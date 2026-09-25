@@ -44,7 +44,10 @@
 | 4. Резолв имени — adaptive/strategy резолвит имя (источник 404) | ✅ сделано | `48077bb` |
 | 4. Резолв имени — матчер балансера (N3) | ✅ сделано | `ac74bb6` |
 | 4. Резолв имени — N5 (канонический ID клиенту) | ✅ частично (`available_models` + `suggestion` в 404) | — |
-| 6. Уведомления `cppworker → agent → webui` | ⏳ | — |
+| 6. Уведомления — причина провала в `/api/models` (таксономия + diagnostics) | ✅ сделано | `2117552` |
+| 6. Уведомления — agent забирает и пересылает (без новых запросов) | ✅ сделано | `1db99f1` |
+| 6. Уведомления — балансер публикует только на смену причины | ✅ сделано | `1db99f1` |
+| 6. Уведомления — WebUI рисует + **закрыт XSS** в notifications.js | ✅ сделано | `1db99f1` |
 | 7. Образы (продовый compose, путь 1+2+3) | ⏳ | — |
 
 **Ограничение протокола, найденное при реализации блока 2 (важно для блоков 2 и 6).**
@@ -413,24 +416,33 @@ SSE `/api/v1/events` с ring buffer 100 (`internal/api/handlers_events.go`),
 | `unknown` | всё остальное | сырой текст (обязательно) |
 
 ### Правки
-1. **A1.** `loadFailureEntry` → `{At, Reason string, Err string, Diagnostics map[string]any}`;
-   `Err` сохранить для совместимости (`handlers_load_progress_failed_test.go`).
-   Поля `Diagnostics` **уже формируются** на lazy-load пути (`lazyload.go:170-175`).
-2. **A2.** Отдать `load_failure` в **`/api/models`** (top-level, рядом с
-   `feasible_max_context`) — агент его **уже** парсит каждые 10 с → **ноль новых
-   HTTP-запросов во всей связке**.
-3. **A3.** agent: поле `LoadFailure` в `LlamaMetrics` (`internal/agent/llama_collector.go:23-31`),
-   заполняется из уже разобранного ответа, уезжает в существующем push-е.
-   Ни новых горутин, ни тикеров, ни endpoint'ов.
-4. **A4.** balancer (только релей): поле в `types.BackendMetrics`
-   (`pkg/types/metrics.go:35`), в `agentBackendMetricsHandler` после `UpdateMetrics`
-   (`handlers_agents.go:912`) — **проверка перехода**: публикуем `EventNotification`
-   только если `(backendID, model, reason)` изменился. Ни поллинга, ни таймеров,
-   ни агрегации; `Publish` неблокирующий.
-5. **A5.** webui: **level** — `llamaCpp.loadFailure` в карточке модели/бэкенда;
-   **edge** — уведомление. v1 клиент **не трогаем** (`notifications.js` уже всё умеет),
-   далее клик → переход на GGUF-страницу + раскрытие чисел, затем кнопка
-   «Загрузить с feasible=N» (`autotune.go:297-308` уже считает `RecommendedNumCtx`).
+1. **A1.** ✅ **Сделано (`2117552`).** `loadFailureEntry` расширен до
+   `{At, Model, Reason, Err, Diagnostics}`; добавлен словарь причин
+   (`cmd/cppworker/load_failure_reason.go`), классификатор по типу ошибки и тексту,
+   `severity`, и метод `latest()` для «последней причины».
+2. **A2.** ✅ **Сделано (`2117552`).** `load_failure` отдаётся в **`/api/models`**
+   (top-level): `model`, `reason`, `error`, `at`, `severity`, `diagnostics`.
+   Агент его **уже** опрашивает каждые ~10 с → **ноль новых HTTP-запросов во всей связке**.
+   Запись централизована в единственных воронках исходов: 404 `model_not_found`,
+   422 `config_out_of_bounds`, ранний отказ lazy-load по отсутствию файла.
+3. **A3.** ✅ **Сделано (`1db99f1`).** agent: `LlamaMetrics.LoadFailure` заполняется
+   из того же ответа `/api/models`; `toBackendLoadFailure` переносит данные в
+   метрики бэкенда. Ни новых горутин, ни тикеров, ни endpoint'ов.
+4. **A4.** ✅ **Сделано (`1db99f1`).** Балансер: `Proxy.PublishLoadFailureTransition`
+   — одно сравнение `(backendID → key)` на полученный push, публикация **только на
+   смену причины** и одно `info`-событие при восстановлении. Ни поллинга, ни
+   таймеров, ни агрегации.
+5. **A5.** ✅ **Сделано (`1db99f1`).** WebUI: `notifications.js` рисует уведомление
+   (клиент v1 не менялся — он уже умел severity/source/model/message) плюс блок
+   «подробности» с числами из `diagnostics`. **Закрыт XSS**: `message`/`source`/
+   `model` подставлялись в `innerHTML` без экранирования, а туда попадает имя
+   модели **из запроса клиента** и сырой текст llama.cpp; `severity` теперь
+   проходит whitelist (значение уходило в имя CSS-класса).
+
+**Найденный при реализации баг (поймал тест):** `LoadFailureInfo.Key()` для
+пустого объекта возвращал `"\x00"` (непустую строку), поэтому «нет данных от
+cppworker» выглядело как провал с пустой причиной и порождало уведомление на
+пустом месте. Исправлено: пустой объект даёт пустой ключ.
 
 ### Обязательные условия
 - **Edge, не level — иначе спам.** Провал живёт 10 мин, push идёт каждые 10 с → без

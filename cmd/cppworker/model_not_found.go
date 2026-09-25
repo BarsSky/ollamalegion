@@ -135,6 +135,20 @@ func commonPrefixLen(a, b string) int {
 // writeModelNotFoundResponse — 404 со списком доступных моделей.
 func writeModelNotFoundResponse(w http.ResponseWriter, requested, attemptedPath string) {
 	available := availableModelNames()
+
+	// R83 (2026-09-25): запоминаем причину — её заберёт agent из /api/models и
+	// покажет оператору уведомление (cppworker → agent → webui). Пишем здесь,
+	// потому что это единственная воронка исхода «файла нет».
+	loadFailures.recordDetailed(requested, LoadFailureModelNotFound,
+		fmt.Errorf("model %q not found in %s (tried %q)",
+			requested, derefString(modelsDir), attemptedPath),
+		map[string]interface{}{
+			"attempted_path":   attemptedPath,
+			"models_dir":       derefString(modelsDir),
+			"available_models": available,
+			"suggestion":       modelNotFoundSuggestion(requested, available),
+		})
+
 	writeJSON(w, http.StatusNotFound, map[string]interface{}{
 		"error":            fmt.Sprintf("model %q not found in %s", requested, derefString(modelsDir)),
 		"code":             "model_not_found",

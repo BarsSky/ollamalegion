@@ -167,6 +167,22 @@ func nctxSuggestion(f NCtxFeasibility) string {
 // Тело намеренно содержит поле "error" — его читают и балансер (:1218), и
 // WebUI/клиенты, не разбирающие структуру.
 func writeNCtxInfeasibleResponse(w http.ResponseWriter, f NCtxFeasibility) {
+	// R83 (2026-09-25): запоминаем причину провала с числами — её заберёт agent
+	// из /api/models и покажет оператору уведомление (cppworker → agent → webui).
+	// Пишем здесь, а не у вызывающих: это единственная воронка этого исхода.
+	loadFailures.recordDetailed(f.Model, LoadFailureConfigOutOfBounds,
+		fmt.Errorf("requested n_ctx=%d exceeds the physically feasible maximum %d",
+			f.RequestedNCtx, f.HardMaxNCtx),
+		map[string]interface{}{
+			"requested_n_ctx":      f.RequestedNCtx,
+			"feasible_max_context": f.FeasibleMaxNCtx,
+			"max_vram_n_ctx":       f.MaxVRAMNCtx,
+			"max_ram_n_ctx":        f.MaxRAMNCtx,
+			"gguf_max_context":     f.GGUFMaxContext,
+			"hard_max_n_ctx":       f.HardMaxNCtx,
+			"suggestion":           nctxSuggestion(f),
+		})
+
 	writeJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{
 		"error": fmt.Sprintf(
 			"requested n_ctx=%d exceeds the physically feasible maximum %d for model %q "+

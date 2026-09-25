@@ -1193,7 +1193,7 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"models":            enrichedModels,
 		"count":             len(models),
 		"max_vram_n_ctx":    maxVRAMNCtx,
@@ -1209,7 +1209,27 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		// gguf_max_context     = max GGUF training context — hard upper bound.
 		"feasible_max_context": topFeasible,
 		"gguf_max_context":     topGGUF,
-	})
+	}
+
+	// R83 (2026-09-25): причина последнего провала загрузки — машиночитаемо.
+	//
+	// Это ключевое звено связки cppworker → agent → webui: agent и так опрашивает
+	// /api/models каждые 10 с, поэтому новых HTTP-запросов не появляется вообще,
+	// а причина провала (код + числа) доезжает до WebUI без участия балансера в
+	// сборе данных. Раньше наружу отдавался только свободный текст в
+	// /api/models/load/progress, и уведомление оператору построить было нельзя.
+	if fe, ok := loadFailures.latest(); ok {
+		resp["load_failure"] = map[string]interface{}{
+			"model":       fe.Model,
+			"reason":      fe.Reason,
+			"error":       fe.Err,
+			"at":          fe.At.UTC().Format(time.RFC3339),
+			"severity":    loadFailureSeverity(fe.Reason),
+			"diagnostics": fe.Diagnostics,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func handleGetModel(w http.ResponseWriter, r *http.Request) {

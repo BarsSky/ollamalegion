@@ -175,6 +175,13 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 				},
 			}
 			RecordLoadAttempt(failAttempt)
+			// R83 (2026-09-25): ту же причину кладём в реестр провалов — оттуда
+			// её забирает agent через /api/models и показывает оператору
+			// (связка cppworker → agent → webui). Раньше провал автозагрузки
+			// существовал только в этом логе и в /api/diagnostics.
+			loadFailures.recordDetailed(modelName, LoadFailureModelNotFound,
+				fmt.Errorf("model file not found: %s", modelPath),
+				failAttempt.Diagnostics)
 			return "", fmt.Errorf("model file not found: %s", modelPath)
 		}
 

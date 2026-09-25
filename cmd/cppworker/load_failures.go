@@ -18,6 +18,11 @@
 // ТЕПЕРЬ: последняя ошибка загрузки/перезагрузки запоминается на TTL и
 // отдаётся в /api/models/load/progress как {"state":"failed","error":"..."},
 // поэтому и балансер, и WebUI (GgufLoadProgress) видят настоящую причину.
+//
+// R83 (2026-09-25): добавлены Reason (машиночитаемый код, см.
+// load_failure_reason.go) и Diagnostics (числа для разбора: запрошенный n_ctx,
+// границы, свободная память). Без кода причину приходилось парсить из строки, и
+// уведомление оператору («почему модель не загрузилась») построить было нельзя.
 
 package main
 
@@ -35,10 +40,13 @@ const loadFailureTTL = 10 * time.Minute
 //
 // Порядок полей — по требованию govet fieldalignment (в .golangci.yml включён
 // govet.enable-all): первым идёт поле с указателем (time.Time хранит
-// *Location), за ним строка.
+// *Location), за ним строки, затем карта.
 type loadFailureEntry struct {
-	At  time.Time
-	Err string
+	At          time.Time
+	Model       string
+	Reason      string
+	Err         string
+	Diagnostics map[string]interface{}
 }
 
 // loadFailureRegistry — потокобезопасный реестр последних провалов загрузки.
@@ -57,14 +65,32 @@ func newLoadFailureRegistry(ttl time.Duration) *loadFailureRegistry {
 	}
 }
 
-// record — запомнить ошибку загрузки модели.
-func (r *loadFailureRegistry) record(name string, err error) {
+// recordDetailed — запомнить ошибку загрузки вместе с кодом причины и числами.
+//
+// reason == "" означает «классифицируй сам по тексту ошибки» — так вызывающие,
+// которым код не важен, не обязаны его знать.
+func (r *loadFailureRegistry) recordDetailed(name, reason string, err error, diag map[string]interface{}) {
 	if r == nil || name == "" || err == nil {
 		return
 	}
+	errText := err.Error()
+	if reason == "" || !isLoadFailureReason(reason) {
+		reason = classifyLoadFailureReason(err, errText)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.m[name] = loadFailureEntry{Err: err.Error(), At: r.now()}
+	r.m[name] = loadFailureEntry{
+		At:          r.now(),
+		Model:       name,
+		Reason:      reason,
+		Err:         errText,
+		Diagnostics: diag,
+	}
+}
+
+// record — прежний вход без причины и диагностики (совместимость с R66d).
+func (r *loadFailureRegistry) record(name string, err error) {
+	r.recordDetailed(name, "", err, nil)
 }
 
 // clear — забыть ошибку (успешная загрузка).
@@ -112,6 +138,30 @@ func (r *loadFailureRegistry) list() map[string]loadFailureEntry {
 		out[name] = e
 	}
 	return out
+}
+
+// latest — самая свежая не истёкшая запись. Нужна для /api/models: клиенту
+// (agent → балансер → WebUI) достаточно последней причины, чтобы показать
+// уведомление, а не весь список.
+func (r *loadFailureRegistry) latest() (loadFailureEntry, bool) {
+	if r == nil {
+		return loadFailureEntry{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now()
+	var best loadFailureEntry
+	found := false
+	for name, e := range r.m {
+		if r.ttl > 0 && now.Sub(e.At) > r.ttl {
+			delete(r.m, name)
+			continue
+		}
+		if !found || e.At.After(best.At) {
+			best, found = e, true
+		}
+	}
+	return best, found
 }
 
 // loadFailures — процесс-глобальный реестр (cppworker обслуживает один backend).

@@ -171,6 +171,14 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// становился настолько медленным, что клиент отваливался по таймауту.
 	// Если запрошенное физически невыполнимо — 422 с числами, без старта загрузки.
 	// См. cmd/cppworker/nctx_feasibility.go.
+	// R83 (2026-09-25): сначала проверяем, что файл вообще есть. Раньше
+	// несуществующий путь уходил прямо в llama.cpp, и оператор получал 500 с
+	// сырым "failed to open GGUF file models/qwen3.8:latest.gguf" вместо
+	// «такой модели нет, доступны вот эти» (см. model_not_found.go).
+	if _, statErr := os.Stat(modelPath); statErr != nil {
+		writeModelNotFoundResponse(w, modelName, modelPath)
+		return
+	}
 	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize) {
 		return
 	}
@@ -622,6 +630,12 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// R83 (2026-09-25): файла нет — 404 со списком доступных (см. model_not_found.go),
+	// а не 500 от llama.cpp с несуществующим путём.
+	if _, statErr := os.Stat(modelPath); statErr != nil {
+		writeModelNotFoundResponse(w, modelName, modelPath)
+		return
+	}
 	// R83 (2026-09-25): проверяем ИТОГОВЫЙ n_ctx — после profile-sync и после
 	// AutoTuneNCtx выше, то есть то значение, с которым модель реально пойдёт
 	// в llama.cpp. Если оно физически невыполнимо — 422 с числами и без старта

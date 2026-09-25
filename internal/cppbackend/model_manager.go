@@ -483,7 +483,35 @@ func (m *ModelManager) ListAliases() []GGUFAlias {
 func (m *ModelManager) AliasSourcePath(name string) (string, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return resolveAliasChain(m.aliases, m.ggufFiles, name)
+	srcPath, ok := resolveAliasChain(m.aliases, m.ggufFiles, name)
+	if ok {
+		return srcPath, true
+	}
+	// R83: если имя НЕ является алиасом, пробуем его варианты (Ollama-тег):
+	// клиент просит "qwen3.8:latest", алиас создан как "qwen3.8".
+	//
+	// ВАЖНО: когда алиас ЕСТЬ, но файл-источник пропал, путь сохраняем как раньше
+	// (R66d): вызывающий покажет понятную ошибку загрузки, а не «модель не
+	// найдена». Регресс-тест: TestScanModels_Aliases_R66d («битый алиас»).
+	if _, isAlias := aliasKey(m.aliases, name); !isAlias {
+		for _, v := range ModelNameVariants(name) {
+			if p, ok := resolveAliasChain(m.aliases, m.ggufFiles, v); ok {
+				return p, true
+			}
+		}
+	}
+	return srcPath, false
+}
+
+// aliasKey — ключ алиаса для имени (та же нормализация, что в resolveAliasChain:
+// trim + снятие .gguf).
+func aliasKey(aliases map[string]GGUFAlias, name string) (string, bool) {
+	current := strings.TrimSpace(name)
+	if strings.HasSuffix(strings.ToLower(current), ".gguf") {
+		current = current[:len(current)-5]
+	}
+	_, ok := aliases[current]
+	return current, ok
 }
 
 // resolveAliasChain — общая логика резолва алиасов (используется и в ScanModels,
@@ -674,6 +702,15 @@ func (m *ModelManager) FindModelByPath(path string) (string, error) {
 		if strings.Contains(strings.ToLower(name), strings.ToLower(path)) {
 			return meta.Path, nil
 		}
+	}
+
+	// R83 (2026-09-25): последний шаг — варианты внешнего имени (Ollama-тег и
+	// регистр). Живой кейс: клиент просит "qwen3.8:latest", файл на диске —
+	// "Qwen3.8-27B-UD-Q4_K_M.gguf". Contains-поиск выше нашёл бы "qwen3.8", но
+	// тег ":latest" его ломал, и cppworker уходил открывать несуществующий
+	// "models/qwen3.8:latest.gguf" → 500 от llama.cpp вместо внятного 404.
+	if foundPath, _, ok := m.findModelByVariantsLocked(path); ok {
+		return foundPath, nil
 	}
 
 	return "", fmt.Errorf("no .gguf file matches: %s", path)

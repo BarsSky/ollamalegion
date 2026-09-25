@@ -965,9 +965,25 @@ func handleAdaptiveStrategy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "model manager not initialized")
 		return
 	}
-	meta, err := mm.GetModelMeta(modelName + ".gguf")
+	// R83 (2026-09-25): нормализуем ВНЕШНЕЕ имя до канонического filename.
+	//
+	// Живой кейс: балансер спрашивает стратегию для "qwen3.8:latest", файл на
+	// диске — "Qwen3.8-27B-UD-Q4_K_M.gguf". GetModelMeta ищет по точному ключу
+	// карты, поэтому оба прежних варианта (name+".gguf" и name) не находили
+	// ничего → 404, и балансер молча оставался без стратегии загрузки
+	// (в логе cppworker: GET /api/v1/cppworker/adaptive/strategy status=404).
+	resolvedName := modelName
+	if _, canonical, ok := mm.FindModelByVariants(modelName); ok && canonical != "" {
+		if canonical != modelName {
+			logger.Get().Infow("handleAdaptiveStrategy: resolved model name",
+				"requested", modelName, "canonical", canonical)
+		}
+		resolvedName = canonical
+	}
+
+	meta, err := mm.GetModelMeta(resolvedName)
 	if err != nil {
-		meta, err = mm.GetModelMeta(modelName)
+		meta, err = mm.GetModelMeta(strings.TrimSuffix(resolvedName, ".gguf"))
 		if err != nil {
 			writeError(w, http.StatusNotFound, "model metadata not found: "+err.Error())
 			return
@@ -977,7 +993,7 @@ func handleAdaptiveStrategy(w http.ResponseWriter, r *http.Request) {
 	env := globalEnv.Get()
 	strategy := SelectStrategyWithKV(
 		&env,
-		modelName,
+		resolvedName,
 		*meta,
 		nCtx,
 		gpuLayers,

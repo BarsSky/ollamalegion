@@ -73,8 +73,15 @@ func queryAdaptiveStrategy(backendAddr, modelName string, targetNCtx int, kvHint
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		logger.Get().Debugw("queryAdaptiveStrategy: non-200 status",
-			"url", url, "status", resp.StatusCode)
+		// R83 (2026-09-25): было Debug — из-за этого «модель не найдена» на
+		// стороне cppworker (404) выглядело как «стратегия просто не выбрана»,
+		// и причина неразрешимого имени модели не попадала в логи балансера.
+		// 404 здесь означает, что имя модели не разрезолвилось (или файла нет) —
+		// это диагностически важно, поэтому Warn. Остальные коды — тоже Warn:
+		// без стратегии загрузка уходит в дефолты и может не влезть в память.
+		logger.Get().Warnw("queryAdaptiveStrategy: non-200 status (стратегия не получена, "+
+			"загрузка пойдёт по значениям по умолчанию)",
+			"url", url, "status", resp.StatusCode, "model", modelName)
 		return nil
 	}
 

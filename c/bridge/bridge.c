@@ -23,7 +23,6 @@
 #include <math.h>
 #include <stdatomic.h>  // Round 31 #6 (2026-08-09): atomic_int abort_requested
 #include <time.h>  // для time() — time-based RNG seed (для seed=0)
-#include <sys/stat.h>  // R83 §3.2: размер файла модели (нижняя оценка весов)
 
 // Отключаем буферизацию stdout для Docker-логов — все printf выводятся немедленно.
 // Без этого [bridge] сообщения могут не появляться в `docker compose logs`
@@ -862,7 +861,8 @@ struct ggml_backend_buffer_type * resolve_buft_by_name(const char *name) {
 }
 
 // ============================================================
-// R83 §3.2 (2026-09-26): кламп gpu_layers по свободной VRAM
+// R83 §3.2 (2026-09-26): C-сторона не отдаёт в llama.cpp план,
+// который заведомо не помещается
 // ============================================================
 //
 // ЗАЧЕМ. До R83 bridge_load_model отвечал на «VRAM кончилась» только
@@ -873,22 +873,19 @@ struct ggml_backend_buffer_type * resolve_buft_by_name(const char *name) {
 // (OOMKilled=false, см. plans/2026-09-25-handoff-r83-next-session.md §1).
 //
 // ПРИНЦИП (страховка, а не замена планировщика):
-//   * основной расчёт лимитов — Go-сторона (internal/memfit);
-//   * C-сторона обязана не отдавать в llama.cpp заведомо непомещающийся
-//     план. Срабатывает ровно один узкий случай: размер файла весов
-//     больше свободной VRAM, то есть модель не влезает на GPU целиком
-//     даже без KV-cache. Тогда n_gpu_layers понижается до 0 (модель на
-//     CPU). Любая помещающаяся раскладка проходит без изменений —
-//     C-оценка не «съедает» корректно спланированные 22-24 слоя;
-//   * неточность безопасна в одну сторону: размер файла — оценка СВЕРХУ
-//     для split-GGUF (учитывает только один шард), поэтому кламп может
-//     не сработать там, где сработал бы, но не может сработать на
-//     помещающейся модели;
-//   * per-tensor размеры (и, значит, «сколько слоёв влезет») до загрузки
-//     неизвестны: llama.cpp отдаёт их только через llama_model_* после
-//     llama_model_load_from_file. Поэтому решение «сколько слоёв» остаётся
-//     за memfit, а у C-стороны — только грубый отказ от заведомо
-//     непомещающегося плана.
+//   * раскладку слоёв планирует Go-сторона (internal/memfit);
+//   * C-сторона проверяет ФАКТЫ и только там, где они уже известны:
+//     после llama_model_load_from_file и ДО llama_init_from_model (именно там
+//     аллоцируется KV-cache). Если в свободной VRAM не помещается даже один
+//     токен KV — загрузка отклоняется (BRIDGE_ERR_GPU_OOM) с числами, модель
+//     освобождается, аллокации в переподписке не происходит;
+//   * числа KV берутся от планировщика (config->kv_layers / kv_head_dim) —
+//     рекуррентные слои KV не хранят, head_dim KV = attention.key_length;
+//   * пред-загрузочного клампа gpu_layers здесь СОЗНАТЕЛЬНО нет: до загрузки
+//     известен только размер файла, а не per-tensor размеры, поэтому эвристика
+//     «влезает доля free/файл» резала бы корректный partial offload (16.4 GB
+//     модель на 8 GB карте — норма). Это зафиксировано живым замером: см.
+//     CHANGELOG 0.5.43.
 
 // R83 §3.2: получить свободную VRAM текущего CUDA-устройства в байтах.
 // Возвращает false, если CUDA недоступна или запрос не удался.
@@ -903,23 +900,6 @@ static bool r83_cuda_free_vram_bytes(unsigned long long* out_free) {
 #else
     (void)out_free;
     return false;
-#endif
-}
-
-// R83 §3.2: размер файла модели в байтах — нижняя оценка объёма весов.
-// Возвращает 0, если файл недоступен.
-static unsigned long long r83_file_size_bytes(const char* path) {
-    if (path == NULL || path[0] == '\0') return 0;
-#ifdef _WIN32
-    // MinGW: _stat64 / _wstat64. Используем stat() из <sys/stat.h> —
-    // для размеров > 2 GiB берём _stati64-совместимый вариант.
-    struct _stati64 st;
-    if (_stati64(path, &st) != 0) return 0;
-    return (unsigned long long)st.st_size;
-#else
-    struct stat st;
-    if (stat(path, &st) != 0) return 0;
-    return (unsigned long long)st.st_size;
 #endif
 }
 
@@ -1072,32 +1052,13 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
     }
 
 
-    // R83 §3.2 (2026-09-26): кламп n_gpu_layers, если запрошенный GPU-offload
-    // заведомо не помещается в свободную VRAM. См. подробный комментарий у
-    // r83_cuda_free_vram_bytes. Проверяем ДО llama_model_load_from_file:
-    // после загрузки веса уже аллоцированы, и «уменьшить слои» без
-    // unload+reload невозможно.
-    //
-    // Условие срабатывания узкое: размер файла весов (нижняя оценка объёма
-    // модели) больше свободной VRAM. То есть модель не влезает на GPU
-    // целиком даже без KV-cache — отдавать такой план в llama.cpp значит
-    // аллоцировать в переподписке (инцидент SIGABRT, §1 хендоффа).
-    // Частичные раскладки (веса влезают, не влезает KV) НЕ трогаем здесь —
-    // их проверяет пост-загрузочный блок оценки KV ниже, а планирует memfit.
-    if (model_params.n_gpu_layers != 0) {
-        unsigned long long free_vram = 0;
-        unsigned long long file_bytes = r83_file_size_bytes(config->model_path);
-        if (r83_cuda_free_vram_bytes(&free_vram) && file_bytes > 0 &&
-            free_vram < file_bytes) {
-            printf("[bridge] R83 §3.2: clamping gpu_layers %d -> 0 "
-                   "(free VRAM=%llu MB < model file=%llu MB; weights cannot "
-                   "fit on GPU at all)\n",
-                   model_params.n_gpu_layers,
-                   free_vram / (1024ULL * 1024ULL),
-                   file_bytes / (1024ULL * 1024ULL));
-            model_params.n_gpu_layers = 0;
-        }
-    }
+    // R83 §3.2 (2026-09-26): пред-загрузочного клампа gpu_layers здесь НЕТ —
+    // и это осознанно. Эвристика «влезает доля free_vram/размер_файла» режет
+    // корректно спланированный memfit'ом partial offload (16.4 GB модель на
+    // 8 GB карте — это норма, а не ошибка), а точных per-tensor размеров до
+    // llama_model_load_from_file не существует. Решение о раскладке принимает
+    // memfit (Go), а C-сторона отказывает только там, где уже знает факты:
+    // после загрузки модели, до создания контекста (см. блок KV ниже).
 
     // Загружаем модель
     struct llama_model *model = llama_model_load_from_file(config->model_path, model_params);

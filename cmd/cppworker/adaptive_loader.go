@@ -400,54 +400,26 @@ func SelectStrategyWithKV(
 	var moeOverridePatterns, moeOverrideBufts []string
 
 	if meta.NLayers == 0 || meta.NEmbd == 0 || meta.NHeads == 0 {
-		// Auto-select optimal kvCacheType based on available VRAM.
-		// With f16 at 65K context on 8GB GPU, KV-cache alone is ~6.7GB → guaranteed OOM.
-		// q4_0 reduces this to ~1.7GB, freeing VRAM for more GPU layers.
-		kvType := "f16"
-		if _, hinted := bytesPerKVCacheType[preferredKV]; hinted {
-			// R70: хинт от балансера (профиль модели / фактический тип KV-cache
-			// загруженной модели) важнее авто-выбора.
-			kvType = preferredKV
-		} else if autoKVCacheEnabled && env != nil && env.FreeVRAM > 0 && requestedNCtx > 32768 {
-			// Estimate KV-cache for each type and pick the best that leaves room for model weights.
-			// Conservative model estimate: ~5GB for 7-9B Q4_K_M models.
-			const conservativeModelMB = 5120
-			modelBytes := int64(conservativeModelMB) * 1024 * 1024
-			overheadBytes := int64(1000) * 1024 * 1024 // 1GB overhead
-			if env.OverheadBytes > 0 {
-				overheadBytes = env.OverheadBytes
-			}
-			for _, candidate := range []string{"q4_0", "q8_0", "f16"} {
-				bytesPerToken := bytesPerKVCacheType[candidate]
-				if bytesPerToken <= 0 {
-					bytesPerToken = 4
-				}
-				// Conservative KV-cache estimate: 42 layers, n_kv_heads=2, head_dim=128
-				kvBytes := int64(2) * int64(42) * int64(requestedNCtx) * int64(2) * int64(128) * bytesPerToken
-				totalNeeded := modelBytes + kvBytes + overheadBytes
-				if totalNeeded <= int64(env.FreeVRAM) {
-					kvType = candidate
-					break
-				}
-			}
-		}
-		// Calculate max viable n_ctx from available VRAM + RAM.
-		// Strategy: offload most layers to RAM (partial_offload), keeping
-		// minimal layers on GPU. This frees VRAM for larger KV-cache.
-		// Use actual model size from GGUF if available, otherwise conservative estimate.
+		// === R83 (2026-09-25): оценки модели считаются ЗДЕСЬ и ОДИН РАЗ ===
+		//
+		// Раньше выбор типа KV-cache (ниже) опирался на ХАРДКОД «5 ГБ модели,
+		// 42 слоя, 2 kv-heads, head_dim=128», а более точные оценки считались уже
+		// ПОСЛЕ него. Для Qwen3.8-27B (15.3 ГБ, 64 слоя, 8 kv-heads) это занижало
+		// и размер модели втрое, и KV-cache — то есть решение о kvCacheType
+		// принималось по параметрам чужой модели.
+		//
+		// Ветка выполняется только когда GGUF header не дал архитектуры
+		// (NLayers/NEmbd/NHeads = 0), поэтому часть величин остаётся оценочной.
+		// Но всё, что мета всё-таки содержит (SizeBytes, NKvHeads), используется.
 		const defaultModelMB = 5120
-		// Round 6 #11: arch-aware fallback. meta.Architecture is set even when
-		// NLayers/NEmbd/NHeads are zero (the trigger for this branch), so we
-		// can narrow numLayers per architecture family. Without this, a Qwen3.6
-		// 35B-A3B (48 layers, 22 GB) was being estimated as 60 layers (8-15 GB
-		// size class), causing per-layer weight math to be off by 25% and
-		// partial_offload to mis-target GPU layer count.
 		const defaultLayers = 42
 		modelBytes := int64(defaultModelMB) * 1024 * 1024
 		numLayers := defaultLayers
 		if meta.SizeBytes > 0 {
 			modelBytes = int64(meta.SizeBytes)
 			// Layer estimate: arch first (more accurate), fall back to size heuristic.
+			// Round 6 #11: meta.Architecture заполнена даже когда NLayers/NEmbd/NHeads
+			// нулевые — это и есть условие входа в ветку.
 			arch := strings.ToLower(meta.Architecture)
 			switch {
 			case strings.Contains(arch, "qwen3"), strings.Contains(arch, "qwen35"):
@@ -479,6 +451,69 @@ func SelectStrategyWithKV(
 				}
 			}
 		}
+
+		// n_kv_heads: берём из GGUF, если он его отдал (частичная мета — обычное
+		// дело: NHeads пуст, а NKvHeads известен), иначе грубая оценка по размеру.
+		nKvHeads := meta.NKvHeads
+		if nKvHeads <= 0 {
+			nKvHeads = 2
+			if modelBytes > 20*1024*1024*1024 {
+				nKvHeads = 8
+			} else if modelBytes > 10*1024*1024*1024 {
+				nKvHeads = 4
+			}
+		}
+		// head_dim: NEmbd/NHeads, если известны; иначе типовое 128.
+		headDim := int64(128)
+		if meta.NEmbd > 0 && meta.NHeads > 0 {
+			headDim = int64(meta.NEmbd / meta.NHeads)
+		}
+
+		// Auto-select optimal kvCacheType based on available VRAM.
+		// With f16 at 65K context on 8GB GPU, KV-cache alone is ~6.7GB → guaranteed OOM.
+		// q4_0 reduces this to ~1.7GB, freeing VRAM for more GPU layers.
+		//
+		// R83: базовый тип берём из конфига (обычно q4_0), а НЕ хардкод «f16».
+		// Это значение остаётся, если ни один вариант не уложился в свободную VRAM
+		// (см. цикл ниже) — и раньше в этом случае молча выставлялся f16, то есть
+		// вчетверо больший KV, чем q4_0: гарантированный OOM на границе памяти.
+		kvDefault := "q4_0"
+		if defaults != nil && isValidKVCacheType(defaults.DefaultKVCacheType) {
+			kvDefault = defaults.DefaultKVCacheType
+		}
+		kvType := kvDefault
+		if _, hinted := bytesPerKVCacheType[preferredKV]; hinted {
+			// R70: хинт от балансера (профиль модели / фактический тип KV-cache
+			// загруженной модели) важнее авто-выбора.
+			kvType = preferredKV
+		} else if autoKVCacheEnabled && env != nil && env.FreeVRAM > 0 && requestedNCtx > 32768 {
+			// Estimate KV-cache for each type and pick the best that leaves room for model weights.
+			overheadBytes := int64(1000) * 1024 * 1024 // 1GB overhead
+			if env.OverheadBytes > 0 {
+				overheadBytes = env.OverheadBytes
+			}
+			for _, candidate := range []string{"q4_0", "q8_0", "f16"} {
+				bytesPerToken := bytesPerKVCacheType[candidate]
+				if bytesPerToken <= 0 {
+					bytesPerToken = 4
+				}
+				// R83: реальные оценки модели вместо хардкода «42 слоя, 2 kv-heads,
+				// head_dim=128» (см. блок оценок в начале ветки).
+				kvBytes := int64(2) * int64(numLayers) * int64(nKvHeads) * headDim *
+					int64(requestedNCtx) * bytesPerToken
+				totalNeeded := modelBytes + kvBytes + overheadBytes
+				if totalNeeded <= int64(env.FreeVRAM) {
+					kvType = candidate
+					break
+				}
+			}
+		}
+		// Calculate max viable n_ctx from available VRAM + RAM.
+		// Strategy: offload most layers to RAM (partial_offload), keeping
+		// minimal layers on GPU. This frees VRAM for larger KV-cache.
+		//
+		// R83: modelBytes/numLayers/nKvHeads/headDim посчитаны в начале ветки
+		// (до выбора kvCacheType) — здесь только производные от них величины.
 		const minGPULayers = 4 // keep attention layers on GPU
 		perLayer := modelBytes / int64(numLayers)
 		overheadBytes := int64(1000) * 1024 * 1024
@@ -506,22 +541,14 @@ func SelectStrategyWithKV(
 			freeForKV = int64(env.FreeVRAM) - modelBytes - overheadBytes
 		}
 
-		// KV-cache per token: 2 (K+V) * N layers * N kv_heads * 128 head_dim * bytes_per_elem
-		// Estimate n_kv_heads from model size (conservative):
-		//   <10GB → 2 (7-9B class: gemma, mistral)
-		//   10-20GB → 4 (13-34B class)
-		//   >20GB → 8 (70B+ class)
-		nKvHeads := 2
-		if modelBytes > 20*1024*1024*1024 {
-			nKvHeads = 8
-		} else if modelBytes > 10*1024*1024*1024 {
-			nKvHeads = 4
-		}
+		// KV-cache per token: 2 (K+V) * N layers * N kv_heads * head_dim * bytes/elem.
+		// R83: nKvHeads и headDim посчитаны в начале ветки (nKvHeads — из GGUF,
+		// если он его отдал, иначе оценка по размеру; headDim — из NEmbd/NHeads).
 		bytesPerToken := bytesPerKVCacheType[kvType]
 		if bytesPerToken <= 0 {
 			bytesPerToken = 4
 		}
-		kvPerToken := int64(2) * int64(numLayers) * int64(nKvHeads) * int64(128) * bytesPerToken
+		kvPerToken := int64(2) * int64(numLayers) * int64(nKvHeads) * headDim * bytesPerToken
 		maxViableNCtx := 512
 		if kvPerToken > 0 && freeForKV > 0 {
 			maxViableNCtx = int(freeForKV / kvPerToken)

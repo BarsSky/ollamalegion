@@ -31,6 +31,9 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
+
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -133,4 +136,68 @@ func logNCtxFeasibility(f NCtxFeasibility) {
 	default:
 		log.Debugw("R83 n_ctx-оценка недоступна: нет метрик VRAM/RAM/GGUF", fields...)
 	}
+}
+
+// nctxSuggestion — что оператору/клиенту сделать вместо отклонённого n_ctx.
+// Возвращает конкретные числа, а не общий совет: это интерфейс между отказом и
+// уведомлением в WebUI (блок 6 плана).
+func nctxSuggestion(f NCtxFeasibility) string {
+	switch {
+	case f.GGUFMaxContext > 0 && f.HardMaxNCtx == f.GGUFMaxContext:
+		return fmt.Sprintf("n_ctx ограничен обучающим контекстом модели: %d. "+
+			"Укажите n_ctx <= %d.", f.GGUFMaxContext, f.GGUFMaxContext)
+	case f.FeasibleMaxNCtx > 0:
+		return fmt.Sprintf("Для загрузки целиком в VRAM используйте n_ctx <= %d "+
+			"(feasible_max_context). До %d возможно с выгрузкой части слоёв в RAM "+
+			"(partial_offload) — это заметно медленнее.",
+			f.FeasibleMaxNCtx, f.HardMaxNCtx)
+	default:
+		return "Снизьте n_ctx или используйте модель/железо с большим объёмом памяти."
+	}
+}
+
+// writeNCtxInfeasibleResponse — HTTP 422 со всеми числами.
+//
+// ВАЖНО про код ответа: 422, а НЕ 503. Балансер ретраит только 503 с признаком
+// «model is loading» (internal/balancer/model_management.go:1223); на любой
+// другой не-2xx он возвращает ошибку сразу («Другая ошибка — не повторяем»,
+// :1245). Поэтому 422 доходит до клиента как внятный отказ, а не превращается
+// в retry-шторм и не даёт 503-поллинг до 3-15 минут (см. load_failures.go).
+//
+// Тело намеренно содержит поле "error" — его читают и балансер (:1218), и
+// WebUI/клиенты, не разбирающие структуру.
+func writeNCtxInfeasibleResponse(w http.ResponseWriter, f NCtxFeasibility) {
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{
+		"error": fmt.Sprintf(
+			"requested n_ctx=%d exceeds the physically feasible maximum %d for model %q "+
+				"on this hardware (max_vram_n_ctx=%d, max_ram_n_ctx=%d, gguf_max_context=%d)",
+			f.RequestedNCtx, f.HardMaxNCtx, f.Model,
+			f.MaxVRAMNCtx, f.MaxRAMNCtx, f.GGUFMaxContext),
+		"code":                 "n_ctx_infeasible",
+		"model":                f.Model,
+		"requested_n_ctx":      f.RequestedNCtx,
+		"feasible_max_context": f.FeasibleMaxNCtx,
+		"max_vram_n_ctx":       f.MaxVRAMNCtx,
+		"max_ram_n_ctx":        f.MaxRAMNCtx,
+		"gguf_max_context":     f.GGUFMaxContext,
+		"hard_max_n_ctx":       f.HardMaxNCtx,
+		"suggestion":           nctxSuggestion(f),
+	})
+}
+
+// checkNCtxBeforeLoad — общая точка входа для всех load/reload-хендлеров
+// (handleLoadModel, handleLoadWithParams, handleReloadModel).
+//
+// Возвращает false, если запрос ОТКЛОНЁН — ответ уже записан, вызывающий обязан
+// сделать return. Всегда логирует оценку (в т.ч. degraded), чтобы режим загрузки
+// был виден оператору до её старта.
+func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx int) bool {
+	f := evaluateNCtxFeasibility(
+		modelName, backend.CalculateResourceLimits(modelName), requestedNCtx)
+	logNCtxFeasibility(f)
+	if f.Stage == nctxStageInfeasible {
+		writeNCtxInfeasibleResponse(w, f)
+		return false
+	}
+	return true
 }

@@ -169,9 +169,11 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// /api/models/load рапортовал успех и при 32768, и при 65536, хотя во втором
 	// случае стратегия уходила в partial_offload (часть слоёв в RAM) и ответ
 	// становился настолько медленным, что клиент отваливался по таймауту.
-	// См. cmd/cppworker/nctx_feasibility.go — там же гибридная политика R83.
-	logNCtxFeasibility(evaluateNCtxFeasibility(
-		modelName, backend.CalculateResourceLimits(modelName), opts.ContextSize))
+	// Если запрошенное физически невыполнимо — 422 с числами, без старта загрузки.
+	// См. cmd/cppworker/nctx_feasibility.go.
+	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize) {
+		return
+	}
 
 	logger.Get().Infow("loading model",
 		"name", modelName, "path", modelPath,
@@ -618,6 +620,14 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		if tunedOpts.UseMmap {
 			opts.UseMmap = true
 		}
+	}
+
+	// R83 (2026-09-25): проверяем ИТОГОВЫЙ n_ctx — после profile-sync и после
+	// AutoTuneNCtx выше, то есть то значение, с которым модель реально пойдёт
+	// в llama.cpp. Если оно физически невыполнимо — 422 с числами и без старта
+	// загрузки (иначе получим OOM/обрыв стрима вместо внятной причины).
+	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize) {
+		return
 	}
 
 	logger.Get().Infow("loading model with extended params",
@@ -1585,6 +1595,14 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	// max_vram_n_ctx ????????? ? ????????????? reject'?? ??????.
 	// ??? auto_offload gpu_layers ???????????, ????? ????? ?????? ? RAM
 	// (mmap), ?????????? VRAM ??? KV-cache ???????? ???????.
+	// R83 (2026-09-25): проверяем n_ctx после profile-sync — это то значение,
+	// с которым пойдёт reload. Балансер сам инициирует reload на больший n_ctx
+	// (preflight), и именно этот путь чаще всего просил 65536/131072 на A10.
+	// Физически невыполнимое — 422 с числами, без unload/load.
+	if !checkNCtxBeforeLoad(w, req.Name, opts.ContextSize) {
+		return
+	}
+
 	if opts.GPULayers == -2 || (*autoOffload && opts.GPULayers == current.GPULayers) {
 		// ??????? ????????? ModelInfo ? ??????????? n_ctx ??? ???????.
 		m := *current

@@ -6,7 +6,8 @@
   "scripts": {
     "test:visual": "playwright test --config=playwright.config.js",
     "test:visual:update": "playwright test --config=playwright.config.js --update-snapshots",
-    "test:visual:report": "playwright show-report"
+    "test:visual:report": "playwright show-report",
+    "test:webui": "node webui/tests/ui-renderer-smoke.test.js"
   },
   "devDependencies": {
     "@playwright/test": "1.49.0"

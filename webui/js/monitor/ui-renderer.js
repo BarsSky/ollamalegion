@@ -7,6 +7,43 @@
   var T = MA.T;
 
   /**
+   * R83 (2026-09-25): локальный хелпер записи текста в элемент.
+   *
+   * ЗАЧЕМ. renderAdmissionStats (R70) и renderPlacementPolicy (R77) звали
+   * голый updateText(...), которого в этом файле НИКОГДА не было — он объявлен
+   * приватно внутри IIFE MonitorMetrics (js/modules/monitor-metrics.js:83) и
+   * наружу торчит только как MonitorMetrics.updateText. Итог: на КАЖДОМ refresh'е
+   * падало `ReferenceError: updateText is not defined`, updateUI обрывался на
+   * первой такой панели, и /monitor оставался пустым («Нет данных для отображения
+   * топологии»), а в консоли росло `[monitor] fetchAll failed`.
+   *
+   * Предпочитаем собственный хелпер, а не MonitorMetrics.updateText: он не
+   * зависит от порядка загрузки скриптов (оба идут с defer) и не ломается, если
+   * monitor-metrics.js не подключён на странице.
+   */
+  function updateText(id, text) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+
+  /**
+   * R83: один упавший рендер не должен убивать всю страницу.
+   *
+   * До этой правки любое исключение в середине updateUI (как раз ReferenceError
+   * выше) выбрасывало управление из функции целиком: терялись ВСЕ панели после
+   * упавшей — placement, candidates, virtualModels, диагностика, кластерные
+   * ресурсы, таблица бэкендов, диск/сеть, очередь, сессии и топология.
+   * Теперь каждая панель изолирована: падает — пишем в консоль и продолжаем.
+   */
+  function safeRender(name, fn) {
+    try {
+      fn();
+    } catch (e) {
+      console.error('[monitor] render ' + name + ' failed:', e);
+    }
+  }
+
+  /**
    * B-12: Добавляет переключатель backend-типа в заголовок Monitor.
    * Ollama ↔ llama.cpp — синхронизируется с BackendTypeFilter и localStorage.
    */
@@ -359,34 +396,40 @@
     // Round 18f: hide Ollama-specific panels if no Ollama backends present.
     // Auto-Pull / Virtual Models — специфичны для Ollama workflow.
     // Если в кластере только llama.cpp — панели бесполезны, скрываем.
-    hideOllamaOnlyPanels(bk);
+    //
+    // R83: каждый рендер изолирован через safeRender — см. её комментарий.
+    safeRender('hideOllamaOnlyPanels', function() { hideOllamaOnlyPanels(bk); });
 
-    renderAutoPullPanel(data.autoPullConfig || null, data.autoPullStatus || null);
-    renderModelOps(data.modelOps || null);
-    renderDispatchStats(data.queueStats || {});
-    renderAdmissionStats(data.queueStats || {});
-    renderPlacementPolicy(data.placement || {});
-    renderCandidateBackends(data.candidates || null);
-    renderVirtualModels(data.virtualModels || null);
-    diagnose(data);
-    renderClusterResources(bk);
-    renderModelsInMemory(bk, ss);
-    renderBackends(bk, data.modelOps || null);
+    safeRender('autoPullPanel', function() { renderAutoPullPanel(data.autoPullConfig || null, data.autoPullStatus || null); });
+    safeRender('modelOps', function() { renderModelOps(data.modelOps || null); });
+    safeRender('dispatchStats', function() { renderDispatchStats(data.queueStats || {}); });
+    safeRender('admissionStats', function() { renderAdmissionStats(data.queueStats || {}); });
+    safeRender('placementPolicy', function() { renderPlacementPolicy(data.placement || {}); });
+    safeRender('candidateBackends', function() { renderCandidateBackends(data.candidates || null); });
+    safeRender('virtualModels', function() { renderVirtualModels(data.virtualModels || null); });
+    safeRender('diagnose', function() { diagnose(data); });
+    safeRender('clusterResources', function() { renderClusterResources(bk); });
+    safeRender('modelsInMemory', function() { renderModelsInMemory(bk, ss); });
+    safeRender('backends', function() { renderBackends(bk, data.modelOps || null); });
     // Добавляем бейджи типа бэкенда после рендера таблиц
-    if (window.BackendTypeBadges) {
-        BackendTypeBadges.enhanceBackendsTable();
-    }
+    safeRender('backendTypeBadges', function() {
+      if (window.BackendTypeBadges) {
+          BackendTypeBadges.enhanceBackendsTable();
+      }
+    });
     // Round 32 #4 (2026-08-10): bind delegated click handler для inline Unload buttons
     // в таблице backends. handler attached ОДИН раз (через _ggufUnloadBound флаг)
     // чтобы не утекали listeners при каждом refresh'е таблицы.
-    bindUnloadHandlers();
-    renderDiskNetwork(bk);
+    safeRender('bindUnloadHandlers', function() { bindUnloadHandlers(); });
+    safeRender('diskNetwork', function() { renderDiskNetwork(bk); });
     // B-12: Render backend type switcher on first load
-    renderBackendTypeSwitcher();
-    renderLoadFeasibility(bk);
-    renderQueue(q);
-    renderSessions(ss);
-    if (typeof window.updateTopology === 'function') window.updateTopology(bk, ss, q, recentClients, warmingUpModels);
+    safeRender('backendTypeSwitcher', function() { renderBackendTypeSwitcher(); });
+    safeRender('loadFeasibility', function() { renderLoadFeasibility(bk); });
+    safeRender('queue', function() { renderQueue(q); });
+    safeRender('sessions', function() { renderSessions(ss); });
+    safeRender('topology', function() {
+      if (typeof window.updateTopology === 'function') window.updateTopology(bk, ss, q, recentClients, warmingUpModels);
+    });
   }
 
   function diagnose(data) {

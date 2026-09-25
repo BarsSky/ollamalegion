@@ -4,7 +4,7 @@
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
 > **HEAD:** `fe10c73` on branch `centurion` + R78 (`PlacementMetricsSummary`, `schedulePlacementResync`, удаление канала/worker'ов `QueueManager`).
-> **Live stack:** `ol-bundled-balancer:r77-submodule-v14` (R78-образ `r78-submodule-v15` проверен на стенде) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r77-submodule-v2` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token`.
+> **Live stack:** `ol-bundled-balancer:r78-submodule-v15` (R78) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r77-submodule-v2` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token`.
 > **Проверено на живом стенде (R68/R69/R71/R72/R73/R74):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1`; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-*`; при `operatingMode=standard` политика обслуживает алиас через пул и модель через реплики.
 
 ---

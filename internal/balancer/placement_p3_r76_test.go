@@ -17,18 +17,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"ollama-loadbalancer/pkg/types"
 )
 
-// placementRejectProxyR76 — прокси с 2 бэкендами-заглушками (upstream отвечает
+// placementRejectProxyR76 — прокси с бэкендом-заглушкой (upstream отвечает
 // 200) и заданной политикой; возвращает и счётчик обращений к upstream.
-func placementRejectProxyR76(t *testing.T, placement types.PlacementSettings) (*Proxy, *int32) {
+//
+// R78-fix: счётчик атомарный. Обработчик httptest и тестовая горутина — разные
+// горутины, а `-race` на self-hosted Windows ловил гонку на `upstream++`
+// (write в handler vs read в тесте) — CI-падение Test (self-hosted Windows).
+func placementRejectProxyR76(t *testing.T, placement types.PlacementSettings) (*Proxy, *atomic.Int32) {
 	t.Helper()
-	var upstreamCalls int32
+	var upstreamCalls atomic.Int32
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamCalls++
+		upstreamCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"model":"m","message":{"role":"assistant","content":"ok"},"done":true}`))
 	}))
@@ -74,8 +79,8 @@ func TestPlacementP3_RejectsShardedWithFallbackError_R76(t *testing.T) {
 		t.Fatalf("HTTP %d, ожидался 503 (fallback=error, sharded не исполняется): %s",
 			rec.Code, rec.Body.String())
 	}
-	if *upstream != 0 {
-		t.Errorf("upstream получил %d запрос(ов): отказ по политике должен происходить ДО маршрутизации", *upstream)
+	if got := upstream.Load(); got != 0 {
+		t.Errorf("upstream получил %d запрос(ов): отказ по политике должен происходить ДО маршрутизации", got)
 	}
 	var body map[string]interface{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -114,7 +119,7 @@ func TestPlacementP3_FallbackSingleServesWithHeader_R76(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("HTTP %d, ожидался 200 (fallback=single): %s", rec.Code, rec.Body.String())
 	}
-	if *upstream == 0 {
+	if upstream.Load() == 0 {
 		t.Error("запрос не дошёл до upstream — fallback=single должен обслужить обычным путём")
 	}
 	if got := header.Get("X-LB-Placement"); got != string(types.PlacementSingle) {
@@ -149,7 +154,7 @@ func TestPlacementP3_AllowDegradedServes_R76(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("HTTP %d, ожидался 200 (allowDegraded=true): %s", rec.Code, rec.Body.String())
 	}
-	if *upstream == 0 {
+	if upstream.Load() == 0 {
 		t.Error("запрос не дошёл до upstream")
 	}
 	if got := header.Get("X-LB-Placement"); got != string(types.PlacementSingle) {
@@ -186,9 +191,9 @@ func TestPlacementP3_RejectsDegradedWithoutAllowDegraded_R76(t *testing.T) {
 func TestPlacementP3_RequireHomogeneous_R76(t *testing.T) {
 	// Два бэкенда с разными «личностями» GPU (sm_86 и sm_90), модель влезает на
 	// оба, правило требует однородность и minBackends=2 → репликация невозможна.
-	var upstream int32
+	var upstream atomic.Int32
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstream++
+		upstream.Add(1)
 		_, _ = w.Write([]byte(`{"done":true}`))
 	}))
 	defer stub.Close()
@@ -254,7 +259,7 @@ func TestPlacementP3_RejectionDisabledWhenPolicyOff_R76(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("HTTP %d, ожидался 200 при выключенной политике", rec.Code)
 	}
-	if *upstream == 0 {
+	if upstream.Load() == 0 {
 		t.Error("запрос не дошёл до upstream при выключенной политике")
 	}
 	if got := header.Get("X-LB-Placement-Source"); got != string(PlacementSourceDisabled) {

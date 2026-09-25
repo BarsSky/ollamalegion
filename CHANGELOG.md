@@ -66,6 +66,15 @@ legacy-поля `pending`/`processing` (всегда пусты — сохран
 (блок `placement` в `/api/v1/metrics`). Регрессии: `./internal/... -race`,
 `./cmd/...`, `./tests/... -short` — зелёные.
 
+**Fix после CI (R78-fix):** job `Test (self-hosted Windows)` падал на шаге
+`internal/... (-race)`: `TestPlacementP3_AllowDegradedServes_R76` —
+`WARNING: DATA RACE` в самом тесте. Счётчик обращений к upstream-заглушке
+(`placement_p3_r76_test.go`) инкрементировался как `upstream++` из обработчика
+`httptest`, а читался из тестовой горутины → гонка write/read. Счётчик переведён
+на `atomic.Int32` (`Add`/`Load`) в обеих заглушках файла. Воспроизведено и
+проверено локально на Windows: `go test -race -tags llama_stub -timeout 300s
+./internal/...` — зелёный.
+
 ## [0.5.35 — Round 77 (2026-09-24)]
 
 ### ✨ WebUI: карточка «Размещение моделей» на /monitor (P3, §5 плана)

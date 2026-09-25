@@ -26,6 +26,10 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		"totalBackends":   state.TotalBackends,
 		"healthyBackends": state.HealthyBackends,
 		"backends":        state.Backends,
+		// R78 (P3): сводка placement policy — оператор видит в общих метриках,
+		// что политика активна и не деградирует молча (полные решения —
+		// GET /api/v1/placement).
+		"placement": s.proxy.PlacementMetricsSummary(),
 	})
 }
 

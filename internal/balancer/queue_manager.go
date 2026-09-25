@@ -1,14 +1,34 @@
 package balancer
 
+// Package balancer — хранилище статистики очереди (R78).
+//
+// ИСТОРИЯ: до R73 у Ollama-пути была своя очередь — канал `queue` + пул
+// worker'ов, которые забирали запросы и обслуживали их через `dispatchRequest`
+// (со своими лимитами и без per-session справедливости). R73 свёл ожидание
+// слотов в admission-очередь (`admission_queue.go`), после чего канал и worker'ы
+// стали мёртвым кодом: запросы в них больше никто не клал.
+//
+// R78 удалил канал, пул worker'ов и `dispatchRequest`. `QueueManager` остался
+// как **хранилище статистики и истории** для контракта API:
+//
+//   - `processed` — сколько запросов обслужено (пополняется `RecordUnified`);
+//   - `completedHistory` — история `/api/v1/queue/history`;
+//   - dispatch-счётчики (`dispatchAffinity/Load/Config`) — их инкрементирует
+//     выбор бэкенда, читает `/api/v1/queue/stats` и страница /monitor;
+//   - `maxSize` — порог backpressure для единой очереди
+//     (`admissionOverloaded`);
+//   - `pending`/`processing` — legacy-поля ответа `/api/v1/queue/details`
+//     (всегда пусты: реальные ожидающие живут в admission-очереди, их видно в
+//     `/api/v1/queue/stats` → `admission`).
+//
+// `numWorkers`/`timeout` остаются только для совместимости API-ответов
+// (`workers`, `timeout_sec`) — пула worker'ов больше нет.
+
 import (
-	"context"
-	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"ollama-loadbalancer/pkg/logger"
 )
 
 // CompletedRequest - выполненный запрос для истории
@@ -20,36 +40,33 @@ type CompletedRequest struct {
 	WaitTimeMs  int64     `json:"wait_time_ms"`
 }
 
-// QueueManager - менеджер очереди с pool workers
+// QueueManager - счётчики и история очереди (без канала и worker'ов, см. шапку
+// файла). Порядок полей — под fieldalignment.
 type QueueManager struct {
-	queue      chan *QueuedRequest
-	mu         sync.Mutex
-	maxSize    int
-	numWorkers int
-	processed  int64 // atomic (R66d): recordCompleted пишет из worker-горутин, GetQueueStats читает
-	timeout    time.Duration
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	proxy      *Proxy
-	// Round 52.4 (2026-08-24): sync.Once для idempotent Stop().
-	// Без этого второй вызов (например, defer + t.Cleanup) → panic
-	// "close of closed channel" на qm.queue.
-	stopOnce         sync.Once
-	pendingMu        sync.RWMutex
 	pending          []*QueuedRequest
-	processingMu     sync.RWMutex
 	processing       []*QueuedRequest
-	historyMu        sync.RWMutex
 	completedHistory []*CompletedRequest
 
-	// Dispatch counters — atomic
-	dispatchAffinity int64 // Model Affinity (модель уже загружена)
-	dispatchLoad     int64 // Resource-Aware (выбор по ресурсам)
-	dispatchConfig   int64 // Config/Weight (выбор по весам/конфигурации)
+	// Счётчики (атомарные): processed — обслужено всего, dispatch* — каким
+	// правилом выбран бэкенд.
+	processed        int64
+	dispatchAffinity int64
+	dispatchLoad     int64
+	dispatchConfig   int64
+	// timeout — исторический queueTimeout (в API как timeout_sec).
+	timeout time.Duration
+	// maxSize — порог backpressure единой очереди; numWorkers — legacy-значение
+	// для ответа API (`workers`).
+	maxSize    int
+	numWorkers int
+
+	pendingMu    sync.RWMutex
+	processingMu sync.RWMutex
+	historyMu    sync.RWMutex
 }
 
-// QueuedRequest - запрос в очереди
+// QueuedRequest - запрос в очереди (legacy-структура: используется только
+// тестами и DTO истории; в обслуживании не участвует с R73).
 type QueuedRequest struct {
 	Request      *http.Request
 	Writer       http.ResponseWriter
@@ -75,374 +92,34 @@ type QueueStats struct {
 	DispatchByConfig   int64               `json:"dispatch_by_config"`
 }
 
-// NewQueueManager - создание менеджера очереди с pool workers
-func NewQueueManager(proxy *Proxy, maxSize int, numWorkers int, timeout time.Duration) *QueueManager {
-	ctx, cancel := context.WithCancel(context.Background())
-	qm := &QueueManager{
-		queue:      make(chan *QueuedRequest, maxSize),
+// NewQueueManager - создание хранилища статистики очереди.
+//
+// Сигнатура сохранена ради конфига (`queueMaxSize`, `queueWorkers`,
+// `queueTimeout`) и существующих вызовов/тестов; пул worker'ов не создаётся —
+// ожидание слотов обеспечивает admission-очередь (R73).
+func NewQueueManager(_ *Proxy, maxSize int, numWorkers int, timeout time.Duration) *QueueManager {
+	return &QueueManager{
 		maxSize:    maxSize,
 		numWorkers: numWorkers,
 		timeout:    timeout,
-		ctx:        ctx,
-		cancel:     cancel,
-		proxy:      proxy,
-	}
-	// Запускаем pool workers
-	for i := 0; i < qm.numWorkers; i++ {
-		qm.wg.Add(1)
-		go qm.worker(i)
-	}
-	return qm
-}
-
-// worker - обработчик запросов из очереди
-func (qm *QueueManager) worker(id int) {
-	defer qm.wg.Done()
-	logger.Get().Infow("queue worker started", "worker_id", id)
-
-	for {
-		select {
-		case <-qm.ctx.Done():
-			logger.Get().Infow("queue worker stopped", "worker_id", id)
-			return
-		case req := <-qm.queue:
-			qm.removePending(req)
-			qm.addProcessing(req)
-			qm.processRequest(req, id)
-			qm.removeProcessing(req)
-		}
 	}
 }
 
-// processRequest - обработка одного запроса из очереди через централизованный dispatch
-func (qm *QueueManager) processRequest(req *QueuedRequest, workerID int) {
-	var targetBackend string
-	// Защита от паники: гарантируем освобождение слота, processing и уведомление клиента
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Get().Errorw("panic in processRequest, recovered",
-				"worker_id", workerID,
-				"model", req.Model,
-				"panic", r,
-			)
-			// Освобождаем захваченный слот чтобы избежать перманентной утечки
-			if targetBackend != "" {
-				qm.proxy.releaseSlot(targetBackend)
-			}
-			select {
-			case req.Done <- false:
-			default:
-			}
-		}
-	}()
+// Stop - сохранён для совместимости (Shutdown и тестовые cleanup): останавливать
+// больше нечего, вызов идемпотентен.
+func (qm *QueueManager) Stop() {}
 
-	logger.Get().Debugw("processing queued request",
-		"worker_id", workerID,
-		"model", req.Model,
-		"requeue_count", req.RequeueCount,
-	)
+// addDispatchAffinity/addDispatchLoad/addDispatchConfig — инкременты счётчиков
+// выбора бэкенда (заменяют прямые atomic.AddInt64 в backend_selector/queue_dispatch).
+func (qm *QueueManager) addDispatchAffinity() { atomic.AddInt64(&qm.dispatchAffinity, 1) }
+func (qm *QueueManager) addDispatchLoad()     { atomic.AddInt64(&qm.dispatchLoad, 1) }
+func (qm *QueueManager) addDispatchConfig()   { atomic.AddInt64(&qm.dispatchConfig, 1) }
 
-	var dispatchType string
-
-	// Если запрос requeue'ится более 3 раз — принудительно выбираем любой
-	// свободный бэкенд без учёта model affinity.
-	const maxRequeues = 3
-	if req.RequeueCount >= maxRequeues {
-		logger.Get().Warnw("max requeues exceeded, forcing rebalance to any free backend",
-			"worker_id", workerID,
-			"requeue_count", req.RequeueCount,
-			"model", req.Model,
-		)
-		targetBackend = qm.proxy.selectFreeBackendAny(nil)
-		if targetBackend != "" {
-			// Защита от гонки: проверяем что бэкенд всё ещё существует
-			if _, exists := qm.proxy.backends[targetBackend]; !exists {
-				targetBackend = ""
-			} else if !qm.proxy.tryAcquireSlot(targetBackend) {
-				targetBackend = ""
-			} else {
-				dispatchType = "force_rebalance"
-				logger.Get().Infow("force rebalanced to free backend",
-					"worker_id", workerID,
-					"backend", targetBackend,
-					"model", req.Model,
-				)
-			}
-		}
-	}
-
-	// Централизованный dispatch через новую логику
-	if targetBackend == "" {
-		// Проверяем дедлайн: если запрос ждёт дольше queue timeout — отдаём 503
-		queueTimeout := qm.timeout
-		if isStream, _ := req.Request.Context().Value(streamContextKey).(bool); isStream {
-			// Для streaming запросов уменьшаем timeout вдвое
-			streamTimeout := qm.proxy.config.Balancing.QueueTimeout / 2
-			if streamTimeout < 5 {
-				streamTimeout = 5 // минимум 5 секунд
-			}
-			if streamTimeout > 0 {
-				queueTimeout = time.Duration(streamTimeout) * time.Second
-			}
-		}
-		if time.Since(req.Enqueued) > queueTimeout {
-			logger.Get().Warnw("request exceeded queue timeout, returning 503",
-				"worker_id", workerID,
-				"model", req.Model,
-				"wait_sec", time.Since(req.Enqueued).Seconds(),
-				"requeue_count", req.RequeueCount,
-			)
-			errBody := []byte(`{"error":"queue timeout exceeded"}`)
-			req.Writer.Header().Set("Content-Type", "application/json")
-			req.Writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
-			req.Writer.WriteHeader(http.StatusServiceUnavailable)
-			req.Writer.Write(errBody)
-			select {
-			case req.Done <- false:
-			default:
-			}
-			return
-		}
-
-		result := qm.proxy.dispatchRequest(req)
-		if result.Error != nil {
-			req.RequeueCount++
-			// После N ретраев принудительно отдаём 503 вместо бесконечного re-queue
-			const maxRequeueAttempts = 500
-			if req.RequeueCount >= maxRequeueAttempts {
-				logger.Get().Errorw("max requeue attempts exceeded, returning 503",
-					"worker_id", workerID,
-					"requeue_count", req.RequeueCount,
-					"model", req.Model,
-					"error", result.Error,
-				)
-				errBody := []byte(`{"error":"all backends busy, max retries exceeded"}`)
-				req.Writer.Header().Set("Content-Type", "application/json")
-				req.Writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
-				req.Writer.WriteHeader(http.StatusServiceUnavailable)
-				req.Writer.Write(errBody)
-				select {
-				case req.Done <- false:
-				default:
-				}
-				return
-			}
-			logger.Get().Warnw("dispatch failed, re-queueing request",
-				"worker_id", workerID,
-				"requeue_count", req.RequeueCount,
-				"error", result.Error,
-			)
-			time.AfterFunc(100*time.Millisecond, func() {
-				// Non-blocking check: если Stop() уже вызван (ctx.Done), то
-				// qm.queue будет закрыт через мгновение. Не пытаемся отправлять
-				// в закрытый канал → паника "send on closed channel". Вместо
-				// этого просто сигналим req.Done = false.
-				select {
-				case <-qm.ctx.Done():
-					select {
-					case req.Done <- false:
-					default:
-					}
-					return
-				default:
-				}
-				select {
-				case qm.queue <- req:
-				case <-qm.ctx.Done():
-					select {
-					case req.Done <- false:
-					default:
-					}
-				}
-			})
-			return
-		}
-		targetBackend = result.BackendID
-		dispatchType = result.DispatchType
-	}
-
-	// На этом этапе слот уже захвачен внутри dispatchRequest (или force_rebalance).
-	// Гарантируем освобождение слота при любом выходе (включая panic — см. defer выше).
-	// Двойное освобождение предотвращается проверкой targetBackend != "" в panic-recover и
-	// atomic захватом/освобождением в releaseSlot.
-	defer func() {
-		if targetBackend != "" {
-			qm.proxy.releaseSlot(targetBackend)
-			targetBackend = ""
-		}
-	}()
-
-	req.Target = targetBackend
-	logger.Get().Debugw("proxying queued request to backend",
-		"worker_id", workerID,
-		"backend", targetBackend,
-		"dispatch_type", dispatchType,
-	)
-
-	// Проксируем запрос — с обработкой ошибок и fallback на другие бэкенды
-	err := qm.proxy.proxyRequest(req.Writer, req.Request, targetBackend)
-	if err == nil {
-		select {
-		case req.Done <- true:
-		default:
-		}
-		qm.recordCompleted(req, dispatchType, workerID)
-		return
-	}
-
-	// Ошибка на целевом бэкенде — освобождаем слот и пробуем fallback
-	logger.Get().Warnw("queue request failed on target backend, trying fallback",
-		"worker_id", workerID, "backend", targetBackend, "error", err)
-	failedBackend := targetBackend
-	qm.proxy.releaseSlot(failedBackend)
-	targetBackend = "" // предотвращаем повторное освобождение через defer
-
-	attemptedBackends := map[string]bool{failedBackend: true}
-	const maxFallbackAttempts = 3
-	for attempt := 0; attempt < maxFallbackAttempts; attempt++ {
-		altBackend := qm.proxy.selectBackendExcluding(req.Model, attemptedBackends, qm.proxy.determineRequestBackendType(req.Request))
-		if altBackend == "" {
-			break
-		}
-		if !qm.proxy.tryAcquireSlot(altBackend) {
-			attemptedBackends[altBackend] = true
-			continue
-		}
-
-		req.Target = altBackend
-		err = qm.proxy.proxyRequest(req.Writer, req.Request, altBackend)
-		if err == nil {
-			qm.proxy.releaseSlot(altBackend)
-			select {
-			case req.Done <- true:
-			default:
-			}
-			qm.recordCompleted(req, "fallback_"+dispatchType, workerID)
-			return
-		}
-
-		logger.Get().Warnw("fallback backend also failed",
-			"worker_id", workerID, "backend", altBackend, "attempt", attempt+1, "error", err)
-		qm.proxy.releaseSlot(altBackend)
-		attemptedBackends[altBackend] = true
-	}
-
-	// Все бэкенды не сработали — пробуем requeue или отдаём 503
-	const maxRequeueAttempts = 500
-	if req.RequeueCount < maxRequeueAttempts {
-		req.RequeueCount++
-		logger.Get().Warnw("all fallbacks exhausted, re-queueing request",
-			"worker_id", workerID,
-			"requeue_count", req.RequeueCount,
-			"model", req.Model,
-		)
-		time.AfterFunc(100*time.Millisecond, func() {
-			// Non-blocking check: если Stop() уже вызван (ctx.Done), то
-			// qm.queue будет закрыт через мгновение. Не пытаемся отправлять
-			// в закрытый канал → паника "send on closed channel". Вместо
-			// этого просто сигналим req.Done = false.
-			select {
-			case <-qm.ctx.Done():
-				select {
-				case req.Done <- false:
-				default:
-				}
-				return
-			default:
-			}
-			select {
-			case qm.queue <- req:
-			case <-qm.ctx.Done():
-				select {
-				case req.Done <- false:
-				default:
-				}
-			}
-		})
-		return
-	}
-
-	logger.Get().Errorw("max requeue attempts exceeded after fallback, returning 503",
-		"worker_id", workerID,
-		"requeue_count", req.RequeueCount,
-		"model", req.Model,
-	)
-	errBody := []byte(`{"error":"all backends failed, max retries exceeded"}`)
-	req.Writer.Header().Set("Content-Type", "application/json")
-	req.Writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(errBody)))
-	req.Writer.WriteHeader(http.StatusServiceUnavailable)
-	req.Writer.Write(errBody)
-	select {
-	case req.Done <- false:
-	default:
-	}
-}
-
-// Stop - остановка всех workers.
+// RecordUnified — запись запроса, обслуженного ЕДИНОЙ (admission-)очередью.
 //
-// Round 52.4 (2026-08-24): idempotent — multiple calls don't panic on
-// double-close of qm.queue channel. До этого паника
-// `close of closed channel` при втором вызове (e.g., тест делает
-// `defer proxy.queueMgr.Stop()` + t.Cleanup -> Shutdown -> queueMgr.Stop).
-func (qm *QueueManager) Stop() {
-	qm.stopOnce.Do(func() {
-		qm.cancel()
-		qm.wg.Wait()
-		close(qm.queue)
-		for req := range qm.queue {
-			select {
-			case req.Done <- false:
-			default:
-			}
-		}
-	})
-}
-
-// addPending - добавление запроса в pending список
-func (qm *QueueManager) addPending(req *QueuedRequest) {
-	qm.pendingMu.Lock()
-	qm.pending = append(qm.pending, req)
-	qm.pendingMu.Unlock()
-}
-
-// removePending - удаление запроса из pending списка
-func (qm *QueueManager) removePending(req *QueuedRequest) {
-	qm.pendingMu.Lock()
-	for i, r := range qm.pending {
-		if r == req {
-			qm.pending = append(qm.pending[:i], qm.pending[i+1:]...)
-			break
-		}
-	}
-	qm.pendingMu.Unlock()
-}
-
-// addProcessing - добавление запроса в processing список
-func (qm *QueueManager) addProcessing(req *QueuedRequest) {
-	qm.processingMu.Lock()
-	qm.processing = append(qm.processing, req)
-	qm.processingMu.Unlock()
-}
-
-// removeProcessing - удаление запроса из processing списка
-func (qm *QueueManager) removeProcessing(req *QueuedRequest) {
-	qm.processingMu.Lock()
-	for i, r := range qm.processing {
-		if r == req {
-			qm.processing = append(qm.processing[:i], qm.processing[i+1:]...)
-			break
-		}
-	}
-	qm.processingMu.Unlock()
-}
-
-// RecordUnified — R73: запись запроса, обслуженного ЕДИНОЙ (admission-)очередью.
-//
-// Legacy QueueManager больше не обслуживает запросы (Ollama-путь ждёт слот в
-// admission-очереди), но его счётчики и история остаются частью API
-// (`/api/v1/queue/stats`, `/api/v1/queue/history`, скор-панель WebUI). Чтобы
-// `processed_total` и история не «замерзали», Ollama-путь отмечает здесь каждый
-// обслуженный запрос.
+// Счётчики и история остаются частью API (`/api/v1/queue/stats`,
+// `/api/v1/queue/history`, панель WebUI), поэтому Ollama-путь отмечает здесь
+// каждый обслуженный запрос.
 func (qm *QueueManager) RecordUnified(model, target string, enqueued time.Time) {
 	if qm == nil {
 		return
@@ -459,45 +136,18 @@ func (qm *QueueManager) RecordUnified(model, target string, enqueued time.Time) 
 		CompletedAt: now,
 		WaitTimeMs:  now.Sub(enqueued).Milliseconds(),
 	})
-	const maxHistory = 100
-	if len(qm.completedHistory) > maxHistory {
-		qm.completedHistory = qm.completedHistory[len(qm.completedHistory)-maxHistory:]
+	if len(qm.completedHistory) > queueHistoryLimit {
+		qm.completedHistory = qm.completedHistory[len(qm.completedHistory)-queueHistoryLimit:]
 	}
 	qm.historyMu.Unlock()
 }
 
-// recordCompleted - запись завершённого запроса в историю и обновление счётчиков
-func (qm *QueueManager) recordCompleted(req *QueuedRequest, dispatchType string, workerID int) {
-	now := time.Now()
-	waitTimeMs := now.Sub(req.Enqueued).Milliseconds()
-	// R66d (2026-09-22): счётчик атомарный. Раньше инкремент шёл под qm.mu,
-	// а чтение в GetQueueStats (cluster_state.go) — без блокировки, что давало
-	// DATA RACE при параллельных worker'ах.
-	processed := atomic.AddInt64(&qm.processed, 1)
+// queueHistoryLimit — сколько завершённых запросов держим в истории.
+const queueHistoryLimit = 100
 
-	qm.historyMu.Lock()
-	qm.completedHistory = append(qm.completedHistory, &CompletedRequest{
-		Model:       req.Model,
-		Target:      req.Target,
-		Enqueued:    req.Enqueued,
-		CompletedAt: now,
-		WaitTimeMs:  waitTimeMs,
-	})
-	const maxHistory = 100
-	if len(qm.completedHistory) > maxHistory {
-		qm.completedHistory = qm.completedHistory[len(qm.completedHistory)-maxHistory:]
-	}
-	qm.historyMu.Unlock()
-
-	logger.Get().Debugw("queued request completed",
-		"worker_id", workerID,
-		"processed_total", processed,
-		"wait_time_ms", waitTimeMs,
-		"dispatch_type", dispatchType,
-	)
-}
-
-// getProcessingDTOs - получение DTO processing запросов для API
+// getProcessingDTOs - получение DTO processing запросов для API.
+// R78: список всегда пуст (реальные запросы ждут в admission-очереди), но поле
+// ответа сохранено для совместимости.
 func (qm *QueueManager) getProcessingDTOs() []map[string]interface{} {
 	qm.processingMu.RLock()
 	defer qm.processingMu.RUnlock()
@@ -516,7 +166,7 @@ func (qm *QueueManager) getProcessingDTOs() []map[string]interface{} {
 	return result
 }
 
-// getPendingDTOs - получение DTO pending запросов для API
+// getPendingDTOs - получение DTO pending запросов для API (см. выше).
 func (qm *QueueManager) getPendingDTOs() []map[string]interface{} {
 	qm.pendingMu.RLock()
 	defer qm.pendingMu.RUnlock()

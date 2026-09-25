@@ -1,10 +1,10 @@
 # OllamaLegion — Roadmap (живой документ)
 
-> **Дата обновления:** 2026-09-24 (Round 77 — WebUI: карточка «Размещение моделей» на /monitor)
+> **Дата обновления:** 2026-09-24 (Round 78 — P3 закрыт: метрики размещения, автопересборка раскладки, legacy-очередь убрана)
 > **Назначение:** единственный источник правды по реализованному и оставшемуся в проекте OllamaLegion.
 > Все устаревшие/завершённые планы — в `plans/archive/`.
-> **HEAD:** `b9f6c2d` on branch `centurion` + R77 (карточка размещения в WebUI, `?v=R77`).
-> **Live stack:** `ol-bundled-balancer:r76-submodule-v14` + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r77-submodule-v2` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token` (4 healthy).
+> **HEAD:** `fe10c73` on branch `centurion` + R78 (`PlacementMetricsSummary`, `schedulePlacementResync`, удаление канала/worker'ов `QueueManager`).
+> **Live stack:** `ol-bundled-balancer:r77-submodule-v14` (R78-образ `r78-submodule-v15` проверен на стенде) + `ol-bundled-cppworker-gpu:gpu-r70-submodule-v3` + `ol-bundled-webui:r77-submodule-v2` + `ol-bundled-cppworker-gpu-agent:cppworker-bundled-r41-agent-x-api-token`.
 > **Проверено на живом стенде (R68/R69/R71/R72/R73/R74):** Cline (VS Code, провайдер ollama, Model Context Window = 65536) получает 200 и ответ модели; модель грузится на `ctx=65536, kv=q4_0` на RTX 3070 8 GB; агент применяет `maxConcurrentRequests=1`; placement-политика резолвится и видна в `/api/v1/placement`; единая очередь отдаёт `X-Queue-*`; при `operatingMode=standard` политика обслуживает алиас через пул и модель через реплики.
 
 ---
@@ -41,8 +41,24 @@ R76 закрыл часть P3: §6 «не уходить в другую стр
 `fallback=error`), `fallback=single` с заголовком `X-LB-Placement-Fallback`,
 `auto.requireHomogeneous`.
 R77 добавил карточку «Размещение моделей» на `/monitor` (P3/§5).
+R78 закрыл P3 полностью (§6 + метрики + автопересборка) и вывел legacy
+`QueueManager` из эксплуатации (канал/worker'ы/`dispatchRequest` удалены).
 
-### R77 (2026-09-24) — текущий раунд
+### R78 (2026-09-24) — текущий раунд
+
+Вариант C, выбранный пользователем: P2 отложен, хвосты P3 закрыты, legacy-очередь убрана.
+
+| # | Направление | Статус |
+|---|-------------|--------|
+| 1 | `placement` в `GET /api/v1/metrics` (`PlacementMetricsSummary`: configured/enabled/fallback/byStrategy/degraded/notExecutable/warnings/replication) | ✅ сделано |
+| 2 | Автопересборка раскладки: `AddBackend`/`RemoveBackend` → `schedulePlacementResync` + `EnsureInstances` (асинхронно, без самоблокировки) | ✅ сделано |
+| 3 | Legacy `QueueManager`: удалены канал, пул worker'ов, `dispatchRequest`/`waitForModelReady` (~300 строк) и их тесты; остались статистика/история | ✅ сделано |
+| 4 | `current_size` в `/api/v1/queue/stats` = ожидающие единой очереди (было всегда 0) | ✅ сделано |
+| 5 | Тесты: `queue_retire_r78_test.go` (4), `metrics_placement_r78_test.go`; регрессии `-race`/cmd/tests | ✅ зелёные |
+| 6 | P4 (нагрузочные KPI: tok/s single vs replicated, VRAM, failover) | ⏳ следующий этап |
+| 7 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏸ отложено решением пользователя (нужен выбор: llama.cpp RPC vs B8.7) |
+
+### R77 (2026-09-24) — закрытый раунд
 
 Placement policy, этап P3/§5 (`plans/2026-09-23-multi-backend-placement-policy.md`):
 
@@ -53,8 +69,6 @@ Placement policy, этап P3/§5 (`plans/2026-09-23-multi-backend-placement-pol
 | 3 | `api.js`: `GET /api/v1/placement` в общем опросе; `ui-renderer.js`: `renderPlacementPolicy` | ✅ сделано |
 | 4 | i18n ru/en (23 ключа, паритет 1270/1270) + бамп `?v=R77` | ✅ сделано (образ `webui:r77-submodule-v2`) |
 | 5 | Проверки: `i18n_diff --strict`, `check_iife_exports.py`, рендер-проверка `_diag/r77_render_check.js`, живая отдача ассетов | ✅ проверено (CHANGELOG 0.5.35) |
-| 6 | Осталось по P3: автопересборка раскладки при смене состава бэкендов (группы реконсилит `GroupController` каждые 10 с), `degraded` в общих метриках | ⏳ следующий этап |
-| 7 | P2 placement policy: `sharded`/`rpc` на реальном транспорте | ⏳ нужен выбор (llama.cpp RPC vs B8.7) |
 
 ### R76 (2026-09-24) — закрытый раунд
 

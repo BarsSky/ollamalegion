@@ -171,6 +171,67 @@ func (p *Proxy) refinePlacementDecision(d PlacementDecision) PlacementDecision {
 	return d
 }
 
+// PlacementMetricsSummary — R78 (P3): компактная сводка политики размещения для
+// GET /api/v1/metrics (полные решения — в GET /api/v1/placement).
+//
+// Показывает, что политика активна и не деградирует молча: сколько моделей
+// описано, сколько решений деградировало/неисполнимо, по каким стратегиям
+// раскладываются решения, сколько предупреждений у конфига и готова ли
+// репликация.
+func (p *Proxy) PlacementMetricsSummary() map[string]interface{} {
+	cfg := p.PlacementSettings()
+	summary := map[string]interface{}{
+		"enabled":       cfg.Enabled,
+		"fallback":      p.placementFallbackMode(),
+		"operatingMode": p.OperatingMode(),
+		"rules":         len(cfg.Models),
+		"classes":       len(cfg.Classes),
+	}
+	if !cfg.Enabled && len(cfg.Models) == 0 && len(cfg.Classes) == 0 {
+		// Политика не настроена — метрики не засоряем.
+		summary["configured"] = false
+		return summary
+	}
+	summary["configured"] = true
+
+	byStrategy := map[string]int{}
+	degraded := 0
+	notExecutable := 0
+	decisions := p.PlacementDecisions()
+	for _, d := range decisions {
+		byStrategy[string(d.Strategy)]++
+		if d.Degraded {
+			degraded++
+		}
+		if !d.Executable {
+			notExecutable++
+		}
+	}
+	summary["byStrategy"] = byStrategy
+	summary["decisions"] = len(decisions)
+	summary["degraded"] = degraded
+	summary["notExecutable"] = notExecutable
+
+	warnings := p.PlacementWarnings()
+	summary["warnings"] = len(warnings)
+	if len(warnings) > 0 {
+		summary["warningList"] = warnings
+	}
+
+	repl := p.PlacementReplicationStatus()
+	summary["replicationReady"] = repl["managerReady"]
+	if groups, ok := repl["groups"].(map[string]interface{}); ok {
+		withGroup := 0
+		for _, g := range groups {
+			if entry, ok := g.(map[string]interface{}); ok && entry["hasGroup"] == true {
+				withGroup++
+			}
+		}
+		summary["replicationGroups"] = withGroup
+	}
+	return summary
+}
+
 // matchingModelRule — правило модели, которое сработало бы для этого имени
 // (нужно refinement'у auto: там лежат auto.prefer/minBackends).
 func (p *Proxy) matchingModelRule(model string) (types.PlacementModelRule, bool) {

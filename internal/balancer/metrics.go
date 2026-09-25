@@ -76,7 +76,7 @@ func (bm *BalancerMetrics) GetMetrics() map[string]interface{} {
 	}
 	bm.proxy.mu.RUnlock()
 
-	queueDepth := len(bm.proxy.queueMgr.queue)
+	queueDepth := bm.proxy.admissionWaiting()
 	queueMax := bm.proxy.queueMgr.maxSize
 	queueFillPct := 0.0
 	if queueMax > 0 {

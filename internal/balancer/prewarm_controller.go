@@ -105,7 +105,12 @@ func (pc *PrewarmController) evaluate() {
 	backendLoad := make(map[string]float64)      // backendID -> load ratio
 	modelQueueDepth := make(map[string]int)      // model -> pending requests
 
-	// Анализируем очередь
+	// Анализируем очередь.
+	//
+	// R78: legacy-список pending всегда пуст (канал QueueManager удалён, запросы
+	// ждут в admission-очереди). Скан сохранён для совместимости — как только
+	// admission-очередь начнёт отдавать модели ожидающих, здесь появится
+	// реальная глубина по модели.
 	pc.proxy.queueMgr.pendingMu.RLock()
 	for _, req := range pc.proxy.queueMgr.pending {
 		if req.Model != "" {

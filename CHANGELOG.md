@@ -5,6 +5,67 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.36 — Round 78 (2026-09-24)]
+
+### ✨ Placement policy P3 закрыт; legacy-очередь выведена из эксплуатации
+
+Пользователь выбрал вариант C: отложить P2 (`sharded`/`rpc` — нужен транспорт
+раскладки) и закрыть хвосты P3 + убрать legacy `QueueManager`.
+
+**1. `placement` в общих метриках (`PlacementMetricsSummary`)**
+
+`GET /api/v1/metrics` теперь отдаёт блок `placement`: `configured`/`enabled`,
+`fallback`, `operatingMode`, `rules`/`classes`, `byStrategy` (сколько решений по
+каждой стратегии), `degraded`, `notExecutable`, `warnings` (+`warningList`),
+`replicationReady`/`replicationGroups`. Для ненастроенной политики блок короткий
+(`configured: false`) — метрики не засоряются. Оператор видит деградацию не
+только в логе, но и в общем ответе метрик.
+
+**2. Автопересборка раскладки при изменении состава бэкендов**
+
+`AddBackend`/`RemoveBackend` → `schedulePlacementResync(reason)`: если политика
+содержит replicated-правила (или `auto` с `prefer=replicated`), асинхронно
+выполняется `syncPlacementReplicationGroups()` + `EnsureInstances()`. Асинхронно
+потому, что callbacks менеджера репликации берут `p.mu.RLock`, а в
+`AddBackend`/`RemoveBackend` `p.mu` уже удерживается (прямой вызов —
+самоблокировка). Новый бэкенд получает свою реплику сразу, не дожидаясь тика
+`GroupController` (10 с).
+
+**3. Legacy `QueueManager` выведен из эксплуатации (R73 доведён до конца)**
+
+После R73 канал `queue` и пул worker'ов остались мёртвым кодом (никто в них не
+клал запросы). Удалено:
+
+* канал `queue`, `ctx/cancel/wg/stopOnce`, `worker()`, `processRequest()` и весь
+  fallback/requeue-путь (~300 строк);
+* `dispatchRequest`, `waitForModelReady`, `DispatchResult`, `ErrNoBackendAvailable`,
+  `getSyncModelLoadTimeout` (`queue_dispatch.go` теперь содержит только
+  `canAcceptRequest` и `getModelLoadTimeout`, которые использует обычный выбор
+  бэкенда);
+* тесты, проверявшие поведение канала/worker'ов (`TestQueueManagerEnqueue`,
+  `TestQueueManagerFull`, `TestQueueManagerShutdown`, `TestNewQueueManager`,
+  `TestQueueRequestTimeout`, `TestDispatchRequest*`, `TestWaitForModelReady`).
+
+`QueueManager` остался **хранилищем статистики и истории**:
+`processed`/`completedHistory` (`/api/v1/queue/history`), dispatch-счётчики
+(`dispatchAffinity/Load/Config`), `maxSize` (порог backpressure единой очереди) и
+legacy-поля `pending`/`processing` (всегда пусты — сохранены для контракта
+`/api/v1/queue/details`). `Stop()` и `SetQueueManagerProxy()` — no-op для
+совместимости вызовов; `NewQueueManager` сохранил сигнатуру (config
+`queueWorkers`/`queueTimeout` остаются валидными).
+
+**Следствие (полезное):** `current_size` в `/api/v1/queue/stats` больше не
+всегда 0 — теперь это число запросов, ждущих слот в **единой** очереди
+(`admissionWaiting()`), и то же значение используется в метриках и в штрафе
+скоринга за глубину очереди.
+
+**Тесты:** `internal/balancer/queue_retire_r78_test.go` (4: сводка метрик для
+ненастроенной политики; счётчики degraded/notExecutable/byStrategy/репликации;
+добавление бэкенда → у группы появляется второй инстанс; `CurrentSize` следует
+за ожидающими admission-очереди), `internal/api/metrics_placement_r78_test.go`
+(блок `placement` в `/api/v1/metrics`). Регрессии: `./internal/... -race`,
+`./cmd/...`, `./tests/... -short` — зелёные.
+
 ## [0.5.35 — Round 77 (2026-09-24)]
 
 ### ✨ WebUI: карточка «Размещение моделей» на /monitor (P3, §5 плана)

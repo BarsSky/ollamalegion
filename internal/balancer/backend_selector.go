@@ -2,7 +2,6 @@ package balancer
 
 import (
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -101,7 +100,7 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 			}
 		}
 		if bestBackendID != "" {
-			atomic.AddInt64(&p.queueMgr.dispatchAffinity, 1)
+			p.queueMgr.addDispatchAffinity()
 			return bestBackendID
 		}
 	}
@@ -126,7 +125,7 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 				start := time.Now()
 				for time.Since(start) < syncTimeout {
 					if p.checkModelReadyUnsafe(backendID, model) {
-						atomic.AddInt64(&p.queueMgr.dispatchAffinity, 1)
+						p.queueMgr.addDispatchAffinity()
 						return backendID
 					}
 					time.Sleep(500 * time.Millisecond)
@@ -159,7 +158,7 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 				start := time.Now()
 				for time.Since(start) < syncTimeout {
 					if p.checkModelReadyUnsafe(backendID, model) {
-						atomic.AddInt64(&p.queueMgr.dispatchAffinity, 1)
+						p.queueMgr.addDispatchAffinity()
 						return backendID
 					}
 					time.Sleep(500 * time.Millisecond)
@@ -306,9 +305,9 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool, allowedTypes
 
 	if bestBackend != "" {
 		if p.config.Balancing.UseEnhancedScoring {
-			atomic.AddInt64(&p.queueMgr.dispatchLoad, 1)
+			p.queueMgr.addDispatchLoad()
 		} else {
-			atomic.AddInt64(&p.queueMgr.dispatchConfig, 1)
+			p.queueMgr.addDispatchConfig()
 		}
 	}
 
@@ -626,7 +625,7 @@ func (p *Proxy) selectFreeBackendAny(allowedTypes []types.BackendType) string {
 
 	if bestBackend != "" {
 		logger.Get().Infow("selectFreeBackendAny: selected", "backend", bestBackend, "load_ratio", bestLoadRatio)
-		atomic.AddInt64(&p.queueMgr.dispatchLoad, 1)
+		p.queueMgr.addDispatchLoad()
 	}
 	return bestBackend
 }
@@ -691,9 +690,9 @@ func (p *Proxy) selectByResources(allowedTypes []types.BackendType) string {
 			state.mu.Unlock()
 		}
 		if p.config.Balancing.UseEnhancedScoring {
-			atomic.AddInt64(&p.queueMgr.dispatchLoad, 1)
+			p.queueMgr.addDispatchLoad()
 		} else {
-			atomic.AddInt64(&p.queueMgr.dispatchConfig, 1)
+			p.queueMgr.addDispatchConfig()
 		}
 	}
 

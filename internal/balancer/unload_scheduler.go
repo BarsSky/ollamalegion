@@ -225,6 +225,10 @@ func (us *UnloadScheduler) getUnloadCandidates() []UnloadCandidate {
 func (us *UnloadScheduler) activeModelsMap() map[string]bool {
 	result := make(map[string]bool)
 
+	// R78: processing/pending — legacy-списки QueueManager, они всегда пусты
+	// (канал и worker'ы удалены, запросы ждут в admission-очереди). Сканы
+	// оставлены для совместимости: если admission-очередь начнёт отдавать
+	// модели ожидающих/активных, здесь появятся реальные ключи.
 	us.proxy.queueMgr.processingMu.RLock()
 	defer us.proxy.queueMgr.processingMu.RUnlock()
 

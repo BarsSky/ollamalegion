@@ -2,9 +2,6 @@ package balancer
 
 import (
 	"net"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,74 +104,6 @@ func createTestConfig() *types.LoadBalancerConfig {
 	}
 }
 
-// TestQueueManagerEnqueue - проверка постановки в очередь через канал
-func TestQueueManagerEnqueue(t *testing.T) {
-	t.Parallel()
-
-	// Создаём QueueManager с 0 workers, чтобы элемент гарантированно остался в канале
-	queueMgr := NewQueueManager(nil, 100, 0, 5*time.Second)
-	defer queueMgr.Stop()
-
-	// Проверяем начальное состояние
-	assert.Equal(t, 0, len(queueMgr.queue))
-	assert.Equal(t, 100, queueMgr.maxSize)
-	assert.Equal(t, 0, queueMgr.numWorkers)
-
-	// Создаем тестовый запрос
-	req := httptest.NewRequest(http.MethodPost, "/api/generate", strings.NewReader(`{"model": "llama2"}`))
-	w := httptest.NewRecorder()
-
-	done := make(chan bool, 1)
-	queuedReq := &QueuedRequest{
-		Request:  req,
-		Writer:   w,
-		Model:    "llama2",
-		Enqueued: time.Now(),
-		Done:     done,
-	}
-
-	// Отправляем запрос в канал очереди
-	select {
-	case queueMgr.queue <- queuedReq:
-		// Успешно
-	default:
-		t.Fatal("Не удалось отправить запрос в очередь")
-	}
-
-	// Проверяем что очередь увеличилась
-	assert.Equal(t, 1, len(queueMgr.queue))
-}
-
-// TestQueueManagerFull - проверка переполненной очереди
-func TestQueueManagerFull(t *testing.T) {
-	t.Parallel()
-
-	// Создаем QueueManager с буфером 1, 0 workers (без proxy чтобы не паниковали workers)
-	queueMgr := NewQueueManager(nil, 1, 0, 5*time.Second)
-	defer queueMgr.Stop()
-
-	// Отправляем запрос в канал
-	done1 := make(chan bool, 1)
-	select {
-	case queueMgr.queue <- &QueuedRequest{Model: "model1", Done: done1}:
-		// Успешно
-	default:
-		t.Fatal("Не удалось отправить первый запрос")
-	}
-
-	// Пытаемся отправить второй — канал буферизованный на 1, должен заблокироваться
-	done2 := make(chan bool, 1)
-	select {
-	case queueMgr.queue <- &QueuedRequest{Model: "model2", Done: done2}:
-		t.Fatal("Очередь должна быть переполнена")
-	default:
-		// Ожидаемое поведение — канал переполнен
-	}
-
-	// Проверяем maxSize
-	assert.Equal(t, 1, queueMgr.maxSize)
-}
-
 // TestQueueManagerProcess - проверка обработки очереди
 func TestQueueManagerProcess(t *testing.T) {
 	t.Parallel()
@@ -204,29 +133,6 @@ func TestQueueManagerProcess(t *testing.T) {
 	assert.NotEmpty(t, backend, "Должен быть выбран бэкенд")
 }
 
-// TestQueueManagerShutdown - проверка остановки QueueManager
-func TestQueueManagerShutdown(t *testing.T) {
-	t.Parallel()
-
-	// 0 workers чтобы избежать panic с nil proxy
-	queueMgr := NewQueueManager(nil, 10, 0, 5*time.Second)
-
-	// Создаем запрос в канале
-	done := make(chan bool, 1)
-	select {
-	case queueMgr.queue <- &QueuedRequest{
-		Model: "test",
-		Done:  done,
-	}:
-	default:
-	}
-
-	// Останавливаем — не должно паниковать
-	assert.NotPanics(t, func() {
-		queueMgr.Stop()
-	})
-}
-
 // TestQueueManagerProcessedCount - проверка счетчика обработанных запросов
 func TestQueueManagerProcessedCount(t *testing.T) {
 	t.Parallel()
@@ -237,20 +143,6 @@ func TestQueueManagerProcessedCount(t *testing.T) {
 
 	// Начальное значение (R66d: processed — atomic int64, читаем атомарно)
 	assert.Equal(t, int64(0), atomic.LoadInt64(&queueMgr.processed))
-}
-
-// TestNewQueueManager - проверка создания QueueManager
-func TestNewQueueManager(t *testing.T) {
-	t.Parallel()
-
-	// 0 workers чтобы избежать panic с nil proxy
-	queueMgr := NewQueueManager(nil, 50, 0, 10*time.Second)
-	defer queueMgr.Stop()
-
-	assert.Equal(t, 50, queueMgr.maxSize)
-	assert.Equal(t, 10*time.Second, queueMgr.timeout)
-	assert.Equal(t, 0, queueMgr.numWorkers)
-	assert.NotNil(t, queueMgr.queue)
 }
 
 // TestProxyNew - проверка создания Proxy
@@ -651,35 +543,6 @@ func TestMetricsManager(t *testing.T) {
 	mm := NewMetricsManager()
 	assert.NotNil(t, mm)
 	assert.NotNil(t, mm.metrics)
-}
-
-// TestQueueRequestTimeout - проверка таймаута запроса в очереди
-func TestQueueRequestTimeout(t *testing.T) {
-	t.Parallel()
-
-	// Создаем новый queue manager для теста (0 workers чтобы не обрабатывать)
-	queueMgr := NewQueueManager(nil, 10, 0, 100*time.Millisecond)
-	defer queueMgr.Stop()
-
-	done := make(chan bool, 1)
-	queuedReq := &QueuedRequest{
-		Model:    "test",
-		Enqueued: time.Now(),
-		Done:     done,
-	}
-
-	// Отправляем в канал
-	select {
-	case queueMgr.queue <- queuedReq:
-	default:
-		t.Fatal("Не удалось отправить в очередь")
-	}
-
-	// Ждем немного
-	time.Sleep(50 * time.Millisecond)
-
-	// Проверяем что запрос в очереди
-	assert.Equal(t, 1, len(queueMgr.queue))
 }
 
 // TestCalculateScore - проверка вычисления scores

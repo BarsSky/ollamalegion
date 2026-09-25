@@ -213,10 +213,63 @@ func (p *Proxy) syncPlacementReplicationGroups() []string {
 	// Сразу поднимаем инстансы по minInstances (не ждём тика GroupController):
 	// иначе политика «включилась», а реплик ещё нет и модель обслуживается
 	// обычным путём до следующей итерации контроллера.
-	if p.modelReplication != nil && len(actions) > 0 {
-		p.modelReplication.EnsureInstances()
+	if len(actions) > 0 {
+		p.ensurePlacementInstances()
 	}
 	return actions
+}
+
+// ensurePlacementInstances — поднять инстансы групп по minInstances
+// (idempotent; менеджер репликации сам решает, сколько экземпляров не хватает).
+func (p *Proxy) ensurePlacementInstances() {
+	if p == nil || p.modelReplication == nil {
+		return
+	}
+	p.modelReplication.EnsureInstances()
+}
+
+// schedulePlacementResync — R78 (P3): пересобрать раскладку по политике после
+// изменения состава бэкендов (добавление/удаление).
+//
+// Асинхронно и только когда это вообще нужно: синхронизация вызывает callbacks
+// менеджера репликации, которые берут p.mu.RLock — из AddBackend/RemoveBackend
+// (там p.mu уже удерживается) прямой вызов дал бы самоблокировку.
+func (p *Proxy) schedulePlacementResync(reason string) {
+	if p == nil || !p.placementResyncRelevant() {
+		return
+	}
+	go func() {
+		actions := p.syncPlacementReplicationGroups()
+		// R78: главное здесь — дотянуть/пересобрать инстансы под новый состав
+		// бэкендов (новый бэкенд должен получить свою реплику сразу, не ожидая
+		// тика GroupController).
+		p.ensurePlacementInstances()
+		if len(actions) == 0 {
+			logger.Get().Infow("placement: раскладка пересобрана после изменения состава бэкендов",
+				"reason", reason)
+			return
+		}
+		logger.Get().Infow("placement: раскладка пересобрана после изменения состава бэкендов",
+			"reason", reason, "actions", actions)
+	}()
+}
+
+// placementResyncRelevant — есть ли в политике правила, требующие групп
+// репликации (strategy=replicated или auto с prefer=replicated).
+func (p *Proxy) placementResyncRelevant() bool {
+	cfg := p.PlacementSettings()
+	if !cfg.Enabled {
+		return false
+	}
+	for _, rule := range cfg.Models {
+		if types.ParsePlacementStrategy(rule.Strategy) == types.PlacementReplicated {
+			return true
+		}
+		if autoPrefersReplicatedR75(rule) {
+			return true
+		}
+	}
+	return false
 }
 
 // maskOrName — true, если в имени есть wildcard-символы маски.

@@ -288,8 +288,11 @@ func (p *Proxy) GetQueueStats() QueueStats {
 	p.queueMgr.historyMu.RUnlock()
 
 	return QueueStats{
-		Admission:          p.admission.stats(p.admissionWaitTimeout()),
-		CurrentSize:        len(p.queueMgr.queue),
+		Admission: p.admission.stats(p.admissionWaitTimeout()),
+		// R78: current_size — сколько запросов ЖДЁТ слот в единой
+		// (admission-)очереди; legacy-канал QueueManager удалён, поэтому раньше
+		// здесь всегда был 0 и панель очереди показывала пустоту.
+		CurrentSize:        p.admissionWaiting(),
 		MaxSize:            p.queueMgr.maxSize,
 		Processed:          processed,
 		WaitTimeAvgMs:      avgWaitMs,
@@ -299,6 +302,15 @@ func (p *Proxy) GetQueueStats() QueueStats {
 		DispatchByLoad:     atomic.LoadInt64(&p.queueMgr.dispatchLoad),
 		DispatchByConfig:   atomic.LoadInt64(&p.queueMgr.dispatchConfig),
 	}
+}
+
+// admissionWaiting — сколько запросов сейчас ждут свободный слот (единая
+// очередь). nil-safe: Proxy без admission-очереди (юнит-тесты) → 0.
+func (p *Proxy) admissionWaiting() int {
+	if p == nil || p.admission == nil {
+		return 0
+	}
+	return p.admission.waitingCount()
 }
 
 // GetQueueHistory - получение истории выполненных запросов

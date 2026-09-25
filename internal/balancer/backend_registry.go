@@ -113,6 +113,12 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 
 	p.scheduleSave()
 
+	// R78 (P3): состав бэкендов изменился — раскладка по политике может
+	// требовать пересборки. Планируем асинхронно: синхронизация берёт RLock
+	// через callbacks менеджера репликации, поэтому под уже взятым p.mu её
+	// вызывать нельзя.
+	p.schedulePlacementResync("backend added")
+
 	return nil
 }
 
@@ -333,6 +339,11 @@ drainLoop:
 	}
 
 	logger.Get().Infow("backend removed and state flushed", "backend", backendID)
+
+	// R78 (P3): состав бэкендов изменился — пересобираем раскладку по политике
+	// (асинхронно, см. комментарий в AddBackend).
+	p.schedulePlacementResync("backend removed")
+
 	return nil
 }
 

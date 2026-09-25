@@ -115,7 +115,7 @@ func (p *Proxy) computeEnhancedComponents(metrics *types.BackendMetrics, state *
 
 	modelCapacityScore := computeModelCapacityScore(metrics)
 	modelLoadedBonus := float64(len(metrics.Ollama.RunningModels)) * wModelLoaded * 10.0
-	queueDepthPenalty := float64(len(p.queueMgr.queue)) * wQueueDepth
+	queueDepthPenalty := float64(p.admissionWaiting()) * wQueueDepth
 
 	// Error rate penalty
 	errorRatePenalty := 0.0

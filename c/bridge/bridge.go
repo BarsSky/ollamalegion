@@ -201,6 +201,18 @@ type ModelConfig struct {
 	// Supported buft names: "CPU", "CUDA0", "CUDA1", ...
 	OverrideTensors     []string // nil = no override
 	OverrideTensorBufts []string // parallel slice, len == len(OverrideTensors)
+
+	// R83 §3.2/§3.4 (2026-09-26): параметры KV-кэша, посчитанные планировщиком
+	// (internal/memfit, kv_layers.go). C-bridge использует их в оценке «сколько
+	// n_ctx влезает в свободную VRAM» и в проверке «помещается ли KV для
+	// запрошенного n_ctx» — чтобы оценка считала те же слои и тот же head_dim,
+	// что и план загрузки. 0 = неизвестно (C берёт консервативный верх).
+	//
+	// Правка нужна потому, что наивная формула (все слои, head_dim =
+	// n_embd/n_heads) завышала KV почти в 10 раз: на живом замере §3.2
+	// «влезало» 17 673 токена при реальном потолке ~175 000.
+	KVLayers  int // число слоёв, хранящих KV (рекуррентные/MTP не хранят)
+	KVHeadDim int // head_dim KV = attention.key_length
 }
 
 // DefaultModelConfig возвращает конфигурацию по умолчанию
@@ -578,6 +590,10 @@ func LoadModelWithEarlyHandle(cfg ModelConfig, earlyHandle *ModelHandle) (*Model
 	// Session 16 (2026-06-27): Parallel + KVCacheType.
 	cCfg.n_parallel = C.int(cfg.NParallel)
 	cCfg.kv_cache_type = C.int(kvCacheTypeToBridgeInt(cfg.KVCacheType))
+
+	// R83 §3.2/§3.4: числа KV-кэша от планировщика (см. ModelConfig.KVLayers).
+	cCfg.kv_layers = C.int(cfg.KVLayers)
+	cCfg.kv_head_dim = C.int(cfg.KVHeadDim)
 
 	// Round 7: pack OverrideTensors parallel arrays to C.
 	if len(cfg.OverrideTensors) > 0 && len(cfg.OverrideTensors) == len(cfg.OverrideTensorBufts) {

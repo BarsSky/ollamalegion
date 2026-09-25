@@ -1254,6 +1254,24 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
             }
             if (head_dim <= 0) head_dim = 1;
 
+            // R83 §3.2/§3.4: числа KV-кэша берём у планировщика (memfit), если он
+            // их прислал. Рекуррентные (SSM) слои KV не хранят, MTP-слой в кэш не
+            // входит, а head_dim KV = attention.key_length (у Qwen3.8 — 256), тогда
+            // как n_embd/n_heads = 213. Наивные значения завышали KV почти в 10 раз
+            // (17 673 «влезающих» токена против реальных ~175 000).
+            int kv_layers = n_layers;
+            if (config->kv_layers > 0) {
+                if (config->kv_layers < kv_layers) kv_layers = config->kv_layers;
+                if (kv_layers <= 0) kv_layers = 1;
+            }
+            int kv_head_dim = head_dim;
+            if (config->kv_head_dim > 0 && config->kv_head_dim != kv_head_dim) {
+                printf("[bridge] R83: KV head_dim из планировщика = %d "
+                       "(n_embd/n_heads = %d), n_layers=%d, kv_layers=%d\n",
+                       config->kv_head_dim, head_dim, n_layers, kv_layers);
+                kv_head_dim = config->kv_head_dim;
+            }
+
             // Тип KV-кэша влияет на per-token размер в 2-3 раза
             // (R83 §3.4: тип обязан совпадать с тем, что видит гейт).
             unsigned long long type_size = 2; // f16 default
@@ -1263,13 +1281,13 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
                 default:             type_size = 32; break; // f16: 32 * 2B
             }
             // kv_per_token — байты НА ТОКЕН для K+V.
-            //   row_bytes = n_kv_heads * head_dim * (type_size / elements_per_block)
+            //   row_bytes = n_kv_heads * kv_head_dim * (type_size / elements_per_block)
             // Для f16 elements_per_block=1, для q8_0/q4_0 = 32.
             unsigned long long elems_per_block = (type_size == 32) ? 1 : 32;
             unsigned long long row_bytes =
-                (unsigned long long)n_kv_heads * (unsigned long long)head_dim *
+                (unsigned long long)n_kv_heads * (unsigned long long)kv_head_dim *
                 type_size / elems_per_block;
-            int64_t kv_per_token = 2 * (int64_t)n_layers * (int64_t)row_bytes;
+            int64_t kv_per_token = 2 * (int64_t)kv_layers * (int64_t)row_bytes;
 
             // estimated_max — оценка БЕЗ clamp'а. 0 если
             // free_for_kv < kv_per_token (модель не влезает в VRAM).
@@ -1315,12 +1333,14 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
             printf("[bridge] VRAM-estimated max n_ctx = %d "
                    "(free=%lld MB, gpu_model=%llu MB, "
                    "n_layers=%d n_embd=%d n_heads=%d n_kv_heads=%d "
-                   "head_dim=%d kv_per_token=%lld bytes, requested n_ctx=%u)\n",
+                   "kv_layers=%d kv_head_dim=%d kv_per_token=%lld bytes, "
+                   "requested n_ctx=%u)\n",
                    estimated_max,
                    (long long)(free_bytes / (1024 * 1024)),
                    (unsigned long long)(model_size_bytes / (1024 * 1024)),
                    n_layers, n_embd, n_heads, n_kv_heads,
-                   head_dim, (long long)kv_per_token, ctx_params.n_ctx);
+                   kv_layers, kv_head_dim, (long long)kv_per_token,
+                   ctx_params.n_ctx);
         } else {
             printf("[bridge] cuMemGetInfo failed — cannot estimate VRAM-based n_ctx\n");
         }

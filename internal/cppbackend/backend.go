@@ -345,6 +345,14 @@ type LoadModelOpts struct {
 	// CAVEAT: BatchedScheduler пока greedy argmax (no temp/top_p).
 	EnableBatchedParallel *bool
 
+	// R83 §3.2/§3.4 (2026-09-26): числа KV-кэша для C-оценки свободной VRAM.
+	// Заполняются в checkVRAMForModel из метаданных GGUF (KVLayersFor /
+	// KVHeadDimFor) и уходят в bridge.ModelConfig. 0 = неизвестно.
+	// Нужны, чтобы C-оценка «сколько n_ctx влезает» считала те же слои и тот же
+	// head_dim, что и план memfit: наивная формула завышала KV почти в 10 раз.
+	KVLayers  int
+	KVHeadDim int
+
 	// Round 17 (2026-07-31): per-model override для reasoning parser routing.
 	// Решает баг 2026-07-31 (см. plans/bug-2026-07-31-reasoning-not-routed.md):
 	// SOFT prompt injection работает для ЛЮБОЙ модели при cfg.EnableReasoning=true,
@@ -817,6 +825,10 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	cfg.NUMA = opts.NUMA
 	cfg.UseMmap = opts.UseMmap
 	cfg.UseMlock = b.cfg.DefaultUseMlock
+	// R83 §3.2/§3.4: числа KV-кэша для C-оценки свободной VRAM (см.
+	// checkVRAMForModel). 0 = неизвестно → C берёт консервативный верх.
+	cfg.KVLayers = opts.KVLayers
+	cfg.KVHeadDim = opts.KVHeadDim
 	// NThreads override см. ниже — после секции KVCacheType/Parallel.
 	// (Раньше cfg.NThreads = b.cfg.DefaultNThreads затирал opts.NThreads;
 	//  теперь мы применяем opts > default корректно.)
@@ -1522,6 +1534,19 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 			"vramFreeMB", totalVRAMMB,
 			"reason", "model > 70% of available VRAM")
 		opts.UseMmap = true
+	}
+
+	// R83 §3.2/§3.4 (2026-09-26): числа KV-кэша (слои с KV и head_dim KV) —
+	// из тех же метаданных, по которым memfit считал раскладку. C-bridge
+	// использует их в оценке свободной VRAM; без них он считает KV по всем
+	// слоям и n_embd/n_heads, завышая его почти в 10 раз.
+	if header != nil {
+		if l, ok := header.KVLayers(); ok && l > 0 {
+			opts.KVLayers = l
+		}
+		if hd := header.KVHeadDim(); hd > 0 {
+			opts.KVHeadDim = hd
+		}
 	}
 
 	// «Неизвестно» — НЕ отказ: если метаданных модели нет (нет файла, скан не

@@ -133,6 +133,11 @@ type ModelConfig struct {
 	RMSNormEps  float32
 	NoMemoryMap bool
 	RPCBackend  string
+	// R83 §3.2/§3.4 (2026-09-26): параметры KV-кэша от планировщика.
+	// В stub-режиме не используются, но обязаны присутствовать для совместимости
+	// типов между bridge.go (!llama_stub) и bridge_stub.go (llama_stub).
+	KVLayers  int
+	KVHeadDim int
 	// Round 7: override-tensors (parallel slices; ignored in stub).
 	OverrideTensors     []string
 	OverrideTensorBufts []string

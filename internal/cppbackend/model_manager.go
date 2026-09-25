@@ -68,6 +68,16 @@ type GGUFModelMeta struct {
 	// (config.bundled.json). НЕ из GGUF (его там нет) — задаётся через
 	// profile-syncer pull. Используется feasible.go для расчёта kv_per_token.
 	KVCacheType string `json:"kvCacheType,omitempty"`
+
+	// R83 (2026-09-25): параметры реального KV-кэша. Без них KV считался как
+	// «2 × block_count × kv_heads × (n_embd/n_heads)», что для гибридных моделей
+	// завышает его в разы (у Qwen3.8-27B KV хранят 17 слоёв из 65, head_dim 256,
+	// а не 213). Правило — kv_layers.go, методы KVLayers()/KVHeadDim().
+	KeyLength             int  `json:"keyLength,omitempty"`
+	ValueLength           int  `json:"valueLength,omitempty"`
+	NextNPredictLayers    int  `json:"nextnPredictLayers,omitempty"`
+	FullAttentionInterval int  `json:"fullAttentionInterval,omitempty"`
+	HasRecurrentLayersKey bool `json:"hasRecurrentLayersKey,omitempty"`
 }
 
 // ModelManager — управляет модельками
@@ -612,7 +622,10 @@ func (m *ModelManager) GetModelMeta(filename string) (*GGUFModelMeta, error) {
 	}
 
 	// Lazy-load архитектурных параметров из GGUF header.
-	if meta.NLayers == 0 || meta.NEmbd == 0 || meta.NHeads == 0 || meta.ContextLength == 0 {
+	// R83: условие включает KeyLength — параметры реального KV-кэша
+	// (key_length/nextn/recurrent) обязаны добираться и для моделей, у которых
+	// уже заполнены NLayers/NEmbd/NHeads/ContextLength.
+	if meta.NLayers == 0 || meta.NEmbd == 0 || meta.NHeads == 0 || meta.ContextLength == 0 || meta.KeyLength == 0 {
 		if hdr, err := ReadGGUFHeader(meta.Path); err == nil && hdr != nil {
 			m.mu.Lock()
 			if meta.NLayers == 0 {
@@ -635,6 +648,24 @@ func (m *ModelManager) GetModelMeta(filename string) (*GGUFModelMeta, error) {
 			}
 			if meta.Architecture == "" {
 				meta.Architecture = hdr.Architecture
+			}
+			// R83 (2026-09-25): параметры реального KV-кэша — иначе он считался
+			// по block_count и n_embd/n_heads (завышение в разы для гибридных
+			// моделей). См. kv_layers.go.
+			if meta.KeyLength == 0 && hdr.KeyLength > 0 {
+				meta.KeyLength = hdr.KeyLength
+			}
+			if meta.ValueLength == 0 && hdr.ValueLength > 0 {
+				meta.ValueLength = hdr.ValueLength
+			}
+			if meta.NextNPredictLayers == 0 && hdr.NextNPredictLayers > 0 {
+				meta.NextNPredictLayers = hdr.NextNPredictLayers
+			}
+			if meta.FullAttentionInterval == 0 && hdr.FullAttentionInterval > 0 {
+				meta.FullAttentionInterval = hdr.FullAttentionInterval
+			}
+			if hdr.HasRecurrentLayersKey {
+				meta.HasRecurrentLayersKey = true
 			}
 			m.mu.Unlock()
 		}

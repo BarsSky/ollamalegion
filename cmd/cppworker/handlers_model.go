@@ -1042,14 +1042,22 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		// R83 (2026-09-25): граница «влезает в VRAM» — нужна, чтобы показать
 		// оператору, что загруженный n_ctx выше неё (режим partial_offload).
 		vramMax int
+		// R83 шаг 3: различать «VRAM неизвестна» и «известна, но веса не влезают».
+		vramKnown bool
 	}
 	perModelFeasible := make(map[string]feasibleAgg, len(models))
+	// R83: top-level vram_known отражает НАЛИЧИЕ GPU, а не наличие загруженных
+	// моделей: раньше при count=0 поле было false, хотя GPU есть.
+	vramKnownAgg := backend.MemfitBudget().VRAMKnown
 
 	for _, m := range models {
 		if m.State != cppbackend.StateLoaded {
 			continue
 		}
 		limits := backend.CalculateResourceLimits(m.Name)
+		if limits.VRAMKnown {
+			vramKnownAgg = true
+		}
 		if limits.TotalVRAMMB > totalVRAMMB {
 			totalVRAMMB = limits.TotalVRAMMB
 		}
@@ -1084,6 +1092,7 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			feasibleMax: feasibleI,
 			ggufMax:     m.GGUFContextLength,
 			vramMax:     limits.MaxVRAMNCtx,
+			vramKnown:   limits.VRAMKnown,
 		}
 	}
 
@@ -1170,12 +1179,14 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		// медленнее, и клиент легко упирается в таймаут. Раньше этот факт нигде
 		// не отражался — отсюда «32768 работает, 65536 нет» без объяснения.
 		vramMax, feasibleMax, ggufMax := 0, 0, m.GGUFContextLength
+		vramKnown := false
 		if fa, ok := perModelFeasible[m.Name]; ok {
 			feasibleMax = fa.feasibleMax
 			ggufMax = fa.ggufMax
 			vramMax = fa.vramMax
+			vramKnown = fa.vramKnown
 		}
-		for k, v := range nctxModeFields(vramMax, ggufMax, feasibleMax, m.ContextSize) {
+		for k, v := range nctxModeFields(vramMax, ggufMax, feasibleMax, m.ContextSize, vramKnown) {
 			entry[k] = v
 		}
 		enrichedModels = append(enrichedModels, entry)
@@ -1209,6 +1220,11 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		// gguf_max_context     = max GGUF training context — hard upper bound.
 		"feasible_max_context": topFeasible,
 		"gguf_max_context":     topGGUF,
+		// R83 шаг 3: max_vram_n_ctx = 0 означает ЛИБО «данных о VRAM нет»
+		// (vram_known=false), ЛИБО «веса модели не влезают в VRAM» (vram_known=true,
+		// загрузка пойдёт в partial_offload/cpu_only). Раньше эти случаи были
+		// неразличимы, и UI не мог предупредить о режиме загрузки.
+		"vram_known": vramKnownAgg,
 	}
 
 	// R83 (2026-09-25): причина последнего провала загрузки — машиночитаемо.

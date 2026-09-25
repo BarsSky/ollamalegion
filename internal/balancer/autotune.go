@@ -867,6 +867,16 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 			},
 		})
 
+		// R83: не запускаем reload, пока для этой модели уже идёт reload/загрузка.
+		// Живой инцидент 2026-09-25: автотюн запускал reload вторым планом, пока
+		// первая загрузка ещё держала память → переподписка VRAM (free=0 MB) →
+		// повреждение кучи glibc → SIGABRT и рестарт контейнера.
+		if p.nctxReload != nil && p.nctxReload.IsReloadPending(backendID, modelName) {
+			logger.Get().Infow("autotune: reload уже идёт для модели — повторный запуск пропущен",
+				"backend", backendID, "model", modelName, "reason", plan.Reason)
+			return
+		}
+
 		err := p.executeAutoTuneReload(backendID, modelName, plan, circuit)
 		if err != nil {
 			circuit.RecordError(err.Error())

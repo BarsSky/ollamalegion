@@ -256,7 +256,7 @@ func TestR83_NctxSuggestion(t *testing.T) {
 // «загружено». Живой случай: A10, ctx=65536 при границе VRAM 40000.
 func TestR83_NctxModeFields(t *testing.T) {
 	t.Run("после границы VRAM — degraded", func(t *testing.T) {
-		f := nctxModeFields(40000, 262144, 40000, 65536)
+		f := nctxModeFields(40000, 262144, 40000, 65536, true)
 		if got, _ := f["n_ctx_degraded"].(bool); !got {
 			t.Error("n_ctx_degraded = false, want true (65536 > 40000)")
 		}
@@ -269,7 +269,7 @@ func TestR83_NctxModeFields(t *testing.T) {
 	})
 
 	t.Run("в пределах VRAM — не degraded", func(t *testing.T) {
-		f := nctxModeFields(40000, 262144, 40000, 32768)
+		f := nctxModeFields(40000, 262144, 40000, 32768, true)
 		if got, _ := f["n_ctx_degraded"].(bool); got {
 			t.Error("n_ctx_degraded = true, want false (32768 <= 40000)")
 		}
@@ -279,7 +279,7 @@ func TestR83_NctxModeFields(t *testing.T) {
 	})
 
 	t.Run("граница VRAM неизвестна — не утверждаем ничего", func(t *testing.T) {
-		f := nctxModeFields(0, 262144, 200000, 131072)
+		f := nctxModeFields(0, 262144, 200000, 131072, false)
 		if got, _ := f["n_ctx_degraded"].(bool); got {
 			t.Error("n_ctx_degraded = true при неизвестной границе VRAM")
 		}

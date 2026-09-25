@@ -36,6 +36,14 @@ func TestModelNameMatches_R66d(t *testing.T) {
 		{"path_on_candidate", "/app/models/gemma-4-E4B-it-Q4_K_M.gguf", "gemma-4-E4B-it-Q4_K_M", true},
 		{"partial_profile_name", "gemma-4-E4B-it-Q4_K_M", "gemma-4", true},
 		{"partial_request_name", "gemma-4", "gemma-4-E4B-it-Q4_K_M", true},
+		// R83: Ollama-тег — это часть написания имени, а не часть имени модели.
+		// Клиент зовёт модель "qwen3.8:latest", файл на бэкенде —
+		// "Qwen3.8-27B-UD-Q4_K_M". Без срезания тега не находился ни размер
+		// модели (→ idle 120s вместо 1800s), ни сама загруженная модель.
+		{"ollama_tag_on_request", "Qwen3.8-27B-UD-Q4_K_M", "qwen3.8:latest", true},
+		{"ollama_tag_on_candidate", "Qwen3.8-27B-UD-Q4_K_M:latest", "qwen3.8", true},
+		{"ollama_tag_custom", "Qwen3.8-27B-UD-Q4_K_M", "qwen3.8:q4_k_m", true},
+		{"ollama_tag_different_variant", "Qwen3.8-27B-UD-Q4_K_M", "qwen3.8-4b:latest", false},
 		{"different_models", "Qwen3.8-27B", "gemma-4-E4B-it-Q4_K_M", false},
 		{"empty_candidate", "", "gemma-4", false},
 		{"empty_wanted", "gemma-4", "", false},

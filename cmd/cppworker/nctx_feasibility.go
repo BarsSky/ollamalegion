@@ -59,6 +59,10 @@ type NCtxFeasibility struct {
 	Degraded        bool
 	Known           bool   // удалось ли вообще что-то посчитать
 	Stage           string // см. nctxStage*
+	// VerdictSuggestion — текст подсказки из internal/memfit (R83 шаг 3). Если
+	// задан, он предпочтительнее собранного здесь: memfit добавляет к нему причину
+	// «поможет квантизация KV», которую прежняя логика не знала.
+	VerdictSuggestion string
 }
 
 // evaluateNCtxFeasibility применяет гибридную политику R83 к посчитанным
@@ -142,6 +146,11 @@ func logNCtxFeasibility(f NCtxFeasibility) {
 // Возвращает конкретные числа, а не общий совет: это интерфейс между отказом и
 // уведомлением в WebUI (блок 6 плана).
 func nctxSuggestion(f NCtxFeasibility) string {
+	// R83 шаг 3: если решение принял memfit, его подсказка конкретнее (в ней есть
+	// и потолок, и — когда применимо — выигрыш от kvCacheType=q4_0).
+	if f.VerdictSuggestion != "" {
+		return f.VerdictSuggestion
+	}
 	switch {
 	case f.GGUFMaxContext > 0 && f.HardMaxNCtx == f.GGUFMaxContext:
 		return fmt.Sprintf("n_ctx ограничен обучающим контекстом модели: %d. "+
@@ -208,8 +217,20 @@ func writeNCtxInfeasibleResponse(w http.ResponseWriter, f NCtxFeasibility) {
 // сделать return. Всегда логирует оценку (в т.ч. degraded), чтобы режим загрузки
 // был виден оператору до её старта.
 func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx int) bool {
-	f := evaluateNCtxFeasibility(
-		modelName, backend.CalculateResourceLimits(modelName), requestedNCtx)
+	// R83, шаг 3: решение принимает internal/memfit (memfit_gate.go). Прежний
+	// расчёт здесь удалён — он расходился с решением о загрузке.
+	f, verdict, ok := feasibilityFromMemfit(modelName, requestedNCtx)
+	if !ok {
+		// Метаданных модели нет — судить не о чем. Не отказываем (как и раньше),
+		// но говорим об этом явно, а не молча (прежний fail-open был неотличим от
+		// «всё хорошо»).
+		if logger.Get() != nil {
+			logger.Get().Debugw("R83 гейт n_ctx: метаданные модели недоступны — проверка пропущена",
+				"model", modelName, "requested_n_ctx", requestedNCtx)
+		}
+		return true
+	}
+	logMemfitVerdict(verdict)
 	logNCtxFeasibility(f)
 
 	// R83 (C1): предупреждаем, если ПОТОЛОК ИЗ КОНФИГА недостижим на этом железе.
@@ -249,16 +270,17 @@ func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx 
 // видел «загружено» в обоих случаях. Здесь режим становится машинночитаемым,
 // чтобы WebUI показал его, а не только лог.
 //
-// vramMax <= 0 означает «граница неизвестна» (нет GPU-метрик) — тогда
-// n_ctx_degraded = false и n_ctx_headroom не отдаётся: утверждать нечего.
-func nctxModeFields(vramMax, ggufMax, feasibleMax, contextSize int) map[string]interface{} {
+// vramKnown различает «VRAM неизвестна» и «известна, но веса не влезают»:
+// раньше ноль в vramMax означал и то и другое, и n_ctx_degraded молчал.
+func nctxModeFields(vramMax, ggufMax, feasibleMax, contextSize int, vramKnown bool) map[string]interface{} {
 	fields := map[string]interface{}{
 		"gguf_max_context":     ggufMax,
 		"feasible_max_context": feasibleMax,
 		"max_vram_n_ctx":       vramMax,
-		"n_ctx_degraded":       vramMax > 0 && contextSize > vramMax,
+		"vram_known":           vramKnown,
+		"n_ctx_degraded":       vramKnown && contextSize > vramMax,
 	}
-	if vramMax > 0 {
+	if vramKnown {
 		fields["n_ctx_headroom"] = vramMax - contextSize
 	}
 	return fields

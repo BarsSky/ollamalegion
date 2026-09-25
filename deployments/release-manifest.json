@@ -1,0 +1,41 @@
+{
+    "tag":  "r83-submodule-v2",
+    "builtAt":  "2026-09-25T20:50:32Z",
+    "gitCommit":  "30f28ed",
+    "cudaArch":  86,
+    "composeFile":  "docker-compose.cppworker-bundled-with-agent.yml",
+    "images":  [
+                   {
+                       "service":  "balancer",
+                       "variable":  "BALANCER_TAG",
+                       "image":  "ollama-legion/balancer:r83-submodule-v2",
+                       "imageTag":  "r83-submodule-v2",
+                       "imageId":  "sha256:2e6af19a2b4c64275107fd749681db879ac616a52e74262ea379b80f0d07a27f",
+                       "alias":  "ollama-legion/balancer:latest"
+                   },
+                   {
+                       "service":  "cppworker",
+                       "variable":  "CPPWORKER_GPU_TAG",
+                       "image":  "ollama-legion/cppworker:gpu-r83-submodule-v2",
+                       "imageTag":  "gpu-r83-submodule-v2",
+                       "imageId":  "sha256:fabb922c13053e8afc2ee0bc704378488be3b577fcbd99b0a9e77c3622bb291a",
+                       "alias":  "ollama-legion/cppworker:latest-gpu-86"
+                   },
+                   {
+                       "service":  "agent",
+                       "variable":  "AGENT_TAG",
+                       "image":  "ollama-legion/agent:r83-submodule-v2",
+                       "imageTag":  "r83-submodule-v2",
+                       "imageId":  "sha256:4affe47329c3db65efb374b54185f0187661b8a3468676fc406321c1f8a181e2",
+                       "alias":  "ollama-legion/agent:latest"
+                   },
+                   {
+                       "service":  "webui",
+                       "variable":  "WEBUI_TAG",
+                       "image":  "ollama-legion/webui:r83-submodule-v2",
+                       "imageTag":  "r83-submodule-v2",
+                       "imageId":  "sha256:da4fed250739ee56aea8be51ec623c73187fe4796d0b2d33391206c760b781ac",
+                       "alias":  "ollama-legion/webui:latest"
+                   }
+               ]
+}

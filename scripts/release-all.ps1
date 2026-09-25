@@ -175,7 +175,11 @@ foreach ($svc in $Services) {
 # ${VAR:-default} именно из .env (env_file на подстановку не влияет).
 Write-Host ""
 foreach ($r in $results) {
-    Set-ImageTagVar -VariableName $r.variable -Value $r.imageTag -EnvDir $envDir
+    # R83: compose сам добавляет префикс `gpu-` к CPPWORKER_GPU_TAG
+# (`image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-...}`), поэтому в .env
+# пишем тег БЕЗ него — иначе получается образ `gpu-gpu-<tag>` и расходится с
+# манифестом/check-image-tags.ps1.
+Set-ImageTagVar -VariableName $r.variable -Value ($r.imageTag -replace '^gpu-', '') -EnvDir $envDir
 }
 
 # --- деплой ----------------------------------------------------------------

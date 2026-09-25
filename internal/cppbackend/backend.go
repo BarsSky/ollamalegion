@@ -25,6 +25,7 @@ import (
 	"unsafe"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/tokencount"
 	"ollama-loadbalancer/pkg/types"
@@ -149,6 +150,19 @@ type Backend struct {
 	// Key: model name, Value: chan struct{} (closed when loading completes).
 	loading map[string]chan struct{}
 	loadMu  sync.Mutex
+
+	// loadSingleFlight — R83 (шаг 3, инцидент 2026-09-25): сериализация загрузок.
+	//
+	// checkVRAMForModel считает бюджет VRAM ДО распределения, поэтому вторая
+	// параллельная загрузка видит свободную память, которой уже нет. Живой лог:
+	// два плана (gpu_layers=29 и 18) ушли в llama.cpp одновременно, свободной VRAM
+	// стало 0 МБ, и процесс умер по SIGABRT с повреждением кучи glibc
+	// («malloc(): unaligned tcache chunk detected»), после чего контейнер
+	// перезапустился. Пока идёт загрузка, второй запрос обязан её ДОЖДАТЬСЯ, а
+	// затем увидеть модель в b.models и получить «already loaded» — вместо второй
+	// загрузки того же файла. Загрузки редки и длинны, поэтому мьютекс общий,
+	// а не per-model: на один процесс приходится один GPU-бэкенд.
+	loadSingleFlight sync.Mutex
 
 	// inFlight — per-model счётчик активных inference-запросов.
 	// Используется в handleReloadModel чтобы дождаться завершения
@@ -651,6 +665,12 @@ func (b *Backend) LoadModel(name string, path string) error {
 // завершает эту работу: bridge.LoadModelWithEarlyHandle + раннее
 // заполнение inst.handle.ptr в bridge_load_model.
 func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path string, opts LoadModelOpts) error {
+	// R83: single-flight — загрузка одной модели за раз (см. loadSingleFlight).
+	// Без него второй запрос проходит checkVRAMForModel на устаревшем снимке
+	// свободной VRAM и запускает вторую загрузку того же файла параллельно.
+	b.loadSingleFlight.Lock()
+	defer b.loadSingleFlight.Unlock()
+
 	// Валидация VRAM перед загрузкой и авто-подбор оптимальных gpuLayers.
 	// Выполняется ДО pre-allocation inst, чтобы не плодить phantom entries
 	// в b.models при ошибке валидации.
@@ -1172,13 +1192,23 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 	}
 	b.mu.RUnlock()
 
-	// Собираем доступную RAM (системная память)
+	// Собираем доступную RAM (системная память).
+	//
+	// R83 (живая проверка 2026-09-25): здесь была УСТАНОВЛЕННАЯ память (MemTotal),
+	// и именно она сравнивалась ниже с потребностью CPU-части модели
+	// («cpuMemoryMB < totalRAM*8/10»), уходя в лог под именем ramAvailableMB.
+	// На живом стенде: cpuMemoryMB=19556, в лог печаталось 24576 (это MemTotal),
+	// фактически свободно было 20480 → проверка прошла с запасом 105 MB и
+	// загрузка 27B (веса 15.7 GB + KV 8.6 GB) была одобрена, хотя по свободной
+	// памяти обязана была отказать с диагностикой. Итог одобрения — 13.97 GiB
+	// resident и минуты загрузки при CPU 0.13 % (упор в I/O).
 	var totalRAM uint64
 	if runtime.GOOS != "windows" {
 		totalRAM = getSystemRAMGB() * 1024 // в MB
 	} else {
 		totalRAM = 8192 // fallback: предполагаем хотя бы 8GB RAM
 	}
+	availRAM, ramSource := availableRAMForLoadMB(totalRAM)
 
 	diag := &DiagnosticsInfo{
 		ModelSizeGB:     math.Round(modelSizeMB/1024*100) / 100,
@@ -1288,13 +1318,15 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 	diag2.VRAMRequiredForOptimal = EstimateGPUMemoryForModel(modelSizeBytes, bestLayers, totalLayers, requestedCtxSize) + kvCacheMB
 	diag2.RAMRequiredForRemaining = cpuMemoryMB
 
-	if cpuMemoryMB < totalRAM*8/10 { // используем до 80% RAM
+	if cpuMemoryMB < availRAM*8/10 { // до 80% РЕАЛЬНО свободной RAM (R83: было MemTotal)
 		logger.Get().Infow("optimal GPU layers found with RAM fallback",
 			"totalLayers", totalLayers,
 			"gpuLayers", bestLayers,
 			"cpuLayers", cpuLayers,
 			"cpuMemoryMB", cpuMemoryMB,
-			"ramAvailableMB", totalRAM,
+			"ramAvailableMB", availRAM,
+			"ramTotalMB", totalRAM,
+			"ramSource", ramSource,
 			"kvCacheMB", kvCacheMB,
 			"useMmap", useMmap,
 			"kvCPUFraction", kvCPUFraction)
@@ -1311,7 +1343,7 @@ func (b *Backend) CalculateOptimalGPULayers(modelSizeBytes int64, totalLayers, n
 			"or enable flash attention.",
 		uint64(modelSizeMB)+kvCacheMB,
 		modelSizeMB/1024, kvCacheMB,
-		totalFreeVRAM, totalRAM,
+		totalFreeVRAM, availRAM,
 		bestLayers, cpuLayers, cpuMemoryMB)
 
 	return bestLayers, true, diag2
@@ -1433,20 +1465,38 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 	// иначе дефолт cppworker). Без этого при q8_0/q4_0 требования завышались в
 	// 2-4 раза и модель уходила в частичный CPU-offload при свободной VRAM.
 	effectiveKV := effectiveKVCacheType(opts.KVCacheType, b.cfg.DefaultKVCacheType)
-	optGPULayers, useMmap, diagnostics := b.CalculateOptimalGPULayers(
-		fi.Size(), totalLayers, nHeads, nKvHeads, nEmbd,
-		opts.GPULayers, opts.ContextSize, effectiveKV,
-	)
+
+	// R83, шаг 3 миграции: решение «влезает ли модель и сколько слоёв на GPU»
+	// принимает internal/memfit — единственный предикат computeSplit. Прежний
+	// CalculateOptimalGPULayers считал веса как «размер × 0.7», KV — по всем блокам
+	// с head_dim = n_embd/n_heads, а RAM сравнивал с MemTotal; из-за этого
+	// llama.cpp получал gpu_layers=0 и грузил модель целиком на CPU.
+	spec := MemfitSpecFromValues(name, fi.Size(), totalLayers, nHeads, nKvHeads, nEmbd, 0, 0, 0)
+	if mm := b.ModelManager(); mm != nil {
+		if meta, err := mm.GetModelMeta(name); err == nil && meta != nil {
+			if l, _ := meta.KVLayers(); l > 0 {
+				spec.KVLayers = l
+			}
+			if hd := meta.KVHeadDim(); hd > 0 {
+				spec.KVHeadDim = hd
+			}
+		}
+	}
+	verdict := memfit.Evaluate(spec, memfit.Request{
+		Ctx:       opts.ContextSize,
+		KVType:    MemfitKVType(effectiveKV),
+		GPULayers: opts.GPULayers, // <= 0 = авто: максимум, что влезает
+	}, b.MemfitBudget(), MemfitPolicy())
+
 	if logger.Get() != nil {
-		logger.Get().Debugw("checkVRAMForModel: KV-cache type used for VRAM estimate",
+		logger.Get().Debugw("checkVRAMForModel: решение о памяти (memfit)",
 			"model", name, "kv_cache_type", effectiveKV,
-			"requested", opts.KVCacheType, "config_default", b.cfg.DefaultKVCacheType)
+			"requested_gpu_layers", opts.GPULayers, "verdict", verdict.String())
 	}
 
-	// 2026-06-26 BUGFIX: для больших моделей (model_size > 70% VRAM) принудительно
-	// включаем useMmap=true. Без mmap все 20 GB весов модели форсируются в VRAM,
-	// что приводит к OOM на partial offload. С mmap не-вмещающиеся слои остаются
-	// в RAM через page-cache и не занимают VRAM.
+	// 2026-06-26 BUGFIX (сохранено): для больших моделей (model_size > 70% свободной
+	// VRAM) принудительно включаем useMmap=true. Без mmap веса форсируются в VRAM,
+	// что приводит к OOM на partial offload.
 	totalVRAMMB := uint64(0)
 	b.mu.RLock()
 	for _, dev := range b.gpuDevices {
@@ -1463,36 +1513,43 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 		opts.UseMmap = true
 	}
 
-	if diagnostics != nil && diagnostics.Recomendation != "" {
-		logger.Get().Errorw("cannot load model - insufficient memory",
-			"model", name,
-			"path", path,
-			"diagnostics", diagnostics)
-		return opts, fmt.Errorf("cannot load model %s: %s", name, diagnostics.Recomendation)
+	// «Неизвестно» — НЕ отказ: если метаданных модели нет (нет файла, скан не
+	// прошёл), судить не о чем, и запрошенные опции остаются как есть. Иначе
+	// сервис отказывался бы загружать всё, чего нет в каталоге (и ломал бы
+	// stub-режим, где моделей на диске нет вовсе).
+	if verdict.Stage == memfit.StageUnknown {
+		if logger.Get() != nil {
+			logger.Get().Debugw("checkVRAMForModel: метаданных модели нет — раскладка слоёв без изменений",
+				"model", name, "requested_gpu_layers", opts.GPULayers)
+		}
+		return opts, nil
 	}
 
-	// Если оптимальные GPU-слои отличаются от запрошенных — логируем и адаптируемся
-	if optGPULayers != opts.GPULayers {
-		logger.Get().Infow("auto-adapting GPU layers for model",
+	if !verdict.Fits() {
+		logger.Get().Errorw("cannot load model - insufficient memory (memfit)",
+			"model", name,
+			"path", path,
+			"verdict", verdict.String(),
+			"suggestion", verdict.Suggestion)
+		return opts, fmt.Errorf("cannot load model %s: %s", name, verdict.Suggestion)
+	}
+
+	// Раскладка слоёв и mmap — из вердикта. Вне exact_fit часть модели живёт в RAM,
+	// поэтому mmap обязателен.
+	if verdict.GPULayers != opts.GPULayers {
+		logger.Get().Infow("auto-adapting GPU layers for model (memfit)",
 			"model", name,
 			"requestedGPULayers", opts.GPULayers,
-			"optimalGPULayers", optGPULayers,
-			"useMmap", useMmap)
-
-		opts.GPULayers = optGPULayers
-		if useMmap {
-			opts.UseMmap = true
-		}
-
-		if diagnostics != nil {
-			logger.Get().Infow("optimal GPU layers calculation details",
-				"model", name,
-				"totalLayers", diagnostics.TotalLayers,
-				"vramAvailableMB", diagnostics.VRAMAvailableMB,
-				"vramRequiredForOptimal", diagnostics.VRAMRequiredForOptimal,
-				"ramAvailableMB", diagnostics.RAMAvailableMB,
-				"ramRequiredForRemaining", diagnostics.RAMRequiredForRemaining)
-		}
+			"optimalGPULayers", verdict.GPULayers,
+			"stage", string(verdict.Stage),
+			"vramRequiredMB", (verdict.GPUWeights + verdict.GPUKV).MiB(),
+			"vramAvailableMB", verdict.UsableVRAM.MiB(),
+			"ramRequiredMB", (verdict.CPUWeights + verdict.CPUKV).MiB(),
+			"ramAvailableMB", verdict.UsableRAM.MiB())
+		opts.GPULayers = verdict.GPULayers
+	}
+	if verdict.Stage != memfit.StageExactFit {
+		opts.UseMmap = true
 	}
 
 	return opts, nil
@@ -1549,151 +1606,73 @@ type ResourceLimits struct {
 	// RAM (для mmap fallback, если модель не влезает в VRAM)
 	TotalRAMMB     uint64 // суммарный объём системной RAM
 	AvailableRAMMB uint64 // свободная RAM (Total - занятое)
-	MaxRAMNCtx     int    // макс. n_ctx, который влезет в RAM через mmap
+	MaxRAMNCtx     int    // макс. n_ctx с выгрузкой части слоёв в RAM (VRAM + RAM)
+	// VRAMKnown — были ли вообще данные о свободной VRAM. Ноль в MaxVRAMNCtx при
+	// VRAMKnown=true означает «веса не влезают в VRAM», при false — «неизвестно».
+	// R83 шаг 3: различать эти случаи обязательно, иначе нельзя сказать, стоит ли
+	// предупреждать о режиме загрузки (прежний перегруженный ноль это запрещал).
+	VRAMKnown bool
 	// Прочее
 	ModelMaxContext int // максимальный контекст из GGUF training metadata (gemma-3: 131072, llama-3: 8192, qwen3.6-72B: 32768)
 }
 
-// CalculateResourceLimits рассчитывает лимиты VRAM/RAM для загруженной модели.
+// CalculateResourceLimits — потолки n_ctx для модели.
 //
-// Алгоритм:
-//  1. Берём метаданные из уже загруженной модели (NLayers, NEmbd, NKvHeads, ContextLength)
-//     или из GGUF header если модель ещё не загружена.
-//  2. KV-cache размер = 2 (K+V) * 2 байта (fp16) * NLayers * NKvHeads * headDim * n_ctx,
-//     где headDim = NEmbd / NHeads.
-//  3. Для VRAM: доступно = TotalVRAM - уже занято (моделями). Резервируем 2 GB на overhead.
-//     max_vram_n_ctx = (available_vram_mb * 1024 * 1024 - 2GB_reserve) / kv_per_token_bytes.
-//  4. Для RAM: вся свободная RAM, минус 4 GB на систему. max_ram_n_ctx считается так же.
-//  5. Clamp оба значения к ModelMaxContext (из GGUF).
+// R83 (шаг 3 миграции): расчёт идёт ТОЛЬКО через internal/memfit — правило
+// KV-слоёв из kv_layers.go, доступная RAM из ProbeRAM, явная Policy. Прежняя
+// собственная формула расходилась и с решением о загрузке, и с memfit: считала KV
+// по всем блокам (а не по attention-слоям), брала head_dim из n_embd/n_heads (а не
+// attention.key_length) и сравнивала с MemTotal. Теперь «в логе одно, в решении
+// другое» невозможно по построению.
 //
-// Возвращает ResourceLimits со всеми полями заполненными. Если модель не загружена
-// и GGUF header недоступен — MaxVRAMNCtx/MaxRAMNCtx = 0, остальные поля = 0.
+// Если метаданные модели недоступны, MaxVRAMNCtx/MaxRAMNCtx остаются 0, но
+// VRAMKnown показывает, были ли данные о VRAM — ноль больше не означает
+// одновременно «неизвестно» и «не влезает».
 //
-// Эта функция используется:
-//   - cppworker'ом в handleListModels для формирования JSON-ответа /api/models;
-//   - балансировщиком для fallback (если cppworker не сообщил эти поля — баг).
+// Используется:
+//   - cppworker: handleListModels (/api/models) и пред-загрузочный гейт n_ctx;
+//   - тесты cppbackend.
 func (b *Backend) CalculateResourceLimits(name string) ResourceLimits {
 	var limits ResourceLimits
 
-	// 1. Метаданные модели: сначала из загруженной, потом из GGUF header.
-	var nLayers, nHeads, nKvHeads, nEmbd, modelCtx int
-	// loadedKVType — фактический тип KV-cache загруженной модели (R67a).
-	// Пустая строка = модель не загружена → используем дефолт конфига.
-	var loadedKVType string
-	if info, err := b.GetModel(name); err == nil {
-		nLayers = info.NLayers
-		nHeads = info.NHeads
-		nKvHeads = info.NKvHeads
-		nEmbd = info.NEmbd
-		loadedKVType = info.KVCacheType
-		if info.GGUFContextLength > 0 {
-			modelCtx = info.GGUFContextLength
-		}
-	}
-	if nLayers == 0 || nEmbd == 0 {
-		// Пытаемся получить метаданные через ModelManager (для незагруженных моделей).
-		// GGUFModelMeta не содержит поля ContextLength — оно берётся из GGUF header
-		// через ReadGGUFHeader (если есть Path) или остаётся 0.
-		if mm := b.ModelManager(); mm != nil {
-			if m, err := mm.GetModelMeta(name); err == nil && m != nil {
-				if m.NLayers > 0 {
-					nLayers = m.NLayers
-				}
-				if m.NEmbd > 0 {
-					nEmbd = m.NEmbd
-				}
-				if m.NHeads > 0 {
-					nHeads = m.NHeads
-				}
-				if m.NKvHeads > 0 {
-					nKvHeads = m.NKvHeads
-				}
-				// modelCtx уже из info.GGUFContextLength выше, если не 0 — оставляем
-			}
-		}
+	budget := b.MemfitBudget()
+	limits.VRAMKnown = budget.VRAMKnown
+	limits.TotalVRAMMB = uint64(budget.VRAMTotal.MiB())
+	limits.AvailableVRAMMB = uint64(budget.VRAMFree.MiB())
+	limits.TotalRAMMB = uint64(budget.RAMTotal.MiB())
+	limits.AvailableRAMMB = uint64(budget.RAMAvail.MiB())
+
+	spec, ok := b.MemfitSpec(name)
+	if !ok {
+		return limits
 	}
 
-	limits.ModelMaxContext = modelCtx
-
-	// 2. KV-cache per token = 2 (K+V) * NLayers * NKvHeads * headDim * bytes/elem.
-	//
-	// R67a (2026-09-23): bytes/elem зависит от типа квантования KV (f16 → 2,
-	// q8_0 → 34/32, q4_0 → 18/32). Берём фактический тип загруженной модели, а
-	// если модель не загружена — дефолт конфига cppworker. Раньше здесь всегда
-	// был fp16 (множитель 4 = K+V по 2 байта), из-за чего max_vram_n_ctx и
-	// feasible_max_context — а это и есть потолок n_ctx для балансера —
-	// занижались в 2-4 раза при q8_0/q4_0. Отсюда жалоба «n_ctx жёстко 32768
-	// при свободной VRAM» на мощном GPU.
-	if nLayers > 0 && nEmbd > 0 {
-		if nHeads <= 0 {
-			nHeads = 1
-		}
-		if nKvHeads <= 0 {
-			nKvHeads = nHeads // GQA fallback
-		}
-		headDim := nEmbd / nHeads
-		kvType := effectiveKVCacheType(loadedKVType, b.cfg.DefaultKVCacheType)
-		kvNum, kvDen := kvCacheBytesPerElem(kvType)
-		// 2 = K+V, далее умножаем на байт-на-элемент (дробь num/den).
-		kvPerToken := uint64(2) * uint64(nLayers) * uint64(nKvHeads) * uint64(headDim) * kvNum / kvDen
-		if kvPerToken > 0 {
-			// 3. VRAM: суммируем свободную VRAM по всем GPU.
-			// Live refresh b.gpuDevices from C-bridge (was snapshot from init, not updated runtime).
-			b.mu.Lock()
-			for i := 0; i < b.gpuCount; i++ {
-				if dev, err := bridge.GetGPUInfo(i); err == nil && dev != nil {
-					if i < len(b.gpuDevices) {
-						b.gpuDevices[i].VRAMFreeMB = dev.VRAMFreeMB
-						b.gpuDevices[i].VRAMTotalMB = dev.VRAMTotalMB
-					}
-				}
-			}
-			for _, dev := range b.gpuDevices {
-				limits.TotalVRAMMB += uint64(dev.VRAMTotalMB)
-				limits.AvailableVRAMMB += uint64(dev.VRAMFreeMB)
-			}
-			b.mu.Unlock()
-
-			// Резервируем overhead на runtime/фрагментацию. По умолчанию 2 GB, но
-			// R67a: значение настраивается через CPPWORKER_VRAM_OVERHEAD_MB —
-			// на картах с большим объёмом VRAM фиксированные 2 GB искусственно
-			// занижали max_vram_n_ctx (потолок n_ctx у балансера).
-			vramOverheadMB := vramOverheadMBConfig()
-			if limits.AvailableVRAMMB > vramOverheadMB {
-				usableBytes := (limits.AvailableVRAMMB - vramOverheadMB) * 1024 * 1024
-				limits.MaxVRAMNCtx = int(usableBytes / kvPerToken)
-				logger.Get().Debugw("CalculateResourceLimits: VRAM-based n_ctx ceiling",
-					"model", name,
-					"kv_cache_type", kvType,
-					"kv_per_token_bytes", kvPerToken,
-					"vram_free_mb", limits.AvailableVRAMMB,
-					"vram_overhead_mb", vramOverheadMB,
-					"max_vram_n_ctx", limits.MaxVRAMNCtx)
-			}
-
-			// 4. RAM: вся доступная системная память (на Linux читаем /proc/meminfo,
-			// на других платформах — fallback через getSystemRAMGB).
-			limits.TotalRAMMB = getSystemRAMGB() * 1024
-			// Резервируем 4 GB на систему + cppworker + llama.cpp runtime.
-			const ramOverheadMB = uint64(4096)
-			if limits.TotalRAMMB > ramOverheadMB {
-				limits.AvailableRAMMB = limits.TotalRAMMB - ramOverheadMB
-				usableBytes := limits.AvailableRAMMB * 1024 * 1024
-				limits.MaxRAMNCtx = int(usableBytes / kvPerToken)
-			}
-
-			// 5. Clamp к modelCtx (training context из GGUF).
-			if modelCtx > 0 {
-				if limits.MaxVRAMNCtx > modelCtx {
-					limits.MaxVRAMNCtx = modelCtx
-				}
-				if limits.MaxRAMNCtx > modelCtx {
-					limits.MaxRAMNCtx = modelCtx
-				}
-			}
-		}
+	// Тип KV-cache: у загруженной модели — фактический, иначе дефолт конфига.
+	loadedKV := ""
+	if info, err := b.GetModel(name); err == nil && info != nil {
+		loadedKV = info.KVCacheType
 	}
+	kvType := MemfitKVType(b.EffectiveKVCacheType(loadedKV))
 
+	exact, hard := memfit.Ceilings(spec, kvType, budget, MemfitPolicy())
+	limits.MaxVRAMNCtx = exact
+	limits.MaxRAMNCtx = hard
+	limits.ModelMaxContext = spec.TrainCtx
+
+	if logger.Get() != nil {
+		logger.Get().Debugw("CalculateResourceLimits: потолки n_ctx (memfit)",
+			"model", name,
+			"kv_type", string(kvType),
+			"kv_layers", spec.EffectiveKVLayers(),
+			"kv_head_dim", spec.EffectiveKVHeadDim(),
+			"vram_known", budget.VRAMKnown,
+			"vram_free_mb", budget.VRAMFree.MiB(),
+			"ram_avail_mb", budget.RAMAvail.MiB(),
+			"ram_source", budget.Source,
+			"max_exact_fit_n_ctx", exact,
+			"max_hard_n_ctx", hard,
+			"gguf_max_context", spec.TrainCtx)
+	}
 	return limits
 }
 
@@ -2811,6 +2790,17 @@ type GGUFHeaderInfo struct {
 	// 0 = unknown (файл не GGUF или архитектура не из ggufModelArchs).
 	ContextLength int   `json:"contextLength"`
 	FileSize      int64 `json:"fileSize"`
+
+	// R83 (2026-09-25): параметры, от которых зависит РЕАЛЬНЫЙ размер KV-кэша.
+	// Без них KV считался как «2 × block_count × kv_heads × (n_embd/n_heads)», что
+	// для гибридных моделей (qwen35/qwen3next) завышает его в разы: у
+	// Qwen3.8-27B KV хранят 17 слоёв из 65, а head_dim = 256, а не 213.
+	// Правило и обоснование — kv_layers.go.
+	KeyLength             int  `json:"keyLength,omitempty"`             // *.attention.key_length
+	ValueLength           int  `json:"valueLength,omitempty"`           // *.attention.value_length
+	NextNPredictLayers    int  `json:"nextnPredictLayers,omitempty"`    // *.nextn_predict_layers (MTP)
+	FullAttentionInterval int  `json:"fullAttentionInterval,omitempty"` // *.full_attention_interval
+	HasRecurrentLayersKey bool `json:"hasRecurrentLayersKey,omitempty"` // в файле есть явный список рекуррентных слоёв
 }
 
 // ggufFieldSuffixes — суффиксы ключей метаданных для параметров модели.
@@ -2826,6 +2816,11 @@ var ggufFieldSuffixes = []string{
 	".attention.head_count_kv",
 	".embedding_length",
 	".context_length",
+	// R83 (2026-09-25): реальный размер KV-кэша. См. kv_layers.go.
+	".attention.key_length",
+	".attention.value_length",
+	".nextn_predict_layers",
+	".full_attention_interval",
 }
 
 // ggufModelArchs — известные архитектуры GGUF.
@@ -3057,6 +3052,13 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 			if err := binary.Read(br, binary.LittleEndian, &arrLen); err != nil {
 				return nil, fmt.Errorf("read key[%q] array len: %w", key, err)
 			}
+			// R83: <arch>.attention.recurrent_layers — явный список рекуррентных
+			// слоёв. Значения не разбираем (нам достаточно факта наличия): при
+			// наличии ключа правило по умолчанию из llama.cpp не применяется, и
+			// число KV-слоёв считается верхней оценкой с exact=false (kv_layers.go).
+			if strings.HasSuffix(key, ".attention.recurrent_layers") {
+				info.HasRecurrentLayersKey = true
+			}
 			// Пропускаем элементы массива
 			elemSize := ggufTypeSize(elemType)
 			if elemSize > 0 {
@@ -3098,15 +3100,19 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 	return info, nil
 }
 
-// ggufSetField устанавливает поле GGUFHeaderInfo по field index (0-4).
+// ggufSetField устанавливает поле GGUFHeaderInfo по field index.
 //
 // Field index (должен соответствовать ggufFieldSuffixes):
 //
-//	0 = NLayers        (.block_count)
-//	1 = NHeads         (.attention.head_count)
-//	2 = NKvHeads       (.attention.head_count_kv)
-//	3 = NEmbd          (.embedding_length)
-//	4 = ContextLength  (.context_length)  // Round 37: training context
+//	0 = NLayers              (.block_count)
+//	1 = NHeads               (.attention.head_count)
+//	2 = NKvHeads             (.attention.head_count_kv)
+//	3 = NEmbd                (.embedding_length)
+//	4 = ContextLength        (.context_length)         // Round 37: training context
+//	5 = KeyLength            (.attention.key_length)   // R83: head_dim KV
+//	6 = ValueLength          (.attention.value_length)
+//	7 = NextNPredictLayers   (.nextn_predict_layers)   // R83: MTP-слои
+//	8 = FullAttentionInterval(.full_attention_interval)
 func ggufSetField(info *GGUFHeaderInfo, fieldIndex, value int) {
 	switch fieldIndex {
 	case 0:
@@ -3119,6 +3125,14 @@ func ggufSetField(info *GGUFHeaderInfo, fieldIndex, value int) {
 		info.NEmbd = value
 	case 4:
 		info.ContextLength = value
+	case 5:
+		info.KeyLength = value
+	case 6:
+		info.ValueLength = value
+	case 7:
+		info.NextNPredictLayers = value
+	case 8:
+		info.FullAttentionInterval = value
 	}
 }
 

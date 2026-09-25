@@ -36,6 +36,11 @@ import (
 // вернуть клиенту 503+Retry-After. 0 = прежнее поведение (сразу 503).
 const autoLoadWaitDefaultSec = 180
 
+// autoLoadHardCeiling — абсолютный предел ожидания загрузки, даже если cppworker
+// сообщает прогресс. Нужен, чтобы соединение не держалось вечно; 30 минут с
+// запасом покрывают загрузку 30-40B модели с диска.
+const autoLoadHardCeiling = 30 * time.Minute
+
 // autoLoadPollInterval — период опроса состояния загрузки.
 const autoLoadPollInterval = 2 * time.Second
 
@@ -71,6 +76,10 @@ type modelLoadState struct {
 	State string
 	Error string
 	Known bool
+	// ElapsedMs — сколько cppworker уже грузит эту модель (поле elapsedMs из
+	// /api/models/load/progress). R83: признак ПРОГРЕССА, а не «сколько осталось»:
+	// пока значение растёт, загрузка жива, и дедлайн ожидания продлевается.
+	ElapsedMs int64
 }
 
 // fetchModelLoadState — один опрос /api/models/load/progress у cppworker.
@@ -101,13 +110,14 @@ func (lr *LlamaCppRouter) fetchModelLoadState(
 		return modelLoadState{}
 	}
 	var parsed struct {
-		State string `json:"state"`
-		Error string `json:"error"`
+		State     string `json:"state"`
+		Error     string `json:"error"`
+		ElapsedMs int64  `json:"elapsedMs"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return modelLoadState{}
 	}
-	return modelLoadState{State: strings.ToLower(parsed.State), Error: parsed.Error, Known: true}
+	return modelLoadState{State: strings.ToLower(parsed.State), Error: parsed.Error, Known: true, ElapsedMs: parsed.ElapsedMs}
 }
 
 // isModelPresentOnBackend — модель присутствует в /api/models cppworker'а
@@ -180,6 +190,15 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 	client := &http.Client{Timeout: 5 * time.Second}
 	deadline := time.Now().Add(timeout)
 
+	// R83 (инцидент 2026-09-25): timeout — это ДАТЧИК БЕЗ ПРОГРЕССА, а не общий
+	// лимит загрузки. Раньше жёсткие 180 с (LB_AUTO_LOAD_WAIT_SEC) отдавали
+	// клиенту «auto-load failed», пока модель продолжала грузиться; клиент
+	// повторял запрос, и в cppworker уходили параллельные планы — вплоть до
+	// падения по SIGABRT. Теперь при растущем elapsedMs дедлайн продлевается, а
+	// общий предел ограничен hardCeiling (30 мин), чтобы не ждать вечно.
+	hardDeadline := time.Now().Add(autoLoadHardCeiling)
+	lastElapsedMs := int64(-1)
+
 	var loadDoneChan <-chan error
 	if len(loadDone) > 0 {
 		loadDoneChan = loadDone[0]
@@ -209,7 +228,16 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 			}
 			return fmt.Errorf("model load failed: %s", msg)
 		case "loading":
-			// продолжаем ждать
+			// Загрузка идёт. Если cppworker сообщает, что время загрузки выросло —
+			// процесс жив, и дедлайн бездействия продлевается (не «залипаем» на
+			// фиксированных 180 с для 16-гигабайтной модели).
+			if st.ElapsedMs > lastElapsedMs {
+				lastElapsedMs = st.ElapsedMs
+				deadline = time.Now().Add(timeout)
+				ridLog(lr_recentCtx()).Debugw("autoload_wait: загрузка прогрессирует, дедлайн продлён",
+					"backend", backendID, "model", modelName,
+					"elapsed_ms", st.ElapsedMs, "idle_budget", timeout)
+			}
 		default:
 			// Записи прогресса нет — проверяем список моделей: возможно, модель
 			// уже загружена (запись снята) или загружена под каноническим именем.
@@ -222,8 +250,11 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 			}
 		}
 
+		if time.Now().After(hardDeadline) {
+			return fmt.Errorf("model load exceeded hard ceiling %s (elapsed_ms=%d)", autoLoadHardCeiling, lastElapsedMs)
+		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("model load did not finish within %s", timeout)
+			return fmt.Errorf("model load did not finish within %s (no progress reported by cppworker)", timeout)
 		}
 		// Спим не дольше, чем осталось до дедлайна: иначе таймаут «переезжает»
 		// на целый интервал опроса (клиент ждёт лишние 2 секунды).
@@ -285,6 +316,7 @@ func (p *Proxy) waitForBackendNCtx(
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	deadline := time.Now().Add(timeout)
+
 	for {
 		if ctx != nil && ctx.Err() != nil {
 			return false

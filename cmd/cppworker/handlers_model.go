@@ -164,6 +164,15 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 			"name", modelName, "count", len(req.OverrideTensors))
 	}
 
+	// R83 (2026-09-25): пред-загрузочная оценка n_ctx. Режим загрузки
+	// (exact_fit / degraded / infeasible) пишется в лог ДО старта: раньше
+	// /api/models/load рапортовал успех и при 32768, и при 65536, хотя во втором
+	// случае стратегия уходила в partial_offload (часть слоёв в RAM) и ответ
+	// становился настолько медленным, что клиент отваливался по таймауту.
+	// См. cmd/cppworker/nctx_feasibility.go — там же гибридная политика R83.
+	logNCtxFeasibility(evaluateNCtxFeasibility(
+		modelName, backend.CalculateResourceLimits(modelName), opts.ContextSize))
+
 	logger.Get().Infow("loading model",
 		"name", modelName, "path", modelPath,
 		"gpuLayers", opts.GPULayers, "ctxSize", opts.ContextSize,

@@ -376,6 +376,20 @@ func IsContinuationARegeneration(originalContent, continuationContent string) bo
 	if len(trimmed) < 10 {
 		return false
 	}
+	// R83 (2026-09-25): правило «>85% похожести», обещанное в docstring R60.55
+	// («suppress the continuation if it's >85% similar to the original»), но так
+	// и не реализованное: проверялись только приветствия, преамбулы, ChatML-утечка
+	// и совпадение начала. Модель может перегенерировать ответ БЕЗ приветствия и с
+	// чуть иной формулировкой начала — тогда ни одна из эвристик не срабатывала и
+	// клиент получал дубль.
+	//
+	// Проверка идёт ДО порога minRegenerationOriginalRunes и работает на любой
+	// длине оригинала: жалоба «ответ продублирован слово-в-слово» приходит в том
+	// числе на КОРОТКИХ ответах, где similarity-эвристики раньше отключались
+	// целиком (см. isRegenerationBySimilarity).
+	if isDuplicateBySimilarity(originalContent, continuationContent) {
+		return true
+	}
 	// Strip common chat-model preamble patterns first.
 	preambles := []string{
 		"Sure, here's the continuation:",
@@ -480,6 +494,95 @@ const minRegenerationContainmentRunes = 60
 // длинный ответ, он порог проходит.
 const minRegenerationOriginalRunes = 120
 
+// R83 (2026-09-25) — реализация обещанного в R60.55 правила «>85% похожести».
+//
+// Зачем отдельная проверка, если уже есть isRegenerationBySimilarity:
+// та работает по совпадению НАЧАЛА (общий префикс, вхождение фрагмента) и
+// отключается на коротких оригиналах. Дубликат «слово-в-слово» может при этом
+// не иметь длинного общего префикса — модель пересказывает тот же ответ чуть
+// иначе в первых словах, но дальше повторяет его целиком. Такое ловится только
+// сравнением по ВСЕМУ тексту, что и делает longest common substring ниже.
+const (
+	// regenerationSimilarityRatio — доля оригинала, дословно найденная внутри
+	// continuation, начиная с которой считаем это повторной генерацией.
+	regenerationSimilarityRatio = 0.85
+	// maxSimilarityProbeRunes — ограничение окна сравнения (в рунах). Дубликат
+	// виден уже на первых двух тысячах рун, а стоимость DP растёт квадратично.
+	maxSimilarityProbeRunes = 2000
+	// minDuplicateOriginalRunes — минимальная длина оригинала (в нормализованных
+	// рунах), при которой вообще применяется правило «≥85% дословного повтора».
+	//
+	// Почему отдельная константа, а не minRegenerationOriginalRunes: порог нужен,
+	// чтобы не считать дублем законное повторение короткого фрагмента. Регресс-тест
+	// R60.55 (NoFalsePositiveOnCommonCode) использует оригинал в 69 рун — одну
+	// строку кода, которую настоящее продолжение повторяет дословно. 160 рун даёт
+	// запас над этим случаем, но при этом ловит реальную жалобу: ответ чата,
+	// продублированный слово-в-слово, — это сотни рун.
+	minDuplicateOriginalRunes = 160
+)
+
+// isDuplicateBySimilarity — continuation содержит почти весь оригинал дословно
+// (≥85% его длины), то есть это повторная генерация, а не продолжение.
+//
+// Работает на нормализованном тексте (регистр + пробелы), поэтому не зависит от
+// переносов строк и markdown-отступов. Порог по длине оригинала НЕ применяется:
+// именно короткие ответы давали незамеченный дубль.
+func isDuplicateBySimilarity(originalContent, continuationContent string) bool {
+	orig := []rune(normalizeForCompare(originalContent))
+	cont := []rune(normalizeForCompare(continuationContent))
+	if len(orig) == 0 || len(cont) == 0 {
+		return false
+	}
+	// Порог по длине оригинала обязателен — см. minDuplicateOriginalRunes.
+	if len(orig) < minDuplicateOriginalRunes {
+		return false
+	}
+	if len(orig) > maxSimilarityProbeRunes {
+		orig = orig[:maxSimilarityProbeRunes]
+	}
+	if len(cont) > maxSimilarityProbeRunes {
+		cont = cont[:maxSimilarityProbeRunes]
+	}
+	lcs := longestCommonSubstringRunes(orig, cont)
+	return float64(lcs) >= regenerationSimilarityRatio*float64(len(orig))
+}
+
+// longestCommonSubstringRunes — длина наибольшей общей ПОДСТРОКИ (не
+// подпоследовательности!) двух последовательностей рун.
+//
+// DP с двумя строками: O(len(a)*len(b)) времени, O(min) памяти. Вызывается
+// только когда авто-продолжение уже собирается эмитить контент (редкое событие),
+// поэтому стоимость не на горячем пути.
+func longestCommonSubstringRunes(a, b []rune) int {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	// Держим в памяти короткую строку, чтобы матрица была минимальной.
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	prev := make([]int, len(a)+1)
+	cur := make([]int, len(a)+1)
+	best := 0
+	for i := 1; i <= len(b); i++ {
+		for j := 1; j <= len(a); j++ {
+			if a[j-1] == b[i-1] {
+				cur[j] = prev[j-1] + 1
+				if cur[j] > best {
+					best = cur[j]
+				}
+			} else {
+				cur[j] = 0
+			}
+		}
+		prev, cur = cur, prev
+		for j := range cur {
+			cur[j] = 0
+		}
+	}
+	return best
+}
+
 // normalizeForCompare — приводит текст к виду, устойчивому к форматированию:
 // нижний регистр + схлопывание любых пробельных последовательностей в один
 // пробел. Нужна, чтобы сравнение не зависело от переносов строк/отступов.
@@ -541,8 +644,18 @@ func isRegenerationBySimilarity(originalContent, continuationContent string) boo
 	}
 	origRunes, contRunes := []rune(orig), []rune(cont)
 
-	// На коротких оригиналах similarity-проверки не применяем: продолжение
-	// законно повторяет форму короткого фрагмента (см. minRegenerationOriginalRunes).
+	// R83 (2026-09-25): порог НЕ снижаем, и вот почему.
+	//
+	// В плане R83 было предложено снять minRegenerationOriginalRunes для коротких
+	// оригиналов. При реализации это ломает документированный компромисс R60.55,
+	// который закреплён регресс-тестом
+	// TestR6055_IsContinuationARegeneration_NoFalsePositiveOnCommonCode:
+	// настоящее продолжение кода законно повторяет строку оригинала
+	// («const height = parseFloat(...)»), и подавление такого «продолжения»
+	// означает МОЛЧАЛИВУЮ ПОТЕРЮ КОНТЕНТА — по комментарию к константе ниже это
+	// хуже дубликата. Поэтому здесь всё как было, а дубликат на коротких ответах
+	// ловится отдельной проверкой по всему тексту (isDuplicateBySimilarity,
+	// вызывается из IsContinuationARegeneration до этой функции).
 	if len(origRunes) < minRegenerationOriginalRunes {
 		return false
 	}

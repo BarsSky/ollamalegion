@@ -218,3 +218,53 @@ powershell -File scripts/check-image-tags.ps1
 вариантный (`latest-gpu-86`), а plain `latest` вешают только те компоненты, у
 которых вариантов нет (balancer, agent, webui). Именно из-за этого ограничения в
 репозитории исторически появились `latest-cpu` и `latest-gpu`.
+
+---
+
+## n_ctx на 24 GB (A10) — рабочий режим и границы (R83)
+
+Живая проверка на **NVIDIA A10 (24 GB)** с `Qwen3.8-27B-UD-Q4_K_M`
+(15.3 ГБ, 64 слоя, `gguf_max_context=262144`):
+
+| n_ctx | Что делает стратегия | Результат |
+|---|---|---|
+| **32768** | `exact_fit` — все слои в VRAM | **работает без ошибок** (рекомендуемый режим) |
+| 65536 | `partial_offload` — часть слоёв уходит в RAM (mmap) | заметно медленнее, клиент упирается в таймаут |
+| 131072 | ещё дальше / `cpu_only` | не работает |
+
+**Почему это не «примерно не влезло», а смена режима.** Граница проходит ровно
+по `safeVRAM = 0.85 × FreeVRAM` в `SelectStrategyWithKV`
+(`cmd/cppworker/adaptive_loader.go`): пока `weights + KV + overhead` укладываются —
+`exact_fit`; как только нет — `partial_offload`.
+
+### Что выставить
+
+```
+CPPWORKER_CTX_SIZE=32768            # дефолт; рабочий режим для 27B Q4_K_M на 24 GB
+CPPWORKER_RAM_FALLBACK_MAX_N_CTX=32768   # не больше feasible (см. ниже)
+LB_NCTX_RELOAD_MAX_N_CTX=32768           # не больше feasible
+```
+
+Проверить фактический предел для модели на конкретном железе:
+
+```bash
+cppworker -feasible Qwen3.8-27B-UD-Q4_K_M     # печатает min(VRAM, RAM, GGUF)
+curl -s localhost:18092/api/models | jq '.feasible_max_context, .gguf_max_context'
+```
+
+### Что теперь защищает от «молча не работает» (R83)
+
+1. **Отказ 422.** Если запрошенный n_ctx выше физического предела (RAM или
+   обучающего контекста модели) — загрузка не стартует, клиент получает причину и
+   числа. `partial_offload` при этом НЕ запрещён: это легитимный запуск большой
+   модели на малом GPU.
+2. **Режим виден в `/api/models`:** `max_vram_n_ctx`, `n_ctx_degraded`,
+   `n_ctx_headroom`, `feasible_max_context`.
+3. **Предупреждение в логе**, если потолок из конфига недостижим на этом железе
+   (`CPPWORKER_RAM_FALLBACK_MAX_N_CTX` больше физического предела) — раньше конфиг
+   обещал 128000 там, где предел ниже, и это выглядело как «модель сломалась».
+4. **Карточка модели в WebUI** показывает `Feasible n_ctx`, `GGUF max n_ctx` и
+   предупреждение «partial offload», если фактический n_ctx выше границы VRAM.
+
+> `gguf_max_context` (262144) — это ОБУЧАЮЩИЙ контекст модели, а не
+> рекомендация. Ориентироваться нужно на `feasible_max_context`.

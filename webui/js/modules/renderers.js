@@ -15,6 +15,49 @@ const Renderers = (function () {
 
     const _t = (k, p) => window.I18N ? window.I18N.t(k, p) : k;
 
+    // === R83 (2026-09-25), N5: канонический ID модели для клиента ===
+    //
+    // ЗАЧЕМ. Оператор видит в карточке «Runtime C:65.5K», а в клиенте (Cline,
+    // OpenWebUI) надо вписать имя модели. Живой случай: в клиенте стояло
+    // "qwen3.8:latest", на диске лежит "Qwen3.8-27B-UD-Q4_K_M" — угадать это по
+    // интерфейсу было невозможно, запрос уходил в никуда (500/404).
+    //
+    // Копирование сделано через data-атрибут + делегирование, а НЕ через
+    // inline onclick с подставленным именем: имя модели приходит из бэкенда (и
+    // потенциально управляется клиентом), поэтому вставлять его в HTML-атрибут
+    // с JS-кодом нельзя — это инъекция. Значение читается из data-атрибута,
+    // который экранирован для атрибутного контекста.
+    window.copyModelId = function (name, btn) {
+      if (!name) return;
+      const mark = () => {
+        if (!btn) return;
+        const prev = btn.textContent;
+        btn.textContent = '✓';
+        setTimeout(() => { btn.textContent = prev; }, 1200);
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(name).then(mark, mark);
+          return;
+        }
+      } catch (e) {
+        // Клипборд может быть недоступен (не HTTPS, старый браузер) — ID и так
+        // виден на экране, его можно выделить руками.
+      }
+      mark();
+    };
+
+    if (typeof document !== 'undefined' && document.addEventListener) {
+      document.addEventListener('click', (ev) => {
+        const target = ev.target;
+        if (!target || typeof target.closest !== 'function') return;
+        const btn = target.closest('[data-copy-model-id]');
+        if (!btn) return;
+        ev.preventDefault();
+        window.copyModelId(btn.getAttribute('data-copy-model-id'), btn);
+      });
+    }
+
     function stableBackendOrder(backends) {
       const now = Date.now();
       const seen = new Set();
@@ -1368,9 +1411,31 @@ const Renderers = (function () {
                 }
             }
 
+            // R83 (N5): точный ID, который нужно вписать в клиент.
+            //
+            // Живой случай: в Cline стояло "qwen3.8:latest", а модель на диске
+            // называется "Qwen3.8-27B-UD-Q4_K_M" — по интерфейсу это было не
+            // угадать, и запрос уходил в 500/404. Показываем каноническое имя
+            // (без .gguf) и даём скопировать его одним кликом.
+            const clientId = String(model.name || '').replace(/\.gguf$/i, '');
+            const clientIdHtml = clientId
+                ? '<div class="model-detail">' +
+                      '<div class="model-detail-label">' + escapeHtml('Имя для клиента') + '</div>' +
+                      '<div class="model-detail-value">' +
+                          '<code style="font-size:11px">' + escapeHtml(clientId) + '</code> ' +
+                          '<button type="button" data-copy-model-id="' + escapeHtml(clientId) + '" ' +
+                              'title="Скопировать ID модели для настройки клиента (Cline/OpenWebUI)" ' +
+                              'style="background:transparent;border:1px solid var(--border-color);' +
+                              'border-radius:3px;cursor:pointer;font-size:11px;padding:0 5px;' +
+                              'color:var(--text-primary)">⧉</button>' +
+                      '</div>' +
+                  '</div>'
+                : '';
+
             return modelDetail('GGUF Path', ggufPath) +
                 modelDetail('Quantization', ggufQuant) +
                 (runtime ? modelDetail('Runtime', runtime) : '') +
+                clientIdHtml +
                 feasDetails;
         }
         // Ollama-специфичные поля

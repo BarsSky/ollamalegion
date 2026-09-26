@@ -821,23 +821,18 @@ func EstimateGPUMemoryForModel(sizeBytes int64, gpuLayers int, totalLayers int, 
 		return 0
 	}
 
-	// Доля слоёв на GPU
-	var ratio float64
-	if gpuLayers == -1 {
-		// -1 означает "все слои на GPU"
-		ratio = 1.0
-	} else {
-		ratio = float64(gpuLayers) / float64(totalLayers)
-	}
-	if ratio > 1.0 {
-		ratio = 1.0
-	}
+	// Доля слоёв на GPU больше не нужна: пропорцию целиком считает
+	// WeightsOnGPUBytes (см. ниже).
 
-	// Размер модели в MB
-	modelSizeMB := float64(sizeBytes) / 1024 / 1024
-
-	// Приблизительная оценка: слои занимают ~70% модели (остальное — embedding и т.д.)
-	gpuMemoryMB := modelSizeMB * 0.7 * ratio
+	// Доля весов на GPU.
+	//
+	// R83 §9.4 (2026-09-26): пропорцию считает WeightsOnGPUBytes — та же формула,
+	// что в memfit.computeSplit. Раньше здесь было «×0.7» (якобы embedding и
+	// прочее не уезжают на GPU), и это занижало вес: на 8 GB карте планировалось
+	// меньше слоёв, чем помещается. Функция остаётся только как legacy-fallback
+	// для auto_offload (когда memfit не может собрать ModelSpec); KV-cache здесь
+	// по-прежнему считается по «256 КБ на токен» — то есть оценка консервативная.
+	gpuMemoryMB := float64(WeightsOnGPUBytes(sizeBytes, gpuLayers, totalLayers)) / 1024 / 1024
 
 	// KV-cache: ~256 KB на токен (для Q4_K_M и fp16 KV).
 	// n_ctx=4096 → 1 GB, n_ctx=32768 → 8 GB.

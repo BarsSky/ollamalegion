@@ -98,6 +98,32 @@ func (b *Backend) MemfitBudget() memfit.Budget {
 	return budget
 }
 
+// WeightsOnGPUBytes — сколько байт весов модели уедет на GPU при gpuLayers слоях
+// из totalLayers.
+//
+// R83 §9.4 (2026-09-26): это та же пропорция, которой пользуется
+// memfit.computeSplit (`ModelSpec.SizeBytes.Scale(g, n_layers)`), вынесенная для
+// вызывающих, которым нужна ОЦЕНКА ЧИСЛА, а не вердикт: выбор бэкенда, warmup и
+// scoring сравнивают байты, чтобы принять решение о маршрутизации.
+//
+// Заменяет legacy EstimateGPUMemoryForModel в части весов: та формула брала
+// «70% модели» (×0.7) — занижение, из-за которого на 8 GB карте планировалось
+// меньше слоёв, чем помещается, и модель уходила в CPU-only.
+//
+// gpuLayers <= 0: -1 (и любое неположительное) = «все слои», как в llama.cpp.
+func WeightsOnGPUBytes(sizeBytes int64, gpuLayers, totalLayers int) uint64 {
+	if sizeBytes <= 0 || totalLayers <= 0 {
+		return 0
+	}
+	if gpuLayers <= 0 {
+		return uint64(sizeBytes)
+	}
+	if gpuLayers >= totalLayers {
+		return uint64(sizeBytes)
+	}
+	return uint64(int64(sizeBytes) * int64(gpuLayers) / int64(totalLayers))
+}
+
 // MemfitSpec собирает описание модели по внешнему имени (включая «qwen3.8:latest»).
 // Резолв — тем же путём, что и сама загрузка.
 func (b *Backend) MemfitSpec(name string) (memfit.ModelSpec, bool) {

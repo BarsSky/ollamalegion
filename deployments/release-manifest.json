@@ -1,40 +1,40 @@
 {
-    "tag":  "r83-submodule-v14",
-    "builtAt":  "2026-09-26T17:06:39Z",
-    "gitCommit":  "026981c",
+    "tag":  "r83-submodule-v15",
+    "builtAt":  "2026-09-26T18:22:13Z",
+    "gitCommit":  "f8578af",
     "cudaArch":  86,
     "composeFile":  "docker-compose.cppworker-bundled-with-agent.yml",
     "images":  [
                    {
                        "service":  "balancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r83-submodule-v14",
-                       "imageTag":  "r83-submodule-v14",
-                       "imageId":  "sha256:8e2aa30145070bce0aa7f4c6a2d3aa8fb4a45111fc8d0909ed843ec030490dc5",
+                       "image":  "ollama-legion/balancer:r83-submodule-v15",
+                       "imageTag":  "r83-submodule-v15",
+                       "imageId":  "sha256:e80bc2037dbcb2b08fa66b7af4334a96d76deab75769d9e642544e14ae7cd0e9",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {
                        "service":  "cppworker",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r83-submodule-v14",
-                       "imageTag":  "gpu-r83-submodule-v14",
-                       "imageId":  "sha256:4e52c676029a196295f32554f7139c09bd26801768fca2f2a5c6c78c0ba8e30b",
+                       "image":  "ollama-legion/cppworker:gpu-r83-submodule-v15",
+                       "imageTag":  "gpu-r83-submodule-v15",
+                       "imageId":  "sha256:ebd174845ffad403afe26fac01dc2847850610d02c55f4b81b8a84be2463675d",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {
                        "service":  "agent",
                        "variable":  "AGENT_TAG",
-                       "image":  "ollama-legion/agent:r83-submodule-v14",
-                       "imageTag":  "r83-submodule-v14",
-                       "imageId":  "sha256:25b1956445c5bc3ea6ded9bd6421b5cc834ced60231f92692d15f5098f02656e",
+                       "image":  "ollama-legion/agent:r83-submodule-v15",
+                       "imageTag":  "r83-submodule-v15",
+                       "imageId":  "sha256:21ea88be0af8f28cd630913cd7f1e831d70ccbdd13c1878893c9382cb710309b",
                        "alias":  "ollama-legion/agent:latest"
                    },
                    {
                        "service":  "webui",
                        "variable":  "WEBUI_TAG",
-                       "image":  "ollama-legion/webui:r83-submodule-v14",
-                       "imageTag":  "r83-submodule-v14",
-                       "imageId":  "sha256:d6318ddaf45b2400a3910e30c9242a4af1c3dc9e517ec92155d0e9f671d59e36",
+                       "image":  "ollama-legion/webui:r83-submodule-v15",
+                       "imageTag":  "r83-submodule-v15",
+                       "imageId":  "sha256:5c451ce1a878ab75cd09829ef994524b93298bd9fd3a6dbd2a6cc6285236bc74",
                        "alias":  "ollama-legion/webui:latest"
                    }
                ]

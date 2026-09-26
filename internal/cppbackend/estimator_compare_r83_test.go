@@ -144,6 +144,12 @@ func TestR83_EstimatorComparison(t *testing.T) {
 			t.Logf("legacy=%d (mmap=%v) | memfit=%d (stage=%s)",
 				legacy, legacyMmap, layers, stage)
 
+			// R83 §9.4: после унификации весов (WeightsOnGPUBytes вместо ×0.7)
+			// legacy стал ещё консервативнее — его KV «256 Б/токен» (≈3.9 GB
+			// против реальных 1.16 GB у Qwen3.8) больше ничем не компенсируется.
+			// Это ожидаемо и безопасно: legacy остаётся только путём «memfit не
+			// может судить» (нет метаданных), где перестраховка уместна.
+
 			// Инвариант 1: обе оценки — в границах [0, nLayers].
 			for name, v := range map[string]int{"legacy": legacy, "memfit": layers} {
 				if v < 0 || v > sc.nLayers {

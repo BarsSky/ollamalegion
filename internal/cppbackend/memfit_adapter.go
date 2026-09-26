@@ -110,15 +110,17 @@ func (b *Backend) MemfitBudget() memfit.Budget {
 // «70% модели» (×0.7) — занижение, из-за которого на 8 GB карте планировалось
 // меньше слоёв, чем помещается, и модель уходила в CPU-only.
 //
-// gpuLayers <= 0: -1 (и любое неположительное) = «все слои», как в llama.cpp.
+// gpuLayers: 0 = CPU-only (весов на GPU нет), -1 = «все слои» (как в llama.cpp),
+// >= totalLayers = тоже все. Важно: 0 и -1 — РАЗНЫЕ случаи, и legacy-функция,
+// которую эта замена закрывает, различала их так же.
 func WeightsOnGPUBytes(sizeBytes int64, gpuLayers, totalLayers int) uint64 {
 	if sizeBytes <= 0 || totalLayers <= 0 {
 		return 0
 	}
-	if gpuLayers <= 0 {
-		return uint64(sizeBytes)
+	if gpuLayers == 0 {
+		return 0
 	}
-	if gpuLayers >= totalLayers {
+	if gpuLayers < 0 || gpuLayers >= totalLayers {
 		return uint64(sizeBytes)
 	}
 	return uint64(int64(sizeBytes) * int64(gpuLayers) / int64(totalLayers))

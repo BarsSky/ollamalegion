@@ -277,32 +277,55 @@ func TestGPUManagerGetDevices(t *testing.T) {
 }
 
 // ============================================================
-// EstimateModelVRAM tests
+// WeightsOnGPUBytes tests (R83 §9.4: заменил legacy EstimateModelVRAM)
 // ============================================================
 
-func TestEstimateModelVRAM(t *testing.T) {
-	// 10GB модель, 40 layers, все на GPU, контекст 4096
-	mem := cppbackend.EstimateModelVRAM(10*1024*1024*1024, -1, 40, 4096)
-	if mem == 0 {
-		t.Error("expected non-zero VRAM estimate")
+// TestWeightsOnGPUBytes — пропорция «сколько весов уедет на GPU».
+// Формула обязана совпадать с memfit.computeSplit: SizeBytes × g / totalLayers.
+func TestWeightsOnGPUBytes(t *testing.T) {
+	const size int64 = 10 * 1024 * 1024 * 1024
+	const layers = 40
+
+	// Все слои на GPU (и -1, и явное «все»): весь файл.
+	if got := cppbackend.WeightsOnGPUBytes(size, -1, layers); got != uint64(size) {
+		t.Errorf("gpuLayers=-1: %d, want %d", got, size)
+	}
+	if got := cppbackend.WeightsOnGPUBytes(size, layers, layers); got != uint64(size) {
+		t.Errorf("gpuLayers=все: %d, want %d", got, size)
 	}
 
-	// Должна быть хотя бы 5000 MB для 10GB модели
-	if mem < 5000 {
-		t.Errorf("expected VRAM >= 5000 MB, got %d", mem)
+	// Половина слоёв — половина весов (без прежнего ×0.7).
+	half := cppbackend.WeightsOnGPUBytes(size, layers/2, layers)
+	wantHalf := uint64(size / 2)
+	if half != wantHalf {
+		t.Errorf("половина слоёв: %d, want %d (было бы ×0.7 = %d)",
+			half, wantHalf, uint64(float64(size)*0.7/2))
 	}
 
-	// Контекст больше → больше VRAM
-	memBigCtx := cppbackend.EstimateModelVRAM(10*1024*1024*1024, -1, 40, 8192)
-	if memBigCtx <= mem {
-		t.Errorf("expected BigCtx > SmallCtx, got BigCtx=%d <= SmallCtx=%d", memBigCtx, mem)
+	// CPU-only: весов на GPU нет.
+	if got := cppbackend.WeightsOnGPUBytes(size, 0, layers); got != 0 {
+		t.Errorf("gpuLayers=0: %d, want 0", got)
 	}
-}
 
-func TestEstimateModelVRAMNoGPU(t *testing.T) {
-	mem := cppbackend.EstimateModelVRAM(10*1024*1024*1024, 0, 40, 4096)
-	if mem != 0 {
-		t.Errorf("expected 0 for CPU-only, got %d", mem)
+	// Монотонность по числу слоёв.
+	prev := uint64(0)
+	for g := 0; g <= layers; g++ {
+		got := cppbackend.WeightsOnGPUBytes(size, g, layers)
+		if got < prev {
+			t.Fatalf("немонотонно: g=%d даёт %d < %d", g, got, prev)
+		}
+		prev = got
+	}
+
+	// Защита от мусора.
+	if got := cppbackend.WeightsOnGPUBytes(0, 10, layers); got != 0 {
+		t.Errorf("size=0: %d, want 0", got)
+	}
+	if got := cppbackend.WeightsOnGPUBytes(size, 10, 0); got != 0 {
+		t.Errorf("totalLayers=0: %d, want 0", got)
+	}
+	if got := cppbackend.WeightsOnGPUBytes(size, layers*2, layers); got != uint64(size) {
+		t.Errorf("gpuLayers > totalLayers: %d, want %d (не больше файла)", got, size)
 	}
 }
 

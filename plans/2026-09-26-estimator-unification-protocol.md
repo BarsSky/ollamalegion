@@ -114,30 +114,56 @@ Select-String -Path internal\cppbackend\*.go,cmd\cppworker\*.go `
 тестируют `CalculateOptimalGPULayers`; после шага 1 либо переписать на memfit,
 либо удалить (их покрытие теперь даёт `estimator_compare_r83_test.go`).
 
-### Шаг 3. `EstimateModelVRAM`
+### Шаг 3. `EstimateModelVRAM` → `WeightsOnGPUBytes` — ДЕЛАЕТСЯ СЕЙЧАС (v16)
 
-**Особенность:** его потребители (`backend_selector.go:566`,
-`model_instance_controller.go:178`, `prewarm_controller.go:239`,
-`scoring.go:283-284`) сравнивают **числа**, а не берут вердикт: им нужна оценка
-«сколько VRAM займут веса при N слоях». Вердикт memfit (`v.GPUWeights`) даёт
-ровно это — но только для одного ctx/раскладки за вызов.
+**Что выяснилось при проверке:** у `cppbackend.EstimateModelVRAM` продовых
+вызовов НЕТ вообще — все `estimateModelVRAM(...)` в
+`backend_selector.go:566`, `model_instance_controller.go:178`,
+`prewarm_controller.go:239` — это **своя** функция балансера в
+`scoring.go:284` (эвристика по имени модели). Тест
+`tests/gpu_distribution_test.go:TestEstimateModelVRAM` — единственный потребитель.
 
-**Что делать:** добавить в `memfit_adapter.go` маленький хелпер
-`WeightsOnGPUBytes(sizeBytes, nLayers, gpuLayers)` (чистая пропорция, как
-`ModelSpec.Weights.Scale(g, n_layers)` в `computeSplit`) и заменить
-`EstimateModelVRAM` на него. Это единственное место, где допустима формула мимо
-`Evaluate`: она считает не решение, а часть решения, и та же формула уже живёт в
-`memfit.computeSplit`.
+**Сделано:**
+- добавлен `cppbackend.WeightsOnGPUBytes(sizeBytes, gpuLayers, totalLayers)` —
+  ровно та пропорция, что в `memfit.computeSplit`
+  (`ModelSpec.SizeBytes.Scale(g, n_layers)`); 0 = CPU-only, -1 = все слои;
+  тест `tests/gpu_distribution_test.go:TestWeightsOnGPUBytes` (монотонность,
+  границы, защита от мусора). **Тест сразу поймал ошибку автора:** первая версия
+  трактовала `gpuLayers <= 0` как «все слои», то есть `gpuLayers=0` давал весь
+  файл вместо нуля;
+- `EstimateGPUMemoryForModel` больше не считает «70% модели»: пропорцию весов
+  отдаёт `WeightsOnGPUBytes`. **Замер после правки:** legacy на живом стенде
+  стал 12 слоёв вместо 18 — то есть ещё консервативнее (его KV «256 КБ/токен»
+  больше ничем не компенсируется). Это безопасное направление: legacy остаётся
+  путём «memfit не может судить»;
+- `tests/cppbackend_test.go:TestEstimateGPUMemoryForModel` — обновлён под новую
+  арифметику (было «≈5.5 GB» из-за ×0.7, стало 6.0 GB = 5 GiB весов + 1 GB
+  compute; KV при 4096 даёт ≈1 MB).
 
-**Проверка:** `tests/gpu_distribution_test.go:TestEstimateModelVRAM` — переписать
-на новый хелпер; сравнить значения на тех же входных данных (golden-таблица).
+**Что осталось (шаг 3б — удаление):** удалить `cppbackend.EstimateModelVRAM`
+(нет продовых вызовов) и `backwardCompatEstimateGPUMemoryForModel` (нет вызовов
+вообще). `Backend.CalculateOptimalGPULayers` — следующий кандидат, но сначала
+надо переписать `backend_r52_test.go` и `kv_cache_type_r67a_test.go` на memfit
+(сейчас они — единственные его вызывающие).
+
+**Находка для отдельной задачи:** в legacy-KV «256 КБ на токен» заложено
+завышение в 1024×: реальный `ctxMemoryMB` = `ctxSize × 256 / 1024 / 1024`, то
+есть при ctx=32768 это 8 MB, а не 8 GB, как написано в комментарии
+(`model_manager.go:842-848`). Оценка остаётся консервативной (перестраховка по
+весам), но комментарий врёт — при следующем касании этого места KV нужно
+считать через `KVLayersFor`/`KVHeadDimFor`, как в C-bridge и memfit.
 
 ### Шаг 4. Уборка `vram_detect.go`
 
-`availableRAMBytes` уже делегирует в `memfit.ProbeRAM` (§9.4a). Остаётся решить,
-что делать с `availableVRAMBytes`/`freeVRAMBytes` и `nvidiaSmiVRAMBytes`:
-кандидат — вынести чтение VRAM в `memfit` по аналогии с `ProbeRAM`, тогда
-`vram_detect.go` схлопывается до GPU-discovery через bridge.
+`availableRAMBytes` уже делегирует в `memfit.ProbeRAM` (§9.4a).
+
+**Остаётся `availableVRAMBytes`** — у него 7 продовых вызовов
+(`auto_offload.go:136`, `auto_tune_nctx.go:85`, `handlers_model.go:1711,1718`,
+`lazyload.go:243,304`, `lazyload_calc.go:175`), то есть это не мёртвый код, а
+второй (наряду с `Backend.MemfitBudget`) способ узнать свободную VRAM: через
+bridge, с fallback на `CPPWORKER_VRAM_BYTES` и `nvidia-smi`. Кандидат — оставить
+один путь (`MemfitBudget` → `bridge`, где `nvidia-smi` уже есть) и удалить
+`nvidiaSmiVRAMBytes`.
 
 **Проверка:** `cmd/cppworker` тесты (`ram_fallback_env_test.go`,
 `auto_tune_nctx_test.go`), плюс живой `-Strict` прогон §9 (он смотрит

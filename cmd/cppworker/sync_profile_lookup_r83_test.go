@@ -54,6 +54,40 @@ func TestR83_ProfileLookup_TaggedName(t *testing.T) {
 	}
 }
 
+// TestR83_ProfileLookup_NoVersionCollision — живой дефект, найденный на стенде:
+// после первого (мягкого) варианта нормализации профиль "Qwen3-8B-Instruct-2507"
+// подходил под запрос "qwen3.8:latest" (оба ключа начинались на "qwen3.8"), и
+// загрузка получала ЧУЖОЙ профиль: ctx 32768, -1 слоёв и kvCacheType="" вместо
+// q8_0. Версия (Qwen3.8) и имя модели (Qwen3-8B) обязаны различаться.
+func TestR83_ProfileLookup_NoVersionCollision(t *testing.T) {
+	ps := &profileSyncerT{cache: map[string]types.LlamaCppModelProfile{}}
+	// Профиль без kvCacheType — именно он «перебивал» нужный на живом стенде.
+	ps.cache["Qwen3-8B-Instruct-2507"] = types.LlamaCppModelProfile{
+		ContextLength: 32768,
+		NumGPULayers:  -1,
+	}
+	ps.cache["Qwen3.8-27B"] = types.LlamaCppModelProfile{
+		ContextLength: 32768,
+		NumGPULayers:  -2,
+		KVCacheType:   "q8_0",
+	}
+
+	for i := 0; i < 50; i++ { // порядок обхода map случаен
+		prof := ps.applyProfileOnLoad("qwen3.8:latest")
+		if prof == nil {
+			t.Fatal("профиль не найден")
+		}
+		if prof.KVCacheType != "q8_0" {
+			t.Fatalf("итерация %d: выбран профиль Qwen3-8B (kv=%q gpu=%d) вместо "+
+				"Qwen3.8-27B (kv=q8_0 gpu=-2)", i, prof.KVCacheType, prof.NumGPULayers)
+		}
+		if prof.NumGPULayers != -2 {
+			t.Fatalf("итерация %d: NumGPULayers = %d, want -2 (профиль Qwen3.8-27B)",
+				i, prof.NumGPULayers)
+		}
+	}
+}
+
 // TestR83_ProfileLookup_ExactAndCanonical — канонические имена тоже находятся
 // (иначе сломается auto-load от балансера, который зовёт модель по имени файла).
 func TestR83_ProfileLookup_ExactAndCanonical(t *testing.T) {

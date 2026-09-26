@@ -213,27 +213,43 @@ func (ps *profileSyncerT) applyProfileOnLoad(modelName string) *types.LlamaCppMo
 	// Раньше здесь было `containsFold(name, modelName) || containsFold(modelName, name)`
 	// по СЫРЫМ строкам, и профиль "Qwen3.8-27B" НЕ находился для имени клиента
 	// "qwen3.8:latest": общий префикс "qwen3.8" обрывался на ':' против '-'.
-	// Живое следствие: ни kvCacheType=q8_0 из профиля, ни его contextLength не
-	// применялись к загрузке, которая пришла по имени клиента, — то есть вся
-	// pull-синхронизация профилей для таких имён не работала.
+	// Живое следствие: для загрузок по имени клиента не применялся весь
+	// pull-профиль — ни kvCacheType, ни contextLength, ни numGpuLayers.
 	//
-	// Нормализация: срезаем ollama-тег и .gguf, приводим разделители
-	// ('.', '-', ':', '_', пробел) к одному, в нижний регистр — "qwen3.8:latest"
-	// → "qwen3.8", "Qwen3.8-27B" → "qwen3.8.27b".
+	// ДВА прохода, а не один (иначе получается ложное совпадение):
 	//
-	// Префиксное совпадение, но БЕЗ угадывания: если под него попало несколько
-	// профилей ("Qwen3.8-27B" и "Qwen3.8-27B-UD-Q4_K_M"), берём самый длинный
-	// ключ, а при равенстве — лексикографически первый. Порядок обхода map
-	// случаен, поэтому выбор обязан быть детерминированным: иначе один и тот же
-	// запрос получал бы разные contextLength/kvCacheType от запуска к запуску.
+	//	1) строгий: разделителями считаются только ':' '.' '_' и пробел.
+	//	   Тогда "qwen3.8:latest" → "qwen3.8" совпадает с "Qwen3.8-27B" → "qwen3.8.27b",
+	//	   но НЕ совпадает с "Qwen3-8B-Instruct-2507" → "qwen3-8b-instruct-2507"
+	//	   ('-' там разделяет имя модели, а не версию). Именно это совпадение
+	//	   ловилось на живом стенде: профиль Qwen3-8B применялся к запросу
+	//	   qwen3.8:latest — при том, что у Qwen3.8-27B kvCacheType=q8_0, а у
+	//	   Qwen3-8B kvCacheType пуст, и гейт с загрузкой разошлись по KV.
+	//	2) мягкий: '-' и '_' тоже становятся разделителями — для имён вида
+	//	   "qwen3" против "Qwen3-8B-Instruct-2507".
+	//
+	// Совпадение — префиксное. Если под него попало несколько профилей
+	// ("Qwen3.8-27B" и "Qwen3.8-27B-UD-Q4_K_M"), берётся самый длинный ключ, а
+	// при равенстве — лексикографически первый: порядок обхода map случаен,
+	// поэтому выбор обязан быть детерминированным.
 	want := normalizeProfileKey(modelName)
 	if want == "" {
 		return nil
 	}
+	if p := pickProfileByKey(ps.cache, want, normStrictProfileKey); p != nil {
+		return p
+	}
+	return pickProfileByKey(ps.cache, want, normalizeProfileKey)
+}
+
+// pickProfileByKey — самый конкретный профиль, чей нормализованный ключ совпал
+// с запросом (равенство или префикс в любую сторону).
+func pickProfileByKey(cache map[string]types.LlamaCppModelProfile,
+	want string, norm func(string) string) *types.LlamaCppModelProfile {
 	var bestName string
 	var best *types.LlamaCppModelProfile
-	for name, p := range ps.cache {
-		have := normalizeProfileKey(name)
+	for name, p := range cache {
+		have := norm(name)
 		if have == "" {
 			continue
 		}
@@ -250,12 +266,21 @@ func (ps *profileSyncerT) applyProfileOnLoad(modelName string) *types.LlamaCppMo
 	return best
 }
 
-// normalizeProfileKey — ключ сравнения имён моделей и профилей.
+// normalizeProfileKey — ключ сравнения имён моделей и профилей (мягкий вариант).
 //
 // Срезает ollama-тег ("qwen3.8:latest" → "qwen3.8"), расширение .gguf и
-// приводит разделители к точке: имена в конфигах и на диске пишут одним и тем
-// же смыслом разными символами ("Qwen3.8-27B" против "qwen3.8:latest").
+// приводит разделители ('.', '-', ':', '_', пробел) к точке.
 func normalizeProfileKey(name string) string {
+	return profileKeyFor(name, true)
+}
+
+// normStrictProfileKey — тот же ключ, но '-' и '_' НЕ считаются разделителями:
+// они различают версию и имя модели ("Qwen3.8-27B" против "Qwen3-8B").
+func normStrictProfileKey(name string) string {
+	return profileKeyFor(name, false)
+}
+
+func profileKeyFor(name string, dashIsSeparator bool) string {
 	s := strings.ToLower(strings.TrimSpace(name))
 	if i := strings.LastIndex(s, ":"); i >= 0 {
 		s = s[:i]
@@ -265,16 +290,19 @@ func normalizeProfileKey(name string) string {
 	b.Grow(len(s))
 	prevDot := false
 	for _, r := range s {
-		switch r {
-		case '.', '-', ':', '_', ' ', '\t':
+		sep := r == '.' || r == ':' || r == ' ' || r == '\t'
+		if dashIsSeparator && (r == '-' || r == '_') {
+			sep = true
+		}
+		if sep {
 			if b.Len() > 0 && !prevDot {
 				b.WriteByte('.')
 				prevDot = true
 			}
-		default:
-			b.WriteRune(r)
-			prevDot = false
+			continue
 		}
+		b.WriteRune(r)
+		prevDot = false
 	}
 	return strings.Trim(b.String(), ".")
 }

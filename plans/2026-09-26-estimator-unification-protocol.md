@@ -70,31 +70,31 @@ but VRAM=8191 MB + RAM=8192 MB insufficient. Best GPU layers=18 (CPU layers=46, 
 (`calculateOptimalGPULayersForModel`) ← `handlers_model.go:1735` (reload) и
 `handlers_config.go:582` (update-config). Объявление — `backend.go:1184`.
 
-**Что делать:** заменить тело `calculateOptimalGPULayersForModel` на вердикт:
+**Что СДЕЛАНО (v15):**
 
-```go
-spec, ok := backend.MemfitSpec(m.Name)          // метаданные модели
-if !ok { return currentConfig.DefaultGPULayers } // нет метаданных — прежний fallback
-v := memfit.Evaluate(spec, memfit.Request{Ctx: nCtx, KVType: cppbackend.MemfitKVType(kvCacheType)},
-    backend.MemfitBudget(), cppbackend.MemfitPolicy())
-if !v.Fits() { ... }        // см. шаг 1b
-return v.GPULayers
-```
+- `calculateOptimalGPULayersForModel` сначала спрашивает memfit
+  (`memfitGPULayersForModel`: `backend.MemfitSpec` + `backend.MemfitBudget` +
+  `memfit.Evaluate` → поле `GPULayers`); при `ok=false` уходит в
+  `legacyCalculateOptimalGPULayersForModel` — прежняя формула, переименована и
+  оставлена как fallback;
+- `currentConfig == nil` → возвращаем `-1` (auto): судить не о чем, решение
+  примет `checkVRAMForModel` через memfit. Без этой ветки тест ловил
+  nil-pointer — то есть проверка нашла реальную дыру, а не формальность;
+- в reload-пути (`handlers_model.go`) ноль от memfit теперь **применяется**:
+  флаг `memfitDecided` отличает осознанный CPU-only («веса не влезают») от
+  прежнего «legacy не смог»; без него условие `calculated > 0` пропускало ноль
+  и оставляло старое (слишком большое) число слоёв. В лог добавлено
+  `source=memfit|legacy`.
 
-**Проверка шага 1:**
-- `go test -tags llama_stub ./internal/cppbackend/` — сравнение колонок
-  (`legacy` в тесте продолжает вызывать старую функцию, пока она существует;
-  после шага 3 тест надо переписать так, чтобы он вызывал новую обёртку);
-- `go test -tags llama_stub ./cmd/cppworker/` — тесты auto_offload;
-- живая: reload модели с `gpuLayers=-2` → в логе
-  `reload: auto-offload recalculated gpu_layers` с `new_gpu_layers` 22-24
-  вместо 18 (на 3070 + Qwen3.8). Команда:
-  `scripts/verify-r83-section9.ps1 -Strict` + `verify-r83-v3-v4.ps1`.
+**Что осталось на шаг 1b (решение по отказу):** если `!v.Fits()`, вернуть отказ
+`insufficient_resources`, а не `DefaultGPULayers` — согласованно с §9.3
+(`insufficientResourcesFromFallbackNoFit`). Сейчас в этом случае возвращается
+`v.GPULayers` (обычно 0 = CPU-only), и загрузка идёт через partial offload.
+Проверка: сценарий из `lazyload_nofit_refusal_r83_test.go`, но через reload.
 
-**Шаг 1b (решение по отказу):** если `!v.Fits()`, вернуть отказ
-`insufficient_resources` вместо `DefaultGPULayers` — согласованно с §9.3
-(`insufficientResourcesFromFallbackNoFit`). Проверка: тот же сценарий, что в
-`lazyload_nofit_refusal_r83_test.go`, но через reload-путь.
+**Проверка шага 1:** тесты `auto_offload_memfit_r83_test.go` (границы
+fallback / disabled / no-config), полный набор `cmd/cppworker` + `cppbackend` +
+`balancer` + `api` — зелёный; живая сверка — §4 (ожидание 22-24 слоя вместо 18).
 
 ### Шаг 2. Удалить `EstimateGPUMemoryForModel` / `backwardCompat…`
 

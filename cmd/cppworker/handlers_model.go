@@ -1683,6 +1683,9 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		m := *current
 		m.ContextSize = opts.ContextSize
 		var calculated int
+		// memfitDecided — решение принято memfit (а не legacy-оценкой): только в
+		// этом случае ноль слоёв означает осознанный CPU-only (R83 §9.4 шаг 1).
+		memfitDecided := false
 		// Use adaptive SelectStrategy which tries all kvCacheTypes (f16->q8_0->q4_0)
 		// and handles MoE, dynamic overhead, and VRAM/RAM limits.
 		if globalEnv != nil {
@@ -1756,14 +1759,28 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			calculated = calculateOptimalGPULayersForModel(m, opts.KVCacheType)
+			// R83 §9.4 шаг 1 (2026-09-26): memfit может вернуть 0 осознанно —
+			// это «веса не влезают в VRAM, раскладка только CPU». Прежняя
+			// оценка в этом случае отдавала legacy-число, и условие
+			// `calculated > 0` ниже его пропускало; для memfit-ответа ноль
+			// обязан быть применён, иначе останется старое (слишком большое)
+			// число слоёв и загрузка уйдёт в переподписку.
+			if _, ok := memfitGPULayersForModel(m, opts.KVCacheType); ok {
+				memfitDecided = true
+			}
 		}
-		if calculated > 0 && calculated != opts.GPULayers {
+		if (calculated > 0 || (memfitDecided && calculated >= 0)) && calculated != opts.GPULayers {
+			source := "legacy"
+			if memfitDecided {
+				source = "memfit"
+			}
 			logger.Get().Infow("reload: auto-offload recalculated gpu_layers",
 				"name", req.Name,
 				"old_gpu_layers", opts.GPULayers,
 				"new_gpu_layers", calculated,
 				"n_ctx", opts.ContextSize,
-				"model_size_mb", current.SizeBytes/(1024*1024))
+				"model_size_mb", current.SizeBytes/(1024*1024),
+				"source", source)
 			opts.GPULayers = calculated
 			opts.UseMmap = true // partial offload ??????? mmap
 		}

@@ -21,6 +21,7 @@ package main
 
 import (
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
 	"os/exec"
 	"strings"
@@ -45,6 +46,19 @@ func kvCacheBytesPerType(kvCacheType string) int64 {
 // calculateOptimalGPULayersForModel вычисляет оптимальное число GPU-слоёв
 // для размещения модели в доступной VRAM с учётом KV-cache и типа KV-cache.
 //
+// R83 §9.4 шаг 1 (2026-09-26): решение принимает memfit — единственный предикат
+// computeSplit, тот же, что и в checkVRAMForModel. Прежняя формула (веса ×0.7,
+// KV «256 Б/токен») ЗАНИЖАЛА число слоёв: на живом стенде (3070 8 GB +
+// Qwen3.8-27B) она давала 18 слоёв при q8_0 и 0 при f16, тогда как memfit — 23
+// и 22. Ноль означал загрузку модели целиком на CPU, то есть исторический
+// симптом «gpu_layers=0 → непригодно медленно»
+// (см. internal/cppbackend/estimator_compare_r83_test.go).
+//
+// Legacy-формула не удалена, а вызывается ТОЛЬКО как fallback, когда memfit
+// судить не о чем: нет глобального backend'а (установка конфига до инициализации,
+// тесты) или нет метаданных модели. Это сохраняет прежнее поведение в тех
+// случаях, где memfit данных не имеет, — и делает замену проверяемой по шагам.
+//
 // Параметр kvCacheType принимает "f16"/"q8_0"/"q4_0" или "" (default=f16).
 //
 // Возвращает:
@@ -53,9 +67,68 @@ func kvCacheBytesPerType(kvCacheType string) int64 {
 //
 // Если auto_offload отключён — возвращает currentConfig.DefaultGPULayers как есть.
 func calculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType string) int {
+	// currentConfig заполняется в main при старте; в тестах/до инициализации его
+	// может не быть — тогда судить не о чем, и вызывающий получит -1 (=auto),
+	// то есть решение всё равно примет checkVRAMForModel через memfit.
+	if currentConfig == nil {
+		return -1
+	}
 	if !*autoOffload {
 		return currentConfig.DefaultGPULayers
 	}
+	if layers, ok := memfitGPULayersForModel(m, kvCacheType); ok {
+		return layers
+	}
+	return legacyCalculateOptimalGPULayersForModel(m, kvCacheType)
+}
+
+// memfitGPULayersForModel — раскладка через memfit. ok=false означает «судить не
+// о чем» (нет backend'а, модели в каталоге или метаданных) — вызывающий обязан
+// уйти в legacy-fallback, а не выдумывать числа.
+func memfitGPULayersForModel(m cppbackend.ModelInfo, kvCacheType string) (int, bool) {
+	if backend == nil || m.Name == "" {
+		return 0, false
+	}
+	spec, ok := backend.MemfitSpec(m.Name)
+	if !ok || !spec.Complete() {
+		return 0, false
+	}
+	nCtx := m.ContextSize
+	if nCtx <= 0 {
+		nCtx = currentConfig.DefaultCtxSize
+	}
+	v := memfit.Evaluate(spec, memfit.Request{
+		Ctx:    nCtx,
+		KVType: cppbackend.MemfitKVType(kvCacheType),
+	}, backend.MemfitBudget(), cppbackend.MemfitPolicy())
+
+	layers := v.GPULayers
+	if layers < 0 {
+		layers = 0
+	}
+	if layers > spec.NLayers {
+		layers = spec.NLayers
+	}
+	logger.Get().Infow("auto_offload: gpu_layers from memfit (R83 §9.4)",
+		"model", m.Name,
+		"n_ctx", nCtx,
+		"kv_cache_type", kvCacheType,
+		"stage", string(v.Stage),
+		"gpu_layers", layers,
+		"total_layers", spec.NLayers,
+		"vram_used_mb", (v.GPUWeights + v.GPUKV).MiB(),
+		"usable_vram_mb", v.UsableVRAM.MiB(),
+		"usable_ram_mb", v.UsableRAM.MiB(),
+		"max_exact_fit_n_ctx", v.MaxExactFitCtx,
+		"max_hard_n_ctx", v.MaxHardCtx,
+		"suggestion", v.Suggestion)
+	return layers, true
+}
+
+// legacyCalculateOptimalGPULayersForModel — прежняя формула (веса ×0.7,
+// KV «256 Б/токен»). Оставлена как fallback без метаданных; удаляется шагом 2
+// протокола plans/2026-09-26-estimator-unification-protocol.md.
+func legacyCalculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType string) int {
 	if m.SizeBytes == 0 || m.NLayers == 0 {
 		// Нет метаданных (только что загруженная без path/size) — fallback.
 		return currentConfig.DefaultGPULayers

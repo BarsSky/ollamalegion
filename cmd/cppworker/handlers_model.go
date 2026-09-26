@@ -179,7 +179,7 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		writeModelNotFoundResponse(w, modelName, modelPath)
 		return
 	}
-	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize) {
+	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize, opts.KVCacheType) {
 		return
 	}
 
@@ -640,7 +640,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	// AutoTuneNCtx выше, то есть то значение, с которым модель реально пойдёт
 	// в llama.cpp. Если оно физически невыполнимо — 422 с числами и без старта
 	// загрузки (иначе получим OOM/обрыв стрима вместо внятной причины).
-	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize) {
+	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize, opts.KVCacheType) {
 		return
 	}
 
@@ -1661,7 +1661,7 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	// с которым пойдёт reload. Балансер сам инициирует reload на больший n_ctx
 	// (preflight), и именно этот путь чаще всего просил 65536/131072 на A10.
 	// Физически невыполнимое — 422 с числами, без unload/load.
-	if !checkNCtxBeforeLoad(w, req.Name, opts.ContextSize) {
+	if !checkNCtxBeforeLoad(w, req.Name, opts.ContextSize, opts.KVCacheType) {
 		return
 	}
 

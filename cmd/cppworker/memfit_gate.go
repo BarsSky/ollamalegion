@@ -22,22 +22,51 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 )
 
-// feasibilityFromMemfit считает вердикт гейта и переносит его в NCtxFeasibility.
+// effectiveKVCacheTypeForLoad — какой тип KV-cache реально применит ЗАГРУЗКА для
+// этой модели. Тот же порядок, что в хендлерах:
 //
-// ok == false означает «метаданных модели нет» — судить не о чем; вызывающий
-// обязан решить сам (гейт в этом случае не отказывает, но и не молчит: пишет в лог).
-func feasibilityFromMemfit(modelName string, requested int) (NCtxFeasibility, memfit.Verdict, bool) {
+//	явный параметр запроса → профиль модели (config/cppworker-*.json /
+//	профиль от балансера) → дефолт cppworker (config.DefaultKVCacheType).
+//
+// Зачем отдельная функция: гейт n_ctx обязан считать KV тем же типом, что и
+// раскладка слоёв. Наивный EffectiveKVCacheType("") берёт дефолт конфига и
+// игнорирует per-model профиль: для Qwen3.8 дефолт q4_0, а профиль задаёт
+// q8_0 — тип расходится в 1.88 раза, и гейт пропускает n_ctx, который
+// раскладка считает невлезающим (или наоборот).
+func effectiveKVCacheTypeForLoad(modelName, explicit string) string {
+	if isValidKVCacheType(explicit) {
+		return explicit
+	}
+	if profileSyncer != nil {
+		if prof := profileSyncer.applyProfileOnLoad(modelName); prof != nil &&
+			isValidKVCacheType(prof.KVCacheType) {
+			return prof.KVCacheType
+		}
+	}
+	if backend != nil {
+		return backend.EffectiveKVCacheType("")
+	}
+	return "f16"
+}
+
+// feasibilityFromMemfit — вердикт гейта по уже собранным входным данным.
+//
+// kvType — итоговый тип KV-cache ("" = взять дефолт конфига). Параметр
+// обязателен: без него гейт считал бы KV по одному типу, а раскладка — по
+// другому (R83 §3.4).
+func feasibilityFromMemfit(spec memfit.ModelSpec, budget memfit.Budget,
+	kvType string, requested int) (NCtxFeasibility, memfit.Verdict, bool) {
 	var zero memfit.Verdict
-	if backend == nil || requested <= 0 {
+	if requested <= 0 {
 		return NCtxFeasibility{}, zero, false
 	}
-	spec, ok := backend.MemfitSpec(modelName)
-	if !ok {
-		return NCtxFeasibility{}, zero, false
+	if backend != nil && strings.TrimSpace(kvType) == "" {
+		kvType = backend.EffectiveKVCacheType("")
 	}
-	kvType := cppbackend.MemfitKVType(backend.EffectiveKVCacheType(""))
-	v := memfit.Evaluate(spec, memfit.Request{Ctx: requested, KVType: kvType},
-		backend.MemfitBudget(), cppbackend.MemfitPolicy())
+	v := memfit.Evaluate(spec, memfit.Request{
+		Ctx:    requested,
+		KVType: cppbackend.MemfitKVType(kvType),
+	}, budget, cppbackend.MemfitPolicy())
 
 	minPositive := func(vals ...int) int {
 		out := 0
@@ -50,7 +79,7 @@ func feasibilityFromMemfit(modelName string, requested int) (NCtxFeasibility, me
 	}
 
 	f := NCtxFeasibility{
-		Model:          modelName,
+		Model:          spec.Name,
 		RequestedNCtx:  requested,
 		MaxVRAMNCtx:    v.MaxExactFitCtx,
 		MaxRAMNCtx:     v.MaxHardCtx,
@@ -81,6 +110,17 @@ func feasibilityFromMemfit(modelName string, requested int) (NCtxFeasibility, me
 		f.VerdictSuggestion = strings.TrimSpace(f.VerdictSuggestion + " " + detail)
 	}
 	return f, v, true
+}
+
+// logResolvedKVCacheType — одна строка о том, каким типом KV считает гейт.
+// Нужна, чтобы расхождение «гейт q4_0 против раскладки q8_0» было видно в логе
+// без чтения кода (это и был симптом §3.4).
+func logResolvedKVCacheType(modelName, kvType string) {
+	if logger.Get() == nil {
+		return
+	}
+	logger.Get().Debugw("R83 гейт n_ctx: тип KV-cache для оценки",
+		"model", modelName, "kv_cache_type", kvType)
 }
 
 // logMemfitVerdict — строка вердикта в лог: одна структура со всеми числами, из

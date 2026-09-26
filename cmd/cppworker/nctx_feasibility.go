@@ -216,10 +216,18 @@ func writeNCtxInfeasibleResponse(w http.ResponseWriter, f NCtxFeasibility) {
 // Возвращает false, если запрос ОТКЛОНЁН — ответ уже записан, вызывающий обязан
 // сделать return. Всегда логирует оценку (в т.ч. degraded), чтобы режим загрузки
 // был виден оператору до её старта.
-func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx int) bool {
+//
+// kvCacheType — тип KV-cache, с которым пойдёт ИМЕННО эта загрузка ("" = взять
+// дефолт конфига). Гейт обязан считать KV тем же типом, что и раскладка слоёв
+// (R83 §3.4): иначе для модели, у которой профиль задаёт q8_0, а дефолт q4_0,
+// потолок VRAM расходится в 1.88 раза.
+func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx int, kvCacheType string) bool {
 	// R83, шаг 3: решение принимает internal/memfit (memfit_gate.go). Прежний
 	// расчёт здесь удалён — он расходился с решением о загрузке.
-	f, verdict, ok := feasibilityFromMemfit(modelName, requestedNCtx)
+	if backend == nil {
+		return true
+	}
+	spec, ok := backend.MemfitSpec(modelName)
 	if !ok {
 		// Метаданных модели нет — судить не о чем. Не отказываем (как и раньше),
 		// но говорим об этом явно, а не молча (прежний fail-open был неотличим от
@@ -228,6 +236,12 @@ func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx 
 			logger.Get().Debugw("R83 гейт n_ctx: метаданные модели недоступны — проверка пропущена",
 				"model", modelName, "requested_n_ctx", requestedNCtx)
 		}
+		return true
+	}
+	resolvedKV := effectiveKVCacheTypeForLoad(modelName, kvCacheType)
+	logResolvedKVCacheType(modelName, resolvedKV)
+	f, verdict, ok := feasibilityFromMemfit(spec, backend.MemfitBudget(), resolvedKV, requestedNCtx)
+	if !ok {
 		return true
 	}
 	logMemfitVerdict(verdict)

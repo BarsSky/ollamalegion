@@ -274,3 +274,145 @@ docker restart ol-bundled-cppworker-gpu
 **Порядок вывода наружу (для следующей сессии).** Все правки этой сессии
 закоммичены и раскатаны: `r83-submodule-v10` — актуальный тег в
 `deployments/.env` и `release-manifest.json`; `check-image-tags.ps1` — OK.
+
+---
+
+## 9. Что осталось: разбор с локациями и критериями
+
+Проверено по коду и на стенде `r83-submodule-v10` (2026-09-26). Порядок —
+по отношению «риск / стоимость».
+
+### 9.1. `LB_AUTO_LOAD_WAIT_SEC` не знает размера модели (§3.3)
+
+**Где:** `internal/balancer/autoload_wait.go:37` (`autoLoadWaitDefaultSec = 180`),
+`:54` (`AutoLoadWaitTimeout()`) — читает только env `LB_AUTO_LOAD_WAIT_SEC`,
+модель в функцию не передаётся.
+
+**Почему это осталось проблемой.** Логика «датчик бездействия» (R83) продлевает
+дедлайн, пока `elapsedMs` растёт, и это лечит основной случай. Но если прогресс
+**недоступен** (poller не ответил, `/load/progress` вернул `Known=false`),
+работает прежний фиксированный бюджет 180 с: для 16.4 GB модели на bind-mount
+(загрузка 7-9 минут) это гарантированный фальшивый «auto-load failed» → повторный
+запрос → вторая загрузка. Такие тиры уже сделаны для idle/first-byte
+(`getModelStreamingIdleTimeout`), здесь — нет.
+
+**Как закрывать.** Взять размер GGUF тем же способом, что idle-тиры
+(`getModelSizeBytes` — с учётом ollama-тега, см. правку R83 в
+`model_name_match.go`), и масштабировать базовый бюджет: например
+`max(180s, sizeBytes / 20 MB/s)` с потолком `autoLoadHardCeiling` (30 мин).
+Функция должна принимать имя модели: `AutoLoadWaitTimeout(model string)`.
+Критерий: на 16.4 GB модели без доступного прогресса ожидание ≥ 10 мин, на
+4 GB — не больше ~3 мин.
+
+### 9.2. Балансер всё ещё трактует `max_vram_n_ctx == 0` как «нет данных» (§3.7)
+
+**Где:** `pkg/types/llama_cpp_metrics.go:8` — в домене `LlamaCppMetrics` поля
+`vram_known` **нет** (cppworker его отдаёт с R83, а poller не читает);
+`internal/balancer/preflight_nctx.go:287` (`MaxVRAMNCtx int // 0 = unknown`),
+`:480` (`if state.MaxVRAMNCtx > 0 {…}` — при нуле VRAM-потолок вообще не
+проверяется), `nctx_reload_handlers.go:96,424`.
+
+**Почему это важно.** После R83 ноль означает ДВА разных случая: «метрик нет» и
+«VRAM известна, но веса не влезают». Во втором случае reload заведомо не поднимет
+потолок (веса не поместятся ни при каком `gpu_layers`), а балансер сейчас
+молча пропускает проверку и уходит в reload-ветку — клиент получает таймаут
+вместо внятного отказа.
+
+**Как закрывать.** Добавить `VramKnown bool \`json:"vramKnown"\`` в
+`LlamaCppMetrics` (poller читает `vram_known` из `/api/models`), протянуть в
+`NCtxBackendState`, и в `:480` различать: `Known=false` → прежнее
+fail-open-поведение; `Known=true && MaxVRAMNCtx==0` → отказ с
+`insufficient_resources` и suggestion «уменьшите модель/квант, VRAM не хватит
+даже на KV».
+
+### 9.3. `fallback_no_fit` всё ещё не отказ (§3.5)
+
+**Где:** `cmd/cppworker/lazyload_calc.go:313` (`rationale.Source =
+"fallback_no_fit"` — и загрузка продолжается), `adaptive_loader.go:807` (тот же
+source в стадии адаптивного подбора). Тесты фиксируют это поведение
+(`lazyload_simulator_test.go:270` «40GB модель > 30GB RAM — ожидаем
+fallback_no_fit»).
+
+**Как закрывать.** В ветке «не влезает даже в CPU-only» вернуть отказ
+`insufficient_resources` + suggestion (форма — как у гейта n_ctx:
+`writeError(422)` в `handlers_model.go`) **либо**, если решено оставить
+попытку, эмитить warning-событие в EventBus (данные для текста уже есть в
+`rationale`). Тесты `lazyload_*_test.go` придётся переписать: они кодируют
+текущее «пробуем всё равно».
+
+### 9.4. Продово-мёртвые оценки (§3.6)
+
+**Факт:** функции на месте, но их продовые вызовы остались — удаление не
+механическое:
+
+| функция | где объявлена | продовые вызовы |
+|---|---|---|
+| `EstimateGPUMemoryForModel` | `model_manager.go:819` (веса ×0.7, KV 256 Б/токен) | `backend.go:1271,1276,1296,1341`, `gpu_distribution.go:406-411` |
+| `backwardCompatEstimateGPUMemoryForModel` | `model_manager.go:860` | `model_manager.go:857` |
+| `EstimateModelVRAM` | `gpu_distribution.go:407` | `backend_selector.go:566`, `model_instance_controller.go:178`, `prewarm_controller.go:239`, `scoring.go:283-284` |
+| `CalculateOptimalGPULayers` | `backend.go:1184` | `handlers_model.go:1722,2159,2165`, `handlers_config.go:560,582`, `auto_offload.go:45,55`, `vram_detect.go:98` |
+| `availableRAMBytes` | `vram_detect.go:199` | `adaptive_loader.go:116,202`, `auto_tune_nctx.go:162,210`, `inference.go:768,878,917`, `lazyload_calc.go:58,178,258,305` |
+
+**Порядок работ:** сначала `availableRAMBytes` → `memfit.ProbeRAM`
+(`internal/cppbackend/ram_available.go` уже есть — сверить, что он и есть
+замена), затем `CalculateOptimalGPULayers` → вердикт memfit на вызывающих
+путях, затем `EstimateModelVRAM`/`EstimateGPUMemoryForModel` (их используют
+scoring/selector — там нужен аналог «оценка весов по слоям», а не memfit-вердикт).
+Тесты к переписыванию/удалению: `backend_r52_test.go`,
+`kv_cache_type_r67a_test.go`, `tests/cppbackend_test.go:TestEstimateGPUMemoryForModel`,
+`tests/gpu_distribution_test.go:TestEstimateModelVRAM`.
+
+### 9.5. SSE ring buffer пуст, пока нет подключённого клиента
+
+**Где:** `internal/api/handlers_events.go:197` — `buf.push(ev)` вызывается
+**внутри** цикла чтения `subCh` конкретного SSE-клиента. Потребители:
+`:144` (snapshot при подключении) и `handlers_health.go:206` (recent errors).
+
+**Следствие:** если ни один клиент не подключён, буфер не наполняется: `GET
+/api/v1/events` при переподключении не отдаёт пропущенные нотификации, а
+секция recent-errors в `/api/v1/health` пуста (что и описано в §3.9 хендоффа).
+
+**Как закрывать.** Наполнять буфер из подписки, живущей независимо от клиентов:
+одна постоянная подписка на `eventBus` при старте `eventsHub`
+(`newEventsHub` → горутина) пишет в `buf`; `handleEvents` только отдаёт
+snapshot + свою live-подписку. Тест: опубликовать событие без клиентов →
+`buf.snapshot()` не пуст.
+
+### 9.6. Дефекты загрузки (D-A, D-B, D-C из §3.9 хендоффа)
+
+- **D-A (асинхронность только на бумаге).** `handlers_model.go:247,262,281`
+  (и `:699,712,726`, `:1829`) возвращают 202 + `progressUrl` при `wait=false`,
+  но фактическая загрузка идёт в горутине, которая захватывает тот же
+  single-flight/лок, поэтому HTTP-ответ ждёт конца загрузки (`duration:9m6.6s`
+  в логе). Нужно либо честно документировать блокирующее поведение, либо
+  вынести загрузку из-под лока HTTP-хендлера (single-flight остаётся в
+  `Backend.loadSingleFlight`, но не в обработчике).
+- **D-B (реестр расходится).** Симптом «`model loaded` в логе, `/api/models` →
+  `count=0`» после перекрывающихся load/unload. Смотреть `handlers_model.go:245`
+  («loaded by concurrent request») и удаление `b.models[name]` в путях ошибок;
+  нужен тест-симулятор перекрытия.
+- **D-C (unload не барьер).** `handleUnloadModel` (`handlers_model.go:941`)
+  отвечает 200 мгновенно, пока идёт загрузка 16 GB. Решение: либо ждать
+  завершения in-flight загрузки (или отменять её через
+  `bridge.RequestLoadAbort`), либо документировать семантику «unload
+  асинхронный».
+
+### 9.7. Механизм A дублирования в OpenWebUI — за владельцем контракта
+
+`cmd/cppworker/handlers_chat.go:1397-1407`: в `done`-чанк Ollama-совместимого
+ответа кладётся **полный** текст (`msg["content"] = cleanFinalContent(fullOutput)`),
+хотя стриминговые чанки уже его содержали — замерено 2.00× на `/api/chat`.
+Технически это соответствует схеме Ollama, но ломает клиентов, которые
+конкатенируют чанки. Нужно решение владельца: оставить контракт и чинить
+клиента, или не дублировать текст в `done` (тогда сломаются клиенты, читающие
+только `done`). Кода-правки без этого решения нет.
+
+### 9.8. Устаревшие профили моделей (§3.8) — сейчас не воспроизводится
+
+Живой поиск по логу `r83-submodule-v10` и по персистентному состоянию
+(`deployments/data/balancer/{config,state}.json`, `models/.name_history.json`)
+имён `r81-model.gguf`, `m-auto.gguf`, `llama-3-8b.gguf` **не находит**.
+Пункт остаётся как «если симптом вернётся — источник вне репозитория
+(сохранённые профили/WebUI), проверять `deployments/data/**` и реестр
+балансера, а не `config/*.json`».
+

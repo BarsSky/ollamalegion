@@ -96,6 +96,33 @@ but VRAM=8191 MB + RAM=8192 MB insufficient. Best GPU layers=18 (CPU layers=46, 
 fallback / disabled / no-config), полный набор `cmd/cppworker` + `cppbackend` +
 `balancer` + `api` — зелёный; живая сверка — §4 (ожидание 22-24 слоя вместо 18).
 
+**Что получилось проверить живьём (v15), а что нет — честно:**
+
+* Проверено: **продовый путь раскладки** — `auto-adapting GPU layers for model
+  (memfit) … optimalGPULayers:20, stage:partial_offload`, затем
+  `[bridge] loading model … gpu_layers=20` и фактическая аллокация
+  `llama_kv_cache: size = 1088.00 MiB (32768 cells, 16 layers, K/V (q8_0))` —
+  сходится с memfit-оценкой `34 816 Б/токен × 32 768 = 1088 МиБ`. Это C-сторона
+  (`checkVRAMForModel`), она работала и раньше, но теперь весь стек согласован.
+* Проверено: **вызов новой функции** через `PUT /api/v1/cppworker/config/update`
+  (`applied:["defaultCtxSize"], reload_started:["qwen3.8:latest"]`) — перезагрузка
+  пошла, `[bridge] loading model … gpu_layers=20`.
+* **НЕ удалось надёжно увидеть лог `reload: auto-offload recalculated gpu_layers
+  … source=memfit`**: в `handleReloadModel` эта ветка требует одновременно
+  `opts.GPULayers == -2` и отсутствия блокировки single-flight, а на стенде
+  загрузки шли одна за другой (по 8-10 минут), поэтому вызовы попадали в ветку
+  «уже грузится». Тот же код покрыт юнит-тестами
+  (`auto_offload_memfit_r83_test.go`) и вызывается из
+  `config/update`, где эффект виден (20 слоёв). Если нужна именно живая строка —
+  запускать reload на **простаивающем** стенде (модель загружена, нет активных
+  загрузок) и смотреть `docker logs` сразу после ответа 202.
+
+**Побочная находка:** `PUT /api/v1/cppworker/config/update` с телом
+`{"defaultGPULayers":20,"defaultCtxSize":32768}` переписал
+`config/cppworker-defaults.json`, обнулив `defaultNuma` и `enableReasoning`
+(файл был восстановлен через `git checkout`). Это поведение самого хендлера, к
+§9.4 не относится, но при экспериментах с ним нужно проверять `git status`.
+
 ### Шаг 2. Удалить `EstimateGPUMemoryForModel` / `backwardCompat…`
 
 **Порядок:** сначала шаг 1 (он перестаёт вызывать), затем проверить остаток:

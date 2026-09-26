@@ -5,6 +5,67 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.45 — R83: стрим /api/chat не рвётся и не ломает JSON у клиента (2026-09-26)]
+
+### 🐛 «Invalid control character» на длинной генерации: причина найдена
+
+**Живой инцидент.** Длинная сессия на 8 GB GPU (`Qwen3.8-27B` в
+partial_offload): клиент (OpenWebUI) показал под блоком кода
+`Invalid control character at: line 1 column 73 (char 72)` — это ошибка
+JavaScript-парсера JSON на стороне клиента, в репозитории такой строки нет.
+
+Что показали логи:
+
+```
+15:21:25  balancer  proxyRequestLlamaCpp: sending request /api/chat  stream:true
+15:53:57  balancer  SSE stream truncated before [DONE] marker
+                    bytes_forwarded=23861  scanner_err="unexpected EOF"
+15:54:05  cppworker HTTP POST /api/chat  status=200  duration=32m40.65s
+```
+
+То есть генерация шла 32 минуты («Рассуждаю 14 минут» + ответ), клиенту ушло
+23.8 КБ, поток оборвался обрезанной строкой NDJSON, а cppworker ещё 8 секунд
+после обрыва продолжал работу и отчитался `status=200`.
+
+### 🔒 Все записи в стрим — через `safeStreamWriter`
+
+В `writeChatStreamResponse` (`cmd/cppworker/handlers_chat.go`) пишут **две
+горутины**: колбэк токенов и heartbeat раз в 15 с. Обе писали в один
+`http.ResponseWriter` через `fmt.Fprintf` **без синхронизации**, а он не
+потокобезопасен: на 32-минутной генерации (130+ heartbeat'ов) записи могли
+перемешаться внутри одного NDJSON-фрейма → клиент получал невалидный JSON и
+падал именно с «Invalid control character». OpenAI-путь
+(`writeOpenAIChatStream`) уже использовал `safeStreamWriter`; нативный
+`/api/chat` — нет. Теперь используют оба (`writeChatStreamResponse` и
+`writeChatStreamResponseWithTools`).
+
+Побочно это даёт то, чего не было на нативном пути:
+- проверка `ctx.Done()` перед каждой записью;
+- `IsBroken()` в колбэке → генерация прекращается сразу после ухода клиента
+  (вместо «молотим ещё секунды»);
+- первый write error логируется (`safeStreamWriter: stream broken`) и попадает
+  в `/api/v1/cppworker/debug/last-stream`.
+
+### 🧹 Управляющие символы из текста модели вычищаются
+
+`sanitizeStreamText` (`cmd/cppworker/stream_sanitize.go`) убирает C0-контролы и
+DEL, сохраняя `\n`, `\r`, `\t` (их несут markdown и код); применяется в обоих
+нативных путях и в OpenAI-стриме, к `content`, `reasoning` и `content`-дельтам.
+Наш NDJSON сырой контрол пропустить не может (`json.Marshal` экранирует всё в
+`\u00XX`), но клиент парсит текст модели и сам — артефакты, аргументы
+tool-call, «JSON mode»: там кривой выход квантованной модели и ломал парсер.
+
+### 🔧 Мелочи
+
+- `feasible_sync.go`: в `Warnw` была лишняя пара ключ-значение, из-за чего zap
+  каждый раз писал в лог `error: Ignored key without a value` — рекомендация
+  теперь часть значения `recommendation`.
+- Тесты: `stream_sanitize_test.go` (контролы, структурные пробелы, UTF-8,
+  реальный блок кода из инцидента).
+
+**Проверка:** `go build`/`go vet -tags llama_stub` — чисто; `cmd/cppworker`,
+`internal/cppbackend`, `internal/balancer`, `internal/api` — зелёные.
+
 ## [0.5.44 — R83 §3.4: гейт n_ctx и раскладка слоёв считают KV одним типом (2026-09-26)]
 
 ### 🎯 Один тип KV-cache на весь путь загрузки

@@ -221,8 +221,8 @@ func (fs *feasibleSyncT) checkModel(ctx context.Context, modelName string) {
 		"gguf_max", info.GGUFMax,
 		"kv_cache_type", info.KVCacheType,
 		"recommendation", "PUT /api/v1/cppworker/model-profiles/"+modelName+
-			" with contextLength: "+itoa(feasibleNCtx),
-		"or set contextLengthAuto: true for fully automatic adaptation",
+			" with contextLength: "+itoa(feasibleNCtx)+
+			" (или contextLengthAuto: true для полностью автоматической адаптации)",
 	)
 }
 

@@ -906,11 +906,21 @@ func buildChatPromptFromMessages(msgs []chatMessage, modelName string) string {
 
 // writeChatStreamResponse ? streaming ????? ? ??????? NDJSON ??? /api/chat.
 func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
+	// R83 (2026-09-26): ВСЕ записи в ответ — через safeStreamWriter.
+	//
+	// Почему это критично именно здесь. В этой функции пишут ДВЕ горутины: колбэк
+	// токенов (ниже) и heartbeat раз в 15 с («Round 6 Fix 5»). Раньше обе писали
+	// в один http.ResponseWriter через fmt.Fprintf БЕЗ синхронизации, а
+	// ResponseWriter не потокобезопасен: на длинной генерации (32 мин, 130+
+	// heartbeat'ов) записи могли перемешаться внутри одного NDJSON-фрейма →
+	// клиент получал невалидный JSON и падал с «Invalid control character».
+	// safeStreamWriter держит мьютекс, а заодно:
+	//   - проверяет ctx.Done() перед каждой записью;
+	//   - логирует первый обрыв клиента (markBroken → Warnw + /debug/last-stream);
+	//   - отдаёт IsBroken(), по которому колбэк прекращает генерацию
+	//     (без этого cppworker молотил ещё секунды после ухода клиента — ровно то,
+	//     что видно в живом логе: обрыв в 15:53:57, HTTP-лог в 15:54:05).
+	sw := newSafeStreamWriter(w, r, "writeChatStreamResponse", modelName)
 	// 2026-06-24: preflight n_ctx check BEFORE flushing headers.
 	if err := clampNPredictToFitContext(modelName, prompt, &params); err != nil {
 		var perr *PromptExceedsNCtxError
@@ -921,9 +931,9 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	sw.SetHeader("Content-Type", "application/x-ndjson")
+	sw.SetHeader("Cache-Control", "no-cache")
+	sw.SetHeader("Connection", "keep-alive")
 	// Round 32 (2026-08-09): emit immediate "prefill" heartbeat перед inference.
 	// C-bridge prefill занимает 5-30s на reasoning моделях. Без heartbeat клиент
 	// не видит никаких данных в течение всего prefill ("зависший спиннер").
@@ -934,8 +944,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	prefillStartTime := time.Now()
 	prefillHB := map[string]interface{}{"done": false}
 	prefillHBJSON, _ := json.Marshal(prefillHB)
-	fmt.Fprintf(w, "%s\n", prefillHBJSON)
-	flusher.Flush()
+	sw.Writef("%s\n", prefillHBJSON)
+	sw.Flush()
 	// R66b (2026-09-22): время ПЕРВОГО сгенерированного токена. Раньше
 	// prompt_eval_duration считался как time.Since(prefillStartTime) в самом
 	// конце генерации, то есть равнялся всей длительности запроса: условие
@@ -970,6 +980,17 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 			return false
 		default:
 		}
+		// R83: если writer сломан (клиент отвалился, ctx.Done или write error) —
+		// прекращаем генерацию немедленно. Без этого cppworker продолжал молотить
+		// токены после ухода клиента: в живом логе обрыв 15:53:57, а HTTP-лог с
+		// status=200 и duration=32m40s появился только в 15:54:05.
+		if sw.IsBroken() {
+			return false
+		}
+		// R83: чистим управляющие символы — клиентские JSON-парсеры (артефакты,
+		// tool-call аргументы) на них падают с «Invalid control character».
+		// \n, \r, \t сохраняются: их несут markdown и код.
+		token = sanitizeStreamText(token)
 		outputBuf.WriteString(token)
 		// R66b: TTFT — время первого непустого токена (см. firstTokenAt выше).
 		if token != "" {
@@ -1002,8 +1023,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 					"done": false,
 				}
 				rcJSON, _ := json.Marshal(rcChunk)
-				fmt.Fprintf(w, "%s\n", rcJSON)
-				flusher.Flush()
+				sw.Writef("%s\n", rcJSON)
+				sw.Flush()
 			}
 			if contentDelta != "" {
 				ccChunk := map[string]interface{}{
@@ -1016,8 +1037,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 					"done": false,
 				}
 				ccJSON, _ := json.Marshal(ccChunk)
-				fmt.Fprintf(w, "%s\n", ccJSON)
-				flusher.Flush()
+				sw.Writef("%s\n", ccJSON)
+				sw.Flush()
 			}
 			return true
 		}
@@ -1035,8 +1056,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 			"done": false,
 		}
 		jsonData, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "%s\n", jsonData)
-		flusher.Flush()
+		sw.Writef("%s\n", jsonData)
+		sw.Flush()
 		return true
 	}
 
@@ -1057,8 +1078,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 				"cancelled":   true,
 			}
 			cancelledJSON, _ := json.Marshal(cancelledChunk)
-			fmt.Fprintf(w, "%s\n", cancelledJSON)
-			flusher.Flush()
+			sw.Writef("%s\n", cancelledJSON)
+			sw.Flush()
 			return
 		}
 		// ??????????? ????????? reload-loop-limit (HTTP 413 ? NDJSON-?????).
@@ -1078,8 +1099,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 			errJSON, _ := json.Marshal(errChunk)
 			w.Header().Set("X-CppWorker-Error", "reload_loop_limit")
 			w.Header().Set("X-HTTP-Status", "413")
-			fmt.Fprintf(w, "%s\n", errJSON)
-			flusher.Flush()
+			sw.Writef("%s\n", errJSON)
+			sw.Flush()
 			return
 		}
 		errChunk := map[string]interface{}{
@@ -1090,8 +1111,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 			"error":      streamErr.Error(),
 		}
 		errJSON, _ := json.Marshal(errChunk)
-		fmt.Fprintf(w, "%s\n", errJSON)
-		flusher.Flush()
+		sw.Writef("%s\n", errJSON)
+		sw.Flush()
 		return
 	}
 
@@ -1109,8 +1130,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 			"error":       "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
 		}
 		errJSON, _ := json.Marshal(errChunk)
-		fmt.Fprintf(w, "%s\n", errJSON)
-		flusher.Flush()
+		sw.Writef("%s\n", errJSON)
+		sw.Flush()
 		return
 	}
 
@@ -1150,8 +1171,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		"eval_duration":        evalNs - promptEvalNs,
 	}
 	doneJSON, _ := json.Marshal(doneChunk)
-	fmt.Fprintf(w, "%s\n", doneJSON)
-	flusher.Flush()
+	sw.Writef("%s\n", doneJSON)
+	sw.Flush()
 }
 
 // writeChatStreamResponseWithTools ? streaming-????? ? ?????????? tool calling.
@@ -1171,11 +1192,10 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 // ```json ... ``` можно только имея весь ответ целиком (буферизация). Финал:
 // один content-чанк (без обёртки) + done-чанк.
 func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, jsonMode bool) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
+	// R83 (2026-09-26): тот же safeStreamWriter, что и в writeChatStreamResponse —
+	// здесь тоже пишут две горутины (heartbeat + финальные чанки), и на длинной
+	// генерации без мьютекса фреймы могли перемешаться.
+	sw := newSafeStreamWriter(w, r, "writeChatStreamResponseWithTools", modelName)
 	// 2026-06-24: preflight n_ctx check BEFORE flushing headers.
 	if err := clampNPredictToFitContext(modelName, prompt, &params); err != nil {
 		var perr *PromptExceedsNCtxError
@@ -1186,9 +1206,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	sw.SetHeader("Content-Type", "application/x-ndjson")
+	sw.SetHeader("Cache-Control", "no-cache")
+	sw.SetHeader("Connection", "keep-alive")
 	// Round 6 Fix 5: do NOT flush headers immediately — buffer the response.
 	// Previously every prose token was sent on the wire and then the final
 	// chunk tried to set content="" with tool_calls — clients got garbage
@@ -1196,7 +1216,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// no flushes. After inference, parse tool_calls and emit one final
 	// chunk (either tool_calls or content). Heartbeat goroutine keeps
 	// the connection alive during long generations.
-	flusher.Flush()
+	sw.Flush()
 	ctx := r.Context()
 	// R63 (2026-09-15): per-infer AbortWatcher создаётся внутри GenerateStream
 	// (inference.go:521), там где доступен abortFlag от C-bridge.
@@ -1234,10 +1254,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if _, err := fmt.Fprintf(w, "{\"keepalive\":true}\n"); err != nil {
+				if !sw.Writef("{\"keepalive\":true}\n") {
+					// Клиент отвалился — writer помечен broken, выходим.
 					return
 				}
-				flusher.Flush()
+				sw.Flush()
 			}
 		}
 	}()
@@ -1264,6 +1285,12 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			return false
 		default:
 		}
+		// R83: writer broken (клиент ушёл) → прекращаем генерацию немедленно.
+		if sw.IsBroken() {
+			return false
+		}
+		// R83: чистим управляющие символы (см. stream_sanitize.go).
+		token = sanitizeStreamText(token)
 		outputBuf.WriteString(token)
 		// R66b: TTFT — время первого непустого токена.
 		if token != "" {
@@ -1299,8 +1326,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			// ????? ?????? HTTP-?????? ? response (best-effort: ???? streaming ??? ????? ? http.status ????? ?????????????? ????????, ?? ??? ? NDJSON ??? ????? ????? ???????).
 			w.Header().Set("X-CppWorker-Error", "reload_loop_limit")
 			w.Header().Set("X-HTTP-Status", "413")
-			fmt.Fprintf(w, "%s\n", errJSON)
-			flusher.Flush()
+			sw.Writef("%s\n", errJSON)
+			sw.Flush()
 			return
 		}
 		errChunk := map[string]interface{}{
@@ -1312,8 +1339,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			"error":       streamErr.Error(),
 		}
 		errJSON, _ := json.Marshal(errChunk)
-		fmt.Fprintf(w, "%s\n", errJSON)
-		flusher.Flush()
+		sw.Writef("%s\n", errJSON)
+		sw.Flush()
 		return
 	}
 
@@ -1334,8 +1361,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			"error":       "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
 		}
 		errJSON, _ := json.Marshal(errChunk)
-		fmt.Fprintf(w, "%s\n", errJSON)
-		flusher.Flush()
+		sw.Writef("%s\n", errJSON)
+		sw.Flush()
 		return
 	}
 
@@ -1410,6 +1437,6 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	}
 
 	doneJSON, _ := json.Marshal(finalChunk)
-	fmt.Fprintf(w, "%s\n", doneJSON)
-	flusher.Flush()
+	sw.Writef("%s\n", doneJSON)
+	sw.Flush()
 }

@@ -1143,6 +1143,10 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			// Заменяем ДО эмита в SSE для правильного отображения.
 			reasoningDelta = strings.ReplaceAll(reasoningDelta, `\\n`, "\n")
 			contentDelta = strings.ReplaceAll(contentDelta, `\\n`, "\n")
+			// R83 (2026-09-26): чистим управляющие символы — клиентские
+			// JSON-парсеры падают на них с «Invalid control character».
+			reasoningDelta = sanitizeStreamText(reasoningDelta)
+			contentDelta = sanitizeStreamText(contentDelta)
 
 			// Header-chunk: первый чанк содержит role=assistant. Отправляется ОДИН раз
 			// до первого reasoning/content delta. Это упрощает клиент-парсер.
@@ -1173,7 +1177,8 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		}
 
 		// Non-reasoning путь: legacy-логика с одним SSE чанком и content=token.
-		delta := map[string]interface{}{"role": "assistant", "content": token}
+		// R83 (2026-09-26): управляющие символы вычищаем и здесь.
+		delta := map[string]interface{}{"role": "assistant", "content": sanitizeStreamText(token)}
 		if !writeReasoningChunk(delta) {
 			return false
 		}

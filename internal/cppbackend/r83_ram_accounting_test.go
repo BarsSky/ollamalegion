@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/memfit"
 )
 
 // r83InjectQwen38 — Backend с одним «файлом на диске» и без загруженных моделей.
@@ -70,39 +70,59 @@ func TestR83_ResourceLimits_TaggedNameResolvesGGUF(t *testing.T) {
 	}
 }
 
-// TestR83_OptimalGPULayers_UsesAvailableRAMNotTotal — гард RAM-fallback должен
+// TestR83_RAMFallback_UsesAvailableRAMNotTotal — гард RAM-fallback должен
 // опираться на СВОБОДНУЮ память, а не на установленную.
-func TestR83_OptimalGPULayers_UsesAvailableRAMNotTotal(t *testing.T) {
-	newBackend := func() *Backend {
-		return &Backend{
-			gpuDevices: []bridge.GPUDevice{
-				{Index: 0, VRAMTotalMB: 8 * 1024, VRAMFreeMB: 7 * 1024},
-			},
-		}
-	}
+//
+// R83 §9.4 (2026-09-26): переписан на memfit. Раньше тест проверял
+// Backend.CalculateOptimalGPULayers — функция удалена (продовых вызовов не было,
+// раскладку считает memfit). Проверяем то же свойство на том же входе:
+// 16 GiB весов + n_ctx=131072 при 10 GiB свободной RAM обязаны не поместиться,
+// при 64 GiB — поместиться, и причина обязана называть СВОБОДНУЮ память.
+func TestR83_RAMFallback_UsesAvailableRAMNotTotal(t *testing.T) {
 	const modelSize = 16 * 1024 * 1024 * 1024 // 16 GiB весов
 	const ctx = 131072
+	spec := MemfitSpecFromValues("m", modelSize, 64, 24, 4, 5120, ctx, 16, 256)
 
-	// 1. Свободно 10 GB, а нужно ~40 GB (веса на CPU + KV) → обязан быть отказ
-	//    с диагностикой, а не «загружено и непригодно».
-	t.Setenv("CPPWORKER_AVAILABLE_RAM_BYTES", "10737418240") // 10 GiB
-	_, _, diag := newBackend().CalculateOptimalGPULayers(modelSize, 64, 24, 4, 5120, 20, ctx, "f16")
-	if diag == nil || diag.Recomendation == "" {
-		t.Errorf("при 10 GiB свободной RAM загрузка 16 GiB модели с n_ctx=%d должна быть отклонена с диагностикой (получено diag=%+v)", ctx, diag)
+	evalWithRAM := func(ramGB int64) memfit.Verdict {
+		budget := memfit.Budget{
+			VRAMTotal:   memfit.MiBOf(7 * 1024),
+			VRAMFree:    memfit.MiBOf(7 * 1024),
+			VRAMKnown:   true,
+			VRAMReserve: memfit.MiBOf(2048),
+			RAMTotal:    memfit.GiBOf(ramGB),
+			RAMAvail:    memfit.GiBOf(ramGB),
+			RAMKnown:    true,
+			RAMReserve:  memfit.MiBOf(4096),
+		}
+		return memfit.Evaluate(spec, memfit.Request{Ctx: ctx, KVType: memfit.KVQ8}, budget, MemfitPolicy())
 	}
 
-	// 2. Свободно 64 GB → тот же запрос обязан пройти.
-	t.Setenv("CPPWORKER_AVAILABLE_RAM_BYTES", "68719476736") // 64 GiB
-	_, _, diag2 := newBackend().CalculateOptimalGPULayers(modelSize, 64, 24, 4, 5120, 20, ctx, "f16")
-	if diag2 != nil && diag2.Recomendation != "" {
-		t.Errorf("при 64 GiB свободной RAM загрузка должна быть одобрена, получена диагностика: %s", diag2.Recomendation)
+	// 1. Свободно 10 GiB → 16 GiB весов + KV не влезают: отказ, а не тихое
+	//    «загрузим и посмотрим».
+	tight := evalWithRAM(10)
+	if tight.Fits() {
+		t.Errorf("10 GiB свободной RAM: stage=%s — должно быть does_not_fit", tight.Stage)
+	}
+	if !tight.HasReason(memfit.ReasonRAMShort) && !tight.HasReason(memfit.ReasonWeightsExceedVRAM) {
+		t.Errorf("причина отказа не названа: %s", tight.String())
 	}
 
-	// 3. Отказ обязан называть СВОБОДНУЮ память, а не установленную.
-	t.Setenv("CPPWORKER_AVAILABLE_RAM_BYTES", "10737418240")
-	_, _, diag3 := newBackend().CalculateOptimalGPULayers(modelSize, 64, 24, 4, 5120, 20, ctx, "f16")
-	if diag3 == nil || !strings.Contains(diag3.Recomendation, "RAM=10240 MB") {
-		t.Errorf("диагностика должна содержать свободную RAM (RAM=10240 MB), получено: %v", diag3)
+	// 2. Свободно 64 GiB → тот же запрос проходит.
+	roomy := evalWithRAM(64)
+	if !roomy.Fits() {
+		t.Errorf("64 GiB свободной RAM: stage=%s — запрос обязан пройти (%s)",
+			roomy.Stage, roomy.String())
+	}
+
+	// 3. Отказ обязан называть ДОСТУПНУЮ память (10 GiB минус системный резерв
+	//    4 GiB = 6.00 GiB), а не установленную, — иначе оператор не поймёт, чего
+	//    именно не хватает.
+	detail := tight.ReasonDetail(memfit.ReasonRAMShort)
+	if !strings.Contains(detail, "6.00 GiB") {
+		t.Errorf("причина не содержит доступную RAM (6.00 GiB = 10 GiB − резерв 4 GiB): %q", detail)
+	}
+	if strings.Contains(detail, "10.00 GiB") {
+		t.Errorf("причина назвала установленную/полную RAM вместо доступной: %q", detail)
 	}
 }
 

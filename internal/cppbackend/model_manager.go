@@ -849,13 +849,6 @@ func EstimateGPUMemoryForModel(sizeBytes int64, gpuLayers int, totalLayers int, 
 	return uint64(gpuMemoryMB + ctxMemoryMB + computeBufferMB)
 }
 
-// backwardCompatEstimateGPUMemoryForModel — старая сигнатура без ctxSize.
-// Используется в legacy-коде; внутри вызывает новую с дефолтным ctx=4096.
-// Оставлена для обратной совместимости с тестами и сторонними вызовами.
-func backwardCompatEstimateGPUMemoryForModel(sizeBytes int64, gpuLayers int, totalLayers int) uint64 {
-	return EstimateGPUMemoryForModel(sizeBytes, gpuLayers, totalLayers, 4096)
-}
-
 // GetModelArchitectureFromFile пытается определить архитектуру по GGUF файлу
 // без полной загрузки. Использует только первые байты файла (magic + header).
 // В реальности это в C bridge — llama.cpp может читать header.

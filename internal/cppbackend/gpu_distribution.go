@@ -402,25 +402,6 @@ func (m *GPUManager) GetVRAMSummary() map[string]interface{} {
 	}
 }
 
-// EstimateModelVRAM оценивает VRAM для модели на одном GPU
-// Использует ту же эвристику что EstimateGPUMemoryForModel (теперь с ctxSize + compute buffer)
-func EstimateModelVRAM(sizeBytes int64, gpuLayers int, totalLayers int, ctxSize int) uint64 {
-	// 2026-06-26: новая сигнатура EstimateGPUMemoryForModel уже учитывает ctxSize
-	// через ctxMemoryMB (KV-cache) и computeBufferMB (1 GB overhead).
-	// Дополнительной поправки больше не требуется.
-	base := EstimateGPUMemoryForModel(sizeBytes, gpuLayers, totalLayers, ctxSize)
-	if base == 0 {
-		return 0
-	}
-
-	// ctxOverhead оставлен для обратной совместимости с legacy-вызовами
-	// (если базовая оценка когда-то изменится обратно на hardcoded ctx=512MB).
-	// Сейчас ctxOverhead = 0, потому что база уже включает ctxMemoryMB.
-	ctxOverhead := uint64(0)
-
-	return base + ctxOverhead
-}
-
 // ============================================================
 // String representation
 // ============================================================

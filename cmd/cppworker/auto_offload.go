@@ -23,9 +23,7 @@ import (
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
-	"os/exec"
 	"strings"
-	"strconv"
 )
 
 // kvCacheBytesPerType возвращает количество байт на KV-pair в зависимости от типа KV-cache.
@@ -133,17 +131,32 @@ func legacyCalculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType
 		// Нет метаданных (только что загруженная без path/size) — fallback.
 		return currentConfig.DefaultGPULayers
 	}
-	availableVRAM := availableVRAMBytes()
-	if availableVRAM <= 0 {
-		// Fallback: пробуем через nvidia-smi
-		availableVRAM = nvidiaSmiVRAMBytes()
+	// R83 §9.4 шаг 4 (2026-09-26): спрашиваем СВОБОДНУЮ VRAM, а не полную.
+	// Прежний код брал availableVRAMBytes() — это ёмкость карты (bridge отдаёт
+	// VRAMTotalMB), на 3070 это 8 GB против ~1 GB фактически свободных. Из-за
+	// этого legacy-фоллбэк планировал слои в VRAM, которой уже нет.
+	freeVRAM := freeVRAMBytes()
+	if freeVRAM <= 0 {
+		// Fallback: nvidia-smi --query-gpu=memory.free
+		freeVRAM = tryNvidiaSMIFree()
 	}
-	if availableVRAM <= 0 {
+	if freeVRAM <= 0 {
+		// Могли не получить free (старый bridge) — берём полную ёмкость как
+		// верхнюю границу и предупреждаем: оценка будет оптимистичной.
+		freeVRAM = availableVRAMBytes()
+		if freeVRAM > 0 {
+			logger.Get().Warnw("auto_offload: свободная VRAM неизвестна, используем полную ёмкость карты "+
+				"(оценка числа слоёв оптимистична)",
+				"model", m.Name, "total_vram_mb", freeVRAM/(1024*1024))
+		}
+	}
+	if freeVRAM <= 0 {
 		// Не смогли узнать VRAM — fallback.
 		logger.Get().Warnw("auto_offload: cannot determine available VRAM (NVML + nvidia-smi both failed), using DefaultGPULayers",
 			"model", m.Name)
 		return currentConfig.DefaultGPULayers
 	}
+	availableVRAM := freeVRAM
 	safetyFactor := 0.85
 	safeVRAM := int64(float64(availableVRAM) * safetyFactor)
 	overheadBytes := int64(1536) * 1024 * 1024 // 1.5 GB
@@ -191,28 +204,6 @@ func legacyCalculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType
 		"n_ctx", nCtx,
 		"gpu_layers", gpuLayers)
 	return gpuLayers
-}
-
-// nvidiaSmiVRAMBytes — fallback для availableVRAMBytes через nvidia-smi.
-// Используется когда NVML недоступен. Возвращает свободную VRAM в байтах.
-func nvidiaSmiVRAMBytes() int64 {
-	cmd := exec.Command("nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits")
-	out, err := cmd.Output()
-	if err != nil {
-		return 0
-	}
-	line := strings.TrimSpace(string(out))
-	if line == "" {
-		return 0
-	}
-	// Берём первую строку (первая GPU), отрезаем единицы
-	parts := strings.SplitN(line, "\n", 2)
-	vramStr := strings.TrimSpace(parts[0])
-	vramMiB, err := strconv.ParseInt(vramStr, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return vramMiB * 1024 * 1024
 }
 
 // estimateKVCacheBytes — оценка размера KV-cache для n_ctx токенов.

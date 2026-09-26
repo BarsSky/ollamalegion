@@ -16,8 +16,6 @@ package cppbackend
 
 import (
 	"testing"
-
-	"ollama-loadbalancer/c/bridge"
 )
 
 func TestKVCacheBytesPerElem_R67a(t *testing.T) {
@@ -77,58 +75,16 @@ func TestEstimateKVCacheMB_KVTypeScales(t *testing.T) {
 	}
 }
 
-// TestCalculateOptimalGPULayers_KVTypeAffectsFit — при q4_0 модель влезает
-// целиком там, где с f16 эстиматор отправлял слои на CPU.
-func TestCalculateOptimalGPULayers_KVTypeAffectsFit(t *testing.T) {
-	// Бюджет VRAM подобран так, чтобы разница была видна:
-	//   модель 4.2 GB + f16 KV 3.7 GB = 7.9 GB > 7.4 GB → не влезает (offload);
-	//   модель 4.2 GB + q4_0 KV 1.0 GB = 5.2 GB ≤ 7.4 GB → влезает полностью.
-	const vramFreeMB = 7400
-	newBackend := func() *Backend {
-		return &Backend{
-			gpuCount: 1,
-			gpuDevices: []bridge.GPUDevice{
-				{Index: 0, VRAMTotalMB: 8 * 1024, VRAMFreeMB: vramFreeMB},
-			},
-		}
-	}
-	const modelSize = 4215695776 // gemma-4-E4B-it-Q4_K_M
-
-	f16Layers, _, f16Diag := newBackend().CalculateOptimalGPULayers(
-		modelSize, 42, 8, 2, 2560, -1, 32768, "f16")
-	q4Layers, _, q4Diag := newBackend().CalculateOptimalGPULayers(
-		modelSize, 42, 8, 2, 2560, -1, 32768, "q4_0")
-
-	t.Logf("f16:  gpuLayers=%d diag=%v", f16Layers, f16Diag)
-	t.Logf("q4_0: gpuLayers=%d diag=%v", q4Layers, q4Diag)
-
-	if f16Layers >= 42 {
-		t.Errorf("предпосылка теста: с f16 при %d MB свободной VRAM все 42 слоя влезать не должны (got %d)",
-			vramFreeMB, f16Layers)
-	}
-	if q4Layers != 42 {
-		t.Errorf("при q4_0 все 42 слоя должны поместиться в %d MB: got %d", vramFreeMB, q4Layers)
-	}
-	if q4Layers <= f16Layers {
-		t.Errorf("q4_0 должен давать больше GPU-слоёв, чем f16: q4=%d f16=%d", q4Layers, f16Layers)
-	}
-}
-
 // TestCalculateResourceLimits_KVTypeRaisesNCtxCeiling — потолок n_ctx
 // (max_vram_n_ctx), который балансер использует как cap, должен вырастать при
 // квантованном KV. Это и есть «дать регулировать максимальный контекст/VRAM».
+//
+// R83 §9.4 (2026-09-26): тест на CalculateOptimalGPULayers удалён вместе с
+// функцией — её продовых вызовов не было (раскладку считает memfit). Что
+// kvCacheType реально влияет на потолок n_ctx, проверяется здесь и в
+// TestKVCacheBytesPerElem_R67a / TestEstimateKVCacheMB_KVTypeScales, а сама
+// раскладка по типам — в estimator_compare_r83_test.go (колонка memfit).
 func TestCalculateResourceLimits_KVTypeRaisesNCtxCeiling(t *testing.T) {
-	makeBackend := func(kvType string) *Backend {
-		b := &Backend{
-			gpuCount: 1,
-			gpuDevices: []bridge.GPUDevice{
-				{Index: 0, VRAMTotalMB: 8 * 1024, VRAMFreeMB: 8 * 1024},
-			},
-			cfg: Config{DefaultKVCacheType: kvType},
-		}
-		return b
-	}
-
 	// Модель не загружена → метаданные через ModelManager недоступны, но лимиты
 	// считаются по конфигу; для теста достаточно сравнить, что дефолтный тип KV
 	// из конфига реально влияет на kvPerToken → max_vram_n_ctx.
@@ -147,7 +103,6 @@ func TestCalculateResourceLimits_KVTypeRaisesNCtxCeiling(t *testing.T) {
 		t.Errorf("ожидалось ускорение потолка n_ctx в ~3.6 раза при q4_0, получили %.2f×", ratio)
 	}
 	t.Logf("потолок n_ctx при q4_0 вырастет в %.2f× относительно f16", ratio)
-	_ = makeBackend // конфиг-зависимость проверяется в vram_overhead тесте ниже
 }
 
 // TestVRAMOverheadConfig_R67a — настраиваемый резерв VRAM.

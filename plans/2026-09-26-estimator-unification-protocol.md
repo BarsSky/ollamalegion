@@ -180,21 +180,32 @@ Select-String -Path internal\cppbackend\*.go,cmd\cppworker\*.go `
 весам), но комментарий врёт — при следующем касании этого места KV нужно
 считать через `KVLayersFor`/`KVHeadDimFor`, как в C-bridge и memfit.
 
-### Шаг 4. Уборка `vram_detect.go`
+### Шаг 4. Уборка `vram_detect.go` — ДЕЛАЕТСЯ СЕЙЧАС (v17)
 
 `availableRAMBytes` уже делегирует в `memfit.ProbeRAM` (§9.4a).
 
-**Остаётся `availableVRAMBytes`** — у него 7 продовых вызовов
-(`auto_offload.go:136`, `auto_tune_nctx.go:85`, `handlers_model.go:1711,1718`,
-`lazyload.go:243,304`, `lazyload_calc.go:175`), то есть это не мёртвый код, а
-второй (наряду с `Backend.MemfitBudget`) способ узнать свободную VRAM: через
-bridge, с fallback на `CPPWORKER_VRAM_BYTES` и `nvidia-smi`. Кандидат — оставить
-один путь (`MemfitBudget` → `bridge`, где `nvidia-smi` уже есть) и удалить
-`nvidiaSmiVRAMBytes`.
+**Найденный дефект (шаг 4):** `availableVRAMBytes()` возвращает **полную ёмкость
+карты** (bridge отдаёт `VRAMTotalMB`), а не свободную VRAM — и именно её
+спрашивал legacy-фоллбэк раскладки слоёв. На живом стенде (3070 8 GB) это
+8191 MB против ~1033 MB фактически свободных: оценка была оптимистична в 8 раз.
+`freeVRAMBytes()` рядом читает `VRAMFreeMB` — то же, что `memfit.Budget`.
 
-**Проверка:** `cmd/cppworker` тесты (`ram_fallback_env_test.go`,
-`auto_tune_nctx_test.go`), плюс живой `-Strict` прогон §9 (он смотрит
-`vram_known`).
+**Сделано:**
+- `legacyCalculateOptimalGPULayersForModel` теперь берёт `freeVRAMBytes()`
+  (fallback `tryNvidiaSMIFree()`, и только если free неизвестен — полная
+  ёмкость **с предупреждением** в лог, что оценка оптимистична);
+- удалён дубль `nvidiaSmiVRAMBytes` из `auto_offload.go` (то же, что
+  `tryNvidiaSMIFree`, но с `memory.free` в имени функции под словом «VRAM»);
+- `availableVRAMBytes` больше НЕ используются в расчётах — только для
+  диагностики/логов (`handlers_model.go`, `lazyload*.go`, `auto_tune_nctx.go`);
+  в комментарии к функции это записано явно;
+- тесты `vram_detect_free_r83_test.go`: free и total — разные величины, каждая
+  читает свою переменную окружения; на стенде с загруженной моделью
+  free < total.
+
+**Что осталось (шаг 4б):** сводить `availableVRAMBytes` с `MemfitBudget` не
+нужно — она честно отвечает на вопрос «сколько всего», а расчёты на неё больше
+не опираются. Если понадобится, оставшиеся вызовы (7) — только логи.
 
 ---
 

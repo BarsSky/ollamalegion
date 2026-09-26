@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -202,73 +203,37 @@ func availableRAMBytes() int64 {
 	// R66c (2026-09-22): если переменная ЗАДАНА, но значение некорректно —
 	// возвращаем 0 и громко предупреждаем, НЕ проваливаясь в автоопределение.
 	//
-	// Раньше некорректное значение молча игнорировалось и выполнялась стратегия 2:
-	// на Linux подхватывался /proc/meminfo, поэтому явная (но ошибочная)
-	// настройка оператора «не отрабатывала», а заметить это было нечем —
-	// на Windows /proc/meminfo нет, и поведение отличалось от Linux
-	// (именно так расходились локальный прогон и CI:
-	// TestAvailableRAMBytes_InvalidEnv).
-	//
 	// 0 = «достоверно неизвестно» → AutoTuneNCtx пропускает RAM-проверку
 	// (консервативно), вместо того чтобы считать по чужим цифрам.
-	if v := os.Getenv("CPPWORKER_AVAILABLE_RAM_BYTES"); v != "" {
+	//
+	// R83 §9.4 (2026-09-26): дальше делегируем в memfit.ProbeRAM — единственный
+	// ридер системной памяти. Раньше здесь была СВОЯ реализация (meminfo →
+	// sysctl → Windows GlobalMemoryStatusEx), и она расходилась с memfit:
+	// cgroup-лимит контейнера не учитывался вовсе, поэтому внутри Docker
+	// «доступная RAM» показывала память всей VM (24.5 GB вместо фактических
+	// ~18.8 GB) — ровно то, из-за чего решение о раскладке одобряло загрузку,
+	// которая не помещалась.
+	if v := strings.TrimSpace(os.Getenv("CPPWORKER_AVAILABLE_RAM_BYTES")); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
-		if err == nil && n > 0 {
-			return n
+		if err != nil || n <= 0 {
+			logger.Get().Warnw("CPPWORKER_AVAILABLE_RAM_BYTES задан, но некорректен — "+
+				"автоопределение RAM пропущено, возвращаем 0 (AutoTune пропустит RAM-проверку). "+
+				"Ожидалось положительное целое число байт.",
+				"value", v, "parse_error", err)
+			return 0
 		}
-		logger.Get().Warnw("CPPWORKER_AVAILABLE_RAM_BYTES задан, но некорректен — "+
-			"автоопределение RAM пропущено, возвращаем 0 (AutoTune пропустит RAM-проверку). "+
-			"Ожидалось положительное целое число байт.",
-			"value", v, "parse_error", err)
+		return n
+	}
+
+	probe := memfit.ProbeRAM()
+	if !probe.Known {
+		logger.Get().Debugw("availableRAMBytes: memfit.ProbeRAM не смог определить память")
 		return 0
 	}
-
-	// Стратегия 2: Linux /proc/meminfo MemAvailable.
-	data, err := os.ReadFile("/proc/meminfo")
-	if err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "MemAvailable:") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil && kb > 0 {
-						return kb * 1024
-					}
-				}
-			}
-		}
-		// Если MemAvailable нет, попробуем MemFree + Cached.
-		var memFree, cached int64
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "MemFree:") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil && kb > 0 {
-						memFree = kb * 1024
-					}
-				}
-			} else if strings.HasPrefix(line, "Cached:") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil && kb > 0 {
-						cached = kb * 1024
-					}
-				}
-			}
-		}
-		if memFree+cached > 0 {
-			return memFree + cached
-		}
+	// cgroup-лимит — более жёсткая граница, чем память VM: если он известен,
+	// берём минимум (в контейнере MemAvailable считает всю VM).
+	if probe.LimitKnown && probe.Limit > 0 && probe.Limit < probe.Available {
+		return int64(probe.Limit)
 	}
-
-	// Стратегия 3: macOS sysctl.
-	out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
-	if err == nil {
-		if n, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64); err == nil && n > 0 {
-			return n
-		}
-	}
-
-	// Стратегия 4: ничего не помогло — возвращаем 0 (AutoTuneNCtx пропустит RAM-проверку).
-	logger.Get().Debugw("availableRAMBytes: all strategies failed, returning 0")
-	return 0
+	return int64(probe.Available)
 }

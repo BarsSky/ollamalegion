@@ -99,6 +99,34 @@ func (p *Proxy) publishLoadFailureEvent(evType types.EventType, backendID, model
 		"backend", backendID, "model", model, "severity", severity, "message", message)
 }
 
+// publishLoadFailureEventDeduped — публикация с дедупликацией по (backend, key).
+//
+// R83 §9.3 (2026-09-26): нужно для путей, которые повторяются при каждом запросе
+// клиента (например, провал async auto-load): без этого одно и то же событие
+// уходило бы в EventBus на каждую попытку и вытесняло полезную историю из
+// ring buffer (100 событий), а оператор получал бы лавину уведомлений.
+//
+// Семантика: сообщаем, только когда ключ СМЕНИЛСЯ. Пустой key сбрасывает запись.
+func (p *Proxy) publishLoadFailureEventDeduped(backendID, key string,
+	severity types.EventSeverity, message string, data map[string]interface{}) {
+	if p == nil || key == "" {
+		return
+	}
+	p.loadFailureMu.Lock()
+	if p.loadFailureSeen == nil {
+		p.loadFailureSeen = make(map[string]string)
+	}
+	dedupKey := "pump:" + backendID
+	if prev, ok := p.loadFailureSeen[dedupKey]; ok && prev == key {
+		p.loadFailureMu.Unlock()
+		return
+	}
+	p.loadFailureSeen[dedupKey] = key
+	p.loadFailureMu.Unlock()
+
+	p.publishLoadFailureEvent(types.EventNotification, backendID, "", severity, message, data)
+}
+
 // loadFailureEventSeverity — severity события из severity причины. Неизвестное
 // значение трактуем как warning: пугать оператора error'ом без причины нельзя.
 func loadFailureEventSeverity(reasonSeverity string) types.EventSeverity {

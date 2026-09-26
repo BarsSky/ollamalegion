@@ -776,6 +776,21 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 				}
 				ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: async load failed",
 					"backend", backendID, "model", modelName, "error", result.Error)
+				// R83 §9.3 (2026-09-26): оператор должен узнать о провале из WebUI,
+				// а не только из лога. Событие публикуется в EventBus → SSE ring
+				// buffer (см. eventsHub.startPump) → bell-меню и recent-errors в
+				// /api/v1/health/detailed. Дедупликация по (backend, модель+текст):
+				// повторные провалы с той же причиной не спамят.
+				lr.proxy.publishLoadFailureEventDeduped(backendID,
+					"auto_load_failed|"+modelName+"|"+result.Error,
+					types.SeverityWarning,
+					"Не удалось загрузить модель "+modelName+": "+result.Error,
+					map[string]interface{}{
+						"event_kind": "auto_load_failed",
+						"model":      modelName,
+						"raw_error":  result.Error,
+						"path":       "async_auto_load",
+					})
 				loadDone <- fmt.Errorf("%s", result.Error)
 			} else {
 				lr.loadBackoff.recordSuccess(backendID, modelName)

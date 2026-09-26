@@ -1007,6 +1007,37 @@ func handleUnloadModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.Get().Infow("unloading model", "name", name, "force", force)
+
+	// R83 §9.6 D-C (2026-09-26): unload во время ЗАГРУЗКИ — не барьер.
+	//
+	// Проверка выше смотрит только активные inference-запросы (InFlight), а
+	// фоновая загрузка в неё не попадает. Поэтому unload 16 GB модели,
+	// которая сейчас читается с диска, отвечал 200 мгновенно: модель удалялась
+	// из реестра, а через минуты возвращалась туда фоновой загрузкой —
+	// «model loaded в логе, /api/models → count=0», то есть расхождение
+	// состояния и 200 OK на операцию, которая фактически не произошла.
+	//
+	// Честный ответ — 409, как и для активной генерации: вызывающий (WebUI,
+	// скрипт) должен знать, что сейчас unload невозможен. force=true
+	// продавливает: загрузка не отменяется мгновенно (у неё свои checkpoints),
+	// но после неё модель будет выгружена — последовательность команд
+	// «unload --force» + «load» даёт предсказуемый результат.
+	if backend.IsLoading(name) {
+		if !force {
+			logger.Get().Warnw("unload refused: model is loading",
+				"name", name)
+			writeJSON(w, http.StatusConflict, map[string]interface{}{
+				"error": "model is currently loading",
+				"name":  name,
+				"hint": "wait for the load to finish (poll /api/models until state=loaded), " +
+					"or retry with ?force=true to unload right after it completes",
+			})
+			return
+		}
+		logger.Get().Warnw("unload force=true during active load — модель будет выгружена после завершения загрузки",
+			"name", name)
+	}
+
 	if err := backend.UnloadModel(name); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return

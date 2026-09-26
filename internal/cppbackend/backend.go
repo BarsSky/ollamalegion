@@ -1802,6 +1802,20 @@ func (b *Backend) IsModelLoading(name string) bool {
 	return state == StateLoading
 }
 
+// IsLoading сообщает, идёт ли сейчас загрузка или перезагрузка модели name.
+//
+// R83 §9.6 D-C (2026-09-26): нужен обработчику unload. Раньше unload во время
+// загрузки 16 GB отвечал 200 мгновенно (проверялись только активные
+// inference-запросы через InFlight, а загрузка там не учитывается): модель
+// удалялась из реестра и тут же возвращалась туда фоновой загрузкой — то самое
+// «model loaded в логе, /api/models → count=0».
+func (b *Backend) IsLoading(name string) bool {
+	b.loadMu.Lock()
+	defer b.loadMu.Unlock()
+	_, ok := b.loading[name]
+	return ok
+}
+
 // TryLockLoad пытается зарезервировать эксклюзивное право на загрузку модели name.
 // Возвращает:
 //   - (true, nil): блокировка получена, вызывающий может начинать загрузку.

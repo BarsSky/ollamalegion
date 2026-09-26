@@ -5,6 +5,83 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.46 — R83 §9: остаток хендоффа — ожидание загрузки, vram_known, отказ no-fit, SSE-буфер (2026-09-26)]
+
+### ⏳ `LB_AUTO_LOAD_WAIT_SEC` учитывает размер модели (§9.1)
+
+Живой инцидент: 16.4 GB модель (Qwen3.8-27B) на bind-mount грузится 7-9 минут,
+а жёсткие 180 с обрывали ожидание — клиент получал «auto-load failed», повторял
+запрос и запускал **вторую** загрузку. «Датчик бездействия» (R83) лечит это,
+пока прогресс доступен; тир по размеру — резерв на случай, когда
+`/api/models/load/progress` ничего не сообщает.
+
+- `(*Proxy).autoLoadWaitTimeoutForModel(modelName)`:
+  `LB_AUTO_LOAD_WAIT_SEC` задан явно → уважаем его; иначе
+  `max(180s, sizeBytes / 20 MB/s)`, не больше `autoLoadHardCeiling` (30 мин);
+- `ensureModelLoadedOnBackend` использует этот метод вместо глобального
+  `lbAutoLoadWait` (поле осталось для совместимости с тестами);
+- тестовый шов `modelSizeBytesForTest` — проверить тиры иначе нельзя;
+- тесты: 4 GB → ~3.4 мин, 8 GB → ~6.8 мин, 16.4 GB → ~13 мин; явный env,
+  `0`, отрицательное и мусор в env; потолок 30 мин; неизвестный размер → 180 с.
+
+### 🔍 Балансер различает «VRAM неизвестна» и «веса не влезают» (§9.2)
+
+`max_vram_n_ctx == 0` означал два разных случая, и preflight не различал их:
+при нуле проверка потолка VRAM просто пропускалась, поэтому случай «VRAM
+известна, но веса модели в неё не влезают» уходил в reload-ветку — клиент ждал
+reload, который физически не мог помочь, и получал таймаут.
+
+- `types.LlamaCppMetrics.VramKnown` + per-model `LlamaCppModel.VramKnown`;
+  poller читает top-level и per-model `vram_known` из `/api/models`;
+- `NCtxBackendState.VRAMKnown` / `AvailableVRAMMB` заполняются в
+  `collectPreflightState` (per-model приоритетнее top-level);
+- в `DecidePreflight` перед NoOp-веткой: `VRAMKnown && MaxVRAMNCtx == 0` →
+  отказ 413 с `vram_known: true` и suggestion «меньшая модель/квант: веса не
+  влезают, reload не поможет». Важно: отказ срабатывает только если клиент
+  просит **больше** текущего n_ctx — уже работающую partial-offload сессию не
+  ломаем;
+- `makePreflightRejectWithSuggestion` — тот же ответ с заменой `suggestion`
+  (общий совет «поднимите contextLengthMax» здесь неверен);
+- тесты: отказ, fail-open при неизвестной VRAM, рабочий reload при
+  положительном потолке.
+
+### 🚫 `fallback_no_fit` — отказ, а не «попробуем всё равно» (§9.3)
+
+Ветка «не влезает даже в CPU-only» писала только error в лог, и загрузка
+продолжалась: 16.4 GB модель уезжала в RAM целиком, вытесняя всё остальное, а
+клиент видел OOM/таймаут вместо причины.
+
+- `insufficientResourcesFromFallbackNoFit` строит `*InsufficientResourcesError`
+  (её понимает `handleInferenceError` → HTTP 413 + structured JSON, `code=6`);
+- отказ вызывается в `ensureModelLoaded` (все inference-пути) и в
+  `handleLoadWithParams` (явный путь с числами от `AutoTuneNCtx`);
+- поведение `calculateLazyLoadOpts` не изменено (source и opts как раньше) —
+  изменилось только решение вызывающих;
+- тесты: типизированный отказ с числами, остальные source не затронуты,
+  HTTP-форма 413 + `insufficient_resources`.
+
+### 📥 SSE ring buffer наполняется без подключённых клиентов (§9.5)
+
+`buf.push` вызывался **внутри** live-цикла конкретного SSE-клиента, поэтому без
+подключённого клиента буфер был пуст: `GET /api/v1/events` при переподключении не
+отдавал пропущенные нотификации, а секция recent-errors в `/api/v1/health` —
+всегда пуста.
+
+- `eventsHub.startPump(bus)` подписывается на EventBus один раз (идемпотентно) и
+  пишет нотификации в буфер независимо от клиентов; `SetEventBus` вызывает его;
+- из `handleEvents` push убран (иначе при подключённом клиенте история вытеснялась
+  вдвое быстрее);
+- тесты: событие без клиентов попадает в snapshot, не-нотификации игнорируются,
+  повторный `startPump` не плодит подписки.
+
+### 🔧 Прочее
+
+- `PreflightResult` отказа теперь содержит `vram_known` — оператор видит,
+  измерена ли VRAM.
+
+**Проверка:** `go build`/`go vet -tags llama_stub` — чисто; `cmd/cppworker`,
+`internal/cppbackend`, `internal/balancer`, `internal/api` — зелёные.
+
 ## [0.5.45 — R83: стрим /api/chat не рвётся и не ломает JSON у клиента (2026-09-26)]
 
 ### 🐛 «Invalid control character» на длинной генерации: причина найдена

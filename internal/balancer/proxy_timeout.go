@@ -431,6 +431,10 @@ func (p *Proxy) getGlobalFirstByteTimeout() time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
+// modelSizeBytesForTest — тестовый шов для getModelSizeBytes (nil в проде).
+// Нужен, чтобы проверять тиры таймаутов по размеру модели без реальных профилей.
+var modelSizeBytesForTest func(modelName string) int64
+
 // getModelSizeBytes возвращает размер модели в байтах из per-model профиля
 // или из метрик загруженных моделей на бэкендах.
 // Приоритет:
@@ -438,6 +442,14 @@ func (p *Proxy) getGlobalFirstByteTimeout() time.Duration {
 //  2. LoadedModel size из llamaMetrics любого бэкенда (LlamaCppModel.Size)
 //  3. 0 — если размер неизвестен
 func (p *Proxy) getModelSizeBytes(modelName string) int64 {
+	// Тестовый шов: R83 §9.1 — тир ожидания авто-загрузки зависит от размера
+	// модели, и проверить это иначе как подменой источника размера нельзя
+	// (реальные профили/метрики в юнит-тесте недоступны). Пакетная переменная, а
+	// не поле Proxy: структура остаётся в своём allocator size class
+	// (govet fieldalignment).
+	if modelSizeBytesForTest != nil {
+		return modelSizeBytesForTest(modelName)
+	}
 	if modelName == "" {
 		return 0
 	}

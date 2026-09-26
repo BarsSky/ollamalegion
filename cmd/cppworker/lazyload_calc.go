@@ -310,7 +310,16 @@ func calculateLazyLoadOpts(
 			"available_ram_mb", availableRAM/(1024*1024))
 		// ?????????? opts ??? ???? ? ????? llama.cpp ????????? ? ??????
 		// ? ???????? ??????? OOM. ???????????? ?????? actionable ?????????.
+		// R83 §9.3 (2026-09-26): Source="fallback_no_fit" — это НЕ «попробуем
+		// всё равно», а «не влезает даже в CPU-only». Возвращаем opts как есть
+		// (поведение calculateLazyLoadOpts не меняем), но вызывающие обязаны
+		// отказать: см. insufficientResourcesFromFallbackNoFit() и её вызовы
+		// в lazyload.go (ensureModelLoaded) и handlers_model.go
+		// (handleLoadWithParams). Иначе llama.cpp получает заведомо
+		// непомещающийся план и падает OOM (или грузит 16 GB в RAM, вытесняя
+		// всё остальное).
 		rationale.Source = "fallback_no_fit"
+		rationale.MaxViableNCtx = int(maxNCtxCPUOnly)
 		return cppbackend.LoadModelOpts{
 			GPULayers:   requestedGPULayers,
 			ContextSize: requestedNCtx,
@@ -344,6 +353,32 @@ func calculateLazyLoadOpts(
 		BatchSize:   *batchSize,
 		UseMmap:     true,
 	}, rationale
+}
+
+// insufficientResourcesFromFallbackNoFit — R83 §9.3 (2026-09-26).
+//
+// Строит отказ для случая «модель не влезает даже в CPU-only». Раньше этот
+// случай (Source="fallback_no_fit") только писал error в лог, и загрузка
+// продолжалась: 16.4 GB модель уходила в RAM целиком, вытесняя всё остальное, а
+// клиент узнавал о проблеме по таймауту или OOM от llama.cpp.
+//
+// Возвращает nil, если rationale относится к другому случаю. Форма ошибки —
+// *InsufficientResourcesError: её понимает handleInferenceError (HTTP 413 +
+// structured JSON с code=6), и балансер проксирует ответ клиенту без изменений.
+func insufficientResourcesFromFallbackNoFit(modelName string, r LazyLoadRationale) error {
+	if r.Source != "fallback_no_fit" {
+		return nil
+	}
+	return &InsufficientResourcesError{
+		Model:              modelName,
+		RequestedNCtx:      r.RequestedNCtx,
+		MaxViableNCtx:      r.MaxViableNCtx,
+		AvailableVRAMMB:    r.AvailableVRAMBytes / (1024 * 1024),
+		AvailableRAMMB:     r.AvailableRAMBytes / (1024 * 1024),
+		ModelSizeBytes:     r.ModelSize,
+		KVCacheRequiredMB:  r.EstimatedKVCacheMB,
+		GPULayersAttempted: 0, // CPU-only: слоёв на GPU нет
+	}
 }
 
 // FormatRationale ? ??????????? ??? ???????????.

@@ -106,6 +106,10 @@ func (s *Server) GetImportHandler() http.HandlerFunc {
 func (s *Server) SetEventBus(bus EventBusLike) {
 	s.eventBus = bus
 	s.eventsHub = newEventsHub()
+	// R83 §9.5 (2026-09-26): наполняем ring buffer подпиской, живущей независимо
+	// от SSE-клиентов. Без этого буфер пуст, пока никто не подключён, и
+	// recent-errors в /api/v1/health всегда пуст.
+	s.eventsHub.startPump(bus)
 	logger.Get().Infow("Server.SetEventBus: SSE notifications endpoint enabled")
 }
 

@@ -4,8 +4,14 @@ package types
 type LlamaCppMetrics struct {
 	// MaxVRAMNCtx — макс. n_ctx, помещающийся в VRAM (из /api/models cppworker).
 	// Используется preflight_nctx для оценки возможности reload без round-trip.
-	// 0 = неизвестно (poller ещё не опросил бэкенд).
-	MaxVRAMNCtx     int    `json:"maxVramNCtx"`
+	// 0 = неизвестно (poller ещё не опросил бэкенд) ИЛИ веса не влезают —
+	// различает VramKnown (R83 §9.2).
+	MaxVRAMNCtx int `json:"maxVramNCtx"`
+	// VramKnown — cppworker сообщил, что VRAM ему известна (top-level
+	// `vram_known` в /api/models, R83). Вместе с MaxVRAMNCtx==0 означает «веса
+	// модели не помещаются в VRAM ни при каком gpu_layers»: reload бессмыслен, и
+	// preflight обязан отказать с причиной, а не гнать клиента в reload.
+	VramKnown       bool   `json:"vramKnown"`
 	MaxRAMNCtx      int    `json:"maxRamNCtx"`
 	AvailableVRAMMB uint64 `json:"availableVramMb"`
 	TotalVRAMMB     uint64 `json:"totalVramMb"`
@@ -80,6 +86,10 @@ type LlamaCppModel struct {
 	// Используется balancer'ом для 3-tier resolution: profile vs feasible vs GGUF.
 	FeasibleMaxContext int `json:"feasibleMaxContext,omitempty"`
 	GGUFMaxContext     int `json:"ggufMaxContext,omitempty"`
+	// R83 §9.2 (2026-09-26): per-model `vram_known` из /api/models cppworker.
+	// Если модель не загружена, cppworker отдаёт vram_known=false — тогда preflight
+	// не делает выводов о «веса не влезают» (см. NCtxBackendState.VRAMKnown).
+	VramKnown bool `json:"vramKnown,omitempty"`
 	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
 	// Заполняются только пока State == "loading" / "error". После успешной
 	// загрузки поля обнуляются (omitempty).

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -79,12 +80,74 @@ func (eb *eventsBuffer) snapshot() []types.Event {
 // eventsHub связывает EventBus (publisher) с SSE clients (subscribers) + ring buffer.
 type eventsHub struct {
 	buf *eventsBuffer
+	// R83 §9.5 (2026-09-26): подписка, живущая независимо от SSE-клиентов.
+	// До правки buf.push вызывался ТОЛЬКО внутри цикла чтения конкретного
+	// клиента (handleEvents), поэтому без подключённого клиента буфер не
+	// наполнялся: GET /api/v1/events при переподключении не отдавал пропущенные
+	// нотификации, а секция recent-errors в /api/v1/health была всегда пуста.
+	mu        sync.Mutex
+	subID     string
+	stopCh    chan struct{}
+	started   bool
+	// pushed — счётчик событий, положенных в буфер (для диагностики/тестов).
+	pushed int64
 }
 
 func newEventsHub() *eventsHub {
 	return &eventsHub{
 		buf: newEventsBuffer(eventsBufferCapacity),
 	}
+}
+
+// startPump запускает фоновую подписку, которая пишет нотификации в буфер
+// независимо от того, есть ли подключённые SSE-клиенты.
+//
+// Идемпотентно: повторный вызов с тем же bus ничего не делает; с новым bus —
+// отписывается от старого и подписывается заново.
+func (h *eventsHub) startPump(bus EventBusLike) {
+	if h == nil || bus == nil {
+		return
+	}
+	h.mu.Lock()
+	// Уже слушаем этот же bus — повторный SetEventBus не должен плодить горутины.
+	if h.started {
+		h.mu.Unlock()
+		return
+	}
+	subID, ch := bus.Subscribe()
+	h.subID = subID
+	h.stopCh = make(chan struct{})
+	stopCh := h.stopCh
+	h.started = true
+	h.mu.Unlock()
+
+	go func() {
+		for {
+			select {
+			case <-stopCh:
+				return
+			case ev, ok := <-ch:
+				if !ok {
+					return
+				}
+				// Интересуют только нотификации — ровно то, что отдаёт
+				// handleEvents (см. фильтр в его live-цикле).
+				if ev.Type != types.EventNotification {
+					continue
+				}
+				h.buf.push(ev)
+				atomic.AddInt64(&h.pushed, 1)
+			}
+		}
+	}()
+}
+
+// pushedCount — сколько событий попало в буфер (диагностика/тесты).
+func (h *eventsHub) pushedCount() int64 {
+	if h == nil {
+		return 0
+	}
+	return atomic.LoadInt64(&h.pushed)
 }
 
 // handleEvents — SSE endpoint для notifications.
@@ -192,10 +255,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if ev.Type != types.EventNotification {
 				continue
 			}
-			// Сохраняем в ring buffer для будущих подключений.
-			if s.eventsHub != nil {
-				s.eventsHub.buf.push(ev)
-			}
+			// R83 §9.5: в ring buffer событие уже положил фоновый pump
+			// (eventsHub.startPump) — здесь НЕ дублируем, иначе при подключённом
+			// клиенте буфер наполнялся бы вдвое быстрее и вытеснял историю.
 			if err := writeSSEEvent(w, ev); err != nil {
 				logger.Get().Debugw("handleEvents: client disconnected during live stream",
 					"remote", r.RemoteAddr, "error", err)

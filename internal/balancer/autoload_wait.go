@@ -51,24 +51,101 @@ const autoLoadPollInterval = 2 * time.Second
 //	По умолчанию 180s. Значение имеет смысл только в async-режиме
 //	(LB_AUTO_LOAD_ASYNC=1, default): в sync-режиме handler и так блокируется на
 //	загрузке.
+//
+// ВНИМАНИЕ (R83 §9.1, 2026-09-26): это «глобальный» таймаут без знания модели.
+// Для реального ожидания используйте (*Proxy).autoLoadWaitTimeoutForModel —
+// он масштабирует бюджет по размеру GGUF (см. ниже).
 func AutoLoadWaitTimeout() time.Duration {
+	n, mode := autoLoadWaitEnv()
+	switch mode {
+	case autoLoadWaitDisabled:
+		return 0
+	case autoLoadWaitUnlimited:
+		return 30 * time.Minute
+	case autoLoadWaitExplicit:
+		return time.Duration(n) * time.Second
+	default:
+		return autoLoadWaitDefaultSec * time.Second
+	}
+}
+
+// autoLoadWaitMode — как интерпретировать LB_AUTO_LOAD_WAIT_SEC.
+type autoLoadWaitMode int
+
+const (
+	autoLoadWaitDefault  autoLoadWaitMode = iota // env не задан → тир по размеру модели
+	autoLoadWaitExplicit                         // N > 0 секунд
+	autoLoadWaitDisabled                         // 0 = не ждать (прежнее поведение)
+	autoLoadWaitUnlimited                        // < 0 = ждать «сколько нужно» (до hard ceiling)
+)
+
+// autoLoadWaitEnv разбирает LB_AUTO_LOAD_WAIT_SEC.
+func autoLoadWaitEnv() (int, autoLoadWaitMode) {
 	v := strings.TrimSpace(os.Getenv("LB_AUTO_LOAD_WAIT_SEC"))
 	if v == "" {
-		return autoLoadWaitDefaultSec * time.Second
+		return 0, autoLoadWaitDefault
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		return autoLoadWaitDefaultSec * time.Second
+		return 0, autoLoadWaitDefault
 	}
-	if n == 0 {
+	switch {
+	case n == 0:
+		return 0, autoLoadWaitDisabled
+	case n < 0:
+		return 0, autoLoadWaitUnlimited
+	default:
+		return n, autoLoadWaitExplicit
+	}
+}
+
+// autoLoadWaitMinSec / autoLoadWaitBytesPerSec — параметры тира по размеру модели.
+//
+// R83 §9.1: жёсткие 180 с обрывали ожидание 16.4 GB модели (загрузка 7-9 минут
+// на bind-mount), клиент получал «auto-load failed», повторял запрос и запускал
+// ВТОРУЮ загрузку. Логика «датчик бездействия» лечит случай, когда прогресс
+// доступен; эти тиры — резерв на случай, когда прогресса нет (poller не ответил,
+// `/api/models/load/progress` вернул Known=false).
+//
+// 20 MB/s — консервативная оценка холодного чтения GGUF с диска (для bind-mount
+// на Windows наблюдалось медленнее, поэтому бюджет только растёт, а не режется).
+const (
+	autoLoadWaitMinSec         = autoLoadWaitDefaultSec // 180 с — нижняя граница
+	autoLoadWaitBytesPerSecond = 20 * 1024 * 1024       // 20 MB/s
+)
+
+// autoLoadWaitTimeoutForModel — бюджет ожидания авто-загрузки КОНКРЕТНОЙ модели.
+//
+// Тиры:
+//  1. LB_AUTO_LOAD_WAIT_SEC задан явно → уважаем его (operator override);
+//  2. иначе max(180s, sizeBytes / 20 MB/s), но не больше autoLoadHardCeiling.
+//
+// Критерий (R83 §9.1): 16.4 GB без доступного прогресса → ≥ 10 мин; 4 GB → ≤ 3 мин.
+func (p *Proxy) autoLoadWaitTimeoutForModel(modelName string) time.Duration {
+	if p == nil {
+		return AutoLoadWaitTimeout()
+	}
+	n, mode := autoLoadWaitEnv()
+	switch mode {
+	case autoLoadWaitDisabled:
 		return 0
+	case autoLoadWaitUnlimited:
+		return autoLoadHardCeiling
+	case autoLoadWaitExplicit:
+		return time.Duration(n) * time.Second
 	}
-	if n < 0 {
-		// «Ждать сколько потребуется» — ограничиваем разумным максимумом, чтобы
-		// не держать соединение вечно (клиент всё равно отвалится раньше).
-		return 30 * time.Minute
+
+	budget := time.Duration(autoLoadWaitMinSec) * time.Second
+	if size := p.getModelSizeBytes(modelName); size > 0 {
+		bySize := time.Duration(size/autoLoadWaitBytesPerSecond) * time.Second
+		if bySize > budget {
+			budget = bySize
+		}
 	}
-	return time.Duration(n) * time.Second
+	if budget > autoLoadHardCeiling {
+		budget = autoLoadHardCeiling
+	}
+	return budget
 }
 
 // modelLoadState — состояние загрузки модели на конкретном бэкенде.

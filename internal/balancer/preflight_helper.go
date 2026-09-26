@@ -235,6 +235,9 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 		if lm := mm.GetLlamaCppMetrics(backendID); lm != nil {
 			state.MaxFeasibleContext = lm.MaxFeasibleContext
 			state.GGUFMaxContext = lm.GGUFMaxContext
+			// R83 §9.2: различать «VRAM неизвестна» и «веса не влезают».
+			state.VRAMKnown = lm.VramKnown
+			state.AvailableVRAMMB = lm.AvailableVRAMMB
 			// Заполняем current runtime params из LoadedModels (Round 34 Phase 2).
 			for _, m := range lm.LoadedModels {
 				if m.Name == model || containsFold(m.Name, model) || containsFold(model, m.Name) {
@@ -252,6 +255,11 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 					// Из cppworker metrics (Round 60.4 уже заполняет Size).
 					if m.Size > 0 {
 						state.ModelSizeBytes = int64(m.Size)
+					}
+					// R83 §9.2: per-model vram_known приоритетнее top-level:
+					// он относится именно к этой модели.
+					if m.VramKnown {
+						state.VRAMKnown = true
 					}
 					break
 				}

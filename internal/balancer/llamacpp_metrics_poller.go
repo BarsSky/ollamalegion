@@ -184,7 +184,11 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 	var data struct {
 		Count           int `json:"count"`
 		MaxVRAMNCtx     int `json:"max_vram_n_ctx"`
-		ModelMaxContext int `json:"model_max_context"`
+		// R83 §9.2 (2026-09-26): cppworker сообщает, известна ли ему VRAM.
+		// Вместе с max_vram_n_ctx==0 это означает «веса не влезают», а не
+		// «метрик нет» — см. DecidePreflight.
+		VramKnown       bool `json:"vram_known"`
+		ModelMaxContext int  `json:"model_max_context"`
 		// Round 37 (2026-08-18): feasible + GGUF top-level fields from cppworker.
 		// cppworker exposes them since Round 37 in /api/models.
 		FeasibleMaxContext int    `json:"feasible_max_context"`
@@ -233,6 +237,10 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			// Round 37 work, so this completes the wire.
 			FeasibleMaxContext int `json:"feasible_max_context,omitempty"`
 			GGUFMaxContext     int `json:"gguf_max_context,omitempty"`
+			// R83 §9.2 (2026-09-26): per-model vram_known (cppworker отдаёт с R83).
+			// У загруженной модели он true → preflight может отличить «веса не
+			// влезают» от «метрик нет».
+			VramKnown bool `json:"vram_known,omitempty"`
 			// Round 18 P0.1 (2026-08-03): capabilities (reasoning/vision/tools).
 			// cppworker теперь возвращает готовый capabilities объект в /api/models.
 			Capabilities     *types.ModelCapabilities `json:"capabilities,omitempty"`
@@ -315,6 +323,7 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			// but the loop never copied them out.
 			FeasibleMaxContext: m.FeasibleMaxContext,
 			GGUFMaxContext:     m.GGUFMaxContext,
+			VramKnown:          m.VramKnown,
 			// Round 18 P0.1 (2026-08-03): capabilities. Если cppworker не вернул
 			// (старая версия), вычисляем по имени как fallback.
 			Capabilities: capabilitiesOrFallback(m.Capabilities, m.Name, m.Architecture, m.GGUFContextLength, m.ReasoningEnabled),
@@ -330,6 +339,7 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 	}
 	lm.LoadedModels = loadedModels
 	lm.MaxVRAMNCtx = data.MaxVRAMNCtx
+	lm.VramKnown = data.VramKnown
 	lm.ModelMaxContext = data.ModelMaxContext
 	// Round 37 (2026-08-18): per-model feasible/GGUF для 3-tier resolution.
 	// Per-model: prefer per-model feasible (если загружена хоть одна модель).

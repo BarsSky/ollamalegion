@@ -284,8 +284,18 @@ type NCtxBackendState struct {
 	CurrentKvCacheType string // "f16"/"q8_0"/"q4_0" — "" = unknown
 
 	CurrentNCtx     int // lastKnownNCtx из координатора
-	MaxVRAMNCtx     int // из cppworker metrics (0 = unknown)
+	MaxVRAMNCtx     int // из cppworker metrics (0 = unknown ИЛИ веса не влезают — см. VRAMKnown)
 	ModelMaxContext int // из GGUF metadata (0 = unknown)
+	// R83 §9.2 (2026-09-26): различает два смысла нуля в MaxVRAMNCtx.
+	//
+	// cppworker с R83 отдаёт top-level `vram_known` в /api/models (и per-model).
+	// Раньше «0» означало и «метрик нет» (fail-open: проверку пропускаем), и
+	// «VRAM известна, но веса не влезают» (reload бессмыслен). Теперь:
+	//   VRAMKnown=false → данных нет, прежнее поведение;
+	//   VRAMKnown=true  → VRAM измерена; MaxVRAMNCtx==0 означает «веса не влезают».
+	VRAMKnown bool
+	// AvailableVRAMMB — свободная VRAM бэкенда в MB (для текста отказа).
+	AvailableVRAMMB uint64
 	// R60.6 (2026-09-07): размер файла модели в байтах (из cppworker metrics).
 	// Используется EstimateReloadTimeMs для расчёта Retry-After.
 	// 0 = unknown (fallback на cfg.effectiveAsyncRetryAfter).
@@ -462,8 +472,37 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	}
 
 	// Уже помещается — NoOp.
+	//
+	// R83 §9.2 (2026-09-26): перед NoOp проверяем случай «VRAM известна, но веса
+	// не влезают» — НО только если клиент ПРОСИТ больше, чем уже загружено.
+	// Если запрос помещается в текущий n_ctx, отказывать нельзя: сессия уже
+	// работает (модель загружена через partial offload, cppworker это умеет), и
+	// ломать её отказом было бы регрессом. Отказ адресован ровно той ситуации,
+	// ради которой раньше уходили в reload: «нужно больше контекста», а веса в
+	// VRAM не помещаются ни при каком gpu_layers, поэтому reload не поможет.
 	if state.CurrentNCtx > 0 && required <= state.CurrentNCtx {
 		return &PreflightResult{Decision: PreflightNoOp}
+	}
+	if state.VRAMKnown && state.MaxVRAMNCtx == 0 {
+		// Веса не влезают в VRAM целиком даже без KV-cache: exact-fit потолок
+		// равен нулю. Reload не поднимет его — веса не уменьшатся.
+		logger.Get().Warnw("preflight: VRAM известна, но max_vram_n_ctx=0 — веса не влезают",
+			"backend_id", state.BackendID,
+			"required_n_ctx", required,
+			"current_n_ctx", state.CurrentNCtx,
+			"model_max_context", state.ModelMaxContext,
+			"gguf_max_context", state.GGUFMaxContext,
+			"note", "reload не поднимет потолок: веса модели не помещаются в VRAM")
+		return makePreflightRejectWithSuggestion(state, required, fmt.Sprintf(
+			"VRAM is known (%d MB available) but this model's weights do not fit: "+
+				"max_vram_n_ctx=0 at any gpu_layers (model_max_context=%d, current_n_ctx=%d). "+
+				"Reload cannot raise this ceiling.",
+			state.AvailableVRAMMB, state.ModelMaxContext, state.CurrentNCtx),
+			"Use a smaller model or a more aggressive quantization (Q4_K_M instead of Q8_0/F16): "+
+				"the weights alone do not fit into this GPU's VRAM, so no reload with a different "+
+				"n_ctx or gpu_layers can help. Partial offload is still possible — start the model via "+
+				"/api/models/load-with-params with a smaller contextSize, or use a model profile with a "+
+				"lower contextLength and kvCacheType=q4_0.")
 	}
 
 	// Потолок модели/оператора (если известен) — найжестший потолок.
@@ -477,6 +516,10 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	// Потолок VRAM — больше НЕ reject, а trigger reload.
 	// cppworker при reload применит AutoTuneNCtx для partial offload.
 	// Reject только если AutoReloadMaxNCtx (operator cap) превышен.
+	//
+	// R83 §9.2: случай «VRAM известна, но веса не влезают» (MaxVRAMNCtx == 0 при
+	// VRAMKnown) обработан ВЫШЕ, до NoOp-ветки: если он попадает сюда, значит
+	// запрос всё равно требует больше текущего n_ctx и reload бессмыслен.
 	if state.MaxVRAMNCtx > 0 {
 		safety := cfg.effectiveSafetyFactor()
 		safeMax := int(float64(state.MaxVRAMNCtx) * safety)
@@ -652,6 +695,17 @@ func reqStr(b *bool) string {
 // contextLength профиля (hint для первичной загрузки), и оператор видел
 // «exceeds model max context=8192» для модели, которая держит 131072.
 func makePreflightReject(state *NCtxBackendState, required int, reason string) *PreflightResult {
+	return makePreflightRejectWithSuggestion(state, required, reason, "")
+}
+
+// makePreflightRejectWithSuggestion — то же, но с заменой поля suggestion.
+// Нужно там, где общий совет («увеличьте контекст в клиенте») неверен: например,
+// когда VRAM известна и веса модели в неё не влезают ни при каком gpu_layers —
+// клиенту не поможет ничего, кроме меньшей модели/кванта.
+func makePreflightRejectWithSuggestion(state *NCtxBackendState, required int, reason, suggestion string) *PreflightResult {
+	if suggestion == "" {
+		suggestion = "Increase the client's context window request, or raise contextLengthMax/LB_NCTX_RELOAD_MAX_N_CTX; a model profile's contextLength is only the initial-load hint"
+	}
 	body := map[string]interface{}{
 		"error":                 "preflight: prompt + n_predict exceeds n_ctx for this backend",
 		"reason":                reason,
@@ -663,8 +717,9 @@ func makePreflightReject(state *NCtxBackendState, required int, reason string) *
 		"gguf_max_context":      state.GGUFMaxContext,
 		"auto_reload_max_n_ctx": state.AutoReloadMaxNCtx,
 		"max_vram_n_ctx":        state.MaxVRAMNCtx,
+		"vram_known":            state.VRAMKnown,
 		"backend_id":            state.BackendID,
-		"suggestion":            "Increase the client's context window request, or raise contextLengthMax/LB_NCTX_RELOAD_MAX_N_CTX; a model profile's contextLength is only the initial-load hint",
+		"suggestion":            suggestion,
 		"profile_endpoint":      "/api/v1/cppworker/model-profiles",
 	}
 	encoded, _ := json.Marshal(body)

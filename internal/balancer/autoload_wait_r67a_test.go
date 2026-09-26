@@ -19,6 +19,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -83,6 +84,11 @@ func TestRequestSessionKey_R67a(t *testing.T) {
 
 // newAutoloadWaitHarness — Proxy + LlamaCppRouter с одним бэкендом.
 func newAutoloadWaitHarness(t *testing.T, handler http.HandlerFunc, wait time.Duration) (*LlamaCppRouter, *httptest.Server) {
+	// R83 §9.1 (2026-09-26): бюджет ожидания теперь считается по модели
+	// (autoLoadWaitTimeoutForModel): явный LB_AUTO_LOAD_WAIT_SEC уважается, иначе
+	// тир по размеру GGUF. В тестах размер модели недоступен, поэтому задаём
+	// бюджет через env — тем же путём, что и оператор.
+	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", strconv.Itoa(int(wait/time.Second)))
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)

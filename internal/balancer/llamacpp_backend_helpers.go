@@ -785,12 +785,18 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 			}
 		}()
 		// R67a (2026-09-23): вместо немедленного 503 «загрузится через 30-180с»
-		// ждём завершения загрузки ограниченное время (LB_AUTO_LOAD_WAIT_SEC,
-		// default 180). На нормальном железе загрузка укладывается в это окно, и
-		// ПЕРВЫЙ же запрос клиента обслуживается — раньше клиент получал ошибку и
-		// проходил только повторный запрос. Если не успели — отдаём прежний
-		// 503+Retry-After (модель продолжает грузиться, retry пройдёт).
-		if wait := lr.proxy.lbAutoLoadWait; wait > 0 {
+		// ждём завершения загрузки ограниченное время. На нормальном железе
+		// загрузка укладывается в это окно, и ПЕРВЫЙ же запрос клиента
+		// обслуживается — раньше клиент получал ошибку и проходил только
+		// повторный запрос. Если не успели — отдаём прежний 503+Retry-After
+		// (модель продолжает грузиться, retry пройдёт).
+		//
+		// R83 §9.1 (2026-09-26): бюджет зависит от размера модели. Раньше здесь
+		// был глобальный lbAutoLoadWait (180 с), из-за чего 16.4 GB модель на
+		// bind-mount не укладывалась в ожидание: клиент получал «auto-load
+		// failed» и запускал ВТОРУЮ загрузку. Явный LB_AUTO_LOAD_WAIT_SEC
+		// по-прежнему уважается (см. autoLoadWaitTimeoutForModel).
+		if wait := lr.proxy.autoLoadWaitTimeoutForModel(modelName); wait > 0 {
 			if waitErr := lr.waitForModelLoad(reqCtx, backendID, modelName, wait, loadDone); waitErr == nil {
 				ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: async auto-load finished, serving request",
 					"backend", backendID, "model", modelName, "waited_max", wait, "session", sessionKey)

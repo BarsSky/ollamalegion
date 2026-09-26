@@ -257,6 +257,33 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 		opts.FlashAttnType = convertFlashAttn(*flashAttn)
 		opts.NUMA = *numa
 
+		// R83 §9.3 (2026-09-26): «не влезает даже в CPU-only» — это отказ, а не
+		// «попробуем всё равно». До правки загрузка 16.4 GB модели в RAM
+		// продолжалась, вытесняя всё остальное, и клиент видел OOM/таймаут
+		// вместо причины. Ошибка типизирована (insufficient_resources):
+		// handleInferenceError отдаёт 413 + structured JSON, балансер
+		// проксирует его клиенту.
+		if fitErr := insufficientResourcesFromFallbackNoFit(modelName, rationale); fitErr != nil {
+			log.Errorw("lazy-load refused: model does not fit even in CPU-only mode",
+				"model", modelName, "path", modelPath,
+				"model_size_mb", rationale.ModelSize/(1024*1024),
+				"available_ram_mb", rationale.AvailableRAMBytes/(1024*1024),
+				"available_vram_mb", rationale.AvailableVRAMBytes/(1024*1024),
+				"requested_n_ctx", rationale.RequestedNCtx,
+				"max_viable_n_ctx", rationale.MaxViableNCtx)
+			attempt := LoadAttempt{
+				Timestamp: loadStart,
+				Model:     modelName,
+				Path:      modelPath,
+				Stage:     "insufficient_resources",
+				Success:   false,
+				Error:     fitErr.Error(),
+				DurationMs: time.Since(loadStart).Milliseconds(),
+			}
+			RecordLoadAttempt(attempt)
+			return "", fitErr
+		}
+
 		logger.Get().Infow("lazy-load: load opts calculated",
 			"model", modelName,
 			"rationale", rationale.FormatRationale())

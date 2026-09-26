@@ -608,7 +608,20 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		if req.GPULayers != nil {
 			tunedGPULayers = *req.GPULayers
 		}
-		tunedOpts, _ := calculateLazyLoadOpts(modelName, *req.ContextSize, tunedGPULayers, currentConfig)
+		tunedOpts, tunedRationale := calculateLazyLoadOpts(modelName, *req.ContextSize, tunedGPULayers, currentConfig)
+		// R83 §9.3 (2026-09-26): «не влезает даже в CPU-only» — отказ, а не
+		// «попробуем всё равно». Отдача плана в llama.cpp означала загрузку
+		// 16.4 GB в RAM (вытесняя всё) и OOM/таймаут у клиента вместо причины.
+		if fitErr := insufficientResourcesFromFallbackNoFit(modelName, tunedRationale); fitErr != nil {
+			logger.Get().Warnw("handleLoadWithParams: отказано — модель не влезает даже в CPU-only",
+				"name", modelName,
+				"model_size_mb", tunedRationale.ModelSize/(1024*1024),
+				"available_ram_mb", tunedRationale.AvailableRAMBytes/(1024*1024),
+				"requested_n_ctx", tunedRationale.RequestedNCtx,
+				"max_viable_n_ctx", tunedRationale.MaxViableNCtx)
+			writeInsufficientResourcesResponse(w, fitErr.(*InsufficientResourcesError))
+			return
+		}
 		if tunedOpts.ContextSize > 0 && tunedOpts.ContextSize != *req.ContextSize {
 			logger.Get().Infow("handleLoadWithParams: applying AutoTuneNCtx from GGUF meta",
 				"name", modelName,

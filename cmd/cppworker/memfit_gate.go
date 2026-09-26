@@ -40,6 +40,14 @@ func effectiveKVCacheTypeForLoad(modelName, explicit string) string {
 	if profileSyncer != nil {
 		if prof := profileSyncer.applyProfileOnLoad(modelName); prof != nil &&
 			isValidKVCacheType(prof.KVCacheType) {
+			// R83 §3.4: профиль перебивает дефолт конфига — это ровно то место,
+			// где прежний гейт считал q4_0, а раскладка шла с q8_0. Пишем INFO
+			// (не DEBUG): на проде уровень info, и расхождение должно быть
+			// видно в логе без включения отладки.
+			if logger.Get() != nil {
+				logger.Get().Infow("R83 гейт n_ctx: тип KV-cache взят из профиля модели",
+					"model", modelName, "kv_cache_type", prof.KVCacheType)
+			}
 			return prof.KVCacheType
 		}
 	}

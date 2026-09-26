@@ -417,6 +417,14 @@ Remove-Item "$env:TEMP\*" -Recurse -Force    # 3.8 GB
 
 ### 9.6. Дефекты загрузки (D-A, D-B, D-C из §3.9 хендоффа)
 
+- **D-C (unload не барьер) — ЗАКРЫТО (v18).** `handleUnloadModel` проверял только
+  активные inference-запросы (`InFlight`), а фоновая загрузка в этот счётчик не
+  попадает: unload 16 GB модели во время чтения с диска отвечал 200, модель
+  удалялась из реестра и через минуты возвращалась туда фоновой загрузкой.
+  Теперь `Backend.IsLoading(name)` (реестр `loading` под `loadMu`) + 409 Conflict
+  с подсказкой «дождитесь state=loaded или `?force=true`»; force продавливает,
+  но загрузка не отменяется мгновенно — у неё свои checkpoints.
+  Тесты `unload_loading_guard_r83_test.go`.
 - **D-A (асинхронность только на бумаге).** `handlers_model.go:247,262,281`
   (и `:699,712,726`, `:1829`) возвращают 202 + `progressUrl` при `wait=false`,
   но фактическая загрузка идёт в горутине, которая захватывает тот же
@@ -425,14 +433,15 @@ Remove-Item "$env:TEMP\*" -Recurse -Force    # 3.8 GB
   вынести загрузку из-под лока HTTP-хендлера (single-flight остаётся в
   `Backend.loadSingleFlight`, но не в обработчике).
 - **D-B (реестр расходится).** Симптом «`model loaded` в логе, `/api/models` →
-  `count=0`» после перекрывающихся load/unload. Смотреть `handlers_model.go:245`
-  («loaded by concurrent request») и удаление `b.models[name]` в путях ошибок;
+  `count=0`» после перекрывающихся load/unload. Часть причины закрыта D-C (unload
+  во время загрузки больше не проходит молча). Остаётся: `handlers_model.go:245`
+  («loaded by concurrent request») и удаление `b.models[name]` в путях ошибок —
   нужен тест-симулятор перекрытия.
-- **D-C (unload не барьер).** `handleUnloadModel` (`handlers_model.go:941`)
-  отвечает 200 мгновенно, пока идёт загрузка 16 GB. Решение: либо ждать
-  завершения in-flight загрузки (или отменять её через
-  `bridge.RequestLoadAbort`), либо документировать семантику «unload
-  асинхронный».
+- **§9.4 остаток:** шаг **1б** — при `!verdict.Fits()` возвращать отказ
+  `insufficient_resources` вместо `GPULayers`/`DefaultGPULayers` (сейчас
+  CPU-only раскладка просто применяется); шаг **3б** — `EstimateGPUMemoryForModel`
+  всё ещё жив как fallback `auto_offload` без метаданных (веса уже считает
+  `WeightsOnGPUBytes`, KV — по «256 КБ/токен» с завышением 1024×, см. протокол).
 
 ### 9.7. Механизм A дублирования в OpenWebUI — за владельцем контракта
 

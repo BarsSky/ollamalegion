@@ -336,12 +336,19 @@ Docker «доступная RAM» показывала память всей VM.
 (`backend_selector.go:566`, `model_instance_controller.go:178`,
 `prewarm_controller.go:239`, `scoring.go:283-284`), `EstimateGPUMemoryForModel`
 (внутри `CalculateOptimalGPULayers`) и `backwardCompatEstimateGPUMemoryForModel`.
-Для `CalculateOptimalGPULayers` есть прямой путь: заменить тело
-`calculateOptimalGPULayersForModel` на вердикт memfit
-(`backend.MemfitSpec` + `backend.MemfitBudget` + `memfit.Evaluate`, поле
-`GPULayers`), тогда обёртка исчезает вместе с legacy-оценкой. Для
-`EstimateModelVRAM` нужен аналог «оценка весов по слоям» (scoring/selector
-сравнивают числа, а не вердикт).
+
+**Подготовлено, чтобы не делать вслепую:**
+- `internal/cppbackend/estimator_compare_r83_test.go` — эталон «до»: обе оценки
+  на 4 сценариях. **Измеренный факт:** legacy ЗАНИЖАЕТ число слоёв, а не
+  завышает: на живом стенде (3070 8 GB, Qwen3.8-27B, ctx=32768) legacy=18 слоёв
+  при `q8_0` и **0 слоёв** при `f16`, memfit=23/22 (`partial_offload`). На A10
+  24 GB и на мелкой модели обе оценки совпадают (64/64 и 36/36). Причина: веса
+  ×0.7 уменьшают вес, но KV «256 Б/токен» (≈3.9 GB против реальных 1.1 GB)
+  перекрывает это с запасом — отсюда исторический симптом «gpu_layers=0».
+- `plans/2026-09-26-estimator-unification-protocol.md` — пошаговый протокол
+  замены с проверками на каждом шаге, приёмочными критериями и откатом.
+- `scripts/verify-r83-section9.ps1` — живая сверка инвариантов §9 (в т.ч.
+  `-Strict` для сверки шагов рефактора).
 
 **Как закрывать.** Взять размер GGUF тем же способом, что idle-тиры
 (`getModelSizeBytes` — с учётом ollama-тега, см. правку R83 в

@@ -366,6 +366,8 @@ func calculateLazyLoadOpts(
 // *InsufficientResourcesError: её понимает handleInferenceError (HTTP 413 +
 // structured JSON с code=6), и балансер проксирует ответ клиенту без изменений.
 func insufficientResourcesFromFallbackNoFit(modelName string, r LazyLoadRationale) error {
+	// В адаптивном пути (lazyload.go: SelectStrategy) Source заполняется из
+	// strategy.Stage, то есть тем же значением "fallback_no_fit".
 	if r.Source != "fallback_no_fit" {
 		return nil
 	}
@@ -377,7 +379,7 @@ func insufficientResourcesFromFallbackNoFit(modelName string, r LazyLoadRational
 		AvailableRAMMB:     r.AvailableRAMBytes / (1024 * 1024),
 		ModelSizeBytes:     r.ModelSize,
 		KVCacheRequiredMB:  r.EstimatedKVCacheMB,
-		GPULayersAttempted: 0, // CPU-only: слоёв на GPU нет
+		GPULayersAttempted: r.AppliedGPULayers,
 	}
 }
 

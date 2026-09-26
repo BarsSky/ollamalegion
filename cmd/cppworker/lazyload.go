@@ -235,6 +235,13 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 					NHeads:             meta.NHeads,
 					NKvHeads:           meta.NKvHeads,
 					ModelSize:          meta.SizeBytes,
+					// R83 §9.3 (2026-09-26): числа для отказа, если стратегия —
+					// fallback_no_fit («не влезает даже в CPU-only»). Без них
+					// InsufficientResourcesError напечатал бы нули: адаптивный путь
+					// раньше отказывать не умел, поэтому поля не заполнялись.
+					MaxViableNCtx:      strategy.NCtx,
+					AvailableVRAMBytes: availableVRAMBytes(),
+					AvailableRAMBytes:  availableRAMBytes(),
 				}
 				logger.Get().Infow("lazy-load: adaptive SelectStrategy applied",
 					"model", modelName,

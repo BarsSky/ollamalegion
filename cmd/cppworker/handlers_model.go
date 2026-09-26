@@ -1696,6 +1696,29 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 				SizeBytes:    int64(m.SizeBytes),
 			}
 			strategy := SelectStrategy(&env, req.Name, ggufMeta, m.ContextSize, -2, currentConfig)
+			// R83 §9.3 (2026-09-26): «не влезает даже в CPU-only» — отказ, а не
+			// попытка. Раньше этот случай (Stage="fallback_no_fit") проваливался в
+			// ветку ниже и загрузка всё равно стартовала: unload текущей модели,
+			// загрузка 16 GB в RAM, таймаут у клиента вместо причины.
+			if strategy.Stage == "fallback_no_fit" {
+				logger.Get().Warnw("reload: отказано — модель не влезает даже в CPU-only",
+					"name", req.Name,
+					"model_size_mb", m.SizeBytes/(1024*1024),
+					"available_ram_mb", availableRAMBytes()/(1024*1024),
+					"available_vram_mb", availableVRAMBytes()/(1024*1024),
+					"requested_n_ctx", m.ContextSize,
+					"explanation", strategy.Explanation)
+				writeInsufficientResourcesResponse(w, &InsufficientResourcesError{
+					Model:              req.Name,
+					RequestedNCtx:      m.ContextSize,
+					MaxViableNCtx:      strategy.NCtx,
+					AvailableVRAMMB:    availableVRAMBytes() / (1024 * 1024),
+					AvailableRAMMB:     availableRAMBytes() / (1024 * 1024),
+					ModelSizeBytes:     int64(m.SizeBytes),
+					GPULayersAttempted: strategy.GPULayers,
+				})
+				return
+			}
 			if strategy.GPULayers >= 0 || strategy.Stage == "fallback_no_meta" {
 				// For fallback_no_meta (GGUF header not parsed, e.g. gemma4),
 				// keep gpuLayers=-2 (AUTO) — backend's checkVRAMForModel will

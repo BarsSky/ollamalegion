@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -207,13 +208,75 @@ func (ps *profileSyncerT) applyProfileOnLoad(modelName string) *types.LlamaCppMo
 	if p, ok := ps.cache[modelName]; ok {
 		return &p
 	}
-	// 2) Case-insensitive substring match (e.g. profile "gemma-4" → model "gemma-4-E4B-it-Q4_K_M")
+	// 2) Нормализованное сравнение (R83 §3.4, 2026-09-26).
+	//
+	// Раньше здесь было `containsFold(name, modelName) || containsFold(modelName, name)`
+	// по СЫРЫМ строкам, и профиль "Qwen3.8-27B" НЕ находился для имени клиента
+	// "qwen3.8:latest": общий префикс "qwen3.8" обрывался на ':' против '-'.
+	// Живое следствие: ни kvCacheType=q8_0 из профиля, ни его contextLength не
+	// применялись к загрузке, которая пришла по имени клиента, — то есть вся
+	// pull-синхронизация профилей для таких имён не работала.
+	//
+	// Нормализация: срезаем ollama-тег и .gguf, приводим разделители
+	// ('.', '-', ':', '_', пробел) к одному, в нижний регистр — "qwen3.8:latest"
+	// → "qwen3.8", "Qwen3.8-27B" → "qwen3.8.27b".
+	//
+	// Префиксное совпадение, но БЕЗ угадывания: если под него попало несколько
+	// профилей ("Qwen3.8-27B" и "Qwen3.8-27B-UD-Q4_K_M"), берём самый длинный
+	// ключ, а при равенстве — лексикографически первый. Порядок обхода map
+	// случаен, поэтому выбор обязан быть детерминированным: иначе один и тот же
+	// запрос получал бы разные contextLength/kvCacheType от запуска к запуску.
+	want := normalizeProfileKey(modelName)
+	if want == "" {
+		return nil
+	}
+	var bestName string
+	var best *types.LlamaCppModelProfile
 	for name, p := range ps.cache {
-		if containsFold(name, modelName) || containsFold(modelName, name) {
-			return &p
+		have := normalizeProfileKey(name)
+		if have == "" {
+			continue
+		}
+		if !(have == want || strings.HasPrefix(have, want) || strings.HasPrefix(want, have)) {
+			continue
+		}
+		if best == nil || len(have) > len(bestName) ||
+			(len(have) == len(bestName) && have < bestName) {
+			prof := p // копия: &p в range-цикле указывал бы на переменную цикла
+			best = &prof
+			bestName = have
 		}
 	}
-	return nil
+	return best
+}
+
+// normalizeProfileKey — ключ сравнения имён моделей и профилей.
+//
+// Срезает ollama-тег ("qwen3.8:latest" → "qwen3.8"), расширение .gguf и
+// приводит разделители к точке: имена в конфигах и на диске пишут одним и тем
+// же смыслом разными символами ("Qwen3.8-27B" против "qwen3.8:latest").
+func normalizeProfileKey(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	if i := strings.LastIndex(s, ":"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSuffix(s, ".gguf")
+	var b strings.Builder
+	b.Grow(len(s))
+	prevDot := false
+	for _, r := range s {
+		switch r {
+		case '.', '-', ':', '_', ' ', '\t':
+			if b.Len() > 0 && !prevDot {
+				b.WriteByte('.')
+				prevDot = true
+			}
+		default:
+			b.WriteRune(r)
+			prevDot = false
+		}
+	}
+	return strings.Trim(b.String(), ".")
 }
 
 // snapshotSize — для логов / metrics.
@@ -224,38 +287,6 @@ func (ps *profileSyncerT) snapshotSize() int {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 	return len(ps.cache)
-}
-
-// containsFold — case-insensitive substring match без аллокаций.
-func containsFold(a, b string) bool {
-	if len(a) == 0 || len(b) == 0 {
-		return false
-	}
-	la, lb := len(a), len(b)
-	if la > lb {
-		a, b = b, a
-		la, lb = lb, la
-	}
-	for i := 0; i+la <= lb; i++ {
-		match := true
-		for j := 0; j < la; j++ {
-			ca, cb := a[j], b[i+j]
-			if ca >= 'A' && ca <= 'Z' {
-				ca += 'a' - 'A'
-			}
-			if cb >= 'A' && cb <= 'Z' {
-				cb += 'a' - 'A'
-			}
-			if ca != cb {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
 }
 
 // resolveBalancerURL — env-fallback chain для адреса балансера.

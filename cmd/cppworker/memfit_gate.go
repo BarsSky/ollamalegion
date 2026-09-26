@@ -35,15 +35,22 @@ import (
 // раскладка считает невлезающим (или наоборот).
 func effectiveKVCacheTypeForLoad(modelName, explicit string) string {
 	if isValidKVCacheType(explicit) {
+		// Явный параметр приходит из плана загрузки (опции хендлера). Логируем на
+		// уровне INFO: именно здесь видно, что гейт считает KV тем же типом, что
+		// и раскладка — то есть что §3.4 не вернулся (раньше здесь молча
+		// подставлялся дефолт конфига, обычно q4_0 при профиле q8_0).
+		if logger.Get() != nil {
+			logger.Get().Infow("R83 гейт n_ctx: тип KV-cache из плана загрузки",
+				"model", modelName, "kv_cache_type", explicit)
+		}
 		return explicit
 	}
 	if profileSyncer != nil {
 		if prof := profileSyncer.applyProfileOnLoad(modelName); prof != nil &&
 			isValidKVCacheType(prof.KVCacheType) {
-			// R83 §3.4: профиль перебивает дефолт конфига — это ровно то место,
-			// где прежний гейт считал q4_0, а раскладка шла с q8_0. Пишем INFO
-			// (не DEBUG): на проде уровень info, и расхождение должно быть
-			// видно в логе без включения отладки.
+			// Профиль перебивает дефолт конфига. Путь используется хендлерами,
+			// которые не применяют профиль в opts до гейта (handleLoadModel,
+			// handleReloadModel) — поэтому резолв делается здесь.
 			if logger.Get() != nil {
 				logger.Get().Infow("R83 гейт n_ctx: тип KV-cache взят из профиля модели",
 					"model", modelName, "kv_cache_type", prof.KVCacheType)

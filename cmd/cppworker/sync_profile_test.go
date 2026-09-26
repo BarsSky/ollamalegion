@@ -143,22 +143,23 @@ func TestApplyProfileToLoadRequest_KVCacheType(t *testing.T) {
 	}
 }
 
-func TestContainsFold(t *testing.T) {
-	cases := []struct {
-		a, b string
-		want bool
-	}{
-		{"gemma-4", "gemma-4-E4B-it-Q4_K_M", true},
-		{"gemma-4-E4B-it-Q4_K_M", "gemma-4", true},
-		{"qwen3", "Qwen3.6-35B-A3B-UD-Q4_K_M", true}, // case-insensitive
-		{"qwerty", "gemma-4-E4B-it-Q4_K_M", false},
-		{"", "gemma-4", false},
-		{"gemma-4", "", false},
-		{"qwen", "qwen3-22b", true},
+// TestNormalizeProfileKey — R83 §3.4 (2026-09-26): ключ сравнения имён
+// моделей и профилей. Заменил containsFold (см. sync_profile.go): сырое
+// подстрочное сравнение не находило профиль "Qwen3.8-27B" для имени клиента
+// "qwen3.8:latest", потому что общий префикс обрывался на ':' против '-'.
+func TestNormalizeProfileKey(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"qwen3.8:latest", "qwen3.8"},
+		{"Qwen3.8-27B", "qwen3.8.27b"},
+		{"Qwen3.8-27B-UD-Q4_K_M", "qwen3.8.27b.ud.q4.k.m"},
+		{"Qwen3.8-27B-UD-Q4_K_M.gguf", "qwen3.8.27b.ud.q4.k.m"},
+		{"gemma-4-E4B-it-Q4_K_M", "gemma.4.e4b.it.q4.k.m"},
+		{"  Qwen3-8B  ", "qwen3.8b"},
+		{"", ""},
 	}
 	for _, c := range cases {
-		if got := containsFold(c.a, c.b); got != c.want {
-			t.Errorf("containsFold(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		if got := normalizeProfileKey(c.in); got != c.want {
+			t.Errorf("normalizeProfileKey(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

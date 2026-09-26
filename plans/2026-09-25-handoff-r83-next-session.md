@@ -350,6 +350,39 @@ Docker «доступная RAM» показывала память всей VM.
 - `scripts/verify-r83-section9.ps1` — живая сверка инвариантов §9 (в т.ч.
   `-Strict` для сверки шагов рефактора).
 
+### 9.9. Диск C: и выпуск (грабля 2026-09-26)
+
+Выпуск `r83-submodule-v14` **упал** на `docker build` с
+`write .../metadata_v2.db: read-only file system`, а `docker system df` отвечал
+`Docker Desktop is unable to start`. Причина — **на диске C: оставалось ~3 МБ**:
+`buildx` не мог писать в свой overlay, Docker Desktop не поднимал бэкенд. Это не
+ошибка кода и не сеть.
+
+Что съедало место (замерено):
+
+| каталог | размер |
+|---|---|
+| `%LOCALAPPDATA%\Docker` | 69.6 GB |
+| `%LOCALAPPDATA%\go-build` | 23.7 GB |
+| Docker Build Cache (`docker system df`) | 28.6 GB (21.4 GB reclaimable) |
+| `%LOCALAPPDATA%\Temp` | 3.8 GB |
+
+Что помогло (безопасно, ничего рабочего не удалено):
+
+```powershell
+go clean -cache                              # 23.7 GB, кэш пересобирается
+Remove-Item "$env:TEMP\*" -Recurse -Force    # 3.8 GB
+```
+
+После этого Docker Desktop поднялся сам (~30 с), стек остался на прежнем теге,
+`.env` не менялся — `release-all.ps1` при падении `docker build` ничего не
+раскатывает. Повторный запуск с тем же тегом собрал образы (llama.cpp-слой
+пересобирался ~16 мин: ccache частично вытеснен).
+
+**Правило:** перед выпуском смотреть `Get-PSDrive C`; при <5 ГБ свободного
+сначала `go clean -cache` и очистка `%TEMP%`, иначе получите
+`read-only file system` и ложное впечатление, что сломан Docker.
+
 **Как закрывать.** Взять размер GGUF тем же способом, что idle-тиры
 (`getModelSizeBytes` — с учётом ollama-тега, см. правку R83 в
 `model_name_match.go`), и масштабировать базовый бюджет: например

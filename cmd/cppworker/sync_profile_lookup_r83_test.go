@@ -89,3 +89,59 @@ func TestR83_Gate_UsesProfileKVType(t *testing.T) {
 		t.Errorf("явный параметр: got %q, want f16", got)
 	}
 }
+
+// TestR83_ProfileLookup_DeterministicPick — когда под префикс попадает несколько
+// профилей, выбор обязан быть детерминированным (самый длинный ключ), а не
+// зависеть от случайного порядка обхода map: иначе один и тот же запрос получал
+// бы разные contextLength/kvCacheType от запуска к запуску.
+//
+// Семантика «самый длинный ключ» = «самый конкретный профиль»: для
+// неоднозначного имени клиента ("qwen3.8:latest" ↔ "Qwen3.8-27B" и
+// "Qwen3.8-27B-UD-Q4_K_M") выигрывает профиль с более полным именем. Клиенту,
+// которому нужен именно короткий профиль, следует звать модель полным именем.
+func TestR83_ProfileLookup_DeterministicPick(t *testing.T) {
+	ps := &profileSyncerT{cache: map[string]types.LlamaCppModelProfile{}}
+	ps.cache["Qwen3.8-27B"] = types.LlamaCppModelProfile{ContextLength: 32768, KVCacheType: "q8_0"}
+	ps.cache["Qwen3.8-27B-UD-Q4_K_M"] = types.LlamaCppModelProfile{ContextLength: 65536, KVCacheType: "f16"}
+
+	for i := 0; i < 50; i++ { // порядок обхода map меняется от запуска к запуску
+		prof := ps.applyProfileOnLoad("qwen3.8:latest")
+		if prof == nil {
+			t.Fatal("профиль не найден")
+		}
+		if prof.ContextLength != 65536 || prof.KVCacheType != "f16" {
+			t.Fatalf("итерация %d: выбран не самый длинный ключ (ctx=%d kv=%q)",
+				i, prof.ContextLength, prof.KVCacheType)
+		}
+	}
+}
+
+// TestR83_ProfileLookup_NoSpuriousMatch — нормализация не должна склеивать
+// разные модели: у "qwen3" общий префикс с "qwen3.8", но разные модели —
+// профиль по несуществующей модели не подставляется наугад.
+func TestR83_ProfileLookup_NoSpuriousMatch(t *testing.T) {
+	ps := newSeededProfileSyncerR83()
+	for _, name := range []string{"llama-3-8b", "gemma-2-9b", "mistral-7b"} {
+		if prof := ps.applyProfileOnLoad(name); prof != nil {
+			t.Errorf("%q: подставлен чужой профиль (ctx=%d kv=%q)",
+				name, prof.ContextLength, prof.KVCacheType)
+		}
+	}
+}
+
+// TestR83_ProfileLookup_GemmaTagged — второй живой случай того же дефекта:
+// клиент зовёт "gemma-4:latest", профиль называется "gemma-4-E4B-it-Q4_K_M".
+func TestR83_ProfileLookup_GemmaTagged(t *testing.T) {
+	ps := &profileSyncerT{cache: map[string]types.LlamaCppModelProfile{}}
+	ps.cache["gemma-4-E4B-it-Q4_K_M"] = types.LlamaCppModelProfile{
+		ContextLength: 32768,
+		KVCacheType:   "q4_0",
+	}
+	prof := ps.applyProfileOnLoad("gemma-4:latest")
+	if prof == nil {
+		t.Fatal("профиль gemma-4-E4B-it-Q4_K_M не найден для \"gemma-4:latest\"")
+	}
+	if prof.KVCacheType != "q4_0" {
+		t.Errorf("KVCacheType = %q, want q4_0", prof.KVCacheType)
+	}
+}

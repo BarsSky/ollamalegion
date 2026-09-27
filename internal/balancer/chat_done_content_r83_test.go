@@ -1,6 +1,6 @@
 //go:build llama_stub
 
-// chat_done_content_r83_test.go — R83 §9.7 (2026-09-27).
+// chat_done_content_r83_test.go — R83 §9.7 + план A10 блок 3 (D6), 2026-09-27.
 //
 // ЖАЛОБА была: «OpenWebUI дублирует ответ на /api/chat, а с настоящей Ollama
 // работает». Проверено на ЖИВОМ стенде (v20):
@@ -24,6 +24,26 @@
 // ФИКС: нормализуем финальный чанк на выходе (`stripNativeDoneContent`) —
 // content пустой, все статы на месте. Это делает наш ответ неотличимым от Ollama,
 // поэтому клиент, который работает с Ollama, работает и с нами.
+//
+// D6 (план A10, «зафиксировать контракт под версию OpenWebUI из деплоя»).
+// ВАЖНОЕ УТОЧНЕНИЕ, добытое чтением кода клиента: OpenWebUI в деплой НЕ ВХОДИТ
+// (в compose есть только наш дашборд `ollama-legion/webui`, версия клиента
+// оператором не пинится), поэтому «версия из деплоя» — это версия, которую
+// оператор запускает снаружи. Отсюда контракт зафиксирован по КОДУ клиента:
+//
+//   - 0.9.x, `backend/open_webui/utils/response.py`:
+//     `message_content if not done else None` — на done-чанке content обнулялся
+//     самим клиентом;
+//   - main (и 0.10/0.11), там же: content больше НЕ обнуляется
+//     (`openai_chat_chunk_message_template(model, message_content, …)`), зато
+//     фронтенд `src/lib/apis/streaming/index.ts` эмитит ровно
+//     `parsedData.choices?.[0]?.delta?.content ?? ''`, а потребитель
+//     конкатенирует эти дельты.
+//
+// Вывод, который и защищают тесты ниже: в ЛЮБОЙ из этих версий полный текст в
+// done-чанке приводит к дублю (0.9.x — через `message.content` без обнуления в
+// не-стриме/иных путях, main — через дельту), а пустой content на done не ломает
+// ничего: в main он даёт `delta.content = null`, во фронтенде — `''`.
 package balancer
 
 import (
@@ -166,4 +186,61 @@ func TestR83_CppworkerOwnChatPutsFullTextInDone(t *testing.T) {
 	t.Logf("нативный /api/chat cppworker: текст в дельтах %d байт, в done-чанке ещё %d байт — "+
 		"балансер снимает дубль (stripNativeDoneContent), доводя ответ до формата Ollama",
 		streamed.Len(), doneContent.Len())
+}
+
+// TestD6_OpenAIStreamDoneFrameCarriesNoDelta — D6, вторая ветка: SSE-клиент
+// (OpenAI-совместимый путь) читает ТОЛЬКО `choices[0].delta.content`.
+//
+// Почему это часть контракта: фронтенд OpenWebUI (`src/lib/apis/streaming/index.ts`)
+// делает ровно
+//
+//	yield { done: false, value: parsedData.choices?.[0]?.delta?.content ?? '' }
+//
+// и конкатенирует `value` к сообщению. Значит любой текст в delta финального
+// кадра будет приклеен ВТОРЫМ экземпляром ответа — независимо от того, что
+// бэкенд OpenWebUI (в 0.9.x) обнулял content на done, а в main уже нет.
+func TestD6_OpenAIStreamDoneFrameCarriesNoDelta(t *testing.T) {
+	stream := []byte(
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Hello \",\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{\"content\":\"world\",\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{\"content\":null,\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"index\":0}]}\n\n" +
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n" +
+			"data: [DONE]\n\n")
+
+	var streamed strings.Builder
+	var doneDeltas []string
+	for _, raw := range strings.Split(string(stream), "\n\n") {
+		raw = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "data:"))
+		if raw == "" || raw == "[DONE]" {
+			continue
+		}
+		var frame map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+			t.Fatalf("кадр не разобран: %v (%s)", err, raw)
+		}
+		choices, _ := frame["choices"].([]interface{})
+		if len(choices) == 0 {
+			continue // usage-only кадр
+		}
+		choice, _ := choices[0].(map[string]interface{})
+		delta, _ := choice["delta"].(map[string]interface{})
+		content, _ := delta["content"].(string)
+		fr, _ := choice["finish_reason"].(string)
+		if fr != "" {
+			// Финальный кадр: клиент возьмёт delta.content и приклеит его.
+			doneDeltas = append(doneDeltas, content)
+			continue
+		}
+		streamed.WriteString(content)
+	}
+
+	if len(doneDeltas) != 1 {
+		t.Fatalf("кадров с finish_reason: %d, want ровно 1", len(doneDeltas))
+	}
+	if doneDeltas[0] != "" {
+		t.Errorf("в финальном кадре delta.content = %q — клиент приклеит полный ответ вторым экземпляром", doneDeltas[0])
+	}
+	if got := streamed.String(); got != "Hello world" {
+		t.Errorf("текст в дельтах = %q, want %q", got, "Hello world")
+	}
 }

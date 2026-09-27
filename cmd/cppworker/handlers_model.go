@@ -1028,6 +1028,11 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		// R83 (2026-09-25): граница «влезает в VRAM» — нужна, чтобы показать
 		// оператору, что загруженный n_ctx выше неё (режим partial_offload).
 		vramMax int
+		// R83 (2026-09-27): потолок n_ctx для загрузки ЦЕЛИКОМ в VRAM.
+		// Именно по нему считается n_ctx_degraded: max_vram_n_ctx для 27B равен
+		// нулю (веса не влезают даже одним слоем), и прежнее сравнение с ним
+		// объявляло модель деградированной при любом контексте.
+		exactFitMax int
 		// R83 шаг 3: различать «VRAM неизвестна» и «известна, но веса не влезают».
 		vramKnown bool
 	}
@@ -1078,6 +1083,7 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			feasibleMax: feasibleI,
 			ggufMax:     m.GGUFContextLength,
 			vramMax:     limits.MaxVRAMNCtx,
+			exactFitMax: limits.MaxVRAMNCtx,
 			vramKnown:   limits.VRAMKnown,
 		}
 	}
@@ -1158,21 +1164,23 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		if inflight := backend.InFlight(); inflight != nil {
 			entry["active_queries"] = inflight.Get(m.Name)
 		}
-		// R83 (2026-09-25): показываем РЕЖИМ загрузки, а не только факт загрузки.
+		// R83 (2026-09-27): показываем РЕЖИМ загрузки, а не только факт загрузки.
 		// context_size — фактический n_ctx, с которым работает модель;
-		// max_vram_n_ctx — граница exact_fit (всё в VRAM). Если фактический выше,
-		// модель в partial_offload/cpu_only: часть слоёв в RAM, ответ заметно
-		// медленнее, и клиент легко упирается в таймаут. Раньше этот факт нигде
-		// не отражался — отсюда «32768 работает, 65536 нет» без объяснения.
-		vramMax, feasibleMax, ggufMax := 0, 0, m.GGUFContextLength
+		// max_vram_n_ctx — граница «всё в VRAM»; max_exact_fit_n_ctx — потолок
+		// n_ctx для загрузки ЦЕЛИКОМ в VRAM (по нему считается n_ctx_degraded).
+		// Раньше degraded считался от max_vram_n_ctx, и на 27B (веса не влезают
+		// даже одним слоем → 0) он был true при любом контексте: оператор видел
+		// «деградировано» и не понимал, во что именно упёрлось.
+		vramMax, feasibleMax, ggufMax, exactFitMax := 0, 0, m.GGUFContextLength, 0
 		vramKnown := false
 		if fa, ok := perModelFeasible[m.Name]; ok {
 			feasibleMax = fa.feasibleMax
 			ggufMax = fa.ggufMax
 			vramMax = fa.vramMax
 			vramKnown = fa.vramKnown
+			exactFitMax = fa.exactFitMax
 		}
-		for k, v := range nctxModeFields(vramMax, ggufMax, feasibleMax, m.ContextSize, vramKnown) {
+		for k, v := range nctxModeFields(vramMax, ggufMax, feasibleMax, exactFitMax, m.ContextSize, vramKnown) {
 			entry[k] = v
 		}
 		enrichedModels = append(enrichedModels, entry)

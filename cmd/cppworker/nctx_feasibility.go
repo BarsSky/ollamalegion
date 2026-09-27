@@ -324,16 +324,30 @@ func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx 
 //
 // vramKnown различает «VRAM неизвестна» и «известна, но веса не влезают»:
 // раньше ноль в vramMax означал и то и другое, и n_ctx_degraded молчал.
-func nctxModeFields(vramMax, ggufMax, feasibleMax, contextSize int, vramKnown bool) map[string]interface{} {
+//
+// R83 (2026-09-27): добавлен exactFitMax — потолок загрузки ЦЕЛИКОМ в VRAM, и
+// именно по нему теперь считается degraded. Причина: на живом стенде
+// max_vram_n_ctx равен 0 (веса 27B не влезают даже одним слоем), поэтому условие
+// «degraded = contextSize > max_vram_n_ctx» объявляло модель деградированной при
+// ЛЮБОМ контексте — оператор видел n_ctx_degraded=true, хотя модель штатно
+// работает в partial_offload и физический потолок равен десяткам тысяч токенов.
+// Теперь потолок отдаётся отдельным полем (max_exact_fit_n_ctx), и числа сходятся.
+func nctxModeFields(vramMax, ggufMax, feasibleMax, exactFitMax, contextSize int, vramKnown bool) map[string]interface{} {
+	// Если вызывающий потолок exact-fit не передал — считаем, что он равен vramMax
+	// (прежнее поведение: там это было одно и то же число).
+	if exactFitMax <= 0 {
+		exactFitMax = vramMax
+	}
 	fields := map[string]interface{}{
 		"gguf_max_context":     ggufMax,
 		"feasible_max_context": feasibleMax,
 		"max_vram_n_ctx":       vramMax,
+		"max_exact_fit_n_ctx":  exactFitMax,
 		"vram_known":           vramKnown,
-		"n_ctx_degraded":       vramKnown && contextSize > vramMax,
+		"n_ctx_degraded":       vramKnown && exactFitMax > 0 && contextSize > exactFitMax,
 	}
-	if vramKnown {
-		fields["n_ctx_headroom"] = vramMax - contextSize
+	if vramKnown && exactFitMax > 0 {
+		fields["n_ctx_headroom"] = exactFitMax - contextSize
 	}
 	return fields
 }

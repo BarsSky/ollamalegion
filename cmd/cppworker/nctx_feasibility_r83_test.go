@@ -254,9 +254,14 @@ func TestR83_NctxSuggestion(t *testing.T) {
 // TestR83_NctxModeFields — поля режима в /api/models. Это то, что читает WebUI,
 // чтобы показать оператору «модель работает в partial_offload», а не только
 // «загружено». Живой случай: A10, ctx=65536 при границе VRAM 40000.
+//
+// R83 (2026-09-27): в сигнатуру добавлен exactFitMax — потолок загрузки целиком
+// в VRAM. Раньше degraded считался от max_vram_n_ctx, который на 27B равен нулю
+// (веса не влезают даже одним слоем), и тогда «деградировано» показывалось при
+// любом контексте — то есть поле не несло информации.
 func TestR83_NctxModeFields(t *testing.T) {
 	t.Run("после границы VRAM — degraded", func(t *testing.T) {
-		f := nctxModeFields(40000, 262144, 40000, 65536, true)
+		f := nctxModeFields(40000, 262144, 40000, 40000, 65536, true)
 		if got, _ := f["n_ctx_degraded"].(bool); !got {
 			t.Error("n_ctx_degraded = false, want true (65536 > 40000)")
 		}
@@ -266,10 +271,13 @@ func TestR83_NctxModeFields(t *testing.T) {
 		if got, _ := f["max_vram_n_ctx"].(int); got != 40000 {
 			t.Errorf("max_vram_n_ctx = %v, want 40000", got)
 		}
+		if got, _ := f["max_exact_fit_n_ctx"].(int); got != 40000 {
+			t.Errorf("max_exact_fit_n_ctx = %v, want 40000", got)
+		}
 	})
 
 	t.Run("в пределах VRAM — не degraded", func(t *testing.T) {
-		f := nctxModeFields(40000, 262144, 40000, 32768, true)
+		f := nctxModeFields(40000, 262144, 40000, 40000, 32768, true)
 		if got, _ := f["n_ctx_degraded"].(bool); got {
 			t.Error("n_ctx_degraded = true, want false (32768 <= 40000)")
 		}
@@ -279,7 +287,7 @@ func TestR83_NctxModeFields(t *testing.T) {
 	})
 
 	t.Run("граница VRAM неизвестна — не утверждаем ничего", func(t *testing.T) {
-		f := nctxModeFields(0, 262144, 200000, 131072, false)
+		f := nctxModeFields(0, 262144, 200000, 0, 131072, false)
 		if got, _ := f["n_ctx_degraded"].(bool); got {
 			t.Error("n_ctx_degraded = true при неизвестной границе VRAM")
 		}
@@ -288,6 +296,21 @@ func TestR83_NctxModeFields(t *testing.T) {
 		}
 		if f["feasible_max_context"] != 200000 {
 			t.Errorf("feasible_max_context = %v, want 200000", f["feasible_max_context"])
+		}
+	})
+
+	// Живой случай (3070 8 GB, Qwen3.8-27B): веса не влезают в VRAM ни одним
+	// слоем, max_vram_n_ctx = 0, но модель штатно работает в partial_offload с
+	// физическим потолком в десятки тысяч токенов. Поле degraded обязано молчать
+	// про почти нулевой контекст и говорить только когда реально упёрлись.
+	t.Run("живой случай 27B: vramMax=0, но потолок известен", func(t *testing.T) {
+		f := nctxModeFields(0, 262144, 56715, 56715, 32768, true)
+		if got, _ := f["n_ctx_degraded"].(bool); got {
+			t.Error("n_ctx_degraded = true при ctx=32768 и потолке 56715 — " +
+				"поле объявляет модель деградированной, ничего не сообщая (это и был живой симптом)")
+		}
+		if got, _ := f["n_ctx_headroom"].(int); got != 23947 {
+			t.Errorf("n_ctx_headroom = %v, want 23947", got)
 		}
 	})
 }

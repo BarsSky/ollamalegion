@@ -216,6 +216,11 @@ internal/**/*.backup-*/
 # User can `mv .cleanup_archive_20260812 /tmp/` to permanently delete.
 .cleanup_archive_*/
 
+# 2026-09-27: карантин локальной уборки рабочего дерева
+# (scripts/cleanup-worktree.ps1 — логи, бинарники, старые сборки C).
+# Папка появляется/удаляется вне git; в коммиты попадать не должна.
+.cleanup_[0-9]*/
+
 # Round 60.17 (2026-09-08) cleanup: diagnostic scratch
 # (operator-side debug dumps, one-off snapshots, not for commit).
 /_diag/

@@ -11,6 +11,16 @@
 
 > **🚦 Быстрый старт** (новое железо или миграция): см. [docs/ru/hardware-presets.md](docs/ru/hardware-presets.md) / [docs/en/hardware-presets.md](docs/en/hardware-presets.md) — 4 готовых пресета для RTX 30xx/40xx/50xx и A10. Скрипт `python scripts/apply-hardware-preset.py <name>` за 30 секунд правит `.env.bundled-with-agent` под вашу GPU.
 
+> **📦 v1.0 — релиз исходников.** Что реально работает, что работает частично и что
+> стоит заглушкой (sharded/rpc — этап P2, pipeline/expert parallelism и continuous
+> batching — post-1.0): [docs/v1.0-release-notes.md](docs/v1.0-release-notes.md).
+> Перед финальным тегом остался ручной smoke на A10:
+> [docs/v1.0-smoke-checklist.md](docs/v1.0-smoke-checklist.md).
+> Собрать архив исходников без бинарников и образов:
+> `pwsh -File scripts/release-sources.ps1`.
+> **Важно:** каталог `c/llama.cpp` — git-сабмодуль, в архиве он пуст; для сборки
+> без `-tags llama_stub` выполните `git submodule update --init c/llama.cpp`.
+
 ## AutoTune (R54–R55.2, 2026-08-24)
 
 Автономный оптимизатор параметров загруженных моделей. Детектит

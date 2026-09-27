@@ -172,9 +172,13 @@ try {
             Ok "запрещённых файлов нет (нет dist/, .tmp*, deployments/data/, рабочего .env)"
         }
         # Ожидаемые метаданные: полезно подтвердить, что они ЕСТЬ, а не отсутствуют.
+        $prefixRe = '^' + [regex]::Escape($prefix) + '/'
         foreach ($exp in $expectedTracked) {
             $hit = $entries | Where-Object { $_ -match [regex]::Escape($exp) } | Select-Object -First 1
-            if ($hit) { Ok "ожидаемый файл на месте: $($hit -replace "^$prefix/", "")" }
+            if ($hit) {
+                $relative = $hit -replace $prefixRe, ''
+                Ok "ожидаемый файл на месте: $relative"
+            }
         }
         # Верхний уровень — чтобы глазами видеть состав.
         Write-Host "  верхний уровень:" -ForegroundColor DarkGray

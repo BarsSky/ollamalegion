@@ -219,6 +219,47 @@ if ($health) {
         "публикуется при load_degraded в /api/models (severity=warning, source=load)"
 }
 
+# --- [7] §9.8: профили без модели — видно, а не «магия» ------------------------
+#
+# История пункта: в логах живого cppworker видели попытки грузить
+# r81-model.gguf / m-auto.gguf / llama-3-8b.gguf, которых нет ни в config/*.json,
+# ни в deployments/*.json. Разбор (2026-09-27) показал: это имена, которые
+# присылал КЛИЕНТ (внутренние _diag-логи прошлых сессий), а не содержимое
+# репозитория. Профили в конфиге сами по себе загрузок НЕ инициируют — они
+# применяются только когда модель с таким именем запрошена.
+#
+# Проверка нужна, чтобы этот класс («профиль на модель, которой нет на стенде»)
+# было видно сразу и не приходилось снова искать по логам: печатаем профили,
+# которым не соответствует ни одна модель в каталоге cppworker.
+Write-Host ""
+Write-Host "[7] §9.8: профили без соответствующей модели (informational)" -ForegroundColor Cyan
+$cfgRaw = docker exec ol-bundled-balancer sh -c "cat /app/data/config.json" 2>$null | Out-String
+$filesRaw = Get-JsonUtf8 "$cppworker/api/models/files" @{ Authorization = "Bearer $Token" }
+$orphans = @()
+if ($cfgRaw -and $filesRaw) {
+    try {
+        $cfg = $cfgRaw | ConvertFrom-Json
+        $catalog = @($filesRaw.files | ForEach-Object { [System.IO.Path]::GetFileNameWithoutExtension([string]$_.name) })
+        if ($cfg.llamaCppModelProfiles) {
+            foreach ($prof in $cfg.llamaCppModelProfiles.PSObject.Properties) {
+                $name = $prof.Name
+                $match = $catalog | Where-Object { $_ -and ($_ -like "*$name*" -or $name -like "*$_*") }
+                if (-not $match) { $orphans += $name }
+            }
+        }
+        Check "профили прочитаны из конфига балансера" $true `
+            ("всего=" + @($cfg.llamaCppModelProfiles.PSObject.Properties).Count + ", без модели на стенде=" + $orphans.Count)
+    } catch {
+        Write-Host ("  (конфиг не разобран: " + $_.Exception.Message + ")") -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "  (нет доступа к конфигу балансера или каталогу моделей)" -ForegroundColor DarkGray
+}
+if ($orphans.Count -gt 0) {
+    Write-Host ("       профили без модели: " + ($orphans -join ', ')) -ForegroundColor DarkGray
+    Write-Host "       Это не дефект: профиль применяется только при запросе такой модели, загрузок не инициирует." -ForegroundColor DarkGray
+}
+
 Write-Host ""
 if ($fail -eq 0) {
     Write-Host "ИТОГ §9: все проверки пройдены" -ForegroundColor Green

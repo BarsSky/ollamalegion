@@ -263,6 +263,12 @@ func runAsyncLoad(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 		// (line ~646 in backend.go). The instance is removed.
 	} else {
 		loadFailures.clear(modelName)
+		// R83 §9.4 шаг 1б (2026-09-26): режим загрузки (обычный / CPU-only).
+		// Вердикт здесь не пересчитываем: считаем по факту — ноль слоёв на GPU
+		// при ненулевом размере модели и есть осознанный CPU-only. Это делает
+		// запись достоверной и для путей, где memfit не вызывался вовсе
+		// (явный gpuLayers=0 от оператора).
+		noteLoadDegradation(modelName, opts)
 		logger.Get().Infow("runAsyncLoad: background load complete",
 			"name", modelName, "duration_ms", duration.Milliseconds())
 		// Notify balancer so the model becomes "ready" for routing.
@@ -306,12 +312,30 @@ type currentModelInfo struct {
 //
 // При ошибке load — пытаемся rollback к старым параметрам.
 // В любом случае UnlockLoad в конце.
+//
+// degradedStage (R83 §9.4 шаг 1б, 2026-09-26) — стадия деградации, уже
+// вычисленная хендлером по вердикту memfit до старта фоновой загрузки. Пустая
+// строка = обычная загрузка. Передаётся сюда, потому что заголовок ответа
+// ставится в 202, а запись в регистр — уже после фактической загрузки, и оба
+// места должны говорить об одном и том же (иначе UI покажет деградацию там,
+// где её нет, или наоборот).
 func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
-	current *cppbackend.ModelInfo, balancerReg balancerRegNotifier) {
+	current *cppbackend.ModelInfo, balancerReg balancerRegNotifier, degradedStage string) {
 	start := time.Now()
 	logger.Get().Infow("runAsyncReload: starting background reload",
 		"name", modelName, "path", modelPath,
 		"new_ctx", opts.ContextSize, "new_gpu_layers", opts.GPULayers)
+
+	// Защита от nil: функция читает пакетный backend (InFlight, UnloadModel,
+	// LoadModelWithOpts) из фоновой горутины, а он меняется при
+	// переинициализации (и в тестах). Раньше это давало панику всего процесса
+	// (nil pointer в InFlight) вместо пропущенного reload — фоновый сбой ронял
+	// cppworker, обслуживающий живые запросы.
+	if backend == nil {
+		logger.Get().Errorw("runAsyncReload: backend не инициализирован — reload пропущен",
+			"name", modelName)
+		return
+	}
 
 	// Wait for in-flight requests to drain (graceful unload).
 	if inflight := backend.InFlight(); inflight != nil {
@@ -362,6 +386,20 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 		"name", modelName, "duration_ms", duration.Milliseconds())
 	// R66d: успешный reload снимает запись о провале.
 	loadFailures.clear(modelName)
+	// R83 §9.4 шаг 1б (2026-09-26): и обновляет запись о режиме загрузки —
+	// успешный reload мог снять деградацию (например, оператор уменьшил n_ctx)
+	// или, наоборот, создать её.
+	//
+	// Почему пересчёт, а не запись из degradedStage: фактическая раскладка —
+	// авторитетнее плана. Хендлер мог не увидеть cpu_only (нет метаданных GGUF,
+	// вердикта нет), а загрузка всё равно прошла без GPU. noteLoadDegradation
+	// смотрит на opts.GPULayers и числа модели, поэтому регистр не разойдётся с
+	// реальностью. degradedStage при этом остаётся нужен для заголовка в 202.
+	noteLoadDegradation(modelName, opts)
+	if degradedStage != "" {
+		logger.Get().Warnw("runAsyncReload: подтверждена деградированная загрузка",
+			"name", modelName, "stage", degradedStage, "gpu_layers", opts.GPULayers)
+	}
 
 	if balancerReg != nil {
 		if info, err := backend.GetModel(modelName); err == nil {

@@ -1,17 +1,41 @@
 {
-    "tag":  "r83-submodule-v18",
-    "builtAt":  "2026-09-27T06:43:06Z",
-    "gitCommit":  "dacb31f",
+    "tag":  "r83-submodule-v19",
+    "builtAt":  "2026-09-27T07:57:28Z",
+    "gitCommit":  "4dc7b27",
     "cudaArch":  86,
     "composeFile":  "docker-compose.cppworker-bundled-with-agent.yml",
     "images":  [
                    {
+                       "service":  "balancer",
+                       "variable":  "BALANCER_TAG",
+                       "image":  "ollama-legion/balancer:r83-submodule-v19",
+                       "imageTag":  "r83-submodule-v19",
+                       "imageId":  "sha256:3aed23de6a7939af484d9e36c7a7b1dafb2d3a91b2e9baa399e083680ce3cb54",
+                       "alias":  "ollama-legion/balancer:latest"
+                   },
+                   {
                        "service":  "cppworker",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r83-submodule-v18",
-                       "imageTag":  "gpu-r83-submodule-v18",
-                       "imageId":  "sha256:03de80faa18138559656af76f45db8db4ec375a17e847dc595da7b3994d012e6",
+                       "image":  "ollama-legion/cppworker:gpu-r83-submodule-v19",
+                       "imageTag":  "gpu-r83-submodule-v19",
+                       "imageId":  "sha256:785fd733d1ed621cdfacc0d6b03d1835a74f67eca5dff6e9c8a1232a7b9c4643",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
+                   },
+                   {
+                       "service":  "agent",
+                       "variable":  "AGENT_TAG",
+                       "image":  "ollama-legion/agent:r83-submodule-v19",
+                       "imageTag":  "r83-submodule-v19",
+                       "imageId":  "sha256:de1ce45272e8ef00f70db28edbc2739023c78d781fb4848445bfa9489291f6ae",
+                       "alias":  "ollama-legion/agent:latest"
+                   },
+                   {
+                       "service":  "webui",
+                       "variable":  "WEBUI_TAG",
+                       "image":  "ollama-legion/webui:r83-submodule-v19",
+                       "imageTag":  "r83-submodule-v19",
+                       "imageId":  "sha256:7832d0980b12e8c56f4ffd43c5b9cd1aa851ed13cf50d1a6ee8d959470cf751d",
+                       "alias":  "ollama-legion/webui:latest"
                    }
                ]
 }

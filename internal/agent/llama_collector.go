@@ -32,6 +32,26 @@ type LlamaMetrics struct {
 	// Берём из того же ответа, который агент и так опрашивает, поэтому новых
 	// HTTP-запросов в связке cppworker → agent → webui не появляется.
 	LoadFailure *llamaLoadFailure `json:"loadFailure,omitempty"`
+	// R83 §9.4 шаг 1б (2026-09-26): режим загрузки из /api/models
+	// (load_degraded). Отдельное поле, потому что это не провал: модель
+	// загрузилась, но работает на CPU. Балансер превращает это в warning.
+	//
+	// Имя ключа — snake_case, как его реально отдаёт cppworker в /api/models.
+	// Это расходится с loadFailure, но именно так поле и называется на проводе;
+	// «причёсывание» имени молча обнулило бы фичу (поймано тестом
+	// TestR83_LlamaCollector_LoadDegraded).
+	LoadDegraded *llamaLoadDegraded `json:"load_degraded,omitempty"`
+}
+
+// llamaLoadDegraded — режим загрузки в терминах cppworker /api/models.
+type llamaLoadDegraded struct {
+	Model       string                 `json:"model"`
+	Stage       string                 `json:"stage"`
+	Reason      string                 `json:"reason"`
+	Detail      string                 `json:"detail"`
+	At          string                 `json:"at"`
+	Severity    string                 `json:"severity"`
+	Diagnostics map[string]interface{} `json:"diagnostics"`
 }
 
 // llamaLoadFailure — причина провала в терминах cppworker /api/models.
@@ -130,6 +150,7 @@ func (lc *LlamaCollector) Collect(ctx context.Context) (*LlamaMetrics, error) {
 		metrics.Models = modR.Models
 		metrics.ModelCount = modR.Count
 		metrics.LoadFailure = modR.LoadFailure
+		metrics.LoadDegraded = modR.LoadDegraded
 	}
 	if infoR != nil {
 		metrics.Uptime = infoR.Uptime
@@ -211,6 +232,9 @@ type modelsResponse struct {
 	Count  int         `json:"count"`
 	// R83: причина последнего провала загрузки (cppworker /api/models).
 	LoadFailure *llamaLoadFailure `json:"load_failure"`
+	// R83 §9.4 шаг 1б (2026-09-26): режим загрузки (cppworker /api/models →
+	// load_degraded). Отдельное поле: модель загружена, но без GPU.
+	LoadDegraded *llamaLoadDegraded `json:"load_degraded"`
 }
 
 // collectInfo собирает общую информацию с /api/info

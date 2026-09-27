@@ -1,7 +1,8 @@
 # R83 §9.4: протокол замены legacy-оценок памяти на memfit
 
-**Дата:** 2026-09-26 · **База:** `r83-submodule-v13` · **Статус:** не начато
-(подготовка выполнена — см. «Что уже готово»)
+**Дата:** 2026-09-26 · **База:** `r83-submodule-v13` · **Статус:** шаги 1, 1б, 3,
+3б, 4 выполнены (v15…v19); остаётся шаг 2 — удалить no-metadata fallback
+`EstimateGPUMemoryForModel` (см. шаг 2 ниже)
 
 Документ отвечает на вопрос «как делать §9.4, не работая вслепую»: что измерено,
 какие проверки запускать на каждом шаге, что считать регрессом и как откатиться.
@@ -86,30 +87,43 @@ but VRAM=8191 MB + RAM=8192 MB insufficient. Best GPU layers=18 (CPU layers=46, 
   и оставляло старое (слишком большое) число слоёв. В лог добавлено
   `source=memfit|legacy`.
 
-**Что осталось на шаг 1b (решение по отказу):** если `!v.Fits()`, вернуть отказ
-`insufficient_resources`, а не применять CPU-only раскладку — согласованно с
-§9.3 (`insufficientResourcesFromFallbackNoFit`).
+**РЕШЕНО И СДЕЛАНО (v19, 2026-09-26): вариант B+D** — владелец выбрал его из
+предложения `plans/2026-09-26-step1b-fit-refusal-proposal.md`. Итог:
 
-**ПОДГОТОВЛЕНО К РЕШЕНИЮ (2026-09-26):**
-`plans/2026-09-26-step1b-fit-refusal-proposal.md` — предложение с измеренной
-границей. Ключевой факт из теста-калькулятора
-(`estimator_fit_boundary_r83_test.go`, живые числа 3070 8 GB + Qwen3.8-27B):
+* **B** — отказ (HTTP 413 `insufficient_resources`, `code=6`) только на
+  `StageDoesNotFit` и только когда в запросе нет явного `gpuLayers`. Числа в
+  ответе берутся из того же вердикта, что и лог (`insErrFromVerdict`), поэтому
+  `max_viable_n_ctx` и строка в логе не могут разойтись. Причина доведена до
+  клиента машиночитаемо (`not_enough_ram` / `weights_exceed_vram` /
+  `kv_too_large`) вместе с подсказкой.
+* **D** — `StageCPUOnly` загрузку **не** блокирует: RAM хватает, модель
+  отработает на CPU. Оператор получает запись в отдельном реестре
+  `degradedLoads` (не в `load_failures` — загрузка удалась), поле
+  `load_degraded` в `/api/models`, заголовки
+  `X-CppWorker-Degraded[-Stage]` в ответе и warning-событие в WebUI
+  (`PublishLoadDegradedTransition`, дедупликация с префиксом `degraded:`,
+  чтобы не сталкиваться с провалом той же модели).
+* **Escape-hatch** — `force: true` в теле или `?force=true` в query
+  (`forceReloadRequest`), а также явный `gpuLayers`: явное намерение всегда
+  побеждает автоматику.
 
-```
-ctx=32768  kv=q8_0 ram=20GB → partial_offload fits=true  gpu_layers=23 (cpu_needed 10.50/16.00 GiB)
-ctx=262144 kv=q4_0 ram=20GB → partial_offload fits=true  gpu_layers=19 (cpu_needed 13.95/16.00 GiB)
-ctx=32768  kv=q8_0 ram=12GB → does_not_fit    fits=false (cpu_needed 10.50/8.00 GiB)
-```
-
-На живом стенде `!Fits()` не наступает вообще, а когда наступает — причина
-всегда RAM, и CPU-only в этом случае нежизнеспособен (llama.cpp не сможет
-аллоцировать CPU-часть). Предложение: отказ только на `StageDoesNotFit`,
-событие в WebUI для `cpu_only`, escape-hatch для явного `gpuLayers`/`?force=true`.
-Ждёт решения владельца — код шага 1б не менялся.
+**Важное наблюдение при реализации (стоит помнить).** В memfit-ветке гейт
+`checkNCtxBeforeLoad` стоит **первым** и уже отдаёт 422 `n_ctx_infeasible`,
+когда веса не помещаются никуда (`MaxHardCtx == 0`, потому что `Ceilings`
+монотонны и при `ctx=0` веса по-прежнему не влезают). Поэтому отказ по
+`does_not_fit` из 413-ветки на практике срабатывает как **страховка**: он нужен
+там, где гейт и раскладка разошлись по входным данным (тип KV-cache из профиля
+против явного, другой n_ctx), а также на путях без гейта. Сквозной тест
+`TestReload_InfeasibleIsRefusedNotLoaded` принимает любой из двух 4xx и
+проверяет главное: загрузка не началась, ответ содержит числа. Убирать 413-ветку
+как «недостижимую» не нужно — это ровно тот случай, когда дублирующая проверка
+дешевле пропущенного отказа.
 
 **Проверка шага 1:** тесты `auto_offload_memfit_r83_test.go` (границы
-fallback / disabled / no-config), полный набор `cmd/cppworker` + `cppbackend` +
-`balancer` + `api` — зелёный; живая сверка — §4 (ожидание 22-24 слоя вместо 18).
+fallback / disabled / no-config), `degraded_load_r83_test.go` (13 тестов
+1б: реестр, вердикт→ответ, заголовки, сквозные reload-сценарии), полный набор
+`cmd/cppworker` + `cppbackend` + `balancer` + `api` + `agent` — зелёный;
+живая сверка — §4 (ожидание 22-24 слоя вместо 18).
 
 **Что получилось проверить живьём (v15), а что нет — честно:**
 

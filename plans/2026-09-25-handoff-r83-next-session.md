@@ -277,12 +277,77 @@ docker restart ol-bundled-cppworker-gpu
 
 ---
 
+## 8б. Третья часть сессии: §9.4 шаг 1б (вариант B+D), тег `r83-submodule-v19`
+
+**Решение владельца — B+D** (из `plans/2026-09-26-step1b-fit-refusal-proposal.md`):
+отказ 413 только на `does_not_fit` и только без явного `gpuLayers`; `cpu_only`
+грузится, а оператор получает заголовки, поле в `/api/models` и warning-событие.
+Подробности — `CHANGELOG.md` 0.5.47.
+
+**Живая проверка (временный stub-контейнер, подменённые RAM/VRAM).** На живом
+стенде `cpu_only` не воспроизводится (модель влезает в VRAM → `partial_offload`),
+поэтому деградация проверялась на отдельном контейнере из образа v19 с
+`--models-dir /tmp/m`, фейковым GGUF (470 MiB, 64 слоя) и подменёнными
+`CPPWORKER_AVAILABLE_RAM_BYTES` / `CPPWORKER_VRAM_BYTES`. Что подтвердилось:
+
+```
+POST /api/models/reload {"name":"cpuonly-probe","contextSize":8192} →
+HTTP/1.1 202 Accepted
+X-Cppworker-Degraded: insufficient_resources
+X-Cppworker-Degraded-Stage: cpu_only
+{"gpuLayers":0, "status":"loading"}
+
+cppworker: warn "reload: загрузка в режиме CPU-only (деградация)"
+           name=cpuonly-probe requested_n_ctx=8192 weights_mb=470 usable_ram_mb=16384
+
+GET /api/models →
+"load_degraded":{"model":"cpuonly-probe","stage":"cpu_only",
+  "reason":"insufficient_resources","severity":"warning",
+  "detail":"vram_unknown: свободная VRAM неизвестна — расчёт только по RAM",
+  "diagnostics":{"gpu_layers":0,"kv_cache_type":"f16","kv_total_mb":3408,
+                 "max_hard_n_ctx":38253,"requested_n_ctx":8192,
+                 "total_layers":64,"usable_ram_mb":16384,"usable_vram_mb":0,
+                 "weights_mb":470}}
+
+GET /api/models/load/progress?model=cpuonly-probe → {"state":"loaded"}
+```
+
+Модель при этом **загрузилась** — то есть деградация корректно отличается от
+провала: в `load_failure` записи нет, событие «не хватило памяти» не публикуется.
+
+**Отказ (B) на том же контейнере с `CPPWORKER_AVAILABLE_RAM_BYTES=4 GiB`:** и
+`/api/models/load`, и `/api/models/load-with-params` получают **HTTP 422
+`n_ctx_infeasible`** с числами (`max_vram_n_ctx=0, max_ram_n_ctx=0,
+gguf_max_context=262144`) — загрузка не начинается. Это гейт `checkNCtxBeforeLoad`,
+который стоит первым; 413-ветка по вердикту `does_not_fit` остаётся страховкой
+для случая, когда гейт и раскладка разошлись по входным данным (см. протокол
+§9.4). Полезная деталь того же прогона: `loadModelRequest` не имеет поля `force`,
+поэтому на пути `load`/`load-with-params` escape-hatch — это только `?force=true`
+(и он не обходит гейт: если модель не влезает физически, отказ правилен).
+
+**Наблюдение на будущее (не дефект этого шага).** В stub-контейнере без GPU
+вердикт получил `Reason = vram_unknown` и всё равно выбрал `cpu_only`, а не
+`unknown`: при неизвестной VRAM memfit безопасно считает, что на GPU не влезает
+ничего. На реальном стенде `gpu_count=1` и VRAM известна, поэтому этот путь не
+задействован; но если однажды VRAM перестанет читаться (сломанный NVML), модели
+начнут грузиться CPU-only с честным предупреждением — это лучше, чем молчаливая
+переподписка, однако стоит помнить как источник «внезапно медленно».
+
+**Артефакты живой сверки:** `scripts/verify-r83-section9.ps1` дополнен блоком
+`[1b]` (контракт поля `load_degraded`: нет деградации → поля нет; есть → обязан
+нести `stage`, `diagnostics`, `severity=warning`) и `[6b]` (событие деградации в
+`recentErrors`). На живом стенде оба блока проходят (поле отсутствует — штатно),
+позитивная ветка покрыта `cmd/cppworker/degraded_load_r83_test.go`.
+
+---
+
 ## 9. Что осталось: разбор с локациями и критериями
 
-> **ОБНОВЛЕНО 2026-09-26 (вторая половина сессии, тег `r83-submodule-v13`).**
+> **ОБНОВЛЕНО 2026-09-26 (третья часть сессии, тег `r83-submodule-v19`).**
 > Закрыты: **9.1**, **9.2**, **9.3** (+ событие о провале авто-загрузки в WebUI),
-> **9.5** и **первая часть 9.4** (`availableRAMBytes` → `memfit.ProbeRAM`).
-> Остались: **9.4 (кроме RAM)**, **9.6**, **9.7** (за владельцем), **9.8** (не
+> **9.4** (шаги 1, 1б, 3, 3б, 4; остался только шаг 2 — no-metadata fallback),
+> **9.5**, а также **D-C** из 9.6 (unload не барьер во время загрузки).
+> Остались: **9.4 шаг 2**, **9.6 D-A/D-B**, **9.7** (за владельцем), **9.8** (не
 > воспроизводится). Ниже формулировки сохранены как исходный разбор; отметки
 > «ЗАКРЫТО» стоят у сделанного.
 
@@ -322,7 +387,7 @@ EventBus (`publishLoadFailureEventDeduped`): раньше оператор уз�
 (backend, модель+текст), иначе повторные попытки забивали 100-событийный буфер.
 Тесты `load_failure_events_dedup_r83_test.go`.
 
-### 9.4. Продово-мёртвые оценки (§3.6) — ЧАСТИЧНО
+### 9.4. Продово-мёртвые оценки (§3.6) — ЗАКРЫТО (кроме шага 2)
 
 **Сделано (RAM):** `cmd/cppworker.availableRAMBytes` больше не имеет своей
 реализации — делегирует в `memfit.ProbeRAM` (единственный ридер системной
@@ -330,12 +395,20 @@ EventBus (`publishLoadFailureEventDeduped`): раньше оператор уз�
 Это устранило расхождение: своя реализация не читала cgroup-лимит, поэтому в
 Docker «доступная RAM» показывала память всей VM.
 
-**Осталось:** `CalculateOptimalGPULayers` (продовые вызовы через
-`calculateOptimalGPULayersForModel` в `handlers_model.go:1735`,
-`handlers_config.go:582`), `EstimateModelVRAM`
-(`backend_selector.go:566`, `model_instance_controller.go:178`,
-`prewarm_controller.go:239`, `scoring.go:283-284`), `EstimateGPUMemoryForModel`
-(внутри `CalculateOptimalGPULayers`) и `backwardCompatEstimateGPUMemoryForModel`.
+**Сделано (v17–v19):** `availableVRAMBytes` разделён на «полная ёмкость» и
+`freeVRAMBytes` (шаг 4); `EstimateModelVRAM` → `WeightsOnGPUBytes` без ×0.7
+(шаг 3); `EstimateGPUMemoryForModel`/`backwardCompat…` удалены из продового
+пути, осталась только no-metadata оценка слоёв как fallback (шаг 1);
+`memfitPlanForModel` отдаёт полный вердикт, и на нём же построено решение
+«отказ или деградация» (шаг 1б, вариант B+D — см. `plans/2026-09-26-step1b-fit-refusal-proposal.md`).
+
+**Осталось (шаг 2):** `EstimateGPUMemoryForModel` живёт как fallback «нет
+метаданных GGUF» и содержит ту же неверную константу KV («256 КБ на токен»;
+завышение ~1024×). Его нужно либо переписать на `KVLayersFor`/`KVHeadDimFor`,
+либо удалить вместе с вызовом, когда решим, что делать без метаданных
+(сейчас — `DefaultGPULayers`, см. `legacyCalculateOptimalGPULayersForModel`).
+Это единственный незакрытый пункт §9.4; протокол по шагам —
+`plans/2026-09-26-estimator-unification-protocol.md`.
 
 **Подготовлено, чтобы не делать вслепую:**
 - `internal/cppbackend/estimator_compare_r83_test.go` — эталон «до»: обе оценки
@@ -437,11 +510,14 @@ Remove-Item "$env:TEMP\*" -Recurse -Force    # 3.8 GB
   во время загрузки больше не проходит молча). Остаётся: `handlers_model.go:245`
   («loaded by concurrent request») и удаление `b.models[name]` в путях ошибок —
   нужен тест-симулятор перекрытия.
-- **§9.4 остаток:** шаг **1б** — при `!verdict.Fits()` возвращать отказ
-  `insufficient_resources` вместо `GPULayers`/`DefaultGPULayers` (сейчас
-  CPU-only раскладка просто применяется); шаг **3б** — `EstimateGPUMemoryForModel`
-  всё ещё жив как fallback `auto_offload` без метаданных (веса уже считает
-  `WeightsOnGPUBytes`, KV — по «256 КБ/токен» с завышением 1024×, см. протокол).
+- **§9.4 шаг 1б — ЗАКРЫТО (v19).** Решение владельца — вариант **B+D**: отказ
+  413 только на `StageDoesNotFit` (и только без явного `gpuLayers`), `cpu_only`
+  грузится с warning-событием и заголовками `X-CppWorker-Degraded[-Stage]`,
+  escape-hatch `force:true`/`?force=true`. Детали — `CHANGELOG.md` 0.5.47 и
+  `plans/2026-09-26-step1b-fit-refusal-proposal.md` («Итог»). Остаётся шаг
+  **2**: `EstimateGPUMemoryForModel` всё ещё жив как fallback `auto_offload` без
+  метаданных (веса уже считает `WeightsOnGPUBytes`, KV — по «256 КБ/токен» с
+  завышением 1024×, см. протокол).
 
 ### 9.7. Механизм A дублирования в OpenWebUI — за владельцем контракта
 

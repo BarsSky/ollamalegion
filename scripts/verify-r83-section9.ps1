@@ -104,6 +104,41 @@ if ($models) {
     }
 }
 
+# --- [1b] load_degraded: контракт поля (R83 §9.4 шаг 1б, вариант D) ----------
+#
+# Что проверяем и почему именно так. Поле load_degraded — это НЕ провал
+# (загрузка удалась, модель работает без GPU), поэтому в спокойном состоянии
+# его быть не должно: иначе оператор получит предупреждение о работающей
+# модели. А если оно есть — обязано нести stage и diagnostics, иначе UI не
+# сможет объяснить, почему раскладка такая.
+#
+# Позитивную ветку (cpu_only + заголовки) здесь воспроизвести нельзя: на живом
+# стенде модель влезает в VRAM (partial_offload), а искусственный дефицит
+# памяти требует отдельного контейнера. Она покрыта юнит- и e2e-тестами
+# (cmd/cppworker/degraded_load_r83_test.go) и проверялась на временном
+# stub-контейнере с подменёнными RAM/VRAM.
+Write-Host ""
+Write-Host "[1b] §9.4 шаг 1б: контракт load_degraded в /api/models" -ForegroundColor Cyan
+if ($models) {
+    $hasDegradedField = $models.PSObject.Properties.Name -contains "load_degraded"
+    if (-not $models.load_degraded) {
+        Check "нет деградации → поля load_degraded нет" $true "модель работает штатно"
+    } else {
+        Check "load_degraded есть → stage заполнен" `
+            ($models.load_degraded.stage -ne "") ("stage=" + $models.load_degraded.stage)
+        Check "load_degraded есть → diagnostics заполнены" `
+            ($null -ne $models.load_degraded.diagnostics) `
+            ("model=" + $models.load_degraded.model + " reason=" + $models.load_degraded.reason)
+        Check "load_degraded.severity = warning (не провал)" `
+            ($models.load_degraded.severity -eq "warning") ("severity=" + $models.load_degraded.severity)
+    }
+    # Признак того, что поля вообще нет в схеме ответа (старый образ) — это не
+    # провал проверки, а информация: поле опциональное (omitempty).
+    if (-not $hasDegradedField) {
+        Write-Host "  (поля нет в ответе вовсе — штатно для omitempty)" -ForegroundColor DarkGray
+    }
+}
+
 # --- [2] recentErrors читается ------------------------------------------------
 Write-Host ""
 Write-Host "[2] /api/v1/health/detailed: recentErrors доступен (ring buffer)" -ForegroundColor Cyan
@@ -167,6 +202,22 @@ $cplog = docker logs --since 30m ol-bundled-cppworker-gpu 2>&1 | Out-String
 InfoCheck "cppworker жив и логирует решения гейта" ($cplog -match 'R83 гейт n_ctx') `
     "лог появляется при попытке загрузки с явным contextSize"
 Check "нет SIGABRT/переподписки" (($cplog -notmatch 'SIGABRT') -and ($cplog -notmatch 'unaligned tcache'))
+
+# --- [6b] событие деградации (§9.4 шаг 1б, вариант D) ------------------------
+#
+# Проверяем, что уведомление о CPU-only действительно доходит до балансера.
+# Событие публикуется только когда факт деградации есть в /api/models, поэтому
+# в обычном прогоне это INFO; с -Strict — обязательная проверка (используется
+# при сверке на стенде, где деградацию воспроизводили).
+Write-Host ""
+Write-Host "[6b] §9.4 шаг 1б: событие load_degraded доходит до WebUI" -ForegroundColor Cyan
+if ($health) {
+    $degEv = @($health.recentErrors) | Where-Object {
+        $_.path -eq "load_degraded" -or $_.message -like "*без GPU*" -or $_.message -like "*cpu_only*"
+    } | Select-Object -First 1
+    InfoCheck "событие деградации есть в recentErrors" ($null -ne $degEv) `
+        "публикуется при load_degraded в /api/models (severity=warning, source=load)"
+}
 
 Write-Host ""
 if ($fail -eq 0) {

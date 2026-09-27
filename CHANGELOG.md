@@ -5,6 +5,87 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.47 — R83 §9.4 шаг 1б: «не влезает» — отказ, «влезает без GPU» — загрузка с предупреждением (2026-09-26)]
+
+### 🧭 Вердикт memfit решает и на пути reload (§9.4 шаг 1б)
+
+До этого шага в `handleReloadModel` решение о раскладке принимала
+`SelectStrategy` со своей формулой, а memfit попадал в игру лишь как fallback
+без `globalEnv`. Из-за этого отказ по «не влезает даже в CPU-only» зависел от
+того, инициализировано ли окружение, и на живом стенде не срабатывал вовсе.
+
+- `memfitPlanForModel(m, kvCacheType)` — обёртка, отдающая полный
+  `memfit.Verdict` (её же использует `memfitGPULayersForModel`);
+- в reload-ветке `gpuLayers=-2` (или `auto_offload` с унаследованным числом)
+  вердикт считается **до** `SelectStrategy`, и решение принимается по стадии.
+
+### 🚫 Вариант B: 413 только на `does_not_fit`
+
+- `verdict.Stage == does_not_fit` и в запросе **нет** явного `gpuLayers` →
+  HTTP 413 `insufficient_resources` (`code=6`) с числами вердикта
+  (`max_viable_n_ctx = MaxHardCtx`, `available_vram_mb`, `available_ram_mb`,
+  `gpu_layers_attempted`) и машиночитаемым `reason`
+  (`not_enough_ram` / `weights_exceed_vram` / `kv_too_large`) вместо общей фразы;
+- запись в `loadFailures` (`insufficient_resources`) — уведомление доедет до
+  WebUI обычным путём (cppworker → agent → балансер → EventBus);
+- отказ выдаётся **до** unload/load: прежнее поведение (unload рабочей модели,
+  загрузка 16 GB в RAM, таймаут у клиента) исключено.
+
+### 📉 Вариант D: `cpu_only` грузится и предупреждает
+
+Ключевое различие: «не хватило RAM» и «хватило RAM, но не хватило VRAM» —
+разные ситуации. Вторая рабочая: модель отработает на CPU, медленнее, но
+корректно, поэтому отказ там превратил бы работающую конфигурацию в нерабочую.
+
+- `degraded_load.go`: тип `DegradedNotice`, отдельный реестр `degradedLoads`
+  (TTL 30 мин — деградация это СОСТОЯНИЕ, а не мгновенное событие), сборка
+  записи из вердикта (`degradedNoticeFromVerdict`) и заголовки
+  `X-CppWorker-Degraded: insufficient_resources`,
+  `X-CppWorker-Degraded-Stage: cpu_only` на ответах load/reload (202 и 200);
+- **в `load_failures` деградация не пишется** — иначе балансер опубликовал бы
+  «не хватило памяти» и позже «загрузка восстановлена» про работающую модель;
+- `/api/models` отдаёт отдельное поле `load_degraded` (reason/stage/detail/
+  severity=warning/diagnostics);
+- `noteLoadDegradation` вызывается во всех путях после фактической загрузки
+  (`runAsyncLoad`, `runAsyncReload`, синхронный reload): факт важнее плана —
+  если слои на GPU есть, запись снимается;
+- агент пересылает `load_degraded` тем же push'ем (`llamaLoadDegraded` →
+  `types.DegradedLoadInfo`), `toBackendLoadDegraded` на пустом даёт nil;
+- балансер: `PublishLoadDegradedTransition` — событие `load_degraded`,
+  `severity=warning`, дедупликация по `(backend, model, stage)` в общей карте, но
+  с префиксом `degraded:` (иначе деградация и провал одной модели глушили бы
+  друг друга). Текст события объясняет последствие («инференс будет медленным»)
+  и путь решения.
+
+### 🪂 Escape-hatch: явное намерение всегда побеждает
+
+- `force: true` в теле **или** `?force=true` в query (`forceReloadRequest`) —
+  отказ по памяти обходится сознательно, с warn в логе;
+- явный `gpuLayers` в запросе (кроме `-2`) тоже отключает отказ: это намерение
+  оператора, а не автоматика.
+
+### 🛡 Прочее
+
+- `runAsyncReload` больше не паникует на nil-`backend`: фоновый reload читает
+  пакетный backend, и при переинициализации это роняло **весь** cppworker
+  (nil pointer в `InFlight`) вместо пропущенного reload;
+- `InsufficientResourcesError` получил `Reason`/`Suggestion`; `bridge_info`
+  теперь несёт `reason` на верхнем уровне и внутри (старые вызовы не меняются —
+  пустая причина даёт прежний текст).
+
+**Тесты:** 13 новых — реестр деградации (TTL, clear, latest),
+`degradedStageFromVerdict`, `insErrFromVerdict` (числа и причина),
+`degradedNoticeFromVerdict` (только `cpu_only`), `forceReloadRequest` (тело и
+query), заголовки, `/api/models` → `load_degraded`, сквозные reload-сценарии
+(невыполнимый reload отвергнут 4xx вместо загрузки, `force` обходит отказ,
+`cpu_only` не отказывает и помечает ответ), «деградация не записана как провал»,
+событие балансера (дедупликация, отсутствие коллизий с провалом, текст), агент
+(конвертация, разбор `load_degraded`, отсутствие поля).
+
+**Проверка:** `go build -tags llama_stub ./...`, `go vet` — чисто;
+`cmd/cppworker`, `internal/cppbackend`, `internal/balancer`, `internal/api`,
+`internal/agent` — зелёные.
+
 ## [0.5.46 — R83 §9: остаток хендоффа — ожидание загрузки, vram_known, отказ no-fit, SSE-буфер (2026-09-26)]
 
 ### ⏳ `LB_AUTO_LOAD_WAIT_SEC` учитывает размер модели (§9.1)

@@ -749,8 +749,32 @@ func (a *Agent) collectLlamaMetrics(base *types.BackendMetrics) *types.BackendMe
 	// (связка cppworker → agent → webui). Данные уже получены из /api/models,
 	// дополнительных запросов нет.
 	base.LoadFailure = toBackendLoadFailure(llamaMetrics.LoadFailure)
+	// R83 §9.4 шаг 1б (2026-09-26): режим загрузки (cpu_only = деградация).
+	// Идёт тем же push'ем и из того же /api/models (поле load_degraded), поэтому
+	// дополнительных запросов к cppworker не появляется.
+	base.LoadDegraded = toBackendLoadDegraded(llamaMetrics.LoadDegraded)
 
 	return base
+}
+
+// toBackendLoadDegraded — конвертация режима загрузки из формата cppworker
+// (/api/models → load_degraded) в формат метрик бэкенда.
+//
+// nil означает «деградации нет» (модель либо не загружена, либо загружена
+// нормально): балансер тогда молчит. Пустая запись тоже трактуется как «нет» —
+// иначе каждый push порождал бы событие «модель деградировала» без причины.
+func toBackendLoadDegraded(ld *llamaLoadDegraded) *types.DegradedLoadInfo {
+	if ld == nil || (ld.Model == "" && ld.Stage == "") {
+		return nil
+	}
+	return &types.DegradedLoadInfo{
+		Model:       ld.Model,
+		Stage:       ld.Stage,
+		Reason:      ld.Reason,
+		Detail:      ld.Detail,
+		At:          ld.At,
+		Diagnostics: ld.Diagnostics,
+	}
 }
 
 // toBackendLoadFailure — конвертация причины провала из формата cppworker

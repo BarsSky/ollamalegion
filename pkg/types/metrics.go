@@ -42,6 +42,15 @@ type BackendMetrics struct {
 	// опроса и не забивает SSE-буфер (в нём всего 100 событий).
 	LoadFailure *LoadFailureInfo `json:"loadFailure,omitempty"`
 
+	// LoadDegraded — модель загружена, но работает деградированно (R83 §9.4
+	// шаг 1б, 2026-09-26): сегодня это cpu_only, когда веса не влезли в VRAM.
+	//
+	// Почему отдельное поле, а не loadFailure: загрузка УДАЛАСЬ. Балансер
+	// публикует уведомление с severity=warning и отдельной дедупликацией
+	// (DegradedLoadInfo.Key) — «не хватило памяти» о работающей модели было бы
+	// ложью, а последующее «загрузка восстановлена» — второй ложью.
+	LoadDegraded *DegradedLoadInfo `json:"loadDegraded,omitempty"`
+
 	// Прогноз критического состояния
 	Prediction Prediction `json:"prediction"`
 

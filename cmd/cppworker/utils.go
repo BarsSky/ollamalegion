@@ -473,6 +473,12 @@ type InsufficientResourcesError struct {
 	ModelSizeBytes     int64
 	KVCacheRequiredMB  int64
 	GPULayersAttempted int
+	// R83 §9.4 шаг 1б (2026-09-26): машиночитаемая причина и подсказка из
+	// вердикта memfit (not_enough_ram / weights_exceed_vram / kv_too_large).
+	// Пустые — прежнее поведение (общая формулировка в write...Response),
+	// поэтому уже существующие вызовы ничего не меняют.
+	Reason     string
+	Suggestion string
 }
 
 // Error — human-readable message (используется в логах и в generic 5xx fallback).
@@ -495,13 +501,26 @@ func (e *InsufficientResourcesError) Error() string {
 // Балансер проксирует этот JSON клиенту как есть (код 6 — не n_ctx-reloadable,
 // клиент сам решит, уменьшать n_ctx или нет).
 func writeInsufficientResourcesResponse(w http.ResponseWriter, err *InsufficientResourcesError) {
+	// Подсказка и причина: если путь (memfit-вердикт) их дал — используем их,
+	// иначе прежняя общая формулировка. Клиент (Cline/OpenWebUI) показывает
+	// suggestion как есть, поэтому конкретика («не влезает в RAM») важнее.
+	reason := err.Reason
+	if reason == "" {
+		reason = "insufficient_resources"
+	}
+	suggestion := err.Suggestion
+	if suggestion == "" {
+		suggestion = "Reduce num_ctx to " + strconv.Itoa(err.MaxViableNCtx) + " or use a smaller model. You can also save a per-model profile via POST /api/v1/cppworker/model-profiles/{name} with smaller contextSize."
+	}
 	body := map[string]interface{}{
 		"error":   "insufficient_resources",
+		"reason":  reason,
 		"code":    6,
 		"message": err.Error(),
 		"details": err.Error(),
 		"bridge_info": map[string]interface{}{
 			"code":                 6,
+			"reason":               reason,
 			"requested_n_ctx":      err.RequestedNCtx,
 			"max_viable_n_ctx":     err.MaxViableNCtx,
 			"available_vram_mb":    err.AvailableVRAMMB,
@@ -510,7 +529,7 @@ func writeInsufficientResourcesResponse(w http.ResponseWriter, err *Insufficient
 			"kv_cache_required_mb": err.KVCacheRequiredMB,
 			"gpu_layers_attempted": err.GPULayersAttempted,
 			"model":                err.Model,
-			"suggestion":           "Reduce num_ctx to " + strconv.Itoa(err.MaxViableNCtx) + " or use a smaller model. You can also save a per-model profile via POST /api/v1/cppworker/model-profiles/{name} with smaller contextSize.",
+			"suggestion":           suggestion,
 		},
 		"http_status": 413,
 	}

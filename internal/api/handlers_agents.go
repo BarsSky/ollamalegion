@@ -931,6 +931,12 @@ func (s *Server) agentBackendMetricsHandler(w http.ResponseWriter, r *http.Reque
 	// а запись о провале живёт 10 минут (SSE-буфер вмещает всего 100 событий).
 	s.proxy.PublishLoadFailureTransition(backendID, metrics.LoadFailure)
 
+	// R83 §9.4 шаг 1б (2026-09-26), вариант D: «загружено, но без GPU» —
+	// отдельное уведомление (severity=warning). Дедупликация своя: cpu_only не
+	// должен ни глушить, ни глушиться провалом загрузки (см.
+	// PublishLoadDegradedTransition).
+	s.proxy.PublishLoadDegradedTransition(backendID, metrics.LoadDegraded)
+
 	// Обновляем флаг активного агента
 	s.proxy.UpdateBackendAgentStatus(backendID, true)
 

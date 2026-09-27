@@ -80,40 +80,54 @@ func calculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType strin
 	return legacyCalculateOptimalGPULayersForModel(m, kvCacheType)
 }
 
-// memfitGPULayersForModel — раскладка через memfit. ok=false означает «судить не
-// о чем» (нет backend'а, модели в каталоге или метаданных) — вызывающий обязан
-// уйти в legacy-fallback, а не выдумывать числа.
-func memfitGPULayersForModel(m cppbackend.ModelInfo, kvCacheType string) (int, bool) {
+// memfitPlanForModel — раскладка через memfit БЕЗ потери вердикта.
+//
+// ok=false означает «судить не о чем» (нет backend'а, модели в каталоге или
+// метаданных) — вызывающий обязан уйти в legacy-fallback, а не выдумывать числа.
+//
+// R83 §9.4 шаг 1б (2026-09-26): вызывающим нужен не только GPULayers, но и
+// Stage/Fits/MaxHardCtx — чтобы отличить «влезает частично» (работает, хотя и
+// медленнее) от «не влезает суммарно» (загрузка заведомо провалится) и назвать
+// потолок в подсказке отказа.
+func memfitPlanForModel(m cppbackend.ModelInfo, kvCacheType string) (memfit.Verdict, bool) {
 	if backend == nil || m.Name == "" {
-		return 0, false
+		return memfit.Verdict{}, false
 	}
 	spec, ok := backend.MemfitSpec(m.Name)
 	if !ok || !spec.Complete() {
-		return 0, false
+		return memfit.Verdict{}, false
 	}
 	nCtx := m.ContextSize
 	if nCtx <= 0 {
 		nCtx = currentConfig.DefaultCtxSize
 	}
-	v := memfit.Evaluate(spec, memfit.Request{
+	return memfit.Evaluate(spec, memfit.Request{
 		Ctx:    nCtx,
 		KVType: cppbackend.MemfitKVType(kvCacheType),
-	}, backend.MemfitBudget(), cppbackend.MemfitPolicy())
+	}, backend.MemfitBudget(), cppbackend.MemfitPolicy()), true
+}
 
+// memfitGPULayersForModel — число GPU-слоёв по вердикту memfit (обёртка над
+// memfitPlanForModel). ok=false — «судить не о чем», см. выше.
+func memfitGPULayersForModel(m cppbackend.ModelInfo, kvCacheType string) (int, bool) {
+	v, ok := memfitPlanForModel(m, kvCacheType)
+	if !ok {
+		return 0, false
+	}
 	layers := v.GPULayers
 	if layers < 0 {
 		layers = 0
 	}
-	if layers > spec.NLayers {
-		layers = spec.NLayers
+	if v.TotalLayers > 0 && layers > v.TotalLayers {
+		layers = v.TotalLayers
 	}
 	logger.Get().Infow("auto_offload: gpu_layers from memfit (R83 §9.4)",
 		"model", m.Name,
-		"n_ctx", nCtx,
+		"n_ctx", m.ContextSize,
 		"kv_cache_type", kvCacheType,
 		"stage", string(v.Stage),
 		"gpu_layers", layers,
-		"total_layers", spec.NLayers,
+		"total_layers", v.TotalLayers,
 		"vram_used_mb", (v.GPUWeights + v.GPUKV).MiB(),
 		"usable_vram_mb", v.UsableVRAM.MiB(),
 		"usable_ram_mb", v.UsableRAM.MiB(),

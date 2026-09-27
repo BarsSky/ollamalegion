@@ -16,6 +16,7 @@ import (
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -1289,6 +1290,25 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// R83 §9.4 шаг 1б, вариант D (2026-09-26): модель загружена, но без GPU.
+	//
+	// Это НЕ load_failure: загрузка удалась, модель работает. Отдаём отдельным
+	// полем, потому что балансер по load_failure публикует «не хватило памяти»
+	// и позже «загрузка восстановлена» — для cpu_only и то и другое ложь.
+	// Agent забирает поле тем же циклом опроса (см. internal/agent/collector.go)
+	// и передаёт балансеру, который публикует уведомление с severity=warning.
+	if d, ok := degradedLoads.latest(); ok && !d.IsEmpty() {
+		resp["load_degraded"] = map[string]interface{}{
+			"model":       d.Model,
+			"stage":       d.Stage,
+			"reason":      d.Reason,
+			"detail":      d.Detail,
+			"at":          d.At.UTC().Format(time.RFC3339),
+			"severity":    "warning",
+			"diagnostics": d.Numbers,
+		}
+	}
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1657,6 +1677,23 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		opts.OverrideTensors = req.OverrideTensors
 		opts.OverrideTensorBufts = req.OverrideTensorBufts
 	}
+	// R83 §9.4 шаг 1б (2026-09-26): escape-hatch для отказа по памяти.
+	//
+	// Объявлено до auto-offload блока, потому что решение об отказе (ниже) уже
+	// должно его видеть: оператор, который сознательно хочет попробовать,
+	// ставит force. forceReloadRequest объединяет JSON-поле force и
+	// ?force=true — как в handleUnloadModel, чтобы не заставлять клиента
+	// переписывать тело ради одной попытки.
+	forceReload := forceReloadRequest(r, req.Force)
+
+	// R83 §9.4 шаг 1б (2026-09-26), вариант D: «загрузим, но без GPU».
+	//
+	// Пустая строка = обычная загрузка. Заполняется вердиктом memfit в блоке
+	// auto-offload (и только если memfit реально судил — без метаданных GGUF
+	// вердикта нет). Объявлено здесь, а не внутри блока, потому что заголовок
+	// X-CppWorker-Degraded-Stage нужно поставить уже после решения, но до
+	// первого WriteHeader — а это две разные ветки ниже (202 и 200).
+	degradedStage := ""
 	if req.Parallel != nil {
 		opts.Parallel = *req.Parallel
 	}
@@ -1717,6 +1754,63 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		// memfitDecided — решение принято memfit (а не legacy-оценкой): только в
 		// этом случае ноль слоёв означает осознанный CPU-only (R83 §9.4 шаг 1).
 		memfitDecided := false
+		// R83 §9.4 шаг 1б (2026-09-26): вердикт memfit — единая точка решения.
+		//
+		// ПОЧЕМУ ЗДЕСЬ, А НЕ ТОЛЬКО В ВЕТКЕ globalEnv == nil. До этого шага
+		// решение о раскладке принимала strategy (SelectStrategy) со своей
+		// формулой, а memfit попадал в игру лишь как fallback без globalEnv.
+		// Из-за этого отказ по «не влезает даже в CPU-only» зависел от того,
+		// инициализировано ли окружение, и на живом стенде не срабатывал
+		// вовсе (см. plans/2026-09-26-step1b-fit-refusal-proposal.md).
+		if verdict, ok := memfitPlanForModel(m, opts.KVCacheType); ok {
+			// Явный gpuLayers в запросе = «я знаю, что делаю»: не отказываем и
+			// не подменяем стадию, оператор сам просил раскладку (§9.4: явное
+			// намерение всегда побеждает автоматику). Именно поэтому условие
+			// проверяет req.GPULayers, а не профиль: профиль — тоже автоматика.
+			explicitGPULayers := req.GPULayers != nil && *req.GPULayers != -2
+			if verdict.Stage == memfit.StageDoesNotFit && !explicitGPULayers {
+				if forceReload {
+					logger.Get().Warnw("reload: does_not_fit, но force=true — загрузка разрешена оператором",
+						"name", req.Name,
+						"requested_n_ctx", m.ContextSize,
+						"max_hard_n_ctx", verdict.MaxHardCtx,
+						"stage", string(verdict.Stage))
+				} else {
+					logger.Get().Warnw("reload: отказано — модель не влезает даже в CPU-only",
+						"name", req.Name,
+						"requested_n_ctx", m.ContextSize,
+						"max_hard_n_ctx", verdict.MaxHardCtx,
+						"usable_ram_mb", verdict.UsableRAM.MiB(),
+						"usable_vram_mb", verdict.UsableVRAM.MiB(),
+						"verdict", verdict.String())
+					loadFailures.recordDetailed(req.Name, LoadFailureInsufficientResources,
+						fmt.Errorf("%s", verdict.String()), map[string]interface{}{
+							"requested_n_ctx":  m.ContextSize,
+							"max_viable_n_ctx": verdict.MaxHardCtx,
+							"stage":            string(verdict.Stage),
+							"usable_ram_mb":    verdict.UsableRAM.MiB(),
+							"usable_vram_mb":   verdict.UsableVRAM.MiB(),
+						})
+					writeInsufficientResourcesResponse(w,
+						insErrFromVerdict(req.Name, verdict, m.ContextSize))
+					return
+				}
+			}
+			if degradedStageFromVerdict(verdict) != "" {
+				degradedStage = degradedStageFromVerdict(verdict)
+				degraded := degradedNoticeFromVerdict(req.Name, verdict, m.ContextSize)
+				if degraded != nil {
+					degradedLoads.record(degraded)
+				}
+				logger.Get().Warnw("reload: загрузка в режиме CPU-only (деградация)",
+					"name", req.Name,
+					"requested_n_ctx", m.ContextSize,
+					"weights_mb", verdict.Weights.MiB(),
+					"usable_ram_mb", verdict.UsableRAM.MiB(),
+					"usable_vram_mb", verdict.UsableVRAM.MiB(),
+					"verdict", verdict.String())
+			}
+		}
 		// Use adaptive SelectStrategy which tries all kvCacheTypes (f16->q8_0->q4_0)
 		// and handles MoE, dynamic overhead, and VRAM/RAM limits.
 		if globalEnv != nil {
@@ -1849,7 +1943,7 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	// ??? ?????, ????? C-bridge ?? ????? ??????? ???????????? ??????????? n_ctx
 	// (effective n_ctx < GGUF native context_length), ? ????????????? ???? force,
 	// ????? ????????????? ????????????? ?????? ? ?????? ???????????.
-	forceReload := req.Force != nil && *req.Force
+	// (значение forceReload вычислено выше — там же, где отказ по памяти)
 
 	// R64 (2026-09-15): include KVCacheType in skip-check AND log diagnostics
 	// on each skip miss. Pre-R64:
@@ -1927,9 +2021,12 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			LoadingStartedAt: time.Now(),
 			LoadingSizeBytes: sizeBytes,
 		}
+		// R83 §9.4 шаг 1б (2026-09-26), вариант D: 202 Accepted тоже несёт режим
+		// загрузки — клиент узнаёт о деградации сразу, не дожидаясь метрик.
+		setDegradedHeader(w, degradedStage)
 		writeLoadAccepted(w, r, req.Name, modelPath, sizeBytes, estimatedMs, lm)
 		// Background reload: UnloadModel + LoadModelWithOpts + notify.
-		go runAsyncReload(req.Name, modelPath, opts, current, balancerReg)
+		go runAsyncReload(req.Name, modelPath, opts, current, balancerReg, degradedStage)
 		return
 	}
 
@@ -2028,12 +2125,19 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// R83 §9.4 шаг 1б (2026-09-26): сообщаем клиенту режим загрузки. Заголовок
+	// обязан быть выставлен ДО writeJSON — после WriteHeader он теряется молча.
+	setDegradedHeader(w, degradedStage)
+	// Синхронный reload тоже обновляет регистр: запись о деградации должна
+	// появляться и исчезать одинаково во всех путях (иначе /api/models соврёт).
+	noteLoadDegradation(req.Name, opts)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "reloaded", "name": req.Name,
 		"contextSize": opts.ContextSize, "batchSize": opts.BatchSize,
 		"gpuLayers": opts.GPULayers, "flashAttnType": opts.FlashAttnType,
 		"reloadDurationMs": time.Since(unloadStart).Milliseconds(),
 		"model":            model,
+		"degraded":         degradedStage,
 	})
 }
 

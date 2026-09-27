@@ -52,3 +52,50 @@ func (l *LoadFailureInfo) Key() string {
 	}
 	return l.Model + "\x00" + l.Reason
 }
+
+// DegradedLoadInfo — модель ЗАГРУЖЕНА, но работает неоптимально (R83 §9.4,
+// шаг 1б, 2026-09-26).
+//
+// Отдельный тип, а не переиспользование LoadFailureInfo, по существу: это не
+// провал. Смешивание дало бы оператору уведомление «не хватило памяти» о модели,
+// которая успешно работает, и последующее «загрузка восстановлена» — оба ложные.
+//
+// Единственная стадия сегодня — cpu_only: веса не влезли в VRAM (или вердикт
+// memfit так решил), раскладка целиком на CPU. Модель работает, инференс
+// медленный; отказ (HTTP 413) в этом случае был бы неверен, потому что памяти
+// (RAM) достаточно — см. plans/2026-09-26-step1b-fit-refusal-proposal.md.
+type DegradedLoadInfo struct {
+	// Model — имя модели, под которым её загрузили.
+	Model string `json:"model"`
+	// Stage — стадия раскладки; сегодня только "cpu_only".
+	Stage string `json:"stage"`
+	// Reason — машиночитаемый код причины деградации.
+	Reason string `json:"reason"`
+	// Detail — одна строка «почему» из вердикта (код причины + детали).
+	Detail string `json:"detail,omitempty"`
+	// At — когда зафиксировано (RFC3339).
+	At string `json:"at,omitempty"`
+	// Diagnostics — числа вердикта: n_ctx, gpu_layers, веса, KV, доступная
+	// память. Те же, что в логе раскладки, поэтому источники не расходятся.
+	Diagnostics map[string]interface{} `json:"diagnostics,omitempty"`
+}
+
+// IsEmpty — nil-safe проверка «нечего показывать».
+func (d *DegradedLoadInfo) IsEmpty() bool {
+	if d == nil {
+		return true
+	}
+	return d.Model == "" && d.Stage == ""
+}
+
+// Key — ключ дедупликации: уведомление публикуется только на смену состояния.
+//
+// Модель и стадия входят в ключ: деградация другой модели — другое событие, а
+// переход cpu_only → partial_offload должен быть замечен (это уже улучшение, и
+// о нём стоит сказать отдельно).
+func (d *DegradedLoadInfo) Key() string {
+	if d.IsEmpty() {
+		return ""
+	}
+	return d.Model + "\x00" + d.Stage
+}

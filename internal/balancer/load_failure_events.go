@@ -79,6 +79,86 @@ func (p *Proxy) PublishLoadFailureTransition(backendID string, lf *types.LoadFai
 		})
 }
 
+// PublishLoadDegradedTransition — уведомление о том, что модель загружена в
+// деградированном режиме (R83 §9.4 шаг 1б, вариант D, 2026-09-26).
+//
+// ОТЛИЧИЕ ОТ PublishLoadFailureTransition: там «не загрузилось» (severity по
+// причине, позже info «восстановлено»), здесь «загрузилось, но без GPU».
+// Смешивать нельзя: для работающей модели событие «не хватило памяти» — ложь.
+//
+// Дедупликация — по DegradedLoadInfo.Key() (модель + стадия) в ТОЙ ЖЕ карте
+// loadFailureSeen, но с префиксом "degraded:", чтобы ключи двух типов не
+// сталкивались (иначе «cpu_only» модели M и «провал» модели M с тем же ключом
+// глушили бы друг друга). Пустой key сбрасывает запись и молчит: снятие
+// деградации — не событие (модель просто загрузили нормально).
+func (p *Proxy) PublishLoadDegradedTransition(backendID string, d *types.DegradedLoadInfo) {
+	if p == nil {
+		return
+	}
+	key := d.Key()
+
+	p.loadFailureMu.Lock()
+	if p.loadFailureSeen == nil {
+		p.loadFailureSeen = make(map[string]string)
+	}
+	dedupKey := "degraded:" + backendID
+	prev, hadPrev := p.loadFailureSeen[dedupKey]
+	if key == "" {
+		if hadPrev {
+			delete(p.loadFailureSeen, dedupKey)
+		}
+		p.loadFailureMu.Unlock()
+		return // снятие деградации молчит: «загрузилось нормально» — не инцидент
+	}
+	if hadPrev && prev == key {
+		p.loadFailureMu.Unlock()
+		return // та же деградация — уже сообщили (agent шлёт метрики каждые ~10 с)
+	}
+	p.loadFailureSeen[dedupKey] = key
+	p.loadFailureMu.Unlock()
+
+	p.publishLoadFailureEvent(types.EventNotification, backendID, d.Model,
+		types.SeverityWarning, loadDegradedEventMessage(d),
+		map[string]interface{}{
+			"event_kind":  "load_degraded",
+			"stage":       d.Stage,
+			"reason":      d.Reason,
+			"detail":      d.Detail,
+			"occurred_at": d.At,
+			// Те же числа, что в логе раскладки и в ответе cppworker, — оператор
+			// видит, ПОЧЕМУ раскладка такая, а не только «cpu_only».
+			"diagnostics": d.Diagnostics,
+		})
+}
+
+// loadDegradedEventMessage — человеческая фраза про деградацию.
+//
+// Формулировка обязана читаться как «работает, но медленно»: оператор должен
+// понимать, что модель доступна, а не искать, почему она не загрузилась.
+func loadDegradedEventMessage(d *types.DegradedLoadInfo) string {
+	if d.IsEmpty() {
+		return "Модель загружена в деградированном режиме"
+	}
+	model := d.Model
+	if model == "" {
+		model = "модель"
+	}
+	switch d.Stage {
+	case "cpu_only":
+		msg := model + " загружена без GPU (cpu_only): веса не влезли в VRAM, " +
+			"инференс будет медленным. Уменьшите n_ctx или gpuLayers, чтобы вернуть слои на GPU."
+		if d.Detail != "" {
+			msg += " Причина: " + d.Detail
+		}
+		return msg
+	}
+	msg := model + " загружена в деградированном режиме (" + d.Stage + ")"
+	if d.Detail != "" {
+		msg += ": " + d.Detail
+	}
+	return msg
+}
+
 // publishLoadFailureEvent — низкоуровневая публикация (nil-safe по eventBus).
 func (p *Proxy) publishLoadFailureEvent(evType types.EventType, backendID, model string,
 	severity types.EventSeverity, message string, data map[string]interface{}) {

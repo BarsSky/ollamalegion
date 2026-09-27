@@ -223,3 +223,6 @@ internal/**/*.backup-*/
 /scripts/diag_openwebui_2nd_question.ps1
 /scripts/diag_*.ps1
 
+
+dist/
+

@@ -1,0 +1,139 @@
+# =============================================================================
+# OllamaLegion — стенд проверки РАСПРЕДЕЛЕНИЯ запросов между двумя бэкендами
+# =============================================================================
+#
+# ЗАЧЕМ. Балансер выбирает бэкенд по максимальному score, а не round-robin.
+# Если ответы приходят мгновенно, счётчик активных запросов не успевает вырасти,
+# порог prewarm.triggerLoadThreshold (0.7) не включается, и ВСЕ запросы уходят
+# на один бэкенд — проверить распределение невозможно. Здесь у cppworker задана
+# искусственная задержка инференса, поэтому параллельные запросы реально
+# перекрываются и распределение видно.
+#
+# Это СТЕНД, а не продовая конфигурация: используются stub-образы cppworker
+# (--models-dir со стаб-моделью), реального инференса нет.
+#
+# Использование:
+#   # 1) образ стаба с поддержкой задержки
+#   docker build -t ollama-legion/cppworker:stub-delay -f docker/cppworker/Dockerfile.stub .
+#   # 2) стаб-модель в общий том (любой GGUF-подобный файл; см. scripts ниже)
+#   docker volume create fanout-models
+#   # 3) поднять стенд
+#   docker compose -f deployments/docker-compose.fanout-test.yml up -d
+#   # 4) проверить распределение
+#   pwsh -File scripts/test-backend-fanout.ps1 -Container fanout-bal `
+#       -Token fantoken -Model distro-probe -Count 10
+#   # 5) убрать
+#   docker compose -f deployments/docker-compose.fanout-test.yml down -v
+#
+# Порт балансера наружу: 18088 (внутри 18080), чтобы не конфликтовать с продовым.
+# =============================================================================
+
+services:
+  bal:
+    image: ollama-legion/balancer:${BALANCER_TAG:-r83-submodule-v22}
+    container_name: fanout-bal
+    environment:
+      - BALANCER_PORT=18080
+      - BALANCER_API_TOKEN=fantoken
+      - API_TOKEN=fantoken
+      - LOG_LEVEL=${FANOUT_LOG_LEVEL:-info}
+    ports:
+      - "${FANOUT_BALANCER_PORT:-18088}:18080"
+    networks: [fanout]
+
+  cpp-a:
+    image: ollama-legion/cppworker:${FANOUT_STUB_TAG:-stub-delay}
+    container_name: fanout-cpp-a
+    command: ["--models-dir", "/tmp/m"]
+    environment:
+      - CPPWORKER_PORT=18092
+      - CPPWORKER_MODELS_DIR=/tmp/m
+      - CPPWORKER_REGISTER_DISABLE=true
+      - CPPWORKER_AUTO_OFFLOAD=false
+      - CPPWORKER_CTX_SIZE=4096
+      # Ключевое для теста: ответ держится 2 секунды, запросы перекрываются.
+      - CPPWORKER_STUB_INFER_DELAY_MS=${FANOUT_DELAY_MS:-2000}
+      - CPPWORKER_API_TOKEN=fantoken
+      - API_TOKEN=fantoken
+    volumes:
+      - fanout-models:/tmp/m
+    networks: [fanout]
+
+  agent-a:
+    image: ollama-legion/agent:${AGENT_TAG:-r83-submodule-v22}
+    container_name: fanout-agent-a
+    depends_on: [bal, cpp-a]
+    environment:
+      - AGENT_ID=fanout-agent-a
+      - AGENT_PORT=18032
+      - BALANCER_URL=http://bal:18081
+      - BALANCER_TOKEN=fantoken
+      # Имена, которые РЕАЛЬНО читает код (см. cmd/agent/main.go):
+      - BACKEND_TYPE=llama_cpp
+      - CPPWORKER_URL=http://cpp-a:18092
+      - AGENT_CPPWORKER_HOST=cpp-a
+      - AGENT_CPPWORKER_PORT=18092
+      - AGENT_PUBLIC_HOST=cpp-a
+      - NODE_LABELS=gpu,llamacpp
+      # Вместимость: сколько параллельных запросов бэкенд примет.
+      - AGENT_MAX_CONCURRENT_REQUESTS=${FANOUT_MAX_CONCURRENT:-10}
+      - AGENT_MAX_MODELS=4
+      - AGENT_WEIGHT=1
+      - GPU_MODE=cpu
+      - NVML_ENABLED=false
+      - COLLECT_INTERVAL=5
+      - HEARTBEAT_INTERVAL=10
+      - LOG_LEVEL=info
+      - LOG_FORMAT=text
+    networks: [fanout]
+
+  cpp-b:
+    image: ollama-legion/cppworker:${FANOUT_STUB_TAG:-stub-delay}
+    container_name: fanout-cpp-b
+    command: ["--models-dir", "/tmp/m"]
+    environment:
+      - CPPWORKER_PORT=18092
+      - CPPWORKER_MODELS_DIR=/tmp/m
+      - CPPWORKER_REGISTER_DISABLE=true
+      - CPPWORKER_AUTO_OFFLOAD=false
+      - CPPWORKER_CTX_SIZE=4096
+      - CPPWORKER_STUB_INFER_DELAY_MS=${FANOUT_DELAY_MS:-2000}
+      - CPPWORKER_API_TOKEN=fantoken
+      - API_TOKEN=fantoken
+    volumes:
+      - fanout-models:/tmp/m
+    networks: [fanout]
+
+  agent-b:
+    image: ollama-legion/agent:${AGENT_TAG:-r83-submodule-v22}
+    container_name: fanout-agent-b
+    depends_on: [bal, cpp-b]
+    environment:
+      - AGENT_ID=fanout-agent-b
+      - AGENT_PORT=18032
+      - BALANCER_URL=http://bal:18081
+      - BALANCER_TOKEN=fantoken
+      - BACKEND_TYPE=llama_cpp
+      - CPPWORKER_URL=http://cpp-b:18092
+      - AGENT_CPPWORKER_HOST=cpp-b
+      - AGENT_CPPWORKER_PORT=18092
+      - AGENT_PUBLIC_HOST=cpp-b
+      - NODE_LABELS=gpu,llamacpp
+      - AGENT_MAX_CONCURRENT_REQUESTS=${FANOUT_MAX_CONCURRENT:-10}
+      - AGENT_MAX_MODELS=4
+      - AGENT_WEIGHT=1
+      - GPU_MODE=cpu
+      - NVML_ENABLED=false
+      - COLLECT_INTERVAL=5
+      - HEARTBEAT_INTERVAL=10
+      - LOG_LEVEL=info
+      - LOG_FORMAT=text
+    networks: [fanout]
+
+networks:
+  fanout:
+    name: fanout-net
+
+volumes:
+  fanout-models:
+    name: fanout-models

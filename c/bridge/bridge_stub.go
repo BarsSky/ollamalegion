@@ -15,11 +15,14 @@ package bridge
 
 import (
 	"fmt"
+	"os"
 	"runtime"
-	"unsafe"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"ollama-loadbalancer/pkg/tokencount"
 )
@@ -465,7 +468,34 @@ func SetStubInferDelay(d time.Duration) time.Duration {
 }
 
 // getStubInferDelay — текущее значение задержки (thread-safe).
+//
+// R83 (2026-09-27): ENV-хук CPPWORKER_STUB_INFER_DELAY_MS. Зачем: задержка
+// раньше задавалась ТОЛЬКО из Go-тестов через SetStubInferDelay, поэтому на
+// стенде из docker-контейнеров её выставить было нечем. Из-за этого стаб
+// отвечает за десятки миллисекунд, параллельные запросы не перекрываются, и
+// проверить распределение нагрузки между бэкендами по-настоящему нельзя:
+// балансер выбирает «лучший по score», а при мгновенных ответах счётчик
+// активных запросов не успевает вырасти и порог prewarm не включается.
+//
+// Значение читается один раз (первое обращение) — чтобы не звать os.Getenv на
+// каждый токен; в тестах по-прежнему главнее SetStubInferDelay.
+var stubInferDelayEnvOnce sync.Once
+
 func getStubInferDelay() time.Duration {
+	stubInferDelayEnvOnce.Do(func() {
+		if stubInferDelay.Load() != 0 {
+			return
+		}
+		raw := strings.TrimSpace(os.Getenv("CPPWORKER_STUB_INFER_DELAY_MS"))
+		if raw == "" {
+			return
+		}
+		ms, err := strconv.Atoi(raw)
+		if err != nil || ms <= 0 {
+			return
+		}
+		stubInferDelay.Store(int64(time.Duration(ms) * time.Millisecond))
+	})
 	return time.Duration(stubInferDelay.Load())
 }
 

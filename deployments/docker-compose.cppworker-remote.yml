@@ -1,0 +1,182 @@
+# =============================================================================
+# OllamaLegion — cppworker (llama.cpp) + agent, ПОДКЛЮЧЕНИЕ К ВНЕШНЕМУ БАЛАНСЕРУ
+# =============================================================================
+#
+# Назначение: развернуть бэкенд llama.cpp на этой машине и подключить его к
+# УЖЕ СУЩЕСТВУЮЩЕМУ балансеру (на другой машине или в другом compose-проекте).
+# Сам балансер здесь НЕ поднимается.
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │ ГДЕ ВПИСАТЬ АДРЕС БАЛАНСЕРА                                                │
+# │                                                                           │
+# │  1) В .env:  BALANCER_URL=http://<хост-балансера>:18081                    │
+# │                                                                           │
+# │     Это ЕДИНСТВЕННОЕ место. Читает его AGENT (env BALANCER_URL,           │
+# │     см. cmd/agent/main.go:47) — он и регистрирует бэкенд, и шлёт метрики. │
+# │     Порт 18081 — ADMIN API балансера (18080 — клиентский API, туда НЕ     │
+# │     регистрируются).                                                      │
+# │                                                                           │
+# │  2) BALANCER_TOKEN=<токен> — тот же X-API-Token, что у балансера          │
+# │     (у bundled-стека: CPPWORKER_API_TOKEN / LB_API_TOKEN).                │
+# │                                                                           │
+# │  3) BACKEND_HOST=<адрес этой машины, доступный С БАЛАНСЕРА>               │
+# │                                                                           │
+# │     Балансер будет проксировать инференс по этому адресу и порту          │
+# │     (CPPWORKER_ADVERTISED_PORT). Здесь НЕ подходит имя compose-сервиса    │
+# │     вроде «cppworker-gpu»: оно резолвится только внутри этой сети.        │
+# │     Варианты: IP этой машины в LAN, DNS-имя, host.docker.internal         │
+# │     (если балансер на том же хосте), адрес в общей внешней docker-сети.   │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# ⚠ ВАЖНО ПРО ИМЕНА ПЕРЕМЕННЫХ (проверено по коду, не по документации):
+#   В разных compose-файлах проекта исторически встречаются AGENT_BACKEND_TYPE,
+#   AGENT_CPPWORKER_URL, AGENT_NODE_LABELS, AGENT_MODE. Код агента их НЕ читает.
+#   Читаются:
+#       BACKEND_TYPE      (не AGENT_BACKEND_TYPE)   → llama_cpp
+#       CPPWORKER_URL     (не AGENT_CPPWORKER_URL)  → адрес cppworker
+#       NODE_LABELS       (не AGENT_NODE_LABELS)
+#       GPU_MODE          (не AGENT_MODE)
+#       BALANCER_URL, BALANCER_TOKEN, AGENT_ID, AGENT_PORT, AGENT_PUBLIC_HOST,
+#       AGENT_CPPWORKER_HOST, AGENT_CPPWORKER_PORT, AGENT_MAX_CONCURRENT_REQUESTS,
+#       AGENT_MAX_MODELS, AGENT_WEIGHT, COLLECT_INTERVAL, HEARTBEAT_INTERVAL
+#   Ниже используются ПРАВИЛЬНЫЕ имена. Если указать неправильные, агент
+#   зарегистрируется как ollama-бэкенд (BACKEND_TYPE) и не будет знать URL
+#   cppworker — распределение запросов не заработает.
+#
+# ⚠ РЕГИСТРАЦИЯ: CPPWORKER_REGISTER_DISABLE=true, чтобы бэкенд регистрировал
+#   ТОЛЬКО агент. Иначе cppworker (Go-side) и агент создадут две записи на один
+#   физический endpoint — в бэкендах будет дубль.
+#
+# Запуск:
+#   cp .env.cppworker-remote.example .env
+#   # вписать BALANCER_URL, BALANCER_TOKEN, BACKEND_HOST, MODELS_DIR
+#   docker compose -f docker-compose.cppworker-remote.yml up -d
+#
+# Проверка, что подключилось:
+#   curl -H "X-API-Token: $BALANCER_TOKEN" http://<балансер>:18081/api/v1/backends
+#   → должна появиться запись с host=<BACKEND_HOST> и status=healthy
+# =============================================================================
+
+services:
+  cppworker-gpu:
+    image: ollama-legion/cppworker:${CPPWORKER_GPU_TAG:?задайте CPPWORKER_GPU_TAG (например gpu-r83-submodule-v22)}
+    container_name: cppworker-remote-gpu
+    restart: unless-stopped
+    runtime: nvidia
+
+    # --- cppworker: сам инференс llama.cpp ---------------------------------
+    environment:
+      - CPPWORKER_HOST=0.0.0.0
+      - CPPWORKER_PORT=18092
+      # Имя/порт, которые агент отдаст балансеру как адрес бэкенда.
+      # Для самого cppworker это только информационные поля.
+      - CPPWORKER_ADVERTISE_HOST=${BACKEND_HOST:?задайте BACKEND_HOST — адрес этой машины, доступный с балансера}
+      - CPPWORKER_ADVERTISED_PORT=${CPPWORKER_ADVERTISED_PORT:-18092}
+      # Регистрацию делает ТОЛЬКО агент (иначе дубль бэкенда).
+      - CPPWORKER_REGISTER_DISABLE=true
+      # Токен, которым балансер авторизуется в cppworker (совпадает с BALANCER_TOKEN).
+      - CPPWORKER_API_TOKEN=${BALANCER_TOKEN:?задайте BALANCER_TOKEN}
+      - API_TOKEN=${BALANCER_TOKEN}
+
+      # --- Память и раскладка (подставьте своё железо) ---
+      - CPPWORKER_MODELS_DIR=/app/models
+      - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-32768}
+      - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
+      - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:-20}
+      - CPPWORKER_FLASH_ATTN_TYPE=${CPPWORKER_FLASH_ATTN_TYPE:--1}
+      - CPPWORKER_USE_MMAP=${CPPWORKER_USE_MMAP:-true}
+      - CPPWORKER_AUTO_OFFLOAD=${CPPWORKER_AUTO_OFFLOAD:-true}
+      - CPPWORKER_AUTO_TUNE_NCTX=${CPPWORKER_AUTO_TUNE_NCTX:-true}
+      - CPPWORKER_RAM_FALLBACK_N_CTX=${CPPWORKER_RAM_FALLBACK_N_CTX:-true}
+      - CPPWORKER_RAM_FALLBACK_MAX_N_CTX=${CPPWORKER_RAM_FALLBACK_MAX_N_CTX:-128000}
+
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+    volumes:
+      # Папка с GGUF-моделями на этой машине.
+      - ${MODELS_DIR:-./models}:/app/models
+      - cppworker-cache:/app/.cache
+
+    ports:
+      # Порт инференса наружу: по нему до бэкенда дойдёт балансер.
+      - "${CPPWORKER_ADVERTISED_PORT:-18092}:18092"
+
+    healthcheck:
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    networks:
+      - cppworker-net
+
+  agent:
+    image: ollama-legion/agent:${AGENT_TAG:?задайте AGENT_TAG (например r83-submodule-v22)}
+    container_name: cppworker-remote-agent
+    restart: unless-stopped
+    depends_on:
+      cppworker-gpu:
+        condition: service_healthy
+    runtime: nvidia
+
+    # --- agent: регистрация бэкенда + метрики ------------------------------
+    environment:
+      - AGENT_ID=${AGENT_ID:-cppworker-remote-agent}
+      - AGENT_PORT=18032
+
+      # ═══ АДРЕС БАЛАНСЕРА — ЗДЕСЬ ═══
+      # ADMIN API (18081), не клиентский (18080).
+      - BALANCER_URL=${BALANCER_URL:?задайте BALANCER_URL=http://<хост-балансера>:18081}
+      - BALANCER_TOKEN=${BALANCER_TOKEN:?задайте BALANCER_TOKEN}
+
+      # Тип бэкенда: llama_cpp (иначе балансер будет считать его Ollama).
+      - BACKEND_TYPE=llama_cpp
+      # Как агент ходит в cppworker (внутри этой compose-сети).
+      - CPPWORKER_URL=http://cppworker-gpu:18092
+
+      # Что агент отдаёт балансеру как адрес бэкенда.
+      - AGENT_CPPWORKER_HOST=${BACKEND_HOST:?задайте BACKEND_HOST}
+      - AGENT_CPPWORKER_PORT=${CPPWORKER_ADVERTISED_PORT:-18092}
+      # Адрес самого агента (для health/agentPort).
+      - AGENT_PUBLIC_HOST=${BACKEND_HOST}
+      - AGENT_PUBLIC_PORT=18032
+
+      # Вместимость и вес: сколько параллельных запросов балансер может
+      # отправить на этот бэкенд. Для llama.cpp это n_parallel воркера.
+      - AGENT_MAX_CONCURRENT_REQUESTS=${CPPWORKER_PARALLEL:-1}
+      - AGENT_MAX_MODELS=${AGENT_MAX_MODELS:-4}
+      - AGENT_WEIGHT=${AGENT_WEIGHT:-1}
+      - NODE_LABELS=${NODE_LABELS:-gpu,llamacpp}
+
+      - GPU_MODE=gpu
+      - NVML_ENABLED=true
+      - COLLECT_INTERVAL=${COLLECT_INTERVAL:-10}
+      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-15}
+      - LOG_LEVEL=${AGENT_LOG_LEVEL:-info}
+      - LOG_FORMAT=text
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    ports:
+      - "${AGENT_PORT:-18032}:18032"
+
+    healthcheck:
+      test: ["CMD", "/app/agent", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    networks:
+      - cppworker-net
+
+networks:
+  cppworker-net:
+    name: cppworker-remote-net
+
+volumes:
+  cppworker-cache:
+    name: cppworker-remote-cache

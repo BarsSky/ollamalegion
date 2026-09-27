@@ -87,10 +87,25 @@ but VRAM=8191 MB + RAM=8192 MB insufficient. Best GPU layers=18 (CPU layers=46, 
   `source=memfit|legacy`.
 
 **Что осталось на шаг 1b (решение по отказу):** если `!v.Fits()`, вернуть отказ
-`insufficient_resources`, а не `DefaultGPULayers` — согласованно с §9.3
-(`insufficientResourcesFromFallbackNoFit`). Сейчас в этом случае возвращается
-`v.GPULayers` (обычно 0 = CPU-only), и загрузка идёт через partial offload.
-Проверка: сценарий из `lazyload_nofit_refusal_r83_test.go`, но через reload.
+`insufficient_resources`, а не применять CPU-only раскладку — согласованно с
+§9.3 (`insufficientResourcesFromFallbackNoFit`).
+
+**ПОДГОТОВЛЕНО К РЕШЕНИЮ (2026-09-26):**
+`plans/2026-09-26-step1b-fit-refusal-proposal.md` — предложение с измеренной
+границей. Ключевой факт из теста-калькулятора
+(`estimator_fit_boundary_r83_test.go`, живые числа 3070 8 GB + Qwen3.8-27B):
+
+```
+ctx=32768  kv=q8_0 ram=20GB → partial_offload fits=true  gpu_layers=23 (cpu_needed 10.50/16.00 GiB)
+ctx=262144 kv=q4_0 ram=20GB → partial_offload fits=true  gpu_layers=19 (cpu_needed 13.95/16.00 GiB)
+ctx=32768  kv=q8_0 ram=12GB → does_not_fit    fits=false (cpu_needed 10.50/8.00 GiB)
+```
+
+На живом стенде `!Fits()` не наступает вообще, а когда наступает — причина
+всегда RAM, и CPU-only в этом случае нежизнеспособен (llama.cpp не сможет
+аллоцировать CPU-часть). Предложение: отказ только на `StageDoesNotFit`,
+событие в WebUI для `cpu_only`, escape-hatch для явного `gpuLayers`/`?force=true`.
+Ждёт решения владельца — код шага 1б не менялся.
 
 **Проверка шага 1:** тесты `auto_offload_memfit_r83_test.go` (границы
 fallback / disabled / no-config), полный набор `cmd/cppworker` + `cppbackend` +

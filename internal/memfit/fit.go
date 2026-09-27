@@ -339,9 +339,31 @@ func Evaluate(m ModelSpec, req Request, b Budget, p Policy) Verdict {
 	}
 
 	if s.fits {
-		if v.GPULayers == 0 {
+		// R83 C1 (2026-09-27): «CPU-only» — это утверждение о VRAM, поэтому его
+		// нельзя делать, когда VRAM НЕИЗВЕСТНА.
+		//
+		// ЧТО БЫЛО: при неизвестной VRAM UsableVRAM(p) = 0, computeSplit давал
+		// gMax=0, и вердикт объявлял cpu_only — хотя на самом деле про VRAM мы
+		// ничего не знаем. Cppworker сообщал оператору честный
+		// reason=vram_unknown, но РЕШЕНИЕ всё равно принимал за него: на живом
+		// GPU-стенде это означало бы «модель поехала на CPU, потому что NVML
+		// отвалился». Настоящая причина cpu_only — «VRAM известна и в неё не
+		// влезает ни один слой», и только тогда это cpu_only.
+		//
+		// ТЕПЕРЬ: при неизвестной VRAM стадия — partial_offload с нулём слов,
+		// то есть раскладку оставляем прежней/на усмотрение C-стороны
+		// (checkVRAMForModel), а не понижаем её сами. Причина vram_unknown уже
+		// добавлена выше (стр. ~295), поэтому оператор видит, почему решение
+		// неполное.
+		if v.GPULayers == 0 && b.VRAMKnown {
 			v.Stage = StageCPUOnly
 			v.Suggestion = fmt.Sprintf("n_ctx=%d обслуживается только CPU (веса %s + KV %s в RAM, доступно %s). Ответ будет медленным.",
+				req.Ctx, v.CPUWeights, v.CPUKV, v.UsableRAM)
+		} else if v.GPULayers == 0 {
+			v.Stage = StagePartial
+			v.Suggestion = fmt.Sprintf("VRAM неизвестна — раскладка не понижается до CPU-only: "+
+				"n_ctx=%d обслуживается CPU-частью (веса %s + KV %s в RAM, доступно %s), "+
+				"слои на GPU определит C-сторона при загрузке.",
 				req.Ctx, v.CPUWeights, v.CPUKV, v.UsableRAM)
 		} else {
 			v.Stage = StagePartial

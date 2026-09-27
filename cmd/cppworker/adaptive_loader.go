@@ -613,10 +613,28 @@ func SelectStrategyWithKV(
 			bytesPerToken = b
 		}
 
-		// KV-cache ??? requestedNCtx
+		// KV-cache для requestedNCtx.
+		//
+		// R83 §9.4 шаг 2, продолжение (2026-09-27): считаем по РЕАЛЬНЫМ
+		// параметрам кэша из метаданных (kv_layers, attention.key_length), а не
+		// по block_count и n_embd/n_heads. Метаданные здесь уже под рукой
+		// (meta), поэтому дополнительного чтения GGUF не нужно. Завышенный KV
+		// уводил выбор в cpu_only / меньший контекст там, где железо позволяло
+		// больше — тот же класс дефекта, что и в раскладке.
+		kvLayers := meta.NLayers
+		if l, _ := meta.KVLayers(); l > 0 {
+			kvLayers = l
+		}
+		kvHeadDim := meta.KVHeadDim()
 		kvCacheBytes := estimateKVCacheBytes(
 			requestedNCtx, meta.NLayers, meta.NEmbd,
 			meta.NHeads, meta.NKvHeads, kvType)
+		if kvHeadDim > 0 {
+			// Ровно та же формула, что в memfit.KVBytesPerToken: 2 (K и V) ×
+			// слоёв с KV × голов KV × head_dim × байт-на-элемент.
+			kvCacheBytes = estimateKVCacheBytesForLayers(
+				requestedNCtx, kvLayers, meta.NKvHeads, kvHeadDim, kvType)
+		}
 
 		// ??? MoE: ?????? attention ?? GPU, ???????? ????? mmap
 		gpuWeightFraction := moefrac

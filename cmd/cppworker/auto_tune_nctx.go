@@ -116,7 +116,11 @@ func AutoTuneNCtx(m cppbackend.ModelInfo, requestedNCtx int, kvCacheType string)
 			currentGpuLayers = currentConfig.DefaultGPULayers
 		}
 		// KV-cache ??? requestedNCtx.
-		kvCacheBytes := estimateKVCacheBytes(requestedNCtx, m.NLayers, m.NEmbd, m.NHeads, m.NKvHeads, kvCacheType)
+		kvCacheBytes, kvReal := kvCacheBytesForModel(m, requestedNCtx, kvCacheType)
+		if !kvReal {
+			logger.Get().Warnw("AutoTuneNCtx: KV посчитан консервативно (нет метаданных KV) — рекомендация n_ctx может быть ниже реально возможной",
+				"model", m.Name, "requested_n_ctx", requestedNCtx)
+		}
 		// ?????? weights ??? currentGpuLayers ?? GPU.
 		gpuWeightsBytes := int64(currentGpuLayers) * weightsPerLayer
 		// ?????? weights ??? (NLayers - currentGpuLayers) ? RAM (mmap).
@@ -278,7 +282,7 @@ func computeMaxViableNCtx(m cppbackend.ModelInfo, availableVRAM int64, gpuLayers
 	safetyFactor := 0.85
 	safeVRAM := int64(float64(availableVRAM) * safetyFactor)
 	// KV-cache ??? m.ContextSize ? kvPerToken.
-	kvCacheBytes := estimateKVCacheBytes(m.ContextSize, m.NLayers, m.NEmbd, m.NHeads, m.NKvHeads, "")
+	kvCacheBytes, _ := kvCacheBytesForModel(m, m.ContextSize, "")
 	kvPerToken := kvCacheBytes / int64(m.ContextSize)
 	if kvPerToken <= 0 {
 		kvPerToken = 4096

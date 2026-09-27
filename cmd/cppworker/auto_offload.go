@@ -5,16 +5,21 @@
 // requested n_ctx. Неправильное число → OOM на старте LoadModel.
 //
 // Решение: при `CPPWORKER_AUTO_OFFLOAD=true` cppworker при загрузке/перезагрузке
-// вычисляет оптимальное gpu_layers по формуле:
+// спрашивает раскладку у internal/memfit (единый предикат computeSplit), а
+// legacy-формула ниже остаётся только fallback'ом на случай, когда метаданных
+// модели нет и судить не о чем:
 //
-//   availableVRAM_safety = availableVRAM * 0.85
+//   availableVRAM_safety = freeVRAM * 0.85
 //   overhead = 1.5 GB (CUDA + activations + llama.cpp)
-//   kvCacheBytes = n_ctx * kv_cache_per_token (зависит от архитектуры и kvCacheType)
+//   kvCacheBytes = n_ctx * kv_cache_per_token (по РЕАЛЬНЫМ kv_layers/kv_head_dim,
+//                  когда они есть; иначе консервативно по block_count)
 //   weightsPerLayer = SizeBytes / NLayers
 //   gpu_layers = floor((availableVRAM_safety - overhead - kvCacheBytes) / weightsPerLayer)
 //
-// kvCacheType влияет на размер KV-cache: f16=4B/token, q8_0=2B/token, q4_0=1B/token.
-// Если не указан — используется f16 (консервативная оценка).
+// kvCacheType влияет на размер KV-cache. Константа одна на весь стек —
+// memfit.KVBytesPerElement: f16 = 2 байта на элемент, q8_0 = 34/32, q4_0 = 18/32
+// (прежняя таблица «q8_0 = ровно 2 байта» расходилась с memfit и удалена).
+// Если тип не указан — используется f16 (консервативная оценка).
 //
 // Файл активируется только при сборке с реальным llama.cpp (не stub).
 package main
@@ -262,6 +267,32 @@ func legacyCalculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType
 		"n_ctx", nCtx,
 		"gpu_layers", gpuLayers)
 	return gpuLayers
+}
+
+// kvCacheBytesForModel — KV-кэш модели на n_ctx: реальные метаданные, если они
+// есть, иначе прежняя консервативная оценка (block_count + n_embd/n_heads).
+//
+// R83 §9.4 шаг 2, продолжение (2026-09-27). Одна точка входа для путей, где
+// раньше стояла «своя» формула: AutoTuneNCtx, SelectStrategy (adaptive_loader),
+// lazyLoad и текст ошибки в inference. В двух из них KV меняет КОНФИГУРАЦИЮ, а не
+// только текст, поэтому завышенный KV означал заниженный контекст: оператор
+// просит 65536, гейт n_ctx разрешает (он считает по метаданным), а тюнер молча
+// урезает до меньшего.
+//
+// Почему не всегда метаданные: если их нет, выдумывать нельзя — возвращаем
+// консервативную оценку и сообщаем об этом (второй результат), чтобы вызывающий
+// записал предупреждение. Завышение безопаснее занижения (переподписки).
+func kvCacheBytesForModel(m cppbackend.ModelInfo, nCtx int, kvCacheType string) (int64, bool) {
+	if nCtx <= 0 {
+		return 0, false
+	}
+	if backend != nil && m.Name != "" {
+		if bytes, real := backend.KVCacheBytesForModel(m.Name, nCtx, kvCacheType,
+			m.NLayers, m.NEmbd, m.NHeads, m.NKvHeads); real && bytes > 0 {
+			return bytes, true
+		}
+	}
+	return estimateKVCacheBytes(nCtx, m.NLayers, m.NEmbd, m.NHeads, m.NKvHeads, kvCacheType), false
 }
 
 // estimateKVCacheBytesForLayers — KV-cache из РЕАЛЬНЫХ параметров кэша.

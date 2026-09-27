@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -830,7 +831,21 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					}
 				}
 			}
-			n, errFwd := fmt.Fprintf(w, "%s\n", trimmed)
+			// R83 §9.7 (2026-09-27): нормализуем финальный чанк ПЕРЕД отдачей
+			// клиенту. cppworker кладёт в done-чанк ПОЛНЫЙ текст ответа, хотя
+			// дельты его уже отдали (измерено 2.00×: столько же байт в дельтах
+			// и в done). Настоящая Ollama в done-чанке отдаёт `message.content:
+			// ""`, и OpenWebUI с ней работает — значит дубль ломает именно
+			// клиентов, конкатенирующих чанки. Оставляем все статы.
+			//
+			// ВАЖНО: accumulatedPlainContent/upstreamDoneContent выше уже
+			// накопили полный текст (для R60.21 auto-continue) — здесь правится
+			// только то, что уходит по проводу.
+			outLine := trimmed
+			if nativeDoneContentStrippingEnabled() {
+				outLine = stripNativeDoneContent(trimmed)
+			}
+			n, errFwd := fmt.Fprintf(w, "%s\n", outLine)
 			bytesForwarded += int64(n)
 			if errFwd != nil {
 				lastForwardErr = errFwd
@@ -1647,4 +1662,61 @@ func getEffectiveStreamTimeoutSec(p *Proxy, modelName string, isStreaming bool) 
 		return 0
 	}
 	return int(p.getModelStreamTimeout(modelName).Seconds())
+}
+
+// stripNativeDoneContent — убрать текст из финального NDJSON-чанка (native-путь),
+// оставив всю статистику.
+//
+// R83 §9.7 (2026-09-27). ЗАЧЕМ: cppworker в своём /api/chat кладёт в done-чанк
+// ПОЛНЫЙ текст ответа, хотя стриминговые чанки его уже отдали. Настоящая Ollama
+// в done-чанке отдаёт `message.content: ""` (подтверждено живым сырым логом
+// OpenWebUI: `{"done":true,...,"message":{"content":"",...}}`), и клиенты,
+// конкатенирующие чанки, получают ответ дважды — измерено на живом балансере:
+// 63 символа в дельтах и те же 63 в done-чанке.
+//
+// ЧТО НЕ МЕНЯЕТСЯ: `done`, `done_reason`, `eval_count`, `prompt_eval_count`,
+// `total_duration`, `load_duration`, `eval_duration`, `prompt_eval_duration`,
+// `model`, `created_at` — всё остаётся как пришло. Не-done чанки и любая строка,
+// которую не удалось разобрать, возвращаются байт-в-байт: этот код не имеет
+// права испортить поток, если формат неожиданный.
+func stripNativeDoneContent(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "{") {
+		return line
+	}
+	var chunk map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &chunk); err != nil {
+		return line
+	}
+	done, _ := chunk["done"].(bool)
+	if !done {
+		return line
+	}
+	msg, ok := chunk["message"].(map[string]interface{})
+	if !ok {
+		return line
+	}
+	content, _ := msg["content"].(string)
+	if content == "" {
+		return line
+	}
+	msg["content"] = ""
+	out, err := json.Marshal(chunk)
+	if err != nil {
+		return line
+	}
+	return string(out)
+}
+
+// nativeDoneContentStrippingEnabled — выключатель нормализации (по умолчанию
+// ВКЛЮЧЕНА). Нужен на случай, если найдётся клиент, читающий ответ ТОЛЬКО из
+// done-чанка: ему возвращают прежнее поведение переменной
+// LB_OLLAMA_DONE_CONTENT=keep, не пересобирая образ.
+func nativeDoneContentStrippingEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LB_OLLAMA_DONE_CONTENT")))
+	switch v {
+	case "keep", "raw", "off", "0", "false", "passthrough":
+		return false
+	}
+	return true
 }

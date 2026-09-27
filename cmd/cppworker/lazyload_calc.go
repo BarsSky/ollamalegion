@@ -190,7 +190,17 @@ func calculateLazyLoadOpts(
 	}
 
 	// ??????? KV-cache ??? requestedNCtx ? ????????? ??????????? ???????????.
+	//
+	// R83 §9.4 шаг 2, продолжение (2026-09-27): по реальным параметрам кэша из
+	// метаданных (kv_layers/attention.key_length), если они есть — иначе прежняя
+	// консервативная оценка. Число идёт в rationale и в текст отказа клиенту,
+	// поэтому завышение здесь видел оператор.
 	kvBytes := estimateKVCacheBytes(requestedNCtx, meta.NLayers, meta.NEmbd, meta.NHeads, meta.NKvHeads, "")
+	if kvLayers, _ := meta.KVLayers(); kvLayers > 0 {
+		if headDim := meta.KVHeadDim(); headDim > 0 {
+			kvBytes = estimateKVCacheBytesForLayers(requestedNCtx, kvLayers, meta.NKvHeads, headDim, "")
+		}
+	}
 	rationale.EstimatedKVCacheMB = kvBytes / (1024 * 1024)
 
 	weightsPerLayer := meta.SizeBytes / int64(meta.NLayers)

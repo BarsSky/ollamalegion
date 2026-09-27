@@ -867,7 +867,7 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 				}
 				kvCacheMB := int64(0)
 				if opts.ContextSize > 0 && current.NLayers > 0 {
-					kvCacheBytes := estimateKVCacheBytes(opts.ContextSize, current.NLayers, current.NEmbd, current.NHeads, current.NKvHeads, "")
+					kvCacheBytes, _ := kvCacheBytesForModel(*current, opts.ContextSize, "")
 					kvCacheMB = kvCacheBytes / (1024 * 1024)
 				}
 				return false, &InsufficientResourcesError{
@@ -906,7 +906,7 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 			}
 			kvCacheMB := int64(0)
 			if opts.ContextSize > 0 && current.NLayers > 0 {
-				kvCacheBytes := estimateKVCacheBytes(opts.ContextSize, current.NLayers, current.NEmbd, current.NHeads, current.NKvHeads, "")
+				kvCacheBytes, _ := kvCacheBytesForModel(*current, opts.ContextSize, "")
 				kvCacheMB = kvCacheBytes / (1024 * 1024)
 			}
 			return false, &InsufficientResourcesError{

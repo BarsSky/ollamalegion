@@ -146,6 +146,17 @@ func logNCtxFeasibility(f NCtxFeasibility) {
 // Возвращает конкретные числа, а не общий совет: это интерфейс между отказом и
 // уведомлением в WebUI (блок 6 плана).
 func nctxSuggestion(f NCtxFeasibility) string {
+	// R83 (2026-09-27): сначала случай «не влезает вообще». Проверять его раньше
+	// остальных обязательно: при нулевом потолке HardMaxNCtx равен обучающему
+	// контексту модели, и ветка про «ограничен обучающим контекстом» давала
+	// совет «укажите n_ctx <= 262144» модели, которой не хватает памяти при
+	// любом n_ctx. Живой прогон дал ровно такую подсказку, поэтому порядок
+	// веток здесь — не стилистика, а исправление.
+	if f.HardMaxNCtx <= 0 {
+		return "Веса модели не помещаются ни в VRAM, ни в доступную RAM при любом " +
+			"n_ctx — уменьшение контекста не поможет. Нужна меньшая модель или " +
+			"более сильное квантование."
+	}
 	// R83 шаг 3: если решение принял memfit, его подсказка конкретнее (в ней есть
 	// и потолок, и — когда применимо — выигрыш от kvCacheType=q4_0).
 	if f.VerdictSuggestion != "" {
@@ -179,9 +190,17 @@ func writeNCtxInfeasibleResponse(w http.ResponseWriter, f NCtxFeasibility) {
 	// R83 (2026-09-25): запоминаем причину провала с числами — её заберёт agent
 	// из /api/models и покажет оператору уведомление (cppworker → agent → webui).
 	// Пишем здесь, а не у вызывающих: это единственная воронка этого исхода.
-	loadFailures.recordDetailed(f.Model, LoadFailureConfigOutOfBounds,
-		fmt.Errorf("requested n_ctx=%d exceeds the physically feasible maximum %d",
-			f.RequestedNCtx, f.HardMaxNCtx),
+	//
+	// R83 B3 (2026-09-27): при нулевом потолке запись тоже должна говорить «не
+	// влезает вообще», а не «превышен максимум 262144» — иначе оператор в
+	// уведомлении видит то же противоречие, что и клиент в ответе.
+	recordErr := fmt.Errorf("requested n_ctx=%d exceeds the physically feasible maximum %d",
+		f.RequestedNCtx, f.HardMaxNCtx)
+	if f.HardMaxNCtx <= 0 {
+		recordErr = fmt.Errorf("model %s does not fit in available memory at any n_ctx "+
+			"(requested n_ctx=%d)", f.Model, f.RequestedNCtx)
+	}
+	loadFailures.recordDetailed(f.Model, LoadFailureConfigOutOfBounds, recordErr,
 		map[string]interface{}{
 			"requested_n_ctx":      f.RequestedNCtx,
 			"feasible_max_context": f.FeasibleMaxNCtx,
@@ -192,12 +211,31 @@ func writeNCtxInfeasibleResponse(w http.ResponseWriter, f NCtxFeasibility) {
 			"suggestion":           nctxSuggestion(f),
 		})
 
+	// R83 §9.4 шаг 2 / B3 (2026-09-27): текст отказа должен быть непротиворечивым.
+	//
+	// ЧТО БЫЛО: при абсолютной нехватке памяти (max_ram_n_ctx=0, max_vram_n_ctx=0)
+	// HardMaxNCtx равен обучающему контексту модели, и клиент получал
+	// «requested n_ctx=4096 exceeds the physically feasible maximum 262144» —
+	// потолок 262144 и «влезает 0» в одном предложении. Живой прогон на стенде
+	// дал ровно такую строку (см. plans/...-handoff, раздел про шаг 2).
+	//
+	// Потолок = 0 означает «не влезает ничего»: говорим это прямо и показываем
+	// доступную память, по которой решение и принято.
+	errText := fmt.Sprintf(
+		"requested n_ctx=%d exceeds the physically feasible maximum %d for model %q "+
+			"on this hardware (max_vram_n_ctx=%d, max_ram_n_ctx=%d, gguf_max_context=%d)",
+		f.RequestedNCtx, f.HardMaxNCtx, f.Model,
+		f.MaxVRAMNCtx, f.MaxRAMNCtx, f.GGUFMaxContext)
+	if f.HardMaxNCtx <= 0 {
+		errText = fmt.Sprintf(
+			"model %q does not fit on this hardware at any n_ctx: weights + KV exceed "+
+				"available memory (max_ram_n_ctx=0, max_vram_n_ctx=0, gguf_max_context=%d, "+
+				"requested n_ctx=%d). Use a smaller quantization/model.",
+			f.Model, f.GGUFMaxContext, f.RequestedNCtx)
+	}
+
 	writeJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{
-		"error": fmt.Sprintf(
-			"requested n_ctx=%d exceeds the physically feasible maximum %d for model %q "+
-				"on this hardware (max_vram_n_ctx=%d, max_ram_n_ctx=%d, gguf_max_context=%d)",
-			f.RequestedNCtx, f.HardMaxNCtx, f.Model,
-			f.MaxVRAMNCtx, f.MaxRAMNCtx, f.GGUFMaxContext),
+		"error":                errText,
 		"code":                 "n_ctx_infeasible",
 		"model":                f.Model,
 		"requested_n_ctx":      f.RequestedNCtx,

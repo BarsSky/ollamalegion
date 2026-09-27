@@ -12,6 +12,8 @@
 package cppbackend
 
 import (
+	"os"
+	"strconv"
 	"strings"
 
 	"ollama-loadbalancer/c/bridge"
@@ -95,7 +97,53 @@ func (b *Backend) MemfitBudget() memfit.Budget {
 	budget.RAMLimitKnown = pr.LimitKnown
 	budget.RAMKnown = pr.Known
 	budget.Source = pr.Source
+
+	// R83 C1 (2026-09-27): ENV-переопределение VRAM должно быть видно и бюджету.
+	//
+	// ЧТО БЫЛО: budget.VRAMKnown выставлялся только из bridge/gpuDevices, поэтому
+	// на стенде без видимого GPU (stub, отвалившийся NVML) CPPWORKER_VRAM_BYTES и
+	// CPPWORKER_FREE_VRAM_BYTES игнорировались: вердикт считал VRAM неизвестной и
+	// объявлял cpu_only, хотя оператор явно задал объём. Теперь обе переменные
+	// (те же, что читает availableVRAMBytes/freeVRAMBytes в cppworker) имеют
+	// приоритет: это явное намерение оператора и единственный способ проверить
+	// GPU-сценарий без GPU.
+	if !budget.VRAMKnown {
+		if total, free, ok := vramEnvOverrideBytes(); ok {
+			budget.VRAMTotal = memfit.Bytes(total)
+			budget.VRAMFree = memfit.Bytes(free)
+			budget.VRAMKnown = true
+			budget.Source = budget.Source + "+env"
+		}
+	}
 	return budget
+}
+
+// vramEnvOverrideBytes — VRAM из ENV-переопределений (тесты/CI и явная настройка
+// оператором). Возвращает (total, free, ok); free по умолчанию равен total.
+func vramEnvOverrideBytes() (total, free int64, ok bool) {
+	parse := func(name string) (int64, bool) {
+		v := strings.TrimSpace(os.Getenv(name))
+		if v == "" {
+			return 0, false
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return 0, false
+		}
+		return n, true
+	}
+	if t, hasTotal := parse("CPPWORKER_VRAM_BYTES"); hasTotal {
+		total = t
+		free = t
+		if f, hasFree := parse("CPPWORKER_FREE_VRAM_BYTES"); hasFree {
+			free = f
+		}
+		return total, free, true
+	}
+	if f, hasFree := parse("CPPWORKER_FREE_VRAM_BYTES"); hasFree {
+		return f, f, true
+	}
+	return 0, 0, false
 }
 
 // WeightsOnGPUBytes — сколько байт весов модели уедет на GPU при gpuLayers слоях
@@ -214,4 +262,58 @@ func MemfitSpecFromValues(name string, sizeBytes int64, nLayers, nHeads, nKvHead
 		KVHeadDim: kvHeadDim,
 		TrainCtx:  trainCtx,
 	}
+}
+
+// KVCacheBytesForModel — размер KV-кэша модели на n_ctx токенов по РЕАЛЬНЫМ
+// метаданным, с явным флагом достоверности.
+//
+// R83 §9.4 шаг 2, продолжение (2026-09-27). Зачем отдельная функция: после того
+// как раскладка слоёв стала считать KV из метаданных, в cppworker остались ещё
+// пять мест со «своей» консервативной формулой (n_layers = block_count,
+// head_dim = n_embd/n_heads). Из них два меняют КОНФИГУРАЦИЮ, а не только текст:
+//
+//   - AutoTuneNCtx — подбирает n_ctx и gpu_layers при reload на больший контекст;
+//   - SelectStrategy (adaptive_loader) — свой выбор n_ctx/gpu_layers.
+//
+// Завышенный KV в них означает заниженный контекст: оператор просит 65536, а
+// получает меньше, хотя железо позволяет (и гейт n_ctx это подтвердил).
+//
+// Реализация — ровно наоборот безопасная: реальные числа берутся, только если
+// метаданные ЕСТЬ и полны (kvLayers>0, kvHeadDim>0). Иначе возвращается прежняя
+// консервативная оценка и real=false, чтобы вызывающий мог сказать об этом в лог.
+// Компромисс здесь выбран осознанно: KV, посчитанный по block_count, завышает
+// (безопасно), а выдуманный «на глазок» — может занизить (опасно, переподписка).
+func (b *Backend) KVCacheBytesForModel(name string, nCtx int, kvCacheType string,
+	nLayers, nEmbd, nHeads, nKvHeads int) (bytes int64, real bool) {
+	if b == nil || strings.TrimSpace(name) == "" {
+		return 0, false
+	}
+	mm := b.ModelManager()
+	if mm == nil {
+		return 0, false
+	}
+	meta, err := mm.GetModelMeta(name)
+	if err != nil || meta == nil {
+		if _, canonical, ok := mm.FindModelByVariants(name); ok {
+			meta, err = mm.GetModelMeta(canonical)
+		}
+	}
+	if err != nil || meta == nil {
+		return 0, false
+	}
+	kvLayers, _ := meta.KVLayers()
+	headDim := meta.KVHeadDim()
+	heads := meta.NKvHeads
+	if heads <= 0 {
+		heads = nKvHeads
+	}
+	if heads <= 0 {
+		heads = nHeads
+	}
+	if kvLayers <= 0 || headDim <= 0 || heads <= 0 || nCtx <= 0 {
+		return 0, false
+	}
+	num, den := memfit.KVBytesPerElement(MemfitKVType(kvCacheType))
+	elements := int64(kvLayers) * int64(heads) * int64(headDim) * 2
+	return int64(nCtx) * elements * num / den, true
 }

@@ -1,8 +1,9 @@
 # R83 §9.4: протокол замены legacy-оценок памяти на memfit
 
-**Дата:** 2026-09-26 · **База:** `r83-submodule-v13` · **Статус:** шаги 1, 1б, 3,
-3б, 4 выполнены (v15…v19); остаётся шаг 2 — удалить no-metadata fallback
-`EstimateGPUMemoryForModel` (см. шаг 2 ниже)
+**Дата:** 2026-09-26 · **База:** `r83-submodule-v13` · **Статус:** ВЫПОЛНЕНО
+целиком (шаги 1, 1б, 2, 3, 3б, 4 — теги v15…v20); остаётся только осознанно
+отложенное: консервативная `estimateKVCacheBytes` на путях без метаданных
+(см. конец шага 2)
 
 Документ отвечает на вопрос «как делать §9.4, не работая вслепую»: что измерено,
 какие проверки запускать на каждом шаге, что считать регрессом и как откатиться.
@@ -152,23 +153,54 @@ fallback / disabled / no-config), `degraded_load_r83_test.go` (13 тестов
 (файл был восстановлен через `git checkout`). Это поведение самого хендлера, к
 §9.4 не относится, но при экспериментах с ним нужно проверять `git status`.
 
-### Шаг 2. Удалить `EstimateGPUMemoryForModel` / `backwardCompat…`
+### Шаг 2. Удалить `EstimateGPUMemoryForModel` / `backwardCompat…` — СДЕЛАНО (v20)
 
-**Порядок:** сначала шаг 1 (он перестаёт вызывать), затем проверить остаток:
+**Что оказалось при проверке.** `EstimateGPUMemoryForModel` был не «остатком
+продового пути», а **полностью мёртвым кодом**: единственные упоминания вне
+самой функции — её же тест и комментарии. Legacy-фоллбэк `auto_offload` считал
+KV своей функцией `estimateKVCacheBytes` (block_count + n_embd/n_heads), а не
+этой. Продовых вызовов не было ни одного:
 
 ```
-Select-String -Path internal\cppbackend\*.go,cmd\cppworker\*.go `
-  -Pattern 'EstimateGPUMemoryForModel|backwardCompatEstimateGPUMemoryForModel'
+internal\cppbackend\model_manager.go:801,819   — определение
+internal\cppbackend\memfit_adapter.go:109      — комментарий
+internal\memfit\units.go:13                    — комментарий
+tests\cppbackend_test.go:338-368               — тест
 ```
 
-Продовых вызовов быть не должно (в `backend.go` они были только внутри
-`CalculateOptimalGPULayers`; в `gpu_distribution.go:406-411` — внутри
-`EstimateModelVRAM`, см. шаг 3).
+**Сделано (v20):**
 
-**Тесты:** `tests/cppbackend_test.go:TestEstimateGPUMemoryForModel` — удалить
-вместе с функцией; `backend_r52_test.go`, `kv_cache_type_r67a_test.go` — они
-тестируют `CalculateOptimalGPULayers`; после шага 1 либо переписать на memfit,
-либо удалить (их покрытие теперь даёт `estimator_compare_r83_test.go`).
+- функция удалена вместе с `tests/cppbackend_test.go:TestEstimateGPUMemoryForModel`;
+- `backwardCompatEstimateGPUMemoryForModel` был удалён ещё на шаге 1,
+  `CalculateOptimalGPULayers` и `EstimateModelVRAM` — на шагах 1 и 3;
+- **настоящий дефект шага 2 оказался в другом месте**: legacy-фоллбэк считал KV
+  по `block_count` и `n_embd/n_heads`, то есть завышал его на гибридных моделях
+  (Qwen3.8-27B: 64×213 против реальных 16 слоёв × 256 и 4 голов KV). Исправлено:
+  `(*Backend).KVLayersForModel` + `estimateKVCacheBytesForLayers`;
+- **константа «байт на элемент» теперь одна на стек** —
+  `memfit.KVBytesPerElement` (f16 2/1, q8_0 34/32, q4_0 18/32). До этого
+  cppworker держал свою таблицу и считал q8_0 ровно как 2 байта.
+
+**Как проверено (без живого стенда, но на абсолютных числах):**
+
+- `TestR83_Step2_KVMatchesLlamaCpp` — 1088 MiB при ctx=32768, 16 слоях KV,
+  head_dim=256 и q8_0 (это ровно то, что печатает llama.cpp на живом стенде);
+- `TestR83_Step2_KVMatchesMemfit` — совпадение с `memfit.KVBytesPerToken` для
+  f16/q8_0/q4_0 (иначе снова два источника истины);
+- `TestR83_Step2_OldFormulaWasOverestimating` — прежняя формула действительно
+  завышает (защита от возврата дефекта);
+- `TestR83_Step2_RealMetadataWins` — head_dim берётся из `attention.key_length`
+  (256), а не из `n_embd/n_heads` (213);
+- `TestR83_Step2_IncompleteMetadataIsConservative` — без метаданных
+  `KVLayersForModel` возвращает ok=false, а KV-функция — 0 («не знаю»), а не
+  выдуманное число.
+
+**Осталось по шагу 2 (осознанно, не долг):** `estimateKVCacheBytes` живёт как
+консервативная оценка сверху для путей, где известны только параметры модели
+(`auto_tune_nctx`, `inference.go`, `lazyLoad`). Переводить их на реальные
+метаданные — отдельная задача: там `GGUFModelMeta` под рукой не всегда, а
+ошибка в эту сторону (завышение) безопаснее занижения. Функция помечена
+предупреждением в doc-комментарии.
 
 ### Шаг 3. `EstimateModelVRAM` → `WeightsOnGPUBytes` — ДЕЛАЕТСЯ СЕЙЧАС (v16)
 

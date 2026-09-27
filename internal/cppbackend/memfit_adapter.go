@@ -160,6 +160,45 @@ func MemfitSpecFromMeta(name string, meta *GGUFModelMeta) memfit.ModelSpec {
 		meta.NEmbd, meta.ContextLength, kvLayers, meta.KVHeadDim())
 }
 
+// KVLayersForModel — параметры РЕАЛЬНОГО KV-кэша модели по внешнему имени.
+//
+// R83 §9.4 шаг 2 (2026-09-27). Зачем отдельно от MemfitSpec: legacy-фоллбэк
+// auto_offload (когда memfit не может собрать полный ModelSpec — например, в
+// метаданных нет обучающего контекста) считал KV по block_count и
+// n_embd/n_heads. На Qwen3.8-27B это 64 слоя × 213 = 13 632 «пары» против
+// реальных 16 слоёв × 256 = 4 096, то есть завышение в 3.3 раза — ровно тот
+// дефект, из-за которого исторически планировалось gpu_layers=0.
+//
+// Достаточно именно этих двух чисел: они не требуют TrainCtx, поэтому доступны
+// и там, где полный ModelSpec ещё «неполный». ok=false — метаданных нет,
+// вызывающий обязан взять консервативную верхнюю оценку и сказать об этом в лог.
+func (b *Backend) KVLayersForModel(name string) (layers, headDim int, ok bool) {
+	if b == nil || strings.TrimSpace(name) == "" {
+		return 0, 0, false
+	}
+	mm := b.ModelManager()
+	if mm == nil {
+		return 0, 0, false
+	}
+	meta, err := mm.GetModelMeta(name)
+	if err != nil || meta == nil {
+		if _, canonical, ok := mm.FindModelByVariants(name); ok {
+			meta, err = mm.GetModelMeta(canonical)
+		}
+	}
+	if err != nil || meta == nil {
+		return 0, 0, false
+	}
+	kvLayers, _ := meta.KVLayers()
+	headDim = meta.KVHeadDim()
+	if kvLayers <= 0 || headDim <= 0 {
+		// Частичные метаданные: отдаём то, что знаем, но помечаем «неточно» —
+		// вызывающий решит, доверять ли (см. auto_offload).
+		return kvLayers, headDim, false
+	}
+	return kvLayers, headDim, true
+}
+
 // MemfitSpecFromValues — сборка ModelSpec из уже известных чисел (например, из
 // GGUF-заголовка, прочитанного в checkVRAMForModel: там файл повторно не читается).
 // kvLayers/kvHeadDim = 0 означают «неизвестно» → memfit берёт верхнюю оценку.

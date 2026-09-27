@@ -194,6 +194,61 @@ func writeLoadAccepted(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusAccepted, body)
 }
 
+// respondWhileAnotherLoadInProgress — ответ, когда загрузку этой модели уже
+// выполняет другой запрос (наш TryLockLoad не взял лок).
+//
+// R83 §9.6 D-A (2026-09-27). ЧТО БЫЛО: обе ветки сначала вызывали
+// WaitForLoad(name) и только потом смотрели на waitSync. WaitForLoad ждёт
+// канал загрузки без таймаута, поэтому при `?wait=false` (default!) ответ
+// приходит не сразу, а после ЧУЖОЙ загрузки — в логе это выглядело как
+// `status:202 duration:9m6.6s`, то есть «асинхронность» была только на бумаге,
+// а клиент с коротким таймаутом отваливался, хотя у него уже был progressUrl.
+//
+// ТЕПЕРЬ: в async-режиме отвечаем 202 немедленно (state=loading) и не ждём
+// ничего — это ровно тот контракт, который рекламирует writeLoadAccepted.
+// Блокирующее ожидание осталось только для sync-режима (?wait=true), где оно
+// и является смыслом запроса.
+//
+// ВАЖНО: этот путь НЕ запускает вторую загрузку. Лок держит другой запрос,
+// прогресс виден в /api/models/load/progress, а сам клиент дополлит его по
+// progressUrl. Возвращать здесь 503 нельзя: у клиента нет способа отличить
+// «уже грузится» от «сломалось».
+func respondWhileAnotherLoadInProgress(w http.ResponseWriter, r *http.Request,
+	modelName, modelPath string, estimatedMs int64, loadStart time.Time, waitSync bool,
+) {
+	if !waitSync {
+		// Async: 202 сразу, без ожидания чужой загрузки.
+		logger.Get().Infow("model is already being loaded by another request; returning 202 immediately",
+			"name", modelName)
+		lm := cppbackend.ModelInfo{
+			Name:  modelName,
+			Path:  modelPath,
+			State: cppbackend.StateLoading,
+		}
+		writeLoadAccepted(w, r, modelName, modelPath, 0, estimatedMs, lm)
+		return
+	}
+
+	// Sync (?wait=true): клиент сознательно ждёт — ждём и мы.
+	logger.Get().Infow("model is already being loaded by another request; waiting (wait=true)",
+		"name", modelName)
+	if backend.WaitForLoad(modelName) {
+		if info, getErr := backend.GetModel(modelName); getErr == nil {
+			logger.Get().Infow("load finished while we waited (concurrent request)",
+				"name", modelName, "duration_ms", time.Since(loadStart).Milliseconds())
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"status":         "loaded_by_other",
+				"model":          info,
+				"loadDurationMs": time.Since(loadStart).Milliseconds(),
+			})
+			return
+		}
+	}
+	// Загрузка закончилась неудачей (или модель так и не появилась) — отдаём
+	// понятную ошибку вместо «202, который никогда не станет loaded».
+	writeLoadingResponse(w, modelName, errModelIsLoading)
+}
+
 // writeLoadWaitTimeout отвечает HTTP 202 Accepted когда sync-режим (?wait=true)
 // исчерпал waitTimeoutMs. По сути то же что writeLoadAccepted, но с другим
 // status-полем, чтобы клиент понял: "load ещё идёт, дождись сам".

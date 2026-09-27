@@ -940,9 +940,15 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		// в ответе на /api/models/load и не попадает в /api/models,
 		// но если клиент polling'ом проверял состояние — успеет увидеть state=loading
 		// в течение ~миллисекунд до получения HTTP 500.
-		b.mu.Lock()
-		delete(b.models, name)
-		b.mu.Unlock()
+		//
+		// R83 §9.6 D-B (2026-09-27): удаляем ТОЛЬКО СВОЙ инстанс. Раньше здесь
+		// было безусловное `delete(b.models, name)`, и при перекрытии
+		// load/unload это выбивало из реестра ЧУЖУЮ (уже новую) запись: другая
+		// горутина успевала пересоздать inst и зарегистрировать его, а наш
+		// провалившийся путь его стирал. Снаружи это выглядело как «model loaded
+		// в логе, а /api/models → count=0» — тот самый симптом D-B, при котором
+		// балансер не находил загруженную модель.
+		b.removeOwnInstance(name, inst)
 		if b.metrics != nil {
 			b.metrics.RecordRequest(name, 0, 0, false)
 		}
@@ -1526,6 +1532,41 @@ func (b *Backend) InjectLoadedModelForTest(name string) error {
 		handle: nil,
 	}
 	return nil
+}
+
+// removeOwnInstance — убрать запись модели из реестра, ТОЛЬКО если она всё ещё
+// указывает на наш инстанс.
+//
+// R83 §9.6 D-B (2026-09-27). Зачем отдельный метод и проверка идентичности:
+// провалившаяся загрузка обязана убрать за собой фантомную запись (`inst`
+// регистрируется ДО C-вызова, чтобы UI видел state=loading). Но при перекрытии
+// загрузок ту же модель успевает пересоздать другая горутина, и безусловный
+// delete стирает уже ЕЁ — работающую — запись. Симптом снаружи: «загрузка
+// завершилась в логе, а /api/models отдаёт count=0», балансер считает модель
+// выгруженной и шлёт запросы в никуда.
+//
+// Вынесен отдельно, чтобы поведение можно было проверить тестом без реального
+// C-сбоя: в stub-сборке bridge.LoadModel не падает, и добраться до этого пути
+// иначе нельзя.
+func (b *Backend) removeOwnInstance(name string, inst *modelInstance) {
+	if b == nil || name == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	cur, ok := b.models[name]
+	switch {
+	case !ok:
+		// Записи уже нет (например, её снял unload) — убирать нечего.
+		return
+	case cur == inst:
+		delete(b.models, name)
+	default:
+		// В реестре уже НОВЫЙ инстанс этой модели: он нашему провалу не
+		// принадлежит и трогать его нельзя.
+		logger.Get().Warnw("load failure: запись в реестре заменена новым инстансом — не удаляем",
+			"name", name)
+	}
 }
 
 // UnloadModel выгружает модель

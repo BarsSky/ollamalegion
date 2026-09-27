@@ -798,57 +798,6 @@ func (m *ModelManager) GetLastScanTime() time.Time {
 	return m.lastScanTime
 }
 
-// EstimateGPUMemoryForModel оценивает необходимую VRAM для модели.
-//
-// Аргументы:
-//   - sizeBytes: размер GGUF-файла модели.
-//   - gpuLayers: число слоёв на GPU (-1 = все).
-//   - totalLayers: общее число слоёв модели.
-//   - ctxSize: размер контекста (n_ctx). Используется для расчёта KV-cache.
-//     Если ctxSize <= 0, считается дефолт 4096.
-//
-// Базируется на эвристике: доля слоёв × размер файла + KV-cache + compute buffers.
-//
-// 2026-06-26 BUGFIX:
-//   - ctxMemoryMB был захардкожен на 512.0 (≈ 4096 контекста). Для n_ctx=32768
-//     фактический KV-cache ~6 GB, что приводило к ложному «VRAM sufficient».
-//   - Не было safety buffer для CUDA context + compute buffers + scratch,
-//     что добавляет ~1 GB на 20GB GPU.
-//
-// Теперь сигнатура принимает ctxSize и добавляет 1 GB compute-buffer overhead.
-func EstimateGPUMemoryForModel(sizeBytes int64, gpuLayers int, totalLayers int, ctxSize int) uint64 {
-	if gpuLayers == 0 || totalLayers <= 0 {
-		return 0
-	}
-
-	// Доля слоёв на GPU больше не нужна: пропорцию целиком считает
-	// WeightsOnGPUBytes (см. ниже).
-
-	// Доля весов на GPU.
-	//
-	// R83 §9.4 (2026-09-26): пропорцию считает WeightsOnGPUBytes — та же формула,
-	// что в memfit.computeSplit. Раньше здесь было «×0.7» (якобы embedding и
-	// прочее не уезжают на GPU), и это занижало вес: на 8 GB карте планировалось
-	// меньше слоёв, чем помещается. Функция остаётся только как legacy-fallback
-	// для auto_offload (когда memfit не может собрать ModelSpec); KV-cache здесь
-	// по-прежнему считается по «256 КБ на токен» — то есть оценка консервативная.
-	gpuMemoryMB := float64(WeightsOnGPUBytes(sizeBytes, gpuLayers, totalLayers)) / 1024 / 1024
-
-	// KV-cache: ~256 KB на токен (для Q4_K_M и fp16 KV).
-	// n_ctx=4096 → 1 GB, n_ctx=32768 → 8 GB.
-	// Мы используем грубую оценку: 1 MB на 4 токена (256 KB).
-	if ctxSize <= 0 {
-		ctxSize = 4096
-	}
-	ctxMemoryMB := float64(ctxSize) * 256.0 / 1024.0 / 1024.0
-
-	// Compute buffers + CUDA context + scratch ~1 GB на 20GB GPU.
-	// Этот overhead не зависит от размера модели, но зависит от размера VRAM.
-	const computeBufferMB = 1024
-
-	return uint64(gpuMemoryMB + ctxMemoryMB + computeBufferMB)
-}
-
 // GetModelArchitectureFromFile пытается определить архитектуру по GGUF файлу
 // без полной загрузки. Использует только первые байты файла (magic + header).
 // В реальности это в C bridge — llama.cpp может читать header.

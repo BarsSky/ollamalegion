@@ -26,10 +26,14 @@ import (
 	"strings"
 )
 
-// kvCacheBytesPerType возвращает количество байт на KV-pair в зависимости от типа KV-cache.
-//   "f16" или ""  → 4 (2 байта K + 2 байта V = f16)
-//   "q8_0"       → 2 (1 байт K + 1 байт V = 8-bit quant)
-//   "q4_0"       → 1 (0.5 байта K + 0.5 байта V = 4-bit quant)
+// kvCacheBytesPerType — байт на KV-элемент для типа кэша.
+//
+// ВНИМАНИЕ: возвращает ЦЕЛОЕ число байт и потому для квантованных типов теряет
+// дробную часть (q8_0 — 34/32 = 1.0625 байта, q4_0 — 18/32 = 0.5625). Для
+// планирования раскладки и подсчёта KV используйте kvCacheBytesPerTypeRatio,
+// который берёт отношение из memfit (единый источник истины) и не теряет
+// точность. Эта функция оставлена только для путей, где нужен грубый «байт на
+// пару K+V» (f16 → 4, q8_0 → 2, q4_0 → 1).
 func kvCacheBytesPerType(kvCacheType string) int64 {
 	switch strings.ToLower(kvCacheType) {
 	case "q8_0":
@@ -39,6 +43,21 @@ func kvCacheBytesPerType(kvCacheType string) int64 {
 	default:
 		return 4 // f16
 	}
+}
+
+// kvCacheBytesPerTypeRatio — байт на KV-ЭЛЕМЕНТ с учётом типа (числитель, знаменатель).
+//
+// Единый источник — memfit.KVBytesPerElement: та же константа, что и в memfit.
+// R83 §9.4 шаг 2 (2026-09-27): раньше здесь была своя таблица (2 байта на
+// q8_0), и на реальных числах она расходилась с memfit (34/32 против 2). Два
+// источника истины для одной константы — ровно тот класс дефекта, который шаг 2
+// и устраняет.
+//
+// ВНИМАНИЕ: это байт на ОДИН элемент (K или V), множитель «2 тензора» считает
+// вызывающий. Сложить его сюда — значит завысить KV ровно вдвое (эта ошибка
+// была допущена и поймана тестом TestR83_Step2_KVMatchesMemfit).
+func kvCacheBytesPerTypeRatio(kvCacheType string) (num, den int64) {
+	return memfit.KVBytesPerElement(cppbackend.MemfitKVType(kvCacheType))
 }
 
 // calculateOptimalGPULayersForModel вычисляет оптимальное число GPU-слоёв
@@ -176,13 +195,38 @@ func legacyCalculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType
 	overheadBytes := int64(1536) * 1024 * 1024 // 1.5 GB
 
 	// KV-cache для запрошенного n_ctx (bytes)
-	// Формула: bytesPerType(v) * n_ctx * n_layers * effKVHeads * headDim
-	// где headDim ≈ n_embd (для MHA) или n_embd / n_heads * n_kv_heads (GQA).
+	//
+	// R83 §9.4 шаг 2 (2026-09-27): считаем по РЕАЛЬНЫМ параметрам KV-кэша
+	// (число слоёв с attention + head_dim KV), а не по block_count и
+	// n_embd/n_heads. На Qwen3.8-27B прежняя формула давала 64×213 против
+	// реальных 16×256, то есть завышала KV в 3.3 раза — именно это исторически
+	// загоняло раскладку в gpu_layers=0. Метаданные берём у backend'а тем же
+	// путём, что и memfit (KVLayersForModel); если их нет — прежняя
+	// консервативная оценка + предупреждение в лог.
 	nCtx := m.ContextSize
 	if nCtx <= 0 {
 		nCtx = currentConfig.DefaultCtxSize
 	}
-	kvCacheBytes := estimateKVCacheBytes(nCtx, m.NLayers, m.NEmbd, m.NHeads, m.NKvHeads, kvCacheType)
+	// kvLayers/kvHeadDim — из метаданных; nKvHeads известен из ModelInfo всегда,
+	// но при нуле берём nHeads (MHA — консервативная верхняя граница).
+	kvLayers, kvHeadDim := m.NLayers, 0
+	nKvHeads := m.NKvHeads
+	if nKvHeads <= 0 {
+		nKvHeads = m.NHeads
+	}
+	if backend != nil {
+		if l, hd, kvOK := backend.KVLayersForModel(m.Name); l > 0 && hd > 0 {
+			kvLayers, kvHeadDim = l, hd
+			logger.Get().Infow("auto_offload: KV посчитан по реальным параметрам кэша (R83 §9.4 шаг 2)",
+				"model", m.Name,
+				"kv_layers", l,
+				"kv_head_dim", hd,
+				"n_kv_heads", nKvHeads,
+				"block_count", m.NLayers,
+				"kv_exact", kvOK)
+		}
+	}
+	kvCacheBytes := estimateKVCacheBytesForLayers(nCtx, kvLayers, nKvHeads, kvHeadDim, kvCacheType)
 
 	availableForWeights := safeVRAM - overheadBytes - kvCacheBytes
 	if availableForWeights <= 0 {
@@ -220,7 +264,44 @@ func legacyCalculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType
 	return gpuLayers
 }
 
+// estimateKVCacheBytesForLayers — KV-cache из РЕАЛЬНЫХ параметров кэша.
+//
+// R83 §9.4 шаг 2 (2026-09-27). Отличие от estimateKVCacheBytes (ниже) только во
+// входных числах: там n_layers = block_count и head_dim ≈ n_embd/n_heads, здесь —
+// kv_layers (сколько слоёв реально держат KV) и kv_head_dim (attention.key_length).
+//
+// Формула ОДНА с memfit.KVBytesPerToken:
+//
+//	2 (K и V) × kv_layers × n_kv_heads × kv_head_dim × байт-на-элемент
+//
+// Про n_kv_heads легко забыть, и это не косметика: без множителя KV занижается
+// ровно в число голов (на Qwen3.8-27B — в 8 раз), то есть раскладка планирует
+// KV в 8 раз меньше реального и уходит в переподписку. Тест
+// TestR83_Step2_KVMatchesLlamaCpp фиксирует абсолютное число из лога llama.cpp
+// (1088 MiB при 32768 токенах), поэтому пропустить это нельзя.
+//
+// Живой пример (3070 8 GB, Qwen3.8-27B): 16 слоёв × 8 голов × 256 = 32 768
+// элементов на токен; q8_0 → 34/32 байта → 34 816 Б/токен → × 32 768 токенов =
+// 1088 MiB, ровно как в логе
+// `llama_kv_cache: size = 1088.00 MiB (32768 cells, 16 layers, K/V (q8_0))`.
+func estimateKVCacheBytesForLayers(nCtx, kvLayers, nKvHeads, kvHeadDim int, kvCacheType string) int64 {
+	if nCtx <= 0 || kvLayers <= 0 || nKvHeads <= 0 || kvHeadDim <= 0 {
+		return 0
+	}
+	// Единая константа с memfit (34/32 для q8_0, 18/32 для q4_0).
+	num, den := kvCacheBytesPerTypeRatio(kvCacheType)
+	elements := int64(kvLayers) * int64(nKvHeads) * int64(kvHeadDim) * 2
+	return int64(nCtx) * elements * num / den
+}
+
 // estimateKVCacheBytes — оценка размера KV-cache для n_ctx токенов.
+//
+// ВНИМАНИЕ: это КОНСЕРВАТИВНАЯ ОЦЕНКА СВЕРХУ для путей, где известны только
+// параметры модели (block_count, n_embd, n_heads, n_kv_heads). Она завышает
+// KV для гибридных моделей (где KV держат не все слои) и для моделей с
+// attention.key_length ≠ n_embd/n_heads. Там, где есть метаданные GGUF,
+// используйте estimateKVCacheBytesForLayers — иначе раскладка снова начнёт
+// занижать gpu_layers (см. R83 §9.4 шаг 2).
 //
 // Формула для f16 (4 байта на KV-pair на токен на слой):
 //   bytes = bytesPerType * n_ctx * n_layers * head_dim * 2 (K+V)

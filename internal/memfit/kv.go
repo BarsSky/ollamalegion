@@ -91,11 +91,10 @@ func (t KVType) Normalize() KVType {
 // (218 112 против 69 632 Б/токен при f16) — и вместе с ним все потолки n_ctx.
 // Разбор правила и ссылки на llama.cpp: internal/cppbackend/kv_layers.go.
 //
-// bytes_per_elem по типам (как в llama.cpp: значение + масштаб):
-//
-//	f16  → 2          (2 байта: fp16)
-//	q8_0 → 34/32      (1 байт + 1/32 на масштаб)
-//	q4_0 → 18/32      (0.5 байта + 1/32 на масштаб)
+// bytes_per_elem берётся из KVBytesPerElement — одной константы на весь стек
+// (её же использует legacy-оценка в cmd/cppworker/auto_offload.go). Раньше
+// константа дублировалась, и legacy считал q8_0 как ровно 2 байта вместо 34/32
+// (R83 §9.4 шаг 2, 2026-09-27).
 func KVBytesPerToken(m ModelSpec, t KVType) Bytes {
 	hd := m.EffectiveKVHeadDim()
 	layers := m.EffectiveKVLayers()
@@ -103,12 +102,27 @@ func KVBytesPerToken(m ModelSpec, t KVType) Bytes {
 		return 0
 	}
 	elements := int64(2) * int64(layers) * int64(m.NKvHeads) * int64(hd)
-	num, den := int64(2), int64(1)
+	num, den := KVBytesPerElement(t)
+	return Bytes(elements * num / den)
+}
+
+// KVBytesPerElement — байт на элемент KV-кэша с учётом типа (числитель и
+// знаменатель, потому что для квантованных типов значение дробное).
+//
+// Как в llama.cpp: значение + масштаб на блок.
+//
+//	f16  → 2/1   (2 байта: fp16)
+//	q8_0 → 34/32 (1 байт + 1/32 на масштаб)
+//	q4_0 → 18/32 (0.5 байта + 1/32 на масштаб)
+//
+// Возвращает (num, den): вызывающий делит СНАЧАЛА умножив на num, чтобы не
+// терять точность на целочисленном делении.
+func KVBytesPerElement(t KVType) (num, den int64) {
 	switch t.Normalize() {
 	case KVQ8:
-		num, den = 34, 32
+		return 34, 32
 	case KVQ4:
-		num, den = 18, 32
+		return 18, 32
 	}
-	return Bytes(elements * num / den)
+	return 2, 1
 }

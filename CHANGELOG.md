@@ -5,6 +5,90 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.5.48 — R83 §9.6 D-A/D-B + §9.4 шаг 2: 202 перестал ждать, реестр не теряет модель, KV из метаданных (2026-09-27)]
+
+### ⏱ D-A: `?wait=false` действительно не ждёт (§9.6)
+
+**Симптом:** в логе HTTP `status:202 duration:9m6.6s` — ответ «принято, полли
+progressUrl» приходил только после того, как ЧУЖАЯ загрузка той же модели
+завершалась. Клиент (балансер) с коротким таймаутом отваливался, хотя прогресс
+уже был доступен.
+
+**Причина:** обе ветки «модель уже грузится другим запросом» сначала вызывали
+`backend.WaitForLoad(name)` и лишь ПОТОМ смотрели на `waitSync`. `WaitForLoad`
+ждёт канал загрузки без таймаута.
+
+**Исправлено:** общий хелпер `respondWhileAnotherLoadInProgress`
+(`cmd/cppworker/handlers_model_async.go`), единый для `handleLoadModel` и
+`handleLoadWithParams`:
+
+- `wait=false` (default) → 202 **немедленно** (`state=loading` + `progressUrl`),
+  без ожидания канала. Вторая загрузка при этом НЕ запускается: лок держит
+  другой запрос, прогресс виден в `/api/models/load/progress`;
+- `wait=true` → прежнее блокирующее ожидание и `loaded_by_other` при успехе
+  (в этом и смысл явного wait), а при неудаче — понятная 5xx вместо «202,
+  который никогда не станет loaded».
+
+**Тесты:** `concurrent_load_r83_test.go` — async отвечает быстрее 2 с при чужой
+загрузке, длящейся 30 с (до правки здесь был бы таймаут теста); sync ждёт;
+sync на успешной чужой загрузке получает `loaded_by_other`.
+
+### 🧾 D-B: провал загрузки не выбивает чужую запись из реестра (§9.6)
+
+**Симптом:** «загрузка завершилась в логе, а `/api/models` → `count=0`» после
+перекрывающихся load/unload: балансер считал модель выгруженной и слал запросы
+в никуда.
+
+**Причина:** `LoadModelWithOpts` регистрирует инстанс ДО C-вызова (чтобы UI
+видел `state=loading`), а на ошибке делал безусловный
+`delete(b.models, name)` — стирая ту запись, которую за это время успела
+создать другая горутина.
+
+**Исправлено:** `(*Backend).removeOwnInstance(name, inst)` удаляет запись только
+если она всё ещё указывает на наш инстанс; чужую (уже новую) — не трогает и
+пишет об этом в лог. Метод вынесен отдельно, чтобы путь очистки можно было
+проверить без реального C-сбоя (в stub-сборке `bridge.LoadModel` не падает).
+
+**Тесты:** `internal/cppbackend/registry_overlap_r83_test.go` — свой инстанс
+убирается; новая запись остаётся нетронутой (**главный тест**: без правки здесь
+было `count=0` при живой модели); отсутствие записи — no-op; симулятор
+перекрытия на настоящих `TryLockLoad`/`WaitForLoad` — в реестре ровно одна
+свежая запись, а ожидающий клиент получает успех.
+
+### 🧮 §9.4 шаг 2: KV-кэш считается из реальных метаданных
+
+**Что было.** Legacy-фоллбэк `auto_offload` (путь, где memfit не может собрать
+полный `ModelSpec`) считал KV по `block_count` и `n_embd/n_heads`. На
+Qwen3.8-27B это 64 слоя × 213 вместо реальных 16 слоёв × 256 и 4 голов KV —
+завышение в ~1.6 раза, из-за которого исторически планировалось `gpu_layers=0`.
+
+- `(*Backend).KVLayersForModel(name)` (`internal/cppbackend/memfit_adapter.go`)
+  отдаёт реальные `kv_layers` и `kv_head_dim` по внешнему имени модели; не
+  требует `TrainCtx`, поэтому доступен и там, где полный spec ещё неполный;
+- `estimateKVCacheBytesForLayers(nCtx, kvLayers, nKvHeads, kvHeadDim, kvType)`
+  (`cmd/cppworker/auto_offload.go`) — та же формула, что `memfit.KVBytesPerToken`:
+  `2 × kv_layers × n_kv_heads × kv_head_dim × байт-на-элемент`. Множитель
+  `n_kv_heads` легко потерять — без него KV занижается ровно в число голов;
+- **одна константа на стек:** `memfit.KVBytesPerElement(t)` (f16 → 2/1,
+  q8_0 → 34/32, q4_0 → 18/32). Раньше таблица дублировалась в cppworker и
+  считала q8_0 ровно как 2 байта — расхождение с memfit;
+- `estimateKVCacheBytes` (старая функция) осталась для путей, где известны
+  только параметры модели, и помечена как КОНСЕРВАТИВНАЯ оценка сверху;
+- удалена **мёртвая** `cppbackend.EstimateGPUMemoryForModel` (веса ×0.7 и KV
+  «256 Б/токен»): продовых вызовов не было, только тест. Вместе с ней удалён
+  `tests/cppbackend_test.go:TestEstimateGPUMemoryForModel`.
+
+**Проверка числами:** `TestR83_Step2_KVMatchesLlamaCpp` фиксирует абсолютную
+величину из лога llama.cpp — `1088 MiB` при `ctx=32768`, 16 слоях KV и
+`head_dim=256` (34 816 Б/токен при q8_0); `TestR83_Step2_KVMatchesMemfit` —
+совпадение с `memfit.KVBytesPerToken` для всех трёх типов;
+`TestR83_Step2_OldFormulaWasOverestimating` — что прежняя формула действительно
+завышала (защита от возврата дефекта); `TestR83_Step2_RealMetadataWins` — что
+`head_dim` берётся из `attention.key_length` (256), а не из `n_embd/n_heads` (213).
+
+**Проверка:** `go build`/`go vet -tags llama_stub` — чисто;
+`cmd/cppworker`, `internal/cppbackend`, `internal/memfit`, `tests` — зелёные.
+
 ## [0.5.47 — R83 §9.4 шаг 1б: «не влезает» — отказ, «влезает без GPU» — загрузка с предупреждением (2026-09-26)]
 
 ### 🧭 Вердикт memfit решает и на пути reload (§9.4 шаг 1б)

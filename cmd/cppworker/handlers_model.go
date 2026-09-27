@@ -236,41 +236,8 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !lockOk {
-		// ?????? ???????? ??? ?????? ??? ??????. ???????? ?????????? ? ???
-		// ????????? ?????, ????? ????????/?????? ?????????? ????????????
-		// POST /api/models/load ? ?????? ???????? 503, ???? ?????? ???????
-		// ?????????? ????? ????????? ??????.
-		logger.Get().Infow("model is already being loaded by another request; waiting", "name", modelName)
-		if backend.WaitForLoad(modelName) {
-			if info, getErr := backend.GetModel(modelName); getErr == nil {
-				logger.Get().Infow("handleLoadModel: model loaded by concurrent request",
-					"name", modelName, "duration_ms", time.Since(loadStart).Milliseconds())
-				if !waitSync {
-					// Async mode: even if other request finished, return 202 so client
-					// knows to use progressUrl pattern. Model is actually loaded now.
-					writeLoadAccepted(w, r, modelName, modelPath,
-						int64(info.SizeBytes), estimatedMs, info)
-					return
-				}
-				writeJSON(w, http.StatusOK, map[string]interface{}{
-					"status":         "loaded_by_other",
-					"model":          info,
-					"loadDurationMs": time.Since(loadStart).Milliseconds(),
-				})
-				return
-			}
-		}
-		if !waitSync {
-			// Async mode: return 202 with current state (loading in progress).
-			lm := cppbackend.ModelInfo{
-				Name:  modelName,
-				Path:  modelPath,
-				State: cppbackend.StateLoading,
-			}
-			writeLoadAccepted(w, r, modelName, modelPath, 0, estimatedMs, lm)
-			return
-		}
-		writeLoadingResponse(w, modelName, errModelIsLoading)
+		respondWhileAnotherLoadInProgress(w, r, modelName, modelPath,
+			estimatedMs, loadStart, waitSync)
 		return
 	}
 
@@ -705,34 +672,8 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !lockOk {
-		logger.Get().Infow("model is already being loaded by another request; waiting", "name", modelName)
-		if backend.WaitForLoad(modelName) {
-			if info, getErr := backend.GetModel(modelName); getErr == nil {
-				logger.Get().Infow("handleLoadWithParams: model loaded by concurrent request",
-					"name", modelName, "duration_ms", time.Since(loadStart).Milliseconds())
-				if !waitSync {
-					writeLoadAccepted(w, r, modelName, modelPath,
-						int64(info.SizeBytes), estimatedMs, info)
-					return
-				}
-				writeJSON(w, http.StatusOK, map[string]interface{}{
-					"status":         "loaded_by_other",
-					"model":          info,
-					"loadDurationMs": time.Since(loadStart).Milliseconds(),
-				})
-				return
-			}
-		}
-		if !waitSync {
-			lm := cppbackend.ModelInfo{
-				Name:  modelName,
-				Path:  modelPath,
-				State: cppbackend.StateLoading,
-			}
-			writeLoadAccepted(w, r, modelName, modelPath, 0, estimatedMs, lm)
-			return
-		}
-		writeLoadingResponse(w, modelName, errModelIsLoading)
+		respondWhileAnotherLoadInProgress(w, r, modelName, modelPath,
+			estimatedMs, loadStart, waitSync)
 		return
 	}
 

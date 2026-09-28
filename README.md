@@ -188,6 +188,15 @@ r35 image deployed, no SIGSEGV в логах 26+ минут uptime.
 
 Требуется: Docker 24+ с поддержкой Compose v2, Git, NVIDIA драйвер + NVIDIA Container Toolkit (для GPU-режима).
 
+**Канонический compose — `deployments/docker-compose.stack.yml`.** Один файл,
+три сценария через профили (подробно: [docs/deployment-stack.md](docs/deployment-stack.md)):
+
+| Сценарий | Команда |
+|---|---|
+| Всё на одной машине (cppworker + agent + balancer + webui) | `--profile full` |
+| Только бэкенд (cppworker + agent), балансер на другой машине | `--profile worker` |
+| Только управление (balancer + webui), бэкенды подключаются сами | `--profile balancer` |
+
 ```bash
 # 1. Клонировать репозиторий (имя каталога — произвольное).
 #    Флаг --recurse-submodules ОБЯЗАТЕЛЕН: c/llama.cpp/ — git submodule
@@ -201,12 +210,10 @@ cd ollamalegion
 # 2. Подготовить .env (один раз)
 cp deployments/.env.example deployments/.env                                  # интерполяция compose
 cp deployments/.env.bundled-with-agent.example deployments/.env.bundled-with-agent   # env_file: модели/GPU/лимиты
-# R66d: API-токен задаётся ТОЛЬКО в deployments/.env (CPPWORKER_API_TOKEN) —
+# API-токен задаётся ТОЛЬКО в deployments/.env (CPPWORKER_API_TOKEN) —
 # один на balancer/cppworker/agent/webui. В .env.bundled-with-agent он НЕ влияет
 # (`environment:` переопределяет `env_file`) — смените его там и получите 401.
-# Остальное в .env.bundled-with-agent правьте под свою машину как раньше.
-
-# 3. Запустить стек
+# Остальное в .env.bundled-with-agent правьте под свою машину.
 ```
 
 **Windows (PowerShell):**
@@ -214,10 +221,10 @@ cp deployments/.env.bundled-with-agent.example deployments/.env.bundled-with-age
 ```powershell
 $env:DOCKER_BUILDKIT=1
 $env:CUDA_ARCH=86        # sm_86 для RTX 30xx, sm_89 для RTX 40xx, sm_90 для RTX 50xx
-# --env-file НЕ нужен: composer сам читает deployments/.env, а .env.bundled-with-agent
+# --env-file НЕ нужен: compose сам читает deployments/.env, а .env.bundled-with-agent
 # подключён через env_file:. Флаг --env-file ПОДМЕНЯЛ .env целиком, из-за чего
 # терялись CUDA_ARCH (сборка под 9 архитектур ~40 мин вместо ~3) и токен.
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml up -d --build
+docker compose -f deployments/docker-compose.stack.yml --profile full up -d
 ```
 
 **Linux / macOS / WSL2:**
@@ -225,13 +232,39 @@ docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml up
 ```bash
 export DOCKER_BUILDKIT=1
 export CUDA_ARCH=86
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml up -d --build
+docker compose -f deployments/docker-compose.stack.yml --profile full up -d
 ```
 
 После запуска:
 - Балансер: http://localhost:18080 (Ollama API) / :18081 (Management API)
 - CppWorker: http://localhost:18092 (llama.cpp inference)
 - WebUI: http://localhost:18083
+
+> **Только бэкенд на этой машине** (балансер уже есть): задайте две переменные в
+> `deployments/.env.bundled-with-agent` — `BALANCER_URL=http://<хост-балансера>:18081`
+> (ADMIN API, не 18080) и `BACKEND_HOST=<адрес этой машины, видимый с балансера>`,
+> затем `docker compose -f deployments/docker-compose.stack.yml --profile worker up -d`.
+> Подробности и диагностика: [docs/deployment-stack.md](docs/deployment-stack.md).
+
+> ⚠️ **Имена переменных агента.** Код читает `BACKEND_TYPE`, `CPPWORKER_URL`,
+> `NODE_LABELS`, `GPU_MODE`, `COLLECT_INTERVAL`, `HEARTBEAT_INTERVAL`. Имена вида
+> `AGENT_BACKEND_TYPE` / `AGENT_CPPWORKER_URL` / `AGENT_NODE_LABELS` / `AGENT_MODE`
+> (встречаются в старых compose-файлах) **не читаются**: бэкенд зарегистрируется
+> как Ollama. `docker-compose.stack.yml` использует правильные имена.
+
+> ⚠️ **Вместимость.** `AGENT_MAX_CONCURRENT_REQUESTS` должен совпадать с реальным
+> `n_parallel` cppworker (по умолчанию 1). Завышенное значение даёт ложные
+> «свободные слоты» и отказы/зависания у клиента (Cline). Балансер обязан быть
+> **`r83-submodule-v23+`**: в нём вместимость применяется на всех трёх путях
+> регистрации, и унаследованное из `state.json` значение больше не переживает
+> пересборку. Если в `/api/v1/backends` видите `maxConcurrentRequests` больше
+> заданного — рецепт в [docs/deployment-stack.md](docs/deployment-stack.md), п. 7.1.
+
+> ⏱ **Первая загрузка 27B — минуты, а не секунды** (на A10 наблюдалось 311 с).
+> Клиент (Cline) с коротким таймаутом порвёт соединение раньше, чем закончится
+> загрузка, и это будет выглядеть как «cppworker не работает». Загружайте модель
+> заранее через `POST /api/models/load-with-params?wait=false` — подробности и
+> диагностика в [docs/deployment-stack.md](docs/deployment-stack.md), п. 2.1.
 
 > Если нужна более простая сборка **без sidecar-агента метрик**, используйте
 > `deployments/docker-compose.cppworker-bundled.yml` + готовые скрипты:

@@ -49,19 +49,26 @@ func (a *Agent) register() error {
 	}
 
 	// Отправляем регистрацию напрямую в формате, который ожидает балансировщик
+	//
+	// R83 (2026-09-28): передаём реальную вместимость воркера.
+	// Раньше поля не было, и балансер ставил MaxConcurrentReqs=10 константой —
+	// для llama.cpp это завышение (n_parallel=1 в C-bridge), из-за которого
+	// admission-очередь считала доступными 10 слотов. Значение <= 0 означает
+	// «не задано»: балансер применит дефолт по типу бэкенда.
 	reqBody := map[string]interface{}{
-		"agentId":     a.config.AgentID,
-		"hostname":    hostname,
-		"host":        registerHost,
-		"ollamaPort":  ollamaPort,
-		"agentPort":   a.config.MetricsPort,
-		"gpuCount":    gpuInfo.Count,
-		"name":        a.config.AgentID,
-		"labels":      []string{osName, "amd64", string(a.platformMode)},
-		"weight":        a.config.Weight,
-		"backendType":   string(a.config.BackendType),
-		"cppWorkerPort": registerCppWorkerPort,
-		"nodeLabels":    a.config.NodeLabels,
+		"agentId":               a.config.AgentID,
+		"hostname":              hostname,
+		"host":                  registerHost,
+		"ollamaPort":            ollamaPort,
+		"agentPort":             a.config.MetricsPort,
+		"gpuCount":              gpuInfo.Count,
+		"name":                  a.config.AgentID,
+		"labels":                []string{osName, "amd64", string(a.platformMode)},
+		"weight":                a.config.Weight,
+		"backendType":           string(a.config.BackendType),
+		"cppWorkerPort":         registerCppWorkerPort,
+		"nodeLabels":            a.config.NodeLabels,
+		"maxConcurrentRequests": a.config.MaxConcurrentRequests,
 	}
 
 	data, err := json.Marshal(reqBody)

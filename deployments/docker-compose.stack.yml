@@ -1,0 +1,303 @@
+# =============================================================================
+# OllamaLegion — единый docker-compose для всех сценариев запуска
+# =============================================================================
+#
+# ОДИН ФАЙЛ, ТРИ СЦЕНАРИЯ (через профили). В deployments/ исторически лежало
+# 19 compose-файлов, где один и тот же сервис описывался по-разному, а часть
+# переменных не читалась кодом вовсе (см. «ИМЕНА ПЕРЕМЕННЫХ» ниже). Здесь один
+# источник правды; старые файлы оставлены, но новым стекам нужен этот.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# СЦЕНАРИЙ 1. Всё на одной машине: cppworker + agent + balancer + webui
+# ─────────────────────────────────────────────────────────────────────────────
+#   cd deployments
+#   cp .env.bundled-with-agent.example .env.bundled-with-agent   # первый раз
+#   # в deployments/.env задать CPPWORKER_API_TOKEN (единый токен стека)
+#   docker compose -f docker-compose.stack.yml --profile full up -d
+#
+#   Клиенты (OpenWebUI/Cline) → http://<хост>:18080
+#   WebUI оператора           → http://<хост>:18083
+#   Admin API                 → http://<хост>:18081
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# СЦЕНАРИЙ 2. Только бэкенд: cppworker + agent (балансер уже есть на другой машине)
+# ─────────────────────────────────────────────────────────────────────────────
+#   В .env.bundled-with-agent задать ДВЕ вещи:
+#     BALANCER_URL=http://<хост-балансера>:18081   # ADMIN API, НЕ 18080
+#     BACKEND_HOST=<адрес этой машины, видимый С балансера>
+#   docker compose -f docker-compose.stack.yml --profile worker up -d
+#
+#   Agent зарегистрирует cppworker в удалённом балансере и будет слать метрики.
+#   Балансер начнёт проксировать инференс на BACKEND_HOST:18092 — этот порт
+#   обязан быть доступен с машины балансера (в сценарии 1 он нужен только
+#   внутри сети, здесь — наружу).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# СЦЕНАРИЙ 3. Только управление: balancer + webui (бэкенды подключатся сами)
+# ─────────────────────────────────────────────────────────────────────────────
+#   docker compose -f docker-compose.stack.yml --profile balancer up -d
+#
+#   Бэкенды (cppworker+agent на других машинах) регистрируются сами, если у них
+#   задан BALANCER_URL=http://<этот-хост>:18081. Пока их нет,
+#   GET /api/v1/backends вернёт пустой список.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# ⚠ ИМЕНА ПЕРЕМЕННЫХ: что читает код (проверено по исходникам)
+# ═════════════════════════════════════════════════════════════════════════════
+# В проекте встречались имена, которые КОД НЕ ЧИТАЕТ: переменная выглядит
+# заданной, но не влияет ни на что. Правильные имена:
+#
+#   agent (cmd/agent/main.go):
+#     ✅ BACKEND_TYPE            ❌ AGENT_BACKEND_TYPE   (иначе бэкенд = Ollama!)
+#     ✅ CPPWORKER_URL           ❌ AGENT_CPPWORKER_URL
+#     ✅ NODE_LABELS             ❌ AGENT_NODE_LABELS
+#     ✅ GPU_MODE                ❌ AGENT_MODE
+#     ✅ COLLECT_INTERVAL        ❌ AGENT_COLLECT_INTERVAL
+#     ✅ HEARTBEAT_INTERVAL      ❌ AGENT_HEARTBEAT_INTERVAL
+#     ✅ AGENT_CPPWORKER_HOST / AGENT_CPPWORKER_PORT (эти читаются)
+#     ✅ BALANCER_URL / BALANCER_TOKEN / AGENT_ID / AGENT_PORT /
+#        AGENT_PUBLIC_HOST / AGENT_MAX_MODELS / AGENT_MAX_CONCURRENT_REQUESTS /
+#        AGENT_WEIGHT / NVML_ENABLED
+#     ❌ AGENT_BACKEND_ID / AGENT_REGISTER_GPU_MODE — не читаются вовсе
+#
+#   cppworker (cmd/cppworker, internal/cppbackend):
+#     ✅ CPPWORKER_* , API_TOKEN, CPPWORKER_BALANCER_URL,
+#        CPPWORKER_BALANCER_TOKEN, CPPWORKER_ADVERTISE_HOST
+#     ❌ CPPWORKER_ADVERTISED_PORT — не читается; порт, по которому балансер
+#        доедет до бэкенда, задаётся через AGENT_CPPWORKER_PORT
+#
+#   balancer:
+#     ✅ LB_* (см. .env.bundled-with-agent.example), CPPWORKER_API_TOKEN,
+#        CPPWORKER_URL
+#     ❌ BALANCER_PORT / BALANCER_API_PORT — порты берутся из
+#        config/config.json (loadBalancer.port/.apiPort) или флагами
+#        -port/-api-port, а не из окружения
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠ ПОРЯДОК ПЕРЕМЕННЫХ: `environment:` ПЕРЕОПРЕДЕЛЯЕТ `env_file`
+# ─────────────────────────────────────────────────────────────────────────────
+# Compose сначала подставляет env_file, затем НАКЛАДЫВАЕТ environment. Поэтому
+# строка вида `- LB_FOO=${LB_FOO:-}` в environment ЗАТИРАЕТ значение из
+# .env.bundled-with-agent пустой строкой: интерполяция `${...}` читает только
+# deployments/.env, где таких переменных нет. Правило: переключатель задаётся
+# ЛИБО в .env.bundled-with-agent (и не упоминается в environment), ЛИБО в
+# environment с дефолтом из .env. Ниже переключатели намеренно не дублируются.
+# =============================================================================
+
+name: ollama-legion-stack
+
+services:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # balancer — точка входа для клиентов (OpenAI + Ollama API) и admin API
+  # Профили: balancer | full
+  # ═══════════════════════════════════════════════════════════════════════════
+  loadbalancer:
+    image: ollama-legion/balancer:${BALANCER_TAG:-r83-submodule-v22}
+    container_name: ol-stack-balancer
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${LB_PORT:-18080}:18080"        # клиентский API (OpenWebUI, Cline)
+      - "${LB_ADMIN_PORT:-18081}:18081"  # admin API (регистрация, метрики, WebUI)
+    environment:
+      - GIN_MODE=release
+      - LOG_LEVEL=${LB_LOG_LEVEL:-info}
+      - LB_CONFIG_PATH=/app/config/config.json
+      # ЕДИНЫЙ токен стека. Обязан совпадать с:
+      #   cppworker -> CPPWORKER_API_TOKEN / API_TOKEN
+      #   agent     -> BALANCER_TOKEN
+      #   webui     -> API_TOKEN
+      - LB_API_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
+      - LB_NCTX_RELOAD_ENABLED=${LB_NCTX_RELOAD_ENABLED:-true}
+      - LB_NCTX_RELOAD_MAX_N_CTX=${LB_NCTX_RELOAD_MAX_N_CTX:-131072}
+      - LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=${LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR:-0.95}
+      - LB_NCTX_RELOAD_TIMEOUT_SEC=${LB_NCTX_RELOAD_TIMEOUT_SEC:-300}
+      - LB_NCTX_PREFLIGHT_ENABLED=${LB_NCTX_PREFLIGHT_ENABLED:-true}
+      - LB_NCTX_PREFLIGHT_ASYNC_RELOAD=${LB_NCTX_PREFLIGHT_ASYNC_RELOAD:-true}
+      - LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC=${LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC:-30}
+      - LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=${LB_NCTX_PREFLIGHT_MAX_WAIT_SEC:-1800}
+      - LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER=${LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER:-3}
+      - LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC=${LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC:-300}
+      # Сколько ждать авто-загрузку модели, прежде чем отдать 503 «попробуйте
+      # позже». Для 27B на A10/3070 загрузка 3–8 минут, поэтому дефолт 900 с
+      # (в коде дефолт 180 с — его мало). 0 = не ждать вовсе.
+      - LB_AUTO_LOAD_WAIT_SEC=${LB_AUTO_LOAD_WAIT_SEC:-900}
+      # Переключатели поведения (LB_OPENAI_AUTO_STREAM, LB_AUTO_LOAD_ASYNC,
+      # LB_AUTO_CONTINUE_*, LB_GPU_HEADROOM_PERCENT) НЕ дублируются здесь —
+      # они задаются в .env.bundled-with-agent (см. шапку про порядок).
+    env_file:
+      - .env.bundled-with-agent
+    volumes:
+      - ../config:/app/config:ro
+      - balancer_data:/app/data
+    networks: [ol-net]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:18081/api/v1/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    profiles: ["balancer", "full"]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # webui — дашборд оператора (мониторинг, загрузка моделей, настройки)
+  # Профили: balancer | full
+  # ═══════════════════════════════════════════════════════════════════════════
+  webui:
+    image: ollama-legion/webui:${WEBUI_TAG:-r83-submodule-v22}
+    container_name: ol-stack-webui
+    restart: unless-stopped
+    depends_on:
+      loadbalancer:
+        condition: service_healthy
+    ports:
+      - "${WEBUI_PORT:-18083}:80"
+    environment:
+      - API_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
+      - LB_API_URL=http://loadbalancer:18081
+      - LOG_LEVEL=${WEBUI_LOG_LEVEL:-info}
+    networks: [ol-net]
+    profiles: ["balancer", "full"]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # cppworker-gpu — инференс llama.cpp на GPU
+  # Профили: worker | full
+  # ═══════════════════════════════════════════════════════════════════════════
+  cppworker-gpu:
+    image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-r83-submodule-v22}
+    container_name: ol-stack-cppworker-gpu
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - CPPWORKER_HOST=0.0.0.0
+      - CPPWORKER_PORT=18092
+      - CPPWORKER_MODELS_DIR=/app/models
+      # Регистрацию бэкенда делает ТОЛЬКО agent. Если включить и Go-side
+      # регистрацию, в балансере появится ДВА бэкенда на один endpoint.
+      - CPPWORKER_REGISTER_DISABLE=true
+      - API_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
+      - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
+      # Балансер нужен cppworker для pull-based sync профилей моделей.
+      # В сценарии 2 сюда попадает удалённый адрес из BALANCER_URL.
+      - CPPWORKER_BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      - CPPWORKER_BALANCER_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
+
+      # ─── Модель и память ─────────────────────────────────────────────────
+      - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-32768}
+      - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
+      # Сколько слоёв на GPU: 20 для 8 GB (RTX 3070) + 27B Q4; 99 для 24 GB.
+      - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:-20}
+      - CPPWORKER_FLASH_ATTN_TYPE=${CPPWORKER_FLASH_ATTN_TYPE:--1}
+      - CPPWORKER_N_THREADS=${CPPWORKER_N_THREADS:-0}
+      - CPPWORKER_NUMA=${CPPWORKER_NUMA:-false}
+      - CPPWORKER_USE_MMAP=${CPPWORKER_USE_MMAP:-true}
+      - CPPWORKER_AUTO_OFFLOAD=${CPPWORKER_AUTO_OFFLOAD:-true}
+      - CPPWORKER_AUTO_TUNE_NCTX=${CPPWORKER_AUTO_TUNE_NCTX:-true}
+      - CPPWORKER_RAM_FALLBACK_N_CTX=${CPPWORKER_RAM_FALLBACK_N_CTX:-true}
+      - CPPWORKER_RAM_FALLBACK_GPU_LAYERS=${CPPWORKER_RAM_FALLBACK_GPU_LAYERS:--2}
+      - CPPWORKER_RAM_FALLBACK_MAX_N_CTX=${CPPWORKER_RAM_FALLBACK_MAX_N_CTX:-128000}
+      - CPPWORKER_DEFAULT_ENABLE_REASONING=${CPPWORKER_DEFAULT_ENABLE_REASONING:-false}
+      - CPPWORKER_ENABLE_REASONING=${CPPWORKER_ENABLE_REASONING:-false}
+      - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ${MODELS_DIR:-../models}:/app/models
+      - cppworker_cache:/app/.cache
+    ports:
+      # Порт инференса. Наружу обязателен в сценарии 2 (балансер на другой
+      # машине); в сценарии 1 достаточно внутри сети, но проброс не мешает.
+      - "${CPPWORKER_PORT_HOST:-18092}:18092"
+    networks: [ol-net]
+    healthcheck:
+      test: ["CMD", "/app/cppworker", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    profiles: ["worker", "full"]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # agent — регистрация бэкенда в балансере + метрики GPU/RAM/CPU
+  # Профили: worker | full
+  # ═══════════════════════════════════════════════════════════════════════════
+  agent:
+    image: ollama-legion/agent:${AGENT_TAG:-r83-submodule-v22}
+    container_name: ol-stack-agent
+    restart: unless-stopped
+    runtime: nvidia
+    depends_on:
+      cppworker-gpu:
+        condition: service_healthy
+    environment:
+      - AGENT_ID=${AGENT_ID:-cppworker-gpu-bundled-agent}
+      - AGENT_PORT=18032
+
+      # ─── Подключение к балансеру: ADMIN API, порт 18081 ──────────────────
+      # Сценарий 1: имя сервиса внутри этой сети (значение по умолчанию).
+      # Сценарий 2: задать BALANCER_URL в .env.bundled-with-agent —
+      #             http://<хост-балансера>:18081
+      - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      - BALANCER_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
+
+      # ─── Как agent ходит в cppworker (внутри сети) ───────────────────────
+      # Ранее здесь стояло AGENT_CPPWORKER_URL — код это имя НЕ читает,
+      # поэтому agent не знал адрес cppworker.
+      - CPPWORKER_URL=http://cppworker-gpu:18092
+
+      # Тип бэкенда ОБЯЗАТЕЛЕН: без него бэкенд регистрируется как Ollama
+      # (ранее стояло AGENT_BACKEND_TYPE — не читается кодом).
+      - BACKEND_TYPE=llama_cpp
+
+      # Что agent отдаёт балансеру как адрес бэкенда. В сценарии 1 — имя
+      # сервиса; в сценарии 2 — BACKEND_HOST (адрес машины, видимый с
+      # балансера). Порт должен совпадать с CPPWORKER_PORT контейнера.
+      - AGENT_CPPWORKER_HOST=${BACKEND_HOST:-cppworker-gpu}
+      - AGENT_CPPWORKER_PORT=${CPPWORKER_PORT:-18092}
+      - AGENT_PUBLIC_HOST=${AGENT_PUBLIC_HOST:-cppworker-gpu-agent}
+      - AGENT_PUBLIC_PORT=18032
+      - NODE_LABELS=${NODE_LABELS:-gpu,llamacpp}
+
+      # ─── Вместимость: сколько параллельных запросов примет бэкенд ────────
+      # Значение ДОЛЖНО совпадать с реальным n_parallel воркера:
+      #   CPPWORKER_PARALLEL=1 (по умолчанию) → AGENT_MAX_CONCURRENT_REQUESTS=1
+      #   n_parallel=2 (или CPPWORKER_ENABLE_BATCHED_PARALLEL=true + parallel=2)
+      #                                        → поставьте 2
+      # Почему не больше: cppworker с n_parallel=1 обслуживает ОДИН запрос за
+      # раз. Завышенное значение даёт ложные «свободные слоты»: балансер
+      # начинает слать параллельные запросы и клиент получает отказы/зависания.
+      # Значение <= 0 означает «не задано» — балансер применит дефолт по типу
+      # бэкенда (llama_cpp → 1).
+      - AGENT_MAX_CONCURRENT_REQUESTS=${AGENT_MAX_CONCURRENT_REQUESTS:-1}
+      - AGENT_MAX_MODELS=${AGENT_MAX_MODELS:-4}
+      - AGENT_WEIGHT=${AGENT_WEIGHT:-1}
+
+      # Ранее стояло AGENT_MODE — код читает GPU_MODE.
+      - GPU_MODE=gpu
+      - NVML_ENABLED=true
+      # Ранее стояли AGENT_COLLECT_INTERVAL / AGENT_HEARTBEAT_INTERVAL.
+      - COLLECT_INTERVAL=${COLLECT_INTERVAL:-15}
+      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-30}
+      - LOG_LEVEL=${AGENT_LOG_LEVEL:-info}
+      - LOG_FORMAT=text
+    ports:
+      - "${AGENT_PORT_HOST:-18032}:18032"
+    networks: [ol-net]
+    healthcheck:
+      test: ["CMD", "/app/agent", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    profiles: ["worker", "full"]
+
+networks:
+  ol-net:
+    name: ol-net
+
+volumes:
+  balancer_data:
+    name: ol-balancer-data
+  cppworker_cache:
+    name: ol-cppworker-cache

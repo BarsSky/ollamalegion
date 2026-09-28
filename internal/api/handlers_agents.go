@@ -37,6 +37,11 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		Labels        []string `json:"labels"`
 		Weight        int      `json:"weight"`
 		BackendType   string   `json:"backendType"`
+		// R83 (2026-09-28): реальная вместимость воркера (n_parallel).
+		// <= 0 = «не задано явно» → AddBackend применит дефолт по типу
+		// (llama_cpp = 1). Раньше поле не принималось, а MaxConcurrentReqs
+		// задавался константой 10 — см. комментарий у создания бэкенда ниже.
+		MaxConcurrentRequests int `json:"maxConcurrentRequests"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -120,6 +125,18 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 				"existingBackendId", existingID,
 				"host", host,
 				"cppWorkerPort", req.CppWorkerPort)
+			// R83 (2026-09-28): до attach принимаем вместимость узла.
+			//
+			// Дефект на живой стойке (A10): агент пересоздан с
+			// AGENT_MAX_CONCURRENT_REQUESTS=1, а балансер в трёх запусках
+			// подряд отдавал maxConcurrentRequests=10. Значение пришло из
+			// state.json, записанного старой сборкой (создание бэкенда тогда
+			// ставило константу 10), и дальше поддерживалось петлёй
+			// heartbeat → агент → регистрация. Ветка dedup меняла только
+			// HasAgent/AgentPort, поэтому починка создания бэкенда на
+			// существующих стендах не срабатывала вовсе.
+			s.proxy.AdoptCapacityFromNode(existingID, req.MaxConcurrentRequests)
+
 			s.proxy.AttachAgentToBackend(existingID, req.AgentID, agentPort)
 
 			// Удаляем stale standalone бэкенд с тем же agentId (если есть).
@@ -162,6 +179,27 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		// «вместимость от ноды» — после чего heartbeat-«эхо» агента снова
 		// перекрывало реальный n_parallel (наблюдалось на живой стойке:
 		// runtime 1 → 0 при рестарте агента).
+		// R83 (2026-09-28): повторная регистрация ОБЯЗАНА обновлять
+		// вместимость, иначе исправление создания теряется на живом стенде.
+		//
+		// Наблюдение на реальной стойке: агент пересоздан с
+		// AGENT_MAX_CONCURRENT_REQUESTS=1, балансер по-прежнему отдавал
+		// maxConcurrentRequests=10. Причина — здесь: значение бралось ИЗ
+		// existing и payload регистрации игнорировался. Дополнительно
+		// завышенное 10 успевало осесть в state.json и восстанавливалось при
+		// рестарте балансера, так что «починить и перезапустить» не помогало.
+		//
+		// Правило: агент — источник истины о своём n_parallel, но только когда
+		// он его реально сообщил (>0). <=0 означает «не задано» → сохраняем
+		// прежнее значение и не ломаем существующие стенды.
+		//
+		// Операторский лимит (PUT /limits → RuntimeMaxConcurrentRequests)
+		// по-прежнему переносится из existing ниже.
+		maxReqs := existing.MaxConcurrentReqs
+		if req.MaxConcurrentRequests > 0 {
+			maxReqs = req.MaxConcurrentRequests
+		}
+
 		updated := types.Backend{
 			ID:                           req.AgentID,
 			Name:                         req.Name,
@@ -170,7 +208,7 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			AgentPort:                    agentPort,
 			CppWorkerPort:                req.CppWorkerPort,
 			Weight:                       weight,
-			MaxConcurrentReqs:            existing.MaxConcurrentReqs,
+			MaxConcurrentReqs:            maxReqs,
 			Labels:                       req.Labels,
 			Status:                       types.StatusHealthy,
 			Type:                         backendType,
@@ -199,6 +237,24 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Создание нового бэкенда
+	//
+	// R83 (2026-09-28): MaxConcurrentReqs НЕ задаём здесь константой.
+	//
+	// Было `MaxConcurrentReqs: 10` — жёстко, для ЛЮБОГО типа бэкенда. Это
+	// обходило типо-зависимый дефолт в AddBackend (для llama_cpp он равен 1,
+	// потому что n_parallel=1 в C-bridge) и давало cppworker'у 10 «свободных
+	// слотов». Следствие на живом стенде: balance показывал
+	// maxConcurrentRequests=10, admission-очередь считала, что можно слать
+	// десять запросов параллельно, и клиент (Cline) получал отказы/зависания
+	// там, где cppworker физически обслуживает один запрос за раз.
+	//
+	// Теперь: 0 = «не задано явно» → AddBackend подставит дефолт по типу.
+	// Явное значение оператора (агент прислал maxConcurrentRequests > 0)
+	// уважается: оно означает реальный n_parallel воркера.
+	maxReqs := 0
+	if req.MaxConcurrentRequests > 0 {
+		maxReqs = req.MaxConcurrentRequests
+	}
 	backend := types.Backend{
 		ID:                req.AgentID,
 		Name:              req.Name,
@@ -207,7 +263,7 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		AgentPort:         agentPort,
 		CppWorkerPort:     req.CppWorkerPort,
 		Weight:            weight,
-		MaxConcurrentReqs: 10,
+		MaxConcurrentReqs: maxReqs,
 		Labels:            req.Labels,
 		Status:            types.StatusStarting,
 		Type:              backendType,

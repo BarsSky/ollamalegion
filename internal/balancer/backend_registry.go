@@ -625,6 +625,65 @@ func (p *Proxy) FindBackendByHostPortExcluding(host string, cppWorkerPort int, e
 //	Previous read at cluster_state.go:49 (*state.Backend, под state.mu)
 //
 // Порядок захвата всегда p.mu → state.mu.
+// AdoptCapacityFromNode — R83 (2026-09-28): агент сообщил реальный n_parallel
+// воркера, и балансер ОБЯЗАН его принять, а не воспроизводить собственное
+// унаследованное значение.
+//
+// Зачем отдельный метод. Путь «агент прикрепился к уже зарегистрированному
+// cppworker» (AttachAgentToBackend) исторически менял только HasAgent/AgentPort
+// и не трогал вместимость. Из-за этого завышенное значение, однажды записанное в
+// state.json старой сборкой (там создание бэкенда ставило константу 10),
+// переживало и обновление образа, и рестарт: балансер загружал 10 из state.json,
+// heartbeat отдавал 10 агенту, агент «применял» его и возвращал в следующей
+// регистрации — самоподдерживающаяся петля.
+//
+// Ровно это наблюдалось на живой стойке (A10, 2026-09-28): в контейнере агента
+// AGENT_MAX_CONCURRENT_REQUESTS=1, а /api/v1/backends отдавал 10 в трёх
+// независимых запусках образа.
+//
+// Правило: узел — источник истины о своём n_parallel. Операторский троттлинг
+// живёт отдельно (RuntimeMaxConcurrentRequests) и НЕ затирается: если он задан,
+// метод только выравнивает runtime-значение, не меняя его смысла.
+//
+// reported <= 0 означает «агент не сообщил» → no-op.
+func (p *Proxy) AdoptCapacityFromNode(backendID string, reported int) {
+	if reported <= 0 {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	state, ok := p.backends[backendID]
+	if !ok {
+		return
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	// Операторский лимит — граница, которую узел не имеет права поднять.
+	if state.Backend.RuntimeMaxConcurrentRequests > 0 {
+		return
+	}
+	if state.Backend.MaxConcurrentReqs == reported {
+		return
+	}
+
+	old := state.Backend.MaxConcurrentReqs
+	state.Backend.MaxConcurrentReqs = reported
+	state.Backend.RuntimeCapacityFromNode = true
+	state.Backend.RuntimeMaxConcurrentRequests = reported
+
+	logger.Get().Infow("AdoptCapacityFromNode: вместимость бэкенда приведена к n_parallel узла",
+		"backendId", backendID,
+		"oldMaxConcurrentReqs", old,
+		"newMaxConcurrentReqs", reported)
+
+	p.scheduleSave()
+}
+
+// AttachAgentToBackend — привязка агента к уже существующему бэкенду.
 func (p *Proxy) AttachAgentToBackend(backendID, agentID string, agentPort int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

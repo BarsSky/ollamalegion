@@ -47,14 +47,19 @@ Set-Location $repoRoot
 
 $imageName = "ollama-legion/cppworker"
 $imageTag = "gpu-$Tag"
+# R83 (2026-09-28): локальный репозиторий образов — та же переменная, что читает
+# compose (deployments/.env → IMAGE_REGISTRY). Пусто = стандартный путь.
+. (Join-Path $PSScriptRoot 'lib-image-registry.ps1')
+$registryPrefix = Get-ImageRegistryPrefix -EnvDir (Join-Path $repoRoot 'deployments')
+$imageRef = Resolve-ImageRef -Prefix $registryPrefix -Name $imageName -Tag $imageTag
 $composeFile = "docker-compose.cppworker-bundled-with-agent.yml"
 $envDir = Join-Path $repoRoot "deployments"
 
 if (-not $SkipBuild) {
-    Write-Host "[cppworker] Building ${imageName}:${imageTag} (CUDA_ARCH=86, RTX 3070/sm_86) ..." -ForegroundColor Cyan
+    Write-Host "[cppworker] Building ${imageRef} (CUDA_ARCH=86, RTX 3070/sm_86) ..." -ForegroundColor Cyan
     # CUDA_ARCH=86 — только sm_86. Default в Dockerfile.gpu = "all" (sm_50..sm_90,
     # 9 архитектур) — это ~9x дольше и нужно только для multi-arch образов.
-    docker build --build-arg CUDA_ARCH=86 -t "${imageName}:${imageTag}" -f docker/cppworker/Dockerfile.gpu .
+    docker build --build-arg CUDA_ARCH=86 -t $imageRef -f docker/cppworker/Dockerfile.gpu .
     if ($LASTEXITCODE -ne 0) { throw "docker build failed (exit $LASTEXITCODE)" }
 }
 
@@ -70,7 +75,7 @@ if (-not $NoAlias) {
     # (cpu / stub / gpu-86 / gpu-arch_all / gpu-llamacpp), а `latest` — один тег на
     # репозиторий: его перезапишет последняя сборка, и `latest` может начать
     # указывать на CPU- или arch_all-сборку. Этот скрипт собирает CUDA_ARCH=86.
-    Add-ImageAlias -ImageRef "${imageName}:${imageTag}" -AliasRef "${imageName}:latest-gpu-86"
+    Add-ImageAlias -ImageRef $imageRef -AliasRef (Resolve-ImageRef -Prefix $registryPrefix -Name $imageName -Tag 'latest-gpu-86')
 }
 
 Push-Location $envDir

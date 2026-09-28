@@ -10,16 +10,53 @@
 #   .\scripts\build-containers.ps1 -CppWorker          # только cppworker
 #   .\scripts\build-containers.ps1 -CppWorker -CudaArch "86"   # только cppworker:gpu с тегом :gpu-86
 #   .\scripts\build-containers.ps1 -CudaArch "all"    # все поддерживаемые архитектуры (тэг :gpu-arch_all)
+#   .\scripts\build-containers.ps1 -Tag r83-submodule-v23      # собрать с РЕЛИЗНЫМ тегом (не latest)
+#
+# R83 (2026-09-28): ЛОКАЛЬНЫЙ РЕПОЗИТОРИЙ.
+# Префикс берётся из `IMAGE_REGISTRY` в deployments/.env (или из окружения):
+#   IMAGE_REGISTRY=                      → ollama-legion/balancer:latest
+#   IMAGE_REGISTRY=local-docker-hub:5000/ → local-docker-hub:5000/ollama-legion/balancer:latest
+# Скрипт добавляет слэш сам и превращает заглушки (local/docker.io) в пустой
+# префикс, поэтому значение можно писать «как принято в вашем registry».
+# Собранный образ получает ТО ЖЕ имя, которое ищет compose, — иначе `up -d`
+# пошёл бы в registry за образом, только что собранным локально под другим именем.
 # =============================================================================
 param(
     [switch]$Balancer,
     [switch]$WebUI,
     [switch]$Agent,
     [switch]$CppWorker,
-    [string]$CudaArch = $env:CUDA_ARCH
+    [string]$CudaArch = $env:CUDA_ARCH,
+    # Релизный тег. Пусто = `latest` (поведение по умолчанию).
+    [string]$Tag = "",
+    # Не добавлять префикс IMAGE_REGISTRY (нужно, если образы должны остаться
+    # строго локальными даже при заданном registry).
+    [switch]$NoRegistryPrefix
 )
 
 $ErrorActionPreference = "Stop"
+
+# R83: префикс локального репозитория образов — та же переменная, что читает compose.
+. (Join-Path $PSScriptRoot 'lib-image-registry.ps1')
+$registryPrefix = ''
+if (-not $NoRegistryPrefix) {
+    $registryPrefix = Get-ImageRegistryPrefix -EnvDir (Join-Path $PSScriptRoot '..\deployments')
+}
+
+$imageTag = if ([string]::IsNullOrWhiteSpace($Tag)) { 'latest' } else { $Tag.Trim() }
+
+# R83: версия/коммит/дата вшиваются в бинарники (pkg/version) — их печатает
+# стартовая шапка логов. Значения те же, что в Dockerfile'ах по умолчанию.
+$gitCommit = 'unknown'
+$gitDescribe = 'unknown'
+try {
+    $sha = & git rev-parse --short HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $sha) { $gitCommit = $sha.Trim() }
+    $desc = & git describe --tags --always 2>$null
+    if ($LASTEXITCODE -eq 0 -and $desc) { $gitDescribe = $desc.Trim() }
+} catch { }
+$buildDate = (Get-Date -Format 'yyyy-MM-dd')
+$versionArgs = @('--build-arg', "GIT_COMMIT=$gitCommit", '--build-arg', "BUILD_DATE=$buildDate")
 
 # Round 23 (2026-08-04): ВКЛЮЧАЕМ BuildKit глобально.
 # Без этого:
@@ -35,6 +72,13 @@ $env:DOCKER_BUILDKIT = "1"
 
 Push-Location $PSScriptRoot\..
 try {
+    $registryLabel = 'локальный (без префикса)'
+    if ($registryPrefix) {
+        $registryLabel = $registryPrefix.TrimEnd('/')
+    }
+    Write-Host "=== Репозиторий образов: $registryLabel | тег: $imageTag ===" -ForegroundColor Gray
+    Write-Host "=== Версия сборки: commit=$gitCommit buildDate=$buildDate ===" -ForegroundColor Gray
+
     if (-not $Balancer -and -not $WebUI -and -not $Agent -and -not $CppWorker) {
         $Balancer = $true
         $WebUI = $true
@@ -43,37 +87,36 @@ try {
     }
 
     if ($Balancer) {
-        Write-Host "=== Building ollama-legion/balancer ===" -ForegroundColor Cyan
-        docker build -t ollama-legion/balancer:latest -f docker/balancer/Dockerfile .
+        $balancerImage = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/balancer' -Tag $imageTag
+        Write-Host "=== Building $balancerImage ===" -ForegroundColor Cyan
+        docker build @versionArgs -t $balancerImage -f docker/balancer/Dockerfile .
         if ($LASTEXITCODE -ne 0) { throw "Balancer build failed" }
     }
 
     if ($WebUI) {
-        Write-Host "=== Building ollama-legion/webui ===" -ForegroundColor Cyan
+        Write-Host "=== Building webui ===" -ForegroundColor Cyan
         # Sprint 30 (2026-07-30): пробрасываем VERSION / GIT_COMMIT / BUILD_DATE
         # в WebUI build как --build-arg. entrypoint.sh инжектит их в config.js,
         # JS в index.html показывает версию в sidebar footer (id=appVersion).
-        $webuiVersion = 'dev'
-        $webuiCommit = 'unknown'
-        $webuiBuildDate = 'unknown'
-        try {
-            $gitTag = & git describe --tags --always 2>$null
-            if ($LASTEXITCODE -eq 0 -and $gitTag) { $webuiVersion = $gitTag.Trim() }
-            $gitSha = & git rev-parse --short HEAD 2>$null
-            if ($LASTEXITCODE -eq 0 -and $gitSha) { $webuiCommit = $gitSha.Trim() }
-            $webuiBuildDate = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-        } catch { }
-        Write-Host "  version=$webuiVersion commit=$webuiCommit" -ForegroundColor Gray
-        docker compose -f deployments/docker-compose.yml build webui `
+        $webuiVersion = $gitDescribe
+        $webuiBuildDate = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+        Write-Host "  version=$webuiVersion commit=$gitCommit" -ForegroundColor Gray
+        # R83: имя образа при сборке через compose задаётся в самом compose, поэтому
+        # здесь передаём его явно — иначе при заданном IMAGE_REGISTRY тег внутри
+        # compose и фактически собранный разойдутся.
+        $webuiImage = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/webui' -Tag $imageTag
+        docker build `
             --build-arg "VERSION=$webuiVersion" `
-            --build-arg "GIT_COMMIT=$webuiCommit" `
-            --build-arg "BUILD_DATE=$webuiBuildDate"
+            --build-arg "GIT_COMMIT=$gitCommit" `
+            --build-arg "BUILD_DATE=$webuiBuildDate" `
+            -t $webuiImage -f docker/webui/Dockerfile .
         if ($LASTEXITCODE -ne 0) { throw "WebUI build failed" }
     }
 
     if ($Agent) {
-        Write-Host "=== Building ollama-legion/agent ===" -ForegroundColor Cyan
-        docker build -t ollama-legion/agent:latest -f docker/agent/Dockerfile .
+        $agentImage = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/agent' -Tag $imageTag
+        Write-Host "=== Building $agentImage ===" -ForegroundColor Cyan
+        docker build @versionArgs --build-arg ENABLE_NVML=true -t $agentImage -f docker/agent/Dockerfile .
         if ($LASTEXITCODE -ne 0) { throw "Agent build failed" }
     }
 
@@ -102,8 +145,11 @@ try {
             }
         }
 
-        $gpuImage = "ollama-legion/cppworker:gpu-$tagArchSegment"
-        $cpuImage = "ollama-legion/cppworker:cpu"
+        # Тег cppworker: релизный, если задан -Tag, иначе архитектурный (как раньше).
+        $gpuTag = if ($imageTag -ne 'latest') { "gpu-$imageTag" } else { "gpu-$tagArchSegment" }
+        $cpuTag = if ($imageTag -ne 'latest') { $imageTag } else { 'cpu' }
+        $gpuImage = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/cppworker' -Tag $gpuTag
+        $cpuImage = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/cppworker' -Tag $cpuTag
 
         Write-Host "=== Building $gpuImage (CUDA_ARCH=$CudaArch) ===" -ForegroundColor Cyan
         $gpuBuildArgs = @()
@@ -124,11 +170,11 @@ try {
                 Write-Host "Using arch-specific Dockerfile: $dockerfile" -ForegroundColor Yellow
             }
         }
-        & docker build @gpuBuildArgs -t $gpuImage -f $dockerfile --target runtime .
+        & docker build @gpuBuildArgs @versionArgs -t $gpuImage -f $dockerfile --target runtime .
         if ($LASTEXITCODE -ne 0) { throw "CppWorker GPU build failed" }
 
         Write-Host "=== Building $cpuImage ===" -ForegroundColor Cyan
-        docker build -t $cpuImage -f docker/cppworker/Dockerfile.cpu --target runtime .
+        docker build @versionArgs -t $cpuImage -f docker/cppworker/Dockerfile.cpu --target runtime .
         if ($LASTEXITCODE -ne 0) { throw "CppWorker CPU build failed" }
     }
 

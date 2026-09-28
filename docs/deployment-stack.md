@@ -283,6 +283,63 @@ docker logs ol-stack-cppworker-gpu 2>&1 | grep -m1 'Worker starting'
 
 ---
 
+## 5.3 Свой репозиторий образов: одна переменная `IMAGE_REGISTRY`
+
+По умолчанию образы берутся по стандартному пути (`ollama-legion/balancer:<тег>`,
+локально собранные). Если у вас свой registry, его адрес задаётся **одной**
+переменной в `deployments/.env`:
+
+```bash
+# deployments/.env
+IMAGE_REGISTRY=                       # стандартный путь (по умолчанию)
+IMAGE_REGISTRY=local-docker-hub:5000/ # свой registry — СЛЭШ НА КОНЦЕ
+```
+
+Тогда compose подставит префикс во все четыре образа:
+
+```
+local-docker-hub:5000/ollama-legion/balancer:r83-submodule-v23
+local-docker-hub:5000/ollama-legion/cppworker:gpu-r83-submodule-v23
+local-docker-hub:5000/ollama-legion/agent:r83-submodule-v23
+local-docker-hub:5000/ollama-legion/webui:r83-submodule-v23
+```
+
+Проверить, что получится, **не запуская** ничего:
+
+```bash
+cd deployments
+docker compose -f docker-compose.stack.yml --profile full config | grep 'image:'
+```
+
+> ⚠️ **Слэш на конце обязателен.** Compose не нормализует пути: он склеивает
+> строки буквально, и без слэша получится
+> `local-docker-hub:5000ollama-legion/balancer` — невалидная ссылка.
+
+**Сборка читает ту же переменную.** Скрипты добавляют слэш сами и превращают
+заглушки (`local`, `docker.io`, `index.docker.io`) в пустой префикс, поэтому
+собранный образ получает ровно то имя, которое ищет compose:
+
+```powershell
+# все образы с релизным тегом, в ваш registry (адрес — из deployments/.env)
+powershell -File scripts/build-containers.ps1 -Tag r83-submodule-v23
+
+# разовая сборка в другой registry без правки .env
+$env:IMAGE_REGISTRY='other-reg:5000'; powershell -File scripts/build-containers.ps1 -Balancer -Tag test
+```
+
+Полный выпуск (`scripts/release-all.ps1`) и точечные пересборки
+(`rebuild_balancer_r66a.ps1`, `rebuild_cppworker_r66a.ps1`, `rebuild_webui_r66d.ps1`)
+тоже учитывают префикс — иначе `up -d` пошёл бы в registry за образом, который
+только что собран локально под другим именем.
+
+Проверка нормализации префикса (без Docker):
+
+```powershell
+powershell -File scripts/lib-image-registry.tests.ps1
+```
+
+---
+
 ## 6. Ловушка с порядком переменных: `environment:` сильнее `env_file`
 
 Compose сначала подставляет `env_file`, а затем **накладывает** `environment`.

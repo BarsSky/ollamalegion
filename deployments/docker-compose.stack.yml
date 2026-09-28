@@ -82,6 +82,22 @@
 # deployments/.env, где таких переменных нет. Правило: переключатель задаётся
 # ЛИБО в .env.bundled-with-agent (и не упоминается в environment), ЛИБО в
 # environment с дефолтом из .env. Ниже переключатели намеренно не дублируются.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# 🐳 СВОЙ РЕПОЗИТОРИЙ ОБРАЗОВ: одна переменная IMAGE_REGISTRY
+# ─────────────────────────────────────────────────────────────────────────────
+# Все четыре образа берут префикс из `IMAGE_REGISTRY` (deployments/.env):
+#
+#   IMAGE_REGISTRY=                        → локальные образы (по умолчанию):
+#                                            ollama-legion/balancer:<тег>
+#   IMAGE_REGISTRY=local-docker-hub:5000/  → local-docker-hub:5000/ollama-legion/balancer:<тег>
+#
+# ⚠️ СЛЭШ НА КОНЦЕ ОБЯЗАТЕЛЕН. Compose — не язык с нормализацией путей: он
+# склеивает строки буквально, и без слэша получится
+# `local-docker-hub:5000ollama-legion/balancer` — невалидная ссылка. Скрипты
+# сборки (scripts/lib-image-registry.ps1 → Get-ImageRegistryPrefix) слэш
+# добавляют сами и значения-заглушки (`local`, `docker.io`, `index.docker.io`)
+# превращают в пустой префикс.
 # =============================================================================
 
 name: ollama-legion-stack
@@ -92,7 +108,7 @@ services:
   # Профили: balancer | full
   # ═══════════════════════════════════════════════════════════════════════════
   loadbalancer:
-    image: ollama-legion/balancer:${BALANCER_TAG:-r83-submodule-v22}
+    image: ${IMAGE_REGISTRY:-}ollama-legion/balancer:${BALANCER_TAG:-r83-submodule-v22}
     container_name: ol-stack-balancer
     restart: unless-stopped
     security_opt:
@@ -149,7 +165,7 @@ services:
   # Профили: balancer | full
   # ═══════════════════════════════════════════════════════════════════════════
   webui:
-    image: ollama-legion/webui:${WEBUI_TAG:-r83-submodule-v22}
+    image: ${IMAGE_REGISTRY:-}ollama-legion/webui:${WEBUI_TAG:-r83-submodule-v22}
     container_name: ol-stack-webui
     restart: unless-stopped
     depends_on:
@@ -169,7 +185,7 @@ services:
   # Профили: worker | full
   # ═══════════════════════════════════════════════════════════════════════════
   cppworker-gpu:
-    image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-r83-submodule-v22}
+    image: ${IMAGE_REGISTRY:-}ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-r83-submodule-v22}
     container_name: ol-stack-cppworker-gpu
     restart: unless-stopped
     runtime: nvidia
@@ -229,7 +245,7 @@ services:
   # Профили: worker | full
   # ═══════════════════════════════════════════════════════════════════════════
   agent:
-    image: ollama-legion/agent:${AGENT_TAG:-r83-submodule-v22}
+    image: ${IMAGE_REGISTRY:-}ollama-legion/agent:${AGENT_TAG:-r83-submodule-v22}
     container_name: ol-stack-agent
     restart: unless-stopped
     runtime: nvidia

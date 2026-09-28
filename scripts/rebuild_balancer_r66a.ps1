@@ -36,13 +36,20 @@ $ErrorActionPreference = "Continue"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
-$imageName = "ollama-legion/balancer"
+# R83 (2026-09-28): локальный репозиторий образов — та же переменная, которую
+# читает compose (deployments/.env → IMAGE_REGISTRY). Пусто = стандартный путь.
+. (Join-Path $PSScriptRoot 'lib-image-registry.ps1')
+$registryPrefix = Get-ImageRegistryPrefix -EnvDir (Join-Path $repoRoot 'deployments')
+
+# Полное имя образа (с префиксом репозитория, если он задан).
+$imageRef = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/balancer' -Tag $Tag
+$imageName = 'ollama-legion/balancer'
 $composeFile = "docker-compose.cppworker-bundled-with-agent.yml"
 $composePath = Join-Path $repoRoot "deployments\$composeFile"
 
 if (-not $SkipBuild) {
-    Write-Host "[balancer] Building ${imageName}:${Tag} ..." -ForegroundColor Cyan
-    docker build -t "${imageName}:${Tag}" -f docker/balancer/Dockerfile .
+    Write-Host "[balancer] Building ${imageRef} ..." -ForegroundColor Cyan
+    docker build -t $imageRef -f docker/balancer/Dockerfile .
     if ($LASTEXITCODE -ne 0) { throw "docker build failed (exit $LASTEXITCODE)" }
 }
 
@@ -58,7 +65,7 @@ Set-ImageTagVar -VariableName 'BALANCER_TAG' -Value $Tag -EnvDir (Join-Path $rep
 if (-not $NoAlias) {
     # У балансера нет взаимоисключающих вариантов, поэтому plain `latest` однозначен
     # и нужен dev-конфигам (docker-compose.yml, docker-compose.full.yml).
-    Add-ImageAlias -ImageRef "${imageName}:${Tag}" -AliasRef "${imageName}:latest"
+    Add-ImageAlias -ImageRef $imageRef -AliasRef (Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/balancer' -Tag 'latest')
 }
 
 Push-Location (Join-Path $repoRoot "deployments")

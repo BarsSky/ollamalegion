@@ -254,6 +254,21 @@ docker compose -f deployments/docker-compose.stack.yml --profile full up -d
 - CppWorker: http://localhost:18092 (llama.cpp inference)
 - WebUI: http://localhost:18083
 
+> 🐳 **Свой репозиторий образов — одна переменная `IMAGE_REGISTRY`** в
+> `deployments/.env` (пусто = стандартный путь). Значение — адрес registry
+> **со слэшем на конце**, иначе compose склеит строки буквально:
+> ```bash
+> IMAGE_REGISTRY=local-docker-hub:5000/
+> # → local-docker-hub:5000/ollama-legion/balancer:<тег> и так же для остальных
+> ```
+> Скрипты сборки читают ту же переменную, поэтому собранный образ получает ровно
+> то имя, которое ищет compose:
+> `powershell -File scripts/build-containers.ps1 -Tag <тег>`.
+> Что получится, можно проверить без запуска:
+> `docker compose -f deployments/docker-compose.stack.yml config | grep image:`,
+> а разбор префикса — `powershell -File scripts/lib-image-registry.tests.ps1`.
+> Подробности — [docs/deployment-stack.md](docs/deployment-stack.md), п. 5.3.
+
 > **Только бэкенд на этой машине** (балансер уже есть): задайте две переменные в
 > `deployments/.env.bundled-with-agent` — `BALANCER_URL=http://<хост-балансера>:18081`
 > (ADMIN API, не 18080) и `BACKEND_HOST=<адрес этой машины, видимый с балансера>`,

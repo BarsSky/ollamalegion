@@ -37,6 +37,16 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
 $imageName = "ollama-legion/webui"
+# R83 (2026-09-28): локальный репозиторий образов — та же переменная, что читает
+# compose (deployments/.env → IMAGE_REGISTRY). Пусто = стандартный путь.
+#
+# ВАЖНО: webui собирается через `docker compose build`, то есть имя берётся из
+# `image:` в compose-файле (там уже `${IMAGE_REGISTRY:-}`). Здесь префикс нужен
+# только для алиаса — если построить его без префикса, `latest` будет указывать
+# в другой репозиторий, чем свежесобранный тег.
+. (Join-Path $PSScriptRoot 'lib-image-registry.ps1')
+$registryPrefix = Get-ImageRegistryPrefix -EnvDir (Join-Path $repoRoot 'deployments')
+$imageRef = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/webui' -Tag $Tag
 $composeFile = "docker-compose.cppworker-bundled-with-agent.yml"
 $composePath = Join-Path $repoRoot "deployments\$composeFile"
 
@@ -58,11 +68,11 @@ $buildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 . (Join-Path $PSScriptRoot 'lib-image-tags.ps1')
 Set-ImageTagVar -VariableName 'WEBUI_TAG' -Value $Tag -EnvDir (Join-Path $repoRoot "deployments")
 if (-not $NoAlias) {
-    Add-ImageAlias -ImageRef "${imageName}:${Tag}" -AliasRef "${imageName}:latest"
+    Add-ImageAlias -ImageRef $imageRef -AliasRef (Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/webui' -Tag 'latest')
 }
 
 if (-not $SkipBuild) {
-    Write-Host "[webui] Building ${imageName}:${Tag} (commit $gitCommit) ..." -ForegroundColor Cyan
+    Write-Host "[webui] Building ${imageRef} (commit $gitCommit) ..." -ForegroundColor Cyan
     $env:WEBUI_VERSION = $Tag
     $env:WEBUI_GIT_COMMIT = $gitCommit
     $env:WEBUI_BUILD_DATE = $buildDate

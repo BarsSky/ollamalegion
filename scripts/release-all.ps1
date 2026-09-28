@@ -72,6 +72,11 @@ Set-Location $repoRoot
 # (единая реализация вместо трёх разных способов).
 . (Join-Path $PSScriptRoot 'lib-image-tags.ps1')
 
+# R83 (2026-09-28): локальный репозиторий образов — та же переменная, что читает
+# compose (deployments/.env → IMAGE_REGISTRY). Пусто = стандартный путь.
+. (Join-Path $PSScriptRoot 'lib-image-registry.ps1')
+$registryPrefix = Get-ImageRegistryPrefix -EnvDir (Join-Path $PSScriptRoot '..\deployments')
+
 if ([string]::IsNullOrWhiteSpace($Tag)) {
     $Tag = "r" + (Get-Date -Format 'yyMMdd-HHmm')
 }
@@ -123,7 +128,10 @@ $results = @()
 
 foreach ($svc in $Services) {
     $s = $spec[$svc]
-    $imageRef = "$($s.Repo):$($s.ImageTag)"
+    # R83: имя образа собирается с префиксом репозитория из IMAGE_REGISTRY —
+    # ровно так же, как его ищет compose. Иначе `up -d` ушёл бы в registry за
+    # образом, который только что собран локально под другим именем.
+    $imageRef = Resolve-ImageRef -Prefix $registryPrefix -Name $s.Repo -Tag $s.ImageTag
 
     if (-not $SkipBuild) {
         Write-Host "[$svc] build $imageRef ..." -ForegroundColor Cyan
@@ -156,7 +164,7 @@ foreach ($svc in $Services) {
         # «Последний» тег-алиас — через общий helper (для cppworker он вариантный,
         # см. lib-image-tags.ps1: plain `latest` перезаписывается сборкой другого
         # варианта, потому что cpu/stub/gpu-* делят один репозиторий).
-        Add-ImageAlias -ImageRef $imageRef -AliasRef "$($s.Repo):$($s.Alias)"
+        Add-ImageAlias -ImageRef $imageRef -AliasRef (Resolve-ImageRef -Prefix $registryPrefix -Name $s.Repo -Tag $s.Alias)
     }
 
     $imgID = Get-ImageID -ImageRef $imageRef
@@ -166,7 +174,7 @@ foreach ($svc in $Services) {
         image    = $imageRef
         imageTag = $s.ImageTag
         imageId  = $imgID
-        alias    = if ($NoAlias) { "" } else { "$($s.Repo):$($s.Alias)" }
+        alias    = if ($NoAlias) { "" } else { Resolve-ImageRef -Prefix $registryPrefix -Name $s.Repo -Tag $s.Alias }
     }
 }
 

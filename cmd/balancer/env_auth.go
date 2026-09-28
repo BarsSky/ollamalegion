@@ -20,6 +20,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -79,4 +80,61 @@ func applyEnvAuthTokens(auth *types.AuthConfig) {
 		"new_count", len(envTokens),
 		"source", "LB_API_TOKEN/LB_AUTH_TOKENS",
 	)
+}
+
+// authTokenSource — R83 (2026-09-28): человекочитаемый источник токенов для
+// стартовой шапки логов.
+//
+// Зачем. Главная путаница с токеном: оператор правит `auth.tokens` в
+// config/config.json, но при заданном LB_API_TOKEN этот список ПОЛНОСТЬЮ
+// заменяется значением из окружения (см. applyEnvAuthTokens выше). Правка файла
+// при этом не даёт никакого эффекта, а выглядит это как «токен не работает».
+// В шапке сразу видно, что победило, и предупреждение не даёт искать причину
+// в исходниках.
+func authTokenSource(auth *types.AuthConfig) string {
+	if auth == nil {
+		return "auth не сконфигурирован"
+	}
+	if !auth.Enabled {
+		return "auth ВЫКЛЮЧЕН (запросы без токена)"
+	}
+
+	if single := strings.TrimSpace(os.Getenv("LB_API_TOKEN")); single != "" {
+		return fmt.Sprintf("LB_API_TOKEN (len=%d) ЗАМЕНЯЕТ config.json", len(single))
+	}
+	if csv := strings.TrimSpace(os.Getenv("LB_AUTH_TOKENS")); csv != "" {
+		return fmt.Sprintf("LB_AUTH_TOKENS (%d шт.) ЗАМЕНЯЕТ config.json", len(strings.Split(csv, ",")))
+	}
+	if len(auth.Tokens) == 1 && auth.Tokens[0] == "bundled-default" {
+		return "config.json: 'bundled-default' — ЗАМЕНИТЕ (LB_API_TOKEN)"
+	}
+	return fmt.Sprintf("config.json (%d шт.)", len(auth.Tokens))
+}
+
+// warnIfConfigTokensShadowed — R83 (2026-09-28): громкое предупреждение, когда
+// список токенов из config.json фактически не действует.
+//
+// Зачем. Оператор правит `auth.tokens` в config/config.json, перезапускает
+// балансер и продолжает получать 401 — потому что при заданном LB_API_TOKEN
+// значения из файла ПОЛНОСТЬЮ заменяются (applyEnvAuthTokens). Это самая
+// дорогая по времени путаница с токеном: файл выглядит источником истины, но
+// им не является. Предупреждение называет победивший источник и объясняет, что
+// менять надо его, а не файл.
+func warnIfConfigTokensShadowed(auth *types.AuthConfig) {
+	if auth == nil || !auth.Enabled {
+		return
+	}
+	winner := ""
+	if v := strings.TrimSpace(os.Getenv("LB_API_TOKEN")); v != "" {
+		winner = "LB_API_TOKEN"
+	} else if v := strings.TrimSpace(os.Getenv("LB_AUTH_TOKENS")); v != "" {
+		winner = "LB_AUTH_TOKENS"
+	}
+	if winner == "" {
+		return
+	}
+	logger.Get().Warnw("auth.tokens из config.json НЕ ДЕЙСТВУЕТ: список полностью переопределён переменной окружения. "+
+		"Меняйте токен в deployments/.env (CPPWORKER_API_TOKEN → LB_API_TOKEN), правка config/config.json результата не даст.",
+		"winner", winner,
+		"config_token_count", len(auth.Tokens))
 }

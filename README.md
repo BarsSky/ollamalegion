@@ -216,6 +216,20 @@ cp deployments/.env.bundled-with-agent.example deployments/.env.bundled-with-age
 # Остальное в .env.bundled-with-agent правьте под свою машину.
 ```
 
+> 🔑 **Токен — ровно одно место: `CPPWORKER_API_TOKEN` в `deployments/.env`.**
+> Compose выводит из него `LB_API_TOKEN`, `API_TOKEN`/`CPPWORKER_API_TOKEN`
+> (cppworker и agent) и `BALANCER_TOKEN`. Править `auth.tokens` в
+> `config/config.json` **бесполезно**: при заданном `LB_API_TOKEN` список из
+> файла полностью заменяется. Балансер говорит об этом в шапке логов
+> (`Auth tokens: LB_API_TOKEN … ЗАМЕНЯЕТ config.json`) и предупреждением.
+> Подробности — [docs/deployment-stack.md](docs/deployment-stack.md), п. 5.1.
+
+> 🏷 **Какая сборка запущена — в шапке логов.** Балансер, агент и cppworker
+> печатают тег образа и коммит первой строкой:
+> `║Version: r83-submodule-v23 (commit 5731414, 2026-09-28)║`.
+> Если тег не тот, который вы собирали, — в контейнере старый образ, и искать
+> дефект в коде бессмысленно.
+
 **Windows (PowerShell):**
 
 ```powershell

@@ -183,6 +183,106 @@ docker compose -f docker-compose.stack.yml --profile balancer up -d
 
 ---
 
+## 5.1 Токен: одно место, откуда он расходится по всем сервисам
+
+**Источник истины — ровно один: `deployments/.env` → `CPPWORKER_API_TOKEN`.**
+Всё остальное compose выводит из него:
+
+| Сервис | Переменная в контейнере | Откуда |
+|---|---|---|
+| loadbalancer | `LB_API_TOKEN` | `${CPPWORKER_API_TOKEN}` |
+| cppworker | `API_TOKEN`, `CPPWORKER_API_TOKEN` | `${CPPWORKER_API_TOKEN}` |
+| agent | `BALANCER_TOKEN` | `${CPPWORKER_API_TOKEN}` |
+| agent | `CPPWORKER_API_TOKEN` | `${CPPWORKER_API_TOKEN}` |
+| webui | `API_TOKEN` | `${CPPWORKER_API_TOKEN}` |
+
+Правите токен — правите **только** эту строку и пересоздаёте стек:
+
+```bash
+# deployments/.env
+CPPWORKER_API_TOKEN=<новый-токен>
+
+docker compose -f docker-compose.stack.yml --profile full up -d --force-recreate
+```
+
+### Что менять НЕ надо (и почему это ловушка)
+
+`auth.tokens` в `config/config.json` содержит плейсхолдер `bundled-default`, и
+при заданном `LB_API_TOKEN` список токенов из файла **полностью заменяется**.
+Правка `config.json` не даст никакого эффекта — вы будете искать причину 401
+там, где её нет. Балансер теперь говорит об этом прямо в стартовой шапке и
+предупреждением в логе:
+
+```
+║ Auth tokens:   LB_API_TOKEN (len=33) ЗАМЕНЯЕТ config.json    ║
+...
+WARN auth.tokens из config.json НЕ ДЕЙСТВУЕТ: список полностью переопределён
+     переменной окружения. Меняйте токен в deployments/.env ..., правка
+     config/config.json результата не даст.  winner=LB_API_TOKEN config_token_count=1
+```
+
+То же самое видно у остальных сервисов в их шапках:
+
+```
+cppworker: "apiTokenSource":"API_TOKEN(len=33)"        # или CPPWORKER_API_TOKEN
+agent:     ║API token:     CPPWORKER_API_TOKEN/API_TOKEN (len=33)        ║
+```
+
+### Токен cppworker доезжает через агента
+
+Cppworker защищает свои эндпоинты (`/api/models/reload`,
+`/api/v1/cppworker/config/update`) и ждёт `Authorization: Bearer <token>` или
+`X-API-Token`. Балансер проксирует эти запросы от WebUI, но **не передаёт
+клиентский токен**: он подставляет серверный токен бэкенда, а при его отсутствии
+удаляет заголовок целиком.
+
+До исправления в bundled-стеке этот токен не попадал в балансер вообще:
+Go-side регистрация cppworker там выключена (`CPPWORKER_REGISTER_DISABLE=true`),
+бэкенд создаёт агент, а токен умела отдавать только cppworker-регистрация. Итог —
+правка параметров модели в WebUI через агента падала с 401 «invalid or missing
+API token», хотя токен задан во всех `.env` и одинаков. Теперь агент передаёт
+`cppWorkerApiToken` в регистрации, и балансер принимает его на всех трёх путях
+(создание, повторная регистрация, attach).
+
+Проверка, что путь живой:
+
+```bash
+TOKEN=$(grep '^CPPWORKER_API_TOKEN=' .env | cut -d= -f2)
+curl -s -o /dev/null -w '%{http_code}\n' -X PUT \
+  -H "X-API-Token: $TOKEN" -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:18080/api/v1/gguf/backends/cppworker-gpu-bundled-agent/proxy/api/v1/cppworker/config/update"
+# → 200 (а не 401 «invalid or missing API token»)
+```
+
+---
+
+## 5.2 Версия в шапке логов: проверка «а точно ли новая сборка?»
+
+Все три сервиса печатают версию запущенного образа первой строкой шапки:
+
+```
+╔═════════════════════════════════════════════════════════════╗
+║               Ollama Load Balancer - Starting               ║
+╠═════════════════════════════════════════════════════════════╣
+║Version:       r83-submodule-v23 (commit 5731414, 2026-09-28)║
+```
+
+Значение берётся из `APP_VERSION` (compose подставляет тег образа) плюс
+`GIT_COMMIT`/`BUILD_DATE`, вшитые при сборке. Отсюда сразу видно, применилась ли
+правка:
+
+```bash
+docker logs ol-stack-balancer 2>&1 | head -10 | grep Version
+docker logs ol-stack-agent    2>&1 | head -12 | grep Version
+docker logs ol-stack-cppworker-gpu 2>&1 | grep -m1 'Worker starting'
+#   → "version":"r83-submodule-v22 (commit …, …)","apiTokenSource":"API_TOKEN(len=33)"
+```
+
+Если версия в логе не та, которую вы собирали, — в контейнере старый образ, и
+искать дефект в коде бессмысленно.
+
+---
+
 ## 6. Ловушка с порядком переменных: `environment:` сильнее `env_file`
 
 Compose сначала подставляет `env_file`, а затем **накладывает** `environment`.
@@ -293,9 +393,12 @@ curl -s -D - -o /dev/null ... http://127.0.0.1:18080/api/chat | grep -i x-backen
 | 503 «model load started, retry» | идёт загрузка (минуты для 27B) | повторить запрос; при необходимости поднять `LB_AUTO_LOAD_WAIT_SEC` |
 | Клиент (Cline) «не работает», запрос висит и рвётся | таймаут клиента меньше времени загрузки 27B | см. п. 2.1: грузить модель заранее, поднять таймаут клиента |
 | `400 unknown field "options"` на `/v1/chat/completions` | клиент шлёт Ollama-поле в OpenAI-формат | `options` — только для `/api/chat`; в OpenAI-формате используйте `max_tokens`/`temperature` |
+| Правка параметров модели из WebUI: 401 «invalid or missing API token» | балансер не знает токен cppworker (или у бэкенда пустой `cppWorkerApiToken`) | см. п. 5.1; проверить шапку агента (`API token`) и балансера |
+| Токен изменён в `config/config.json`, но 401 остался | список токенов переопределён `LB_API_TOKEN` | см. п. 5.1: менять надо `deployments/.env` |
 | Бэкенд `unhealthy` | балансер не может достучаться до `host:18092` | проверить `BACKEND_HOST`/сеть/файрвол (сценарий 2) |
 | Бэкенд зарегистрирован, но `type=ollama` | задан `AGENT_BACKEND_TYPE` вместо `BACKEND_TYPE` | см. п. 5 |
 | `maxConcurrentRequests=10` при `AGENT_MAX_CONCURRENT_REQUESTS=1` | унаследованное значение в `state.json` + старый образ балансера | см. п. 7.1 |
+| Сомнение «применилась ли правка / какая сборка в контейнере» | неизвестна версия образа | см. п. 5.2: версия печатается в шапке логов |
 | Два бэкенда на один endpoint | включена Go-регистрация cppworker и agent | `CPPWORKER_REGISTER_DISABLE=true` |
 
 ---

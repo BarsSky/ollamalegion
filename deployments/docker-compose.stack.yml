@@ -104,6 +104,10 @@ services:
       - GIN_MODE=release
       - LOG_LEVEL=${LB_LOG_LEVEL:-info}
       - LB_CONFIG_PATH=/app/config/config.json
+      # R83 (2026-09-28): версия запущенного образа — в первой шапке логов.
+      # Значение берётся из того же тега, что и image выше, поэтому лог всегда
+      # честно отвечает на вопрос «а точно ли в контейнере новая сборка?».
+      - APP_VERSION=${BALANCER_TAG:-r83-submodule-v22}
       # ЕДИНЫЙ токен стека. Обязан совпадать с:
       #   cppworker -> CPPWORKER_API_TOKEN / API_TOKEN
       #   agent     -> BALANCER_TOKEN
@@ -173,6 +177,8 @@ services:
       - CPPWORKER_HOST=0.0.0.0
       - CPPWORKER_PORT=18092
       - CPPWORKER_MODELS_DIR=/app/models
+      # R83 (2026-09-28): версия — в стартовом логе cppworker.
+      - APP_VERSION=${CPPWORKER_GPU_TAG:-r83-submodule-v22}
       # Регистрацию бэкенда делает ТОЛЬКО agent. Если включить и Go-side
       # регистрацию, в балансере появится ДВА бэкенда на один endpoint.
       - CPPWORKER_REGISTER_DISABLE=true
@@ -233,6 +239,8 @@ services:
     environment:
       - AGENT_ID=${AGENT_ID:-cppworker-gpu-bundled-agent}
       - AGENT_PORT=18032
+      # R83 (2026-09-28): версия — в стартовой шапке агента.
+      - APP_VERSION=${AGENT_TAG:-r83-submodule-v22}
 
       # ─── Подключение к балансеру: ADMIN API, порт 18081 ──────────────────
       # Сценарий 1: имя сервиса внутри этой сети (значение по умолчанию).
@@ -240,6 +248,12 @@ services:
       #             http://<хост-балансера>:18081
       - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
       - BALANCER_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
+      # R83 (2026-09-28): агент передаёт балансеру токен, который ждёт cppworker.
+      # Без него балансер не может авторизоваться на защищённых эндпоинтах
+      # cppworker, и правка параметров модели из WebUI падает с 401
+      # «invalid or missing API token», хотя токен задан во всех .env одинаково.
+      # Источник — ОДНА переменная стека: deployments/.env → CPPWORKER_API_TOKEN.
+      - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
 
       # ─── Как agent ходит в cppworker (внутри сети) ───────────────────────
       # Ранее здесь стояло AGENT_CPPWORKER_URL — код это имя НЕ читает,

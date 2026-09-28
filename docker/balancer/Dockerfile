@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # Ollama Load Balancer — Dockerfile (оптимизированный, локальные образы)
 # =============================================================================
 # Использует локально доступные базовые образы для обхода блокировки Docker Hub.
@@ -58,8 +58,17 @@ COPY . .
 # ВАЖНО: НЕ отключаем CGO_ENABLED=0, иначе cgo-директивы в bridge_stub.go
 # не парсятся и Go выдаёт "build constraints exclude all Go files in c/bridge".
 # alpine содержит gcc/musl (build-base), так что cgo работает.
+#
+# R83 (2026-09-28): GIT_COMMIT/BUILD_DATE подставляются в pkg/version, чтобы
+# стартовая шапка логов показывала, ЧТО именно запущено. Передаются как
+# build-args (см. scripts/rebuild_balancer_r66a.ps1 / release-all.ps1).
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-    go build -tags llama_stub -trimpath -ldflags "-w -s -extldflags '-static'" \
+    go build -tags llama_stub -trimpath \
+    -ldflags "-w -s -extldflags '-static' \
+      -X ollama-loadbalancer/pkg/version.Commit=${GIT_COMMIT} \
+      -X ollama-loadbalancer/pkg/version.BuildDate=${BUILD_DATE}" \
     -a -o balancer ./cmd/balancer
 
 # -----------------------------------------------------------------------------

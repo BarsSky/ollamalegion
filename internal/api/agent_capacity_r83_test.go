@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,14 @@ func newAgentCapacityServer(t *testing.T) *Server {
 // registerAgentPayload собирает тело регистрации так, как это делает агент
 // (internal/agent/collector_register.go).
 func registerAgentPayload(agentID, backendType string, maxConcurrent int) []byte {
+	return registerAgentPayloadWithToken(agentID, backendType, maxConcurrent, "")
+}
+
+// registerAgentPayloadWithToken — то же, но с токеном cppworker.
+// R83 (2026-09-28): агент обязан сообщать балансеру токен, который ждёт
+// cppworker; без него балансер удаляет заголовок авторизации при проксировании
+// (R65d), и правка параметров модели из WebUI получает 401.
+func registerAgentPayloadWithToken(agentID, backendType string, maxConcurrent int, cppToken string) []byte {
 	body := map[string]interface{}{
 		"agentId":  agentID,
 		"hostname": "test-host",
@@ -67,6 +76,9 @@ func registerAgentPayload(agentID, backendType string, maxConcurrent int) []byte
 		"backendType":           backendType,
 		"nodeLabels":            "gpu,llamacpp",
 		"maxConcurrentRequests": maxConcurrent,
+	}
+	if cppToken != "" {
+		body["cppWorkerApiToken"] = cppToken
 	}
 	data, _ := json.Marshal(body)
 	return data
@@ -260,5 +272,89 @@ func TestR83_AgentRegister_AttachAdoptsCapacity(t *testing.T) {
 			"сохранённое 10 — дефект, из-за которого балансер держал десять слотов "+
 			"на однослотовом cppworker даже после пересборки агента)",
 			backend.MaxConcurrentReqs)
+	}
+}
+
+// TestR83_AgentToken_AttachAdoptsCppWorkerToken — агент сообщает токен cppworker,
+// и балансер ОБЯЗАН его сохранить, иначе не сможет авторизоваться на защищённых
+// эндпоинтах cppworker.
+//
+// Живой сценарий (2026-09-28, A10): правка параметров модели в WebUI через агента
+// падала с 401 «invalid or missing API token» при ОДИНАКОВОМ токене во всех .env.
+// Причина: в bundled-стеке Go-side регистрация cppworker выключена, бэкенд создаёт
+// агент, а токен умела отдавать только cppworker-регистрация. Backend оставался
+// без токена, и proxyToCppWorker (R65d) при пустом токене УДАЛЯЕТ заголовок
+// авторизации — «чтобы не отправлять чужой секрет».
+func TestR83_AgentToken_AttachAdoptsCppWorkerToken(t *testing.T) {
+	s := newAgentCapacityServer(t)
+	const cppID = "r83-token-cppworker"
+	const agentID = "r83-token-agent"
+	const sharedToken = "shared-stack-token"
+
+	rec := doRegisterAgent(t, s, registerAgentPayload(cppID, string(types.BackendTypeLlamaCpp), -1))
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("регистрация cppworker вернула %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Агент приходит вторым (dedup-attach) и приносит токен cppworker.
+	rec = doRegisterAgent(t, s, registerAgentPayloadWithToken(
+		agentID, string(types.BackendTypeLlamaCpp), 1, sharedToken))
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("регистрация агента вернула %d: %s", rec.Code, rec.Body.String())
+	}
+
+	backend := s.proxy.GetBackend(cppID)
+	if backend == nil {
+		t.Fatal("cppworker-бэкенд пропал после attach")
+	}
+	if backend.CppWorkerApiToken != sharedToken {
+		t.Errorf("CppWorkerApiToken = %q, want %q — без него балансер удаляет заголовок "+
+			"авторизации при проксировании на cppworker, и WebUI получает 401 "+
+			"«invalid or missing API token» при одинаковом токене во всех .env",
+			backend.CppWorkerApiToken, sharedToken)
+	}
+}
+
+// TestR83_AgentToken_CreateAdoptsCppWorkerToken — тот же токен, но на пути
+// СОЗДАНИЯ бэкенда (агент пришёл первым).
+func TestR83_AgentToken_CreateAdoptsCppWorkerToken(t *testing.T) {
+	s := newAgentCapacityServer(t)
+	const id = "r83-token-create"
+	const sharedToken = "shared-stack-token"
+
+	rec := doRegisterAgent(t, s, registerAgentPayloadWithToken(
+		id, string(types.BackendTypeLlamaCpp), 1, sharedToken))
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("регистрация вернула %d: %s", rec.Code, rec.Body.String())
+	}
+
+	backend := s.proxy.GetBackend(id)
+	if backend == nil {
+		t.Fatal("бэкенд не зарегистрирован")
+	}
+	if backend.CppWorkerApiToken != sharedToken {
+		t.Errorf("CppWorkerApiToken = %q, want %q (создание бэкенда обязано принять токен агента)",
+			backend.CppWorkerApiToken, sharedToken)
+	}
+}
+
+// TestR83_AgentToken_RegistrationResponseHidesSecret — токен не должен утекать
+// в тело ответа на регистрацию.
+func TestR83_AgentToken_RegistrationResponseHidesSecret(t *testing.T) {
+	s := newAgentCapacityServer(t)
+	const id = "r83-token-response"
+	const sharedToken = "super-secret-token"
+
+	rec := doRegisterAgent(t, s, registerAgentPayloadWithToken(
+		id, string(types.BackendTypeLlamaCpp), 1, sharedToken))
+	if strings.Contains(rec.Body.String(), sharedToken) {
+		t.Errorf("ответ регистрации содержит токен открытым текстом: %s", rec.Body.String())
+	}
+
+	// Повторная регистрация (ветка «updated») тоже отвечает телом с бэкендом.
+	rec = doRegisterAgent(t, s, registerAgentPayloadWithToken(
+		id, string(types.BackendTypeLlamaCpp), 1, sharedToken))
+	if strings.Contains(rec.Body.String(), sharedToken) {
+		t.Errorf("ответ повторной регистрации содержит токен открытым текстом: %s", rec.Body.String())
 	}
 }

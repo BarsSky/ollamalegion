@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"ollama-loadbalancer/internal/runtimeoverrides"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
+	"ollama-loadbalancer/pkg/version"
 )
 
 var (
@@ -91,6 +94,13 @@ func main() {
 	logger.Init(conf.Logging.Level)
 	defer logger.Sync()
 
+	// R83 (2026-09-28): громкое предупреждение, если токен из config.json
+	// фактически не действует (переопределён LB_API_TOKEN). Без него оператор
+	// правит файл, перезапускает балансер и продолжает получать 401.
+	// Вызывается ПОСЛЕ logger.Init — до инициализации предупреждение уходит в
+	// никуда (это и было первой версией дефекта: предупреждение «не появлялось»).
+	warnIfConfigTokensShadowed(&conf.Auth)
+
 	// F.2 (Session F) — инициализация log-broker для live tail через WebSocket /ws/logs.
 	// Брокер хранит ring buffer из 100 последних записей; Subscribe() из
 	// internal/api/handlers_logs_ws.go получает копию буфера + live channel.
@@ -131,17 +141,26 @@ func main() {
 		}
 	}
 
-	fmt.Printf("╔═══════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║         Ollama Load Balancer - Starting                   ║\n")
-	fmt.Printf("╠═══════════════════════════════════════════════════════════╣\n")
-	fmt.Printf("║ Proxy Port:  %-46d║\n", conf.LoadBalancer.Port)
-	fmt.Printf("║ API Port:    %-46d║\n", conf.LoadBalancer.APIPort)
+	fmt.Printf("╔═════════════════════════════════════════════════════════════╗\n")
+	bannerRow("", "Ollama Load Balancer - Starting")
+	fmt.Printf("╠═════════════════════════════════════════════════════════════╣\n")
+	// R83 (2026-09-28): версия запущенного образа — первой строкой.
+	// Без неё невозможно отличить «исправление не сработало» от «в контейнере
+	// старый образ»: именно это на живом стенде заняло несколько итераций.
+	bannerRow("Version", version.Get().String())
+	bannerRow("Proxy Port", strconv.Itoa(conf.LoadBalancer.Port))
+	bannerRow("API Port", strconv.Itoa(conf.LoadBalancer.APIPort))
 	if conf.TLS.Enabled {
-		fmt.Printf("║ TLS Port:    %-46d║\n", conf.LoadBalancer.TLSPort)
+		bannerRow("TLS Port", strconv.Itoa(conf.LoadBalancer.TLSPort))
 	}
-	fmt.Printf("║ Algorithm:   %-46s║\n", conf.Balancing.Algorithm)
-	fmt.Printf("║ Backends:    %-46d║\n", len(conf.Backends))
-	fmt.Printf("╚═══════════════════════════════════════════════════════════╝\n")
+	bannerRow("Algorithm", string(conf.Balancing.Algorithm))
+	bannerRow("Backends", strconv.Itoa(len(conf.Backends)))
+	// R83 (2026-09-28): откуда взят токен авторизации. Оператор меняет токен в
+	// config.json и не понимает, почему он «не работает»: при заданном
+	// LB_API_TOKEN список токенов из файла ПОЛНОСТЬЮ заменяется, и правка файла
+	// не даёт эффекта. Здесь это видно сразу, без чтения исходников.
+	bannerRow("Auth tokens", authTokenSource(&conf.Auth))
+	fmt.Printf("╚═════════════════════════════════════════════════════════════╝\n")
 
 	// Создание прокси
 	proxy := balancer.NewProxy(conf)
@@ -539,6 +558,38 @@ func main() {
 		modelInstanceCtrl.Stop()
 	}
 	fmt.Println("[Shutdown] Completed. Goodbye!")
+}
+
+// bannerRow — R83 (2026-09-28): строка стартовой шапки с гарантированной
+// шириной.
+//
+// Раньше строки печатались литералами с %-46s, и любое новое поле (или
+// многобайтовый символ в значении, например «ЗАМЕНЯЕТ») сдвигало правую рамку.
+// Здесь внутренняя часть ВСЕГДА ровно 61 руна, поэтому рамка сходится
+// независимо от длины значения; слишком длинное значение обрезается.
+func bannerRow(label, value string) {
+	const inner = 61
+	// Заголовок шапки — строка без поля: печатается по центру, но рамка та же.
+	if label == "" {
+		text := value
+		if runes := []rune(text); len(runes) > inner-8 {
+			text = string(runes[:inner-9]) + "…"
+		}
+		left := (inner - len([]rune(text))) / 2
+		right := inner - len([]rune(text)) - left
+		fmt.Printf("║%s%s%s║\n", strings.Repeat(" ", left), text, strings.Repeat(" ", right))
+		return
+	}
+	text := label + ":"
+	for len([]rune(text)) < 14 {
+		text += " "
+	}
+	text += " " + value
+	if runes := []rune(text); len(runes) > inner {
+		text = string(runes[:inner-1]) + "…"
+	}
+	pad := inner - len([]rune(text))
+	fmt.Printf("║%s%s║\n", text, strings.Repeat(" ", pad))
 }
 
 // defaultIfZero — возвращает def если v == 0, иначе v. Helper для

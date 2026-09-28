@@ -42,6 +42,14 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		// (llama_cpp = 1). Раньше поле не принималось, а MaxConcurrentReqs
 		// задавался константой 10 — см. комментарий у создания бэкенда ниже.
 		MaxConcurrentRequests int `json:"maxConcurrentRequests"`
+		// R83 (2026-09-28): токен, который ждёт сам cppworker.
+		//
+		// Агент — единственный, кто его знает в bundled-стеке (Go-side
+		// регистрация cppworker там выключена). Без этого поля
+		// Backend.CppWorkerApiToken остаётся пустым, и балансер, проксируя
+		// запрос к cppworker защищённого эндпоинта, удаляет заголовок
+		// авторизации (R65d) → 401 «invalid or missing API token».
+		CppWorkerApiToken string `json:"cppWorkerApiToken"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -137,6 +145,17 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			// существующих стендах не срабатывала вовсе.
 			s.proxy.AdoptCapacityFromNode(existingID, req.MaxConcurrentRequests)
 
+			// R83 (2026-09-28): тем же шагом принимаем токен cppworker.
+			//
+			// Раньше attach менял только HasAgent/AgentPort, поэтому на
+			// bundled-стенде (бэкенд создаёт агент, Go-side регистрация
+			// cppworker выключена) токен не попадал в запись бэкенда вообще:
+			// балансер удалял заголовок авторизации при проксировании на
+			// cppworker, и правка параметров модели из WebUI получала
+			// 401 «invalid or missing API token» — при одинаковом токене во
+			// всех .env.
+			s.proxy.AdoptCppWorkerToken(existingID, req.CppWorkerApiToken)
+
 			s.proxy.AttachAgentToBackend(existingID, req.AgentID, agentPort)
 
 			// Удаляем stale standalone бэкенд с тем же agentId (если есть).
@@ -200,6 +219,14 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			maxReqs = req.MaxConcurrentRequests
 		}
 
+		// R83 (2026-09-28): токен cppworker — та же логика, что у вместимости.
+		// Агент сообщил непустое значение → принимаем; иначе сохраняем прежнее
+		// (сборки агента без этого поля не должны стирать токен).
+		cppToken := existing.CppWorkerApiToken
+		if req.CppWorkerApiToken != "" {
+			cppToken = req.CppWorkerApiToken
+		}
+
 		updated := types.Backend{
 			ID:                           req.AgentID,
 			Name:                         req.Name,
@@ -216,7 +243,7 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			RuntimeMaxConcurrentRequests: existing.RuntimeMaxConcurrentRequests,
 			RuntimeCapacityFromNode:      existing.RuntimeCapacityFromNode,
 			RuntimeRequestTimeout:        existing.RuntimeRequestTimeout,
-			CppWorkerApiToken:            existing.CppWorkerApiToken,
+			CppWorkerApiToken:            cppToken,
 			Engine:                       existing.Engine,
 			ApiStyle:                     existing.ApiStyle,
 			GPUMode:                      existing.GPUMode,
@@ -227,11 +254,18 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		s.proxy.UpdateBackend(req.AgentID, updated)
 
+		// R83 (2026-09-28): не возвращаем секрет клиенту.
+		// `updated` содержит CppWorkerApiToken (его прислал агент), а ответ
+		// уходит в тело JSON. Обнуляем только копию для ответа — запись
+		// бэкенда уже сохранена с токеном (UpdateBackend выше).
+		safeResp := updated
+		safeResp.CppWorkerApiToken = ""
+
 		s.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"success": true,
 			"action":  "updated",
 			"agentId": req.AgentID,
-			"backend": updated,
+			"backend": safeResp,
 		})
 		return
 	}
@@ -264,6 +298,10 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		CppWorkerPort:     req.CppWorkerPort,
 		Weight:            weight,
 		MaxConcurrentReqs: maxReqs,
+		// R83 (2026-09-28): токен cppworker, иначе балансер не сможет
+		// авторизоваться на его защищённых эндпоинтах (см. комментарий к полю
+		// в структуре запроса выше).
+		CppWorkerApiToken: req.CppWorkerApiToken,
 		Labels:            req.Labels,
 		Status:            types.StatusStarting,
 		Type:              backendType,
@@ -319,11 +357,17 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// R83 (2026-09-28): не возвращаем секрет клиенту — `backend` содержит
+	// CppWorkerApiToken (его прислал агент). В записи пула токен уже сохранён
+	// (AddBackend выше), поэтому обнуляем только копию для ответа.
+	safeCreated := backend
+	safeCreated.CppWorkerApiToken = ""
+
 	s.writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"success": true,
 		"action":  "created",
 		"agentId": req.AgentID,
-		"backend": backend,
+		"backend": safeCreated,
 		"message": "Agent registered successfully. Backend added to the pool.",
 	})
 }

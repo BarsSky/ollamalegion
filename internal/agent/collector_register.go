@@ -69,6 +69,11 @@ func (a *Agent) register() error {
 		"cppWorkerPort":         registerCppWorkerPort,
 		"nodeLabels":            a.config.NodeLabels,
 		"maxConcurrentRequests": a.config.MaxConcurrentRequests,
+		// R83 (2026-09-28): токен, который ждёт cppworker. Без него балансер
+		// не может авторизоваться на защищённых эндпоинтах cppworker, и правка
+		// параметров модели из WebUI через прокси балансера возвращает 401
+		// («invalid or missing API token»), хотя токен задан во всех .env.
+		"cppWorkerApiToken": a.config.CppWorkerApiToken,
 	}
 
 	data, err := json.Marshal(reqBody)

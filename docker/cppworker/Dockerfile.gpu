@@ -193,8 +193,13 @@ ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/
 
 # GOMAXPROCS=2 ограничивает параллелизм компиляции Go,
 # чтобы уложиться в доступную RAM при сборке в Docker Desktop / WSL2.
+# R83 (2026-09-28): версия сборки в pkg/version — стартовая запись лога
+# cppworker сообщает тег/коммит (см. cmd/cppworker/main.go).
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOMAXPROCS=2 \
-    go build -trimpath -ldflags "-w -s" \
+    go build -trimpath \
+    -ldflags "-w -s -X ollama-loadbalancer/pkg/version.Commit=${GIT_COMMIT} -X ollama-loadbalancer/pkg/version.BuildDate=${BUILD_DATE}" \
     -o cppworker ./cmd/cppworker
 
 # -----------------------------------------------------------------------------

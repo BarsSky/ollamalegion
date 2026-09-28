@@ -31,33 +31,33 @@ type QueuedRequest struct {
 
 // AgentConfig - конфигурация агента
 type AgentConfig struct {
-	AgentID               string       `json:"agentId"`
-	BalancerURL           string       `json:"balancerUrl"`
-	OllamaURL             string       `json:"ollamaURL"`
-	CppWorkerURL          string       `json:"cppWorkerUrl"`      // URL llama.cpp CppWorker (для BackendType=llama_cpp)
-	MetricsPort           int          `json:"metricsPort"`
-	CollectInterval       int          `json:"collectInterval"`   // секунды
-	HeartbeatInterval     int          `json:"heartbeatInterval"` // секунды
-	GPUMode               PlatformMode `json:"gpuMode"`           // auto/gpu/cpu
-	NVMLEnabled           bool         `json:"nvmlEnabled"`       // включить NVML
-	PublicHost            string       `json:"publicHost"`        // публичный IP/hostname agent'а, доступный балансеру
+	AgentID           string       `json:"agentId"`
+	BalancerURL       string       `json:"balancerUrl"`
+	OllamaURL         string       `json:"ollamaURL"`
+	CppWorkerURL      string       `json:"cppWorkerUrl"` // URL llama.cpp CppWorker (для BackendType=llama_cpp)
+	MetricsPort       int          `json:"metricsPort"`
+	CollectInterval   int          `json:"collectInterval"`   // секунды
+	HeartbeatInterval int          `json:"heartbeatInterval"` // секунды
+	GPUMode           PlatformMode `json:"gpuMode"`           // auto/gpu/cpu
+	NVMLEnabled       bool         `json:"nvmlEnabled"`       // включить NVML
+	PublicHost        string       `json:"publicHost"`        // публичный IP/hostname agent'а, доступный балансеру
 	// 2026-06-30: явный host/port физического cppworker-бэкенда, который agent обёртывает.
 	// Используется в register() как host/cppWorkerPort, чтобы de-dup по (host, port)
 	// в /api/v1/gguf/backends корректно склеивал cppworker-gpu и cppworker-gpu-bundled-agent.
-	CppWorkerHost         string       `json:"cppWorkerHost"`     // host физического cppworker (например, "cppworker-gpu")
-	CppWorkerPort         int          `json:"cppWorkerPort"`     // port физического cppworker (например, 18092)
-	MaxModels             int          `json:"maxModels"`         // максимум моделей (-1 = авто/не задано)
-	MaxConcurrentRequests int          `json:"maxConcurrentRequests"` // максимум одновременных запросов (-1 = авто/не задано)
-	Weight                int          `json:"weight"`            // приоритетный вес бэкенда (1-100, по умолчанию 1)
-	BackendType           BackendType  `json:"backendType"`       // тип бэкенда: ollama или llama_cpp (по умолчанию ollama)
-	NodeLabels            string       `json:"nodeLabels"`        // метки узла (key=value через запятую)
+	CppWorkerHost         string      `json:"cppWorkerHost"`         // host физического cppworker (например, "cppworker-gpu")
+	CppWorkerPort         int         `json:"cppWorkerPort"`         // port физического cppworker (например, 18092)
+	MaxModels             int         `json:"maxModels"`             // максимум моделей (-1 = авто/не задано)
+	MaxConcurrentRequests int         `json:"maxConcurrentRequests"` // максимум одновременных запросов (-1 = авто/не задано)
+	Weight                int         `json:"weight"`                // приоритетный вес бэкенда (1-100, по умолчанию 1)
+	BackendType           BackendType `json:"backendType"`           // тип бэкенда: ollama или llama_cpp (по умолчанию ollama)
+	NodeLabels            string      `json:"nodeLabels"`            // метки узла (key=value через запятую)
 
 	// Round 13 (2026-07-10): BackendID — ID бэкенда, к которому agent прикреплён.
 	// Получается из ответа /api/v1/agents/register (поле backendId при action=attached).
 	// Используется в heartbeat: agent отправляет heartbeat на
 	// POST /api/v1/backends/{BackendID}/agent/heartbeat — это правильный ID,
 	// а не agentID (который при attached режиме отличается от backendID).
-	BackendID             string       `json:"backendId,omitempty"`
+	BackendID string `json:"backendId,omitempty"`
 
 	// Round 41 (2026-08-19): BalancerToken — общий static-токен для аутентификации
 	// на балансировщике. Передаётся через env BALANCER_TOKEN (compose), agent
@@ -65,5 +65,20 @@ type AgentConfig struct {
 	// /api/v1/backends/{id}/agent/metrics, /api/v1/backends/{id}/agent/heartbeat.
 	// Пустая строка = agent не шлёт заголовок (для dev-режима с выключенным
 	// auth на балансере; в проде пустой токен при включённом auth → 401, как и раньше).
-	BalancerToken         string       `json:"balancerToken"`
+	BalancerToken string `json:"balancerToken"`
+
+	// R83 (2026-09-28): CppWorkerApiToken — токен, который ждёт САМ cppworker.
+	//
+	// Зачем это поле у агента. В bundled-стеке Go-side регистрация cppworker
+	// выключена (CPPWORKER_REGISTER_DISABLE=true), и бэкенд создаёт агент. Но
+	// именно cppworker-регистрация умела отдавать балансеру свой API-токен
+	// (registerPayload.CppWorkerApiToken) — агент этого не делал. Следствие:
+	// Backend.CppWorkerApiToken оставался пустым, и балансер, проксируя запрос
+	// через /api/v1/gguf/backends/{id}/proxy/... на защищённые эндпоинты
+	// cppworker, УДАЛЯЛ заголовок авторизации (R65d: «не отправлять чужой
+	// секрет») → cppworker отвечал 401 «invalid or missing API token».
+	//
+	// Живой симптом: правка параметров модели в WebUI через агента падала с
+	// ошибкой токена, хотя токен задан во всех .env и одинаков везде.
+	CppWorkerApiToken string `json:"cppWorkerApiToken,omitempty"`
 }

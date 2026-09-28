@@ -24,6 +24,7 @@ import (
 
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/version"
 
 	"go.uber.org/zap"
 )
@@ -290,7 +291,17 @@ func main() {
 		log.Fatalw("invalid configuration", "error", err)
 	}
 
+	// R83 (2026-09-28): версия запущенного образа и источник API-токена —
+	// в первой же записи лога.
+	//
+	// Зачем токен: оператор меняет его в .env и не понимает, почему cppworker
+	// продолжает отвечать 401 «invalid or missing API token». Обычно причина в
+	// том, что контейнер поднят со старым окружением (или токен задан в
+	// переменной, которую cppworker не читает). Здесь видно и КАКАЯ переменная
+	// победила, и длина значения (сам секрет в лог не попадает).
 	log.Infow("CppBackend Worker starting",
+		"version", version.Get().String(),
+		"apiTokenSource", apiTokenSource(),
 		"port", cfg.Port, "host", cfg.Host, "modelsDir", cfg.ModelsDir,
 		"gpuLayers", cfg.DefaultGPULayers, "flashAttn", cfg.DefaultFlashAttnType,
 		"numa", cfg.DefaultNUMA,
@@ -301,6 +312,14 @@ func main() {
 		"autoOffload", *autoOffload,
 		"autoTuneNCtx", *autoTuneNCtx,
 		"writeTimeout", writeTimeout.String())
+
+	// Предупреждаем о пустом токене: тогда защищённые эндпоинты открыты, и
+	// балансер не сможет выполнить ни reload, ни правку параметров модели.
+	if resolveAPIToken() == "" {
+		log.Warnw("API token is empty: protected cppworker endpoints are UNAUTHENTICATED. " +
+			"Задайте API_TOKEN (или CPPWORKER_API_TOKEN) в окружении контейнера — " +
+			"иначе балансер не сможет менять параметры модели, а сам воркер открыт всем.")
+	}
 
 	if err := os.MkdirAll(cfg.ModelsDir, 0755); err != nil {
 		log.Fatalw("failed to create models directory", "dir", cfg.ModelsDir, "error", err)

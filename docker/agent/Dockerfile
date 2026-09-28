@@ -50,8 +50,11 @@ ARG ENABLE_NVML=false
 # CGO_ENABLED=1 для GPU — но на alpine musl NVML может не собраться,
 #   поэтому GPU-вариант требует glibc-совместимого билдера.
 #   Для GPU используйте отдельный builder (см. stage builder-gpu ниже).
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -tags llama_stub -trimpath -ldflags "-w -s -extldflags '-static'" \
+    go build -tags llama_stub -trimpath \
+    -ldflags "-w -s -extldflags '-static' -X ollama-loadbalancer/pkg/version.Commit=${GIT_COMMIT} -X ollama-loadbalancer/pkg/version.BuildDate=${BUILD_DATE}" \
     -a -installsuffix cgo -o agent ./cmd/agent
 
 # -----------------------------------------------------------------------------
@@ -93,8 +96,11 @@ ARG ENABLE_NVML=true
 # Сборка с NVML под glibc (nvidia/cuda base).
 # -tags "nvml llama_stub" включает NVML (Go-nvml) и stub-режим bridge —
 # agent не вызывает bridge symbols на runtime, поэтому stub покрывает потребности.
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags "-w -s -extldflags '-static'" \
+    go build -trimpath \
+    -ldflags "-w -s -extldflags '-static' -X ollama-loadbalancer/pkg/version.Commit=${GIT_COMMIT} -X ollama-loadbalancer/pkg/version.BuildDate=${BUILD_DATE}" \
     -tags "nvml llama_stub" -o agent ./cmd/agent
 
 # -----------------------------------------------------------------------------

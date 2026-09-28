@@ -683,6 +683,51 @@ func (p *Proxy) AdoptCapacityFromNode(backendID string, reported int) {
 	p.scheduleSave()
 }
 
+// AdoptCppWorkerToken — R83 (2026-09-28): агент сообщил токен, который ждёт
+// cppworker, и балансер обязан его сохранить.
+//
+// Зачем отдельный метод. В bundled-стеке Go-side регистрация cppworker выключена
+// (CPPWORKER_REGISTER_DISABLE=true) и бэкенд создаёт агент. Токен умела отдавать
+// только cppworker-регистрация (registerPayload.CppWorkerApiToken в
+// cmd/cppworker/balancer_register.go), агент его не передавал. Поэтому при
+// attach к существующему бэкенду Backend.CppWorkerApiToken оставался пустым, а
+// proxyToCppWorker (R65d) при пустом токене УДАЛЯЕТ заголовок авторизации —
+// «чтобы не отправлять чужой секрет». Итог: правка параметров модели из WebUI
+// (/api/v1/gguf/backends/{id}/proxy/api/v1/cppworker/config/update) получала от
+// cppworker 401 «invalid or missing API token», хотя токен задан во всех .env и
+// одинаков во всех сервисах.
+//
+// reported == "" означает «агент не сообщил» → сохраняем прежнее значение
+// (сборки агента без поля не должны стирать токен).
+func (p *Proxy) AdoptCppWorkerToken(backendID, reported string) {
+	reported = strings.TrimSpace(reported)
+	if reported == "" {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	state, ok := p.backends[backendID]
+	if !ok {
+		return
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	if state.Backend.CppWorkerApiToken == reported {
+		return
+	}
+
+	logger.Get().Infow("AdoptCppWorkerToken: сохранён токен cppworker, сообщённый агентом",
+		"backendId", backendID,
+		"hadTokenBefore", state.Backend.CppWorkerApiToken != "")
+
+	state.Backend.CppWorkerApiToken = reported
+	p.scheduleSave()
+}
+
 // AttachAgentToBackend — привязка агента к уже существующему бэкенду.
 func (p *Proxy) AttachAgentToBackend(backendID, agentID string, agentPort int) {
 	p.mu.Lock()

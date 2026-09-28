@@ -83,6 +83,19 @@ func resolveAPIToken() string {
 	return ""
 }
 
+// apiTokenSource — R83 (2026-09-28): имя переменной, из которой взят токен, и
+// его длина. Нужно для стартового лога: оператор меняет токен в .env и не
+// понимает, почему cppworker отвечает 401. Видно, какая переменная победила
+// (или что токена нет вовсе), но сам секрет в лог не попадает.
+func apiTokenSource() string {
+	for _, name := range []string{"API_TOKEN", "CPPWORKER_API_TOKEN", "BALANCER_API_TOKEN"} {
+		if v := os.Getenv(name); v != "" {
+			return fmt.Sprintf("%s(len=%d)", name, len(strings.TrimSpace(v)))
+		}
+	}
+	return "не задан (защищённые эндпоинты открыты)"
+}
+
 // corsMiddleware — Round 22 deferred fix (2026-08-04).
 //
 // Browser-side: для cross-origin запросов с кастомными headers (X-API-Token,

@@ -1340,6 +1340,9 @@ window.I18N_EN = {
   "settings.profiles.step_reload": "Reloading model on backends…",
   "settings.profiles.applied": "Profile applied",
   "settings.profiles.applied_with_errors": "Profile applied with errors on several backends",
+  // R83 (2026-09-29): saving a profile does NOT change an already loaded model.
+  "settings.profiles.saved_needs_apply_confirm": "Profile saved. The loaded model is still running with the OLD settings.\n\nApply now? The model will be reloaded (seconds or minutes, in-flight requests to it will be interrupted).\n\n\"Cancel\" — settings apply on the next model load.",
+  "settings.profiles.saved_not_applied": "Profile saved. The model is still running with the old settings — changes apply on the next load or via the \"Apply (reload)\" button.",
 
   // ===== Per-Model Profiles — advanced fields (Session 15, Q3 W3-4 Model profiles UI) =====
   "settings.profiles.advanced_section": "Advanced (optional overrides)",

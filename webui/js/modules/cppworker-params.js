@@ -697,13 +697,57 @@
         const body = wizardStateToProfileBody(state);
         try {
             await PROFILES.upsert(name, body);
-            showToast('success', isNew
-                ? I18N.t('settings.profiles.created', 'Профиль создан')
-                : I18N.t('settings.profiles.updated', 'Профиль обновлён'));
             closeWizard();
             await loadAndRender();
+
+            // R83 (2026-09-29): «нажал Сохранить — ничего не изменилось».
+            //
+            // PUT профиля ТОЛЬКО сохраняет настройки. Уже загруженная модель
+            // продолжает работать со СТАРЫМИ параметрами, пока профиль не
+            // применён (reload): оператор сохранял n_ctx/parallel/kvCacheType,
+            // видел «Профиль сохранён» и ждал эффекта, которого не было.
+            // Теперь говорим прямо, что дальше, и предлагаем применить сразу.
+            const isLoaded = isModelLoadedNow(name);
+            if (isLoaded) {
+                const applyNow = confirm(I18N.t('settings.profiles.saved_needs_apply_confirm',
+                    'Профиль сохранён. Загруженная модель пока работает со СТАРЫМИ настройками.\n\n' +
+                    'Применить сейчас? Модель будет перезагружена (несколько секунд/минут, ' +
+                    'активные запросы к ней прервутся).\n\n' +
+                    '«Отмена» — настройки применятся при следующей загрузке модели.'));
+                if (applyNow) {
+                    await applyProfileWithProgress(name);
+                } else {
+                    showToast('warning', I18N.t('settings.profiles.saved_not_applied',
+                        'Профиль сохранён. Модель работает со старыми настройками — ' +
+                        'изменения применятся при следующей загрузке или по кнопке «Применить (reload)».'));
+                }
+            } else {
+                showToast('success', isNew
+                    ? I18N.t('settings.profiles.created', 'Профиль создан')
+                    : I18N.t('settings.profiles.updated', 'Профиль обновлён'));
+            }
         } catch (err) {
             showToast('error', err.message || String(err));
+        }
+    }
+
+    // isModelLoadedNow — загружена ли модель прямо сейчас (по данным последнего
+    // опроса /api/v1/cluster/models/loaded, который кладёт app.js в
+    // window.CPPWORKER_LOADED_MODELS). Имя может быть как именем модели, так и
+    // именем файла — сравниваем в обе стороны, как это делает профиль-резолвер
+    // балансера.
+    function isModelLoadedNow(name) {
+        try {
+            const models = (window.CPPWORKER_LOADED_MODELS && window.CPPWORKER_LOADED_MODELS.models) || [];
+            if (!models.length) return false;
+            const target = String(name || '').toLowerCase();
+            return models.some(function (m) {
+                const n = String(m.name || '').toLowerCase();
+                const p = String(m.path || '').toLowerCase();
+                return n === target || p.indexOf(target) >= 0 || (target && target.indexOf(n) >= 0);
+            });
+        } catch (e) {
+            return false;
         }
     }
 

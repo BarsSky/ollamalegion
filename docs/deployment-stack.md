@@ -436,46 +436,6 @@ Compose сначала подставляет `env_file`, а затем **нак
 > (`PUT /api/v1/backends/{id}/limits` или `AGENT_MAX_CONCURRENT_REQUESTS`) имеет
 > приоритет и автоматикой не перезаписывается.
 
-### 7.2 Как включить 2 параллельных запроса (пошагово)
-
-Параллельность задаётся **в одном месте** — сколько слотов поднимает cppworker;
-балансер узнаёт это сам. Порядок:
-
-```bash
-cd deployments
-# 1. В .env:
-#    CPPWORKER_N_PARALLEL=2
-# 2. Перезапустить cppworker (переменная читается при старте):
-docker compose -f docker-compose.stack.yml --profile full up -d --force-recreate cppworker-gpu
-# 3. Убедиться, что cppworker поднял 2 слота (после того как модель загружена):
-curl -s http://127.0.0.1:18092/api/models | jq '.models[] | {name, context_size, max_slots}'
-#    → "max_slots": 2
-# 4. Убедиться, что балансер видит ту же вместимость:
-curl -s -H "X-API-Token: <токен>" http://127.0.0.1:18081/api/v1/backends \
-  | jq '.backends[] | {id, maxConcurrentReqs}'
-#    → "maxConcurrentReqs": 2
-```
-
-Три способа задать параллельность (приоритет сверху вниз):
-
-| Способ | Когда использовать | Где |
-|---|---|---|
-| Поле `parallel` в запросе загрузки | разовая загрузка с нужным числом слотов | WebUI (страница моделей GGUF) / `POST /api/models/load-with-params` |
-| Поле `parallel` в профиле модели | если у профиля `ignoreDefaults: false` | `config/config.json` → `llamaCppModelProfiles.<имя>.parallel` |
-| `CPPWORKER_N_PARALLEL` | **основной способ**: инфраструктурная настройка контейнера | `deployments/.env` |
-
-> ⚠️ Если у профиля стоит `"ignoreDefaults": true` (в этом стенде — у всех
-> профилей), профиль **не** подставляет параметры загрузки, включая `parallel`.
-> Это осознанно: `ignoreDefaults` означает «env контейнера выигрывает у профиля»
-> (см. §7.0). Параллельность в этом режиме задаётся только `CPPWORKER_N_PARALLEL`.
-
-> ℹ️ Раньше `parallel` из профиля доезжал до cppworker **только** через
-> `POST /api/v1/cppworker/model-profiles/{name}/apply` и терялся при обычной
-> загрузке (auto-load по `/api/chat`, `POST /api/models/load*`) — оператор
-> сохранял 2 слота в WebUI, а модель поднималась с одним (`max_slots=1`), и
-> второй клиент получал 503. Исправлено в `internal/balancer/model_management.go`
-> (`applyProfileLoadParams`), там же есть тесты.
-
 ### 7.0 Что может «сбить» настройки, выставленные в WebUI
 
 Проверено на живом стенде (2026-09-29). Настройки задаются один раз — при загрузке
@@ -557,6 +517,55 @@ curl -s -H "X-API-Token: $TOKEN" http://127.0.0.1:18081/api/v1/backends \
 
 На чистой установке (`ol-balancer-data` пуст) шаги 2–3 не нужны: бэкенд
 создаётся уже с правильным значением.
+
+### 7.2 Как включить 2 параллельных запроса (пошагово)
+
+Параллельность задаётся **в одном месте** — сколько слотов поднимает cppworker;
+балансер узнаёт это сам. Порядок:
+
+```bash
+cd deployments
+# 1. В .env:
+#    CPPWORKER_N_PARALLEL=2
+# 2. Перезапустить cppworker (переменная читается при старте):
+docker compose -f docker-compose.stack.yml --profile full up -d --force-recreate cppworker-gpu
+# 3. Убедиться, что cppworker поднял 2 слота (после того как модель загружена):
+curl -s http://127.0.0.1:18092/api/models | jq '.models[] | {name, context_size, max_slots}'
+#    → "max_slots": 2
+# 4. Убедиться, что балансер видит ту же вместимость:
+curl -s -H "X-API-Token: <токен>" http://127.0.0.1:18081/api/v1/backends \
+  | jq '.backends[] | {id, maxConcurrentReqs}'
+#    → "maxConcurrentReqs": 2
+```
+
+> ℹ️ Уже загруженная модель сохраняет свои слоты: после смены
+> `CPPWORKER_N_PARALLEL` её надо перезагрузить (unload + запрос, либо
+> «Применить» в WebUI). Иначе в `/api/models` останется прежний `max_slots`.
+
+Три способа задать параллельность (приоритет сверху вниз):
+
+| Способ | Когда использовать | Где |
+|---|---|---|
+| Поле `parallel` в запросе загрузки | разовая загрузка с нужным числом слотов | WebUI (страница моделей GGUF) / `POST /api/models/load-with-params` |
+| Поле `parallel` в профиле модели | если у профиля `ignoreDefaults: false` | `config/config.json` → `llamaCppModelProfiles.<имя>.parallel` |
+| `CPPWORKER_N_PARALLEL` | **основной способ**: инфраструктурная настройка контейнера | `deployments/.env` |
+
+> ⚠️ Если у профиля стоит `"ignoreDefaults": true` (в этом стенде — у всех
+> профилей), профиль **не** подставляет параметры загрузки, включая `parallel`.
+> Это осознанно: `ignoreDefaults` означает «env контейнера выигрывает у профиля»
+> (см. §7.0). Параллельность в этом режиме задаётся только `CPPWORKER_N_PARALLEL`.
+
+> ℹ️ Раньше `parallel` из профиля доезжал до cppworker **только** через
+> `POST /api/v1/cppworker/model-profiles/{name}/apply` и терялся при обычной
+> загрузке (auto-load по `/api/chat`, `POST /api/models/load*`) — оператор
+> сохранял 2 слота в WebUI, а модель поднималась с одним (`max_slots=1`), и
+> второй клиент получал 503. Исправлено в `internal/balancer/model_management.go`
+> (`applyProfileLoadParams`), там же есть тесты.
+
+> ℹ️ Сохранение профиля в WebUI **не перезагружает** модель: кнопка
+> «Сохранить» пишет настройки, применяет их «Применить (reload)». R83: после
+> сохранения WebUI спрашивает, применить ли сразу, и объясняет, что иначе
+> изменения вступят в силу при следующей загрузке модели.
 
 ---
 

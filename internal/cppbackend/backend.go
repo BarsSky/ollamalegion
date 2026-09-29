@@ -1053,7 +1053,19 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	//   3. metrics broker экспортировал parallel/kvCacheType в /metrics.
 	// opts — value type (не pointer), так что он всегда non-nil после
 	// LoadModelWithOpts (даже если caller передал zero-value).
-	inst.info.Parallel = opts.Parallel
+	//
+	// R83-fix (2026-09-29): пишем ФАКТИЧЕСКОЕ число слотов, а не opts.Parallel.
+	//
+	// Было: info.Parallel = opts.Parallel, то есть 0, когда параллельность взята
+	// из CPPWORKER_N_PARALLEL. При этом SlotManager инициализировался ниже
+	// РЕАЛЬНЫМ числом (maxSlots=2), а в /api/models уходило `max_slots: 1`
+	// (handlers_model.go берёт его из ModelInfo.Parallel). Из-за этого:
+	//   - балансер НЕ мог узнать реальную вместимость воркера («capacity from
+	//     model slots» не срабатывал: наблюдалось max_slots=1 при двух слотах);
+	//   - WebUI и автотюн видели single-slot, хотя модель обслуживала два
+	//     клиента одновременно.
+	requestedParallel := resolveNParallel(opts.Parallel, b.cfg.DefaultNParallel)
+	inst.info.Parallel = requestedParallel
 	inst.info.KVCacheType = opts.KVCacheType
 
 	// Round 13 (2026-07-28): initialize SlotManager после успешной загрузки.
@@ -1065,7 +1077,6 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	// R83 (2026-09-29): до этого здесь стояло max(1, opts.Parallel) —
 	// CPPWORKER_N_PARALLEL в SlotManager не учитывался (см. комментарий у
 	// cfg.NParallel выше).
-	requestedParallel := resolveNParallel(opts.Parallel, b.cfg.DefaultNParallel)
 	parallelSlots := parallelSlotsFor(requestedParallel)
 	inst.slots = NewSlotManager(parallelSlots)
 	logger.Get().Infow("slot manager initialized",

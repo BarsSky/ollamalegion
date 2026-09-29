@@ -1,11 +1,16 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"ollama-loadbalancer/pkg/types"
 )
@@ -72,6 +77,72 @@ func (a *Agent) getOllamaBaseURL() string {
 		return a.config.OllamaURL
 	}
 	return "http://localhost:11434"
+}
+
+// cppWorkerProbeTimeout — сколько ждать ответ cppworker при определении
+// вместимости. Переменная (а не константа), чтобы тест мог её укоротить.
+var cppWorkerProbeTimeout = 5 * time.Second
+
+// detectCppWorkerParallelism — R83-fix (2026-09-29): сколько параллельных
+// запросов реально обслуживает cppworker.
+//
+// Источник — сам cppworker: GET /api/v1/cppworker/config → config.defaultNParallel
+// (задаётся env CPPWORKER_N_PARALLEL). Эндпоинт открытый, авторизации не требует.
+//
+// ЗАЧЕМ. До этого вместимость задавалась в ДВУХ местах: CPPWORKER_N_PARALLEL
+// (слоты воркера) и AGENT_MAX_CONCURRENT_REQUESTS (то, что агент сообщает
+// балансеру). Рассинхрон давал ровно симптом «второй клиент получает 503»:
+// агент сообщал 1, и балансер ставил второй запрос в очередь, хотя воркер держал
+// два слота. Теперь при незаданном AGENT_MAX_CONCURRENT_REQUESTS агент берёт
+// значение воркера, то есть настраивать надо ОДНО место.
+//
+// Возвращает 0, если узнать не удалось (тогда балансер применит свой дефолт).
+func (a *Agent) detectCppWorkerParallelism() int {
+	base := a.config.CppWorkerURL
+	if base == "" {
+		host := a.extractCppWorkerHost()
+		port := a.extractCppWorkerPort()
+		if host == "" || port <= 0 {
+			return 0
+		}
+		base = fmt.Sprintf("http://%s:%d", host, port)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cppWorkerProbeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/cppworker/config", nil)
+	if err != nil {
+		return 0
+	}
+	client := a.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: cppWorkerProbeTimeout}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("[%s] detectCppWorkerParallelism: cppworker недоступен (%v) — "+
+			"вместимость оставляем на усмотрение балансера\n",
+			time.Now().Format(time.RFC3339), err)
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	var parsed struct {
+		Config struct {
+			DefaultNParallel int `json:"defaultNParallel"`
+		} `json:"config"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return 0
+	}
+	if parsed.Config.DefaultNParallel > 0 {
+		fmt.Printf("[%s] detectCppWorkerParallelism: cppworker сообщил defaultNParallel=%d\n",
+			time.Now().Format(time.RFC3339), parsed.Config.DefaultNParallel)
+		return parsed.Config.DefaultNParallel
+	}
+	return 0
 }
 
 // extractCppWorkerHost - возвращает host физического cppworker-бэкенда.

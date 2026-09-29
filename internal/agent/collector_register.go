@@ -55,6 +55,24 @@ func (a *Agent) register() error {
 	// для llama.cpp это завышение (n_parallel=1 в C-bridge), из-за которого
 	// admission-очередь считала доступными 10 слотов. Значение <= 0 означает
 	// «не задано»: балансер применит дефолт по типу бэкенда.
+	//
+	// R83-fix (2026-09-29): «одна настройка — одно место».
+	//
+	// Было: вместимость задавалась в ДВУХ местах — CPPWORKER_N_PARALLEL
+	// (сколько слотов реально поднимает cppworker) и AGENT_MAX_CONCURRENT_REQUESTS
+	// (сколько запросов пропускает балансер). Рассинхрон между ними давал ровно
+	// тот дефект, из-за которого «второй клиент получает 503»: агент сообщал 1,
+	// балансер ставил запросы в очередь, хотя воркер держал 2 слота — либо
+	// наоборот, пропускал 2 при одном слоте.
+	//
+	// Теперь при незаданном AGENT_MAX_CONCURRENT_REQUESTS агент спрашивает у
+	// cppworker его defaultNParallel (env CPPWORKER_N_PARALLEL) и сообщает
+	// балансеру ИМЕННО ЭТО значение. Явно заданный AGENT_MAX_CONCURRENT_REQUESTS
+	// остаётся операторским лимитом и имеет приоритет.
+	maxConcurrent := a.config.MaxConcurrentRequests
+	if maxConcurrent <= 0 {
+		maxConcurrent = a.detectCppWorkerParallelism()
+	}
 	reqBody := map[string]interface{}{
 		"agentId":               a.config.AgentID,
 		"hostname":              hostname,
@@ -68,7 +86,7 @@ func (a *Agent) register() error {
 		"backendType":           string(a.config.BackendType),
 		"cppWorkerPort":         registerCppWorkerPort,
 		"nodeLabels":            a.config.NodeLabels,
-		"maxConcurrentRequests": a.config.MaxConcurrentRequests,
+		"maxConcurrentRequests": maxConcurrent,
 		// R83 (2026-09-28): токен, который ждёт cppworker. Без него балансер
 		// не может авторизоваться на защищённых эндпоинтах cppworker, и правка
 		// параметров модели из WebUI через прокси балансера возвращает 401

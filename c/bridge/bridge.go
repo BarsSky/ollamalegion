@@ -44,6 +44,7 @@ import (
 	"runtime"
 	"runtime/cgo"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"ollama-loadbalancer/pkg/tokencount"

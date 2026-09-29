@@ -1,6 +1,10 @@
 package types
 
-import "time"
+import (
+	"os"
+	"strings"
+	"time"
+)
 
 // BackendStatus - статус бэкенда
 type BackendStatus string
@@ -72,6 +76,19 @@ type Backend struct {
 	// Сбрасывается оператором: PUT /limits или правка бэкенда из WebUI.
 	RuntimeCapacityFromNode bool `json:"runtimeCapacityFromNode,omitempty"`
 
+	// RuntimeModelSlots — R83 (2026-09-29): сколько параллельных сессий РЕАЛЬНО
+	// заведено у загруженной модели (cppworker отдаёт `max_slots` в /api/models).
+	//
+	// Зачем отдельное поле, а не MaxConcurrentReqs. MaxConcurrentReqs — статическая
+	// вместимость бэкенда, и её каждые 30 секунд переписывает перерегистрация агента
+	// (значение из AGENT_MAX_CONCURRENT_REQUESTS). Поэтому авто-значение из слотов
+	// модели там не выживало: poller ставил 2, ближайший heartbeat возвращал 1 —
+	// воспроизведено на живом стенде. Здесь живёт ФАКТ (слоты), агент его не трогает,
+	// а итоговую вместимость считает EffectiveMaxConcurrentRequests().
+	//
+	// 0 = неизвестно (старая сборка cppworker) → прежнее поведение.
+	RuntimeModelSlots int `json:"runtimeModelSlots,omitempty"`
+
 	// OllamaConfig — желаемые runtime-флаги Ollama, передаваемые агенту (только для ollama-типа)
 	OllamaConfig *OllamaDesiredConfig `json:"ollamaConfig,omitempty"`
 
@@ -109,17 +126,75 @@ type Backend struct {
 //
 // 0 или -1 означают «лимит не задан» — как и в прежней логике
 // «runtime > 0 ? runtime : max».
+//
+// R83 (2026-09-29): перед всеми этими источниками стоит RuntimeModelSlots —
+// фактическое число слотов, с которым модель загружена (cppworker отдаёт
+// max_slots в /api/models). Именно оно означает реальную способность бэкенда
+// держать параллельные сессии; MaxConcurrentReqs — лишь статический дефолт,
+// который вдобавок переписывается перерегистрацией агента каждые 30 секунд
+// (поэтому авто-значение там не выживало).
 func (b *Backend) EffectiveMaxConcurrentRequests() int {
 	if b == nil {
 		return 0
 	}
-	if b.RuntimeCapacityFromNode && b.MaxConcurrentReqs > 0 {
-		return b.MaxConcurrentReqs
+	// R83 (2026-09-29): учёт ФАКТИЧЕСКИХ слотов модели — opt-in.
+	//
+	// Авто-привязка вместимости к слотам меняет поведение уже проверенных путей
+	// (admission-очередь, слот-менеджер, выбор бэкенда), поэтому по умолчанию она
+	// ВЫКЛЮЧЕНА: стенд работает ровно как раньше. Оператор включает её осознанно,
+	// когда модель загружена с parallel > 1 и он хочет, чтобы балансер пропускал
+	// столько запросов параллельно: LB_CAPACITY_FROM_MODEL_SLOTS=true.
+	slots := 0
+	if CapacityFromModelSlotsEnabled() {
+		slots = b.RuntimeModelSlots
 	}
-	if b.RuntimeMaxConcurrentRequests > 0 {
-		return b.RuntimeMaxConcurrentRequests
+	return ResolveEffectiveCapacity(slots, b.RuntimeMaxConcurrentRequests,
+		b.RuntimeCapacityFromNode, b.MaxConcurrentReqs)
+}
+
+// CapacityFromModelSlotsEnabled — включён ли учёт фактических слотов модели.
+//
+// Читается из окружения на каждом вызове: резолвер горячий, но чтение одной
+// переменной дешевле, чем риск рассинхрона кэша (в тестах окружение меняется
+// через t.Setenv).
+func CapacityFromModelSlotsEnabled() bool {
+	for _, name := range []string{"LB_CAPACITY_FROM_MODEL_SLOTS", "CPPWORKER_CAPACITY_FROM_SLOTS"} {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+		case "1", "true", "yes", "on":
+			return true
+		}
 	}
-	return b.MaxConcurrentReqs
+	return false
+}
+
+// ResolveEffectiveCapacity — чистая функция резолвера вместимости: вынесена
+// отдельно, чтобы её можно было проверить тестом без конструирования Backend и
+// чтобы правило было в одном месте.
+//
+// R83 (2026-09-29): первым идёт RuntimeModelSlots — ФАКТИЧЕСКОЕ число слотов
+// загруженной модели (cppworker отдаёт max_slots в /api/models). Это реальная
+// способность бэкенда держать параллельные сессии; MaxConcurrentReqs — лишь
+// статический дефолт, который вдобавок переписывается перерегистрацией агента
+// каждые 30 секунд (поэтому авто-значение там не выживало: poller ставил 2,
+// ближайший heartbeat возвращал 1 — воспроизведено на живом стенде).
+//
+// Операторский лимит (runtimeMax) уважается, но НЕ может превысить фактические
+// слоты: иначе балансер открыл бы ложные свободные слоты и слал больше запросов,
+// чем cppworker обслуживает.
+func ResolveEffectiveCapacity(modelSlots, runtimeMax int, capacityFromNode bool, staticMax int) int {
+	if modelSlots > 0 {
+		if runtimeMax > 0 && runtimeMax <= modelSlots {
+			return runtimeMax
+		}
+		return modelSlots
+	}
+	if capacityFromNode && staticMax > 0 {
+		return staticMax
+	}
+	if runtimeMax > 0 {
+		return runtimeMax
+	}
+	return staticMax
 }
 
 // OllamaDesiredConfig — желаемая конфигурация Ollama, передаваемая агенту через heartbeat

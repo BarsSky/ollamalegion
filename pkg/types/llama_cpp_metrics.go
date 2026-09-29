@@ -21,9 +21,9 @@ type LlamaCppMetrics struct {
 	// 0 = unknown (cppworker didn't report — pre-Round 37 build).
 	// Used by preflight resolveModelMaxContext v2 for auto-relax when
 	// profile is conservative.
-	MaxFeasibleContext int `json:"maxFeasibleContext"`
-	GGUFMaxContext     int `json:"ggufMaxContext"`
-	LoadedModels []LlamaCppModel `json:"loadedModels"`
+	MaxFeasibleContext int             `json:"maxFeasibleContext"`
+	GGUFMaxContext     int             `json:"ggufMaxContext"`
+	LoadedModels       []LlamaCppModel `json:"loadedModels"`
 	// LoadingModels — модели, которые сейчас в процессе загрузки (State="loading").
 	// Заполняется из cppworker /api/models/load/progress (либо из notifyModelLoaded callback).
 	// Используется UI (монитор, вкладка бэкендов, GGUF-таб) для отображения
@@ -55,6 +55,18 @@ type LlamaCppModel struct {
 	NumGPULayers  int    `json:"numGpuLayers"`
 	Quantization  string `json:"quantization"`
 	State         string `json:"state"` // "loaded", "loading", "error"
+	// Parallel — R83 (2026-09-29): число параллельных слотов модели (n_parallel).
+	//
+	// Зачем. Балансер не знал реальную вместимость модели и держал
+	// MaxConcurrentReqs=1, то есть СЕРИАЛИЗОВАЛ запросы, даже когда модель
+	// загружена с parallel=2/3 и готова обслуживать их одновременно (проверено
+	// напрямую: два одновременных запроса при parallel=2 — оба 200). Теперь
+	// значение приходит из /api/models и синхронизирует вместимость бэкенда.
+	Parallel int `json:"parallel,omitempty"`
+	// MaxSlots — сколько слотов cppworker РЕАЛЬНО завёл (`max_slots` в /api/models).
+	// Для однослотовой модели это 1 (а не 0), поэтому именно это поле годится как
+	// источник вместимости бэкенда.
+	MaxSlots int `json:"maxSlots,omitempty"`
 	// === Architecture metadata (Round 18+ — для оценки VRAM/RAM split по слоям) ===
 	// cppworker reports per-model architecture details, используем для расчёта
 	// estimatedVram/estimatedRam (cppworker не сообщает actual usage per-model).
@@ -64,7 +76,7 @@ type LlamaCppModel struct {
 	NEmbd        int    `json:"nEmbd,omitempty"`        // n_embd (для KV cache)
 	HeadDimK     int    `json:"headDimK,omitempty"`     // head_dim_k
 	HeadDimV     int    `json:"headDimV,omitempty"`     // head_dim_v
-	MaxContext   int    `json:"maxContext,omitempty"`  // ggufContextLength (макс n_ctx для этой модели)
+	MaxContext   int    `json:"maxContext,omitempty"`   // ggufContextLength (макс n_ctx для этой модели)
 	LoadedAt     string `json:"loadedAt,omitempty"`     // RFC3339Nano
 	// === Capabilities (Round 18 P0.1, 2026-08-03) ===
 	// Single source of truth для auto-detect (vision, tools, reasoning).
@@ -77,9 +89,9 @@ type LlamaCppModel struct {
 	// в preflight: если client просит kvCacheType=q8_0, а модель загружена с
 	// f16, → reload на нужный params (как в n_ctx случае).
 	// Пустая строка / 0 = неизвестно.
-	KvCacheType     string `json:"kvCacheType,omitempty"`
-	FlashAttnType   int    `json:"flashAttnType,omitempty"` // -1=auto, 0=off, 1=on
-	UseMmap         bool   `json:"useMmap,omitempty"`
+	KvCacheType   string `json:"kvCacheType,omitempty"`
+	FlashAttnType int    `json:"flashAttnType,omitempty"` // -1=auto, 0=off, 1=on
+	UseMmap       bool   `json:"useMmap,omitempty"`
 	// === Round 37 (2026-08-18): per-model feasible/GGUF max context ===
 	// Заполняется из enriched /api/models per-model `feasible_max_context` /
 	// `gguf_max_context` (см. cmd/cppworker/handlers_model.go Round 37 changes).

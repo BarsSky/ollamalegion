@@ -728,6 +728,36 @@ func (p *Proxy) AdoptCppWorkerToken(backendID, reported string) {
 	p.scheduleSave()
 }
 
+// SetBackendModelSlots — R83 (2026-09-29): записать фактические слоты модели.
+//
+// Отдельный сеттер, а не правка MaxConcurrentReqs: MaxConcurrentReqs — статическая
+// вместимость, и её каждые 30 секунд переписывает перерегистрация агента (значение
+// из AGENT_MAX_CONCURRENT_REQUESTS). Из-за этого авто-значение из слотов модели не
+// выживало: poller ставил 2, ближайший heartbeat возвращал 1 — воспроизведено на
+// живом стенде. RuntimeModelSlots хранит ФАКТ и агентом не трогается, а итоговую
+// вместимость считает EffectiveMaxConcurrentRequests() (факт, ограниченный
+// операторским лимитом).
+func (p *Proxy) SetBackendModelSlots(backendID string, slots int) {
+	if slots <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	state, ok := p.backends[backendID]
+	if !ok {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	if state.Backend.RuntimeModelSlots == slots {
+		return
+	}
+	state.Backend.RuntimeModelSlots = slots
+	p.scheduleSave()
+}
+
 // AttachAgentToBackend — привязка агента к уже существующему бэкенду.
 func (p *Proxy) AttachAgentToBackend(backendID, agentID string, agentPort int) {
 	p.mu.Lock()

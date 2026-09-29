@@ -1156,6 +1156,22 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			"loaded_at":           m.LoadedAt,
 			"gpu_count":           m.GPUCount,
 			"kv_cache_type":       m.KVCacheType,
+			// R83 (2026-09-29): число параллельных слотов модели (n_parallel).
+			//
+			// Зачем в ответе. Балансер НЕ мог узнать, что модель умеет держать
+			// несколько сессий: поля не было в /api/models, поэтому он держал
+			// MaxConcurrentReqs=1 и сериализовал запросы, даже когда модель
+			// загружена с parallel=2/3 и физически готова их обслуживать
+			// (проверено: два одновременных запроса напрямую в cppworker с
+			// parallel=2 — оба 200).
+			"parallel":   m.Parallel,
+			"batch_size": m.BatchSize,
+			"max_slots": func() int {
+				if m.Parallel > 0 {
+					return m.Parallel
+				}
+				return 1
+			}(),
 		}
 		// Round 51.6 (2026-08-20): per-model active_queries counter. WebUI
 		// показывает "Generating N requests" badge чтобы оператор не выгружал

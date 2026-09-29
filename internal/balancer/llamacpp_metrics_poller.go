@@ -182,8 +182,8 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 	// reverts to camelCase, the right fix is a custom UnmarshalJSON, not
 	// relying on the comma-list (which doesn't work as expected).
 	var data struct {
-		Count           int `json:"count"`
-		MaxVRAMNCtx     int `json:"max_vram_n_ctx"`
+		Count       int `json:"count"`
+		MaxVRAMNCtx int `json:"max_vram_n_ctx"`
 		// R83 §9.2 (2026-09-26): cppworker сообщает, известна ли ему VRAM.
 		// Вместе с max_vram_n_ctx==0 это означает «веса не влезают», а не
 		// «метрик нет» — см. DecidePreflight.
@@ -212,7 +212,14 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			// "context_size" but the previous tag was "contextSize", so
 			// LoadedModels[].ContextLength was always 0, breaking
 			// preflightNCtxReloadIfNeeded's loaded >= requested check.
-			ContextSize       int    `json:"context_size,contextSize,omitempty"`
+			ContextSize int `json:"context_size,contextSize,omitempty"`
+			// R83 (2026-09-29): слоты модели. Без них балансер держал
+			// вместимость 1 и сериализовал запросы, даже когда модель загружена
+			// с parallel=2/3 (проверено: два одновременных запроса напрямую в
+			// cppworker при parallel=2 — оба 200).
+			Parallel          int    `json:"parallel,omitempty"`
+			MaxSlots          int    `json:"max_slots,maxSlots,omitempty"`
+			BatchSize         int    `json:"batch_size,batchSize,omitempty"`
 			GGUFContextLength int    `json:"gguf_context_length,ggufContextLength,omitempty"`
 			GPULayers         int    `json:"gpu_layers,gpuLayers,omitempty"`
 			ActiveQueries     int    `json:"active_queries,activeQueries,omitempty"`
@@ -292,7 +299,9 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			VRAMUsage:     vram,
 			RAMUsage:      m.RAMUsage,
 			ContextLength: m.ContextSize,
-			BatchSize:     0, // cppworker reports batchSize too, см. ниже в более широкой структуре
+			Parallel:      m.Parallel, // R83: слоты модели (для синхронизации вместимости)
+			MaxSlots:      m.MaxSlots, // R83: сколько слотов завёл cppworker (>=1)
+			BatchSize:     0,          // cppworker reports batchSize too, см. ниже в более широкой структуре
 			NumGPULayers:  m.GPULayers,
 			Quantization:  quant,
 			State:         state,
@@ -360,12 +369,76 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 	lm.AvailableVRAMMB = data.AvailableVRAMMB
 	lm.TotalVRAMMB = data.TotalVRAMMB
 	p.proxy.metricsMgr.mu.Unlock()
+
+	// R83 (2026-09-29): согласуем вместимость бэкенда с числом слотов модели.
+	//
+	// Балансер держал MaxConcurrentReqs=1 и СЕРИАЛИЗОВАЛ запросы, хотя модель
+	// может обслуживать несколько одновременно (parallel=2/3). Оператору приходилось
+	// вручную выставлять вместимость, и при перезагрузке модели её значение
+	// расходилось с реальностью. Теперь вместимость подтягивается из факта:
+	// сколько слотов завёл cppworker (max_slots), столько запросов балансер и
+	// пропускает параллельно; остальные ждут в очереди, как и раньше.
+	p.adoptCapacityFromLoadedModels(b.id, loadedModels)
+
 	logger.Get().Infow("llamaCppMetricsPoller: updated llama.cpp metrics",
 		"backend", b.id, "url", url, "loaded_models", len(loadedModels))
 
 	// Опрос loading-прогресса (если есть активные загрузки — обновим
 	// LoadingModels и переключим poller на быстрый режим).
 	p.pollLoadingProgress(b)
+}
+
+// adoptCapacityFromLoadedModels — R83 (2026-09-29): привести вместимость бэкенда
+// в соответствие с числом слотов загруженной модели.
+//
+// ПОЧЕМУ. cppworker сообщает max_slots (сколько параллельных сессий заведено при
+// загрузке: parallel=1 → 1, parallel=3 → 3). Балансер это значение не читал,
+// поэтому всегда работал с MaxConcurrentReqs=1 и сериализовал запросы даже к
+// модели с тремя слотами. Проверено напрямую: два одновременных запроса к
+// cppworker с parallel=2 — оба 200, то есть модель реально готова к параллелизму.
+//
+// ПРАВИЛА (чтобы не сломать уже настроенные стенды):
+//   - берём МАКСИМУМ по загруженным моделям: вместимость бэкенда — это его
+//     способность, а не параметр одной модели;
+//   - уважаем оператора: если RuntimeMaxConcurrentRequests задан явно (PUT /limits
+//     или AGENT_MAX_CONCURRENT_REQUESTS), значение оператора не трогаем;
+//   - меняем только когда есть что менять (иначе poller каждые 30 c писал бы
+//     состояние и вызывал autosave).
+func (p *llamaCppMetricsPoller) adoptCapacityFromLoadedModels(backendID string, models []types.LlamaCppModel) {
+	if p == nil || p.proxy == nil || backendID == "" || len(models) == 0 {
+		return
+	}
+
+	slots := 0
+	for _, m := range models {
+		if m.State != "loaded" {
+			continue
+		}
+		n := m.MaxSlots
+		if n <= 0 {
+			n = m.Parallel
+		}
+		if n > slots {
+			slots = n
+		}
+	}
+	if slots <= 0 {
+		return
+	}
+
+	state := p.proxy.GetBackend(backendID)
+	if state == nil {
+		return
+	}
+	if state.RuntimeModelSlots == slots {
+		return
+	}
+
+	old := state.RuntimeModelSlots
+	p.proxy.SetBackendModelSlots(backendID, slots)
+	logger.Get().Infow("llamaCppMetricsPoller: вместимость бэкенда приведена к числу слотов модели",
+		"backend", backendID, "old_model_slots", old, "new_model_slots", slots,
+		"note", "значение живёт в RuntimeModelSlots: MaxConcurrentReqs переписывается перерегистрацией агента")
 }
 
 // pollLoadingProgress опрашивает /api/models/load/progress у бэкенда и

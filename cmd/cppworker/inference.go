@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unsafe"
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
@@ -514,24 +515,62 @@ func generateWithRamFallback(modelName, prompt string, params bridge.GenerationP
 // ?????? ? ?????? ?? prefill-?????? ??? tools/long-prompt ????????.
 
 // streamWithAbort wraps backend.GenerateStream with R63 per-infer AbortWatcher.
-// Returns error from GenerateStream. AbortWatcher is fire-and-forget goroutine
-// that calls bridge.SetInferAbort(abortFlag, 1) when ctx.Done() fires.
+// Returns error from GenerateStream.
 //
-// Precondition: ctx must be cancellable (handler context). abortFlag == nil is safe
-// (no watcher created).
+// R83 (2026-09-29): ИСПРАВЛЕН ПОРЯДОК. Раньше здесь было так:
+//
+//	abortFlag, err := backend.GenerateStream(...)   // блокирует всю генерацию
+//	if abortFlag != nil { NewAbortWatcher(ctx, abortFlag) }
+//
+// то есть watcher создавался ПОСЛЕ возврата из блокирующего C-вызова — когда
+// генерация уже закончилась. Клиентский Cancel (Cline закрывает соединение,
+// WebUI жмёт Cancel) не останавливал модель: ctx.Done() приходил, но флаг
+// ставить было уже некуда и незачем. Живой симптом из отчёта: «перестал
+// отрабатывать cancel от клиента — модель продолжает генерацию судя по логам».
+//
+// Теперь флаг создаётся ДО генерации, watcher вооружается сразу, а флаг
+// передаётся в C (bridge_infer_stream использует его вместо стекового).
+// Отмена срабатывает на ближайшем checkpoint (проверка флага на каждый токен).
+//
+// Precondition: ctx must be cancellable (handler context).
+// abortFlagFactory — R83 (2026-09-29): точка подмены для тестов.
+//
+// В production это bridge.NewInferAbortFlag (C side malloc + atomic_init). В тестах
+// подменяется, чтобы проверить ПОРЯДОК вооружения AbortWatcher: watcher обязан
+// получить флаг ДО старта генерации, иначе клиентский Cancel не остановит модель
+// (см. cancel_watcher_order_r83_test.go).
+var abortFlagFactory = bridge.NewInferAbortFlag
+
+// beginInferCancellation — R83 (2026-09-29): создать abort-флаг и вооружить
+// AbortWatcher ДО старта генерации.
+//
+// Вынесено отдельной функцией, потому что порядок здесь и есть исправление:
+// раньше watcher создавался после возврата из блокирующего C-вызова, то есть
+// когда генерация уже завершилась, и клиентский Cancel (Cline закрывает
+// соединение, WebUI жмёт Cancel) ни на что не влиял. Тест
+// cancel_watcher_order_r83_test.go проверяет именно эту функцию — она не требует
+// ни загруженной модели, ни C-bridge.
+//
+// Возвращает флаг для передачи в C (может быть nil в stub-режиме).
+func beginInferCancellation(ctx context.Context) unsafe.Pointer {
+	abortFlag := abortFlagFactory()
+	if abortFlag == nil {
+		return nil
+	}
+	// Возвращаем флаг в 0 перед каждой попыткой: при RAM-fallback/reload
+	// streamWithAbort вызывается повторно, и «залипший» флаг от предыдущей
+	// отмены мгновенно убил бы новую генерацию.
+	bridge.ResetInferAbortFlag(abortFlag)
+	_ = NewAbortWatcher(ctx, abortFlag)
+	return abortFlag
+}
+
 func streamWithAbort(ctx context.Context, modelName, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) error {
-	abortFlag, err := backend.GenerateStream(modelName, prompt, params, callback)
-	if err != nil {
-		return err
-	}
-	// R63 (2026-09-15): per-infer AbortWatcher через unsafe.Pointer на
-	// C atomic_int, возвращённый из GenerateStream. При ctx.Done() ставит
-	// atomic.StoreInt32(flag, 1) → C-bridge aborts ТОЛЬКО этот infer на
-	// ближайшем checkpoint, не per-model.
-	if abortFlag != nil {
-		_ = NewAbortWatcher(ctx, abortFlag)
-	}
-	return nil
+	// Флаг создаём и вооружаем ЗАРАНЕЕ — это и есть исправление порядка.
+	abortFlag := beginInferCancellation(ctx)
+
+	_, err := backend.GenerateStreamWithAbort(modelName, prompt, params, callback, abortFlag)
+	return err
 }
 
 func generateStreamWithRamFallback(ctx context.Context, modelName, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback, hasTools bool) error {
@@ -729,10 +768,10 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 		TensorSplit:   current.TensorSplit,
 		// Session 16+ (gemma-4/qwen3 fix): RAM fallback must use q4_0 KV-cache to fit big n_ctx in 8GB VRAM.
 		// Without this, llama.cpp reserves f16 KV and OOMs on 65536+ for any model.
-		KVCacheType:   "q4_0",
+		KVCacheType: "q4_0",
 		// Round 15 (2026-07-29): inherit Parallel из current для сохранения multi-slot
 		// state isolation после reload (иначе SlotManager пересоздаётся с maxSlots=1).
-		Parallel:      current.Parallel,
+		Parallel: current.Parallel,
 	}
 
 	// === AutoTuneNCtx (Issue: "Cline + 20GB GPU, ???? RAM, ?? VRAM ?? ???????") ===
@@ -937,4 +976,3 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 	}
 	return true, nil
 }
-

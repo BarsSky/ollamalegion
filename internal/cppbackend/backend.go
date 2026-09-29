@@ -2077,6 +2077,17 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 // per-model race (любая отмена одной горутины сбрасывала все infers для
 // той же модели).
 func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) (unsafe.Pointer, error) {
+	return b.GenerateStreamWithAbort(modelName, prompt, params, callback, nil)
+}
+
+// GenerateStreamWithAbort — R83 (2026-09-29): то же, что GenerateStream, но с
+// ЗАРАНЕЕ созданным флагом отмены (bridge.NewInferAbortFlag).
+//
+// Зачем. Раньше флаг отмены возвращался уже после завершения блокирующей
+// генерации, поэтому клиентский Cancel не мог её прервать. Теперь вызывающий
+// создаёт флаг, вооружает AbortWatcher на ctx.Done() и передаёт флаг сюда —
+// отмена срабатывает на ближайшем checkpoint C-bridge (per-token).
+func (b *Backend) GenerateStreamWithAbort(modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback, streamAbortFlag unsafe.Pointer) (unsafe.Pointer, error) {
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
 		return nil, err
@@ -2132,7 +2143,16 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 		inst.lastUsedAt.Store(time.Now())
 	}()
 
-	abortFlag, streamErr := inst.handle.InferStream(prompt, params, countedCallback)
+	// R83 (2026-09-29): если вызывающий уже создал флаг отмены — используем его,
+	// чтобы AbortWatcher мог остановить генерацию ВО ВРЕМЯ неё (см.
+	// InferStreamWithAbort в c/bridge). Без флага поведение прежнее.
+	// streamErr объявлен выше и используется в defer для метрик.
+	var abortFlag unsafe.Pointer
+	if streamAbortFlag != nil {
+		abortFlag, streamErr = inst.handle.InferStreamWithAbort(prompt, params, countedCallback, streamAbortFlag)
+	} else {
+		abortFlag, streamErr = inst.handle.InferStream(prompt, params, countedCallback)
+	}
 	return abortFlag, streamErr
 }
 
@@ -2403,6 +2423,22 @@ func (b *Backend) GetGPUDevices() []bridge.GPUDevice {
 	return result
 }
 
+// VramFreeSourceName — R83 (2026-09-29): человекочитаемый источник значения
+// VRAMFreeMB. Нужен оператору, чтобы отличить реальный ноль от «не смогли
+// измерить»: раньше при ошибке замера отдавался весь объём как свободный.
+func VramFreeSourceName(source int) string {
+	switch source {
+	case 0:
+		return "cudaMemGetInfo" // runtime API — самый точный
+	case 1:
+		return "cuMemGetInfo" // driver API (контекст уже существовал)
+	case 2:
+		return "unknown" // не измерено: vramFreeMB=0 значит НЕИЗВЕСТНО, а не «ноль свободно»
+	default:
+		return "unknown"
+	}
+}
+
 // GetGPUMetrics возвращает метрики использования GPU
 func (b *Backend) GetGPUMetrics() []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, b.gpuCount)
@@ -2414,6 +2450,12 @@ func (b *Backend) GetGPUMetrics() []map[string]interface{} {
 			"vramFreeMB":   dev.VRAMFreeMB,
 			"vramUsedMB":   dev.VRAMTotalMB - dev.VRAMFreeMB,
 			"vramUsagePct": float64(0),
+			// R83 (2026-09-29): чем измерена свободная VRAM. Оператор должен
+			// отличать «свободно 0» от «не смогли спросить»: раньше при ошибке
+			// замера отдавался весь объём как свободный, планировщик считал 8 ГБ
+			// доступными, и загрузка падала с cudaMalloc OOM. Значение "unknown"
+			// означает: VRAMFreeMB=0 — это НЕ «ноль свободно», а «неизвестно».
+			"vramFreeSource": VramFreeSourceName(dev.VRAMFreeSource),
 		}
 		if dev.VRAMTotalMB > 0 {
 			metrics["vramUsagePct"] = float64(dev.VRAMTotalMB-dev.VRAMFreeMB) / float64(dev.VRAMTotalMB) * 100

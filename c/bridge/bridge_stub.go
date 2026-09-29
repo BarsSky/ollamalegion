@@ -40,6 +40,9 @@ type GPUDevice struct {
 	Name            string
 	ComputeCapMajor int
 	ComputeCapMinor int
+	// VRAMFreeSource — R83 (2026-09-29): в stub VRAM не измеряется (2 = неизвестно).
+	// Поле обязано существовать, чтобы код, читающий его, собирался и под llama_stub.
+	VRAMFreeSource int
 }
 
 // GenerationParams — параметры генерации
@@ -657,6 +660,28 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 		}
 	}
 	return nil, nil
+}
+
+// NewInferAbortFlag — R83 (2026-09-29): в stub-режиме отмена не эмулируется,
+// но сигнатура обязана совпадать с non-stub реализацией (bridge.go), иначе
+// cmd/cppworker не соберётся под тегом llama_stub.
+func NewInferAbortFlag() unsafe.Pointer { return nil }
+
+// ResetInferAbortFlag — R83 (2026-09-29): сброс делает Go (atomic.StoreInt32), а не
+// C, поэтому реализация общая для stub и real. Здесь оставлен вызов того же
+// примитива — важно, чтобы «залипший» флаг от предыдущей отмены не убивал
+// следующую генерацию и в stub-режиме (иначе тесты на порядок не воспроизводятся).
+func ResetInferAbortFlag(flag unsafe.Pointer) {
+	if flag == nil {
+		return
+	}
+	atomic.StoreInt32((*int32)(flag), 0)
+}
+
+// InferStreamWithAbort — stub-вариант стриминга с заранее созданным флагом.
+// Семантика та же, что у InferStream: флаг в stub не используется.
+func (m *ModelHandle) InferStreamWithAbort(prompt string, params GenerationParams, callback StreamCallback, flag unsafe.Pointer) (unsafe.Pointer, error) {
+	return m.InferStream(prompt, params, callback)
 }
 
 // GetEmbeddings получает эмбеддинги (stub)

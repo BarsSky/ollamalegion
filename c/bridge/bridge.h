@@ -23,6 +23,13 @@ typedef struct {
     char name[256];
     int compute_capability_major;
     int compute_capability_minor;
+    // R83 (2026-09-29): чем измерена свободная VRAM.
+    //   0 = cudaMemGetInfo (runtime, точно, учитывает другие процессы)
+    //   1 = cuMemGetInfo   (driver API, контекст уже был)
+    //   2 = НЕ измерена — vram_free_mb=0, значение неизвестно
+    // Нужно, чтобы отличить «реально 0 свободно» от «не смогли спросить» и не
+    // выдавать total за free (см. инцидент с OOM на 8 ГБ карте).
+    int vram_free_source;
 } GPUDeviceInfo;
 
 // InferenceResult — результат инференса
@@ -227,14 +234,31 @@ InferenceResult bridge_infer(
 
 // Стриминг инференс (через callback)
 typedef int (*StreamCallback)(const char* token, int token_len, void* user_data);
+
+// R83 (2026-09-29): abort_flag — ЗАРАНЕЕ созданный флаг (bridge_infer_abort_create).
+//
+// Если передан, используется он, а не стековый. Это единственный способ отменить
+// генерацию ПОСРЕДИ работы: раньше адрес стекового флага возвращался через
+// out_abort_flag только при входе, а Go получал его уже после возврата из
+// блокирующего вызова — то есть когда генерация закончилась. AbortWatcher
+// создавался в streamWithAbort ПОСЛЕ GenerateStream и не успевал ни на что
+// повлиять: клиентский Cancel не останавливал модель (она считала до n_predict).
 int bridge_infer_stream(
     ModelHandle model,
     const char* prompt,
     const GenerationParams* params,
     StreamCallback callback,
     void* user_data,
-    void** out_abort_flag   // R63: optional out-param. Caller passes unsafe.Pointer*; C stores &local_atomic_flag here.
+    void** out_abort_flag,  // R63: optional out-param (legacy). C stores the flag actually used.
+    int32_t* abort_flag     // R83: optional pre-created flag; NULL → стековый (legacy).
 );
+
+// R83 (2026-09-29): создать per-inference abort flag ДО старта генерации.
+// Возвращает NULL при ошибке (детали — bridge_get_last_error).
+int32_t* bridge_infer_abort_create(void);
+
+// R83: сбросить флаг в 0 (для повторной попытки той же генерации).
+void bridge_infer_abort_reset(int32_t* abort_flag);
 
 // R63: установить abort flag для конкретного infer.
 // Go-side вызывает из cancel-watcher goroutine при r.Context().Done().

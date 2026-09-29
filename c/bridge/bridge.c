@@ -812,12 +812,49 @@ int bridge_get_gpu_info(int gpu_index, GPUDeviceInfo* info) {
     strncpy(info->name, prop.name, sizeof(info->name) - 1);
     info->name[sizeof(info->name) - 1] = '\0';
     info->vram_total_mb = (uint64_t)(prop.totalGlobalMem / (1024 * 1024));
+
+    // R83 (2026-09-29): честная свободная VRAM.
+    //
+    // БЫЛО: cuMemGetInfo (driver API) и, при ошибке, `vram_free_mb = vram_total_mb`.
+    // Подвох в fallback: cuMemGetInfo требует ИНИЦИАЛИЗИРОВАННОГО primary-контекста.
+    // Если контекста ещё нет (сразу после старта cppworker, до первой загрузки
+    // модели), вызов возвращает ошибку — и мы объявляли свободным ВЕСЬ объём.
+    //
+    // Живой симптом (RTX 3070 8 GB, 2026-09-29): nvidia-smi показывал
+    // used=1582 MiB / free=6436 MiB, а /api/gpu отдавал vramUsedMB=0,
+    // vramFreeMB=8191. Планировщик (memfit) считал, что доступно 8 ГБ, и загрузка
+    // падала с "cudaMalloc failed: out of memory" — оператор видел «VRAM занята,
+    // но ни WebUI, ни балансер не понимают кем».
+    //
+    // ТЕПЕРЬ: сначала runtime API cudaMemGetInfo — он сам поднимает контекст и
+    // учитывает память, занятую другими процессами на устройстве. Если и он
+    // недоступен, сообщаем 0 («неизвестно»), а НЕ весь объём: завышенная оценка
+    // опаснее неизвестной — она приводит к попытке загрузки, которая гарантированно
+    // упадёт по OOM. Ноль трактуется выше как VRAMKnown=false (консервативный путь).
     size_t free_mem = 0, total_mem = 0;
-    CUresult cu_err = cuMemGetInfo(&free_mem, &total_mem);
-    if (cu_err == CUDA_SUCCESS) {
+    cudaError_t rt_err = cudaMemGetInfo(&free_mem, &total_mem);
+    if (rt_err == cudaSuccess && total_mem > 0) {
         info->vram_free_mb = (uint64_t)(free_mem / (1024 * 1024));
+        info->vram_free_source = 0; // runtime API
     } else {
-        info->vram_free_mb = info->vram_total_mb;
+        // Fallback на driver API — работает, если контекст уже создан llama.cpp
+        // (то есть при повторном опросе после загрузки модели).
+        size_t drv_free = 0, drv_total = 0;
+        CUresult cu_err = cuMemGetInfo(&drv_free, &drv_total);
+        if (cu_err == CUDA_SUCCESS) {
+            info->vram_free_mb = (uint64_t)(drv_free / (1024 * 1024));
+            info->vram_free_source = 1; // driver API
+        } else {
+            // Обе оценки недоступны — честно сообщаем 0, не выдаём total за free.
+            info->vram_free_mb = 0;
+            info->vram_free_source = 2; // неизвестно
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                     "free VRAM unknown: cudaMemGetInfo failed (%s), cuMemGetInfo failed; "
+                     "reporting 0 instead of total to avoid over-commit",
+                     cudaGetErrorString(rt_err));
+            set_error(buf);
+        }
     }
     info->compute_capability_major = prop.major;
     info->compute_capability_minor = prop.minor;
@@ -1875,7 +1912,10 @@ int bridge_infer_stream(
     const GenerationParams* params,
     StreamCallback callback,
     void* user_data,
-    void** out_abort_flag  // R63: per-infer atomic flag (optional)
+    void** out_abort_flag,  // R63: per-infer atomic flag (optional, legacy out-param)
+    int32_t* abort_flag     // R83 (2026-09-29): заранее созданный флаг (optional).
+                            // Если задан — используется ОН, а не стековый: это
+                            // позволяет Go вооружить AbortWatcher ДО генерации.
 ) {
     if (model == NULL || prompt == NULL || callback == NULL) {
         set_error("invalid arguments to bridge_infer_stream (model/prompt/callback is NULL)");
@@ -1894,9 +1934,13 @@ int bridge_infer_stream(
     // был RACE CONDITION: любая горутина, делающая bridge_request_abort,
     // отменяла ВСЕ активные infers для модели — что ломало OpenWebUI
     // streaming при многопользовательской нагрузке.
+    //
+    // R83 (2026-09-29): если caller передал свой флаг — работаем с ним. Стековый
+    // оставлен для обратной совместимости (caller без предварительного создания).
     atomic_int local_abort;
     atomic_init(&local_abort, 0);
-    if (out_abort_flag) *out_abort_flag = (void*)&local_abort;
+    atomic_int* abort = (abort_flag != NULL) ? (atomic_int*)abort_flag : &local_abort;
+    if (out_abort_flag) *out_abort_flag = (void*)abort;
 
     // Round 13 (2026-07-28): extract seq_id for multi-slot support.
     llama_seq_id seq_id = (llama_seq_id)(params->seq_id > 0 ? params->seq_id : 0);
@@ -1969,7 +2013,7 @@ int bridge_infer_stream(
 
         // Round 31 #6 + R63: abort check в prompt phase (stream).
         // R63: per-infer flag (local_abort) вместо per-model.
-        if (atomic_load(&local_abort)) {
+        if (atomic_load(abort)) {
             free(tokens);
             set_error("generation aborted by user (bridge_infer_stream, prompt phase)");
             llama_batch_free(batch);
@@ -2065,7 +2109,7 @@ int bridge_infer_stream(
         // R63: per-infer flag (local_abort) вместо per-model.
         // Если токен долго декодируется (large model, large batch), abort даёт
         // exit point между декодированием. Cancel latency = single batch time.
-        if (atomic_load(&local_abort)) {
+        if (atomic_load(abort)) {
             llama_batch_free(gen_batch);
             llama_sampler_free(sampler);
             return BRIDGE_ERR_ABORTED;
@@ -2381,6 +2425,36 @@ int bridge_request_abort(ModelHandle model) {
     InternalModel *im = (InternalModel *)model;
     atomic_store(&im->abort_requested, 1);
     return 0;
+}
+
+// R83 (2026-09-29): bridge_infer_abort_create — per-inference abort flag,
+// создаваемый ДО старта генерации.
+//
+// ЗАЧЕМ. До этой правки флаг был atomic_int на СТЕКЕ внутри bridge_infer /
+// bridge_infer_stream, и его адрес уходил в out_abort_flag только при входе —
+// то есть Go узнавал флаг лишь ПОСЛЕ возврата из блокирующего C-вызова, когда
+// генерация уже закончилась. Go-side AbortWatcher (abort_watcher.go) создавался
+// в streamWithAbort уже после GenerateStream, поэтому ctx.Done() от оборванного
+// клиента физически не мог поставить флаг: генерация продолжалась до n_predict.
+// Живой симптом: клиент нажал Cancel (Cline/WebUI), соединение закрыто, а
+// модель продолжает считать токены — по логам cppworker видно активные генерации.
+//
+// Теперь флаг создаётся Go-стороной ЗАРАНЕЕ, передаётся в C как параметр, и
+// AbortWatcher вооружается до запуска генерации. Флаг можно переиспользовать
+// для повторной попытки (bridge_infer_abort_reset).
+int32_t* bridge_infer_abort_create(void) {
+    atomic_int* flag = (atomic_int*)malloc(sizeof(atomic_int));
+    if (flag == NULL) {
+        set_error("out of memory: failed to allocate abort flag");
+        return NULL;
+    }
+    atomic_init(flag, 0);
+    return (int32_t*)flag;
+}
+
+void bridge_infer_abort_reset(int32_t* abort_flag) {
+    if (abort_flag == NULL) return;
+    atomic_store((atomic_int*)abort_flag, 0);
 }
 
 // R63 (2026-09-15): bridge_set_infer_abort — установить per-inference abort flag.

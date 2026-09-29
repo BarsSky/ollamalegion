@@ -63,6 +63,13 @@ type GPUDevice struct {
 	Name            string
 	ComputeCapMajor int
 	ComputeCapMinor int
+	// VRAMFreeSource — R83 (2026-09-29): чем измерена свободная VRAM.
+	//   0 = cudaMemGetInfo (runtime, точно)
+	//   1 = cuMemGetInfo   (driver API, контекст уже был)
+	//   2 = не измерена: VRAMFreeMB=0, значение НЕИЗВЕСТНО
+	// Нужно вызывающему, чтобы не принять «не смогли спросить» за «свободно 0»
+	// и не выдать total за free (инцидент с OOM на 8 ГБ карте).
+	VRAMFreeSource int
 }
 
 // GenerationParams — параметры генерации
@@ -126,7 +133,7 @@ func DefaultGenerationParams() GenerationParams {
 		//
 		// Если клиент хочет длиннее — задаёт max_tokens/num_predict в body явно.
 		NPredict: 4096,
-		NKeep: 0,
+		NKeep:    0,
 		// Round 32 (2026-08-09): n_batch default 512 → 64 для frequent abort checks
 		// в prefill phase. С n_batch=512 abort может быть detected только ПОСЛЕ
 		// завершения текущего llama_decode (~1-2s на RTX 3070). С n_batch=64
@@ -416,6 +423,7 @@ func GetGPUInfo(index int) (*GPUDevice, error) {
 		Name:            C.GoString(&info.name[0]),
 		ComputeCapMajor: int(info.compute_capability_major),
 		ComputeCapMinor: int(info.compute_capability_minor),
+		VRAMFreeSource:  int(info.vram_free_source),
 	}, nil
 }
 
@@ -1003,6 +1011,50 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 // Per-infer abort flag решает R60.58 per-model race, где любая отмена одной
 // горутины сбрасывала ВСЕ параллельные infers для той же модели.
 func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callback StreamCallback) (unsafe.Pointer, error) {
+	return m.inferStreamWithAbortFlag(prompt, params, callback, nil)
+}
+
+// NewInferAbortFlag — R83 (2026-09-29): per-inference abort flag, создаваемый ДО
+// старта генерации.
+//
+// Зачем. Раньше флаг был atomic_int на СТЕКЕ внутри bridge_infer_stream, и его
+// адрес возвращался через out_abort_flag только при ВХОДЕ в блокирующий C-вызов.
+// Go получал его лишь после возврата, то есть когда генерация уже закончилась.
+// AbortWatcher в cmd/cppworker/inference.go создавался после GenerateStream и не
+// мог ни на что повлиять: клиентский Cancel (Cline/WebUI) не останавливал модель —
+// она продолжала считать токены до n_predict. Теперь флаг создаётся заранее,
+// передаётся в C и вооружается ДО генерации.
+func NewInferAbortFlag() unsafe.Pointer {
+	flag := C.bridge_infer_abort_create()
+	if flag == nil {
+		return nil
+	}
+	// Оборачиваем C-указатель в unsafe.Pointer: cgo разрешает хранить указатели,
+	// выделенные в C (это не Go-heap и GC их не перемещает).
+	return unsafe.Pointer(flag)
+}
+
+// ResetInferAbortFlag — сбросить флаг в 0 (повторная попытка той же генерации).
+//
+// R83 (2026-09-29): сбрасываем Go-атомиком, а не через C. Флаг — обычный int32
+// (C создаёт его как atomic_int, Go пишет в него atomic.StoreInt32 — оба
+// используют одинаково выровненный 32-битный слот), поэтому запись из Go
+// корректна и в stub-, и в real-сборке. Раньше вызов уходил в C, из-за чего в
+// stub-режиме сброса не происходило ВООБЩЕ, и тест на «залипший» флаг это поймал.
+func ResetInferAbortFlag(flag unsafe.Pointer) {
+	if flag == nil {
+		return
+	}
+	atomic.StoreInt32((*int32)(flag), 0)
+}
+
+// InferStreamWithAbort — то же, что InferStream, но с ЗАРАНЕЕ созданным флагом
+// отмены (см. NewInferAbortFlag). flag == nil → поведение InferStream.
+func (m *ModelHandle) InferStreamWithAbort(prompt string, params GenerationParams, callback StreamCallback, flag unsafe.Pointer) (unsafe.Pointer, error) {
+	return m.inferStreamWithAbortFlag(prompt, params, callback, flag)
+}
+
+func (m *ModelHandle) inferStreamWithAbortFlag(prompt string, params GenerationParams, callback StreamCallback, preparedAbort unsafe.Pointer) (unsafe.Pointer, error) {
 	if m == nil || m.ptr == nil {
 		return nil, fmt.Errorf("model not loaded")
 	}
@@ -1049,12 +1101,20 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 	// R63 (2026-09-15): per-inference abort flag вместо per-model.
 	// unsafe.Pointer для C atomic_int — Go sync/atomic гарантирует
 	// cross-language memory consistency при условии aligned access.
+	//
+	// R83 (2026-09-29): если Go уже создал флаг (preparedAbort), передаём его в C —
+	// тогда отмена работает ВО ВРЕМЯ генерации, а не после её окончания.
 	var abortFlag unsafe.Pointer
+	var cAbort *C.int32_t
+	if preparedAbort != nil {
+		cAbort = (*C.int32_t)(preparedAbort)
+	}
 	ret := C.bridge_infer_stream(
 		m.ptr, cPrompt, &cParams,
 		C.StreamCallback(C.streamCallbackGo),
 		unsafe.Pointer(&handle),
-		&abortFlag)
+		&abortFlag,
+		cAbort)
 
 	if ret != 0 {
 		// Round 31 #6: BRIDGE_ERR_ABORTED = -100 обрабатывается отдельно

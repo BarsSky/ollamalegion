@@ -320,7 +320,16 @@
                                                              "contextLengthAuto":  true,
                                                              "contextLengthMax":  131072,
                                                              "ignoreDefaults":  true
-                                                         }
+                                                         },
+                                  "Qwen3-Instruct-2507-q4km":  {
+                                                                   "contextLength":  16384,
+                                                                   "batchSize":  512,
+                                                                   "numGpuLayers":  -1,
+                                                                   "contextLengthAuto":  true,
+                                                                   "contextLengthMax":  32768,
+                                                                   "ignoreDefaults":  true,
+                                                                   "primary":  false
+                                                               }
                               },
     "_note_modelProfiles":  "R83 (2026-09-29): ignoreDefaults=true во всех профилях — профиль больше НЕ подставляет параметры загрузки (gpuLayers/batchSize/kvCacheType/contextLength) вместо окружения. Параметры берутся из запроса клиента, затем из env cppworker. contextLength остаётся HINT для preflight/UI."
 }

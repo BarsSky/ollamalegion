@@ -76,6 +76,33 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		return false, nil
 	}
 
+	// R83 (2026-09-29): PRIMARY — политика администратора решает судьбу запроса
+	// РАНЬШЕ координатора reload.
+	//
+	// Почему здесь, а не в preflightNCtxReloadIfNeeded: координатор успевает
+	// сработать первым и, если запрос превышает потолок auto-reload, отдаёт
+	// ОБЕЗЛИЧЕННЫЙ отказ вида «requested n_ctx=32768 exceeds configured
+	// auto_reload_max_n_ctx=16384». Клиент не понимает, что настройки
+	// зафиксированы администратором, — а именно это требуется по требованиям
+	// эксплуатации. Поэтому при primary=true отвечаем своим сообщением (с
+	// цифрами и указанием «править через администратора»), и только если
+	// политика не вмешалась — идём обычным путём.
+	if lr.proxy != nil && lr.proxy.isPrimaryModel(args.model) {
+		outBody, needsProxy, rejectMsg, status := lr.proxy.applyPrimaryModelPolicy(
+			args.backendID, args.model, args.body, path)
+		if !needsProxy {
+			// При отказе политика возвращает nil-тело и текст причины отдельно —
+			// нельзя передавать тело запроса как сообщение об ошибке.
+			writePrimaryRejection(args.w, outBody, rejectMsg, status, args.model, lr.proxy, args.backendID)
+			return true, &PreflightResult{Decision: PreflightReject}
+		}
+		// Политика пропустила запрос: подменённое тело (num_ctx = зафиксированный)
+		// должно уйти на бэкенд вместо клиентского.
+		if len(outBody) > 0 && string(outBody) != string(args.body) {
+			args.body = outBody
+		}
+	}
+
 	backendURL := args.backendURL
 	if backendURL == "" && lr.proxy != nil {
 		backendURL = lr.proxy.backendHTTPAddrByID(args.backendID)

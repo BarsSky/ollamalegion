@@ -25,6 +25,7 @@
 package balancer
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -138,7 +139,12 @@ func (p *Proxy) applyPrimaryModelPolicy(backendID, modelName string, bodyBuf []b
 		return w.body, false, "", w.status
 	}
 
-	return bodyBuf, false, msg, http.StatusRequestEntityTooLarge
+	// ВАЖНО: первым элементом отдаём nil, а НЕ исходное тело запроса.
+	//
+	// Иначе вызывающий принимает тело запроса за текст ошибки: на живом стенде
+	// клиент получил в поле "error" собственный JSON запроса вместо объяснения
+	// про зафиксированные настройки.
+	return nil, false, msg, http.StatusRequestEntityTooLarge
 }
 
 // primaryResponseWriter — минимальный ResponseWriter в память: нужен, чтобы
@@ -168,5 +174,85 @@ func (w *primaryResponseWriter) Write(p []byte) (int, error) {
 func (w *primaryResponseWriter) WriteHeader(code int) {
 	if w.status == 0 {
 		w.status = code
+	}
+}
+
+// writePrimaryRejection — записать клиенту отказ политики primary.
+//
+// Формат зависит от клиента: для streaming-запросов (OpenWebUI/Cline) нужен
+// NDJSON-чанк с done=true, иначе клиент видит «обрыв соединения» вместо
+// объяснения. Для обычных — JSON с текстом.
+func writePrimaryRejection(rw http.ResponseWriter, body []byte, rejectMsg string, status int, modelName string, p *Proxy, backendID string) {
+	if rw == nil {
+		return
+	}
+	if status <= 0 {
+		status = http.StatusRequestEntityTooLarge
+	}
+
+	// Тело уже сформировано политикой (NDJSON-вариант) — отдаём как есть.
+	if len(body) > 0 && isStreamingRejectBody(body) {
+		rw.Header().Set("Content-Type", "application/x-ndjson")
+		rw.Header().Set("X-Accel-Buffering", "no")
+		rw.WriteHeader(status)
+		_, _ = rw.Write(body)
+		return
+	}
+
+	// Обычный JSON-ответ. Текст причины приходит ОТДЕЛЬНЫМ параметром: тело
+	// запроса здесь использовать нельзя — на живом стенде клиент получил в поле
+	// "error" собственный JSON запроса вместо объяснения про фиксацию.
+	msg := rejectMsg
+	if msg == "" {
+		msg = "model settings are fixed by the administrator"
+	}
+	fixed := 0
+	if p != nil {
+		fixed = p.primaryFixedNCtx(backendID, modelName)
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(status)
+	resp := map[string]interface{}{
+		"success":          false,
+		"error":            msg,
+		"model":            modelName,
+		"settings_locked":  true,
+		"fixed_n_ctx":      fixed,
+		"reason":           "primary_model_settings_fixed_by_administrator",
+		"admin_action":     "измените настройки модели в WebUI (GGUF → настройки) и перезагрузите её",
+		"profile_endpoint": "/api/v1/cppworker/model-profiles",
+	}
+	_ = json.NewEncoder(rw).Encode(resp)
+}
+
+// isStreamingRejectBody — отличает NDJSON-ответ политики от простого текста.
+func isStreamingRejectBody(body []byte) bool {
+	return len(body) > 0 && body[0] == '{' && containsFold(string(body), "\"done\"")
+}
+
+// WritePrimaryReject — отдаёт клиенту сформированный политикой ответ.
+//
+// Нужен потому, что политика применяется внутри preflight-хелпера, где нет
+// http.ResponseWriter: хелпер только сигнализирует «запрос обработан», а тело и
+// статус возвращает политика. Заголовки (Content-Type для NDJSON-варианта
+// streaming-клиентам) копируются как есть.
+func (w *primaryResponseWriter) WritePrimaryReject(rw http.ResponseWriter, status int) {
+	if rw == nil {
+		return
+	}
+	for k, vs := range w.Header() {
+		for _, v := range vs {
+			rw.Header().Add(k, v)
+		}
+	}
+	if status <= 0 {
+		status = w.status
+	}
+	if status <= 0 {
+		status = http.StatusRequestEntityTooLarge
+	}
+	rw.WriteHeader(status)
+	if len(w.body) > 0 {
+		_, _ = rw.Write(w.body)
 	}
 }

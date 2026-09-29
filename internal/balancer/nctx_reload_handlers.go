@@ -618,6 +618,19 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		return bodyBuf, true, "", http.StatusOK
 	}
 
+	// R83 (2026-09-29): PRIMARY — настройки модели зафиксированы администратором.
+	//
+	// Клиентский запрос НЕ меняет параметры загруженной модели:
+	//   * хватает зафиксированного контекста — обслуживаем, подменив num_ctx в теле
+	//     на загруженный (cppworker не должен видеть чужой num_ctx);
+	//   * не хватает — отказ с указанием зафиксированных значений и подсказкой
+	//     «править через администратора». Раньше в этом случае балансер молча
+	//     перезагружал модель на бОльший контекст, и администратор узнавал об этом
+	//     только по расходу VRAM.
+	if p.isPrimaryModel(modelName) {
+		return p.applyPrimaryModelPolicy(backendID, modelName, bodyBuf, requestPath)
+	}
+
 	// R60.6 (2026-09-07): IsReloadPending guard. Если reload для этой модели
 	// уже в процессе (через новый coordinator dedup path в RunPreflight),
 	// НЕ запускаем второй reload — просто возвращаем 503. Без этого

@@ -51,6 +51,21 @@ func lazyLoadDetachedTimeout() time.Duration {
 	return 30 * time.Minute
 }
 
+// loadContextForSharedLoad — R83-fix (2026-09-29): контекст для РАЗДЕЛЯЕМОЙ
+// загрузки модели (одну модель грузит одна горутина, остальные запросы ждут её).
+//
+// Всегда отвязан от клиентского запроса и ограничен по времени: загрузка —
+// общий ресурс, её нельзя убивать уходом одного клиента. Возвращённый cancel
+// обязан вызвать вызывающий.
+//
+// Отдельной функцией — чтобы правило было покрыто тестом
+// (lazyload_detached_ctx_r83_test.go): раньше здесь стояло условие
+// `ctx.Done() != nil`, которое истинно как раз для клиентского r.Context(),
+// из-за чего отвязка не срабатывала именно в своём сценарии.
+func loadContextForSharedLoad() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), lazyLoadDetachedTimeout())
+}
+
 func init() {
 	if v := os.Getenv("CPPWORKER_FALLBACK_ESTIMATED_LAYERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 20 && n <= 200 {
@@ -400,12 +415,20 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 		// завершение клиентского запроса её не убивает. Явный /api/cancel по-прежнему
 		// не может прервать загрузку — это осознанный компромисс: ждать догрузки
 		// лучше, чем остаться без модели из-за ушедшего клиента.
-		loadCtx := ctx
-		if loadCtx == nil || loadCtx.Done() != nil {
-			detached, cancel := context.WithTimeout(context.Background(), lazyLoadDetachedTimeout())
-			defer cancel()
-			loadCtx = detached
-		}
+		//
+		// R83-fix (2026-09-29, живой стенд). Предыдущая версия проверяла
+		// `loadCtx.Done() != nil` — а это истина ровно для CANCELLABLE контекста,
+		// то есть для клиентского r.Context(). Ветка «отвязать» срабатывала
+		// только для context.Background() (у него Done() == nil) и НЕ срабатывала
+		// для того самого случая, от которого защищала. Воспроизведение: три
+		// параллельных /api/chat к НЕ загруженной модели → инициатор уходил по
+		// таймауту → общая загрузка обрывалась («load cancelled: model load
+		// aborted by user ... BRIDGE_ERR_ABORTED») → 503 у остальных.
+		//
+		// Отвязываем ВСЕГДА: загрузка — разделяемый ресурс, её контекст не может
+		// принадлежать ни одному из клиентов.
+		loadCtx, cancelLoad := loadContextForSharedLoad()
+		defer cancelLoad()
 
 		if err := backend.LoadModelWithOpts(loadCtx, modelName, modelPath, opts); err != nil {
 			log.Errorw("lazy-load failed", "model", modelName, "path", modelPath, "error", err)

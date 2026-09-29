@@ -704,6 +704,64 @@ func (mm *ModelManager) profileForLoad(modelName string) (types.LlamaCppModelPro
 	return types.LlamaCppModelProfile{}, false
 }
 
+// applyProfileLoadParams — R83 (2026-09-29): подстановка полей профиля модели
+// в запрос загрузки. Вынесено из executeLlamaCppLoad, чтобы правило было
+// покрыто тестом (раньше тест дублировал логику копипастой и не ловил
+// расхождения вроде «parallel из профиля не доезжал»).
+//
+// Приоритет: явные поля запроса > профиль > дефолт cppworker.
+//
+// IgnoreDefaults=true — профиль не подставляет НИЧЕГО: оператор явно отказался
+// от скрытых дефолтов (env-значения cppworker должны выигрывать, см.
+// docs/deployment-stack.md §7.0). Параллельность в этом режиме задаётся
+// окружением контейнера (CPPWORKER_N_PARALLEL) — см. internal/cppbackend
+// resolveNParallel, где то же число уходит и в C-bridge, и в SlotManager.
+func applyProfileLoadParams(req *ModelOpRequest, prof types.LlamaCppModelProfile) {
+	if req == nil || prof.IgnoreDefaults {
+		return
+	}
+	if req.ContextSize == nil && prof.ContextLength > 0 {
+		cs := prof.ContextLength
+		req.ContextSize = &cs
+	}
+	if req.BatchSize == nil && prof.BatchSize > 0 {
+		bs := prof.BatchSize
+		req.BatchSize = &bs
+	}
+	if req.GPULayers == nil && prof.NumGPULayers != 0 {
+		gl := prof.NumGPULayers
+		req.GPULayers = &gl
+	}
+	if req.FlashAttn == nil && prof.FlashAttn != nil {
+		// profile.FlashAttn — *bool (человекочитаемый JSON), cppworker ждёт
+		// *int (-1=auto, 0=off, 1=on). Та же конверсия, что в
+		// handlers_cppworker_profiles.go:483 (apply path).
+		fa := 0
+		if *prof.FlashAttn {
+			fa = 1
+		}
+		req.FlashAttn = &fa
+	}
+	if req.UseMmap == nil && prof.UseMmap != nil {
+		um := *prof.UseMmap
+		req.UseMmap = &um
+	}
+	if req.KVCacheType == nil && prof.KVCacheType != "" {
+		kv := prof.KVCacheType
+		req.KVCacheType = &kv
+	}
+	// R83 (2026-09-29): parallel из профиля. Раньше это поле профиля
+	// учитывалось ТОЛЬКО на пути POST .../model-profiles/{name}/apply
+	// (handlers_cppworker_profiles.go:586) и терялось при обычной загрузке
+	// (auto-load из /api/chat, POST /api/models/load*): cppworker получал
+	// запрос без `parallel`, поднимал single-slot, и второй параллельный
+	// клиент упирался в SlotManager (503/timeout).
+	if req.Parallel == nil && prof.Parallel > 0 {
+		par := prof.Parallel
+		req.Parallel = &par
+	}
+}
+
 // resolveOverrideTensors — резолвит per-tensor override для load.
 // Приоритет: явные поля req.OverrideTensors > сохранённый LlamaCppModelProfile.
 // Возвращает согласованные по длине parallel arrays или пустые slices.
@@ -981,40 +1039,8 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	// NumGPULayers: 0 трактуем как «не задано» (в типе профиля нет признака
 	// «поле отсутствует», а 0 = CPU-only на практике не использовался;
 	// ValidateProfile допускает 0).
-	if prof, ok := mm.profileForLoad(req.ModelName); ok && !prof.IgnoreDefaults {
-		// R83 (2026-09-29): профиль с IgnoreDefaults=true не участвует в подстановке —
-		// оператор явно отказался от скрытых дефолтов, и параметры загрузки берутся
-		// из запроса клиента, а остальное — из окружения cppworker.
-		if req.ContextSize == nil && prof.ContextLength > 0 {
-			cs := prof.ContextLength
-			req.ContextSize = &cs
-		}
-		if req.BatchSize == nil && prof.BatchSize > 0 {
-			bs := prof.BatchSize
-			req.BatchSize = &bs
-		}
-		if req.GPULayers == nil && prof.NumGPULayers != 0 {
-			gl := prof.NumGPULayers
-			req.GPULayers = &gl
-		}
-		if req.FlashAttn == nil && prof.FlashAttn != nil {
-			// profile.FlashAttn — *bool (человекочитаемый JSON), cppworker ждёт
-			// *int (-1=auto, 0=off, 1=on). Та же конверсия, что в
-			// handlers_cppworker_profiles.go:483 (apply path).
-			fa := 0
-			if *prof.FlashAttn {
-				fa = 1
-			}
-			req.FlashAttn = &fa
-		}
-		if req.UseMmap == nil && prof.UseMmap != nil {
-			um := *prof.UseMmap
-			req.UseMmap = &um
-		}
-		if req.KVCacheType == nil && prof.KVCacheType != "" {
-			kv := prof.KVCacheType
-			req.KVCacheType = &kv
-		}
+	if prof, ok := mm.profileForLoad(req.ModelName); ok {
+		applyProfileLoadParams(&req, prof)
 	}
 
 	// Round 7: resolve override-tensors (req override > profile > none).

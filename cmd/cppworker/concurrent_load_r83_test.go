@@ -25,13 +25,23 @@ import (
 // holdLoad — занять лок загрузки так, как это делает другой запрос: канал
 // остаётся открытым (никто не завершил загрузку). Возвращает функцию
 // завершения «загрузки» другой стороны.
+//
+// R83-fix (2026-09-29): замыкание ЗАХВАТЫВАЕТ конкретный backend, а не читает
+// пакетную переменную backend в момент вызова. Иначе отложенные вызовы
+// (time.AfterFunc на 30 с) срабатывали уже после теста — когда следующий тест
+// подменил/обнулил backend — и роняли весь пакет паникой
+// `invalid memory address` в UnlockLoad(0x0).
 func holdLoad(t *testing.T, name string) func() {
 	t.Helper()
-	taken, err := backend.TryLockLoad(name)
+	b := backend
+	if b == nil {
+		t.Fatal("holdLoad: backend не инициализирован")
+	}
+	taken, err := b.TryLockLoad(name)
 	if err != nil || !taken {
 		t.Fatalf("не удалось занять лок загрузки: taken=%v err=%v", taken, err)
 	}
-	return func() { backend.UnlockLoad(name) }
+	return func() { b.UnlockLoad(name) }
 }
 
 // TestR83_AsyncLoadDoesNotWaitForConcurrentLoad — главный тест D-A: при

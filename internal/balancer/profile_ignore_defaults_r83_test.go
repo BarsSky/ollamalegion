@@ -18,48 +18,41 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// buildLoadBody — минимальная проверка эффекта ignoreDefaults на параметры
-// загрузки. Повторяет логику executeLlamaCppLoad: применить профиль к пустому
-// запросу и посмотреть, какие поля заполнились.
+// buildLoadBody — проверка эффекта ignoreDefaults на параметры загрузки.
+//
+// R83-финал: вызывает НАСТОЯЩЕЕ правило (applyProfileLoadParams из
+// model_management.go), а не его копию. Раньше здесь была копипаста логики —
+// из-за этого тест не заметил, что `parallel` из профиля в запрос не попадал
+// (см. profile_parallel_r83_test.go).
 func applyProfileToEmptyRequest(t *testing.T, prof types.LlamaCppModelProfile) map[string]interface{} {
 	t.Helper()
 
 	// Пустой запрос: клиент ничего не задал — значит любое заполненное поле
 	// пришло ИЗ ПРОФИЛЯ.
-	var reqCtx, reqBatch, reqGPU *int
-	var reqKV *string
-
-	if !prof.IgnoreDefaults {
-		if reqCtx == nil && prof.ContextLength > 0 {
-			cs := prof.ContextLength
-			reqCtx = &cs
-		}
-		if reqBatch == nil && prof.BatchSize > 0 {
-			bs := prof.BatchSize
-			reqBatch = &bs
-		}
-		if reqGPU == nil && prof.NumGPULayers != 0 {
-			gl := prof.NumGPULayers
-			reqGPU = &gl
-		}
-		if reqKV == nil && prof.KVCacheType != "" {
-			kv := prof.KVCacheType
-			reqKV = &kv
-		}
-	}
+	var req ModelOpRequest
+	applyProfileLoadParams(&req, prof)
 
 	out := map[string]interface{}{}
-	if reqCtx != nil {
-		out["contextSize"] = *reqCtx
+	if req.ContextSize != nil {
+		out["contextSize"] = *req.ContextSize
 	}
-	if reqBatch != nil {
-		out["batchSize"] = *reqBatch
+	if req.BatchSize != nil {
+		out["batchSize"] = *req.BatchSize
 	}
-	if reqGPU != nil {
-		out["gpuLayers"] = *reqGPU
+	if req.GPULayers != nil {
+		out["gpuLayers"] = *req.GPULayers
 	}
-	if reqKV != nil {
-		out["kvCacheType"] = *reqKV
+	if req.KVCacheType != nil {
+		out["kvCacheType"] = *req.KVCacheType
+	}
+	if req.Parallel != nil {
+		out["parallel"] = *req.Parallel
+	}
+	if req.UseMmap != nil {
+		out["useMmap"] = *req.UseMmap
+	}
+	if req.FlashAttn != nil {
+		out["flashAttn"] = *req.FlashAttn
 	}
 	return out
 }
@@ -67,11 +60,16 @@ func applyProfileToEmptyRequest(t *testing.T, prof types.LlamaCppModelProfile) m
 // TestR83_Profile_IgnoreDefaults_DoesNotInjectParams — профиль с ignoreDefaults
 // не должен добавлять в запрос загрузки ни одного параметра.
 func TestR83_Profile_IgnoreDefaults_DoesNotInjectParams(t *testing.T) {
+	fa := true
+	um := false
 	prof := types.LlamaCppModelProfile{
 		ContextLength:  32768,
 		BatchSize:      512,
 		NumGPULayers:   -2,
 		KVCacheType:    "q8_0",
+		Parallel:       4,
+		FlashAttn:      &fa,
+		UseMmap:        &um,
 		IgnoreDefaults: true,
 	}
 
@@ -91,10 +89,11 @@ func TestR83_Profile_WithoutIgnoreDefaults_StillInjects(t *testing.T) {
 		BatchSize:     512,
 		NumGPULayers:  -2,
 		KVCacheType:   "q8_0",
+		Parallel:      2,
 	}
 
 	body := applyProfileToEmptyRequest(t, prof)
-	for _, key := range []string{"contextSize", "batchSize", "gpuLayers", "kvCacheType"} {
+	for _, key := range []string{"contextSize", "batchSize", "gpuLayers", "kvCacheType", "parallel"} {
 		if _, ok := body[key]; !ok {
 			t.Errorf("без ignoreDefaults профиль обязан подставить %s (обратная совместимость)", key)
 		}

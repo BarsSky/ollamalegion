@@ -228,6 +228,24 @@ services:
       - CPPWORKER_DEFAULT_ENABLE_REASONING=${CPPWORKER_DEFAULT_ENABLE_REASONING:-false}
       - CPPWORKER_ENABLE_REASONING=${CPPWORKER_ENABLE_REASONING:-false}
       - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
+      # Параллельные слоты модели (n_parallel / n_seq_max). 0 = одиночный слот.
+      #
+      # R83 (2026-09-29): раньше эта переменная вообще не доезжала до
+      # контейнера, поэтому «выделить кеш под несколько запросов» из compose
+      # было нельзя — только полем `parallel` в запросе загрузки/профиле.
+      # В контейнере код читает именно CPPWORKER_N_PARALLEL
+      # (internal/cppbackend/config.go: LoadConfigFromEnv).
+      #
+      # Стоимость: каждый слот — своя последовательность в KV-cache; при
+      # n_ctx=8192 + q4_0 на Qwen3-1.7B замерено +0 МБ (см. §7.2
+      # docs/deployment-stack.md — llama.cpp держит n_ctx ОБЩИМ на все слоты,
+      # поэтому контекст делится, а не умножается).
+      #
+      # ВАЖНО: значение должно совпадать с AGENT_MAX_CONCURRENT_REQUESTS.
+      # cppworker сам сообщает балансеру свою вместимость
+      # (effectiveNParallel → MaxConcurrentReqs), поэтому достаточно задать
+      # CPPWORKER_N_PARALLEL и НЕ задавать AGENT_MAX_CONCURRENT_REQUESTS.
+      - CPPWORKER_N_PARALLEL=${CPPWORKER_N_PARALLEL:-0}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
@@ -297,9 +315,16 @@ services:
 
       # ─── Вместимость: сколько параллельных запросов примет бэкенд ────────
       # Значение ДОЛЖНО совпадать с реальным n_parallel воркера:
-      #   CPPWORKER_PARALLEL=1 (по умолчанию) → AGENT_MAX_CONCURRENT_REQUESTS=1
-      #   n_parallel=2 (или CPPWORKER_ENABLE_BATCHED_PARALLEL=true + parallel=2)
-      #                                        → поставьте 2
+      #   CPPWORKER_N_PARALLEL=0/1 (по умолчанию) → AGENT_MAX_CONCURRENT_REQUESTS=1
+      #   CPPWORKER_N_PARALLEL=2                   → поставьте 2
+      # (Раньше здесь было написано CPPWORKER_PARALLEL — такого имени код НЕ
+      #  читает нигде; правильное имя — CPPWORKER_N_PARALLEL.)
+      #
+      # Обычно задавать эту переменную НЕ нужно: сам cppworker при регистрации
+      # сообщает балансеру свою вместимость (effectiveNParallel → n_parallel),
+      # поэтому достаточно CPPWORKER_N_PARALLEL. Явное значение здесь —
+      # операторский лимит: он имеет приоритет и автоматикой не перезаписывается.
+      #
       # Почему не больше: cppworker с n_parallel=1 обслуживает ОДИН запрос за
       # раз. Завышенное значение даёт ложные «свободные слоты»: балансер
       # начинает слать параллельные запросы и клиент получает отказы/зависания.

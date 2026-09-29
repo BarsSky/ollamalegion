@@ -296,7 +296,12 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// через C-bridge (полная cancellable load требует C-side fix — см. PLAN.md §3.1).
 	loadDone := make(chan error, 1)
 	go func() {
-		loadDone <- backend.LoadModelWithOpts(r.Context(), modelName, modelPath, opts)
+		// R83-fix (2026-09-29): контекст загрузки отвязан от HTTP-запроса.
+		// См. loadContextForSharedLoad (lazyload.go) и комментарий в
+		// handleLoadWithParams — уход клиента не должен убивать общую загрузку.
+		loadCtx, cancelLoad := loadContextForSharedLoad()
+		defer cancelLoad()
+		loadDone <- backend.LoadModelWithOpts(loadCtx, modelName, modelPath, opts)
 	}()
 	timeout := time.NewTimer(time.Duration(waitTimeoutMs) * time.Millisecond)
 	defer timeout.Stop()
@@ -737,7 +742,18 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		// R60.57: r.Context() — client disconnect → ctx.Done() → watcher в
 		// LoadModelWithOpts попытается abort load. C-side fix нужен для
 		// full cancel; см. PLAN.md §3.1.
-		loadDone <- backend.LoadModelWithOpts(r.Context(), modelName, modelPath, opts)
+		//
+		// R83-fix (2026-09-29): БОЛЬШЕ НЕ r.Context(). Загрузка — разделяемый
+		// ресурс (одну модель грузит одна горутина, остальные ждут), поэтому
+		// уход клиента, ПОПРОСИВШЕГО загрузку, обрывал её для всех: в логах
+		// «model load aborted by user ... BRIDGE_ERR_ABORTED», а остальные
+		// клиенты получали 503 «model is not loaded and auto-load failed».
+		// Именно так балансер (его auto-load/reload — отдельный HTTP-клиент)
+		// терял модель, когда исходный клиент отваливался по таймауту.
+		// Правило и подробности — loadContextForSharedLoad (lazyload.go).
+		loadCtx, cancelLoad := loadContextForSharedLoad()
+		defer cancelLoad()
+		loadDone <- backend.LoadModelWithOpts(loadCtx, modelName, modelPath, opts)
 	}()
 	timeout := time.NewTimer(time.Duration(waitTimeoutMs) * time.Millisecond)
 	defer timeout.Stop()
@@ -2062,7 +2078,15 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 
 	loadStart := time.Now()
 	// R60.57: r.Context() — HTTP client disconnect → ctx.Done() → abort load.
-	if err := backend.LoadModelWithOpts(r.Context(), req.Name, modelPath, opts); err != nil {
+	//
+	// R83-fix (2026-09-29): reload — тоже разделяемая операция (его запускает
+	// балансер по preflight/auto-reload, а не конечный клиент), поэтому его
+	// контекст отвязан от HTTP-запроса: иначе таймаут балансера на ожидании
+	// reload'а обрывал перезагрузку и оставлял модель выгруженной — это и
+	// выглядело как «модель не загрузить». См. loadContextForSharedLoad.
+	reloadCtx, cancelReload := loadContextForSharedLoad()
+	defer cancelReload()
+	if err := backend.LoadModelWithOpts(reloadCtx, req.Name, modelPath, opts); err != nil {
 		logger.Get().Errorw("reload: load with new params failed",
 			"name", req.Name, "error", err)
 		oldOpts := cppbackend.LoadModelOpts{
@@ -2074,8 +2098,8 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			UseMmap:       current.UseMmap,
 			TensorSplit:   current.TensorSplit,
 		}
-		// Rollback тоже cancellable через r.Context().
-		if rollbackErr := backend.LoadModelWithOpts(r.Context(), req.Name, modelPath, oldOpts); rollbackErr != nil {
+		// Rollback тоже не должен зависеть от ушедшего HTTP-клиента.
+		if rollbackErr := backend.LoadModelWithOpts(reloadCtx, req.Name, modelPath, oldOpts); rollbackErr != nil {
 			logger.Get().Errorw("reload rollback failed (model is no longer loaded!)",
 				"name", req.Name, "rollback_error", rollbackErr)
 		}

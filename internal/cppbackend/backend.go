@@ -628,6 +628,38 @@ func (b *Backend) HFDownloader() *HuggingFaceDownloader {
 // Управление моделями
 // ============================================================
 
+// resolveNParallel — R83 (2026-09-29): сколько параллельных слотов запрошено
+// для одной загружаемой модели.
+//
+//   - perModel > 0  — per-model запрос (WebUI/профиль/поле `parallel` в
+//     /api/models/load-with-params) всегда побеждает;
+//   - иначе cfgDefault > 0 (env CPPWORKER_N_PARALLEL) — инфраструктурный
+//     дефолт контейнера;
+//   - иначе 0 — «не задано», C-bridge оставляет свой внутренний дефолт (1).
+//
+// Одно правило на C-bridge (cfg.NParallel) и на Go SlotManager: иначе
+// llama.cpp выделяет KV-cache под N слотов, а cppworker обслуживает 1 —
+// ровно тот рассинхрон, из-за которого второй параллельный клиент молча
+// висел в SlotManager.Acquire до таймаута (503).
+func resolveNParallel(perModel int, cfgDefault int) int {
+	if perModel > 0 {
+		return perModel
+	}
+	if cfgDefault > 0 {
+		return cfgDefault
+	}
+	return 0
+}
+
+// parallelSlotsFor — минимальное число слотов SlotManager (никогда < 1):
+// 0/отрицательное «запрошено» означает одиночный слот.
+func parallelSlotsFor(requested int) int {
+	if requested > 0 {
+		return requested
+	}
+	return 1
+}
+
 // LoadModel загружает GGUF модель с параметрами по умолчанию
 //
 // R60.57 (2026-09-13): использует context.Background() — load нельзя отменить
@@ -859,13 +891,15 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	// Round 12 (2026-07-28): если opts.Parallel не задан (0), используем
 	// b.cfg.DefaultNParallel — это даёт CLI/env/JSON-конфигурируемый default,
 	// который раньше был только per-model в opts.
-	if opts.Parallel > 0 {
-		cfg.NParallel = opts.Parallel
-	} else if b.cfg.DefaultNParallel > 0 {
-		cfg.NParallel = b.cfg.DefaultNParallel
-	} else {
-		cfg.NParallel = 0 // оставляем дефолт bridge (1)
-	}
+	//
+	// R83 (2026-09-29): значение вычисляется ОДНИМ правилом (resolveNParallel),
+	// потому что то же число ниже инициализирует SlotManager. Раньше здесь
+	// учитывался DefaultNParallel, а в SlotManager — нет (там было просто
+	// max(1, opts.Parallel)); при CPPWORKER_N_PARALLEL=2 llama.cpp получал
+	// n_parallel=2 (то есть KV-cache под 2 слота), cppworker объявлял балансеру
+	// вместимость 2 (effectiveNParallel), а SlotManager пропускал по одному
+	// запросу — второй клиент молча ждал в Acquire и получал 503 по таймауту.
+	cfg.NParallel = resolveNParallel(opts.Parallel, b.cfg.DefaultNParallel)
 	// NThreads: было cfg.NThreads = b.cfg.DefaultNThreads (ВСЕГДА затирал opts).
 	// Сейчас opts.NThreads > 0 — выигрывает opts, иначе — дефолт.
 	if opts.NThreads > 0 {
@@ -1023,19 +1057,22 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	inst.info.KVCacheType = opts.KVCacheType
 
 	// Round 13 (2026-07-28): initialize SlotManager после успешной загрузки.
-	// maxSlots = max(1, opts.Parallel). Parallel=0/1 → single-slot (Round 8 behavior).
-	// Parallel>1 → до N concurrent calls, каждый со своим seq_id.
-	// Инициализация тут (а не в NewBackend) потому что Parallel — per-model,
-	// и для каждой загруженной модели нужен свой SlotManager.
-	parallelSlots := opts.Parallel
-	if parallelSlots < 1 {
-		parallelSlots = 1
-	}
+	// maxSlots = resolveNParallel(opts, config) — то же правило, что ушло в
+	// C-bridge выше, поэтому SlotManager и llama.cpp всегда согласованы
+	// (Parallel=0/1 → single-slot, Round 8 behavior; explicit N или
+	// CPPWORKER_N_PARALLEL → N слотов).
+	//
+	// R83 (2026-09-29): до этого здесь стояло max(1, opts.Parallel) —
+	// CPPWORKER_N_PARALLEL в SlotManager не учитывался (см. комментарий у
+	// cfg.NParallel выше).
+	requestedParallel := resolveNParallel(opts.Parallel, b.cfg.DefaultNParallel)
+	parallelSlots := parallelSlotsFor(requestedParallel)
 	inst.slots = NewSlotManager(parallelSlots)
 	logger.Get().Infow("slot manager initialized",
 		"name", name,
 		"maxSlots", parallelSlots,
-		"parallel", opts.Parallel)
+		"parallel", opts.Parallel,
+		"defaultNParallel", b.cfg.DefaultNParallel)
 
 	// Round 15.1 (2026-07-30): initialize BatchedScheduler если включён
 	// (per-model override или global toggle). Требует Parallel >= 2 потому
@@ -1305,6 +1342,24 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 		logger.Get().Debugw("checkVRAMForModel: решение о памяти (memfit)",
 			"model", name, "kv_cache_type", effectiveKV,
 			"requested_gpu_layers", opts.GPULayers, "verdict", verdict.String())
+	}
+
+	// R83 (2026-09-29): оценка памяти НЕ знает про параллельные слоты.
+	//
+	// memfit.Request описывает одну последовательность (Ctx × KVType), а
+	// llama.cpp при n_seq_max=N держит KV под N последовательностей. На живом
+	// стенде (RTX 3070 8 ГБ, Qwen3-1.7B, ctx=8192, q4_0) свободная VRAM сразу
+	// после загрузки: parallel=1 → 5195 МБ, parallel=2 → 1446 МБ, то есть
+	// второй слот стоил ~3.7 ГБ, которых memfit не предвидел.
+	//
+	// Предупреждаем явно: без этого оператор видит «настройки применились»,
+	// а получает частичный CPU-offload (медленнее) или OOM.
+	if slots := resolveNParallel(opts.Parallel, b.cfg.DefaultNParallel); slots > 1 && logger.Get() != nil {
+		logger.Get().Warnw("checkVRAMForModel: несколько параллельных слотов — "+
+			"оценка памяти считает KV под ОДНУ последовательность",
+			"model", name, "parallel_slots", slots,
+			"hint", "фактический расход VRAM ≈ KV одной последовательности × слотов; "+
+				"если генерация стала медленнее — слои уехали на CPU, уменьшите n_ctx или kv-кэш до q4_0")
 	}
 
 	// 2026-06-26 BUGFIX (сохранено): для больших моделей (model_size > 70% свободной
@@ -2009,8 +2064,9 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 	// передать через params (пока не реализовано).
 	if inst.slots == nil {
 		// Защита от nil: если модель загружена через устаревший путь без
-		// SlotManager (например, init race), создаём single-slot.
-		inst.slots = NewSlotManager(1)
+		// SlotManager (например, init race), создаём его по тому же правилу,
+		// что и штатная загрузка (env CPPWORKER_N_PARALLEL учитывается).
+		inst.slots = NewSlotManager(parallelSlotsFor(resolveNParallel(0, b.cfg.DefaultNParallel)))
 	}
 	slot, release, err := inst.slots.Acquire(context.Background())
 	if err != nil {
@@ -2110,7 +2166,7 @@ func (b *Backend) GenerateStreamWithAbort(modelName string, prompt string, param
 
 	// Round 13: acquire slot (см. Generate для объяснения).
 	if inst.slots == nil {
-		inst.slots = NewSlotManager(1)
+		inst.slots = NewSlotManager(parallelSlotsFor(resolveNParallel(0, b.cfg.DefaultNParallel)))
 	}
 	slot, release, err := inst.slots.Acquire(context.Background())
 	if err != nil {

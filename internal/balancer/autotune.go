@@ -1199,6 +1199,23 @@ func PlanApplyAutoTuneWithMinContext(
 	if !plan.NeedsReload() {
 		return nil
 	}
+
+	// R83 (2026-09-29): если reload запускается НЕ ради контекста (kv_cache или
+	// layers), контекст обязан остаться фактически загруженным.
+	//
+	// ДЕФЕКТ, который это закрывает (живой лог 2026-09-29): план менял только
+	// kv_cache f16 → q4_0, ContextSize оставался 0, ApplyAutoTunePlan при нуле НЕ
+	// кладёт contextSize в запрос, и cppworker поднимал модель со своим
+	// env-дефолтом (CPPWORKER_CTX_SIZE=32768) вместо загруженных 131072. Оператор
+	// видел «после запроса от Cline модель принудительно сброшена до 32768», хотя
+	// Cline просил 128000; дальше каждый запрос получал code 2 (n_ctx exceeds).
+	//
+	// Ставим значение ТОЛЬКО если рекомендация «context» ничего не предложила
+	// (ContextSize == 0), и только после проверки NeedsReload, чтобы «план без
+	// изменений» по-прежнему возвращал nil (это контракт PlanApplyAutoTune).
+	if plan.ContextSize <= 0 {
+		plan.ContextSize = currentLoaded.ContextLength
+	}
 	return plan
 }
 

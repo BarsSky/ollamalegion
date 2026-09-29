@@ -423,6 +423,13 @@ func (p *llamaCppMetricsPoller) adoptCapacityFromLoadedModels(backendID string, 
 		}
 	}
 	if slots <= 0 {
+		// Слотов нет: либо старая сборка cppworker (не отдаёт max_slots/parallel),
+		// либо модель не в состоянии loaded. Поведение прежнее.
+		if logger.Get() != nil {
+			logger.Get().Debugw("llamaCppMetricsPoller: слоты модели не распознаны, вместимость прежняя",
+				"backend", backendID, "loaded_models", len(models),
+				"enabled", types.CapacityFromModelSlotsEnabled())
+		}
 		return
 	}
 

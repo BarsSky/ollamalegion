@@ -129,6 +129,12 @@ services:
       #   agent     -> BALANCER_TOKEN
       #   webui     -> API_TOKEN
       - LB_API_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
+      # R83 (2026-09-29): вместимость бэкенда = ФАКТИЧЕСКОЕ число слотов модели
+      # (cppworker отдаёт max_slots в /api/models). Так балансер пропускает столько
+      # параллельных запросов, сколько слотов заведено при загрузке (parallel=2 →
+      # два одновременно), а не сериализует их по одному. Значение живёт в
+      # deployments/.env; по умолчанию выключено (прежнее поведение).
+      - LB_CAPACITY_FROM_MODEL_SLOTS=${LB_CAPACITY_FROM_MODEL_SLOTS:-false}
       - LB_NCTX_RELOAD_ENABLED=${LB_NCTX_RELOAD_ENABLED:-true}
       - LB_NCTX_RELOAD_MAX_N_CTX=${LB_NCTX_RELOAD_MAX_N_CTX:-131072}
       - LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=${LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR:-0.95}

@@ -199,6 +199,53 @@ func ParseCppWorkerError(body []byte, statusCode int, backendID string) error {
 	}
 }
 
+// isNCtxDoneChunkError — R83 (2026-09-29): распознаёт n_ctx-ошибку в error-поле
+// финального (done) чанка нативного NDJSON от cppworker.
+//
+// ПОЧЕМУ НЕ ParseCppWorkerError: тот намеренно возвращает nil при status < 400
+// («2xx — не ошибка, даже если body содержит error»). А cppworker отдаёт
+// n_ctx-ошибку именно так: HTTP 200 и error внутри done-чанка:
+//
+//	{"done":true,"error":"stream inference failed with code 2: requested
+//	 n_ctx=128000 exceeds model's effective n_ctx=32768 ..."}
+//
+// Без этой проверки балансер просто логировал предупреждение и отдавал ошибку
+// клиенту — а его кэш n_ctx оставался устаревшим, поэтому preflight возвращал
+// NoOp и reload не запускался. Клиент получал ошибку на каждом запросе (дедлок).
+//
+// Коды те же, что bridge.ErrCodeNCtxNeedsReload (2) и ErrCodePromptTooLong (3),
+// но вытаскиваем их из текста: структурного bridge_info в этом чанке нет.
+func isNCtxDoneChunkError(errText string) bool {
+	lower := strings.ToLower(errText)
+	if lower == "" {
+		return false
+	}
+	// «with code 2» / «code 3» — формат сообщения cppworker (stream inference failed ...).
+	if strings.Contains(lower, "code 2") || strings.Contains(lower, "code 3") {
+		return true
+	}
+	// Текстовые формулировки тех же ошибок (на случай смены формата в cppworker).
+	return strings.Contains(lower, "exceeds model's effective n_ctx") ||
+		strings.Contains(lower, "prompt exceeds") ||
+		strings.Contains(lower, "n_ctx exceeds loaded model")
+}
+
+// newNCtxErrorFromDoneChunk собирает NCtxError из текста ошибки done-чанка, чтобы
+// передать его в handleNCtxReload. Code берём как NCtxNeedsReload (2): именно он
+// означает «нужен reload с бОльшим n_ctx» и приводит к тому же пути, что и
+// HTTP-вариант ошибки.
+func newNCtxErrorFromDoneChunk(errText, backendID string) error {
+	return &NCtxError{
+		BackendID:  backendID,
+		HTTPStatus: 200, // cppworker отвечает 200, ошибка внутри чанка
+		Body:       errText,
+		BridgeInfo: &NCtxBridgeError{
+			Code:    bridge.ErrCodeNCtxNeedsReload,
+			Message: errText,
+		},
+	}
+}
+
 // convertCppWorkerBridgeInfo — копирует cppWorkerBridgeInfo в NCtxBridgeError
 // (который используется внутри balancer; см. nctx_reload.go).
 func convertCppWorkerBridgeInfo(info *cppWorkerBridgeInfo) *NCtxBridgeError {

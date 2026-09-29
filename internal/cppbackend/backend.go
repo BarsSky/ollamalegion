@@ -1097,6 +1097,15 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	// будут обновлять его на каждом запросе.
 	inst.lastUsedAt.Store(time.Now())
 
+	// R83 (2026-09-29): обновляем снимок свободной VRAM СРАЗУ после загрузки модели.
+	//
+	// Зачем. MemfitBudget больше не зовёт bridge.GetGPUInfo (см. memfit_adapter.go:
+	// CUDA-вызовы сериализуются и подвешивали GET /api/models на время генерации).
+	// Бюджет читает снимок b.gpuDevices, поэтому его надо освежать в точках, где
+	// VRAM действительно меняется — то есть после загрузки/выгрузки модели.
+	// Здесь инференса нет, CUDA свободна, вызов мгновенный.
+	b.refreshGPUDeviceVRAM()
+
 	// Записываем метрики
 	if b.metrics != nil {
 		b.metrics.RecordLoad(name)

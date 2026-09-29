@@ -296,12 +296,37 @@ func (lr *LlamaCppRouter) backendReachable(backendID string) bool {
 		return false
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(baseURL + "/api/models")
-	if err != nil {
-		return false
+	// R83 (2026-09-29): проверяем ЖИВОСТЬ по /api/version, а не по /api/models.
+	//
+	// ЗАЧЕМ. /api/models во время генерации блокируется: он читает memfit-бюджет,
+	// а тот раньше звал cudaMemGetInfo (сериализованный CUDA-вызов) — замерено
+	// 8+ секунд ожидания при активном инференсе, при таймауте здесь 2 секунды.
+	// Проверка врала «cppworker недоступен».
+	//
+	// Живой симптом (воспроизведено 2026-09-29): при capacity=3 и трёх
+	// параллельных запросах первый обслуживался, а второй и третий получали
+	//   503 {"error":"model '...' is not loaded and auto-load failed:
+	//        backend unreachable: ... (cppworker did not answer /api/models)"}
+	// хотя модель была загружена и работала. Замеры во время генерации:
+	//   /api/gpu 4-7 мс, /api/models/active-queries ~4 мс, /api/version ~4 мс,
+	//   /api/models и /api/info — не отвечали 8+ секунд.
+	resp, err := client.Get(baseURL + "/api/version")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		// Fallback для сборок cppworker без /api/version (404) и для сетевых сбоев
+		// на этом пути. ВАЖНО: закрываем ответ первой попытки, иначе утечёт
+		// соединение — это горячий путь, он вызывается на каждый запрос.
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		resp2, err2 := client.Get(baseURL + "/api/models")
+		if err2 != nil {
+			return false
+		}
+		defer func() { _ = resp2.Body.Close() }()
+		return resp2.StatusCode == http.StatusOK
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return resp.StatusCode == http.StatusOK
+	return true
 }
 
 // backendReadyWithModelByMetrics — R82: бэкенд доступен и по метрикам модель на

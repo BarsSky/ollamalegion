@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 
-	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/memfit"
 )
 
@@ -68,14 +67,25 @@ func (b *Backend) MemfitBudget() memfit.Budget {
 
 	if b != nil {
 		b.mu.Lock()
-		for i := 0; i < b.gpuCount; i++ {
-			if dev, err := bridge.GetGPUInfo(i); err == nil && dev != nil {
-				if i < len(b.gpuDevices) {
-					b.gpuDevices[i].VRAMFreeMB = dev.VRAMFreeMB
-					b.gpuDevices[i].VRAMTotalMB = dev.VRAMTotalMB
-				}
-			}
-		}
+		// R83 (2026-09-29): НЕ зовём bridge.GetGPUInfo из горячего пути.
+		//
+		// ЗАЧЕМ. GetGPUInfo делает cudaMemGetInfo, а CUDA-вызовы сериализуются:
+		// пока идёт генерация, вызов ждёт освобождения контекста. MemfitBudget
+		// вызывается из CalculateResourceLimits, тот — из handleListModels, значит
+		// GET /api/models ЗАВИСАЛ на всё время инференса.
+		//
+		// Живой симптом (2026-09-29, воспроизведено): во время генерации
+		// /api/models и /api/info не отвечали 8+ секунд, тогда как /api/gpu и
+		// /api/models/active-queries отвечали за 4-7 мс. Из-за этого балансер
+		// (backendReachable с таймаутом 2 c) решал «cppworker недоступен» и на
+		// ВТОРОЙ параллельный запрос отвечал 503 «model is not loaded and
+		// auto-load failed: backend unreachable», хотя модель была загружена и
+		// обслуживала первый запрос.
+		//
+		// Теперь берём УЖЕ СОБРАННЫЙ снимок b.gpuDevices (его обновляют
+		// RefreshGPUDevices при загрузке/выгрузке и поллеры). Значения могут быть
+		// на несколько секунд старше — для вердикта memfit это допустимо, потому
+		// что решения принимаются перед загрузкой, а не во время генерации.
 		var free, total uint64
 		for _, dev := range b.gpuDevices {
 			total += uint64(dev.VRAMTotalMB)

@@ -22,10 +22,11 @@ import (
 // partial offload math давал неверный gpuLayers → OOM risk.
 //
 // Теперь эти параметры конфигурируются через env-vars:
-//   CPPWORKER_FALLBACK_ESTIMATED_LAYERS — default 80 (типичная LLM, диапазон 20-200)
-//   CPPWORKER_FALLBACK_KV_RESERVE_MB    — default 2048 (диапазон 256-16384)
-//   CPPWORKER_FALLBACK_OVERHEAD_MB      — default 1536 (CUDA + activations)
-//   CPPWORKER_FALLBACK_SAFETY_FACTOR   — default 0.85 (диапазон 0.5-1.0)
+//
+//	CPPWORKER_FALLBACK_ESTIMATED_LAYERS — default 80 (типичная LLM, диапазон 20-200)
+//	CPPWORKER_FALLBACK_KV_RESERVE_MB    — default 2048 (диапазон 256-16384)
+//	CPPWORKER_FALLBACK_OVERHEAD_MB      — default 1536 (CUDA + activations)
+//	CPPWORKER_FALLBACK_SAFETY_FACTOR   — default 0.85 (диапазон 0.5-1.0)
 //
 // Out-of-range или невалидные значения → fallback на default (без fatal).
 var (
@@ -34,6 +35,21 @@ var (
 	fallbackOverheadMB      int64   = 1536
 	fallbackSafetyFactor    float64 = 0.85
 )
+
+// lazyLoadDetachedTimeout — R83 (2026-09-29): сколько ждать загрузку модели,
+// отвязанную от клиентского запроса.
+//
+// Загрузка 27B Q4 на CPU-offload занимает минуты; 30 минут — верхняя граница,
+// чтобы «повисшая» загрузка не держала слот вечно. Переопределяется
+// CPPWORKER_LAZY_LOAD_TIMEOUT_SEC (секунды).
+func lazyLoadDetachedTimeout() time.Duration {
+	if v := os.Getenv("CPPWORKER_LAZY_LOAD_TIMEOUT_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 30 && n <= 86400 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 30 * time.Minute
+}
 
 func init() {
 	if v := os.Getenv("CPPWORKER_FALLBACK_ESTIMATED_LAYERS"); v != "" {
@@ -160,12 +176,12 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 			log.Errorw("lazy-load: model file not found",
 				"model", modelName, "path", modelPath, "error", statErr)
 			failAttempt := LoadAttempt{
-				Timestamp: loadStart,
-				Model:     modelName,
-				Path:      modelPath,
-				Stage:     "file_not_found",
-				Success:   false,
-				Error:     statErr.Error(),
+				Timestamp:  loadStart,
+				Model:      modelName,
+				Path:       modelPath,
+				Stage:      "file_not_found",
+				Success:    false,
+				Error:      statErr.Error(),
 				DurationMs: time.Since(loadStart).Milliseconds(),
 				Diagnostics: map[string]interface{}{
 					"modelPath":   modelPath,
@@ -279,12 +295,12 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 				"requested_n_ctx", rationale.RequestedNCtx,
 				"max_viable_n_ctx", rationale.MaxViableNCtx)
 			attempt := LoadAttempt{
-				Timestamp: loadStart,
-				Model:     modelName,
-				Path:      modelPath,
-				Stage:     "insufficient_resources",
-				Success:   false,
-				Error:     fitErr.Error(),
+				Timestamp:  loadStart,
+				Model:      modelName,
+				Path:       modelPath,
+				Stage:      "insufficient_resources",
+				Success:    false,
+				Error:      fitErr.Error(),
 				DurationMs: time.Since(loadStart).Milliseconds(),
 			}
 			RecordLoadAttempt(attempt)
@@ -362,7 +378,36 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 			return existingName, nil
 		}
 
-		if err := backend.LoadModelWithOpts(ctx, modelName, modelPath, opts); err != nil {
+		// R83 (2026-09-29): загрузку НЕЛЬЗЯ привязывать к ctx конкретного клиента.
+		//
+		// ДЕФЕКТ (воспроизведён на живом стенде). Загрузка модели — разделяемый
+		// ресурс: при параллельных запросах грузит ОДНА горутина (TryLockLoad выше),
+		// остальные ждут её через WaitForLoad. Но ctx передавался от клиента, который
+		// эту загрузку инициировал, поэтому обрыв/завершение ЕГО запроса отменяло
+		// общую загрузку:
+		//
+		//	lazy-load failed: load cancelled: model load aborted by user
+		//	(R60.57 checkpoint A: after llama_model_load_from_file)
+		//	BRIDGE_ERR_ABORTED
+		//
+		// В итоге модель не загружалась НИ У КОГО: инициатор получал 500
+		// («upstream returned HTTP 500»), а ожидавшие — 503 «model is not loaded and
+		// auto-load failed». Именно это наблюдалось при трёх параллельных запросах:
+		// первый обслуживался, второй и третий падали, хотя модель физически
+		// загружалась.
+		//
+		// Теперь загрузка идёт на отдельном контексте с ограничением по времени:
+		// завершение клиентского запроса её не убивает. Явный /api/cancel по-прежнему
+		// не может прервать загрузку — это осознанный компромисс: ждать догрузки
+		// лучше, чем остаться без модели из-за ушедшего клиента.
+		loadCtx := ctx
+		if loadCtx == nil || loadCtx.Done() != nil {
+			detached, cancel := context.WithTimeout(context.Background(), lazyLoadDetachedTimeout())
+			defer cancel()
+			loadCtx = detached
+		}
+
+		if err := backend.LoadModelWithOpts(loadCtx, modelName, modelPath, opts); err != nil {
 			log.Errorw("lazy-load failed", "model", modelName, "path", modelPath, "error", err)
 			attempt.Stage = "load_failed"
 			attempt.Success = false

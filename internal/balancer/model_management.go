@@ -82,6 +82,21 @@ type ModelOpRequest struct {
 	UseMmap     *bool   `json:"useMmap,omitempty"`     // default true
 	FlashAttn   *int    `json:"flashAttn,omitempty"`   // -1=auto, 0=off, 1=on
 	BatchSize   *int    `json:"batchSize,omitempty"`
+
+	// R83 (2026-09-29): ПАРАЛЛЕЛЬНОСТЬ и РАЗМЫШЛЕНИЯ.
+	//
+	// ДЕФЕКТ. Cppworker принимает оба поля в /api/models/load-with-params
+	// (cmd/cppworker/types.go: loadWithParamsRequest.Parallel,
+	// .EnableReasoning), но в структуре запроса БАЛАНСЕРА их не было — и они
+	// молча терялись по пути WebUI → балансер → cppworker. Настройки «на
+	// размышления» и «параллельность» на странице моделей GGUF сохранялись, а к
+	// модели не применялись: оператор видел, что параметры «не применились».
+	//
+	// Parallel — число одновременных сессий (слотов) модели. Без него cppworker
+	// поднимает n_parallel=1 независимо от того, что оператор выставил в UI.
+	Parallel *int `json:"parallel,omitempty"`
+	// EnableReasoning — per-model override reasoning-парсера (thinking).
+	EnableReasoning *bool `json:"enableReasoning,omitempty"`
 }
 
 // ModelOpResult — результат операции с моделью
@@ -1031,6 +1046,14 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	}
 	if req.BatchSize != nil {
 		body["batchSize"] = *req.BatchSize
+	}
+	// R83 (2026-09-29): параллельность и размышления — раньше терялись по пути
+	// WebUI → балансер → cppworker (см. комментарий у полей ModelOpRequest).
+	if req.Parallel != nil {
+		body["parallel"] = *req.Parallel
+	}
+	if req.EnableReasoning != nil {
+		body["enableReasoning"] = *req.EnableReasoning
 	}
 	if useLoadWithParams {
 		body["overrideTensors"] = overrideTensors

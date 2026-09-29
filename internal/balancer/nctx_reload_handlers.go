@@ -708,6 +708,35 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 			"backend", backendID, "model", modelName, "requested_n_ctx", requestedNCtx)
 	}
 
+	// R83 (2026-09-29): ПОТОЛОК auto-reload применяется и на ЭТОМ пути.
+	//
+	// ДЕФЕКТ (пойман на живом). В балансере два независимых пути n_ctx-reload:
+	// координатор (nctx_reload.go, проверяет cfg.AutoReloadMaxNCtx) и этот —
+	// preflightNCtxReloadIfNeeded. Второй потолок НЕ проверял, поэтому клиент
+	// мог поднять контекст выше операторского лимита: при LB_NCTX_RELOAD_MAX_N_CTX=16384
+	// и загруженных 16384 запрос с num_ctx=32768 вызвал async reload
+	//   "preflightNCtxReload: detected n_ctx mismatch, scheduling async reload,
+	//    loaded_n_ctx":16384,"requested_n_ctx":32768
+	// и модель загрузилась с 32768 — настройка оператора была перебита
+	// клиентским запросом, причём молча (в ответе 200).
+	//
+	// Теперь запрос, требующий контекст выше потолка, отклоняется с понятным
+	// объяснением вместо тихой перезагрузки. Сам потолок НЕ ограничивает
+	// явную загрузку модели (WebUI/load-with-params) — он про авто-reload.
+	if cfg := p.nctxReload.Config(); cfg.AutoReloadMaxNCtx > 0 && requestedNCtx > cfg.AutoReloadMaxNCtx {
+		logger.Get().Warnw("preflightNCtxReload: запрошенный n_ctx выше потолка auto-reload — reload НЕ запускаю",
+			"backend", backendID, "model", modelName,
+			"requested_n_ctx", requestedNCtx,
+			"auto_reload_max_n_ctx", cfg.AutoReloadMaxNCtx,
+			"hint", "поднимите LB_NCTX_RELOAD_MAX_N_CTX или загрузите модель с нужным contextSize явно")
+		return bodyBuf, false,
+			fmt.Sprintf("requested num_ctx=%d exceeds operator limit auto_reload_max_n_ctx=%d "+
+				"(model %q keeps its loaded n_ctx). Raise LB_NCTX_RELOAD_MAX_N_CTX "+
+				"or load the model explicitly with the needed contextSize.",
+				requestedNCtx, cfg.AutoReloadMaxNCtx, modelName),
+			http.StatusRequestEntityTooLarge
+	}
+
 	// 2. Получаем loaded n_ctx из метрик.
 	p.metricsMgr.mu.RLock()
 	lm, hasLm := p.metricsMgr.llamaMetrics[backendID]

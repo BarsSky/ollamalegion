@@ -689,6 +689,13 @@ type profilePresence struct {
 	// (`"disabled": false`), а не только выставить: при мерж-семантике
 	// отсутствующее поле сохраняет текущее значение.
 	Disabled *bool `json:"disabled"`
+	// Primary — R83 (2026-09-29): тот же принцип для «настройки зафиксированы
+	// администратором». Без указателя снять флаг из UI было бы нельзя
+	// (`"primary": false` неотличимо от «поле не прислали»).
+	Primary *bool `json:"primary"`
+	// IgnoreDefaults — R83: снятие «профиль не подставляет параметры» тоже
+	// должно быть возможно явным false.
+	IgnoreDefaults *bool `json:"ignoreDefaults"`
 }
 
 // mergeProfileUpdate — R67a: полный мерж обновления профиля.
@@ -720,6 +727,12 @@ func mergeProfileUpdate(existing, values types.LlamaCppModelProfile, presence pr
 	}
 	if presence.Disabled != nil {
 		out.Disabled = *presence.Disabled
+	}
+	if presence.Primary != nil {
+		out.Primary = *presence.Primary
+	}
+	if presence.IgnoreDefaults != nil {
+		out.IgnoreDefaults = *presence.IgnoreDefaults
 	}
 	return out
 }

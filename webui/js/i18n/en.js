@@ -1351,6 +1351,8 @@ window.I18N_EN = {
   "settings.profiles.use_mmap_help": "Memory-map the model file. False disables mmap (full read into RAM). nil = inherit.",
   "settings.profiles.parallel": "Parallel sequences",
   "settings.profiles.parallel_help": "Number of parallel sequences (batched generation). > 1 requires more VRAM (KV-cache × parallel). 0 = inherit cppworker default (1).",
+            "settings.profiles.primary": "Lock settings (client requests cannot change them)",
+            "settings.profiles.primary_help": "A client request cannot change this model's parameters: if it fits the locked context it is served; if it needs more, the client gets a rejection saying the settings are fixed by the administrator. Also disables auto-optimization for this model.",
   "settings.profiles.kv_cache_type": "KV-cache quantization",
   "settings.profiles.kv_cache_type_help": "KV-cache quantization. q8_0 saves ~50% VRAM with minimal quality loss. q4_0 saves ~75%, but noticeable degradation on long contexts. '' = inherit (F16).",
   "settings.profiles.notes_help": "Free-form description (purpose, performance notes).",

@@ -257,6 +257,10 @@
             // профиль превращался в жёсткий потолок contextLength (32768).
             contextLengthAuto: !!profile.contextLengthAuto,
             contextLengthMax: profile.contextLengthMax || 0,
+            // R83 (2026-09-29): primary — «настройки модели зафиксированы
+            // администратором, клиентский запрос их не меняет». См.
+            // internal/balancer/primary_model_policy.go.
+            primary: !!profile.primary,
             // Round 32 #10 (2026-08-10): reasoning mode toggle. UI-only — не
             // отправляется в API. На save конвертируется в ×3 таймауты.
             reasoningMode: false
@@ -291,6 +295,9 @@
         // работают, а частичные обновления больше не обнуляют остальные поля.
         body.contextLengthAuto = !!state.contextLengthAuto;
         body.contextLengthMax = parseInt(state.contextLengthMax, 10) || 0;
+        // R83 (2026-09-29): primary отправляем ВСЕГДА (true/false) — иначе снять
+        // фиксацию из UI было бы нельзя (мерж-семантика: отсутствие поля = «не менять»).
+        body.primary = !!state.primary;
         return body;
     }
 
@@ -426,6 +433,13 @@
                                 <option value="off" ${state.useMmap === 'off' ? 'selected' : ''}>off</option>
                             </select>
                             <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.use_mmap_help', 'Memory-map файла модели. false = полностью читать в RAM. nil = наследовать.'))}</div>
+                        </div>
+                        <div class="wizard-field">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="wizPrimary" ${state.primary ? 'checked' : ''}>
+                                <span>${escapeHtml(I18N.t('settings.profiles.primary', 'Зафиксировать настройки (клиентские запросы их не меняют)'))}</span>
+                            </label>
+                            <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.primary_help', 'Включено: клиентский запрос НЕ может изменить параметры модели. Если запросу хватает зафиксированного контекста — он обслуживается (num_ctx подменяется на загруженный); если нужно больше — клиент получает отказ с указанием, что настройки зафиксированы администратором. Также отключает авто-оптимизацию (AutoTune) для этой модели. Параметры по-прежнему меняются здесь, через администратора.'))}</div>
                         </div>
                         <div class="wizard-field">
                             <label>${escapeHtml(I18N.t('settings.profiles.parallel', 'Параллельные sequences'))}</label>
@@ -623,7 +637,9 @@
             firstByteTimeoutSec: parseInt(overlay.querySelector('#wizFirstByteTimeout').value, 10) || 0,
             // R67a: потолок n_ctx (авто-режим + максимум).
             contextLengthAuto: !!(overlay.querySelector('#wizCtxAuto') && overlay.querySelector('#wizCtxAuto').checked),
-            contextLengthMax: parseInt((overlay.querySelector('#wizCtxMax') || {}).value, 10) || 0
+            contextLengthMax: parseInt((overlay.querySelector('#wizCtxMax') || {}).value, 10) || 0,
+            // R83 (2026-09-29): primary — фиксация настроек администратором.
+            primary: !!(overlay.querySelector('#wizPrimary') && overlay.querySelector('#wizPrimary').checked)
         };
     }
 

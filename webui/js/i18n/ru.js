@@ -1228,6 +1228,8 @@ window.I18N_RU = {
   "settings.profiles.use_mmap_help": "Memory-map файла модели. false = полностью читать в RAM. nil = наследовать.",
   "settings.profiles.parallel": "Параллельные sequences",
   "settings.profiles.parallel_help": "Число параллельных sequences (batched generation). > 1 требует больше VRAM (KV-cache × parallel). 0 = оставить дефолт cppworker (1).",
+            "settings.profiles.primary": "Зафиксировать настройки (клиентские запросы их не меняют)",
+            "settings.profiles.primary_help": "Клиентский запрос не может изменить параметры модели: если ему хватает зафиксированного контекста — обслуживается, если нужно больше — получает отказ с указанием, что настройки зафиксированы администратором. Также отключает авто-оптимизацию для этой модели.",
   "settings.profiles.kv_cache_type": "Квантизация KV-cache",
   "settings.profiles.kv_cache_type_help": "Тип квантизации KV-cache. q8_0 экономит ~50% VRAM с минимальной потерей качества. q4_0 экономит ~75%, но заметная потеря на длинных контекстах. '' = default (F16).",
   "settings.profiles.notes_help": "Свободное описание (назначение, особенности производительности).",

@@ -188,7 +188,8 @@
                                                       "kvCacheType":  "q8_0",
                                                       "contextLengthAuto":  true,
                                                       "contextLengthMax":  131072,
-                                                      "ignoreDefaults":  true
+                                                      "ignoreDefaults":  true,
+                                                      "primary":  true
                                                   },
                                   "Qwen3-4B-Instruct-2507":  {
                                                                  "_note":  "2026-08-17: Qwen3 dense 4B, Q4_K_M ~2.5GB. Загружается за 99s (Qwen3-Instruct-2507-q4km.gguf). Все слои на GPU (-1) — помещается в любую 4GB+ VRAM. Thinking mode через chat template enable_thinking=true (Round 14).",

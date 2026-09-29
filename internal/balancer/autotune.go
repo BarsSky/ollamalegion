@@ -445,6 +445,12 @@ func IsAutoTuneEnabled(p *Proxy, modelName string) bool {
 	if p == nil {
 		return false
 	}
+	// 0) R83 (2026-09-29): primary-модель — настройки зафиксированы администратором,
+	// авто-оптимизация её не трогает. Иначе AutoTune перезагрузил бы модель по своим
+	// рекомендациям и «сдвинул» ровно те параметры, которые оператор зафиксировал.
+	if modelName != "" && p.isPrimaryModel(modelName) {
+		return false
+	}
 	// 1) Per-model profile override (highest priority)
 	if modelName != "" {
 		profile, ok := p.GetModelProfile(modelName)

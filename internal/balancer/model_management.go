@@ -966,7 +966,10 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	// NumGPULayers: 0 трактуем как «не задано» (в типе профиля нет признака
 	// «поле отсутствует», а 0 = CPU-only на практике не использовался;
 	// ValidateProfile допускает 0).
-	if prof, ok := mm.profileForLoad(req.ModelName); ok {
+	if prof, ok := mm.profileForLoad(req.ModelName); ok && !prof.IgnoreDefaults {
+		// R83 (2026-09-29): профиль с IgnoreDefaults=true не участвует в подстановке —
+		// оператор явно отказался от скрытых дефолтов, и параметры загрузки берутся
+		// из запроса клиента, а остальное — из окружения cppworker.
 		if req.ContextSize == nil && prof.ContextLength > 0 {
 			cs := prof.ContextLength
 			req.ContextSize = &cs

@@ -270,7 +270,13 @@ const ui = (function () {
             case 'gguf':
                 if (window.GgufRenderer) {
                     var container = document.getElementById('ggufContainer');
-                    if (container) GgufRenderer.render(container);
+                    if (container) {
+                        GgufRenderer.render(container);
+                        // R83 (2026-09-29): render() пересобирает DOM и вызывает
+                        // refreshBackends() (REST-запрос к /api/v1/gguf/backends),
+                        // то есть страница GGUF получает свежие данные и при
+                        // переключении на неё, и при кнопке «Обновить».
+                    }
                 }
                 break;
             case 'settings':
@@ -335,8 +341,26 @@ const ui = (function () {
         var deleteBackend = function () { if (CRUD.deleteBackend) CRUD.deleteBackend(); };
 
         document.getElementById('refreshBtn').addEventListener('click', () => {
-            refreshCurrentPage();
-            showToast(window.I18N ? I18N.t('common.success') : 'Data updated', 'success');
+            // R83 (2026-09-29): сначала ЗАПРОС к балансеру, потом рендер.
+            //
+            // Было: только refreshCurrentPage(), а эта функция рисует страницу из
+            // ЛОКАЛЬНОЙ копии data.* — то есть кнопка «Обновить» перерисовывала то,
+            // что уже было в памяти, и по свежим данным ничего не запрашивала.
+            // Пока живы периодический опрос (REFRESH_INTERVAL) и WebSocket, разница
+            // незаметна, но при обрыве WS кнопка выглядела неработающей: тост
+            // «успешно» появляется, а цифры не меняются.
+            //
+            // Ровно так же работает соседняя кнопка refreshModelsBtn ниже
+            // (fetchClusterState().then(modelsPage)).
+            var done = function () {
+                refreshCurrentPage();
+                showToast(window.I18N ? I18N.t('common.success') : 'Data updated', 'success');
+            };
+            if (typeof fetchClusterState === 'function') {
+                fetchClusterState().then(done).catch(done);
+            } else {
+                done();
+            }
         });
 
         document.getElementById('addBackendBtn').addEventListener('click', () => openBackendModal());

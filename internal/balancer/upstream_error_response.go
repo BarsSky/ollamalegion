@@ -23,6 +23,7 @@
 package balancer
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -90,7 +91,7 @@ func classifyUpstreamError(err error) string {
 	case containsFold(msg, "unexpected EOF"), containsFold(msg, "EOF"):
 		return "unexpected_eof"
 	}
-	if t := determineErrorType(err, nil); t != "" && t != "unknown" {
+	if t := determineErrorType(err, context.Background()); t != "" && t != "unknown" {
 		return t
 	}
 	return "upstream_error"

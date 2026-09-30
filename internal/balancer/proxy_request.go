@@ -23,13 +23,25 @@ type OllamaErrorResponse struct {
 }
 
 // determineErrorType — классифицирует ошибку HTTP-запроса для логирования и retry-логики
+//
+// R83-fix (2026-09-30): reqCtx может быть nil (классификация «по одной ошибке»,
+// без контекста запроса — см. classifyUpstreamError). Раньше здесь было
+// безусловное `reqCtx.Err()`, и вызов с nil ронял ВЕСЬ балансер паникой
+// `invalid memory address or nil pointer dereference` (адрес 0x28): живой
+// сценарий — таймаут первого байта от cppworker, воспроизведён тестом
+// tests/first_byte_timeout_test.go (TestOpenAIChat_HeaderTimeout_StillWorks).
 func determineErrorType(err error, reqCtx context.Context) string {
-	errDetail := err.Error()
-	if reqCtx.Err() == context.DeadlineExceeded {
-		return "context_deadline_exceeded"
+	if err == nil {
+		return "unknown"
 	}
-	if reqCtx.Err() == context.Canceled {
-		return "context_canceled"
+	errDetail := err.Error()
+	if reqCtx != nil {
+		if reqCtx.Err() == context.DeadlineExceeded {
+			return "context_deadline_exceeded"
+		}
+		if reqCtx.Err() == context.Canceled {
+			return "context_canceled"
+		}
 	}
 	if strings.Contains(errDetail, "connection refused") ||
 		// R82: Windows-формулировка WSAECONNREFUSED — «...actively refused it».

@@ -51,6 +51,28 @@ func TestR83_ClassifyUpstreamError(t *testing.T) {
 	}
 }
 
+// TestR83Fix_ClassifyUpstreamError_GenericTimeoutDoesNotPanic — регрессия на
+// падение всего балансера.
+//
+// classifyUpstreamError звал determineErrorType(err, nil), а тот безусловно
+// обращался к reqCtx.Err(): на сообщении, не попавшем в ранние case'ы
+// («i/o timeout» без слов Client.Timeout/context deadline exceeded), это
+// `invalid memory address or nil pointer dereference` и паника всего процесса.
+// Живой сценарий — таймаут первого байта от cppworker; воспроизводился тестом
+// tests/first_byte_timeout_test.go (TestOpenAIChat_HeaderTimeout_StillWorks),
+// который до фикса валил пакет tests с goroutine dump.
+func TestR83Fix_ClassifyUpstreamError_GenericTimeoutDoesNotPanic(t *testing.T) {
+	for _, msg := range []string{
+		"net/http: timeout awaiting response headers",
+		"i/o timeout",
+		"read tcp 172.23.0.1:5555->172.23.0.5:18092: i/o timeout",
+	} {
+		if got := classifyUpstreamError(errors.New(msg)); got == "" {
+			t.Errorf("classifyUpstreamError(%q) = %q, ожидался непустой тип", msg, got)
+		}
+	}
+}
+
 func TestR83_WriteUpstreamError_ConnectionRefusedIsRetryable(t *testing.T) {
 	w := httptest.NewRecorder()
 	err := errors.New(`Post "http://cppworker-gpu:18092/api/chat": dial tcp 172.23.0.5:18092: connect: connection refused`)

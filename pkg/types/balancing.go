@@ -379,15 +379,30 @@ type LlamaCppModelProfile struct {
 	SizeBytes int64 `json:"sizeBytes,omitempty"`
 
 	// Parallel — число параллельных слотов для одновременной обработки запросов
-	// (n_parallel в llama.cpp). 0 = использовать дефолт cppworker (обычно 1).
-	// >0 = до 8 параллельных слотов в одном экземпляре модели. Полезно для
-	// multi-user throughput без репликации модели на N бэкендов.
+	// (n_parallel / n_seq_max в llama.cpp). 0 = использовать дефолт cppworker
+	// (обычно 1). >0 = до 8 параллельных слотов в одном экземпляре модели.
 	//
-	// Trade-off: каждый слот потребляет отдельный KV-cache (n_parallel × KV-cache per slot),
-	// так что n_ctx × n_parallel должно влезать в VRAM. Например, gemma-4 8B с
-	// n_ctx=65536 + parallel=2 + kv_cache_type=f16 требует ~14 GB на KV-cache
-	// (было бы 7 GB при parallel=1).
+	// R83-уточнение (2026-09-30): слоты НЕ умножают KV-cache, они ДЕЛЯТ окно.
+	// Проверено на стенде (c/llama.cpp gguf-v0.19.0-1369, kv_unified=false,
+	// src/llama-context.cpp):
+	//
+	//	n_ctx_seq = GGML_PAD(n_ctx / n_seq_max, 256)
+	//	contextSize=8192 + parallel=2 → llama_context: n_ctx=8192, n_ctx_seq=4096
+	//	свободная VRAM: parallel=1 → 5197 МБ, parallel=2 → 5197 МБ, parallel=3 → 5191 МБ
+	//
+	// То есть contextLength здесь — СУММАРНОЕ окно, а каждый клиент получает
+	// n_ctx / slots. Если нужно окно НА КЛИЕНТА, задавайте ContextPerSeq.
+	// (Прежний комментарий утверждал обратное — «KV-cache × n_parallel»; это
+	// было неверно, см. docs/deployment-stack.md §7.2.)
 	Parallel int `json:"parallel,omitempty"` // 0 = inherit, 1..8 = parallel slots
+
+	// ContextPerSeq — R83 (2026-09-30): окно контекста НА КЛИЕНТА (на слот).
+	//
+	// > 0 → суммарный n_ctx = PAD256(ContextPerSeq) × слотов, поэтому «16384 на
+	// клиента + parallel=2» даёт по 16384 каждому (суммарно 32768, и memfit
+	// проверяет именно суммарные 32768).
+	// 0 → contextLength трактуется как суммарное окно (прежнее поведение).
+	ContextPerSeq int `json:"contextPerSeq,omitempty"`
 
 	// KVCacheType — тип квантизации KV-cache. "" (или отсутствие поля) = inherit
 	// from cppworker default (обычно f16).

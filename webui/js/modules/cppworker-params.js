@@ -178,7 +178,8 @@
     }
 
     const DEFAULTS_FIELDS = [
-        ['contextLength', 'n_ctx (окно контекста)'],
+        ['contextLength', 'n_ctx (окно контекста, СУММАРНОЕ)'],
+        ['contextPerSlot', 'n_ctx на клиента (llama.cpp: n_ctx / слоты)'],
         ['batchSize', 'batch size'],
         ['numGpuLayers', 'слоёв на GPU (-1 = все, -2 = AUTO)'],
         ['kvCacheType', 'KV-cache (f16/q8_0/q4_0)'],
@@ -187,6 +188,17 @@
         ['useMmap', 'mmap'],
         ['enableReasoning', 'reasoning по умолчанию']
     ];
+
+    // lowPerSlotWarning — R83 (2026-09-30): окно на клиента < 1024 — почти всегда
+    // ошибка оператора (он думал, что contextLength и есть окно на клиента).
+    function lowPerSlotWarning(eff) {
+        const per = eff && eff.contextPerSlot;
+        if (!per || per >= 1024) return '';
+        return '<div class="cpp-profiles-hint" style="color:var(--warning,#d29922);">' +
+            escapeHtml(I18N.t('settings.load_defaults.low_per_slot',
+                'Внимание: на каждого клиента приходится меньше 1024 токенов — это окно делится между слотами (n_ctx / параллельные слоты). Чтобы дать 16K каждому при 2 слотах, задайте суммарное окно 32768 или укажите «окно на клиента».')) +
+            '</div>';
+    }
 
     function renderLoadDefaults(data, el) {
         const eff = data.effective || {};
@@ -222,6 +234,7 @@
                         'Применяются к модели, у которой нет своего профиля. Профиль модели всегда важнее; если ничего не задано — берётся env контейнера cppworker.'))}</div>
                     <div class="cpp-profiles-hint">${escapeHtml(I18N.t('settings.load_defaults.cppworker_label', 'env cppworker:'))} ${cwState}</div>
                     ${ignoredNote}
+                    ${lowPerSlotWarning(eff)}
                 </div>
                 <div>
                     <button class="btn btn-primary" id="cppDefaultsEditBtn">${escapeHtml(I18N.t('common.edit', 'Изменить'))}</button>
@@ -250,7 +263,8 @@
         box.innerHTML = `
             <div class="cpp-defaults-form">
                 <div class="cpp-defaults-grid">
-                    ${field('cppDefCtx', 'n_ctx', prof.contextLength !== undefined ? prof.contextLength : eff.contextLength, 'min="256" max="262144"')}
+                    ${field('cppDefCtx', 'n_ctx суммарное (слоты делят его)', prof.contextLength !== undefined ? prof.contextLength : eff.contextLength, 'min="256" max="262144"')}
+                    ${field('cppDefPerSeq', 'окно НА КЛИЕНТА (0 = не задавать)', prof.contextPerSeq, 'min="0" max="262144"')}
                     ${field('cppDefBatch', 'batch size', prof.batchSize !== undefined ? prof.batchSize : eff.batchSize, 'min="0" max="4096"')}
                     ${field('cppDefGpuLayers', 'слоёв на GPU', prof.numGpuLayers, 'min="-2" max="200"')}
                     ${field('cppDefParallel', 'параллельных слотов', prof.parallel !== undefined ? prof.parallel : eff.parallel, 'min="0" max="8"')}
@@ -266,6 +280,8 @@
                 </div>
                 <div class="cpp-profiles-hint">${escapeHtml(I18N.t('settings.load_defaults.form_hint',
                     'Пустое поле = не задавать (тогда значение берётся из env контейнера cppworker). Сохранение пишет значения в конфиг балансера.'))}</div>
+                <div class="cpp-profiles-hint">${escapeHtml(I18N.t('settings.load_defaults.perslot_hint',
+                    'n_ctx — СУММАРНОЕ окно: llama.cpp делит его между слотами (n_ctx_seq = n_ctx / слоты). Чтобы каждый клиент получил, например, 16K при 2 слотах, задайте суммарное 32768 или впишите 16384 в «окно НА КЛИЕНТА» — тогда суммарное посчитается само (16384 × 2 = 32768).'))}</div>
                 <label class="cpp-defaults-field" style="flex-direction:row; align-items:center; gap:8px; margin-top:8px;">
                     <input type="checkbox" id="cppDefIgnore"${prof.ignoreDefaults ? ' checked' : ''}>
                     <span>${escapeHtml(I18N.t('settings.load_defaults.ignore_defaults',
@@ -288,6 +304,11 @@
                 if (!isNaN(n)) body[key] = n;
             };
             intOrSkip('cppDefCtx', 'contextLength');
+            // R83 (2026-09-30): окно НА КЛИЕНТА — 0/пусто = не задавать
+            // (тогда contextLength трактуется как суммарное).
+            const perRaw = (box.querySelector('#cppDefPerSeq').value || '').trim();
+            const perVal = perRaw === '' ? 0 : parseInt(perRaw, 10);
+            if (!isNaN(perVal) && perVal > 0) body.contextPerSeq = perVal;
             intOrSkip('cppDefBatch', 'batchSize');
             intOrSkip('cppDefGpuLayers', 'numGpuLayers');
             intOrSkip('cppDefParallel', 'parallel');
@@ -298,9 +319,9 @@
             const ignoreEl = box.querySelector('#cppDefIgnore');
             if (ignoreEl) body.ignoreDefaults = !!ignoreEl.checked;
 
-            if (body.contextLength === undefined && !data.defaultModelProfile) {
+            if (body.contextLength === undefined && !data.defaultModelProfile && !body.contextPerSeq) {
                 showToast('error', I18N.t('settings.load_defaults.ctx_required',
-                    'Укажите n_ctx: без него настройки по умолчанию ничего не задают'));
+                    'Укажите n_ctx (суммарное) или «окно на клиента»: иначе настройки по умолчанию ничего не задают'));
                 return;
             }
             try {
@@ -358,11 +379,13 @@
                     ? '<span class="cpp-source-badge is-env">' + escapeHtml(I18N.t('settings.catalog.profile_ignored', 'профиль отключён (ignoreDefaults)')) + '</span>'
                     : '<span class="cpp-source-badge is-default">' + escapeHtml(I18N.t('settings.catalog.has_profile', 'свой профиль')) + '</span>')
                 : '<span class="cpp-source-badge is-env">' + escapeHtml(I18N.t('settings.catalog.no_profile', 'по умолчанию')) + '</span>';
+            const perSlot = eff.contextPerSlot || 0;
             const settings = [
-                'n_ctx=' + fmtValue('contextLength', eff.contextLength) + ' (' + (src.contextLength || '—') + ')',
+                'n_ctx=' + fmtValue('contextLength', eff.contextLength) + ' суммарно (' + (src.contextLength || '—') + ')',
+                perSlot ? 'на клиента=' + fmtValue('contextLength', perSlot) : null,
                 eff.parallel ? 'parallel=' + eff.parallel + ' (' + (src.parallel || '—') + ')' : 'parallel=1',
                 eff.kvCacheType ? 'kv=' + eff.kvCacheType + ' (' + (src.kvCacheType || '—') + ')' : 'kv=f16'
-            ].join(' · ');
+            ].filter(Boolean).join(' · ');
             return `
                 <div class="cpp-profile-item" data-file="${escapeHtml(f.name)}">
                     <div class="cpp-profile-info">

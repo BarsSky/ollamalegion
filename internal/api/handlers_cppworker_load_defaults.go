@@ -32,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -142,6 +143,19 @@ func (s *Server) getLoadDefaults(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	pickInt("parallel", profileParallel, "defaultNParallel")
+
+	// R83 (2026-09-30): окно НА КЛИЕНТА. contextLength выше — СУММАРНОЕ окно,
+	// которое слоты ДЕЛЯТ (llama.cpp: n_ctx_seq = n_ctx / n_seq_max). Показываем
+	// обе цифры: иначе «16K + 2 слота» читается как 16K на клиента.
+	if effCtx, ok := intFromEffective(effective, "contextLength"); ok && effCtx > 0 {
+		slots, _ := intFromEffective(effective, "parallel")
+		effective["contextPerSlot"] = cppbackend.ContextPerSlot(effCtx, slots)
+		source["contextPerSlot"] = source["contextLength"]
+	}
+	if hasProfile && prof.ContextPerSeq > 0 {
+		effective["contextPerSeq"] = prof.ContextPerSeq
+		source["contextPerSeq"] = "defaultProfile"
+	}
 
 	if hasProfile && profileKV != "" {
 		effective["kvCacheType"] = profileKV
@@ -365,6 +379,11 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 						entry.Effective["kvCacheType"] = p.KVCacheType
 						entry.Source["kvCacheType"] = src
 					}
+					// R83 (2026-09-30): «окно на клиента» из профиля/дефолта.
+					if entry.Effective["contextPerSeq"] == nil && p.ContextPerSeq > 0 {
+						entry.Effective["contextPerSeq"] = p.ContextPerSeq
+						entry.Source["contextPerSeq"] = src
+					}
 				}
 				prof, hasProf := s.proxy.GetModelProfile(f.Name)
 				if !hasProf {
@@ -388,6 +407,22 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 				}
 				// Последний уровень — env контейнера cppworker.
 				fillFromCppWorker(entry.Effective, entry.Source, cw)
+				// R83 (2026-09-30): окно на клиента и итоговое суммарное окно.
+				// Если задан contextPerSeq — он и есть окно на клиента, а суммарное
+				// растёт до per × слотов (ту же арифметику применяет cppworker).
+				ctxTotal, _ := intFromEffective(entry.Effective, "contextLength")
+				slots, _ := intFromEffective(entry.Effective, "parallel")
+				perSeq, _ := intFromEffective(entry.Effective, "contextPerSeq")
+				totalEff, perEff := cppbackend.EffectiveContextSize(ctxTotal, perSeq, slots)
+				if perEff > 0 {
+					entry.Effective["contextPerSlot"] = perEff
+					entry.Source["contextPerSlot"] = entry.Source["contextPerSeq"]
+					if perSeq > 0 {
+						// При явном «на клиента» суммарное окно другое — показываем,
+						// сколько реально запросим у llama.cpp.
+						entry.Effective["contextLengthEffective"] = totalEff
+					}
+				}
 				files = append(files, entry)
 			}
 		}
@@ -437,6 +472,23 @@ func fillFromCppWorker(effective map[string]interface{}, source map[string]strin
 	setInt("numGpuLayers", "defaultGpuLayers")
 	setInt("parallel", "defaultNParallel")
 	setStr("kvCacheType", "defaultKvCacheType")
+}
+
+// intFromEffective — целое значение из карты effective (там лежат int/float64).
+func intFromEffective(m map[string]interface{}, key string) (int, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	}
+	return 0, false
 }
 
 // fetchCppWorkerSnapshot — читает дефолты контейнера cppworker (полная картина

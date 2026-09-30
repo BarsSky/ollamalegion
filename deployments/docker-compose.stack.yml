@@ -236,17 +236,18 @@ services:
       # В контейнере код читает именно CPPWORKER_N_PARALLEL
       # (internal/cppbackend/config.go: LoadConfigFromEnv).
       #
-      # Стоимость: каждый слот — своя последовательность в KV-cache. Замер на
-      # RTX 3070 8 ГБ (Qwen3-1.7B, ctx=8192, q4_0): parallel=1 → 5195 МБ
-      # свободно, parallel=2 → 1446 МБ, то есть второй слот ≈ вторая копия
-      # KV-cache. На 8 ГБ с n_ctx≈16K два слота обычно уже не влезают и часть
-      # слоёв уезжает на CPU (медленнее). Подробности и замеры — §7 и §7.2
-      # docs/deployment-stack.md.
+      # Что реально делает CPPWORKER_N_PARALLEL (проверено на стенде, c/llama.cpp
+      # gguf-v0.19.0-1369, kv_unified=false):
+      #   llama_context: n_ctx_seq = GGML_PAD(n_ctx / n_seq_max, 256)
+      # То есть слоты НЕ умножают KV-cache и НЕ увеличивают расход VRAM — они
+      # ДЕЛЯТ окно контекста между клиентами:
+      #   contextSize=8192 + parallel=2 → n_ctx=8192, n_ctx_seq=4096
+      #   свободная VRAM: parallel=1 → 5197 МБ, 2 → 5197 МБ, 3 → 5191 МБ
+      # Чтобы каждый клиент получил нужное окно, задайте суммарное окно
+      # = окно × слоты либо поле `contextPerSeq` («окно на клиента»).
       #
-      # ВАЖНО: значение должно совпадать с AGENT_MAX_CONCURRENT_REQUESTS.
-      # cppworker сам сообщает балансеру свою вместимость
-      # (effectiveNParallel → MaxConcurrentReqs), поэтому достаточно задать
-      # CPPWORKER_N_PARALLEL и НЕ задавать AGENT_MAX_CONCURRENT_REQUESTS.
+      # ВАЖНО: AGENT_MAX_CONCURRENT_REQUESTS задавать НЕ нужно — cppworker сам
+      # сообщает балансеру свою вместимость (effectiveNParallel).
       - CPPWORKER_N_PARALLEL=${CPPWORKER_N_PARALLEL:-0}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility

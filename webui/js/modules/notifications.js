@@ -272,8 +272,13 @@
             };
 
             add('n_ctx запрошен', d.requested_n_ctx);
-            add('влезает в VRAM', d.max_vram_n_ctx);
-            add('предел RAM', d.hard_max_n_ctx);
+            // R83 (2026-09-30): «max_vram_n_ctx» — это НЕ «максимум, что модель
+            // может обслужить», а «сколько влезает ЦЕЛИКОМ в VRAM»; для второго
+            // есть отдельное поле (hard_max_n_ctx — с частичным оффлоадом).
+            // Раньше подпись «влезает в VRAM» читалась как общий потолок, и
+            // оператор не понимал, почему модель работает на большем n_ctx.
+            add('целиком в VRAM', d.max_vram_n_ctx);
+            add('с частичным оффлоадом', d.hard_max_n_ctx);
             add('gguf max', d.gguf_max_context);
             if (Array.isArray(d.available_models) && d.available_models.length) {
                 add('доступны', d.available_models.slice(0, 8).join(', '));

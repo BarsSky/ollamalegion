@@ -155,6 +155,11 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	if req.Parallel != nil && *req.Parallel > 0 {
 		opts.Parallel = *req.Parallel
 	}
+	// R83 (2026-09-30): окно НА КЛИЕНТА (пересчёт в суммарное — в
+	// LoadModelWithOpts, там известны и слоты, и конфиг).
+	if req.ContextPerSeq != nil && *req.ContextPerSeq > 0 {
+		opts.ContextPerSeq = *req.ContextPerSeq
+	}
 	if req.OverrideTensor != nil && *req.OverrideTensor != "" {
 		opts.OverrideTensor = *req.OverrideTensor
 	}
@@ -514,6 +519,11 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Parallel != nil && *req.Parallel > 0 {
 		opts.Parallel = *req.Parallel
+	}
+	// R83 (2026-09-30): окно НА КЛИЕНТА — пересчёт в суммарный n_ctx делает
+	// LoadModelWithOpts (там известны слоты и env-дефолт CPPWORKER_N_PARALLEL).
+	if req.ContextPerSeq != nil && *req.ContextPerSeq > 0 {
+		opts.ContextPerSeq = *req.ContextPerSeq
 	}
 	if req.KVCacheType != nil && *req.KVCacheType != "" {
 		// Session 16: KVCacheType ? ????????? ???????? "f16"/"q8_0"/"q4_0".
@@ -1182,6 +1192,18 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			// parallel=2 — оба 200).
 			"parallel":   m.Parallel,
 			"batch_size": m.BatchSize,
+			// R83 (2026-09-30): окно, которое реально получит ОДИН клиент.
+			//
+			// context_size в этом же ответе — СУММАРНОЕ окно (llama.cpp при
+			// kv_unified=false считает n_ctx_seq = n_ctx / n_seq_max). Без этого
+			// поля «16384 + parallel=2» читалось как 16384 на клиента, хотя
+			// каждый слот получает 8192.
+			"context_per_seq": func() int {
+				if m.ContextPerSeq > 0 {
+					return m.ContextPerSeq
+				}
+				return cppbackend.ContextPerSlot(m.ContextSize, m.Parallel)
+			}(),
 			"max_slots": func() int {
 				if m.Parallel > 0 {
 					return m.Parallel
@@ -1677,6 +1699,11 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	degradedStage := ""
 	if req.Parallel != nil {
 		opts.Parallel = *req.Parallel
+	}
+	// R83 (2026-09-30): окно на клиента при reload — та же семантика, что и при
+	// загрузке (пересчёт в суммарный n_ctx делает LoadModelWithOpts).
+	if req.ContextPerSeq != nil && *req.ContextPerSeq > 0 {
+		opts.ContextPerSeq = *req.ContextPerSeq
 	}
 	if req.KVCacheType != nil && *req.KVCacheType != "" {
 		// ?????????? ? ?????????? ?????????? ???????? (cppbackend fallback'???

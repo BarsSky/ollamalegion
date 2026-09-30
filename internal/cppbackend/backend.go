@@ -96,6 +96,11 @@ type ModelInfo struct {
 	// Parallel=0 = дефолт cppworker (=1), KVCacheType=0 = F16.
 	Parallel    int    `json:"parallel"`    // n_parallel в llama.cpp
 	KVCacheType string `json:"kvCacheType"` // "f16"/"q8_0"/"q4_0"
+	// ContextPerSeq — R83 (2026-09-30): окно, которое фактически получил ОДИН
+	// слот (llama.cpp: n_ctx_seq = n_ctx / n_seq_max). Показывается оператору,
+	// потому что ContextSize в API — суммарное окно, и без этого поля «16384 +
+	// parallel=2» выглядело как 16384 на клиента, хотя реально это 8192.
+	ContextPerSeq int `json:"contextPerSeq,omitempty"`
 	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
 	// Заполняются пока State == StateLoading, чтобы UI мог показывать
 	// «Загружается model-name 25s» и спиннер. После успеха/ошибки поля обнуляются.
@@ -215,7 +220,10 @@ func (b *Backend) ReloadStartedAt() time.Time {
 //   - NThreads        — количество CPU-потоков для batch/generation
 //     (по умолчанию физические ядра).
 //   - Parallel         — число параллельных sequences (batched generation).
-//     Требует больше VRAM (KV-cache × parallel).
+//     Слоты ДЕЛЯТ окно контекста (llama.cpp: n_ctx_seq = n_ctx / n_seq_max,
+//     kv_unified=false), а не умножают KV-cache: 8192 + parallel=2 → по 4096
+//     на клиента, суммарный KV остаётся как при 8192. Окно на клиента задаётся
+//     ContextPerSeq.
 //   - KVCacheType      — тип KV-cache quantization (0=F16, 1=Q8_0, 2=Q4_0).
 //     Q8_0 экономит ~50% KV-cache VRAM с минимальной
 //     потерей качества (perplexity delta < 0.1).
@@ -330,6 +338,20 @@ type LoadModelOpts struct {
 	KVCacheType    string // "" = inherit (default F16), "f16"/"q8_0"/"q4_0" — explicit type
 	SplitMode      int    // 0=layer, 1=row
 	OverrideTensor string // legacy single-string override, empty = no override
+
+	// ContextPerSeq — R83 (2026-09-30): окно контекста НА КЛИЕНТА (на слот).
+	//
+	// ЗАЧЕМ. В этой сборке llama.cpp (см. src/llama-context.cpp: при
+	// kv_unified=false) считает n_ctx_seq = PAD256(n_ctx / n_seq_max), то есть
+	// contextSize в API — СУММАРНОЕ окно, которое слоты ДЕЛЯТ между собой.
+	// Оператор, выставив 16384 и parallel=2, получал по 8192 на клиента и не
+	// видел этого нигде.
+	//
+	// С ContextPerSeq > 0 итоговое (суммарное) окно считается как
+	// PAD256(ContextPerSeq) × slots, поэтому «16384 на клиента + 2 слота» даёт
+	// ровно 16384 каждому (суммарно 32768 — и memfit проверяет именно 32768).
+	// 0 = выключено, ContextSize трактуется как суммарное (прежнее поведение).
+	ContextPerSeq int
 	// Round 7: parallel arrays for per-tensor override-tensors.
 	// Each entry is (regex-pattern, buft-name) where buft-name is one of
 	//   "CPU", "CUDA0", "CUDA1", ...
@@ -660,6 +682,60 @@ func parallelSlotsFor(requested int) int {
 	return 1
 }
 
+// ContextPadStep — шаг выравнивания n_ctx_seq в llama.cpp (GGML_PAD(_, 256)).
+const ContextPadStep = 256
+
+// padContext — выравнивание окна вверх до шага llama.cpp.
+func padContext(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	step := ContextPadStep
+	return ((n + step - 1) / step) * step
+}
+
+// ContextPerSlot — R83 (2026-09-30): сколько токенов окна реально получит ОДИН
+// клиент (слот) при суммарном totalNCtx и slots слотах.
+//
+// Повторяет правило llama.cpp для kv_unified=false:
+//
+//	n_ctx_seq = GGML_PAD(n_ctx / n_seq_max, 256)
+//
+// (см. c/llama.cpp/src/llama-context.cpp — там же llama.cpp печатает
+// «n_ctx_seq = ...» в лог, и это же число видно оператору).
+//
+// Зачем в Go: иначе WebUI/API показывают суммарное окно как будто оно на клиента,
+// и оператор, выставив 16384 + parallel=2, молча получает по 8192.
+func ContextPerSlot(totalNCtx, slots int) int {
+	if totalNCtx <= 0 {
+		return 0
+	}
+	if slots < 1 {
+		slots = 1
+	}
+	return padContext(totalNCtx / slots)
+}
+
+// EffectiveContextSize — R83 (2026-09-30): единая точка, где «окно на клиента»
+// превращается в суммарный n_ctx, который уходит в memfit и в C-bridge.
+//
+//   - perSeq > 0 → total = PAD256(perSeq) × slots (окно НА КЛИЕНТА задано явно);
+//   - иначе      → total = ContextSize как есть (прежняя семантика: суммарное).
+//
+// Возвращает (total, perSeqActual): второе — фактическое окно на клиента для
+// логов и /api/models (0, если считать не из чего).
+func EffectiveContextSize(contextSize, perSeq, slots int) (int, int) {
+	slots = parallelSlotsFor(slots)
+	if perSeq > 0 {
+		per := padContext(perSeq)
+		return per * slots, per
+	}
+	if contextSize > 0 {
+		return contextSize, ContextPerSlot(contextSize, slots)
+	}
+	return contextSize, 0
+}
+
 // LoadModel загружает GGUF модель с параметрами по умолчанию
 //
 // R60.57 (2026-09-13): использует context.Background() — load нельзя отменить
@@ -708,6 +784,25 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	// свободной VRAM и запускает вторую загрузку того же файла параллельно.
 	b.loadSingleFlight.Lock()
 	defer b.loadSingleFlight.Unlock()
+
+	// R83 (2026-09-30): «окно на клиента» → суммарный n_ctx.
+	//
+	// ЕДИНСТВЕННАЯ точка пересчёта, ДО checkVRAMForModel: иначе memfit проверял
+	// бы суммарное окно, а C-bridge получил бы другое (и наоборот). Семантика
+	// llama.cpp в этой сборке: n_ctx_seq = n_ctx / n_seq_max (см. ContextPerSlot),
+	// поэтому оператор, задав окно «на клиента», получает его на каждом слоте,
+	// а суммарный n_ctx = окно × слоты.
+	slotsRequested := resolveNParallel(opts.Parallel, b.cfg.DefaultNParallel)
+	if opts.ContextPerSeq > 0 {
+		total, per := EffectiveContextSize(opts.ContextSize, opts.ContextPerSeq, slotsRequested)
+		logger.Get().Infow("load: окно на клиента пересчитано в суммарный n_ctx",
+			"model", name,
+			"context_per_seq", opts.ContextPerSeq,
+			"slots", parallelSlotsFor(slotsRequested),
+			"total_n_ctx", total,
+			"context_per_seq_actual", per)
+		opts.ContextSize = total
+	}
 
 	// Валидация VRAM перед загрузкой и авто-подбор оптимальных gpuLayers.
 	// Выполняется ДО pre-allocation inst, чтобы не плодить phantom entries
@@ -1067,6 +1162,8 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	requestedParallel := resolveNParallel(opts.Parallel, b.cfg.DefaultNParallel)
 	inst.info.Parallel = requestedParallel
 	inst.info.KVCacheType = opts.KVCacheType
+	// Окно на клиента — из фактического суммарного n_ctx и числа слотов.
+	inst.info.ContextPerSeq = ContextPerSlot(ctxSize, requestedParallel)
 
 	// Round 13 (2026-07-28): initialize SlotManager после успешной загрузки.
 	// maxSlots = resolveNParallel(opts, config) — то же правило, что ушло в
@@ -1355,22 +1452,25 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 			"requested_gpu_layers", opts.GPULayers, "verdict", verdict.String())
 	}
 
-	// R83 (2026-09-29): оценка памяти НЕ знает про параллельные слоты.
+	// R83 (2026-09-30): снимок памяти делается ДО решения о загрузке, и memfit
+	// НЕ знает про слоты — но это и не нужно: слоты не умножают KV-cache, они
+	// ДЕЛЯТ окно. Проверено на стенде (c/llama.cpp gguf-v0.19.0-1369,
+	// kv_unified=false): contextSize=8192 + parallel=2 → llama_context:
+	// n_ctx=8192, n_ctx_seq=4096, и свободная VRAM не меняется
+	// (parallel=1 → 5197 МБ, parallel=2 → 5197 МБ, parallel=3 → 5191 МБ).
 	//
-	// memfit.Request описывает одну последовательность (Ctx × KVType), а
-	// llama.cpp при n_seq_max=N держит KV под N последовательностей. На живом
-	// стенде (RTX 3070 8 ГБ, Qwen3-1.7B, ctx=8192, q4_0) свободная VRAM сразу
-	// после загрузки: parallel=1 → 5195 МБ, parallel=2 → 1446 МБ, то есть
-	// второй слот стоил ~3.7 ГБ, которых memfit не предвидел.
-	//
-	// Предупреждаем явно: без этого оператор видит «настройки применились»,
-	// а получает частичный CPU-offload (медленнее) или OOM.
+	// Единственное, что важно не перепутать: если оператор задаёт окно НА КЛИЕНТА
+	// (opts.ContextPerSeq), суммарный n_ctx считается выше (PAD256(per) × слотов),
+	// и в memfit уходит уже он — поэтому «16K на клиента + 2 слота» проверяется
+	// как 32K. Предупреждение ниже — про разницу между суммарным окном и окном
+	// на клиента, а не про «KV × слотов».
 	if slots := resolveNParallel(opts.Parallel, b.cfg.DefaultNParallel); slots > 1 && logger.Get() != nil {
-		logger.Get().Warnw("checkVRAMForModel: несколько параллельных слотов — "+
-			"оценка памяти считает KV под ОДНУ последовательность",
+		total, per := EffectiveContextSize(opts.ContextSize, opts.ContextPerSeq, slots)
+		logger.Get().Infow("checkVRAMForModel: несколько параллельных слотов — окно делится между клиентами",
 			"model", name, "parallel_slots", slots,
-			"hint", "фактический расход VRAM ≈ KV одной последовательности × слотов; "+
-				"если генерация стала медленнее — слои уехали на CPU, уменьшите n_ctx или kv-кэш до q4_0")
+			"total_n_ctx", total, "context_per_slot", per,
+			"hint", "llama.cpp делит СУММАРНОЕ окно между слотами (n_ctx_seq = n_ctx / слоты); "+
+				"чтобы каждый клиент получил нужное окно, задайте contextPerSeq или суммарное n_ctx = окно × слоты")
 	}
 
 	// 2026-06-26 BUGFIX (сохранено): для больших моделей (model_size > 70% свободной

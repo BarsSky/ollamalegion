@@ -117,6 +117,7 @@ type loadModelRequest struct {
 	// that loadWithParamsRequest already accepts. Mirrors Session 16
 	// (2026-06-27) Per-Model Profile semantics.
 	Parallel            *int     `json:"parallel,omitempty"`       // 0 = inherit (1)
+	ContextPerSeq       *int     `json:"contextPerSeq,omitempty"`  // R83: окно НА КЛИЕНТА (см. ниже)
 	KVCacheType         *string  `json:"kvCacheType,omitempty"`    // "f16"/"q8_0"/"q4_0"
 	OverrideTensor      *string  `json:"overrideTensor,omitempty"` // legacy: "blk\\..*=CPU"
 	OverrideTensors     []string `json:"overrideTensors,omitempty"`
@@ -148,6 +149,14 @@ type reloadModelRequest struct {
 	// Применяются при reload через /api/models/reload, если профиль содержит
 	// parallel/kvCacheType. nil/0 = использовать cppworker defaults.
 	Parallel *int `json:"parallel,omitempty"` // 0 = inherit (1)
+	// ContextPerSeq — R83 (2026-09-30): окно контекста НА КЛИЕНТА (слот).
+	//
+	// > 0 → cppworker сам считает суммарный n_ctx = PAD256(ContextPerSeq) × слотов,
+	// поэтому «16384 на клиента + parallel=2» даёт по 16384 каждому (суммарно
+	// 32768, и memfit проверяет именно 32768).
+	// 0 → contextSize трактуется как СУММАРНОЕ окно (прежнее поведение: слоты
+	// его делят, llama.cpp: n_ctx_seq = n_ctx / n_seq_max).
+	ContextPerSeq *int `json:"contextPerSeq,omitempty"`
 	// KVCacheType принимает строковое значение "f16"/"q8_0"/"q4_0"
 	// (а не int). Внутри маппится в bridge-числа через kvCacheTypeToString helper.
 	KVCacheType *string `json:"kvCacheType,omitempty"`
@@ -186,6 +195,9 @@ type loadWithParamsRequest struct {
 	// Extended (load-with-params specific)
 	NThreads *int `json:"nThreads,omitempty"` // 0 = auto
 	Parallel *int `json:"parallel,omitempty"` // 0 = 1
+	// ContextPerSeq — R83 (2026-09-30): окно контекста НА КЛИЕНТА.
+	// > 0 → суммарный n_ctx = PAD256(ContextPerSeq) × слотов (см. reloadModelRequest).
+	ContextPerSeq *int `json:"contextPerSeq,omitempty"`
 	// KVCacheType принимает строковое значение "f16"/"q8_0"/"q4_0".
 	// Внутри LoadModelOpts это тоже string (см. cppbackend.LoadModelOpts).
 	KVCacheType    *string `json:"kvCacheType,omitempty"`

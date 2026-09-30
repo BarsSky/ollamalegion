@@ -95,6 +95,14 @@ type ModelOpRequest struct {
 	// Parallel — число одновременных сессий (слотов) модели. Без него cppworker
 	// поднимает n_parallel=1 независимо от того, что оператор выставил в UI.
 	Parallel *int `json:"parallel,omitempty"`
+	// ContextPerSeq — R83 (2026-09-30): окно контекста НА КЛИЕНТА (слот).
+	//
+	// contextSize — суммарное окно, которое слоты делят (llama.cpp:
+	// n_ctx_seq = n_ctx / n_seq_max). Если оператор задаёт окно «на клиента»,
+	// именно это поле уходит в cppworker; итоговый суммарный n_ctx считает
+	// cppworker (он знает и слоты, и env CPPWORKER_N_PARALLEL), а memfit там же
+	// проверяет суммарный объём.
+	ContextPerSeq *int `json:"contextPerSeq,omitempty"`
 	// EnableReasoning — per-model override reasoning-парсера (thinking).
 	EnableReasoning *bool `json:"enableReasoning,omitempty"`
 }
@@ -760,6 +768,12 @@ func applyProfileLoadParams(req *ModelOpRequest, prof types.LlamaCppModelProfile
 		par := prof.Parallel
 		req.Parallel = &par
 	}
+	// R83 (2026-09-30): окно на клиента из профиля — как и parallel, работает и
+	// при обычной загрузке (раньше такие поля терялись вне пути .../apply).
+	if req.ContextPerSeq == nil && prof.ContextPerSeq > 0 {
+		per := prof.ContextPerSeq
+		req.ContextPerSeq = &per
+	}
 }
 
 // resolveOverrideTensors — резолвит per-tensor override для load.
@@ -1091,6 +1105,12 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	// WebUI → балансер → cppworker (см. комментарий у полей ModelOpRequest).
 	if req.Parallel != nil {
 		body["parallel"] = *req.Parallel
+	}
+	// R83 (2026-09-30): окно НА КЛИЕНТА. Суммарный n_ctx считает cppworker
+	// (у него есть и слоты, и env-дефолт CPPWORKER_N_PARALLEL), поэтому здесь
+	// передаём как есть и НЕ подменяем contextSize.
+	if req.ContextPerSeq != nil && *req.ContextPerSeq > 0 {
+		body["contextPerSeq"] = *req.ContextPerSeq
 	}
 	if req.EnableReasoning != nil {
 		body["enableReasoning"] = *req.EnableReasoning

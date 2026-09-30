@@ -368,13 +368,20 @@ func (p *Proxy) reloadHintsFor(backendID, modelName string) ReloadHints {
 	if p == nil || p.config == nil {
 		return ReloadHints{}
 	}
+	// R83-fix (2026-09-30): kv-хинт и число GPU-слоёв собираются НЕЗАВИСИМО.
+	// Раньше функция возвращала ReloadHints только с kvCacheType, и рано
+	// выходила по профилю модели — из-за этого «сколько слоёв сейчас на GPU»
+	// не доезжало до reload'а, и он мог понизить раскладку (см. ReloadHints.GPULayers).
+	hints := ReloadHints{}
 	if p.config.LlamaCppModelProfiles != nil {
 		if mp, ok := p.config.LlamaCppModelProfiles[modelName]; ok && mp.KVCacheType != "" {
-			return ReloadHints{KVCacheType: mp.KVCacheType}
-		}
-		for name, mp := range p.config.LlamaCppModelProfiles {
-			if (containsFold(name, modelName) || containsFold(modelName, name)) && mp.KVCacheType != "" {
-				return ReloadHints{KVCacheType: mp.KVCacheType}
+			hints.KVCacheType = mp.KVCacheType
+		} else {
+			for name, mp := range p.config.LlamaCppModelProfiles {
+				if (containsFold(name, modelName) || containsFold(modelName, name)) && mp.KVCacheType != "" {
+					hints.KVCacheType = mp.KVCacheType
+					break
+				}
 			}
 		}
 	}
@@ -384,15 +391,16 @@ func (p *Proxy) reloadHintsFor(backendID, modelName string) ReloadHints {
 		if lm := p.metricsMgr.llamaMetrics[backendID]; lm != nil {
 			for _, m := range lm.LoadedModels {
 				if m.Name == modelName || containsFold(m.Name, modelName) || containsFold(modelName, m.Name) {
-					if m.KvCacheType != "" {
-						return ReloadHints{KVCacheType: m.KvCacheType}
+					if hints.KVCacheType == "" && m.KvCacheType != "" {
+						hints.KVCacheType = m.KvCacheType
 					}
+					hints.GPULayers = m.NumGPULayers
 					break
 				}
 			}
 		}
 	}
-	return ReloadHints{}
+	return hints
 }
 
 // preflightAutoReloadMaxNCtx — operator cap (LB_NCTX_RELOAD_MAX_N_CTX) из

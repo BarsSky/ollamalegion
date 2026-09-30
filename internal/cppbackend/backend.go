@@ -435,6 +435,59 @@ type modelInstance struct {
 	// idleTimeout от момента загрузки, а не от момента последнего использования.
 	// atomic.Value позволяет читать без мьютекса на горячем пути ListModels.
 	lastUsedAt atomic.Value // time.Time
+
+	// activeQueries / totalQueries — R83-fix (2026-09-30): счётчики запросов
+	// БЕЗ inst.mu.
+	//
+	// Зачем. inst.mu удерживается на ВСЁ время генерации (см. Generate:
+	// "держим mu на всём инференсе"). Пока счётчик читался под тем же мьютексом
+	// (getActiveQueries), КАЖДЫЙ читающий эндпоинт вставал в очередь за
+	// генерацией: на живом стенде GET /api/info и GET /api/models висели
+	// 2 м 51 с — ровно столько, сколько шёл запрос Cline с 16k prompt. Это
+	// ломало сразу всё: балансер не мог обновить метрики (WebUI показывал
+	// устаревшие «сколько памяти занято / какая модель активна»), агент не
+	// мог отдать heartbeat, а /api/models/active-queries (busy-badge) врал.
+	//
+	// Живой лог (2026-09-30, gemma-4 на RTX 3070): двенадцать GET /api/info
+	// с duration 2m51s/2m36s/…/6s, все завершились в одну миллисекунду с
+	// окончанием генерации.
+	//
+	// Теперь счётчики — атомарные: читаются lock-free, пишутся в том же месте,
+	// где и раньше (+ зеркало в info для снимков, см. syncQueryCountersLocked).
+	activeQueries atomic.Int64
+	totalQueries  atomic.Int64
+}
+
+// incQueries — +1 активный запрос (и +1 всего). Не требует inst.mu.
+func (inst *modelInstance) incQueries() {
+	inst.activeQueries.Add(1)
+	inst.totalQueries.Add(1)
+}
+
+// decQueries — -1 активный запрос (всего не меняется). Не требует inst.mu.
+func (inst *modelInstance) decQueries() {
+	inst.activeQueries.Add(-1)
+}
+
+// activeQueriesCount — текущее число активных запросов БЕЗ взятия inst.mu.
+func (inst *modelInstance) activeQueriesCount() int {
+	return int(inst.activeQueries.Load())
+}
+
+// totalQueriesCount — всего запросов к модели БЕЗ взятия inst.mu.
+func (inst *modelInstance) totalQueriesCount() int64 {
+	return inst.totalQueries.Load()
+}
+
+// syncQueryCountersLocked переносит атомарные счётчики в снимок info.
+//
+// Вызывать ТОЛЬКО удерживая inst.mu: info — обычные поля, их пишут и другие
+// места (загрузка/выгрузка). Нужно для тестов и для кода, который читает
+// inst.info напрямую; все внешние снимки (ListModels/GetModel/GetMetrics)
+// берут значения из атомиков, а не из info.
+func (inst *modelInstance) syncQueryCountersLocked() {
+	inst.info.ActiveQueries = inst.activeQueriesCount()
+	inst.info.TotalQueries = inst.totalQueriesCount()
 }
 
 // ============================================================
@@ -1971,7 +2024,13 @@ func (b *Backend) ListModels() []ModelInfo {
 	result := make([]ModelInfo, 0, len(b.models))
 	for _, inst := range b.models {
 		info := inst.info
-		info.ActiveQueries = b.getActiveQueries(inst)
+		// R83-fix (2026-09-30): счётчики берём из атомиков (lock-free).
+		// inst.info читается без inst.mu намеренно: этот снимок должен
+		// отвечать МГНОВЕННО даже во время генерации (его читают poller
+		// балансера, WebUI и агент). Поля, меняющиеся во время инференса,
+		// здесь перезаписываются атомарными значениями.
+		info.ActiveQueries = inst.activeQueriesCount()
+		info.TotalQueries = inst.totalQueriesCount()
 		info.LastUsedAt = b.getLastUsedAt(inst)
 		// Round 18 P0.1 (2026-08-03): single source of truth для capabilities.
 		// Используем реальный reasoningEnabled из instance (не из whitelist),
@@ -2228,8 +2287,8 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 	// сразу после ++ActiveQueries — два goroutine могли одновременно войти
 	// в inst.handle.Infer() и race на llama.cpp context.
 	inst.mu.Lock()
-	inst.info.TotalQueries++
-	inst.info.ActiveQueries++
+	inst.incQueries()
+	inst.syncQueryCountersLocked()
 	// lastUsedAt.Store — atomic, мьютекс не нужен. Делаем тут же для
 	// удобства чтения (IdleUnloadManager смотрит на это значение).
 	inst.lastUsedAt.Store(time.Now())
@@ -2244,7 +2303,8 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 	)
 
 	defer func() {
-		inst.info.ActiveQueries--
+		inst.decQueries()
+		inst.syncQueryCountersLocked()
 		// Токены считаем ПОКА держим inst.mu: CountTokens дёргает tokenizer
 		// модели (llama.cpp) и не переживает параллельный Infer. Раньше здесь
 		// стоял approximateTokens(approxResultLen(...)), а approxResultLen —
@@ -2322,8 +2382,8 @@ func (b *Backend) GenerateStreamWithAbort(modelName string, prompt string, param
 	params.SeqId = slot
 
 	inst.mu.Lock()
-	inst.info.TotalQueries++
-	inst.info.ActiveQueries++
+	inst.incQueries()
+	inst.syncQueryCountersLocked()
 	inst.lastUsedAt.Store(time.Now())
 
 	start := time.Now()
@@ -2342,7 +2402,8 @@ func (b *Backend) GenerateStreamWithAbort(modelName string, prompt string, param
 
 	var streamErr error
 	defer func() {
-		inst.info.ActiveQueries--
+		inst.decQueries()
+		inst.syncQueryCountersLocked()
 		inst.mu.Unlock()
 		if b.metrics != nil {
 			b.metrics.RecordRequest(modelName, generated, time.Since(start), !isBackendFailure(streamErr))
@@ -2448,8 +2509,11 @@ func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prom
 
 	// 4. Update metrics (BatchedScheduler сам берёт modelLock на время
 	// decode, поэтому нам НЕ нужно держать inst.mu тут).
-	inst.info.TotalQueries++
-	inst.info.ActiveQueries++
+	//
+	// R83-fix (2026-09-30): счётчики — атомарные (incQueries/decQueries), а НЕ
+	// inst.info.*. Здесь inst.mu не удерживается (см. комментарий выше), поэтому
+	// запись в info была ещё и гонкой; зеркало info обновляют пути под мьютексом.
+	inst.incQueries()
 	inst.lastUsedAt.Store(time.Now())
 	start := time.Now()
 
@@ -2459,7 +2523,7 @@ func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prom
 	generated := 0
 	var opErr error
 	defer func() {
-		inst.info.ActiveQueries--
+		inst.decQueries()
 		if b.metrics != nil {
 			b.metrics.RecordRequest(modelName, generated, time.Since(start), !isBackendFailure(opErr))
 		}
@@ -2690,7 +2754,7 @@ func (b *Backend) GetMetrics() map[string]interface{} {
 		if inst.info.State == StateLoaded {
 			loadedCount++
 		}
-		totalQueries += inst.info.TotalQueries
+		totalQueries += inst.totalQueriesCount()
 		activeQueries += b.getActiveQueries(inst)
 	}
 
@@ -2793,9 +2857,11 @@ func (b *Backend) getModelInstance(name string) (*modelInstance, error) {
 }
 
 func (b *Backend) getActiveQueries(inst *modelInstance) int {
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-	return inst.info.ActiveQueries
+	// R83-fix (2026-09-30): БЕЗ inst.mu. Раньше здесь был inst.mu.Lock(), а
+	// inst.mu удерживается всю генерацию — из-за этого /api/models и /api/info
+	// висели ровно столько, сколько шёл inference (замерено: 2 м 51 с на
+	// 16k-prompt Cline). Счётчик теперь атомарный, см. modelInstance.
+	return inst.activeQueriesCount()
 }
 
 // completionTokens — число токенов в сгенерированном тексте.

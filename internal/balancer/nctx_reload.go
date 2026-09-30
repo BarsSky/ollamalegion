@@ -352,6 +352,16 @@ type ReloadHints struct {
 	// считала по реальному типу, а не по f16 (иначе для 65K на 8 GB она выбирает
 	// cpu_only/gpu_layers=0, хотя с q4_0 модель влезает на GPU).
 	KVCacheType string
+	// GPULayers — R83-fix (2026-09-30): сколько слоёв СЕЙЧАС на GPU у загруженной
+	// модели (`gpu_layers` в /api/models cppworker). 0 = неизвестно.
+	//
+	// ЗАЧЕМ. Reload не имеет права УХУДШАТЬ раскладку: если адаптивная стратегия
+	// предлагает меньше слоёв, чем уже работает (типичный случай — stage=cpu_only
+	// при неизвестном бюджете), то перезагрузка ради чуть большего окна выкинет
+	// модель из VRAM, ускорить ничего не ускорит и превратит нормальный запрос в
+	// минуты ожидания. Живой лог 2026-09-30: gemma-4 работала с 19 слоями на GPU,
+	// reload «на 131072» вернул gpuLayers=0 и contextSize=65536 (то же окно).
+	GPULayers int
 }
 
 // SetReloadHintsProvider — установка поставщика хинтов (вызывается Proxy'ем).
@@ -918,6 +928,25 @@ func (c *NCtxReloadCoordinator) DoReload(
 			"backend", backendID, "model", modelName, "kv_cache_type", hints.KVCacheType)
 	}
 	strategy := queryAdaptiveStrategy(backendAddr, modelName, plan.NewNCtx, hints.KVCacheType, nil)
+
+	// R83-fix (2026-09-30): reload НЕ имеет права понижать GPU-оффлоад.
+	//
+	// Адаптивная стратегия считает бюджет по СВОБОДНОЙ VRAM. Для перезагрузки
+	// УЖЕ загруженной модели это неверный бюджет: свободная память не включает
+	// ту, которую занимает сама перезагружаемая модель. На живом стенде
+	// (gemma-4, RTX 3070 8 GB, q4_0) это давало stage=cpu_only с gpuLayers=0 для
+	// модели, которая прямо сейчас работает с 19 слоями на GPU, — и reload
+	// выкидывал модель из VRAM. Здесь оставляем не меньше слоёв, чем работает
+	// сейчас: хуже текущей раскладки перезагрузка быть не должна.
+	if clampStrategyToCurrentLayout(strategy, hints.GPULayers) {
+		logger.Get().Warnw("nctx_reload: адаптивная стратегия понижает GPU-оффлоад — оставляю текущий",
+			"backend", backendID,
+			"model", modelName,
+			"strategy_gpu_layers", strategy.GPULayers,
+			"current_gpu_layers", hints.GPULayers,
+			"stage", strategy.Stage,
+			"reason", "бюджет стратегии считает свободную VRAM без учёта памяти самой модели")
+	}
 
 	// Cap target n_ctx to MaxViableNCtx from adaptive strategy.
 	// This prevents auto-reload from escalating to unusable context sizes

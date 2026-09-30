@@ -1387,7 +1387,30 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 	const maxBufSize = 4 * 1024 * 1024 // 4MB cap — long multi-turn chats
 	outBufSize := initialBufSize
 	outBuf := (*C.char)(C.malloc(C.size_t(outBufSize)))
-	defer C.free(unsafe.Pointer(outBuf))
+	// R83-fix (2026-09-30): освобождаем ИТОГОВЫЙ указатель, а не тот, что был на
+	// момент defer.
+	//
+	// Ниже буфер растёт через C.realloc (случай ret == -4: отрендеренный prompt
+	// не влез в 64 KB — обычное дело для запроса Cline/OpenWebUI с system-промптом
+	// и tools[]), а realloc освобождает СТАРЫЙ блок. Запись
+	// `defer C.free(unsafe.Pointer(outBuf))` вычисляет аргумент в момент defer,
+	// то есть запоминает старый указатель; после переезда блока (realloc вернул
+	// другой адрес) этот free освобождал уже освобождённую память — glibc
+	// «double free or corruption (out)» и SIGABRT ВСЕГО процесса cppworker.
+	//
+	// Живой лог локального стенда 2026-09-30 14:14:22 (gemma-4, enableReasoning):
+	//   double free or corruption (out)
+	//   SIGABRT: abort ... signal arrived during cgo execution
+	//   c/bridge.(*ModelHandle).ApplyChatTemplateWithThinking.func2.func7()
+	//       c/bridge/bridge.go:1390
+	//   cmd/cppworker.buildChatPromptWithOptions → handleChat → /api/chat
+	// Клиент в этот момент получал connection refused (backend перезапускался).
+	// Process-level SIGABRT не ловится recover() в handlers_chat.go.
+	defer func() {
+		if outBuf != nil {
+			C.free(unsafe.Pointer(outBuf))
+		}
+	}()
 
 	var cOverride *C.char
 	if chatTemplateOverride != "" {

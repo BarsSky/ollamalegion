@@ -962,6 +962,28 @@ func initAdaptiveLoader(reloadFn func(string, float64) error) {
 	})
 }
 
+// reloadReclaimableVRAM — R83-fix (2026-09-30): сколько байт VRAM освободит
+// перезагрузка модели name (0, если модель не загружена или имя не совпало).
+//
+// В момент reload'а модель выгружается, поэтому её текущая VRAM возвращается в
+// бюджет. Без этого стратегия считала раскладку невыполнимой и уходила в
+// cpu_only для модели, которая прямо сейчас работает на GPU.
+func reloadReclaimableVRAM(models []cppbackend.ModelInfo, name string) uint64 {
+	if name == "" {
+		return 0
+	}
+	for _, m := range models {
+		if m.State != cppbackend.StateLoaded {
+			continue
+		}
+		if m.Name != name && !strings.EqualFold(m.Name, name) {
+			continue
+		}
+		return estimateVRAMSize(m.NLayers, m.GPULayers, m.SizeBytes)
+	}
+	return 0
+}
+
 // handleAdaptiveStrategy ? GET /api/v1/cppworker/adaptive/strategy
 // ?????????? ????????? ????????? ??? ?????? ??? ????????.
 func handleAdaptiveStrategy(w http.ResponseWriter, r *http.Request) {
@@ -1036,6 +1058,35 @@ func handleAdaptiveStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	env := globalEnv.Get()
+	// R83-fix (2026-09-30): бюджет для ПЕРЕЗАГРУЗКИ уже загруженной модели.
+	//
+	// Стратегию спрашивают ПЕРЕД reload'ом модели, которая прямо сейчас занимает
+	// VRAM. env.FreeVRAM её не учитывает — память занята, — поэтому раскладка
+	// выглядела невыполнимой: живой стенд (gemma-4, 4.0 GiB весов, 19 слоёв на
+	// GPU, context 65536, RTX 3070 8 GB) при 4629 MB свободных получал от
+	// стратегии stage=cpu_only/gpuLayers=0, хотя эта же модель в этот момент
+	// работала на GPU. Дальше балансер честно выполнял этот «план»: выгружал
+	// модель и грузил заново — 2–3 минуты простоя без выигрыша.
+	//
+	// Возвращаем в бюджет память самой перезагружаемой модели: в момент reload'а
+	// она освобождается. Ограничиваем сверху total VRAM (иначе стратегия решила
+	// бы, что памяти больше, чем есть на карте).
+	if backend != nil {
+		if reclaim := reloadReclaimableVRAM(backend.ListModels(), resolvedName); reclaim > 0 {
+			before := env.FreeVRAM
+			env.FreeVRAM += int64(reclaim)
+			if env.TotalVRAM > 0 && env.FreeVRAM > env.TotalVRAM {
+				env.FreeVRAM = env.TotalVRAM
+			}
+			logger.Get().Infow("handleAdaptiveStrategy: бюджет reload'а учитывает память самой модели",
+				"model", resolvedName,
+				"free_vram_before_mb", before/(1024*1024),
+				"model_vram_mb", int64(reclaim)/(1024*1024),
+				"free_vram_for_reload_mb", env.FreeVRAM/(1024*1024),
+				"total_vram_mb", env.TotalVRAM/(1024*1024),
+				"reason", "reload освобождает память перезагружаемой модели")
+		}
+	}
 	strategy := SelectStrategyWithKV(
 		&env,
 		resolvedName,

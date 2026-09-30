@@ -128,6 +128,38 @@ func queryAdaptiveStrategy(backendAddr, modelName string, targetNCtx int, kvHint
 	return &strategy
 }
 
+// clampStrategyToCurrentLayout — R83-fix (2026-09-30): не дать reload'у
+// понизить GPU-оффлоад относительно уже работающей раскладки.
+//
+// Возвращает true, если стратегию пришлось поправить (caller логирует WARN).
+// Изменяет strategy на месте:
+//   - gpuLayers := currentGPULayers;
+//   - stage=cpu_only превращается в "gpu_layers_kept" (иначе load-failure
+//     события и логи говорили бы «модель загружена без GPU» про GPU-раскладку);
+//   - gpuReduced снимается.
+//
+// Почему это вообще нужно: запрос стратегии приходит ПЕРЕД reload'ом модели,
+// которая занимает VRAM прямо сейчас. Её собственная память в env.FreeVRAM не
+// учтена, поэтому стратегия считает раскладку невыполнимой и уходит в cpu_only
+// (живой случай: gemma-4 с 19 слоями на GPU → gpuLayers=0). cppworker после
+// R83-fix сам добавляет память перезагружаемой модели в бюджет (см.
+// handleAdaptiveStrategy), но эта защита не зависит от его версии.
+func clampStrategyToCurrentLayout(strategy *AdaptiveStrategy, currentGPULayers int) bool {
+	if strategy == nil || currentGPULayers <= 0 {
+		return false
+	}
+	// -1 = «все слои на GPU» — это не понижение.
+	if strategy.GPULayers < 0 || strategy.GPULayers >= currentGPULayers {
+		return false
+	}
+	strategy.GPULayers = currentGPULayers
+	strategy.GPUReduced = false
+	if strategy.Stage == "cpu_only" {
+		strategy.Stage = "gpu_layers_kept"
+	}
+	return true
+}
+
 // enrichReloadPayload добавляет параметры из AdaptiveStrategy в payload reload-запроса.
 // Возвращает модифицированный payload (gpuLayers, kvCacheType, contextSize, useMmap, flashAttn).
 //

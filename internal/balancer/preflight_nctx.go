@@ -418,6 +418,75 @@ func (s *NCtxBackendState) physicalCeiling() int {
 	return s.ModelMaxContext
 }
 
+// growthWorthReload — R83-fix (2026-09-30): стоит ли вообще перезагружать
+// модель ради большего окна.
+//
+// ЗАЧЕМ. Живой дефект на локальном стенде (gemma-4, 65536 суммарно / 2 слота,
+// RTX 3070 8 GB, клиент Cline с prompt ≈16k токенов и max_tokens=8192):
+//
+//  1. preflight сравнивает ОЦЕНКУ промпта (44 230 токенов) с окном слота
+//     (32 768) и решает растить окно;
+//  2. cppworker выгружает модель и грузит заново;
+//  3. адаптивная стратегия, спрошенная ДО выгрузки, считает бюджет по СВОБОДНОЙ
+//     VRAM — то есть по памяти, которую занимает сама перезагружаемая модель,
+//     — и возвращает stage=cpu_only, gpuLayers=0, nCtx=65536;
+//  4. перезагрузка идёт с contextSize=65536, то есть ровно с текущим окном,
+//     но без части GPU-слоёв.
+//
+// Итог: 2–3 минуты простоя, 503/ожидание у клиента и НИ ОДНОГО выигрыша —
+// окно не изменилось. Поэтому перед перезагрузкой спрашиваем у cppworker ту же
+// стратегию, что использует DoReload, и отказываемся от reload'а, если:
+//
+//   - окно не вырастет (strategy.NCtx <= текущего суммарного), или
+//   - стратегия понижает GPU-оффлоад относительно уже работающей раскладки
+//     (stage=cpu_only или меньше слоёв).
+//
+// Возвращает (worth, why). worth=true при любой неопределённости (нет адреса,
+// нет стратегии) — прежнее поведение сохраняется.
+func (c *NCtxReloadCoordinator) growthWorthReload(
+	backendAddr, backendID, modelName string,
+	targetTotalNCtx, currentTotalNCtx, currentPerSeqNCtx, currentGPULayers int,
+) (bool, string) {
+	if backendAddr == "" || modelName == "" {
+		return true, ""
+	}
+	hints := c.ReloadHintsFor(backendID, modelName)
+	httpClient := &http.Client{Timeout: 3 * time.Second}
+	strategy := queryAdaptiveStrategy(backendAddr, modelName, targetTotalNCtx, hints.KVCacheType, httpClient)
+	if strategy == nil {
+		// Стратегии нет (cppworker не ответил/404) — не берём на себя
+		// решение: прежнее поведение (reload).
+		return true, ""
+	}
+
+	// 1. Понижение GPU-оффлоада. -1 = «все слои», это не понижение.
+	if currentGPULayers > 0 {
+		switch {
+		case strategy.GPULayers == 0 && strategy.Stage == "cpu_only":
+			return false, fmt.Sprintf(
+				"адаптивная стратегия вернула cpu_only (gpu_layers=0), а модель уже работает "+
+					"с %d слоями на GPU: перезагрузка выкинула бы модель из VRAM ради окна %d "+
+					"(текущее %d), то есть без выигрыша",
+				currentGPULayers, targetTotalNCtx, currentTotalNCtx)
+		case strategy.GPULayers > 0 && strategy.GPULayers < currentGPULayers:
+			return false, fmt.Sprintf(
+				"адаптивная стратегия предлагает %d GPU-слоёв против %d работающих: "+
+					"перезагрузка ухудшила бы раскладку ради окна %d (текущее %d)",
+				strategy.GPULayers, currentGPULayers, targetTotalNCtx, currentTotalNCtx)
+		}
+	}
+
+	// 2. Окно не увеличится.
+	if strategy.NCtx > 0 && currentTotalNCtx > 0 && strategy.NCtx <= currentTotalNCtx {
+		return false, fmt.Sprintf(
+			"стратегия даёт суммарное окно %d при текущем %d (на клиента %d): "+
+				"reload не изменил бы окно, но выгрузил бы модель на 1–3 минуты",
+			strategy.NCtx, currentTotalNCtx, currentPerSeqNCtx)
+	}
+
+	return true, ""
+}
+
 // DecidePreflight решает, нужен ли reload ДО отправки запроса.
 //
 // Логика:
@@ -938,6 +1007,30 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 				reloadTargetForState(decision.TargetNCtx, state),
 				state.CurrentNCtx, state.CurrentContextPerSeq, state.effectiveSlots(),
 				state.MaxVRAMNCtx, state.ModelMaxContext),
+		}
+
+		// R83-fix (2026-09-30): ПРОВЕРКА ДОСТИЖИМОСТИ. Не перезагружаем модель,
+		// если рост окна недостижим или достигается ценой потери GPU-слоёв —
+		// подробности в growthWorthReload. Без этой проверки живой стенд уходил
+		// в 2–3-минутную выгрузку/загрузку с тем же самым окном.
+		gateModelName := ""
+		if meta != nil {
+			gateModelName = meta.ModelName
+		}
+		if worth, why := c.growthWorthReload(backendAddr, backendID, gateModelName,
+			plan.NewNCtx, state.CurrentNCtx, state.effectivePerSeqNCtx(),
+			c.ReloadHintsFor(backendID, gateModelName).GPULayers); !worth {
+			logger.Get().Warnw("preflight: рост окна пропущен — reload не дал бы выигрыша",
+				"backend_id", backendID,
+				"model", gateModelName,
+				"target_n_ctx", plan.NewNCtx,
+				"current_n_ctx", state.CurrentNCtx,
+				"context_per_seq", state.effectivePerSeqNCtx(),
+				"slots", state.effectiveSlots(),
+				"reason", why,
+				"action", "запрос обслуживается в текущем окне; cppworker ответит честным "+
+					"413, если prompt действительно не влезает")
+			return &PreflightResult{Decision: PreflightNoOp, TargetNCtx: state.CurrentNCtx}, nil
 		}
 
 		// Round 31 #2 (2026-08-09): async mode — не блокируем на reload.

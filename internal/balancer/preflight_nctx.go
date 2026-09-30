@@ -476,8 +476,11 @@ func (c *NCtxReloadCoordinator) growthWorthReload(
 		}
 	}
 
-	// 2. Окно не увеличится.
-	if strategy.NCtx > 0 && currentTotalNCtx > 0 && strategy.NCtx <= currentTotalNCtx {
+	// 2. Окно не увеличится. Проверяем только когда reload затевался РАДИ роста:
+	// если target <= current, это не growth-перезагрузка (другая причина), и
+	// решать за неё мы не имеем права.
+	if targetTotalNCtx > currentTotalNCtx && strategy.NCtx > 0 && currentTotalNCtx > 0 &&
+		strategy.NCtx <= currentTotalNCtx {
 		return false, fmt.Sprintf(
 			"стратегия даёт суммарное окно %d при текущем %d (на клиента %d): "+
 				"reload не изменил бы окно, но выгрузил бы модель на 1–3 минуты",

@@ -1424,6 +1424,28 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                         <span data-i18n="settings.profiles.add">Добавить профиль…</span>
                                     </button>
                                 </div>
+
+                                <!-- ============ R83 (2026-09-30): доступные настройки загрузки ============ -->
+                                <!-- Отвечает на «видеть, какие настройки есть и сейчас доступны для
+                                     загрузки» и «прописать параметры новой модели в конфиг из WebUI». -->
+                                <div class="settings-subsection" id="section-llama-cpp-load-defaults" style="margin-top:24px; padding-top:16px; border-top:1px solid var(--border-color, #2a3441);">
+                                    <h4 style="margin:0 0 8px 0; font-size:14px; color:var(--text-primary); display:flex; align-items:center; gap:8px;">
+                                        <i class="fas fa-sliders"></i>
+                                        <span data-i18n="settings.load_defaults.title">Настройки по умолчанию для новых моделей</span>
+                                    </h4>
+
+                                    <div id="cppLoadDefaults">
+                                        <!-- Рендерится JS (cppworker-params.js): значения + источник -->
+                                    </div>
+
+                                    <h4 style="margin:20px 0 8px 0; font-size:14px; color:var(--text-primary); display:flex; align-items:center; gap:8px;">
+                                        <i class="fas fa-hard-drive"></i>
+                                        <span data-i18n="settings.catalog.title">Модели в папке</span>
+                                    </h4>
+                                    <div id="cppModelCatalog">
+                                        <!-- Рендерится JS (cppworker-params.js): файлы + эффективные настройки -->
+                                    </div>
+                                </div>
                             </div>
                         </div>
 

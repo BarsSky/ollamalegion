@@ -82,3 +82,59 @@ func TestR83_ProfileParallel_RespectsIgnoreDefaults(t *testing.T) {
 		t.Errorf("ignoreDefaults=true, а профиль подставил contextSize=%d", *req.ContextSize)
 	}
 }
+
+// TestR83_DefaultProfile_FillsGapsAfterModelProfile — R83 (2026-09-30):
+// цепочка, которую выполняет executeLlamaCppLoad для модели с профилем:
+// сначала профиль модели, затем — «настройки по умолчанию для новых моделей»
+// (config.defaultModelProfile). Профиль модели выигрывает по заданным полям,
+// дефолт добивает остальные; модель без профиля получает весь дефолт.
+func TestR83_DefaultProfile_FillsGapsAfterModelProfile(t *testing.T) {
+	var req ModelOpRequest
+
+	// 1) профиль модели: только contextLength и batchSize.
+	applyProfileLoadParams(&req, types.LlamaCppModelProfile{
+		ContextLength: 8192,
+		BatchSize:     256,
+	})
+	// 2) дефолт из конфига: остальное.
+	applyProfileLoadParams(&req, types.LlamaCppModelProfile{
+		ContextLength: 16384,
+		BatchSize:     512,
+		NumGPULayers:  20,
+		KVCacheType:   "q4_0",
+		Parallel:      2,
+	})
+
+	if req.ContextSize == nil || *req.ContextSize != 8192 {
+		t.Errorf("contextSize = %v, want 8192 (профиль модели выигрывает у дефолта)", req.ContextSize)
+	}
+	if req.BatchSize == nil || *req.BatchSize != 256 {
+		t.Errorf("batchSize = %v, want 256 (профиль модели выигрывает у дефолта)", req.BatchSize)
+	}
+	if req.GPULayers == nil || *req.GPULayers != 20 {
+		t.Errorf("gpuLayers = %v, want 20 (добирается из дефолта)", req.GPULayers)
+	}
+	if req.Parallel == nil || *req.Parallel != 2 {
+		t.Errorf("parallel = %v, want 2 (добирается из дефолта)", req.Parallel)
+	}
+	if req.KVCacheType == nil || *req.KVCacheType != "q4_0" {
+		t.Errorf("kvCacheType = %v, want q4_0 (добирается из дефолта)", req.KVCacheType)
+	}
+}
+
+// TestR83_DefaultProfile_IgnoreDefaultsKeepsEnvWins — если оператор поставил
+// ignoreDefaults на САМ дефолтный профиль, он не подставляет ничего: выигрывает
+// окружение cppworker. Тот же принцип «одно место», что и у per-model профиля.
+func TestR83_DefaultProfile_IgnoreDefaultsKeepsEnvWins(t *testing.T) {
+	var req ModelOpRequest
+	applyProfileLoadParams(&req, types.LlamaCppModelProfile{
+		ContextLength:  32768,
+		Parallel:       4,
+		IgnoreDefaults: true,
+	})
+
+	if req.ContextSize != nil || req.Parallel != nil {
+		t.Errorf("дефолт с ignoreDefaults=true подставил параметры: ctx=%v parallel=%v",
+			req.ContextSize, req.Parallel)
+	}
+}

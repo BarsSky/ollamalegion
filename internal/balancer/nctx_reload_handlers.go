@@ -676,6 +676,9 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// гарантирует first-load с правильным ctx (32768 из profile, не 8192 из
 	// body default клиента).
 	requestedNCtx := ExtractNumCtxFromBody(bodyBuf)
+	// R83-fix (2026-09-30): клиент вообще не задал окно? Это отдельный случай,
+	// см. правило ниже (не перезагружать уже загруженную модель).
+	clientSilentAboutNCtx := requestedNCtx <= 0
 	profileNCtx := p.GetModelProfileNumCtx(modelName)
 	backendDefaultNCtx := 0
 	if backendID != "" {
@@ -778,6 +781,38 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 			"backend", backendID, "model", modelName,
 			"metrics_n_ctx", loadedNCtx, "coordinator_n_ctx", lk)
 		loadedNCtx = lk
+	}
+
+	// R83-fix (2026-09-30): КЛИЕНТ НЕ ЗАДАЛ ОКНО + МОДЕЛЬ ЗАГРУЖЕНА → НЕ ТРОГАЕМ.
+	//
+	// ТРЕБОВАНИЕ ЭКСПЛУАТАЦИИ: «если клиент не прислал, с каким окном загружать,
+	// то если модель загружена — перезагружать не надо; если не загружена — грузить
+	// дефолтными значениями из настроек».
+	//
+	// ЧТО БЫЛО. При body_num_ctx=0 preflight подставлял contextLength профиля
+	// (он задуман как HINT) и, если загруженный n_ctx ему не равнялся, запускал
+	// async reload. Живой пример (проверено на стенде): оператор загрузил модель
+	// с ctx=8192, первый же клиентский запрос БЕЗ num_ctx перезагрузил её в 16384
+	// (в логе: chosen_source=profile, «detected n_ctx mismatch, scheduling async
+	// reload»). Для оператора это выглядит как «настройки сбиваются сами».
+	//
+	// ЧТО СТАЛО. Если модель уже загружена и клиент окно не запрашивал — работаем
+	// с тем, что загружено: это и есть настройки администратора. Клиент, который
+	// не помещается в текущий контекст, получит от cppworker понятную ошибку, и
+	// только тогда сработает реактивный путь (handleNCtxReload /
+	// DecideReloadBackend) — то есть перезагрузка происходит по фактической
+	// необходимости, а не спекулятивно.
+	//
+	// Если модель НЕ загружена (loadedNCtx == 0), правило не применяется: ниже
+	// работает обычный приоритет «профиль → дефолт бэкенда», то есть загрузка
+	// идёт значениями из настроек.
+	if clientSilentAboutNCtx && loadedNCtx > 0 {
+		logger.Get().Infow("preflightNCtxReload: клиент не задал num_ctx, модель уже загружена — reload не нужен",
+			"backend", backendID, "model", modelName,
+			"loaded_n_ctx", loadedNCtx,
+			"profile_hint_n_ctx", profileNCtx,
+			"note", "настройки загруженной модели не меняем; клиент, которому не хватит контекста, получит ошибку и сработает реактивный reload")
+		return bodyBuf, true, "", http.StatusOK
 	}
 
 	// 3. R60.35: stickiness check с учётом `required` (prompt + n_predict).

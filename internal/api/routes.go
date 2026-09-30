@@ -318,6 +318,15 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/cppworker/model-profiles", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleListModelProfiles), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/cppworker/model-profiles/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleModelProfile), s.rateLimiter), s.authenticator))
 
+	// R83 (2026-09-30): «доступные настройки загрузки» и модели в папке.
+	//   GET/PUT /api/v1/cppworker/load-defaults — что применится к модели без
+	//           своего профиля (значение + источник) и запись этих значений в
+	//           конфиг балансера (defaultModelProfile) — редактируется из WebUI.
+	//   GET     /api/v1/cppworker/model-catalog — файлы моделей в папке (включая
+	//           ещё не загруженные) с эффективными настройками каждого.
+	s.mux.Handle("/api/v1/cppworker/load-defaults", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleLoadDefaults), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/cppworker/model-catalog", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleModelCatalog), s.rateLimiter), s.authenticator))
+
 	// 2026-06-24: proxy to cppworker reset-reload-counter endpoint.
 	// Сбрасывает ramFallbackAttempts на cppworker (cycle counter блокирует reload
 	// после превышения лимита). Без этого нужен `docker restart`.

@@ -154,6 +154,35 @@ func (p *Proxy) DeleteModelProfile(modelName string) bool {
 	return true
 }
 
+// CountModelProfiles — сколько per-model профилей назначено (для WebUI:
+// «сколько моделей уже настроено отдельно»).
+func (p *Proxy) CountModelProfiles() (int, error) {
+	if p == nil || p.config == nil {
+		return 0, nil
+	}
+	return len(p.config.LlamaCppModelProfiles), nil
+}
+
+// GetDefaultModelProfile — R83 (2026-09-30): настройки по умолчанию для моделей,
+// у которых нет своего профиля. Это тот самый «конфиг инициализации», который
+// оператор редактирует из WebUI: значения применяются при загрузке новой модели.
+func (p *Proxy) GetDefaultModelProfile() (types.LlamaCppModelProfile, bool) {
+	if p == nil || p.config == nil || p.config.DefaultModelProfile == nil {
+		return types.LlamaCppModelProfile{}, false
+	}
+	return *p.config.DefaultModelProfile, true
+}
+
+// SetDefaultModelProfile — upsert дефолтного профиля (in-memory; сохранение на
+// диск — ответственность вызывающего, см. SaveProfilesToFile / configSaver).
+func (p *Proxy) SetDefaultModelProfile(profile types.LlamaCppModelProfile) {
+	if p == nil || p.config == nil {
+		return
+	}
+	cp := profile
+	p.config.DefaultModelProfile = &cp
+}
+
 // GetDefaultModelProfileNumCtx — достаёт contextLength из config.DefaultModelProfile.
 // Используется как fallback-потолок при clamping per-request num_ctx (Phase D.3-fix),
 // когда для модели нет записи в LlamaCppModelProfiles.

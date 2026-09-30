@@ -27,6 +27,8 @@
     'use strict';
 
     const PROFILES = window.Api && window.Api.cppworkerModelProfiles;
+    // R83 (2026-09-30): «доступные настройки загрузки» + список моделей в папке.
+    const LOAD_DEFAULTS = window.Api && window.Api.cppworkerLoadDefaults;
     const ACTIVE_QUERIES = window.Api && window.Api.cppworkerActiveQueries;
     const APPLY_PROGRESS = window.Api && window.Api.cppworkerApplyProgress;
     const I18N = window.I18N || { t: (k, def) => def || k };
@@ -100,6 +102,12 @@
 
     /**
      * Загрузить список профилей и отрендерить в #cppProfilesList.
+     *
+     * R83 (2026-09-30): вместе с профилями рисуем два новых блока —
+     *   * #cppLoadDefaults  — «настройки по умолчанию для новых моделей»
+     *     (редактируемый конфиг инициализации + источник каждого значения);
+     *   * #cppModelCatalog  — модели, лежащие в папке (в том числе ещё не
+     *     загруженные) с эффективными настройками и кнопкой «Настроить».
      */
     async function loadAndRender() {
         const listEl = document.getElementById('cppProfilesList');
@@ -113,6 +121,288 @@
         } catch (e) {
             listEl.innerHTML = '<div class="cpp-profiles-empty">' + escapeHtml(e.message || String(e)) + '</div>';
         }
+
+        // Блоки ниже независимы: их падение не должно ломать список профилей.
+        loadAndRenderDefaults();
+        loadAndRenderCatalog();
+    }
+
+    // ----- Настройки по умолчанию для новых моделей -----
+
+    async function loadAndRenderDefaults() {
+        const el = document.getElementById('cppLoadDefaults');
+        if (!el) return;
+        if (!LOAD_DEFAULTS) {
+            el.innerHTML = '';
+            return;
+        }
+        el.innerHTML = '<div class="loading">' + escapeHtml(I18N.t('common.loading', 'Загрузка...')) + '</div>';
+        try {
+            const data = await LOAD_DEFAULTS.get();
+            renderLoadDefaults(data || {}, el);
+        } catch (e) {
+            el.innerHTML = '<div class="cpp-profiles-empty">' + escapeHtml(e.message || String(e)) + '</div>';
+        }
+    }
+
+    const SOURCE_LABEL = {
+        defaultProfile: 'настройки по умолчанию',
+        'cppworker-env': 'env cppworker',
+        none: 'не задано'
+    };
+
+    function sourceBadge(src) {
+        const map = {
+            defaultProfile: ['is-default', I18N.t('settings.load_defaults.source_default', 'настройки по умолчанию')],
+            'cppworker-env': ['is-env', I18N.t('settings.load_defaults.source_env', 'env контейнера')],
+            none: ['is-none', I18N.t('settings.load_defaults.source_none', 'не задано')]
+        };
+        const [cls, label] = map[src] || map.none;
+        return '<span class="cpp-source-badge ' + cls + '">' + escapeHtml(label) + '</span>';
+    }
+
+    function fmtValue(key, v) {
+        if (v === null || v === undefined || v === '') return '—';
+        if (key === 'numGpuLayers') {
+            if (v === -2) return 'AUTO';
+            if (v === -1) return I18N.t('settings.load_defaults.all_layers', 'все слои');
+            if (v === 0) return 'CPU';
+        }
+        if (key === 'flashAttn') {
+            if (v === -1) return 'auto';
+            if (v === 0) return 'off';
+            if (v === 1) return 'on';
+        }
+        if (key === 'useMmap' || key === 'enableReasoning') return v ? 'on' : 'off';
+        return String(v);
+    }
+
+    const DEFAULTS_FIELDS = [
+        ['contextLength', 'n_ctx (окно контекста)'],
+        ['batchSize', 'batch size'],
+        ['numGpuLayers', 'слоёв на GPU (-1 = все, -2 = AUTO)'],
+        ['kvCacheType', 'KV-cache (f16/q8_0/q4_0)'],
+        ['parallel', 'параллельных слотов'],
+        ['flashAttn', 'flash attention (-1 = auto)'],
+        ['useMmap', 'mmap'],
+        ['enableReasoning', 'reasoning по умолчанию']
+    ];
+
+    function renderLoadDefaults(data, el) {
+        const eff = data.effective || {};
+        const src = data.source || {};
+        const cw = data.cppworker || {};
+        const rows = DEFAULTS_FIELDS.map(([key, label]) => {
+            return '<tr>' +
+                '<td>' + escapeHtml(label) + '</td>' +
+                '<td class="cpp-defaults-value">' + escapeHtml(fmtValue(key, eff[key])) + '</td>' +
+                '<td>' + sourceBadge(src[key]) + '</td>' +
+                '</tr>';
+        }).join('');
+
+        const cwState = cw.available
+            ? '<span class="cpp-source-badge is-env">' + escapeHtml(cw.backendId || '') + '</span>'
+            : '<span class="cpp-source-badge is-none">' + escapeHtml(cw.error || I18N.t('settings.load_defaults.cppworker_unavailable', 'недоступен')) + '</span>';
+
+        el.innerHTML = `
+            <div class="cpp-defaults-head">
+                <div>
+                    <strong>${escapeHtml(I18N.t('settings.load_defaults.title', 'Настройки по умолчанию для новых моделей'))}</strong>
+                    <div class="cpp-profiles-hint">${escapeHtml(I18N.t('settings.load_defaults.hint',
+                        'Применяются к модели, у которой нет своего профиля. Профиль модели всегда важнее; если ничего не задано — берётся env контейнера cppworker.'))}</div>
+                    <div class="cpp-profiles-hint">${escapeHtml(I18N.t('settings.load_defaults.cppworker_label', 'env cppworker:'))} ${cwState}</div>
+                </div>
+                <div>
+                    <button class="btn btn-primary" id="cppDefaultsEditBtn">${escapeHtml(I18N.t('common.edit', 'Изменить'))}</button>
+                </div>
+            </div>
+            <table class="cpp-defaults-table"><tbody>${rows}</tbody></table>
+            <div id="cppDefaultsForm"></div>
+        `;
+
+        const btn = el.querySelector('#cppDefaultsEditBtn');
+        if (btn) btn.addEventListener('click', () => openDefaultsForm(data));
+    }
+
+    // openDefaultsForm — компактная форма правки конфига инициализации.
+    // Пустое поле = «не задавать» (тогда работает env cppworker).
+    function openDefaultsForm(data) {
+        const box = document.getElementById('cppDefaultsForm');
+        if (!box) return;
+        const prof = data.defaultModelProfile || {};
+        const eff = data.effective || {};
+        const num = (v) => (v === null || v === undefined) ? '' : String(v);
+        const field = (id, label, value, attrs) =>
+            '<label class="cpp-defaults-field"><span>' + escapeHtml(label) + '</span>' +
+            '<input class="form-control" id="' + id + '" type="number" value="' + escapeHtml(num(value)) + '" ' + (attrs || '') + '></label>';
+
+        box.innerHTML = `
+            <div class="cpp-defaults-form">
+                <div class="cpp-defaults-grid">
+                    ${field('cppDefCtx', 'n_ctx', prof.contextLength !== undefined ? prof.contextLength : eff.contextLength, 'min="256" max="262144"')}
+                    ${field('cppDefBatch', 'batch size', prof.batchSize !== undefined ? prof.batchSize : eff.batchSize, 'min="0" max="4096"')}
+                    ${field('cppDefGpuLayers', 'слоёв на GPU', prof.numGpuLayers, 'min="-2" max="200"')}
+                    ${field('cppDefParallel', 'параллельных слотов', prof.parallel !== undefined ? prof.parallel : eff.parallel, 'min="0" max="8"')}
+                    <label class="cpp-defaults-field"><span>KV-cache</span>
+                        <select class="form-control" id="cppDefKv">
+                            <option value=""${!prof.kvCacheType ? ' selected' : ''}>— не задавать (env) —</option>
+                            <option value="f16"${prof.kvCacheType === 'f16' ? ' selected' : ''}>f16</option>
+                            <option value="q8_0"${prof.kvCacheType === 'q8_0' ? ' selected' : ''}>q8_0</option>
+                            <option value="q4_0"${prof.kvCacheType === 'q4_0' ? ' selected' : ''}>q4_0</option>
+                        </select>
+                    </label>
+                    ${field('cppDefFlash', 'flash attention (-1 auto, 0 off, 1 on)', prof.flashAttn === true ? 1 : (prof.flashAttn === false ? 0 : ''), 'min="-1" max="1"')}
+                </div>
+                <div class="cpp-profiles-hint">${escapeHtml(I18N.t('settings.load_defaults.form_hint',
+                    'Пустое поле = не задавать (тогда значение берётся из env контейнера cppworker). Сохранение пишет значения в конфиг балансера.'))}</div>
+                <div class="cpp-defaults-actions">
+                    <button class="btn btn-primary" id="cppDefaultsSave">${escapeHtml(I18N.t('common.save', 'Сохранить'))}</button>
+                    <button class="btn btn-secondary" id="cppDefaultsCancel">${escapeHtml(I18N.t('common.cancel', 'Отмена'))}</button>
+                </div>
+            </div>
+        `;
+
+        box.querySelector('#cppDefaultsCancel').addEventListener('click', () => { box.innerHTML = ''; });
+        box.querySelector('#cppDefaultsSave').addEventListener('click', async () => {
+            const body = {};
+            const intOrSkip = (id, key) => {
+                const raw = (box.querySelector('#' + id).value || '').trim();
+                if (raw === '') return;
+                const n = parseInt(raw, 10);
+                if (!isNaN(n)) body[key] = n;
+            };
+            intOrSkip('cppDefCtx', 'contextLength');
+            intOrSkip('cppDefBatch', 'batchSize');
+            intOrSkip('cppDefGpuLayers', 'numGpuLayers');
+            intOrSkip('cppDefParallel', 'parallel');
+            const kv = box.querySelector('#cppDefKv').value;
+            if (kv) body.kvCacheType = kv;
+            const fa = (box.querySelector('#cppDefFlash').value || '').trim();
+            if (fa !== '') body.flashAttn = (parseInt(fa, 10) === 1);
+
+            if (body.contextLength === undefined && !data.defaultModelProfile) {
+                showToast('error', I18N.t('settings.load_defaults.ctx_required',
+                    'Укажите n_ctx: без него настройки по умолчанию ничего не задают'));
+                return;
+            }
+            try {
+                await LOAD_DEFAULTS.save(body);
+                showToast('success', I18N.t('settings.load_defaults.saved',
+                    'Настройки по умолчанию сохранены'));
+                box.innerHTML = '';
+                await loadAndRenderDefaults();
+            } catch (err) {
+                showToast('error', err.message || String(err));
+            }
+        });
+    }
+
+    // ----- Модели в папке -----
+
+    async function loadAndRenderCatalog() {
+        const el = document.getElementById('cppModelCatalog');
+        if (!el) return;
+        if (!LOAD_DEFAULTS || !LOAD_DEFAULTS.catalog) {
+            el.innerHTML = '';
+            return;
+        }
+        el.innerHTML = '<div class="loading">' + escapeHtml(I18N.t('common.loading', 'Загрузка...')) + '</div>';
+        try {
+            const data = await LOAD_DEFAULTS.catalog();
+            renderModelCatalog(data || {}, el);
+        } catch (e) {
+            el.innerHTML = '<div class="cpp-profiles-empty">' + escapeHtml(e.message || String(e)) + '</div>';
+        }
+    }
+
+    function fmtBytes(b) {
+        if (!b || b <= 0) return '—';
+        const gb = b / (1024 * 1024 * 1024);
+        return gb >= 1 ? gb.toFixed(2) + ' GB' : (b / (1024 * 1024)).toFixed(0) + ' MB';
+    }
+
+    function renderModelCatalog(data, el) {
+        const files = data.files || [];
+        if (files.length === 0) {
+            el.innerHTML = '<div class="cpp-profiles-empty">' +
+                escapeHtml(I18N.t('settings.catalog.empty', 'В папке моделей нет GGUF-файлов (или cppworker недоступен).')) +
+                '</div>';
+            return;
+        }
+        const rows = files.map((f) => {
+            const eff = f.effective || {};
+            const src = f.source || {};
+            const loadedBadge = f.loaded
+                ? '<span class="cpp-source-badge is-default">' + escapeHtml(I18N.t('settings.catalog.loaded', 'загружена')) + (f.loadedContextSize ? ' ' + escapeHtml(formatCtx(f.loadedContextSize)) : '') + '</span>'
+                : '<span class="cpp-source-badge is-none">' + escapeHtml(I18N.t('settings.catalog.not_loaded', 'не загружена')) + '</span>';
+            const profBadge = f.hasProfile
+                ? '<span class="cpp-source-badge is-default">' + escapeHtml(I18N.t('settings.catalog.has_profile', 'свой профиль')) + '</span>'
+                : '<span class="cpp-source-badge is-env">' + escapeHtml(I18N.t('settings.catalog.no_profile', 'по умолчанию')) + '</span>';
+            const settings = [
+                'n_ctx=' + fmtValue('contextLength', eff.contextLength) + ' (' + (src.contextLength || '—') + ')',
+                eff.parallel ? 'parallel=' + eff.parallel + ' (' + (src.parallel || '—') + ')' : 'parallel=1',
+                eff.kvCacheType ? 'kv=' + eff.kvCacheType + ' (' + (src.kvCacheType || '—') + ')' : 'kv=f16'
+            ].join(' · ');
+            return `
+                <div class="cpp-profile-item" data-file="${escapeHtml(f.name)}">
+                    <div class="cpp-profile-info">
+                        <div class="cpp-profile-name">
+                            ${escapeHtml(f.name)}
+                            ${loadedBadge}
+                            ${profBadge}
+                        </div>
+                        <div class="cpp-profile-meta">${escapeHtml(fmtBytes(f.sizeBytes))}${f.quantization ? ' · ' + escapeHtml(f.quantization) : ''} · ${escapeHtml(settings)}</div>
+                    </div>
+                    <div class="cpp-profile-actions">
+                        <button class="btn btn-secondary" data-action="catalog-edit" data-name="${escapeHtml(f.name)}" title="${escapeHtml(I18N.t('settings.catalog.assign', 'Назначить настройки этой модели'))}">
+                            <i class="fas fa-sliders"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        el.innerHTML = `
+            <div class="cpp-defaults-head">
+                <div>
+                    <strong>${escapeHtml(I18N.t('settings.catalog.title', 'Модели в папке'))}</strong>
+                    <div class="cpp-profiles-hint">${escapeHtml(I18N.t('settings.catalog.hint',
+                        'Файлы, доступные для загрузки. «Настроить» создаёт профиль модели — он применяется при следующей загрузке и по кнопке «Применить (reload)».'))}</div>
+                </div>
+            </div>
+            ${rows}
+        `;
+
+        el.querySelectorAll('[data-action="catalog-edit"]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const name = btn.dataset.name;
+                // Имя файла: профили хранятся и без .gguf — попробуем оба варианта.
+                const base = name.replace(/\.gguf$/i, '');
+                let profile = null;
+                try {
+                    const r = await PROFILES.get(base);
+                    profile = r.profile;
+                } catch (e) {
+                    try {
+                        const r2 = await PROFILES.get(name);
+                        profile = r2.profile;
+                    } catch (e2) {
+                        // профиля ещё нет — предзаполним текущими эффективными
+                        const file = files.find(x => x.name === name);
+                        if (file) {
+                            profile = {
+                                contextLength: file.effective.contextLength || 0,
+                                batchSize: file.effective.batchSize || 0,
+                                numGpuLayers: file.effective.numGpuLayers || 0,
+                                parallel: file.effective.parallel || 0,
+                                kvCacheType: file.effective.kvCacheType || ''
+                            };
+                        }
+                    }
+                }
+                openWizard(base, profile);
+            });
+        });
     }
 
     function renderProfiles(models, container) {

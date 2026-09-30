@@ -1042,6 +1042,20 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	if prof, ok := mm.profileForLoad(req.ModelName); ok {
 		applyProfileLoadParams(&req, prof)
 	}
+	// R83 (2026-09-30): «настройки по умолчанию для новых моделей».
+	//
+	// Если у модели НЕТ своего профиля (или у профиля ignoreDefaults=true),
+	// параметры загрузки берутся из config.defaultModelProfile — того самого
+	// конфига, который оператор редактирует из WebUI. Раньше этот раздел config
+	// влиял только на потолок n_ctx, а загрузка уходила в env-дефолты контейнера
+	// cppworker: оператор выставлял значения в WebUI, а новая модель поднималась
+	// «как настроен контейнер» — увидеть и поменять это из WebUI было нельзя.
+	//
+	// Вызов идёт ПОСЛЕ профиля модели и заполняет только пустые поля, поэтому
+	// приоритет остаётся: явный запрос > профиль модели > дефолт > env cppworker.
+	if dp, ok := mm.proxy.GetDefaultModelProfile(); ok {
+		applyProfileLoadParams(&req, dp)
+	}
 
 	// Round 7: resolve override-tensors (req override > profile > none).
 	overrideTensors, overrideTensorBufts := mm.resolveOverrideTensors(req)

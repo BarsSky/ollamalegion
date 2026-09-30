@@ -335,6 +335,42 @@ const Api = (function () {
             }
         },
 
+        // ===== Настройки загрузки: дефолты и модели в папке (R83, 2026-09-30) =====
+        // Отвечает на запросы оператора «видеть, какие настройки доступны для
+        // загрузки» и «прописать параметры новой модели в конфиг из WebUI».
+        cppworkerLoadDefaults: {
+            /**
+             * GET /api/v1/cppworker/load-defaults
+             * @returns {Promise<{defaultModelProfile, effective, source, cppworker, profilesCount}>}
+             *   effective/source — значение и источник («defaultProfile» | «cppworker-env» | «none»).
+             */
+            async get() {
+                return getJson('/api/v1/cppworker/load-defaults');
+            },
+
+            /**
+             * PUT /api/v1/cppworker/load-defaults — записать настройки по умолчанию
+             * в конфиг балансера (config.defaultModelProfile).
+             * @param {Object} profile — частичный набор полей (merge с существующим).
+             */
+            async save(profile) {
+                const response = await request(`${API_BASE}/api/v1/cppworker/load-defaults`, {
+                    method: 'PUT',
+                    body: JSON.stringify(profile)
+                });
+                return response.json();
+            },
+
+            /**
+             * GET /api/v1/cppworker/model-catalog — модели, лежащие в папке
+             * (включая ещё не загруженные), с эффективными настройками.
+             * @returns {Promise<{files: Array, total: number, cppworker: Object}>}
+             */
+            async catalog() {
+                return getJson('/api/v1/cppworker/model-catalog');
+            }
+        },
+
         // ===== Active Queries (Round 26 v0.5.13) =====
         // Используется для busy badge в WebUI: показывает, генерирует ли модель
         // ответ прямо сейчас. Помогает UX — пользователь видит, что apply нужно

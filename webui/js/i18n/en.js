@@ -1344,6 +1344,27 @@ window.I18N_EN = {
   "settings.profiles.saved_needs_apply_confirm": "Profile saved. The loaded model is still running with the OLD settings.\n\nApply now? The model will be reloaded (seconds or minutes, in-flight requests to it will be interrupted).\n\n\"Cancel\" — settings apply on the next model load.",
   "settings.profiles.saved_not_applied": "Profile saved. The model is still running with the old settings — changes apply on the next load or via the \"Apply (reload)\" button.",
 
+  // ===== R83 (2026-09-30): available load settings + models on disk =====
+  "settings.load_defaults.title": "Default settings for new models",
+  "settings.load_defaults.hint": "Applied to a model that has no profile of its own. A model profile always wins; if nothing is set, the cppworker container env is used.",
+  "settings.load_defaults.cppworker_label": "cppworker env:",
+  "settings.load_defaults.cppworker_unavailable": "unavailable",
+  "settings.load_defaults.source_default": "default settings",
+  "settings.load_defaults.source_env": "container env",
+  "settings.load_defaults.source_none": "not set",
+  "settings.load_defaults.all_layers": "all layers",
+  "settings.load_defaults.form_hint": "An empty field means \"do not set\" (the cppworker container env is used instead). Saving writes the values into the balancer config.",
+  "settings.load_defaults.saved": "Default settings saved",
+  "settings.load_defaults.ctx_required": "Set n_ctx: without it the defaults do not set anything",
+  "settings.catalog.title": "Models on disk",
+  "settings.catalog.hint": "Files available for loading. \"Configure\" creates a model profile — it is applied on the next load and via the \"Apply (reload)\" button.",
+  "settings.catalog.empty": "No GGUF files in the models directory (or cppworker is unavailable).",
+  "settings.catalog.loaded": "loaded",
+  "settings.catalog.not_loaded": "not loaded",
+  "settings.catalog.has_profile": "own profile",
+  "settings.catalog.no_profile": "by default",
+  "settings.catalog.assign": "Assign settings to this model",
+
   // ===== Per-Model Profiles — advanced fields (Session 15, Q3 W3-4 Model profiles UI) =====
   "settings.profiles.advanced_section": "Advanced (optional overrides)",
   "settings.profiles.flash_attn": "Flash Attention",

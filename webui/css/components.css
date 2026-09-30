@@ -1428,6 +1428,77 @@
     border-color: var(--warning-soft-5);
 }
 
+/* ===== R83 (2026-09-30): «доступные настройки загрузки» и модели в папке ===== */
+.cpp-defaults-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+.cpp-defaults-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.cpp-defaults-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-color, #2a3441);
+    vertical-align: middle;
+}
+.cpp-defaults-table td:first-child {
+    color: var(--text-muted);
+    width: 45%;
+}
+.cpp-defaults-value {
+    font-family: var(--font-mono, monospace);
+    color: var(--text-primary);
+}
+.cpp-source-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    line-height: 16px;
+    white-space: nowrap;
+}
+.cpp-source-badge.is-default {
+    background: rgba(56, 139, 253, 0.18);
+    color: #79c0ff;
+}
+.cpp-source-badge.is-env {
+    background: rgba(210, 153, 34, 0.18);
+    color: #d29922;
+}
+.cpp-source-badge.is-none {
+    background: rgba(139, 148, 158, 0.18);
+    color: var(--text-muted);
+}
+.cpp-defaults-form {
+    margin-top: 10px;
+    padding: 12px;
+    border: 1px solid var(--border-color, #2a3441);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary, #151a26);
+}
+.cpp-defaults-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+}
+.cpp-defaults-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.cpp-defaults-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
 .cpp-profile-info {
     flex: 1;
     min-width: 0;

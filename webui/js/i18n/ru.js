@@ -1222,6 +1222,27 @@ window.I18N_RU = {
   "settings.profiles.saved_needs_apply_confirm": "Профиль сохранён. Загруженная модель пока работает со СТАРЫМИ настройками.\n\nПрименить сейчас? Модель будет перезагружена (секунды или минуты, активные запросы к ней прервутся).\n\n«Отмена» — настройки применятся при следующей загрузке модели.",
   "settings.profiles.saved_not_applied": "Профиль сохранён. Модель работает со старыми настройками — изменения применятся при следующей загрузке или по кнопке «Применить (reload)».",
 
+  // ===== R83 (2026-09-30): доступные настройки загрузки и модели в папке =====
+  "settings.load_defaults.title": "Настройки по умолчанию для новых моделей",
+  "settings.load_defaults.hint": "Применяются к модели, у которой нет своего профиля. Профиль модели всегда важнее; если ничего не задано — берётся env контейнера cppworker.",
+  "settings.load_defaults.cppworker_label": "env cppworker:",
+  "settings.load_defaults.cppworker_unavailable": "недоступен",
+  "settings.load_defaults.source_default": "настройки по умолчанию",
+  "settings.load_defaults.source_env": "env контейнера",
+  "settings.load_defaults.source_none": "не задано",
+  "settings.load_defaults.all_layers": "все слои",
+  "settings.load_defaults.form_hint": "Пустое поле = не задавать (тогда значение берётся из env контейнера cppworker). Сохранение пишет значения в конфиг балансера.",
+  "settings.load_defaults.saved": "Настройки по умолчанию сохранены",
+  "settings.load_defaults.ctx_required": "Укажите n_ctx: без него настройки по умолчанию ничего не задают",
+  "settings.catalog.title": "Модели в папке",
+  "settings.catalog.hint": "Файлы, доступные для загрузки. «Настроить» создаёт профиль модели — он применяется при следующей загрузке и по кнопке «Применить (reload)».",
+  "settings.catalog.empty": "В папке моделей нет GGUF-файлов (или cppworker недоступен).",
+  "settings.catalog.loaded": "загружена",
+  "settings.catalog.not_loaded": "не загружена",
+  "settings.catalog.has_profile": "свой профиль",
+  "settings.catalog.no_profile": "по умолчанию",
+  "settings.catalog.assign": "Назначить настройки этой модели",
+
   // ===== Per-Model Profiles — advanced fields (Session 15, Q3 W3-4 Model profiles UI) =====
   "settings.profiles.advanced_section": "Дополнительно (опциональные override)",
   "settings.profiles.flash_attn": "Flash Attention",

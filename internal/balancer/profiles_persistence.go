@@ -29,9 +29,13 @@ import (
 
 // profilesFileFormat — структура файла /app/data/profiles.json.
 // v1: исходная версия (Round 31).
+// v1 + DefaultProfile (R83, 2026-09-30): добавлено поле defaultProfile —
+// «настройки по умолчанию для моделей без своего профиля» (config.DefaultModelProfile),
+// редактируемые из WebUI. Поле опциональное, поэтому старые файлы читаются как есть.
 type profilesFileFormat struct {
-	Version  int                                   `json:"version"`
-	Profiles map[string]types.LlamaCppModelProfile `json:"profiles"`
+	Version        int                                   `json:"version"`
+	Profiles       map[string]types.LlamaCppModelProfile `json:"profiles"`
+	DefaultProfile *types.LlamaCppModelProfile           `json:"defaultProfile,omitempty"`
 }
 
 // profilesFileVersion — current schema version
@@ -101,6 +105,16 @@ func (p *Proxy) LoadProfilesFromFile() (int, error) {
 	}
 	logger.Get().Infow("LoadProfilesFromFile: loaded profiles from disk",
 		"path", path, "loaded", loaded, "total_in_file", len(file.Profiles))
+
+	// R83 (2026-09-30): дефолтный профиль (настройки для моделей без профиля).
+	// Приоритет у config.json: если там defaultModelProfile уже задан — файл его
+	// не перекрывает (config = bundled defaults, монтируется :ro).
+	if file.DefaultProfile != nil && p.config.DefaultModelProfile == nil {
+		dp := *file.DefaultProfile
+		p.config.DefaultModelProfile = &dp
+		logger.Get().Infow("LoadProfilesFromFile: loaded default profile from disk",
+			"path", path, "contextLength", dp.ContextLength, "parallel", dp.Parallel)
+	}
 	return loaded, nil
 }
 
@@ -128,6 +142,10 @@ func (p *Proxy) SaveProfilesToFile() error {
 	file := profilesFileFormat{
 		Version:  profilesFileVersion,
 		Profiles: p.config.LlamaCppModelProfiles,
+		// R83 (2026-09-30): дефолтные настройки загрузки — вместе с профилями,
+		// иначе правка «настроек по умолчанию» из WebUI терялась бы при рестарте,
+		// если config.json смонтирован read-only.
+		DefaultProfile: p.config.DefaultModelProfile,
 	}
 	data, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {

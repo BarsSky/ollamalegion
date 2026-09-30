@@ -62,42 +62,51 @@ func gateCoordinator(currentGPULayers int) *NCtxReloadCoordinator {
 	return coord
 }
 
-// TestR83Fix_GrowthSkipped_WhenStrategyGoesCPUOnly — главный случай живого дефекта.
-func TestR83Fix_GrowthSkipped_WhenStrategyGoesCPUOnly(t *testing.T) {
-	// Именно такой ответ вернул cppworker на стенде:
-	// {"gpuLayers":0,"nCtx":65536,"kvCacheType":"q4_0","stage":"cpu_only",...}
+// TestR83Fix_GrowthAllowed_WhenStrategySaysCPUOnlyButWindowGrows — cpu_only сам
+// по себе НЕ повод отказывать в росте окна.
+//
+// Живая проверка 2026-09-30 (cppworker gpu-r83-submodule-v36): при стратегии
+// stage=cpu_only/gpuLayers=0 reload всё равно дал `new_gpu_layers:-1` →
+// `gpu_layers=22`, `offloaded 22/43 layers` — потому что `gpuLayers: 0` в
+// reload-запросе cppworker трактует как «взять из профиля» (sync_profile.go),
+// а не как CPU-only. Отклонение такого reload'а лишило бы клиента нужного
+// контекста (8192 → 65536), не защитив ни от чего.
+func TestR83Fix_GrowthAllowed_WhenStrategySaysCPUOnlyButWindowGrows(t *testing.T) {
+	srv, _ := strategyBackend(t, `{"gpuLayers":0,"nCtx":65536,"kvCacheType":"q4_0",`+
+		`"stage":"cpu_only","gpuReduced":true,"nCtxReduced":true,"maxViableNCtx":659129,`+
+		`"explanation":"cpu_only: kvType=q4_0, n_ctx=65536/131072"}`)
+
+	coord := gateCoordinator(20)
+	worth, why := coord.growthWorthReload(srv.URL, "b1", "gemma-4-E4B-it-Q4_K_M",
+		65536 /* target: растём с 8192 */, 8192 /* current total */, 4096, 20)
+
+	if !worth {
+		t.Fatalf("рост окна 8192→65536 отклонён из-за cpu_only в стратегии: почему=%q — "+
+			"cppworker трактует gpuLayers=0 как «из профиля», раскладка не пострадает", why)
+	}
+}
+
+// TestR83Fix_GrowthSkipped_WhenWindowWouldNotGrow — главный случай живого
+// дефекта: стратегия даёт то же окно, что уже загружено (131072 запрошено,
+// 65536 достижимо при текущих 65536), reload бессмыслен.
+func TestR83Fix_GrowthSkipped_WhenWindowWouldNotGrow(t *testing.T) {
 	srv, reloads := strategyBackend(t, `{"gpuLayers":0,"nCtx":65536,"kvCacheType":"q4_0",`+
 		`"stage":"cpu_only","gpuReduced":true,"nCtxReduced":true,"maxViableNCtx":659129,`+
 		`"explanation":"cpu_only: kvType=q4_0, n_ctx=65536/131072"}`)
 
-	coord := gateCoordinator(19) // модель реально работает с 19 слоями на GPU
+	coord := gateCoordinator(19)
 	worth, why := coord.growthWorthReload(srv.URL, "b1", "gemma-4-E4B-it-Q4_K_M",
 		131072 /* target total */, 65536 /* current total */, 32768 /* per-slot */, 19)
 
 	if worth {
-		t.Fatalf("рост окна признан осмысленным, хотя стратегия уводит модель в cpu_only "+
-			"(текущая раскладка — 19 слоёв на GPU): почему=%q", why)
+		t.Fatalf("рост окна признан осмысленным, хотя стратегия даёт то же суммарное окно "+
+			"65536 при текущем 65536: почему=%q", why)
 	}
 	if why == "" {
 		t.Error("причина пропуска пустая — оператор не поймёт, почему reload не сделан")
 	}
 	if *reloads != 0 {
 		t.Errorf("/api/models/reload вызван %d раз — reload не должен запускаться", *reloads)
-	}
-}
-
-// TestR83Fix_GrowthSkipped_WhenWindowWouldNotGrow — окно не увеличивается.
-func TestR83Fix_GrowthSkipped_WhenWindowWouldNotGrow(t *testing.T) {
-	srv, _ := strategyBackend(t, `{"gpuLayers":19,"nCtx":65536,"kvCacheType":"q4_0",`+
-		`"stage":"partial_offload","maxViableNCtx":65536,"explanation":"clamped"}`)
-
-	coord := gateCoordinator(19)
-	worth, why := coord.growthWorthReload(srv.URL, "b1", "gemma-4-E4B-it-Q4_K_M",
-		131072, 65536, 32768, 19)
-
-	if worth {
-		t.Fatalf("рост окна признан осмысленным, хотя стратегия даёт то же суммарное окно "+
-			"65536 при текущем 65536: почему=%q", why)
 	}
 }
 

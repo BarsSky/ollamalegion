@@ -11,6 +11,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"ollama-loadbalancer/internal/cppbackend"
@@ -43,6 +45,31 @@ func TestR83Fix_ReclaimableVRAM_LoadedModel(t *testing.T) {
 func TestR83Fix_ReclaimableVRAM_RegisteredByName(t *testing.T) {
 	if got := reloadReclaimableVRAM([]cppbackend.ModelInfo{loadedGemma()}, "GEMMA-4-E4B-IT-Q4_K_M"); got == 0 {
 		t.Error("reclaim = 0 при другом регистре имени — reload снова без бюджета модели")
+	}
+	// Живой случай: handleAdaptiveStrategy резолвит внешнее имя в canonical
+	// filename с .gguf, а /api/models отдаёт имя без расширения.
+	if got := reloadReclaimableVRAM([]cppbackend.ModelInfo{loadedGemma()}, "gemma-4-E4B-it-Q4_K_M.gguf"); got == 0 {
+		t.Error("reclaim = 0 для canonical имени с .gguf — именно на этом " +
+			"сломался первый вариант фикса (проверено живым логом)")
+	}
+}
+
+// TestR83Fix_ReclaimableVRAM_SizeFallbackViaStat — SizeBytes у cppbackend часто
+// 0 (размер берётся из gguf-меты, которая заполнена не всегда): без os.Stat
+// reclaim молча не срабатывал — именно это и наблюдалось на живом стенде v36.
+func TestR83Fix_ReclaimableVRAM_SizeFallbackViaStat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gemma-4-E4B-it-Q4_K_M.gguf")
+	if err := os.WriteFile(path, make([]byte, 1<<20), 0o644); err != nil {
+		t.Fatalf("не удалось создать файл-заглушку: %v", err)
+	}
+	m := loadedGemma()
+	m.SizeBytes = 0 // как отдаёт /api/models, когда gguf-размер пуст
+	m.Path = path
+
+	if got := reloadReclaimableVRAM([]cppbackend.ModelInfo{m}, m.Name); got == 0 {
+		t.Error("reclaim = 0 при SizeBytes=0 и существующем Path — os.Stat-fallback " +
+			"не сработал, бюджет reload'а снова без памяти модели")
 	}
 }
 

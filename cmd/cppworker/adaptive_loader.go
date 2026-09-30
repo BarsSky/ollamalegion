@@ -972,14 +972,41 @@ func reloadReclaimableVRAM(models []cppbackend.ModelInfo, name string) uint64 {
 	if name == "" {
 		return 0
 	}
+	// Имя на диске может быть и внешним именем без расширения, и canonical
+	// filename с .gguf: handleAdaptiveStrategy резолвит `gemma-4-E4B-it-Q4_K_M`
+	// в `gemma-4-E4B-it-Q4_K_M.gguf`, а /api/models отдаёт имя БЕЗ расширения.
+	// Без сравнения по обоим вариантам reclaim не срабатывал (проверено живым
+	// логом: строка «бюджет reload'а учитывает память самой модели» не
+	// появлялась, стратегия продолжала отвечать cpu_only).
+	want := []string{name, strings.TrimSuffix(name, ".gguf")}
 	for _, m := range models {
 		if m.State != cppbackend.StateLoaded {
 			continue
 		}
-		if m.Name != name && !strings.EqualFold(m.Name, name) {
+		have := []string{m.Name, strings.TrimSuffix(m.Name, ".gguf")}
+		matched := false
+		for _, w := range want {
+			for _, h := range have {
+				if w != "" && strings.EqualFold(w, h) {
+					matched = true
+				}
+			}
+		}
+		if !matched {
 			continue
 		}
-		return estimateVRAMSize(m.NLayers, m.GPULayers, m.SizeBytes)
+		// R60.4: m.SizeBytes часто 0 (cppbackend берёт размер из gguf-меты
+		// llama.cpp, которая заполнена не для всех моделей — см. комментарий в
+		// handlers_model.go). Без os.Stat-fallback estimateVRAMSize вернул бы 0,
+		// и reclaim молча не сработал бы (проверено живым логом v36: строки
+		// «бюджет reload'а учитывает память самой модели» не было).
+		size := m.SizeBytes
+		if size == 0 && m.Path != "" {
+			if fi, statErr := os.Stat(m.Path); statErr == nil {
+				size = uint64(fi.Size())
+			}
+		}
+		return estimateVRAMSize(m.NLayers, m.GPULayers, size)
 	}
 	return 0
 }

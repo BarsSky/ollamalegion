@@ -67,6 +67,16 @@ type LlamaCppModel struct {
 	// Для однослотовой модели это 1 (а не 0), поэтому именно это поле годится как
 	// источник вместимости бэкенда.
 	MaxSlots int `json:"maxSlots,omitempty"`
+	// ContextPerSeq — R83-fix (2026-09-30): окно ОДНОГО слота
+	// (`context_per_seq` в /api/models = n_ctx_seq у llama.cpp).
+	//
+	// ЗАЧЕМ. ContextLength — СУММАРНОЕ окно, которое слоты делят между собой
+	// (llama.cpp при kv_unified=false: n_ctx_seq = PAD(n_ctx / n_seq_max, 256)).
+	// При parallel=2 модель с суммарным окном 32768 обслуживает каждый запрос
+	// только 16384 токенами. Балансер, ограничивая запрос суммарным окном,
+	// пропускал num_ctx=32768 — cppworker принимал (32768 ≤ 32768), а фактически
+	// слот столько не вмещает.
+	ContextPerSeq int `json:"context_per_seq,omitempty"`
 	// === Architecture metadata (Round 18+ — для оценки VRAM/RAM split по слоям) ===
 	// cppworker reports per-model architecture details, используем для расчёта
 	// estimatedVram/estimatedRam (cppworker не сообщает actual usage per-model).

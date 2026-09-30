@@ -276,6 +276,34 @@ int32_t bridge_get_n_vocab(void* model) {
     return (int32_t)llama_vocab_n_tokens(vocab);
 }
 
+// bridge_get_context_sizes — R83-fix (2026-09-30): РЕАЛЬНЫЙ n_ctx контекста и
+// окно одного слота (n_ctx_seq), как их видит llama.cpp.
+//
+// Зачем отдельная функция, если im->ctx_n_ctx уже есть: llama.cpp при
+// kv_unified=false выравнивает значения (n_ctx_seq = GGML_PAD(n_ctx / n_seq_max),
+// n_ctx = n_ctx_seq * n_seq_max), поэтому запрошенное при загрузке, хранимое в
+// Go и фактическое у llama.cpp могли расходиться на сотни токенов. Балансер,
+// зная «31974», отправлял запрос с n_ctx_override=32768 → cppworker отвечал
+// code=2 «exceeds model's effective n_ctx» → auto-reload → 413 клиенту.
+//
+// Возвращает 0 при успехе, -1 при ошибке (handle == NULL).
+int32_t bridge_get_context_sizes(void* model, int32_t* out_n_ctx, int32_t* out_n_ctx_seq) {
+    if (model == NULL) {
+        return -1;
+    }
+    InternalModel* im = (InternalModel*)model;
+    if (im->context == NULL) {
+        return -1;
+    }
+    if (out_n_ctx) {
+        *out_n_ctx = (int32_t)llama_n_ctx(im->context);
+    }
+    if (out_n_ctx_seq) {
+        *out_n_ctx_seq = (int32_t)llama_n_ctx_seq(im->context);
+    }
+    return 0;
+}
+
 // bridge_set_embeddings_mode — Round 39 (2026-08-18): dynamic embeddings toggle.
 //
 // Реализация: один вызов llama_set_embeddings() + обновление im->embeddings_mode

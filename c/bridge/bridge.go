@@ -410,6 +410,26 @@ func GetLastGPULayers() int {
 	return int(C.bridge_get_last_gpu_layers())
 }
 
+// GetContextSizes — R83-fix (2026-09-30): РЕАЛЬНЫЕ размеры контекста у llama.cpp.
+//
+// Возвращает (nCtx, nCtxSeq): суммарное окно и окно ОДНОГО слота. llama.cpp
+// выравнивает значения (n_ctx_seq = PAD(n_ctx / n_seq_max, 256), затем
+// n_ctx = n_ctx_seq * n_seq_max), поэтому «запрошенное при загрузке» может
+// отличаться от фактического (на стенде 31974 против 32256). Без этого
+// cppworker сообщал балансеру одно число, а модель имела другое: балансер
+// отправлял n_ctx_override больше фактического, получал code=2 «exceeds model's
+// effective n_ctx» и уходил в auto-reload → 413 клиенту.
+func GetContextSizes(m *ModelHandle) (nCtx int, nCtxSeq int, err error) {
+	if m == nil || m.ptr == nil {
+		return 0, 0, fmt.Errorf("GetContextSizes: nil model handle")
+	}
+	var cCtx, cSeq C.int32_t
+	if ret := C.bridge_get_context_sizes(unsafe.Pointer(m.ptr), &cCtx, &cSeq); ret != 0 {
+		return 0, 0, fmt.Errorf("bridge_get_context_sizes: %s", C.GoString(C.bridge_last_error()))
+	}
+	return int(cCtx), int(cSeq), nil
+}
+
 // GetGPUInfo возвращает информацию о GPU
 func GetGPUInfo(index int) (*GPUDevice, error) {
 	var info C.GPUDeviceInfo

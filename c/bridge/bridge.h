@@ -692,6 +692,18 @@ int bridge_batched_decode(
 // Возвращает -1 при ошибке.
 int32_t bridge_get_n_vocab(void* model);
 
+// bridge_get_context_sizes — R83-fix (2026-09-30): реальные размеры контекста
+// у llama.cpp: *out_n_ctx — суммарное окно, *out_n_ctx_seq — окно ОДНОГО слота
+// (то, что реально получит один клиент при parallel > 1).
+//
+// Нужны потому, что llama.cpp выравнивает n_ctx (n_ctx_seq = PAD(n_ctx /
+// n_seq_max, 256), затем n_ctx = n_ctx_seq * n_seq_max), и без этого геттера
+// cppworker/балансер работали с «запрошенным» значением, отличающимся от
+// фактического: на стенде 31974 (запрошено) против 32256 (реально), из-за чего
+// балансер отправлял n_ctx_override=32768 и получал code=2 → 413 клиенту.
+// Возвращает 0 при успехе, -1 при ошибке.
+int32_t bridge_get_context_sizes(void* model, int32_t* out_n_ctx, int32_t* out_n_ctx_seq);
+
 // Round 39 (2026-08-18): embeddings mode constants for bridge_set_embeddings_mode.
 //   BRIDGE_MODE_CHAT      = 0 — chat path (cparams.embeddings=false)
 //   BRIDGE_MODE_EMBEDDING = 1 — embedding path (cparams.embeddings=true)

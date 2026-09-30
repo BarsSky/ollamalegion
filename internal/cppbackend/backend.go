@@ -1125,6 +1125,8 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	inst.info.HeadDimV = meta.HeadDimV // Phase 3
 	inst.info.NEmbd = meta.NEmbd
 	inst.info.NVocab = meta.NVocab
+	// R83-fix: реальное окно пишем ниже (после чтения у llama.cpp) — здесь
+	// оставляем запрошенное как стартовое значение.
 	inst.info.ContextSize = ctxSize
 	inst.info.GGUFContextLength = meta.ContextLength
 	inst.info.SizeBytes = meta.SizeTotalBytes
@@ -1163,7 +1165,32 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	inst.info.Parallel = requestedParallel
 	inst.info.KVCacheType = opts.KVCacheType
 	// Окно на клиента — из фактического суммарного n_ctx и числа слотов.
-	inst.info.ContextPerSeq = ContextPerSlot(ctxSize, requestedParallel)
+	//
+	// R83-fix (2026-09-30): числа берём у llama.cpp (llama_n_ctx / llama_n_ctx_seq),
+	// а не из запроса. llama.cpp выравнивает их (n_ctx_seq = PAD(n_ctx/slots, 256),
+	// затем n_ctx = n_ctx_seq × slots), и запрошенное отличалось от фактического:
+	// на стенде 31974 против 32256. Из-за этого /api/models отдавал одно, модель
+	// имела другое, и балансер, округляя вверх, просил больше реального окна.
+	actualCtx, actualCtxSeq := ctxSize, 0
+	if handle != nil {
+		if c, s, err := bridge.GetContextSizes(handle); err == nil && c > 0 {
+			actualCtx, actualCtxSeq = c, s
+		} else if err != nil {
+			logger.Get().Debugw("LoadModelWithOpts: не удалось прочитать реальные размеры контекста, используем запрошенные",
+				"name", name, "requested_n_ctx", ctxSize, "error", err)
+		}
+	}
+	inst.info.ContextSize = actualCtx
+	if actualCtxSeq > 0 {
+		inst.info.ContextPerSeq = actualCtxSeq
+	} else {
+		inst.info.ContextPerSeq = ContextPerSlot(actualCtx, requestedParallel)
+	}
+	if actualCtx != ctxSize {
+		logger.Get().Infow("LoadModelWithOpts: фактическое окно отличается от запрошенного (выравнивание llama.cpp)",
+			"name", name, "requested_n_ctx", ctxSize,
+			"actual_n_ctx", actualCtx, "context_per_seq", inst.info.ContextPerSeq)
+	}
 
 	// Round 13 (2026-07-28): initialize SlotManager после успешной загрузки.
 	// maxSlots = resolveNParallel(opts, config) — то же правило, что ушло в

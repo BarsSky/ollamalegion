@@ -217,8 +217,12 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			// вместимость 1 и сериализовал запросы, даже когда модель загружена
 			// с parallel=2/3 (проверено: два одновременных запроса напрямую в
 			// cppworker при parallel=2 — оба 200).
-			Parallel          int    `json:"parallel,omitempty"`
-			MaxSlots          int    `json:"max_slots,maxSlots,omitempty"`
+			Parallel int `json:"parallel,omitempty"`
+			MaxSlots int `json:"max_slots,maxSlots,omitempty"`
+			// R83-fix (2026-09-30): окно одного слота (n_ctx_seq у llama.cpp).
+			// Суммарный ContextSize выше слоты делят между собой, поэтому
+			// ограничивать клиентский запрос надо именно этим значением.
+			ContextPerSeq     int    `json:"context_per_seq,contextPerSeq,omitempty"`
 			BatchSize         int    `json:"batch_size,batchSize,omitempty"`
 			GGUFContextLength int    `json:"gguf_context_length,ggufContextLength,omitempty"`
 			GPULayers         int    `json:"gpu_layers,gpuLayers,omitempty"`
@@ -301,7 +305,10 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			ContextLength: m.ContextSize,
 			Parallel:      m.Parallel, // R83: слоты модели (для синхронизации вместимости)
 			MaxSlots:      m.MaxSlots, // R83: сколько слотов завёл cppworker (>=1)
-			BatchSize:     0,          // cppworker reports batchSize too, см. ниже в более широкой структуре
+			// R83-fix: окно ОДНОГО слота — по нему ограничиваем запрос клиента,
+			// а не по суммарному ContextLength.
+			ContextPerSeq: m.ContextPerSeq,
+			BatchSize:     0, // cppworker reports batchSize too, см. ниже в более широкой структуре
 			NumGPULayers:  m.GPULayers,
 			Quantization:  quant,
 			State:         state,

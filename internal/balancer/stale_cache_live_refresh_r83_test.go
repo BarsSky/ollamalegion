@@ -123,11 +123,14 @@ func TestR83_StaleCache_ResolverUsesLiveWindow(t *testing.T) {
 	body := []byte(`{"model":"` + model + `","options":{"num_ctx":65536}}`)
 	got := p.ResolveNumCtx(model, body, backendID)
 
-	if got.Value > 32768 {
-		t.Errorf("ResolveNumCtx вернул %d при живом окне 32768 — cppworker ответит "+
-			"code=2 «exceeds model's effective n_ctx»", got.Value)
+	// Живой cppworker отдаёт: context_size=32768, context_per_seq=16384, max_slots=2.
+	// Ограничиваем ОКНОМ СЛОТА (16384), а не потолком профиля (65536) и не
+	// суммарным окном (32768): слот с двумя слотами столько не вмещает.
+	if got.Value > 16384 {
+		t.Errorf("ResolveNumCtx вернул %d при живом окне слота 16384 — cppworker "+
+			"примет запрос, который слот не обслужит", got.Value)
 	}
-	if got.Value != 32768 {
-		t.Errorf("ResolveNumCtx = %d, want ровно живое окно 32768", got.Value)
+	if got.Value != 16384 {
+		t.Errorf("ResolveNumCtx = %d, want 16384 (живое окно слота)", got.Value)
 	}
 }

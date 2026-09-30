@@ -297,6 +297,13 @@ func GetGPUInfo(index int) (*GPUDevice, error) {
 	return nil, fmt.Errorf("GPU not available in stub mode (llama_stub)")
 }
 
+// GetContextSizes — R83-fix (2026-09-30): stub-аналог реальной функции.
+// В stub-режиме контекста нет; ошибка означает «неизвестно», и вызывающий
+// обязан оставить запрошенные значения как есть.
+func GetContextSizes(m *ModelHandle) (int, int, error) {
+	return 0, 0, fmt.Errorf("context sizes not available in stub mode (llama_stub)")
+}
+
 // GetLastGPULayers — R83 §3.2 (2026-09-26): stub-аналог реальной bridge.go
 // функции. В stub-режиме реального offload нет, поэтому всегда -1
 // («неизвестно») — cppworker не должен логировать расхождение плана.

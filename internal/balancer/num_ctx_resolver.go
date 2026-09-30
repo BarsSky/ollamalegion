@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -312,6 +313,61 @@ func (p *Proxy) loadedWindowNCtx(backendID, modelName string) int {
 	return fromMetrics
 }
 
+// loadedPerSeqNCtx — R83-fix (2026-09-30): окно, реально доступное ОДНОМУ
+// запросу (слоту).
+//
+// Отличие от loadedWindowNCtx: там СУММАРНОЕ окно модели (нужно для закрепления
+// настройки и определения «загружена ли модель»), здесь — окно одного слота.
+// llama.cpp при kv_unified=false делит суммарное окно между слотами
+// (n_ctx_seq = PAD(n_ctx / n_seq_max, 256)): модель с суммарным окном 32768 при
+// parallel=2 обслуживает каждый запрос лишь 16384 токенами. Клиент с
+// num_ctx=32768 проходил проверки (32768 ≤ 32768), хотя слот столько не вмещает.
+//
+// Источник — `context_per_seq` из /api/models (cppworker отдаёт n_ctx_seq). Если
+// поле не пришло (старая сборка), считаем сами из суммарного окна и слотов.
+func (p *Proxy) loadedPerSeqNCtx(backendID, modelName string) int {
+	if p == nil || backendID == "" {
+		return 0
+	}
+	total, slots := 0, 0
+	if p.metricsMgr != nil {
+		p.metricsMgr.mu.RLock()
+		if lm := p.metricsMgr.llamaMetrics[backendID]; lm != nil {
+			for _, m := range lm.LoadedModels {
+				if m.ContextLength <= 0 {
+					continue
+				}
+				if modelName != "" && m.Name != modelName &&
+					!containsFold(m.Name, modelName) && !containsFold(modelName, m.Name) {
+					continue
+				}
+				perSeq := m.ContextPerSeq
+				if perSeq > 0 {
+					p.metricsMgr.mu.RUnlock()
+					return perSeq
+				}
+				if m.ContextLength > total {
+					total = m.ContextLength
+				}
+				if m.MaxSlots > slots {
+					slots = m.MaxSlots
+				}
+			}
+		}
+		p.metricsMgr.mu.RUnlock()
+	}
+	if total <= 0 {
+		return 0
+	}
+	// Один слот (или слоты неизвестны — старая сборка cppworker): окно слота
+	// равно суммарному. Никакого деления/выравнивания — суммарное значение уже
+	// пришло от cppworker и является фактическим.
+	if slots <= 1 {
+		return total
+	}
+	return cppbackend.ContextPerSlot(total, slots)
+}
+
 // refreshLoadedWindowNCtx — R83-fix (2026-09-30): принудительно обновить кэш
 // метрик бэкенда и вернуть окно модели.
 //
@@ -549,6 +605,16 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 		// иначе ниже посчитаем потолком профиль и попросим больше реального окна.
 		if p.loadedWindowNCtx(backendID, modelName) == 0 {
 			p.refreshLoadedWindowNCtx(backendID, modelName)
+		}
+		// Ограничиваем ОКНОМ СЛОТА (а не суммарным): при parallel=2 суммарные
+		// 32768 означают по 16384 на клиента, и запрос с num_ctx=32768 слоту
+		// не по силам. Суммарное окно при этом НЕ меняется — оно закреплено.
+		if perSeq := p.loadedPerSeqNCtx(backendID, modelName); perSeq > 0 && n > perSeq {
+			logger.Get().Infow("ResolveNumCtx: R83 — ограничиваем запрос окном слота",
+				"model", modelName, "backend", backendID,
+				"requested_n_ctx", n, "context_per_seq", perSeq)
+			p.recordDesiredNCtx(backendID, modelName, perSeq)
+			return ResolvedNumCtx{Value: perSeq, Source: NumCtxSourceRequest}
 		}
 		if loadedNCtx := p.loadedWindowNCtx(backendID, modelName); loadedNCtx > 0 && n > loadedNCtx {
 			logger.Get().Infow("ResolveNumCtx: R83 — не просим больше загруженного окна",

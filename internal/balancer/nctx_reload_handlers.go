@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -803,6 +804,30 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		loadedNCtx = lk
 	}
 
+	// R83-fix (2026-09-30): сравниваем с ОКНОМ СЛОТА, а не с суммарным.
+	//
+	// `loadedNCtx` — СУММАРНОЕ окно модели (его же кладём в кэш метрик и
+	// сравниваем с памятью). Но клиент просит окно ДЛЯ СЕБЯ: при двух слотах
+	// суммарные 65536 дают клиенту 32768, и запрос с num_ctx=65536 формально
+	// «покрыт» (65536 ≥ 65536), хотя фактически урезан вдвое — длинный промпт
+	// Cline не влезает, клиент получает
+	//   "preflight: prompt + n_predict exceeds n_ctx for this backend".
+	// Живое воспроизведение: gemma-4-E4B загружена ctx=65536, max_slots=2,
+	// клиент просит 65536 → на клиента 32768.
+	//
+	// Поэтому все сравнения/патчи тела ниже идут по perSeq, а суммарное значение
+	// остаётся для reload-таргета (окно клиента × слоты) и для кэша метрик.
+	loadedTotalNCtx := loadedNCtx
+	if perSeq := p.loadedPerSeqNCtx(backendID, modelName); perSeq > 0 {
+		if perSeq != loadedNCtx {
+			logger.Get().Infow("preflightNCtxReload: окно модели суммарное/на клиента",
+				"backend", backendID, "model", modelName,
+				"total_n_ctx", loadedNCtx, "context_per_seq", perSeq)
+		}
+		loadedNCtx = perSeq
+	}
+	_ = loadedTotalNCtx
+
 	// R83-fix (2026-09-30): КЛИЕНТ НЕ ЗАДАЛ ОКНО + МОДЕЛЬ ЗАГРУЖЕНА → НЕ ТРОГАЕМ.
 	//
 	// ТРЕБОВАНИЕ ЭКСПЛУАТАЦИИ: «если клиент не прислал, с каким окном загружать,
@@ -994,10 +1019,35 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// Новая логика: запускаем reload в горутине, сразу возвращаем клиенту
 	// HTTP 503 Service Unavailable + Retry-After: 5. Клиент повторит
 	// запрос через 5 секунд — к этому моменту reload обычно завершён.
+	// R83-fix (2026-09-30): клиентское окно — НА КЛИЕНТА, а не суммарное.
+	//
+	// Семантика клиента (Cline/OpenWebUI/Ollama): `num_ctx=N` — окно, которое
+	// нужно ЭТОМУ запросу. llama.cpp при kv_unified=false делит суммарное окно
+	// между слотами (n_ctx_seq = PAD(n_ctx / slots, 256)), поэтому при двух
+	// слотах запрос с num_ctx=65536 получал бы только 32768 — и длинный промпт
+	// Cline (system + tools + история) не влезал: клиент видел
+	//   "preflight: prompt + n_predict exceeds n_ctx for this backend".
+	// Именно это воспроизведено на стенде: gemma-4 загружена с ctx=65536 и
+	// max_slots=2 → на клиента 32768.
+	//
+	// Теперь суммарное окно, до которого делаем reload, считается как
+	// «окно клиента × слоты» (PAD256), то есть каждый клиент получает ровно
+	// запрошенное, а memfit проверяет суммарный объём.
+	reloadTarget := requestedNCtx
+	if slots := p.loadedSlotsNCtx(backendID, modelName); slots > 1 {
+		if total, per := cppbackend.EffectiveContextSize(0, requestedNCtx, slots); total > 0 {
+			reloadTarget = total
+			logger.Get().Infow("preflightNCtxReload: клиентское окно — на клиента, суммарное окно пересчитано",
+				"backend", backendID, "model", modelName,
+				"requested_per_seq", per, "slots", slots, "total_n_ctx", total)
+		}
+	}
+
 	logger.Get().Infow("preflightNCtxReload: detected n_ctx mismatch, scheduling async reload",
 		"backend", backendID, "model", modelName,
 		"loaded_n_ctx", loadedNCtx,
 		"requested_n_ctx", requestedNCtx,
+		"reload_target_total", reloadTarget,
 		"loaded_n_ctx_is_zero", loadedNCtx == 0)
 
 	// Получаем backend state для URL.
@@ -1017,7 +1067,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// отменяет предыдущую («model load aborted by user»), rollback падает и модель
 	// остаётся выгруженной.
 	if !p.nctxReload.StartModelReloadIfNotPending(backendID, modelName, func(_ *reloadEntry) {
-		p.executeAsyncReload(backendID, modelName, requestedNCtx, backendState.Backend)
+		p.executeAsyncReload(backendID, modelName, reloadTarget, backendState.Backend)
 	}) {
 		logger.Get().Infow("preflightNCtxReload: reload already pending for this model, reusing it (R69 dedup)",
 			"backend", backendID, "model", modelName, "requested_n_ctx", requestedNCtx)
@@ -1026,7 +1076,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// Обновляем кэш метрик: ставим ContextLength = requestedNCtx,
 	// чтобы следующие preflight-чеки не запускали reload повторно.
 	// Реальное значение обновит metrics_poller через ~5 сек после успешного reload.
-	p.cacheLoadedContextLength(backendID, modelName, requestedNCtx)
+	p.cacheLoadedContextLength(backendID, modelName, reloadTarget)
 
 	// R68 (2026-09-23): ждём завершения reload'а и обслуживаем ПЕРВЫЙ же запрос.
 	// Раньше клиент получал 503 «being reloaded to n_ctx=…; retry in 30s» и
@@ -1035,11 +1085,11 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// 0 = прежнее поведение).
 	if wait := nctxPreflightWaitTimeout(); wait > 0 {
 		waitStart := time.Now()
-		if p.waitForBackendNCtx(context.Background(), backendID, modelName, requestedNCtx, wait) {
-			p.cacheLoadedContextLength(backendID, modelName, requestedNCtx)
+		if p.waitForBackendNCtx(context.Background(), backendID, modelName, reloadTarget, wait) {
+			p.cacheLoadedContextLength(backendID, modelName, reloadTarget)
 			logger.Get().Infow("preflightNCtxReload: reload finished while client waited, serving request",
 				"backend", backendID, "model", modelName,
-				"new_n_ctx", requestedNCtx,
+				"new_n_ctx", reloadTarget,
 				"waited_ms", time.Since(waitStart).Milliseconds())
 			return bodyBuf, true, "", http.StatusOK
 		}

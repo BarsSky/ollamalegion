@@ -326,46 +326,70 @@ func (p *Proxy) loadedWindowNCtx(backendID, modelName string) int {
 // Источник — `context_per_seq` из /api/models (cppworker отдаёт n_ctx_seq). Если
 // поле не пришло (старая сборка), считаем сами из суммарного окна и слотов.
 func (p *Proxy) loadedPerSeqNCtx(backendID, modelName string) int {
-	if p == nil || backendID == "" {
+	if p == nil || backendID == "" || p.metricsMgr == nil {
 		return 0
 	}
-	total, slots := 0, 0
-	if p.metricsMgr != nil {
-		p.metricsMgr.mu.RLock()
-		if lm := p.metricsMgr.llamaMetrics[backendID]; lm != nil {
-			for _, m := range lm.LoadedModels {
-				if m.ContextLength <= 0 {
-					continue
-				}
-				if modelName != "" && m.Name != modelName &&
-					!containsFold(m.Name, modelName) && !containsFold(modelName, m.Name) {
-					continue
-				}
-				perSeq := m.ContextPerSeq
-				if perSeq > 0 {
-					p.metricsMgr.mu.RUnlock()
-					return perSeq
-				}
-				if m.ContextLength > total {
-					total = m.ContextLength
-				}
-				if m.MaxSlots > slots {
-					slots = m.MaxSlots
-				}
-			}
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+	lm := p.metricsMgr.llamaMetrics[backendID]
+	if lm == nil {
+		return 0
+	}
+	// Считаем ПО КАЖДОЙ записи отдельно и возвращаем первое осмысленное
+	// значение: записи могут отличаться (например, поллер положил модель с
+	// context_per_seq, а priming после reload'а обновил ContextLength).
+	// Складывать «суммарное из одной записи» и «слоты из другой» нельзя.
+	for _, m := range lm.LoadedModels {
+		if m.ContextLength <= 0 {
+			continue
 		}
-		p.metricsMgr.mu.RUnlock()
+		if modelName != "" && m.Name != modelName &&
+			!containsFold(m.Name, modelName) && !containsFold(modelName, m.Name) {
+			continue
+		}
+		if m.ContextPerSeq > 0 {
+			return m.ContextPerSeq
+		}
+		if m.MaxSlots > 1 {
+			return cppbackend.ContextPerSlot(m.ContextLength, m.MaxSlots)
+		}
+		if m.Parallel > 1 {
+			return cppbackend.ContextPerSlot(m.ContextLength, m.Parallel)
+		}
+		// Один слот: окно слота равно суммарному (без деления и выравнивания —
+		// суммарное уже пришло от cppworker и является фактическим).
+		return m.ContextLength
 	}
-	if total <= 0 {
-		return 0
+	return 0
+}
+
+// loadedSlotsNCtx — R83-fix (2026-09-30): сколько слотов заведено у загруженной
+// модели (>= 1). Нужно, чтобы пересчитать клиентское окно («на клиента») в
+// суммарное: llama.cpp делит суммарное окно между слотами.
+func (p *Proxy) loadedSlotsNCtx(backendID, modelName string) int {
+	if p == nil || backendID == "" || p.metricsMgr == nil {
+		return 1
 	}
-	// Один слот (или слоты неизвестны — старая сборка cppworker): окно слота
-	// равно суммарному. Никакого деления/выравнивания — суммарное значение уже
-	// пришло от cppworker и является фактическим.
-	if slots <= 1 {
-		return total
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+	lm := p.metricsMgr.llamaMetrics[backendID]
+	if lm == nil {
+		return 1
 	}
-	return cppbackend.ContextPerSlot(total, slots)
+	for _, m := range lm.LoadedModels {
+		if modelName != "" && m.Name != modelName &&
+			!containsFold(m.Name, modelName) && !containsFold(modelName, m.Name) {
+			continue
+		}
+		if m.MaxSlots > 1 {
+			return m.MaxSlots
+		}
+		if m.Parallel > 1 {
+			return m.Parallel
+		}
+		return 1
+	}
+	return 1
 }
 
 // refreshLoadedWindowNCtx — R83-fix (2026-09-30): принудительно обновить кэш
@@ -568,13 +592,19 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 		// R83-fix (2026-09-30): окно берём из ОБОИХ источников (метрики поллера
 		// + координатор reload'а), иначе после обычной загрузки (мимо
 		// координатора) loaded выглядел как 0 и апгрейд не срабатывал.
-		if loadedNCtx := p.loadedWindowNCtx(backendID, modelName); loadedNCtx > 0 && loadedNCtx > n {
+		//
+		// Поднимаем до ОКНА СЛОТА, а не до суммарного: суммарное окно модель
+		// делит между слотами, и «подъём до суммарного» отправлял в cppworker
+		// значение, которого у слота нет (при 2 слотах: 131072 суммарно против
+		// 65536 на клиента).
+		perSeqLoaded := p.loadedPerSeqNCtx(backendID, modelName)
+		if perSeqLoaded > 0 && perSeqLoaded > n {
 			// R60.37: loaded > body — patch body к loaded.
 			// Это предотвращает cppworker overflow (loaded=4096, body=2048, prompt overflow).
 			logger.Get().Infow("ResolveNumCtx: R60.37 — body num_ctx < loaded, upgrading",
 				"model", modelName, "backend", backendID,
-				"body_n_ctx", n, "loaded_n_ctx", loadedNCtx)
-			n = loadedNCtx
+				"body_n_ctx", n, "loaded_per_seq_n_ctx", perSeqLoaded)
+			n = perSeqLoaded
 		}
 		// Clamp к потолку из profile (если задан).
 		// profile.ContextLength — это максимум, который поддерживает модель
@@ -600,21 +630,22 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 		// — при том что клиент просил всего 8192, и он в модель помещается.
 		//
 		// Теперь: если модель загружена, отправляем ровно её окно (не больше).
-		// R83-fix: если кэши говорят «не загружена», а модель на самом деле
-		// работает (загрузка мимо балансера), — обновляем кэш ОДНИМ запросом,
-		// иначе ниже посчитаем потолком профиль и попросим больше реального окна.
-		if p.loadedWindowNCtx(backendID, modelName) == 0 {
-			p.refreshLoadedWindowNCtx(backendID, modelName)
-		}
+		// ВАЖНО: резолвер НЕ ходит в сеть. Живое окно у cppworker спрашивает
+		// preflight (preflightNCtxReloadIfNeeded) — он выполняется ПЕРЕД резолвером
+		// и наполняет кэш метрик; резолвер читает только кэши. Так решение о
+		// reload и значение X-Cpp-Ctx принимаются на одних данных, а юнит-тесты
+		// резолвера остаются герметичными (без обращения к реальному бэкенду).
 		// Ограничиваем ОКНОМ СЛОТА (а не суммарным): при parallel=2 суммарные
 		// 32768 означают по 16384 на клиента, и запрос с num_ctx=32768 слоту
 		// не по силам. Суммарное окно при этом НЕ меняется — оно закреплено.
-		if perSeq := p.loadedPerSeqNCtx(backendID, modelName); perSeq > 0 && n > perSeq {
+		if perSeqLoaded > 0 && n > perSeqLoaded {
 			logger.Get().Infow("ResolveNumCtx: R83 — ограничиваем запрос окном слота",
 				"model", modelName, "backend", backendID,
-				"requested_n_ctx", n, "context_per_seq", perSeq)
-			p.recordDesiredNCtx(backendID, modelName, perSeq)
-			return ResolvedNumCtx{Value: perSeq, Source: NumCtxSourceRequest}
+				"requested_n_ctx", n, "context_per_seq", perSeqLoaded)
+			// В «желаемое» пишем ИСХОДНУЮ просьбу клиента (а не урезанное
+			// значение): иначе AutoTune сочтёт окно избыточным и понизит его.
+			p.recordDesiredNCtx(backendID, modelName, n)
+			return ResolvedNumCtx{Value: perSeqLoaded, Source: NumCtxSourceRequest}
 		}
 		if loadedNCtx := p.loadedWindowNCtx(backendID, modelName); loadedNCtx > 0 && n > loadedNCtx {
 			logger.Get().Infow("ResolveNumCtx: R83 — не просим больше загруженного окна",

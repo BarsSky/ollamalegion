@@ -107,8 +107,9 @@ func TestR83_StaleCache_LiveWindowPreventsSpuriousReload(t *testing.T) {
 	}
 }
 
-// TestR83_StaleCache_ResolverUsesLiveWindow — резолвер тоже должен видеть
-// живое окно: клиент, просящий больше, не получает «потолок профиля».
+// TestR83_StaleCache_ResolverUsesLiveWindow — резолвер не ходит в сеть сам, но
+// использует то, что наполняет preflight: после его обновления кэша клиентский
+// запрос ограничивается ЖИВЫМ окном, а не потолком профиля.
 func TestR83_StaleCache_ResolverUsesLiveWindow(t *testing.T) {
 	const backendID = "live-cpp-2"
 	const model = "m"
@@ -120,16 +121,26 @@ func TestR83_StaleCache_ResolverUsesLiveWindow(t *testing.T) {
 		model: {ContextLength: 16384, ContextLengthMax: 65536},
 	}
 
+	// Preflight идёт ПЕРЕД резолвером и обновляет кэш у cppworker.
+	//
+	// Клиент просит 65536 «на себя», а слоту сейчас доступно 16384 → preflight
+	// обязан ЗАПЛАНИРОВАТЬ РОСТ (reload), но не отдать 413 и не урезать модель:
+	// отказ был бы ложным (место есть), а урезание — «настройки сбились».
 	body := []byte(`{"model":"` + model + `","options":{"num_ctx":65536}}`)
-	got := p.ResolveNumCtx(model, body, backendID)
-
-	// Живой cppworker отдаёт: context_size=32768, context_per_seq=16384, max_slots=2.
-	// Ограничиваем ОКНОМ СЛОТА (16384), а не потолком профиля (65536) и не
-	// суммарным окном (32768): слот с двумя слотами столько не вмещает.
-	if got.Value > 16384 {
-		t.Errorf("ResolveNumCtx вернул %d при живом окне слота 16384 — cppworker "+
-			"примет запрос, который слот не обслужит", got.Value)
+	_, needsProxy, msg, status := p.preflightNCtxReloadIfNeeded(
+		context.Background(), backendID, model, body, "/api/chat")
+	if status == http.StatusRequestEntityTooLarge {
+		t.Fatalf("preflight отдал 413 вместо роста: msg=%q — это ложный отказ, "+
+			"запрос помещается в целевое окно", msg)
 	}
+	if !p.nctxReload.IsReloadPending(backendID, model) {
+		t.Fatalf("preflight не запланировал рост окна (needsProxy=%v status=%d msg=%q)",
+			needsProxy, status, msg)
+	}
+
+	// Пока рост не завершён, значение, уходящее в cppworker, — окно слота, а не
+	// суммарное и не потолок профиля (иначе cppworker ответит code=2).
+	got := p.ResolveNumCtx(model, body, backendID)
 	if got.Value != 16384 {
 		t.Errorf("ResolveNumCtx = %d, want 16384 (живое окно слота)", got.Value)
 	}

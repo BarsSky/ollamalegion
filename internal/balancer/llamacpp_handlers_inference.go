@@ -186,7 +186,9 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 			if isHeadersSent(w) {
 				writeStreamErrorChunk(w, "/v1/chat/completions", model, err.Error())
 			} else {
-				writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+				// R83-fix (2026-09-30): не отдаём сырой dial-текст — Cline принимал
+				// его за переполнение контекста. 503 + Retry-After для «узел недоступен».
+				writeUpstreamError(w, backendID, model, err)
 			}
 		}
 		return
@@ -244,7 +246,9 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 			}
 		}
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			// R83-fix (2026-09-30): не отдаём сырой dial-текст — Cline принимал
+			// его за переполнение контекста. 503 + Retry-After для «узел недоступен».
+			writeUpstreamError(w, backendID, model, err)
 			return
 		}
 	}
@@ -450,7 +454,9 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 			}
 		}
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			// R83-fix (2026-09-30): не отдаём сырой dial-текст — Cline принимал
+			// его за переполнение контекста. 503 + Retry-After для «узел недоступен».
+			writeUpstreamError(w, backendID, model, err)
 			return
 		}
 	}
@@ -570,7 +576,9 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 	if err != nil {
 		logger.Get().Errorw("handleOpenAIEmbeddings: upstream request failed",
 			"backend", backendID, "model", model, "error", err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		// R83-fix (2026-09-30): та же понятная ошибка, что и на chat-путях
+		// (503 + Retry-After при недоступном узле вместо сырого dial-текста).
+		writeUpstreamError(w, backendID, model, err)
 		return
 	}
 	defer upstreamResp.Body.Close()
@@ -729,7 +737,9 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		if isHeadersSent(w) {
 			writeStreamErrorChunk(w, "/api/chat", model, err.Error())
 		} else {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			// R83-fix (2026-09-30): не отдаём сырой dial-текст — Cline принимал
+			// его за переполнение контекста. 503 + Retry-After для «узел недоступен».
+			writeUpstreamError(w, backendID, model, err)
 		}
 	}
 }
@@ -865,7 +875,9 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 		if isHeadersSent(w) {
 			writeStreamErrorChunk(w, "/api/generate", model, err.Error())
 		} else {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			// R83-fix (2026-09-30): не отдаём сырой dial-текст — Cline принимал
+			// его за переполнение контекста. 503 + Retry-After для «узел недоступен».
+			writeUpstreamError(w, backendID, model, err)
 		}
 	}
 }

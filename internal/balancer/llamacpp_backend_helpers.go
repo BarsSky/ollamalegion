@@ -295,7 +295,7 @@ func (lr *LlamaCppRouter) backendReachable(backendID string) bool {
 	if baseURL == "" {
 		return false
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := &http.Client{Timeout: backendReachabilityTimeout}
 	// R83 (2026-09-29): проверяем ЖИВОСТЬ по /api/version, а не по /api/models.
 	//
 	// ЗАЧЕМ. /api/models во время генерации блокируется: он читает memfit-бюджет,
@@ -310,23 +310,48 @@ func (lr *LlamaCppRouter) backendReachable(backendID string) bool {
 	// хотя модель была загружена и работала. Замеры во время генерации:
 	//   /api/gpu 4-7 мс, /api/models/active-queries ~4 мс, /api/version ~4 мс,
 	//   /api/models и /api/info — не отвечали 8+ секунд.
-	resp, err := client.Get(baseURL + "/api/version")
-	if err != nil || resp.StatusCode != http.StatusOK {
-		// Fallback для сборок cppworker без /api/version (404) и для сетевых сбоев
-		// на этом пути. ВАЖНО: закрываем ответ первой попытки, иначе утечёт
-		// соединение — это горячий путь, он вызывается на каждый запрос.
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
-		resp2, err2 := client.Get(baseURL + "/api/models")
-		if err2 != nil {
-			return false
-		}
-		defer func() { _ = resp2.Body.Close() }()
-		return resp2.StatusCode == http.StatusOK
+	//
+	// R83-fix (2026-09-30): таймаут поднят 2s → 4s и добавлена ОДНА повторная
+	// попытка. Во время загрузки 16-ГБ модели (27B) контейнер занят CPU, и
+	// одиночный быстрый запрос мог не успеть — балансер объявлял узел мёртвым
+	// и клиент получал «backend unreachable: ... (cppworker did not answer
+	// /api/models)». Сообщение теперь называет реально опрошенный endpoint.
+	if reachableVia(client, baseURL) {
+		return true
 	}
-	defer func() { _ = resp.Body.Close() }()
-	return true
+	// Вторая попытка: короткая пауза не нужна (клиент уже ждал таймаут), но
+	// повторяем — сеть/планировщик под нагрузкой дают разовые промахи.
+	if reachableVia(client, baseURL) {
+		return true
+	}
+	return false
+}
+
+// backendReachabilityTimeout — сколько ждём ответа cppworker при проверке
+// живости. 4 c: /api/version отвечает за ~4 мс, но при загрузке большой модели
+// контейнер может не отдавать ответ мгновенно.
+const backendReachabilityTimeout = 4 * time.Second
+
+// reachableVia — одна попытка проверки живости: /api/version, при 404/ошибке —
+// /api/models (для старых сборок cppworker без /api/version).
+func reachableVia(client *http.Client, baseURL string) bool {
+	resp, err := client.Get(baseURL + "/api/version")
+	if err == nil && resp != nil && resp.StatusCode == http.StatusOK {
+		_ = resp.Body.Close()
+		return true
+	}
+	// Fallback для сборок cppworker без /api/version (404) и для сетевых сбоев
+	// на этом пути. ВАЖНО: закрываем ответ первой попытки, иначе утечёт
+	// соединение — это горячий путь, он вызывается на каждый запрос.
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	resp2, err2 := client.Get(baseURL + "/api/models")
+	if err2 != nil || resp2 == nil {
+		return false
+	}
+	defer resp2.Body.Close()
+	return resp2.StatusCode == http.StatusOK
 }
 
 // backendReadyWithModelByMetrics — R82: бэкенд доступен и по метрикам модель на
@@ -637,10 +662,34 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 	// R82: cppworker недоступен — не доверяем устаревшему снапшоту метрик
 	// (он может говорить «модель загружена», хотя узел уже мёртв) и отдаём
 	// управление failover'у.
+	//
+	// R83-fix (2026-09-30): НО если для этой модели уже идёт загрузка/reload,
+	// «не ответил на пробу» ≠ «узел мёртв»: во время загрузки 16-ГБ модели
+	// контейнер занят, и клиент получал
+	//   "model is not loaded and auto-load failed: backend unreachable:
+	//    ... (cppworker did not answer /api/models)"
+	// хотя загрузка шла нормально. В этом случае ждём её завершения (ниже есть
+	// ветка ожидания state=loading), а не объявляем узел недоступным.
 	if !lr.backendReachable(backendID) {
-		ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: backend unreachable, refusing to trust stale snapshot",
-			"backend", backendID, "model", modelName)
-		return false, fmt.Errorf("%w: %s (cppworker did not answer /api/models)", errBackendUnreachableR82, backendID)
+		loadPending := lr.proxy.nctxReload != nil &&
+			lr.proxy.nctxReload.IsReloadPending(backendID, modelName)
+		if !loadPending {
+			for _, m := range lr.queryCppWorkerModels(backendID) {
+				if matchCppWorkerModel(modelName, m) && m.State == "loading" {
+					loadPending = true
+					break
+				}
+			}
+		}
+		if loadPending {
+			ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: проба не ответила, но загрузка идёт — ждём, а не считаем узел мёртвым",
+				"backend", backendID, "model", modelName)
+		} else {
+			ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: backend unreachable, refusing to trust stale snapshot",
+				"backend", backendID, "model", modelName)
+			return false, fmt.Errorf("%w: %s (cppworker did not answer /api/version within %s)",
+				errBackendUnreachableR82, backendID, backendReachabilityTimeout)
+		}
 	}
 	// Быстрая проверка — может модель уже загружена
 	if lr.isModelReadyOnBackend(backendID, modelName) {

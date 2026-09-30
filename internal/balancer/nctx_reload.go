@@ -638,7 +638,26 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 		}
 	}
 
+	// R83-fix (2026-09-30): операторский потолок auto-reload НЕ должен отказывать
+	// в запросе, который помещается в УЖЕ ЗАГРУЖЕННОЕ окно.
+	//
+	// Живой случай: модель загружена с 31841, cppworker вернул code=2 из-за
+	// n_ctx_override=32768 (балансер посчитал потолком profile.contextLengthMax),
+	// required=32768 > auto_reload_max_n_ctx=16384 → 413 «prompt + n_predict
+	// exceeds n_ctx for this backend», хотя клиент просил 8192.
+	//
+	// Проверка выше (required <= CurrentNCtx → NoOp) уже реализует инвариант;
+	// здесь — громкое предупреждение о конфигурации, из-за которой он нарушается.
 	if cfg.AutoReloadMaxNCtx > 0 && required > cfg.AutoReloadMaxNCtx {
+		if bridgeErr.CurrentNCtx > 0 && cfg.AutoReloadMaxNCtx < bridgeErr.CurrentNCtx {
+			logger.Get().Errorw("auto_reload_max_n_ctx НИЖЕ загруженного окна модели — "+
+				"запросы на границе будут отклоняться 413",
+				"backend", backendID,
+				"loaded_n_ctx", bridgeErr.CurrentNCtx,
+				"auto_reload_max_n_ctx", cfg.AutoReloadMaxNCtx,
+				"required_n_ctx", required,
+				"hint", "поднимите LB_NCTX_RELOAD_MAX_N_CTX до окна модели (или 0 = без потолка)")
+		}
 		return c.makeRejectPlan(backendID, bridgeErr, required,
 			fmt.Sprintf("required n_ctx=%d exceeds configured max=%d", required, cfg.AutoReloadMaxNCtx),
 			"n_ctx_too_large_for_backend")

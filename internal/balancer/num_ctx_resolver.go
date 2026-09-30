@@ -263,6 +263,55 @@ func (p *Proxy) physicalNumCtxCeiling(modelName, backendID string) int {
 	return resolvePhysicalMaxContext(ggufMax, ctxMax, 0)
 }
 
+// loadedWindowNCtx — R83-fix (2026-09-30): окно, с которым модель РЕАЛЬНО
+// загружена, по обоим источникам балансера.
+//
+// ПОЧЕМУ ОБА. Метрики (metricsMgr.llamaMetrics) заполняет поллер раз в 30 c и
+// cacheLoadedContextLength сразу после reload'а; координатор (nctxReload)
+// знает значение сразу после reload'а, но НЕ знает про загрузку, сделанную
+// мимо него (WebUI, auto-load, ручной /api/models/load-with-params). Каждый
+// источник по отдельности давал «0 = не загружена» там, где модель работает:
+//
+//   - ResolveNumCtx (R60.37) спрашивал ТОЛЬКО координатора → не поднимал
+//     клиентский num_ctx до загруженного окна, cppworker получал меньшее
+//     значение и уходил в reload;
+//   - preflight читал ТОЛЬКО метрики → при устаревшем кэше видел loaded=0 и
+//     планировал reload на клиентское (меньшее) окно — так «подготовленная
+//     модель с окном 131k выгружалась в пользу меньшего окна от клиента».
+//
+// Возвращает 0, если модель, по мнению балансера, не загружена.
+func (p *Proxy) loadedWindowNCtx(backendID, modelName string) int {
+	if p == nil || backendID == "" {
+		return 0
+	}
+	fromMetrics := 0
+	if p.metricsMgr != nil {
+		p.metricsMgr.mu.RLock()
+		if lm := p.metricsMgr.llamaMetrics[backendID]; lm != nil {
+			for _, m := range lm.LoadedModels {
+				if m.ContextLength <= 0 {
+					continue
+				}
+				if modelName == "" || m.Name == modelName ||
+					containsFold(m.Name, modelName) || containsFold(modelName, m.Name) {
+					if m.ContextLength > fromMetrics {
+						fromMetrics = m.ContextLength
+					}
+				}
+			}
+		}
+		p.metricsMgr.mu.RUnlock()
+	}
+	fromCoordinator := 0
+	if p.nctxReload != nil {
+		fromCoordinator = p.nctxReload.LastKnownNCtx(backendID)
+	}
+	if fromCoordinator > fromMetrics {
+		return fromCoordinator
+	}
+	return fromMetrics
+}
+
 // maxNumCtxForModel — эффективный потолок для модели ДЛЯ CLAMPING (Round 43).
 //
 // Round 43 (2026-08-19) CONCEPTUAL FIX:
@@ -412,16 +461,17 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 		//
 		// Stickiness: используем max(body_n_ctx, loaded_n_ctx) — НЕ
 		// downgrade к body n_ctx когда loaded уже >= required.
-		if p.nctxReload != nil {
-			loadedNCtx := p.nctxReload.LastKnownNCtx(backendID)
-			if loadedNCtx > 0 && loadedNCtx > n {
-				// R60.37: loaded > body — patch body к loaded.
-				// Это предотвращает cppworker overflow (loaded=4096, body=2048, prompt overflow).
-				logger.Get().Infow("ResolveNumCtx: R60.37 — body num_ctx < loaded, upgrading",
-					"model", modelName, "backend", backendID,
-					"body_n_ctx", n, "loaded_n_ctx", loadedNCtx)
-				n = loadedNCtx
-			}
+		//
+		// R83-fix (2026-09-30): окно берём из ОБОИХ источников (метрики поллера
+		// + координатор reload'а), иначе после обычной загрузки (мимо
+		// координатора) loaded выглядел как 0 и апгрейд не срабатывал.
+		if loadedNCtx := p.loadedWindowNCtx(backendID, modelName); loadedNCtx > 0 && loadedNCtx > n {
+			// R60.37: loaded > body — patch body к loaded.
+			// Это предотвращает cppworker overflow (loaded=4096, body=2048, prompt overflow).
+			logger.Get().Infow("ResolveNumCtx: R60.37 — body num_ctx < loaded, upgrading",
+				"model", modelName, "backend", backendID,
+				"body_n_ctx", n, "loaded_n_ctx", loadedNCtx)
+			n = loadedNCtx
 		}
 		// Clamp к потолку из profile (если задан).
 		// profile.ContextLength — это максимум, который поддерживает модель
@@ -432,6 +482,27 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 				"model", modelName, "requested", n, "clamped_to", maxCtx, "source", NumCtxSourceRequest)
 			p.recordDesiredNCtx(backendID, modelName, maxCtx)
 			return ResolvedNumCtx{Value: maxCtx, Source: NumCtxSourceRequest}
+		}
+		// R83-fix (2026-09-30): НИКОГДА не просим больше, чем модель РЕАЛЬНО имеет.
+		//
+		// ДЕФЕКТ (воспроизведён на стенде). cppworker грузит модель с 32768, но
+		// фактически у неё 31841 (её же AutoTune/feasibility), а llama.cpp после
+		// выравнивания под слоты даёт 32256. Балансер же считает потолком
+		// profile.contextLengthMax (32768) и отправляет n_ctx_override=32768 —
+		// то есть БОЛЬШЕ, чем у модели есть. cppworker честно отвечает 400
+		//   code=2 "requested n_ctx=32768 exceeds model's effective n_ctx=31841"
+		// после чего балансер запускает auto-reload, упирается в операторский
+		// потолок auto_reload_max_n_ctx=16384 и отдаёт клиенту 413
+		//   "preflight: prompt + n_predict exceeds n_ctx for this backend"
+		// — при том что клиент просил всего 8192, и он в модель помещается.
+		//
+		// Теперь: если модель загружена, отправляем ровно её окно (не больше).
+		if loadedNCtx := p.loadedWindowNCtx(backendID, modelName); loadedNCtx > 0 && n > loadedNCtx {
+			logger.Get().Infow("ResolveNumCtx: R83 — не просим больше загруженного окна",
+				"model", modelName, "backend", backendID,
+				"requested_n_ctx", n, "loaded_n_ctx", loadedNCtx)
+			p.recordDesiredNCtx(backendID, modelName, loadedNCtx)
+			return ResolvedNumCtx{Value: loadedNCtx, Source: NumCtxSourceRequest}
 		}
 		// R69: помним, что клиент просит такой n_ctx — AutoTune не должен
 		// «оптимизировать» контекст вниз и запускать ping-pong reload.
@@ -458,7 +529,7 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 			// Когда loaded=0 (cold start, balancer ещё не знает) → возвращаем
 			// backend_default как есть. После auto-load (R60.33) loaded обновится.
 			if p.nctxReload != nil {
-				loadedNCtx := p.nctxReload.LastKnownNCtx(backendID)
+				loadedNCtx := p.loadedWindowNCtx(backendID, modelName)
 				if loadedNCtx > 0 && loadedNCtx > n {
 					logger.Get().Infow("ResolveNumCtx: R60.47b — backend_default < loaded, upgrading",
 						"model", backendID, "backend", backendID,

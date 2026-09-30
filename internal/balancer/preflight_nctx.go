@@ -272,6 +272,17 @@ type PreflightResult struct {
 	EstimatedRetryAfter int
 }
 
+// maxReserveSlackTokens — R83-fix (2026-09-30): верхняя граница «запаса» в
+// расчёте required = prompt + n_predict + 1 + reserveSlack.
+//
+// ЗАЧЕМ. Запас нужен (округление токенизатора, EOS, доклейка токенов в
+// function-call парсинге), но он НЕ должен расти линейно с длиной диалога:
+// 10% от промпта на продолжении сессии в 120k токенов добавляли 12k
+// «виртуальных» токенов, required превышал потолок бэкенда, и клиент получал
+// 413 «preflight: prompt + n_predict exceeds n_ctx for this backend» — при том
+// что история в загруженное окно помещается.
+const maxReserveSlackTokens = 2048
+
 // NCtxBackendState — состояние n_ctx на бэкенде (для preflight-расчётов).
 // Заполняется из cluster state + cppworker metrics.
 type NCtxBackendState struct {
@@ -401,10 +412,20 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		"estimated_prompt_tokens", meta.EstimatedPromptTokens,
 		"n_predict", meta.RequestedNPredict,
 		"has_tools", meta.HasTools)
-	// Резерв 10% + 1 токен под EOS. Cline может дослать токены в
-	// function-call парсинге, поэтому reserveSlack обязателен.
-	const reserveSlackPercent = 10
-	reserveSlack := meta.EstimatedPromptTokens * reserveSlackPercent / 100
+	// Резерв под округление токенизатора +1 токен под EOS. Cline может дослать
+	// токены в function-call парсинге, поэтому запас нужен.
+	//
+	// R83-fix (2026-09-30): запас ОГРАНИЧЕН сверху. Было ровно 10% от промпта —
+	// на длинном продолжении сессии (120k токенов) это 12k «виртуальных» токенов,
+	// и required раздувался выше потолка/загруженного окна, хотя сам контекст
+	// помещается. Клиент получал 413 «prompt + n_predict exceeds n_ctx», хотя
+	// история влезала. Теперь запас = min(10%, 2048) — этого хватает на
+	// округление и EOS, и он не растёт линейно с длиной диалога.
+	slack := meta.EstimatedPromptTokens / 10
+	if slack > maxReserveSlackTokens {
+		slack = maxReserveSlackTokens
+	}
+	reserveSlack := slack
 	nPredict := meta.RequestedNPredict
 	if nPredict <= 0 {
 		nPredict = 2048 // default из bridge

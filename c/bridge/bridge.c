@@ -1400,7 +1400,27 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
     // проверки ёмкости (prompt + n_predict <= n_ctx) перед llama_decode.
     // Без этого клиент получал загадочную ошибку «llama_decode failed» без
     // указания на реальную причину (переполнение контекста).
-    im->ctx_n_ctx = ctx_params.n_ctx;
+    //
+    // R83-fix (2026-09-30): берём РЕАЛЬНЫЙ n_ctx у llama.cpp, а не запрошенный.
+    //
+    // ЗАЧЕМ. llama.cpp выравнивает n_ctx: при kv_unified=false он считает
+    // n_ctx_seq = GGML_PAD(n_ctx / n_seq_max, 256) и ПЕРЕЗАПИСЫВАЕТ n_ctx как
+    // n_ctx_seq * n_seq_max (см. src/llama-context.cpp). Живой пример на стенде:
+    // запросили 31841 → llama.cpp получил 32256 (n_ctx_seq=16128 × 2 слота), а
+    // cppworker продолжал сообщать 31841. Балансер, зная «31841», считал
+    // потолком profile.contextLengthMax=32768 и отправлял n_ctx_override=32768
+    // — БОЛЬШЕ, чем у модели есть → cppworker отвечал 400 code=2
+    // «requested n_ctx=32768 exceeds model's effective n_ctx=...» → балансер
+    // запускал auto-reload → 413 клиенту, хотя клиент просил 8192.
+    // Теперь все три числа (запрошено / сообщено / у llama.cpp) совпадают.
+    im->ctx_n_ctx = llama_n_ctx(context);
+    if (im->ctx_n_ctx == 0) {
+        // Страховка для сборок/бэкендов, где llama_n_ctx вернул 0.
+        im->ctx_n_ctx = ctx_params.n_ctx;
+    }
+    printf("[bridge] context n_ctx: requested=%u actual=%u (n_seq_max=%u, n_ctx_seq=%u)\n",
+           ctx_params.n_ctx, im->ctx_n_ctx,
+           ctx_params.n_seq_max, llama_n_ctx_seq(context));
     im->ctx_n_batch = ctx_params.n_batch;
     // Round 39: start in embedding mode (matches ctx_params.embeddings=true).
     // The C-bridge switches to chat mode (0) before each chat decode call.

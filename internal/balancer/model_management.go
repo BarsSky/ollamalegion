@@ -1071,6 +1071,19 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 		applyProfileLoadParams(&req, dp)
 	}
 
+	// R83-fix (2026-09-30): явная загрузка с окном от оператора (WebUI,
+	// load-with-params, apply профиля) ЗАКРЕПЛЯЕТ окно.
+	//
+	// ЗАЧЕМ. AutoTune («over-allocation fix») умеет уменьшать n_ctx, и раньше его
+	// останавливал только «желаемый n_ctx» от КЛИЕНТСКИХ запросов (R69, TTL 30
+	// мин). Подготовленная оператором модель без трафика такой защиты не имела:
+	// первый же запрос с меньшим окном мог привести к перезагрузке в меньшее окно
+	// («подготовленная модель с 131k выгружена в пользу 128k от клиента»).
+	// Теперь операторский выбор окна фиксируется тем же механизмом.
+	if req.ContextSize != nil && *req.ContextSize > 0 && req.ModelName != "" {
+		mm.proxy.recordDesiredNCtx(backendID, req.ModelName, *req.ContextSize)
+	}
+
 	// Round 7: resolve override-tensors (req override > profile > none).
 	overrideTensors, overrideTensorBufts := mm.resolveOverrideTensors(req)
 	useLoadWithParams := len(overrideTensors) > 0 && len(overrideTensors) == len(overrideTensorBufts)

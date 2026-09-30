@@ -285,9 +285,43 @@ func TestDecidePreflight_Reload_VRAMLimit_TriggersPartialOffload(t *testing.T) {
 	if res.Decision != PreflightReload {
 		t.Fatalf("expected PreflightReload (partial offload), got %v (reason: %s)", res.Decision, res.RejectBody)
 	}
-	// required = 60000 + 512 + 1 + 6000 (slack) = 66513 → roundUp → 131072
-	if res.TargetNCtx < 66513 {
-		t.Errorf("expected target >= 66513, got %d", res.TargetNCtx)
+	// R83-fix (2026-09-30): запас ограничен сверху maxReserveSlackTokens=2048,
+	// поэтому required = 60000 + 512 + 1 + 2048 = 62561 → roundUp → 65536.
+	// Раньше считалось 10% (6000) → 66513 → 131072, и на длинных сессиях такой
+	// «виртуальный» запас отбраковывал запросы, которые в окно помещаются.
+	if res.TargetNCtx < 62561 {
+		t.Errorf("expected target >= 62561 (prompt+n_predict+bounded slack), got %d", res.TargetNCtx)
+	}
+}
+
+// TestDecidePreflight_LongPrompt_SlackIsBounded — R83-fix (2026-09-30):
+// на длинном продолжении сессии запас НЕ растёт линейно.
+//
+// Проверяем на реальном кейсе жалобы: история ~100k токенов, запрос помещается
+// в окно 131072, но 10% запаса (10k) раздували required до 112k… — а на 120k
+// промпте до 132k, то есть выше окна, и клиент получал 413, хотя история
+// влезала. Теперь required = prompt + n_predict + 1 + min(10%, 2048).
+func TestDecidePreflight_LongPrompt_SlackIsBounded(t *testing.T) {
+	const prompt = 120000
+	const nPredict = 2048
+	meta := &RequestMeta{EstimatedPromptTokens: prompt, RequestedNPredict: nPredict}
+	state := &NCtxBackendState{
+		BackendID:       "cppworker-long",
+		CurrentNCtx:     131072,
+		MaxVRAMNCtx:     131072,
+		ModelMaxContext: 262144,
+	}
+	res := DecidePreflight(meta, state, DefaultNCtxReloadConfig())
+
+	// Главное: при окне 131072 запрос обслуживается без reload и без отказа.
+	if res.Decision != PreflightNoOp {
+		t.Fatalf("история %d токенов должна помещаться в окно 131072 без reload, "+
+			"получено %v (reason: %s)", prompt, res.Decision, res.RejectBody)
+	}
+	// И запас не превышает объявленной границы.
+	wantMaxRequired := prompt + nPredict + 1 + maxReserveSlackTokens
+	if wantMaxRequired > state.CurrentNCtx {
+		t.Fatalf("тест сломан: %d > окна %d", wantMaxRequired, state.CurrentNCtx)
 	}
 }
 

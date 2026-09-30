@@ -776,7 +776,13 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// ставил X-Cpp-Ctx=8192, cppworker отвечал 413 «prompt exceeds n_ctx», а
 	// обработчик 413 запускал ВТОРОЙ reload на 16384 — клиент (Cline) получал
 	// 503 «reload in progress» уже после того, как дождался 65536.
-	if lk := p.lastKnownNCtxFor(backendID); lk > loadedNCtx {
+	// R83-fix (2026-09-30): «загружено ли» — по ОБОИМ источникам (метрики поллера
+	// + координатор). Метрики обновляются раз в 30 c, поэтому сразу после загрузки
+	// (особенно сделанной мимо координатора — WebUI/auto-load) здесь был 0, и
+	// preflight считал модель незагруженной: планировал reload на КЛИЕНТСКОЕ
+	// (меньшее) окно. Так «подготовленная модель с окном 131k выгружалась в пользу
+	// меньшего окна от клиента».
+	if lk := p.loadedWindowNCtx(backendID, modelName); lk > loadedNCtx {
 		logger.Get().Infow("preflightNCtxReload: loaded n_ctx from coordinator is fresher than metrics cache",
 			"backend", backendID, "model", modelName,
 			"metrics_n_ctx", loadedNCtx, "coordinator_n_ctx", lk)
@@ -856,8 +862,13 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		if meta.RequestedNPredict <= 0 {
 			return bodyBuf, true, "", http.StatusOK
 		}
-		const reserveSlackPercent = 10
-		reserveSlack := meta.EstimatedPromptTokens * reserveSlackPercent / 100
+		// R83-fix (2026-09-30): запас ограничен сверху (см. preflight_nctx.go) —
+		// иначе на длинных сессиях 10% превращались в десятки тысяч токенов и
+		// запрос, который помещается, отклонялся как «prompt + n_predict exceeds».
+		reserveSlack := meta.EstimatedPromptTokens / 10
+		if reserveSlack > maxReserveSlackTokens {
+			reserveSlack = maxReserveSlackTokens
+		}
 		nPredict := meta.RequestedNPredict
 		required := meta.EstimatedPromptTokens + nPredict + 1 + reserveSlack
 		if required > loadedNCtx {

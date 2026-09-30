@@ -1129,6 +1129,23 @@ func (c *NCtxReloadCoordinator) DoReload(
 	c.SetLastKnownNCtx(backendID, actual)
 	cur.err = nil
 	logger.Get().Infof("[nctx_reload] backend %s: reload successful, new n_ctx=%d", backendID, actual)
+
+	// R83-fix (2026-09-30): честно сообщаем, если окно НЕ доросло до запрошенного.
+	//
+	// Живой случай (стенд, gemma-4 8 ГБ): preflight просил 131072 (окно клиента
+	// 65536 × 2 слота), адаптивная стратегия вернула stage=cpu_only с nCtx=65536,
+	// цель была срезана до 65536 — а в логе печаталось «reload successful,
+	// new n_ctx=131072» (бралось из плана). Оператор видел успех и не понимал,
+	// почему клиент по-прежнему получает половину окна.
+	if actual < plan.NewNCtx {
+		logger.Get().Warnw("[nctx_reload] окно выросло МЕНЬШЕ запрошенного — клиент получит меньше контекста",
+			"backend", backendID, "model", modelName,
+			"requested_n_ctx", plan.NewNCtx,
+			"achieved_n_ctx", actual,
+			"shortfall", plan.NewNCtx-actual,
+			"reason", "адаптивная стратегия cppworker ограничила размер окна (VRAM/RAM)",
+			"hint", "уменьшите окно, поставьте parallel=1 или возьмите модель/квант полегче")
+	}
 	return nil
 }
 

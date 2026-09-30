@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -287,6 +288,20 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 					// он относится именно к этой модели.
 					if m.VramKnown {
 						state.VRAMKnown = true
+					}
+					// R83-fix (2026-09-30): окно ОДНОГО слота. Клиентский запрос
+					// обслуживает один слот, поэтому «влезает ли промпт» надо
+					// сравнивать с ним, а не с суммарным окном модели: при
+					// parallel=2 суммарные 65536 дают клиенту только 32768.
+					if m.ContextPerSeq > 0 {
+						state.CurrentContextPerSeq = m.ContextPerSeq
+					} else if m.MaxSlots > 1 {
+						state.CurrentContextPerSeq = cppbackend.ContextPerSlot(m.ContextLength, m.MaxSlots)
+					}
+					if m.MaxSlots > 1 {
+						state.CurrentSlots = m.MaxSlots
+					} else if m.Parallel > 1 {
+						state.CurrentSlots = m.Parallel
 					}
 					break
 				}

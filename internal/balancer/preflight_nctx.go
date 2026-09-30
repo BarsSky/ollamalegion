@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/tokencount"
 )
@@ -345,6 +346,62 @@ type NCtxBackendState struct {
 	AutoReloadMaxNCtx    int
 	CurrentFlashAttnType int // -1/0/1, 0 = unknown
 	CurrentUseMmap       bool
+	// CurrentContextPerSeq — R83-fix (2026-09-30): окно ОДНОГО слота
+	// (n_ctx_seq у llama.cpp, `context_per_seq` в /api/models).
+	//
+	// ЗАЧЕМ. CurrentNCtx — СУММАРНОЕ окно модели, а один запрос обслуживает один
+	// слот: при parallel=2 суммарные 65536 дают клиенту 32768. Проверка «промпт
+	// помещается» по суммарному окну пропускала запрос, который слот не обслужит,
+	// а проверка «нужно больше, чем есть» — не срабатывала, и балансер уходил в
+	// ветку отказа «VRAM исчерпана / reload не поможет» вместо роста окна.
+	// 0 = неизвестно (считаем, что окно слота равно суммарному).
+	CurrentContextPerSeq int
+	// CurrentSlots — сколько слотов заведено у загруженной модели (>=1).
+	// Нужно, чтобы пересчитать требование «на клиента» в суммарный n_ctx для
+	// перезагрузки: total = окно_клиента × слоты.
+	CurrentSlots int
+}
+
+// reloadTargetForState — R83-fix (2026-09-30): целевое СУММАРНОЕ окно для
+// перезагрузки.
+//
+// `perSeqTarget` — сколько нужно ОДНОМУ клиенту. Поскольку llama.cpp делит
+// суммарное окно между слотами (n_ctx_seq = n_ctx / slots), для двух слотов
+// нужно суммарно в два раза больше — иначе клиент снова получит половину и
+// упрётся в то же ограничение (это и наблюдалось: gemma-4 при max_slots=2
+// давала клиенту 32768 при суммарных 65536).
+func reloadTargetForState(perSeqTarget int, state *NCtxBackendState) int {
+	if perSeqTarget <= 0 {
+		return perSeqTarget
+	}
+	slots := state.effectiveSlots()
+	if slots <= 1 {
+		return perSeqTarget
+	}
+	total := cppbackend.PadContext(perSeqTarget) * slots
+	logger.Get().Infow("preflight: целевое окно пересчитано «на клиента → суммарно»",
+		"backend_id", state.BackendID,
+		"per_seq_target", perSeqTarget, "slots", slots, "total_target", total)
+	return total
+}
+
+// effectivePerSeqNCtx — окно, доступное ОДНОМУ клиенту (0 → суммарное).
+func (s *NCtxBackendState) effectivePerSeqNCtx() int {
+	if s == nil {
+		return 0
+	}
+	if s.CurrentContextPerSeq > 0 {
+		return s.CurrentContextPerSeq
+	}
+	return s.CurrentNCtx
+}
+
+// effectiveSlots — число слотов модели (>=1).
+func (s *NCtxBackendState) effectiveSlots() int {
+	if s == nil || s.CurrentSlots < 1 {
+		return 1
+	}
+	return s.CurrentSlots
 }
 
 // physicalCeiling — потолок, выше которого клиентский запрос удовлетворить
@@ -501,37 +558,98 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	// ломать её отказом было бы регрессом. Отказ адресован ровно той ситуации,
 	// ради которой раньше уходили в reload: «нужно больше контекста», а веса в
 	// VRAM не помещаются ни при каком gpu_layers, поэтому reload не поможет.
-	if state.CurrentNCtx > 0 && required <= state.CurrentNCtx {
+	//
+	// R83-fix (2026-09-30): сравниваем с окном СЛОТА, а не с суммарным.
+	// Живое воспроизведение (стенд): gemma-4 загружена ctx=65536 при
+	// max_slots=2 → клиенту доступно 32768, а история занимала ~101k токенов.
+	// Проверка по суммарному окну давала «required <= current» → NoOp и обрыв
+	// дальше, либо уходила в ветку VRAM-отказа с текстом «reload cannot raise
+	// this ceiling», хотя перезагрузка с окном 101k × 2 слота решает задачу
+	// (KV уезжает в RAM — модель и так работает через partial offload).
+	if perSeq := state.effectivePerSeqNCtx(); perSeq > 0 && required <= perSeq {
+		return &PreflightResult{Decision: PreflightNoOp}
+	}
+	if state.CurrentNCtx > 0 && required <= state.CurrentNCtx && state.CurrentContextPerSeq <= 0 {
+		// Окно слота неизвестно — прежнее поведение (сравнение с суммарным).
 		return &PreflightResult{Decision: PreflightNoOp}
 	}
 	if state.VRAMKnown && state.MaxVRAMNCtx == 0 {
 		// Веса не влезают в VRAM целиком даже без KV-cache: exact-fit потолок
-		// равен нулю. Reload не поднимет его — веса не уменьшатся.
-		logger.Get().Warnw("preflight: VRAM известна, но max_vram_n_ctx=0 — веса не влезают",
+		// равен нулю.
+		//
+		// R83-fix (2026-09-30): это НЕ повод отказывать, если физический потолок
+		// (GGUF/operator cap) покрывает требование. Раньше здесь стоял безусловный
+		// reject «reload cannot raise this ceiling» — и запрос с длинной историей
+		// получал 413 за 0 c, хотя модель уже работает через partial offload, а
+		// перезагрузка с бОльшим окном (KV в RAM) задачу решает. Отказ оставляем
+		// только когда требование действительно выше физического потолка.
+		ceil := state.physicalCeiling()
+		if ceil <= 0 || required > ceil {
+			logger.Get().Warnw("preflight: VRAM известна, но max_vram_n_ctx=0 — веса не влезают",
+				"backend_id", state.BackendID,
+				"required_n_ctx", required,
+				"current_n_ctx", state.CurrentNCtx,
+				"context_per_seq", state.CurrentContextPerSeq,
+				"model_max_context", state.ModelMaxContext,
+				"gguf_max_context", state.GGUFMaxContext,
+				"physical_ceiling", ceil,
+				"note", "требование выше физического потолка модели — reload не поможет")
+			return makePreflightRejectWithSuggestion(state, required, fmt.Sprintf(
+				"VRAM is known (%d MB available) but this model's weights do not fit: "+
+					"max_vram_n_ctx=0 at any gpu_layers (model_max_context=%d, current_n_ctx=%d, "+
+					"context_per_seq=%d, required=%d, physical_ceiling=%d). "+
+					"Reload cannot raise this ceiling.",
+				state.AvailableVRAMMB, state.ModelMaxContext, state.CurrentNCtx,
+				state.CurrentContextPerSeq, required, ceil),
+				"Reduce the prompt/history size, or use a smaller model or a more aggressive "+
+					"quantization (Q4_K_M instead of Q8_0/F16).")
+		}
+		// Покрывается физическим потолком → растём (KV уйдёт в RAM при
+		// partial offload). Ниже отработает общая логика reload с проверкой
+		// операторского потолка.
+		logger.Get().Infow("preflight: max_vram_n_ctx=0, но требование в пределах физического потолка — растём окно",
 			"backend_id", state.BackendID,
-			"required_n_ctx", required,
-			"current_n_ctx", state.CurrentNCtx,
-			"model_max_context", state.ModelMaxContext,
-			"gguf_max_context", state.GGUFMaxContext,
-			"note", "reload не поднимет потолок: веса модели не помещаются в VRAM")
-		return makePreflightRejectWithSuggestion(state, required, fmt.Sprintf(
-			"VRAM is known (%d MB available) but this model's weights do not fit: "+
-				"max_vram_n_ctx=0 at any gpu_layers (model_max_context=%d, current_n_ctx=%d). "+
-				"Reload cannot raise this ceiling.",
-			state.AvailableVRAMMB, state.ModelMaxContext, state.CurrentNCtx),
-			"Use a smaller model or a more aggressive quantization (Q4_K_M instead of Q8_0/F16): "+
-				"the weights alone do not fit into this GPU's VRAM, so no reload with a different "+
-				"n_ctx or gpu_layers can help. Partial offload is still possible — start the model via "+
-				"/api/models/load-with-params with a smaller contextSize, or use a model profile with a "+
-				"lower contextLength and kvCacheType=q4_0.")
+			"required_n_ctx", required, "current_n_ctx", state.CurrentNCtx,
+			"context_per_seq", state.CurrentContextPerSeq,
+			"physical_ceiling", ceil)
 	}
 
 	// Потолок модели/оператора (если известен) — найжестший потолок.
+	//
 	// R68: используем physicalCeiling() (GGUF/operator cap), а не profile hint.
-	if ceil := state.physicalCeiling(); ceil > 0 && required > ceil {
-		return makePreflightReject(state, required, fmt.Sprintf(
-			"required n_ctx=%d exceeds backend context ceiling=%d (profile hint=%d, gguf max=%d, auto_reload_max_n_ctx=%d)",
-			required, ceil, state.ProfileHintNCtx, state.GGUFMaxContext, state.AutoReloadMaxNCtx))
+	//
+	// R83-fix (2026-09-30): при нескольких слотах потолок НА КЛИЕНТА меньше
+	// суммарного — llama.cpp делит окно между слотами (n_ctx_seq = n_ctx / slots).
+	// Раньше здесь сравнивали per-seq требование с СУММАРНЫМ потолком, поэтому
+	// клиент с историей 101k на модели с total-потолком 131072 при 2 слотах
+	// проходил эту проверку, уходил в ветку VRAM-отказа и получал невнятное
+	// «reload cannot raise this ceiling». Теперь отказ (если он неизбежен)
+	// называет ПОТОЛОК НА КЛИЕНТА и способы его поднять.
+	if ceil := state.physicalCeiling(); ceil > 0 {
+		slots := state.effectiveSlots()
+		perClientCeil := ceil
+		if slots > 1 {
+			perClientCeil = ceil / slots
+		}
+		if required > perClientCeil {
+			msg := fmt.Sprintf(
+				"required n_ctx=%d exceeds per-client context ceiling=%d "+
+					"(backend context ceiling=%d, slots=%d, "+
+					"profile hint=%d, gguf max=%d, auto_reload_max_n_ctx=%d)",
+				required, perClientCeil, ceil, slots,
+				state.ProfileHintNCtx, state.GGUFMaxContext, state.AutoReloadMaxNCtx)
+			suggestion := ""
+			if slots > 1 {
+				suggestion = fmt.Sprintf(
+					"При %d параллельных слотах модель делит окно между клиентами: "+
+						"каждому доступно %d токенов из %d. Варианты: уменьшить историю/промпт, "+
+						"поставить parallel=1 (тогда окно целиком одному клиенту), "+
+						"взять модель с бОльшим окном или поднять суммарный потолок "+
+						"(contextLengthMax / LB_NCTX_RELOAD_MAX_N_CTX).",
+					slots, perClientCeil, ceil)
+			}
+			return makePreflightRejectWithSuggestion(state, required, msg, suggestion)
+		}
 	}
 
 	// Потолок VRAM — больше НЕ reject, а trigger reload.
@@ -568,6 +686,30 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		return makePreflightReject(state, required, fmt.Sprintf(
 			"required n_ctx=%d exceeds configured auto_reload_max_n_ctx=%d",
 			required, cfg.AutoReloadMaxNCtx))
+	}
+
+	// R83-fix (2026-09-30): окно не покрывает требование → ЯВНО просим рост.
+	//
+	// До этой правки при `max_vram_n_ctx == 0` (веса не влезают в VRAM целиком,
+	// модель работает через partial offload) функция доходила до конца и
+	// возвращала NoOp — то есть «растим» мы разрешили, но рост никто не
+	// запрашивал: запрос уходил в cppworker с прежним окном и падал там
+	// («prompt + n_predict exceeds n_ctx») либо упирался в 413.
+	//
+	// Условие роста: требование больше окна СЛОТА и не превышает проверенные
+	// выше потолки (физический и операторский) — рост возможен, KV уедет в RAM.
+	if perSeq := state.effectivePerSeqNCtx(); perSeq > 0 && required > perSeq {
+		logger.Get().Infow("preflight: требование больше окна слота — запрашиваю рост окна",
+			"backend_id", state.BackendID,
+			"required_n_ctx", required,
+			"context_per_seq", perSeq,
+			"current_n_ctx", state.CurrentNCtx,
+			"slots", state.effectiveSlots(),
+			"max_vram_n_ctx", state.MaxVRAMNCtx)
+		return &PreflightResult{
+			Decision:   PreflightReload,
+			TargetNCtx: roundUpPow2(required),
+		}
 	}
 
 	// Compute target n_ctx: required, rounded up до степени 2, capped.
@@ -791,9 +933,11 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 		}
 		plan := &ReloadPlan{
 			Decision: DecisionReload,
-			NewNCtx:  decision.TargetNCtx,
-			Reason: fmt.Sprintf("preflight: target=%d (current=%d, max_vram=%d, model_max=%d)",
-				decision.TargetNCtx, state.CurrentNCtx, state.MaxVRAMNCtx, state.ModelMaxContext),
+			NewNCtx:  reloadTargetForState(decision.TargetNCtx, state),
+			Reason: fmt.Sprintf("preflight: target=%d (current=%d, context_per_seq=%d, slots=%d, max_vram=%d, model_max=%d)",
+				reloadTargetForState(decision.TargetNCtx, state),
+				state.CurrentNCtx, state.CurrentContextPerSeq, state.effectiveSlots(),
+				state.MaxVRAMNCtx, state.ModelMaxContext),
 		}
 
 		// Round 31 #2 (2026-08-09): async mode — не блокируем на reload.

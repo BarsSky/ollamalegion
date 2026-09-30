@@ -694,6 +694,10 @@ func padContext(n int) int {
 	return ((n + step - 1) / step) * step
 }
 
+// PadContext — экспортированный вариант padContext: балансер пересчитывает
+// «окно на клиента» в суммарное тем же правилом, что и llama.cpp.
+func PadContext(n int) int { return padContext(n) }
+
 // ContextPerSlot — R83 (2026-09-30): сколько токенов окна реально получит ОДИН
 // клиент (слот) при суммарном totalNCtx и slots слотах.
 //

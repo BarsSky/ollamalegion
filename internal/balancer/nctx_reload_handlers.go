@@ -782,6 +782,20 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// preflight считал модель незагруженной: планировал reload на КЛИЕНТСКОЕ
 	// (меньшее) окно. Так «подготовленная модель с окном 131k выгружалась в пользу
 	// меньшего окна от клиента».
+	// R83-fix (2026-09-30): кэш может быть пуст — загрузку сделали мимо
+	// балансера (WebUI/прямой вызов cppworker), а поллер ещё не прошёл. Тогда
+	// здесь было loaded_n_ctx=0, и preflight планировал reload УЖЕ ЗАГРУЖЕННОЙ
+	// модели на клиентское (меньшее) окно:
+	//   "detected n_ctx mismatch, scheduling async reload, loaded_n_ctx=0,
+	//    requested_n_ctx=8192, loaded_n_ctx_is_zero=true"
+	// Спрашиваем cppworker один раз и только в этом случае.
+	if loadedNCtx == 0 {
+		if live := p.refreshLoadedWindowNCtx(backendID, modelName); live > 0 {
+			logger.Get().Infow("preflightNCtxReload: кэш метрик пуст, окно взято у cppworker",
+				"backend", backendID, "model", modelName, "live_n_ctx", live)
+			loadedNCtx = live
+		}
+	}
 	if lk := p.loadedWindowNCtx(backendID, modelName); lk > loadedNCtx {
 		logger.Get().Infow("preflightNCtxReload: loaded n_ctx from coordinator is fresher than metrics cache",
 			"backend", backendID, "model", modelName,

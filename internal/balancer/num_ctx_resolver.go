@@ -312,6 +312,53 @@ func (p *Proxy) loadedWindowNCtx(backendID, modelName string) int {
 	return fromMetrics
 }
 
+// refreshLoadedWindowNCtx — R83-fix (2026-09-30): принудительно обновить кэш
+// метрик бэкенда и вернуть окно модели.
+//
+// ЗАЧЕМ. Поллер опрашивает /api/models раз в 30 c (2 c — только пока видит
+// state=loading). Если загрузку сделали МИМО балансера (WebUI, прямой вызов
+// cppworker, авто-загрузка на другом узле), в момент первого клиентского запроса
+// кэш ещё пуст: `loaded_n_ctx=0`. Живое воспроизведение:
+//
+//	preflightNCtxReload: detected n_ctx mismatch, scheduling async reload
+//	  loaded_n_ctx=0, requested_n_ctx=8192, loaded_n_ctx_is_zero=true
+//	preflightNCtxReload(async): starting reload ... target_n_ctx=8192
+//
+// То есть балансер планировал перезагрузку УЖЕ ЗАГРУЖЕННОЙ модели (32768) на
+// клиентское (меньшее) окно — ровно то, на что жаловался оператор
+// («подготовленная модель выгружена в пользу меньшего окна от клиента»).
+//
+// Стоимость: один GET /api/models (после R83 он отвечает за миллисекунды —
+// memfit-бюджет больше не зовёт CUDA в горячем пути) и только тогда, когда
+// кэши говорят «не загружена», то есть на пути, который иначе принял бы
+// неверное решение.
+func (p *Proxy) refreshLoadedWindowNCtx(backendID, modelName string) int {
+	if p == nil || backendID == "" {
+		return 0
+	}
+	if p.llamaCppMetricsPoller != nil {
+		if b, ok := p.backendInfoForPoller(backendID); ok {
+			p.llamaCppMetricsPoller.pollBackend(b)
+		}
+	}
+	return p.loadedWindowNCtx(backendID, modelName)
+}
+
+// backendInfoForPoller — (host, port) бэкенда в виде, который понимает поллер.
+func (p *Proxy) backendInfoForPoller(backendID string) (backendInfo, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	bs, ok := p.backends[backendID]
+	if !ok || bs == nil || bs.Backend == nil {
+		return backendInfo{}, false
+	}
+	port := p.getBackendPort(bs.Backend)
+	if port <= 0 || bs.Backend.Host == "" {
+		return backendInfo{}, false
+	}
+	return backendInfo{id: backendID, host: bs.Backend.Host, port: port}, true
+}
+
 // maxNumCtxForModel — эффективный потолок для модели ДЛЯ CLAMPING (Round 43).
 //
 // Round 43 (2026-08-19) CONCEPTUAL FIX:
@@ -497,6 +544,12 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 		// — при том что клиент просил всего 8192, и он в модель помещается.
 		//
 		// Теперь: если модель загружена, отправляем ровно её окно (не больше).
+		// R83-fix: если кэши говорят «не загружена», а модель на самом деле
+		// работает (загрузка мимо балансера), — обновляем кэш ОДНИМ запросом,
+		// иначе ниже посчитаем потолком профиль и попросим больше реального окна.
+		if p.loadedWindowNCtx(backendID, modelName) == 0 {
+			p.refreshLoadedWindowNCtx(backendID, modelName)
+		}
 		if loadedNCtx := p.loadedWindowNCtx(backendID, modelName); loadedNCtx > 0 && n > loadedNCtx {
 			logger.Get().Infow("ResolveNumCtx: R83 — не просим больше загруженного окна",
 				"model", modelName, "backend", backendID,

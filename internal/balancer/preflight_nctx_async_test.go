@@ -52,6 +52,8 @@ func TestPreflightAsyncReload_RunPreflightReturnsAsyncDecision(t *testing.T) {
 	})
 
 	meta := &RequestMeta{
+		// R83-политика (2026-10-01): перезагрузку инициирует окно КЛИЕНТА.
+		RequestedNCtxOverride: 65536,
 		EstimatedPromptTokens: 50000,
 		RequestedNPredict:     1000,
 		ModelName:             "gemma-4-E4B-it-Q4_K_M",
@@ -134,6 +136,8 @@ func TestPreflightAsyncReload_SyncModeStillBlocks(t *testing.T) {
 	})
 
 	meta := &RequestMeta{
+		// R83-политика (2026-10-01): рост окна — по явному запросу клиента.
+		RequestedNCtxOverride: 50000,
 		EstimatedPromptTokens: 50000,
 		RequestedNPredict:     1000,
 		ModelName:             "gemma-4",

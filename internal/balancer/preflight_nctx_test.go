@@ -219,7 +219,10 @@ func TestDecidePreflight_NoOp_ParamsMismatchButCtxCovers(t *testing.T) {
 // флаги (потому что target n_ctx вычисляется из required, не из params).
 func TestDecidePreflight_Reload_NCtxTooSmall_IgnoresParams(t *testing.T) {
 	meta := &RequestMeta{
-		EstimatedPromptTokens:  100000, // огромный prompt
+		// R83-политика (2026-10-01): рост окна инициирует КЛИЕНТ, а не оценка
+		// промпта. Раньше здесь хватало EstimatedPromptTokens=100000.
+		RequestedNCtxOverride:  100000,
+		EstimatedPromptTokens:  100000,
 		RequestedNPredict:      4096,
 		RequestedKvCacheType:   "f16", // matches current
 		RequestedFlashAttnType: -1,    // matches current
@@ -245,6 +248,9 @@ func testBoolPtr(b bool) *bool { return &b }
 
 func TestDecidePreflight_Reload_FitsInVRAM(t *testing.T) {
 	meta := &RequestMeta{
+		// R83-политика (2026-10-01): окно задаёт клиент; оценка промпта больше
+		// не влияет на решение о перезагрузке.
+		RequestedNCtxOverride: 50000,
 		EstimatedPromptTokens: 50000, // ~200KB символов
 		RequestedNPredict:     512,
 	}
@@ -259,9 +265,9 @@ func TestDecidePreflight_Reload_FitsInVRAM(t *testing.T) {
 	if res.Decision != PreflightReload {
 		t.Fatalf("expected PreflightReload, got %v (reason: %s)", res.Decision, res.RejectBody)
 	}
-	// required = 50000 + 512 + 1 + 5000 (slack) = 55513 → roundUp → 65536
-	if res.TargetNCtx < 55513 {
-		t.Errorf("expected target >= 55513, got %d", res.TargetNCtx)
+	// TargetNCtx — окно КЛИЕНТА (а не раздутая оценка промпта).
+	if res.TargetNCtx != 50000 {
+		t.Errorf("expected target = 50000 (окно клиента), got %d", res.TargetNCtx)
 	}
 }
 
@@ -271,6 +277,8 @@ func TestDecidePreflight_Reload_VRAMLimit_TriggersPartialOffload(t *testing.T) {
 	// offload (уменьшит gpu_layers, вытеснит часть весов в RAM, освободит VRAM
 	// для KV-cache большего размера).
 	meta := &RequestMeta{
+		// R83-политика (2026-10-01): клиент явно просит 60000 на клиента.
+		RequestedNCtxOverride: 60000,
 		EstimatedPromptTokens: 60000,
 		RequestedNPredict:     512,
 	}
@@ -285,12 +293,10 @@ func TestDecidePreflight_Reload_VRAMLimit_TriggersPartialOffload(t *testing.T) {
 	if res.Decision != PreflightReload {
 		t.Fatalf("expected PreflightReload (partial offload), got %v (reason: %s)", res.Decision, res.RejectBody)
 	}
-	// R83-fix (2026-09-30): запас ограничен сверху maxReserveSlackTokens=2048,
-	// поэтому required = 60000 + 512 + 1 + 2048 = 62561 → roundUp → 65536.
-	// Раньше считалось 10% (6000) → 66513 → 131072, и на длинных сессиях такой
-	// «виртуальный» запас отбраковывал запросы, которые в окно помещаются.
-	if res.TargetNCtx < 62561 {
-		t.Errorf("expected target >= 62561 (prompt+n_predict+bounded slack), got %d", res.TargetNCtx)
+	// Перезагрузка идёт под окно КЛИЕНТА: cppworker сам решит раскладку
+	// (partial offload) и, если не поместится, скажет об этом честно.
+	if res.TargetNCtx != 60000 {
+		t.Errorf("expected target = 60000 (окно клиента), got %d", res.TargetNCtx)
 	}
 }
 
@@ -326,8 +332,10 @@ func TestDecidePreflight_LongPrompt_SlackIsBounded(t *testing.T) {
 }
 
 func TestDecidePreflight_Reject_ModelMaxLimit(t *testing.T) {
-	// Required = 300000 + 512 + 1 + 30000 (slack) = 330513 > gemma-4 max 262144.
+	// R83-политика (2026-10-01): отказ только когда запрошенное КЛИЕНТОМ окно
+	// не влезает в физический потолок модели.
 	meta := &RequestMeta{
+		RequestedNCtxOverride: 300000, // больше GGUF-потолка 262144
 		EstimatedPromptTokens: 300000,
 		RequestedNPredict:     512,
 	}
@@ -342,15 +350,18 @@ func TestDecidePreflight_Reject_ModelMaxLimit(t *testing.T) {
 	if res.Decision != PreflightReject {
 		t.Fatalf("expected PreflightReject, got %v", res.Decision)
 	}
-	// R68: потолок теперь называется «backend context ceiling» (GGUF/operator
-	// cap), а contextLength профиля попадает в тело как profile_hint_n_ctx.
-	if !strings.Contains(res.RejectBody, "backend context ceiling") {
-		t.Errorf("expected reason about backend context ceiling, got: %s", res.RejectBody)
+	// Текст — для человека: что не поместится и что делать.
+	if !strings.Contains(res.RejectBody, "не поместится") {
+		t.Errorf("expected human-readable reason about не поместится, got: %s", res.RejectBody)
+	}
+	if !strings.Contains(res.RejectBody, "262144") {
+		t.Errorf("в отказе нет потолка модели: %s", res.RejectBody)
 	}
 }
 
 func TestDecidePreflight_Reject_ConfigMax(t *testing.T) {
 	meta := &RequestMeta{
+		RequestedNCtxOverride: 100000,
 		EstimatedPromptTokens: 100000,
 		RequestedNPredict:     512,
 	}
@@ -380,8 +391,9 @@ func TestDecidePreflight_NilInputs(t *testing.T) {
 }
 
 func TestDecidePreflight_DefaultNPredictWhenZero(t *testing.T) {
-	// Current 4096 еле покрывает required=3149 (1000 + 2048 default + 1 + 100 slack).
-	// Чтобы получить Reload — увеличим prompt, чтобы он не влезал.
+	// R83-политика (2026-10-01): n_predict больше НЕ участвует в решении о
+	// перезагрузке. Клиент не указал окно → NoOp, даже если промпт по оценке
+	// не влезает: перезагрузка «по оценке» и была принудительным элементом.
 	meta := &RequestMeta{
 		EstimatedPromptTokens: 8000,
 		RequestedNPredict:     0, // default 2048
@@ -393,12 +405,9 @@ func TestDecidePreflight_DefaultNPredictWhenZero(t *testing.T) {
 	}
 	cfg := DefaultNCtxReloadConfig()
 	res := DecidePreflight(meta, state, cfg)
-	if res.Decision != PreflightReload {
-		t.Errorf("expected PreflightReload, got %v", res.Decision)
-	}
-	// required = 8000 + 2048 (default) + 1 + 800 (slack) = 10849 → 16384
-	if res.TargetNCtx < 10849 {
-		t.Errorf("expected target >= 10849, got %d", res.TargetNCtx)
+	if res.Decision != PreflightNoOp {
+		t.Errorf("клиент не указал окно — ожидался NoOp, получено %v (target=%d)",
+			res.Decision, res.TargetNCtx)
 	}
 }
 
@@ -475,6 +484,7 @@ func TestRunPreflight_Reload_Success(t *testing.T) {
 	mock := &mockReloadClient{respCode: 200}
 	meta := &RequestMeta{
 		ModelName:             "gemma-4",
+		RequestedNCtxOverride: 50000, // R83-политика: рост окна инициирует клиент
 		EstimatedPromptTokens: 50000,
 		RequestedNPredict:     512,
 		HasTools:              true,
@@ -505,27 +515,31 @@ func TestRunPreflight_Reload_Success(t *testing.T) {
 func TestRunPreflight_Reject_VRAMExceeded(t *testing.T) {
 	coord := NewNCtxReloadCoordinator(DefaultNCtxReloadConfig())
 	mock := &mockReloadClient{respCode: 200}
+	// R83-политика (2026-10-01): отказ — когда запрошенное клиентом окно выше
+	// физического потолка бэкенда.
 	meta := &RequestMeta{
 		ModelName:             "gemma-4",
+		RequestedNCtxOverride: 100000,
 		EstimatedPromptTokens: 100000,
 		RequestedNPredict:     2048,
 	}
 	state := &NCtxBackendState{
-		BackendID:       "b1",
-		CurrentNCtx:     8192,
-		MaxVRAMNCtx:     32768,
-		ModelMaxContext: 262144,
+		BackendID:          "b1",
+		CurrentNCtx:        8192,
+		MaxVRAMNCtx:        32768,
+		ModelMaxContext:    65536,
+		PhysicalMaxContext: 65536, // 100000 на клиента не влезает
 	}
 	res, err := coord.RunPreflight(context.Background(), "b1", "http://backend",
 		meta, state, mock)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if res.Decision != PreflightReload {
-		t.Errorf("expected PreflightReload (partial offload), got %v", res.Decision)
+	if res.Decision != PreflightReject {
+		t.Errorf("expected PreflightReject (окно клиента выше потолка бэкенда), got %v", res.Decision)
 	}
-	if mock.calls.Load() != 1 {
-		t.Errorf("expected 1 reload call for partial offload, got %d", mock.calls.Load())
+	if mock.calls.Load() != 0 {
+		t.Errorf("reload не должен вызываться при отказе, got %d calls", mock.calls.Load())
 	}
 }
 
@@ -536,6 +550,7 @@ func TestRunPreflight_KillSwitch(t *testing.T) {
 	mock := &mockReloadClient{respCode: 200}
 	meta := &RequestMeta{
 		ModelName:             "gemma-4",
+		RequestedNCtxOverride: 50000, // R83-политика: решение о росте — за клиентом
 		EstimatedPromptTokens: 50000,
 		RequestedNPredict:     512,
 	}
@@ -588,10 +603,12 @@ func TestAutoReloadAllowToolsEnabled_LocalOff(t *testing.T) {
 // ============================================================
 
 func TestPreflight_RealClineScenario(t *testing.T) {
-	// Cline scenario: prompt_tokens=55111 + n_predict=512 + 1 = 55624 > n_ctx=32768.
-	// current=32768, max_vram=32719. VRAM НЕ позволяет расширить → reject.
+	// Cline scenario: клиент просит окно 55111 на клиента, загружено 32768.
+	// R83-политика (2026-10-01): перезагружаем под окно КЛИЕНТА; оценка промпта
+	// (и любой «запас») в таргет больше не попадают.
 	meta := &RequestMeta{
 		ModelName:             "gemma-4-E4B-it-Q4_K_M",
+		RequestedNCtxOverride: 55111,
 		EstimatedPromptTokens: 55111,
 		RequestedNPredict:     512,
 		HasTools:              true,
@@ -608,11 +625,8 @@ func TestPreflight_RealClineScenario(t *testing.T) {
 		t.Fatalf("expected PreflightReload (partial offload), got %v (target=%d, reason: %s)",
 			res.Decision, res.TargetNCtx, res.RejectBody)
 	}
-	// required = 55111 + 512 + 1 + 5511 (slack) = 61135
-	// safeMax = 32719 * 0.85 = 27811
-	// 61135 > 27811 → trigger reload (не reject!).
-	if res.TargetNCtx < 61135 {
-		t.Errorf("expected target >= 61135, got %d", res.TargetNCtx)
+	if res.TargetNCtx != 55111 {
+		t.Errorf("expected target = 55111 (окно клиента), got %d", res.TargetNCtx)
 	}
 }
 
@@ -620,6 +634,7 @@ func TestPreflight_RealClineScenario_VRAMIncreased(t *testing.T) {
 	// Тот же сценарий, но пользователь поднял VRAM (например, 80GB A100).
 	meta := &RequestMeta{
 		ModelName:             "gemma-4-E4B-it-Q4_K_M",
+		RequestedNCtxOverride: 55111,
 		EstimatedPromptTokens: 55111,
 		RequestedNPredict:     512,
 	}
@@ -634,8 +649,7 @@ func TestPreflight_RealClineScenario_VRAMIncreased(t *testing.T) {
 	if res.Decision != PreflightReload {
 		t.Fatalf("expected Reload, got %v", res.Decision)
 	}
-	// required ≈ 61135 → target должен покрывать.
-	if res.TargetNCtx < 61135 {
-		t.Errorf("expected target >= 61135, got %d", res.TargetNCtx)
+	if res.TargetNCtx != 55111 {
+		t.Errorf("expected target = 55111 (окно клиента), got %d", res.TargetNCtx)
 	}
 }

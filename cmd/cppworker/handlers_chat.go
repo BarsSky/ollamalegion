@@ -241,7 +241,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		"request_id", requestID, "model", req.Model, "user_id", userID)
 
 	// ??????? ???????? ??????
-	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
+	// R83-политика (2026-10-01): окно загрузки = num_ctx запроса (если клиент
+	// его указал). Раньше lazy-load брал окно из env/профиля, и клиент получал
+	// модель с чужим окном, после чего шли «перезагрузки под клиента».
+	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.Options.NumCtx)
 	if err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)

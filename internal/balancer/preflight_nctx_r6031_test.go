@@ -91,11 +91,11 @@ func TestPreflight_R6031_UpgradeStillWorks(t *testing.T) {
 	}
 	res := DecidePreflight(meta, state, cfg)
 	if res.Decision == PreflightNoOp {
-		t.Errorf("loaded(2048) < required(8501) — should reload, got NoOp")
+		t.Errorf("loaded(2048) < requested(16384) — should reload, got NoOp")
 	}
-	if res.TargetNCtx < 8192 {
-		t.Errorf("TargetNCtx=%d, expected >= 8192 (roundUpPow2(8501)≈16384, but no-downward means >= loaded * 2)",
-			res.TargetNCtx)
+	// R83-политика: таргет — окно КЛИЕНТА, а не раздутая оценка промпта.
+	if res.TargetNCtx != 16384 {
+		t.Errorf("TargetNCtx=%d, ожидалось 16384 (окно клиента)", res.TargetNCtx)
 	}
 }
 
@@ -118,8 +118,9 @@ func TestPreflight_R6031_NoExplicitClientOverride(t *testing.T) {
 		AutoReloadMaxNCtx: 131072,
 	}
 	res := DecidePreflight(meta, state, cfg)
-	if res.Decision == PreflightNoOp {
-		t.Errorf("required(8501) > loaded(2048) — should reload, got NoOp")
+	if res.Decision != PreflightNoOp {
+		t.Errorf("R83-политика (2026-10-01): клиент не указал окно — ожидался NoOp "+
+			"(без принудительной перезагрузки по оценке промпта), получено %v", res.Decision)
 	}
 }
 
@@ -142,9 +143,12 @@ func TestPreflight_R6031_ForwardStickiness(t *testing.T) {
 		AutoReloadMaxNCtx: 131072,
 	}
 	res := DecidePreflight(meta, state, cfg)
-	if res.Decision != PreflightNoOp {
-		t.Errorf("loaded(2048) >= required(521) — should be NoOp (stickiness), got Decision=%d TargetNCtx=%d",
-			res.Decision, res.TargetNCtx)
+	if res.Decision != PreflightReload {
+		t.Fatalf("R83-политика (2026-10-01): клиент явно просит 4096 при загруженных 2048 — "+
+			"ожидался Reload, получено %v", res.Decision)
+	}
+	if res.TargetNCtx != 4096 {
+		t.Errorf("TargetNCtx = %d, ожидалось 4096 (окно клиента)", res.TargetNCtx)
 	}
 }
 
@@ -168,9 +172,12 @@ func TestPreflight_R6031_ClientRequestExceedsLoaded(t *testing.T) {
 		AutoReloadMaxNCtx: 131072,
 	}
 	res := DecidePreflight(meta, state, cfg)
-	if res.Decision != PreflightNoOp {
-		t.Errorf("loaded(2048) >= required(511) — should be NoOp (stickiness), got Decision=%d TargetNCtx=%d",
-			res.Decision, res.TargetNCtx)
+	if res.Decision != PreflightReload {
+		t.Fatalf("R83-политика (2026-10-01): клиент явно просит 8192 при загруженных 2048 — "+
+			"ожидался Reload, получено %v", res.Decision)
+	}
+	if res.TargetNCtx != 8192 {
+		t.Errorf("TargetNCtx = %d, ожидалось 8192 (окно клиента)", res.TargetNCtx)
 	}
 }
 

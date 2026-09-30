@@ -357,7 +357,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	logger.Get().Debugw("handleV1ChatCompletions: cancel tracking enabled",
 		"request_id", requestID, "model", req.Model, "user_id", userID)
 
-	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
+	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.NumCtx)
 	if err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
@@ -1432,7 +1432,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	logger.Get().Debugw("handleV1Completions: cancel tracking enabled",
 		"request_id", requestID, "model", req.Model, "user_id", userID)
 
-	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
+	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.NumCtx)
 	if err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)
@@ -1441,6 +1441,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
 		return
 	}
+	// R62 (2026-09-14): use actualModel для downstream calls.
 	modelName := actualModel
 
 	params := bridge.DefaultGenerationParams()

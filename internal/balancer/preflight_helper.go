@@ -272,6 +272,13 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 					state.CurrentKvCacheType = m.KvCacheType
 					state.CurrentFlashAttnType = m.FlashAttnType
 					state.CurrentUseMmap = m.UseMmap
+					// R83-политика (2026-10-01): режим reasoning загруженной
+					// модели. nil = cppworker не сообщил — тогда расхождение
+					// с требованием клиента (think) не объявляем.
+					if m.ReasoningEnabled != nil {
+						v := *m.ReasoningEnabled
+						state.CurrentReasoningEnabled = &v
+					}
 					// Round 37: per-model feasible/GGUF (приоритетнее top-level)
 					if m.FeasibleMaxContext > 0 {
 						state.MaxFeasibleContext = m.FeasibleMaxContext

@@ -243,7 +243,8 @@ func runGenerateCore(w http.ResponseWriter, r *http.Request, req generateRequest
 		return bridge.GenerationParams{}, "", false
 	}
 
-	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
+	// R83-политика (2026-10-01): окно загрузки = num_ctx запроса (если задан).
+	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.Options.NumCtx)
 	if err != nil {
 		if isModelLoadingError(err) {
 			writeLoadingResponse(w, req.Model, err)

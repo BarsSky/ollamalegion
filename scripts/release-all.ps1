@@ -50,6 +50,17 @@
 .PARAMETER NoAlias
   Не вешать «последний» тег-алиас.
 
+.PARAMETER ComposeFile
+  Какой compose-файл использовать для раскатки (по умолчанию — рабочий стенд:
+  docker-compose.stack.yml). Именно он управляет ТЕКУЩИМ стендом (`ol-stack-*`);
+  docker-compose.cppworker-bundled-with-agent.yml — отдельный проект
+  (`ol-bundled-*`), который делит те же порты и падает с
+  «Bind for 0.0.0.0:18080 failed: port is already allocated».
+
+.PARAMETER ComposeProfile
+  Профиль compose для раскатки (по умолчанию full: loadbalancer + webui +
+  cppworker-gpu + agent).
+
 .EXAMPLE
   pwsh -File scripts/release-all.ps1 -Tag r83-submodule-v1
   pwsh -File scripts/release-all.ps1 -Tag r83 -Services webui,balancer
@@ -61,7 +72,13 @@ param(
     [int]$CudaArch = 86,
     [switch]$SkipBuild,
     [switch]$NoDeploy,
-    [switch]$NoAlias
+    [switch]$NoAlias,
+    # R83-политика (2026-10-01): раскатка — ОДНИМ рабочим способом, тем же
+    # compose, которым живёт стенд. Раньше по умолчанию брался
+    # docker-compose.cppworker-bundled-with-agent.yml (проект ol-bundled-*),
+    # который делит порты с рабочим стендом ol-stack-* и падал на 18080.
+    [string]$ComposeFile = "docker-compose.stack.yml",
+    [string]$ComposeProfile = "full"
 )
 
 $ErrorActionPreference = "Continue"
@@ -84,9 +101,11 @@ if ($Tag -notmatch '^[A-Za-z0-9._-]+$') {
     throw "Недопустимый тег '$Tag': разрешены только буквы, цифры, точка, подчёркивание и дефис"
 }
 
-$composeFile = "docker-compose.cppworker-bundled-with-agent.yml"
+# R83-политика (2026-10-01): файл compose и профиль приходят из параметров.
+# По умолчанию — рабочий стенд (docker-compose.stack.yml --profile full), потому
+# что «единый рабочий метод» = тот же compose, которым стенд живёт.
 $envDir = Join-Path $repoRoot "deployments"
-$composePath = Join-Path $envDir $composeFile
+$composePath = Join-Path $envDir $ComposeFile
 $envPath = Join-Path $envDir ".env"
 $envContainerPath = Join-Path $envDir ".env.bundled-with-agent"
 $manifestPath = Join-Path $envDir "release-manifest.json"
@@ -195,8 +214,8 @@ if (-not $NoDeploy) {
     Push-Location $envDir
     try {
         Write-Host ""
-        Write-Host "docker compose up -d (пересоздание изменённых сервисов) ..." -ForegroundColor Cyan
-        docker compose -f $composeFile up -d
+        Write-Host "docker compose -f $ComposeFile --profile $ComposeProfile up -d (пересоздание изменённых сервисов) ..." -ForegroundColor Cyan
+        docker compose -f $ComposeFile --profile $ComposeProfile up -d
         if ($LASTEXITCODE -ne 0) { throw "docker compose up failed (exit $LASTEXITCODE)" }
     } finally {
         Pop-Location
@@ -213,7 +232,8 @@ $manifest = [ordered]@{
     builtAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     gitCommit = $gitCommit
     cudaArch = $CudaArch
-    composeFile = $composeFile
+    composeFile = $ComposeFile
+    composeProfile = $ComposeProfile
     images = $results
 }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath
@@ -228,4 +248,4 @@ $results | Format-Table service, variable, image, imageId -AutoSize
 Write-Host "Проверка согласованности compose и .env:"
 Write-Host "  pwsh -File scripts/check-image-tags.ps1" -ForegroundColor DarkGray
 Write-Host "Откат: верните нужные теги в deployments/.env и выполните"
-Write-Host "  docker compose -f deployments/$composeFile up -d" -ForegroundColor DarkGray
+Write-Host "  docker compose -f deployments/$ComposeFile --profile $ComposeProfile up -d" -ForegroundColor DarkGray

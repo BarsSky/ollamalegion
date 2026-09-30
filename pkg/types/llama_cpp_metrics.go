@@ -112,6 +112,15 @@ type LlamaCppModel struct {
 	// Если модель не загружена, cppworker отдаёт vram_known=false — тогда preflight
 	// не делает выводов о «веса не влезают» (см. NCtxBackendState.VRAMKnown).
 	VramKnown bool `json:"vramKnown,omitempty"`
+	// ReasoningEnabled — R83-политика (2026-10-01): режим reasoning ЗАГРУЖЕННОЙ
+	// модели (`reasoning_enabled` в /api/models cppworker).
+	//
+	// nil = cppworker не сообщил (модель не загружена или старая версия) —
+	// сравнивать требование клиента (think=true/false) не с чем, и балансер
+	// молчит. false — это ЗНАЧЕНИЕ: модель загружена с выключенным reasoning,
+	// и запрос с think=true обязан получить внятную ошибку, а не тихую подмену
+	// поведения.
+	ReasoningEnabled *bool `json:"reasoningEnabled,omitempty"`
 	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
 	// Заполняются только пока State == "loading" / "error". После успешной
 	// загрузки поля обнуляются (omitempty).

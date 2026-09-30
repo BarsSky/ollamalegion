@@ -71,6 +71,17 @@ type RequestMeta struct {
 	RequestedKvCacheType   string
 	RequestedFlashAttnType int   // -1/0/1, 0 = не задано
 	RequestedUseMmap       *bool // nil = не задано
+	// R83-политика (2026-10-01): требование клиента по «размышлению».
+	//
+	// nil  = клиент не упоминал параметр (мы ничего не требуем);
+	// true = клиент требует ВКЛЮЧЁННЫЙ reasoning (`think: true`/`"high"`);
+	// false = клиент требует ВЫКЛЮЧЕННЫЙ (`think: false`).
+	//
+	// Зачем. Раньше флаговый mismatch молча игнорировался: клиент просил
+	// «думать», модель была загружена без reasoning, и ответ приходил другой
+	// по смыслу — без объяснения. Теперь это явная ошибка с перечислением
+	// расхождений (см. semanticParamDiffs).
+	RequestedThink *bool
 }
 
 // EstimatePromptTokens — оценка числа токенов в prompt.
@@ -108,6 +119,8 @@ type ollamaChatRequestRaw struct {
 		FlashAttn   *int   `json:"flash_attn"`    // -1=auto, 0=off, 1=on
 		UseMmap     *bool  `json:"use_mmap"`      // Round 34: profile mismatch
 	} `json:"options"`
+	// R83-политика (2026-10-01): требование клиента по reasoning.
+	Think json.RawMessage `json:"think"`
 	// R60.55 (2026-09-13): top-level max_tokens (OpenAI-style alias for num_predict).
 	MaxTokens int `json:"max_tokens"`
 	// R69 (2026-09-23): max_output_tokens — ещё один алиас, который шлёт реальный
@@ -149,6 +162,43 @@ type openAIChatRequestRaw struct {
 	// cppworker возвращал 400 "n_ctx too large" → балансер конвертировал
 	// в 413 → клиент получал 413 sync вместо 503+Retry-After.
 	NumCtx int `json:"num_ctx"`
+	// R83-политика (2026-10-01): требование клиента по reasoning (нестандартное
+	// расширение, но его шлют и Ollama-клиенты, и часть OpenAI-совместимых).
+	Think json.RawMessage `json:"think"`
+}
+
+// parseThinkRequirement — требование клиента по reasoning из `think`.
+//
+// Возвращает nil, если клиент параметр НЕ упоминал (тогда мы ничего не
+// требуем и не сравниваем). Поддерживаются формы, которые реально шлют
+// клиенты: bool (`true`/`false`), строка-уровень (`"high"`, `"medium"`,
+// `"low"`, `"none"`, `"off"`), числа 1/0.
+func parseThinkRequirement(raw json.RawMessage) *bool {
+	if len(raw) == 0 {
+		return nil
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return &b
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "true", "on", "yes", "high", "medium", "low", "minimal":
+			v := true
+			return &v
+		case "false", "off", "no", "none", "disabled":
+			v := false
+			return &v
+		}
+		return nil
+	}
+	var n float64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		v := n != 0
+		return &v
+	}
+	return nil
 }
 
 // ExtractRequestMeta пытается распарсить body как Ollama / OpenAI chat
@@ -188,6 +238,7 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 			meta.RequestedFlashAttnType = *req.Options.FlashAttn
 		}
 		meta.RequestedUseMmap = req.Options.UseMmap
+		meta.RequestedThink = parseThinkRequirement(req.Think)
 		// Конкатенируем все messages content.
 		var sb strings.Builder
 		for _, m := range req.Messages {
@@ -233,6 +284,7 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 			sb.WriteString("\n")
 		}
 		meta.EstimatedPromptTokens = EstimatePromptTokens(sb.String())
+		meta.RequestedThink = parseThinkRequirement(req.Think)
 	}
 
 	if meta.ModelName == "" && meta.EstimatedPromptTokens == 0 {
@@ -360,6 +412,12 @@ type NCtxBackendState struct {
 	// Нужно, чтобы пересчитать требование «на клиента» в суммарный n_ctx для
 	// перезагрузки: total = окно_клиента × слоты.
 	CurrentSlots int
+	// CurrentReasoningEnabled — R83-политика (2026-10-01): режим reasoning
+	// ЗАГРУЖЕННОЙ модели (per-model `reasoning_enabled` из /api/models).
+	//
+	// nil = cppworker не сообщил (модель не загружена или старая версия) —
+	// сравнивать не с чем, расхождение не объявляем.
+	CurrentReasoningEnabled *bool
 }
 
 // reloadTargetForState — R83-fix (2026-09-30): целевое СУММАРНОЕ окно для
@@ -491,372 +549,303 @@ func (c *NCtxReloadCoordinator) growthWorthReload(
 	return true, ""
 }
 
-// DecidePreflight решает, нужен ли reload ДО отправки запроса.
+// DecidePreflight решает, что делать с запросом ДО отправки в cppworker.
 //
-// Логика:
-//  1. required := estimatedTokens + nPredict + 1 + reserveSlack (10%)
-//  2. Если required <= currentNCtx → NoOp
-//  3. Если required > modelMaxContext (если известен) → Reject
-//  4. Если required > MaxVRAMNCtx*safety → trigger Reload (partial offload)
-//  5. Иначе → Reload (target = roundUpPow2(required), capped по modelMax)
+// R83-политика (2026-10-01): решение принимается ТОЛЬКО по тому, что клиент
+// ЯВНО указал, — а не по нашей оценке длины промпта.
 //
-// Round 34 follow-up: добавлен шаг 1.5 — если клиент ЯВНО указал num_ctx
-// в body (RequestedNCtxOverride > 0) и это больше loaded n_ctx → trigger
-// reload с target = RequestedNCtxOverride, НЕЗАВИСИМО от фактического
-// размера prompt. Раньше (Round 14) считалось только по estimated
-// prompt + n_predict, что для маленьких prompt'ов возвращало NoOp даже
-// когда клиент явно запрашивал большее окно (например Cline с
-// num_ctx=65536 на пустой prompt "hi") → запрос проксировался в
-// cppworker → cppworker возвращал 400 "n_ctx too large" → 413 sync
-// вместо 503+Retry-After.
+// Почему так. Раньше окно «росло» по оценке промпта (tokencount — консервативная
+// верхняя граница, завышающая в 2–4 раза): обычный запрос Cline с 16k-промптом
+// давал оценку 44 230, окно слота 32 768 объявлялось малым, и модель уходила в
+// перезагрузку на 2–3 минуты — иногда с тем же самым окном на выходе. Загрузка
+// «по оценке» — это и есть принудительный элемент, который убирается: если
+// клиент не сказал, какое окно ему нужно, мы не гадаем.
 //
-// ВАЖНО (2026-06-24): при required > MaxVRAMNCtx*safety мы БОЛЬШЕ НЕ reject,
-// а trigger reload. Причина: max_vram_n_ctx рассчитывается C-bridge для
-// ТЕКУЩИХ gpu_layers. Если все слои на GPU (gpu_layers=-1) и модель большая,
-// свободной VRAM почти нет → max_vram_n_ctx маленький. Но cppworker может
-// сделать partial offload (уменьшить gpu_layers, вытеснить веса в RAM),
-// после чего max_vram_n_ctx увеличится. Reject только если:
-//   - required > modelMaxContext (модель физически не поддерживает)
-//   - required > AutoReloadMaxNCtx (operator cap)
+// Порядок решений:
+//
+//  1. Расхождение СЕМАНТИЧЕСКИХ параметров (reasoning/thinking) → отказ 409 с
+//     перечислением отличий. Тихая подмена поведения недопустима: клиент просит
+//     «думать», а модель загружена без reasoning — это другой ответ.
+//  2. Клиент не указал num_ctx → NoOp. Никаких перезагрузок «на всякий случай»;
+//     если история действительно не влезает, cppworker вернёт свою ошибку, а
+//     балансер передаст её объяснение клиенту.
+//  3. Модель ещё не загружена → NoOp: cppworker загрузит её С ОКНОМ КЛИЕНТА
+//     (ensureModelLoaded принимает num_ctx запроса), а не с дефолтом профиля.
+//  4. Загруженное окно на клиента >= запрошенного → NoOp. Загружено больше —
+//     перезагружать под клиента не нужно и уведомлять не о чем.
+//  5. Загруженное окно меньше → перезагрузка модели под окно клиента (остальные
+//     параметры совпадают, поэтому это безопасно). Если запрошенное окно не
+//     влезает в физический потолок (GGUF/операторский cap) — отказ с понятным
+//     текстом: «столько не поместится, вот почему и что делать».
 func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadConfig) *PreflightResult {
 	if meta == nil || state == nil {
 		return &PreflightResult{Decision: PreflightNoOp}
 	}
-	// Round 35c+ (2026-08-13): diagnostic logging для отладки "num_ctx downgrade
-	// 32768 → 8192" на A10. Логируем на Info уровне чтобы видеть что реально
-	// приходит от клиента в OpenAI /v1/chat/completions path (Cline использует
-	// этот path). Показывает:
-	//   - body_n_ctx: что прислал клиент (RequestedNCtxOverride)
-	//   - loaded_n_ctx: что в данный момент загружено в cppworker
-	//   - model_max_n_ctx: что профиль говорит (modelMaxContext)
-	//   - estimated_prompt_tokens: расчётная длина prompt
-	//   - n_predict: max tokens to generate (default 2048)
-	//   - required: estimated + n_predict + reserve (что реально нужно)
 	logger.Get().Infow("preflight: DecidePreflight inputs",
 		"backend_id", state.BackendID,
 		"model", meta.ModelName,
 		"body_n_ctx", meta.RequestedNCtxOverride,
 		"loaded_n_ctx", state.CurrentNCtx,
+		"context_per_seq", state.CurrentContextPerSeq,
+		"slots", state.effectiveSlots(),
 		"model_max_n_ctx", state.ModelMaxContext,
 		"max_vram_n_ctx", state.MaxVRAMNCtx,
 		"estimated_prompt_tokens", meta.EstimatedPromptTokens,
 		"n_predict", meta.RequestedNPredict,
-		"has_tools", meta.HasTools)
-	// Резерв под округление токенизатора +1 токен под EOS. Cline может дослать
-	// токены в function-call парсинге, поэтому запас нужен.
-	//
-	// R83-fix (2026-09-30): запас ОГРАНИЧЕН сверху. Было ровно 10% от промпта —
-	// на длинном продолжении сессии (120k токенов) это 12k «виртуальных» токенов,
-	// и required раздувался выше потолка/загруженного окна, хотя сам контекст
-	// помещается. Клиент получал 413 «prompt + n_predict exceeds n_ctx», хотя
-	// история влезала. Теперь запас = min(10%, 2048) — этого хватает на
-	// округление и EOS, и он не растёт линейно с длиной диалога.
-	slack := meta.EstimatedPromptTokens / 10
-	if slack > maxReserveSlackTokens {
-		slack = maxReserveSlackTokens
-	}
-	reserveSlack := slack
-	nPredict := meta.RequestedNPredict
-	if nPredict <= 0 {
-		nPredict = 2048 // default из bridge
-	}
-	required := meta.EstimatedPromptTokens + nPredict + 1 + reserveSlack
+		"has_tools", meta.HasTools,
+		"requested_think", reqStr(meta.RequestedThink),
+		"loaded_reasoning", reqStr(state.CurrentReasoningEnabled))
 
-	// R60.31 (2026-09-10): STICKINESS FIX — убираем reload loop.
-	//
-	// Round 34 follow-up: если клиент ЯВНО запросил больше n_ctx чем
-	// загружено → нужен reload, НЕЗАВИСИМО от фактического размера prompt.
-	// Cline/OpenWebUI шлют num_ctx=65536 даже для маленьких prompts.
-	//
-	// R60.31 fix: добавляем check "loaded покрывает required" ДО
-	// reload. Если loaded=8192 и client num_ctx=2048, но required=500
-	// (маленький prompt), loaded покрывает — NoOp. Без этого fix
-	// OpenWebUI шлёт num_ctx=8192, preflight trigger reload на 8192.
-	// Другой запрос шлёт num_ctx=2048 → reload вниз. Loop.
-	//
-	// Ollama и LM Studio решают это sticky n_ctx: loaded == requested
-	// без auto-reload. У нас auto-reload РАЗРЕШЁН (фича), но с защитой
-	// от loop: trigger reload ТОЛЬКО если loaded < required (НЕ
-	// только потому что client указал больший num_ctx).
-	//
-	// Сценарии:
-	//   loaded=8192, client num_ctx=2048, required=500 → NoOp
-	//   (stickiness, loaded покрывает)
-	//   loaded=2048, client num_ctx=8192, required=500 → NoOp
-	//   (loaded покрывает required, НЕ делаем upgrade-only)
-	//   loaded=2048, required=5000 → Reload (loaded не покрывает)
-	if meta.RequestedNCtxOverride > 0 && state.CurrentNCtx > 0 &&
-		meta.RequestedNCtxOverride > state.CurrentNCtx &&
-		required > state.CurrentNCtx {
-		// R60.31: дополнительная проверка — loaded покрывает required?
-		// Если да, NoOp (stickiness), даже если client указал больше.
-		target := meta.RequestedNCtxOverride
-		// R68 (2026-09-23): сравниваем с ФИЗИЧЕСКИМ потолком, а не с profile
-		// hint. Раньше здесь стоял ModelMaxContext, который в Tier 1 равнялся
-		// contextLength профиля (8192 для gemma) — и запрос Cline с num_ctx=65536
-		// отбивался 413 «exceeds model max context=8192», хотя модель держит
-		// 131072 и VRAM позволяет 66K.
-		if ceil := state.physicalCeiling(); ceil > 0 && target > ceil {
-			// Запрошено больше, чем физически возможно — reject с честными
-			// цифрами (профиль/hint, GGUF, operator cap, VRAM).
-			return makePreflightReject(state, required, fmt.Sprintf(
-				"requested n_ctx=%d exceeds backend context ceiling=%d (profile hint=%d, gguf max=%d, auto_reload_max_n_ctx=%d)",
-				target, ceil, state.ProfileHintNCtx, state.GGUFMaxContext, state.AutoReloadMaxNCtx))
-		}
-		if cfg.AutoReloadMaxNCtx > 0 && target > cfg.AutoReloadMaxNCtx {
-			return makePreflightReject(state, required, fmt.Sprintf(
-				"requested n_ctx=%d exceeds configured auto_reload_max_n_ctx=%d",
-				target, cfg.AutoReloadMaxNCtx))
-		}
-		logger.Get().Infow("preflight: client requested n_ctx > loaded AND required > loaded, triggering reload",
+	// (1) Семантические параметры: клиент требует то, чего у загруженной модели
+	// нет. Перезагрузкой это НЕ лечим (пользователь просил именно ошибку), и
+	// молчать нельзя — ответ был бы другим по смыслу.
+	if diffs := semanticParamDiffs(meta, state); len(diffs) > 0 {
+		logger.Get().Warnw("preflight: отказ — параметры загруженной модели не совпадают с требованием запроса",
 			"backend_id", state.BackendID,
-			"requested_n_ctx", target, "current_n_ctx", state.CurrentNCtx,
-			"estimated_tokens", meta.EstimatedPromptTokens, "n_predict", nPredict,
-			"required_n_ctx", required)
-		// Сразу возвращаем Reload (RunPreflight конвертирует в AsyncReload если
-		// включён PreflightAsyncReload). Возвращать PreflightAsyncReload здесь
-		// НЕЛЬЗЯ — switch в RunPreflight его не обрабатывает и фолбэчит на NoOp.
-		return &PreflightResult{
-			Decision:   PreflightReload,
-			TargetNCtx: roundUpPow2(target),
-		}
+			"model", meta.ModelName,
+			"differences", len(diffs),
+			"detail", diffs[0].Explain)
+		return makeParamMismatchReject(state, meta, diffs)
 	}
 
-	// Уже помещается — NoOp.
-	//
-	// R83 §9.2 (2026-09-26): перед NoOp проверяем случай «VRAM известна, но веса
-	// не влезают» — НО только если клиент ПРОСИТ больше, чем уже загружено.
-	// Если запрос помещается в текущий n_ctx, отказывать нельзя: сессия уже
-	// работает (модель загружена через partial offload, cppworker это умеет), и
-	// ломать её отказом было бы регрессом. Отказ адресован ровно той ситуации,
-	// ради которой раньше уходили в reload: «нужно больше контекста», а веса в
-	// VRAM не помещаются ни при каком gpu_layers, поэтому reload не поможет.
-	//
-	// R83-fix (2026-09-30): сравниваем с окном СЛОТА, а не с суммарным.
-	// Живое воспроизведение (стенд): gemma-4 загружена ctx=65536 при
-	// max_slots=2 → клиенту доступно 32768, а история занимала ~101k токенов.
-	// Проверка по суммарному окну давала «required <= current» → NoOp и обрыв
-	// дальше, либо уходила в ветку VRAM-отказа с текстом «reload cannot raise
-	// this ceiling», хотя перезагрузка с окном 101k × 2 слота решает задачу
-	// (KV уезжает в RAM — модель и так работает через partial offload).
-	if perSeq := state.effectivePerSeqNCtx(); perSeq > 0 && required <= perSeq {
+	reqWindow := meta.RequestedNCtxOverride
+
+	// (2) Клиент не сообщил окно — не гадаем и не перезагружаем.
+	if reqWindow <= 0 {
+		logger.Get().Infow("preflight: клиент не указал num_ctx — модель не перезагружаем",
+			"backend_id", state.BackendID,
+			"model", meta.ModelName,
+			"loaded_n_ctx", state.CurrentNCtx,
+			"estimated_prompt_tokens", meta.EstimatedPromptTokens)
 		return &PreflightResult{Decision: PreflightNoOp}
 	}
-	if state.CurrentNCtx > 0 && required <= state.CurrentNCtx && state.CurrentContextPerSeq <= 0 {
-		// Окно слота неизвестно — прежнее поведение (сравнение с суммарным).
+
+	// (3) Модель не загружена — грузим её окном клиента. Решение о загрузке
+	// принимает cppworker (ensureModelLoaded получает num_ctx запроса), поэтому
+	// здесь именно NoOp: «проксируй запрос как есть».
+	if state.effectivePerSeqNCtx() <= 0 && state.CurrentNCtx <= 0 {
+		logger.Get().Infow("preflight: модель не загружена — грузим окном клиента",
+			"backend_id", state.BackendID,
+			"model", meta.ModelName,
+			"requested_n_ctx", reqWindow)
 		return &PreflightResult{Decision: PreflightNoOp}
 	}
-	if state.VRAMKnown && state.MaxVRAMNCtx == 0 {
-		// Веса не влезают в VRAM целиком даже без KV-cache: exact-fit потолок
-		// равен нулю.
-		//
-		// R83-fix (2026-09-30): это НЕ повод отказывать, если физический потолок
-		// (GGUF/operator cap) покрывает требование. Раньше здесь стоял безусловный
-		// reject «reload cannot raise this ceiling» — и запрос с длинной историей
-		// получал 413 за 0 c, хотя модель уже работает через partial offload, а
-		// перезагрузка с бОльшим окном (KV в RAM) задачу решает. Отказ оставляем
-		// только когда требование действительно выше физического потолка.
-		ceil := state.physicalCeiling()
-		if ceil <= 0 || required > ceil {
-			logger.Get().Warnw("preflight: VRAM известна, но max_vram_n_ctx=0 — веса не влезают",
-				"backend_id", state.BackendID,
-				"required_n_ctx", required,
-				"current_n_ctx", state.CurrentNCtx,
-				"context_per_seq", state.CurrentContextPerSeq,
-				"model_max_context", state.ModelMaxContext,
-				"gguf_max_context", state.GGUFMaxContext,
-				"physical_ceiling", ceil,
-				"note", "требование выше физического потолка модели — reload не поможет")
-			return makePreflightRejectWithSuggestion(state, required, fmt.Sprintf(
-				"VRAM is known (%d MB available) but this model's weights do not fit: "+
-					"max_vram_n_ctx=0 at any gpu_layers (model_max_context=%d, current_n_ctx=%d, "+
-					"context_per_seq=%d, required=%d, physical_ceiling=%d). "+
-					"Reload cannot raise this ceiling.",
-				state.AvailableVRAMMB, state.ModelMaxContext, state.CurrentNCtx,
-				state.CurrentContextPerSeq, required, ceil),
-				"Reduce the prompt/history size, or use a smaller model or a more aggressive "+
-					"quantization (Q4_K_M instead of Q8_0/F16).")
-		}
-		// Покрывается физическим потолком → растём (KV уйдёт в RAM при
-		// partial offload). Ниже отработает общая логика reload с проверкой
-		// операторского потолка.
-		logger.Get().Infow("preflight: max_vram_n_ctx=0, но требование в пределах физического потолка — растём окно",
+
+	// (4) Загруженное окно на клиента уже не меньше запрошенного → NoOp.
+	perSeq := state.effectivePerSeqNCtx()
+	if perSeq > 0 && reqWindow <= perSeq {
+		logger.Get().Infow("preflight: загруженное окно не меньше запрошенного — reload не нужен",
 			"backend_id", state.BackendID,
-			"required_n_ctx", required, "current_n_ctx", state.CurrentNCtx,
-			"context_per_seq", state.CurrentContextPerSeq,
-			"physical_ceiling", ceil)
-	}
-
-	// Потолок модели/оператора (если известен) — найжестший потолок.
-	//
-	// R68: используем physicalCeiling() (GGUF/operator cap), а не profile hint.
-	//
-	// R83-fix (2026-09-30): при нескольких слотах потолок НА КЛИЕНТА меньше
-	// суммарного — llama.cpp делит окно между слотами (n_ctx_seq = n_ctx / slots).
-	// Раньше здесь сравнивали per-seq требование с СУММАРНЫМ потолком, поэтому
-	// клиент с историей 101k на модели с total-потолком 131072 при 2 слотах
-	// проходил эту проверку, уходил в ветку VRAM-отказа и получал невнятное
-	// «reload cannot raise this ceiling». Теперь отказ (если он неизбежен)
-	// называет ПОТОЛОК НА КЛИЕНТА и способы его поднять.
-	if ceil := state.physicalCeiling(); ceil > 0 {
-		slots := state.effectiveSlots()
-		perClientCeil := ceil
-		if slots > 1 {
-			perClientCeil = ceil / slots
-		}
-		if required > perClientCeil {
-			msg := fmt.Sprintf(
-				"required n_ctx=%d exceeds per-client context ceiling=%d "+
-					"(backend context ceiling=%d, slots=%d, "+
-					"profile hint=%d, gguf max=%d, auto_reload_max_n_ctx=%d)",
-				required, perClientCeil, ceil, slots,
-				state.ProfileHintNCtx, state.GGUFMaxContext, state.AutoReloadMaxNCtx)
-			suggestion := ""
-			if slots > 1 {
-				suggestion = fmt.Sprintf(
-					"При %d параллельных слотах модель делит окно между клиентами: "+
-						"каждому доступно %d токенов из %d. Варианты: уменьшить историю/промпт, "+
-						"поставить parallel=1 (тогда окно целиком одному клиенту), "+
-						"взять модель с бОльшим окном или поднять суммарный потолок "+
-						"(contextLengthMax / LB_NCTX_RELOAD_MAX_N_CTX).",
-					slots, perClientCeil, ceil)
-			}
-			return makePreflightRejectWithSuggestion(state, required, msg, suggestion)
-		}
-	}
-
-	// Потолок VRAM — больше НЕ reject, а trigger reload.
-	// cppworker при reload применит AutoTuneNCtx для partial offload.
-	// Reject только если AutoReloadMaxNCtx (operator cap) превышен.
-	//
-	// R83 §9.2: случай «VRAM известна, но веса не влезают» (MaxVRAMNCtx == 0 при
-	// VRAMKnown) обработан ВЫШЕ, до NoOp-ветки: если он попадает сюда, значит
-	// запрос всё равно требует больше текущего n_ctx и reload бессмыслен.
-	if state.MaxVRAMNCtx > 0 {
-		safety := cfg.effectiveSafetyFactor()
-		safeMax := int(float64(state.MaxVRAMNCtx) * safety)
-		if required > safeMax {
-			if cfg.AutoReloadMaxNCtx > 0 && required > cfg.AutoReloadMaxNCtx {
-				return makePreflightReject(state, required, fmt.Sprintf(
-					"required n_ctx=%d exceeds configured auto_reload_max_n_ctx=%d (max_vram_n_ctx=%d, safety=%.2f). "+
-						"Reduce prompt/tools or save a model profile with bigger context_length",
-					required, cfg.AutoReloadMaxNCtx, state.MaxVRAMNCtx, safety))
-			}
-			// НЕ reject — trigger reload. cppworker сделает partial offload.
-			logger.Get().Infow("preflight: max_vram_n_ctx small for current gpu_layers, triggering reload for partial offload",
-				"backend_id", state.BackendID,
-				"required_n_ctx", required,
-				"max_vram_n_ctx", state.MaxVRAMNCtx,
-				"safe_max", safeMax,
-				"current_n_ctx", state.CurrentNCtx,
-				"note", "cppworker will apply AutoTuneNCtx to reduce gpu_layers and free VRAM for KV-cache")
-			// Пadeем к DecisionReload логике ниже (не return).
-		}
-	}
-
-	// AutoReloadMaxNCtx (operator cap).
-	if cfg.AutoReloadMaxNCtx > 0 && required > cfg.AutoReloadMaxNCtx {
-		return makePreflightReject(state, required, fmt.Sprintf(
-			"required n_ctx=%d exceeds configured auto_reload_max_n_ctx=%d",
-			required, cfg.AutoReloadMaxNCtx))
-	}
-
-	// R83-fix (2026-09-30): окно не покрывает требование → ЯВНО просим рост.
-	//
-	// До этой правки при `max_vram_n_ctx == 0` (веса не влезают в VRAM целиком,
-	// модель работает через partial offload) функция доходила до конца и
-	// возвращала NoOp — то есть «растим» мы разрешили, но рост никто не
-	// запрашивал: запрос уходил в cppworker с прежним окном и падал там
-	// («prompt + n_predict exceeds n_ctx») либо упирался в 413.
-	//
-	// Условие роста: требование больше окна СЛОТА и не превышает проверенные
-	// выше потолки (физический и операторский) — рост возможен, KV уедет в RAM.
-	if perSeq := state.effectivePerSeqNCtx(); perSeq > 0 && required > perSeq {
-		logger.Get().Infow("preflight: требование больше окна слота — запрашиваю рост окна",
-			"backend_id", state.BackendID,
-			"required_n_ctx", required,
+			"model", meta.ModelName,
+			"requested_n_ctx", reqWindow,
 			"context_per_seq", perSeq,
-			"current_n_ctx", state.CurrentNCtx,
-			"slots", state.effectiveSlots(),
-			"max_vram_n_ctx", state.MaxVRAMNCtx)
-		return &PreflightResult{
-			Decision:   PreflightReload,
-			TargetNCtx: roundUpPow2(required),
-		}
+			"loaded_n_ctx", state.CurrentNCtx)
+		return &PreflightResult{Decision: PreflightNoOp}
 	}
-
-	// Compute target n_ctx: required, rounded up до степени 2, capped.
-	// ВАЖНО: при partial offload target может быть БОЛЬШЕ max_vram_n_ctx*safety,
-	// потому что после reload gpu_layers уменьшится и max_vram_n_ctx увеличится.
-	// Поэтому НЕ зажимаем target по max_vram_n_ctx — позволяем cppworker
-	// решить через AutoTuneNCtx, какой n_ctx реально achievable.
-	target := required
-	if cfg.AutoReloadMaxNCtx > 0 && target > cfg.AutoReloadMaxNCtx {
-		target = cfg.AutoReloadMaxNCtx
-	}
-	// Не зажимаем по MaxVRAMNCtx — после partial offload оно изменится.
-	// R68: зажимаем по ФИЗИЧЕСКОМУ потолку (GGUF/operator cap), не по profile hint.
-	if ceil := state.physicalCeiling(); ceil > 0 && target > ceil {
-		target = ceil
-	}
-	rounded := roundUpPow2(target)
-	if rounded < target {
-		rounded = target
-	}
-
-	// Round 53.2 (2026-08-24): Round 34 (2026-08-12) Phase 2 flag-based reload
-	// REMOVED. Решение о reload теперь опирается ТОЛЬКО на n_ctx (контекстное
-	// окно), а НЕ на флаги (kv_cache_type, flash_attn, use_mmap).
-	//
-	// Pre-R53.2 (Round 34 follow-up): если client прислал options.kv_cache_type="q4_0",
-	// а модель загружена с "f16" — balancer выгружал модель и перезагружал
-	// с новыми params, даже если n_ctx уже подходил. Это ИЗБЫТОЧНО:
-	//   - Клиент (Cline/OpenWebUI) часто не указывает эти флаги явно — get
-	//     defaults от backend.
-	//   - Модель с kv_cache=f16 корректно обслуживает запросы с options.kv_cache=q4_0
-	//     (настройка KV-cache применяется к запросу, не к загруженной модели).
-	//   - Reload занимает 5-15 сек и блокирует другие запросы.
-	//   - Параллелизм (n_parallel) и так встроен в backend — клиенту не нужно
-	//     это контролировать.
-	//
-	// User feedback (2026-08-24): "определять в каком состоянии надо перезагружать
-	// модель еще опиралось на наличие флагов, то это избыточно сейчас требуется
-	// оставить решение по перезагрузки модели только по контекстному окну".
-	//
-	// Post-R53.2: n_ctx mismatch (required > currentNCtx) → reload, иначе NoOp.
-	// Клиент может менять флаги в options — backend обрабатывает per-request.
-
-	// R60.46 (2026-09-11): НЕ trigger reload если user не указал n_predict
-	// AND loaded >= requested. Иначе false-positive cascade:
-	//   user sent num_ctx=2048, n_predict не указан → cppworker default 2048
-	//   required(1 + 2048 + 0.1) = 2050 > loaded(2048) → reload 2048→4096
-	//   User ждёт 90s, retry, опять reload, опять ждёт — застрял.
-	//
-	// Skip reload check если:
-	//   1. n_predict не указан (user хочет default behavior)
-	//   2. loaded >= requested (user's num_ctx satisfied, no need to upgrade)
-	if meta != nil && meta.RequestedNPredict <= 0 && state.CurrentNCtx > 0 &&
-		meta.RequestedNCtxOverride > 0 && meta.RequestedNCtxOverride <= state.CurrentNCtx {
+	if perSeq <= 0 && state.CurrentNCtx > 0 && reqWindow <= state.CurrentNCtx {
+		// Окно слота неизвестно (старые метрики) — сравниваем с суммарным.
 		return &PreflightResult{Decision: PreflightNoOp}
 	}
 
-	// Если n_ctx уже fits (required <= currentNCtx) — NoOp, перезагрузка НЕ нужна.
-	if state.CurrentNCtx > 0 && required <= state.CurrentNCtx {
-		return &PreflightResult{Decision: PreflightNoOp}
+	// (5) Нужен рост окна под клиента. Проверяем только физику: поместится ли
+	// запрошенное окно вообще (GGUF-потолок модели и операторский cap). Если нет
+	// — понятный отказ вместо перезагрузки «в никуда».
+	slots := state.effectiveSlots()
+	targetTotal := perClientToTotal(reqWindow, slots)
+	if ceil := state.physicalCeiling(); ceil > 0 && targetTotal > ceil {
+		logger.Get().Warnw("preflight: запрошенное окно больше физического потолка — отказ",
+			"backend_id", state.BackendID,
+			"model", meta.ModelName,
+			"requested_per_client", reqWindow,
+			"requested_total", targetTotal,
+			"slots", slots,
+			"physical_ceiling", ceil)
+		return makeWindowTooBigReject(state, meta, reqWindow, targetTotal, ceil,
+			fmt.Sprintf("модель поддерживает не более %d токенов контекста", ceil))
+	}
+	if cfg.AutoReloadMaxNCtx > 0 && targetTotal > cfg.AutoReloadMaxNCtx {
+		logger.Get().Warnw("preflight: запрошенное окно больше операторского потолка — отказ",
+			"backend_id", state.BackendID,
+			"model", meta.ModelName,
+			"requested_total", targetTotal,
+			"auto_reload_max_n_ctx", cfg.AutoReloadMaxNCtx)
+		return makeWindowTooBigReject(state, meta, reqWindow, targetTotal, cfg.AutoReloadMaxNCtx,
+			fmt.Sprintf("в настройках балансера задан потолок авто-перезагрузки %d токенов (LB_NCTX_RELOAD_MAX_N_CTX)",
+				cfg.AutoReloadMaxNCtx))
 	}
 
+	logger.Get().Infow("preflight: загруженное окно меньше запрошенного — перезагружаем под клиента",
+		"backend_id", state.BackendID,
+		"model", meta.ModelName,
+		"requested_per_client", reqWindow,
+		"requested_total", targetTotal,
+		"context_per_seq", perSeq,
+		"loaded_n_ctx", state.CurrentNCtx,
+		"slots", slots)
+	// TargetNCtx — окно НА КЛИЕНТА: RunPreflight сам пересчитает его в суммарное
+	// (total = окно × слоты), чтобы не умножить дважды.
 	return &PreflightResult{
 		Decision:   PreflightReload,
-		TargetNCtx: rounded,
+		TargetNCtx: reqWindow,
 	}
 }
 
-// preflightDecisionFromCfg — выбирает между Reload и AsyncReload
-// в зависимости от конфигурации.
+// perClientToTotal — пересчёт «окно на клиента» → «суммарное окно модели».
 //
-// Round 34 follow-up: helper для early-return path когда клиент
-// явно запросил num_ctx > loaded (см. RequestedNCtxOverride check
-// в DecidePreflight).
+// llama.cpp при kv_unified=false делит суммарное окно между слотами:
+// n_ctx_seq = PAD(n_ctx / n_seq_max, 256). Значит для N клиентов нужно
+// суммарно ≈ окно × N (с выравниванием вверх до 256).
+func perClientToTotal(perSeq, slots int) int {
+	if perSeq <= 0 {
+		return perSeq
+	}
+	if slots <= 1 {
+		return perSeq
+	}
+	return cppbackend.PadContext(perSeq) * slots
+}
+
+// ParamDiff — расхождение между требованием клиента и загруженной моделью.
+//
+// Поля намеренно человекочитаемые: этот объект уходит КЛИЕНТУ, а не только в
+// лог, поэтому «param X + param Y = error» здесь недопустим.
+type ParamDiff struct {
+	// Parameter — машинное имя ("reasoning").
+	Parameter string `json:"parameter"`
+	// Loaded / Requested — как есть и как требует клиент, словами.
+	Loaded    string `json:"loaded"`
+	Requested string `json:"requested"`
+	// Explain — одна понятная фраза, что именно не совпало.
+	Explain string `json:"explain"`
+}
+
+// semanticParamDiffs — расхождения по параметрам, которые МЕНЯЮТ СМЫСЛ ответа.
+//
+// Сюда попадают только те параметры, из-за которых ответ будет другим, а не
+// просто медленнее: сейчас это reasoning/thinking. Технические параметры
+// (kv_cache_type, flash_attn, use_mmap) сознательно НЕ сравниваются: они влияют
+// на скорость и память, но не на смысл ответа, и отказ из-за них ломал бы
+// работу там, где всё в порядке.
+func semanticParamDiffs(meta *RequestMeta, state *NCtxBackendState) []ParamDiff {
+	if meta == nil || state == nil {
+		return nil
+	}
+	if meta.RequestedThink == nil || state.CurrentReasoningEnabled == nil {
+		return nil
+	}
+	if *meta.RequestedThink == *state.CurrentReasoningEnabled {
+		return nil
+	}
+	want := "включено"
+	have := "выключено"
+	if *state.CurrentReasoningEnabled {
+		have = "включено"
+	}
+	if !*meta.RequestedThink {
+		want = "выключено"
+	}
+	explain := fmt.Sprintf(
+		"Запрос требует %s размышление (reasoning), а модель %s уже загружена с %s.",
+		want, meta.ModelName, have)
+	return []ParamDiff{{
+		Parameter: "reasoning",
+		Loaded:    have,
+		Requested: want,
+		Explain:   explain,
+	}}
+}
+
+// makeParamMismatchReject — HTTP 409 с перечислением расхождений.
+//
+// Текст пишется для человека: что загружено, что просит клиент, что делать.
+// Балансер здесь выступает как прокси и обязан объяснить причину, а не выдать
+// «requested param mismatch» или набор чисел.
+func makeParamMismatchReject(state *NCtxBackendState, meta *RequestMeta, diffs []ParamDiff) *PreflightResult {
+	parts := make([]string, 0, len(diffs))
+	for _, d := range diffs {
+		parts = append(parts, fmt.Sprintf("%s: загружено «%s», запрос требует «%s»", d.Parameter, d.Loaded, d.Requested))
+	}
+	loaded := map[string]interface{}{
+		"context_per_seq":   state.effectivePerSeqNCtx(),
+		"context_size":      state.CurrentNCtx,
+		"slots":             state.effectiveSlots(),
+		"reasoning_enabled": reqStr(state.CurrentReasoningEnabled),
+		"kv_cache_type":     state.CurrentKvCacheType,
+	}
+	requested := map[string]interface{}{
+		"num_ctx": meta.RequestedNCtxOverride,
+		"think":   reqStr(meta.RequestedThink),
+	}
+	body := map[string]interface{}{
+		"error": fmt.Sprintf(
+			"Модель %s загружена с другими параметрами, чем требует запрос: %s. "+
+				"Перезагрузка под этот запрос не выполняется — измените параметр в клиенте "+
+				"или перезагрузите модель с нужными настройками в WebUI.",
+			meta.ModelName, strings.Join(parts, "; ")),
+		"reason":            strings.Join(parts, "; "),
+		"param_differences": diffs,
+		"loaded":            loaded,
+		"requested":         requested,
+		"what_to_do": "Измените параметр в клиенте (например, уберите think=true) — либо " +
+			"перезагрузите модель с этим параметром: WebUI → Настройки → llama.cpp → профиль " +
+			"модели → Enable reasoning → «Применить (reload)».",
+		"backend_id": state.BackendID,
+		"model":      meta.ModelName,
+	}
+	encoded, _ := json.Marshal(body)
+	return &PreflightResult{
+		Decision:     PreflightReject,
+		RejectStatus: http.StatusConflict,
+		RejectBody:   string(encoded),
+	}
+}
+
+// makeWindowTooBigReject — HTTP 413: запрошенное окно физически не поместится.
+//
+// Единственный случай, когда о «маленьком окне» нужно уведомлять (по требованию
+// пользователя): остальные расхождения лечатся перезагрузкой, а это — нет.
+func makeWindowTooBigReject(
+	state *NCtxBackendState, meta *RequestMeta,
+	requestedPerClient, requestedTotal, ceiling int, because string,
+) *PreflightResult {
+	slots := state.effectiveSlots()
+	perClientCeil := ceiling
+	if slots > 1 {
+		perClientCeil = ceiling / slots
+	}
+	msg := fmt.Sprintf(
+		"Запрошенное контекстное окно %d токенов на клиента не поместится: %s. "+
+			"При %d параллельных слотах суммарное окно %d делится между клиентами, "+
+			"поэтому одному клиенту доступно не больше %d токенов.",
+		requestedPerClient, because, slots, ceiling, perClientCeil)
+	body := map[string]interface{}{
+		"error":                 msg,
+		"reason":                fmt.Sprintf("требуется %d (суммарно %d), доступно не более %d на клиента", requestedPerClient, requestedTotal, perClientCeil),
+		"requested_n_ctx":       requestedPerClient,
+		"requested_total_n_ctx": requestedTotal,
+		"max_per_client_n_ctx":  perClientCeil,
+		"backend_ceiling_n_ctx": ceiling,
+		"slots":                 slots,
+		"loaded_n_ctx":          state.CurrentNCtx,
+		"context_per_seq":       state.effectivePerSeqNCtx(),
+		"gguf_max_context":      state.GGUFMaxContext,
+		"auto_reload_max_n_ctx": state.AutoReloadMaxNCtx,
+		"what_to_do": fmt.Sprintf(
+			"Уменьшите окно в клиенте (до %d или меньше), либо поставьте параллельные слоты в 1 "+
+				"(тогда всё окно достанется одному клиенту), либо поднимите потолок "+
+				"(профиль модели → contextLengthMax / LB_NCTX_RELOAD_MAX_N_CTX).",
+			perClientCeil),
+		"backend_id": state.BackendID,
+		"model":      meta.ModelName,
+	}
+	encoded, _ := json.Marshal(body)
+	return &PreflightResult{
+		Decision:     PreflightReject,
+		RejectStatus: http.StatusRequestEntityTooLarge,
+		RejectBody:   string(encoded),
+	}
+}
+
 func preflightDecisionFromCfg(cfg NCtxReloadConfig) PreflightDecision {
 	if cfg.PreflightAsyncReload {
 		return PreflightAsyncReload

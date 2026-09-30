@@ -125,6 +125,46 @@ func init() {
 //     (C-bridge watcher в LoadModelWithOpts отменил load; см. PLAN.md §3)
 //   - "", прочие: ошибка загрузки (validation, FS, C-bridge)
 func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
+	return ensureModelLoadedWithNCtx(ctx, modelName, 0)
+}
+
+// loadTotalNCtxForRequest — окно НА КЛИЕНТА → СУММАРНОЕ окно загрузки модели.
+//
+// llama.cpp при kv_unified=false делит суммарное окно между слотами
+// (n_ctx_seq = PAD(n_ctx / n_seq_max, 256)), поэтому клиенту, попросившему
+// 32768 при parallel=2, нужно суммарно ~65536. Без этого пересчёта клиент
+// получил бы ровно половину запрошенного.
+func loadTotalNCtxForRequest(requestedPerClient, slots int) int {
+	if requestedPerClient <= 0 {
+		return 0
+	}
+	if slots < 1 {
+		slots = 1
+	}
+	return cppbackend.PadContext(requestedPerClient) * slots
+}
+
+// ensureModelLoadedWithNCtx — R83-политика (2026-10-01): загрузка модели с
+// ОКНОМ КЛИЕНТА, если клиент его явно указал.
+//
+// Зачем. Раньше lazy-load всегда брал окно из env (`CPPWORKER_CTX_SIZE`) и
+// профиля модели, а `num_ctx` из запроса при загрузке не участвовал вовсе:
+// клиент, которому нужно 32768, получал модель, загруженную на 8192 из профиля,
+// и дальше начинались «перезагрузки под клиента». Пользователь формулирует это
+// так: «если размер указан и модель не загружена — применять настройки клиента;
+// дефолтные значения поломают всю работу».
+//
+// Приоритет (лестница уже реализована в sync_profile.go — профиль НЕ
+// перебивает непустое значение из запроса):
+//
+//	явный num_ctx запроса  >  профиль модели  >  env CPPWORKER_CTX_SIZE
+//
+// requestedNCtx — окно НА ОДНОГО КЛИЕНТА (то, что клиент прислал в num_ctx);
+// 0 = клиент окно не указывал, грузим как раньше.
+//
+// Если запрошенное окно физически не влезает, его уменьшит адаптивная
+// стратегия/auto-tune, а rationale.AppliedNCtx покажет, что реально применилось.
+func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedNCtx int) (string, error) {
 	// 0) Если модель уже загружена — сразу выходим.
 	if _, err := backend.GetModel(modelName); err == nil {
 		return modelName, nil
@@ -149,7 +189,27 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 
 	log := logger.Get()
 	loadStart := time.Now()
-	log.Infow("lazy-loading model from filesystem", "model", modelName)
+	// R83-политика (2026-10-01): окно загрузки. Явный num_ctx клиента важнее
+	// env/профиля — иначе клиент, которому нужно 32768, получает 8192 и
+	// вынужден ждать перезагрузку (или работать хуже, чем может).
+	//
+	// ВАЖНО про единицы измерения. `num_ctx` клиента — это окно НА КЛИЕНТА, а
+	// n_ctx модели — СУММАРНОЕ: llama.cpp делит его между слотами
+	// (n_ctx_seq = PAD(n_ctx / n_seq_max, 256)). Поэтому переводим одно в другое
+	// здесь: иначе клиент, попросивший 32768 при parallel=2, получил бы 16384.
+	loadNCtx := *ctxSize
+	loadNCtxSource := "env CPPWORKER_CTX_SIZE"
+	if requestedNCtx > 0 {
+		slots := 1
+		if currentConfig != nil && currentConfig.DefaultNParallel > 1 {
+			slots = currentConfig.DefaultNParallel
+		}
+		loadNCtx = loadTotalNCtxForRequest(requestedNCtx, slots)
+		loadNCtxSource = fmt.Sprintf("num_ctx запроса клиента (%d на клиента × %d слота)",
+			requestedNCtx, slots)
+	}
+	log.Infow("lazy-loading model from filesystem", "model", modelName,
+		"load_n_ctx", loadNCtx, "n_ctx_source", loadNCtxSource)
 
 	// Ищем модель в файловой системе
 	mm := backend.ModelManager()
@@ -247,7 +307,7 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 				meta, mErr = mm.GetModelMeta(modelName)
 			}
 			if mErr == nil && meta != nil && meta.NLayers > 0 {
-				strategy := SelectStrategy(&env, modelName, *meta, *ctxSize, *gpuLayers, currentConfig)
+				strategy := SelectStrategy(&env, modelName, *meta, loadNCtx, *gpuLayers, currentConfig)
 				opts = cppbackend.LoadModelOpts{
 					GPULayers:   strategy.GPULayers,
 					ContextSize: strategy.NCtx,
@@ -255,7 +315,7 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 					UseMmap:     strategy.UseMmap,
 				}
 				rationale = LazyLoadRationale{
-					RequestedNCtx:      *ctxSize,
+					RequestedNCtx:      loadNCtx,
 					RequestedGPULayers: *gpuLayers,
 					AppliedNCtx:        strategy.NCtx,
 					AppliedGPULayers:   strategy.GPULayers,
@@ -283,12 +343,12 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 					"explanation", strategy.Explanation)
 			} else {
 				// Fallback to calculateLazyLoadOpts
-				tunedOpts, calcRationale := calculateLazyLoadOpts(modelName, *ctxSize, *gpuLayers, currentConfig)
+				tunedOpts, calcRationale := calculateLazyLoadOpts(modelName, loadNCtx, *gpuLayers, currentConfig)
 				opts = tunedOpts
 				rationale = calcRationale
 			}
 		} else {
-			tunedOpts, calcRationale := calculateLazyLoadOpts(modelName, *ctxSize, *gpuLayers, currentConfig)
+			tunedOpts, calcRationale := calculateLazyLoadOpts(modelName, loadNCtx, *gpuLayers, currentConfig)
 			opts = tunedOpts
 			rationale = calcRationale
 		}

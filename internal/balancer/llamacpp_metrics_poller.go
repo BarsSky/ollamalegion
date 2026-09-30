@@ -254,8 +254,13 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			VramKnown bool `json:"vram_known,omitempty"`
 			// Round 18 P0.1 (2026-08-03): capabilities (reasoning/vision/tools).
 			// cppworker теперь возвращает готовый capabilities объект в /api/models.
-			Capabilities     *types.ModelCapabilities `json:"capabilities,omitempty"`
-			ReasoningEnabled bool                     `json:"reasoning_enabled,reasoningEnabled,omitempty"`
+			Capabilities *types.ModelCapabilities `json:"capabilities,omitempty"`
+			// R83-политика (2026-10-01): указатель, а не bool — «ключ
+			// отсутствует» (модель не загружена / старая версия cppworker)
+			// должно отличаться от «reasoning выключен». По этому полю
+			// балансер решает, расходится ли требование клиента (think=true)
+			// с загруженной моделью.
+			ReasoningEnabled *bool `json:"reasoning_enabled,reasoningEnabled"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
@@ -342,7 +347,10 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			VramKnown:          m.VramKnown,
 			// Round 18 P0.1 (2026-08-03): capabilities. Если cppworker не вернул
 			// (старая версия), вычисляем по имени как fallback.
-			Capabilities: capabilitiesOrFallback(m.Capabilities, m.Name, m.Architecture, m.GGUFContextLength, m.ReasoningEnabled),
+			Capabilities: capabilitiesOrFallback(m.Capabilities, m.Name, m.Architecture, m.GGUFContextLength,
+				m.ReasoningEnabled != nil && *m.ReasoningEnabled),
+			// R83-политика (2026-10-01): nil = cppworker не сообщил.
+			ReasoningEnabled: m.ReasoningEnabled,
 		})
 	}
 

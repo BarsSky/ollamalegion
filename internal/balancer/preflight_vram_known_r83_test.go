@@ -18,28 +18,33 @@ import (
 	"testing"
 )
 
-// TestR83_DecidePreflight_VRAMKnownButZero_Rejects — VRAM известна, потолок 0,
-// клиент просит БОЛЬШЕ текущего n_ctx → отказ, а не reload.
+// TestR83Policy_ClientWindowBeyondCeiling_Rejects — R83-политика (2026-10-01):
+// отказ выдаётся только когда запрошенное КЛИЕНТОМ окно не влезает в потолок.
 //
-// current_n_ctx=32768 и запрос на 48000 токенов: именно так выглядит живой
-// кейс — модель уже работает через partial offload, клиент просит контекст
-// больше, а веса в VRAM не помещаются ни при каком gpu_layers.
-func TestR83_DecidePreflight_VRAMKnownButZero_Rejects(t *testing.T) {
+// Раньше здесь отказывали из-за max_vram_n_ctx=0 (веса не влезают целиком),
+// даже не спрашивая клиента. Теперь молчащий клиент никогда не получает отказ
+// «на всякий случай»: решение принимается по его окну.
+func TestR83Policy_ClientWindowBeyondCeiling_Rejects(t *testing.T) {
 	state := &NCtxBackendState{
-		BackendID:       "cppworker-gpu-bundled-agent",
-		CurrentNCtx:     32768,
-		MaxVRAMNCtx:     0, // веса не влезают
-		VRAMKnown:       true,
-		AvailableVRAMMB: 8191,
-		ModelMaxContext: 32768,
-		GGUFMaxContext:  262144,
+		BackendID:          "cppworker-gpu-bundled-agent",
+		CurrentNCtx:        32768,
+		MaxVRAMNCtx:        0, // веса не влезают целиком (partial offload)
+		VRAMKnown:          true,
+		AvailableVRAMMB:    8191,
+		ModelMaxContext:    131072,
+		PhysicalMaxContext: 131072,
+		GGUFMaxContext:     131072,
 	}
-	meta := &RequestMeta{EstimatedPromptTokens: 40000, RequestedNPredict: 8000}
+	meta := &RequestMeta{
+		RequestedNCtxOverride: 262144, // клиент просит больше, чем модель держит
+		EstimatedPromptTokens: 40000,
+		RequestedNPredict:     8000,
+	}
 	cfg := NCtxReloadConfig{AutoReloadMaxNCtx: 131072}
 
 	res := DecidePreflight(meta, state, cfg)
 	if res.Decision != PreflightReject {
-		t.Fatalf("Decision = %v, want PreflightReject (VRAM известна, веса не влезают)", res.Decision)
+		t.Fatalf("Decision = %v, want PreflightReject (262144 > потолка 131072)", res.Decision)
 	}
 	if res.RejectStatus == 0 {
 		t.Error("RejectStatus не выставлен")
@@ -49,21 +54,37 @@ func TestR83_DecidePreflight_VRAMKnownButZero_Rejects(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.RejectBody), &body); err != nil {
 		t.Fatalf("RejectBody не JSON: %v", err)
 	}
-	if got, _ := body["vram_known"].(bool); !got {
-		t.Errorf("vram_known = %v, want true — клиент/оператор должны видеть, "+
-			"что VRAM измерена, а не «нет данных»", body["vram_known"])
+	// Требование пользователя: понятный текст, а не «параметр + параметр = ошибка».
+	errText, _ := body["error"].(string)
+	if !strings.Contains(errText, "не поместится") {
+		t.Errorf("error = %q, ожидалось объяснение «не поместится»", errText)
 	}
-	reason, _ := body["reason"].(string)
-	if !strings.Contains(reason, "weights do not fit") {
-		t.Errorf("reason = %q, want про веса, которые не влезают", reason)
+	if got, _ := body["backend_ceiling_n_ctx"].(float64); got != 131072 {
+		t.Errorf("backend_ceiling_n_ctx = %v, ожидалось 131072", body["backend_ceiling_n_ctx"])
 	}
-	if !strings.Contains(reason, "Reload cannot raise") {
-		t.Errorf("reason = %q, want явное «reload не поможет»", reason)
+	if wtd, _ := body["what_to_do"].(string); !strings.Contains(wtd, "Уменьшите окно") {
+		t.Errorf("what_to_do = %q, ожидался совет, что делать", wtd)
 	}
-	suggestion, _ := body["suggestion"].(string)
-	if !strings.Contains(suggestion, "smaller model") {
-		t.Errorf("suggestion = %q, want совет про меньшую модель/квант, "+
-			"а не общий «raise contextLengthMax»", suggestion)
+}
+
+// TestR83Policy_VRAMKnownZero_SilentClientServed — та же VRAM-картина, но клиент
+// окно не указывал → NoOp (обслуживаем как есть), без ложного отказа.
+func TestR83Policy_VRAMKnownZero_SilentClientServed(t *testing.T) {
+	state := &NCtxBackendState{
+		BackendID:       "cppworker-gpu-bundled-agent",
+		CurrentNCtx:     32768,
+		MaxVRAMNCtx:     0,
+		VRAMKnown:       true,
+		AvailableVRAMMB: 8191,
+		ModelMaxContext: 131072,
+		GGUFMaxContext:  131072,
+	}
+	meta := &RequestMeta{EstimatedPromptTokens: 40000, RequestedNPredict: 8000}
+
+	res := DecidePreflight(meta, state, NCtxReloadConfig{AutoReloadMaxNCtx: 131072})
+	if res.Decision != PreflightNoOp {
+		t.Fatalf("Decision = %v, want PreflightNoOp (клиент не указал окно): %s",
+			res.Decision, res.RejectBody)
 	}
 }
 

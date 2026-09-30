@@ -88,8 +88,17 @@ func TestDecidePreflight_R68_LegacyStateStillRejects(t *testing.T) {
 	if res.Decision != PreflightReject {
 		t.Fatalf("legacy-состояние: ожидался Reject, получено %v", res.Decision)
 	}
-	if !strings.Contains(res.RejectBody, "exceeds backend context ceiling=8192") {
-		t.Errorf("в причине отказа должно быть видно legacy-потолок, получено: %s", res.RejectBody)
+	// R83-политика (2026-10-01): тело отказа — понятный текст + машинные поля
+	// с потолком бэкенда (legacy-потолок = ModelMaxContext = 8192).
+	var body map[string]interface{}
+	if err := json.Unmarshal([]byte(res.RejectBody), &body); err != nil {
+		t.Fatalf("тело отказа не JSON: %v (%s)", err, res.RejectBody)
+	}
+	if got, _ := body["backend_ceiling_n_ctx"].(float64); got != 8192 {
+		t.Errorf("backend_ceiling_n_ctx = %v, ожидалось 8192 (legacy = ModelMaxContext)", body["backend_ceiling_n_ctx"])
+	}
+	if !strings.Contains(res.RejectBody, "не поместится") {
+		t.Errorf("в отказе нет понятного объяснения: %s", res.RejectBody)
 	}
 }
 
@@ -110,12 +119,14 @@ func TestDecidePreflight_R68_RejectsBeyondPhysicalCeiling(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.RejectBody), &body); err != nil {
 		t.Fatalf("тело отказа не JSON: %v (%s)", err, res.RejectBody)
 	}
+	// R83-политика (2026-10-01): в теле — машинные поля с потолками и
+	// ПОНЯТНЫЙ текст для клиента (а не набор чисел вместо объяснения).
 	checks := map[string]float64{
-		"profile_hint_n_ctx":    8192,
 		"gguf_max_context":      131072,
 		"auto_reload_max_n_ctx": 131072,
-		"physical_max_context":  131072,
-		"max_vram_n_ctx":        66125,
+		"backend_ceiling_n_ctx": 131072,
+		"requested_n_ctx":       262144,
+		"slots":                 1,
 	}
 	for key, want := range checks {
 		got, ok := body[key].(float64)
@@ -127,8 +138,9 @@ func TestDecidePreflight_R68_RejectsBeyondPhysicalCeiling(t *testing.T) {
 			t.Errorf("%s = %v, ожидалось %v", key, got, want)
 		}
 	}
-	if reason, _ := body["reason"].(string); !strings.Contains(reason, "profile hint=8192") {
-		t.Errorf("reason должен ссылаться на hint профиля, получено: %s", reason)
+	errText, _ := body["error"].(string)
+	if !strings.Contains(errText, "не поместится") || !strings.Contains(errText, "131072") {
+		t.Errorf("текст отказа должен объяснять, что именно не поместится: %s", errText)
 	}
 	if res.RejectStatus != http.StatusRequestEntityTooLarge {
 		t.Errorf("RejectStatus = %d, ожидался 413", res.RejectStatus)

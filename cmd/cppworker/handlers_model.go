@@ -1211,6 +1211,23 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 				return 1
 			}(),
 		}
+		// R83-политика (2026-10-01): режим reasoning ЗАГРУЖЕННОЙ модели.
+		//
+		// Зачем в ответе. Балансер обязан уметь сказать клиенту «модель уже
+		// загружена с другими параметрами» вместо тихой подмены поведения:
+		// если клиент требует think=true, а модель загружена с выключенным
+		// reasoning, это разные ответы на один и тот же запрос. Поле
+		// читается поллером балансера (llamacpp_metrics_poller.go) и
+		// прокидывается в NCtxBackendState.CurrentReasoningEnabled.
+		//
+		// false здесь — ЗНАЧЕНИЕ, а не «неизвестно»: cppworker всегда его
+		// отдаёт для загруженной модели, поэтому балансер отличает «выключено»
+		// от «метрик ещё нет» (ключ отсутствует).
+		if m.Capabilities != nil {
+			entry["reasoning_enabled"] = m.Capabilities.Reasoning
+		} else {
+			entry["reasoning_enabled"] = false
+		}
 		// Round 51.6 (2026-08-20): per-model active_queries counter. WebUI
 		// показывает "Generating N requests" badge чтобы оператор не выгружал
 		// модель посреди inference (R51.6: handleUnloadModel теперь возвращает

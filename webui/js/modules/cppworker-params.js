@@ -192,6 +192,7 @@
         const eff = data.effective || {};
         const src = data.source || {};
         const cw = data.cppworker || {};
+        const prof = data.defaultModelProfile || null;
         const rows = DEFAULTS_FIELDS.map(([key, label]) => {
             return '<tr>' +
                 '<td>' + escapeHtml(label) + '</td>' +
@@ -204,6 +205,15 @@
             ? '<span class="cpp-source-badge is-env">' + escapeHtml(cw.backendId || '') + '</span>'
             : '<span class="cpp-source-badge is-none">' + escapeHtml(cw.error || I18N.t('settings.load_defaults.cppworker_unavailable', 'недоступен')) + '</span>';
 
+        // ignoreDefaults на дефолтном профиле = «ничего не подставлять, пусть
+        // решает env контейнера» — тот же принцип, что у per-model профилей.
+        const ignored = !!(prof && prof.ignoreDefaults);
+        const ignoredNote = ignored
+            ? '<div class="cpp-profiles-hint"><span class="cpp-source-badge is-env">' +
+              escapeHtml(I18N.t('settings.load_defaults.ignored', 'настройки по умолчанию отключены (ignoreDefaults) — значения берутся из env контейнера')) +
+              '</span></div>'
+            : '';
+
         el.innerHTML = `
             <div class="cpp-defaults-head">
                 <div>
@@ -211,6 +221,7 @@
                     <div class="cpp-profiles-hint">${escapeHtml(I18N.t('settings.load_defaults.hint',
                         'Применяются к модели, у которой нет своего профиля. Профиль модели всегда важнее; если ничего не задано — берётся env контейнера cppworker.'))}</div>
                     <div class="cpp-profiles-hint">${escapeHtml(I18N.t('settings.load_defaults.cppworker_label', 'env cppworker:'))} ${cwState}</div>
+                    ${ignoredNote}
                 </div>
                 <div>
                     <button class="btn btn-primary" id="cppDefaultsEditBtn">${escapeHtml(I18N.t('common.edit', 'Изменить'))}</button>
@@ -255,6 +266,11 @@
                 </div>
                 <div class="cpp-profiles-hint">${escapeHtml(I18N.t('settings.load_defaults.form_hint',
                     'Пустое поле = не задавать (тогда значение берётся из env контейнера cppworker). Сохранение пишет значения в конфиг балансера.'))}</div>
+                <label class="cpp-defaults-field" style="flex-direction:row; align-items:center; gap:8px; margin-top:8px;">
+                    <input type="checkbox" id="cppDefIgnore"${prof.ignoreDefaults ? ' checked' : ''}>
+                    <span>${escapeHtml(I18N.t('settings.load_defaults.ignore_defaults',
+                        'Не подставлять эти значения (ignoreDefaults) — всё берётся из env контейнера cppworker'))}</span>
+                </label>
                 <div class="cpp-defaults-actions">
                     <button class="btn btn-primary" id="cppDefaultsSave">${escapeHtml(I18N.t('common.save', 'Сохранить'))}</button>
                     <button class="btn btn-secondary" id="cppDefaultsCancel">${escapeHtml(I18N.t('common.cancel', 'Отмена'))}</button>
@@ -279,6 +295,8 @@
             if (kv) body.kvCacheType = kv;
             const fa = (box.querySelector('#cppDefFlash').value || '').trim();
             if (fa !== '') body.flashAttn = (parseInt(fa, 10) === 1);
+            const ignoreEl = box.querySelector('#cppDefIgnore');
+            if (ignoreEl) body.ignoreDefaults = !!ignoreEl.checked;
 
             if (body.contextLength === undefined && !data.defaultModelProfile) {
                 showToast('error', I18N.t('settings.load_defaults.ctx_required',
@@ -336,7 +354,9 @@
                 ? '<span class="cpp-source-badge is-default">' + escapeHtml(I18N.t('settings.catalog.loaded', 'загружена')) + (f.loadedContextSize ? ' ' + escapeHtml(formatCtx(f.loadedContextSize)) : '') + '</span>'
                 : '<span class="cpp-source-badge is-none">' + escapeHtml(I18N.t('settings.catalog.not_loaded', 'не загружена')) + '</span>';
             const profBadge = f.hasProfile
-                ? '<span class="cpp-source-badge is-default">' + escapeHtml(I18N.t('settings.catalog.has_profile', 'свой профиль')) + '</span>'
+                ? (f.profileIgnored
+                    ? '<span class="cpp-source-badge is-env">' + escapeHtml(I18N.t('settings.catalog.profile_ignored', 'профиль отключён (ignoreDefaults)')) + '</span>'
+                    : '<span class="cpp-source-badge is-default">' + escapeHtml(I18N.t('settings.catalog.has_profile', 'свой профиль')) + '</span>')
                 : '<span class="cpp-source-badge is-env">' + escapeHtml(I18N.t('settings.catalog.no_profile', 'по умолчанию')) + '</span>';
             const settings = [
                 'n_ctx=' + fmtValue('contextLength', eff.contextLength) + ' (' + (src.contextLength || '—') + ')',

@@ -1234,6 +1234,8 @@ window.I18N_RU = {
   "settings.load_defaults.form_hint": "Пустое поле = не задавать (тогда значение берётся из env контейнера cppworker). Сохранение пишет значения в конфиг балансера.",
   "settings.load_defaults.saved": "Настройки по умолчанию сохранены",
   "settings.load_defaults.ctx_required": "Укажите n_ctx: без него настройки по умолчанию ничего не задают",
+  "settings.load_defaults.ignored": "настройки по умолчанию отключены (ignoreDefaults) — значения берутся из env контейнера",
+  "settings.load_defaults.ignore_defaults": "Не подставлять эти значения (ignoreDefaults) — всё берётся из env контейнера cppworker",
   "settings.catalog.title": "Модели в папке",
   "settings.catalog.hint": "Файлы, доступные для загрузки. «Настроить» создаёт профиль модели — он применяется при следующей загрузке и по кнопке «Применить (reload)».",
   "settings.catalog.empty": "В папке моделей нет GGUF-файлов (или cppworker недоступен).",
@@ -1241,6 +1243,7 @@ window.I18N_RU = {
   "settings.catalog.not_loaded": "не загружена",
   "settings.catalog.has_profile": "свой профиль",
   "settings.catalog.no_profile": "по умолчанию",
+  "settings.catalog.profile_ignored": "профиль отключён (ignoreDefaults) — параметры профиля не применяются",
   "settings.catalog.assign": "Назначить настройки этой модели",
 
   // ===== Per-Model Profiles — advanced fields (Session 15, Q3 W3-4 Model profiles UI) =====

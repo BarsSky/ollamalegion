@@ -1356,6 +1356,8 @@ window.I18N_EN = {
   "settings.load_defaults.form_hint": "An empty field means \"do not set\" (the cppworker container env is used instead). Saving writes the values into the balancer config.",
   "settings.load_defaults.saved": "Default settings saved",
   "settings.load_defaults.ctx_required": "Set n_ctx: without it the defaults do not set anything",
+  "settings.load_defaults.ignored": "default settings are disabled (ignoreDefaults) — values come from the container env",
+  "settings.load_defaults.ignore_defaults": "Do not apply these values (ignoreDefaults) — everything comes from the cppworker container env",
   "settings.catalog.title": "Models on disk",
   "settings.catalog.hint": "Files available for loading. \"Configure\" creates a model profile — it is applied on the next load and via the \"Apply (reload)\" button.",
   "settings.catalog.empty": "No GGUF files in the models directory (or cppworker is unavailable).",
@@ -1363,6 +1365,7 @@ window.I18N_EN = {
   "settings.catalog.not_loaded": "not loaded",
   "settings.catalog.has_profile": "own profile",
   "settings.catalog.no_profile": "by default",
+  "settings.catalog.profile_ignored": "profile disabled (ignoreDefaults) — profile params are not applied",
   "settings.catalog.assign": "Assign settings to this model",
 
   // ===== Per-Model Profiles — advanced fields (Session 15, Q3 W3-4 Model profiles UI) =====

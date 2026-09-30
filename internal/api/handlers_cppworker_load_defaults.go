@@ -293,16 +293,19 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	defaults, hasDefaults := s.proxy.GetDefaultModelProfile()
 
 	type fileEntry struct {
-		Name         string                 `json:"name"`
-		SizeBytes    int64                  `json:"sizeBytes"`
-		Quantization string                 `json:"quantization,omitempty"`
-		ModifiedAt   string                 `json:"modifiedAt,omitempty"`
-		Loaded       bool                   `json:"loaded"`
-		LoadedCtx    int                    `json:"loadedContextSize,omitempty"`
-		HasProfile   bool                   `json:"hasProfile"`
-		Profile      *types.LlamaCppModelProfile `json:"profile,omitempty"`
-		Effective    map[string]interface{} `json:"effective"`
-		Source       map[string]string      `json:"source"`
+		Name         string `json:"name"`
+		SizeBytes    int64  `json:"sizeBytes"`
+		Quantization string `json:"quantization,omitempty"`
+		ModifiedAt   string `json:"modifiedAt,omitempty"`
+		Loaded       bool   `json:"loaded"`
+		LoadedCtx    int    `json:"loadedContextSize,omitempty"`
+		HasProfile   bool   `json:"hasProfile"`
+		// ProfileIgnored — профиль есть, но ignoreDefaults=true: его параметры
+		// НЕ применяются (оператор выбрал «значения из env контейнера»).
+		ProfileIgnored bool                        `json:"profileIgnored,omitempty"`
+		Profile        *types.LlamaCppModelProfile `json:"profile,omitempty"`
+		Effective      map[string]interface{}      `json:"effective"`
+		Source         map[string]string           `json:"source"`
 	}
 
 	files := []fileEntry{}
@@ -338,12 +341,10 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 					entry.LoadedCtx = lm
 				}
 				// Настройки: профиль модели → дефолтный профиль → env cppworker.
-				applyEntry := func(p types.LlamaCppModelProfile, src string, forced bool) {
-					if forced || (!entry.HasProfile && src == "defaultProfile") {
-						cp := p
-						entry.Profile = &cp
-						entry.HasProfile = true
-					}
+				// Ровно та же цепочка и то же правило ignoreDefaults, что в
+				// executeLlamaCppLoad (applyProfileLoadParams) — иначе WebUI
+				// показывал бы одно, а грузилось другое.
+				fillFrom := func(p types.LlamaCppModelProfile, src string) {
 					if entry.Effective["contextLength"] == nil && p.ContextLength > 0 {
 						entry.Effective["contextLength"] = p.ContextLength
 						entry.Source["contextLength"] = src
@@ -365,13 +366,25 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 						entry.Source["kvCacheType"] = src
 					}
 				}
-				if p, ok := s.proxy.GetModelProfile(f.Name); ok {
-					applyEntry(p, "profile", true)
-				} else if p, ok := s.proxy.GetModelProfile(strings.TrimSuffix(f.Name, ".gguf")); ok {
-					applyEntry(p, "profile", true)
+				prof, hasProf := s.proxy.GetModelProfile(f.Name)
+				if !hasProf {
+					prof, hasProf = s.proxy.GetModelProfile(strings.TrimSuffix(f.Name, ".gguf"))
 				}
-				if hasDefaults {
-					applyEntry(defaults, "defaultProfile", false)
+				if hasProf {
+					cp := prof
+					entry.Profile = &cp
+					entry.HasProfile = true
+					if prof.IgnoreDefaults {
+						// Профиль есть, но его параметры отключены: оператор явно
+						// просил «пусть решает окружение». Показываем это честно,
+						// иначе в UI выглядело бы, что настройки применяются.
+						entry.ProfileIgnored = true
+					} else {
+						fillFrom(prof, "profile")
+					}
+				}
+				if hasDefaults && !defaults.IgnoreDefaults {
+					fillFrom(defaults, "defaultProfile")
 				}
 				// Последний уровень — env контейнера cppworker.
 				fillFromCppWorker(entry.Effective, entry.Source, cw)

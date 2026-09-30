@@ -749,6 +749,86 @@ docker logs --since 1h ol-stack-cppworker-gpu 2>&1 | grep -c 'double free'
 
 ---
 
+## 7.5 Политика контекстного окна и параметров (R83-политика, 2026-10-01)
+
+Правило, по которому балансер решает «грузить / перезагружать / отказать».
+Раньше окно росло по ОЦЕНКЕ промпта (`tokencount` — верхняя граница, завышает в
+2–4 раза: 44 230 против реальных 16 210 на живом запросе Cline), поэтому обычный
+запрос уходил в перезагрузку на 2–3 минуты. Теперь решение принимается **только
+по тому, что клиент указал явно**.
+
+| Ситуация | Что делает балансер |
+|---|---|
+| Клиент требует reasoning (`think: true`), а модель загружена с выключенным | **409** с перечислением отличий: `param_differences`, `loaded`, `requested`, `what_to_do`. Тихая подмена поведения недопустима |
+| Клиент **не указал** `num_ctx` | **NoOp.** Никаких перезагрузок «по оценке»; если история не влезает — cppworker отвечает своей причиной, балансер её передаёт |
+| Модель **не загружена**, клиент указал `num_ctx` | **NoOp**, cppworker грузит модель **окном клиента**: `ensureModelLoadedWithNCtx` пересчитывает «на клиента → суммарно» (`num_ctx × слоты`, выравнивание до 256) |
+| Загруженное окно на клиента **≥** запрошенного | **NoOp.** Загружено больше — перезагружать не нужно и уведомлять не о чем |
+| Загруженное окно **<** запрошенного, влезает в потолок | **Reload** под окно клиента (остальные параметры совпадают) |
+| Запрошенное окно **не влезает** (GGUF-потолок / операторский cap / cppworker не может дать столько) | **413** с понятным текстом: сколько просили, сколько доступно на клиента при N слотах, что делать |
+
+Порядок источников окна при загрузке:
+**`num_ctx` запроса → профиль модели → env `CPPWORKER_CTX_SIZE`**
+(лестница реализована в `sync_profile.go`; запрос не перебивается профилем).
+
+Единицы измерения важны: `num_ctx` клиента — окно **на клиента**, а `n_ctx`
+модели — **суммарное** (llama.cpp делит его между слотами:
+`n_ctx_seq = PAD(n_ctx / n_seq_max, 256)`). Пересчёт — `loadTotalNCtxForRequest`
+(cppworker) и `perClientToTotal` (balancer).
+
+### Рабочая конфигурация стенда (малая модель + 32768 на клиента)
+
+```bash
+# Профиль gemma-4: суммарное окно 65536 при parallel=2 → 32768 каждому клиенту
+TOKEN=$(grep '^CPPWORKER_API_TOKEN=' deployments/.env | cut -d= -f2)
+curl -s -X PUT -H "X-API-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"contextLength":65536,"batchSize":512,"numGpuLayers":-1,"flashAttn":true,
+       "useMmap":true,"ignoreDefaults":true,"kvCacheType":"q4_0",
+       "contextLengthAuto":true,"contextLengthMax":131072}' \
+  http://127.0.0.1:18081/api/v1/cppworker/model-profiles/gemma-4-E4B-it-Q4_K_M
+```
+
+В `deployments/.env`: `CPPWORKER_CTX_SIZE=65536` (та же логика: суммарное окно по
+умолчанию) и `CPPWORKER_N_PARALLEL=2`.
+
+Проверка (все ветки политики):
+
+```bash
+TOKEN=$(grep '^CPPWORKER_API_TOKEN=' deployments/.env | cut -d= -f2)
+# 1. холодная загрузка окном клиента: ждём context_per_seq=32768, context_size=65536
+curl -s -X POST -H "X-API-Token: $TOKEN" "http://127.0.0.1:18092/api/models/unload?name=gemma-4-E4B-it-Q4_K_M"
+curl -s -H 'Content-Type: application/json' -H "X-API-Token: $TOKEN" \
+  -d '{"model":"gemma-4-E4B-it-Q4_K_M","messages":[{"role":"user","content":"ok"}],
+       "options":{"num_ctx":32768,"num_predict":8}}' http://127.0.0.1:18080/api/chat
+curl -s -H "X-API-Token: $TOKEN" http://127.0.0.1:18092/api/v1/cppworker/config/runtime \
+  | jq '.loaded_models[] | {context_size, gpu_layers}'
+# 2. окно выше потолка → 413 с объяснением (а не молчаливый reload)
+curl -s -o - -w '\n%{http_code}\n' -H 'Content-Type: application/json' -H "X-API-Token: $TOKEN" \
+  -d '{"model":"gemma-4-E4B-it-Q4_K_M","messages":[{"role":"user","content":"hi"}],
+       "options":{"num_ctx":131072}}' http://127.0.0.1:18080/api/chat
+# 3. think=true при reasoning=off → 409 с param_differences
+curl -s -o - -w '\n%{http_code}\n' -H 'Content-Type: application/json' -H "X-API-Token: $TOKEN" \
+  -d '{"model":"gemma-4-E4B-it-Q4_K_M","messages":[{"role":"user","content":"hi"}],
+       "think":true,"options":{"num_ctx":16384}}' http://127.0.0.1:18080/api/chat
+```
+
+### Раскатка — одним методом
+
+Стенд живёт под `deployments/docker-compose.stack.yml` (проект `ol-stack-*`).
+Поэтому и выпуск идёт тем же compose:
+
+```bash
+pwsh -File scripts/release-all.ps1 -Tag r83-submodule-vNN -Services balancer,cppworker
+#   → по умолчанию: docker compose -f docker-compose.stack.yml --profile full up -d
+```
+
+Прежний default (`docker-compose.cppworker-bundled-with-agent.yml`, проект
+`ol-bundled-*`) — другой проект на тех же портах: `up -d` падал с
+«Bind for 0.0.0.0:18080 failed: port is already allocated», и стенд оставался на
+старых образах. Параметры `-ComposeFile` / `-ComposeProfile` позволяют указать
+другой файл, но по умолчанию всегда берётся рабочий.
+
+---
+
 ## 8. Диагностика: что смотреть при проблемах
 
 ```bash

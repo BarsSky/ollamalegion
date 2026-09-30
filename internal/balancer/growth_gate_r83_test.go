@@ -77,8 +77,8 @@ func TestR83Fix_GrowthAllowed_WhenStrategySaysCPUOnlyButWindowGrows(t *testing.T
 		`"explanation":"cpu_only: kvType=q4_0, n_ctx=65536/131072"}`)
 
 	coord := gateCoordinator(20)
-	worth, why := coord.growthWorthReload(srv.URL, "b1", "gemma-4-E4B-it-Q4_K_M",
-		65536 /* target: растём с 8192 */, 8192 /* current total */, 4096, 20)
+	worth, _, why := coord.growthWorthReload(srv.URL, "b1", "gemma-4-E4B-it-Q4_K_M",
+		65536 /* target: растём с 8192 */, 8192 /* current total */, 4096, 20, 2)
 
 	if !worth {
 		t.Fatalf("рост окна 8192→65536 отклонён из-за cpu_only в стратегии: почему=%q — "+
@@ -95,8 +95,8 @@ func TestR83Fix_GrowthSkipped_WhenWindowWouldNotGrow(t *testing.T) {
 		`"explanation":"cpu_only: kvType=q4_0, n_ctx=65536/131072"}`)
 
 	coord := gateCoordinator(19)
-	worth, why := coord.growthWorthReload(srv.URL, "b1", "gemma-4-E4B-it-Q4_K_M",
-		131072 /* target total */, 65536 /* current total */, 32768 /* per-slot */, 19)
+	worth, _, why := coord.growthWorthReload(srv.URL, "b1", "gemma-4-E4B-it-Q4_K_M",
+		131072 /* target total */, 65536 /* current total */, 32768 /* per-slot */, 19, 2)
 
 	if worth {
 		t.Fatalf("рост окна признан осмысленным, хотя стратегия даёт то же суммарное окно "+
@@ -117,8 +117,8 @@ func TestR83Fix_GrowthAllowed_WhenStrategyGrowsAndKeepsGPU(t *testing.T) {
 		`"stage":"partial_offload","maxViableNCtx":131072,"explanation":"fits"}`)
 
 	coord := gateCoordinator(19)
-	worth, why := coord.growthWorthReload(srv.URL, "b1", "gemma-4-E4B-it-Q4_K_M",
-		131072, 65536, 32768, 19)
+	worth, _, why := coord.growthWorthReload(srv.URL, "b1", "gemma-4-E4B-it-Q4_K_M",
+		131072, 65536, 32768, 19, 2)
 
 	if !worth {
 		t.Fatalf("рост окна отклонён, хотя стратегия даёт 131072 суммарно и 24 слоя "+
@@ -131,7 +131,7 @@ func TestR83Fix_GrowthAllowed_WhenStrategyGrowsAndKeepsGPU(t *testing.T) {
 func TestR83Fix_GrowthWorthReload_NoStrategyMeansOldBehaviour(t *testing.T) {
 	srv, _ := strategyBackend(t, `not json at all`)
 	coord := gateCoordinator(19)
-	if worth, why := coord.growthWorthReload(srv.URL, "b1", "m", 131072, 65536, 32768, 19); !worth {
+	if worth, _, why := coord.growthWorthReload(srv.URL, "b1", "m", 131072, 65536, 32768, 19, 2); !worth {
 		t.Fatalf("без стратегии reload должен оставаться разрешённым, отклонён: %q", why)
 	}
 }

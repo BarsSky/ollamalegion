@@ -506,14 +506,19 @@ func (s *NCtxBackendState) physicalCeiling() int {
 // 12 против 19) по-прежнему отсекается — но в DoReload, а не здесь
 // (clampStrategyToCurrentLayout).
 //
-// Возвращает (worth, why). worth=true при любой неопределённости (нет адреса,
-// нет стратегии) — прежнее поведение сохраняется.
+// Возвращает (worth, achievablePerClient, why):
+//   - worth=true  → перезагрузка осмысленна (achievablePerClient не определён);
+//   - worth=false → achievablePerClient — окно НА КЛИЕНТА, которое cppworker
+//     реально сможет дать (0 = неизвестно), why — причина словами.
+//
+// worth=true при любой неопределённости (нет адреса, нет стратегии) — прежнее
+// поведение сохраняется.
 func (c *NCtxReloadCoordinator) growthWorthReload(
 	backendAddr, backendID, modelName string,
-	targetTotalNCtx, currentTotalNCtx, currentPerSeqNCtx, currentGPULayers int,
-) (bool, string) {
+	targetTotalNCtx, currentTotalNCtx, currentPerSeqNCtx, currentGPULayers, slots int,
+) (bool, int, string) {
 	if backendAddr == "" || modelName == "" {
-		return true, ""
+		return true, 0, ""
 	}
 	hints := c.ReloadHintsFor(backendID, modelName)
 	httpClient := &http.Client{Timeout: 3 * time.Second}
@@ -521,7 +526,7 @@ func (c *NCtxReloadCoordinator) growthWorthReload(
 	if strategy == nil {
 		// Стратегии нет (cppworker не ответил/404) — не берём на себя
 		// решение: прежнее поведение (reload).
-		return true, ""
+		return true, 0, ""
 	}
 	if strategy.Stage == "cpu_only" {
 		// Диагностика для оператора: сама по себе не отменяет рост окна
@@ -540,13 +545,18 @@ func (c *NCtxReloadCoordinator) growthWorthReload(
 	// решать за неё мы не имеем права.
 	if targetTotalNCtx > currentTotalNCtx && strategy.NCtx > 0 && currentTotalNCtx > 0 &&
 		strategy.NCtx <= currentTotalNCtx {
-		return false, fmt.Sprintf(
+		// strategy.NCtx — СУММАРНОЕ окно: клиенту достанется его доля по слотам.
+		achievablePerClient := strategy.NCtx
+		if slots > 1 {
+			achievablePerClient = strategy.NCtx / slots
+		}
+		return false, achievablePerClient, fmt.Sprintf(
 			"стратегия даёт суммарное окно %d при текущем %d (на клиента %d): "+
 				"reload не изменил бы окно, но выгрузил бы модель на 1–3 минуты",
 			strategy.NCtx, currentTotalNCtx, currentPerSeqNCtx)
 	}
 
-	return true, ""
+	return true, 0, ""
 }
 
 // DecidePreflight решает, что делать с запросом ДО отправки в cppworker.
@@ -1010,9 +1020,29 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 		if meta != nil {
 			gateModelName = meta.ModelName
 		}
-		if worth, why := c.growthWorthReload(backendAddr, backendID, gateModelName,
+		worth, achievablePerClient, why := c.growthWorthReload(backendAddr, backendID, gateModelName,
 			plan.NewNCtx, state.CurrentNCtx, state.effectivePerSeqNCtx(),
-			c.ReloadHintsFor(backendID, gateModelName).GPULayers); !worth {
+			c.ReloadHintsFor(backendID, gateModelName).GPULayers, state.effectiveSlots())
+		if !worth {
+			reqWindow := 0
+			if meta != nil {
+				reqWindow = meta.RequestedNCtxOverride
+			}
+			// R83-политика (2026-10-01): клиент ЯВНО просит окно, которое
+			// cppworker дать не может → это тот самый случай, о котором надо
+			// уведомить понятным текстом (а не молча обслужить в меньшем окне).
+			if reqWindow > 0 && achievablePerClient > 0 && reqWindow > achievablePerClient {
+				logger.Get().Warnw("preflight: запрошенное окно недостижимо — отказ с объяснением",
+					"backend_id", backendID,
+					"model", gateModelName,
+					"requested_per_client", reqWindow,
+					"achievable_per_client", achievablePerClient,
+					"reason", why)
+				return makeWindowTooBigReject(state, meta, reqWindow, plan.NewNCtx,
+					achievablePerClient*state.effectiveSlots(),
+					fmt.Sprintf("cppworker может дать не больше %d токенов на клиента при %d слотах",
+						achievablePerClient, state.effectiveSlots())), nil
+			}
 			logger.Get().Warnw("preflight: рост окна пропущен — reload не дал бы выигрыша",
 				"backend_id", backendID,
 				"model", gateModelName,

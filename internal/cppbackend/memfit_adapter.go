@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/internal/memfit"
+	"ollama-loadbalancer/pkg/logger"
 )
 
 // defaultRAMReserveMBForFit — системный резерв под ОС и runtime (как в
@@ -128,7 +129,65 @@ func (b *Backend) MemfitBudget() memfit.Budget {
 	return budget
 }
 
-// vramEnvOverrideBytes — VRAM из ENV-переопределений (тесты/CI и явная настройка
+// MemfitBudgetFor — бюджет для решения о загрузке/ПЕРЕзагрузке модели name.
+//
+// R83-фикс (2026-10-01): если эта модель уже загружена, её собственная VRAM
+// возвращается в бюджет — при перезагрузке она освобождается. Без этого решение
+// принималось по «свободно 4.7 ГБ, из них минус резерв 2 ГБ», модель
+// раскладывалась на GPU лишь частично (18-20 слоёв из 43), 25 слоёв считались
+// на CPU, и prefill 22.6k токенов занимал ~300 с — клиент (Cline, лимит 300 с)
+// не дожидался первого токена.
+//
+// Живой замер (2026-10-01, gemma-4 Q4_K_M на RTX 3070 8 GB):
+//   memfit: requestedGPULayers=40 → optimal=18, vramAvailableMB=2671;
+//   фактически после загрузки 18 слоёв: used=3476 МБ, свободно 4715 МБ.
+// То есть ~4.7 ГБ простаивало, а половина модели считалась на CPU.
+func (b *Backend) MemfitBudgetFor(reclaimModel string) memfit.Budget {
+	budget := b.MemfitBudget()
+	if b == nil || strings.TrimSpace(reclaimModel) == "" || !budget.VRAMKnown {
+		return budget
+	}
+
+	// Сколько занимает СЕЙЧАС загруженный экземпляр этой модели: веса на GPU +
+	// KV-кэш. Считаем по тем же величинам, которыми оперирует memfit.
+	b.mu.RLock()
+	inst, ok := b.models[reclaimModel]
+	b.mu.RUnlock()
+	if !ok || inst == nil {
+		return budget
+	}
+	info := inst.info
+	if info.SizeBytes == 0 || info.NLayers <= 0 || info.GPULayers == 0 {
+		return budget
+	}
+
+	reclaim := WeightsOnGPUBytes(int64(info.SizeBytes), info.GPULayers, info.NLayers)
+	if kv, real := b.KVCacheBytesForModel(reclaimModel, info.ContextSize, info.KVCacheType,
+		info.NLayers, info.NEmbd, info.NHeads, info.NKvHeads); kv > 0 && real {
+		reclaim += uint64(kv)
+	}
+	if reclaim == 0 {
+		return budget
+	}
+
+	before := budget.VRAMFree
+	// Bytes — базовый целочисленный тип, сложение напрямую.
+	budget.VRAMFree = budget.VRAMFree + memfit.Bytes(reclaim)
+	if budget.VRAMTotal > 0 && budget.VRAMFree > budget.VRAMTotal {
+		budget.VRAMFree = budget.VRAMTotal
+	}
+	if logger.Get() != nil {
+		logger.Get().Debugw("MemfitBudgetFor: память перезагружаемой модели возвращена в бюджет",
+			"model", reclaimModel,
+			"reclaim_mb", reclaim/(1024*1024),
+			"free_before_mb", before.MiB(),
+			"free_after_mb", budget.VRAMFree.MiB(),
+			"total_mb", budget.VRAMTotal.MiB())
+	}
+	return budget
+}
+
+
 // оператором). Возвращает (total, free, ok); free по умолчанию равен total.
 func vramEnvOverrideBytes() (total, free int64, ok bool) {
 	parse := func(name string) (int64, bool) {

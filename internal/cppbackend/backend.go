@@ -1528,7 +1528,7 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 		Ctx:       opts.ContextSize,
 		KVType:    MemfitKVType(effectiveKV),
 		GPULayers: opts.GPULayers, // <= 0 = авто: максимум, что влезает
-	}, b.MemfitBudget(), MemfitPolicy())
+	}, b.MemfitBudgetFor(name), MemfitPolicy())
 
 	if logger.Get() != nil {
 		logger.Get().Debugw("checkVRAMForModel: решение о памяти (memfit)",
@@ -1892,6 +1892,22 @@ func (b *Backend) UnloadModel(name string) error {
 	if b.metrics != nil {
 		b.metrics.RecordUnload(name)
 	}
+
+	// R83-фикс (2026-10-01): обновляем снимок VRAM СРАЗУ после выгрузки.
+	//
+	// Зачем. MemfitBudget читает снимок b.gpuDevices (не зовёт CUDA в горячем
+	// пути). После выгрузки модели память освободилась, но снимок оставался
+	// СТАРЫМ — со «занятой» моделью. Поэтому следующая загрузка (reload)
+	// оценивала бюджет как «свободно ~4.7 ГБ минус резерв» и раскладывала на GPU
+	// лишь ~18-20 слоёв из 43, хотя после выгрузки доступно ~8 ГБ.
+	//
+	// Живой замер (2026-10-01, gemma-4 Q4_K_M, RTX 3070 8 GB):
+	//   memfit verdict: requestedGPULayers=40 → optimal=18,
+	//   vramAvailableMB=2671 (снимок со занятой моделью), stage=partial_offload;
+	//   фактически после загрузки 18 слоёв: vramUsedMB=3476, свободно 4715 МБ.
+	// Итог: 25 слоёв считались на CPU, prefill 22.6k токенов занимал ~300 с, и
+	// клиент (Cline, лимит 300 с) не дожидался первого токена.
+	b.refreshGPUDeviceVRAM()
 
 	logger.Get().Infow("model unloaded", "name", name)
 	return nil

@@ -1149,6 +1149,54 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					if c, ok := msgMap["content"].(string); ok && c != "" {
 						upstreamDoneContent = c
 					}
+					// R83-фикс (2026-10-01): tool call может прийти ЦЕЛИКОМ в
+					// финальном (done) чанке — ровно так делает cppworker на
+					// пути /api/chat с tools: он буферизует ответ и отдаёт его
+					// одним сообщением с finish_reason.
+					//
+					// Живой дефект (Cline → балансер → /api/chat): модель
+					// выдала JSON-массив tool_calls, cppworker вернул его в
+					// message.content последнего чанка, а балансер этот content
+					// «вырезал» (он ждал tool call в deltaContent, где его не
+					// было) и клиент получал пустой ответ:
+					//   "model produced an empty response (inference succeeded
+					//    but output is empty)" ← сообщение Cline.
+					// Прямой запрос в cppworker при этом отдавал корректный
+					// JSON, а OpenAI-путь (/v1/chat/completions) — корректный
+					// tool_calls. Ломался только Ollama-путь.
+					//
+					// Теперь, как и для дельт, пытаемся извлечь tool calls из
+					// финального content и, если получилось, отдаём их штатным
+					// механизмом (writeStreamingSSEDone с toolAccum). Если не
+					// получилось — content остаётся как есть и доезжает до
+					// клиента: потерять ответ модели нельзя.
+					if !contentToolCallsProcessed && upstreamDoneContent != "" {
+						if detectedTC, remainingTC, found := detectAndExtractToolCallsFromContent(upstreamDoneContent); found && len(detectedTC) > 0 {
+							// Кладём в тот же аккумулятор, что и дельты
+							// (toolAccum — map[index]*accumulatedToolCall),
+							// чтобы финальный NDJSON отдал их штатно.
+							for i, raw := range detectedTC {
+								tcm, ok := raw.(map[string]interface{})
+								if !ok {
+									continue
+								}
+								entry := &accumulatedToolCall{index: i, function: map[string]interface{}{}}
+								if id, ok := tcm["id"].(string); ok {
+									entry.id = id
+								}
+								if fn, ok := tcm["function"].(map[string]interface{}); ok {
+									entry.function = fn
+								}
+								toolAccum[i] = entry
+							}
+							contentToolCallsProcessed = true
+							upstreamDoneContent = cleanContentAfterToolCallExtraction(stripServiceTokens(remainingTC))
+							logger.Get().Infow("proxyRequestLlamaCpp: tool_calls извлечены из финального (done) чанка",
+								"backend", backendID, "model", modelFromCtx,
+								"tool_calls_count", len(detectedTC),
+								"remaining_content_len", len(upstreamDoneContent))
+						}
+					}
 				}
 			} else if originalPath == "/api/generate" {
 				// Для /api/generate content лежит в chunk["choices"][0].text или в done_chunk.response

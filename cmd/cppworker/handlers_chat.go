@@ -1355,6 +1355,45 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 
 	// 2026-06-24: ???????? ?? ?????? ????? ????? cleanFinalContent (gemma antiprompt).
 	if len(toolCalls) == 0 && strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
+		// R83/v51 (2026-10-12): не врём клиенту "empty response", если модель
+		// реально что-то сгенерировала — просто наша очистка/парсер не смогли
+		// распознать вывод (например, незакрытый tool-call блок, который срезал
+		// antiprompt, или служебные токены, оставшиеся без полезного текста).
+		// Отдаём сырой (но безопасный для клиента) вывод как content, чтобы
+		// пользователь видел, что именно ответила модель.
+		rawPreview := strings.TrimSpace(sanitizeStreamText(fullOutput))
+		meaningful := stripKnownServiceTokens(rawPreview)
+		if rawPreview != "" && meaningful != "" {
+			logger.Get().Warnw("writeChatStreamResponseWithTools: tool call не распознан — отдаём сырой вывод как content",
+				"model", modelName,
+				"raw_len", len(fullOutput),
+				"clean_len", len(cleanFinalContent(fullOutput)),
+				"preview", truncateForLog(rawPreview, 300))
+			chunk := map[string]interface{}{
+				"model":      modelName,
+				"created_at": createdAt,
+				"message":    map[string]string{"role": "assistant", "content": rawPreview},
+				"done":       false,
+			}
+			chunkJSON, _ := json.Marshal(chunk)
+			sw.Writef("%s\n", chunkJSON)
+			doneChunk := map[string]interface{}{
+				"model":       modelName,
+				"created_at":  createdAt,
+				"message":     map[string]string{"role": "assistant", "content": ""},
+				"done":        true,
+				"done_reason": "stop",
+			}
+			doneJSON, _ := json.Marshal(doneChunk)
+			sw.Writef("%s\n", doneJSON)
+			sw.Flush()
+			return
+		}
+		// R83/v51: сырой вывод тоже пуст или состоит только из служебных
+		// токенов — только тогда честно сообщаем об ошибке.
+		logger.Get().Warnw("writeChatStreamResponseWithTools: inference вернула пустой вывод — отдаём error-чанк",
+			"model", modelName,
+			"raw_len", len(fullOutput))
 		errChunk := map[string]interface{}{
 			"model":       modelName,
 			"created_at":  createdAt,

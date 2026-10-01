@@ -62,3 +62,34 @@ func sanitizeStreamText(s string) string {
 	}
 	return b.String()
 }
+
+// stripKnownServiceTokens — R83/v51 (2026-10-12): убирает из текста ВСЕ
+// известные служебные токены chat-шаблонов (не только хвостовые, как
+// cleanFinalContent). Нужна исключительно для диагностики: понять, есть ли в
+// сыром выводе модели хоть какое-то настоящее содержимое, прежде чем отдавать
+// его клиенту вместо ошибки "empty response".
+//
+// Пример: gemma эмитит единственный токен "<end_of_turn>" — raw output не пуст,
+// но содержания в нём нет, и подсовывать его клиенту как content нельзя.
+func stripKnownServiceTokens(s string) string {
+	if s == "" {
+		return ""
+	}
+	for _, tok := range trailingToolTokens {
+		s = strings.ReplaceAll(s, tok, "")
+	}
+	return strings.TrimSpace(s)
+}
+
+// truncateForLog обрезает строку для лога до n РУН (не байт), чтобы не порвать
+// UTF-8 посередине символа.
+func truncateForLog(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}

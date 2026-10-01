@@ -14,7 +14,14 @@
 # -----------------------------------------------------------------------------
 # Stage 1: llama-builder — сборка libllama.a + libggml*.a с CUDA
 # -----------------------------------------------------------------------------
-FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04 AS llama-builder
+
+# CUDA_BASE — реестр базового образа CUDA. Объявлен ДО первого FROM: только
+# такой ARG доступен в строках FROM. Зеркало по умолчанию (timeweb) отдаёт
+# большой слой devel-образа (2.34 GB) со скоростью ~110 KB/s — сборка висит
+# часами. Быстрый обход: --build-arg CUDA_BASE=mirror.gcr.io/nvidia/cuda
+# (проверено на стенде: 77 MB/s, образ тянется за секунды).
+ARG CUDA_BASE=dockerhub.timeweb.cloud/nvidia/cuda
+FROM ${CUDA_BASE}:12.2.0-devel-ubuntu22.04 AS llama-builder
 
 # CUDA_ARCH:
 #   "all"  — собрать под широкий список архитектур (61;70;75;80;86;89;90;120)
@@ -105,7 +112,7 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
 # -----------------------------------------------------------------------------
 # Stage 2: bridge-builder — сборка libollamalegion_bridge.a
 # -----------------------------------------------------------------------------
-FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-builder
+FROM ${CUDA_BASE}:12.2.0-devel-ubuntu22.04 AS bridge-builder
 
 # Round 14a (2026-07-28): nlohmann-json3-dev для c/llama.cpp/common/
 # (nlohmann/json_fwd.hpp, nlohmann/json.hpp — нужны для chat.h).
@@ -145,7 +152,7 @@ RUN mkdir -p build && cd build && \
 # -----------------------------------------------------------------------------
 # Stage 3: go-builder — Go сборка с CGo
 # -----------------------------------------------------------------------------
-FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04 AS go-builder
+FROM ${CUDA_BASE}:12.2.0-devel-ubuntu22.04 AS go-builder
 
 ARG GO_VERSION=1.24.3
 
@@ -211,7 +218,7 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOMAXPROCS=2 \
 # Полная документация:
 #   c/bridge/tests/test_batch_n_tokens.c
 #   c/bridge/tests/test_batched_batch.c
-FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-tests
+FROM ${CUDA_BASE}:12.2.0-devel-ubuntu22.04 AS bridge-tests
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends cmake gcc g++ && \
@@ -230,7 +237,7 @@ RUN mkdir -p build && cd build && \
 # -----------------------------------------------------------------------------
 # Stage 4: runtime
 # -----------------------------------------------------------------------------
-FROM dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS runtime
+FROM ${CUDA_BASE}:12.2.0-runtime-ubuntu22.04 AS runtime
 
 WORKDIR /app
 

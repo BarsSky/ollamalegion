@@ -70,6 +70,11 @@ param(
     [string]$Tag = "",
     [string[]]$Services = @("balancer", "cppworker", "agent", "webui"),
     [int]$CudaArch = 86,
+    # Реестр базового образа CUDA для cppworker (ARG CUDA_BASE в Dockerfile.gpu).
+    # Оставлено настраиваемым намеренно: зеркало по умолчанию (timeweb) отдаёт
+    # слой devel-образа 2.34 GB со скоростью ~110 KB/s, и сборка висит часами.
+    # Быстрый обход: -CudaBase mirror.gcr.io/nvidia/cuda (проверено: 77 MB/s).
+    [string]$CudaBase = "",
     [switch]$SkipBuild,
     [switch]$NoDeploy,
     [switch]$NoAlias,
@@ -161,7 +166,12 @@ foreach ($svc in $Services) {
             "cppworker" {
                 # CUDA_ARCH — только нужная архитектура: default "all" в Dockerfile.gpu
                 # собирает 9 архитектур (~9x дольше) и нужен лишь для multi-arch.
-                docker build --build-arg CUDA_ARCH=$CudaArch -t $imageRef -f docker/cppworker/Dockerfile.gpu .
+                # CUDA_BASE — реестр базового образа; пусто = дефолт Dockerfile.
+                if ($CudaBase -ne "") {
+                    docker build --build-arg CUDA_ARCH=$CudaArch --build-arg CUDA_BASE=$CudaBase -t $imageRef -f docker/cppworker/Dockerfile.gpu .
+                } else {
+                    docker build --build-arg CUDA_ARCH=$CudaArch -t $imageRef -f docker/cppworker/Dockerfile.gpu .
+                }
             }
             "agent" {
                 # Продовый стек использует GPU-агента (nvidia runtime) → target agent-gpu.

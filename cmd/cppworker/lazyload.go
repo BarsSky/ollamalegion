@@ -487,6 +487,26 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 		//
 		// Отвязываем ВСЕГДА: загрузка — разделяемый ресурс, её контекст не может
 		// принадлежать ни одному из клиентов.
+		// R83/v52 (2026-10-01): ленивая загрузка обязана уважать профиль модели —
+		// тот же, что применяет балансер при auto-load.
+		//
+		// ДЕФЕКТ (замер стенда). handleLoadModel/handleReloadModel вызывают
+		// applyProfileToLoadRequest, а этот путь — нет. Прямой запрос к cppworker
+		// (WebUI, диагностика, клиент мимо балансера) поднимал модель на
+		// env-дефолтах контейнера: kvCacheType=f16 вместо профильного q4_0. KV
+		// вырастал вчетверо, memfit видел «не влезает» и оставлял 19 слоёв из 42
+		// на CPU — tokenLatencyMs 1035 (≈1 с/токен) против 125 мс у инстанса,
+		// загруженного балансером. Гейт n_ctx при этом уже считал KV по профилю
+		// (memfit_gate.effectiveKVCacheTypeForLoad) — то есть решение принималось
+		// по одному типу KV, а загрузка шла с другим.
+		//
+		// Профиль только ДОПОЛНЯЕТ: applyProfileToLoadRequest заполняет поля,
+		// которые остались пустыми/нулевыми, поэтому окно от клиента
+		// (opts.ContextSize) не перезаписывается.
+		if err := applySyncedProfileToLazyLoadOpts(modelName, &opts); err != nil {
+			return "", err
+		}
+
 		loadCtx, cancelLoad := loadContextForSharedLoad()
 		defer cancelLoad()
 
@@ -556,6 +576,45 @@ func backendGPUVRAMFree() uint64 {
 		free += d.VRAMFreeMB
 	}
 	return free
+}
+
+// applySyncedProfileToLazyLoadOpts — R83/v52 (2026-10-01): дополнить план ленивой
+// загрузки профилем модели (pull-sync с балансера).
+//
+// ДЕФЕКТ (замер стенда). handleLoadModel/handleReloadModel вызывают
+// applyProfileToLoadRequest, а путь ленивой загрузки — нет. Прямой запрос к
+// cppworker (WebUI, диагностика, клиент мимо балансера) поднимал модель на
+// env-дефолтах контейнера: kvCacheType=f16 вместо профильного q4_0. KV вырастал
+// вчетверо, memfit видел «не влезает» и оставлял 19 слоёв из 42 на CPU —
+// tokenLatencyMs 1035 (≈1 с/токен) против 125 мс у инстанса, который поднял
+// балансер. Гейт n_ctx при этом уже считал KV по профилю
+// (memfit_gate.effectiveKVCacheTypeForLoad): решение принималось по одному типу
+// KV, а загрузка шла с другим.
+//
+// Профиль только ДОПОЛНЯЕТ план: applyProfileToLoadRequest заполняет пустые поля,
+// поэтому окно, выбранное под клиента (opts.ContextSize), не перезаписывается.
+func applySyncedProfileToLazyLoadOpts(modelName string, opts *cppbackend.LoadModelOpts) error {
+	if opts == nil || profileSyncer == nil {
+		return nil
+	}
+	prof := profileSyncer.applyProfileOnLoad(modelName)
+	if prof == nil {
+		return nil
+	}
+	ctxSize, batch, gpuLayers := opts.ContextSize, opts.BatchSize, opts.GPULayers
+	flashAttn, kvCacheType := opts.FlashAttnType, opts.KVCacheType
+	if !applyProfileToLoadRequest(prof, &ctxSize, &batch, &gpuLayers, &flashAttn, &kvCacheType) {
+		return fmt.Errorf("model %s is marked as disabled in profile", modelName)
+	}
+	if kvCacheType != opts.KVCacheType {
+		logger.Get().Infow("lazy-load: kvCacheType взят из профиля модели (R83/v52)",
+			"model", modelName,
+			"kv_cache_type", kvCacheType,
+			"was", opts.KVCacheType)
+	}
+	opts.ContextSize, opts.BatchSize, opts.GPULayers = ctxSize, batch, gpuLayers
+	opts.FlashAttnType, opts.KVCacheType = flashAttn, kvCacheType
+	return nil
 }
 
 // writeLoadingResponse — хелпер: отвечает 503 Service Unavailable с JSON

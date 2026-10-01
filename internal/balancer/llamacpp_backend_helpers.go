@@ -610,6 +610,23 @@ func basenameOfPath(p string) string {
 	return p
 }
 
+// buildAutoLoadRequest — R83-фикс (2026-10-01): сборка запроса авто-загрузки.
+//
+// Единицы измерения важны: `contextSize` у cppworker — СУММАРНОЕ окно модели,
+// `contextPerSeq` — окно НА КЛИЕНТА (cppworker сам умножит его на число слотов
+// и прибавит выравнивание 256). Клиентский `num_ctx` — всегда второе, поэтому
+// вызывающий передаёт его именно в ctxPerSeq. Вынесено в функцию, чтобы правило
+// было покрыто тестом.
+func buildAutoLoadRequest(modelName string, ctxSize, ctxPerSeq, gpuLayers *int) ModelOpRequest {
+	return ModelOpRequest{
+		Operation:     "load",
+		ModelName:     modelName,
+		ContextSize:   ctxSize,
+		ContextPerSeq: ctxPerSeq,
+		GPULayers:     gpuLayers,
+	}
+}
+
 // ensureModelLoadedOnBackend автоматически загружает модель в VRAM на cppworker-бэкенде,
 // если она ещё не загружена. Нужно для обработки inference-запросов (chat/generate) на
 // холодную. С auto-load балансер сам СИНХРОННО грузит модель (до 5 минут), дожидается
@@ -761,11 +778,26 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		return false, fmt.Errorf("model manager not available")
 	}
 	var ctxSize *int
+	var ctxPerSeq *int
 	var gpuLayers *int
 	if len(extraOpts) > 0 {
 		opts := extraOpts[0]
 		if opts.NumCtx > 0 {
-			ctxSize = &opts.NumCtx
+			// R83-фикс (2026-10-01): opts.NumCtx — это окно НА КЛИЕНТА
+			// (`num_ctx` запроса после ResolveNumCtx), а не суммарное n_ctx
+			// модели. Передаём его как contextPerSeq: cppworker сам посчитает
+			// суммарное (PAD256(окно) × слоты) — он единственный, кто знает и
+			// CPPWORKER_N_PARALLEL, и профиль.
+			//
+			// ЧТО БЫЛО. Значение уходило в contextSize, который cppworker
+			// трактует как СУММАРНОЕ окно. При parallel=2 клиент получал ровно
+			// половину: запросил 32768 → получил слот на 16384 → его же запрос
+			// отвергался («effective n_ctx=16384… required 32768»), а клиент с
+			// окном 32768 вообще не мог работать. Живое воспроизведение
+			// 2026-10-01: после auto-load от балансера /api/models показывал
+			// context_size=32768, context_per_seq=16384.
+			perSeq := opts.NumCtx
+			ctxPerSeq = &perSeq
 		}
 		if opts.GPULayers > 0 {
 			gpuLayers = &opts.GPULayers
@@ -800,12 +832,7 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 	// загруженную модель → 200.
 	//
 	// Sync mode (LB_AUTO_LOAD_ASYNC=0) для debug / long-running клиентов.
-	opReq := ModelOpRequest{
-		Operation:   "load",
-		ModelName:   modelName,
-		ContextSize: ctxSize,
-		GPULayers:   gpuLayers,
-	}
+	opReq := buildAutoLoadRequest(modelName, ctxSize, ctxPerSeq, gpuLayers)
 	if lr.proxy.lbAutoLoadAsync {
 		// Async mode: kick off load in goroutine, return immediately.
 		// mm.ExecuteOperation handles dedup (mm.activeOps), state update (R60.32),

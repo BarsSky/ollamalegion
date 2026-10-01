@@ -330,6 +330,31 @@ func (b *Backend) KVLayersForModel(name string) (layers, headDim int, ok bool) {
 	return kvLayers, headDim, true
 }
 
+// applyKVPlanToSpec — R83/v52 (2026-10-01): перенести раскладку KV-кэша из
+// метаданных модели в спецификацию памяти.
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. checkVRAMForModel собирал spec вручную и брал из
+// метаданных только «слоёв с кэшем» + head_dim. Для gemma-4 этого мало: 24 слоя
+// с кэшем, но 20 из них живут в окне 512 токенов, и без оконных полей memfit
+// снова считал KV как «все слои × n_ctx» (3.17 GB вместо 294 MiB на 65536) и
+// оставлял 7 слоёв из 42 на CPU — генерация 5-9 tok/s вместо 30+. Ошибку ловит
+// TestApplyKVPlanToSpec_Gemma4.
+func applyKVPlanToSpec(spec *memfit.ModelSpec, meta *GGUFModelMeta) {
+	if spec == nil || meta == nil {
+		return
+	}
+	plan := meta.KVPlan()
+	if l := plan.KVLayers(); l > 0 {
+		spec.KVLayers = l
+	}
+	if hd := plan.GlobalHeadDim; hd > 0 {
+		spec.KVHeadDim = hd
+	}
+	spec.KVSWALayers = plan.SWALayers
+	spec.SWAWindow = plan.SWAWindow
+	spec.SWAHeadDim = plan.SWAHeadDim
+}
+
 // MemfitSpecFromValues — сборка ModelSpec из уже известных чисел (например, из
 // GGUF-заголовка, прочитанного в checkVRAMForModel: там файл повторно не читается).
 // kvLayers/kvHeadDim = 0 означают «неизвестно» → memfit берёт верхнюю оценку.

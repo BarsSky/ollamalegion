@@ -1516,12 +1516,7 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 	spec := MemfitSpecFromValues(name, fi.Size(), totalLayers, nHeads, nKvHeads, nEmbd, 0, 0, 0)
 	if mm := b.ModelManager(); mm != nil {
 		if meta, err := mm.GetModelMeta(name); err == nil && meta != nil {
-			if l, _ := meta.KVLayers(); l > 0 {
-				spec.KVLayers = l
-			}
-			if hd := meta.KVHeadDim(); hd > 0 {
-				spec.KVHeadDim = hd
-			}
+			applyKVPlanToSpec(&spec, meta)
 		}
 	}
 	verdict := memfit.Evaluate(spec, memfit.Request{
@@ -1580,11 +1575,20 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 	// из тех же метаданных, по которым memfit считал раскладку. C-bridge
 	// использует их в оценке свободной VRAM; без них он считает KV по всем
 	// слоям и n_embd/n_heads, завышая его почти в 10 раз.
+	//
+	// R83 (2026-10-01): берём ГЛОБАЛЬНУЮ часть раскладки (KVPlan.GlobalLayers).
+	// Оконные слои в оценку «KV на токен × n_ctx» не входят: их кэш ограничен
+	// окном, а не контекстом (у gemma-4-E4B это 20 слоёв из 24 с окном 512).
 	if header != nil {
-		if l, ok := header.KVLayers(); ok && l > 0 {
+		plan := header.KVPlan()
+		if plan.GlobalLayers > 0 {
+			opts.KVLayers = plan.GlobalLayers
+		} else if l, ok := header.KVLayers(); ok && l > 0 {
 			opts.KVLayers = l
 		}
-		if hd := header.KVHeadDim(); hd > 0 {
+		if hd := plan.GlobalHeadDim; hd > 0 {
+			opts.KVHeadDim = hd
+		} else if hd := header.KVHeadDim(); hd > 0 {
 			opts.KVHeadDim = hd
 		}
 	}

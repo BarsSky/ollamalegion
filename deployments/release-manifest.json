@@ -1,18 +1,18 @@
 {
-    "tag":  "r83-submodule-v44",
-    "builtAt":  "2026-10-01T06:32:46Z",
-    "gitCommit":  "6f05441",
+    "tag":  "r83-submodule-v45",
+    "builtAt":  "2026-10-01T07:12:04Z",
+    "gitCommit":  "7ac8b35",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
     "images":  [
                    {
-                       "service":  "balancer",
-                       "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r83-submodule-v44",
-                       "imageTag":  "r83-submodule-v44",
-                       "imageId":  "sha256:898f0abac6a578503bb90ca789e7981a40e5b80e226799b292f758226dedde9f",
-                       "alias":  "ollama-legion/balancer:latest"
+                       "service":  "cppworker",
+                       "variable":  "CPPWORKER_GPU_TAG",
+                       "image":  "ollama-legion/cppworker:gpu-r83-submodule-v45",
+                       "imageTag":  "gpu-r83-submodule-v45",
+                       "imageId":  "sha256:16eaf044550165e4d80f01d1d038c8c63da3cdf77517f72c744df0a299d93033",
+                       "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    }
                ]
 }

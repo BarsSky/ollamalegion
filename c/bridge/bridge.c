@@ -2201,6 +2201,16 @@ int bridge_infer_stream(
         // Отправляем всё, кроме удерживаемого хвоста.
         if (pending_len > hold) {
             size_t send = pending_len - hold;
+            // Граница отправки не должна разрезать UTF-8: если байт под срезом —
+            // продолжение последовательности (10xxxxxx), сдвигаем границу влево.
+            // Без этого клиент получал битый символ: например, «…» распадалась на
+            // два вызова callback, и в ответе появлялся U+FFFD.
+            while (send > 0 && ((unsigned char)pending[send] & 0xC0) == 0x80) {
+                send--;
+            }
+            if (send == 0) {
+                continue; // весь накопленный хвост ждёт завершения руны
+            }
             if (callback(pending, (int)send, user_data) == 0) {
                 llama_sampler_free(sampler);
                 return BRIDGE_ERR_ABORTED; // CHANGED: 0 → BRIDGE_ERR_ABORTED

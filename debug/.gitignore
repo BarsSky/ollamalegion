@@ -1,0 +1,44 @@
+# debug/ — локальные инструменты диагностики стенда.
+#
+# В git попадают только сами инструменты (Go-пробники и скрипты) — они нужны,
+# чтобы повторить разбор из docs/deployment-stack.md §7.7. Транзиентные
+# результаты прогонов (логи сборки, дампы ответов, тела запросов) не версионируем.
+*.log
+*.txt.tmp
+t1.json
+t2.json
+t3_request.json
+t3_response.json
+t3b_response.json
+t4_request.json
+t4_out.txt
+t5_request.json
+t5_all.txt
+t6_request.json
+t6_repeat.txt
+cline_shape.json
+sp1.json
+sp2.json
+pull_cuda.log
+pull_cuda_devel.log
+pull_devel2.log
+build_v55.log
+build_v55b.log
+pull_devel2.log
+repro_cline_r83.json
+repro_cline_r83.log
+w.json
+w2.json
+w3.json
+w4.json
+w5.json
+w6.json
+warm.json
+lb_req.json
+lb_req2.json
+ft.json
+l42.json
+load42.json
+load_body.json
+v53_sp.json
+v53_warm.json

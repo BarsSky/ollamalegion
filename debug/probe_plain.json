@@ -1,0 +1,1 @@
+{"options":{"num_predict":400,"num_ctx":32768},"messages":[{"content":"Напиши 10 предложений о языке Go.","role":"user"}],"model":"gemma-4-E4B-it-Q4_K_M","stream":true}

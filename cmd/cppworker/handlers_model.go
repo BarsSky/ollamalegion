@@ -1882,28 +1882,6 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 					calculated = -2
 				} else {
 					calculated = strategy.GPULayers
-					// R83-фикс (2026-10-01): если memfit — единая точка решения,
-					// которой пользуется и ленивая загрузка (cppbackend.
-					// checkVRAMForModel) — даёт БОЛЬШЕ слоёв, берём его значение.
-					//
-					// Почему это нужно. SelectStrategy оценивает KV-cache и
-					// бюджет консервативно: на живом стенде (gemma-4 Q4_K_M,
-					// RTX 3070 8 GB, ctx=65536) она оставляла 20 слоёв из 43, и
-					// после загрузки 4.7 ГБ VRAM простаивали, а 23 слоя считались
-					// на CPU. Prefill 22k токенов занимал ~300 с (клиент с лимитом
-					// 300 с не дожидался первого токена). Через ленивую загрузку
-					// (memfit) та же модель раскладывается на 35 слоёв и даёт
-					// prefill 72 с. Здесь приводим путь авто-загрузки от балансера
-					// к тому же решению.
-					if gl, ok := memfitGPULayersForModel(m, opts.KVCacheType); ok && gl > calculated {
-						logger.Get().Infow("load: memfit даёт больше GPU-слоёв, чем стратегия — берём memfit",
-							"name", req.Name,
-							"strategy_gpu_layers", calculated,
-							"memfit_gpu_layers", gl,
-							"ctx", m.ContextSize)
-						calculated = gl
-						memfitDecided = true
-					}
 					// Round 40 #2 (2026-08-18): respect user-explicit kvCacheType
 					// (from reload body or profile). Previously this was an
 					// unconditional override `opts.KVCacheType = strategy.KVCacheType`

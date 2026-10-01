@@ -2199,24 +2199,28 @@ int bridge_infer_stream(
         }
 
         // Отправляем всё, кроме удерживаемого хвоста.
+        //
+        // ВАЖНО: токен обязан уйти в llama_decode НИЖЕ, даже если сейчас мы
+        // ничего не отправляем (send == 0). Пропуск шага декодирования
+        // рассинхронизирует KV-кэш и позиции: следующая итерация сэмплирует
+        // токен из состояния без предыдущего, и llama_decode падает с
+        // «llama_decode failed during generation step».
         if (pending_len > hold) {
             size_t send = pending_len - hold;
             // Граница отправки не должна разрезать UTF-8: если байт под срезом —
             // продолжение последовательности (10xxxxxx), сдвигаем границу влево.
-            // Без этого клиент получал битый символ: например, «…» распадалась на
-            // два вызова callback, и в ответе появлялся U+FFFD.
+            // Без этого клиент получал битый символ (U+FFFD).
             while (send > 0 && ((unsigned char)pending[send] & 0xC0) == 0x80) {
                 send--;
             }
-            if (send == 0) {
-                continue; // весь накопленный хвост ждёт завершения руны
+            if (send > 0) {
+                if (callback(pending, (int)send, user_data) == 0) {
+                    llama_sampler_free(sampler);
+                    return BRIDGE_ERR_ABORTED; // CHANGED: 0 → BRIDGE_ERR_ABORTED
+                }
+                memmove(pending, pending + send, pending_len - send);
+                pending_len -= send;
             }
-            if (callback(pending, (int)send, user_data) == 0) {
-                llama_sampler_free(sampler);
-                return BRIDGE_ERR_ABORTED; // CHANGED: 0 → BRIDGE_ERR_ABORTED
-            }
-            memmove(pending, pending + send, pending_len - send);
-            pending_len -= send;
         }
 
         // Декодируем следующий шаг

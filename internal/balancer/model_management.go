@@ -725,7 +725,27 @@ func (mm *ModelManager) profileForLoad(modelName string) (types.LlamaCppModelPro
 // окружением контейнера (CPPWORKER_N_PARALLEL) — см. internal/cppbackend
 // resolveNParallel, где то же число уходит и в C-bridge, и в SlotManager.
 func applyProfileLoadParams(req *ModelOpRequest, prof types.LlamaCppModelProfile) {
-	if req == nil || prof.IgnoreDefaults {
+	if req == nil {
+		return
+	}
+	if prof.IgnoreDefaults {
+		// R83-фикс (2026-10-01): объясняем пропуск профиля в логе.
+		//
+		// ignoreDefaults=true означает «профиль ничего не подставляет». Это
+		// ожидаемое поведение, но в сочетании с «настройками по умолчанию»
+		// получается ловушка: профиль модели с numGpuLayers=-1/AUTO молча
+		// теряется, а значение из defaultModelProfile (например 20 слоёв)
+		// выигрывает — модель работает наполовину на CPU, и по логам загрузки
+		// не видно, ПОЧЕМУ. Живой случай 2026-10-01: gemma-4 грузился на 20
+		// слоях из 43 (4.7 ГБ VRAM простаивали, prefill 22k токенов ≈ 300 с)
+		// при профиле модели с -1, потому что defaultModelProfile нёс 20.
+		if req.ModelName != "" {
+			logger.Get().Infow("applyProfileLoadParams: профиль модели пропущен (ignoreDefaults=true) — "+
+				"действуют «настройки по умолчанию» и env контейнера",
+				"model", req.ModelName,
+				"profile_context_length", prof.ContextLength,
+				"profile_num_gpu_layers", prof.NumGPULayers)
+		}
 		return
 	}
 	if req.ContextSize == nil && prof.ContextLength > 0 {

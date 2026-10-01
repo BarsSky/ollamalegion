@@ -146,29 +146,35 @@ func writeRequestedWindowTooSmall(
 	w http.ResponseWriter, r *http.Request,
 	modelName, backendID string, requestedPerClient, loadedPerClient, required int,
 ) {
+	// ВАЖНО: bridgeErr.CurrentNCtx — это окно, с которым cppworker обслуживал
+	// ЭТОТ запрос (то есть уже урезанное до клиентского num_ctx), а не окно
+	// загруженной модели. Поэтому в тексте не утверждаем «модель загружена с
+	// окном N», а называем только то, что известно точно: что просил клиент и
+	// сколько нужно промпту. loadedPerClient остаётся машинным полем для
+	// диагностики.
+	_ = loadedPerClient
 	var msg string
 	if requestedPerClient > 0 {
 		msg = fmt.Sprintf(
 			"Промпт не помещается в контекстное окно, которое запросил клиент: "+
-				"запрошено %d токенов, а промпту нужно %d. Модель %s загружена с окном %d токенов на клиента. "+
+				"запрошено %d токенов, а промпту нужно %d. "+
 				"Увеличьте num_ctx в настройках модели клиента (до %d или больше) либо сократите промпт/историю.",
-			requestedPerClient, required, modelName, loadedPerClient, required)
+			requestedPerClient, required, required)
 	} else {
 		msg = fmt.Sprintf(
-			"Промпт не помещается в загруженное окно модели: промпту нужно %d токенов, "+
-				"а модель %s загружена с окном %d токенов на клиента. Клиент не указал num_ctx, поэтому "+
-				"балансер не перезагружает модель сам: укажите num_ctx в клиенте (не меньше %d) "+
-				"или сократите промпт/историю.",
-			required, modelName, loadedPerClient, required)
+			"Промпт не помещается в загруженное окно модели: промпту нужно %d токенов. "+
+				"Клиент не указал num_ctx, поэтому балансер не перезагружает модель сам: "+
+				"укажите num_ctx в клиенте (не меньше %d) или сократите промпт/историю.",
+			required, required)
 	}
 	body := map[string]interface{}{
-		"error":                   msg,
-		"reason":                  "клиент не запросил большее окно — автоматическая перезагрузка модели не выполняется",
-		"requested_num_ctx":       requestedPerClient,
-		"required_n_ctx":          required,
-		"loaded_per_client_n_ctx": loadedPerClient,
-		"model":                   modelName,
-		"backend_id":              backendID,
+		"error":                     msg,
+		"reason":                    "клиент не запросил большее окно — автоматическая перезагрузка модели не выполняется",
+		"requested_num_ctx":         requestedPerClient,
+		"required_n_ctx":            required,
+		"cppworker_effective_n_ctx": loadedPerClient,
+		"model":                     modelName,
+		"backend_id":                backendID,
 		"what_to_do": fmt.Sprintf(
 			"В клиенте (Cline: «Model Context Window», OpenWebUI: num_ctx) поставьте не меньше %d "+
 				"и сократите историю/промпт. Балансер не меняет окно модели без явного запроса клиента.",

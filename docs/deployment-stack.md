@@ -880,6 +880,71 @@ docker logs --since 10m ol-stack-balancer 2>&1 | grep -E 'STREAMING_IDLE_TIMEOUT
 
 ---
 
+## 7.7 «Model returned empty response»: разбор по логам (R83, 2026-10-01)
+
+Симптом: Cline на gemma-4-E4B-it-Q4_K_M отвечает `Model returned empty response`
+(первый разбор — §7.4). На живом стенде разобрано ДО КОНЦА: в журнале сессии
+Cline (`~/.cline/data/sessions/<id>/*.messages.json`) лежат два РАЗНЫХ сбоя.
+
+**Сбой 1 — пустой вывод модели.** Текст ошибки, который показал Cline, —
+дословно наш чанк: `model produced an empty response (inference succeeded but
+output is empty)`. В логе cppworker этому соответствует WARN с `raw_len=0`:
+модель завершила ход первым же токеном EOG и не сгенерировала ни одного байта.
+Воспроизведено пробником (`debug/streamprobe`) на запросе Cline с 18 tools —
+примерно каждый второй-третий прогон. Лечение: один повторный проход генерации
+(`CPPWORKER_EMPTY_OUTPUT_RETRY`, default true) + диагностический WARN с
+`raw_len`; подтверждение из лога:
+
+```
+WARN  writeChatStreamResponseWithTools: пустой вывод модели (raw_len=0) — повторная генерация  prompt_tokens=2513
+INFO  writeChatStreamResponseWithTools: повторная генерация завершена  raw_len=311
+```
+
+**Сбой 2 — клиент отвалился раньше ответа.** `Model returned empty response` —
+это уже текст САМОГО Cline. `/api/v1/cppworker/debug/last-stream` по 5-минутной
+попытке: `tokens_sent=0, bytes_written=380, reason=ctx_done_on_write,
+duration_ms=306047`. 380 байт за 306 с — это ровно 20 keepalive-ов
+(`{"keepalive":true}` раз в 15 с); ни одного токена ответа клиент не получил.
+Причина — tools-ветка `/api/chat` буферизовала ответ целиком и отдавала его
+одним финальным чанком.
+
+**Почему ответ и не успевал.** Модель работала на 35 слоях из 42 (7 слоёв на
+CPU) — 5.3–9.4 tok/s. Проверка показала, что memfit завышал KV-кэш в 4–6 раз:
+у gemma-4 кэш держат 24 слоя из 42 (`attention.shared_kv_layers=18`), из них
+глобальных всего 4 (слои 5/11/17/23, паттерн окна `111110×7`), остальные 20 живут
+в окне 512 токенов с отдельной головой (`key_length_swa=256`). Оценка «все слои ×
+n_ctx» давала 3.17 GB вместо 294 MiB на n_ctx=65536.
+
+Исправлено четыре слоя одного дефекта: раскладка KV (`KVPlan`, `internal/cppbackend/kv_layers.go`),
+перенос раскладки в вердикт memfit, поиск метаданных по имени клиента
+(`GetModelMetaResolved`) и применение профиля при ленивой загрузке cppworker.
+Живой результат:
+
+| Метрика | До | После |
+|---|---|---|
+| Слоёв на GPU | 35/42 (ленивый путь 19/42) | **42/42** |
+| `tokenLatencyMs` | 125–1035 | **32** |
+| Генерация | 5.3–9.4 tok/s | **31.6 tok/s** |
+| Cline-образный запрос (18 tools) через балансер | 31 s | **4.9 s**, `done_reason=tool_calls` |
+
+Дополнительно: tools-ветка теперь отдаёт prose дельтами, удерживая окно 32 байта
+вокруг маркера tool call (`CPPWORKER_TOOLS_STREAM_CONTENT`, default true), а в
+`c/bridge/bridge.c` убран повтор всей накопленной выдачи при срабатывании
+antiprompt (дублирование хвоста до ~1 КБ) — вместо этого хвост удерживается и
+каждый токен уходит клиенту ровно один раз.
+
+Проверка (пробник показывает время прихода каждого чанка, ищет дублирование
+хвоста, утечку маркера tool call и битый UTF-8):
+
+```bash
+go run ./debug/streamprobe http://127.0.0.1:18080/api/chat debug/probe_tools.json
+# ждём: DONE reason=tool_calls, контента нет (JSON вызова в content не утекает)
+go run ./debug/streamprobe http://127.0.0.1:18080/api/chat debug/probe_prose_tools.json
+# ждём: сотни контентных чанков, «UTF-8 в ответе корректен», «дублирования хвоста не обнаружено»
+```
+
+---
+
 ## 8. Диагностика: что смотреть при проблемах
 
 ```bash

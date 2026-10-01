@@ -1279,9 +1279,34 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		recordLastPromptFromErrorWithContext(modelName, "/api/chat", prompt, &params, true, streamErr, r)
 	}()
 
-	// Round 6 Fix 5: callback ONLY buffers. Prose is NEVER sent to the wire
-	// because it might be part of a tool_call (Gemma-4 / Qwen3 stream prose
-	// before tool_call). Without buffering, clients see raw JSON in chat.
+	// R83/v56 (2026-10-01): потоковая отдача content.
+	//
+	// Round 6 Fix 5 буферизовал ответ целиком («клиент не должен видеть сырой
+	// JSON tool call»), из-за чего на медленном инстансе клиент не получал ни
+	// одного токена до конца генерации и отваливался по своему таймауту.
+	// Теперь prose уходит по мере генерации, а маркер tool call удерживается
+	// окном toolsStreamHoldback (см. tools_stream_r83.go).
+	streamContent := toolsStreamContentEnabled()
+	var emittedLen int
+	var toolsHold bool
+	emitContentDelta := func(delta string) {
+		if delta == "" {
+			return
+		}
+		chunk := map[string]interface{}{
+			"model":      modelName,
+			"created_at": createdAt,
+			"message": map[string]string{
+				"role":    "assistant",
+				"content": delta,
+			},
+			"done": false,
+		}
+		data, _ := json.Marshal(chunk)
+		sw.Writef("%s\n", data)
+		sw.Flush()
+	}
+
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
@@ -1299,6 +1324,39 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		if token != "" {
 			atomic.CompareAndSwapInt64(&firstTokenAt, 0, time.Now().UnixNano())
 		}
+		if !streamContent || toolsHold || token == "" {
+			return true
+		}
+		buf := outputBuf.String()
+		// Предохранитель 1: ответ начинается с JSON — парсер может счесть его
+		// tool_calls целиком (стратегия 4), поэтому дельтами не отдаём.
+		if emittedLen == 0 && toolsStreamStartsWithJSON(buf) {
+			toolsHold = true
+			return true
+		}
+		// Предохранитель 2: в хвосте появился маркер tool call. Prose ПЕРЕД
+		// маркером обязан уйти клиенту (он уже сгенерирован и не является
+		// частью вызова) — иначе окно удержания съедало бы до 32 байт ответа.
+		if pos, ok := toolsStreamMarkerPos(buf, toolsStreamHoldback+len(token)); ok {
+			if pos > emittedLen {
+				emitContentDelta(buf[emittedLen:pos])
+				emittedLen = pos
+			}
+			toolsHold = true
+			logger.Get().Debugw("writeChatStreamResponseWithTools: маркер tool call — content больше не отдаём дельтами",
+				"model", modelName, "emitted", emittedLen, "buffered", len(buf))
+			return true
+		}
+		cut := len(buf) - toolsStreamHoldback
+		if cut <= emittedLen {
+			return true
+		}
+		cut = toolsStreamRuneSafeCut(buf, emittedLen, cut)
+		if cut <= emittedLen {
+			return true
+		}
+		emitContentDelta(buf[emittedLen:cut])
+		emittedLen = cut
 		return true
 	}
 
@@ -1364,19 +1422,36 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		rawPreview := strings.TrimSpace(sanitizeStreamText(fullOutput))
 		meaningful := stripKnownServiceTokens(rawPreview)
 		if rawPreview != "" && meaningful != "" {
+			// R83/v56: если часть ответа уже ушла дельтами, повторно её не
+			// отправляем — иначе клиент, складывающий чанки, увидит текст дважды.
+			tail := rawPreview
+			if emittedLen > 0 && emittedLen <= len(fullOutput) {
+				tail = strings.TrimSpace(sanitizeStreamText(fullOutput[emittedLen:]))
+			}
 			logger.Get().Warnw("writeChatStreamResponseWithTools: tool call не распознан — отдаём сырой вывод как content",
 				"model", modelName,
 				"raw_len", len(fullOutput),
 				"clean_len", len(cleanFinalContent(fullOutput)),
-				"preview", truncateForLog(rawPreview, 300))
-			chunk := map[string]interface{}{
-				"model":      modelName,
-				"created_at": createdAt,
-				"message":    map[string]string{"role": "assistant", "content": rawPreview},
-				"done":       false,
+				"emitted_len", emittedLen,
+				"preview", truncateForLog(tail, 300))
+			emitContentDelta(tail)
+			doneChunk := map[string]interface{}{
+				"model":       modelName,
+				"created_at":  createdAt,
+				"message":     map[string]string{"role": "assistant", "content": ""},
+				"done":        true,
+				"done_reason": "stop",
 			}
-			chunkJSON, _ := json.Marshal(chunk)
-			sw.Writef("%s\n", chunkJSON)
+			doneJSON, _ := json.Marshal(doneChunk)
+			sw.Writef("%s\n", doneJSON)
+			sw.Flush()
+			return
+		}
+		// R83/v56: если что-то уже отдано дельтами, «пустым» ответ назвать
+		// нельзя — закрываем стрим обычным stop, без ложной ошибки.
+		if emittedLen > 0 {
+			logger.Get().Warnw("writeChatStreamResponseWithTools: вывод пуст после отданного префикса — закрываем стрим stop",
+				"model", modelName, "emitted_len", emittedLen, "raw_len", len(fullOutput))
 			doneChunk := map[string]interface{}{
 				"model":       modelName,
 				"created_at":  createdAt,
@@ -1472,10 +1547,36 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		if jsonMode {
 			content = stripJSONFence(content)
 		}
-		msg["content"] = content
+		if streamContent && emittedLen > 0 {
+			// R83/v56: префикс ответа уже ушёл дельтами. В финальный чанк кладём
+			// только остаток (клиент, складывающий чанки, не должен получить
+			// текст дважды), а сам остаток отдаём отдельной дельтой.
+			//
+			// Если маркер tool call всё-таки встречался (toolsHold), остаток
+			// чистим от служебных токенов; иначе отдаём как есть — иначе
+			// cleanFinalContent срезал бы значимый хвостовой пробел/перевод строки.
+			tail := content
+			if emittedLen <= len(fullOutput) {
+				if toolsHold {
+					tail = cleanFinalContent(fullOutput[emittedLen:])
+				} else {
+					tail = sanitizeStreamText(fullOutput[emittedLen:])
+				}
+				if jsonMode {
+					tail = stripJSONFence(tail)
+				}
+			}
+			emitContentDelta(tail)
+			msg["content"] = ""
+			logger.Get().Debugw("writeChatStreamResponseWithTools: text response отдан дельтами",
+				"model", modelName, "emitted_len", emittedLen, "tail_len", len(tail),
+				"tools_hold", toolsHold, "json_mode", jsonMode)
+		} else {
+			msg["content"] = content
+			logger.Get().Debugw("writeChatStreamResponseWithTools: text response (no tool_calls)",
+				"model", modelName, "content_len", len(content), "json_mode", jsonMode)
+		}
 		finalChunk["done_reason"] = "stop"
-		logger.Get().Debugw("writeChatStreamResponseWithTools: text response (no tool_calls)",
-			"model", modelName, "content_len", len(content), "json_mode", jsonMode)
 	}
 
 	doneJSON, _ := json.Marshal(finalChunk)

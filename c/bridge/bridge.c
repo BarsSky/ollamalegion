@@ -717,6 +717,46 @@ static int check_antiprompts(const char* output, size_t output_len, const Genera
     return -1;
 }
 
+// find_antiprompt_anywhere — ищет ЛЮБОЙ antiprompt в буфере и возвращает позицию
+// самого раннего совпадения (или -1).
+//
+// Отличие от check_antiprompts (проверка суффикса): маркер нового хода может
+// прийти не в конце буфера, а внутри токена вместе с последующим текстом
+// («<start_of_turn>model и ещё слова»). Проверка по суффиксу такой маркер не
+// видит, и он уходит клиенту как часть ответа.
+//
+// *out_len — длина найденного маркера (нужна, чтобы отрезать его целиком).
+static int find_antiprompt_anywhere(const char* buf, size_t buf_len,
+                                    const GenerationParams* params,
+                                    size_t* out_pos, size_t* out_len) {
+    if (buf == NULL || params == NULL || params->antiprompts == NULL) {
+        return -1;
+    }
+    size_t best = (size_t)-1;
+    size_t best_len = 0;
+    for (int i = 0; i < params->n_antiprompts; i++) {
+        const char* ap = params->antiprompts[i];
+        if (ap == NULL) continue;
+        size_t ap_len = strlen(ap);
+        if (ap_len == 0 || ap_len > buf_len) continue;
+        for (size_t p = 0; p + ap_len <= buf_len; p++) {
+            if (memcmp(buf + p, ap, ap_len) == 0) {
+                if (p < best) {
+                    best = p;
+                    best_len = ap_len;
+                }
+                break;
+            }
+        }
+    }
+    if (best == (size_t)-1) {
+        return -1;
+    }
+    if (out_pos != NULL) *out_pos = best;
+    if (out_len != NULL) *out_len = best_len;
+    return (int)best;
+}
+
 // trim_antiprompt_suffix — обрезает с конца output хвостовой antiprompt,
 // чтобы пользователь его не увидел. Возвращает новую длину output.
 static size_t trim_antiprompt_suffix(char* output, size_t output_len, int ap_index, const GenerationParams* params) {
@@ -2086,12 +2126,33 @@ int bridge_infer_stream(
     free(tokens);
 
     // Генерируем токены и отправляем через callback
-    // Локальный буфер накапливает последние токены для antiprompt-проверки
-    // (чтобы корректно ловить маркеры длиной в несколько токенов, вроде
-    // "<end_of_turn>"). Размер: max длина antiprompt + запас.
-    char streamed_acc[1024];
-    size_t streamed_acc_len = 0;
-    streamed_acc[0] = '\0';
+    //
+    // R83 (2026-10-01): HOLD-BACK вместо повторной отправки накопленного буфера.
+    //
+    // БЫЛО. Буфер streamed_acc (до 1024 Б) накапливал все токены, каждый токен
+    // уходил в callback сразу, а при совпадении antiprompt клиенту повторно
+    // отправлялся ВЕСЬ буфер минус маркер. То есть уже отправленный текст
+    // приезжал дважды: дублирование хвоста ответа до ~1 КБ (в живом ответе
+    // видно как повтор последнего абзаца).
+    //
+    // СТАЛО. Держим неотправленным ровно хвост длиной max(len(antiprompt)) - 1:
+    // этого достаточно, чтобы поймать многочастный маркер («<start_of_turn>model»
+    // приходит 2-3 токенами) раньше, чем его часть уйдёт клиенту. Каждый токен
+    // отправляется РОВНО ОДИН РАЗ, а хвост сбрасывается по концу генерации.
+    size_t hold = 0;
+    if (params != NULL && params->antiprompts != NULL) {
+        for (int i = 0; i < params->n_antiprompts; i++) {
+            const char* ap = params->antiprompts[i];
+            if (ap == NULL) continue;
+            size_t l = strlen(ap);
+            if (l > hold) hold = l;
+        }
+    }
+    if (hold > 0) hold -= 1;
+
+    char pending[1024];
+    size_t pending_len = 0;
+    int antiprompt_hit = 0;
 
     for (int i = 0; i < n_predict; i++) {
         llama_token new_token = llama_sampler_sample(sampler, im->context, -1);
@@ -2107,44 +2168,45 @@ int bridge_infer_stream(
         }
         token_text[token_len] = '\0';
 
-        // Накапливаем токен в локальный буфер для antiprompt-проверки
-        if (streamed_acc_len + (size_t)token_len + 1 < sizeof(streamed_acc)) {
-            memcpy(streamed_acc + streamed_acc_len, token_text, (size_t)token_len);
-            streamed_acc_len += (size_t)token_len;
-            streamed_acc[streamed_acc_len] = '\0';
-        } else {
-            // буфер переполнен — сбрасываем (anti-prompts мы уже видели)
-            streamed_acc_len = 0;
-            streamed_acc[0] = '\0';
+        if ((size_t)token_len >= sizeof(pending)) {
+            continue; // аномальный токен: один токен длиннее буфера
         }
-
-        // Проверка antiprompt по хвосту буфера. Если совпало — обрезаем хвост
-        // до antiprompt и НЕ отправляем его в callback.
-        int ap_idx = check_antiprompts(streamed_acc, streamed_acc_len, params);
-        if (ap_idx >= 0) {
-            // обрезаем streamed_acc до antiprompt-суффикса
-            const char* ap = params->antiprompts[ap_idx];
-            size_t ap_len = strlen(ap);
-            streamed_acc_len -= ap_len;
-            streamed_acc[streamed_acc_len] = '\0';
-            // отправляем то, что осталось (без antiprompt-хвоста)
-            if (streamed_acc_len > 0) {
-                if (callback(streamed_acc, (int)streamed_acc_len, user_data) == 0) {
-                    llama_sampler_free(sampler);
-                    return 0;
-                }
+        if (pending_len + (size_t)token_len >= sizeof(pending)) {
+            // Не должно случаться: pending ограничен hold + один токен.
+            // Страховка от потери текста — отправляем накопленное как есть.
+            if (callback(pending, (int)pending_len, user_data) == 0) {
+                llama_sampler_free(sampler);
+                return BRIDGE_ERR_ABORTED;
             }
+            pending_len = 0;
+        }
+        memcpy(pending + pending_len, token_text, (size_t)token_len);
+        pending_len += (size_t)token_len;
+        pending[pending_len] = '\0';
+
+        // Ищем ЛЮБОЙ antiprompt в накопленном (не только в хвосте): маркер
+        // нового хода может прийти внутри токена, и тогда проверка по суффиксу
+        // его не увидит, а текст маркера уйдёт клиенту.
+        size_t ap_pos = 0, ap_len = 0;
+        if (find_antiprompt_anywhere(pending, pending_len, params, &ap_pos, &ap_len) >= 0) {
+            // Отправляем только то, что стоит ПЕРЕД маркером, и завершаем стрим.
+            if (ap_pos > 0 && callback(pending, (int)ap_pos, user_data) == 0) {
+                llama_sampler_free(sampler);
+                return 0;
+            }
+            antiprompt_hit = 1;
             break; // antiprompt сработал, стрим завершён
         }
 
-        // Конвенция callback: возврат !=0 (true) — продолжить стриминг,
-        // возврат 0 (false) — остановить стриминг (клиент отвалился / ctx.Done).
-        // Round 31 #6: callback cancel → BRIDGE_ERR_ABORTED (а не 0 = success).
-        // Закрывает G3: статус код теперь отличает cancelled от natural end,
-        // что нужно для telemetry и balancer accounting.
-        if (callback(token_text, token_len, user_data) == 0) {
-            llama_sampler_free(sampler);
-            return BRIDGE_ERR_ABORTED; // CHANGED: 0 → BRIDGE_ERR_ABORTED
+        // Отправляем всё, кроме удерживаемого хвоста.
+        if (pending_len > hold) {
+            size_t send = pending_len - hold;
+            if (callback(pending, (int)send, user_data) == 0) {
+                llama_sampler_free(sampler);
+                return BRIDGE_ERR_ABORTED; // CHANGED: 0 → BRIDGE_ERR_ABORTED
+            }
+            memmove(pending, pending + send, pending_len - send);
+            pending_len -= send;
         }
 
         // Декодируем следующий шаг
@@ -2174,6 +2236,16 @@ int bridge_infer_stream(
             return 1;
         }
         llama_batch_free(gen_batch);
+    }
+
+    // Сбрасываем удержанный хвост: без этого последние hold байт ответа
+    // (включая последнее слово) не дойдут до клиента. При срабатывании
+    // antiprompt хвост уже обработан выше — маркер отправлять нельзя.
+    if (!antiprompt_hit && pending_len > 0) {
+        if (callback(pending, (int)pending_len, user_data) == 0) {
+            llama_sampler_free(sampler);
+            return BRIDGE_ERR_ABORTED;
+        }
     }
 
     llama_sampler_free(sampler);

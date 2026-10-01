@@ -103,8 +103,88 @@ func (p *Proxy) handleNCtxReload(
 		}
 
 	case DecisionReload:
+		// R83-политика (2026-10-01): ПРИНУДИТЕЛЬНЫЙ рост окна убран.
+		//
+		// Растём ТОЛЬКО когда клиент сам попросил окно больше загруженного
+		// (этот случай обрабатывает preflight ДО проксирования — DecidePreflight).
+		// Если клиент попросил ровно столько же (или меньше), а промпт всё равно
+		// не влез — это ЕГО окно, и честный ответ: «промпт не помещается в
+		// запрошенное окно N, увеличьте num_ctx или сократите промпт».
+		//
+		// Живой случай (лог 2026-10-01): клиент прислал num_ctx=32768 и промпт на
+		// 85 544 токена; балансер вместо ответа выгрузил модель, перезагрузил её
+		// С ТЕМ ЖЕ окном 65536 (стратегия срезала цель 131072 → 65536) за 121 с и
+		// отчитался «reload successful, new n_ctx=131072». Клиент ждал и не
+		// получил ничего.
+		// Гейт срабатывает ТОЛЬКО когда клиент ЯВНО указал окно и оно не больше
+		// загруженного (случай пользователя: «пришло явное указание на окно»).
+		// Молчащий клиент сохраняет прежнее поведение (реактивное восстановление
+		// по РЕАЛЬНОЙ ошибке «prompt too long», а не по оценке).
+		if bridgeErr != nil && bridgeErr.CurrentNCtx > 0 && requestedOverride > 0 &&
+			requestedOverride <= bridgeErr.CurrentNCtx {
+			logger.Get().Warnw("nctx_reload: рост окна НЕ запрошен клиентом — reload отменён",
+				"backend", backendID,
+				"model", modelName,
+				"requested_num_ctx", requestedOverride,
+				"loaded_per_client_n_ctx", bridgeErr.CurrentNCtx,
+				"required_n_ctx", bridgeErr.RequiredNCtx,
+				"plan_target_n_ctx", plan.NewNCtx)
+			writeRequestedWindowTooSmall(w, r, modelName, backendID,
+				requestedOverride, bridgeErr.CurrentNCtx, bridgeErr.RequiredNCtx)
+			return
+		}
 		p.handleNCtxReloadActual(ctx, w, r, backendID, modelName, plan, bodyBuf, bridgeErr)
 	}
+}
+
+// writeRequestedWindowTooSmall — понятный отказ вместо «молчаливой» перезагрузки.
+//
+// Случай: клиент САМ ограничил окно (num_ctx=N), промпт в него не влез, а
+// поднять окно балансер без просьбы клиента не имеет права (R83-политика).
+// Текст адресован человеку: что просили, сколько нужно, что делать.
+func writeRequestedWindowTooSmall(
+	w http.ResponseWriter, r *http.Request,
+	modelName, backendID string, requestedPerClient, loadedPerClient, required int,
+) {
+	var msg string
+	if requestedPerClient > 0 {
+		msg = fmt.Sprintf(
+			"Промпт не помещается в контекстное окно, которое запросил клиент: "+
+				"запрошено %d токенов, а промпту нужно %d. Модель %s загружена с окном %d токенов на клиента. "+
+				"Увеличьте num_ctx в настройках модели клиента (до %d или больше) либо сократите промпт/историю.",
+			requestedPerClient, required, modelName, loadedPerClient, required)
+	} else {
+		msg = fmt.Sprintf(
+			"Промпт не помещается в загруженное окно модели: промпту нужно %d токенов, "+
+				"а модель %s загружена с окном %d токенов на клиента. Клиент не указал num_ctx, поэтому "+
+				"балансер не перезагружает модель сам: укажите num_ctx в клиенте (не меньше %d) "+
+				"или сократите промпт/историю.",
+			required, modelName, loadedPerClient, required)
+	}
+	body := map[string]interface{}{
+		"error":                   msg,
+		"reason":                  "клиент не запросил большее окно — автоматическая перезагрузка модели не выполняется",
+		"requested_num_ctx":       requestedPerClient,
+		"required_n_ctx":          required,
+		"loaded_per_client_n_ctx": loadedPerClient,
+		"model":                   modelName,
+		"backend_id":              backendID,
+		"what_to_do": fmt.Sprintf(
+			"В клиенте (Cline: «Model Context Window», OpenWebUI: num_ctx) поставьте не меньше %d "+
+				"и сократите историю/промпт. Балансер не меняет окно модели без явного запроса клиента.",
+			required),
+	}
+	// Streaming-клиенты (Cline) ждут NDJSON-чанк с done:true, а не plain JSON:
+	// иначе они не понимают, что это конец стрима (см. DecisionReject выше).
+	if r != nil && isNCtxReloadStreaming(r) {
+		body["done"] = true
+		encoded, _ := json.Marshal(body)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(413)
+		_, _ = w.Write(append(encoded, '\n'))
+		return
+	}
+	writeJSON(w, 413, body)
 }
 
 // handleNCtxReloadActual — выполняет reload на бэкенде.

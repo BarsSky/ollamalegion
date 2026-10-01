@@ -402,6 +402,9 @@ func (p *Proxy) reloadHintsFor(backendID, modelName string) ReloadHints {
 						hints.KVCacheType = m.KvCacheType
 					}
 					hints.GPULayers = m.NumGPULayers
+					// R83-политика (2026-10-01): суммарное окно загруженной
+					// модели — по нему DoReload отсекает «пустые» перезагрузки.
+					hints.WindowNCtx = m.ContextLength
 					break
 				}
 			}

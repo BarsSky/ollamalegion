@@ -352,8 +352,7 @@ type ReloadHints struct {
 	// считала по реальному типу, а не по f16 (иначе для 65K на 8 GB она выбирает
 	// cpu_only/gpu_layers=0, хотя с q4_0 модель влезает на GPU).
 	KVCacheType string
-	// GPULayers — R83-fix (2026-09-30): сколько слоёв СЕЙЧАС на GPU у загруженной
-	// модели (`gpu_layers` в /api/models cppworker). 0 = неизвестно.
+	// GPULayers — R83-fix (2026-09-30): сколько слоёв СЕЙЧАС на GPU у загруженной	// модели (`gpu_layers` в /api/models cppworker). 0 = неизвестно.
 	//
 	// ЗАЧЕМ. Reload не имеет права УХУДШАТЬ раскладку: если адаптивная стратегия
 	// предлагает меньше слоёв, чем уже работает (типичный случай — stage=cpu_only
@@ -362,6 +361,13 @@ type ReloadHints struct {
 	// минуты ожидания. Живой лог 2026-09-30: gemma-4 работала с 19 слоями на GPU,
 	// reload «на 131072» вернул gpuLayers=0 и contextSize=65536 (то же окно).
 	GPULayers int
+	// WindowNCtx — R83-политика (2026-10-01): СУММАРНОЕ окно, с которым модель
+	// загружена сейчас (`context_size` из /api/models). 0 = неизвестно.
+	//
+	// Зачем. DoReload обязан уметь сказать «перезагрузка не изменит окно»:
+	// адаптивная стратегия может срезать цель (131072 → 65536), и тогда reload
+	// стоит 1–3 минуты простоя, не давая клиенту ничего.
+	WindowNCtx int
 }
 
 // SetReloadHintsProvider — установка поставщика хинтов (вызывается Proxy'ем).
@@ -960,6 +966,40 @@ func (c *NCtxReloadCoordinator) DoReload(
 			"capped_target", targetNCtx,
 			"max_viable", strategy.MaxViableNCtx,
 			"reason", "VRAM insufficient for requested n_ctx even with best kvCacheType")
+	}
+
+	// R83-политика (2026-10-01): ЧЕСТНАЯ цель и защита от «пустого» reload.
+	//
+	// Живой случай (лог 2026-10-01 04:02): plan.NewNCtx=131072, адаптивная
+	// стратегия вернула nCtx=65536, enrichReloadPayload подменил contextSize на
+	// 65536 — то есть модель перезагрузилась с ТЕМ ЖЕ окном, что уже было.
+	// Балансер при этом отчитался «reload successful, new n_ctx=131072»
+	// (логировал цель, а не факт), модель была выгружена на 121 с, и клиент не
+	// получил ничего. Здесь считаем ЭФФЕКТИВНУЮ цель (то, что реально уйдёт в
+	// cppworker) и отказываемся от перезагрузки, если она не больше текущего окна.
+	effectiveTarget := targetNCtx
+	if strategy != nil && strategy.NCtx > 0 {
+		effectiveTarget = strategy.NCtx
+	}
+	if hints.WindowNCtx > 0 && effectiveTarget <= hints.WindowNCtx {
+		cur.err = fmt.Errorf(
+			"reload skipped: effective target n_ctx=%d does not exceed currently loaded n_ctx=%d "+
+				"(adaptive strategy clamped the target); window would not change",
+			effectiveTarget, hints.WindowNCtx)
+		logger.Get().Warnw("[nctx_reload] reload пропущен — окно не изменилось бы",
+			"backend", backendID,
+			"model", modelName,
+			"plan_target_n_ctx", plan.NewNCtx,
+			"strategy_n_ctx", func() int {
+				if strategy != nil {
+					return strategy.NCtx
+				}
+				return 0
+			}(),
+			"effective_target_n_ctx", effectiveTarget,
+			"loaded_n_ctx", hints.WindowNCtx,
+			"reason", "перезагрузка стоила бы 1–3 минуты простоя без выигрыша в окне")
+		return cur.err
 	}
 
 	payloadMap := map[string]interface{}{

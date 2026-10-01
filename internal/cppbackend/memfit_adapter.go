@@ -253,12 +253,7 @@ func (b *Backend) MemfitSpec(name string) (memfit.ModelSpec, bool) {
 	if mm == nil {
 		return memfit.ModelSpec{}, false
 	}
-	meta, err := mm.GetModelMeta(name)
-	if err != nil || meta == nil {
-		if _, canonical, ok := mm.FindModelByVariants(name); ok {
-			meta, err = mm.GetModelMeta(canonical)
-		}
-	}
+	meta, err := mm.GetModelMetaResolved(name)
 	if err != nil || meta == nil {
 		return memfit.ModelSpec{}, false
 	}
@@ -311,12 +306,7 @@ func (b *Backend) KVLayersForModel(name string) (layers, headDim int, ok bool) {
 	if mm == nil {
 		return 0, 0, false
 	}
-	meta, err := mm.GetModelMeta(name)
-	if err != nil || meta == nil {
-		if _, canonical, ok := mm.FindModelByVariants(name); ok {
-			meta, err = mm.GetModelMeta(canonical)
-		}
-	}
+	meta, err := mm.GetModelMetaResolved(name)
 	if err != nil || meta == nil {
 		return 0, 0, false
 	}
@@ -400,12 +390,7 @@ func (b *Backend) KVCacheBytesForModel(name string, nCtx int, kvCacheType string
 	if mm == nil {
 		return 0, false
 	}
-	meta, err := mm.GetModelMeta(name)
-	if err != nil || meta == nil {
-		if _, canonical, ok := mm.FindModelByVariants(name); ok {
-			meta, err = mm.GetModelMeta(canonical)
-		}
-	}
+	meta, err := mm.GetModelMetaResolved(name)
 	if err != nil || meta == nil {
 		return 0, false
 	}

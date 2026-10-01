@@ -1515,7 +1515,11 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 	// llama.cpp получал gpu_layers=0 и грузил модель целиком на CPU.
 	spec := MemfitSpecFromValues(name, fi.Size(), totalLayers, nHeads, nKvHeads, nEmbd, 0, 0, 0)
 	if mm := b.ModelManager(); mm != nil {
-		if meta, err := mm.GetModelMeta(name); err == nil && meta != nil {
+		// R83 (2026-10-01): GetModelMetaResolved, а не GetModelMeta — клиент зовёт
+		// модель без «.gguf», и прямой lookup молча возвращал ошибку. Тогда KV
+		// считался по всем слоям (у gemma-4 3.17 GB вместо 294 MiB) и вердикт
+		// уходил в partial_offload/35 слоёв.
+		if meta, err := mm.GetModelMetaResolved(name); err == nil && meta != nil {
 			applyKVPlanToSpec(&spec, meta)
 		}
 	}

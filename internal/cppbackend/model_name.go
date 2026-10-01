@@ -18,6 +18,7 @@
 package cppbackend
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,4 +80,27 @@ func (m *ModelManager) FindModelByVariants(name string) (string, string, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.findModelByVariantsLocked(name)
+}
+
+// GetModelMetaResolved — GetModelMeta с резолвом внешнего имени.
+//
+// ЗАЧЕМ (R83, 2026-10-01). Клиент и балансер зовут модель «gemma-4-E4B-it-Q4_K_M»,
+// а в кэше ggufFiles ключ — имя файла «gemma-4-E4B-it-Q4_K_M.gguf». Прямой
+// GetModelMeta по внешнему имени возвращает ошибку, и вызывающий молча работает
+// без метаданных. В checkVRAMForModel это означало «KV считать по всем слоям»:
+// у gemma-4 3.17 GB вместо 294 MiB и 35 слоёв из 42 на GPU вместо полного
+// оффлоада (замер стенда: 5-9 tok/s). Резолв по вариантам имени тут обязателен.
+func (m *ModelManager) GetModelMetaResolved(name string) (*GGUFModelMeta, error) {
+	if m == nil {
+		return nil, fmt.Errorf("model manager is nil")
+	}
+	if meta, err := m.GetModelMeta(name); err == nil && meta != nil {
+		return meta, nil
+	}
+	if _, canonical, ok := m.FindModelByVariants(name); ok && canonical != "" {
+		if meta, err := m.GetModelMeta(canonical); err == nil && meta != nil {
+			return meta, nil
+		}
+	}
+	return nil, fmt.Errorf("model %s not found in models directory", name)
 }

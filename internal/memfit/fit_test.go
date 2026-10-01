@@ -199,6 +199,100 @@ func TestEvaluate_Golden_Gemma4_On3070(t *testing.T) {
 	}
 }
 
+// gemma4KVShared — та же gemma-4-E4B, но с РЕАЛЬНОЙ раскладкой KV-кэша.
+//
+// Числа прочитаны из GGUF 2026-10-01 (block_count=42, shared_kv_layers=18,
+// sliding_window=512, key_length_swa=256, key_length=512,
+// sliding_window_pattern = '111110' × 7). llama.cpp на загрузке подтвердил:
+// «layer 5/11/17/23: dev = CUDA0», остальные слои 0..23 — filtered (окно),
+// 24..41 — «does not have KV cache». То есть KV держат 24 слоя: 4 глобальных и
+// 20 оконных.
+var gemma4KVShared = ModelSpec{
+	Name:        "gemma-4-E4B-it-Q4_K_M",
+	SizeBytes:   Bytes(4215695776),
+	NLayers:     42,
+	KVLayers:    24,
+	KVSWALayers: 20,
+	SWAWindow:   512,
+	SWAHeadDim:  256,
+	NHeads:      8,
+	NKvHeads:    2,
+	NEmbd:       2560,
+	KVHeadDim:   512,
+	TrainCtx:    131072,
+}
+
+// TestEvaluate_Gemma4_KVSharing_AllowsFullOffload — регресс 2026-10-01.
+//
+// Живой симптом: Cline ждал ответа 3-5 минут и отваливался по своему таймауту
+// («Model returned empty response»), cppworker при этом писал tokens_sent=0 —
+// одна лишь генерация шла 5-9 tok/s. Причина: memfit считал KV gemma-4 как
+// «42 слоя × n_ctx» (3.0 GiB на 65536) вместо реальных 294 MiB и оставлял 7
+// слоёв на CPU.
+//
+// Числа бюджета — измерения стенда: VRAM 8192 MiB, свободно 7015 MiB
+// (часть занята рабочим столом), резерв 2048 MiB.
+func TestEvaluate_Gemma4_KVSharing_AllowsFullOffload(t *testing.T) {
+	b := Budget{
+		VRAMFree:    MiBOf(7015),
+		VRAMTotal:   MiBOf(8192),
+		VRAMKnown:   true,
+		RAMAvail:    MiBOf(18490),
+		RAMTotal:    MiBOf(25042),
+		RAMKnown:    true,
+		VRAMReserve: MiBOf(2048),
+		RAMReserve:  MiBOf(4096),
+	}
+	p := DefaultPolicy()
+
+	// KV на 65536: 4 глобальных слоя × 1152 Б/токен × 65536 = 288 MiB
+	//          + 20 оконных × 576 Б/токен × 512 = 5.6 MiB → 294 MiB.
+	kv := KVTotalBytes(gemma4KVShared, KVQ4, 65536)
+	if got, want := kv.MiB(), int64(294); got < want-2 || got > want+2 {
+		t.Errorf("KVTotalBytes(gemma-4, q4_0, 65536) = %d MiB, want ~%d MiB", got, want)
+	}
+
+	v := Evaluate(gemma4KVShared, Request{Ctx: 65536, KVType: KVQ4}, b, p)
+	if v.Stage != StageExactFit || v.GPULayers != gemma4KVShared.NLayers {
+		t.Errorf("KV-sharing учтён: stage=%s layers=%d, want exact_fit/%d\n  %s",
+			v.Stage, v.GPULayers, gemma4KVShared.NLayers, v.String())
+	}
+
+	// Контроль: та же модель, но KV посчитан по всем слоям — как было до фикса.
+	// Полного оффлоада быть не должно, иначе тест не ловит регресс.
+	naive := gemma4KVShared
+	naive.KVLayers, naive.KVSWALayers, naive.SWAWindow = 42, 0, 0
+	vn := Evaluate(naive, Request{Ctx: 65536, KVType: KVQ4}, b, p)
+	if vn.Stage == StageExactFit {
+		t.Errorf("завышенный KV не должен давать exact_fit: %s", vn.String())
+	}
+	if vn.GPULayers >= gemma4KVShared.NLayers {
+		t.Errorf("завышенный KV должен оставлять меньше слоёв на GPU: %d", vn.GPULayers)
+	}
+}
+
+// TestKVTotalBytes_SWAStopsGrowing — оконные слои не растут с контекстом:
+// после окна 512 прирост даёт только глобальная часть (4 слоя).
+func TestKVTotalBytes_SWAStopsGrowing(t *testing.T) {
+	at512 := KVTotalBytes(gemma4KVShared, KVQ4, 512)
+	at65536 := KVTotalBytes(gemma4KVShared, KVQ4, 65536)
+	at131072 := KVTotalBytes(gemma4KVShared, KVQ4, 131072)
+
+	// Прирост 512 → 65536 должен быть только за счёт глобальных слоёв:
+	// 4 слоя × 1152 Б/токен × (65536−512) = 288 MiB (с округлением).
+	if delta := (at65536 - at512).MiB(); delta < 280 || delta > 296 {
+		t.Errorf("прирост 512→65536 = %d MiB, want ~288 MiB (только глобальные слои)", delta)
+	}
+	if at131072 <= at65536 {
+		t.Errorf("KV должен расти с контекстом: 65536=%d, 131072=%d", at65536, at131072)
+	}
+	// Наивная оценка (все 24 слоя × n_ctx) завысила бы KV в 6 раз.
+	naive := KVBytesPerToken(gemma4KVShared, KVQ4).Mul(65536)
+	if naive < at65536*5 {
+		t.Errorf("наивная оценка %d Б должна быть заметно больше реальных %d Б", naive, at65536)
+	}
+}
+
 // TestEvaluate_Golden_Qwen38_OnA10 — ключевой ответ на исходный вопрос.
 //
 // С ИСПРАВЛЕННЫМ KV (17 слоёв × 256) картина на A10 меняется принципиально:

@@ -78,6 +78,15 @@ type GGUFModelMeta struct {
 	NextNPredictLayers    int  `json:"nextnPredictLayers,omitempty"`
 	FullAttentionInterval int  `json:"fullAttentionInterval,omitempty"`
 	HasRecurrentLayersKey bool `json:"hasRecurrentLayersKey,omitempty"`
+
+	// R83 (2026-10-01): KV-sharing и скользящее окно (gemma4/gemma3n).
+	// Без них KV считался как «все слои × n_ctx»: у gemma-4-E4B это 3.17 GB
+	// против реальных ~0.3 GB, из-за чего memfit отказывал в полном оффлоаде.
+	// Раскладка — kv_layers.go (KVPlan).
+	SharedKVLayers int    `json:"sharedKvLayers,omitempty"`
+	SlidingWindow  int    `json:"slidingWindow,omitempty"`
+	SWAKeyLength   int    `json:"swaKeyLength,omitempty"`
+	SWAPattern     string `json:"swaPattern,omitempty"`
 }
 
 // ModelManager — управляет модельками
@@ -666,6 +675,19 @@ func (m *ModelManager) GetModelMeta(filename string) (*GGUFModelMeta, error) {
 			}
 			if hdr.HasRecurrentLayersKey {
 				meta.HasRecurrentLayersKey = true
+			}
+			// R83 (2026-10-01): KV-sharing + скользящее окно (gemma4/gemma3n).
+			if meta.SharedKVLayers == 0 && hdr.SharedKVLayers > 0 {
+				meta.SharedKVLayers = hdr.SharedKVLayers
+			}
+			if meta.SlidingWindow == 0 && hdr.SlidingWindow > 0 {
+				meta.SlidingWindow = hdr.SlidingWindow
+			}
+			if meta.SWAKeyLength == 0 && hdr.SWAKeyLength > 0 {
+				meta.SWAKeyLength = hdr.SWAKeyLength
+			}
+			if meta.SWAPattern == "" && hdr.SWAPattern != "" {
+				meta.SWAPattern = hdr.SWAPattern
 			}
 			m.mu.Unlock()
 		}

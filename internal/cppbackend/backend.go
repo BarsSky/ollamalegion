@@ -2998,6 +2998,18 @@ type GGUFHeaderInfo struct {
 	NextNPredictLayers    int  `json:"nextnPredictLayers,omitempty"`    // *.nextn_predict_layers (MTP)
 	FullAttentionInterval int  `json:"fullAttentionInterval,omitempty"` // *.full_attention_interval
 	HasRecurrentLayersKey bool `json:"hasRecurrentLayersKey,omitempty"` // в файле есть явный список рекуррентных слоёв
+
+	// R83 (2026-10-01): KV-sharing и скользящее окно (gemma4/gemma3n).
+	//
+	// У gemma-4-E4B кэш держат 24 слоя из 42 (shared_kv_layers=18), из них
+	// глобальных всего 4 — остальные живут в окне 512 токенов. Оценка «все слои
+	// × n_ctx» завышала KV в 4-6 раз: memfit отказывал в полном оффлоаде и
+	// оставлял 7 слоёв на CPU (замер стенда: 5-9 tok/s против 35/42 слоёв).
+	// Правило раскладки — kv_layers.go (KVPlan).
+	SharedKVLayers int    `json:"sharedKvLayers,omitempty"` // *.attention.shared_kv_layers
+	SlidingWindow  int    `json:"slidingWindow,omitempty"`  // *.attention.sliding_window
+	SWAKeyLength   int    `json:"swaKeyLength,omitempty"`   // *.attention.key_length_swa
+	SWAPattern     string `json:"swaPattern,omitempty"`     // *.attention.sliding_window_pattern: '1'=окно, '0'=глобальный
 }
 
 // ggufFieldSuffixes — суффиксы ключей метаданных для параметров модели.
@@ -3018,6 +3030,12 @@ var ggufFieldSuffixes = []string{
 	".attention.value_length",
 	".nextn_predict_layers",
 	".full_attention_interval",
+	// R83 (2026-10-01): раскладка KV моделей с KV-sharing и скользящим окном
+	// (gemma4/gemma3n): сколько слоёв переиспользуют чужой кэш и какие слои
+	// живут в окне. См. KVPlan в kv_layers.go.
+	".attention.shared_kv_layers",
+	".attention.sliding_window",
+	".attention.key_length_swa",
 }
 
 // ggufModelArchs — известные архитектуры GGUF.
@@ -3256,6 +3274,17 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 			if strings.HasSuffix(key, ".attention.recurrent_layers") {
 				info.HasRecurrentLayersKey = true
 			}
+			// R83 (2026-10-01): <arch>.attention.sliding_window_pattern — массив
+			// из n_layer флагов: '1' = слой со скользящим окном, '0' = глобальный.
+			// Нужен, чтобы отделить глобальный KV (растёт с n_ctx) от оконного:
+			// у gemma-4-E4B глобальных слоёв всего 4 из 24 с кэшем.
+			if strings.HasSuffix(key, ".attention.sliding_window_pattern") {
+				pattern, ok := readGGUFBoolArray(br, elemType, arrLen)
+				if ok {
+					info.SWAPattern = pattern
+					continue
+				}
+			}
 			// Пропускаем элементы массива
 			elemSize := ggufTypeSize(elemType)
 			if elemSize > 0 {
@@ -3310,6 +3339,9 @@ func readGGUFHeaderInfo(path string) (*GGUFHeaderInfo, error) {
 //	6 = ValueLength          (.attention.value_length)
 //	7 = NextNPredictLayers   (.nextn_predict_layers)   // R83: MTP-слои
 //	8 = FullAttentionInterval(.full_attention_interval)
+//	9 = SharedKVLayers       (.attention.shared_kv_layers)  // R83: KV-sharing
+//	10 = SlidingWindow       (.attention.sliding_window)
+//	11 = SWAKeyLength        (.attention.key_length_swa)
 func ggufSetField(info *GGUFHeaderInfo, fieldIndex, value int) {
 	switch fieldIndex {
 	case 0:
@@ -3330,9 +3362,59 @@ func ggufSetField(info *GGUFHeaderInfo, fieldIndex, value int) {
 		info.NextNPredictLayers = value
 	case 8:
 		info.FullAttentionInterval = value
+	case 9:
+		info.SharedKVLayers = value
+	case 10:
+		info.SlidingWindow = value
+	case 11:
+		info.SWAKeyLength = value
 	}
 }
 
+// readGGUFBoolArray читает массив флагов GGUF и возвращает его как строку '1'/'0'.
+//
+// Нужен для <arch>.attention.sliding_window_pattern (gemma4/gemma3n): llama.cpp
+// строит по нему is_swa(il), а от этого зависит, растёт KV-кэш слоя с n_ctx или
+// ограничен окном. ok=false — тип элементов не поддержан, вызывающий обязан
+// пропустить массив штатным способом.
+func readGGUFBoolArray(br *bufio.Reader, elemType uint32, arrLen uint64) (string, bool) {
+	switch elemType {
+	case 0, 1, 7, 4, 5, 10, 11:
+	default:
+		return "", false
+	}
+	if arrLen == 0 || arrLen > 512 {
+		return "", false
+	}
+	b := make([]byte, 0, arrLen)
+	for j := uint64(0); j < arrLen; j++ {
+		var v uint64
+		switch elemType {
+		case 0, 1, 7:
+			var x uint8
+			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
+				return "", false
+			}
+			v = uint64(x)
+		case 4, 5:
+			var x uint32
+			if err := binary.Read(br, binary.LittleEndian, &x); err != nil {
+				return "", false
+			}
+			v = uint64(x)
+		case 10, 11:
+			if err := binary.Read(br, binary.LittleEndian, &v); err != nil {
+				return "", false
+			}
+		}
+		if v != 0 {
+			b = append(b, '1')
+		} else {
+			b = append(b, '0')
+		}
+	}
+	return string(b), true
+}
 // ggufTypeSize возвращает размер элемента GGUF metadata value по типу.
 // Для скалярных типов — их размер, для массивов — размер одного элемента.
 func ggufTypeSize(valType uint32) int64 {

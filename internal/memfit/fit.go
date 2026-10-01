@@ -169,7 +169,9 @@ func computeSplit(m ModelSpec, ctx int, kv KVType, b Budget, p Policy) split {
 		return s
 	}
 	s.kvPerToken = kvPT
-	s.kvTotal = kvPT.Mul(int64(ctx))
+	// R83 (2026-10-01): оконные слои (SWA) держат только окно, поэтому
+	// «kvPerToken × ctx» для них завышает кэш. KVTotalBytes учитывает окно.
+	s.kvTotal = KVTotalBytes(m, kv, ctx)
 	s.total = m.SizeBytes + s.kvTotal
 
 	uv, ur := b.UsableVRAM(p), b.UsableRAM(p)
@@ -215,7 +217,26 @@ func Ceilings(m ModelSpec, kv KVType, b Budget, p Policy) (exactFitCtx, hardCtx 
 	}
 
 	if uv := b.UsableVRAM(p); uv > m.SizeBytes {
-		exactFitCtx = int(uv.Sub(m.SizeBytes) / kvPT)
+		avail := uv.Sub(m.SizeBytes)
+		if s := m.SWAKVLayers(); s > 0 {
+			// KV не линеен по ctx: до окна растут все слои, после — только
+			// глобальные. Считаем по той же формуле, что KVTotalBytes.
+			pg := KVBytesPerLayerPerToken(m.EffectiveKVHeadDim(), m.NKvHeads, kv).
+				Mul(int64(m.GlobalKVLayers()))
+			ps := KVBytesPerLayerPerToken(m.EffectiveSWAHeadDim(), m.NKvHeads, kv).
+				Mul(int64(s))
+			if pg+ps > 0 {
+				exactFitCtx = int(avail / (pg + ps))
+			}
+			if w := m.SWAWindow; w > 0 && exactFitCtx > w {
+				fixed := ps.Mul(int64(w))
+				if avail > fixed && pg > 0 {
+					exactFitCtx = int(avail.Sub(fixed) / pg)
+				}
+			}
+		} else if kvPT > 0 {
+			exactFitCtx = int(avail / kvPT)
+		}
 	}
 	if m.TrainCtx > 0 && exactFitCtx > m.TrainCtx {
 		exactFitCtx = m.TrainCtx

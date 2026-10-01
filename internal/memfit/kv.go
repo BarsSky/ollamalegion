@@ -23,6 +23,19 @@ type ModelSpec struct {
 	KVHeadDim int
 	// TrainCtx — обучающий контекст из GGUF (*.context_length). 0 = неизвестен.
 	TrainCtx int
+
+	// R83 (2026-10-01): скользящее окно. Часть слоёв с KV-кэшем видит только
+	// последние SWAWindow токенов, и их кэш НЕ растёт с n_ctx. У gemma-4-E4B из
+	// 24 слоёв с кэшем 20 оконные (окно 512) и только 4 глобальные: оценка
+	// «KVLayers × n_ctx» завышала KV в 4-6 раз и роняла 7 слоёв на CPU.
+	//
+	// KVSWALayers — сколько из KVLayers слоёв оконные (0 = нет окна).
+	// SWAWindow — окно в токенах.
+	// SWAHeadDim — размер головы K/V оконных слоёв (у gemma-4 это 256 против 512
+	// у глобальных). 0 = как KVHeadDim.
+	KVSWALayers int
+	SWAWindow   int
+	SWAHeadDim  int
 }
 
 // EffectiveKVLayers — сколько слоёв считать хранящими KV (0 → верхняя оценка).
@@ -39,6 +52,34 @@ func (m ModelSpec) EffectiveKVHeadDim() int {
 		return m.KVHeadDim
 	}
 	return m.HeadDim()
+}
+
+// EffectiveSWAHeadDim — размер головы KV у оконных слоёв (0 → как у глобальных).
+func (m ModelSpec) EffectiveSWAHeadDim() int {
+	if m.SWAHeadDim > 0 {
+		return m.SWAHeadDim
+	}
+	return m.EffectiveKVHeadDim()
+}
+
+// GlobalKVLayers — сколько слоёв держат кэш, растущий с n_ctx.
+func (m ModelSpec) GlobalKVLayers() int {
+	g := m.EffectiveKVLayers() - m.KVSWALayers
+	if g < 0 {
+		return 0
+	}
+	return g
+}
+
+// SWAKVLayers — сколько слоёв живут в окне фиксированного размера.
+func (m ModelSpec) SWAKVLayers() int {
+	if m.KVSWALayers <= 0 {
+		return 0
+	}
+	if m.KVSWALayers > m.EffectiveKVLayers() {
+		return m.EffectiveKVLayers()
+	}
+	return m.KVSWALayers
 }
 
 // HeadDim — размер головы attention. Для нестандартных архитектур (Qwen3.8:
@@ -108,7 +149,6 @@ func KVBytesPerToken(m ModelSpec, t KVType) Bytes {
 
 // KVBytesPerElement — байт на элемент KV-кэша с учётом типа (числитель и
 // знаменатель, потому что для квантованных типов значение дробное).
-//
 // Как в llama.cpp: значение + масштаб на блок.
 //
 //	f16  → 2/1   (2 байта: fp16)
@@ -125,4 +165,39 @@ func KVBytesPerElement(t KVType) (num, den int64) {
 		return 18, 32
 	}
 	return 2, 1
+}
+
+// KVBytesPerLayerPerToken — байт KV на один слой и один токен.
+func KVBytesPerLayerPerToken(headDim, nKvHeads int, t KVType) Bytes {
+	if headDim <= 0 || nKvHeads <= 0 {
+		return 0
+	}
+	elements := int64(2) * int64(nKvHeads) * int64(headDim)
+	num, den := KVBytesPerElement(t)
+	return Bytes(elements * num / den)
+}
+
+// KVTotalBytes — полный размер KV-кэша модели на n_ctx токенов.
+//
+// Отличие от KVBytesPerToken×ctx: оконные слои (SWA) держат только последние
+// min(n_ctx, SWAWindow) токенов, поэтому их кэш не растёт с контекстом. Для
+// gemma-4-E4B (24 слоя с кэшем, из них 20 оконных с окном 512) это разница
+// между 1.8 GB и ~0.3 GB при n_ctx=65536.
+func KVTotalBytes(m ModelSpec, t KVType, ctx int) Bytes {
+	if ctx <= 0 || !m.Complete() {
+		return 0
+	}
+	global := KVBytesPerLayerPerToken(m.EffectiveKVHeadDim(), m.NKvHeads, t).
+		Mul(int64(m.GlobalKVLayers() * ctx))
+	swaLayers := m.SWAKVLayers()
+	if swaLayers == 0 {
+		return global
+	}
+	swaCtx := ctx
+	if m.SWAWindow > 0 && swaCtx > m.SWAWindow {
+		swaCtx = m.SWAWindow
+	}
+	swa := KVBytesPerLayerPerToken(m.EffectiveSWAHeadDim(), m.NKvHeads, t).
+		Mul(int64(swaLayers * swaCtx))
+	return global + swa
 }

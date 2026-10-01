@@ -272,9 +272,23 @@ func MemfitSpecFromMeta(name string, meta *GGUFModelMeta) memfit.ModelSpec {
 	if meta == nil {
 		return memfit.ModelSpec{}
 	}
-	kvLayers, _ := meta.KVLayers()
-	return MemfitSpecFromValues(name, meta.SizeBytes, meta.NLayers, meta.NHeads, meta.NKvHeads,
+	plan := meta.KVPlan()
+	kvLayers := plan.KVLayers()
+	if kvLayers == 0 {
+		kvLayers, _ = meta.KVLayers()
+	}
+	spec := MemfitSpecFromValues(name, meta.SizeBytes, meta.NLayers, meta.NHeads, meta.NKvHeads,
 		meta.NEmbd, meta.ContextLength, kvLayers, meta.KVHeadDim())
+	// R83 (2026-10-01): оконные слои (gemma4/gemma3n) держат только окно токенов,
+	// поэтому их KV не растёт с n_ctx. Без этого memfit считал «все слои × n_ctx»
+	// и отказывал в полном оффлоаде (замер стенда: 35/42 слоёв, 5-9 tok/s).
+	spec.KVSWALayers = plan.SWALayers
+	spec.SWAWindow = plan.SWAWindow
+	spec.SWAHeadDim = plan.SWAHeadDim
+	if plan.GlobalHeadDim > 0 {
+		spec.KVHeadDim = plan.GlobalHeadDim
+	}
+	return spec
 }
 
 // KVLayersForModel — параметры РЕАЛЬНОГО KV-кэша модели по внешнему имени.
@@ -370,8 +384,15 @@ func (b *Backend) KVCacheBytesForModel(name string, nCtx int, kvCacheType string
 	if err != nil || meta == nil {
 		return 0, false
 	}
-	kvLayers, _ := meta.KVLayers()
-	headDim := meta.KVHeadDim()
+	plan := meta.KVPlan()
+	kvLayers := plan.KVLayers()
+	headDim := plan.GlobalHeadDim
+	if headDim <= 0 {
+		headDim = meta.KVHeadDim()
+	}
+	if kvLayers == 0 {
+		kvLayers, _ = meta.KVLayers()
+	}
 	heads := meta.NKvHeads
 	if heads <= 0 {
 		heads = nKvHeads
@@ -383,6 +404,24 @@ func (b *Backend) KVCacheBytesForModel(name string, nCtx int, kvCacheType string
 		return 0, false
 	}
 	num, den := memfit.KVBytesPerElement(MemfitKVType(kvCacheType))
-	elements := int64(kvLayers) * int64(heads) * int64(headDim) * 2
-	return int64(nCtx) * elements * num / den, true
+	// R83 (2026-10-01): оконные слои ограничены окном, а не n_ctx.
+	globalLayers := plan.GlobalLayers
+	if globalLayers <= 0 && plan.SWALayers == 0 {
+		globalLayers = kvLayers
+	}
+	perLayer := func(hd int) int64 {
+		if hd <= 0 {
+			hd = headDim
+		}
+		return int64(2) * int64(heads) * int64(hd) * num / den
+	}
+	total := int64(nCtx) * int64(globalLayers) * perLayer(headDim)
+	if swa := plan.SWALayers; swa > 0 {
+		swaCtx := nCtx
+		if plan.SWAWindow > 0 && swaCtx > plan.SWAWindow {
+			swaCtx = plan.SWAWindow
+		}
+		total += int64(swaCtx) * int64(swa) * perLayer(plan.SWAHeadDim)
+	}
+	return total, true
 }

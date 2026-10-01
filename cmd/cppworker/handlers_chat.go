@@ -1122,6 +1122,25 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	fullOutput := outputBuf.String()
 	duration := time.Since(start)
 
+	// R83/v59: пустой вывод модели — один повторный проход (см.
+	// empty_output_retry_r83.go). Здесь ничего не потеряно: при raw_len=0 дельт
+	// клиенту не отправлялось.
+	if len(fullOutput) == 0 && emptyOutputRetryEnabled() {
+		logger.Get().Warnw("writeChatStreamResponse: пустой вывод модели (raw_len=0) — повторная генерация",
+			"model", modelName, "prompt_tokens", countTokensSafe(modelName, prompt))
+		outputBuf.Reset()
+		atomic.StoreInt64(&firstTokenAt, 0)
+		if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr != nil {
+			logger.Get().Warnw("writeChatStreamResponse: повторная генерация не удалась",
+				"model", modelName, "error", retryErr)
+		} else {
+			fullOutput = outputBuf.String()
+			duration = time.Since(start)
+			logger.Get().Infow("writeChatStreamResponse: повторная генерация завершена",
+				"model", modelName, "raw_len", len(fullOutput))
+		}
+	}
+
 	// 2026-06-24: ???????? ?? ?????? ????? ????? cleanFinalContent (gemma antiprompt).
 	if strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
 		errChunk := map[string]interface{}{
@@ -1407,6 +1426,35 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 
 	fullOutput := outputBuf.String()
 	duration := time.Since(start)
+
+	// R83/v59 (2026-10-01): повтор генерации при ПУСТОМ выводе модели.
+	//
+	// Живой факт (пробник debug/streamprobe, gemma-4-E4B-it-Q4_K_M, запрос Cline
+	// с 18 tools): модель иногда завершает ход ПЕРВЫМ же токеном EOG — в
+	// /debug-логе видно raw_len=0, то есть не сгенерировано ни байта. Клиенту
+	// уходил чанк "model produced an empty response", и ни повторить, ни понять
+	// причину он не мог (ровно это показал первый сбой Cline из журнала сессии).
+	//
+	// Сэмплирование стохастично, поэтому повторный проход обычно даёт ответ.
+	// Терять нечего: при raw_len=0 клиенту ещё не отправлено ни одного чанка
+	// (в том числе дельт — их неоткуда взять).
+	if len(fullOutput) == 0 && emptyOutputRetryEnabled() {
+		logger.Get().Warnw("writeChatStreamResponseWithTools: пустой вывод модели (raw_len=0) — повторная генерация",
+			"model", modelName, "prompt_tokens", countTokensSafe(modelName, prompt))
+		outputBuf.Reset()
+		emittedLen = 0
+		toolsHold = false
+		atomic.StoreInt64(&firstTokenAt, 0)
+		if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr != nil {
+			logger.Get().Warnw("writeChatStreamResponseWithTools: повторная генерация не удалась",
+				"model", modelName, "error", retryErr)
+		} else {
+			fullOutput = outputBuf.String()
+			duration = time.Since(start)
+			logger.Get().Infow("writeChatStreamResponseWithTools: повторная генерация завершена",
+				"model", modelName, "raw_len", len(fullOutput))
+		}
+	}
 
 	// ???????? ?????????? tool_calls ?? ?????????? ??????.
 	toolCalls := parseToolCallsFromOutput(fullOutput)

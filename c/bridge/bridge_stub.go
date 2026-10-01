@@ -646,11 +646,22 @@ func ResetStubLoadAbortCount() {
 // (atomic.Int32 — всегда nil), но сигнатура должна совпадать с non-stub
 // реализацией в bridge.go.
 func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callback StreamCallback) (unsafe.Pointer, error) {
+	// Считаем вызовы: тестам повторной генерации (R83/v59) нужно доказать, что
+	// handler действительно сделал ВТОРОЙ проход, а не просто сменил текст ошибки.
+	stubInferCalls.Add(1)
+
 	// Режим «пустой output» для тестов: callback не вызывается ни разу,
 	// ошибка не возвращается — это имитирует случай, когда модель
 	// успешно завершила генерацию (Status=0), но не выдала ни одного
 	// токена (например, antiprompt сработал на первом же шаге).
+	//
+	// stubEmptyFirstCall — то же самое, но ТОЛЬКО для первого вызова: имитирует
+	// живое поведение gemma-4, когда модель завершает ход первым же токеном EOG
+	// (в логе cppworker это raw_len=0), а повторный проход даёт нормальный ответ.
 	if stubEmptyOutput.Load() {
+		return nil, nil
+	}
+	if stubEmptyFirstCall.Load() && stubInferCalls.Load() == 1 {
 		return nil, nil
 	}
 
@@ -668,6 +679,23 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 	}
 	return nil, nil
 }
+
+// stubInferCalls — счётчик вызовов stub-стриминга (для тестов повторной
+// генерации). stubEmptyFirstCall — «первый проход пустой, дальше как обычно».
+var (
+	stubInferCalls    atomic.Int64
+	stubEmptyFirstCall atomic.Bool
+)
+
+// ResetStubInferCalls обнуляет счётчик вызовов stub-стриминга.
+func ResetStubInferCalls() { stubInferCalls.Store(0) }
+
+// StubInferCalls возвращает число вызовов stub-стриминга с последнего сброса.
+func StubInferCalls() int64 { return stubInferCalls.Load() }
+
+// SetStubEmptyFirstCall включает режим «первый вызов без токенов» и возвращает
+// предыдущее значение (для восстановления через defer).
+func SetStubEmptyFirstCall(enabled bool) bool { return stubEmptyFirstCall.Swap(enabled) }
 
 // NewInferAbortFlag — R83 (2026-09-29): в stub-режиме отмена не эмулируется,
 // но сигнатура обязана совпадать с non-stub реализацией (bridge.go), иначе

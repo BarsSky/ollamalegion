@@ -182,28 +182,61 @@ func (p *Proxy) getStreamingIdleTimeout() time.Duration {
 //
 // Total stream timeout оставлен только как safety net для
 // "process sending garbage chunks forever" (через ModelLatencyTracker).
+// envSeconds — opt-in таймаут из ENV (положительное число секунд).
+//
+// R83-доктрина (2026-10-01): «таймаут — это opt-in; по умолчанию его нет».
+// Пользователь дважды формулировал одно и то же: медленная, но работающая
+// генерация ОБЯЗАНА доходить до клиента; обрывать её по нашему счётчику нельзя.
+// Останавливать работу должен клиент (закрыл соединение → r.Context().Done())
+// либо реальная ошибка бэкенда (EOF/refused/abort) — их мы и отслеживаем.
+//
+// Поэтому эвристики по размеру модели, значения из config.json и «рекомендации»
+// ModelLatencyTracker больше НЕ применяются как таймауты по умолчанию: они
+// остаются только в диагностике. Явно задать предел можно профилем модели
+// (per-model) или этими ENV.
+func envSeconds(name string) (time.Duration, bool) {
+	if isStreamingNeverTimeout() {
+		return 0, false
+	}
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return time.Duration(n) * time.Second, true
+}
+
+// getModelStreamTimeout — суммарный таймаут streaming-ответа.
+//
+// R83-доктрина (2026-10-01): по умолчанию 0 = БЕЗ таймаута. Приоритет:
+//  1. LB_STREAMING_NEVER_TIMEOUT=1 → 0 (мастер-выключатель);
+//  2. LB_STREAMING_TIMEOUT_SEC=N — явный opt-in;
+//  3. профиль модели (StreamingTimeoutSec) — осознанное решение по модели;
+//  4. иначе 0 (нет таймаута; соединение живёт до cancel от клиента или ошибки).
+//
+// ЧТО УБРАНО И ПОЧЕМУ. Раньше здесь были значения 600s (config) и «рекомендация»
+// ModelLatencyTracker/эвристика по размеру GGUF (для gemma-4 4.2 GB — 1800s,
+// для «medium»-моделей — 300s в FirstByte). Живой случай 2026-10-01: запрос
+// Cline с промптом 22 547 токенов обрабатывался 5 минут и был оборван ровно на
+// 300-й секунде, клиент не получил ни одного токена. Такой обрыв экономит
+// время балансеру и стоит клиенту всей работы.
 func (p *Proxy) getModelStreamTimeout(modelName string) time.Duration {
 	if isStreamingNeverTimeout() {
 		return 0
 	}
-
-	if modelName == "" || p.modelLatencyTracker == nil {
-		return p.getGlobalStreamTimeout()
+	if d, ok := envSeconds("LB_STREAMING_TIMEOUT_SEC"); ok {
+		return d
 	}
-
-	// Tier 1: per-model profile
-	profile, ok := p.GetModelProfile(modelName)
-	if ok && profile.StreamingTimeoutSec > 0 {
-		return time.Duration(profile.StreamingTimeoutSec) * time.Second
+	// Tier: явный per-model профиль (осознанное решение оператора по модели).
+	if modelName != "" {
+		if profile, ok := p.GetModelProfile(modelName); ok && profile.StreamingTimeoutSec > 0 {
+			return time.Duration(profile.StreamingTimeoutSec) * time.Second
+		}
 	}
-
-	// Tier 2-3: ModelLatencyTracker + GGUF size heuristic
-	globalTimeoutSec := p.config.Balancing.StreamTimeout
-	if globalTimeoutSec <= 0 {
-		globalTimeoutSec = 600
-	}
-	modelSize := p.getModelSizeBytes(modelName)
-	return p.modelLatencyTracker.GetOrComputeTimeout(modelName, 0, globalTimeoutSec, modelSize)
+	return 0
 }
 
 // getModelStreamingIdleTimeout возвращает per-model idle-таймаут стриминга.
@@ -227,57 +260,40 @@ func (p *Proxy) getModelStreamingIdleTimeout(modelName string) time.Duration {
 	if isStreamingNeverTimeout() {
 		return 0
 	}
-	// R60.18 F1: env override (break-glass). Tier 1.
+	// ENV opt-in (break-glass, R60.18 F1).
 	if n, ok := getEnvIdleTimeoutSec(); ok {
 		return time.Duration(n) * time.Second
 	}
-	if modelName == "" || p.modelLatencyTracker == nil {
-		return p.getGlobalStreamingIdleTimeout()
+	// Явный per-model профиль — осознанное решение по конкретной модели.
+	if modelName != "" {
+		if profile, ok := p.GetModelProfile(modelName); ok && profile.StreamingIdleTimeoutSec > 0 {
+			return time.Duration(profile.StreamingIdleTimeoutSec) * time.Second
+		}
 	}
-
-	// Tier 2: per-model profile
-	profile, ok := p.GetModelProfile(modelName)
-	if ok && profile.StreamingIdleTimeoutSec > 0 {
-		return time.Duration(profile.StreamingIdleTimeoutSec) * time.Second
-	}
-
-	// Tier 3 + 4: ModelLatencyTracker (с modelSizeBytes для tier-4 fallback)
-	globalIdleSec := p.config.Balancing.StreamingIdleTimeout
-	if globalIdleSec <= 0 {
-		globalIdleSec = 120
-	}
-	modelSize := p.getModelSizeBytes(modelName)
-	return p.modelLatencyTracker.GetOrComputeIdleTimeout(modelName, 0, globalIdleSec, modelSize)
+	// R83-доктрина (2026-10-01): по умолчанию idle-таймаута НЕТ. Раньше здесь
+	// был config (120–600s) и «рекомендация» трекера, из-за которых длинный
+	// prefill/пауза между токенами обрывали стрим на середине ответа.
+	return 0
 }
 
-// getModelRequestTimeout возвращает per-model таймаут non-streaming запроса.
-// Приоритет:
-//  1. Per-model profile (config.LlamaCppModelProfiles[modelName].RequestTimeoutSec)
-//  2. ModelLatencyTracker (автоматический расчёт)
-//  3. Глобальный config.Balancing.RequestTimeout
-//  4. Дефолт 120 секунд
+// getModelRequestTimeout возвращает per-model таймаут NON-streaming запроса.
 //
-// R58.1: LB_STREAMING_NEVER_TIMEOUT=1 → 0 (= "no request timeout").
+// R83-доктрина (2026-10-01): по умолчанию 0 = БЕЗ таймаута (приоритет:
+// NEVER_TIMEOUT → LB_REQUEST_TIMEOUT_SEC → профиль модели → 0). Значения из
+// config.json и «рекомендации» трекера больше не применяются автоматически.
 func (p *Proxy) getModelRequestTimeout(modelName string) time.Duration {
 	if isStreamingNeverTimeout() {
 		return 0
 	}
-	if modelName == "" || p.modelLatencyTracker == nil {
-		return p.getGlobalRequestTimeout()
+	if d, ok := envSeconds("LB_REQUEST_TIMEOUT_SEC"); ok {
+		return d
 	}
-
-	// Tier 1: per-model profile
-	profile, ok := p.GetModelProfile(modelName)
-	if ok && profile.RequestTimeoutSec > 0 {
-		return time.Duration(profile.RequestTimeoutSec) * time.Second
+	if modelName != "" {
+		if profile, ok := p.GetModelProfile(modelName); ok && profile.RequestTimeoutSec > 0 {
+			return time.Duration(profile.RequestTimeoutSec) * time.Second
+		}
 	}
-
-	// Tier 2: ModelLatencyTracker
-	globalReqSec := p.config.Balancing.RequestTimeout
-	if globalReqSec <= 0 {
-		globalReqSec = 120
-	}
-	return p.modelLatencyTracker.GetOrComputeRequestTimeout(modelName, 0, globalReqSec)
+	return 0
 }
 
 // getModelFirstByteTimeout возвращает per-model таймаут ожидания первого байта.
@@ -308,27 +324,34 @@ func (p *Proxy) getModelRequestTimeout(modelName string) time.Duration {
 // только профилем; глобальное значение ниже эвристики эффекта не даёт.
 // Подробности — docs/R60.18-env-flags-audit.md и _note_streaming_round42 в
 // config/config.json.
+// getModelFirstByteTimeout — сколько ждать ПЕРВЫЙ БАЙТ (HTTP-заголовки) от бэкенда.
+//
+// R83-доктрина (2026-10-01): по умолчанию 0 = БЕЗ таймаута. Приоритет:
+//  1. LB_STREAMING_NEVER_TIMEOUT=1 → 0;
+//  2. LB_FIRST_BYTE_TIMEOUT_SEC=N — явный opt-in;
+//  3. per-model profile (`firstByteTimeoutSec`) — осознанное решение по модели;
+//  4. иначе 0.
+//
+// ЧТО УБРАНО. Эвристика по размеру GGUF (`EstimateFirstByteTimeoutFromModelSize`:
+// 300s для medium, 600s для 2–5 GB, 900s при неизвестном размере) и глобальный
+// `balancing.firstByteTimeout` больше не применяются автоматически. Живой случай
+// 2026-10-01: Cline с промптом 22 547 токенов на gemma-4 (4.2 GB) — prefill
+// занимал больше 300 с, и запрос обрывался до первого токена. Медленный prefill
+// на partial offload — норма для этого железа, а не ошибка; обрывать его нельзя.
+// Эвристики остаются только в диагностике (ModelLatencyTracker.Recommended*).
 func (p *Proxy) getModelFirstByteTimeout(modelName string) time.Duration {
 	if isStreamingNeverTimeout() {
 		return 0
 	}
-	if modelName == "" || p.modelLatencyTracker == nil {
-		return p.getGlobalFirstByteTimeout()
+	if d, ok := envSeconds("LB_FIRST_BYTE_TIMEOUT_SEC"); ok {
+		return d
 	}
-
-	// Tier 1: per-model profile
-	profile, ok := p.GetModelProfile(modelName)
-	if ok && profile.FirstByteTimeoutSec > 0 {
-		return time.Duration(profile.FirstByteTimeoutSec) * time.Second
+	if modelName != "" {
+		if profile, ok := p.GetModelProfile(modelName); ok && profile.FirstByteTimeoutSec > 0 {
+			return time.Duration(profile.FirstByteTimeoutSec) * time.Second
+		}
 	}
-
-	// Tier 2-3: ModelLatencyTracker + GGUF size heuristic
-	globalFbSec := p.config.Balancing.FirstByteTimeout
-	if globalFbSec <= 0 {
-		globalFbSec = 120
-	}
-	modelSize := p.getModelSizeBytes(modelName)
-	return p.modelLatencyTracker.GetOrComputeFirstByteTimeout(modelName, 0, globalFbSec, modelSize)
+	return 0
 }
 
 // getGlobalStreamTimeout — глобальный total-таймаут стриминга.

@@ -73,7 +73,13 @@ func TestR83_ModelSizeResolution_AllClientSpellings(t *testing.T) {
 }
 
 // TestR83_IdleTimeout_ScalesWithModelSize — следствие дефекта резолвинга:
-// для 16.5 GB модели idle-дедлайн обязан быть в tier 12-24 GB (30 мин).
+// для 16.5 GB модели эвристика tier'а обязана давать 30 мин.
+//
+// R83-доктрина (2026-10-01): эта эвристика больше НЕ применяется как таймаут по
+// умолчанию — она осталась диагностической рекомендацией
+// (ModelLatencyTracker.Recommended*). Проверяем обе вещи: сам расчёт tier'а и
+// то, что рабочий idle-таймаут по умолчанию = 0 (нет таймаута), иначе медленная,
+// но живая генерация обрывается посередине.
 func TestR83_IdleTimeout_ScalesWithModelSize(t *testing.T) {
 	if d := EstimateIdleTimeoutFromModelSize(r83Qwen38Size); d != 1800*time.Second {
 		t.Fatalf("EstimateIdleTimeoutFromModelSize(16.5GB) = %v, want 30m (tier 12-24 GB)", d)
@@ -81,8 +87,9 @@ func TestR83_IdleTimeout_ScalesWithModelSize(t *testing.T) {
 
 	p := r83ProxyWithLoadedQwen38()
 	for _, name := range []string{"Qwen3.8-27B-UD-Q4_K_M", "qwen3.8:latest"} {
-		if got := p.getModelStreamingIdleTimeout(name); got != 1800*time.Second {
-			t.Errorf("getModelStreamingIdleTimeout(%q) = %v, want 30m — иначе датчик зависания обрывает живую медленную генерацию", name, got)
+		if got := p.getModelStreamingIdleTimeout(name); got != 0 {
+			t.Errorf("getModelStreamingIdleTimeout(%q) = %v, want 0 (R83-доктрина: "+
+				"таймаут — opt-in, по умолчанию его нет)", name, got)
 		}
 	}
 }

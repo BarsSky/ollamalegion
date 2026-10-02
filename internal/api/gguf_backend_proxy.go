@@ -15,10 +15,36 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// cppWorkerProxyTimeout — общий таймаут для проксирования запросов к CppWorker.
-// HF download и search могут занимать до 60-90 секунд (особенно search, который
-// параллельно подгружает файлы для каждого результата).
-const cppWorkerProxyTimeout = 90 * time.Second
+// cppWorkerProxyTimeout — duration-кап на проксирование запросов WebUI → CppWorker.
+//
+// R83/v67 (2026-10-02): по умолчанию 0 = БЕЗ капа.
+//
+// БЫЛО: жёсткие 90 секунд на ВСЕ проксируемые пути, включая
+// POST /api/models/load, /reload, /api/hf/download. Загрузка 15-гигабайтной
+// модели идёт минуты, и WebUI показывал «CppWorker at … is not responding
+// (timeout 90s)», хотя cppworker продолжал грузить модель — оператор видел
+// «модель не загружается» при полностью здоровой загрузке.
+//
+// СТАЛО: ждём ответа бэкенда (успех/ошибка/недоступность). Кап возвращается
+// только явным opt-in LB_ALLOW_GGUF_PROXY_TIMEOUT_SEC=N (секунды), и при
+// взведении печатается WARN с именем переменной.
+func cppWorkerProxyTimeout() time.Duration {
+	return balancer.OptInTimeoutSeconds("LB_ALLOW_GGUF_PROXY_TIMEOUT_SEC",
+		"прокси WebUI → cppworker (load/unload/reload/hf)")
+}
+
+// proxyContext — контекст для проксируемого запроса.
+//
+// ВАЖНО: context.WithTimeout(parent, 0) — это НЕМЕДЛЕННО истёкший контекст, а
+// не «без таймаута». Поэтому при выключенном капе берём WithCancel: запрос
+// живёт до ответа бэкенда или до ухода клиента. Именно на этом уже один раз
+// спотыкались (deadline exceeded до обращения к бэкенду).
+func proxyContext(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d > 0 {
+		return context.WithTimeout(parent, d)
+	}
+	return context.WithCancel(parent)
+}
 
 // resolveCppWorkerURL — определение базового URL CppWorker для заданного backendID.
 // Возвращает host, port, baseURL.
@@ -104,8 +130,9 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 		_ = r.Body.Close()
 	}
 
-	// Контекст с таймаутом
-	ctx, cancel := context.WithTimeout(r.Context(), cppWorkerProxyTimeout)
+	// Контекст с таймаутом (R83/v67: 0 = без капа, см. cppWorkerProxyTimeout)
+	proxyTimeout := cppWorkerProxyTimeout()
+	ctx, cancel := proxyContext(r.Context(), proxyTimeout)
 	defer cancel()
 
 	// Создаём прокси-запрос
@@ -173,7 +200,7 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 
 	// Делаем запрос
 	httpClient := &http.Client{
-		Timeout: cppWorkerProxyTimeout,
+		Timeout: proxyTimeout,
 	}
 	resp, err := httpClient.Do(req)
 	// Round 8 (2026-07-10): connection-level error retry with exponential backoff.
@@ -211,7 +238,7 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 				return
 			}
 			// Recreate req with fresh context (old ctx may have expired)
-			ctx2, cancel2 := context.WithTimeout(r.Context(), cppWorkerProxyTimeout)
+			ctx2, cancel2 := proxyContext(r.Context(), proxyTimeout)
 			req2, reqErr := http.NewRequestWithContext(ctx2, r.Method, target, bytes.NewReader(bodyBytes))
 			if reqErr != nil {
 				cancel2()
@@ -238,7 +265,7 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 		// Понятные сообщения для типовых сетевых ошибок
 		if strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "timeout") {
 			statusCode = http.StatusGatewayTimeout
-			msg = fmt.Sprintf("CppWorker at %s:%d is not responding (timeout %s)", host, port, cppWorkerProxyTimeout)
+			msg = fmt.Sprintf("CppWorker at %s:%d is not responding (timeout %s)", host, port, proxyTimeout)
 		} else if strings.Contains(msg, "connection refused") {
 			statusCode = http.StatusBadGateway
 			msg = fmt.Sprintf("CppWorker at %s:%d is unreachable (connection refused)", host, port)

@@ -2,6 +2,7 @@ package balancer
 
 import (
 	"net/http"
+	"reflect"
 	"strings"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -114,6 +115,14 @@ func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
 // BackendRouter instances to try for the given request backend type. nil
 // routers are preserved in the list so dispatchRouters can skip them
 // uniformly (instead of inlining nil checks at each call site).
+//
+// R-Image (2026-09-27): список теперь включает ImageRouter. Порядок:
+//   - locked image-тип (bt == image_cpp) → только imageRouter;
+//   - mixed mode → imageRouter ставится ПЕРВЫМ: его Route() срабатывает
+//     только на явных image-путях (/v1/images/*, /sdapi/v1/*, /api/image/*
+//     и префиксы модели), поэтому для текстовых запросов он безвреден,
+//     а для image-запросов не даёт Ollama/llama.cpp роутерам перехватить
+//     запрос раньше времени.
 func (p *Proxy) buildRoutersForDispatch(bt types.BackendType) []BackendRouter {
 	// Locked modes: only one router is relevant.
 	switch bt {
@@ -121,35 +130,59 @@ func (p *Proxy) buildRoutersForDispatch(bt types.BackendType) []BackendRouter {
 		return []BackendRouter{p.llamaCppRouter}
 	case types.BackendTypeOllama:
 		return []BackendRouter{p.ollamaRouter}
+	case types.BackendTypeImage:
+		return []BackendRouter{p.imageRouter}
 	}
 
 	// Mixed mode (bt == ""): order by which backend types are registered.
 	counts := p.countBackendsByType()
 	hasOllama := counts[types.BackendTypeOllama] > 0
 	hasLlama := counts[types.BackendTypeLlamaCpp] > 0
+	// R-Image: imageRouter идёт первым независимо от состава кластера —
+	// он реагирует только на явные image-пути.
+	imageFirst := p.imageRouter
 
 	switch {
 	case hasOllama:
 		// Ollama-приоритет: большинство /api/* endpoint'ов нативные.
-		return []BackendRouter{p.ollamaRouter, p.llamaCppRouter}
+		return []BackendRouter{imageFirst, p.ollamaRouter, p.llamaCppRouter}
 	case hasLlama:
 		// Только llama.cpp: пробуем его первым, иначе OllamaRouter вернёт
 		// пустой aggregate (нельзя делать aggregation без Ollama backends).
-		return []BackendRouter{p.llamaCppRouter, p.ollamaRouter}
+		return []BackendRouter{imageFirst, p.llamaCppRouter, p.ollamaRouter}
 	default:
 		// Нет зарегистрированных бэкендов — стандартный fallback: Ollama,
 		// затем llama.cpp (для случая когда router инициализирован, но
 		// backends ещё не подключились).
-		return []BackendRouter{p.ollamaRouter, p.llamaCppRouter}
+		return []BackendRouter{imageFirst, p.ollamaRouter, p.llamaCppRouter}
 	}
+}
+
+// isNilRouter — true и для nil-интерфейса, и для TYPED NIL (nil-указатель
+// внутри интерфейса).
+//
+// Зачем: `router == nil` ложно для typed nil, поэтому вызов Route() уходил бы
+// в метод с nil-получателем. Ровно такой случай — `imageRouter *ImageRouter`,
+// не заданный в тестах/при частичной инициализации: в списке роутеров он лежит
+// как BackendRouter, и проверка `== nil` его не отсеивает.
+func isNilRouter(r BackendRouter) bool {
+	if r == nil {
+		return true
+	}
+	v := reflect.ValueOf(r)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map, reflect.Func, reflect.Chan:
+		return v.IsNil()
+	}
+	return false
 }
 
 // dispatchRouters — R59.15b: единая диспетчеризация по приоритетному списку
 // BackendRouter. Возвращает true если любой router в списке обработал запрос.
-// nil-элементы пропускаются.
+// nil-элементы (включая typed nil) пропускаются.
 func (p *Proxy) dispatchRouters(routers []BackendRouter, w http.ResponseWriter, r *http.Request) bool {
 	for _, router := range routers {
-		if router == nil {
+		if isNilRouter(router) {
 			continue
 		}
 		if router.Route(w, r) {
@@ -205,13 +238,14 @@ func isReadOnlyOrMgmtEndpoint(path string) bool {
 }
 
 // isUnsupportedOpenAIEndpoint — OpenAI endpoints, которые OllamaLegion НЕ
-// реализует (audio/images/etc). Возвращаем early 404 вместо проксирования
+// реализует (audio/etc). Возвращаем early 404 вместо проксирования
 // на backend → 30s timeout (Round 22 BUG #7).
+//
+// R-Image (2026-09-27): case "/v1/images/" УБРАН — генерация изображений
+// обслуживается image-бэкендами (тип image_cpp, см. ImageRouter).
 func isUnsupportedOpenAIEndpoint(path string) bool {
 	switch {
 	case strings.HasPrefix(path, "/v1/audio/"):
-		return true
-	case strings.HasPrefix(path, "/v1/images/"):
 		return true
 	case path == "/v1/realtime":
 		return true

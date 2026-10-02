@@ -64,6 +64,23 @@ func TestDispatchRouters_EmptyListYieldsFalse(t *testing.T) {
 	})
 }
 
+// nonNilRouters — только реально созданные роутеры.
+//
+// R-Image (2026-09-27): buildRoutersForDispatch кладёт imageRouter ПЕРВЫМ
+// слотом во всех mixed-режимах («nil-роутеры сохраняются в списке, чтобы
+// dispatchRouters пропускал их единообразно»). В тестах imageRouter не задан,
+// поэтому в списке есть nil-элемент — проверяем порядок содержательных
+// роутеров, а не длину списка.
+func nonNilRouters(list []BackendRouter) []BackendRouter {
+	out := make([]BackendRouter, 0, len(list))
+	for _, r := range list {
+		if !isNilRouter(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // TestBuildRoutersForDispatch_OrdersCorrectly — R59.15b: buildRoutersForDispatch
 // строит правильный приоритет в зависимости от bt и наличия бэкендов.
 func TestBuildRoutersForDispatch_OrdersCorrectly(t *testing.T) {
@@ -89,7 +106,7 @@ func TestBuildRoutersForDispatch_OrdersCorrectly(t *testing.T) {
 
 	t.Run("mixed with ollama only → llama.cpp first (avoid empty aggregate)", func(t *testing.T) {
 		p := newTestProxyWithBackendsByType(t, types.BackendTypeLlamaCpp)
-		list := p.buildRoutersForDispatch("")
+		list := nonNilRouters(p.buildRoutersForDispatch(""))
 		require.Len(t, list, 2)
 		assert.Equal(t, "LlamaCppRouter", list[0].Name(),
 			"mixed+llama-only: llama.cpp router первый")
@@ -98,7 +115,7 @@ func TestBuildRoutersForDispatch_OrdersCorrectly(t *testing.T) {
 
 	t.Run("mixed with ollama present → ollama first", func(t *testing.T) {
 		p := newTestProxyWithBackendsByType(t, types.BackendTypeOllama)
-		list := p.buildRoutersForDispatch("")
+		list := nonNilRouters(p.buildRoutersForDispatch(""))
 		require.Len(t, list, 2)
 		assert.Equal(t, "OllamaRouter", list[0].Name(),
 			"mixed+ollama: ollama router первый (больше native /api/* support)")
@@ -110,7 +127,7 @@ func TestBuildRoutersForDispatch_OrdersCorrectly(t *testing.T) {
 			ollamaRouter:   NewOllamaRouter(nil),
 			llamaCppRouter: NewLlamaCppRouter(nil),
 		}
-		list := p.buildRoutersForDispatch("")
+		list := nonNilRouters(p.buildRoutersForDispatch(""))
 		require.Len(t, list, 2)
 		assert.Equal(t, "OllamaRouter", list[0].Name())
 	})

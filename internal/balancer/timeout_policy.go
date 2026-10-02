@@ -43,6 +43,13 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 )
 
+// OptInTimeoutSeconds — экспорт optInTimeoutSeconds для соседних пакетов
+// (internal/api проксирует WebUI → cppworker и обязан подчиняться той же
+// доктрине: кап только явным opt-in и с WARN в логе).
+func OptInTimeoutSeconds(envName, what string) time.Duration {
+	return optInTimeoutSeconds(envName, what)
+}
+
 // optInTimeoutSeconds — читает opt-in кап из переменной окружения.
 //
 // Пусто/некорректно/<=0 → 0, то есть «без капа» (ждать терминального

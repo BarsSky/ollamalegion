@@ -45,6 +45,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"ollama-loadbalancer/pkg/logger"
 )
 
 // truncateReasons — why we think response is truncated.
@@ -809,15 +811,35 @@ func GetAutoContinueChatPolicy() string {
 // byte). Set LB_AUTO_CONTINUE_TIMEOUT_SEC=600 to raise to 10min.
 // Set LB_AUTO_CONTINUE_TIMEOUT_SEC=0 to fall back to the previous
 // 60s default (NOT recommended for long code).
+// GetAutoContinueTimeout — opt-in duration-кап для запроса автопродолжения.
+//
+// R60.25 поднял дефолт с 60с до 10 минут; R83/v67 (2026-10-02) убрал его вовсе.
+//
+// ПОЧЕМУ. Продолжение — это ОБЫЧНАЯ генерация: столько же токенов, столько же
+// времени. 10-минутный кап обрывал продолжение длинного ответа ровно на
+// десятой минуте, и клиент получал обрезанный хвост — тот самый дефект, из-за
+// которого автопродолжение и появилось. Ждём терминального состояния
+// (продолжение закончилось / бэкенд вернул ошибку / клиент отвалился).
+//
+// LB_AUTO_CONTINUE_TIMEOUT_SEC=N — осознанный кап (WARN в логе). 0 = без капа.
 func GetAutoContinueTimeout() time.Duration {
 	v := strings.TrimSpace(os.Getenv("LB_AUTO_CONTINUE_TIMEOUT_SEC"))
 	if v == "" {
-		return 600 * time.Second // R60.25 default: 10 minutes
+		return 0
 	}
-	if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-		return time.Duration(n) * time.Second
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		logger.Get().Warnw("LB_AUTO_CONTINUE_TIMEOUT_SEC не распознан — автопродолжение без капа",
+			"value", v, "error", err)
+		return 0
 	}
-	return 600 * time.Second
+	if n == 0 {
+		return 0
+	}
+	logger.Get().Warnw("armed auto-continue timeout (operator opt-in): продолжение будет "+
+		"оборвано по таймеру, а не по завершению генерации",
+		"timeout_sec", n, "source", "LB_AUTO_CONTINUE_TIMEOUT_SEC")
+	return time.Duration(n) * time.Second
 }
 
 // chatMessage — minimal struct for chat message. Both Ollama and

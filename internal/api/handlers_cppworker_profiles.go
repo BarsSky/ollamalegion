@@ -696,6 +696,12 @@ type profilePresence struct {
 	// IgnoreDefaults — R83: снятие «профиль не подставляет параметры» тоже
 	// должно быть возможно явным false.
 	IgnoreDefaults *bool `json:"ignoreDefaults"`
+	// EnableReasoning — R83/v62 (2026-10-02): reasoning из WebUI. Поле есть в
+	// types.LlamaCppModelProfile, но без presence-записи PUT его молча терял:
+	// галочка оператора не сохранялась, и модель поднималась с
+	// reasoning_enabled=false (живая проверка на стенде: PUT 200, в GET профиля
+	// ключа нет, инстанс — reasoning_enabled=False).
+	EnableReasoning *bool `json:"enableReasoning"`
 }
 
 // mergeProfileUpdate — R67a: полный мерж обновления профиля.
@@ -733,6 +739,13 @@ func mergeProfileUpdate(existing, values types.LlamaCppModelProfile, presence pr
 	}
 	if presence.IgnoreDefaults != nil {
 		out.IgnoreDefaults = *presence.IgnoreDefaults
+	}
+	// R83/v62 (2026-10-02): reasoning из профиля (галочка WebUI) — переносим в
+	// сохранённый профиль. Без этой строки PUT принимал поле (HTTP 200), но оно
+	// не сохранялось, и модель поднималась с reasoning_enabled=false, хотя в
+	// WebUI галочка была активна (живая жалоба оператора).
+	if presence.EnableReasoning != nil {
+		out.EnableReasoning = presence.EnableReasoning
 	}
 	return out
 }

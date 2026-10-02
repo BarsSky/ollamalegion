@@ -115,9 +115,12 @@ func (p *Proxy) imageLockBlocksTextBackend(state *BackendState) bool {
 	if state.Backend.Status == types.StatusOffline {
 		return false
 	}
-	// GPU-индекс: (host, gpuIndex) обеих сторон. При индексе 0 у любой из сторон
-	// gpuLockHeldFor блокирует весь хост — консервативно, см. locksConflict.
-	return res.gpuLockHeldFor(state.Backend.Host, state.Backend.EffectiveGPUIndex())
+	// GPU-индекс: (host, индекс) обеих сторон. Если индекс неизвестен ХОТЯ БЫ у
+	// одной из сторон (в том числе при nil у текстового бэкенда — именно так
+	// выглядит «неизвестно» после R-Image follow-up), gpuLockHeldFor блокирует
+	// весь хост — консервативно, см. locksConflict.
+	idx, known := state.Backend.EffectiveGPUIndex()
+	return res.gpuLockHeldFor(state.Backend.Host, gpuRef{index: idx, known: known})
 }
 
 // imageLockWaitCap — предел ожидания слота для текстового запроса, когда

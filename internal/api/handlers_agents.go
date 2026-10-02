@@ -254,8 +254,12 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			// GPUIndex — операторское/нодовое поле: heartbeat его НЕ трогает,
 			// но обязан перенести. Иначе ближайший же (каждые 30 с) heartbeat
 			// молча стирал бы индекс, и лок сосуществования возвращался бы к
-			// хостовому (R-Image follow-up: ключ лока = host + gpuIndex).
-			GPUIndex: existing.GPUIndex,
+			// хостовому (R-Image follow-up: ключ лока = host + индекс, когда
+			// индекс ИЗВЕСТЕН у обеих сторон). Копируем ЗНАЧЕНИЕ указателя:
+			// nil («неизвестно») и &0 («явно GPU 0») обязаны сохраниться как
+			// есть, но запись бэкенда не должна делить указатель со снимком
+			// existing, который мог быть отдан наружу.
+			GPUIndex: cloneGPUIndex(existing.GPUIndex),
 		}
 		s.proxy.UpdateBackend(req.AgentID, updated)
 

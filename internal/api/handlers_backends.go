@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -197,7 +198,6 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			// потребитель, берущий порт из списка, молча падал на дефолт 18093
 			// и на нестандартном порту уходил бы не туда.
 			"imagePort":                    backend.ImagePort,
-			"gpuIndex":                     backend.GPUIndex,
 			"weight":                       backend.Weight,
 			"maxConcurrentRequests":        maxConcurrent,
 			"maxModels":                    maxModels,
@@ -216,6 +216,14 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			"hasAgent":         backend.HasAgent,
 			"agentId":          backend.AgentID,
 			"lastAgentContact": backend.LastAgentContact,
+		}
+
+		// R-Image follow-up (2026-10-02): gpuIndex — ЧИСЛО, когда индекс задан
+		// явно (0 — валидная ПЕРВАЯ карта), и поля НЕТ, когда индекс неизвестен
+		// (nil). Разницу обязан видеть потребитель: от неё зависит ключ лока
+		// сосуществования image/text (см. types.Backend.GPUIndex).
+		if backend.GPUIndex != nil {
+			backendData["gpuIndex"] = *backend.GPUIndex
 		}
 
 		// Добавление метрик если они доступны
@@ -467,11 +475,12 @@ func (s *Server) refreshRegisteredBackend(w http.ResponseWriter, req backendRequ
 	if req.CppWorkerApiToken != "" {
 		updated.CppWorkerApiToken = req.CppWorkerApiToken
 	}
-	// GPUIndex: нода сообщила ненулевой индекс → принимаем; иначе сохраняем
-	// операторское значение (сборки, которые поля не знают, не должны стирать
-	// настройку, иначе лок сосуществования молча вернулся бы к хостовому).
-	if req.GPUIndex > 0 {
-		updated.GPUIndex = req.GPUIndex
+	// GPUIndex: нода сообщила индекс (в т.ч. 0 — явная первая карта) → принимаем;
+	// ключа в payload нет → сохраняем операторское значение. Сборки, которые поля
+	// не знают, не должны стирать настройку, иначе лок сосуществования молча
+	// вернулся бы к хостовому.
+	if req.GPUIndex != nil {
+		updated.GPUIndex = types.GPUIndexPtr(*req.GPUIndex)
 	}
 	if err := s.proxy.UpdateBackend(req.ID, updated); err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -504,11 +513,13 @@ type backendRequest struct {
 	// R-Image (2026-09-27): порт image-воркера для backendType=image_cpp
 	// (default 18093). Fallback: CppWorkerPort → 18093 (EffectiveImagePort).
 	ImagePort int `json:"imagePort"`
-	// GPUIndex — индекс GPU бэкенда (0 = не задан/неизвестно; см.
+	// GPUIndex — индекс GPU бэкенда (nil = не задан/неизвестно; см.
 	// types.Backend.GPUIndex). Влияет только на ключ лока сосуществования
-	// image/text: при индексе у ОБЕИХ сторон лок берётся по (host, gpu), иначе
-	// по хосту. Merge-семантика как у imagePort: 0 = «не менять».
-	GPUIndex          int      `json:"gpuIndex"`
+	// image/text: при известном индексе у ОБЕИХ сторон лок берётся по
+	// (host, gpu), иначе по хосту. УКАЗАТЕЛЬ, а не int: 0 — валидная первая
+	// карта, и в int «явно GPU 0» неотличимо от «не прислано» (тогда POST от
+	// cppworker'а на GPU 0 молча оставлял бы хостовый лок).
+	GPUIndex          *int     `json:"gpuIndex"`
 	Weight            int      `json:"weight"`
 	MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
 	MaxModels         int      `json:"maxModels"`
@@ -668,7 +679,6 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		AgentPort:         req.AgentPort,
 		CppWorkerPort:     cppWorkerPort,
 		ImagePort:         imagePort,
-		GPUIndex:          req.GPUIndex,
 		Weight:            req.Weight,
 		MaxConcurrentReqs: req.MaxConcurrentReqs,
 		MaxModels:         req.MaxModels,
@@ -681,6 +691,14 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		// Round 51.2 (2026-08-20): если req.ApiStyle непусто и валидно — используем как есть.
 		// Иначе Backend.EffectiveAPIStyle() выведет из Type автоматически.
 		ApiStyle: types.APIStyle(req.ApiStyle),
+	}
+
+	// GPUIndex: копируем ЗНАЧЕНИЕ из запроса, а не переиспользуем его указатель
+	// (состояние бэкенда не должно зависеть от времени жизни тела запроса).
+	// nil = «индекс не объявлен» → ключ лока сосуществования остаётся хостовым;
+	// &0 = нода/оператор ЯВНО сказали «первая карта».
+	if req.GPUIndex != nil {
+		backend.GPUIndex = types.GPUIndexPtr(*req.GPUIndex)
 	}
 
 	// Добавление бэкенда в прокси
@@ -754,6 +772,51 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// cloneGPUIndex — копия указателя индекса GPU (nil-safe).
+//
+// Нужна там, где состояние бэкенда пересобирается из снимка (heartbeat
+// агента): «неизвестно» (nil) и «явно GPU 0» (&0) обязаны сохраниться как есть,
+// но новая запись не должна делить указатель со снимком, который уже отдан
+// наружу (иначе запись по указателю в одном месте меняла бы индекс в другом).
+func cloneGPUIndex(src *int) *int {
+	if src == nil {
+		return nil
+	}
+	return types.GPUIndexPtr(*src)
+}
+
+// applyGPUIndexUpdate — merge-семантика gpuIndex для PUT /api/v1/backends/{id}.
+//
+// ТРИ исхода (ровно этого требует R-Image follow-up: индекс GPU 0 должен быть
+// объявляемым, а индекс — сбрасываемым):
+//
+//	ключа в теле нет   → current (не менять): частичный PUT из WebUI не должен
+//	                     стирать настройку, от которой зависит ключ лока
+//	                     сосуществования image/text;
+//	"gpuIndex": null   → nil (СБРОС): индекс снова «неизвестен», лок хостовый;
+//	"gpuIndex": <int>  → явный индекс; 0 — валидная ПЕРВАЯ карта.
+//
+// Отрицательный индекс — 400: «GPU -1» смысла не имеет, а молча проглотить его
+// значило бы записать в state.json значение, которое EffectiveGPUIndex() потом
+// трактует как «неизвестно» (и оператор не поймёт, почему лок не сузился).
+func applyGPUIndexUpdate(raw json.RawMessage, current *int) (*int, error) {
+	if len(raw) == 0 {
+		return current, nil // ключ отсутствует — не менять
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if string(trimmed) == "null" {
+		return nil, nil // явный сброс в «неизвестно»
+	}
+	var idx int
+	if err := json.Unmarshal(trimmed, &idx); err != nil {
+		return current, fmt.Errorf("Invalid gpuIndex: expected an integer or null, got %s", string(trimmed))
+	}
+	if idx < 0 {
+		return current, fmt.Errorf("Invalid gpuIndex: %d (must be >= 0, or null to reset)", idx)
+	}
+	return types.GPUIndexPtr(idx), nil
+}
+
 // updateBackend - обновление бэкенда
 func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID string) {
 	var req struct {
@@ -765,17 +828,23 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		// R-Image (2026-09-27): порт image-воркера для backendType=image_cpp
 		// (default 18093). Fallback: CppWorkerPort → 18093 (EffectiveImagePort).
 		ImagePort int `json:"imagePort"`
-		// GPUIndex — индекс GPU (0 = не задан/неизвестно). Merge-семантика как у
-		// imagePort: 0 = «не менять» (обнулить индекс этой ручкой нельзя — 0 и
-		// «не прислано» в int неразличимы, см. types.Backend.GPUIndex).
-		GPUIndex          int      `json:"gpuIndex"`
-		Weight            int      `json:"weight"`
-		MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
-		MaxModels         int      `json:"maxModels"`
-		GPUMode           string   `json:"gpuMode"`
-		Labels            []string `json:"labels"`
-		BackendType       string   `json:"backendType"`
-		BackendEngine     string   `json:"backendEngine"`
+		// GPUIndex — индекс GPU. Здесь json.RawMessage, а не *int: у PUT
+		// ТРИ исхода, и «ключ отсутствует» обязан отличаться от «null»:
+		//   - ключа нет            → индекс не менять (частичный PUT из WebUI);
+		//   - `"gpuIndex": null`   → СБРОСИТЬ индекс (снова «неизвестно»,
+		//                            лок сосуществования — хостовый);
+		//   - `"gpuIndex": 0`      → ЯВНО GPU 0 (валидная первая карта).
+		// *int не различает первые два случая: json.Unmarshal кладёт nil и в
+		// отсутствующий ключ, и в null (ровно из-за этого сбросить индекс через
+		// PUT раньше было нельзя). См. applyGPUIndexUpdate.
+		GPUIndex          json.RawMessage `json:"gpuIndex"`
+		Weight            int             `json:"weight"`
+		MaxConcurrentReqs int             `json:"maxConcurrentRequests"`
+		MaxModels         int             `json:"maxModels"`
+		GPUMode           string          `json:"gpuMode"`
+		Labels            []string        `json:"labels"`
+		BackendType       string          `json:"backendType"`
+		BackendEngine     string          `json:"backendEngine"`
 		// Round 51.2 (2026-08-20): явный API-стиль. Семантика:
 		//   - непустое значение → устанавливается
 		//   - пустая строка → сохраняется существующее значение (для сброса
@@ -866,11 +935,16 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		imagePort = req.ImagePort
 	}
 
-	// GPUIndex — та же merge-семантика (0 = «не менять»): частичный PUT из WebUI
-	// не должен стирать индекс, от которого зависит ключ лока сосуществования.
-	gpuIndex := existing.GPUIndex
-	if req.GPUIndex > 0 {
-		gpuIndex = req.GPUIndex
+	// GPUIndex — merge-семантика с ВОЗМОЖНОСТЬЮ СБРОСА (см. applyGPUIndexUpdate):
+	// ключа нет → не менять; null → сбросить в nil («индекс неизвестен», лок
+	// сосуществования снова хостовый); 0 → явная первая карта.
+	gpuIndex, gpuIndexErr := applyGPUIndexUpdate(req.GPUIndex, existing.GPUIndex)
+	if gpuIndexErr != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   gpuIndexErr.Error(),
+		})
+		return
 	}
 
 	// Round 51.2 (2026-08-20): применяем apiStyle если передан, иначе сохраняем.

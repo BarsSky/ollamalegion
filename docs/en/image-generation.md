@@ -169,7 +169,21 @@ The gate blocks **exactly one** meaningful case: the estimate is known, free VRA
 
 **What is actually compared against free VRAM (important).** When the model is already loaded — which is precisely when the gate runs, weights being resident — the gate compares the **generation working set** (20% of the weights, no less than 256 MB and no more than 1 GB), not the full model weight: the weights are already held by the model itself, and demanding them again would reject generation on any card where less than the model size is free after loading. The "do the weights fit" question belongs to model-load time. This was fixed after a live run: SD1.5 Q4 (2.6 GB) on a card with 895 MB free answered `503` to every request while the engine was perfectly ready.
 
-The lock is keyed by backend host, and by "host + GPU" when the backend declares `gpuIndex` (a backend field; for llama.cpp it falls back to `cppWorkerConfig.mainGpu`). This matters on multi-GPU machines: a card busy with generation no longer blocks text traffic going to another card on the same host. If only one side declares an index, the conflict is treated as host-wide (conservative).
+The lock is keyed by backend host, and by "host + GPU" when the backend's `gpuIndex` is **known**. This matters on multi-GPU machines: a card busy with generation no longer blocks text traffic going to another card on the same host. If only one side declares an index, the conflict is treated as host-wide (conservative).
+
+`gpuIndex` is a backend field with **three states**, not two (a plain `int` cannot express them: `0` is a valid first-card index and is indistinguishable from "unset"):
+
+| Field value | Meaning | Lock key |
+|---|---|---|
+| absent / `null` | index **unknown**: we do not know which card the backend uses | `host` (whole host) |
+| `0` | **explicitly the first card** | `host#gpu0` |
+| `N > 0` | explicitly card N | `host#gpuN` |
+
+- `PUT /api/v1/backends/{id}` distinguishes all three: no key in the body → "do not change" (a partial PUT from the WebUI must not wipe the setting), `"gpuIndex": null` → **reset** to unknown, `"gpuIndex": 0` → explicit first card. A negative index → `400`.
+- `POST /api/v1/backends` accepts the same field (including `0`); a missing key means "unknown".
+- `GET /api/v1/backends` returns `gpuIndex` as a **number** when the index is explicit and **omits the field** when the index is unknown, so consumers can tell the difference.
+- `gpuLockHeldFor` (whether a text request waits for generation) follows the same rule: an unknown index on either side means a host-wide lock.
+- For llama.cpp, when no explicit `gpuIndex` is set the index falls back to `cppWorkerConfig.mainGpu`, but **only when `mainGpu > 0`**: zero there means "auto/unset", and treating it as "explicitly card 0" would narrow the lock on a guess.
 
 Waiting for a text request blocked by generation is capped by `queueWaitTimeoutSec` (not by the shared admission queue): after the cap the client gets the standard `503` with `Retry-After`, the `X-Queue-Wait-Reason: image_gpu_lock` header and a `waitReason` field in the body.
 

@@ -1,0 +1,222 @@
+# =============================================================================
+# OllamaLegion — ImageWorker (sdworker + sd-server / stable-diffusion.cpp)
+# R-Image / Phase 3.
+# =============================================================================
+#
+# Использование:
+#   Vulkan (AMD/Intel/NVIDIA, основной путь — образ ~37 MB движка):
+#     docker compose -f deployments/docker-compose.imageworker.yml --profile vulkan up -d
+#   CPU (без GPU, медленно):
+#     docker compose -f deployments/docker-compose.imageworker.yml --profile cpu up -d
+#   CUDA (NVIDIA; ЛИНУКС-CUDA-РЕЛИЗА sd.cpp НЕТ — только свой бинарь):
+#     SD_SERVER_BIN=./vendor/sd-server-cuda \
+#     docker compose -f deployments/docker-compose.imageworker.yml --profile cuda up -d --build
+#
+# Сборка образов вручную:
+#   Vulkan: docker build -t ollama-legion/imageworker:vulkan -f docker/imageworker/Dockerfile \
+#             --build-arg SD_SERVER_REVISION=master-929-3f8527a \
+#             --build-arg SD_SERVER_ASSET=sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip .
+#   CPU:    ... --build-arg SD_SERVER_ASSET=sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64.zip .
+#
+# Переменные окружения:
+#   SDWORKER_PORT            — внешний порт API воркера (18093)
+#   SDWORKER_SD_SERVER_PORT  — внутренний порт sd-server (18094, только loopback)
+#   IMAGE_MODELS_DIR         — каталог bundle'ов на хосте (./models/image)
+#   SDWORKER_PRELOAD_MODEL   — модель для загрузки при старте (пусто = по запросу)
+#   SDWORKER_IDLE_UNLOAD_MINUTES — авто-выгрузка (0 = выключено)
+#   SD_SERVER_BIN            — путь к своему бинарю sd-server (CUDA-вариант)
+#   HF_TOKEN / HF_MIRROR     — доступ к HuggingFace (gated модели / зеркало)
+#   SDWORKER_BALANCER_URL    — URL балансера для авторегистрации
+#   SDWORKER_BACKEND_ID      — id бэкенда (по умолчанию imageworker-<host>)
+#   SDWORKER_ADVERTISE_HOST  — host, под которым воркер виден балансеру
+#   SDWORKER_BALANCER_TOKEN  — токен балансера (X-API-Token)
+# =============================================================================
+
+x-imageworker-common: &imageworker-common
+  image: ollama-legion/imageworker:${IMAGE_WORKER_TAG:-vulkan}
+  build:
+    context: ..
+    dockerfile: docker/imageworker/Dockerfile
+    args:
+      SD_SERVER_REVISION: ${SD_SERVER_REVISION:-master-929-3f8527a}
+      SD_SERVER_ASSET: ${SD_SERVER_ASSET:-sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip}
+      SD_SERVER_BIN: ${SD_SERVER_BIN:-}
+  container_name: ollama-legion-imageworker
+  restart: unless-stopped
+  ports:
+    - "${SDWORKER_PORT:-18093}:18093"
+  volumes:
+    # Bundle image-моделей: <dir>/<имя>/{diffusion, vae, te...} + profile.json.
+    # Отдельный подкаталог image/, чтобы не смешивать с текстовыми GGUF
+    # (у них своя раскладка «плоский каталог .gguf»).
+    - ${IMAGE_MODELS_DIR:-../models/image}:/app/models/image:rw
+    # Сгенерированные картинки (response_format:"url") — чтобы их можно было
+    # забрать с хоста и не терять при пересоздании контейнера.
+    - ${IMAGE_OUTPUT_DIR:-../data/images}:/app/data/images:rw
+    # LoRA и ESRGAN-апскейлеры: движок сканирует их в рантайме, поэтому
+    # докидывать файлы можно без рестарта (LoRA — per-request, upscalers —
+    # пересканируются на каждый запрос).
+    - ${IMAGE_LORA_DIR:-../models/lora}:/app/lora:ro
+    - ${IMAGE_UPSCALERS_DIR:-../models/upscalers}:/app/upscalers:ro
+    - hf-cache-image:/app/.cache/huggingface
+  environment:
+    - SDWORKER_PORT=18093
+    - SDWORKER_HOST=0.0.0.0
+    - SDWORKER_SD_SERVER_PORT=${SDWORKER_SD_SERVER_PORT:-18094}
+    - SDWORKER_IMAGE_MODELS_DIR=/app/models/image
+    - SDWORKER_IMAGES_DIR=/app/data/images
+    - SDWORKER_LORA_DIR=/app/lora
+    - SDWORKER_HIRES_UPSCALERS_DIR=/app/upscalers
+    - SDWORKER_IDLE_UNLOAD_MINUTES=${SDWORKER_IDLE_UNLOAD_MINUTES:-30}
+    - SDWORKER_MAX_CONCURRENT=${SDWORKER_MAX_CONCURRENT:-64}
+    - SDWORKER_GENERATION_TIMEOUT_SEC=${SDWORKER_GENERATION_TIMEOUT_SEC:-600}
+    - SDWORKER_STARTUP_TIMEOUT_SEC=${SDWORKER_STARTUP_TIMEOUT_SEC:-180}
+    - SDWORKER_PRELOAD_MODEL=${SDWORKER_PRELOAD_MODEL:-}
+    # BASE_URL обязателен для response_format:"url" — иначе клиент получит
+    # относительную ссылку, которая в его контексте не разрешится.
+    - SDWORKER_BASE_URL=${SDWORKER_BASE_URL:-http://localhost:18093}
+    # HuggingFace (Phase 2 — HF-слой image-bundle'ов; здесь для ручных скриптов).
+    - HF_TOKEN=${HF_TOKEN:-}
+    - HF_MIRROR=${HF_MIRROR:-}
+    # === Авторегистрация в балансере ===
+    # Go-код читает SDWORKER_BALANCER_URL/TOKEN; BALANCER_URL — каноническое
+    # имя в этом compose-стеке, поэтому принимаем оба.
+    - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+    - SDWORKER_BALANCER_URL=${SDWORKER_BALANCER_URL:-${BALANCER_URL:-http://loadbalancer:18081}}
+    - SDWORKER_BALANCER_TOKEN=${SDWORKER_BALANCER_TOKEN:-${BALANCER_API_TOKEN:-}}
+    - BALANCER_API_TOKEN=${BALANCER_API_TOKEN:-}
+    - SDWORKER_BACKEND_ID=${SDWORKER_BACKEND_ID:-imageworker}
+    - SDWORKER_ADVERTISE_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}
+    - SDWORKER_ADVERTISE_PORT=${SDWORKER_ADVERTISE_PORT:-18093}
+    - SDWORKER_REGISTER_DISABLE=${SDWORKER_REGISTER_DISABLE:-false}
+  networks:
+    - ollama-legion-net
+  healthcheck:
+    # Через сам бинарь: curl в минимальном образе может отсутствовать, а
+    # `sdworker -healthcheck` есть всегда. /health отвечает 200 даже без
+    # загруженной модели (иначе idle-unload переводил бы контейнер в unhealthy).
+    test: ["CMD", "/app/sdworker", "-healthcheck"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 20s
+  labels:
+    - "ollama-legion.role=imageworker"
+    - "ollama-legion.backend-type=image_cpp"
+
+services:
+  # ===========================================================================
+  # Vulkan — основной путь: один образ покрывает AMD/Intel/NVIDIA.
+  #
+  # ПОЧЕМУ НЕТ deploy.resources.reservations.devices (как у cppworker-gpu):
+  # этот блок — NVIDIA-специфичный (driver: nvidia). Vulkan работает через
+  # /dev/dri, поэтому пробрасываем устройство и группы render/video.
+  # ===========================================================================
+  imageworker-vulkan:
+    <<: *imageworker-common
+    profiles: ["default", "vulkan"]
+    environment:
+      - SDWORKER_PORT=18093
+      - SDWORKER_IMAGE_MODELS_DIR=/app/models/image
+      - SDWORKER_IMAGES_DIR=/app/data/images
+      - SDWORKER_BASE_URL=${SDWORKER_BASE_URL:-http://localhost:18093}
+      - SDWORKER_IDLE_UNLOAD_MINUTES=${SDWORKER_IDLE_UNLOAD_MINUTES:-30}
+      - SDWORKER_PRELOAD_MODEL=${SDWORKER_PRELOAD_MODEL:-}
+      - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      - SDWORKER_BALANCER_URL=${SDWORKER_BALANCER_URL:-${BALANCER_URL:-http://loadbalancer:18081}}
+      - SDWORKER_BALANCER_TOKEN=${SDWORKER_BALANCER_TOKEN:-${BALANCER_API_TOKEN:-}}
+      - SDWORKER_BACKEND_ID=${SDWORKER_BACKEND_ID:-imageworker}
+      - SDWORKER_ADVERTISE_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}
+      - SDWORKER_REGISTER_DISABLE=${SDWORKER_REGISTER_DISABLE:-false}
+      # AMD Polaris (RX 4xx/5xx): ~2x по скорости (16 → 7.3 s/it).
+      - RADV_PERFTEST=${RADV_PERFTEST:-nogttspill}
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    labels:
+      - "ollama-legion.gpu=vulkan"
+      - "ollama-legion.sd-backend=vulkan"
+
+  # ===========================================================================
+  # CUDA (NVIDIA) — ТРЕБУЕТ своего бинаря sd-server.
+  #
+  # ⚠️ В релизах stable-diffusion.cpp Linux-CUDA-сборки НЕТ (CUDA есть только
+  # под Windows; под Linux есть CPU/Vulkan/ROCm). Поэтому этот профиль
+  # собирается с --build-arg SD_SERVER_BIN=<путь в build context> и
+  # предполагает, что оператор положил бинарь, собранный из исходников:
+  #   git clone --recursive https://github.com/leejet/stable-diffusion.cpp
+  #   cmake -B build -DSD_CUDA=ON && cmake --build build --config Release -j
+  #   mkdir -p vendor && cp build/bin/sd-server vendor/sd-server-cuda
+  # Если SD_SERVER_BIN не задан — сборка завершится ошибкой с этой подсказкой.
+  # GPU пробрасывается через deploy.resources (NVIDIA Container Toolkit).
+  # ===========================================================================
+  imageworker-cuda:
+    <<: *imageworker-common
+    image: ollama-legion/imageworker:${IMAGE_WORKER_CUDA_TAG:-cuda}
+    container_name: ollama-legion-imageworker-cuda
+    profiles: ["cuda"]
+    environment:
+      - SDWORKER_PORT=18093
+      - SDWORKER_IMAGE_MODELS_DIR=/app/models/image
+      - SDWORKER_IMAGES_DIR=/app/data/images
+      - SDWORKER_BASE_URL=${SDWORKER_BASE_URL:-http://localhost:18093}
+      - SDWORKER_IDLE_UNLOAD_MINUTES=${SDWORKER_IDLE_UNLOAD_MINUTES:-30}
+      - SDWORKER_PRELOAD_MODEL=${SDWORKER_PRELOAD_MODEL:-}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      - SDWORKER_BALANCER_URL=${SDWORKER_BALANCER_URL:-${BALANCER_URL:-http://loadbalancer:18081}}
+      - SDWORKER_BALANCER_TOKEN=${SDWORKER_BALANCER_TOKEN:-${BALANCER_API_TOKEN:-}}
+      - SDWORKER_BACKEND_ID=${SDWORKER_BACKEND_ID:-imageworker-cuda}
+      - SDWORKER_ADVERTISE_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker-cuda}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    labels:
+      - "ollama-legion.gpu=cuda"
+      - "ollama-legion.sd-backend=cuda"
+
+  # ===========================================================================
+  # CPU — без GPU. Работает всегда, но генерация измеряется минутами
+  # (CPU-only: ~80 с/шаг против ~10 с/шаг на GPU), поэтому только для тестов
+  # корректности пайплайна, а не для использования.
+  # ===========================================================================
+  imageworker-cpu:
+    <<: *imageworker-common
+    image: ollama-legion/imageworker:${IMAGE_WORKER_CPU_TAG:-cpu}
+    container_name: ollama-legion-imageworker-cpu
+    profiles: ["cpu"]
+    build:
+      context: ..
+      dockerfile: docker/imageworker/Dockerfile
+      args:
+        SD_SERVER_REVISION: ${SD_SERVER_REVISION:-master-929-3f8527a}
+        SD_SERVER_ASSET: ${SD_SERVER_ASSET_CPU:-sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64.zip}
+    environment:
+      - SDWORKER_PORT=18093
+      - SDWORKER_IMAGE_MODELS_DIR=/app/models/image
+      - SDWORKER_IMAGES_DIR=/app/data/images
+      - SDWORKER_BASE_URL=${SDWORKER_BASE_URL:-http://localhost:18093}
+      - SDWORKER_IDLE_UNLOAD_MINUTES=${SDWORKER_IDLE_UNLOAD_MINUTES:-30}
+      - SDWORKER_GENERATION_TIMEOUT_SEC=${SDWORKER_GENERATION_TIMEOUT_SEC:-3600}
+      - SDWORKER_PRELOAD_MODEL=${SDWORKER_PRELOAD_MODEL:-}
+    labels:
+      - "ollama-legion.gpu=false"
+      - "ollama-legion.sd-backend=cpu"
+
+networks:
+  # Сеть балансера: воркер обязан быть в ней, иначе авторегистрация пройдёт,
+  # а маршрутизация запросов от балансера — нет.
+  ollama-legion-net:
+    name: deployments_ollama-legion-net
+    external: true
+
+volumes:
+  hf-cache-image:
+    name: ollama-legion-hf-cache-image

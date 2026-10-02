@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -161,6 +162,17 @@ func (p *execProcess) Wait() error {
 // Почему SIGTERM первым: sd-server корректно освобождает VRAM/файлы; hard kill
 // на Vulkan-драйвере (Mesa RADV) иногда оставляет устройство в «залипшем»
 // состоянии, а следующий spawn падает на инициализации.
+//
+// R-Image (2026-10-02, найдено живым E2E): НАМЕРЕННАЯ остановка НЕ является
+// ошибкой. Раньше возвращался `p.waitErr`, а `cmd.Wait()` для процесса,
+// убитого через Kill, отдаёт "exit status 1" — из-за этого успешный
+// `POST /api/image/models/unload` отвечал HTTP 500, а idle-unload писал
+// «idle unload failed» при фактически выгруженной модели.
+//
+// Вторая часть того же дефекта: `os.Interrupt` на Windows процессу не
+// доставляется (платформа его не поддерживает), поэтому мы каждый раз
+// выжидали ПОЛНЫЙ grace (5 с) и только потом убивали — unload занимал 5 секунд.
+// Поэтому на Windows сигнал не отправляем, а сразу переходим к Kill.
 func (p *execProcess) Stop(grace time.Duration) error {
 	if p.cmd.Process == nil {
 		return nil
@@ -173,19 +185,25 @@ func (p *execProcess) Stop(grace time.Duration) error {
 	p.stopped = true
 	p.mu.Unlock()
 
-	_ = p.cmd.Process.Signal(os.Interrupt) // SIGINT/SIGTERM-совместимый путь
-	select {
-	case <-p.done:
-		return p.waitErr
-	case <-time.After(grace):
+	if runtime.GOOS != "windows" {
+		_ = p.cmd.Process.Signal(os.Interrupt) // SIGINT/SIGTERM-совместимый путь
+		select {
+		case <-p.done:
+			// Процесс завершился сам — это тоже намеренная остановка.
+			return nil
+		case <-time.After(grace):
+		}
 	}
-	// Не завершился — жёстко.
+
+	// Не завершился (или Windows, где сигнал не доставляется) — жёстко.
 	_ = p.cmd.Process.Kill()
 	select {
 	case <-p.done:
 	case <-time.After(grace):
 	}
-	return p.waitErr
+	// Намеренная остановка: ненулевой exit-код убитого процесса — НЕ ошибка.
+	// Реальные ошибки старта/работы видны в State() и в логе процесса.
+	return nil
 }
 
 func (p *execProcess) Kill() error {
@@ -218,18 +236,18 @@ type Supervisor struct {
 	// PollEvery — интервал опроса джоб движка (в тестах 2 мс).
 	PollEvery time.Duration
 
-	mu       sync.Mutex
-	state    string
-	proc     Process
-	client   *SDServerClient
-	loaded   string // current model name ("" = none)
-	prof     *types.ImageModelProfile
-	loadErr  error
-	loading  bool
+	mu           sync.Mutex
+	state        string
+	proc         Process
+	client       *SDServerClient
+	loaded       string // current model name ("" = none)
+	prof         *types.ImageModelProfile
+	loadErr      error
+	loading      bool
 	loadingModel string
-	gen      uint64 // «поколение» процесса: инвалидирует отменённые загрузки
-	inFlight uint64 // активные генерации (для idle-unload и метрик)
-	caps     *Capabilities
+	gen          uint64 // «поколение» процесса: инвалидирует отменённые загрузки
+	inFlight     uint64 // активные генерации (для idle-unload и метрик)
+	caps         *Capabilities
 }
 
 // NewSupervisor — супервизор с боевыми зависимостями.

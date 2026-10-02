@@ -392,45 +392,62 @@ func recomputeBundleProgress(p *HFBundleProgress) {
 	}
 }
 
+// cloneBundleProgress — ГЛУБОКАЯ копия снимка прогресса bundle.
+//
+// R-Image (2026-10-02, найдено на ревью + подтверждено `go test -race`):
+// `snapshot := task.progress` копирует структуру, но поле Files — СРЕЗ, общий
+// с активной загрузкой (downloadBundleFile пишет элементы под своим мьютексом).
+// Любое чтение Files снаружи = data race. Поэтому все «снимки» отдаём deep-copy.
+func cloneBundleProgress(p HFBundleProgress) HFBundleProgress {
+	out := p
+	if len(p.Files) > 0 {
+		out.Files = make([]HFBundleFileProgress, len(p.Files))
+		copy(out.Files, p.Files)
+	}
+	return out
+}
+
 // GetBundleProgress возвращает снимок прогресса bundle (активного или из истории).
 func (d *HuggingFaceDownloader) GetBundleProgress(bundleID string) (*HFBundleProgress, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	if task, ok := d.activeBundles[bundleID]; ok {
-		snapshot := task.progress
+		snapshot := cloneBundleProgress(task.progress)
 		return &snapshot, nil
 	}
 	// История — от новых к старым: последняя попытка важнее.
 	for i := len(d.bundleHistory) - 1; i >= 0; i-- {
 		if d.bundleHistory[i].BundleID == bundleID {
-			snapshot := d.bundleHistory[i]
+			snapshot := cloneBundleProgress(d.bundleHistory[i])
 			return &snapshot, nil
 		}
 	}
 	return nil, fmt.Errorf("no bundle download found for %s", bundleID)
 }
 
-// ListActiveBundles возвращает активные bundle-загрузки.
+// ListActiveBundles возвращает активные bundle-загрузки (глубокие копии).
 func (d *HuggingFaceDownloader) ListActiveBundles() []HFBundleProgress {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	result := make([]HFBundleProgress, 0, len(d.activeBundles))
 	for _, task := range d.activeBundles {
-		result = append(result, task.progress)
+		result = append(result, cloneBundleProgress(task.progress))
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].BundleID < result[j].BundleID })
 	return result
 }
 
-// ListBundleHistory возвращает историю завершённых bundle-загрузок.
+// ListBundleHistory возвращает историю завершённых bundle-загрузок (глубокие копии).
 func (d *HuggingFaceDownloader) ListBundleHistory() []HFBundleProgress {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	result := make([]HFBundleProgress, len(d.bundleHistory))
-	copy(result, d.bundleHistory)
+	for i, p := range d.bundleHistory {
+		result[i] = cloneBundleProgress(p)
+	}
 	return result
 }
 

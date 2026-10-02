@@ -186,12 +186,17 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 		}
 
 		backendData := map[string]interface{}{
-			"id":                           backend.ID,
-			"name":                         backend.Name,
-			"host":                         backend.Host,
-			"ollamaPort":                   backend.OllamaPort,
-			"agentPort":                    backend.AgentPort,
-			"cppWorkerPort":                backend.CppWorkerPort,
+			"id":            backend.ID,
+			"name":          backend.Name,
+			"host":          backend.Host,
+			"ollamaPort":    backend.OllamaPort,
+			"agentPort":     backend.AgentPort,
+			"cppWorkerPort": backend.CppWorkerPort,
+			// R-Image (2026-10-02): порт image-воркера. Найдено живым E2E:
+			// POST отдавал imagePort, а GET /api/v1/backends — нет, поэтому
+			// потребитель, берущий порт из списка, молча падал на дефолт 18093
+			// и на нестандартном порту уходил бы не туда.
+			"imagePort":                    backend.ImagePort,
 			"weight":                       backend.Weight,
 			"maxConcurrentRequests":        maxConcurrent,
 			"maxModels":                    maxModels,

@@ -125,6 +125,23 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
   loadbalancer:
     image: ${IMAGE_REGISTRY:-}ollama-legion/balancer:${BALANCER_TAG:-r83-submodule-v22}
+    # Phase 8 (2026-10-03): сборка ИЗ ИСХОДНИКОВ. До этого build: был только у
+    # imageworker, поэтому `docker compose --profile full up -d --build`
+    # пересобирал ОДИН image-воркер, а балансер оставался старым образом: в
+    # стенде не появлялись ни 18079 (OpenAI-поверхность картинок), ни метрики
+    # image-запросов, ни cluster.image. Ровно это выглядело как «в докере новый
+    # бэкенд не активен».
+    #
+    # cppworker-gpu и agent сознательно остаются image-only: их код в этой фазе
+    # не менялся, а пересборка llama.cpp из исходников занимает десятки минут (и
+    # ломала бы работающий текстовый пул). Сборка всего из исходников — в
+    # docker-compose.bundled-full.yml.
+    build:
+      context: ..
+      dockerfile: docker/balancer/Dockerfile
+      args:
+        GIT_COMMIT: ${BALANCER_GIT_COMMIT:-unknown}
+        BUILD_DATE: ${BALANCER_BUILD_DATE:-unknown}
     container_name: ol-stack-balancer
     restart: unless-stopped
     security_opt:
@@ -201,6 +218,23 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
   webui:
     image: ${IMAGE_REGISTRY:-}ollama-legion/webui:${WEBUI_TAG:-r83-submodule-v22}
+    # Phase 8: сборка из исходников — по той же причине, что у балансера: без
+    # build: пункт навигации «Image-бэкенды» и панель запросов в Monitor не
+    # доехали бы до оператора (образ оставался старым), и это выглядело как
+    # «WebUI не видит image-бэкенд».
+    #
+    # VERSION — не просто подпись: Dockerfile подменяет им токен ?v= во всех
+    # html (sed 's/?v=.../?v=${VERSION}/'), а nginx отдаёт js с expires 1y. При
+    # неизменном токене браузер оператора оставил бы СТАРЫЕ модули из кэша даже
+    # после пересборки (именно так правки R70 не доезжали). Поэтому дефолт —
+    # версия релиза, а не «dev».
+    build:
+      context: ..
+      dockerfile: docker/webui/Dockerfile
+      args:
+        VERSION: ${WEBUI_VERSION:-0.7.0}
+        GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
+        BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
     container_name: ol-stack-webui
     restart: unless-stopped
     depends_on:

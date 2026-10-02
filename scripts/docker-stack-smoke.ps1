@@ -250,6 +250,8 @@ try {
     $r = Invoke-Http -Method GET -Url "$api/api/v1/cluster" -Headers $authHeaders
     $cj = ConvertTo-JsonSafe $r.Body
     # /api/v1/cluster отдаёт ClusterState напрямую (обёртку cluster добавляет клиент).
+    $pool = $null
+    if ($cj) { $pool = $cj.image }
     $poolBackends = 0; $poolTotal = 0
     if ($pool) {
         $poolBackends = [int]$pool.backends

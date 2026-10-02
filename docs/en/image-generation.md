@@ -355,6 +355,53 @@ curl -s -H "X-API-Token: $TOKEN" http://<host>:18081/api/v1/backends | jq '.back
 curl -s -H "X-API-Token: $TOKEN" http://<host>:18081/api/v1/cluster  | jq '.cluster.image.requests'
 ```
 
+**About building the images.** In `docker-compose.stack.yml` the `build:` section
+exists for `loadbalancer`, `webui` and `imageworker`, so
+`--profile full up -d --build` rebuilds exactly those; `cppworker-gpu` and `agent`
+come from images (their code did not change in this phase, and rebuilding llama.cpp
+takes tens of minutes). Without `build:` on the balancer and WebUI, `--build`
+rebuilt only the image worker while the balancer/UI stayed on old images — which is
+exactly what looks like "the new backend is not active in Docker" and "the WebUI
+does not see the image backend".
+
+**About the WebUI `?v=` token.** The Dockerfile replaces the `?v=` token in all
+html files with `WEBUI_VERSION` (build arg), and nginx serves js with
+`expires 1y`. The compose default is `0.7.0`; with an unchanged token the
+operator's browser keeps the OLD modules from cache even after a rebuild. Bump
+`WEBUI_VERSION` when you ship new frontend code.
+
+#### GPU inside the container: verify, do not assume
+
+`nvidia-smi` inside the container sees the card (compute/utility are passed
+through), but sd.cpp needs **Vulkan**, and the NVIDIA ICD only reaches the
+container with the `graphics` capability and a Vulkan ICD in the host driver
+store:
+
+```bash
+docker exec ol-stack-imageworker sh -c 'ls /usr/share/vulkan/icd.d/'
+# no nvidia_icd.json  -> NVIDIA Vulkan is unavailable in the container
+docker exec ol-stack-imageworker nvidia-smi -L   # GPU present (CUDA), but not Vulkan
+```
+
+Measured on the live stand (Windows + Docker Desktop/WSL2, RTX 3070): inside the
+container 512x512 / 8 steps took **251 s** (the engine falls back to CPU/software
+Vulkan), while the native `sd-server` with Vulkan on the same host took **9-76 s**.
+The stand works, but images inside the container are computed on CPU.
+
+Options if you need GPU speed with a containerized worker:
+
+1. **CUDA build of sd.cpp** (the project has no Linux CUDA releases, so you need
+   your own binary): put the built `sd-server` into `docker/imageworker/vendor/`
+   and build with `IMAGE_WORKER_RUNTIME_BASE=nvidia/cuda:12.6.0-runtime-ubuntu24.04`
+   plus `SD_SERVER_BIN=<file name>`. CUDA containers do work on this machine (the
+   text pool `cppworker-gpu` uses CUDA).
+2. **Native image worker on the host + the same balancer**: run `sdworker` outside
+   Docker with `SDWORKER_BALANCER_URL=http://<host>:18081`,
+   `SDWORKER_BALANCER_TOKEN=<stack token>`,
+   `SDWORKER_ADVERTISE_HOST=host.docker.internal` and
+   `SDWORKER_REGISTER_DISABLE=true` on the containerized worker — then the
+   balancer (in Docker) proxies images to the native worker with GPU Vulkan.
+
 ## 12. Image request metrics and backend management in the UI
 
 ### 12.1 What is counted

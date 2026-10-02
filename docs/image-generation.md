@@ -376,6 +376,50 @@ curl -s -H "X-API-Token: $TOKEN" http://<хост>:18081/api/v1/backends | jq '.
 curl -s -H "X-API-Token: $TOKEN" http://<хост>:18081/api/v1/cluster  | jq '.cluster.image.requests'
 ```
 
+**Важно про сборку образов.** В `docker-compose.stack.yml` секция `build:` есть
+у `loadbalancer`, `webui` и `imageworker`, поэтому `--profile full up -d --build`
+пересобирает именно их; `cppworker-gpu` и `agent` берутся из образов (их код в
+этой фазе не менялся, а пересборка llama.cpp занимает десятки минут). Без
+`build:` у балансера и WebUI команда `--build` пересобирала бы один image-воркер,
+а балансер/UI оставались бы старыми образами — ровно это выглядит как «в докере
+новый бэкенд не активен» и «WebUI не видит image-бэкенд».
+
+**Про `?v=` у WebUI.** Dockerfile подменяет токен `?v=` во всех html на
+`WEBUI_VERSION` (build-arg), а nginx отдаёт js с `expires 1y`. Дефолт в compose —
+`0.7.0`; при неизменном токене браузер оператора оставит СТАРЫЕ модули из кэша
+даже после пересборки. Меняйте `WEBUI_VERSION` при выпуске нового фронтенда.
+
+#### GPU внутри контейнера: проверять, а не предполагать
+
+`nvidia-smi` в контейнере видит карту (то есть compute/utility проброшены), но
+для sd.cpp нужен **Vulkan**, а ICD NVIDIA приезжает в контейнер только при
+capability `graphics` и наличии Vulkan-ICD в driver-store хоста:
+
+```bash
+docker exec ol-stack-imageworker sh -c 'ls /usr/share/vulkan/icd.d/'
+# нет nvidia_icd.json  -> Vulkan-NVIDIA в контейнере недоступен
+docker exec ol-stack-imageworker nvidia-smi -L   # GPU проброшен (CUDA), но не Vulkan
+```
+
+Замер на живом стенде (Windows + Docker Desktop/WSL2, RTX 3070): в контейнере
+512×512 / 8 шагов — **251 с** (движок уходит на CPU/software Vulkan), на том же
+хосте нативный `sd-server` с Vulkan — **9–76 с**. То есть стенд работает, но
+картинки в контейнере считаются на CPU.
+
+Варианты, если нужна GPU-скорость при контейнерном воркере:
+
+1. **CUDA-сборка sd.cpp** (Linux-CUDA-релизов у проекта нет, нужен свой бинарь):
+   положить собранный `sd-server` в `docker/imageworker/vendor/` и собрать образ с
+   `IMAGE_WORKER_RUNTIME_BASE=nvidia/cuda:12.6.0-runtime-ubuntu24.04` +
+   `SD_SERVER_BIN=<имя файла>`. CUDA-контейнеры на этой машине работают
+   (text-пул `cppworker-gpu` использует именно CUDA).
+2. **Нативный image-воркер на хосте + тот же балансер**: запустить `sdworker` вне
+   Docker с `SDWORKER_BALANCER_URL=http://<хост>:18081`,
+   `SDWORKER_BALANCER_TOKEN=<токен стека>`,
+   `SDWORKER_ADVERTISE_HOST=host.docker.internal` и
+   `SDWORKER_REGISTER_DISABLE=true` у контейнерного воркера — тогда балансер
+   (в контейнере) проксирует картинки на нативный воркер с GPU-Vulkan.
+
 ## 12. Метрики image-запросов и управление бэкендами в UI
 
 ### 12.1 Что именно считается

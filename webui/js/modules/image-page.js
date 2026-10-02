@@ -1768,6 +1768,17 @@
             }
         }
         refresh();
+        // R-Image Phase 6 (2026-10-02): профили image-моделей - отдельный модуль
+        // (image-profiles.js, грузится до этого файла). Хук минимальный: страница
+        // владеет только своим DOM, профили - своим контейнером #imageProfiles.
+        // Отсутствие модуля не должно ломать страницу (порядок/кэш script-тегов).
+        if (window.ImageProfiles && typeof window.ImageProfiles.mount === 'function') {
+            try {
+                window.ImageProfiles.mount('imageProfiles');
+            } catch (e) {
+                if (window.console) console.warn('[ImagePage] ImageProfiles.mount failed:', e);
+            }
+        }
     }
 
     /** Только данные, без перерисовки статики (кнопка «Обновить» на странице). */

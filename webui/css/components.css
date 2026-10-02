@@ -2138,3 +2138,195 @@
     background: var(--bg-secondary);
     border-top: 1px solid var(--border);
 }
+
+/* ============================================================ */
+/* R-Image Phase 6 (2026-10-02): профили image-моделей          */
+/* (webui/js/modules/image-profiles.js)                         */
+/* ============================================================ */
+
+.imgp-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.imgp-notes {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    max-width: 340px;
+    word-break: break-word;
+}
+
+.imgp-error {
+    display: block;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary, #1a1f2e);
+    border: 1px solid var(--error, #f85149);
+    color: var(--text-primary, #e2e8f0);
+    font-size: 13px;
+    word-break: break-word;
+}
+
+.imgp-unreachable {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    line-height: 16px;
+    white-space: nowrap;
+    background: rgba(248, 81, 73, 0.18);
+    color: #ff7b72;
+}
+
+/* Редактор профиля: шире обычного визарда (много полей и строк файлов) */
+.imgp-editor-modal {
+    max-width: 1000px;
+}
+
+.imgp-errors {
+    margin: 0 24px 12px;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--error, #f85149);
+    background: var(--bg-tertiary, #151a26);
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.imgp-errors ul {
+    margin: 6px 0 0;
+    padding-left: 18px;
+}
+
+.imgp-error-title {
+    font-weight: 600;
+}
+
+/* Секции редактора (<details>): summary - заголовок секции, а не строка списка */
+.imgp-editor-modal details {
+    border: 1px solid var(--border-color, #2a3441);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    background: var(--bg-secondary, #1a1f2e);
+}
+
+.imgp-editor-modal details[open] {
+    padding-bottom: 12px;
+}
+
+.imgp-section-title {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: var(--font-size-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-primary);
+}
+
+.imgp-editor-modal details > summary::-webkit-details-marker {
+    display: none;
+}
+
+.imgp-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.imgp-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* Поля внутри grid/flex-ячеек не растягиваются сами: в .wizard-field input
+   ширина не задана, поэтому растягиваем и учитываем padding в ширине. */
+.imgp-field input,
+.imgp-field select,
+.imgp-field textarea,
+.imgp-file-col input,
+.imgp-file-col select {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.imgp-field-check {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+}
+
+.imgp-checks {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.imgp-file-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 8px;
+    margin-top: 8px;
+    border: 1px solid var(--border-color, #2a3441);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary, #151a26);
+}
+
+.imgp-file-col {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.imgp-file-col-role { flex: 0 0 130px; }
+.imgp-file-col-repo { flex: 2 1 220px; }
+.imgp-file-col-file { flex: 2 1 220px; }
+.imgp-file-col-rev { flex: 0 0 110px; }
+.imgp-file-col-act { flex: 0 0 auto; }
+
+.imgp-file-local {
+    flex: 1 0 100%;
+    font-size: 11px;
+    color: var(--text-muted);
+    word-break: break-all;
+}
+
+.imgp-catalog-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
+
+.imgp-hint {
+    display: block;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.imgp-args {
+    margin: 6px 0 0;
+    padding: 8px 10px;
+    background: var(--bg-primary, #0f0f23);
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.imgp-server-args:empty {
+    display: none;
+}

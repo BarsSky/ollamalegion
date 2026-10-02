@@ -1125,7 +1125,13 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	// R83/v59: пустой вывод модели — один повторный проход (см.
 	// empty_output_retry_r83.go). Здесь ничего не потеряно: при raw_len=0 дельт
 	// клиенту не отправлялось.
-	if len(fullOutput) == 0 && emptyOutputRetryEnabled() {
+	// R83/v62 (2026-10-02): автоповтор ТОЛЬКО если клиент ещё ждёт.
+	// Если контекст запроса уже отменён (клиент ушёл — по своему таймауту, кнопке
+	// Stop или обрыву), повторный проход бессмысленен: он мгновенно упадёт на
+	// взведённом abort-флаге и в логе появится пугающее «повторная генерация не
+	// удалась: BRIDGE_ERR_ABORTED» (живой лог A10, запрос 5 минут в prefill).
+	// В этом случае честнее сразу закрыть стрим/отдать ошибку с причиной.
+	if len(fullOutput) == 0 && emptyOutputRetryEnabled() && ctx.Err() == nil {
 		logger.Get().Warnw("writeChatStreamResponse: пустой вывод модели (raw_len=0) — повторная генерация",
 			"model", modelName, "prompt_tokens", countTokensSafe(modelName, prompt))
 		outputBuf.Reset()
@@ -1438,7 +1444,13 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// Сэмплирование стохастично, поэтому повторный проход обычно даёт ответ.
 	// Терять нечего: при raw_len=0 клиенту ещё не отправлено ни одного чанка
 	// (в том числе дельт — их неоткуда взять).
-	if len(fullOutput) == 0 && emptyOutputRetryEnabled() {
+	// R83/v62 (2026-10-02): автоповтор ТОЛЬКО если клиент ещё ждёт.
+	// Если контекст запроса уже отменён (клиент ушёл — по своему таймауту, кнопке
+	// Stop или обрыву), повторный проход бессмысленен: он мгновенно упадёт на
+	// взведённом abort-флаге и в логе появится пугающее «повторная генерация не
+	// удалась: BRIDGE_ERR_ABORTED» (живой лог A10, запрос 5 минут в prefill).
+	// В этом случае честнее сразу закрыть стрим/отдать ошибку с причиной.
+	if len(fullOutput) == 0 && emptyOutputRetryEnabled() && ctx.Err() == nil {
 		logger.Get().Warnw("writeChatStreamResponseWithTools: пустой вывод модели (raw_len=0) — повторная генерация",
 			"model", modelName, "prompt_tokens", countTokensSafe(modelName, prompt))
 		outputBuf.Reset()

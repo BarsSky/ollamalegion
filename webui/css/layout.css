@@ -94,6 +94,14 @@
     border-left: 3px solid var(--text-muted);
 }
 
+/* R-Image Phase 5 (2026-10-02): image.cpp filter in the sidebar type switcher.
+   Green (--success) matches the image.cpp backend badge so the operator can tell
+   the three backend classes apart at a glance. */
+.backend-engine-badge.engine-image_cpp {
+    color: var(--success);
+    border-left: 3px solid var(--success);
+}
+
 /* ===== Nav (single-line, max 80px tall condensed) ===== */
 .nav {
     flex: 1;

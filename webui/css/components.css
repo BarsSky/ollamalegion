@@ -397,6 +397,12 @@
     color: var(--warning);
     border: 1px solid var(--warning-soft-4);
 }
+/* R-Image Phase 5: badge for the third backend type (stable-diffusion.cpp). */
+.badge.backend-type-image_cpp {
+    background: var(--success-soft);
+    color: var(--success);
+    border: 1px solid var(--success-bg-soft-2);
+}
 
 /* Round 18d (2026-07-10): backend ID + type badge in Backends table.
    Раньше ID и badge шли в одну строку через inline → при длинных ID
@@ -1302,6 +1308,11 @@
 .type-filter-btn.active[data-type="llama_cpp"] {
     background: var(--warning-soft-2);
     border-color: var(--warning-soft-3);
+}
+/* R-Image Phase 5: image.cpp filter button active state. */
+.type-filter-btn.active[data-type="image_cpp"] {
+    background: var(--success-bg-soft-2);
+    border-color: var(--success-soft);
 }
 
 /* ===== Models tab: backend-type filter + sort (Roadmap Q3 W3-4) ===== */

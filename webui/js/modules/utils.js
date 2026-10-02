@@ -60,13 +60,20 @@ const Utils = {
     },
 
     /**
-     * Normalize backend type string to canonical form (ollama | llama_cpp).
+     * Normalize backend type string to canonical form (ollama | llama_cpp | image_cpp).
      * Maps aliases like 'ollama_api' → 'ollama'.
      */
     normalizeBackendType(raw) {
         if (!raw) return '';
         const t = String(raw).toLowerCase();
         if (t === 'llama_cpp' || t === 'llamacpp' || t === 'llama.cpp') return 'llama_cpp';
+        // R-Image Phase 5: image-бэкенд (stable-diffusion.cpp). Алиасы нужны потому,
+        // что поле приходит из разных источников: backendType/type (config JSON),
+        // BackendType (agent metrics, PascalCase значение), engine ('image_cpp').
+        // Без явной ветки normalizeBackendType('image_cpp') возвращал 'image_cpp'
+        // как есть, но getBackendType() ниже падал в дефолт 'ollama' - бейдж и
+        // фильтры показывали image-бэкенд как Ollama.
+        if (t === 'image_cpp' || t === 'imagecpp' || t === 'image.cpp' || t === 'sd_cpp' || t === 'sdcpp') return 'image_cpp';
         if (t === 'ollama' || t === 'ollama_api' || t === 'ollamaapi') return 'ollama';
         return t;
     },
@@ -88,12 +95,17 @@ const Utils = {
     },
 
     /**
-     * Get HTML badge for backend type (🦙 Ollama / 🦒 llama.cpp)
+     * Get HTML badge for backend type (🦙 Ollama / 🦒 llama.cpp / 🎨 image.cpp)
      */
     getBackendTypeBadge(backend) {
         const bt = Utils.getBackendType(backend);
         if (bt === 'llama_cpp') {
             return '<span class="badge backend-type-llama_cpp">🦒 llama.cpp</span>';
+        }
+        if (bt === 'image_cpp') {
+            // R-Image Phase 5: label/emoji совпадают с GET /api/v1/backends/types
+            // (BackendType.Emoji()/Label() на сервере) - единый вид в UI и API.
+            return '<span class="badge backend-type-image_cpp">🎨 image.cpp</span>';
         }
         if (bt === 'ollama') {
             return '<span class="badge backend-type-ollama">🦙 Ollama</span>';

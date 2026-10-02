@@ -95,6 +95,13 @@
                 <a href="#gguf" class="nav-item" data-page="gguf">
                     <span class="nav-icon-wrap"><i class="fas fa-cube fa-fw"></i></span> <span data-i18n="nav.gguf">GGUF</span>
                 </a>
+                <!-- R-Image Phase 5 (2026-10-02): страница генерации изображений.
+                     Вкладка НЕ скрывается фильтром текстового движка (ollama/llama.cpp):
+                     image_cpp - ортогональный класс бэкендов, он сосуществует с текстовым
+                     (см. internal/config/backend_type_validation.go). -->
+                <a href="#image" class="nav-item" data-page="image">
+                    <span class="nav-icon-wrap"><i class="fas fa-image fa-fw"></i></span> <span data-i18n="nav.image">Изображения</span>
+                </a>
                 <a href="virtual-models.html" target="_blank" rel="noopener" class="nav-item" data-page="virtual-models">
                     <span class="nav-icon-wrap"><i class="fas fa-share-nodes fa-fw"></i></span> <span data-i18n="nav.virtual_models">Виртуальные модели</span>
                 </a>
@@ -245,6 +252,7 @@
                                 <button class="type-filter-btn active" data-type="all" data-i18n="models.filter_all">Все</button>
                                 <button class="type-filter-btn" data-type="ollama" data-i18n="models.filter_ollama">Ollama</button>
                                 <button class="type-filter-btn" data-type="llama_cpp" data-i18n="models.filter_llamacpp">llama.cpp</button>
+                                <button class="type-filter-btn" data-type="image_cpp">🎨 image.cpp</button>
                             </div>
                             <input type="text" class="search-input" placeholder="Поиск..." id="backendSearch" data-i18n-placeholder="backends.search">
                         </div>
@@ -296,6 +304,7 @@
                                 <button class="type-filter-btn active" data-type="all" data-i18n="backends.filter_all">Все</button>
                                 <button class="type-filter-btn" data-type="ollama">Ollama</button>
                                 <button class="type-filter-btn" data-type="llama_cpp">llama.cpp</button>
+                                <button class="type-filter-btn" data-type="image_cpp">🎨 image.cpp</button>
                             </div>
                             <button class="btn btn-secondary" id="exportBackends" data-i18n="backends.export">Экспорт</button>
                             <button class="btn btn-primary" id="addBackendBtn2" data-i18n="backends.add">Добавить</button>
@@ -580,6 +589,185 @@
             <div class="page" id="gguf-page">
                 <div class="gguf-container" id="ggufContainer">
                     <div class="loading" data-i18n="common.loading">Загрузка...</div>
+                </div>
+            </div>
+
+            <!-- Image Page (R-Image Phase 5): генерация + image-модели (bundle) -->
+            <div class="page" id="image-page">
+                <!-- Toolbar: выбор image-бэкенда и модели -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-wand-magic-sparkles section-icon-i"></i> <span data-i18n="image.title">Генерация изображений</span></h3>
+                        <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <span style="font-size:12px;color:var(--text-muted);" data-i18n="image.backend">Image-бэкенд</span>
+                            <select class="sort-select" id="imgBackendSelect"></select>
+                            <span style="font-size:12px;color:var(--text-muted);" data-i18n="image.model">Модель</span>
+                            <select class="sort-select" id="imgModelSelect"></select>
+                            <button class="btn btn-secondary" id="imgRefreshBtn" data-i18n="gguf.refresh">Обновить</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <!-- Notice: нет image-бэкендов / API воркера ещё не отдаёт данные -->
+                        <div id="imgNotice" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
+
+                        <!-- Generation form -->
+                        <div class="form-row">
+                            <div class="form-group" style="flex:2;">
+                                <label data-i18n="image.prompt">Промпт</label>
+                                <textarea id="imgPrompt" class="form-control" rows="3" data-i18n-placeholder="image.prompt_placeholder" placeholder="a cat on a windowsill, soft light"></textarea>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group" style="flex:2;">
+                                <label data-i18n="image.negative">Негативный промпт</label>
+                                <textarea id="imgNegative" class="form-control" rows="2" data-i18n-placeholder="image.negative_placeholder" placeholder="blurry, low quality, watermark"></textarea>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label data-i18n="image.width">Ширина</label>
+                                <input type="number" id="imgWidth" class="form-control" value="512" min="64" max="4096" step="64">
+                                <small style="color:var(--text-muted);font-size:11px;" data-i18n="image.size_hint">64..4096, шаг 64</small>
+                            </div>
+                            <div class="form-group">
+                                <label data-i18n="image.height">Высота</label>
+                                <input type="number" id="imgHeight" class="form-control" value="512" min="64" max="4096" step="64">
+                            </div>
+                            <div class="form-group">
+                                <label data-i18n="image.steps">Шаги</label>
+                                <input type="number" id="imgSteps" class="form-control" value="20" min="1" max="100">
+                            </div>
+                            <div class="form-group">
+                                <label data-i18n="image.cfg">CFG scale</label>
+                                <input type="number" id="imgCfg" class="form-control" value="1" min="0" max="30" step="0.1">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label data-i18n="image.sampler">Самплер</label>
+                                <select class="form-control" id="imgSampler"></select>
+                            </div>
+                            <div class="form-group">
+                                <label data-i18n="image.scheduler">Шедулер</label>
+                                <select class="form-control" id="imgScheduler"></select>
+                            </div>
+                            <div class="form-group">
+                                <label data-i18n="image.seed">Seed</label>
+                                <input type="number" id="imgSeed" class="form-control" data-i18n-placeholder="image.seed_placeholder" placeholder="пусто = случайный">
+                            </div>
+                            <div class="form-group">
+                                <label data-i18n="image.batch">Батч</label>
+                                <input type="number" id="imgBatch" class="form-control" value="1" min="1" max="8">
+                            </div>
+                        </div>
+                        <small id="imgCapsNote" style="display:block;margin-bottom:12px;color:var(--text-muted);font-size:11px;"></small>
+                        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+                            <button class="btn btn-primary" id="imgGenerateBtn" data-i18n="image.generate">Сгенерировать</button>
+                            <span id="imgGenSpinner" style="display:none;align-items:center;gap:6px;font-size:13px;"><i class="fas fa-circle-notch fa-spin" aria-hidden="true"></i> <span data-i18n="image.generating">Генерация...</span></span>
+                            <span id="imgGenElapsed" style="font-size:13px;color:var(--text-muted);"></span>
+                        </div>
+                        <!-- ВАЖНО: движок не умеет отменять генерацию в полёте (cancel есть
+                             только для queued-джоб), поэтому кнопки Cancel здесь нет и
+                             процент шагов не рисуется - только elapsed. -->
+                        <small style="display:block;margin-top:8px;color:var(--text-muted);font-size:11px;" data-i18n="image.no_cancel_hint">Отмена генерации в полёте движком не поддерживается - только для джоб в очереди.</small>
+                    </div>
+                </div>
+
+                <!-- Result of the last generation -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-images section-icon-i"></i> <span data-i18n="image.result">Результат</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary" id="imgDownloadAllBtn" style="display:none;" data-i18n="image.download_all">Скачать все</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="imgResults" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;"></div>
+                        <div id="imgResultsEmpty" class="loading-cell" data-i18n="image.no_results">Пока ничего не сгенерировано</div>
+                    </div>
+                </div>
+
+                <!-- Gallery (localStorage) -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-clock-rotate-left section-icon-i"></i> <span data-i18n="image.gallery">Галерея</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary" id="imgGalleryClear" data-i18n="image.clear_gallery">Очистить галерею</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="imgGallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;"></div>
+                        <div id="imgGalleryEmpty" class="loading-cell" data-i18n="image.gallery_empty">Генераций пока нет</div>
+                        <small style="display:block;margin-top:10px;color:var(--text-muted);font-size:11px;" data-i18n="image.gallery_hint">История хранится в браузере (localStorage, лимит ~5 МБ): у старых картинок превью может пропасть после перезагрузки, параметры сохраняются.</small>
+                    </div>
+                </div>
+
+                <!-- Image models (bundles) -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-layer-group section-icon-i"></i> <span data-i18n="image.models_title">Image-модели</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary" id="imgModelsRefreshBtn" data-i18n="gguf.refresh">Обновить</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="imgLoadProgress" style="display:none;margin-bottom:12px;">
+                            <div id="imgLoadProgressLabel" style="font-size:12px;color:var(--text-muted);margin-bottom:4px;"></div>
+                            <div class="metric-mini-bar" id="imgLoadProgressBar" style="display:none;"><div class="metric-mini-fill" id="imgLoadProgressFill" style="width:0%"></div></div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="imgModelsTable">
+                                <thead>
+                                    <tr>
+                                        <th data-i18n="models.model_name">Имя модели</th>
+                                        <th data-i18n="metrics.status">Статус</th>
+                                        <th data-i18n="gguf.model_size">Размер</th>
+                                        <th data-i18n="image.col_family">Семейство</th>
+                                        <th data-i18n="image.col_active">Активные запросы</th>
+                                        <th data-i18n="image.col_vram">Оценка VRAM</th>
+                                        <th data-i18n="backends.actions">Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="imgModelsBody">
+                                    <tr><td colspan="7" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- HF bundle download -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-download section-icon-i"></i> <span data-i18n="image.bundle_title">Скачать модель с HuggingFace</span></h3>
+                    </div>
+                    <div class="card-body">
+                        <small style="display:block;margin-bottom:12px;color:var(--text-muted);font-size:11px;" data-i18n="image.bundle_hint">Image-модель - это набор файлов: diffusion + VAE + text encoder. Для sd.cpp рабочие репозитории обычно leejet/* (city96/* для FLUX в sd.cpp не грузятся).</small>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label data-i18n="image.bundle_name">Имя bundle</label>
+                                <input type="text" id="imgBundleName" class="form-control" placeholder="z-image-turbo-q3k">
+                            </div>
+                            <div class="form-group">
+                                <label data-i18n="image.bundle_family">Семейство</label>
+                                <select class="form-control" id="imgBundleFamily"></select>
+                            </div>
+                            <div class="form-group">
+                                <label data-i18n="image.hf_token">HF token</label>
+                                <input type="password" id="imgHfToken" class="form-control" placeholder="hf_...">
+                            </div>
+                        </div>
+                        <div id="imgBundleRows"></div>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
+                            <button class="btn btn-secondary" id="imgBundleAddRow" data-i18n="image.bundle_add_row">Добавить файл</button>
+                            <button class="btn btn-primary" id="imgBundleStart" data-i18n="image.bundle_download">Скачать bundle</button>
+                        </div>
+                        <div id="imgBundleProgress" style="display:none;margin-top:12px;">
+                            <div id="imgBundleProgressLabel" style="font-size:12px;color:var(--text-muted);margin-bottom:4px;"></div>
+                            <div class="metric-mini-bar"><div class="metric-mini-fill" id="imgBundleProgressFill" style="width:0%"></div></div>
+                        </div>
+                        <div id="imgBundleStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;"></div>
+                    </div>
                 </div>
             </div>
 
@@ -1625,6 +1813,9 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                         <select id="formBackendType" class="form-control">
                             <option value="ollama">Ollama</option>
                             <option value="llama_cpp">llama.cpp</option>
+                            <!-- R-Image Phase 5: третий тип бэкенда - stable-diffusion.cpp
+                                 (sd-server) в отдельном процессе, порт воркера 18093. -->
+                            <option value="image_cpp">🎨 image.cpp</option>
                         </select>
                         <small style="color: var(--text-muted); font-size: 11px;">Выберите тип инференс-движка</small>
                     </div>
@@ -1652,6 +1843,14 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                         <div class="form-group">
                             <label>gRPC порт</label>
                             <input type="number" id="formBackendCppGrpcPort" class="form-control" value="19000">
+                        </div>
+                    </div>
+                    <!-- image.cpp-specific fields (R-Image Phase 5) -->
+                    <div class="form-row backend-field-image" style="display:none;">
+                        <div class="form-group">
+                            <label>Порт image-воркера</label>
+                            <input type="number" id="formBackendImagePort" class="form-control" value="18093">
+                            <small style="color: var(--text-muted); font-size: 11px;">Дефолт: 18093 (image-воркер / sd-server, стабильная диффузия). Поле imagePort в API.</small>
                         </div>
                     </div>
                     <div class="form-row">
@@ -1847,6 +2046,10 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script defer src="js/modules/utils.js?v=R83"></script>
     <script defer src="js/modules/api.js?v=R83"></script>
     <script defer src="js/modules/gguf-api.js?v=R83"></script>
+    <!-- R-Image Phase 5 (2026-10-02): Image page (генерация + image-модели).
+         Загружается ПОСЛЕ utils/api/gguf-api (нужны Utils/Api/I18N) и ДО app.js
+         (app.js refreshPage('image') вызывает window.ImagePage.init). -->
+    <script defer src="js/modules/image-page.js?v=R83"></script>
     <script defer src="js/modules/websocket.js?v=R83"></script>
     <script defer src="js/modules/renderers.js?v=R83"></script>
     <!-- R54.5 (2026-08-24): AutoTune visibility (Phase 1: read-only badge) -->

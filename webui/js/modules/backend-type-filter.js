@@ -35,7 +35,7 @@
         getCurrentType: function () {
             // 1. Проверяем кэш localStorage
             var cached = localStorage.getItem(STORAGE_KEY);
-            if (cached === 'llama_cpp' || cached === 'ollama') {
+            if (cached === 'llama_cpp' || cached === 'ollama' || cached === 'image_cpp') {
                 return cached;
             }
             // Round 18g: '' = пользователь явно выбрал "Все". Возвращаем 'all',
@@ -123,8 +123,9 @@
                 if (serverConfig && serverConfig.backendEngine) {
                     var type = self._engineToType(serverConfig.backendEngine);
                     // Не перезаписываем если уже есть валидное значение в localStorage
+                    // (R-Image Phase 5: 'image_cpp' — тоже валидный UI-фильтр).
                     var existing = localStorage.getItem(STORAGE_KEY);
-                    if (existing !== 'llama_cpp' && existing !== 'ollama') {
+                    if (existing !== 'llama_cpp' && existing !== 'ollama' && existing !== 'image_cpp') {
                         localStorage.setItem(STORAGE_KEY, type);
                         self.updateUI(type);
                     }
@@ -139,6 +140,9 @@
          */
         _engineToType: function (engine) {
             if (engine === 'llama_cpp') return 'llama_cpp';
+            // R-Image Phase 5: image_cpp — третий engine. Без этой ветки смешанный
+            // кластер с backendEngine=image_cpp показывался бы как Ollama.
+            if (engine === 'image_cpp') return 'image_cpp';
             if (engine === 'ollama_api') return 'ollama';
             return 'ollama';
         },
@@ -150,7 +154,10 @@
          */
         setCurrentType: function (type) {
             // Round 18f: добавили 'all' как 3-й вариант (показывать все бэкенды).
-            if (type !== 'ollama' && type !== 'llama_cpp' && type !== 'all') return;
+            // R-Image Phase 5: 'image_cpp' — четвёртый вариант (только image-бэкенды).
+            // ВАЖНО: image_cpp НЕ уезжает на сервер как backendEngine —
+            // _saveToServer() для него выходит сразу (текстовые бэкенды не трогаем).
+            if (type !== 'ollama' && type !== 'llama_cpp' && type !== 'all' && type !== 'image_cpp') return;
             if (type === 'all') {
                 localStorage.setItem(STORAGE_KEY, '');
             } else {
@@ -170,6 +177,14 @@
          * После сохранения снимает флаг _savingInProgress.
          */
         _saveToServer: function (type) {
+            // R-Image Phase 5: image_cpp — ортогональный класс бэкендов, он не
+            // является «типом движка кластера». Если отправить его как
+            // backendEngine, серверный резолвер превратит значение в ollama_api
+            // и текстовые бэкенды поедут по ollama-пути.
+            if (type === 'image_cpp') {
+                this._savingInProgress = false;
+                return;
+            }
             if (!window.Api || !window.Api.updateConfig) {
                 this._savingInProgress = false;
                 return;
@@ -241,11 +256,16 @@
             // Round 18g: пользователь явно выбрал "Все" (localStorage === '').
             // НЕ перезаписываем на serverEngine — иначе выбор "Все" теряется
             // при каждом cluster update (2с цикл) и выделение не перешагивает.
-            if (localStorageType === '') {
+            //
+            // R-Image Phase 5: то же правило для явного выбора "image.cpp"
+            // (localStorage === 'image_cpp'). Сервер не знает про UI-фильтр
+            // image_cpp (getEffectiveBackendType считает только текстовые типы),
+            // поэтому без этого guard'а 2-секундный cluster update возвращал бы
+            // фильтр к ollama/llama_cpp и вкладка «Изображения» мигала.
+            if (localStorageType === '' || localStorageType === 'image_cpp') {
                 window.__lastClusterState = state;
-                // UI уже показывает "Все" (getCurrentType возвращает 'all'),
-                // updateUI не нужен. Просто return.
-                return 'all';
+                // UI уже показывает выбранный фильтр — updateUI не нужен.
+                return localStorageType === '' ? 'all' : 'image_cpp';
             }
 
             // Определяем целевой тип из серверных данных
@@ -255,8 +275,12 @@
                 targetType = 'llama_cpp';
             } else if (effectiveType === 'ollama') {
                 targetType = 'ollama';
+            } else if (effectiveType === 'image_cpp') {
+                targetType = 'image_cpp';
             } else if (serverEngine === 'llama_cpp') {
                 targetType = 'llama_cpp';
+            } else if (serverEngine === 'image_cpp') {
+                targetType = 'image_cpp';
             } else if (serverEngine === 'ollama_api') {
                 targetType = 'ollama';
             }
@@ -318,7 +342,7 @@
             var label = document.getElementById('backendEngineLabel');
             if (!badge || !label) return;
 
-            badge.classList.remove('engine-ollama', 'engine-llama_cpp', 'engine-auto');
+            badge.classList.remove('engine-ollama', 'engine-llama_cpp', 'engine-image_cpp', 'engine-auto');
 
             var icon = '🔌';
             var text = (window.I18N ? I18N.t('dashboard.engine_auto') : 'Автоопределение...');
@@ -330,6 +354,13 @@
                 text = 'llama.cpp';
                 cssClass = 'engine-llama_cpp';
                 title = (window.I18N ? I18N.t('dashboard.engine_hint_llama_cpp') : 'Движок: llama.cpp');
+            } else if (type === 'image_cpp') {
+                // R-Image Phase 5: выбран фильтр «image.cpp» — маркер в сайдбаре тоже
+                // должен это показать (иначе смена фильтра выглядит как «ничего не произошло»).
+                icon = '🎨';
+                text = 'image.cpp';
+                cssClass = 'engine-image_cpp';
+                title = (window.I18N ? I18N.t('dashboard.engine_hint_image_cpp') : 'Движок: image.cpp (stable-diffusion.cpp)');
             } else if (type === 'ollama') {
                 icon = '🦙';
                 text = 'Ollama API';
@@ -444,16 +475,23 @@
 
         /**
          * Показать/скрыть поля в форме добавления бэкенда.
+         * R-Image Phase 5: у каждого типа ровно один свой блок полей —
+         * llama-поля (cppWorkerPort/grpcPort) для image_cpp скрыты, иначе оператор
+         * заполнял бы поля, которые сервер игнорирует (у image-бэкенда imagePort).
          */
         toggleBackendFormFields: function (type) {
             var ollamaFields = document.querySelectorAll('.backend-field-ollama');
             var llamaCppFields = document.querySelectorAll('.backend-field-llama');
+            var imageFields = document.querySelectorAll('.backend-field-image');
 
             ollamaFields.forEach(function (f) {
                 f.style.display = (type === 'ollama') ? '' : 'none';
             });
             llamaCppFields.forEach(function (f) {
                 f.style.display = (type === 'llama_cpp') ? '' : 'none';
+            });
+            imageFields.forEach(function (f) {
+                f.style.display = (type === 'image_cpp') ? '' : 'none';
             });
         },
 
@@ -484,6 +522,13 @@
             if (type === 'llama_cpp') {
                 return ['standard', 'virtual_router', 'distributed_inference'];
             }
+            // R-Image Phase 5: image_cpp поддерживается только в standard /
+            // replication / rpc_coordinator (virtual_router и distributed_inference
+            // ломали резолв /api/*, см. plan §7 Phase 1) — поэтому как у ollama,
+            // но без ollama-специфичных описаний в UI.
+            if (type === 'image_cpp') {
+                return ['standard', 'replication', 'rpc_coordinator'];
+            }
             return ['standard'];
         },
 
@@ -500,9 +545,15 @@
          * Используется как клиентский fallback, если сервер не отфильтровал.
          * При type='ollama' — оставляет только ollama (или пустой тип как ollama).
          * При type='llama_cpp' — оставляет только llama_cpp.
+         * При type='image_cpp' — оставляет только image_cpp.
          * При type=null/undefined — возвращает все без фильтрации.
          * Если после фильтрации результат пуст — возвращает ВСЕ бэкенды (fallback),
          * чтобы UI не оставался пустым при несоответствии типов.
+         *
+         * R-Image Phase 5: image_cpp — ортогональный класс, поэтому при текстовом
+         * фильтре (ollama/llama_cpp) image-бэкенды НЕ выбрасываются. Иначе
+         * зарегистрированный image-бэкенд исчезал бы со страницы «Бэкенды» при
+         * backendEngine=llama_cpp и оператор не смог бы его ни увидеть, ни удалить.
          */
         filterBackends: function (backends, type) {
             if (!backends || !Array.isArray(backends)) return backends || [];
@@ -510,10 +561,13 @@
             var filtered = backends.filter(function (b) {
                 var bt = b.backend_type || b.BackendType || b.type || '';
                 if (type === 'ollama') {
-                    return bt === 'ollama' || bt === '' || bt === 'ollama_api';
+                    return bt === 'ollama' || bt === '' || bt === 'ollama_api' || bt === 'image_cpp';
                 }
                 if (type === 'llama_cpp') {
-                    return bt === 'llama_cpp';
+                    return bt === 'llama_cpp' || bt === 'image_cpp';
+                }
+                if (type === 'image_cpp') {
+                    return bt === 'image_cpp';
                 }
                 return true;
             });

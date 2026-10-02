@@ -155,6 +155,15 @@
             }
         }
 
+        // R-Image Phase 5: порт image-воркера (тип image_cpp, дефолт 18093).
+        // Без заполнения из backend.imagePort редактирование бэкенда с
+        // нестандартным портом (например 18103) отправляло бы дефолт 18093 —
+        // балансер ходил бы на закрытый порт, а бэкенд выглядел «недоступным».
+        var imagePortEl = document.getElementById('formBackendImagePort');
+        if (imagePortEl) {
+            imagePortEl.value = (backend && (backend.imagePort || backend.image_port)) || 18093;
+        }
+
         // Синхронизируем селектор типа бэкенда с BackendTypeFilter
         const formBackendType = document.getElementById('formBackendType');
         if (formBackendType) {
@@ -162,8 +171,16 @@
             if (window.BackendTypeFilter) {
                 currentType = BackendTypeFilter.getCurrentType();
             }
-            if (backend && backend.type) {
-                currentType = backend.type === 'llama_cpp' ? 'llama_cpp' : 'ollama';
+            // Тип конкретного бэкенда важнее глобального фильтра. image_cpp
+            // раньше молча превращался в 'ollama' (тернарник llama_cpp/ollama),
+            // из-за чего при редактировании image-бэкенда открывался блок полей
+            // Ollama и Save перезаписывал тип на ollama.
+            var backendTypeRaw = (backend && (backend.backendType || backend.type || backend.backend_type)) || '';
+            if (backendTypeRaw) {
+                var normalized = window.Utils && Utils.normalizeBackendType
+                    ? Utils.normalizeBackendType(backendTypeRaw)
+                    : String(backendTypeRaw);
+                currentType = (normalized === 'llama_cpp' || normalized === 'image_cpp') ? normalized : 'ollama';
             }
             formBackendType.value = currentType;
             if (window.BackendTypeFilter) {
@@ -258,6 +275,17 @@
                     }).catch(function () { /* ignore */ });
                 }
             }
+        }
+
+        // R-Image Phase 5: для image_cpp отправляем ТОЛЬКО imagePort —
+        // серверная структура addBackendRequest/updateBackendRequest принимает
+        // imagePort (internal/api/handlers_backends.go:483,717) и сама подставляет
+        // types.DefaultImageWorkerPort (18093), если пришёл 0. cppWorkerPort
+        // сознательно не отправляем: у image-воркера другой процесс и другой порт,
+        // иначе EffectiveImagePort() взял бы cppWorkerPort как fallback.
+        if (backendType === 'image_cpp') {
+            var imagePortInput = _getInt('formBackendImagePort', 0);
+            payload.imagePort = imagePortInput > 0 ? imagePortInput : 18093;
         }
         const isEdit = document.getElementById('formBackendId').disabled;
 

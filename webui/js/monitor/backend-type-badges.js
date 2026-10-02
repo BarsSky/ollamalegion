@@ -25,6 +25,16 @@
             borderColor: '#ff6d00',
             textColor: '#ff6d00'
         },
+        // R-Image Phase 5: image-бэкенд (stable-diffusion.cpp). Цвет - зелёный
+        // (--success), чтобы не путать с синим Ollama и оранжевым llama.cpp.
+        image_cpp: {
+            emoji: '🎨',
+            label: 'image.cpp',
+            cssClass: 'badge-image-cpp',
+            bgColor: '#4ade8020',
+            borderColor: '#4ade80',
+            textColor: '#4ade80'
+        },
         unknown: {
             emoji: '❓',
             label: 'Unknown',
@@ -73,6 +83,9 @@
         if (node && (node.BackendType || node.type)) {
             var bt = node.BackendType || node.type;
             if (bt === 'llama_cpp') return 'llama_cpp';
+            // R-Image Phase 5: image_cpp раньше молча становился 'ollama' -
+            // на топологии и в таблицах монитора image-нода рисовалась как Ollama.
+            if (bt === 'image_cpp') return 'image_cpp';
             return 'ollama';
         }
         // 3. Глобальный тип из BackendTypeFilter
@@ -116,7 +129,7 @@
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         // Эмодзи не рендерятся в canvas — используем символ
-        var symbol = backendType === 'llama_cpp' ? '🦒' : '🦙';
+        var symbol = backendType === 'llama_cpp' ? '🦒' : (backendType === 'image_cpp' ? '🎨' : '🦙');
         ctx.fillText(symbol, x, y + 14);
         ctx.restore();
     }

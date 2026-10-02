@@ -182,6 +182,7 @@ const ui = (function () {
             sessions: 'Sessions',
             queue: 'Queue',
             gguf: 'GGUF Models',
+            image: 'Image Generation',
             logs: 'System Logs',
             settings: 'Settings',
             agents: 'Agents'
@@ -277,6 +278,14 @@ const ui = (function () {
                         // то есть страница GGUF получает свежие данные и при
                         // переключении на неё, и при кнопке «Обновить».
                     }
+                }
+                break;
+            case 'image':
+                // R-Image Phase 5: страница Image (генерация + image-модели).
+                // init() идемпотентен: первый вызов подписывает обработчики и
+                // тянет данные, последующие — только refresh (без дублей listener'ов).
+                if (window.ImagePage) {
+                    window.ImagePage.init();
                 }
                 break;
             case 'settings':
@@ -490,7 +499,16 @@ const ui = (function () {
             formBackendType.addEventListener('change', function () {
                 var newType = this.value;
                 if (window.BackendTypeFilter) {
-                    BackendTypeFilter.setCurrentType(newType);
+                    // R-Image Phase 5: image_cpp — тип КОНКРЕТНОГО бэкенда, а не
+                    // «движок кластера». setCurrentType('image_cpp') не сохраняется
+                    // на сервер (guard в _saveToServer), но менял бы глобальный
+                    // фильтр списка бэкендов; при выборе image_cpp нужно лишь
+                    // показать соответствующий блок полей формы.
+                    if (newType === 'image_cpp') {
+                        BackendTypeFilter.toggleBackendFormFields(newType);
+                    } else {
+                        BackendTypeFilter.setCurrentType(newType);
+                    }
                 }
             });
         }
@@ -1785,7 +1803,7 @@ const ui = (function () {
         var counts = (state && state.backendTypeCounts) || {};
 
         // Remove old colour classes
-        badge.classList.remove('engine-ollama', 'engine-llama_cpp', 'engine-auto');
+        badge.classList.remove('engine-ollama', 'engine-llama_cpp', 'engine-image_cpp', 'engine-auto');
 
         var icon = '🔌';
         var text = (window.I18N ? I18N.t('dashboard.engine_auto') : 'Автоопределение...');
@@ -1809,6 +1827,14 @@ const ui = (function () {
             text = (window.I18N ? I18N.t('dashboard.engine_all') : 'Все движки');
             cssClass = 'engine-auto';
             title = (window.I18N ? I18N.t('dashboard.engine_hint_all') : 'Движок: все');
+        } else if (userType === 'image_cpp') {
+            // R-Image Phase 5: пользователь выбрал фильтр «image.cpp» в type switcher.
+            // Без этой ветки badge откатывался к серверному текстовому движку на
+            // каждом cluster update (2 с) — выбор фильтра выглядел «непринятым».
+            icon = '🎨';
+            text = 'image.cpp';
+            cssClass = 'engine-image_cpp';
+            title = (window.I18N ? I18N.t('dashboard.engine_hint_image_cpp') : 'Движок: image.cpp (stable-diffusion.cpp)');
         } else if (effectiveType === 'llama_cpp') {
             icon = '🦒';
             text = 'llama.cpp';

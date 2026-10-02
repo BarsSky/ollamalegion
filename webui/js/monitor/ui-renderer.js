@@ -64,6 +64,8 @@
         '<button type="button" data-type="all" class="mtype-btn' + (currentType === 'all' || currentType === '' ? ' active' : '') + '" onclick="window.switchBackendType(\'all\')" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' + (currentType === 'all' || currentType === '' ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' + (currentType === 'all' || currentType === '' ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600" title="Все бэкенды">' + T('monitor.common.allBackends') + '</button>' +
         '<button type="button" data-type="ollama" class="mtype-btn' + (currentType === 'ollama' ? ' active' : '') + '" onclick="window.switchBackendType(\'ollama\')" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' + (currentType === 'ollama' ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' + (currentType === 'ollama' ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600" title="Ollama API">🦙 Ollama</button>' +
         '<button type="button" data-type="llama_cpp" class="mtype-btn' + (currentType === 'llama_cpp' ? ' active' : '') + '" onclick="window.switchBackendType(\'llama_cpp\')" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' + (currentType === 'llama_cpp' ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' + (currentType === 'llama_cpp' ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600" title="llama.cpp / GGUF">🦒 llama.cpp</button>' +
+        // R-Image Phase 5: четвёртое состояние переключателя — image-бэкенды.
+        '<button type="button" data-type="image_cpp" class="mtype-btn' + (currentType === 'image_cpp' ? ' active' : '') + '" onclick="window.switchBackendType(\'image_cpp\')" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' + (currentType === 'image_cpp' ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' + (currentType === 'image_cpp' ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600" title="image.cpp / stable-diffusion.cpp">🎨 image.cpp</button>' +
       '</div>';
   }
 
@@ -307,14 +309,15 @@
     var effType = data.cluster.effectiveBackendType || '';
     // Также учитываем выбор пользователя из localStorage (синхронизация с BackendTypeFilter)
     var userType = localStorage.getItem('ollamalegion_backend_type') || '';
-    if (userType && (userType === 'llama_cpp' || userType === 'ollama')) {
+    if (userType && (userType === 'llama_cpp' || userType === 'ollama' || userType === 'image_cpp')) {
       effType = userType;
     }
     if (effType) {
       bk = bk.filter(function(b) {
         var bt = b.backendType || b.BackendType || b.backend_type || b.type || '';
-        if (effType === 'llama_cpp') return bt === 'llama_cpp';
-        if (effType === 'ollama') return bt === 'ollama' || bt === '' || bt === 'ollama_api';
+        if (effType === 'llama_cpp') return bt === 'llama_cpp' || bt === 'image_cpp';
+        if (effType === 'ollama') return bt === 'ollama' || bt === '' || bt === 'ollama_api' || bt === 'image_cpp';
+        if (effType === 'image_cpp') return bt === 'image_cpp';
         return true;
       });
     }

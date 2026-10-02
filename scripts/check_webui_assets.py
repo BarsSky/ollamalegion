@@ -139,11 +139,18 @@ def main() -> int:
     fa = root / "css" / "font-awesome.min.css"
     if fa.exists():
         for m in CSS_URL_RE.finditer(fa.read_text(encoding="utf-8", errors="replace")):
-            url = m.group(1).strip()
+            raw_url = m.group(1).strip()
+            # R-Image (2026-10-02): снимаем query (?v=R83) ДО проверки.
+            # Без этого Path("....ttf?v=R83").suffix == ".ttf?v=R83" — не
+            # шрифтовое расширение, поэтому fallback из missing_asset()
+            # (нет .ttf, но есть .woff2 с тем же именем) не срабатывал, и
+            # чекер падал на vendored font-awesome.min.css, где в репозитории
+            # намеренно лежат только .woff2.
+            url = strip_query(raw_url)
             if url.startswith("../webfonts/"):
                 target = (fa.parent / url).resolve()
                 if missing_asset(target):
-                    errors.append(f"css/font-awesome.min.css: нет шрифта {url}")
+                    errors.append(f"css/font-awesome.min.css: нет шрифта {raw_url}")
 
     if errors:
         print("[assets] FAIL — внешние или отсутствующие ассеты:", file=sys.stderr)

@@ -60,6 +60,11 @@ type BalancingSettings struct {
 	SyncModelLoad       SyncModelLoadConfig       `json:"syncModelLoad"`
 	ResourceReservation ResourceReservationConfig `json:"resourceReservation"`
 
+	// R-Image (2026-10-02): настройки сосуществования image-генерации (диффузии)
+	// с текстовым инференсом на одной GPU. Диффузия и LLM одновременно в VRAM
+	// одной карты обычно не помещаются, поэтому по умолчанию — exclusive.
+	Image ImageResourceSettings `json:"image"`
+
 	// Feature flags
 	UseEnhancedScoring bool `json:"useEnhancedScoring"` // Расширенный скоринг v2 (полная формула)
 	ModelLoadTimeout   int  `json:"modelLoadTimeout"`   // Таймаут ожидания загрузки модели (сек, default 120)

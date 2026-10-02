@@ -395,6 +395,11 @@ type LlamaCppModelProfile struct {
 	// (Прежний комментарий утверждал обратное — «KV-cache × n_parallel»; это
 	// было неверно, см. docs/deployment-stack.md §7.2.)
 	Parallel int `json:"parallel,omitempty"` // 0 = inherit, 1..8 = parallel slots
+	// EnableReasoning — R83/v62 (2026-10-02): per-model переключатель
+	// reasoning/thinking. WebUI его уже отправляет (cppworker-params.js: enableReasoning),
+	// но в типе профиля поля не было — галочка оператора молча терялась при сохранении,
+	// и размышления в ответе не появлялись. nil = наследовать config.EnableReasoning.
+	EnableReasoning *bool `json:"enableReasoning,omitempty"`
 
 	// ContextPerSeq — R83 (2026-09-30): окно контекста НА КЛИЕНТА (на слот).
 	//

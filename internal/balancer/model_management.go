@@ -776,6 +776,12 @@ func applyProfileLoadParams(req *ModelOpRequest, prof types.LlamaCppModelProfile
 		kv := prof.KVCacheType
 		req.KVCacheType = &kv
 	}
+	// R83/v62 (2026-10-02): reasoning из профиля модели (галочка WebUI).
+	// Приоритет как у остальных полей: явный запрос > профиль модели > дефолт > env.
+	if req.EnableReasoning == nil && prof.EnableReasoning != nil {
+		v := *prof.EnableReasoning
+		req.EnableReasoning = &v
+	}
 	// R83 (2026-09-29): parallel из профиля. Раньше это поле профиля
 	// учитывалось ТОЛЬКО на пути POST .../model-profiles/{name}/apply
 	// (handlers_cppworker_profiles.go:586) и терялось при обычной загрузке

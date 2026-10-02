@@ -483,12 +483,12 @@ func (s *Server) refreshRegisteredBackend(w http.ResponseWriter, req backendRequ
 // повторной регистрации (isSameBackendRegistration / refreshRegisteredBackend)
 // работала с тем же типом.
 type backendRequest struct {
-	ID                string   `json:"id"`
-	Name              string   `json:"name"`
-	Host              string   `json:"host"`
-	OllamaPort        int      `json:"ollamaPort"`
-	AgentPort         int      `json:"agentPort"`
-	CppWorkerPort     int      `json:"cppWorkerPort"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Host          string `json:"host"`
+	OllamaPort    int    `json:"ollamaPort"`
+	AgentPort     int    `json:"agentPort"`
+	CppWorkerPort int    `json:"cppWorkerPort"`
 	// R-Image (2026-09-27): порт image-воркера для backendType=image_cpp
 	// (default 18093). Fallback: CppWorkerPort → 18093 (EffectiveImagePort).
 	ImagePort         int      `json:"imagePort"`
@@ -679,28 +679,49 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(1 * time.Second)
 		backend := s.proxy.GetBackend(req.ID)
 		if backend != nil {
-			var healthURL string
+			var healthURLs []string
 			switch backendType {
 			case types.BackendTypeLlamaCpp:
-				healthURL = fmt.Sprintf("http://%s:%d/health", backend.Host, cppWorkerPort)
+				healthURLs = []string{fmt.Sprintf("http://%s:%d/health", backend.Host, cppWorkerPort)}
 			case types.BackendTypeImage:
-				// R-Image: у sd-server нет /health — проверяем capabilities
-				// (он же подтверждает, что модель загружена и API живой).
-				healthURL = fmt.Sprintf("http://%s:%d/sdcpp/v1/capabilities", backend.Host, backend.EffectiveImagePort())
+				// R-Image: на порту image-бэкенда может стоять либо наш воркер
+				// `sdworker` (есть /health), либо голый sd-server (есть только
+				// /sdcpp/v1/capabilities). Проверяем оба адреса по очереди.
+				imgPort := backend.EffectiveImagePort()
+				healthURLs = []string{
+					fmt.Sprintf("http://%s:%d/health", backend.Host, imgPort),
+					fmt.Sprintf("http://%s:%d/sdcpp/v1/capabilities", backend.Host, imgPort),
+				}
 			default:
-				healthURL = fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
+				healthURLs = []string{fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)}
 			}
 			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Get(healthURL)
-			if err == nil && resp.StatusCode == http.StatusOK {
-				s.proxy.UpdateBackendStatus(req.ID, types.StatusHealthy)
-				resp.Body.Close()
-			} else {
+			healthy := false
+			var lastErr error
+			var lastURL string
+			for _, healthURL := range healthURLs {
+				lastURL = healthURL
+				resp, err := client.Get(healthURL)
 				if err != nil {
+					lastErr = err
+					continue
+				}
+				status := resp.StatusCode
+				resp.Body.Close()
+				if status == http.StatusOK {
+					healthy = true
+					break
+				}
+				lastErr = fmt.Errorf("status code: %d", status)
+			}
+			if healthy {
+				s.proxy.UpdateBackendStatus(req.ID, types.StatusHealthy)
+			} else {
+				if lastErr != nil {
 					logger.Get().Errorw("backend health check unreachable",
 						"backend", req.ID,
-						"url", healthURL,
-						"error", err,
+						"url", lastURL,
+						"error", lastErr,
 					)
 				}
 				s.proxy.UpdateBackendStatus(req.ID, types.StatusUnhealthy)
@@ -718,14 +739,14 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 // updateBackend - обновление бэкенда
 func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID string) {
 	var req struct {
-		Name              string   `json:"name"`
-		Host              string   `json:"host"`
-		OllamaPort        int      `json:"ollamaPort"`
-		AgentPort         int      `json:"agentPort"`
-		CppWorkerPort     int      `json:"cppWorkerPort"`
-	// R-Image (2026-09-27): порт image-воркера для backendType=image_cpp
-	// (default 18093). Fallback: CppWorkerPort → 18093 (EffectiveImagePort).
-	ImagePort         int      `json:"imagePort"`
+		Name          string `json:"name"`
+		Host          string `json:"host"`
+		OllamaPort    int    `json:"ollamaPort"`
+		AgentPort     int    `json:"agentPort"`
+		CppWorkerPort int    `json:"cppWorkerPort"`
+		// R-Image (2026-09-27): порт image-воркера для backendType=image_cpp
+		// (default 18093). Fallback: CppWorkerPort → 18093 (EffectiveImagePort).
+		ImagePort         int      `json:"imagePort"`
 		Weight            int      `json:"weight"`
 		MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
 		MaxModels         int      `json:"maxModels"`

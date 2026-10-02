@@ -191,9 +191,16 @@ func (hc *HealthChecker) performCheck(backend *types.Backend) *HealthCheckResult
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Определяем движок и endpoint для health-check
+	// Определяем движок и endpoint'ы для health-check.
+	//
+	// R-Image (2026-09-27): для image-бэкенда кандидатов ДВА, и проверяются они
+	// по очереди, потому что на порту 18093 может стоять либо наш воркер
+	// `sdworker` (у него есть `/health`), либо «голый» `sd-server`
+	// (у него `/health` нет, но есть `/sdcpp/v1/capabilities`, который заодно
+	// подтверждает, что модель загружена). Проверять только второй вариант
+	// нельзя: воркер его не отдаёт, и бэкенд навсегда оставался бы unhealthy.
 	engine := types.ResolveEngine(backend.Engine, backend.Type)
-	var url string
+	var urls []string
 	switch engine {
 	case types.EngineLlamaCPP:
 		port := backend.CppWorkerPort
@@ -201,46 +208,52 @@ func (hc *HealthChecker) performCheck(backend *types.Backend) *HealthCheckResult
 			// Modern llama.cpp CppWorker default port (18091 is legacy).
 			port = 18092
 		}
-		url = fmt.Sprintf("http://%s:%d/health", backend.Host, port)
+		urls = []string{fmt.Sprintf("http://%s:%d/health", backend.Host, port)}
 	case types.EngineImageCPP:
-		// R-Image (2026-09-27): image-воркер (sdworker) и/или напрямую sd-server.
-		// У sd-server нет /health, но есть /sdcpp/v1/capabilities — он же
-		// подтверждает, что модель загружена и API живой.
-		url = fmt.Sprintf("http://%s:%d/sdcpp/v1/capabilities", backend.Host, backend.EffectiveImagePort())
+		port := backend.EffectiveImagePort()
+		urls = []string{
+			fmt.Sprintf("http://%s:%d/health", backend.Host, port),                // sdworker
+			fmt.Sprintf("http://%s:%d/sdcpp/v1/capabilities", backend.Host, port), // голый sd-server
+		}
 	default:
-		url = fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
-	}
-
-	start := time.Now()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		result.Healthy = false
-		result.Error = fmt.Sprintf("request error: %v", err)
-		return result
+		urls = []string{fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)}
 	}
 
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		result.Healthy = false
-		result.Error = fmt.Sprintf("connection error: %v", err)
+	var lastErr string
+	for _, url := range urls {
+		start := time.Now()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			lastErr = fmt.Sprintf("request error: %v", err)
+			continue
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Sprintf("connection error: %v", err)
+			continue
+		}
+		latency := time.Since(start)
+		status := resp.StatusCode
+		resp.Body.Close()
+
+		if status != http.StatusOK {
+			lastErr = fmt.Sprintf("status code: %d (url %s)", status, url)
+			continue
+		}
+
+		result.Latency = latency
+		result.Healthy = true
 		return result
 	}
-	defer resp.Body.Close()
 
-	result.Latency = time.Since(start)
-
-	if resp.StatusCode != http.StatusOK {
-		result.Healthy = false
-		result.Error = fmt.Sprintf("status code: %d", resp.StatusCode)
-		return result
-	}
-
-	result.Healthy = true
+	result.Healthy = false
+	result.Error = lastErr
 	return result
 }
 

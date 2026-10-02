@@ -5,6 +5,98 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.6.0 — R-Image: генерация изображений (тип `image_cpp`, OpenAI-порт 18079, `sdworker`, WebUI) (2026-10-02)]
+
+### 🎨 Добавлено: третий класс бэкендов — `image_cpp`
+
+- `pkg/types/backend_type.go`: `BackendTypeImage = "image_cpp"`, `EngineImageCPP`,
+  `DefaultImageWorkerPort = 18093`; ветки в `EffectiveAPIStyle` (openai-compatible),
+  `ToBackendType`, `ResolveEngine`, `AllBackendTypes`, `Label` («image.cpp»), `Emoji` (🎨).
+- `pkg/types/backend.go`: `Backend.ImagePort` + `EffectiveImagePort()` (ImagePort → CppWorkerPort → 18093).
+- `ModeBackendTypes`: `image_cpp` добавлен в `standard`/`replication`/`rpc_coordinator`.
+  В `virtual_router`/`distributed_inference` НЕ добавлен: эти режимы ждут ровно один тип,
+  и второй ломает резолв `/api/*` → llama.cpp (регрессия ловится `TestServeHTTP_MixedCluster_RoutingByURLPath`).
+- `ValidateBackendTypeConsistency` проверяет однотипность только текстовых бэкендов — image сосуществует с llama.cpp/Ollama.
+- Health-probe image-бэкенда: сначала `/health` (наш воркер), затем `/sdcpp/v1/capabilities` (голый `sd-server`).
+
+### 🌐 OpenAI-поверхность балансера — порт 18079 (`LB_OPENAI_PORT`)
+
+- Отдельный слушатель (`internal/balancer/openai_surface.go`) поверх ТОГО ЖЕ `*Proxy`, что и 18080:
+  состояние (бэкенды, сессии, очередь, скоринг, метрики) общее, распределение не дублируется.
+- Стриминг включается ТОЛЬКО полем `stream` в теле (на 18080 сохранён legacy-дефолт `true`).
+- CORS + `OPTIONS → 204` (нужен кнопке Connect в SillyTavern).
+- Ollama-нативные пути (`/api/chat`, `/api/tags`, `/api/pull`, …) → 404 с подсказкой «используйте 18080».
+- Поведение 18080 не изменено (регрессионные тесты зелёные без правок).
+
+### 🧭 Маршрутизация по явному признаку + `ImageRouter`
+
+- Явные признаки: endpoint `/v1/images/*`, `/sdapi/v1/*`, `/api/image/*` и префиксы модели
+  `sd:` / `image:` / `img/` / `sd_cpp:` / `diffusion:`. Никакой классификации по тексту промпта.
+- `internal/balancer/image_router.go`: выбор бэкенда строго среди `image_cpp`, прямой
+  `proxyRequestToBackend` (минуя preflight n_ctx / AutoTune / `normalizeOpenAIBody`), без streaming-ветки,
+  ошибки в OpenAI-конверте `{"error":{"message","type","code"}}`, таймаут без капа (`LB_ALLOW_IMAGE_TIMEOUT_SEC` — opt-in).
+- Снят ранний 404 на `/v1/images/*`; `/v1/models` получает алиасы `sd-cpp-local`, `dall-e-2`, `dall-e-3`
+  (`gpt-image-*` намеренно не добавлен: клиенты по этому префиксу ждут `url`, а движок отдаёт только b64).
+- `getDefaultAllowedTypes()` намеренно исключает `image_cpp`: иначе текстовый `/api/generate`
+  (где тип не определён) мог бы уйти на image-бэкенд. `filterBackendsByEffectiveType` пропускает image всегда.
+- `warmupModel` не прогревает image-бэкенды (у них нет `/api/tags` и текстового `/load`).
+
+### 📦 Модели: bundle, HuggingFace, профили
+
+- `pkg/types/image_model.go` — контракт: роли файлов, `ImageGenDefaults`, `ImageRuntime`
+  (плейсмент/offload/TAESD/`seedMode`), `ImageModelProfile`, `ValidateImageModelProfile`
+  (границы, которых движок НЕ проверяет), `ServerArgs()` (сборка argv `sd-server`, включая `--seed -1`),
+  `PinnedSDServerRevision = "master-929-3f8527a"`.
+- `internal/cppbackend/hf_bundle.go`: `StartBundleDownload` — N файлов = одна модель, каталог
+  `<modelsDir>/<bundle>/`, атомарная регистрация через манифест `.ollamalegion-bundle.json`
+  (неполный bundle моделью не становится), resume/cancel/orphans, расширения `.gguf/.safetensors/.sft/.ckpt`.
+- `internal/sdbackend/hf.go` + `cmd/sdworker/handlers_hf.go`: `/api/hf/{search,files,download,bundle,progress,downloads,cancel,cleanup}`
+  на воркере, `X-HF-Token`/`Authorization`, `HF_MIRROR`, запись `profile.json` и `Registry.Load` только после успеха.
+- `internal/api/handlers_image_profiles.go` + `internal/config/image_model_profiles.go` — CRUD профилей
+  (merge с presence, валидация делегирована `types.ValidateImageModelProfile`), `config/image-model-catalog.json` (9 пресетов).
+- `internal/api/handlers_image_models.go` + `gguf_backend_proxy.go` — список image-бэкендов и прозрачный
+  прокси `/api/v1/image/backends/{id}/proxy/...`.
+
+### 🖥 Воркер `sdworker` (порт 18093)
+
+- Супервизор субпроцесса `sd-server`: spawn из `profile.ServerArgs()` + `--listen-ip/--listen-port`,
+  readiness через `/sdcpp/v1/capabilities`, классификация падения на неизвестном флаге
+  (`FlagIncompatibleError` с упоминанием пинованной версии), single-flight, idle-unload, метрики, VRAM.
+- Клиент нативного async API: `img_gen` (202) → poll `jobs/{id}` → `result.images[].b64_json`.
+- Нормализация под клиентов: seed всегда положительный (инъекция `<sd_cpp_extra_args>{"seed":N}</sd_cpp_extra_args>`
+  для OpenAI-пути — иначе sd.cpp берёт 42 и все картинки одинаковые), `size` clamp 64…4096 + кратность 64,
+  `steps` 1…100, `n`/`batch` 1…8, `response_format: url`, A1111-заглушки
+  (`POST /sdapi/v1/options`, `/progress`, `/interrupt`, `/sd-vae`, `/sd-modules`) без `forge_preset`.
+- Честные ограничения: `cancel_generating=false`, отмена только для `queued`, прогресса по шагам нет.
+- Docker: `docker/imageworker/Dockerfile` (Vulkan-релиз как основной лёгкий путь) + `deployments/docker-compose.imageworker.yml`.
+
+### 🖼 WebUI
+
+- Тип `image_cpp` в модалке бэкенда (поле `imagePort`), бейдж 🎨 в utils/monitor, фильтры типов.
+- Страница «Изображения»: форма генерации, рендер «сколько вернулось — столько картинок», галерея
+  с бюджетом localStorage, load/unload моделей с прогрессом, HF-bundle-форма (N строк role+repo+filename).
+- Без фальшивого прогресса шагов и без кнопки Cancel — движок этого не умеет.
+- i18n: +83 парных ключа (en/ru), паритет проверяется `TestI18nKeyParity_EN_RU`.
+
+### 🐞 Исправлено
+
+- **`unload` отдавал HTTP 500 при фактическом успехе** и занимал 5 с: `Stop()` возвращал `waitErr`
+  убитого процесса, а на Windows `os.Interrupt` не доставляется, поэтому каждый раз выжидался полный grace.
+  Теперь намеренная остановка ошибкой не считается, на Windows сигнал не шлётся: `500/5008 мс → 200/7 мс`.
+- **Data race** в `hf_bundle.go`: `ListActiveBundles`/`GetBundleProgress`/`ListBundleHistory` отдавали
+  снимок с общим срезом `Files` — теперь deep-copy.
+- `GET /api/v1/backends` не отдавал `imagePort` (был только в POST).
+- `isSameBackendRegistration` не учитывал `ImagePort` — повторная саморегистрация image-воркера получала 409.
+
+### ✅ Проверка
+
+- `go build -tags llama_stub ./...` — зелёный; `go test -race` по новым пакетам — чисто.
+- `tests/image_surface_smoke_test.go` — 7/7 PASS (SillyTavern, Open WebUI, LibreChat, AnythingLLM, n8n, изоляция, OpenAI-конверт).
+- `scripts/image-e2e-smoke.ps1` — живой E2E реальными процессами (мок `sd-server` + `sdworker` + балансер):
+  **17/17 PASS**, включая seed-нормализацию на проводе, CORS/OPTIONS, изоляцию текста и A1111-заглушки.
+- Документация: `docs/image-generation.md` (подключение клиентов), `docs/research-sdcpp-lowvram-integration.md`
+  (движок/флаги/модели/замеры), `plans/2026-09-27-image-generation-backend-plan.md` (план и статус фаз).
+
 ## [0.5.50 — D6 закрыт: контракт `done`-чанка по коду клиента + честные поля режима (2026-09-27)]
 
 ### 📋 D6: контракт `done`-чанка зафиксирован под реального клиента

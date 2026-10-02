@@ -194,6 +194,31 @@ jobs:
           & $go build -tags llama_stub -v -o bin\balancer-stub.exe      .\cmd\balancer\
           & $go build -tags llama_stub -v -o bin\cppworker-stub.exe    .\cmd\cppworker\
           & $go build -tags llama_stub -v -o bin\agent-stub.exe        .\cmd\agent\
+          # R-Image (2026-10-02): image-воркер и мок движка. Без них сборка
+          # «всех бинарей» не покрывала новый компонент, и падение компиляции
+          # sdworker/mock-sdserver выяснялось только при живом E2E.
+          & $go build -tags llama_stub -v -o bin\sdworker-stub.exe     .\cmd\sdworker\
+          & $go build -v                -o bin\mock-sdserver.exe       .\tools\mock-sdserver\
+
+      - name: Image chain E2E (mock sd-server + sdworker + balancer)
+        run: |
+          # R-Image (2026-10-02): живая проверка image-цепочки РЕАЛЬНЫМИ процессами:
+          # мок движка sd.cpp, воркер sdworker (супервизор субпроцесса: spawn,
+          # readiness через /sdcpp/v1/capabilities, unload) и балансер с
+          # OpenAI-поверхностью. Скрипт сам собирает нужные бинари в -BinDir
+          # (имена balancer.exe/sdworker.exe/mock-sdserver.exe), сам сдвигает
+          # занятые порты и в finally гасит все процессы.
+          #
+          # Что ловит то, чего не видят unit-тесты: полный путь запроса
+          # клиент -> балансер (18079) -> воркер -> движок, нормализация seed
+          # на проводе (<sd_cpp_extra_args>), CORS/OPTIONS для браузерных
+          # клиентов, изоляцию текстового трафика от image-бэкенда,
+          # A1111-заглушки и отсутствие ложного 500 на unload.
+          & .\scripts\image-e2e-smoke.ps1 -BinDir bin -WorkDir "$env:TEMP\ol-e2e-ci"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::image chain E2E failed (см. таблицу проверок выше)"
+            exit 1
+          }
 
       - name: Check image tag consistency (no docker needed)
         run: |
@@ -419,6 +444,10 @@ jobs:
           go build -tags llama_stub -v -o bin/balancer-stub      ./cmd/balancer/
           go build -tags llama_stub -v -o bin/cppworker-stub    ./cmd/cppworker/
           go build -tags llama_stub -v -o bin/agent-stub        ./cmd/agent/
+          # R-Image (2026-10-02): image-воркер + мок движка (см. одноимённый шаг
+          # в self-hosted job).
+          go build -tags llama_stub -v -o bin/sdworker-stub     ./cmd/sdworker/
+          go build -v                -o bin/mock-sdserver       ./tools/mock-sdserver/
 
       - name: Build with -tags nvml (compile-only)
         run: |
@@ -454,6 +483,24 @@ jobs:
       - name: Test internal/cppbackend (no race)
         if: always()
         run: scripts/run_go_test.sh "internal/cppbackend" -tags llama_stub -timeout 120s -v ./internal/cppbackend/
+
+      # R-Image (2026-10-02): image-воркер (супервизор sd-server, нормализация
+      # запросов, очередь джоб, HF-bundle) и его HTTP-слой.
+      - name: Test internal/sdbackend (no race)
+        if: always()
+        run: scripts/run_go_test.sh "internal/sdbackend" -tags llama_stub -timeout 120s -v ./internal/sdbackend/
+
+      - name: Test cmd/sdworker (no race)
+        if: always()
+        run: scripts/run_go_test.sh "cmd/sdworker" -tags llama_stub -timeout 120s -v ./cmd/sdworker/
+
+      - name: "Test image chain (in-process smoke: clients -> balancer -> mock engine)"
+        if: always()
+        run: |
+          # Ловит регрессии маршрутизации/нормализации без внешних процессов:
+          # 7 клиентских сценариев (SillyTavern, Open WebUI, LibreChat,
+          # AnythingLLM, n8n) + изоляция текста + OpenAI-конверт ошибки.
+          go test -tags llama_stub -timeout 120s -run 'TestImageSmoke' -v ./tests/ 2>&1 | tail -30
 
       - name: Test internal/rpccoordinator (no race)
         if: always()

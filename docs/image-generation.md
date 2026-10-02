@@ -233,4 +233,14 @@ curl -s -X POST http://localhost:18079/v1/images/generations \
   -d '{"model":"dall-e-2","prompt":"a cat","size":"512x512","n":1}' | head -c 200
 ```
 
-Если `/v1/images/generations` отвечает `503 image_backend_unavailable` — не зарегистрирован ни один здоровый бэкенд типа `image_cpp`.
+Если `/v1/images/generations` отвечает `503 image_backend_unavailable` — не зарегистрирован ни один здоровый бэкенд типа `image_cpp`. Ответ `503 insufficient_vram` означает, что модель не влезает в текущую свободную VRAM — смотри поле `hint` в теле ответа.
+
+## 10. Живой стенд для проверки
+
+`scripts/image-e2e-smoke.ps1` собирает мок `sd-server` (`tools/mock-sdserver`), `sdworker` и балансер, поднимает их реальными процессами и прогоняет 17 проверок (спавн движка, load/unload, нормализация seed на проводе, CORS/`OPTIONS`, полный путь через порт 18079, изоляция текста, A1111-заглушки, health-probe). Занятые порты скрипт сдвигает сам, а в `finally` гасит все процессы.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/image-e2e-smoke.ps1
+```
+
+Этот же стенд запускается в CI (job `test-self-hosted`, шаг «Image chain E2E»), а in-process версия клиентских сценариев — на ubuntu-fallback (`go test -run TestImageSmoke ./tests/`).

@@ -426,6 +426,23 @@ type ImageRuntime struct {
 
 ## 7. Фазы внедрения
 
+### Статус (2026-10-02)
+
+| Фаза | Статус | Коммит | Что осталось |
+|---|---|---|---|
+| 1 — OpenAI-порт + image_cpp + маршрутизация | ✅ DONE | `a358a74`, `99b01ac`, `0fa005f` | — |
+| 2 — bundle/HF/профили/API | ✅ DONE | `85188e8` | профили живут в отдельном `config/image-model-profiles.json` (см. отклонение ниже) |
+| 3 — `sdworker` + супервизор + docker | ✅ DONE | `9194230` | `/api/hf/*` в воркере (Phase 4a, в работе) |
+| 5 — WebUI | ✅ DONE | `cc6d25d` | редактор image-профилей (§5.7) не сделан |
+| 4 — discovery/contract | ⚠️ частично | — | агрегаты `/v1/images/capabilities` и `/api/v1/image/contract` на балансере; у воркера `/api/image/capabilities` есть |
+| 6 — ресурсы/очередь/наблюдаемость | ⚠️ частично | — | у воркера очередь+лимиты+метрики есть; на балансере нет `ImageVramEstimate` и гейта `insufficient_vram`; политики `exclusive/offload/dedicated` не реализованы |
+| 7 — docs/CI | ⚠️ частично | — | `docs/image-generation.md` есть; CHANGELOG и `.clinerules` — после Phase 4a |
+
+**Отклонения от плана (осознанные):**
+1. **Профили image-моделей** хранятся в отдельном файле `config/image-model-profiles.json` (`internal/config/image_model_profiles.go`), а не в `config.json`: `pkg/types/config.go` в момент Phase 2 был заморожен, а свой store с атомарным `Save` + env `LB_IMAGE_MODEL_PROFILES_PATH` даёт то же поведение без правки ядра конфига. Если нужно единообразие с llama.cpp-профилями — добавить поле `ImageModelProfiles` в `LoadBalancerConfig` и переключить store на него.
+2. **Токен image-воркера** берётся из `Backend.CppWorkerApiToken` → env `IMAGEWORKER_API_TOKEN`/`CPPWORKER_API_TOKEN`/`LB_API_TOKEN` (отдельного `ImageApiToken` в `Backend` нет).
+3. **`/v1/images/edits` и `/sdapi/v1/img2img`** отдают 501 с понятным текстом (img2img не входил в Phase 1–3).
+
 ### Phase 1 — MVP: OpenAI-порт + внешний image-бэкенд и маршрутизация (2–3 дня) — ✅ DONE 2026-10-02 (commit `a358a74`)
 
 **Статус:** реализовано полностью, приёмка закрыта. Факты:

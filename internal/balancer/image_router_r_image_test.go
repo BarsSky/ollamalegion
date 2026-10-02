@@ -222,6 +222,17 @@ func TestGetDefaultAllowedTypes_NeverContainsImage(t *testing.T) {
 func TestOpenAISurface_ImageRequestRoutedToImageBackend(t *testing.T) {
 	var imageHits int32
 	imageWorker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// R-Image Phase 6: балансер сам опрашивает контракт воркера
+		// (GET /api/image/models) — поллером метрик и перед решением гейта.
+		// Такие запросы не «генерация» и не считаются попаданием в image-путь.
+		// Ответ на контракт здесь намеренно пустой (без ключа models): гейт
+		// считает данные недостоверными и пропускает запрос (fail-open), как и
+		// для «голого» sd-server. Проверка самого гейта — image_resources_test.go.
+		if r.URL.Path == "/api/image/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"state":"loaded"}`))
+			return
+		}
 		atomic.AddInt32(&imageHits, 1)
 		if r.URL.Path != "/v1/images/generations" {
 			t.Errorf("unexpected path on image backend: %s", r.URL.Path)

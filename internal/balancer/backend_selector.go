@@ -64,6 +64,47 @@ func isBackendTypeAllowed(bt types.BackendType, allowedTypes []types.BackendType
 	return false
 }
 
+// imageGateBlocksTextBackend — R-Image Phase 6 (2026-10-02): не выбирать
+// ТЕКСТОВЫЙ бэкенд на хосте, где image-генерация держит эксклюзивный лок GPU.
+//
+// ПОЧЕМУ ИМЕННО ЗДЕСЬ И ПОЧЕМУ ТАК. Политика exclusive (дефолт) означает «во
+// время генерации карта принадлежит image». Реализовано это ДВУМЯ частями:
+//  1. image-запросы берут лок на время генерации (image_resources.go);
+//  2. текстовый КАНДИДАТ на хосте с активным локом просто не выбирается —
+//     минимальный хук в функциях выбора, без блокирующих примитивов.
+//
+// ЧЕГО ХУК НЕ ДЕЛАЕТ: не держит текстовый запрос в глубине (это опасно: лок под
+// p.mu/селектором = риск дедлока и остановки всего трафика). Если подходящих
+// кандидатов не осталось, запрос уходит в существующую admission-очередь
+// (unified_queue_r73.go) и ждёт освобождения слота там; по истечении лимита
+// клиент получает 503 + Retry-After. То есть «ждать» — есть, но лимит ожидания
+// задаётся LB_ADMISSION_WAIT_SEC, а не balancing.image.queueWaitTimeoutSec
+// (второй лимит действует на стороне image-запросов) — это осознанный
+// компромисс, см. отчёт Phase 6.
+//
+// image-бэкенды хук не трогает: для них всегда false (иначе exclusive
+// заблокировал бы саму генерацию).
+func (p *Proxy) imageGateBlocksTextBackend(state *BackendState) bool {
+	if p == nil || state == nil || state.Backend == nil {
+		return false
+	}
+	res := p.imageRes
+	if res == nil {
+		return false
+	}
+	if normalizeBackendType(state.Backend.Type) == types.BackendTypeImage {
+		return false
+	}
+	if state.Backend.Status == types.StatusOffline {
+		return false
+	}
+	if !res.gpuLockHeld(state.Backend.Host) {
+		return false
+	}
+	res.noteTextSlotWithheld()
+	return true
+}
+
 // selectBackend - выбор бэкенда для запроса (pre-step + 4 этапа = 5 шагов)
 // bt — требуемый тип бэкенда (если пустой — определяется из OperatingMode)
 // skipSyncLoad (variadic bool) — если true, пропускает P3 (Sync Model Load / warmup).
@@ -304,6 +345,11 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool, allowedTypes
 			continue
 		}
 		if state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+		// Phase 6: хост занят image-генерацией (exclusive) — текстовый кандидат
+		// не подходит, ждём освобождения в admission-очереди.
+		if p.imageGateBlocksTextBackend(state) {
 			continue
 		}
 
@@ -634,6 +680,11 @@ func (p *Proxy) selectFreeBackendAny(allowedTypes []types.BackendType) string {
 			continue
 		}
 
+		// Phase 6: см. imageGateBlocksTextBackend — на хосте идёт image-генерация.
+		if p.imageGateBlocksTextBackend(state) {
+			continue
+		}
+
 		loadRatio := 0.0
 		if maxReqs > 0 {
 			loadRatio = float64(active) / float64(maxReqs)
@@ -671,6 +722,11 @@ func (p *Proxy) selectByResources(allowedTypes []types.BackendType) string {
 		}
 
 		if !p.checkResourceLimits(id) {
+			continue
+		}
+
+		// Phase 6: см. imageGateBlocksTextBackend — на хосте идёт image-генерация.
+		if p.imageGateBlocksTextBackend(state) {
 			continue
 		}
 

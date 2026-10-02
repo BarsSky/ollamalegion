@@ -2,6 +2,7 @@ package balancer
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,6 +72,32 @@ func (ir *ImageRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 
+	// R-Image Phase 6 (2026-10-02): VRAM-гейт + ресурсный лок GPU.
+	//
+	// ТОЛЬКО для запросов ГЕНЕРАЦИИ: GET /api/image/models, /capabilities,
+	// load/unload/progress — управление, они не занимают GPU и не должны
+	// получать 503 из-за нехватки VRAM (иначе оператор не смог бы даже
+	// посмотреть состояние и выгрузить модель).
+	//
+	// Освобождение лока — в defer: он переживает и ошибку проксирования, и
+	// панику (при разворачивании стека defer выполняется). Для асинхронного
+	// нативного пути defer становится no-op, потому что владение передаётся
+	// сторожу (см. imageResources.watchAsyncGeneration).
+	var gate imageGateDecision
+	if isImageGenerationRequest(r) {
+		gate = ir.proxy.imageResources().beforeGeneration(r.Context(), backendID)
+		if !gate.Allowed {
+			logger.Get().Warnw("image generation rejected by gate",
+				"path", r.URL.Path,
+				"backend", backendID,
+				"code", gate.Code,
+				"status", gate.Status)
+			ir.writeGateError(w, r, gate)
+			return true
+		}
+		defer func() { gate.Release() }()
+	}
+
 	logger.Get().Infow("image request routed",
 		"path", r.URL.Path,
 		"backend", backendID,
@@ -84,8 +111,88 @@ func (ir *ImageRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 			"image backend request failed: "+err.Error())
 		return true
 	}
+
+	// Асинхронная постановка джобы (нативный контракт: 202 + job id): генерация
+	// продолжится ПОСЛЕ ответа, поэтому лок GPU передаём сторожу, а не снимаем
+	// в defer. Для синхронных поверхностей (/v1/images/*, /sdapi/v1/*) ответ
+	// приходит уже с готовой картинкой — лок снимается сразу.
+	if gate.holder != nil && isImageAsyncSubmitPath(r) && resp.StatusCode == http.StatusAccepted {
+		if res := ir.proxy.imageResources(); res != nil {
+			res.watchAsyncGeneration(gate.holder)
+		}
+	}
 	copyResponse(w, resp)
 	return true
+}
+
+// isImageGenerationRequest — запросы, которые РЕАЛЬНО занимают GPU.
+//
+// Список явный, а не «префикс + POST»: под /sdapi/v1/* есть POST-эндпоинты
+// управления (interrupt, options), и гейтить их нельзя — иначе отмена
+// генерации требовала бы свободной VRAM, а смена модели — свободного лока.
+func isImageGenerationRequest(r *http.Request) bool {
+	if r == nil || r.Method != http.MethodPost {
+		return false
+	}
+	switch r.URL.Path {
+	case "/v1/images/generations",
+		"/v1/images/edits",
+		"/v1/images/variations",
+		"/sdapi/v1/txt2img",
+		"/sdapi/v1/img2img",
+		"/api/image/generate":
+		return true
+	}
+	return false
+}
+
+// isImageAsyncSubmitPath — путь, отвечающий 202 на постановку джобы (генерация
+// идёт фоном). У /v1/images/* и /sdapi/v1/* ответ синхронный.
+func isImageAsyncSubmitPath(r *http.Request) bool {
+	return r != nil && r.Method == http.MethodPost && r.URL.Path == "/api/image/generate"
+}
+
+// writeGateError — отказ гейта в форме, ожидаемой клиентом.
+//
+// Отличие от writeError: несёт HINT (OOM-лестницу или «загрузите модель») и
+// Retry-After для 429/503 с ожиданием. Клиент/оператор обязан видеть, что
+// делать, а не только «503».
+func (ir *ImageRouter) writeGateError(w http.ResponseWriter, r *http.Request, gate imageGateDecision) {
+	status := gate.Status
+	if status == 0 {
+		status = http.StatusServiceUnavailable
+	}
+	if gate.RetryAfterSec > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(gate.RetryAfterSec))
+	}
+
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		// OpenAI-конверт. hint кладём ВНУТРЬ error: SDK читают message/type/code,
+		// а оператор и curl видят подсказку; лишние поля OpenAI-схему не ломают.
+		body := map[string]interface{}{
+			"message": gate.Message,
+			"type":    "invalid_request_error",
+			"code":    gate.Code,
+		}
+		if gate.Hint != "" {
+			body["hint"] = gate.Hint
+		}
+		if gate.RetryAfterSec > 0 {
+			body["retry_after_seconds"] = gate.RetryAfterSec
+		}
+		writeJSON(w, status, map[string]interface{}{"error": body})
+		return
+	}
+	// Не-/v1 поверхности (sdapi/v1, /api/image/*): плоский конверт, как у
+	// writeError, плюс hint.
+	body := map[string]string{
+		"error":   gate.Code,
+		"message": gate.Message,
+	}
+	if gate.Hint != "" {
+		body["hint"] = gate.Hint
+	}
+	writeJSON(w, status, body)
 }
 
 // selectImageBackend — выбор image-бэкенда.

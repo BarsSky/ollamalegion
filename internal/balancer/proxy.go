@@ -53,6 +53,11 @@ type Proxy struct {
 	// /v1/images/*, /sdapi/v1/*, /api/image/*.
 	imageRouter *ImageRouter
 
+	// R-Image Phase 6 (2026-10-02): VRAM-гейт и ресурсный лок GPU для
+	// сосуществования image-генерации с текстовым инференсом. Вся логика —
+	// image_resources.go; инициализируется сразу после imageRouter.
+	imageRes *imageResources
+
 	// Round 31 #7 (2026-08-09): token usage tracking.
 	// Atomic counters для агрегации prompt/completion tokens по моделям.
 	// Используется для мониторинга через /api/v1/stats/tokens endpoint.
@@ -382,6 +387,13 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 
 	// R-Image (2026-09-27): маршрутизатор image-бэкендов (sd.cpp / sd-server).
 	p.imageRouter = NewImageRouter(p)
+
+	// R-Image Phase 6 (2026-10-02): VRAM-гейт + лок GPU. Поллер метрик
+	// image-воркеров (GET /api/image/models) стартует сразу: без него гейт
+	// принимал бы решения по пустому кэшу. Останавливается сам при Shutdown
+	// прокси (видит p.shuttingDown), поэтому Shutdown не меняется.
+	p.imageRes = newImageResources(p)
+	p.imageRes.Start()
 
 	// Round 40 #3 (2026-08-18): инициализация reverse proxy для /api/v1/*.
 	// Endpoint'ы под /api/v1/ обслуживаются API-сервером (cmd/balancer/api,

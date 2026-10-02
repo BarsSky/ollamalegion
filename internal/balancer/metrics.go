@@ -126,6 +126,13 @@ func (bm *BalancerMetrics) GetMetrics() map[string]interface{} {
 		"queue_wait_time_histogram":  queueWaitTimeHistogram.Snapshot(),
 	}
 
+	// ==== R-Image Phase 6: VRAM-гейт и лок GPU (сосуществование с текстом) ====
+	// Счётчики отказов гейта по reasonCode, занятость лока, время ожидания и
+	// per-backend снимок метрик image-воркеров (см. image_resources.go).
+	if res := bm.proxy.imageResources(); res != nil {
+		result["image"] = res.snapshotMetrics()
+	}
+
 	// ==== n_ctx auto-reload метрики (Stage 5) ====
 	// nctxReload.Snapshot() возвращает:
 	//   nctx_reloads_total, nctx_rejects_total, nctx_errors_total,

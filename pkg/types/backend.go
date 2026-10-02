@@ -199,7 +199,12 @@ func ResolveEffectiveCapacity(modelSlots, runtimeMax int, capacityFromNode bool,
 
 // OllamaDesiredConfig — желаемая конфигурация Ollama, передаваемая агенту через heartbeat
 type OllamaDesiredConfig struct {
-	NumGPULayers    int    `json:"numGpuLayers"`    // Количество слоёв на GPU (-1 = не менять)
+	NumGPULayers int `json:"numGpuLayers"` // Количество слоёв на GPU (-1 = не менять)
+	// Parallel — R83/v62 (2026-10-02): параллельные слоты модели (n_seq_max).
+	// WebUI это поле уже отправляет (cppworker-params.js: parallel), но в типе его не
+	// было — настройка оператора молча терялась при сохранении профиля, и загрузка
+	// уходила в defaultModelProfile (parallel=2). nil/0 = наследовать.
+	Parallel        *int   `json:"parallel,omitempty"`
 	ContextLength   int    `json:"contextLength"`   // Размер контекста (-1 = не менять)
 	NumParallel     int    `json:"numParallel"`     // Параллельных запросов (-1 = не менять)
 	NumThreads      int    `json:"numThreads"`      // Потоков CPU (-1 = не менять)

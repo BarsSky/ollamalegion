@@ -7,6 +7,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/stretchr/testify v1.10.0
 	go.uber.org/zap v1.27.1
+	golang.org/x/image v0.24.0
 )
 
 require (

@@ -621,6 +621,215 @@ func TestInvertMaskBase64_GarbageRejected(t *testing.T) {
 	}
 }
 
+// ============================================================
+// webp (R-Image follow-up, 2026-10-02): init_image и mask
+// ============================================================
+//
+// ПОЧЕМУ ФИКСТУРЫ — КОНСТАНТЫ, А НЕ testdata-ФАЙЛЫ И НЕ ГЕНЕРАЦИЯ В ТЕСТЕ:
+// кодировщика webp в Go нет (golang.org/x/image/webp умеет только
+// декодировать), поэтому «сгенерировать валидный webp кодом теста» нечем.
+// Байты зафиксированы как base64 — это ровно те файлы, что собирает ImageMagick:
+//
+//	magick mask.pgm -define webp:lossless=true mask_lossless.webp
+//	magick init.ppm -define webp:lossless=true init_lossless.webp
+//	magick init.ppm -quality 90 init_lossy.webp
+//
+// Источники: mask.pgm = P2 2x1 «255 0» (белое = перерисовать),
+// init.ppm = P3 4x2 с контрольными цветами (красный/зелёный/синий/жёлтый,
+// чёрный/серый 128/белый/10-20-30).
+//
+// ВАЖНО: покрыты ОБА кодека — VP8L (lossless, байты 12..16 == "VP8L") и
+// VP8 (lossy). Ровно потому, что декодер умеет не всё: тест на lossless не
+// доказывает, что мы не отдадим движку мусор на lossy-входе.
+const (
+	webpMaskLosslessB64 = "UklGRh4AAABXRUJQVlA4TBIAAAAvAQAAAA8w//M///MfeMiI/gc="
+	webpInitLosslessB64 = "UklGRkQAAABXRUJQVlA4TDcAAAAvA0AAAD9AmG20QZzl+X+nQSZtk79+Z38E2TYbyd3u77D5DxCJOIRkzXcQCqAxmQSC6hfR/8ADAA=="
+	webpInitLossyB64    = "UklGRloAAABXRUJQVlA4IE4AAABQAgCdASoEAAIAAMASJYwCdAW4B+IBoU4KqAAA/vG/4gWRf++N//Slp7T/5oErUJyfqL14bEZcv6avv/8myo5/DT7//krkE2upaoXAAAA="
+)
+
+// webpFixtureKind — какой кодек внутри фикстуры (по FourCC контейнера).
+func webpFixtureKind(t *testing.T, b64 string) string {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("фикстура не base64: %v", err)
+	}
+	if !looksLikeWebP(raw) {
+		t.Fatalf("фикстура не похожа на webp (magic RIFF/WEBP): % x", raw[:12])
+	}
+	return string(raw[12:16])
+}
+
+// Обе фикстуры обязаны декодироваться форматом "webp" — иначе тесты ниже
+// проверяли бы не то (например, что мы «поддерживаем webp», не декодируя его).
+func TestWebPFixtures_DecodeConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		b64  string
+		w, h int
+		kind string
+	}{
+		{"mask lossless", webpMaskLosslessB64, 2, 1, "VP8L"},
+		{"init lossless", webpInitLosslessB64, 4, 2, "VP8L"},
+		{"init lossy", webpInitLossyB64, 4, 2, "VP8 "},
+	}
+	for _, c := range cases {
+		if got := webpFixtureKind(t, c.b64); got != c.kind {
+			t.Fatalf("%s: FourCC = %q, want %q", c.name, got, c.kind)
+		}
+		w, h, err := ImageSizeFromBase64(c.b64)
+		if err != nil {
+			t.Errorf("%s: ImageSizeFromBase64: %v", c.name, err)
+			continue
+		}
+		if w != c.w || h != c.h {
+			t.Errorf("%s: size = %dx%d, want %dx%d", c.name, w, h, c.w, c.h)
+		}
+	}
+}
+
+// webp-init обязан доехать до движка как PNG (контракт img_gen — PNG/JPEG),
+// а PNG/JPEG — остаться байт-в-байт (иначе мы бы гоняли CPU на каждый запрос).
+func TestNormalizeImageBase64_WebPTranscodedToPNG(t *testing.T) {
+	got, err := NormalizeImageBase64("data:image/webp;base64," + webpInitLosslessB64)
+	if err != nil {
+		t.Fatalf("webp init: %v", err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(got)
+	if err != nil {
+		t.Fatalf("результат не base64: %v", err)
+	}
+	img, format, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("результат не декодируется: %v", err)
+	}
+	if format != "png" {
+		t.Fatalf("webp-init отдан движку как %q, want png (webp в контракте init_image не заявлен)", format)
+	}
+	if b := img.Bounds(); b.Dx() != 4 || b.Dy() != 2 {
+		t.Fatalf("bounds = %v, want 4x2", b)
+	}
+	// Lossless-фикстура обязана сохранить цвета пиксель-в-пиксель.
+	want := []color.RGBA{
+		{R: 255, A: 255}, {G: 255, A: 255}, {B: 255, A: 255}, {R: 255, G: 255, A: 255},
+		{A: 255}, {R: 128, G: 128, B: 128, A: 255}, {R: 255, G: 255, B: 255, A: 255}, {R: 10, G: 20, B: 30, A: 255},
+	}
+	for i, w := range want {
+		x, y := i%4, i/4
+		r, g, b, a := img.At(x, y).RGBA()
+		got8 := color.RGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: uint8(a >> 8)}
+		if got8 != w {
+			t.Errorf("пиксель (%d,%d) = %+v, want %+v", x, y, got8, w)
+		}
+	}
+
+	// Lossy-webp тоже перекодируется (цвета проверять нельзя — сжатие с потерями).
+	lossy, err := NormalizeImageBase64(webpInitLossyB64)
+	if err != nil {
+		t.Fatalf("lossy webp init: %v", err)
+	}
+	lraw, _ := base64.StdEncoding.DecodeString(lossy)
+	if _, format, err := image.Decode(bytes.NewReader(lraw)); err != nil || format != "png" {
+		t.Fatalf("lossy webp → format=%q err=%v, want png", format, err)
+	}
+
+	// PNG проходит без перекодирования (та же строка, что и на входе).
+	if got, err := NormalizeImageBase64(tinyPNG); err != nil || got != tinyPNG {
+		t.Fatalf("PNG обязан проходить байт-в-байт: err=%v equal=%v", err, got == tinyPNG)
+	}
+}
+
+// webp-маска обязана превратиться в 1-канальный PNG: значение = яркость
+// (маска не в альфе), инверсия = 255 − значение.
+func TestMaskWebP_LosslessToGrayPNGAndInvert(t *testing.T) {
+	norm, err := NormalizeMaskBase64("data:image/webp;base64," + webpMaskLosslessB64)
+	if err != nil {
+		t.Fatalf("normalize mask: %v", err)
+	}
+	raw, _ := base64.StdEncoding.DecodeString(norm)
+	img, format, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("маска не декодируется: %v", err)
+	}
+	if format != "png" {
+		t.Fatalf("webp-маска отдана движку как %q, want png (mask_image у движка — 1 канал PNG/JPEG)", format)
+	}
+	gray, ok := img.(*image.Gray)
+	if !ok {
+		t.Fatalf("маска = %T, want *image.Gray (1 канал)", img)
+	}
+	if v := gray.GrayAt(0, 0).Y; v != 255 {
+		t.Errorf("белый пиксель → %d, want 255", v)
+	}
+	if v := gray.GrayAt(1, 0).Y; v != 0 {
+		t.Errorf("чёрный пиксель → %d, want 0", v)
+	}
+
+	inv, err := InvertMaskBase64(webpMaskLosslessB64)
+	if err != nil {
+		t.Fatalf("invert mask: %v", err)
+	}
+	iraw, _ := base64.StdEncoding.DecodeString(inv)
+	iimg, _, err := image.Decode(bytes.NewReader(iraw))
+	if err != nil {
+		t.Fatalf("инвертированная маска не декодируется: %v", err)
+	}
+	ig, ok := iimg.(*image.Gray)
+	if !ok {
+		t.Fatalf("инвертированная маска = %T, want *image.Gray", iimg)
+	}
+	if v := ig.GrayAt(0, 0).Y; v != 0 {
+		t.Errorf("инверсия белого → %d, want 0", v)
+	}
+	if v := ig.GrayAt(1, 0).Y; v != 255 {
+		t.Errorf("инверсия чёрного → %d, want 255", v)
+	}
+}
+
+// Битый webp: ошибка обязана называть формат и просить PNG — «invalid format»
+// клиенту ничего не объясняет (и именно эту ветку мы обязаны проверять, если
+// декодер формат не понял).
+func TestWebPBrokenPayload_ClearError(t *testing.T) {
+	// Валидный контейнер (RIFF/WEBP) с мусором внутри — так выглядит обрезанный
+	// или повреждённый webp, а не «вообще не картинка».
+	broken := append([]byte("RIFF\x24\x00\x00\x00WEBPVP8L"), []byte("garbage-garbage-garbage")...)
+	b64 := base64.StdEncoding.EncodeToString(broken)
+	if looksLikeWebP(broken) != true {
+		t.Fatal("тест обязан использовать payload с magic-байтами webp")
+	}
+
+	if _, _, err := ImageSizeFromBase64(b64); err == nil {
+		t.Error("битый webp: ImageSizeFromBase64 обязан вернуть ошибку")
+	} else if !strings.Contains(err.Error(), "webp не декодирован") || !strings.Contains(err.Error(), "PNG") {
+		t.Errorf("ImageSizeFromBase64: невнятная ошибка: %v", err)
+	}
+
+	if _, err := NormalizeMaskBase64(b64); err == nil {
+		t.Error("битый webp: NormalizeMaskBase64 обязан вернуть ошибку, а не отдать маску движку")
+	} else if !strings.Contains(err.Error(), "webp не декодирован") || !strings.Contains(err.Error(), "PNG") {
+		t.Errorf("NormalizeMaskBase64: невнятная ошибка: %v", err)
+	}
+
+	if _, err := InvertMaskBase64(b64); err == nil {
+		t.Error("битый webp: InvertMaskBase64 обязан вернуть ошибку (иначе движок получит неинвертированную маску)")
+	} else if !strings.Contains(err.Error(), "webp не декодирован") {
+		t.Errorf("InvertMaskBase64: невнятная ошибка: %v", err)
+	}
+
+	if _, err := NormalizeImageBase64(b64); err == nil {
+		t.Error("битый webp: NormalizeImageBase64 обязан вернуть ошибку, а не отправить мусор в движок")
+	} else if !strings.Contains(err.Error(), "webp не декодирован") {
+		t.Errorf("NormalizeImageBase64: невнятная ошибка: %v", err)
+	}
+
+	// Ошибка через NormalizeGeneration обязана называть поле запроса.
+	if _, err := NormalizeGeneration(GenerationRequest{MaskImage: b64}, nil, nil); err == nil {
+		t.Error("NormalizeGeneration обязан завернуть ошибку маски")
+	} else if !strings.Contains(err.Error(), "mask_image") {
+		t.Errorf("ошибка обязана называть поле mask_image: %v", err)
+	}
+}
+
 func TestLooksLikeEncodeOOM(t *testing.T) {
 	for _, s := range []string{
 		"ggml_backend_cuda: failed to allocate 4096 MB",

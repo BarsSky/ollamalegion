@@ -19,6 +19,19 @@ import (
 	// вернёт «image: unknown format», и геометрию картинки мы не узнаем.
 	_ "image/jpeg"
 
+	// webp — ПОЧЕМУ ЗАВИСИМОСТЬ ВСЁ-ТАКИ ДОБАВЛЕНА (R-Image, follow-up
+	// 2026-10-02): клиенты (SillyTavern/A1111-обёртки) регулярно присылают
+	// webp-маску и webp init_image. Без декодера такой запрос либо получал
+	// невнятное «image: unknown format», либо (что опаснее) маска уходила в
+	// движок, не будучи проверенной/инвертированной. Пакет регистрирует
+	// формат "webp" в image.Decode/DecodeConfig, поэтому геометрия init-картинки
+	// и одноканальное приведение маски работают штатно.
+	//
+	// ВАЖНО: x/image/webp умеет и lossy (VP8), и lossless (VP8L) — кодировщика
+	// в пакете НЕТ, поэтому webp-маску мы ДЕКОДИРУЕМ и перекодируем в PNG
+	// (движку гарантированно понятный 1-канальный формат), а не отдаём как есть.
+	_ "golang.org/x/image/webp"
+
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -437,18 +450,58 @@ func InjectSeedIntoPrompt(prompt string, seed int64) string {
 // padding (часть JS-клиентов режет '='), URL-safe base64 (A1111-обёртки).
 // Пробелы/переводы строк внутри payload вырезаются: base64 в JSON-строке
 // иногда переносят по 76 символов.
+//
+// webp — ЕДИНСТВЕННЫЙ формат, который здесь перекодируется (в PNG): контракт
+// img_gen заявляет для init_image PNG/JPEG, а webp клиенты шлют регулярно.
+// Остальные форматы идут байт-в-байт, как и раньше.
 func NormalizeImageBase64(payload string) (string, error) {
 	raw, err := DecodeImageBase64(payload)
 	if err != nil {
 		return "", err
 	}
+	converted, ok, cerr := transcodeWebPToPNG(raw)
+	if cerr != nil {
+		return "", cerr
+	}
+	if ok {
+		return base64.StdEncoding.EncodeToString(converted), nil
+	}
 	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+// transcodeWebPToPNG — webp-payload → PNG (ok = «перекодировали»).
+//
+// ПОЧЕМУ ПЕРЕКОДИРУЕМ, А НЕ ОТДАЁМ КАК ЕСТЬ: движок читает init_image через
+// stb_image, и webp там не гарантирован — отдать его «на авось» значит уронить
+// запрос уже внутри генерации, после того как мы его приняли и провалидировали.
+// x/image/webp умеет декодировать и lossy (VP8), и lossless (VP8L), но НЕ
+// кодировать, поэтому единственный честный путь — декодировать и перекодировать
+// в PNG. Всё, что webp'ом не является, не трогаем вообще (нулевая цена для
+// PNG/JPEG, которые и так работают).
+func transcodeWebPToPNG(raw []byte) ([]byte, bool, error) {
+	if !looksLikeWebP(raw) {
+		return nil, false, nil
+	}
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, false, webpDecodeError(err, "PNG или JPEG")
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, false, fmt.Errorf("encode webp as png: %w", err)
+	}
+	return buf.Bytes(), true, nil
 }
 
 // DecodeImageBase64 — payload (base64/data-URL) → сырые байты.
 //
 // Отдельная функция (а не только NormalizeImageBase64), потому что маску
 // нужно ДЕКОДИРОВАТЬ в картинку (инверсия), а не просто перекодировать.
+//
+// Формат здесь НЕ проверяется сознательно: это транспортный слой (base64 и
+// срезание data-URL-префикса). Понимает ли сборка конкретный формат, решают
+// вызывающие — image.Decode/DecodeConfig (png/jpeg/webp зарегистрированы, см.
+// блок импортов): им и нужна геометрия/пиксели.
 func DecodeImageBase64(payload string) ([]byte, error) {
 	s := strings.TrimSpace(payload)
 	if s == "" {
@@ -502,15 +555,35 @@ func stripBase64Space(s string) string {
 	return b.String()
 }
 
-// ImageSizeFromBase64 — геометрия изображения из payload (PNG/JPEG).
+// looksLikeWebP — контейнер WebP по magic-байтам («RIFF....WEBP»).
+//
+// ЗАЧЕМ: image.Decode/DecodeConfig при ОШИБКЕ декодирования возвращают ПУСТОЕ
+// имя формата (sniff формат опознал, decode упал), поэтому отличить «битый
+// webp» от «мусора» по возвращённому format нельзя. Magic-байты дают точный
+// ответ, а вместе с ним — выполнимую подсказку клиенту.
+func looksLikeWebP(raw []byte) bool {
+	return len(raw) >= 12 && string(raw[0:4]) == "RIFF" && string(raw[8:12]) == "WEBP"
+}
+
+// webpDecodeError — внятная ошибка «webp не декодирован».
+//
+// want — что именно просить у клиента: у маски и у init-картинки требования
+// разные (маска строго 1 канал, init — 3/4 канала), и «пришлите PNG» без
+// уточнения отправляло бы клиента по кругу.
+func webpDecodeError(err error, want string) error {
+	return fmt.Errorf("webp не декодирован: %v; пришлите %s", err, want)
+}
+
+// ImageSizeFromBase64 — геометрия изображения из payload (PNG/JPEG/webp).
 //
 // ЗАЧЕМ: img2img без явных width/height обязан работать в размере стартовой
 // картинки (так делают и A1111, и OpenAI): иначе клиент, не приславший size,
 // получил бы 512x512 из дефолта профиля при исходнике 1024x1024.
 //
-// webp НЕ декодируем: в go.mod нет golang.org/x/image, а тянуть зависимость
-// ради чтения заголовка — лишнее. Вызывающий код обязан пережить ошибку
-// (фолбэк на дефолты профиля).
+// webp ЧИТАЕТСЯ: формат регистрируется импортом golang.org/x/image/webp (см.
+// блок импортов), поэтому DecodeConfig разбирает и заголовок webp — раньше это
+// было «image: unknown format», и клиент не понимал, чего от него хотят.
+// Вызывающий код по-прежнему обязан пережить ошибку (фолбэк на дефолты профиля).
 func ImageSizeFromBase64(payload string) (int, int, error) {
 	raw, err := DecodeImageBase64(payload)
 	if err != nil {
@@ -518,6 +591,9 @@ func ImageSizeFromBase64(payload string) (int, int, error) {
 	}
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
+		if format == "webp" || looksLikeWebP(raw) {
+			return 0, 0, webpDecodeError(err, "PNG или JPEG")
+		}
 		return 0, 0, fmt.Errorf("decode image header: %w", err)
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 {
@@ -530,8 +606,9 @@ func ImageSizeFromBase64(payload string) (int, int, error) {
 //
 // Инверсия = 255 − значение (см. maskToGray про то, что именно берётся за
 // значение). ЧЕСТНО: это не «молчаливое игнорирование флага» — если картинку
-// не удалось декодировать (например webp без x/image), вызывающий обязан
-// вернуть клиенту ошибку, а не отправить движку неинвертированную маску.
+// не удалось декодировать (битый payload, неподдержанный формат), вызывающий
+// обязан вернуть клиенту ошибку, а не отправить движку неинвертированную маску.
+// webp для этого теперь декодируется (см. импорт golang.org/x/image/webp).
 func InvertMaskBase64(payload string) (string, error) {
 	gray, err := maskGray(payload)
 	if err != nil {
@@ -557,8 +634,16 @@ func NormalizeMaskBase64(payload string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if img, _, derr := image.Decode(bytes.NewReader(raw)); derr == nil {
-		if _, ok := img.(*image.Gray); ok {
+	// Пропуск «как есть» — ТОЛЬКО для не-webp.
+	//
+	// ПОЧЕМУ ПРОВЕРЯЕМ ФОРМАТ, А НЕ ТОЛЬКО ТИП КАРТИНКИ: после подключения
+	// x/image/webp серой (image.Gray) может оказаться и lossless-webp. Отдать
+	// его движку как есть нельзя — webp в контракте mask_image не заявлен
+	// (движок читает PNG/JPEG, mask_image — 1 канал), то есть это была бы
+	// ровно та «непроверенная маска», которой быть не должно. Поэтому webp
+	// всегда идёт ниже, через maskGray → PNG.
+	if img, format, derr := image.Decode(bytes.NewReader(raw)); derr == nil {
+		if _, ok := img.(*image.Gray); ok && format != "webp" {
 			return base64.StdEncoding.EncodeToString(raw), nil
 		}
 	}
@@ -591,6 +676,9 @@ func maskGray(payload string) (*image.Gray, error) {
 	}
 	img, format, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
+		if format == "webp" || looksLikeWebP(raw) {
+			return nil, webpDecodeError(err, "PNG-маску (1 канал)")
+		}
 		return nil, fmt.Errorf("decode mask image (%s): %w", format, err)
 	}
 	b := img.Bounds()

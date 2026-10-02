@@ -274,7 +274,7 @@ func (a *App) handleSDAPIImg2Img(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid_mask",
 				"cannot invert mask for inpainting_mask_invert: "+err.Error()+
-					" (поддерживаются PNG/JPEG; для webp маску нужно инвертировать на стороне клиента)")
+					" (поддерживаются PNG/JPEG/WebP; webp декодируется и перекодируется в grayscale PNG)")
 			return
 		}
 		mask = inv

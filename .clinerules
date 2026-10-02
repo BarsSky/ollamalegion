@@ -385,21 +385,33 @@ curl -X POST -H "X-API-Token: $LB_TOKEN" \
 
 | OperatingMode | Допустимые BackendType |
 |---|---|
-| `standard` | `ollama`, `llama_cpp` |
-| `replication` | `ollama`, `llama_cpp` |
-| `rpc_coordinator` | `ollama`, `llama_cpp` |
+| `standard` | `ollama`, `llama_cpp`, `image_cpp` |
+| `replication` | `ollama`, `llama_cpp`, `image_cpp` |
+| `rpc_coordinator` | `ollama`, `llama_cpp`, `image_cpp` |
 | `virtual_router` | `llama_cpp` |
 | `distributed_inference` | `llama_cpp` |
 
 - Режимы и типы определены в `pkg/types/backend_type.go`: `ModeBackendTypes`, `ModeEngines`.
 - Пустой `Backend.Type` (legacy) нормализуется в `ollama` через `internal/balancer.normalizeBackendType`.
 
+### image_cpp — отдельный класс бэкендов (R-Image, 2026-09-27)
+
+- **Что это:** бэкенд генерации изображений на `stable-diffusion.cpp` (`sd-server`), обёрнутый воркером `cmd/sdworker` (порт **18093**). Своё поле порта — `Backend.ImagePort` (fallback: `CppWorkerPort` → 18093), свой каталог моделей, свой API-стиль (`openai-compatible`).
+- **Правила cppworker на него НЕ распространяются:** нет `/api/tags`, `/api/pull` (501), chat-шаблонов, n_ctx, reasoning/tools, KV-cache. Healh-probe — `GET /sdcpp/v1/capabilities` (у sd-server нет `/health`).
+- **`virtual_router`/`distributed_inference`:** `image_cpp` туда НЕ добавлять. Эти режимы ждут ровно один тип в `getDefaultAllowedTypes()`; второй тип ломает резолв `/api/*` → llama.cpp (регрессия ловится `TestServeHTTP_MixedCluster_RoutingByURLPath`).
+- **Инвариант маршрутизации:** image-бэкенд достижим ТОЛЬКО по явному признаку — endpoint (`/v1/images/*`, `/sdapi/v1/*`, `/api/image/*`) или префикс модели (`sd:`, `image:`, `img/`, `sd_cpp:`, `diffusion:`). `getDefaultAllowedTypes()` **намеренно исключает** `image_cpp`: иначе текстовый `/api/generate` (где тип не определён) мог бы уйти на image-бэкенд. Тест — `TestGetDefaultAllowedTypes_NeverContainsImage`.
+- **OpenAI-поверхность (порт 18079):** отдельный слушатель (`openaiSurface`), обслуживающий `/v1/*` + `/sdapi/v1/*`; стриминг включается ТОЛЬКО полем `stream` в теле (на 18080 сохранился legacy-дефолт `true`); Ollama-нативные пути отвечают 404 со ссылкой на 18080. Состояние общее с 18080 — это один и тот же `*Proxy`.
+- **Прочее:** `filterBackendsByEffectiveType` пропускает `image_cpp` всегда (иначе Monitor теряет image-ноды при `backendEngine=llama_cpp`); `warmupModel` пропускает image-бэкенды (нет текстового прогрева); `/v1/models` получает алиасы `sd-cpp-local`, `dall-e-2`, `dall-e-3`.
+- **Документация:** `docs/image-generation.md` (подключение клиентов), `docs/research-sdcpp-lowvram-integration.md` (движок, флаги, модели), `plans/2026-09-27-image-generation-backend-plan.md` (план и статус фаз).
+
 ### Маршрутизация по пути
 
-- `/v1/*` (OpenAI-совместимые) → всегда `llama_cpp` (`determineRequestBackendType`).
+- `/v1/*` (OpenAI-совместимые) → всегда `llama_cpp` (`determineRequestBackendType`), КРОМЕ явных image-признаков.
+- **Явные image-признаки (приоритет над всем):** endpoint `/v1/images/*`, `/sdapi/v1/*`, `/api/image/*`; префикс модели `sd:`/`image:`/`img/`/`sd_cpp:`/`diffusion:`. Дают `BackendTypeImage`.
 - `/api/*` в смешанных режимах (`standard`/`replication`/`rpc_coordinator`) → пустой `BackendType`, `selectBackend` решает по модели/ресурсам.
 - `/api/*` в `virtual_router`/`distributed_inference` → всегда `llama_cpp`.
 - `/api/chat` и `/api/generate` в смешанных режимах должны проходить через основной flow `ServeHTTP` / `selectBackend`, а не перехватываться специализированными роутерами (`router.go`).
+- Image-запросы обслуживает `ImageRouter` (`internal/balancer/image_router.go`) — напрямую через `proxyRequestToBackend`, БЕЗ preflight n_ctx / AutoTune / `normalizeOpenAIBody` и без streaming-ветки.
 
 ### Совместимость и fallback
 

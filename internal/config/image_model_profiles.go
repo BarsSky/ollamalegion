@@ -18,6 +18,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -111,6 +112,11 @@ func (s *ImageModelProfileStore) Load() error {
 	}
 
 	var file imageModelProfilesFile
+	// R-Image (2026-10-02, найдено Phase 6): снимаем UTF-8 BOM. Notepad и
+	// PowerShell Set-Content -Encoding UTF8 пишут BOM, а json.Unmarshal на нём
+	// падает с «invalid character 'ï'» — оператор видел бы «профилей нет»
+	// (или ошибку чтения) при внешне корректном файле.
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 	if err := json.Unmarshal(data, &file); err != nil {
 		return fmt.Errorf("parse image model profiles %s: %w", s.path, err)
 	}

@@ -56,15 +56,15 @@ func TestEvaluateImageVRAM(t *testing.T) {
 			wantAllow: true, wantCode: ImageGateDisabled,
 		},
 		{
-			name: "unknown estimate rejected by default",
+			name: "unknown estimate does NOT block by default",
 			est:  ImageVramEstimate{Source: "unknown"}, freeMB: 8000,
-			wantAllow: false, wantCode: ImageGateUnknownEstimate,
+			wantAllow: true, wantCode: ImageGateOK,
 		},
 		{
-			name: "unknown estimate allowed explicitly",
+			name: "unknown estimate blocks with opt-in strictness",
 			est:  ImageVramEstimate{Source: "unknown"}, freeMB: 8000,
-			settings:  ImageResourceSettings{AllowUnknownVRAMEstimate: true},
-			wantAllow: true, wantCode: ImageGateOK,
+			settings:  ImageResourceSettings{BlockOnUnknownVRAMEstimate: true},
+			wantAllow: false, wantCode: ImageGateUnknownEstimate,
 		},
 		{
 			name: "free vram unknown -> do not block", est: est, freeMB: 0,

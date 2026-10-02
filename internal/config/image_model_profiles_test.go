@@ -26,6 +26,31 @@ func validProfile(name string) types.ImageModelProfile {
 	}
 }
 
+// TestImageModelProfileStore_StripsUTF8BOM — R-Image (2026-10-02): файл профилей,
+// сохранённый Notepad'ом (UTF-8 с BOM), обязан читаться. До фикса json.Unmarshal
+// падал на BOM («invalid character 'ï'»), и оператор видел «профилей нет» при
+// внешне корректном файле.
+func TestImageModelProfileStore_StripsUTF8BOM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image-model-profiles.json")
+
+	payload := `{"profiles":{"sd15-bom":{"name":"sd15-bom","family":"sd15",` +
+		`"files":[{"role":"diffusion","repo":"r","filename":"m.gguf"}],` +
+		`"defaults":{"steps":20,"cfgScale":7,"sampler":"euler_a","scheduler":"discrete","width":512,"height":512,"batchCount":1,"seed":-1}}}}`
+
+	// BOM + валидный JSON — ровно то, что пишет Notepad.
+	if err := os.WriteFile(path, append([]byte{0xEF, 0xBB, 0xBF}, []byte(payload)...), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	store := NewImageModelProfileStore(path)
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load with UTF-8 BOM must succeed, got %v", err)
+	}
+	if _, ok := store.Get("sd15-bom"); !ok {
+		t.Fatal("profile from BOM-prefixed file must be loaded")
+	}
+}
+
 // TestImageModelProfileStore_CRUDAndPersistence — Set/Get/Delete + переживание
 // рестарта (новый store читает тот же файл).
 func TestImageModelProfileStore_CRUDAndPersistence(t *testing.T) {

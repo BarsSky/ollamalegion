@@ -64,10 +64,17 @@ type ImageResourceSettings struct {
 	// (например, чтобы текстовый бэкенд мог держать свои веса). 0 = не резервировать.
 	VramHeadroomMB int `json:"vramHeadroomMb,omitempty"`
 
-	// AllowUnknownVRAMEstimate — разрешать генерацию, если оценка VRAM неизвестна
-	// (у модели не заполнен vramEstimateMb и нет метрик воркера). По умолчанию
-	// false: лучше явная ошибка конфигурации, чем OOM внутри движка.
-	AllowUnknownVRAMEstimate bool `json:"allowUnknownVramEstimate,omitempty"`
+	// BlockOnUnknownVRAMEstimate — opt-in СТРОГОСТЬ: блокировать генерацию, если
+	// оценку VRAM модели получить не удалось (нет vramEstimateMb в профиле, нет
+	// метрик воркера, нет размеров файлов).
+	//
+	// Почему по умолчанию ВЫКЛЮЧЕНО (R-Image, 2026-10-02): на типовом стенде
+	// оценка часто неизвестна (свежий bundle без профиля, воркер без метрик VRAM),
+	// и строгий дефолт означал бы «генерация не работает вообще» при формально
+	// исправной конфигурации. Поэтому неизвестная оценка ПРОПУСКАЕТ генерацию
+	// (с WARN в логе), а гейт защищает там, где он реально что-то знает:
+	// известная оценка + известная свободная VRAM.
+	BlockOnUnknownVRAMEstimate bool `json:"blockOnUnknownVramEstimate,omitempty"`
 
 	// QueueWaitTimeoutSec — сколько exclusive-режим ждёт освобождения GPU,
 	// прежде чем ответить 429 с Retry-After. 0 = дефолт (30 с).
@@ -161,11 +168,14 @@ const ImageOOMHint = "reduce model quantization (q8 -> q4_0/q3_k), enable diffus
 // Логика сознательно простая и предсказуемая (в отличие от memfit для LLM):
 //
 //	allowed = GateDisabled
-//	       || (estimate известна && estimate + headroom <= free)
+//	       || estimate неизвестна (и не включён BlockOnUnknownVRAMEstimate)
+//	       || freeMB неизвестна
+//	       || (estimate + headroom <= freeMB)
 //
-// freeMB <= 0 означает «свободная VRAM неизвестна» — тогда, если estimate
-// известна, гейт пропускает (не блокируем работу из-за отсутствия метрик),
-// а если неизвестна и AllowUnknownVRAMEstimate=false — отказывает.
+// То есть гейт блокирует РОВНО один осмысленный случай: оценка известна,
+// свободная VRAM известна, и модель в неё не влезает. Во всех остальных
+// случаях генерация пропускается — иначе при неполных метриках фича просто
+// не работает, а оператор не понимает, почему.
 func EvaluateImageVRAM(est ImageVramEstimate, freeMB int, s ImageResourceSettings) ImageVRAMVerdict {
 	if s.GateDisabled {
 		return ImageVRAMVerdict{Allowed: true, ReasonCode: ImageGateDisabled}
@@ -179,17 +189,18 @@ func EvaluateImageVRAM(est ImageVramEstimate, freeMB int, s ImageResourceSetting
 	}
 
 	if !est.IsKnown() {
-		if s.AllowUnknownVRAMEstimate {
-			verdict.Allowed = true
-			verdict.ReasonCode = ImageGateOK
-			verdict.Message = "VRAM estimate is unknown; allowed by allowUnknownVramEstimate"
+		if s.BlockOnUnknownVRAMEstimate {
+			verdict.Allowed = false
+			verdict.ReasonCode = ImageGateUnknownEstimate
+			verdict.Message = "cannot estimate VRAM required by this image model"
+			verdict.Hint = "set vramEstimateMb in the image model profile, or disable " +
+				"balancing.image.blockOnUnknownVramEstimate to skip the gate"
 			return verdict
 		}
-		verdict.Allowed = false
-		verdict.ReasonCode = ImageGateUnknownEstimate
-		verdict.Message = "cannot estimate VRAM required by this image model"
-		verdict.Hint = "set vramEstimateMb in the image model profile, or enable " +
-			"balancing.image.allowUnknownVramEstimate to skip the gate"
+		// Дефолт: неизвестная оценка НЕ блокирует (WARN пишет вызывающая сторона).
+		verdict.Allowed = true
+		verdict.ReasonCode = ImageGateOK
+		verdict.Message = "VRAM estimate is unknown; gate skipped"
 		return verdict
 	}
 

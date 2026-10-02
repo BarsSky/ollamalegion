@@ -518,7 +518,21 @@ func (r *VirtualRouter) proxyToBackend(
 	originalModel, strategy string,
 	timeout time.Duration,
 ) (*http.Response, bool, context.CancelFunc, error) {
-	ctx, cancel := context.WithTimeout(req.Context(), timeout)
+	// R83/v62 (2026-10-02): guard как во всех остальных путях этой ревизии.
+	// context.WithTimeout(ctx, 0) — это НЕМЕДЛЕННО истёкший контекст: если
+	// вызывающий передаст 0 (а по доктрине 0 = «без капа»), то ЛЮБОЙ запрос через
+	// virtual router падал бы с "context deadline exceeded" ещё до апстрима.
+	// Поэтому таймаут взводится только при > 0; иначе контекст наследует жизнь
+	// запроса (отмена клиентом) — это и есть «ждать терминальное состояние».
+	ctx := req.Context()
+	cancel := context.CancelFunc(func() {})
+	if timeout > 0 {
+		if logger.Get() != nil {
+			logger.Get().Warnw("armed virtual router timeout (operator opt-in)",
+				"timeout", timeout.String(), "backend", backendID, "model", originalModel)
+		}
+		ctx, cancel = context.WithTimeout(req.Context(), timeout)
+	}
 
 	proxyReq, err := http.NewRequestWithContext(ctx, req.Method, targetURL, bytes.NewReader(rewrittenBody))
 	if err != nil {

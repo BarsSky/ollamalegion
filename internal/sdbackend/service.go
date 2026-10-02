@@ -31,6 +31,11 @@ type Service struct {
 	Runner   *JobRunner
 	Idle     *IdleUnloadManager
 
+	// HF — HF-загрузка image-bundle'ов (Phase 4). Может быть nil, если сервис
+	// собран вручную (тесты) без NewService: хендлеры обязаны это переживать
+	// (503 «HF downloader not available»), а не паниковать.
+	HF *HFManager
+
 	// StartedAt — время старта сервиса (uptime в /health).
 	StartedAt time.Time
 }
@@ -60,6 +65,19 @@ func NewService(cfg *Config) (*Service, error) {
 	}
 	sup := NewSupervisor(cfg, registry, metrics)
 	runner := NewJobRunner(cfg, registry, sup, metrics, store)
+
+	// HF-загрузчик собираем сразу: он создаёт каталоги темп/моделей, поэтому
+	// ошибка прав на запись видна на старте, а не при первом «Скачать».
+	hf, err := NewHFManager(cfg, registry)
+	if err != nil {
+		return nil, fmt.Errorf("init HF downloader: %w", err)
+	}
+	// Подчищаем каталоги bundle'ов, чью регистрацию снял cleanup (удалённый
+	// файл): они невидимы реестру, но занимают диск.
+	if swept := hf.SweepUnregisteredBundles(); swept > 0 {
+		sdLog().Infow("swept unregistered image bundle dirs at startup", "count", swept)
+	}
+
 	return &Service{
 		Config:    cfg,
 		Registry:  registry,
@@ -69,8 +87,25 @@ func NewService(cfg *Config) (*Service, error) {
 		Store:     store,
 		Runner:    runner,
 		Idle:      NewIdleUnloadManager(cfg, registry, sup, metrics),
+		HF:        hf,
 		StartedAt: time.Now(),
 	}, nil
+}
+
+// Downloader — HF-обёртка воркера (nil, если сервис собран без NewService).
+func (s *Service) Downloader() *HFManager { return s.HF }
+
+// ReloadRegistry — перечитывает каталог моделей (новые bundle'ы становятся
+// видны в GET /api/image/models без рестарта воркера).
+//
+// Отдельный публичный метод (а не приватный вызов из HFManager): Phase 2
+// синкает профили с балансера в каталог воркера — после раскладки файлов
+// требуется тот же reload.
+func (s *Service) ReloadRegistry() error {
+	if s.Registry == nil {
+		return fmt.Errorf("registry is not initialized")
+	}
+	return s.Registry.Load()
 }
 
 // Start запускает фоновые сервисы воркера (idle-unload, опциональный preload).
@@ -94,6 +129,12 @@ func (s *Service) Start(ctx context.Context) {
 // процесс-сироту с занятой VRAM (особенно важно при рестарте контейнера).
 func (s *Service) Shutdown(ctx context.Context) {
 	s.Idle.Stop()
+	// Незавершённые HF-загрузки отменяем: иначе горутина pull'а переживёт
+	// HTTP-сервер и оставит .download-файлы (их подхватит resume при следующем
+	// запуске — но процесс не должен «висеть» до конца 6-GB файла).
+	if s.HF != nil {
+		s.HF.Close()
+	}
 	if s.Sup == nil {
 		return
 	}

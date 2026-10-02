@@ -179,6 +179,19 @@ func setRetryAfter(w http.ResponseWriter, seconds int) {
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 }
 
+// parseInt — строка в int с дефолтом (для query-параметров вроде limit).
+// Пустая строка → defaultVal без ошибки, как в cppworker.
+func parseInt(s string, defaultVal int) (int, error) {
+	if s == "" {
+		return defaultVal, nil
+	}
+	val, err := strconv.Atoi(s)
+	if err != nil {
+		return defaultVal, err
+	}
+	return val, nil
+}
+
 // statusForError — HTTP-статус по классу ошибки сервиса.
 func statusForError(err error) (status int, code string) {
 	c := sdbackend.ErrorCodeOf(err)

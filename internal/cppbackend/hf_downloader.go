@@ -364,14 +364,29 @@ func sortFilesByPopularity(files []HFFileInfo) {
 // Для каждого результата параллельно запрашивает список .gguf файлов,
 // фильтрует репозитории без GGUF и сортирует файлы по популярности.
 func (d *HuggingFaceDownloader) SearchModels(ctx context.Context, query string, limit int) ([]HFModelRepo, error) {
+	return d.SearchModelsTask(ctx, query, limit, "")
+}
+
+// SearchModelsTask — R-Image (2026-09-28): SearchModels с необязательным
+// фильтром HF pipeline_tag (task).
+//
+// ЗАЧЕМ: image-воркеру нужны диффузионные репозитории (text-to-image), а не
+// текстовые. Но library=gguf из SearchModels отсекал бы ВСЕ safetensors-репо,
+// поэтому при явном task фильтр library не ставится: репозиторий попадает в
+// выдачу, если у него есть файлы весовых форматов
+// (.gguf/.safetensors/.sft/.ckpt) — их проверяет enrichWithFiles.
+//
+// task == "" сохраняет ровно прежнее поведение (library=gguf) — cppworker
+// продолжает получать только GGUF-модели.
+func (d *HuggingFaceDownloader) SearchModelsTask(ctx context.Context, query string, limit int, task string) ([]HFModelRepo, error) {
 	log := logger.Get()
-	log.Infow("searching HuggingFace models", "query", query, "limit", limit)
+	log.Infow("searching HuggingFace models", "query", query, "limit", limit, "task", task)
 
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 
-	// HuggingFace API для поиска: GET /api/models?search=...&task=text-generation&sort=downloads
+	// HuggingFace API для поиска: GET /api/models?search=...&task=...&sort=downloads
 	apiURL := d.getAPIURL("/models")
 	parsedURL, err := url.Parse(apiURL)
 	if err != nil {
@@ -383,8 +398,12 @@ func (d *HuggingFaceDownloader) SearchModels(ctx context.Context, query string, 
 	params.Set("sort", "downloads")
 	params.Set("direction", "-1")
 	params.Set("limit", fmt.Sprintf("%d", limit))
-	// Ищем модели, которые поддерживают GGUF
-	params.Set("library", "gguf")
+	if strings.TrimSpace(task) != "" {
+		params.Set("task", strings.TrimSpace(task))
+	} else {
+		// Ищем модели, которые поддерживают GGUF (прежнее поведение).
+		params.Set("library", "gguf")
+	}
 	parsedURL.RawQuery = params.Encode()
 
 	req, err := d.newRequest("GET", parsedURL.String(), nil)

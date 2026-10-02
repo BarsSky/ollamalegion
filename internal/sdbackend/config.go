@@ -46,6 +46,31 @@ type Config struct {
 	// см. types.ImageModelProfile.BundleDir.
 	ModelsDir string `json:"modelsDir"`
 
+	// DownloadsDir — каталог темповых .download-файлов ОДИНОЧНЫХ HF-загрузок
+	// (bundle'ы кладут темп внутрь своего каталога моделей).
+	//
+	// ПОЧЕМУ ОТДЕЛЬНЫЙ ОТ cppworker КАТАЛОГ ПО УМОЛЧАНИЮ: .download диффузионной
+	// модели — это 6-12 GB. Если он лежит в общем ./downloads, оператор не
+	// понимает, какой воркер занимает место, а orphan-cleanup одного воркера
+	// удаляет partial другого.
+	DownloadsDir string `json:"downloadsDir"`
+
+	// HFToken — токен HuggingFace (gated-модели). Приоритет у заголовка
+	// X-HF-Token из запроса: UI хранит токен у себя и шлёт его именно заголовком
+	// (webui/js/modules/image-page.js:656). Env: HF_TOKEN (совместимо с
+	// cppworker/cppbackend), SDWORKER_HF_TOKEN — переопределение.
+	HFToken string `json:"hfToken,omitempty"`
+
+	// HFMirror — зеркало HF (например https://hf-mirror.com). Пусто =
+	// huggingface.co. Env: HF_MIRROR (общая переменная проекта).
+	HFMirror string `json:"hfMirror,omitempty"`
+
+	// HFBundleAutoFit — runtime.autoFit для профилей, которые воркер
+	// генерирует сам после HF-bundle-загрузки: on|off|"" (пусто = не передавать
+	// флаг). Дефолт "on": движок сам ужимает плейсмент под доступную VRAM —
+	// именно то, что нужно слабым GPU (см. docs/research-sdcpp-lowvram-integration.md).
+	HFBundleAutoFit string `json:"hfBundleAutoFit,omitempty"`
+
 	// SDServerBin — путь к бинарю sd-server (или имя в PATH).
 	//
 	// Почему «или имя»: в Docker бинарь лежит в /usr/local/bin и достаточно
@@ -104,6 +129,7 @@ func DefaultConfig() Config {
 		Host:              "0.0.0.0",
 		Port:              DefaultPort,
 		ModelsDir:         "./models/image",
+		DownloadsDir:      "./downloads/image",
 		SDServerBin:       "sd-server",
 		ListenIP:          "127.0.0.1",
 		ServerPort:        18094,
@@ -120,6 +146,9 @@ func DefaultConfig() Config {
 		MaxConcurrent: 64,
 		ImagesDir:     "./data/images",
 		CORSOrigin:    "*",
+		// Автогенерируемые профили (после HF-bundle-загрузки) получают
+		// --auto-fit on: движок сам решает, что держать в VRAM.
+		HFBundleAutoFit: "on",
 	}
 }
 
@@ -151,6 +180,9 @@ func (c *Config) Validate() error {
 	}
 	if c.GenerationTimeoutSec < 0 {
 		return fmt.Errorf("generationTimeoutSec must be >= 0, got %d", c.GenerationTimeoutSec)
+	}
+	if c.HFBundleAutoFit != "" && c.HFBundleAutoFit != "on" && c.HFBundleAutoFit != "off" {
+		return fmt.Errorf("hfBundleAutoFit must be on|off|\"\", got %q", c.HFBundleAutoFit)
 	}
 	return nil
 }
@@ -203,6 +235,7 @@ func (c *Config) ApplyEnv() error {
 	envStr("SDWORKER_HOST", &c.Host)
 	envStr("SDWORKER_MODELS_DIR", &c.ModelsDir)
 	envStr("SDWORKER_IMAGE_MODELS_DIR", &c.ModelsDir)
+	envStr("SDWORKER_DOWNLOADS_DIR", &c.DownloadsDir)
 	envStr("SDWORKER_SD_SERVER_BIN", &c.SDServerBin)
 	envStr("SDWORKER_SD_SERVER_LISTEN_IP", &c.ListenIP)
 	envStr("SDWORKER_LORA_DIR", &c.LoraModelDir)
@@ -211,6 +244,15 @@ func (c *Config) ApplyEnv() error {
 	envStr("SDWORKER_BASE_URL", &c.BaseURL)
 	envStr("SDWORKER_IMAGES_DIR", &c.ImagesDir)
 	envStr("SDWORKER_CORS_ORIGIN", &c.CORSOrigin)
+	envStr("SDWORKER_HF_BUNDLE_AUTOFIT", &c.HFBundleAutoFit)
+
+	// HF-токен и зеркало читаем из ОБЩИХ переменных проекта (HF_TOKEN /
+	// HF_MIRROR) — так конфиг image-воркера совпадает с cppworker, и оператору
+	// не нужно дублировать секреты. SDWORKER_*-варианты имеют приоритет.
+	envStr("HF_TOKEN", &c.HFToken)
+	envStr("SDWORKER_HF_TOKEN", &c.HFToken)
+	envStr("HF_MIRROR", &c.HFMirror)
+	envStr("SDWORKER_HF_MIRROR", &c.HFMirror)
 
 	// SDWORKER_EXTRA_ARGS берём НЕ через envStr с lookaside-полем: строку
 	// разбираем сразу (в JSON это массив, в env — строка, разделённая пробелами).
@@ -256,4 +298,26 @@ func (c *Config) ImagesDirAbs() (string, error) {
 		c.ImagesDir = "./data/images"
 	}
 	return filepath.Abs(c.ImagesDir)
+}
+
+// ModelsDirAbs — абсолютный путь каталога image-моделей (bundle'ов).
+//
+// Абсолютный путь нужен HF-обёртке: загрузчик строит локальные пути файлов
+// (LocalPath в profile.json), и относительный путь стал бы невалидным при
+// запуске sd-server с другим рабочим каталогом.
+func (c *Config) ModelsDirAbs() (string, error) {
+	if strings.TrimSpace(c.ModelsDir) == "" {
+		c.ModelsDir = "./models/image"
+	}
+	return filepath.Abs(c.ModelsDir)
+}
+
+// DownloadsDirAbs — абсолютный путь каталога темповых .download-файлов.
+func (c *Config) DownloadsDirAbs() (string, error) {
+	if strings.TrimSpace(c.DownloadsDir) == "" {
+		// Темп рядом с моделями: на боевых хостах ./models часто лежит на
+		// большом volume, а корень контейнера — нет.
+		c.DownloadsDir = filepath.Join(filepath.Dir(c.ModelsDir), "downloads")
+	}
+	return filepath.Abs(c.DownloadsDir)
 }

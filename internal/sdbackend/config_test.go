@@ -153,6 +153,77 @@ func TestConfig_GenTimeoutAndImagesDir(t *testing.T) {
 	}
 }
 
+// HF-настройки (Phase 4): каталоги резолвятся в абсолютные пути, а токен и
+// зеркало читаются из ОБЩИХ переменных проекта (HF_TOKEN/HF_MIRROR) — как в
+// cppworker, чтобы оператор не дублировал секреты в двух конфигах.
+func TestConfig_HFSettings(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.DownloadsDir == "" {
+		t.Fatal("downloadsDir должен иметь дефолт (иначе темп .download ляжет в cwd)")
+	}
+	if cfg.HFBundleAutoFit != "on" {
+		t.Fatalf("hfBundleAutoFit по умолчанию = %q, want on (слабые GPU)", cfg.HFBundleAutoFit)
+	}
+	modelsAbs, err := cfg.ModelsDirAbs()
+	if err != nil {
+		t.Fatalf("ModelsDirAbs: %v", err)
+	}
+	downloadsAbs, err := cfg.DownloadsDirAbs()
+	if err != nil {
+		t.Fatalf("DownloadsDirAbs: %v", err)
+	}
+	if !filepath.IsAbs(modelsAbs) || !filepath.IsAbs(downloadsAbs) {
+		t.Fatalf("каталоги не абсолютные: %q, %q", modelsAbs, downloadsAbs)
+	}
+	if modelsAbs == downloadsAbs {
+		t.Fatal("темп и модели не должны совпадать (orphan-cleanup удалил бы модели)")
+	}
+
+	t.Setenv("HF_TOKEN", "hf_from_env")
+	t.Setenv("HF_MIRROR", "https://hf-mirror.example")
+	t.Setenv("SDWORKER_DOWNLOADS_DIR", filepath.Join(t.TempDir(), "dl"))
+	t.Setenv("SDWORKER_HF_BUNDLE_AUTOFIT", "off")
+	env, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("LoadConfigFromEnv: %v", err)
+	}
+	if env.HFToken != "hf_from_env" {
+		t.Fatalf("hfToken = %q, want из HF_TOKEN", env.HFToken)
+	}
+	if env.HFMirror != "https://hf-mirror.example" {
+		t.Fatalf("hfMirror = %q", env.HFMirror)
+	}
+	if env.HFBundleAutoFit != "off" {
+		t.Fatalf("hfBundleAutoFit = %q, want off", env.HFBundleAutoFit)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(env.DownloadsDir), "/dl") {
+		t.Fatalf("downloadsDir = %q", env.DownloadsDir)
+	}
+	// SDWORKER_HF_TOKEN имеет приоритет над общей HF_TOKEN.
+	t.Setenv("SDWORKER_HF_TOKEN", "hf_sdworker")
+	env2, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("LoadConfigFromEnv: %v", err)
+	}
+	if env2.HFToken != "hf_sdworker" {
+		t.Fatalf("hfToken = %q, want SDWORKER_HF_TOKEN", env2.HFToken)
+	}
+}
+
+// Некорректный hfBundleAutoFit — ошибка конфигурации, а не молчаливое
+// игнорирование: иначе оператор не поймёт, почему флаг не применился.
+func TestConfig_RejectsBadAutoFit(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.HFBundleAutoFit = "maybe"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("ожидалась ошибка валидации hfBundleAutoFit")
+	}
+	cfg.HFBundleAutoFit = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("пустое значение допустимо (флаг не передаём): %v", err)
+	}
+}
+
 // listenIP — критичная защита: движок не должен торчать наружу, иначе клиенты
 // обойдут нормализацию (и получат дефолтный seed 42 — «все картинки одинаковые»).
 func TestListenIP_ForcesLoopback(t *testing.T) {

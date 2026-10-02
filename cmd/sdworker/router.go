@@ -16,6 +16,8 @@ import (
 //	/v1/images/*  — OpenAI Images (Open WebUI, LobeChat, Cherry, n8n, OpenAI SDK)
 //	/sdapi/v1/*   — A1111 WebUI API (SillyTavern, LibreChat SD tool, Open WebUI)
 //	/api/image/*  — наш нативный контракт (балансер, WebUI, диагностика)
+//	/api/hf/*     — HF-загрузка image-bundle'ов (проксируется балансером
+//	                как есть: /api/v1/image/backends/{id}/proxy/api/hf/...)
 //
 // Плюс служебное: /health, /metrics, /images/* (статика для response_format:url).
 func (a *App) setupRouter() http.Handler {
@@ -71,9 +73,26 @@ func (a *App) setupRouter() http.Handler {
 	// но каталог отдаём только этот — не весь /app.
 	mux.Handle("/images/", http.StripPrefix("/images/", http.FileServer(http.Dir(a.svc.Store.Dir()))))
 
-	// /api/hf/* НЕ реализуем: HF-загрузка image-bundle'ов — Phase 2
-	// (internal/api + internal/cppbackend/hf_downloader.go). Контракт для
-	// будущего проксирующего слоя описан в отчёте Phase 3.
+	// --- HF-загрузка image-bundle'ов (Phase 4) ---
+	//
+	// Пути ОБЯЗАНЫ совпадать с тем, что дёргает UI: балансер проксирует их
+	// как есть (/api/v1/image/backends/{id}/proxy/api/hf/...), поэтому
+	// несогласие имени даёт 404 на воркере — именно так страница «Изображения»
+	// и деградировала раньше (см. webui/js/modules/image-page.js:63-76).
+	mux.HandleFunc("/api/hf/search", a.handleHFSearch)
+	mux.HandleFunc("/api/hf/files", a.handleHFFiles)
+	mux.HandleFunc("/api/hf/download", a.handleHFDownload)
+	mux.HandleFunc("/api/hf/bundle", a.handleHFBundle)
+	// Алиасы: UI пробует их, если канонический путь недоступен
+	// (BUNDLE_DOWNLOAD_PATHS), а /api/image/models/download — наш собственный
+	// контракт «скачать модель на бэкенд». Все три ведут в один хендлер, чтобы
+	// не разъезжались.
+	mux.HandleFunc("/api/hf/bundle/download", a.handleHFBundle)
+	mux.HandleFunc("/api/image/models/download", a.handleHFBundle)
+	mux.HandleFunc("/api/hf/progress", a.handleHFProgress)
+	mux.HandleFunc("/api/hf/downloads", a.handleHFDownloads)
+	mux.HandleFunc("/api/hf/cancel", a.handleHFCancel)
+	mux.HandleFunc("/api/hf/cleanup", a.handleHFCleanup)
 
 	// Порядок middleware повторяет cppworker: recover снаружи (паника в любом
 	// слое не должна ронять HTTP-соединение без ответа), затем CORS (OPTIONS →

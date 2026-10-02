@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"ollama-loadbalancer/pkg/types"
@@ -57,10 +59,25 @@ type ModelInfo struct {
 
 // Registry — известные модели. Иммутабелен после Load (профили не меняются
 // на лету: смена состава файлов = смена модели, а не hot-reload).
+//
+// ПОЧЕМУ СНИМОК (snapshot) ВМЕСТО ПРОСТОГО ПОЛЯ: с Phase 4 HF-bundle-загрузки
+// реестр перезагружается В ПРОЦЕССЕ РАБОТЫ (после успешного скачивания
+// bundle — см. internal/sdbackend/hf.go), а читают его HTTP-хендлеры
+// (/api/image/models) параллельно из других горутин. Мутация map при чтении —
+// это фатальная ошибка рантайма Go («concurrent map read and map write»),
+// которая убивает воркер целиком. Поэтому Load строит НОВУЮ map и атомарно
+// подменяет указатель: читатели видят либо старый, либо новый снимок целиком,
+// без локов на горячем пути.
 type Registry struct {
 	modelsDir string
-	profiles  map[string]types.ImageModelProfile
-	warnings  []string
+	// snapshot — текущий снимок (map иммортабельный: после Store не мутируется).
+	snapshot atomic.Pointer[map[string]types.ImageModelProfile]
+	// loadMu сериализует Load: два параллельных сканирования не должны
+	// наперегонки подменять снимок (последний победил бы с неполными данными).
+	loadMu sync.Mutex
+	// warnings защищены тем же loadMu (читаются редко, только /health и список).
+	warningsMu sync.RWMutex
+	warnings   []string
 }
 
 // ModelsDir — каталог моделей реестра.
@@ -68,6 +85,8 @@ func (r *Registry) ModelsDir() string { return r.modelsDir }
 
 // Warnings — некорректные каталоги, найденные при сканировании (для /health).
 func (r *Registry) Warnings() []string {
+	r.warningsMu.RLock()
+	defer r.warningsMu.RUnlock()
 	out := make([]string, len(r.warnings))
 	copy(out, r.warnings)
 	return out
@@ -75,7 +94,18 @@ func (r *Registry) Warnings() []string {
 
 // NewRegistry — пустой реестр на каталоге dir.
 func NewRegistry(dir string) *Registry {
-	return &Registry{modelsDir: dir, profiles: map[string]types.ImageModelProfile{}}
+	r := &Registry{modelsDir: dir}
+	empty := map[string]types.ImageModelProfile{}
+	r.snapshot.Store(&empty)
+	return r
+}
+
+// profilesMap — текущий снимок профилей (никогда не nil).
+func (r *Registry) profilesMap() map[string]types.ImageModelProfile {
+	if p := r.snapshot.Load(); p != nil {
+		return *p
+	}
+	return map[string]types.ImageModelProfile{}
 }
 
 // Load сканирует каталог моделей и строит реестр.
@@ -89,14 +119,27 @@ func NewRegistry(dir string) *Registry {
 //     иначе одна битая модель убивала бы весь воркер;
 //   - отсутствующий каталог — не ошибка (воркер поднимется и покажет пустой
 //     список: так удобнее в Docker, где volume может быть ещё пуст).
+//
+// Метод идемпотентен и может вызываться повторно во время работы (после
+// успешной HF-bundle-загрузки): снимок профилей подменяется атомарно.
 func (r *Registry) Load() error {
-	r.profiles = map[string]types.ImageModelProfile{}
-	r.warnings = nil
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+
+	current := map[string]types.ImageModelProfile{}
+	var warnings []string
+
+	defer func() {
+		r.snapshot.Store(&current)
+		r.warningsMu.Lock()
+		r.warnings = warnings
+		r.warningsMu.Unlock()
+	}()
 
 	entries, err := os.ReadDir(r.modelsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			r.warnings = append(r.warnings, fmt.Sprintf("models_dir_missing: %s (создайте каталог и положите bundle)", r.modelsDir))
+			warnings = append(warnings, fmt.Sprintf("models_dir_missing: %s (создайте каталог и положите bundle)", r.modelsDir))
 			return nil
 		}
 		return fmt.Errorf("read models dir %s: %w", r.modelsDir, err)
@@ -114,9 +157,9 @@ func (r *Registry) Load() error {
 		dir := filepath.Join(r.modelsDir, name)
 		profile, err := r.loadProfile(name, dir)
 		if err != nil {
-			r.warnings = append(r.warnings, fmt.Sprintf("%s: %v", name, err))
+			warnings = append(warnings, fmt.Sprintf("%s: %v", name, err))
 			// Кладём «сломанный» профиль, чтобы UI видел модель и её ошибку.
-			r.profiles[name] = types.ImageModelProfile{
+			current[name] = types.ImageModelProfile{
 				Name:   name,
 				Family: "other",
 				Files:  []types.ImageModelFile{},
@@ -124,7 +167,7 @@ func (r *Registry) Load() error {
 			}
 			continue
 		}
-		r.profiles[name] = *profile
+		current[name] = *profile
 	}
 	return nil
 }
@@ -253,19 +296,20 @@ func roleFromFilename(filename string) string {
 
 // Profile — профиль по имени (копия: реестр не должен мутироваться извне).
 func (r *Registry) Profile(name string) (types.ImageModelProfile, bool) {
-	p, ok := r.profiles[name]
+	p, ok := r.profilesMap()[name]
 	return p, ok
 }
 
 // Names — имена моделей в стабильном (алфавитном) порядке.
 func (r *Registry) Names() []string {
-	return types.ImageProfileNames(r.profiles)
+	return types.ImageProfileNames(r.profilesMap())
 }
 
 // Profiles — все профили (копия карты).
 func (r *Registry) Profiles() map[string]types.ImageModelProfile {
-	out := make(map[string]types.ImageModelProfile, len(r.profiles))
-	for k, v := range r.profiles {
+	src := r.profilesMap()
+	out := make(map[string]types.ImageModelProfile, len(src))
+	for k, v := range src {
 		out[k] = v
 	}
 	return out

@@ -374,6 +374,11 @@
                                 <button type="button" class="filter-btn active" data-filter-type="all" data-i18n-title="models.filter_all_title" title="Все типы"><span data-i18n="models.filter_all">Все</span></button>
                                 <button type="button" class="filter-btn" data-filter-type="ollama" data-i18n-title="models.filter_ollama_title" title="Только Ollama"><span data-i18n="models.filter_ollama">Ollama</span></button>
                                 <button type="button" class="filter-btn" data-filter-type="llama_cpp" data-i18n-title="models.filter_llamacpp_title" title="Только llama.cpp"><span data-i18n="models.filter_llamacpp">llama.cpp</span></button>
+                                <!-- R-Image Phase 5 (2026-10-02): image-модели
+                                     попадают в общий список из backend.image.models
+                                     (/api/v1/metrics), поэтому нужен и фильтр по
+                                     типу image_cpp - иначе их видно только на «Все». -->
+                                <button type="button" class="filter-btn" data-filter-type="image_cpp" data-i18n-title="models.filter_image_cpp_title" title="Только image.cpp"><span data-i18n="models.filter_image_cpp">🎨 image.cpp</span></button>
                             </div>
                             <label class="sort-label" for="modelsSortBy">
                                 <span data-i18n="models.sort_by">Сортировка:</span>

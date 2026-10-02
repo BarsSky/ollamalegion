@@ -598,9 +598,16 @@ const Renderers = (function () {
             // Round 18d (2026-07-10): для llama.cpp бэкендов показываем loadedModels
             // вместо runningModels (которые только для Ollama).
             const isLlamaCpp = Utils.getBackendType(b) === 'llama_cpp';
-            const models = isLlamaCpp
-                ? ((b.llamaCpp && Array.isArray(b.llamaCpp.loadedModels)) ? b.llamaCpp.loadedModels.length : 0)
-                : (oll.runningModels?.length || 0);
+            // R-Image (2026-10-02): у image-бэкенда ни runningModels, ни
+            // loadedModels - модели лежат в backend.image.models. Без этой ветки
+            // колонка «Модели» показывала 0 у бэкенда с загруженной моделью.
+            const isImage = Utils.getBackendType(b) === 'image_cpp';
+            const imageModels = isImage ? Utils.getBackendImageModels(b) : [];
+            const models = isImage
+                ? imageModels.length
+                : (isLlamaCpp
+                    ? ((b.llamaCpp && Array.isArray(b.llamaCpp.loadedModels)) ? b.llamaCpp.loadedModels.length : 0)
+                    : (oll.runningModels?.length || 0));
             // Model details tooltip for the Models column
             // Format expiresAt for display
             function fmtExpires(exp) {
@@ -615,10 +622,24 @@ const Renderers = (function () {
                 return ' ⌛' + Math.round(diff/3600000) + 'h';
             }
             // Round 18d (2026-07-10): для llama.cpp бэкендов берём loadedModels иначе tooltip пустой.
-            const modelsList = isLlamaCpp
-                ? ((b.llamaCpp && Array.isArray(b.llamaCpp.loadedModels)) ? b.llamaCpp.loadedModels : [])
-                : (oll.runningModels || []);
+            const modelsList = isImage
+                ? imageModels
+                : (isLlamaCpp
+                    ? ((b.llamaCpp && Array.isArray(b.llamaCpp.loadedModels)) ? b.llamaCpp.loadedModels : [])
+                    : (oll.runningModels || []));
             const modelDetailsHtml = modelsList.map(function(m) {
+                if (isImage) {
+                    // Tooltip: имя - состояние | размер | оценка VRAM | активные запросы.
+                    var imgParts = [Utils.imageStateLabel(m.state)];
+                    var imgSize = Utils.imageSizeBytes(m);
+                    var imgVram = Utils.imageVramEstimateMb(m);
+                    if (imgSize > 0) imgParts.push(Utils.formatMB(imgSize / 1024 / 1024));
+                    if (imgVram > 0) imgParts.push('VRAM ' + Utils.formatMB(imgVram));
+                    if (m.activeQueries) imgParts.push('q:' + m.activeQueries);
+                    return '<div class="model-tooltip-row">' + Utils.escapeHtml(m.name) + ' — ' +
+                        Utils.escapeHtml(m.family ? (m.family + ' | ' + imgParts.join(' | ')) : imgParts.join(' | ')) +
+                        '</div>';
+                }
                 if (isLlamaCpp) {
                     var ctx = m.contextLength ? 'C:' + formatNumber(m.contextLength) : '';
                     var gpuL = m.numGpuLayers === -1 ? 'GPU:all' : (m.numGpuLayers ? 'GPU:' + m.numGpuLayers : '');
@@ -637,6 +658,14 @@ const Renderers = (function () {
                     '</div>';
             }).join('');
             const modelDetailsTitle = modelsList.map(function(m) {
+                if (isImage) {
+                    var imgTitleParts = [Utils.imageStateLabel(m.state)];
+                    var imgTitleSize = Utils.imageSizeBytes(m);
+                    var imgTitleVram = Utils.imageVramEstimateMb(m);
+                    if (imgTitleSize > 0) imgTitleParts.push(Utils.formatMB(imgTitleSize / 1024 / 1024));
+                    if (imgTitleVram > 0) imgTitleParts.push('VRAM ' + Utils.formatMB(imgTitleVram));
+                    return (m.name || '-') + ' — ' + imgTitleParts.join(' | ');
+                }
                 if (isLlamaCpp) {
                     var ctx = m.contextLength ? 'C:' + formatNumber(m.contextLength) : '';
                     var gpuL = m.numGpuLayers === -1 ? 'GPU:all' : (m.numGpuLayers ? 'GPU:' + m.numGpuLayers : '');
@@ -716,10 +745,120 @@ const Renderers = (function () {
         source:           { label: 'Источник флагов', desc: 'Откуда взяты настройки: process-args (аргументы командной строки), env (переменные окружения), default (встроенные значения).' }
     };
 
+    /**
+     * R-Image (2026-10-02): детали image-бэкенда для раскрытой строки страницы
+     * «Бэкенды». Ollama- и llama.cpp-секции для него неприменимы (нет
+     * runtimeFlags, backendCapacity, loadedModels), поэтому оператор видел
+     * почти пустую строку, хотя /api/v1/metrics уже отдаёт:
+     *   imagePort, image.state, image.currentModel, image.vramFreeMb/vramTotalMb,
+     *   image.updatedAt, image.lastError, image.models[{name,state,family,
+     *   sizeBytes,vramEstimateMb,activeQueries}].
+     * Показываем ровно это. Значения экранируем: строки приходят от воркера.
+     */
+    function renderImageParams(backend) {
+        var img = Utils.getBackendImage(backend) || {};
+        var models = Utils.getBackendImageModels(backend);
+        var port = Utils.getBackendImagePort(backend);
+        var workerState = Utils.getBackendImageState(backend);
+        var lastError = Utils.getBackendImageLastError(backend);
+        // Локальный t: _t() возвращает сам ключ, если i18n ещё не загружен -
+        // в этом случае показываем английский fallback, а не "image.worker_port".
+        var t = function (key, fallback) {
+            var v = _t(key);
+            return (v && v !== key) ? v : fallback;
+        };
+
+        var html = '<div class="be-detail-section"><div class="be-detail-title">🎨 ' +
+            escapeHtml(t('image.section_worker', 'image.cpp worker')) + '</div><div class="be-params-grid">';
+        html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(t('image.worker_port', 'Worker port')) +
+            '</span><span class="be-param-value">' + (port > 0 ? port : escapeHtml(t('image.port_unset', 'not set'))) + '</span></div>';
+        if (workerState) {
+            html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(t('image.worker_state', 'Worker state')) +
+                '</span><span class="be-param-value">' + Utils.imageStateBadge(workerState) + '</span></div>';
+        }
+        if (backend.host) {
+            html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(t('backends.host', 'Host')) +
+                '</span><span class="be-param-value">' + escapeHtml(String(backend.host)) + '</span></div>';
+        }
+        if (img.vramFreeMb !== undefined || img.vramTotalMb !== undefined) {
+            html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(t('image.worker_vram', 'Worker VRAM')) +
+                '</span><span class="be-param-value">' + escapeHtml(Utils.formatVramPair(img.vramFreeMb, img.vramTotalMb)) + '</span></div>';
+        }
+        if (img.currentModel) {
+            html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(t('image.current_model', 'Current model')) +
+                '</span><span class="be-param-value">' + escapeHtml(String(img.currentModel)) + '</span></div>';
+        }
+        if (img.updatedAt) {
+            html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(t('image.updated', 'Updated')) +
+                '</span><span class="be-param-value">' + escapeHtml(Utils.formatDate(img.updatedAt)) + '</span></div>';
+        }
+        html += '</div>';
+        if (lastError) {
+            // Данные могли протухнуть: воркер ответил ошибкой, поэтому метрики
+            // ниже - последний успешный снимок, а не текущее состояние.
+            html += '<div style="margin-top:8px;padding:6px 8px;border-radius:4px;font-size:12px;' +
+                'background:rgba(240,173,78,0.12);border:1px solid var(--warning);color:var(--warning)">⚠️ ' +
+                escapeHtml(t('image.last_error', 'Worker error')) + ': ' + escapeHtml(lastError) + '. ' +
+                escapeHtml(t('image.last_error_stale', 'The values below may be stale: the worker reported an error instead of fresh data.')) +
+                '</div>';
+        }
+        html += '</div>';
+
+        // Section: модели воркера (image.models) со статусом, размером и VRAM.
+        html += '<div class="be-detail-section"><div class="be-detail-title">' + escapeHtml(t('image.models_title', 'Image models')) + '</div>';
+        if (!models.length) {
+            html += '<div class="be-params-grid"><div class="be-param-item" style="grid-column:1/-1;">' +
+                '<span class="be-param-value" style="color:var(--text-secondary)">' + escapeHtml(t('image.no_models', 'No image models on this backend.')) +
+                '</span></div></div>';
+        } else {
+            html += '<div class="be-params-grid">';
+            models.forEach(function (m) {
+                var sizeBytes = Utils.imageSizeBytes(m);
+                var vramMb = Utils.imageVramEstimateMb(m);
+                var bits = [];
+                if (sizeBytes > 0) bits.push(Utils.formatMB(sizeBytes / 1024 / 1024));
+                if (vramMb > 0) bits.push('VRAM ' + Utils.formatMB(vramMb));
+                if (m.activeQueries) bits.push(t('image.col_active', 'Active requests') + ': ' + m.activeQueries);
+                var isCurrentModel = img.currentModel && img.currentModel === m.name;
+                html += '<div class="be-param-item" style="grid-column:1/-1;">' +
+                    '<span class="be-param-label">' + escapeHtml(m.name) +
+                    (isCurrentModel ? ' <span class="badge badge-success">' + escapeHtml(t('image.active_badge', 'active')) + '</span>' : '') +
+                    (m.family ? ' <span style="color:var(--text-secondary);font-size:11px">' + escapeHtml(String(m.family)) + '</span>' : '') +
+                    '</span><span class="be-param-value">' + Utils.imageStateBadge(m.state) +
+                    (bits.length ? ' <span style="color:var(--text-secondary);font-size:11px">' + escapeHtml(bits.join(' | ')) + '</span>' : '') +
+                    '</span></div>';
+            });
+            html += '</div>';
+        }
+        html += '</div>';
+
+        // Section: Disk / Network (общий для всех типов бэкендов).
+        const sys = backend.system || {};
+        if (sys.diskTotal !== undefined || sys.diskUsed !== undefined || sys.diskFree !== undefined || sys.networkRX !== undefined || sys.networkTX !== undefined) {
+            html += '<div class="be-detail-section"><div class="be-detail-title">' + escapeHtml(_t('renderers.section_disk_network')) + '</div><div class="be-params-grid">';
+            if (sys.diskTotal !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.disk_total')) + '</span><span class="be-param-value">' + formatMB(sys.diskTotal) + '</span></div>';
+            if (sys.diskUsed !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.disk_used')) + '</span><span class="be-param-value">' + formatMB(sys.diskUsed) + '</span></div>';
+            if (sys.diskFree !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.disk_free')) + '</span><span class="be-param-value">' + formatMB(sys.diskFree) + '</span></div>';
+            if (sys.networkRX !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.network_rx')) + '</span><span class="be-param-value">' + formatMB(sys.networkRX) + '</span></div>';
+            if (sys.networkTX !== undefined) html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.network_tx')) + '</span><span class="be-param-value">' + formatMB(sys.networkTX) + '</span></div>';
+            html += '</div></div>';
+        }
+
+        return html;
+    }
+
     function renderOllamaParams(backend) {
         // Определяем тип бэкенда (используем унифицированную утилиту)
         var bt = Utils.getBackendType(backend);
         var isLlamaCpp = (bt === 'llama_cpp');
+
+        // R-Image (2026-10-02): image-бэкенд (stable-diffusion.cpp). У него нет
+        // runtimeFlags/backendCapacity/loadedModels - без отдельной ветки
+        // раскрытая строка на странице «Бэкенды» показывала пустоту, хотя
+        // /api/v1/metrics отдаёт image.state / image.models / vramFreeMb.
+        if (bt === 'image_cpp') {
+            return renderImageParams(backend);
+        }
 
         const flags = backend.ollama?.runtimeFlags || {};
         const cap = backend.ollama?.backendCapacity || {};
@@ -899,6 +1038,17 @@ const Renderers = (function () {
             const detailsHtml = renderOllamaParams(b);
             const rowId = 'be-row-' + idx;
             const safeId = escapeHtml(b.id);
+            // R-Image (2026-10-02): у image-бэкенда порт воркера - imagePort.
+            // cppWorkerPort у него 0, а ollamaPort приходит из конфига (11434) и
+            // к sd-server отношения не имеет: оператор шёл по нему и не находил
+            // воркер. Поэтому для image-строки показываем imagePort.
+            const isImageRow = Utils.getBackendType(b) === 'image_cpp';
+            const imagePort = isImageRow ? Utils.getBackendImagePort(b) : 0;
+            const portHtml = isImageRow
+                ? (imagePort > 0
+                    ? '<span title="' + escapeHtml(_t('image.worker_port')) + '">' + imagePort + ' 🎨</span>'
+                    : '<span title="' + escapeHtml(_t('image.worker_port')) + '">' + escapeHtml(_t('image.port_unset')) + '</span>')
+                : String(Utils.getBackendType(b) === 'llama_cpp' ? (b.cppWorkerPort || b.port || 8080) : (b.ollamaPort || 11434));
 
             // ==== Loading column («вкладка бэкендов» — Issue: «отображение загрузки») ====
             // Поддерживаются источники:
@@ -951,7 +1101,7 @@ const Renderers = (function () {
                     <td><div class="backend-id-cell"><span class="backend-id-name">${escapeHtml(b.id)}</span><div class="backend-id-badges">${getBackendTypeBadge(b)} <span class="be-expand-icon">▶</span></div></div></td>
                     <td>${escapeHtml(b.name || b.id)}</td>
                     <td>${escapeHtml(b.host)}</td>
-                    <td>${(Utils.getBackendType(b) === 'llama_cpp' ? (b.cppWorkerPort || b.port || 8080) : (b.ollamaPort || 11434))}</td>
+                    <td>${portHtml}</td>
                     <td>${b.agentPort || 18032}</td>
                     <td>${b.weight || 1}</td>
                     <td>${b.maxConcurrentRequests || 10}</td>
@@ -1067,6 +1217,40 @@ const Renderers = (function () {
                         // Round 18+: пометка что VRAM/RAM оценочные (не реальные)
                         vramEstimated: split.estimated,
                         ramEstimated: split.estimated
+                    });
+                });
+            }
+            // R-Image (2026-10-02): image-модели воркера. Источник -
+            // backend.image.models из того же /api/v1/metrics (воркер напрямую
+            // НЕ опрашиваем: страница «Изображения» уже работает с
+            // /api/v1/image/models и её контракт не трогаем). У image-модели нет
+            // digest/expiresAt и она не GGUF, зато есть vramEstimateMb.
+            if (Utils.getBackendType(b) === 'image_cpp') {
+                const imgBlock = Utils.getBackendImage(b) || {};
+                Utils.getBackendImageModels(b).forEach(function (im) {
+                    const imVramMb = Utils.imageVramEstimateMb(im);
+                    allModels.push({
+                        name: im.name,
+                        size: Utils.imageSizeBytes(im),
+                        // modelsGrid ожидает байты: (m.vramUsage || 0) / 1024 / 1024.
+                        vramUsage: imVramMb * 1024 * 1024,
+                        ramUsage: 0,
+                        digest: '',
+                        expiresAt: '',
+                        quantization: '',
+                        ggufPath: '',
+                        // Backend identification
+                        backend: b.id,
+                        backendStatus: b.status,
+                        backendType: 'image_cpp',
+                        state: im.state || 'not_loaded',
+                        family: im.family || '',
+                        imageSizeBytes: Utils.imageSizeBytes(im),
+                        imageVramMb: imVramMb,
+                        activeQueries: im.activeQueries || 0,
+                        // Модель, которую воркер держит в памяти прямо сейчас.
+                        isCurrentImageModel: !!(imgBlock.currentModel && imgBlock.currentModel === im.name),
+                        vramEstimated: true
                     });
                 });
             }
@@ -1192,11 +1376,25 @@ const Renderers = (function () {
             // Round 16 (2026-07-10): для cppworker бэкенда показываем llama.cpp loaded models
             // (имя + ctx + GPU layers), а не только ollama runningModels.
             const loadedCppModels = (b.llamaCpp && Array.isArray(b.llamaCpp.loadedModels)) ? b.llamaCpp.loadedModels : [];
-            const displayModels = isLlamaCpp && loadedCppModels.length ? loadedCppModels : ollamaModels;
+            // R-Image Phase 5: модели image-воркера (backend.image.models) - без
+            // этой ветки блок «Загрузка бэкендов» показывал у image-бэкенда
+            // «Моделей 0», хотя SD-модель загружена.
+            const imageLoadedModels = Utils.getBackendImageModels(b);
+            const isImageBk = Utils.getBackendType(b) === 'image_cpp';
+            const displayModels = (isImageBk && imageLoadedModels.length)
+                ? imageLoadedModels
+                : (isLlamaCpp && loadedCppModels.length ? loadedCppModels : ollamaModels);
             const modelsHtml = displayModels.slice(0, 4).map(function (m) {
                 const name = (typeof m === 'string') ? m : (m.name || m);
                 let extra = '';
                 if (typeof m === 'object' && m !== null) {
+                    if (isImageBk) {
+                        const imgSize = Utils.imageSizeBytes(m);
+                        const imgVram = Utils.imageVramEstimateMb(m);
+                        extra += ' <span style="color:var(--text-secondary);font-size:0.85em">' + escapeHtml(Utils.imageStateLabel(m.state)) + '</span>';
+                        if (imgSize > 0) extra += ' <span style="color:var(--text-secondary);font-size:0.85em">' + escapeHtml(Utils.formatMB(imgSize / 1024 / 1024)) + '</span>';
+                        if (imgVram > 0) extra += ' <span style="color:var(--text-secondary);font-size:0.85em">VRAM ' + escapeHtml(Utils.formatMB(imgVram)) + '</span>';
+                    }
                     if (m.contextLength) extra += ' <span style="color:var(--text-secondary);font-size:0.85em">C:' + formatNumber(m.contextLength) + '</span>';
                     if (m.numGpuLayers && m.numGpuLayers !== -1) extra += ' <span style="color:var(--text-secondary);font-size:0.85em">GPU:' + m.numGpuLayers + '</span>';
                     else if (m.numGpuLayers === -1) extra += ' <span style="color:var(--text-secondary);font-size:0.85em">GPU:all</span>';
@@ -1313,23 +1511,47 @@ const Renderers = (function () {
             const safeName = escapeHtml(m.name).replace(/'/g, "\\'");
             const backendType = Utils.getBackendType(backend) || (m.backendType || '');
             const sizeBytes = m.size || 0;
+            // R-Image (2026-10-02): image-модель (источник - backend.image.models
+            // из /api/v1/metrics).
+            const isImageModel = (backendType === 'image_cpp');
             // session A (Q3 W4): bulk operations — checkbox для multi-select.
             // Хранится в window.bulkModels.selected (Set ключей `${backend}::${model}`).
             // Не блокирует клик по карточке (mousedown on .model-card-checkbox → stopPropagation).
+            // Для image-моделей checkbox НЕ рисуем: bulk load/unload идёт
+            // ollama-путём бэкенда и image-воркер его не понимает.
             const safeNameAttr = escapeHtml(m.name);
+            // R-Image (2026-10-02): действия карточки.
+            // image-модель грузит image-воркер (POST /api/v1/image/models/...), а
+            // /api/v1/cluster/models/info про неё не знает - ⓘ открыл бы модал с
+            // ошибкой, а load/unload/delete ушли бы в чужой API. Единственное
+            // действие - переход на страницу «Изображения»: там генерация,
+            // список моделей воркера и профили, то есть рабочее управление.
+            const actionsHtml = isImageModel
+                ? `<button class="btn btn-load" onclick="window.Renderers.openImagePage('${safeBackend}')" title="${escapeHtml(_t('image.open_page'))}">🎨 ${escapeHtml(_t('image.open_page'))}</button>`
+                : `<button class="btn btn-info" title="${escapeHtml(backendType === 'llama_cpp' ? _t('models.details.title_llama_cpp') : _t('models.details.title'))}" onclick="window.openModelDetailsModal('${safeName}', '${safeBackend}', '${backendType}')" aria-label="${escapeHtml(backendType === 'llama_cpp' ? _t('models.details.title_llama_cpp') : _t('models.details.title'))}">ⓘ</button>` +
+                  (backendType === 'llama_cpp'
+                    // Round 18e: для llama.cpp бэкендов кнопки load/unload/delete
+                    // скрыты — ⓘ редиректит на GGUF Models tab с pre-selected
+                    // backend, где есть полноценное управление (load options,
+                    // profiles, file management, delete).
+                    ? ''
+                    : `<button class="btn btn-load" onclick="window.modelCardAction('load', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.load')}</button>` +
+                      `<button class="btn btn-unload" onclick="window.modelCardAction('unload', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.unload')}</button>` +
+                      `<button class="btn btn-delete" onclick="window.modelCardAction('delete', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.delete')}</button>`);
 
             return `
                 <div class="model-card" data-backend="${safeBackend}" data-model="${safeName}" data-model-name="${escapeHtml(m.name).toLowerCase()}" data-backend-type="${escapeHtml(backendType)}" data-size-bytes="${sizeBytes}" data-vram-mb="${vramMB === null ? 0 : vramMB}">
-                    <label class="model-card-checkbox" onclick="event.stopPropagation();" title="${escapeHtml(_t('models.bulk.select_this'))}">
+                    ${isImageModel ? '' : `<label class="model-card-checkbox" onclick="event.stopPropagation();" title="${escapeHtml(_t('models.bulk.select_this'))}">
                         <input type="checkbox" class="model-select-cb"
                                data-backend="${safeBackend}" data-model="${safeNameAttr}"
                                onchange="window.bulkModels.onSelectionChanged()">
-                    </label>
+                    </label>`}
                     <div class="model-card-header">
                         <span class="model-name">${escapeHtml(m.name)}</span>
                         ${(window.AutoTuneUI && m.isSubOptimal)
                             ? window.AutoTuneUI.renderModelAutoTuneBadge(m)
                             : ''}
+                        ${m.isCurrentImageModel ? '<span class="badge badge-success">' + escapeHtml(_t('image.active_badge')) + '</span>' : ''}
                         ${getBackendTypeBadge(backend)} ${badge(m.backend, m.backendStatus === 'healthy' ? 'success' : 'danger')}
                     </div>
                     <div class="model-size">${sizeGB === null ? '—' : sizeGB.toFixed(1) + ' GB'}</div>
@@ -1347,16 +1569,7 @@ const Renderers = (function () {
                         ${showRAM ? memoryBar('RAM', ramMB, totalRAM, ramPercent, 'ram') : ''}
                     </div>
                     <div class="model-card-actions">
-                        <button class="btn btn-info" title="${escapeHtml(backendType === 'llama_cpp' ? _t('models.details.title_llama_cpp') : _t('models.details.title'))}" onclick="window.openModelDetailsModal('${safeName}', '${safeBackend}', '${backendType}')" aria-label="${escapeHtml(backendType === 'llama_cpp' ? _t('models.details.title_llama_cpp') : _t('models.details.title'))}">ⓘ</button>
-                        ${backendType === 'llama_cpp'
-                            // Round 18e: для llama.cpp бэкендов кнопки load/unload/delete
-                            // скрыты — ⓘ редиректит на GGUF Models tab с pre-selected
-                            // backend, где есть полноценное управление (load options,
-                            // profiles, file management, delete).
-                            ? ''
-                            : '<button class="btn btn-load" onclick="window.modelCardAction(\'load\', \'' + safeBackend + '\', \'' + safeName + '\')" ' + (m.backendStatus !== 'healthy' ? 'disabled' : '') + '>' + _t('models.load') + '</button>' +
-                              '<button class="btn btn-unload" onclick="window.modelCardAction(\'unload\', \'' + safeBackend + '\', \'' + safeName + '\')" ' + (m.backendStatus !== 'healthy' ? 'disabled' : '') + '>' + _t('models.unload') + '</button>' +
-                              '<button class="btn btn-delete" onclick="window.modelCardAction(\'delete\', \'' + safeBackend + '\', \'' + safeName + '\')" ' + (m.backendStatus !== 'healthy' ? 'disabled' : '') + '>' + _t('models.delete') + '</button>'}
+                        ${actionsHtml}
                     </div>
                 </div>
             `;
@@ -1438,6 +1651,19 @@ const Renderers = (function () {
                 clientIdHtml +
                 feasDetails;
         }
+        // R-Image (2026-10-02): image-модель (backend.image.models из
+        // /api/v1/metrics). GGUF-полей у неё нет, зато есть семейство
+        // (sd15/sdxl/flux), состояние воркера и оценка VRAM.
+        if (bt === 'image_cpp') {
+            var imgSize = Utils.imageSizeBytes(model);
+            var imgVram = Utils.imageVramEstimateMb(model);
+            return modelDetail(_t('image.col_family'), model.family || '-') +
+                modelDetail(_t('image.col_state'), Utils.imageStateLabel(model.state)) +
+                modelDetail(_t('image.col_vram'), imgVram > 0 ? Utils.formatMB(imgVram) : '-') +
+                (imgSize > 0 ? modelDetail(_t('image.size'), Utils.formatMB(imgSize / 1024 / 1024)) : '') +
+                (model.activeQueries ? modelDetail(_t('image.col_active'), String(model.activeQueries)) : '') +
+                (model.isCurrentImageModel ? modelDetail(_t('image.current_model'), _t('image.active_badge')) : '');
+        }
         // Ollama-специфичные поля
         return modelDetail('Family', model.family || '-') +
             modelDetail('Format', model.format || '-') +
@@ -1466,6 +1692,32 @@ const Renderers = (function () {
                 </div>
             </div>
         `;
+    }
+
+    /**
+     * R-Image (2026-10-02): переход со страницы «Модели» на страницу
+     * «Изображения» с предвыбранным image-бэкендом.
+     *
+     * Зачем именно переход, а не кнопки load/unload в карточке: image-модель
+     * грузит image-воркер (POST /api/v1/image/models/...), у него свои профили и
+     * таймауты, а /api/v1/cluster/models/info про image-модели не знает.
+     * Страница «Изображения» уже умеет всё это - дублировать её логику в карточке
+     * значило бы сломать обе.
+     */
+    function openImagePage(backendId) {
+        var navLink = document.querySelector('[data-page="image"]');
+        if (navLink) navLink.click();
+        if (!backendId) return;
+        // Ждём, пока app.js отрисует страницу, затем предвыбираем бэкенд.
+        // ImagePage.refresh() сохраняет selectedBackendId, если бэкенд ещё в списке.
+        setTimeout(function () {
+            var page = window.ImagePage;
+            if (!page) return;
+            if (page._state) page._state.selectedBackendId = backendId;
+            if (typeof page.refresh === 'function') {
+                try { page.refresh(); } catch (e) { /* ignore */ }
+            }
+        }, 100);
     }
 
     // ---- Sessions Page ----
@@ -1996,6 +2248,11 @@ const Renderers = (function () {
         dashboard,
         backendsPage,
         modelsPage,
+        // R-Image (2026-10-02): раскрытая строка image-бэкенда и переход на
+        // страницу «Изображения». Экспортируем и для юнит-тестов
+        // (webui/js/modules/renderers-image.test.js).
+        renderImageParams,
+        openImagePage,
         sessionsPage,
         queuePage,
         logs,

@@ -107,6 +107,11 @@ function makeSandbox(overrides) {
   sandbox.globalThis = sandbox;
 
   const elById = new Map();
+  // R-Image Phase 5 (2026-10-02): селекторы тоже кэшируем. До этого
+  // document.querySelector всегда возвращал null, поэтому renderBackends и
+  // renderModelsInMemory падали на `tb.innerHTML = ...` (ошибку глотал
+  // safeRender), и таблицы монитора в этом smoke-тесте не проверялись вообще.
+  const elBySelector = new Map();
   sandbox.document = {
     // Кэшируем элементы по id — иначе запись в .textContent одного экземпляра
     // не видна следующему getElementById, и проверки состояния DOM бесполезны.
@@ -114,13 +119,17 @@ function makeSandbox(overrides) {
       if (!elById.has(id)) elById.set(id, fakeEl(id));
       return elById.get(id);
     },
-    querySelector() { return null; },
+    querySelector(sel) {
+      if (!elBySelector.has(sel)) elBySelector.set(sel, fakeEl(sel));
+      return elBySelector.get(sel);
+    },
     querySelectorAll() { return []; },
     createElement(tag) { return fakeEl(tag); },
     addEventListener() {},
     removeEventListener() {},
   };
   sandbox.__elById = elById;
+  sandbox.__elBySelector = elBySelector;
   sandbox.document.body = fakeEl('body');
   sandbox.document.documentElement = fakeEl('html');
 
@@ -131,6 +140,7 @@ function makeSandbox(overrides) {
     bar: function () { return '<div></div>'; },
     fmtDur: function (ms) { return (ms || 0) + 'ms'; },
     stableBackendOrder: function (arr) { return (arr || []).slice(); },
+    isCloudModel: function () { return false; },
     requestRate: 0,
     lastTime: 0,
     lastTotalRequests: 0,
@@ -145,10 +155,64 @@ function makeSandbox(overrides) {
   return { sandbox, calls, consoleErrors };
 }
 
-function loadRenderer(sandbox) {
+function loadRenderer(sandbox, opts) {
   const src = fs.readFileSync(TARGET, 'utf8');
   vm.createContext(sandbox);
+  // R-Image Phase 5: monitor.html теперь грузит modules/utils.js (общие хелперы
+  // бейджа типа и разбора backend.image). В sandbox он подключается по флагу,
+  // чтобы проверить реальный бейдж 🎨 image.cpp, а не локальный fallback.
+  if (opts && opts.withUtils) {
+    const utilsPath = path.join(REPO_ROOT, 'webui', 'js', 'modules', 'utils.js');
+    const utilsSrc = fs.readFileSync(utilsPath, 'utf8');
+    vm.runInContext(utilsSrc, sandbox, { filename: utilsPath });
+  }
   vm.runInContext(src, sandbox, { filename: TARGET });
+}
+
+// R-Image Phase 5 (2026-10-02): image-бэкенд, как его отдаёт GET /api/v1/metrics.
+// Отдельный пример нужен потому, что у него нет ни ollama, ни llamaCpp: порт
+// воркера лежит в imagePort, модели — в backend.image.models.
+function sampleImageData() {
+  return {
+    cluster: {
+      backends: [{
+        id: 'image-real',
+        status: 'healthy',
+        backendType: 'image_cpp',
+        host: '127.0.0.1',
+        ollamaPort: 11434,
+        cppWorkerPort: 0,
+        imagePort: 18093,
+        maxConcurrentRequests: 4,
+        image: {
+          state: 'loaded',
+          currentModel: 'sd15-q4',
+          vramFreeMb: 894,
+          vramTotalMb: 8192,
+          updatedAt: '2026-10-02T10:00:00Z',
+          lastError: '',
+          models: [
+            { name: 'sd15-q4', state: 'loaded', family: 'sd15', sizeBytes: 1526, vramEstimateMb: 2600, activeQueries: 0 },
+            { name: 'sdxl-base', state: 'not_loaded', family: 'sdxl', sizeBytes: 6800, vramEstimateMb: 7800, activeQueries: 0 },
+          ],
+        },
+      }],
+      backendMetrics: [],
+      recentClients: [],
+      totalRequests: 10,
+      rps: 0,
+      effectiveBackendType: 'image_cpp',
+    },
+    sessions: { sessions: [] },
+    queueDetails: { pending_count: 0, processing_count: 0, all: [] },
+    queueStats: { current_size: 0, processing_count: 0, admission: { enabled: true, waiting: 0 } },
+    placement: { enabled: false, fallback: 'error', operatingMode: 'standard', decisions: [], warnings: [] },
+    candidates: null,
+    virtualModels: null,
+    modelOps: null,
+    autoPullConfig: null,
+    autoPullStatus: null,
+  };
 }
 
 // Реалистичный payload: один llama.cpp-бэкенд, как в живом стенде (A10 + Qwen3.8).
@@ -250,6 +314,69 @@ console.log('ui-renderer smoke (' + path.relative(REPO_ROOT, TARGET) + ')');
     consoleErrors.join(' | '));
   check('панели ПОСЛЕ упавшей всё равно отрисованы (topology)',
     calls.topology === 1, 'вызовов: ' + calls.topology);
+}
+
+// --- Тест 3: image-бэкенд (R-Image Phase 5) ---------------------------------
+// Симптом: «Monitor не показывает image-бэкенд с его моделью и отдельным портом».
+// Проверяем, что строка таблицы бэкендов и список моделей в памяти содержат
+// реальные данные воркера (imagePort / image.models), а не ollama-поля.
+{
+  const { sandbox, calls, consoleErrors } = makeSandbox();
+  loadRenderer(sandbox, { withUtils: true });
+
+  let threw = null;
+  try {
+    sandbox.updateUI(sampleImageData());
+  } catch (e) {
+    threw = e;
+  }
+  check('image: updateUI() не бросает исключение', threw === null, threw && threw.message);
+  check('image: цепочка панелей дошла до конца', calls.topology === 1, 'вызовов: ' + calls.topology);
+
+  const backendsHtml = sandbox.document.querySelector('#backendsTable tbody').innerHTML;
+  check('image: в таблице бэкендов виден порт воркера 18093',
+    backendsHtml.indexOf('18093') !== -1);
+  check('image: в таблице бэкендов видна модель воркера',
+    backendsHtml.indexOf('sd15-q4') !== -1);
+  check('image: бейдж типа 🎨 image.cpp отрисован (utils.js подключён)',
+    backendsHtml.indexOf('🎨 image.cpp') !== -1, backendsHtml.slice(0, 200));
+  check('image: состояние воркера отрисовано', backendsHtml.indexOf('loaded') !== -1);
+  check('image: кнопки unload (чужой API) у image-моделей нет',
+    backendsHtml.indexOf('monitor-unload-btn') === -1);
+
+  const modelsHtml = sandbox.document.querySelector('#modelsTable tbody').innerHTML;
+  check('image: модель попала в «Models in Memory»',
+    modelsHtml.indexOf('sd15-q4') !== -1 && modelsHtml.indexOf('sdxl-base') !== -1);
+  check('image: оценка VRAM модели отрисована (vramEstimateMb, а не 0)',
+    modelsHtml.indexOf('~2.5 GB') !== -1, modelsHtml.slice(0, 300));
+  check('image: счётчик загруженных моделей = 2',
+    sandbox.document.getElementById('statModelsLoaded').textContent === 2,
+    String(sandbox.document.getElementById('statModelsLoaded').textContent));
+
+  const realErrors = consoleErrors.filter(function (m) {
+    return m.indexOf('panel failed') !== -1;
+  });
+  check('image: ни одна панель не упала', realErrors.length === 0, realErrors.join(' | '));
+}
+
+// --- Тест 4: фильтр по типу «image.cpp» не выкидывает image-бэкенд ----------
+{
+  const data = sampleImageData();
+  // Добавляем Ollama-бэкенд: фильтр effType=image_cpp должен оставить один.
+  data.cluster.backends.push({
+    id: 'ollama-1', status: 'healthy', backendType: 'ollama',
+    activeRequests: 0, maxConcurrentRequests: 8, models: ['llama3.1'],
+    vram: { totalGB: 24, usedGB: 0, usagePercent: 0 }, gpu: {}, system: {}, ollama: {},
+  });
+  const { sandbox } = makeSandbox();
+  loadRenderer(sandbox, { withUtils: true });
+  sandbox.updateUI(data);
+  check('filter: при типе image.cpp остаётся только image-бэкенд',
+    sandbox.document.getElementById('statBackends').textContent === 1,
+    String(sandbox.document.getElementById('statBackends').textContent));
+  const backendsHtml = sandbox.document.querySelector('#backendsTable tbody').innerHTML;
+  check('filter: image-бэкенд в отфильтрованной таблице',
+    backendsHtml.indexOf('image-real') !== -1 && backendsHtml.indexOf('ollama-1') === -1);
 }
 
 console.log('');

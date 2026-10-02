@@ -815,9 +815,11 @@ window.I18N_RU = {
   "models.filter_all": "Все",
   "models.filter_ollama": "Ollama",
   "models.filter_llamacpp": "llama.cpp",
+  "models.filter_image_cpp": "image.cpp",
   "models.filter_all_title": "Все типы бэкендов",
   "models.filter_ollama_title": "Только Ollama",
   "models.filter_llamacpp_title": "Только llama.cpp",
+  "models.filter_image_cpp_title": "Только image.cpp",
   "models.sort_by": "Сортировка:",
   "models.sort_name_asc": "Имя (А-Я)",
   "models.sort_name_desc": "Имя (Я-А)",
@@ -1596,6 +1598,24 @@ window.I18N_RU = {
   "image.bundle_all_done": "Все файлы bundle скачаны",
   "image.bundle_failed_files": "Часть файлов не скачалась: {names}",
   "image.gallery_no_preview": "Превью не сохранено",
+
+  // R-Image Phase 5 (2026-10-02): image.cpp-бэкенд на страницах «Бэкенды»,
+  // «Модели» и в Monitor (порт, состояние воркера, модели с оценкой VRAM).
+  // Воркер живёт на своём порту (imagePort), поэтому ollamaPort/cppWorkerPort
+  // для него показывать нельзя - оператор шёл на 11434 и не находил воркер.
+  "image.section_worker": "Воркер image.cpp",
+  "image.worker_port": "Порт воркера",
+  "image.worker_state": "Состояние воркера",
+  "image.worker_vram": "VRAM воркера",
+  "image.port_unset": "не задан",
+  "image.current_model": "Текущая модель",
+  "image.updated": "Обновлено",
+  "image.last_error": "Ошибка воркера",
+  "image.last_error_stale": "Значения выше могли устареть: воркер вернул ошибку вместо свежих данных.",
+  "image.active_badge": "активна",
+  "image.col_state": "Состояние",
+  "image.size": "Размер",
+  "image.open_page": "Управление на странице «Изображения»",
 
   // R-Image Phase 6 (2026-10-02): редактор профилей image-моделей
   // (webui/js/modules/image-profiles.js, пространство image.profiles.*).

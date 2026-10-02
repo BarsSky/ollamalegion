@@ -7,6 +7,88 @@
   var T = MA.T;
 
   /**
+   * R-Image Phase 5 (2026-10-02): helpers для image-бэкенда
+   * (BackendType=image_cpp, stable-diffusion.cpp).
+   *
+   * ЗАЧЕМ локальные функции, а не modules/utils.js: monitor.html исторически
+   * грузит только monitor-модули и MonitorApp-хелперы. Если Utils на странице
+   * есть (мы его подключаем), берём его - единая трактовка с WebUI; если нет
+   * (страницу открыли со старым набором скриптов/кэшем), работает локальный
+   * fallback, и Monitor всё равно показывает порт воркера и модели.
+   *
+   * image-бэкенд отличается тем, что воркер живёт на своём порту (imagePort),
+   * а метрики лежат в backend.image, а не в ollama/llamaCpp.
+   */
+  function imageBlockOf(b) {
+    return (b && (b.image || b.Image)) || {};
+  }
+  function imageModelsOf(b) {
+    var img = imageBlockOf(b);
+    return Array.isArray(img.models) ? img.models : [];
+  }
+  function imagePortOf(b) {
+    if (!b) return 0;
+    var raw = (b.imagePort !== undefined) ? b.imagePort : b.image_port;
+    var p = parseInt(raw, 10);
+    return (isFinite(p) && p > 0) ? p : 0;
+  }
+  function isImageBackendType(bt) {
+    var s = String(bt || '').toLowerCase();
+    return s === 'image_cpp' || s === 'imagecpp' || s === 'image.cpp' || s === 'sd_cpp' || s === 'sdcpp';
+  }
+  function isImageBackend(b) {
+    if (window.Utils && typeof window.Utils.getBackendType === 'function') {
+      return window.Utils.getBackendType(b) === 'image_cpp';
+    }
+    return isImageBackendType(b && (b.backendType || b.BackendType || b.backend_type || b.type));
+  }
+  /** Состояние image-модели/воркера -> локализованный текст (gguf.model_state_*). */
+  function imageStateText(state) {
+    var s = String(state || '').toLowerCase();
+    if (window.Utils && typeof window.Utils.imageStateLabel === 'function') {
+      return window.Utils.imageStateLabel(s);
+    }
+    var key = (s === 'loaded') ? 'gguf.model_state_loaded'
+      : (s === 'loading') ? 'gguf.model_state_loading'
+      : (s === 'error' || s === 'failed') ? 'gguf.model_state_error'
+      : 'gguf.model_state_unloaded';
+    var v = T(key);
+    return (v && v !== key) ? v : (s || 'not_loaded');
+  }
+  /** Размер image-модели в байтах (см. Utils.imageSizeBytes). */
+  function imageSizeBytesOf(m) {
+    if (window.Utils && typeof window.Utils.imageSizeBytes === 'function') {
+      return window.Utils.imageSizeBytes(m);
+    }
+    var v = Number((m && (m.sizeBytes !== undefined ? m.sizeBytes : m.size_bytes)) || 0);
+    if (!isFinite(v) || v <= 0) return 0;
+    return v < 1024 * 1024 ? Math.round(v * 1024 * 1024) : Math.round(v);
+  }
+  /** Формат байт -> "1.5 GB" / "512 MB". */
+  function fmtBytesShort(bytes) {
+    if (!bytes || bytes <= 0) return '';
+    var mb = bytes / 1024 / 1024;
+    if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
+    return Math.round(mb) + ' MB';
+  }
+  /** Бейдж типа бэкенда: Utils.getBackendTypeBadge, иначе локальные стили. */
+  function backendTypeBadgeHtml(b, bt) {
+    if (window.Utils && typeof window.Utils.getBackendTypeBadge === 'function') {
+      return window.Utils.getBackendTypeBadge(b);
+    }
+    if (isImageBackendType(bt)) {
+      return ' <span class="badge" style="background:#4ade8020;border:1px solid #4ade80;color:#4ade80;font-size:10px;padding:0 4px;border-radius:3px">🎨 image.cpp</span>';
+    }
+    if (bt === 'llama_cpp') {
+      return ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:10px;padding:0 4px;border-radius:3px">🦒 llama.cpp</span>';
+    }
+    if (bt === 'ollama' || !bt) {
+      return ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:10px;padding:0 4px;border-radius:3px">🦙 Ollama</span>';
+    }
+    return '';
+  }
+
+  /**
    * R83 (2026-09-25): локальный хелпер записи текста в элемент.
    *
    * ЗАЧЕМ. renderAdmissionStats (R70) и renderPlacementPolicy (R77) звали
@@ -252,13 +334,32 @@
 
     var adapt = function(b) {
       if (!b) return b;
-      if (b.activeRequests !== undefined && b.vram !== undefined) return b;
+      if (b.activeRequests !== undefined && b.vram !== undefined) {
+        // R-Image Phase 5: у "полного" бэкенда (cluster уже отдал
+        // activeRequests/vram) модели image-воркера всё равно лежат только в
+        // backend.image.models, а тип может прийти в другой форме (image.cpp).
+        // Без этой ветки колонка Models оставалась пустой, а фильтр по типу
+        // "image.cpp" не находил бэкенд.
+        var fullImg = b.image || b.Image || {};
+        var patch = {};
+        if (!b.models && Array.isArray(fullImg.models) && fullImg.models.length) {
+          patch.models = fullImg.models.map(function (m) { return m.name || m.Name || m; });
+        }
+        if (window.Utils && typeof window.Utils.normalizeBackendType === 'function') {
+          var normBt = window.Utils.normalizeBackendType(b.backendType || b.BackendType || b.type || b.Type || '');
+          if (normBt && normBt !== b.backendType) patch.backendType = normBt;
+        }
+        return Object.keys(patch).length ? Object.assign({}, b, patch) : b;
+      }
       var o = b.ollama || b.Ollama || {};
       // Round 18f: для llama.cpp бэкендов читаем из b.llamaCpp (cppworker poller).
       // balancer НЕ выставляет b.ollama.activeRequests для llama.cpp, поэтому
       // stats bar (statActive/statRate/statRPSCluster) показывал «—». Теперь
       // fallback на b.llamaCpp для всех полей.
       var lc = b.llamaCpp || b.LlamaCpp || {};
+      // R-Image Phase 5: image-воркер отдаёт свой блок метрик (state,
+      // currentModel, vramFreeMb/vramTotalMb, models[]) в backend.image.
+      var img = b.image || b.Image || {};
       var g = b.gpu || b.GPU || {}, s = b.system || b.System || {};
       var sr = (b.status || b.Status || '').toString().toLowerCase();
       var sm = { healthy: 'active', active: 'active', ready: 'ready', unhealthy: 'error', offline: 'offline', starting: 'starting', ollama_unavailable: 'ollama_unavailable' };
@@ -266,9 +367,14 @@
       var activeReq = b.activeRequests;
       if (activeReq === undefined) activeReq = lc.activeRequests !== undefined ? lc.activeRequests : (o.activeRequests || 0);
       // Models list — для llama.cpp берём из loadedModels.
+      // R-Image Phase 5: у image-бэкенда ни runningModels, ни loadedModels -
+      // модели лежат в backend.image.models. Без этой ветки Monitor показывал
+      // 0 моделей у image-бэкенда с загруженной SD-моделью.
       var models = b.models;
       if (!models) {
-        if (Array.isArray(lc.loadedModels) && lc.loadedModels.length) {
+        if (Array.isArray(img.models) && img.models.length) {
+          models = img.models.map(function (m) { return m.name || m.Name || m; });
+        } else if (Array.isArray(lc.loadedModels) && lc.loadedModels.length) {
           models = lc.loadedModels.map(function (m) { return m.name || m.Name || m; });
         } else {
           models = (o.runningModels || []).map(function (m) { return m.name || m; });
@@ -281,7 +387,11 @@
         activeRequests: activeReq,
         maxConcurrentRequests: b.maxConcurrentRequests !== undefined ? b.maxConcurrentRequests : (lc.maxConcurrentReqs || lc.maxConcurrentRequests || o.maxConcurrentRequests || 10),
         models: models,
-        backendType: b.backendType || b.BackendType || b.type || b.Type || '',
+        // R-Image Phase 5: нормализуем тип (image.cpp/imagecpp -> image_cpp),
+        // иначе бейдж типа и фильтр по типу не узнают image-бэкенд.
+        backendType: (window.Utils && typeof window.Utils.normalizeBackendType === 'function')
+          ? window.Utils.normalizeBackendType(b.backendType || b.BackendType || b.type || b.Type || '')
+          : (b.backendType || b.BackendType || b.type || b.Type || ''),
         // Round 18f: rps / avgResponseTime — fallback llama.cpp → ollama.
         rps: b.rps !== undefined ? b.rps : (lc.requestsPerSecond !== undefined ? lc.requestsPerSecond : (o.requestsPerSecond || 0)),
         avgResponseTime: b.avgResponseTime !== undefined ? b.avgResponseTime : (lc.avgResponseTime !== undefined ? lc.avgResponseTime : (o.avgResponseTime || 0)),
@@ -295,7 +405,7 @@
           var t = s.memoryTotal || s.MemoryTotal || 0, u = s.memoryUsed || s.MemoryUsed || 0;
           return t > 0 ? u / t * 100 : 0;
         })(),
-        gpu: g, system: s, ollama: o, llamaCpp: lc
+        gpu: g, system: s, ollama: o, llamaCpp: lc, image: img
       });
     };
 
@@ -532,15 +642,39 @@
     var mm = {};
     // Local models from backends
     bk.forEach(function(b) {
-      (b.models || []).forEach(function(m) {
-        if (!mm[m]) mm[m] = { bks: [], sc: 0, cloud: false };
+      // R-Image Phase 5: модели image-воркера лежат в backend.image.models.
+      // b.models у image-бэкенда появляется только после adapt(); страницу может
+      // отрисовать и код без adapt (демо-режим, старый кэш скриптов), поэтому
+      // читаем оба источника и не дублируем имена.
+      var imgModels = imageModelsOf(b);
+      var list = (b.models || []).slice();
+      imgModels.forEach(function(im) {
+        var nm = im && (im.name || im.Name);
+        if (nm && list.indexOf(nm) < 0) list.push(nm);
+      });
+      list.forEach(function(m) {
+        if (!mm[m]) mm[m] = { bks: [], sc: 0, cloud: false, image: null };
         mm[m].bks.push(b.id);
+        // Метаданные image-модели: состояние, размер, оценка VRAM, семейство.
+        var im2 = null;
+        for (var i = 0; i < imgModels.length; i++) {
+          if ((imgModels[i].name || imgModels[i].Name) === m) { im2 = imgModels[i]; break; }
+        }
+        if (im2) {
+          mm[m].image = {
+            state: im2.state || '',
+            family: im2.family || '',
+            sizeBytes: imageSizeBytesOf(im2),
+            vramMb: Number(im2.vramEstimateMb || im2.vram_estimate_mb || 0) || 0,
+            activeQueries: im2.activeQueries || 0
+          };
+        }
       });
     });
     // Add models from sessions (including cloud models not loaded locally)
     ss.forEach(function(s) {
       if (!s.model) return;
-      if (!mm[s.model]) mm[s.model] = { bks: [], sc: 0, cloud: MA.isCloudModel(s.model) };
+      if (!mm[s.model]) mm[s.model] = { bks: [], sc: 0, cloud: MA.isCloudModel(s.model), image: null };
       if (MA.isCloudModel(s.model)) mm[s.model].cloud = true;
       mm[s.model].sc++;
     });
@@ -551,6 +685,16 @@
     tb.innerHTML = models.map(function(m) {
       var fb = bk.find(function(b) { return (b.models || []).indexOf(m.name) >= 0; });
       var vg = fb && fb.vram && fb.vram.usedGB ? (fb.vram.usedGB / (fb.models || []).length).toFixed(1) : (m.info.cloud ? '☁️' : '—');
+      // R-Image Phase 5: у image-модели есть собственная оценка VRAM
+      // (vramEstimateMb) - она честнее, чем деление VRAM бэкенда на число моделей.
+      var imgMeta = m.info.image;
+      var vramCell;
+      if (m.info.cloud) vramCell = '☁️ N/A';
+      else if (imgMeta && imgMeta.vramMb > 0) {
+        vramCell = '~' + (imgMeta.vramMb >= 1024
+          ? (imgMeta.vramMb / 1024).toFixed(1) + ' GB'
+          : Math.round(imgMeta.vramMb) + ' MB');
+      } else vramCell = '~' + vg + ' GB';
       // Find model info from backends for expiresAt and digest
       var expDate = '';
       var digestShort = '';
@@ -570,7 +714,13 @@
         expHTML = '<span title="' + MA.esc(expDate) + '" style="font-size:10px;color:var(--warning);margin-left:4px">' + label + '</span>';
       }
       var digHTML = digestShort ? ' <code style="font-size:9px;background:var(--bg-secondary);padding:1px 3px;border-radius:3px" title="' + MA.esc('Digest: ' + digestShort) + '">' + MA.esc(digestShort) + '</code>' : '';
-      var nameCell = '<strong>' + MA.esc(m.name) + '</strong>' + digHTML + (m.info.cloud ? ' <span style="font-size:10px;color:var(--accent);background:rgba(59,130,246,0.12);padding:1px 5px;border-radius:4px">☁️ ' + T('renderers.cloud') + '</span>' : '');
+      // R-Image Phase 5: состояние image-модели видно в колонке Model - иначе
+      // загруженная и незагруженная SD-модель выглядели одинаково.
+      var imgStateHTML = (imgMeta && imgMeta.state)
+        ? ' <span class="badge" style="background:rgba(74,222,128,0.12);color:#4ade80;font-size:9px;padding:0 4px;border-radius:2px" title="' +
+          MA.esc(T('image.worker_state')) + '">🎨 ' + MA.esc(imageStateText(imgMeta.state)) + '</span>'
+        : '';
+      var nameCell = '<strong>' + MA.esc(m.name) + '</strong>' + digHTML + imgStateHTML + (m.info.cloud ? ' <span style="font-size:10px;color:var(--accent);background:rgba(59,130,246,0.12);padding:1px 5px;border-radius:4px">☁️ ' + T('renderers.cloud') + '</span>' : '');
       // B-11: Добавляем бейдж backend-типа для каждого бэкенда
       var bkCell = m.info.cloud && m.info.bks.length === 0
         ? '<span class="badge badge-blue">☁️ cloud</span>'
@@ -583,13 +733,17 @@
               var btType = fbBk.backendType || fbBk.type || '';
               if (btType === 'llama_cpp') {
                 btBadge = ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:9px;padding:0 3px;border-radius:2px">🦒</span>';
+              } else if (isImageBackendType(btType)) {
+                // R-Image Phase 5: image_cpp раньше не имел ветки - у image-модели
+                // в колонке Backends не было бейджа типа вообще.
+                btBadge = ' <span class="badge" style="background:#4ade8020;border:1px solid #4ade80;color:#4ade80;font-size:9px;padding:0 3px;border-radius:2px">🎨</span>';
               } else if (btType === 'ollama' || !btType) {
                 btBadge = ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:9px;padding:0 3px;border-radius:2px">🦙</span>';
               }
             }
             return '<span class="badge badge-purple">' + MA.esc(bid) + btBadge + '</span>';
           }).join(' ');
-      return '<tr><td>' + nameCell + '</td><td>' + bkCell + '</td><td class="col-right">' + m.info.sc + '</td><td class="col-right">' + (m.info.cloud ? '☁️ N/A' : '~' + vg + ' GB') + '</td><td class="col-right">' + (m.info.sc > 0 ? (m.info.cloud ? '☁️ ' + m.info.sc : '🔥 ' + m.info.sc) : '—') + '</td><td class="col-right" style="font-size:11px">' + expHTML + '</td></tr>';
+      return '<tr><td>' + nameCell + '</td><td>' + bkCell + '</td><td class="col-right">' + m.info.sc + '</td><td class="col-right">' + vramCell + '</td><td class="col-right">' + (m.info.sc > 0 ? (m.info.cloud ? '☁️ ' + m.info.sc : '🔥 ' + m.info.sc) : '—') + '</td><td class="col-right" style="font-size:11px">' + expHTML + '</td></tr>';
     }).join('');
     // Update colspan for no-data row (was 5, now 6 with expiresAt column)
     if (!models.length) { 
@@ -694,13 +848,32 @@
       } else {
         loadingCell = '<span style="font-size:11px;color:var(--text-secondary)">—</span>';
       }
-      // Per-backend type badge (🦙 Ollama / 🦒 llama.cpp)
-      var btType = b.backendType || '';
-      var typeBadge = '';
-      if (btType === 'llama_cpp') {
-        typeBadge = ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:10px;padding:0 4px;border-radius:3px">🦒 llama.cpp</span>';
-      } else if (btType === 'ollama' || !btType) {
-        typeBadge = ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:10px;padding:0 4px;border-radius:3px">🦙 Ollama</span>';
+      // Per-backend type badge (🦙 Ollama / 🦒 llama.cpp / 🎨 image.cpp).
+      // R-Image Phase 5: image_cpp раньше не попадал ни в одну ветку, поэтому
+      // бейджа типа у image-бэкенда не было вообще (и по строке нельзя было
+      // понять, что это stable-diffusion.cpp, а не Ollama).
+      var bt = b.backendType || '';
+      var isImg = isImageBackendType(bt) || isImageBackend(b);
+      var btType = isImg ? 'image_cpp' : (bt || 'ollama');
+      var typeBadge = backendTypeBadgeHtml(b, btType);
+      // R-Image Phase 5: порт воркера и его состояние - прямо в строке.
+      // У image-бэкенда нет валидных RPS/avgRT (воркер их не отдаёт), поэтому
+      // без этих бейджей строка выглядела «мёртвой», хотя воркер работает.
+      var imageBadges = '';
+      if (isImg) {
+        var imgPort = imagePortOf(b);
+        var imgBlock = imageBlockOf(b);
+        var imgState = String(imgBlock.state || '').toLowerCase();
+        var imgStyle = 'background:rgba(74,222,128,0.12);color:#4ade80;border-color:rgba(74,222,128,0.3)';
+        imageBadges += ' <span class="badge" style="' + imgStyle + '" title="' + MA.esc(T('image.worker_port')) + '">🔌 ' +
+          (imgPort > 0 ? imgPort : MA.esc(T('image.port_unset'))) + '</span>';
+        if (imgState) {
+          imageBadges += ' <span class="badge" style="' + imgStyle + '" title="' + MA.esc(T('image.worker_state')) + '">' +
+            MA.esc(imageStateText(imgState)) + '</span>';
+        }
+        if (imgBlock.lastError) {
+          imageBadges += ' <span class="badge badge-orange" title="' + MA.esc(T('image.last_error') + ': ' + imgBlock.lastError) + '">⚠️</span>';
+        }
       }
 // Sparkline helper: record + render per backend (no-op if Sparkline not loaded).
       function sl(bid, key, color) {
@@ -719,16 +892,48 @@
       //
       // Использует GgufApi.manageModel(backendId, 'unload', modelName) — тот же
       // path что GGUF page (per-operation timeout, 30s для unload).
-      var modelsCell = (b.models || []).slice(0, 3).map(function(m) {
-        return '<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">' +
-          MA.esc(m) +
-          ' <button class="monitor-unload-btn" data-backend="' + MA.esc(b.id) + '" data-model="' + MA.esc(m) + '" ' +
-          'title="Unload ' + MA.esc(m) + '" ' +
-          'style="background:transparent;border:none;color:inherit;cursor:pointer;padding:0 2px;font-size:11px;line-height:1;opacity:0.7;">' +
-          '<i class="fas fa-times"></i></button>' +
-        '</span>';
-      }).join(' ');
-      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + typeBadge + '</td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + modelsCell + '</td><td class="col-right">' + up + '</td></tr>';
+      //
+      // R-Image Phase 5: для image-бэкенда кнопку unload НЕ рисуем - 
+      // GgufApi.manageModel шлёт ollama/cppworker-путь (/api/v1/backends/{id}/models),
+      // которого image-воркер не понимает; управление image-моделями живёт на
+      // странице «Изображения» (/api/v1/image/models/...). Вместо кнопки
+      // показываем состояние модели и её оценку VRAM в title.
+      var modelsCell;
+      if (isImg) {
+        var imgModelsList = imageModelsOf(b);
+        if (!imgModelsList.length) {
+          modelsCell = '<span style="font-size:11px;color:var(--text-secondary)">—</span>';
+        } else {
+          modelsCell = imgModelsList.slice(0, 3).map(function (m) {
+            var st = String(m.state || '').toLowerCase();
+            var col = (st === 'loaded') ? '#4ade80'
+              : (st === 'loading') ? '#f0ad4e'
+              : (st === 'error' || st === 'failed') ? '#ef4444'
+              : 'var(--text-secondary)';
+            var sub = [];
+            var szTxt = fmtBytesShort(imageSizeBytesOf(m));
+            if (szTxt) sub.push(szTxt);
+            var vramMb = Number(m.vramEstimateMb || m.vram_estimate_mb || 0);
+            if (vramMb > 0) sub.push('VRAM ' + (vramMb >= 1024 ? (vramMb / 1024).toFixed(1) + ' GB' : Math.round(vramMb) + ' MB'));
+            sub.push(imageStateText(st));
+            return '<span class="badge" style="background:rgba(74,222,128,0.10);color:' + col + ';border-color:' + col + '" title="' +
+              MA.esc(String(m.name || '') + ' — ' + sub.join(' | ')) + '">🎨 ' + MA.esc(m.name) +
+              ' <span style="opacity:0.8">(' + MA.esc(imageStateText(st)) + ')</span></span>';
+          }).join(' ');
+          if (imgModelsList.length > 3) modelsCell += ' +' + (imgModelsList.length - 3);
+        }
+      } else {
+        modelsCell = (b.models || []).slice(0, 3).map(function(m) {
+          return '<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">' +
+            MA.esc(m) +
+            ' <button class="monitor-unload-btn" data-backend="' + MA.esc(b.id) + '" data-model="' + MA.esc(m) + '" ' +
+            'title="Unload ' + MA.esc(m) + '" ' +
+            'style="background:transparent;border:none;color:inherit;cursor:pointer;padding:0 2px;font-size:11px;line-height:1;opacity:0.7;">' +
+            '<i class="fas fa-times"></i></button>' +
+          '</span>';
+        }).join(' ');
+      }
+      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + imageBadges + typeBadge + '</td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + modelsCell + '</td><td class="col-right">' + up + '</td></tr>';
     }).join('');
   }
 

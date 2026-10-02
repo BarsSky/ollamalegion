@@ -738,9 +738,11 @@ window.I18N_EN = {
   "models.filter_all": "All",
   "models.filter_ollama": "Ollama",
   "models.filter_llamacpp": "llama.cpp",
+  "models.filter_image_cpp": "image.cpp",
   "models.filter_all_title": "All backend types",
   "models.filter_ollama_title": "Ollama only",
   "models.filter_llamacpp_title": "llama.cpp only",
+  "models.filter_image_cpp_title": "image.cpp only",
   "models.sort_by": "Sort:",
   "models.sort_name_asc": "Name (A–Z)",
   "models.sort_name_desc": "Name (Z–A)",
@@ -1590,6 +1592,24 @@ window.I18N_EN = {
   "image.bundle_all_done": "All bundle files downloaded",
   "image.bundle_failed_files": "Some files failed: {names}",
   "image.gallery_no_preview": "Preview not stored",
+
+  // R-Image Phase 5 (2026-10-02): image.cpp backend in the Backends / Models
+  // tables and in Monitor (port, worker state, models with their VRAM estimate).
+  // The worker runs on its own port (imagePort), so ollamaPort/cppWorkerPort
+  // must not be shown for it - operators looked at 11434 and found no worker.
+  "image.section_worker": "image.cpp worker",
+  "image.worker_port": "Worker port",
+  "image.worker_state": "Worker state",
+  "image.worker_vram": "Worker VRAM",
+  "image.port_unset": "not set",
+  "image.current_model": "Current model",
+  "image.updated": "Updated",
+  "image.last_error": "Worker error",
+  "image.last_error_stale": "The values above may be stale: the worker reported an error instead of fresh data.",
+  "image.active_badge": "active",
+  "image.col_state": "State",
+  "image.size": "Size",
+  "image.open_page": "Manage on the Images page",
 
   // R-Image Phase 6 (2026-10-02): image model profile editor
   // (webui/js/modules/image-profiles.js, image.profiles.* namespace).

@@ -113,6 +113,147 @@ const Utils = {
         return '';
     },
 
+    // ---- R-Image (Phase 5 follow-up, 2026-10-02): image.cpp backend helpers ----
+    //
+    // ЗАЧЕМ. У image-бэкенда (BackendType=image_cpp) своя топология: воркер
+    // sd-server живёт на отдельном порту (imagePort), а метрики приходят не в
+    // backend.ollama / backend.llamaCpp, а в backend.image (state, currentModel,
+    // vramFreeMb/vramTotalMb, models[]). Из-за этого UI показывал для него
+    // ollamaPort=11434 / cppWorkerPort=0 и 0 моделей - бэкенд выглядел пустым.
+    // Держим разбор этих полей в одной точке, чтобы страницы «Бэкенды»,
+    // «Модели» и Monitor не расходились в трактовке.
+
+    /**
+     * image-бэкенд (stable-diffusion.cpp) или нет.
+     */
+    isImageBackend(backend) {
+        return Utils.getBackendType(backend) === 'image_cpp';
+    },
+
+    /**
+     * Блок метрик image-воркера (backend.image) или null.
+     */
+    getBackendImage(backend) {
+        if (!backend) return null;
+        const img = backend.image || backend.Image;
+        return (img && typeof img === 'object') ? img : null;
+    },
+
+    /**
+     * Порт image-воркера (imagePort). 0 = не задан/неизвестен.
+     * Для image-бэкенда ollamaPort/cppWorkerPort не значат ничего, поэтому
+     * показывать их оператору нельзя - он видит 11434 и ищет воркер не там.
+     */
+    getBackendImagePort(backend) {
+        if (!backend) return 0;
+        const raw = (backend.imagePort !== undefined) ? backend.imagePort : backend.image_port;
+        const p = parseInt(raw, 10);
+        return (isFinite(p) && p > 0) ? p : 0;
+    },
+
+    /**
+     * Модели image-воркера (backend.image.models).
+     */
+    getBackendImageModels(backend) {
+        const img = Utils.getBackendImage(backend);
+        return (img && Array.isArray(img.models)) ? img.models : [];
+    },
+
+    /**
+     * Состояние image-воркера ('loaded' | 'not_loaded' | 'loading' | 'error').
+     */
+    getBackendImageState(backend) {
+        const img = Utils.getBackendImage(backend);
+        return (img && img.state) ? String(img.state).toLowerCase() : '';
+    },
+
+    /**
+     * Ошибка последнего обращения к image-воркеру (пусто = ошибки нет).
+     */
+    getBackendImageLastError(backend) {
+        const img = Utils.getBackendImage(backend);
+        return (img && img.lastError) ? String(img.lastError) : '';
+    },
+
+    /**
+     * i18n-ключ для состояния image-модели. Переиспользуем gguf.model_state_*
+     * (они уже есть в обоих языках) - отдельный набор ключей не нужен.
+     */
+    imageModelStateKey(state) {
+        const s = String(state || '').toLowerCase();
+        if (s === 'loaded') return 'gguf.model_state_loaded';
+        if (s === 'loading') return 'gguf.model_state_loading';
+        if (s === 'error' || s === 'failed') return 'gguf.model_state_error';
+        return 'gguf.model_state_unloaded';
+    },
+
+    /**
+     * Локализованный текст состояния image-модели/воркера.
+     */
+    imageStateLabel(state) {
+        const fallback = String(state || 'not_loaded');
+        const key = Utils.imageModelStateKey(state);
+        if (window.I18N && typeof window.I18N.t === 'function') {
+            const v = window.I18N.t(key);
+            if (v && v !== key) return v;
+        }
+        return fallback;
+    },
+
+    /**
+     * HTML-бейдж состояния image-модели/воркера.
+     */
+    imageStateBadge(state) {
+        const s = String(state || '').toLowerCase();
+        const cls = (s === 'loaded') ? 'badge-success'
+            : (s === 'loading') ? 'badge-warning'
+            : (s === 'error' || s === 'failed') ? 'badge-danger'
+            : 'badge-info';
+        return '<span class="badge ' + cls + '">' + Utils.escapeHtml(Utils.imageStateLabel(s)) + '</span>';
+    },
+
+    /**
+     * Размер модели image-воркера в байтах.
+     *
+     * Рабочий воркер отдаёт sizeBytes, но в части сборок для однофайлового
+     * бандла туда попадали МЕГАБАЙТЫ (sd15-q4 -> 1526). SD-модель меньше 1 МБ
+     * физически невозможна, поэтому такое значение трактуем как МБ - иначе в
+     * карточке было бы "0.0 GB" вместо "1.5 GB". 0 = размер неизвестен.
+     */
+    imageSizeBytes(model) {
+        if (!model) return 0;
+        const raw = (model.sizeBytes !== undefined) ? model.sizeBytes
+            : ((model.size_bytes !== undefined) ? model.size_bytes : 0);
+        const v = Number(raw);
+        if (!isFinite(v) || v <= 0) return 0;
+        if (v < 1024 * 1024) return Math.round(v * 1024 * 1024);
+        return Math.round(v);
+    },
+
+    /**
+     * Оценка VRAM модели image-воркера в МБ (0 = неизвестно).
+     */
+    imageVramEstimateMb(model) {
+        if (!model) return 0;
+        const raw = (model.vramEstimateMb !== undefined) ? model.vramEstimateMb
+            : ((model.vram_estimate_mb !== undefined) ? model.vram_estimate_mb : 0);
+        const v = Number(raw);
+        return (isFinite(v) && v > 0) ? Math.round(v) : 0;
+    },
+
+    /**
+     * Строка "свободно / всего" для VRAM воркера. Любое отсутствующее значение
+     * даёт '-' (не рисуем 0.0 GB - это выглядело бы как «VRAM кончилась»).
+     */
+    formatVramPair(freeMb, totalMb) {
+        const f = (freeMb === undefined || freeMb === null || freeMb === '') ? null : Number(freeMb);
+        const t = (totalMb === undefined || totalMb === null || totalMb === '') ? null : Number(totalMb);
+        if ((f === null || !isFinite(f)) && (t === null || !isFinite(t))) return '-';
+        const freeStr = (f === null || !isFinite(f)) ? '?' : Utils.formatMB(f);
+        const totalStr = (t === null || !isFinite(t)) ? '?' : Utils.formatMB(t);
+        return freeStr + ' / ' + totalStr;
+    },
+
     /**
      * Get GPU status class based on metrics
      */

@@ -45,7 +45,12 @@ const MonitorBackends = (() => {
         return backends.filter(b => {
             const id = (b.id || '').toLowerCase();
             const status = (b.status || '').toLowerCase();
-            const models = (b.models || []).join(' ').toLowerCase();
+            // R-Image Phase 5: у image-бэкенда модели лежат в backend.image.models -
+            // учитываем и их, иначе поиск по имени SD-модели ничего не находил.
+            const imageNames = (b.image && Array.isArray(b.image.models))
+                ? b.image.models.map(function (im) { return im.name || ''; })
+                : [];
+            const models = ((b.models && b.models.length ? b.models : imageNames) || []).join(' ').toLowerCase();
             return id.includes(currentFilter) || status.includes(currentFilter) || models.includes(currentFilter);
         });
     }
@@ -87,6 +92,33 @@ const MonitorBackends = (() => {
         const rps = (b.ollama && b.ollama.requestsPerSecond != null) ? b.ollama.requestsPerSecond : 0;
         // Round 16: hasAgent + agentPort + agentId для visibility (после Round 12 dedup)
         const hasAgent = b.hasAgent ? '<span class="badge" style="background:rgba(34,197,94,0.12);color:#22c55e" title="' + MA.esc(b.agentId || 'agent') + '">●</span>' : '<span class="badge" style="opacity:0.4">○</span>';
+
+        // ==== R-Image Phase 5 (2026-10-02): image-бэкенд (image_cpp) ====
+        // У него нет ни ollama, ни llamaCpp: воркер живёт на своём порту
+        // (imagePort), а модели лежат в backend.image.models. Без этой ветки
+        // строка выглядела как Ollama-бэкенд с 0 моделей, а бейджа типа не было.
+        const btType = b.backendType || b.backend_type || b.type || '';
+        const isImage = String(btType).toLowerCase() === 'image_cpp'
+            || String(btType).toLowerCase() === 'imagecpp'
+            || String(btType).toLowerCase() === 'image.cpp';
+        const imageBlock = b.image || {};
+        const imagePort = parseInt(b.imagePort !== undefined ? b.imagePort : b.image_port, 10) || 0;
+        const imageModels = Array.isArray(imageBlock.models) ? imageBlock.models : [];
+        let typeBadge = '';
+        if (window.Utils && typeof window.Utils.getBackendTypeBadge === 'function') {
+            typeBadge = ' ' + window.Utils.getBackendTypeBadge(b);
+        } else if (isImage) {
+            typeBadge = ' <span class="badge" style="background:#4ade8020;border:1px solid #4ade80;color:#4ade80;font-size:10px;padding:0 4px;border-radius:3px">🎨 image.cpp</span>';
+        } else if (btType === 'llama_cpp') {
+            typeBadge = ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:10px;padding:0 4px;border-radius:3px">🦒 llama.cpp</span>';
+        } else if (btType === 'ollama' || !btType) {
+            typeBadge = ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:10px;padding:0 4px;border-radius:3px">🦙 Ollama</span>';
+        }
+        const imageBadges = isImage
+            ? ' <span class="badge" style="background:rgba(74,222,128,0.12);color:#4ade80" title="' +
+              MA.esc(window.I18N ? I18N.t('image.worker_port') : 'image.worker_port') + '">🔌 ' +
+              (imagePort > 0 ? imagePort : MA.esc(window.I18N ? I18N.t('image.port_unset') : 'image.port_unset')) + '</span>'
+            : '';
 
         // ==== Loading column (Issue: «отображение загрузки в мониторе») ====
         // Поддерживается два источника:
@@ -147,8 +179,19 @@ const MonitorBackends = (() => {
         // Клик вызывает MonitorApp.unloadModel(backendId, modelName) →
         // GgufApi.manageModel(backendId, 'unload', modelName) → POST /api/v1/backends/{id}/models
         // (тот же путь что GGUF page использует для unload, но 30s timeout — достаточно).
-        const modelsArr = (b.models || []).slice(0, 3);
+        const modelsSource = (b.models && b.models.length) ? b.models : imageModels.map(function (im) { return im.name || im.Name || ''; });
+        const modelsArr = modelsSource.slice(0, 3);
         const modelBadges = modelsArr.map(function(m) {
+            // R-Image Phase 5: для image-модели кнопку unload НЕ рисуем -
+            // GgufApi.manageModel шлёт ollama/cppworker-путь, которого
+            // image-воркер не понимает (управление - на странице «Изображения»).
+            if (isImage) {
+                const im = imageModels.filter(function(x) { return (x.name || x.Name) === m; })[0] || {};
+                const st = String(im.state || '').toLowerCase();
+                const col = (st === 'loaded') ? '#4ade80' : (st === 'loading') ? '#f0ad4e' : (st === 'error' || st === 'failed') ? '#ef4444' : 'var(--text-secondary)';
+                return '<span class="badge" style="background:rgba(74,222,128,0.10);color:' + col + ';border-color:' + col + '">🎨 ' +
+                    MA.esc(m) + (st ? ' <span style="opacity:0.8">(' + MA.esc(st) + ')</span>' : '') + '</span>';
+            }
             return '<span class="badge" style="background:rgba(168,85,247,0.12);color:var(--purple-accent);border-color:rgba(168,85,247,0.2)">' +
                 MA.esc(m) +
                 // Compact unload button: ✕ (8px шрифт, hover-effect через CSS)
@@ -158,10 +201,10 @@ const MonitorBackends = (() => {
                 '<i class="fas fa-times"></i></button>' +
             '</span>';
         }).join(' ');
-        const moreModels = (b.models || []).length > 3 ? (' +' + ((b.models || []).length - 3)) : '';
+        const moreModels = modelsSource.length > 3 ? (' +' + (modelsSource.length - 3)) : '';
 
         return `<tr data-backend="${MA.esc(b.id)}" title="${MA.esc(tooltip)}">
-            <td><strong>${MA.esc(b.id)}</strong> ${hasAgent}</td>
+            <td><strong>${MA.esc(b.id)}</strong> ${hasAgent}${imageBadges}${typeBadge}</td>
             <td><span class="badge ${scs}">${b.status}</span></td>
             <td>${bar(gu)} ${gu.toFixed(0)}%</td>
             <td>${bar(vu)} ${vu.toFixed(0)}%</td>

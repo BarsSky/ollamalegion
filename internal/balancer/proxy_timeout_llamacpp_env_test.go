@@ -47,8 +47,15 @@ func TestProxy_LB_LLAMACPP_STREAM_TIMEOUT_SEC_Removed(t *testing.T) {
 
 	// Если env var ВСЁ ЕЩЁ читается (regression!), getModelStreamTimeout вернёт 90s
 	// и per-model profile (1h) будет проигнорирован — OpenWebUI cutoff возвращается.
+	// R83/v62 (2026-10-02): профильное значение больше НЕ взводит таймаут скрыто
+	// (нужен LB_ALLOW_PROFILE_TIMEOUTS=1), а deprecated env не читается.
 	got := p.getModelStreamTimeout("qwen3-8b")
-	want := 3600 * time.Second // per-model profile wins
+	if got != 0 {
+		t.Errorf("getModelStreamTimeout(qwen3-8b) без LB_ALLOW_PROFILE_TIMEOUTS = %v, want 0", got)
+	}
+	t.Setenv("LB_ALLOW_PROFILE_TIMEOUTS", "1")
+	got = p.getModelStreamTimeout("qwen3-8b")
+	want := 3600 * time.Second // per-model profile wins при явном opt-in
 	if got != want {
 		t.Errorf("getModelStreamTimeout(qwen3-8b) с LB_LLAMACPP_STREAM_TIMEOUT_SEC=90 "+
 			"вернул %v, want %v. ENV var НЕ ДОЛЖЕН читаться (R60.18 F3 removal). "+

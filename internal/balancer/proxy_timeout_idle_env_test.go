@@ -87,12 +87,20 @@ func TestProxy_LB_STREAMING_IDLE_TIMEOUT_SEC_UnsetFallsToPerModel(t *testing.T) 
 		modelLatencyTracker: NewModelLatencyTracker(),
 	}
 
+	// R83/v62 (2026-10-02): профильные таймауты игнорируются, пока оператор не
+	// разрешил их явно (LB_ALLOW_PROFILE_TIMEOUTS=1). Таймаут — рубильник
+	// оператора, а не скрытая настройка профиля: живой случай на A10 — обрыв
+	// запроса ровно на 300-й секунде из-за значения в профиле.
 	got := p.getModelStreamingIdleTimeout("qwen3-8b")
-	want := 300 * time.Second
-	if got != want {
-		t.Errorf("getModelStreamingIdleTimeout(qwen3-8b) без ENV = %v, want %v "+
-			"(per-model profile используется когда env не задан)",
-			got, want)
+	if got != 0 {
+		t.Errorf("getModelStreamingIdleTimeout(qwen3-8b) без LB_ALLOW_PROFILE_TIMEOUTS = %v, want 0 "+
+			"(профильное значение не должно взводить таймаут скрыто)", got)
+	}
+
+	// С явным opt-in профильное значение снова работает.
+	t.Setenv("LB_ALLOW_PROFILE_TIMEOUTS", "1")
+	if got := p.getModelStreamingIdleTimeout("qwen3-8b"); got != 300*time.Second {
+		t.Errorf("с LB_ALLOW_PROFILE_TIMEOUTS=1 = %v, want 300s", got)
 	}
 }
 

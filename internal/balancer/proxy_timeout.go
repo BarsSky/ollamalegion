@@ -21,6 +21,21 @@ import (
 //
 // Принимает "1", "true", "yes" (case-insensitive) как enable.
 // "0", "false", "no", "" → false.
+// profileTimeoutsAllowed — R83/v62 (2026-10-02): профильные таймауты взводим
+// ТОЛЬКО по явному opt-in (LB_ALLOW_PROFILE_TIMEOUTS=1).
+//
+// ЗАЧЕМ. Таймаут — рубильник оператора, а не скрытая настройка профиля модели.
+// Живой случай (A10 24 GB, qwen3.8): запрос обрывался ровно на 300-й секунде
+// (duration_ms=301208), хотя клиент своего таймаута не выбирал — значение
+// приезжало из per-model профиля, и по логам нельзя было понять, кто его взвёл.
+// Теперь такие значения игнорируются, пока оператор явно их не разрешит.
+func profileTimeoutsAllowed() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LB_ALLOW_PROFILE_TIMEOUTS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
 func isStreamingNeverTimeout() bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("LB_STREAMING_NEVER_TIMEOUT")))
 	switch v {
@@ -232,7 +247,7 @@ func (p *Proxy) getModelStreamTimeout(modelName string) time.Duration {
 	}
 	// Tier: явный per-model профиль (осознанное решение оператора по модели).
 	if modelName != "" {
-		if profile, ok := p.GetModelProfile(modelName); ok && profile.StreamingTimeoutSec > 0 {
+		if profile, ok := p.GetModelProfile(modelName); ok && profileTimeoutsAllowed() && profile.StreamingTimeoutSec > 0 {
 			return time.Duration(profile.StreamingTimeoutSec) * time.Second
 		}
 	}
@@ -266,7 +281,7 @@ func (p *Proxy) getModelStreamingIdleTimeout(modelName string) time.Duration {
 	}
 	// Явный per-model профиль — осознанное решение по конкретной модели.
 	if modelName != "" {
-		if profile, ok := p.GetModelProfile(modelName); ok && profile.StreamingIdleTimeoutSec > 0 {
+		if profile, ok := p.GetModelProfile(modelName); ok && profileTimeoutsAllowed() && profile.StreamingIdleTimeoutSec > 0 {
 			return time.Duration(profile.StreamingIdleTimeoutSec) * time.Second
 		}
 	}
@@ -289,7 +304,7 @@ func (p *Proxy) getModelRequestTimeout(modelName string) time.Duration {
 		return d
 	}
 	if modelName != "" {
-		if profile, ok := p.GetModelProfile(modelName); ok && profile.RequestTimeoutSec > 0 {
+		if profile, ok := p.GetModelProfile(modelName); ok && profileTimeoutsAllowed() && profile.RequestTimeoutSec > 0 {
 			return time.Duration(profile.RequestTimeoutSec) * time.Second
 		}
 	}
@@ -347,7 +362,7 @@ func (p *Proxy) getModelFirstByteTimeout(modelName string) time.Duration {
 		return d
 	}
 	if modelName != "" {
-		if profile, ok := p.GetModelProfile(modelName); ok && profile.FirstByteTimeoutSec > 0 {
+		if profile, ok := p.GetModelProfile(modelName); ok && profileTimeoutsAllowed() && profile.FirstByteTimeoutSec > 0 {
 			return time.Duration(profile.FirstByteTimeoutSec) * time.Second
 		}
 	}

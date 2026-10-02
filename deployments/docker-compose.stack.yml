@@ -13,11 +13,27 @@
 #   cd deployments
 #   cp .env.bundled-with-agent.example .env.bundled-with-agent   # первый раз
 #   # в deployments/.env задать CPPWORKER_API_TOKEN (единый токен стека)
-#   docker compose -f docker-compose.stack.yml --profile full up -d
+#   docker compose -f docker-compose.stack.yml --profile full up -d --build
 #
 #   Клиенты (OpenWebUI/Cline) → http://<хост>:18080
 #   WebUI оператора           → http://<хост>:18083
 #   Admin API                 → http://<хост>:18081
+#
+#   ТЕКСТ + КАРТИНКИ В ОДНОМ СТЕНДЕ (R-Image Phase 8). Профиль full поднимает
+#   ОБА пула бэкендов за ОДНИМ балансером:
+#     cppworker-gpu (llama_cpp, :18092) — текст;
+#     imageworker   (image_cpp,  :18093) — генерация изображений (sd.cpp).
+#   Оба регистрируются в балансере сами (метка auto-registered), поэтому в WebUI
+#   и Monitor видны как два разных типа бэкендов одного кластера; трафик
+#   расходится по типу запроса: текст → llama_cpp, /v1/images/* и /sdapi/v1/* →
+#   image_cpp. OpenAI-поверхность для картинок — http://<хост>:18079.
+#   Проверка после старта:
+#     curl -s localhost:18081/api/v1/backends | jq '.backends[] | {id, type}'
+#     curl -s localhost:18079/v1/images/generations -H 'Content-Type: application/json' \
+#          -d '{"model":"sd-cpp-local","prompt":"a cat"}'
+#   Модели картинок — это КАТАЛОГИ-bundle'ы в ${MODELS_DIR}/image/<имя>/; каталог
+#   общий с текстовыми .gguf (../models), поэтому один том моделей на весь стенд.
+#   Готовый смоук этого сценария: scripts/docker-stack-smoke.ps1.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # СЦЕНАРИЙ 2. Только бэкенд: cppworker + agent (балансер уже есть на другой машине)
@@ -150,6 +166,14 @@ services:
       - LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=${LB_NCTX_PREFLIGHT_MAX_WAIT_SEC:-1800}
       - LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER=${LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER:-3}
       - LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC=${LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC:-300}
+      # Phase 8 (2026-10-03): где балансер хранит профили image-моделей.
+      #
+      # ЗАЧЕМ ЯВНО. По умолчанию стор пишет в config/image-model-profiles.json,
+      # то есть в /app/config — а он смонтирован ТОЛЬКО ДЛЯ ЧТЕНИЯ (`:ro` ниже).
+      # Сохранение профиля из WebUI падало бы на read-only файловой системе: в
+      # едином стенде оператор не смог бы ни создать, ни поправить профиль
+      # image-модели. /app/data — записываемый том (balancer_data).
+      - LB_IMAGE_MODEL_PROFILES_PATH=${LB_IMAGE_MODEL_PROFILES_PATH:-/app/data/image-model-profiles.json}
       # Сколько ждать авто-загрузку модели, прежде чем отдать 503 «попробуйте
       # позже». Для 27B на A10/3070 загрузка 3–8 минут, поэтому дефолт 900 с
       # (в коде дефолт 180 с — его мало). 0 = не ждать вовсе.
@@ -383,6 +407,13 @@ services:
       # ссылку на этот порт, и по нему же можно ходить в обход балансера.
       - "${SDWORKER_PORT:-18093}:18093"
     networks: [ol-net]
+    # Phase 8 (2026-10-03): ждём ГОТОВЫЙ балансер, а не просто «запущенный».
+    # Раньше зависимости не было вовсе: воркер стартовал первым, первый POST
+    # /api/v1/backends уходил в недоступный порт и повторялся через 30 с — в
+    # едином стенде это выглядело как «image-бэкенд не появился в балансере».
+    depends_on:
+      loadbalancer:
+        condition: service_healthy
     healthcheck:
       # Через сам бинарь (как у cppworker): /health отвечает 200 и без модели,
       # поэтому idle-unload не переводит контейнер в unhealthy.

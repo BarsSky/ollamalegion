@@ -82,6 +82,11 @@ services:
       # в environment: ниже. Без этого async mode выключен и клиент получает 413.
       - LB_NCTX_PREFLIGHT_ASYNC_RELOAD=${LB_NCTX_PREFLIGHT_ASYNC_RELOAD:-true}
       - LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC=${LB_NCTX_PREFLIGHT_ASYNC_RETRY_AFTER_SEC:-30}
+      # Phase 8 (2026-10-03): профили image-моделей — в записываемый том.
+      # По умолчанию стор пишет в config/image-model-profiles.json, а ../config
+      # смонтирован `:ro` (см. volumes ниже) — сохранение профиля из WebUI
+      # падало бы на read-only ФС.
+      - LB_IMAGE_MODEL_PROFILES_PATH=${LB_IMAGE_MODEL_PROFILES_PATH:-/app/data/image-model-profiles.json}
     volumes:
       - ../config:/app/config:ro
       - balancer_data:/app/data

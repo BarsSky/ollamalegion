@@ -661,6 +661,37 @@ try {
     $b9 = ($r.Status -eq 200) -and $ported -and ($models9 -ge 1)
     Add-Result 'B9' 'image-бэкенд виден в /api/v1/metrics (imagePort + модели)' $b9 "http=$($r.Status) imagePort=$($img9.imagePort) models=$models9 currentModel=$cur9"
 
+    # B10 (R-Image Phase 8, 2026-10-03): балансер обязан СЧИТАТЬ image-запросы.
+    # К этому моменту через балансер прошли генерации (B4/B5 + реальная картинка
+    # в -Real), поэтому total > 0, а лента последних запросов непуста. До Phase 8
+    # ImageRouter шёл мимо recordRequest: в Monitor у image-бэкенда было RPS=0.0,
+    # Avg RT="-", Active="0/10" при живых генерациях.
+    $reqs9 = $null
+    if ($img9 -and $img9.image) { $reqs9 = $img9.image.requests }
+    $total9 = 0; $ok9 = 0; $feed9 = 0
+    if ($reqs9) { $total9 = [int]$reqs9.total; $ok9 = [int]$reqs9.ok }
+    if ($img9 -and $img9.image -and $img9.image.recent) { $feed9 = @($img9.image.recent).Count }
+    $b10 = ($total9 -ge 1) -and ($ok9 -ge 1) -and ($feed9 -ge 1)
+    Add-Result 'B10' 'балансер считает image-запросы (per-backend total/ok + лента)' $b10 "total=$total9 ok=$ok9 recent=$feed9"
+
+    # B11: агрегат по пулу и общая лента — в /api/v1/cluster (их читает Monitor).
+    # Панель «запросы к image-бэкендам» берёт данные именно отсюда, и без
+    # cluster.image она была бы пустой на каждом тике.
+    $r = Invoke-Http -Method GET -Url "$api/api/v1/cluster"
+    $cj11 = ConvertTo-JsonSafe $r.Body
+    # ВАЖНО: /api/v1/cluster отдаёт ClusterState НАПРЯМУЮ, без обёртки cluster
+    # (обёртку добавляет клиентский слой Monitor, а не API).
+    $pool11 = $null
+    if ($cj11) { $pool11 = $cj11.image }
+    $ptotal = 0; $pbackends = 0; $pfeed = 0
+    if ($pool11) {
+        $pbackends = [int]$pool11.backends
+        if ($pool11.requests) { $ptotal = [int]$pool11.requests.total }
+        if ($pool11.recent) { $pfeed = @($pool11.recent).Count }
+    }
+    $b11 = ($r.Status -eq 200) -and ($pbackends -ge 1) -and ($ptotal -ge 1) -and ($pfeed -ge 1)
+    Add-Result 'B11' 'агрегат image-пула виден в /api/v1/cluster (pool + общая лента)' $b11 "http=$($r.Status) backends=$pbackends total=$ptotal recent=$pfeed"
+
     # ========================================================
     # A9: unload (делаем ПОСЛЕ B — иначе генерация не пройдёт)
     # ========================================================

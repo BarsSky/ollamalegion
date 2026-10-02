@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -617,6 +619,39 @@ func basenameOfPath(p string) string {
 // и прибавит выравнивание 256). Клиентский `num_ctx` — всегда второе, поэтому
 // вызывающий передаёт его именно в ctxPerSeq. Вынесено в функцию, чтобы правило
 // было покрыто тестом.
+// loadWaitDeadline / loadWaitExpired — R83/v62 (2026-10-02): ожидание загрузки
+// модели больше НЕ ограничено жёсткими 5 минутами.
+//
+// БЫЛО: три цикла ожидания готовности (concurrent load, poll после ошибки
+// «model is loading», финальная синхронизация после async-load) считали
+// pollDeadline = now + 5 min. Для больших моделей (A10 24 GB, qwen3.8 15.7 ГБ)
+// загрузка+mmap занимает больше пяти минут, и запрос падал «на ровном месте»
+// таймером, а не ошибкой бэкенда — ровно тот класс дефектов, который вычищаем.
+//
+// СТАЛО: ждём терминального состояния (loaded/error) и недоступности бэкенда —
+// это уже есть в циклах. Кап возможен только как явный opt-in оператора
+// (LB_ALLOW_LOAD_WAIT_CAP_SEC), и при взведении печатается громкий WARN.
+func loadWaitDeadline() time.Time {
+	v := strings.TrimSpace(os.Getenv("LB_ALLOW_LOAD_WAIT_CAP_SEC"))
+	if v == "" {
+		return time.Time{}
+	}
+	sec, err := strconv.Atoi(v)
+	if err != nil || sec <= 0 {
+		return time.Time{}
+	}
+	if logger.Get() != nil {
+		logger.Get().Warnw("armed load wait cap (operator opt-in)",
+			"cap_sec", sec, "source", "LB_ALLOW_LOAD_WAIT_CAP_SEC",
+			"hint", "по умолчанию капа нет: ждём loaded/error/недоступность бэкенда")
+	}
+	return time.Now().Add(time.Duration(sec) * time.Second)
+}
+
+// loadWaitExpired — true, если оператор взвёл кап и он истёк.
+func loadWaitExpired(deadline time.Time) bool {
+	return !deadline.IsZero() && time.Now().After(deadline)
+}
 func buildAutoLoadRequest(modelName string, ctxSize, ctxPerSeq, gpuLayers *int) ModelOpRequest {
 	return ModelOpRequest{
 		Operation:     "load",
@@ -744,7 +779,7 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 	if isAlreadyLoading {
 		ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: concurrent load already in progress, waiting",
 			"backend", backendID, "model", modelName, "step", "wait_concurrent_load")
-		pollDeadline := time.Now().Add(5 * time.Minute)
+		pollDeadline := loadWaitDeadline()
 		for {
 			if lr.isModelReadyOnBackend(backendID, modelName) {
 				ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: concurrent load completed",
@@ -764,7 +799,7 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 			if foundError {
 				return false, fmt.Errorf("cppworker reported error state for model %q while waiting for concurrent load", modelName)
 			}
-			if time.Now().After(pollDeadline) {
+			if loadWaitExpired(pollDeadline) {
 				return false, fmt.Errorf("timed out waiting for concurrent model load to complete on backend %q", backendID)
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -986,7 +1021,7 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 				"backend", backendID, "model", modelName,
 				"step", "wait_after_load_error",
 				"op_error", result.Error)
-			pollDeadline := time.Now().Add(5 * time.Minute)
+			pollDeadline := loadWaitDeadline()
 			for {
 				if lr.isModelReadyOnBackend(backendID, modelName) {
 					ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: model became ready while polling after load error",
@@ -994,7 +1029,7 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 						"step", "ready_after_load_error")
 					return true, nil
 				}
-				if time.Now().After(pollDeadline) {
+				if loadWaitExpired(pollDeadline) {
 					ridLog(lr_recentCtx()).Errorw("ensureModelLoadedOnBackend: timeout polling for ready after load error",
 						"backend", backendID, "model", modelName,
 						"step", "poll_timeout_after_load_error")
@@ -1012,7 +1047,7 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 			"op_message", result.Message)
 		return false, fmt.Errorf("auto-load failed: %s", result.Error)
 	}
-	pollDeadline := time.Now().Add(5 * time.Minute)
+	pollDeadline := loadWaitDeadline()
 	// Round 24 (2026-08-04): async load поддержка — cppworker может вернуть
 	// 202 Accepted с status=loading. В этом случае executeLlamaCppLoad
 	// уже сделал polling до maxWait (estimated * 1.5 + 10s), и в норме
@@ -1045,10 +1080,10 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		if foundError {
 			return false, fmt.Errorf("cppworker reported error state for model %q", modelName)
 		}
-		if !foundLoading && time.Now().After(pollDeadline) {
+		if !foundLoading && loadWaitExpired(pollDeadline) {
 			return false, fmt.Errorf("load reported success but model never reached state=loaded (deadline 5s)")
 		}
-		if time.Now().After(pollDeadline) {
+		if loadWaitExpired(pollDeadline) {
 			return false, fmt.Errorf("load reported success but model still in state=loading after 5s")
 		}
 		time.Sleep(200 * time.Millisecond)

@@ -32,16 +32,17 @@ func (a *App) setupRouter() http.Handler {
 
 	// --- OpenAI-совместимая поверхность ---
 	mux.HandleFunc("/v1/images/generations", a.handleOpenAIImagesGenerations)
-	// /v1/images/edits (img2img/inpaint, multipart) сознательно НЕ реализован:
-	// это отдельная фича (init_image + mask), вне Phase 3. Отдаём понятную
-	// ошибку вместо 404 от mux — клиент (Open WebUI) умеет её показать.
-	mux.HandleFunc("/v1/images/edits", a.handleNotImplemented("img2img/inpaint (POST /v1/images/edits)"))
+	// /v1/images/edits — img2img/inpaint (multipart: image[]/image + mask):
+	// первое изображение уходит как init_image, mask — как mask_image.
+	mux.HandleFunc("/v1/images/edits", a.handleOpenAIImagesEdits)
+	// /v1/images/variations по-прежнему НЕ реализован (это отдельная фича:
+	// вариации без промпта), отдаём понятную ошибку вместо 404 от mux.
 	mux.HandleFunc("/v1/images/variations", a.handleNotImplemented("image variations"))
 	mux.HandleFunc("/v1/models", a.handleOpenAIModels)
 
 	// --- A1111 WebUI API ---
 	mux.HandleFunc("/sdapi/v1/txt2img", a.handleSDAPITxt2Img)
-	mux.HandleFunc("/sdapi/v1/img2img", a.handleNotImplemented("img2img (POST /sdapi/v1/img2img)"))
+	mux.HandleFunc("/sdapi/v1/img2img", a.handleSDAPIImg2Img)
 	// Заглушки, которые дёргают SillyTavern и Open WebUI (§12.4 п.6).
 	mux.HandleFunc("/sdapi/v1/options", a.handleSDAPIOptions)
 	mux.HandleFunc("/sdapi/v1/progress", a.handleSDAPIProgress)

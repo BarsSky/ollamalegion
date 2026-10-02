@@ -12,7 +12,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"ollama-loadbalancer/internal/sdbackend"
@@ -25,21 +28,21 @@ import (
 // а 400 на незнакомое поле сломало бы клиентов, которые шлют полный набор
 // A1111-параметров всегда.
 type sdapiTxt2ImgRequest struct {
-	Prompt         string   `json:"prompt"`
-	NegativePrompt string   `json:"negative_prompt"`
-	Width          int      `json:"width"`
-	Height         int      `json:"height"`
-	Steps          int      `json:"steps"`
-	CFGScale       float64  `json:"cfg_scale"`
-	Seed           *int64   `json:"seed"`
-	BatchSize      int      `json:"batch_size"`
-	BatchCount     int      `json:"n_iter"`
-	ClipSkip       int      `json:"clip_skip"`
-	SamplerName    string   `json:"sampler_name"`
-	Scheduler      string   `json:"scheduler"`
-	Model          string   `json:"override_settings_sd_model_checkpoint"`
+	Prompt         string      `json:"prompt"`
+	NegativePrompt string      `json:"negative_prompt"`
+	Width          int         `json:"width"`
+	Height         int         `json:"height"`
+	Steps          int         `json:"steps"`
+	CFGScale       float64     `json:"cfg_scale"`
+	Seed           *int64      `json:"seed"`
+	BatchSize      int         `json:"batch_size"`
+	BatchCount     int         `json:"n_iter"`
+	ClipSkip       int         `json:"clip_skip"`
+	SamplerName    string      `json:"sampler_name"`
+	Scheduler      string      `json:"scheduler"`
+	Model          string      `json:"override_settings_sd_model_checkpoint"`
 	Lora           []sdapiLora `json:"lora"`
-	OutputFormat   string   `json:"output_format"`
+	OutputFormat   string      `json:"output_format"`
 }
 
 // sdapiLora — структурированная LoRA A1111.
@@ -47,11 +50,11 @@ type sdapiTxt2ImgRequest struct {
 // ПОЧЕМУ СТРУКТУРА, А НЕ <lora:...> В ПРОМПТЕ: sd.cpp намеренно НЕ парсит
 // prompt-теги ни в одном из трёх API (examples/server/api.md, «Global LoRA rule»).
 type sdapiLora struct {
-	Name       string  `json:"name"`
-	Path       string  `json:"path"`
-	Multiplier float64 `json:"multiplier"`
-	Weight     float64 `json:"weight"`
-	IsHighNoise bool   `json:"is_high_noise"`
+	Name        string  `json:"name"`
+	Path        string  `json:"path"`
+	Multiplier  float64 `json:"multiplier"`
+	Weight      float64 `json:"weight"`
+	IsHighNoise bool    `json:"is_high_noise"`
 }
 
 // handleSDAPITxt2Img — POST /sdapi/v1/txt2img (синхронно).
@@ -126,7 +129,20 @@ func (a *App) handleSDAPITxt2Img(w http.ResponseWriter, r *http.Request) {
 		images = append(images, img.B64JSON)
 	}
 
-	params := map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
+		"images":     images,
+		"parameters": sdapiParams(norm),
+		"info":       sdapiInfo(norm, res, model, nil),
+	})
+}
+
+// sdapiParams — эхо параметров запроса (A1111-поле `parameters`).
+//
+// Отдельная функция, а не инлайн: txt2img и img2img обязаны отдавать ОДИН И
+// ТОТ ЖЕ набор ключей (клиенты сравнивают ответы), плюс img2img добавляет
+// denoising_strength/init_images_count.
+func sdapiParams(norm sdbackend.GenerationRequest) map[string]any {
+	return map[string]any{
 		"prompt":          norm.Prompt,
 		"negative_prompt": norm.NegativePrompt,
 		"width":           norm.Width,
@@ -139,30 +155,244 @@ func (a *App) handleSDAPITxt2Img(w http.ResponseWriter, r *http.Request) {
 		"scheduler":       norm.Scheduler,
 		"clip_skip":       norm.ClipSkip,
 	}
-	// info — JSON-СТРОКА (так у A1111; LibreChat/SillyTavern её парсят).
+}
+
+// sdapiInfo — `info` как JSON-СТРОКА (так у A1111; LibreChat/SillyTavern её
+// парсят), extra — дополнительные ключи (для img2img: denoising_strength).
+func sdapiInfo(norm sdbackend.GenerationRequest, res *sdbackend.GenerationResultView, model string, extra map[string]any) string {
 	info := map[string]any{
-		"seed":           norm.Seed,
-		"all_seeds":      []int64{norm.Seed},
-		"width":          norm.Width,
-		"height":         norm.Height,
-		"steps":          norm.Steps,
-		"cfg_scale":      norm.CFGScale,
-		"sampler_name":   norm.Sampler,
-		"scheduler":      norm.Scheduler,
-		"sd_model_name":  model,
-		"model":          model,
-		"output_format":  res.OutputFormat,
-		"infotexts":      []string{},
-		"worker_notes":   norm.Notes,
-		"duration_ms":    res.Duration.Milliseconds(),
+		"seed":          norm.Seed,
+		"all_seeds":     []int64{norm.Seed},
+		"width":         norm.Width,
+		"height":        norm.Height,
+		"steps":         norm.Steps,
+		"cfg_scale":     norm.CFGScale,
+		"sampler_name":  norm.Sampler,
+		"scheduler":     norm.Scheduler,
+		"sd_model_name": model,
+		"model":         model,
+		"output_format": res.OutputFormat,
+		"infotexts":     []string{},
+		"worker_notes":  norm.Notes,
+		"duration_ms":   res.Duration.Milliseconds(),
+	}
+	for k, v := range extra {
+		info[k] = v
 	}
 	infoJSON, _ := json.Marshal(info)
+	return string(infoJSON)
+}
+
+// sdapiImg2ImgRequest — POST /sdapi/v1/img2img.
+//
+// Наследует ВСЕ обычные txt2img-поля (prompt, negative_prompt, width, height,
+// steps, cfg_scale, seed, batch_size, n_iter, sampler_name, scheduler,
+// clip_skip, output_format, lora) и добавляет img2img-специфичные.
+//
+// mask_blur / inpaint_full_res / resize_mode / refiner_* сознательно НЕ
+// реализуются и не валят запрос: это косметика/постобработка, движок их не
+// принимает, а 400 на незнакомое поле сломал бы клиентов, которые всегда шлют
+// полный набор A1111-параметров (та же логика, что в txt2img).
+type sdapiImg2ImgRequest struct {
+	sdapiTxt2ImgRequest
+	// InitImages — base64 ИЛИ data-URL (A1111-клиенты шлют оба варианта).
+	InitImages []string `json:"init_images"`
+	// Mask — маска inpaint (PNG; A1111 кладёт её в альфа-канал).
+	Mask string `json:"mask"`
+	// DenoisingStrength → нативный strength, [0,1] (clamp, как в A1111).
+	DenoisingStrength *float64 `json:"denoising_strength"`
+	// InpaintingMaskInvert — клиенты шлют и bool, и 0/1 (см. flexBool).
+	InpaintingMaskInvert flexBool `json:"inpainting_mask_invert"`
+	MaskBlur             int      `json:"mask_blur"`
+	InpaintFullRes       int      `json:"inpaint_full_res"`
+	ResizeMode           int      `json:"resize_mode"`
+}
+
+// flexBool — поле, которое A1111-клиенты присылают и как bool, и как int.
+//
+// ПОЧЕМУ НЕ bool: в A1111 API `inpainting_mask_invert` объявлен как integer
+// (0/1), но часть обёрток (и наши тесты) шлют true/false. Строгий bool в Go
+// вернул бы 400 на втором варианте, а интерфейс A1111 принимает оба.
+type flexBool bool
+
+// UnmarshalJSON — true/false, 0/1, "true"/"0", null.
+func (b *flexBool) UnmarshalJSON(data []byte) error {
+	s := strings.Trim(strings.TrimSpace(string(data)), `"`)
+	switch strings.ToLower(s) {
+	case "", "null", "false", "0":
+		*b = false
+		return nil
+	case "true", "1":
+		*b = true
+		return nil
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		*b = f != 0
+		return nil
+	}
+	return errors.New("inpainting_mask_invert: expected bool or 0/1, got " + string(data))
+}
+
+// handleSDAPIImg2Img — POST /sdapi/v1/img2img (синхронно).
+//
+// КЛЮЧЕВОЕ ПРО SEED: остаётся обычным полем (как в txt2img) — движок читает
+// его в нативном img_gen, а -1 уже заменён положительным на нашей стороне
+// (у движка подтверждён integer overflow при seed = -1). Блок
+// <sd_cpp_extra_args> здесь НЕ добавляется: A1111-путь не идёт через
+// OpenAI-ветку движка.
+func (a *App) handleSDAPIImg2Img(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+	var req sdapiImg2ImgRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json", "invalid JSON body: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		writeJSONError(w, http.StatusBadRequest, "prompt_required", "prompt is required")
+		return
+	}
+	initPayload := firstNonEmptyString(req.InitImages)
+	if initPayload == "" {
+		writeJSONError(w, http.StatusBadRequest, "init_images_required",
+			"init_images is required for img2img (base64 or data URL); use /sdapi/v1/txt2img for text-to-image")
+		return
+	}
+
+	var notes []string
+	if len(req.InitImages) > 1 {
+		notes = append(notes, fmt.Sprintf("init_images: %d шт.; sd.cpp принимает одно init_image — использовано первое", len(req.InitImages)))
+	}
+	mask := ""
+	switch {
+	case strings.TrimSpace(req.Mask) != "" && bool(req.InpaintingMaskInvert):
+		// Инверсия — ПОПИКСЕЛЬНО (не молчаливое игнорирование флага: клиент
+		// иначе получил бы прорисованной ровно противоположную область).
+		inv, err := sdbackend.InvertMaskBase64(req.Mask)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_mask",
+				"cannot invert mask for inpainting_mask_invert: "+err.Error()+
+					" (поддерживаются PNG/JPEG; для webp маску нужно инвертировать на стороне клиента)")
+			return
+		}
+		mask = inv
+		notes = append(notes, "inpainting_mask_invert: маска инвертирована попиксельно "+
+			"(255−значение; значение — альфа для A1111-масок, иначе яркость); результат — grayscale PNG")
+	case strings.TrimSpace(req.Mask) != "":
+		mask = req.Mask
+	default:
+		if bool(req.InpaintingMaskInvert) {
+			notes = append(notes, "inpainting_mask_invert=true проигнорирован: mask не передан")
+		}
+	}
+
+	var strength *float64
+	if req.DenoisingStrength != nil {
+		v, clamped := sdbackend.NormalizeDenoisingStrength(*req.DenoisingStrength)
+		if clamped {
+			notes = append(notes, fmt.Sprintf("denoising_strength зажат в [0,1]: %.4g → %.4g", *req.DenoisingStrength, v))
+		}
+		strength = &v
+	}
+
+	// A1111: при width/height = 0 размер берётся из init-картинки (иначе
+	// img2img молча сгенерировал бы дефолт профиля вместо размера исходника).
+	w0, h0 := req.Width, req.Height
+	if w0 <= 0 || h0 <= 0 {
+		if iw, ih, ierr := sdbackend.ImageSizeFromBase64(initPayload); ierr == nil {
+			if w0 <= 0 {
+				w0 = iw
+			}
+			if h0 <= 0 {
+				h0 = ih
+			}
+		}
+	}
+
+	provided := req.Seed != nil
+	var seedVal int64
+	if provided {
+		seedVal = *req.Seed
+	}
+	batch := req.BatchSize
+	if batch <= 0 {
+		batch = 1
+	}
+	if req.BatchCount > 1 {
+		batch *= req.BatchCount
+	}
+
+	model := a.resolveModel(req.Model)
+	profile := a.svc.Runner.ProfileFor(model)
+
+	norm, err := sdbackend.NormalizeGeneration(sdbackend.GenerationRequest{
+		Prompt:         req.Prompt,
+		NegativePrompt: req.NegativePrompt,
+		Width:          w0,
+		Height:         h0,
+		Steps:          req.Steps,
+		CFGScale:       req.CFGScale,
+		Seed:           seedVal,
+		SeedProvided:   provided,
+		Sampler:        req.SamplerName,
+		Scheduler:      req.Scheduler,
+		BatchCount:     batch,
+		ClipSkip:       req.ClipSkip,
+		OutputFormat:   req.OutputFormat,
+		Lora:           convertLora(req.Lora),
+		InitImage:      initPayload,
+		MaskImage:      mask,
+		Strength:       strength,
+	}, profile, a.limitsFor())
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_generation_params", err.Error())
+		return
+	}
+	norm.Notes = append(norm.Notes, notes...)
+
+	// injectSeedInPrompt=false: A1111-путь передаёт seed обычным полем.
+	res, err := a.svc.Runner.GenerateSync(r.Context(), model, false, false, norm)
+	if err != nil {
+		writeEditsError(w, false, err)
+		return
+	}
+
+	images := make([]string, 0, len(res.Images))
+	for _, img := range res.Images {
+		images = append(images, img.B64JSON)
+	}
+	params := sdapiParams(norm)
+	if strength != nil {
+		params["denoising_strength"] = *strength
+	}
+	// init_images в эхо НЕ возвращаем (в отличие от A1111): это удвоило бы
+	// ответ на несколько мегабайт, а клиенты его оттуда не читают.
+	params["init_images_count"] = len(req.InitImages)
+
+	extra := map[string]any{"init_images_count": len(req.InitImages)}
+	if strength != nil {
+		extra["denoising_strength"] = *strength
+		extra["strength"] = *strength
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"images":     images,
 		"parameters": params,
-		"info":       string(infoJSON),
+		"info":       sdapiInfo(norm, res, model, extra),
 	})
+}
+
+// firstNonEmptyString — первая непустая строка (init_images[0] на практике,
+// но часть клиентов кладёт пустую строку первым элементом).
+func firstNonEmptyString(vals []string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // convertLora — A1111 LoRA → движковые LoraRef.
@@ -214,7 +444,7 @@ func (a *App) handleSDAPIOptions(w http.ResponseWriter, r *http.Request) {
 			model = a.resolveModel("")
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"samples_format":     "png",
+			"samples_format":      "png",
 			"sd_model_checkpoint": model,
 		})
 	case http.MethodPost:
@@ -329,7 +559,7 @@ func (a *App) handleSDAPISdModels(w http.ResponseWriter, r *http.Request) {
 	if len(out) == 0 {
 		out = append(out, map[string]any{
 			"title": "no-models", "model_name": "no-models", "filename": "",
-			"hash": "8888888888",
+			"hash":   "8888888888",
 			"sha256": "8888888888888888888888888888888888888888888888888888888888888888",
 			"config": nil,
 		})

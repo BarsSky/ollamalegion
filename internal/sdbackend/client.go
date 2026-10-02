@@ -44,21 +44,21 @@ const sdcppRequestTimeout = 30 * time.Second
 
 // Capabilities — ответ GET /sdcpp/v1/capabilities (только нужные поля).
 type Capabilities struct {
-	Model        CapModel            `json:"model"`
-	CurrentMode  string              `json:"current_mode"`
-	SupportedModes []string          `json:"supported_modes"`
-	Defaults     map[string]any      `json:"defaults"`
-	DefaultsByMode map[string]any    `json:"defaults_by_mode"`
-	OutputFormats  []string          `json:"output_formats"`
-	OutputFormatsByMode map[string][]string `json:"output_formats_by_mode"`
-	Features     map[string]any      `json:"features"`
-	FeaturesByMode map[string]map[string]bool `json:"features_by_mode"`
-	Samplers     []string            `json:"samplers"`
-	Schedulers   []string            `json:"schedulers"`
-	Loras        []CapLora           `json:"loras"`
-	Upscalers    []CapUpscaler       `json:"upscalers"`
-	Upscale      bool                `json:"upscale"`
-	Limits       CapLimits           `json:"limits"`
+	Model               CapModel                   `json:"model"`
+	CurrentMode         string                     `json:"current_mode"`
+	SupportedModes      []string                   `json:"supported_modes"`
+	Defaults            map[string]any             `json:"defaults"`
+	DefaultsByMode      map[string]any             `json:"defaults_by_mode"`
+	OutputFormats       []string                   `json:"output_formats"`
+	OutputFormatsByMode map[string][]string        `json:"output_formats_by_mode"`
+	Features            map[string]any             `json:"features"`
+	FeaturesByMode      map[string]map[string]bool `json:"features_by_mode"`
+	Samplers            []string                   `json:"samplers"`
+	Schedulers          []string                   `json:"schedulers"`
+	Loras               []CapLora                  `json:"loras"`
+	Upscalers           []CapUpscaler              `json:"upscalers"`
+	Upscale             bool                       `json:"upscale"`
+	Limits              CapLimits                  `json:"limits"`
 	// raw — исходный JSON (отдаём клиенту агрегированно, без потери полей,
 	// которых мы не знаем: API молод и расширяется каждую неделю).
 	raw map[string]any
@@ -108,13 +108,13 @@ type ImageResult struct {
 
 // MaskImageParams — параметры сэмплирования (вложенный объект движка).
 type MaskImageParams struct {
-	Scheduler     string            `json:"scheduler,omitempty"`
-	SampleMethod  string            `json:"sample_method,omitempty"`
-	SampleSteps   int               `json:"sample_steps,omitempty"`
-	Eta           *float64          `json:"eta,omitempty"`
+	Scheduler       string          `json:"scheduler,omitempty"`
+	SampleMethod    string          `json:"sample_method,omitempty"`
+	SampleSteps     int             `json:"sample_steps,omitempty"`
+	Eta             *float64        `json:"eta,omitempty"`
 	ShiftedTimestep int             `json:"shifted_timestep,omitempty"`
-	FlowShift     *float64          `json:"flow_shift,omitempty"`
-	Guidance      *GuidanceParams   `json:"guidance,omitempty"`
+	FlowShift       *float64        `json:"flow_shift,omitempty"`
+	Guidance        *GuidanceParams `json:"guidance,omitempty"`
 }
 
 // GuidanceParams — guidance-блок (txt_cfg и т.п.).
@@ -136,17 +136,26 @@ type LoraRef struct {
 // попадают в JSON, поэтому дефолты движка (eta, flow_shift, img_cfg) остаются
 // нетронутыми. Это важно: подстановка нулей вместо «не задано» меняет картинку.
 type ImgGenRequest struct {
-	Prompt         string       `json:"prompt"`
-	NegativePrompt string       `json:"negative_prompt,omitempty"`
-	ClipSkip       *int         `json:"clip_skip,omitempty"`
-	Width          int          `json:"width,omitempty"`
-	Height         int          `json:"height,omitempty"`
-	Seed           int64        `json:"seed"`
-	BatchCount     int          `json:"batch_count,omitempty"`
-	SampleParams   *MaskImageParams `json:"sample_params,omitempty"`
-	Lora           []LoraRef    `json:"lora,omitempty"`
-	OutputFormat   string       `json:"output_format,omitempty"`
-	OutputCompression *int      `json:"output_compression,omitempty"`
+	Prompt            string           `json:"prompt"`
+	NegativePrompt    string           `json:"negative_prompt,omitempty"`
+	ClipSkip          *int             `json:"clip_skip,omitempty"`
+	Width             int              `json:"width,omitempty"`
+	Height            int              `json:"height,omitempty"`
+	Seed              int64            `json:"seed"`
+	BatchCount        int              `json:"batch_count,omitempty"`
+	SampleParams      *MaskImageParams `json:"sample_params,omitempty"`
+	Lora              []LoraRef        `json:"lora,omitempty"`
+	OutputFormat      string           `json:"output_format,omitempty"`
+	OutputCompression *int             `json:"output_compression,omitempty"`
+	// --- img2img/inpaint -----------------------------------------------------
+	// InitImage/MaskImage — «голый» base64 (data-URL-префикс срезан у нас:
+	// NormalizeImageBase64). Движок принимает оба варианта, но фиксировать
+	// формат на проводе лучше в одном месте.
+	InitImage string `json:"init_image,omitempty"`
+	MaskImage string `json:"mask_image,omitempty"`
+	// Strength — [0,1]; nil = не передавать (дефолт движка). Указатель, потому
+	// что 0 — валидное значение («ничего не денойзить»), и omitempty его съел бы.
+	Strength *float64 `json:"strength,omitempty"`
 }
 
 // JobResult — result завершённой img_gen-джобы.
@@ -190,11 +199,11 @@ const (
 
 // SubmitResponse — ответ 202 на img_gen.
 type SubmitResponse struct {
-	ID       string `json:"id"`
-	Kind     string `json:"kind"`
-	Status   string `json:"status"`
-	Created  int64  `json:"created"`
-	PollURL  string `json:"poll_url"`
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Status  string `json:"status"`
+	Created int64  `json:"created"`
+	PollURL string `json:"poll_url"`
 }
 
 // SDServerClient — низкоуровневый клиент sd-server.
@@ -437,6 +446,61 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
+// ============================================================
+// Классификация ошибок img2img (encode)
+// ============================================================
+
+// Img2ImgMemoryHint — подсказка оператору при OOM на этапе encode.
+//
+// ПОЧЕМУ ОНА ВООБЩЕ НУЖНА: у sd.cpp авто-retry при OOM есть ТОЛЬКО для decode
+// VAE (готовую картинку можно собрать тайлами). Для encode (init_image в
+// img2img/inpaint) такого пути нет — движок просто падает, и клиент видит
+// «generation failed» без единого намёка на причину. VRAM при img2img выше,
+// чем при txt2img: к латентам добавляется само стартовое изображение.
+const Img2ImgMemoryHint = "Похоже на нехватку VRAM/памяти на encode (img2img), " +
+	"а авто-retry при OOM у sd.cpp есть только для decode VAE. " +
+	"Варианты: запустить sd-server с --vae-tiling и/или --vae-conv-direct, " +
+	"уменьшить размер init_image (и width/height), снизить batch_count (n), " +
+	"либо выгрузить конкурирующие модели (POST /api/image/models/unload)."
+
+// memoryMarkers — подстроки (в нижнем регистре), по которым узнаётся OOM.
+//
+// Список намеренно узкий: «error», «failed» и «encode» сами по себе не
+// признак OOM — иначе подсказка про --vae-tiling появлялась бы на любой
+// ошибке и превратилась бы в шум.
+var memoryMarkers = []string{
+	"out of memory",
+	"outofmemory",
+	"out-of-memory",
+	"oom",
+	"not enough memory",
+	"insufficient memory",
+	"failed to allocate",
+	"cannot allocate memory",
+	"bad_alloc",
+	"cuda_error_out_of_memory",
+	"vk_error_out_of_device_memory",
+	"ggml_backend_alloc",
+	"alloc buffer",
+}
+
+// LooksLikeEncodeOOM — эвристика «движок упал от нехватки памяти».
+//
+// Получает текст ошибки движка (job.Error.Message либо ответ submit'а) и
+// отвечает, стоит ли добавлять Img2ImgMemoryHint.
+func LooksLikeEncodeOOM(text string) bool {
+	if text == "" {
+		return false
+	}
+	low := strings.ToLower(text)
+	for _, m := range memoryMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // AsUpstreamError — приведение ошибки к *UpstreamError (для HTTP-слоя).
 func AsUpstreamError(err error) (*UpstreamError, bool) {
 	var ue *UpstreamError
@@ -477,4 +541,3 @@ func atoiSafe(s string) int {
 	}
 	return n
 }
-

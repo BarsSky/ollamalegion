@@ -592,6 +592,20 @@ func TestNative_CancelEdges(t *testing.T) {
 	if rec.Code != http.StatusOK && rec.Code != http.StatusConflict {
 		t.Fatalf("cancel = %d body=%s", rec.Code, rec.Body.String())
 	}
+
+	// Дожидаемся терминального состояния джобы ПЕРЕД возвратом из теста.
+	//
+	// ЗАЧЕМ (это лечит флейк, а не проверку): фоновая горутина джобы в
+	// ensureLoaded пишет sidecar sd-server.config.json в каталог модели
+	// (supervisor.writeSidecar). Если тест успевает вернуться раньше, запись
+	// происходит уже во время t.TempDir().RemoveAll — на Windows это
+	// «unlinkat <tmp>\sd15: The directory is not empty» (наблюдалось и на
+	// состоянии ДО этой правки, ~1 из 4 прогонов пакета).
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer waitCancel()
+	if _, err := app.svc.Runner.Wait(waitCtx, sub.ID); err != nil {
+		t.Logf("job %s не успела завершиться до очистки: %v", sub.ID, err)
+	}
 }
 
 // --- 13. Наш /api/image/models + capabilities --------------------------------

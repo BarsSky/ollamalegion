@@ -29,9 +29,20 @@ type mockEngine struct {
 	mu       sync.Mutex
 	requests []map[string]any
 	failJob  bool
+	// failMessage — текст ошибки джобы (например OOM при encode img2img).
+	// Пусто → «boom» (поведение по умолчанию для старых тестов).
+	failMessage string
 	// generatingForever — джобы никогда не завершаются (для теста cancel 409).
 	generatingForever bool
 	jobs              map[string]string
+}
+
+// failWith — завершать джобы ошибкой с заданным текстом (OOM-подобной и т.п.).
+func (m *mockEngine) failWith(message string) {
+	m.mu.Lock()
+	m.failJob = true
+	m.failMessage = message
+	m.mu.Unlock()
 }
 
 func newMockEngine() *mockEngine {
@@ -86,6 +97,7 @@ func newMockEngine() *mockEngine {
 		status := m.jobs[rest]
 		forever := m.generatingForever
 		fail := m.failJob
+		failMsg := m.failMessage
 		m.mu.Unlock()
 		if status == "" {
 			w.WriteHeader(http.StatusNotFound)
@@ -104,8 +116,12 @@ func newMockEngine() *mockEngine {
 		}
 		resp := map[string]any{"id": rest, "kind": "img_gen", "status": status, "queue_position": 0}
 		if fail {
+			msg := failMsg
+			if msg == "" {
+				msg = "boom"
+			}
 			resp["status"] = sdbackend.JobStatusFailed
-			resp["error"] = map[string]any{"code": "generation_failed", "message": "boom"}
+			resp["error"] = map[string]any{"code": "generation_failed", "message": msg}
 		} else if status == sdbackend.JobStatusCompleted {
 			// Количество картинок — по batch_count последнего запроса: иначе
 			// тест «верни ровно столько элементов data[], сколько сгенерировано»
@@ -140,17 +156,35 @@ func (m *mockEngine) lastRequest() mockImgGenRequest {
 	raw, _ := json.Marshal(m.requests[len(m.requests)-1])
 	var out mockImgGenRequest
 	_ = json.Unmarshal(raw, &out)
+	out.Raw = m.requests[len(m.requests)-1]
 	return out
 }
 
 type mockImgGenRequest struct {
-	Prompt       string `json:"prompt"`
-	Width        int    `json:"width"`
-	Height       int    `json:"height"`
-	Seed         int64  `json:"seed"`
-	BatchCount   int    `json:"batch_count"`
-	ClipSkip     *int   `json:"clip_skip"`
-	OutputFormat string `json:"output_format"`
+	Prompt         string `json:"prompt"`
+	NegativePrompt string `json:"negative_prompt"`
+	Width          int    `json:"width"`
+	Height         int    `json:"height"`
+	Seed           int64  `json:"seed"`
+	BatchCount     int    `json:"batch_count"`
+	ClipSkip       *int   `json:"clip_skip"`
+	OutputFormat   string `json:"output_format"`
+	// img2img/inpaint: то, что обязано доехать до движка.
+	InitImage    string            `json:"init_image"`
+	MaskImage    string            `json:"mask_image"`
+	Strength     *float64          `json:"strength"`
+	SampleParams *mockSampleParams `json:"sample_params"`
+	Raw          map[string]any    `json:"-"`
+}
+
+// mockSampleParams — sample_params движка (только нужные тестам поля).
+type mockSampleParams struct {
+	SampleMethod string `json:"sample_method"`
+	Scheduler    string `json:"scheduler"`
+	SampleSteps  int    `json:"sample_steps"`
+	Guidance     *struct {
+		TxtCfg *float64 `json:"txt_cfg"`
+	} `json:"guidance"`
 }
 
 // fakeRunner — ProcessRunner без реального spawn.

@@ -1,7 +1,12 @@
 package sdbackend
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 
@@ -20,8 +25,8 @@ func TestParseSize(t *testing.T) {
 		w, h    int
 		wantErr bool
 	}{
-		{"", 0, 0, false},        // дефолт LibreChat/AnythingLLM
-		{"auto", 0, 0, false},    // дефолт LobeChat/Open WebUI
+		{"", 0, 0, false},     // дефолт LibreChat/AnythingLLM
+		{"auto", 0, 0, false}, // дефолт LobeChat/Open WebUI
 		{"AUTO", 0, 0, false},
 		{"512x512", 512, 512, false},
 		{"1024X768", 1024, 768, false},
@@ -51,16 +56,16 @@ func TestParseSize(t *testing.T) {
 
 func TestNormalizeGeneration_SizeClampAndRound64(t *testing.T) {
 	cases := []struct {
-		inW, inH   int
+		inW, inH     int
 		wantW, wantH int
 	}{
 		{512, 512, 512, 512},
 		{4096, 4096, 4096, 4096},
-		{5000, 5000, 4096, 4096},   // верхний clamp
-		{10, 10, 64, 64},           // нижний clamp
-		{700, 300, 640, 256},       // округление ВНИЗ до 64
-		{650, 650, 640, 640},       // 650 → 640 (не 704)
-		{63, 63, 64, 64},           // ниже минимума → ровно минимум
+		{5000, 5000, 4096, 4096}, // верхний clamp
+		{10, 10, 64, 64},         // нижний clamp
+		{700, 300, 640, 256},     // округление ВНИЗ до 64
+		{650, 650, 640, 640},     // 650 → 640 (не 704)
+		{63, 63, 64, 64},         // ниже минимума → ровно минимум
 	}
 	for _, c := range cases {
 		got, err := NormalizeGeneration(GenerationRequest{Width: c.inW, Height: c.inH}, nil, nil)
@@ -307,6 +312,333 @@ func TestBuildImgGenRequest_OmitsUnsetFields(t *testing.T) {
 	}
 	if strings.Contains(s, `"eta"`) || strings.Contains(s, `"flow_shift"`) || strings.Contains(s, `"img_cfg"`) {
 		t.Errorf("незаданные опциональные поля не должны сериализоваться: %s", s)
+	}
+}
+
+// ============================================================
+// img2img / inpaint: init_image, mask_image, strength
+// ============================================================
+
+// pngB64 — валидный PNG w×h с заданным цветом (для тестов картинок).
+func pngB64(t *testing.T, w, h int, c color.Color) string {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, c)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+func TestNormalizeImageBase64_DataURLAndBare(t *testing.T) {
+	bare := tinyPNG
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"bare base64", bare, bare},
+		{"png data URL", "data:image/png;base64," + bare, bare},
+		{"jpeg data URL", "data:image/jpeg;base64," + bare, bare},
+		{"uppercase scheme", "DATA:IMAGE/PNG;BASE64," + bare, bare},
+		{"whitespace/newlines", "data:image/png;base64,\n  " + bare[:8] + "\n" + bare[8:], bare},
+		{"empty", "", ""},
+	}
+	for _, c := range cases {
+		got, err := NormalizeImageBase64(c.in)
+		if c.want == "" {
+			if err == nil {
+				t.Errorf("%s: ожидалась ошибка на пустой payload", c.name)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s: got %q, want чистый base64 (%q)", c.name, got, c.want)
+		}
+	}
+
+	// Base64 без padding (часть JS-клиентов режет '=') тоже обязан приниматься.
+	raw, _ := base64.StdEncoding.DecodeString(bare)
+	unpadded := base64.RawStdEncoding.EncodeToString(raw)
+	got, err := NormalizeImageBase64(unpadded)
+	if err != nil {
+		t.Fatalf("unpadded base64: %v", err)
+	}
+	if got != bare {
+		t.Fatalf("unpadded → %q, want %q", got, bare)
+	}
+
+	// Не-base64 и не-base64 data URL — ошибка, а не «пропустить как есть».
+	if _, err := NormalizeImageBase64("data:image/png,notbase64"); err == nil {
+		t.Error("data URL без ;base64 обязан отклоняться")
+	}
+	if _, err := NormalizeImageBase64("!!!not base64!!!"); err == nil {
+		t.Error("мусор обязан отклоняться")
+	}
+}
+
+func TestImageSizeFromBase64(t *testing.T) {
+	b64 := pngB64(t, 96, 64, color.RGBA{R: 10, G: 20, B: 30, A: 255})
+	w, h, err := ImageSizeFromBase64("data:image/png;base64," + b64)
+	if err != nil {
+		t.Fatalf("size: %v", err)
+	}
+	if w != 96 || h != 64 {
+		t.Fatalf("size = %dx%d, want 96x64", w, h)
+	}
+	if _, _, err := ImageSizeFromBase64("AAAA"); err == nil {
+		t.Error("невалидная картинка обязана давать ошибку (фолбэк — на дефолты профиля)")
+	}
+}
+
+func TestNormalizeDenoisingStrength_MapsAndClamps(t *testing.T) {
+	cases := []struct {
+		in      float64
+		want    float64
+		clamped bool
+	}{
+		{0, 0, false},
+		{0.35, 0.35, false},
+		{1, 1, false},
+		{1.7, 1, true}, // A1111 молча зажимает — и мы зажимаем (не 400)
+		{-0.4, 0, true},
+	}
+	for _, c := range cases {
+		got, clamped := NormalizeDenoisingStrength(c.in)
+		if got != c.want || clamped != c.clamped {
+			t.Errorf("NormalizeDenoisingStrength(%v) = %v,%v want %v,%v", c.in, got, clamped, c.want, c.clamped)
+		}
+	}
+	if err := ValidateStrength(1.0001); err == nil {
+		t.Error("ValidateStrength обязан отклонять > 1 (движок: validate())")
+	}
+	if err := ValidateStrength(0.5); err != nil {
+		t.Errorf("ValidateStrength(0.5): %v", err)
+	}
+}
+
+func TestNormalizeGeneration_StrengthOutOfRangeRejected(t *testing.T) {
+	bad := 1.5
+	if _, err := NormalizeGeneration(GenerationRequest{Strength: &bad}, nil, nil); err == nil {
+		t.Fatal("strength=1.5 обязан отклоняться: движок отвергает значение вне [0,1]")
+	}
+	ok := 0.0
+	got, err := NormalizeGeneration(GenerationRequest{Strength: &ok}, nil, nil)
+	if err != nil {
+		t.Fatalf("strength=0 валиден: %v", err)
+	}
+	if got.Strength == nil || *got.Strength != 0 {
+		t.Fatalf("strength потерян: %v", got.Strength)
+	}
+}
+
+func TestBuildImgGenRequest_InitMaskStrength(t *testing.T) {
+	init := tinyPNG
+	mask := pngB64(t, 2, 2, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+	strength := 0.6
+	norm, err := NormalizeGeneration(GenerationRequest{
+		Prompt:    "cat",
+		InitImage: "data:image/png;base64," + init,
+		MaskImage: "data:image/png;base64," + mask,
+		Strength:  &strength,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	req := BuildImgGenRequest(norm, false)
+	if req.InitImage != init {
+		t.Fatalf("init_image = %q (data-URL-префикс обязан быть срезан)", req.InitImage)
+	}
+	if req.MaskImage == "" || req.MaskImage == mask {
+		t.Fatalf("маска обязана быть приведена к 1 каналу (движок принимает mask_image 1 каналом)")
+	}
+	mraw, err := base64.StdEncoding.DecodeString(req.MaskImage)
+	if err != nil {
+		t.Fatalf("mask_image не base64: %v", err)
+	}
+	mimg, _, err := image.Decode(bytes.NewReader(mraw))
+	if err != nil {
+		t.Fatalf("mask_image не декодируется: %v", err)
+	}
+	if _, ok := mimg.(*image.Gray); !ok {
+		t.Fatalf("mask_image = %T, want *image.Gray (1 канал)", mimg)
+	}
+	if req.Strength == nil || *req.Strength != 0.6 {
+		t.Fatalf("strength = %v, want 0.6", req.Strength)
+	}
+	// Без img2img-полей в JSON их быть не должно: движок применит свои дефолты.
+	txt, _ := NormalizeGeneration(GenerationRequest{Prompt: "cat"}, nil, nil)
+	body, _ := json.Marshal(BuildImgGenRequest(txt, false))
+	for _, key := range []string{"init_image", "mask_image", "strength"} {
+		if strings.Contains(string(body), key) {
+			t.Errorf("%q не задан, но попал в тело: %s", key, body)
+		}
+	}
+}
+
+// Grayscale-маску не перекодируем, а маску A1111 (информация в АЛЬФЕ) —
+// конвертируем по альфе, а не по яркости (иначе получился бы «белый лист»).
+func TestNormalizeMaskBase64_AlphaConvention(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	src.Set(0, 0, color.RGBA{R: 255, G: 255, B: 255, A: 255}) // перерисовать
+	src.Set(1, 0, color.RGBA{R: 255, G: 255, B: 255, A: 0})   // оставить
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, src)
+
+	got, err := NormalizeMaskBase64(base64.StdEncoding.EncodeToString(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("normalize mask: %v", err)
+	}
+	raw, _ := base64.StdEncoding.DecodeString(got)
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	gray, ok := img.(*image.Gray)
+	if !ok {
+		t.Fatalf("got %T, want *image.Gray", img)
+	}
+	if v := gray.GrayAt(0, 0).Y; v != 255 {
+		t.Errorf("непрозрачный пиксель → %d, want 255 (маска в альфе)", v)
+	}
+	if v := gray.GrayAt(1, 0).Y; v != 0 {
+		t.Errorf("прозрачный пиксель → %d, want 0 (маска в альфе)", v)
+	}
+
+	// Полностью прозрачная маска = «перерисовывать нечего» (0), а не белый лист.
+	empty := image.NewRGBA(image.Rect(0, 0, 2, 1)) // все пиксели нулевые (A=0)
+	var ebuf bytes.Buffer
+	_ = png.Encode(&ebuf, empty)
+	got2, err := NormalizeMaskBase64(base64.StdEncoding.EncodeToString(ebuf.Bytes()))
+	if err != nil {
+		t.Fatalf("normalize empty mask: %v", err)
+	}
+	raw2, _ := base64.StdEncoding.DecodeString(got2)
+	img2, _, _ := image.Decode(bytes.NewReader(raw2))
+	if v := img2.(*image.Gray).GrayAt(0, 0).Y; v != 0 {
+		t.Errorf("полностью прозрачная маска → %d, want 0", v)
+	}
+
+	// Уже grayscale — проходит без перекодирования.
+	graySrc := image.NewGray(image.Rect(0, 0, 2, 1))
+	graySrc.SetGray(0, 0, color.Gray{Y: 200})
+	var gbuf bytes.Buffer
+	_ = png.Encode(&gbuf, graySrc)
+	original := base64.StdEncoding.EncodeToString(gbuf.Bytes())
+	same, err := NormalizeMaskBase64(original)
+	if err != nil {
+		t.Fatalf("gray mask: %v", err)
+	}
+	if same != original {
+		t.Errorf("grayscale-маска перекодирована без необходимости")
+	}
+}
+
+func TestNormalizeGeneration_InvalidInitImageRejected(t *testing.T) {
+	_, err := NormalizeGeneration(GenerationRequest{InitImage: "not-base64!!!"}, nil, nil)
+	if err == nil {
+		t.Fatal("битый init_image обязан давать ошибку до похода в движок")
+	}
+	if !strings.Contains(err.Error(), "init_image") {
+		t.Fatalf("ошибка обязана называть поле: %v", err)
+	}
+}
+
+func TestInvertMaskBase64_GrayscaleInvertsLuminance(t *testing.T) {
+	// Чёрно-белая маска (белое = «перерисовать»): инверсия обязана поменять
+	// местами области.
+	src := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	src.Set(0, 0, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+	src.Set(1, 0, color.RGBA{R: 0, G: 0, B: 0, A: 255})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, src); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	inv, err := InvertMaskBase64(base64.StdEncoding.EncodeToString(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("invert: %v", err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(inv)
+	if err != nil {
+		t.Fatalf("результат не base64: %v", err)
+	}
+	img, format, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("результат не декодируется: %v", err)
+	}
+	if format != "png" {
+		t.Fatalf("format = %q, want png", format)
+	}
+	if _, ok := img.(*image.Gray); !ok {
+		t.Fatalf("ожидался grayscale PNG (у движка mask_image 1 канал), got %T", img)
+	}
+	if r, _, _, _ := img.At(0, 0).RGBA(); r>>8 != 0 {
+		t.Errorf("белый пиксель не инвертирован: %v", r>>8)
+	}
+	if r, _, _, _ := img.At(1, 0).RGBA(); r>>8 != 255 {
+		t.Errorf("чёрный пиксель не инвертирован: %v", r>>8)
+	}
+}
+
+func TestInvertMaskBase64_AlphaConvention(t *testing.T) {
+	// A1111 кладёт маску в альфу: прозрачное = не перерисовывать.
+	src := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	src.Set(0, 0, color.RGBA{R: 255, G: 255, B: 255, A: 0})   // fully transparent
+	src.Set(1, 0, color.RGBA{R: 255, G: 255, B: 255, A: 255}) // opaque
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, src)
+
+	inv, err := InvertMaskBase64(base64.StdEncoding.EncodeToString(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("invert: %v", err)
+	}
+	raw, _ := base64.StdEncoding.DecodeString(inv)
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if v := img.At(0, 0).(color.Gray).Y; v != 255 {
+		t.Errorf("прозрачный пиксель → %d, want 255 (инверсия альфы)", v)
+	}
+	if v := img.At(1, 0).(color.Gray).Y; v != 0 {
+		t.Errorf("непрозрачный пиксель → %d, want 0 (инверсия альфы)", v)
+	}
+}
+
+func TestInvertMaskBase64_GarbageRejected(t *testing.T) {
+	if _, err := InvertMaskBase64("data:image/webp;base64,AAAA"); err == nil {
+		t.Error("недекодируемая маска обязана давать ошибку, а не тихо вернуть исходник")
+	}
+}
+
+func TestLooksLikeEncodeOOM(t *testing.T) {
+	for _, s := range []string{
+		"ggml_backend_cuda: failed to allocate 4096 MB",
+		"CUDA error: out of memory",
+		"std::bad_alloc",
+		"not enough memory to encode image",
+	} {
+		if !LooksLikeEncodeOOM(s) {
+			t.Errorf("%q обязан распознаваться как OOM", s)
+		}
+	}
+	for _, s := range []string{"", "prompt is required", "generation failed: invalid sampler"} {
+		if LooksLikeEncodeOOM(s) {
+			t.Errorf("%q НЕ должен считаться OOM (иначе hint превратится в шум)", s)
+		}
+	}
+	if !strings.Contains(Img2ImgMemoryHint, "--vae-tiling") || !strings.Contains(Img2ImgMemoryHint, "--vae-conv-direct") {
+		t.Fatalf("hint обязан называть флаги движка: %q", Img2ImgMemoryHint)
 	}
 }
 

@@ -925,6 +925,10 @@ upstream). Только явной переменной окружения, и �
 | `LB_ALLOW_MODEL_LOAD_TIMEOUT_SEC` | HTTP-запрос загрузки модели |
 | `LB_ALLOW_LOAD_WAIT_CAP_SEC` | ожидание готовности модели (poll-циклы) |
 | `LB_ALLOW_NCTX_RELOAD_TIMEOUT` | reload/preflight контекста |
+| `LB_ALLOW_GGUF_PROXY_TIMEOUT_SEC` | прокси WebUI → cppworker (load/unload/reload/hf) |
+| `LB_ALLOW_RPC_INFER_TIMEOUT_SEC` | распределённый инференс через RPC-координатор |
+| `LB_ALLOW_RPC_TP_INFER_TIMEOUT_SEC` | тензор-параллельный инференс (TP) |
+| `LB_AUTO_CONTINUE_TIMEOUT_SEC` | автопродолжение обрезанного ответа |
 | `LB_NCTX_PREFLIGHT_WAIT_SEC` | ожидание первого async-reload: `N` сек, `0` = не ждать (по умолчанию ждём терминального состояния) |
 | `LB_AUTO_LOAD_WAIT_SEC` | бюджет ожидания авто-загрузки: `N` сек, `0` = не ждать, отрицательное = до потолка |
 | `CPPWORKER_WRITE_TIMEOUT` / `CPPWORKER_READ_TIMEOUT` | HTTP Write/ReadTimeout сервера cppworker (`0` = без ограничения, дефолт) |

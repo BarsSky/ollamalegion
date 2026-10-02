@@ -1,12 +1,11 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
-	"time"
 
+	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/rpccoordinator"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -225,7 +224,14 @@ func (s *Server) handleRpcModelInfer_POST(w http.ResponseWriter, r *http.Request
 	}
 
 	// Inference через coordinator.
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	//
+	// R83/v67 (2026-10-02): по умолчанию БЕЗ капа. Было жёстких 30 секунд на
+	// распределённый инференс: генерация на удалённой машине (A10) идёт минуты, и
+	// запрос обрывался на 30-й секунде, хотя работа продолжалась. Ждём
+	// терминального состояния (ответ/ошибка) или ухода клиента.
+	// Кап — осознанный opt-in LB_ALLOW_RPC_INFER_TIMEOUT_SEC.
+	ctx, cancel := proxyContext(r.Context(),
+		balancer.OptInTimeoutSeconds("LB_ALLOW_RPC_INFER_TIMEOUT_SEC", "RPC-инференс через координатор"))
 	defer cancel()
 
 	resp, err := coord.Infer(ctx, rpccoordinator.InferRequest{

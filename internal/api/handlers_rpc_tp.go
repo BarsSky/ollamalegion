@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/rptensor"
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -165,8 +166,14 @@ func (s *Server) handleRPCModelTPInfer(w http.ResponseWriter, r *http.Request) {
 		SessionID: req.SessionID,
 	}
 
-	// Выполняем с timeout (по умолчанию 60s).
-	ctx, cancel := withTimeoutFromContext(r, 60*time.Second)
+	// Выполняем инференс.
+	//
+	// R83/v67 (2026-10-02): по умолчанию БЕЗ капа (было 60s). Тензор-параллельный
+	// инференс — обычная генерация, она длится столько, сколько длится; 60-секундный
+	// кап обрывал её посередине. Ждём терминального состояния или ухода клиента;
+	// кап — осознанный opt-in LB_ALLOW_RPC_TP_INFER_TIMEOUT_SEC.
+	ctx, cancel := withTimeoutFromContext(r,
+		balancer.OptInTimeoutSeconds("LB_ALLOW_RPC_TP_INFER_TIMEOUT_SEC", "TP-инференс"))
 	defer cancel()
 
 	start := time.Now()
@@ -230,12 +237,18 @@ func (s *Server) handleRPCModelTPStatus(w http.ResponseWriter, r *http.Request) 
 
 // withTimeoutFromContext — обёртка: если r.Context() уже с таймаутом,
 // использует его; иначе применяет defaultTimeout.
+//
+// R83/v67 (2026-10-02): defaultTimeout <= 0 = БЕЗ капа (WithCancel, не
+// WithTimeout(…, 0): нулевой таймаут даёт немедленно истёкший контекст).
 func withTimeoutFromContext(r *http.Request, defaultTimeout time.Duration) (context.Context, context.CancelFunc) {
+	parent := context.Background()
 	if r != nil && r.Context() != nil && r.Context().Err() == nil {
-		// Используем request context как parent (caller может отменить).
-		return context.WithTimeout(r.Context(), defaultTimeout)
+		parent = r.Context()
 	}
-	return context.WithTimeout(context.Background(), defaultTimeout)
+	if defaultTimeout > 0 {
+		return context.WithTimeout(parent, defaultTimeout)
+	}
+	return context.WithCancel(parent)
 }
 
 // generateRequestID — простой UUID-подобный ID для request tracking.

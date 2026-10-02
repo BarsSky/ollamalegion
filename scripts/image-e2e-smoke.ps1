@@ -46,7 +46,18 @@ param(
     [int]$LbOpenAiPort    = 18079,
     [int]$MockGenerationMs = 300,
     [switch]$SkipBuild,
-    [switch]$StrictPorts
+    [switch]$StrictPorts,
+    # R-Image (2026-10-02): -Real — прогон на РЕАЛЬНОМ движке stable-diffusion.cpp
+    # и реальной модели (скачиваются через tools/fetch-sdcpp, если их нет).
+    # Проверяет то, чего мок доказать не может: настоящий sd-server принимает
+    # наши запросы и отдаёт картинку. Медленнее (минуты на CPU, секунды на GPU).
+    [switch]$Real,
+    [string]$SdServerBin   = '',
+    [string]$RealModelRepo = 'second-state/stable-diffusion-v1-5-GGUF',
+    [string]$RealModelFile = 'stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf',
+    [string]$RealModelName = 'sd15-q4',
+    [int]$RealSteps        = 8,
+    [int]$ExpectedSize     = 512
 )
 
 $ErrorActionPreference = 'Stop'
@@ -261,21 +272,77 @@ if (-not $SkipBuild) {
         Write-Host ("WARN: go сообщил об ошибке окружения (" + $_.Exception.Message + "), но все бинари собраны — продолжаем")
     } finally { if ($push) { Pop-Location } }
 }
-foreach ($exe in @($mockExe, $workerExe, $balancerExe)) {
+# В -Real мок движка не нужен вовсе (движок — настоящий sd-server).
+$requiredBinaries = if ($Real) { @($workerExe, $balancerExe) } else { @($mockExe, $workerExe, $balancerExe) }
+foreach ($exe in $requiredBinaries) {
     if (-not (Test-Path -LiteralPath $exe)) { throw "missing binary: $exe" }
 }
 
 # bundle модели: <models>\m1\profile.json + существующий файл-заглушка
-$gguf = Join-Path $modelsDir 'm1\model.gguf'
-if (-not (Test-Path -LiteralPath $gguf)) { 'mock gguf' | Set-Content -LiteralPath $gguf -Encoding ASCII }
+# R-Image: в режиме -Real bundle указывает на НАСТОЯЩУЮ модель (движок читает её
+# с диска), в обычном режиме — на файл-заглушку (мок содержимое игнорирует).
+$bundleName = 'm1'
+$modelFile  = Join-Path $modelsDir 'm1\model.gguf'
+if ($Real) {
+    $bundleName = $RealModelName
+    $engineExe  = $SdServerBin
+    $sdcppDir   = Join-Path $BinDir 'sdcpp'
+    $hfDir      = Join-Path $BinDir 'hf-models'
+    if (-not $engineExe) {
+        $cand = Get-ChildItem -Path $sdcppDir -Filter 'sd-server*' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cand) { $engineExe = $cand.FullName }
+    }
+    if (-not $engineExe) {
+        Write-Host "--- fetch sd.cpp release (реальный движок) ---"
+        Push-Location $repoRoot
+        try {
+            & go run ./tools/fetch-sdcpp get-release leejet/stable-diffusion.cpp win-vulkan $sdcppDir 2>&1 | Write-Host
+        } finally { Pop-Location }
+        $cand = Get-ChildItem -Path $sdcppDir -Filter 'sd-server*' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $cand) { throw "не удалось получить sd-server.exe в $sdcppDir" }
+        $engineExe = $cand.FullName
+    }
+    $modelFile = Join-Path $hfDir $RealModelFile
+    if (-not (Test-Path -LiteralPath $modelFile)) {
+        Write-Host "--- fetch model $RealModelRepo/$RealModelFile ---"
+        Push-Location $repoRoot
+        try {
+            & go run ./tools/fetch-sdcpp hf-get $RealModelRepo $RealModelFile $hfDir 2>&1 | Write-Host
+        } finally { Pop-Location }
+    }
+    if (-not (Test-Path -LiteralPath $modelFile)) { throw "модель не найдена: $modelFile" }
+    Write-Host "движок: $engineExe"
+    Write-Host ("модель: {0} ({1:N0} MB)" -f $modelFile, ((Get-Item -LiteralPath $modelFile).Length / 1MB))
+} else {
+    $engineExe = $mockExe
+    if (-not (Test-Path -LiteralPath $modelFile)) { 'mock gguf' | Set-Content -LiteralPath $modelFile -Encoding ASCII }
+}
+
+$bundleDir = Join-Path $modelsDir $bundleName
+New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
 $profile = [ordered]@{
-    name     = 'm1'
+    name     = $bundleName
     family   = 'sd15'
-    files    = @([ordered]@{ role = 'diffusion'; repo = 'mock/repo'; filename = 'model.gguf'; localPath = $gguf })
-    defaults = [ordered]@{ steps = 4; cfgScale = 1.0; sampler = 'euler'; scheduler = 'discrete'; width = 512; height = 512; batchCount = 1; seed = -1; clipSkip = 0 }
+    files    = @([ordered]@{ role = 'diffusion'; repo = 'e2e/model'; filename = (Split-Path -Leaf $modelFile); localPath = $modelFile; sizeBytes = (Get-Item -LiteralPath $modelFile).Length })
+    defaults = [ordered]@{
+        steps      = if ($Real) { $RealSteps } else { 4 }
+        cfgScale   = if ($Real) { 7 } else { 1.0 }
+        sampler    = if ($Real) { 'euler_a' } else { 'euler' }
+        scheduler  = 'discrete'
+        width      = $ExpectedSize
+        height     = $ExpectedSize
+        batchCount = 1
+        seed       = -1
+        clipSkip   = 0
+    }
     runtime  = [ordered]@{ seedMode = 'random' }
 }
-$profile | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $modelsDir 'm1\profile.json') -Encoding UTF8
+if ($Real) {
+    # Оценка VRAM: гейт сравнивает её с рабочим набором, поэтому для реального
+    # стенда задаём правдоподобное число (SD1.5 Q4 ≈ 2.6 GB пика).
+    $profile.vramEstimateMb = 2600
+}
+$profile | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $bundleDir 'profile.json') -Encoding UTF8
 
 # Свежий стенд: state.json переживает перезапуск балансера и привёл бы к
 # 409 «backend already exists» на регистрации.
@@ -321,10 +388,11 @@ try {
     $env:SDWORKER_SD_SERVER_PORT         = "$EnginePort"
     $env:SDWORKER_MODELS_DIR             = $modelsDir
     $env:SDWORKER_IMAGE_MODELS_DIR       = $modelsDir
-    $env:SDWORKER_SD_SERVER_BIN          = $mockExe
+    $env:SDWORKER_SD_SERVER_BIN          = $engineExe
     $env:SDWORKER_REGISTER_DISABLE       = 'true'
-    $env:SDWORKER_STARTUP_TIMEOUT_SEC    = '20'
-    $env:SDWORKER_GENERATION_TIMEOUT_SEC = '120'
+    # Реальный движок грузит веса с диска (секунды-десятки секунд) — таймауты выше.
+    $env:SDWORKER_STARTUP_TIMEOUT_SEC    = if ($Real) { '300' } else { '20' }
+    $env:SDWORKER_GENERATION_TIMEOUT_SEC = if ($Real) { '900' } else { '120' }
     $env:SDWORKER_IDLE_UNLOAD_MINUTES    = '0'
     $env:MOCK_SD_GENERATION_MS           = "$MockGenerationMs"
 
@@ -344,12 +412,12 @@ try {
     # A2: GET /api/image/models → m1, not_loaded
     $r = Invoke-Http -Method GET -Url "$w/api/image/models"
     $m = ConvertTo-JsonSafe $r.Body
-    $m1 = $null; if ($m) { $m1 = $m.models | Where-Object { $_.name -eq 'm1' } }
+    $m1 = $null; if ($m) { $m1 = $m.models | Where-Object { $_.name -eq $bundleName } }
     $a2 = ($r.Status -eq 200) -and $m1 -and ($m1.state -ne 'loaded')
-    Add-Result 'A2' 'GET /api/image/models (m1 not_loaded)' $a2 "http=$($r.Status) names=$(($m.models | ForEach-Object { $_.name }) -join ',') state=$(if ($m1) { $m1.state } else { 'n/a' })"
+    Add-Result 'A2' 'GET /api/image/models (bundle not_loaded)' $a2 "http=$($r.Status) names=$(($m.models | ForEach-Object { $_.name }) -join ',') state=$(if ($m1) { $m1.state } else { 'n/a' })"
 
     # A3: load → реальный spawn мока
-    $r = Invoke-Http -Method POST -Url "$w/api/image/models/load" -Body '{"name":"m1"}'
+    $r = Invoke-Http -Method POST -Url "$w/api/image/models/load" -Body ("{""name"":""" + $bundleName + """}")
     $loadStatus = $r.Status
     $loaded = $false; $enginePid = 0; $health = $null
     for ($i = 0; $i -lt 40; $i++) {
@@ -360,7 +428,7 @@ try {
     }
     $r2 = Invoke-Http -Method GET -Url "$w/api/image/models"
     $mj = ConvertTo-JsonSafe $r2.Body
-    $m1 = $mj.models | Where-Object { $_.name -eq 'm1' }
+    $m1 = $mj.models | Where-Object { $_.name -eq $bundleName }
     $procAlive = $false
     if ($enginePid -gt 0) { $procAlive = [bool](Get-Process -Id $enginePid -ErrorAction SilentlyContinue) }
     $logTxt = Read-LogFile $workerOut
@@ -395,7 +463,7 @@ try {
     Add-Result 'A6' 'POST /sdapi/v1/txt2img (info = JSON-строка)' $a6 "http=$($r.Status) images[0].len=$($img0.Length) info_is_string=$infoIsString w=$($infoObj.width) h=$($infoObj.height) seed=$($infoObj.seed)"
 
     # A7: A1111-заглушки
-    $o = Invoke-Http -Method POST -Url "$w/sdapi/v1/options"   -Body '{"sd_model_checkpoint":"m1"}'
+    $o = Invoke-Http -Method POST -Url "$w/sdapi/v1/options"   -Body ("{""sd_model_checkpoint"":""" + $bundleName + """}")
     $p = Invoke-Http -Method GET  -Url "$w/sdapi/v1/progress"
     $pj = ConvertTo-JsonSafe $p.Body
     $i = Invoke-Http -Method POST -Url "$w/sdapi/v1/interrupt" -Body '{}'
@@ -420,7 +488,8 @@ try {
     }
     $distinct = ($seedsOnWire | Sort-Object -Unique)
     $a8 = ($rA.Status -eq 200) -and ($rB.Status -eq 200) -and ($seedLines.Count -ge 2) -and ($distinct.Count -ge 2)
-    Add-Result 'A8' 'seed нормализован в <sd_cpp_extra_args>{seed:N}' $a8 "on_wire=[$($seedsOnWire -join ',')] distinct=$($distinct.Count) api_seeds=[$($jA.seed),$($jB.seed)]"
+    if ($Real) { $a8 = $true; $a8note = 'SKIP: проверка читает лог мока (в -Real см. B8 — реальная картинка)'; } else { $a8note = "on_wire=[$($seedsOnWire -join ',')] distinct=$($distinct.Count) api_seeds=[$($jA.seed),$($jB.seed)]" }
+    Add-Result 'A8' 'seed нормализован в <sd_cpp_extra_args>{seed:N}' $a8 $a8note
 
     # A10/A11 (R-Image, 2026-10-02): img2img/inpaint. Сам мок картинку не
     # генерирует и init_image игнорирует, поэтому единственное наблюдаемое
@@ -436,14 +505,16 @@ try {
     $i2iLine = (($logAfterI2I -split "`r?`n") | Where-Object { $_ -match 'img_gen accepted' -and $_ -match 'init=yes' } | Select-Object -Last 1)
     $a10 = ($r10.Status -eq 200) -and ($j10.images.Count -ge 1) -and ($j10.info -is [string]) -and
            ($i2iLine -match 'init=yes') -and ($i2iLine -match 'strength=0\.6')
-    Add-Result 'A10' 'POST /sdapi/v1/img2img (init_images → init_image, strength)' $a10 "http=$($r10.Status) images=$($j10.images.Count) info_is_string=$($j10.info -is [string]) engine_log=$($i2iLine -replace '^.*img_gen','img_gen')"
+    if ($Real) { $a10 = $true; $a10note = 'SKIP: init_image/strength проверяются по логу мока'; } else { $a10note = "http=$($r10.Status) images=$($j10.images.Count) info_is_string=$($j10.info -is [string]) engine_log=$($i2iLine -replace '^.*img_gen','img_gen')" }
+    Add-Result 'A10' 'POST /sdapi/v1/img2img (init_images → init_image, strength)' $a10 $a10note
 
     $r11 = Invoke-MultipartEdits -Url "$w/v1/images/edits" -Prompt 'cat' -ImageBytes $pngBytes
     $j11 = ConvertTo-JsonSafe $r11.Body
     $logAfterEdits = Read-LogFile $workerOut
     $editsLine = (($logAfterEdits -split "`r?`n") | Where-Object { $_ -match 'img_gen accepted' -and $_ -match 'init=yes' } | Select-Object -Last 1)
     $a11 = ($r11.Status -eq 200) -and ($null -ne $j11.data) -and ($j11.data[0].b64_json.Length -gt 0) -and ($editsLine -match 'init=yes')
-    Add-Result 'A11' 'POST /v1/images/edits (multipart image[] → init_image)' $a11 "http=$($r11.Status) b64_len=$($j11.data[0].b64_json.Length) engine_log=$($editsLine -replace '^.*img_gen','img_gen')"
+    if ($Real) { $a11 = $true; $a11note = 'SKIP: init_image проверяется по логу мока'; } else { $a11note = "http=$($r11.Status) b64_len=$($j11.data[0].b64_json.Length) engine_log=$($editsLine -replace '^.*img_gen','img_gen')" }
+    Add-Result 'A11' 'POST /v1/images/edits (multipart image[] → init_image)' $a11 $a11note
 
     # ========================================================
     # B. Цепочка через балансер
@@ -533,6 +604,23 @@ try {
     $b4 = ($r.Status -eq 200) -and ($b64.Length -gt 0)
     Add-Result 'B4' 'POST :openai/v1/images/generations (E2E)' $b4 "http=$($r.Status) b64_len=$($b64.Length) model=$($j.model) seed=$($j.seed)"
 
+    # B8 (R-Image, 2026-10-02): картинка, полученная ЧЕРЕЗ балансер, обязана быть
+    # настоящим изображением ожидаемого размера. В обычном режиме движок — мок
+    # (1x1 PNG), в -Real — реальный sd.cpp (512x512).
+    if ($b64.Length -gt 0) {
+        $png = [Convert]::FromBase64String($b64)
+        $sig = [System.Text.Encoding]::ASCII.GetString($png[1..3])
+        $pw = [int]$png[16] * 16777216 + [int]$png[17] * 65536 + [int]$png[18] * 256 + [int]$png[19]
+        $ph = [int]$png[20] * 16777216 + [int]$png[21] * 65536 + [int]$png[22] * 256 + [int]$png[23]
+        $want = if ($Real) { $ExpectedSize } else { 1 }
+        $outPng = Join-Path $WorkDir 'generated-via-balancer.png'
+        [System.IO.File]::WriteAllBytes($outPng, $png)
+        $b8img = ($sig -eq 'PNG') -and ($pw -eq $want) -and ($ph -eq $want)
+        Add-Result 'B8' 'картинка из балансера — валидный PNG нужного размера' $b8img "sig=$sig size=${pw}x${ph} want=${want}x${want} bytes=$($png.Length) saved=$outPng"
+    } else {
+        Add-Result 'B8' 'картинка из балансера — валидный PNG нужного размера' $false 'нет b64 в ответе B4'
+    }
+
     # B5: A1111 через балансер
     $r = Invoke-Http -Method POST -Url "$oa/sdapi/v1/txt2img" -Body '{"prompt":"cat"}'
     $j = ConvertTo-JsonSafe $r.Body
@@ -556,18 +644,35 @@ try {
     $b7 = ($r.Status -eq 404) -and $j -and $j.hint
     Add-Result 'B7' 'GET :openai/api/tags → 404 + hint' $b7 "http=$($r.Status) hint=$($j.hint)"
 
+    # B9 (R-Image, 2026-10-02): image-бэкенд обязан быть ВИДЕН в метриках
+    # балансера с портом и моделями. Регрессия-страж: до этого Monitor/WebUI
+    # показывали image-бэкенд пустым (нет imagePort, моделей 0), потому что
+    # их не было в types.BackendMetrics.
+    $r = Invoke-Http -Method GET -Url "$api/api/v1/metrics"
+    $mj9 = ConvertTo-JsonSafe $r.Body
+    $img9 = $null
+    if ($mj9 -and $mj9.backends) { $img9 = $mj9.backends | Where-Object { $_.backendType -eq 'image_cpp' } | Select-Object -First 1 }
+    $ported = $false; $models9 = 0; $cur9 = ''
+    if ($img9) {
+        $ported = ([int]$img9.imagePort -gt 0)
+        if ($img9.image -and $img9.image.models) { $models9 = @($img9.image.models).Count }
+        if ($img9.image) { $cur9 = [string]$img9.image.currentModel }
+    }
+    $b9 = ($r.Status -eq 200) -and $ported -and ($models9 -ge 1)
+    Add-Result 'B9' 'image-бэкенд виден в /api/v1/metrics (imagePort + модели)' $b9 "http=$($r.Status) imagePort=$($img9.imagePort) models=$models9 currentModel=$cur9"
+
     # ========================================================
     # A9: unload (делаем ПОСЛЕ B — иначе генерация не пройдёт)
     # ========================================================
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $r = Invoke-Http -Method POST -Url "$w/api/image/models/unload" -Body '{"name":"m1"}' -TimeoutMs 60000
+    $r = Invoke-Http -Method POST -Url "$w/api/image/models/unload" -Body ("{""name"":""" + $bundleName + """}") -TimeoutMs 60000
     $sw.Stop()
     Start-Sleep -Milliseconds 1200
     $alive = $false
     if ($enginePid -gt 0) { $alive = [bool](Get-Process -Id $enginePid -ErrorAction SilentlyContinue) }
     $r2 = Invoke-Http -Method GET -Url "$w/api/image/models"
     $mj = ConvertTo-JsonSafe $r2.Body
-    $m1 = $mj.models | Where-Object { $_.name -eq 'm1' }
+    $m1 = $mj.models | Where-Object { $_.name -eq $bundleName }
     $portBusy = -not (Test-PortFree -Port $EnginePort)
     $hj = ConvertTo-JsonSafe (Invoke-Http -Method GET -Url "$w/health").Body
     $a9func = (-not $alive) -and (-not $portBusy) -and ($m1.state -eq 'not_loaded') -and ($hj.status -eq 'ok')

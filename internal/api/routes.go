@@ -308,6 +308,28 @@ func (s *Server) setupRoutes() {
 	//     потому что EventSource не поддерживает custom headers.
 	s.mux.Handle("/api/v1/gguf/backends/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleGgufBackendProxy), s.rateLimiter), s.authenticator))
 
+	// R-Image (2026-09-27): image-бэкенды (генерация изображений, sd.cpp/sd-server).
+	//
+	// Симметрично gguf-путям:
+	//   GET    /api/v1/image/backends                  — публичный список image-бэкендов
+	//          (страница Image в WebUI рисуется до входа в настройки — как GGUF);
+	//   GET    /api/v1/image/models                    — «сырые» списки моделей со всех воркеров;
+	//   GET    /api/v1/image/model-catalog             — пресеты (config/image-model-catalog.json);
+	//   CRUD   /api/v1/image/model-profiles[/{name}]   — профили bundle'ов;
+	//   POST   /api/v1/image/model-profiles/{name}/apply (+ /apply/progress, /apply/status);
+	//   ANY    /api/v1/image/backends/{id}/proxy/...   — прозрачный прокси к воркеру
+	//          (+ алиасы models/load/unload/capabilities/generate/jobs/pull).
+	//
+	// Всё, кроме публичного списка, — под AuthMiddleware + RateLimitMiddleware:
+	// прокси умеет POST /api/image/models/load (spawn sd-server) и /api/hf/bundle
+	// (многогигабайтная загрузка), поэтому анонимный доступ здесь недопустим.
+	s.mux.HandleFunc("/api/v1/image/backends", s.handleImageBackends)
+	s.mux.Handle("/api/v1/image/models", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelsAggregate), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/image/model-catalog", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelCatalog), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/image/model-profiles", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelProfiles), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/image/model-profiles/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelProfile), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/image/backends/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageBackendRoutes), s.rateLimiter), s.authenticator))
+
 	// Proxy Logs endpoint (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/proxy/logs", AuthMiddleware(RateLimitMiddleware(s.proxyLogsHandler, s.rateLimiter), s.authenticator))
 

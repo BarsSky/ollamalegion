@@ -12,6 +12,7 @@ package cppbackend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,6 +50,45 @@ const (
 )
 
 // ============================================================
+// Расширения файлов моделей
+// ============================================================
+
+// ModelWeightExtensions — расширения, которые считаются файлами весов модели.
+//
+// R-Image (2026-09-27): до этого список был жёстко зашит как ".gguf" в двух
+// местах (tree-API и fallback через siblings). Для диффузионных моделей
+// (stable-diffusion.cpp) это неверно: diffusion/VAE/text-encoder'ы лежат в
+// .safetensors/.sft, а старые all-in-one чекпойнты — в .ckpt. Один bundle =
+// НЕСКОЛЬКО файлов разных форматов, поэтому фильтр должен быть один и
+// параметризуемый (см. ListModelFilesByFormat).
+var ModelWeightExtensions = []string{".gguf", ".safetensors", ".sft", ".ckpt"}
+
+// HasModelWeightExtension — true, если имя файла имеет «весовое» расширение.
+// Регистронезависимо: HF отдаёт имена как есть, встречается и ".GGUF".
+func HasModelWeightExtension(name string) bool {
+	lower := strings.ToLower(name)
+	for _, ext := range ModelWeightExtensions {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// FileFormatFromPath — формат файла без точки ("gguf", "safetensors", "sft",
+// "ckpt"); "" для не-весовых файлов. Используется вместо булева IsGGUF там,
+// где важна разница между форматами (валидация bundle, UI).
+func FileFormatFromPath(path string) string {
+	lower := strings.ToLower(path)
+	for _, ext := range ModelWeightExtensions {
+		if strings.HasSuffix(lower, ext) {
+			return strings.TrimPrefix(ext, ".")
+		}
+	}
+	return ""
+}
+
+// ============================================================
 // Типы
 // ============================================================
 
@@ -67,12 +107,16 @@ type HFModelRepo struct {
 	Recommended string       `json:"recommended"`     // Path рекомендованного .gguf (Q4_K_M если есть)
 }
 
-// HFFileInfo — информация о GGUF файле в репозитории
+// HFFileInfo — информация о файле весов в репозитории
 type HFFileInfo struct {
 	Path         string `json:"path"`         // путь в репозитории
 	SizeBytes    int64  `json:"sizeBytes"`    // размер файла
-	IsGGUF       bool   `json:"isGGUF"`       // .gguf файл?
+	IsGGUF       bool   `json:"isGGUF"`       // .gguf файл? (обратная совместимость UI)
 	Quantization string `json:"quantization"` // извлечённый тип квантизации
+	// Format — расширение без точки: gguf | safetensors | sft | ckpt.
+	// R-Image: нужно, чтобы UI/каталог могли отличить файл весов диффузии от
+	// VAE/text-encoder'а — для bundle-загрузки это разные роли, а не «GGUF или нет».
+	Format string `json:"format,omitempty"`
 }
 
 // HFDownloadProgress — прогресс загрузки
@@ -105,6 +149,16 @@ type HFDownloadRequest struct {
 	Revision     string `json:"revision"`     // ветка/ревизия (опционально, default: "main")
 	Quantization string `json:"quantization"` // фильтр по квантизации (опционально)
 	AutoDetect   bool   `json:"autoDetect"`   // авто-выбор файла?
+	// Role — R-Image (2026-09-27): роль файла внутри bundle
+	// (diffusion/vae/clip_l/t5xxl/llm/... — см. types.ImageFileRole*).
+	// Для одиночной загрузки не используется; нужна для прогресса bundle и
+	// для отчёта «какой компонент не скачался».
+	Role string `json:"role,omitempty"`
+	// SizeBytes — ожидаемый размер файла (0 = неизвестен). Для bundle-загрузки
+	// позволяет (а) показать общий прогресс до прихода заголовков ответа и
+	// (б) пропустить уже скачанный файл, если его размер совпал — повторный
+	// pull не перекачивает гигабайты.
+	SizeBytes int64 `json:"sizeBytes,omitempty"`
 }
 
 // ============================================================
@@ -123,6 +177,14 @@ type HuggingFaceDownloader struct {
 	downloadHistory []HFDownloadProgress
 	maxConcurrent   int
 	semaphore       chan struct{}
+
+	// activeBundles/bundleHistory — R-Image (2026-09-27): bundle-загрузки
+	// (несколько файлов = одна диффузионная модель). Отдельные карты, а не
+	// общие с одиночными загрузками: ключ bundle — bundleID (каталог), а не
+	// "repo/filename", и агрегировать их прогресс вместе нельзя.
+	// См. hf_bundle.go.
+	activeBundles map[string]*bundleTask
+	bundleHistory []HFBundleProgress
 
 	// onDownloadComplete — R66d (2026-09-23): вызывается после успешной
 	// загрузки файла в modelsDir. Backend подписывается на него, чтобы
@@ -180,6 +242,8 @@ func NewHuggingFaceDownloader(token, mirror, downloadsDir, modelsDir string) *Hu
 		},
 		activeDownloads: make(map[string]*downloadTask),
 		downloadHistory: make([]HFDownloadProgress, 0),
+		activeBundles:   make(map[string]*bundleTask),
+		bundleHistory:   make([]HFBundleProgress, 0),
 		maxConcurrent:   MaxConcurrentDownloads,
 		semaphore:       make(chan struct{}, MaxConcurrentDownloads),
 	}
@@ -434,7 +498,8 @@ func (d *HuggingFaceDownloader) enrichWithFiles(ctx context.Context, repos []HFM
 			continue
 		}
 		if len(e.files) == 0 {
-			log.Debugw("repo has no GGUF files, skipping", "repo", e.repo.ID)
+			// R-Image: файлов весов нет вообще (ни .gguf, ни .safetensors).
+			log.Debugw("repo has no model weight files, skipping", "repo", e.repo.ID)
 			continue
 		}
 
@@ -467,13 +532,26 @@ func countWithFiles(repos []HFModelRepo) int {
 	return n
 }
 
-// ListModelFiles получает список GGUF файлов в репозитории
+// ListModelFiles получает список файлов весов в репозитории.
+//
+// R-Image (2026-09-27): фильтр расширений больше не зашит как «.gguf» —
+// используется ModelWeightExtensions (.gguf/.safetensors/.sft/.ckpt), потому
+// что bundle диффузионной модели состоит из файлов разных форматов.
 func (d *HuggingFaceDownloader) ListModelFiles(ctx context.Context, modelID, revision string) ([]HFFileInfo, error) {
+	return d.ListModelFilesByFormat(ctx, modelID, revision, ModelWeightExtensions)
+}
+
+// ListModelFilesByFormat — ListModelFiles с явным списком расширений
+// (например []string{".gguf"} для чисто-GGUF вкладки или []string{".safetensors"}).
+func (d *HuggingFaceDownloader) ListModelFilesByFormat(ctx context.Context, modelID, revision string, extensions []string) ([]HFFileInfo, error) {
 	log := logger.Get()
-	log.Infow("listing model files", "modelID", modelID, "revision", revision)
+	log.Infow("listing model files", "modelID", modelID, "revision", revision, "extensions", extensions)
 
 	if revision == "" {
 		revision = "main"
+	}
+	if len(extensions) == 0 {
+		extensions = ModelWeightExtensions
 	}
 
 	// Используем HF API: GET /api/models/{modelID}/tree/{revision}
@@ -507,20 +585,25 @@ func (d *HuggingFaceDownloader) ListModelFiles(ctx context.Context, modelID, rev
 	if err := json.NewDecoder(resp.Body).Decode(&hfFiles); err != nil {
 		// Если не удалось распарсить как массив, пробуем другой формат
 		log.Warnw("failed to parse file list as array, trying alternative format", "error", err)
-		return d.listModelFilesAlternative(ctx, modelID, revision)
+		return d.listModelFilesAlternative(ctx, modelID, revision, extensions)
 	}
 
 	result := make([]HFFileInfo, 0, len(hfFiles))
 	for _, f := range hfFiles {
-		if f.Type == "file" && strings.HasSuffix(strings.ToLower(f.Path), ".gguf") {
-			info := HFFileInfo{
-				Path:         f.Path,
-				SizeBytes:    f.Size,
-				IsGGUF:       true,
-				Quantization: GetFileTypeFromName(f.Path),
-			}
-			result = append(result, info)
+		if f.Type != "file" {
+			continue
 		}
+		format := formatForExtensions(f.Path, extensions)
+		if format == "" {
+			continue
+		}
+		result = append(result, HFFileInfo{
+			Path:         f.Path,
+			SizeBytes:    f.Size,
+			IsGGUF:       format == "gguf",
+			Format:       format,
+			Quantization: GetFileTypeFromName(f.Path),
+		})
 	}
 
 	// Сортируем по размеру (сначала маленькие)
@@ -528,13 +611,26 @@ func (d *HuggingFaceDownloader) ListModelFiles(ctx context.Context, modelID, rev
 		return result[i].SizeBytes < result[j].SizeBytes
 	})
 
-	log.Infow("files listed", "modelID", modelID, "ggufFiles", len(result))
+	log.Infow("files listed", "modelID", modelID, "modelFiles", len(result))
 	return result, nil
+}
+
+// formatForExtensions — формат файла, если его расширение входит в allowed;
+// иначе "". Отдельный helper (а не прямой HasModelWeightExtension), чтобы
+// явный список расширений уважался в обоих путях (tree и siblings).
+func formatForExtensions(path string, allowed []string) string {
+	lower := strings.ToLower(path)
+	for _, ext := range allowed {
+		if strings.HasSuffix(lower, strings.ToLower(ext)) {
+			return strings.TrimPrefix(strings.ToLower(ext), ".")
+		}
+	}
+	return ""
 }
 
 // listModelFilesAlternative — альтернативный метод получения файлов
 // Использует прямой HTML парсинг или API /api/models/{modelID}
-func (d *HuggingFaceDownloader) listModelFilesAlternative(ctx context.Context, modelID, revision string) ([]HFFileInfo, error) {
+func (d *HuggingFaceDownloader) listModelFilesAlternative(ctx context.Context, modelID, revision string, extensions []string) ([]HFFileInfo, error) {
 	// Пробуем получить список через API модели
 	apiURL := d.getAPIURL(fmt.Sprintf("/models/%s", modelID))
 
@@ -569,15 +665,17 @@ func (d *HuggingFaceDownloader) listModelFilesAlternative(ctx context.Context, m
 
 	result := make([]HFFileInfo, 0, len(modelInfo.Siblings))
 	for _, s := range modelInfo.Siblings {
-		if strings.HasSuffix(strings.ToLower(s.Rfilename), ".gguf") {
-			info := HFFileInfo{
-				Path:         s.Rfilename,
-				SizeBytes:    s.Size,
-				IsGGUF:       true,
-				Quantization: GetFileTypeFromName(s.Rfilename),
-			}
-			result = append(result, info)
+		format := formatForExtensions(s.Rfilename, extensions)
+		if format == "" {
+			continue
 		}
+		result = append(result, HFFileInfo{
+			Path:         s.Rfilename,
+			SizeBytes:    s.Size,
+			IsGGUF:       format == "gguf",
+			Format:       format,
+			Quantization: GetFileTypeFromName(s.Rfilename),
+		})
 	}
 
 	sort.Slice(result, func(i, j int) bool {
@@ -632,7 +730,7 @@ func (d *HuggingFaceDownloader) StartDownload(req HFDownloadRequest) (*HFDownloa
 		}
 
 		if len(files) == 0 {
-			return nil, fmt.Errorf("no GGUF files found in %s", req.ModelID)
+			return nil, fmt.Errorf("no model weight files (.gguf/.safetensors/.sft/.ckpt) found in %s", req.ModelID)
 		}
 
 		// Если указана квантизация, фильтруем
@@ -649,18 +747,30 @@ func (d *HuggingFaceDownloader) StartDownload(req HFDownloadRequest) (*HFDownloa
 			}
 		}
 
-		// Выбираем самый маленький файл (обычно это Q4_K_M или похожий оптимальный)
-		req.Filename = files[0].Path
+		// Выбираем рекомендованный файл по приоритету квантизации (Q4_K_M → …),
+		// а НЕ «самый маленький».
+		//
+		// R-Image (2026-09-27): раньше здесь стоял files[0] — то есть после
+		// сортировки по размеру это был САМЫЙ МАЛЕНЬКИЙ файл (Q2_K), хотя
+		// комментарий обещал «обычно Q4_K_M». Эвристика «самый маленький»
+		// вредна для одиночной загрузки и вовсе неверна для bundle: состав
+		// диффузионной модели (diffusion+vae+text encoders) задаёт пользователь
+		// или каталог пресетов — см. StartBundleDownload, где авто-выбор
+		// запрещён и каждый файл указан явно.
+		//
+		// pickRecommended — та же функция, что и в SearchModels, поэтому UI
+		// показывает ровно тот файл, который будет скачан.
+		req.Filename = pickRecommended(files)
 		log.Infow("auto-selected file", "modelID", req.ModelID, "filename", req.Filename)
 	} else if req.Filename == "" {
-		// Пытаемся найти GGUF файлы и взять первый
+		// Пытаемся найти файлы весов и взять рекомендованный
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
 		files, err := d.ListModelFiles(ctx, req.ModelID, req.Revision)
 		if err == nil && len(files) > 0 {
-			req.Filename = files[0].Path
-			log.Infow("auto-selected first file", "modelID", req.ModelID, "filename", req.Filename)
+			req.Filename = pickRecommended(files)
+			log.Infow("auto-selected recommended file", "modelID", req.ModelID, "filename", req.Filename)
 		} else {
 			return nil, fmt.Errorf("filename is required when autoDetect is false")
 		}
@@ -727,25 +837,70 @@ func (d *HuggingFaceDownloader) StartDownload(req HFDownloadRequest) (*HFDownloa
 	return &task.progress, nil
 }
 
-// downloadFile — внутренняя функция загрузки файла
-func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *downloadTask, req HFDownloadRequest, destPath, finalPath string) {
-	defer close(task.completed)
-	defer func() {
-		d.mu.Lock()
-		delete(d.activeDownloads, d.makeDownloadKey(req.ModelID, req.Filename))
-		d.mu.Unlock()
-	}()
+// ============================================================
+// Загрузка одного файла: ядро (переиспользуется bundle-загрузкой)
+// ============================================================
+
+// errDownloadCancelled — загрузка отменена вызывающим (ctx.Done()).
+// Темповый .download-файл при отмене УДАЛЯЕТСЯ: «отменить» = «не resume'ить».
+var errDownloadCancelled = errors.New("download cancelled")
+
+// downloadInterruptedError — сетевой/IO-сбой В СЕРЕДИНЕ передачи.
+// .download-файл остаётся на диске: следующий запуск продолжит с байта обрыва
+// (Range-resume). Отличается от прочих ошибок (HTTP 4xx, ошибка записи) —
+// те помечаются в истории как "failed".
+type downloadInterruptedError struct{ err error }
+
+func (e *downloadInterruptedError) Error() string { return e.err.Error() }
+func (e *downloadInterruptedError) Unwrap() error { return e.err }
+
+// fileFetchCallbacks — хуки прогресса одной загрузки (все необязательны).
+// Вызываются БЕЗ удержания d.mu: получатель сам берёт лок, если ему нужно
+// обновить своё состояние.
+type fileFetchCallbacks struct {
+	// OnTotal — узнали полный размер файла (после заголовков ответа).
+	OnTotal func(total int64)
+	// OnProgress — периодический прогресс (не чаще ~100 мс).
+	// downloaded — всего байт на диске (resume-base + этот запуск).
+	OnProgress func(downloaded, total, speedBps int64)
+	// OnPhase — смена фазы передачи: "finalizing" при move temp→final.
+	OnPhase func(phase string)
+}
+
+// fileFetchResult — итог скачивания одного файла.
+type fileFetchResult struct {
+	Downloaded int64 // байт, записанных в ЭТОМ запуске
+	Total      int64 // полный размер файла (0 = неизвестен)
+	// ResumeBase — сколько байт уже лежало на диске до этого запуска
+	// (0, если resume не применялся: файла не было или сервер не поддержал Range).
+	ResumeBase int64
+}
+
+// fetchFile — скачивает ОДИН файл: Range-resume, темповый .download,
+// move temp→final (копированием), прогресс каждые 100 мс.
+//
+// R-Image (2026-09-27): вынесено из downloadFile, чтобы bundle-загрузка
+// (StartBundleDownload) переиспользовала ровно ту же механику — HF_TOKEN,
+// зеркало HF_MIRROR, .download-темп, Range-resume, keep-partial-on-error —
+// вместо второго загрузчика с собственными багами.
+//
+// Возвращает:
+//   - (res, nil) — файл лежит в finalPath;
+//   - errDownloadCancelled — ctx отменён, .download удалён;
+//   - *downloadInterruptedError — .download ОСТАВЛЕН для resume;
+//   - прочие ошибки — .download тоже оставлен (повторный вызов возобновит).
+func (d *HuggingFaceDownloader) fetchFile(ctx context.Context, req HFDownloadRequest, destPath, finalPath string, resumedFrom int64, cb fileFetchCallbacks) (fileFetchResult, error) {
+	log := logger.Get()
+	res := fileFetchResult{ResumeBase: resumedFrom}
 
 	// Семафор для ограничения одновременных загрузок
 	select {
 	case d.semaphore <- struct{}{}:
 		defer func() { <-d.semaphore }()
 	case <-ctx.Done():
-		d.updateTaskStatus(task, "cancelled", "")
-		return
+		return res, errDownloadCancelled
 	}
 
-	log := logger.Get()
 	downloadURL := d.getResolveURL(req.ModelID, req.Filename, req.Revision)
 
 	log.Infow("downloading file",
@@ -756,17 +911,16 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 	// Создаём HTTP запрос
 	httpReq, err := d.newRequest("GET", downloadURL, nil)
 	if err != nil {
-		d.updateTaskError(task, fmt.Sprintf("create request: %v", err))
-		return
+		return res, fmt.Errorf("create request: %w", err)
 	}
 	httpReq = httpReq.WithContext(ctx)
 
 	// Round 17.3 (2026-08-03): RESUME support — HTTP Range request.
-	// Если tmpPath уже существует с N байт (от предыдущей попытки), шлём
+	// Если .download уже существует с N байт (от предыдущей попытки), шлём
 	// `Range: bytes=N-` чтобы получить только остаток файла. HuggingFace
 	// (как и любой S3-совместимый storage) возвращает 206 Partial Content
 	// с заголовком `Content-Range: bytes N-(total-1)/total`.
-	existingSize := task.progress.ResumedFrom
+	existingSize := resumedFrom
 	if existingSize > 0 {
 		httpReq.Header.Set("Range", fmt.Sprintf("bytes=%d-", existingSize))
 		log.Infow("sending HTTP Range request to resume",
@@ -778,30 +932,23 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 	// Выполняем запрос
 	resp, err := d.httpClient.Do(httpReq)
 	if err != nil {
-		d.updateTaskError(task, fmt.Sprintf("HTTP request: %v", err))
-		return
+		return res, fmt.Errorf("HTTP request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// Для resume: ожидаем 206 Partial Content, для fresh: 200 OK.
-	// Если сервер не поддерживает Range (например, CDN) — 200 OK с полным файлом,
-	// тогда нужно начать с нуля (удаляем tmp файл).
-	// ПРИМЕЧАНИЕ: tmpPath ещё не определён ниже — определяем здесь явно для ранней
-	// проверки (перед MkdirAll downloadsDir).
-	tmpPathEarly := destPath + ".download"
+	// Если сервер не поддерживает Range (например, CDN) — 200 OK с полным
+	// файлом, тогда начинаем с нуля (удаляем .download).
+	tmpPath := destPath + ".download"
 	if existingSize > 0 && resp.StatusCode == http.StatusOK {
 		log.Warnw("server doesn't support Range, restarting from 0",
 			"modelID", req.ModelID, "filename", req.Filename)
-		os.Remove(tmpPathEarly)
+		os.Remove(tmpPath)
 		existingSize = 0
-		d.mu.Lock()
-		task.progress.ResumedFrom = 0
-		task.progress.Resumable = false
-		d.mu.Unlock()
+		res.ResumeBase = 0
 	} else if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		d.updateTaskError(task, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)))
-		return
+		return res, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	// Получаем размер файла
@@ -817,22 +964,21 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 	if totalBytes <= 0 {
 		totalBytes = 0 // неизвестно
 	}
+	res.Total = totalBytes
 
-	// Обновляем прогресс
-	d.mu.Lock()
-	task.progress.TotalBytes = totalBytes
-	d.mu.Unlock()
-
-	// Создаём временный файл в директории загрузок
-	if err := os.MkdirAll(d.downloadsDir, 0755); err != nil {
-		d.updateTaskError(task, fmt.Sprintf("create downloads dir: %v", err))
-		return
+	if cb.OnTotal != nil {
+		cb.OnTotal(totalBytes)
 	}
 
-	tmpPath := destPath + ".download"
+	// Каталог для темпового файла: одиночная загрузка — downloadsDir,
+	// bundle — каталог самого bundle внутри modelsDir.
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return res, fmt.Errorf("create temp dir: %w", err)
+	}
+
+	tmpPath = destPath + ".download"
 	// Round 17.3: если resuming — открываем файл в append mode.
 	// Если fresh (existingSize==0) — создаём новый (truncate если был garbage).
-	// (tmpPathEarly использовался выше для early Range check, теперь tmpPath — основной)
 	var tmpFile *os.File
 	if existingSize > 0 {
 		tmpFile, err = os.OpenFile(tmpPath, os.O_WRONLY|os.O_APPEND, 0644)
@@ -841,14 +987,14 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 			log.Warnw("resumed file missing, starting fresh",
 				"tmpPath", tmpPath, "error", err)
 			existingSize = 0
+			res.ResumeBase = 0
 			tmpFile, err = os.Create(tmpPath)
 		}
 	} else {
 		tmpFile, err = os.Create(tmpPath)
 	}
 	if err != nil {
-		d.updateTaskError(task, fmt.Sprintf("create/open temp file: %v", err))
-		return
+		return res, fmt.Errorf("create/open temp file: %w", err)
 	}
 	defer tmpFile.Close()
 
@@ -859,15 +1005,13 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 	var downloaded int64
 	var lastUpdate time.Time
 	var lastBytes int64
-	startTime := time.Now()
 
 	for {
 		select {
 		case <-ctx.Done():
 			tmpFile.Close()
 			os.Remove(tmpPath)
-			d.updateTaskStatus(task, "cancelled", "")
-			return
+			return res, errDownloadCancelled
 		default:
 		}
 
@@ -875,8 +1019,7 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 		if n > 0 {
 			if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
 				tmpFile.Close()
-				d.updateTaskError(task, fmt.Sprintf("write file: %v", writeErr))
-				return
+				return res, fmt.Errorf("write file: %w", writeErr)
 			}
 			downloaded += int64(n)
 
@@ -890,19 +1033,9 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 						speed = (downloaded - lastBytes) * 1000 / dt
 					}
 				}
-
-				totalDownloaded := existingSize + downloaded
-				pct := 0.0
-				if totalBytes > 0 {
-					pct = float64(totalDownloaded) / float64(totalBytes) * 100
+				if cb.OnProgress != nil {
+					cb.OnProgress(existingSize+downloaded, totalBytes, speed)
 				}
-
-				d.mu.Lock()
-				task.progress.Downloaded = totalDownloaded
-				task.progress.ProgressPct = pct
-				task.progress.SpeedBps = speed
-				d.mu.Unlock()
-
 				lastUpdate = now
 				lastBytes = downloaded
 			}
@@ -913,47 +1046,40 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 		}
 		if readErr != nil {
 			// Round 17.3: НЕ удаляем partial file при network/IO ошибке —
-			// оставляем для RESUME при следующем вызове StartDownload.
+			// оставляем для RESUME при следующем вызове.
 			// Удаляем только при явной отмене (ctx.Done()).
 			tmpFile.Close()
 			if ctx.Err() != nil {
 				// User cancelled — cleanup
 				os.Remove(tmpPath)
-				d.updateTaskStatus(task, "cancelled", readErr.Error())
-			} else {
-				// Network/IO error — keep partial file
-				totalDownloaded := existingSize + downloaded
-				log.Warnw("download interrupted, partial file kept for resume",
-					"modelID", req.ModelID,
-					"filename", req.Filename,
-					"partialBytes", totalDownloaded,
-					"tmpPath", tmpPath,
-					"readError", readErr.Error())
-				d.updateTaskStatus(task, "interrupted", readErr.Error())
-				// Resumable остаётся true — следующий StartDownload подхватит
-				d.mu.Lock()
-				task.progress.Downloaded = totalDownloaded
-				d.mu.Unlock()
+				return res, errDownloadCancelled
 			}
-			return
+			// Network/IO error — keep partial file
+			totalDownloaded := existingSize + downloaded
+			log.Warnw("download interrupted, partial file kept for resume",
+				"modelID", req.ModelID,
+				"filename", req.Filename,
+				"partialBytes", totalDownloaded,
+				"tmpPath", tmpPath,
+				"readError", readErr.Error())
+			if cb.OnProgress != nil {
+				cb.OnProgress(totalDownloaded, totalBytes, 0)
+			}
+			res.Downloaded = downloaded
+			return res, &downloadInterruptedError{err: readErr}
 		}
 	}
 
 	// Закрываем временный файл
 	tmpFile.Close()
 
-	// Round 17.3: финальный размер = existingSize (от прошлой попытки) + downloaded (этот запуск).
-	// Это для корректного ProgressPct=100% и метрик.
-	totalDownloaded := existingSize + downloaded
-
-	// Перемещаем в директорию моделей
-	if err := os.MkdirAll(d.modelsDir, 0755); err != nil {
+	// Перемещаем в каталог моделей
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0755); err != nil {
 		os.Remove(tmpPath)
-		d.updateTaskError(task, fmt.Sprintf("create models dir: %v", err))
-		return
+		return res, fmt.Errorf("create models dir: %w", err)
 	}
 
-	// Если файл уже существует в modelsDir, удаляем старый
+	// Если целевой файл уже существует, удаляем старый
 	if _, err := os.Stat(finalPath); err == nil {
 		os.Remove(finalPath)
 	}
@@ -984,36 +1110,33 @@ func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *download
 	// Также: добавляем periodic progress updates в io.Copy loop чтобы UI
 	// видел реальный прогресс move→copy (а не висел на 100% с фейковым
 	// "downloading" статусом).
-	d.moveTempToFinalWithProgress(task, tmpPath, finalPath, totalDownloaded, startTime, destPath, downloaded, existingSize, req)
+	if err := d.moveTempToFinal(tmpPath, finalPath, cb.OnPhase); err != nil {
+		return res, err
+	}
+
+	res.Downloaded = downloaded
+	if cb.OnProgress != nil {
+		cb.OnProgress(existingSize+downloaded, totalBytes, 0)
+	}
+	return res, nil
 }
 
-// moveTempToFinalWithProgress — R66.3 helper. Копирует temp → final через io.Copy
-// с periodic progress updates. UI видит реальный прогресс move→copy фазы
-// (раньше status="downloading" на 100% с ProgressPct=99.996, теперь status="finalizing"
-// с честным ProgressPct).
+// moveTempToFinal — R66.3 helper (выделен из moveTempToFinalWithProgress при
+// выносе fetchFile). Копирует temp → final, периодически сообщая фазу
+// "finalizing": UI видит реальный прогресс фазы копирования, а не зависание на
+// 100% со статусом "downloading".
 //
 // Pre-R66.3: использовался os.Rename + io.Copy fallback. Когда temp и final
 // на разных FS (типично для WSL: downloads на overlay, models на 9p mount),
 // os.Rename падал с EXDEV и fallback io.Copy молча копировал без progress updates.
-// UI думал что download ещё идёт.
-func (d *HuggingFaceDownloader) moveTempToFinalWithProgress(
-	task *downloadTask,
-	tmpPath, finalPath string,
-	totalDownloaded int64,
-	startTime time.Time,
-	destPath string,
-	downloaded int64,
-	existingSize int64,
-	req HFDownloadRequest,
-) {
+func (d *HuggingFaceDownloader) moveTempToFinal(tmpPath, finalPath string, onPhase func(string)) error {
 	log := logger.Get()
 
 	// Phase 1: open source
 	srcFile, err := os.Open(tmpPath)
 	if err != nil {
 		os.Remove(tmpPath)
-		d.updateTaskError(task, fmt.Sprintf("open temp for move: %v", err))
-		return
+		return fmt.Errorf("open temp for move: %w", err)
 	}
 	defer srcFile.Close()
 
@@ -1021,15 +1144,12 @@ func (d *HuggingFaceDownloader) moveTempToFinalWithProgress(
 	dstFile, err := os.Create(finalPath)
 	if err != nil {
 		os.Remove(tmpPath)
-		d.updateTaskError(task, fmt.Sprintf("create final file: %v", err))
-		return
+		return fmt.Errorf("create final file: %w", err)
 	}
 	defer dstFile.Close()
 
-	// Phase 3: copy with periodic progress
-	// Wrap io.Copy в custom loop чтобы обновлять progress каждые 500ms.
+	// Phase 3: copy with periodic progress (каждые 500 мс)
 	copyBuf := make([]byte, ChunkSize)
-	var copied int64
 	lastCopyUpdate := time.Now()
 
 	for {
@@ -1038,15 +1158,13 @@ func (d *HuggingFaceDownloader) moveTempToFinalWithProgress(
 			if _, writeErr := dstFile.Write(copyBuf[:n]); writeErr != nil {
 				os.Remove(tmpPath)
 				os.Remove(finalPath)
-				d.updateTaskError(task, fmt.Sprintf("copy to models: %v", writeErr))
-				return
+				return fmt.Errorf("copy to models: %w", writeErr)
 			}
-			copied += int64(n)
 			if time.Since(lastCopyUpdate) > 500*time.Millisecond {
 				// Update UI: switch status from "downloading" to "finalizing"
-				d.mu.Lock()
-				task.progress.Status = "finalizing"
-				d.mu.Unlock()
+				if onPhase != nil {
+					onPhase("finalizing")
+				}
 				lastCopyUpdate = time.Now()
 			}
 		}
@@ -1056,8 +1174,7 @@ func (d *HuggingFaceDownloader) moveTempToFinalWithProgress(
 		if readErr != nil {
 			os.Remove(tmpPath)
 			os.Remove(finalPath)
-			d.updateTaskError(task, fmt.Sprintf("copy read: %v", readErr))
-			return
+			return fmt.Errorf("copy read: %w", readErr)
 		}
 	}
 
@@ -1067,36 +1184,101 @@ func (d *HuggingFaceDownloader) moveTempToFinalWithProgress(
 	if err := os.Remove(tmpPath); err != nil {
 		log.Warnw("failed to remove temp after copy", "tmpPath", tmpPath, "error", err)
 	}
+	return nil
+}
 
-	// Обновляем прогресс как завершённый
-	duration := time.Since(startTime)
-	d.mu.Lock()
-	task.progress.Downloaded = totalDownloaded
-	task.progress.TotalBytes = totalDownloaded
-	task.progress.ProgressPct = 100.0
-	task.progress.SpeedBps = int64(float64(downloaded) / duration.Seconds())
-	task.progress.Status = "completed"
-	task.progress.CompletedAt = time.Now().UTC().Format(time.RFC3339)
-	task.progress.Filename = filenameFromPath(destPath)
-	task.progress.Resumable = false // больше нечего resume'ить
-	d.downloadHistory = append(d.downloadHistory, task.progress)
-	if len(d.downloadHistory) > 50 {
-		d.downloadHistory = d.downloadHistory[len(d.downloadHistory)-50:]
+// downloadFile — одиночная загрузка в фоне: обёртка вокруг fetchFile.
+// Здесь живёт ТОЛЬКО состояние задачи — прогресс, история, статус,
+// уведомление Backend'а. Вся передача данных — в fetchFile (её же
+// переиспользует bundle-загрузка).
+func (d *HuggingFaceDownloader) downloadFile(ctx context.Context, task *downloadTask, req HFDownloadRequest, destPath, finalPath string) {
+	defer close(task.completed)
+	defer func() {
+		d.mu.Lock()
+		delete(d.activeDownloads, d.makeDownloadKey(req.ModelID, req.Filename))
+		d.mu.Unlock()
+	}()
+
+	log := logger.Get()
+	startTime := time.Now()
+	existingSize := task.progress.ResumedFrom
+
+	cb := fileFetchCallbacks{
+		OnTotal: func(total int64) {
+			d.mu.Lock()
+			task.progress.TotalBytes = total
+			d.mu.Unlock()
+		},
+		OnProgress: func(downloaded, total, speed int64) {
+			pct := 0.0
+			if total > 0 {
+				pct = float64(downloaded) / float64(total) * 100
+			}
+			d.mu.Lock()
+			task.progress.Downloaded = downloaded
+			task.progress.ProgressPct = pct
+			task.progress.SpeedBps = speed
+			d.mu.Unlock()
+		},
+		OnPhase: func(phase string) {
+			d.mu.Lock()
+			task.progress.Status = phase
+			d.mu.Unlock()
+		},
 	}
-	d.mu.Unlock()
 
-	log.Infow("download completed",
-		"modelID", req.ModelID,
-		"filename", filenameFromPath(destPath),
-		"sizeBytes", totalDownloaded,
-		"resumedFrom", existingSize,
-		"downloadedThisRun", downloaded,
-		"duration", duration.String(),
-		"speed", formatSpeed(downloaded, duration))
+	res, err := d.fetchFile(ctx, req, destPath, finalPath, existingSize, cb)
+	totalDownloaded := res.ResumeBase + res.Downloaded
 
-	// R66d: сообщаем Backend'у, что каталог моделей изменился — иначе свежая
-	// модель не появится в /api/models/files (вкладка GGUF) до рестарта.
-	d.notifyDownloadComplete(filenameFromPath(finalPath))
+	var interrupted *downloadInterruptedError
+	switch {
+	case err == nil:
+		duration := time.Since(startTime)
+		speed := int64(0)
+		if duration.Seconds() > 0 {
+			speed = int64(float64(res.Downloaded) / duration.Seconds())
+		}
+		d.mu.Lock()
+		task.progress.Downloaded = totalDownloaded
+		task.progress.TotalBytes = totalDownloaded
+		task.progress.ProgressPct = 100.0
+		task.progress.SpeedBps = speed
+		task.progress.Status = "completed"
+		task.progress.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+		task.progress.Filename = filenameFromPath(destPath)
+		task.progress.Resumable = false // больше нечего resume'ить
+		d.downloadHistory = append(d.downloadHistory, task.progress)
+		if len(d.downloadHistory) > 50 {
+			d.downloadHistory = d.downloadHistory[len(d.downloadHistory)-50:]
+		}
+		d.mu.Unlock()
+
+		log.Infow("download completed",
+			"modelID", req.ModelID,
+			"filename", filenameFromPath(destPath),
+			"sizeBytes", totalDownloaded,
+			"resumedFrom", res.ResumeBase,
+			"downloadedThisRun", res.Downloaded,
+			"duration", duration.String(),
+			"speed", formatSpeed(res.Downloaded, duration))
+
+		// R66d: сообщаем Backend'у, что каталог моделей изменился — иначе свежая
+		// модель не появится в /api/models/files (вкладка GGUF) до рестарта.
+		d.notifyDownloadComplete(filenameFromPath(finalPath))
+
+	case errors.Is(err, errDownloadCancelled):
+		d.updateTaskStatus(task, "cancelled", "")
+
+	case errors.As(err, &interrupted):
+		// Network/IO error — partial оставлен на диске, Resumable=true.
+		d.mu.Lock()
+		task.progress.Downloaded = totalDownloaded
+		d.mu.Unlock()
+		d.updateTaskStatus(task, "interrupted", interrupted.Error())
+
+	default:
+		d.updateTaskError(task, err.Error())
+	}
 }
 
 // ============================================================
@@ -1409,5 +1591,11 @@ func (d *HuggingFaceDownloader) Close() {
 	for key, task := range d.activeDownloads {
 		task.cancel()
 		delete(d.activeDownloads, key)
+	}
+	// R-Image: bundle-загрузки тоже должны остановиться, иначе
+	// незавершённый pull держит сокет и .download-файлы после shutdown.
+	for id, task := range d.activeBundles {
+		task.cancel()
+		delete(d.activeBundles, id)
 	}
 }

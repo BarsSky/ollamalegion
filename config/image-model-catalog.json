@@ -1,0 +1,363 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-27",
+  "notices": [
+    "Все репозитории в каталоге проверены вручную (см. docs/research-sdcpp-lowvram-integration.md §2.3 и plans/2026-09-27-image-generation-backend-plan.md §6). НЕ заменять их на 'похожие' из поиска HF.",
+    "Для FLUX/Z-Image/klein GGUF берём ТОЛЬКО leejet/*: city96-GGUF для FLUX — это формат ComfyUI-GGUF, sd.cpp падает с 'new_sd_ctx_t failed'.",
+    "Репозитории black-forest-labs/FLUX.1-schnell и black-forest-labs/FLUX.2-dev содержат ae.safetensors (VAE) и ОТДАЮТСЯ ТОЛЬКО с принятой лицензией: без HF_TOKEN загрузка VAE упадёт (HF отвечает 401/gated).",
+    "T5-XXL — только квантованный: fp16 9.79 GB против Q4_K_M 2.90 GB, при одном и том же результате.",
+    "Для SD1.5 K-квантов не существует (только q4_0/q4_1/q5_0/q5_1/q8_0/f16) — q5_k_m в каталоге быть не может.",
+    "VramEstimateMb — ОЦЕНКА пиковой VRAM, нужна для гейта 'не влезает' (Phase 6) и для UI; калибруется по факту (nvidia-smi)."
+  ],
+  "presets": [
+    {
+      "name": "sd15-q4-0",
+      "family": "sd15",
+      "files": [
+        {
+          "role": "diffusion",
+          "repo": "second-state/stable-diffusion-v1-5-GGUF",
+          "filename": "stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf",
+          "sizeBytes": 1566768416
+        }
+      ],
+      "defaults": {
+        "steps": 25,
+        "cfgScale": 7,
+        "sampler": "euler_a",
+        "scheduler": "discrete",
+        "width": 512,
+        "height": 512,
+        "batchCount": 1,
+        "seed": -1
+      },
+      "runtime": {
+        "vaeTiling": true,
+        "seedMode": "random"
+      },
+      "vramEstimateMb": 2000,
+      "timeoutSec": 300,
+      "idleUnloadMinutes": 15,
+      "notes": "Самый лёгкий вход: all-in-one Q4_0 (1.57 GB, UNet+VAE+CLIP внутри) → --model. Работает на 4 GB без offload (пик ~2.0 GB @512). K-квантов для SD1.5 не существует."
+    },
+    {
+      "name": "sd15-q5-0",
+      "family": "sd15",
+      "files": [
+        {
+          "role": "diffusion",
+          "repo": "second-state/stable-diffusion-v1-5-GGUF",
+          "filename": "stable-diffusion-v1-5-pruned-emaonly-Q5_0.gguf",
+          "sizeBytes": 1615967904
+        }
+      ],
+      "defaults": {
+        "steps": 25,
+        "cfgScale": 7,
+        "sampler": "euler_a",
+        "scheduler": "discrete",
+        "width": 512,
+        "height": 512,
+        "batchCount": 1,
+        "seed": -1
+      },
+      "runtime": {
+        "vaeTiling": true,
+        "seedMode": "random"
+      },
+      "vramEstimateMb": 2050,
+      "timeoutSec": 300,
+      "idleUnloadMinutes": 15,
+      "notes": "Q5_0 (1.62 GB) — компромисс качество/размер между Q4_0 и Q8_0. Разница в пике VRAM против Q4_0 незначима."
+    },
+    {
+      "name": "sd15-q8-0",
+      "family": "sd15",
+      "files": [
+        {
+          "role": "diffusion",
+          "repo": "second-state/stable-diffusion-v1-5-GGUF",
+          "filename": "stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf",
+          "sizeBytes": 1763578176
+        }
+      ],
+      "defaults": {
+        "steps": 25,
+        "cfgScale": 7,
+        "sampler": "euler_a",
+        "scheduler": "discrete",
+        "width": 512,
+        "height": 512,
+        "batchCount": 1,
+        "seed": -1
+      },
+      "runtime": {
+        "vaeTiling": true,
+        "seedMode": "random"
+      },
+      "vramEstimateMb": 2100,
+      "timeoutSec": 300,
+      "idleUnloadMinutes": 15,
+      "notes": "Эталон качества SD1.5 (1.76 GB) при пике 2.1 GB @512 по замерам sd.cpp. Именно Q8_0 рекомендован по умолчанию для 4-6 GB карт."
+    },
+    {
+      "name": "sdxl-turbo-q8-0",
+      "family": "sdxl_turbo",
+      "files": [
+        {
+          "role": "diffusion",
+          "repo": "OlegSkutte/sdxl-turbo-GGUF",
+          "filename": "sd_xl_turbo_1.0.q8_0.gguf",
+          "sizeBytes": 4098988672
+        }
+      ],
+      "defaults": {
+        "steps": 4,
+        "cfgScale": 1,
+        "sampler": "euler",
+        "scheduler": "discrete",
+        "width": 512,
+        "height": 512,
+        "batchCount": 1,
+        "seed": -1
+      },
+      "runtime": {
+        "offloadToCpu": true,
+        "vaeTiling": true,
+        "seedMode": "random"
+      },
+      "vramEstimateMb": 4200,
+      "timeoutSec": 300,
+      "idleUnloadMinutes": 15,
+      "notes": "Единственный публичный q8_0 all-in-one SDXL-Turbo (4.10 GB) → --model. cfg ОБЯЗАТЕЛЬНО 1.0 (distilled), 1-4 шага. Файл больше 4 GB → на 4 GB-карте нужен --offload-to-cpu (в профиле включён)."
+    },
+    {
+      "name": "z-image-turbo-q3-k",
+      "family": "z_image",
+      "files": [
+        {
+          "role": "diffusion",
+          "repo": "leejet/Z-Image-Turbo-GGUF",
+          "filename": "z_image_turbo-Q3_K.gguf",
+          "sizeBytes": 3143559104
+        },
+        {
+          "role": "vae",
+          "repo": "black-forest-labs/FLUX.1-schnell",
+          "filename": "ae.safetensors",
+          "sizeBytes": 335304388
+        },
+        {
+          "role": "llm",
+          "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+          "filename": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+          "sizeBytes": 2497281120
+        }
+      ],
+      "defaults": {
+        "steps": 8,
+        "cfgScale": 1,
+        "sampler": "euler",
+        "scheduler": "smoothstep",
+        "width": 512,
+        "height": 1024,
+        "batchCount": 1,
+        "seed": -1
+      },
+      "runtime": {
+        "offloadToCpu": true,
+        "diffusionFa": true,
+        "seedMode": "random"
+      },
+      "vramEstimateMb": 3400,
+      "timeoutSec": 900,
+      "idleUnloadMinutes": 10,
+      "notes": "Официальный рецепт '4 GB VRAM' из wiki sd.cpp: Q3_K (3.14 GB) + Qwen3-4B Q4_K_M TE + ae.safetensors, --offload-to-cpu --diffusion-fa, 512x1024, 8 шагов. ВАЖНО: наличие ae.safetensors требует принятой лицензии black-forest-labs (HF_TOKEN)."
+    },
+    {
+      "name": "z-image-turbo-q4-0",
+      "family": "z_image",
+      "files": [
+        {
+          "role": "diffusion",
+          "repo": "leejet/Z-Image-Turbo-GGUF",
+          "filename": "z_image_turbo-Q4_0.gguf",
+          "sizeBytes": 3683370944
+        },
+        {
+          "role": "vae",
+          "repo": "black-forest-labs/FLUX.1-schnell",
+          "filename": "ae.safetensors",
+          "sizeBytes": 335304388
+        },
+        {
+          "role": "llm",
+          "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+          "filename": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+          "sizeBytes": 2497281120
+        }
+      ],
+      "defaults": {
+        "steps": 8,
+        "cfgScale": 1,
+        "sampler": "euler",
+        "scheduler": "smoothstep",
+        "width": 512,
+        "height": 1024,
+        "batchCount": 1,
+        "seed": -1
+      },
+      "runtime": {
+        "offloadToCpu": true,
+        "diffusionFa": true,
+        "seedMode": "random"
+      },
+      "vramEstimateMb": 3800,
+      "timeoutSec": 900,
+      "idleUnloadMinutes": 10,
+      "notes": "Тот же рецепт, но Q4_0 (3.68 GB) — второй рекомендованный квант для 4 GB. Замер на 12 GB без offload: diffusion 3512 MB + TE 4076 MB + VAE 160 MB."
+    },
+    {
+      "name": "flux2-klein-4b-q4-0",
+      "family": "flux2",
+      "files": [
+        {
+          "role": "diffusion",
+          "repo": "leejet/FLUX.2-klein-4B-GGUF",
+          "filename": "flux-2-klein-4b-Q4_0.gguf",
+          "sizeBytes": 2460378560
+        },
+        {
+          "role": "vae",
+          "repo": "black-forest-labs/FLUX.2-dev",
+          "filename": "ae.safetensors",
+          "sizeBytes": 336211292
+        },
+        {
+          "role": "llm",
+          "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+          "filename": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+          "sizeBytes": 2497281120
+        }
+      ],
+      "defaults": {
+        "steps": 4,
+        "cfgScale": 1,
+        "sampler": "euler",
+        "scheduler": "discrete",
+        "width": 512,
+        "height": 512,
+        "batchCount": 1,
+        "seed": -1
+      },
+      "runtime": {
+        "offloadToCpu": true,
+        "diffusionFa": true,
+        "seedMode": "random"
+      },
+      "vramEstimateMb": 2600,
+      "timeoutSec": 900,
+      "idleUnloadMinutes": 10,
+      "notes": "Лучший 'новый' кандидат под 4-6 GB: Q4_0 всего 2.46 GB (замер на RTX 2060 6GB: ~1.4 с/шаг @512). cfg=1.0, 4 шага (klein distilled). VAE — gated репозиторий FLUX.2-dev (нужен HF_TOKEN)."
+    },
+    {
+      "name": "flux-schnell-q2-k",
+      "family": "flux",
+      "files": [
+        {
+          "role": "diffusion",
+          "repo": "leejet/FLUX.1-schnell-gguf",
+          "filename": "flux1-schnell-q2_k.gguf",
+          "sizeBytes": 4110959520
+        },
+        {
+          "role": "vae",
+          "repo": "black-forest-labs/FLUX.1-schnell",
+          "filename": "ae.safetensors",
+          "sizeBytes": 335304388
+        },
+        {
+          "role": "clip_l",
+          "repo": "comfyanonymous/flux_text_encoders",
+          "filename": "clip_l.safetensors",
+          "sizeBytes": 246144152
+        },
+        {
+          "role": "t5xxl",
+          "repo": "city96/t5-v1_1-xxl-encoder-gguf",
+          "filename": "t5-v1_1-xxl-encoder-Q4_K_M.gguf",
+          "sizeBytes": 2896123072
+        }
+      ],
+      "defaults": {
+        "steps": 4,
+        "cfgScale": 1,
+        "sampler": "euler",
+        "scheduler": "discrete",
+        "width": 512,
+        "height": 512,
+        "batchCount": 1,
+        "seed": -1
+      },
+      "runtime": {
+        "backend": "te=cpu",
+        "offloadToCpu": true,
+        "diffusionFa": true,
+        "seedMode": "random"
+      },
+      "vramEstimateMb": 3900,
+      "timeoutSec": 1800,
+      "idleUnloadMinutes": 10,
+      "notes": "FLUX.1-schnell Q2_K (4.01 GB) — только 512 и с offload; официально измеренный пик q2_k = 3736 MB. TE обязательно на CPU (--backend te=cpu): Qwen/T5-часть иначе съедает VRAM. Быстрая (4 шага, cfg 1.0), но качество ниже q3_k."
+    },
+    {
+      "name": "flux-schnell-q3-k",
+      "family": "flux",
+      "files": [
+        {
+          "role": "diffusion",
+          "repo": "leejet/FLUX.1-schnell-gguf",
+          "filename": "flux1-schnell-q3_k.gguf",
+          "sizeBytes": 5312873376
+        },
+        {
+          "role": "vae",
+          "repo": "black-forest-labs/FLUX.1-schnell",
+          "filename": "ae.safetensors",
+          "sizeBytes": 335304388
+        },
+        {
+          "role": "clip_l",
+          "repo": "comfyanonymous/flux_text_encoders",
+          "filename": "clip_l.safetensors",
+          "sizeBytes": 246144152
+        },
+        {
+          "role": "t5xxl",
+          "repo": "city96/t5-v1_1-xxl-encoder-gguf",
+          "filename": "t5-v1_1-xxl-encoder-Q4_K_M.gguf",
+          "sizeBytes": 2896123072
+        }
+      ],
+      "defaults": {
+        "steps": 4,
+        "cfgScale": 1,
+        "sampler": "euler",
+        "scheduler": "discrete",
+        "width": 1024,
+        "height": 1024,
+        "batchCount": 1,
+        "seed": -1
+      },
+      "runtime": {
+        "backend": "te=cpu",
+        "diffusionFa": true,
+        "seedMode": "random"
+      },
+      "vramEstimateMb": 5200,
+      "timeoutSec": 1800,
+      "idleUnloadMinutes": 10,
+      "notes": "FLUX.1-schnell Q3_K (5.31 GB) — 6 GB-вариант (измеренный пик q3_k = 4888 MB), 1024x1024, 4 шага, cfg 1.0. TE на CPU (--backend te=cpu) обязателен, иначе T5-XXL вытеснит diffusion из VRAM."
+    }
+  ]
+}

@@ -376,6 +376,11 @@ func (s *Server) getBackend(w http.ResponseWriter, r *http.Request, backendID st
 //     ручное создание бэкенда из WebUI такой метки не имеет — для него остаётся
 //     409, чтобы случайный POST не перезаписал чужую запись);
 //   - совпадение host и порта с уже зарегистрированным бэкендом.
+//
+// R-Image (2026-09-27): учитываем imagePort. У image-бэкенда (sdworker) НЕТ
+// ни Ollama-, ни llama.cpp-поверхности, поэтому он физически не может заполнить
+// CppWorkerPort/OllamaPort — без этой ветки повторная саморегистрация (после
+// смены host/порта или рестарта) получала 409 и запись не обновлялась.
 func (s *Server) isSameBackendRegistration(req backendRequest) bool {
 	existing := s.proxy.GetBackend(req.ID)
 	if existing == nil {
@@ -389,11 +394,15 @@ func (s *Server) isSameBackendRegistration(req backendRequest) bool {
 	if port == 0 {
 		port = req.OllamaPort
 	}
+	if port == 0 {
+		port = req.ImagePort
+	}
 	if host == "" || port == 0 {
 		return false
 	}
 	sameHost := host == existing.Host
-	samePort := port == existing.CppWorkerPort || port == existing.OllamaPort
+	samePort := port == existing.CppWorkerPort || port == existing.OllamaPort ||
+		port == existing.ImagePort || port == existing.EffectiveImagePort()
 	return sameHost && samePort
 }
 

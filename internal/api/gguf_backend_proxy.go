@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -53,8 +54,26 @@ func proxyContext(parent context.Context, d time.Duration) (context.Context, con
 // (balancer → CppWorker), и контейнер balancer'а корректно резолвит этот Docker-алиас
 // (в отличие от браузера, для которого изначально и был сделан прокси-эндпоинт).
 //
-// Возвращает ("", 0, "", err) если бэкенд не найден или не llama_cpp.
+// R-Image (2026-09-27): теперь принимает и image_cpp — путь
+// /api/v1/gguf/backends/{id}/proxy/... исторически общий для обоих типов воркеров,
+// а порт для image-бэкенда берётся из EffectiveImagePort() (ImagePort → CppWorkerPort
+// → 18093), а не из CppWorkerPort: у image-воркера свой порт.
+//
+// Возвращает ("", 0, "", err) если бэкенд не найден или его тип не воркер.
 func (s *Server) resolveCppWorkerURL(backendID string) (string, int, string, error) {
+	return s.resolveWorkerURL(backendID, false)
+}
+
+// resolveImageWorkerURL — базовый URL image-воркера (sd-server).
+// Отдельная обёртка, а не «просто EffectiveImagePort в resolveCppWorkerURL»:
+// на image-путях тип обязан быть image_cpp, иначе опечатка в backendID молча
+// отправила бы запрос генерации в llama.cpp-воркер.
+func (s *Server) resolveImageWorkerURL(backendID string) (string, int, string, error) {
+	return s.resolveWorkerURL(backendID, true)
+}
+
+// resolveWorkerURL — общая реализация резолва адреса воркера.
+func (s *Server) resolveWorkerURL(backendID string, imageOnly bool) (string, int, string, error) {
 	if s.proxy == nil {
 		return "", 0, "", fmt.Errorf("proxy unavailable")
 	}
@@ -62,17 +81,49 @@ func (s *Server) resolveCppWorkerURL(backendID string) (string, int, string, err
 	if backend == nil {
 		return "", 0, "", fmt.Errorf("backend %q not found", backendID)
 	}
-	if backend.Type != types.BackendTypeLlamaCpp {
+
+	if imageOnly {
+		if backend.Type != types.BackendTypeImage {
+			return "", 0, "", fmt.Errorf("backend %q is not image_cpp (type=%q)", backendID, backend.Type)
+		}
+		port := backend.EffectiveImagePort()
+		return backend.Host, port, fmt.Sprintf("http://%s:%d", backend.Host, port), nil
+	}
+
+	if backend.Type != types.BackendTypeLlamaCpp && backend.Type != types.BackendTypeImage {
 		return "", 0, "", fmt.Errorf("backend %q is not llama_cpp (type=%q)", backendID, backend.Type)
 	}
 
 	host := backend.Host
 	// По умолчанию 18092 (актуальный default для современных llama.cpp CppWorker).
 	port := backend.CppWorkerPort
-	if port <= 0 {
+	if backend.Type == types.BackendTypeImage {
+		port = backend.EffectiveImagePort()
+	} else if port <= 0 {
 		port = 18092
 	}
 	return host, port, fmt.Sprintf("http://%s:%d", host, port), nil
+}
+
+// imageWorkerAPIToken — токен для авторизации на image-воркере.
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ: у image-воркера нет своего поля токена в
+// types.Backend (ImageApiToken в этот контракт не входит), а в bundled-стеке
+// все сервисы используют ОДИН токен (deployments/.env → LB_API_TOKEN). Порядок:
+// токен бэкенда → IMAGEWORKER_API_TOKEN → CPPWORKER_API_TOKEN → LB_API_TOKEN.
+// Тот же приём уже применён в reloadModelOnCppWorker (handlers_cppworker_profiles.go).
+func (s *Server) imageWorkerAPIToken(backendID string) string {
+	if s.proxy != nil {
+		if backend := s.proxy.GetBackend(backendID); backend != nil && backend.CppWorkerApiToken != "" {
+			return backend.CppWorkerApiToken
+		}
+	}
+	for _, envVar := range []string{"IMAGEWORKER_API_TOKEN", "CPPWORKER_API_TOKEN", "LB_API_TOKEN"} {
+		if v := strings.TrimSpace(os.Getenv(envVar)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // cppWorkerAPIToken — токен для авторизации на cppworker для заданного бэкенда.
@@ -99,8 +150,30 @@ func (s *Server) cppWorkerAPIToken(backendID string) string {
 //
 // Прокидывает заголовок X-HF-Token (для HuggingFace API) и X-Real-IP.
 func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backendID, path string) {
+	s.proxyToWorker(w, r, backendID, path, s.resolveCppWorkerURL, s.cppWorkerAPIToken(backendID), "CppWorker")
+}
+
+// proxyToImageWorker — то же для image-воркера (sd-server): другой резолвер
+// (EffectiveImagePort, обязательный image_cpp) и другой источник токена.
+func (s *Server) proxyToImageWorker(w http.ResponseWriter, r *http.Request, backendID, path string) {
+	s.proxyToWorker(w, r, backendID, path, s.resolveImageWorkerURL, s.imageWorkerAPIToken(backendID), "ImageWorker")
+}
+
+// proxyToWorker — общая реализация сервер-серверного прокси WebUI → воркер.
+//
+// R-Image (2026-09-27): вынесено из proxyToCppWorker, чтобы image-пути
+// переиспользовали ВСЁ поведение прокси (SSE-стриминг, retry на connection-level
+// ошибках, перезапись токена, X-Forwarded-*, проброс Authorization на /api/hf/*),
+// отличаясь только адресом воркера, токеном и именем диагностического заголовка.
+func (s *Server) proxyToWorker(
+	w http.ResponseWriter,
+	r *http.Request,
+	backendID, path string,
+	resolve func(string) (string, int, string, error),
+	token, workerLabel string,
+) {
 	log := logger.Get()
-	host, port, baseURL, err := s.resolveCppWorkerURL(backendID)
+	host, port, baseURL, err := resolve(backendID)
 	if err != nil {
 		s.writeJSON(w, http.StatusNotFound, map[string]string{
 			"error":   "backend not found",
@@ -157,7 +230,7 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 	req.Header.Set("X-Forwarded-For", r.Header.Get("X-Forwarded-For"))
 	req.Header.Set("X-Forwarded-Proto", schemeFromRequest(r))
 
-	// R65d (2026-09-20): авторизация к cppworker — ТОЛЬКО серверным токеном бэкенда.
+	// R65d (2026-09-20): авторизация к воркеру — ТОЛЬКО серверным токеном.
 	//
 	// copyProxyHeaders выше копирует заголовки клиента как есть, включая
 	// X-API-Token. До R65d это означало, что клиентский токен БАЛАНСЕРА
@@ -166,23 +239,23 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 	// Кроме того, клиент мог подставить произвольный токен.
 	//
 	// Теперь всегда перезаписываем значение на токен из конфигурации бэкенда
-	// (Backend.CppWorkerApiToken). Если токен не задан — удаляем заголовок,
-	// чтобы не отправлять чужой секрет.
-	if token := s.cppWorkerAPIToken(backendID); token != "" {
+	// (Backend.CppWorkerApiToken, а для image — imageWorkerAPIToken). Если токен
+	// не задан — удаляем заголовок, чтобы не отправлять чужой секрет.
+	if token != "" {
 		req.Header.Set(types.HeaderXAPIToken, token)
 	} else {
 		req.Header.Del(types.HeaderXAPIToken)
 		// Некоторые развёртывания используют Authorization: Bearer — тоже чистим,
-		// если он пришёл от клиента, а не задан конфигом cppworker.
+		// если он пришёл от клиента, а не задан конфигом воркера.
 		//
 		// R66c (2026-09-22): НЕ чистим Authorization на HuggingFace-путях.
 		// Там клиент присылает свой HF-токен (`Authorization: Bearer hf_...`),
-		// и cppworker обязан передать его в huggingface.co — иначе скачивание
+		// и воркер обязан передать его в huggingface.co — иначе скачивание
 		// приватных/лимитированных моделей падает с 401, хотя WebUI форму
 		// токена показывает и пользователь его заполнил.
 		//
 		// Смысл чистки (R65d) — не пустить клиентский токен БАЛАНСЕРА в
-		// cppworker как его собственный; HF-токен к авторизации cppworker
+		// воркер как его собственный; HF-токен к авторизации воркера
 		// отношения не имеет.
 		if !strings.HasPrefix(path, "/api/hf/") {
 			req.Header.Del(types.HeaderAuthorization)
@@ -292,7 +365,7 @@ func (s *Server) proxyToCppWorker(w http.ResponseWriter, r *http.Request, backen
 			w.Header().Add(key, v)
 		}
 	}
-	w.Header().Set("X-Proxied-From-CppWorker", fmt.Sprintf("%s:%d", host, port))
+	w.Header().Set("X-Proxied-From-"+workerLabel, fmt.Sprintf("%s:%d", host, port))
 
 	// Round 25: SSE / streaming responses (Content-Type: text/event-stream)
 	// должны стримиться напрямую, без буферизации. Иначе EventSource

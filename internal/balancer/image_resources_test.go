@@ -861,7 +861,7 @@ func TestImageLock_TextSlotWithheldWhileGPUBusy(t *testing.T) {
 		t.Fatalf("до генерации: selectByResources = %q, want текстовый бэкенд", got)
 	}
 
-	holder, ok, _ := p.imageRes.acquireLock(context.Background(), "img-1", "127.0.0.1", "flux-test")
+	holder, ok, _ := p.imageRes.acquireLock(context.Background(), "img-1", "127.0.0.1", 0, "flux-test")
 	if !ok || holder == nil {
 		t.Fatal("не удалось взять лок (тестовый стенд сломан)")
 	}

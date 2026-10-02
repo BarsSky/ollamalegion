@@ -65,26 +65,43 @@ func isBackendTypeAllowed(bt types.BackendType, allowedTypes []types.BackendType
 }
 
 // imageGateBlocksTextBackend — R-Image Phase 6 (2026-10-02): не выбирать
-// ТЕКСТОВЫЙ бэкенд на хосте, где image-генерация держит эксклюзивный лок GPU.
+// ТЕКСТОВЫЙ бэкенд на GPU, где image-генерация держит эксклюзивный лок.
 //
 // ПОЧЕМУ ИМЕННО ЗДЕСЬ И ПОЧЕМУ ТАК. Политика exclusive (дефолт) означает «во
 // время генерации карта принадлежит image». Реализовано это ДВУМЯ частями:
 //  1. image-запросы берут лок на время генерации (image_resources.go);
-//  2. текстовый КАНДИДАТ на хосте с активным локом просто не выбирается —
-//     минимальный хук в функциях выбора, без блокирующих примитивов.
+//  2. текстовый КАНДИДАТ на занятой карте просто не выбирается — минимальный
+//     хук в функциях выбора, без блокирующих примитивов.
 //
 // ЧЕГО ХУК НЕ ДЕЛАЕТ: не держит текстовый запрос в глубине (это опасно: лок под
 // p.mu/селектором = риск дедлока и остановки всего трафика). Если подходящих
 // кандидатов не осталось, запрос уходит в существующую admission-очередь
 // (unified_queue_r73.go) и ждёт освобождения слота там; по истечении лимита
-// клиент получает 503 + Retry-After. То есть «ждать» — есть, но лимит ожидания
-// задаётся LB_ADMISSION_WAIT_SEC, а не balancing.image.queueWaitTimeoutSec
-// (второй лимит действует на стороне image-запросов) — это осознанный
-// компромисс, см. отчёт Phase 6.
+// клиент получает 503 + Retry-After.
+//
+// ЛИМИТ ЭТОГО ОЖИДАНИЯ (Phase 6 follow-up, 2026-10-02): когда единственная
+// причина отсутствия кандидата — именно image-лок, ожидание ограничивается
+// balancing.image.queueWaitTimeoutSec, а не LB_ADMISSION_WAIT_SEC (см.
+// imageLockWaitCap). Для остальных причин (нет здоровых бэкендов, нет модели,
+// обычная перегрузка слотов) поведение не меняется.
 //
 // image-бэкенды хук не трогает: для них всегда false (иначе exclusive
 // заблокировал бы саму генерацию).
 func (p *Proxy) imageGateBlocksTextBackend(state *BackendState) bool {
+	if !p.imageLockBlocksTextBackend(state) {
+		return false
+	}
+	p.imageRes.noteTextSlotWithheld()
+	return true
+}
+
+// imageLockBlocksTextBackend — тот же предикат, но БЕЗ счётчика.
+//
+// ЗАЧЕМ РАЗДЕЛЕНИЕ: детектор «единственная причина — image-лок» (см.
+// imageLockWaitCap) обязан спрашивать ровно то же условие, но он не «пропускает
+// кандидата» — считать его в text_slots_withheld_total значило бы надувать
+// метрику выбора несуществующими событиями.
+func (p *Proxy) imageLockBlocksTextBackend(state *BackendState) bool {
 	if p == nil || state == nil || state.Backend == nil {
 		return false
 	}
@@ -98,11 +115,73 @@ func (p *Proxy) imageGateBlocksTextBackend(state *BackendState) bool {
 	if state.Backend.Status == types.StatusOffline {
 		return false
 	}
-	if !res.gpuLockHeld(state.Backend.Host) {
+	// GPU-индекс: (host, gpuIndex) обеих сторон. При индексе 0 у любой из сторон
+	// gpuLockHeldFor блокирует весь хост — консервативно, см. locksConflict.
+	return res.gpuLockHeldFor(state.Backend.Host, state.Backend.EffectiveGPUIndex())
+}
+
+// imageLockWaitCap — предел ожидания слота для текстового запроса, когда
+// единственная причина отсутствия кандидата — активный image-лок.
+//
+// ЧТО ЗНАЧИТ «ЕДИНСТВЕННАЯ ПРИЧИНА» (и почему проверок ровно столько):
+//   - у модели есть кандидаты (expandCandidates — тот же отбор, что в
+//     selectBackend: healthy, известная/загружаемая модель, живые лимиты);
+//   - НИ ОДНОГО кандидата в группах P1 (модель загружена) и P2 (модель
+//     загружается) — эти две группы селектор отдаёт, НЕ применяя хук Phase 6,
+//     значит их наличие означало бы, что кандидат есть и без лока, то есть
+//     причина не в нём;
+//   - у КАЖДОГО оставшегося кандидата ЕСТЬ свободный слот (иначе причина
+//     ожидания — ёмкость, то есть обычная перегрузка: лок лишь совпал с ней);
+//   - КАЖДЫЙ оставшийся кандидат заблокирован image-локом.
+//
+// Возвращает (лимит, true), только если все условия выполнены.
+func (p *Proxy) imageLockWaitCap(model string, bt types.BackendType) (time.Duration, bool) {
+	if p == nil || p.imageRes == nil {
+		return 0, false
+	}
+	candidates := p.expandCandidates(model, p.getAllowedTypesList(bt))
+	if len(candidates) == 0 {
+		return 0, false
+	}
+	blocked := 0
+	for _, group := range candidates {
+		if group.Priority == 1 || group.Priority == 2 {
+			return 0, false
+		}
+		for _, backendID := range group.BackendIDs {
+			state := p.backends[backendID]
+			if state == nil || !p.imageLockBlocksTextBackend(state) {
+				return 0, false
+			}
+			if !p.backendHasFreeSlot(state) {
+				return 0, false
+			}
+			blocked++
+		}
+	}
+	if blocked == 0 {
+		return 0, false
+	}
+	wait := time.Duration(p.imageRes.settings().EffectiveQueueWaitTimeout()) * time.Second
+	if wait <= 0 {
+		return 0, false
+	}
+	return wait, true
+}
+
+// backendHasFreeSlot — есть ли на бэкенде свободный слот.
+//
+// Правило то же, что у tryAcquireSlot: EffectiveMaxConcurrentRequests против
+// ActiveReqs (<= 0 = лимита нет → слот есть всегда).
+func (p *Proxy) backendHasFreeSlot(state *BackendState) bool {
+	if state == nil || state.Backend == nil {
 		return false
 	}
-	res.noteTextSlotWithheld()
-	return true
+	state.mu.Lock()
+	active := state.ActiveReqs
+	state.mu.Unlock()
+	maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
+	return maxReqs <= 0 || active < maxReqs
 }
 
 // selectBackend - выбор бэкенда для запроса (pre-step + 4 этапа = 5 шагов)

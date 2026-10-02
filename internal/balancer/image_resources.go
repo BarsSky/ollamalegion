@@ -20,10 +20,11 @@
 //     image_model_error. Ленивой загрузки у sdworker НЕТ (он отвечает
 //     409 model_not_loaded — см. internal/sdbackend/jobs.go:654), поэтому
 //     «пропустить наугад» означало бы гарантированную ошибку глубже.
-//  4. Ресурсный лок GPU по хосту для политики exclusive: генерация владеет
-//     картой, второй запрос ждёт QueueWaitTimeoutSec и получает 429, а
-//     предохранитель ExclusiveLockTimeoutSec принудительно снимает лок с
-//     зависшей генерации (иначе карта была бы занята навсегда).
+//  4. Ресурсный лок GPU для политики exclusive: генерация владеет картой,
+//     второй запрос ждёт QueueWaitTimeoutSec и получает 429, а предохранитель
+//     ExclusiveLockTimeoutSec принудительно снимает лок с зависшей генерации
+//     (иначе карта была бы занята навсегда). Ключ лока — host + индекс GPU,
+//     когда индекс задан у ОБЕИХ сторон (см. locksConflict); иначе — host.
 //
 // ГРАНИЦЫ РЕШЕНИЙ (почему именно так — чтобы это не переоткрывали заново):
 //
@@ -56,6 +57,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -315,14 +317,68 @@ const (
 // Ресурсный лок GPU
 // ============================================================
 
-// imageHostLock — состояние лока одного хоста. Все поля защищены imageResources.mu.
+// imageHostLock — состояние лока одной GPU (или всего хоста). Все поля защищены
+// imageResources.mu.
 type imageHostLock struct {
 	// holder — владелец лока (nil при свободном локе).
 	holder *imageLockHolder
 	// releaseCh — канал, закрываемый при освобождении: будит ожидающих.
 	releaseCh chan struct{}
+	// host — хост лока (нужен для проверки конфликтов между ключами хоста).
+	host string
+	// gpuIndex — индекс GPU лока; 0 = «неизвестно» = лок на весь хост.
+	gpuIndex int
 	// held — занят ли лок.
 	held bool
+}
+
+// imageLockKey — ключ лока в карте r.locks.
+//
+// ЗАЧЕМ СОСТАВНОЙ КЛЮЧ (R-Image follow-up, 2026-10-02): раньше лок брался по
+// host, и на multi-GPU хосте генерация на одной карте блокировала текстовый
+// бэкенд на другой. Теперь ключ — host + индекс GPU, КОГДА индекс задан; при
+// gpuIndex == 0 ключ равен хосту (прежнее поведение) — индекс «неизвестно»
+// не даёт права сузить лок.
+func imageLockKey(host string, gpuIndex int) string {
+	if gpuIndex > 0 {
+		return host + "#gpu" + strconv.Itoa(gpuIndex)
+	}
+	return host
+}
+
+// locksConflict — пересекаются ли два лока по GPU.
+//
+// КОНСЕРВАТИЗМ (почему именно так): если индекс не задан ХОТЯ БЫ У ОДНОЙ
+// стороны, считаем, что она занимает весь хост — какой GPU она использует, нам
+// неизвестно, а «пропустить» текстовый запрос на карту генерации означает OOM
+// внутри движка (ровно то, от чего защищает политика exclusive). Сужаем лок
+// только когда ОБЕ стороны назвали свою карту.
+func locksConflict(a, b *imageHostLock) bool {
+	if a == nil || b == nil || a.host != b.host {
+		return false
+	}
+	if a.gpuIndex == 0 || b.gpuIndex == 0 {
+		return true
+	}
+	return a.gpuIndex == b.gpuIndex
+}
+
+// lockOrderLess — детерминированный порядок конфликтующих локов: сначала
+// хостовый (он блокирует всё), затем по возрастанию индекса GPU, затем по
+// ключу. Нужен, чтобы выбор «на чьём releaseCh спать» не зависел от порядка
+// обхода map (иначе при нескольких локах хоста ожидание становилось бы
+// случайным — а timer-страховка всего лишь 100 мс).
+func lockOrderLess(a, b *imageHostLock) bool {
+	if a == nil || b == nil {
+		return a == nil && b != nil
+	}
+	if (a.gpuIndex == 0) != (b.gpuIndex == 0) {
+		return a.gpuIndex == 0
+	}
+	if a.gpuIndex != b.gpuIndex {
+		return a.gpuIndex < b.gpuIndex
+	}
+	return imageLockKey(a.host, a.gpuIndex) < imageLockKey(b.host, b.gpuIndex)
 }
 
 // imageLockHolder — право владения локом GPU на время генерации.
@@ -334,10 +390,12 @@ type imageLockHolder struct {
 	res        *imageResources
 	fuse       *time.Timer
 	done       chan struct{}
+	key        string
 	host       string
 	backendID  string
 	model      string
 	acquiredAt time.Time
+	gpuIndex   int
 	once       sync.Once
 	// handedOff — лок передан сторожу асинхронной генерации: отложенный
 	// Release() из HTTP-обработчика обязан стать no-op.
@@ -361,6 +419,7 @@ func (h *imageLockHolder) Release(reason string) {
 		held := time.Since(h.acquiredAt)
 		logger.Get().Infow("image GPU lock released",
 			"host", h.host,
+			"gpu_index", h.gpuIndex,
 			"backend", h.backendID,
 			"model", h.model,
 			"reason", reason,
@@ -421,6 +480,10 @@ type imageResources struct {
 	lockWaits         atomic.Int64
 	lockWaitSumMS     atomic.Int64
 	textSlotsWithheld atomic.Int64
+	// textWaitCapped — сколько раз ожидание ТЕКСТОВОГО запроса было урезано до
+	// balancing.image.queueWaitTimeoutSec, потому что единственная причина
+	// отсутствия слота — активный image-лок (Phase 6 follow-up, п.2).
+	textWaitCapped    atomic.Int64
 	gateSkippedNoData atomic.Int64
 	started           atomic.Bool
 
@@ -839,8 +902,12 @@ func (r *imageResources) beforeGeneration(ctx context.Context, backendID string)
 	settings := r.settings()
 	backend := r.proxy.GetBackend(backendID)
 	host := ""
+	gpuIndex := 0
 	if backend != nil {
 		host = backend.Host
+		// Индекс GPU: явный gpuIndex → CppWorkerConfig.MainGPU → 0 («неизвестно»).
+		// При 0 лок остаётся хостовым — см. locksConflict.
+		gpuIndex = backend.EffectiveGPUIndex()
 	}
 
 	if settings.GateDisabled {
@@ -867,7 +934,7 @@ func (r *imageResources) beforeGeneration(ctx context.Context, backendID string)
 		return imageGateDecision{Allowed: true, Code: types.ImageGateOK}
 	}
 
-	holder, ok, waited := r.acquireLock(ctx, backendID, host, r.loadedModelName(snap))
+	holder, ok, waited := r.acquireLock(ctx, backendID, host, gpuIndex, r.loadedModelName(snap))
 	if !ok {
 		retryAfter := int(r.queueWait().Seconds())
 		if retryAfter < 1 {
@@ -878,7 +945,7 @@ func (r *imageResources) beforeGeneration(ctx context.Context, backendID string)
 		r.gateDenied[ImageGateGPUBusy]++
 		r.mu.Unlock()
 		logger.Get().Warnw("image GPU lock busy: generation rejected",
-			"host", host, "backend", backendID,
+			"host", host, "gpu_index", gpuIndex, "backend", backendID,
 			"waited_ms", waited.Milliseconds(),
 			"queue_wait_sec", int(r.queueWait().Seconds()))
 		return imageGateDecision{
@@ -1278,31 +1345,38 @@ func (r *imageResources) profileStore() *config.ImageModelProfileStore {
 // Лок GPU: захват/освобождение/предохранитель
 // ============================================================
 
-// acquireLock — взять лок GPU хоста, ожидая освобождения не дольше queueWait.
-// Возвращает (holder, ok, waited).
-func (r *imageResources) acquireLock(ctx context.Context, backendID, host, model string) (*imageLockHolder, bool, time.Duration) {
+// acquireLock — взять лок GPU (host + индекс, когда индекс задан), ожидая
+// освобождения не дольше queueWait. Возвращает (holder, ok, waited).
+func (r *imageResources) acquireLock(ctx context.Context, backendID, host string, gpuIndex int, model string) (*imageLockHolder, bool, time.Duration) {
 	if r == nil {
 		return nil, true, 0
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	key := imageLockKey(host, gpuIndex)
 	wait := r.queueWait()
 	start := time.Now()
 	deadline := start.Add(wait)
 
 	for {
 		r.mu.Lock()
-		lk := r.locks[host]
+		lk := r.locks[key]
 		if lk == nil {
-			lk = &imageHostLock{}
-			r.locks[host] = lk
+			lk = &imageHostLock{host: host, gpuIndex: gpuIndex}
+			r.locks[key] = lk
 		}
-		if !lk.held {
+		// Конфликт ищем по ВСЕМ локам хоста, а не только по своему ключу:
+		// хостовый лок (индекс неизвестен) и лок другой карты — разные ключи,
+		// но первый обязан блокировать всех (см. locksConflict).
+		conflict := r.conflictLocked(lk)
+		if conflict == nil {
 			h := &imageLockHolder{
 				res:        r,
 				done:       make(chan struct{}),
+				key:        key,
 				host:       host,
+				gpuIndex:   gpuIndex,
 				backendID:  backendID,
 				model:      model,
 				acquiredAt: time.Now(),
@@ -1324,14 +1398,16 @@ func (r *imageResources) acquireLock(ctx context.Context, backendID, host, model
 			}
 			logger.Get().Infow("image GPU lock acquired",
 				"host", host,
+				"gpu_index", gpuIndex,
+				"lock_key", key,
 				"backend", backendID,
 				"model", model,
 				"waited_ms", waited.Milliseconds(),
 				"fuse_sec", int(fuse.Seconds()))
 			return h, true, waited
 		}
-		holder := lk.holder
-		releaseCh := lk.releaseCh
+		holder := conflict.holder
+		releaseCh := conflict.releaseCh
 		r.mu.Unlock()
 
 		remaining := time.Until(deadline)
@@ -1342,7 +1418,9 @@ func (r *imageResources) acquireLock(ctx context.Context, backendID, host, model
 		if holder != nil {
 			logger.Get().Debugw("image GPU lock busy, waiting",
 				"host", host,
+				"gpu_index", gpuIndex,
 				"held_by_backend", holder.backendID,
+				"held_gpu_index", holder.gpuIndex,
 				"held_ms", time.Since(holder.acquiredAt).Milliseconds(),
 				"remaining_ms", remaining.Milliseconds())
 		}
@@ -1364,6 +1442,34 @@ func (r *imageResources) acquireLock(ctx context.Context, backendID, host, model
 	}
 }
 
+// conflictLocked — удерживаемый лок, конфликтующий с lk (mu удерживается).
+// Выбор детерминирован (см. lockOrderLess).
+func (r *imageResources) conflictLocked(lk *imageHostLock) *imageHostLock {
+	if lk == nil {
+		return nil
+	}
+	// СВОЙ ключ занят — это и есть конфликт (другой запрос держит ту же карту).
+	// Отдельная ветка обязательна: в общем цикле свой лок пропускается как
+	// «сам себя», и без неё повторный захват того же (host, gpu) проходил бы
+	// молча — воспроизведено тестом TestImageLock_ExclusiveSecondRequestRejected.
+	if lk.held {
+		return lk
+	}
+	var best *imageHostLock
+	for _, other := range r.locks {
+		if other == lk || !other.held {
+			continue
+		}
+		if !locksConflict(lk, other) {
+			continue
+		}
+		if best == nil || lockOrderLess(other, best) {
+			best = other
+		}
+	}
+	return best
+}
+
 // unlock — снять лок (вызывается из imageLockHolder.Release под sync.Once).
 func (r *imageResources) unlock(h *imageLockHolder) {
 	if r == nil || h == nil {
@@ -1371,7 +1477,7 @@ func (r *imageResources) unlock(h *imageLockHolder) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	lk := r.locks[h.host]
+	lk := r.locks[h.key]
 	if lk == nil || !lk.held || lk.holder != h {
 		return
 	}
@@ -1393,7 +1499,7 @@ func (r *imageResources) forceRelease(h *imageLockHolder) {
 		return
 	}
 	r.mu.Lock()
-	lk := r.locks[h.host]
+	lk := r.locks[h.key]
 	stillHeld := lk != nil && lk.held && lk.holder == h
 	r.mu.Unlock()
 	if !stillHeld {
@@ -1402,6 +1508,7 @@ func (r *imageResources) forceRelease(h *imageLockHolder) {
 	r.lockForced.Add(1)
 	logger.Get().Warnw("image GPU lock held too long — forced release (предохранитель exclusiveLockTimeoutSec)",
 		"host", h.host,
+		"gpu_index", h.gpuIndex,
 		"backend", h.backendID,
 		"model", h.model,
 		"held_sec", int(time.Since(h.acquiredAt).Seconds()),
@@ -1417,28 +1524,62 @@ func (r *imageResources) releaseFromRequest(h *imageLockHolder) {
 	}
 	if h.handedOff.Load() {
 		logger.Get().Debugw("image GPU lock release skipped: ownership handed to async watcher",
-			"host", h.host, "backend", h.backendID, "model", h.model)
+			"host", h.host, "gpu_index", h.gpuIndex, "backend", h.backendID, "model", h.model)
 		return
 	}
 	h.Release("request_done")
 }
 
-// gpuLockHeld — держит ли кто-то лок этого хоста (используется текстовой
-// стороной: см. imageGateBlocksTextBackend в backend_selector.go).
+// gpuLockHeld — занят ли хост ЛЮБЫМ локом (без учёта индекса GPU): «есть ли на
+// хосте активная генерация вообще». Используется диагностикой/тестами; боевой
+// путь текстовой стороны — gpuLockHeldFor с индексом.
 func (r *imageResources) gpuLockHeld(host string) bool {
 	if r == nil || host == "" {
 		return false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	lk := r.locks[host]
-	return lk != nil && lk.held
+	for _, lk := range r.locks {
+		if lk != nil && lk.held && lk.host == host {
+			return true
+		}
+	}
+	return false
+}
+
+// gpuLockHeldFor — блокирует ли удерживаемый лок эту (host, gpuIndex) пару.
+//
+// Правило то же, что и у взятия лока (locksConflict): лок другой карты того же
+// хоста не блокирует, а лок с неизвестным индексом (или проверка без индекса)
+// блокирует весь хост — консервативно.
+func (r *imageResources) gpuLockHeldFor(host string, gpuIndex int) bool {
+	if r == nil || host == "" {
+		return false
+	}
+	probe := &imageHostLock{host: host, gpuIndex: gpuIndex}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, lk := range r.locks {
+		if lk != nil && lk.held && locksConflict(probe, lk) {
+			return true
+		}
+	}
+	return false
 }
 
 // noteTextSlotWithheld — счётчик «текстовый кандидат пропущен из-за image-лока».
 func (r *imageResources) noteTextSlotWithheld() {
 	if r != nil {
 		r.textSlotsWithheld.Add(1)
+	}
+}
+
+// noteTextWaitCapped — счётчик «ожидание текстового запроса урезано до
+// balancing.image.queueWaitTimeoutSec, потому что единственная причина
+// отсутствия кандидата — активный image-лок» (см. imageLockWaitCap).
+func (r *imageResources) noteTextWaitCapped() {
+	if r != nil {
+		r.textWaitCapped.Add(1)
 	}
 }
 
@@ -1592,6 +1733,9 @@ func (r *imageResources) snapshotMetrics() map[string]interface{} {
 		"lock_rejected_total":        r.lockRejected.Load(),
 		"lock_force_released_total":  r.lockForced.Load(),
 		"text_slots_withheld_total":  r.textSlotsWithheld.Load(),
-		"backends":                   perBackend,
+		// Phase 6 follow-up (п.2): ожидание текстового запроса урезано до
+		// balancing.image.queueWaitTimeoutSec (единственная причина — image-лок).
+		"text_wait_capped_total": r.textWaitCapped.Load(),
+		"backends":               perBackend,
 	}
 }

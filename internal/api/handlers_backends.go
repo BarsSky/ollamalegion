@@ -197,6 +197,7 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			// потребитель, берущий порт из списка, молча падал на дефолт 18093
 			// и на нестандартном порту уходил бы не туда.
 			"imagePort":                    backend.ImagePort,
+			"gpuIndex":                     backend.GPUIndex,
 			"weight":                       backend.Weight,
 			"maxConcurrentRequests":        maxConcurrent,
 			"maxModels":                    maxModels,
@@ -466,6 +467,12 @@ func (s *Server) refreshRegisteredBackend(w http.ResponseWriter, req backendRequ
 	if req.CppWorkerApiToken != "" {
 		updated.CppWorkerApiToken = req.CppWorkerApiToken
 	}
+	// GPUIndex: нода сообщила ненулевой индекс → принимаем; иначе сохраняем
+	// операторское значение (сборки, которые поля не знают, не должны стирать
+	// настройку, иначе лок сосуществования молча вернулся бы к хостовому).
+	if req.GPUIndex > 0 {
+		updated.GPUIndex = req.GPUIndex
+	}
 	if err := s.proxy.UpdateBackend(req.ID, updated); err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"success": false,
@@ -496,7 +503,12 @@ type backendRequest struct {
 	CppWorkerPort int    `json:"cppWorkerPort"`
 	// R-Image (2026-09-27): порт image-воркера для backendType=image_cpp
 	// (default 18093). Fallback: CppWorkerPort → 18093 (EffectiveImagePort).
-	ImagePort         int      `json:"imagePort"`
+	ImagePort int `json:"imagePort"`
+	// GPUIndex — индекс GPU бэкенда (0 = не задан/неизвестно; см.
+	// types.Backend.GPUIndex). Влияет только на ключ лока сосуществования
+	// image/text: при индексе у ОБЕИХ сторон лок берётся по (host, gpu), иначе
+	// по хосту. Merge-семантика как у imagePort: 0 = «не менять».
+	GPUIndex          int      `json:"gpuIndex"`
 	Weight            int      `json:"weight"`
 	MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
 	MaxModels         int      `json:"maxModels"`
@@ -656,6 +668,7 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		AgentPort:         req.AgentPort,
 		CppWorkerPort:     cppWorkerPort,
 		ImagePort:         imagePort,
+		GPUIndex:          req.GPUIndex,
 		Weight:            req.Weight,
 		MaxConcurrentReqs: req.MaxConcurrentReqs,
 		MaxModels:         req.MaxModels,
@@ -751,7 +764,11 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		CppWorkerPort int    `json:"cppWorkerPort"`
 		// R-Image (2026-09-27): порт image-воркера для backendType=image_cpp
 		// (default 18093). Fallback: CppWorkerPort → 18093 (EffectiveImagePort).
-		ImagePort         int      `json:"imagePort"`
+		ImagePort int `json:"imagePort"`
+		// GPUIndex — индекс GPU (0 = не задан/неизвестно). Merge-семантика как у
+		// imagePort: 0 = «не менять» (обнулить индекс этой ручкой нельзя — 0 и
+		// «не прислано» в int неразличимы, см. types.Backend.GPUIndex).
+		GPUIndex          int      `json:"gpuIndex"`
 		Weight            int      `json:"weight"`
 		MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
 		MaxModels         int      `json:"maxModels"`
@@ -849,6 +866,13 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		imagePort = req.ImagePort
 	}
 
+	// GPUIndex — та же merge-семантика (0 = «не менять»): частичный PUT из WebUI
+	// не должен стирать индекс, от которого зависит ключ лока сосуществования.
+	gpuIndex := existing.GPUIndex
+	if req.GPUIndex > 0 {
+		gpuIndex = req.GPUIndex
+	}
+
 	// Round 51.2 (2026-08-20): применяем apiStyle если передан, иначе сохраняем.
 	// Если оператор явно прислал невалидное значение — 400 (тот же контракт, что
 	// в addBackend, для консистентности).
@@ -943,6 +967,7 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		AgentPort:                    agentPort,
 		CppWorkerPort:                cppWorkerPort,
 		ImagePort:                    imagePort,
+		GPUIndex:                     gpuIndex,
 		Weight:                       weight,
 		MaxConcurrentReqs:            maxConcurrent,
 		MaxModels:                    maxModels,

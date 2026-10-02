@@ -46,29 +46,50 @@ var errAdmissionOverloaded = errors.New("admission queue overloaded")
 // бэкенде (тот же выбор, что в Proxy.ServeHTTP: affinity/Load/Config).
 // Возвращает ID бэкенда, на котором слот захвачен, либо "".
 func (p *Proxy) tryAcquireAnyBackendSlot(model string, bt types.BackendType) string {
+	id, _ := p.tryAcquireAnyBackendSlotDetailed(model, bt)
+	return id
+}
+
+// tryAcquireAnyBackendSlotDetailed — то же, но сообщает ПОЧЕМУ не получилось
+// (второе значение = «кандидатов не нашлось вовсе», а не «слоты заняты»).
+//
+// ЗАЧЕМ РАЗЛИЧАТЬ: лимит ожидания урезается только тогда, когда причина
+// отсутствия слота — активный image-лок (Phase 6 follow-up, см.
+// imageLockWaitCap). Если селектор НАШЁЛ бэкенд, а слот на нём занят, причина —
+// обычная перегрузка, и трогать лимит нельзя. Различить это можно ровно в
+// момент выбора: пустой результат первой же селекции означает «кандидатов нет»,
+// а исчерпание retry-цикла — «кандидаты были, но все заняты».
+func (p *Proxy) tryAcquireAnyBackendSlotDetailed(model string, bt types.BackendType) (backendID string, noCandidate bool) {
 	if p == nil {
-		return ""
+		return "", true
 	}
 	attempted := make(map[string]bool, 4)
 	if id := p.selectBackend(model, bt, false); id != "" {
 		if p.tryAcquireSlot(id) {
-			return id
+			return id, false
 		}
 		attempted[id] = true
+	} else {
+		// Ни одного кандидата: либо их нет, либо все заблокированы image-локом.
+		noCandidate = true
 	}
 	const maxRetries = 10
 	for retry := 0; retry < maxRetries; retry++ {
 		id := p.selectBackendExcluding(model, attempted, bt)
 		if id == "" {
-			return ""
+			return "", noCandidate
 		}
 		if p.tryAcquireSlot(id) {
-			return id
+			return id, false
 		}
 		attempted[id] = true
 	}
-	return ""
+	return "", noCandidate
 }
+
+// imageLockWaitReason — машинный код причины «ожидание урезано image-локом».
+// Идёт в заголовок X-Queue-Wait-Reason и в тело 503 (см. writeAdmissionUnavailable).
+const imageLockWaitReason = "image_gpu_lock"
 
 // waitForInferenceBackend — R73: дождаться слота на любом подходящем бэкенде.
 //
@@ -80,6 +101,13 @@ func (p *Proxy) tryAcquireAnyBackendSlot(model string, bt types.BackendType) str
 //	errAdmissionOverloaded — очередь переполнена (backpressure): быстрый 503;
 //	errAdmissionTimeout    — ожидание истекло: 503 + Retry-After;
 //	ctx.Err()              — клиент отвалился/отменил запрос.
+//
+// ЛИМИТ ОЖИДАНИЯ — per-request (Phase 6 follow-up, 2026-10-02). Базовый лимит
+// по-прежнему LB_ADMISSION_WAIT_SEC, но когда единственная причина отсутствия
+// кандидата — активный image-лок, он сужается до
+// balancing.image.queueWaitTimeoutSec: ждать освобождения GPU дольше, чем ждёт
+// сам image-запрос, смысла нет. Глобальное поле очереди (aq.wait) при этом НЕ
+// трогается — правка per-request, иначе пострадали бы все остальные запросы.
 func (p *Proxy) waitForInferenceBackend(
 	ctx context.Context, model string, bt types.BackendType, session string,
 ) (backendID string, release func(), waited time.Duration, position int, err error) {
@@ -88,7 +116,8 @@ func (p *Proxy) waitForInferenceBackend(
 	}
 
 	// Быстрый путь: слот свободен — очередь не нужна.
-	if id := p.tryAcquireAnyBackendSlot(model, bt); id != "" {
+	id, noCandidate := p.tryAcquireAnyBackendSlotDetailed(model, bt)
+	if id != "" {
 		lease := p.newAdmissionLease(id, session, 0, 0)
 		return id, lease.Release, 0, 0, nil
 	}
@@ -96,6 +125,19 @@ func (p *Proxy) waitForInferenceBackend(
 	wait := p.admissionWaitTimeout()
 	if wait <= 0 || p.admission == nil {
 		return "", nil, 0, 0, errAdmissionDisabled
+	}
+	if noCandidate {
+		if capped, ok := p.imageLockWaitCap(model, bt); ok && capped < wait {
+			logger.Get().Warnw("unified queue: кандидатов нет из-за активного image-лока — лимит ожидания сужен до balancing.image.queueWaitTimeoutSec",
+				"model", model, "session", session,
+				"reason", imageLockWaitReason,
+				"wait_max_sec", int(capped.Seconds()),
+				"admission_wait_sec", int(wait.Seconds()))
+			if p.imageRes != nil {
+				p.imageRes.noteTextWaitCapped()
+			}
+			wait = capped
+		}
 	}
 	if p.admissionOverloaded() {
 		logger.Get().Warnw("unified queue: очередь переполнена, быстрый 503",

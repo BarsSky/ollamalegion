@@ -102,6 +102,21 @@ type Backend struct {
 	// настройка «одним портом»), иначе DefaultImageWorkerPort (18093).
 	ImagePort int `json:"imagePort,omitempty"`
 
+	// GPUIndex — индекс GPU, на которой реально работает этот бэкенд.
+	//
+	// 0 = НЕ ЗАДАН («неизвестно»), потому что 0 — валидный индекс первой карты,
+	// и отличить «GPU 0» от «не указано» в одном int без отдельного флага
+	// нельзя. Следствие (осознанное, консервативное): объявить ПЕРВУЮ карту
+	// этим полем невозможно — для неё лок остаётся хостовым. Ослаблять защиту
+	// сосуществования на самой частой конфигурации (индекс 0) нельзя.
+	//
+	// Зачем поле (R-Image follow-up, 2026-10-02): лок сосуществования image/text
+	// брался по host целиком, и на multi-GPU хосте генерация на одной карте
+	// блокировала текстовый бэкенд на другой. Ключ лока = host + GPUIndex, когда
+	// индекс задан у ОБЕИХ сторон; иначе — по хосту (см.
+	// internal/balancer/image_resources.go: locksConflict).
+	GPUIndex int `json:"gpuIndex,omitempty"`
+
 	// CppWorkerConfig — настройки llama.cpp (только для llama_cpp-типа)
 	CppWorkerConfig *LlamaCppConfig `json:"cppWorkerConfig,omitempty"`
 
@@ -132,6 +147,28 @@ func (b *Backend) EffectiveImagePort() int {
 		return b.CppWorkerPort
 	}
 	return DefaultImageWorkerPort
+}
+
+// EffectiveGPUIndex — индекс GPU бэкенда с фолбэком (0 = неизвестно).
+//
+// Приоритет: явный GPUIndex → CppWorkerConfig.MainGPU. Фолбэк осознанный: у
+// llama.cpp-бэкенда MainGPU — это ровно тот device, на который cppworker кладёт
+// веса (internal/cppbackend: cfg.MainGPU = ts.MainGPU из авто-распределения),
+// то есть конфигурация уже называет карту, и игнорировать её значило бы
+// оставлять хостовый лок там, где сторона сама сказала, какая у неё GPU.
+//
+// Ноль в ОБОИХ источниках = «неизвестно» (см. GPUIndex о причине).
+func (b *Backend) EffectiveGPUIndex() int {
+	if b == nil {
+		return 0
+	}
+	if b.GPUIndex > 0 {
+		return b.GPUIndex
+	}
+	if b.CppWorkerConfig != nil && b.CppWorkerConfig.MainGPU > 0 {
+		return b.CppWorkerConfig.MainGPU
+	}
+	return 0
 }
 
 // EffectiveMaxConcurrentRequests — R71 (2026-09-24): единое правило вместимости

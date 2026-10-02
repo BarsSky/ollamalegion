@@ -251,6 +251,11 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			HasAgent:                     existing.HasAgent,
 			CppWorkerConfig:              existing.CppWorkerConfig,
 			OllamaConfig:                 existing.OllamaConfig,
+			// GPUIndex — операторское/нодовое поле: heartbeat его НЕ трогает,
+			// но обязан перенести. Иначе ближайший же (каждые 30 с) heartbeat
+			// молча стирал бы индекс, и лок сосуществования возвращался бы к
+			// хостовому (R-Image follow-up: ключ лока = host + gpuIndex).
+			GPUIndex: existing.GPUIndex,
 		}
 		s.proxy.UpdateBackend(req.AgentID, updated)
 

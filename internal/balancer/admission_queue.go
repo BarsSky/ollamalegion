@@ -709,14 +709,28 @@ func (lr *LlamaCppRouter) acquireInferenceAdmission(
 
 // writeAdmissionUnavailable — R67b: 503 «нет свободных слотов» с понятными
 // заголовками (клиент видит, что запрос стоял в очереди, и когда повторить).
+//
+// Phase 6 follow-up (2026-10-02): лимит ожидания бывает сужен per-request —
+// когда единственная причина отсутствия кандидата это активный image-лок
+// (см. imageLockWaitCap / waitForInferenceBackend). Признак этого — waited
+// СТРОГО меньше настроенного предела: из цикла ожидания errAdmissionTimeout
+// возвращается только при remaining <= 0, то есть waited >= применённого
+// лимита всегда. Поэтому здесь достаточно сравнения, без протаскивания флага
+// через сигнатуру (лишний параметр сломал бы всех вызывающих).
 func writeAdmissionUnavailable(w http.ResponseWriter, model, session string, position int, waited, maxWait time.Duration) {
+	capped := waited > 0 && waited < maxWait
+	if capped {
+		// Отчитываемся ФАКТИЧЕСКИ применённым лимитом: иначе клиент и оператор
+		// увидели бы LB_ADMISSION_WAIT_SEC, которого в этом запросе не было.
+		maxWait = waited
+	}
 	w.Header().Set("Retry-After", strconv.Itoa(admissionRetryAfterSec))
 	if position > 0 {
 		w.Header().Set("X-Queue-Position", strconv.Itoa(position))
 	}
 	w.Header().Set("X-Queue-Wait-Ms", strconv.FormatInt(waited.Milliseconds(), 10))
 	w.Header().Set("X-Queue-Wait-Max-Sec", strconv.Itoa(int(maxWait.Seconds())))
-	writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+	payload := map[string]interface{}{
 		"error": "all inference slots are busy, request waited in queue and timed out: " +
 			"model '" + model + "'",
 		"queued":        true,
@@ -725,5 +739,15 @@ func writeAdmissionUnavailable(w http.ResponseWriter, model, session string, pos
 		"waitMaxSec":    int(maxWait.Seconds()),
 		"retryAfterMs":  admissionRetryAfterSec * 1000,
 		"session":       session,
-	})
+	}
+	if capped {
+		// Причина отказа машинночитаема: слот не освободился, потому что GPU
+		// занята image-генерацией (exclusive-политика), а не потому что очередь
+		// переполнена текстовыми запросами.
+		w.Header().Set("X-Queue-Wait-Reason", imageLockWaitReason)
+		payload["waitReason"] = imageLockWaitReason
+		payload["waitReasonHint"] = "the text backends are on a GPU held by an image generation " +
+			"(balancing.image.coexistence=exclusive); retry after it finishes or lower balancing.image.queueWaitTimeoutSec expectations"
+	}
+	writeJSON(w, http.StatusServiceUnavailable, payload)
 }

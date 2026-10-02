@@ -614,6 +614,15 @@ func applySyncedProfileToLazyLoadOpts(modelName string, opts *cppbackend.LoadMod
 	}
 	opts.ContextSize, opts.BatchSize, opts.GPULayers = ctxSize, batch, gpuLayers
 	opts.FlashAttnType, opts.KVCacheType = flashAttn, kvCacheType
+	// R83/v67 (2026-10-02): per-model reasoning из профиля при lazy-load.
+	// Иначе LoadModelOpts.EnableReasoning оставался nil → cppbackend брал
+	// cfg.DefaultEnableReasoning=false, и модель грузилась БЕЗ размышлений,
+	// хотя галочка в WebUI стоит. Явный запрос (opts уже задан) приоритетнее.
+	if opts.EnableReasoning == nil && prof.EnableReasoning != nil {
+		opts.EnableReasoning = prof.EnableReasoning
+		logger.Get().Infow("lazy-load: enableReasoning взят из профиля модели (R83/v67)",
+			"model", modelName, "enable_reasoning", *prof.EnableReasoning)
+	}
 	return nil
 }
 

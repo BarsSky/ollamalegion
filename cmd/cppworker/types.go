@@ -129,6 +129,17 @@ type loadModelRequest struct {
 	// "unknown field reason" → 400 → reload loop. The field is recorded
 	// for log correlation but not used to alter behavior.
 	Reason *string `json:"reason,omitempty"`
+	// R83/v67 (2026-10-02): per-model переключатель размышлений.
+	//
+	// Balancer отправляет enableReasoning ВСЕГДА, когда загрузка идёт по
+	// профилю модели (model_management.go), а не только на /load-with-params.
+	// Строгий декодер (types.DecodeJSONRequest, DisallowUnknownFields) из-за
+	// отсутствия поля отвечал «invalid JSON: json: unknown field
+	// "enableReasoning"» → 400, и авто-загрузка падала ЦЕЛИКОМ (модель не
+	// поднималась вовсе). Ровно тот же класс дефекта, что kvCacheType в R44.
+	//
+	// nil = inherit (cppbackend.LoadModelOpts.EnableReasoning → cfg.DefaultEnableReasoning).
+	EnableReasoning *bool `json:"enableReasoning,omitempty"`
 }
 
 type embeddingsRequest struct {
@@ -163,6 +174,11 @@ type reloadModelRequest struct {
 	// Round 7: parallel arrays for MoE override-tensors.
 	OverrideTensors     []string `json:"overrideTensors,omitempty"`
 	OverrideTensorBufts []string `json:"overrideTensorBufts,omitempty"`
+	// R83/v67 (2026-10-02): per-model reasoning и на reload — иначе перезагрузка
+	// (preflight n_ctx, смена окна) молча выключала уже включённые размышления:
+	// opts.EnableReasoning оставался nil → cppbackend падал на
+	// cfg.DefaultEnableReasoning (false), и флаг «включить размышления» терялся.
+	EnableReasoning *bool `json:"enableReasoning,omitempty"`
 }
 
 // loadWithParamsRequest — расширенный набор параметров для

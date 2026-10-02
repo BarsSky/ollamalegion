@@ -1035,6 +1035,93 @@ func urlQueryEscape(s string) string {
 // закрывает race condition, когда параллельные запросы приходят на cppworker
 // в момент, когда другая горутина уже грузит эту же модель (другая запрос
 // получил `TryLockLoad=false`, а handleLoadModel ещё не завершил WaitForLoad).
+// llamaCppLoadBodyKeys — КОНТРАКТ тех ключей, которые балансер кладёт в тело
+// POST /api/models/load (или /api/models/load-with-params) для cppworker.
+//
+// ЗАЧЕМ СПИСОК. cppworker декодирует тело СТРОГИМ декодером
+// (pkg/types.DecodeJSONRequest → json.Decoder.DisallowUnknownFields), поэтому
+// любое поле, которое балансер добавил, а loadModelRequest /
+// loadWithParamsRequest (cmd/cppworker/types.go) не знает, превращается в
+// HTTP 400 `invalid JSON: json: unknown field "..."` — и загрузка модели падает
+// ЦЕЛИКОМ, а не деградирует. Так было уже дважды:
+//   - R44 (2026-08-19): kvCacheType / reason на legacy /api/models/load;
+//   - R83/v67 (2026-10-02): enableReasoning — профиль с галочкой «размышления»
+//     вообще не давал модель поднять (см. лог балансера: «async load failed»).
+//
+// Дисциплина: добавление ключа сюда ОБЯЗАНО сопровождаться приёмом поля на
+// стороне cppworker. Тесты держат обе стороны синхронными:
+//   - internal/balancer: TestLlamaCppLoadBody_KeyContract
+//   - cmd/cppworker:     TestBalancerLoadBody_AcceptedByLegacyAndParamsEndpoints
+var llamaCppLoadBodyKeys = []string{
+	"name",
+	"contextSize",
+	"gpuLayers",
+	"kvCacheType",
+	"useMmap",
+	"flashAttn",
+	"batchSize",
+	"parallel",
+	"contextPerSeq",
+	"enableReasoning",
+	"overrideTensors",
+	"overrideTensorBufts",
+}
+
+// buildLlamaCppLoadBody собирает тело запроса на загрузку модели для cppworker.
+//
+// Вынесено из executeLlamaCppLoad отдельной функцией, чтобы контракт ключей
+// (llamaCppLoadBodyKeys) можно было проверить тестом без HTTP и без живого
+// бэкенда. Поля с nil-указателем не попадают в тело вовсе: cppworker тогда
+// берёт свой env/config-дефолт (см. handleLoadModel в cmd/cppworker).
+//
+// R83 (2026-09-30) про contextPerSeq: суммарный n_ctx считает cppworker (у него
+// есть и слоты, и env-дефолт CPPWORKER_N_PARALLEL), поэтому передаём как есть и
+// НЕ подменяем contextSize.
+//
+// R83/v67 (2026-10-02) про enableReasoning: приходит сюда из профиля модели
+// (WebUI) через applyProfileLoadParams — балансер не имеет права решать за
+// оператора, поэтому поле уходит всегда, когда задано.
+func buildLlamaCppLoadBody(req ModelOpRequest, overrideTensors, overrideTensorBufts []string, useLoadWithParams bool) map[string]interface{} {
+	body := map[string]interface{}{
+		"name": req.ModelName,
+	}
+	if req.ContextSize != nil {
+		body["contextSize"] = *req.ContextSize
+	}
+	if req.GPULayers != nil {
+		body["gpuLayers"] = *req.GPULayers
+	}
+	// R54.6 (2026-08-24): AutoTune fields — apply to /api/models/load body.
+	if req.KVCacheType != nil {
+		body["kvCacheType"] = *req.KVCacheType
+	}
+	if req.UseMmap != nil {
+		body["useMmap"] = *req.UseMmap
+	}
+	if req.FlashAttn != nil {
+		body["flashAttn"] = *req.FlashAttn
+	}
+	if req.BatchSize != nil {
+		body["batchSize"] = *req.BatchSize
+	}
+	// R83 (2026-09-29): параллельность и размышления — раньше терялись по пути
+	// WebUI → балансер → cppworker (см. комментарий у полей ModelOpRequest).
+	if req.Parallel != nil {
+		body["parallel"] = *req.Parallel
+	}
+	if req.ContextPerSeq != nil && *req.ContextPerSeq > 0 {
+		body["contextPerSeq"] = *req.ContextPerSeq
+	}
+	if req.EnableReasoning != nil {
+		body["enableReasoning"] = *req.EnableReasoning
+	}
+	if useLoadWithParams {
+		body["overrideTensors"] = overrideTensors
+		body["overrideTensorBufts"] = overrideTensorBufts
+	}
+	return body
+}
+
 func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
 	// Round 27 follow-up (v0.5.14 follow-up #2): если у модели стоит профиль
 	// с disabled=true (например, gemma-4 с upstream GGML_ASSERT на любом n_ctx >= 8192)
@@ -1136,46 +1223,7 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	if useLoadWithParams {
 		url = fmt.Sprintf("http://%s:%d/api/models/load-with-params", host, port)
 	}
-	body := map[string]interface{}{
-		"name": req.ModelName,
-	}
-	if req.ContextSize != nil {
-		body["contextSize"] = *req.ContextSize
-	}
-	if req.GPULayers != nil {
-		body["gpuLayers"] = *req.GPULayers
-	}
-	// R54.6 (2026-08-24): AutoTune fields — apply to /api/models/load body.
-	if req.KVCacheType != nil {
-		body["kvCacheType"] = *req.KVCacheType
-	}
-	if req.UseMmap != nil {
-		body["useMmap"] = *req.UseMmap
-	}
-	if req.FlashAttn != nil {
-		body["flashAttn"] = *req.FlashAttn
-	}
-	if req.BatchSize != nil {
-		body["batchSize"] = *req.BatchSize
-	}
-	// R83 (2026-09-29): параллельность и размышления — раньше терялись по пути
-	// WebUI → балансер → cppworker (см. комментарий у полей ModelOpRequest).
-	if req.Parallel != nil {
-		body["parallel"] = *req.Parallel
-	}
-	// R83 (2026-09-30): окно НА КЛИЕНТА. Суммарный n_ctx считает cppworker
-	// (у него есть и слоты, и env-дефолт CPPWORKER_N_PARALLEL), поэтому здесь
-	// передаём как есть и НЕ подменяем contextSize.
-	if req.ContextPerSeq != nil && *req.ContextPerSeq > 0 {
-		body["contextPerSeq"] = *req.ContextPerSeq
-	}
-	if req.EnableReasoning != nil {
-		body["enableReasoning"] = *req.EnableReasoning
-	}
-	if useLoadWithParams {
-		body["overrideTensors"] = overrideTensors
-		body["overrideTensorBufts"] = overrideTensorBufts
-	}
+	body := buildLlamaCppLoadBody(req, overrideTensors, overrideTensorBufts, useLoadWithParams)
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return &ModelOpResult{

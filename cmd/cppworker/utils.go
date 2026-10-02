@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -565,6 +566,21 @@ func defaultIntPtr(v *int, def int) int {
 		return def
 	}
 	return *v
+}
+
+// currentReasoningPtr — R83/v67 (2026-10-02): снимок действующего per-model
+// reasoning в виде *bool для LoadModelOpts при reload.
+//
+// Зачем: reload строит LoadModelOpts заново, и nil в EnableReasoning означает
+// «наследовать cfg.DefaultEnableReasoning» (false). То есть перезагрузка ради
+// другого окна молча выключала размышления, которые оператор включил в WebUI.
+// Передаём текущее состояние явно, чтобы reload сохранял его.
+func currentReasoningPtr(info *cppbackend.ModelInfo) *bool {
+	if info == nil {
+		return nil
+	}
+	v := info.ReasoningEnabled
+	return &v
 }
 
 // isValidKVCacheType — true, если value соответствует одному из

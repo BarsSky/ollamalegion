@@ -160,6 +160,16 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	if req.ContextPerSeq != nil && *req.ContextPerSeq > 0 {
 		opts.ContextPerSeq = *req.ContextPerSeq
 	}
+	// R83/v67 (2026-10-02): per-model reasoning на legacy /api/models/load.
+	// Балансер шлёт enableReasoning ВСЕГДА при загрузке по профилю модели
+	// (а не только на /load-with-params), поэтому поле обязано приниматься и
+	// здесь: без него строгий декодер отвечал 400 «unknown field
+	// "enableReasoning"» и модель не поднималась вообще.
+	if req.EnableReasoning != nil {
+		opts.EnableReasoning = req.EnableReasoning
+		logger.Get().Infow("handleLoadModel: per-model reasoning applied",
+			"name", modelName, "enableReasoning", *req.EnableReasoning)
+	}
 	if req.OverrideTensor != nil && *req.OverrideTensor != "" {
 		opts.OverrideTensor = *req.OverrideTensor
 	}
@@ -569,6 +579,15 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 				"profileBatchSize", prof.BatchSize,
 				"profileGPULayers", prof.NumGPULayers,
 				"profileKVCacheType", prof.KVCacheType)
+			// R83/v67 (2026-10-02): reasoning из профиля применяется тем же
+			// правилом «заполняем только пустое». Раньше профильная галочка
+			// «включить размышления» при загрузке через балансер терялась:
+			// opts.EnableReasoning оставался nil → cfg.DefaultEnableReasoning.
+			if opts.EnableReasoning == nil && prof.EnableReasoning != nil {
+				opts.EnableReasoning = prof.EnableReasoning
+				logger.Get().Infow("handleLoadWithParams: enableReasoning из профиля модели (R83/v67)",
+					"name", modelName, "enable_reasoning", *prof.EnableReasoning)
+			}
 		}
 	}
 
@@ -1690,6 +1709,12 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		// ?? ????????? (nil ?? ???????) ? inherit ?? ??????? ????????.
 		Parallel:    current.Parallel,
 		KVCacheType: current.KVCacheType,
+		// R83/v67 (2026-10-02): reasoning НЕ сбрасывается перезагрузкой.
+		// Было: opts.EnableReasoning = nil → cppbackend падал на
+		// cfg.DefaultEnableReasoning (false), и любой preflight-reload молча
+		// выключал уже включённые размышления. Явный req.EnableReasoning ниже
+		// имеет приоритет над текущим состоянием.
+		EnableReasoning: currentReasoningPtr(current),
 	}
 	// Round 7: forward MoE override-tensors (parallel arrays) from request
 	// body to LoadModelOpts so the bridge applies them to llama_model_params.
@@ -1716,6 +1741,13 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	degradedStage := ""
 	if req.Parallel != nil {
 		opts.Parallel = *req.Parallel
+	}
+	// R83/v67 (2026-10-02): явный enableReasoning в теле reload перекрывает
+	// унаследованное состояние (current.ReasoningEnabled, см. opts выше).
+	if req.EnableReasoning != nil {
+		opts.EnableReasoning = req.EnableReasoning
+		logger.Get().Infow("handleReloadModel: per-model reasoning applied",
+			"name", req.Name, "enableReasoning", *req.EnableReasoning)
 	}
 	// R83 (2026-09-30): окно на клиента при reload — та же семантика, что и при
 	// загрузке (пересчёт в суммарный n_ctx делает LoadModelWithOpts).
@@ -1753,6 +1785,14 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 				"profileBatchSize", prof.BatchSize,
 				"profileGPULayers", prof.NumGPULayers,
 				"profileKVCacheType", prof.KVCacheType)
+			// R83/v67 (2026-10-02): профиль может ВКЛЮЧИТЬ размышления, а
+			// тело reload их не задаёт. Явное req.EnableReasoning уже
+			// проставлено выше — здесь трогаем только незаданное.
+			if req.EnableReasoning == nil && prof.EnableReasoning != nil {
+				opts.EnableReasoning = prof.EnableReasoning
+				logger.Get().Infow("handleReloadModel: enableReasoning из профиля модели (R83/v67)",
+					"name", req.Name, "enable_reasoning", *prof.EnableReasoning)
+			}
 		}
 	}
 

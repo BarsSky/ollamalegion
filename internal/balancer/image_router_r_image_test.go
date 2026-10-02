@@ -126,11 +126,11 @@ func newImageTestProxy(t *testing.T, imagePort int) *Proxy {
 
 	cfg := &types.LoadBalancerConfig{
 		LoadBalancer: types.LoadBalancerSettings{
-			Host:        "127.0.0.1",
-			Port:        18080,
-			APIPort:     18081,
-			OpenAIPort:  18079,
-			StatePath:   t.TempDir() + "/state.json",
+			Host:       "127.0.0.1",
+			Port:       18080,
+			APIPort:    18081,
+			OpenAIPort: 18079,
+			StatePath:  t.TempDir() + "/state.json",
 		},
 		Backends: []types.Backend{
 			{
@@ -181,6 +181,39 @@ func TestImageRouter_SelectsOnlyImageBackends(t *testing.T) {
 	}
 	if got := p.selectByResources(allowed); got == "llm-1" {
 		t.Fatal("selectByResources(image_cpp) returned a text backend")
+	}
+}
+
+// TestGetDefaultAllowedTypes_NeverContainsImage — инвариант «image только по
+// явному признаку»: если тип запроса не определён (bt == "", типичный случай
+// текстового /api/generate в смешанном режиме), image_cpp НЕ должен попадать в
+// список допустимых, иначе текст мог бы уйти на image-бэкенд.
+func TestGetDefaultAllowedTypes_NeverContainsImage(t *testing.T) {
+	for mode := range types.ModeBackendTypes {
+		cfg := &types.LoadBalancerConfig{
+			Balancing: types.BalancingSettings{OperatingMode: mode},
+		}
+		p := &Proxy{config: cfg}
+		for _, bt := range p.getDefaultAllowedTypes() {
+			if bt == types.BackendTypeImage {
+				t.Errorf("mode %q: getDefaultAllowedTypes() contains image_cpp — текст сможет уйти на image-бэкенд", mode)
+			}
+		}
+		// Явный image-запрос по-прежнему разрешает ровно image.
+		explicit := p.getAllowedTypesList(types.BackendTypeImage)
+		if len(explicit) != 1 || explicit[0] != types.BackendTypeImage {
+			t.Errorf("mode %q: explicit image request must allow exactly image_cpp, got %v", mode, explicit)
+		}
+	}
+
+	// Смешанный кластер, image-бэкенд единственный «свободный»: текстовый
+	// запрос без явного типа не должен выбрать его.
+	p := newImageTestProxy(t, 18093)
+	if got := p.selectBackend("gemma-4-E4B-it-Q4_K_M", ""); got == "img-1" {
+		t.Fatal("text request with undetermined type was routed to the image backend")
+	}
+	if got := p.selectByResources(p.getDefaultAllowedTypes()); got == "img-1" {
+		t.Fatal("selectByResources(default types) returned the image backend")
 	}
 }
 

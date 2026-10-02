@@ -19,13 +19,35 @@ func (p *Proxy) getAllowedTypesList(bt types.BackendType) []types.BackendType {
 
 // getDefaultAllowedTypes возвращает допустимые типы бэкендов на основе OperatingMode.
 // Используется когда явный BackendType не передан (обратная совместимость).
+//
+// R-Image (2026-09-27): image_cpp СОЗНАТЕЛЬНО исключён из списка «по умолчанию».
+//
+// Инвариант: image-бэкенд достижим ТОЛЬКО по явному признаку запроса
+// (endpoint /v1/images/*, /sdapi/v1/*, /api/image/* или префикс модели sd:),
+// который всегда даёт bt == BackendTypeImage → getAllowedTypesList вернёт
+// ровно {image_cpp}. Если же тип не определён (bt == "", типичный случай
+// текстового /api/generate в смешанном режиме), в списке допустимых не должно
+// быть image: иначе текстовый запрос мог бы уйти на image-бэкенд (например,
+// если тот единственный здоровый или получил лучший score по ресурсам).
 func (p *Proxy) getDefaultAllowedTypes() []types.BackendType {
 	allowed, ok := types.ModeBackendTypes[p.config.Balancing.OperatingMode]
 	if !ok || len(allowed) == 0 {
-		// Неизвестный режим — разрешаем оба типа для обратной совместимости
+		// Неизвестный режим — разрешаем оба текстовых типа для обратной совместимости
 		return []types.BackendType{types.BackendTypeOllama, types.BackendTypeLlamaCpp}
 	}
-	return allowed
+	textTypes := make([]types.BackendType, 0, len(allowed))
+	for _, t := range allowed {
+		if t == types.BackendTypeImage {
+			continue
+		}
+		textTypes = append(textTypes, t)
+	}
+	if len(textTypes) == 0 {
+		// Режим, в котором вообще нет текстовых типов (на будущее) — не
+		// превращаем список в пустой: пустой allowedTypes означает «разрешено всё».
+		return []types.BackendType{types.BackendTypeImage}
+	}
+	return textTypes
 }
 
 // isBackendTypeAllowed проверяет, разрешён ли тип бэкенда в списке allowedTypes.

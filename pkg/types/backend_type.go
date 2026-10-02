@@ -204,12 +204,19 @@ func DefaultLlamaCppConfig() *LlamaCppConfig {
 }
 
 // ModeBackendTypes — маппинг OperatingMode → допустимые типы бэкендов
+//
+// R-Image (2026-09-27): image_cpp добавлен только в «смешанные» режимы
+// (standard/replication/rpc_coordinator). В virtual_router/distributed_inference
+// он НЕ добавлен намеренно: эти режимы жёстко привязаны к llama.cpp
+// (getDefaultAllowedTypes возвращает ровно один тип, и добавление второго
+// ломало бы резолв `/api/*` → llama.cpp — воспроизведено тестом
+// TestServeHTTP_MixedCluster_RoutingByURLPath).
 var ModeBackendTypes = map[string][]BackendType{
 	"standard":              {BackendTypeOllama, BackendTypeLlamaCpp, BackendTypeImage},
 	"replication":           {BackendTypeOllama, BackendTypeLlamaCpp, BackendTypeImage},
 	"rpc_coordinator":       {BackendTypeOllama, BackendTypeLlamaCpp, BackendTypeImage},
-	"virtual_router":        {BackendTypeLlamaCpp, BackendTypeImage},
-	"distributed_inference": {BackendTypeLlamaCpp, BackendTypeImage},
+	"virtual_router":        {BackendTypeLlamaCpp},
+	"distributed_inference": {BackendTypeLlamaCpp},
 }
 
 // ModeEngines — маппинг OperatingMode → движок инференса

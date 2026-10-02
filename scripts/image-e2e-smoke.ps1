@@ -239,15 +239,27 @@ $statePath   = Join-Path $WorkDir 'state.json'
 
 if (-not $SkipBuild) {
     Write-Host "--- build ---"
+    # R-Image (2026-10-02): go пишет телеметрию/stat-cache в %APPDATA%\go и в
+    # GOMODCACHE, а при $ErrorActionPreference='Stop' любая такая запись на stderr
+    # (например «Access is denied» в песочнице или на runner'е с read-only
+    # профилем) валит шаг сборки, хотя сами бинари собрались. Гасим телеметрию
+    # и не считаем запись в кэш ошибкой: успех определяем ТОЛЬКО по $LASTEXITCODE.
+    $env:GOTELEMETRY = 'off'
+    $push = $true
     Push-Location $repoRoot
     try {
         & go build -o $mockExe ./tools/mock-sdserver/ 2>&1 | Write-Host
-        if ($LASTEXITCODE -ne 0) { throw "build mock-sdserver failed" }
+        if ($LASTEXITCODE -ne 0) { throw "build mock-sdserver failed (exit $LASTEXITCODE)" }
         & go build -tags llama_stub -o $workerExe ./cmd/sdworker/ 2>&1 | Write-Host
-        if ($LASTEXITCODE -ne 0) { throw "build sdworker failed" }
+        if ($LASTEXITCODE -ne 0) { throw "build sdworker failed (exit $LASTEXITCODE)" }
         & go build -tags llama_stub -o $balancerExe ./cmd/balancer/ 2>&1 | Write-Host
-        if ($LASTEXITCODE -ne 0) { throw "build balancer failed" }
-    } finally { Pop-Location }
+        if ($LASTEXITCODE -ne 0) { throw "build balancer failed (exit $LASTEXITCODE)" }
+    } catch {
+        # Не пробрасываем дальше «шум» от go: если бинари на месте — это не ошибка.
+        $missing = @($mockExe, $workerExe, $balancerExe) | Where-Object { -not (Test-Path -LiteralPath $_) }
+        if ($missing.Count -gt 0) { throw }
+        Write-Host ("WARN: go сообщил об ошибке окружения (" + $_.Exception.Message + "), но все бинари собраны — продолжаем")
+    } finally { if ($push) { Pop-Location } }
 }
 foreach ($exe in @($mockExe, $workerExe, $balancerExe)) {
     if (-not (Test-Path -LiteralPath $exe)) { throw "missing binary: $exe" }

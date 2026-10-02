@@ -188,11 +188,21 @@
                 <th class="col-right" data-sort="score" data-i18n="monitor.table.score">Score</th>
                 <th data-i18n="monitor.table.loading">Loading</th>
                 <th data-i18n="monitor.table.models">Models</th>
+                <!-- R-Image Phase 8 (2026-10-03): три колонки счётчиков запросов
+                     image-бэкенда (total / ok / failed) из backend.image.requests.
+                     У текстовых бэкендов таких счётчиков нет - там прочерк.
+                     data-sort НЕ ставим осознанно: сортировка колонок
+                     (#backendsTable th[data-sort], modules/monitor-backends.js)
+                     не знает этих полей, и вешать на них клик значило бы
+                     сортировать по чужому ключу. -->
+                <th class="col-right" data-i18n="monitor.table.imageRequests">Image req</th>
+                <th class="col-right" data-i18n="monitor.table.imageOk">Image OK</th>
+                <th class="col-right" data-i18n="monitor.table.imageFailed">Image err</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td colspan="12" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">No data</td>
+                <td colspan="17" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">No data</td>
               </tr>
             </tbody>
           </table>
@@ -236,6 +246,62 @@
             <tbody>
               <tr>
                 <td colspan="7" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.common.noData">No data</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="panel open" id="panelImageRequests" style="display:none">
+      <div class="panel-header" onclick="togglePanel('panelImageRequests')">
+        <span class="panel-title-group">
+          <span data-i18n="monitor.panel.imageRequests">🖼️ Image backend requests</span>
+          <span class="panel-badge" id="imageRequestsCount">0</span>
+        </span>
+        <span class="chevron">▼</span>
+      </div>
+      <div class="panel-body">
+        <!-- R-Image Phase 8 (2026-10-03): запросы к бэкендам генерации
+             изображений (тип image_cpp). Данные уже лежат в ответе
+             GET /api/v1/cluster -> cluster.image (агрегат по пулу) и
+             cluster.backends[i].image.requests (по бэкенду), поэтому панель не
+             делает ни одного дополнительного HTTP-запроса.
+
+             Панель по умолчанию скрыта (style="display:none") и включается
+             рендерером ТОЛЬКО когда в кластере есть image-бэкенды: в чисто
+             текстовом стенде (Ollama/llama.cpp) cluster.image в ответе нет, и
+             лишняя панель там не нужна. Класс open задан сразу, чтобы при
+             появлении image-бэкенда лента была видна без лишнего клика;
+             togglePanel() меняет только класс, поэтому ручное сворачивание
+             пользователем рендерер не отменяет. -->
+        <div class="stat-row" id="imageRequestsStats" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;margin-bottom:12px">
+          <div class="stat-item"><div id="imgReqTotal" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.imageRequests.total">Total</div></div>
+          <div class="stat-item"><div id="imgReqOk" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.imageRequests.ok">OK</div></div>
+          <div class="stat-item"><div id="imgReqFailed" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.imageRequests.failed">Failed</div></div>
+          <div class="stat-item"><div id="imgReqRejected" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.imageRequests.rejected">Rejected by gate</div></div>
+          <div class="stat-item"><div id="imgReqInFlight" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.imageRequests.inflight">In flight</div></div>
+          <div class="stat-item"><div id="imgReqRps" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.imageRequests.rps">RPS</div></div>
+          <div class="stat-item"><div id="imgReqAvg" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.imageRequests.avg">Avg</div></div>
+          <div class="stat-item"><div id="imgReqP95" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.imageRequests.p95">p95</div></div>
+        </div>
+        <div style="padding:0 4px 8px;font-size:11px;color:var(--text-secondary);line-height:1.6" data-i18n="monitor.imageRequests.hint">Counters and feed of image generation requests (type image_cpp). Management calls (model list, load and unload) are not counted.</div>
+        <div style="overflow-x:auto">
+          <table id="imageRequestsTable">
+            <thead>
+              <tr>
+                <th data-i18n="monitor.imageRequests.col_time">Time</th>
+                <th data-i18n="monitor.imageRequests.col_backend">Backend</th>
+                <th data-i18n="monitor.imageRequests.col_path">Path</th>
+                <th data-i18n="monitor.imageRequests.col_model">Model</th>
+                <th class="col-right" data-i18n="monitor.imageRequests.col_size">Size</th>
+                <th class="col-right" data-i18n="monitor.imageRequests.col_steps">Steps</th>
+                <th class="col-right" data-i18n="monitor.imageRequests.col_duration">Duration</th>
+                <th data-i18n="monitor.imageRequests.col_status">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td colspan="8" style="color:var(--text-secondary);text-align:center;padding:16px" data-i18n="monitor.imageRequests.empty">No requests yet</td>
               </tr>
             </tbody>
           </table>

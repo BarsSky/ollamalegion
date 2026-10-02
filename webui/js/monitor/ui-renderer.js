@@ -71,6 +71,81 @@
     if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
     return Math.round(mb) + ' MB';
   }
+  /**
+   * R-Image Phase 8 (2026-10-03): экранирование текста ленты image-запросов.
+   *
+   * ЗАЧЕМ СВОЙ ХЕЛПЕР, А НЕ MA.esc. В webui/js/monitor/state.js MonitorApp.esc
+   * объявлен как `{ '&': '&', '<': '<', '>': '>' ... }` - то есть для &, < и >
+   * возвращает ТЕ ЖЕ символы и фактически не экранирует ничего (баг жил
+   * незамеченным, потому что панели монитора печатают имена бэкендов/моделей,
+   * где этих символов обычно нет). В ленте image-запросов лежат поля из тела
+   * запроса КЛИЕНТА (model, path, prompt), поэтому подставлять их в innerHTML
+   * без экранирования нельзя - это XSS в мониторе. Правим локально, чтобы не
+   * менять поведение уже существующих панелей.
+   */
+  function escHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  /**
+   * Длительность image-запроса -> человекочитаемо: "900 ms" / "9.1 s" /
+   * "21 s" / "1m 20s". До секунды показываем миллисекунды (важно для мелких
+   * генераций), дальше - секунды: полное число миллисекунд в ленте нечитаемо.
+   */
+  function fmtImageDuration(ms) {
+    var v = Number(ms) || 0;
+    if (v <= 0) return '—';
+    if (v < 1000) return Math.round(v) + ' ms';
+    if (v < 10000) return (v / 1000).toFixed(1) + ' s';
+    var sec = Math.round(v / 1000);
+    if (sec < 60) return sec + ' s';
+    var min = Math.floor(sec / 60);
+    if (min < 60) return min + 'm ' + (sec % 60) + 's';
+    return Math.floor(min / 60) + 'h ' + (min % 60) + 'm';
+  }
+
+  /** Размер генерации: "512x512"; прочерк, если воркер его не сообщил. */
+  function fmtImageSize(w, h) {
+    var W = Number(w) || 0, H = Number(h) || 0;
+    if (W <= 0 || H <= 0) return '—';
+    return W + 'x' + H;
+  }
+
+  /**
+   * Время запроса -> локаль. Нулевое/битое время даёт прочерк, а не
+   * "01.01.1, 00:00:00": у Go нулевое time.Time сериализуется как
+   * "0001-01-01T00:00:00Z" (та же ловушка, что у lastAgentContact).
+   */
+  function fmtImageTime(at) {
+    if (!at) return '—';
+    var d = new Date(at);
+    var t = d.getTime();
+    if (!isFinite(t) || d.getFullYear() <= 1) return '—';
+    return d.toLocaleTimeString();
+  }
+
+  /** Статус image-запроса -> локализованный текст (monitor.imageRequests.status.*). */
+  function imageRequestStatusText(st) {
+    var s = String(st || '').toLowerCase();
+    if (!s) return '—';
+    var key = 'monitor.imageRequests.status.' + s;
+    var v = T(key);
+    return (v && v !== key) ? v : s;
+  }
+
+  /** Бейдж статуса image-запроса (ok/failed/rejected/accepted/finished). */
+  function imageRequestStatusBadge(st) {
+    var s = String(st || '').toLowerCase();
+    if (s === 'ok') return 'badge-green';
+    if (s === 'failed') return 'badge-red';
+    if (s === 'rejected') return 'badge-orange';
+    if (s === 'accepted') return 'badge-yellow';
+    if (s === 'finished') return 'badge-blue';
+    return 'badge-yellow';
+  }
+
   /** Бейдж типа бэкенда: Utils.getBackendTypeBadge, иначе локальные стили. */
   function backendTypeBadgeHtml(b, bt) {
     if (window.Utils && typeof window.Utils.getBackendTypeBadge === 'function') {
@@ -328,6 +403,10 @@
       });
       MA.lastTotalRequests = 0;
       MA.requestRate = 0;
+      // R-Image Phase 8: кластера нет -> прячем панель image-запросов, иначе на
+      // экране остались бы счётчики прошлого успешного опроса.
+      var ip = document.getElementById('panelImageRequests');
+      if (ip) ip.style.display = 'none';
       if (typeof window.setConnStatus === 'function') window.setConnStatus(T('monitor.status.idle'), 'green');
       return;
     }
@@ -524,6 +603,10 @@
     safeRender('clusterResources', function() { renderClusterResources(bk); });
     safeRender('modelsInMemory', function() { renderModelsInMemory(bk, ss); });
     safeRender('backends', function() { renderBackends(bk, data.modelOps || null); });
+    // R-Image Phase 8: панель запросов к image-бэкендам. Передаём уже
+    // отфильтрованный bk — если пользователь отфильтровал страницу по типу без
+    // image-бэкендов, панель скроется вместе с их строками в таблице.
+    safeRender('imageRequests', function() { renderImageRequests(data, bk); });
     // Добавляем бейджи типа бэкенда после рендера таблиц
     safeRender('backendTypeBadges', function() {
       if (window.BackendTypeBadges) {
@@ -797,7 +880,7 @@
   function renderBackends(bk, modelOps) {
     document.getElementById('backendCount').textContent = bk.length;
     var tb = document.querySelector('#backendsTable tbody');
-    if (!bk.length) { tb.innerHTML = '<tr><td colspan="14" style="color:var(--text-secondary);text-align:center;padding:16px">' + T('monitor.common.noData') + '</td></tr>'; return; }
+    if (!bk.length) { tb.innerHTML = '<tr><td colspan="17" style="color:var(--text-secondary);text-align:center;padding:16px">' + T('monitor.common.noData') + '</td></tr>'; return; }
     // Build a lookup: backendId -> array of operations running on it
     var opsByBackend = {};
     if (modelOps) {
@@ -812,7 +895,16 @@
       });
     }
     tb.innerHTML = bk.map(function(b) {
+      // R-Image Phase 8 (2026-10-03): у image-бэкенда счётчики запросов лежат в
+      // backend.image.requests (их пишет ImageRouter балансера), а не в
+      // ollama/llamaCpp. Без этого блока строка image-воркера показывала
+      // RPS = «-», Avg RT = «-» и Active = «0/10» даже когда генерации шли:
+      // по таблице нельзя было понять, работает ли воркер. Для текстовых
+      // бэкендов ветка не меняет ничего (imgReq там всегда null).
+      var isImgRow = isImageBackendType(b.backendType || b.BackendType || b.backend_type || b.type || '') || isImageBackend(b);
+      var imgReq = (isImgRow && b.image && b.image.requests) ? b.image.requests : null;
       var mr = b.maxConcurrentRequests || 10, a = b.activeRequests || 0;
+      if (imgReq && imgReq.inFlight != null) a = imgReq.inFlight;
       var gu = (b.gpu && b.gpu.usagePercent != null) ? b.gpu.usagePercent : 0;
       var vu = (b.vram && b.vram.usagePercent != null) ? b.vram.usagePercent : (b.vramUsagePercent || 0);
       var cu = (b.system && b.system.cpuUsagePercent != null) ? b.system.cpuUsagePercent : 0;
@@ -821,7 +913,9 @@
       var scs = b.status === 'healthy' || b.status === 'active' || b.status === 'ready' ? 'badge-green' : (b.status === 'error' || b.status === 'unhealthy' ? 'badge-red' : (b.status === 'ollama_unavailable' ? 'badge-orange' : 'badge-yellow'));
       var up = b.lastSeen ? MA.fmtDur(Date.now() - new Date(b.lastSeen).getTime()) : '-';
       var rps = (b.ollama && b.ollama.requestsPerSecond != null) ? b.ollama.requestsPerSecond : 0;
+      if (imgReq && imgReq.rps != null) rps = imgReq.rps;
       var avgRT = (b.ollama && b.ollama.avgResponseTime != null && b.ollama.avgResponseTime > 0) ? b.ollama.avgResponseTime.toFixed(0) + 'ms' : '-';
+      if (imgReq && imgReq.avgDurationMs > 0) avgRT = fmtImageDuration(imgReq.avgDurationMs);
       var reqCap = (b.prediction && b.prediction.requestCapacity != null) ? b.prediction.requestCapacity.toFixed(0) + '%' : '-';
       // GPU hidden metrics tooltip
       var gpu = b.gpu || {};
@@ -879,7 +973,10 @@
       function sl(bid, key, color) {
         if (!window.Sparkline) return '';
         try {
-          var avgRTraw = (b.ollama && b.ollama.avgResponseTime != null) ? b.ollama.avgResponseTime : 0;
+          // R-Image Phase 8: у image-бэкенда истории avg RT в ollama нет -
+          // берём avgDurationMs из image.requests, иначе график был бы нулевым.
+          var avgRTraw = (b.ollama && b.ollama.avgResponseTime != null) ? b.ollama.avgResponseTime
+            : ((imgReq && imgReq.avgDurationMs) ? imgReq.avgDurationMs : 0);
           window.Sparkline.recordMetricsHistory(bid, { gpu: gu, vram: vu, cpu: cu, ram: ru, rps: rps, avgRt: avgRTraw });
           return window.Sparkline.render(bid, key, color);
         } catch (e) { return ''; }
@@ -933,7 +1030,16 @@
           '</span>';
         }).join(' ');
       }
-      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + imageBadges + typeBadge + '</td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + modelsCell + '</td><td class="col-right">' + up + '</td></tr>';
+      // R-Image Phase 8: три колонки счётчиков image-запросов (total/ok/failed).
+      // У не-image бэкендов таких данных нет вовсе, поэтому там прочерк - так
+      // сразу видно, что колонки относятся только к image_cpp. Считаем
+      // завершённые исходы (total включает и ещё не завершённые accepted).
+      var imgReqCells = imgReq
+        ? '<td class="col-right">' + (imgReq.total || 0) + '</td>' +
+          '<td class="col-right" style="color:var(--success)">' + (imgReq.ok || 0) + '</td>' +
+          '<td class="col-right" style="color:' + ((imgReq.failed || 0) > 0 ? 'var(--danger)' : 'var(--text-secondary)') + '">' + (imgReq.failed || 0) + '</td>'
+        : '<td class="col-right">-</td><td class="col-right">-</td><td class="col-right">-</td>';
+      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + imageBadges + typeBadge + '</td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + modelsCell + '</td>' + imgReqCells + '<td class="col-right">' + up + '</td></tr>';
     }).join('');
   }
 
@@ -1024,6 +1130,119 @@
         '<td>' + MA.esc((d && d.source) || '-') + '</td>' +
         '<td>' + MA.esc((d && d.fallback) || '-') + '</td>' +
         '<td style="font-size:11px">' + reason + '</td></tr>';
+    }).join('');
+  }
+
+  /**
+   * applyImageRequestsPanelI18n — перевести СТАТИЧЕСКИЕ подписи панели запросов.
+   *
+   * ЗАЧЕМ ОТДЕЛЬНО. monitor.html переводит статику ([data-i18n]) только по
+   * событию смены языка (#langSelect 'change', monitor.html:663) и один раз при
+   * инициализации i18n. Если начальная детекция языка разошлась с языком, который
+   * в итоге показывает переключатель (свежий профиль: localStorage пуст,
+   * navigator.language=en, а переключатель встаёт на ru), часть панелей остаётся
+   * с англоязычными дефолтами из разметки. Свою панель переводим сами — это
+   * дешёво (десяток элементов) и не зависит от порядка инициализации; чужие
+   * панели сознательно не трогаем (иначе это правка поведения всего Monitor).
+   */
+  function applyImageRequestsPanelI18n(panel) {
+    if (!panel || typeof panel.querySelectorAll !== 'function') return;
+    var nodes = panel.querySelectorAll('[data-i18n]');
+    if (!nodes || !nodes.length) return;
+    Array.prototype.forEach.call(nodes, function(el) {
+      var key = el.getAttribute && el.getAttribute('data-i18n');
+      if (key) el.textContent = T(key);
+    });
+  }
+
+  /**
+   * renderImageRequests — R-Image Phase 8 (2026-10-03): панель «запросы к
+   * image-бэкендам» (тип image_cpp).
+   *
+   * Данные — data.cluster.image (тип types.ImagePoolMetrics, уже отдаётся
+   * GET /api/v1/cluster): requests (агрегаты по всему пулу) + recent (общая
+   * лента, свежие в начале). Per-backend счётчики лежат в
+   * backend.image.requests и используются в таблице бэкендов (renderBackends).
+   *
+   * РЕШЕНИЕ О ВИДИМОСТИ (почему так): панель без image-бэкендов бесполезна и
+   * только засоряет экран, поэтому при их отсутствии (cluster.image нет вообще
+   * либо в списке нет ни одного image_cpp) она прячется через
+   * style.display='none' - в чисто текстовом стенде лишней панели быть не
+   * должно. Если image-бэкенды ЕСТЬ, панель показывается даже при нулевых
+   * счётчиках: «воркер поднят, но генераций ещё не было» - это тоже полезная
+   * информация, и она снимает вопрос «а счётчики вообще работают?».
+   *
+   * @param {Object} data — ответ GET /api/v1/cluster (+ остальные секции)
+   * @param {Array}  [bk] — уже отфильтрованный список бэкендов (updateUI
+   *                        передаёт его, чтобы панель уважала фильтр по типу)
+   */
+  function renderImageRequests(data, bk) {
+    var panel = document.getElementById('panelImageRequests');
+    if (!panel) return;
+
+    var backends = bk || (data && data.cluster && data.cluster.backends) || [];
+    var pool = (data && data.cluster && data.cluster.image) || null;
+    var hasImageBackend = backends.some(function(b) {
+      if (isImageBackend(b)) return true;
+      return isImageBackendType(b && (b.backendType || b.BackendType || b.backend_type || b.type));
+    });
+    // pool.backends — счётчик image-бэкендов самого балансера: страховка на
+    // случай, когда клиентский фильтр по типу выкинул строки из bk, а данные
+    // пула при этом есть.
+    if (!hasImageBackend && !(pool && (pool.backends || 0) > 0)) {
+      panel.style.display = 'none';
+      return;
+    }
+    panel.style.display = '';
+    applyImageRequestsPanelI18n(panel);
+
+    var req = (pool && pool.requests) || {};
+    var recent = (pool && Array.isArray(pool.recent)) ? pool.recent : [];
+
+    updateText('imgReqTotal', req.total || 0);
+    updateText('imgReqOk', req.ok || 0);
+    updateText('imgReqFailed', req.failed || 0);
+    updateText('imgReqRejected', req.rejected || 0);
+    updateText('imgReqInFlight', req.inFlight || 0);
+    updateText('imgReqRps', (Number(req.rps) || 0).toFixed(1));
+    updateText('imgReqAvg', req.avgDurationMs > 0 ? fmtImageDuration(req.avgDurationMs) : '—');
+    updateText('imgReqP95', req.p95DurationMs > 0 ? fmtImageDuration(req.p95DurationMs) : '—');
+    updateText('imageRequestsCount', recent.length);
+
+    var tb = document.querySelector('#imageRequestsTable tbody');
+    if (!tb) return;
+    if (!recent.length) {
+      tb.innerHTML = '<tr><td colspan="8" style="color:var(--text-secondary);text-align:center;padding:16px">' +
+        T('monitor.imageRequests.empty') + '</td></tr>';
+      return;
+    }
+
+    tb.innerHTML = recent.map(function(r) {
+      r = r || {};
+      var st = String(r.status || '').toLowerCase();
+      // title строки: HTTP-код, код ошибки и сообщение движка/гейта. В
+      // колонках они не помещаются, но при разборе инцидента нужны.
+      var titleBits = [];
+      if (r.httpStatus) titleBits.push('HTTP ' + r.httpStatus);
+      if (r.code) titleBits.push(String(r.code));
+      if (r.error) titleBits.push(String(r.error));
+      var titleAttr = titleBits.length ? ' title="' + escHtml(titleBits.join(' | ')) + '"' : '';
+      var sizeTxt = fmtImageSize(r.width, r.height);
+      var batch = Number(r.batch) || 0;
+      if (batch > 1) sizeTxt += ' x' + batch;
+      var images = Number(r.images) || 0;
+      var steps = Number(r.steps) || 0;
+      return '<tr' + titleAttr + '>' +
+        '<td style="font-size:11px;white-space:nowrap">' + escHtml(fmtImageTime(r.at)) + '</td>' +
+        '<td>' + escHtml(r.backendId || '—') + '</td>' +
+        '<td><code style="font-size:11px">' + escHtml(r.path || '—') + '</code></td>' +
+        '<td>' + escHtml(r.model || '—') +
+          (images > 0 ? ' <span style="font-size:10px;color:var(--text-secondary)">×' + images + '</span>' : '') + '</td>' +
+        '<td class="col-right">' + escHtml(sizeTxt) + '</td>' +
+        '<td class="col-right">' + (steps > 0 ? steps : '—') + '</td>' +
+        '<td class="col-right">' + escHtml(fmtImageDuration(r.durationMs)) + '</td>' +
+        '<td><span class="badge ' + imageRequestStatusBadge(st) + '">' + escHtml(imageRequestStatusText(st)) + '</span></td>' +
+        '</tr>';
     }).join('');
   }
 

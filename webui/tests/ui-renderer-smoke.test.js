@@ -172,6 +172,11 @@ function loadRenderer(sandbox, opts) {
 // R-Image Phase 5 (2026-10-02): image-бэкенд, как его отдаёт GET /api/v1/metrics.
 // Отдельный пример нужен потому, что у него нет ни ollama, ни llamaCpp: порт
 // воркера лежит в imagePort, модели — в backend.image.models.
+//
+// R-Image Phase 8 (2026-10-03): сюда же добавлены счётчики запросов
+// (backend.image.requests + backend.image.recent) и агрегат пула
+// (cluster.image) — панель «запросы к image-бэкендам» и колонки
+// RPS/Avg RT/Active в таблице бэкендов читают именно их.
 function sampleImageData() {
   return {
     cluster: {
@@ -199,6 +204,20 @@ function sampleImageData() {
             { name: 'sd15-q4', state: 'loaded', family: 'sd15', sizeBytes: 1526, vramEstimateMb: 2600, activeQueries: 0 },
             { name: 'sdxl-base', state: 'not_loaded', family: 'sdxl', sizeBytes: 6800, vramEstimateMb: 7800, activeQueries: 0 },
           ],
+          // Счётчики ЭТОГО бэкенда. inFlight=2 при activeRequests=0 в топе
+          // бэкенда специально: проверка ниже доказывает, что колонка Active
+          // берёт inFlight из image.requests, а не пустое активное поле.
+          requests: {
+            inFlight: 2, total: 3, ok: 2, failed: 1, rejected: 0, accepted: 0, finished: 0,
+            rps: 0.4, avgDurationMs: 9100, p50DurationMs: 8800, p95DurationMs: 21000, lastDurationMs: 9000,
+            lastRequestAt: '2026-10-03T10:00:00Z',
+            failuresByCode: { engine_oom: 1 }, gateDeniedByCode: { insufficient_vram: 2 },
+          },
+          recent: [
+            { id: 'img-1', at: '2026-10-03T10:00:00Z', backendId: 'image-real', surface: 'openai',
+              path: '/v1/images/generations', model: 'sd-cpp-local', prompt: 'a cat', width: 512, height: 512,
+              steps: 8, batch: 1, durationMs: 9000, status: 'ok', httpStatus: 200, code: '', error: '', images: 1 },
+          ],
         },
       }],
       backendMetrics: [],
@@ -206,6 +225,27 @@ function sampleImageData() {
       totalRequests: 10,
       rps: 0,
       effectiveBackendType: 'image_cpp',
+      // Агрегат по пулу (types.ImagePoolMetrics). Значения намеренно
+      // отличаются от per-backend: так видно, что панель читает пул, а
+      // таблица бэкендов — свою строку.
+      image: {
+        backends: 1,
+        requests: {
+          inFlight: 2, total: 7, ok: 6, failed: 1, rejected: 2, accepted: 0, finished: 0,
+          rps: 0.1, avgDurationMs: 9100, p50DurationMs: 8800, p95DurationMs: 21000, lastDurationMs: 9000,
+          lastRequestAt: '2026-10-03T10:00:00Z',
+          failuresByCode: { engine_oom: 1 }, gateDeniedByCode: { insufficient_vram: 2 },
+        },
+        recent: [
+          { id: 'img-1', at: '2026-10-03T10:00:00Z', backendId: 'image-real', surface: 'openai',
+            path: '/v1/images/generations', model: 'sd-cpp-local', prompt: 'a cat', width: 512, height: 512,
+            steps: 8, batch: 1, durationMs: 9000, status: 'ok', httpStatus: 200, code: '', error: '', images: 1 },
+          { id: 'img-2', at: '2026-10-03T10:00:05Z', backendId: 'image-real', surface: 'openai',
+            path: '/v1/images/generations', model: 'sd15-q4', prompt: 'a dog', width: 768, height: 768,
+            steps: 20, batch: 1, durationMs: 21000, status: 'failed', httpStatus: 500,
+            code: 'engine_oom', error: 'out of memory', images: 0 },
+        ],
+      },
     },
     sessions: { sessions: [] },
     queueDetails: { pending_count: 0, processing_count: 0, all: [] },
@@ -363,7 +403,150 @@ console.log('ui-renderer smoke (' + path.relative(REPO_ROOT, TARGET) + ')');
   check('image: ни одна панель не упала', realErrors.length === 0, realErrors.join(' | '));
 }
 
-// --- Тест 4: фильтр по типу «image.cpp» не выкидывает image-бэкенд ----------
+// --- Тест 4: панель image-запросов (R-Image Phase 8) -------------------------
+// Симптом: «Monitor не показывает запросы, которые идут к image-бэкендам» -
+// в таблице бэкендов у image-воркера RPS=«-», Avg RT=«-», Active=«0/10», а
+// сами генерации нигде не видны.
+// Проверяем: (а) агрегаты пула в элементах панели, (б) строки ленты,
+// (в) RPS/Avg RT/Active в таблице бэкендов берутся из backend.image.requests.
+{
+  // Spy на T: рендерер захватывает MA.T на этапе загрузки скрипта, поэтому
+  // подменяем его ДО loadRenderer. Нужен, чтобы доказать: статус запроса
+  // переводится через ключи monitor.imageRequests.status.*, а не печатается
+  // сырым кодом. Обычный T в этом sandbox'е возвращает сам ключ, и отличить
+  // «перевели» от «не перевели» было бы нельзя.
+  const tKeys = [];
+  const { sandbox, calls, consoleErrors } = makeSandbox(function (sb) {
+    const origT = sb.MonitorApp.T;
+    sb.MonitorApp.T = function (k, p) {
+      tKeys.push(String(k));
+      if (String(k).indexOf('monitor.imageRequests.status.') === 0) return '«' + k + '»';
+      return origT(k, p);
+    };
+  });
+  loadRenderer(sandbox, { withUtils: true });
+
+  let threw = null;
+  try {
+    sandbox.updateUI(sampleImageData());
+  } catch (e) {
+    threw = e;
+  }
+  const txt = function (id) { return String(sandbox.document.getElementById(id).textContent); };
+
+  check('imageReq: updateUI() не бросает исключение', threw === null, threw && threw.message);
+  check('imageReq: цепочка панелей дошла до конца', calls.topology === 1, 'вызовов: ' + calls.topology);
+
+  // (а) агрегаты пула (cluster.image.requests) отрисованы в панели
+  check('imageReq: панель показана (image-бэкенды есть)',
+    sandbox.document.getElementById('panelImageRequests').style.display === '',
+    String(sandbox.document.getElementById('panelImageRequests').style.display));
+  check('imageReq: total = 7', txt('imgReqTotal') === '7', txt('imgReqTotal'));
+  check('imageReq: ok = 6', txt('imgReqOk') === '6', txt('imgReqOk'));
+  check('imageReq: failed = 1', txt('imgReqFailed') === '1', txt('imgReqFailed'));
+  check('imageReq: rejected = 2', txt('imgReqRejected') === '2', txt('imgReqRejected'));
+  check('imageReq: in-flight = 2', txt('imgReqInFlight') === '2', txt('imgReqInFlight'));
+  check('imageReq: RPS = 0.1', txt('imgReqRps') === '0.1', txt('imgReqRps'));
+  check('imageReq: avg = 9.1 s (9100 ms)', txt('imgReqAvg') === '9.1 s', txt('imgReqAvg'));
+  check('imageReq: p95 = 21 s (21000 ms)', txt('imgReqP95') === '21 s', txt('imgReqP95'));
+  check('imageReq: счётчик в заголовке = 2 записи ленты',
+    txt('imageRequestsCount') === '2', txt('imageRequestsCount'));
+
+  // (б) лента: модель/размер/длительность/статус/бэкенд/путь
+  const feedHtml = sandbox.document.querySelector('#imageRequestsTable tbody').innerHTML;
+  check('imageReq: модель запроса в ленте', feedHtml.indexOf('sd-cpp-local') !== -1, feedHtml.slice(0, 200));
+  check('imageReq: размер WxH в ленте (512x512)', feedHtml.indexOf('512x512') !== -1);
+  check('imageReq: размер второй строки (768x768)', feedHtml.indexOf('768x768') !== -1);
+  check('imageReq: длительность в ленте (9000 ms -> 9.0 s)', feedHtml.indexOf('9.0 s') !== -1);
+  check('imageReq: длительность в ленте (21000 ms -> 21 s)', feedHtml.indexOf('21 s') !== -1);
+  check('imageReq: статус ok переведён через i18n-ключ',
+    feedHtml.indexOf('monitor.imageRequests.status.ok') !== -1);
+  check('imageReq: статус failed переведён через i18n-ключ',
+    feedHtml.indexOf('monitor.imageRequests.status.failed') !== -1);
+  check('imageReq: оба статуса реально запрошены у i18n',
+    tKeys.indexOf('monitor.imageRequests.status.ok') !== -1 &&
+    tKeys.indexOf('monitor.imageRequests.status.failed') !== -1,
+    tKeys.join(','));
+  check('imageReq: шаги запроса в ленте (8 и 20)',
+    feedHtml.indexOf('>8</td>') !== -1 && feedHtml.indexOf('>20</td>') !== -1);
+  check('imageReq: бэкенд и путь запроса в ленте',
+    feedHtml.indexOf('image-real') !== -1 && feedHtml.indexOf('/v1/images/generations') !== -1);
+  check('imageReq: код ошибки попал в title (разбор инцидента)',
+    feedHtml.indexOf('engine_oom') !== -1 && feedHtml.indexOf('out of memory') !== -1);
+
+  // (в) таблица бэкендов: RPS / Avg RT / Active из image.requests
+  const backendsHtml = sandbox.document.querySelector('#backendsTable tbody').innerHTML;
+  check('imageReq: Active в таблице бэкендов = 2/4 (inFlight/max)',
+    backendsHtml.indexOf('>2/4</td>') !== -1, backendsHtml.slice(0, 300));
+  check('imageReq: RPS в таблице бэкендов = 0.4 (image.requests.rps)',
+    backendsHtml.indexOf('>0.4<div class="sl-cell">') !== -1);
+  check('imageReq: Avg RT в таблице бэкендов = 9.1 s (avgDurationMs)',
+    backendsHtml.indexOf('>9.1 s<div class="sl-cell">') !== -1);
+  check('imageReq: колонки Image req/OK/err заполнены из image.requests',
+    backendsHtml.indexOf('<td class="col-right">3</td>' +
+      '<td class="col-right" style="color:var(--success)">2</td>' +
+      '<td class="col-right" style="color:var(--danger)">1</td>') !== -1,
+    backendsHtml.slice(-260));
+
+  const renderErrors = consoleErrors.filter(function (m) { return m.indexOf('failed') !== -1; });
+  check('imageReq: ни один рендер не упал', renderErrors.length === 0, renderErrors.join(' | '));
+}
+
+// --- Тест 5: без image-бэкендов панель скрыта, с нулями - показана -----------
+// Требование контракта: cluster.image ОТСУТСТВУЕТ, если в кластере нет ни
+// одного image-бэкенда, и панель обязана быть скрыта (в чисто текстовом
+// стенде лишней панели быть не должно). Обратный случай - image-бэкенды есть,
+// запросов ноль: панель показывается с нулями и строкой «запросов пока не
+// было» (осознанное решение: «воркер поднят, генераций ещё не было» - это тоже
+// информация, а не отсутствие данных).
+{
+  const { sandbox, calls } = makeSandbox();
+  loadRenderer(sandbox, { withUtils: true });
+
+  let threw = null;
+  try {
+    sandbox.updateUI(sampleData());
+  } catch (e) {
+    threw = e;
+  }
+  check('imageReq-off: updateUI() на текстовом кластере не падает', threw === null, threw && threw.message);
+  check('imageReq-off: цепочка панелей дошла до конца', calls.topology === 1, 'вызовов: ' + calls.topology);
+  check('imageReq-off: панель скрыта (cluster.image нет)',
+    sandbox.document.getElementById('panelImageRequests').style.display === 'none',
+    String(sandbox.document.getElementById('panelImageRequests').style.display));
+
+  const backendsHtml = sandbox.document.querySelector('#backendsTable tbody').innerHTML;
+  check('imageReq-off: у не-image бэкенда три колонки image-запросов = «-»',
+    backendsHtml.indexOf('<td class="col-right">-</td><td class="col-right">-</td><td class="col-right">-</td>') !== -1,
+    backendsHtml.slice(-260));
+  check('imageReq-off: RPS не-image бэкенда остался прочерком',
+    backendsHtml.indexOf('>-<div class="sl-cell">') !== -1 || backendsHtml.indexOf('>0.0<div class="sl-cell">') !== -1);
+}
+
+// --- Тест 6: image-бэкенды есть, запросов ноль -> панель с нулями -----------
+{
+  const data = sampleImageData();
+  data.cluster.image = {
+    backends: 1,
+    requests: { inFlight: 0, total: 0, ok: 0, failed: 0, rejected: 0, accepted: 0, finished: 0, rps: 0 },
+    recent: [],
+  };
+  const { sandbox } = makeSandbox();
+  loadRenderer(sandbox, { withUtils: true });
+  sandbox.updateUI(data);
+
+  const txt = function (id) { return String(sandbox.document.getElementById(id).textContent); };
+  check('imageReq-zero: панель показана (image-бэкенд есть, запросов нет)',
+    sandbox.document.getElementById('panelImageRequests').style.display === '');
+  check('imageReq-zero: total = 0', txt('imgReqTotal') === '0', txt('imgReqTotal'));
+  check('imageReq-zero: avg без данных = «—»', txt('imgReqAvg') === '—', txt('imgReqAvg'));
+  check('imageReq-zero: счётчик ленты = 0', txt('imageRequestsCount') === '0', txt('imageRequestsCount'));
+  const feedHtml = sandbox.document.querySelector('#imageRequestsTable tbody').innerHTML;
+  check('imageReq-zero: строка «запросов пока не было»',
+    feedHtml.indexOf('monitor.imageRequests.empty') !== -1, feedHtml.slice(0, 200));
+}
+
+// --- Тест 7: фильтр по типу «image.cpp» не выкидывает image-бэкенд ----------
 {
   const data = sampleImageData();
   // Добавляем Ollama-бэкенд: фильтр effType=image_cpp должен оставить один.
@@ -381,6 +564,31 @@ console.log('ui-renderer smoke (' + path.relative(REPO_ROOT, TARGET) + ')');
   const backendsHtml = sandbox.document.querySelector('#backendsTable tbody').innerHTML;
   check('filter: image-бэкенд в отфильтрованной таблице',
     backendsHtml.indexOf('image-real') !== -1 && backendsHtml.indexOf('ollama-1') === -1);
+}
+
+// --- Тест 8: лента экранирует текст из тела запроса клиента (XSS) ------------
+// model/path/backendId в ленте приходят из ТЕЛА запроса клиента, то есть
+// подконтрольны тому, кто вызывает генерацию. MonitorApp.esc в
+// webui/js/monitor/state.js для &, <, > сейчас возвращает те же символы (карта
+// замены потеряла HTML-сущности), поэтому рендерер ленты использует
+// собственный escHtml - проверяем, что разметка не инжектится.
+{
+  const evil = '"><img src=x onerror=alert(1)>';
+  const data = sampleImageData();
+  data.cluster.image.recent = [{
+    id: 'img-x', at: '2026-10-03T10:00:00Z', backendId: evil, surface: 'openai',
+    path: evil, model: evil, width: 512, height: 512, steps: 8, batch: 1,
+    durationMs: 1000, status: 'ok', httpStatus: 200, code: evil, error: evil, images: 1,
+  }];
+  const { sandbox } = makeSandbox();
+  loadRenderer(sandbox, { withUtils: true });
+  sandbox.updateUI(data);
+
+  const feedHtml = sandbox.document.querySelector('#imageRequestsTable tbody').innerHTML;
+  check('imageReq-xss: сырой <img> из ленты не попал в разметку',
+    feedHtml.indexOf('<img') === -1, feedHtml.slice(0, 300));
+  check('imageReq-xss: инъекция экранирована',
+    feedHtml.indexOf('&lt;img') !== -1 && feedHtml.indexOf('&quot;&gt;') !== -1);
 }
 
 console.log('');

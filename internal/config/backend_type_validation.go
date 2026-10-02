@@ -7,8 +7,14 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// ValidateBackendTypeConsistency проверяет, что все активные бэкенды одного типа.
-// Возвращает ошибку, если обнаружены бэкенды разных типов.
+// ValidateBackendTypeConsistency проверяет, что все активные ТЕКСТОВЫЕ бэкенды
+// одного типа (ollama или llama_cpp).
+//
+// R-Image (2026-09-27): бэкенды типа image_cpp исключены из проверки — это
+// «полностью отдельный» класс бэкендов (свой порт, свой движок, своя
+// маршрутизация по явному признаку), он по определению сосуществует с текстовыми.
+// Смешивать ollama и llama_cpp в одной роли по-прежнему не рекомендуется.
+// Возвращает ошибку, если обнаружены текстовые бэкенды разных типов.
 func ValidateBackendTypeConsistency(backends []types.Backend) error {
 	if len(backends) == 0 {
 		return nil
@@ -16,21 +22,26 @@ func ValidateBackendTypeConsistency(backends []types.Backend) error {
 
 	activeBackends := make([]types.Backend, 0, len(backends))
 	for _, b := range backends {
-		if b.Status != types.StatusOffline {
-			activeBackends = append(activeBackends, b)
+		if b.Status == types.StatusOffline {
+			continue
 		}
+		// image_cpp — отдельный класс, в проверке однотипности не участвует.
+		if normalizeBackendType(b.Type) == types.BackendTypeImage {
+			continue
+		}
+		activeBackends = append(activeBackends, b)
 	}
 
 	if len(activeBackends) <= 1 {
 		return nil
 	}
 
-	// Все активные бэкенды должны быть одного типа
+	// Все активные текстовые бэкенды должны быть одного типа
 	firstType := normalizeBackendType(activeBackends[0].Type)
 	for _, b := range activeBackends[1:] {
 		bt := normalizeBackendType(b.Type)
 		if bt != firstType {
-			return fmt.Errorf("backend type mismatch: backend %q is %s, but backend %q is %s — all backends must be of the same type (ollama or llama_cpp)",
+			return fmt.Errorf("backend type mismatch: backend %q is %s, but backend %q is %s — all text backends must be of the same type (ollama or llama_cpp); image_cpp backends may coexist",
 				activeBackends[0].ID, firstType.Label(), b.ID, bt.Label())
 		}
 	}
@@ -141,7 +152,7 @@ func normalizeBackendTypeWithHeuristic(bt types.BackendType, cppWorkerPort int) 
 		return types.BackendTypeOllama
 	}
 	switch bt {
-	case types.BackendTypeOllama, types.BackendTypeLlamaCpp:
+	case types.BackendTypeOllama, types.BackendTypeLlamaCpp, types.BackendTypeImage:
 		return bt
 	default:
 		return types.BackendTypeOllama // неизвестный → Ollama
@@ -181,6 +192,8 @@ func MigrateLegacyBackendTypes(config *types.LoadBalancerConfig) {
 			config.BackendEngine = types.EngineOllamaAPI
 		case types.BackendTypeLlamaCpp:
 			config.BackendEngine = types.EngineLlamaCPP
+		case types.BackendTypeImage:
+			config.BackendEngine = types.EngineImageCPP
 		}
 	}
 }

@@ -49,6 +49,9 @@ type Proxy struct {
 	totalRequests          int64           // Atomic: всего запросов через прокси
 	ollamaRouter           *OllamaRouter   // Маршрутизатор Ollama API endpoint'ов
 	llamaCppRouter         *LlamaCppRouter // Маршрутизатор llama.cpp API endpoint'ов
+	// R-Image (2026-09-27): маршрутизатор image-бэкендов (тип image_cpp):
+	// /v1/images/*, /sdapi/v1/*, /api/image/*.
+	imageRouter *ImageRouter
 
 	// Round 31 #7 (2026-08-09): token usage tracking.
 	// Atomic counters для агрегации prompt/completion tokens по моделям.
@@ -377,6 +380,9 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// Инициализация LlamaCppRouter для llama.cpp бэкендов
 	p.llamaCppRouter = NewLlamaCppRouter(p)
 
+	// R-Image (2026-09-27): маршрутизатор image-бэкендов (sd.cpp / sd-server).
+	p.imageRouter = NewImageRouter(p)
+
 	// Round 40 #3 (2026-08-18): инициализация reverse proxy для /api/v1/*.
 	// Endpoint'ы под /api/v1/ обслуживаются API-сервером (cmd/balancer/api,
 	// порт 18081), а не proxy flow. Сюда входят: /api/v1/cluster/*,
@@ -479,6 +485,22 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 //   - Прочие пути → "" (будет определено из OperatingMode через getDefaultAllowedTypes)
 func (p *Proxy) determineRequestBackendType(r *http.Request) types.BackendType {
 	path := r.URL.Path
+
+	// R-Image (2026-09-27): явные признаки image-запроса (endpoint или
+	// префикс имени модели) имеют приоритет над всеми остальными правилами и
+	// действуют на ОБЕИХ поверхностях:
+	//   - /v1/images/*, /sdapi/v1/*, /api/image/*  → image-бэкенд;
+	//   - model: "sd:...", "image:...", "img/..."  → image-бэкенд.
+	// Никакой классификации по тексту промпта — только явные признаки.
+	// Разделение обеспечивается фильтром типов в selectBackend/expandCandidates:
+	// текстовый запрос не может уйти на image-бэкенд и наоборот.
+	if isImageEndpointPath(path) {
+		return types.BackendTypeImage
+	}
+	if model := p.requestModelHint(r); hasImageModelPrefix(model) {
+		return types.BackendTypeImage
+	}
+
 	if strings.HasPrefix(path, "/api/") {
 		// Проверяем, какие типы бэкендов разрешены текущим OperatingMode
 		allowed := p.getDefaultAllowedTypes()
@@ -720,6 +742,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parsed := p.parseRequestBody(r)
 	model := parsed.Model
 	isStream := parsed.Stream
+	// Кладём разобранное тело в контекст: determineRequestBackendType и
+	// slot-handler'ы переиспользуют его без повторного парсинга body.
+	r = withParsedRequest(r, parsed)
 
 	// Определяем требуемый тип бэкенда из URL запроса
 	bt := p.determineRequestBackendType(r)
@@ -1573,7 +1598,13 @@ type parsedRequest struct {
 // Возвращает parsedRequest с извлечёнными model/stream и сырым телом для последующего проксирования.
 // Восстанавливает r.Body через NopCloser для повторного чтения в proxyRequest.
 func (p *Proxy) parseRequestBody(r *http.Request) *parsedRequest {
-	result := &parsedRequest{Stream: true} // default stream=true (Ollama behaviour)
+	// default stream=true (Ollama behaviour) на legacy-поверхности (18080).
+	//
+	// R-Image (2026-09-27): на OpenAI-поверхности (18079) такого дефолта НЕТ —
+	// стриминг включается только явным полем stream в теле запроса. Иначе
+	// запрос без поля stream (обычный случай для image/OpenAI-клиентов) уходил
+	// бы в streaming/NDJSON-ветку без таймаута и с чужой обработкой ответа.
+	result := &parsedRequest{Stream: requestSurfaceOf(r) == surfaceLegacy}
 
 	if r.Method != http.MethodPost || r.Body == nil {
 		return result

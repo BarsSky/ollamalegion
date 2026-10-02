@@ -56,7 +56,7 @@ type BackendTypeMismatchError struct {
 func (e *BackendTypeMismatchError) Error() string {
 	return "cannot add backend of type " + e.NewType.Label() +
 		": existing backend " + e.ExistingID + " is of type " + e.ExistingType.Label() +
-		". All backends must be of the same type (ollama or llama_cpp)"
+		". All text backends must be of the same type (ollama or llama_cpp); image_cpp backends may coexist"
 }
 
 // handleBackendTypeFilter — GET /api/v1/backends?type=ollama|llama_cpp
@@ -68,9 +68,9 @@ func (s *Server) handleBackendTypeFilter(w http.ResponseWriter, r *http.Request)
 	}
 
 	bt := types.BackendType(typeFilter)
-	if bt != types.BackendTypeOllama && bt != types.BackendTypeLlamaCpp {
+	if bt != types.BackendTypeOllama && bt != types.BackendTypeLlamaCpp && bt != types.BackendTypeImage {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "invalid backend type: must be 'ollama' or 'llama_cpp'",
+			"error": "invalid backend type: must be 'ollama', 'llama_cpp' or 'image_cpp'",
 		})
 		return
 	}
@@ -191,12 +191,13 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 }
 
 // normalizeBackendAPIType нормализует тип бэкенда в API-контексте
+// R-Image (2026-09-27): image_cpp — валидный тип (до правки молча становился ollama).
 func normalizeBackendAPIType(bt types.BackendType) types.BackendType {
 	if bt == "" {
 		return types.BackendTypeOllama
 	}
 	switch bt {
-	case types.BackendTypeOllama, types.BackendTypeLlamaCpp:
+	case types.BackendTypeOllama, types.BackendTypeLlamaCpp, types.BackendTypeImage:
 		return bt
 	default:
 		return types.BackendTypeOllama

@@ -63,6 +63,10 @@ func (p *Proxy) getBackendPort(backend *types.Backend) int {
 		logger.Get().Warnw("llama.cpp backend has no CppWorkerPort, using default",
 			"backend", backend.ID, "default_port", 18092)
 		return 18092 // default cppworker port (modern)
+	case types.EngineImageCPP:
+		// R-Image (2026-09-27): image-бэкенд — отдельный процесс на своём порту.
+		// EffectiveImagePort(): ImagePort → CppWorkerPort → 18093.
+		return backend.EffectiveImagePort()
 	default:
 		return backend.OllamaPort
 	}

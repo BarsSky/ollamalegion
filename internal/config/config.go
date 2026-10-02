@@ -135,6 +135,10 @@ func LoadFromEnv() (*Config, error) {
 	config.LoadBalancer.Host = env.Get("LB_HOST", "0.0.0.0")
 	config.LoadBalancer.Port = env.GetInt("LB_PORT", 18080)
 	config.LoadBalancer.APIPort = env.GetInt("LB_API_PORT", 18081)
+	// R-Image (2026-09-27): отдельная OpenAI-поверхность балансера (OpenAI-стиль
+	// для llama.cpp и image-бэкендов + A1111-прогон /sdapi/v1/* для image-бэкендов).
+	// 0 = слушатель не поднимается (обратная совместимость для тестов/старых конфигов).
+	config.LoadBalancer.OpenAIPort = env.GetInt("LB_OPENAI_PORT", 18079)
 	config.LoadBalancer.TLSHost = env.Get("LB_TLS_HOST", "")
 	config.LoadBalancer.TLSPort = env.GetInt("LB_TLS_PORT", 8443)
 	config.LoadBalancer.StatePath = env.Get("LB_STATE_PATH", "data/state.json")
@@ -321,6 +325,12 @@ func setDefaults(config *types.LoadBalancerConfig) {
 	}
 	if config.LoadBalancer.APIPort == 0 {
 		config.LoadBalancer.APIPort = 18081
+	}
+	// R-Image (2026-09-27): OpenAI-поверхность. 0 (поле не задано) → дефолт 18079,
+	// чтобы фича включалась и в существующих config.json. Отрицательное значение —
+	// явное «не поднимать слушатель» (см. cmd/balancer/main.go).
+	if config.LoadBalancer.OpenAIPort == 0 {
+		config.LoadBalancer.OpenAIPort = 18079
 	}
 	if config.LoadBalancer.TLSPort == 0 {
 		config.LoadBalancer.TLSPort = 8443

@@ -874,6 +874,13 @@ func (lr *LlamaCppRouter) handleOpenAIModels(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
+	// R-Image (2026-09-27): подмешиваем image-модели/алиасы, если в кластере есть
+	// бэкенд типа image_cpp. Без этого дропдауны клиентов (n8n фильтрует id по
+	// префиксу "dall-") остаются пустыми, хотя генерация доступна.
+	for _, id := range lr.proxy.imageModelIDsForModelsList() {
+		uniqueModels[id] = true
+	}
+
 	now := time.Now().Unix()
 	data := make([]map[string]interface{}, 0, len(uniqueModels))
 	for name := range uniqueModels {

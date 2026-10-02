@@ -150,6 +150,13 @@ func main() {
 	bannerRow("Version", version.Get().String())
 	bannerRow("Proxy Port", strconv.Itoa(conf.LoadBalancer.Port))
 	bannerRow("API Port", strconv.Itoa(conf.LoadBalancer.APIPort))
+	// R-Image (2026-09-27): OpenAI-поверхность (OpenAI-стиль + A1111 для
+	// image-бэкендов). Отрицательное/нулевое значение = слушатель не поднимается.
+	if conf.LoadBalancer.OpenAIPort > 0 {
+		bannerRow("OpenAI Port", strconv.Itoa(conf.LoadBalancer.OpenAIPort))
+	} else {
+		bannerRow("OpenAI Port", "disabled")
+	}
 	if conf.TLS.Enabled {
 		bannerRow("TLS Port", strconv.Itoa(conf.LoadBalancer.TLSPort))
 	}
@@ -423,6 +430,29 @@ func main() {
 		"write_timeout_sec", apiHTTPServer.WriteTimeout.Seconds(),
 		"idle_timeout_sec", apiHTTPServer.IdleTimeout.Seconds())
 
+	// R-Image (2026-09-27): OpenAI-поверхность на отдельном порту (18079).
+	//
+	// Это НЕ второй балансер: обёртка openAISurface держит указатель на тот же
+	// *Proxy, что и прокси-порт 18080, поэтому сессии, очередь, скоринг,
+	// метрики и распределение нагрузки общие. Отличия поверхности:
+	//   - строгий OpenAI-стиль: стриминг только по явному полю stream в теле;
+	//   - A1111-прогон /sdapi/v1/* и /v1/images/* → image-бэкенды;
+	//   - Ollama-нативные пути отвечают ошибкой со ссылкой на 18080.
+	var openAIHTTPServer *http.Server
+	var openAITLSServer *http.Server
+	openAIEnabled := conf.LoadBalancer.OpenAIPort > 0
+	if openAIEnabled {
+		openAIHandler := balancer.NewOpenAISurface(proxy)
+		openAIHTTPServer = &http.Server{
+			Addr:         fmt.Sprintf("%s:%d", conf.LoadBalancer.Host, conf.LoadBalancer.OpenAIPort),
+			Handler:      openAIHandler,
+			ConnContext:  enableTCPKeepAlive,
+			ReadTimeout:  30 * time.Second,
+			WriteTimeout: 0, // генерация изображения/долгий стрим — без капа (см. R83/v67)
+			IdleTimeout:  120 * time.Second,
+		}
+	}
+
 	// HTTPS сервера (если TLS включен)
 	var proxyTLSServer *http.Server
 	var apiTLSServer *http.Server
@@ -459,6 +489,19 @@ func main() {
 			IdleTimeout:  120 * time.Second,
 		}
 
+		// R-Image (2026-09-27): HTTPS OpenAI-поверхность (порт TLSPort+2, чтобы
+		// не конфликтовать с TLSPort и TLSPort+1, занятыми прокси и API).
+		if openAIEnabled {
+			openAITLSServer = &http.Server{
+				Addr:         fmt.Sprintf("%s:%d", conf.LoadBalancer.Host, conf.LoadBalancer.TLSPort+2),
+				Handler:      balancer.NewOpenAISurface(proxy),
+				TLSConfig:    tlsConfig,
+				ReadTimeout:  30 * time.Second,
+				WriteTimeout: 0,
+				IdleTimeout:  120 * time.Second,
+			}
+		}
+
 		// Добавление middleware для редиректа HTTP -> HTTPS (опционально)
 		// mux = api.HTTPSRedirectMiddleware(mux)
 	}
@@ -468,6 +511,9 @@ func main() {
 	apiErr := make(chan error, 1)
 	proxyTLSErr := make(chan error, 1)
 	apiTLSErr := make(chan error, 1)
+	// R-Image: каналы OpenAI-поверхности (используются, только если включена).
+	openAIErr := make(chan error, 1)
+	openAITLSErr := make(chan error, 1)
 
 	// Запуск серверов
 	go func() {
@@ -479,6 +525,14 @@ func main() {
 		fmt.Printf("[API]    Listening on %s:%d\n", conf.LoadBalancer.Host, conf.LoadBalancer.APIPort)
 		apiErr <- apiHTTPServer.ListenAndServe()
 	}()
+
+	if openAIEnabled {
+		go func() {
+			fmt.Printf("[OpenAI] Listening on %s:%d (OpenAI style + A1111 for image backends)\n",
+				conf.LoadBalancer.Host, conf.LoadBalancer.OpenAIPort)
+			openAIErr <- openAIHTTPServer.ListenAndServe()
+		}()
+	}
 
 	// Запуск HTTPS серверов если TLS включен
 	if conf.TLS.Enabled {
@@ -495,6 +549,15 @@ func main() {
 			fmt.Printf("[API]    HTTPS Listening on %s:%d\n", conf.LoadBalancer.Host, conf.LoadBalancer.TLSPort+1)
 			apiTLSErr <- apiTLSServer.ListenAndServeTLS(certFile, keyFile)
 		}()
+
+		if openAITLSServer != nil {
+			go func() {
+				certFile := conf.TLS.CertFile
+				keyFile := conf.TLS.KeyFile
+				fmt.Printf("[OpenAI] HTTPS Listening on %s:%d\n", conf.LoadBalancer.Host, conf.LoadBalancer.TLSPort+2)
+				openAITLSErr <- openAITLSServer.ListenAndServeTLS(certFile, keyFile)
+			}()
+		}
 	}
 
 	// Ожидание сигнала завершения
@@ -518,6 +581,14 @@ func main() {
 	case err := <-apiTLSErr:
 		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("API TLS server failed: %v", err)
+		}
+	case err := <-openAIErr:
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatalf("OpenAI surface server failed: %v", err)
+		}
+	case err := <-openAITLSErr:
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatalf("OpenAI surface TLS server failed: %v", err)
 		}
 	case sig := <-quit:
 		fmt.Printf("\nReceived signal %v, shutting down gracefully...\n", sig)
@@ -551,6 +622,11 @@ func main() {
 	if err := apiHTTPServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("[Shutdown] API server shutdown error: %v", err)
 	}
+	if openAIHTTPServer != nil {
+		if err := openAIHTTPServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[Shutdown] OpenAI surface shutdown error: %v", err)
+		}
+	}
 	if proxyTLSServer != nil {
 		if err := proxyTLSServer.Shutdown(shutdownCtx); err != nil {
 			log.Printf("[Shutdown] Proxy TLS server shutdown error: %v", err)
@@ -559,6 +635,11 @@ func main() {
 	if apiTLSServer != nil {
 		if err := apiTLSServer.Shutdown(shutdownCtx); err != nil {
 			log.Printf("[Shutdown] API TLS server shutdown error: %v", err)
+		}
+	}
+	if openAITLSServer != nil {
+		if err := openAITLSServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[Shutdown] OpenAI surface TLS shutdown error: %v", err)
 		}
 	}
 

@@ -1048,6 +1048,14 @@ func (p *Proxy) warmupModel(backendID, host string, port int, model string, extr
 	switch engine {
 	case types.EngineLlamaCPP:
 		p.warmupLlamaCppModel(backendID, host, port, model, opts)
+	case types.EngineImageCPP:
+		// R-Image (2026-09-27): image-бэкенды НЕ прогреваются текстовыми
+		// вызовами. У них нет /api/tags и /load текстовой модели: модель
+		// задаётся флагами при спавне sd-server (одна модель на процесс).
+		// Прогрев/загрузка image-модели — задача image-воркера (Phase 3).
+		logger.Get().Debugw("warmupModel: skipping image backend (no textual warmup)",
+			"backend", backendID, "model", model)
+		return
 	default:
 		p.warmupOllamaModel(backendID, host, port, model)
 	}

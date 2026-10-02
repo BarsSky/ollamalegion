@@ -22,6 +22,11 @@ func configDefaults(cfg *types.LoadBalancerConfig) {
 	if cfg.LoadBalancer.APIPort == 0 {
 		cfg.LoadBalancer.APIPort = 18081
 	}
+	// R-Image (2026-09-27): OpenAI-поверхность (OpenAI-стиль + A1111 для
+	// image-бэкендов). Отрицательное значение = слушатель отключён.
+	if cfg.LoadBalancer.OpenAIPort == 0 {
+		cfg.LoadBalancer.OpenAIPort = 18079
+	}
 	if cfg.LoadBalancer.TLSPort == 0 {
 		cfg.LoadBalancer.TLSPort = 8443
 	}

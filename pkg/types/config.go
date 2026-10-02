@@ -27,9 +27,16 @@ type LoadBalancerConfig struct {
 
 // LoadBalancerSettings - настройки балансировщика
 type LoadBalancerSettings struct {
-	Host            string   `json:"host"`
-	Port            int      `json:"port"`
-	APIPort         int      `json:"apiPort"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	APIPort int    `json:"apiPort"`
+	// OpenAIPort — R-Image (2026-09-27): отдельная «OpenAI-поверхность» балансера.
+	// Обслуживает только OpenAI-стиль (/v1/chat/completions, /v1/completions,
+	// /v1/embeddings, /v1/models, /v1/images/*) и A1111-совместимый прогон
+	// (/sdapi/v1/*) для image-бэкендов. Стриминг решается ТОЛЬКО полем stream
+	// в теле запроса (без legacy auto-stream). Порт 18080 (Port) при этом
+	// сохраняет прежнее поведение без изменений. 0 = порт не поднимать.
+	OpenAIPort      int      `json:"openAiPort"`
 	TLSHost         string   `json:"tlsHost"`          // хост для HTTPS
 	TLSPort         int      `json:"tlsPort"`          // порт для HTTPS
 	StatePath       string   `json:"statePath"`        // путь к файлу сохранения состояния

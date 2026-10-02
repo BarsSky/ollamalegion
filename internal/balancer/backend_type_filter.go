@@ -76,12 +76,15 @@ func (p *Proxy) countBackendsByType() map[types.BackendType]int {
 
 // normalizeBackendType приводит тип бэкенда к стандартному значению.
 // Пустой тип считается Ollama (обратная совместимость).
+// R-Image (2026-09-27): image_cpp — валидный тип; до этой правки он молча
+// превращался в Ollama, из-за чего image-бэкенд опрашивался как Ollama
+// (/api/tags) и получал OllamaPort.
 func normalizeBackendType(bt types.BackendType) types.BackendType {
 	if bt == "" {
 		return types.BackendTypeOllama
 	}
 	switch bt {
-	case types.BackendTypeOllama, types.BackendTypeLlamaCpp:
+	case types.BackendTypeOllama, types.BackendTypeLlamaCpp, types.BackendTypeImage:
 		return bt
 	default:
 		return types.BackendTypeOllama

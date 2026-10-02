@@ -6,7 +6,18 @@ type BackendType string
 const (
 	BackendTypeOllama   BackendType = "ollama"
 	BackendTypeLlamaCpp BackendType = "llama_cpp"
+	// BackendTypeImage — отдельный бэкенд генерации изображений (diffusion, sd.cpp).
+	// R-Image (2026-09-27): «полностью отдельный бэкенд» — свой порт (ImagePort,
+	// default 18093), свой каталог моделей, свой API-стиль (OpenAI-совместимый).
+	// Правила cppworker (n_ctx, chat-шаблоны, reasoning/tools, /api/tags, /api/pull)
+	// на него НЕ распространяются. Маршрутизация — только по явному признаку
+	// (endpoint /v1/images/*, /sdapi/v1/*, префикс модели sd:/image:).
+	BackendTypeImage BackendType = "image_cpp"
 )
+
+// DefaultImageWorkerPort — порт image-воркера по умолчанию.
+// 18091/18092 заняты cppworker'ами, 18093 свободен.
+const DefaultImageWorkerPort = 18093
 
 // BackendEngine — движок инференса
 type BackendEngine string
@@ -14,6 +25,7 @@ type BackendEngine string
 const (
 	EngineOllamaAPI BackendEngine = "ollama_api" // HTTP REST API Ollama
 	EngineLlamaCPP  BackendEngine = "llama_cpp"  // llama.cpp через gRPC/HTTP
+	EngineImageCPP  BackendEngine = "image_cpp"  // stable-diffusion.cpp (sd-server)
 	EngineAuto      BackendEngine = "auto"       // автоопределение
 )
 
@@ -66,6 +78,11 @@ func (b *Backend) EffectiveAPIStyle() APIStyle {
 	}
 	// Fallback: inference from Type (сохраняет R50 поведение по умолчанию).
 	if b.Type == BackendTypeLlamaCpp {
+		return APIStyleOpenAICompatible
+	}
+	// R-Image: image-бэкенд говорит на OpenAI-совместимом API (/v1/images/*,
+	// /sdapi/v1/*) — значит и стиль openai-compatible.
+	if b.Type == BackendTypeImage {
 		return APIStyleOpenAICompatible
 	}
 	return APIStyleOllamaNative
@@ -152,6 +169,8 @@ func (e BackendEngine) ToBackendType() BackendType {
 		return BackendTypeOllama
 	case EngineLlamaCPP:
 		return BackendTypeLlamaCpp
+	case EngineImageCPP:
+		return BackendTypeImage
 	default:
 		return ""
 	}
@@ -186,11 +205,11 @@ func DefaultLlamaCppConfig() *LlamaCppConfig {
 
 // ModeBackendTypes — маппинг OperatingMode → допустимые типы бэкендов
 var ModeBackendTypes = map[string][]BackendType{
-	"standard":              {BackendTypeOllama, BackendTypeLlamaCpp},
-	"replication":           {BackendTypeOllama, BackendTypeLlamaCpp},
-	"rpc_coordinator":       {BackendTypeOllama, BackendTypeLlamaCpp},
-	"virtual_router":        {BackendTypeLlamaCpp},
-	"distributed_inference": {BackendTypeLlamaCpp},
+	"standard":              {BackendTypeOllama, BackendTypeLlamaCpp, BackendTypeImage},
+	"replication":           {BackendTypeOllama, BackendTypeLlamaCpp, BackendTypeImage},
+	"rpc_coordinator":       {BackendTypeOllama, BackendTypeLlamaCpp, BackendTypeImage},
+	"virtual_router":        {BackendTypeLlamaCpp, BackendTypeImage},
+	"distributed_inference": {BackendTypeLlamaCpp, BackendTypeImage},
 }
 
 // ModeEngines — маппинг OperatingMode → движок инференса
@@ -226,6 +245,8 @@ func ResolveEngine(engine BackendEngine, bt BackendType) BackendEngine {
 	switch bt {
 	case BackendTypeLlamaCpp:
 		return EngineLlamaCPP
+	case BackendTypeImage:
+		return EngineImageCPP
 	default:
 		return EngineOllamaAPI
 	}
@@ -249,9 +270,21 @@ func IsModeLlamaCpp(mode string) bool {
 	return engine == EngineLlamaCPP
 }
 
+// IsModeImage возвращает true, если режим жёстко привязан к image-движку.
+// R-Image (2026-09-27): сейчас ни один OperatingMode не является image-only,
+// поэтому функция нужна для симметрии с IsModeOllama/IsModeLlamaCpp и для
+// будущих режимов (например image_tool_loop).
+func IsModeImage(mode string) bool {
+	engine, ok := ModeEngines[mode]
+	if !ok {
+		return false
+	}
+	return engine == EngineImageCPP
+}
+
 // AllBackendTypes возвращает список всех типов бэкендов
 func AllBackendTypes() []BackendType {
-	return []BackendType{BackendTypeOllama, BackendTypeLlamaCpp}
+	return []BackendType{BackendTypeOllama, BackendTypeLlamaCpp, BackendTypeImage}
 }
 
 // BackendTypeLabel возвращает человекочитаемое название типа бэкенда
@@ -261,6 +294,8 @@ func (bt BackendType) Label() string {
 		return "Ollama"
 	case BackendTypeLlamaCpp:
 		return "llama.cpp"
+	case BackendTypeImage:
+		return "image.cpp"
 	default:
 		return string(bt)
 	}
@@ -273,6 +308,8 @@ func (bt BackendType) Emoji() string {
 		return "🦙"
 	case BackendTypeLlamaCpp:
 		return "🦒"
+	case BackendTypeImage:
+		return "🎨"
 	default:
 		return "❓"
 	}

@@ -95,6 +95,13 @@ type Backend struct {
 	// CppWorkerPort — порт cppworker для llama.cpp-бэкендов (по умолчанию 18091)
 	CppWorkerPort int `json:"cppWorkerPort,omitempty"`
 
+	// ImagePort — порт image-воркера (diffusion / stable-diffusion.cpp) для
+	// бэкендов типа image_cpp. R-Image (2026-09-27): image-бэкенд полностью
+	// отдельный (свой порт, свой каталог моделей, свой API-стиль).
+	// Если 0 — используется CppWorkerPort (обратная совместимость и ручная
+	// настройка «одним портом»), иначе DefaultImageWorkerPort (18093).
+	ImagePort int `json:"imagePort,omitempty"`
+
 	// CppWorkerConfig — настройки llama.cpp (только для llama_cpp-типа)
 	CppWorkerConfig *LlamaCppConfig `json:"cppWorkerConfig,omitempty"`
 
@@ -109,6 +116,22 @@ type Backend struct {
 	RequestTimeout int `json:"requestTimeout"`
 	// RuntimeRequestTimeout — runtime-значение таймаута от балансера (меняется адаптивно, сохраняется в state.json)
 	RuntimeRequestTimeout int `json:"runtimeRequestTimeout"`
+}
+
+// EffectiveImagePort — R-Image (2026-09-27): порт image-воркера для бэкенда
+// типа image_cpp. Приоритет: явный ImagePort → CppWorkerPort (ручная настройка
+// «одним портом») → DefaultImageWorkerPort (18093).
+func (b *Backend) EffectiveImagePort() int {
+	if b == nil {
+		return DefaultImageWorkerPort
+	}
+	if b.ImagePort > 0 {
+		return b.ImagePort
+	}
+	if b.CppWorkerPort > 0 {
+		return b.CppWorkerPort
+	}
+	return DefaultImageWorkerPort
 }
 
 // EffectiveMaxConcurrentRequests — R71 (2026-09-24): единое правило вместимости

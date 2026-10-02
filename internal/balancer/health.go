@@ -202,6 +202,11 @@ func (hc *HealthChecker) performCheck(backend *types.Backend) *HealthCheckResult
 			port = 18092
 		}
 		url = fmt.Sprintf("http://%s:%d/health", backend.Host, port)
+	case types.EngineImageCPP:
+		// R-Image (2026-09-27): image-воркер (sdworker) и/или напрямую sd-server.
+		// У sd-server нет /health, но есть /sdcpp/v1/capabilities — он же
+		// подтверждает, что модель загружена и API живой.
+		url = fmt.Sprintf("http://%s:%d/sdcpp/v1/capabilities", backend.Host, backend.EffectiveImagePort())
 	default:
 		url = fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
 	}

@@ -480,6 +480,9 @@ type backendRequest struct {
 	OllamaPort        int      `json:"ollamaPort"`
 	AgentPort         int      `json:"agentPort"`
 	CppWorkerPort     int      `json:"cppWorkerPort"`
+	// R-Image (2026-09-27): порт image-воркера для backendType=image_cpp
+	// (default 18093). Fallback: CppWorkerPort → 18093 (EffectiveImagePort).
+	ImagePort         int      `json:"imagePort"`
 	Weight            int      `json:"weight"`
 	MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
 	MaxModels         int      `json:"maxModels"`
@@ -566,10 +569,13 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Валидация типа бэкенда
-	if backendType != types.BackendTypeOllama && backendType != types.BackendTypeLlamaCpp {
+	// R-Image (2026-09-27): добавлен image_cpp — отдельный бэкенд генерации
+	// изображений (свой порт ImagePort, свой каталог моделей, OpenAI/A1111 API).
+	if backendType != types.BackendTypeOllama && backendType != types.BackendTypeLlamaCpp &&
+		backendType != types.BackendTypeImage {
 		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"success": false,
-			"error":   fmt.Sprintf("Invalid backend type: %s. Allowed: ollama, llama_cpp", req.BackendType),
+			"error":   fmt.Sprintf("Invalid backend type: %s. Allowed: ollama, llama_cpp, image_cpp", req.BackendType),
 		})
 		return
 	}
@@ -621,6 +627,13 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		cppWorkerPort = 18092
 	}
 
+	// R-Image: image-бэкенд слушает свой порт (default 18093). CppWorkerPort для
+	// него не трогаем — EffectiveImagePort() даст ImagePort → CppWorkerPort → 18093.
+	imagePort := req.ImagePort
+	if imagePort == 0 && backendType == types.BackendTypeImage {
+		imagePort = types.DefaultImageWorkerPort
+	}
+
 	backend := types.Backend{
 		ID:                req.ID,
 		Name:              req.Name,
@@ -628,6 +641,7 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		OllamaPort:        req.OllamaPort,
 		AgentPort:         req.AgentPort,
 		CppWorkerPort:     cppWorkerPort,
+		ImagePort:         imagePort,
 		Weight:            req.Weight,
 		MaxConcurrentReqs: req.MaxConcurrentReqs,
 		MaxModels:         req.MaxModels,
@@ -657,9 +671,14 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		backend := s.proxy.GetBackend(req.ID)
 		if backend != nil {
 			var healthURL string
-			if backendType == types.BackendTypeLlamaCpp {
+			switch backendType {
+			case types.BackendTypeLlamaCpp:
 				healthURL = fmt.Sprintf("http://%s:%d/health", backend.Host, cppWorkerPort)
-			} else {
+			case types.BackendTypeImage:
+				// R-Image: у sd-server нет /health — проверяем capabilities
+				// (он же подтверждает, что модель загружена и API живой).
+				healthURL = fmt.Sprintf("http://%s:%d/sdcpp/v1/capabilities", backend.Host, backend.EffectiveImagePort())
+			default:
 				healthURL = fmt.Sprintf("http://%s:%d/api/tags", backend.Host, backend.OllamaPort)
 			}
 			client := &http.Client{Timeout: 5 * time.Second}
@@ -695,6 +714,9 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		OllamaPort        int      `json:"ollamaPort"`
 		AgentPort         int      `json:"agentPort"`
 		CppWorkerPort     int      `json:"cppWorkerPort"`
+	// R-Image (2026-09-27): порт image-воркера для backendType=image_cpp
+	// (default 18093). Fallback: CppWorkerPort → 18093 (EffectiveImagePort).
+	ImagePort         int      `json:"imagePort"`
 		Weight            int      `json:"weight"`
 		MaxConcurrentReqs int      `json:"maxConcurrentRequests"`
 		MaxModels         int      `json:"maxModels"`
@@ -784,6 +806,12 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 	cppWorkerPort := existing.CppWorkerPort
 	if req.CppWorkerPort > 0 {
 		cppWorkerPort = req.CppWorkerPort
+	}
+
+	// R-Image: порт image-воркера — та же merge-семантика, что у CppWorkerPort.
+	imagePort := existing.ImagePort
+	if req.ImagePort > 0 {
+		imagePort = req.ImagePort
 	}
 
 	// Round 51.2 (2026-08-20): применяем apiStyle если передан, иначе сохраняем.
@@ -879,6 +907,7 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		OllamaPort:                   ollamaPort,
 		AgentPort:                    agentPort,
 		CppWorkerPort:                cppWorkerPort,
+		ImagePort:                    imagePort,
 		Weight:                       weight,
 		MaxConcurrentReqs:            maxConcurrent,
 		MaxModels:                    maxModels,

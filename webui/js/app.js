@@ -2284,9 +2284,41 @@ const ui = (function () {
         showToast((window.I18N ? I18N.t('models.operation_running') : 'Operation in progress...') + ' ' + operation + ' ' + modelName, 'info');
 
         Api.backendModelOperation(backendId, operation, modelName, options).then(function(result) {
+            // R83/v60 (2026-10-01): модель ЗАНЯТА активной генерацией.
+            //
+            // ДЕФЕКТ (живая проверка на стенде). cppworker отказывает в выгрузке
+            // занятой модели: 409 + {success:false, busy:true, retryWithForce:true}
+            // (cmd/cppworker/handlers_model.go:942-965, балансер —
+            // internal/balancer/model_management.go:1423-1433). GGUF-страница этот
+            // ответ обрабатывает и повторяет операцию с force (gguf-renderer-actions.js:249-257),
+            // а страница Models — нет: пользователь получал тупиковую ошибку
+            // «Cannot unload: model is busy with active inference requests» и мог
+            // выгрузить модель ТОЛЬКО после того, как генерация закончится сама.
+            // Замер: unload во время генерации → 409 за 6 мс, генерация продолжается.
+            //
+            // Теперь предлагаем подтверждение и повторяем с force=true: cppworker
+            // обрывает активные генерации этой модели (AbortWatcher → C atomic flag)
+            // и выгружает её. Проверено: тот же запрос с force → 200, модель исчезает
+            // из /api/models, хотя генерация шла.
+            if (result && result.success === false && operation === 'unload' && !options.force &&
+                (result.retryWithForce || result.busy || result.status === 409)) {
+                var busyMsg = (window.I18N ? I18N.t('gguf.confirm_unload_force')
+                    : 'Модель занята активными запросами. Прервать их и выгрузить?');
+                if (!confirm(busyMsg)) {
+                    addLog('Model op cancelled by user (model busy): unload ' + modelName + ' on ' + backendId, 'warn');
+                    return;
+                }
+                executeModelOperation(backendId, operation, modelName, Object.assign({}, options, { force: true }));
+                return;
+            }
             if (result && result.success) {
-                showToast((window.I18N ? I18N.t('models.operation_success') : 'Success') + ': ' + operation + ' ' + modelName, 'success');
-                addLog('Model op success: ' + operation + ' ' + modelName + ' on ' + backendId, 'info');
+                var successMsg = (window.I18N ? I18N.t('models.operation_success') : 'Success') + ': ' + operation + ' ' + modelName;
+                if (options.force) {
+                    // Явно сообщаем, что операция потребовала обрыва генераций.
+                    successMsg += ' (' + (window.I18N ? I18N.t('gguf.generation_cancelled') : 'generations cancelled') + ')';
+                }
+                showToast(successMsg, 'success');
+                addLog('Model op success: ' + operation + ' ' + modelName + ' on ' + backendId + (options.force ? ' (force)' : ''), 'info');
                 // Reload models after a short delay
                 setTimeout(function() {
                     loadBackendModels(backendId);

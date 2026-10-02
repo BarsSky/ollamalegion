@@ -2025,6 +2025,59 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			"requested_useMmap", opts.UseMmap, "current_useMmap", current.UseMmap)
 	}
 
+	// R83/v60 (2026-10-01): гейт «модель занята генерацией» ДО выбора
+	// async/sync-ветки.
+	//
+	// ДЕФЕКТ (живая жалоба оператора). Дренаж активных запросов жил только в
+	// sync-ветке (inflight.WaitZero(name, 0) — «0 = ждать вечно»), а async-путь
+	// (wait=false, default!) уходил в runAsyncReload — где тот же WaitZero(0) ждал
+	// бесконечно уже в фоне. Из WebUI это выглядело так: «пока модель не закончит
+	// ответ, ей нельзя управлять» — применение профиля (кнопка «Применить
+	// (reload)») висело минутами. Отвлечённо: тот же класс, что и у выгрузки,
+	// только там cppworker отвечал 409, а здесь молча ждал.
+	//
+	// Теперь без force отвечаем структурно (как handleUnloadModel), а с force —
+	// обрываем генерации этой модели и грузим сразу.
+	inflightN := int64(0)
+	if inflight := backend.InFlight(); inflight != nil {
+		inflightN = inflight.Get(req.Name)
+	}
+	if inflightN > 0 && !forceReload {
+		logger.Get().Warnw("reload refused: model has active requests",
+			"name", req.Name, "in_flight", inflightN)
+		writeJSON(w, http.StatusConflict, map[string]interface{}{
+			"error":          "model is busy with active inference requests",
+			"name":           req.Name,
+			"active_queries": inflightN,
+			"busy":           true,
+			"retryWithForce": true,
+			"hint": "wait for in-flight requests to complete, or retry with \"force\": true " +
+				"to cancel them and reload now (active clients will be disconnected)",
+		})
+		return
+	}
+	if forceReload {
+		// Обрываем генерации по модели. Делаем это независимо от счётчика
+		// in-flight: запрос мог быть уже снят со счёта, но продолжать держать
+		// поток/соединение (например, на этапе финального чанка).
+		if gen := backend.ActiveGenerations(); gen != nil {
+			if cancelled := gen.CancelByModel("", req.Name); cancelled > 0 {
+				logger.Get().Warnw("reload force=true: cancelled active generations",
+					"name", req.Name, "cancelled", cancelled)
+			}
+		}
+		if inflightN > 0 {
+			logger.Get().Infow("reload force=true: ждём дренажа активных запросов (не дольше 5s)",
+				"name", req.Name, "in_flight", inflightN)
+			if inflight := backend.InFlight(); inflight != nil {
+				if !inflight.WaitZero(req.Name, 5*time.Second) {
+					logger.Get().Warnw("reload force=true: запросы не дренировались за 5s — грузим всё равно",
+						"name", req.Name, "in_flight", inflight.Get(req.Name))
+				}
+			}
+		}
+	}
+
 	// Round 24 (2026-08-04) Bug #1 fix: async reload by default.
 	// Если wait=false (default), возвращаем 202 + Location и запускаем
 	// реальный reload в background goroutine. WebUI settings UI больше
@@ -2087,22 +2140,13 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	// ветке не режет load — он лишь говорит клиенту "я устал ждать, полли сам".
 	// Future enhancement: добавить goroutine + select, как в handleLoadModel.
 
-	// 2026-06-24: graceful reload ??? ?????? ???????? ??????????.
-	// ????? UnloadModel ???? ?????????? ???? ???????? inference-????????
-	// ? ???? ?????? (InFlight counter, ??. internal/cppbackend/inflight.go).
-	// ??? ????? cppworker ???????? HTTP-?????????? ???????? (EOF), ?
-	// ?????????????, polling'?????? /api/models ? ???? ??????, ????? RST.
+	// 2026-06-24: graceful reload без обрыва активных запросов.
 	//
-	// ??????? ?? ?????? ? ???? ??????? ?? ??????????? (???????), ?????
-	// reload ??????? ? context.WithTimeout ??????? (??. reload watchdog).
-	// ??? InFlight.WaitZero ?????????? 100ms polling.
-	if inflight := backend.InFlight(); inflight != nil {
-		if n := inflight.Get(req.Name); n > 0 {
-			logger.Get().Infow("reload: waiting for in-flight inference requests to drain",
-				"name", req.Name, "in_flight", n)
-		}
-		inflight.WaitZero(req.Name, 0) // 0 = ??? ??????
-	}
+	// R83/v60 (2026-10-01): сам дренаж перенесён ВЫШЕ — до выбора async/sync-ветки
+	// (см. «гейт модель занята генерацией»): иначе async-путь (default) уходил в
+	// runAsyncReload и ждал освобождения модели бесконечно, а оператор в WebUI
+	// видел только бесконечный прогресс. Сюда доходим уже с дренированными
+	// запросами (force=true ждёт не дольше 5s).
 
 	// ????????????? reload_pending heartbeat ? ????????????? ?????? ???
 	// ???? ?? /api/metrics ? ?? ???????? ??????? LoadModel API, ????

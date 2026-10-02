@@ -206,11 +206,31 @@ const Api = (function () {
 
         async backendModelOperation(id, operation, modelName, options = {}) {
             const payload = { operation, modelName, ...options };
-            const response = await request(`${API_BASE}/api/v1/backends/${id}/models`, {
-                method: 'POST',
-                body: JSON.stringify(payload)
-            });
-            return response.json();
+            // R83/v60 (2026-10-01): 409 busy — это НЕ транспортная ошибка, а
+            // структурированный ответ бэкенда:
+            //   {success:false, busy:true, retryWithForce:true,
+            //    error:"model '...' is busy with active inference requests"}
+            // (cppworker cmd/cppworker/handlers_model.go:942-965, балансер
+            // internal/balancer/model_management.go:1423-1433).
+            //
+            // request() бросает исключение на любой !response.ok (api.js:50-58),
+            // поэтому признаки busy/retryWithForce терялись, и страница Models
+            // показывала тупиковое «HTTP 409: Conflict»: выгрузить ЗАНЯТУЮ модель
+            // из WebUI было нельзя, оставалось ждать конца генерации. GGUF-слой
+            // эту же ситуацию уже обрабатывает (gguf-api.js:463-475) — теперь
+            // поведение одинаковое.
+            try {
+                const response = await request(`${API_BASE}/api/v1/backends/${id}/models`, {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+                return response.json();
+            } catch (err) {
+                if (err && err.status === 409 && err.body && typeof err.body === 'object') {
+                    return Object.assign({ success: false, status: 409 }, err.body);
+                }
+                throw err;
+            }
         },
 
         async modelOperationsStatus() {

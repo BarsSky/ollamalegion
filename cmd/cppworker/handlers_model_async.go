@@ -393,12 +393,23 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	}
 
 	// Wait for in-flight requests to drain (graceful unload).
+	//
+	// R83/v60 (2026-10-01): ожидание ОГРАНИЧЕНО. Было WaitZero(modelName, 0) —
+	// «0 = ждать вечно»: async-путь (wait=false, default) запускается из
+	// handleReloadModel, и если по модели шла генерация, фон висел на ней
+	// бесконечно, а оператор в WebUI видел вечный прогресс «применяю профиль».
+	// Теперь хендлер до запуска этой горутины либо отвечает 409 busy (без force),
+	// либо обрывает генерации (force=true) — здесь остаётся только короткое окно
+	// на дренаж уже отменённых запросов.
 	if inflight := backend.InFlight(); inflight != nil {
 		if n := inflight.Get(modelName); n > 0 {
-			logger.Get().Infow("runAsyncReload: waiting for in-flight to drain",
+			logger.Get().Infow("runAsyncReload: waiting for in-flight to drain (не дольше 10s)",
 				"name", modelName, "in_flight", n)
+			if !inflight.WaitZero(modelName, 10*time.Second) {
+				logger.Get().Warnw("runAsyncReload: запросы не дренировались за 10s — перезагружаем всё равно",
+					"name", modelName, "in_flight", inflight.Get(modelName))
+			}
 		}
-		inflight.WaitZero(modelName, 0)
 	}
 
 	// Unload old model.

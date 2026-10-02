@@ -113,6 +113,28 @@ func (m *HFMockServer) BlockAfter(bytes int64) func() {
 	return func() { once.Do(func() { close(m.release) }) }
 }
 
+// WaitBlocked — дождаться, что сервер РЕАЛЬНО начал «залипать».
+//
+// R-Image (2026-10-02): без этого тесты, которые проверяют статус
+// "downloading"/частичный прогресс, флапали под нагрузкой: они сэмплировали
+// состояние, не зная, успел ли сервер дойти до точки блокировки. Если ожидание
+// истекло — возвращаем false, и тест обязан сказать об этом явно, а не падать
+// на несвязанном утверждении.
+func (m *HFMockServer) WaitBlocked(timeout time.Duration) bool {
+	m.mu.Lock()
+	blocked := m.blocked
+	m.mu.Unlock()
+	if blocked == nil {
+		return false
+	}
+	select {
+	case <-blocked:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 // AbortAfter — разорвать соединение после bytes байт (имитация сетевого
 // обрыва). Нужно, чтобы получить ЧАСТИЧНЫЙ .download-файл: cppbackend сохраняет
 // его для resume при сетевой ошибке (в отличие от отмены, где темп удаляется).

@@ -64,6 +64,15 @@
   расширений и существующий fallback «нет `.ttf`, но есть `.woff2` с тем же
   именем» не срабатывал (в репозитории намеренно лежат только `.woff2`).
   Подтверждено на базовом коммите `3bfaa58`; теперь чекер зелёный.
+- **Флейк HF-тестов устранён структурно**: тесты, проверяющие состояние «загрузка
+  идёт» (прогресс активного bundle, списки загрузок, отмена, удаление активного
+  файла), сэмплировали состояние, не зная, успел ли мок дойти до точки
+  блокировки передачи — под параллельной нагрузкой это давало ложные падения
+  (`TestHFBundle_FileProgressShape`, `TestHFManager_ListDownloadsIncludesBundles`).
+  Добавлен `HFMockServer.WaitBlocked(timeout)` и `waitBlockedOrFail(t, mock)`:
+  теперь тест сначала дожидается фактического «залипания» сервера, и только потом
+  проверяет статусы. Если блокировка не наступила, тест говорит об этом прямо
+  («стенд сломан»), а не падает на несвязанном утверждении.
 - `scripts/image-e2e-smoke.ps1`: при `$ErrorActionPreference='Stop'` любая запись
   `go` на stderr (телеметрия в `%APPDATA%\go`, stat-cache в read-only `GOMODCACHE`)
   валила шаг сборки, хотя бинари собирались. Теперь `GOTELEMETRY=off`, успех —
@@ -76,9 +85,9 @@
   `pkg/types`) — ok полным прогоном; `-race` по `balancer`/`sdbackend`/`pkg/types` — чисто.
 - Живой E2E — **19/19 PASS** (сборка из исходников без перенаправления `APPDATA`).
 - Предсуществующие плавающие тесты, не связанные с правками (в изоляции проходят):
-  `TestGenerate_ConcurrentSameModel_Serialized` (под параллельной нагрузкой),
-  `TestHFManager_ListDownloadsIncludesBundles` (cleanup TempDir на Windows),
-  `TestNative_CancelEdges` (уже исправлен ранее).
+  `TestGenerate_ConcurrentSameModel_Serialized` (под параллельной нагрузкой
+  7 пакетов; воспроизведён один раз из двух полных прогонов, в изоляции 4/4 зелёный).
+  `TestNative_CancelEdges` исправлен ранее, HF-флейки — в этой версии.
 
 ## [0.6.2 — R-Image Phase 7: img2img/inpaint, редактор профилей в WebUI, CI и EN-доки (2026-10-02)]
 

@@ -215,6 +215,18 @@ func TestHFBundle_IncompleteBundleNotRegistered(t *testing.T) {
 // 3. Прогресс ОДНОГО файла bundle отдаётся в форме HFDownloadProgress
 // ============================================================
 
+// waitBlockedOrFail — дождаться, что мок РЕАЛЬНО начал «залипать».
+//
+// R-Image (2026-10-02): тесты с BlockAfter проверяют состояние «загрузка идёт»
+// (progress/списки/отмена). Без этой синхронизации под параллельной нагрузкой
+// можно сэмплировать состояние до старта блокировки — отсюда флейки.
+func waitBlockedOrFail(t *testing.T, mock *HFMockServer) {
+	t.Helper()
+	if !mock.WaitBlocked(10 * time.Second) {
+		t.Fatal("мок не начал блокировать передачу — стенд сломан, а не продукт")
+	}
+}
+
 func TestHFBundle_FileProgressShape(t *testing.T) {
 	mock := NewHFMockServer(t)
 	mock.AddFile("acme/z-image-turbo", "diffusion.gguf", 3*1024*1024)
@@ -228,6 +240,13 @@ func TestHFBundle_FileProgressShape(t *testing.T) {
 	}
 	if err := hf.StartBundle("progress-bundle", "other", files); err != nil {
 		t.Fatalf("StartBundle: %v", err)
+	}
+
+	// R-Image (2026-10-02): сначала дожидаемся ФАКТИЧЕСКОЙ блокировки сервера,
+	// иначе под нагрузкой можно сэмплировать состояние до/после «залипания» и
+	// получить ложное падение (флейк ловился в параллельном прогоне пакетов).
+	if !mock.WaitBlocked(10 * time.Second) {
+		t.Fatal("мок не начал блокировать передачу — стенд сломан, а не продукт")
 	}
 
 	// Ждём, пока сервер отдаст первую часть и «залипнет».
@@ -503,6 +522,7 @@ func TestHFManager_CloseCancelsActiveBundle(t *testing.T) {
 	if err := hf.StartBundle("close-bundle", "other", files); err != nil {
 		t.Fatalf("StartBundle: %v", err)
 	}
+	waitBlockedOrFail(t, mock)
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if mock.ResolveHits() > 0 {
@@ -554,6 +574,7 @@ func TestHFManager_FileProgressFindsActiveBundle(t *testing.T) {
 	if err := hf.StartBundle("active-bundle", "other", files); err != nil {
 		t.Fatalf("StartBundle: %v", err)
 	}
+	waitBlockedOrFail(t, mock)
 	// Состояние появляется СРАЗУ после StartBundle (не по факту старта сети):
 	// UI опрашивает прогресс через ~2 с и не должен получать 404 на «идёт».
 	deadline := time.Now().Add(20 * time.Second)
@@ -592,6 +613,7 @@ func TestHFManager_ListDownloadsIncludesBundles(t *testing.T) {
 	if err := hf.StartBundle("list-bundle", "other", files); err != nil {
 		t.Fatalf("StartBundle: %v", err)
 	}
+	waitBlockedOrFail(t, mock)
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		snap := hf.ListDownloads()
@@ -625,6 +647,7 @@ func TestHFManager_CancelBundleMarksFilesCancelled(t *testing.T) {
 	if err := hf.StartBundle("cancel-bundle", "other", files); err != nil {
 		t.Fatalf("StartBundle: %v", err)
 	}
+	waitBlockedOrFail(t, mock)
 	// Ждём начала передачи, чтобы отмена пришлась на активную загрузку.
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) && mock.ResolveHits() == 0 {
@@ -693,6 +716,8 @@ func TestHFManager_DeletePartialBundleFileRemovesTemp(t *testing.T) {
 	if err := hf.StartBundle("partial-bundle", "other", files); err != nil {
 		t.Fatalf("StartBundle: %v", err)
 	}
+	// NB: здесь AbortAfter (обрыв соединения), а не BlockAfter — ждать
+	// WaitBlocked нельзя: сервер не «залипает», а рвёт передачу.
 
 	// Ждём, пока .download реально появится и наполнится.
 	tempPath := filepath.Join(modelsDir, "partial-bundle", "diffusion.gguf.download")
@@ -747,6 +772,7 @@ func TestHFManager_DeleteActiveBundleFile(t *testing.T) {
 	if err := hf.StartBundle("active-del-bundle", "other", files); err != nil {
 		t.Fatalf("StartBundle: %v", err)
 	}
+	waitBlockedOrFail(t, mock)
 	tempPath := filepath.Join(modelsDir, "active-del-bundle", "diffusion.gguf.download")
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {

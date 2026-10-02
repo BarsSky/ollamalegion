@@ -251,6 +251,8 @@ func TestRecordLatency_UpdatesRuntimeRequestTimeout(t *testing.T) {
 // ============================================================
 
 func TestGetEffectiveTimeout_AdaptivePriority(t *testing.T) {
+	// R83/v62: таймауты запроса взводятся только по явному opt-in.
+	t.Setenv("LB_ALLOW_REQUEST_TIMEOUTS", "1")
 	state := &BackendState{
 		Backend: &types.Backend{
 			ID:             "test-1",
@@ -267,6 +269,8 @@ func TestGetEffectiveTimeout_AdaptivePriority(t *testing.T) {
 }
 
 func TestGetEffectiveTimeout_StaticFallback(t *testing.T) {
+	// R83/v62: таймауты запроса взводятся только по явному opt-in.
+	t.Setenv("LB_ALLOW_REQUEST_TIMEOUTS", "1")
 	state := &BackendState{
 		Backend: &types.Backend{
 			ID:             "test-1",
@@ -283,6 +287,8 @@ func TestGetEffectiveTimeout_StaticFallback(t *testing.T) {
 }
 
 func TestGetEffectiveTimeout_GlobalFallback(t *testing.T) {
+	// R83/v62: таймауты запроса взводятся только по явному opt-in.
+	t.Setenv("LB_ALLOW_REQUEST_TIMEOUTS", "1")
 	state := &BackendState{
 		Backend: &types.Backend{
 			ID:             "test-1",
@@ -337,6 +343,8 @@ func TestGetRuntimeRequestTimeout_Fallback(t *testing.T) {
 // ============================================================
 
 func TestAdaptiveTimeout_RecordThenGetEffective(t *testing.T) {
+	// R83/v62: таймауты запроса взводятся только по явному opt-in.
+	t.Setenv("LB_ALLOW_REQUEST_TIMEOUTS", "1")
 	state := &BackendState{
 		Backend: &types.Backend{
 			ID:             "test-1",
@@ -397,4 +405,17 @@ func TestAdaptiveTimeout_TimeNowOverride(t *testing.T) {
 	// Убеждаемся что ResetTimeNowForTest действительно меняет функцию
 	// (не может быть equal fixedTime если время не заморожено)
 	_ = oldNow
+}
+
+// TestGetEffectiveTimeout_DisabledByDefault — R83/v62 (2026-10-02): без явного
+// LB_ALLOW_REQUEST_TIMEOUTS балансер НЕ взводит таймаут на длительность запроса.
+// Живой случай (A10, qwen3.8): запрос обрывался на 300-й секунде значением из
+// adaptive/per-backend таймаута, хотя клиент своего таймаута не выбирал.
+func TestGetEffectiveTimeout_DisabledByDefault(t *testing.T) {
+	t.Setenv("LB_ALLOW_REQUEST_TIMEOUTS", "")
+	st := &BackendState{Backend: &types.Backend{ID: "b1", RequestTimeout: 600}}
+	st.AdaptiveTimeout = 300
+	if got := getEffectiveTimeout(st, 900); got != 0 {
+		t.Errorf("getEffectiveTimeout без opt-in = %d, want 0 (таймаут — рубильник оператора)", got)
+	}
 }

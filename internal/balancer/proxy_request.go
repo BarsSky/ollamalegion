@@ -354,7 +354,11 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 			if len(bodyBuf) > 0 {
 				r.Body = io.NopCloser(bytes.NewBuffer(bodyBuf))
 			}
-			retryCtx, retryCancel := context.WithTimeout(r.Context(), 5*time.Minute)
+			// R83/v62 (2026-10-02): БЕЗ жёсткого капа 5 минут. Ретрай легитимного
+			// инференс-запроса не должен обрываться таймером: на A10/больших моделях
+			// prefill идёт минутами, и такой кап выглядел как «клиент отвалился».
+			// Контекст наследует жизнь запроса (клиент решает), кап — только явный env.
+			retryCtx, retryCancel := context.WithCancel(r.Context())
 			defer retryCancel()
 			retryReq, retryErr := http.NewRequestWithContext(retryCtx, r.Method, targetURL+r.URL.String(), r.Body)
 			if retryErr == nil {

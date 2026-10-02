@@ -2,7 +2,9 @@ package balancer
 
 import (
 	"math"
+	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -168,6 +170,18 @@ func recordLatency(state *BackendState, latencyMs int64, model string, success b
 		"history_size", len(state.LatencyHistory))
 }
 
+// allowRequestTimeouts — R83/v62: единственный рубильник, разрешающий балансеру
+// взводить таймаут на ДЛИТЕЛЬНОСТЬ запроса (LB_ALLOW_REQUEST_TIMEOUTS=1).
+// По умолчанию выключен: без него ни adaptive, ни legacy per-backend, ни
+// профильные значения не ограничивают легитимный инференс по времени.
+func allowRequestTimeouts() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LB_ALLOW_REQUEST_TIMEOUTS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 // getEffectiveTimeout возвращает эффективный таймаут для бэкенда:
 //   - Если есть adaptiveTimeout (>0) — используем его
 //   - Если есть per-backend RequestTimeout (>0) — используем его
@@ -178,6 +192,18 @@ func getEffectiveTimeout(state *BackendState, globalTimeout int) int {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
+	// R83/v62 (2026-10-02): эффективный таймаут запроса взводится ТОЛЬКО явным
+	// opt-in оператора (LB_ALLOW_REQUEST_TIMEOUTS=1). Иначе — 0, без капа.
+	//
+	// БЫЛО: state.AdaptiveTimeout (пересчитывался от истории задержек) и
+	// state.Backend.RequestTimeout (legacy per-backend, дефолт 600 из config.json)
+	// возвращались как таймаут запроса — то есть балансер сам, молча, обрывал
+	// легитимный инференс на 600/300 секундах. Живой случай (A10, qwen3.8):
+	// duration_ms=301208 при том, что клиент своего таймаута не выбирал.
+	// Доктрина проекта: таймаут — рубильник оператора и он должен быть виден.
+	if !allowRequestTimeouts() {
+		return 0
+	}
 	if state.AdaptiveTimeout > 0 {
 		return state.AdaptiveTimeout
 	}

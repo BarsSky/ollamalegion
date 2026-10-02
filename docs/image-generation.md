@@ -331,3 +331,95 @@ curl -H "X-API-Token: $TOKEN" http://<хост>:18081/api/v1/image/backends
 Для NVIDIA нужен nvidia-container-runtime с `NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics`
 (без `graphics` в контейнер не пробрасывается Vulkan-ICD); для AMD/Intel — проброс
 `/dev/dri` и `group_add: video,render` (см. `docker-compose.imageworker.yml`).
+
+### 11.1 Единый стенд: текст и картинки за одним балансером
+
+Профиль `full` в `deployments/docker-compose.stack.yml` поднимает **оба** пула
+бэкендов за одним балансером:
+
+```bash
+cd deployments
+docker compose -f docker-compose.stack.yml --profile full up -d --build
+```
+
+| Сервис | Тип бэкенда | Порт | Роль |
+|---|---|---|---|
+| `loadbalancer` | — | 18080 / 18081 / **18079** | точка входа, admin API, OpenAI-поверхность картинок |
+| `webui` | — | 18083 | операторский UI (в т.ч. страница «Image-бэкенды») |
+| `cppworker-gpu` | `llama_cpp` | 18092 | текст |
+| `imageworker` | `image_cpp` | 18093 | генерация изображений (sd.cpp) |
+| `agent` | — | 18032 | метрики GPU/RAM и регистрация текстового бэкенда |
+
+Оба воркера регистрируются в балансере САМИ (метка `auto-registered`), поэтому
+разделять стенд на два балансера не нужно: маршрутизация идёт по типу запроса
+(текст → `llama_cpp`, `/v1/images/*` и `/sdapi/v1/*` → `image_cpp`). Каталог
+моделей общий: `${MODELS_DIR}/image/<имя>/` — bundle'ы картинок, `${MODELS_DIR}/*.gguf`
+— текстовые модели.
+
+Что учтено именно для единого стенда:
+
+- `imageworker` ждёт **готовый** балансер (`depends_on: condition: service_healthy`),
+  иначе первый POST регистрации уходил бы в закрытый порт;
+- **перерегистрация с изменившимся адресом** обновляет запись вместо «409 и
+  забыли»: пересозданный контейнер (новый host/порт) больше не оставляет в
+  балансере мёртвую запись (см. `isReRegistrationOfAutoBackend`);
+- профили image-моделей пишутся в `/app/data/image-model-profiles.json`
+  (`LB_IMAGE_MODEL_PROFILES_PATH`), потому что `../config` смонтирован `:ro` —
+  иначе сохранение профиля из WebUI падало бы на read-only ФС;
+- смоук стенда: `powershell -File scripts\docker-stack-smoke.ps1` (проверяет
+  состав профиля, оба типа бэкендов, `cluster.image`, страницу WebUI, а с
+  `-Generate` — реальную генерацию и рост метрик).
+
+```bash
+# что именно видит балансер после старта
+curl -s -H "X-API-Token: $TOKEN" http://<хост>:18081/api/v1/backends | jq '.backends[] | {id, type, status}'
+curl -s -H "X-API-Token: $TOKEN" http://<хост>:18081/api/v1/cluster  | jq '.cluster.image.requests'
+```
+
+## 12. Метрики image-запросов и управление бэкендами в UI
+
+### 12.1 Что именно считается
+
+Счётчики ведутся балансером по **генерации**: `POST /v1/images/*`,
+`POST /sdapi/v1/txt2img|img2img`, `POST /api/image/generate`. Управляющие вызовы
+(список моделей, `load`/`unload`, `capabilities`) в метрики НЕ попадают — иначе
+RPS и «среднее время» показывали бы служебный трафик вместо генерации.
+
+Исходов пять, и они означают разное:
+
+| Статус | Что произошло |
+|---|---|
+| `ok` | синхронная генерация отдала картинку |
+| `failed` | запрос дошёл до воркера/движка и упал (5xx, разрыв соединения) |
+| `rejected` | отказал гейт балансера (нет модели, нехватка VRAM, занят лок, таймаут очереди, нет бэкенда) |
+| `accepted` | асинхронная постановка (`202`), генерация ещё идёт |
+| `finished` | асинхронная генерация завершилась (per-job исход балансер не отслеживает — воркер отдаёт только `active_queries`) |
+
+### 12.2 Где смотреть
+
+- `GET /api/v1/metrics` (нужен `X-API-Token`) → блок `image`:
+  `requests` (агрегат по пулу + `recent` — общая лента) и `backends[<id>].requests`
+  (счётчики конкретного воркера);
+- `GET /api/v1/cluster` → `cluster.image` (тот же агрегат + общая лента) и
+  `cluster.backends[<id>].image.requests` (per-backend). Именно это читает Monitor,
+  поэтому панель запросов не требует второго запроса на каждом тике;
+- `GET /api/v1/image/backends/{id}/models` → состояние моделей воркера.
+
+Поля агрегата: `inFlight`, `total` (сколько запросов стартовало), `ok`,
+`failed`, `rejected`, `accepted`, `finished`, `rps` (окно 60 с), `avgDurationMs`,
+`p50DurationMs`, `p95DurationMs`, `lastDurationMs`, `lastRequestAt`,
+`failuresByCode` (коды ошибок движка), `gateDeniedByCode` (причины отказов гейта).
+Память ограничена жёстко: лента 20 записей на бэкенд и 50 общих, выборка
+длительностей 512 значений.
+
+### 12.3 UI
+
+- **Страница «Image-бэкенды»** (WebUI, пункт навигации появляется, когда в
+  кластере есть хотя бы один `image_cpp`): список image-бэкендов с портом
+  воркера, индексом GPU, состоянием, текущей моделью, VRAM и счётчиками
+  запросов; действия — добавить/изменить/удалить бэкенд, загрузить/выгрузить
+  модель, перейти к генерации.
+- **Monitor**: панель «Запросы к image-бэкендам» (агрегаты + лента последних
+  запросов с путём, моделью, размером, шагами, длительностью и статусом), а в
+  таблице бэкендов у `image_cpp` колонки Active/RPS/Avg RT заполняются из
+  `image.requests` (раньше там были нули и «-» даже во время генераций).

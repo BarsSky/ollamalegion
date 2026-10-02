@@ -310,3 +310,94 @@ curl -H "X-API-Token: $TOKEN" http://<host>:18081/api/v1/image/backends
 NVIDIA requires nvidia-container-runtime with `NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics`
 (without `graphics` no Vulkan ICD is mounted into the container); AMD/Intel need
 `/dev/dri` plus `group_add: video,render` (see `docker-compose.imageworker.yml`).
+
+### 11.1 Single stand: text and images behind one balancer
+
+The `full` profile of `deployments/docker-compose.stack.yml` brings up **both**
+backend pools behind one balancer:
+
+```bash
+cd deployments
+docker compose -f docker-compose.stack.yml --profile full up -d --build
+```
+
+| Service | Backend type | Port | Role |
+|---|---|---|---|
+| `loadbalancer` | — | 18080 / 18081 / **18079** | entry point, admin API, image OpenAI surface |
+| `webui` | — | 18083 | operator UI (including the "Image backends" page) |
+| `cppworker-gpu` | `llama_cpp` | 18092 | text |
+| `imageworker` | `image_cpp` | 18093 | image generation (sd.cpp) |
+| `agent` | — | 18032 | GPU/RAM metrics and text backend registration |
+
+Both workers register themselves with the balancer (label `auto-registered`), so
+there is no need for two balancers: routing follows the request type (text →
+`llama_cpp`, `/v1/images/*` and `/sdapi/v1/*` → `image_cpp`). The model directory
+is shared: `${MODELS_DIR}/image/<name>/` holds image bundles, `${MODELS_DIR}/*.gguf`
+holds text models.
+
+What is handled specifically for the single stand:
+
+- `imageworker` waits for a **ready** balancer (`depends_on: condition: service_healthy`);
+  otherwise its first registration POST hits a closed port;
+- **re-registration with a changed address** updates the record instead of a
+  permanent `409`: a recreated container (new host/port) no longer leaves a dead
+  record behind (see `isReRegistrationOfAutoBackend`);
+- image model profiles are stored in `/app/data/image-model-profiles.json`
+  (`LB_IMAGE_MODEL_PROFILES_PATH`) because `../config` is mounted `:ro` — saving a
+  profile from the WebUI would otherwise fail on a read-only filesystem;
+- stand smoke test: `powershell -File scripts\docker-stack-smoke.ps1` (checks the
+  profile composition, both backend types, `cluster.image`, the WebUI page, and
+  with `-Generate` a real generation plus growing metrics).
+
+```bash
+# what the balancer actually sees after startup
+curl -s -H "X-API-Token: $TOKEN" http://<host>:18081/api/v1/backends | jq '.backends[] | {id, type, status}'
+curl -s -H "X-API-Token: $TOKEN" http://<host>:18081/api/v1/cluster  | jq '.cluster.image.requests'
+```
+
+## 12. Image request metrics and backend management in the UI
+
+### 12.1 What is counted
+
+The balancer counts **generation** requests: `POST /v1/images/*`,
+`POST /sdapi/v1/txt2img|img2img`, `POST /api/image/generate`. Management calls
+(model list, `load`/`unload`, `capabilities`) are NOT counted — otherwise RPS and
+"average time" would show service traffic instead of generation.
+
+There are five outcomes, and they mean different things:
+
+| Status | What happened |
+|---|---|
+| `ok` | a synchronous generation returned an image |
+| `failed` | the request reached the worker/engine and failed (5xx, broken connection) |
+| `rejected` | the balancer gate refused it (no model, not enough VRAM, GPU lock held, queue timeout, no backend) |
+| `accepted` | asynchronous submission (`202`), generation still running |
+| `finished` | asynchronous generation finished (the balancer does not track per-job results — the worker only exposes `active_queries`) |
+
+### 12.2 Where to look
+
+- `GET /api/v1/metrics` (requires `X-API-Token`) → the `image` block:
+  `requests` (pool aggregate plus `recent`, the shared feed) and
+  `backends[<id>].requests` (counters of one worker);
+- `GET /api/v1/cluster` → `cluster.image` (same aggregate and feed) plus
+  `cluster.backends[<id>].image.requests` (per backend). This is what the Monitor
+  reads, so the requests panel needs no extra poll per tick;
+- `GET /api/v1/image/backends/{id}/models` → the worker's model state.
+
+Aggregate fields: `inFlight`, `total` (requests started), `ok`, `failed`,
+`rejected`, `accepted`, `finished`, `rps` (60 s window), `avgDurationMs`,
+`p50DurationMs`, `p95DurationMs`, `lastDurationMs`, `lastRequestAt`,
+`failuresByCode` (engine error codes), `gateDeniedByCode` (gate refusal reasons).
+Memory is hard-capped: a 20-entry feed per backend and 50 shared entries, with
+512 duration samples.
+
+### 12.3 UI
+
+- **"Image backends" page** (WebUI; the nav item appears once the cluster has at
+  least one `image_cpp` backend): the list of image backends with worker port, GPU
+  index, state, current model, VRAM and request counters; actions — add/edit/delete
+  a backend, load/unload a model, jump to generation.
+- **Monitor**: an "Image backend requests" panel (aggregates plus a feed of the
+  latest requests with path, model, size, steps, duration and status), and in the
+  backends table the Active/RPS/Avg RT columns of an `image_cpp` backend are filled
+  from `image.requests` (they used to show zeros and "-" even during generation).

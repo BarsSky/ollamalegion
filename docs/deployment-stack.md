@@ -1014,6 +1014,62 @@ go run ./debug/streamprobe http://127.0.0.1:18080/api/chat debug/probe_prose_too
 
 ---
 
+## 7.7.1 Размышления (reasoning): контракт и проверка (R83/v67, 2026-10-02)
+
+**Где живёт флаг.** Галочка «Enable reasoning» на странице GGUF Models пишется в
+профиль модели (`enableReasoning`) и доезжает до cppworker телом загрузки
+(`POST /api/models/load`), после чего её видно как `reasoning_enabled` в
+`GET /api/models` и как `reasoningEnabled` в `loadedModels` балансера.
+
+**Приоритет** (от старшего к младшему): явный `think` клиента в запросе →
+per-model флаг из профиля (WebUI) → глобальный `config.EnableReasoning`.
+
+**Что видит клиент.** Рассуждение уходит отдельным полем (`reasoning_content`
+в OpenAI-совместимом ответе, `reasoning` / `thinking` в нативных Ollama-путях),
+видимый ответ — в `content`. Маркеры (`<|channel>thought`, `<channel|>`,
+`<think>` и др.) в ответ не попадают: потоковый парсер удерживает неполный тег
+до тех пор, пока не станет ясно, тег это или обычный текст.
+
+Было две живые жалобы, обе закрыты в v67/v69:
+
+1. «Флаг включить размышление был активен, однако при ответе размышление не
+   применилось» — сборка промпта смотрела только на ГЛОБАЛЬНЫЙ
+   `config.EnableReasoning` и per-model состояние (то, что ставит галочка) не
+   читала вовсе. Диагностика, которой это ловится:
+   `GET /api/v1/cppworker/debug/last-prompt` — если в `prompt_head` нет
+   thinking-инструкции при `reasoning_enabled=true`, дело именно в этом.
+2. «Ответ обрезан / в ответе мусор» — в потоке первые символы маркера
+   (`<|c`, `h`, `a`, `nn`) уходили в ВИДИМЫЙ content, а остальное — в
+   reasoning. Проверка (SSE-дельты не должны содержать `<|` и `channel`):
+
+```bash
+# 1. включён ли режим у ЗАГРУЖЕННОЙ модели
+curl -s http://127.0.0.1:18092/api/models | jq '.models[] | {name, reasoning_enabled}'
+#   ждём: reasoning_enabled = true
+
+# 2. дошла ли политика до промпта (thinking-инструкция в system)
+TOKEN=$(grep '^CPPWORKER_API_TOKEN=' deployments/.env | cut -d= -f2)
+curl -s -H "X-API-Token: $TOKEN" \
+  "http://127.0.0.1:18092/api/v1/cppworker/debug/last-prompt" | jq '{model, prompt_head}'
+#   ждём: в prompt_head есть требование рассуждать (<reasoning>...</reasoning>)
+
+# 3. разделение в потоке: ни одного фрагмента маркера в content
+curl -sN -H 'Content-Type: application/json' \
+  -d '{"model":"gemma-4-E4B-it-Q4_K_M","messages":[{"role":"user","content":"Think step by step: what is 17*23?"}],"stream":true,"max_tokens":300}' \
+  http://127.0.0.1:18080/v1/chat/completions \
+  | grep '^data: {' | sed 's/^data: //' \
+  | jq -r 'select(.choices[0].delta.content) | .choices[0].delta.content' \
+  | grep -E '<\||channel' && echo 'УТЕЧКА МАРКЕРА' || echo 'чисто'
+```
+
+**Границы генерации.** `max_output_tokens` (его шлёт Cline) — это верхняя
+граница «сколько ответа клиент примет», а не запрошенная длина: она может
+только уменьшить `num_predict`, но не задать его. Иначе «приму до 64000»
+превращается в «сгенерируй 64000» (десятки минут на слабой карте, обрыв по
+клиентскому таймауту, «пустой ответ»).
+
+---
+
 ## 8. Диагностика: что смотреть при проблемах
 
 ```bash

@@ -444,6 +444,22 @@ func IsLoadAborted(model *ModelHandle) bool {
 
 // Infer выполняет синхронный инференс (stub)
 func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceResult, error) {
+	// Round 8 regression (2026-10-02): наблюдаем ФАКТ перекрытия вызовов Infer —
+	// см. StubInferMaxOverlap. Инкремент на входе / декремент на выходе дают
+	// точную эквивалентность «maxInFlight >= 2 ⟺ два Infer пересекались во
+	// времени», то есть тесту сериализации не нужны ни time.Sleep-окна, ни
+	// опрос снимков ModelInfo (который всегда ≤1: он пишется под тем же
+	// мьютексом, который тест и проверяет).
+	cur := stubInferInFlight.Add(1)
+	stubSyncInferCalls.Add(1)
+	for {
+		old := stubInferMaxInFlight.Load()
+		if cur <= old || stubInferMaxInFlight.CompareAndSwap(old, cur) {
+			break
+		}
+	}
+	defer stubInferInFlight.Add(-1)
+
 	// Round 8 (2026-07-28): если тест задал stubInferDelay через SetStubInferDelay —
 	// имитируем долгий inference (нужно для теста concurrent serialization в
 	// internal/cppbackend/backend_test.go). В обычной работе delay=0.
@@ -460,6 +476,41 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 		Status:   0,
 		ErrorMsg: "",
 	}, nil
+}
+
+// ============================================================
+// Наблюдение параллелизма Infer (Round 8 regression, детерминированно)
+// ============================================================
+
+// stubInferInFlight — сколько вызовов Infer находится ВНУТРИ прямо сейчас;
+// stubInferMaxInFlight — максимум одновременных вызовов с последнего сброса;
+// stubSyncInferCalls — сколько СИНХРОННЫХ вызовов Infer было с последнего
+// сброса (не путать с stubInferCalls: тот считает проходы InferStream).
+//
+// Зачем (R-Image follow-up, 2026-10-02): тест сериализации
+// (internal/cppbackend: TestGenerate_ConcurrentSameModel_Serialized) раньше
+// выводил факт сериализации косвенно — читал info.ActiveQueries ПОСЛЕ того, как
+// Generate вернулся, да ещё и под тем же inst.mu, который сам проверял. Такой
+// снимок всегда ≤1 и не может ни поймать регрессию, ни надёжно её исключить.
+// Прямой счётчик перекрытия убирает и тайминговые допущения, и сам обходной
+// путь: maxOverlap >= 2 ⟺ перекрытие было.
+var (
+	stubInferInFlight    atomic.Int32
+	stubInferMaxInFlight atomic.Int32
+	stubSyncInferCalls   atomic.Int64
+)
+
+// StubInferMaxOverlap — максимум одновременных вызовов Infer с последнего сброса.
+func StubInferMaxOverlap() int32 { return stubInferMaxInFlight.Load() }
+
+// StubSyncInferCalls — сколько раз синхронный Infer вызывался с последнего сброса.
+func StubSyncInferCalls() int64 { return stubSyncInferCalls.Load() }
+
+// ResetStubInferOverlap — обнулить наблюдаемые счётчики (вызывать перед
+// прогоном теста; текущее число «внутри» сохраняется, чтобы фон не считался).
+func ResetStubInferOverlap() {
+	stubInferMaxInFlight.Store(stubInferInFlight.Load())
+	stubSyncInferCalls.Store(0)
 }
 
 // stubInferDelay — искусственная задержка в stub.Infer, нужна для теста
@@ -683,7 +734,7 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 // stubInferCalls — счётчик вызовов stub-стриминга (для тестов повторной
 // генерации). stubEmptyFirstCall — «первый проход пустой, дальше как обычно».
 var (
-	stubInferCalls    atomic.Int64
+	stubInferCalls     atomic.Int64
 	stubEmptyFirstCall atomic.Bool
 )
 

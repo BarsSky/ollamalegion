@@ -109,15 +109,39 @@ func TestGenerate_ConcurrentSameModel_NotPanic(t *testing.T) {
 	}
 }
 
-// TestGenerate_ConcurrentSameModel_Serialized — проверяет, что параллельные
-// вызовы Generate на одну модель СЕРИАЛИЗУЮТСЯ (не выполняются одновременно).
-// Это критично, потому что llama.cpp context не thread-safe.
+// TestGenerate_ConcurrentSameModel_Serialized — проверяет ФАКТ: одновременные
+// вызовы Generate к одной модели никогда не выполняют inst.handle.Infer()
+// параллельно. Это критично, потому что контекст llama.cpp не thread-safe.
 //
-// Используем счётчик «активных вызовов Infer»: он должен быть <= 1
-// в любой момент времени. До фикса счётчик мог быть = 2 одновременно.
+// ЧТО ИСПРАВЛЕНО (R-Image follow-up, 2026-10-02). Тест был недетерминированным
+// сразу по трём причинам, и ни одна из них не была «таймингом самого факта»:
+//
+//  1. Факт выводился КОСВЕННО: горутина после возврата из Generate читала
+//     inst.info.ActiveQueries. Это поле пишется под тем же inst.mu, который тест
+//     и проверяет, поэтому наблюдаемое значение всегда ≤1 — проверить
+//     сериализацию такой снимок не может (ни поймать регрессию, ни надёжно её
+//     исключить). Теперь факт наблюдается ПРЯМО в стабе:
+//     bridge.StubInferMaxOverlap() — счётчик одновременных вызовов Infer,
+//     инкремент на входе и декремент на выходе. maxOverlap >= 2 ⟺ два Infer
+//     пересекались во времени; никаких окон и опросов.
+//  2. Горутины запускались «одновременно» через time.Sleep(20ms) перед
+//     снятием барьера — то есть тест надеялся, что планировщик успел запустить
+//     все n горутин (под нагрузкой 7 пакетов это не так), а не синхронизировался
+//     с ними. Теперь барьер честный: все горутины сигналят готовность и ждут
+//     закрытия канала start — ни одного time.Sleep в координации.
+//  3. Модель грузилась с одним слотом (LoadModelOpts без Parallel → SlotManager
+//     maxSlots=1), и запросы сериализовал САМ SlotManager — то есть inst.mu,
+//     ради которого тест и написан, вообще не участвовал: со снятым inst.mu
+//     тест всё равно проходил. Теперь модель грузится с Parallel=8 (> n), и
+//     сериализовать может только inst.mu; это проверяется явно по MaxSlots().
+//
+// Ширина окна (25 мс задержки стаба) нужна не для «поймать перекрытие», а чтобы
+// РЕГРЕССИЯ (снятый inst.mu) ловилась надёжно, а не по удаче планировщика.
 func TestGenerate_ConcurrentSameModel_Serialized(t *testing.T) {
-	prevDelay := bridge.SetStubInferDelay(50 * time.Millisecond)
+	prevDelay := bridge.SetStubInferDelay(25 * time.Millisecond)
 	defer bridge.SetStubInferDelay(prevDelay)
+	bridge.ResetStubInferOverlap()
+	defer bridge.ResetStubInferOverlap()
 
 	cfg := Config{
 		ModelsDir:        t.TempDir(),
@@ -132,56 +156,63 @@ func TestGenerate_ConcurrentSameModel_Serialized(t *testing.T) {
 	}
 	if err := backend.LoadModelWithOpts(context.Background(), "test_model", fakePath, LoadModelOpts{
 		ContextSize: 512, BatchSize: 64, GPULayers: 0,
+		// > числа одновременных вызовов: иначе запросы сериализует SlotManager,
+		// и проверка inst.mu становится пустой (см. п.3 в комментарии выше).
+		Parallel: 8,
 	}); err != nil {
 		t.Fatalf("LoadModelWithOpts: %v", err)
 	}
 
-	// Счётчик активных вызовов через stub.InferDelay.
-	// Когда stub.Infer спит, можем проверить, что только 1 goroutine
-	// находится внутри. Используем сам факт задержки как «окно» —
-	// если 2 Infer'а идут одновременно, оба задержки завершатся
-	// одновременно, и проверка ниже увидит активные вызовы через
-	// modelInstance.info.ActiveQueries.
-
-	const n = 5
-	var startBarrier sync.WaitGroup
-	startBarrier.Add(1)
-	var done sync.WaitGroup
-	maxActive := atomic.Int32{}
-
-	done.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer done.Done()
-			startBarrier.Wait() // запускаем все горутины одновременно
-			_, _ = backend.Generate("test_model", "hi", bridge.GenerationParams{NPredict: 5})
-
-			// После завершения Generate — ActiveQueries должен быть 0
-			// (потому что Generate удерживает mu всё время).
-			// Snapshot info.ActiveQueries:
-			backend.mu.RLock()
-			inst := backend.models["test_model"]
-			backend.mu.RUnlock()
-			if inst == nil {
-				return
-			}
-			inst.mu.Lock()
-			curActive := inst.info.ActiveQueries
-			inst.mu.Unlock()
-			if curActive > 1 {
-				maxActive.Store(int32(curActive))
-			}
-		}()
+	backend.mu.RLock()
+	inst := backend.models["test_model"]
+	backend.mu.RUnlock()
+	if inst == nil || inst.slots == nil {
+		t.Fatal("модель/слоты не инициализированы — стенд теста сломан")
 	}
 
-	// Даём всем горутинам время войти в Generate, потом отпускаем barrier.
-	time.Sleep(20 * time.Millisecond)
-	startBarrier.Done()
-	done.Wait()
+	const n = 5
+	if got := inst.slots.MaxSlots(); got < n {
+		t.Fatalf("SlotManager.MaxSlots() = %d, want >= %d: с меньшим числом слотов "+
+			"запросы сериализует сам SlotManager, и тест перестаёт проверять inst.mu", got, n)
+	}
 
-	if maxActive.Load() > 1 {
-		t.Errorf("ActiveQueries reached %d — Generate calls were NOT serialized (Round 8 bug regression!)",
-			maxActive.Load())
+	// Честный барьер: все горутины доходят до start и ждут его закрытия — никаких
+	// «подождём 20 мс, авось планировщик успел».
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	ready.Add(n)
+	errs := make(chan error, n)
+
+	for i := 0; i < n; i++ {
+		go func() {
+			ready.Done()
+			<-start
+			_, err := backend.Generate("test_model", "hi", bridge.GenerationParams{NPredict: 5})
+			errs <- err
+		}()
+	}
+	ready.Wait()
+	close(start)
+
+	// Ждём завершения ВСЕХ Generate (каналом, а не таймером), затем проверяем
+	// факты. Каждый вызов обязан дойти до Infer и вернуться без ошибки.
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("Generate[%d] error: %v", i, err)
+		}
+	}
+
+	if calls := bridge.StubSyncInferCalls(); calls != n {
+		t.Errorf("Infer вызван %d раз, а Generate было %d — часть запросов не дошла "+
+			"до инференса (тест проверял бы не то)", calls, n)
+	}
+	if got := bridge.StubInferMaxOverlap(); got != 1 {
+		t.Errorf("одновременно внутри Infer было %d вызовов — Generate НЕ сериализованы "+
+			"(Round 8 bug regression: параллельный llama_decode / гонка на KV-cache)", got)
+	}
+	// Счётчики запросов не «протекли»: после возврата всех Generate активных нет.
+	if got := inst.activeQueriesCount(); got != 0 {
+		t.Errorf("activeQueries = %d после завершения всех Generate, want 0", got)
 	}
 }
 

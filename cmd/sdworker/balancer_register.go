@@ -28,6 +28,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -41,11 +42,16 @@ import (
 	"ollama-loadbalancer/internal/sdbackend"
 )
 
+// errRegistrationConflict — балансер ответил 409: ID занят записью, которую он
+// не считает нашей саморегистрацией (см. register). Отдельная ошибка нужна,
+// чтобы start() НЕ ретраил её и НЕ помечал воркер зарегистрированным.
+var errRegistrationConflict = errors.New("backend id is taken by a non-auto-registered record")
+
 // registerPayload — JSON-тело POST /api/v1/backends (см. internal/api/handlers_backends.go:476).
 type registerPayload struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Host  string `json:"host"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Host string `json:"host"`
 	// ImagePort — порт image-воркера: именно его использует EffectiveImagePort().
 	ImagePort         int      `json:"imagePort"`
 	BackendType       string   `json:"backendType"`
@@ -177,17 +183,21 @@ func (r *balancerRegistration) register(ctx context.Context, log *zap.SugaredLog
 	}
 	defer resp.Body.Close()
 
-	// 409 = бэкенд с таким ID уже есть. Для image-воркера это НОРМАЛЬНЫЙ путь
-	// повторного старта: isSameBackendRegistration (internal/api:379) требует
-	// непустой cppWorkerPort/ollamaPort, которых у нас нет, поэтому балансер
-	// отвечает 409 и НЕ обновляет запись. Это осознанный компромисс без правок
-	// в запретной зоне (см. отчёт): при смене порта/хоста оператор удаляет
-	// бэкенд в WebUI (DELETE /api/v1/backends/{id}) — либо мы делаем это сами
-	// перед регистрацией, если SDK сообщает конфликт.
+	// 409 = бэкенд с таким ID уже есть, и балансер НЕ считает эту запись нашей
+	// саморегистрацией (нет метки "auto-registered" — например, бэкенд создан
+	// руками в WebUI).
+	//
+	// Phase 8 (2026-10-03): это НЕ «успех». Раньше 409 молча считался
+	// регистрацией, и воркер при остановке делал DELETE — то есть сносил запись,
+	// которую создал оператор. Теперь конфликт возвращается отдельной ошибкой:
+	// повторять его бессмысленно (start() не станет ретраить), а `registered`
+	// остаётся false, поэтому DELETE при остановке не выполняется.
+	//
+	// Смена host/порта пересозданным контейнером конфликтом БОЛЬШЕ НЕ является:
+	// балансер обновляет запись саморегистрируемого бэкенда
+	// (см. internal/api: isReRegistrationOfAutoBackend).
 	if resp.StatusCode == http.StatusConflict {
-		log.Infow("sdworker already registered (409 conflict, treated as ok)",
-			"id", r.backendID, "hint", "если изменились host/port — удалите бэкенд в балансере и перезапустите воркер")
-		return nil
+		return errRegistrationConflict
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		log.Infow("sdworker registered with balancer",
@@ -211,6 +221,16 @@ func (r *balancerRegistration) start(ctx context.Context, log *zap.SugaredLogger
 			if err == nil {
 				r.registered.Store(true)
 				break
+			}
+			// Конфликт ID (409) ретраить бессмысленно: он не пройдёт сам, а
+			// каждые 30 с будет только мусорить в лог. Оператору нужен один
+			// внятный совет — что именно сделать.
+			if errors.Is(err, errRegistrationConflict) {
+				log.Errorw("sdworker registration conflict: backend id is taken by a record that is not auto-registered",
+					"id", r.backendID,
+					"hint", "удалите бэкенд в WebUI (DELETE /api/v1/backends/{id}) или задайте другой SDWORKER_BACKEND_ID; "+
+						"heartbeat и автоудаление при остановке для этого бэкенда отключены")
+				return
 			}
 			attempts++
 			log.Warnw("sdworker registration failed, will retry",

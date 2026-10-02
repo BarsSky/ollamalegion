@@ -420,6 +420,36 @@ func (s *Server) isSameBackendRegistration(req backendRequest) bool {
 	return sameHost && samePort
 }
 
+// isReRegistrationOfAutoBackend — R-Image Phase 8 (2026-10-03): повторная
+// саморегистрация с ИЗМЕНИВШИМСЯ адресом.
+//
+// ЗАЧЕМ ОТДЕЛЬНО ОТ isSameBackendRegistration. Тот требует совпадения host+порта,
+// поэтому пересозданный контейнер (новый host или порт — типичный случай в
+// едином docker-стенде после `up -d --build`) залипал в 409 НАВСЕГДА: воркер жив
+// и здоров, а в балансере остаётся старая запись с чужим адресом. Ровно это
+// выглядит как «image-бэкенд не активен в докере».
+//
+// Условия — все обязательны, иначе POST из WebUI мог бы перезаписать чужую
+// запись по совпадению ID:
+//   - у СУЩЕСТВУЮЩЕЙ записи есть метка "auto-registered" (её ставит только нода,
+//     ручное создание из WebUI — нет);
+//   - в запросе тоже есть "auto-registered" (это саморегистрация, а не оператор);
+//   - тип бэкенда в запросе непустой и совпадает с типом существующей записи.
+func (s *Server) isReRegistrationOfAutoBackend(req backendRequest) bool {
+	existing := s.proxy.GetBackend(req.ID)
+	if existing == nil {
+		return false
+	}
+	if !hasLabelFold(existing.Labels, "auto-registered") || !hasLabelFold(req.Labels, "auto-registered") {
+		return false
+	}
+	want := types.BackendType(req.BackendType)
+	if want == "" {
+		return false
+	}
+	return want == existing.Type
+}
+
 // hasLabelFold — есть ли метка (без учёта регистра).
 func hasLabelFold(labels []string, want string) bool {
 	for _, l := range labels {
@@ -447,6 +477,29 @@ func (s *Server) refreshRegisteredBackend(w http.ResponseWriter, req backendRequ
 		return
 	}
 	updated := *existing
+	// Phase 8: АДРЕС тоже обновляем. Для isSameBackendRegistration он совпадает по
+	// определению, а для повторной регистрации авто-бэкенда с новым адресом
+	// (пересозданный контейнер) это единственный способ не залипнуть в 409:
+	// иначе воркер жив, а балансер держит запись с чужим host/портом и зовёт
+	// несуществующий адрес.
+	if req.Host != "" {
+		updated.Host = req.Host
+	}
+	if req.Name != "" {
+		updated.Name = req.Name
+	}
+	if req.OllamaPort > 0 {
+		updated.OllamaPort = req.OllamaPort
+	}
+	if req.CppWorkerPort > 0 {
+		updated.CppWorkerPort = req.CppWorkerPort
+	}
+	if req.ImagePort > 0 {
+		updated.ImagePort = req.ImagePort
+	}
+	if req.AgentPort > 0 {
+		updated.AgentPort = req.AgentPort
+	}
 	if req.MaxConcurrentReqs > 0 {
 		updated.MaxConcurrentReqs = req.MaxConcurrentReqs
 		// R70: сбрасываем runtime-override — иначе он (значение, которое агент
@@ -576,7 +629,7 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 	// Обновляем ТОЛЬКО если это тот же бэкенд (совпадают host и cppWorkerPort) —
 	// иначе 409, чтобы WebUI не перезаписал чужой бэкенд по ошибке.
 	if s.proxy.BackendExists(req.ID) {
-		if !s.isSameBackendRegistration(req) {
+		if !s.isSameBackendRegistration(req) && !s.isReRegistrationOfAutoBackend(req) {
 			s.writeJSON(w, http.StatusConflict, map[string]interface{}{
 				"success": false,
 				"error":   fmt.Sprintf("Backend with ID %s already exists", req.ID),

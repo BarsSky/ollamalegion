@@ -34,7 +34,7 @@ func stateForLongHistory(currentTotal, perSeq, slots int) *NCtxBackendState {
 		MaxVRAMNCtx:          0, // веса не влезают в VRAM целиком (partial offload)
 		VRAMKnown:            true,
 		AvailableVRAMMB:      4791,
-		ModelMaxContext:      8192,  // profile hint (не потолок)
+		ModelMaxContext:      8192, // profile hint (не потолок)
 		PhysicalMaxContext:   131072,
 		GGUFMaxContext:       131072,
 		AutoReloadMaxNCtx:    131072,

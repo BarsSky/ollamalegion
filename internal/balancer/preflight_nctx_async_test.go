@@ -19,6 +19,8 @@ import (
 // TestPreflightAsyncReload_RunPreflightReturnsAsyncDecision — coordinator
 // возвращает PreflightAsyncReload (не PreflightReload) при async-режиме.
 func TestPreflightAsyncReload_RunPreflightReturnsAsyncDecision(t *testing.T) {
+	// R83/v62: кап на перезагрузку — только по явному opt-in.
+	t.Setenv("LB_ALLOW_NCTX_RELOAD_TIMEOUT", "1")
 	// R68: по умолчанию балансер ЖДЁТ async reload (LB_NCTX_PREFLIGHT_WAIT_SEC=240)
 	// и обслуживает первый же запрос. Этот тест проверяет legacy-контракт «сразу
 	// AsyncReload» — выключаем ожидание явно.
@@ -116,6 +118,8 @@ func TestPreflightAsyncReload_RunPreflightReturnsAsyncDecision(t *testing.T) {
 // TestPreflightAsyncReload_SyncModeStillBlocks — backward compat:
 // PreflightAsyncReload=false → sync reload (старое поведение).
 func TestPreflightAsyncReload_SyncModeStillBlocks(t *testing.T) {
+	// R83/v62: кап на перезагрузку — только по явному opt-in.
+	t.Setenv("LB_ALLOW_NCTX_RELOAD_TIMEOUT", "1")
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/models/reload" {
 			time.Sleep(50 * time.Millisecond)

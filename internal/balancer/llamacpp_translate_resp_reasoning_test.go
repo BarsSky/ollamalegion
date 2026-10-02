@@ -2,13 +2,14 @@
 // between OpenAI (cppworker) and Ollama (OpenWebUI) formats.
 //
 // Bug context (2026-08-09):
-//   cppworker эмитит delta.reasoning_content для reasoning-моделей (gemma-4,
-//   qwen3.5/qwen3.6, deepseek-r1). Текущий translateSSEChatToOllama в
-//   internal/balancer/llamacpp_translate_resp.go НЕ извлекает reasoning_content —
-//   OpenWebUI получает стрим без thinking-секции.
 //
-//   translateOpenAIChatToOllama (non-streaming) тоже не маппит
-//   message.reasoning_content → message.reasoning.
+//	cppworker эмитит delta.reasoning_content для reasoning-моделей (gemma-4,
+//	qwen3.5/qwen3.6, deepseek-r1). Текущий translateSSEChatToOllama в
+//	internal/balancer/llamacpp_translate_resp.go НЕ извлекает reasoning_content —
+//	OpenWebUI получает стрим без thinking-секции.
+//
+//	translateOpenAIChatToOllama (non-streaming) тоже не маппит
+//	message.reasoning_content → message.reasoning.
 //
 // Покрывает:
 //   - SSE→NDJSON: delta.reasoning_content → message.thinking

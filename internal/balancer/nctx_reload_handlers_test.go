@@ -21,17 +21,19 @@ import (
 )
 
 func TestNewNCtxReloadHTTPClient_TimeoutFromConfig(t *testing.T) {
+	// R83/v62: кап на перезагрузку — только по явному opt-in.
+	t.Setenv("LB_ALLOW_NCTX_RELOAD_TIMEOUT", "1")
 	tests := []struct {
 		name         string
 		autoReloadTO int
 		wantMin      time.Duration
 		wantMax      time.Duration
 	}{
-		{"no_nctxReload", 0, 300 * time.Second, 300 * time.Second},
+		{"no_nctxReload", 0, 0, 0},                                  // R83/v62: без координатора капа нет (было hardcoded 300s)
 		{"default_300s", 300, 320 * time.Second, 340 * time.Second}, // 300+30
 		{"short_120s", 120, 140 * time.Second, 160 * time.Second},   // 120+30
 		{"max_600s", 600, 600 * time.Second, 600 * time.Second},     // 600+30=630 → clamped to 600
-		{"zero_uses_default", 0, 300 * time.Second, 300 * time.Second},
+		{"zero_uses_default", 0, 0, 0},                              // 0 = без капа (значение берётся из AutoReloadTimeoutSec только при opt-in)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -133,8 +133,8 @@ func TestAttachAgentToBackend_NonExistent(t *testing.T) {
 }
 
 // TestAgentAttach_EndToEnd simulates the full bundled-mode flow:
-//   1. cppworker registers first (canonical backend)
-//   2. agent registers second → should attach, not create
+//  1. cppworker registers first (canonical backend)
+//  2. agent registers second → should attach, not create
 func TestAgentAttach_EndToEnd(t *testing.T) {
 	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{})
 

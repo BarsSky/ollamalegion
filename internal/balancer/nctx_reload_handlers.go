@@ -466,12 +466,19 @@ func (p *Proxy) newNCtxReloadHTTPClient() NCtxReloadHTTPClient {
 	// R60.6: derive http.Client.Timeout from nctxReload config. Default 300s,
 	// max 600s (clamped). +30s buffer для HTTP overhead (cppworker шлёт headers
 	// после завершения reload, balancer должен успеть их прочитать).
-	timeout := 300 * time.Second // R60.6: was 90s
+	// R83/v62 (2026-10-02): по умолчанию — БЕЗ таймаута HTTP-клиента (0 = нет
+	// таймаута в Go). Клиентский таймаут означает, что балансер сам обрывает
+	// перезагрузку большой модели (A10, qwen3.8 15.7 ГБ) на 300-й секунде.
+	// Числовой таймаут — только при явном opt-in LB_ALLOW_NCTX_RELOAD_TIMEOUT=1.
+	timeout := time.Duration(0)
 	if p.nctxReload != nil {
-		cfg := p.nctxReload.Config()
-		timeout = cfg.effectiveTimeout() + 30*time.Second
-		if timeout > 600*time.Second {
-			timeout = 600 * time.Second
+		if d := p.nctxReload.Config().effectiveTimeout(); d > 0 {
+			timeout = d + 30*time.Second
+			if timeout > 600*time.Second {
+				timeout = 600 * time.Second
+			}
+			logger.Get().Warnw("armed nctx reload http client timeout (operator opt-in)",
+				"timeout", timeout.String(), "source", "LB_ALLOW_NCTX_RELOAD_TIMEOUT")
 		}
 	}
 	return &DefaultNCtxReloadHTTPClient{
@@ -1503,7 +1510,7 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 		"useMmap":     true,
 	})
 
-	reloadCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	reloadCtx, cancel := reloadTimeoutContext(context.Background(), 0)
 	defer cancel()
 
 	req, reqErr := http.NewRequestWithContext(reloadCtx, "POST", targetURL, bytes.NewReader(reloadPayload))

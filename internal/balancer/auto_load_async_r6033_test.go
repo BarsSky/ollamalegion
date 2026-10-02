@@ -35,9 +35,9 @@ import (
 // 6-retry cascade до failure). 90s = realistic wait для async load.
 func TestWriteAutoLoadRetryAfter(t *testing.T) {
 	cases := []struct {
-		name     string
-		err      error
-		wantSec  int
+		name    string
+		err     error
+		wantSec int
 	}{
 		{"async in progress (R60.33, R60.42 90s default)", errors.New("model 'q' auto-load in progress, retry in 30s"), 90},
 		{"n_ctx reload in progress (R60.42 90s default)", errors.New("model 'q' n_ctx reload in progress"), 90},

@@ -110,7 +110,7 @@ func TestR6054_DeduplicateResponseContent_AnchorTooShort(t *testing.T) {
 	// easily. But the function has len(anchor) < 20 guard. Test with a 20+ char anchor.
 	// Just ensure normal-length anchor works.
 	resp := strings.Repeat("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 10) // 260 chars, first 80 = 80 unique letters
-	resp = resp + resp // 520 chars total - first half repeats second half, but anchor only first 80 chars
+	resp = resp + resp                                       // 520 chars total - first half repeats second half, but anchor only first 80 chars
 	deduped, removed := deduplicateResponseContent(resp)
 	// The anchor (first 80 chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 80/26 + some) WILL match later in content
 	// So dedup should trigger. Just verify no panic.

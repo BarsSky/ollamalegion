@@ -55,7 +55,8 @@ func TestR83_AutoLoadWaitTier_ByModelSize(t *testing.T) {
 // уважается и не перебивается тиром.
 func TestR83_AutoLoadWaitTier_ExplicitEnvWins(t *testing.T) {
 	p := &Proxy{}
-	restore := setModelSize(16*1024*1024*1024); defer restore()
+	restore := setModelSize(16 * 1024 * 1024 * 1024)
+	defer restore()
 
 	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "42")
 	if got := p.autoLoadWaitTimeoutForModel("m"); got != 42*time.Second {
@@ -80,7 +81,8 @@ func TestR83_AutoLoadWaitTier_ExplicitEnvWins(t *testing.T) {
 func TestR83_AutoLoadWaitTier_HardCeiling(t *testing.T) {
 	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "")
 	p := &Proxy{}
-	restore := setModelSize(200*1024*1024*1024); defer restore() // 200 GB — заведомо больше потолка
+	restore := setModelSize(200 * 1024 * 1024 * 1024)
+	defer restore() // 200 GB — заведомо больше потолка
 	if got := p.autoLoadWaitTimeoutForModel("m"); got != autoLoadHardCeiling {
 		t.Errorf("бюджет = %s, want %s (hard ceiling)", got, autoLoadHardCeiling)
 	}
@@ -90,7 +92,8 @@ func TestR83_AutoLoadWaitTier_HardCeiling(t *testing.T) {
 func TestR83_AutoLoadWaitTier_UnknownSizeKeepsDefault(t *testing.T) {
 	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "")
 	p := &Proxy{}
-	restore := setModelSize(0); defer restore()
+	restore := setModelSize(0)
+	defer restore()
 	if got := p.autoLoadWaitTimeoutForModel("unknown-model"); got != autoLoadWaitDefaultSec*time.Second {
 		t.Errorf("бюджет = %s, want %s (дефолт при неизвестном размере)",
 			got, autoLoadWaitDefaultSec*time.Second)

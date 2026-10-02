@@ -104,6 +104,7 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // Used by:
 //   - llamacpp_handlers_inference.go (5 sites: chat/completions,
 //     completions, embeddings, /api/chat, /api/generate)
+//
 // writeServiceUnavailable — write a 503 response with a Retry-After
 // header (in seconds). Use this for any 503 that tells the client to
 // retry later (e.g. auto-load in progress, async reload pending).
@@ -334,9 +335,9 @@ func buildAutoLoadDiagnostic(
 	loadErr error,
 ) ServiceUnavailableDiagnostic {
 	diag := ServiceUnavailableDiagnostic{
-		Error: fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
-		Model: model,
-		BackendID: backendID,
+		Error:         fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+		Model:         model,
+		BackendID:     backendID,
 		RetryAfterSec: writeAutoLoadRetryAfter(loadErr),
 	}
 	if targetNCtx > 0 {

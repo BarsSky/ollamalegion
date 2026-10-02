@@ -133,16 +133,16 @@ func TestWriteServiceUnavailableWithDiagnostics_DefaultRetryAfter(t *testing.T) 
 // async n_ctx reload использует эту функцию для возврата 503+Retry-After.
 func TestWriteServiceUnavailableWithDiagnostics_EstimatedMsToRetryAfter(t *testing.T) {
 	tests := []struct {
-		name     string
-		estMs    int
-		wantSec  int
+		name    string
+		estMs   int
+		wantSec int
 	}{
 		{"5s", 5000, 5},
 		{"30s", 30000, 30},
 		{"95s", 95000, 95},
 		{"180s", 180000, 180},
-		{"600s capped", 700000, 600},  // cap at 10 min
-		{"min 5s", 1000, 5},           // floor at 5s
+		{"600s capped", 700000, 600},          // cap at 10 min
+		{"min 5s", 1000, 5},                   // floor at 5s
 		{"zero = default 90 (R60.42)", 0, 90}, // 0 → 90 (was 30 pre-R60.42)
 	}
 	for _, tc := range tests {
@@ -280,7 +280,7 @@ func TestWriteAutoLoadRetryAfter_R60_42_CascadeAvoidance(t *testing.T) {
 
 	// Simulate 180s load with 90s Retry-After: client retries 2 times.
 	loadDurationSec := 180
-	attemptsAt30s := loadDurationSec / 30 // 6 retries with R60.41 default
+	attemptsAt30s := loadDurationSec / 30        // 6 retries with R60.41 default
 	attemptsAt90s := (loadDurationSec + 89) / 90 // 2 retries with R60.42 default (ceil)
 
 	if attemptsAt30s <= 3 {

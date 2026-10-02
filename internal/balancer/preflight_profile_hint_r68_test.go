@@ -212,6 +212,8 @@ func preflightReloadMockR68(t *testing.T, delay time.Duration, calls *int32) *ht
 // LB_NCTX_PREFLIGHT_WAIT_SEC>0 RunPreflight ДОЖИДАЕТСЯ reload'а и возвращает
 // PreflightReload (caller обслуживает первый же запрос), а не AsyncReload.
 func TestPreflightAsyncReload_R68_WaitsAndServes(t *testing.T) {
+	// R83/v62: кап на перезагрузку — только по явному opt-in.
+	t.Setenv("LB_ALLOW_NCTX_RELOAD_TIMEOUT", "1")
 	t.Setenv("LB_NCTX_PREFLIGHT_WAIT_SEC", "5")
 
 	var reloadCalls int32

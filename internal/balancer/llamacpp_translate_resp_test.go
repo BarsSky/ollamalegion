@@ -452,10 +452,10 @@ func TestTranslateOpenAICompletionToOllama_FinishReasonLength(t *testing.T) {
 // TestTranslateSSEChatToOllama_FullStream_SingleDone — Round 53.1 structural
 // compliance test. Симулирует полный cppworker stream (content chunks +
 // finish_reason wrapper + usage chunk) и проверяет что:
-//   1. Ровно ОДИН done:true чанк (от usage chunk)
-//   2. Этот чанк содержит ВСЕ обязательные Ollama поля: eval_count,
-//      prompt_eval_count, total_duration, model, done_reason, message
-//   3. Никакой "phantom done" (с done:true но без stats) в стриме
+//  1. Ровно ОДИН done:true чанк (от usage chunk)
+//  2. Этот чанк содержит ВСЕ обязательные Ollama поля: eval_count,
+//     prompt_eval_count, total_duration, model, done_reason, message
+//  3. Никакой "phantom done" (с done:true но без stats) в стриме
 //
 // Это структурный тест compliance с Ollama NDJSON API spec — не просто
 // "есть content", а "ответ имеет канонический вид".

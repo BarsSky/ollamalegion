@@ -49,7 +49,7 @@ func TestExecuteLlamaCppUnload_InvalidatesState(t *testing.T) {
 	mm := NewModelManager(nil)
 	coord := NewNCtxReloadCoordinator(NCtxReloadConfig{})
 	mm.proxy = &Proxy{
-		config:    &types.LoadBalancerConfig{},
+		config:     &types.LoadBalancerConfig{},
 		metricsMgr: NewMetricsManager(),
 		nctxReload: coord,
 	}

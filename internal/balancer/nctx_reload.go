@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -150,6 +151,20 @@ func (c NCtxReloadConfig) effectiveSafetyFactor() float64 {
 }
 
 func (c NCtxReloadConfig) effectiveTimeout() time.Duration {
+	// R83/v62 (2026-10-02): кап на ПЕРЕЗАГРУЗКУ модели снят по умолчанию.
+	//
+	// Раньше здесь был дефолт 300 с (clamp 30..600), и он работал в двух местах:
+	// три context.WithTimeout в preflight_nctx.go И http.Client.Timeout для всех
+	// вызовов reload (newNCtxReloadHTTPClient). Для большой модели (A10, qwen3.8
+	// 15.7 ГБ) перезагрузка в 300 с не укладывается — операция умирала по таймеру,
+	// а клиент получал ошибку вместо ответа. Ждём терминальное состояние
+	// перезагрузки, а не время.
+	//
+	// Кап — только явный opt-in LB_ALLOW_NCTX_RELOAD_TIMEOUT=1 (тогда значения
+	// AutoReloadTimeoutSec работают с прежним clamp 30..600).
+	if !allowReloadTimeout() {
+		return 0
+	}
 	t := c.AutoReloadTimeoutSec
 	if t <= 0 {
 		t = 300
@@ -161,6 +176,29 @@ func (c NCtxReloadConfig) effectiveTimeout() time.Duration {
 		t = 600
 	}
 	return time.Duration(t) * time.Second
+}
+
+// allowReloadTimeout — R83/v62: рубильник оператора для капа на перезагрузку.
+func allowReloadTimeout() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LB_ALLOW_NCTX_RELOAD_TIMEOUT"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// reloadTimeoutContext — контекст операции перезагрузки. d <= 0 (по умолчанию)
+// означает «без капа»: context.WithCancel, а НЕ WithTimeout(0), который истёк бы
+// мгновенно. При взведённом капе печатается WARN с источником.
+func reloadTimeoutContext(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		return context.WithCancel(parent)
+	}
+	if logger.Get() != nil {
+		logger.Get().Warnw("armed nctx reload timeout (operator opt-in)",
+			"timeout", d.String(), "source", "LB_ALLOW_NCTX_RELOAD_TIMEOUT")
+	}
+	return context.WithTimeout(parent, d)
 }
 
 // effectiveAsyncRetryAfter — сколько секунд клиенту ждать после 503

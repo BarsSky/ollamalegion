@@ -3,15 +3,15 @@
 // Phase 8 — Programmatic smoke test для 1.0 release.
 //
 // Это интеграционный сценарий, который:
-//   1. Поднимает 2 fake cppworker backends через httptest.Server.
-//   2. Поднимает реальный balancer через httptest.Server с mode=rpc_coordinator
-//      + DistributedModel + mode=virtual_router + VirtualModel (alias-on-pool).
-//   3. Регистрирует distributed model через coordinator + virtual model через
-//      registry.
-//   4. Прогоняет инференс через rpc_coordinator pipeline (model=llama).
-//   5. Прогоняет инференс через virtual_router (model=virtual:llama-pool).
-//   6. Проверяет metrics: оба pipeline инкрементнули counters.
-//   7. Проверяет fail-safe: backend down → failover (P.2 backlog) работает.
+//  1. Поднимает 2 fake cppworker backends через httptest.Server.
+//  2. Поднимает реальный balancer через httptest.Server с mode=rpc_coordinator
+//     + DistributedModel + mode=virtual_router + VirtualModel (alias-on-pool).
+//  3. Регистрирует distributed model через coordinator + virtual model через
+//     registry.
+//  4. Прогоняет инференс через rpc_coordinator pipeline (model=llama).
+//  5. Прогоняет инференс через virtual_router (model=virtual:llama-pool).
+//  6. Проверяет metrics: оба pipeline инкрементнули counters.
+//  7. Проверяет fail-safe: backend down → failover (P.2 backlog) работает.
 //
 // Это dry-run 1.0 release без реального hardware. Реальный hardware test
 // (A10 + Qwen3-A3B) — отдельный item (Round 19 OOM fix verification).
@@ -136,9 +136,10 @@ func newCPPWorkerFake(t *testing.T, workerID string) *cppworkerFakeServer {
 //
 // Сценарий: balancer работает в hybrid mode (rpc_coordinator + virtual_router).
 // Тестирует 3 параллельных flow:
-//   A) Direct model → standard proxy flow (НЕ rpc_coordinator / virtual)
-//   B) Distributed model "llama" → rpc_coordinator pipeline (2 backends)
-//   C) Virtual model "virtual:llama-pool" → virtual_router (2 backends via pool)
+//
+//	A) Direct model → standard proxy flow (НЕ rpc_coordinator / virtual)
+//	B) Distributed model "llama" → rpc_coordinator pipeline (2 backends)
+//	C) Virtual model "virtual:llama-pool" → virtual_router (2 backends via pool)
 func TestSmoke_1_0Release_FullFlow(t *testing.T) {
 	t.Parallel()
 

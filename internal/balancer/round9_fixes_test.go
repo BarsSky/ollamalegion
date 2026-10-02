@@ -1,17 +1,20 @@
 // round9_fixes_test.go — Round 9 (2026-07-28) regression tests.
 //
 // BUG #2 (warmupLlamaCppModel spam):
-//   Каждый HTTP-запрос через balancer дёргал warmupModel с model=""
-//   для служебных эндпоинтов (/health, /api/models, /api/v1/cluster/*).
-//   cppworker отвечал 400 на /load с пустым name, balancer 30s timeout.
+//
+//	Каждый HTTP-запрос через balancer дёргал warmupModel с model=""
+//	для служебных эндпоинтов (/health, /api/models, /api/v1/cluster/*).
+//	cppworker отвечал 400 на /load с пустым name, balancer 30s timeout.
 //
 // BUG #3 (WaitForLoad race) — covered in internal/cppbackend
-//   concurrent_generate_test.go (Round 8) + dedicated test below.
+//
+//	concurrent_generate_test.go (Round 8) + dedicated test below.
 //
 // BUG #4 (MaxConcurrentReqs=10 default for all backend types):
-//   cppworker с n_parallel=1 не может обработать >1 inference одновременно
-//   (Round 8 fix сериализует через mutex). Default 10 — впустую.
-//   Round 9: type-aware default — cppworker=1, ollama/agent=10.
+//
+//	cppworker с n_parallel=1 не может обработать >1 inference одновременно
+//	(Round 8 fix сериализует через mutex). Default 10 — впустую.
+//	Round 9: type-aware default — cppworker=1, ollama/agent=10.
 package balancer
 
 import (

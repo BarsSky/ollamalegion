@@ -6,10 +6,10 @@
 // — для них нужен time tracking от start of request в balancer".
 //
 // Fix:
-// 1. sendSSEDone (streaming.go:398) теперь принимает streamStart time.Time
-//    и пишет реальный total_duration в nanoseconds в done-чанке.
-// 2. translateUsageChunkToOllama (llamacpp_translate_resp.go) тоже принимает
-//    streamStart и пишет real total_duration в usage-чанке.
+//  1. sendSSEDone (streaming.go:398) теперь принимает streamStart time.Time
+//     и пишет реальный total_duration в nanoseconds в done-чанке.
+//  2. translateUsageChunkToOllama (llamacpp_translate_resp.go) тоже принимает
+//     streamStart и пишет real total_duration в usage-чанке.
 package balancer
 
 import (

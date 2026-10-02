@@ -54,6 +54,8 @@ func TestHandleNCtxReloadAsync_R69_SkipsPointlessDowngrade(t *testing.T) {
 // TestHandleNCtxReloadAsync_R69_StillReloadsWhenNeeded — если known n_ctx МЕНЬШЕ
 // цели, reload запускается как раньше (регрессия не внесена).
 func TestHandleNCtxReloadAsync_R69_StillReloadsWhenNeeded(t *testing.T) {
+	// R83/v62: кап на перезагрузку — только по явному opt-in.
+	t.Setenv("LB_ALLOW_NCTX_RELOAD_TIMEOUT", "1")
 	const modelName = "test-model"
 	cppWorker, _, reloadCalls := makeMockCppWorkerWithReload(t, modelName, 8192)
 	p := buildProxyWithMockInitialCtx(t, cppWorker.URL, modelName, 8192)

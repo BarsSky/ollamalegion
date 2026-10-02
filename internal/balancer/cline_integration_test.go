@@ -25,8 +25,9 @@ import (
 //  3. Upstream cppworker получает content КАК СТРОКУ (не как массив).
 //
 // Это регрессионный тест на ошибку:
-//   "400 invalid JSON: json: cannot unmarshal array into Go struct field
-//    openAIChatMessage.messages.content of type string"
+//
+//	"400 invalid JSON: json: cannot unmarshal array into Go struct field
+//	 openAIChatMessage.messages.content of type string"
 //
 // Без фикса upstream получает content=[{...},{...}] и возвращает 400.
 func TestHandleOpenAIChatCompletions_Cline_NormalizesContent(t *testing.T) {

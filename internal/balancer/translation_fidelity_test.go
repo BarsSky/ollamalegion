@@ -375,8 +375,8 @@ func TestR6052_TranslateOllamaGenerateToOpenAI_AllFieldsPreserved(t *testing.T) 
 // TestR6052_TranslateOllamaEmbeddingsToOpenAI — embeddings endpoint.
 func TestR6052_TranslateOllamaEmbeddingsToOpenAI(t *testing.T) {
 	tests := []struct {
-		input    string
-		wantInp  interface{}
+		input     string
+		wantInp   interface{}
 		wantModel string
 	}{
 		{`{"model":"qwen3","input":"hello world"}`, "hello world", "qwen3"},
@@ -498,7 +498,7 @@ func TestR6052_TranslatePathForLlamaCpp(t *testing.T) {
 		{"/api/chat", "/v1/chat/completions"},
 		{"/api/generate", "/v1/completions"},
 		{"/api/embeddings", "/v1/embeddings"},
-		{"/api/tags", "/api/tags"}, // passthrough
+		{"/api/tags", "/api/tags"},                       // passthrough
 		{"/v1/chat/completions", "/v1/chat/completions"}, // passthrough (already OpenAI)
 	}
 	for _, tt := range tests {
@@ -541,18 +541,19 @@ func TestR6052_StripStreamFlagForPath(t *testing.T) {
 
 // TestR6052_TranslateOllamaChatToOpenAI_RoundTripFields — checks that ALL
 // Ollama fields are either:
-//   1. Preserved (model, messages, stream)
-//   2. Renamed (num_predict → max_tokens, etc.)
-//   3. Dropped with reason (Ollama-specific fields like seed)
+//  1. Preserved (model, messages, stream)
+//  2. Renamed (num_predict → max_tokens, etc.)
+//  3. Dropped with reason (Ollama-specific fields like seed)
+//
 // No SILENT loss.
 func TestR6052_TranslateOllamaChatToOpenAI_RoundTripFields(t *testing.T) {
 	// List of CONFIRMED translations (verified by code)
 	confirmedTranslations := map[string]string{
-		"options.num_predict":  "max_tokens",
+		"options.num_predict": "max_tokens",
 		"options.temperature": "temperature",
-		"options.top_p":        "top_p",
-		"options.top_k":        "top_k",
-		"options.stop":         "stop",
+		"options.top_p":       "top_p",
+		"options.top_k":       "top_k",
+		"options.stop":        "stop",
 	}
 
 	// Build a request with all translatable fields

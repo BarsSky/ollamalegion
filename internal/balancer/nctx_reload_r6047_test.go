@@ -116,6 +116,8 @@ func extractTestPort(url string) int {
 // Это INTEGRATION-уровень test: mock cppworker с reloadDelay=5s, async
 // mode должен return ДО завершения reload (т.е. <100ms).
 func TestR6047_AsyncReloadReturnsImmediately(t *testing.T) {
+	// R83/v62: кап на перезагрузку — только по явному opt-in.
+	t.Setenv("LB_ALLOW_NCTX_RELOAD_TIMEOUT", "1")
 	const backendID = "test-r6047-async"
 	const modelName = "qwen2.5.gguf"
 	p, mock := newProxyForR6047(t, backendID, modelName, 2048)
@@ -183,6 +185,8 @@ func TestR6047_AsyncReloadReturnsImmediately(t *testing.T) {
 // Не делаем полный sync mode test (требует полный http.Client и proxyRequest).
 // Проверяем только что sync mode ветка доходит до DoReload (блокируется на нём).
 func TestR6047_SyncModeStillBlocks(t *testing.T) {
+	// R83/v62: кап на перезагрузку — только по явному opt-in.
+	t.Setenv("LB_ALLOW_NCTX_RELOAD_TIMEOUT", "1")
 	const backendID = "test-r6047-sync"
 	const modelName = "qwen2.5.gguf"
 	p, mock := newProxyForR6047(t, backendID, modelName, 2048)

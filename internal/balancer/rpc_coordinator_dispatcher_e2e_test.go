@@ -6,14 +6,14 @@
 // регистрируем его в реальном ModelCoordinator, регистрируем distributed
 // модель, и прогоняем запросы через dispatcher.ServeHTTP. Проверяем:
 //
-//   1. /api/generate — Ollama non-streaming → 200 + {"response","done",...}
-//   2. /api/chat     — Ollama chat non-streaming → 200 + {"message","done"}
-//   3. /v1/chat/completions — OpenAI chat non-streaming → 200 + {id,choices}
-//   4. /v1/completions      — OpenAI completion non-streaming → 200 + {id,choices}
-//   5. Unknown model → 404 model_not_distributed
-//   6. Body parse error → 400 body_read_error / invalid_envelope
-//   7. Empty model field → 400 invalid_envelope
-//   8. Streaming not implemented → 501 (lift from session 2 skeleton)
+//  1. /api/generate — Ollama non-streaming → 200 + {"response","done",...}
+//  2. /api/chat     — Ollama chat non-streaming → 200 + {"message","done"}
+//  3. /v1/chat/completions — OpenAI chat non-streaming → 200 + {id,choices}
+//  4. /v1/completions      — OpenAI completion non-streaming → 200 + {id,choices}
+//  5. Unknown model → 404 model_not_distributed
+//  6. Body parse error → 400 body_read_error / invalid_envelope
+//  7. Empty model field → 400 invalid_envelope
+//  8. Streaming not implemented → 501 (lift from session 2 skeleton)
 //
 // Все тесты работают с stub-mode (LLAMA_STUB build tag), не требуют реальной llama.cpp.
 package balancer
@@ -104,9 +104,9 @@ func (h *dispatcherTestHarness) loadModel(t *testing.T, modelName string) {
 // "test-model" mapped to that worker (slice 1-32).
 //
 // ВАЖНО: имя модели должно совпадать в трёх местах:
-//   1. файл на диске в worker'е (через loadModel)
-//   2. distributed model name в coordinator (RegisterDistributedModel)
-//   3. "model" поле в HTTP request body
+//  1. файл на диске в worker'е (через loadModel)
+//  2. distributed model name в coordinator (RegisterDistributedModel)
+//  3. "model" поле в HTTP request body
 //
 // worker.InferSlice ищет модель по имени файла, поэтому coordinator slice
 // получает req.ModelName, который worker потом использует для lookup.

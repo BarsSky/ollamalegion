@@ -37,13 +37,13 @@
 //   - main (и 0.10/0.11), там же: content больше НЕ обнуляется
 //     (`openai_chat_chunk_message_template(model, message_content, …)`), зато
 //     фронтенд `src/lib/apis/streaming/index.ts` эмитит ровно
-//     `parsedData.choices?.[0]?.delta?.content ?? ''`, а потребитель
+//     `parsedData.choices?.[0]?.delta?.content ?? ”`, а потребитель
 //     конкатенирует эти дельты.
 //
 // Вывод, который и защищают тесты ниже: в ЛЮБОЙ из этих версий полный текст в
 // done-чанке приводит к дублю (0.9.x — через `message.content` без обнуления в
 // не-стриме/иных путях, main — через дельту), а пустой content на done не ломает
-// ничего: в main он даёт `delta.content = null`, во фронтенде — `''`.
+// ничего: в main он даёт `delta.content = null`, во фронтенде — `”`.
 package balancer
 
 import (

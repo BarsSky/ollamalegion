@@ -73,10 +73,10 @@ func AutoLoadWaitTimeout() time.Duration {
 type autoLoadWaitMode int
 
 const (
-	autoLoadWaitDefault  autoLoadWaitMode = iota // env не задан → тир по размеру модели
-	autoLoadWaitExplicit                         // N > 0 секунд
-	autoLoadWaitDisabled                         // 0 = не ждать (прежнее поведение)
-	autoLoadWaitUnlimited                        // < 0 = ждать «сколько нужно» (до hard ceiling)
+	autoLoadWaitDefault   autoLoadWaitMode = iota // env не задан → тир по размеру модели
+	autoLoadWaitExplicit                          // N > 0 секунд
+	autoLoadWaitDisabled                          // 0 = не ждать (прежнее поведение)
+	autoLoadWaitUnlimited                         // < 0 = ждать «сколько нужно» (до hard ceiling)
 )
 
 // autoLoadWaitEnv разбирает LB_AUTO_LOAD_WAIT_SEC.

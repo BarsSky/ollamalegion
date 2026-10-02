@@ -110,15 +110,15 @@ func TestR6048_WriteServiceUnavailableWithDiagnostics_ContentLengthSet(t *testin
 	rec := httptest.NewRecorder()
 
 	diag := ServiceUnavailableDiagnostic{
-		Error:           "model 'X' n_ctx auto-reload in progress",
-		Model:           "X",
-		BackendID:       "test-backend",
-		TargetNCtx:      8192,
-		EstimatedLoadMs: 60000,
+		Error:              "model 'X' n_ctx auto-reload in progress",
+		Model:              "X",
+		BackendID:          "test-backend",
+		TargetNCtx:         8192,
+		EstimatedLoadMs:    60000,
 		FeasibleMaxContext: 16384,
-		CurrentNCtx:     2048,
-		RequiredNCtx:    8500,
-		Suggestion:      "wait 60s and retry",
+		CurrentNCtx:        2048,
+		RequiredNCtx:       8500,
+		Suggestion:         "wait 60s and retry",
 	}
 
 	writeServiceUnavailableWithDiagnostics(rec, diag)

@@ -4,7 +4,9 @@
 // turn → emitted greeting "Привет! Конечно..." → duplicate in final response.
 //
 // Fix: continuation request is now MULTI-TURN CHAT — sends
-//   [user: original_prompt, assistant: partial_content, user: continue]
+//
+//	[user: original_prompt, assistant: partial_content, user: continue]
+//
 // so the model sees mid-conversation and continues without greeting.
 //
 // This test verifies the fix at the level of message construction.

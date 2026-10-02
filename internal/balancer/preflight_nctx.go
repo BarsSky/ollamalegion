@@ -1130,7 +1130,7 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 								"backend_id", backendID, "panic", r)
 						}
 					}()
-					reloadCtx, cancel := context.WithTimeout(context.Background(), cfg.effectiveTimeout())
+					reloadCtx, cancel := reloadTimeoutContext(context.Background(), cfg.effectiveTimeout())
 					defer cancel()
 					if err := c.DoReload(reloadCtx, backendID, backendAddr, modelName, plan, loader); err != nil {
 						logger.Get().Errorw("preflight: async reload failed",
@@ -1160,7 +1160,7 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 								"backend_id", backendID, "panic", r)
 						}
 					}()
-					reloadCtx, cancel := context.WithTimeout(context.Background(), cfg.effectiveTimeout())
+					reloadCtx, cancel := reloadTimeoutContext(context.Background(), cfg.effectiveTimeout())
 					defer cancel()
 					if err := c.DoReload(reloadCtx, backendID, backendAddr, modelName, plan, loader); err != nil {
 						logger.Get().Errorw("preflight: async reload failed",
@@ -1230,7 +1230,7 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 			}
 		}()
 
-		reloadCtx, cancel := context.WithTimeout(ctx, cfg.effectiveTimeout())
+		reloadCtx, cancel := reloadTimeoutContext(ctx, cfg.effectiveTimeout())
 		defer cancel()
 		modelName := ""
 		if meta != nil {

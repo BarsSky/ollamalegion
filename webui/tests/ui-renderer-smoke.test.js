@@ -184,6 +184,10 @@ function sampleImageData() {
         cppWorkerPort: 0,
         imagePort: 18093,
         maxConcurrentRequests: 4,
+        // Ровно то, что отдаёт живой балансер: у image-бэкенда нет агента, и Go
+        // сериализует нулевое время строкой. До фикса в колонке «Последняя
+        // активность» рисовалось «01.01.1, 02:30:17» (см. проверку ниже).
+        lastAgentContact: '0001-01-01T00:00:00Z',
         image: {
           state: 'loaded',
           currentModel: 'sd15-q4',

@@ -1033,7 +1033,10 @@ const Renderers = (function () {
 
         tbody.innerHTML = backends.map((b, idx) => {
             const labels = (b.labels || []).join(', ') || '-';
-            const lastContact = b.lastAgentContact ? new Date(b.lastAgentContact).toLocaleString(Utils._locale()) : '-';
+            // Utils.formatDate — не только «пусто ли поле»: Go отдаёт нулевое
+            // время строкой "0001-01-01T00:00:00Z", и раньше у image-бэкенда
+            // (без агента) в этой колонке стояло «01.01.1, 02:30:17».
+            const lastContact = Utils.formatDate(b.lastAgentContact);
             const maxModels = b.runtimeMaxModels || b.maxModels || b.ollama?.maxModels || '-';
             const detailsHtml = renderOllamaParams(b);
             const rowId = 'be-row-' + idx;
@@ -1749,7 +1752,7 @@ const Renderers = (function () {
                 <td>${escapeHtml(s.backendId || '-')}</td>
                 <td>${escapeHtml(s.model || '-')}</td>
                 <td>${s.requestCount || 0}</td>
-                <td>${s.lastRequestAt ? new Date(s.lastRequestAt).toLocaleString(Utils._locale()) : '-'}</td>
+                <td>${Utils.formatDate(s.lastRequestAt)}</td>
                 <td>${escapeHtml(s.clientIP || '-')}</td>
                 <td>${clientIcon} ${escapeHtml(s.clientName || '-')}</td>
             </tr>
@@ -2020,7 +2023,9 @@ const Renderers = (function () {
             const status = a.status || 'unknown';
             const statusClass = status === 'healthy' ? 'success' : (status === 'unhealthy' ? 'danger' : 'warning');
             const uptime = a.uptime ? formatUptime(a.uptime) : '-';
-            const lastHb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString(Utils._locale()) : (a.lastAgentContact ? new Date(a.lastAgentContact).toLocaleString(Utils._locale()) : '-');
+            // Utils.formatDate вместо локальной проверки на falsy: нулевое время
+            // Go ("0001-01-01T00:00:00Z") истинно и давало дату «01.01.1».
+            const lastHb = Utils.formatDateFirst(a.lastHeartbeat, a.lastAgentContact);
             return '<tr>' +
                 '<td><strong>' + escapeHtml(a.id || '-') + '</strong></td>' +
                 '<td>' + escapeHtml(a.host || '-') + '</td>' +
@@ -2075,7 +2080,7 @@ const Renderers = (function () {
         html += '<div class="be-param-item"><span class="be-param-label">' + _t('backends.agent_port') + '</span><span class="be-param-value">' + escapeHtml(String(agentInfo.agentPort || agentInfo.port || '-')) + '</span></div>';
         html += '<div class="be-param-item"><span class="be-param-label">' + _t('agents.platform') + '</span><span class="be-param-value">' + escapeHtml(agentInfo.platform || '-') + '</span></div>';
         html += '<div class="be-param-item"><span class="be-param-label">' + _t('agents.uptime') + '</span><span class="be-param-value">' + escapeHtml(formatUptime(agentInfo.uptime)) + '</span></div>';
-        html += '<div class="be-param-item"><span class="be-param-label">' + _t('agents.last_heartbeat') + '</span><span class="be-param-value">' + (agentInfo.lastHeartbeat ? escapeHtml(new Date(agentInfo.lastHeartbeat).toLocaleString(Utils._locale())) : (agentInfo.lastAgentContact ? escapeHtml(new Date(agentInfo.lastAgentContact).toLocaleString(Utils._locale())) : '-')) + '</span></div>';
+        html += '<div class="be-param-item"><span class="be-param-label">' + _t('agents.last_heartbeat') + '</span><span class="be-param-value">' + escapeHtml(Utils.formatDateFirst(agentInfo.lastHeartbeat, agentInfo.lastAgentContact)) + '</span></div>';
         html += '<div class="be-param-item"><span class="be-param-label">' + _t('agents.ollama_version') + '</span><span class="be-param-value">' + escapeHtml(agentInfo.ollamaVersion || agentInfo.ollama_version || '-') + '</span></div>';
 
         // Runtime flags

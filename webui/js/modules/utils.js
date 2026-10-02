@@ -314,11 +314,20 @@ const Utils = {
 
     /**
      * Format date to locale string
+     *
+     * R-Image follow-up (2026-10-02): НУЛЕВОЕ время Go доезжает до UI строкой
+     * "0001-01-01T00:00:00Z", а такая строка истинна — проверки на falsy её не
+     * ловили. Оператор видел это живьём: у image-бэкенда (у него нет агента и
+     * heartbeat) в колонке «Последняя активность» появлялось «01.01.1, 02:30:17»
+     * вместо прочерка. Год < 1970 для timestamp'ов проекта невозможен, поэтому
+     * такие значения (как и невалидные) трактуем как «времени нет».
      */
     formatDate(date) {
         if (!date) return '-';
         try {
-            return new Date(date).toLocaleString(Utils._locale());
+            const d = new Date(date);
+            if (!isFinite(d.getTime()) || d.getFullYear() < 1970) return '-';
+            return d.toLocaleString(Utils._locale());
         } catch {
             return '-';
         }
@@ -326,14 +335,35 @@ const Utils = {
 
     /**
      * Format time only (HH:MM:SS)
+     *
+     * Та же защита от нулевого времени, что и в formatDate: иначе в ячейке
+     * оказывалось «02:30:17» из 0001-01-01 вместо прочерка.
      */
     formatTime(date) {
         if (!date) return '--:--:--';
         try {
-            return new Date(date).toLocaleTimeString(Utils._locale());
+            const d = new Date(date);
+            if (!isFinite(d.getTime()) || d.getFullYear() < 1970) return '--:--:--';
+            return d.toLocaleTimeString(Utils._locale());
         } catch {
             return '--:--:--';
         }
+    },
+
+    /**
+     * Format the first VALID timestamp among candidates ('-' если валидных нет).
+     *
+     * Зачем отдельный хелпер: UI предпочитает lastHeartbeat, а он бывает
+     * нулевым ("0001-01-01T00:00:00Z" — истинная строка). В этой ситуации важно
+     * не просто «не показать 0001 год», а откатиться на следующий кандидат
+     * (lastAgentContact), иначе оператор теряет единственную реальную дату.
+     */
+    formatDateFirst() {
+        for (let i = 0; i < arguments.length; i++) {
+            const s = Utils.formatDate(arguments[i]);
+            if (s !== '-') return s;
+        }
+        return '-';
     },
 
     /**

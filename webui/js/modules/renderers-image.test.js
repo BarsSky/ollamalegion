@@ -226,6 +226,26 @@ check('Backends: без ошибки предупреждения нет', funct
     assert.strictEqual(html.indexOf('Worker error'), -1);
 });
 
+// R-Image follow-up (2026-10-02): живой стенд показал «Последняя активность:
+// 01.01.1, 02:30:17». Причина — у image-бэкенда нет агента, и Go отдаёт НУЛЕВОЕ
+// время строкой "0001-01-01T00:00:00Z": она ИСТИННА, поэтому проверка на falsy её
+// пропускала, а new Date(...) исправно рисовал 0001 год. Локаль влияет на формат
+// ('01.01.1' в ru, '1/1/1' в en), поэтому проверяем оба варианта.
+check('Backends: нулевое время агента — прочерк, а не дата 0001 года', function () {
+    const b = imageBackend();
+    b.lastAgentContact = '0001-01-01T00:00:00Z';
+    const html = renderBackendsPage([b]);
+    assert.strictEqual(html.indexOf('01.01.1'), -1, 'ru-формат нулевого времени не должен попадать в таблицу');
+    assert.strictEqual(html.indexOf('1/1/1'), -1, 'en-формат нулевого времени не должен попадать в таблицу');
+});
+
+check('Backends: реальное время агента по-прежнему показывается', function () {
+    const b = imageBackend();
+    b.lastAgentContact = '2026-10-02T19:34:05Z';
+    const html = renderBackendsPage([b]);
+    assert.ok(html.indexOf('2026') !== -1, 'валидная дата обязана отрисоваться');
+});
+
 check('Backends: image-бэкенд без блока image не падает', function () {
     const html = renderBackendsPage([{ id: 'image-bare', backendType: 'image_cpp', host: 'h', imagePort: 18093 }]);
     assert.ok(html.indexOf('18093') !== -1);

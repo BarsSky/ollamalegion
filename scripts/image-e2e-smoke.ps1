@@ -110,6 +110,62 @@ function Invoke-Http {
     }
 }
 
+# R-Image (2026-10-02): POST /v1/images/edits — это multipart/form-data,
+# а Invoke-Http умеет только JSON-тело (и PS 5.1 не имеет -Form, он появился
+# в PS 6+). Поэтому тело собираем вручную.
+function Invoke-MultipartEdits {
+    param(
+        [string]$Url,
+        [string]$Prompt,
+        [byte[]]$ImageBytes,
+        [string]$FileName = 'init.png',
+        [byte[]]$MaskBytes = $null,
+        [string]$MaskName = 'mask.png',
+        [int]$TimeoutMs = 120000
+    )
+    $boundary = '----olE2E' + [guid]::NewGuid().ToString('N')
+    $ms = New-Object System.IO.MemoryStream
+    $enc = [Text.Encoding]::UTF8
+    $nl = "`r`n"
+
+    function Add-Text([string]$s) { $b = $enc.GetBytes($s); $ms.Write($b, 0, $b.Length) }
+
+    Add-Text "--$boundary$nl"
+    Add-Text "Content-Disposition: form-data; name=`"prompt`"$nl$nl$Prompt$nl"
+    Add-Text "--$boundary$nl"
+    Add-Text "Content-Disposition: form-data; name=`"image[]`"; filename=`"$FileName`"$nl"
+    Add-Text "Content-Type: image/png$nl$nl"
+    $ms.Write($ImageBytes, 0, $ImageBytes.Length)
+    Add-Text $nl
+    if ($MaskBytes -and $MaskBytes.Length -gt 0) {
+        Add-Text "--$boundary$nl"
+        Add-Text "Content-Disposition: form-data; name=`"mask`"; filename=`"$MaskName`"$nl"
+        Add-Text "Content-Type: image/png$nl$nl"
+        $ms.Write($MaskBytes, 0, $MaskBytes.Length)
+        Add-Text $nl
+    }
+    Add-Text "--$boundary--$nl"
+    $bytes = $ms.ToArray()
+
+    $req = [System.Net.HttpWebRequest]::Create($Url)
+    $req.Method = 'POST'
+    $req.Timeout = $TimeoutMs
+    $req.ContentType = "multipart/form-data; boundary=$boundary"
+    $req.ContentLength = $bytes.Length
+    try {
+        $s = $req.GetRequestStream(); $s.Write($bytes, 0, $bytes.Length); $s.Close()
+        try { $resp = $req.GetResponse() } catch [System.Net.WebException] { $resp = $_.Exception.Response }
+        if (-not $resp) { return @{ Status = -1; Body = '' } }
+        $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+        $text = $sr.ReadToEnd(); $sr.Close()
+        $status = [int]$resp.StatusCode
+        $resp.Close()
+        return @{ Status = $status; Body = $text }
+    } catch {
+        return @{ Status = -1; Body = ''; Exception = $_.Exception.Message }
+    }
+}
+
 function ConvertTo-JsonSafe {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
@@ -353,6 +409,29 @@ try {
     $distinct = ($seedsOnWire | Sort-Object -Unique)
     $a8 = ($rA.Status -eq 200) -and ($rB.Status -eq 200) -and ($seedLines.Count -ge 2) -and ($distinct.Count -ge 2)
     Add-Result 'A8' 'seed нормализован в <sd_cpp_extra_args>{seed:N}' $a8 "on_wire=[$($seedsOnWire -join ',')] distinct=$($distinct.Count) api_seeds=[$($jA.seed),$($jB.seed)]"
+
+    # A10/A11 (R-Image, 2026-10-02): img2img/inpaint. Сам мок картинку не
+    # генерирует и init_image игнорирует, поэтому единственное наблюдаемое
+    # доказательство «поля доехали до движка» — его лог (мок печатает
+    # `init=yes mask=... strength=...`), который воркер релеит на DEBUG (-verbose).
+    $pngB64  = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    $pngBytes = [Convert]::FromBase64String($pngB64)
+
+    $i2iBody = '{"prompt":"cat","init_images":["' + $pngB64 + '"],"denoising_strength":0.6,"width":512,"height":512,"steps":4}'
+    $r10 = Invoke-Http -Method POST -Url "$w/sdapi/v1/img2img" -Body $i2iBody
+    $j10 = ConvertTo-JsonSafe $r10.Body
+    $logAfterI2I = Read-LogFile $workerOut
+    $i2iLine = (($logAfterI2I -split "`r?`n") | Where-Object { $_ -match 'img_gen accepted' -and $_ -match 'init=yes' } | Select-Object -Last 1)
+    $a10 = ($r10.Status -eq 200) -and ($j10.images.Count -ge 1) -and ($j10.info -is [string]) -and
+           ($i2iLine -match 'init=yes') -and ($i2iLine -match 'strength=0\.6')
+    Add-Result 'A10' 'POST /sdapi/v1/img2img (init_images → init_image, strength)' $a10 "http=$($r10.Status) images=$($j10.images.Count) info_is_string=$($j10.info -is [string]) engine_log=$($i2iLine -replace '^.*img_gen','img_gen')"
+
+    $r11 = Invoke-MultipartEdits -Url "$w/v1/images/edits" -Prompt 'cat' -ImageBytes $pngBytes
+    $j11 = ConvertTo-JsonSafe $r11.Body
+    $logAfterEdits = Read-LogFile $workerOut
+    $editsLine = (($logAfterEdits -split "`r?`n") | Where-Object { $_ -match 'img_gen accepted' -and $_ -match 'init=yes' } | Select-Object -Last 1)
+    $a11 = ($r11.Status -eq 200) -and ($null -ne $j11.data) -and ($j11.data[0].b64_json.Length -gt 0) -and ($editsLine -match 'init=yes')
+    Add-Result 'A11' 'POST /v1/images/edits (multipart image[] → init_image)' $a11 "http=$($r11.Status) b64_len=$($j11.data[0].b64_json.Length) engine_log=$($editsLine -replace '^.*img_gen','img_gen')"
 
     # ========================================================
     # B. Цепочка через балансер

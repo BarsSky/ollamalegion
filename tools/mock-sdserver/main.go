@@ -173,7 +173,7 @@ func (s *server) handleImgGen(w http.ResponseWriter, r *http.Request) {
 	s.jobs[id] = j
 	s.mu.Unlock()
 
-	log.Printf("mock-sdserver: img_gen accepted id=%s prompt=%q", id, truncate(fmt.Sprint(body["prompt"]), 60))
+	log.Printf("mock-sdserver: img_gen accepted id=%s prompt=%q%s", id, truncate(fmt.Sprint(body["prompt"]), 60), imgGenSummary(body))
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"id": id, "kind": "img_gen", "status": "queued", "created": now,
 		"poll_url": "/sdcpp/v1/jobs/" + id,
@@ -316,4 +316,31 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// imgGenSummary — компактная сводка img2img-полей для лога.
+//
+// R-Image (2026-10-02): нужна живому E2E, чтобы доказать, что init_image/mask/
+// strength доехали до движка, а не потерялись в воркере. Сам мок эти поля
+// игнорирует (картинку не генерирует), поэтому лог — единственное наблюдаемое
+// доказательство на проводе.
+func imgGenSummary(body map[string]any) string {
+	yesNo := func(v any) string {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			return "yes"
+		}
+		return "no"
+	}
+	strength := "n/a"
+	if f, ok := body["strength"].(float64); ok {
+		strength = strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	batch := 1
+	if f, ok := body["batch_count"].(float64); ok && f > 0 {
+		batch = int(f)
+	}
+	// width/height могут лежать и в корне, и внутри sample_params запроса — мок
+	// смотрит только корень (этого достаточно для сводки).
+	return fmt.Sprintf(" init=%s mask=%s strength=%s batch=%d",
+		yesNo(body["init_image"]), yesNo(body["mask_image"]), strength, batch)
 }

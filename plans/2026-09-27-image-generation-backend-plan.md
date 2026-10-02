@@ -432,11 +432,12 @@ type ImageRuntime struct {
 |---|---|---|---|
 | 1 — OpenAI-порт + image_cpp + маршрутизация | ✅ DONE | `a358a74`, `99b01ac`, `0fa005f` | — |
 | 2 — bundle/HF/профили/API | ✅ DONE | `85188e8` | профили живут в отдельном `config/image-model-profiles.json` (см. отклонение ниже) |
-| 3 — `sdworker` + супервизор + docker | ✅ DONE | `9194230` | `/api/hf/*` в воркере (Phase 4a, в работе) |
+| 3 — `sdworker` + супервизор + docker | ✅ DONE | `9194230` | — |
+| 4 — discovery/contract | ✅ DONE | `4f6c1a2` | агрегат `/api/v1/image/capabilities` + `/api/v1/image/contract` (JSON-Schema инструмента `generate_image`); на OpenAI-поверхности `/v1/images/capabilities` не поднят (клиентам он не нужен) |
+| 4a — HF-загрузка bundle в воркере | ✅ DONE | `a6b8467` | — |
 | 5 — WebUI | ✅ DONE | `cc6d25d` | редактор image-профилей (§5.7) не сделан |
-| 4 — discovery/contract | ⚠️ частично | — | агрегаты `/v1/images/capabilities` и `/api/v1/image/contract` на балансере; у воркера `/api/image/capabilities` есть |
-| 6 — ресурсы/очередь/наблюдаемость | ⚠️ частично | — | у воркера очередь+лимиты+метрики есть; на балансере нет `ImageVramEstimate` и гейта `insufficient_vram`; политики `exclusive/offload/dedicated` не реализованы |
-| 7 — docs/CI | ⚠️ частично | — | `docs/image-generation.md` есть; CHANGELOG и `.clinerules` — после Phase 4a |
+| 6 — ресурсы/очередь/наблюдаемость | ✅ DONE | `8d3501d` | текстовое ожидание в `exclusive` ограничено общей admission-очередью (`LB_ADMISSION_WAIT_SEC`), а не `balancing.image.queueWaitTimeoutSec`; лок по хосту без индекса GPU (поля нет в `types.Backend`) |
+| 7 — docs/CI | ⚠️ частично | — | `docs/image-generation.md` + CHANGELOG есть; CI-джобы и EN-зеркало документа не сделаны |
 
 **Отклонения от плана (осознанные):**
 1. **Профили image-моделей** хранятся в отдельном файле `config/image-model-profiles.json` (`internal/config/image_model_profiles.go`), а не в `config.json`: `pkg/types/config.go` в момент Phase 2 был заморожен, а свой store с атомарным `Save` + env `LB_IMAGE_MODEL_PROFILES_PATH` даёт то же поведение без правки ядра конфига. Если нужно единообразие с llama.cpp-профилями — добавить поле `ImageModelProfiles` в `LoadBalancerConfig` и переключить store на него.

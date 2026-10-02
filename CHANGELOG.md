@@ -5,6 +5,75 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.6.1 — R-Image: гейт VRAM, сосуществование с LLM, discovery-контракт (2026-10-02)]
+
+### 🧮 Гейт VRAM и политики сосуществования (`balancing.image`)
+
+- Диффузия и LLM на одной карте в VRAM обычно не сосуществуют (FLUX Q4 — пики
+  3.7–6.4 GB, Q8 — до 12 GB). Балансер теперь это учитывает.
+- `internal/balancer/image_resources.go`: сбор метрик image-воркеров, оценка
+  потребности в VRAM (профиль → `vram_estimate_mb` воркера → размеры файлов ×1.15
+  → unknown), оценка свободной VRAM (воркер → снимок `nvidia-smi` из
+  `/api/image/capabilities` → `available_vram_mb` текстового соседа того же хоста),
+  гейт, лок GPU по хосту, наблюдаемость (счётчики отказов по reasonCode, занятость
+  лока, гистограмма ожидания).
+- Гейт блокирует **ровно один** осмысленный случай: оценка известна, свободная VRAM
+  известна, модель не влезает. Ответ — `503 insufficient_vram` + hint по лестнице
+  снижения памяти (квант → `--diffusion-fa` → `te=cpu` → `--vae-tiling` →
+  `--vae-conv-direct` → `--taesd` → `--offload-to-cpu` → меньше разрешение).
+- **Неизвестная оценка не блокирует** генерацию (WARN в логе); строгость —
+  opt-in через `balancing.image.blockOnUnknownVramEstimate`.
+- Политики `exclusive` (default, лок по хосту: текстовый кандидат на занятом хосте
+  не выбирается), `offload`, `dedicated`; ожидание `queueWaitTimeoutSec` → `429 image_gpu_busy`
+  с `Retry-After`; предохранитель `exclusiveLockTimeoutSec` снимает лок принудительно (WARN),
+  чтобы зависшая генерация не блокировала карту; `Release` идемпотентен и переживает панику.
+- Честные отказы, когда модель не готова: `image_model_not_loaded` / `model_loading` / `model_error`.
+
+### 🔍 Discovery и «расшифровка» контракта
+
+- `GET /api/v1/image/contract` — порты из фактического конфига, список endpoints,
+  поля запроса с правилами нормализации (`size` 64…4096 + кратность 64, `steps` 1…100,
+  `n` 1…8, seed всегда положительный, `response_format` b64/url, игнорируемые поля
+  OpenAI), лимиты, доступные модели с дефолтами, curl-примеры, **JSON-Schema
+  инструмента `generate_image`** и инструкция для LLM-агента.
+- `GET /api/v1/image/capabilities` — агрегат по здоровым image-бэкендам: объединение
+  samplers/schedulers/loras/upscalers, консервативный мёрж лимитов (`min_*` = max,
+  `max_*` = min, очереди = сумма, `size_multiple` = LCM, флаги = AND),
+  модели по бэкендам, отчёт об ошибках опроса. TTL-кэш 8 с с single-flight и
+  инвалидацией по подписи топологии.
+- Оба маршрута — под `AuthMiddleware` + `RateLimitMiddleware`.
+
+### 🐞 Исправлено
+
+- **Файл профилей с UTF-8 BOM** (Notepad, `Set-Content -Encoding UTF8`) больше не
+  ломает загрузку: `json.Unmarshal` падал на BOM, и оператор видел «профилей нет»
+  при внешне корректном файле. BOM снимается перед разбором (+ тест).
+- **Флейк** `TestImageLock_TextSlotWithheldWhileGPUBusy`: после снятия лока
+  принимается любой из двух свободных текстовых бэкендов (выбор по скорингу
+  недетерминирован) — падал ~1 раз из 3; проверяемая семантика сохранена.
+- Поллер метрик image-бэкендов: первый тик отложен, без image-бэкендов сеть не
+  трогается вовсе, свежесть к моменту запроса обеспечивает ленивая догрузка
+  (иначе фоновый опрос ломал существующий тест проксирования `/api/image/models`
+  и добавлял лишний ход при каждом старте).
+- `unload` больше не отдаёт `500` при фактическом успехе и не висит 5 с
+  (намеренная остановка не считается ошибкой; на Windows `os.Interrupt` не
+  доставляется — сразу Kill): `500/5008 мс → 200/7 мс`.
+- Data race в `hf_bundle.go` (снимки прогресса отдавали общий срез `Files`) → deep-copy.
+- `GET /api/v1/backends` отдаёт `imagePort`; `isSameBackendRegistration` учитывает
+  `ImagePort` (повторная саморегистрация image-воркера получала 409).
+- `pkg/types/image_policy.go`: `blockOnUnknownVramEstimate` вместо
+  `allowUnknownVramEstimate` (смысл инвертирован — см. выше).
+
+### ✅ Проверка
+
+- `go build -tags llama_stub ./...` — зелёный.
+- `go test -tags llama_stub -count=1 ./internal/{balancer,api,config,cppbackend,sdbackend} ./cmd/sdworker ./pkg/types` — все пакеты ok; `-race` по `internal/balancer` — чисто.
+- Клиентский smoke `tests/image_surface_smoke_test.go` — 7/7 PASS.
+- Живой E2E `scripts/image-e2e-smoke.ps1` (мок `sd-server` + `sdworker` + балансер) — **17/17 PASS**;
+  отдельно проверены гейт (профиль 8000 MB при 2496 MB free → `503 insufficient_vram` + hint;
+  профиль 64 MB → 200 + лок acquired/released; оценка unknown → 200 согласно fail-open дефолту).
+- Документация: `docs/image-generation.md` дополнена разделами про `balancing.image` и discovery.
+
 ## [0.6.0 — R-Image: генерация изображений (тип `image_cpp`, OpenAI-порт 18079, `sdworker`, WebUI) (2026-10-02)]
 
 ### 🎨 Добавлено: третий класс бэкендов — `image_cpp`

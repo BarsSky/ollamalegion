@@ -34,6 +34,11 @@ import (
 // изображений 4096x4096 (PNG ~8-12 MB каждое) и маску.
 const maxEditsRequestBytes = 32 << 20
 
+// defaultVariationsStrength — strength по умолчанию для /v1/images/variations:
+// умеренная переработка init-картинки без текстового условия (0.5 — компромисс
+// между «почти копия» и «совсем другая картинка»).
+const defaultVariationsStrength = 0.5
+
 // editsFormMemoryBytes — сколько multipart держим в памяти до выгрузки в
 // temp-файлы (stdlib сам решает; нам важно не удвоить лимит тела в heap).
 const editsFormMemoryBytes = 8 << 20
@@ -191,13 +196,39 @@ func (a *App) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Reque
 // инжектится в prompt через <sd_cpp_extra_args> — тот же путь, что у
 // generations (injectSeedInPrompt=true).
 func (a *App) handleOpenAIImagesEdits(w http.ResponseWriter, r *http.Request) {
+	a.handleOpenAIImagesEditsLike(w, r, false)
+}
+
+// handleOpenAIImagesVariations — /v1/images/variations.
+//
+// R-Image (2026-10-02): реализовано как img2img с ПУСТЫМ промптом и strength
+// по умолчанию 0.5. У sd.cpp нет отдельного режима «variations»: смысл OpenAI
+// endpoint'а — «сделай вариации этой картинки», а это ровно denoise от init
+// image без текстового условия. Поэтому путь переиспользуется полностью
+// (multipart, init_image, seed-инъекция, нормализация), отличаются две вещи:
+//   - prompt НЕ обязателен (в edits — обязателен);
+//   - если strength не задан, подставляем 0.5 (движковый дефолт для img2img
+//     может быть иным, а для вариаций нужна умеренная переработка).
+//
+// ВАЖНО: поведение самого движка на пустом промпте не проверялось живьём
+// (в окружении нет реального sd.cpp) — если он откажется, клиент получит его
+// ошибку как есть, а в notes будет пометка о том, как эндпоинт реализован.
+func (a *App) handleOpenAIImagesVariations(w http.ResponseWriter, r *http.Request) {
+	a.handleOpenAIImagesEditsLike(w, r, true)
+}
+
+func (a *App) handleOpenAIImagesEditsLike(w http.ResponseWriter, r *http.Request, variations bool) {
 	if r.Method != http.MethodPost {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
 		return
 	}
 	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "multipart/form-data") {
+		field := "prompt, image[], mask, n, size, output_format"
+		if variations {
+			field = "image[] (или image), n, size, output_format; prompt опционален"
+		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_content_type",
-			"POST /v1/images/edits expects multipart/form-data (fields: prompt, image[], mask, n, size, output_format)")
+			"expects multipart/form-data (fields: "+field+")")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxEditsRequestBytes)
@@ -218,7 +249,7 @@ func (a *App) handleOpenAIImagesEdits(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if strings.TrimSpace(r.FormValue("prompt")) == "" {
+	if !variations && strings.TrimSpace(r.FormValue("prompt")) == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "prompt_required", "prompt is required")
 		return
 	}
@@ -275,6 +306,14 @@ func (a *App) handleOpenAIImagesEdits(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_strength", err.Error())
 		return
+	}
+	if variations {
+		if strength == nil {
+			def := defaultVariationsStrength
+			strength = &def
+		}
+		notes = append(notes, "variations реализованы как img2img: пустой промпт, strength="+
+			strconv.FormatFloat(*strength, 'f', -1, 64))
 	}
 
 	provided, seedVal := formSeed(r.FormValue("seed"))
@@ -536,6 +575,11 @@ func (a *App) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleNotImplemented — внятная 501 вместо пустого 404 от mux.
+//
+// R-Image (2026-10-02): сейчас НЕ зарегистрирован ни на одном маршруте —
+// последним потребителем был /v1/images/variations, который теперь реализован
+// (см. handleOpenAIImagesVariations). Оставлен как готовый хелпер для будущих
+// «ещё не поддержанных» эндпоинтов: 501 с текстом лучше, чем 404 от mux.
 func (a *App) handleNotImplemented(feature string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {

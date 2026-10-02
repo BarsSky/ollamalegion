@@ -115,6 +115,52 @@ func seedFromPrompt(t *testing.T, prompt string) int64 {
 
 // --- OpenAI /v1/images/edits --------------------------------------------------
 
+// --- OpenAI /v1/images/variations --------------------------------------------
+
+// TestOpenAI_ImagesVariations_EmptyPromptAndDefaultStrength — R-Image (2026-10-02):
+// вариации = img2img с ПУСТЫМ промптом и strength по умолчанию 0.5.
+// Отличие от edits: prompt не обязателен, а strength подставляется, если не задан.
+func TestOpenAI_ImagesVariations_EmptyPromptAndDefaultStrength(t *testing.T) {
+	app, engine := newTestApp(t, map[string]types.ImageModelProfile{"sd15": newTestProfile("sd15", "sd15")})
+	src := pngBytes(t, 128, 128)
+
+	// Промпта нет вовсе — это и есть смысл variations. Собираем запрос прямо
+	// на variations: editsRequest готовит multipart, путь подменяем.
+	req := editsRequest(t, map[string]string{"n": "1"}, []multipartPart{{"image[]", src}})
+	req.URL.Path = "/v1/images/variations"
+	rec := serveEdits(t, app, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("variations без prompt: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	got := engine.lastRequest()
+	if got.InitImage == "" {
+		t.Fatal("init_image не доехал до движка")
+	}
+	if got.Strength == nil {
+		t.Fatal("strength обязан подставляться для variations (0.5)")
+	}
+	if *got.Strength != defaultVariationsStrength {
+		t.Fatalf("strength = %v, want %v", *got.Strength, defaultVariationsStrength)
+	}
+
+	// Явный strength уважается.
+	req2 := editsRequest(t, map[string]string{"strength": "0.9"}, []multipartPart{{"image[]", src}})
+	req2.URL.Path = "/v1/images/variations"
+	if rec2 := serveEdits(t, app, req2); rec2.Code != http.StatusOK {
+		t.Fatalf("variations с явным strength: %d %s", rec2.Code, rec2.Body.String())
+	}
+	if got2 := engine.lastRequest(); got2.Strength == nil || *got2.Strength != 0.9 {
+		t.Fatalf("явный strength не доехал: %+v", got2.Strength)
+	}
+
+	// А edits по-прежнему ТРЕБУЕТ prompt (поведение не сломано).
+	rec3 := serveEdits(t, app, editsRequest(t, map[string]string{}, []multipartPart{{"image[]", src}}))
+	if rec3.Code != http.StatusBadRequest {
+		t.Fatalf("edits без prompt: status = %d, want 400", rec3.Code)
+	}
+}
+
 func TestOpenAI_ImagesEdits_MultipartImageArray(t *testing.T) {
 	app, engine := newTestApp(t, map[string]types.ImageModelProfile{"sd15": newTestProfile("sd15", "sd15")})
 	first := pngBytes(t, 128, 192)

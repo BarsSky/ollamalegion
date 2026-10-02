@@ -35,9 +35,9 @@ func (a *App) setupRouter() http.Handler {
 	// /v1/images/edits — img2img/inpaint (multipart: image[]/image + mask):
 	// первое изображение уходит как init_image, mask — как mask_image.
 	mux.HandleFunc("/v1/images/edits", a.handleOpenAIImagesEdits)
-	// /v1/images/variations по-прежнему НЕ реализован (это отдельная фича:
-	// вариации без промпта), отдаём понятную ошибку вместо 404 от mux.
-	mux.HandleFunc("/v1/images/variations", a.handleNotImplemented("image variations"))
+	// /v1/images/variations — R-Image (2026-10-02): реализовано как img2img
+	// с пустым промптом и strength по умолчанию 0.5 (см. handleOpenAIImagesVariations).
+	mux.HandleFunc("/v1/images/variations", a.handleOpenAIImagesVariations)
 	mux.HandleFunc("/v1/models", a.handleOpenAIModels)
 
 	// --- A1111 WebUI API ---

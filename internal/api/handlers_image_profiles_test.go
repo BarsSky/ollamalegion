@@ -233,6 +233,68 @@ func TestImageProfile_MergePreservesUnsetFields(t *testing.T) {
 	assert.False(t, p.SeedIsRandom())
 }
 
+// TestImageProfile_MergeCanZeroScalars — R-Image (2026-10-02): presence
+// расширен на числовые/строковые скаляры, поэтому «0» и «""» теперь ЗНАЧЕНИЯ,
+// а не «не менять». До этого из WebUI нельзя было обнулить timeoutSec/clipSkip
+// или очистить backend/paramsBackend — редактор предупреждал подсказкой.
+func TestImageProfile_MergeCanZeroScalars(t *testing.T) {
+	imageProfilesPathForTest(t)
+	server, _, _ := createTestServer(t)
+	defer server.Close()
+
+	full := `{
+	  "family": "sd15",
+	  "files": [{"role":"diffusion","repo":"second-state/SD1.5","filename":"sd15-q8.gguf"}],
+	  "defaults": {"steps":20,"cfgScale":7,"sampler":"euler_a","scheduler":"discrete","width":512,"height":512,"batchCount":1,"seed":-1,"clipSkip":2},
+	  "runtime": {"backend":"te=cpu","paramsBackend":"diffusion=disk","threads":8,"nGpuLayers":-1,"vaeTileSize":512},
+	  "vramEstimateMb": 3000,
+	  "timeoutSec": 600,
+	  "idleUnloadMinutes": 15
+	}`
+	resp := putImageProfile(t, server.URL, "zero-demo", full)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	decodeProfileResponse(t, resp)
+
+	// Явные нули/пустые строки ОБНУЛЯЮТ допустимые поля (а не «не меняют»),
+	// и дефолты семейства их больше НЕ перетирают.
+	zeroing := `{
+	  "defaults": {"clipSkip":0,"sampler":"","scheduler":""},
+	  "runtime": {"backend":"","paramsBackend":"","threads":0,"nGpuLayers":0,"vaeTileSize":0},
+	  "vramEstimateMb": 0,
+	  "timeoutSec": 0,
+	  "idleUnloadMinutes": 0
+	}`
+	resp = putImageProfile(t, server.URL, "zero-demo", zeroing)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	p := decodeProfileResponse(t, resp)
+
+	assert.Equal(t, 0, p.Defaults.ClipSkip)
+	assert.Equal(t, "", p.Defaults.Sampler, "explicit empty sampler must stay empty")
+	assert.Equal(t, "", p.Defaults.Scheduler)
+	assert.Equal(t, "", p.Runtime.Backend)
+	assert.Equal(t, "", p.Runtime.ParamsBackend)
+	assert.Equal(t, 0, p.Runtime.Threads)
+	assert.Equal(t, 0, p.Runtime.VaeTileSize)
+	assert.Equal(t, 0, p.VramEstimateMB)
+	assert.Equal(t, 0, p.TimeoutSec)
+	assert.Equal(t, 0, p.IdleUnloadMinutes)
+
+	// А поле, которого в теле НЕТ, по-прежнему не меняется (PATCH-семантика):
+	// family/файлы/размеры остались с первого PUT.
+	assert.Equal(t, "sd15", p.Family)
+	assert.Len(t, p.Files, 1)
+	assert.Equal(t, 20, p.Defaults.Steps, "steps без presence берётся из профиля/дефолта")
+
+	// Явный невалидный ноль НЕ подменяется дефолтом молча — это 400 с границами
+	// (steps: 0 физически невалиден: диапазон 1…100).
+	resp = putImageProfile(t, server.URL, "zero-demo", `{"defaults":{"steps":0}}`)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode,
+		"explicit steps=0 must be rejected, not silently replaced by the family default")
+	assert.Contains(t, string(body), "steps")
+}
+
 // TestImageProfile_DeleteAndNotFound — DELETE/GET и их 404.
 func TestImageProfile_DeleteAndNotFound(t *testing.T) {
 	imageProfilesPathForTest(t)

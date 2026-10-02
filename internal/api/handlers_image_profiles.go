@@ -267,7 +267,7 @@ func (s *Server) upsertImageModelProfile(w http.ResponseWriter, r *http.Request,
 	// хотя имя уже пришло в пути.
 	incoming.Name = name
 	defaultImageProfileSeed(&incoming, presence.Defaults.Seed != nil, hasExisting)
-	if err := applyImageProfileDefaults(&incoming); err != nil {
+	if err := applyImageProfileDefaults(&incoming, presence); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error":   "invalid profile",
 			"message": err.Error(),
@@ -420,7 +420,7 @@ func (s *Server) applyImageModelProfile(w http.ResponseWriter, r *http.Request, 
 	}
 	merged.Name = name
 	defaultImageProfileSeed(&merged, presence.Defaults.Seed != nil, hasCurrent)
-	if err := applyImageProfileDefaults(&merged); err != nil {
+	if err := applyImageProfileDefaults(&merged, presence); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error":   "invalid profile",
 			"message": err.Error(),
@@ -551,45 +551,77 @@ func (s *Server) handleImageApplyStatus(w http.ResponseWriter, name, applyID str
 // presence нельзя ни выключить флаг (`runtime.offloadToCpu: false`), ни задать
 // `defaults.seed: 0` — а это валидный ФИКСИРОВАННЫЙ seed (в отличие от -1 = random).
 //
+// R-Image (2026-10-02): presence расширен на ЧИСЛОВЫЕ и СТРОКОВЫЕ скаляры.
+// Раньше `steps: 0`, `timeoutSec: 0`, `vramEstimateMb: 0` и `sampler: ""`
+// трактовались как «не менять», поэтому из WebUI нельзя было ни обнулить
+// поле, ни очистить строку — редактор об этом честно предупреждал подсказкой.
+// Теперь «0/пусто» — это ЗНАЧЕНИЕ, а «поле отсутствует в теле» — не менять
+// (PATCH-семантика сохраняется: поля, которых нет в JSON, остаются как были).
+//
 // ВАЖНО: структура повторяет ВЛОЖЕННОСТЬ типа ImageModelProfile
 // (presence.runtime.… / presence.defaults.…), иначе JSON-теги указывали бы на
 // верхний уровень, и presence молча ничего не находил — ровно этот баг был
 // пойман тестом «explicit false must clear the flag».
 type imageProfilePresence struct {
-	Disabled *bool                 `json:"disabled"`
-	Notes    *string               `json:"notes"`
-	Defaults imageDefaultsPresence `json:"defaults"`
-	Runtime  imageRuntimePresence  `json:"runtime"`
+	Family            *string               `json:"family"`
+	Disabled          *bool                 `json:"disabled"`
+	Notes             *string               `json:"notes"`
+	VramEstimateMB    *int                  `json:"vramEstimateMb"`
+	TimeoutSec        *int                  `json:"timeoutSec"`
+	IdleUnloadMinutes *int                  `json:"idleUnloadMinutes"`
+	Defaults          imageDefaultsPresence `json:"defaults"`
+	Runtime           imageRuntimePresence  `json:"runtime"`
 }
 
 // imageDefaultsPresence — presence для ImageGenDefaults.
 type imageDefaultsPresence struct {
-	Seed           *int64  `json:"seed"`
-	NegativePrompt *string `json:"negativePrompt"`
+	Steps          *int     `json:"steps"`
+	CFGScale       *float64 `json:"cfgScale"`
+	Sampler        *string  `json:"sampler"`
+	Scheduler      *string  `json:"scheduler"`
+	Width          *int     `json:"width"`
+	Height         *int     `json:"height"`
+	BatchCount     *int     `json:"batchCount"`
+	ClipSkip       *int     `json:"clipSkip"`
+	Seed           *int64   `json:"seed"`
+	NegativePrompt *string  `json:"negativePrompt"`
 }
 
-// imageRuntimePresence — presence для ImageRuntime (булевы флаги).
+// imageRuntimePresence — presence для ImageRuntime (булевы флаги + скаляры).
 type imageRuntimePresence struct {
-	OffloadToCPU  *bool `json:"offloadToCpu"`
-	DiffusionFA   *bool `json:"diffusionFa"`
-	VaeTiling     *bool `json:"vaeTiling"`
-	VaeConvDirect *bool `json:"vaeConvDirect"`
-	Taesd         *bool `json:"taesd"`
+	Backend       *string `json:"backend"`
+	ParamsBackend *string `json:"paramsBackend"`
+	MaxVRAM       *string `json:"maxVram"`
+	AutoFit       *string `json:"autoFit"`
+	SplitMode     *string `json:"splitMode"`
+	SeedMode      *string `json:"seedMode"`
+	NGpuLayers    *int    `json:"nGpuLayers"`
+	Threads       *int    `json:"threads"`
+	VaeTileSize   *int    `json:"vaeTileSize"`
+	OffloadToCPU  *bool   `json:"offloadToCpu"`
+	DiffusionFA   *bool   `json:"diffusionFa"`
+	VaeTiling     *bool   `json:"vaeTiling"`
+	VaeConvDirect *bool   `json:"vaeConvDirect"`
+	Taesd         *bool   `json:"taesd"`
 }
 
 // mergeImageProfileUpdate — мерж обновления поверх существующего профиля.
 //
-// Семантика: zero-value поля update НЕ перезаписывают existing (PATCH-like),
-// булевы/seed/notes — через presence. Files: nil = «не менять», непустой
-// список = «заменить целиком» (роли привязаны к файлам, частичный мерж
-// состава дал бы bundle без VAE/TE).
+// Семантика (R-Image, 2026-10-02): поле, ОТСУТСТВУЮЩЕЕ в теле, не меняется;
+// поле, переданное явно (presence != nil), записывается КАК ЕСТЬ — включая
+// `0`, `false` и `""`. Zero-value fallback ниже оставлен для обратной
+// совместимости с клиентами, которые не шлют полный набор ключей.
+// Files: nil = «не менять», непустой список = «заменить целиком» (роли
+// привязаны к файлам, частичный мерж состава дал бы bundle без VAE/TE).
 func mergeImageProfileUpdate(existing, update types.ImageModelProfile, presence imageProfilePresence) types.ImageModelProfile {
 	out := existing
 
 	if update.Name != "" {
 		out.Name = update.Name
 	}
-	if update.Family != "" {
+	if presence.Family != nil {
+		out.Family = *presence.Family
+	} else if update.Family != "" {
 		out.Family = update.Family
 	}
 	if update.Files != nil {
@@ -597,28 +629,44 @@ func mergeImageProfileUpdate(existing, update types.ImageModelProfile, presence 
 	}
 
 	d, u := &out.Defaults, update.Defaults
-	if u.Steps != 0 {
+	if presence.Defaults.Steps != nil {
+		d.Steps = *presence.Defaults.Steps
+	} else if u.Steps != 0 {
 		d.Steps = u.Steps
 	}
-	if u.CFGScale != 0 {
+	if presence.Defaults.CFGScale != nil {
+		d.CFGScale = *presence.Defaults.CFGScale
+	} else if u.CFGScale != 0 {
 		d.CFGScale = u.CFGScale
 	}
-	if u.Sampler != "" {
+	if presence.Defaults.Sampler != nil {
+		d.Sampler = *presence.Defaults.Sampler
+	} else if u.Sampler != "" {
 		d.Sampler = u.Sampler
 	}
-	if u.Scheduler != "" {
+	if presence.Defaults.Scheduler != nil {
+		d.Scheduler = *presence.Defaults.Scheduler
+	} else if u.Scheduler != "" {
 		d.Scheduler = u.Scheduler
 	}
-	if u.Width != 0 {
+	if presence.Defaults.Width != nil {
+		d.Width = *presence.Defaults.Width
+	} else if u.Width != 0 {
 		d.Width = u.Width
 	}
-	if u.Height != 0 {
+	if presence.Defaults.Height != nil {
+		d.Height = *presence.Defaults.Height
+	} else if u.Height != 0 {
 		d.Height = u.Height
 	}
-	if u.BatchCount != 0 {
+	if presence.Defaults.BatchCount != nil {
+		d.BatchCount = *presence.Defaults.BatchCount
+	} else if u.BatchCount != 0 {
 		d.BatchCount = u.BatchCount
 	}
-	if u.ClipSkip != 0 {
+	if presence.Defaults.ClipSkip != nil {
+		d.ClipSkip = *presence.Defaults.ClipSkip
+	} else if u.ClipSkip != 0 {
 		d.ClipSkip = u.ClipSkip
 	}
 	if presence.Defaults.Seed != nil {
@@ -633,31 +681,49 @@ func mergeImageProfileUpdate(existing, update types.ImageModelProfile, presence 
 	}
 
 	ro, ru := &out.Runtime, update.Runtime
-	if ru.Backend != "" {
+	if presence.Runtime.Backend != nil {
+		ro.Backend = *presence.Runtime.Backend
+	} else if ru.Backend != "" {
 		ro.Backend = ru.Backend
 	}
-	if ru.ParamsBackend != "" {
+	if presence.Runtime.ParamsBackend != nil {
+		ro.ParamsBackend = *presence.Runtime.ParamsBackend
+	} else if ru.ParamsBackend != "" {
 		ro.ParamsBackend = ru.ParamsBackend
 	}
-	if ru.MaxVRAM != "" {
+	if presence.Runtime.MaxVRAM != nil {
+		ro.MaxVRAM = *presence.Runtime.MaxVRAM
+	} else if ru.MaxVRAM != "" {
 		ro.MaxVRAM = ru.MaxVRAM
 	}
-	if ru.AutoFit != "" {
+	if presence.Runtime.AutoFit != nil {
+		ro.AutoFit = *presence.Runtime.AutoFit
+	} else if ru.AutoFit != "" {
 		ro.AutoFit = ru.AutoFit
 	}
-	if ru.SplitMode != "" {
+	if presence.Runtime.SplitMode != nil {
+		ro.SplitMode = *presence.Runtime.SplitMode
+	} else if ru.SplitMode != "" {
 		ro.SplitMode = ru.SplitMode
 	}
-	if ru.SeedMode != "" {
+	if presence.Runtime.SeedMode != nil {
+		ro.SeedMode = *presence.Runtime.SeedMode
+	} else if ru.SeedMode != "" {
 		ro.SeedMode = ru.SeedMode
 	}
-	if ru.NGpuLayers != 0 {
+	if presence.Runtime.NGpuLayers != nil {
+		ro.NGpuLayers = *presence.Runtime.NGpuLayers
+	} else if ru.NGpuLayers != 0 {
 		ro.NGpuLayers = ru.NGpuLayers
 	}
-	if ru.Threads != 0 {
+	if presence.Runtime.Threads != nil {
+		ro.Threads = *presence.Runtime.Threads
+	} else if ru.Threads != 0 {
 		ro.Threads = ru.Threads
 	}
-	if ru.VaeTileSize != 0 {
+	if presence.Runtime.VaeTileSize != nil {
+		ro.VaeTileSize = *presence.Runtime.VaeTileSize
+	} else if ru.VaeTileSize != 0 {
 		ro.VaeTileSize = ru.VaeTileSize
 	}
 	if ru.ExtraArgs != nil {
@@ -689,13 +755,19 @@ func mergeImageProfileUpdate(existing, update types.ImageModelProfile, presence 
 		ro.Taesd = true
 	}
 
-	if update.VramEstimateMB != 0 {
+	if presence.VramEstimateMB != nil {
+		out.VramEstimateMB = *presence.VramEstimateMB
+	} else if update.VramEstimateMB != 0 {
 		out.VramEstimateMB = update.VramEstimateMB
 	}
-	if update.TimeoutSec != 0 {
+	if presence.TimeoutSec != nil {
+		out.TimeoutSec = *presence.TimeoutSec
+	} else if update.TimeoutSec != 0 {
 		out.TimeoutSec = update.TimeoutSec
 	}
-	if update.IdleUnloadMinutes != 0 {
+	if presence.IdleUnloadMinutes != nil {
+		out.IdleUnloadMinutes = *presence.IdleUnloadMinutes
+	} else if update.IdleUnloadMinutes != 0 {
 		out.IdleUnloadMinutes = update.IdleUnloadMinutes
 	}
 	if presence.Disabled != nil {
@@ -714,10 +786,15 @@ func mergeImageProfileUpdate(existing, update types.ImageModelProfile, presence 
 // applyImageProfileDefaults — то, что можно вывести из family, а не требовать
 // от оператора: шаги/cfg/sampler/размер (types.DefaultImageGenDefaults).
 //
-// Заполняем ТОЛЬКО полностью пустые Defaults (или отдельные незаданные поля
-// размера/batch): иначе PUT «только files» требовал бы вручную прописать 25
-// полей, а пресеты каталога несли бы дублирующиеся константы.
-func applyImageProfileDefaults(p *types.ImageModelProfile) error {
+// Заполняем только НЕЗАДАННЫЕ поля: иначе PUT «только files» требовал бы вручную
+// прописать 25 полей, а пресеты каталога несли бы дублирующиеся константы.
+//
+// R-Image (2026-10-02): поля, ПЕРЕДАННЫЕ ЯВНО (presence), не заполняем.
+// Без этого явный `clipSkip: 0` / `sampler: ""` / `vaeTileSize: 0` затирался
+// дефолтом семейства — то есть «обнулить поле из UI» было невозможно, даже
+// когда значение валидно. Если явное значение выходит за границы (например
+// `steps: 0`), валидация ниже вернёт честный 400, а не тихую подмену дефолтом.
+func applyImageProfileDefaults(p *types.ImageModelProfile, presence imageProfilePresence) error {
 	if p == nil {
 		return fmt.Errorf("profile is nil")
 	}
@@ -729,28 +806,28 @@ func applyImageProfileDefaults(p *types.ImageModelProfile) error {
 	}
 
 	d := types.DefaultImageGenDefaults(p.Family)
-	if p.Defaults.Steps == 0 {
+	if p.Defaults.Steps == 0 && presence.Defaults.Steps == nil {
 		p.Defaults.Steps = d.Steps
 	}
-	if p.Defaults.CFGScale == 0 {
+	if p.Defaults.CFGScale == 0 && presence.Defaults.CFGScale == nil {
 		p.Defaults.CFGScale = d.CFGScale
 	}
-	if p.Defaults.Sampler == "" {
+	if p.Defaults.Sampler == "" && presence.Defaults.Sampler == nil {
 		p.Defaults.Sampler = d.Sampler
 	}
-	if p.Defaults.Scheduler == "" {
+	if p.Defaults.Scheduler == "" && presence.Defaults.Scheduler == nil {
 		p.Defaults.Scheduler = d.Scheduler
 	}
-	if p.Defaults.Width == 0 {
+	if p.Defaults.Width == 0 && presence.Defaults.Width == nil {
 		p.Defaults.Width = d.Width
 	}
-	if p.Defaults.Height == 0 {
+	if p.Defaults.Height == 0 && presence.Defaults.Height == nil {
 		p.Defaults.Height = d.Height
 	}
-	if p.Defaults.BatchCount == 0 {
+	if p.Defaults.BatchCount == 0 && presence.Defaults.BatchCount == nil {
 		p.Defaults.BatchCount = 1
 	}
-	if p.Runtime.SeedMode == "" {
+	if p.Runtime.SeedMode == "" && presence.Runtime.SeedMode == nil {
 		p.Runtime.SeedMode = "random"
 	}
 	return types.ValidateImageModelProfile(p)

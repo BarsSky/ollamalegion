@@ -1079,10 +1079,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	if requestedNCtx > 0 && loadedNCtx > 0 && requestedNCtx <= loadedNCtx {
 		meta := ExtractRequestMeta(bodyBuf, requestPath)
 		if meta != nil {
-			required := meta.EstimatedPromptTokens + meta.RequestedNPredict + 1
-			// +10% slack под округление tokenizer'а и накопление KV.
-			slack := meta.EstimatedPromptTokens / 10
-			required += slack
+			required := requiredNCtxForMeta(meta)
 			if required <= loadedNCtx {
 				// Промпт влезает в текущий n_ctx. Patch body и проксируем.
 				patchedBody := patchNumCtxInBody(bodyBuf, loadedNCtx)

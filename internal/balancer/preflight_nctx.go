@@ -38,6 +38,25 @@ import (
 	"ollama-loadbalancer/pkg/tokencount"
 )
 
+// requiredNCtxForMeta — сколько контекста нужно запросу:
+// prompt + ожидаемая длина ответа + 10% slack.
+//
+// R83/v67 (2026-10-02): ожидаемая длина — это ИСКЛЮЧИТЕЛЬНО явное намерение
+// клиента (options.num_predict / max_tokens → RequestedNPredict).
+// MaxOutputTokensUpperBound сюда НЕ входит намеренно: это верхняя граница
+// «сколько клиент вообще примет» (Cline шлёт 32000-64000 «на всякий случай»), и
+// её вклад раздувал требуемое окно — балансер делал лишний reload в большее окно
+// либо отвечал 413 на короткий вопрос. Реальную длину ответа ограничивает окно
+// модели: cppworker клампит num_predict по свободному месту в контексте.
+func requiredNCtxForMeta(meta *RequestMeta) int {
+	if meta == nil {
+		return 0
+	}
+	required := meta.EstimatedPromptTokens + meta.RequestedNPredict + 1
+	required += meta.EstimatedPromptTokens / 10
+	return required
+}
+
 // ============================================================
 // Метаданные запроса
 // ============================================================
@@ -47,7 +66,23 @@ type RequestMeta struct {
 	// EstimatedPromptTokens — оценка числа токенов в prompt (chars/4).
 	EstimatedPromptTokens int
 	// RequestedNPredict — max_tokens / num_predict из тела (0 = default).
+	//
+	// R83/v67 (2026-10-02): сюда попадает ТОЛЬКО явное намерение клиента
+	// (options.num_predict или max_tokens). max_output_tokens — НЕ намерение, а
+	// верхняя граница «сколько я вообще приму» (Cline шлёт 32000-64000 «на
+	// всякий случай»), и раньше он подставлялся сюда как ожидаемая длина ответа.
+	// Последствие: required = prompt + 64000 раздувал требование к окну, и
+	// балансер либо перезагружал модель в большее окно, либо возвращал 413 —
+	// хотя клиент просил обычный ответ. См. MaxOutputTokensUpperBound.
 	RequestedNPredict int
+	// MaxOutputTokensUpperBound — max_output_tokens из тела (nil = не задан).
+	//
+	// Верхняя граница объёма ответа, которую клиент готов принять. Используется
+	// ТОЛЬКО для диагностики и для проверки «а не обрежем ли мы клиента»: она не
+	// участвует ни в выборе n_ctx, ни в расчёте required, ни в решении о reload
+	// и ни в оценке памяти. Реальную длину генерации ограничивает окно модели
+	// (cppworker клампит num_predict по свободному месту в контексте).
+	MaxOutputTokensUpperBound *int
 	// RequestedNCtxOverride — num_ctx из тела (0 = не задан).
 	RequestedNCtxOverride int
 	// ModelName — имя модели из body (для логов).
@@ -225,11 +260,12 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 			meta.RequestedNPredict = req.MaxTokens
 		}
 		// R69 (2026-09-23): Cline шлёт max_output_tokens вместо num_predict/
-		// max_tokens — без этого preflight считал n_predict=0 (дефолт 2048) и
-		// недооценивал требуемый контекст.
-		if meta.RequestedNPredict <= 0 && req.MaxOutputTokens != nil {
-			meta.RequestedNPredict = *req.MaxOutputTokens
-		}
+		// max_tokens.
+		// R83/v67 (2026-10-02): читаем его, но НЕ как ожидаемую длину ответа —
+		// только как верхнюю границу (см. MaxOutputTokensUpperBound): иначе
+		// «на всякий случай 64000» раздувало требование к окну и приводило к
+		// лишнему reload/413.
+		meta.MaxOutputTokensUpperBound = req.MaxOutputTokens
 		meta.HasTools = len(req.Tools) > 0
 		// Round 34 (2026-08-12) Phase 2: profile mismatch detection.
 		// Только Ollama /api/chat парсит options.* — для OpenAI эти поля остаются нулевыми.
@@ -259,9 +295,8 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		if meta.RequestedNPredict <= 0 {
 			meta.RequestedNPredict = req.MaxTokens
 		}
-		if meta.RequestedNPredict <= 0 && req.MaxOutputTokens != nil {
-			meta.RequestedNPredict = *req.MaxOutputTokens
-		}
+		// R83/v67: верхняя граница, а не ожидаемая длина (см. RequestMeta).
+		meta.MaxOutputTokensUpperBound = req.MaxOutputTokens
 		meta.HasTools = len(req.Tools) > 0
 		meta.EstimatedPromptTokens = EstimatePromptTokens(req.Prompt + req.System)
 
@@ -273,10 +308,12 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		meta.ModelName = req.Model
 		meta.RequestedNCtxOverride = req.NumCtx // Round 34 follow-up
 		meta.RequestedNPredict = req.MaxTokens
-		// R69 (2026-09-23): max_output_tokens (Cline) — алиас max_tokens.
-		if meta.RequestedNPredict <= 0 && req.MaxOutputTokens != nil {
-			meta.RequestedNPredict = *req.MaxOutputTokens
-		}
+		// R83/v67 (2026-10-02): max_output_tokens (Cline) — ВЕРХНЯЯ ГРАНИЦА, а не
+		// алиас max_tokens. Раньше он подставлялся в RequestedNPredict, и
+		// «max_output_tokens: 64000» на короткий вопрос заставлял балансер
+		// считать, что клиенту нужно 64000 токенов ответа: это раздувало
+		// требуемое окно (лишний reload) либо давало 413.
+		meta.MaxOutputTokensUpperBound = req.MaxOutputTokens
 		meta.HasTools = len(req.Tools) > 0
 		var sb strings.Builder
 		for _, m := range req.Messages {

@@ -432,7 +432,14 @@ func (st *ReasoningStreamState) Feed(chunk string) (reasoningDelta, contentDelta
 		return "", ""
 	}
 	st.full.WriteString(chunk)
-	reasoning, content, _ := SplitReasoningContent(st.full.String())
+	// R83/v67 (2026-10-02): НЕ отдаём наружу хвост, который может оказаться
+	// началом think-тега. См. trailingTagPrefixLen: иначе недособранный маркер
+	// утекает в видимый ответ. Хвост выпустит Finalize (или он разрешится
+	// следующим чанком).
+	full := st.full.String()
+	holdBack := trailingTagPrefixLen(full)
+	safe := full[:len(full)-holdBack]
+	reasoning, content, _ := SplitReasoningContent(safe)
 	prevRLen := len(st.reasoningAll)
 	prevCLen := len(st.contentAll)
 	// Безопасное вычисление дельты: reasoning/content могут стать короче
@@ -454,16 +461,96 @@ func (st *ReasoningStreamState) Feed(chunk string) (reasoningDelta, contentDelta
 	return reasoningDelta, contentDelta
 }
 
-// Finalize завершает парсинг. Вызывается после EOS. Для нашей реализации
-// (с полным буфером и перерасчётом) Finalize не делает ничего сверх Feed —
-// просто возвращает последние дельты (которые равны "" после Feed).
+// maxThinkTagLen — длина самого длинного тега в thinkTagPairs.
+func maxThinkTagLen() int {
+	max := 0
+	for _, p := range thinkTagPairs {
+		if len(p.open) > max {
+			max = len(p.open)
+		}
+		if len(p.close) > max {
+			max = len(p.close)
+		}
+	}
+	return max
+}
+
+// isProperTagPrefix — true, если s (непустой) является НАЧАЛОМ какого-либо
+// think-тега, но короче его (то есть тег может достроиться следующим чанком).
+func isProperTagPrefix(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, p := range thinkTagPairs {
+		if len(s) < len(p.open) && strings.HasPrefix(p.open, s) {
+			return true
+		}
+		if len(s) < len(p.close) && strings.HasPrefix(p.close, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// trailingTagPrefixLen — длина хвоста s, который может оказаться неполным
+// think-тегом (открывающим или закрывающим).
 //
-// Метод оставлен для совместимости с API и для будущих оптимизаций
-// (например, eager-flush pending-чанков).
+// ЗАЧЕМ. C-bridge отдаёт поток токенами, и маркер приходит по частям. Живой
+// лог cppworker на gemma-4 (R83/v67, диагностика «размышления не применились»):
+//
+//	content:  "<|c"   content: "h"   content: "a"   content: "nn"
+//	reasoning_content: "though" ...
+//
+// То есть первые 7 символов открывающего маркера `<|channel>thought` ушли
+// клиенту как ВИДИМЫЙ ответ, а остальное — в reasoning_content. Парсер
+// пересчитывал разбиение на каждом чанке и не мог «отозвать» уже отправленное.
+//
+// РЕШЕНИЕ: пока хвост накопленного текста является началом любого тега, он
+// удерживается и наружу не отдаётся. Разрешится он следующим чанком (станет
+// тегом или обычным текстом), а если поток закончится — его выпустит Finalize.
+func trailingTagPrefixLen(s string) int {
+	if s == "" {
+		return 0
+	}
+	maxLen := maxThinkTagLen() - 1
+	if maxLen > len(s) {
+		maxLen = len(s)
+	}
+	for n := maxLen; n >= 1; n-- {
+		if isProperTagPrefix(s[len(s)-n:]) {
+			return n
+		}
+	}
+	return 0
+}
+
+// Finalize завершает парсинг: выпускает УДЕРЖАННЫЙ хвост (см.
+// trailingTagPrefixLen) как обычный текст, если он так и не стал тегом.
+//
+// R83/v67 (2026-10-02): раньше был no-op, потому что Feed отдавал всё
+// немедленно. Теперь Feed удерживает потенциальный неполный маркер, поэтому
+// каждый потоковый путь ОБЯЗАН вызвать Finalize после EOS и эмитить
+// возвращённые дельты — иначе последние символы ответа потеряются.
 func (st *ReasoningStreamState) Finalize() (reasoningDelta, contentDelta string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return "", ""
+	full := st.full.String()
+	if full == "" {
+		return "", ""
+	}
+	// Поток закончился: неопределённости больше нет, разбираем весь текст.
+	reasoning, content, _ := SplitReasoningContent(full)
+	prevRLen := len(st.reasoningAll)
+	prevCLen := len(st.contentAll)
+	if len(reasoning) >= prevRLen {
+		reasoningDelta = reasoning[prevRLen:]
+	}
+	if len(content) >= prevCLen {
+		contentDelta = content[prevCLen:]
+	}
+	st.reasoningAll = reasoning
+	st.contentAll = content
+	return reasoningDelta, contentDelta
 }
 
 // ReasoningSnapshot — снимок состояния incremental-парсера для

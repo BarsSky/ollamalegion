@@ -51,16 +51,27 @@ type generateRequest struct {
 	TypicalP    *float64 `json:"typicalP,omitempty"`
 	TfsZ        *float64 `json:"tfsZ,omitempty"`
 	MaxTokens   int      `json:"maxTokens,omitempty"`
-	// MaxOutputTokens — R69 (2026-09-23): алиас num_predict/maxTokens, который
-	// шлёт реальный клиент Cline (провайдер "ollama"). Строгий декодер раньше
-	// отвечал 400 `invalid JSON: json: unknown field "max_output_tokens"`.
-	MaxOutputTokens  *int     `json:"max_output_tokens,omitempty"`
-	RepeatPenalty    *float64 `json:"repeatPenalty,omitempty"`
-	FrequencyPenalty *float64 `json:"frequencyPenalty,omitempty"`
-	PresencePenalty  *float64 `json:"presencePenalty,omitempty"`
-	Seed             int      `json:"seed,omitempty"`
-	NumCtx           int      `json:"numCtx,omitempty"`
-	Stream           bool     `json:"stream"`
+	// MaxOutputTokens — R69 (2026-09-23): поле, которое шлёт реальный клиент
+	// Cline (провайдер "ollama"). Строгий декодер раньше отвечал 400
+	// `invalid JSON: json: unknown field "max_output_tokens"`.
+	//
+	// R83/v67 (2026-10-02): это ВЕРХНЯЯ ГРАНИЦА «сколько ответа клиент вообще
+	// примет», а НЕ запрошенная длина генерации (Cline шлёт 32000-64000 «на
+	// всякий случай»). Раньше значение подставлялось в MaxTokens, то есть модель
+	// получала право генерировать 64000 токенов: на слабой карте это десятки
+	// минут, обрыв по клиентскому таймауту и «пустой ответ». Теперь граница
+	// только УМЕНЬШАЕТ итоговый num_predict (см. clampNPredictToClientUpperBound).
+	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
+	// _upperBoundNumPredict — вычисляется из MaxOutputTokens в
+	// normalizeGenerateRequest и применяется как min() к финальному num_predict.
+	// Не экспортируется в JSON (служебное поле, не часть контракта очереди).
+	_upperBoundNumPredict int      `json:"-"`
+	RepeatPenalty         *float64 `json:"repeatPenalty,omitempty"`
+	FrequencyPenalty      *float64 `json:"frequencyPenalty,omitempty"`
+	PresencePenalty       *float64 `json:"presencePenalty,omitempty"`
+	Seed                  int      `json:"seed,omitempty"`
+	NumCtx                int      `json:"numCtx,omitempty"`
+	Stream                bool     `json:"stream"`
 	// _keepAliveDuration — парсится из req.KeepAlive в normalizeGenerateRequest.
 	// Используется в handleGenerate/handleOllamaGenerate для продления lastUsedAt
 	// модели после успешного ответа. 0 = дефолт (30 минут).

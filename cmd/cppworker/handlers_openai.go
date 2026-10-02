@@ -402,14 +402,19 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.TopP != nil {
 		params.TopP = float32(*req.TopP)
 	}
-	// R69 (2026-09-23): max_output_tokens (Cline) — алиас max_tokens.
-	// Применяем только если клиент не задал max_tokens/num_predict.
-	effectiveMaxTokens := req.MaxTokens
-	if effectiveMaxTokens <= 0 && req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
-		logger.Get().Infow("buildOpenAIChatParams: max_output_tokens (Cline) → max_tokens",
-			"model", actualModel, "max_output_tokens", *req.MaxOutputTokens)
-		effectiveMaxTokens = *req.MaxOutputTokens
+	// R69 (2026-09-23): max_output_tokens (Cline) читается.
+	//
+	// R83/v67 (2026-10-02): это ВЕРХНЯЯ ГРАНИЦА «сколько ответа клиент вообще
+	// примет», а НЕ запрошенная длина. Раньше значение подставлялось в
+	// effectiveMaxTokens → num_predict = 64000, и модель получала право
+	// генерировать 64000 токенов (десятки минут на слабой карте, обрыв по
+	// клиентскому таймауту, «пустой ответ»). Теперь длину задаёт политика
+	// (max_tokens/num_predict → профиль → дефолт), а граница только уменьшает её.
+	upperBound := 0
+	if req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
+		upperBound = *req.MaxOutputTokens
 	}
+	effectiveMaxTokens := req.MaxTokens
 	if effectiveMaxTokens > 0 {
 		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
 		// дефолт n_predict до DefaultNPredictReasoning, иначе модель обрывает генерацию
@@ -419,6 +424,11 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 2026-07-01: req.MaxTokens==0 → используем дефолт cppworker (2048), но для
 		// reasoning-моделей повышаем до DefaultNPredictReasoning (8192).
 		params.NPredict = ResolveNPredict(0, actualModel)
+	}
+	if upperBound > 0 && params.NPredict > upperBound {
+		logger.Get().Infow("buildOpenAIChatParams: max_output_tokens ограничил длину ответа сверху",
+			"model", actualModel, "max_output_tokens", upperBound, "n_predict", params.NPredict)
+		params.NPredict = upperBound
 	}
 	if req.Seed != 0 {
 		params.Seed = req.Seed
@@ -1291,6 +1301,25 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	fullOutput := outputBuf.String()
 	toolCalls := parseToolCallsFromOutput(fullOutput)
 
+	// R83/v67 (2026-10-02): финальный сброс reasoning-парсера.
+	//
+	// Feed() удерживает хвост, который может оказаться неполным think-тегом
+	// (иначе фрагменты маркера утекали в видимый ответ: живой дефект
+	// «content=<|chann, reasoning=though ...»). После EOS удерживать больше
+	// нечего — выпускаем хвост как обычный текст, иначе последние символы
+	// ответа потеряются.
+	if rsIsReasoning {
+		rTail, cTail := rsParser.Finalize()
+		rTail = sanitizeStreamText(strings.ReplaceAll(rTail, `\\n`, "\n"))
+		cTail = sanitizeStreamText(strings.ReplaceAll(cTail, `\\n`, "\n"))
+		if rTail != "" {
+			writeReasoningChunk(map[string]interface{}{"reasoning_content": rTail})
+		}
+		if cTail != "" {
+			writeReasoningChunk(map[string]interface{}{"content": cTail})
+		}
+	}
+
 	// 2026-06-24: проверка на пустой ответ после cleanFinalContent (gemma antiprompt).
 	// Если tool_calls нет И cleaned output пустой → error-чанк.
 	if len(toolCalls) == 0 && strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
@@ -1452,13 +1481,14 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	if req.TopP != nil {
 		params.TopP = float32(*req.TopP)
 	}
-	// R69 (2026-09-23): max_output_tokens (Cline) — алиас max_tokens.
-	effectiveMaxTokens2 := req.MaxTokens
-	if effectiveMaxTokens2 <= 0 && req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
-		logger.Get().Infow("handleOpenAICompletions: max_output_tokens (Cline) → max_tokens",
-			"model", modelName, "max_output_tokens", *req.MaxOutputTokens)
-		effectiveMaxTokens2 = *req.MaxOutputTokens
+	// R69 (2026-09-23): max_output_tokens (Cline) читается.
+	// R83/v67 (2026-10-02): как ВЕРХНЯЯ ГРАНИЦА, а не как длина ответа (см.
+	// подробное обоснование в buildOpenAIChatParams и handlers_generate.go).
+	upperBound2 := 0
+	if req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
+		upperBound2 = *req.MaxOutputTokens
 	}
+	effectiveMaxTokens2 := req.MaxTokens
 	if effectiveMaxTokens2 > 0 {
 		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
 		// дефолт n_predict до DefaultNPredictReasoning, иначе модель обрывает генерацию
@@ -1468,6 +1498,11 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		// 2026-07-01: req.MaxTokens==0 → дефолт cppworker (2048), для reasoning-моделей
 		// повышаем до DefaultNPredictReasoning (8192).
 		params.NPredict = ResolveNPredict(0, modelName)
+	}
+	if upperBound2 > 0 && params.NPredict > upperBound2 {
+		logger.Get().Infow("handleOpenAICompletions: max_output_tokens ограничил длину ответа сверху",
+			"model", modelName, "max_output_tokens", upperBound2, "n_predict", params.NPredict)
+		params.NPredict = upperBound2
 	}
 	if req.PresencePenalty != nil {
 		params.PresencePenalty = float32(*req.PresencePenalty)
@@ -1773,6 +1808,14 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	// Финальный чанк с полным output (раньше был пустой text — клиент видел пустой ответ).
 	// 2026-06-24: проверка на пустой ответ после cleanFinalContent (gemma antiprompt).
 	fullOutput := outputBuf.String()
+	// R83/v67 (2026-10-02): финальный сброс reasoning-парсера (см. подробный
+	// комментарий в writeOpenAIChatStream) — выпускаем удержанный хвост.
+	if rcIsReasoning {
+		rTail, tTail := rcParser.Finalize()
+		if rTail != "" || tTail != "" {
+			writeCompletionChunk(sanitizeStreamText(tTail), sanitizeStreamText(rTail))
+		}
+	}
 	if strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
 		errChunk := map[string]interface{}{
 			"id":      completionID,

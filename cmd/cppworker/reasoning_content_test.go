@@ -208,8 +208,10 @@ func TestStreamState_WholeInOneChunk(t *testing.T) {
 		t.Errorf("whole → rd=%q cd=%q, want rd=\"think\" cd=\"content\"", rd, cd)
 	}
 	rd2, cd2 := st.Finalize()
+	// R83/v67: Finalize теперь реальный сброс удержанного хвоста. Для целиком
+	// пришедшего текста удерживать нечего — дельты пустые.
 	if rd2 != "" || cd2 != "" {
-		t.Errorf("Finalize no-op → rd=%q cd=%q", rd2, cd2)
+		t.Errorf("Finalize для полного текста → rd=%q cd=%q, want пусто", rd2, cd2)
 	}
 	snap := st.Snapshot()
 	if !snap.HasReasoning || snap.ReasoningChars != 5 || snap.ContentChars != 7 {
@@ -218,16 +220,22 @@ func TestStreamState_WholeInOneChunk(t *testing.T) {
 }
 
 func TestStreamState_SplitMidTag(t *testing.T) {
-	// Тег разрезан между чанками. Поведение O(N²)-парсера:
-	// после двух Feed'ов snapshot показывает финальное разбиение.
-	// Проверяем только инварианты финального состояния, не дельты
-	// (которые чувствительны к точному наложению think-тегов).
+	// Тег разрезан между чанками.
+	//
+	// R83/v67 (2026-10-02): неполный тег наружу НЕ отдаётся. Раньше первый
+	// чанк "<thin" уходил клиенту как content, и после достройки тега он
+	// оставался в видимом ответе навсегда (живой дефект утечки маркера:
+	// content="<|chann" при reasoning="though ..."). Теперь такой хвост
+	// удерживается и разрешается следующим чанком.
 	st := NewReasoningStreamState()
 	_, cd1 := st.Feed("<thin")
-	if cd1 != "<thin" {
-		t.Errorf("chunk1 content=%q, want \"<thin\"", cd1)
+	if cd1 != "" {
+		t.Errorf("chunk1 content=%q, want \"\" (неполный тег не выпускаем)", cd1)
 	}
-	_, _ = st.Feed("k>reasoning</think>content")
+	_, cd2 := st.Feed("k>reasoning</think>content")
+	if strings.Contains(cd2, "<thin") {
+		t.Errorf("фрагмент тега утёк в видимый ответ: %q", cd2)
+	}
 	snap := st.Snapshot()
 	if !snap.HasReasoning {
 		t.Error("snapshot.HasReasoning should be true after think tag")

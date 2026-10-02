@@ -58,11 +58,20 @@ func normalizeGenerateRequest(req *generateRequest) {
 	if req.MaxTokens == 0 && req.Options.NumPredict > 0 {
 		req.MaxTokens = req.Options.NumPredict
 	}
-	// R69: max_output_tokens (Cline) — алиас num_predict, если явных значений нет.
+	// R69/R83-v67: max_output_tokens (Cline) — ВЕРХНЯЯ ГРАНИЦА, а не длина ответа.
+	//
+	// Было (R69): req.MaxTokens = *req.MaxOutputTokens, то есть «клиент примет до
+	// 64000» превращалось в «сгенерируй до 64000». На слабой карте это десятки
+	// минут генерации, обрыв по клиентскому таймауту и жалоба «пустой ответ».
+	//
+	// Стало: длину задаёт политика (явный num_predict/max_tokens → профиль →
+	// дефолт cppworker, см. ResolveNPredict), а граница клиента может её только
+	// УМЕНЬШИТЬ — применяется как min() к финальному num_predict
+	// (clampNPredictToClientUpperBound в handlers_openai/buildGenerationParams).
 	if req.MaxTokens == 0 && req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
-		logger.Get().Infow("normalizeGenerateRequest: max_output_tokens (Cline) → maxTokens",
+		req._upperBoundNumPredict = *req.MaxOutputTokens
+		logger.Get().Infow("normalizeGenerateRequest: max_output_tokens учтён как ВЕРХНЯЯ ГРАНИЦА (не как длина ответа)",
 			"model", req.Model, "max_output_tokens", *req.MaxOutputTokens)
-		req.MaxTokens = *req.MaxOutputTokens
 	}
 	if req.RepeatPenalty == nil && req.Options.RepeatPenalty != 0 {
 		v := req.Options.RepeatPenalty
@@ -158,6 +167,16 @@ func buildGenerationParams(req generateRequest) bridge.GenerationParams {
 	}
 	if req.MaxTokens > 0 {
 		params.NPredict = req.MaxTokens
+	}
+	// R83/v67 (2026-10-02): верхняя граница от клиента (max_output_tokens) может
+	// только УМЕНЬШИТЬ длину ответа, но не задать её. Раньше граница попадала в
+	// req.MaxTokens, то есть «приму до 64000» = «сгенерируй до 64000».
+	if req._upperBoundNumPredict > 0 && params.NPredict > req._upperBoundNumPredict {
+		logger.Get().Infow("buildGenerationParams: max_output_tokens ограничил длину ответа сверху",
+			"model", req.Model,
+			"max_output_tokens", req._upperBoundNumPredict,
+			"n_predict_before", params.NPredict)
+		params.NPredict = req._upperBoundNumPredict
 	}
 	if req.RepeatPenalty != nil {
 		params.RepeatPenalty = float32(*req.RepeatPenalty)
@@ -707,6 +726,24 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		return
 	}
 	fullOutput := outputBuf.String()
+	// R83/v67 (2026-10-02): финальный сброс reasoning-парсера — выпускаем
+	// удержанный хвост (возможный неполный think-тег), иначе последние символы
+	// ответа потеряются (см. ReasoningStreamState.Finalize).
+	if ogIsReasoning {
+		thinkingTail, responseTail := ogParser.Finalize()
+		if thinkingTail != "" {
+			tc := map[string]interface{}{"model": modelName, "thinking": sanitizeStreamText(thinkingTail), "done": false}
+			tcJSON, _ := json.Marshal(tc)
+			fmt.Fprintf(w, "%s\n", tcJSON)
+			flusher.Flush()
+		}
+		if responseTail != "" {
+			rc := map[string]interface{}{"model": modelName, "response": sanitizeStreamText(responseTail), "done": false}
+			rcJSON, _ := json.Marshal(rc)
+			fmt.Fprintf(w, "%s\n", rcJSON)
+			flusher.Flush()
+		}
+	}
 	// 2026-06-24: проверка на пустой ответ после cleanFinalContent (gemma antiprompt).
 	if strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
 		errJSON, _ := json.Marshal(map[string]interface{}{

@@ -471,14 +471,15 @@ func buildGenerateRequestFromChat(req chatRequest, prompt string) generateReques
 	if req.MaxTokens != nil {
 		genReq.MaxTokens = *req.MaxTokens
 	}
-	// R69: max_output_tokens (Cline) — алиас num_predict/max_tokens. Применяем
-	// только если клиент не задал ни num_predict (options), ни max_tokens:
-	// явные Ollama-поля остаются приоритетными.
-	if req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 &&
-		genReq.MaxTokens <= 0 && genReq.Options.NumPredict <= 0 {
-		logger.Get().Infow("buildGenerateRequestFromChat: max_output_tokens (Cline) → num_predict",
+	// R69/R83-v67 (2026-10-02): max_output_tokens (Cline) — ВЕРХНЯЯ ГРАНИЦА, а не
+	// длина ответа. Раньше значение подставлялось в genReq.MaxTokens, то есть
+	// «клиент примет до 64000» превращалось в «сгенерируй до 64000» (десятки
+	// минут на слабой карте, обрыв по клиентскому таймауту). Теперь граница
+	// только уменьшает финальный num_predict.
+	if req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
+		genReq._upperBoundNumPredict = *req.MaxOutputTokens
+		logger.Get().Infow("buildGenerateRequestFromChat: max_output_tokens учтён как ВЕРХНЯЯ ГРАНИЦА",
 			"model", req.Model, "max_output_tokens", *req.MaxOutputTokens)
-		genReq.MaxTokens = *req.MaxOutputTokens
 	}
 	if req.NumCtx != nil && *req.NumCtx > 0 {
 		genReq.NumCtx = *req.NumCtx
@@ -1163,6 +1164,43 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 			duration = time.Since(start)
 			logger.Get().Infow("writeChatStreamResponse: повторная генерация завершена",
 				"model", modelName, "raw_len", len(fullOutput))
+		}
+	}
+
+	// R83/v67 (2026-10-02): финальный сброс reasoning-парсера — выпускаем
+	// удержанный хвост (возможный неполный маркер), иначе последние символы
+	// ответа потеряются (см. ReasoningStreamState.Finalize).
+	if rcIsReasoning {
+		rTail, cTail := rcParser.Finalize()
+		rTail = strings.ReplaceAll(rTail, `\\n`, "\n")
+		cTail = strings.ReplaceAll(cTail, `\\n`, "\n")
+		if rTail != "" {
+			rcChunk := map[string]interface{}{
+				"model":      modelName,
+				"created_at": createdAt,
+				"message": map[string]interface{}{
+					"role":      "assistant",
+					"reasoning": sanitizeStreamText(rTail),
+				},
+				"done": false,
+			}
+			rcJSON, _ := json.Marshal(rcChunk)
+			sw.Writef("%s\n", rcJSON)
+			sw.Flush()
+		}
+		if cTail != "" {
+			ccChunk := map[string]interface{}{
+				"model":      modelName,
+				"created_at": createdAt,
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": sanitizeStreamText(cTail),
+				},
+				"done": false,
+			}
+			ccJSON, _ := json.Marshal(ccChunk)
+			sw.Writef("%s\n", ccJSON)
+			sw.Flush()
 		}
 	}
 

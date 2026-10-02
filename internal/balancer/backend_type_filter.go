@@ -149,12 +149,23 @@ func (p *Proxy) getEffectiveBackendType() types.BackendType {
 
 // filterBackendsByEffectiveType фильтрует срез BackendMetrics по эффективному типу.
 // Если effectiveType пуст — возвращает все бэкенды без фильтрации.
+//
+// R-Image (2026-09-27): image_cpp НИКОГДА не отфильтровывается.
+// Зачем: эффективный тип описывает ТЕКСТОВЫЙ движок кластера
+// (backendEngine = llama_cpp/ollama). Image-бэкенды ортогональны ему — иначе
+// при backendEngine=llama_cpp (bundled-стек) image-ноды исчезали бы из
+// /api/v1/metrics и /api/v1/cluster, и Monitor не показывал бы их вообще.
 func filterBackendsByEffectiveType(backends []types.BackendMetrics, effectiveType types.BackendType) []types.BackendMetrics {
 	if effectiveType == "" {
 		return backends
 	}
 	filtered := make([]types.BackendMetrics, 0, len(backends))
 	for _, b := range backends {
+		// Image-бэкенды ортогональны текстовому движку — пропускаем всегда.
+		if b.BackendType == types.BackendTypeImage {
+			filtered = append(filtered, b)
+			continue
+		}
 		if b.BackendType == effectiveType || (b.BackendType == "" && effectiveType == types.BackendTypeOllama) {
 			filtered = append(filtered, b)
 		}

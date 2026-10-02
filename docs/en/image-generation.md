@@ -167,6 +167,8 @@ How the estimate is derived (in priority order): the model profile (`vramEstimat
 
 The gate blocks **exactly one** meaningful case: the estimate is known, free VRAM is known, and the model does not fit. The answer is `503` with code `insufficient_vram`, a message, and a **hint listing the memory-reduction ladder**: lower the quantization → `--diffusion-fa` → text encoder on CPU (`--backend te=cpu`) → `--vae-tiling` → `--vae-conv-direct` → `--taesd` → `--offload-to-cpu` → lower resolution.
 
+**What is actually compared against free VRAM (important).** When the model is already loaded — which is precisely when the gate runs, weights being resident — the gate compares the **generation working set** (20% of the weights, no less than 256 MB and no more than 1 GB), not the full model weight: the weights are already held by the model itself, and demanding them again would reject generation on any card where less than the model size is free after loading. The "do the weights fit" question belongs to model-load time. This was fixed after a live run: SD1.5 Q4 (2.6 GB) on a card with 895 MB free answered `503` to every request while the engine was perfectly ready.
+
 The lock is keyed by backend host, and by "host + GPU" when the backend declares `gpuIndex` (a backend field; for llama.cpp it falls back to `cppWorkerConfig.mainGpu`). This matters on multi-GPU machines: a card busy with generation no longer blocks text traffic going to another card on the same host. If only one side declares an index, the conflict is treated as host-wide (conservative).
 
 Waiting for a text request blocked by generation is capped by `queueWaitTimeoutSec` (not by the shared admission queue): after the cap the client gets the standard `503` with `Retry-After`, the `X-Queue-Wait-Reason: image_gpu_lock` header and a `waitReason` field in the body.
@@ -177,6 +179,13 @@ Waiting for a text request blocked by generation is capped by `queueWaitTimeoutS
 |---|---|
 | `GET /api/v1/image/contract` | the "decoded" contract: actual ports, endpoint list, request fields with normalization rules, limits, available models with defaults, curl examples, the **JSON Schema of the `generate_image` tool**, and instructions for an LLM agent (which URL to call, that the image arrives as `b64_json`) |
 | `GET /api/v1/image/capabilities` | aggregate over all healthy image backends: samplers/schedulers/loras/upscalers (union), conservative limit merge (`min_*` = max, `max_*` = min, queues = sum), models per backend, and a report of probe failures |
+
+**Where the image backend appears in general monitoring:** `GET /api/v1/metrics`
+and `GET /api/v1/cluster` expose `backendType: "image_cpp"` with the `imagePort`
+field (worker port) and an `image` block containing the worker state, the current
+model, every known model (`models[]`: name, state, family, size, VRAM estimate,
+active queries) and host VRAM. The WebUI (Backends/Dashboard/Monitor/Models) renders
+this data, including the 🎨 image.cpp badge.
 
 Both require `X-API-Token` (port 18081). The aggregate is cached for 8 s and the cache is invalidated whenever the backend set or statuses change.
 
@@ -224,10 +233,66 @@ curl -s -X POST http://localhost:18079/v1/images/generations \
 
 If `/v1/images/generations` answers `503 image_backend_unavailable`, no healthy `image_cpp` backend is registered. A `503 insufficient_vram` means the model does not fit the currently free VRAM — see the `hint` field in the response.
 
-## 10. End-to-end smoke stand
+## 10. Live test stand
 
-`scripts/image-e2e-smoke.ps1` builds a mock `sd-server` (`tools/mock-sdserver`), the `sdworker` and the balancer, starts them as real processes and runs 17 checks (engine spawn, load/unload, seed normalization on the wire, CORS/`OPTIONS`, full path through port 18079, text isolation, A1111 stubs, health probe). It shifts busy ports automatically and kills every process in `finally`.
+`scripts/image-e2e-smoke.ps1` builds a mock `sd-server` (`tools/mock-sdserver`), `sdworker` and the balancer, starts them as real processes and runs 21 checks. It shifts busy ports automatically and kills every process in `finally`.
 
 ```powershell
+# protocol run on the mock engine (seconds)
 powershell -ExecutionPolicy Bypass -File scripts/image-e2e-smoke.ps1
+
+# run on the REAL engine and a real model (Vulkan/CPU; minutes on CPU)
+powershell -ExecutionPolicy Bypass -File scripts/image-e2e-smoke.ps1 -Real
 ```
+
+With `-Real` the engine and the model are downloaded automatically if missing:
+`tools/fetch-sdcpp` fetches `stable-diffusion.cpp` release assets from GitHub and
+files from HuggingFace (Range resume, retries, `HF_TOKEN`):
+
+```powershell
+go run ./tools/fetch-sdcpp list-release leejet/stable-diffusion.cpp win-vulkan
+go run ./tools/fetch-sdcpp get-release  leejet/stable-diffusion.cpp win-vulkan .\bin\sdcpp
+go run ./tools/fetch-sdcpp hf-get   second-state/stable-diffusion-v1-5-GGUF stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf .\bin\hf-models
+```
+
+What `-Real` proves that the mock cannot: real `sd.cpp` accepts our requests, and
+**the image obtained through the balancer is a valid PNG of the expected size**
+(check B8; the file is saved into the stand working directory). Checks that rely on
+the mock's log (seed normalization, `init_image` for img2img) are marked `SKIP` in
+this mode.
+
+The same stand runs in CI (job `test-self-hosted`, step "Image chain E2E"); the
+in-process version of the client scenarios runs on the ubuntu fallback
+(`go test -run TestImageSmoke ./tests/`).
+
+## 11. Docker
+
+The image worker image is built from an `sd.cpp` release (Vulkan is the default
+path; the project publishes no Linux-CUDA release, CUDA is wired through your own
+binary in `docker/imageworker/vendor/`).
+
+```bash
+# bundled-full: the image worker starts BY DEFAULT (no profiles)
+docker compose -f deployments/docker-compose.bundled-full.yml up -d --build
+
+# stack: enable the image worker with the worker|full profile
+docker compose -f deployments/docker-compose.stack.yml --profile full up -d --build imageworker
+
+# image worker only (self-contained file)
+docker compose -f deployments/docker-compose.imageworker.yml --profile vulkan up -d
+
+# disable
+docker compose -f deployments/docker-compose.stack.yml --profile full rm -sf imageworker
+```
+
+The balancer publishes the OpenAI surface (`18079`) — that is where clients send
+requests: `POST http://<host>:18079/v1/images/generations`. To confirm the backend
+registered as an image backend:
+
+```bash
+curl -H "X-API-Token: $TOKEN" http://<host>:18081/api/v1/image/backends
+```
+
+NVIDIA requires nvidia-container-runtime with `NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics`
+(without `graphics` no Vulkan ICD is mounted into the container); AMD/Intel need
+`/dev/dri` plus `group_add: video,render` (see `docker-compose.imageworker.yml`).

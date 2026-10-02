@@ -179,6 +179,15 @@ VRAM известна, и модель в неё не влезает. Ответ
 `--vae-tiling` → `--vae-conv-direct` → `--taesd` → `--offload-to-cpu` → меньше
 разрешение.
 
+**Что именно сравнивается с свободной VRAM (важно).** Когда модель уже загружена
+(а гейт работает именно в этот момент — веса резидентны), с `free` сравнивается
+**рабочий набор генерации** (20% веса, но не меньше 256 MB и не больше 1 GB),
+а не полный вес модели: полный вес занят самой моделью, и требовать его повторно
+означало бы отказывать в генерации на любой карте, где после загрузки модели
+осталось меньше её веса. Вопрос «влезут ли веса» решается на этапе загрузки
+модели. Это исправлено после живого прогона: SD1.5 Q4 (2.6 GB) при свободных
+895 MB получала `503` на каждый запрос, хотя движок был готов.
+
 Лок работает по хосту бэкенда, а если у бэкенда задан `gpuIndex` (поле в карточке бэкенда; для llama.cpp подхватывается из `cppWorkerConfig.mainGpu`) — по паре «хост + карта». Это важно на multi-GPU машине: занятая генерацией карта больше не блокирует текстовый трафик, идущий на другую карту того же хоста. Если индекс известен только у одной стороны, конфликт считается по всему хосту (консервативно).
 
 Ожидание текстового запроса, заблокированного генерацией, ограничено `queueWaitTimeoutSec` (а не общей admission-очередью): по истечении клиент получает штатный `503` с `Retry-After`, заголовком `X-Queue-Wait-Reason: image_gpu_lock` и `waitReason` в теле.
@@ -189,6 +198,13 @@ VRAM известна, и модель в неё не влезает. Ответ
 |---|---|
 | `GET /api/v1/image/contract` | «расшифровка»: фактические порты, список endpoints, поля запроса с правилами нормализации, лимиты, доступные модели с дефолтами, curl-примеры, **JSON-Schema инструмента `generate_image`** и инструкция для LLM-агента (какой URL дёргать и что картинка приходит в `b64_json`) |
 | `GET /api/v1/image/capabilities` | агрегат по всем здоровым image-бэкендам: samplers/schedulers/loras/upscalers (объединение), консервативный мёрж лимитов (`min_*` = max, `max_*` = min, очереди = сумма), модели по бэкендам, отчёт об ошибках опроса |
+
+**Где image-бэкенд виден в общем мониторинге:** `GET /api/v1/metrics` и
+`GET /api/v1/cluster` отдают у бэкенда `backendType: "image_cpp"` поле
+`imagePort` (порт воркера) и блок `image` со состоянием воркера, текущей моделью,
+всеми известными моделями (`models[]`: имя, состояние, family, размер, оценка
+VRAM, активные запросы) и VRAM хоста. WebUI (Backends/Dashboard/Monitor/Models)
+показывает эти данные, включая бейдж 🎨 image.cpp.
 
 Оба — под `X-API-Token` (порт 18081). Кэш агрегата — 8 с, с инвалидацией при
 смене состава/статуса бэкендов.
@@ -239,10 +255,65 @@ curl -s -X POST http://localhost:18079/v1/images/generations \
 
 ## 10. Живой стенд для проверки
 
-`scripts/image-e2e-smoke.ps1` собирает мок `sd-server` (`tools/mock-sdserver`), `sdworker` и балансер, поднимает их реальными процессами и прогоняет 17 проверок (спавн движка, load/unload, нормализация seed на проводе, CORS/`OPTIONS`, полный путь через порт 18079, изоляция текста, A1111-заглушки, health-probe). Занятые порты скрипт сдвигает сам, а в `finally` гасит все процессы.
+`scripts/image-e2e-smoke.ps1` собирает мок `sd-server` (`tools/mock-sdserver`), `sdworker` и балансер, поднимает их реальными процессами и прогоняет 21 проверку. Занятые порты скрипт сдвигает сам, а в `finally` гасит все процессы.
 
 ```powershell
+# протокольный прогон на моке движка (секунды)
 powershell -ExecutionPolicy Bypass -File scripts/image-e2e-smoke.ps1
+
+# прогон на РЕАЛЬНОМ движке и реальной модели (Vulkan/CPU, минуты на CPU)
+powershell -ExecutionPolicy Bypass -File scripts/image-e2e-smoke.ps1 -Real
 ```
 
-Этот же стенд запускается в CI (job `test-self-hosted`, шаг «Image chain E2E»), а in-process версия клиентских сценариев — на ubuntu-fallback (`go test -run TestImageSmoke ./tests/`).
+В режиме `-Real` движок и модель скачиваются автоматически, если их нет:
+`tools/fetch-sdcpp` умеет забирать релиз `stable-diffusion.cpp` с GitHub и файлы
+с HuggingFace (докачка по Range, повторы, `HF_TOKEN`):
+
+```powershell
+go run ./tools/fetch-sdcpp list-release leejet/stable-diffusion.cpp win-vulkan
+go run ./tools/fetch-sdcpp get-release  leejet/stable-diffusion.cpp win-vulkan .\bin\sdcpp
+go run ./tools/fetch-sdcpp hf-list  second-state/stable-diffusion-v1-5-GGUF
+go run ./tools/fetch-sdcpp hf-get   second-state/stable-diffusion-v1-5-GGUF stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf .\bin\hf-models
+```
+
+Что именно проверяет `-Real` (то, чего мок доказать не может): реальный `sd.cpp`
+принимает наши запросы, и **картинка, полученная через балансер, — валидный PNG
+нужного размера** (проверка B8; файл сохраняется в рабочий каталог стенда).
+Проверки, опирающиеся на лог мока (нормализация seed, `init_image` у img2img),
+в этом режиме помечаются `SKIP`.
+
+Этот же стенд запускается в CI (job `test-self-hosted`, шаг «Image chain E2E»),
+а in-process версия клиентских сценариев — на ubuntu-fallback
+(`go test -run TestImageSmoke ./tests/`).
+
+## 11. Docker
+
+Образ image-воркера собирается из релиза `sd.cpp` (Vulkan — основной путь;
+Linux-CUDA-релизов у проекта нет, CUDA подключается своим бинарём через
+`docker/imageworker/vendor/`).
+
+```bash
+# bundled-full: image-воркер поднимается ПО УМОЛЧАНИЮ (без профилей)
+docker compose -f deployments/docker-compose.bundled-full.yml up -d --build
+
+# stack: image-воркер включается профилем worker|full
+docker compose -f deployments/docker-compose.stack.yml --profile full up -d --build imageworker
+
+# только image-воркер (самодостаточный файл)
+docker compose -f deployments/docker-compose.imageworker.yml --profile vulkan up -d
+
+# выключить
+docker compose -f deployments/docker-compose.stack.yml --profile full rm -sf imageworker
+```
+
+Балансер публикует OpenAI-поверхность (`18079`) — именно на неё шлют запросы
+клиенты: `POST http://<хост>:18079/v1/images/generations`. Проверить, что
+бэкенд зарегистрировался как image-бэкенд:
+
+```bash
+curl -H "X-API-Token: $TOKEN" http://<хост>:18081/api/v1/image/backends
+```
+
+Для NVIDIA нужен nvidia-container-runtime с `NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics`
+(без `graphics` в контейнер не пробрасывается Vulkan-ICD); для AMD/Intel — проброс
+`/dev/dri` и `group_add: video,render` (см. `docker-compose.imageworker.yml`).

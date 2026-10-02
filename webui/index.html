@@ -83,6 +83,14 @@
                 <a href="#backends" class="nav-item" data-page="backends">
                     <span class="nav-icon-wrap"><i class="fas fa-server fa-fw"></i></span> <span data-i18n="nav.backends">Бэкенды</span>
                 </a>
+                <!-- R-Image: управление image-бэкендами (тип image_cpp).
+                     Пункт скрыт по умолчанию и появляется ТОЛЬКО когда в кластере
+                     есть хотя бы один image-бэкенд: видимость переключает
+                     js/modules/image-backends-page.js (syncVisibility) на каждом
+                     опросе GET /api/v1/cluster, а не только при входе на страницу. -->
+                <a href="#image-backends" class="nav-item" data-page="image-backends" style="display:none">
+                    <span class="nav-icon-wrap"><i class="fas fa-images fa-fw"></i></span> <span data-i18n="nav.image_backends">Image-бэкенды</span>
+                </a>
                 <a href="#models" class="nav-item" data-page="models">
                     <span class="nav-icon-wrap"><i class="fas fa-brain fa-fw"></i></span> <span data-i18n="nav.models">Модели</span>
                 </a>
@@ -334,6 +342,61 @@
                                 <tr><td colspan="14" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Image Backends Page (R-Image): управление бэкендами генерации
+                 изображений (тип backendType=image_cpp). Отдельная страница, а не
+                 вкладка внутри «Бэкендов»: у image-воркера свои поля
+                 (imagePort/gpuIndex) и блок image с состоянием модели и потоком
+                 запросов, которых нет у Ollama/llama.cpp бэкендов.
+                 Страница скрыта, пока в кластере нет ни одного image_cpp-бэкенда
+                 (js/modules/image-backends-page.js, syncVisibility). -->
+            <div class="page" id="image-backends-page" style="display:none">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 data-i18n="imageBackends.title">Управление image-бэкендами</h3>
+                        <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <button class="btn btn-secondary" id="imageBackendsRefresh" data-i18n="imageBackends.refresh">Обновить</button>
+                            <button class="btn btn-primary" id="imageBackendsAdd" data-i18n="imageBackends.add">Добавить бэкенд</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <p style="margin:0 0 6px;font-size:12px;color:var(--text-muted);" data-i18n="imageBackends.hint">Бэкенды генерации изображений (тип image_cpp): порт воркера, GPU, состояние, модели и поток запросов.</p>
+                        <p style="margin:0 0 12px;font-size:12px;color:var(--text-muted);">
+                            <i class="fas fa-circle-info" aria-hidden="true"></i>
+                            <span data-i18n="imageBackends.policy">Сосуществование с текстом</span>:
+                            <!-- Фактическое значение подгружает модуль страницы из
+                                 /api/v1/metrics (image.coexistence_policy + лимиты гейта).
+                                 Литерал «image_cpp» здесь стоять не должен: это ТИП
+                                 бэкенда, а не значение политики (выглядело как настройка). -->
+                            <span id="imageBackendsPolicy">—</span>
+                        </p>
+                        <div id="imageBackendsNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="imageBackendsTable">
+                                <thead>
+                                    <tr>
+                                        <th data-i18n="imageBackends.col_id">ID</th>
+                                        <th data-i18n="imageBackends.col_name">Имя</th>
+                                        <th data-i18n="imageBackends.col_host">Хост</th>
+                                        <th data-i18n="imageBackends.col_port">Порт воркера</th>
+                                        <th data-i18n="imageBackends.col_gpu">GPU</th>
+                                        <th data-i18n="imageBackends.col_state">Состояние</th>
+                                        <th data-i18n="imageBackends.col_model">Текущая модель</th>
+                                        <th data-i18n="imageBackends.col_vram">VRAM</th>
+                                        <th data-i18n="imageBackends.col_requests">Запросы</th>
+                                        <th data-i18n="imageBackends.col_rps">RPS</th>
+                                        <th data-i18n="imageBackends.col_avg">Среднее время</th>
+                                        <th data-i18n="imageBackends.col_actions">Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="imageBackendsBody">
+                                    <tr><td colspan="12" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2096,6 +2159,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          Грузится ДО image-page.js: его init() вызывает window.ImageProfiles.mount. -->
     <script defer src="js/modules/image-profiles.js?v=R83"></script>
     <script defer src="js/modules/image-page.js?v=R83"></script>
+    <script defer src="js/modules/image-backends-page.js?v=R83"></script>
     <script defer src="js/modules/websocket.js?v=R83"></script>
     <script defer src="js/modules/renderers.js?v=R83"></script>
     <!-- R54.5 (2026-08-24): AutoTune visibility (Phase 1: read-only badge) -->

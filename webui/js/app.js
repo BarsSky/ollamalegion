@@ -167,7 +167,7 @@ const ui = (function () {
 
         refreshPage(page);
 
-        if (page === 'backends' || page === 'models') {
+        if (page === 'backends' || page === 'models' || page === 'image-backends') {
             fetchClusterState();
         }
     }
@@ -242,6 +242,26 @@ const ui = (function () {
             case 'backends':
                 var filteredBackendsB = filterBackendsForUI(data.backends);
                 backendsPage([...filteredBackendsB].sort(function(a, b) { return (a.id || '').localeCompare(b.id || ''); }));
+                // R-Image: видимость пункта «Image-бэкенды» зависит от состава
+                // кластера, а не от активной страницы, поэтому синхронизируем её
+                // и здесь (в дополнение к fetchClusterState).
+                if (window.ImageBackendsPage) {
+                    window.ImageBackendsPage.syncVisibility(data.backends);
+                }
+                break;
+            case 'image-backends':
+                // R-Image: страница управления image-бэкендами (тип image_cpp).
+                // Данные те же, что у страницы «Бэкенды» - массив из
+                // GET /api/v1/cluster (см. fetchClusterState).
+                if (window.ImageBackendsPage) {
+                    window.ImageBackendsPage.mount();
+                    window.ImageBackendsPage.render(data.backends);
+                    window.ImageBackendsPage.syncVisibility(data.backends);
+                    // Ключа header.image-backends в i18n нет (набор ключей
+                    // страницы зафиксирован), а switchPage() подставил бы в
+                    // заголовок сырой ключ - перезаписываем своим.
+                    if (window.I18N) Utils.setText('pageTitle', I18N.t('imageBackends.title'));
+                }
                 break;
             case 'models':
                 modelsPage(filterBackendsForUI(data.backends));
@@ -824,6 +844,21 @@ const ui = (function () {
             // (handlers_backends.go:189-214), то есть НАДМНОЖЕСТВО нужных полей.
             // Мержим их в state.backends, метрики из /cluster имеют приоритет.
             state.backends = await enrichBackendsWithConfig(state.backends || []);
+
+            // R-Image: пункт навигации и страница «Image-бэкенды» существуют
+            // только пока в кластере есть image_cpp-бэкенд. Синхронизируем
+            // видимость на КАЖДОМ опросе /api/v1/cluster (а не только при входе
+            // на страницу «Бэкенды»), иначе вкладка не появлялась бы после
+            // регистрации image-воркера и не исчезала бы после удаления.
+            if (window.ImageBackendsPage) {
+                window.ImageBackendsPage.syncVisibility(state.backends);
+                // Пока страница открыта, обновляем и таблицу: periodic refresh
+                // перерисовывает только settings, поэтому счётчики запросов и RPS
+                // воркера замирали бы до ручного «Обновить».
+                if (currentPage === 'image-backends') {
+                    window.ImageBackendsPage.render(state.backends);
+                }
+            }
 
             // R59.4 (2026-09-03): updateBackends moved to app-listeners.js in R57.3;
             // call via App.* instead of local ref (which was left behind by the

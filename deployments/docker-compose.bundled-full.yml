@@ -1,7 +1,8 @@
 # =============================================================================
 # OllamaLegion — bundled-full stack (single compose file)
 # =============================================================================
-# Полный стек в ОДНОМ файле: loadbalancer + cppworker-gpu + agent-sidecar + webui.
+# Полный стек в ОДНОМ файле: loadbalancer + cppworker-gpu + agent-sidecar + webui
+# + imageworker (R-Image: генерация изображений, sd.cpp, порт 18093).
 # Поднимается одной командой:
 #
 #   cd deployments
@@ -36,6 +37,10 @@
 #   - cppworker-gpu — llama.cpp backend (основной inference)
 #   - agent         — sidecar для GPU/VRAM/CPU метрик (отдельный backend registration)
 #   - webui         — WebUI для управления и мониторинга
+#   - imageworker   — R-Image: image_cpp-бэкенд (stable-diffusion.cpp, порт 18093);
+#                     клиенты идут на OpenAI-поверхность балансера :18079
+#                     (/v1/images/*). Регистрируется сам (Go-side). Выключение —
+#                     --scale imageworker=0 (см. блок сервиса ниже).
 #
 # ВАЖНО: после изменения CPPWORKER_API_TOKEN в .env нужно пересобрать
 #        и перезапустить стек (token baked into env at startup).
@@ -57,6 +62,10 @@ services:
     ports:
       - "${LB_PORT:-18080}:18080"      # Ollama API proxy
       - "${LB_ADMIN_PORT:-18081}:18081"  # Admin API
+      # R-Image (2026-09-27): OpenAI-поверхность image-генерации (/v1/images/*).
+      # Внутри контейнера порт 18079 (loadBalancer.openAIPort / LB_OPENAI_PORT,
+      # дефолт 18079); здесь меняется только ВНЕШНИЙ порт.
+      - "${LB_OPENAI_PORT:-18079}:18079"
     environment:
       - GIN_MODE=release
       - LOG_LEVEL=${LB_LOG_LEVEL:-info}
@@ -283,6 +292,109 @@ services:
       loadbalancer:
         condition: service_healthy
 
+  # ===========================================================================
+  # 5. IMAGEWORKER — R-Image: генерация изображений (sdworker → sd.cpp)
+  # ===========================================================================
+  # Бэкенд типа image_cpp (порт 18093). У сервиса НЕТ профиля — то есть он
+  # АКТИВЕН В ЭТОМ СТЕКЕ ПО УМОЛЧАНИЮ (это и было требованием: раньше файл
+  # docker-compose.imageworker.yml существовал, но ни к одному стеку не
+  # подключался, и образ «не был активен в Docker»).
+  #
+  # Маршрутизация: клиент → балансер :18079 (OpenAI-поверхность) → imageworker
+  # :18093. Текстовый трафик на image-бэкенд не попадает (фильтр по типу,
+  # internal/balancer/backend_type_filter.go).
+  #
+  # Регистрация — Go-side, самим воркером (cmd/sdworker/balancer_register.go):
+  # POST /api/v1/backends {backendType:"image_cpp", imagePort:18093}. Agent для
+  # image-бэкенда не нужен (он умеет только llama_cpp/ollama), поэтому метрик
+  # GPU у него в WebUI нет.
+  #
+  # ⚠️ GPU: Linux-CUDA-релизов sd.cpp НЕ существует (в master-929 только
+  # CPU/Vulkan/ROCm; CUDA-ассеты — под Windows). Default = Vulkan, драйвер
+  # NVIDIA отдаёт runtime: nvidia + capability `graphics` (она монтирует
+  # nvidia_icd.json — без неё Vulkan не видит NVIDIA-карту). /dev/dri нужен
+  # AMD/Intel, не NVIDIA. CUDA-путь = свой бинарь sd-server:
+  #   cp build/bin/sd-server docker/imageworker/vendor/sd-server-cuda
+  #   SD_SERVER_BIN=sd-server-cuda \
+  #   IMAGE_WORKER_RUNTIME_BASE=nvidia/cuda:12.6.0-runtime-ubuntu24.04 \
+  #   docker compose -f docker-compose.bundled-full.yml \
+  #     --env-file .env.bundled-full up -d --build imageworker
+  #
+  # ВЫКЛЮЧИТЬ (образ не собран / GPU занят текстовой моделью):
+  #   основной : docker compose -f docker-compose.bundled-full.yml \
+  #                --env-file .env.bundled-full up -d --scale imageworker=0
+  #   гарантированный (любая версия compose; если контейнер уже создан):
+  #              docker compose -f docker-compose.bundled-full.yml \
+  #                --env-file .env.bundled-full rm -sf imageworker
+  #   насовсем : убрать сервис из этого файла.
+  # Обратно: up -d без --scale imageworker=0 (образ соберётся при --build).
+  # ⚠️ container_name задан (как у остальных сервисов), поэтому поднять больше
+  # одного контейнера compose не даст; выключение и запуск одного — работают.
+  #
+  # МОДЕЛИ: bundle = каталог <models>/image/<имя>/ (diffusion + VAE + text
+  # encoders + profile.json). Пустой каталог — не ошибка: воркер поднимется,
+  # /health = 200, генерация ответит model_not_found.
+  # ===========================================================================
+  imageworker:
+    build:
+      context: ..
+      dockerfile: docker/imageworker/Dockerfile
+      args:
+        SD_SERVER_REVISION: ${SD_SERVER_REVISION:-master-929-3f8527a}
+        SD_SERVER_ASSET: ${SD_SERVER_ASSET:-sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip}
+        SD_SERVER_BIN: ${SD_SERVER_BIN:-}
+        RUNTIME_BASE: ${IMAGE_WORKER_RUNTIME_BASE:-ubuntu:24.04}
+    image: ollama-legion/imageworker:${IMAGE_WORKER_TAG:-vulkan}
+    container_name: ol-bundled-full-imageworker
+    restart: unless-stopped
+    # Тот же GPU-путь, что у cppworker-gpu и agent выше.
+    runtime: nvidia
+    environment:
+      - SDWORKER_HOST=0.0.0.0
+      - SDWORKER_PORT=18093
+      - SDWORKER_SD_SERVER_PORT=${SDWORKER_SD_SERVER_PORT:-18094}
+      - SDWORKER_IMAGE_MODELS_DIR=/app/models/image
+      - SDWORKER_IMAGES_DIR=/app/data/images
+      - SDWORKER_IDLE_UNLOAD_MINUTES=${SDWORKER_IDLE_UNLOAD_MINUTES:-30}
+      - SDWORKER_MAX_CONCURRENT=${SDWORKER_MAX_CONCURRENT:-64}
+      - SDWORKER_GENERATION_TIMEOUT_SEC=${SDWORKER_GENERATION_TIMEOUT_SEC:-600}
+      - SDWORKER_PRELOAD_MODEL=${SDWORKER_PRELOAD_MODEL:-}
+      # response_format:"url" отдаёт ссылку на этот адрес; для клиентов не с
+      # этой машины задайте SDWORKER_BASE_URL=http://<хост>:18093.
+      - SDWORKER_BASE_URL=${SDWORKER_BASE_URL:-http://localhost:18093}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_MIRROR=${HF_MIRROR:-}
+      # capability graphics = Vulkan-ICD NVIDIA (compute,utility — только CUDA/NVML).
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+      # Авторегистрация: SDWORKER_* — имена, которые читает Go-код воркера.
+      - SDWORKER_BALANCER_URL=${SDWORKER_BALANCER_URL:-${BALANCER_URL:-http://loadbalancer:18081}}
+      - SDWORKER_BALANCER_TOKEN=${SDWORKER_BALANCER_TOKEN:-${CPPWORKER_API_TOKEN:-}}
+      - SDWORKER_BACKEND_ID=${SDWORKER_BACKEND_ID:-imageworker}
+      - SDWORKER_ADVERTISE_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}
+      - SDWORKER_REGISTER_DISABLE=${SDWORKER_REGISTER_DISABLE:-false}
+    volumes:
+      # Один каталог моделей с cppworker-gpu: .gguf в корне, image-bundle'ы в image/,
+      # temp-загрузки HF — в downloads/ (иначе .download на 6-12 GB терялся бы
+      # при пересоздании контейнера).
+      - ../models:/app/models:rw
+      - ../data/images:/app/data/images:rw
+      - imageworker_cache:/app/.cache/huggingface
+    ports:
+      - "${SDWORKER_PORT:-18093}:18093"
+    networks:
+      - ol-bundled-net
+    healthcheck:
+      test: ["CMD", "/app/sdworker", "-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Первый старт движка = прогрев Vulkan и (опционально) загрузка модели.
+      start_period: 60s
+    depends_on:
+      loadbalancer:
+        condition: service_healthy
+
 networks:
   ol-bundled-net:
     driver: bridge
@@ -292,3 +404,5 @@ networks:
 volumes:
   balancer_data:
   cppworker_cache:
+  # HF-кэш image-воркера.
+  imageworker_cache:

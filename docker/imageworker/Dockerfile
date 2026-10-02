@@ -11,26 +11,55 @@
 # ПОЧЕМУ ГОТОВЫЙ РЕЛИЗ, А НЕ СБОРКА ИЗ ИСХОДНИКОВ:
 # релизы sd.cpp выходят по нескольку раз в день, а сборка из исходников — это
 # полный ggml-подмодуль и десятки минут CI. Для основного пути берём
-# официальный Linux-Vulkan-ассет (~37 MB) — он работает на AMD/Intel/NVIDIA
+# официальный Linux-Vulkan-ассет (~35 MB) — он работает на AMD/Intel/NVIDIA
 # через драйвер Vulkan, то есть один образ покрывает почти всё железо.
+#
+# ┌─ VULKAN И NVIDIA: ЧТО ИМЕННО НУЖНО ────────────────────────────────────────┐
+# │ mesa-vulkan-drivers (в образе) даёт ICD для AMD/Intel (RADV/ANV) и          │
+# │ software-lavapipe, но НЕ для NVIDIA: проприетарный Vulkan-драйвер NVIDIA    │
+# │ (nvidia_icd.json + libnvidia-glcore) попадает в контейнер ТОЛЬКО через     │
+# │ NVIDIA Container Toolkit, то есть `runtime: nvidia` + capability           │
+# │ `graphics` (compute,utility дают лишь CUDA/NVML). Проброс /dev/dri для      │
+# │ NVIDIA бесполезен, он нужен AMD/Intel — см. devices: в                    │
+# │ deployments/docker-compose.imageworker.yml.                                 │
+# └────────────────────────────────────────────────────────────────────────────┘
 #
 # ⚠️ CUDA: LINUX-CUDA-РЕЛИЗА У stable-diffusion.cpp НЕТ.
 # В релизе master-929 присутствуют: Linux-Ubuntu-24.04-x86_64 (CPU),
 # -vulkan, -rocm-7.14.0, а CUDA-сборки есть только под Windows.
 # Поэтому CUDA-вариант возможен ТОЛЬКО сборкой из исходников
 # (`cmake -B build -DSD_CUDA=ON`, нужен CUDA Toolkit) — либо подсунуть готовый
-# бинарь через build-arg SD_SERVER_BIN=/path/inside/build/context:
+# бинарь через build-arg SD_SERVER_BIN (ИМЯ ФАЙЛА внутри
+# docker/imageworker/vendor/; каталог существует в репозитории, поэтому COPY
+# не падает, когда бинарь не задан):
 #
+#   cp build/bin/sd-server docker/imageworker/vendor/sd-server-cuda
 #   docker build -f docker/imageworker/Dockerfile \
-#     --build-arg SD_SERVER_URL= \
-#     --build-arg SD_SERVER_BIN=./vendor/sd-server-cuda \
+#     --build-arg SD_SERVER_BIN=sd-server-cuda \
+#     --build-arg RUNTIME_BASE=nvidia/cuda:12.6.0-runtime-ubuntu24.04 \
 #     -t ollama-legion/imageworker:cuda .
+#
+#   ⚠️ Два ограничения контекста сборки:
+#     1) .dockerignore в корне репо исключает *.so — если вашему бинарю НУЖНЫ
+#        .so рядом с ним, в образ они не попадут (соберите статически либо
+#        доработайте .dockerignore, он вне зоны этого Dockerfile);
+#     2) CUDA-сборка sd.cpp линкуется с libcudart/libcublas: nvidia-runtime
+#        монтирует только ДРАЙВЕР, а эти библиотеки даёт базовый образ, поэтому
+#        для CUDA нужен RUNTIME_BASE=nvidia/cuda:<ver>-runtime-ubuntu24.04.
 #
 # ЮБИЛЕЙНЫЙ ВАЖНЫЙ МОМЕНТ ПРО ВЕРСИЮ: имена флагов sd-server менялись
 # (--host/--port → --listen-ip/--listen-port после master-600). Контракт
 # sdworker написан под types.PinnedSDServerRevision; пин ниже фиксирует ту же
 # ревизию, чтобы сборка и контракт не разъезжались молча.
 # =============================================================================
+
+# Глобальный build-arg: только объявленный ДО первого FROM ARG можно
+# подставлять в строку FROM — это требование Dockerfile.
+# RUNTIME_BASE — база стадии runtime. Дефолт ubuntu:24.04 (Vulkan/CPU). Для CUDA
+# подставляйте образ с CUDA-рантаймом (libcudart/libcublas), например
+# nvidia/cuda:12.6.0-runtime-ubuntu24.04: nvidia-container-runtime монтирует
+# только драйвер, и без этих библиотек бинарь не запустится.
+ARG RUNTIME_BASE=ubuntu:24.04
 
 FROM golang:1.24-alpine AS builder
 
@@ -57,20 +86,38 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
 FROM alpine:3.20 AS fetch-sd-server
 
 ARG SD_SERVER_REVISION=master-929-3f8527a
+# Дефолтный ассет — ровно то имя, что лежит в релизе master-929-3f8527a
+# (Linux, Ubuntu 24.04, x86_64, Vulkan). CPU-вариант того же релиза:
+#   sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64.zip
 ARG SD_SERVER_ASSET=sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip
 ARG SD_SERVER_URL=https://github.com/leejet/stable-diffusion.cpp/releases/download/${SD_SERVER_REVISION}/${SD_SERVER_ASSET}
-# SD_SERVER_BIN — «подсунуть свой бинарь» (сборка из исходников, CUDA-вариант).
-# Путь трактуется относительно build context (например ./vendor/sd-server).
+# SD_SERVER_BIN — «подсунуть свой бинарь» (CUDA / своя сборка из исходников).
+# Значение — имя файла внутри docker/imageworker/vendor/ (context = корень репо).
 ARG SD_SERVER_BIN=
 
-RUN apk add --no-cache curl unzip && mkdir -p /sdserver
+# vendor/ существует в контексте ВСЕГДА (в нём лежит .gitkeep), поэтому этот
+# COPY не падает при пустом SD_SERVER_BIN — в отличие от `COPY ${SD_SERVER_BIN}`.
+COPY docker/imageworker/vendor/ /provided/
+
+RUN apk add --no-cache curl unzip && mkdir -p /sdserver /out
+# В обоих режимах каталог движка переносится ЦЕЛИКОМ (`cp -a <dir>/. /out/`):
+# рядом с sd-server лежат его .so, поодиночке бинарь не запустится.
+# Комментарии намеренно вне RUN: строки с `#` внутри продолжения инструкции
+# парсер Dockerfile понимает не во всех версиях.
 RUN set -eux; \
     if [ -n "${SD_SERVER_BIN}" ]; then \
-        # Свой бинарь передаётся как часть build context (путь внутри него)
-        # и монтируется в отдельный stage ниже; здесь только создаём каталог,
-        # чтобы COPY --from не падал при пустом build-arg.
-        echo ">>> provided binary mode: ${SD_SERVER_BIN}"; \
-        mkdir -p /out; \
+        name="${SD_SERVER_BIN#./}"; \
+        src="/provided/${name}"; \
+        if [ ! -f "${src}" ]; then \
+            echo "ERROR: SD_SERVER_BIN='${SD_SERVER_BIN}' не найден (искал ${src})" >&2; \
+            echo "       положите бинарь в docker/imageworker/vendor/ и передайте имя файла:" >&2; \
+            echo "       docker build --build-arg SD_SERVER_BIN=sd-server-cuda ..." >&2; \
+            exit 1; \
+        fi; \
+        echo ">>> provided binary mode: ${src}"; \
+        cp -a /provided/. /out/; \
+        if [ "${name}" != "sd-server" ]; then cp -a "${src}" /out/sd-server; fi; \
+        chmod +x /out/sd-server; \
     else \
         echo ">>> downloading ${SD_SERVER_URL}"; \
         curl -fsSL -o /tmp/sd.zip "${SD_SERVER_URL}"; \
@@ -79,12 +126,10 @@ RUN set -eux; \
         found="$(find /sdserver -type f -name 'sd-server' | head -n1)"; \
         if [ -z "${found}" ]; then \
             echo "ERROR: sd-server не найден в релизном архиве ${SD_SERVER_URL}" >&2; \
-            echo "       (для CUDA под Linux готового релиза НЕТ — задайте --build-arg SD_SERVER_BIN=./vendor/sd-server-cuda)" >&2; \
+            echo "       (для CUDA под Linux готового релиза НЕТ — задайте --build-arg SD_SERVER_BIN=sd-server-cuda)" >&2; \
             exit 1; \
         fi; \
         dir="$(dirname "${found}")"; \
-        mkdir -p /out; \
-        # Переносим каталог целиком: рядом с sd-server лежат его .so.
         cp -a "${dir}"/. /out/; \
         chmod +x /out/sd-server; \
     fi; \
@@ -93,12 +138,16 @@ RUN set -eux; \
 # -----------------------------------------------------------------------------
 # Stage 3: runtime
 # -----------------------------------------------------------------------------
-FROM ubuntu:24.04 AS runtime
+# База этой стадии задаётся глобальным ARG RUNTIME_BASE (см. начало файла):
+# ubuntu:24.04 по умолчанию, nvidia/cuda:<ver>-runtime-ubuntu24.04 для CUDA.
+FROM ${RUNTIME_BASE} AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Зависимости рантайма:
-#   libvulkan1 + mesa-vulkan-drivers — Vulkan-сборка (основной путь);
+#   libvulkan1 — Vulkan LOADER, обязателен (sd.cpp-Vulkan линкуется с ним);
+#   mesa-vulkan-drivers — ICD-драйверы AMD/Intel (RADV/ANV) + software-lavapipe
+#     (аварийный путь «Vulkan без GPU»); ICD NVIDIA приезжает из nvidia-runtime;
 #   libgomp1 — OpenMP (движок использует его для CPU-части);
 #   libstdc++6 — C++ рантайм (в базовом образе есть, фиксируем явно);
 #   ca-certificates/tzdata — TLS и корректное время в логах;
@@ -119,11 +168,17 @@ WORKDIR /app
 COPY --from=builder /out/sdworker /app/sdworker
 COPY --from=fetch-sd-server /out/ /app/sd-server/
 COPY docker/imageworker/entrypoint.sh /entrypoint.sh
+
+# UID/GID воркера — 1000; entrypoint сбрасывает привилегии через setpriv по
+# ЧИСЛАМ, поэтому имена пользователя/группы не обязательны. В ubuntu:24.04
+# UID/GID 1000 уже занят пользователем `ubuntu`, поэтому создаём «только если
+# свободно»: раньше здесь стоял alpine-синтаксис `addgroup -gid` + безусловный
+# groupadd — на ubuntu это падало и ломало сборку целиком.
 RUN chmod +x /entrypoint.sh /app/sd-server/sd-server && \
     mkdir -p /app/models/image /app/data/images /app/lora /app/upscalers && \
-    addgroup -gid 1000 appgroup 2>/dev/null || groupadd -g 1000 appgroup && \
-    useradd -u 1000 -g appgroup -M -s /usr/sbin/nologin appuser && \
-    chown -R appuser:appgroup /app
+    (getent group 1000 >/dev/null || groupadd -g 1000 appgroup) && \
+    (getent passwd 1000 >/dev/null || useradd -u 1000 -g 1000 -M -s /usr/sbin/nologin appuser) && \
+    chown -R 1000:1000 /app
 
 # Пути по умолчанию: sd-server берём из образа, модели — из volume.
 ENV SDWORKER_PORT=18093 \
@@ -141,10 +196,10 @@ ENV SDWORKER_PORT=18093 \
 # воркера, иначе клиенты обойдут нормализацию seed/размеров.
 EXPOSE 18093
 
-# HEALTHCHECK через сам бинарник: curl может отсутствовать в минимальном
-# образе, а `sdworker -healthcheck` есть всегда.
+# HEALTHCHECK через сам бинарник (как у cppworker): `sdworker -healthcheck`
+# есть всегда, а curl в минимальном образе может отсутствовать.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD /app/sdworker -healthcheck || exit 1
+    CMD ["/app/sdworker", "-healthcheck"]
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["--port", "18093"]

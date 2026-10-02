@@ -4,19 +4,33 @@
 # =============================================================================
 #
 # Использование:
-#   Vulkan (AMD/Intel/NVIDIA, основной путь — образ ~37 MB движка):
-#     docker compose -f deployments/docker-compose.imageworker.yml --profile vulkan up -d
+#   Vulkan (AMD/Intel/NVIDIA; linux-релиз sd.cpp, ~35 MB движка):
+#     AMD/Intel (GPU через /dev/dri):
+#       docker compose -f deployments/docker-compose.imageworker.yml --profile vulkan up -d
+#     NVIDIA: у сервиса imageworker-vulkan ниже проброшен /dev/dri — это путь
+#     AMD/Intel. Для NVIDIA он бесполезен (своего Vulkan-ICD в образе нет),
+#     нужен nvidia-container-runtime + capability graphics: см. закомментированный
+#     блок `runtime: nvidia` у imageworker-vulkan. Готовый NVIDIA-дефолт — в
+#     docker-compose.stack.yml / docker-compose.bundled-full.yml (там сервис
+#     imageworker уже поднимается с runtime: nvidia).
 #   CPU (без GPU, медленно):
 #     docker compose -f deployments/docker-compose.imageworker.yml --profile cpu up -d
-#   CUDA (NVIDIA; ЛИНУКС-CUDA-РЕЛИЗА sd.cpp НЕТ — только свой бинарь):
-#     SD_SERVER_BIN=./vendor/sd-server-cuda \
+#   CUDA (NVIDIA; LINUX-CUDA-РЕЛИЗА sd.cpp НЕТ — только свой бинарь):
+#     cp build/bin/sd-server docker/imageworker/vendor/sd-server-cuda   # из своей сборки
+#     SD_SERVER_BIN=sd-server-cuda \
+#     IMAGE_WORKER_RUNTIME_BASE=nvidia/cuda:12.6.0-runtime-ubuntu24.04 \
 #     docker compose -f deployments/docker-compose.imageworker.yml --profile cuda up -d --build
+#   ⚠️ SD_SERVER_BIN — ИМЯ ФАЙЛА внутри docker/imageworker/vendor/ (не путь в
+#   контейнере): Dockerfile копирует этот каталог в build-стадию и кладёт файл
+#   как /app/sd-server/sd-server, то есть туда, где его ждёт SDWORKER_SD_SERVER_BIN.
 #
 # Сборка образов вручную:
 #   Vulkan: docker build -t ollama-legion/imageworker:vulkan -f docker/imageworker/Dockerfile \
 #             --build-arg SD_SERVER_REVISION=master-929-3f8527a \
 #             --build-arg SD_SERVER_ASSET=sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip .
 #   CPU:    ... --build-arg SD_SERVER_ASSET=sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64.zip .
+#   CUDA:   ... --build-arg SD_SERVER_BIN=sd-server-cuda \
+#               --build-arg RUNTIME_BASE=nvidia/cuda:12.6.0-runtime-ubuntu24.04 .
 #
 # Переменные окружения:
 #   SDWORKER_PORT            — внешний порт API воркера (18093)
@@ -24,7 +38,12 @@
 #   IMAGE_MODELS_DIR         — каталог bundle'ов на хосте (./models/image)
 #   SDWORKER_PRELOAD_MODEL   — модель для загрузки при старте (пусто = по запросу)
 #   SDWORKER_IDLE_UNLOAD_MINUTES — авто-выгрузка (0 = выключено)
-#   SD_SERVER_BIN            — путь к своему бинарю sd-server (CUDA-вариант)
+#   SD_SERVER_ASSET          — имя ассета релиза sd.cpp (vulkan/CPU)
+#   SD_SERVER_BIN            — имя СВОЕГО бинаря в docker/imageworker/vendor/
+#                              (CUDA-вариант; в контейнере = /app/sd-server/sd-server)
+#   IMAGE_WORKER_RUNTIME_BASE — база runtime для CUDA-варианта
+#                              (nvidia/cuda:<ver>-runtime-ubuntu24.04: нужны
+#                              libcudart/libcublas, nvidia-runtime даёт только драйвер)
 #   HF_TOKEN / HF_MIRROR     — доступ к HuggingFace (gated модели / зеркало)
 #   SDWORKER_BALANCER_URL    — URL балансера для авторегистрации
 #   SDWORKER_BACKEND_ID      — id бэкенда (по умолчанию imageworker-<host>)
@@ -41,6 +60,9 @@ x-imageworker-common: &imageworker-common
       SD_SERVER_REVISION: ${SD_SERVER_REVISION:-master-929-3f8527a}
       SD_SERVER_ASSET: ${SD_SERVER_ASSET:-sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip}
       SD_SERVER_BIN: ${SD_SERVER_BIN:-}
+      # CUDA-вариант требует базы с CUDA-рантаймом (libcudart/libcublas):
+      # nvidia-container-runtime монтирует только драйвер.
+      RUNTIME_BASE: ${IMAGE_WORKER_RUNTIME_BASE:-ubuntu:24.04}
   container_name: ollama-legion-imageworker
   restart: unless-stopped
   ports:
@@ -111,6 +133,16 @@ services:
   # ПОЧЕМУ НЕТ deploy.resources.reservations.devices (как у cppworker-gpu):
   # этот блок — NVIDIA-специфичный (driver: nvidia). Vulkan работает через
   # /dev/dri, поэтому пробрасываем устройство и группы render/video.
+  #
+  # ⚠️ NVIDIA И /dev/dri: в образе есть только mesa-драйверы (AMD/Intel) +
+  # software-lavapipe. Проприетарный Vulkan-ICD NVIDIA приезжает ИЗ ДРАЙВЕРА
+  # через nvidia-container-runtime, поэтому для NVIDIA вместо блока devices
+  # нужны те две строки, что закомментированы ниже (capability graphics — без
+  # неё монтируются только CUDA/NVML, Vulkan не увидит GPU). Готовый вариант с
+  # runtime: nvidia — в docker-compose.stack.yml / docker-compose.bundled-full.yml.
+  #
+  #   runtime: nvidia
+  #   environment: [..., NVIDIA_VISIBLE_DEVICES=all, NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics]
   # ===========================================================================
   imageworker-vulkan:
     <<: *imageworker-common

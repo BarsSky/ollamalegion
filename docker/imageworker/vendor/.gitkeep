@@ -1,0 +1,27 @@
+Сюда кладётся СВОЙ бинарь sd-server (CUDA-вариант / своя сборка из исходников).
+
+Зачем каталог вообще существует: Dockerfile копирует его в build-стадию
+безусловно (`COPY docker/imageworker/vendor/ /provided/`), поэтому сборка
+основного (Vulkan) образа не падает, когда свой бинарь не задан. Этот файл —
+заполнитель, чтобы каталог не был пустым.
+
+Как использовать (CUDA: готовых Linux-CUDA-релизов stable-diffusion.cpp НЕТ):
+
+  1. соберите sd-server из исходников:
+       git clone --recursive https://github.com/leejet/stable-diffusion.cpp
+       cmake -B build -DSD_CUDA=ON && cmake --build build --config Release -j
+  2. положите бинарь СЮДА (имя произвольное):
+       cp build/bin/sd-server docker/imageworker/vendor/sd-server-cuda
+  3. соберите образ, указав имя файла И базу с CUDA-рантаймом
+     (libcudart/libcublas; nvidia-container-runtime монтирует только драйвер):
+       docker build -f docker/imageworker/Dockerfile \
+         --build-arg SD_SERVER_BIN=sd-server-cuda \
+         --build-arg RUNTIME_BASE=nvidia/cuda:12.6.0-runtime-ubuntu24.04 \
+         -t ollama-legion/imageworker:cuda .
+     В образе бинарь окажется как /app/sd-server/sd-server — ровно там, где его
+     ждёт SDWORKER_SD_SERVER_BIN (см. ENV в Dockerfile).
+
+⚠️ Ограничения контекста сборки (корневой .dockerignore, вне зоны этого каталога):
+  - `*.so` ИСКЛЮЧЕНЫ: если бинарю нужны .so рядом с ним, они в образ не попадут —
+    соберите статически или снимите исключение в .dockerignore;
+  - `*.zip` не исключён, но крупные архивы лучше не тащить в контекст.

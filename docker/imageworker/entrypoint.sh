@@ -30,8 +30,16 @@
 #   SDWORKER_REGISTER_DISABLE      — true = выключить Go-side регистрацию
 #   HF_TOKEN / HF_MIRROR           — для HF-слоя (Phase 2) и ручных скриптов
 #
-# Пример docker run (Vulkan, AMD):
+# Пример docker run (Vulkan, AMD/Intel — драйвер берётся из хоста через /dev/dri):
 #   docker run --device /dev/dri --group-add video --group-add render \
+#     -e SDWORKER_BASE_URL=http://192.168.1.10:18093 \
+#     -v ./models/image:/app/models/image \
+#     -p 18093:18093 ollama-legion/imageworker:vulkan
+#
+# Пример docker run (Vulkan, NVIDIA — ICD и драйвер даёт nvidia-container-runtime;
+# /dev/dri для NVIDIA НЕ нужен и ничего не даёт, в образе нет его ICD):
+#   docker run --runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all \
+#     -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
 #     -e SDWORKER_BASE_URL=http://192.168.1.10:18093 \
 #     -v ./models/image:/app/models/image \
 #     -p 18093:18093 ollama-legion/imageworker:vulkan
@@ -78,11 +86,16 @@ export SDWORKER_BALANCER_URL="${SDWORKER_BALANCER_URL:-${BALANCER_URL:-}}"
 export SDWORKER_BALANCER_TOKEN="${SDWORKER_BALANCER_TOKEN:-${BALANCER_API_TOKEN:-}}"
 
 # ---- Права на каталоги volume (docker создаёт их root'ом) ----
+# chown ИМЕННО ПО ЧИСЛАМ (1000:1000), а не appuser:appgroup: в ubuntu:24.04
+# UID/GID 1000 уже занят пользователем `ubuntu`, поэтому Dockerfile может не
+# создать одноимённых appuser/appgroup. setpriv ниже тоже работает по числам —
+# имена не нужны нигде.
 for d in "${MODELS_DIR}" "${SDWORKER_IMAGES_DIR:-/app/data/images}" \
          "${SDWORKER_LORA_DIR:-/app/lora}" "${SDWORKER_HIRES_UPSCALERS_DIR:-/app/upscalers}"; do
     [ -d "$d" ] || mkdir -p "$d"
-    # chown может не сработать (read-only volume) — это не повод падать.
-    chown -R appuser:appgroup "$d" 2>/dev/null || true
+    # chown может не сработать (read-only volume / Windows bind mount) — это не
+    # повод падать.
+    chown -R 1000:1000 "$d" 2>/dev/null || true
 done
 
 echo "[entrypoint] launching: /app/sdworker $*"

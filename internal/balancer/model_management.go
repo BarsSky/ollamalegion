@@ -1087,8 +1087,28 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	//
 	// Вызов идёт ПОСЛЕ профиля модели и заполняет только пустые поля, поэтому
 	// приоритет остаётся: явный запрос > профиль модели > дефолт > env cppworker.
-	if dp, ok := mm.proxy.GetDefaultModelProfile(); ok {
+	// R83/v62 (2026-10-02): ignoreDefaults=true в профиле МОДЕЛИ означает «не
+	// подставлять значения из настроек по умолчанию» — и только это.
+	//
+	// БЫЛО (дефект, живая жалоба оператора): профиль модели с ignoreDefaults
+	// сам не применялся (см. ранний return в applyProfileLoadParams), НО сразу
+	// после него применялся defaultModelProfile — и заполнял всё: параллельность,
+	// KV-cache, слои, окно. То есть «игнорировать умолчания» на практике значило
+	// «подставить умолчания вместо настроек оператора».
+	//
+	// ТЕПЕРЬ: при ignoreDefaults дефолтный профиль для этой модели не
+	// применяется вовсе — действуют env/конфиг контейнера. Явный запрос и
+	// профиль модели (когда ignoreDefaults=false) работают как раньше; приоритет:
+	// явный запрос > профиль модели > дефолт > env cppworker.
+	ignoreDefaultsSet := false
+	if modelProf, ok := mm.profileForLoad(req.ModelName); ok {
+		ignoreDefaultsSet = modelProf.IgnoreDefaults
+	}
+	if dp, ok := mm.proxy.GetDefaultModelProfile(); ok && !ignoreDefaultsSet {
 		applyProfileLoadParams(&req, dp)
+	} else if ignoreDefaultsSet && logger.Get() != nil {
+		logger.Get().Infow("executeLlamaCppLoad: «настройки по умолчанию» не применены (ignoreDefaults=true в профиле модели)",
+			"model", req.ModelName, "backend", backendID)
 	}
 
 	// R83-fix (2026-09-30): явная загрузка с окном от оператора (WebUI,

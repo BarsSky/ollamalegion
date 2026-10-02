@@ -273,6 +273,13 @@ POST :18079 /v1/images/generations
 
 ### 5.4 Модели: «bundle» + профиль
 
+> **Реализовано (контракт, commit `5ea981f`):** `pkg/types/image_model.go` +
+> `pkg/types/image_model_test.go`. Это ЗАМОРОЖЕННЫЙ контракт для слоя
+> моделей/HF и для воркера: роли файлов, `ImageGenDefaults`, `ImageRuntime`
+> (плейсмент/offload/TAESD/seedMode), `ImageModelProfile`, `ValidateImageModelProfile`
+> (границы, которых движок НЕ проверяет), `ServerArgs()` (сборка argv sd-server,
+> включая обязательный `--seed -1`), `PinnedSDServerRevision = "master-929-3f8527a"`.
+
 Одна диффузионная модель — это **набор файлов**, а не один GGUF:
 - **all-in-one** (`--model`) — только SD1.x/2.x/SD-Turbo/SDXL;
 - **всё остальное** (SD3+, FLUX, Chroma, Qwen-Image, Z-Image, FLUX.2) — `--diffusion-model` + `--vae` + text encoder'ы (`--clip_l`, `--clip_g`, `--t5xxl`, `--llm`, `--llm_vision`) + опционально `--taesd`.
@@ -419,7 +426,16 @@ type ImageRuntime struct {
 
 ## 7. Фазы внедрения
 
-### Phase 1 — MVP: OpenAI-порт + внешний image-бэкенд и маршрутизация (2–3 дня)
+### Phase 1 — MVP: OpenAI-порт + внешний image-бэкенд и маршрутизация (2–3 дня) — ✅ DONE 2026-10-02 (commit `a358a74`)
+
+**Статус:** реализовано полностью, приёмка закрыта. Факты:
+- типы `BackendTypeImage`/`EngineImageCPP`, `Backend.ImagePort` (+`EffectiveImagePort`), `LoadBalancerSettings.OpenAIPort` (env `LB_OPENAI_PORT`, default 18079);
+- три нормализатора типа сохраняют `image_cpp`; `ValidateBackendTypeConsistency` проверяет однотипность только текстовых бэкендов; `image_cpp` добавлен в `standard`/`replication`/`rpc_coordinator` (в `virtual_router`/`distributed_inference` — НЕ добавлен: ломало резолв `/api/*` → llama.cpp, регрессия поймана тестом `TestServeHTTP_MixedCluster_RoutingByURLPath`);
+- снят ранний 404 на `/v1/images/*`; `determineRequestBackendType` понимает явные признаки (endpoint + префиксы модели `sd:`/`image:`/`img/`/`sd_cpp:`/`diffusion:`); `stream` по умолчанию = true только на 18080;
+- `ImageRouter` (`/v1/images/*`, `/sdapi/v1/*`, `/api/image/*` → только `image_cpp`), `openaiSurface` (CORS + OPTIONS→204, отказ на Ollama-путях, общий `*Proxy`), третий слушатель в `cmd/balancer/main.go` (+ HTTPS `TLSPort+2`);
+- health-probe image-бэкенда — `/sdcpp/v1/capabilities`; image-бэкенды исключены из текстового warmup; `/v1/models` получает алиасы `sd-cpp-local`, `dall-e-2`, `dall-e-3` (n8n фильтрует id по `^dall-`; `gpt-image-*` намеренно НЕ добавлен — клиенты по этому префиксу ждут `url`).
+
+**Приёмка (проверено):** `go build -tags llama_stub ./...` зелёный; `internal/balancer` (87 с), `internal/api`, `internal/config`, `pkg/types` — ok; клиентский smoke `tests/image_surface_smoke_test.go` — 7/7 PASS на реальном балансере с мок-`sd-server` (SillyTavern `sdcpp`, Open WebUI `engine=openai`, LibreChat SD tool, AnythingLLM `localai`, n8n, изоляция текста, OpenAI-конверт ошибки при отсутствии image-бэкенда). Падения в `tests/` (Ollama-зависимые + PF-5) воспроизведены на baseline-worktree дореформенного коммита `3bfaa58` — предсуществующие.
 
 1. **OpenAI-порт 18079**: `LoadBalancerSettings.OpenAIPort` (`pkg/types/config.go:29-39`), env `LB_OPENAI_PORT` + дефолт/сброс (`internal/config/config.go:136-137, 320-323`), баннер (`cmd/balancer/main.go:151-154`), дефолты в отдаваемом конфиге (`internal/api/handlers_cluster.go:20-23`), третий `http.Server` (`cmd/balancer/main.go:365-500`) с тем же `*Proxy` и обёрткой `openaiSurface`.
 2. **`openaiSurface`** (новый файл `internal/balancer/openai_surface.go`): allow-list `/v1/*` + `/health` + `/metrics`, форвард `/api/v1/*` на management API, понятная ошибка на Ollama-путях («используйте 18080»), **строгий `stream` из тела** (не наследовать default-true из `proxy.go:1575-1611`).

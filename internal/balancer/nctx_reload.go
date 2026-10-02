@@ -880,7 +880,16 @@ type DefaultNCtxReloadHTTPClient struct {
 func (c *DefaultNCtxReloadHTTPClient) PostReload(ctx context.Context, endpoint string, payload []byte) (*http.Response, error) {
 	client := c.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 300 * time.Second}
+		// R83/v62 (2026-10-02): БЕЗ hardcoded 300 с. Timeout=0 в Go означает «нет
+		// таймаута»: перезагрузку большой модели (A10, qwen3.8 15.7 ГБ) ждём по
+		// терминальному состоянию, а не по часам. Кап — только явный opt-in
+		// (LB_ALLOW_NCTX_RELOAD_TIMEOUT), и он уже применяется в
+		// newNCtxReloadHTTPClient; сюда попадаем лишь если клиент не задан.
+		client = &http.Client{Timeout: 0}
+		if logger.Get() != nil {
+			logger.Get().Warnw("nctx reload: HTTP-клиент не задан — используем без таймаута",
+				"endpoint", endpoint, "source", "PostReload fallback")
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {

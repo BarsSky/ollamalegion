@@ -757,7 +757,10 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 	if lr.proxy.nctxReload != nil && lr.proxy.nctxReload.IsReloadPending(backendID, modelName) {
 		ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: reload in progress, waiting via dedup",
 			"backend", backendID, "model", modelName, "step", "wait_reload_dedup")
-		if err := lr.proxy.nctxReload.WaitReloadDone(backendID, modelName, 5*time.Minute); err != nil {
+		// R83/v62 (2026-10-02): 0 = ждать терминального состояния чужой перезагрузки,
+		// без капа 5 минут. Перезагрузка большой модели (A10, qwen3.8 15.7 ГБ)
+		// укладывалась не всегда, и запрос падал нашим таймером. Кап — явный opt-in.
+		if err := lr.proxy.nctxReload.WaitReloadDone(backendID, modelName, 0); err != nil {
 			ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: WaitReloadDone error",
 				"backend", backendID, "model", modelName, "error", err)
 			// Не fatal — продолжаем обычный flow (fallback на state=loading polling).

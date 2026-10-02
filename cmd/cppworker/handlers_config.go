@@ -549,7 +549,10 @@ func reloadAllLoadedWithDefaults() ([]string, []string) {
 		modelInfo := m
 		// ????????? reload ? ???????? ? ?? ????????? ????? WebUI ?? ??????.
 		go func(name string, modelPath string, info cppbackend.ModelInfo, loadOpts cppbackend.LoadModelOpts) {
-			_, cancel := contextWithTimeout(120 * time.Second)
+			// R83/v62 (2026-10-02): без капа 120 с. Служебная операция после смены конфига
+			// ждёт терминального состояния (contextWithTimeout(0) = без таймаута),
+			// иначе на большой модели (A10, qwen3.8 15.7 ГБ) она обрывалась по часам.
+			_, cancel := contextWithTimeout(0)
 			defer cancel()
 			if err := backend.UnloadModel(name); err != nil {
 				logger.Get().Warnw("handleCppWorkerUpdateConfig: unload failed",

@@ -1044,6 +1044,20 @@ func (r *imageResources) checkImageModelReady(s *imageBackendMetrics) (imageGate
 func (r *imageResources) checkVRAM(s *imageBackendMetrics, host string, settings types.ImageResourceSettings) (imageGateDecision, bool) {
 	allow := imageGateDecision{Allowed: true, Code: types.ImageGateOK}
 	est := r.resolveVRAMEstimate(s)
+	// R-Image (2026-10-02, найдено ЖИВЫМ прогоном): сюда мы попадаем только когда
+	// модель УЖЕ загружена (dataKnown требует loaded() != nil), то есть веса
+	// резидентны. Сравнивать с текущим free полный вес модели нельзя: на
+	// 8-гиговой карте после загрузки SD1.5 Q4 (пик ~2.6 GB) свободно ~0.9 GB,
+	// и КАЖДЫЙ запрос получал 503 insufficient_vram при полностью готовом
+	// движке (в логе: required_mb=2600, free_mb=895).
+	// Генерации нужны рабочие буферы (латенты, VAE-декод, внимание) — их и
+	// проверяем; вопрос «влезут ли веса» решается на этапе загрузки модели
+	// (там оценка сравнивается со свободной VRAM до загрузки).
+	gateEst := est
+	if est.IsKnown() {
+		gateEst.RequiredMB = imageWorkingSetMB(est.RequiredMB)
+		gateEst.Detail = est.Detail + "; weights already resident -> gate checks the working set only"
+	}
 	free, freeSource := r.freeVRAMFor(host, s)
 	shared := r.hostHasTextNeighbour(host)
 	dataKnown := s != nil && s.contractOK && s.lastErr == "" && s.loaded() != nil
@@ -1059,16 +1073,17 @@ func (r *imageResources) checkVRAM(s *imageBackendMetrics, host string, settings
 		return allow, false
 	}
 
-	verdict := types.EvaluateImageVRAM(est, free, settings)
+	verdict := types.EvaluateImageVRAM(gateEst, free, settings)
 	logger.Get().Infow("image VRAM gate decision",
 		"backend", s.backendIDOrEmpty(),
 		"host", host,
 		"model", r.loadedModelName(s),
 		"allowed", verdict.Allowed,
 		"reason_code", verdict.ReasonCode,
-		"required_mb", est.RequiredMB,
+		"required_mb", gateEst.RequiredMB,
+		"weights_mb", est.RequiredMB,
 		"estimate_source", est.Source,
-		"estimate_detail", est.Detail,
+		"estimate_detail", gateEst.Detail,
 		"free_mb", free,
 		"free_source", freeSource,
 		"headroom_mb", settings.VramHeadroomMB,
@@ -1091,6 +1106,27 @@ func (r *imageResources) checkVRAM(s *imageBackendMetrics, host string, settings
 	}
 	r.gateAllowed.Add(1)
 	return imageGateDecision{Allowed: true, Code: verdict.ReasonCode, Verdict: verdict}, false
+}
+
+// imageWorkingSetMB — оценка РАБОЧЕГО набора генерации, когда веса уже в VRAM.
+//
+// Heuristic и почему именно такая: после загрузки модели нужно место под латенты
+// (масштабируются от разрешения, не от веса), VAE-декод и буферы внимания.
+// 20% веса — практичный прокси для типовых 512–1024 px; нижняя граница 256 MB
+// защищает мелкие модели от заведомо недостаточной проверки, верхняя 1 GB —
+// от того, чтобы «рабочий набор» крупной модели превратился в тот же полный вес.
+//
+// Это осознанно НЕ оценка «влезут ли веса» — она делается на этапе загрузки
+// модели (свободная VRAM до загрузки против оценки из профиля/воркера).
+func imageWorkingSetMB(weightsMB int) int {
+	ws := weightsMB / 5
+	if ws < 256 {
+		ws = 256
+	}
+	if ws > 1024 {
+		ws = 1024
+	}
+	return ws
 }
 
 // backendIDOrEmpty — nil-safe ID снимка (для логов).
@@ -1658,6 +1694,47 @@ func (r *imageResources) watchAsyncGeneration(h *imageLockHolder) {
 // ============================================================
 
 // snapshotMetrics — срез состояния Phase 6 для /api/metrics и диагностики.
+// clusterSnapshot — снимок состояния image-бэкенда для WebUI/Monitor
+// (types.BackendMetrics.Image).
+//
+// R-Image (2026-10-02): данные уже собираются для гейта VRAM, поэтому UI
+// получает их без дополнительных запросов. nil — если по бэкенду нет снимка
+// (например, он только что зарегистрирован и поллер ещё не успел).
+func (r *imageResources) clusterSnapshot(backendID string) *types.ImageBackendMetrics {
+	if r == nil || backendID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	s := r.snapshots[backendID]
+	r.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+
+	out := &types.ImageBackendMetrics{
+		State:        s.state,
+		CurrentModel: s.currentModel,
+		VramFreeMB:   s.vramFreeMB,
+		VramTotalMB:  s.vramTotalMB,
+		UpdatedAt:    s.at,
+		LastError:    s.lastErr,
+	}
+	// Модели отдаём ВСЕ (включая незагруженные): оператору нужно видеть, что
+	// вообще установлено и что можно загрузить, а не только текущую модель.
+	for _, m := range s.models {
+		out.Models = append(out.Models, types.ImageModelBrief{
+			Name:           m.Name,
+			State:          m.State,
+			Family:         m.Family,
+			SizeBytes:      m.SizeBytes,
+			VramEstimateMB: m.VramEstimateMB,
+			ActiveQueries:  m.ActiveQueries,
+			Error:          m.Error,
+		})
+	}
+	return out
+}
+
 func (r *imageResources) snapshotMetrics() map[string]interface{} {
 	if r == nil {
 		return map[string]interface{}{}

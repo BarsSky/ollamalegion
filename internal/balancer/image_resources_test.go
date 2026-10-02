@@ -363,9 +363,13 @@ func TestImageGate_FitsAllowsAndProxies(t *testing.T) {
 }
 
 // TestImageGate_InsufficientVRAM — (2) не влезает → 503 insufficient_vram + hint.
+//
+// R-Image (2026-10-02): гейт сравнивает с free РАБОЧИЙ НАБОР (веса модели уже
+// резидентны, ведь модель загружена), а не полный вес. Для модели 8000 MB
+// рабочий набор = 1024 MB, поэтому «не влезает» — это free ниже 1024.
 func TestImageGate_InsufficientVRAM(t *testing.T) {
 	p, stub := newImgResProxy(t, types.ImageResourceSettings{})
-	stub.setWorkerVRAM(4000, 16000) // нужно 8000, свободно 4000
+	stub.setWorkerVRAM(700, 16000) // рабочий набор 1024 MB, свободно 700
 
 	rec := imgResPost(t, p, "/v1/images/generations", `{"model":"dall-e-2","prompt":"cat"}`)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -394,7 +398,7 @@ func TestImageGate_InsufficientVRAM(t *testing.T) {
 // (sdapi) отдаётся плоским конвертом {error,message,hint}.
 func TestImageGate_InsufficientVRAMFlatEnvelope(t *testing.T) {
 	p, stub := newImgResProxy(t, types.ImageResourceSettings{})
-	stub.setWorkerVRAM(4000, 16000)
+	stub.setWorkerVRAM(700, 16000) // ниже рабочего набора (1024 MB)
 
 	rec := imgResPost(t, p, "/sdapi/v1/txt2img", `{"prompt":"cat"}`)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -500,22 +504,42 @@ func TestImageGate_DisabledSkipsGate(t *testing.T) {
 
 // TestImageGate_HeadroomConsidered — (5) headroom входит в бюджет.
 func TestImageGate_HeadroomConsidered(t *testing.T) {
-	// Ровно влезает без запаса: 8000 нужно, 8500 свободно.
+	// Ровно влезает без запаса: рабочий набор 1024 MB, свободно 1500 MB.
 	p, stub := newImgResProxy(t, types.ImageResourceSettings{VramHeadroomMB: 0})
-	stub.setWorkerVRAM(8500, 16000)
+	stub.setWorkerVRAM(1500, 16000)
 	if rec := imgResPost(t, p, "/v1/images/generations", `{"prompt":"cat"}`); rec.Code != http.StatusOK {
 		t.Fatalf("без headroom: status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
 	}
 
-	// Тот же расклад, но с запасом 1000 MB → уже не влезает.
+	// Тот же расклад, но с запасом 1000 MB (1024+1000=2024 > 1500) → уже не влезает.
 	p2, stub2 := newImgResProxy(t, types.ImageResourceSettings{VramHeadroomMB: 1000})
-	stub2.setWorkerVRAM(8500, 16000)
+	stub2.setWorkerVRAM(1500, 16000)
 	rec := imgResPost(t, p2, "/v1/images/generations", `{"prompt":"cat"}`)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("с headroom: status = %d, want 503 (body=%s)", rec.Code, rec.Body.String())
 	}
 	if code := imgResStr(t, imgResErrFields(t, rec), "code"); code != types.ImageGateInsufficientVRAM {
 		t.Fatalf("error.code = %q, want %q", code, types.ImageGateInsufficientVRAM)
+	}
+}
+
+// TestImageGate_LoadedModelChecksWorkingSetNotFullWeights — R-Image (2026-10-02):
+// дефект, найденный ЖИВЫМ прогоном. Модель уже загружена в движок (веса
+// резидентны), free VRAM меньше полного веса — прежний гейт отказывал 503 на
+// КАЖДЫЙ запрос, хотя движок готов генерировать. Теперь при загруженной модели
+// проверяется рабочий набор (20% веса, 256…1024 MB).
+func TestImageGate_LoadedModelChecksWorkingSetNotFullWeights(t *testing.T) {
+	// Вес 8000 MB, свободно 2000 MB: полный вес не влезает, рабочий набор (1024) — влезает.
+	p, stub := newImgResProxy(t, types.ImageResourceSettings{})
+	stub.setWorkerVRAM(2000, 16000)
+
+	rec := imgResPost(t, p, "/v1/images/generations", `{"prompt":"cat"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: при загруженной модели полный вес повторно не требуется (body=%s)",
+			rec.Code, rec.Body.String())
+	}
+	if gen, _ := stub.hits(); gen == 0 {
+		t.Fatal("запрос не дошёл до воркера, хотя гейт должен был пропустить")
 	}
 }
 
@@ -810,12 +834,12 @@ func TestImageResources_NoImageBackendsNoNetwork(t *testing.T) {
 func TestImageGate_FreeVRAMFromTextNeighbour(t *testing.T) {
 	p, _ := newImgResProxy(t, types.ImageResourceSettings{})
 	p.metricsMgr.mu.Lock()
-	p.metricsMgr.llamaMetrics["llm-1"] = &types.LlamaCppMetrics{AvailableVRAMMB: 4000}
+	p.metricsMgr.llamaMetrics["llm-1"] = &types.LlamaCppMetrics{AvailableVRAMMB: 400}
 	p.metricsMgr.mu.Unlock()
 
 	rec := imgResPost(t, p, "/v1/images/generations", `{"prompt":"cat"}`)
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 (8000 MB нужно, 4000 MB свободно у соседа; body=%s)",
+		t.Fatalf("status = %d, want 503 (рабочий набор 1024 MB, у соседа свободно 400 MB; body=%s)",
 			rec.Code, rec.Body.String())
 	}
 	if code := imgResStr(t, imgResErrFields(t, rec), "code"); code != types.ImageGateInsufficientVRAM {
@@ -979,7 +1003,7 @@ func TestImageVRAMEstimateSources(t *testing.T) {
 // TestImageResources_MetricsSnapshot — счётчики Phase 6 попадают в /api/metrics.
 func TestImageResources_MetricsSnapshot(t *testing.T) {
 	p, stub := newImgResProxy(t, types.ImageResourceSettings{})
-	stub.setWorkerVRAM(4000, 16000)
+	stub.setWorkerVRAM(700, 16000) // ниже рабочего набора (1024 MB) → отказ гейта
 	if rec := imgResPost(t, p, "/v1/images/generations", `{"prompt":"cat"}`); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}

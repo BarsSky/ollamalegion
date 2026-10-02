@@ -14,13 +14,23 @@ type BackendMetrics struct {
 	RequestID string `json:"request_id,omitempty"`
 
 	// Тип бэкенда и движок
-	BackendType BackendType    `json:"backendType"`
-	Engine      BackendEngine  `json:"engine"`
+	BackendType BackendType   `json:"backendType"`
+	Engine      BackendEngine `json:"engine"`
 
 	// Конфигурация бэкенда (атомарно копируется из Backend)
 	Host          string `json:"host"`
 	OllamaPort    int    `json:"ollamaPort"`
 	CppWorkerPort int    `json:"cppWorkerPort,omitempty"` // Порт cppworker для llama.cpp-бэкендов
+	// ImagePort — порт image-воркера (тип image_cpp). Заполняется из
+	// Backend.EffectiveImagePort(); без него Monitor/WebUI не могли показать
+	// отдельный порт image-бэкенда (жалоба оператора, 2026-10-02).
+	ImagePort int `json:"imagePort,omitempty"`
+
+	// Image — данные image-бэкенда (модели, состояние, VRAM) из поллера
+	// image_resources. nil для текстовых бэкендов.
+	// Без этого поля WebUI/Monitor видели image-бэкенд «пустым»: ни моделей,
+	// ни состояния (у текстовых они лежат в Ollama/LlamaCpp).
+	Image *ImageBackendMetrics `json:"image,omitempty"`
 
 	// GPU метрики
 	GPU GPUMetrics `json:"gpu"`
@@ -63,9 +73,9 @@ type BackendMetrics struct {
 	VRAMUsedGB            float64  `json:"vramUsedGB"`            // Used VRAM in GB
 	MemoryUsagePercent    float64  `json:"memoryUsagePercent"`    // RAM usage %
 	// Таймауты запросов (заполняются в GetClusterState)
-	RequestTimeout        int `json:"requestTimeout"`        // Per-backend статический таймаут
-	RuntimeRequestTimeout int `json:"runtimeRequestTimeout"` // Runtime-значение (адаптивное)
-	EffectiveTimeout      int `json:"effectiveTimeout"`      // Эффективный таймаут (макс. приоритет)
+	RequestTimeout        int      `json:"requestTimeout"`        // Per-backend статический таймаут
+	RuntimeRequestTimeout int      `json:"runtimeRequestTimeout"` // Runtime-значение (адаптивное)
+	EffectiveTimeout      int      `json:"effectiveTimeout"`      // Эффективный таймаут (макс. приоритет)
 	WarmingUpModels       []string `json:"warmingUpModels"`       // Модели в превентивной загрузке
 }
 

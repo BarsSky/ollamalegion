@@ -76,6 +76,16 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			EffectiveTimeout:      effectiveTimeout,
 		}
 
+		// R-Image (2026-10-02): image-бэкенд обязан быть виден в Monitor/WebUI
+		// со своим ПОРТОМ и МОДЕЛЯМИ. У текстовых бэкендов это Ollama/LlamaCpp-
+		// метрики, у image-воркера — свой контракт (/api/image/models), который
+		// уже опрашивает поллер image_resources для гейта VRAM. Без этих двух
+		// полей оператор видел image-бэкенд «пустой строкой» без порта и моделей.
+		if backendConfig.Type == types.BackendTypeImage {
+			metrics.ImagePort = backendConfig.EffectiveImagePort()
+			metrics.Image = p.imageRes.clusterSnapshot(id)
+		}
+
 		// R66d (2026-09-22): снапшот под RLock. Раньше указатель брался из карты
 		// без блокировки, а ниже идёт range по RunningModels — гонка с писателями
 		// (heartbeat/updateRunningModelInMetrics), которую ловил -race.

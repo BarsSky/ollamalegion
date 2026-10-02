@@ -330,6 +330,22 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/image/model-profiles/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelProfile), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/image/backends/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageBackendRoutes), s.rateLimiter), s.authenticator))
 
+	// Phase 4 (discovery) — «расшифровка» контракта генерации изображений.
+	//
+	//   GET /api/v1/image/capabilities — агрегат возможностей всех здоровых
+	//       image_cpp-бэкендов (samplers/schedulers/loras/upscalers/limits/models);
+	//   GET /api/v1/image/contract     — порты, ручки, поля с нормализацией,
+	//       лимиты, модели, curl-примеры и JSON-Schema инструмента generate_image.
+	//
+	// Обе ручки под AuthMiddleware + RateLimitMiddleware: они читают состояние
+	// кластера и ходят в воркеры (N HTTP-запросов на промах кэша), то есть это
+	// такая же «тяжёлая» management-плоскость, как /api/v1/image/models и
+	// /api/v1/image/model-profiles выше.
+	// См. internal/api/handlers_image_contract.go,
+	// internal/balancer/image_capabilities.go.
+	s.mux.Handle("/api/v1/image/capabilities", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageCapabilities), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/image/contract", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageContract), s.rateLimiter), s.authenticator))
+
 	// Proxy Logs endpoint (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/proxy/logs", AuthMiddleware(RateLimitMiddleware(s.proxyLogsHandler, s.rateLimiter), s.authenticator))
 

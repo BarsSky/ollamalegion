@@ -437,7 +437,7 @@ type ImageRuntime struct {
 | 4a — HF-загрузка bundle в воркере | ✅ DONE | `a6b8467` | — |
 | 5 — WebUI | ✅ DONE | `cc6d25d` | редактор image-профилей (§5.7) не сделан |
 | 6 — ресурсы/очередь/наблюдаемость | ✅ DONE | `8d3501d` | текстовое ожидание в `exclusive` ограничено общей admission-очередью (`LB_ADMISSION_WAIT_SEC`), а не `balancing.image.queueWaitTimeoutSec`; лок по хосту без индекса GPU (поля нет в `types.Backend`) |
-| 7 — docs/CI | ⚠️ частично | — | `docs/image-generation.md` + CHANGELOG есть; CI-джобы и EN-зеркало документа не сделаны |
+| 7 — docs/CI | ✅ DONE | `0b2808f`, `3eb60f3`, `1e46b92`, `bac5f40` | `/v1/images/variations` остаётся 501; webp-маска в img2img → честный 400 (нет `x/image` в go.mod); EN-зеркало документации есть |
 
 **Отклонения от плана (осознанные):**
 1. **Профили image-моделей** хранятся в отдельном файле `config/image-model-profiles.json` (`internal/config/image_model_profiles.go`), а не в `config.json`: `pkg/types/config.go` в момент Phase 2 был заморожен, а свой store с атомарным `Save` + env `LB_IMAGE_MODEL_PROFILES_PATH` даёт то же поведение без правки ядра конфига. Если нужно единообразие с llama.cpp-профилями — добавить поле `ImageModelProfiles` в `LoadBalancerConfig` и переключить store на него.

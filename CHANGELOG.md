@@ -5,6 +5,69 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.6.2 — R-Image Phase 7: img2img/inpaint, редактор профилей в WebUI, CI и EN-доки (2026-10-02)]
+
+### 🖌 img2img и inpaint (`/v1/images/edits`, `/sdapi/v1/img2img`)
+
+- Снят 501: оба эндпоинта идут в нативный `POST /sdcpp/v1/img_gen` с полями
+  `init_image` / `mask_image` / `strength`.
+- **OpenAI `/v1/images/edits`** (multipart): `prompt`, `image[]` (первое) и legacy `image`,
+  `mask`, `n`, `size`, `output_format`/`output_compression`, опциональный `strength`;
+  лимит тела 32 MB (`413 payload_too_large`), внятные `400` на отсутствие prompt/image,
+  битый `size`, неподдерживаемый формат; ошибки — в OpenAI-конверте с `hint`;
+  seed-нормализация сохранена (иначе движок снова взял бы 42).
+- **A1111 `/sdapi/v1/img2img`**: `init_images[0]` → `init_image`, `mask` → `mask_image`,
+  `denoising_strength` → `strength` (clamp `[0,1]` + note), `batch_size × n_iter` → `batch_count`,
+  `seed` передаётся полем; ответ `{images[], parameters{эхо}, info:"<JSON-строка>"}` с
+  `denoising_strength`.
+- `inpainting_mask_invert` **реализован**: decode PNG/JPEG → grayscale 1 канал → `255−v` → re-encode.
+  Разная альфа трактуется как альфа (конвенция A1111), полностью прозрачная маска → 0;
+  webp без `x/image` → честный `400 invalid_mask`, а не молчаливая отправка неинвертированной маски.
+- Нормализация: base64 и data-URL (в т.ч. без padding и URL-safe), размер берётся из геометрии
+  init-картинки, если `size`/`width` не заданы, маска всегда приводится к 1 каналу.
+- OOM при img2img: у движка авто-retry есть **только для decode VAE**, поэтому ошибки,
+  похожие на нехватку памяти при кодировании, получают hint (`--vae-tiling`,
+  `--vae-conv-direct`, меньше размер/`n`, unload).
+- Несколько изображений (`image[]`/`init_images[N>1]`): движок принимает одно `init_image` —
+  берётся первое, факт отражён в `notes`/`parameters`.
+
+### 🧩 WebUI: редактор профилей image-моделей
+
+- Новый модуль `webui/js/modules/image-profiles.js` (таблица профилей + модалка-редактор
+  по образцу `cppworker-params.js`): секции basic/files/defaults/runtime, подстановка пресета
+  из каталога, предпросмотр argv `sd-server`, тултипы (vaeTiling против vaeOnCPU,
+  `vaeTileSize` в пикселях, offload⇄paramsBackend, seedMode).
+- Клиентская валидация до отправки: обязателен `diffusion`-файл, запрет дублей ролей (кроме `lora`),
+  кратность 64, `offloadToCpu` + `paramsBackend` взаимоисключающие, VAE обязателен для DiT-семейств.
+- Apply показывает честный статус по бэкендам (`applied`/`partial`/`unreachable`).
+- +120 парных ключей i18n (`image.profiles.*`); тесты: 35 чистых + 19 DOM-проверок.
+
+### 🤖 CI и документация
+
+- CI: сборка `sdworker` и `mock-sdserver` в обоих job'ах, тесты `internal/sdbackend` и
+  `cmd/sdworker`, новый шаг живого E2E на self-hosted Windows-раннере
+  (`scripts/image-e2e-smoke.ps1`) и in-process smoke клиентских сценариев на ubuntu-fallback.
+- `docs/en/image-generation.md` — EN-зеркало документации; в русской версии добавлены
+  разделы про `balancing.image`, discovery и живой стенд.
+
+### ✅ Проверка
+
+- `go build -tags llama_stub ./...` — зелёный; все пакеты (`balancer`, `api`, `config`, `cppbackend`,
+  `sdbackend`, `cmd/sdworker`, `pkg/types`) — ok одним прогоном.
+- Живой E2E — **19/19 PASS**, включая две новые проверки: A1111 `img2img` (в логе движка
+  видно `init=yes ... strength=0.6`) и multipart `edits` (`image[]` → `init_image`).
+- WebUI-стражи CI: IIFE-экспорт (57 файлов), `node --check`, паритет i18n — зелёные.
+- Предсуществующее (воспроизведено на базовом коммите `3bfaa58`, к R-Image не относится):
+  `scripts/check_webui_assets.py` падает на шрифтах Font Awesome (`.ttf` отсутствуют, а чекер
+  не снимает `?v=R83`), и в `./tests/` падают Ollama-зависимые `TestProxyAllEndpoints_Streaming`.
+
+### 🐞 Исправлено
+
+- Предсуществующий флейк `TestNative_CancelEdges` (падал ~1 из 4 на Windows): причина —
+  `supervisor.writeSidecar` писал `sd-server.config.json` в temp-каталог уже после
+  `t.TempDir().RemoveAll()` → «directory is not empty». Добавлено ожидание терминального
+  состояния джобы, 6/6 прогонов зелёные.
+
 ## [0.6.1 — R-Image: гейт VRAM, сосуществование с LLM, discovery-контракт (2026-10-02)]
 
 ### 🧮 Гейт VRAM и политики сосуществования (`balancing.image`)

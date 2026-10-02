@@ -234,6 +234,13 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 	// --- RecentClients для монитора ---
 	state.RecentClients = p.getRecentClients()
 
+	// --- R-Image Phase 8 (2026-10-03): агрегат запросов к image-пулу ---
+	// Monitor опрашивает именно /api/v1/cluster, поэтому панель «запросы к
+	// image-бэкендам» получает счётчики и ленту из ТОГО ЖЕ ответа, без второго
+	// запроса на каждом тике. Передаём уже собранный список бэкендов: внутри
+	// p.mu.RLock повторный filterBackendsByType рискует самоблокировкой RWMutex.
+	state.Image = p.imagePoolMetricsFrom(state.Backends)
+
 	return state
 }
 

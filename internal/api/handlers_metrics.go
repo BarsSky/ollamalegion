@@ -26,6 +26,13 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		"totalBackends":   state.TotalBackends,
 		"healthyBackends": state.HealthyBackends,
 		"backends":        state.Backends,
+		// R-Image Phase 8 (2026-10-03): политика сосуществования image/text,
+		// состояние гейта и лока, счётчики запросов к image-бэкендам (агрегат +
+		// per-backend + лента последних). Раньше этот блок жил только в
+		// balancer-сборщике метрик, а /api/v1/metrics (этот обработчик) его не
+		// отдавал — страница управления image-бэкендами и внешние потребители не
+		// видели ни политики, ни потока запросов. nil, если image-подсистемы нет.
+		"image": s.proxy.ImageMetricsSummary(),
 		// R78 (P3): сводка placement policy — оператор видит в общих метриках,
 		// что политика активна и не деградирует молча (полные решения —
 		// GET /api/v1/placement).

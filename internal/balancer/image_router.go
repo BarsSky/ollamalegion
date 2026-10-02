@@ -63,10 +63,29 @@ func (ir *ImageRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
+	// Phase 8 (2026-10-03): поток image-запросов для метрик.
+	//
+	// Считаем ТОЛЬКО генерацию: /api/image/models, load/unload, capabilities —
+	// это управление, и подмешивать его в RPS/среднее время генерации значило бы
+	// показывать оператору бессмысленные цифры.
+	//
+	// Метаданные (модель/размер/шаги/промпт) снимаем здесь, ДО проксирования:
+	// тело читается один раз и возвращается на место (см. image_request_meta.go).
+	store := ir.proxy.imageResources().imageRequests()
+	generation := isImageGenerationRequest(r)
+	var meta types.ImageRequestBrief
+	if generation {
+		meta = imageRequestBriefFor(r)
+	}
+
 	backendID := ir.selectImageBackend()
 	if backendID == "" {
 		logger.Get().Warnw("image request: no healthy image backend",
 			"path", r.URL.Path, "surface", requestSurfaceOf(r).String())
+		// Отказ «нет бэкенда» тоже обязан быть виден в метриках: иначе оператор
+		// видит пустой монитор там, где клиенты получают 503.
+		store.gateDenied("", "image_backend_unavailable",
+			"no healthy backend of type image_cpp is registered")
 		ir.writeError(w, r, http.StatusServiceUnavailable, "image_backend_unavailable",
 			"no healthy backend of type image_cpp is registered")
 		return true
@@ -84,7 +103,7 @@ func (ir *ImageRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 	// нативного пути defer становится no-op, потому что владение передаётся
 	// сторожу (см. imageResources.watchAsyncGeneration).
 	var gate imageGateDecision
-	if isImageGenerationRequest(r) {
+	if generation {
 		gate = ir.proxy.imageResources().beforeGeneration(r.Context(), backendID)
 		if !gate.Allowed {
 			logger.Get().Warnw("image generation rejected by gate",
@@ -92,10 +111,18 @@ func (ir *ImageRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 				"backend", backendID,
 				"code", gate.Code,
 				"status", gate.Status)
+			store.gateDenied(backendID, gate.Code, gate.Message)
 			ir.writeGateError(w, r, gate)
 			return true
 		}
 		defer func() { gate.Release() }()
+	}
+
+	// Запись «в полёте» появляется ДО обращения к воркеру: долгая генерация
+	// (десятки секунд) должна быть видна в ленте сразу, а не только на финише.
+	var handle *imageRequestHandle
+	if generation {
+		handle = store.begin(backendID, meta)
 	}
 
 	logger.Get().Infow("image request routed",
@@ -107,6 +134,8 @@ func (ir *ImageRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 	if err != nil {
 		logger.Get().Errorw("image request failed",
 			"path", r.URL.Path, "backend", backendID, "error", err)
+		handle.finish(types.ImageRequestStatusFailed, http.StatusBadGateway,
+			"image_backend_error", err.Error(), 0)
 		ir.writeError(w, r, http.StatusBadGateway, "image_backend_error",
 			"image backend request failed: "+err.Error())
 		return true
@@ -116,10 +145,27 @@ func (ir *ImageRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 	// продолжится ПОСЛЕ ответа, поэтому лок GPU передаём сторожу, а не снимаем
 	// в defer. Для синхронных поверхностей (/v1/images/*, /sdapi/v1/*) ответ
 	// приходит уже с готовой картинкой — лок снимается сразу.
-	if gate.holder != nil && isImageAsyncSubmitPath(r) && resp.StatusCode == http.StatusAccepted {
+	if handle != nil && gate.holder != nil && isImageAsyncSubmitPath(r) && resp.StatusCode == http.StatusAccepted {
+		// Ответ 202 означает «принято в очередь», а не «картинка готова»:
+		// исход посчитает сторож (status=finished), поэтому здесь только
+		// отмечаем постановку, не закрывая запись.
+		handle.markAccepted()
 		if res := ir.proxy.imageResources(); res != nil {
-			res.watchAsyncGeneration(gate.holder)
+			res.watchAsyncGeneration(gate.holder, handle)
 		}
+	} else if handle != nil {
+		code, msg := "", ""
+		if resp.StatusCode >= 400 {
+			code, msg = peekImageErrorBody(resp)
+		}
+		status := types.ImageRequestStatusOK
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			status = types.ImageRequestStatusFailed
+			if code == "" {
+				code = "image_backend_http_" + strconv.Itoa(resp.StatusCode)
+			}
+		}
+		handle.finish(status, resp.StatusCode, code, msg, imageResponseImages(meta, resp.StatusCode))
 	}
 	copyResponse(w, resp)
 	return true

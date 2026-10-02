@@ -489,6 +489,11 @@ type imageResources struct {
 	lockWaitHist *histogramCollector
 	stopCh       chan struct{}
 
+	// imgReq — счётчики и лента image-запросов (Phase 8). Живут здесь же, а не
+	// в Proxy: это та же зона ответственности (наблюдаемость image-пула), и
+	// UI получает их тем же снимком, что и состояние воркеров.
+	imgReq *imageRequestStore
+
 	snapshots  map[string]*imageBackendMetrics
 	locks      map[string]*imageHostLock
 	gateDenied map[string]int64
@@ -525,12 +530,42 @@ type imageResources struct {
 func newImageResources(proxy *Proxy) *imageResources {
 	return &imageResources{
 		proxy:        proxy,
+		imgReq:       newImageRequestStore(),
 		snapshots:    make(map[string]*imageBackendMetrics),
 		locks:        make(map[string]*imageHostLock),
 		gateDenied:   make(map[string]int64),
 		lockWaitHist: newHistogramCollector(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30),
 		stopCh:       make(chan struct{}),
 	}
+}
+
+// imageRequests — счётчики image-запросов (nil-safe).
+func (r *imageResources) imageRequests() *imageRequestStore {
+	if r == nil {
+		return nil
+	}
+	return r.imgReq
+}
+
+// ImageMetricsSummary — блок `image` для GET /api/v1/metrics: политика
+// сосуществования, состояние гейта и лока, счётчики запросов по пулу и по
+// каждому image-бэкенду.
+//
+// ЗАЧЕМ ЭКСПОРТ. `internal/api` собирает /api/v1/metrics СВОИМ ответом
+// (handlers_metrics.go: timestamp/backends/placement/autoContinue) и этот блок в
+// него не попадал: страница «Image-бэкенды» и внешние потребители не могли
+// узнать фактическую политику (coexistence_policy, vram_headroom_mb,
+// queue_wait_timeout_sec) и поток запросов. Дублировать сборку в API-слое не
+// нужно — отдаём готовый снимок.
+func (p *Proxy) ImageMetricsSummary() map[string]interface{} {
+	if p == nil {
+		return nil
+	}
+	res := p.imageResources()
+	if res == nil {
+		return nil
+	}
+	return res.snapshotMetrics()
 }
 
 // settings — секция balancing.image из конфига (nil-safe).
@@ -1661,13 +1696,20 @@ func (r *imageResources) noteTextWaitCapped() {
 // синхронных /v1/images/* и /sdapi/v1/*) означало бы пустить текст на GPU
 // ВНУТРЬ генерации. Сторож опрашивает active_queries воркера и снимает лок,
 // когда генерация закончилась (или по предохранителю/остановке).
-func (r *imageResources) watchAsyncGeneration(h *imageLockHolder) {
+//
+// Phase 8: сторож же закрывает и запись в метриках (req). Исход — finished, а не
+// ok: воркер отдаёт только active_queries, per-job результат балансеру
+// недоступен, и выдавать «закончилось» за «успешно» было бы враньём. Если воркер
+// пропал во время генерации — это failed (запись не останется «в полёте»
+// навсегда).
+func (r *imageResources) watchAsyncGeneration(h *imageLockHolder, req *imageRequestHandle) {
 	if r == nil || h == nil {
 		return
 	}
 	h.HandOff()
 	go func() {
 		defer h.Release("async_generation_finished")
+		defer req.finish(types.ImageRequestStatusFinished, http.StatusAccepted, "", "", 0)
 		activeSeen := false
 		idle := 0
 		pending := 0
@@ -1692,6 +1734,10 @@ func (r *imageResources) watchAsyncGeneration(h *imageLockHolder) {
 				if failures >= imageAsyncMaxPollErrors {
 					logger.Get().Warnw("async image generation watch: worker unreachable, releasing GPU lock",
 						"backend", h.backendID, "host", h.host, "failures", failures)
+					// Воркер пропал: генерация не завершилась — фиксируем failed
+					// (idempotent finish, поэтому defer ниже уже не сработает).
+					req.finish(types.ImageRequestStatusFailed, 0, "image_worker_unreachable",
+						"worker unreachable during async generation", 0)
 					return
 				}
 				continue
@@ -1754,6 +1800,11 @@ func (r *imageResources) clusterSnapshot(backendID string) *types.ImageBackendMe
 		UpdatedAt:    s.at,
 		LastError:    s.lastErr,
 	}
+	// Phase 8: поток запросов (агрегаты + лента последних). UI показывает их
+	// рядом с состоянием воркера — иначе по таблице невозможно понять, идут ли
+	// на бэкенд генерации и с каким исходом.
+	out.Requests = r.imageRequests().snapshot(backendID)
+	out.Recent = r.imageRequests().recentFor(backendID, imageRecentLimitPerBackend)
 	// Модели отдаём ВСЕ (включая незагруженные): оператору нужно видеть, что
 	// вообще установлено и что можно загрузить, а не только текущую модель.
 	for _, m := range s.models {
@@ -1788,7 +1839,9 @@ func (r *imageResources) snapshotMetrics() map[string]interface{} {
 		byReason[k] = v
 	}
 	perBackend := make(map[string]interface{}, len(r.snapshots))
+	known := make(map[string]bool, len(r.snapshots))
 	for id, s := range r.snapshots {
+		known[id] = true
 		if s == nil {
 			continue
 		}
@@ -1802,6 +1855,11 @@ func (r *imageResources) snapshotMetrics() map[string]interface{} {
 			"vram_source":      s.vramSource,
 			"snapshot_age_sec": int(time.Since(s.at).Seconds()),
 		}
+		// Phase 8: поток запросов по этому воркеру (total/ok/failed/rejected,
+		// in_flight, rps, длительности, отказы по кодам).
+		if req := r.imageRequests().snapshotMap(id); req != nil {
+			entry["requests"] = req
+		}
 		if m := s.loaded(); m != nil {
 			entry["loaded_model"] = m.Name
 			entry["loaded_vram_estimate_mb"] = m.VramEstimateMB
@@ -1813,6 +1871,9 @@ func (r *imageResources) snapshotMetrics() map[string]interface{} {
 		perBackend[id] = entry
 	}
 	r.mu.Unlock()
+
+	// Предохранитель от роста карты счётчиков (см. imageRequestStore.prune).
+	r.imageRequests().prune(known, time.Now())
 
 	waits := r.lockWaits.Load()
 	avgWaitMS := int64(0)
@@ -1848,6 +1909,9 @@ func (r *imageResources) snapshotMetrics() map[string]interface{} {
 		// Phase 6 follow-up (п.2): ожидание текстового запроса урезано до
 		// balancing.image.queueWaitTimeoutSec (единственная причина — image-лок).
 		"text_wait_capped_total": r.textWaitCapped.Load(),
-		"backends":               perBackend,
+		// Phase 8: поток запросов ко ВСЕМУ image-пулу (агрегат + общая лента
+		// последних запросов). Per-backend счётчики — в "backends" выше.
+		"requests": r.imageRequests().aggregateMap(imageRecentLimitGlobal),
+		"backends": perBackend,
 	}
 }

@@ -73,10 +73,22 @@ func TestR83_Profile_IgnoreDefaults_DoesNotInjectParams(t *testing.T) {
 		IgnoreDefaults: true,
 	}
 
+	// R83/v62 (2026-10-02): СМЕНА КОНТРАКТА. Раньше ignoreDefaults означал
+	// «профиль модели не подставляет ничего» — и дефолтный профиль заполнял всё
+	// вместо настроек оператора. Теперь ignoreDefaults означает «не применять
+	// НАСТРОЙКИ ПО УМОЛЧАНИЮ», а профиль модели применяется всегда.
 	body := applyProfileToEmptyRequest(t, prof)
-	if len(body) != 0 {
-		t.Errorf("профиль с ignoreDefaults=true подставил параметры: %+v — именно это "+
-			"оператор видит как «балансер навязывает свои шитые настройки»", body)
+	for key, want := range map[string]int{
+		"contextSize": 32768, "batchSize": 512, "gpuLayers": -2, "parallel": 4,
+	} {
+		got, ok := body[key].(int)
+		if !ok || got != want {
+			t.Errorf("профиль модели с ignoreDefaults обязан подставить %s=%d (настройка оператора из WebUI), got %+v",
+				key, want, body)
+		}
+	}
+	if body["kvCacheType"] != "q8_0" {
+		t.Errorf("kvCacheType из профиля не применён: %+v", body)
 	}
 }
 

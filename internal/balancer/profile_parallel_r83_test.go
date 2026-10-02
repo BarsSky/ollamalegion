@@ -75,11 +75,15 @@ func TestR83_ProfileParallel_RespectsIgnoreDefaults(t *testing.T) {
 		IgnoreDefaults: true,
 	})
 
-	if req.Parallel != nil {
-		t.Errorf("ignoreDefaults=true, а профиль подставил parallel=%d", *req.Parallel)
+	// R83/v62 (2026-10-02): СМЕНА КОНТРАКТА. ignoreDefaults гасит применение
+	// НАСТРОЕК ПО УМОЛЧАНИЮ (defaultModelProfile — проверяется в
+	// executeLlamaCppLoad), а профиль модели применяется всегда: это настройки
+	// оператора из WebUI, они не должны теряться.
+	if req.Parallel == nil || *req.Parallel != 4 {
+		t.Errorf("parallel из профиля не применён при ignoreDefaults: %v", req.Parallel)
 	}
-	if req.ContextSize != nil {
-		t.Errorf("ignoreDefaults=true, а профиль подставил contextSize=%d", *req.ContextSize)
+	if req.ContextSize == nil || *req.ContextSize != 32768 {
+		t.Errorf("contextSize из профиля не применён при ignoreDefaults: %v", req.ContextSize)
 	}
 }
 
@@ -133,8 +137,12 @@ func TestR83_DefaultProfile_IgnoreDefaultsKeepsEnvWins(t *testing.T) {
 		IgnoreDefaults: true,
 	})
 
-	if req.ContextSize != nil || req.Parallel != nil {
-		t.Errorf("дефолт с ignoreDefaults=true подставил параметры: ctx=%v parallel=%v",
+	// R83/v62 (2026-10-02): контракт изменён — профиль модели (это настройки
+	// оператора из WebUI) применяется всегда, даже при ignoreDefaults. Флаг
+	// означает «не подставлять значения из defaultModelProfile», и это правило
+	// живёт в executeLlamaCppLoad, а не здесь.
+	if req.ContextSize == nil || req.Parallel == nil {
+		t.Errorf("профиль модели не применён при ignoreDefaults: ctx=%v parallel=%v",
 			req.ContextSize, req.Parallel)
 	}
 }

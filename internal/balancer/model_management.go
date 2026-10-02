@@ -728,25 +728,23 @@ func applyProfileLoadParams(req *ModelOpRequest, prof types.LlamaCppModelProfile
 	if req == nil {
 		return
 	}
-	if prof.IgnoreDefaults {
-		// R83-фикс (2026-10-01): объясняем пропуск профиля в логе.
-		//
-		// ignoreDefaults=true означает «профиль ничего не подставляет». Это
-		// ожидаемое поведение, но в сочетании с «настройками по умолчанию»
-		// получается ловушка: профиль модели с numGpuLayers=-1/AUTO молча
-		// теряется, а значение из defaultModelProfile (например 20 слоёв)
-		// выигрывает — модель работает наполовину на CPU, и по логам загрузки
-		// не видно, ПОЧЕМУ. Живой случай 2026-10-01: gemma-4 грузился на 20
-		// слоях из 43 (4.7 ГБ VRAM простаивали, prefill 22k токенов ≈ 300 с)
-		// при профиле модели с -1, потому что defaultModelProfile нёс 20.
-		if req.ModelName != "" {
-			logger.Get().Infow("applyProfileLoadParams: профиль модели пропущен (ignoreDefaults=true) — "+
-				"действуют «настройки по умолчанию» и env контейнера",
-				"model", req.ModelName,
-				"profile_context_length", prof.ContextLength,
-				"profile_num_gpu_layers", prof.NumGPULayers)
-		}
-		return
+	// R83/v62 (2026-10-02): ignoreDefaults БОЛЬШЕ НЕ отключает профиль модели.
+	//
+	// БЫЛО: при ignoreDefaults=true функция возвращалась ЗДЕСЬ — профиль модели не
+	// применялся вообще, а следом применялся defaultModelProfile и заполнял всё.
+	// «Игнорировать умолчания» на практике значило «игнорировать настройки
+	// оператора»: parallel, KV-cache, слои и окно из WebUI перебивались дефолтом.
+	// Живые случаи: gemma-4 грузился на 20 слоях из 43 при профиле с -1 (в дефолте
+	// стояло 20); у модели с parallel=1 клиент получал окно на слот как при
+	// parallel=2.
+	//
+	// ТЕПЕРЬ: профиль модели применяется всегда; ignoreDefaults гасит только
+	// применение defaultModelProfile (см. executeLlamaCppLoad).
+	if prof.IgnoreDefaults && logger.Get() != nil {
+		logger.Get().Infow("applyProfileLoadParams: применён профиль модели, «настройки по умолчанию» для неё отключены (ignoreDefaults=true)",
+			"model", req.ModelName,
+			"profile_context_length", prof.ContextLength,
+			"profile_num_gpu_layers", prof.NumGPULayers)
 	}
 	if req.ContextSize == nil && prof.ContextLength > 0 {
 		cs := prof.ContextLength

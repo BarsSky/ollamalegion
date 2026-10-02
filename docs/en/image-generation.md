@@ -127,6 +127,7 @@ print(len(r.data[0].b64_json))   # url is None: sd.cpp returns b64_json only
 | `seed` | when omitted, resolved to a random positive number. **This normalization is mandatory:** sd.cpp's OpenAI handler does not read `seed` at all and defaults to 42, so without it every image would be identical |
 | `response_format` | `b64_json` or absent → base64; `url` → we store the PNG and return a URL (sd.cpp only ever returns base64) |
 | `output_format`, `output_compression` | passed through (`png`/`jpeg`/`webp`, 0…100) |
+| input images (init/mask) | PNG and JPEG pass through unchanged; **WebP is decoded and re-encoded to PNG** (the engine contract is PNG/JPEG). If a webp file cannot be decoded the response explicitly asks for PNG, and a mask is never forwarded to the engine |
 | `quality`, `style`, `user`, `background` | ignored |
 | errors | OpenAI envelope `{"error":{"message","type","code"}}` (sd.cpp returns `{"error":"string"}`) |
 
@@ -166,7 +167,9 @@ How the estimate is derived (in priority order): the model profile (`vramEstimat
 
 The gate blocks **exactly one** meaningful case: the estimate is known, free VRAM is known, and the model does not fit. The answer is `503` with code `insufficient_vram`, a message, and a **hint listing the memory-reduction ladder**: lower the quantization → `--diffusion-fa` → text encoder on CPU (`--backend te=cpu`) → `--vae-tiling` → `--vae-conv-direct` → `--taesd` → `--offload-to-cpu` → lower resolution.
 
-The lock is keyed by backend host (the backend contract has no GPU index). In `exclusive` mode a text candidate on a busy host is not selected — the request waits in the admission queue and is served by another host when one exists.
+The lock is keyed by backend host, and by "host + GPU" when the backend declares `gpuIndex` (a backend field; for llama.cpp it falls back to `cppWorkerConfig.mainGpu`). This matters on multi-GPU machines: a card busy with generation no longer blocks text traffic going to another card on the same host. If only one side declares an index, the conflict is treated as host-wide (conservative).
+
+Waiting for a text request blocked by generation is capped by `queueWaitTimeoutSec` (not by the shared admission queue): after the cap the client gets the standard `503` with `Retry-After`, the `X-Queue-Wait-Reason: image_gpu_lock` header and a `waitReason` field in the body.
 
 ## 6. Discovery: ask instead of reading the source
 
@@ -193,6 +196,7 @@ Both require `X-API-Token` (port 18081). The aggregate is cached for 8 s and the
 - **Generation is serialized** by a single mutex: concurrent requests queue up.
 - **No in-flight cancellation and no per-step progress** (the C API has the primitives, the server does not expose them).
 - **`city96/*` FLUX GGUF files do not load** in sd.cpp (that is the ComfyUI-GGUF format) — use `leejet/*` builds.
+- **`/v1/images/variations` is implemented on top of img2img** (empty prompt + `strength` 0.5): sd.cpp has no dedicated variations mode, and the engine's behaviour with an empty prompt has not been verified against real sd.cpp (no engine binary in the test environment) — if it refuses, the client receives that error verbatim.
 - **`--vae-on-cpu` costs ~5×** — prefer `--vae-tiling`; on AMD/RADV tiling is mandatory.
 - sd.cpp releases several times a day and flag names have changed (`--host/--port` → `--listen-ip/--listen-port`) — the version is pinned in `types.PinnedSDServerRevision`.
 

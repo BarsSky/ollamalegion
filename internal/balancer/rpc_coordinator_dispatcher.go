@@ -150,9 +150,14 @@ func NewRpcCoordinatorDispatcher(coord *rpccoordinator.ModelCoordinator, p *Prox
 		coordinator:     coord,
 		proxy:           p,
 		circuitBreakers: make(map[string]*rpccoordinator.CircuitBreaker),
-		requestTimeout:  30 * time.Second, // default
-		streamTimeout:   5 * time.Minute,  // default
-		failFast:        false,            // default — retry через circuit breaker
+		// R83/v62 (2026-10-02): без hardcoded капов на длительность операции.
+		// 0 = нет таймаута (обе ветки ниже применяют WithTimeout только при >0):
+		// RPC-запрос к узлу и стрим ждут терминального состояния, а не часов.
+		// Числовые значения — только из конфига координатора (осознанный выбор
+		// оператора), как и во всех остальных путях после этой ревизии.
+		requestTimeout: 0,     // 0 = без капа
+		streamTimeout:  0,     // 0 = без капа
+		failFast:       false, // default — retry через circuit breaker
 	}
 	// Store CB defaults на dispatcher; применяются в getOrCreateCircuitBreaker.
 	d.cbDefaults = defaultCBConfig()

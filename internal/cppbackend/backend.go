@@ -1801,6 +1801,27 @@ func (b *Backend) InjectLoadedModelForTest(name string) error {
 	return nil
 }
 
+// SetModelReasoningEnabledForTest — test helper: выставить resolved per-model
+// reasoning у уже инжектированного инстанса (см. InjectLoadedModelForTest).
+//
+// Зачем: R83/v67 (2026-10-02) — живой дефект «галочка размышлений в WebUI
+// включена, а в ответе размышлений нет». Проверка причины требует состояния
+// inst.reasoningEnabled=true без реальной загрузки GGUF, иначе тест
+// воспроизводит только ветку «выключено».
+func (b *Backend) SetModelReasoningEnabledForTest(name string, enabled bool) error {
+	if b == nil {
+		return fmt.Errorf("nil backend")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	inst, ok := b.models[name]
+	if !ok || inst == nil {
+		return fmt.Errorf("model %s is not injected", name)
+	}
+	inst.info.ReasoningEnabled = enabled
+	return nil
+}
+
 // removeOwnInstance — убрать запись модели из реестра, ТОЛЬКО если она всё ещё
 // указывает на наш инстанс.
 //

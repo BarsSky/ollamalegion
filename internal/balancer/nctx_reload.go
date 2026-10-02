@@ -939,7 +939,11 @@ func (c *NCtxReloadCoordinator) DoReload(
 	}
 	cfg := c.Config()
 	timeout := cfg.effectiveTimeout()
-	rctx, cancel := context.WithTimeout(ctx, timeout)
+	// R83/v67 (2026-10-02): reloadTimeoutContext, а НЕ context.WithTimeout.
+	// effectiveTimeout() == 0 означает «без капа» (штатный режим), а
+	// context.WithTimeout(ctx, 0) — это НЕМЕДЛЕННО истёкший контекст: DoReload
+	// падал бы с "context deadline exceeded" ещё до обращения к бэкенду.
+	rctx, cancel := reloadTimeoutContext(ctx, timeout)
 	defer cancel()
 
 	state := c.state(backendID)

@@ -139,7 +139,10 @@ func autoLoadHTTPClient(modelName string, nCtx int, port int, apiToken string) (
 	if apiToken != "" {
 		req.Header.Set("X-API-Token", apiToken)
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	// R83/v67 (2026-10-02): без Timeout. 30 секунд — duration-кап на загрузку
+	// модели: CLI получал ошибку клиента, пока cppworker продолжал грузить.
+	// Ждём ответа сервера (успех/ошибка), а не таймера.
+	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err

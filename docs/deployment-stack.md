@@ -878,6 +878,75 @@ docker logs --since 10m ol-stack-balancer 2>&1 | grep -E 'STREAMING_IDLE_TIMEOUT
 > Для таких случаев есть явные opt-in ENV выше и профиль модели; наблюдать
 > зависания помогает `GET /api/models` (поле `active_queries`) и монитор.
 
+### 7.6.1 То же правило для загрузки, pull, reload и HTTP-серверов (R83/v67, 2026-10-02)
+
+**Формулировка доктрины, по которой вычищался весь код:**
+
+> Допустимы только таймауты **опроса состояния** — «каждые N секунд проверить,
+> готово ли» (poll interval, health probe, метрики, heartbeat, idle-соединение
+> между запросами). Такой таймер задаёт частоту взгляда и никогда не отменяет
+> работу.
+>
+> **Запрещены duration-капы на работу**: любой `time.After` / `context.WithTimeout`
+> / `http.Client.Timeout`, который по истечении срока **обрывает** загрузку модели,
+> генерацию, pull, reload, unload. Признак дефекта — сервер отдаёт ошибку, а
+> upstream продолжает работу: состояние расходится, оператор видит «модель не
+> грузится / ответ обрезан / context canceled» и ищет причину вслепую.
+>
+> Вместо капа — ждать **терминального состояния** (успех / явная ошибка /
+> недоступность бэкенда / закрытие клиентского соединения) и возвращать
+> конкретную ошибку.
+
+Что было снято в v67 (каждый пункт — потенциальный «обрыв на ровном месте»):
+
+| Место | Было | Почему это ломало работу |
+|---|---|---|
+| `cmd/cppworker/main.go` | `WriteTimeout = 30m`, `ReadTimeout = 30s` | обрыв потокового ответа и приёма большого тела ровно по часам |
+| `cmd/balancer/main.go` (API-сервер, TLS-прокси, TLS-API) | `WriteTimeout = 60s` / `RequestTimeout+30` | load/reload/apply длиной больше минуты отдавали ошибку, хотя работа шла |
+| `internal/balancer/model_management.go` | `Client.Timeout = 10m`, load-клиент = `ModelLoadTimeout` | pull/load 15.7 ГБ не укладывается — «Client.Timeout exceeded» при живом прогрессе |
+| `internal/balancer/auto_pull.go` | `Client.Timeout = 10m`, `PullTimeout = "5m"` | закачка большой модели «падала по таймауту» в глазах вызывающего |
+| `internal/balancer/llamacpp_backend_helpers.go`, `ollama_router.go` (`proxyHTTP`) | 120 с / 30 с | `/api/pull` — это скачивание модели, а не быстрый endpoint |
+| `internal/balancer/autoload_wait.go` | hard ceiling 30 мин | обрывал ожидание **даже при растущем прогрессе** |
+| `internal/balancer/preflight_nctx.go` | ожидание reload 240 с | первый же запрос клиента получал 503 «being reloaded» |
+| `internal/balancer/nctx_reload.go` (`DoReload`) | `context.WithTimeout(ctx, 0)` при выключенном капе | немедленно истёкший контекст → reload падал до обращения к бэкенду |
+| `cmd/cppworker/lazyload.go` | дефолт 30 минут | отмена разделяемой загрузки → `BRIDGE_ERR_ABORTED` («load cancelled») |
+| `cmd/cppworker/cli_auto_load.go` | `Client.Timeout = 30s` | CLI сообщал ошибку, пока cppworker продолжал грузить |
+
+**Как вернуть кап, если он действительно нужен** (защита от багованного
+upstream). Только явной переменной окружения, и при взведении печатается
+громкий `WARN` с именем переменной — чтобы «почему оборвалось» имело ответ в
+логе:
+
+| Переменная | Что ограничивает |
+|---|---|
+| `LB_ALLOW_PROFILE_TIMEOUTS` | таймауты из per-model профилей (WebUI) |
+| `LB_ALLOW_REQUEST_TIMEOUTS` | адаптивный per-request таймаут прокси |
+| `LB_ALLOW_MODEL_OP_TIMEOUT_SEC` | HTTP-клиент операций с моделью (pull/push/show/create) |
+| `LB_ALLOW_MODEL_LOAD_TIMEOUT_SEC` | HTTP-запрос загрузки модели |
+| `LB_ALLOW_LOAD_WAIT_CAP_SEC` | ожидание готовности модели (poll-циклы) |
+| `LB_ALLOW_NCTX_RELOAD_TIMEOUT` | reload/preflight контекста |
+| `LB_NCTX_PREFLIGHT_WAIT_SEC` | ожидание первого async-reload: `N` сек, `0` = не ждать (по умолчанию ждём терминального состояния) |
+| `LB_AUTO_LOAD_WAIT_SEC` | бюджет ожидания авто-загрузки: `N` сек, `0` = не ждать, отрицательное = до потолка |
+| `CPPWORKER_WRITE_TIMEOUT` / `CPPWORKER_READ_TIMEOUT` | HTTP Write/ReadTimeout сервера cppworker (`0` = без ограничения, дефолт) |
+| `CPPWORKER_LAZY_LOAD_TIMEOUT_SEC` | контекст разделяемой (ленивой) загрузки модели |
+
+Единая точка правды в коде — `internal/balancer/timeout_policy.go` (там же
+реестр и хелпер `optInTimeoutSeconds`, который печатает WARN при взведении).
+
+```bash
+# 1. серверы: все четыре значения обязаны быть 0
+docker logs --since 5m ol-stack-balancer 2>&1 | grep -E 'HTTP server timeouts'
+docker logs --since 5m ol-stack-cppworker-gpu 2>&1 | grep -E 'HTTP server timeouts'
+#   ждём: read_timeout_sec=0 write_timeout_sec=0
+
+# 2. в контейнерах не должно быть взведённых opt-in капов
+docker exec ol-stack-balancer sh -c 'env | grep -E "LB_ALLOW_|LB_NCTX_PREFLIGHT_WAIT_SEC|LB_AUTO_LOAD_WAIT_SEC"'
+docker exec ol-stack-cppworker-gpu sh -c 'env | grep -E "CPPWORKER_(WRITE|READ|LAZY_LOAD)_TIMEOUT"'
+
+# 3. живая проверка: pull/load большой модели доезжает до конца
+docker logs -f ol-stack-balancer 2>&1 | grep -E 'auto-pull|ensureModelLoadedOnBackend'
+```
+
 ---
 
 ## 7.7 «Model returned empty response»: разбор по логам (R83, 2026-10-01)

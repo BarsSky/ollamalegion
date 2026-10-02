@@ -36,10 +36,18 @@ import (
 // вернуть клиенту 503+Retry-After. 0 = прежнее поведение (сразу 503).
 const autoLoadWaitDefaultSec = 180
 
-// autoLoadHardCeiling — абсолютный предел ожидания загрузки, даже если cppworker
-// сообщает прогресс. Нужен, чтобы соединение не держалось вечно; 30 минут с
-// запасом покрывают загрузку 30-40B модели с диска.
-const autoLoadHardCeiling = 30 * time.Minute
+// autoLoadBudgetCeiling — верхняя граница БЮДЖЕТА БЕЗ ПРОГРЕССА (R83/v67).
+//
+// Это НЕ общий лимит загрузки: пока cppworker сообщает растущий elapsedMs,
+// дедлайн бездействия продлевается (см. цикл ожидания ниже), поэтому живая
+// загрузка этим потолком не обрывается. Ограничение нужно лишь для того, чтобы
+// одно «зависшее» ожидание без единого признака прогресса не длилось сутками.
+//
+// Раньше здесь стоял autoLoadHardCeiling = 30 минут, который обрывал ожидание
+// ДАЖЕ при растущем прогрессе — это был duration-кап на работу: на медленном
+// диске 15-гигабайтная модель грузится дольше, и клиент получал «model load
+// exceeded hard ceiling», хотя загрузка продолжалась.
+const autoLoadBudgetCeiling = 24 * time.Hour
 
 // autoLoadPollInterval — период опроса состояния загрузки.
 const autoLoadPollInterval = 2 * time.Second
@@ -130,7 +138,7 @@ func (p *Proxy) autoLoadWaitTimeoutForModel(modelName string) time.Duration {
 	case autoLoadWaitDisabled:
 		return 0
 	case autoLoadWaitUnlimited:
-		return autoLoadHardCeiling
+		return autoLoadBudgetCeiling
 	case autoLoadWaitExplicit:
 		return time.Duration(n) * time.Second
 	}
@@ -142,8 +150,8 @@ func (p *Proxy) autoLoadWaitTimeoutForModel(modelName string) time.Duration {
 			budget = bySize
 		}
 	}
-	if budget > autoLoadHardCeiling {
-		budget = autoLoadHardCeiling
+	if budget > autoLoadBudgetCeiling {
+		budget = autoLoadBudgetCeiling
 	}
 	return budget
 }
@@ -273,7 +281,7 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 	// повторял запрос, и в cppworker уходили параллельные планы — вплоть до
 	// падения по SIGABRT. Теперь при растущем elapsedMs дедлайн продлевается, а
 	// общий предел ограничен hardCeiling (30 мин), чтобы не ждать вечно.
-	hardDeadline := time.Now().Add(autoLoadHardCeiling)
+	hardDeadline := time.Now().Add(autoLoadBudgetCeiling)
 	lastElapsedMs := int64(-1)
 
 	var loadDoneChan <-chan error
@@ -327,8 +335,8 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 			}
 		}
 
-		if time.Now().After(hardDeadline) {
-			return fmt.Errorf("model load exceeded hard ceiling %s (elapsed_ms=%d)", autoLoadHardCeiling, lastElapsedMs)
+		if !hardDeadline.IsZero() && time.Now().After(hardDeadline) {
+			return fmt.Errorf("model load exceeded the operator-armed hard ceiling (elapsed_ms=%d)", lastElapsedMs)
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("model load did not finish within %s (no progress reported by cppworker)", timeout)

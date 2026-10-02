@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"encoding/json"
@@ -43,18 +43,22 @@ func NewAutoPullManager(proxy *Proxy, config types.AutoPullConfig) *AutoPullMana
 		proxy:       proxy,
 		config:      config,
 		activePulls: make(map[string]*PullState),
-		httpClient: &http.Client{
-			Timeout: 10 * time.Minute, // Долгий таймаут для pull больших моделей
-		},
+		// R83/v67 (2026-10-02): без Timeout. Скачивание 15-гигабайтной модели
+		// с HF/Ollama-registry физически не укладывается в 10 минут, а
+		// http.Client.Timeout убивает ЗАПРОС, не прекращая саму закачку: оператор
+		// получал «pull request failed: context deadline exceeded» при живом
+		// прогрессе. Отсутствие работы (сеть, диск, upstream) видно по ошибке
+		// соединения/чтения — таймаут для этого не нужен.
+		httpClient: &http.Client{},
 	}
 
 	// Значения по умолчанию
 	if config.MaxConcurrent <= 0 {
 		apm.config.MaxConcurrent = 3
 	}
-	if config.PullTimeout == "" {
-		apm.config.PullTimeout = "5m"
-	}
+	// R83/v67 (2026-10-02): PullTimeout НЕ подставляется. Пустое значение =
+	// ждать терминального состояния закачки (см. pullWaitTimeout): дефолтные
+	// "5m" превращали любую большую модель в «auto-pull timed out».
 	if config.RetryCount <= 0 {
 		apm.config.RetryCount = 1
 	}
@@ -75,9 +79,6 @@ func (apm *AutoPullManager) SetConfig(cfg types.AutoPullConfig) {
 	defer apm.mu.Unlock()
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 3
-	}
-	if cfg.PullTimeout == "" {
-		cfg.PullTimeout = "5m"
 	}
 	if cfg.RetryCount <= 0 {
 		cfg.RetryCount = 1
@@ -141,14 +142,13 @@ func (apm *AutoPullManager) EnsureModel(model string) (string, error) {
 			"model", model, "backend", existing.BackendID)
 
 		// Ждём завершения уже запущенного pull'а
-		timeout := apm.getPullTimeout()
 		select {
 		case <-existing.Done:
 			if existing.Error != nil {
 				return "", fmt.Errorf("auto-pull for %s failed: %w", model, existing.Error)
 			}
 			return existing.BackendID, nil
-		case <-time.After(timeout):
+		case <-apm.pullWaitTimeout():
 			return "", fmt.Errorf("auto-pull for %s timed out waiting for in-progress pull", model)
 		}
 	}
@@ -180,10 +180,9 @@ func (apm *AutoPullManager) EnsureModel(model string) (string, error) {
 	// Шаг 6: Запускаем pull асинхронно
 	go apm.executePull(state)
 
-	// Шаг 7: Ждём завершения
-	timeout := apm.getPullTimeout()
+	// Шаг 7: Ждём завершения (без лимита, если PullTimeout не задан явно)
 	logger.Get().Infow("auto-pull: waiting for model download",
-		"model", model, "backend", backendID, "timeout", timeout)
+		"model", model, "backend", backendID, "pull_timeout", apm.getPullTimeout().String())
 
 	select {
 	case <-state.Done:
@@ -197,11 +196,11 @@ func (apm *AutoPullManager) EnsureModel(model string) (string, error) {
 		logger.Get().Infow("auto-pull: model download complete",
 			"model", model, "backend", backendID, "elapsed_sec", int(time.Since(state.StartedAt).Seconds()))
 		return backendID, nil
-	case <-time.After(timeout):
+	case <-apm.pullWaitTimeout():
 		// Таймаут — оставляем pull в фоне (он может завершиться позже)
 		logger.Get().Warnw("auto-pull: timeout waiting for model download, pull continues in background",
-			"model", model, "backend", backendID, "timeout", timeout)
-		return "", fmt.Errorf("auto-pull for %s timed out after %v (pull continues in background)", model, timeout)
+			"model", model, "backend", backendID, "pull_timeout", apm.getPullTimeout().String())
+		return "", fmt.Errorf("auto-pull for %s timed out (pull continues in background)", model)
 	}
 }
 
@@ -421,14 +420,44 @@ func (apm *AutoPullManager) getBackend(backendID string) *types.Backend {
 }
 
 // getPullTimeout — парсит таймаут из конфигурации
+// pullWaitTimeout возвращает канал, который закроется по истечении
+// сконфигурированного PullTimeout, либо nil — если ждать нужно до терминального
+// состояния (R83/v67).
+//
+// nil-канал в select блокирует свою ветку НАВСЕГДА — именно это и требуется:
+// «ждать завершения pull'а», а не «ждать 5 минут и объявить ошибку». Раньше
+// PullTimeout по умолчанию был "5m", и закачка большой модели гарантированно
+// «падала по таймауту» в глазах вызывающего, хотя продолжалась в фоне.
+//
+// Ненулевое значение остаётся возможным (конфиг PullTimeout: "10m") — тогда
+// поведение прежнее, и это осознанный выбор оператора.
+func (apm *AutoPullManager) pullWaitTimeout() <-chan time.Time {
+	d := apm.getPullTimeout()
+	if d <= 0 {
+		return nil
+	}
+	logger.Get().Warnw("auto-pull: PullTimeout включён — ожидание закачки будет прервано по таймеру "+
+		"(это лимит на работу, а не таймаут опроса состояния; pull продолжится в фоне)",
+		"pull_timeout", d.String())
+	return time.After(d)
+}
+
 func (apm *AutoPullManager) getPullTimeout() time.Duration {
 	apm.mu.Lock()
 	timeoutStr := apm.config.PullTimeout
 	apm.mu.Unlock()
 
+	if strings.TrimSpace(timeoutStr) == "" {
+		// R83/v67: пусто = ждать терминального состояния (см. pullWaitTimeout).
+		return 0
+	}
 	d, err := time.ParseDuration(timeoutStr)
 	if err != nil {
-		return 5 * time.Minute // fallback
+		// Не распарсили — не выдумываем кап: ошибка конфигурации не должна
+		// превращаться в «закачка отменена через 5 минут».
+		logger.Get().Warnw("auto-pull: PullTimeout не распознан, ожидание без лимита",
+			"pull_timeout", timeoutStr, "error", err)
+		return 0
 	}
 	return d
 }

@@ -166,6 +166,28 @@ func IsReasoningEnabledForRequest(modelName string) bool {
 	return false
 }
 
+// PerModelReasoningEnabled — R83/v67 (2026-10-02): ТОЛЬКО per-model состояние
+// (inst.reasoningEnabled, resolved в LoadModel из профиля/WebUI-галочки или
+// opts.EnableReasoning), без whitelist по имени модели.
+//
+// Зачем отдельно от IsReasoningEnabledForRequest: тот возвращает true для
+// ЛЮБОЙ модели из whitelist по имени (в том числе gemma-4) и потому не годится
+// как «оператор включил размышления»: он включал бы thinking всем gemma-4
+// подряд, даже когда галочка снята. Здесь же — ровно то состояние, которое
+// видно в /api/models как reasoning_enabled.
+//
+// Nil-safe: backend может быть nil (тесты, ранняя инициализация).
+func PerModelReasoningEnabled(modelName string) bool {
+	if backend == nil || modelName == "" {
+		return false
+	}
+	info, err := backend.GetModel(modelName)
+	if err != nil || info == nil {
+		return false
+	}
+	return info.ReasoningEnabled
+}
+
 // ============================================================
 // Разбор think-блоков
 // ============================================================

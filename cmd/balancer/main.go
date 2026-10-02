@@ -400,14 +400,28 @@ func main() {
 		"balancing_request_timeout", conf.Balancing.RequestTimeout)
 
 	// Создание API сервера
+	//
+	// R83/v67 (2026-10-02): WriteTimeout снят (был 60s). Через API-порт идут
+	// операции с моделью — load / reload / apply-профиль, — которые на слабых
+	// машинах длятся минуты (загрузка 15 ГБ GGUF с диска). 60-секундный кап
+	// обрывал ОТВЕТ ровно тогда, когда работа ещё шла: оператор видел ошибку
+	// «context canceled» и делал вывод «балансер не умеет грузить модель».
+	// Ноль означает «ждать терминального состояния», а не «ждать вечно вслепую»:
+	// хендлеры возвращают 202 + прогресс (handlers_cppworker_apply_async.go).
+	// Чтобы вернуть кап — выставьте его осознанно в коде/конфиге; сейчас
+	// поведение явно пишется в лог ниже.
 	apiHTTPServer := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", conf.LoadBalancer.Host, conf.LoadBalancer.APIPort),
 		Handler:      apiServer,
 		ConnContext:  enableTCPKeepAlive, // Тот же fix для API server
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
 	}
+	logger.Get().Infow("balancer API HTTP server timeouts",
+		"read_timeout_sec", apiHTTPServer.ReadTimeout.Seconds(),
+		"write_timeout_sec", apiHTTPServer.WriteTimeout.Seconds(),
+		"idle_timeout_sec", apiHTTPServer.IdleTimeout.Seconds())
 
 	// HTTPS сервера (если TLS включен)
 	var proxyTLSServer *http.Server
@@ -422,11 +436,16 @@ func main() {
 
 		// HTTPS прокси сервер
 		proxyTLSServer = &http.Server{
-			Addr:         fmt.Sprintf("%s:%d", conf.LoadBalancer.Host, conf.LoadBalancer.TLSPort),
-			Handler:      mux,
-			TLSConfig:    tlsConfig,
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: time.Duration(conf.Balancing.RequestTimeout+30) * time.Second,
+			Addr:        fmt.Sprintf("%s:%d", conf.LoadBalancer.Host, conf.LoadBalancer.TLSPort),
+			Handler:     mux,
+			TLSConfig:   tlsConfig,
+			ReadTimeout: 30 * time.Second,
+			// R83/v67 (2026-10-02): тот же дефект R65d, что уже исправлен для
+			// HTTP-прокси выше, но оставшийся в TLS-ветке: WriteTimeout
+			// (RequestTimeout+30 = 630s по умолчанию) обрывал долгий стрим,
+			// причём ДО application-level логики и без done-чанка — клиент
+			// получал TransferEncodingError вместо ответа.
+			WriteTimeout: 0,
 			IdleTimeout:  120 * time.Second,
 		}
 
@@ -436,7 +455,7 @@ func main() {
 			Handler:      apiServer,
 			TLSConfig:    tlsConfig,
 			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 60 * time.Second,
+			WriteTimeout: 0, // R83/v67: см. комментарий у apiHTTPServer
 			IdleTimeout:  120 * time.Second,
 		}
 

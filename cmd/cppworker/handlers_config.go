@@ -82,6 +82,19 @@ func handleCppWorkerRuntimeConfig(w http.ResponseWriter, r *http.Request) {
 			"active_queries":      m.ActiveQueries,
 			"total_queries":       m.TotalQueries,
 			"last_used_at":        m.LastUsedAt,
+			// R83/v67 (2026-10-02): флаги, с которыми модель РЕАЛЬНО работает.
+			//
+			// Жалоба оператора: «не выводится информация о всех флагах в строке
+			// состояния Загруженные у модели на странице GGUF Models». Здесь не
+			// хватало kv-cache, параллельности, окна на слот и reasoning — то есть
+			// ровно тех настроек, которые оператор выставляет в WebUI и хочет
+			// видеть применёнными (в первую очередь галочку «размышления»).
+			"kv_cache_type":     m.KVCacheType,
+			"parallel":          m.Parallel,
+			"context_per_seq":   m.ContextPerSeq,
+			"reasoning_enabled": m.ReasoningEnabled,
+			"batched_parallel":  m.BatchedParallel,
+			"flash_attn":        m.FlashAttnType,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{

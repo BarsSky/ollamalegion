@@ -67,8 +67,8 @@ func TestR83_AutoLoadWaitTier_ExplicitEnvWins(t *testing.T) {
 		t.Errorf("0 = не ждать: %s, want 0", got)
 	}
 	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "-1")
-	if got := p.autoLoadWaitTimeoutForModel("m"); got != autoLoadHardCeiling {
-		t.Errorf("отрицательное = ждать до предела: %s, want %s", got, autoLoadHardCeiling)
+	if got := p.autoLoadWaitTimeoutForModel("m"); got != autoLoadBudgetCeiling {
+		t.Errorf("отрицательное = ждать до предела: %s, want %s", got, autoLoadBudgetCeiling)
 	}
 	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "abc")
 	if got := p.autoLoadWaitTimeoutForModel("m"); got < 10*time.Minute {
@@ -76,15 +76,22 @@ func TestR83_AutoLoadWaitTier_ExplicitEnvWins(t *testing.T) {
 	}
 }
 
-// TestR83_AutoLoadWaitTier_HardCeiling — бюджет не может превысить hard ceiling
-// (30 мин): соединение не держим вечно.
-func TestR83_AutoLoadWaitTier_HardCeiling(t *testing.T) {
+// TestR83_AutoLoadWaitTier_BudgetCeiling — бюджет БЕЗ ПРОГРЕССА не может
+// превысить autoLoadBudgetCeiling (24 ч).
+//
+// R83/v67 (2026-10-02): раньше здесь был autoLoadHardCeiling = 30 минут, и это
+// был duration-кап на САМУ загрузку: ожидание обрывалось даже при растущем
+// прогрессе. Теперь потолок ограничивает только «зависшее» ожидание (24 ч), а
+// живая загрузка продлевает дедлайн на каждом шаге прогресса.
+func TestR83_AutoLoadWaitTier_BudgetCeiling(t *testing.T) {
 	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "")
 	p := &Proxy{}
-	restore := setModelSize(200 * 1024 * 1024 * 1024)
-	defer restore() // 200 GB — заведомо больше потолка
-	if got := p.autoLoadWaitTimeoutForModel("m"); got != autoLoadHardCeiling {
-		t.Errorf("бюджет = %s, want %s (hard ceiling)", got, autoLoadHardCeiling)
+	// 10 TiB: даже при 20 МБ/с это ≈ 6 суток > потолка, поэтому бюджет обязан
+	// упереться ровно в autoLoadBudgetCeiling.
+	restore := setModelSize(10 << 40)
+	defer restore()
+	if got := p.autoLoadWaitTimeoutForModel("m"); got != autoLoadBudgetCeiling {
+		t.Errorf("бюджет = %s, want %s (budget ceiling)", got, autoLoadBudgetCeiling)
 	}
 }
 

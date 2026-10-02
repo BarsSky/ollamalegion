@@ -67,19 +67,48 @@ func TestR83_LoadContext_NotKilledByCallerAfterStart(t *testing.T) {
 
 // TestR83_LoadContext_HasDeadline — «повисшая» загрузка не держит ресурс вечно:
 // контекст обязан быть ограничен по времени.
-func TestR83_LoadContext_HasDeadline(t *testing.T) {
+// TestR83_LoadContext_NoDeadlineByDefault — R83/v67 (2026-10-02).
+//
+// БЫЛО (до v67): тест требовал НАЛИЧИЯ дедлайна у контекста загрузки — дефолт
+// 30 минут. Но этот дедлайн и есть duration-кап на работу: на медленном диске
+// 15-гигабайтная модель грузится дольше, контекст отменялся, и bridge
+// возвращал BRIDGE_ERR_ABORTED («load cancelled») при полностью здоровой
+// загрузке.
+//
+// СТАЛО: по умолчанию дедлайна НЕТ — загрузка живёт до терминального
+// состояния. Кап возможен только явным opt-in
+// CPPWORKER_LAZY_LOAD_TIMEOUT_SEC (проверяется следующим тестом).
+func TestR83_LoadContext_NoDeadlineByDefault(t *testing.T) {
+	t.Setenv("CPPWORKER_LAZY_LOAD_TIMEOUT_SEC", "")
+
+	loadCtx, cancelLoad := loadContextForSharedLoad()
+	defer cancelLoad()
+
+	if deadline, ok := loadCtx.Deadline(); ok {
+		t.Fatalf("у контекста загрузки есть дедлайн %v — это duration-кап на работу: "+
+			"загрузка большой модели будет прервана таймером, а не терминальным состоянием",
+			time.Until(deadline))
+	}
+	if err := loadCtx.Err(); err != nil {
+		t.Fatalf("контекст загрузки уже отменён: %v", err)
+	}
+}
+
+// TestR83_LoadContext_OptInDeadline — оператор может осознанно взвести кап.
+func TestR83_LoadContext_OptInDeadline(t *testing.T) {
+	t.Setenv("CPPWORKER_LAZY_LOAD_TIMEOUT_SEC", "120")
+
+	if got := lazyLoadDetachedTimeout(); got != 120*time.Second {
+		t.Fatalf("lazyLoadDetachedTimeout() = %v, want 120s (явный opt-in)", got)
+	}
 	loadCtx, cancelLoad := loadContextForSharedLoad()
 	defer cancelLoad()
 
 	deadline, ok := loadCtx.Deadline()
 	if !ok {
-		t.Fatal("у контекста загрузки нет дедлайна — зависшая загрузка останется навсегда")
+		t.Fatal("при взведённом CPPWORKER_LAZY_LOAD_TIMEOUT_SEC дедлайн обязан быть")
 	}
-	d := time.Until(deadline)
-	if d <= 0 {
-		t.Fatalf("дедлайн уже прошёл: %v", d)
-	}
-	if d > 24*time.Hour {
-		t.Errorf("дедлайн неразумно далеко: %v", d)
+	if d := time.Until(deadline); d <= 0 || d > 3*time.Minute {
+		t.Fatalf("неожиданный дедлайн: %v", d)
 	}
 }

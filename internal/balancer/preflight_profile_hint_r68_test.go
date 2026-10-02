@@ -172,16 +172,21 @@ func TestResolvePhysicalMaxContext_R68(t *testing.T) {
 }
 
 // TestNctxPreflightWaitTimeout_R68 — парсинг LB_NCTX_PREFLIGHT_WAIT_SEC.
+//
+// R83/v67 (2026-10-02): дефолт изменился — раньше 240 секунд, теперь
+// неограниченное ожидание терминального состояния (константа
+// nctxPreflightWaitUnlimited = -1). 240-секундный кап давал первому же запросу
+// клиента 503 «being reloaded», пока перезагрузка шла нормально.
 func TestNctxPreflightWaitTimeout_R68(t *testing.T) {
 	cases := []struct {
 		env  string
 		want time.Duration
 	}{
-		{"", 240 * time.Second},
-		{"0", 0},
-		{"30", 30 * time.Second},
-		{"-1", 30 * time.Minute},
-		{"garbage", 240 * time.Second},
+		{"", nctxPreflightWaitUnlimited},        // default: ждать терминального состояния
+		{"0", 0},                                // осознанно не ждать
+		{"30", 30 * time.Second},                // явный кап оператора
+		{"-1", nctxPreflightWaitUnlimited},      // синоним «без капа»
+		{"garbage", nctxPreflightWaitUnlimited}, // ошибка конфига не обрывает ожидание
 	}
 	for _, tc := range cases {
 		t.Run("env="+tc.env, func(t *testing.T) {

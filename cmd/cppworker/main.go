@@ -79,7 +79,8 @@ var (
 	allowedOrigin = flag.String("cors-origin", "*", "CORS allowed origin")
 	envFile       = flag.String("env", "", "Path to .env configuration file (optional)")
 	preloadModels = flag.Bool("preload-models", false, "Preload all .gguf models at startup (disabled by default ? use with care, may exhaust VRAM)")
-	writeTimeout  = flag.Duration("write-timeout", 30*time.Minute, "HTTP WriteTimeout for streaming inference (use 0 for no timeout)")
+	writeTimeout  = flag.Duration("write-timeout", 0, "HTTP WriteTimeout для потокового инференса. 0 = без таймаута (по умолчанию, R83/v67): раньше 30 минут обрывали долгую генерацию ровно посередине ответа")
+	readTimeout   = flag.Duration("read-timeout", 0, "HTTP ReadTimeout (приём запроса). 0 = без таймаута (по умолчанию, R83/v67): обрыв медленного клиента — не наша задача; IdleTimeout отдельно закрывает простаивающие соединения")
 	healthCheck   = flag.Bool("healthcheck", false, "Run a one-shot health probe against /health and exit")
 	verbose       = flag.Bool("verbose", false, "Enable verbose (debug) logging")
 )
@@ -209,7 +210,14 @@ func main() {
 		log.Infow("applied CPPWORKER_AUTO_KV_CACHE from env", "auto_kv_cache", autoKVCacheEnabled)
 	}
 
-	// WriteTimeout ?? env (???? ???? ?? ??????? ????).
+	// WriteTimeout/ReadTimeout — через env (флаги имеют приоритет).
+	//
+	// R83/v67 (2026-10-02): оба по умолчанию 0 (без таймаута). Duration-кап на
+	// ответ сервера — это ровно тот класс таймаутов, который «мешает корректной
+	// работе»: WriteTimeout=30m обрывал генерацию (и догрузку модели, которую
+	// клиент ждёт в том же соединении) ровно посередине. Ненулевое значение
+	// теперь возможно только осознанно — через флаг или env, и это пишется в лог
+	// как WARNING, чтобы «почему оборвалось» больше не искали вслепую.
 	if !isFlagSet("write-timeout") {
 		if envVal := os.Getenv("CPPWORKER_WRITE_TIMEOUT"); envVal != "" {
 			if d, err := time.ParseDuration(envVal); err == nil && d >= 0 {
@@ -217,6 +225,23 @@ func main() {
 				log.Infow("applied CPPWORKER_WRITE_TIMEOUT from env", "write_timeout", d.String())
 			}
 		}
+	}
+	if !isFlagSet("read-timeout") {
+		if envVal := os.Getenv("CPPWORKER_READ_TIMEOUT"); envVal != "" {
+			if d, err := time.ParseDuration(envVal); err == nil && d >= 0 {
+				*readTimeout = d
+				log.Infow("applied CPPWORKER_READ_TIMEOUT from env", "read_timeout", d.String())
+			}
+		}
+	}
+	if *writeTimeout > 0 {
+		log.Warnw("CPPWORKER_WRITE_TIMEOUT включён: сервер ОБОРВЁТ потоковый ответ по истечении срока "+
+			"(это duration-кап на работу, а не таймаут опроса состояния)",
+			"write_timeout", writeTimeout.String())
+	}
+	if *readTimeout > 0 {
+		log.Warnw("CPPWORKER_READ_TIMEOUT включён: сервер ОБОРВЁТ приём запроса по истечении срока",
+			"read_timeout", readTimeout.String())
 	}
 
 	// Phase 8 P.4 (2026-07-11): multi-GPU tensor_split + split_mode.
@@ -370,12 +395,21 @@ func main() {
 
 	router := setupRouter()
 	server := &http.Server{
-		Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Handler:      router,
-		ReadTimeout:  30 * time.Second,
+		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler: router,
+		// R83/v67 (2026-10-02): duration-капы на приём/отдачу запроса сняты.
+		// ReadTimeout=30s обрывал медленную загрузку тела (большие vision-запросы),
+		// WriteTimeout=30m обрывал долгую генерацию и ожидание загрузки модели.
+		// Оставляем IdleTimeout: это защита ПРОСТАИВАЮЩЕГО соединения между
+		// запросами (то есть таймаут опроса состояния, а не лимит на работу).
+		ReadTimeout:  *readTimeout,
 		WriteTimeout: *writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
+	log.Infow("cppworker HTTP server timeouts (0 = без ограничения)",
+		"read_timeout_sec", server.ReadTimeout.Seconds(),
+		"write_timeout_sec", server.WriteTimeout.Seconds(),
+		"idle_timeout_sec", server.IdleTimeout.Seconds())
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

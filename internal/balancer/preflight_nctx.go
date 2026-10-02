@@ -863,39 +863,52 @@ func preflightDecisionFromCfg(cfg NCtxReloadConfig) PreflightDecision {
 	return PreflightReload
 }
 
-// nctxPreflightWaitDefaultSec — R68 (2026-09-23): сколько ЖДАТЬ завершения
-// async reload, прежде чем ответить клиенту 503/stream-dialog.
-//
-// Жалоба R68 (Cline): клиент с Model Context Window = 65536 получал либо 413
-// (preflight reject по profile hint), либо 503 «retry in 30s» — и работал
-// только повторный запрос. Тот же принцип, что в R67a для авто-загрузки:
-// первый же запрос дожидается готовности модели и обслуживается.
-//
-// 240 c < типичного клиентского таймаута (Cline 300000 ms, OpenWebUI 300 c),
-// но с запасом больше реального reload'а (gemma-4 65K на 8 GB — 119 c).
+// nctxPreflightWaitDefaultSec — исторический дефолт 240 c (R68). Оставлен как
+// документация: R83/v67 убрал его из поведения — ждать нужно терминального
+// состояния reload, а не 240 секунд по часам.
 const nctxPreflightWaitDefaultSec = 240
 
-// nctxPreflightWaitTimeout — R68: предел ожидания async reload.
+// nctxPreflightWaitUnlimited — «ждать терминального состояния».
 //
-//	LB_NCTX_PREFLIGHT_WAIT_SEC=N — N секунд (0 = прежнее поведение: сразу
-//	503+Retry-After / stream-dialog с keepalive; отрицательное = ждать до
-//	отмены клиентом, но не дольше 30 минут).
-//	По умолчанию 240 c.
+// Отрицательное значение выбрано намеренно: 0 в этой функции означает
+// «не ждать вовсе» (сразу 503), а WaitReloadDone(…, 0) — «ждать завершения».
+// Caller (RunPreflight) переводит -1 в 0 для WaitReloadDone.
+const nctxPreflightWaitUnlimited = -1 * time.Second
+
+// nctxPreflightWaitTimeout — сколько балансер ждёт завершения async reload,
+// прежде чем отдать клиенту 503.
+//
+// R83/v67 (2026-10-02): по умолчанию — ЖДАТЬ ТЕРМИНАЛЬНОГО СОСТОЯНИЯ.
+//
+//	LB_NCTX_PREFLIGHT_WAIT_SEC не задан → -1: ждать, пока reload не завершится
+//	    (успех или ошибка) либо пока клиент не отменит запрос. Раньше здесь
+//	    стояли 240 секунд, и на A10 с 15.7 ГБ моделью reload не укладывался —
+//	    первый же запрос клиента получал 503 «being reloaded», хотя перезагрузка
+//	    шла нормально (жалоба «проходит только повторный запрос»).
+//	N > 0 → N секунд: осознанный кап оператора (взведение видно в логе).
+//	0 → не ждать вовсе (прежнее поведение: сразу 503 + Retry-After).
+//	отрицательное → -1 (то же, что «не задан»): ждать терминального состояния.
+//	нечисловое значение → -1 (ошибка конфига не должна обрывать ожидание).
 func nctxPreflightWaitTimeout() time.Duration {
 	v := strings.TrimSpace(os.Getenv("LB_NCTX_PREFLIGHT_WAIT_SEC"))
 	if v == "" {
-		return nctxPreflightWaitDefaultSec * time.Second
+		return nctxPreflightWaitUnlimited
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		return nctxPreflightWaitDefaultSec * time.Second
+		logger.Get().Warnw("LB_NCTX_PREFLIGHT_WAIT_SEC не распознан — ждём терминального состояния reload",
+			"value", v, "error", err)
+		return nctxPreflightWaitUnlimited
 	}
 	switch {
 	case n == 0:
 		return 0
 	case n < 0:
-		return 30 * time.Minute
+		return nctxPreflightWaitUnlimited
 	default:
+		logger.Get().Warnw("armed preflight wait cap (operator opt-in): первый запрос клиента "+
+			"получит 503, если reload не успеет за этот срок",
+			"wait_sec", n, "source", "LB_NCTX_PREFLIGHT_WAIT_SEC")
 		return time.Duration(n) * time.Second
 	}
 }
@@ -1182,9 +1195,16 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 			// Раньше: клиенту сразу уходил 503+Retry-After (non-stream) или
 			// stream-dialog с keepalive и финальным [DONE] БЕЗ ответа модели —
 			// Cline показывал пустой ответ, и проходил только повторный запрос.
-			if wait := nctxPreflightWaitTimeout(); wait > 0 {
+			// R83/v67 (2026-10-02): wait != 0 → ждём. Значение < 0 означает
+			// «терминальное состояние» (переводим в 0 — так это понимает
+			// WaitReloadDone: 0 = ждать до done, без таймера).
+			if wait := nctxPreflightWaitTimeout(); wait != 0 {
+				waitArg := wait
+				if waitArg < 0 {
+					waitArg = 0
+				}
 				waitStart := time.Now()
-				if waitErr := c.WaitReloadDone(backendID, modelName, wait); waitErr == nil {
+				if waitErr := c.WaitReloadDone(backendID, modelName, waitArg); waitErr == nil {
 					c.SetLastKnownNCtx(backendID, decision.TargetNCtx)
 					c.ResetCycleCounter(backendID)
 					logger.Get().Infow("preflight: async reload finished while client waited, serving request",

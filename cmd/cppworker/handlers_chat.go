@@ -585,7 +585,26 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 
 	// R66b: эффективный режим reasoning = per-request think (если клиент задал)
 	// поверх глобального config.EnableReasoning.
-	reasoningEnabled := effectiveReasoningEnabled(opts, currentConfig != nil && currentConfig.EnableReasoning)
+	//
+	// R83/v67 (2026-10-02): fallback — НЕ только глобальный config.
+	//
+	// ЖИВОЙ ДЕФЕКТ (жалоба оператора: «флаг включить размышление был активен,
+	// однако при ответе размышление не применилось»). Галочка «размышления» в
+	// WebUI пишется в профиль модели (enableReasoning=true) и честно доезжает до
+	// загрузки — /api/models показывает reasoning_enabled=true. Но сборка промпта
+	// смотрела ТОЛЬКО на глобальный config.EnableReasoning (по умолчанию false) и
+	// per-model состояние (inst.reasoningEnabled, на которое влияет галочка) не
+	// читала вовсе: ни native enable_thinking, ни soft-инструкция не применялись.
+	// Проверено на стенде через /api/v1/cppworker/debug/last-prompt: промпт
+	// приходил без thinking-инструкции вообще.
+	//
+	// Порядок приоритета: явный think клиента > per-model (WebUI/профиль) >
+	// глобальный config.EnableReasoning.
+	configReasoning := PerModelReasoningEnabled(modelName)
+	if currentConfig != nil && currentConfig.EnableReasoning {
+		configReasoning = true
+	}
+	reasoningEnabled := effectiveReasoningEnabled(opts, configReasoning)
 
 	// R66b: format:"json"/схема → инструкция структурированного вывода.
 	// Грамматику C-bridge не поддерживает, поэтому ограничиваем промптом, а

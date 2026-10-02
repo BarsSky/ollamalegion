@@ -90,7 +90,12 @@ func TestNewAutoPullManager(t *testing.T) {
 	assert.NotNil(t, apm)
 	assert.Equal(t, proxy, apm.proxy)
 	assert.Equal(t, 3, apm.config.MaxConcurrent, "default MaxConcurrent should be 3")
-	assert.Equal(t, "5m", apm.config.PullTimeout, "default PullTimeout should be 5m")
+	// R83/v67 (2026-10-02): дефолтного PullTimeout больше нет. Пустое значение
+	// означает «ждать терминального состояния закачки»: дефолтные "5m"
+	// превращали любую большую модель в «auto-pull timed out» при живом
+	// прогрессе скачивания.
+	assert.Equal(t, "", apm.config.PullTimeout, "PullTimeout по умолчанию пустой = без лимита ожидания")
+	assert.Equal(t, time.Duration(0), apm.getPullTimeout(), "пустой PullTimeout = 0 (без лимита)")
 	assert.Equal(t, 1, apm.config.RetryCount, "default RetryCount should be 1")
 	assert.Empty(t, apm.activePulls)
 	assert.NotNil(t, apm.httpClient)
@@ -106,7 +111,7 @@ func TestAutoPullConfigDefaults(t *testing.T) {
 	cfg := apm.GetConfig()
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, 3, cfg.MaxConcurrent)
-	assert.Equal(t, "5m", cfg.PullTimeout)
+	assert.Equal(t, "", cfg.PullTimeout, "R83/v67: дефолт не подставляется (без лимита)")
 	assert.Equal(t, 1, cfg.RetryCount)
 
 	// Проверяем IsEnabled
@@ -186,8 +191,10 @@ func TestAutoPullGetPullTimeout(t *testing.T) {
 		{types.AutoPullConfig{Enabled: true, PullTimeout: "5m"}, 5 * time.Minute},
 		{types.AutoPullConfig{Enabled: true, PullTimeout: "10m"}, 10 * time.Minute},
 		{types.AutoPullConfig{Enabled: true, PullTimeout: "30s"}, 30 * time.Second},
-		{types.AutoPullConfig{Enabled: true, PullTimeout: ""}, 5 * time.Minute},        // default
-		{types.AutoPullConfig{Enabled: true, PullTimeout: "invalid"}, 5 * time.Minute}, // fallback
+		// R83/v67: пусто и нераспознанное значение = БЕЗ лимита (0), а не
+		// выдуманные 5 минут. Ошибка в конфиге не должна отменять закачку.
+		{types.AutoPullConfig{Enabled: true, PullTimeout: ""}, 0},
+		{types.AutoPullConfig{Enabled: true, PullTimeout: "invalid"}, 0},
 	}
 
 	for _, tt := range tests {

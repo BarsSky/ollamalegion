@@ -1094,10 +1094,15 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 }
 
 // proxyHTTP — R59.15c: thin wrapper over Proxy.proxyRequestToBackend.
-// 120s timeout (Round 21): /api/show, /api/pull, /api/create могут вызывать
-// lazy load модели (50-70s для 5GB qwen3-4b). 30s было слишком мало —
-// клиент получал 502 timeout, а cppworker продолжал грузить в фоне (теряя slot).
-// Раньше здесь была 22-строчная копия логики OllamaRouter.proxyHTTP.
+//
+// R83/v67 (2026-10-02): таймаут снят (был 120s). Через этот путь идут
+// /api/show, /api/pull, /api/create, причём /api/pull — это СКАЧИВАНИЕ модели:
+// 15-гигабайтный GGUF не укладывается ни в 30s, ни в 120s. http.Client.Timeout
+// обрывал запрос, не отменяя работу на бэкенде (cppworker продолжал качать),
+// и клиент видел 502, а модель — «не загрузилась».
+//
+// Теперь ждём терминального состояния: ответ/ошибку бэкенда или отмену
+// клиентского контекста (r.Context()). Явный кап — LB_ALLOW_MODEL_OP_TIMEOUT_SEC.
 func (lr *LlamaCppRouter) proxyHTTP(r *http.Request, backendID string) (*http.Response, error) {
-	return lr.proxy.proxyRequestToBackend(r, backendID, 120*time.Second)
+	return lr.proxy.proxyRequestToBackend(r, backendID, modelOpHTTPTimeout())
 }

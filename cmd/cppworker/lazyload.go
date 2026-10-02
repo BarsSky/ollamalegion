@@ -42,13 +42,26 @@ var (
 // Загрузка 27B Q4 на CPU-offload занимает минуты; 30 минут — верхняя граница,
 // чтобы «повисшая» загрузка не держала слот вечно. Переопределяется
 // CPPWORKER_LAZY_LOAD_TIMEOUT_SEC (секунды).
+// lazyLoadDetachedTimeout — duration-кап на РАЗДЕЛЯЕМУЮ загрузку модели.
+//
+// R83/v67 (2026-10-02): по умолчанию 0 = БЕЗ капа. Раньше дефолт 30 минут
+// обрывал загрузку большой модели ровно по часам: контекст отменялся, и
+// llama_model_load_from_file возвращал BRIDGE_ERR_ABORTED («load cancelled»),
+// хотя диск/VRAM были в порядке — оператор видел «модель не грузится».
+//
+// Доктрина: загрузка завершается терминальным состоянием (успех/ошибка/
+// недоступность), а не таймером. Кап возвращается ТОЛЬКО явным opt-in
+// CPPWORKER_LAZY_LOAD_TIMEOUT_SEC=N (секунды).
 func lazyLoadDetachedTimeout() time.Duration {
 	if v := os.Getenv("CPPWORKER_LAZY_LOAD_TIMEOUT_SEC"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 30 && n <= 86400 {
+			logger.Get().Warnw("armed lazy-load timeout (operator opt-in): загрузка модели будет "+
+				"прервана по таймеру, а не по терминальному состоянию",
+				"timeout_sec", n, "source", "CPPWORKER_LAZY_LOAD_TIMEOUT_SEC")
 			return time.Duration(n) * time.Second
 		}
 	}
-	return 30 * time.Minute
+	return 0
 }
 
 // loadContextForSharedLoad — R83-fix (2026-09-29): контекст для РАЗДЕЛЯЕМОЙ
@@ -63,7 +76,9 @@ func lazyLoadDetachedTimeout() time.Duration {
 // `ctx.Done() != nil`, которое истинно как раз для клиентского r.Context(),
 // из-за чего отвязка не срабатывала именно в своём сценарии.
 func loadContextForSharedLoad() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), lazyLoadDetachedTimeout())
+	// contextWithTimeout трактует <= 0 как «без капа» (WithCancel), а не как
+	// немедленно истёкший контекст — см. context_timeout.go.
+	return contextWithTimeout(lazyLoadDetachedTimeout())
 }
 
 func init() {

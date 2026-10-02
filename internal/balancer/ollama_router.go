@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"time"
 
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -244,8 +243,14 @@ func (or *OllamaRouter) readBody(r *http.Request) []byte {
 // proxyHTTP — R59.15c: thin wrapper over Proxy.proxyRequestToBackend.
 // 30s timeout: Ollama endpoints are fast, no long-poll operations.
 // Previously this was a 22-line copy of the same logic in llamacpp_router.
+//
+// R83/v67 (2026-10-02): таймаут снят. Утверждение «no long-poll operations»
+// неверно: через этот путь идёт POST /api/pull — скачивание модели на много
+// гигабайт. 30-секундный http.Client.Timeout обрывал запрос при живом
+// прогрессе закачки. Ждём терминального состояния (ответ/ошибка/отмена
+// клиентского контекста); явный кап — LB_ALLOW_MODEL_OP_TIMEOUT_SEC.
 func (or *OllamaRouter) proxyHTTP(r *http.Request, backendID string) (*http.Response, error) {
-	return or.proxy.proxyRequestToBackend(r, backendID, 30*time.Second)
+	return or.proxy.proxyRequestToBackend(r, backendID, modelOpHTTPTimeout())
 }
 
 // NOTE: writeJSON and copyResponse moved to proxy_helpers.go in R51.1.

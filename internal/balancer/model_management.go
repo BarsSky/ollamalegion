@@ -38,7 +38,19 @@ func NewModelManager(proxy *Proxy) *ModelManager {
 	return &ModelManager{
 		proxy: proxy,
 		client: &http.Client{
-			Timeout: 10 * time.Minute, // pull/push могут быть долгими
+			// R83/v67 (2026-10-02): Timeout снят (был 10 минут).
+			//
+			// 10 минут — это duration-кап на РАБОТУ: скачивание/выгрузка
+			// 15-гигабайтного GGUF физически не укладывается в него, а
+			// http.Client.Timeout убивает запрос, не отменяя саму операцию у
+			// upstream. Оператор видел «Client.Timeout exceeded while awaiting
+			// headers» при живом прогрессе и считал, что балансер не умеет
+			// работать с большими моделями.
+			//
+			// Отсутствие работы видно по ошибке соединения/чтения — таймаут для
+			// этого не нужен (см. доктрину: капы допустимы только как opt-in).
+			// Явный кап возвращается через LB_ALLOW_MODEL_OP_TIMEOUT_SEC.
+			Timeout: modelOpHTTPTimeout(),
 			Transport: &http.Transport{
 				MaxIdleConns:        10,
 				MaxIdleConnsPerHost: 5,
@@ -47,6 +59,25 @@ func NewModelManager(proxy *Proxy) *ModelManager {
 		},
 		activeOps: make(map[string]map[string]time.Time),
 	}
+}
+
+// modelOpHTTPTimeout — duration-кап для HTTP-клиента операций с моделью
+// (pull/push/load/reload/unload).
+//
+// R83/v67 (2026-10-02): по умолчанию 0 = БЕЗ капа: операции ждут терминального
+// состояния (успех/ошибка/недоступность), а не «10 минут по часам». Кап
+// возвращается только явным opt-in оператора, и при взведении печатается WARN,
+// чтобы причина обрыва больше не искалась вслепую.
+func modelOpHTTPTimeout() time.Duration {
+	return optInTimeoutSeconds("LB_ALLOW_MODEL_OP_TIMEOUT_SEC", "операции с моделью (pull/push/load/unload)")
+}
+
+// loadRequestTimeout — duration-кап на конкретный HTTP-запрос загрузки модели.
+// По умолчанию 0 (см. modelOpHTTPTimeout). Отдельное имя — потому что раньше
+// здесь подставлялся Balancing.ModelLoadTimeout (120s), который на больших
+// моделях обрывал загрузку, продолжавшуюся на бэкенде.
+func loadRequestTimeout() time.Duration {
+	return optInTimeoutSeconds("LB_ALLOW_MODEL_LOAD_TIMEOUT_SEC", "HTTP-запрос загрузки модели")
 }
 
 // ModelOpRequest — запрос на выполнение операции с моделью
@@ -1235,14 +1266,22 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 		}
 	}
 
-	// Используем отдельный клиент с таймаутом из конфигурации (Balancing.ModelLoadTimeout,
-	// default 120s). Раньше был хардкод 5s — этого недостаточно для cold-start
-	// больших GGUF моделей (чтение файла + загрузка весов в VRAM).
-	// Общий mm.client имеет Timeout 10 минут (для pull/push), что слишком много
-	// для load-запроса к потенциально неотвечающему cppworker.
-	loadTimeout := mm.getLoadTimeout()
+	// R83/v67 (2026-10-02): без капа по умолчанию.
+	//
+	// БЫЛО: отдельный клиент с Timeout = Balancing.ModelLoadTimeout (default
+	// 120s, позже 600s). Загрузка qwen3.8 15.7 ГБ на A10 идёт дольше, и запрос
+	// обрывался на таймере, хотя cppworker продолжал грузить модель — в логе
+	// «auto-load failed: context deadline exceeded», в UI «модель не грузится».
+	//
+	// СТАЛО: ждём ответа бэкенда (успех/ошибка/недоступность). Кап — только
+	// opt-in (LB_ALLOW_MODEL_LOAD_TIMEOUT_SEC), с громким WARN.
+	loadTimeout := loadRequestTimeout()
 	loadClient := &http.Client{
 		Timeout: loadTimeout,
+	}
+	if loadTimeout > 0 {
+		logger.Get().Warnw("load request timeout armed (operator opt-in)",
+			"load_timeout", loadTimeout.String(), "source", "LB_ALLOW_MODEL_LOAD_TIMEOUT_SEC")
 	}
 
 	for attempt := 0; attempt < llamaCppLoadMaxRetries; attempt++ {

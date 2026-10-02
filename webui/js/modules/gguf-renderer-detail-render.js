@@ -322,6 +322,141 @@
         }).join('');
     }
 
+    /**
+     * buildLoadedFlags — R83/v67 (2026-10-02): строка состояния ЗАГРУЖЕННОЙ
+     * модели со ВСЕМИ флагами, с которыми она реально работает.
+     *
+     * ЖИВАЯ ЖАЛОБА ОПЕРАТОРА: «не выводится информация о всех флагах в строке
+     * состояния Загруженные у модели на странице GGUF Models». Раньше в строке
+     * были только ctx_size и VRAM — по ней нельзя было понять, применились ли к
+     * модели параллельность, kv-cache, flash attention и галочка «размышления»
+     * (именно поэтому «флаг включён, а размышлений нет» выглядело необъяснимо).
+     *
+     * Источники — оба, с приоритетом runtime (cppworker отдаёт фактические
+     * значения загрузки), а балансерный loadedModels дополняет тем, что знает
+     * только он (parallel/maxSlots/kvCacheType/reasoningEnabled/context_per_seq).
+     *
+     * @param {Object} m  элемент state.loadedModels (ответ балансера)
+     * @param {Object|null} rt runtime-параметры модели (cppworker config/runtime)
+     * @returns {Array<{label:string,value:string,title:string,tone:string}>}
+     */
+    function buildLoadedFlags(m, rt) {
+        m = m || {};
+        rt = rt || {};
+        const pick = function () {
+            for (let i = 0; i < arguments.length; i++) {
+                const v = arguments[i];
+                if (v !== undefined && v !== null && v !== '') return v;
+            }
+            return null;
+        };
+        const flags = [];
+
+        const ctx = pick(rt.context_size, m.contextLength, m.contextSize);
+        const perSeq = pick(rt.context_per_seq, m.context_per_seq);
+        if (ctx !== null) {
+            flags.push({
+                label: 'ctx',
+                value: String(ctx) + (perSeq !== null && String(perSeq) !== String(ctx) ? ' (' + perSeq + '/slot)' : ''),
+                title: 'Суммарное окно контекста' + (perSeq !== null ? '; на один слот (клиента): ' + perSeq : ''),
+                tone: 'normal'
+            });
+        }
+
+        const parallel = pick(m.parallel, m.maxSlots, rt.parallel);
+        if (parallel !== null) {
+            flags.push({
+                label: 'parallel',
+                value: String(parallel) + (m.maxSlots ? ' (max ' + m.maxSlots + ')' : ''),
+                title: 'Число параллельных слотов (llama.cpp n_parallel)',
+                tone: 'normal'
+            });
+        }
+
+        const kv = pick(m.kvCacheType, rt.kv_cache_type);
+        flags.push({
+            label: 'kv',
+            value: kv !== null ? String(kv) : 'f16',
+            // Дефолт без явной настройки действительно f16 — и это ровно то, на
+            // что жаловался оператор («в дефолте нигде не указывается
+            // квантизация KV-cache, отчего всегда грузит с f-16»).
+            title: kv !== null ? 'Тип KV-cache' : 'Тип KV-cache не задан — llama.cpp использует f16 (максимум VRAM)',
+            tone: kv !== null ? 'normal' : 'warn'
+        });
+
+        const gpu = pick(rt.gpu_layers, m.numGpuLayers);
+        const layers = pick(rt.n_layers, m.nLayers);
+        if (gpu !== null) {
+            const gpuNum = Number(gpu);
+            const layersNum = layers !== null ? Number(layers) : 0;
+            let tone = 'normal';
+            if (gpuNum === 0) tone = 'warn';
+            else if (layersNum > 0 && gpuNum > 0 && gpuNum < layersNum) tone = 'warn';
+            flags.push({
+                label: 'gpu_layers',
+                value: layersNum > 0 ? gpuNum + '/' + layersNum : String(gpuNum),
+                title: gpuNum === 0
+                    ? 'Модель целиком на CPU — генерация будет очень медленной'
+                    : 'Сколько слоёв модели на GPU (из общего числа слоёв)',
+                tone: tone
+            });
+        }
+
+        const fa = pick(rt.flash_attn_type, m.flashAttnType);
+        if (fa !== null) {
+            const faNum = Number(fa);
+            flags.push({
+                label: 'flash_attn',
+                value: faNum === 1 ? 'on' : (faNum === 0 ? 'off' : 'auto'),
+                title: 'Flash attention: auto = решает llama.cpp по архитектуре GPU',
+                tone: 'normal'
+            });
+        }
+
+        const mmap = pick(rt.use_mmap, m.useMmap);
+        if (mmap !== null) {
+            flags.push({
+                label: 'mmap',
+                value: mmap ? 'on' : 'off',
+                title: 'use_mmap: отображение весов файла в память',
+                tone: 'normal'
+            });
+        }
+
+        // reasoning_enabled — то самое поле, которое показывает, «применилась ли
+        // галочка размышлений» из профиля/WebUI (см. /api/models на cppworker).
+        const reasoning = pick(m.reasoningEnabled, rt.reasoning_enabled,
+            (m.capabilities ? m.capabilities.reasoning : null));
+        if (reasoning !== null && reasoning !== undefined) {
+            const on = reasoning === true || reasoning === 'true';
+            flags.push({
+                label: 'reasoning',
+                value: on ? 'on' : 'off',
+                title: on
+                    ? 'Размышления включены: промпт получает thinking-инструкцию, рассуждение отделяется от ответа'
+                    : 'Размышления выключены (галочка «Enable reasoning» в настройках модели снята)',
+                tone: on ? 'ok' : 'off'
+            });
+        }
+
+        const batched = pick(rt.batched_parallel);
+        if (batched !== null) {
+            flags.push({
+                label: 'batched',
+                value: batched ? 'on' : 'off',
+                title: 'Один llama_decode на несколько сессий (true parallel inference)',
+                tone: batched ? 'ok' : 'off'
+            });
+        }
+
+        const quant = pick(m.quantization);
+        if (quant !== null) {
+            flags.push({label: 'quant', value: String(quant), title: 'Квантование весов', tone: 'normal'});
+        }
+
+        return flags;
+    }
+
     function renderLoadedPane() {
         const models = state.loadedModels || [];
         const loadingArr = (state.selectedBackendId && state.loadingModels && state.loadingModels[state.selectedBackendId]) || [];
@@ -376,7 +511,10 @@
             // /api/v1/cppworker/config/runtime с ключом m.name (без .gguf), а
             // список загруженных моделей балансера может содержать имя файла.
             const rt = lookupRuntimeModel(state.runtimeModels, name, m.path);
-            const ctx = m.ctxSize || m.contextSize || '-';
+            // R83/v67: contextLength — поле, которое реально отдаёт балансер в
+            // loadedModels (раньше здесь были только ctxSize/contextSize, поэтому
+            // в строке состояния показывался прочерк «ctx_size: -»).
+            const ctx = m.ctxSize || m.contextSize || m.contextLength || (rt && rt.context_size) || '-';
             const vram = m.vramBytes ? formatFileSize(m.vramBytes) : (m.vramUsage ? m.vramUsage + ' MB' : '-');
             // Runtime-блок (показываем рядом с default если rt есть).
             // Поля из cppworker: context_size, gpu_layers, batch_size, flash_attn_type,
@@ -393,16 +531,12 @@
                 const rtGpuBadge = (rtGpu !== null && rtGpu !== undefined && rtGpu !== m.gpuLayers) ?
                     '<span class="badge" style="background:var(--bg-tertiary);margin-left:6px;padding:2px 6px;font-size:10px;">gpu: ' + Utils.escapeHtml(String(rtGpu)) + '</span>' : '';
                 const meta = [];
-                if (rtCtx) meta.push('<span title="Runtime n_ctx">ctx=' + Utils.escapeHtml(String(rtCtx)) + '</span>');
-                if (rtGpu !== null && rtGpu !== undefined) meta.push('<span title="Runtime GPU layers">gpu_layers=' + Utils.escapeHtml(String(rtGpu)) + '</span>');
-                if (rtBatch) meta.push('<span title="Runtime batch size">batch=' + Utils.escapeHtml(String(rtBatch)) + '</span>');
-                if (rtFa !== undefined && rtFa !== null) meta.push('<span title="Flash attention type">fa=' + Utils.escapeHtml(String(rtFa)) + '</span>');
-                if (rtLayers) meta.push('<span title="Model layers">layers=' + Utils.escapeHtml(String(rtLayers)) + '</span>');
+                // R83/v67 (2026-10-02): ctx/gpu_layers/batch/flash_attn/layers/mmap
+                // переехали в строку флагов (buildLoadedFlags) — раньше они были
+                // здесь, но без kv-cache, параллельности и reasoning, и по строке
+                // нельзя было понять, применились ли настройки модели.
                 if (rt.gguf_context_length && rt.gguf_context_length !== rtCtx) {
                     meta.push('<span title="Max n_ctx per GGUF metadata">gguf_max=' + Utils.escapeHtml(String(rt.gguf_context_length)) + '</span>');
-                }
-                if (rt.use_mmap !== undefined && rt.use_mmap !== null) {
-                    meta.push('<span title="use_mmap">mmap=' + (rt.use_mmap ? 'on' : 'off') + '</span>');
                 }
                 // R66d: CPU-offload — прямая причина «модель работает медленно,
                 // хотя VRAM свободна». cppworker в auto-режиме (gpu_layers=-2)
@@ -457,12 +591,32 @@
                   '</span>'
                 : '';
 
+            // R83/v67 (2026-10-02): строка состояния со ВСЕМИ флагами модели.
+            // Жалоба оператора: «не выводится информация о всех флагах в строке
+            // состояния Загруженные у модели на странице GGUF Models» — без
+            // kv/parallel/reasoning нельзя было убедиться, что настройки
+            // применились к загруженной модели.
+            const flags = buildLoadedFlags(m, rt);
+            const flagsHtml = flags.length > 0
+                ? '<div class="gguf-loaded-model-flags" style="margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;font-family:monospace;font-size:11px;">' +
+                    flags.map(function (f) {
+                        const color = f.tone === 'ok' ? '#5cb85c'
+                            : (f.tone === 'warn' ? '#f0ad4e'
+                            : (f.tone === 'off' ? 'var(--text-muted)' : 'var(--text-secondary)'));
+                        return '<span class="gguf-flag" style="color:' + color + ';padding:1px 6px;background:var(--bg-tertiary);border-radius:6px;" ' +
+                            'title="' + Utils.escapeHtml(f.title) + '">' +
+                            Utils.escapeHtml(f.label) + '=' + Utils.escapeHtml(f.value) + '</span>';
+                    }).join('') +
+                  '</div>'
+                : '';
+
             return '<div class="gguf-loaded-model-item">' +
                 '<div class="gguf-loaded-model-name">' + Utils.escapeHtml(name) + busyBadge + '</div>' +
                 '<div class="gguf-loaded-model-info">' +
                     '<span>' + _('gguf.ctx_size') + ': ' + ctx + '</span>' +
                     '<span style="margin-left:12px;">VRAM: ' + vram + '</span>' +
                 '</div>' +
+                flagsHtml +
                 rtHtml +
                 '<button class="btn btn-sm btn-danger gguf-unload-btn" data-handle="' + Utils.escapeHtml(m.handle || name) + '">' +
                     '<i class="fas fa-stop"></i> ' + _('gguf.unload_model') +

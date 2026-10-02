@@ -51,7 +51,15 @@ func getStreamDialogCfg() streamDialogConfig {
 	cfg := streamDialogConfig{
 		enabled:         true, // default ON
 		keepalivePeriod: 5 * time.Second,
-		waitTimeout:     5 * time.Minute,
+		// R83/v62 (2026-10-02): кап 5 минут на ожидание перезагрузки убран.
+		//
+		// 0 = ждать ТЕРМИНАЛЬНОГО состояния reload (WaitReloadDone(...,0) ждёт
+		// <-found.done). Раньше по истечении 5 минут диалог закрывался БЕЗ ответа
+		// модели — ровно тот случай, который в preflight_nctx.go описан как
+		// «Cline показывал пустой ответ, и проходил только повторный запрос».
+		// Числовое значение можно вернуть через env (см. ниже), и тогда оно
+		// печатается в лог как осознанный кап оператора.
+		waitTimeout: 0,
 	}
 	if v, ok := os.LookupEnv("LB_PREFLIGHT_STREAM_DIALOG"); ok {
 		switch v {

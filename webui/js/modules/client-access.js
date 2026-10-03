@@ -346,4 +346,16 @@
             KEY_MASK: KEY_MASK
         }
     };
+
+    // Самомонтирование: блок появляется в трёх местах (страница «Бэкенды»,
+    // «Image-модели» → «Обзор», «GGUF модели» → «О бэкенде»), и заставлять каждую
+    // страницу звать mount() — лишний способ забыть это сделать на новой.
+    // Слушатель один на документ, поэтому повторные вызовы безвредны.
+    if (typeof document !== 'undefined' && document.addEventListener) {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', mount);
+        } else {
+            mount();
+        }
+    }
 })();

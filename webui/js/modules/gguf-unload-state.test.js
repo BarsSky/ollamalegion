@@ -218,6 +218,25 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
         assert.strictEqual(M.state._unloadingTimer, null, 'таймер остался запущенным');
     });
 
+    // --- 9. «О бэкенде»: подключение клиентов (2026-10-03) ------------------
+    // Ключ и эндпоинты теперь и в панели детали GGUF: оператор настраивает
+    // клиента, глядя на конкретный бэкенд. Блок рисует общий модуль
+    // client-access.js — здесь проверяем только факт его встраивания.
+    check('панель «О бэкенде» содержит блок «Подключение клиентов»', function () {
+        window.ClientAccess = {
+            render: function (b) { return '<div data-client-access-stub="' + (b && b.id) + '"></div>'; },
+            mount: function () {},
+        };
+        try {
+            M.state.detailPane = 'about';
+            const html = M.renderDetailPane();
+            assert.ok(html.indexOf('data-client-access-stub="' + BACKEND.id + '"') !== -1,
+                'блок подключения не встроен в «О бэкенде»: ' + html.slice(0, 300));
+        } finally {
+            delete window.ClientAccess;
+        }
+    });
+
     // Секундный таймер выгрузки держит event loop живым — гасим его и выходим
     // явно, иначе `node <тест>` не завершится (и вывод не отдастся в pipe).
     if (M.state._unloadingTimer) { clearInterval(M.state._unloadingTimer); M.state._unloadingTimer = null; }

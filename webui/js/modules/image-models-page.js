@@ -46,6 +46,7 @@
     // прийти на несколько секунд позже, чем воркер реально её загрузил.
     var SELFTEST_GATE_WAIT_MS = 30000;
     var LOADED_STATE_ID = 'imLoadedState';
+    var CLIENT_ACCESS_HOST_ID = 'imClientAccessHost';
     var BACKEND_SELECT_ID = 'imgBackendSelect';
 
     var mounted = false;
@@ -198,9 +199,32 @@
         el.textContent = parts.join(' · ');
     }
 
+    /**
+     * renderClientAccess — таб «Обзор»: блок «Подключение клиентов» для
+     * ВЫБРАННОГО image-бэкенда (ключ + эндпоинты картинок).
+     *
+     * Зачем здесь: оператор настраивает клиента, глядя на конкретный бэкенд, а
+     * ключ лежал только в deployments/.env на хосте. Модуль тот же, что на
+     * странице «Бэкенды» (`client-access.js`) — одна реализация на проект.
+     */
+    function renderClientAccess() {
+        var host = byId(CLIENT_ACCESS_HOST_ID);
+        if (!host) return;
+        if (!window.ClientAccess || typeof window.ClientAccess.render !== 'function') {
+            host.innerHTML = '';
+            return;
+        }
+        var backendId = selectedBackendID();
+        var backend = null;
+        state.backends.forEach(function (b) { if (b.id === backendId) backend = b; });
+        if (!backend) { host.innerHTML = ''; return; }
+        host.innerHTML = window.ClientAccess.render(backend);
+    }
+
     function render(backends) {
         state.backends = Array.isArray(backends) ? backends : [];
         renderCurrentModel();
+        renderClientAccess();
         renderTabs();
         return state.backends;
     }
@@ -493,6 +517,22 @@
     function mount() {
         if (mounted) { restoreTabIfNeeded(); return; }
         mounted = true;
+
+        // Делегированный обработчик «показать/скопировать ключ» — слушатель на
+        // документе, поэтому монтируем один раз (идемпотентно внутри модуля).
+        if (window.ClientAccess && typeof window.ClientAccess.mount === 'function') {
+            window.ClientAccess.mount();
+        }
+
+        // Смена выбранного бэкенда в шапке — сразу перерисовать «Подключение
+        // клиентов» и сводку загруженной модели (не ждать периодического refresh).
+        var backendSel = byId(BACKEND_SELECT_ID);
+        if (backendSel && backendSel.addEventListener) {
+            backendSel.addEventListener('change', function () {
+                renderClientAccess();
+                renderCurrentModel();
+            });
+        }
 
         var tabs = byId(TABS_ID);
         if (tabs && tabs.addEventListener) {

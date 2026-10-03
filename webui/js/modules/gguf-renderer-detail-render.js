@@ -184,6 +184,13 @@
         if (!backend) return '';
         const gpus = renderGpuInfoCards();
         const worker = renderWorkerInfoCard();
+        // 2026-10-03: блок «Подключение клиентов» (ключ + эндпоинты) прямо в
+        // «О бэкенде» — оператор настраивает клиента, глядя на этот бэкенд, и
+        // раньше уходил искать токен в deployments/.env на хосте. Модуль общий с
+        // страницей «Бэкенды» (webui/js/modules/client-access.js).
+        const accessHtml = (window.ClientAccess && typeof window.ClientAccess.render === 'function')
+            ? window.ClientAccess.render(backend)
+            : '';
         return '<div class="gguf-about-grid">' +
             '<div>' +
                 '<div class="gguf-about-section">' +
@@ -204,7 +211,7 @@
                     '</div>' +
                 '</div>' +
             '</div>' +
-        '</div>';
+        '</div>' + accessHtml;
     }
 
     function renderGpuInfoCards() {

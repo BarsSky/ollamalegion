@@ -198,6 +198,26 @@ function tabPanel(tab) {
         assert.ok(txt.indexOf('894') !== -1 && txt.indexOf('8192') !== -1, 'нет VRAM: ' + txt);
     });
 
+    // 2026-10-03: таб «Обзор» показывает «Подключение клиентов» для выбранного
+    // image-бэкенда — тот же блок, что на странице «Бэкенды».
+    check('таб «Обзор»: блок «Подключение клиентов» рисуется для выбранного бэкенда', function () {
+        const calls = [];
+        window.ClientAccess = {
+            mount: function () { calls.push('mount'); },
+            render: function (b) { calls.push(b && b.id); return '<div data-test-access="' + (b && b.id) + '"></div>'; },
+        };
+        try {
+            getEl('imgBackendSelect').value = 'img1';
+            Page.render([{ id: 'img1', backendType: 'image_cpp', host: 'legion' }]);
+            assert.deepStrictEqual(calls.filter(function (c) { return c !== 'mount'; }), ['img1'],
+                'ClientAccess.render вызван не для выбранного бэкенда: ' + JSON.stringify(calls));
+            assert.ok(getEl('imClientAccessHost').innerHTML.indexOf('data-test-access="img1"') !== -1,
+                'блок не отрисован в #imClientAccessHost: ' + getEl('imClientAccessHost').innerHTML);
+        } finally {
+            delete window.ClientAccess;
+        }
+    });
+
     await checkAsync('runSelfTest: при загруженной модели сразу генерация, без лишней загрузки', async function () {
         requests.length = 0;
         responseFor = null;

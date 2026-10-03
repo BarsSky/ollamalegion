@@ -1,11 +1,19 @@
 {
-    "tag":  "r83-submodule-v79",
-    "builtAt":  "2026-10-03T20:32:47Z",
-    "gitCommit":  "1c0228c",
+    "tag":  "r83-submodule-v80",
+    "builtAt":  "2026-10-03T20:40:08Z",
+    "gitCommit":  "652cbec",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
     "images":  [
+                   {
+                       "service":  "imageworker",
+                       "variable":  "IMAGE_WORKER_TAG",
+                       "image":  "ollama-legion/imageworker:r83-submodule-v80",
+                       "imageTag":  "r83-submodule-v80",
+                       "imageId":  "sha256:4ad7802197b01ab843ba5bb287401ba9973f16874aaa80e0fc647b63fa6a504d",
+                       "alias":  "ollama-legion/imageworker:latest-cuda"
+                   },
                    {
                        "service":  "webui",
                        "variable":  "WEBUI_TAG",
@@ -13,14 +21,6 @@
                        "imageTag":  "r83-submodule-v79",
                        "imageId":  "sha256:25861894769bbd17ca89efaf6c5554d71ad2c8d22f979f843529f8173fc42bca",
                        "alias":  "ollama-legion/webui:latest"
-                   },
-                   {
-                       "service":  "imageworker",
-                       "variable":  "IMAGE_WORKER_TAG",
-                       "image":  "ollama-legion/imageworker:r83-submodule-v78",
-                       "imageTag":  "r83-submodule-v78",
-                       "imageId":  "sha256:f387f6b5ff41e229371da35f79da31961bc764cda6091369f099cba07657bad5",
-                       "alias":  "ollama-legion/imageworker:latest-cuda"
                    },
                    {
                        "service":  "balancer",

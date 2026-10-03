@@ -998,19 +998,37 @@
     }
 
     /**
+     * mainWeightFile — файл, по которому судим о репозитории: самый крупный
+     * DIFFUSION-файл (роль приходит с сервера), и только если такого нет — самый
+     * крупный файл весов.
+     *
+     * ЗАЧЕМ НЕ ПРОСТО «САМЫЙ КРУПНЫЙ»: в DiT-репозиториях text encoder бывает
+     * больше самой модели (Qwen-Image: 17.5 ГБ TE против 7.6 ГБ Qwen-2.1-Q8_0),
+     * и «самый крупный» уводил пред-проверку на энкодер — вердикт «не
+     * определяется», а семейство профиля не подставлялось (проверено живьём).
+     */
+    function mainWeightFile(files) {
+        var weights = (files || []).filter(function (f) {
+            return /\.(gguf|safetensors)$/i.test(filePath(f));
+        });
+        if (!weights.length) return null;
+        var diffusion = weights.filter(function (f) { return suggestedRole(f) === 'diffusion'; });
+        var pool = (diffusion.length ? diffusion : weights).slice();
+        pool.sort(function (a, b) { return fileSize(b) - fileSize(a); });
+        return pool[0];
+    }
+
+    /**
      * autoProbeMainFile — после выбора репозитория проверить ГЛАВНЫЙ файл
-     * (самый крупный .gguf/.safetensors): один запрос, зато вердикт по репозиторию
+     * (самый крупный diffusion-файл): один запрос, зато вердикт по репозиторию
      * появляется сразу, без кликов. Остальные файлы — по кнопке.
      */
     async function autoProbeMainFile() {
-        var files = (state.files || []).filter(function (f) {
-            return /\.(gguf|safetensors)$/i.test(filePath(f));
-        });
-        if (!files.length) return null;
-        files.sort(function (a, b) { return fileSize(b) - fileSize(a); });
-        var main = filePath(files[0]);
-        if (!main || state.probes[main]) return state.probes[main] || null;
-        return probeFile(main);
+        var main = mainWeightFile(state.files);
+        if (!main) return null;
+        var path = filePath(main);
+        if (!path || state.probes[path]) return state.probes[path] || null;
+        return probeFile(path);
     }
 
     function setSelection(path, patch) {
@@ -1287,14 +1305,11 @@
             { family: probe.family, prev: prev });
     }
 
-    /** mainProbeResult — результат пред-проверки главного (самого крупного) файла. */
+    /** mainProbeResult — результат пред-проверки главного (diffusion) файла. */
     function mainProbeResult(files) {
-        var list = (files || []).filter(function (f) {
-            return /\.(gguf|safetensors)$/i.test(filePath(f)) && state.probes[filePath(f)];
-        });
-        if (!list.length) return null;
-        list.sort(function (a, b) { return fileSize(b) - fileSize(a); });
-        return state.probes[filePath(list[0])] || null;
+        var main = mainWeightFile(files);
+        if (!main) return null;
+        return state.probes[filePath(main)] || null;
     }
 
     function mount() {
@@ -1380,7 +1395,8 @@
             diTFamilyWarning: diTFamilyWarning,
             ditHint: ditHint,
             compatBadgeHtml: compatBadgeHtml,
-            DIT_FAMILIES: DIT_FAMILIES
+            DIT_FAMILIES: DIT_FAMILIES,
+            mainWeightFile: mainWeightFile
         }
     };
 })();

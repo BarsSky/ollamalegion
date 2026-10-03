@@ -373,6 +373,27 @@ check('DIT_FAMILIES совпадает с pkg/types (diTFamilies)', function () 
     assert.deepStrictEqual(P.DIT_FAMILIES.slice().sort(), ['chroma', 'flux', 'flux2', 'qwen_image', 'sd3', 'z_image']);
 });
 
+check('mainWeightFile: главный файл — самый крупный DIFFUSION, а не text encoder', function () {
+    // Реальный случай (abenzerps/Qwen-Image-2.1-Uncensored-GGUF): TE 17.5 ГБ
+    // больше самой модели, и «самый крупный файл» уводил пред-проверку на
+    // энкодер — вердикт «не определяется», семейство не подставлялось.
+    const files = [
+        { path: 'text_encoders/qwen3vl_8b_bf16.safetensors', sizeBytes: 17534334616, suggestedRole: 'llm' },
+        { path: 'qwen-image-2.1-UC-BF16.gguf', sizeBytes: 14230272800, suggestedRole: 'diffusion' },
+        { path: 'vae/qwen_image_2.1_vae_bf16.safetensors', sizeBytes: 675509688, suggestedRole: 'vae' },
+        { path: 'qwen-image-2.1-UC-Q4_0.gguf', sizeBytes: 4151573280, suggestedRole: 'diffusion' },
+    ];
+    assert.strictEqual(P.mainWeightFile(files).path, 'qwen-image-2.1-UC-BF16.gguf');
+    // Нет diffusion-роли (например, файлы ещё не размечены) — берём крупнейший вес.
+    const noDiffusion = [
+        { path: 'text_encoders/t5xxl.safetensors', sizeBytes: 9000, suggestedRole: 't5xxl' },
+        { path: 'vae/ae.safetensors', sizeBytes: 100, suggestedRole: 'vae' },
+    ];
+    assert.strictEqual(P.mainWeightFile(noDiffusion).path, 'text_encoders/t5xxl.safetensors');
+    assert.strictEqual(P.mainWeightFile([]), null);
+    assert.strictEqual(P.mainWeightFile([{ path: 'README.md', sizeBytes: 10 }]), null, 'не весовой файл — не главный');
+});
+
 check('compatBadgeHtml: кнопка «Проверить» только у файла, причина — в title', function () {
     const withBtn = P.compatBadgeHtml({ level: 'unknown', label: 'не проверено', hint: 'нет данных' }, 'flux1-dev-Q4_0.gguf');
     assert.ok(withBtn.indexOf('data-imh-probe="flux1-dev-Q4_0.gguf"') !== -1, 'нет кнопки пред-проверки: ' + withBtn);
@@ -424,7 +445,9 @@ check('модуль не рендерит сгенерированные кар�
         // Пред-проверка заголовка: главный файл (t5xxl) — DiT-семейство qwen_image,
         // любой другой — «по заголовку не определить» (как VAE/text encoder).
         if (rec.url.indexOf('/hf/probe') !== -1) {
-            if (rec.url.indexOf('t5xxl') !== -1) {
+            // Главный файл репозитория — самый крупный DIFFUSION-файл (t5xxl
+            // крупнее, но он text encoder: его пред-проверка не главная).
+            if (rec.url.indexOf('flux1-schnell-Q4_0.gguf') !== -1) {
                 return {
                     status: 200, body: {
                         verdict: 'supported', family: 'qwen_image', versionLabel: 'Qwen Image 2.1', dit: true,
@@ -505,10 +528,10 @@ check('модуль не рендерит сгенерированные кар�
         assert.ok(rec.url.indexOf('/api/v1/image/backends/img-1/hf/probe') !== -1, 'неверный путь: ' + rec.url);
         assert.ok(rec.url.indexOf('modelId=leejet%2FFLUX.1-schnell-gguf') !== -1, 'нет modelId: ' + rec.url);
         assert.strictEqual(rec.headers['X-HF-Token'], 'hf_secret', 'HF-токен нужен и пред-проверке (приватные репозитории)');
-        assert.ok(rec.url.indexOf('filename=t5xxl-Q4_K_M.gguf') !== -1, 'проверяться должен самый крупный файл: ' + rec.url);
+        assert.ok(rec.url.indexOf('filename=flux1-schnell-Q4_0.gguf') !== -1, 'проверяться должен главный diffusion-файл: ' + rec.url);
     });
     check('пред-проверка: вердикт воркера сохранён и отрисован у строки файла', function () {
-        const probe = Hf._state.probes['t5xxl-Q4_K_M.gguf'];
+        const probe = Hf._state.probes['flux1-schnell-Q4_0.gguf'];
         assert.ok(probe && probe.verdict === 'supported', 'вердикт не сохранён: ' + JSON.stringify(probe));
         const html = getEl('imHfFilesBody').innerHTML;
         assert.ok(html.indexOf('движок узнаёт: Qwen Image 2.1') !== -1, 'нет вердикта у файла: ' + html.slice(0, 400));

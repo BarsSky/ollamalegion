@@ -699,8 +699,9 @@
                     </div>
                 </div>
 
-                <!-- Таб «Модели на диске»: существующая таблица image-моделей
-                     (id сохранены: модуль image-page.js продолжает их заполнять). -->
+                <!-- Таб «Модели на диске»: таблица image-моделей (bundle).
+                     Колонка «Состав» показывает роли файлов (diffusion/vae/…):
+                     без неё оператор не понимает, чего в bundle не хватает. -->
                 <div class="gguf-tab-content" id="imTabModels">
                 <!-- Image models (bundles) -->
                 <div class="card">
@@ -711,6 +712,7 @@
                         </div>
                     </div>
                     <div class="card-body">
+                        <div id="imgModelsNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
                         <div class="table-responsive">
                             <table class="data-table" id="imgModelsTable">
                                 <thead>
@@ -719,13 +721,14 @@
                                         <th data-i18n="metrics.status">Статус</th>
                                         <th data-i18n="gguf.model_size">Размер</th>
                                         <th data-i18n="image.col_family">Семейство</th>
+                                        <th data-i18n="imageModels.roles_summary">Состав (роли)</th>
                                         <th data-i18n="image.col_active">Активные запросы</th>
                                         <th data-i18n="image.col_vram">Оценка VRAM</th>
                                         <th data-i18n="backends.actions">Действия</th>
                                     </tr>
                                 </thead>
                                 <tbody id="imgModelsBody">
-                                    <tr><td colspan="7" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
+                                    <tr><td colspan="8" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -734,13 +737,61 @@
 
                 </div>
 
-                <!-- Таб «HuggingFace»: поиск репозиториев, файлы с предложенными
-                     ролями и сборка bundle (id карточки сохранены — модуль
-                     image-page.js продолжает работать, роли приходят с сервера
-                     полем suggestedRole). -->
+                <!-- Таб «HuggingFace» (R-Image Phase 9): поиск репозиториев, файлы
+                     с ПРЕДЛОЖЕННЫМИ сервером ролями (suggestedRole) и сборка
+                     bundle. Разметку и логику держит модуль image-models-hf.js;
+                     визуальный язык — тот же, что на странице «GGUF модели»
+                     (классы .gguf-search-form/.gguf-file-item из pages.css). -->
                 <div class="gguf-tab-content" id="imTabHf">
 
-                <!-- HF bundle download -->
+                <!-- 1. Поиск репозитория на HuggingFace -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fab fa-huggingface section-icon-i"></i> <span data-i18n="imageModels.hf_search_title">Поиск модели на HuggingFace</span></h3>
+                    </div>
+                    <div class="card-body">
+                        <small style="display:block;margin-bottom:10px;color:var(--text-muted);font-size:11px;" data-i18n="imageModels.hf_search_hint">Введите 2 и более символа или org/model (со слешем) — сразу попадёте к списку файлов репозитория.</small>
+                        <div class="gguf-search-form">
+                            <div class="gguf-search-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+                                <div class="form-group" style="flex:2;min-width:220px;margin:0;">
+                                    <label data-i18n="gguf.search">Поиск на HuggingFace</label>
+                                    <input type="text" id="imHfQuery" class="form-control gguf-search-input" placeholder="Поиск моделей на HuggingFace Hub...">
+                                </div>
+                                <div class="form-group" style="min-width:180px;margin:0;">
+                                    <label data-i18n="imageModels.hf_task">Фильтр задачи</label>
+                                    <select class="form-control" id="imHfTask">
+                                        <option value="text-to-image" data-i18n="imageModels.search_task_filter">Только text-to-image</option>
+                                        <option value="" data-i18n="imageModels.hf_task_any">Любая задача</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="margin:0;">
+                                    <button class="btn btn-primary" id="imHfSearchBtn" data-imh-action="search" data-i18n="gguf.search_btn">Найти</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="imHfSearchResults" style="margin-top:12px;"></div>
+                    </div>
+                </div>
+
+                <!-- 2. Файлы выбранного репозитория: роль подставлена сервером,
+                     оператор может её изменить или снять галочку. -->
+                <div class="card" id="imHfFilesCard" style="display:none;">
+                    <div class="card-header">
+                        <h3><i class="fas fa-file section-icon-i"></i> <span data-i18n="imageModels.hf_files_title">Файлы репозитория</span>:
+                            <span id="imHfRepoName" style="font-family:monospace;font-size:13px;"></span></h3>
+                        <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <span id="imHfSelectionSummary" style="font-size:12px;color:var(--text-muted);"></span>
+                            <button class="btn btn-secondary" data-imh-action="suggested" data-i18n="imageModels.hf_select_suggested">Отметить по ролям</button>
+                            <button class="btn btn-secondary" data-imh-action="clear" data-i18n="imageModels.hf_clear_selection">Снять отметки</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <small style="display:block;margin-bottom:10px;color:var(--text-muted);font-size:11px;" data-i18n="imageModels.hf_files_hint">Роли предложены по именам файлов на сервере: проверьте их перед загрузкой. Крупные text encoder'ы (t5xxl/llm) по умолчанию не отмечены — их нужно выбирать осознанно.</small>
+                        <div id="imHfFilesBody" class="gguf-files-list"></div>
+                    </div>
+                </div>
+
+                <!-- 3. Сборка bundle: имя, семейство, HF-токен и запуск загрузки. -->
                 <div class="card">
                     <div class="card-header">
                         <h3><i class="fas fa-download section-icon-i"></i> <span data-i18n="image.bundle_title">Скачать модель с HuggingFace</span></h3>
@@ -761,10 +812,8 @@
                                 <input type="password" id="imgHfToken" class="form-control" placeholder="hf_...">
                             </div>
                         </div>
-                        <div id="imgBundleRows"></div>
                         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
-                            <button class="btn btn-secondary" id="imgBundleAddRow" data-i18n="image.bundle_add_row">Добавить файл</button>
-                            <button class="btn btn-primary" id="imgBundleStart" data-i18n="image.bundle_download">Скачать bundle</button>
+                            <button class="btn btn-primary" id="imgBundleStart" data-imh-action="download" data-i18n="image.bundle_download">Скачать bundle</button>
                         </div>
                         <div id="imgBundleProgress" style="display:none;margin-top:12px;">
                             <div id="imgBundleProgressLabel" style="font-size:12px;color:var(--text-muted);margin-bottom:4px;"></div>
@@ -795,12 +844,15 @@
                 </div>
 
                 <!-- Таб «Загрузки»: активные загрузки, история и «остатки»
-                     (GET /api/hf/downloads, POST /api/hf/cleanup). Контейнер заполняет
-                     модуль таба; пока он пуст — здесь видно подсказку. -->
+                     (GET /api/hf/downloads, POST /api/hf/cancel, DELETE /api/hf/cleanup).
+                     Содержимое целиком рисует модуль image-models-hf.js. -->
                 <div class="gguf-tab-content" id="imTabDownloads">
                     <div class="card">
                         <div class="card-header">
                             <h3><i class="fas fa-cloud-arrow-down section-icon-i"></i> <span data-i18n="imageModels.downloads_title">Загрузки моделей</span></h3>
+                            <div class="card-actions">
+                                <button class="btn btn-secondary" data-imh-action="refresh-downloads" data-i18n="gguf.refresh">Обновить</button>
+                            </div>
                         </div>
                         <div class="card-body">
                             <div id="imDownloadsHost" class="loading-cell" data-i18n="common.loading">Загрузка...</div>
@@ -808,8 +860,23 @@
                     </div>
                 </div>
 
-                <!-- Таб «Настройки»: профили image-моделей (существующий редактор) -->
+                <!-- Таб «Настройки»: параметры выбранного бэкенда + профили image-моделей -->
                 <div class="gguf-tab-content" id="imTabSettings">
+                <!-- Параметры бэкенда: форма живёт в image-backends-page.js (таб
+                     «Обзор»), здесь — вход в неё для выбранного бэкенда. Дублировать
+                     форму значило бы держать две копии валидации одних и тех же полей. -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-server section-icon-i"></i> <span data-i18n="imageModels.backend_params_title">Параметры бэкенда</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary" id="imBackendParamsBtn" data-i18n="imageModels.open_backend_editor">Открыть параметры</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <small style="display:block;margin-bottom:8px;color:var(--text-muted);font-size:11px;" data-i18n="imageModels.backend_params_hint">Порт воркера, GPU-индекс, вес, лимит параллельных запросов и idle-выгрузка задаются в карточке бэкенда (таб «Обзор»): эти поля влияют на балансер, а не на профиль модели.</small>
+                        <div id="imBackendParamsState" style="font-size:12px;color:var(--text-muted);"></div>
+                    </div>
+                </div>
                 <!-- Image model profiles (R-Image Phase 6, webui/js/modules/image-profiles.js).
                      Контейнер #imageProfiles - точка монтирования модуля:
                      window.ImageProfiles.mount('imageProfiles') вызывается из
@@ -2133,6 +2200,9 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script defer src="js/modules/image-profiles.js?v=R83"></script>
     <script defer src="js/modules/image-page.js?v=R83"></script>
     <script defer src="js/modules/image-models-page.js?v=R83"></script>
+    <!-- R-Image Phase 9: табы «HuggingFace» и «Загрузки» страницы «Image-модели»
+         (поиск репо, файлы с suggestedRole, bundle-загрузка, история/остатки). -->
+    <script defer src="js/modules/image-models-hf.js?v=R83"></script>
     <script defer src="js/modules/image-backends-page.js?v=R83"></script>
     <script defer src="js/modules/websocket.js?v=R83"></script>
     <script defer src="js/modules/renderers.js?v=R83"></script>

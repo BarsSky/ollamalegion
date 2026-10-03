@@ -1,11 +1,19 @@
 /**
  * image-page.js — R-Image Phase 9 (2026-10-03): страница «Image-модели».
  *
- * Что делает:
+ * Что делает (табы «Модели на диске», «Загруженные», «Настройки»):
  *   1. Выбор image-бэкенда и модели в шапке страницы.
  *   2. Управление image-моделями (bundle): список, load / unload, прогресс загрузки.
- *   3. Загрузка bundle с HuggingFace (несколько файлов: diffusion + vae + TE).
- *   4. Монтирование редактора профилей (window.ImageProfiles.mount).
+ *   3. Монтирование редактора профилей (window.ImageProfiles.mount).
+ *
+ * ЧЕГО ЗДЕСЬ БОЛЬШЕ НЕТ (Phase 9): загрузки bundle с HuggingFace. Она переехала
+ * в таб-модуль image-models-hf.js вместе со своими шагами (поиск репозитория →
+ * выбор файлов с предложенными ролями → bundle-загрузка → история загрузок).
+ * Причина: ручная форма «строка = repo + filename + роль» требовала от оператора
+ * знать имена файлов в репозитории заранее, а поля вводились вслепую; стиль
+ * страницы «GGUF модели» (поиск → файлы → отметки) эту работу убирает. Держать
+ * обе реализации — значит однажды починить одну и забыть другую, поэтому старый
+ * код удалён, а не «оставлен на всякий случай».
  *
  * ПОЧЕМУ БОЛЬШЕ НЕТ ГЕНЕРАЦИИ, РЕЗУЛЬТАТА И ГАЛЕРЕИ (Phase 9):
  *   WebUI — панель настройки балансера и понимания состояния системы: какие
@@ -26,50 +34,27 @@
  *   выполняет воркер фоном, UI только запускает их и опрашивает прогресс.
  *
  * Зависимости (уже загружены, см. webui/index.html): window.I18N, window.Api,
- * window.GgufApi (только ради общего HF-токена), window.ImageProfiles
- * (редактор профилей, грузится до этого файла).
+ * window.ImageProfiles (редактор профилей, грузится до этого файла).
  * Экспорт: window.ImagePage.
  */
 (function () {
     'use strict';
 
     // ---- Ключи localStorage ----
-    // HF-токен общий с GgufApi (gguf-api.js:19) — один токен на WebUI, чтобы
-    // оператор не вводил его дважды на двух страницах.
-    var HF_TOKEN_KEY = 'ollamalegion_hf_token';
+    // (HF-токен и его ключ живут теперь в image-models-hf.js: он единственный,
+    // кто ходит в /api/hf/*. Ключ там ТОТ ЖЕ — 'ollamalegion_hf_token', общий с
+    // GgufApi, чтобы оператор не вводил токен дважды на трёх страницах.)
 
     // ---- Таймауты и интервалы ----
     var TIMEOUT_CONTROL_MS = 15000;
     var LOAD_POLL_MS = 1500;
-    var DOWNLOAD_POLL_MS = 2000;
-    // Сколько пустых тиков прогресса терпим, прежде чем перестать опрашивать
-    // (прогресс может быть недоступен у воркера — не крутим вечный таймер).
-    var DOWNLOAD_IDLE_TICKS_MAX = 20;
 
     // ---- Пути воркера (контракт плана §5.3, проксируются балансером) ----
     var PATH_MODELS = '/api/image/models';
     var PATH_MODEL_LOAD = '/api/image/models/load';
     var PATH_MODEL_UNLOAD = '/api/image/models/unload';
+    var PATH_MODEL_DELETE = '/api/image/models/delete';
     var PATH_LOAD_PROGRESS = '/api/image/models/load/progress';
-    var PATH_HF_FILES = '/api/hf/files';
-    var PATH_HF_PROGRESS = '/api/hf/progress';
-    var PATH_HF_DOWNLOAD = '/api/hf/download';
-    // Bundle-загрузка. Канонический путь — POST /api/hf/bundle на image-воркере:
-    // балансер прозрачно форвардит его воркеру и через прокси
-    // (/api/v1/image/backends/{id}/proxy/api/hf/bundle), и через алиас
-    // /api/v1/image/backends/{id}/pull (internal/api/handlers_image_models.go:225).
-    // Тело — {name, family, files:[{role, repo, filename, revision}]}.
-    //
-    // Дополнительные пути оставлены как страховка от расхождения контракта, а
-    // если ни один не отвечает (на момент Phase 5 воркер /api/hf/* ещё не
-    // реализует, см. cmd/sdworker/router.go:74-76) — честно деградируем на
-    // N одиночных /api/hf/download (он принимает поле role).
-    var BUNDLE_DOWNLOAD_PATHS = ['/api/hf/bundle', '/api/hf/bundle/download', '/api/image/models/download'];
-
-    // Роли файлов bundle — ЗАМОРОЖЕННЫЙ контракт pkg/types/image_model.go:32-45.
-    var IMAGE_ROLES = ['diffusion', 'vae', 'clip_l', 'clip_g', 't5xxl', 'llm', 'clip_vision', 'taesd', 'lora', 'upscaler', 'controlnet', 'ip_adapter'];
-    // Семейства — pkg/types/image_model.go:49-52.
-    var IMAGE_FAMILIES = ['sd15', 'sd21', 'sd_turbo', 'sdxl', 'sdxl_turbo', 'sd3', 'flux', 'flux2', 'chroma', 'qwen_image', 'z_image', 'other'];
 
     // =====================================================================
     // Pure helpers — не трогают DOM, поэтому покрыты юнит-тестами
@@ -147,6 +132,24 @@
         return fallback;
     }
 
+    /**
+     * Состав bundle → короткая строка ролей для таблицы («diffusion, vae, clip_l»).
+     *
+     * ЗАЧЕМ: без состава таблица отвечает «модель есть», но не отвечает на вопрос
+     * оператора «а VAE в ней есть?» — а именно из-за отсутствующего VAE sd-server
+     * падает при загрузке FLUX/SD3 (pkg/types/image_model.go:260). Роли приходят
+     * с сервера (types.ImageModelFile.Role), в JS ничего не выводится из имён.
+     */
+    function rolesSummary(files) {
+        var list = Array.isArray(files) ? files : [];
+        var seen = [];
+        list.forEach(function (f) {
+            var role = String((f && (f.role || f.Role)) || '').trim();
+            if (role && seen.indexOf(role) === -1) seen.push(role);
+        });
+        return seen;
+    }
+
     /** GET /api/image/models → нормализованный список моделей. */
     function normalizeModels(data) {
         var arr = [];
@@ -155,6 +158,7 @@
         return arr.map(function (m) {
             m = m || {};
             var d = m.defaults || {};
+            var files = Array.isArray(m.files) ? m.files : [];
             return {
                 name: m.name || m.id || '',
                 state: String(m.state || 'not_loaded'),
@@ -166,6 +170,11 @@
                 // Форму генерации из WebUI убрали, но сервер их отдаёт, а список
                 // моделей - это ещё и обзор состава профиля.
                 defaults: d,
+                // Состав bundle: роли файлов + признак применённого профиля.
+                roles: rolesSummary(files),
+                files_count: files.length,
+                bundle_path: m.bundle_path || m.bundlePath || '',
+                loaded_at: m.loaded_at || m.loadedAt || '',
                 disabled: !!m.disabled
             };
         }).filter(function (m) { return !!m.name; });
@@ -200,106 +209,6 @@
             if (!onlyImageType) return true;
             return b.type === 'image_cpp' || b.type === 'sd_cpp' || b.type === 'sdcpp';
         });
-    }
-
-    /**
-     * Строки формы bundle → файлы профиля. Ошибки возвращаются КОДАМИ
-     * (не текстом), чтобы pure-слой не зависел от языка.
-     * Пустые строки игнорируются (пользователь мог добавить и не заполнить).
-     */
-    function parseBundleRows(rows) {
-        var files = [];
-        var errors = [];
-        var seen = Object.create(null);
-        (rows || []).forEach(function (r, idx) {
-            r = r || {};
-            var role = String(r.role || '').trim();
-            var repo = String(r.repo || '').trim();
-            var filename = String(r.filename || '').trim();
-            var rowNo = idx + 1;
-            if (!role && !repo && !filename) return;
-            if (IMAGE_ROLES.indexOf(role) < 0) {
-                errors.push({ code: 'role', row: rowNo, role: role });
-                return;
-            }
-            if (!repo || !filename) {
-                errors.push({ code: 'missing', row: rowNo });
-                return;
-            }
-            // Дубликат роли запрещён, кроме lora: LoRA-файлов может быть много
-            // (pkg/types/image_model.go:251 - "duplicate role" только для остальных).
-            if (seen[role] && role !== 'lora') {
-                errors.push({ code: 'dup', row: rowNo, role: role });
-                return;
-            }
-            seen[role] = true;
-            files.push({
-                role: role,
-                repo: repo,
-                filename: filename,
-                revision: String(r.revision || 'main').trim() || 'main'
-            });
-        });
-        if (files.length && !seen.diffusion) {
-            errors.push({ code: 'need_diffusion', row: 0 });
-        }
-        return { files: files, errors: errors };
-    }
-
-    /** Ключ файла bundle для карты прогресса. */
-    function bundleFileKey(f) {
-        return String((f && f.repo) || '') + '/' + String((f && f.filename) || '');
-    }
-
-    /**
-     * Агрегат прогресса по файлам bundle: суммарные байты, процент,
-     * сколько файлов завершено/упало. Прогресс берётся из HFDownloadProgress
-     * (downloaded/totalBytes/status, hf_downloader.go:122-143).
-     */
-    function aggregateDownloadProgress(files, progressMap) {
-        var total = 0;
-        var downloaded = 0;
-        var completed = 0;
-        var failed = 0;
-        var active = 0;
-        var unknown = 0;
-        var list = files || [];
-        list.forEach(function (f) {
-            var p = progressMap ? progressMap[bundleFileKey(f)] : null;
-            if (!p) { unknown++; return; }
-            var t = Number(p.totalBytes || p.total_bytes || 0);
-            var d = Number(p.downloaded || p.downloadedBytes || 0);
-            var st = String(p.status || '');
-            if (st === 'completed') {
-                completed++;
-                total += t > 0 ? t : d;
-                downloaded += t > 0 ? t : d;
-                return;
-            }
-            if (st === 'failed' || st === 'cancelled' || st === 'interrupted') {
-                failed++;
-                total += t > 0 ? t : 0;
-                return;
-            }
-            active++;
-            total += t > 0 ? t : 0;
-            downloaded += d > 0 ? d : 0;
-        });
-        var pct = 0;
-        if (total > 0) pct = Math.floor((downloaded / total) * 100);
-        else if (list.length > 0 && completed + failed === list.length && failed === 0) pct = 100;
-        if (pct > 100) pct = 100;
-        return {
-            total: total,
-            downloaded: downloaded,
-            percent: pct,
-            completed: completed,
-            failed: failed,
-            active: active,
-            unknown: unknown,
-            totalFiles: list.length,
-            done: list.length > 0 && completed + failed === list.length
-        };
     }
 
     /** Состояние модели → ключ i18n (переиспользуем gguf.model_state_*). */
@@ -358,13 +267,9 @@
         parseOpenAIError: parseOpenAIError,
         normalizeModels: normalizeModels,
         normalizeBackends: normalizeBackends,
-        parseBundleRows: parseBundleRows,
-        aggregateDownloadProgress: aggregateDownloadProgress,
-        bundleFileKey: bundleFileKey,
+        rolesSummary: rolesSummary,
         stateLabelKey: stateLabelKey,
-        normalizeLoadProgress: normalizeLoadProgress,
-        IMAGE_ROLES: IMAGE_ROLES,
-        IMAGE_FAMILIES: IMAGE_FAMILIES
+        normalizeLoadProgress: normalizeLoadProgress
     };
 
     // =====================================================================
@@ -378,11 +283,6 @@
         selectedBackendId: '',
         models: [],
         loadPoll: null,         // { timer, name }
-        bundleRows: [],         // строки формы bundle (переживают смену языка)
-        bundleFiles: [],
-        bundleProgress: {},
-        bundlePoll: null,
-        bundleIdleTicks: 0,
         notifiedApiMissing: false
     };
 
@@ -458,10 +358,6 @@
         return headers;
     }
 
-    function hfToken() {
-        try { return localStorage.getItem(HF_TOKEN_KEY) || ''; } catch (e) { return ''; }
-    }
-
     /**
      * URL прокси к image-воркеру через балансер.
      * Зеркало GgufApi.buildBackendProxyUrl (gguf-api.js:857-876):
@@ -488,7 +384,6 @@
         }
         var init = { method: opts.method || 'GET', headers: authHeaders(opts.headers) };
         if (ctrl) init.signal = ctrl.signal;
-        if (opts.hfTokenValue) init.headers['X-HF-Token'] = opts.hfTokenValue;
         if (opts.body !== undefined) init.body = opts.body;
         return fetch(url, init).then(function (resp) {
             if (timer) clearTimeout(timer);
@@ -526,7 +421,13 @@
         return requestJson(apiBase() + path, opts);
     }
 
-    /** Запрос к image-воркеру через прокси балансера. */
+    /**
+     * Запрос к image-воркеру через прокси балансера.
+     *
+     * HF-ветки здесь больше нет: /api/hf/* целиком принадлежит
+     * image-models-hf.js (вместе с заголовком X-HF-Token). Эта функция ходит
+     * только в нативные /api/image/* ручки воркера.
+     */
     function requestBackend(backendId, path, opts) {
         opts = opts || {};
         var o = {
@@ -535,8 +436,6 @@
             timeoutMs: opts.timeoutMs || TIMEOUT_CONTROL_MS,
             headers: opts.headers
         };
-        // HF-токен нужен только HF-путям (как в gguf-api.js:1015).
-        if (path.indexOf('/api/hf/') === 0) o.hfTokenValue = hfToken();
         return requestJson(buildProxyUrl(backendId, path), o);
     }
 
@@ -585,7 +484,6 @@
 
     async function loadModels() {
         var backendId = state.selectedBackendId;
-        state.bundleProgress = {};
         if (!backendId) {
             state.models = [];
             renderModelSelect();
@@ -614,6 +512,10 @@
         }
         renderModelSelect();
         renderModelsTable();
+        // Сводка параметров бэкенда на табе «Настройки» зависит от выбранного
+        // бэкенда и списка бэкендов, а не от моделей — но обновлять её дешевле
+        // всего здесь: это единственная точка, где страница узнаёт свежие данные.
+        renderBackendParamsState();
     }
 
     /** Полный refresh данных страницы (вызывается при входе и по кнопке). */
@@ -672,12 +574,13 @@
     function renderModelsTable() {
         var body = el('imgModelsBody');
         if (!body) return;
+        // colspan = число колонок в #imgModelsTable (index.html): 8.
         if (!state.selectedBackendId) {
-            body.innerHTML = '<tr><td colspan="7" class="loading-cell">' + escapeHtml(t('image.no_backend_selected', 'Select an image backend first')) + '</td></tr>';
+            body.innerHTML = '<tr><td colspan="8" class="loading-cell">' + escapeHtml(t('image.no_backend_selected', 'Select an image backend first')) + '</td></tr>';
             return;
         }
         if (!state.models.length) {
-            body.innerHTML = '<tr><td colspan="7" class="loading-cell">' + escapeHtml(t('image.no_models', 'No image models on this backend.')) + '</td></tr>';
+            body.innerHTML = '<tr><td colspan="8" class="loading-cell">' + escapeHtml(t('image.no_models', 'No image models on this backend.')) + '</td></tr>';
             return;
         }
         body.innerHTML = state.models.map(function (m) {
@@ -692,13 +595,23 @@
                     escapeHtml(t('gguf.unload_model', 'Unload')) + '</button>';
             } else {
                 actions = '<button class="btn btn-primary btn-sm" data-img-action="load-model" data-model="' + escapeHtml(m.name) + '">' +
-                    escapeHtml(t('common.load', 'Load')) + '</button>';
+                    escapeHtml(t('common.load', 'Load')) + '</button>' +
+                    // Удаление с диска — только у НЕзагруженной модели: сервер
+                    // всё равно ответит 409 (движок держит веса открытыми), но
+                    // кнопка, которая гарантированно даёт ошибку, — плохой UI.
+                    ' <button class="btn btn-danger btn-sm" data-img-action="delete-model" data-model="' + escapeHtml(m.name) + '" ' +
+                    'title="' + escapeHtml(t('gguf.delete_from_disk', 'Delete downloaded files from disk')) + '">' +
+                    '<i class="fas fa-trash"></i></button>';
             }
+            var roles = (m.roles && m.roles.length)
+                ? m.roles.map(function (r) { return escapeHtml(t('imageModels.role_' + r, r)); }).join(', ')
+                : escapeHtml(t('imageModels.roles_unknown', 'нет данных'));
             return '<tr>' +
                 '<td><strong>' + escapeHtml(m.name) + '</strong>' + (m.disabled ? ' <span class="badge">disabled</span>' : '') + '</td>' +
                 '<td>' + escapeHtml(t(stateLabelKey(m.state), m.state)) + '</td>' +
                 '<td>' + escapeHtml(formatBytes(m.size_bytes)) + '</td>' +
                 '<td>' + escapeHtml(m.family || '-') + '</td>' +
+                '<td style="font-size:12px;">' + roles + '</td>' +
                 '<td>' + escapeHtml(String(m.active_queries || 0)) + '</td>' +
                 '<td>' + (m.vram_estimate_mb ? escapeHtml(formatBytes(m.vram_estimate_mb * 1024 * 1024)) : '-') + '</td>' +
                 '<td>' + actions + '</td>' +
@@ -744,6 +657,43 @@
         } catch (e) {
             toast(t('image.unload_failed', 'Failed to unload model: {error}', { error: (e && e.message) || String(e) }), 'error');
         }
+    }
+
+    /**
+     * Удаление bundle с диска (Phase 9).
+     *
+     * ЗАЧЕМ ПОДТВЕРЖДЕНИЕ: это единственная необратимая операция на странице —
+     * bundle'ы весят 1.5–12 ГБ, и «случайный клик» означал бы повторное
+     * скачивание в сотни мегабайт трафика. confirm() с именем bundle в тексте
+     * (ключ imageModels.confirm_delete_bundle) — минимальная защита.
+     *
+     * Серверная сторона отказывает, если модель загружена (409): показываем её
+     * текст как есть, а не своё «не получилось» — там есть подсказка про unload.
+     */
+    async function onDeleteModel(name) {
+        var backendId = state.selectedBackendId;
+        if (!backendId || !name) return false;
+        var ok = true;
+        if (typeof window.confirm === 'function') {
+            ok = window.confirm(t('imageModels.confirm_delete_bundle', 'Delete bundle {name} from disk?', { name: name }));
+        }
+        if (!ok) return false;
+        try {
+            var res = await requestBackend(backendId, PATH_MODEL_DELETE, {
+                method: 'POST',
+                body: JSON.stringify({ name: name }),
+                timeoutMs: TIMEOUT_CONTROL_MS
+            });
+            var freed = Number((res && (res.freed_bytes || res.freedBytes)) || 0);
+            toast(t('imageModels.deleted_freed', 'Deleted, {mb} MB freed', { mb: Math.round(freed / (1024 * 1024)) }), 'success');
+            if (res && res.warning) toast(String(res.warning), 'warn');
+        } catch (e) {
+            toast(t('gguf.delete_error', 'Failed to delete model file') + ': ' + ((e && e.message) || String(e)), 'error');
+            return false;
+        }
+        // Реестр воркер перечитал сам; перечитываем и список на странице.
+        await loadModels();
+        return true;
     }
 
     /**
@@ -822,275 +772,6 @@
         state.loadPoll = null;
     }
 
-    // =====================================================================
-    // Bundle (HF)
-    // =====================================================================
-
-    /**
-     * Отрисовка строк bundle.
-     * @param {Array} [rows] если переданы — используются они и запоминаются в
-     *        state.bundleRows. Без аргумента берётся state.bundleRows (или одна
-     *        пустая строка). Так re-render по смене языка не теряет введённые
-     *        значения: вызывающий сам решает, брать ли их из DOM.
-     */
-    function renderBundleRows(rows) {
-        var box = el('imgBundleRows');
-        if (!box) return;
-        if (rows) state.bundleRows = rows;
-        var list = state.bundleRows && state.bundleRows.length ? state.bundleRows : [{ role: 'diffusion', repo: '', filename: '' }];
-        state.bundleRows = list;
-        box.innerHTML = list.map(function (r, i) {
-            var roleOptions = IMAGE_ROLES.map(function (role) {
-                return '<option value="' + role + '"' + (role === r.role ? ' selected' : '') + '>' + role + '</option>';
-            }).join('');
-            return '<div class="form-row" data-bundle-row="' + i + '" style="align-items:flex-end;">' +
-                '<div class="form-group" style="max-width:170px;">' +
-                    '<label>' + escapeHtml(t('image.bundle_role', 'Role')) + '</label>' +
-                    '<select class="form-control" data-bundle-field="role">' + roleOptions + '</select>' +
-                '</div>' +
-                '<div class="form-group" style="flex:2;">' +
-                    '<label>' + escapeHtml(t('image.bundle_repo', 'Repo (org/model)')) + '</label>' +
-                    '<input type="text" class="form-control" data-bundle-field="repo" value="' + escapeHtml(r.repo || '') + '" placeholder="leejet/Z-Image-Turbo-GGUF" list="imgBundleFilesList_' + i + '">' +
-                    '<datalist id="imgBundleFilesList_' + i + '"></datalist>' +
-                '</div>' +
-                '<div class="form-group" style="flex:2;">' +
-                    '<label>' + escapeHtml(t('image.bundle_filename', 'File in repo')) + '</label>' +
-                    '<input type="text" class="form-control" data-bundle-field="filename" value="' + escapeHtml(r.filename || '') + '" placeholder="z-image-turbo-Q3_K.gguf">' +
-                '</div>' +
-                '<div class="form-group" style="max-width:190px;">' +
-                    '<button class="btn btn-secondary btn-sm" data-img-action="bundle-files" data-row="' + i + '">' + escapeHtml(t('image.bundle_list_files', 'List files')) + '</button> ' +
-                    '<button class="btn btn-secondary btn-sm" data-img-action="bundle-remove" data-row="' + i + '">' + escapeHtml(t('image.bundle_remove_row', 'Remove row')) + '</button>' +
-                '</div>' +
-                '</div>';
-        }).join('');
-    }
-
-    /**
-     * Подсказка роли для новой строки: следующая незанятая из типового набора.
-     * ЗАЧЕМ: 90% bundle'ов для sd.cpp - это diffusion + vae + text encoder'ы;
-     * предлагать в новой строке 'lora' (первый свободный по алфавиту) значит
-     * заставлять оператора каждый раз переключать селект вручную.
-     */
-    function nextSuggestedRole(rows) {
-        var order = ['diffusion', 'vae', 'clip_l', 'clip_g', 't5xxl', 'llm', 'clip_vision', 'taesd', 'lora'];
-        var used = {};
-        (rows || []).forEach(function (r) { used[r.role] = true; });
-        for (var i = 0; i < order.length; i++) {
-            if (!used[order[i]]) return order[i];
-        }
-        return 'lora';
-    }
-
-    /** Селект семейства: значения - контракт pkg/types/image_model.go (ImageModelFamilies). */
-    function renderFamilySelect() {
-        var sel = el('imgBundleFamily');
-        if (!sel) return;
-        var prev = sel.value;
-        sel.innerHTML = IMAGE_FAMILIES.map(function (f) {
-            return '<option value="' + escapeHtml(f) + '">' + escapeHtml(f) + '</option>';
-        }).join('');
-        if (prev) sel.value = prev;
-    }
-
-    function readBundleRows() {
-        var box = el('imgBundleRows');
-        if (!box) return [];
-        var rows = [];
-        box.querySelectorAll('[data-bundle-row]').forEach(function (row) {
-            var get = function (field) {
-                var inp = row.querySelector('[data-bundle-field="' + field + '"]');
-                return inp ? inp.value : '';
-            };
-            rows.push({ role: get('role'), repo: get('repo'), filename: get('filename'), revision: 'main' });
-        });
-        return rows;
-    }
-
-    async function listBundleFiles(rowIndex) {
-        var backendId = state.selectedBackendId;
-        var rows = readBundleRows();
-        var row = rows[rowIndex];
-        if (!backendId || !row || !row.repo) {
-            toast(t('image.bundle_row_missing_fields', 'Row {row}: repo and file are required', { row: rowIndex + 1 }), 'error');
-            return;
-        }
-        try {
-            var qs = '?modelId=' + encodeURIComponent(row.repo) + '&revision=main';
-            var data = await requestBackend(backendId, PATH_HF_FILES + qs, { timeoutMs: TIMEOUT_CONTROL_MS });
-            var files = (data && Array.isArray(data.files)) ? data.files : (Array.isArray(data) ? data : []);
-            var list = el('imgBundleFilesList_' + rowIndex);
-            if (list) {
-                list.innerHTML = files.map(function (f) {
-                    var name = f.path || f.filename || f.name || '';
-                    return '<option value="' + escapeHtml(name) + '">' + escapeHtml(formatBytes(f.sizeBytes || f.size_bytes || 0)) + '</option>';
-                }).join('');
-            }
-            if (!files.length) toast(t('image.bundle_files_empty', 'No files found in this repo'), 'warn');
-            else toast(t('image.bundle_files_found', 'Files in repo: {n}', { n: files.length }), 'info');
-        } catch (e) {
-            toast(t('common.error', 'Error') + ': ' + ((e && e.message) || String(e)), 'error');
-        }
-    }
-
-    function saveHfToken() {
-        var input = el('imgHfToken');
-        if (!input) return;
-        try {
-            if (input.value) localStorage.setItem(HF_TOKEN_KEY, input.value);
-            else localStorage.removeItem(HF_TOKEN_KEY);
-        } catch (e) { /* ignore */ }
-        if (window.GgufApi && typeof window.GgufApi.setHFToken === 'function') {
-            window.GgufApi.setHFToken(input.value);
-        }
-        toast(t('image.hf_token_saved', 'HF token saved'), 'success');
-    }
-
-    function renderBundleProgress(agg, files) {
-        var wrap = el('imgBundleProgress');
-        if (!wrap) return;
-        if (!agg || !agg.totalFiles) { wrap.style.display = 'none'; return; }
-        wrap.style.display = '';
-        setText('imgBundleProgressLabel', t('image.bundle_progress', 'Overall progress') + ': ' +
-            t('image.bundle_overall', 'Downloaded {done} of {total} ({pct}%)', {
-                done: formatBytes(agg.downloaded),
-                total: agg.total > 0 ? formatBytes(agg.total) : '?',
-                pct: agg.percent
-            }));
-        var fill = el('imgBundleProgressFill');
-        if (fill) fill.style.width = agg.percent + '%';
-
-        // Пофайловый статус: оператору важно видеть, какой компонент bundle
-        // (vae / t5xxl) не скачался, а не только общий процент.
-        var lines = (files || []).map(function (f) {
-            var p = state.bundleProgress[bundleFileKey(f)];
-            var st = p ? (p.status || 'downloading') : 'pending';
-            var pct = p ? Math.round(Number(p.progressPct || 0)) : 0;
-            var extra = p && p.status === 'downloading' && p.speedBps ? ' · ' + formatBytes(p.speedBps) + '/s' : '';
-            return '<div>' + escapeHtml(f.role + ': ' + f.filename + ' - ' + st + (st === 'downloading' ? ' ' + pct + '%' : '') + extra) + '</div>';
-        });
-        var statusEl = el('imgBundleStatus');
-        if (statusEl) statusEl.innerHTML = lines.join('');
-    }
-
-    async function onBundleDownload() {
-        var backendId = state.selectedBackendId;
-        if (!backendId) { toast(t('image.no_backend_selected', 'Select an image backend first'), 'error'); return; }
-        var name = String(val('imgBundleName') || '').trim();
-        if (!name) { toast(t('image.bundle_need_name', 'Bundle name is required'), 'error'); return; }
-        var family = String(val('imgBundleFamily') || 'other');
-        var parsed = parseBundleRows(readBundleRows());
-        if (parsed.errors.length) {
-            parsed.errors.forEach(function (err) {
-                if (err.code === 'need_diffusion') toast(t('image.bundle_need_diffusion', 'A diffusion file is required in the bundle'), 'error');
-                else if (err.code === 'missing') toast(t('image.bundle_row_missing_fields', 'Row {row}: repo and file are required', { row: err.row }), 'error');
-                else if (err.code === 'dup') toast(t('image.bundle_dup_role', 'Row {row}: duplicate role {role}', { row: err.row, role: err.role }), 'error');
-                else toast(t('image.bundle_row_missing_fields', 'Row {row}: repo and file are required', { row: err.row }), 'error');
-            });
-            return;
-        }
-        if (!parsed.files.length) { toast(t('image.bundle_need_diffusion', 'A diffusion file is required in the bundle'), 'error'); return; }
-
-        // HF-токен сохраняем до старта: воркер читает его из заголовка запроса.
-        var tokenInput = el('imgHfToken');
-        if (tokenInput && tokenInput.value) {
-            try { localStorage.setItem(HF_TOKEN_KEY, tokenInput.value); } catch (e) { /* ignore */ }
-        }
-
-        var body = JSON.stringify({ name: name, family: family, files: parsed.files });
-        var started = false;
-        var lastErr = null;
-        for (var i = 0; i < BUNDLE_DOWNLOAD_PATHS.length && !started; i++) {
-            try {
-                await requestBackend(backendId, BUNDLE_DOWNLOAD_PATHS[i], { method: 'POST', body: body, timeoutMs: TIMEOUT_CONTROL_MS });
-                started = true;
-            } catch (e) {
-                lastErr = e;
-                if (!isMissingEndpoint(e)) break;
-            }
-        }
-
-        if (!started) {
-            if (lastErr && isMissingEndpoint(lastErr)) {
-                // Bundle-эндпоинта ещё нет (Phase 2). Деградируем на уже
-                // существующий одиночный /api/hf/download по каждому файлу:
-                // он принимает role и скачивает файл в каталог моделей воркера.
-                toast(t('image.bundle_endpoint_missing', 'Bundle endpoint is not available yet - started per-file downloads instead.'), 'warn');
-                var okCount = 0;
-                for (var j = 0; j < parsed.files.length; j++) {
-                    var f = parsed.files[j];
-                    try {
-                        await requestBackend(backendId, PATH_HF_DOWNLOAD, {
-                            method: 'POST',
-                            body: JSON.stringify({ modelId: f.repo, filename: f.filename, revision: f.revision, role: f.role }),
-                            timeoutMs: TIMEOUT_CONTROL_MS
-                        });
-                        okCount++;
-                    } catch (e3) {
-                        toast(f.role + ': ' + ((e3 && e3.message) || String(e3)), 'error');
-                    }
-                }
-                if (!okCount) return;
-            } else {
-                toast((lastErr && lastErr.message) || String(lastErr), 'error');
-                return;
-            }
-        }
-
-        toast(t('image.bundle_started', 'Bundle download started'), 'success');
-        startBundlePolling(parsed.files);
-    }
-
-    /** Прогресс bundle: опрос HFDownloadProgress по каждому файлу. */
-    function startBundlePolling(files) {
-        stopBundlePolling();
-        state.bundleFiles = files;
-        state.bundleProgress = {};
-        state.bundleIdleTicks = 0;
-        var backendId = state.selectedBackendId;
-        var tick = function () {
-            var tasks = files.map(function (f) {
-                var qs = '?modelId=' + encodeURIComponent(f.repo) + '&filename=' + encodeURIComponent(f.filename);
-                return requestBackend(backendId, PATH_HF_PROGRESS + qs, { timeoutMs: TIMEOUT_CONTROL_MS })
-                    .then(function (p) { state.bundleProgress[bundleFileKey(f)] = p || {}; })
-                    .catch(function () { /* 404 = запись ещё не появилась, не ошибка */ });
-            });
-            Promise.all(tasks).then(function () {
-                var agg = aggregateDownloadProgress(files, state.bundleProgress);
-                renderBundleProgress(agg, files);
-                if (agg.unknown === files.length) {
-                    state.bundleIdleTicks++;
-                    if (state.bundleIdleTicks >= DOWNLOAD_IDLE_TICKS_MAX) {
-                        stopBundlePolling();
-                        return;
-                    }
-                } else {
-                    state.bundleIdleTicks = 0;
-                }
-                if (agg.done) {
-                    stopBundlePolling();
-                    if (agg.failed) {
-                        var failedNames = files.filter(function (f) {
-                            var p = state.bundleProgress[bundleFileKey(f)] || {};
-                            return p.status === 'failed' || p.status === 'cancelled' || p.status === 'interrupted';
-                        }).map(function (f) { return f.filename; }).join(', ');
-                        toast(t('image.bundle_failed_files', 'Some files failed: {names}', { names: failedNames }), 'error');
-                    } else {
-                        toast(t('image.bundle_all_done', 'All bundle files downloaded'), 'success');
-                    }
-                    // Новые файлы могли уже зарегистрироваться как bundle-профиль
-                    // (Phase 2) — перечитываем список моделей, это дешёвый GET.
-                    loadModels();
-                }
-            });
-        };
-        tick();
-        state.bundlePoll = setInterval(tick, DOWNLOAD_POLL_MS);
-    }
-
-    function stopBundlePolling() {
-        if (state.bundlePoll) clearInterval(state.bundlePoll);
-        state.bundlePoll = null;
-    }
 
     // =====================================================================
     // События
@@ -1105,15 +786,24 @@
             onLoadModel(actionEl.getAttribute('data-model'));
         } else if (action === 'unload-model') {
             onUnloadModel(actionEl.getAttribute('data-model'));
-        } else if (action === 'bundle-remove') {
-            var idx = parseInt(actionEl.getAttribute('data-row'), 10);
-            var rows = readBundleRows();
-            rows.splice(idx, 1);
-            if (!rows.length) rows = [{ role: 'diffusion', repo: '', filename: '' }];
-            renderBundleRows(rows);
-        } else if (action === 'bundle-files') {
-            listBundleFiles(parseInt(actionEl.getAttribute('data-row'), 10) || 0);
+        } else if (action === 'delete-model') {
+            onDeleteModel(actionEl.getAttribute('data-model'));
         }
+    }
+
+    /**
+     * renderBackendParamsState — таб «Настройки»: краткая сводка параметров
+     * выбранного бэкенда. Форму держит image-backends-page.js (одна реализация
+     * на проект, см. кнопку «Открыть параметры»).
+     */
+    function renderBackendParamsState() {
+        var node = el('imBackendParamsState');
+        if (!node) return;
+        var b = null;
+        (state.backends || []).forEach(function (x) { if (x.id === state.selectedBackendId) b = x; });
+        if (!b) { node.textContent = t('imageModels.no_backend_selected', 'Image-бэкенд не выбран'); return; }
+        node.textContent = b.name + ' · ' + t('imageBackends.col_host', 'Хост') + ': ' + (b.host || '-') +
+            ' · ' + t('imageBackends.col_port', 'Порт воркера') + ': ' + (b.imagePort || '-');
     }
 
     function bindEvents() {
@@ -1121,8 +811,9 @@
         var page = el('image-page');
         if (!page) return;
         state.bound = true;
-        // Делегирование: и таблица моделей, и строки bundle перерисовываются
-        // через innerHTML, поэтому слушателей на кнопках было бы не навесить.
+        // Делегирование: таблица моделей перерисовывается через innerHTML,
+        // поэтому слушателей на кнопках было бы не навесить.
+        // (Клики таба HF обрабатывает image-models-hf.js по своим data-imh-action.)
         page.addEventListener('click', onClick);
 
         var refreshBtn = el('imgRefreshBtn');
@@ -1134,19 +825,25 @@
             state.selectedBackendId = this.value;
             stopLoadPolling();
             loadModels();
+            renderBackendParamsState();
+        });
+        // Таб «Настройки»: параметры бэкенда правит его собственный редактор
+        // (модалка image-backends-page.js) — так валидация полей одна на проект.
+        var paramsBtn = el('imBackendParamsBtn');
+        if (paramsBtn) paramsBtn.addEventListener('click', function () {
+            var b = null;
+            (state.backends || []).forEach(function (x) { if (x.id === state.selectedBackendId) b = x; });
+            if (!b) { toast(t('imageModels.no_backend_selected', 'Image-бэкенд не выбран'), 'error'); return; }
+            if (window.ImageBackendsPage && window.ImageBackendsPage._actions &&
+                typeof window.ImageBackendsPage._actions.openEditor === 'function') {
+                window.ImageBackendsPage._actions.openEditor(b);
+            } else {
+                window.ImageModelsPage && window.ImageModelsPage.showTab &&
+                    window.ImageModelsPage.showTab('overview');
+            }
         });
         // #imgModelSelect остался в шапке как индикатор выбранной модели:
         // формы генерации, к которой применялись дефолты профиля, в WebUI больше нет.
-        var addRow = el('imgBundleAddRow');
-        if (addRow) addRow.addEventListener('click', function () {
-            var rows = readBundleRows();
-            rows.push({ role: nextSuggestedRole(rows), repo: '', filename: '' });
-            renderBundleRows(rows);
-        });
-        var bundleBtn = el('imgBundleStart');
-        if (bundleBtn) bundleBtn.addEventListener('click', onBundleDownload);
-        var tokenInput = el('imgHfToken');
-        if (tokenInput) tokenInput.addEventListener('change', saveHfToken);
     }
 
     // =====================================================================
@@ -1159,21 +856,13 @@
         bindEvents();
         if (!state.inited) {
             state.inited = true;
-            // HF-токен общий с GGUF-страницей — показываем уже сохранённый.
-            var tokenInput = el('imgHfToken');
-            if (tokenInput) tokenInput.value = hfToken();
-            renderFamilySelect();
-            renderBundleRows();
             if (window.I18N && typeof I18N.getLang === 'function') {
                 // Смена языка перерисовывает статичный HTML через App._updateUITranslations,
-                // но динамические куски (таблица моделей, строки bundle) собраны в
-                // JS — их нужно перерисовать вручную.
+                // но динамические куски (таблица моделей) собраны в JS — их нужно
+                // перерисовать вручную. Табы HF/Загрузки перерисовывает их модуль
+                // сам, слушая то же событие (image-models-hf.js).
                 window.addEventListener('i18n:changed', function () {
                     renderModelsTable();
-                    // Строки bundle перерисовываются из текущих значений DOM,
-                    // иначе смена языка стёрла бы введённые repo/filename.
-                    renderBundleRows(readBundleRows());
-                    renderFamilySelect();
                 });
             }
         }
@@ -1203,14 +892,15 @@
         _state: state,
         // Действия для интеграционного smoke-теста с мок-DOM
         // (webui/js/modules/image-page-dom.test.js): проверить реальные
-        // сценарии (refresh / load / unload / bundle) без браузера.
+        // сценарии (refresh / load / unload / delete) без браузера. Загрузка
+        // bundle проверяется в image-models-hf.test.js — у неё теперь свой модуль.
         _actions: {
             refresh: refresh,
             loadModel: onLoadModel,
             unloadModel: onUnloadModel,
-            bundleDownload: onBundleDownload,
-            listBundleFiles: listBundleFiles,
-            stopPolling: function () { stopLoadPolling(); stopBundlePolling(); }
+            deleteModel: onDeleteModel,
+            renderBackendParamsState: renderBackendParamsState,
+            stopPolling: stopLoadPolling
         }
     };
 })();

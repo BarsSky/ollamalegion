@@ -7,12 +7,17 @@
 //   * чистые функции не ловят опечатки в id элементов и в вызовах DOM —
 //     а именно они дают «страница молча не работает»;
 //   * здесь проверяется весь путь: refresh() → рендер таблицы моделей →
-//     load/unload и прогресс загрузки → bundle-загрузка с HF (включая fallback
-//     на одиночные /api/hf/download) → монтирование редактора профилей.
+//     load/unload и прогресс загрузки → монтирование редактора профилей.
+//
+// ГРАНИЦА С image-models-hf.test.js: загрузка bundle с HuggingFace (поиск репо,
+// выбор файлов с ролями, прогресс, история/остатки) в Phase 9 переехала в
+// отдельный таб-модуль image-models-hf.js — её путь проверяется ТАМ. Здесь
+// остаётся ровно то, чем владеет image-page.js (табы «Модели на диске»,
+// «Загруженные», «Настройки»).
 //
 // Что проверяем:
-//   1. Каждый getElementById из модуля существует в webui/index.html
-//      (кроме динамических imgBundleFilesList_<n>) — ловит рассинхрон HTML/JS.
+//   1. Каждый getElementById из модуля существует в webui/index.html — ловит
+//      рассинхрон HTML/JS.
 //   2. Каждый i18n-ключ, который дёргает модуль, есть в ru.js (поэтому тест
 //      грузит реальный пак переводов, а не заглушку).
 //   3. refresh(): список image-бэкендов (fallback на /api/v1/backends при 404),
@@ -20,12 +25,12 @@
 //   4. Прогресс загрузки модели: стадия/время в подписи, полоса — только если
 //      воркер реально прислал progressPct.
 //   5. load/unload модели: POST-тела и остановка поллинга по state=loaded.
-//   6. bundle: отсутствие bundle-эндпоинта → отдельные /api/hf/download с role;
-//      список файлов репозитория (image.bundle_list_files) заполняет datalist.
+//   6. HF/bundle-логики в модуле больше НЕТ (она у image-models-hf.js) — это и
+//      есть проверка «ничего не потеряли, а перенесли».
 //   7. В модуле НЕ осталось генерации, результата и галереи (грепом по исходнику:
 //      нет imgGenerateBtn, imgGallery, prompt_required, /generate и т.п.) — это
 //      главное требование Phase 9: картинки в WebUI не показываем.
-//   8. Сохранённый функционал на месте: модели, HF-загрузка, прогресс, профили.
+//   8. Сохранённый функционал на месте: модели, прогресс загрузки, профили.
 
 'use strict';
 
@@ -143,36 +148,15 @@ function makeElement(id) {
     return el;
 }
 
-// Строки bundle отдаём «как из DOM»: diffusion + vae.
-function makeBundleRowsHost() {
-    const host = makeElement('imgBundleRows');
-    host.querySelectorAll = function (sel) {
-        if (sel !== '[data-bundle-row]') return [];
-        const rows = [
-            { role: 'diffusion', repo: 'leejet/FLUX.1-schnell-gguf', filename: 'flux1-schnell-Q4_0.gguf' },
-            { role: 'vae', repo: 'black-forest-labs/FLUX.1-schnell', filename: 'ae.safetensors' },
-        ];
-        return rows.map(function (r) {
-            return {
-                querySelector: function (q) {
-                    const mm = /data-bundle-field="([a-z]+)"/.exec(q);
-                    return { value: mm ? (r[mm[1]] || '') : '' };
-                },
-            };
-        });
-    };
-    return host;
-}
 // Заранее создаём все элементы, которые есть в index.html, чтобы тест мог
 // читать/записывать их value и innerHTML. Обращение модуля к id, которого нет
 // в index.html, всё равно фиксируется в unknownIds (см. getElementById).
 KNOWN_IDS.forEach(function (id) { elements[id] = makeElement(id); });
-elements['imgBundleRows'] = makeBundleRowsHost();
 
 global.document = {
     getElementById: function (id) {
         if (!Object.prototype.hasOwnProperty.call(elements, id)) {
-            if (!KNOWN_IDS.has(id) && !/^imgBundleFilesList_\d+$/.test(id)) unknownIds.push(id);
+            if (!KNOWN_IDS.has(id)) unknownIds.push(id);
             elements[id] = makeElement(id);
         }
         return elements[id];
@@ -203,8 +187,15 @@ const MODELS = {
         family: 'sd15',
         active_queries: 0,
         vram_estimate_mb: 2100,
+        // Состав bundle: роли приходят с сервера (types.ImageModelFile.Role).
+        files: [{ role: 'diffusion', path: 'sd15-q8.gguf' }, { role: 'vae', path: 'vae.safetensors' }],
     }],
 };
+
+// confirm() для удаления bundle: тест управляет ответом оператора.
+let confirmAnswer = true;
+const confirmCalls = [];
+global.confirm = function (msg) { confirmCalls.push(msg); return confirmAnswer; };
 
 let imageBackendsStatus = 404; // /api/v1/image/backends ещё нет (параллельная работа)
 // Прогресс загрузки модели: 'loading' — первый снимок со стадией и процентом,
@@ -247,6 +238,7 @@ global.fetch = function (url, init) {
     }
     if (p === '/api/image/models/load') return jsonResponse({ status: 'ok' });
     if (p === '/api/image/models/unload') return jsonResponse({ status: 'ok' });
+    if (p === '/api/image/models/delete') return jsonResponse({ status: 'ok', name: 'sd15-q8', freed_bytes: 1760000000 });
     if (p === '/api/image/models') return jsonResponse(MODELS);
     if (p === '/api/hf/files') return jsonResponse({ files: [{ path: 'flux1-schnell-Q4_0.gguf', sizeBytes: 1000 }], count: 1 });
     if (p === '/api/hf/progress') return jsonResponse({ error: 'not found' }, 404);
@@ -292,14 +284,16 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
         assert.ok(html.indexOf('sd15') !== -1, 'нет семейства');
         assert.ok(html.indexOf('data-img-action="load-model"') !== -1, 'нет кнопки Load');
     });
+    check('состав bundle (роли) и кнопка удаления с диска видны для незагруженной модели', function () {
+        const html = elements['imgModelsBody'].innerHTML;
+        assert.ok(html.indexOf('diffusion (веса)') !== -1, 'нет роли diffusion в составе');
+        assert.ok(html.indexOf('vae') !== -1, 'нет роли vae в составе');
+        assert.ok(html.indexOf('data-img-action="delete-model"') !== -1, 'нет кнопки удаления с диска');
+        assert.strictEqual((html.match(/colspan="8"/g) || []).length, 0, 'colspan не должен попадать в строки с данными');
+    });
     check('селекты шапки заполнены: бэкенд и модель', function () {
         assert.ok(elements['imgBackendSelect'].innerHTML.indexOf('img-1') !== -1, 'нет бэкенда в селекте');
         assert.ok(elements['imgModelSelect'].innerHTML.indexOf('sd15-q8') !== -1, 'нет модели в селекте');
-    });
-    check('селект семейства и строки bundle отрисованы (таб HuggingFace)', function () {
-        assert.ok(elements['imgBundleFamily'].innerHTML.indexOf('flux') !== -1, 'нет семейств');
-        assert.strictEqual(Page._state.bundleRows.length, 1, 'должна быть одна стартовая строка');
-        assert.strictEqual(Page._state.bundleRows[0].role, 'diffusion');
     });
     check('профили image-моделей смонтированы в таб «Настройки»', function () {
         assert.deepStrictEqual(global.ImageProfiles.mounted, ['imageProfiles']);
@@ -347,38 +341,79 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
         assert.ok(unloaded, 'нет тоста о выгрузке модели');
     });
 
-    // --- 7. bundle: канонический путь → fallback на пофайловые загрузки ----
-    elements['imgBundleName'].value = 'flux-schnell-q4';
-    elements['imgBundleFamily'].value = 'flux';
-    await Page._actions.bundleDownload();
-    await sleep(20);
-
-    const perFile = requests.filter(function (r) { return r.url.indexOf('/proxy/api/hf/download') !== -1; });
-    const bundleTries = requests.filter(function (r) { return r.url.indexOf('/proxy/api/hf/bundle') !== -1 || r.url.indexOf('/proxy/api/image/models/download') !== -1; });
-    check('bundle-эндпоинта нет → сначала канонический /api/hf/bundle, затем fallback на /api/hf/download с role', function () {
-        assert.strictEqual(bundleTries.length >= 1, true, 'канонический путь /api/hf/bundle не пробовался');
-        assert.strictEqual(bundleTries[0].url.indexOf('/proxy/api/hf/bundle') !== -1, true, 'первым должен идти канонический путь, был: ' + bundleTries[0].url);
-        assert.strictEqual(bundleTries[0].body.name, 'flux-schnell-q4');
-        assert.strictEqual(bundleTries[0].body.family, 'flux');
-        assert.strictEqual(bundleTries[0].body.files.length, 2);
-        assert.strictEqual(perFile.length, 2, 'должно быть 2 файла, было ' + perFile.length);
-        assert.strictEqual(perFile[0].body.modelId, 'leejet/FLUX.1-schnell-gguf');
-        assert.strictEqual(perFile[0].body.role, 'diffusion');
-        assert.strictEqual(perFile[1].body.role, 'vae');
-        const warn = toasts.filter(function (t) { return t.msg.indexOf('Эндпоинт bundle') !== -1; })[0];
-        assert.ok(warn, 'нет предупреждения о недоступном bundle-эндпоинте');
+    // --- 7. удаление bundle с диска (Phase 9) ------------------------------
+    // Сначала отказ оператора: запроса быть не должно.
+    confirmAnswer = false;
+    requests.length = 0;
+    await Page._actions.deleteModel('sd15-q8');
+    check('удаление: отказ в confirm() → запроса нет', function () {
+        assert.strictEqual(requests.filter(function (r) { return r.url.indexOf('/models/delete') !== -1; }).length, 0);
+        assert.ok(confirmCalls.length >= 1, 'оператора не спросили');
     });
-    Page._actions.stopPolling();
+    check('удаление: в тексте подтверждения есть имя bundle', function () {
+        assert.ok(confirmCalls[confirmCalls.length - 1].indexOf('sd15-q8') !== -1,
+            'нет имени в подтверждении: ' + confirmCalls[confirmCalls.length - 1]);
+    });
 
-    // --- 8. список файлов репозитория (image.bundle_list_files) ------------
-    await Page._actions.listBundleFiles(0);
+    confirmAnswer = true;
+    requests.length = 0;
+    const deleted = await Page._actions.deleteModel('sd15-q8');
     await sleep(20);
-    check('«Список файлов»: GET /api/hf/files и datalist строки заполнен', function () {
-        const filesReq = requests.filter(function (r) { return r.url.indexOf('/proxy/api/hf/files') !== -1; })[0];
-        assert.ok(filesReq, 'запрос /api/hf/files не ушёл');
-        assert.ok(filesReq.url.indexOf('modelId=leejet%2FFLUX.1-schnell-gguf') !== -1, 'нет modelId в query: ' + filesReq.url);
-        assert.ok(elements['imgBundleFilesList_0'].innerHTML.indexOf('flux1-schnell-Q4_0.gguf') !== -1,
-            'datalist не заполнен: ' + elements['imgBundleFilesList_0'].innerHTML);
+    check('удаление: POST /models/delete {name} + тост с освобождённым объёмом', function () {
+        assert.strictEqual(deleted, true);
+        const rec = requests.filter(function (r) { return r.url.indexOf('/proxy/api/image/models/delete') !== -1; })[0];
+        assert.ok(rec, 'POST /api/image/models/delete не ушёл');
+        assert.strictEqual(rec.method, 'POST');
+        assert.strictEqual(rec.body.name, 'sd15-q8');
+        const done = toasts.filter(function (t) { return t.msg.indexOf('Удалено, освобождено') !== -1; })[0];
+        assert.ok(done, 'нет тоста об освобождённом объёме');
+        assert.ok(done.msg.indexOf('1678') !== -1, 'объём должен быть в MB: ' + done.msg);
+    });
+    check('удаление: список моделей перечитан (модель не остаётся фантомом)', function () {
+        assert.ok(requests.filter(function (r) { return r.url.indexOf('/proxy/api/image/models') !== -1 && r.url.indexOf('delete') === -1; }).length >= 1,
+            'список моделей не перечитан после удаления');
+    });
+
+    // --- 8. таб «Настройки»: сводка параметров бэкенда ---------------------
+    check('«Настройки»: сводка параметров выбранного бэкенда и вход в его редактор', function () {
+        Page._actions.renderBackendParamsState();
+        const txt = elements['imBackendParamsState'].textContent;
+        assert.ok(txt.indexOf('GPU image') !== -1, 'нет имени бэкенда: ' + txt);
+        assert.ok(txt.indexOf('18093') !== -1, 'нет порта воркера: ' + txt);
+        assert.ok(KNOWN_IDS.has('imBackendParamsBtn'), 'в index.html нет кнопки параметров бэкенда');
+        assert.ok(MODULE_SRC.indexOf('openEditor') !== -1, 'модуль не открывает редактор бэкенда');
+    });
+
+    // --- 9. HF/bundle перенесён в image-models-hf.js -----------------------
+    // Владелец сменился: ручная форма «строка = repo+filename+роль» больше не
+    // живёт в image-page.js. Проверяем и исходник, и разметку — так поймаем и
+    // «половину переноса» (код убрали, а поля остались), и «двойного владельца»
+    // (оба модуля слушают #imgBundleStart).
+    check('HF/bundle-логики в image-page.js больше нет', function () {
+        // Комментарии не считаем: в них Phase 9 как раз объясняет, КУДА уехал
+        // HF-код. Ищем только в исполняемых строках.
+        const code = MODULE_SRC.split('\n').filter(function (line) {
+            const s = line.trim();
+            return s.indexOf('//') !== 0 && s.indexOf('*') !== 0 && s.indexOf('/*') !== 0;
+        }).join('\n');
+        ['onBundleDownload', 'listBundleFiles', 'renderBundleRows', 'readBundleRows',
+            'parseBundleRows', 'aggregateDownloadProgress', "/api/hf/", 'imgBundleRows',
+            'imgBundleAddRow'].forEach(function (tok) {
+            assert.strictEqual(code.indexOf(tok), -1, 'в image-page.js остался ' + tok);
+        });
+    });
+    check('разметка HF-таба на месте и принадлежит модулю image-models-hf.js', function () {
+        ['imHfQuery', 'imHfTask', 'imHfSearchBtn', 'imHfSearchResults',
+            'imHfFilesCard', 'imHfRepoName', 'imHfFilesBody', 'imHfSelectionSummary',
+            'imgBundleName', 'imgBundleFamily', 'imgHfToken', 'imgBundleStart',
+            'imgBundleProgress', 'imgBundleProgressFill', 'imgBundleStatus',
+            'imDownloadsHost'].forEach(function (id) {
+            assert.ok(KNOWN_IDS.has(id), 'в index.html нет #' + id);
+        });
+        const hfSrc = fs.readFileSync(path.join(__dirname, 'image-models-hf.js'), 'utf8');
+        assert.ok(hfSrc.indexOf('data-imh-action="download"') === -1 || hfSrc.indexOf("act === 'download'") !== -1,
+            'модуль HF не обрабатывает кнопку скачивания bundle');
+        assert.ok(hfSrc.indexOf('/hf/bundle') !== -1, 'модуль HF не зовёт /hf/bundle');
     });
 
     // --- 9. ошибка бэкенда показывается в notice --------------------------
@@ -415,7 +450,7 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
         assert.deepStrictEqual(found, [], 'в image-page.js остались следы генерации/галереи: ' + found.join(', '));
     });
 
-    // --- 11. сохранённый функционал на месте ------------------------------
+    // --- 8. сохранённый функционал на месте -------------------------------
     check('публичный API сохранён (init/refresh/pure/_actions), generate удалён', function () {
         assert.strictEqual(typeof Page.init, 'function', 'нет init');
         assert.strictEqual(typeof Page.refresh, 'function', 'нет refresh');
@@ -423,27 +458,28 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
         assert.strictEqual(typeof Page._actions.refresh, 'function', 'нет _actions.refresh');
         assert.strictEqual(typeof Page._actions.loadModel, 'function', 'нет _actions.loadModel');
         assert.strictEqual(typeof Page._actions.unloadModel, 'function', 'нет _actions.unloadModel');
-        assert.strictEqual(typeof Page._actions.bundleDownload, 'function', 'нет _actions.bundleDownload');
-        assert.strictEqual(typeof Page._actions.listBundleFiles, 'function', 'нет _actions.listBundleFiles');
         assert.strictEqual(typeof Page._actions.stopPolling, 'function', 'нет _actions.stopPolling');
         assert.strictEqual(Page._actions.generate, undefined, 'генерация должна быть удалена');
+        assert.strictEqual(Page._actions.bundleDownload, undefined, 'bundle-загрузка должна была переехать в image-models-hf.js');
     });
     check('pure-хелперы сохранённого функционала на месте', function () {
-        ['normalizeModels', 'normalizeBackends', 'parseBundleRows', 'aggregateDownloadProgress',
-            'bundleFileKey', 'stateLabelKey', 'normalizeLoadProgress', 'formatBytes', 'formatDuration',
-            'parseOpenAIError', 'escapeHtml', 'IMAGE_ROLES', 'IMAGE_FAMILIES']
+        ['normalizeModels', 'normalizeBackends', 'stateLabelKey', 'normalizeLoadProgress',
+            'formatBytes', 'formatDuration', 'parseOpenAIError', 'escapeHtml']
             .forEach(function (name) {
                 assert.notStrictEqual(Page.pure[name], undefined, 'pure.' + name + ' потерян');
             });
+        // Роли и семейства — контракт pkg/types/image_model.go. После переноса HF
+        // они живут в image-models-hf.js (там же проверяются на 12 значений).
+        assert.strictEqual(Page.pure.IMAGE_ROLES, undefined, 'роли должны были переехать в image-models-hf.js');
     });
-    check('модуль по-прежнему владеет id моделей, HF-формы, прогресса и профилей', function () {
+    check('модуль по-прежнему владеет id моделей, прогресса и профилей', function () {
         assert.ok(KNOWN_IDS.has('imgModelsTable'), 'в index.html нет таблицы #imgModelsTable');
+        assert.ok(KNOWN_IDS.has('imTabModels'), 'в index.html нет таба «Модели на диске»');
+        assert.ok(KNOWN_IDS.has('imTabLoaded'), 'в index.html нет таба «Загруженные»');
+        assert.ok(KNOWN_IDS.has('imTabSettings'), 'в index.html нет таба «Настройки»');
         ['imgModelsBody', 'imgModelsRefreshBtn',
-            'imgBundleName', 'imgBundleFamily', 'imgHfToken', 'imgBundleRows', 'imgBundleAddRow',
-            'imgBundleStart', 'imgBundleProgress', 'imgBundleProgressLabel', 'imgBundleProgressFill',
-            'imgBundleStatus', 'imgLoadProgress', 'imgLoadProgressLabel', 'imgLoadProgressBar',
-            'imgLoadProgressFill', 'imgNotice', 'imgBackendSelect', 'imgModelSelect',
-            'image.bundle_list_files']
+            'imgLoadProgress', 'imgLoadProgressLabel', 'imgLoadProgressBar',
+            'imgLoadProgressFill', 'imgNotice', 'imgBackendSelect', 'imgModelSelect']
             .forEach(function (tok) {
                 assert.ok(MODULE_SRC.indexOf(tok) !== -1, 'в модуле нет ' + tok);
             });

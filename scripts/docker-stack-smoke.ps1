@@ -20,7 +20,7 @@
       S5  llama_cpp (текстовый пул) зарегистрирован в ТОМ ЖЕ балансере
       S6  OpenAI-поверхность 18079 опубликована и отдаёт /v1/models
       S7  /api/v1/cluster отдаёт cluster.image (агрегат image-пула для Monitor)
-      S8  WebUI 18083 отдаёт страницу с пунктом nav.image_backends
+      S8  WebUI 18083 отдаёт страницу «Image-модели»: 6 табов, оба модуля табов, без формы генерации
       S9  imageworker видит каталог моделей (GET .../models)
       S10 [opt-in -Generate] генерация через балансер отдаёт валидный PNG
       S11 [opt-in -Generate] метрики запросов выросли (total/recent)
@@ -261,13 +261,24 @@ try {
     Add-Result 'S7' 'cluster.image (агрегат image-пула для Monitor) присутствует' $(if ($s7) { 'PASS' } else { 'FAIL' }) "http=$($r.Status) backends=$poolBackends requests_total=$poolTotal"
 
     # ========================================================
-    # S8: WebUI отдаёт страницу с пунктом «Image-бэкенды»
+    # S8: WebUI отдаёт страницу «Image-модели» в новом виде (Phase 9)
+    #
+    # Проверяем СТРУКТУРУ, а не только факт «страница есть»: табы, оба модуля
+    # табов и ОТСУТСТВИЕ формы генерации. Иначе пересборка образа webui без
+    # новых JS прошла бы незамеченной (ровно этот случай уже был: старый образ
+    # с ?v= из кэша отдавал прежнюю страницу).
     # ========================================================
     $r = Invoke-Http -Method GET -Url "$webui/" -TimeoutMs 10000
-    $hasNav = ($r.Body -match 'data-page="image-backends"')
-    $hasModule = ($r.Body -match 'image-backends-page\.js')
-    $s8 = ($r.Status -eq 200) -and $hasNav -and $hasModule
-    Add-Result 'S8' 'WebUI отдаёт страницу с модулем «Image-бэкенды»' $(if ($s8) { 'PASS' } else { 'FAIL' }) "http=$($r.Status) nav=$hasNav module=$hasModule (старый образ webui? нужен --build webui)"
+    $hasNav = ($r.Body -match 'data-page="image"')
+    $hasShell = ($r.Body -match 'image-models-page\.js')
+    $hasHfModule = ($r.Body -match 'image-models-hf\.js')
+    $tabIds = @('imTabOverview', 'imTabHf', 'imTabModels', 'imTabLoaded', 'imTabDownloads', 'imTabSettings')
+    $missingTabs = @($tabIds | Where-Object { $r.Body -notmatch [regex]::Escape($_) })
+    # Следы формы генерации: их в разметке быть НЕ должно (Phase 9).
+    $genTokens = @('imgGenerateBtn', 'imgPrompt', 'imgGallery', 'imgResults')
+    $genLeft = @($genTokens | Where-Object { $r.Body -match [regex]::Escape($_) })
+    $s8 = ($r.Status -eq 200) -and $hasNav -and $hasShell -and $hasHfModule -and ($missingTabs.Count -eq 0) -and ($genLeft.Count -eq 0)
+    Add-Result 'S8' 'WebUI отдаёт страницу «Image-модели» с 6 табами и без формы генерации' $(if ($s8) { 'PASS' } else { 'FAIL' }) "http=$($r.Status) nav=$hasNav shell=$hasShell hf=$hasHfModule нет_табов=$($missingTabs -join ',') остатки_генерации=$($genLeft -join ',') (старый образ webui? нужен --build webui)"
 
     # ========================================================
     # S9: imageworker видит каталог моделей

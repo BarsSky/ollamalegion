@@ -50,29 +50,49 @@
 ключи `image.prompt|negative|width|height|steps|cfg|sampler|scheduler|seed|batch|generate|images_returned|download_one|gallery_*`,
 действие «К генерации» на странице бэкендов.
 
-## 5. Замороженный контракт между модулями
+## 5. Контракт между модулями (ФАКТ, после шага 4)
 
 ```
 webui/js/modules/image-models-page.js   (шелл, владелец: shell)
   window.ImageModelsPage = {
     mount(),                     // идемпотентно: навигация, табы, обработчики
-    render(backends, ctx),       // перерисовать шелл и активный таб
+    render(backends),            // перерисовать шелл и активный таб
     syncVisibility(backends),    // показ/скрытие пункта меню и страницы
-    showTab(tabId)
+    showTab(tabId),
+    runSelfTest()
   };
 
-webui/js/modules/image-models-hf.js     (владелец: агент A)
-  window.ImageModelsHf = { mount(root), render(ctx), tabIds: ['hf','downloads'] };
+webui/js/modules/image-models-hf.js     (владелец табов hf + downloads)
+  window.ImageModelsHf = { mount(), render(ctx), tabIds: ['hf','downloads'], _actions, _state, pure };
 
-webui/js/modules/image-models-list.js   (владелец: агент B)
-  window.ImageModelsList = { mount(root), render(ctx), tabIds: ['models','loaded','settings'] };
+webui/js/modules/image-page.js          (владелец табов models + loaded + settings)
+  window.ImagePage = { init, refresh, pure, _state, _actions };
+  // Табы «Модели на диске» (состав ролей + удаление с диска), «Загруженные»
+  // (состояние + polling прогресса), «Настройки» (вход в редактор параметров
+  // бэкенда + профили через ImageProfiles.mount).
 
-ctx = { apiBase, headers, backendId, backend, models, capabilities, hfToken }
+ctx = { apiBase, headers, backendId, backend, backends, tab }
 ```
 
-Правила: модули не трогают файлы друг друга; i18n добавляет ТОЛЬКО shell-владелец;
-табы получают данные сами через пути балансера (`/api/v1/image/backends/{id}/...`),
-шелл передаёт только контекст.
+**Отступление от первоначального плана (обосновано).** Планировался второй
+таб-модуль `image-models-list.js` для табов models/loaded/settings. По факту эти
+табы уже полностью реализованы рабочим кодом `image-page.js` (таблица моделей,
+load/unload, polling прогресса, монтирование профилей) и покрыты тестами; вынос
+их в новый модуль означал бы переписать работающее ради красоты контракта — ровно
+тот риск «потерять функционал», от которого страхует этот план. Поэтому:
+
+- HF-часть (поиск, файлы, bundle, прогресс bundle) **вынесена** в
+  `image-models-hf.js` — её в `image-page.js` не было (была ручная форма «строка =
+  repo+filename+роль»), и она переписана в стиле GGUF;
+- models/loaded/settings **остались** в `image-page.js`, но в них добавлено то,
+  чего не хватало для паритета с GGUF: состав bundle по ролям, «Удалить с диска»
+  (ручка `POST /api/image/models/delete`), вход в параметры бэкенда из «Настроек»
+  (форма одна — в `image-backends-page.js`, чтобы не держать две копии валидации).
+
+Правила: модули не трогают файлы друг друга; i18n добавляет ТОЛЬКО shell-владелец
+(ключи `imageModels.*`) плюс переиспользуются `gguf.*`/`image.*`; табы получают
+данные сами через пути балансера (`/api/v1/image/backends/{id}/...`), шелл
+передаёт только контекст.
 
 ## 6. Ключи i18n
 
@@ -85,30 +105,52 @@ ctx = { apiBase, headers, backendId, backend, models, capabilities, hfToken }
   `imageModels.backend_select|worker_port|gpu_index|policy|requests_summary`,
   `imageModels.selftest_*`, `imageModels.role` + `imageModels.role_<role>`,
   `imageModels.family|vram_estimate|bundle_*|profile_applied`, `imageModels.search_task_filter`,
-  `imageModels.use_suggested_roles`, `imageModels.confirm_delete_bundle`, `imageModels.deleted_freed`.
+  `imageModels.use_suggested_roles`, `imageModels.confirm_delete_bundle`, `imageModels.deleted_freed`,
+  `imageModels.hf_*` (поиск/файлы/отметки), `imageModels.dl_files_active|orphans_title|no_downloads*`,
+  `imageModels.roles_summary|roles_unknown|backend_params_*|open_backend_editor|status_interrupted`.
+  Факт: паритет en/ru = 1647/1647 (`scripts/i18n_diff.js --strict`).
 
 ## 7. Шаги
 
 1. **Шелл** (nav, контейнер, табы, выбор бэкенда, видимость, i18n-ключи). Проверка: `check_webui_assets`, node-тест шелла.
    ✅ Сделано: `webui/js/modules/image-models-page.js` (+ тест на 9 проверок), табы в разметке
    `index.html` (`.gguf-tabs`/`.gguf-tab-content` — тот же стиль, что у GGUF), ключи i18n
-   (паритет 1622/1622), видимость страницы по-прежнему за `image-backends-page.js`.
+   (паритет 1647/1647), видимость страницы по-прежнему за `image-backends-page.js`.
 2. **Обзор**: перенос CRUD/политики/счётчиков из `image-backends-page.js` + «Проверка бэкенда» (64×64, 1 шаг, без картинки). Паритет с прежней страницей — до удаления старой.
    ✅ Сделано: карточка бэкендов переехала в таб «Обзор» (id сохранены, модуль и его 36 проверок
    зелёные), «Проверка бэкенда» реализована в шелле через `POST /generate` (`sync: true`) —
    тест проверяет, что base64 из ответа НЕ попадает в DOM.
    ✅ Удалены из разметки генерация, «Результат» и «Галерея»; пункт меню «Image-бэкенды» убран,
    страница «Изображения» переименована в «Image-модели».
-   ⏳ `image-page.js`: вычистка кода генерации/галереи (в работе) + обновление его DOM-теста.
+   ✅ `image-page.js`: код генерации/галереи/формы bundle вычищен (802 → 900 строк с новыми
+   возможностями), оба его теста обновлены (15 + 23 проверки).
 3. **Модели на диске + Загруженные**: таблица bundle'ов с ролями/профилем, load/unload/reload, SSE-прогресс, удаление с диска (ручка готова).
+   ✅ Сделано: колонка «Состав (роли)» (роли с сервера, `rolesSummary`), кнопка «Удалить с диска»
+   (`POST /api/image/models/delete`, confirm с именем bundle, тост с `freed_bytes`, отказ 409
+   показывается текстом сервера), прогресс загрузки модели остался на polling (SSE-вариант
+   сознательно не берём: через прокси балансера EventSource требует `?token=`, а страница живёт
+   секунды — см. комментарий в `startLoadPolling`).
 4. **HuggingFace + Загрузки**: поиск → файлы с ролями → bundle download; активные/история/орфаны.
+   ✅ Сделано: `webui/js/modules/image-models-hf.js` (+ тест на 26 проверок): поиск репозиториев
+   (query + фильтр `text-to-image`), файлы с `suggestedRole` и выбором роли, автоотметки
+   (diffusion/vae/clip_l/clip_g — да; t5xxl/llm — только вручную), сборка `POST /hf/bundle` с
+   `sizeBytes`, прогресс по агрегату `GET /hf/progress?bundleId=`, таб «Загрузки» (активные bundle
+   и файлы, история, остатки + `DELETE /hf/cleanup`, отмена через `POST /hf/cancel`).
 5. **Настройки**: монтирование `image-profiles.js` в таб + параметры бэкенда.
+   ✅ Сделано: профили монтируются как раньше; параметры бэкенда — карточка-сводка (имя, хост,
+   порт воркера) + кнопка «Открыть параметры», которая открывает редактор
+   `image-backends-page.js` (`_actions.openEditor`): одна форма на проект, без второй валидации.
 6. **Удаление** генерации/галереи, чистка i18n и ссылок («К генерации» → «К моделям»).
-   ✅ Ссылка уже переименована в коде (`openImages` ведёт на таб «Модели на диске»);
-   чистка неиспользуемых i18n-ключей — после вычистки `image-page.js`.
+   ✅ Ссылка переименована в коде (`openImages` ведёт на таб «Модели на диске»).
+   ⏳ Чистка неиспользуемых i18n-ключей (`image.prompt|width|steps|…`, галерея) — отдельным шагом:
+   ключи должны исчезнуть из обоих языков одновременно, паритет обязателен.
 7. **Проверки**: node-тесты модулей, `ui-renderer-smoke`, `check_iife_exports`, `check_webui_assets`,
    `i18n_diff --strict`, E2E-проверка структуры UI (табы есть, формы генерации нет) + живой прогон
    в Docker-стенде (загрузка bundle с HF → load → генерация сторонним клиентом).
+   ✅ Node-тесты: 15 файлов + `webui/tests/*` + `tests/webui/*` — все зелёные; `check_iife_exports`
+   67 файлов PASS; `check_webui_assets` 95 ассетов OK; i18n 1647/1647.
+   ⏳ E2E-структура UI в `scripts/docker-stack-smoke.ps1` и живой прогон в Docker (пересборка образа
+   webui) — следующий шаг.
 8. **Документация**: `docs/image-generation.md` (+en) — новый UI; CHANGELOG.
 
 ## 8. Риски и правила

@@ -288,11 +288,15 @@ const ui = (function () {
                 break;
             case 'image':
                 // R-Image Phase 9: страница «Image-модели» — табы в стиле «GGUF
-                // модели». image-page.js по-прежнему наполняет карточки моделей и
-                // HF (их id сохранены), image-backends-page.js — таб «Обзор», а
-                // шелл отвечает за переключение табов и «Проверку бэкенда».
+                // модели». image-page.js наполняет табы «Модели на диске»,
+                // «Загруженные» и «Настройки», image-models-hf.js — «HuggingFace»
+                // и «Загрузки», image-backends-page.js — таб «Обзор», а шелл
+                // (image-models-page.js) переключает табы и делает «Проверку бэкенда».
                 if (window.ImagePage) {
                     window.ImagePage.init();
+                }
+                if (window.ImageModelsHf) {
+                    window.ImageModelsHf.mount();
                 }
                 if (window.ImageModelsPage) {
                     window.ImageModelsPage.mount();

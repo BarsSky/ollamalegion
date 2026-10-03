@@ -1,0 +1,489 @@
+// image-models-hf.test.js — R-Image Phase 9: табы «HuggingFace» и «Загрузки»
+// страницы «Image-модели» (модуль image-models-hf.js).
+//
+// Запуск: node webui/js/modules/image-models-hf.test.js
+//
+// ЧТО ПРОВЕРЯЕМ (и почему именно это):
+//   1. Поиск: GET /api/v1/image/backends/{id}/hf/search с query+limit+task и
+//      заголовком X-HF-Token (без токена приватные репозитории не видны, а
+//      воркер читает его ТОЛЬКО из заголовка — cmd/sdworker/handlers_hf.go:107).
+//   2. Файлы репозитория: GET .../hf/files?modelId=... — роли берутся из
+//      СЕРВЕРНОГО suggestedRole; в JS нет своей таблицы «имя файла → роль»
+//      (иначе правила разъехались бы с internal/sdbackend.SuggestRole).
+//   3. Отметки по умолчанию: diffusion/vae/clip_l/clip_g — да, t5xxl — нет
+//      (крупный файл: скачивать его «за компанию» дорого).
+//   4. Сборка bundle: тело POST .../hf/bundle = {name, family, files:[{role,
+//      repo, filename, revision, sizeBytes}]}, дубликат роли — ошибка (кроме lora),
+//      без diffusion — ошибка, пустой выбор — ошибка.
+//   5. Прогресс: опрос .../hf/progress?bundleId= (агрегат воркера) и остановка
+//      поллинга по финальному статусу; повторное чтение списка моделей, чтобы
+//      новая модель появилась на табе «Модели на диске».
+//   6. «Загрузки»: снимок /hf/downloads раскладывается на активные bundle,
+//      активные файлы, историю и остатки; очистка остатка идёт DELETE
+//      /hf/cleanup?filename=... (имя вида «bundle/file» в путь не положить).
+//   7. НИЧЕГО НЕ ПОКАЗЫВАЕТ КАРТИНКИ: в модуле нет ни b64, ни <img> из ответа
+//      генерации (Phase 9 убрала показ сгенерированного из WebUI).
+'use strict';
+
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+
+// --- mocks: DOM -------------------------------------------------------------
+
+function makeElement(id) {
+    const classes = new Set();
+    const listeners = {};
+    const attrs = {};
+    const el = {
+        id: id,
+        style: {},
+        value: '',
+        checked: false,
+        _html: '',
+        textContent: '',
+        getAttribute: function (n) { return Object.prototype.hasOwnProperty.call(attrs, n) ? attrs[n] : null; },
+        setAttribute: function (n, v) { attrs[n] = v; },
+        addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+        removeEventListener: function () { },
+        dispatch: function (type, ev) { (listeners[type] || []).forEach(function (fn) { fn(ev || {}); }); },
+        classList: {
+            add: function (c) { classes.add(c); },
+            remove: function (c) { classes.delete(c); },
+            contains: function (c) { return classes.has(c); },
+            toggle: function (c, on) { if (on === undefined) { classes.has(c) ? classes.delete(c) : classes.add(c); } else if (on) { classes.add(c); } else { classes.delete(c); } },
+        },
+        appendChild: function () { },
+        parentNode: null,
+    };
+    Object.defineProperty(el, 'innerHTML', {
+        get: function () { return this._html; },
+        set: function (v) { this._html = String(v); },
+    });
+    return el;
+}
+
+const elements = {};
+function getEl(id) {
+    if (!Object.prototype.hasOwnProperty.call(elements, id)) elements[id] = makeElement(id);
+    return elements[id];
+}
+global.window = global;
+global.document = {
+    getElementById: getEl,
+    querySelector: function () { return null; },
+    querySelectorAll: function () { return []; },
+    createElement: function (tag) { return makeElement('created-' + tag); },
+    addEventListener: function () { },
+};
+const store = {};
+global.localStorage = {
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+    setItem: function (k, v) { store[k] = String(v); },
+    removeItem: function (k) { delete store[k]; },
+};
+global.WEBUI_CONFIG = { API_BASE: 'http://balancer.test:18081', API_TOKEN: 'test-token' };
+global.Api = { getAuthHeaders: function () { return { 'Content-Type': 'application/json', 'X-API-Token': 'test-token' }; } };
+
+const RU = {
+    'gguf.searching_for': 'Поиск "{q}"...',
+    'gguf.search_error': 'Ошибка поиска',
+    'gguf.search_btn': 'Найти',
+    'gguf.no_results': 'Результатов не найдено',
+    'gguf.no_results_for': 'По запросу «{q}» ничего не найдено',
+    'gguf.results_count': 'Найдено моделей: {n}',
+    'gguf.download': 'Скачать',
+    'gguf.downloading': 'Загрузка...',
+    'gguf.download_completed': 'Загрузка завершена',
+    'gguf.download_failed': 'Ошибка загрузки',
+    'gguf.download_cancelled': 'Загрузка отменена',
+    'gguf.active_downloads': 'Активные загрузки',
+    'gguf.download_history': 'История загрузок',
+    'gguf.delete': 'Удалить',
+    'gguf.delete_from_disk': 'Удалить скачанный файл с диска',
+    'gguf.file_deleted': 'Файл удалён',
+    'gguf.orphans_hint': 'Частичные .download файлы от прерванных загрузок.',
+    'gguf.last_updated': 'Обновлён',
+    'gguf.likes': 'Лайки',
+    'gguf.downloads': 'Загрузок',
+    'common.loading': 'Загрузка...',
+    'common.error': 'Ошибка',
+    'common.unknown': 'unknown',
+    'image.no_backend_selected': 'Сначала выберите image-бэкенд',
+    'image.bundle_all_done': 'Все файлы bundle скачаны',
+    'image.bundle_started': 'Загрузка bundle начата',
+    'image.bundle_need_name': 'Нужно имя bundle',
+    'image.bundle_need_diffusion': 'В bundle нужен файл diffusion',
+    'image.bundle_dup_role': 'Дубликат роли {role}',
+    'imageModels.role_diffusion': 'diffusion (веса)',
+    'imageModels.role_vae': 'vae',
+    'imageModels.hf_selected_count': 'Выбрано файлов: {n}',
+    'imageModels.hf_none_selected': 'Отметьте хотя бы один файл',
+    'imageModels.hf_bad_role': 'Неизвестная роль: {role}',
+    'imageModels.hf_suggested': 'предложено',
+    'imageModels.status_interrupted': 'прервано',
+    'imageModels.bundle_registered': 'Bundle зарегистрирован',
+    'imageModels.bundle_failed': 'Загрузка bundle не удалась',
+    'imageModels.dl_files_active': 'Активные загрузки файлов',
+    'imageModels.orphans_title': 'Остаточные файлы',
+    'imageModels.no_downloads': 'Загрузок нет',
+    'imageModels.no_downloads_hint': 'Запустите загрузку на табе HuggingFace.',
+};
+global.I18N = {
+    t: function (k, vars) {
+        var s = Object.prototype.hasOwnProperty.call(RU, k) ? RU[k] : k;
+        if (vars) Object.keys(vars).forEach(function (p) { s = String(s).replace('{' + p + '}', vars[p]); });
+        return s;
+    },
+    getLang: function () { return 'ru'; },
+};
+global.console = console;
+
+// --- mocks: fetch -----------------------------------------------------------
+
+const requests = [];
+let responseFor = function () { return { status: 200, body: {} }; };
+
+global.fetch = function (url, init) {
+    const rec = {
+        url: String(url),
+        method: (init && init.method) || 'GET',
+        headers: (init && init.headers) || {},
+        body: init && init.body ? JSON.parse(init.body) : null,
+    };
+    requests.push(rec);
+    const r = responseFor(rec);
+    return Promise.resolve({
+        ok: r.status < 400,
+        status: r.status,
+        text: function () { return Promise.resolve(JSON.stringify(r.body)); },
+    });
+};
+
+require('./image-models-hf.js');
+const Hf = global.ImageModelsHf;
+assert.ok(Hf, 'window.ImageModelsHf должен быть экспортирован (см. check_iife_exports.py)');
+const P = Hf.pure;
+
+// Кооперация с shell/соседним модулем: refresh списка моделей после успешной
+// загрузки и тосты. Объявлено ДО асинхронной части — она стартует сразу.
+let refreshCalls = 0;
+const toasts = [];
+global.Toast = {
+    show: function (opts) {
+        toasts.push({ msg: (opts && opts.message) || '', type: opts && opts.type });
+    },
+};
+global.ImagePage = {
+    _actions: {
+        refresh: function () { refreshCalls++; return Promise.resolve(); },
+    },
+};
+
+// --- helpers ----------------------------------------------------------------
+
+let passed = 0;
+const failures = [];
+function check(name, fn) {
+    try {
+        fn();
+        passed++;
+        console.log('  \u2713 ' + name);
+    } catch (e) {
+        failures.push(name + ': ' + (e && e.message));
+        console.error('  \u2717 ' + name + ' — ' + (e && e.message));
+    }
+}
+const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+
+const ctx = {
+    apiBase: 'http://balancer.test:18081',
+    headers: { 'Content-Type': 'application/json', 'X-API-Token': 'test-token' },
+    backendId: 'img-1',
+    backend: { id: 'img-1', type: 'image_cpp' },
+    backends: [{ id: 'img-1', type: 'image_cpp' }],
+    tab: 'hf',
+};
+
+const FILES = [
+    { path: 'flux1-schnell-Q4_0.gguf', sizeBytes: 4000000000, suggestedRole: 'diffusion' },
+    { path: 'ae.safetensors', sizeBytes: 335000000, suggestedRole: 'vae' },
+    { path: 't5xxl-Q4_K_M.gguf', sizeBytes: 5000000000, suggestedRole: 't5xxl' },
+    { path: 'clip_l.safetensors', sizeBytes: 246000000, suggestedRole: 'clip_l' },
+];
+
+// ============================================================================
+// 1. Чистые хелперы
+// ============================================================================
+
+check('роли: 12 значений из pkg/types/image_model.go', function () {
+    assert.strictEqual(P.IMAGE_ROLES.length, 12);
+    ['diffusion', 'vae', 'clip_l', 'clip_g', 't5xxl', 'llm', 'clip_vision', 'taesd', 'lora', 'upscaler', 'controlnet', 'ip_adapter']
+        .forEach(function (r) { assert.ok(P.IMAGE_ROLES.indexOf(r) >= 0, 'роль ' + r); });
+});
+
+check('семейства: 12 значений из pkg/types/image_model.go', function () {
+    assert.strictEqual(P.IMAGE_FAMILIES.length, 12);
+    ['sd15', 'sd21', 'sd_turbo', 'sdxl', 'sdxl_turbo', 'sd3', 'flux', 'flux2', 'chroma', 'qwen_image', 'z_image', 'other']
+        .forEach(function (f) { assert.ok(P.IMAGE_FAMILIES.indexOf(f) >= 0, 'семейство ' + f); });
+});
+
+check('defaultSelection: diffusion/vae/clip_l/clip_g отмечены, t5xxl — нет', function () {
+    const sel = P.defaultSelection(FILES, null);
+    assert.strictEqual(sel['flux1-schnell-Q4_0.gguf'].checked, true, 'diffusion должна быть отмечена');
+    assert.strictEqual(sel['ae.safetensors'].checked, true, 'vae должна быть отмечена');
+    assert.strictEqual(sel['clip_l.safetensors'].checked, true, 'clip_l должна быть отмечена');
+    assert.strictEqual(sel['t5xxl-Q4_K_M.gguf'].checked, false, 't5xxl — крупный файл, только вручную');
+    assert.strictEqual(sel['t5xxl-Q4_K_M.gguf'].role, 't5xxl', 'роль всё равно подставлена сервером');
+});
+
+check('defaultSelection: одна роль — один отмеченный файл (первый по порядку)', function () {
+    const files = [
+        { path: 'model-f16.gguf', suggestedRole: 'diffusion' },
+        { path: 'model-q4.gguf', suggestedRole: 'diffusion' },
+    ];
+    const sel = P.defaultSelection(files, null);
+    assert.strictEqual(sel['model-f16.gguf'].checked, true);
+    assert.strictEqual(sel['model-q4.gguf'].checked, false);
+});
+
+check('defaultSelection: выбор пользователя (preserve) не сбрасывается', function () {
+    const prev = { 't5xxl-Q4_K_M.gguf': { checked: true, role: 't5xxl' }, 'ae.safetensors': { checked: false, role: 'vae' } };
+    const sel = P.defaultSelection(FILES, prev);
+    assert.strictEqual(sel['t5xxl-Q4_K_M.gguf'].checked, true, 'галочка t5xxl должна пережить повторный рендер');
+    assert.strictEqual(sel['ae.safetensors'].checked, false, 'снятая галочка тоже переживает рендер');
+});
+
+check('buildFileSpecs: roles/repo/filename/revision/sizeBytes для POST /hf/bundle', function () {
+    const sel = P.defaultSelection(FILES, null);
+    const built = P.buildFileSpecs('leejet/FLUX.1-schnell-gguf', sel, { name: 'flux-schnell-q4' });
+    assert.deepStrictEqual(built.errors, []);
+    assert.strictEqual(built.name, 'flux-schnell-q4');
+    assert.strictEqual(built.files.length, 3);
+    assert.strictEqual(built.files[0].repo, 'leejet/FLUX.1-schnell-gguf');
+    assert.strictEqual(built.files[0].revision, 'main');
+    assert.ok(built.files.every(function (f) { return f.sizeBytes > 0; }), 'sizeBytes нужен воркеру для пропуска уже скачанного');
+});
+
+check('buildFileSpecs: без имени / без файлов / без diffusion — коды ошибок', function () {
+    const sel = P.defaultSelection(FILES, null);
+    assert.deepStrictEqual(P.buildFileSpecs('r/x', sel, { name: '' }).errors, [{ code: 'need_name' }]);
+    assert.deepStrictEqual(P.buildFileSpecs('r/x', {}, { name: 'n' }).errors, [{ code: 'empty' }]);
+    const onlyVae = { 'ae.safetensors': { checked: true, role: 'vae' } };
+    assert.deepStrictEqual(P.buildFileSpecs('r/x', onlyVae, { name: 'n' }).errors, [{ code: 'need_diffusion' }]);
+});
+
+check('buildFileSpecs: дубликат роли запрещён, но lora можно много', function () {
+    const sel = {
+        'a.gguf': { checked: true, role: 'diffusion' },
+        'b.gguf': { checked: true, role: 'vae' },
+        'c.gguf': { checked: true, role: 'vae' },
+        'l1.safetensors': { checked: true, role: 'lora' },
+        'l2.safetensors': { checked: true, role: 'lora' },
+    };
+    const built = P.buildFileSpecs('r/x', sel, { name: 'n' });
+    assert.strictEqual(built.files.length, 4, 'diffusion + vae + 2 lora');
+    assert.deepStrictEqual(built.errors.map(function (e) { return e.code; }), ['dup_role']);
+    assert.strictEqual(built.errors[0].role, 'vae');
+});
+
+check('buildFileSpecs: неизвестная роль — bad_role', function () {
+    const built = P.buildFileSpecs('r/x', { 'x.bin': { checked: true, role: 'nonsense' } }, { name: 'n' });
+    assert.deepStrictEqual(built.errors.map(function (e) { return e.code; }), ['bad_role', 'empty']);
+});
+
+check('bundleErrorToI18n: коды → ключи переводов', function () {
+    assert.strictEqual(P.bundleErrorToI18n({ code: 'need_diffusion' }).key, 'image.bundle_need_diffusion');
+    assert.strictEqual(P.bundleErrorToI18n({ code: 'dup_role', role: 'vae' }).vars.role, 'vae');
+    assert.strictEqual(P.bundleErrorToI18n({ code: 'empty' }).key, 'imageModels.hf_none_selected');
+});
+
+check('progressPercent: completed → 100, иначе из байтов/процента', function () {
+    assert.strictEqual(P.progressPercent({ status: 'completed', progressPct: 0 }), 100);
+    assert.strictEqual(P.progressPercent({ status: 'downloading', downloaded: 25, totalBytes: 100 }), 25);
+    assert.strictEqual(P.progressPercent({ status: 'downloading', progressPct: 42.6 }), 43);
+    assert.strictEqual(P.progressPercent({}), 0);
+});
+
+check('downloadsSummary: пустой снимок не даёт секций, полный — даёт', function () {
+    const empty = P.downloadsSummary({});
+    assert.strictEqual(empty.hasAny, false);
+    const full = P.downloadsSummary({ bundles: [{ bundleId: 'a' }], history: [{ filename: 'f' }], orphans: [{ filename: 'o' }] });
+    assert.strictEqual(full.hasAny, true);
+    assert.strictEqual(full.activeCount, 1);
+});
+
+check('модуль не рендерит сгенерированные картинки (base64/img)', function () {
+    const src = fs.readFileSync(path.join(__dirname, 'image-models-hf.js'), 'utf8');
+    ['b64_json', '<img', 'data:image', '/api/image/generate', 'imgResults', 'gallery'].forEach(function (tok) {
+        assert.strictEqual(src.indexOf(tok), -1, 'в модуле не должно быть ' + tok);
+    });
+});
+
+// ============================================================================
+// 2. Асинхронные сценарии (мок fetch)
+// ============================================================================
+
+(async function run() {
+    Hf.mount();
+    Hf.render(ctx);
+
+    // --- поиск --------------------------------------------------------------
+    store['ollamalegion_hf_token'] = 'hf_secret';
+    responseFor = function (rec) {
+        if (rec.url.indexOf('/hf/search') !== -1) {
+            return { status: 200, body: { results: [{ id: 'leejet/FLUX.1-schnell-gguf', downloads: 1200, likes: 30, pipelineTag: 'text-to-image' }], count: 1 } };
+        }
+        if (rec.url.indexOf('/hf/files') !== -1) return { status: 200, body: { files: FILES, count: FILES.length } };
+        if (rec.url.indexOf('/hf/progress') !== -1) {
+            return { status: 200, body: { bundleId: 'flux-schnell-q4', status: 'completed', progressPct: 100, registered: true, files: [] } };
+        }
+        if (rec.url.indexOf('/hf/downloads') !== -1) {
+            return { status: 200, body: { active: [], history: [], orphans: [], bundles: [], bundleHistory: [] } };
+        }
+        if (rec.url.indexOf('/hf/bundle') !== -1) return { status: 202, body: { status: 'started', bundleId: 'flux-schnell-q4' } };
+        if (rec.url.indexOf('/hf/cleanup') !== -1) return { status: 200, body: { status: 'deleted' } };
+        return { status: 404, body: { error: 'unexpected ' + rec.url } };
+    };
+
+    getEl('imHfQuery').value = 'FLUX.1-schnell';
+    getEl('imHfTask').value = 'text-to-image';
+    await Hf._actions.search();
+    await sleep(10);
+
+    check('поиск: GET /hf/search с query/limit/task через балансер', function () {
+        const rec = requests.filter(function (r) { return r.url.indexOf('/hf/search') !== -1; })[0];
+        assert.ok(rec, 'запрос поиска не ушёл');
+        assert.strictEqual(rec.url.indexOf('http://balancer.test:18081/api/v1/image/backends/img-1/hf/search'), 0, 'неверный путь: ' + rec.url);
+        assert.ok(rec.url.indexOf('query=FLUX.1-schnell') !== -1, 'нет query: ' + rec.url);
+        assert.ok(rec.url.indexOf('limit=20') !== -1, 'нет limit');
+        assert.ok(rec.url.indexOf('task=text-to-image') !== -1, 'нет фильтра задачи');
+    });
+    check('поиск: HF-токен уходит в X-HF-Token, авторизация — в X-API-Token', function () {
+        const rec = requests.filter(function (r) { return r.url.indexOf('/hf/search') !== -1; })[0];
+        assert.strictEqual(rec.headers['X-HF-Token'], 'hf_secret');
+        assert.strictEqual(rec.headers['X-API-Token'], 'test-token');
+    });
+    check('результаты поиска отрисованы карточками (id репозитория + загрузки)', function () {
+        const html = getEl('imHfSearchResults').innerHTML;
+        assert.ok(html.indexOf('leejet/FLUX.1-schnell-gguf') !== -1, 'нет карточки репозитория: ' + html.slice(0, 200));
+        assert.ok(html.indexOf('gguf-result-card') !== -1, 'нет стиля карточек GGUF');
+    });
+
+    // --- файлы репозитория ---------------------------------------------------
+    await Hf._actions.pickRepo('leejet/FLUX.1-schnell-gguf');
+    await sleep(10);
+
+    check('файлы: GET /hf/files?modelId=..., роль из suggestedRole (в JS нет своей таблицы ролей)', function () {
+        const rec = requests.filter(function (r) { return r.url.indexOf('/hf/files') !== -1; })[0];
+        assert.ok(rec, 'запрос файлов не ушёл');
+        assert.ok(rec.url.indexOf('modelId=leejet%2FFLUX.1-schnell-gguf') !== -1, 'нет modelId: ' + rec.url);
+        const html = getEl('imHfFilesBody').innerHTML;
+        assert.ok(html.indexOf('t5xxl-Q4_K_M.gguf') !== -1, 'нет файла t5xxl в списке');
+        assert.ok(html.indexOf('data-imh-role="t5xxl-Q4_K_M.gguf"') !== -1, 'нет селекта роли для t5xxl');
+    });
+    check('отметки: diffusion/vae/clip_l — checked, t5xxl — нет', function () {
+        const sel = Hf._state.selection;
+        assert.strictEqual(sel['flux1-schnell-Q4_0.gguf'].checked, true);
+        assert.strictEqual(sel['t5xxl-Q4_K_M.gguf'].checked, false);
+        assert.ok(getEl('imHfSelectionSummary').textContent.indexOf('3') !== -1,
+            'в сводке должно быть 3 выбранных файла: ' + getEl('imHfSelectionSummary').textContent);
+    });
+    check('имя bundle по умолчанию подставлено из имени репозитория', function () {
+        assert.strictEqual(getEl('imgBundleName').value, 'flux.1-schnell-gguf');
+        assert.ok(getEl('imgBundleFamily').innerHTML.indexOf('flux') !== -1, 'селект семейств не заполнен');
+    });
+
+    // --- сборка и запуск bundle ---------------------------------------------
+    getEl('imgBundleName').value = 'flux-schnell-q4';
+    getEl('imgBundleFamily').value = 'flux';
+    getEl('imgHfToken').value = 'hf_new';
+    requests.length = 0;
+    await Hf._actions.startBundle();
+    await sleep(10);
+
+    check('bundle: POST /hf/bundle {name, family, files[]} и HF-токен сохранён', function () {
+        const rec = requests.filter(function (r) { return r.url.indexOf('/hf/bundle') !== -1; })[0];
+        assert.ok(rec, 'POST /hf/bundle не ушёл');
+        assert.strictEqual(rec.method, 'POST');
+        assert.ok(rec.url.indexOf('/api/v1/image/backends/img-1/hf/bundle') !== -1, 'неверный путь: ' + rec.url);
+        assert.strictEqual(rec.body.name, 'flux-schnell-q4');
+        assert.strictEqual(rec.body.family, 'flux');
+        assert.strictEqual(rec.body.files.length, 3, 'diffusion + vae + clip_l');
+        assert.strictEqual(rec.body.files[0].role, 'diffusion');
+        assert.strictEqual(store['ollamalegion_hf_token'], 'hf_new');
+    });
+    check('прогресс: опрос /hf/progress?bundleId= и остановка на финальном статусе', function () {
+        const rec = requests.filter(function (r) { return r.url.indexOf('/hf/progress') !== -1; })[0];
+        assert.ok(rec, 'опрос прогресса не пошёл');
+        assert.ok(rec.url.indexOf('bundleId=flux-schnell-q4') !== -1, 'нет bundleId: ' + rec.url);
+        assert.strictEqual(Hf._state.poll, null, 'поллинг должен остановиться на status=completed');
+        assert.strictEqual(getEl('imgBundleProgress').style.display, '', 'блок прогресса должен быть показан');
+    });
+    check('после завершения список моделей перечитан (новая модель видна на «Моделях на диске»)', function () {
+        assert.ok(refreshCalls >= 1, 'ImagePage._actions.refresh не вызван');
+    });
+    Hf._actions.stopPolling();
+
+    // --- ошибка сборки -------------------------------------------------------
+    requests.length = 0;
+    Hf._actions.clearSelection();
+    await Hf._actions.startBundle();
+    check('пустой выбор: запрос не уходит, тост об ошибке', function () {
+        assert.strictEqual(requests.filter(function (r) { return r.url.indexOf('/hf/bundle') !== -1; }).length, 0);
+        assert.ok(toasts.some(function (x) { return x.msg.indexOf('хотя бы один файл') !== -1; }), 'нет тоста о пустом выборе');
+    });
+
+    // --- «Загрузки» ----------------------------------------------------------
+    responseFor = function (rec) {
+        if (rec.url.indexOf('/hf/downloads') !== -1) {
+            return {
+                status: 200, body: {
+                    active: [{ modelId: 'a/b', filename: 'x.gguf', status: 'downloading', downloaded: 5, totalBytes: 10 }],
+                    history: [{ modelId: 'a/b', filename: 'y.gguf', status: 'completed', downloaded: 10, totalBytes: 10 }],
+                    orphans: [{ filename: 'flux/ae.safetensors', size: 1024, path: '/models/downloads/flux/ae.safetensors.download' }],
+                    bundles: [{ bundleId: 'z-image', status: 'downloading', downloaded: 1, totalBytes: 4, files: [{ role: 'diffusion', filename: 'd.gguf', status: 'downloading' }] }],
+                    bundleHistory: [{ bundleId: 'sd15', status: 'completed', progressPct: 100, registered: true, files: [] }],
+                },
+            };
+        }
+        if (rec.url.indexOf('/hf/cleanup') !== -1) return { status: 200, body: { status: 'deleted' } };
+        return { status: 404, body: { error: 'unexpected' } };
+    };
+    requests.length = 0;
+    Hf.render({ apiBase: ctx.apiBase, headers: ctx.headers, backendId: 'img-1', tab: 'downloads' });
+    await sleep(10);
+
+    check('«Загрузки»: активные bundle, активные файлы, история и остатки в одном снимке', function () {
+        const html = getEl('imDownloadsHost').innerHTML;
+        assert.ok(html.indexOf('z-image') !== -1, 'нет активного bundle');
+        assert.ok(html.indexOf('Загрузка...') !== -1, 'нет статуса загрузки');
+        assert.ok(html.indexOf('x.gguf') !== -1, 'нет активного файла');
+        assert.ok(html.indexOf('История загрузок') !== -1, 'нет секции истории');
+        assert.ok(html.indexOf('sd15') !== -1, 'нет bundle из истории');
+        assert.ok(html.indexOf('Остаточные файлы') !== -1, 'нет секции остатков');
+        assert.ok(html.indexOf('flux/ae.safetensors') !== -1, 'нет имени остаточного файла');
+    });
+    check('«Загрузки»: секции не дублируются (одна секция на вид загрузки)', function () {
+        const html = getEl('imDownloadsHost').innerHTML;
+        assert.strictEqual((html.match(/Активные загрузки файлов/g) || []).length, 1, 'секция активных файлов должна быть одна');
+        assert.strictEqual((html.match(/История загрузок/g) || []).length, 1, 'секция истории должна быть одна');
+        assert.strictEqual((html.match(/Остаточные файлы/g) || []).length, 1, 'секция остатков должна быть одна');
+    });
+
+    requests.length = 0;
+    await Hf._actions.cleanupOrphan('flux/ae.safetensors');
+    await sleep(10);
+    check('остаток: DELETE /hf/cleanup?filename=... (имя с «/» в query, а не в пути)', function () {
+        const rec = requests.filter(function (r) { return r.url.indexOf('/hf/cleanup') !== -1; })[0];
+        assert.ok(rec, 'запрос очистки не ушёл');
+        assert.strictEqual(rec.method, 'DELETE');
+        assert.ok(rec.url.indexOf('filename=flux%2Fae.safetensors') !== -1, 'нет filename в query: ' + rec.url);
+    });
+
+    console.log('\n' + (failures.length ? 'FAILED: ' + failures.length : 'OK: ' + passed + ' checks passed'));
+    if (failures.length) {
+        failures.forEach(function (f) { console.error(' - ' + f); });
+        process.exit(1);
+    }
+})();

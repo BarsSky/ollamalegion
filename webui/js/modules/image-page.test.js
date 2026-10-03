@@ -109,83 +109,7 @@ check('normalizeBackends: /api/v1/backends — фильтр по типу image_
     assert.strictEqual(list[0].imagePort, 18103);
 });
 
-// --- 4. parseBundleRows ----------------------------------------------------
-check('parseBundleRows: валидный bundle (diffusion + vae + t5xxl), пустые строки игнорируются', function () {
-    const res = P.parseBundleRows([
-        { role: 'diffusion', repo: 'leejet/FLUX.1-schnell-gguf', filename: 'flux1-schnell-Q4_0.gguf' },
-        { role: 'vae', repo: 'black-forest-labs/FLUX.1-schnell', filename: 'ae.safetensors' },
-        { role: 't5xxl', repo: 'leejet/t5', filename: 't5xxl-Q4_K_M.gguf' },
-        { role: '', repo: '', filename: '' },
-    ]);
-    assert.deepStrictEqual(res.errors, []);
-    assert.strictEqual(res.files.length, 3);
-    assert.strictEqual(res.files[0].revision, 'main');
-    assert.strictEqual(res.files[2].role, 't5xxl');
-});
-
-check('parseBundleRows: без diffusion — ошибка need_diffusion', function () {
-    const res = P.parseBundleRows([{ role: 'vae', repo: 'r', filename: 'v.safetensors' }]);
-    assert.strictEqual(res.files.length, 1);
-    assert.deepStrictEqual(res.errors, [{ code: 'need_diffusion', row: 0 }]);
-});
-
-check('parseBundleRows: неизвестная роль, пустые поля и дубликат роли (кроме lora)', function () {
-    const res = P.parseBundleRows([
-        { role: 'diffusion', repo: 'r', filename: 'd.gguf' },
-        { role: 'vae', repo: 'r', filename: '' },
-        { role: 'nonsense', repo: 'r', filename: 'x.bin' },
-        { role: 'diffusion', repo: 'r2', filename: 'd2.gguf' },
-        { role: 'lora', repo: 'r', filename: 'l1.safetensors' },
-        { role: 'lora', repo: 'r', filename: 'l2.safetensors' },
-    ]);
-    assert.deepStrictEqual(res.errors, [
-        { code: 'missing', row: 2 },
-        { code: 'role', row: 3, role: 'nonsense' },
-        { code: 'dup', row: 4, role: 'diffusion' },
-    ]);
-    assert.strictEqual(res.files.length, 3, 'diffusion + 2 lora');
-});
-
-// --- 5. aggregateDownloadProgress -----------------------------------------
-check('aggregateDownloadProgress: смешанные статусы → суммарный процент и счётчики', function () {
-    const files = [
-        { repo: 'a/b', filename: 'd.gguf' },
-        { repo: 'a/b', filename: 'v.safetensors' },
-        { repo: 'a/b', filename: 'missing.gguf' },
-    ];
-    const progress = {};
-    progress[P.bundleFileKey(files[0])] = { status: 'downloading', downloaded: 500, totalBytes: 1000, speedBps: 2048 };
-    progress[P.bundleFileKey(files[1])] = { status: 'completed', downloaded: 1000, totalBytes: 1000 };
-    const agg = P.aggregateDownloadProgress(files, progress);
-    assert.strictEqual(agg.total, 2000);
-    assert.strictEqual(agg.downloaded, 1500);
-    assert.strictEqual(agg.percent, 75);
-    assert.strictEqual(agg.completed, 1);
-    assert.strictEqual(agg.active, 1);
-    assert.strictEqual(agg.unknown, 1);
-    assert.strictEqual(agg.done, false);
-});
-
-check('aggregateDownloadProgress: все файлы завершены → 100% и done', function () {
-    const files = [{ repo: 'a/b', filename: 'd.gguf' }];
-    const progress = {};
-    progress[P.bundleFileKey(files[0])] = { status: 'completed', downloaded: 10, totalBytes: 10 };
-    const agg = P.aggregateDownloadProgress(files, progress);
-    assert.strictEqual(agg.percent, 100);
-    assert.strictEqual(agg.done, true);
-});
-
-check('aggregateDownloadProgress: упавший файл не считается завершённым успешно', function () {
-    const files = [{ repo: 'a/b', filename: 'd.gguf' }, { repo: 'a/b', filename: 'e.gguf' }];
-    const progress = {};
-    progress[P.bundleFileKey(files[0])] = { status: 'completed', downloaded: 10, totalBytes: 10 };
-    progress[P.bundleFileKey(files[1])] = { status: 'failed', errorMessage: 'gated' };
-    const agg = P.aggregateDownloadProgress(files, progress);
-    assert.strictEqual(agg.failed, 1);
-    assert.strictEqual(agg.done, true);
-});
-
-// --- 6. normalizeLoadProgress ---------------------------------------------
+// --- 4. normalizeLoadProgress ---------------------------------------------
 check('normalizeLoadProgress: формат image-воркера {progress:{state,stage,elapsed_ms}}', function () {
     const snap = P.normalizeLoadProgress({
         progress: { state: 'loading', model: 'sd15-q8', stage: 'spawning sd-server', elapsed_ms: 4200, events: [] },
@@ -208,7 +132,20 @@ check('normalizeLoadProgress: зеркало cppworker {models:[...]} и чуж�
     assert.strictEqual(withPct.progressPct, 42);
 });
 
-// --- 7. форматтеры и константы --------------------------------------------
+// --- 5. роли bundle -------------------------------------------------------
+check('rolesSummary: уникальные роли файлов (в порядке появления), мусор игнорируется', function () {
+    const roles = P.rolesSummary([
+        { role: 'diffusion', path: 'd.gguf' },
+        { role: 'vae', path: 'v.safetensors' },
+        { role: 'diffusion', path: 'd2.gguf' },
+        { path: 'no-role.bin' },
+        null,
+    ]);
+    assert.deepStrictEqual(roles, ['diffusion', 'vae']);
+    assert.deepStrictEqual(P.rolesSummary(undefined), []);
+});
+
+// --- 6. форматтеры и константы --------------------------------------------
 check('formatBytes: B/KB/MB/GB, мусор → дефис', function () {
     assert.strictEqual(P.formatBytes(0), '0 B');
     assert.strictEqual(P.formatBytes(512), '512 B');
@@ -239,17 +176,9 @@ check('escapeHtml: экранирует имена моделей и файло�
     assert.strictEqual(P.escapeHtml(null), '');
 });
 
-check('IMAGE_ROLES: 12 ролей из pkg/types/image_model.go', function () {
-    assert.strictEqual(P.IMAGE_ROLES.length, 12);
-    ['diffusion', 'vae', 'clip_l', 'clip_g', 't5xxl', 'llm', 'clip_vision', 'taesd', 'lora', 'upscaler', 'controlnet', 'ip_adapter']
-        .forEach(function (r) { assert.ok(P.IMAGE_ROLES.indexOf(r) >= 0, 'роль ' + r); });
-});
-
-check('IMAGE_FAMILIES: 12 семейств из pkg/types/image_model.go', function () {
-    assert.strictEqual(P.IMAGE_FAMILIES.length, 12);
-    ['sd15', 'sd21', 'sd_turbo', 'sdxl', 'sdxl_turbo', 'sd3', 'flux', 'flux2', 'chroma', 'qwen_image', 'z_image', 'other']
-        .forEach(function (f) { assert.ok(P.IMAGE_FAMILIES.indexOf(f) >= 0, 'семейство ' + f); });
-});
+// Роли и семейства bundle (замороженный контракт pkg/types/image_model.go)
+// проверяются в image-models-hf.test.js: после Phase 9 HF-часть принадлежит
+// таб-модулю, и держать две копии контракта в тестах незачем.
 
 check('pure-слой не содержит генерации/галереи (удалено в Phase 9)', function () {
     ['buildGenerationPayload', 'validateGenerationForm', 'extractImages', 'b64ToDataUrl', 'snapDimension', 'clampInt', 'normalizeCapabilities', 'LIMITS', 'STATIC_SAMPLERS', 'STATIC_SCHEDULERS']

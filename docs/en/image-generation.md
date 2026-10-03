@@ -462,11 +462,37 @@ Memory is hard-capped: a 20-entry feed per backend and 50 shared entries, with
 
 ### 12.3 UI
 
-- **"Image backends" page** (WebUI; the nav item appears once the cluster has at
-  least one `image_cpp` backend): the list of image backends with worker port, GPU
-  index, state, current model, VRAM and request counters; actions — add/edit/delete
-  a backend, load/unload a model, jump to generation.
-- **Monitor**: an "Image backend requests" panel (aggregates plus a feed of the
-  latest requests with path, model, size, steps, duration and status), and in the
-  backends table the Active/RPS/Avg RT columns of an `image_cpp` backend are filled
-  from `image.requests` (they used to show zeros and "-" even during generation).
+The WebUI part is a single **"Image models"** page (`#image-page`) built like the
+"GGUF models" page: the nav item appears once the cluster has at least one
+`image_cpp` backend, and it contains six tabs.
+
+| Tab | What it does |
+|---|---|
+| **Overview** | Image backend CRUD, worker port, GPU index, state, current model, VRAM, request counters, text/image coexistence policy; the **"Backend check"** button runs 1 step at 64x64 and shows only the result and the time |
+| **HuggingFace** | Repository search (query + `text-to-image` filter), file list with suggested roles, selection and role override, bundle name/family, `HF token`, "Download bundle" |
+| **Models on disk** | Bundle table: name, state, size, family, **contents by role**, active queries, VRAM estimate; actions — load, unload, **delete from disk** |
+| **Loaded** | Worker state and current model plus load progress (stage, time) |
+| **Downloads** | Active bundle and single-file downloads, history, residual `.download` files with cleanup, cancel |
+| **Settings** | Parameters of the selected backend (entry into its card) and image model profiles (`image-profiles.js` editor) |
+
+Why it works this way:
+
+- **Showing generated images in the WebUI is gone.** The WebUI is a panel for
+  configuring the balancer and understanding system state; displaying results is the
+  clients' job (OpenAI/A1111 on `:18079`), which have previews and their own history.
+  The generation form, "Result" and the localStorage gallery were removed; the
+  "Backend check" button (1 step at 64x64, no image) remains — it answers "is the
+  engine alive?", it does not replace a client.
+- **File roles are computed by the server.** In the repository file list the worker
+  returns `suggestedRole` (`internal/sdbackend.SuggestRole`); the UI only displays it
+  and lets the operator override it. If the "which file is a VAE" heuristic lived in
+  JS, the rules would drift from the worker and bundles would be assembled wrongly.
+- **Auto-selection is conservative.** `diffusion`, `vae`, `clip_l`, `clip_g` are
+  selected by default; `t5xxl`/`llm` (3-9 GB) must be picked by hand.
+- **Bundle deletion** goes through `POST /api/image/models/delete`: only inside
+  `ModelsDir`, a loaded bundle returns `409` with an `unload` hint (the engine keeps
+  the weights open), and the worker registry is reloaded after the delete.
+- **Monitor** stays the second observation window: the "Image backend requests" panel
+  (aggregates plus a feed of the latest requests with path, model, size, steps,
+  duration and status), and in the backends table the Active/RPS/Avg RT columns of an
+  `image_cpp` backend are filled from `image.requests`.

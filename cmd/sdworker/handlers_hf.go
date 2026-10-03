@@ -229,6 +229,16 @@ func (a *App) handleHFFiles(w http.ResponseWriter, r *http.Request) {
 	if files == nil {
 		files = []cppbackend.HFFileInfo{}
 	}
+	// R-Image Phase 9: ПРЕДЛОЖЕННАЯ роль файла в bundle. UI рисует её рядом с
+	// файлом и подставляет в строку bundle, чтобы оператор не выбирал роль
+	// вслепую (diffusion vs vae vs text-encoder). Эвристика — та же функция
+	// (sdbackend.SuggestRole → roleFromFilename), что применяется при чтении
+	// готового bundle: правила не должны разъезжаться между сервером и UI.
+	for i := range files {
+		if files[i].SuggestedRole == "" {
+			files[i].SuggestedRole = sdbackend.SuggestRole(files[i].Path)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"files": files, "count": len(files), "modelId": modelID, "revision": revision,
 	})

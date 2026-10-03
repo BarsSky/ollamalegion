@@ -89,6 +89,12 @@ func newMockImageWorker() *mockImageWorker {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "unloaded"})
 	})
+	// R-Image Phase 9: удаление bundle с диска (аналог cppworker /api/models/delete).
+	mux.HandleFunc("/api/image/models/delete", func(w http.ResponseWriter, r *http.Request) {
+		record(w, r, "/api/image/models/delete")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "freed_bytes": 1024})
+	})
 	mux.HandleFunc("/api/image/models/load/progress", func(w http.ResponseWriter, r *http.Request) {
 		record(w, r, "/api/image/models/load/progress")
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -333,6 +339,18 @@ func TestImageBackendProxy_LoadUnloadAliases(t *testing.T) {
 	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, 1, mock.hits("/api/image/models/unload"))
+
+	// Phase 9: удаление bundle — тот же алиас-механизм; тело обязано доехать до
+	// воркера (иначе ручка удалила бы не тот bundle или ничего).
+	resp, err = http.Post(server.URL+"/api/v1/image/backends/img_mock/models/delete",
+		"application/json", strings.NewReader(`{"name":"z-image-turbo-q3-k"}`))
+	require.NoError(t, err)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, 1, mock.hits("/api/image/models/delete"))
+	assert.Contains(t, mock.body(), "z-image-turbo-q3-k", "тело запроса на удаление обязано форвардиться")
+	assert.Contains(t, string(body), "freed_bytes", "ответ воркера отдаётся как есть")
 }
 
 func TestImageBackendProxy_LoadProgressSSE(t *testing.T) {

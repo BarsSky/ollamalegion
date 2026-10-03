@@ -61,6 +61,9 @@ func (a *App) setupRouter() http.Handler {
 	mux.HandleFunc("/api/image/models", a.handleListModels)
 	mux.HandleFunc("/api/image/models/load", a.handleLoadModel)
 	mux.HandleFunc("/api/image/models/unload", a.handleUnloadModel)
+	// R-Image Phase 9: удаление bundle с диска (аналог cppworker /api/models/delete) —
+	// без него оператор не мог освободить диск из WebUI.
+	mux.HandleFunc("/api/image/models/delete", a.handleDeleteModel)
 	mux.HandleFunc("/api/image/models/reload", a.handleReloadModel)
 	mux.HandleFunc("/api/image/models/load/progress", a.handleLoadProgress)
 	mux.HandleFunc("/api/image/models/load/progress/stream", a.handleLoadProgressStream)

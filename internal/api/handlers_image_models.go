@@ -219,6 +219,8 @@ func (s *Server) handleImageBackendRoutes(w http.ResponseWriter, r *http.Request
 		{http.MethodGet, "models/load/progress", "/api/image/models/load/progress"},
 		{http.MethodPost, "models/load", "/api/image/models/load"},
 		{http.MethodPost, "models/unload", "/api/image/models/unload"},
+		// Phase 9: удаление bundle с диска — удобный алиас к ручке воркера.
+		{http.MethodPost, "models/delete", "/api/image/models/delete"},
 		{http.MethodPost, "generate", "/api/image/generate"},
 		// pull = bundle-загрузка НА ВОРКЕРЕ (файлы должны лежать рядом с
 		// sd-server, а не на балансере), поэтому это прозрачный прокси на

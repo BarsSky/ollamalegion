@@ -16,6 +16,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -136,11 +138,11 @@ func (a *App) handleListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"models":           a.svc.Models(),
-		"state":            a.svc.Sup.State(),
-		"current_model":    a.svc.Sup.CurrentModel(),
-		"warnings":         a.svc.Registry.Warnings(),
-		"pinned_revision":  sdbackend.PinnedRevision(),
+		"models":          a.svc.Models(),
+		"state":           a.svc.Sup.State(),
+		"current_model":   a.svc.Sup.CurrentModel(),
+		"warnings":        a.svc.Registry.Warnings(),
+		"pinned_revision": sdbackend.PinnedRevision(),
 	})
 }
 
@@ -387,4 +389,140 @@ func (a *App) handleLoadProgressStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// ============================================================
+// POST /api/image/models/delete
+// ============================================================
+
+// deleteRequest — тело POST /api/image/models/delete.
+type deleteRequest struct {
+	// Name — ИМЯ bundle'а (каталог внутри ModelsDir), не путь.
+	Name string `json:"name"`
+}
+
+// validateBundleName — имя bundle'а обязано быть ОДНИМ сегментом пути.
+//
+// ЗАЧЕМ ТАК СТРОГО: ручка удаляет каталог с диска. Разделители пути, ".." и
+// пустое имя означали бы, что оператор (или подделанный запрос) может удалить
+// что угодно за пределами каталога моделей — в контейнере это /app/models и
+// смонтированный с хоста том.
+func validateBundleName(name string) error {
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("invalid bundle name %q", name)
+	}
+	if strings.ContainsAny(name, `/\`) || filepath.Base(name) != name {
+		return fmt.Errorf("invalid bundle name %q: path separators are not allowed", name)
+	}
+	return nil
+}
+
+// dirSizeBytes — размер каталога для отчёта «освобождено».
+//
+// Ошибки обхода игнорируем: это диагностика для UI, а не условие удаления —
+// падать из-за одного нечитаемого файла было бы хуже, чем показать неточность.
+func dirSizeBytes(dir string) int64 {
+	var total int64
+	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		if info, ierr := d.Info(); ierr == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// handleDeleteModel — POST /api/image/models/delete: удалить КАТАЛОГ bundle'а с
+// диска (аналог cppworker-ручки POST /api/models/delete).
+//
+// ЗАЧЕМ: без этой ручки оператор не мог освободить диск из WebUI — bundle'ы на
+// 1.5–12 GB копились навсегда, а чистить их приходилось руками. Страница
+// «Image-модели» получает кнопку «Удалить с диска» так же, как страница
+// «GGUF модели» (у неё ручка была с самого начала — отсюда и ощущение
+// «в image всё вслепую»).
+//
+// ГРАНИЦЫ (почему именно так):
+//   - имя — один сегмент пути (см. validateBundleName), плюс defense in depth:
+//     удаляем только то, что лежит ВНУТРИ ModelsDir;
+//   - загруженный (или загружающийся) bundle удалить нельзя → 409 с подсказкой:
+//     движок держит веса открытыми, а супервизор считает модель рабочей;
+//   - после удаления реестр ПЕРЕЧИТЫВАЕТСЯ, иначе удалённая модель осталась бы
+//     «фантомом» в /api/image/models до рестарта воркера.
+func (a *App) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST")
+		return
+	}
+	var req deleteRequest
+	if body := strings.TrimSpace(r.Header.Get("Content-Type")); strings.Contains(body, "application/json") {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			return
+		}
+	}
+	name := strings.TrimSpace(req.Name)
+	if err := validateBundleName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if a.svc == nil || a.svc.Config == nil {
+		writeError(w, http.StatusServiceUnavailable, "service not initialized")
+		return
+	}
+	if a.svc.Sup != nil {
+		state := a.svc.Sup.State()
+		if cur := a.svc.Sup.CurrentModel(); cur == name &&
+			(state == sdbackend.StateLoaded || state == sdbackend.StateLoading) {
+			writeError(w, http.StatusConflict,
+				fmt.Sprintf("bundle %q is loaded (state=%s): unload it first via POST /api/image/models/unload", name, state))
+			return
+		}
+	}
+
+	modelsDir, err := a.svc.Config.ModelsDirAbs()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "resolve models dir: "+err.Error())
+		return
+	}
+	bundleDir := filepath.Join(modelsDir, name)
+	if rel, relErr := filepath.Rel(modelsDir, bundleDir); relErr != nil ||
+		rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		writeError(w, http.StatusBadRequest, "bundle path escapes models dir")
+		return
+	}
+	fi, err := os.Stat(bundleDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("bundle %q not found", name))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "stat bundle: "+err.Error())
+		return
+	}
+	if !fi.IsDir() {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is not a bundle directory", name))
+		return
+	}
+
+	freed := dirSizeBytes(bundleDir)
+	if err := os.RemoveAll(bundleDir); err != nil {
+		writeError(w, http.StatusInternalServerError, "delete bundle: "+err.Error())
+		return
+	}
+
+	resp := map[string]any{
+		"status": "ok", "name": name, "freed_bytes": freed, "path": bundleDir,
+	}
+	// Реестр перечитываем ПОСЛЕ удаления: без этого список моделей продолжил бы
+	// отдавать удалённый bundle (у него уже нет файлов, но запись жила бы в памяти).
+	if err := a.svc.ReloadRegistry(); err != nil {
+		resp["warning"] = "bundle deleted, but registry reload failed: " + err.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

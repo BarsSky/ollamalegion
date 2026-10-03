@@ -272,6 +272,22 @@ func TestHF_FilesListsWeightFormats(t *testing.T) {
 	if resp.Revision != "main" || resp.ModelID != "acme/z-image-turbo" {
 		t.Errorf("эхо параметров неверно: %+v", resp)
 	}
+
+	// R-Image Phase 9: рядом с файлом UI показывает ПРЕДЛОЖЕННУЮ роль, иначе
+	// оператор собирает bundle вслепую (diffusion vs vae vs text-encoder).
+	// Эвристика серверная (sdbackend.SuggestRole) — правила не должны
+	// дублироваться в JS.
+	roles := map[string]string{}
+	for _, f := range resp.Files {
+		roles[f.Path] = f.SuggestedRole
+	}
+	if roles["vae.safetensors"] != types.ImageFileRoleVae {
+		t.Errorf("suggestedRole(vae.safetensors) = %q, want %q", roles["vae.safetensors"], types.ImageFileRoleVae)
+	}
+	if roles["z_image_turbo-Q3_K.gguf"] != types.ImageFileRoleDiffusion {
+		t.Errorf("suggestedRole(веса) = %q, want %q (по умолчанию diffusion)",
+			roles["z_image_turbo-Q3_K.gguf"], types.ImageFileRoleDiffusion)
+	}
 }
 
 // ============================================================

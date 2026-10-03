@@ -41,20 +41,20 @@ const ProfileFileName = "profile.json"
 
 // ModelInfo — запись реестра: профиль + состояние.
 type ModelInfo struct {
-	Name           string                  `json:"name"`
-	BundlePath     string                  `json:"bundle_path,omitempty"`
-	Family         string                  `json:"family"`
-	State          string                  `json:"state"`
-	SizeBytes      int64                   `json:"size_bytes"`
-	VramEstimateMB int                     `json:"vram_estimate_mb,omitempty"`
-	ActiveQueries  int64                   `json:"active_queries"`
-	Disabled       bool                    `json:"disabled,omitempty"`
-	Error          string                  `json:"error,omitempty"`
-	LoadedAt       string                  `json:"loaded_at,omitempty"`
-	LastUsedAt     string                  `json:"last_used_at,omitempty"`
-	Defaults       types.ImageGenDefaults  `json:"defaults"`
-	Files          []types.ImageModelFile  `json:"files,omitempty"`
-	Notes          string                  `json:"notes,omitempty"`
+	Name           string                 `json:"name"`
+	BundlePath     string                 `json:"bundle_path,omitempty"`
+	Family         string                 `json:"family"`
+	State          string                 `json:"state"`
+	SizeBytes      int64                  `json:"size_bytes"`
+	VramEstimateMB int                    `json:"vram_estimate_mb,omitempty"`
+	ActiveQueries  int64                  `json:"active_queries"`
+	Disabled       bool                   `json:"disabled,omitempty"`
+	Error          string                 `json:"error,omitempty"`
+	LoadedAt       string                 `json:"loaded_at,omitempty"`
+	LastUsedAt     string                 `json:"last_used_at,omitempty"`
+	Defaults       types.ImageGenDefaults `json:"defaults"`
+	Files          []types.ImageModelFile `json:"files,omitempty"`
+	Notes          string                 `json:"notes,omitempty"`
 }
 
 // Registry — известные модели. Иммутабелен после Load (профили не меняются
@@ -264,6 +264,24 @@ func SynthesizeProfile(name, dir string) (*types.ImageModelProfile, error) {
 		Notes: "профиль синтезирован по содержимому каталога: " + ProfileFileName +
 			" отсутствует, family=other, плейсмент по умолчанию (движок выберет сам)",
 	}, nil
+}
+
+// SuggestRole — предложенная роль файла по его ИМЕНИ (экспорт эвристики
+// roleFromFilename).
+//
+// ЗАЧЕМ ЭКСПОРТ (R-Image Phase 9): страница «Image-модели» показывает роль
+// рядом с каждым файлом в HF-поиске, чтобы оператор собирал bundle не вслепую
+// (diffusion / vae / clip_l / clip_g / t5xxl / llm / taesd / lora / upscaler /
+// controlnet / ip_adapter / clip_vision). Эвристика обязана жить в ОДНОМ месте:
+// ту же функцию применяют при чтении готового bundle, и если UI начнёт угадывать
+// роли сам, правила со временем разъедутся.
+//
+// Возвращает ImageFileRoleDiffusion, если ничего не подошло: для однофайловых
+// SD1.5-репозиториев это ровно верный ответ, а в многофайловых (FLUX/SDXL)
+// оператор роль поправит — но ПУСТОЙ роли не бывает, иначе UI показал бы
+// «неизвестно» там, где движку нужна конкретная роль.
+func SuggestRole(filename string) string {
+	return roleFromFilename(filename)
 }
 
 // roleFromFilename — эвристика роли по имени файла.

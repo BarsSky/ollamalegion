@@ -117,6 +117,15 @@ type HFFileInfo struct {
 	// R-Image: нужно, чтобы UI/каталог могли отличить файл весов диффузии от
 	// VAE/text-encoder'а — для bundle-загрузки это разные роли, а не «GGUF или нет».
 	Format string `json:"format,omitempty"`
+	// SuggestedRole — R-Image Phase 9: ПРЕДЛОЖЕННАЯ роль файла в image-bundle
+	// (diffusion|vae|clip_l|clip_g|t5xxl|llm|taesd|lora|upscaler|controlnet|
+	// ip_adapter|clip_vision), выведенная из имени файла.
+	//
+	// Заполняет image-воркер (sdbackend.SuggestRole) в ответе GET /api/hf/files:
+	// страница «Image-модели» рисует роль рядом с файлом и подставляет её в
+	// строку bundle, чтобы оператор не выбирал роль вслепую. Для текстовых
+	// GGUF-моделей поле пустое — там роль не нужна.
+	SuggestedRole string `json:"suggestedRole,omitempty"`
 }
 
 // HFDownloadProgress — прогресс загрузки

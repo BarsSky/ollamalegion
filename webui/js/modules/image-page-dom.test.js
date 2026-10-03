@@ -1,5 +1,5 @@
-// image-page-dom.test.js — R-Image Phase 5 (2026-10-02): интеграционный smoke
-// страницы «Изображения» с мок-DOM и мок-fetch (без браузера).
+// image-page-dom.test.js — R-Image Phase 9 (2026-10-03): интеграционный smoke
+// страницы «Image-модели» с мок-DOM и мок-fetch (без браузера).
 //
 // Запуск: node webui/js/modules/image-page-dom.test.js
 //
@@ -7,8 +7,8 @@
 //   * чистые функции не ловят опечатки в id элементов и в вызовах DOM —
 //     а именно они дают «страница молча не работает»;
 //   * здесь проверяется весь путь: refresh() → рендер таблицы моделей →
-//     POST /v1/images/generations → галерея + localStorage → bundle-загрузка
-//     (включая fallback на одиночные /api/hf/download) → load модели.
+//     load/unload и прогресс загрузки → bundle-загрузка с HF (включая fallback
+//     на одиночные /api/hf/download) → монтирование редактора профилей.
 //
 // Что проверяем:
 //   1. Каждый getElementById из модуля существует в webui/index.html
@@ -16,12 +16,16 @@
 //   2. Каждый i18n-ключ, который дёргает модуль, есть в ru.js (поэтому тест
 //      грузит реальный пак переводов, а не заглушку).
 //   3. refresh(): список image-бэкендов (fallback на /api/v1/backends при 404),
-//      модели, capabilities, отрисовка строки модели.
-//   4. generate(): тело запроса соответствует контракту (seed -1 при пустом
-//      поле, negative_prompt, batch_size...), картинок показано столько,
-//      сколько вернул ответ, история сохранена в localStorage.
-//   5. bundle: отсутствие bundle-эндпоинта → отдельные /api/hf/download с role.
-//   6. load model: POST /api/image/models/load + остановка прогресс-поллинга.
+//      модели, таблица моделей и селект модели.
+//   4. Прогресс загрузки модели: стадия/время в подписи, полоса — только если
+//      воркер реально прислал progressPct.
+//   5. load/unload модели: POST-тела и остановка поллинга по state=loaded.
+//   6. bundle: отсутствие bundle-эндпоинта → отдельные /api/hf/download с role;
+//      список файлов репозитория (image.bundle_list_files) заполняет datalist.
+//   7. В модуле НЕ осталось генерации, результата и галереи (грепом по исходнику:
+//      нет imgGenerateBtn, imgGallery, prompt_required, /generate и т.п.) — это
+//      главное требование Phase 9: картинки в WebUI не показываем.
+//   8. Сохранённый функционал на месте: модели, HF-загрузка, прогресс, профили.
 
 'use strict';
 
@@ -88,7 +92,16 @@ global.Api = {
 
 global.WEBUI_CONFIG = { API_BASE: 'http://balancer.test:18081', API_TOKEN: 'test-token' };
 
+// Редактор профилей (image-profiles.js) в этом тесте не грузим: проверяем ровно
+// то, что init() зовёт его mount() с контейнером таба «Настройки».
+global.ImageProfiles = {
+    mounted: [],
+    mount: function (id) { this.mounted.push(id); },
+};
+
 // --- mocks: DOM ------------------------------------------------------------
+const MODULE_PATH = path.join(__dirname, 'image-page.js');
+const MODULE_SRC = fs.readFileSync(MODULE_PATH, 'utf8');
 const INDEX_HTML = fs.readFileSync(path.join(__dirname, '..', '..', 'index.html'), 'utf8');
 const KNOWN_IDS = new Set();
 let m;
@@ -190,16 +203,13 @@ const MODELS = {
         family: 'sd15',
         active_queries: 0,
         vram_estimate_mb: 2100,
-        defaults: { steps: 8, cfgScale: 1, sampler: 'euler', scheduler: 'karras', width: 512, height: 512, negativePrompt: 'ugly' },
     }],
-};
-const CAPS = {
-    samplers: ['euler', 'dpm++2m'],
-    schedulers: ['karras', 'discrete'],
-    limits: { min_width: 64, max_width: 2048, min_height: 64, max_height: 2048, max_batch_count: 4 },
 };
 
 let imageBackendsStatus = 404; // /api/v1/image/backends ещё нет (параллельная работа)
+// Прогресс загрузки модели: 'loading' — первый снимок со стадией и процентом,
+// 'loaded' — финальный (по нему поллинг обязан остановиться).
+let loadProgressMode = 'loading';
 
 global.fetch = function (url, init) {
     const method = (init && init.method) || 'GET';
@@ -221,8 +231,15 @@ global.fetch = function (url, init) {
     // Формат image-воркера (cmd/sdworker/handlers_model.go:318-338): один снимок
     // {progress:{state,model,stage,elapsed_ms,error}} + top-level state/model.
     if (p === '/api/image/models/load/progress') {
+        if (loadProgressMode === 'loading') {
+            return jsonResponse({
+                progress: { state: 'loading', model: 'sd15-q8', stage: 'spawning sd-server', elapsed_ms: 4200, progressPct: 42, events: [] },
+                state: 'loading',
+                model: 'sd15-q8',
+            });
+        }
         return jsonResponse({
-            progress: { state: 'loaded', model: 'sd15-q8', stage: 'ready', elapsed_ms: 1200, events: [] },
+            progress: { state: 'loaded', model: 'sd15-q8', stage: 'ready', elapsed_ms: 5200, events: [] },
             state: 'loaded',
             model: 'sd15-q8',
             pid: 4242,
@@ -231,8 +248,6 @@ global.fetch = function (url, init) {
     if (p === '/api/image/models/load') return jsonResponse({ status: 'ok' });
     if (p === '/api/image/models/unload') return jsonResponse({ status: 'ok' });
     if (p === '/api/image/models') return jsonResponse(MODELS);
-    if (p === '/api/image/capabilities') return jsonResponse(CAPS);
-    if (p === '/v1/images/generations') return jsonResponse({ created: 1, data: [{ b64_json: 'AAA' }, { b64_json: 'BBB' }] });
     if (p === '/api/hf/files') return jsonResponse({ files: [{ path: 'flux1-schnell-Q4_0.gguf', sizeBytes: 1000 }], count: 1 });
     if (p === '/api/hf/progress') return jsonResponse({ error: 'not found' }, 404);
     if (p === '/api/hf/download' && method === 'POST') return jsonResponse({ status: 'started' });
@@ -264,7 +279,7 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
         assert.deepStrictEqual(missingKeys, [], 'нет ключей: ' + missingKeys.join(', '));
     });
 
-    // --- 3. refresh: бэкенды / модели / capabilities ----------------------
+    // --- 3. refresh: бэкенды / модели / селекты ---------------------------
     check('fallback: /api/v1/image/backends 404 → берём image-бэкенды из /api/v1/backends', function () {
         assert.strictEqual(Page._state.backends.length, 1);
         assert.strictEqual(Page._state.selectedBackendId, 'img-1');
@@ -277,67 +292,62 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
         assert.ok(html.indexOf('sd15') !== -1, 'нет семейства');
         assert.ok(html.indexOf('data-img-action="load-model"') !== -1, 'нет кнопки Load');
     });
-    check('capabilities применились: лимиты движка (max 2048, batch 4)', function () {
-        assert.strictEqual(Page._state.caps.source, 'engine');
-        assert.strictEqual(elements['imgWidth'].max, 2048);
-        assert.strictEqual(elements['imgBatch'].max, 4);
-        assert.ok(elements['imgSampler'].innerHTML.indexOf('dpm++2m') !== -1, 'нет самплеров движка');
+    check('селекты шапки заполнены: бэкенд и модель', function () {
+        assert.ok(elements['imgBackendSelect'].innerHTML.indexOf('img-1') !== -1, 'нет бэкенда в селекте');
+        assert.ok(elements['imgModelSelect'].innerHTML.indexOf('sd15-q8') !== -1, 'нет модели в селекте');
+    });
+    check('селект семейства и строки bundle отрисованы (таб HuggingFace)', function () {
+        assert.ok(elements['imgBundleFamily'].innerHTML.indexOf('flux') !== -1, 'нет семейств');
+        assert.strictEqual(Page._state.bundleRows.length, 1, 'должна быть одна стартовая строка');
+        assert.strictEqual(Page._state.bundleRows[0].role, 'diffusion');
+    });
+    check('профили image-моделей смонтированы в таб «Настройки»', function () {
+        assert.deepStrictEqual(global.ImageProfiles.mounted, ['imageProfiles']);
     });
 
-    // --- 4. генерация -----------------------------------------------------
-    elements['imgPrompt'].value = 'a cat';
-    elements['imgNegative'].value = 'blurry';
-    elements['imgWidth'].value = '513';
-    elements['imgHeight'].value = '512';
-    elements['imgSteps'].value = '8';
-    elements['imgCfg'].value = '1';
-    elements['imgSeed'].value = '';
-    elements['imgBatch'].value = '2';
-    elements['imgModelSelect'].value = 'sd15-q8';
+    // --- 4. прогресс загрузки модели --------------------------------------
+    loadProgressMode = 'loading';
+    await Page._actions.loadModel('sd15-q8');
+    await sleep(30);
+    check('load модели: POST /api/image/models/load {name}', function () {
+        const loadReq = requests.filter(function (r) { return r.url.indexOf('/proxy/api/image/models/load') !== -1 && r.url.indexOf('progress') === -1; })[0];
+        assert.ok(loadReq, 'POST load не ушёл');
+        assert.strictEqual(loadReq.method, 'POST');
+        assert.strictEqual(loadReq.body.name, 'sd15-q8');
+        assert.strictEqual(loadReq.headers['X-API-Token'], 'test-token', 'заголовок авторизации');
+    });
+    check('прогресс загрузки: стадия и время в подписи, полоса по progressPct воркера', function () {
+        assert.strictEqual(elements['imgLoadProgress'].style.display, '', 'блок прогресса должен быть виден');
+        assert.ok(elements['imgLoadProgressLabel'].textContent.indexOf('spawning sd-server') !== -1,
+            'нет стадии в подписи: ' + elements['imgLoadProgressLabel'].textContent);
+        assert.strictEqual(elements['imgLoadProgressBar'].style.display, '', 'полоса должна быть видна при progressPct');
+        assert.strictEqual(elements['imgLoadProgressFill'].style.width, '42%');
+        assert.ok(Page._state.loadPoll, 'поллинг прогресса должен идти, пока state=loading');
+    });
+    Page._actions.stopPolling();
 
-    await Page._actions.generate();
-    await sleep(20);
-
-    const genReq = requests.filter(function (r) { return r.url.indexOf('/v1/images/generations') !== -1; })[0];
-    check('POST v1/images/generations: тело соответствует контракту', function () {
-        assert.ok(genReq, 'запрос генерации не ушёл');
-        assert.strictEqual(genReq.method, 'POST');
-        assert.strictEqual(genReq.body.prompt, 'a cat');
-        assert.strictEqual(genReq.body.negative_prompt, 'blurry');
-        assert.strictEqual(genReq.body.width, 512, '513 → 512 (сетка 64)');
-        assert.strictEqual(genReq.body.steps, 8);
-        assert.strictEqual(genReq.body.seed, -1, 'пустой seed → -1 (random)');
-        assert.strictEqual(genReq.body.batch_size, 2);
-        assert.strictEqual(genReq.headers['X-API-Token'], 'test-token', 'заголовок авторизации');
-        assert.ok(genReq.url.indexOf('/api/v1/image/backends/img-1/proxy/v1/images/generations') !== -1, 'путь прокси: ' + genReq.url);
-    });
-    check('результат: показаны обе картинки как data URL, кнопка «Скачать все» включена', function () {
-        const html = elements['imgResults'].innerHTML;
-        assert.ok(html.indexOf('data:image/png;base64,AAA') !== -1, 'нет первой картинки');
-        assert.ok(html.indexOf('data:image/png;base64,BBB') !== -1, 'нет второй картинки');
-        assert.strictEqual(elements['imgResultsEmpty'].style.display, 'none');
-        assert.strictEqual(elements['imgDownloadAllBtn'].style.display, 'inline-block');
-    });
-    check('галерея попала в localStorage (параметры + b64)', function () {
-        const raw = localStorage.getItem('ollamalegion_image_history');
-        assert.ok(raw, 'история не сохранена');
-        const hist = JSON.parse(raw);
-        assert.strictEqual(hist.length, 1);
-        assert.strictEqual(hist[0].prompt, 'a cat');
-        assert.strictEqual(hist[0].images.length, 2);
-        assert.strictEqual(hist[0].images[0].b64, 'AAA');
-    });
-    check('тост об успехе содержит и время, и число картинок', function () {
-        const last = toasts[toasts.length - 1];
-        assert.strictEqual(last.type, 'success');
-        assert.ok(last.msg.indexOf('Картинок получено: 2') !== -1, last.msg);
-    });
-    check('во время генерации спиннер гаснет, elapsed заполнен', function () {
-        assert.strictEqual(Page._state.generating, false);
-        assert.strictEqual(elements['imgGenSpinner'].style.display, 'none');
+    // --- 5. завершение загрузки: поллинг останавливается -------------------
+    loadProgressMode = 'loaded';
+    await Page._actions.loadModel('sd15-q8');
+    await sleep(30);
+    check('state=loaded → поллинг остановлен, тост о загрузке', function () {
+        assert.strictEqual(Page._state.loadPoll, null, 'поллинг должен остановиться после state=loaded');
+        const done = toasts.filter(function (t) { return t.msg.indexOf('Модель загружена') !== -1; })[0];
+        assert.ok(done, 'нет тоста о загрузке модели');
     });
 
-    // --- 5. bundle --------------------------------------------------------
+    // --- 6. unload модели -------------------------------------------------
+    await Page._actions.unloadModel('sd15-q8');
+    await sleep(30);
+    check('unload модели: POST /api/image/models/unload {name} + перечитывание списка', function () {
+        const unloadReq = requests.filter(function (r) { return r.url.indexOf('/proxy/api/image/models/unload') !== -1; })[0];
+        assert.ok(unloadReq, 'POST unload не ушёл');
+        assert.strictEqual(unloadReq.body.name, 'sd15-q8');
+        const unloaded = toasts.filter(function (t) { return t.msg.indexOf('Модель выгружена') !== -1; })[0];
+        assert.ok(unloaded, 'нет тоста о выгрузке модели');
+    });
+
+    // --- 7. bundle: канонический путь → fallback на пофайловые загрузки ----
     elements['imgBundleName'].value = 'flux-schnell-q4';
     elements['imgBundleFamily'].value = 'flux';
     await Page._actions.bundleDownload();
@@ -360,32 +370,84 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
     });
     Page._actions.stopPolling();
 
-    // --- 6. load / unload модели ------------------------------------------
-    await Page._actions.loadModel('sd15-q8');
-    await sleep(30);
-    check('load модели: POST /api/image/models/load {name} + поллинг прогресса остановлен', function () {
-        const loadReq = requests.filter(function (r) { return r.url.indexOf('/api/image/models/load') !== -1 && r.url.indexOf('progress') === -1; })[0];
-        assert.ok(loadReq, 'POST load не ушёл');
-        assert.strictEqual(loadReq.body.name, 'sd15-q8');
-        assert.strictEqual(Page._state.loadPoll, null, 'поллинг должен остановиться после state=loaded');
-        const done = toasts.filter(function (t) { return t.msg.indexOf('Модель загружена') !== -1; })[0];
-        assert.ok(done, 'нет тоста о загрузке модели');
+    // --- 8. список файлов репозитория (image.bundle_list_files) ------------
+    await Page._actions.listBundleFiles(0);
+    await sleep(20);
+    check('«Список файлов»: GET /api/hf/files и datalist строки заполнен', function () {
+        const filesReq = requests.filter(function (r) { return r.url.indexOf('/proxy/api/hf/files') !== -1; })[0];
+        assert.ok(filesReq, 'запрос /api/hf/files не ушёл');
+        assert.ok(filesReq.url.indexOf('modelId=leejet%2FFLUX.1-schnell-gguf') !== -1, 'нет modelId в query: ' + filesReq.url);
+        assert.ok(elements['imgBundleFilesList_0'].innerHTML.indexOf('flux1-schnell-Q4_0.gguf') !== -1,
+            'datalist не заполнен: ' + elements['imgBundleFilesList_0'].innerHTML);
     });
-    Page._actions.stopPolling();
 
-    // --- 7. ошибка генерации в OpenAI-конверте ----------------------------
+    // --- 9. ошибка бэкенда показывается в notice --------------------------
     global.fetch = function (url, init) {
-        if (String(url).indexOf('/v1/images/generations') !== -1) {
-            return jsonResponse({ error: { message: 'no healthy backend of type image_cpp is registered', type: 'invalid_request_error', code: 'image_backend_unavailable' } }, 503);
+        const u = String(url);
+        // Порядок важен: прокси-URL моделей содержит и '/api/v1/image/backends'.
+        if (u.indexOf('/api/image/models') !== -1) return jsonResponse({ error: 'worker is down' }, 500);
+        if (u.indexOf('/api/v1/image/backends') !== -1) {
+            return jsonResponse({ backends: [{ id: 'img-1', name: 'GPU image', type: 'image_cpp', host: '10.0.0.2', imagePort: 18093 }] });
         }
         return jsonResponse({}, 200);
     };
-    await Page._actions.generate();
-    await sleep(20);
-    check('ошибка 503 показывается текстом из OpenAI-конверта', function () {
-        const last = toasts[toasts.length - 1];
-        assert.strictEqual(last.type, 'error');
-        assert.ok(last.msg.indexOf('no healthy backend of type image_cpp is registered (image_backend_unavailable)') !== -1, last.msg);
+    await Page._actions.refresh();
+    await sleep(30);
+    check('недоступный воркер: ошибка видна в notice, страница не падает', function () {
+        assert.strictEqual(elements['imgNotice'].style.display, '', 'notice должен быть показан');
+        assert.ok(elements['imgNotice'].innerHTML.indexOf('worker is down') !== -1,
+            'нет текста ошибки: ' + elements['imgNotice'].innerHTML);
+    });
+
+    // --- 10. генерации/галереи в модуле больше нет ------------------------
+    check('в модуле не осталось генерации, результата и галереи', function () {
+        const forbidden = [
+            'imgGenerateBtn', 'imgGenSpinner', 'imgGenElapsed',
+            'imgResults', 'imgResultsEmpty', 'imgDownloadAllBtn',
+            'imgGallery', 'imgGalleryEmpty', 'imgGalleryClear',
+            'imgPrompt', 'imgNegative', 'imgWidth', 'imgHeight', 'imgSteps',
+            'imgCfg', 'imgSeed', 'imgBatch', 'imgSampler', 'imgScheduler', 'imgCapsNote',
+            'prompt_required', '/generate', 'reuse_params',
+            'ollamalegion_image_history', 'ollamalegion_image_form',
+            'download_one', 'gallery_no_preview',
+        ];
+        const found = forbidden.filter(function (tok) { return MODULE_SRC.indexOf(tok) !== -1; });
+        assert.deepStrictEqual(found, [], 'в image-page.js остались следы генерации/галереи: ' + found.join(', '));
+    });
+
+    // --- 11. сохранённый функционал на месте ------------------------------
+    check('публичный API сохранён (init/refresh/pure/_actions), generate удалён', function () {
+        assert.strictEqual(typeof Page.init, 'function', 'нет init');
+        assert.strictEqual(typeof Page.refresh, 'function', 'нет refresh');
+        assert.strictEqual(typeof Page.pure, 'object', 'нет pure');
+        assert.strictEqual(typeof Page._actions.refresh, 'function', 'нет _actions.refresh');
+        assert.strictEqual(typeof Page._actions.loadModel, 'function', 'нет _actions.loadModel');
+        assert.strictEqual(typeof Page._actions.unloadModel, 'function', 'нет _actions.unloadModel');
+        assert.strictEqual(typeof Page._actions.bundleDownload, 'function', 'нет _actions.bundleDownload');
+        assert.strictEqual(typeof Page._actions.listBundleFiles, 'function', 'нет _actions.listBundleFiles');
+        assert.strictEqual(typeof Page._actions.stopPolling, 'function', 'нет _actions.stopPolling');
+        assert.strictEqual(Page._actions.generate, undefined, 'генерация должна быть удалена');
+    });
+    check('pure-хелперы сохранённого функционала на месте', function () {
+        ['normalizeModels', 'normalizeBackends', 'parseBundleRows', 'aggregateDownloadProgress',
+            'bundleFileKey', 'stateLabelKey', 'normalizeLoadProgress', 'formatBytes', 'formatDuration',
+            'parseOpenAIError', 'escapeHtml', 'IMAGE_ROLES', 'IMAGE_FAMILIES']
+            .forEach(function (name) {
+                assert.notStrictEqual(Page.pure[name], undefined, 'pure.' + name + ' потерян');
+            });
+    });
+    check('модуль по-прежнему владеет id моделей, HF-формы, прогресса и профилей', function () {
+        assert.ok(KNOWN_IDS.has('imgModelsTable'), 'в index.html нет таблицы #imgModelsTable');
+        ['imgModelsBody', 'imgModelsRefreshBtn',
+            'imgBundleName', 'imgBundleFamily', 'imgHfToken', 'imgBundleRows', 'imgBundleAddRow',
+            'imgBundleStart', 'imgBundleProgress', 'imgBundleProgressLabel', 'imgBundleProgressFill',
+            'imgBundleStatus', 'imgLoadProgress', 'imgLoadProgressLabel', 'imgLoadProgressBar',
+            'imgLoadProgressFill', 'imgNotice', 'imgBackendSelect', 'imgModelSelect',
+            'image.bundle_list_files']
+            .forEach(function (tok) {
+                assert.ok(MODULE_SRC.indexOf(tok) !== -1, 'в модуле нет ' + tok);
+            });
+        assert.ok(MODULE_SRC.indexOf("ImageProfiles.mount('imageProfiles')") !== -1, 'нет монтирования профилей');
     });
 
     console.log('\n' + (failures.length ? 'FAILED: ' + failures.length : 'OK: ' + passed + ' checks passed'));

@@ -40,7 +40,10 @@
     // =====================================================================
     // DOM-контракт (id и классы живут в webui/index.html)
     // =====================================================================
-    var PAGE_ID = 'image-backends-page';
+    // Phase 9: страница «Image-модели» (табы) — управление бэкендами теперь её таб
+    // «Обзор», отдельного пункта меню нет, поэтому видимость переключаем у
+    // объединённой страницы.
+    var PAGE_ID = 'image-page';
     var BODY_ID = 'imageBackendsBody';
     var NOTICE_ID = 'imageBackendsNotice';
     // Куда рендерим фактическую политику сосуществования (balancing.image) и как
@@ -52,8 +55,8 @@
 
     // Пункт навигации. Основной селектор - как в задании (a[data-page=...]);
     // резервный оставлен на случай смены тега разметки (button вместо a).
-    var NAV_SELECTOR = 'a[data-page="image-backends"]';
-    var NAV_FALLBACK_SELECTOR = '.nav-item[data-page="image-backends"]';
+    var NAV_SELECTOR = 'a[data-page="image"]';
+    var NAV_FALLBACK_SELECTOR = '.nav-item[data-page="image"]';
 
     // Колонок в таблице: id, имя, хост, порт, GPU, состояние, модель, VRAM,
     // запросы, RPS, среднее время, действия. Нужно для colspan пустых строк.
@@ -992,10 +995,20 @@
         return postModelAction(id, 'unload', picked);
     }
 
-    /** «К генерации»: переключить страницу и предвыбрать этот бэкенд. */
+    /**
+     * «К моделям»: открыть страницу «Image-модели» на табе моделей и предвыбрать
+     * этот бэкенд.
+     *
+     * R-Image Phase 9: раньше кнопка вела на таб генерации, но генерация и показ
+     * картинок из WebUI убраны (это задача клиентов) — теперь ведём туда, где с
+     * моделью работают: «Модели на диске».
+     */
     function openImages(id) {
         var nav = document.querySelector ? document.querySelector('[data-page="image"]') : null;
         if (nav && typeof nav.click === 'function') nav.click();
+        if (window.ImageModelsPage && typeof window.ImageModelsPage.showTab === 'function') {
+            window.ImageModelsPage.showTab('models');
+        }
         // Селект #imgBackendSelect заполняет ImagePage.refresh() асинхронно
         // (GET /api/v1/image/backends), поэтому значение выставляем с
         // повторами: иначе выбор «схлопнется» к первому бэкенду в списке.

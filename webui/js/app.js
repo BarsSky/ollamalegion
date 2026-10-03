@@ -167,7 +167,7 @@ const ui = (function () {
 
         refreshPage(page);
 
-        if (page === 'backends' || page === 'models' || page === 'image-backends') {
+        if (page === 'backends' || page === 'models' || page === 'image') {
             fetchClusterState();
         }
     }
@@ -182,7 +182,7 @@ const ui = (function () {
             sessions: 'Sessions',
             queue: 'Queue',
             gguf: 'GGUF Models',
-            image: 'Image Generation',
+            image: 'Image models',
             logs: 'System Logs',
             settings: 'Settings',
             agents: 'Agents'
@@ -249,20 +249,6 @@ const ui = (function () {
                     window.ImageBackendsPage.syncVisibility(data.backends);
                 }
                 break;
-            case 'image-backends':
-                // R-Image: страница управления image-бэкендами (тип image_cpp).
-                // Данные те же, что у страницы «Бэкенды» - массив из
-                // GET /api/v1/cluster (см. fetchClusterState).
-                if (window.ImageBackendsPage) {
-                    window.ImageBackendsPage.mount();
-                    window.ImageBackendsPage.render(data.backends);
-                    window.ImageBackendsPage.syncVisibility(data.backends);
-                    // Ключа header.image-backends в i18n нет (набор ключей
-                    // страницы зафиксирован), а switchPage() подставил бы в
-                    // заголовок сырой ключ - перезаписываем своим.
-                    if (window.I18N) Utils.setText('pageTitle', I18N.t('imageBackends.title'));
-                }
-                break;
             case 'models':
                 modelsPage(filterBackendsForUI(data.backends));
                 // Session A — Bulk operations: после re-render моделей сбросить
@@ -301,11 +287,21 @@ const ui = (function () {
                 }
                 break;
             case 'image':
-                // R-Image Phase 5: страница Image (генерация + image-модели).
-                // init() идемпотентен: первый вызов подписывает обработчики и
-                // тянет данные, последующие — только refresh (без дублей listener'ов).
+                // R-Image Phase 9: страница «Image-модели» — табы в стиле «GGUF
+                // модели». image-page.js по-прежнему наполняет карточки моделей и
+                // HF (их id сохранены), image-backends-page.js — таб «Обзор», а
+                // шелл отвечает за переключение табов и «Проверку бэкенда».
                 if (window.ImagePage) {
                     window.ImagePage.init();
+                }
+                if (window.ImageModelsPage) {
+                    window.ImageModelsPage.mount();
+                    window.ImageModelsPage.render(data.backends);
+                }
+                if (window.ImageBackendsPage) {
+                    window.ImageBackendsPage.mount();
+                    window.ImageBackendsPage.render(data.backends);
+                    window.ImageBackendsPage.syncVisibility(data.backends);
                 }
                 break;
             case 'settings':
@@ -855,8 +851,9 @@ const ui = (function () {
                 // Пока страница открыта, обновляем и таблицу: periodic refresh
                 // перерисовывает только settings, поэтому счётчики запросов и RPS
                 // воркера замирали бы до ручного «Обновить».
-                if (currentPage === 'image-backends') {
+                if (currentPage === 'image') {
                     window.ImageBackendsPage.render(state.backends);
+                    if (window.ImageModelsPage) window.ImageModelsPage.render(state.backends);
                 }
             }
 

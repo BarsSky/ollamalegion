@@ -1,29 +1,33 @@
 /**
- * image-page.js — R-Image Phase 5 (2026-10-02): страница «Изображения».
+ * image-page.js — R-Image Phase 9 (2026-10-03): страница «Image-модели».
  *
  * Что делает:
- *   1. Генерация картинок через OpenAI-совместимый путь балансера
- *      (image-бэкенд типа image_cpp → stable-diffusion.cpp / sd-server):
- *      POST {proxy}/v1/images/generations, ответ {data:[{b64_json}]}.
- *   2. Управление image-моделями (bundle): список, load / unload, прогресс.
+ *   1. Выбор image-бэкенда и модели в шапке страницы.
+ *   2. Управление image-моделями (bundle): список, load / unload, прогресс загрузки.
  *   3. Загрузка bundle с HuggingFace (несколько файлов: diffusion + vae + TE).
+ *   4. Монтирование редактора профилей (window.ImageProfiles.mount).
+ *
+ * ПОЧЕМУ БОЛЬШЕ НЕТ ГЕНЕРАЦИИ, РЕЗУЛЬТАТА И ГАЛЕРЕИ (Phase 9):
+ *   WebUI — панель настройки балансера и понимания состояния системы: какие
+ *   image-бэкенды есть, какие модели лежат на диске, что загружено, как идёт
+ *   скачивание с HF. Показ сгенерированных картинок — задача клиентов
+ *   (OpenAI/A1111 на :18079): у клиента есть и превью, и своя история, и правка
+ *   результата. Дублирование этого в WebUI тянуло за собой форму генерации,
+ *   разбор ответа воркера, localStorage-историю с бюджетом в 5 МБ и галерею —
+ *   то есть вторую страницу, которая повторяла клиента и для настройки была не
+ *   нужна. Проверка «движок отвечает» осталась отдельной кнопкой «Проверка
+ *   бэкенда» (image-models-page.js): она шлёт 1 шаг 64x64 и НЕ рисует картинку.
  *
  * ПОЧЕМУ свой мини-клиент, а не GgufApi.requestViaBackend:
- *   - у GgufApi жёсткий REQUEST_TIMEOUT_MS = 10 с (gguf-api.js:21), а генерация
- *     диффузии измеряется минутами (план §6: 341 с на GTX 1060, 1024² на RX 580
- *     ~14 мин) — 10-секундный AbortController убивал бы каждый запрос;
  *   - путь прокси другой: /api/v1/image/backends/{id}/proxy (у GGUF —
- *     /api/v1/gguf/backends/{id}/proxy).
- *   Таймауты здесь раздельные: контрольные вызовы 15 с, генерация 15 мин.
+ *     /api/v1/gguf/backends/{id}/proxy);
+ *   - HF-путям нужен заголовок X-HF-Token, а ветку GGUF-клиента трогать нельзя.
+ *   Контрольные вызовы ограничены 15 с: загрузку модели и скачивание файлов
+ *   выполняет воркер фоном, UI только запускает их и опрашивает прогресс.
  *
- * ЧЕГО СОЗНАТЕЛЬНО НЕТ:
- *   - процента шагов сэмплинга: движок его не отдаёт (у sd-server нет
- *     step-progress), рисовать «примерный» прогресс было бы враньём;
- *   - кнопки Cancel во время генерации: отмена честно работает только для
- *     queued-джоб (план §5.3), синхронный /v1/images/generations отменить нельзя.
- *
- * Зависимости (уже загружены, см. webui/index.html): window.I18N, window.Utils,
- * window.Api, window.GgufApi (только ради общего HF-токена).
+ * Зависимости (уже загружены, см. webui/index.html): window.I18N, window.Api,
+ * window.GgufApi (только ради общего HF-токена), window.ImageProfiles
+ * (редактор профилей, грузится до этого файла).
  * Экспорт: window.ImagePage.
  */
 (function () {
@@ -33,20 +37,9 @@
     // HF-токен общий с GgufApi (gguf-api.js:19) — один токен на WebUI, чтобы
     // оператор не вводил его дважды на двух страницах.
     var HF_TOKEN_KEY = 'ollamalegion_hf_token';
-    var HISTORY_KEY = 'ollamalegion_image_history';
-    var FORM_KEY = 'ollamalegion_image_form';
-
-    var HISTORY_LIMIT = 12;
-    // Квота localStorage ~5 МБ, а одна картинка 1024x1024 в base64 легко даёт
-    // 1-2 МБ. Поэтому бюджет на ВСЕ b64 в истории ограничен: самые новые
-    // картинки сохраняются целиком, у остальных остаются только параметры
-    // (метаданные + возможность «Повторить параметры»).
-    var HISTORY_B64_BUDGET = 1500000;
-    var HISTORY_SIZE_CHARS_MAX = 4000000;
 
     // ---- Таймауты и интервалы ----
     var TIMEOUT_CONTROL_MS = 15000;
-    var TIMEOUT_GENERATION_MS = 900000; // 15 минут
     var LOAD_POLL_MS = 1500;
     var DOWNLOAD_POLL_MS = 2000;
     // Сколько пустых тиков прогресса терпим, прежде чем перестать опрашивать
@@ -58,8 +51,6 @@
     var PATH_MODEL_LOAD = '/api/image/models/load';
     var PATH_MODEL_UNLOAD = '/api/image/models/unload';
     var PATH_LOAD_PROGRESS = '/api/image/models/load/progress';
-    var PATH_CAPABILITIES = '/api/image/capabilities';
-    var PATH_GENERATIONS = '/v1/images/generations';
     var PATH_HF_FILES = '/api/hf/files';
     var PATH_HF_PROGRESS = '/api/hf/progress';
     var PATH_HF_DOWNLOAD = '/api/hf/download';
@@ -75,19 +66,10 @@
     // N одиночных /api/hf/download (он принимает поле role).
     var BUNDLE_DOWNLOAD_PATHS = ['/api/hf/bundle', '/api/hf/bundle/download', '/api/image/models/download'];
 
-    // Лимиты валидации воркера (план §5.3): width/height 64..4096 кратно 64,
-    // batch 1..8, steps 1..100, cfg 0..30. Сервер проверяет их же, UI просто
-    // не должен отправлять заведомо невалидный запрос.
-    var LIMITS = { minSide: 64, maxSide: 4096, step: 64, minSteps: 1, maxSteps: 100, minCfg: 0, maxCfg: 30, minBatch: 1, maxBatch: 8 };
-
     // Роли файлов bundle — ЗАМОРОЖЕННЫЙ контракт pkg/types/image_model.go:32-45.
     var IMAGE_ROLES = ['diffusion', 'vae', 'clip_l', 'clip_g', 't5xxl', 'llm', 'clip_vision', 'taesd', 'lora', 'upscaler', 'controlnet', 'ip_adapter'];
     // Семейства — pkg/types/image_model.go:49-52.
     var IMAGE_FAMILIES = ['sd15', 'sd21', 'sd_turbo', 'sdxl', 'sdxl_turbo', 'sd3', 'flux', 'flux2', 'chroma', 'qwen_image', 'z_image', 'other'];
-
-    // Статический fallback, если /api/image/capabilities не ответил.
-    var STATIC_SAMPLERS = ['euler', 'euler_a', 'dpm++2m', 'dpm++2s_a', 'lcm', 'ddim_trailing'];
-    var STATIC_SCHEDULERS = ['discrete', 'karras', 'exponential', 'ays', 'gits', 'smoothstep'];
 
     // =====================================================================
     // Pure helpers — не трогают DOM, поэтому покрыты юнит-тестами
@@ -136,79 +118,6 @@
     }
 
     /**
-     * Привести сторону изображения к сетке 64 в границах [64..4096].
-     * ЗАЧЕМ: sd.cpp падает/искажает латенты на размерах не кратных 64, а
-     * серверная валидация вернёт 400 — лучше поправить в UI.
-     */
-    function snapDimension(value, limits) {
-        var lim = limits || LIMITS;
-        var v = parseInt(value, 10);
-        if (isNaN(v)) return 512;
-        var step = lim.step || 64;
-        v = Math.round(v / step) * step;
-        if (v < (lim.minSide || 64)) v = lim.minSide || 64;
-        if (v > (lim.maxSide || 4096)) v = lim.maxSide || 4096;
-        return v;
-    }
-
-    function clampInt(value, min, max, def) {
-        var v = parseInt(value, 10);
-        if (isNaN(v)) return def;
-        if (v < min) return min;
-        if (v > max) return max;
-        return v;
-    }
-
-    /**
-     * Валидация формы генерации. Возвращает { ok, errorKey } — ключ i18n, а не
-     * готовый текст, чтобы pure-слой не зависел от текущего языка.
-     */
-    function validateGenerationForm(form) {
-        if (!form || !String(form.prompt || '').trim()) {
-            return { ok: false, errorKey: 'image.prompt_required' };
-        }
-        return { ok: true, errorKey: '' };
-    }
-
-    /**
-     * Форма UI → тело OpenAI-запроса (контракт родителя):
-     * { prompt, negative_prompt, width, height, steps, cfg_scale, seed,
-     *   batch_size, sampler_name, scheduler }
-     *
-     * Почему seed по умолчанию -1: у sd.cpp /v1/images/generations НЕ читает
-     * seed из тела (gen_params берётся из default_gen_params, где seed=42) —
-     * рандом включается только при seed < 0, а воркер резолвит -1 в случайное
-     * положительное число (план §12.3, ловушка №1). Пустое поле = -1.
-     *
-     * Почему cfg_scale не отправляется при пустом поле: 0 - валидное значение
-     * (distilled-модели работают на cfg 1.0, но 0 у части сэмплеров допустим),
-     * поэтому «пусто» означает «взять дефолт профиля модели», а не «ноль».
-     */
-    function buildGenerationPayload(form) {
-        form = form || {};
-        var payload = {
-            prompt: String(form.prompt || '').trim(),
-            width: snapDimension(form.width),
-            height: snapDimension(form.height),
-            steps: clampInt(form.steps, LIMITS.minSteps, LIMITS.maxSteps, 20),
-            batch_size: clampInt(form.batch, LIMITS.minBatch, LIMITS.maxBatch, 1)
-        };
-        var neg = String(form.negative || '').trim();
-        if (neg) payload.negative_prompt = neg;
-        var cfgRaw = String(form.cfg === null || form.cfg === undefined ? '' : form.cfg).trim();
-        if (cfgRaw !== '') {
-            var cfg = parseFloat(cfgRaw);
-            if (!isNaN(cfg)) payload.cfg_scale = Math.min(LIMITS.maxCfg, Math.max(LIMITS.minCfg, cfg));
-        }
-        var seedRaw = String(form.seed === null || form.seed === undefined ? '' : form.seed).trim();
-        var seed = seedRaw === '' ? -1 : parseInt(seedRaw, 10);
-        payload.seed = isNaN(seed) ? -1 : seed;
-        if (form.sampler) payload.sampler_name = String(form.sampler);
-        if (form.scheduler) payload.scheduler = String(form.scheduler);
-        return payload;
-    }
-
-    /**
      * Разбор ошибки: OpenAI-конверт {error:{message,type,code}} (его отдаёт
      * ImageRouter для /v1/*, image_router.go:144-153), плоский
      * {error,message} (остальные пути) либо сырой текст/HTML.
@@ -238,42 +147,6 @@
         return fallback;
     }
 
-    /** base64 → data URL для <img src>. Терпит переводы строк и готовый префикс. */
-    function b64ToDataUrl(b64, format) {
-        if (!b64 || typeof b64 !== 'string') return '';
-        var s = b64.trim().replace(/\s+/g, '');
-        if (!s) return '';
-        if (s.indexOf('data:') === 0) return s;
-        var mime = String(format || 'png').toLowerCase();
-        if (mime === 'jpg') mime = 'jpeg';
-        if (mime === 'webp') mime = 'webp';
-        return 'data:image/' + mime + ';base64,' + s;
-    }
-
-    /**
-     * Достать картинки из ответа. Основной контракт — {data:[{b64_json}]},
-     * но принимаем и {images:[...]} (нативный воркер) и url-вариант: лучше
-     * показать картинку, чем упасть на «неожиданной» форме ответа.
-     */
-    function extractImages(resp) {
-        var out = [];
-        function push(item) {
-            if (!item) return;
-            if (typeof item === 'string') { out.push({ b64: item, format: 'png' }); return; }
-            if (item.b64_json || item.b64) {
-                out.push({ b64: item.b64_json || item.b64, format: item.output_format || item.format || 'png' });
-                return;
-            }
-            if (item.url) out.push({ url: item.url, format: item.output_format || item.format || 'png' });
-        }
-        if (!resp) return out;
-        if (Array.isArray(resp)) resp.forEach(push);
-        else if (Array.isArray(resp.data)) resp.data.forEach(push);
-        else if (Array.isArray(resp.images)) resp.images.forEach(push);
-        else if (resp.data) push(resp.data);
-        return out;
-    }
-
     /** GET /api/image/models → нормализованный список моделей. */
     function normalizeModels(data) {
         var arr = [];
@@ -290,35 +163,12 @@
                 active_queries: Number(m.active_queries || m.activeQueries || 0),
                 vram_estimate_mb: Number(m.vram_estimate_mb || m.vramEstimateMB || m.vramEstimateMb || 0),
                 // Дефолты профиля (steps/cfgScale/sampler/scheduler/width/height/negativePrompt).
+                // Форму генерации из WebUI убрали, но сервер их отдаёт, а список
+                // моделей - это ещё и обзор состава профиля.
                 defaults: d,
                 disabled: !!m.disabled
             };
         }).filter(function (m) { return !!m.name; });
-    }
-
-    /**
-     * GET /api/image/capabilities → { samplers, schedulers, limits, source }.
-     * Поля движка приходят в snake_case (CapLimits: min_width, max_batch_count),
-     * поэтому читаем оба варианта написания.
-     */
-    function normalizeCapabilities(data) {
-        var src = data || {};
-        if (src.capabilities && typeof src.capabilities === 'object') src = src.capabilities;
-        var samplers = Array.isArray(src.samplers) ? src.samplers.filter(Boolean) : [];
-        var schedulers = Array.isArray(src.schedulers) ? src.schedulers.filter(Boolean) : [];
-        var rawLimits = src.limits || {};
-        var limits = {
-            minSide: Number(rawLimits.min_width || rawLimits.minWidth || LIMITS.minSide),
-            maxSide: Number(rawLimits.max_width || rawLimits.maxWidth || LIMITS.maxSide),
-            minHeight: Number(rawLimits.min_height || rawLimits.minHeight || LIMITS.minSide),
-            maxHeight: Number(rawLimits.max_height || rawLimits.maxHeight || LIMITS.maxSide),
-            maxBatch: Number(rawLimits.max_batch_count || rawLimits.maxBatchCount || LIMITS.maxBatch),
-            step: LIMITS.step
-        };
-        var source = (samplers.length || schedulers.length) ? 'engine' : 'static';
-        if (!samplers.length) samplers = STATIC_SAMPLERS.slice();
-        if (!schedulers.length) schedulers = STATIC_SCHEDULERS.slice();
-        return { samplers: samplers, schedulers: schedulers, limits: limits, source: source };
     }
 
     /**
@@ -505,15 +355,8 @@
         escapeHtml: escapeHtml,
         formatBytes: formatBytes,
         formatDuration: formatDuration,
-        snapDimension: snapDimension,
-        clampInt: clampInt,
-        validateGenerationForm: validateGenerationForm,
-        buildGenerationPayload: buildGenerationPayload,
         parseOpenAIError: parseOpenAIError,
-        b64ToDataUrl: b64ToDataUrl,
-        extractImages: extractImages,
         normalizeModels: normalizeModels,
-        normalizeCapabilities: normalizeCapabilities,
         normalizeBackends: normalizeBackends,
         parseBundleRows: parseBundleRows,
         aggregateDownloadProgress: aggregateDownloadProgress,
@@ -521,10 +364,7 @@
         stateLabelKey: stateLabelKey,
         normalizeLoadProgress: normalizeLoadProgress,
         IMAGE_ROLES: IMAGE_ROLES,
-        IMAGE_FAMILIES: IMAGE_FAMILIES,
-        STATIC_SAMPLERS: STATIC_SAMPLERS,
-        STATIC_SCHEDULERS: STATIC_SCHEDULERS,
-        LIMITS: LIMITS
+        IMAGE_FAMILIES: IMAGE_FAMILIES
     };
 
     // =====================================================================
@@ -537,13 +377,8 @@
         backends: [],
         selectedBackendId: '',
         models: [],
-        caps: null,
-        results: null,          // последняя генерация
-        gallery: [],            // история (новые первыми)
-        generating: false,
-        genStartedAt: 0,
-        genTimer: null,
         loadPoll: null,         // { timer, name }
+        bundleRows: [],         // строки формы bundle (переживают смену языка)
         bundleFiles: [],
         bundleProgress: {},
         bundlePoll: null,
@@ -710,7 +545,7 @@
     }
 
     // =====================================================================
-    // Бэкенды / модели / capabilities
+    // Бэкенды / модели
     // =====================================================================
 
     function setNotice(html) {
@@ -781,21 +616,6 @@
         renderModelsTable();
     }
 
-    async function loadCapabilities() {
-        var backendId = state.selectedBackendId;
-        if (!backendId) { state.caps = normalizeCapabilities(null); renderCapabilitySelects(); return; }
-        try {
-            var data = await requestBackend(backendId, PATH_CAPABILITIES, { timeoutMs: TIMEOUT_CONTROL_MS });
-            state.caps = normalizeCapabilities(data);
-        } catch (e) {
-            // Самплеры/шедулеры — это подсказка в селектах, а не критичный путь:
-            // при недоступности capabilities берём статический список и
-            // предупреждаем подписью (renderCapabilitySelects покажет note).
-            state.caps = normalizeCapabilities(null);
-        }
-        renderCapabilitySelects();
-    }
-
     /** Полный refresh данных страницы (вызывается при входе и по кнопке). */
     async function refresh() {
         try {
@@ -804,12 +624,12 @@
             setNotice(escapeHtml(t('image.backend_unavailable', 'Image backend is unreachable: {error}', { error: (e && e.message) || String(e) })));
             return;
         }
-        // Модели и capabilities — параллельно (независимые запросы).
-        await Promise.all([loadModels(), loadCapabilities()]);
+        // Модели грузим после бэкендов: нужен выбранный backendId.
+        await loadModels();
     }
 
     // =====================================================================
-    // Рендер: селекты бэкенда/модели/capabilities
+    // Рендер: селекты бэкенда/модели
     // =====================================================================
 
     function renderBackendSelect() {
@@ -843,50 +663,6 @@
         if (current && state.models.some(function (m) { return m.name === current; })) {
             sel.value = current;
         }
-    }
-
-    function renderCapabilitySelects() {
-        var caps = state.caps || normalizeCapabilities(null);
-        var samplerSel = el('imgSampler');
-        var schedulerSel = el('imgScheduler');
-        if (samplerSel) {
-            var prevS = samplerSel.value;
-            samplerSel.innerHTML = caps.samplers.map(function (s) {
-                return '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>';
-            }).join('');
-            if (prevS) samplerSel.value = prevS;
-        }
-        if (schedulerSel) {
-            var prevSc = schedulerSel.value;
-            schedulerSel.innerHTML = caps.schedulers.map(function (s) {
-                return '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>';
-            }).join('');
-            if (prevSc) schedulerSel.value = prevSc;
-        }
-        // Список самплеров мог прийти из статического fallback — оператор должен
-        // знать, что движок свой список не отдал (иначе выбранный самплер
-        // окажется несуществующим и запрос упадёт уже на воркере).
-        var note = el('imgCapsNote');
-        if (note) {
-            note.textContent = caps.source === 'static'
-                ? t('image.capabilities_static', 'Sampler/scheduler list is a built-in fallback.')
-                : '';
-        }
-        // Лимиты движка могли быть шире/уже наших UI-границ — применяем к полям.
-        var w = el('imgWidth');
-        var h = el('imgHeight');
-        if (w) {
-            w.min = caps.limits.minSide;
-            w.max = caps.limits.maxSide;
-            w.step = caps.limits.step;
-        }
-        if (h) {
-            h.min = caps.limits.minHeight;
-            h.max = caps.limits.maxHeight;
-            h.step = caps.limits.step;
-        }
-        var batch = el('imgBatch');
-        if (batch) batch.max = caps.limits.maxBatch;
     }
 
     // =====================================================================
@@ -928,348 +704,6 @@
                 '<td>' + actions + '</td>' +
                 '</tr>';
         }).join('');
-    }
-
-    /** Применить дефолты профиля модели к форме (при выборе модели). */
-    function applyModelDefaults(name) {
-        var model = null;
-        for (var i = 0; i < state.models.length; i++) {
-            if (state.models[i].name === name) { model = state.models[i]; break; }
-        }
-        if (!model) return;
-        var d = model.defaults || {};
-        if (d.steps) setVal('imgSteps', d.steps);
-        if (d.cfgScale !== undefined && d.cfgScale !== null) setVal('imgCfg', d.cfgScale);
-        if (d.width) setVal('imgWidth', d.width);
-        if (d.height) setVal('imgHeight', d.height);
-        if (d.batchCount) setVal('imgBatch', d.batchCount);
-        if (d.negativePrompt !== undefined && d.negativePrompt !== null && !val('imgNegative')) {
-            setVal('imgNegative', d.negativePrompt);
-        }
-        if (d.sampler) selectIfPresent('imgSampler', d.sampler);
-        if (d.scheduler) selectIfPresent('imgScheduler', d.scheduler);
-    }
-
-    function selectIfPresent(id, value) {
-        var sel = el(id);
-        if (!sel) return;
-        for (var i = 0; i < sel.options.length; i++) {
-            if (sel.options[i].value === value) { sel.value = value; return; }
-        }
-    }
-
-    // =====================================================================
-    // Рендер: результаты и галерея
-    // =====================================================================
-
-    function imageCardHtml(entry, index) {
-        var img = entry.images[index] || {};
-        var src = img.b64 ? b64ToDataUrl(img.b64, img.format) : (img.url || '');
-        var preview = src
-            ? '<img src="' + escapeHtml(src) + '" alt="' + escapeHtml(entry.prompt || '') + '" style="width:100%;height:auto;border-radius:6px;display:block;">'
-            : '<div style="padding:12px;font-size:12px;color:var(--text-muted);">' + escapeHtml(t('image.gallery_no_preview', 'Preview not stored')) + '</div>';
-        return '<div class="image-card" style="border:1px solid var(--border-color);border-radius:8px;padding:8px;background:var(--bg-secondary);">' +
-            preview +
-            '<div style="display:flex;gap:6px;align-items:center;justify-content:space-between;margin-top:8px;flex-wrap:wrap;">' +
-                '<span style="font-size:11px;color:var(--text-muted);">' + escapeHtml(formatDuration(entry.elapsedMs || 0)) + ' · #' + (index + 1) + '</span>' +
-                '<span style="display:flex;gap:6px;">' +
-                    (src ? '<button class="btn btn-secondary btn-sm" data-img-action="download-image" data-entry="' + escapeHtml(entry.id) + '" data-index="' + index + '">' + escapeHtml(t('image.download_one', 'Download PNG')) + '</button>' : '') +
-                    '<button class="btn btn-secondary btn-sm" data-img-action="reuse-params" data-entry="' + escapeHtml(entry.id) + '">' + escapeHtml(t('image.reuse_params', 'Reuse parameters')) + '</button>' +
-                '</span>' +
-            '</div>' +
-            '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;word-break:break-word;">' + escapeHtml(entry.prompt || '') + '</div>' +
-            '</div>';
-    }
-
-    function renderResults() {
-        var box = el('imgResults');
-        var empty = el('imgResultsEmpty');
-        if (!box) return;
-        var entry = state.results;
-        if (!entry || !entry.images || !entry.images.length) {
-            box.innerHTML = '';
-            if (empty) empty.style.display = '';
-            show('imgDownloadAllBtn', false);
-            return;
-        }
-        if (empty) empty.style.display = 'none';
-        show('imgDownloadAllBtn', true, 'inline-block');
-        var html = [];
-        for (var i = 0; i < entry.images.length; i++) html.push(imageCardHtml(entry, i));
-        box.innerHTML = html.join('');
-    }
-
-    function renderGallery() {
-        var box = el('imgGallery');
-        var empty = el('imgGalleryEmpty');
-        if (!box) return;
-        if (!state.gallery.length) {
-            box.innerHTML = '';
-            if (empty) empty.style.display = '';
-            return;
-        }
-        if (empty) empty.style.display = 'none';
-        var html = [];
-        state.gallery.forEach(function (entry) {
-            var count = (entry.images && entry.images.length) || entry.count || 0;
-            for (var i = 0; i < (entry.images ? entry.images.length : 0); i++) {
-                html.push(imageCardHtml(entry, i));
-            }
-            if (count && (!entry.images || !entry.images.length)) {
-                // Превью не сохранено (не поместилось в бюджет localStorage) —
-                // карточка с параметрами всё равно полезна: можно повторить.
-                html.push('<div style="border:1px dashed var(--border-color);border-radius:8px;padding:8px;">' +
-                    '<div style="font-size:12px;color:var(--text-muted);">' + escapeHtml(t('image.gallery_no_preview', 'Preview not stored')) + ' (' + count + ')</div>' +
-                    '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;word-break:break-word;">' + escapeHtml(entry.prompt || '') + '</div>' +
-                    '<button class="btn btn-secondary btn-sm" style="margin-top:8px;" data-img-action="reuse-params" data-entry="' + escapeHtml(entry.id) + '">' + escapeHtml(t('image.reuse_params', 'Reuse parameters')) + '</button>' +
-                    '</div>');
-            }
-        });
-        box.innerHTML = html.join('');
-    }
-
-    // =====================================================================
-    // История (localStorage)
-    // =====================================================================
-
-    function loadHistory() {
-        try {
-            var raw = localStorage.getItem(HISTORY_KEY);
-            if (!raw) return [];
-            var parsed = JSON.parse(raw);
-            if (!Array.isArray(parsed)) return [];
-            return parsed.filter(function (e) { return e && e.id; });
-        } catch (e) {
-            return [];
-        }
-    }
-
-    /**
-     * Сохранить историю. b64 кладём только пока влезаем в бюджет: иначе одна
-     * картинка 1024² выест всю квоту localStorage и «сломает» историю целиком.
-     */
-    function persistHistory() {
-        var budget = HISTORY_B64_BUDGET;
-        var out = state.gallery.slice(0, HISTORY_LIMIT).map(function (e) {
-            var copy = {
-                id: e.id,
-                ts: e.ts,
-                prompt: e.prompt,
-                negative: e.negative,
-                params: e.params,
-                model: e.model,
-                backendId: e.backendId,
-                elapsedMs: e.elapsedMs,
-                images: []
-            };
-            (e.images || []).forEach(function (img) {
-                var size = img.b64 ? img.b64.length : 0;
-                if (size > 0 && size <= budget) {
-                    budget -= size;
-                    copy.images.push({ b64: img.b64, format: img.format || 'png' });
-                } else if (img.url) {
-                    copy.images.push({ url: img.url, format: img.format || 'png' });
-                }
-            });
-            copy.count = (e.images || []).length;
-            return copy;
-        });
-        var json = JSON.stringify(out);
-        if (json.length > HISTORY_SIZE_CHARS_MAX) {
-            // Страховка от раздувания: оставляем только метаданные.
-            out = out.map(function (e) {
-                return { id: e.id, ts: e.ts, prompt: e.prompt, negative: e.negative, params: e.params, model: e.model, backendId: e.backendId, elapsedMs: e.elapsedMs, count: e.count, images: [] };
-            });
-            json = JSON.stringify(out);
-        }
-        try {
-            localStorage.setItem(HISTORY_KEY, json);
-        } catch (e) {
-            // QuotaExceededError: оставляем историю без картинок, но с параметрами.
-            try {
-                localStorage.setItem(HISTORY_KEY, JSON.stringify(out.map(function (e) {
-                    return { id: e.id, ts: e.ts, prompt: e.prompt, negative: e.negative, params: e.params, model: e.model, backendId: e.backendId, elapsedMs: e.elapsedMs, count: e.count, images: [] };
-                })));
-            } catch (e2) { /* localStorage может быть отключён политикой */ }
-        }
-    }
-
-    function addHistoryEntry(entry) {
-        state.gallery.unshift(entry);
-        if (state.gallery.length > HISTORY_LIMIT) state.gallery = state.gallery.slice(0, HISTORY_LIMIT);
-        persistHistory();
-        renderGallery();
-    }
-
-    function findEntry(id) {
-        if (state.results && state.results.id === id) return state.results;
-        for (var i = 0; i < state.gallery.length; i++) {
-            if (state.gallery[i].id === id) return state.gallery[i];
-        }
-        return null;
-    }
-
-    // =====================================================================
-    // Форма: чтение / запись / персист
-    // =====================================================================
-
-    function readForm() {
-        return {
-            prompt: val('imgPrompt'),
-            negative: val('imgNegative'),
-            width: val('imgWidth'),
-            height: val('imgHeight'),
-            steps: val('imgSteps'),
-            cfg: val('imgCfg'),
-            sampler: val('imgSampler'),
-            scheduler: val('imgScheduler'),
-            seed: val('imgSeed'),
-            batch: val('imgBatch')
-        };
-    }
-
-    function setVal(id, value) {
-        var e = el(id);
-        if (e) e.value = value;
-    }
-
-    function applyForm(form) {
-        if (!form) return;
-        if (form.prompt !== undefined) setVal('imgPrompt', form.prompt);
-        if (form.negative !== undefined) setVal('imgNegative', form.negative);
-        if (form.width) setVal('imgWidth', form.width);
-        if (form.height) setVal('imgHeight', form.height);
-        if (form.steps) setVal('imgSteps', form.steps);
-        if (form.cfg !== undefined && form.cfg !== null) setVal('imgCfg', form.cfg);
-        if (form.seed !== undefined && form.seed !== null) setVal('imgSeed', form.seed);
-        if (form.batch) setVal('imgBatch', form.batch);
-        if (form.sampler) selectIfPresent('imgSampler', form.sampler);
-        if (form.scheduler) selectIfPresent('imgScheduler', form.scheduler);
-    }
-
-    function saveForm() {
-        try { localStorage.setItem(FORM_KEY, JSON.stringify(readForm())); } catch (e) { /* ignore */ }
-    }
-
-    function restoreForm() {
-        try {
-            var raw = localStorage.getItem(FORM_KEY);
-            if (!raw) return;
-            applyForm(JSON.parse(raw));
-        } catch (e) { /* ignore */ }
-    }
-
-    // =====================================================================
-    // Генерация
-    // =====================================================================
-
-    function setGenerating(active) {
-        state.generating = !!active;
-        var btn = el('imgGenerateBtn');
-        if (btn) btn.disabled = !!active;
-        show('imgGenSpinner', !!active, 'inline-flex');
-        if (active) {
-            state.genStartedAt = Date.now();
-            setText('imgGenElapsed', formatDuration(0));
-            if (state.genTimer) clearInterval(state.genTimer);
-            state.genTimer = setInterval(function () {
-                setText('imgGenElapsed', formatDuration(Date.now() - state.genStartedAt));
-            }, 1000);
-        } else {
-            if (state.genTimer) { clearInterval(state.genTimer); state.genTimer = null; }
-        }
-    }
-
-    async function onGenerate() {
-        if (state.generating) return;
-        var backendId = state.selectedBackendId;
-        if (!backendId) { toast(t('image.no_backend_selected', 'Select an image backend first'), 'error'); return; }
-        var form = readForm();
-        var check = validateGenerationForm(form);
-        if (!check.ok) { toast(t(check.errorKey, 'Prompt is required'), 'error'); return; }
-
-        var payload = buildGenerationPayload(form);
-        saveForm();
-        setGenerating(true);
-        var startedAt = Date.now();
-        try {
-            var resp = await requestBackend(backendId, PATH_GENERATIONS, {
-                method: 'POST',
-                body: JSON.stringify(payload),
-                timeoutMs: TIMEOUT_GENERATION_MS
-            });
-            var images = extractImages(resp);
-            if (!images.length) throw new Error(t('image.error_title', 'Generation error'));
-            var elapsed = Date.now() - startedAt;
-            var entry = {
-                id: 'g' + startedAt + '-' + Math.random().toString(36).slice(2, 8),
-                ts: Date.now(),
-                prompt: payload.prompt,
-                negative: payload.negative_prompt || '',
-                params: payload,
-                model: val('imgModelSelect'),
-                backendId: backendId,
-                elapsedMs: elapsed,
-                images: images
-            };
-            state.results = entry;
-            addHistoryEntry(entry);
-            renderResults();
-            setText('imgGenElapsed', formatDuration(elapsed));
-            toast(t('image.done', 'Generated in {t}', { t: formatDuration(elapsed) }) + ' · ' +
-                t('image.images_returned', 'Images returned: {n}', { n: images.length }), 'success');
-        } catch (e) {
-            var msg = (e && e.message) || String(e);
-            setText('imgGenElapsed', '');
-            toast(t('image.error_title', 'Generation error') + ': ' + msg, 'error');
-        } finally {
-            setGenerating(false);
-        }
-    }
-
-    function downloadImage(entryId, index) {
-        var entry = findEntry(entryId);
-        if (!entry || !entry.images || !entry.images[index]) return;
-        var img = entry.images[index];
-        var src = img.b64 ? b64ToDataUrl(img.b64, img.format) : (img.url || '');
-        if (!src) return;
-        var ext = String(img.format || 'png').toLowerCase();
-        if (ext === 'jpeg') ext = 'jpg';
-        var a = document.createElement('a');
-        a.href = src;
-        a.download = 'image_' + (entry.ts || Date.now()) + '_' + (index + 1) + '.' + ext;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-    }
-
-    function downloadAll() {
-        var entry = state.results;
-        if (!entry || !entry.images) return;
-        // Последовательно, с небольшой задержкой: браузеры режут очередь
-        // одновременных «скачиваний» и часть файлов молча теряется.
-        entry.images.forEach(function (img, i) {
-            setTimeout(function () { downloadImage(entry.id, i); }, i * 250);
-        });
-    }
-
-    function reuseParams(entryId) {
-        var entry = findEntry(entryId);
-        if (!entry) return;
-        var p = entry.params || {};
-        applyForm({
-            prompt: entry.prompt || p.prompt || '',
-            negative: entry.negative || p.negative_prompt || '',
-            width: p.width,
-            height: p.height,
-            steps: p.steps,
-            cfg: p.cfg_scale,
-            sampler: p.sampler_name,
-            scheduler: p.scheduler,
-            seed: (p.seed !== undefined && p.seed !== -1) ? p.seed : '',
-            batch: p.batch_size
-        });
-        toast(t('image.reuse_params', 'Reuse parameters'), 'info');
     }
 
     // =====================================================================
@@ -1667,11 +1101,7 @@
         var actionEl = target && target.closest ? target.closest('[data-img-action]') : null;
         if (!actionEl) return;
         var action = actionEl.getAttribute('data-img-action');
-        if (action === 'download-image') {
-            downloadImage(actionEl.getAttribute('data-entry'), parseInt(actionEl.getAttribute('data-index'), 10) || 0);
-        } else if (action === 'reuse-params') {
-            reuseParams(actionEl.getAttribute('data-entry'));
-        } else if (action === 'load-model') {
+        if (action === 'load-model') {
             onLoadModel(actionEl.getAttribute('data-model'));
         } else if (action === 'unload-model') {
             onUnloadModel(actionEl.getAttribute('data-model'));
@@ -1691,34 +1121,22 @@
         var page = el('image-page');
         if (!page) return;
         state.bound = true;
+        // Делегирование: и таблица моделей, и строки bundle перерисовываются
+        // через innerHTML, поэтому слушателей на кнопках было бы не навесить.
         page.addEventListener('click', onClick);
 
-        var genBtn = el('imgGenerateBtn');
-        if (genBtn) genBtn.addEventListener('click', onGenerate);
         var refreshBtn = el('imgRefreshBtn');
         if (refreshBtn) refreshBtn.addEventListener('click', function () { refresh(); });
         var modelsRefreshBtn = el('imgModelsRefreshBtn');
-        if (modelsRefreshBtn) modelsRefreshBtn.addEventListener('click', function () { loadModels(); loadCapabilities(); });
-        var dlAll = el('imgDownloadAllBtn');
-        if (dlAll) dlAll.addEventListener('click', downloadAll);
-        var clearBtn = el('imgGalleryClear');
-        if (clearBtn) clearBtn.addEventListener('click', function () {
-            state.gallery = [];
-            state.results = null;
-            persistHistory();
-            renderGallery();
-            renderResults();
-            toast(t('image.gallery_cleared', 'Gallery cleared'), 'success');
-        });
+        if (modelsRefreshBtn) modelsRefreshBtn.addEventListener('click', function () { loadModels(); });
         var backendSel = el('imgBackendSelect');
         if (backendSel) backendSel.addEventListener('change', function () {
             state.selectedBackendId = this.value;
             stopLoadPolling();
             loadModels();
-            loadCapabilities();
         });
-        var modelSel = el('imgModelSelect');
-        if (modelSel) modelSel.addEventListener('change', function () { applyModelDefaults(this.value); });
+        // #imgModelSelect остался в шапке как индикатор выбранной модели:
+        // формы генерации, к которой применялись дефолты профиля, в WebUI больше нет.
         var addRow = el('imgBundleAddRow');
         if (addRow) addRow.addEventListener('click', function () {
             var rows = readBundleRows();
@@ -1741,29 +1159,21 @@
         bindEvents();
         if (!state.inited) {
             state.inited = true;
-            state.gallery = loadHistory();
             // HF-токен общий с GGUF-страницей — показываем уже сохранённый.
             var tokenInput = el('imgHfToken');
             if (tokenInput) tokenInput.value = hfToken();
-            renderCapabilitySelects();
             renderFamilySelect();
             renderBundleRows();
-            renderGallery();
-            renderResults();
-            restoreForm();
             if (window.I18N && typeof I18N.getLang === 'function') {
                 // Смена языка перерисовывает статичный HTML через App._updateUITranslations,
-                // но динамические куски (таблица моделей, галерея, строки bundle)
-                // собраны в JS — их нужно перерисовать вручную.
+                // но динамические куски (таблица моделей, строки bundle) собраны в
+                // JS — их нужно перерисовать вручную.
                 window.addEventListener('i18n:changed', function () {
                     renderModelsTable();
-                    renderGallery();
-                    renderResults();
                     // Строки bundle перерисовываются из текущих значений DOM,
                     // иначе смена языка стёрла бы введённые repo/filename.
                     renderBundleRows(readBundleRows());
                     renderFamilySelect();
-                    renderCapabilitySelects();
                 });
             }
         }
@@ -1793,10 +1203,9 @@
         _state: state,
         // Действия для интеграционного smoke-теста с мок-DOM
         // (webui/js/modules/image-page-dom.test.js): проверить реальные
-        // сценарии (refresh / generate / bundle / load) без браузера.
+        // сценарии (refresh / load / unload / bundle) без браузера.
         _actions: {
             refresh: refresh,
-            generate: onGenerate,
             loadModel: onLoadModel,
             unloadModel: onUnloadModel,
             bundleDownload: onBundleDownload,

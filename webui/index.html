@@ -83,14 +83,6 @@
                 <a href="#backends" class="nav-item" data-page="backends">
                     <span class="nav-icon-wrap"><i class="fas fa-server fa-fw"></i></span> <span data-i18n="nav.backends">Бэкенды</span>
                 </a>
-                <!-- R-Image: управление image-бэкендами (тип image_cpp).
-                     Пункт скрыт по умолчанию и появляется ТОЛЬКО когда в кластере
-                     есть хотя бы один image-бэкенд: видимость переключает
-                     js/modules/image-backends-page.js (syncVisibility) на каждом
-                     опросе GET /api/v1/cluster, а не только при входе на страницу. -->
-                <a href="#image-backends" class="nav-item" data-page="image-backends" style="display:none">
-                    <span class="nav-icon-wrap"><i class="fas fa-images fa-fw"></i></span> <span data-i18n="nav.image_backends">Image-бэкенды</span>
-                </a>
                 <a href="#models" class="nav-item" data-page="models">
                     <span class="nav-icon-wrap"><i class="fas fa-brain fa-fw"></i></span> <span data-i18n="nav.models">Модели</span>
                 </a>
@@ -108,7 +100,7 @@
                      image_cpp - ортогональный класс бэкендов, он сосуществует с текстовым
                      (см. internal/config/backend_type_validation.go). -->
                 <a href="#image" class="nav-item" data-page="image">
-                    <span class="nav-icon-wrap"><i class="fas fa-image fa-fw"></i></span> <span data-i18n="nav.image">Изображения</span>
+                    <span class="nav-icon-wrap"><i class="fas fa-image fa-fw"></i></span> <span data-i18n="nav.image_models">Image-модели</span>
                 </a>
                 <a href="virtual-models.html" target="_blank" rel="noopener" class="nav-item" data-page="virtual-models">
                     <span class="nav-icon-wrap"><i class="fas fa-share-nodes fa-fw"></i></span> <span data-i18n="nav.virtual_models">Виртуальные модели</span>
@@ -342,61 +334,6 @@
                                 <tr><td colspan="14" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
                             </tbody>
                         </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Image Backends Page (R-Image): управление бэкендами генерации
-                 изображений (тип backendType=image_cpp). Отдельная страница, а не
-                 вкладка внутри «Бэкендов»: у image-воркера свои поля
-                 (imagePort/gpuIndex) и блок image с состоянием модели и потоком
-                 запросов, которых нет у Ollama/llama.cpp бэкендов.
-                 Страница скрыта, пока в кластере нет ни одного image_cpp-бэкенда
-                 (js/modules/image-backends-page.js, syncVisibility). -->
-            <div class="page" id="image-backends-page" style="display:none">
-                <div class="card">
-                    <div class="card-header">
-                        <h3 data-i18n="imageBackends.title">Управление image-бэкендами</h3>
-                        <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                            <button class="btn btn-secondary" id="imageBackendsRefresh" data-i18n="imageBackends.refresh">Обновить</button>
-                            <button class="btn btn-primary" id="imageBackendsAdd" data-i18n="imageBackends.add">Добавить бэкенд</button>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <p style="margin:0 0 6px;font-size:12px;color:var(--text-muted);" data-i18n="imageBackends.hint">Бэкенды генерации изображений (тип image_cpp): порт воркера, GPU, состояние, модели и поток запросов.</p>
-                        <p style="margin:0 0 12px;font-size:12px;color:var(--text-muted);">
-                            <i class="fas fa-circle-info" aria-hidden="true"></i>
-                            <span data-i18n="imageBackends.policy">Сосуществование с текстом</span>:
-                            <!-- Фактическое значение подгружает модуль страницы из
-                                 /api/v1/metrics (image.coexistence_policy + лимиты гейта).
-                                 Литерал «image_cpp» здесь стоять не должен: это ТИП
-                                 бэкенда, а не значение политики (выглядело как настройка). -->
-                            <span id="imageBackendsPolicy">—</span>
-                        </p>
-                        <div id="imageBackendsNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
-                        <div class="table-responsive">
-                            <table class="data-table" id="imageBackendsTable">
-                                <thead>
-                                    <tr>
-                                        <th data-i18n="imageBackends.col_id">ID</th>
-                                        <th data-i18n="imageBackends.col_name">Имя</th>
-                                        <th data-i18n="imageBackends.col_host">Хост</th>
-                                        <th data-i18n="imageBackends.col_port">Порт воркера</th>
-                                        <th data-i18n="imageBackends.col_gpu">GPU</th>
-                                        <th data-i18n="imageBackends.col_state">Состояние</th>
-                                        <th data-i18n="imageBackends.col_model">Текущая модель</th>
-                                        <th data-i18n="imageBackends.col_vram">VRAM</th>
-                                        <th data-i18n="imageBackends.col_requests">Запросы</th>
-                                        <th data-i18n="imageBackends.col_rps">RPS</th>
-                                        <th data-i18n="imageBackends.col_avg">Среднее время</th>
-                                        <th data-i18n="imageBackends.col_actions">Действия</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="imageBackendsBody">
-                                    <tr><td colspan="12" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -678,98 +615,93 @@
                         <!-- Notice: нет image-бэкендов / API воркера ещё не отдаёт данные -->
                         <div id="imgNotice" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
 
-                        <!-- Generation form -->
-                        <div class="form-row">
-                            <div class="form-group" style="flex:2;">
-                                <label data-i18n="image.prompt">Промпт</label>
-                                <textarea id="imgPrompt" class="form-control" rows="3" data-i18n-placeholder="image.prompt_placeholder" placeholder="a cat on a windowsill, soft light"></textarea>
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group" style="flex:2;">
-                                <label data-i18n="image.negative">Негативный промпт</label>
-                                <textarea id="imgNegative" class="form-control" rows="2" data-i18n-placeholder="image.negative_placeholder" placeholder="blurry, low quality, watermark"></textarea>
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label data-i18n="image.width">Ширина</label>
-                                <input type="number" id="imgWidth" class="form-control" value="512" min="64" max="4096" step="64">
-                                <small style="color:var(--text-muted);font-size:11px;" data-i18n="image.size_hint">64..4096, шаг 64</small>
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.height">Высота</label>
-                                <input type="number" id="imgHeight" class="form-control" value="512" min="64" max="4096" step="64">
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.steps">Шаги</label>
-                                <input type="number" id="imgSteps" class="form-control" value="20" min="1" max="100">
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.cfg">CFG scale</label>
-                                <input type="number" id="imgCfg" class="form-control" value="1" min="0" max="30" step="0.1">
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label data-i18n="image.sampler">Самплер</label>
-                                <select class="form-control" id="imgSampler"></select>
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.scheduler">Шедулер</label>
-                                <select class="form-control" id="imgScheduler"></select>
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.seed">Seed</label>
-                                <input type="number" id="imgSeed" class="form-control" data-i18n-placeholder="image.seed_placeholder" placeholder="пусто = случайный">
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.batch">Батч</label>
-                                <input type="number" id="imgBatch" class="form-control" value="1" min="1" max="8">
-                            </div>
-                        </div>
-                        <small id="imgCapsNote" style="display:block;margin-bottom:12px;color:var(--text-muted);font-size:11px;"></small>
-                        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
-                            <button class="btn btn-primary" id="imgGenerateBtn" data-i18n="image.generate">Сгенерировать</button>
-                            <span id="imgGenSpinner" style="display:none;align-items:center;gap:6px;font-size:13px;"><i class="fas fa-circle-notch fa-spin" aria-hidden="true"></i> <span data-i18n="image.generating">Генерация...</span></span>
-                            <span id="imgGenElapsed" style="font-size:13px;color:var(--text-muted);"></span>
-                        </div>
-                        <!-- ВАЖНО: движок не умеет отменять генерацию в полёте (cancel есть
-                             только для queued-джоб), поэтому кнопки Cancel здесь нет и
-                             процент шагов не рисуется - только elapsed. -->
-                        <small style="display:block;margin-top:8px;color:var(--text-muted);font-size:11px;" data-i18n="image.no_cancel_hint">Отмена генерации в полёте движком не поддерживается - только для джоб в очереди.</small>
                     </div>
                 </div>
 
-                <!-- Result of the last generation -->
-                <div class="card">
+
+
+                <!-- R-Image Phase 9: страница «Image-модели» — табы в стиле «GGUF модели»
+                     (.gguf-tabs/.gguf-tab/.gguf-tab-content из pages.css). Показ
+                     сгенерированных картинок из WebUI убран: он для настройки и
+                     понимания состояния, показ — задача клиентов. -->
+                <div class="gguf-tabs" id="imTabs" role="tablist">
+                    <button type="button" class="gguf-tab active" data-im-tab="overview" data-i18n="imageModels.tab_overview">Обзор</button>
+                    <button type="button" class="gguf-tab" data-im-tab="hf" data-i18n="imageModels.tab_hf">HuggingFace</button>
+                    <button type="button" class="gguf-tab" data-im-tab="models" data-i18n="imageModels.tab_models">Модели на диске</button>
+                    <button type="button" class="gguf-tab" data-im-tab="loaded" data-i18n="imageModels.tab_loaded">Загруженные</button>
+                    <button type="button" class="gguf-tab" data-im-tab="downloads" data-i18n="imageModels.tab_downloads">Загрузки</button>
+                    <button type="button" class="gguf-tab" data-im-tab="settings" data-i18n="imageModels.tab_settings">Настройки</button>
+                </div>
+
+                <!-- Таб «Обзор»: карточка image-бэкендов (CRUD, порт, GPU, состояние,
+                     VRAM, счётчики запросов, политика) + «Проверка бэкенда». -->
+                <div class="gguf-tab-content active" id="imTabOverview">
+<div class="card">
                     <div class="card-header">
-                        <h3><i class="fas fa-images section-icon-i"></i> <span data-i18n="image.result">Результат</span></h3>
-                        <div class="card-actions">
-                            <button class="btn btn-secondary" id="imgDownloadAllBtn" style="display:none;" data-i18n="image.download_all">Скачать все</button>
+                        <h3 data-i18n="imageBackends.title">Управление image-бэкендами</h3>
+                        <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <button class="btn btn-secondary" id="imageBackendsRefresh" data-i18n="imageBackends.refresh">Обновить</button>
+                            <button class="btn btn-primary" id="imageBackendsAdd" data-i18n="imageBackends.add">Добавить бэкенд</button>
                         </div>
                     </div>
                     <div class="card-body">
-                        <div id="imgResults" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;"></div>
-                        <div id="imgResultsEmpty" class="loading-cell" data-i18n="image.no_results">Пока ничего не сгенерировано</div>
-                    </div>
-                </div>
-
-                <!-- Gallery (localStorage) -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3><i class="fas fa-clock-rotate-left section-icon-i"></i> <span data-i18n="image.gallery">Галерея</span></h3>
-                        <div class="card-actions">
-                            <button class="btn btn-secondary" id="imgGalleryClear" data-i18n="image.clear_gallery">Очистить галерею</button>
+                        <p style="margin:0 0 6px;font-size:12px;color:var(--text-muted);" data-i18n="imageBackends.hint">Бэкенды генерации изображений (тип image_cpp): порт воркера, GPU, состояние, модели и поток запросов.</p>
+                        <p style="margin:0 0 12px;font-size:12px;color:var(--text-muted);">
+                            <i class="fas fa-circle-info" aria-hidden="true"></i>
+                            <span data-i18n="imageBackends.policy">Сосуществование с текстом</span>:
+                            <!-- Фактическое значение подгружает модуль страницы из
+                                 /api/v1/metrics (image.coexistence_policy + лимиты гейта).
+                                 Литерал «image_cpp» здесь стоять не должен: это ТИП
+                                 бэкенда, а не значение политики (выглядело как настройка). -->
+                            <span id="imageBackendsPolicy">—</span>
+                        </p>
+                        <div id="imageBackendsNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="imageBackendsTable">
+                                <thead>
+                                    <tr>
+                                        <th data-i18n="imageBackends.col_id">ID</th>
+                                        <th data-i18n="imageBackends.col_name">Имя</th>
+                                        <th data-i18n="imageBackends.col_host">Хост</th>
+                                        <th data-i18n="imageBackends.col_port">Порт воркера</th>
+                                        <th data-i18n="imageBackends.col_gpu">GPU</th>
+                                        <th data-i18n="imageBackends.col_state">Состояние</th>
+                                        <th data-i18n="imageBackends.col_model">Текущая модель</th>
+                                        <th data-i18n="imageBackends.col_vram">VRAM</th>
+                                        <th data-i18n="imageBackends.col_requests">Запросы</th>
+                                        <th data-i18n="imageBackends.col_rps">RPS</th>
+                                        <th data-i18n="imageBackends.col_avg">Среднее время</th>
+                                        <th data-i18n="imageBackends.col_actions">Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="imageBackendsBody">
+                                    <tr><td colspan="12" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
-                    <div class="card-body">
-                        <div id="imgGallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;"></div>
-                        <div id="imgGalleryEmpty" class="loading-cell" data-i18n="image.gallery_empty">Генераций пока нет</div>
-                        <small style="display:block;margin-top:10px;color:var(--text-muted);font-size:11px;" data-i18n="image.gallery_hint">История хранится в браузере (localStorage, лимит ~5 МБ): у старых картинок превью может пропасть после перезагрузки, параметры сохраняются.</small>
+                </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-vial-circle-check section-icon-i"></i> <span data-i18n="imageModels.selftest_title">Проверка бэкенда</span></h3>
+                            <div class="card-actions">
+                                <button class="btn btn-secondary" id="imSelfTestBtn" data-i18n="imageModels.selftest_btn">Проверить</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <!-- Проверка НЕ показывает картинку: 1 шаг 64x64, в UI едет
+                                 только результат (OK/ошибка) и время — это диагностика
+                                 «система жива», а не витрина генерации. -->
+                            <small style="display:block;color:var(--text-muted);font-size:11px;" data-i18n="imageModels.selftest_hint">1 шаг 64x64, показывается только результат и время — сгенерированное изображение в WebUI не отображается.</small>
+                            <div id="imSelfTestResult" style="margin-top:10px;font-size:13px;color:var(--text-muted);"></div>
+                        </div>
                     </div>
                 </div>
 
+                <!-- Таб «Модели на диске»: существующая таблица image-моделей
+                     (id сохранены: модуль image-page.js продолжает их заполнять). -->
+                <div class="gguf-tab-content" id="imTabModels">
                 <!-- Image models (bundles) -->
                 <div class="card">
                     <div class="card-header">
@@ -779,10 +711,6 @@
                         </div>
                     </div>
                     <div class="card-body">
-                        <div id="imgLoadProgress" style="display:none;margin-bottom:12px;">
-                            <div id="imgLoadProgressLabel" style="font-size:12px;color:var(--text-muted);margin-bottom:4px;"></div>
-                            <div class="metric-mini-bar" id="imgLoadProgressBar" style="display:none;"><div class="metric-mini-fill" id="imgLoadProgressFill" style="width:0%"></div></div>
-                        </div>
                         <div class="table-responsive">
                             <table class="data-table" id="imgModelsTable">
                                 <thead>
@@ -803,6 +731,14 @@
                         </div>
                     </div>
                 </div>
+
+                </div>
+
+                <!-- Таб «HuggingFace»: поиск репозиториев, файлы с предложенными
+                     ролями и сборка bundle (id карточки сохранены — модуль
+                     image-page.js продолжает работать, роли приходят с сервера
+                     полем suggestedRole). -->
+                <div class="gguf-tab-content" id="imTabHf">
 
                 <!-- HF bundle download -->
                 <div class="card">
@@ -838,6 +774,42 @@
                     </div>
                 </div>
 
+                </div>
+
+                <!-- Таб «Загруженные»: текущая модель воркера и прогресс загрузки
+                     (SSE /api/image/models/load/progress/stream). Прогресс-блок
+                     сохранён с прежними id — модуль image-page.js пишет в него как и раньше. -->
+                <div class="gguf-tab-content" id="imTabLoaded">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-microchip section-icon-i"></i> <span data-i18n="imageModels.loaded_title">Загруженная модель</span></h3>
+                        </div>
+                        <div class="card-body">
+                            <div id="imLoadedState" style="font-size:13px;color:var(--text-muted);"></div>
+                        <div id="imgLoadProgress" style="display:none;margin-bottom:12px;">
+                            <div id="imgLoadProgressLabel" style="font-size:12px;color:var(--text-muted);margin-bottom:4px;"></div>
+                            <div class="metric-mini-bar" id="imgLoadProgressBar" style="display:none;"><div class="metric-mini-fill" id="imgLoadProgressFill" style="width:0%"></div></div>
+                        </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Таб «Загрузки»: активные загрузки, история и «остатки»
+                     (GET /api/hf/downloads, POST /api/hf/cleanup). Контейнер заполняет
+                     модуль таба; пока он пуст — здесь видно подсказку. -->
+                <div class="gguf-tab-content" id="imTabDownloads">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-cloud-arrow-down section-icon-i"></i> <span data-i18n="imageModels.downloads_title">Загрузки моделей</span></h3>
+                        </div>
+                        <div class="card-body">
+                            <div id="imDownloadsHost" class="loading-cell" data-i18n="common.loading">Загрузка...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Таб «Настройки»: профили image-моделей (существующий редактор) -->
+                <div class="gguf-tab-content" id="imTabSettings">
                 <!-- Image model profiles (R-Image Phase 6, webui/js/modules/image-profiles.js).
                      Контейнер #imageProfiles - точка монтирования модуля:
                      window.ImageProfiles.mount('imageProfiles') вызывается из
@@ -874,6 +846,7 @@
                         </div>
                         <div id="imageProfileEditor"></div>
                     </div>
+                </div>
                 </div>
             </div>
 
@@ -2159,6 +2132,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          Грузится ДО image-page.js: его init() вызывает window.ImageProfiles.mount. -->
     <script defer src="js/modules/image-profiles.js?v=R83"></script>
     <script defer src="js/modules/image-page.js?v=R83"></script>
+    <script defer src="js/modules/image-models-page.js?v=R83"></script>
     <script defer src="js/modules/image-backends-page.js?v=R83"></script>
     <script defer src="js/modules/websocket.js?v=R83"></script>
     <script defer src="js/modules/renderers.js?v=R83"></script>

@@ -290,9 +290,12 @@ const pure = Page.pure;
 
 const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
 
-const NAV_SEL = 'a[data-page="image-backends"]';
+// Phase 9: управление бэкендами живёт в табе «Обзор» объединённой страницы
+// «Image-модели», поэтому и навигация, и страница — от неё (селектор берём
+// буквально тот, что модуль ищет: a[data-page="image"]).
+const NAV_SEL = 'a[data-page="image"]';
 function navEl() { return selectorEls[NAV_SEL]; }
-function pageEl() { return getEl('image-backends-page'); }
+function pageEl() { return getEl('image-page'); }
 function bodyHtml() { return getEl('imageBackendsBody').innerHTML; }
 
 /** Синтетический клик по [data-ib-action] внутри делегированного контейнера. */
@@ -323,7 +326,10 @@ function lastRequest(filter) {
 
     // --- 1. Статическая сверка JS <-> HTML <-> index.html -----------------
     await check('id страницы объявлены в webui/index.html', function () {
-        const required = ['image-backends-page', 'imageBackendsTable', 'imageBackendsBody',
+        // Phase 9: отдельной страницы «Image-бэкенды» больше нет — её карточка
+        // живёт в табе «Обзор» объединённой страницы «Image-модели»
+        // (id таблицы/политики/notice сохранены, поэтому модуль не менялся).
+        const required = ['image-page', 'imTabOverview', 'imageBackendsTable', 'imageBackendsBody',
             'imageBackendsRefresh', 'imageBackendsAdd', 'imageBackendsNotice'];
         const missing = required.filter(function (id) { return !HTML_IDS.has(id); });
         assert.deepStrictEqual(missing, [], 'нет в index.html: ' + missing.join(', '));
@@ -390,22 +396,28 @@ function lastRequest(filter) {
         Page._actions.closeEditor();
     });
 
-    await check('пункт навигации и страница есть в index.html и по умолчанию скрыты, скрипт подключён', function () {
-        assert.ok(/<a href="#image-backends" class="nav-item" data-page="image-backends" style="display:none">/.test(INDEX_HTML),
-            'нет пункта навигации <a data-page="image-backends" style="display:none">');
-        assert.ok(/id="image-backends-page"[^>]*style="display:none"/.test(INDEX_HTML), 'страница не скрыта по умолчанию');
-        assert.ok(INDEX_HTML.indexOf('data-i18n="nav.image_backends"') !== -1, 'нет data-i18n пункта');
+    await check('пункт навигации и страница «Image-модели» есть в index.html, модуль подключён', function () {
+        // Phase 9: управление image-бэкендами переехало в таб «Обзор» страницы
+        // «Image-модели» — отдельного пункта меню нет, а видимость страницы
+        // решает syncVisibility по составу кластера (проверяется ниже).
+        assert.ok(/<a href="#image" class="nav-item" data-page="image">/.test(INDEX_HTML),
+            'нет пункта навигации <a data-page="image">');
+        assert.ok(/id="image-page"/.test(INDEX_HTML), 'нет страницы id="image-page"');
+        assert.ok(INDEX_HTML.indexOf('id="imTabOverview"') !== -1, 'нет таба «Обзор»');
+        assert.ok(INDEX_HTML.indexOf('data-i18n="nav.image_models"') !== -1, 'нет data-i18n пункта');
         assert.ok(INDEX_HTML.indexOf('js/modules/image-backends-page.js?v=R83') !== -1, 'нет script-тега модуля');
     });
 
-    await check('app.js: пункт переключает страницу и рендер подключён к опросу кластера', function () {
-        // switchPage() ищет страницу как getElementById(page + '-page') и пункт как
-        // [data-page=page], поэтому id страницы обязан быть image-backends-page
-        // (проверено выше), а в refreshPage должен быть свой case.
-        assert.ok(/case 'image-backends':/.test(APP_SRC), 'нет case image-backends в refreshPage');
+    await check('app.js: таблица рендерится на странице «Image-модели» и видимость синхронизируется', function () {
+        // Phase 9: собственного case у страницы бэкендов больше нет — рендер и
+        // видимость висят на case 'image' (таб «Обзор»), а периодический опрос
+        // кластера обновляет таблицу, пока страница открыта.
+        assert.ok(/case 'image':/.test(APP_SRC), "нет case 'image' в refreshPage");
         assert.ok(APP_SRC.indexOf('window.ImageBackendsPage.render(') !== -1, 'app.js не рендерит таблицу');
         assert.ok(APP_SRC.indexOf('window.ImageBackendsPage.syncVisibility(') !== -1, 'app.js не синхронизирует видимость');
-        assert.ok(APP_SRC.indexOf("page === 'image-backends'") !== -1, 'switchPage не перечитывает кластер для страницы');
+        assert.ok(APP_SRC.indexOf("page === 'image'") !== -1, 'switchPage не перечитывает кластер для страницы');
+        assert.ok(APP_SRC.indexOf("currentPage === 'image'") !== -1, 'периодический опрос не обновляет таблицу');
+        assert.strictEqual(/case 'image-backends':/.test(APP_SRC), false, 'остался мёртвый case image-backends');
     });
 
     // --- 2. mount + рендер таблицы ---------------------------------------

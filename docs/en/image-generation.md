@@ -535,3 +535,34 @@ Why it works this way:
   (aggregates plus a feed of the latest requests with path, model, size, steps,
   duration and status), and in the backends table the Active/RPS/Avg RT columns of an
   `image_cpp` backend are filled from `image.requests`.
+
+### 12.4 "Image test" page - try model settings and see the result
+
+A separate page (nav item "Image test" right after "Image models") that appears
+**only when the cluster has an `image_cpp` backend**.
+
+WHY A SEPARATE PAGE: "Image models" is about configuration and state, and showing
+generated images there is deliberately excluded (see 12.3). The test page is the
+opposite: it is the only WebUI page that displays an image, and it can simply be
+left unopened.
+
+What it does:
+
+- pick a backend (`image_cpp`) and a model, buttons "Load/Unload model",
+  "From profile" - fill the form with the model profile defaults
+  (steps/cfg/sampler/size);
+- pick the request surface: OpenAI `/v1/images/generations`, A1111
+  `/sdapi/v1/txt2img`, native `/api/image/generate`; parameters - prompt,
+  negative, width, height, steps, cfg, sampler, scheduler, seed, batch
+  (limits come from `/api/image/capabilities`);
+- a "What the request will contain" block with live JSON and curl: you can see
+  which settings are applied instead of guessing from the picture;
+- the result: image, duration, HTTP status, `model`, `seed`, size; run history is
+  **in-memory (this tab only)** to compare settings, "To form" restores the
+  parameters - no localStorage, no gallery;
+- the request goes over the balancer **client path**, so it passes the VRAM gate
+  and is counted in metrics: your own checks show up in Monitor;
+- engine errors are explained: "get sd version from file failed" means the GGUF
+  was built for ComfyUI and sd.cpp cannot read it (see 8.1); "no image model is
+  loaded" means press "Load model"; OOM means reduce size/steps/batch or enable
+  offload; "port still busy" means the engine is still releasing the socket.

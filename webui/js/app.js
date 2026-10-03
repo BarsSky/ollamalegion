@@ -183,6 +183,7 @@ const ui = (function () {
             queue: 'Queue',
             gguf: 'GGUF Models',
             image: 'Image models',
+            'image-test': 'Image test',
             logs: 'System Logs',
             settings: 'Settings',
             agents: 'Agents'
@@ -311,6 +312,18 @@ const ui = (function () {
                 if (window.ImageBackendsPage) {
                     window.ImageBackendsPage.mount();
                     window.ImageBackendsPage.render(data.backends);
+                    window.ImageBackendsPage.syncVisibility(data.backends);
+                }
+                break;
+            case 'image-test':
+                // 2026-10-03: страница-инструмент «Image-тест» — проверить настройки
+                // модели и получить результат. Единственное место WebUI, где
+                // показывается сгенерированное изображение; видна только при
+                // наличии image_cpp-бэкенда (syncVisibility ниже).
+                if (window.ImageTestPage) {
+                    window.ImageTestPage.init();
+                }
+                if (window.ImageBackendsPage) {
                     window.ImageBackendsPage.syncVisibility(data.backends);
                 }
                 break;
@@ -864,6 +877,13 @@ const ui = (function () {
                 if (currentPage === 'image') {
                     window.ImageBackendsPage.render(state.backends);
                     if (window.ImageModelsPage) window.ImageModelsPage.render(state.backends);
+                }
+                // «Image-тест»: состояние модели и лимиты обновляем на каждом опросе,
+                // иначе после загрузки модели из другого места страница показывала бы
+                // устаревший «not_loaded».
+                if (window.ImageTestPage) {
+                    window.ImageTestPage.render(state.backends);
+                    if (currentPage === 'image-test') window.ImageTestPage.refresh();
                 }
             }
 

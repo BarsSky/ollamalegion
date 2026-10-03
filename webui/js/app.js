@@ -920,8 +920,15 @@ const ui = (function () {
                 BackendTypeFilter.syncFromClusterState(state);
             }
             // Бейдж уже обновлён внутри BackendTypeFilter.syncFromClusterState → updateUI → updateEngineBadge
+            //
+            // R84 (2026-10-03): свежесть данных отмечаем ЗДЕСЬ, а не в каждом
+            // вызывающем: fetchClusterState дёргают и опрос, и кнопка, и переход
+            // по страницам. Иначе индикатор в шапке показывал «нет данных» до
+            // первого тика таймера, хотя данные уже пришли.
+            if (window.DataRefresh) window.DataRefresh.markFresh();
         } catch (e) {
             Api.handleError(e, window.I18N ? I18N.t('app.error_loading_cluster') : 'Error loading cluster state');
+            if (window.DataRefresh) window.DataRefresh.markError(e);
         }
     }
 

@@ -147,6 +147,8 @@ check('freshnessLabel: «Обновлено … назад · авто» / «· 
     assert.strictEqual(DR.freshnessLabel(2, true, ''), 'Обновлено только что назад · авто');
     assert.strictEqual(DR.freshnessLabel(30, false, ''), 'Обновлено 30 с назад · пауза');
     assert.strictEqual(DR.freshnessLabel(30, true, 'HTTP 502'), 'не удалось обновить: HTTP 502');
+    // Без данных шаблон не должен давать «Обновлено нет данных назад».
+    assert.strictEqual(DR.freshnessLabel(-1, true, ''), 'нет данных · авто');
 });
 
 check('ageSeconds: до первого обновления — «нет данных», после — считается', function () {

@@ -133,6 +133,9 @@
     function freshnessLabel(sec, isAuto, err) {
         if (err) return t('refresh.error', 'не удалось обновить: {error}', { error: err });
         var mode = isAuto ? t('refresh.auto', 'авто') : t('refresh.paused', 'пауза');
+        // Без данных шаблон «Обновлено {age} назад» давал «Обновлено нет данных
+        // назад» — подпись собираем по-разному.
+        if (sec < 0) return t('refresh.never', 'нет данных') + ' · ' + mode;
         return t('refresh.updated_ago', 'Обновлено {age} назад', { age: formatAge(sec) }) + ' · ' + mode;
     }
 

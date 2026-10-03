@@ -241,6 +241,12 @@ const ui = (function () {
                 break;
             case 'backends':
                 var filteredBackendsB = filterBackendsForUI(data.backends);
+                // 2026-10-03: делегированный обработчик «Подключение клиентов»
+                // (показать/скопировать ключ, копировать curl) — один на документ,
+                // поэтому монтируем при первом входе на страницу «Бэкенды».
+                if (window.ClientAccess && typeof window.ClientAccess.mount === 'function') {
+                    window.ClientAccess.mount();
+                }
                 backendsPage([...filteredBackendsB].sort(function(a, b) { return (a.id || '').localeCompare(b.id || ''); }));
                 // R-Image: видимость пункта «Image-бэкенды» зависит от состава
                 // кластера, а не от активной страницы, поэтому синхронизируем её

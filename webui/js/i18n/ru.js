@@ -679,6 +679,33 @@ window.I18N_RU = {
   "renderers.no_data": "Нет данных",
   "renderers.no_backend_data": "Нет данных о бэкендах",
 
+  // clientAccess — блок «Подключение клиентов» рядом с бэкендом (2026-10-03).
+  // Ключ здесь тот же, что WebUI отправляет в X-API-Token; показываем его
+  // потому, что клиенты (SillyTavern/Open WebUI/n8n) требуют непустое поле
+  // «API key» даже там, где сервер его не проверяет.
+  "clientAccess.title": "Подключение клиентов",
+  "clientAccess.key_label": "Ключ (X-API-Token / Bearer)",
+  "clientAccess.key_absent": "Ключ не задан в конфиге WebUI (проверка выключена)",
+  "clientAccess.show": "Показать",
+  "clientAccess.hide": "Скрыть",
+  "clientAccess.copy": "Копировать",
+  "clientAccess.copied": "Ключ скопирован",
+  "clientAccess.copy_failed": "Не удалось скопировать",
+  "clientAccess.copy_curl": "Копировать curl",
+  "clientAccess.copied_curl": "curl скопирован",
+  "clientAccess.ep_openai_images": "OpenAI-совместимая генерация изображений",
+  "clientAccess.ep_a1111": "A1111 (SillyTavern, LibreChat)",
+  "clientAccess.ep_openai_models": "Список моделей (OpenAI)",
+  "clientAccess.ep_worker_api": "API воркера (через балансер)",
+  "clientAccess.ep_ollama_chat": "Ollama API (чат)",
+  "clientAccess.ep_ollama_tags": "Ollama API (список моделей)",
+  "clientAccess.ep_openai_chat": "OpenAI-совместимый чат (через балансер)",
+  "clientAccess.ep_llama_chat": "OpenAI-совместимый чат (Open WebUI, Cline, Cursor)",
+  "clientAccess.ep_llama_models": "Список моделей (OpenAI)",
+  "clientAccess.ep_ollama_chat_lb": "Ollama-совместимая поверхность",
+  "clientAccess.key_note_optional": "На /v1/images/* и /sdapi/v1/* ключ не проверяется: клиент требует непустое значение — вставьте показанный ключ (или любое другое).",
+  "clientAccess.key_note_text": "Текстовым клиентам ключ можно указать любым, если в конфиге балансера не включена проверка клиентского ключа; админские /api/v1/* требуют именно этот ключ.",
+
   // dashboard
   "renderers.healthy_count": "{count} здоровых",
   "renderers.models_count_loaded": "{count} загружено",

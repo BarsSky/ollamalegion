@@ -259,6 +259,39 @@ if (-not $NoDeploy) {
 # Зачем: тег в .env отвечает на вопрос «что должно быть», манифест — «чем это
 # собрано». Вместе они дают воспроизводимость и откат даже после перезаписи тега
 # (образ остаётся в локальном демоне по image id).
+#
+# R-Image follow-up (2026-10-03): манифест описывает СТЕНД, а не один запуск
+# скрипта. Раньше он перезаписывался только собранными сейчас сервисами, поэтому
+# выпуск одного компонента (`-Services webui`) «терял» из манифеста balancer и
+# imageworker — и check-image-tags.ps1 переставал видеть рассинхрон остальных.
+# Теперь компоненты, которых не было в этом запуске, переносятся из предыдущего
+# манифеста как есть (их теги в .env мы не трогали).
+$builtServices = @{}
+$manifestImages = @()
+foreach ($r in $results) {
+    $builtServices[[string]$r.service] = $true
+    $manifestImages += $r
+}
+if (Test-Path $manifestPath) {
+    try {
+        $prevManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        foreach ($img in @($prevManifest.images)) {
+            if (-not $img -or -not $img.service) { continue }
+            if ($builtServices.ContainsKey([string]$img.service)) { continue }
+            $manifestImages += [pscustomobject]@{
+                service  = [string]$img.service
+                variable = [string]$img.variable
+                image    = [string]$img.image
+                imageTag = [string]$img.imageTag
+                imageId  = [string]$img.imageId
+                alias    = [string]$img.alias
+            }
+        }
+    } catch {
+        Write-Host "[release] предупреждение: не удалось перенести прошлый манифест ($($_.Exception.Message))" -ForegroundColor Yellow
+    }
+}
+
 $gitCommit = (git rev-parse --short HEAD 2>$null | Select-Object -First 1)
 $manifest = [ordered]@{
     tag = $Tag
@@ -267,7 +300,7 @@ $manifest = [ordered]@{
     cudaArch = $CudaArch
     composeFile = $ComposeFile
     composeProfile = $ComposeProfile
-    images = $results
+    images = $manifestImages
 }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath
 Write-Host "[release] манифест: $manifestPath" -ForegroundColor Cyan

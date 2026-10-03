@@ -844,6 +844,13 @@ const Renderers = (function () {
             html += '</div></div>';
         }
 
+        // R-Image follow-up (2026-10-03): рядом с image-бэкендом показываем, как к
+        // нему подключиться (ключ + эндпоинты клиентов). Блок общий для всех типов
+        // бэкендов — см. webui/js/modules/client-access.js.
+        if (window.ClientAccess && typeof window.ClientAccess.render === 'function') {
+            html += window.ClientAccess.render(backend);
+        }
+
         return html;
     }
 
@@ -903,6 +910,10 @@ const Renderers = (function () {
                     '</div>';
                 });
                 cppHtml += '</div></div>';
+            }
+            // Подключение клиентов (ключ + эндпоинты) — см. client-access.js.
+            if (window.ClientAccess && typeof window.ClientAccess.render === 'function') {
+                cppHtml += window.ClientAccess.render(backend);
             }
             return cppHtml;
         }
@@ -1020,7 +1031,10 @@ const Renderers = (function () {
             diskNetHtml += '</div></div>';
         }
 
-        return flagsHtml + capHtml + ctxHtml + modelsHtml + diskNetHtml;
+        var accessHtml = (window.ClientAccess && typeof window.ClientAccess.render === 'function')
+            ? window.ClientAccess.render(backend)
+            : '';
+        return flagsHtml + capHtml + ctxHtml + modelsHtml + diskNetHtml + accessHtml;
     }
 
     function backendsPage(backends) {

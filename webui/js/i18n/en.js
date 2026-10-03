@@ -611,6 +611,33 @@ window.I18N_EN = {
   "renderers.no_data": "No data",
   "renderers.no_backend_data": "No backend data",
 
+  // clientAccess — the "Client connection" block next to a backend (2026-10-03).
+  // The key is the same one the WebUI sends as X-API-Token; we surface it because
+  // clients (SillyTavern/Open WebUI/n8n) require a non-empty "API key" field even
+  // where the server does not check it.
+  "clientAccess.title": "Client connection",
+  "clientAccess.key_label": "Key (X-API-Token / Bearer)",
+  "clientAccess.key_absent": "No key configured in the WebUI config (auth disabled)",
+  "clientAccess.show": "Show",
+  "clientAccess.hide": "Hide",
+  "clientAccess.copy": "Copy",
+  "clientAccess.copied": "Key copied",
+  "clientAccess.copy_failed": "Copy failed",
+  "clientAccess.copy_curl": "Copy curl",
+  "clientAccess.copied_curl": "curl copied",
+  "clientAccess.ep_openai_images": "OpenAI-compatible image generation",
+  "clientAccess.ep_a1111": "A1111 (SillyTavern, LibreChat)",
+  "clientAccess.ep_openai_models": "Model list (OpenAI)",
+  "clientAccess.ep_worker_api": "Worker API (through the balancer)",
+  "clientAccess.ep_ollama_chat": "Ollama API (chat)",
+  "clientAccess.ep_ollama_tags": "Ollama API (model list)",
+  "clientAccess.ep_openai_chat": "OpenAI-compatible chat (through the balancer)",
+  "clientAccess.ep_llama_chat": "OpenAI-compatible chat (Open WebUI, Cline, Cursor)",
+  "clientAccess.ep_llama_models": "Model list (OpenAI)",
+  "clientAccess.ep_ollama_chat_lb": "Ollama-compatible surface",
+  "clientAccess.key_note_optional": "The key is not checked on /v1/images/* and /sdapi/v1/*: clients demand a non-empty value, so paste the key shown here (or any other).",
+  "clientAccess.key_note_text": "Text clients may use any key unless client-key checking is enabled in the balancer config; the admin /api/v1/* paths require exactly this key.",
+
   // dashboard
   "renderers.healthy_count": "{count} healthy",
   "renderers.models_count_loaded": "{count} loaded",

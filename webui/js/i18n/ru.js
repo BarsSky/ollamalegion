@@ -260,6 +260,7 @@ window.I18N_RU = {
   // них вообще не имела обработчика). Подпись собирается в
   // webui/js/modules/data-refresh.js: «Обновлено {age} назад · авто».
   "refresh.updated_ago": "Обновлено {age} назад",
+  "refresh.updated_just_now": "Обновлено только что",
   "refresh.just_now": "только что",
   "refresh.sec_ago": "{n} с",
   "refresh.min_ago": "{n} мин",

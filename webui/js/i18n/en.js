@@ -274,6 +274,7 @@ window.I18N_EN = {
   // had no handler at all). The label is built in
   // webui/js/modules/data-refresh.js: "Updated {age} ago · auto".
   "refresh.updated_ago": "Updated {age} ago",
+  "refresh.updated_just_now": "Updated just now",
   "refresh.just_now": "just now",
   "refresh.sec_ago": "{n}s",
   "refresh.min_ago": "{n} min",

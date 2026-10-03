@@ -67,6 +67,7 @@ global.localStorage = {
 
 const RU = {
     'refresh.updated_ago': 'Обновлено {age} назад',
+    'refresh.updated_just_now': 'Обновлено только что',
     'refresh.just_now': 'только что',
     'refresh.sec_ago': '{n} с',
     'refresh.min_ago': '{n} мин',
@@ -144,7 +145,7 @@ check('formatAge: нет данных / только что / секунды / �
 });
 
 check('freshnessLabel: «Обновлено … назад · авто» / «· пауза» / ошибка', function () {
-    assert.strictEqual(DR.freshnessLabel(2, true, ''), 'Обновлено только что назад · авто');
+    assert.strictEqual(DR.freshnessLabel(2, true, ''), 'Обновлено только что · авто');
     assert.strictEqual(DR.freshnessLabel(30, false, ''), 'Обновлено 30 с назад · пауза');
     assert.strictEqual(DR.freshnessLabel(30, true, 'HTTP 502'), 'не удалось обновить: HTTP 502');
     // Без данных шаблон не должен давать «Обновлено нет данных назад».

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -430,6 +431,9 @@ func TestSupervisor_Load_PortBusy(t *testing.T) {
 	sup := NewSupervisor(&cfg, reg, NewMetrics())
 	sup.SetClientFactoryAddr(func(string) *SDServerClient { return NewSDServerClientURL("http://127.0.0.1:1") })
 	sup.SetRunner(NewFakeRunner(func([]string) (Process, error) { return NewFakeProcess(9, nil), nil }))
+	// Тест на ОТКАЗ: продовое ожидание 60 с здесь не нужно (иначе тест ждал бы
+	// минуту), но именно оно проверяется отдельным тестом ниже.
+	sup.SetPortFreeTimeout(200 * time.Millisecond)
 
 	_, err = sup.Load(context.Background(), "m", LoadOptions{})
 	if err == nil {
@@ -437,6 +441,42 @@ func TestSupervisor_Load_PortBusy(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "still busy") {
 		t.Fatalf("err = %v, want port busy message", err)
+	}
+}
+
+// TestSupervisor_Load_WaitsForPortToFree — R-Image Phase 9: если порт занят
+// прошлым sd-server'ом, загрузка ЖДЁТ его освобождения, а не падает.
+//
+// ЗАЧЕМ: живой E2E в Docker с CUDA показал «выгрузил → загрузил → port is still
+// busy after 5s»: CUDA-процесс отпускает listen-сокет не сразу после kill.
+// Оператор в этот момент видит «модель не грузится», хотя достаточно подождать.
+func TestSupervisor_Load_WaitsForPortToFree(t *testing.T) {
+	sup, _, runner := newSupervisorWithFake(t, map[string]types.ImageModelProfile{
+		"sd15-test": simpleProfile("sd15-test"),
+	})
+	// Занимаем порт движка и отпускаем его через 300 мс — так ведёт себя
+	// умирающий CUDA-процесс sd-server (сокет живёт ещё какое-то время).
+	addr := net.JoinHostPort(sup.cfg.ListenIP, strconv.Itoa(sup.cfg.ServerPort))
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("occupy port %s: %v", addr, err)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_ = ln.Close()
+	}()
+	defer ln.Close() // страховка, если тест упадёт раньше
+	sup.SetPortFreeTimeout(5 * time.Second)
+
+	start := time.Now()
+	if _, err := sup.Load(context.Background(), "sd15-test", LoadOptions{}); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 250*time.Millisecond {
+		t.Fatalf("Load не ждал освобождения порта: %v", elapsed)
+	}
+	if runner.Started() != 1 {
+		t.Fatalf("spawn count = %d, want 1", runner.Started())
 	}
 }
 

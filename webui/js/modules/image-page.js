@@ -55,6 +55,9 @@
     var PATH_MODEL_UNLOAD = '/api/image/models/unload';
     var PATH_MODEL_DELETE = '/api/image/models/delete';
     var PATH_LOAD_PROGRESS = '/api/image/models/load/progress';
+    // SSE-вариант того же прогресса: приходит push-обновлениями, а не опросом
+    // (cmd/sdworker/router.go: /api/image/models/load/progress/stream).
+    var PATH_LOAD_PROGRESS_STREAM = '/api/image/models/load/progress/stream';
 
     // =====================================================================
     // Pure helpers — не трогают DOM, поэтому покрыты юнит-тестами
@@ -697,40 +700,44 @@
     }
 
     /**
-     * Прогресс загрузки модели — polling.
+     * Один снимок прогресса → DOM + терминальные состояния.
      *
-     * У воркера есть и SSE (/api/image/models/load/progress/stream,
-     * cmd/sdworker/router.go:63), но для страницы, которую открывают на десятки
-     * секунд, достаточно опроса: он не держит постоянное соединение через
-     * прокси балансера и не требует ?token= в EventSource. Паттерн опроса взят
-     * из gguf-load-progress.js:44-74 и gguf-renderer-refresh.js:364-417.
+     * Общий код для SSE и polling: транспорт отличается, а поведение (показать
+     * стадию, закрыть поток на loaded/error, перечитать список моделей) — нет.
+     * Иначе две ветки разъехались бы, и «загрузка завершилась, а UI висит» было
+     * бы видно только в одном из режимов.
      */
-    function startLoadPolling(name) {
-        stopLoadPolling();
+    function applyLoadSnapshot(data, name) {
+        var snap = normalizeLoadProgress(data, name);
+        if (!snap) {
+            // Трекер прогресса уже не помнит запись — считаем загрузку
+            // завершённой и перечитываем список моделей (истина о state).
+            stopLoadPolling();
+            renderLoadProgress(null);
+            loadModels();
+            return null;
+        }
+        renderLoadProgress(snap);
+        var st = snap.state;
+        if (st === 'error' || st === 'failed') {
+            stopLoadPolling();
+            toast(t('image.load_failed', 'Failed to load model: {error}', { error: snap.error || t('image.unknown', 'unknown') }), 'error');
+            loadModels();
+        } else if (st === 'loaded' || st === 'ready') {
+            stopLoadPolling();
+            toast(t('image.load_done', 'Model loaded: {name}', { name: name }), 'success');
+            loadModels();
+        }
+        // 'loading'/'starting'/'warming' — ждём дальше.
+        return snap;
+    }
+
+    /** Периодический опрос прогресса: fallback, если SSE недоступен. */
+    function startLoadPollingFallback(name) {
         var backendId = state.selectedBackendId;
         var tick = function () {
             requestBackend(backendId, PATH_LOAD_PROGRESS, { timeoutMs: TIMEOUT_CONTROL_MS }).then(function (data) {
-                var snap = normalizeLoadProgress(data, name);
-                if (!snap) {
-                    // Трекер прогресса уже не помнит запись — считаем загрузку
-                    // завершённой и перечитываем список моделей (истина о state).
-                    stopLoadPolling();
-                    renderLoadProgress(null);
-                    loadModels();
-                    return;
-                }
-                renderLoadProgress(snap);
-                var st = snap.state;
-                if (st === 'error' || st === 'failed') {
-                    stopLoadPolling();
-                    toast(t('image.load_failed', 'Failed to load model: {error}', { error: snap.error || t('image.unknown', 'unknown') }), 'error');
-                    loadModels();
-                } else if (st === 'loaded' || st === 'ready') {
-                    stopLoadPolling();
-                    toast(t('image.load_done', 'Model loaded: {name}', { name: name }), 'success');
-                    loadModels();
-                }
-                // 'loading'/'starting'/'warming' — продолжаем опрос.
+                applyLoadSnapshot(data, name);
             }).catch(function (err) {
                 // 404/недоступность прогресса не должны ломать загрузку:
                 // останавливаем опрос и просто перечитываем список моделей.
@@ -740,7 +747,62 @@
             });
         };
         tick();
-        state.loadPoll = { timer: setInterval(tick, LOAD_POLL_MS), name: name };
+        state.loadPoll = { timer: setInterval(tick, LOAD_POLL_MS), name: name, mode: 'poll' };
+    }
+
+    /**
+     * Прогресс загрузки модели: SSE, с откатом на polling.
+     *
+     * ПОЧЕМУ SSE ПЕРВЫМ. Воркер отдаёт поток `data: {json}` на
+     * /api/image/models/load/progress/stream (cmd/sdworker/handlers_model.go:342),
+     * а прокси балансера стримит `text/event-stream` без буферизации
+     * (internal/api/gguf_backend_proxy.go:isSSEResponse/streamCopy) — так же, как
+     * для GGUF-страницы (webui/js/modules/gguf-load-progress.js:209). Опрос раз в
+     * 1.5 с давал бы задержку до полутора секунд на КАЖДОЙ смене стадии, а
+     * загрузка модели — это десятки секунд ожидания, где стадии «spawning» →
+     * «loading weights» → «ready» и есть весь фидбек оператору.
+     *
+     * ПОЧЕМУ С ?token= В URL. EventSource не умеет отправлять заголовки, а
+     * прокси-путь закрыт AuthMiddleware — buildProxyUrl дублирует токен в query
+     * (AuthMiddleware принимает оба способа).
+     *
+     * ПОЧЕМУ FALLBACK ОБЯЗАТЕЛЕН. EventSource закрывается сам при HTTP 4xx/5xx
+     * (readyState === CLOSED) — например, если воркер старее и ручки нет, или
+     * прокси в чужой сборке буферизует поток. Тогда продолжаем опросом: страница
+     * не должна остаться без прогресса вообще.
+     */
+    function startLoadPolling(name) {
+        stopLoadPolling();
+        var backendId = state.selectedBackendId;
+        if (typeof EventSource !== 'function') {
+            startLoadPollingFallback(name);
+            return;
+        }
+        var es;
+        try {
+            es = new EventSource(buildProxyUrl(backendId, PATH_LOAD_PROGRESS_STREAM));
+        } catch (e) {
+            startLoadPollingFallback(name);
+            return;
+        }
+        state.loadPoll = { es: es, name: name, timer: null, mode: 'sse' };
+        es.onmessage = function (ev) {
+            if (!state.loadPoll || state.loadPoll.es !== es) return; // поток уже остановлен
+            var data = null;
+            try { data = JSON.parse(ev.data); } catch (e2) { return; }
+            applyLoadSnapshot(data, name);
+        };
+        es.onerror = function () {
+            // CLOSED (2) = переподключения не будет (обычно HTTP 4xx/5xx) —
+            // переключаемся на опрос. OPEN/CONNECTING оставляем браузеру:
+            // он переподключается сам.
+            if (typeof EventSource !== 'undefined' && es.readyState === EventSource.CLOSED) {
+                if (!state.loadPoll || state.loadPoll.es !== es) return;
+                try { es.close(); } catch (e3) { /* уже закрыт */ }
+                state.loadPoll = null;
+                startLoadPollingFallback(name);
+            }
+        };
     }
 
     /**
@@ -756,10 +818,22 @@
     function renderLoadProgress(snap) {
         if (!snap) { show('imgLoadProgress', false); return; }
         show('imgLoadProgress', true);
+        // Время может быть нулём: воркер старее Phase 9 отдавал elapsed_ms=0, а
+        // до старта отсчёта его ещё нет. Тогда НЕ рисуем пустые скобки
+        // («Загрузка sd15-q4: ready ()») — это выглядит как сломанный UI, хотя
+        // стадия уже получена.
         var elapsed = snap.elapsedMs ? formatDuration(snap.elapsedMs) : '';
-        var label = snap.stage
-            ? t('image.load_progress', 'Loading {name}: {stage} ({t})', { name: snap.model || '', stage: snap.stage, t: elapsed })
-            : t('image.load_progress_plain', 'Loading {name} ({t})', { name: snap.model || '', t: elapsed });
+        var name = snap.model || '';
+        var label;
+        if (snap.stage && elapsed) {
+            label = t('image.load_progress', 'Loading {name}: {stage} ({t})', { name: name, stage: snap.stage, t: elapsed });
+        } else if (snap.stage) {
+            label = t('imageModels.load_stage', 'Загрузка {name}: {stage}', { name: name, stage: snap.stage });
+        } else if (elapsed) {
+            label = t('image.load_progress_plain', 'Loading {name} ({t})', { name: name, t: elapsed });
+        } else {
+            label = t('imageModels.load_name', 'Загрузка {name}', { name: name });
+        }
         setText('imgLoadProgressLabel', label);
         var pct = Number(snap.progressPct);
         var hasPct = !isNaN(pct) && pct > 0;
@@ -767,8 +841,12 @@
         var fill = el('imgLoadProgressFill');
         if (fill && hasPct) fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
     }
+    /** Остановка наблюдения за прогрессом: закрывает и SSE, и polling. */
     function stopLoadPolling() {
         if (state.loadPoll && state.loadPoll.timer) clearInterval(state.loadPoll.timer);
+        if (state.loadPoll && state.loadPoll.es) {
+            try { state.loadPoll.es.close(); } catch (e) { /* уже закрыт */ }
+        }
         state.loadPoll = null;
     }
 

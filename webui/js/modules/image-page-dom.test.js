@@ -104,6 +104,33 @@ global.ImageProfiles = {
     mount: function (id) { this.mounted.push(id); },
 };
 
+// --- mocks: EventSource (SSE-прогресс загрузки модели) ----------------------
+// Модуль предпочитает SSE и откатывается на polling. Фейковый EventSource
+// записывает URL и позволяет «прислать» сообщение руками — так проверяется и
+// транспорт (URL со ?token=), и реакция на терминальное состояние, и откат.
+global.EventSource = undefined;
+const streams = [];
+function FakeEventSource(url) {
+    this.url = String(url);
+    this.readyState = 0; // CONNECTING
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    this.closed = false;
+    streams.push(this);
+}
+FakeEventSource.CONNECTING = 0;
+FakeEventSource.OPEN = 1;
+FakeEventSource.CLOSED = 2;
+FakeEventSource.prototype.close = function () { this.closed = true; this.readyState = 2; };
+FakeEventSource.prototype.emit = function (obj) {
+    if (this.onmessage) this.onmessage({ data: JSON.stringify(obj) });
+};
+FakeEventSource.prototype.fail = function () {
+    this.readyState = 2; // CLOSED: браузер переподключаться не станет
+    if (this.onerror) this.onerror({});
+};
+
 // --- mocks: DOM ------------------------------------------------------------
 const MODULE_PATH = path.join(__dirname, 'image-page.js');
 const MODULE_SRC = fs.readFileSync(MODULE_PATH, 'utf8');
@@ -320,15 +347,70 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
     });
     Page._actions.stopPolling();
 
-    // --- 5. завершение загрузки: поллинг останавливается -------------------
+    // --- 5. завершение загрузки: наблюдение останавливается ----------------
     loadProgressMode = 'loaded';
     await Page._actions.loadModel('sd15-q8');
     await sleep(30);
-    check('state=loaded → поллинг остановлен, тост о загрузке', function () {
-        assert.strictEqual(Page._state.loadPoll, null, 'поллинг должен остановиться после state=loaded');
+    check('state=loaded → наблюдение остановлено, тост о загрузке', function () {
+        assert.strictEqual(Page._state.loadPoll, null, 'наблюдение должно остановиться после state=loaded');
         const done = toasts.filter(function (t) { return t.msg.indexOf('Модель загружена') !== -1; })[0];
         assert.ok(done, 'нет тоста о загрузке модели');
     });
+
+    // --- 5b. SSE-прогресс: основной транспорт (Phase 9) --------------------
+    // Модуль предпочитает SSE (/progress/stream) и откатывается на polling
+    // только если EventSource недоступен или поток закрылся.
+    global.EventSource = FakeEventSource;
+    streams.length = 0;
+    loadProgressMode = 'loading';
+    await Page._actions.loadModel('sd15-q8');
+    await sleep(20);
+    check('SSE: подписка на /progress/stream через прокси балансера и с ?token=', function () {
+        assert.strictEqual(streams.length, 1, 'EventSource не создан');
+        assert.ok(streams[0].url.indexOf('/proxy/api/image/models/load/progress/stream') !== -1,
+            'неверный URL потока: ' + streams[0].url);
+        assert.ok(streams[0].url.indexOf('token=test-token') !== -1,
+            'EventSource не умеет заголовки — токен обязан быть в query: ' + streams[0].url);
+        assert.strictEqual(Page._state.loadPoll.mode, 'sse', 'режим должен быть SSE');
+        assert.strictEqual(Page._state.loadPoll.timer, null, 'при SSE опрос не запускается');
+    });
+    check('SSE: сообщение прогресса рисуется без опроса', function () {
+        const before = requests.length;
+        streams[0].emit({ state: 'loading', model: 'sd15-q8', stage: 'loading weights', elapsed_ms: 7100 });
+        assert.strictEqual(requests.length, before, 'SSE-обновление не должно порождать HTTP-запросы');
+        assert.ok(elements['imgLoadProgressLabel'].textContent.indexOf('loading weights') !== -1,
+            'стадия из SSE не отрисована: ' + elements['imgLoadProgressLabel'].textContent);
+        assert.ok(elements['imgLoadProgressLabel'].textContent.indexOf('7s') !== -1,
+            'время из SSE не отрисовано: ' + elements['imgLoadProgressLabel'].textContent);
+    });
+    check('SSE: без времени в подписи нет пустых скобок', function () {
+        streams[0].emit({ state: 'loading', model: 'sd15-q8', stage: 'spawn', elapsed_ms: 0 });
+        const txt = elements['imgLoadProgressLabel'].textContent;
+        assert.ok(txt.indexOf('spawn') !== -1, 'стадия потеряна: ' + txt);
+        assert.strictEqual(txt.indexOf('()'), -1, 'пустые скобки в подписи: ' + txt);
+    });
+    check('SSE: терминальное состояние закрывает поток и перечитывает модели', function () {
+        streams[0].emit({ state: 'loaded', model: 'sd15-q8', stage: 'ready', elapsed_ms: 8200 });
+        assert.strictEqual(Page._state.loadPoll, null, 'поток должен быть остановлен');
+        assert.strictEqual(streams[0].closed, true, 'EventSource должен быть закрыт');
+        assert.ok(toasts.some(function (t) { return t.msg.indexOf('Модель загружена') !== -1; }), 'нет тоста о загрузке');
+    });
+    // Асинхронная подготовка — отдельно, проверки остаются синхронными
+    // (check() ловит только синхронные исключения).
+    streams.length = 0;
+    loadProgressMode = 'loading';
+    await Page._actions.loadModel('sd15-q8');
+    await sleep(20);
+    const freshStream = streams[0];
+    freshStream.fail(); // CLOSED: браузер переподключаться не станет
+    check('SSE: закрытый поток (4xx/нет ручки) откатывается на polling', function () {
+        assert.strictEqual(streams.length, 1, 'новая подписка не создана');
+        assert.ok(Page._state.loadPoll, 'наблюдение за прогрессом потеряно');
+        assert.strictEqual(Page._state.loadPoll.mode, 'poll', 'должен включиться polling-fallback');
+        assert.ok(Page._state.loadPoll.timer, 'таймер опроса не запущен');
+    });
+    Page._actions.stopPolling();
+    global.EventSource = undefined;
 
     // --- 6. unload модели -------------------------------------------------
     await Page._actions.unloadModel('sd15-q8');

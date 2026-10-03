@@ -468,10 +468,10 @@ The WebUI part is a single **"Image models"** page (`#image-page`) built like th
 
 | Tab | What it does |
 |---|---|
-| **Overview** | Image backend CRUD, worker port, GPU index, state, current model, VRAM, request counters, text/image coexistence policy; the **"Backend check"** button runs 1 step at 64x64 and shows only the result and the time |
+| **Overview** | Image backend CRUD, worker port, GPU index, state, current model, VRAM, request counters, text/image coexistence policy; the **"Backend check"** button loads a model first if none is loaded and then runs 1 step at 64x64 over the client path `POST /v1/images/generations`; only the result, the time and the model name reach the UI, no image is displayed |
 | **HuggingFace** | Repository search (query + `text-to-image` filter), file list with suggested roles, selection and role override, bundle name/family, `HF token`, "Download bundle" |
 | **Models on disk** | Bundle table: name, state, size, family, **contents by role**, active queries, VRAM estimate; actions — load, unload, **delete from disk** |
-| **Loaded** | Worker state and current model plus load progress (stage, time) |
+| **Loaded** | Worker state and current model plus load progress (stage, time) over SSE `/api/image/models/load/progress/stream` with a polling fallback |
 | **Downloads** | Active bundle and single-file downloads, history, residual `.download` files with cleanup, cancel |
 | **Settings** | Parameters of the selected backend (entry into its card) and image model profiles (`image-profiles.js` editor) |
 

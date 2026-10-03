@@ -44,6 +44,18 @@ const processOutputLimit = 64 * 1024
 // stopGracePeriod — сколько ждём корректного завершения после сигнала.
 const stopGracePeriod = 5 * time.Second
 
+// portFreeTimeout — сколько ждём освобождения порта движка перед spawn.
+//
+// ПОЧЕМУ НЕ 5 СЕКУНД (R-Image Phase 9, найдено живым E2E в Docker с CUDA):
+// после выгрузки модель грузилась заново и падала с
+// «port 127.0.0.1:18094 is still busy after 5s». Причина не в нашем коде
+// остановки: sd-server с CUDA после SIGKILL ещё десятки секунд висит в
+// драйвере (uninterruptible teardown), и всё это время listen-сокет остаётся
+// занятым. Короткое ожидание превращало «выгрузил → загрузил» в ошибку
+// загрузки, хотя через полминуты тот же порт свободен. Ждём долго (дефолт 60 с),
+// потому что альтернатива — отказ операции, которую оператор уже запустил.
+const portFreeTimeout = 60 * time.Second
+
 // Process — запущенный субпроцесс (интерфейс ради тестируемости).
 //
 // ЗАЧЕМ ИНТЕРФЕЙС: запускать sd-server в unit-тестах нельзя (его нет в
@@ -233,6 +245,9 @@ type Supervisor struct {
 	readinessTimeout time.Duration
 	// readinessPoll — интервал опроса readiness.
 	readinessPoll time.Duration
+	// portFreeTimeout — ожидание свободного порта движка перед spawn
+	// (0 = portFreeTimeout-константа; поле нужно тестам).
+	portFreeTimeout time.Duration
 	// PollEvery — интервал опроса джоб движка (в тестах 2 мс).
 	PollEvery time.Duration
 
@@ -468,7 +483,9 @@ func (s *Supervisor) Load(ctx context.Context, name string, opts LoadOptions) (*
 
 	// Порт должен быть свободен: после Stop процесс мог ещё не отпустить
 	// сокет (TIME_WAIT/драйвер), а bind-ошибка выглядит как «модель не грузится».
-	if err := s.waitPortFree(ctx, 5*time.Second); err != nil {
+	// Ждём долго (portFreeTimeout): у CUDA-сборки sd-server освобождение порта
+	// после kill занимает десятки секунд, см. комментарий к константе.
+	if err := s.waitPortFree(ctx, s.portFreeWait()); err != nil {
 		s.failLoad(err)
 		return nil, err
 	}
@@ -618,12 +635,31 @@ func (s *Supervisor) Unload(ctx context.Context) error {
 		s.metrics.MarkUnloaded()
 	}
 	// Ждём, пока порт реально освободится: иначе следующий spawn упадёт на
-	// bind, и это будет выглядеть как «модель не грузится».
+	// bind, и это будет выглядеть как «модель не грузится». Здесь ждём КОРОТКО
+	// (5 с) и не блокируем ответ на unload: оператору нужен быстрый ответ, а
+	// долгое ожидание порта уже сделает следующий Load (s.portFreeWait).
 	if portErr := s.waitPortFree(ctx, 5*time.Second); portErr != nil {
-		sdLog().Warnw("port still busy after unload", "port", s.cfg.ServerPort, "error", portErr)
+		sdLog().Warnw("port still busy after unload",
+			"port", s.cfg.ServerPort, "error", portErr,
+			"hint", "следующая загрузка подождёт освобождения порта (CUDA-процесс отпускает сокет не сразу)")
 	}
 	return err
 }
+
+// portFreeWait — сколько ждать свободного порта перед spawn.
+//
+// Поле есть ради тестов (там нужен короткий таймаут, чтобы проверять отказ), в
+// проде — portFreeTimeout. Нулевое значение = дефолт: Supervisor в тестах и в
+// коде собирается по-разному, и «0 = ждать вечно» было бы ловушкой.
+func (s *Supervisor) portFreeWait() time.Duration {
+	if s.portFreeTimeout > 0 {
+		return s.portFreeTimeout
+	}
+	return portFreeTimeout
+}
+
+// SetPortFreeTimeout — переопределение ожидания порта (тесты/экзотические среды).
+func (s *Supervisor) SetPortFreeTimeout(d time.Duration) { s.portFreeTimeout = d }
 
 // Reload — kill + spawn той же модели (кнопка «Перезагрузить»).
 func (s *Supervisor) Reload(ctx context.Context, name string) (*Capabilities, error) {

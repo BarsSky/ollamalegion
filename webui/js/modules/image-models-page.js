@@ -34,6 +34,17 @@
     var TABS_ID = 'imTabs';
     var STORAGE_KEY = 'ollamalegion_image_models_tab';
     var SELFTEST_RESULT_ID = 'imSelfTestResult';
+    // Потолок ожидания проверки: 1 шаг 64x64 укладывается в секунды даже с
+    // холодной загрузкой модели, но кнопка не должна висеть вечно.
+    var SELFTEST_TIMEOUT_MS = 180000;
+    // Ожидание загрузки модели внутри проверки (гейт пускает генерацию только
+    // с загруженной моделью) и интервал опроса её состояния.
+    var SELFTEST_LOAD_TIMEOUT_MS = 180000;
+    var SELFTEST_LOAD_POLL_MS = 1500;
+    // Окно повторов на транзиентные отказы гейта: кэш состояния бэкенда на
+    // балансере обновляется опросом, поэтому «модель ещё не загружена» может
+    // прийти на несколько секунд позже, чем воркер реально её загрузил.
+    var SELFTEST_GATE_WAIT_MS = 30000;
     var LOADED_STATE_ID = 'imLoadedState';
     var BACKEND_SELECT_ID = 'imgBackendSelect';
 
@@ -230,56 +241,248 @@
     }
 
     /**
-     * runSelfTest — «Проверка бэкенда»: 1 шаг 64x64 через тот же путь, что и
-     * клиенты (нативный /api/image/generate, sync=true).
+     * getJson — GET + разбор ответа с текстом ошибки сервера.
      *
-     * ПОЧЕМУ sync И ПОЧЕМУ БЕЗ КАРТИНКИ: sync даёт ответ в одном запросе (не надо
-     * поллить джобу), а base64-изображение мы СОЗНАТЕЛЬНО не рендерим — WebUI не
-     * показывает сгенерированное, только факт «движок отвечает» и время. Иначе
-     * это была бы витрина генерации, которую из WebUI как раз убрали.
+     * Читаем через text()+JSON.parse (а не r.json()), потому что воркер/балансер
+     * всегда отдают JSON-конверт, а ошибку надо показать оператору текстом:
+     * «HTTP 500» без тела не отличить от «моделей нет».
      */
-    function runSelfTest() {
-        if (state.selftestBusy) return Promise.resolve(false);
-        var backendId = selectedBackendID();
-        if (!backendId) {
-            setSelfTestText(t('imageModels.selftest_no_backend', 'Выберите image-бэкенд'), true);
-            return Promise.resolve(false);
+    function getJson(url, headers) {
+        return fetch(url, { headers: headers }).then(function (r) {
+            return r.text().then(function (text) {
+                var parsed = null;
+                if (text) { try { parsed = JSON.parse(text); } catch (e) { parsed = null; } }
+                if (!r.ok) {
+                    var msg = (parsed && (parsed.error || parsed.message)) || ('HTTP ' + r.status);
+                    var err = new Error(msg);
+                    err.status = r.status;
+                    err.body = parsed;
+                    throw err;
+                }
+                return parsed;
+            });
+        });
+    }
+
+    /**
+     * ensureModelLoaded — VRAM-гейт балансера пускает генерацию только когда
+     * модель УЖЕ загружена (иначе 503 с подсказкой «no image model is loaded»),
+     * поэтому проверка сначала грузит модель выбранного бэкенда, если её нет.
+     *
+     * ПОЧЕМУ ЭТО ПРАВИЛЬНО ДЛЯ «ПРОВЕРКИ»: оператор жмёт кнопку, чтобы понять
+     * «заработает ли генерация». Загрузка модели — часть этого пути (её делает
+     * и клиент, и оператор), поэтому проверка честно проходит оба шага:
+     * загрузку (управляющий путь, разрешён без модели) и генерацию (гейт +
+     * счётчики). Молча вернуть «Ошибка: модель не загружена» значило бы
+     * показывать политику гейта как поломку стенда.
+     *
+     * @returns {Promise<string>} имя загруженной модели ('' если не удалось).
+     */
+    function ensureModelLoaded(backendId, backend) {
+        var img = (backend && backend.image) || {};
+        var state0 = String(img.state || '');
+        if (img.currentModel && (state0 === 'loaded' || state0 === 'ready')) {
+            return Promise.resolve(String(img.currentModel));
         }
-        state.selftestBusy = true;
-        setSelfTestText(t('imageModels.selftest_running', 'Проверяю...'), false);
-        var started = Date.now();
+        setSelfTestText(t('imageModels.selftest_loading_model', 'Загружаю модель...'), false);
+        var headers = authHeaders({ 'Content-Type': 'application/json' });
+        var base = apiBase() + '/api/v1/image/backends/' + encodeURIComponent(backendId);
+        return getJson(base + '/models', headers).then(function (data) {
+            var list = (data && (data.models || data)) || [];
+            if (!Array.isArray(list) || !list.length) {
+                throw new Error(t('imageModels.selftest_no_models', 'у бэкенда нет моделей на диске'));
+            }
+            var name = String(list[0].name || list[0].id || '');
+            if (!name) throw new Error(t('imageModels.selftest_no_models', 'у бэкенда нет моделей на диске'));
+            return fetch(base + '/models/load', {
+                method: 'POST', headers: headers, body: JSON.stringify({ name: name })
+            }).then(function (r) {
+                return r.text().then(function (text) {
+                    if (!r.ok) {
+                        var parsed = null;
+                        if (text) { try { parsed = JSON.parse(text); } catch (e) { parsed = null; } }
+                        var msg = (parsed && (parsed.error || parsed.message)) || ('HTTP ' + r.status);
+                        var err = new Error(msg);
+                        err.body = parsed;
+                        err.status = r.status;
+                        throw err;
+                    }
+                    return name;
+                });
+            });
+        }).then(function (name) {
+            // Ждём state=loaded: генерацию гейт не пустит раньше.
+            var deadline = Date.now() + SELFTEST_LOAD_TIMEOUT_MS;
+            var poll = function () {
+                return getJson(base + '/models', headers).then(function (data) {
+                    var st = String((data && (data.state || (data.progress && data.progress.state))) || '');
+                    var cur = String((data && (data.current_model || data.currentModel || (data.progress && data.progress.model))) || '');
+                    if (st === 'loaded' || st === 'ready') return cur || name;
+                    if (st === 'error' || st === 'failed') {
+                        throw new Error(t('imageModels.selftest_load_failed', 'модель не загрузилась: {error}',
+                            { error: String((data.progress && data.progress.error) || '') }));
+                    }
+                    if (Date.now() > deadline) {
+                        throw new Error(t('imageModels.selftest_load_timeout', 'модель не загрузилась за {s} с',
+                            { s: Math.round(SELFTEST_LOAD_TIMEOUT_MS / 1000) }));
+                    }
+                    return new Promise(function (res) { setTimeout(res, SELFTEST_LOAD_POLL_MS); }).then(poll);
+                });
+            };
+            return poll();
+        });
+    }
+
+    /**
+     * runSelfTest — «Проверка бэкенда»: 1 шаг 64x64 через ТОТ ЖЕ путь, что у
+     * клиентов — POST /v1/images/generations (OpenAI-поверхность балансера).
+     *
+     * ПОЧЕМУ ИМЕННО ЭТОТ ПУТЬ:
+     *   - он считается метриками и проходит VRAM-гейт (internal/balancer/
+     *     image_router.go: счёт ведётся по /v1/images/*, /sdapi/v1/*,
+     *     /api/image/generate), поэтому собственная проверка оператора видна в
+     *     Monitor и в /api/v1/metrics — а не только в логах воркера;
+     *   - он же и клиентский: ровно сюда ходят SillyTavern/Open WebUI/n8n, так
+     *     что проверка отвечает на вопрос «мой клиент заработает?»;
+     *   - управляющий алиас /api/v1/image/backends/{id}/generate для этого не
+     *     годится: он идёт мимо гейта и мимо счётчиков (следствие — проверка
+     *     была не видна в Monitor, хотя реально занимала GPU).
+     *
+     * ПОЧЕМУ БЕЗ КАРТИНКИ: ответ приходит с base64 в data[0].b64_json, и мы его
+     * СОЗНАТЕЛЬНО не рендерим — WebUI показывает только «движок отвечает» и
+     * время. Иначе это была бы витрина генерации, которую из WebUI как раз убрали
+     * (это же проверяется тестом: base64 не попадает в DOM).
+     */
+    /**
+     * generateOnce — один клиентский запрос генерации 1 шага 64x64.
+     * @returns {Promise<{parsed:object}>} либо бросает Error с .status/.body.
+     */
+    function generateOnce() {
         var body = {
             prompt: 'balancer self-test',
-            width: 64,
-            height: 64,
-            steps: 1,
-            batch: 1,
-            sync: true
+            size: '64x64',
+            n: 1,
+            steps: 1
         };
-        return fetch(apiBase() + '/api/v1/image/backends/' + encodeURIComponent(backendId) + '/generate', {
+        var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var timer = null;
+        if (ctrl) timer = setTimeout(function () { ctrl.abort(); }, SELFTEST_TIMEOUT_MS);
+        var init = {
             method: 'POST',
             headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(body)
-        }).then(function (resp) {
+        };
+        if (ctrl) init.signal = ctrl.signal;
+        return fetch(apiBase() + '/v1/images/generations', init).then(function (resp) {
+            if (timer) clearTimeout(timer);
             return resp.text().then(function (text) {
                 var parsed = null;
                 if (text) { try { parsed = JSON.parse(text); } catch (e) { parsed = null; } }
                 if (!resp.ok) {
-                    var msg = (parsed && (parsed.error || parsed.message)) || ('HTTP ' + resp.status);
-                    throw new Error(msg);
+                    var err = new Error((parsed && (parsed.error || parsed.message)) || ('HTTP ' + resp.status));
+                    err.body = parsed;
+                    err.status = resp.status;
+                    throw err;
                 }
                 return parsed;
             });
-        }).then(function () {
+        }).catch(function (err) {
+            if (timer) clearTimeout(timer);
+            throw err;
+        });
+    }
+
+    /**
+     * isTransientGateReject — отказ гейта «подожди и повтори».
+     *
+     * ЗАЧЕМ ПОВТОР: гейт балансера судит по СВОЕМУ кэшу состояния бэкенда
+     * (internal/balancer/image_resources.go: checkImageModelReady смотрит
+     * s.loaded()/s.state), который обновляется периодическим опросом воркера.
+     * Сразу после загрузки модели воркер уже отдаёт «loaded», а кэш балансера
+     * ещё секунды живёт со старым «not_loaded» — и проверка получала 503
+     * «no image model is loaded», хотя модель загружена. Это транзиентное
+     * состояние, а не поломка: ждём Retry-After и повторяем (так же поступает
+     * любой нормальный клиент).
+     */
+    function isTransientGateReject(err) {
+        if (!err || err.status !== 503) return false;
+        var b = err.body || {};
+        var code = String(b.error || b.code || (b.error && b.error.code) || '');
+        var text = String(b.message || b.hint || (b.error && (b.error.message || b.error)) || err.message || '');
+        if (/model_not_loaded|model_loading|gpu_busy|image_gate/i.test(code)) return true;
+        return /still loading|no image model is loaded|using the GPU/i.test(text);
+    }
+
+    /** Пауза: Retry-After от гейта (кап 5 с), иначе 2 с. */
+    function gateRetryDelayMS(err) {
+        var b = (err && err.body) || {};
+        var sec = Number(b.retry_after_seconds || b.retryAfterSeconds || 0);
+        if (!sec || isNaN(sec) || sec <= 0) sec = 2;
+        if (sec > 5) sec = 5;
+        return Math.round(sec * 1000);
+    }
+
+    /**
+     * generateWithGateRetry — генерация с ограниченным числом повторов на
+     * транзиентные отказы гейта (окно SELFTEST_GATE_WAIT_MS).
+     */
+    function generateWithGateRetry(onWait) {
+        var deadline = Date.now() + SELFTEST_GATE_WAIT_MS;
+        var attempt = function () {
+            return generateOnce().catch(function (err) {
+                if (!isTransientGateReject(err) || Date.now() > deadline) throw err;
+                if (onWait) onWait();
+                return new Promise(function (res) { setTimeout(res, gateRetryDelayMS(err)); }).then(attempt);
+            });
+        };
+        return attempt();
+    }
+
+    function runSelfTest() {
+        if (state.selftestBusy) return Promise.resolve(false);
+        if (!state.backends.length) {
+            setSelfTestText(t('imageModels.selftest_no_backend', 'Нет image-бэкендов'), true);
+            return Promise.resolve(false);
+        }
+        state.selftestBusy = true;
+        var backendId = selectedBackendID() || (state.backends[0] && state.backends[0].id) || '';
+        var backend = null;
+        state.backends.forEach(function (b) { if (b.id === backendId) backend = b; });
+        var started = Date.now();
+        var modelName = '';
+        setSelfTestText(t('imageModels.selftest_running', 'Проверяю...'), false);
+        return ensureModelLoaded(backendId, backend).then(function (name) {
+            modelName = String(name || '');
+            setSelfTestText(t('imageModels.selftest_running', 'Проверяю...'), false);
+            return generateWithGateRetry(function () {
+                setSelfTestText(t('imageModels.selftest_wait_gate', 'Жду готовности бэкенда...'), false);
+            });
+        }).then(function (parsed) {
             var ms = Date.now() - started;
             state.selftestBusy = false;
-            setSelfTestText(t('imageModels.selftest_ok', 'OK') + ' — ' + ms + ' ' + t('imageModels.ms', 'мс'), false);
+            var model = modelName || ((parsed && parsed.model) ? String(parsed.model) : '');
+            setSelfTestText(t('imageModels.selftest_ok', 'OK') + ' — ' + ms + ' ' + t('imageModels.ms', 'мс') +
+                (model ? ' · ' + model : ''), false);
             return true;
         }).catch(function (err) {
             state.selftestBusy = false;
-            setSelfTestText(t('imageModels.selftest_fail', 'Ошибка') + ': ' + (err && err.message ? err.message : err), true);
+            setSelfTestError(err);
             return false;
         });
+    }
+
+    /** Текст ошибки проверки: hint гейта информативнее кода. */
+    function setSelfTestError(err) {
+        var msg;
+        if (err && err.name === 'AbortError') {
+            msg = t('imageModels.selftest_timeout', 'нет ответа за {s} с', { s: Math.round(SELFTEST_TIMEOUT_MS / 1000) });
+        } else {
+            var b = err && err.body;
+            msg = (b && (b.hint || b.message)) ||
+                (b && b.error && (b.error.message || b.error)) ||
+                ((err && err.message) || String(err));
+        }
+        setSelfTestText(t('imageModels.selftest_fail', 'Ошибка') + ': ' + msg, true);
     }
 
     // ============================================================

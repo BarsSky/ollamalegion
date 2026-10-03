@@ -80,7 +80,7 @@ const RU = {
     'imageModels.selftest_ok': 'OK',
     'imageModels.selftest_fail': 'Ошибка',
     'imageModels.selftest_running': 'Проверяю...',
-    'imageModels.selftest_no_backend': 'Выберите image-бэкенд',
+    'imageModels.selftest_no_backend': 'Нет image-бэкендов',
     'imageModels.no_backend_selected': 'Image-бэкенд не выбран',
     'imageModels.ms': 'мс',
     'imageBackends.col_state': 'Состояние',
@@ -96,6 +96,9 @@ global.console = console;
 
 const requests = [];
 let nextResponse = { status: 200, body: { status: 'ok', async: false, images: [{ b64_json: 'BASE64_СЕКРЕТ' }] } };
+// Сценарные ответы: если задано, вызывается вместо nextResponse (нужно для
+// последовательности «список моделей → load → список моделей → generate»).
+let responseFor = null;
 
 global.fetch = function (url, init) {
     const rec = {
@@ -105,10 +108,11 @@ global.fetch = function (url, init) {
         body: init && init.body ? JSON.parse(init.body) : null,
     };
     requests.push(rec);
+    const r = responseFor ? responseFor(rec) : nextResponse;
     return Promise.resolve({
-        ok: nextResponse.status < 400,
-        status: nextResponse.status,
-        text: function () { return Promise.resolve(JSON.stringify(nextResponse.body)); },
+        ok: r.status < 400,
+        status: r.status,
+        text: function () { return Promise.resolve(JSON.stringify(r.body)); },
     });
 };
 
@@ -194,24 +198,89 @@ function tabPanel(tab) {
         assert.ok(txt.indexOf('894') !== -1 && txt.indexOf('8192') !== -1, 'нет VRAM: ' + txt);
     });
 
-    await checkAsync('runSelfTest: один запрос на generate с 64x64/1 шаг/sync и токеном', async function () {
+    await checkAsync('runSelfTest: при загруженной модели сразу генерация, без лишней загрузки', async function () {
         requests.length = 0;
-        nextResponse = { status: 200, body: { status: 'ok', async: false, images: [{ b64_json: 'BASE64_СЕКРЕТ' }] } };
+        responseFor = null;
+        nextResponse = { status: 200, body: { created: 1, data: [{ b64_json: 'BASE64_СЕКРЕТ', revised_prompt: '' }] } };
         getEl('imSelfTestResult').textContent = '';
+        Page.render([{ id: 'img1', backendType: 'image_cpp', image: { state: 'loaded', currentModel: 'sd15-q4' } }]);
         const ok = await Page.runSelfTest();
         assert.strictEqual(ok, true, 'проверка не прошла');
         assert.strictEqual(requests.length, 1, 'запросов: ' + requests.length);
         const req = requests[0];
-        assert.ok(req.url.indexOf('/api/v1/image/backends/img1/generate') !== -1, 'неверный путь: ' + req.url);
+        // Клиентский путь: он считается метриками и проходит VRAM-гейт, поэтому
+        // проверка оператора видна в Monitor. Управляющий алиас
+        // /api/v1/image/backends/{id}/generate для этого не годится.
+        assert.ok(/\/v1\/images\/generations$/.test(req.url), 'неверный путь: ' + req.url);
+        assert.strictEqual(req.url.indexOf('/api/v1/image/backends/'), -1, 'проверка ушла в управляющий алиас: ' + req.url);
         assert.strictEqual(req.method, 'POST');
-        assert.strictEqual(req.body.sync, true, 'нет sync:true (иначе пришлось бы поллить джобу)');
-        assert.strictEqual(req.body.width, 64);
-        assert.strictEqual(req.body.height, 64);
-        assert.strictEqual(req.body.steps, 1);
+        assert.strictEqual(req.body.size, '64x64');
+        assert.strictEqual(req.body.n, 1);
+        assert.strictEqual(req.body.steps, 1, 'должен быть ровно 1 шаг');
         assert.ok(req.headers['X-API-Token'], 'не передан токен');
         const txt = getEl('imSelfTestResult').textContent;
         assert.ok(txt.indexOf('OK') === 0, 'нет отметки OK в начале: ' + txt);
         assert.ok(/OK — \d+ мс/.test(txt), 'нет времени выполнения: ' + txt);
+        assert.ok(txt.indexOf('sd15-q4') !== -1, 'нет модели в результате: ' + txt);
+    });
+
+    await checkAsync('runSelfTest: без загруженной модели сначала load (гейт не пустит), затем генерация', async function () {
+        requests.length = 0;
+        responseFor = function (rec) {
+            if (/\/models\/load$/.test(rec.url)) return { status: 202, body: { status: 'started', model: 'sd15-q4' } };
+            if (/\/models$/.test(rec.url)) {
+                // Первый опрос — модель ещё не загружена, второй — уже загружена.
+                const loads = requests.filter(function (r) { return /\/models\/load$/.test(r.url); }).length;
+                return loads === 0
+                    ? { status: 200, body: { models: [{ name: 'sd15-q4' }], state: 'not_loaded', current_model: '' } }
+                    : { status: 200, body: { models: [{ name: 'sd15-q4' }], state: 'loaded', current_model: 'sd15-q4' } };
+            }
+            return { status: 200, body: { created: 1, data: [{ b64_json: 'BASE64_СЕКРЕТ' }] } };
+        };
+        getEl('imSelfTestResult').textContent = '';
+        Page.render([{ id: 'img1', backendType: 'image_cpp', image: { state: 'not_loaded', currentModel: '' } }]);
+        const ok = await Page.runSelfTest();
+        responseFor = null;
+        assert.strictEqual(ok, true, 'проверка не прошла: ' + getEl('imSelfTestResult').textContent);
+        const order = requests.map(function (r) { return r.method + ' ' + r.url.replace(/^.*\/api\/v1\/image\/backends\/img1/, '').replace(/^.*(\/v1\/images\/generations)$/, '$1'); });
+        assert.strictEqual(order[0], 'GET /models', 'первым должен быть список моделей: ' + order.join(' | '));
+        assert.strictEqual(order[1], 'POST /models/load', 'вторым — загрузка модели: ' + order.join(' | '));
+        assert.ok(order[order.length - 1].indexOf('/v1/images/generations') !== -1, 'последним — генерация: ' + order.join(' | '));
+        const txt = getEl('imSelfTestResult').textContent;
+        assert.ok(txt.indexOf('OK') === 0, 'нет отметки OK: ' + txt);
+        assert.ok(txt.indexOf('sd15-q4') !== -1, 'нет имени модели в результате: ' + txt);
+    });
+
+    await checkAsync('runSelfTest: транзиентный отказ гейта (кэш балансера) → повтор и успех', async function () {
+        requests.length = 0;
+        let gen = 0;
+        responseFor = function (rec) {
+            if (/\/v1\/images\/generations$/.test(rec.url)) {
+                gen++;
+                // Первый заход: кэш балансера ещё не знает о загруженной модели.
+                if (gen === 1) {
+                    return {
+                        status: 503,
+                        body: {
+                            error: 'image_model_not_loaded',
+                            message: 'no image model is loaded on the image backend (known models: sd15-q4)',
+                            hint: 'load a model first: POST /api/image/models/load',
+                            retry_after_seconds: 1,
+                        },
+                    };
+                }
+                return { status: 200, body: { created: 1, data: [{ b64_json: 'BASE64_СЕКРЕТ' }] } };
+            }
+            return { status: 200, body: { models: [], state: 'loaded', current_model: 'sd15-q4' } };
+        };
+        getEl('imSelfTestResult').textContent = '';
+        Page.render([{ id: 'img1', backendType: 'image_cpp', image: { state: 'loaded', currentModel: 'sd15-q4' } }]);
+        const ok = await Page.runSelfTest();
+        const gens = requests.filter(function (r) { return /\/v1\/images\/generations$/.test(r.url); });
+        responseFor = null;
+        assert.strictEqual(ok, true, 'повтор не спас проверку: ' + getEl('imSelfTestResult').textContent);
+        assert.strictEqual(gens.length, 2, 'должно быть 2 запроса генерации (отказ + повтор): ' + gens.length);
+        assert.ok(getEl('imSelfTestResult').textContent.indexOf('OK') === 0, 'нет OK после повтора');
     });
 
     check('ПОКАЗ КАРТИНОК: base64 из ответа не попадает в DOM', function () {
@@ -236,14 +305,14 @@ function tabPanel(tab) {
         assert.ok(txt.indexOf('engine_oom') !== -1, 'текст ошибки движка потерян: ' + txt);
     });
 
-    await checkAsync('без выбранного бэкенда запрос не уходит', async function () {
+    await checkAsync('без image-бэкендов в кластере запрос не уходит', async function () {
         requests.length = 0;
         getEl('imgBackendSelect').value = '';
-        Page.render([{ id: 'a', backendType: 'image_cpp' }, { id: 'b', backendType: 'image_cpp' }]);
+        Page.render([]);
         const ok = await Page.runSelfTest();
         assert.strictEqual(ok, false);
-        assert.strictEqual(requests.length, 0, 'запрос ушёл без выбранного бэкенда');
-        assert.strictEqual(getEl('imSelfTestResult').textContent, 'Выберите image-бэкенд');
+        assert.strictEqual(requests.length, 0, 'запрос ушёл без image-бэкендов');
+        assert.strictEqual(getEl('imSelfTestResult').textContent, 'Нет image-бэкендов');
     });
 
     console.log('');

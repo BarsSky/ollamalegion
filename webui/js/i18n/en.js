@@ -1700,7 +1700,15 @@ window.I18N_EN = {
   "imageModels.selftest_running": "Running...",
   "imageModels.selftest_ok": "OK",
   "imageModels.selftest_fail": "Failed",
-  "imageModels.selftest_no_backend": "Select an image backend",
+  "imageModels.selftest_no_backend": "No image backends in the cluster",
+  "imageModels.selftest_timeout": "no response within {s} s",
+  // Check steps: load a model first (the gate only lets generation through with a
+  // loaded model), then generate 1 step at 64x64 over the client path.
+  "imageModels.selftest_loading_model": "Loading a model...",
+  "imageModels.selftest_no_models": "the backend has no models on disk",
+  "imageModels.selftest_load_failed": "the model did not load: {error}",
+  "imageModels.selftest_load_timeout": "the model did not load within {s} s",
+  "imageModels.selftest_wait_gate": "Waiting for the backend to become ready...",
   "imageModels.ms": "ms",
   "imageModels.loaded_title": "Loaded model",
   "imageModels.downloads_title": "Model downloads",
@@ -1757,6 +1765,10 @@ window.I18N_EN = {
   "imageModels.backend_params_title": "Backend parameters",
   "imageModels.backend_params_hint": "Worker port, GPU index, weight, parallel request limit and idle unload are set in the backend card (Overview tab): these fields affect the balancer, not the model profile.",
   "imageModels.open_backend_editor": "Open parameters",
+  // Load progress without a time value (the worker has not started counting yet)
+  // so the label never shows empty parentheses.
+  "imageModels.load_stage": "Loading {name}: {stage}",
+  "imageModels.load_name": "Loading {name}",
 
   // ==== R-Image Phase 8 (2026-10-03): "Image backends" page ====
   "nav.image_backends": "Image backends",

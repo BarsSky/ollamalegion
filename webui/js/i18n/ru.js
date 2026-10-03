@@ -1706,7 +1706,15 @@ window.I18N_RU = {
   "imageModels.selftest_running": "Проверяю...",
   "imageModels.selftest_ok": "OK",
   "imageModels.selftest_fail": "Ошибка",
-  "imageModels.selftest_no_backend": "Выберите image-бэкенд",
+  "imageModels.selftest_no_backend": "Нет image-бэкендов в кластере",
+  "imageModels.selftest_timeout": "нет ответа за {s} с",
+  // Шаги проверки: сначала грузим модель (гейт пускает генерацию только с
+  // загруженной моделью), затем 1 шаг 64x64 клиентским путём.
+  "imageModels.selftest_loading_model": "Загружаю модель...",
+  "imageModels.selftest_no_models": "у бэкенда нет моделей на диске",
+  "imageModels.selftest_load_failed": "модель не загрузилась: {error}",
+  "imageModels.selftest_load_timeout": "модель не загрузилась за {s} с",
+  "imageModels.selftest_wait_gate": "Жду готовности бэкенда...",
   "imageModels.ms": "мс",
   "imageModels.loaded_title": "Загруженная модель",
   "imageModels.downloads_title": "Загрузки моделей",
@@ -1763,6 +1771,10 @@ window.I18N_RU = {
   "imageModels.backend_params_title": "Параметры бэкенда",
   "imageModels.backend_params_hint": "Порт воркера, GPU-индекс, вес, лимит параллельных запросов и idle-выгрузка задаются в карточке бэкенда (таб «Обзор»): эти поля влияют на балансер, а не на профиль модели.",
   "imageModels.open_backend_editor": "Открыть параметры",
+  // Прогресс загрузки без времени (воркер ещё не начал отсчёт) — чтобы в подписи
+  // не оставались пустые скобки.
+  "imageModels.load_stage": "Загрузка {name}: {stage}",
+  "imageModels.load_name": "Загрузка {name}",
 
   // ==== R-Image Phase 8 (2026-10-03): страница «Image-бэкенды» ====
   "nav.image_backends": "Image-бэкенды",

@@ -51,6 +51,13 @@ type progressTracker struct {
 	mu   sync.Mutex
 	cur  loadProgress
 	subs map[chan loadProgress]struct{}
+	// startedAt — начало текущей загрузки. Нулевое значение = загрузка не идёт.
+	//
+	// ПОЧЕМУ НЕ ТАЙМЕР: ElapsedMS считается от startedAt в момент set(), а не
+	// обновляется по тикеру. Иначе пришлось бы держать горутину на каждую
+	// загрузку только ради «сколько уже ждём», а снимок всё равно отдаётся
+	// только по событию (SSE) или по запросу (GET /load/progress).
+	startedAt time.Time
 }
 
 func newProgressTracker() *progressTracker {
@@ -61,19 +68,44 @@ func (p *progressTracker) lock()   { p.mu.Lock() }
 func (p *progressTracker) unlock() { p.mu.Unlock() }
 
 // set — обновление снимка и рассылка подписчикам (SSE).
+//
+// ElapsedMS (R-Image Phase 9): раньше поле всегда оставалось нулём, и UI честно
+// рисовал пустое время («Загрузка sd15-q4: ready ()») — при том что загрузка
+// весов идёт десятки секунд и именно время здесь и есть основной фидбек. Отсчёт
+// начинается на первой стадии загрузки и замирает на её конце: у «unloaded»
+// время сбрасывается, потому что длительность выгрузки оператору не нужна.
 func (p *progressTracker) set(stage, state, model, errText string) {
+	now := time.Now().UTC()
 	p.lock()
+	switch {
+	case state == sdbackend.StateLoading:
+		if p.startedAt.IsZero() {
+			p.startedAt = now
+		}
+		p.cur.ElapsedMS = now.Sub(p.startedAt).Milliseconds()
+	case state == sdbackend.StateLoaded || state == sdbackend.StateError:
+		// Итог загрузки: фиксируем полное время и закрываем отсчёт, чтобы
+		// повторный set (reload/выгрузка) не продолжил старый.
+		if !p.startedAt.IsZero() {
+			p.cur.ElapsedMS = now.Sub(p.startedAt).Milliseconds()
+			p.startedAt = time.Time{}
+		}
+	default:
+		// not_loaded и прочие состояния: время загрузки не имеет смысла.
+		p.startedAt = time.Time{}
+		p.cur.ElapsedMS = 0
+	}
 	p.cur.State = state
 	p.cur.Model = model
 	p.cur.Stage = stage
 	p.cur.Error = errText
-	p.cur.UpdatedAt = time.Now().UTC()
+	p.cur.UpdatedAt = now
 	if stage != "" {
 		line := stage
 		if errText != "" {
 			line += ": " + errText
 		}
-		p.cur.Events = append(p.cur.Events, fmt.Sprintf("%s %s", time.Now().UTC().Format("15:04:05"), line))
+		p.cur.Events = append(p.cur.Events, fmt.Sprintf("%s %s", now.Format("15:04:05"), line))
 		if len(p.cur.Events) > 20 {
 			p.cur.Events = p.cur.Events[len(p.cur.Events)-20:]
 		}

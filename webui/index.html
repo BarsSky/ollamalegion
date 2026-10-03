@@ -102,13 +102,6 @@
                 <a href="#image" class="nav-item" data-page="image">
                     <span class="nav-icon-wrap"><i class="fas fa-image fa-fw"></i></span> <span data-i18n="nav.image_models">Image-модели</span>
                 </a>
-                <!-- 2026-10-03: страница-инструмент «Image-тест» — проверить настройки
-                     модели и получить результат. Единственное место WebUI, где
-                     показывается сгенерированное изображение. Видна только при
-                     наличии image_cpp-бэкенда (syncVisibility). -->
-                <a href="#image-test" class="nav-item" data-page="image-test">
-                    <span class="nav-icon-wrap"><i class="fas fa-flask-vial fa-fw"></i></span> <span data-i18n="nav.image_test">Image-тест</span>
-                </a>
                 <a href="virtual-models.html" target="_blank" rel="noopener" class="nav-item" data-page="virtual-models">
                     <span class="nav-icon-wrap"><i class="fas fa-share-nodes fa-fw"></i></span> <span data-i18n="nav.virtual_models">Виртуальные модели</span>
                 </a>
@@ -638,6 +631,7 @@
                     <button type="button" class="gguf-tab" data-im-tab="loaded" data-i18n="imageModels.tab_loaded">Загруженные</button>
                     <button type="button" class="gguf-tab" data-im-tab="downloads" data-i18n="imageModels.tab_downloads">Загрузки</button>
                     <button type="button" class="gguf-tab" data-im-tab="settings" data-i18n="imageModels.tab_settings">Настройки</button>
+                    <button type="button" class="gguf-tab" data-im-tab="test" data-i18n="imageTest.tab_test">Тест</button>
                 </div>
 
                 <!-- Таб «Обзор»: карточка image-бэкендов (CRUD, порт, GPU, состояние,
@@ -934,129 +928,127 @@
                     </div>
                 </div>
                 </div>
-            </div>
 
-            <!-- Image Test Page (2026-10-03): инструмент для проверки настроек
-                 модели — форма, отправка КЛИЕНТСКИМ путём балансера
-                 (/v1/images/generations, /sdapi/v1/txt2img) и показ результата.
-                 Это ЕДИНСТВЕННОЕ место WebUI, где выводится сгенерированная
-                 картинка: страница намеренно отделена от «Image-моделей» (там
-                 только настройка и состояние) и видна лишь при наличии
-                 image_cpp-бэкенда (см. image-test-page.js → syncVisibility). -->
-            <div class="page" id="image-test-page">
-                <div class="card">
-                    <div class="card-header">
-                        <h3><i class="fas fa-flask-vial section-icon-i"></i> <span data-i18n="imageTest.title">Тест генерации изображений</span></h3>
-                        <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                            <span style="font-size:12px;color:var(--text-muted);" data-i18n="imageTest.backend">Бэкенд</span>
-                            <select class="sort-select" id="imgTestBackendSelect"></select>
-                            <span style="font-size:12px;color:var(--text-muted);" data-i18n="imageTest.model">Модель</span>
-                            <select class="sort-select" id="imgTestModelSelect"></select>
-                            <span style="font-size:12px;color:var(--text-muted);" data-i18n="imageTest.model_state">Состояние</span>
-                            <span id="imgTestModelState" style="font-size:12px;">—</span>
-                            <button class="btn btn-secondary" data-imt-action="defaults" data-i18n="imageTest.apply_defaults">Из профиля</button>
-                            <button class="btn btn-secondary" data-imt-action="load-model" data-i18n="gguf.load_model">Загрузить модель</button>
-                            <button class="btn btn-secondary" data-imt-action="unload-model" data-i18n="gguf.unload_model">Выгрузить</button>
-                            <button class="btn btn-secondary" id="imgTestRefreshBtn" data-i18n="gguf.refresh">Обновить</button>
+                <!-- Таб «Тест» (2026-10-03): инструмент для проверки настроек
+                     модели — форма, отправка КЛИЕНТСКИМ путём балансера
+                     (/v1/images/generations, /sdapi/v1/txt2img) и показ результата.
+                     Это ЕДИНСТВЕННОЕ место WebUI, где выводится сгенерированная
+                     картинка; на остальных табах показ картинок запрещён. -->
+                <div class="gguf-tab-content" id="imTabTest">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-flask-vial section-icon-i"></i> <span data-i18n="imageTest.title">Тест генерации изображений</span></h3>
+                            <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                                <span style="font-size:12px;color:var(--text-muted);" data-i18n="imageTest.backend">Бэкенд</span>
+                                <select class="sort-select" id="imgTestBackendSelect"></select>
+                                <span style="font-size:12px;color:var(--text-muted);" data-i18n="imageTest.model">Модель</span>
+                                <select class="sort-select" id="imgTestModelSelect"></select>
+                                <span style="font-size:12px;color:var(--text-muted);" data-i18n="imageTest.model_state">Состояние</span>
+                                <span id="imgTestModelState" style="font-size:12px;">—</span>
+                                <button class="btn btn-secondary" data-imt-action="defaults" data-i18n="imageTest.apply_defaults">Из профиля</button>
+                                <button class="btn btn-secondary" data-imt-action="load-model" data-i18n="gguf.load_model">Загрузить модель</button>
+                                <button class="btn btn-secondary" data-imt-action="unload-model" data-i18n="gguf.unload_model">Выгрузить</button>
+                                <button class="btn btn-secondary" id="imgTestRefreshBtn" data-i18n="gguf.refresh">Обновить</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div id="imgTestNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
+                            <div class="form-row">
+                                <div class="form-group" style="flex:2;">
+                                    <label data-i18n="image.prompt">Промпт</label>
+                                    <textarea id="imgTestPrompt" class="form-control" rows="3" placeholder="a cat on a windowsill, soft light"></textarea>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group" style="flex:2;">
+                                    <label data-i18n="image.negative">Негативный промпт</label>
+                                    <textarea id="imgTestNegative" class="form-control" rows="2" placeholder="blurry, low quality, watermark"></textarea>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label data-i18n="image.width">Ширина</label>
+                                    <input type="number" id="imgTestWidth" class="form-control" value="512" min="64" max="4096" step="64">
+                                </div>
+                                <div class="form-group">
+                                    <label data-i18n="image.height">Высота</label>
+                                    <input type="number" id="imgTestHeight" class="form-control" value="512" min="64" max="4096" step="64">
+                                </div>
+                                <div class="form-group">
+                                    <label data-i18n="image.steps">Шаги</label>
+                                    <input type="number" id="imgTestSteps" class="form-control" value="8" min="1" max="100">
+                                </div>
+                                <div class="form-group">
+                                    <label data-i18n="image.cfg">CFG scale</label>
+                                    <input type="number" id="imgTestCfg" class="form-control" value="7" min="0" max="30" step="0.1">
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label data-i18n="image.sampler">Самплер</label>
+                                    <select class="form-control" id="imgTestSampler"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label data-i18n="image.scheduler">Шедулер</label>
+                                    <select class="form-control" id="imgTestScheduler"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label data-i18n="image.seed">Seed</label>
+                                    <input type="number" id="imgTestSeed" class="form-control" placeholder="-1 = случайный">
+                                </div>
+                                <div class="form-group">
+                                    <label data-i18n="imageTest.batch">Картинок за раз</label>
+                                    <input type="number" id="imgTestBatch" class="form-control" value="1" min="1" max="8">
+                                </div>
+                                <div class="form-group">
+                                    <label data-i18n="imageTest.surface">Поверхность</label>
+                                    <select class="form-control" id="imgTestSurface">
+                                        <option value="openai">OpenAI /v1/images/generations</option>
+                                        <option value="a1111">A1111 /sdapi/v1/txt2img</option>
+                                        <option value="native">Нативный /api/image/generate</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
+                                <button class="btn btn-primary" data-imt-action="generate" data-i18n="imageTest.generate">Сгенерировать</button>
+                                <button class="btn btn-secondary" data-imt-action="copy-curl" data-i18n="clientAccess.copy_curl">Копировать curl</button>
+                            </div>
+                            <small id="imgTestCapsNote" style="display:block;margin-top:8px;color:var(--text-muted);font-size:11px;"></small>
                         </div>
                     </div>
-                    <div class="card-body">
-                        <div id="imgTestNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
-                        <div class="form-row">
-                            <div class="form-group" style="flex:2;">
-                                <label data-i18n="image.prompt">Промпт</label>
-                                <textarea id="imgTestPrompt" class="form-control" rows="3" placeholder="a cat on a windowsill, soft light"></textarea>
-                            </div>
+    
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-code section-icon-i"></i> <span data-i18n="imageTest.request_title">Что уйдёт в запрос</span></h3>
                         </div>
-                        <div class="form-row">
-                            <div class="form-group" style="flex:2;">
-                                <label data-i18n="image.negative">Негативный промпт</label>
-                                <textarea id="imgTestNegative" class="form-control" rows="2" placeholder="blurry, low quality, watermark"></textarea>
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label data-i18n="image.width">Ширина</label>
-                                <input type="number" id="imgTestWidth" class="form-control" value="512" min="64" max="4096" step="64">
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.height">Высота</label>
-                                <input type="number" id="imgTestHeight" class="form-control" value="512" min="64" max="4096" step="64">
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.steps">Шаги</label>
-                                <input type="number" id="imgTestSteps" class="form-control" value="8" min="1" max="100">
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.cfg">CFG scale</label>
-                                <input type="number" id="imgTestCfg" class="form-control" value="7" min="0" max="30" step="0.1">
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label data-i18n="image.sampler">Самплер</label>
-                                <select class="form-control" id="imgTestSampler"></select>
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.scheduler">Шедулер</label>
-                                <select class="form-control" id="imgTestScheduler"></select>
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="image.seed">Seed</label>
-                                <input type="number" id="imgTestSeed" class="form-control" placeholder="-1 = случайный">
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="imageTest.batch">Картинок за раз</label>
-                                <input type="number" id="imgTestBatch" class="form-control" value="1" min="1" max="8">
-                            </div>
-                            <div class="form-group">
-                                <label data-i18n="imageTest.surface">Поверхность</label>
-                                <select class="form-control" id="imgTestSurface">
-                                    <option value="openai">OpenAI /v1/images/generations</option>
-                                    <option value="a1111">A1111 /sdapi/v1/txt2img</option>
-                                    <option value="native">Нативный /api/image/generate</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">
-                            <button class="btn btn-primary" data-imt-action="generate" data-i18n="imageTest.generate">Сгенерировать</button>
-                            <button class="btn btn-secondary" data-imt-action="copy-curl" data-i18n="clientAccess.copy_curl">Копировать curl</button>
-                        </div>
-                        <small id="imgTestCapsNote" style="display:block;margin-top:8px;color:var(--text-muted);font-size:11px;"></small>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <h3><i class="fas fa-code section-icon-i"></i> <span data-i18n="imageTest.request_title">Что уйдёт в запрос</span></h3>
-                    </div>
-                    <div class="card-body">
-                        <small style="display:block;margin-bottom:8px;color:var(--text-muted);font-size:11px;" data-i18n="imageTest.request_hint">Показывается ровно то, что уходит клиентским путём балансера (гейт VRAM и счётчики Monitor работают как у реальных клиентов).</small>
-                        <pre id="imgTestRequestPreview" style="white-space:pre-wrap;font-size:11px;margin:0;max-height:220px;overflow:auto;"></pre>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <h3><i class="fas fa-image section-icon-i"></i> <span data-i18n="imageTest.result_title">Результат</span></h3>
-                        <div class="card-actions"><span id="imgTestResultMeta" style="font-size:12px;color:var(--text-muted);"></span></div>
-                    </div>
-                    <div class="card-body">
-                        <div id="imgTestResultHost">
-                            <div class="gguf-empty-state" data-i18n="imageTest.no_result">Результата ещё нет — нажмите «Сгенерировать».</div>
+                        <div class="card-body">
+                            <small style="display:block;margin-bottom:8px;color:var(--text-muted);font-size:11px;" data-i18n="imageTest.request_hint">Показывается ровно то, что уходит клиентским путём балансера (гейт VRAM и счётчики Monitor работают как у реальных клиентов).</small>
+                            <pre id="imgTestRequestPreview" style="white-space:pre-wrap;font-size:11px;margin:0;max-height:220px;overflow:auto;"></pre>
                         </div>
                     </div>
-                </div>
-
-                <div class="card" id="imgTestHistoryCard" style="display:none;">
-                    <div class="card-header">
-                        <h3><i class="fas fa-clock-rotate-left section-icon-i"></i> <span data-i18n="imageTest.history_title">История теста (в памяти вкладки)</span></h3>
-                        <div class="card-actions">
-                            <button class="btn btn-secondary" data-imt-action="clear-history" data-i18n="imageTest.clear_history">Очистить</button>
+    
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-image section-icon-i"></i> <span data-i18n="imageTest.result_title">Результат</span></h3>
+                            <div class="card-actions"><span id="imgTestResultMeta" style="font-size:12px;color:var(--text-muted);"></span></div>
+                        </div>
+                        <div class="card-body">
+                            <div id="imgTestResultHost">
+                                <div class="gguf-empty-state" data-i18n="imageTest.no_result">Результата ещё нет — нажмите «Сгенерировать».</div>
+                            </div>
                         </div>
                     </div>
-                    <div class="card-body">
-                        <div id="imgTestHistoryHost"></div>
+    
+                    <div class="card" id="imgTestHistoryCard" style="display:none;">
+                        <div class="card-header">
+                            <h3><i class="fas fa-clock-rotate-left section-icon-i"></i> <span data-i18n="imageTest.history_title">История теста (в памяти вкладки)</span></h3>
+                            <div class="card-actions">
+                                <button class="btn btn-secondary" data-imt-action="clear-history" data-i18n="imageTest.clear_history">Очистить</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div id="imgTestHistoryHost"></div>
+                        </div>
                     </div>
                 </div>
             </div>

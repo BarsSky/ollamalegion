@@ -29,7 +29,9 @@
 (function () {
     'use strict';
 
-    var TABS = ['overview', 'hf', 'models', 'loaded', 'downloads', 'settings'];
+    // Табы страницы. «test» — инструмент проверки настроек модели (форма +
+    // результат); он же единственное место WebUI, где показывается картинка.
+    var TABS = ['overview', 'hf', 'models', 'loaded', 'downloads', 'settings', 'test'];
     var PAGE_ID = 'image-page';
     var TABS_ID = 'imTabs';
     var STORAGE_KEY = 'ollamalegion_image_models_tab';
@@ -161,11 +163,15 @@
     /** renderTabs — отдать контекст подключённым табам-модулям (если они есть). */
     function renderTabs() {
         var ctx = context();
-        [window.ImageModelsList, window.ImageModelsHf].forEach(function (mod) {
+        [window.ImageModelsList, window.ImageModelsHf, window.ImageTestPage].forEach(function (mod) {
             if (!mod || typeof mod.render !== 'function') return;
             var owns = !mod.tabIds || mod.tabIds.indexOf(activeTab) !== -1;
             if (!owns) return;
-            try { mod.render(ctx); } catch (e) {
+            try {
+                // Таб-модули принимают ctx; image-test-page.js дополнительно
+                // понимает «просто массив бэкендов» (его зовут и снаружи).
+                mod.render(ctx);
+            } catch (e) {
                 if (window.console) console.warn('[ImageModelsPage] tab render failed:', e);
             }
         });

@@ -640,8 +640,6 @@ window.I18N_EN = {
 
   // imageTest — the "Image test" tool page (2026-10-03): try model settings and
   // see the result. The only WebUI page that displays a generated image.
-  "nav.image_test": "Image test",
-  "header.image_test": "Image generation test",
   "image.prompt": "Prompt",
   "image.negative": "Negative prompt",
   "image.width": "Width",
@@ -653,6 +651,7 @@ window.I18N_EN = {
   "image.seed": "Seed",
   "image.prompt_required": "Prompt is required",
   "imageTest.title": "Image generation test",
+  "imageTest.tab_test": "Test",
   "imageTest.backend": "Backend",
   "imageTest.model": "Model",
   "imageTest.model_state": "State",

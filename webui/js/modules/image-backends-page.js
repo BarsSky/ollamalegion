@@ -57,11 +57,7 @@
     // резервный оставлен на случай смены тега разметки (button вместо a).
     var NAV_SELECTOR = 'a[data-page="image"]';
     var NAV_FALLBACK_SELECTOR = '.nav-item[data-page="image"]';
-    // 2026-10-03: страница-инструмент «Image-тест» видна ровно по тому же правилу
-    // (есть image_cpp-бэкенд), поэтому переключаем её здесь же — одна реализация
-    // правила на проект, а не две независимые.
-    var TEST_NAV_SELECTOR = 'a[data-page="image-test"]';
-    var TEST_PAGE_ID = 'image-test-page';
+
 
     // Колонок в таблице: id, имя, хост, порт, GPU, состояние, модель, VRAM,
     // запросы, RPS, среднее время, действия. Нужно для colspan пустых строк.
@@ -713,17 +709,8 @@
         if (nav) nav.style.display = visible ? '' : 'none';
         var page = byId(PAGE_ID);
         if (page) page.style.display = visible ? '' : 'none';
-        // Страница-инструмент «Image-тест» существует только вместе с image-бэкендом.
-        var testNav = document.querySelector ? document.querySelector(TEST_NAV_SELECTOR) : null;
-        if (testNav) testNav.style.display = visible ? '' : 'none';
-        var testPage = byId(TEST_PAGE_ID);
-        if (testPage) testPage.style.display = visible ? '' : 'none';
-        if (!visible) {
-            // Активной может быть любая из двух страниц — проверяем обе
-            // (leavePageIfActive срабатывает только на действительно активной).
-            leavePageIfActive(nav);
-            leavePageIfActive(testNav);
-        }
+
+        if (!visible) leavePageIfActive(nav);
         return visible;
     }
 

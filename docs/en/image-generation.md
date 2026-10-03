@@ -536,15 +536,15 @@ Why it works this way:
   duration and status), and in the backends table the Active/RPS/Avg RT columns of an
   `image_cpp` backend are filled from `image.requests`.
 
-### 12.4 "Image test" page - try model settings and see the result
+### 12.4 "Test" tab - try model settings and see the result
 
-A separate page (nav item "Image test" right after "Image models") that appears
-**only when the cluster has an `image_cpp` backend**.
+The seventh tab of the "Image models" page (the "Test" button), available
+**only when the cluster has an `image_cpp` backend** - like the whole page.
 
-WHY A SEPARATE PAGE: "Image models" is about configuration and state, and showing
-generated images there is deliberately excluded (see 12.3). The test page is the
-opposite: it is the only WebUI page that displays an image, and it can simply be
-left unopened.
+WHY A SEPARATE TAB: the other tabs are about configuration and state, and showing
+generated images there is deliberately excluded (see 12.3). The "Test" tab is the
+opposite: it is the only WebUI place that displays an image, and it does not get in
+the way until opened.
 
 What it does:
 

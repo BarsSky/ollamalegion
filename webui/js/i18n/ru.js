@@ -709,8 +709,6 @@ window.I18N_RU = {
   // imageTest — страница-инструмент «Image-тест» (2026-10-03): проверить
   // настройки модели и получить результат. Единственное место WebUI, где
   // показывается сгенерированное изображение.
-  "nav.image_test": "Image-тест",
-  "header.image_test": "Тест генерации изображений",
   "image.prompt": "Промпт",
   "image.negative": "Негативный промпт",
   "image.width": "Ширина",
@@ -722,6 +720,7 @@ window.I18N_RU = {
   "image.seed": "Seed",
   "image.prompt_required": "Укажите промпт",
   "imageTest.title": "Тест генерации изображений",
+  "imageTest.tab_test": "Тест",
   "imageTest.backend": "Бэкенд",
   "imageTest.model": "Модель",
   "imageTest.model_state": "Состояние",

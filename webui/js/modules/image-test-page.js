@@ -2,14 +2,14 @@
  * image-test-page.js — «Image-тест»: страница-инструмент для проверки настроек
  * модели генерации изображений (2026-10-03).
  *
- * ЗАЧЕМ ОТДЕЛЬНАЯ СТРАНИЦА. Страница «Image-модели» — про настройку и состояние
- * (это требование заказчика: в ней нет показа картинок). Но оператору нужно
- * ВРЕМЯ ОТ ВРЕМЕНИ проверить, как модель ведёт себя с текущими настройками
- * (steps/cfg/sampler/размер, профиль bundle), и увидеть результат. Поэтому показ
- * сгенерированного вынесен в отдельную страницу, которая:
- *   - видна только когда в кластере есть бэкенд типа image_cpp (та же логика, что
- *     у страницы «Image-модели»);
- *   - шлёт запрос КЛИЕНТСКИМ путём балансера (OpenAI `/v1/images/generations` или
+ * ЗАЧЕМ ОТДЕЛЬНЫЙ ТАБ. Остальные табы «Image-моделей» — про настройку и состояние
+ * (показ сгенерированного там запрещён по требованию заказчика). Таб «Тест» —
+ * наоборот: единственное место WebUI, где выводится картинка. Он же даёт проверить,
+ * как модель ведёт себя с текущими настройками (steps/cfg/sampler/размер, профиль
+ * bundle) и увидеть результат:
+ *   - таб доступен только когда в кластере есть бэкенд типа image_cpp (та же
+ *     логика видимости, что у всей страницы «Image-модели»);
+ *   - запрос уходит КЛИЕНТСКИМ путём балансера (OpenAI `/v1/images/generations` или
  *     A1111 `/sdapi/v1/txt2img`) — то есть ровно так, как это сделает клиент:
  *     проходит VRAM-гейт, попадает в метрики и видно в Monitor;
  *   - показывает сам запрос (JSON) и ответ движка как есть (model/seed/
@@ -25,8 +25,9 @@
 (function () {
     'use strict';
 
-    var PAGE_ID = 'image-test-page';
-    var NAV_SELECTOR = 'a[data-page="image-test"]';
+    // Панель таба внутри страницы «Image-модели» (разметку держит index.html, а не
+    // модуль: так её видно рядом с остальными табами и не приходится собирать DOM).
+    var PAGE_ID = 'imTabTest';
 
     // Лимиты — те же, что у движка (совпадают с /api/v1/image/contract.limits).
     var LIMITS = { minSide: 64, maxSide: 4096, step: 64, minSteps: 1, maxSteps: 100, minCfg: 0, maxCfg: 30, minBatch: 1, maxBatch: 8 };
@@ -395,34 +396,15 @@
     }
 
     /**
-     * Показ/скрытие пункта меню и страницы.
+     * syncVisibility — оставлено для симметрии с другими image-модулями.
      *
-     * Правило одно на проект и живёт в image-backends-page.js (там же, где
-     * видимость «Image-моделей»): обе страницы существуют только при наличии
-     * image_cpp-бэкенда. Здесь — тонкая обёртка, чтобы контракт соблюдался без
-     * второй реализации того же условия.
+     * Отдельной страницы и пункта меню у теста больше нет (это таб «Image-моделей»),
+     * поэтому скрывать нечего: таб живёт внутри страницы, а её видимость целиком
+     * определяется правилом «есть image_cpp» в image-backends-page.js. Возвращаем
+     * признак, нужен ли image-UI вообще — вызывающие полагаются на это значение.
      */
     function syncVisibility(backends) {
-        if (window.ImageBackendsPage && typeof window.ImageBackendsPage.syncVisibility === 'function') {
-            return window.ImageBackendsPage.syncVisibility(backends);
-        }
-        var visible = hasImageBackends(backends);
-        var nav = document.querySelector ? document.querySelector(NAV_SELECTOR) : null;
-        if (nav) nav.style.display = visible ? '' : 'none';
-        var page = byId(PAGE_ID);
-        if (page) page.style.display = visible ? '' : 'none';
-        if (!visible) leavePageIfActive(nav);
-        return visible;
-    }
-
-    function leavePageIfActive(nav) {
-        var active = false;
-        try { active = !!(nav && nav.classList && nav.classList.contains('active')); } catch (e) { active = false; }
-        if (!active) return;
-        var ctx = window.App && window.App.context;
-        if (ctx && typeof ctx.switchPage === 'function') { ctx.switchPage('backends'); return; }
-        var backendsNav = document.querySelector ? document.querySelector('[data-page="backends"]') : null;
-        if (backendsNav && typeof backendsNav.click === 'function') backendsNav.click();
+        return hasImageBackends(backends);
     }
 
     function imageBackends(list) {
@@ -936,13 +918,41 @@
         refresh();
     }
 
-    function render(backends) {
+    /**
+     * render — принимает ЛИБО массив бэкендов (как другие модули страницы),
+     * ЛИБО ctx от шелла (`{backends, backendId, tab, ...}`).
+     *
+     * Двойная форма нужна потому, что модуль вызывается из двух мест: шелл
+     * передаёт ctx (контракт табов Phase 9), а периодический refresh app.js —
+     * просто список бэкендов. Разбирать это здесь дешевле, чем держать две
+     * функции с одинаковым смыслом.
+     */
+    function render(arg) {
+        // Идемпотентно: слушатели (клики по кнопкам таба) должны существовать к
+        // моменту первого рендера — отдельной страницы, чей init() их вешал, больше
+        // нет, таб рендерит шелл.
+        mount();
+        var backends = arg;
+        var ctx = null;
+        if (arg && !Array.isArray(arg) && typeof arg === 'object') {
+            ctx = arg;
+            backends = arg.backends;
+        }
         state.backends = Array.isArray(backends) ? backends : [];
+        if (ctx && ctx.backendId) state.backendId = String(ctx.backendId);
         if (!state.backendId) {
             var first = imageBackends(state.backends)[0];
             if (first) state.backendId = first.id;
         }
         renderAll();
+        // Данные (модели/лимиты) подтягиваем при активации таба: иначе состояние
+        // модели было бы устаревшим (её могли загрузить с другого таба), а на каждом
+        // опросе кластера мы бы дёргали воркер без надобности.
+        if (ctx && ctx.tab === 'test') {
+            refresh();
+        } else if (!ctx && !state.models.length && !state.busy) {
+            refresh();
+        }
         return state.backends;
     }
 
@@ -952,6 +962,9 @@
         render: render,
         refresh: refresh,
         syncVisibility: syncVisibility,
+        // Таб, которым владеет модуль (контракт шелла: renderTabs() отдаёт ctx
+        // только модулям, владеющим активным табом).
+        tabIds: ['test'],
         generate: generate,
         loadModel: loadModel,
         unloadModel: unloadModel,

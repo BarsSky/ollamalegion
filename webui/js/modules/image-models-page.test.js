@@ -155,8 +155,8 @@ function tabPanel(tab) {
 
     Page.mount();
 
-    check('табы: их шесть и все панели найдены', function () {
-        assert.deepStrictEqual(Page.tabIds, ['overview', 'hf', 'models', 'loaded', 'downloads', 'settings']);
+    check('табы: их семь (включая «Тест») и все панели найдены', function () {
+        assert.deepStrictEqual(Page.tabIds, ['overview', 'hf', 'models', 'loaded', 'downloads', 'settings', 'test']);
         Page.tabIds.forEach(function (tab) {
             assert.ok(tabBtn(tab), 'нет кнопки таба ' + tab);
             assert.ok(tabPanel(tab), 'нет панели таба ' + tab);
@@ -174,6 +174,29 @@ function tabPanel(tab) {
     check('showTab: неизвестный таб не ломает страницу (падает на overview)', function () {
         Page.showTab('нет-такого');
         assert.ok(tabPanel('overview').classList.contains('active'), 'не вернулись на overview');
+    });
+
+    // 2026-10-03: таб «Тест» — единственное место, где показывается картинка;
+    // шелл обязан отдать ему контекст, иначе форма/результат останутся пустыми.
+    check('таб «Тест»: шелл зовёт рендер модуля теста с контекстом таба', function () {
+        const calls = [];
+        window.ImageTestPage = {
+            tabIds: ['test'],
+            render: function (ctx) { calls.push({ tab: ctx && ctx.tab, backends: (ctx && ctx.backends || []).length, backendId: ctx && ctx.backendId }); },
+        };
+        try {
+            getEl('imgBackendSelect').value = 'img1';
+            Page.render([{ id: 'img1', backendType: 'image_cpp' }]); // активен overview → тест не зовём
+            assert.strictEqual(calls.length, 0, 'тест рендерился на чужом табе: ' + JSON.stringify(calls));
+            Page.showTab('test');
+            assert.strictEqual(calls.length, 1, 'шелл не отдал контекст табу «Тест»');
+            assert.strictEqual(calls[0].tab, 'test');
+            assert.strictEqual(calls[0].backends, 1);
+            assert.strictEqual(calls[0].backendId, 'img1');
+        } finally {
+            delete window.ImageTestPage;
+            Page.showTab('overview');
+        }
     });
 
     check('клик по кнопке таба переключает (делегирование на #imTabs)', function () {

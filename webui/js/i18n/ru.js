@@ -253,6 +253,26 @@ window.I18N_RU = {
   // retry → refresh. Семантика «обновить состояние», а не «повторить запрос».
   "common.retry": "Обновить",
   "common.refresh": "Обновить",
+
+  // ==== R84 (2026-10-03): единая точка обновления данных ====
+  // Индикатор свежести в шапке (#dataFreshness) отвечает на вопрос «актуально ли
+  // то, что я вижу» и заменяет россыпь кнопок «Обновить» по страницам (одна из
+  // них вообще не имела обработчика). Подпись собирается в
+  // webui/js/modules/data-refresh.js: «Обновлено {age} назад · авто».
+  "refresh.updated_ago": "Обновлено {age} назад",
+  "refresh.just_now": "только что",
+  "refresh.sec_ago": "{n} с",
+  "refresh.min_ago": "{n} мин",
+  "refresh.hour_ago": "{n} ч",
+  "refresh.never": "нет данных",
+  "refresh.auto": "авто",
+  "refresh.paused": "пауза",
+  "refresh.running": "обновляю…",
+  "refresh.error": "не удалось обновить: {error}",
+  "refresh.error_unknown": "неизвестная ошибка",
+  "refresh.failed": "Не удалось обновить данные",
+  "refresh.toggle_auto_pause": "Приостановить авто-обновление",
+  "refresh.toggle_auto_resume": "Возобновить авто-обновление",
   "common.unknown": "Неизвестно",
   "common.offline": "Офлайн",
   "common.online": "Онлайн",

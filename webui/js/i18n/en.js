@@ -267,6 +267,26 @@ window.I18N_EN = {
   // Round 18e: refresh state, not retry.
   "common.retry": "Refresh",
   "common.refresh": "Refresh",
+
+  // ==== R84 (2026-10-03): single data-refresh entry point ====
+  // The header freshness indicator (#dataFreshness) answers "is what I see
+  // current?" and replaces the scatter of per-page Refresh buttons (one of them
+  // had no handler at all). The label is built in
+  // webui/js/modules/data-refresh.js: "Updated {age} ago · auto".
+  "refresh.updated_ago": "Updated {age} ago",
+  "refresh.just_now": "just now",
+  "refresh.sec_ago": "{n}s",
+  "refresh.min_ago": "{n} min",
+  "refresh.hour_ago": "{n} h",
+  "refresh.never": "no data",
+  "refresh.auto": "auto",
+  "refresh.paused": "paused",
+  "refresh.running": "refreshing…",
+  "refresh.error": "refresh failed: {error}",
+  "refresh.error_unknown": "unknown error",
+  "refresh.failed": "Could not refresh data",
+  "refresh.toggle_auto_pause": "Pause auto-refresh",
+  "refresh.toggle_auto_resume": "Resume auto-refresh",
   "common.unknown": "Unknown",
   "common.offline": "Offline",
   "common.online": "Online",

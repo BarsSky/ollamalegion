@@ -283,6 +283,7 @@ global.document = {
     addEventListener: function () {},
 };
 
+require('./data-refresh.js');
 require('./image-backends-page.js');
 const Page = global.ImageBackendsPage;
 assert.ok(Page, 'window.ImageBackendsPage должен быть экспортирован');
@@ -330,7 +331,7 @@ function lastRequest(filter) {
         // живёт в табе «Обзор» объединённой страницы «Image-модели»
         // (id таблицы/политики/notice сохранены, поэтому модуль не менялся).
         const required = ['image-page', 'imTabOverview', 'imageBackendsTable', 'imageBackendsBody',
-            'imageBackendsRefresh', 'imageBackendsAdd', 'imageBackendsNotice'];
+            'imageBackendsAdd', 'imageBackendsNotice'];
         const missing = required.filter(function (id) { return !HTML_IDS.has(id); });
         assert.deepStrictEqual(missing, [], 'нет в index.html: ' + missing.join(', '));
     });
@@ -755,12 +756,19 @@ function lastRequest(filter) {
     });
 
     // --- 8. Навигация и заголовок ----------------------------------------
-    await check('«Обновить» перечитывает /api/v1/cluster и перерисовывает таблицу', async function () {
+    // R84 (2026-10-03): кнопки «Обновить» у страницы нет — её заменил индикатор
+    // свежести в шапке: он дёргает провайдера страницы 'image'. Поэтому проверяем
+    // не клик по кнопке, а сам провайдер.
+    await check('провайдер обновления страницы перечитывает /api/v1/cluster и перерисовывает таблицу', async function () {
         clusterBackends = clusterPayload().backends;
-        getEl('imageBackendsRefresh').dispatch('click', {});
-        await sleep(20);
-        assert.ok(requests.filter(function (r) { return r.path === '/api/v1/cluster'; }).length >= 2,
-            'нет запроса кластера по кнопке «Обновить»');
+        const before = requests.filter(function (r) { return r.path === '/api/v1/cluster'; }).length;
+        assert.ok(global.DataRefresh, 'data-refresh.js должен быть загружен (провайдеры страниц)');
+        assert.ok(global.DataRefresh._providers['image'] && global.DataRefresh._providers['image'].length > 0,
+            'страница Image не зарегистрировала провайдера обновления');
+        const ok = await global.DataRefresh.refresh('image');
+        assert.strictEqual(ok, true, 'провайдер вернул ошибку');
+        assert.ok(requests.filter(function (r) { return r.path === '/api/v1/cluster'; }).length > before,
+            'нет запроса кластера через провайдера страницы');
         assert.ok(bodyHtml().indexOf('imageworker') !== -1, 'таблица не перерисована');
     });
 

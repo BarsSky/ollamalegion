@@ -86,6 +86,72 @@
     transform: rotate(20deg) scale(1.1);
 }
 
+/* R84 (2026-10-03): индикатор свежести данных в шапке (#dataFreshness) и
+   переключатель авто-обновления (#dataAutoToggle). Заменяют россыпь кнопок
+   «Обновить» по страницам: подпись меняется сама («Обновлено 2 с назад · авто»),
+   клик по индикатору = обновить сейчас. Логика — js/modules/data-refresh.js. */
+.data-freshness {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    white-space: nowrap;
+    cursor: pointer;
+    transition: var(--transition);
+}
+.data-freshness:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+.data-freshness > i {
+    font-size: var(--font-size-sm);
+    /* Зелёный «всё свежо» / серый «пауза» / жёлтый при ошибке: цвет задаём здесь,
+       чтобы состояние читалось без наведения на подсказку. */
+    color: var(--success, #5cb85c);
+}
+.data-freshness.is-stale > i {
+    color: var(--text-muted);
+}
+.data-freshness.is-error {
+    border-color: var(--danger, #d9534f);
+}
+.data-freshness.is-error > i {
+    color: var(--danger, #d9534f);
+}
+.data-freshness-toggle {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+}
+.data-freshness-toggle:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+.data-freshness-toggle.is-paused {
+    color: var(--text-muted);
+}
+/* На узких экранах подпись индикатора уходит первой: кнопки шапки важнее. */
+@media (max-width: 900px) {
+    .data-freshness {
+        display: none;
+    }
+}
+
 /* 2026-06-30: явный fix для колокольчика (notifications bell) и иконки темы (moon/sun).
    Оба используют класс .btn-theme-toggle (см. index.html:128 - notificationsBtn
    и index.html:123 - themeToggle). Без явного color: inherit Font Awesome

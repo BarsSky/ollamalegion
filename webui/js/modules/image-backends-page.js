@@ -1056,8 +1056,11 @@
         if (mountBound) return true;
         mountBound = true;
         page.addEventListener('click', onClick);
-        var refreshBtn = byId('imageBackendsRefresh');
-        if (refreshBtn) refreshBtn.addEventListener('click', function () { refresh(); });
+        // R84 (2026-10-03): кнопка «Обновить» удалена из шапки страницы —
+        // источник (image-бэкенды) обновляется провайдером активной страницы.
+        if (window.DataRefresh && typeof window.DataRefresh.register === 'function') {
+            window.DataRefresh.register('image', function () { return refresh(); });
+        }
         var addBtn = byId('imageBackendsAdd');
         if (addBtn) addBtn.addEventListener('click', function () { openEditor(null); });
         ensureEditor();

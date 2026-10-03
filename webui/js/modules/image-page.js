@@ -894,8 +894,13 @@
         // (Клики таба HF обрабатывает image-models-hf.js по своим data-imh-action.)
         page.addEventListener('click', onClick);
 
-        var refreshBtn = el('imgRefreshBtn');
-        if (refreshBtn) refreshBtn.addEventListener('click', function () { refresh(); });
+        // R84 (2026-10-03): своя кнопка «Обновить» удалена — страница
+        // регистрирует провайдера, его дёргает общая кнопка/индикатор в шапке.
+        // Кнопка у селекта модели остаётся: это отдельный ресурс («перечитать
+        // список моделей выбранного бэкенда»), а не общий refresh страницы.
+        if (window.DataRefresh && typeof window.DataRefresh.register === 'function') {
+            window.DataRefresh.register('image', function () { return refresh(); });
+        }
         var modelsRefreshBtn = el('imgModelsRefreshBtn');
         if (modelsRefreshBtn) modelsRefreshBtn.addEventListener('click', function () { loadModels(); });
         var backendSel = el('imgBackendSelect');

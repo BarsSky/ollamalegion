@@ -1761,10 +1761,11 @@
             state.bound = true;
             node.addEventListener('click', onClick);
         }
-        var refreshBtn = el('imageProfilesRefreshBtn');
-        if (refreshBtn && !refreshBtn._imgpBound) {
-            refreshBtn._imgpBound = true;
-            refreshBtn.addEventListener('click', function () { refresh(); });
+        // R84 (2026-10-03): кнопка «Обновить» удалена — профили image-моделей
+        // перечитываются провайдером активной страницы (та же «Обновить» в шапке).
+        if (window.DataRefresh && typeof window.DataRefresh.register === 'function' && !state._drBound) {
+            state._drBound = true;
+            window.DataRefresh.register('image', function () { return refresh(); });
         }
         var newBtn = el('imageProfilesNewBtn');
         if (newBtn && !newBtn._imgpBound) {

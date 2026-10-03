@@ -79,6 +79,25 @@ const ui = (function () {
             setupEventListeners();
         }
 
+        // R84 (2026-10-03): индикатор свежести данных в шапке (#dataFreshness)
+        // и переключатель авто-обновления. Провайдеры страниц регистрируем ДО
+        // первого рендера, иначе первое нажатие «Обновить» не нашло бы их.
+        if (window.DataRefresh) {
+            window.DataRefresh.mount();
+            registerPageProviders();
+            // Пауза авто-обновления останавливает общий цикл, возобновление —
+            // запускает его заново и сразу подтягивает данные.
+            window.DataRefresh.onAutoChange(function (on) {
+                if (on) {
+                    startPeriodicRefresh();
+                    fetchClusterState();
+                } else {
+                    stopPeriodicRefresh();
+                }
+            });
+        }
+        setupVisibilityRefresh();
+
         // Initial data load — cluster state first, drives connection status
         fetchClusterState().then(function () {
             fetchQueue();
@@ -352,8 +371,24 @@ const ui = (function () {
         }, '*');
     }
 
+    /**
+     * refreshCurrentPage — обновить данные АКТИВНОЙ страницы.
+     *
+     * R84 (2026-10-03): сначала провайдеры страницы (их регистрирует
+     * data-refresh.js: список моделей image-бэкенда, метрики монитора, лог
+     * прокси, GGUF-список и т.д.), затем перерисовка из уже обновлённого
+     * состояния. Раньше здесь была ТОЛЬКО refreshPage(), то есть отрисовка
+     * локальной копии data.* — кнопка «Обновить» визуально ничего не меняла.
+     */
     function refreshCurrentPage() {
+        if (window.DataRefresh && typeof window.DataRefresh.refresh === 'function') {
+            return window.DataRefresh.refresh(currentPage).then(function () {
+                refreshPage(currentPage);
+                return true;
+            });
+        }
         refreshPage(currentPage);
+        return Promise.resolve(true);
     }
 
     // ---- Event Listeners ----
@@ -376,6 +411,26 @@ const ui = (function () {
         var deleteBackend = function () { if (CRUD.deleteBackend) CRUD.deleteBackend(); };
 
         document.getElementById('refreshBtn').addEventListener('click', () => {
+            // R84 (2026-10-03): кнопка в шапке — ЕДИНСТВЕННАЯ кнопка обновления
+            // приложения. Она обязана дёргать и общие данные (cluster/очередь/
+            // сессии), и провайдеров активной страницы (см. refreshCurrentPage),
+            // а результат показывать индикатором свежести, а не тостом «успешно».
+            var markFresh = function () {
+                if (window.DataRefresh && window.DataRefresh.markFresh) window.DataRefresh.markFresh();
+            };
+            if (window.DataRefresh && typeof window.DataRefresh.refresh === 'function') {
+                // Общие данные (cluster → бэкенды/узлы/ресурсы) + провайдеры
+                // активной страницы; ошибку покажет индикатор свежести.
+                fetchClusterState().catch(function () { return null; })
+                    .then(function () { return window.DataRefresh.refresh(currentPage); })
+                    .then(function (ok) {
+                        refreshPage(currentPage);
+                        if (!ok) {
+                            showToast(window.I18N ? I18N.t('refresh.failed', 'Не удалось обновить данные') : 'Refresh failed', 'error');
+                        }
+                    });
+                return;
+            }
             // R83 (2026-09-29): сначала ЗАПРОС к балансеру, потом рендер.
             //
             // Было: только refreshCurrentPage(), а эта функция рисует страницу из
@@ -389,6 +444,7 @@ const ui = (function () {
             // (fetchClusterState().then(modelsPage)).
             var done = function () {
                 refreshCurrentPage();
+                markFresh();
                 showToast(window.I18N ? I18N.t('common.success') : 'Data updated', 'success');
             };
             if (typeof fetchClusterState === 'function') {
@@ -558,12 +614,8 @@ const ui = (function () {
         });
 
         // Agents page buttons
-        var refreshAgentsBtn = document.getElementById('refreshAgentsBtn');
-        if (refreshAgentsBtn) {
-            refreshAgentsBtn.addEventListener('click', function() {
-                fetchAgents();
-            });
-        }
+        // R84: кнопка «Обновить» удалена — агенты теперь и в периодическом
+        // опросе (startPeriodicRefresh), и в провайдерах страницы.
         var closeAgentDetailsBtn = document.getElementById('closeAgentDetails');
         if (closeAgentDetailsBtn) {
             closeAgentDetailsBtn.addEventListener('click', function() {
@@ -619,19 +671,9 @@ const ui = (function () {
             });
         }
 
-        // Models refresh button
-        var refreshModelsBtn = document.getElementById('refreshModelsBtn');
-        if (refreshModelsBtn) {
-            refreshModelsBtn.addEventListener('click', function() {
-                fetchClusterState().then(function() {
-                    modelsPage(data.backends);
-                    if (window.bulkModels && typeof window.bulkModels.renderToolbar === 'function') {
-                        window.bulkModels.renderToolbar();
-                    }
-                    showToast(window.I18N ? I18N.t('common.success') : 'Models refreshed', 'success');
-                });
-            });
-        }
+        // R84 (2026-10-03): кнопки «Обновить» на страницах «Модели» и «Агенты»
+        // удалены — их источники теперь провайдеры (см. registerPageProviders),
+        // которые дёргает общая кнопка/индикатор в шапке.
 
         // Model Management Modal buttons
         var modelManageCloseBtn = document.getElementById('modelManageClose');
@@ -676,12 +718,8 @@ const ui = (function () {
                 renderProxyLogs(data.proxyLogs);
             });
         }
-        var refreshProxyLogsBtn = document.getElementById('refreshProxyLogs');
-        if (refreshProxyLogsBtn) {
-            refreshProxyLogsBtn.addEventListener('click', function() {
-                fetchProxyLogs();
-            });
-        }
+        // R84: кнопка «Обновить» на странице логов удалена — fetchProxyLogs
+        // зарегистрирован провайдером страницы 'logs'.
         var copyProxyLogsBtn = document.getElementById('copyProxyLogs');
         if (copyProxyLogsBtn) {
             copyProxyLogsBtn.addEventListener('click', function() {
@@ -1633,15 +1671,30 @@ const ui = (function () {
 
     function startPeriodicRefresh() {
         const interval = (window.WEBUI_CONFIG?.REFRESH_INTERVAL || 5000);
+        stopPeriodicRefresh();
         // 2026-06-29: добавляем fetchClusterState() в periodic refresh. Без этого
         // метрики дашборда (totalBackends, healthyBackends и т.д.) обновлялись
         // ТОЛЬКО через WebSocket — если WS не подключён (балансер за прокси,
         // CORS preflight, таймаут рукопожатия), карточки метрик оставались
         // с дефолтом "-" из HTML (webui/index.html:138-139). Periodic REST-poll
         // гарантирует, что метрики обновятся даже при неработающем WS.
-        // Также добавляем fetchAgents() для консистентности с in-flight refresh.
+        //
+        // R84 (2026-10-03):
+        //   - fetchAgents() здесь НЕ БЫЛ вызван, хотя комментарий это обещал:
+        //     страница «Агенты» обновлялась только вручную (кнопкой, которую мы
+        //     удалили) — теперь агенты в общем цикле;
+        //   - цикл уважает паузу авто-обновления (иконка в шапке) и скрытую
+        //     вкладку: 24/7-дашборд больше не молотит API в фоне;
+        //   - по завершении тика обновляется индикатор свежести.
         refreshTimer = setInterval(() => {
-            fetchClusterState();
+            if (periodicRefreshPaused()) return;
+            if (window.DataRefresh && !window.DataRefresh.isAuto()) return;
+            fetchClusterState().then(function () {
+                if (window.DataRefresh) window.DataRefresh.markFresh();
+            }).catch(function (e) {
+                if (window.DataRefresh) window.DataRefresh.markError(e);
+            });
+            fetchAgents();
             fetchQueue();
             fetchQueueDetails();
             fetchQueueHistory();
@@ -1655,6 +1708,79 @@ const ui = (function () {
                 loadBackendLimits();
             }
         }, interval);
+    }
+
+    /** stopPeriodicRefresh — снять таймер (повторный вызов безопасен). */
+    function stopPeriodicRefresh() {
+        if (refreshTimer) clearInterval(refreshTimer);
+        refreshTimer = null;
+    }
+
+    /**
+     * periodicRefreshPaused — опрос остановлен из-за скрытой вкладки.
+     *
+     * ЗАЧЕМ: WebUI часто держат открытым сутками в фоне; раньше цикл раз в 5 с
+     * продолжал ходить в API и на скрытой вкладке. При возврате на вкладку
+     * данные обновляются сразу (см. setupVisibilityRefresh), поэтому пауза
+     * незаметна для оператора.
+     */
+    function periodicRefreshPaused() {
+        return !!(typeof document !== 'undefined' && document.visibilityState === 'hidden');
+    }
+
+    /**
+     * setupVisibilityRefresh — пауза опроса на скрытой вкладке и мгновенное
+     * обновление при возврате.
+     */
+    function setupVisibilityRefresh() {
+        if (typeof document === 'undefined' || !document.addEventListener) return;
+        document.addEventListener('visibilitychange', function () {
+            if (document.visibilityState === 'hidden') {
+                stopPeriodicRefresh();
+                return;
+            }
+            startPeriodicRefresh();
+            if (window.DataRefresh && !window.DataRefresh.isAuto()) return;
+            fetchClusterState().then(function () {
+                if (window.DataRefresh) window.DataRefresh.markFresh();
+            }).catch(function () { /* индикатор уже покажет состояние */ });
+            refreshPage(currentPage);
+        });
+    }
+
+    /**
+     * registerPageProviders — что обновляет страница при нажатии «Обновить».
+     *
+     * R84 (2026-10-03): до этого у страниц были СВОИ кнопки «Обновить», и часть
+     * из них обновляла лишь локальную копию данных. Теперь источники описаны
+     * здесь, а кнопка и индикатор в шапке — одни на приложение.
+     */
+    function registerPageProviders() {
+        if (!window.DataRefresh || typeof window.DataRefresh.register !== 'function') return;
+        var DR = window.DataRefresh;
+        // Модели: перечитать состав кластера и перерисовать карточки/тулбар.
+        DR.register('models', function () {
+            return Promise.resolve(fetchClusterState()).then(function () {
+                modelsPage(data.backends);
+                if (window.bulkModels && typeof window.bulkModels.renderToolbar === 'function') {
+                    window.bulkModels.renderToolbar();
+                }
+            });
+        });
+        DR.register('agents', function () { return fetchAgents(); });
+        DR.register('logs', function () { return fetchProxyLogs(); });
+        DR.register('sessions', function () { return fetchSessions(); });
+        DR.register('queue', function () {
+            return Promise.all([fetchQueue(), fetchQueueDetails(), fetchQueueHistory()]);
+        });
+        DR.register('monitor', function () {
+            // Метрики монитора живут в отдельном iframe и своём цикле
+            // (fetchAllSafe); кнопка «Обновить» раньше их не касалась вовсе.
+            if (typeof window.fetchAllSafe === 'function') return window.fetchAllSafe();
+            sendMonitorConfig();
+            return true;
+        });
+        DR.register('settings', function () { return loadBackendLimits(); });
     }
 
 

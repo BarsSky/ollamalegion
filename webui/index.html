@@ -155,6 +155,16 @@
                             <ul id="notificationsList"></ul>
                         </div>
                     </div>
+                    <!-- R84 (2026-10-03): индикатор свежести данных вместо россыпи
+                         кнопок «Обновить» по страницам. Подпись меняется сама
+                         («Обновлено 2 с назад · авто»), клик = обновить сейчас,
+                         соседняя иконка ставит авто-обновление на паузу.
+                         Логика — js/modules/data-refresh.js. -->
+                    <span class="data-freshness" id="dataFreshness" role="status" title="Обновить данные страницы">
+                        <i class="fas fa-circle-check" id="dataFreshnessIcon" aria-hidden="true"></i>
+                        <span id="dataFreshnessText">—</span>
+                    </span>
+                    <button type="button" class="btn-icon data-freshness-toggle" id="dataAutoToggle" title="Приостановить авто-обновление"><i class="fas fa-pause" id="dataAutoToggleIcon" aria-hidden="true"></i></button>
                     <button class="btn btn-secondary" id="refreshBtn" data-i18n="common.retry">Обновить</button>
                     <button class="btn btn-primary" id="addBackendBtn" data-i18n="backends.add">Добавить бэкенд</button>
                 </div>
@@ -392,7 +402,6 @@
                                 <option value="vram-asc" data-i18n="models.sort_vram_asc">VRAM (меньше)</option>
                                 <option value="backend-asc" data-i18n="models.sort_backend_asc">Бэкенд (А-Я)</option>
                             </select>
-                            <button class="btn btn-secondary" id="refreshModelsBtn" data-i18n="common.retry">Обновить</button>
                             <button class="btn btn-primary" id="modelsManageBtn" data-i18n="models.manage_title">Управление моделями</button>
                         </div>
                     </div>
@@ -475,8 +484,7 @@
                     <div class="card-header">
                         <h3><i class="fas fa-table section-icon-i"></i> <span data-i18n="agents.title">Агенты</span></h3>
                         <div class="card-actions">
-                            <button class="btn btn-secondary" id="refreshAgentsBtn" data-i18n="common.retry">Обновить</button>
-                        </div>
+                            </div>
                     </div>
                     <div class="table-responsive">
                         <table class="data-table" id="agentsTable">
@@ -608,7 +616,6 @@
                             <select class="sort-select" id="imgBackendSelect"></select>
                             <span style="font-size:12px;color:var(--text-muted);" data-i18n="image.model">Модель</span>
                             <select class="sort-select" id="imgModelSelect"></select>
-                            <button class="btn btn-secondary" id="imgRefreshBtn" data-i18n="gguf.refresh">Обновить</button>
                         </div>
                     </div>
                     <div class="card-body">
@@ -641,8 +648,7 @@
                     <div class="card-header">
                         <h3 data-i18n="imageBackends.title">Управление image-бэкендами</h3>
                         <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                            <button class="btn btn-secondary" id="imageBackendsRefresh" data-i18n="imageBackends.refresh">Обновить</button>
-                            <button class="btn btn-primary" id="imageBackendsAdd" data-i18n="imageBackends.add">Добавить бэкенд</button>
+                                <button class="btn btn-primary" id="imageBackendsAdd" data-i18n="imageBackends.add">Добавить бэкенд</button>
                         </div>
                     </div>
                     <div class="card-body">
@@ -900,8 +906,7 @@
                         <h3><i class="fas fa-sliders section-icon-i"></i> <span data-i18n="image.profiles.title">Профили image-моделей</span></h3>
                         <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                             <span id="imageProfilesCount" style="font-size:12px;color:var(--text-muted);"></span>
-                            <button class="btn btn-secondary" id="imageProfilesRefreshBtn" data-i18n="gguf.refresh">Обновить</button>
-                            <button class="btn btn-primary" id="imageProfilesNewBtn" data-i18n="image.profiles.new">Новый профиль</button>
+                                <button class="btn btn-primary" id="imageProfilesNewBtn" data-i18n="image.profiles.new">Новый профиль</button>
                         </div>
                     </div>
                     <div class="card-body">
@@ -948,8 +953,7 @@
                                 <button class="btn btn-secondary" data-imt-action="defaults" data-i18n="imageTest.apply_defaults">Из профиля</button>
                                 <button class="btn btn-secondary" data-imt-action="load-model" data-i18n="gguf.load_model">Загрузить модель</button>
                                 <button class="btn btn-secondary" data-imt-action="unload-model" data-i18n="gguf.unload_model">Выгрузить</button>
-                                <button class="btn btn-secondary" id="imgTestRefreshBtn" data-i18n="gguf.refresh">Обновить</button>
-                            </div>
+                                        </div>
                         </div>
                         <div class="card-body">
                             <div id="imgTestNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
@@ -1106,8 +1110,7 @@
                         <h3><i class="fas fa-arrow-right-arrow-left section-icon-i"></i> <span data-i18n="logs.proxy_title">Прокси-запросы</span></h3>
                         <div class="card-actions">
                             <button class="btn btn-secondary" id="clearProxyLogs" data-i18n="logs.clear">Очистить</button>
-                            <button class="btn btn-secondary" id="refreshProxyLogs">Обновить</button>
-                            <button class="btn btn-secondary" id="copyProxyLogs" data-i18n="logs.copy_proxy" data-i18n-title="logs.copy_proxy_title" title="Копировать логи прокси"><i class="fas fa-copy" aria-hidden="true"></i> Копировать</button>
+                                <button class="btn btn-secondary" id="copyProxyLogs" data-i18n="logs.copy_proxy" data-i18n-title="logs.copy_proxy_title" title="Копировать логи прокси"><i class="fas fa-copy" aria-hidden="true"></i> Копировать</button>
                         </div>
                     </div>
                     <div class="proxy-logs-container" id="proxyLogsContainer">
@@ -1997,7 +2000,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                 <div id="autotune-per-model-list">
                                     <div class="hint">Loading models...</div>
                                 </div>
-                                <button type="button" class="btn btn-secondary" id="autotune-refresh-btn">Refresh</button>
+                                <button type="button" class="btn btn-secondary" id="autotune-refresh-btn" data-i18n="common.retry">Обновить</button>
                                 <!-- R66b (2026-09-22): элемент для обратной связи.
                                      autotune_settings.js:showStatus() писал в
                                      #autotune-save-status, но такого id в разметке не было →
@@ -2332,6 +2335,11 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script defer src="js/modules/client-access.js?v=R83"></script>
     <script defer src="js/modules/api.js?v=R83"></script>
     <script defer src="js/modules/gguf-api.js?v=R83"></script>
+    <!-- R84 (2026-10-03): единая точка обновления данных WebUI — реестр
+         провайдеров страниц, индикатор свежести в шапке (#dataFreshness) и
+         переключатель авто-обновления. Грузится ДО app.js (его init вызывает
+         DataRefresh.mount) и ДО модулей страниц (они регистрируют провайдеров). -->
+    <script defer src="js/modules/data-refresh.js?v=R83"></script>
     <!-- R-Image Phase 5 (2026-10-02): Image page (генерация + image-модели).
          Загружается ПОСЛЕ utils/api/gguf-api (нужны Utils/Api/I18N) и ДО app.js
          (app.js refreshPage('image') вызывает window.ImagePage.init). -->
@@ -2368,6 +2376,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script defer src="js/modules/gguf-renderer-actions.js?v=R83"></script>
     <!-- R57.5d-2 (2026-09-03): data refresh + active queries polling + downloads polling. -->
     <script defer src="js/modules/gguf-renderer-refresh.js?v=R83"></script>
+    <script defer src="js/modules/gguf-page-provider.js?v=R83"></script>
     <!-- R57.5e (2026-09-03): delegated click handler + bindEvents + bindSettingsChange. -->
     <script defer src="js/modules/gguf-renderer-detail.js?v=R83"></script>
     <!-- R57.5f (2026-09-03): right panel render functions (renderDetailPanel, 4 sub-panes, settings, backend options). -->

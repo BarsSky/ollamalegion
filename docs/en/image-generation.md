@@ -231,7 +231,16 @@ scheduler configs never show up. On bundle start the extension is validated agai
   `suggestedRole`): `ae.safetensors` → `vae`, `clip_l.safetensors` → `clip_l`,
   `clip_g.safetensors` → `clip_g`, `t5xxl*.safetensors/.gguf` → `t5xxl`,
   `*taesd*` → `taesd`, everything else (including `flux1-schnell.safetensors`) →
-  `diffusion`;
+  `diffusion`. The **directory** counts too: `vae/...` → `vae` and
+  `text_encoders/qwen3vl_8b_bf16.safetensors` → `llm` (the Qwen-Image LLM encoder),
+  while `qwen-image-2.1-UC-Q4_0.gguf` in the repository root stays `diffusion` —
+  the LLM rule only applies inside an encoder directory;
+- the file list is **recursive** (`tree API?recursive=true`): DiT repositories keep
+  their VAE and text encoder in subdirectories (`vae/`, `text_encoders/`,
+  `split_files/`), and before 2026-10-03 such files never reached the UI, so a DiT
+  bundle could not be assembled at all. HF pages the response, so pages are followed
+  via the `cursor` from the `Link` header (without leaving the configured mirror);
+  files are downloaded by their original path and stored under their base name;
 - the engine loads safetensors natively, because sd.cpp runs on ggml: an
   all-in-one `.ckpt/.safetensors/.gguf` is passed via `--model`, separate files go
   through `--vae` (`ae.safetensors`), `--clip_l/--clip_g`, `--t5xxl`, `--taesd`,

@@ -44,6 +44,21 @@ func TestSuggestRole(t *testing.T) {
 		// Регистр не важен: HF-имена приходят и в верхнем регистре.
 		{"VAE.safetensors", types.ImageFileRoleVae},
 		{"CLIP_L.safetensors", types.ImageFileRoleClipL},
+		// ПОДКАТАЛОГИ (R-Image 2026-10-03). Реальный репозиторий
+		// abenzerps/Qwen-Image-2.1-Uncensored-GGUF: vae/ и text_encoders/.
+		// Без правил по каталогу LLM-энкодер уезжал в diffusion, и bundle падал
+		// на дубликате роли (два diffusion-файла).
+		{"vae/qwen_image_2.1_vae_bf16.safetensors", types.ImageFileRoleVae},
+		{"text_encoders/qwen3vl_8b_bf16.safetensors", types.ImageFileRoleLLM},
+		{"text_encoders/qwen3vl_8b_int8_convrot.safetensors", types.ImageFileRoleLLM},
+		{"text_encoders/t5xxl_fp16.safetensors", types.ImageFileRoleT5xxl},
+		{"text_encoders/clip_l.safetensors", types.ImageFileRoleClipL},
+		{"text_encoders/clip_g.safetensors", types.ImageFileRoleClipG},
+		{"split_files/text_encoders/clip_l.safetensors", types.ImageFileRoleClipL},
+		// diffusion-файл с «qwen» в имени НЕ становится LLM: правило про LLM
+		// работает только внутри каталога энкодеров.
+		{"qwen-image-2.1-UC-Q4_0.gguf", types.ImageFileRoleDiffusion},
+		{"qwen_image_2.1-Q4_0.gguf", types.ImageFileRoleDiffusion},
 		// Пустое/неизвестное имя: роль всё равно конкретная (diffusion),
 		// иначе UI показал бы «неизвестно» там, где движку нужна роль.
 		{"", types.ImageFileRoleDiffusion},

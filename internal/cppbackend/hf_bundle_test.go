@@ -189,6 +189,69 @@ func TestListModelFilesByFormat_ExplicitGGUFOnly(t *testing.T) {
 	}
 }
 
+// TestListModelFiles_RecursiveAndPaged (2026-10-03) — ДВА требования к листингу,
+// без которых bundle DiT-модели не собрать:
+//
+//  1. recursive=true: VAE и text encoder лежат в подкаталогах (vae/,
+//     text_encoders/), а без рекурсии tree-API отдаёт только корень;
+//  2. обход страниц: HF отдаёт до 1000 записей и ссылку rel="next" в Link —
+//     следующую страницу обязаны запросить у ТОГО ЖЕ зеркала (из Link берём
+//     только cursor, иначе трафик и токен ушли бы на huggingface.co).
+func TestListModelFiles_RecursiveAndPaged(t *testing.T) {
+	var urls []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models/", func(w http.ResponseWriter, r *http.Request) {
+		urls = append(urls, r.URL.String())
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("cursor") == "" {
+			w.Header().Set("Link", `<https://huggingface.co/api/models/some/dit/tree/main?recursive=true&cursor=PAGE2>; rel="next"`)
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"path": "qwen-image-2.1-UC-Q4_0.gguf", "size": 100, "type": "file"},
+				{"path": "vae", "size": 0, "type": "directory"},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{"path": "vae/qwen_image_2.1_vae_bf16.safetensors", "size": 300, "type": "file"},
+			{"path": "text_encoders/qwen3vl_8b_bf16.safetensors", "size": 200, "type": "file"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	d := NewHuggingFaceDownloader("", srv.URL, t.TempDir(), t.TempDir())
+	files, err := d.ListModelFiles(context.Background(), "some/dit", "main")
+	if err != nil {
+		t.Fatalf("ListModelFiles failed: %v", err)
+	}
+	if len(files) != 3 {
+		t.Fatalf("ожидали 3 файла (включая подкаталоги), получили %d: %+v", len(files), files)
+	}
+	if len(urls) != 2 {
+		t.Fatalf("ожидали два запроса (страницы tree-API), получили %d: %v", len(urls), urls)
+	}
+	if !strings.Contains(urls[0], "recursive=true") {
+		t.Errorf("первый запрос без recursive=true: %s", urls[0])
+	}
+	if !strings.Contains(urls[1], "cursor=PAGE2") {
+		t.Errorf("вторая страница запрошена без cursor из Link: %s", urls[1])
+	}
+	if strings.Contains(urls[1], "huggingface.co") {
+		t.Errorf("вторая страница ушла на huggingface.co вместо зеркала: %s", urls[1])
+	}
+	for _, want := range []string{"qwen-image-2.1-UC-Q4_0.gguf", "text_encoders/qwen3vl_8b_bf16.safetensors", "vae/qwen_image_2.1_vae_bf16.safetensors"} {
+		found := false
+		for _, f := range files {
+			if f.Path == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("в списке нет %q: %+v", want, files)
+		}
+	}
+}
+
 // ============================================================
 // Bundle: атомарная регистрация
 // ============================================================

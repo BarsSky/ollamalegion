@@ -252,7 +252,16 @@ VRAM, активные запросы) и VRAM хоста. WebUI (Backends/Dashb
   `suggestedRole`): `ae.safetensors` → `vae`, `clip_l.safetensors` → `clip_l`,
   `clip_g.safetensors` → `clip_g`, `t5xxl*.safetensors/.gguf` → `t5xxl`,
   `*taesd*` → `taesd`, остальное (включая `flux1-schnell.safetensors`) →
-  `diffusion`;
+  `diffusion`. Учитывается и **каталог**: `vae/...` → `vae`,
+  `text_encoders/qwen3vl_8b_bf16.safetensors` → `llm` (LLM-энкодер Qwen-Image), а
+  `qwen-image-2.1-UC-Q4_0.gguf` в корне остаётся `diffusion` — правило про LLM
+  работает только внутри каталога энкодеров;
+- список файлов **рекурсивный** (`tree-API?recursive=true`): DiT-репозитории
+  кладут VAE и text encoder в подкаталоги (`vae/`, `text_encoders/`,
+  `split_files/`), и до 2026-10-03 такие файлы в UI не попадали — bundle DiT-модели
+  было не собрать. Ответ HF постраничный, страницы обходятся по `cursor` из
+  заголовка `Link` (без ухода с настроенного зеркала), файлы скачиваются по
+  исходному пути, а на диск кладутся под своим базовым именем;
 - движок грузит safetensors нативно, потому что sd.cpp работает через ggml:
   all-in-one `.ckpt/.safetensors/.gguf` передаётся флагом `--model`, отдельные
   файлы — `--vae` (`ae.safetensors`), `--clip_l/--clip_g`, `--t5xxl`, `--taesd`,

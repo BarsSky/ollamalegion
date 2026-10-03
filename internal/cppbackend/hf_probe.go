@@ -97,8 +97,8 @@ type HFProbeResult struct {
 	Filename  string   `json:"filename"`
 	Revision  string   `json:"revision"`
 	SizeBytes int64    `json:"sizeBytes,omitempty"`
-	Format    string   `json:"format"`  // gguf | safetensors | unknown
-	Verdict   string   `json:"verdict"` // supported | unknown
+	Format    string   `json:"format"`                 // gguf | safetensors | unknown
+	Verdict   string   `json:"verdict"`                // supported | unknown
 	Family    string   `json:"family,omitempty"`       // семейство для профиля bundle
 	Version   string   `json:"versionLabel,omitempty"` // как назовёт движок
 	DiT       bool     `json:"dit,omitempty"`          // нужен --diffusion-model

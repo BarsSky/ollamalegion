@@ -5,12 +5,13 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [0.7.7 — Пометки по заголовку файла на табе HuggingFace: какое семейство узнаёт движок, релиз imageworker+webui r83-submodule-v78 (2026-10-03)]
+## [0.7.7 — Пометки по заголовку файла на табе HuggingFace: какое семейство узнаёт движок, релизы imageworker r83-submodule-v78/v80 + webui r83-submodule-v79 (2026-10-03)]
 
-Релиз: образы `imageworker` и `webui` с тегом **`r83-submodule-v78`** (balancer остаётся
-на `r83-submodule-v72`). Запрос оператора: «ты говорил, что будут пометки по вариантам
-моделей — подходят ли они движку генератора или нет, но при поиске с HuggingFace
-никаких пометок не увидел».
+Релиз: образы `imageworker` (**`r83-submodule-v78`**, затем **`r83-submodule-v80`** —
+рекурсивный листинг файлов и роли по каталогам, см. ниже) и `webui`
+(**`r83-submodule-v79`**); balancer остаётся на `r83-submodule-v72`. Запрос
+оператора: «ты говорил, что будут пометки по вариантам моделей — подходят ли они
+движку генератора или нет, но при поиске с HuggingFace никаких пометок не увидел».
 
 ### 🔎 Разбор: почему «get sd version from file failed» (и почему прежняя причина была неверной)
 
@@ -67,6 +68,26 @@
   семейства, отказ от подстановки после ручного выбора, отсутствие приговоров для
   ComfyUI-экспорта, совпадение `DIT_FAMILIES` с `pkg/types.diTFamilies`),
   `image-test-page.test.js` — 14 проверок.
+
+### 📂 Рекурсивный список файлов репозитория (иначе DiT-bundle не собрать)
+
+Живая проверка нашла ещё одну причину, по которой модель «не загружается»: у
+`abenzerps/Qwen-Image-2.1-Uncensored-GGUF` VAE и text encoder лежат в подкаталогах
+(`vae/`, `text_encoders/`), а tree-API вызывался без `recursive=true` — этих файлов
+в UI просто не было, и собрать корректный bundle было нельзя.
+
+- `internal/cppbackend/hf_downloader.go`: tree-API вызывается с `recursive=true`;
+  ответ HF постраничный (до 1000 записей + `Link: rel="next"`), страницы
+  обходятся по `cursor` — но URL следующей страницы собирается заново из текущего
+  (иначе запрос ушёл бы на `huggingface.co` мимо настроенного зеркала).
+- `internal/sdbackend/models.go`: роль файла теперь учитывает и **каталог**:
+  `text_encoders/...` + имя LLM (`qwen`, `gemma`, `llama`, …) → `llm`,
+  `vae/...` → `vae`; при этом `qwen-image-2.1-UC-Q4_0.gguf` в корне остаётся
+  `diffusion` (правило про LLM работает только внутри каталога энкодеров).
+  Раньше LLM-энкодер уезжал в `diffusion`, и bundle падал на дубликате роли.
+- Тесты: `TestListModelFiles_RecursiveAndPaged` (обе страницы, `recursive=true`,
+  `cursor` и «вторая страница не уходит на huggingface.co»),
+  `TestSuggestRole` — 9 новых кейсов с путями.
 
 ## [0.7.6 — «Image-тест» переехал в таб «Image-моделей», релиз webui r83-submodule-v77 (2026-10-03)]
 

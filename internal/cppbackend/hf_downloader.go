@@ -582,56 +582,48 @@ func (d *HuggingFaceDownloader) ListModelFilesByFormat(ctx context.Context, mode
 		extensions = ModelWeightExtensions
 	}
 
-	// Используем HF API: GET /api/models/{modelID}/tree/{revision}
-	apiURL := d.getAPIURL(fmt.Sprintf("/models/%s/tree/%s", modelID, revision))
+	// Используем HF API: GET /api/models/{modelID}/tree/{revision}?recursive=true
+	//
+	// R-Image (2026-10-03): recursive обязателен. DiT-репозитории кладут VAE и
+	// text encoder в ПОДКАТАЛОГИ (vae/, text_encoders/, split_files/), а без
+	// recursive=true tree-API отдаёт только корень: файлы, без которых bundle
+	// DiT-модели не собрать, в списке просто не появлялись. Подкаталоги в ответе
+	// приходят как type="directory" и отбрасываются ниже.
+	apiURL := d.getAPIURL(fmt.Sprintf("/models/%s/tree/%s?recursive=true", modelID, revision))
 
-	req, err := d.newRequest("GET", apiURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	req = req.WithContext(ctx)
-
-	resp, err := d.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("HTTP request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Парсим ответ
-	var hfFiles []struct {
-		Path string `json:"path"`
-		Size int64  `json:"size"`
-		Type string `json:"type"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&hfFiles); err != nil {
-		// Если не удалось распарсить как массив, пробуем другой формат
-		log.Warnw("failed to parse file list as array, trying alternative format", "error", err)
-		return d.listModelFilesAlternative(ctx, modelID, revision, extensions)
-	}
-
-	result := make([]HFFileInfo, 0, len(hfFiles))
-	for _, f := range hfFiles {
-		if f.Type != "file" {
-			continue
+	// Ответ постраничный (HF отдаёт до 1000 записей и ссылку rel="next" в Link).
+	// Без обхода страниц большие репозитории (десятки шардов diffusers) потеряли бы
+	// часть файлов. Потолок страниц — защита от бесконечного цикла на битом Link.
+	const maxTreePages = 10
+	result := make([]HFFileInfo, 0, 64)
+	next := apiURL
+	for page := 0; page < maxTreePages && next != ""; page++ {
+		pageFiles, nextURL, err := d.fetchTreePage(ctx, next)
+		if err != nil {
+			if page == 0 {
+				log.Warnw("failed to fetch file list, trying alternative format", "error", err)
+				return d.listModelFilesAlternative(ctx, modelID, revision, extensions)
+			}
+			log.Warnw("stopped paging file list", "page", page, "error", err)
+			break
 		}
-		format := formatForExtensions(f.Path, extensions)
-		if format == "" {
-			continue
+		for _, f := range pageFiles {
+			if f.Type != "file" {
+				continue
+			}
+			format := formatForExtensions(f.Path, extensions)
+			if format == "" {
+				continue
+			}
+			result = append(result, HFFileInfo{
+				Path:         f.Path,
+				SizeBytes:    f.Size,
+				IsGGUF:       format == "gguf",
+				Format:       format,
+				Quantization: GetFileTypeFromName(f.Path),
+			})
 		}
-		result = append(result, HFFileInfo{
-			Path:         f.Path,
-			SizeBytes:    f.Size,
-			IsGGUF:       format == "gguf",
-			Format:       format,
-			Quantization: GetFileTypeFromName(f.Path),
-		})
+		next = nextURL
 	}
 
 	// Сортируем по размеру (сначала маленькие)
@@ -641,6 +633,84 @@ func (d *HuggingFaceDownloader) ListModelFilesByFormat(ctx context.Context, mode
 
 	log.Infow("files listed", "modelID", modelID, "modelFiles", len(result))
 	return result, nil
+}
+
+// treeEntry — одна запись tree-API HuggingFace.
+type treeEntry struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+	Type string `json:"type"`
+}
+
+// fetchTreePage читает одну страницу tree-API и возвращает URL следующей
+// страницы (пустая строка — страниц больше нет).
+//
+// Ссылку следующей страницы берём из заголовка Link, но собираем её САМИ:
+// HF отдаёт абсолютный URL на huggingface.co, а мы обязаны остаться на
+// настроенном зеркале (иначе токен и трафик ушли бы мимо него). Из ссылки
+// переносим только cursor.
+func (d *HuggingFaceDownloader) fetchTreePage(ctx context.Context, url string) ([]treeEntry, string, error) {
+	req, err := d.newRequest("GET", url, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("create request: %w", err)
+	}
+	req = req.WithContext(ctx)
+
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var entries []treeEntry
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return nil, "", fmt.Errorf("parse file list: %w", err)
+	}
+	return entries, nextTreePageURL(url, resp.Header.Get("Link")), nil
+}
+
+// nextTreePageURL — URL следующей страницы: та же база/путь, но cursor из Link.
+func nextTreePageURL(current, link string) string {
+	next := parseLinkNext(link)
+	if next == "" {
+		return ""
+	}
+	parsed, err := url.Parse(next)
+	if err != nil {
+		return ""
+	}
+	cursor := parsed.Query().Get("cursor")
+	if cursor == "" {
+		return ""
+	}
+	base, err := url.Parse(current)
+	if err != nil {
+		return ""
+	}
+	q := base.Query()
+	q.Set("cursor", cursor)
+	base.RawQuery = q.Encode()
+	return base.String()
+}
+
+// parseLinkNext достаёт URL из заголовка Link по rel="next".
+func parseLinkNext(link string) string {
+	for _, part := range strings.Split(link, ",") {
+		if !strings.Contains(part, `rel="next"`) {
+			continue
+		}
+		start := strings.Index(part, "<")
+		end := strings.Index(part, ">")
+		if start >= 0 && end > start {
+			return part[start+1 : end]
+		}
+	}
+	return ""
 }
 
 // formatForExtensions — формат файла, если его расширение входит в allowed;

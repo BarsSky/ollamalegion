@@ -285,8 +285,30 @@ func SuggestRole(filename string) string {
 }
 
 // roleFromFilename — эвристика роли по имени файла.
+//
+// R-Image (2026-10-03): принимается ПУТЬ внутри репозитория, а не только имя
+// файла. DiT-репозитории раскладывают компоненты по каталогам (`vae/...`,
+// `text_encoders/...`, `split_files/...`), и по одному имени роль не угадать:
+// `text_encoders/qwen3vl_8b_bf16.safetensors` — это LLM-энкодер Qwen-Image, а не
+// diffusion-файл (раньше он и попадал в diffusion, из-за чего в bundle
+// оказывалось два diffusion-файла и загрузка падала на дубликате роли).
 func roleFromFilename(filename string) string {
 	n := strings.ToLower(filename)
+	// Каталог — сильный сигнал, но только когда он есть в пути.
+	inTextEncoderDir := strings.Contains(n, "text_encoder") || strings.Contains(n, "text-encoder") ||
+		strings.Contains(n, "/te/") || strings.HasPrefix(n, "te/")
+	if inTextEncoderDir {
+		switch {
+		case strings.Contains(n, "clip_l") || strings.Contains(n, "clip-l"):
+			return types.ImageFileRoleClipL
+		case strings.Contains(n, "clip_g") || strings.Contains(n, "clip-g"):
+			return types.ImageFileRoleClipG
+		case strings.Contains(n, "t5"):
+			return types.ImageFileRoleT5xxl
+		case isLLMEncoderName(n):
+			return types.ImageFileRoleLLM
+		}
+	}
 	switch {
 	case strings.Contains(n, "vae") || strings.Contains(n, "ae.safetensors"):
 		return types.ImageFileRoleVae
@@ -310,6 +332,20 @@ func roleFromFilename(filename string) string {
 		return types.ImageFileRoleUpscaler
 	}
 	return types.ImageFileRoleDiffusion
+}
+
+// isLLMEncoderName — имя похоже на LLM-энкодер (Qwen-Image/Z-Image/FLUX-LLM).
+//
+// ЗАЧЕМ ОТДЕЛЬНО И ТОЛЬКО В КАТАЛОГЕ text_encoders: «qwen» встречается и в имени
+// самого diffusion-файла (qwen-image-2.1-UC-Q4_0.gguf), поэтому вне каталога
+// энкодеров такое правило давало бы ложные срабатывания.
+func isLLMEncoderName(n string) bool {
+	for _, marker := range []string{"qwen", "gemma", "mistral", "llama", "deepseek", "phi", "llm", "3vl", "_vl_"} {
+		if strings.Contains(n, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Profile — профиль по имени (копия: реестр не должен мутироваться извне).

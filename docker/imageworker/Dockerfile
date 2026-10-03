@@ -57,9 +57,18 @@
 # подставлять в строку FROM — это требование Dockerfile.
 # RUNTIME_BASE — база стадии runtime. Дефолт ubuntu:24.04 (Vulkan/CPU). Для CUDA
 # подставляйте образ с CUDA-рантаймом (libcudart/libcublas), например
-# nvidia/cuda:12.6.0-runtime-ubuntu24.04: nvidia-container-runtime монтирует
+# nvidia/cuda:12.2.0-runtime-ubuntu22.04: nvidia-container-runtime монтирует
 # только драйвер, и без этих библиотек бинарь не запустится.
 ARG RUNTIME_BASE=ubuntu:24.04
+# База стадии СБОРКИ sd.cpp с CUDA (nvcc + CUDAToolkit). Держим её отдельным
+# аргументом: сам бинарь собирается на devel-образе, а работает на runtime.
+ARG CUDA_DEVEL_BASE=dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04
+# Compute capability для сборки ядер. 86 = RTX 30xx (Ampere). Меньше архитектур —
+# быстрее сборка; список через ';' (например 75;86) расширяет совместимость.
+ARG CUDA_ARCH=86
+# Коммит sd.cpp, который собираем (тот же, что в types.PinnedSDServerRevision:
+# master-929-3f8527a). Тег в git — master-929-3f8527a, здесь нужен именно SHA.
+ARG SD_SERVER_REF=3f8527a46c54ecf4cb4ed6003da8e8982283c73c
 
 FROM golang:1.24-alpine AS builder
 
@@ -136,11 +145,80 @@ RUN set -eux; \
     ls -la /out
 
 # -----------------------------------------------------------------------------
-# Stage 3: runtime
+# Stage 2b (опционально): build-sd-server-cuda — сборка sd-server с CUDA
+# -----------------------------------------------------------------------------
+# ЗАЧЕМ ЭТА СТАДИЯ. Linux-CUDA-релиза у sd.cpp НЕТ (в релизе master-929 CUDA
+# собран только под Windows), а Vulkan-ICD NVIDIA приезжает в контейнер не на
+# каждой платформе: например, на Windows + Docker Desktop (WSL2) capability
+# graphics не даёт nvidia_icd.json, и Vulkan-ассет молча уходит на CPU
+# (замер: 512x512/8 шагов — 251 с против 9-76 с на GPU). CUDA-контейнеры на
+# такой машине работают, поэтому здесь появилась сборка из исходников.
+#
+# Стадия используется ТОЛЬКО целью imageworker-cuda (см. конец файла): обычная
+# сборка (target imageworker-vulkan) её не тянет, поэтому дефолтный путь по
+# времени и размеру не меняется. BuildKit собирает только те стадии, которые
+# нужны целевой.
+#
+# SD_CUDA=ON + SD_BUILD_SHARED_LIBS=OFF (дефолт sd.cpp) дают статическую
+# libstable-diffusion и статический ggml: бинарю в рантайме нужны лишь
+# CUDA-рантайм (его даёт RUNTIME_BASE) и системные libstdc++/libgomp.
+FROM ${CUDA_DEVEL_BASE} AS build-sd-server-cuda
+
+ARG SD_SERVER_REF=3f8527a46c54ecf4cb4ed6003da8e8982283c73c
+ARG CUDA_ARCH=86
+ARG SD_SERVER_GIT=https://github.com/leejet/stable-diffusion.cpp
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# git — клон репозитория и его сабмодулей (ggml, libwebp, libwebm);
+# cmake/ninja/build-essential — сборка; ca-certificates — TLS для git.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        cmake \
+        ninja-build \
+        build-essential \
+        pkg-config \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    git clone --filter=blob:none "${SD_SERVER_GIT}" /src; \
+    cd /src; \
+    git checkout "${SD_SERVER_REF}"; \
+    git submodule update --init --recursive; \
+    git describe --tags --abbrev=7 || true
+
+# Собираем ТОЛЬКО серверную цель: sd-cli и тесты нам не нужны, а полная сборка
+# examples удваивает время. WebP/WebM оставляем включёнными (сабмодули уже
+# склонированы): воркер умеет просить webp-выход у движка, и без этой поддержки
+# такой запрос падал бы уже в рантайме.
+RUN set -eux; \
+    cmake -S /src -B /src/build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DSD_CUDA=ON \
+        -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
+        -DSD_BUILD_EXAMPLES=ON; \
+    cmake --build /src/build --target sd-server -j"$(nproc)"
+
+RUN set -eux; \
+    mkdir -p /out; \
+    bin="$(find /src/build -type f -name 'sd-server' | head -n1)"; \
+    if [ -z "${bin}" ]; then echo "ERROR: цель sd-server не собралась" >&2; exit 1; fi; \
+    dir="$(dirname "${bin}")"; \
+    cp -a "${dir}"/. /out/; \
+    chmod +x /out/sd-server; \
+    ls -la /out; \
+    ldd /out/sd-server || true
+
+# -----------------------------------------------------------------------------
+# Stage 3: runtime-base — общая часть рантайма (без самого движка)
 # -----------------------------------------------------------------------------
 # База этой стадии задаётся глобальным ARG RUNTIME_BASE (см. начало файла):
-# ubuntu:24.04 по умолчанию, nvidia/cuda:<ver>-runtime-ubuntu24.04 для CUDA.
-FROM ${RUNTIME_BASE} AS runtime
+# ubuntu:24.04 по умолчанию, nvidia/cuda:<ver>-runtime-ubuntu22.04 для CUDA.
+# Движок копируется в ДОЧЕРНИХ стадиях (imageworker-vulkan / imageworker-cuda):
+# так один и тот же рантайм используется обоими вариантами, а выбор делается
+# через `docker build --target`.
+FROM ${RUNTIME_BASE} AS runtime-base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -152,6 +230,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   libstdc++6 — C++ рантайм (в базовом образе есть, фиксируем явно);
 #   ca-certificates/tzdata — TLS и корректное время в логах;
 #   curl — healthcheck и отладка из контейнера, python3 — HF-скрипты оператора.
+# CUDA-варианту libvulkan1/mesa не нужны, но ставить их безвредно (образ
+# собирается ОДНИМ Dockerfile, а ветвление apt по варианту усложнило бы чтение).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libvulkan1 \
         mesa-vulkan-drivers \
@@ -166,7 +246,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=builder /out/sdworker /app/sdworker
-COPY --from=fetch-sd-server /out/ /app/sd-server/
 COPY docker/imageworker/entrypoint.sh /entrypoint.sh
 
 # UID/GID воркера — 1000; entrypoint сбрасывает привилегии через setpriv по
@@ -174,7 +253,7 @@ COPY docker/imageworker/entrypoint.sh /entrypoint.sh
 # UID/GID 1000 уже занят пользователем `ubuntu`, поэтому создаём «только если
 # свободно»: раньше здесь стоял alpine-синтаксис `addgroup -gid` + безусловный
 # groupadd — на ubuntu это падало и ломало сборку целиком.
-RUN chmod +x /entrypoint.sh /app/sd-server/sd-server && \
+RUN chmod +x /entrypoint.sh && \
     mkdir -p /app/models/image /app/data/images /app/lora /app/upscalers && \
     (getent group 1000 >/dev/null || groupadd -g 1000 appgroup) && \
     (getent passwd 1000 >/dev/null || useradd -u 1000 -g 1000 -M -s /usr/sbin/nologin appuser) && \
@@ -209,3 +288,26 @@ LABEL org.opencontainers.image.description="Image generation worker: supervises 
 LABEL org.opencontainers.image.vendor="OllamaLegion"
 LABEL org.opencontainers.image.version="0.1.0"
 LABEL org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion"
+
+# -----------------------------------------------------------------------------
+# Целевые стадии: выбор движка через `docker build --target`
+# -----------------------------------------------------------------------------
+# ЗАЧЕМ ДВЕ ЦЕЛИ, А НЕ ОДНА. Ветвление внутри RUN здесь невозможно: движок
+# приходит из РАЗНЫХ стадий (релизный архив vs сборка из исходников), а Docker
+# не умеет условный `COPY --from`. Цели решают это честно: каждая копирует свой
+# движок, а `--target` выбирает вариант. Собирается только выбранная ветка —
+# CUDA-стадия не тянется в обычной сборке.
+
+# imageworker-cuda — sd.cpp, собранный с CUDA (см. build-sd-server-cuda).
+# Требует RUNTIME_BASE с CUDA-рантаймом (libcudart/libcublas):
+#   -DSD_SERVER_BUILD=cuda не нужен, вариант задаётся целью.
+FROM runtime-base AS imageworker-cuda
+COPY --from=build-sd-server-cuda /out/ /app/sd-server/
+RUN chmod +x /app/sd-server/sd-server && chown -R 1000:1000 /app/sd-server
+LABEL org.opencontainers.image.description="Image generation worker (sd.cpp, CUDA build)"
+
+# imageworker-vulkan — релизный Vulkan-ассет (дефолт; ПОСЛЕДНЯЯ стадия файла =
+# цель сборки по умолчанию, поэтому обычный `docker build` ведёт себя как раньше).
+FROM runtime-base AS imageworker-vulkan
+COPY --from=fetch-sd-server /out/ /app/sd-server/
+RUN chmod +x /app/sd-server/sd-server && chown -R 1000:1000 /app/sd-server

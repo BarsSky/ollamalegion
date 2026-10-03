@@ -386,21 +386,43 @@ docker exec ol-stack-imageworker nvidia-smi -L   # GPU present (CUDA), but not V
 Measured on the live stand (Windows + Docker Desktop/WSL2, RTX 3070): inside the
 container 512x512 / 8 steps took **251 s** (the engine falls back to CPU/software
 Vulkan), while the native `sd-server` with Vulkan on the same host took **9-76 s**.
-The stand works, but images inside the container are computed on CPU.
 
-Options if you need GPU speed with a containerized worker:
+**Solution: build sd.cpp with CUDA right in the image.** The project publishes no
+Linux CUDA release, so `docker/imageworker/Dockerfile` can compile the engine from
+source, and the variant is selected by the build TARGET:
 
-1. **CUDA build of sd.cpp** (the project has no Linux CUDA releases, so you need
-   your own binary): put the built `sd-server` into `docker/imageworker/vendor/`
-   and build with `IMAGE_WORKER_RUNTIME_BASE=nvidia/cuda:12.6.0-runtime-ubuntu24.04`
-   plus `SD_SERVER_BIN=<file name>`. CUDA containers do work on this machine (the
-   text pool `cppworker-gpu` uses CUDA).
-2. **Native image worker on the host + the same balancer**: run `sdworker` outside
-   Docker with `SDWORKER_BALANCER_URL=http://<host>:18081`,
-   `SDWORKER_BALANCER_TOKEN=<stack token>`,
-   `SDWORKER_ADVERTISE_HOST=host.docker.internal` and
-   `SDWORKER_REGISTER_DISABLE=true` on the containerized worker — then the
-   balancer (in Docker) proxies images to the native worker with GPU Vulkan.
+| Target | Engine | When it is needed |
+|---|---|---|
+| `imageworker-vulkan` (default) | the released Vulkan asset | Linux hosts with an nvidia ICD, AMD/Intel |
+| `imageworker-cuda` | sd.cpp built with CUDA (`-DSD_CUDA=ON`) | where NVIDIA Vulkan never reaches the container (Windows + Docker Desktop/WSL2) |
+
+```bash
+# deployments/.env
+IMAGE_WORKER_BUILD_TARGET=imageworker-cuda
+IMAGE_WORKER_RUNTIME_BASE=dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-runtime-ubuntu22.04
+IMAGE_WORKER_CUDA_ARCH=86          # compute capability: 86 = RTX 30xx
+IMAGE_WORKER_TAG=cuda12
+
+cd deployments
+docker compose -f docker-compose.stack.yml --profile full build imageworker
+docker compose -f docker-compose.stack.yml --profile full up -d
+```
+
+Why CUDA 12.2 and ubuntu 22.04: there is no Linux CUDA build of sd.cpp, and
+`nvidia/cuda:12.2.0-devel/runtime-ubuntu22.04` is already in the local cache (the
+text `cppworker` is built on it), so the build does not pull a multi-gigabyte
+image. The binary is built on the devel base and runs on the runtime base of the
+same version; `SD_BUILD_SHARED_LIBS=OFF` (the sd.cpp default) produces a static
+ggml/stable-diffusion, so the runtime needs only the CUDA runtime and
+libstdc++/libgomp.
+
+Alternative when you would rather not build: **a native image worker on the host +
+the same balancer** — run `sdworker` outside Docker with
+`SDWORKER_BALANCER_URL=http://<host>:18081`,
+`SDWORKER_BALANCER_TOKEN=<stack token>`,
+`SDWORKER_ADVERTISE_HOST=host.docker.internal` and
+`SDWORKER_REGISTER_DISABLE=true` on the containerized worker — then the balancer
+(in Docker) proxies images to the native worker with GPU Vulkan.
 
 ## 12. Image request metrics and backend management in the UI
 

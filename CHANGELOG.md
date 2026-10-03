@@ -31,12 +31,26 @@
   балансере оба типа бэкендов (`llama_cpp` + `image_cpp`), реальная генерация
   через `:18079` (PNG 510 382 байта), метрики запросов посчитаны,
   `scripts/docker-stack-smoke.ps1 -Generate` — **11/11**.
-- ⚠️ **GPU внутри контейнера на Windows/Docker Desktop (WSL2)**: `nvidia-smi` в
-  контейнере карту видит, но Vulkan-ICD NVIDIA не пробрасывается, поэтому sd.cpp
-  уходит на CPU: 512×512/8 шагов — **251 с** в контейнере против **9–76 с** на
-  нативном Vulkan того же хоста. Варианты GPU-скорости (CUDA-сборка sd.cpp в
-  `docker/imageworker/vendor/` либо нативный воркер, зарегистрированный в тот же
-  балансер) описаны в `docs/image-generation.md` §11.1.
+- ✅ **GPU внутри контейнера: CUDA-сборка sd.cpp прямо в образе.** На этой машине
+  (Windows + Docker Desktop/WSL2) `nvidia-smi` в контейнере карту видит, но
+  Vulkan-ICD NVIDIA не пробрасывается (`/usr/share/vulkan/icd.d/` без
+  `nvidia_icd.json`), поэтому релизный Vulkan-движок уходил на CPU: 512×512/8
+  шагов — **251 с**. Linux-CUDA-релиза у sd.cpp нет, поэтому в
+  `docker/imageworker/Dockerfile` появилась стадия сборки из исходников
+  (`-DSD_CUDA=ON`), а вариант движка выбирается ЦЕЛЬЮ образа:
+  `imageworker-vulkan` (дефолт, релизный ассет) и `imageworker-cuda`
+  (та же база CUDA 12.2, что у текстового `cppworker`, поэтому сборка не тянет
+  многогигабайтный образ). Результат в контейнере: **20 с и 4 с** на те же
+  512×512/8 шагов, среднее по пулу 7.9 с — как на нативном GPU.
+  Включается переменными `IMAGE_WORKER_BUILD_TARGET=imageworker-cuda`,
+  `IMAGE_WORKER_RUNTIME_BASE=...cuda:12.2.0-runtime-ubuntu22.04`,
+  `IMAGE_WORKER_CUDA_ARCH=86`.
+- ⚠️ Оператору на Docker Desktop: после пересоздания image-воркера публикация
+  портов у контейнера балансера может «отвалиться» на стороне Docker Desktop
+  (при этом сам балансер отвечает внутри контейнера, а WebUI работает через
+  nginx-прокси). Лечится `docker restart ol-stack-balancer` — это платформенная
+  особенность, а не код: проверка `docker exec ol-stack-balancer curl -fsS
+  localhost:18081/api/v1/ping` отвечает мгновенно.
 - `imageworker` теперь ждёт **готовый** балансер (`depends_on: service_healthy`):
   без этого первый POST саморегистрации уходил в закрытый порт и повторялся
   через 30 с — в едином стенде это выглядело как «image-бэкенд не появился».

@@ -403,22 +403,43 @@ docker exec ol-stack-imageworker nvidia-smi -L   # GPU проброшен (CUDA)
 
 Замер на живом стенде (Windows + Docker Desktop/WSL2, RTX 3070): в контейнере
 512×512 / 8 шагов — **251 с** (движок уходит на CPU/software Vulkan), на том же
-хосте нативный `sd-server` с Vulkan — **9–76 с**. То есть стенд работает, но
-картинки в контейнере считаются на CPU.
+хосте нативный `sd-server` с Vulkan — **9–76 с**.
 
-Варианты, если нужна GPU-скорость при контейнерном воркере:
+**Решение: CUDA-сборка sd.cpp прямо в образе.** Linux-CUDA-релиза у проекта нет,
+поэтому `docker/imageworker/Dockerfile` умеет собирать движок из исходников, а
+выбор варианта делается ЦЕЛЬЮ сборки:
 
-1. **CUDA-сборка sd.cpp** (Linux-CUDA-релизов у проекта нет, нужен свой бинарь):
-   положить собранный `sd-server` в `docker/imageworker/vendor/` и собрать образ с
-   `IMAGE_WORKER_RUNTIME_BASE=nvidia/cuda:12.6.0-runtime-ubuntu24.04` +
-   `SD_SERVER_BIN=<имя файла>`. CUDA-контейнеры на этой машине работают
-   (text-пул `cppworker-gpu` использует именно CUDA).
-2. **Нативный image-воркер на хосте + тот же балансер**: запустить `sdworker` вне
-   Docker с `SDWORKER_BALANCER_URL=http://<хост>:18081`,
-   `SDWORKER_BALANCER_TOKEN=<токен стека>`,
-   `SDWORKER_ADVERTISE_HOST=host.docker.internal` и
-   `SDWORKER_REGISTER_DISABLE=true` у контейнерного воркера — тогда балансер
-   (в контейнере) проксирует картинки на нативный воркер с GPU-Vulkan.
+| Цель | Движок | Когда нужна |
+|---|---|---|
+| `imageworker-vulkan` (дефолт) | релизный Vulkan-ассет | Linux-хосты с nvidia-ICD, AMD/Intel |
+| `imageworker-cuda` | sd.cpp, собранный с CUDA (`-DSD_CUDA=ON`) | там, где Vulkan-NVIDIA в контейнер не приезжает (Windows + Docker Desktop/WSL2) |
+
+```bash
+# deployments/.env
+IMAGE_WORKER_BUILD_TARGET=imageworker-cuda
+IMAGE_WORKER_RUNTIME_BASE=dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-runtime-ubuntu22.04
+IMAGE_WORKER_CUDA_ARCH=86          # compute capability: 86 = RTX 30xx
+IMAGE_WORKER_TAG=cuda12
+
+cd deployments
+docker compose -f docker-compose.stack.yml --profile full build imageworker
+docker compose -f docker-compose.stack.yml --profile full up -d
+```
+
+Почему именно CUDA 12.2 и ubuntu 22.04: Linux-CUDA-сборки sd.cpp не существует,
+а `nvidia/cuda:12.2.0-devel/runtime-ubuntu22.04` уже есть в локальном кэше (на нём
+собран текстовый `cppworker`), поэтому сборка не тянет многогигабайтный образ.
+Бинарь собирается на devel-базе, работает на runtime-базе той же версии;
+`SD_BUILD_SHARED_LIBS=OFF` (дефолт sd.cpp) даёт статический ggml/stable-diffusion —
+в рантайме нужны только CUDA-рантайм и libstdc++/libgomp.
+
+Альтернатива, если собирать не хочется: **нативный image-воркер на хосте + тот же
+балансер** — запустить `sdworker` вне Docker с
+`SDWORKER_BALANCER_URL=http://<хост>:18081`,
+`SDWORKER_BALANCER_TOKEN=<токен стека>`,
+`SDWORKER_ADVERTISE_HOST=host.docker.internal` и
+`SDWORKER_REGISTER_DISABLE=true` у контейнерного воркера — тогда балансер
+(в контейнере) проксирует картинки на нативный воркер с GPU-Vulkan.
 
 ## 12. Метрики image-запросов и управление бэкендами в UI
 

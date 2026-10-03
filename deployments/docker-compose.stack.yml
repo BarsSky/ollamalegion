@@ -381,11 +381,24 @@ services:
     build:
       context: ..
       dockerfile: docker/imageworker/Dockerfile
+      # Phase 8 (2026-10-03): цель сборки выбирает ДВИЖОК образа.
+      #   imageworker-vulkan (дефолт) — релизный Vulkan-ассет sd.cpp: работает на
+      #     AMD/Intel и на NVIDIA там, где проброшен nvidia-ICD (Linux-хосты);
+      #   imageworker-cuda — сборка sd.cpp из исходников с CUDA (Linux-CUDA-релиза
+      #     у проекта нет). Нужна там, где Vulkan-NVIDIA в контейнер не приезжает
+      #     (например, Windows + Docker Desktop/WSL2: nvidia-smi видит карту, а
+      #     nvidia_icd.json отсутствует, и Vulkan-движок уходит на CPU: 251 с на
+      #     512x512/8 шагов против 9-76 с на GPU). Для CUDA обязателен
+      #     RUNTIME_BASE с CUDA-рантаймом — см. IMAGE_WORKER_RUNTIME_BASE ниже.
+      target: ${IMAGE_WORKER_BUILD_TARGET:-imageworker-vulkan}
       args:
         SD_SERVER_REVISION: ${SD_SERVER_REVISION:-master-929-3f8527a}
         SD_SERVER_ASSET: ${SD_SERVER_ASSET:-sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip}
         SD_SERVER_BIN: ${SD_SERVER_BIN:-}
         RUNTIME_BASE: ${IMAGE_WORKER_RUNTIME_BASE:-ubuntu:24.04}
+        CUDA_DEVEL_BASE: ${IMAGE_WORKER_CUDA_DEVEL_BASE:-dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04}
+        CUDA_ARCH: ${IMAGE_WORKER_CUDA_ARCH:-86}
+        SD_SERVER_REF: ${SD_SERVER_REF:-3f8527a46c54ecf4cb4ed6003da8e8982283c73c}
     container_name: ol-stack-imageworker
     restart: unless-stopped
     # Тот же GPU-путь, что у cppworker-gpu выше: nvidia-container-runtime.

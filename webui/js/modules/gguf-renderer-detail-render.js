@@ -308,9 +308,18 @@
                 '</div>' +
                 '<div class="gguf-local-actions" style="display:flex;gap:6px;flex-wrap:wrap;">' +
                     (isLoaded
-                        ? '<button class="btn btn-sm btn-danger gguf-unload-btn" data-handle="' + Utils.escapeHtml(name) + '">' +
-                            '<i class="fas fa-stop"></i> ' + _('gguf.unload_model') +
-                          '</button>'
+                        ? (isUnloadingHandle(name)
+                            // Идёт выгрузка: вместо кнопки — состояние с таймером,
+                            // иначе клик по «Выгрузить» снова уходил бы в API и
+                            // возвращал «model not found».
+                            ? '<span class="gguf-local-unloading" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--warning, #e0a030);">' +
+                                '<i class="fas fa-spinner fa-spin"></i>' +
+                                Utils.escapeHtml(_('gguf.unloading', 'Выгружается…')) + ' ' +
+                                formatElapsedShort(unloadingElapsedMs(unloadingItemFor(name))) +
+                              '</span>'
+                            : '<button class="btn btn-sm btn-danger gguf-unload-btn" data-handle="' + Utils.escapeHtml(name) + '">' +
+                                '<i class="fas fa-stop"></i> ' + _('gguf.unload_model') +
+                              '</button>')
                         : '<button class="btn btn-sm btn-primary gguf-load-btn" data-idx="' + idx + '">' +
                             '<i class="fas fa-play"></i> ' + _('gguf.load_model') +
                           '</button>') +
@@ -457,10 +466,86 @@
         return flags;
     }
 
+    /**
+     * formatElapsedShort — «12s» / «1m 05s» для карточек загрузки/выгрузки.
+     *
+     * Общий хелпер вместо копии в каждой карточке: формат обязан совпадать,
+     * иначе таймер выгрузки выглядел бы иначе, чем таймер загрузки рядом.
+     */
+    function formatElapsedShort(ms) {
+        const elapsedSec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+        if (elapsedSec < 60) return elapsedSec + 's';
+        return Math.floor(elapsedSec / 60) + 'm ' + (elapsedSec % 60) + 's';
+    }
+
+    /** Прошло миллисекунд с момента начала выгрузки (для таймера). */
+    function unloadingElapsedMs(item) {
+        const startedAt = item && item.startedAt ? Number(item.startedAt) : Date.now();
+        return Math.max(0, Date.now() - startedAt);
+    }
+
+    /** Запись о выгрузке для модели (по handle или имени), либо null. */
+    function unloadingItemFor(handle) {
+        const want = String(handle || '');
+        if (!want || !state.selectedBackendId) return null;
+        const list = (state.unloadingModels && state.unloadingModels[state.selectedBackendId]) || [];
+        for (var i = 0; i < list.length; i++) {
+            const item = list[i] || {};
+            if (String(item.handle || '') === want || String(item.name || '') === want) return item;
+        }
+        return null;
+    }
+
+    /** Идёт ли выгрузка этой модели (для панели «Модели на диске»). */
+    function isUnloadingHandle(handle) {
+        return !!unloadingItemFor(handle);
+    }
+
+    /**
+     * renderUnloadingCard — карточка «модель выгружается».
+     *
+     * Рисуется из state.unloadingModels (UI-локальное состояние, см.
+     * gguf-renderer-actions.js): cppworker не отдаёт признак выгрузки, а на
+     * больших моделях освобождение VRAM/mmap занимает десятки секунд — без
+     * этой карточки оператор видел либо «модели нет», либо «модель есть» без
+     * единого признака, что что-то происходит.
+     */
+    function renderUnloadingCard(item, opts) {
+        opts = opts || {};
+        const name = (item && (item.name || item.handle)) || '-';
+        const elapsed = formatElapsedShort(unloadingElapsedMs(item));
+        // Для модели, которая ещё числится загруженной (opts.inline), карточку
+        // не дублируем: там состояние выгрузки показывается вместо кнопки.
+        return '<div class="gguf-loaded-model-item gguf-loaded-model-unloading" style="border-left:3px solid var(--warning, #e0a030);">' +
+            '<div class="gguf-loaded-model-name">' +
+                '<i class="fas fa-spinner fa-spin" style="color:var(--warning, #e0a030);margin-right:6px;"></i>' +
+                Utils.escapeHtml(name) +
+            '</div>' +
+            '<div class="gguf-loaded-model-info">' +
+                '<span style="color:var(--warning, #e0a030);">' + Utils.escapeHtml(_('gguf.unloading', 'Выгружается…')) + '</span>' +
+                '<span style="margin-left:12px;">' + Utils.escapeHtml(_('gguf.elapsed', 'Прошло')) + ': ' + elapsed + '</span>' +
+            '</div>' +
+            '<div class="gguf-loaded-model-info" style="font-size:11px;color:var(--text-muted);">' +
+                Utils.escapeHtml(_('gguf.unloading_hint', 'Освобождаю память (VRAM). На больших моделях это занимает десятки секунд.')) +
+            '</div>' +
+        '</div>';
+    }
+
     function renderLoadedPane() {
         const models = state.loadedModels || [];
         const loadingArr = (state.selectedBackendId && state.loadingModels && state.loadingModels[state.selectedBackendId]) || [];
-        if (models.length === 0 && loadingArr.length === 0) {
+        const unloadingArr = (state.selectedBackendId && state.unloadingModels && state.unloadingModels[state.selectedBackendId]) || [];
+        // Выгружаемые, которых УЖЕ нет в списке загруженных: cppworker удаляет
+        // запись из реестра в начале выгрузки, поэтому карточка нужна отдельно —
+        // иначе в момент самой долгой операции (FreeModel) на экране не было бы
+        // вообще ничего.
+        const unloadingStandalone = unloadingArr.filter(function(item) {
+            const want = String(item.handle || item.name || '');
+            return !models.some(function(m) {
+                return String(m.handle || m.model || m.name || '') === want;
+            });
+        });
+        if (models.length === 0 && loadingArr.length === 0 && unloadingArr.length === 0) {
             return '<div class="gguf-empty-state">' +
                 '<div class="empty-icon"><i class="fas fa-brain"></i></div>' +
                 '<div>' + _('gguf.no_loaded_models') + '</div>' +
@@ -610,6 +695,10 @@
                   '</div>'
                 : '';
 
+            const unloading = unloadingArr.some(function(item) {
+                const want = String(item.handle || item.name || '');
+                return want && (want === String(m.handle || '') || want === name);
+            });
             return '<div class="gguf-loaded-model-item">' +
                 '<div class="gguf-loaded-model-name">' + Utils.escapeHtml(name) + busyBadge + '</div>' +
                 '<div class="gguf-loaded-model-info">' +
@@ -618,12 +707,28 @@
                 '</div>' +
                 flagsHtml +
                 rtHtml +
-                '<button class="btn btn-sm btn-danger gguf-unload-btn" data-handle="' + Utils.escapeHtml(m.handle || name) + '">' +
-                    '<i class="fas fa-stop"></i> ' + _('gguf.unload_model') +
-                '</button>' +
+                // Выгружается: кнопка «Выгрузить» заменяется на состояние с
+                // таймером. Так оператор видит, что команда принята и работа
+                // идёт, а не нажимает кнопку повторно (второй unload вернул бы
+                // «model not found»).
+                (unloading
+                    ? '<div class="gguf-loaded-model-unloading-inline" style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px;color:var(--warning, #e0a030);">' +
+                        '<i class="fas fa-spinner fa-spin"></i>' +
+                        '<span>' + Utils.escapeHtml(_('gguf.unloading', 'Выгружается…')) + '</span>' +
+                        '<span style="color:var(--text-muted);">' + Utils.escapeHtml(_('gguf.elapsed', 'Прошло')) + ': ' +
+                            formatElapsedShort(unloadingElapsedMs(unloadingArr.filter(function(item) {
+                                const want = String(item.handle || item.name || '');
+                                return want === String(m.handle || '') || want === name;
+                            })[0])) + '</span>' +
+                      '</div>'
+                    : '<button class="btn btn-sm btn-danger gguf-unload-btn" data-handle="' + Utils.escapeHtml(m.handle || name) + '">' +
+                        '<i class="fas fa-stop"></i> ' + _('gguf.unload_model') +
+                      '</button>') +
             '</div>';
         }).join('');
-        return (loadingHtml ? '<div class="gguf-loaded-loading-block">' + loadingHtml + '</div>' : '') + loadedHtml;
+        const unloadingHtml = unloadingStandalone.map(function(item) { return renderUnloadingCard(item); }).join('');
+        return (unloadingHtml ? '<div class="gguf-loaded-unloading-block">' + unloadingHtml + '</div>' : '') +
+            (loadingHtml ? '<div class="gguf-loaded-loading-block">' + loadingHtml + '</div>' : '') + loadedHtml;
     }
 
     function renderDownloadsPane() {

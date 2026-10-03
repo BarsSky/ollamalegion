@@ -66,6 +66,26 @@
             // со спиннером и elapsed-таймером: «⟳ Загружается model-name 12s».
             let loadingHtml = '';
             const loadingArr = (state.loadingModels && state.loadingModels[b.id]) || [];
+            // Состояние выгрузки в сайдбаре (2026-10-03): та же логика, что у
+            // загрузки — на больших моделях выгрузка идёт десятки секунд, и
+            // список бэкендов должен это показывать, а не молчать.
+            const unloadingArr = (state.unloadingModels && state.unloadingModels[b.id]) || [];
+            if (unloadingArr.length > 0) {
+                loadingHtml += unloadingArr.map(function(um) {
+                    const elapsedSec = Math.max(0, Math.floor((Date.now() - (Number(um.startedAt) || Date.now())) / 1000));
+                    const elapsedLabel = elapsedSec < 60
+                        ? elapsedSec + 's'
+                        : Math.floor(elapsedSec / 60) + 'm ' + (elapsedSec % 60) + 's';
+                    const stateLabel = M._('gguf.unloading', 'Выгружается…');
+                    return '<div class="gguf-backend-unloading-row" style="display:flex;align-items:center;gap:6px;margin-top:4px;padding:3px 6px;background:rgba(224,160,48,0.10);border-radius:4px;font-size:11px;color:var(--warning,#e0a030);" title="' + window.Utils.escapeHtml(um.name) + '">' +
+                        '<i class="fas fa-spinner fa-spin" style="font-size:10px;flex-shrink:0;"></i>' +
+                        '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+                            window.Utils.escapeHtml(stateLabel) + ': ' + window.Utils.escapeHtml(um.name) +
+                        '</span>' +
+                        '<span style="font-family:monospace;font-size:10px;opacity:0.85;">' + elapsedLabel + '</span>' +
+                    '</div>';
+                }).join('');
+            }
             if (loadingArr.length > 0) {
                 loadingHtml = loadingArr.map(function (lm) {
                     const startedAt = lm.loadingStartedAt ? new Date(lm.loadingStartedAt).getTime() : Date.now();

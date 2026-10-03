@@ -227,6 +227,105 @@
         if (typeof M.refreshDetail === 'function') M.refreshDetail();
     };
 
+    // =====================================================================
+    // Выгрузка модели: состояние «выгружается» (2026-10-03)
+    //
+    // ЗАЧЕМ: UnloadModel в cppworker — синхронная операция, и на больших
+    // моделях освобождение VRAM/mmap занимает десятки секунд. Всё это время
+    // UI не показывал НИЧЕГО: модель либо ещё висела в списке загруженных без
+    // признаков жизни, либо уже исчезала из него (cppworker удаляет запись из
+    // реестра в начале выгрузки) — и оператор не понимал, идёт работа или
+    // интерфейс завис. Теперь нажатие кнопки сразу рисует состояние
+    // «Выгружается… (Ns)» и блокирует повторную выгрузку.
+    //
+    // ПОЧЕМУ В UI, А НЕ С СЕРВЕРА: у cppworker нет состояния unloading (есть
+    // только loaded/loading/error/unloaded), а FreeModel() не сообщает
+    // прогресс. Рисовать «примерно 40%» было бы выдумкой; честный минимум —
+    // факт выгрузки + прошедшее время, как это уже сделано для загрузки.
+    // =====================================================================
+
+    function unloadingState() {
+        const state = M.state;
+        if (!state.unloadingModels) state.unloadingModels = {};
+        return state.unloadingModels;
+    }
+
+    /** Список выгружаемых моделей бэкенда: [{name, handle, startedAt}]. */
+    M.unloadingList = function(backendId) {
+        const map = unloadingState();
+        return (backendId && map[backendId]) || [];
+    };
+
+    /** Идёт ли выгрузка конкретной модели (сравниваем и handle, и имя). */
+    M.isUnloading = function(backendId, handle) {
+        const want = String(handle || '');
+        if (!want) return false;
+        return M.unloadingList(backendId).some(function(item) {
+            return item.handle === want || item.name === want;
+        });
+    };
+
+    /** Перерисовка состояния выгрузки без сетевых запросов (для таймера). */
+    function repaintUnloading() {
+        if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+        if (typeof M.updateBackendsList === 'function') M.updateBackendsList();
+    }
+
+    /**
+     * Таймер выгрузки: раз в секунду перерисовывает панель, чтобы счётчик
+     * времени рос. Живёт только пока есть хотя бы одна выгрузка — иначе это
+     * был бы вечный setInterval на пустом месте.
+     */
+    function syncUnloadingTimer() {
+        const state = M.state;
+        const map = unloadingState();
+        const any = Object.keys(map).some(function(k) { return (map[k] || []).length > 0; });
+        if (any && !state._unloadingTimer) {
+            state._unloadingTimer = setInterval(repaintUnloading, 1000);
+        } else if (!any && state._unloadingTimer) {
+            clearInterval(state._unloadingTimer);
+            state._unloadingTimer = null;
+        }
+    }
+
+    /**
+     * Отметить начало выгрузки модели.
+     *
+     * Идемпотентно: повторный вызов для той же модели НЕ сбрасывает startedAt
+     * (иначе таймер начинал бы отсчёт заново при каждом перерисовывании) и не
+     * создаёт дубликат записи.
+     */
+    M.markUnloading = function(backendId, handle) {
+        if (!backendId || !handle) return false;
+        const map = unloadingState();
+        if (!map[backendId]) map[backendId] = [];
+        if (!M.isUnloading(backendId, handle)) {
+            map[backendId].push({
+                // name — то, что показываем оператору, handle — то, чем адресуем
+                // модель в API (у cppworker это путь/имя файла).
+                name: String(handle),
+                handle: String(handle),
+                startedAt: Date.now()
+            });
+        }
+        syncUnloadingTimer();
+        repaintUnloading();
+        return true;
+    };
+
+    /** Снять отметку выгрузки (успех, ошибка, отказ, отмена). */
+    M.clearUnloading = function(backendId, handle) {
+        const map = unloadingState();
+        if (backendId && map[backendId]) {
+            map[backendId] = map[backendId].filter(function(item) {
+                return item.handle !== handle && item.name !== handle;
+            });
+        }
+        syncUnloadingTimer();
+        repaintUnloading();
+        return true;
+    };
+
     M.unloadOnSelectedBackend = function(handle, force) {
         const backend = M.currentBackend();
         if (!backend) {
@@ -238,6 +337,14 @@
             M.showToast('unloadModel API not available', 'error');
             return;
         }
+        // Повторный клик по «Выгрузить» (в том числе по другой карточке той же
+        // модели) не должен запускать вторую выгрузку: cppworker ответил бы
+        // «model not found», и оператор увидел бы ошибку там, где всё идёт.
+        if (M.isUnloading(backend.id, handle)) {
+            M.showToast(M._('gguf.unload_in_progress', 'Выгрузка этой модели уже идёт') ||
+                'Unload is already in progress', 'info');
+            return;
+        }
         // R66c (2026-09-22): force=true выгружает ЗАНЯТУЮ модель.
         //
         // cppworker отказывает в unload, если по модели есть активные
@@ -246,9 +353,13 @@
         // балансер этот флаг не прокидывал, и в UI не было никакого выхода:
         // пользователь видел "Unload failed: ... busy" и модель оставалась
         // в VRAM. Теперь на busy предлагаем подтверждение и повторяем с force.
-        api.unloadModel(backend.id, handle, force ? { force: true } : {})
+        M.markUnloading(backend.id, handle);
+        return api.unloadModel(backend.id, handle, force ? { force: true } : {})
             .then(function (result) {
                 if (result && result.success === false) {
+                    // Отказ — это НЕ выгрузка: снимаем состояние сразу, иначе
+                    // карточка «Выгружается…» висела бы на живой модели.
+                    M.clearUnloading(backend.id, handle);
                     if (result.retryWithForce || result.busy || result.status === 409) {
                         var msg = M._('gguf.confirm_unload_force') ||
                             'Модель занята активными запросами. Прервать их и выгрузить?';
@@ -258,10 +369,13 @@
                     M.showToast('Unload failed: ' + (result.error || 'unknown error'), 'error');
                     return;
                 }
+                M.clearUnloading(backend.id, handle);
                 M.showToast(M._('gguf.model_unloaded') || 'Model unloaded', 'success');
                 if (typeof M.refreshDetail === 'function') M.refreshDetail();
+                if (typeof M.refreshBackends === 'function') M.refreshBackends();
             })
             .catch(function (err) {
+                M.clearUnloading(backend.id, handle);
                 M.showToast('Unload failed: ' + ((err && err.message) || err), 'error');
             });
     };

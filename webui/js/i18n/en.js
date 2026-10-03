@@ -1065,6 +1065,11 @@ window.I18N_EN = {
   "gguf.model_unloaded": "Model unloaded",
   "gguf.model_load_error": "Failed to load model",
   "gguf.model_unload_error": "Failed to unload model",
+  // Unload state: cppworker exposes no FreeModel() progress, so the UI shows the
+  // fact of the unload plus elapsed time (see gguf-renderer-actions.js).
+  "gguf.unloading": "Unloading…",
+  "gguf.unloading_hint": "Releasing memory (VRAM). On large models this takes tens of seconds.",
+  "gguf.unload_in_progress": "This model is already being unloaded",
   "gguf.loaded_models_header": "Loaded Models",
   "gguf.no_loaded_models": "No models loaded",
   "gguf.loading_indicator": "Loading",

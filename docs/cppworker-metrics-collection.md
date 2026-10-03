@@ -79,6 +79,16 @@ cppworker-бэкенду:
   Фильтрация по `state==loaded` делается на стороне UI.
 - `LoadingModels []LlamaCppModel` — модели в процессе загрузки (state=loading).
   Используется UI для отображения спиннера и elapsed-time «Загружается model-name 25s».
+- **Выгрузка (unloading) в метриках НЕ представлена, и это осознанно:** у cppworker
+  нет состояния `unloading` — `UnloadModel()` удаляет модель из реестра в начале
+  операции, а `StateUnloaded` выставляет только после `FreeModel()` (освобождение
+  VRAM/mmap, на больших моделях десятки секунд). Поэтому WebUI ведёт это состояние
+  сам: `window.GgufModule.state.unloadingModels` заполняется в момент нажатия
+  «Выгрузить» и живёт до ответа HTTP
+  (`webui/js/modules/gguf-renderer-actions.js`); рендер — карточка
+  «Выгружается… (Ns)» в панели «Загруженные», строка в сайдбаре бэкендов и
+  замена кнопки выгрузки на индикатор. Для Dashboard/Monitor это состояние
+  недоступно: там показываются только серверные поля.
 
 **Что poller НЕ собирает** (важно!):
 - ❌ GPU metrics (usage%, VRAM used/total, temperature, power, clocks) — нет NVML.

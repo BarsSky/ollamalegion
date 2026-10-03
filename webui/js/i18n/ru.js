@@ -944,6 +944,11 @@ window.I18N_RU = {
   "gguf.model_unloaded": "Модель выгружена",
   "gguf.model_load_error": "Не удалось загрузить модель",
   "gguf.model_unload_error": "Не удалось выгрузить модель",
+  // Состояние выгрузки: cppworker не отдаёт прогресс FreeModel(), поэтому UI
+  // показывает факт выгрузки и прошедшее время (см. gguf-renderer-actions.js).
+  "gguf.unloading": "Выгружается…",
+  "gguf.unloading_hint": "Освобождаю память (VRAM). На больших моделях это занимает десятки секунд.",
+  "gguf.unload_in_progress": "Выгрузка этой модели уже идёт",
   "gguf.loaded_models_header": "Загруженные модели",
   "gguf.no_loaded_models": "Нет загруженных моделей",
   "gguf.loading_indicator": "Загружается",

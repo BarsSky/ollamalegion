@@ -184,6 +184,21 @@
 
     function isAuto() { return state.auto; }
 
+    /**
+     * shouldPoll — можно ли сейчас опрашивать API (общее правило для ВСЕХ циклов).
+     *
+     * ЗАЧЕМ ОДНО ПРАВИЛО: у приложения несколько независимых поллеров (cluster/
+     * очередь/сессии, метрики в iframe монитора, прогресс загрузок GGUF/HF,
+     * статус операций над моделями). Если каждый решает сам, пауза
+     * авто-обновления и скрытая вкладка перестают что-либо значить — проверено
+     * живьём: при «паузе» в фоне уходило 40+ запросов за 7 секунд.
+     */
+    function shouldPoll() {
+        if (!state.auto) return false;
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+        return true;
+    }
+
     function toggleAuto() { return setAuto(!state.auto); }
 
     /** onAutoChange — подписка для владельца таймера (app.js → startPeriodicRefresh). */
@@ -277,6 +292,7 @@
         isAuto: isAuto,
         toggleAuto: toggleAuto,
         onAutoChange: onAutoChange,
+        shouldPoll: shouldPoll,
         ageSeconds: ageSeconds,
         formatAge: formatAge,
         freshnessLabel: freshnessLabel,

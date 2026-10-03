@@ -1,7 +1,7 @@
 {
-    "tag":  "r83-submodule-v81",
-    "builtAt":  "2026-10-03T20:42:21Z",
-    "gitCommit":  "ecf3901",
+    "tag":  "r83-submodule-v82",
+    "builtAt":  "2026-10-03T21:20:22Z",
+    "gitCommit":  "567c48f",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
@@ -9,9 +9,9 @@
                    {
                        "service":  "webui",
                        "variable":  "WEBUI_TAG",
-                       "image":  "ollama-legion/webui:r83-submodule-v81",
-                       "imageTag":  "r83-submodule-v81",
-                       "imageId":  "sha256:9a92efc81e40acf96dd841db8562effe110e5cb66adb74c3522d37779af9269e",
+                       "image":  "ollama-legion/webui:r83-submodule-v82",
+                       "imageTag":  "r83-submodule-v82",
+                       "imageId":  "sha256:b1ac779186dae9949b905828445055ea4c0d5776625da4d09f994b41f50756ae",
                        "alias":  "ollama-legion/webui:latest"
                    },
                    {

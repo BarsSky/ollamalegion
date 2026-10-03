@@ -249,6 +249,18 @@ check('onAutoChange: владелец таймера узнаёт о паузе/
     assert.deepStrictEqual(seen, [false, true]);
 });
 
+check('shouldPoll: единое правило опроса — пауза и скрытая вкладка', function () {
+    DR.setAuto(true);
+    global.document.visibilityState = 'visible';
+    assert.strictEqual(DR.shouldPoll(), true, 'авто + видимая вкладка = опрашиваем');
+    global.document.visibilityState = 'hidden';
+    assert.strictEqual(DR.shouldPoll(), false, 'скрытая вкладка = не опрашиваем (24/7-дашборд не молотит API)');
+    global.document.visibilityState = 'visible';
+    DR.setAuto(false);
+    assert.strictEqual(DR.shouldPoll(), false, 'пауза авто-обновления = не опрашиваем');
+    DR.setAuto(true);
+});
+
 check('mount: клик по индикатору = обновить сейчас, клик по иконке = пауза', function () {
     DR.mount();
     refreshCalls = 0;

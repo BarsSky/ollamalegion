@@ -91,9 +91,13 @@ const ui = (function () {
                 if (on) {
                     startPeriodicRefresh();
                     fetchClusterState();
+                    startOpsAutoRefresh();
                 } else {
                     stopPeriodicRefresh();
+                    stopOpsAutoRefresh();
                 }
+                // Метрики монитора живут в iframe со своими таймерами.
+                postMonitorPause(!on);
             });
         }
         setupVisibilityRefresh();
@@ -1710,6 +1714,21 @@ const ui = (function () {
         }, interval);
     }
 
+    /**
+     * postMonitorPause — сообщить iframe монитора о паузе/возобновлении.
+     *
+     * Монитор — отдельный документ со своим 2-секундным циклом и своим
+     * sparkline-поллером: из родителя его таймеры не остановить, поэтому
+     * договариваемся сообщением (тот же канал, что и ollamalegion-config).
+     */
+    function postMonitorPause(paused) {
+        var frame = document.getElementById('monitorFrame');
+        if (!frame || !frame.contentWindow) return;
+        try {
+            frame.contentWindow.postMessage({ type: 'ollamalegion-pause', paused: !!paused }, '*');
+        } catch (e) { /* iframe ещё не загрузился — не критично */ }
+    }
+
     /** stopPeriodicRefresh — снять таймер (повторный вызов безопасен). */
     function stopPeriodicRefresh() {
         if (refreshTimer) clearInterval(refreshTimer);
@@ -1737,8 +1756,12 @@ const ui = (function () {
         document.addEventListener('visibilitychange', function () {
             if (document.visibilityState === 'hidden') {
                 stopPeriodicRefresh();
+                postMonitorPause(true);
+                if (window.DataRefresh && window.DataRefresh.isAuto()) stopOpsAutoRefresh();
                 return;
             }
+            postMonitorPause(false);
+            if (window.DataRefresh && window.DataRefresh.isAuto()) startOpsAutoRefresh();
             startPeriodicRefresh();
             if (window.DataRefresh && !window.DataRefresh.isAuto()) return;
             fetchClusterState().then(function () {
@@ -2630,6 +2653,11 @@ const ui = (function () {
     function refreshModelOpsStatus() {
         const opsBody = document.getElementById('modelOpsBody');
         if (!opsBody) return;
+        // R84: единое правило опроса — пауза авто-обновления и скрытая вкладка.
+        if (window.DataRefresh && typeof window.DataRefresh.shouldPoll === 'function' &&
+            !window.DataRefresh.shouldPoll()) {
+            return;
+        }
         Api.modelOperationsStatus().then(function(data) {
             const ops = (data && data.operations) || [];
 

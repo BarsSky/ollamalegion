@@ -248,8 +248,42 @@
     ctx.closePath();
   };
 
+  /**
+   * setPollingPaused — остановить/возобновить циклы метрик монитора.
+   *
+   * ЗАЧЕМ: монитор живёт в iframe со своими таймерами (основной цикл 2 с и
+   * sparkline-поллер 5 с), из родительского документа их не снять. Пауза
+   * авто-обновления и скрытая вкладка должны останавливать и их — иначе
+   * «пауза» в WebUI ничего не значит для трафика.
+   */
+  function setPollingPaused(paused) {
+    if (paused) {
+      if (MonitorApp.timerId) { clearInterval(MonitorApp.timerId); MonitorApp.timerId = null; }
+      if (window.Sparkline && typeof window.Sparkline.stopPoller === 'function') {
+        window.Sparkline.stopPoller();
+      }
+      return;
+    }
+    if (!MonitorApp.timerId && !MonitorApp.demoMode) {
+      MonitorApp.timerId = setInterval(window.fetchAllSafe, MonitorApp.refreshInterval);
+    }
+    if (window.Sparkline && typeof window.Sparkline.startPoller === 'function') {
+      window.Sparkline.startPoller();
+    }
+  }
+  MonitorApp.setPollingPaused = setPollingPaused;
+
+  // Скрытая вкладка браузера — та же пауза (родитель может быть не активен).
+  document.addEventListener('visibilitychange', function() {
+    setPollingPaused(document.visibilityState === 'hidden');
+  });
+
   // Message listener for config updates
   window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'ollamalegion-pause') {
+      setPollingPaused(!!e.data.paused);
+      return;
+    }
     if (e.data && e.data.type === 'ollamalegion-config') {
       // R60.16.1 (2026-09-08): skip empty values so the parent's
       // postMessage doesn't overwrite our detectApiBase() fallback

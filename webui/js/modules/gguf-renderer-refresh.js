@@ -302,6 +302,7 @@
         var fast = false;
         var api = window.GgufApi || window.Api;
         function tick() {
+            if (!shouldPoll()) { scheduleNext(); return; }
             if (!state.selectedBackendId) {
                 state.activeQueries = {};
                 scheduleNext();
@@ -350,7 +351,19 @@
         }
     };
 
-    M.refreshActiveQueriesPolling = function() {
+    /**
+ * shouldPoll — общее правило опроса (data-refresh.js): пауза авто-обновления и
+ * скрытая вкладка останавливают и поллинги GGUF-страницы. Без этого «пауза» в
+ * шапке не влияла на прогресс загрузок (проверено живьём).
+ */
+function shouldPoll() {
+    if (window.DataRefresh && typeof window.DataRefresh.shouldPoll === 'function') {
+        return window.DataRefresh.shouldPoll();
+    }
+    return true;
+}
+
+M.refreshActiveQueriesPolling = function() {
         // Force immediate refresh (cross-tab sync).
         const state = M.state;
         if (typeof state._activeQueriesTickFn === 'function') {
@@ -365,6 +378,7 @@
         const state = M.state;
         if (_downloadsPollTimer) return;
         function tick() {
+            if (!shouldPoll()) return;
             if (!state.activeDownloads || state.activeDownloads.length === 0) {
                 if (_downloadsPollTimer) { clearInterval(_downloadsPollTimer); _downloadsPollTimer = null; }
                 return;

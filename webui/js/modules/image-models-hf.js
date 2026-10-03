@@ -1067,6 +1067,14 @@
         state.pollIdleTicks = 0;
         var tick = async function () {
             if (!backendId() || !name) { stopPolling(); return; }
+            // Прогресс скачивания — тоже опрос API: на паузе авто-обновления и в
+            // скрытой вкладке пропускаем тик (правило одно для всего WebUI,
+            // data-refresh.js). Состояние записи не теряется: следующий тик
+            // после возврата покажет актуальный прогресс.
+            if (window.DataRefresh && typeof window.DataRefresh.shouldPoll === 'function' &&
+                !window.DataRefresh.shouldPoll()) {
+                return;
+            }
             try {
                 var p = await request(backendUrl('hf/progress?bundleId=' + encodeURIComponent(name)), { timeoutMs: TIMEOUT_CONTROL_MS });
                 if (!p) { state.pollIdleTicks++; }

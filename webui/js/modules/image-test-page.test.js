@@ -13,7 +13,7 @@
 //   4. запрос уходит КЛИЕНТСКИМ путём (/v1/images/generations), а не в управляющий
 //      алиас, и результат рисуется как <img>, с метаданными (время/seed/model);
 //   5. ошибки движка показываются текстом + человеческой подсказкой (кейс
-//      «get sd version from file failed» — GGUF для ComfyUI);
+//      «get sd version from file failed» — семейство профиля не совпало с файлом);
 //   6. история теста живёт в памяти вкладки, «В форму» возвращает параметры.
 
 'use strict';
@@ -205,9 +205,12 @@ const BACKENDS = [
         assert.ok(fallback.samplers.indexOf('euler_a') !== -1);
         assert.strictEqual(fallback.limits.maxBatch > 0, true);
     });
-    check('errorHint: «get sd version from file failed» объясняется как ComfyUI-формат', function () {
+    check('errorHint: «get sd version from file failed» объясняется как несовпадение семейства', function () {
         const hint = P.errorHint('sd-server failed ... [ERROR] diffusion_engine.cpp:992 - get sd version from file failed');
-        assert.ok(/ComfyUI/.test(hint), 'нет подсказки про ComfyUI: ' + hint);
+        assert.ok(/семейство/i.test(hint), 'подсказка должна говорить про семейство профиля: ' + hint);
+        assert.ok(/DiT/.test(hint), 'подсказка должна назвать DiT-семейства: ' + hint);
+        assert.strictEqual(/ComfyUI/.test(hint), false,
+            'ComfyUI-версия причины опровергнута на живом движке (docs/image-generation.md §8.2): ' + hint);
         assert.ok(/no image model is loaded/i.test(P.errorHint('no image model is loaded on the image backend')) === false);
         assert.ok(/VRAM/.test(P.errorHint('cuda out of memory')), 'нет подсказки про VRAM');
         assert.ok(/Загрузить модель/.test(P.errorHint('no image model is loaded')), 'нет подсказки про загрузку модели');
@@ -291,7 +294,7 @@ const BACKENDS = [
         const html = getEl('imgTestResultHost').innerHTML;
         assert.ok(html.indexOf('Генерация не удалась') !== -1, 'нет заголовка ошибки: ' + html.slice(0, 200));
         assert.ok(html.indexOf('get sd version from file failed') !== -1, 'нет текста движка');
-        assert.ok(html.indexOf('ComfyUI') !== -1, 'нет подсказки про ComfyUI-формат');
+        assert.ok(html.indexOf('семейство профиля') !== -1, 'нет подсказки про семейство профиля');
     });
 
     // --- 5. запрос без промпта не уходит ------------------------------------

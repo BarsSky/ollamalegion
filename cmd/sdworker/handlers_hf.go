@@ -6,6 +6,8 @@
 //
 //	GET  /api/hf/search?q=<query>          — поиск репозиториев
 //	GET  /api/hf/files?modelId=&revision=  — файлы репозитория (весовые форматы)
+//	GET  /api/hf/probe?modelId=&filename=&revision= — пред-проверка заголовка
+//	     (как движок увидит файл: family/versionLabel/dit) БЕЗ скачивания
 //	POST /api/hf/download                  — одиночный файл → 202
 //	POST /api/hf/bundle                    — bundle целиком → 202 (асинхронно)
 //	GET  /api/hf/progress?modelId=&filename=[&bundleId=]
@@ -242,6 +244,53 @@ func (a *App) handleHFFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"files": files, "count": len(files), "modelId": modelID, "revision": revision,
 	})
+}
+
+// ============================================================
+// GET /api/hf/probe
+// ============================================================
+
+// handleHFProbe — пред-проверка файла модели ДО скачивания.
+//
+// Читает только заголовок (Range-запрос) и отвечает, КАК движок увидит файл:
+//   - verdict=supported — семейство/версия узнаны по именам тензоров
+//     (family/versionLabel/dit в ответе), файл читается движком pinned-версии;
+//   - verdict=unknown   — по заголовку судить нельзя (VAE, text encoder, LoRA
+//     или семейство, которого мы не знаем). Приговоров «движок это не прочитает»
+//     пред-проверка НЕ выносит: «голые» diffusers-имена тензоров есть и у
+//     официальных сборок под sd.cpp, а часть решений движок принимает по
+//     размерностям и комбинациям тензоров (см. internal/cppbackend/hf_probe.go).
+//
+// ЗАЧЕМ ЭТО НА СЕРВЕРЕ, А НЕ В JS: заголовок лежит в начале файла, но читать его
+// надо Range-запросом к huggingface.co с токеном и разбором GGUF/safetensors —
+// это работа воркера, а UI только показывает вердикт рядом с файлом.
+func (a *App) handleHFProbe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "use GET")
+		return
+	}
+	hf, ok := a.hfManager(w)
+	if !ok {
+		return
+	}
+	modelID := strings.TrimSpace(r.URL.Query().Get("modelId"))
+	filename := strings.TrimSpace(r.URL.Query().Get("filename"))
+	if modelID == "" || filename == "" {
+		writeError(w, http.StatusBadRequest, "modelId and filename are required")
+		return
+	}
+	revision := strings.TrimSpace(r.URL.Query().Get("revision"))
+	hf.SetToken(requestHFToken(r))
+
+	ctx, cancel := hfContext(r, 45*time.Second)
+	defer cancel()
+
+	res, err := hf.ProbeFile(ctx, modelID, filename, revision)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "probe failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // ============================================================

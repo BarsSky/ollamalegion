@@ -85,6 +85,12 @@ func (a *App) setupRouter() http.Handler {
 	// и деградировала раньше (см. webui/js/modules/image-page.js:63-76).
 	mux.HandleFunc("/api/hf/search", a.handleHFSearch)
 	mux.HandleFunc("/api/hf/files", a.handleHFFiles)
+	// R-Image (2026-10-03): пред-проверка файла ДО скачивания — читаем заголовок
+	// (Range-запрос) и говорим, КАК движок увидит файл: какое семейство он узнаёт
+	// по именам тензоров и нужен ли --diffusion-model. Приговоров «движок это не
+	// прочитает» нет: «голые» diffusers-имена есть и у сборок под sd.cpp
+	// (см. internal/cppbackend/hf_probe.go и docs/image-generation.md §8.2).
+	mux.HandleFunc("/api/hf/probe", a.handleHFProbe)
 	mux.HandleFunc("/api/hf/download", a.handleHFDownload)
 	mux.HandleFunc("/api/hf/bundle", a.handleHFBundle)
 	// Алиасы: UI пробует их, если канонический путь недоступен

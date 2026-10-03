@@ -273,7 +273,12 @@
         var s = String(text || '');
         if (!s) return '';
         if (/get sd version from file failed/i.test(s)) {
-            return 'Файл модели не распознан: похоже, GGUF собран для ComfyUI (другие имена тензоров/метаданные), а sd.cpp его не читает. Возьмите сборку под stable-diffusion.cpp (например leejet/*, QuantStack/*).';
+            // Разбор на движке pinned master-929-3f8527a (docs/image-generation.md §8.2):
+            // причина — НЕ «чужой формат», а несовпадение семейства профиля с файлом.
+            // DiT-модель (FLUX/SD3/Qwen-Image/Z-Image/Chroma), подключённая как
+            // all-in-one (--model), движком не узнаётся: нужен --diffusion-model,
+            // который воркер передаёт сам, если семейство профиля — DiT-семейство.
+            return 'Движок не узнал версию модели по именам тензоров. Обычно это значит, что семейство профиля не совпадает с файлом: DiT-модель (FLUX/SD3/Qwen-Image/Z-Image/Chroma) подключена как all-in-one. Выберите правильное семейство в профиле модели (на табе HuggingFace оно подставляется кнопкой «Проверить» у файла).';
         }
         if (/is not supported|unsupported (model|architecture)/i.test(s)) {
             return 'Архитектура модели не поддерживается этой версией sd.cpp. Проверьте, что файл собран под sd.cpp, либо обновите движок в образе воркера.';

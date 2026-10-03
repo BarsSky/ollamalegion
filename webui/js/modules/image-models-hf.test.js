@@ -23,6 +23,14 @@
 //      /hf/cleanup?filename=... (имя вида «bundle/file» в путь не положить).
 //   7. НИЧЕГО НЕ ПОКАЗЫВАЕТ КАРТИНКИ: в модуле нет ни b64, ни <img> из ответа
 //      генерации (Phase 9 убрала показ сгенерированного из WebUI).
+//   8. ПОМЕТКИ ПО ЗАГОЛОВКУ (Phase 10): пред-проверка файла
+//      GET .../hf/probe?modelId=&filename=&revision= (без скачивания весов) и
+//      автоподстановка семейства профиля по вердикту движка. Приговоров
+//      «движок это не прочитает» нет: «голые» diffusers-имена тензоров есть и у
+//      официальных сборок под sd.cpp, а DiT-файл, подключённый как all-in-one,
+//      движок не узнаёт («get sd version from file failed») — именно это
+//      расхождение ловит diTFamilyWarning, а семейство подставляет
+//      applyProbedFamily (ручной выбор оператора не перебивается).
 'use strict';
 
 const assert = require('assert');
@@ -313,6 +321,84 @@ check('downloadsSummary: пустой снимок не даёт секций, �
     assert.strictEqual(full.activeCount, 1);
 });
 
+// --- пометки по заголовку файла (Phase 10) -----------------------------------
+
+check('repoCompatibility: известные авторы — ok, остальные — честное unknown (без приговоров)', function () {
+    assert.strictEqual(P.repoCompatibility({ id: 'leejet/FLUX.1-schnell-gguf' }).level, 'ok');
+    assert.strictEqual(P.repoCompatibility({ id: 'QuantStack/Qwen-Image-GGUF' }).level, 'ok');
+    // ВАЖНО: ComfyUI-экспорт НЕ приговаривается — движок читает и такую
+    // раскладку (проверено на pinned-движке, см. internal/cppbackend/hf_probe.go).
+    assert.strictEqual(P.repoCompatibility({ id: 'city96/Qwen-Image-gguf' }).level, 'unknown');
+    assert.strictEqual(P.repoCompatibility({ id: 'someone/ComfyUI-GGUF' }).level, 'unknown');
+    assert.strictEqual(P.repoCompatibility({}).level, 'unknown', 'пустой id — честное «не знаю»');
+});
+
+check('repoCompatibility: у каждого уровня есть подсказка для title', function () {
+    ['leejet/x', 'city96/x', 'nobody/x'].forEach(function (id) {
+        const b = P.repoCompatibility({ id: id });
+        assert.ok(b.label, 'нет подписи у ' + id);
+        assert.ok(b.hint, 'нет подсказки у ' + id);
+    });
+});
+
+check('probeBadge: семья движка в подписи, DiT-подсказка, unknown без приговора', function () {
+    const ok = P.probeBadge({ verdict: 'supported', versionLabel: 'Qwen Image 2.1', family: 'qwen_image', dit: true, reason: 'движок узнаёт семейство по тензору "txt_in.text_norm.weight"' });
+    assert.strictEqual(ok.level, 'ok');
+    assert.ok(ok.label.indexOf('Qwen Image 2.1') !== -1, 'в подписи должно быть имя версии движка: ' + ok.label);
+    assert.ok(ok.hint.indexOf('--diffusion-model') !== -1, 'для DiT нужна подсказка про --diffusion-model: ' + ok.hint);
+    const unknown = P.probeBadge({ verdict: 'unknown', reason: 'в заголовке нет тензоров, по которым движок узнаёт версию' });
+    assert.strictEqual(unknown.level, 'unknown');
+    assert.ok(unknown.hint.indexOf('движок узнаёт версию') !== -1, 'причина воркера должна дойти до UI');
+    assert.strictEqual(P.probeBadge(null).level, 'unknown', 'нет ответа — не выдумываем вердикт');
+    // 'unsupported' мы не выносим: даже если сервер его пришлёт, UI не приговаривает.
+    assert.strictEqual(P.probeBadge({ verdict: 'unsupported' }).level, 'unknown');
+});
+
+check('diTFamilyWarning: DiT-файл против all-in-one семейства в профиле', function () {
+    const probe = { verdict: 'supported', versionLabel: 'Qwen Image 2.1', family: 'qwen_image', dit: true };
+    const warn = P.diTFamilyWarning(probe, 'sd15');
+    assert.ok(warn.indexOf('get sd version from file failed') !== -1, 'предупреждение должно называть реальную ошибку движка: ' + warn);
+    assert.ok(warn.indexOf('qwen_image') !== -1, 'должно подсказывать правильное семейство');
+    assert.ok(P.diTFamilyWarning(probe, 'other').length > 0, 'all-in-one семейство «other» — тоже расхождение');
+    assert.strictEqual(P.diTFamilyWarning(probe, 'qwen_image'), '', 'совпало — предупреждения нет');
+    // Wan/PixArt мапятся в «other» с dit=true: там семейство уже «как надо».
+    assert.strictEqual(P.diTFamilyWarning({ verdict: 'supported', versionLabel: 'Wan', family: 'other', dit: true }, 'other'), '',
+        'семейство совпало с определённым — предупреждения нет');
+    assert.strictEqual(P.diTFamilyWarning({ verdict: 'supported', versionLabel: 'SD1.x', family: 'sd15', dit: false }, 'other'), '',
+        'all-in-one файл от семейства не зависит');
+    assert.strictEqual(P.diTFamilyWarning(null, 'sd15'), '', 'нет вердикта — нет предупреждения');
+});
+
+check('DIT_FAMILIES совпадает с pkg/types (diTFamilies)', function () {
+    assert.deepStrictEqual(P.DIT_FAMILIES.slice().sort(), ['chroma', 'flux', 'flux2', 'qwen_image', 'sd3', 'z_image']);
+});
+
+check('compatBadgeHtml: кнопка «Проверить» только у файла, причина — в title', function () {
+    const withBtn = P.compatBadgeHtml({ level: 'unknown', label: 'не проверено', hint: 'нет данных' }, 'flux1-dev-Q4_0.gguf');
+    assert.ok(withBtn.indexOf('data-imh-probe="flux1-dev-Q4_0.gguf"') !== -1, 'нет кнопки пред-проверки: ' + withBtn);
+    assert.ok(withBtn.indexOf('title="нет данных"') !== -1, 'причина должна быть в title: ' + withBtn);
+    assert.ok(withBtn.indexOf('fa-circle-question') !== -1, 'unknown — серая иконка вопроса');
+    const okBadge = P.compatBadgeHtml({ level: 'ok', label: 'движок узнаёт: Flux', hint: '' }, '');
+    assert.ok(okBadge.indexOf('fa-circle-check') !== -1, 'ok — зелёная галочка');
+    assert.strictEqual(okBadge.indexOf('data-imh-probe'), -1, 'без пути кнопки быть не должно');
+    assert.strictEqual(P.compatBadgeHtml(null, '').indexOf('undefined'), -1, 'пустой вердикт не должен течь в разметку');
+});
+
+check('ditHint: flux без VAE/text encoder предупреждает, полный набор и SD1.5 — нет', function () {
+    const only = [{ path: 'flux1-dev-Q4_0.gguf', suggestedRole: 'diffusion' }];
+    const warn = P.ditHint(only, 'leejet/FLUX.1-dev-gguf');
+    assert.ok(warn.indexOf('VAE') !== -1, 'нет упоминания VAE: ' + warn);
+    assert.ok(warn.indexOf('text encoder') !== -1, 'нет упоминания text encoder: ' + warn);
+    const full = [
+        { path: 'flux1-dev-Q4_0.gguf', suggestedRole: 'diffusion' },
+        { path: 'ae.safetensors', suggestedRole: 'vae' },
+        { path: 'clip_l.safetensors', suggestedRole: 'clip_l' },
+    ];
+    assert.strictEqual(P.ditHint(full, 'leejet/FLUX.1-dev-gguf'), '', 'полный набор — предупреждения нет');
+    assert.strictEqual(P.ditHint(only, 'sd15-model'), '', 'SD1.5 не DiT: отдельные VAE/TE не нужны');
+    assert.strictEqual(P.ditHint(only, 'qwen-image-2.1-uncensored-gguf').length > 0, true, 'qwen — тоже DiT-семейство');
+});
+
 check('модуль не рендерит сгенерированные картинки (base64/img)', function () {
     const src = fs.readFileSync(path.join(__dirname, 'image-models-hf.js'), 'utf8');
     ['b64_json', '<img', 'data:image', '/api/image/generate', 'imgResults', 'gallery'].forEach(function (tok) {
@@ -335,6 +421,24 @@ check('модуль не рендерит сгенерированные кар�
             return { status: 200, body: { results: [{ id: 'leejet/FLUX.1-schnell-gguf', downloads: 1200, likes: 30, pipelineTag: 'text-to-image' }], count: 1 } };
         }
         if (rec.url.indexOf('/hf/files') !== -1) return { status: 200, body: { files: FILES, count: FILES.length } };
+        // Пред-проверка заголовка: главный файл (t5xxl) — DiT-семейство qwen_image,
+        // любой другой — «по заголовку не определить» (как VAE/text encoder).
+        if (rec.url.indexOf('/hf/probe') !== -1) {
+            if (rec.url.indexOf('t5xxl') !== -1) {
+                return {
+                    status: 200, body: {
+                        verdict: 'supported', family: 'qwen_image', versionLabel: 'Qwen Image 2.1', dit: true,
+                        reason: 'движок узнаёт семейство по тензору "txt_in.text_norm.weight"', sizeBytes: 5000000000,
+                    },
+                };
+            }
+            return {
+                status: 200, body: {
+                    verdict: 'unknown', dit: false,
+                    reason: 'в заголовке нет тензоров, по которым движок узнаёт версию модели (возможно, это VAE/text encoder/LoRA)',
+                },
+            };
+        }
         if (rec.url.indexOf('/hf/progress') !== -1) {
             return { status: 200, body: { bundleId: 'flux-schnell-q4', status: 'completed', progressPct: 100, registered: true, files: [] } };
         }
@@ -392,6 +496,68 @@ check('модуль не рендерит сгенерированные кар�
     check('имя bundle по умолчанию подставлено из имени репозитория', function () {
         assert.strictEqual(getEl('imgBundleName').value, 'flux.1-schnell-gguf');
         assert.ok(getEl('imgBundleFamily').innerHTML.indexOf('flux') !== -1, 'селект семейств не заполнен');
+    });
+
+    // --- пометки по заголовку и пред-проверка файла --------------------------
+    check('пред-проверка: главный (самый крупный) файл проверяется сразу после выбора репозитория', function () {
+        const rec = requests.filter(function (r) { return r.url.indexOf('/hf/probe') !== -1; })[0];
+        assert.ok(rec, 'GET /hf/probe не ушёл после pickRepo');
+        assert.ok(rec.url.indexOf('/api/v1/image/backends/img-1/hf/probe') !== -1, 'неверный путь: ' + rec.url);
+        assert.ok(rec.url.indexOf('modelId=leejet%2FFLUX.1-schnell-gguf') !== -1, 'нет modelId: ' + rec.url);
+        assert.strictEqual(rec.headers['X-HF-Token'], 'hf_secret', 'HF-токен нужен и пред-проверке (приватные репозитории)');
+        assert.ok(rec.url.indexOf('filename=t5xxl-Q4_K_M.gguf') !== -1, 'проверяться должен самый крупный файл: ' + rec.url);
+    });
+    check('пред-проверка: вердикт воркера сохранён и отрисован у строки файла', function () {
+        const probe = Hf._state.probes['t5xxl-Q4_K_M.gguf'];
+        assert.ok(probe && probe.verdict === 'supported', 'вердикт не сохранён: ' + JSON.stringify(probe));
+        const html = getEl('imHfFilesBody').innerHTML;
+        assert.ok(html.indexOf('движок узнаёт: Qwen Image 2.1') !== -1, 'нет вердикта у файла: ' + html.slice(0, 400));
+    });
+    check('DiT-файл автоподставляет семейство в профиле (иначе движок ответит get sd version…)', function () {
+        assert.strictEqual(Hf._state.bundleFamily, 'qwen_image', 'семейство должно быть подставлено по заголовку файла');
+        assert.strictEqual(getEl('imgBundleFamily').value, 'qwen_image', 'селект семейства не обновлён');
+        assert.ok(getEl('imHfFilesBody').innerHTML.indexOf('Семейство профиля переключено') !== -1,
+            'оператор должен видеть, почему семейство изменилось');
+    });
+    check('шапка файлов: оценка репозитория есть, а DiT-предупреждения нет (VAE и clip_l в наборе)', function () {
+        const html = getEl('imHfFilesBody').innerHTML;
+        assert.ok(html.indexOf('Оценка репозитория') !== -1, 'нет строки с оценкой репозитория');
+        assert.ok(html.indexOf('автор публикует сборки под sd.cpp') !== -1, 'leejet/ — известный автор сборок под sd.cpp');
+        assert.strictEqual(html.indexOf('Похоже на семейство'), -1,
+            'в наборе есть vae и clip_l: предупреждать не о чем');
+        assert.strictEqual(html.indexOf('а в профиле выбрано'), -1,
+            'семейство подставлено — предупреждения о расхождении быть не должно');
+    });
+    check('семейство, выбранное оператором вручную, запоминается', function () {
+        getEl('image-page').dispatch('change', { target: { id: 'imgBundleFamily', value: 'sd15', getAttribute: function () { return null; } } });
+        assert.strictEqual(Hf._state.bundleFamily, 'sd15');
+        assert.strictEqual(Hf._state.familyManual, true, 'ручной выбор должен запомниться');
+    });
+    await Hf._actions.probeFile('ae.safetensors');
+    check('ручной выбор семейства автоподстановкой не перебивается', function () {
+        assert.strictEqual(Hf._state.bundleFamily, 'sd15', 'после ручного выбора семейство не подставляется');
+    });
+    // Возвращаем DiT-семейство, чтобы следующие проверки шли по «правильному» пути.
+    getEl('image-page').dispatch('change', { target: { id: 'imgBundleFamily', value: 'flux', getAttribute: function () { return null; } } });
+
+    // Клик по кнопке «Проверить» (делегирование на #image-page) проверяет ДРУГОЙ
+    // файл — и вердикт у него другой: так ловится подмена пути в data-атрибуте.
+    requests.length = 0;
+    getEl('image-page').dispatch('click', {
+        target: {
+            getAttribute: function (n) { return n === 'data-imh-probe' ? 'clip_l.safetensors' : null; },
+        },
+    });
+    await sleep(10);
+    check('клик по data-imh-probe уходит в probeFile с этим файлом', function () {
+        const rec = requests.filter(function (r) { return r.url.indexOf('/hf/probe') !== -1; })[0];
+        assert.ok(rec, 'клик по кнопке не вызвал пред-проверку');
+        assert.ok(rec.url.indexOf('filename=clip_l.safetensors') !== -1, 'проверен не тот файл: ' + rec.url);
+        const probe = Hf._state.probes['clip_l.safetensors'];
+        assert.strictEqual(probe && probe.verdict, 'unknown');
+        const html = getEl('imHfFilesBody').innerHTML;
+        assert.ok(html.indexOf('версия по заголовку не определяется') !== -1, 'вердикт «не определяется» не отрисован');
+        assert.ok(html.indexOf('text encoder') !== -1, 'причина воркера не показана');
     });
 
     // --- сборка и запуск bundle ---------------------------------------------

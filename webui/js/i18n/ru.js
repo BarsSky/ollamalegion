@@ -1845,6 +1845,29 @@ window.I18N_RU = {
   "imageModels.no_downloads": "Загрузок нет",
   "imageModels.no_downloads_hint": "Запустите загрузку на табе HuggingFace — прогресс появится здесь.",
 
+  // ==== R-Image Phase 10 (2026-10-03): пометки по заголовку файла ====
+  // Разбор «get sd version from file failed» на движке pinned master-929-3f8527a:
+  // сам файл рабочий, а версию движок определяет по именам тензоров, и имя
+  // зависит от того, как файл подключён (--model vs --diffusion-model). Поэтому
+  // пред-проверка сообщает ФАКТЫ (какое семейство узнаёт движок, нужен ли
+  // --diffusion-model) и НЕ выносит приговоров вида «движок это не прочитает».
+  "imageModels.repo_verdict": "Оценка репозитория",
+  "imageModels.main_file_verdict": "Главный файл",
+  "imageModels.compat_ok": "автор публикует сборки под sd.cpp",
+  "imageModels.compat_ok_hint": "Этот автор публикует сборки для stable-diffusion.cpp. Точный ответ всё равно даёт кнопка «Проверить» у файла: она читает заголовок.",
+  "imageModels.compat_unknown": "формат не проверен",
+  "imageModels.compat_unknown_hint": "Нажмите «Проверить» у файла: воркер прочитает заголовок (без скачивания) и скажет, какое семейство в нём узнаёт движок.",
+  "imageModels.probe_btn": "Проверить",
+  "imageModels.probe_hint": "Прочитать заголовок файла (без скачивания) и определить, какое семейство узнаёт движок",
+  "imageModels.probe_running": "проверяю заголовок…",
+  "imageModels.probe_not_checked": "не проверено",
+  "imageModels.probe_ok_family": "движок узнаёт: {version}",
+  "imageModels.probe_unknown": "версия по заголовку не определяется",
+  "imageModels.probe_dit_hint": "Семейство DiT: в профиле bundle должно быть выбрано это же семейство, тогда воркер запустит движок с --diffusion-model.",
+  "imageModels.probe_family_mismatch": "Файл — DiT-семейства ({version}), а в профиле выбрано «{family}»: воркер подключит его как all-in-one (--model) и движок ответит «get sd version from file failed». Выберите семейство {suggested}.",
+  "imageModels.family_autoset": "Семейство профиля переключено на «{family}» по заголовку файла (было «{prev}»): иначе движок получит all-in-one флаг и ответит «get sd version from file failed».",
+  "imageModels.dit_missing": "Похоже на семейство {family}: в sd.cpp для него нужны отдельные {missing} — в этом репозитории их нет. Добавьте их файлами из другого репозитория (например, VAE ae.safetensors).",
+
   // ==== R-Image Phase 9: таб «Модели на диске» и «Настройки» ====
   "imageModels.roles_summary": "Состав (роли)",
   "imageModels.roles_unknown": "нет данных",

@@ -230,6 +230,12 @@ func (m *HFManager) ListFiles(ctx context.Context, modelID, revision string) ([]
 // ModelsDir — каталог моделей (абсолютный).
 func (m *HFManager) ModelsDir() string { return m.modelsDir }
 
+// ProbeFile — пред-проверка файла модели до скачивания (см. cppbackend/hf_probe.go):
+// читает заголовок Range-запросом и говорит, прочитает ли файл движок.
+func (m *HFManager) ProbeFile(ctx context.Context, modelID, filename, revision string) (*cppbackend.HFProbeResult, error) {
+	return m.downloader.ProbeFile(ctx, modelID, filename, revision)
+}
+
 // DownloadsDir — каталог темповых .download-файлов одиночных загрузок.
 func (m *HFManager) DownloadsDir() string { return m.downloadsDir }
 

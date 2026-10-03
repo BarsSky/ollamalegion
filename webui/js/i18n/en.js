@@ -1838,6 +1838,30 @@ window.I18N_EN = {
   "imageModels.no_downloads": "No downloads",
   "imageModels.no_downloads_hint": "Start a download on the HuggingFace tab — progress will show up here.",
 
+  // ==== R-Image Phase 10 (2026-10-03): header-based marks ====
+  // "get sd version from file failed" investigated on the pinned engine
+  // master-929-3f8527a: the file itself is fine, but the engine identifies the
+  // version by tensor names, and those names depend on how the file is attached
+  // (--model vs --diffusion-model). So the pre-check reports FACTS (which family
+  // the engine recognises, whether --diffusion-model is required) and never
+  // issues "the engine cannot read it" verdicts.
+  "imageModels.repo_verdict": "Repository verdict",
+  "imageModels.main_file_verdict": "Main file",
+  "imageModels.compat_ok": "author publishes sd.cpp builds",
+  "imageModels.compat_ok_hint": "This author publishes stable-diffusion.cpp builds. The exact answer still comes from the Check button next to a file: it reads the header.",
+  "imageModels.compat_unknown": "format not checked",
+  "imageModels.compat_unknown_hint": "Click Check next to a file: the worker reads its header (nothing is downloaded) and tells which family the engine recognises in it.",
+  "imageModels.probe_btn": "Check",
+  "imageModels.probe_hint": "Read the file header (no download) and tell which family the engine recognises",
+  "imageModels.probe_running": "reading header…",
+  "imageModels.probe_not_checked": "not checked",
+  "imageModels.probe_ok_family": "engine recognises: {version}",
+  "imageModels.probe_unknown": "version not identifiable from the header",
+  "imageModels.probe_dit_hint": "This is a DiT family: the bundle profile must use the same family, then the worker starts the engine with --diffusion-model.",
+  "imageModels.probe_family_mismatch": "The file is of DiT family ({version}) while the profile says \"{family}\": the worker will attach it as all-in-one (--model) and the engine will answer \"get sd version from file failed\". Pick the {suggested} family.",
+  "imageModels.family_autoset": "Bundle family switched to \"{family}\" based on the file header (was \"{prev}\"): otherwise the engine gets the all-in-one flag and answers \"get sd version from file failed\".",
+  "imageModels.dit_missing": "This looks like the {family} family: sd.cpp needs separate {missing} for it, and this repository has none. Add them as files from another repository (for example the VAE ae.safetensors).",
+
   // ==== R-Image Phase 9: "Models on disk" and "Settings" tabs ====
   "imageModels.roles_summary": "Contents (roles)",
   "imageModels.roles_unknown": "no data",

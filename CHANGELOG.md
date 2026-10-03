@@ -5,6 +5,69 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.7.7 — Пометки по заголовку файла на табе HuggingFace: какое семейство узнаёт движок, релиз imageworker+webui r83-submodule-v78 (2026-10-03)]
+
+Релиз: образы `imageworker` и `webui` с тегом **`r83-submodule-v78`** (balancer остаётся
+на `r83-submodule-v72`). Запрос оператора: «ты говорил, что будут пометки по вариантам
+моделей — подходят ли они движку генератора или нет, но при поиске с HuggingFace
+никаких пометок не увидел».
+
+### 🔎 Разбор: почему «get sd version from file failed» (и почему прежняя причина была неверной)
+
+Прежняя версия объяснения («GGUF собран для ComfyUI, sd.cpp его не читает»)
+**опровергнута на живом движке** и заменена на проверенную:
+
+- `general.architecture` движок не читает вообще: версию модели он выводит по
+  **именам тензоров** (`ModelLoader::get_sd_version`, `src/model_loader.cpp`
+  пинованной `master-929-3f8527a`), а имена зависят от флага подключения
+  (`src/pipeline/diffusion_engine.cpp`:726/:733): `--diffusion-model` добавляет
+  префикс `model.diffusion_model.` (так грузятся DiT: FLUX/SD3/Qwen-Image/Z-Image/
+  Chroma), `--model` оставляет имена как в файле (all-in-one: SD1.x/2.x/SDXL).
+- Проверка на стенде синтетическими GGUF с **реальными** именами тензоров с HF:
+  и официальная сборка `leejet/Qwen-Image-2.1-GGUF` (fused `img_mlp.gate_up`), и
+  экспорт под ComfyUI (`city96`-стиль: раздельные `img_mlp.gate_layer` +
+  `img_mlp.proj`, `general.architecture="qwen_image21"`) дают на
+  `--diffusion-model` строку `Version: Qwen Image 2.1`, а на `--model` — ту самую
+  ошибку. То есть **файл рабочий, а причина — несовпадение семейства профиля с
+  файлом**: DiT-модель, подключённая как all-in-one, движком не узнаётся.
+- Никаких «приговоров» по раскладке тензоров («голые» `transformer_blocks.*` —
+  это НЕ признак чужого формата: ровно так выглядят и сборки leejet) в UI больше
+  нет: пред-проверка сообщает факты и никогда не пишет «движок это не прочитает».
+
+### 📄 Пред-проверка заголовка без скачивания (`internal/cppbackend/hf_probe.go`, `GET /api/hf/probe`)
+
+- Воркер читает Range-запросом первые 512 КБ файла (ни одного байта весов),
+  разбирает GGUF/safetensors и классифицирует семейство по **тем же якорям**, что
+  ищет движок: `txt_in.text_norm.weight` → Qwen Image 2.1, `double_blocks.`/
+  `single_transformer_blocks.` → Flux, `joint_blocks.` → SD3.x, `cap_embedder.0.weight`
+  → Z-Image, `nerf_final_layer_conv.` → Chroma, UNet + размерность токен-эмбеддинга
+  768/1024 и второй энкодер → SD1.x/SD2.x/SDXL.
+- Ответ: `verdict` (`supported`/`unknown`), `family`, `versionLabel`, `dit`
+  (нужен ли `--diffusion-model`), `architecture`, `tensorCount`, `tensorPrefixes`,
+  `reason`, `sizeBytes` (из `Content-Range`), `checkedBytes`.
+- Тесты: `internal/cppbackend/hf_probe_test.go` (14 проверок на синтетических
+  GGUF/safetensors, включая оба реальных qwen-2.1 случая, все-in-one SD1.5,
+  SD2 по размерности, SDXL по второму энкодеру, VAE/text encoder/LoRA → unknown,
+  обрезанный заголовок, работу Range и лимит чтения при 200 без Range).
+
+### 🖥 UI таба HuggingFace (`webui/js/modules/image-models-hf.js`)
+
+- У каждого файла весов — кнопка **«Проверить»** и метка вердикта («движок узнаёт:
+  Qwen Image 2.1» / «версия по заголовку не определяется»); для самого крупного
+  файла пред-проверка идёт **автоматически** сразу после выбора репозитория.
+- **Семейство профиля подставляется по заголовку файла** (`applyProbedFamily`):
+  это и есть лечение исходной ошибки — при DiT-файле воркер получит
+  `--diffusion-model`. Ручной выбор оператора не перебивается, факт подстановки
+  виден отдельной строкой в шапке.
+- При расхождении («файл DiT, а в профиле `other`/`sd15`») показывается
+  предупреждение с прямой цитатой ошибки движка и подсказкой нужного семейства
+  (`diTFamilyWarning`), а подсказка ошибки на табе «Тест» переписана на ту же
+  причину вместо ComfyUI-версии.
+- Тесты: `image-models-hf.test.js` — 40 проверок (в т.ч. автоподстановка
+  семейства, отказ от подстановки после ручного выбора, отсутствие приговоров для
+  ComfyUI-экспорта, совпадение `DIT_FAMILIES` с `pkg/types.diTFamilies`),
+  `image-test-page.test.js` — 14 проверок.
+
 ## [0.7.6 — «Image-тест» переехал в таб «Image-моделей», релиз webui r83-submodule-v77 (2026-10-03)]
 
 Релиз: образ `webui` с тегом **`r83-submodule-v77`** (balancer и imageworker остаются

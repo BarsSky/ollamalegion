@@ -70,8 +70,18 @@
         filesError: '',
         // path → { checked: bool, role: string }
         selection: {},
+        // path → результат пред-проверки заголовка (/api/hf/probe): вердикт
+        // «прочитает ли движок». Ключ — путь файла в репозитории.
+        probes: {},
+        // path → true, пока идёт пред-проверка (для спиннера в строке файла).
+        probing: {},
         bundleName: '',
         bundleFamily: 'sd15',
+        // familyManual — оператор сам выбирал семейство в селекте: автоподстановка
+        // по заголовку файла (applyProbedFamily) после этого молчит.
+        familyManual: false,
+        // familyNotice — сообщение «семейство подставлено по файлу» для шапки.
+        familyNotice: '',
         tokenSaved: false,
         // прогресс bundle: снимок HFBundleProgress из /api/hf/progress?bundleId=
         bundle: null,
@@ -487,6 +497,132 @@
         }).join('');
     }
 
+    /**
+     * DIT_FAMILIES — семейства, которые движок грузит ТОЛЬКО через
+     * --diffusion-model (pkg/types/image_model.go: diTFamilies). Держим список
+     * здесь ещё и для UI-подсказки: если пред-проверка говорит «DiT», а в
+     * профиле выбрано семейство all-in-one, движок ответит
+     * «get sd version from file failed» — ровно та ошибка, которую мы ловим.
+     */
+    var DIT_FAMILIES = ['sd3', 'flux', 'flux2', 'chroma', 'qwen_image', 'z_image'];
+
+    /**
+     * repoCompatibility — подсказка по автору репозитория (без сети).
+     *
+     * ЧЕГО ЗДЕСЬ СОЗНАТЕЛЬНО НЕТ: приговора «ComfyUI-сборку sd.cpp не читает».
+     * Проверено на движке pinned master-929-3f8527a: экспорт для ComfyUI
+     * (раздельные img_mlp.gate_layer + img_mlp.proj) читается наравне со сборкой
+     * leejet (fused img_mlp.gate_up) — qwen_image_2_1.hpp:38-43 поддерживает обе
+     * раскладки. Поэтому автор — только слабая подсказка, а вердикт даёт
+     * пред-проверка заголовка (кнопка «Проверить»).
+     */
+    function repoCompatibility(repo) {
+        var id = String((repo && (repo.id || repo.modelId || repo.name)) || '').toLowerCase();
+        if (!id) {
+            return {
+                level: 'unknown',
+                label: t('imageModels.compat_unknown', 'формат не проверен'),
+                hint: ''
+            };
+        }
+        var sdCppAuthors = ['leejet/', 'quantstack/', 'silveroxides/'];
+        for (var i = 0; i < sdCppAuthors.length; i++) {
+            if (id.indexOf(sdCppAuthors[i]) === 0) {
+                return {
+                    level: 'ok',
+                    label: t('imageModels.compat_ok', 'автор публикует сборки под sd.cpp'),
+                    hint: t('imageModels.compat_ok_hint', 'Этот автор публикует сборки для stable-diffusion.cpp. Точный ответ всё равно даёт кнопка «Проверить» у файла: она читает заголовок.')
+                };
+            }
+        }
+        return {
+            level: 'unknown',
+            label: t('imageModels.compat_unknown', 'формат не проверен'),
+            hint: t('imageModels.compat_unknown_hint', 'Нажмите «Проверить» у файла: воркер прочитает заголовок (без скачивания) и скажет, какое семейство в нём узнаёт движок.')
+        };
+    }
+
+    /**
+     * probeBadge — вердикт пред-проверки заголовка.
+     *
+     * supported → движок узнаёт семейство (подпись: какое именно) + предупреждение
+     * про --diffusion-model для DiT; unknown → по заголовку не определить
+     * (VAE/text encoder/LoRA или незнакомое семейство). Приговоров нет.
+     */
+    function probeBadge(probe) {
+        probe = probe || {};
+        if (probe.verdict === 'supported' && probe.versionLabel) {
+            var hint = probe.reason || '';
+            if (probe.dit) {
+                hint += ' ' + t('imageModels.probe_dit_hint',
+                    'Семейство DiT: в профиле bundle должно быть выбрано это же семейство, тогда воркер запустит движок с --diffusion-model.');
+            }
+            return {
+                level: 'ok',
+                label: t('imageModels.probe_ok_family', 'движок узнаёт: {version}', { version: probe.versionLabel }),
+                hint: hint
+            };
+        }
+        return {
+            level: 'unknown',
+            label: t('imageModels.probe_unknown', 'версия по заголовку не определяется'),
+            hint: probe.reason || ''
+        };
+    }
+
+    /** diTFamilyWarning — DiT-файл против выбранного семейства профиля. */
+    function diTFamilyWarning(probe, selectedFamily) {
+        if (!probe || probe.verdict !== 'supported' || !probe.dit) return '';
+        var fam = String(selectedFamily || '');
+        // Семейство уже DiT-шное (значит движок получит --diffusion-model) или
+        // совпадает с определённым по файлу (Wan/PixArt мапятся в «other») —
+        // предупреждать не о чем.
+        if (!fam || DIT_FAMILIES.indexOf(fam) !== -1 || fam === probe.family) return '';
+        return t('imageModels.probe_family_mismatch',
+            'Файл — DiT-семейства ({version}), а в профиле выбрано «{family}»: воркер подключит его как all-in-one (--model) и движок ответит «get sd version from file failed». Выберите семейство {suggested}.',
+            { version: probe.versionLabel || '', family: fam, suggested: probe.family || 'DiT' });
+    }
+
+    /**
+     * ditHint — предупреждение о неполном наборе файлов для DiT-семейств.
+     *
+     * FLUX/SD3/Qwen-Image/Z-Image/Chroma в sd.cpp требуют отдельные VAE и
+     * text encoder; если в репозитории только diffusion-файл, bundle не поедет.
+     * Это видно по именам файлов ещё до скачивания.
+     */
+    function ditHint(files, repoId) {
+        var id = String(repoId || '').toLowerCase();
+        var fam = '';
+        ['flux', 'sd3', 'qwen', 'z-image', 'z_image', 'chroma'].forEach(function (f) {
+            if (!fam && id.indexOf(f) !== -1) fam = f;
+        });
+        if (!fam) return '';
+        var roles = {};
+        (files || []).forEach(function (f) { roles[suggestedRole(f) || 'diffusion'] = true; });
+        if (roles.vae && (roles.clip_l || roles.clip_g || roles.t5xxl || roles.llm)) return '';
+        var missing = [];
+        if (!roles.vae) missing.push('VAE');
+        if (!roles.clip_l && !roles.clip_g && !roles.t5xxl && !roles.llm) missing.push('text encoder');
+        return t('imageModels.dit_missing',
+            'Похоже на семейство {family}: в sd.cpp для него нужны отдельные {missing} — в этом репозитории их нет. Добавьте их файлами из другого репозитория (например, VAE ae.safetensors).',
+            { family: fam, missing: missing.join(' + ') });
+    }
+
+    function compatBadgeHtml(badge, probePath) {
+        badge = badge || {};
+        var color = badge.level === 'ok' ? 'var(--success, #5cb85c)'
+            : (badge.level === 'warn' ? 'var(--warning, #e0a030)' : 'var(--text-muted)');
+        var icon = badge.level === 'ok' ? 'fa-circle-check' : (badge.level === 'warn' ? 'fa-triangle-exclamation' : 'fa-circle-question');
+        var html = '<span class="imh-compat" title="' + escapeHtml(badge.hint || '') + '" style="color:' + color + ';font-size:11px;white-space:nowrap;">' +
+            '<i class="fas ' + icon + '"></i> ' + escapeHtml(badge.label || '') + '</span>';
+        if (probePath) {
+            html += ' <button class="btn btn-secondary btn-sm" data-imh-probe="' + escapeHtml(probePath) + '" ' +
+                'title="' + escapeHtml(t('imageModels.probe_hint', 'Прочитать заголовок файла (без скачивания) и проверить, прочитает ли его движок')) + '">' +
+                escapeHtml(t('imageModels.probe_btn', 'Проверить')) + '</button>';
+        }
+        return html;
+    }
+
     function renderFiles() {
         var card = el('imHfFilesCard');
         var body = el('imHfFilesBody');
@@ -512,7 +648,36 @@
                 escapeHtml(t('gguf.no_results', 'Nothing found')) + '</td></tr>';
             return;
         }
-        body.innerHTML = files.map(function (f, idx) {
+        // Предупреждение о неполном наборе (DiT-семейства), вердикт репозитория и
+        // расхождение «DiT-файл, а в профиле all-in-one семейство».
+        var hint = ditHint(files, state.selectedRepo);
+        var repoBadge = repoCompatibility({ id: state.selectedRepo });
+        var mainProbe = mainProbeResult(files);
+        var header = '';
+        var mismatch = diTFamilyWarning(mainProbe, state.bundleFamily);
+        if (mismatch) {
+            header += '<div class="gguf-local-card" style="margin-bottom:8px;border-left:3px solid var(--warning, #e0a030);">' +
+                '<div class="gguf-local-info"><div class="gguf-local-meta" style="white-space:normal;">' +
+                '<i class="fas fa-triangle-exclamation"></i> ' + escapeHtml(mismatch) + '</div></div></div>';
+        }
+        if (hint) {
+            header += '<div class="gguf-local-card" style="margin-bottom:8px;border-left:3px solid var(--warning, #e0a030);">' +
+                '<div class="gguf-local-info"><div class="gguf-local-meta" style="white-space:normal;">' +
+                '<i class="fas fa-triangle-exclamation"></i> ' + escapeHtml(hint) + '</div></div></div>';
+        }
+        header += '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted);">' +
+            escapeHtml(t('imageModels.repo_verdict', 'Оценка репозитория')) + ': ' + compatBadgeHtml(repoBadge, '') + '</div>';
+        if (mainProbe && mainProbe.verdict === 'supported') {
+            header += '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted);">' +
+                escapeHtml(t('imageModels.main_file_verdict', 'Главный файл')) + ': ' + compatBadgeHtml(probeBadge(mainProbe), '') + '</div>';
+        }
+        if (state.familyNotice) {
+            header += '<div class="gguf-local-card" style="margin-bottom:8px;border-left:3px solid var(--info, #4a90d9);">' +
+                '<div class="gguf-local-info"><div class="gguf-local-meta" style="white-space:normal;">' +
+                '<i class="fas fa-circle-info"></i> ' + escapeHtml(state.familyNotice) + '</div></div></div>';
+        }
+
+        header += files.map(function (f, idx) {
             var path = filePath(f);
             var sel = state.selection[path] || { checked: false, role: suggestedRole(f) || 'diffusion' };
             var role = sel.role;
@@ -522,6 +687,19 @@
             var roleHint = suggested && suggested !== role
                 ? ' <span style="font-size:11px;color:var(--text-muted);">(' + escapeHtml(t('imageModels.hf_suggested', 'предложено')) + ': ' + escapeHtml(suggested) + ')</span>'
                 : '';
+            // Метка совместимости: результат пред-проверки, если он есть; иначе —
+            // «не проверено» + кнопка «Проверить» (для файлов весов).
+            var isWeight = /\.(gguf|safetensors|sft|ckpt)$/i.test(path);
+            var probe = state.probes[path];
+            var compat = '';
+            if (probe) {
+                compat = compatBadgeHtml(probeBadge(probe), isWeight ? path : '');
+            } else if (state.probing[path]) {
+                compat = '<span style="font-size:11px;color:var(--text-muted);"><i class="fas fa-spinner fa-spin"></i> ' +
+                    escapeHtml(t('imageModels.probe_running', 'проверяю заголовок…')) + '</span>';
+            } else if (isWeight) {
+                compat = compatBadgeHtml({ level: 'unknown', label: t('imageModels.probe_not_checked', 'не проверено'), hint: '' }, path);
+            }
             return '<div class="gguf-file-item" data-imh-file="' + escapeHtml(path) + '">' +
                 '<label class="gguf-file-name" style="display:flex;align-items:center;gap:8px;cursor:pointer;">' +
                     '<input type="checkbox" data-imh-check="' + escapeHtml(path) + '"' + (sel.checked ? ' checked' : '') + '>' +
@@ -530,9 +708,11 @@
                 '<select class="form-control" data-imh-role="' + escapeHtml(path) + '" style="max-width:200px;font-size:12px;">' +
                     roleOptions(role) +
                 '</select>' + roleHint +
+                compat +
                 '<span class="gguf-file-size">' + escapeHtml(formatBytes(fileSize(f))) + '</span>' +
             '</div>';
         }).join('');
+        body.innerHTML = header;
         renderSelectionSummary();
     }
 
@@ -756,6 +936,11 @@
         state.filesError = '';
         state.filesLoading = true;
         state.selection = {};
+        // Вердикты пред-проверки относятся к КОНКРЕТНОМУ репозиторию: при выборе
+        // нового старые метки (и подставленное семейство) сбрасываем — иначе UI
+        // показывал бы чужие имена тензоров как свои.
+        state.probes = {};
+        state.familyNotice = '';
         renderSearchResults();
         renderFiles();
         try {
@@ -775,7 +960,57 @@
         }
         state.filesLoading = false;
         renderFiles();
+        // Пред-проверка главного файла: вердикт по репозиторию сразу, без кликов.
+        autoProbeMainFile();
         return true;
+    }
+
+    /**
+     * probeFile — пред-проверка файла: читает ТОЛЬКО заголовок (Range-запрос на
+     * стороне воркера) и говорит, КАК движок увидит этот файл.
+     *
+     * ЗАЧЕМ: оператор скачал 4 ГБ GGUF и получил «get sd version from file
+     * failed». Причина в семействе, а не в файле: DiT-модель, подключённая как
+     * all-in-one (--model), движком не узнаётся. Теперь вердикт («движок узнаёт:
+     * Qwen Image 2.1», DiT) видно рядом с файлом ещё до загрузки, а семейство
+     * профиля подставляется автоматически (applyProbedFamily).
+     */
+    async function probeFile(path) {
+        if (!path || !backendId()) return null;
+        if (state.probing[path]) return state.probes[path] || null;
+        state.probing[path] = true;
+        renderFiles();
+        try {
+            var url = backendUrl('hf/probe?modelId=' + encodeURIComponent(state.selectedRepo) +
+                '&filename=' + encodeURIComponent(path) + '&revision=main');
+            var res = await request(url, { timeoutMs: TIMEOUT_SEARCH_MS });
+            state.probes[path] = res || { verdict: 'unknown' };
+        } catch (e) {
+            state.probes[path] = { verdict: 'unknown', reason: (e && e.message) || String(e) };
+        }
+        delete state.probing[path];
+        // DiT-файл + семейство all-in-one в профиле = «get sd version from file
+        // failed» на загрузке. Если оператор не выбирал семейство сам — правим.
+        var notice = applyProbedFamily(state.probes[path]);
+        if (notice) state.familyNotice = notice;
+        renderFiles();
+        return state.probes[path];
+    }
+
+    /**
+     * autoProbeMainFile — после выбора репозитория проверить ГЛАВНЫЙ файл
+     * (самый крупный .gguf/.safetensors): один запрос, зато вердикт по репозиторию
+     * появляется сразу, без кликов. Остальные файлы — по кнопке.
+     */
+    async function autoProbeMainFile() {
+        var files = (state.files || []).filter(function (f) {
+            return /\.(gguf|safetensors)$/i.test(filePath(f));
+        });
+        if (!files.length) return null;
+        files.sort(function (a, b) { return fileSize(b) - fileSize(a); });
+        var main = filePath(files[0]);
+        if (!main || state.probes[main]) return state.probes[main] || null;
+        return probeFile(main);
     }
 
     function setSelection(path, patch) {
@@ -988,6 +1223,9 @@
         while (target && target.getAttribute) {
             var repo = target.getAttribute('data-imh-repo') || target.getAttribute('data-imh-pick');
             if (repo) { pickRepo(repo); return; }
+            // Пред-проверка файла (заголовок, без скачивания).
+            var probePath = target.getAttribute('data-imh-probe');
+            if (probePath) { probeFile(probePath); return; }
             var cancel = target.getAttribute('data-imh-cancel');
             if (cancel) { cancelBundle(cancel); return; }
             var cancelFileBtn = target.getAttribute('data-imh-cancel-file');
@@ -1017,7 +1255,43 @@
         }
         var role = target.getAttribute('data-imh-role');
         if (role) { setSelection(role, { role: target.value }); return; }
-        if (target.id === 'imgBundleFamily') state.bundleFamily = target.value;
+        if (target.id === 'imgBundleFamily') {
+            state.bundleFamily = target.value;
+            // Оператор выбрал семейство руками — автоподстановка больше не лезет.
+            state.familyManual = true;
+        }
+    }
+
+    /**
+     * applyProbedFamily — подставить семейство профиля по заголовку файла.
+     *
+     * ЗАЧЕМ: именно промах по семейству даёт «get sd version from file failed».
+     * DiT-файл (flux/sd3/qwen/z-image/chroma), подключённый как all-in-one
+     * (--model), движок не узнаёт; при выборе DiT-семейства воркер сам передаст
+     * --diffusion-model. Подставляем ТОЛЬКО если оператор не трогал селект.
+     */
+    function applyProbedFamily(probe) {
+        if (!probe || probe.verdict !== 'supported' || !probe.family) return '';
+        if (state.familyManual) return '';
+        if (IMAGE_FAMILIES.indexOf(probe.family) === -1) return '';
+        if (state.bundleFamily === probe.family) return '';
+        var prev = state.bundleFamily;
+        state.bundleFamily = probe.family;
+        var sel = el('imgBundleFamily');
+        if (sel) sel.value = probe.family;
+        return t('imageModels.family_autoset',
+            'Семейство профиля переключено на «{family}» по заголовку файла (было «{prev}»): иначе движок получит all-in-one флаг и ответит «get sd version from file failed».',
+            { family: probe.family, prev: prev });
+    }
+
+    /** mainProbeResult — результат пред-проверки главного (самого крупного) файла. */
+    function mainProbeResult(files) {
+        var list = (files || []).filter(function (f) {
+            return /\.(gguf|safetensors)$/i.test(filePath(f)) && state.probes[filePath(f)];
+        });
+        if (!list.length) return null;
+        list.sort(function (a, b) { return fileSize(b) - fileSize(a); });
+        return state.probes[filePath(list[0])] || null;
     }
 
     function mount() {
@@ -1077,7 +1351,9 @@
             cancelFile: cancelFile,
             cleanupOrphan: cleanupOrphan,
             stopPolling: stopPolling,
-            saveHfToken: saveHfToken
+            saveHfToken: saveHfToken,
+            probeFile: probeFile,
+            autoProbeMainFile: autoProbeMainFile
         },
         _state: state,
         pure: {
@@ -1095,7 +1371,13 @@
             downloadsSummary: downloadsSummary,
             IMAGE_ROLES: IMAGE_ROLES,
             IMAGE_FAMILIES: IMAGE_FAMILIES,
-            AUTO_ROLES: AUTO_ROLES
+            AUTO_ROLES: AUTO_ROLES,
+            repoCompatibility: repoCompatibility,
+            probeBadge: probeBadge,
+            diTFamilyWarning: diTFamilyWarning,
+            ditHint: ditHint,
+            compatBadgeHtml: compatBadgeHtml,
+            DIT_FAMILIES: DIT_FAMILIES
         }
     };
 })();

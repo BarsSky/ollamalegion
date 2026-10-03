@@ -245,12 +245,59 @@ Caveat: `.sft` passes the file filter (a legacy of the shared HF helper), but
 sd.cpp support for `.sft` specifically has not been verified — treat it as
 at-your-own-risk and prefer `.gguf`/`.safetensors`.
 
-### 8.2 Other limitations
+### 8.2 How the engine identifies a model version (and where "get sd version from file failed" comes from)
+
+The engine does NOT read `general.architecture`: it derives the model version from
+**tensor names** (`ModelLoader::get_sd_version`, `src/model_loader.cpp` of the
+pinned `master-929-3f8527a`). And those names depend on the flag the file is
+attached with (`src/pipeline/diffusion_engine.cpp`:726 and :733):
+
+| flag | effect on tensor names | for |
+| --- | --- | --- |
+| `--diffusion-model f.gguf` | prepends `model.diffusion_model.` | DiT: FLUX/FLUX2/SD3/Qwen-Image/Z-Image/Chroma |
+| `--model f.gguf` | keeps the names as stored in the file | all-in-one: SD1.x/SD2.x/SDXL |
+
+Both traps we have already hit follow from this:
+
+- **A DiT file attached as all-in-one.** Bare names (`transformer_blocks.*`,
+  `double_blocks.*`) are unrecognisable in that mode → `get sd version from file
+  failed` after gigabytes were downloaded. The fix is the profile family: for DiT
+  families the worker passes `--diffusion-model` itself (`pkg/types/image_model.go`,
+  `IsDiTFamily`).
+- **"sd.cpp cannot read ComfyUI builds" is wrong.** Verified on the
+  `master-929-3f8527a` engine with synthetic GGUF files carrying real HF tensor
+  names: both the `leejet/*` build (fused `img_mlp.gate_up`) and the ComfyUI export
+  (split `img_mlp.gate_layer` + `img_mlp.proj`,
+  `general.architecture="qwen_image21"`) report `Version: Qwen Image 2.1` — the
+  engine supports both layouts (`src/model/diffusion/qwen_image_2_1.hpp`).
+
+**UI marks (so this is not discovered at load time).** The **HuggingFace** tab
+pre-checks the file header: the Check button next to a file (and automatically for
+the largest file right after a repository is picked) calls
+`GET /api/hf/probe?modelId=&filename=&revision=`. The worker reads the first
+512 KB with a Range request (`internal/cppbackend/hf_probe.go`, not a single byte
+of weights) and answers with facts:
+
+- `verdict=supported` + `family` + `versionLabel` — which family and which engine
+  version it recognises in the file (e.g. `qwen_image` / "Qwen Image 2.1");
+- `dit=true` — the file is attached as `--diffusion-model`, so the profile family
+  must be a DiT family. The UI sets it automatically unless the operator picked a
+  family by hand, and warns separately on a mismatch ("the profile says `other`,
+  the engine will answer get sd version from file failed");
+- `verdict=unknown` — not identifiable from the header (VAE, text encoder, LoRA or
+  an unknown family). The pre-check never issues "the engine cannot read it"
+  verdicts: 512 KB of header do not contain everything the engine needs.
+
+### 8.3 Other limitations
 
 - **One model per process.** Switching models means restarting `sd-server` (the worker's `load`/`unload` do exactly that).
 - **Generation is serialized** by a single mutex: concurrent requests queue up.
 - **No in-flight cancellation and no per-step progress** (the C API has the primitives, the server does not expose them).
-- **`city96/*` FLUX GGUF files do not load** in sd.cpp (that is the ComfyUI-GGUF format) — use `leejet/*` builds.
+- **The tensor layout matters more than who built the file.** `city96/*`,
+  `unsloth/*` and other ComfyUI-oriented repositories do load when their tensor set
+  matches what the engine expects (see 8.2) — use the Check button rather than the
+  author name. An unfamiliar layout (for example a different implementation of the
+  same family) yields `get sd version from file failed`.
 - **`/v1/images/variations` is implemented on top of img2img** (empty prompt + `strength` 0.5): sd.cpp has no dedicated variations mode, and the engine's behaviour with an empty prompt has not been verified against real sd.cpp (no engine binary in the test environment) — if it refuses, the client receives that error verbatim.
 - **`--vae-on-cpu` costs ~5×** — prefer `--vae-tiling`; on AMD/RADV tiling is mandatory.
 - sd.cpp releases several times a day and flag names have changed (`--host/--port` → `--listen-ip/--listen-port`) — the version is pinned in `types.PinnedSDServerRevision`.
@@ -508,7 +555,7 @@ The WebUI part is a single **"Image models"** page (`#image-page`) built like th
 | Tab | What it does |
 |---|---|
 | **Overview** | Image backend CRUD, worker port, GPU index, state, current model, VRAM, request counters, text/image coexistence policy; the **"Backend check"** button loads a model first if none is loaded and then runs 1 step at 64x64 over the client path `POST /v1/images/generations`; only the result, the time and the model name reach the UI, no image is displayed |
-| **HuggingFace** | Repository search (query + `text-to-image` filter), file list with suggested roles, selection and role override, bundle name/family, `HF token`, "Download bundle" |
+| **HuggingFace** | Repository search (query + `text-to-image` filter), file list with suggested roles, selection and role override, bundle name/family, `HF token`, "Download bundle". Every file has a header pre-check ("Check"): which family the engine recognises and whether `--diffusion-model` is required; the profile family is auto-filled from the file (see 8.2) |
 | **Models on disk** | Bundle table: name, state, size, family, **contents by role**, active queries, VRAM estimate; actions — load, unload, **delete from disk** |
 | **Loaded** | Worker state and current model plus load progress (stage, time) over SSE `/api/image/models/load/progress/stream` with a polling fallback |
 | **Downloads** | Active bundle and single-file downloads, history, residual `.download` files with cleanup, cancel |
@@ -562,7 +609,8 @@ What it does:
   parameters - no localStorage, no gallery;
 - the request goes over the balancer **client path**, so it passes the VRAM gate
   and is counted in metrics: your own checks show up in Monitor;
-- engine errors are explained: "get sd version from file failed" means the GGUF
-  was built for ComfyUI and sd.cpp cannot read it (see 8.1); "no image model is
-  loaded" means press "Load model"; OOM means reduce size/steps/batch or enable
-  offload; "port still busy" means the engine is still releasing the socket.
+- engine errors are explained: "get sd version from file failed" means the profile
+  family does not match the file (a DiT model attached as all-in-one, see 8.2 — the
+  family is auto-filled on the HuggingFace tab via the Check button); "no image
+  model is loaded" means press "Load model"; OOM means reduce size/steps/batch or
+  enable offload; "port still busy" means the engine is still releasing the socket.

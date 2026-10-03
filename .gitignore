@@ -43,6 +43,10 @@ out/
 # the local filename. Example: `cp deployments/.env.bundled-full.example
 # deployments/.env.bundled-full && $EDITOR deployments/.env.bundled-full`.
 deployments/.env
+# Корневой .env проектом НЕ используется (рабочий файл — deployments/.env).
+# Правило добавлено 2026-10-03: случайные редиректы (`> .env`) создавали в
+# корне меня пустой файл, который висел в `git status` как мусор.
+/.env
 deployments/.env.bundled
 deployments/.env.bundled-full
 deployments/.env.bundled-with-agent

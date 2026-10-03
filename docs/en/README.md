@@ -7,7 +7,7 @@
 > 📋 **Phase 8 (2026-07-11):** Full documentation is now available in both languages.
 > See [`../README.md`](../README.md) for the Russian version with all 15+ documents.
 
-OllamaLegion is a load balancer + WebUI for Ollama and llama.cpp (via CppWorker) clusters with GPU/CPU/RAM/Disk/Network monitoring and intelligent request distribution.
+OllamaLegion is a load balancer + WebUI for Ollama and llama.cpp (via CppWorker) clusters with GPU/CPU/RAM/Disk/Network monitoring and intelligent request distribution. Since R-Image (0.6.x-0.7.x) the same balancer also serves **image generation** through an `image_cpp` worker on stable-diffusion.cpp (`sd-server`), registered next to the text backends — see [`../image-generation.md`](../image-generation.md) and [`image-generation.md`](image-generation.md).
 
 ---
 

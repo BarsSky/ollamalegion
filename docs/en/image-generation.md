@@ -215,6 +215,38 @@ Both require `X-API-Token` (port 18081). The aggregate is cached for 8 s and the
 
 ## 8. Engine limitations (set expectations)
 
+### 8.1 Which files you see in search, and what actually loads
+
+The file list on the **HuggingFace** tab is NOT "the whole repository" — it is a
+filtered set of **weights**: the worker only returns the
+`ModelWeightExtensions = .gguf, .safetensors, .sft, .ckpt` extensions
+(`internal/cppbackend/hf_bundle.go`), so `model_index.json`, README files and
+scheduler configs never show up. On bundle start the extension is validated again
+(`validateBundleRequest`) — an arbitrary file cannot be slipped in.
+
+**`.safetensors` is recognized, not merely listed:**
+
+- the file role is inferred from the name by the server-side heuristic
+  (`internal/sdbackend/models.go` → `roleFromFilename`, exposed to the UI as
+  `suggestedRole`): `ae.safetensors` → `vae`, `clip_l.safetensors` → `clip_l`,
+  `clip_g.safetensors` → `clip_g`, `t5xxl*.safetensors/.gguf` → `t5xxl`,
+  `*taesd*` → `taesd`, everything else (including `flux1-schnell.safetensors`) →
+  `diffusion`;
+- the engine loads safetensors natively, because sd.cpp runs on ggml: an
+  all-in-one `.ckpt/.safetensors/.gguf` is passed via `--model`, separate files go
+  through `--vae` (`ae.safetensors`), `--clip_l/--clip_g`, `--t5xxl`, `--taesd`,
+  `--llm` (see `docs/research-sdcpp-lowvram-integration.md`, the file layout
+  section);
+- in practice: SD 1.5/SDXL need a single all-in-one `.safetensors`, while
+  DiT families (FLUX/SD3/Qwen-Image/Z-Image) need a set of `diffusion` (usually a
+  GGUF from `leejet/*`) + `ae.safetensors` + text encoders.
+
+Caveat: `.sft` passes the file filter (a legacy of the shared HF helper), but
+sd.cpp support for `.sft` specifically has not been verified — treat it as
+at-your-own-risk and prefer `.gguf`/`.safetensors`.
+
+### 8.2 Other limitations
+
 - **One model per process.** Switching models means restarting `sd-server` (the worker's `load`/`unload` do exactly that).
 - **Generation is serialized** by a single mutex: concurrent requests queue up.
 - **No in-flight cancellation and no per-step progress** (the C API has the primitives, the server does not expose them).
@@ -401,12 +433,19 @@ source, and the variant is selected by the build TARGET:
 IMAGE_WORKER_BUILD_TARGET=imageworker-cuda
 IMAGE_WORKER_RUNTIME_BASE=dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-runtime-ubuntu22.04
 IMAGE_WORKER_CUDA_ARCH=86          # compute capability: 86 = RTX 30xx
-IMAGE_WORKER_TAG=cuda12
+IMAGE_WORKER_TAG=cuda12            # local build; a release (release-all.ps1) writes the release tag here
 
 cd deployments
 docker compose -f docker-compose.stack.yml --profile full build imageworker
 docker compose -f docker-compose.stack.yml --profile full up -d
 ```
+
+On a release, `scripts/release-all.ps1` changes `IMAGE_WORKER_TAG` (service
+`imageworker`): it builds the image through the compose target and writes the
+release tag into `deployments/.env` — the same tag the balancer and WebUI get.
+The old image name (`:cuda12`) stays in the local daemon as the previous
+version, so rolling back means restoring the previous `IMAGE_WORKER_TAG` value and
+running `docker compose ... up -d`.
 
 Why CUDA 12.2 and ubuntu 22.04: there is no Linux CUDA build of sd.cpp, and
 `nvidia/cuda:12.2.0-devel/runtime-ubuntu22.04` is already in the local cache (the

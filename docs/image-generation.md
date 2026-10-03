@@ -235,6 +235,39 @@ VRAM, активные запросы) и VRAM хоста. WebUI (Backends/Dashb
 
 ## 8. Ограничения движка (важно для ожиданий)
 
+### 8.1 Какие файлы видно в поиске и что реально грузится
+
+Список файлов на табе **HuggingFace** — это НЕ «всё содержимое репозитория», а
+отфильтрованный набор **весов**: воркер отдаёт только расширения
+`ModelWeightExtensions = .gguf, .safetensors, .sft, .ckpt`
+(`internal/cppbackend/hf_bundle.go`), поэтому `model_index.json`, README и
+конфиги scheduler'ов в списке не появляются. При запуске bundle расширение
+проверяется ещё раз (`validateBundleRequest`) — подсунуть произвольный файл
+нельзя.
+
+**`.safetensors` распознаётся, а не просто показывается:**
+
+- роль файла выводится из имени серверной эвристикой
+  (`internal/sdbackend/models.go` → `roleFromFilename`, она же отдаётся UI полем
+  `suggestedRole`): `ae.safetensors` → `vae`, `clip_l.safetensors` → `clip_l`,
+  `clip_g.safetensors` → `clip_g`, `t5xxl*.safetensors/.gguf` → `t5xxl`,
+  `*taesd*` → `taesd`, остальное (включая `flux1-schnell.safetensors`) →
+  `diffusion`;
+- движок грузит safetensors нативно, потому что sd.cpp работает через ggml:
+  all-in-one `.ckpt/.safetensors/.gguf` передаётся флагом `--model`, отдельные
+  файлы — `--vae` (`ae.safetensors`), `--clip_l/--clip_g`, `--t5xxl`, `--taesd`,
+  `--llm` (см. `docs/research-sdcpp-lowvram-integration.md` §«Форматы и
+  раскладка файлов»);
+- практическое следствие: для SD 1.5/SDXL достаточно одного all-in-one
+  `.safetensors`, а для DiT-семейств (FLUX/SD3/Qwen-Image/Z-Image) нужен набор
+  `diffusion` (обычно GGUF от `leejet/*`) + `ae.safetensors` + text encoders.
+
+Оговорка: `.sft` проходит фильтр файлов (наследие общего HF-хелпера), но
+engine-поддержку именно `.sft` для sd.cpp мы не проверяли — считайте его
+«на свой риск» и предпочитайте `.gguf`/`.safetensors`.
+
+### 8.2 Прочие ограничения
+
 - **Одна модель на процесс.** Смена модели = перезапуск `sd-server` (в воркере это `load`/`unload`).
 - **Генерация сериализована** одним мьютексом: параллельные запросы встают в очередь.
 - **Отмена в полёте и прогресс по шагам недоступны** (примитивы в C-API есть, в сервер не проброшены).
@@ -419,12 +452,19 @@ docker exec ol-stack-imageworker nvidia-smi -L   # GPU проброшен (CUDA)
 IMAGE_WORKER_BUILD_TARGET=imageworker-cuda
 IMAGE_WORKER_RUNTIME_BASE=dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-runtime-ubuntu22.04
 IMAGE_WORKER_CUDA_ARCH=86          # compute capability: 86 = RTX 30xx
-IMAGE_WORKER_TAG=cuda12
+IMAGE_WORKER_TAG=cuda12            # локальная сборка; выпуск (release-all.ps1) ставит сюда тег релиза
 
 cd deployments
 docker compose -f docker-compose.stack.yml --profile full build imageworker
 docker compose -f docker-compose.stack.yml --profile full up -d
 ```
+
+При выпуске тег `IMAGE_WORKER_TAG` меняет `scripts/release-all.ps1` (сервис
+`imageworker`): он собирает образ через compose-цель и записывает в
+`deployments/.env` релизный тег — тот же, что у балансера и WebUI. Старое имя
+образа (`:cuda12`) при этом остаётся в локальном демоне как предыдущая версия,
+так что откат — это вернуть прежнее значение `IMAGE_WORKER_TAG` и выполнить
+`docker compose ... up -d`.
 
 Почему именно CUDA 12.2 и ubuntu 22.04: Linux-CUDA-сборки sd.cpp не существует,
 а `nvidia/cuda:12.2.0-devel/runtime-ubuntu22.04` уже есть в локальном кэше (на нём

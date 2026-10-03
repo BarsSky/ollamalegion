@@ -7,7 +7,7 @@
 
 > 🇷🇺 **Русский** (текущий) | [🇬🇧 English documentation](docs/en/README.md)
 
-Интеллектуальный балансировщик нагрузки для llama.cpp inference с адаптивной загрузкой моделей, авто-подбором параметров под доступные ресурсы и мониторингом GPU/CPU/RAM.
+Интеллектуальный балансировщик нагрузки для llama.cpp inference с адаптивной загрузкой моделей, авто-подбором параметров под доступные ресурсы и мониторингом GPU/CPU/RAM. С R-Image (0.6.x–0.7.x) тот же балансер обслуживает и **генерацию изображений** — воркер `image_cpp` на stable-diffusion.cpp (`sd-server`) регистрируется рядом с текстовыми бэкендами, а клиенты работают через OpenAI- и A1111-совместимые поверхности ([docs/image-generation.md](docs/image-generation.md)).
 
 > **🚦 Быстрый старт** (новое железо или миграция): см. [docs/ru/hardware-presets.md](docs/ru/hardware-presets.md) / [docs/en/hardware-presets.md](docs/en/hardware-presets.md) — 4 готовых пресета для RTX 30xx/40xx/50xx и A10. Скрипт `python scripts/apply-hardware-preset.py <name>` за 30 секунд правит `.env.bundled-with-agent` под вашу GPU.
 
@@ -46,7 +46,34 @@ async reload. Ручное управление сохранено (per-model `a
 
 ## Что нового
 
-**v0.5.22 — 2026-08-13** (последний релиз, [полный CHANGELOG](CHANGELOG.md)):
+**v0.7.2 — 2026-10-03** (релиз образов `r83-submodule-v72`, [полный CHANGELOG](CHANGELOG.md)):
+
+R-Image Phase 5–9 — **генерация изображений вторым типом бэкенда**, в одном
+стенде и за одним балансером с текстом:
+
+- воркер `image_cpp` (stable-diffusion.cpp / `sd-server`) регистрируется сам и
+  обслуживает те же клиенты через OpenAI-совместимую (`:18079`,
+  `/v1/images/generations`), A1111-совместимую и нативную поверхности; VRAM-гейт
+  и политика сосуществования с текстом — на стороне балансера;
+- WebUI: страница **«Image-модели»** в стиле «GGUF модели» — табы «Обзор»
+  (CRUD бэкендов, политика, счётчики), «HuggingFace» (поиск репозиториев, файлы
+  с **предложенными сервером ролями** `.gguf/.safetensors/.ckpt`, сборка и
+  скачивание bundle), «Модели на диске» (состав по ролям, удаление с диска),
+  «Загруженные» (SSE-прогресс загрузки), «Загрузки» (активные, история,
+  остаточные файлы) и «Настройки» (параметры бэкенда + профили моделей);
+- кнопка **«Проверка бэкенда»** — 1 шаг 64×64 клиентским путём, в UI только
+  результат, время и модель; показ сгенерированных картинок из WebUI убран
+  (это задача клиентов), но поток запросов к image-бэкендам виден в Monitor и
+  в `/api/v1/metrics`;
+- на странице «GGUF модели» появилось **видимое состояние выгрузки модели**
+  («Выгружается… Ns» в карточке, сайдбаре и панели «Модели на диске») — на
+  больших моделях выгрузка идёт десятки секунд и раньше выглядела как «ничего
+  не происходит»;
+- единый Docker-стенд: `docker compose -f docker-compose.stack.yml --profile full up -d --build`
+  поднимает балансер, WebUI, cppworker и imageworker (CUDA-сборка sd.cpp в образе),
+  проверяется `scripts/docker-stack-smoke.ps1`.
+
+**v0.5.22 — 2026-08-13** ([полный CHANGELOG](CHANGELOG.md)):
 
 Round 35 (коммиты `6140a59` + `df7962e` + `f22dc13`) — crash-loop "model
 loaded then immediately reset" полностью закрыт. CppWorker bundled-with-agent
@@ -325,11 +352,16 @@ docker compose -f deployments/docker-compose.stack.yml --profile full up -d
 
 | Порт | Компонент | Назначение |
 |------|-----------|------------|
-| 18080 | Balancer | Ollama API proxy |
+| 18080 | Balancer | Ollama API proxy (и `/v1/*` поверхность) |
 | 18081 | Balancer | Management API + WebSocket |
+| 18079 | Balancer | OpenAI-поверхность изображений (`/v1/images/generations`, `/sdapi/v1/*`) |
 | 18092 | CppWorker | llama.cpp inference |
+| 18093 | ImageWorker | API sdworker (`/api/image/*`, `/api/hf/*`) — R-Image |
 | 18032 | Agent | Метрики GPU/CPU/RAM |
 | 18083 | WebUI | Дашборд |
+
+Порт движка изображений (по умолчанию 18094) слушает только localhost внутри
+контейнера воркера — снаружи он не публикуется, см. [docs/image-generation.md](docs/image-generation.md#7-порты-и-переменные-окружения).
 
 ## Сборка
 

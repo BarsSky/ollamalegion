@@ -36,7 +36,8 @@
   выпуск без версии невозможно ни откатить, ни отличить от предыдущего.
 
 .PARAMETER Services
-  Подмножество компонентов: balancer, cppworker, agent, webui (по умолчанию все).
+  Подмножество компонентов: balancer, cppworker, agent, webui, imageworker
+  (по умолчанию все пять).
 
 .PARAMETER CudaArch
   CUDA_ARCH для cppworker (по умолчанию 86 = A10/RTX 30xx). Для H100/A100 менять.
@@ -68,7 +69,7 @@
 #>
 param(
     [string]$Tag = "",
-    [string[]]$Services = @("balancer", "cppworker", "agent", "webui"),
+    [string[]]$Services = @("balancer", "cppworker", "agent", "webui", "imageworker"),
     [int]$CudaArch = 86,
     # Реестр базового образа CUDA для cppworker (ARG CUDA_BASE в Dockerfile.gpu).
     # Оставлено настраиваемым намеренно: зеркало по умолчанию (timeweb) отдаёт
@@ -123,6 +124,10 @@ $spec = @{
     cppworker = @{ Var = "CPPWORKER_GPU_TAG";   Repo = "ollama-legion/cppworker"; ImageTag = "gpu-$Tag";           Alias = "latest-gpu-$CudaArch" }
     agent     = @{ Var = "AGENT_TAG";           Repo = "ollama-legion/agent";     ImageTag = $Tag;                 Alias = "latest" }
     webui     = @{ Var = "WEBUI_TAG";           Repo = "ollama-legion/webui";     ImageTag = $Tag;                 Alias = "latest" }
+    # R-Image Phase 9 (2026-10-03): imageworker в выпуске. Тег вариантный
+    # (`latest-cuda`), потому что CUDA/Vulkan-сборки делят один репозиторий —
+    # тот же принцип, что у cppworker (`latest-gpu-<arch>`).
+    imageworker = @{ Var = "IMAGE_WORKER_TAG";  Repo = "ollama-legion/imageworker"; ImageTag = $Tag;               Alias = "latest-cuda" }
 }
 
 foreach ($svc in $Services) {
@@ -141,7 +146,7 @@ Write-Host ""
 # заменой строки `VAR=...`, поэтому отсутствие строки = молчаливый no-op
 # (переменная не выставится, compose возьмёт default — и выпуск «не доедет»).
 $envLines = Get-Content $envPath
-foreach ($svc in @("balancer", "cppworker", "agent", "webui")) {
+foreach ($svc in @("balancer", "cppworker", "agent", "webui", "imageworker")) {
     $varName = $spec[$svc].Var
     if (-not ($envLines | Where-Object { $_ -match "^$varName=" })) {
         throw "В deployments/.env нет строки '$varName='. Добавьте её (см. комментарий R83 в .env) — иначе тег не запишется."
@@ -182,6 +187,24 @@ foreach ($svc in $Services) {
                 # благодаря R83 — в токен cache-busting `?v=` внутри образа, поэтому
                 # HTML при выпуске править не нужно.
                 docker build --build-arg VERSION=$Tag -t $imageRef -f docker/webui/Dockerfile .
+            }
+            "imageworker" {
+                # Образ imageworker собирается ЦЕЛЬЮ compose: вариант движка
+                # (CUDA/Vulkan) и CUDA_ARCH задаются переменными IMAGE_WORKER_* в
+                # deployments/.env, поэтому дублировать их здесь не нужно.
+                #
+                # Тег передаём через окружение процесса, а не только через .env:
+                # compose отдаёт переменным окружения приоритет над .env, а запись
+                # тега в .env идёт ПОСЛЕ сборки — иначе образ собрался бы со старым
+                # тегом, и `up -d` не пересоздал бы контейнер.
+                Push-Location $envDir
+                try {
+                    $env:IMAGE_WORKER_TAG = $s.ImageTag
+                    docker compose -f $ComposeFile --profile $ComposeProfile build imageworker
+                } finally {
+                    Remove-Item Env:IMAGE_WORKER_TAG -ErrorAction SilentlyContinue
+                    Pop-Location
+                }
             }
         }
         if ($LASTEXITCODE -ne 0) {

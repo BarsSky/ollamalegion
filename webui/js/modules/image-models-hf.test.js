@@ -533,6 +533,11 @@ check('модуль не рендерит сгенерированные кар�
         assert.strictEqual(Hf._state.bundleFamily, 'sd15');
         assert.strictEqual(Hf._state.familyManual, true, 'ручной выбор должен запомниться');
     });
+    check('ручной выбор all-in-one семейства сразу показывает предупреждение о расхождении', function () {
+        const html = getEl('imHfFilesBody').innerHTML;
+        assert.ok(html.indexOf('а в профиле выбрано') !== -1,
+            'смена семейства должна перерисовывать шапку с предупреждением: ' + html.slice(0, 200));
+    });
     await Hf._actions.probeFile('ae.safetensors');
     check('ручной выбор семейства автоподстановкой не перебивается', function () {
         assert.strictEqual(Hf._state.bundleFamily, 'sd15', 'после ручного выбора семейство не подставляется');

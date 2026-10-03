@@ -1,7 +1,7 @@
 {
-    "tag":  "r83-submodule-v77",
-    "builtAt":  "2026-10-03T19:29:25Z",
-    "gitCommit":  "7863834",
+    "tag":  "r83-submodule-v78",
+    "builtAt":  "2026-10-03T20:29:35Z",
+    "gitCommit":  "30d0f45",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
@@ -9,10 +9,18 @@
                    {
                        "service":  "webui",
                        "variable":  "WEBUI_TAG",
-                       "image":  "ollama-legion/webui:r83-submodule-v77",
-                       "imageTag":  "r83-submodule-v77",
-                       "imageId":  "sha256:d072b310383477e5cc690d2eb8ef3d3990a9d10d3c653f2dd72a616dd2553895",
+                       "image":  "ollama-legion/webui:r83-submodule-v78",
+                       "imageTag":  "r83-submodule-v78",
+                       "imageId":  "sha256:81ab2e386e607e75556c67551b72162f8ff423dd6ed074bbba8ae9eb91516925",
                        "alias":  "ollama-legion/webui:latest"
+                   },
+                   {
+                       "service":  "imageworker",
+                       "variable":  "IMAGE_WORKER_TAG",
+                       "image":  "ollama-legion/imageworker:r83-submodule-v78",
+                       "imageTag":  "r83-submodule-v78",
+                       "imageId":  "sha256:f387f6b5ff41e229371da35f79da31961bc764cda6091369f099cba07657bad5",
+                       "alias":  "ollama-legion/imageworker:latest-cuda"
                    },
                    {
                        "service":  "balancer",
@@ -21,14 +29,6 @@
                        "imageTag":  "r83-submodule-v72",
                        "imageId":  "sha256:9bd1d385bc6b4541a800158ae39028175a6a82c5959721925add13f3a9585c85",
                        "alias":  "ollama-legion/balancer:latest"
-                   },
-                   {
-                       "service":  "imageworker",
-                       "variable":  "IMAGE_WORKER_TAG",
-                       "image":  "ollama-legion/imageworker:r83-submodule-v72",
-                       "imageTag":  "r83-submodule-v72",
-                       "imageId":  "sha256:4b811a01cbb8257e7a35e4a48293cf84a4a87a27551890f69f3fa6ab56fad359",
-                       "alias":  "ollama-legion/imageworker:latest-cuda"
                    }
                ]
 }

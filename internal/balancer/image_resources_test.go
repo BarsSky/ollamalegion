@@ -57,6 +57,10 @@ type imgResStub struct {
 	genStatus  int
 	genHits    int
 	modelsHits int
+	// genBody — тело ответа на «генерацию» (любой путь кроме models/VRAM).
+	// Пусто = дефолт с b64_json; инструмент generate_image просит url-режим,
+	// поэтому тесты подменяют тело через setGenBody.
+	genBody string
 	// armed — «заряженные» блокировки генерации (одна на запрос): blockGeneration.
 	armed []chan struct{}
 	// created — ВСЕ созданные каналы блокировки, чтобы unblock() гарантированно
@@ -117,8 +121,28 @@ func (s *imgResStub) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(`{"created":1,"output_format":"png","data":[{"b64_json":"iVBORw0KGgo="}]}`))
+		s.mu.Lock()
+		body := s.genBody
+		s.mu.Unlock()
+		if body == "" {
+			body = `{"created":1,"output_format":"png","data":[{"b64_json":"iVBORw0KGgo="}]}`
+		}
+		_, _ = w.Write([]byte(body))
 	}
+}
+
+// setGenStatus — код ответа «генерации» (проверка обработки ошибок движка).
+func (s *imgResStub) setGenStatus(status int) {
+	s.mu.Lock()
+	s.genStatus = status
+	s.mu.Unlock()
+}
+
+// setGenBody — подменить тело ответа «генерации» (url-режим инструмента).
+func (s *imgResStub) setGenBody(body string) {
+	s.mu.Lock()
+	s.genBody = body
+	s.mu.Unlock()
 }
 
 // setModels — подменить ответ /api/image/models.

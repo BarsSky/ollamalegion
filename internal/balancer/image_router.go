@@ -63,6 +63,14 @@ func (ir *ImageRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
+	// R84 (2026-10-03): отдача готовых картинок (GET /v1/images/files/{name}) —
+	// это НЕ генерация: ни VRAM-гейта, ни записи в ленту image-запросов быть не
+	// должно, иначе обычная загрузка картинки портила бы метрики генерации.
+	if name, ok := imageFileNameFromPath(r.URL.Path); ok {
+		ir.serveImageFile(w, r, name)
+		return true
+	}
+
 	// Phase 8 (2026-10-03): поток image-запросов для метрик.
 	//
 	// Считаем ТОЛЬКО генерацию: /api/image/models, load/unload, capabilities —

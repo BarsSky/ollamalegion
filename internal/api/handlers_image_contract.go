@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/balancer"
+	"ollama-loadbalancer/internal/imagetool"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -113,7 +114,7 @@ type imageContractResponse struct {
 	Endpoints     []imageContractEndpoint `json:"endpoints"`
 	RequestFields []imageContractField    `json:"requestFields"`
 	Examples      []imageContractExample  `json:"examples"`
-	Tool          imageContractTool       `json:"tool"`
+	Tool          imagetool.Tool          `json:"tool"`
 	ToolUsage     imageContractToolUsage  `json:"toolInstructions"`
 	Warnings      []string                `json:"warnings,omitempty"`
 }
@@ -207,29 +208,6 @@ type imageContractExample struct {
 	URL      string `json:"url"`
 	Curl     string `json:"curl"`
 	Expected string `json:"expected,omitempty"`
-}
-
-// imageContractTool — JSON-Schema инструмента для LLM (формат function calling).
-type imageContractTool struct {
-	Name        string              `json:"name"`
-	Description string              `json:"description"`
-	Parameters  imageToolParameters `json:"parameters"`
-}
-
-type imageToolParameters struct {
-	Type                 string                       `json:"type"`
-	Properties           map[string]imageToolProperty `json:"properties"`
-	Required             []string                     `json:"required"`
-	AdditionalProperties bool                         `json:"additionalProperties"`
-}
-
-type imageToolProperty struct {
-	Type        string      `json:"type"`
-	Description string      `json:"description"`
-	Minimum     interface{} `json:"minimum,omitempty"`
-	Maximum     interface{} `json:"maximum,omitempty"`
-	MultipleOf  interface{} `json:"multipleOf,omitempty"`
-	Enum        []string    `json:"enum,omitempty"`
 }
 
 // imageContractToolUsage — краткая инструкция агенту: куда и что слать.
@@ -678,74 +656,24 @@ func buildImageContractExamples(host string, p imageContractPorts, agg *balancer
 
 // buildImageContractTool — JSON-Schema инструмента generate_image.
 //
-// Схема сознательно в форме OpenAI function calling
-// ({name, description, parameters}) — её понимают и OpenAI SDK, и LangChain
-// (n8n/LibreChat), и локальные агенты (Cline/Roo).
-func buildImageContractTool(agg *balancer.ImageCapabilitiesAggregate) imageContractTool {
+// R84 (2026-10-03): сама схема живёт в internal/imagetool — её же использует
+// балансер, когда автоматически подмешивает инструмент в /v1/chat/completions и
+// исполняет вызов сам (tool-loop). Здесь только маппинг агрегата в нейтральный
+// Spec: две копии схемы неизбежно разъехались бы по именам полей и границам.
+func buildImageContractTool(agg *balancer.ImageCapabilitiesAggregate) imagetool.Tool {
 	lim := agg.Limits
-	minSide := intOr(lim.MinWidth, imageContractMinSide)
 	maxSide := intOr(lim.MaxWidth, imageContractMaxSide)
 	if lim.MaxHeight > 0 && lim.MaxHeight < maxSide {
 		maxSide = lim.MaxHeight
 	}
-	multiple := intOr(lim.SizeMultiple, imageContractSizeMultiple)
-
-	props := map[string]imageToolProperty{
-		"prompt": {
-			Type:        "string",
-			Description: "Текстовое описание желаемого изображения (обязательно). Английский язык обычно даёт лучшее качество.",
-		},
-		"negative_prompt": {
-			Type:        "string",
-			Description: "Что НЕ должно попасть на изображение (blurry, extra fingers, watermark...). Если не задать — возьмётся из профиля модели.",
-		},
-		"width": {
-			Type: "integer", Minimum: minSide, Maximum: maxSide, MultipleOf: multiple,
-			Description: fmt.Sprintf("Ширина в пикселях, %d…%d, кратно %d. Приоритет над size.", minSide, maxSide, multiple),
-		},
-		"height": {
-			Type: "integer", Minimum: minSide, Maximum: maxSide, MultipleOf: multiple,
-			Description: fmt.Sprintf("Высота в пикселях, %d…%d, кратно %d.", minSide, maxSide, multiple),
-		},
-		"steps": {
-			Type:        "integer",
-			Minimum:     intOr(lim.MinSteps, imageContractMinSteps),
-			Maximum:     intOr(lim.MaxSteps, imageContractMaxSteps),
-			Description: "Число шагов сэмплинга: больше — детальнее и медленнее. Для turbo/distilled моделей 4–8, для обычных 20–25.",
-		},
-		"cfg": {
-			Type: "number", Minimum: 0,
-			Description: "CFG scale (насколько строго следовать промпту). Для turbo/distilled — 1.0, для обычных — 6–8.",
-		},
-		"seed": {
-			Type:        "integer",
-			Description: "Зерно генерации. Если не указать (или ≤0) — подставится случайное: повторный вызов с тем же prompt даст ДРУГУЮ картинку. Укажите seed, чтобы воспроизвести результат.",
-		},
-		"model": {
-			Type:        "string",
-			Description: "Имя image-модели. Движок его игнорирует (одна модель на процесс), но по имени выбираются дефолты профиля.",
-		},
-	}
-	// enum моделей только когда модели реально известны: пустой enum сломал бы
-	// валидацию у части tool-раннеров, а хардкодить имена нельзя.
-	if names := agg.AllModels; len(names) > 0 {
-		p := props["model"]
-		p.Enum = names
-		props["model"] = p
-	}
-
-	return imageContractTool{
-		Name: "generate_image",
-		Description: "Сгенерировать изображение по текстовому описанию (stable-diffusion.cpp на image-бэкенде OllamaLegion). " +
-			"Возвращает изображение в base64 — его нужно декодировать и показать/сохранить на стороне клиента. " +
-			"Генерация занимает от секунд до нескольких минут (CPU/слабая GPU), поэтому не вызывайте инструмент без необходимости.",
-		Parameters: imageToolParameters{
-			Type:                 "object",
-			Properties:           props,
-			Required:             []string{"prompt"},
-			AdditionalProperties: false,
-		},
-	}
+	return imagetool.Build(imagetool.Spec{
+		MinSide:      intOr(lim.MinWidth, imageContractMinSide),
+		MaxSide:      maxSide,
+		SizeMultiple: intOr(lim.SizeMultiple, imageContractSizeMultiple),
+		MinSteps:     intOr(lim.MinSteps, imageContractMinSteps),
+		MaxSteps:     intOr(lim.MaxSteps, imageContractMaxSteps),
+		Models:       agg.AllModels,
+	})
 }
 
 // buildImageContractToolUsage — «как вызвать» для агента.

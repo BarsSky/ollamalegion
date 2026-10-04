@@ -522,3 +522,40 @@ func newLlamaOnlyProxy(t *testing.T) (*Proxy, *imgResStub) {
 	}
 	return newProxyWithCleanup(t, cfg), stub
 }
+
+// TestEnsureImageMarkdown — ссылка на картинку попадает в ответ, даже если модель
+// её не вставила (живой случай: gemma-4 ответила текстом без markdown).
+func TestEnsureImageMarkdown(t *testing.T) {
+	results := []map[string]interface{}{{
+		"status":   "ok",
+		"url":      "http://lb:18079/v1/images/files/img_1.png",
+		"markdown": "![кот](http://lb:18079/v1/images/files/img_1.png)",
+	}}
+
+	raw := []byte(`{"id":"c","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"Вот рыжий кот."},"finish_reason":"stop"}]}`)
+	out := ensureImageMarkdown(raw, results)
+	var doc map[string]interface{}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	choices, _ := doc["choices"].([]interface{})
+	msg, _ := choices[0].(map[string]interface{})["message"].(map[string]interface{})
+	content, _ := msg["content"].(string)
+	if !strings.Contains(content, "Вот рыжий кот.") || !strings.Contains(content, "![кот](http://lb:18079/v1/images/files/img_1.png)") {
+		t.Fatalf("markdown не добавлен к тексту: %q", content)
+	}
+
+	// Если модель УЖЕ вставила ссылку — второй раз не дублируем.
+	already := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Смотри: ![кот](http://lb:18079/v1/images/files/img_1.png)"},"finish_reason":"stop"}]}`)
+	out2 := ensureImageMarkdown(already, results)
+	if strings.Count(string(out2), "img_1.png") != 1 {
+		t.Fatalf("ссылка задвоена: %s", out2)
+	}
+
+	// Ошибка генерации (нет url/markdown) — ответ не трогаем.
+	errOnly := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Не вышло"},"finish_reason":"stop"}]}`)
+	out3 := ensureImageMarkdown(errOnly, []map[string]interface{}{{"status": "error", "error": "boom"}})
+	if string(out3) != string(errOnly) {
+		t.Fatalf("ответ изменён без картинки: %s", out3)
+	}
+}

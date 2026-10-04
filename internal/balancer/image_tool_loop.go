@@ -115,12 +115,12 @@ func (lr *LlamaCppRouter) runImageToolLoop(w http.ResponseWriter, r *http.Reques
 		lr.writeImageToolFallback(w, a.model, message, results, clientStream)
 		return true
 	}
-	if clientStream {
-		// turn 2 клиенту нужен стримом: просим модель стримить.
-		body2, _ = setStreamFlag(body2, true)
-	} else {
-		body2, _ = setStreamFlag(body2, false)
-	}
+	// turn 2 ВСЕГДА нестриминговый: картинка уже сгенерирована, и ссылку на неё
+	// надо гарантированно вставить в ответ. Полагаться на то, что модель сама
+	// вставит markdown, нельзя — на живом стенде она написала «Вот рыжий кот» и
+	// ссылку потеряла. Клиенту, просившему стрим, ответ отдадим синтезированными
+	// SSE-чанками (картинка и так приходит после минутной генерации).
+	body2, _ = setStreamFlag(body2, false)
 	resp2, raw2, err := lr.postChatUpstream(r, a.targetURL, body2, a.client)
 	if err != nil || resp2.StatusCode >= 400 {
 		logger.Get().Warnw("image tool: turn 2 не удался — отдаём ссылку напрямую",
@@ -129,19 +129,64 @@ func (lr *LlamaCppRouter) runImageToolLoop(w http.ResponseWriter, r *http.Reques
 		return true
 	}
 
-	if clientStream {
-		lr.proxy.addModelCapabilitiesHeaders(w, a.model)
-		if err := lr.proxy.proxyRequestOpenAIStreaming(w, r, resp2, a.backendID); err != nil {
-			logger.Get().Errorw("image tool: проксирование финального стрима", "error", err)
-			if isHeadersSent(w) {
-				writeStreamErrorChunk(w, "/v1/chat/completions", a.model, err.Error())
-			}
-		}
-		return true
-	}
-	lr.writeBufferedChatResponse(w, r, a.model, resp2.StatusCode, raw2, false)
+	// Ссылку на картинку добавляем САМИ, если модель её не вставила: пользователь
+	// должен увидеть изображение независимо от того, послушалась ли модель.
+	raw2 = ensureImageMarkdown(raw2, results)
+	lr.writeBufferedChatResponse(w, r, a.model, resp2.StatusCode, raw2, clientStream)
 	_ = finishReason
 	return true
+}
+
+// ensureImageMarkdown — добавить в финальный ответ markdown-картинки, которых в
+// нём нет.
+//
+// ЧТО СЧИТАЕМ «УЖЕ ЕСТЬ»: ссылку на файл (публичный URL или имя файла). Модель
+// могла вставить markdown сама — тогда второй раз не добавляем.
+func ensureImageMarkdown(raw []byte, results []map[string]interface{}) []byte {
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return raw
+	}
+	choices, _ := doc["choices"].([]interface{})
+	if len(choices) == 0 {
+		return raw
+	}
+	choice, _ := choices[0].(map[string]interface{})
+	message, _ := choice["message"].(map[string]interface{})
+	if message == nil {
+		return raw
+	}
+	content, _ := message["content"].(string)
+
+	var missing []string
+	for _, res := range results {
+		md, _ := res["markdown"].(string)
+		url, _ := res["url"].(string)
+		if md == "" || url == "" {
+			continue
+		}
+		if strings.Contains(content, url) {
+			continue // модель уже вставила эту картинку
+		}
+		missing = append(missing, md)
+	}
+	if len(missing) == 0 {
+		return raw
+	}
+	content = strings.TrimRight(content, " \t\n")
+	if content != "" {
+		content += "\n\n"
+	}
+	content += strings.Join(missing, "\n\n")
+	message["content"] = content
+	choice["message"] = message
+	choices[0] = choice
+	doc["choices"] = choices
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 // executeOneImageToolCall — генерация по одному вызову; ошибка становится

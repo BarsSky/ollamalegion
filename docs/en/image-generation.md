@@ -623,3 +623,77 @@ What it does:
   family is auto-filled on the HuggingFace tab via the Check button); "no image
   model is loaded" means press "Load model"; OOM means reduce size/steps/batch or
   enable offload; "port still busy" means the engine is still releasing the socket.
+
+## 14. The `generate_image` tool: a text model draws pictures itself
+
+R84 (2026-10-03). When the cluster has a healthy image backend with a **loaded**
+model, the balancer advertises a `generate_image` tool to text models
+(llama.cpp / cppworker) and **executes the call itself**: it generates the image,
+appends the result to the conversation as a tool message and asks the model to
+finish its answer. Clients (Open WebUI, LibreChat, Cline, your agent) need no
+configuration at all - they get the text plus a markdown link to the picture.
+
+### 14.1 Why the balancer executes it, not the client
+
+The tool is declared by the PROXY, not by the client: the client does not know about
+it and cannot execute it. If the client declares its own tool named `generate_image`,
+the balancer steps aside and never intercepts it.
+
+### 14.2 The "someone must be able to execute it" gate
+
+The tool is added only when ALL of these hold:
+
+- a healthy `image_cpp` backend exists;
+- its state snapshot is trustworthy (`contractOK`, no `lastErr`);
+- a model is **loaded** on it (`state=loaded`) - otherwise the call would hit
+  "no image model is loaded" after the tool was already invoked.
+
+Otherwise the request body stays byte-for-byte identical and the response has no
+`X-Image-Tool` header.
+
+### 14.3 What the client sees
+
+```
+POST /v1/chat/completions            # as usual; you need not pass tools
+{ "model": "gemma-4-E4B-it-Q4_K_M.gguf",
+  "messages": [{"role":"user","content":"Draw a ginger cat on a windowsill"}] }
+```
+
+- the response carries `X-Image-Tool: generate_image`;
+- the model calls the tool, the balancer generates the image (VRAM gate, queue) and
+  appends `assistant(tool_calls)` + `tool(result)` to the conversation;
+- the client receives the final text plus a markdown image block; `tool_calls` are
+  NOT returned to the client - there is nothing to execute on its side.
+
+Image URL: `GET /v1/images/files/{name}` (same client surface as generation, no token;
+the file name is random). The absolute URL is built from the client's `Host` or from
+`LB_IMAGE_TOOL_BASE_URL` (needed behind a TLS proxy).
+
+### 14.4 What the operator sees
+
+Tool generations flow through the same request feed as ordinary ones: in Monitor they
+appear with `surface=chat-tool` and the path
+`/v1/chat/completions→generate_image`. They take the VRAM gate and the worker queue,
+so they never bypass resource policy.
+
+### 14.5 Flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `LB_IMAGE_TOOL` | `on` | `off` disables the tool entirely |
+| `LB_IMAGE_TOOL_MAX_CALLS` | `2` | images per request (cap 8) |
+| `LB_IMAGE_TOOL_TIMEOUT_SEC` | `600` | per-generation timeout |
+| `LB_IMAGE_TOOL_BASE_URL` | client Host | public balancer address for links |
+
+### 14.6 Limitations (honestly)
+
+- turn 1 is always non-streaming: the "should we execute this call" decision needs the
+  whole answer. A client that asked for a stream still receives SSE (synthesised
+  chunks); cppworker buffers the tools path anyway;
+- only the `/v1/chat/completions` surface (llama.cpp/cppworker). Ollama `/api/chat`
+  and Anthropic `/v1/messages` are not covered;
+- n_ctx overflow on a tools request triggers the usual auto-reload, but there is no
+  network-level retry on the first turn (the error goes to the client as is);
+- the tool stays unavailable until a model is loaded - a deliberate choice (no silent
+  auto-load on the first call).
+

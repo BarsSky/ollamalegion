@@ -208,3 +208,69 @@ func TestImageResources_AllowToolLoadRoundTrip(t *testing.T) {
 		t.Fatalf("включение не применено: %+v", got)
 	}
 }
+
+// TestImageResources_ToolLoadTimeoutRoundTrip — R86-follow-up: ожидание загрузки
+// модели из вызова инструмента правится из WebUI и переживает рестарт.
+//
+// ЗАЧЕМ ЭТО В КОНФИГЕ: живой случай на стенде — модель 4.7 ГБ не поднялась за
+// дефолтные 600 с, и оператору нужен способ поднять лимит без правки compose.
+func TestImageResources_ToolLoadTimeoutRoundTrip(t *testing.T) {
+	s, store := newImageResourcesTestServer(t, types.ImageResourceSettings{})
+
+	// 1) Не задано: effective = дефолт (600), overridden = false, источник — env.
+	rec := doImageResources(t, s, http.MethodGet, "")
+	var doc map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("не JSON: %s", rec.Body.String())
+	}
+	tlt, _ := doc["toolLoadTimeout"].(map[string]interface{})
+	if tlt == nil {
+		t.Fatalf("в ответе нет блока toolLoadTimeout: %s", rec.Body.String())
+	}
+	if tlt["effectiveSec"] != float64(600) || tlt["overridden"] != false {
+		t.Fatalf("незаданный таймаут: %v", tlt)
+	}
+	if tlt["env"] != "LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC" {
+		t.Errorf("UI должен знать имя переменной окружения: %v", tlt["env"])
+	}
+	limits, _ := doc["limits"].(map[string]interface{})
+	if limits["minToolLoadTimeoutSec"] != float64(1) || limits["maxToolLoadTimeoutSec"] != float64(86400) {
+		t.Errorf("границы таймаута не отданы форме: %v", limits)
+	}
+
+	// 2) Значение применяется и сохраняется.
+	if rec := doImageResources(t, s, http.MethodPut, `{"toolLoadTimeoutSec":1800}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT 1800: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := s.config.Balancing.Image.ToolLoadTimeoutSec; got == nil || *got != 1800 {
+		t.Fatalf("значение не применено: %+v", got)
+	}
+	fresh := config.NewImageResourcesStore(store.Path())
+	if err := fresh.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := fresh.Settings().ToolLoadTimeoutSec; got == nil || *got != 1800 {
+		t.Fatalf("значение не сохранено на диск: %+v", got)
+	}
+
+	// 3) PUT БЕЗ поля не должен затирать сохранённое значение.
+	if rec := doImageResources(t, s, http.MethodPut, `{"vramHeadroomMb":128}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT без таймаута: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := s.config.Balancing.Image.ToolLoadTimeoutSec; got == nil || *got != 1800 {
+		t.Fatalf("PUT без поля обязан сохранить прежнее значение: %+v", got)
+	}
+
+	// 4) Ноль («не ждать вовсе») отклоняется на входе: инструмент не смог бы
+	//    поднять модель никогда, и это выглядело бы как «загрузка не работает».
+	if rec := doImageResources(t, s, http.MethodPut, `{"toolLoadTimeoutSec":0}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("нулевой таймаут должен отклоняться: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// 5) Выше суток — тоже отказ (иначе вызов держал бы слот неограниченно).
+	if rec := doImageResources(t, s, http.MethodPut, `{"toolLoadTimeoutSec":86401}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("слишком большой таймаут должен отклоняться: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := s.config.Balancing.Image.ToolLoadTimeoutSec; got == nil || *got != 1800 {
+		t.Fatalf("невалидные значения не должны менять действующее: %+v", got)
+	}
+}

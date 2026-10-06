@@ -122,7 +122,11 @@ const API_RESPONSE = {
     overridden: false,
     source: 'config',
     path: '/app/data/image-resources.json',
-    limits: { maxVramHeadroomMb: 65536, maxQueueWaitTimeoutSec: 3600, maxExclusiveLockFuseSec: 86400 },
+    limits: { maxVramHeadroomMb: 65536, maxQueueWaitTimeoutSec: 3600, maxExclusiveLockFuseSec: 86400,
+        minToolLoadTimeoutSec: 1, maxToolLoadTimeoutSec: 86400 },
+    // R86-follow-up: ожидание загрузки модели из вызова инструмента.
+    toolLoadTimeout: { effectiveSec: 600, overridden: false, env: 'LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC', hint: 'сколько ждать' },
+    allowToolLoad: { effective: true, overridden: false, env: 'LB_IMAGE_TOOL_ALLOW_LOAD', hint: 'автозагрузка' },
     policies: [
         { value: 'exclusive', hint: 'владеет картой' },
         { value: 'offload', hint: 'нужен offload воркера' },
@@ -159,17 +163,22 @@ const API_RESPONSE = {
     });
 
     await check('validate: границы берутся из limits сервера', function () {
-        const limits = { maxVramHeadroomMb: 4096, maxQueueWaitTimeoutSec: 120, maxExclusiveLockFuseSec: 900 };
-        const ok = P.pure.validate({ coexistence: 'exclusive', vramHeadroomMb: 4096, queueWaitTimeoutSec: 120, exclusiveLockTimeoutSec: 900 }, limits);
+        const limits = { maxVramHeadroomMb: 4096, maxQueueWaitTimeoutSec: 120, maxExclusiveLockFuseSec: 900,
+            minToolLoadTimeoutSec: 1, maxToolLoadTimeoutSec: 7200 };
+        const ok = P.pure.validate({ coexistence: 'exclusive', vramHeadroomMb: 4096, queueWaitTimeoutSec: 120, exclusiveLockTimeoutSec: 900, toolLoadTimeoutSec: 7200 }, limits);
         assert.strictEqual(ok, '', 'граничные значения валидны');
         // Каждый кейс: все поля валидны, кроме одного — иначе ошибка прилетит от
         // первого же поля, и проверка поймает не то сообщение.
-        const base = { coexistence: 'exclusive', vramHeadroomMb: 0, queueWaitTimeoutSec: 0, exclusiveLockTimeoutSec: 0 };
+        const base = { coexistence: 'exclusive', vramHeadroomMb: 0, queueWaitTimeoutSec: 0, exclusiveLockTimeoutSec: 0, toolLoadTimeoutSec: 600 };
         assert.ok(/4096/.test(P.pure.validate(Object.assign({}, base, { vramHeadroomMb: 4097 }), limits)), 'превышение headroom');
         assert.ok(/120/.test(P.pure.validate(Object.assign({}, base, { queueWaitTimeoutSec: 121 }), limits)), 'превышение wait');
         assert.ok(/900/.test(P.pure.validate(Object.assign({}, base, { exclusiveLockTimeoutSec: 901 }), limits)), 'превышение fuse');
         assert.ok(/nonsense/.test(P.pure.validate(Object.assign({}, base, { coexistence: 'nonsense' }), limits)), 'неизвестная политика');
         assert.ok(P.pure.validate(Object.assign({}, base, { vramHeadroomMb: -1 }), limits) !== '', 'отрицательный резерв невалиден');
+        // R86-follow-up: ожидание загрузки модели — 0 («не ждать») и превышение
+        // верхней границы отклоняются, границы берутся из limits сервера.
+        assert.ok(/7200/.test(P.pure.validate(Object.assign({}, base, { toolLoadTimeoutSec: 7201 }), limits)), 'превышение ожидания загрузки');
+        assert.ok(/1/.test(P.pure.validate(Object.assign({}, base, { toolLoadTimeoutSec: 0 }), limits)), 'нулевое ожидание невалидно');
     });
 
     await check('warningFor: offload/dedicated/гейт-выкл предупреждают, exclusive — нет', function () {
@@ -221,6 +230,9 @@ const API_RESPONSE = {
         getEl('imPolicyBlockUnknown').checked = true;
         getEl('imPolicyGateOff').checked = false;
         getEl('imPolicyAllowLoad').checked = false;
+        // R86-follow-up: оператор поднял ожидание загрузки модели (большая модель
+        // на медленном диске) — значение обязано уйти в теле PUT.
+        getEl('imPolicyLoadTimeout').value = '1800';
         const ok = await P._actions.save();
         assert.strictEqual(ok, true);
         const rec = requests.filter(function (r) { return r.method === 'PUT'; })[0];
@@ -231,6 +243,7 @@ const API_RESPONSE = {
         // Снятая галочка автозагрузки обязана уйти как явный false (иначе сервер
         // не отличит «выключил» от «поля нет» и оставит прежнее значение).
         assert.strictEqual(rec.body.allowToolLoad, false, 'allowToolLoad должен уходить в теле PUT');
+        assert.strictEqual(rec.body.toolLoadTimeoutSec, 1800, 'ожидание загрузки должно уходить в теле PUT');
         assert.strictEqual(getEl('imPolicyBadge').style.display, '', 'после сохранения бейдж переопределения виден');
         assert.ok(toasts.some(function (x) { return /сохранена/.test(x.message || ''); }), 'нет тоста об успехе');
         assert.deepStrictEqual(policyReloads, [true], 'колонка политики должна перечитаться принудительно (force)');

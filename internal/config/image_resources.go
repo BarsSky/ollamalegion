@@ -61,6 +61,15 @@ const (
 	ImageResourceMaxHeadroomMB = 65536
 	ImageResourceMaxQueueWaitS = 3600
 	ImageResourceMaxLockFuseS  = 86400
+	// ImageResourceMaxToolLoadTimeoutS — верхняя граница ожидания загрузки модели
+	// из вызова инструмента. Сутки: заведомо больше, чем нужно на любой стенд
+	// (даже 12 ГБ с медленного диска), но не «бесконечность» — иначе один вызов
+	// держал бы слот и запрос клиента неограниченно.
+	ImageResourceMaxToolLoadTimeoutS = 86400
+	// ImageResourceMinToolLoadTimeoutS — нижняя граница. Ноль отклоняем: это
+	// «отказ от ожидания», то есть инструмент гарантированно не сможет поднять
+	// модель (вызов всегда вернёт таймаут) — такое значение только путает.
+	ImageResourceMinToolLoadTimeoutS = 1
 )
 
 // imageResourcesFile — on-disk формат файла политики.
@@ -225,6 +234,14 @@ func ValidateImageResourceSettings(s types.ImageResourceSettings) error {
 	}
 	if s.ExclusiveLockTimeoutSec < 0 || s.ExclusiveLockTimeoutSec > ImageResourceMaxLockFuseS {
 		return fmt.Errorf("exclusiveLockTimeoutSec вне диапазона 0..%d (получено %d)", ImageResourceMaxLockFuseS, s.ExclusiveLockTimeoutSec)
+	}
+	// nil = «не задано» (действует env), поэтому проверяем только заданное значение.
+	if s.ToolLoadTimeoutSec != nil {
+		v := *s.ToolLoadTimeoutSec
+		if v < ImageResourceMinToolLoadTimeoutS || v > ImageResourceMaxToolLoadTimeoutS {
+			return fmt.Errorf("toolLoadTimeoutSec вне диапазона %d..%d (получено %d)",
+				ImageResourceMinToolLoadTimeoutS, ImageResourceMaxToolLoadTimeoutS, v)
+		}
 	}
 	return nil
 }

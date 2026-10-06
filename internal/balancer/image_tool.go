@@ -114,21 +114,33 @@ type imageToolConfig struct {
 // ImageToolAllowLoadEnv — имя флага окружения автозагрузки (для API/WebUI).
 func ImageToolAllowLoadEnv() string { return imageToolAllowLoadEnv }
 
+// ImageToolLoadTimeoutEnv — имя переменной окружения с ожиданием загрузки
+// модели (для API/WebUI: оператор должен видеть, что перекрывается конфигом).
+func ImageToolLoadTimeoutEnv() string { return imageToolEnvLoadTimeout }
+
+// DefaultImageToolLoadTimeoutSec — дефолт ожидания загрузки модели в секундах.
+// Нужен API-слою, чтобы показать действующее значение, когда настройка не задана.
+const DefaultImageToolLoadTimeoutSec = imageToolDefaultLoadTimeoutSec
+
 // imageToolSettings — настройки инструмента для КОНКРЕТНОГО прокси.
 //
-// ПОЧЕМУ МЕТОД, А НЕ ФУНКЦИЯ ОКРУЖЕНИЯ (R85): разрешение на автозагрузку должно
-// переключаться из WebUI без рестарта. Значение живёт в balancing.image
-// (types.ImageResourceSettings.AllowToolLoad), которое правится через
-// PUT /api/v1/image/resources и читается здесь на каждый вызов; окружение
-// остаётся флагом-переключателем для тех стендов, где WebUI не используют.
+// ПОЧЕМУ МЕТОД, А НЕ ФУНКЦИЯ ОКРУЖЕНИЯ (R85/R86): разрешение на автозагрузку и
+// таймаут загрузки должны переключаться из WebUI без рестарта. Значения живут в
+// balancing.image (types.ImageResourceSettings.AllowToolLoad / ToolLoadTimeoutSec),
+// которое правится через PUT /api/v1/image/resources и читается здесь на каждый
+// вызов; окружение остаётся флагом-переключателем для тех стендов, где WebUI не
+// используют.
 //
-// Приоритет: ЯВНО заданное значение в конфиге → флаг окружения → дефолт on.
-// Так «галочка в WebUI» сильнее env, а env сильнее встроенного дефолта.
+// Приоритет: ЯВНО заданное значение в конфиге → флаг/значение окружения → дефолт.
+// Так «поле в WebUI» сильнее env, а env сильнее встроенного дефолта.
 func (p *Proxy) imageToolSettings() imageToolConfig {
 	cfg := imageToolSettingsFromEnv()
 	if p != nil && p.config != nil {
 		if v := p.config.Balancing.Image.AllowToolLoad; v != nil {
 			cfg.AllowLoad = *v
+		}
+		if v := p.config.Balancing.Image.ToolLoadTimeoutSec; v != nil && *v > 0 {
+			cfg.LoadTimeout = time.Duration(*v) * time.Second
 		}
 	}
 	return cfg

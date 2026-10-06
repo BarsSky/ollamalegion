@@ -72,10 +72,10 @@ func catalogProxy(t *testing.T, modelsBody string) (*Proxy, *imgResStub) {
 func TestImageCatalog_CollectsModelsWithProfilesAndDescriptions(t *testing.T) {
 	writeImageProfileFile(t, map[string]types.ImageModelProfile{
 		"flux-schnell-q3-k": {
-			Name:      "flux-schnell-q3-k",
-			Family:    "flux",
-			Files:     []types.ImageModelFile{{Role: types.ImageFileRoleDiffusion, Repo: "r", Filename: "f.gguf", SizeBytes: 5700000000}},
-			Defaults:  types.DefaultImageGenDefaults("flux"),
+			Name:           "flux-schnell-q3-k",
+			Family:         "flux",
+			Files:          []types.ImageModelFile{{Role: types.ImageFileRoleDiffusion, Repo: "r", Filename: "f.gguf", SizeBytes: 5700000000}},
+			Defaults:       types.DefaultImageGenDefaults("flux"),
 			VramEstimateMB: 5900,
 			Notes:          "Q3_K, TE на CPU обязателен",
 			Strengths:      "лучшее качество из каталога, 1024x1024 за 4 шага",
@@ -326,7 +326,7 @@ func TestGenerateImageForTool_NoLoadWhenAlreadyLoaded(t *testing.T) {
 	if target == nil {
 		t.Fatal("нет target")
 	}
-	
+
 	loaded := false
 	for _, m := range target.catalog.Models {
 		if m.Loaded {
@@ -378,6 +378,53 @@ func TestGenerateImageForTool_AllowLoadOffRefusesToLoad(t *testing.T) {
 	}
 	if _, _, loads := stub.hitsAll(); loads != 0 {
 		t.Errorf("запросов на load = %d, want 0", loads)
+	}
+}
+
+// TestEnsureImageModelLoaded_ConfigTimeoutBeatsEnv — R86-follow-up: ожидание
+// загрузки из КОНФИГА (правится в WebUI) сильнее переменной окружения.
+//
+// ЗАЧЕМ: на стенде модель 4.7 ГБ не поднялась за дефолтные 600 с. Оператор должен
+// иметь возможность поднять лимит из WebUI без правки compose и перезапуска —
+// ровно как у галочки автозагрузки. Проверяем оба направления: конфиг задан —
+// побеждает он; конфиг не задан (nil) — действует env.
+func TestEnsureImageModelLoaded_ConfigTimeoutBeatsEnv(t *testing.T) {
+	// env намеренно «щедрый»: если бы конфиг не побеждал, тест ждал бы его.
+	t.Setenv("LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC", "600")
+	ResetImageCatalogCache()
+	t.Cleanup(ResetImageCatalogCache)
+
+	p, stub := newImgResProxy(t, toolTestImageSettings())
+	stub.setModels(imgResWorkerOnlyDiskModel) // так и остаётся not_loaded
+	stub.setLoadStatus(202)
+
+	// 1) Заданное в конфиге значение перекрывает env.
+	oneSec := 1
+	p.config.Balancing.Image.ToolLoadTimeoutSec = &oneSec
+	if got := p.imageToolSettings().LoadTimeout; got != time.Second {
+		t.Fatalf("конфиг не перекрыл env: LoadTimeout=%v", got)
+	}
+
+	started := time.Now()
+	if _, err := p.ensureImageModelLoaded(context.Background(), "img-1", "flux-schnell-q3-k"); err == nil {
+		t.Fatal("ожидалась ошибка по таймауту из конфига")
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Errorf("таймаут из конфига не сработал: ждали %s", elapsed)
+	}
+
+	// 2) Конфиг не задан → действует env.
+	p.config.Balancing.Image.ToolLoadTimeoutSec = nil
+	if got := p.imageToolSettings().LoadTimeout; got != 600*time.Second {
+		t.Fatalf("без настройки должен действовать env: LoadTimeout=%v", got)
+	}
+
+	// 3) Явное большое значение из конфига видно как есть (большая модель на
+	//    медленном диске — оператор поднимает лимит).
+	thirtyMin := 1800
+	p.config.Balancing.Image.ToolLoadTimeoutSec = &thirtyMin
+	if got := p.imageToolSettings().LoadTimeout; got != 30*time.Minute {
+		t.Fatalf("значение 1800 с не применено: %v", got)
 	}
 }
 
@@ -511,5 +558,3 @@ func TestImageToolLoop_ListCallDoesNotConsumeGenerationBudget(t *testing.T) {
 		t.Errorf("tool-сообщений %d, want 2: %s", toolMsgs, out)
 	}
 }
-
-

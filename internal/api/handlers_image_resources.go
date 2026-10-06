@@ -44,12 +44,19 @@ type imageResourcesRequest struct {
 	// чтобы отличить «оператор снял галочку» (false) от «поля в теле нет» (nil):
 	// во втором случае уже сохранённое значение не трогаем.
 	AllowToolLoad *bool `json:"allowToolLoad"`
+	// ToolLoadTimeoutSec — R86-follow-up: сколько секунд ждать загрузку модели,
+	// которую поднимает вызов инструмента. Тот же принцип: nil = не менять.
+	ToolLoadTimeoutSec *int `json:"toolLoadTimeoutSec"`
 }
 
 func (r imageResourcesRequest) toSettings(current types.ImageResourceSettings) types.ImageResourceSettings {
 	allow := current.AllowToolLoad
 	if r.AllowToolLoad != nil {
 		allow = r.AllowToolLoad
+	}
+	loadTimeout := current.ToolLoadTimeoutSec
+	if r.ToolLoadTimeoutSec != nil {
+		loadTimeout = r.ToolLoadTimeoutSec
 	}
 	return types.ImageResourceSettings{
 		Coexistence:                r.Coexistence,
@@ -59,6 +66,7 @@ func (r imageResourcesRequest) toSettings(current types.ImageResourceSettings) t
 		ExclusiveLockTimeoutSec:    r.ExclusiveLockTimeoutSec,
 		GateDisabled:               r.GateDisabled,
 		AllowToolLoad:              allow,
+		ToolLoadTimeoutSec:         loadTimeout,
 	}
 }
 
@@ -169,6 +177,9 @@ func (s *Server) writeImageResources(w http.ResponseWriter) {
 			"maxVramHeadroomMb":       config.ImageResourceMaxHeadroomMB,
 			"maxQueueWaitTimeoutSec":  config.ImageResourceMaxQueueWaitS,
 			"maxExclusiveLockFuseSec": config.ImageResourceMaxLockFuseS,
+			// Границы ожидания загрузки модели из вызова инструмента (R86-follow-up).
+			"minToolLoadTimeoutSec": config.ImageResourceMinToolLoadTimeoutS,
+			"maxToolLoadTimeoutSec": config.ImageResourceMaxToolLoadTimeoutS,
 		},
 		// Подсказки для формы: что означает каждая политика. Держим их рядом с
 		// данными, чтобы UI не дублировал тексты и не расходился с движком.
@@ -181,10 +192,17 @@ func (s *Server) writeImageResources(w http.ResponseWriter) {
 		// значение, и источник (env, если поле не задано) — иначе непонятно,
 		// почему галочка стоит, хотя её никто не ставил.
 		"allowToolLoad": map[string]interface{}{
-			"effective":        types.EffectiveAllowToolLoad(effective.AllowToolLoad),
-			"overridden":       effective.AllowToolLoad != nil,
-			"env":              balancer.ImageToolAllowLoadEnv(),
-			"hint":             "разрешить текстовой модели поднимать image-модель, которой нет в VRAM (инструмент generate_image + list_image_models); при выключении инструмент объявляется только для уже загруженной модели",
+			"effective":  types.EffectiveAllowToolLoad(effective.AllowToolLoad),
+			"overridden": effective.AllowToolLoad != nil,
+			"env":        balancer.ImageToolAllowLoadEnv(),
+			"hint":       "разрешить текстовой модели поднимать image-модель, которой нет в VRAM (инструмент generate_image + list_image_models); при выключении инструмент объявляется только для уже загруженной модели",
+		},
+		// R86-follow-up: ожидание загрузки модели из вызова инструмента.
+		"toolLoadTimeout": map[string]interface{}{
+			"effectiveSec": types.EffectiveToolLoadTimeout(effective.ToolLoadTimeoutSec, balancer.DefaultImageToolLoadTimeoutSec),
+			"overridden":   effective.ToolLoadTimeoutSec != nil,
+			"env":          balancer.ImageToolLoadTimeoutEnv(),
+			"hint":         "сколько секунд ждать загрузку image-модели, которую поднимает вызов инструмента (большие модели на медленном диске грузятся дольше); по истечении в tool-сообщение уходит причина",
 		},
 		"checkedAt": time.Now().UTC().Format(time.RFC3339),
 	})

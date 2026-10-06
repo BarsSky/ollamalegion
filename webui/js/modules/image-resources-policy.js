@@ -64,8 +64,9 @@
      * (пустая политика = exclusive), поэтому в форме показываем именно effective,
      * а «Сбросить» отправляет DELETE (возврат к config.json).
      */
-    function formFromEffective(data) {
+    function formFromEffective(data, useEffectiveFallbacks) {
         var eff = (data && data.effective) || {};
+        if (useEffectiveFallbacks === undefined) useEffectiveFallbacks = true;
         return {
             coexistence: String(eff.coexistence || 'exclusive'),
             vramHeadroomMb: Number(eff.vramHeadroomMb || 0),
@@ -75,7 +76,15 @@
             gateDisabled: !!eff.gateDisabled,
             // R85: автозагрузка модели из инструмента. effective уже учитывает
             // дефолт (on) — галочка показывает ДЕЙСТВУЮЩЕЕ значение.
-            allowToolLoad: eff.allowToolLoad !== false
+            allowToolLoad: eff.allowToolLoad !== false,
+            // R86-follow-up: ожидание загрузки модели из вызова. effective уже учёл
+            // дефолт; 0/пусто трактуем как «не задано» (поле всё равно min=1).
+            // useEffectiveFallbacks=false — для СВОДКИ: там показываем только то,
+            // что реально сохранено, иначе «load wait 600s» висело бы в шапке
+            // всегда, хотя оператор ничего не задавал.
+            toolLoadTimeoutSec: Number(
+                (useEffectiveFallbacks && data && data.toolLoadTimeout && data.toolLoadTimeout.effectiveSec) ||
+                eff.toolLoadTimeoutSec || 0)
         };
     }
 
@@ -96,6 +105,13 @@
         var maxFuse = Number(limits.maxExclusiveLockFuseSec || 86400);
         if (!(form.exclusiveLockTimeoutSec >= 0) || form.exclusiveLockTimeoutSec > maxFuse) {
             return t('imagePolicy.err_fuse', 'Предохранитель лока: 0…{max} с', { max: maxFuse });
+        }
+        // Ожидание загрузки модели: 0 отклоняем — это «не ждать вовсе», то есть
+        // инструмент гарантированно не сможет поднять модель.
+        var minLoad = Number(limits.minToolLoadTimeoutSec || 1);
+        var maxLoad = Number(limits.maxToolLoadTimeoutSec || 86400);
+        if (!(form.toolLoadTimeoutSec >= minLoad) || form.toolLoadTimeoutSec > maxLoad) {
+            return t('imagePolicy.err_load_timeout', 'Ожидание загрузки модели: {min}…{max} с', { min: minLoad, max: maxLoad });
         }
         return '';
     }
@@ -119,7 +135,7 @@
 
     /** summaryText — короткая строка «что действует» (для шапки формы). */
     function summaryText(data) {
-        var f = formFromEffective(data);
+        var f = formFromEffective(data, false);
         var parts = [f.coexistence];
         if (f.vramHeadroomMb > 0) parts.push('headroom ' + f.vramHeadroomMb + ' MB');
         if (f.queueWaitTimeoutSec > 0) parts.push('wait ' + f.queueWaitTimeoutSec + 's');
@@ -127,6 +143,7 @@
         if (f.blockOnUnknownVramEstimate) parts.push('block on unknown');
         if (f.gateDisabled) parts.push('gate off');
         if (!f.allowToolLoad) parts.push('tool load off');
+        if (f.toolLoadTimeoutSec > 0) parts.push('load wait ' + f.toolLoadTimeoutSec + 's');
         return parts.join(', ');
     }
 
@@ -228,6 +245,7 @@
         // R85: имя флага окружения показываем рядом с галочкой — при «не задано в
         // конфиге» действует именно он, и оператор должен видеть, что искать.
         var allowEnv = (state.data && state.data.allowToolLoad && state.data.allowToolLoad.env) || '';
+        var loadTimeoutEnv = (state.data && state.data.toolLoadTimeout && state.data.toolLoadTimeout.env) || '';
 
         host.innerHTML =
             '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">' +
@@ -251,6 +269,10 @@
                     escapeHtml(t('imagePolicy.fuse', 'Предохранитель лока, с')) +
                     '<input type="number" class="form-control" id="imPolicyFuse" min="0" step="1" style="width:150px;" value="' + f.exclusiveLockTimeoutSec + '">' +
                 '</label>' +
+                '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted);">' +
+                    escapeHtml(t('imagePolicy.load_timeout', 'Ожидание загрузки модели, с')) +
+                    '<input type="number" class="form-control" id="imPolicyLoadTimeout" min="1" step="10" style="width:150px;" value="' + f.toolLoadTimeoutSec + '">' +
+                '</label>' +
             '</div>' +
             '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--text-muted);">' +
                 '<label style="display:flex;gap:6px;align-items:center;cursor:pointer;">' +
@@ -270,6 +292,11 @@
                 escapeHtml(t('imagePolicy.allow_load_hint',
                     'При включённой галочке текстовая модель видит каталог моделей (list_image_models) и может сама поднять нужную; при выключенной инструмент объявляется только для уже загруженной модели.')) +
                 (allowEnv ? ' ' + escapeHtml(t('imagePolicy.allow_load_env', 'Флаг окружения: {flag}', { flag: allowEnv })) : '') +
+            '</div>' +
+            '<div style="margin-top:6px;font-size:12px;color:var(--text-muted);">' +
+                escapeHtml(t('imagePolicy.load_timeout_hint',
+                    'Ожидание загрузки: сколько секунд ждать, пока поднимется выбранная модель (большие модели на медленном диске грузятся дольше). По истечении в ответ инструменту уходит причина, и модель объяснит задержку пользователю.')) +
+                (loadTimeoutEnv ? ' ' + escapeHtml(t('imagePolicy.load_timeout_env', 'Переменная окружения: {flag}', { flag: loadTimeoutEnv })) : '') +
             '</div>' +
             '<div id="imPolicyHint" style="margin-top:10px;font-size:12px;color:var(--text-muted);"' + (hint ? '' : ' hidden') + '>' +
                 '<i class="fas fa-circle-info"></i> <span>' + escapeHtml(hint) + '</span></div>' +
@@ -308,6 +335,15 @@
 
     function readForm() {
         var co = byId('imPolicyCoexistence');
+        // Ожидание загрузки модели: если поля нет/пусто (старый DOM, ошибка
+        // отрисовки) — берём ДЕЙСТВУЮЩЕЕ значение, а не 0. Ноль здесь означал бы
+        // «не ждать вовсе» и отклонялся бы валидацией, то есть сохранение любой
+        // другой настройки падало бы из-за незаполненного поля.
+        var loadNode = byId('imPolicyLoadTimeout');
+        var loadSec = Number(loadNode && loadNode.value);
+        if (!(loadSec >= 1)) {
+            loadSec = Number((state.data && state.data.toolLoadTimeout && state.data.toolLoadTimeout.effectiveSec) || 600);
+        }
         return {
             coexistence: co ? String(co.value || 'exclusive') : 'exclusive',
             vramHeadroomMb: Number((byId('imPolicyHeadroom') || {}).value || 0),
@@ -315,7 +351,8 @@
             exclusiveLockTimeoutSec: Number((byId('imPolicyFuse') || {}).value || 0),
             blockOnUnknownVramEstimate: !!(byId('imPolicyBlockUnknown') || {}).checked,
             gateDisabled: !!(byId('imPolicyGateOff') || {}).checked,
-            allowToolLoad: !!(byId('imPolicyAllowLoad') || {}).checked
+            allowToolLoad: !!(byId('imPolicyAllowLoad') || {}).checked,
+            toolLoadTimeoutSec: loadSec
         };
     }
 

@@ -877,6 +877,21 @@ Possible `reason` values: `LB_IMAGE_TOOL=off`, no healthy `image_cpp`, no models
 worker, no loaded model while `LB_IMAGE_TOOL_ALLOW_LOAD=off`, `tool_choice="none"` from
 the client, the client declared our tools itself.
 
+**If the model called the tool but no image appeared**, read the consecutive
+`image tool (ollama):` / `image tool:` lines: they show whether the call was recognized
+(`генерация по вызову модели`), which backend and model were chosen, and how it ended
+(`генерация не удалась: …`). Common cases:
+
+- `загрузка модели "X" прервана: context canceled` - the load ran out of time: raise
+  "Model load wait, s" in the policy card (16.3) or pass `model` explicitly;
+- `модели "X" нет на image-воркере. Доступные модели: …` - the model invented a name.
+  The tool result lists the available names, so the model can correct itself on the
+  next turn; if it keeps repeating the invented name, ask it to call
+  `list_image_models` and choose from the list;
+- the client sees `[]` or `[TOOL_CALLS]=[]` - that is a Qwen3 template artifact; the
+  balancer strips it (if you still see it, the request went straight to cppworker,
+  bypassing the balancer).
+
 If there is no `image tool:` line at all, the request does not look like a chat with
 tools (e.g. it went to `/api/generate`) or the client is hitting the wrong port: the
 OpenAI and Ollama surfaces listen on **18079** and **18080**, management API on 18081.

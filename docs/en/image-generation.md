@@ -913,6 +913,28 @@ curl -sS -X POST -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/j
   http://localhost:28081/api/v1/image/backends/imageworker/models/load
 ```
 
+### 16.8 "The model downloaded but will not load" - how to diagnose
+
+The load error is shown in the WebUI (and in the worker log). Live cases from the stand:
+
+- `unsupported dtype "U32" (tensor "img_in.weight")` + `new_sd_ctx_t failed` - the
+  WRONG FORMAT was downloaded: a `*.safetensors` with MLX quantization (the name
+  usually contains `MLX`, and the file header carries `U32` tensors together with
+  `scales`/`biases`). stable-diffusion.cpp reads **GGUF** and cannot read MLX quants.
+  Check it directly:
+
+  ```bash
+  head -c 3000 file.safetensors | tr -d '\0' | grep -o '"dtype":"[A-Z0-9]*"' | sort -u
+  ```
+
+  If `*.weight` has `U32`, the file will not work; you need GGUF quants for the
+  `diffusion` role (the VAE may stay safetensors - it is readable);
+- `GGUF files cannot be loaded by stable-diffusion.cpp - img_in.weight is stored
+  reshaped` - a known problem with some Qwen-Image 2.1 GGUF publications
+  ([HF discussion](https://huggingface.co/realrebelai/Qwen-Image-2.1_GGUFs/discussions/2)):
+  the tensor is repacked and the engine rejects it - use another quant source;
+- the reference working configuration on the stand is `sd15-q4` (all-in-one GGUF):
+  if it loads, the problem is the specific file, not the worker.
 Common reasons for an empty catalog: the backend is unhealthy (the reason is in
 `warnings`), the worker did not answer with the contract (`contractOk=false`), or no
 model is downloaded on the worker.

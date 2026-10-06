@@ -966,4 +966,26 @@ curl -sS -X POST -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/j
 Частые причины «каталог пуст»: бэкенд нездоров (в `warnings` будет причина), воркер
 ответил не контрактом (`contractOk=false`), модель не скачана в воркер.
 
+### 16.8 «Модель скачалась, но не загружается» — разбор
+
+Ошибку загрузки видно в WebUI (и в логе воркера). Живые случаи со стенда:
+
+- `unsupported dtype "U32" (tensor "img_in.weight")` + `new_sd_ctx_t failed` —
+  скачан **не тот формат**: `*.safetensors` с MLX-квантованием (в имени обычно
+  `MLX`, в шапке файла — тензоры `U32` вместе с `scales`/`biases`).
+  stable-diffusion.cpp читает **GGUF** и не понимает MLX-кванты. Проверить просто:
+
+  ```bash
+  head -c 3000 файл.safetensors | tr -d '\0' | grep -o '"dtype":"[A-Z0-9]*"' | sort -u
+  ```
+
+  Если у `*.weight` стоит `U32` — файл не подойдёт; нужны GGUF-кванты для роли
+  `diffusion` (VAE при этом может оставаться safetensors — он читается);
+- `GGUF files cannot be loaded by stable-diffusion.cpp — img_in.weight is stored
+  reshaped` — известная проблема части публикаций Qwen-Image 2.1 в GGUF
+  ([обсуждение на HF](https://huggingface.co/realrebelai/Qwen-Image-2.1_GGUFs/discussions/2)):
+  тензор переупакован, движок его не читает — нужен другой источник квантов;
+- эталон рабочей конфигурации на стенде — `sd15-q4` (all-in-one GGUF): если он
+  грузится, дело в конкретном файле, а не в воркере.
+
 

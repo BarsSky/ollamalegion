@@ -57,6 +57,14 @@ type imgResStub struct {
 	genStatus  int
 	genHits    int
 	modelsHits int
+	// loadHits — обращения к /api/image/models/load (R85: автозагрузка из вызова).
+	loadHits int
+	// loadStatus — код ответа на load (0 = 202 по умолчанию).
+	loadStatus int
+	// afterLoad — тело /api/image/models ПОСЛЕ загрузки: имитирует переход
+	// not_loaded → loaded, без которого автозагрузку не проверить.
+	afterLoad   string
+	loadDone    bool
 	// genBody — тело ответа на «генерацию» (любой путь кроме models/VRAM).
 	// Пусто = дефолт с b64_json; инструмент generate_image просит url-режим,
 	// поэтому тесты подменяют тело через setGenBody.
@@ -92,9 +100,25 @@ func (s *imgResStub) handle(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.modelsHits++
 		body := s.modelsBody
+		if s.afterLoad != "" && s.loadDone {
+			// Модель поднята: воркер начинает сообщать её как loaded.
+			body = s.afterLoad
+		}
 		s.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
+	case imageModelLoadPath:
+		status := http.StatusAccepted
+		s.mu.Lock()
+		s.loadHits++
+		if s.loadStatus > 0 {
+			status = s.loadStatus
+		}
+		s.loadDone = status >= 200 && status < 300
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"status":"loading"}`))
 	case imageWorkerVRAMPath:
 		s.mu.Lock()
 		body := s.capBody
@@ -202,6 +226,28 @@ func (s *imgResStub) hits() (gen, models int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.genHits, s.modelsHits
+}
+
+// hitsAll — счётчики по всем значимым поверхностям воркера (R85).
+func (s *imgResStub) hitsAll() (gen, models, loads int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.genHits, s.modelsHits, s.loadHits
+}
+
+// setLoadStatus — код ответа воркера на POST /api/image/models/load.
+func (s *imgResStub) setLoadStatus(status int) {
+	s.mu.Lock()
+	s.loadStatus = status
+	s.mu.Unlock()
+}
+
+// setLoadTransition — тело /api/image/models, которое воркер начнёт отдавать
+// ПОСЛЕ успешного load: так тест воспроизводит not_loaded → loaded.
+func (s *imgResStub) setLoadTransition(modelsBody string) {
+	s.mu.Lock()
+	s.afterLoad = modelsBody
+	s.mu.Unlock()
 }
 
 func (s *imgResStub) port(t *testing.T) int {

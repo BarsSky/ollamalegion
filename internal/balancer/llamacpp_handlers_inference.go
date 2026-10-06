@@ -54,22 +54,25 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 
 	// R84 (2026-10-03): инструмент генерации изображений для текстовой модели.
 	//
-	// Объявляем его ТОЛЬКО когда есть кому исполнять: здоровый image_cpp, свежий
-	// снимок и ЗАГРУЖЕННАЯ модель (imageToolTargetFor). Иначе тело запроса
+	// Объявляем его ТОЛЬКО когда есть кому исполнять: здоровый image_cpp и либо
+	// загруженная модель, либо (R85, при LB_IMAGE_TOOL_ALLOW_LOAD=on) модели,
+	// которые вызов поднимет сам (imageToolTargetFor). Иначе тело запроса
 	// остаётся байт-в-байт прежним, и путь ничем не отличается от обычного.
 	//
 	// Исполняет вызов сам балансер: инструмент объявил прокси, клиент про него не
 	// знает и вызвать бы не смог (см. image_tool.go).
 	var imageTool *imageToolTarget
 	if tgt := lr.proxy.imageToolTargetFor(r.Context()); tgt != nil {
-		if injected, ok, injErr := injectImageTool(bodyBuf, imageToolOpenAI(tgt)); injErr != nil {
+		tools := imageToolOpenAITools(tgt)
+		if injected, ok, injErr := injectImageTool(bodyBuf, tools); injErr != nil {
 			logger.Get().Warnw("handleOpenAIChatCompletions: не удалось добавить image-инструмент",
 				"error", injErr)
 		} else if ok {
 			bodyBuf = injected
 			imageTool = tgt
-			// Наблюдаемость: клиент/лог видит, что инструмент был объявлен.
-			w.Header().Set("X-Image-Tool", "generate_image")
+			// Наблюдаемость: клиент/лог видит, что инструменты были объявлены.
+			// При автозагрузке их два — список имён честнее одного заголовка.
+			w.Header().Set("X-Image-Tool", imageToolNamesHeader(tools))
 		}
 	}
 

@@ -141,6 +141,11 @@ const API_RESPONSE = {
         assert.strictEqual(f.exclusiveLockTimeoutSec, 600);
         assert.strictEqual(f.blockOnUnknownVramEstimate, false);
         assert.strictEqual(f.gateDisabled, false);
+        // R85: незаданное значение = автозагрузка разрешена (дефолт on).
+        assert.strictEqual(f.allowToolLoad, true, 'allowToolLoad по умолчанию должен быть включён');
+        // Явный false из конфига обязан снимать галочку.
+        const off = P.pure.formFromEffective({ effective: { allowToolLoad: false } });
+        assert.strictEqual(off.allowToolLoad, false);
         // Пустой ответ не должен давать NaN: форма обязана остаться валидной.
         const empty = P.pure.formFromEffective({});
         assert.strictEqual(empty.coexistence, 'exclusive');
@@ -201,6 +206,7 @@ const API_RESPONSE = {
         assert.ok(html.indexOf('imPolicyCoexistence') !== -1, 'нет селекта политики');
         assert.ok(html.indexOf('imPolicyHeadroom') !== -1, 'нет поля резерва VRAM');
         assert.ok(html.indexOf('imPolicyGateOff') !== -1, 'нет чекбокса «выключить гейт»');
+        assert.ok(html.indexOf('imPolicyAllowLoad') !== -1, 'нет чекбокса «разрешить инструменту загружать модель» (R85)');
         assert.ok(html.indexOf('владеет картой') !== -1, 'нет подсказки сервера для выбранной политики');
         assert.strictEqual(getEl('imPolicyBadge').style.display, 'none', 'без переопределения бейджа быть не должно');
     });
@@ -214,6 +220,7 @@ const API_RESPONSE = {
         getEl('imPolicyFuse').value = '600';
         getEl('imPolicyBlockUnknown').checked = true;
         getEl('imPolicyGateOff').checked = false;
+        getEl('imPolicyAllowLoad').checked = false;
         const ok = await P._actions.save();
         assert.strictEqual(ok, true);
         const rec = requests.filter(function (r) { return r.method === 'PUT'; })[0];
@@ -221,6 +228,9 @@ const API_RESPONSE = {
         assert.strictEqual(rec.body.coexistence, 'offload');
         assert.strictEqual(rec.body.vramHeadroomMb, 1024);
         assert.strictEqual(rec.body.blockOnUnknownVramEstimate, true);
+        // Снятая галочка автозагрузки обязана уйти как явный false (иначе сервер
+        // не отличит «выключил» от «поля нет» и оставит прежнее значение).
+        assert.strictEqual(rec.body.allowToolLoad, false, 'allowToolLoad должен уходить в теле PUT');
         assert.strictEqual(getEl('imPolicyBadge').style.display, '', 'после сохранения бейдж переопределения виден');
         assert.ok(toasts.some(function (x) { return /сохранена/.test(x.message || ''); }), 'нет тоста об успехе');
         assert.deepStrictEqual(policyReloads, [true], 'колонка политики должна перечитаться принудительно (force)');

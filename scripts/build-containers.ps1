@@ -34,7 +34,12 @@ param(
     [switch]$NoRegistryPrefix
 )
 
-$ErrorActionPreference = "Stop"
+# ВАЖНО (R85, 2026-10-06): docker пишет ПРОГРЕСС сборки в stderr, и при
+# $ErrorActionPreference='Stop' PowerShell превращает первую же строку прогресса
+# в NativeCommandError — сборка обрывалась на «#0 building with "desktop-linux"…»
+# сразу после старта. Ошибки docker ловим по факту: проверяем $LASTEXITCODE после
+# каждого build (он и есть источник истины).
+$ErrorActionPreference = "Continue"
 
 # R83: префикс локального репозитория образов — та же переменная, что читает compose.
 . (Join-Path $PSScriptRoot 'lib-image-registry.ps1')

@@ -54,10 +54,30 @@ const (
 	imageToolEnvMaxCalls = "LB_IMAGE_TOOL_MAX_CALLS"   // сколько картинок на один запрос
 	imageToolEnvTimeout  = "LB_IMAGE_TOOL_TIMEOUT_SEC" // таймаут одной генерации
 	imageToolEnvBaseURL  = "LB_IMAGE_TOOL_BASE_URL"    // внешний адрес балансера для ссылок
+	// imageToolEnvAllowLoad — разрешено ли ВЫЗОВУ поднимать модель (R85).
+	//
+	// Было (R84): инструмент объявлялся только когда модель УЖЕ загружена, и
+	// поднять её из вызова было нельзя. Стало: инструмент видит каталог и может
+	// поднять выбранную модель сам (решение оператора, см.
+	// plans/2026-10-06-image-tool-catalog-autoload.md). `off` возвращает прежнее
+	// поведение байт-в-байт: ни list_image_models, ни автозагрузки.
+	imageToolEnvAllowLoad = "LB_IMAGE_TOOL_ALLOW_LOAD" // on | off (по умолчанию on)
+	// imageToolEnvLoadTimeout — сколько ждать загрузку модели перед отказом.
+	// Загрузка bundle'а в VRAM занимает секунды-минуты; бесконечное ожидание
+	// держало бы и запрос клиента, и слот, поэтому таймаут обязателен, а его
+	// истечение — честная ошибка в tool-результате (модель объяснит её
+	// пользователю), а не молчаливый обрыв.
+	imageToolEnvLoadTimeout = "LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC"
 
 	imageToolDefaultMaxCalls   = 2
 	imageToolDefaultTimeoutSec = 600
 	imageToolMaxCallsLimit     = 8
+	// 600 с — как таймаут генерации: FLUX Q3_K на слабой карте грузится минуты.
+	imageToolDefaultLoadTimeoutSec = 600
+	// imageToolLoadPollInterval — период опроса состояния загрузки.
+	// 2 с = «быстрый» интервал поллера метрик (imageMetricsFastInterval), то есть
+	// состояние подхватывается с той же частотой, с какой его видит VRAM-гейт.
+	imageToolLoadPollInterval = 2 * time.Second
 )
 
 // imageToolSurface — метка поверхности в ленте image-запросов (Monitor).
@@ -68,6 +88,14 @@ const imageToolSurface = "chat-tool"
 // imageToolPath — путь, которым тул-генерация видна в ленте запросов.
 const imageToolPath = "/v1/chat/completions→generate_image"
 
+// imageModelLoadPath — ручка воркера, которой поднимается модель (R85).
+// Контракт: POST {"name":"<model>"} → 202, прогресс — /load/progress.
+const imageModelLoadPath = "/api/image/models/load"
+
+// imageToolAllowLoadEnv — имя флага окружения для автозагрузки. Экспортируется
+// через const-переменную пакета, чтобы API-слой показывал в WebUI то же имя.
+const imageToolAllowLoadEnv = imageToolEnvAllowLoad
+
 // imageToolConfig — настройки инструмента.
 type imageToolConfig struct {
 	Enabled  bool
@@ -77,18 +105,51 @@ type imageToolConfig struct {
 	// Host из запроса клиента (http://<Host>). Нужен, когда балансер стоит за
 	// TLS-прокси: тогда схему и хост знает только оператор.
 	BaseURL string
+	// AllowLoad — вызову разрешено поднимать модель (LB_IMAGE_TOOL_ALLOW_LOAD).
+	AllowLoad bool
+	// LoadTimeout — сколько ждать загрузку модели.
+	LoadTimeout time.Duration
 }
 
-// imageToolSettings читает настройки из окружения.
-func imageToolSettings() imageToolConfig {
+// ImageToolAllowLoadEnv — имя флага окружения автозагрузки (для API/WebUI).
+func ImageToolAllowLoadEnv() string { return imageToolAllowLoadEnv }
+
+// imageToolSettings — настройки инструмента для КОНКРЕТНОГО прокси.
+//
+// ПОЧЕМУ МЕТОД, А НЕ ФУНКЦИЯ ОКРУЖЕНИЯ (R85): разрешение на автозагрузку должно
+// переключаться из WebUI без рестарта. Значение живёт в balancing.image
+// (types.ImageResourceSettings.AllowToolLoad), которое правится через
+// PUT /api/v1/image/resources и читается здесь на каждый вызов; окружение
+// остаётся флагом-переключателем для тех стендов, где WebUI не используют.
+//
+// Приоритет: ЯВНО заданное значение в конфиге → флаг окружения → дефолт on.
+// Так «галочка в WebUI» сильнее env, а env сильнее встроенного дефолта.
+func (p *Proxy) imageToolSettings() imageToolConfig {
+	cfg := imageToolSettingsFromEnv()
+	if p != nil && p.config != nil {
+		if v := p.config.Balancing.Image.AllowToolLoad; v != nil {
+			cfg.AllowLoad = *v
+		}
+	}
+	return cfg
+}
+
+// imageToolSettingsFromEnv — настройки только из окружения.
+func imageToolSettingsFromEnv() imageToolConfig {
 	cfg := imageToolConfig{
-		Enabled:  true,
-		MaxCalls: imageToolDefaultMaxCalls,
-		Timeout:  imageToolDefaultTimeoutSec * time.Second,
+		Enabled:     true,
+		MaxCalls:    imageToolDefaultMaxCalls,
+		Timeout:     imageToolDefaultTimeoutSec * time.Second,
+		AllowLoad:   true,
+		LoadTimeout: imageToolDefaultLoadTimeoutSec * time.Second,
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(imageToolEnvEnabled))) {
 	case "0", "false", "no", "off":
 		cfg.Enabled = false
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(imageToolEnvAllowLoad))) {
+	case "0", "false", "no", "off":
+		cfg.AllowLoad = false
 	}
 	if v := strings.TrimSpace(os.Getenv(imageToolEnvMaxCalls)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -103,6 +164,11 @@ func imageToolSettings() imageToolConfig {
 			cfg.Timeout = time.Duration(n) * time.Second
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv(imageToolEnvLoadTimeout)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.LoadTimeout = time.Duration(n) * time.Second
+		}
+	}
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(os.Getenv(imageToolEnvBaseURL)), "/")
 	return cfg
 }
@@ -113,6 +179,14 @@ type imageToolTarget struct {
 	Model     string
 	// Models — все модели кластера (enum в схеме инструмента).
 	Models []string
+	// Families — семейства моделей кластера (enum параметра family у
+	// list_image_models).
+	Families []string
+	// AllowLoad — вызову разрешено поднимать не загруженную модель.
+	AllowLoad bool
+	// catalog — снимок каталога, из которого выбрана модель. Нужен, чтобы
+	// выбор модели в generateImageForTool не переспрашивал кластер.
+	catalog *ImageCatalog
 }
 
 // imageToolTargetFor — гейт доступности: nil, если исполнять некому.
@@ -121,16 +195,24 @@ type imageToolTarget struct {
 // per-request, и протухший снимок стоит дорого в обе стороны — объявим
 // инструмент по выгруженной модели и получим ошибку уже после вызова. Догрузка
 // ленивая и переиспользует один опрос для подряд идущих запросов (staleAfter=5s).
+//
+// R85 (2026-10-06) — ГЕЙТ ИЗМЕНИЛСЯ. Было: здоровый image_cpp + ЗАГРУЖЕННАЯ
+// модель. Стало: здоровый image_cpp + ЕСТЬ ЧТО ГРУЗИТЬ (в снимке есть модели) при
+// LB_IMAGE_TOOL_ALLOW_LOAD=on. Причина: требование «модель уже в VRAM» не давало
+// текстовой модели поднять нужную модель под запрос пользователя, а без
+// каталога она вообще не знала, из чего выбирать.
+//
+// При ALLOW_LOAD=off правило прежнее (нужна загруженная модель) — это ровно то
+// поведение, которое уже описано в документации и проверено тестами.
 func (p *Proxy) imageToolTargetFor(ctx context.Context) *imageToolTarget {
 	if p == nil {
 		return nil
 	}
-	cfg := imageToolSettings()
+	cfg := p.imageToolSettings()
 	if !cfg.Enabled {
 		return nil
 	}
-	res := p.imageResources()
-	if res == nil {
+	if p.imageResources() == nil {
 		return nil
 	}
 	states := p.filterBackendsByType(types.BackendTypeImage)
@@ -139,58 +221,120 @@ func (p *Proxy) imageToolTargetFor(ctx context.Context) *imageToolTarget {
 		return nil
 	}
 
-	var models []string
+	// Каталог — единственный источник и имён, и состояний: он собран из тех же
+	// снимков, что судит VRAM-гейт, поэтому «каталог показывает not_loaded» и
+	// «гейт откажет без загрузки» не могут разойтись.
+	catalog := p.ImageCatalogFor(ctx)
+
+	var models, families []string
 	var target *imageToolTarget
-	for _, st := range states {
-		if st == nil || st.Backend == nil {
-			continue
+	for _, m := range catalog.Models {
+		if m.Name != "" && !containsString(models, m.Name) {
+			models = append(models, m.Name)
 		}
-		snap := res.ensureFreshFor(ctx, st.Backend.ID)
-		if snap == nil || !snap.contractOK || snap.lastErr != "" {
-			logger.Get().Debugw("image tool: снимок бэкенда недостоверен",
-				"backend", st.Backend.ID)
-			continue
-		}
-		for _, m := range snap.models {
-			if m.Name != "" && !containsString(models, m.Name) {
-				models = append(models, m.Name)
-			}
-		}
-		if loaded := snap.loaded(); loaded != nil && target == nil {
-			target = &imageToolTarget{BackendID: st.Backend.ID, Model: loaded.Name}
+		if m.Family != "" && !containsString(families, m.Family) {
+			families = append(families, m.Family)
 		}
 	}
+
+	// Приоритет — ЗАГРУЖЕННАЯ модель: генерация по ней не требует ни загрузки,
+	// ни ожидания. Иначе (и только при разрешённой автозагрузке) — первая модель
+	// каталога: её поднимет executeOneImageToolCall.
+	for _, m := range catalog.Models {
+		if m.Loaded {
+			target = &imageToolTarget{BackendID: m.BackendID, Model: m.Name}
+			break
+		}
+	}
+	if target == nil && cfg.AllowLoad {
+		if len(catalog.Models) > 0 {
+			target = &imageToolTarget{BackendID: catalog.Models[0].BackendID, Model: catalog.Models[0].Name}
+		}
+	}
+
 	if target == nil {
-		// Требование оператора: инструмент отдаём ТОЛЬКО когда картинку реально
-		// можно сделать. Модель может быть на диске, но не в VRAM — тогда
-		// генерация сразу вернула бы «no image model is loaded».
-		logger.Get().Debugw("image tool: не объявляем — ни на одном image-бэкенде нет загруженной модели")
+		if !cfg.AllowLoad {
+			// Прежнее поведение: без загруженной модели исполнять нечего, потому
+			// что LB_IMAGE_TOOL_ALLOW_LOAD=off запрещает поднимать её из вызова.
+			logger.Get().Debugw("image tool: не объявляем — нет загруженной модели (LB_IMAGE_TOOL_ALLOW_LOAD=off)",
+				"env", imageToolEnvAllowLoad)
+			return nil
+		}
+		logger.Get().Debugw("image tool: не объявляем — ни на одном image-бэкенде нет моделей",
+			"confident_backends", len(catalog.Backends))
 		return nil
 	}
+
+	sortStringsInPlace(models)
+	sortStringsInPlace(families)
 	target.Models = models
+	target.Families = families
+	target.AllowLoad = cfg.AllowLoad
+	target.catalog = catalog
 	return target
 }
 
-// imageToolOpenAI — схема инструмента в форме OpenAI tools[].
-func imageToolOpenAI(t *imageToolTarget) map[string]interface{} {
+// imageToolOpenAITools — набор инструментов в форме OpenAI tools[].
+//
+// R85: при AllowLoad добавляется второй инструмент list_image_models (каталог).
+// При off возвращается ровно один generate_image — прежняя проводная форма.
+func imageToolOpenAITools(t *imageToolTarget) []map[string]interface{} {
 	spec := imagetool.Defaults()
 	spec.Sync = true
 	if t != nil {
 		spec.Models = t.Models
+		spec.AllowLoad = t.AllowLoad
 	}
-	return imagetool.Build(spec).OpenAIFunction()
+	tools := imagetool.OpenAITools(spec)
+	if t != nil && t.AllowLoad {
+		// Семейства — из того же каталога, что и модели: enum параметра family
+		// не должен предлагать семейство, которого в кластере нет.
+		tools[1] = imagetool.BuildList(imagetool.ListSpec{Families: t.Families}).OpenAIFunction()
+	}
+	return tools
+}
+
+// imageToolOpenAI — схема generate_image в форме OpenAI tools[] (совместимость:
+// используется contract-тестами и документом контракта).
+func imageToolOpenAI(t *imageToolTarget) map[string]interface{} {
+	return imageToolOpenAITools(t)[0]
+}
+
+// imageToolNamesHeader — значение заголовка X-Image-Tool: имена объявленных
+// инструментов через запятую (в порядке схемы).
+func imageToolNamesHeader(tools []map[string]interface{}) string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if name := openAIToolName(tool); name != "" {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ",")
+}
+
+// sortStringsInPlace — сортировка строк на месте (маленькие срезы: сортировка
+// вставками дешевле sort.Strings и не тянет рефлексию).
+func sortStringsInPlace(list []string) {
+	for i := 1; i < len(list); i++ {
+		for j := i; j > 0 && list[j-1] > list[j]; j-- {
+			list[j-1], list[j] = list[j], list[j-1]
+		}
+	}
 }
 
 // injectImageTool — добавить инструмент в тело запроса /v1/chat/completions.
 //
 // НЕ НАВЯЗЫВАЕМСЯ, ЕСЛИ:
 //   - tool_choice="none" — клиент явно запретил инструменты в этом запросе;
-//   - клиент САМ объявил generate_image — тогда исполняет его сторона, и
-//     перехватывать вызов нельзя (иначе клиент не получит свой tool_call).
+//   - клиент САМ объявил инструмент с таким именем — тогда исполняет его
+//     сторона, и перехватывать вызов нельзя (иначе клиент не получит свой
+//     tool_call). Для набора R85 (generate_image + list_image_models) это
+//     означает: любой из них, объявленный клиентом, отменяет инъекцию ЦЕЛИКОМ —
+//     частичный набор сломал бы ожидания клиента.
 //
 // Возвращает исходное тело, если ничего не добавлено (байт-в-байт: путь без
 // image-бэкенда не должен меняться вообще).
-func injectImageTool(body []byte, tool map[string]interface{}) ([]byte, bool, error) {
+func injectImageTool(body []byte, tools []map[string]interface{}) ([]byte, bool, error) {
 	var doc map[string]interface{}
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return body, false, fmt.Errorf("parse chat body: %w", err)
@@ -199,17 +343,45 @@ func injectImageTool(body []byte, tool map[string]interface{}) ([]byte, bool, er
 		return body, false, nil
 	}
 	existing, _ := doc["tools"].([]interface{})
-	for _, t := range existing {
-		if openAIToolName(t) == imagetool.Name {
-			return body, false, nil
-		}
+	if clientOwnsImageTool(existing, tools) {
+		return body, false, nil
 	}
-	doc["tools"] = append(existing, tool)
+	for _, tool := range tools {
+		existing = append(existing, tool)
+	}
+	doc["tools"] = existing
 	out, err := json.Marshal(doc)
 	if err != nil {
 		return body, false, fmt.Errorf("marshal chat body with tool: %w", err)
 	}
 	return out, true, nil
+}
+
+// clientOwnsImageTool — объявил ли клиент хотя бы один из наших инструментов.
+func clientOwnsImageTool(existing []interface{}, tools []map[string]interface{}) bool {
+	if len(existing) == 0 || len(tools) == 0 {
+		return false
+	}
+	ours := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		switch fn := tool["function"].(type) {
+		case imagetool.Tool:
+			ours[fn.Name] = true
+		case map[string]interface{}:
+			if name, _ := fn["name"].(string); name != "" {
+				ours[name] = true
+			}
+		}
+	}
+	if len(ours) == 0 {
+		return false
+	}
+	for _, t := range existing {
+		if ours[openAIToolName(t)] {
+			return true
+		}
+	}
+	return false
 }
 
 // openAIToolName — имя функции в элементе tools[] (формат OpenAI).
@@ -226,13 +398,18 @@ func openAIToolName(t interface{}) string {
 	return name
 }
 
-// imageToolCall — разобранный вызов инструмента.
+// imageToolCall — разобранный вызов одного из наших инструментов.
 type imageToolCall struct {
 	ID        string
+	Name      string
 	Arguments string
 }
 
-// extractImageToolCalls — вызовы generate_image в ответе модели.
+// isListCall — вызов каталога (list_image_models), а не генерации.
+func (c imageToolCall) isListCall() bool { return c.Name == imagetool.ListName }
+
+// extractImageToolCalls — вызовы наших инструментов в ответе модели (R85:
+// generate_image И list_image_models).
 //
 // cppworker нормализует вывод в message.tool_calls (в т.ч. для Gemma/Hermes/
 // Llama/Mistral форматов), но полагаться только на это нельзя: у части моделей
@@ -250,12 +427,12 @@ func extractImageToolCalls(message map[string]interface{}) []imageToolCall {
 				continue
 			}
 			name, _ := fn["name"].(string)
-			if name != imagetool.Name {
+			if !isImageToolName(name) {
 				continue
 			}
 			args := stringifyToolArguments(fn["arguments"])
 			id, _ := entry["id"].(string)
-			calls = append(calls, imageToolCall{ID: id, Arguments: args})
+			calls = append(calls, imageToolCall{ID: id, Name: name, Arguments: args})
 		}
 	}
 	if len(calls) == 0 {
@@ -271,16 +448,26 @@ func extractImageToolCalls(message map[string]interface{}) []imageToolCall {
 					if !ok {
 						continue
 					}
-					if name, _ := fn["name"].(string); name != imagetool.Name {
+					name, _ := fn["name"].(string)
+					if !isImageToolName(name) {
 						continue
 					}
 					id, _ := entry["id"].(string)
-					calls = append(calls, imageToolCall{ID: id, Arguments: stringifyToolArguments(fn["arguments"])})
+					calls = append(calls, imageToolCall{
+						ID:        id,
+						Name:      name,
+						Arguments: stringifyToolArguments(fn["arguments"]),
+					})
 				}
 			}
 		}
 	}
 	return calls
+}
+
+// isImageToolName — имя принадлежит нашей паре инструментов.
+func isImageToolName(name string) bool {
+	return name == imagetool.Name || name == imagetool.ListName
 }
 
 // imageToolArgs — аргументы вызова в терминах движка.
@@ -293,15 +480,39 @@ type imageToolArgs struct {
 	CFG            float64
 	Seed           *int64
 	Model          string
+	// Family — параметр инструмента list_image_models (фильтр каталога по
+	// семейству). У generate_image его нет, но разбор общий — поле просто пустое.
+	Family string
+	// List — вызов инструмента каталога (list_image_models): prompt не нужен,
+	// генерации не будет. Введено, чтобы у каталога и генерации был один разбор
+	// аргументов (одно место правды про имена полей JSON).
+	List bool
 }
 
 // parseImageToolArgs разбирает JSON-аргументы вызова.
+//
+// list=true — аргументы инструмента каталога: prompt не требуется (он там не
+// нужен вовсе), а семейство читается из того же разбора.
 func parseImageToolArgs(raw string) (imageToolArgs, error) {
-	var doc map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
-		return imageToolArgs{}, fmt.Errorf("arguments не JSON: %w", err)
+	return parseImageToolArgsFor(raw, false)
+}
+
+// parseImageToolArgsFor — общий разбор аргументов обоих инструментов.
+//
+// УСТОЙЧИВОСТЬ К ПУСТЫМ АРГУМЕНТАМ (живой дефект, найденный на стенде R85):
+// модель вызывает инструмент без параметров (list_image_models) и присылает
+// arguments как ПУСТУЮ СТРОКУ ("" или пробелы) либо как нестроковый JSON
+// (null, {}). Первая версия возвращала «arguments не JSON: cannot unmarshal
+// string into Go value of type map[string]interface {}» — то есть инструмент,
+// который специально сделан без обязательных параметров, отказывал на самом
+// естественном вызове. Пустое значение трактуем как «параметров нет».
+func parseImageToolArgsFor(raw string, list bool) (imageToolArgs, error) {
+	doc, err := decodeToolArguments(raw)
+	if err != nil {
+		return imageToolArgs{}, err
 	}
 	args := imageToolArgs{
+		List:           list,
 		Prompt:         stringField(doc, "prompt"),
 		NegativePrompt: firstNonEmpty(stringField(doc, "negative_prompt"), stringField(doc, "negativePrompt")),
 		Width:          intField(doc, "width"),
@@ -309,6 +520,7 @@ func parseImageToolArgs(raw string) (imageToolArgs, error) {
 		Steps:          intField(doc, "steps"),
 		CFG:            floatField(doc, "cfg"),
 		Model:          stringField(doc, "model"),
+		Family:         stringField(doc, "family"),
 	}
 	if v, ok := doc["seed"]; ok {
 		switch t := v.(type) {
@@ -321,10 +533,57 @@ func parseImageToolArgs(raw string) (imageToolArgs, error) {
 			}
 		}
 	}
+	if list {
+		return args, nil
+	}
 	if strings.TrimSpace(args.Prompt) == "" {
 		return args, errors.New("в аргументах нет prompt")
 	}
 	return args, nil
+}
+
+// decodeToolArguments — аргументы вызова как объект.
+//
+// Модели присылают их в четырёх видах: объектом JSON, JSON-СТРОКОЙ внутри
+// строки (как того требует OpenAI), пустой строкой (вызов без параметров),
+// null. Все четыре обязаны разбираться: иначе «инструмент без параметров»
+// становится невызываемым, а это ровно тот случай, ради которого он делался.
+func decodeToolArguments(raw string) (map[string]interface{}, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" {
+		return map[string]interface{}{}, nil
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &doc); err == nil {
+		if doc == nil {
+			return map[string]interface{}{}, nil
+		}
+		return doc, nil
+	}
+	// Аргументы пришли JSON-СТРОКОЙ с JSON внутри (каноничная форма OpenAI).
+	var inner string
+	if err := json.Unmarshal([]byte(trimmed), &inner); err == nil {
+		inner = strings.TrimSpace(inner)
+		if inner == "" || inner == "null" {
+			return map[string]interface{}{}, nil
+		}
+		var nested map[string]interface{}
+		if err := json.Unmarshal([]byte(inner), &nested); err == nil {
+			if nested == nil {
+				return map[string]interface{}{}, nil
+			}
+			return nested, nil
+		}
+	}
+	return nil, fmt.Errorf("arguments не JSON-объект: %s", shortForLog(trimmed))
+}
+
+// shortForLog — обрезать аргументы для текста ошибки (они уходят модели).
+func shortForLog(s string) string {
+	if len(s) > 200 {
+		return s[:200] + "…"
+	}
+	return s
 }
 
 func stringField(doc map[string]interface{}, key string) string {
@@ -374,6 +633,173 @@ func containsString(list []string, v string) bool {
 	return false
 }
 
+// imageToolResolved — какая модель и на каком бэкенде будет исполнять вызов.
+type imageToolResolved struct {
+	BackendID string
+	Model     string
+	// Loaded — модель уже в VRAM (загрузка не нужна).
+	Loaded bool
+	State  string
+}
+
+// resolveImageToolTarget — выбрать бэкенд и модель под конкретный вызов.
+//
+// ЗАЧЕМ ПЕРЕСМАТРИВАТЬ, А НЕ БРАТЬ target. По умолчанию используется модель из
+// гейта (загруженная либо первая доступная). Но модель могла назвать ДРУГУЮ
+// модель в аргументе model: тогда её надо найти в каталоге — и по имени, и по
+// состоянию, и на живом бэкенде. Без этого «model=flux-schnell-q3-k» при
+// загруженной sd15 означал бы «движок проигнорирует параметр и нарисует не то».
+//
+// Фолбэк при неизвестном имени: остаёмся на модели из гейта и НЕ отказываем —
+// каталог мог не догрузиться, а генерация уже возможна. Имя при этом уходит в
+// payload: воркер сам скажет, знает ли он такую модель (и код загрузки ниже
+// вернёт честную ошибку).
+func (p *Proxy) resolveImageToolTarget(ctx context.Context, target *imageToolTarget, requested string) imageToolResolved {
+	res := imageToolResolved{BackendID: target.BackendID, Model: target.Model}
+	if target.catalog != nil {
+		for i := range target.catalog.Models {
+			if m := &target.catalog.Models[i]; m.Name == res.Model {
+				res.Loaded, res.State = m.Loaded, m.State
+				break
+			}
+		}
+	}
+	requested = strings.TrimSpace(requested)
+	if requested == "" || requested == res.Model {
+		return res
+	}
+
+	catalog := p.ImageCatalogFor(ctx)
+	for i := range catalog.Models {
+		m := &catalog.Models[i]
+		if m.Name != requested {
+			continue
+		}
+		return imageToolResolved{
+			BackendID: m.BackendID,
+			Model:     m.Name,
+			Loaded:    m.Loaded,
+			State:     m.State,
+		}
+	}
+	// Модель не найдена в каталоге: пробуем снимок напрямую (каталог мог быть
+	// отдан из кэша до появления модели). Если и там нет — оставляем выбор гейта,
+	// но с запрошенным ИМЕНЕМ, чтобы ошибка воркера была про конкретную модель.
+	if res2 := p.imageResources(); res2 != nil {
+		if snap := res2.ensureFreshFor(ctx, target.BackendID); snap != nil && snap.contractOK {
+			for i := range snap.models {
+				if snap.models[i].Name == requested {
+					return imageToolResolved{
+						BackendID: target.BackendID,
+						Model:     requested,
+						Loaded:    snap.models[i].State == imageStateLoaded,
+						State:     snap.models[i].State,
+					}
+				}
+			}
+		}
+	}
+	logger.Get().Warnw("image tool: запрошенной модели нет в каталоге — отдаём имя воркеру как есть",
+		"requested", requested, "known", len(catalog.Models))
+	return imageToolResolved{BackendID: target.BackendID, Model: requested, State: imageStateNotLoaded}
+}
+
+// ensureImageModelLoaded — поднять модель в VRAM и дождаться готовности.
+//
+// ПОЧЕМУ СИНХРОННО С ПОЛЛИНГОМ, А НЕ АСИНХРОННО. Инструмент обязан вернуть
+// модели результат в том же вызове (tool-сообщение) — асинхронная загрузка
+// означала бы «загружаю, вернись позже», чего tool-протокол не умеет. Поэтому
+// POST load → опрос /api/image/models до state=loaded, с честным таймаутом.
+//
+// ВОЗВРАЩАЕТСЯ ВРЕМЯ ЗАГРУЗКИ. Оно уходит в tool-результат (loadSeconds): без
+// него модель не может объяснить пользователю, почему ответ шёл минуту.
+func (p *Proxy) ensureImageModelLoaded(ctx context.Context, backendID, model string) (time.Duration, error) {
+	started := time.Now()
+	cfg := p.imageToolSettings()
+
+	// ВАЖНО про имя поля: контракт воркера — {"name": "<model>"}
+	// (cmd/sdworker/handlers_model.go: loadRequest.Name), а НЕ "model". Ошибка
+	// здесь выглядела бы как «модель не поднимается» при живом воркере.
+	payload, err := json.Marshal(map[string]string{"name": model})
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, imageModelLoadPath, bytes.NewReader(payload))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.proxyRequestToBackend(req, backendID, cfg.LoadTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("не удалось отправить запрос на загрузку модели %q: %w", model, err)
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, imageToolResponseLimitBytes))
+	_ = resp.Body.Close()
+	if readErr != nil {
+		return 0, fmt.Errorf("чтение ответа на загрузку модели %q: %w", model, readErr)
+	}
+	if resp.StatusCode >= 400 {
+		return 0, fmt.Errorf("воркер отказал в загрузке модели %q (HTTP %d): %s",
+			model, resp.StatusCode, upstreamErrorMessage(raw, resp.StatusCode))
+	}
+
+	// Ждём готовности. Опрос идёт по снимкам (ensureFreshFor сам делает опрос
+	// при протухании), а НЕ по SSE-прогрессу: состояние loaded/error — это
+	// то, чем живёт VRAM-гейт, и видеть его надо там же, где принимается решение
+	// о генерации. Прогресс-поток (load/progress) остаётся для WebUI.
+	deadline := started.Add(cfg.LoadTimeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return time.Since(started), fmt.Errorf("загрузка модели %q прервана: %w", model, err)
+		}
+		if time.Now().After(deadline) {
+			return time.Since(started), fmt.Errorf(
+				"модель %q не поднялась за %s (state=%s): см. логи воркера и настройку %s",
+				model, cfg.LoadTimeout, imageStateLoading, imageToolEnvLoadTimeout)
+		}
+
+		snap := p.imageResources().refresh(ctx, backendID)
+		if snap != nil {
+			elapsed := time.Since(started)
+			if m := snap.entryByName(model); m != nil {
+				switch m.State {
+				case imageStateLoaded:
+					return elapsed, nil
+				case imageStateError:
+					return elapsed, fmt.Errorf("модель %q не поднялась: %s", model,
+						firstNonEmptyStr(m.Error, "воркер сообщил state=error"))
+				}
+			} else if snap.loaded() != nil && snap.loaded().Name != model {
+				// Воркер поднял другую модель (одна модель на процесс): подменять
+				// её молча нельзя — пользователь просил конкретную.
+				return elapsed, fmt.Errorf(
+					"воркер поднял модель %q вместо запрошенной %q (одна модель на процесс; выгрузите текущую)",
+					snap.loaded().Name, model)
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return time.Since(started), fmt.Errorf("загрузка модели %q прервана: %w", model, ctx.Err())
+		case <-time.After(imageToolLoadPollInterval):
+		}
+	}
+}
+
+// entryByName — запись модели по имени (nil, если воркер её не сообщает).
+func (s *imageBackendMetrics) entryByName(name string) *imageModelEntry {
+	if s == nil {
+		return nil
+	}
+	for i := range s.models {
+		if s.models[i].Name == name {
+			return &s.models[i]
+		}
+	}
+	return nil
+}
+
 // generateImageForTool — сгенерировать картинку на выбранном image-бэкенде.
 //
 // Идём НАТИВНЫМ путём воркера (/api/image/generate, sync=true,
@@ -384,9 +810,30 @@ func containsString(list []string, v string) bool {
 // Гейт VRAM и лента запросов — те же, что у обычной генерации
 // (imageResources.beforeGeneration + imageRequestStore): тул-генерации обязаны
 // быть видны в мониторе и обязаны уважать занятость GPU.
+//
+// R85: если выбранная модель ещё не в VRAM, она поднимается ЗДЕСЬ (до гейта и до
+// генерации), потому что воркер отвечает 409 model_not_loaded и сам не грузит.
+// Гейт берётся ПОСЛЕ загрузки: до неё свободная VRAM считается без веса
+// поднимаемой модели, и «влезает/не влезает» было бы посчитано неверно.
 func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarget, args imageToolArgs) (map[string]interface{}, error) {
-	cfg := imageToolSettings()
-	model := firstNonEmpty(args.Model, target.Model)
+	cfg := p.imageToolSettings()
+	resolved := p.resolveImageToolTarget(ctx, target, args.Model)
+	model := resolved.Model
+
+	var loadSeconds float64
+	if !resolved.Loaded && model != "" {
+		if !cfg.AllowLoad {
+			return nil, fmt.Errorf(
+				"модель %q не загружена, а автозагрузка выключена (%s=off): загрузите модель заранее",
+				model, imageToolEnvAllowLoad)
+		}
+		elapsed, err := p.ensureImageModelLoaded(ctx, resolved.BackendID, model)
+		loadSeconds = elapsed.Seconds()
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	payload := map[string]interface{}{
 		"prompt":         args.Prompt,
 		"sync":           true,
@@ -425,14 +872,14 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 	req.Header.Set("Content-Type", "application/json")
 
 	res := p.imageResources()
-	gate := res.beforeGeneration(ctx, target.BackendID)
+	gate := res.beforeGeneration(ctx, resolved.BackendID)
 	if !gate.Allowed {
 		return nil, fmt.Errorf("генерация недоступна: %s", gate.Message)
 	}
 	defer gate.Release()
 
 	brief := types.ImageRequestBrief{
-		BackendID: target.BackendID,
+		BackendID: resolved.BackendID,
 		Surface:   imageToolSurface,
 		Path:      imageToolPath,
 		Model:     model,
@@ -441,10 +888,10 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 		Height:    args.Height,
 		Steps:     args.Steps,
 	}
-	handle := res.imageRequests().begin(target.BackendID, brief)
+	handle := res.imageRequests().begin(resolved.BackendID, brief)
 
 	started := time.Now()
-	resp, err := p.proxyRequestToBackend(req, target.BackendID, cfg.Timeout)
+	resp, err := p.proxyRequestToBackend(req, resolved.BackendID, cfg.Timeout)
 	if err != nil {
 		handle.finish(types.ImageRequestStatusFailed, http.StatusBadGateway, "image_backend_error", err.Error(), 0)
 		return nil, fmt.Errorf("image backend request failed: %w", err)
@@ -473,7 +920,7 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 	}
 
 	handle.finish(types.ImageRequestStatusOK, resp.StatusCode, "", "", 1)
-	return map[string]interface{}{
+	out := map[string]interface{}{
 		"status":     "ok",
 		"url":        url,
 		"markdown":   "![" + shortPrompt(args.Prompt) + "](" + url + ")",
@@ -486,7 +933,19 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 		"output":     doc["output_format"],
 		"generated":  true,
 		"promptUsed": args.Prompt,
-	}, nil
+		// modelState — где модель оказалась к моменту генерации: модель обязана
+		// понимать, что картинка сделана только что поднятой моделью, а не той,
+		// что была в VRAM раньше.
+		"modelState": imageStateLoaded,
+		"backendId":  resolved.BackendID,
+	}
+	// loadSeconds присутствует ТОЛЬКО когда была загрузка: ноль в поле читался
+	// бы как «загрузили мгновенно» и сбивал бы модель с толку.
+	if loadSeconds > 0 {
+		out["loadSeconds"] = loadSeconds
+		out["loadedNow"] = true
+	}
+	return out, nil
 }
 
 // imageToolResponseLimitBytes — предел чтения ответа воркера: в url-режиме тело
@@ -506,6 +965,115 @@ func firstImageURL(doc map[string]interface{}) string {
 	}
 	url, _ := item["url"].(string)
 	return strings.TrimSpace(url)
+}
+
+// imageToolCatalogResult — результат list_image_models для tool-сообщения.
+//
+// ФОРМА ВЫБРАНА ПОД ЧТЕНИЕ МОДЕЛЬЮ: строка summary (одна строка на модель) —
+// самое дешёвое по токенам представление, а полный JSON уходит в models[] для
+// тех клиентов/агентов, которые захотят разобрать его программно. Никакой
+// генерации и обращения к GPU здесь нет — только чтение уже собранного каталога.
+func (p *Proxy) imageToolCatalogResult(ctx context.Context, family string) map[string]interface{} {
+	family = strings.ToLower(strings.TrimSpace(family))
+
+	catalog := p.ImageCatalogFor(ctx)
+	models := make([]ImageCatalogModel, 0, len(catalog.Models))
+	var sb strings.Builder
+	for _, m := range catalog.Models {
+		if family != "" && !strings.EqualFold(m.Family, family) {
+			continue
+		}
+		models = append(models, m)
+		sb.WriteString(imageCatalogModelLine(m))
+		sb.WriteByte('\n')
+	}
+
+	out := map[string]interface{}{
+		"status": "ok",
+		"count":  len(models),
+		"models": models,
+		"limits": catalog.Limits,
+		// loadedModel — что уже в VRAM: если оно подходит, генерация начнётся
+		// сразу, без ожидания загрузки.
+		"hasLoadedModel": catalog.HasLoadedModel,
+	}
+	if family != "" {
+		out["family"] = family
+	}
+	if len(models) == 0 {
+		out["summary"] = fmt.Sprintf(
+			"В каталоге нет моделей%s. Доступны модели: загрузите модель на image-воркер (WebUI → Image-модели → HuggingFace) или через POST /api/v1/image/backends/{id}/models/load.",
+			familySuffix(family))
+	} else {
+		out["summary"] = fmt.Sprintf("Доступные image-модели (%d)%s:\n%s",
+			len(models), familySuffix(family), strings.TrimRight(sb.String(), "\n"))
+	}
+	if loaded := imageCatalogLoadedLine(catalog); loaded != "" {
+		out["loadedModel"] = loaded
+	}
+	return out
+}
+
+// imageCatalogModelLine — одна строка каталога для модели.
+func imageCatalogModelLine(m ImageCatalogModel) string {
+	parts := []string{"- " + m.Name}
+	if m.Family != "" {
+		parts = append(parts, "семейство "+m.Family)
+	}
+	state := m.State
+	if state == "" {
+		state = "unknown"
+	}
+	if m.Loaded {
+		state += " (уже в VRAM)"
+	}
+	parts = append(parts, "состояние: "+state)
+	if m.VramEstimateMB > 0 {
+		parts = append(parts, fmt.Sprintf("~%d MB VRAM", m.VramEstimateMB))
+	} else {
+		parts = append(parts, "VRAM: неизвестно")
+	}
+	parts = append(parts, fmt.Sprintf("дефолт: %dx%d, %d шагов, cfg %g",
+		m.Defaults.Width, m.Defaults.Height, m.Defaults.Steps, m.Defaults.CFGScale))
+	if m.Strengths != "" {
+		parts = append(parts, m.Strengths)
+	}
+	return strings.Join(parts, " | ")
+}
+
+// imageCatalogLoadedLine — что сейчас загружено (пусто, если ничего).
+func imageCatalogLoadedLine(catalog *ImageCatalog) string {
+	if catalog == nil {
+		return ""
+	}
+	for _, m := range catalog.Models {
+		if m.Loaded {
+			return m.Name
+		}
+	}
+	return ""
+}
+
+// familySuffix — « семейства X» для текста результата (пусто, если фильтра нет).
+func familySuffix(family string) string {
+	if family == "" {
+		return ""
+	}
+	return " семейства " + family
+}
+
+// rawStringField — строковое поле из сырого JSON-аргумента (для аргументов,
+// которые не разбирает imageToolArgs: например family у list_image_models).
+func rawStringField(raw, key string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return ""
+	}
+	v, _ := doc[key].(string)
+	return strings.TrimSpace(v)
 }
 
 // upstreamErrorMessage — короткий текст ошибки из ответа воркера.
@@ -573,7 +1141,10 @@ func imageToolPublicURL(r *http.Request, url string) string {
 		// Разобрать не удалось — лучше отдать как есть, чем склеить мусор.
 		return url
 	}
-	base := imageToolSettings().BaseURL
+	// BaseURL живёт ТОЛЬКО в окружении (это адрес конкретного стенда, а не
+	// балансировочная настройка), поэтому берём env-часть настроек — из конфига
+	// сюда попадать нечему.
+	base := imageToolSettingsFromEnv().BaseURL
 	if base == "" {
 		host := ""
 		if r != nil {

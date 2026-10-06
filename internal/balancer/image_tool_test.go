@@ -33,9 +33,16 @@ import (
 
 // --- 1. Схема и инъекция ----------------------------------------------------
 
+// singleImageTool — один инструмент generate_image в форме, которую принимает
+// injectImageTool (R85: функция принимает НАБОР инструментов — generate_image
+// и, при автозагрузке, list_image_models).
+func singleImageTool() []map[string]interface{} {
+	return []map[string]interface{}{imagetool.Build(imagetool.Defaults()).OpenAIFunction()}
+}
+
 func TestInjectImageTool_AddsTool(t *testing.T) {
 	body := []byte(`{"model":"gemma-4","messages":[{"role":"user","content":"нарисуй кота"}],"stream":true}`)
-	out, ok, err := injectImageTool(body, imagetool.Build(imagetool.Defaults()).OpenAIFunction())
+	out, ok, err := injectImageTool(body, singleImageTool())
 	if err != nil || !ok {
 		t.Fatalf("инъекция не сработала: ok=%v err=%v", ok, err)
 	}
@@ -59,7 +66,7 @@ func TestInjectImageTool_AddsTool(t *testing.T) {
 
 func TestInjectImageTool_KeepsExistingTools(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`)
-	out, ok, err := injectImageTool(body, imagetool.Build(imagetool.Defaults()).OpenAIFunction())
+	out, ok, err := injectImageTool(body, singleImageTool())
 	if err != nil || !ok {
 		t.Fatalf("инъекция не сработала: ok=%v err=%v", ok, err)
 	}
@@ -76,7 +83,7 @@ func TestInjectImageTool_KeepsExistingTools(t *testing.T) {
 
 func TestInjectImageTool_SkipsWhenClientOwnsTool(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[],"tools":[{"type":"function","function":{"name":"generate_image","parameters":{"type":"object"}}}]}`)
-	out, ok, err := injectImageTool(body, imagetool.Build(imagetool.Defaults()).OpenAIFunction())
+	out, ok, err := injectImageTool(body, singleImageTool())
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
@@ -90,7 +97,7 @@ func TestInjectImageTool_SkipsWhenClientOwnsTool(t *testing.T) {
 
 func TestInjectImageTool_SkipsWhenToolChoiceNone(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[],"tool_choice":"none"}`)
-	out, ok, _ := injectImageTool(body, imagetool.Build(imagetool.Defaults()).OpenAIFunction())
+	out, ok, _ := injectImageTool(body, singleImageTool())
 	if ok || string(out) != string(body) {
 		t.Fatalf("при tool_choice=none инструмент навязывать нельзя: ok=%v %s", ok, out)
 	}
@@ -165,10 +172,48 @@ func TestParseImageToolArgs(t *testing.T) {
 	}
 }
 
+// TestParseImageToolArgs_EmptyAndNestedForms — ЖИВОЙ ДЕФЕКТ R85: Qwen3 вызывает
+// инструмент без параметров и присылает arguments пустой строкой. Такая форма
+// (а также "null" и JSON-строка с JSON внутри) обязана разбираться: инструмент
+// list_image_models специально сделан без обязательных параметров.
+func TestParseImageToolArgs_EmptyAndNestedForms(t *testing.T) {
+	cases := []string{"", "   ", "null", "{}", `"{}"`, `"{\"family\":\"flux\"}"`, `{"family":"flux"}`}
+	for _, raw := range cases {
+		args, err := parseImageToolArgsFor(raw, true)
+		if err != nil {
+			t.Fatalf("list-инструмент с аргументами %q должен разбираться, got %v", raw, err)
+		}
+		if !args.List {
+			t.Errorf("args.List=false для %q", raw)
+		}
+		if strings.Contains(raw, "flux") && args.Family != "flux" {
+			t.Errorf("family из %q не разобран: %q", raw, args.Family)
+		}
+	}
+	// У генерации пустые аргументы по-прежнему означают «нет prompt».
+	if _, err := parseImageToolArgsFor("", false); err == nil {
+		t.Error("generate_image без prompt обязан отклоняться")
+	}
+	// Каноничная форма OpenAI (JSON-строка внутри строки) работает и для генерации.
+	args, err := parseImageToolArgsFor(`"{\"prompt\":\"a cat\",\"model\":\"sd15-q8-0\"}"`, false)
+	if err != nil {
+		t.Fatalf("вложенная JSON-строка не разобрана: %v", err)
+	}
+	if args.Prompt != "a cat" || args.Model != "sd15-q8-0" {
+		t.Fatalf("поля из вложенной формы = %+v", args)
+	}
+}
+
 // --- 3. Гейт доступности ----------------------------------------------------
 
 func TestImageToolTargetFor_RequiresLoadedModel(t *testing.T) {
-	p, stub := newImgResProxy(t, toolTestImageSettings())
+	ResetImageCatalogCache()
+	t.Cleanup(ResetImageCatalogCache)
+
+	// ALLOW_LOAD=on (по умолчанию): достаточно, что модель ЕСТЬ в снимке — её
+	// поднимет сам вызов.
+	t.Setenv("LB_IMAGE_TOOL_ALLOW_LOAD", "on")
+	p, _ := newImgResProxy(t, toolTestImageSettings())
 	target := p.imageToolTargetFor(context.Background())
 	if target == nil {
 		t.Fatal("с загруженной моделью инструмент должен объявляться")
@@ -179,16 +224,31 @@ func TestImageToolTargetFor_RequiresLoadedModel(t *testing.T) {
 	if len(target.Models) == 0 {
 		t.Error("enum моделей пуст: модель не сможет выбрать модель")
 	}
+	if !target.AllowLoad {
+		t.Error("ALLOW_LOAD=on должен разрешать загрузку")
+	}
 
-	_ = stub
-
-	// Модель есть на диске, но не загружена → инструмент не объявляем. Стенд
-	// отдельный: снимок кэшируется (staleAfter), и подмена ответа ПОСЛЕ первого
-	// опроса ничего бы не доказала.
+	// Модель есть на диске, но не загружена → при ALLOW_LOAD=on инструмент ВСЁ
+	// РАВНО объявляем (в этом и смысл R85). Стенд отдельный: снимок кэшируется
+	// (staleAfter), и подмена ответа ПОСЛЕ первого опроса ничего бы не доказала.
+	ResetImageCatalogCache()
 	p2, stub2 := newImgResProxy(t, toolTestImageSettings())
 	stub2.setModels(`{"models":[{"name":"flux-test","state":"not_loaded"}],"state":"not_loaded","current_model":""}`)
-	if got := p2.imageToolTargetFor(context.Background()); got != nil {
-		t.Fatalf("без загруженной модели инструмент объявлять нельзя: %+v", got)
+	got := p2.imageToolTargetFor(context.Background())
+	if got == nil {
+		t.Fatal("ALLOW_LOAD=on: модель на диске должна объявляться — вызов поднимет её сам")
+	}
+	if got.Model != "flux-test" {
+		t.Fatalf("target=%+v", got)
+	}
+
+	// ALLOW_LOAD=off → прежнее правило: без загруженной модели не объявляем.
+	ResetImageCatalogCache()
+	t.Setenv("LB_IMAGE_TOOL_ALLOW_LOAD", "off")
+	p3, stub3 := newImgResProxy(t, toolTestImageSettings())
+	stub3.setModels(`{"models":[{"name":"flux-test","state":"not_loaded"}],"state":"not_loaded","current_model":""}`)
+	if bad := p3.imageToolTargetFor(context.Background()); bad != nil {
+		t.Fatalf("ALLOW_LOAD=off: без загруженной модели инструмент объявлять нельзя: %+v", bad)
 	}
 }
 

@@ -115,3 +115,107 @@ func TestOpenAIFunction_WireShape(t *testing.T) {
 		t.Errorf("нет parameters в function: %s", raw)
 	}
 }
+
+// --- R85: автозагрузка и каталог моделей ------------------------------------
+
+// При выключенной автозагрузке схема обязана остаться ПРЕЖНЕЙ байт-в-байт:
+// на неё опираются уже развёрнутые клиенты, а обещать «поднимем модель сами»
+// при ALLOW_LOAD=off было бы ложью в описании инструмента.
+func TestBuild_AllowLoadOffKeepsLegacySchema(t *testing.T) {
+	legacy := Build(Spec{Sync: true})
+	withFlagOff := Build(Spec{Sync: true, AllowLoad: false})
+
+	legacyJSON, _ := json.Marshal(legacy)
+	offJSON, _ := json.Marshal(withFlagOff)
+	if string(legacyJSON) != string(offJSON) {
+		t.Fatalf("AllowLoad=false изменил схему:\n legacy=%s\n   off=%s", legacyJSON, offJSON)
+	}
+	if strings.Contains(withFlagOff.Description, ListName) {
+		t.Error("при ALLOW_LOAD=off описание не должно звать list_image_models: каталогом модель нельзя поднять")
+	}
+	if strings.Contains(withFlagOff.Parameters.Properties["model"].Description, ListName) {
+		t.Error("при ALLOW_LOAD=off описание параметра model не должно ссылаться на list_image_models")
+	}
+}
+
+// При включённой автозагрузке модель обязана узнать ДВА факта: чем
+// отличаются модели (каталог) и что загрузка — это пауза, о которой надо
+// предупредить пользователя.
+func TestBuild_AllowLoadOnExplainsCatalogAndLoadPause(t *testing.T) {
+	tool := Build(Spec{Sync: true, AllowLoad: true, Models: []string{"sd15-q8-0", "flux-schnell-q3-k"}})
+	if !strings.Contains(tool.Description, ListName) {
+		t.Errorf("описание должно звать %s: %s", ListName, tool.Description)
+	}
+	if !strings.Contains(tool.Description, "загрузку") {
+		t.Errorf("описание должно предупреждать о времени загрузки: %s", tool.Description)
+	}
+	model := tool.Parameters.Properties["model"]
+	if !strings.Contains(model.Description, ListName) {
+		t.Errorf("описание параметра model должно ссылаться на %s: %s", ListName, model.Description)
+	}
+	if len(model.Enum) != 2 {
+		t.Errorf("enum моделей = %v, want 2 значения", model.Enum)
+	}
+}
+
+func TestBuildList_Shape(t *testing.T) {
+	tool := BuildList(ListSpec{})
+	if tool.Name != ListName {
+		t.Fatalf("имя инструмента %q, want %q", tool.Name, ListName)
+	}
+	if len(tool.Parameters.Required) != 0 {
+		t.Errorf("required=%v, want пусто: каталог отдаётся без параметров", tool.Parameters.Required)
+	}
+	if tool.Parameters.AdditionalProperties {
+		t.Error("additionalProperties должен быть false")
+	}
+	if _, ok := tool.Parameters.Properties["family"]; !ok {
+		t.Error("нет необязательного параметра family")
+	}
+	if e := tool.Parameters.Properties["family"].Enum; e != nil {
+		t.Errorf("enum семейств при пустом списке = %v, want nil", e)
+	}
+	withFam := BuildList(ListSpec{Families: []string{"sd15", "flux"}})
+	got := withFam.Parameters.Properties["family"].Enum
+	if len(got) != 2 || got[0] != "sd15" {
+		t.Fatalf("enum семейств = %v, want [sd15 flux]", got)
+	}
+	got[0] = "mutated"
+	if BuildList(ListSpec{Families: []string{"sd15"}}).Parameters.Properties["family"].Enum[0] == "mutated" {
+		t.Error("BuildList не копирует список семейств")
+	}
+	if !strings.Contains(tool.Description, "GPU не занимает") {
+		t.Errorf("описание должно объяснять, что каталог не тратит GPU: %s", tool.Description)
+	}
+}
+
+func TestOpenAITools_ListOnlyWithAllowLoad(t *testing.T) {
+	// Имена берём из фактической проводной формы (marshal → JSON), а не из
+	// структуры: так тест проверяет ровно то, что уйдёт в запрос к модели.
+	names := func(tools []map[string]interface{}) []string {
+		out := make([]string, 0, len(tools))
+		for _, tool := range tools {
+			raw, err := json.Marshal(tool)
+			if err != nil {
+				t.Fatalf("marshal tool: %v", err)
+			}
+			var doc map[string]interface{}
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				t.Fatalf("unmarshal tool: %v", err)
+			}
+			fn, _ := doc["function"].(map[string]interface{})
+			name, _ := fn["name"].(string)
+			out = append(out, name)
+		}
+		return out
+	}
+
+	off := OpenAITools(Spec{Sync: true})
+	if len(off) != 1 || names(off)[0] != Name {
+		t.Fatalf("ALLOW_LOAD=off: инструменты = %v, want только %s", names(off), Name)
+	}
+	on := OpenAITools(Spec{Sync: true, AllowLoad: true})
+	if len(on) != 2 || names(on)[0] != Name || names(on)[1] != ListName {
+		t.Fatalf("ALLOW_LOAD=on: инструменты = %v, want [%s %s]", names(on), Name, ListName)
+	}
+}

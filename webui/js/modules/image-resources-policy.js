@@ -72,7 +72,10 @@
             queueWaitTimeoutSec: Number(eff.queueWaitTimeoutSec || 0),
             exclusiveLockTimeoutSec: Number(eff.exclusiveLockTimeoutSec || 0),
             blockOnUnknownVramEstimate: !!eff.blockOnUnknownVramEstimate,
-            gateDisabled: !!eff.gateDisabled
+            gateDisabled: !!eff.gateDisabled,
+            // R85: автозагрузка модели из инструмента. effective уже учитывает
+            // дефолт (on) — галочка показывает ДЕЙСТВУЮЩЕЕ значение.
+            allowToolLoad: eff.allowToolLoad !== false
         };
     }
 
@@ -123,6 +126,7 @@
         if (f.exclusiveLockTimeoutSec > 0) parts.push('fuse ' + f.exclusiveLockTimeoutSec + 's');
         if (f.blockOnUnknownVramEstimate) parts.push('block on unknown');
         if (f.gateDisabled) parts.push('gate off');
+        if (!f.allowToolLoad) parts.push('tool load off');
         return parts.join(', ');
     }
 
@@ -221,6 +225,9 @@
         var limits = (state.data && state.data.limits) || {};
         var warn = warningFor(f);
         var hint = policyHint(state.data, f.coexistence);
+        // R85: имя флага окружения показываем рядом с галочкой — при «не задано в
+        // конфиге» действует именно он, и оператор должен видеть, что искать.
+        var allowEnv = (state.data && state.data.allowToolLoad && state.data.allowToolLoad.env) || '';
 
         host.innerHTML =
             '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">' +
@@ -254,6 +261,15 @@
                     '<input type="checkbox" id="imPolicyGateOff"' + (f.gateDisabled ? ' checked' : '') + '>' +
                     escapeHtml(t('imagePolicy.gate_off', 'Выключить гейт VRAM и лок')) +
                 '</label>' +
+                '<label style="display:flex;gap:6px;align-items:center;cursor:pointer;">' +
+                    '<input type="checkbox" id="imPolicyAllowLoad"' + (f.allowToolLoad ? ' checked' : '') + '>' +
+                    escapeHtml(t('imagePolicy.allow_load', 'Разрешить инструменту загружать image-модель')) +
+                '</label>' +
+            '</div>' +
+            '<div style="margin-top:6px;font-size:12px;color:var(--text-muted);">' +
+                escapeHtml(t('imagePolicy.allow_load_hint',
+                    'При включённой галочке текстовая модель видит каталог моделей (list_image_models) и может сама поднять нужную; при выключенной инструмент объявляется только для уже загруженной модели.')) +
+                (allowEnv ? ' ' + escapeHtml(t('imagePolicy.allow_load_env', 'Флаг окружения: {flag}', { flag: allowEnv })) : '') +
             '</div>' +
             '<div id="imPolicyHint" style="margin-top:10px;font-size:12px;color:var(--text-muted);"' + (hint ? '' : ' hidden') + '>' +
                 '<i class="fas fa-circle-info"></i> <span>' + escapeHtml(hint) + '</span></div>' +
@@ -298,7 +314,8 @@
             queueWaitTimeoutSec: Number((byId('imPolicyWait') || {}).value || 0),
             exclusiveLockTimeoutSec: Number((byId('imPolicyFuse') || {}).value || 0),
             blockOnUnknownVramEstimate: !!(byId('imPolicyBlockUnknown') || {}).checked,
-            gateDisabled: !!(byId('imPolicyGateOff') || {}).checked
+            gateDisabled: !!(byId('imPolicyGateOff') || {}).checked,
+            allowToolLoad: !!(byId('imPolicyAllowLoad') || {}).checked
         };
     }
 

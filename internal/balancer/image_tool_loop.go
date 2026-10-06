@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/imagetool"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -57,7 +58,7 @@ type imageToolLoopArgs struct {
 // true — ответ клиенту уже записан (штатный путь handler'а не нужен).
 func (lr *LlamaCppRouter) runImageToolLoop(w http.ResponseWriter, r *http.Request, a imageToolLoopArgs) bool {
 	clientStream := isStreamingFromBody(r.URL.Path, a.bodyBuf)
-	cfg := imageToolSettings()
+	cfg := lr.proxy.imageToolSettings()
 
 	// --- turn 1: нестриминговый, чтобы увидеть вызов целиком ---
 	body1, err := forceNonStream(a.bodyBuf)
@@ -93,22 +94,31 @@ func (lr *LlamaCppRouter) runImageToolLoop(w http.ResponseWriter, r *http.Reques
 	}
 
 	// --- исполнение вызовов ---
+	//
+	// ЛИМИТ (cfg.MaxCalls) считается по ГЕНЕРАЦИЯМ, а не по всем вызовам: запрос
+	// каталога (list_image_models) ничего не стоит и не должен съедать бюджет
+	// картинок. Иначе модель, вызвавшая каталог и генерацию в одном turn,
+	// потеряла бы одну генерацию из двух.
 	results := make([]map[string]interface{}, 0, len(calls))
-	for i, call := range calls {
-		if i >= cfg.MaxCalls {
-			// Больше MaxCalls картинок на запрос не генерируем: это защита от
-			// «модель решила нарисовать десять вариантов» на слабой GPU.
-			results = append(results, map[string]interface{}{
-				"status": "error",
-				"error":  fmt.Sprintf("лимит генераций на один запрос (%d) исчерпан", cfg.MaxCalls),
-			})
-			continue
+	generations := 0
+	for _, call := range calls {
+		if !call.isListCall() {
+			if generations >= cfg.MaxCalls {
+				// Больше MaxCalls картинок на запрос не генерируем: это защита от
+				// «модель решила нарисовать десять вариантов» на слабой GPU.
+				results = append(results, map[string]interface{}{
+					"status": "error",
+					"error":  fmt.Sprintf("лимит генераций на один запрос (%d) исчерпан", cfg.MaxCalls),
+				})
+				continue
+			}
+			generations++
 		}
 		res := lr.executeOneImageToolCall(r, a, call)
 		results = append(results, res)
 	}
 
-	// --- turn 2: финальный ответ модели без нашего инструмента ---
+	// --- turn 2: финальный ответ модели без наших инструментов (R85: обоих) ---
 	body2, err := buildFollowUpBody(a.bodyBuf, message, calls, results)
 	if err != nil {
 		logger.Get().Errorw("image tool: не удалось собрать follow-up", "error", err)
@@ -189,19 +199,31 @@ func ensureImageMarkdown(raw []byte, results []map[string]interface{}) []byte {
 	return out
 }
 
-// executeOneImageToolCall — генерация по одному вызову; ошибка становится
-// содержимым tool-сообщения (модель обязана объяснить её пользователю, а не
-// молча упасть).
+// executeOneImageToolCall — исполнение одного вызова: генерация или каталог.
+// Ошибка становится содержимым tool-сообщения (модель обязана объяснить её
+// пользователю, а не молча упасть).
 func (lr *LlamaCppRouter) executeOneImageToolCall(r *http.Request, a imageToolLoopArgs, call imageToolCall) map[string]interface{} {
-	args, err := parseImageToolArgs(call.Arguments)
+	args, err := parseImageToolArgsFor(call.Arguments, call.isListCall())
 	if err != nil {
 		logger.Get().Warnw("image tool: некорректные аргументы вызова",
-			"call", call.ID, "args", call.Arguments, "error", err)
+			"call", call.ID, "tool", call.Name, "args", call.Arguments, "error", err)
 		return map[string]interface{}{"status": "error", "error": err.Error()}
 	}
+
+	// R85: list_image_models — это чтение каталога: ни GPU, ни VRAM-гейта, ни
+	// записи в ленту image-запросов (генерации не было — считать её запросом
+	// значило бы портить статистику и занимать слот).
+	if call.isListCall() {
+		logger.Get().Infow("image tool: модель запросила каталог моделей",
+			"call", call.ID, "family", args.Family)
+		res := lr.proxy.imageToolCatalogResult(r.Context(), args.Family)
+		res["tool_call_id"] = call.ID
+		return res
+	}
+
 	logger.Get().Infow("image tool: генерация по вызову модели",
 		"backend", a.target.BackendID, "model", a.target.Model,
-		"prompt_len", len(args.Prompt), "call", call.ID)
+		"requested_model", args.Model, "prompt_len", len(args.Prompt), "call", call.ID)
 
 	res, err := lr.proxy.generateImageForTool(r.Context(), a.target, args)
 	if err != nil {
@@ -301,14 +323,21 @@ func buildFollowUpBody(body []byte, assistant map[string]interface{}, calls []im
 		assistantMsg["tool_calls"] = rawCalls
 	} else {
 		// Вызов пришёл JSON-ом в content — синтезируем каноничную форму, чтобы
-		// модель увидела свой вызов в истории так, как её учили.
+		// модель увидела свой вызов в истории так, как её учили. Имя берём из
+		// разобранного вызова: R85 добавил второй инструмент (list_image_models),
+		// и подменять его на generate_image нельзя — модель увидела бы в истории
+		// не тот вызов, который сделала.
 		synth := make([]interface{}, 0, len(calls))
 		for _, c := range calls {
+			name := c.Name
+			if name == "" {
+				name = imagetool.Name
+			}
 			synth = append(synth, map[string]interface{}{
 				"id":   c.ID,
 				"type": "function",
 				"function": map[string]interface{}{
-					"name":      "generate_image",
+					"name":      name,
 					"arguments": c.Arguments,
 				},
 			})
@@ -335,11 +364,13 @@ func buildFollowUpBody(body []byte, assistant map[string]interface{}, calls []im
 	}
 	doc["messages"] = messages
 
-	// Наш инструмент убираем, инструменты клиента оставляем.
+	// Наши инструменты убираем (оба: generate_image и list_image_models),
+	// инструменты клиента оставляем. Иначе turn 2 снова получил бы каталог и мог
+	// бы вызывать его бесконечно.
 	if tools, ok := doc["tools"].([]interface{}); ok {
 		kept := make([]interface{}, 0, len(tools))
 		for _, t := range tools {
-			if openAIToolName(t) == "generate_image" {
+			if isImageToolName(openAIToolName(t)) {
 				continue
 			}
 			kept = append(kept, t)
@@ -382,6 +413,13 @@ func (lr *LlamaCppRouter) writeImageToolFallback(w http.ResponseWriter, model st
 				sb.WriteString("\n\n")
 			}
 			sb.WriteString(md)
+		} else if summary, _ := res["summary"].(string); summary != "" {
+			// Результат list_image_models: markdown-картинки в нём нет, но текст
+			// каталога терять нельзя — модель его запросила, чтобы выбрать модель.
+			if sb.Len() > 0 {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString(summary)
 		} else if e, _ := res["error"].(string); e != "" {
 			if sb.Len() > 0 {
 				sb.WriteString("\n\n")

@@ -5,10 +5,61 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [0.7.19 — Разбор: скачанная модель не загрузилась (MLX вместо GGUF), 2026-10-06]
+## [0.7.20 — Почему поисковик предлагает «не тот» формат и как это видно заранее, 2026-10-06]
+
+Вопрос оператора: **«почему предлагает такой формат поисковик моделей в webui?»**
+
+### 🔎 Почему поиск предложил MLX-файл
+
+Для image-моделей запрос к HuggingFace идёт с `task=text-to-image` и **без**
+`library=gguf` — иначе отсекались бы легитимные safetensors-репозитории (Qwen/FLUX
+публикуют и так). В карточке репозитория показываются все файлы весов
+(`.gguf/.safetensors/.sft/.ckpt`), поэтому в выдачу попадает и
+`qwen-image-2.1-UC-MLX-4bit.safetensors`. Поиск при этом не «ошибается»: он не
+фильтрует по тому, что ПРОЧТЁТ движок, — а проверка формата была, но её вердикт
+никто не показывал (эндпоинт `GET /api/hf/probe` существовал, UI его не вызывал).
+
+### 🛠 Что добавлено
+
+- Пред-проверка (`internal/cppbackend/hf_probe.go`) теперь читает **dtype** тензоров
+  из шапки safetensors и выносит вердикт `unsupported`, если у тензора-ВЕСА
+  (`.weight`) тип `U32/I32/U16/I16` — это MLX-квантование (веса + пары
+  `scales`/`biases`), которое stable-diffusion.cpp не читает. Причина в ответе
+  человеческая: «MLX-квантование … нужен GGUF-квант».
+- Это не догадка по имени файла: тип берётся из самой шапки. Обычный safetensors
+  (F16/BF16/F8) и служебные тензоры в U32 файл не блокируют.
+- Разбор шапки вынесен в `probeHeadInto`, чтобы тесты проверяли реальные байты, а
+  не HTTP-мок.
+
+### ✅ Живая проверка (imageworker r83-submodule-v81)
+
+```bash
+# виновник — теперь точный отказ ДО скачивания 4 ГБ
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  'http://<воркер>:18093/api/hf/probe?modelId=abenzerps/Qwen-Image-2.1-Uncensored-GGUF&filename=qwen-image-2.1-UC-MLX-4bit.safetensors'
+→ {"verdict":"unsupported","format":"safetensors","reason":"MLX-квантование (тип весов U32 …) … нужен GGUF-квант"}
+
+# нормальный GGUF — по-прежнему supported
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  'http://<воркер>:18093/api/hf/probe?modelId=leejet/Qwen-Image-2.1-GGUF&filename=qwen_image_2.1-Q4_0.gguf'
+→ {"verdict":"supported","family":"qwen_image","versionLabel":"Qwen Image 2.1"}
+```
+
+### 📌 Что осталось сделать (следующий шаг)
+
+UI пока не вызывает пред-проверку: чтобы предупреждение появлялось прямо в карточке
+файла перед скачиванием, нужно вызвать `/api/hf/probe` при показе списка файлов
+(`webui/js/modules/image-models-hf.js`) и показать вердикт рядом с кнопкой.
+Сейчас проверить кандидата можно той же командой `curl` выше — она бесплатна
+(читается 512 КБ шапки).
+
 
 Оператор скачал `qwen-image-2.1-uncensored-gguf` и получил ошибку загрузки с
 `unsupported dtype "U32" (tensor "img_in.weight")` и `new_sd_ctx_t failed`.
+
+## [0.7.19 — Разбор: скачанная модель не загрузилась (MLX вместо GGUF), 2026-10-06]
+
+Оператор скачал `qwen-image-2.1-uncensored-gguf` и получил ошибку загрузки с`n`unsupported dtype "U32" (tensor "img_in.weight")` и `new_sd_ctx_t failed`.
 
 ### 🔎 Причина (подтверждена в самом файле)
 

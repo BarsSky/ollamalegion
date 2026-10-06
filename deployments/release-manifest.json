@@ -25,9 +25,9 @@
                    {
                        "service":  "imageworker",
                        "variable":  "IMAGE_WORKER_TAG",
-                       "image":  "ollama-legion/imageworker:r83-submodule-v82",
-                       "imageTag":  "r83-submodule-v82",
-                       "imageId":  "sha256:b7cd65346d3c50f1a0ab80b6b0d62797d46f35b9524d9a1d917c35a9ae916b2c",
+                       "image":  "ollama-legion/imageworker:r83-submodule-v83",
+                       "imageTag":  "r83-submodule-v83",
+                       "imageId":  "sha256:68b812358e5c0aaf026a36ea85c8c4213a7af8bde0c10b823d1e2efc6e53a1b2",
                        "alias":  "ollama-legion/imageworker:latest-cuda"
                    }
                ]

@@ -12,7 +12,7 @@ import (
 //
 // Клиент получил это как обычный текст, картинка не нарисовалась. Тест фиксирует,
 // распознаёт ли это существующий детектор форм и извлекает ли имя инструмента.
-func TestDetector_Qwen3ToolCallsPrefix(t *testing.T) {
+func TestDetector_Qwen3FormatNestedFunction(t *testing.T) {
 	args := `{\"prompt\":\"Сказочный лес с светящимися деревьями\",\"model\":\"stable-diffusion.cpp\",\"negative_prompt\":\"чёрные тени, ужасы\",\"steps\":30,\"width\":768,\"height\":512,\"seed\":42}`
 	content := `[TOOL_CALLS][{"id":"call_generate_image","type":"function","function":{"name":"generate_image","arguments":"` + args + `"}}]`
 

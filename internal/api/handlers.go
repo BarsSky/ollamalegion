@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"ollama-loadbalancer/internal/balancer"
+	"ollama-loadbalancer/internal/config"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 
@@ -15,21 +17,28 @@ import (
 
 // Server - API сервер
 type Server struct {
-	proxy         *balancer.Proxy
-	config        *types.LoadBalancerConfig
-	mux           *http.ServeMux
-	healthChecker *balancer.HealthChecker
-	metricsBroker *MetricsBroker
-	rateLimiter   *RateLimiter
-	wsRateLimiter *RateLimiter
-	authenticator *TokenAuthenticator
+	proxy  *balancer.Proxy
+	config *types.LoadBalancerConfig
+	// imageResources — переопределение политики сосуществования
+	// (balancing.image) из WebUI: файл в записываемом томе + мутация config.
+	// imageResourcesMu защищает запись в config.Balancing.Image от гонки с
+	// читающим её гейтом (см. handlers_image_resources.go).
+	imageResources         *config.ImageResourcesStore
+	imageResourcesDefaults types.ImageResourceSettings
+	imageResourcesMu       sync.RWMutex
+	mux                    *http.ServeMux
+	healthChecker          *balancer.HealthChecker
+	metricsBroker          *MetricsBroker
+	rateLimiter            *RateLimiter
+	wsRateLimiter          *RateLimiter
+	authenticator          *TokenAuthenticator
 	// eventBus — общая EventBus с балансировщиком (для нотификаций, F.α).
 	// Инициализируется через SetEventBus из main.go (после создания Proxy).
-	eventBus      EventBusLike
+	eventBus EventBusLike
 	// eventsHub — локальный ring buffer + подписки на eventBus (F.α SSE endpoint).
-	eventsHub     *eventsHub
-	stopCh        chan struct{} // graceful shutdown for metricsPublishLoop
-	configSaver   func() error  // функция сохранения конфига на диск (устанавливается из main)
+	eventsHub   *eventsHub
+	stopCh      chan struct{} // graceful shutdown for metricsPublishLoop
+	configSaver func() error  // функция сохранения конфига на диск (устанавливается из main)
 	// overridesStore — persistent runtime overrides для read-only config.json
 	// (Session 17, 2026-07-27). Хранит llamaCpp-секцию в /app/data/runtime-overrides/
 	// (writable named volume `balancer_data`). Опционально — если nil, PUT

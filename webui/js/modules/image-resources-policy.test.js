@@ -1,0 +1,255 @@
+// image-resources-policy.test.js — R84 (2026-10-03): форма политики
+// сосуществования image-генерации с текстом (балансер: balancing.image).
+//
+// Запуск: node webui/js/modules/image-resources-policy.test.js
+//
+// ЧТО ПРОВЕРЯЕМ:
+//   1. чтение действующих значений из ответа API (effective → форма) и подсказок
+//      политик, которые приходят С СЕРВЕРА (UI не дублирует тексты);
+//   2. клиентская валидация ДО отправки и её границы из limits сервера;
+//   3. предупреждения: offload (нужен реальный offload воркера), dedicated,
+//      «гейт выключен» — оператор обязан видеть риск, а не только поля;
+//   4. отправка: PUT с телом формы, DELETE для сброса, отдельный путь для ошибок;
+//   5. сводка «действует сейчас» отражает все непустые поля.
+'use strict';
+
+const assert = require('assert');
+
+// --- mocks ------------------------------------------------------------------
+
+function makeElement(id) {
+    const listeners = {};
+    const el = {
+        id: id,
+        style: {},
+        value: '',
+        checked: false,
+        innerHTML: '',
+        textContent: '',
+        getAttribute: function () { return null; },
+        setAttribute: function () { },
+        addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+        dispatch: function (type, ev) { (listeners[type] || []).forEach(function (fn) { fn(ev || {}); }); },
+    };
+    return el;
+}
+
+const elements = {};
+function getEl(id) {
+    if (!Object.prototype.hasOwnProperty.call(elements, id)) elements[id] = makeElement(id);
+    return elements[id];
+}
+
+global.window = global;
+global.document = {
+    getElementById: getEl,
+    addEventListener: function () { },
+};
+global.WEBUI_CONFIG = { API_BASE: 'http://balancer.test:18081', API_TOKEN: 'test-token' };
+global.Api = { getAuthHeaders: function () { return { 'Content-Type': 'application/json', 'X-API-Token': 'test-token' }; } };
+
+const RU = {
+    'imagePolicy.warn_offload': 'Политика offload разрешает совместную работу с текстом.',
+    'imagePolicy.warn_dedicated': 'Политика dedicated снимает ограничения.',
+    'imagePolicy.warn_gate_off': 'Гейт VRAM выключен.',
+    'imagePolicy.err_headroom': 'Резерв VRAM: 0…{max} МБ',
+    'imagePolicy.err_wait': 'Ожидание GPU: 0…{max} с',
+    'imagePolicy.err_fuse': 'Предохранитель лока: 0…{max} с',
+    'imagePolicy.err_policy': 'Неизвестная политика: {value}',
+    'imagePolicy.current': 'Действует сейчас',
+    'imagePolicy.file': 'файл',
+    'imagePolicy.headroom': 'Резерв VRAM, МБ',
+};
+global.I18N = {
+    t: function (k, vars) {
+        var s = Object.prototype.hasOwnProperty.call(RU, k) ? RU[k] : k;
+        if (vars) Object.keys(vars).forEach(function (p) { s = String(s).replace('{' + p + '}', vars[p]); });
+        return s;
+    },
+};
+
+const requests = [];
+let responseFor = function () { return { status: 200, body: {} }; };
+global.fetch = function (url, init) {
+    const rec = { url: String(url), method: (init && init.method) || 'GET', body: init && init.body ? JSON.parse(init.body) : null };
+    requests.push(rec);
+    const r = responseFor(rec);
+    return Promise.resolve({
+        ok: r.status < 400,
+        status: r.status,
+        text: function () { return Promise.resolve(r.body === null ? '' : JSON.stringify(r.body)); },
+    });
+};
+
+const toasts = [];
+global.Toast = { show: function (o) { toasts.push(o || {}); } };
+
+require('./image-resources-policy.js');
+const P = global.ImageResourcesPolicy;
+assert.ok(P, 'window.ImageResourcesPolicy должен быть экспортирован (см. check_iife_exports.py)');
+
+// --- раннер -----------------------------------------------------------------
+
+let passed = 0;
+const failures = [];
+async function check(name, fn) {
+    try {
+        await fn();
+        passed++;
+        console.log('  \u2713 ' + name);
+    } catch (e) {
+        failures.push(name + ': ' + (e && e.message));
+        console.error('  \u2717 ' + name + ' — ' + (e && e.message));
+    }
+}
+
+const API_RESPONSE = {
+    effective: {
+        coexistence: 'exclusive',
+        vramHeadroomMb: 512,
+        queueWaitTimeoutSec: 30,
+        exclusiveLockTimeoutSec: 600,
+        blockOnUnknownVramEstimate: false,
+        gateDisabled: false,
+    },
+    defaults: { coexistence: 'exclusive' },
+    overridden: false,
+    source: 'config',
+    path: '/app/data/image-resources.json',
+    limits: { maxVramHeadroomMb: 65536, maxQueueWaitTimeoutSec: 3600, maxExclusiveLockFuseSec: 86400 },
+    policies: [
+        { value: 'exclusive', hint: 'владеет картой' },
+        { value: 'offload', hint: 'нужен offload воркера' },
+        { value: 'dedicated', hint: 'отдельная GPU' },
+    ],
+};
+
+(async function main() {
+    // --- pure -----------------------------------------------------------------
+
+    await check('formFromEffective: значения API попадают в форму, пустые поля — в 0/false', function () {
+        const f = P.pure.formFromEffective(API_RESPONSE);
+        assert.strictEqual(f.coexistence, 'exclusive');
+        assert.strictEqual(f.vramHeadroomMb, 512);
+        assert.strictEqual(f.queueWaitTimeoutSec, 30);
+        assert.strictEqual(f.exclusiveLockTimeoutSec, 600);
+        assert.strictEqual(f.blockOnUnknownVramEstimate, false);
+        assert.strictEqual(f.gateDisabled, false);
+        // Пустой ответ не должен давать NaN: форма обязана остаться валидной.
+        const empty = P.pure.formFromEffective({});
+        assert.strictEqual(empty.coexistence, 'exclusive');
+        assert.strictEqual(empty.vramHeadroomMb, 0);
+    });
+
+    await check('policyHint: подсказка берётся из ответа сервера', function () {
+        assert.strictEqual(P.pure.policyHint(API_RESPONSE, 'offload'), 'нужен offload воркера');
+        assert.strictEqual(P.pure.policyHint(API_RESPONSE, 'nonsense'), '');
+        assert.strictEqual(P.pure.policyHint(null, 'exclusive'), '');
+    });
+
+    await check('validate: границы берутся из limits сервера', function () {
+        const limits = { maxVramHeadroomMb: 4096, maxQueueWaitTimeoutSec: 120, maxExclusiveLockFuseSec: 900 };
+        const ok = P.pure.validate({ coexistence: 'exclusive', vramHeadroomMb: 4096, queueWaitTimeoutSec: 120, exclusiveLockTimeoutSec: 900 }, limits);
+        assert.strictEqual(ok, '', 'граничные значения валидны');
+        // Каждый кейс: все поля валидны, кроме одного — иначе ошибка прилетит от
+        // первого же поля, и проверка поймает не то сообщение.
+        const base = { coexistence: 'exclusive', vramHeadroomMb: 0, queueWaitTimeoutSec: 0, exclusiveLockTimeoutSec: 0 };
+        assert.ok(/4096/.test(P.pure.validate(Object.assign({}, base, { vramHeadroomMb: 4097 }), limits)), 'превышение headroom');
+        assert.ok(/120/.test(P.pure.validate(Object.assign({}, base, { queueWaitTimeoutSec: 121 }), limits)), 'превышение wait');
+        assert.ok(/900/.test(P.pure.validate(Object.assign({}, base, { exclusiveLockTimeoutSec: 901 }), limits)), 'превышение fuse');
+        assert.ok(/nonsense/.test(P.pure.validate(Object.assign({}, base, { coexistence: 'nonsense' }), limits)), 'неизвестная политика');
+        assert.ok(P.pure.validate(Object.assign({}, base, { vramHeadroomMb: -1 }), limits) !== '', 'отрицательный резерв невалиден');
+    });
+
+    await check('warningFor: offload/dedicated/гейт-выкл предупреждают, exclusive — нет', function () {
+        assert.strictEqual(P.pure.warningFor({ coexistence: 'exclusive' }), '');
+        assert.ok(/offload/.test(P.pure.warningFor({ coexistence: 'offload' })));
+        assert.ok(/dedicated/.test(P.pure.warningFor({ coexistence: 'dedicated' })));
+        assert.ok(/Гейт VRAM/.test(P.pure.warningFor({ coexistence: 'exclusive', gateDisabled: true })));
+    });
+
+    await check('summaryText: сводка отражает все непустые поля', function () {
+        const s = P.pure.summaryText(API_RESPONSE);
+        assert.ok(s.indexOf('exclusive') !== -1 && s.indexOf('headroom 512 MB') !== -1, s);
+        assert.ok(s.indexOf('wait 30s') !== -1 && s.indexOf('fuse 600s') !== -1, s);
+        assert.strictEqual(P.pure.summaryText({ effective: { coexistence: 'exclusive', vramHeadroomMb: 0, queueWaitTimeoutSec: 0, exclusiveLockTimeoutSec: 0 } }), 'exclusive');
+    });
+
+    await check('escapeHtml: подписи политик экранируются', function () {
+        assert.strictEqual(P.pure.escapeHtml('<b>"x"</b>'), '&lt;b&gt;&quot;x&quot;&lt;/b&gt;');
+        assert.strictEqual(P.pure.escapeHtml(null), '');
+    });
+
+    // --- сеть -----------------------------------------------------------------
+
+    await check('load: GET /api/v1/image/resources и рендер формы', async function () {
+        requests.length = 0;
+        responseFor = function () { return { status: 200, body: API_RESPONSE }; };
+        P.mount();
+        await P._actions.load(true);
+        const rec = requests.filter(function (r) { return r.url.indexOf('/api/v1/image/resources') !== -1; })[0];
+        assert.ok(rec, 'запрос политики не ушёл');
+        assert.strictEqual(rec.method, 'GET');
+        assert.ok(rec.url.indexOf('http://balancer.test:18081') === 0, 'неверный base URL: ' + rec.url);
+        const html = getEl('imPolicyHost').innerHTML;
+        assert.ok(html.indexOf('imPolicyCoexistence') !== -1, 'нет селекта политики');
+        assert.ok(html.indexOf('imPolicyHeadroom') !== -1, 'нет поля резерва VRAM');
+        assert.ok(html.indexOf('imPolicyGateOff') !== -1, 'нет чекбокса «выключить гейт»');
+        assert.ok(html.indexOf('владеет картой') !== -1, 'нет подсказки сервера для выбранной политики');
+        assert.strictEqual(getEl('imPolicyBadge').style.display, 'none', 'без переопределения бейджа быть не должно');
+    });
+
+    await check('save: PUT с телом формы и обновление бейджа', async function () {
+        requests.length = 0;
+        responseFor = function () { return { status: 200, body: Object.assign({}, API_RESPONSE, { overridden: true, source: 'override', effective: Object.assign({}, API_RESPONSE.effective, { coexistence: 'offload', vramHeadroomMb: 1024 }) }) }; };
+        getEl('imPolicyCoexistence').value = 'offload';
+        getEl('imPolicyHeadroom').value = '1024';
+        getEl('imPolicyWait').value = '30';
+        getEl('imPolicyFuse').value = '600';
+        getEl('imPolicyBlockUnknown').checked = true;
+        getEl('imPolicyGateOff').checked = false;
+        const ok = await P._actions.save();
+        assert.strictEqual(ok, true);
+        const rec = requests.filter(function (r) { return r.method === 'PUT'; })[0];
+        assert.ok(rec, 'PUT не ушёл');
+        assert.strictEqual(rec.body.coexistence, 'offload');
+        assert.strictEqual(rec.body.vramHeadroomMb, 1024);
+        assert.strictEqual(rec.body.blockOnUnknownVramEstimate, true);
+        assert.strictEqual(getEl('imPolicyBadge').style.display, '', 'после сохранения бейдж переопределения виден');
+        assert.ok(toasts.some(function (x) { return /сохранена/.test(x.message || ''); }), 'нет тоста об успехе');
+    });
+
+    await check('save: невалидное значение не уходит на сервер', async function () {
+        requests.length = 0;
+        getEl('imPolicyCoexistence').value = 'nonsense';
+        const ok = await P._actions.save();
+        assert.strictEqual(ok, false);
+        assert.strictEqual(requests.filter(function (r) { return r.method === 'PUT'; }).length, 0, 'невалидное значение не должно отправляться');
+        assert.ok(/nonsense/.test(getEl('imPolicyHost').innerHTML), 'ошибка должна быть видна в форме');
+        getEl('imPolicyCoexistence').value = 'exclusive';
+    });
+
+    await check('reset: DELETE и возврат встроенных значений', async function () {
+        requests.length = 0;
+        responseFor = function () { return { status: 200, body: API_RESPONSE }; };
+        const ok = await P._actions.reset();
+        assert.strictEqual(ok, true);
+        const rec = requests.filter(function (r) { return r.method === 'DELETE'; })[0];
+        assert.ok(rec, 'DELETE не ушёл');
+        assert.strictEqual(getEl('imPolicyBadge').style.display, 'none', 'после сброса бейджа быть не должно');
+        assert.ok(toasts.some(function (x) { return /встроенные/.test(x.message || ''); }), 'нет тоста о сбросе');
+    });
+
+    await check('ошибка сервера показывается в форме и тостом', async function () {
+        requests.length = 0;
+        responseFor = function () { return { status: 400, body: { error: 'unknown coexistence policy "bad"' } }; };
+        const ok = await P._actions.save();
+        assert.strictEqual(ok, false);
+        assert.ok(getEl('imPolicyHost').innerHTML.indexOf('unknown coexistence policy') !== -1, 'текст ошибки сервера не показан');
+        assert.ok(toasts.some(function (x) { return /Не удалось сохранить/.test(x.message || ''); }), 'нет тоста об ошибке');
+    });
+
+    console.log('\n' + (failures.length ? 'FAILED: ' + failures.length : 'ИТОГ: все проверки пройдены (' + passed + ')'));
+    if (failures.length) failures.forEach(function (f) { console.error(' - ' + f); });
+    process.exit(failures.length ? 1 : 0);
+})();

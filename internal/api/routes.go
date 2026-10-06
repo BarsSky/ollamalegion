@@ -323,6 +323,12 @@ func (s *Server) setupRoutes() {
 	// Всё, кроме публичного списка, — под AuthMiddleware + RateLimitMiddleware:
 	// прокси умеет POST /api/image/models/load (spawn sd-server) и /api/hf/bundle
 	// (многогигабайтная загрузка), поэтому анонимный доступ здесь недопустим.
+	// R84 (2026-10-03): политика сосуществования image-генерации с текстом
+	// (balancing.image) — просмотр, изменение и сброс из WebUI. Переопределение
+	// живёт в /app/data (config.json смонтирован read-only, см.
+	// internal/config/image_resources.go).
+	s.mux.Handle("/api/v1/image/resources", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageResources), s.rateLimiter), s.authenticator))
+
 	s.mux.HandleFunc("/api/v1/image/backends", s.handleImageBackends)
 	s.mux.Handle("/api/v1/image/models", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelsAggregate), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/image/model-catalog", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelCatalog), s.rateLimiter), s.authenticator))

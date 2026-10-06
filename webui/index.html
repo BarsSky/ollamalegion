@@ -701,6 +701,25 @@
                         </div>
                     </div>
 
+                    <!-- R84 (2026-10-03): политика сосуществования image-генерации
+                         с текстовым инференсом (balancing.image). Рисует
+                         webui/js/modules/image-resources-policy.js; значения
+                         хранятся в записываемом томе (/app/data), потому что
+                         config.json в стенде смонтирован read-only. -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fas fa-scale-balanced section-icon-i"></i> <span data-i18n="imagePolicy.title">Политика сосуществования с текстом</span></h3>
+                            <div class="card-actions">
+                                <span id="imPolicyBadge" style="display:none;font-size:11px;color:var(--warning, #e0a030);" data-i18n="imagePolicy.badge_override">переопределено из WebUI</span>
+                                <button class="btn btn-secondary" id="imPolicyResetBtn" data-i18n="imagePolicy.reset">Сбросить к встроенным</button>
+                                <button class="btn btn-primary" id="imPolicySaveBtn" data-i18n="common.save">Сохранить</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div id="imPolicyHost"></div>
+                        </div>
+                    </div>
+
                     <div class="card">
                         <div class="card-header">
                             <h3><i class="fas fa-vial-circle-check section-icon-i"></i> <span data-i18n="imageModels.selftest_title">Проверка бэкенда</span></h3>
@@ -2356,6 +2375,9 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          сгенерированное изображение). Видна только при наличии image_cpp. -->
     <script defer src="js/modules/image-test-page.js?v=R83"></script>
     <script defer src="js/modules/image-backends-page.js?v=R83"></script>
+    <!-- R84: политика сосуществования image-генерации с текстом (balancing.image)
+         — форма на табе «Обзор» страницы «Image-модели». -->
+    <script defer src="js/modules/image-resources-policy.js?v=R83"></script>
     <script defer src="js/modules/websocket.js?v=R83"></script>
     <script defer src="js/modules/renderers.js?v=R83"></script>
     <!-- R54.5 (2026-08-24): AutoTune visibility (Phase 1: read-only badge) -->

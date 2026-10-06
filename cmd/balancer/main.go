@@ -169,6 +169,24 @@ func main() {
 	bannerRow("Auth tokens", authTokenSource(&conf.Auth))
 	fmt.Printf("╚═════════════════════════════════════════════════════════════╝\n")
 
+	// R84 (2026-10-03): переопределение политики сосуществования image-генерации
+	// с текстом (balancing.image) из WebUI.
+	//
+	// ПОЧЕМУ ФАЙЛ, А НЕ config.json: в едином стенде /app/config смонтирован
+	// read-only, и штатный configSaver туда писать не может, а env-переменных для
+	// этих полей нет. Значения оператора живут в записываемом томе
+	// (LB_IMAGE_RESOURCES_PATH, по умолчанию /app/data/image-resources.json) и
+	// применяются здесь ДО создания прокси — гейт читает их на каждый запрос.
+	imageResourcesStore := config.NewImageResourcesStore("")
+	bundledImageResources := conf.Balancing.Image // эталон из config.json (для «Сбросить»)
+	if config.ApplyImageResourcesOverride(conf, imageResourcesStore) {
+		fmt.Printf("  image policy: override applied from %s (coexistence=%s)\n",
+			imageResourcesStore.Path(), conf.Balancing.Image.EffectiveCoexistencePolicy())
+	} else {
+		fmt.Printf("  image policy: %s (coexistence=%s)\n",
+			imageResourcesStore.Path(), conf.Balancing.Image.EffectiveCoexistencePolicy())
+	}
+
 	// Создание прокси
 	proxy := balancer.NewProxy(conf)
 
@@ -199,6 +217,9 @@ func main() {
 
 	// Подключаем сохранение конфига на диск для авто-загрузки моделей (AutoPull)
 	apiServer.SetConfigSaver(cfg.Save)
+
+	// R84: хранилище политики image-ресурсов + эталон из config.json для сброса.
+	apiServer.SetImageResourcesStore(imageResourcesStore, bundledImageResources)
 
 	// Round 31 (2026-08-09): load model profiles из /app/data/profiles.json (writable).
 	// config.json может быть read-only (bundled compose), поэтому профили persist'ятся

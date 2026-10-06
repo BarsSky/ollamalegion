@@ -163,7 +163,9 @@
     /** renderTabs — отдать контекст подключённым табам-модулям (если они есть). */
     function renderTabs() {
         var ctx = context();
-        [window.ImageModelsList, window.ImageModelsHf, window.ImageTestPage].forEach(function (mod) {
+        // R84: ImageResourcesPolicy владеет табом «Обзор» (политика сосуществования),
+        // поэтому он в том же списке таб-модулей, что и остальные.
+        [window.ImageModelsList, window.ImageModelsHf, window.ImageResourcesPolicy, window.ImageTestPage].forEach(function (mod) {
             if (!mod || typeof mod.render !== 'function') return;
             var owns = !mod.tabIds || mod.tabIds.indexOf(activeTab) !== -1;
             if (!owns) return;

@@ -38,7 +38,8 @@
       "vramEstimateMb": 2000,
       "timeoutSec": 300,
       "idleUnloadMinutes": 15,
-      "notes": "Самый лёгкий вход: all-in-one Q4_0 (1.57 GB, UNet+VAE+CLIP внутри) → --model. Работает на 4 GB без offload (пик ~2.0 GB @512). K-квантов для SD1.5 не существует."
+      "notes": "Самый лёгкий вход: all-in-one Q4_0 (1.57 GB, UNet+VAE+CLIP внутри) → --model. Работает на 4 GB без offload (пик ~2.0 GB @512). K-квантов для SD1.5 не существует.",
+      "strengths": "быстрая черновая генерация 512x512 за секунды, минимум VRAM (2.0 GB), идёт даже на 4 GB без offload"
     },
     {
       "name": "sd15-q5-0",
@@ -68,7 +69,8 @@
       "vramEstimateMb": 2050,
       "timeoutSec": 300,
       "idleUnloadMinutes": 15,
-      "notes": "Q5_0 (1.62 GB) — компромисс качество/размер между Q4_0 и Q8_0. Разница в пике VRAM против Q4_0 незначима."
+      "notes": "Q5_0 (1.62 GB) — компромисс качество/размер между Q4_0 и Q8_0. Разница в пике VRAM против Q4_0 незначима.",
+      "strengths": "тот же малый VRAM, что у Q4_0, но чуть аккуратнее детали: компромисс качество/размер"
     },
     {
       "name": "sd15-q8-0",
@@ -98,7 +100,8 @@
       "vramEstimateMb": 2100,
       "timeoutSec": 300,
       "idleUnloadMinutes": 15,
-      "notes": "Эталон качества SD1.5 (1.76 GB) при пике 2.1 GB @512 по замерам sd.cpp. Именно Q8_0 рекомендован по умолчанию для 4-6 GB карт."
+      "notes": "Эталон качества SD1.5 (1.76 GB) при пике 2.1 GB @512 по замерам sd.cpp. Именно Q8_0 рекомендован по умолчанию для 4-6 GB карт.",
+      "strengths": "эталон качества SD1.5 при малом VRAM (2.1 GB): лучший выбор по умолчанию для 4-6 GB"
     },
     {
       "name": "sdxl-turbo-q8-0",
@@ -129,7 +132,8 @@
       "vramEstimateMb": 4200,
       "timeoutSec": 300,
       "idleUnloadMinutes": 15,
-      "notes": "Единственный публичный q8_0 all-in-one SDXL-Turbo (4.10 GB) → --model. cfg ОБЯЗАТЕЛЬНО 1.0 (distilled), 1-4 шага. Файл больше 4 GB → на 4 GB-карте нужен --offload-to-cpu (в профиле включён)."
+      "notes": "Единственный публичный q8_0 all-in-one SDXL-Turbo (4.10 GB) → --model. cfg ОБЯЗАТЕЛЬНО 1.0 (distilled), 1-4 шага. Файл больше 4 GB → на 4 GB-карте нужен --offload-to-cpu (в профиле включён).",
+      "strengths": "1-4 шага на картинку: самая быстрая генерация, качество выше SD1.5 при cfg 1.0"
     },
     {
       "name": "z-image-turbo-q3-k",
@@ -172,7 +176,8 @@
       "vramEstimateMb": 3400,
       "timeoutSec": 900,
       "idleUnloadMinutes": 10,
-      "notes": "Официальный рецепт '4 GB VRAM' из wiki sd.cpp: Q3_K (3.14 GB) + Qwen3-4B Q4_K_M TE + ae.safetensors, --offload-to-cpu --diffusion-fa, 512x1024, 8 шагов. ВАЖНО: наличие ae.safetensors требует принятой лицензии black-forest-labs (HF_TOKEN)."
+      "notes": "Официальный рецепт '4 GB VRAM' из wiki sd.cpp: Q3_K (3.14 GB) + Qwen3-4B Q4_K_M TE + ae.safetensors, --offload-to-cpu --diffusion-fa, 512x1024, 8 шагов. ВАЖНО: наличие ae.safetensors требует принятой лицензии black-forest-labs (HF_TOKEN).",
+      "strengths": "современное качество Z-Image Turbo на 4 GB: 512x1024 за 8 шагов, требует offload на CPU"
     },
     {
       "name": "z-image-turbo-q4-0",
@@ -215,7 +220,8 @@
       "vramEstimateMb": 3800,
       "timeoutSec": 900,
       "idleUnloadMinutes": 10,
-      "notes": "Тот же рецепт, но Q4_0 (3.68 GB) — второй рекомендованный квант для 4 GB. Замер на 12 GB без offload: diffusion 3512 MB + TE 4076 MB + VAE 160 MB."
+      "notes": "Тот же рецепт, но Q4_0 (3.68 GB) — второй рекомендованный квант для 4 GB. Замер на 12 GB без offload: diffusion 3512 MB + TE 4076 MB + VAE 160 MB.",
+      "strengths": "то же качество Z-Image Turbo, но на 12 GB идёт без offload; второй вариант для 4 GB"
     },
     {
       "name": "flux2-klein-4b-q4-0",
@@ -258,7 +264,8 @@
       "vramEstimateMb": 2600,
       "timeoutSec": 900,
       "idleUnloadMinutes": 10,
-      "notes": "Лучший 'новый' кандидат под 4-6 GB: Q4_0 всего 2.46 GB (замер на RTX 2060 6GB: ~1.4 с/шаг @512). cfg=1.0, 4 шага (klein distilled). VAE — gated репозиторий FLUX.2-dev (нужен HF_TOKEN)."
+      "notes": "Лучший 'новый' кандидат под 4-6 GB: Q4_0 всего 2.46 GB (замер на RTX 2060 6GB: ~1.4 с/шаг @512). cfg=1.0, 4 шага (klein distilled). VAE — gated репозиторий FLUX.2-dev (нужен HF_TOKEN).",
+      "strengths": "лучший баланс 'новое качество / малый VRAM' (влезает в 4-6 GB): универсальный выбор"
     },
     {
       "name": "flux-schnell-q2-k",
@@ -308,7 +315,8 @@
       "vramEstimateMb": 3900,
       "timeoutSec": 1800,
       "idleUnloadMinutes": 10,
-      "notes": "FLUX.1-schnell Q2_K (4.01 GB) — только 512 и с offload; официально измеренный пик q2_k = 3736 MB. TE обязательно на CPU (--backend te=cpu): Qwen/T5-часть иначе съедает VRAM. Быстрая (4 шага, cfg 1.0), но качество ниже q3_k."
+      "notes": "FLUX.1-schnell Q2_K (4.01 GB) — только 512 и с offload; официально измеренный пик q2_k = 3736 MB. TE обязательно на CPU (--backend te=cpu): Qwen/T5-часть иначе съедает VRAM. Быстрая (4 шага, cfg 1.0), но качество ниже q3_k.",
+      "strengths": "FLUX-качество на минимуме VRAM, но только 512 и обязательно с offload text encoder на CPU"
     },
     {
       "name": "flux-schnell-q3-k",
@@ -357,7 +365,8 @@
       "vramEstimateMb": 5200,
       "timeoutSec": 1800,
       "idleUnloadMinutes": 10,
-      "notes": "FLUX.1-schnell Q3_K (5.31 GB) — 6 GB-вариант (измеренный пик q3_k = 4888 MB), 1024x1024, 4 шага, cfg 1.0. TE на CPU (--backend te=cpu) обязателен, иначе T5-XXL вытеснит diffusion из VRAM."
+      "notes": "FLUX.1-schnell Q3_K (5.31 GB) — 6 GB-вариант (измеренный пик q3_k = 4888 MB), 1024x1024, 4 шага, cfg 1.0. TE на CPU (--backend te=cpu) обязателен, иначе T5-XXL вытеснит diffusion из VRAM.",
+      "strengths": "лучшее качество FLUX из каталога: 1024x1024 за 4 шага; требует ~6 GB и offload text encoder"
     }
   ]
 }

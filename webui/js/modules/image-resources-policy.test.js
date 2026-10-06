@@ -84,6 +84,10 @@ global.fetch = function (url, init) {
 };
 
 const toasts = [];
+// Мок страницы бэкендов: после сохранения политики её колонка обязана обновиться
+// принудительно (у неё TTL кэш), иначе оператор видит старое значение.
+const policyReloads = [];
+global.ImageBackendsPage = { _actions: { loadPolicy: function (force) { policyReloads.push(force); } } };
 global.Toast = { show: function (o) { toasts.push(o || {}); } };
 
 require('./image-resources-policy.js');
@@ -219,6 +223,7 @@ const API_RESPONSE = {
         assert.strictEqual(rec.body.blockOnUnknownVramEstimate, true);
         assert.strictEqual(getEl('imPolicyBadge').style.display, '', 'после сохранения бейдж переопределения виден');
         assert.ok(toasts.some(function (x) { return /сохранена/.test(x.message || ''); }), 'нет тоста об успехе');
+        assert.deepStrictEqual(policyReloads, [true], 'колонка политики должна перечитаться принудительно (force)');
     });
 
     await check('save: невалидное значение не уходит на сервер', async function () {

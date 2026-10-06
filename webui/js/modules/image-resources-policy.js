@@ -379,9 +379,15 @@
      * значения (иначе оператор видел бы старое и решил, что не применилось).
      */
     function refreshPolicyColumn() {
-        if (window.ImageBackendsPage && window.ImageBackendsPage._actions &&
-            typeof window.ImageBackendsPage._actions.refresh === 'function') {
-            try { window.ImageBackendsPage._actions.refresh(); } catch (e) { /* страница может быть не смонтирована */ }
+        var page = window.ImageBackendsPage;
+        if (!page || !page._actions) return;
+        // Сначала именно loadPolicy(true): у колонки TTL кэш 15 с, и обычный
+        // refresh() показал бы старое значение сразу после сохранения.
+        if (typeof page._actions.loadPolicy === 'function') {
+            try { page._actions.loadPolicy(true); return; } catch (e) { /* фолбэк ниже */ }
+        }
+        if (typeof page._actions.refresh === 'function') {
+            try { page._actions.refresh(); } catch (e) { /* страница может быть не смонтирована */ }
         }
     }
 

@@ -1085,6 +1085,9 @@
         _state: state,
         _actions: {
             refresh: refresh,
+            // R84: force-перечитка политики для формы «Политика сосуществования» —
+            // после сохранения колонка обязана обновиться сразу (TTL кэша 15 с).
+            loadPolicy: loadPolicy,
             save: saveEditor,
             edit: onEdit,
             remove: onRemove,

@@ -230,6 +230,12 @@ func (m *HFManager) ListFiles(ctx context.Context, modelID, revision string) ([]
 // ModelsDir — каталог моделей (абсолютный).
 func (m *HFManager) ModelsDir() string { return m.modelsDir }
 
+// PlanRepo — «паспорт репозитория»: комплектность набора + режим движка + шаги
+// (см. cppbackend/hf_plan.go). Один Range-запрос на главный кандидат.
+func (m *HFManager) PlanRepo(ctx context.Context, modelID, revision string) (*cppbackend.HFRepoPlan, error) {
+	return m.downloader.PlanRepo(ctx, modelID, revision, nil)
+}
+
 // ProbeFile — пред-проверка файла модели до скачивания (см. cppbackend/hf_probe.go):
 // читает заголовок Range-запросом и говорит, прочитает ли файл движок.
 func (m *HFManager) ProbeFile(ctx context.Context, modelID, filename, revision string) (*cppbackend.HFProbeResult, error) {

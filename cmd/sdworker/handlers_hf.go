@@ -247,6 +247,48 @@ func (a *App) handleHFFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================
+// GET /api/hf/plan
+// ============================================================
+
+// handleHFPlan — «паспорт репозитория»: что скачать, в каком режиме запустится
+// движок и какие шаги остались.
+//
+// ЗАЧЕМ (живой случай 2026-10-06): оператор скачал ТОЛЬКО diffusion-файл
+// Qwen-Image 2.1 и получил «VAE tensor ... not in model metadata» +
+// «new_sd_ctx_t failed». Пригодность ОДНОГО файла и пригодность НАБОРА — разные
+// вещи; паспорт отвечает на второе: семейство и режим (--model против
+// --diffusion-model), обязательные роли (vae/llm/t5xxl/...), чего не хватает, и
+// пошаговая инструкция для WebUI. Тот же ответ подсказывает, какое ИМЯ модели
+// передавать инструменту generate_image (см. docs/image-generation.md §16.9).
+func (a *App) handleHFPlan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "use GET")
+		return
+	}
+	hf, ok := a.hfManager(w)
+	if !ok {
+		return
+	}
+	modelID := strings.TrimSpace(r.URL.Query().Get("modelId"))
+	if modelID == "" {
+		writeError(w, http.StatusBadRequest, "modelId is required")
+		return
+	}
+	revision := strings.TrimSpace(r.URL.Query().Get("revision"))
+	hf.SetToken(requestHFToken(r))
+
+	ctx, cancel := hfContext(r, 60*time.Second)
+	defer cancel()
+
+	plan, err := hf.PlanRepo(ctx, modelID, revision)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "plan failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// ============================================================
 // GET /api/hf/probe
 // ============================================================
 

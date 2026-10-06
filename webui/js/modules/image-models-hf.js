@@ -73,6 +73,12 @@
         // path → результат пред-проверки заголовка (/api/hf/probe): вердикт
         // «прочитает ли движок». Ключ — путь файла в репозитории.
         probes: {},
+        // plan — «паспорт репозитория» от воркера (GET /api/hf/plan): комплектность
+        // набора, режим движка, чего не хватает и шаги. Нужен, потому что
+        // пригодность ОДНОГО файла и пригодность НАБОРА — разные вещи (живой
+        // случай: diffusion скачан, VAE и text encoder — нет).
+        plan: null,
+        planLoading: false,
         // path → true, пока идёт пред-проверка (для спиннера в строке файла).
         probing: {},
         bundleName: '',
@@ -682,6 +688,10 @@
         }
         header += '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted);">' +
             escapeHtml(t('imageModels.repo_verdict', 'Оценка репозитория')) + ': ' + compatBadgeHtml(repoBadge, '') + '</div>';
+        // ПАСПОРТ НАБОРА: что обязательно, чего нет, режим движка и порядок
+        // действий. Заменяет собой прежнюю догадку по автору репозитория: вердикт
+        // теперь считается по факту (заголовок главного файла + состав файлов).
+        header += planHtml(state.plan);
         if (mainProbe && mainProbe.verdict === 'supported') {
             header += '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted);">' +
                 escapeHtml(t('imageModels.main_file_verdict', 'Главный файл')) + ': ' + compatBadgeHtml(probeBadge(mainProbe), '') + '</div>';
@@ -955,6 +965,8 @@
         // нового старые метки (и подставленное семейство) сбрасываем — иначе UI
         // показывал бы чужие имена тензоров как свои.
         state.probes = {};
+        state.plan = null;
+        state.planLoading = true;
         state.familyNotice = '';
         renderSearchResults();
         renderFiles();
@@ -974,6 +986,9 @@
             state.filesError = (e && e.message) || String(e);
         }
         state.filesLoading = false;
+        // Паспорт репозитория: комплектность набора + режим движка + шаги. Один
+        // запрос к воркеру (он читает заголовок главного файла Range-запросом).
+        loadPlan();
         renderFiles();
         // Пред-проверка главного файла: вердикт по репозиторию сразу, без кликов.
         autoProbeMainFile();
@@ -1012,6 +1027,82 @@
         return state.probes[path];
     }
 
+    /**
+     * loadPlan — «паспорт репозитория» (GET /api/hf/plan).
+     *
+     * ЗАЧЕМ: поиск показывает файлы, а оператору нужно знать НАБОР и РЕЖИМ.
+     * Живой случай 2026-10-06: скачан только diffusion Qwen-Image 2.1, движок
+     * ответил «VAE tensor ... not in model metadata» и не поднялся. Паспорт
+     * заранее говорит: режим --diffusion-model, нужны роли vae и llm, их нет —
+     * и что делать по шагам (в том числе какое имя модели передавать инструменту).
+     */
+    async function loadPlan() {
+        if (!state.selectedRepo || !backendId()) return null;
+        var repo = state.selectedRepo;
+        state.planLoading = true;
+        renderFiles();
+        try {
+            var res = await request(backendUrl('hf/plan?modelId=' + encodeURIComponent(repo) + '&revision=main'),
+                { timeoutMs: TIMEOUT_SEARCH_MS });
+            if (state.selectedRepo === repo) state.plan = res || null;
+        } catch (e) {
+            if (state.selectedRepo === repo) {
+                state.plan = { verdict: 'unknown', summary: (e && e.message) || String(e) };
+            }
+        }
+        state.planLoading = false;
+        renderFiles();
+        return state.plan;
+    }
+
+    /**
+     * planHtml — разметка паспорта: режим, комплектность обязательных ролей, шаги
+     * и подсказка модели, которая поднимает модель инструментом.
+     */
+    function planHtml(plan) {
+        if (!plan) {
+            return state.planLoading
+                ? '<div style="margin:10px 0;font-size:12px;color:var(--text-muted);"><i class="fas fa-spinner fa-spin"></i> ' +
+                    escapeHtml(t('imageModels.plan_loading', 'собираю паспорт набора…')) + '</div>'
+                : '';
+        }
+        var verdictColor = plan.verdict === 'ready' ? 'var(--success, #5cb85c)'
+            : (plan.verdict === 'incomplete' ? 'var(--warning, #e0a030)'
+                : (plan.verdict === 'unsupported' ? 'var(--danger, #d9534f)' : 'var(--text-muted)'));
+        var verdictIcon = plan.verdict === 'ready' ? 'fa-circle-check'
+            : (plan.verdict === 'incomplete' ? 'fa-triangle-exclamation'
+                : (plan.verdict === 'unsupported' ? 'fa-circle-xmark' : 'fa-circle-question'));
+        var html = '<div style="margin:12px 0;padding:10px 12px;border-left:3px solid ' + verdictColor +
+            ';background:var(--bg-secondary);border-radius:6px;font-size:12px;">' +
+            '<div style="color:' + verdictColor + ';font-weight:600;"><i class="fas ' + verdictIcon + '"></i> ' +
+            escapeHtml(plan.summary || '') + '</div>';
+        if (plan.engineMode && plan.engineMode !== 'unknown') {
+            html += '<div style="margin-top:6px;color:var(--text-muted);">' +
+                escapeHtml(t('imageModels.plan_mode', 'Режим запуска')) + ': <code>' +
+                escapeHtml(plan.engineMode === 'model' ? '--model (all-in-one)' : '--diffusion-model + VAE/text encoder') +
+                '</code></div>';
+        }
+        var required = (plan.roles || []).filter(function (r) { return r.required; });
+        if (required.length) {
+            html += '<div style="margin-top:6px;">' + required.map(function (r) {
+                var mark = r.found ? '✅' : '❌';
+                var files = (r.files || []).length ? ' — ' + escapeHtml(r.files.join(', ')) : '';
+                var hint = (!r.found && r.hint) ? '<div style="color:var(--text-muted);margin-left:18px;">' +
+                    escapeHtml(r.hint) + '</div>' : '';
+                return '<div>' + mark + ' ' + escapeHtml(r.label) + files + '</div>' + hint;
+            }).join('') + '</div>';
+        }
+        if (plan.steps && plan.steps.length) {
+            html += '<div style="margin-top:8px;"><b>' + escapeHtml(t('imageModels.plan_steps', 'Порядок действий')) +
+                ':</b><ol style="margin:4px 0 0 18px;padding:0;">' +
+                plan.steps.map(function (s) { return '<li>' + escapeHtml(s) + '</li>'; }).join('') + '</ol></div>';
+        }
+        if (plan.modelHint) {
+            html += '<div style="margin-top:8px;color:var(--text-muted);"><i class="fas fa-robot"></i> ' +
+                escapeHtml(plan.modelHint) + '</div>';
+        }
+        return html + '</div>';
+    }
     /**
      * mainWeightFile — файл, по которому судим о репозитории: самый крупный
      * DIFFUSION-файл (роль приходит с сервера), и только если такого нет — самый
@@ -1458,7 +1549,8 @@
             mainWeightFile: mainWeightFile,
             // R86-follow-up: какие файлы проверять автоматически (главный + крупные
             // safetensors) — экспортируется, чтобы это правило было под тестом.
-            autoProbeTargets: autoProbeTargets
+            autoProbeTargets: autoProbeTargets,
+            planHtml: planHtml
         }
     };
 })();

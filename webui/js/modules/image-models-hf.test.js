@@ -718,3 +718,39 @@ check('модуль не рендерит сгенерированные кар�
         process.exit(1);
     }
 })();
+
+check('planHtml: режим, комплектность, шаги и подсказка модели', function () {
+    // Паспорт неполного DiT-набора (живой случай Qwen-Image 2.1: только diffusion).
+    const plan = {
+        verdict: 'incomplete',
+        summary: 'Движок запустит как DiT (--diffusion-model + отдельные VAE/text encoder), но не хватает: VAE, text encoder (LLM).',
+        engineMode: 'diffusion-model',
+        roles: [
+            { role: 'diffusion', label: 'diffusion (DiT)', required: true, found: true, files: ['qwen-image-2.1-UC-Q4_K_M.gguf'] },
+            { role: 'vae', label: 'VAE', required: true, found: false, hint: 'Нужен отдельный VAE' },
+            { role: 'llm', label: 'text encoder (LLM)', required: true, found: false, hint: 'Нужен отдельный text encoder' },
+            { role: 'lora', label: 'LoRA', required: false, found: false }
+        ],
+        steps: ['Отметьте файл qwen-image-2.1-UC-Q4_K_M.gguf.', 'В поле «Семейство» выберите qwen_image.']
+    };
+    const html = P.planHtml(plan);
+    assert.ok(html.indexOf('--diffusion-model') !== -1, 'режим движка виден: ' + html);
+    assert.ok(html.indexOf('VAE') !== -1 && html.indexOf('text encoder') !== -1, 'обязательные роли перечислены');
+    assert.ok(html.indexOf('❌') !== -1, 'отсутствующие роли помечены');
+    assert.ok(html.indexOf('Нужен отдельный VAE') !== -1, 'подсказка, что искать');
+    assert.ok(html.indexOf('qwen_image') !== -1, 'шаг про семейство');
+    assert.ok(html.indexOf('LoRA') === -1, 'необязательные роли не засоряют паспорт');
+    assert.ok(html.indexOf('--danger') === -1 && html.indexOf('e0a030') !== -1, 'неполный набор — предупреждение');
+});
+
+check('planHtml: пустой паспорт и режим all-in-one', function () {
+    assert.strictEqual(P.planHtml(null), '', 'без паспорта разметки нет');
+    const ready = P.planHtml({
+        verdict: 'ready', summary: 'Набор собран: движок узнаёт «SD1.x» и запустит как all-in-one (--model).',
+        engineMode: 'model', roles: [{ role: 'diffusion', label: 'diffusion (all-in-one)', required: true, found: true, files: ['sd15.gguf'] }],
+        steps: [], modelHint: 'Инструменту generate_image передавайте model="sd15-q4".'
+    });
+    assert.ok(ready.indexOf('--model') !== -1, 'all-in-one режим: ' + ready);
+    assert.ok(ready.indexOf('fa-robot') !== -1, 'подсказка модели показана');
+    assert.ok(ready.indexOf('e0a030') === -1, 'готовый набор без предупреждения');
+});

@@ -91,6 +91,7 @@ func (a *App) setupRouter() http.Handler {
 	// прочитает» нет: «голые» diffusers-имена есть и у сборок под sd.cpp
 	// (см. internal/cppbackend/hf_probe.go и docs/image-generation.md §8.2).
 	mux.HandleFunc("/api/hf/probe", a.handleHFProbe)
+	mux.HandleFunc("/api/hf/plan", a.handleHFPlan)
 	mux.HandleFunc("/api/hf/download", a.handleHFDownload)
 	mux.HandleFunc("/api/hf/bundle", a.handleHFBundle)
 	// Алиасы: UI пробует их, если канонический путь недоступен

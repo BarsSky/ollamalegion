@@ -89,6 +89,20 @@ type ImageResourceSettings struct {
 	// GateDisabled — полностью отключить гейт VRAM и лок сосуществования
 	// (оператор знает, что делает: например, image только на CPU).
 	GateDisabled bool `json:"gateDisabled,omitempty"`
+
+	// AllowToolLoad — разрешено ли ИНСТРУМЕНТУ (generate_image) поднимать
+	// image-модель, которой нет в VRAM (R85, 2026-10-06).
+	//
+	// ПОЧЕМУ УКАЗАТЕЛЬ, А НЕ bool: у настройки ТРИ состояния, и они разные.
+	// nil = «не задано» → действует флаг окружения LB_IMAGE_TOOL_ALLOW_LOAD
+	// (дефолт on); true → разрешено; false → запрещено, даже если окружение
+	// говорит обратное. Обычный bool не отличил бы «оператор выключил
+	// автозагрузку из WebUI» от «поле не сохраняли», и выключение нельзя было бы
+	// отличить от отсутствия настройки.
+	//
+	// Хранится в том же файле-переопределении, что и остальные поля
+	// balancing.image (/app/data), поэтому переживает рестарт и правится из WebUI.
+	AllowToolLoad *bool `json:"allowToolLoad,omitempty"`
 }
 
 // Дефолты (используются, когда поле в конфиге не задано).
@@ -96,6 +110,22 @@ const (
 	DefaultImageQueueWaitTimeoutSec     = 30
 	DefaultImageExclusiveLockTimeoutSec = 600
 )
+
+// EffectiveAllowToolLoad — действует ли автозагрузка модели из инструмента,
+// если настройка в конфиге не задана (nil).
+//
+// ПРАВИЛО (R85): незаданная настройка = РАЗРЕШЕНО. Так требование оператора
+// «разрешить инструменту самому загружать модель» (см.
+// plans/2026-10-06-image-tool-catalog-autoload.md) выполняется без правки
+// конфига на уже развёрнутых стендах, а выключить можно либо галочкой в WebUI
+// (false), либо флагом окружения. Единственный источник правды для вызова —
+// imageToolSettings (окружение перекрывает этот дефолт).
+func EffectiveAllowToolLoad(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
 
 // EffectiveQueueWaitTimeout — таймаут ожидания лока с дефолтом.
 func (s ImageResourceSettings) EffectiveQueueWaitTimeout() int {

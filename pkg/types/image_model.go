@@ -138,9 +138,23 @@ type ImageModelProfile struct {
 	TimeoutSec int `json:"timeoutSec,omitempty"`
 	// IdleUnloadMinutes — выгрузка простаивающей модели (0 = не выгружать).
 	// Для image-воркера «выгрузка» = остановка субпроцесса sd-server.
-	IdleUnloadMinutes int    `json:"idleUnloadMinutes,omitempty"`
-	Disabled          bool   `json:"disabled,omitempty"`
-	Notes             string `json:"notes,omitempty"`
+	IdleUnloadMinutes int  `json:"idleUnloadMinutes,omitempty"`
+	Disabled          bool `json:"disabled,omitempty"`
+	// Notes — человекочитаемое описание модели (происхождение, состав, оговорки).
+	//
+	// ЗАЧЕМ В КОНТРАКТЕ, А НЕ В КОДЕ: описания моделей нужны инструменту
+	// generate_image — текстовая модель выбирает модель под запрос пользователя
+	// и должна видеть, чем они отличаются. Держать эти строки в Go-коде значило
+	// бы «зашитое знание о моделях»: оператор не смог бы их поправить без
+	// пересборки. Поэтому описание — ДАННЫЕ профиля, правится из WebUI и
+	// попадает в каталог (GET /api/v1/image/models/catalog, см.
+	// plans/2026-10-06-image-tool-catalog-autoload.md).
+	Notes string `json:"notes,omitempty"`
+	// Strengths — «для чего эта модель хороша»: короткая фраза для выбора модели
+	// (скорость против качества, VRAM, размер картинки). Отдельное поле от Notes,
+	// потому что назначение разное: Notes читает оператор, Strengths — модель в
+	// каталоге инструмента (одна строка, без переносов).
+	Strengths string `json:"strengths,omitempty"`
 }
 
 // IsValidImageFamily — известное ли семейство (неизвестное → "other").

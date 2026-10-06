@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"time"
 
+	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/config"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -39,9 +40,17 @@ type imageResourcesRequest struct {
 	QueueWaitTimeoutSec        int                          `json:"queueWaitTimeoutSec"`
 	ExclusiveLockTimeoutSec    int                          `json:"exclusiveLockTimeoutSec"`
 	GateDisabled               bool                         `json:"gateDisabled"`
+	// AllowToolLoad — R85: разрешать ли инструменту поднимать модель. Указатель,
+	// чтобы отличить «оператор снял галочку» (false) от «поля в теле нет» (nil):
+	// во втором случае уже сохранённое значение не трогаем.
+	AllowToolLoad *bool `json:"allowToolLoad"`
 }
 
-func (r imageResourcesRequest) toSettings() types.ImageResourceSettings {
+func (r imageResourcesRequest) toSettings(current types.ImageResourceSettings) types.ImageResourceSettings {
+	allow := current.AllowToolLoad
+	if r.AllowToolLoad != nil {
+		allow = r.AllowToolLoad
+	}
 	return types.ImageResourceSettings{
 		Coexistence:                r.Coexistence,
 		VramHeadroomMB:             r.VramHeadroomMB,
@@ -49,6 +58,7 @@ func (r imageResourcesRequest) toSettings() types.ImageResourceSettings {
 		QueueWaitTimeoutSec:        r.QueueWaitTimeoutSec,
 		ExclusiveLockTimeoutSec:    r.ExclusiveLockTimeoutSec,
 		GateDisabled:               r.GateDisabled,
+		AllowToolLoad:              allow,
 	}
 }
 
@@ -87,7 +97,7 @@ func (s *Server) handleImageResources(w http.ResponseWriter, r *http.Request) {
 			writeJSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
 			return
 		}
-		settings := req.toSettings()
+		settings := req.toSettings(s.effectiveImageResources())
 		if err := config.ValidateImageResourceSettings(settings); err != nil {
 			writeJSONResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -104,7 +114,8 @@ func (s *Server) handleImageResources(w http.ResponseWriter, r *http.Request) {
 			"queueWaitSec", settings.QueueWaitTimeoutSec,
 			"lockFuseSec", settings.ExclusiveLockTimeoutSec,
 			"blockOnUnknown", settings.BlockOnUnknownVRAMEstimate,
-			"gateDisabled", settings.GateDisabled)
+			"gateDisabled", settings.GateDisabled,
+			"allowToolLoad", allowToolLoadLabel(settings.AllowToolLoad))
 		s.writeImageResources(w)
 	case http.MethodDelete:
 		if err := s.imageResources.Remove(); err != nil {
@@ -126,6 +137,14 @@ func (s *Server) applyImageResources(settings types.ImageResourceSettings) {
 	s.imageResourcesMu.Lock()
 	s.config.Balancing.Image = settings
 	s.imageResourcesMu.Unlock()
+}
+
+// effectiveImageResources — действующие настройки под тем же мьютексом, что и
+// запись (нужно, чтобы PUT «без поля» сохранил уже действующее значение).
+func (s *Server) effectiveImageResources() types.ImageResourceSettings {
+	s.imageResourcesMu.RLock()
+	defer s.imageResourcesMu.RUnlock()
+	return s.config.Balancing.Image
 }
 
 // writeImageResources — ответ для UI: действующие, встроенные, источник.
@@ -158,6 +177,26 @@ func (s *Server) writeImageResources(w http.ResponseWriter) {
 			{"value": string(types.ImageCoexistenceOffload), "hint": "совместная работа разрешена: применяйте, только если image-воркер запущен с offload в RAM (--offload-to-cpu / --backend te=cpu), иначе рискуете OOM"},
 			{"value": string(types.ImageCoexistenceDedicated), "hint": "под image-бэкенд выделена отдельная GPU: ограничения сосуществования не применяются"},
 		},
+		// R85: автозагрузка модели из инструмента. Показываем и действующее
+		// значение, и источник (env, если поле не задано) — иначе непонятно,
+		// почему галочка стоит, хотя её никто не ставил.
+		"allowToolLoad": map[string]interface{}{
+			"effective":        types.EffectiveAllowToolLoad(effective.AllowToolLoad),
+			"overridden":       effective.AllowToolLoad != nil,
+			"env":              balancer.ImageToolAllowLoadEnv(),
+			"hint":             "разрешить текстовой модели поднимать image-модель, которой нет в VRAM (инструмент generate_image + list_image_models); при выключении инструмент объявляется только для уже загруженной модели",
+		},
 		"checkedAt": time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// allowToolLoadLabel — значение настройки для лога: «on»/«off»/«env».
+func allowToolLoadLabel(v *bool) string {
+	if v == nil {
+		return "env"
+	}
+	if *v {
+		return "on"
+	}
+	return "off"
 }

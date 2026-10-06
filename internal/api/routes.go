@@ -314,6 +314,8 @@ func (s *Server) setupRoutes() {
 	//   GET    /api/v1/image/backends                  — публичный список image-бэкендов
 	//          (страница Image в WebUI рисуется до входа в настройки — как GGUF);
 	//   GET    /api/v1/image/models                    — «сырые» списки моделей со всех воркеров;
+	//   GET    /api/v1/image/models/catalog            — каталог моделей (состояние,
+	//          дефолты, VRAM, strengths/notes) — его же читает инструмент generate_image;
 	//   GET    /api/v1/image/model-catalog             — пресеты (config/image-model-catalog.json);
 	//   CRUD   /api/v1/image/model-profiles[/{name}]   — профили bundle'ов;
 	//   POST   /api/v1/image/model-profiles/{name}/apply (+ /apply/progress, /apply/status);
@@ -330,6 +332,11 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/image/resources", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageResources), s.rateLimiter), s.authenticator))
 
 	s.mux.HandleFunc("/api/v1/image/backends", s.handleImageBackends)
+	// ВАЖНО про порядок: Go ServeMux выбирает САМЫЙ ДЛИННЫЙ совпадающий шаблон,
+	// поэтому "/api/v1/image/models/catalog" выигрывает у "/api/v1/image/models"
+	// независимо от порядка регистрации. Регистрируем рядом с ним, чтобы связь
+	// была видна читателю.
+	s.mux.Handle("/api/v1/image/models/catalog", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelsCatalog), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/image/models", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelsAggregate), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/image/model-catalog", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelCatalog), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/image/model-profiles", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleImageModelProfiles), s.rateLimiter), s.authenticator))

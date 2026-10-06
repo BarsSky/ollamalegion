@@ -15,12 +15,32 @@
 package config
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
 
 	"ollama-loadbalancer/pkg/types"
 )
+
+// embeddedImageModelCatalog — КОПИЯ config/image-model-catalog.json, вшитая в
+// бинарь (go:embed требует файл внутри пакета, поэтому путь с «../..»).
+//
+// ЗАЧЕМ ФОЛБЭК. Каталог пресетов нужен не только оператору в WebUI, но и
+// КАТАЛОГУ МОДЕЛЕЙ (GET /api/v1/image/models/catalog и инструмент
+// list_image_models): без описаний модель не может выбрать модель. При этом
+// путь по умолчанию — относительный ("config/…"), и если балансер запущен не из
+// корня репозитория (тесты, контейнер с другим WORKDIR, systemd с другим
+// WorkingDirectory), файла там просто нет. Тогда каталог молча терял бы
+// strengths/notes — то есть ровно то, ради чего он делался.
+//
+// Приоритет: файл на диске (оператор правит его без пересборки) → вшитая копия,
+// если файла нет. Файл, который ЕСТЬ, но невалиден, фолбэком не подменяется: это
+// ошибка оператора, и её надо увидеть (фолбэк по невалидному файлу скрыл бы
+// опечатку).
+//
+//go:embed image-model-catalog.embed.json
+var embeddedImageModelCatalog []byte
 
 const (
 	// DefaultImageModelCatalogPath — путь каталога пресетов по умолчанию.
@@ -52,20 +72,36 @@ func ResolveImageModelCatalogPath() string {
 }
 
 // LoadImageModelCatalog читает и валидирует каталог пресетов.
+//
+// ПРАВИЛО ИСТОЧНИКА (простое и предсказуемое):
+//   - файл есть → он источник истины (оператор правит его без пересборки);
+//   - файла нет → вшитая копия (каталог не должен «исчезать» из-за рабочего
+//     каталога: см. embeddedImageModelCatalog);
+//   - файл есть, но невалиден → ОШИБКА, фолбэка нет. Иначе опечатка в JSON
+//     молча подменялась бы вшитой копией, и оператор видел бы «мои правки не
+//     применились» без причины.
 func LoadImageModelCatalog(path string) (*ImageModelCatalog, error) {
 	if path == "" {
 		path = ResolveImageModelCatalogPath()
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return parseImageModelCatalog(embeddedImageModelCatalog, path+" (embedded)")
+		}
 		return nil, fmt.Errorf("read image model catalog %s: %w", path, err)
 	}
+	return parseImageModelCatalog(data, path)
+}
+
+// parseImageModelCatalog — разбор и валидация тела каталога.
+func parseImageModelCatalog(data []byte, source string) (*ImageModelCatalog, error) {
 	var catalog ImageModelCatalog
 	if err := json.Unmarshal(data, &catalog); err != nil {
-		return nil, fmt.Errorf("parse image model catalog %s: %w", path, err)
+		return nil, fmt.Errorf("parse image model catalog %s: %w", source, err)
 	}
 	if err := catalog.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid image model catalog %s: %w", path, err)
+		return nil, fmt.Errorf("invalid image model catalog %s: %w", source, err)
 	}
 	return &catalog, nil
 }

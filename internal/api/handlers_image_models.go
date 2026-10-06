@@ -10,6 +10,9 @@
 //	GET  /api/v1/image/backends/{id}                — один бэкенд
 //	GET  /api/v1/image/models                       — «сырые» списки моделей со всех
 //	                                                  image-воркеров (без разбора схемы)
+//	GET  /api/v1/image/models/catalog               — каталог моделей (состояние,
+//	                                                  дефолты, VRAM, описания; см.
+//	                                                  handlers_image_catalog.go)
 //	ANY  /api/v1/image/backends/{id}/proxy/{path}   — прозрачный прокси (зеркало gguf)
 //	GET  /api/v1/image/backends/{id}/models         — удобный прокси GET /api/image/models
 //	GET  /api/v1/image/backends/{id}/capabilities   — GET /api/image/capabilities

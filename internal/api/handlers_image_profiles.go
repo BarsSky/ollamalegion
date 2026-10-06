@@ -566,6 +566,7 @@ type imageProfilePresence struct {
 	Family            *string               `json:"family"`
 	Disabled          *bool                 `json:"disabled"`
 	Notes             *string               `json:"notes"`
+	Strengths         *string               `json:"strengths"`
 	VramEstimateMB    *int                  `json:"vramEstimateMb"`
 	TimeoutSec        *int                  `json:"timeoutSec"`
 	IdleUnloadMinutes *int                  `json:"idleUnloadMinutes"`
@@ -779,6 +780,13 @@ func mergeImageProfileUpdate(existing, update types.ImageModelProfile, presence 
 		out.Notes = *presence.Notes
 	} else if update.Notes != "" {
 		out.Notes = update.Notes
+	}
+	// Strengths — описание «для чего модель хороша»: его читает текстовая модель
+	// в каталоге инструмента (см. pkg/types.ImageModelProfile.Strengths).
+	if presence.Strengths != nil {
+		out.Strengths = *presence.Strengths
+	} else if update.Strengths != "" {
+		out.Strengths = update.Strengths
 	}
 	return out
 }

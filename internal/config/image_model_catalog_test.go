@@ -16,6 +16,39 @@ import (
 // Это contract-тест данных: битый пресет (несуществующая роль, отсутствие VAE у
 // DiT-семейства, width не кратный 64) ловится здесь, а не у оператора, который
 // нажал «скачать» и получил падение sd-server.
+// TestEmbeddedImageModelCatalog_MatchesRepoFile — вшитая копия каталога не
+// должна расходиться с config/image-model-catalog.json.
+//
+// ЗАЧЕМ: вшитая копия — фолбэк для запуска не из корня репозитория (тесты,
+// контейнер с другим WORKDIR). Если её забыть обновить, оператор увидит одну
+// версию каталога через API (/api/v1/image/model-catalog читает файл), а
+// инструмент выбора модели — другую (вшитую) — и «описания не те, что я правил»
+// будет выглядеть как баг балансера.
+//
+// Регенерация при расхождении:
+//
+//	Copy-Item config/image-model-catalog.json internal/config/image-model-catalog.embed.json
+func TestEmbeddedImageModelCatalog_MatchesRepoFile(t *testing.T) {
+	path := filepath.Join("..", "..", "config", "image-model-catalog.json")
+	disk, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("файл каталога недоступен (%v): сравнение вшитой копии пропущено", err)
+	}
+	if string(disk) != string(embeddedImageModelCatalog) {
+		t.Fatalf("вшитая копия каталога разошлась с %s: "+
+			"скопируйте файл в internal/config/image-model-catalog.embed.json", path)
+	}
+
+	// Вшитая копия обязана быть валидным каталогом (её читают без файла на диске).
+	catalog, err := LoadImageModelCatalog("")
+	if err != nil {
+		t.Fatalf("вшитый каталог не загрузился: %v", err)
+	}
+	if len(catalog.Presets) == 0 {
+		t.Fatal("вшитый каталог пуст")
+	}
+}
+
 func TestLoadImageModelCatalog_RepoFile(t *testing.T) {
 	path := filepath.Join("..", "..", "config", "image-model-catalog.json")
 	catalog, err := LoadImageModelCatalog(path)
@@ -129,14 +162,20 @@ func TestImageModelCatalog_ValidateRejectsBroken(t *testing.T) {
 	}
 }
 
-// TestLoadImageModelCatalog_NotFound — отсутствующий файл = ошибка с путём.
-func TestLoadImageModelCatalog_NotFound(t *testing.T) {
-	_, err := LoadImageModelCatalog(filepath.Join(t.TempDir(), "missing.json"))
-	if err == nil {
-		t.Fatal("expected error for missing catalog")
+// TestLoadImageModelCatalog_MissingFileUsesEmbedded — отсутствующий файл даёт
+// вшитую копию каталога (R85), а не ошибку: каталог обязан работать и когда
+// балансер запущен не из корня репозитория.
+func TestLoadImageModelCatalog_MissingFileUsesEmbedded(t *testing.T) {
+	catalog, err := LoadImageModelCatalog(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatalf("отсутствующий файл должен давать вшитую копию, got error: %v", err)
 	}
-	if !os.IsNotExist(err) && !strings.Contains(err.Error(), "missing.json") {
-		t.Errorf("error must point at the file, got: %v", err)
+	if len(catalog.Presets) == 0 {
+		t.Fatal("вшитая копия пуста")
+	}
+	// Вшитая копия обязана быть тем же каталогом, что и файл репозитория.
+	if _, err := LoadImageModelCatalog(filepath.Join("..", "..", "config", "image-model-catalog.json")); err != nil {
+		t.Skipf("файл репозитория недоступен: %v", err)
 	}
 }
 

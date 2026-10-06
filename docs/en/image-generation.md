@@ -788,6 +788,26 @@ instead of silently substituting data.
 | `LB_IMAGE_TOOL_ALLOW_LOAD` | `on` | `off` - a call never loads a model and `list_image_models` is not announced (R84 behaviour) |
 | `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` | `600` | how long to wait for a model load before the reason is reported |
 
+**Both values are editable from the WebUI without a restart** (Image models -> Overview
+-> policy card): the "let the tool load an image model" checkbox and the "Model load
+wait, s" field. Priority: **WebUI value** (`/app/data/image-resources.json`) ->
+environment variable -> default.
+
+This matters for large models: `qwen-image-2.1` (4.7 GB) does not fit into 600 s on a
+slow disk, and the call returns "model did not come up in 600s" - raise the field to
+1800-3600 s. Bounds: 1..86400 s; **0 is rejected**, because that means "do not wait at
+all" (the tool could never bring the model up).
+
+Check the effective values:
+
+```bash
+curl -sS -H "X-API-Token: $LB_API_TOKEN" http://localhost:28081/api/v1/image/resources \
+  | jq '{allow: .allowToolLoad, loadTimeout: .toolLoadTimeout, limits: .limits}'
+```
+
+`overridden: false` means "the environment variable / default is in effect"; after
+saving from the WebUI it becomes `true` and `effectiveSec` is your value.
+
 `LB_IMAGE_TOOL_ALLOW_LOAD` can also be toggled from the WebUI (the checkbox in the
 coexistence policy card); priority is config -> environment -> default `on`.
 

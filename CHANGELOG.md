@@ -5,6 +5,59 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.7.15 — Ожидание загрузки image-модели правится из WebUI (balancer r83-submodule-v92 + webui r83-submodule-v93), 2026-10-06]
+
+Вопрос оператора: **«можно ли таймаут повышать в WebUI?»** До этой правки —
+нет: `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` читался только из окружения, то есть для
+подъёма лимита нужна была правка compose и перезапуск балансера. Галочка
+автозагрузки (`allowToolLoad`) при этом уже правилась из WebUI — теперь у обоих
+параметров одинаковый механизм.
+
+### 🛠 Что добавлено
+
+- **`balancing.image.toolLoadTimeoutSec`** (`types.ImageResourceSettings`,
+  указатель — «не задано» ≠ «ноль») в том же файле-переопределении
+  `/app/data/image-resources.json`, с валидацией на входе: допустимо **1…86400 с**;
+  `0` отклоняется («не ждать вовсе» = инструмент гарантированно не поднимет
+  модель), больше суток — тоже (вызов держал бы слот неограниченно).
+- **Приоритет**: значение из WebUI → `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` → дефолт 600 с.
+  `imageToolSettings()` читает настройку на каждый вызов, поэтому применяется без
+  перезапуска.
+- **WebUI**: поле «Ожидание загрузки модели, с» в карточке политики (таб
+  «Image-модели» → «Обзор») с клиентской проверкой границ (границы берутся из
+  `limits` ответа сервера), подсказкой и именем переменной окружения; значение
+  уходит в теле PUT. Сводка «Действует сейчас» показывает `load wait Ns` только
+  когда оператор реально задал значение (иначе шапка шумела бы дефолтом).
+- **API**: `GET /api/v1/image/resources` отдаёт блок `toolLoadTimeout`
+  (`effectiveSec`, `overridden`, `env`, `hint`) и границы
+  `minToolLoadTimeoutSec`/`maxToolLoadTimeoutSec`; `PUT` без поля сохраняет
+  прежнее значение.
+- Документация §16.3 (ru+en): как поднять лимит из WebUI и что означают границы.
+
+### 🧪 Тесты
+
+- `internal/api/handlers_image_resources_test.go`: круговой путь
+  (`effectiveSec`/`overridden`/env/границы), применение и персист, «PUT без поля
+  не затирает», отказ на `0` и на `86401` без изменения действующего значения.
+- `internal/balancer/image_catalog_test.go`:
+  `TestEnsureImageModelLoaded_ConfigTimeoutBeatsEnv` — конфиг перекрывает env, при
+  `nil` действует env, большое значение из конфига применяется как есть.
+- `webui/js/modules/image-resources-policy.test.js` (12): поле в форме, границы из
+  `limits`, `toolLoadTimeoutSec` в теле PUT, сводка не показывает дефолт.
+
+### ✅ Живая проверка
+
+- `GET /api/v1/image/resources` до правок: `toolLoadTimeout.effectiveSec=600`,
+  `overridden=false`, `env=LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC`,
+  `limits={1…86400}`;
+- `PUT {"toolLoadTimeoutSec":1800}` → `effectiveSec=1800`, `overridden=true`; в
+  файле переопределения появилось `"toolLoadTimeoutSec": 1800` (переживёт рестарт);
+- `PUT 0` → 400 «toolLoadTimeoutSec вне диапазона 1..86400 (получено 0)»,
+  `PUT 86401` → тот же отказ, действующее значение не меняется;
+- возврат `600` → `effectiveSec=600`; в образе webui v93 поле
+  `imPolicyLoadTimeout` присутствует, PUT из формы уходит с
+  `toolLoadTimeoutSec`.
+
 ## [0.7.14 — Инструмент генерации изображений на поверхности Ollama /api/chat (R86) + диагностика решения, 2026-10-06]
 
 Вопрос оператора: **«При запросе к балансеру через Open WebUI модель не видела

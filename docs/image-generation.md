@@ -831,6 +831,32 @@ curl -sS -X PUT -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/js
 | `LB_IMAGE_TOOL_ALLOW_LOAD` | `on` | `off` — вызов не поднимает модель и `list_image_models` не объявляется (поведение R84) |
 | `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` | `600` | сколько ждать загрузку модели, после чего в tool-сообщение уходит причина |
 
+**Оба значения правятся из WebUI без перезапуска** (таб «Image-модели» → «Обзор» →
+карточка политики): галочка «разрешить инструменту загружать image-модель» и поле
+«Ожидание загрузки модели, с». Приоритет: **значение из WebUI** (файл
+`/app/data/image-resources.json`) → переменная окружения → дефолт.
+
+Это нужно ровно тогда, когда модель большая: `qwen-image-2.1` (4.7 ГБ) на медленном
+диске не укладывается в 600 с, и вызов вернёт «модель не поднялась за 600s» — тогда
+поднимите поле до 1800–3600 с. Границы: 1…86400 с; **0 отклоняется**, потому что это
+«не ждать вовсе» (инструмент гарантированно не смог бы поднять модель).
+
+Проверить действующие значения:
+
+```bash
+curl -sS -H "X-API-Token: $LB_API_TOKEN" http://localhost:28081/api/v1/image/resources \
+  | jq '{allow: .allowToolLoad, loadTimeout: .toolLoadTimeout, limits: .limits}'
+```
+
+```json
+{ "allow": {"effective": true, "overridden": false, "env": "LB_IMAGE_TOOL_ALLOW_LOAD"},
+  "loadTimeout": {"effectiveSec": 600, "overridden": false, "env": "LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC"},
+  "limits": {"minToolLoadTimeoutSec": 1, "maxToolLoadTimeoutSec": 86400} }
+```
+
+`overridden: false` означает «действует переменная окружения / дефолт»; после
+сохранения из WebUI там будет `true`, а `effectiveSec` — ваше значение.
+
 ### 16.4 Сценарий «пользователь просит картинку»
 
 ```

@@ -1469,6 +1469,14 @@ const Renderers = (function () {
         if (base.toLowerCase().endsWith('.gguf')) {
             base = base.substring(0, base.length - 5);
         }
+        // СЛИТНАЯ ЗАПИСЬ llama.cpp (q4km, q3ks, q4k): у неё нет разделителя перед
+        // квантом, поэтому общий regex ниже её не ловит (он требует [-._] перед
+        // группой). Проверяем отдельно и в самом конце имени — иначе «q4km» так и
+        // оставалось прочерком в карточке модели (живой случай: Qwen3-…-q4km).
+        var fused = base.match(/q([0-8])([km])([km])?$/i);
+        if (fused) {
+            return 'Q' + fused[1] + '_' + fused[2].toUpperCase() + (fused[3] ? '_' + fused[3].toUpperCase() : '');
+        }
         // Ищем квантизацию в конце имени.
         // Разделитель: - или . (mistral-7B-v0.3.Q4_K_M.gguf) или в начале (Q2_K.gguf).
         // Паттерны: IQ1..IQ4, TQ1/TQ2, Q2..Q8, F16/F26/F32, BF16/FP16.
@@ -1477,7 +1485,9 @@ const Renderers = (function () {
             '(IQ[1-4]_[A-Z]+' +          // IQ4_XS, IQ3_XXS, IQ1_S, IQ2_M, IQ4_NL
             '|TQ[12]_[0-9]' +            // TQ1_0, TQ2_0
             '|Q[0-8]_[0-9K]_[A-Z]' +     // Q4_K_M, Q5_K_S, Q3_K_L, Q2_K_S
-            '|Q[0-8]_[0-9K]' +           // Q2_K, Q4_K, Q5_K, Q6_K
+            '|Q[0-8]_[A-Z]' +            // Q2_K, Q4_K, Q5_K, Q6_K
+            '|Q[0-8][KM][KM]' +          // слитная запись llama.cpp: q4km, q3ks
+            '|Q[0-8][KM]' +              // слитная запись: q4k, q6k
             '|Q[0-8]_[0-9]' +            // Q4_0, Q5_1, Q8_0
             '|F1[26]' +                  // F16, F26
             '|F32' +                     // F32
@@ -1487,7 +1497,14 @@ const Renderers = (function () {
             'i'
         );
         var m = base.match(re);
-        return m && m[1] ? m[1].toUpperCase() : '';
+        if (!m || !m[1]) return '';
+        // Приводим слитную запись к канонической: q4km → Q4_K_M, q6k → Q6_K.
+        var out = m[1].toUpperCase();
+        var fused = out.match(/^Q([0-8])([KM]{1,2})$/);
+        if (fused) {
+            out = 'Q' + fused[1] + '_' + fused[2].split('').join('_');
+        }
+        return out;
     }
 
     function modelsGrid(allModels, backendMap) {
@@ -1603,12 +1620,29 @@ const Renderers = (function () {
         if (bt === 'llama_cpp') {
             // GGUF-специфичные поля. Round 17: добавлены context length и GPU layers
             // чтобы оператор видел runtime config прямо в карточке модели.
-            var ggufPath = model.ggufPath || model.path || '-';
-            var ggufQuant = model.quantization || model.ggufQuant || '-';
+            //
+            // ПРОЧЕРК ВМЕСТО ДАННЫХ (живой случай 2026-10-06): карточка показывала
+            // «GGUF Path: -», «Quantization: -», «Runtime: -», хотя модель в списке
+            // есть. Причина: путь/квантование приходят не из /api/models, а из
+            // рантайм-среза воркера, и в момент перерегистрации бэкенда (или до
+            // первого опроса) этих полей ещё нет. Различаем «данных пока нет» и
+            // «движок не сообщил»: первое — подсказка, второе — прочерк. Имя
+            // модели тоже несёт квант (…-q4km, …-Q4_K_M) — парсим его как фолбэк.
+            var hasPath = !!(model.ggufPath || model.path);
+            var ggufPath = hasPath ? (model.ggufPath || model.path)
+                : (model.backendStatus && model.backendStatus !== 'healthy'
+                    ? '— (бэкенд ' + model.backendStatus + ')'
+                    : '— (сведения ещё не получены)');
+            var rawQuant = model.quantization || model.ggufQuant || '';
+            if (!rawQuant && typeof parseQuantizationFromName === 'function') {
+                rawQuant = parseQuantizationFromName(model.name) || parseQuantizationFromName(ggufPath) || '';
+            }
+            var ggufQuant = rawQuant || (hasPath ? '—' : '— (данные не получены)');
             var ctx = model.contextLength ? 'C:' + formatNumber(model.contextLength) : '';
             var gpu = model.numGpuLayers === -1 ? 'GPU:all' :
                       (model.numGpuLayers ? 'GPU:' + model.numGpuLayers : '');
             var runtime = [ctx, gpu].filter(Boolean).join(' ');
+            if (!runtime) runtime = '— (не загружена)';
 
             // R83 (2026-09-25): показываем границу VRAM рядом с фактическим n_ctx.
             //

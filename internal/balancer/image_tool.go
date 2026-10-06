@@ -879,6 +879,30 @@ func (p *Proxy) resolveImageToolTarget(ctx context.Context, target *imageToolTar
 	return imageToolResolved{BackendID: target.BackendID, Model: requested, State: imageStateNotLoaded, NotFound: true}
 }
 
+// loadedImageModelForTarget — уже загруженная модель каталога (для подмены, когда
+// модель назвала несуществующее имя).
+//
+// Выбираем ПЕРВУЮ загруженную: генерация по ней не требует ни загрузки, ни
+// ожидания, то есть картинка придёт сразу. Каталог берём из target, чтобы не
+// переспрашивать кластер.
+func (p *Proxy) loadedImageModelForTarget(target *imageToolTarget) *imageToolResolved {
+	if target == nil || target.catalog == nil {
+		return nil
+	}
+	for i := range target.catalog.Models {
+		m := &target.catalog.Models[i]
+		if m.Loaded {
+			return &imageToolResolved{
+				BackendID: m.BackendID,
+				Model:     m.Name,
+				Loaded:    true,
+				State:     m.State,
+			}
+		}
+	}
+	return nil
+}
+
 // imageToolUnknownModelError — понятная ошибка «такой модели нет».
 //
 // ЗАЧЕМ СВОЙ ТЕКСТ: ошибка воркера «image model not found: stable-diffusion:1.5»
@@ -1013,17 +1037,33 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 	model := resolved.Model
 
 	var loadSeconds float64
-	if !resolved.Loaded && model != "" {
-		if !cfg.AllowLoad {
-			return nil, fmt.Errorf(
-				"модель %q не загружена, а автозагрузка выключена (%s=off): загрузите модель заранее",
-				model, imageToolEnvAllowLoad)
-		}
-		if resolved.NotFound {
-			// Имени нет в каталоге: не гоняем воркер за гарантированным 404, а
-			// сразу отдаём модели список доступных — чтобы она исправилась.
+	substitutedFrom := ""
+	needLoad := !resolved.Loaded && model != ""
+	if needLoad && !cfg.AllowLoad {
+		return nil, fmt.Errorf(
+			"модель %q не загружена, а автозагрузка выключена (%s=off): загрузите модель заранее",
+			model, imageToolEnvAllowLoad)
+	}
+	if needLoad && resolved.NotFound {
+		// ИМЯ-АРТЕФАКТ (живой случай 2026-10-06): модель передаёт
+		// "model":"stable-diffusion.cpp" — это не имя модели на воркере, а
+		// заученный ярлык движка. Раньше такой вызов просто отказывал, и
+		// пользователь не получал картинку. Если в VRAM уже есть готовая
+		// модель — рисуем ею (пользователь просил картинку, а не конкретный
+		// файл), а подмену честно сообщаем в результате. Если готовой модели
+		// нет — отдаём список доступных имён, чтобы модель исправилась.
+		loaded := p.loadedImageModelForTarget(target)
+		if loaded == nil {
 			return nil, errors.New(p.imageToolUnknownModelError(ctx, model))
 		}
+		substitutedFrom = model
+		resolved = *loaded
+		model = loaded.Model
+		// Подставленная модель УЖЕ в VRAM: грузить её не нужно (иначе мы бы
+		// «перезагружали» то, что и так работает, и теряли бы время).
+		needLoad = false
+	}
+	if needLoad {
 		elapsed, err := p.ensureImageModelLoaded(ctx, resolved.BackendID, model)
 		loadSeconds = elapsed.Seconds()
 		if err != nil {
@@ -1141,6 +1181,16 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 	if loadSeconds > 0 {
 		out["loadSeconds"] = loadSeconds
 		out["loadedNow"] = true
+	}
+	// Подмена модели: модель назвала имя, которого нет на воркере (например
+	// заученное "stable-diffusion.cpp"), и мы нарисовали уже загруженной моделью.
+	// Сообщаем честно — и модели, и пользователю в её ответе.
+	if substitutedFrom != "" {
+		out["requestedModel"] = substitutedFrom
+		out["modelNote"] = fmt.Sprintf(
+			"модели %q нет на image-воркере; использована уже загруженная модель %q. "+
+				"Актуальные имена моделей возвращает list_image_models.",
+			substitutedFrom, model)
 	}
 	return out, nil
 }

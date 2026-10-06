@@ -114,6 +114,16 @@ func (lr *LlamaCppRouter) runImageToolLoopOllama(w http.ResponseWriter, r *http.
 		// объявлены, но модель их не вызвала, в content попадает пустой массив
 		// вызовов — клиент видит «[]» вместо ответа. Убираем мусор, сам ответ не
 		// трогаем.
+		//
+		// ДИАГНОСТИКА: если в content ЕСТЬ маркер вызова ([TOOL_CALLS]/<tool_call>/
+		// <|python_tag|>), значит детектор не распознал формат — это дефект, а не
+		// «модель не вызвала инструмент». Пишем превью, чтобы формат можно было
+		// починить по факту, а не по догадке.
+		if content, _ := message["content"].(string); strings.Contains(content, "[TOOL_CALLS]") ||
+			strings.Contains(content, "<tool_call>") || strings.Contains(content, "<|python_tag|>") {
+			logger.Get().Warnw("image tool (ollama): в ответе есть маркер вызова, но вызов НЕ распознан",
+				"content_head", shortForLog(content), "content_len", len(content))
+		}
 		lr.writeOllamaChatResponse(w, a, stripEmptyToolCallArtifact(raw1), status1, clientStream)
 		return true
 	}

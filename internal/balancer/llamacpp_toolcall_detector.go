@@ -544,8 +544,11 @@ func detectMistralToolCallsInContent(content string) (toolCalls []interface{}, r
 
 	// Найдём конец JSON-массива после [TOOL_CALLS]
 	jsonStart := idx + len(marker)
-	// Пропускаем whitespace
-	for jsonStart < len(content) && (content[jsonStart] == ' ' || content[jsonStart] == '\n' || content[jsonStart] == '\t') {
+	// Пропускаем whitespace И разделитель «=»: живые сборки шаблона Qwen3 пишут
+	// маркер по-разному — «[TOOL_CALLS][…]», «[TOOL_CALLS]=[…]» и
+	// «[TOOL_CALLS] = […]» (2026-10-06, два разных скриншота оператора).
+	for jsonStart < len(content) && (content[jsonStart] == ' ' || content[jsonStart] == '\n' ||
+		content[jsonStart] == '\t' || content[jsonStart] == '\r' || content[jsonStart] == '=') {
 		jsonStart++
 	}
 	if jsonStart >= len(content) || content[jsonStart] != '[' {

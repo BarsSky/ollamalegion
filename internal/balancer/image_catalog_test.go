@@ -428,13 +428,47 @@ func TestEnsureImageModelLoaded_ConfigTimeoutBeatsEnv(t *testing.T) {
 	}
 }
 
-// TestGenerateImageForTool_UnknownModelListsAvailable — выдуманное имя модели
-// (живой случай: "stable-diffusion:1.5") не должно превращаться в непонятный 404
-// от движка: в ошибке перечисляем доступные имена, чтобы модель исправилась.
+// TestGenerateImageForTool_UnknownModelSubstitutesLoaded — модель назвала
+// несуществующее имя (живой случай: "stable-diffusion.cpp"), но в VRAM уже есть
+// готовая модель: рисуем ею, а подмену честно сообщаем. Пользователь просил
+// картинку, а не конкретный файл, поэтому отказ тут — худший ответ.
+func TestGenerateImageForTool_UnknownModelSubstitutesLoaded(t *testing.T) {
+	p, stub := catalogProxy(t, imgResWorkerTwoModels) // загружена sd15-q8-0
+	stub.setGenBody(`{"created":1,"model":"sd15-q8-0","output_format":"png","seed":5,"width":512,"height":512,"steps":8,"duration_ms":900,"data":[{"url":"/images/img_sub.png"}]}`)
+
+	target := p.imageToolTargetFor(context.Background())
+	if target == nil {
+		t.Fatal("нет target")
+	}
+	res, err := p.generateImageForTool(context.Background(), target, imageToolArgs{
+		Prompt: "лес в стиле Кандинского", Model: "stable-diffusion.cpp",
+	})
+	if err != nil {
+		t.Fatalf("с загруженной моделью вызов должен пройти подменой, got %v", err)
+	}
+	if res["status"] != "ok" || res["url"] != "/images/img_sub.png" {
+		t.Fatalf("результат=%+v", res)
+	}
+	if res["model"] != "sd15-q8-0" {
+		t.Errorf("нарисовали не загруженной моделью: %v", res["model"])
+	}
+	if res["requestedModel"] != "stable-diffusion.cpp" {
+		t.Errorf("не сообщили, какое имя запросила модель: %+v", res)
+	}
+	if note, _ := res["modelNote"].(string); !strings.Contains(note, "stable-diffusion.cpp") {
+		t.Errorf("нет пояснения о подмене: %v", res["modelNote"])
+	}
+	// Никакой загрузки: модель уже была в VRAM.
+	if _, _, loadHits := stub.hitsAll(); loadHits != 0 {
+		t.Errorf("загрузка не требовалась, а запросов на load = %d", loadHits)
+	}
+}
+
+// TestGenerateImageForTool_UnknownModelListsAvailable — если загруженной модели
+// НЕТ, выдуманное имя не должно превращаться в непонятный 404 от движка: в ошибке
+// перечисляем доступные имена, чтобы модель исправилась.
 func TestGenerateImageForTool_UnknownModelListsAvailable(t *testing.T) {
-	p, stub := catalogProxy(t, imgResWorkerTwoModels)
-	// Заведомо «пустая» генерация: если бы вызов всё-таки ушёл в воркер, тест
-	// поймал бы это по счётчику ниже.
+	p, stub := catalogProxy(t, imgResWorkerOnlyDiskModel) // загруженной модели нет
 	stub.setGenBody(`{"created":1,"output_format":"png","data":[{"url":"/images/nope.png"}]}`)
 
 	target := p.imageToolTargetFor(context.Background())
@@ -447,16 +481,19 @@ func TestGenerateImageForTool_UnknownModelListsAvailable(t *testing.T) {
 		Prompt: "a cat", Model: "stable-diffusion:1.5",
 	})
 	if err == nil {
-		t.Fatal("неизвестное имя модели обязано давать ошибку")
+		t.Fatal("неизвестное имя модели обязано давать ошибку, когда подставить нечего")
 	}
 	msg := err.Error()
-	for _, want := range []string{"stable-diffusion:1.5", "sd15-q8-0", "flux-schnell-q3-k", "list_image_models"} {
+	for _, want := range []string{"stable-diffusion:1.5", "flux-schnell-q3-k", "list_image_models"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("в ошибке нет %q: %s", want, msg)
 		}
 	}
-	if after, _, _ := stub.hitsAll(); after != before {
-		t.Errorf("воркер не должен вызываться для заведомо неизвестного имени (%d -> %d)", before, after)
+	// Воркер не должен получать заведомо неизвестное имя — но генерации не было,
+	// поэтому сравниваем счётчики генераций и загрузок.
+	afterGen, _, afterLoad := stub.hitsAll()
+	if afterGen != before || afterLoad != 0 {
+		t.Errorf("воркер вызван для заведомо неизвестного имени (gen %d->%d, load %d)", before, afterGen, afterLoad)
 	}
 }
 

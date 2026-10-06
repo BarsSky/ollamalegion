@@ -913,7 +913,46 @@ curl -sS -X POST -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/j
   http://localhost:28081/api/v1/image/backends/imageworker/models/load
 ```
 
-### 16.8 "The model downloaded but will not load" - how to diagnose
+### 16.8 Repository passport: what to download, in which mode, and what to do
+
+R86-follow-up (2026-10-06). Model search lists files, but did not answer the main
+question: **which set the engine will actually run and in what mode**. Live case: the
+repository contained diffusion, VAE and text encoder, but only diffusion went into the
+bundle - the engine answered "VAE tensor ... not in model metadata" and never started.
+
+Now, when you pick a repository, the card shows the passport (WebUI -> Image models ->
+HuggingFace); the same answer is available from the API:
+
+```bash
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  'http://localhost:28081/api/v1/image/backends/imageworker/hf/plan?modelId=<repo>'
+```
+
+Field meanings:
+
+| Field | Meaning |
+| --- | --- |
+| `family`, `versionLabel` | what the engine recognizes from the main file header |
+| `engineMode` | `model` - all-in-one (`--model`); `diffusion-model` - DiT (`--diffusion-model` + separate VAE/text encoder) |
+| `roles[]` | required roles: found (with paths) or missing plus what to look for |
+| `missing[]` | what is missing - the load will fail without it |
+| `verdict`, `summary` | `ready` / `incomplete` / `unsupported` / `unknown` in one line |
+| `steps[]` | the order of actions in the WebUI |
+| `modelHint` | **what to pass to the text model** |
+
+Operator steps (same as `steps[]`): tick the files the passport proposes, check their
+roles, pick the family from the passport (mandatory for DiT, otherwise the engine gets
+`--model` and answers "get sd version from file failed"), download the bundle, press
+"Load" on the model, and if the load fails read the engine error - it lists the missing
+tensors (VAE/conditioner), meaning a role is absent from the set.
+
+**What matters for the model that loads models by itself**: `modelHint` (and the tool
+description, see 16.1) says to pass the **bundle directory name** to `generate_image`
+(`model="qwen-image-2.1-UC-Q4_K_M"`), not "stable-diffusion.cpp" and not the repository
+id; `list_image_models` returns the valid names. A wrong name makes the balancer
+substitute the already loaded model and report it (`requestedModel`/`modelNote`), which
+costs a whole turn.
+### 16.9 "The model downloaded but will not load" - how to diagnose
 
 The load error is shown in the WebUI (and in the worker log). Live cases from the stand:
 

@@ -304,8 +304,29 @@ func TestGenerateImageForTool_EngineError(t *testing.T) {
 	p, stub := newImgResProxy(t, toolTestImageSettings())
 	stub.setGenStatus(http.StatusInternalServerError)
 	target := p.imageToolTargetFor(context.Background())
-	if _, err := p.generateImageForTool(context.Background(), target, imageToolArgs{Prompt: "x"}); err == nil {
+	// Промпт осмысленный: вырожденные отсекаются раньше (см.
+	// TestValidateImageToolPrompt), и этот тест проверяет именно ошибку движка.
+	if _, err := p.generateImageForTool(context.Background(), target, imageToolArgs{Prompt: "a cat"}); err == nil {
 		t.Fatal("ошибка движка должна возвращаться как ошибка")
+	}
+}
+
+// TestValidateImageToolPrompt — живой случай 2026-10-06: модель вызвала
+// generate_image с prompt_len=6, и пользователь получил красный квадрат (SD на
+// бессмысленном промпте заливает картинку одним цветом). Такие вызовы отсекаем с
+// понятным текстом, чтобы модель исправилась, а не «успешно» нарисовала мусор.
+func TestValidateImageToolPrompt(t *testing.T) {
+	bad := []string{"", "   ", "\n\t", "x", "а", "..", "аааа", "........"}
+	for _, p := range bad {
+		if err := validateImageToolPrompt(p); err == nil {
+			t.Errorf("вырожденный промпт %q должен отклоняться", p)
+		}
+	}
+	good := []string{"a cat", "лес", "кот на подоконнике", "a red cat on a windowsill, cartoon style"}
+	for _, p := range good {
+		if err := validateImageToolPrompt(p); err != nil {
+			t.Errorf("осмысленный промпт %q отклонён: %v", p, err)
+		}
 	}
 }
 

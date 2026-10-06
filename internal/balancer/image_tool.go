@@ -42,6 +42,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ollama-loadbalancer/internal/imagetool"
 	"ollama-loadbalancer/pkg/logger"
@@ -903,6 +904,51 @@ func (p *Proxy) loadedImageModelForTarget(target *imageToolTarget) *imageToolRes
 	return nil
 }
 
+// imageToolMinPromptChars — минимальная длина промпта, на котором SD даёт
+// осмысленную картинку. Порог намеренно низкий: «a cat» (5 символов) — валидный
+// промпт, а «лес» (3) уже даёт узнаваемое. Отсекаем именно вырожденные случаи
+// (пусто, «.», «x», «аааа»), на которых движок заливает всё одним цветом.
+const imageToolMinPromptChars = 3
+
+// validateImageToolPrompt — отсечь промпт, на котором получится мусор.
+//
+// ЗАЧЕМ: живой случай — модель вызвала инструмент с prompt_len=6, пользователь
+// получил красный квадрат и справедливо решил, что «генерация сломана». Ошибка в
+// tool-сообщении честнее: модель видит текст и может исправиться, а пользователь
+// не получает картинку-заглушку под видом результата.
+func validateImageToolPrompt(prompt string) error {
+	trimmed := strings.TrimSpace(prompt)
+	if trimmed == "" {
+		return errors.New("prompt пуст: опиши изображение словами (движок на пустом промпте заливает картинку одним цветом)")
+	}
+	if utf8.RuneCountInString(trimmed) < imageToolMinPromptChars {
+		return fmt.Errorf(
+			"prompt слишком короткий (%q): нужен осмысленный текстовый запрос, иначе движок выдаст однотонную заливку",
+			trimmed)
+	}
+	// Один и тот же символ/пара повторов («ааааа», «....») — тоже заливка.
+	if isDegeneratePrompt(trimmed) {
+		return fmt.Errorf(
+			"prompt %q не описывает изображение (повтор одного символа): сформулируй, что нарисовать",
+			trimmed)
+	}
+	return nil
+}
+
+// isDegeneratePrompt — промпт из одного повторяющегося символа.
+func isDegeneratePrompt(s string) bool {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return true
+	}
+	for _, r := range runes {
+		if r != runes[0] {
+			return false
+		}
+	}
+	return true
+}
+
 // imageToolUnknownModelError — понятная ошибка «такой модели нет».
 //
 // ЗАЧЕМ СВОЙ ТЕКСТ: ошибка воркера «image model not found: stable-diffusion:1.5»
@@ -1033,6 +1079,14 @@ func (s *imageBackendMetrics) entryByName(name string) *imageModelEntry {
 // поднимаемой модели, и «влезает/не влезает» было бы посчитано неверно.
 func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarget, args imageToolArgs) (map[string]interface{}, error) {
 	cfg := p.imageToolSettings()
+	// ЗАЩИТА ОТ ВЫРОЖДЕННОГО ПРОМПТА (живой случай 2026-10-06): модель прислала
+	// prompt_len=6, и клиент получил красный квадрат — SD на бессмысленном промпте
+	// даёт именно мусорную заливку. Лучше честная ошибка, чем «успешная» картинка-
+	// заглушка: пользователь не примет квадрат за результат, а модель получит
+	// текст, который можно исправить следующим вызовом.
+	if err := validateImageToolPrompt(args.Prompt); err != nil {
+		return nil, err
+	}
 	resolved := p.resolveImageToolTarget(ctx, target, args.Model)
 	model := resolved.Model
 

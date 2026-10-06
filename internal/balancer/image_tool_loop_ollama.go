@@ -203,6 +203,13 @@ func (lr *LlamaCppRouter) executeOneImageToolCallOllama(r *http.Request, a image
 	logger.Get().Infow("image tool (ollama): генерация по вызову модели",
 		"backend", a.target.BackendID, "model", a.target.Model,
 		"requested_model", args.Model, "prompt_len", len(args.Prompt), "call", call.ID)
+	// Промпт в лог (кратко): живой случай 2026-10-06 — генерация ушла с
+	// prompt_len=6, и клиент получил красный квадрат вместо картинки. Без текста
+	// промпта в логе причину не видно.
+	logger.Get().Infow("image tool (ollama): промпт вызова",
+		"call", call.ID, "prompt", shortForLog(args.Prompt),
+		"negative_prompt", shortForLog(args.NegativePrompt),
+		"width", args.Width, "height", args.Height, "steps", args.Steps)
 
 	res, err := lr.proxy.generateImageForTool(r.Context(), a.target, args)
 	if err != nil {

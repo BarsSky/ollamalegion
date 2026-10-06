@@ -551,6 +551,17 @@
      */
     function probeBadge(probe) {
         probe = probe || {};
+        // UNSUPPORTED — единственный случай, когда вердикт выносится по факту из
+        // шапки: веса в U32 (MLX-квантование), движок такое не читает. Живой случай
+        // 2026-10-06: 4 ГБ скачались, загрузка упала с unsupported dtype "U32".
+        if (probe.verdict === 'unsupported') {
+            return {
+                level: 'error',
+                label: t('imageModels.probe_unsupported', 'формат не поддерживается'),
+                hint: probe.reason || t('imageModels.probe_unsupported_hint',
+                    'Это MLX-квантование (веса U32 + scales/biases): stable-diffusion.cpp читает GGUF. Возьмите GGUF-квант этого репозитория.')
+            };
+        }
         if (probe.verdict === 'supported' && probe.versionLabel) {
             var hint = probe.reason || '';
             if (probe.dit) {
@@ -610,9 +621,13 @@
 
     function compatBadgeHtml(badge, probePath) {
         badge = badge || {};
+        // error — «движок это не прочитает» (MLX-кванты): красный и с явным текстом.
         var color = badge.level === 'ok' ? 'var(--success, #5cb85c)'
-            : (badge.level === 'warn' ? 'var(--warning, #e0a030)' : 'var(--text-muted)');
-        var icon = badge.level === 'ok' ? 'fa-circle-check' : (badge.level === 'warn' ? 'fa-triangle-exclamation' : 'fa-circle-question');
+            : (badge.level === 'error' ? 'var(--danger, #d9534f)'
+                : (badge.level === 'warn' ? 'var(--warning, #e0a030)' : 'var(--text-muted)'));
+        var icon = badge.level === 'ok' ? 'fa-circle-check'
+            : (badge.level === 'error' ? 'fa-circle-xmark'
+                : (badge.level === 'warn' ? 'fa-triangle-exclamation' : 'fa-circle-question'));
         var html = '<span class="imh-compat" title="' + escapeHtml(badge.hint || '') + '" style="color:' + color + ';font-size:11px;white-space:nowrap;">' +
             '<i class="fas ' + icon + '"></i> ' + escapeHtml(badge.label || '') + '</span>';
         if (probePath) {
@@ -1019,16 +1034,41 @@
     }
 
     /**
-     * autoProbeMainFile — после выбора репозитория проверить ГЛАВНЫЙ файл
-     * (самый крупный diffusion-файл): один запрос, зато вердикт по репозиторию
-     * появляется сразу, без кликов. Остальные файлы — по кнопке.
+     * autoProbeMainFile — после выбора репозитория проверить главный файл И
+     * крупные safetensors.
+     *
+     * ПОЧЕМУ НЕ ТОЛЬКО ГЛАВНЫЙ (живой случай 2026-10-06): виновником оказался
+     * `qwen-image-2.1-UC-MLX-4bit.safetensors` — крупнейший файл репозитория, но
+     * НЕ единственный, и вердикт по нему не появлялся, пока оператор не нажмёт
+     * «Проверить». Проверяем главный файл плюс до двух самых крупных safetensors:
+     * это 3 Range-запроса по 512 КБ, зато «формат не поддерживается» видно сразу.
      */
     async function autoProbeMainFile() {
-        var main = mainWeightFile(state.files);
-        if (!main) return null;
-        var path = filePath(main);
-        if (!path || state.probes[path]) return state.probes[path] || null;
-        return probeFile(path);
+        var targets = autoProbeTargets(state.files);
+        var out = null;
+        for (var i = 0; i < targets.length; i++) {
+            var res = await probeFile(targets[i]);
+            if (!out) out = res;
+        }
+        return out;
+    }
+
+    /** autoProbeTargets — какие файлы проверить автоматически (порядок стабилен). */
+    function autoProbeTargets(files) {
+        var list = Array.isArray(files) ? files : [];
+        var main = mainWeightFile(list);
+        var mainPath = main ? filePath(main) : '';
+        var out = [];
+        if (mainPath) out.push(mainPath);
+        var sf = list.filter(function (f) {
+            var p = filePath(f);
+            return /\.safetensors$/i.test(p) && p !== mainPath;
+        }).sort(function (a, b) { return fileSize(b) - fileSize(a); });
+        sf.slice(0, 2).forEach(function (f) {
+            var p = filePath(f);
+            if (out.indexOf(p) === -1) out.push(p);
+        });
+        return out;
     }
 
     function setSelection(path, patch) {
@@ -1276,6 +1316,17 @@
         if (!target || !target.getAttribute) return;
         var check = target.getAttribute('data-imh-check');
         if (check !== null && check !== undefined && check !== '') {
+            // ЗАПРЕТ ВЫБОРА НЕПОДДЕРЖИВАЕМОГО ФАЙЛА (живой случай 2026-10-06):
+            // оператор скачал 4 ГБ MLX-квантов и получил отказ загрузки. Если
+            // пред-проверка уже сказала «формат не поддерживается» — не даём
+            // отметить файл в bundle и объясняем, что взять вместо него.
+            var pr = state.probes[check];
+            if (target.checked && pr && pr.verdict === 'unsupported') {
+                target.checked = false;
+                toast(t('imageModels.probe_unsupported_block',
+                    'Этот файл движок не прочитает: {reason}', { reason: pr.reason || '' }), 'error');
+                return;
+            }
             setSelection(check, { checked: !!target.checked });
             return;
         }
@@ -1404,7 +1455,10 @@
             ditHint: ditHint,
             compatBadgeHtml: compatBadgeHtml,
             DIT_FAMILIES: DIT_FAMILIES,
-            mainWeightFile: mainWeightFile
+            mainWeightFile: mainWeightFile,
+            // R86-follow-up: какие файлы проверять автоматически (главный + крупные
+            // safetensors) — экспортируется, чтобы это правило было под тестом.
+            autoProbeTargets: autoProbeTargets
         }
     };
 })();

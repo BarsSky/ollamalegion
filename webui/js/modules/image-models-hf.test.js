@@ -350,8 +350,45 @@ check('probeBadge: семья движка в подписи, DiT-подсказ
     assert.strictEqual(unknown.level, 'unknown');
     assert.ok(unknown.hint.indexOf('движок узнаёт версию') !== -1, 'причина воркера должна дойти до UI');
     assert.strictEqual(P.probeBadge(null).level, 'unknown', 'нет ответа — не выдумываем вердикт');
-    // 'unsupported' мы не выносим: даже если сервер его пришлёт, UI не приговаривает.
-    assert.strictEqual(P.probeBadge({ verdict: 'unsupported' }).level, 'unknown');
+    // R86-follow-up: единственный приговор — MLX-кванты (веса U32), их движок не
+    // читает. Живой случай 2026-10-06: 4 ГБ скачались, загрузка упала с
+    // unsupported dtype "U32" — UI обязан предупредить ДО скачивания.
+    const unsupported = P.probeBadge({
+        verdict: 'unsupported',
+        reason: 'MLX-квантование (тип весов U32 вместе с scales/biases): stable-diffusion.cpp читает GGUF и обычные safetensors (F16/BF16/F8), такой файл не загрузится — нужен GGUF-квант'
+    });
+    assert.strictEqual(unsupported.level, 'error');
+    assert.ok(unsupported.label.indexOf('не поддерживается') !== -1, 'подпись должна быть понятной: ' + unsupported.label);
+    assert.ok(unsupported.hint.indexOf('GGUF') !== -1, 'подсказка должна объяснять, что взять: ' + unsupported.hint);
+    // Бейдж рисуется красным с иконкой крестика (не «вопросик, как у unknown»).
+    const html = P.compatBadgeHtml(unsupported, 'qwen-image-2.1-UC-MLX-4bit.safetensors');
+    assert.ok(html.indexOf('fa-circle-xmark') !== -1, 'иконка ошибки: ' + html);
+    assert.ok(html.indexOf('--danger') !== -1, 'красный цвет: ' + html);
+    assert.ok(html.indexOf('data-imh-probe') !== -1, 'кнопка повторной проверки должна остаться');
+});
+
+check('autoProbeTargets: главный файл + крупные safetensors (виновник — не главный)', function () {
+    // Раскладка со стенда: главный (самый крупный diffusion) — GGUF с правильными
+    // именами, а рядом MLX-safetensors, который движок не читает.
+    const files = [
+        { path: 'qwen-image-2.1-UC-MLX-4bit.safetensors', sizeBytes: 4002363741, suggestedRole: 'diffusion' },
+        { path: 'qwen-image-2.1-UC-Q8_0.gguf', sizeBytes: 2100000000, suggestedRole: 'diffusion' },
+        { path: 'qwen_image_2.1_vae_bf16.safetensors', sizeBytes: 675509688, suggestedRole: 'vae' },
+        { path: 'README.md', sizeBytes: 1024 }
+    ];
+    const targets = P.autoProbeTargets(files);
+    assert.ok(targets.indexOf('qwen-image-2.1-UC-MLX-4bit.safetensors') !== -1,
+        'крупный safetensors обязан проверяться автоматически: ' + targets.join(', '));
+    assert.ok(targets.indexOf('qwen_image_2.1_vae_bf16.safetensors') !== -1,
+        'второй safetensors (VAE) — тоже кандидат: ' + targets.join(', '));
+    assert.ok(targets.indexOf('README.md') === -1, 'не весовые файлы не проверяем');
+    assert.ok(targets.length <= 3, 'не больше трёх Range-запросов на репозиторий: ' + targets.length);
+    assert.deepStrictEqual(P.autoProbeTargets([]), [], 'пустой список — нечего проверять');
+});
+
+check('autoProbeTargets: без safetensors проверяется только главный файл', function () {
+    const onlyGGUF = [{ path: 'sd15-q4.gguf', sizeBytes: 1566768416, suggestedRole: 'diffusion' }];
+    assert.deepStrictEqual(P.autoProbeTargets(onlyGGUF), ['sd15-q4.gguf']);
 });
 
 check('diTFamilyWarning: DiT-файл против all-in-one семейства в профиле', function () {

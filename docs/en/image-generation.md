@@ -692,8 +692,9 @@ R85 added two more flags (model catalog and auto-load) - see 16.3.
 - turn 1 is always non-streaming: the "should we execute this call" decision needs the
   whole answer. A client that asked for a stream still receives SSE (synthesised
   chunks); cppworker buffers the tools path anyway;
-- only the `/v1/chat/completions` surface (llama.cpp/cppworker). Ollama `/api/chat`
-  and Anthropic `/v1/messages` are not covered;
+- works on two surfaces: `/v1/chat/completions` (OpenAI) and `/api/chat` (Ollama,
+  including the `/ollama/*` and `/openai/*` prefixes). Anthropic `/v1/messages` is
+  not covered;
 - n_ctx overflow on a tools request triggers the usual auto-reload, but there is no
   network-level retry on the first turn (the error goes to the client as is);
 - with `LB_IMAGE_TOOL_ALLOW_LOAD=off` the tool is announced only when a model is
@@ -808,7 +809,59 @@ User: "draw a cat on a windowsill, make it beautiful"
 In Monitor the operator sees tool generations with `surface=chat-tool` and the model
 load; the catalog call does not appear in the feed because it generated nothing.
 
-### 16.5 Diagnostics
+### 16.5 Two surfaces: `/v1/chat/completions` and `/api/chat` (R86)
+
+**Why this matters for Open WebUI.** Tools are announced on BOTH chat surfaces,
+because clients connect differently:
+
+| Client / connection mode | Path | Tool announced |
+| --- | --- | --- |
+| Open WebUI, **OpenAI** connection | `POST /v1/chat/completions` | yes |
+| Open WebUI, **Ollama** connection (default) | `POST /api/chat` | yes (R86) |
+| Cline / Roo / Continue / OpenAI SDK | `POST /v1/chat/completions` | yes |
+| curl to `/api/chat` directly | `POST /api/chat` | yes |
+
+Before R86 `/api/chat` had no tools at all - that is exactly why the model "did not
+see the tools" when used through Open WebUI. The Ollama surface now runs the same
+loop: `tools` announcement, `tool_calls` capture from the NDJSON response, execution
+(catalog/generation with auto-load) and the model's final answer.
+
+Deliberate differences on `/api/chat`:
+
+- **client tools are preserved** - in Open WebUI the user usually has their own
+  (web search etc.), and they keep working alongside ours;
+- if the client declared a tool with **our name** (`generate_image` or
+  `list_image_models`), ours are not added at all: the client side executes;
+- `tool_choice: "none"` is honoured: no tools are announced at all;
+- a client asking for `stream: true` receives an NDJSON stream with a mandatory
+  `done: true` (turn 1 is non-streaming anyway - the decision needs the whole answer).
+
+### 16.6 Diagnostics: "the model does not see the tools"
+
+For every chat request the balancer logs one INFO line describing the decision, so the
+reason is visible immediately:
+
+```bash
+docker logs ol-stack-balancer --since 30m 2>&1 | grep "image tool:"
+```
+
+Examples (log messages are emitted in Russian, as the rest of the balancer logs):
+
+```json
+{"msg":"image tool: инструменты объявлены модели","path":"/api/chat","model":"Qwen3-...","client_tools":3,"injected":true,"injected_tools":"generate_image,list_image_models"}
+{"msg":"image tool: инструменты НЕ объявлены","path":"/v1/chat/completions","client_tools":1,"injected":false,"reason":"клиент прислал tool_choice=\"none\" — инструменты запрещены в этом запросе"}
+{"msg":"image tool: инструменты НЕ объявлены","path":"/api/chat","client_tools":0,"injected":false,"reason":"на image-бэкенде нет моделей (нечего генерировать)"}
+```
+
+Possible `reason` values: `LB_IMAGE_TOOL=off`, no healthy `image_cpp`, no models on the
+worker, no loaded model while `LB_IMAGE_TOOL_ALLOW_LOAD=off`, `tool_choice="none"` from
+the client, the client declared our tools itself.
+
+If there is no `image tool:` line at all, the request does not look like a chat with
+tools (e.g. it went to `/api/generate`) or the client is hitting the wrong port: the
+OpenAI and Ollama surfaces listen on **18079** and **18080**, management API on 18081.
+
+### 16.7 Other checks
 
 ```bash
 # which models the balancer sees and what it knows about them

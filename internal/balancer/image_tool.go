@@ -204,21 +204,45 @@ type imageToolTarget struct {
 //
 // При ALLOW_LOAD=off правило прежнее (нужна загруженная модель) — это ровно то
 // поведение, которое уже описано в документации и проверено тестами.
+//
+// Тонкая обёртка над imageToolDecision: здесь причина отказа не нужна, но нужна
+// там, где решение логируется (см. logImageToolDecision).
 func (p *Proxy) imageToolTargetFor(ctx context.Context) *imageToolTarget {
+	target, _ := p.imageToolDecision(ctx)
+	return target
+}
+
+// Причины отказа объявить инструмент (R86, 2026-10-06). Нужны, чтобы ответить
+// на вопрос «почему модель не видит инструменты» ОДНОЙ строкой лога, а не
+// раскопками исходников: раньше отказ жил на debug-уровне без причины.
+const (
+	imageToolSkipDisabled     = "tool_disabled"
+	imageToolSkipNoBackend    = "no_image_backend"
+	imageToolSkipNoModels     = "no_models_to_load"
+	imageToolSkipAllowLoadOff = "no_loaded_model_and_allow_load_off"
+	imageToolSkipClientNone   = "client_tool_choice_none"
+	imageToolSkipClientOwns   = "client_owns_tool"
+)
+
+// imageToolDecision — гейт доступности ВМЕСТЕ с причиной отказа.
+//
+// Возвращает (nil, "") если инструмент объявлять можно; иначе (nil, причина) —
+// причина для лога (см. imageToolSkipReason).
+func (p *Proxy) imageToolDecision(ctx context.Context) (*imageToolTarget, string) {
 	if p == nil {
-		return nil
+		return nil, imageToolSkipDisabled
 	}
 	cfg := p.imageToolSettings()
 	if !cfg.Enabled {
-		return nil
+		return nil, imageToolSkipDisabled
 	}
 	if p.imageResources() == nil {
-		return nil
+		return nil, imageToolSkipDisabled
 	}
 	states := p.filterBackendsByType(types.BackendTypeImage)
 	if len(states) == 0 {
 		logger.Get().Debugw("image tool: не объявляем — нет здоровых image_cpp-бэкендов")
-		return nil
+		return nil, imageToolSkipNoBackend
 	}
 
 	// Каталог — единственный источник и имён, и состояний: он собран из тех же
@@ -258,11 +282,11 @@ func (p *Proxy) imageToolTargetFor(ctx context.Context) *imageToolTarget {
 			// что LB_IMAGE_TOOL_ALLOW_LOAD=off запрещает поднимать её из вызова.
 			logger.Get().Debugw("image tool: не объявляем — нет загруженной модели (LB_IMAGE_TOOL_ALLOW_LOAD=off)",
 				"env", imageToolEnvAllowLoad)
-			return nil
+			return nil, imageToolSkipAllowLoadOff
 		}
 		logger.Get().Debugw("image tool: не объявляем — ни на одном image-бэкенде нет моделей",
 			"confident_backends", len(catalog.Backends))
-		return nil
+		return nil, imageToolSkipNoModels
 	}
 
 	sortStringsInPlace(models)
@@ -271,7 +295,7 @@ func (p *Proxy) imageToolTargetFor(ctx context.Context) *imageToolTarget {
 	target.Families = families
 	target.AllowLoad = cfg.AllowLoad
 	target.catalog = catalog
-	return target
+	return target, ""
 }
 
 // imageToolOpenAITools — набор инструментов в форме OpenAI tools[].
@@ -303,13 +327,31 @@ func imageToolOpenAI(t *imageToolTarget) map[string]interface{} {
 // imageToolNamesHeader — значение заголовка X-Image-Tool: имена объявленных
 // инструментов через запятую (в порядке схемы).
 func imageToolNamesHeader(tools []map[string]interface{}) string {
+	return strings.Join(imageToolNames(tools), ",")
+}
+
+// imageToolNames — имена инструментов набора (пустые пропускаются).
+func imageToolNames(tools []map[string]interface{}) []string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
-		if name := openAIToolName(tool); name != "" {
+		if name := imageToolEntryName(tool); name != "" {
 			names = append(names, name)
 		}
 	}
-	return strings.Join(names, ",")
+	return names
+}
+
+// countClientTools — сколько инструментов прислал клиент (для диагностики).
+func countClientTools(body []byte) int {
+	if len(body) == 0 {
+		return 0
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return 0
+	}
+	tools, _ := doc["tools"].([]interface{})
+	return len(tools)
 }
 
 // sortStringsInPlace — сортировка строк на месте (маленькие срезы: сортировка
@@ -384,7 +426,8 @@ func clientOwnsImageTool(existing []interface{}, tools []map[string]interface{})
 	return false
 }
 
-// openAIToolName — имя функции в элементе tools[] (формат OpenAI).
+// openAIToolName — имя функции в элементе tools[] (формат OpenAI и Ollama:
+// обе поверхности описывают инструмент как {"type":"function","function":{...}}).
 func openAIToolName(t interface{}) string {
 	entry, ok := t.(map[string]interface{})
 	if !ok {
@@ -396,6 +439,123 @@ func openAIToolName(t interface{}) string {
 	}
 	name, _ := fn["name"].(string)
 	return name
+}
+
+// injectImageToolsOllama — добавить наши инструменты в тело /api/chat.
+//
+// ЧЕМ ОТЛИЧАЕТСЯ ОТ OpenAI-ПУТИ (сознательно):
+//   - инструменты КЛИЕНТА СОХРАНЯЮТСЯ: в Open WebUI у пользователя обычно
+//     включены свои инструменты (веб-поиск и т.п.), и «клиент что-то объявил →
+//     ничего не добавляем» лишало бы его картинок;
+//   - но если клиент объявил инструмент с ИМЕНЕМ ИЗ НАШЕГО НАБОРА
+//     (generate_image / list_image_models) — не добавляем НИЧЕГО: исполняет его
+//     сторона, а смешанный набор (наш каталог + его генерация) привёл бы к тому,
+//     что часть вызовов исполняем мы, часть клиент, и никто не знает, кто;
+//   - tool_choice="none" уважается: клиент явно запретил инструменты в этом
+//     запросе (docs/AUDIT-client-api-fidelity-2026.md, C7).
+//
+// Возвращает (тело, имена добавленных инструментов). Пустой список = тело не
+// менялось.
+func injectImageToolsOllama(body []byte, tools []map[string]interface{}) ([]byte, bool, []string) {
+	if len(tools) == 0 {
+		return body, false, nil
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return body, false, nil
+	}
+	if tc, ok := doc["tool_choice"].(string); ok && strings.EqualFold(strings.TrimSpace(tc), "none") {
+		return body, false, nil
+	}
+
+	existing, _ := doc["tools"].([]interface{})
+	for _, t := range existing {
+		if isImageToolName(openAIToolName(t)) {
+			// Клиент объявил инструмент с нашим именем — исполняет он, не мы.
+			return body, false, nil
+		}
+	}
+
+	added := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		existing = append(existing, tool)
+		added = append(added, imageToolEntryName(tool))
+	}
+	if len(added) == 0 {
+		return body, false, nil
+	}
+	doc["tools"] = existing
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return body, false, nil
+	}
+	return out, true, added
+}
+
+// imageToolEntryName — имя инструмента в элементе tools[] в любой из двух форм
+// (собранная схема imagetool.Tool или уже сериализованный map).
+func imageToolEntryName(tool map[string]interface{}) string {
+	switch fn := tool["function"].(type) {
+	case imagetool.Tool:
+		return fn.Name
+	case map[string]interface{}:
+		name, _ := fn["name"].(string)
+		return name
+	}
+	return ""
+}
+
+// logImageToolDecision — ЕДИНАЯ диагностическая строка решения об инструменте.
+//
+// ЗАЧЕМ (живой вопрос оператора, 2026-10-06): «модель не видит инструменты» нельзя
+// было объяснить без чтения исходников — отказ объявления жил на debug-уровне, а
+// причина «клиент прислал tool_choice=none» вообще нигде не логировалась. Строка
+// уровня INFO на каждый tools-запрос отвечает сразу: каким ПУТЁМ пришёл запрос,
+// что прислал клиент, что решил балансер и почему.
+func logImageToolDecision(path, model string, clientTools int, injected bool, names []string, reason string) {
+	log := logger.Get()
+	if log == nil {
+		return
+	}
+	fields := []interface{}{
+		"path", path,
+		"model", model,
+		"client_tools", clientTools,
+		"injected", injected,
+	}
+	if len(names) > 0 {
+		fields = append(fields, "injected_tools", strings.Join(names, ","))
+	}
+	if reason != "" {
+		fields = append(fields, "reason", reason)
+	}
+	switch {
+	case injected:
+		log.Infow("image tool: инструменты объявлены модели", fields...)
+	default:
+		// Отказ — не ошибка: чаще всего это «нечего грузить» или «клиент запретил».
+		log.Infow("image tool: инструменты НЕ объявлены", fields...)
+	}
+}
+
+// imageToolSkipReason — человеческая причина отказа объявления (для лога).
+func imageToolSkipReason(skip string) string {
+	switch skip {
+	case imageToolSkipDisabled:
+		return "LB_IMAGE_TOOL=off — инструмент отключён оператором"
+	case imageToolSkipNoBackend:
+		return "в кластере нет здорового image_cpp-бэкенда"
+	case imageToolSkipNoModels:
+		return "на image-бэкенде нет моделей (нечего генерировать)"
+	case imageToolSkipAllowLoadOff:
+		return "нет загруженной модели, а LB_IMAGE_TOOL_ALLOW_LOAD=off"
+	case imageToolSkipClientNone:
+		return `клиент прислал tool_choice="none" — инструменты запрещены в этом запросе`
+	case imageToolSkipClientOwns:
+		return "клиент сам объявил наши инструменты — исполняет его сторона"
+	default:
+		return skip
+	}
 }
 
 // imageToolCall — разобранный вызов одного из наших инструментов.

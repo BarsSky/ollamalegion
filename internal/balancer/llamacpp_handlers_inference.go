@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
@@ -61,8 +62,13 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	//
 	// Исполняет вызов сам балансер: инструмент объявил прокси, клиент про него не
 	// знает и вызвать бы не смог (см. image_tool.go).
+	//
+	// R86: решение логируется одной INFO-строкой (путь, что прислал клиент, что
+	// решил балансер и почему) — без неё вопрос «почему модель не видит
+	// инструменты» требовал чтения исходников.
+	clientTools := countClientTools(bodyBuf)
 	var imageTool *imageToolTarget
-	if tgt := lr.proxy.imageToolTargetFor(r.Context()); tgt != nil {
+	if tgt, skip := lr.proxy.imageToolDecision(r.Context()); tgt != nil {
 		tools := imageToolOpenAITools(tgt)
 		if injected, ok, injErr := injectImageTool(bodyBuf, tools); injErr != nil {
 			logger.Get().Warnw("handleOpenAIChatCompletions: не удалось добавить image-инструмент",
@@ -73,7 +79,13 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 			// Наблюдаемость: клиент/лог видит, что инструменты были объявлены.
 			// При автозагрузке их два — список имён честнее одного заголовка.
 			w.Header().Set("X-Image-Tool", imageToolNamesHeader(tools))
+			logImageToolDecision(r.URL.Path, model, clientTools, true, imageToolNames(tools), "")
+		} else {
+			logImageToolDecision(r.URL.Path, model, clientTools, false, nil,
+				imageToolSkipReason(imageToolSkipClientOwns))
 		}
+	} else {
+		logImageToolDecision(r.URL.Path, model, clientTools, false, nil, imageToolSkipReason(skip))
 	}
 
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
@@ -674,6 +686,34 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		bodyBuf = normalized
 	}
 
+	// R86 (2026-10-06): инструмент генерации изображений на OLLAMA-поверхности.
+	//
+	// ЗАЧЕМ: Open WebUI по умолчанию подключается как Ollama-сервер и ходит на
+	// POST /api/chat — там инструменты не объявлялись вовсе, поэтому «модель не
+	// видит инструменты» при работе через Open WebUI. Теперь объявляем здесь так
+	// же, как на /v1/chat/completions, и исполняем вызов своим циклом.
+	//
+	// Тело меняется ТОЛЬКО когда инструмент реально объявлен: без image-бэкенда
+	// (или при LB_IMAGE_TOOL=off) путь остаётся байт-в-байт прежним.
+	//
+	// Инструменты КЛИЕНТА сохраняются (в Open WebUI у пользователя обычно есть
+	// свои), а tool_choice="none" уважается — см. injectImageToolsOllama.
+	clientTools := countClientTools(bodyBuf)
+	var imageToolOllama *imageToolTarget
+	if tgt, skip := lr.proxy.imageToolDecision(r.Context()); tgt != nil {
+		if injected, added := injectImageToolOllama(bodyBuf, tgt); len(added) > 0 {
+			bodyBuf = injected
+			imageToolOllama = tgt
+			w.Header().Set("X-Image-Tool", strings.Join(added, ","))
+			logImageToolDecision(r.URL.Path, model, clientTools, true, added, "")
+		} else {
+			logImageToolDecision(r.URL.Path, model, clientTools, false, nil,
+				imageToolSkipReason(imageToolSkipClientOwns))
+		}
+	} else {
+		logImageToolDecision(r.URL.Path, model, clientTools, false, nil, imageToolSkipReason(skip))
+	}
+
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
 	backendID := lr.selectLlamaCppBackendForModel(model)
 	if backendID == "" {
@@ -758,6 +798,24 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if release != nil {
 		defer release()
+	}
+
+	// R86: инструмент объявлен → сперва пробуем цикл «вызов → исполнение →
+	// финальный ответ». Он сам решает, нужен ли второй turn, и возвращает false
+	// только если ПЕРВЫЙ шаг не удался (клиенту ещё ничего не отправлено) —
+	// тогда запрос идёт обычным путём.
+	if imageToolOllama != nil {
+		if lr.runImageToolLoopOllama(w, r, imageToolLoopArgsOllama{
+			bodyBuf:    bodyBuf,
+			model:      model,
+			backendID:  backendID,
+			backendURL: lr.proxy.backendHTTPAddrByID(backendID),
+			target:     imageToolOllama,
+		}) {
+			return
+		}
+		logger.Get().Warnw("handleChat: image tool loop не справился, отдаём обычным путём",
+			"model", model, "backend", backendID)
 	}
 
 	var err error

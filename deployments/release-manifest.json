@@ -1,5 +1,5 @@
 {
-    "tag":  "r83-submodule-v97",
+    "tag":  "r83-submodule-v94-webui",
     "builtAt":  "2026-10-06T17:16:12Z",
     "gitCommit":  "7e2b6f2",
     "cudaArch":  86,
@@ -9,9 +9,9 @@
                    {
                        "service":  "webui",
                        "variable":  "WEBUI_TAG",
-                       "image":  "ollama-legion/webui:r83-submodule-v93",
-                       "imageTag":  "r83-submodule-v93",
-                       "imageId":  "sha256:ea06f1c41f443ee5780cdf3f5771f5bf8c36210141ac92fa8094c8694ffbd462",
+                       "image":  "ollama-legion/webui:r83-submodule-v94",
+                       "imageTag":  "r83-submodule-v94",
+                       "imageId":  "sha256:9b3c8a9930c17e4f51ae24dddd08d9f97a0d685763d297e6ebb6cfc495909cad",
                        "alias":  "ollama-legion/webui:latest"
                    },
                    {

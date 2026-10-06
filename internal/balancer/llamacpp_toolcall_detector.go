@@ -64,7 +64,9 @@ func collapseDuplicateClosingBrace(s string) string {
 //  3. Массив с префиксом: <start_of_turn>[{"id":"call_xxx",...}]
 //  4. Hermes / Qwen 2.5: <tool_call>{"name":"search","arguments":{...}}</tool_call>
 //  5. Llama-3 python_tag: <|python_tag|>{"name":"search","parameters":{...}}
-//  6. Mistral Nemo: [TOOL_CALLS][{"name":"search","arguments":{...}}]
+//  6. Mistral Nemo / Qwen3: [TOOL_CALLS][{"name":"search","arguments":{...}}]
+//     и OpenAI-подобный вариант того же маркера:
+//     [TOOL_CALLS][{"id":"call_x","type":"function","function":{"name":"...","arguments":"{...}"}}]
 //
 // Функция ищет любой из этих форматов в любом месте content.
 func detectAndExtractToolCallsFromContent(content string) (toolCalls []interface{}, remainingContent string, found bool) {
@@ -526,7 +528,13 @@ func detectLlamaPythonTagInContent(content string) (toolCalls []interface{}, rem
 	return result, remaining, true
 }
 
-// detectMistralToolCallsInContent — ищет Mistral Nemo формат в content.
+// detectMistralToolCallsInContent — ищет Mistral Nemo / Qwen3 формат в content.
+//
+// Маркер один и тот же — `[TOOL_CALLS]`, но тело бывает двух форм:
+//   - прямая: {"name":"search","arguments":{...}};
+//   - OpenAI-подобная: {"id":"call_x","type":"function","function":{"name":"...","arguments":"{...}"}}
+//     (именно так ответил Qwen3 2026-10-06, и без поддержки этой формы вызов
+//     уходил клиенту обычным текстом — см. parseHermesToOpenAI).
 func detectMistralToolCallsInContent(content string) (toolCalls []interface{}, remainingContent string, found bool) {
 	const marker = "[TOOL_CALLS]"
 	idx := strings.Index(content, marker)
@@ -645,6 +653,25 @@ func parseHermesToOpenAI(raw json.RawMessage) map[string]interface{} {
 		name = n
 	} else if fn, ok := obj["function"].(string); ok && fn != "" {
 		name = fn
+	} else if fnObj, ok := obj["function"].(map[string]interface{}); ok {
+		// OpenAI-ПОДОБНАЯ ФОРМА (живой дефект 2026-10-06, Qwen3 через Open WebUI):
+		// модель эмитит в content готовую структуру tool call —
+		//   [TOOL_CALLS][{"id":"call_x","type":"function",
+		//                 "function":{"name":"generate_image","arguments":"{...}"}}]
+		// Раньше `obj["function"]` был объектом, а не строкой, поэтому имя не
+		// находилось, парсер возвращал nil, вызов НЕ распознавался и уходил
+		// клиенту обычным текстом (инструмент не исполнялся). Забираем имя и
+		// аргументы из вложенного объекта.
+		if n, ok := fnObj["name"].(string); ok {
+			name = n
+		}
+		if _, hasArgs := obj["arguments"]; !hasArgs {
+			if a, ok := fnObj["arguments"]; ok && a != nil {
+				obj["arguments"] = a
+			} else if p, ok := fnObj["parameters"]; ok && p != nil {
+				obj["parameters"] = p
+			}
+		}
 	}
 	if name == "" {
 		return nil

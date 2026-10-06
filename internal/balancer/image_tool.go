@@ -812,6 +812,9 @@ type imageToolResolved struct {
 	// Loaded — модель уже в VRAM (загрузка не нужна).
 	Loaded bool
 	State  string
+	// NotFound — запрошенного имени нет в каталоге воркера. Нужно, чтобы вместо
+	// непонятного 404 от движка отдать модели список доступных имён.
+	NotFound bool
 }
 
 // resolveImageToolTarget — выбрать бэкенд и модель под конкретный вызов.
@@ -873,7 +876,24 @@ func (p *Proxy) resolveImageToolTarget(ctx context.Context, target *imageToolTar
 	}
 	logger.Get().Warnw("image tool: запрошенной модели нет в каталоге — отдаём имя воркеру как есть",
 		"requested", requested, "known", len(catalog.Models))
-	return imageToolResolved{BackendID: target.BackendID, Model: requested, State: imageStateNotLoaded}
+	return imageToolResolved{BackendID: target.BackendID, Model: requested, State: imageStateNotLoaded, NotFound: true}
+}
+
+// imageToolUnknownModelError — понятная ошибка «такой модели нет».
+//
+// ЗАЧЕМ СВОЙ ТЕКСТ: ошибка воркера «image model not found: stable-diffusion:1.5»
+// ничего не говорит модели о том, ЧТО ЖЕ доступно, и следующий её шаг — снова
+// угадывать имя (живой случай 2026-10-06). Перечисляем доступные имена прямо в
+// tool-сообщении: модель может исправиться на следующем turn.
+func (p *Proxy) imageToolUnknownModelError(ctx context.Context, requested string) string {
+	names := imageCatalogNames(p.ImageCatalogFor(ctx))
+	if len(names) == 0 {
+		return fmt.Sprintf("модели %q нет на image-воркере, а загруженных моделей нет вовсе: "+
+			"вызови list_image_models и выбери из доступного, либо попроси оператора загрузить модель", requested)
+	}
+	return fmt.Sprintf("модели %q нет на image-воркере. Доступные модели (имя использовать ровно как есть): %s. "+
+		"Вызови list_image_models, чтобы увидеть их описания, и повтори генерацию с одним из этих имён.",
+		requested, strings.Join(names, ", "))
 }
 
 // ensureImageModelLoaded — поднять модель в VRAM и дождаться готовности.
@@ -998,6 +1018,11 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 			return nil, fmt.Errorf(
 				"модель %q не загружена, а автозагрузка выключена (%s=off): загрузите модель заранее",
 				model, imageToolEnvAllowLoad)
+		}
+		if resolved.NotFound {
+			// Имени нет в каталоге: не гоняем воркер за гарантированным 404, а
+			// сразу отдаём модели список доступных — чтобы она исправилась.
+			return nil, errors.New(p.imageToolUnknownModelError(ctx, model))
 		}
 		elapsed, err := p.ensureImageModelLoaded(ctx, resolved.BackendID, model)
 		loadSeconds = elapsed.Seconds()
@@ -1173,9 +1198,21 @@ func (p *Proxy) imageToolCatalogResult(ctx context.Context, family string) map[s
 		out["family"] = family
 	}
 	if len(models) == 0 {
-		out["summary"] = fmt.Sprintf(
-			"В каталоге нет моделей%s. Доступны модели: загрузите модель на image-воркер (WebUI → Image-модели → HuggingFace) или через POST /api/v1/image/backends/{id}/models/load.",
-			familySuffix(family))
+		// ФИЛЬТР НЕ ДАЛ НИЧЕГО (живой случай 2026-10-06): модель вызвала каталог с
+		// family="stable-diffusion", получила пустой ответ и дальше придумала имя
+		// модели из своих знаний ("stable-diffusion:1.5"), которого на воркере нет.
+		// Поэтому в пустом ответе ОБЯЗАТЕЛЬНО перечисляем доступные имена и
+		// говорим, что фильтр нужно снять.
+		available := imageCatalogNames(catalog)
+		if len(available) > 0 {
+			out["status"] = "empty"
+			out["availableModels"] = available
+			out["summary"] = fmt.Sprintf(
+				"По фильтру family=%q моделей нет. ДОСТУПНЫЕ модели (используй имя ровно как есть, без выдумывания): %s. Вызови list_image_models без параметра family, чтобы увидеть их описания и требования к VRAM.",
+				family, strings.Join(available, ", "))
+		} else {
+			out["summary"] = "В каталоге нет моделей ни на одном image-бэкенде. Загрузите модель на image-воркер (WebUI → Image-модели → HuggingFace) или через POST /api/v1/image/backends/{id}/models/load."
+		}
 	} else {
 		out["summary"] = fmt.Sprintf("Доступные image-модели (%d)%s:\n%s",
 			len(models), familySuffix(family), strings.TrimRight(sb.String(), "\n"))
@@ -1224,6 +1261,20 @@ func imageCatalogLoadedLine(catalog *ImageCatalog) string {
 		}
 	}
 	return ""
+}
+
+// imageCatalogNames — имена моделей каталога (для подсказки в tool-результате).
+func imageCatalogNames(catalog *ImageCatalog) []string {
+	if catalog == nil {
+		return nil
+	}
+	names := make([]string, 0, len(catalog.Models))
+	for _, m := range catalog.Models {
+		if m.Name != "" {
+			names = append(names, m.Name)
+		}
+	}
+	return names
 }
 
 // familySuffix — « семейства X» для текста результата (пусто, если фильтра нет).

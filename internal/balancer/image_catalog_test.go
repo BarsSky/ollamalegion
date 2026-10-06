@@ -428,6 +428,38 @@ func TestEnsureImageModelLoaded_ConfigTimeoutBeatsEnv(t *testing.T) {
 	}
 }
 
+// TestGenerateImageForTool_UnknownModelListsAvailable — выдуманное имя модели
+// (живой случай: "stable-diffusion:1.5") не должно превращаться в непонятный 404
+// от движка: в ошибке перечисляем доступные имена, чтобы модель исправилась.
+func TestGenerateImageForTool_UnknownModelListsAvailable(t *testing.T) {
+	p, stub := catalogProxy(t, imgResWorkerTwoModels)
+	// Заведомо «пустая» генерация: если бы вызов всё-таки ушёл в воркер, тест
+	// поймал бы это по счётчику ниже.
+	stub.setGenBody(`{"created":1,"output_format":"png","data":[{"url":"/images/nope.png"}]}`)
+
+	target := p.imageToolTargetFor(context.Background())
+	if target == nil {
+		t.Fatal("нет target")
+	}
+
+	before, _, _ := stub.hitsAll()
+	_, err := p.generateImageForTool(context.Background(), target, imageToolArgs{
+		Prompt: "a cat", Model: "stable-diffusion:1.5",
+	})
+	if err == nil {
+		t.Fatal("неизвестное имя модели обязано давать ошибку")
+	}
+	msg := err.Error()
+	for _, want := range []string{"stable-diffusion:1.5", "sd15-q8-0", "flux-schnell-q3-k", "list_image_models"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("в ошибке нет %q: %s", want, msg)
+		}
+	}
+	if after, _, _ := stub.hitsAll(); after != before {
+		t.Errorf("воркер не должен вызываться для заведомо неизвестного имени (%d -> %d)", before, after)
+	}
+}
+
 // TestEnsureImageModelLoaded_TimesOut — незагружаемая модель заканчивается
 // честной ошибкой с таймаутом, а не бесконечным ожиданием.
 func TestEnsureImageModelLoaded_TimesOut(t *testing.T) {
@@ -496,8 +528,20 @@ func TestImageToolCatalogResult_ListsAndDoesNotTouchGPU(t *testing.T) {
 	if empty["count"] != 0 {
 		t.Fatalf("фильтр по несуществующему семейству: %+v", empty)
 	}
-	if s, _ := empty["summary"].(string); !strings.Contains(s, "нет моделей") {
-		t.Errorf("пустой каталог должен объясняться словами: %q", s)
+	// Пустой фильтр обязан не молчать, а перечислить доступные имена: иначе модель
+	// выдумывает имя из своих знаний (живой случай 2026-10-06: family=stable-diffusion
+	// → пусто → generate_image с именем "stable-diffusion:1.5", которого нет).
+	if s, _ := empty["summary"].(string); !strings.Contains(s, "моделей нет") {
+		t.Errorf("пустой фильтр должен объясняться словами: %q", s)
+	}
+	if s, _ := empty["summary"].(string); !strings.Contains(s, "sd15-q8-0") {
+		t.Errorf("в тексте ответа должны быть доступные имена: %q", s)
+	}
+	if avail, _ := empty["availableModels"].([]string); len(avail) != 2 {
+		t.Errorf("в пустом ответе нет machine-readable перечня моделей: %+v", empty)
+	}
+	if status, _ := empty["status"].(string); status != "empty" {
+		t.Errorf("status пустого фильтра = %q, want empty", status)
 	}
 
 	// GPU не тронут: ни одной генерации.

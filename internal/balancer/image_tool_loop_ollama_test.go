@@ -181,11 +181,11 @@ func TestRunImageToolLoopOllama_ExecutesAndFollowsUp(t *testing.T) {
 	req.Host = "balancer.test:18080"
 
 	handled := router.runImageToolLoopOllama(rec, req, imageToolLoopArgsOllama{
-		bodyBuf:     body,
-		model:       "qwen3",
-		backendID:   "llm-1",
-		backendURL:  srv.URL,
-		target:      target,
+		bodyBuf:    body,
+		model:      "qwen3",
+		backendID:  "llm-1",
+		backendURL: srv.URL,
+		target:     target,
 	})
 	if !handled {
 		t.Fatal("цикл должен был обработать запрос")
@@ -252,11 +252,11 @@ func TestRunImageToolLoopOllama_StreamsNDJSON(t *testing.T) {
 	req.Host = "balancer.test:18080"
 
 	if !router.runImageToolLoopOllama(rec, req, imageToolLoopArgsOllama{
-		bodyBuf:     body,
-		model:       "qwen3",
-		backendID:   "llm-1",
-		backendURL:  srv.URL,
-		target:      target,
+		bodyBuf:    body,
+		model:      "qwen3",
+		backendID:  "llm-1",
+		backendURL: srv.URL,
+		target:     target,
 	}) {
 		t.Fatal("цикл должен был обработать запрос")
 	}
@@ -305,11 +305,11 @@ func TestRunImageToolLoopOllama_NoToolCallPassesThrough(t *testing.T) {
 	req.Host = "balancer.test:18080"
 
 	if !router.runImageToolLoopOllama(rec, req, imageToolLoopArgsOllama{
-		bodyBuf:     body,
-		model:       "qwen3",
-		backendID:   "llm-1",
-		backendURL:  srv.URL,
-		target:      target,
+		bodyBuf:    body,
+		model:      "qwen3",
+		backendID:  "llm-1",
+		backendURL: srv.URL,
+		target:     target,
 	}) {
 		t.Fatal("цикл должен был обработать запрос")
 	}
@@ -333,11 +333,11 @@ func TestRunImageToolLoopOllama_ListCallDoesNotGenerate(t *testing.T) {
 	req.Host = "balancer.test:18080"
 
 	if !router.runImageToolLoopOllama(rec, req, imageToolLoopArgsOllama{
-		bodyBuf:     body,
-		model:       "qwen3",
-		backendID:   "llm-1",
-		backendURL:  srv.URL,
-		target:      target,
+		bodyBuf:    body,
+		model:      "qwen3",
+		backendID:  "llm-1",
+		backendURL: srv.URL,
+		target:     target,
 	}) {
 		t.Fatal("цикл должен был обработать запрос")
 	}
@@ -350,6 +350,52 @@ func TestRunImageToolLoopOllama_ListCallDoesNotGenerate(t *testing.T) {
 	content, _ := toolMsg["content"].(string)
 	if !strings.Contains(content, "Доступные image-модели") {
 		t.Errorf("в tool-сообщении нет каталога: %s", content)
+	}
+}
+
+// TestStripEmptyToolCallArtifact — живой артефакт Qwen3: инструменты объявлены,
+// модель их не вызвала, и в content попал пустой массив вызовов («[]»). Клиент не
+// должен видеть эту строку вместо ответа.
+func TestStripEmptyToolCallArtifact(t *testing.T) {
+	in := []byte("{\"model\":\"qwen3\",\"message\":{\"role\":\"assistant\",\"content\":\"[]\"},\"done\":true}\n")
+	out := stripEmptyToolCallArtifact(in)
+	if strings.Contains(string(out), `"[]"`) {
+		t.Fatalf("артефакт не убран: %s", out)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &doc); err != nil {
+		t.Fatalf("ответ стал не-JSON: %s", out)
+	}
+	msg, _ := doc["message"].(map[string]interface{})
+	if content, _ := msg["content"].(string); content != "" {
+		t.Errorf("content=%q, want пусто", content)
+	}
+	if doc["done"] != true {
+		t.Errorf("done потерян: %s", out)
+	}
+
+	// Маркер [TOOL_CALLS] + пустой массив — тот же артефакт.
+	in2 := []byte("{\"message\":{\"role\":\"assistant\",\"content\":\"[TOOL_CALLS][]\"},\"done\":true}\n")
+	out2 := stripEmptyToolCallArtifact(in2)
+	if strings.Contains(string(out2), "TOOL_CALLS") {
+		t.Fatalf("маркер не убран: %s", out2)
+	}
+	// Ещё один вариант со стенда: «[TOOL_CALLS]=[]».
+	in3 := []byte("{\"message\":{\"role\":\"assistant\",\"content\":\"[TOOL_CALLS]=[]\"},\"done\":true}\n")
+	out3 := stripEmptyToolCallArtifact(in3)
+	if strings.Contains(string(out3), "TOOL_CALLS") || strings.Contains(string(out3), "[]") {
+		t.Fatalf("вариант с '=' не убран: %s", out3)
+	}
+
+	// НОРМАЛЬНЫЙ ответ не трогаем (в том числе текст, где есть скобки).
+	keep := []byte("{\"message\":{\"role\":\"assistant\",\"content\":\"Вот список: [] — пусто\"},\"done\":true}\n")
+	if got := string(stripEmptyToolCallArtifact(keep)); got != string(keep) {
+		t.Errorf("обычный ответ изменён: %s", got)
+	}
+	// Пустой ответ без артефакта тоже остаётся как есть.
+	empty := []byte("{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n")
+	if got := string(stripEmptyToolCallArtifact(empty)); got != string(empty) {
+		t.Errorf("пустой ответ изменён: %s", got)
 	}
 }
 

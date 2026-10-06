@@ -110,7 +110,11 @@ func (lr *LlamaCppRouter) runImageToolLoopOllama(w http.ResponseWriter, r *http.
 	}
 	calls := extractImageToolCalls(message)
 	if len(calls) == 0 {
-		lr.writeOllamaChatResponse(w, a, raw1, status1, clientStream)
+		// Артефакт шаблона Qwen3 (живой случай 2026-10-06): когда инструменты
+		// объявлены, но модель их не вызвала, в content попадает пустой массив
+		// вызовов — клиент видит «[]» вместо ответа. Убираем мусор, сам ответ не
+		// трогаем.
+		lr.writeOllamaChatResponse(w, a, stripEmptyToolCallArtifact(raw1), status1, clientStream)
 		return true
 	}
 	_ = done
@@ -167,6 +171,22 @@ func (lr *LlamaCppRouter) executeOneImageToolCallOllama(r *http.Request, a image
 			"call", call.ID, "family", args.Family)
 		res := lr.proxy.imageToolCatalogResult(r.Context(), args.Family)
 		res["tool_call_id"] = call.ID
+		// ФИЛЬТР НЕ ДАЛ НИЧЕГО (живой случай 2026-10-06): модель вызвала каталог с
+		// family="stable-diffusion", получила пустой список и дальше придумала имя
+		// модели. Отвечаем явной ошибкой с перечнем доступных имён — модель
+		// исправляется на следующем turn (в том числе если это был вызов каталога
+		// вместе с генерацией по выдуманному имени).
+		if status, _ := res["status"].(string); status == "empty" {
+			out := map[string]interface{}{
+				"status":       "error",
+				"error":        res["summary"],
+				"tool_call_id": call.ID,
+			}
+			if avail, ok := res["availableModels"]; ok {
+				out["availableModels"] = avail
+			}
+			return out
+		}
 		return res
 	}
 
@@ -508,6 +528,69 @@ func (lr *LlamaCppRouter) writeOllamaToolFallback(w http.ResponseWriter, a image
 	lr.writeOllamaChatResponse(w, a, raw, http.StatusOK, clientStream)
 }
 
+// stripEmptyToolCallArtifact — убрать «пустой вызов» из NDJSON-ответа модели.
+//
+// ПОЧЕМУ ЭТО НУЖНО (живой случай 2026-10-06): у Qwen3 chat-шаблон при объявленных
+// инструментах дописывает в ответ маркер вызова, и если модель НЕ вызвала
+// инструмент, в content остаётся мусор от шаблона: «[]», «[TOOL_CALLS]»,
+// «[TOOL_CALLS]=[]» (варианты зависят от сборки шаблона). Клиент видит эту строку
+// вместо ответа. Настоящий вызов эти строки не содержат (его распознал бы
+// extractImageToolCalls), поэтому чистим content только тогда, когда после
+// удаления маркеров и скобок в нём не остаётся ничего осмысленного.
+func stripEmptyToolCallArtifact(raw []byte) []byte {
+	const marker = "[TOOL_CALLS]"
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	changed := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		var doc map[string]interface{}
+		if err := json.Unmarshal([]byte(trimmed), &doc); err != nil {
+			continue
+		}
+		msg, _ := doc["message"].(map[string]interface{})
+		if msg == nil {
+			continue
+		}
+		content, _ := msg["content"].(string)
+		if !isEmptyToolCallArtifact(content, marker) {
+			continue
+		}
+		msg["content"] = ""
+		doc["message"] = msg
+		out, err := json.Marshal(doc)
+		if err != nil {
+			continue
+		}
+		lines[i] = string(out)
+		changed = true
+	}
+	if !changed {
+		return raw
+	}
+	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
+// isEmptyToolCallArtifact — остаётся ли от content что-то, кроме маркера вызова,
+// скобок, знаков «=»/«:» и пробелов.
+func isEmptyToolCallArtifact(content, marker string) bool {
+	s := strings.ReplaceAll(content, marker, "")
+	s = strings.TrimSpace(s)
+	// После снятия маркера допустимы только пустые скобки/разделители: "[]", "=[]",
+	// "[]:", "[ ]" и т.п. Всё, что содержит буквы или цифры, — настоящий ответ.
+	for _, r := range s {
+		switch r {
+		case '[', ']', '=', ':', ' ', '\t', '\n', '\r':
+			continue
+		default:
+			return false
+		}
+	}
+	return strings.ContainsAny(s, "[]")
+}
+
 // ensureImageMarkdownOllama — добавить ссылку на картинку в NDJSON-ответ /api/chat,
 // если модель её не вставила (та же логика, что ensureImageMarkdown для OpenAI).
 func ensureImageMarkdownOllama(raw []byte, results []map[string]interface{}) []byte {
@@ -560,4 +643,3 @@ func ensureImageMarkdownOllama(raw []byte, results []map[string]interface{}) []b
 	}
 	return raw
 }
-

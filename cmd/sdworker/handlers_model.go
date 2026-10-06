@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/sdbackend"
+	"ollama-loadbalancer/pkg/logger"
 )
 
 // ============================================================
@@ -164,10 +165,24 @@ func (a *App) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListModels — GET /api/image/models.
+//
+// САМОВОССТАНОВЛЕНИЕ РЕЕСТРА (живой случай 2026-10-06): модель, скачанная
+// одиночной загрузкой файла через HF, не появлялась в списке до перезапуска
+// контейнера — реестр строится один раз при старте, а его перечитывал только
+// bundle-путь. Теперь перед ответом проверяем «отпечаток» каталога моделей и
+// перечитываем реестр, если на диске что-то изменилось. Проверка дешёвая
+// (ReadDir + Stat), полный скан — только при реальном изменении.
 func (a *App) handleListModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "use GET")
 		return
+	}
+	// НЕ перечитываем реестр во время активной загрузки: каталог bundle уже создан,
+	// а profile.json ещё нет — скан синтезировал бы «пустую» модель и показал её
+	// оператору как готовую (живой дефект 2026-10-06). Свою загрузку реестр
+	// обновляет сам после записи манифеста.
+	if !a.svc.HF.HasActiveDownloads() && a.svc.Registry.RefreshIfChanged() {
+		logger.Get().Infow("image models registry refreshed (models dir changed)")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"models":          a.svc.Models(),

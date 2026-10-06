@@ -745,6 +745,32 @@ func (m *HFManager) FileProgress(modelID, filename string) (*cppbackend.HFDownlo
 // ПОЧЕМУ НЕ downloader.GetBundleProgress: см. комментарий у FileProgress (общий
 // срез Files = data race). Скорость берём из финального снимка загрузчика —
 // читать его безопасно, потому что загрузка уже завершена (см. finishBundleState).
+// HasActiveDownloads — идёт ли сейчас загрузка (bundle или одиночный файл).
+//
+// ЗАЧЕМ (живой дефект 2026-10-06): пока качается bundle, каталог модели уже
+// существует, а profile.json ещё не записан. Скан реестра в этот момент
+// синтезирует «пустую» модель (family=other, files=[]), и она показывается
+// оператору как готовая — а после завершения загрузки снимок уже не обновлялся
+// (отпечаток тот же). Поэтому реестр перечитываем только когда загрузок нет.
+func (m *HFManager) HasActiveDownloads() bool {
+	if m == nil {
+		return false
+	}
+	m.statesMu.Lock()
+	defer m.statesMu.Unlock()
+	for _, st := range m.states {
+		if st == nil {
+			continue
+		}
+		switch st.status {
+		case "downloading", "queued", "starting":
+			return true
+		}
+	}
+	return false
+}
+
+// BundleProgress — прогресс bundle-загрузки по её id.
 func (m *HFManager) BundleProgress(bundleID string) (*cppbackend.HFBundleProgress, error) {
 	bundleID = strings.TrimSpace(bundleID)
 	if bundleID == "" {

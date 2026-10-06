@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -78,6 +79,71 @@ type Registry struct {
 	// warnings защищены тем же loadMu (читаются редко, только /health и список).
 	warningsMu sync.RWMutex
 	warnings   []string
+	// lastScan — отпечаток каталога на момент последнего Load (число записей +
+	// суммарное время модификации каталогов). Нужен для RefreshIfChanged: реестр
+	// строится один раз при старте, а модели могут появиться на диске ПОЗЖЕ —
+	// например одиночной загрузкой файла через HF (живой случай 2026-10-06:
+	// модель появилась в списке только после перезапуска контейнера).
+	lastScan string
+}
+
+// RefreshIfChanged — перечитать реестр, только если каталог моделей изменился.
+//
+// ЧТО СЧИТАЕМ ИЗМЕНЕНИЕМ: набор подкаталогов и время их модификации. Это дешёвая
+// проверка (os.ReadDir + Stat, без чтения профилей и файлов) — её можно звать на
+// каждый GET /api/image/models, и тогда «модель не видна до рестарта» больше не
+// воспроизводится. Полный Load выполняется только при реальном изменении.
+func (r *Registry) RefreshIfChanged() bool {
+	if r == nil {
+		return false
+	}
+	fp := r.dirFingerprint()
+	r.loadMu.Lock()
+	unchanged := fp != "" && fp == r.lastScan
+	r.loadMu.Unlock()
+	if unchanged {
+		return false
+	}
+	if err := r.Load(); err != nil {
+		if logger.Get() != nil {
+			logger.Get().Warnw("registry refresh failed", "dir", r.modelsDir, "error", err)
+		}
+		return false
+	}
+	return true
+}
+
+// dirFingerprint — «отпечаток» каталога моделей: имена подкаталогов и их mtime.
+//
+// ВАЖНО ПРО ПУСТОЙ КАТАЛОГ: пустой каталог — это НОРМАЛЬНОЕ состояние (моделей
+// ещё нет), и его отпечаток не должен совпадать с «каталог недоступен». Иначе
+// первая же проверка RefreshIfChanged считала бы «неизвестно» изменением и
+// запускала полный скан на КАЖДЫЙ запрос списка моделей. Поэтому добавляем
+// разделитель после каждой записи: даже без записей отпечаток непустой ("#").
+//
+// Пустая строка = каталог прочитать не удалось (тогда RefreshIfChanged оставляет
+// реестр как есть: Load сам обработает отсутствие каталога и вернёт предупреждение).
+func (r *Registry) dirFingerprint() string {
+	if r == nil || r.modelsDir == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(r.modelsDir)
+	if err != nil {
+		return ""
+	}
+	// Только ИМЕНА подкаталогов: mtime меняется и при дозаписи файлов внутрь
+	// существующего bundle, а по такому изменению нельзя запускать полный скан —
+	// можно прочитать профиль, пока файлы ещё качаются, и запомнить неполный
+	// набор (следующий скан уже не сработает). Свою bundle-загрузку реестр
+	// обновляет сам (hf.go: registerBundle → Registry.Load).
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return "#" + strings.Join(names, ";")
 }
 
 // ModelsDir — каталог моделей реестра.
@@ -134,6 +200,10 @@ func (r *Registry) Load() error {
 		r.warningsMu.Lock()
 		r.warnings = warnings
 		r.warningsMu.Unlock()
+		// Отпечаток каталога фиксируем здесь же: RefreshIfChanged сравнивает его,
+		// чтобы не сканировать диск на каждый запрос списка моделей. loadMu уже
+		// удерживается вызывающим Load, повторно его брать нельзя (дедлок).
+		r.lastScan = r.dirFingerprint()
 	}()
 
 	entries, err := os.ReadDir(r.modelsDir)

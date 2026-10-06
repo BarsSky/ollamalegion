@@ -57,7 +57,10 @@ func newTestApp(t *testing.T, models map[string]types.ImageModelProfile) (*App, 
 	cfg.ListenIP = "127.0.0.1"
 	cfg.ServerPort = freePort(t)
 	cfg.StartupTimeoutSec = 4
-	cfg.ImagesDir = filepath.Join(dir, "images")
+	// Каталог картинок НЕ внутри каталога моделей: реестр после RefreshIfChanged
+	// перечитывает диск и любой подкаталог models/ считает bundle (живой случай:
+	// images/ попадал в список моделей как третья «модель»).
+	cfg.ImagesDir = filepath.Join(t.TempDir(), "images")
 
 	reg := sdbackend.NewRegistry(dir)
 	if err := reg.Load(); err != nil {
@@ -199,7 +202,7 @@ func TestOpenAI_ImagesGenerations_B64(t *testing.T) {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Created      int64 `json:"created"`
+		Created      int64  `json:"created"`
 		OutputFormat string `json:"output_format"`
 		Data         []struct {
 			B64JSON string `json:"b64_json"`
@@ -485,10 +488,10 @@ func TestNative_GenerateAsyncJobLifecycle(t *testing.T) {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 	var submitted struct {
-		ID       string `json:"id"`
-		State    string `json:"state"`
-		PollURL  string `json:"poll_url"`
-		QueuePosition int `json:"queue_position"`
+		ID            string `json:"id"`
+		State         string `json:"state"`
+		PollURL       string `json:"poll_url"`
+		QueuePosition int    `json:"queue_position"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &submitted); err != nil {
 		t.Fatalf("invalid JSON: %v", err)

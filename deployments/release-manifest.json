@@ -9,9 +9,9 @@
                    {
                        "service":  "webui",
                        "variable":  "WEBUI_TAG",
-                       "image":  "ollama-legion/webui:r83-submodule-v95",
-                       "imageTag":  "r83-submodule-v95",
-                       "imageId":  "sha256:d393e636a7dcb37af6ce87aed8e063d83a5429dd65fe8ab13d8d08370c383ec9",
+                       "image":  "ollama-legion/webui:r83-submodule-v96",
+                       "imageTag":  "r83-submodule-v96",
+                       "imageId":  "sha256:a96606031f9d35b2eee029f9ba704bb22a285992b2fe43a54b339e1fe8dc3bbe",
                        "alias":  "ollama-legion/webui:latest"
                    },
                    {

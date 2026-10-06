@@ -451,6 +451,27 @@ func TestImageToolPublicURL(t *testing.T) {
 	if got := imageToolPublicURL(req, "/images/img_1.png"); got != "https://ai.example.com/v1/images/files/img_1.png" {
 		t.Errorf("base URL из окружения не учтён: %q", got)
 	}
+
+	// ЖИВОЙ СЛУЧАЙ: воркер отдаёт АБСОЛЮТНУЮ ссылку (у него задан BASE_URL).
+	// Первая версия отрезала только префикс «/images/» и склеивала мусор:
+	// http://балансер/v1/images/files/http://localhost:18093/images/x.png
+	t.Setenv("LB_IMAGE_TOOL_BASE_URL", "")
+	if got := imageToolPublicURL(req, "http://localhost:18093/images/img_7_ab.png"); got != "http://lb.example:18079/v1/images/files/img_7_ab.png" {
+		t.Errorf("абсолютная ссылка воркера разобрана неверно: %q", got)
+	}
+	if name := imageFileNameFromURL("http://worker:18093/images/img_7.png?x=1#f"); name != "img_7.png" {
+		t.Errorf("query/fragment не отрезаны: %q", name)
+	}
+	for _, bad := range []string{"", "/images/", "http://w/images/../../etc/passwd", "http://w/images/a/b.png"} {
+		if name := imageFileNameFromURL(bad); name != "" {
+			t.Errorf("опасная ссылка %q дала имя %q", bad, name)
+		}
+	}
+	// Неразобранную ссылку возвращаем как есть (лучше рабочая ссылка воркера,
+	// чем склеенный мусор).
+	if got := imageToolPublicURL(req, "ftp://weird"); got != "ftp://weird" {
+		t.Errorf("неразобранная ссылка изменена: %q", got)
+	}
 }
 
 func TestBuildFollowUpBody_KeepsClientTools(t *testing.T) {

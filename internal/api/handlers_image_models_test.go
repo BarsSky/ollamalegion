@@ -525,6 +525,87 @@ func TestImageBackendProxy_GgufPathAlsoAcceptsImageBackend(t *testing.T) {
 		"image backend must resolve to EffectiveImagePort()")
 }
 
+// TestImageModelsCatalog_RouteAndPayload — R85: GET /api/v1/image/models/catalog
+// идёт через тот же мок воркера и отдаёт модели с параметрами, VRAM, состоянием
+// и описанием; «сырой» маршрут /api/v1/image/models при этом не подменяется.
+func TestImageModelsCatalog_RouteAndPayload(t *testing.T) {
+	mock := newMockImageWorker()
+	defer mock.close()
+
+	server, _ := createImageTestServer(t, mock.server.URL)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/image/models/catalog")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var payload struct {
+		Backends []struct {
+			ID         string   `json:"id"`
+			Status     string   `json:"status"`
+			State      string   `json:"state"`
+			ContractOK bool     `json:"contractOk"`
+			Models     []string `json:"models"`
+		} `json:"backends"`
+		Models []struct {
+			Name           string `json:"name"`
+			BackendID      string `json:"backendId"`
+			Family         string `json:"family"`
+			State          string `json:"state"`
+			VramEstimateMB int    `json:"vramEstimateMb"`
+			Loaded         bool   `json:"loaded"`
+			Strengths      string `json:"strengths"`
+			Defaults       struct {
+				Steps int `json:"steps"`
+			} `json:"defaults"`
+		} `json:"models"`
+		Limits struct {
+			MinSide      int `json:"minSide"`
+			MaxSide      int `json:"maxSide"`
+			SizeMultiple int `json:"sizeMultiple"`
+			MaxSteps     int `json:"maxSteps"`
+		} `json:"limits"`
+		HasLoadedModel bool `json:"hasLoadedModel"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&payload))
+
+	require.Len(t, payload.Backends, 1)
+	assert.Equal(t, "img_mock", payload.Backends[0].ID)
+	assert.Equal(t, "healthy", payload.Backends[0].Status)
+	assert.True(t, payload.Backends[0].ContractOK, "воркер ответил контрактом — каталог обязан это показать")
+	assert.Contains(t, payload.Backends[0].Models, "z-image-turbo-q3-k")
+
+	require.Len(t, payload.Models, 1)
+	m := payload.Models[0]
+	assert.Equal(t, "z-image-turbo-q3-k", m.Name)
+	assert.Equal(t, "img_mock", m.BackendID)
+	assert.Equal(t, "z_image", m.Family)
+	// Мок отдаёт модели БЕЗ поля state (как часть «голого» контракта) — каталог
+	// обязан честно показать это пустой строкой, а не выдумать "loaded".
+	assert.Equal(t, "", m.State)
+	assert.False(t, m.Loaded)
+	assert.NotEmpty(t, m.Strengths, "описание модели — то, ради чего каталог существует")
+	assert.NotZero(t, m.Defaults.Steps, "дефолты профиля/каталога должны доехать до модели")
+	assert.False(t, payload.HasLoadedModel)
+
+	// Лимиты — из замороженного контракта движка.
+	assert.Equal(t, 64, payload.Limits.MinSide)
+	assert.Equal(t, 4096, payload.Limits.MaxSide)
+	assert.Equal(t, 64, payload.Limits.SizeMultiple)
+	assert.Equal(t, 100, payload.Limits.MaxSteps)
+
+	// Агрегат «сырых» ответов остался отдельным маршрутом (самый длинный шаблон
+	// выигрывает: /api/v1/image/models/catalog != /api/v1/image/models).
+	raw, err := http.Get(server.URL + "/api/v1/image/models")
+	require.NoError(t, err)
+	defer raw.Body.Close()
+	var aggregate map[string]interface{}
+	require.NoError(t, json.NewDecoder(raw.Body).Decode(&aggregate))
+	assert.Contains(t, aggregate, "backends")
+	assert.NotContains(t, aggregate, "limits", "агрегат не должен подменяться каталогом")
+}
+
 // TestImageWorkerAPIToken_Precedence — токен image-воркера: бэкенд → env-фолбэк.
 func TestImageWorkerAPIToken_Precedence(t *testing.T) {
 	mock := newMockImageWorker()
@@ -534,13 +615,25 @@ func TestImageWorkerAPIToken_Precedence(t *testing.T) {
 	defer server.Close()
 
 	// 1) Токен из записи бэкенда.
-	b := s.proxy.GetBackend("img_mock")
-	require.NotNil(t, b)
-	b.CppWorkerApiToken = "backend-token"
+	//
+	// ВАЖНО (гонка в CI): писать прямо в указатель из GetBackend нельзя. Он
+	// ведёт в живую запись реестра, которую параллельно читает фоновый
+	// llamaCppMetricsPoller через GetAllBackends() (под state.mu) — -race
+	// помечал это как data race. Мутируем только штатным UpdateBackend.
+	setBackendToken := func(token string) {
+		t.Helper()
+		b := s.proxy.GetBackend("img_mock")
+		require.NotNil(t, b)
+		updated := *b
+		updated.CppWorkerApiToken = token
+		require.NoError(t, s.proxy.UpdateBackend("img_mock", updated))
+	}
+
+	setBackendToken("backend-token")
 	assert.Equal(t, "backend-token", s.imageWorkerAPIToken("img_mock"))
 
 	// 2) Пусто в бэкенде → env-фолбэк (bundled-стек: один LB_API_TOKEN на все сервисы).
-	b.CppWorkerApiToken = ""
+	setBackendToken("")
 	t.Setenv("LB_API_TOKEN", "stack-token")
 	t.Setenv("CPPWORKER_API_TOKEN", "")
 	t.Setenv("IMAGEWORKER_API_TOKEN", "")

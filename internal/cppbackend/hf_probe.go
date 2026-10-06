@@ -55,7 +55,20 @@ const HFProbeRangeBytes = 512 * 1024
 const (
 	HFProbeSupported = "supported" // семейство/версия движка узнаны по именам тензоров
 	HFProbeUnknown   = "unknown"   // по заголовку вердикта нет
+	// HFProbeUnsupported — по заголовку ВИДНО, что движок файл не прочитает.
+	// Единственный такой случай сегодня — MLX-квантование safetensors: веса лежат
+	// в U32 вместе с парами scales/biases, а стабильный sd.cpp читает F16/BF16/F8.
+	// Это не догадка по имени: тип указан в самой шапке файла.
+	//
+	// Живой случай (2026-10-06): оператор скачал `*-UC-MLX-4bit.safetensors` из
+	// репозитория с «GGUF» в названии и получил на загрузке
+	// `unsupported dtype "U32" (tensor "img_in.weight")` + `new_sd_ctx_t failed`.
+	HFProbeUnsupported = "unsupported"
 )
+
+// sfUnsupportedWeightDtypes — типы весов, которые движок не читает. U32/I32 —
+// маркер MLX-квантования (веса + scales/biases), а не обычных весов.
+var sfUnsupportedWeightDtypes = map[string]bool{"U32": true, "I32": true, "U16": true, "I16": true}
 
 // engineAnchor — правило узнавания семейства: имя тензора, которое ищет
 // get_sd_version (src/model_loader.cpp pinned master-929-3f8527a).
@@ -179,6 +192,19 @@ func (d *HuggingFaceDownloader) ProbeFile(ctx context.Context, modelID, filename
 		CheckedB:  len(head),
 		SizeBytes: parseContentRangeTotal(resp.Header.Get("Content-Range")),
 	}
+	// Вердикт по шапке считает отдельная функция: её же проверяют тесты без сети.
+	return probeHeadInto(res, head, filename), nil
+}
+
+// probeHeadInto — вердикт по прочитанной шапке файла (без сети и без ModelID).
+//
+// Вынесено из ProbeFile ради тестов: разбор шапки — самая ценная часть
+// пред-проверки (именно она ловит MLX-кванты), и проверять её нужно на реальных
+// байтах, а не через HTTP-мок.
+func probeHeadInto(res *HFProbeResult, head []byte, filename string) *HFProbeResult {
+	if res == nil {
+		res = &HFProbeResult{}
+	}
 	res.Format = detectWeightFormat(head, filename)
 	switch res.Format {
 	case "gguf":
@@ -186,7 +212,7 @@ func (d *HuggingFaceDownloader) ProbeFile(ctx context.Context, modelID, filename
 		if perr != nil {
 			res.Verdict = HFProbeUnknown
 			res.Reason = "GGUF-заголовок не читается: " + perr.Error()
-			return res, nil
+			return res
 		}
 		res.Arch = hdr.Arch
 		res.Tensors = hdr.TensorCount
@@ -198,23 +224,63 @@ func (d *HuggingFaceDownloader) ProbeFile(ctx context.Context, modelID, filename
 		if perr != nil {
 			res.Verdict = HFProbeUnknown
 			res.Reason = "safetensors-заголовок не читается: " + perr.Error()
-			return res, nil
+			return res
 		}
 		res.Arch = hdr.Arch
 		res.Tensors = hdr.TensorCount
 		res.Prefixes = hdr.Prefixes
+		// MLX-КВАНТОВАНИЕ (живой случай 2026-10-06): веса в U32 + пары
+		// scales/biases. Тип виден прямо в шапке, поэтому это не «неизвестно», а
+		// точный отказ — и оператор узнаёт о нём ДО скачивания гигабайтов.
+		if t := firstUnsupportedWeightDtype(hdr.Dtypes); t != "" {
+			res.Verdict = HFProbeUnsupported
+			res.Reason = fmt.Sprintf(
+				"MLX-квантование (тип весов %s вместе с scales/biases): stable-diffusion.cpp читает GGUF и обычные safetensors (F16/BF16/F8), такой файл не загрузится — нужен GGUF-квант",
+				t)
+			return res
+		}
 		res.Family, res.Version, res.DiT, res.Reason = classifyTensors(hdr.normalizedSet())
 	default:
 		res.Verdict = HFProbeUnknown
 		res.Reason = "не похоже на файл весов (.gguf/.safetensors)"
-		return res, nil
+		return res
 	}
 	if res.Version != "" {
 		res.Verdict = HFProbeSupported
 	} else {
 		res.Verdict = HFProbeUnknown
 	}
-	return res, nil
+	return res
+}
+
+// probeHead — вердикт по шапке для тестов (без ModelID/размера).
+func probeHead(head []byte, filename string) *HFProbeResult {
+	return probeHeadInto(&HFProbeResult{}, head, filename)
+}
+
+// firstUnsupportedWeightDtype — первый тип весов, который движок не прочитает.
+//
+// Смотрим только тензоры-ВЕСА (`.weight`), а не служебные: у MLX в U32 лежат
+// именно веса, тогда как scales/biases — в BF16, и по одному U32-тензору это
+// видно сразу. Пусто = поддержка не исключена.
+func firstUnsupportedWeightDtype(dtypes map[string]string) string {
+	if len(dtypes) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(dtypes))
+	for name := range dtypes {
+		names = append(names, name)
+	}
+	sort.Strings(names) // детерминированный ответ (тесты и UI)
+	for _, name := range names {
+		if !strings.Contains(name, "weight") {
+			continue
+		}
+		if sfUnsupportedWeightDtypes[dtypes[name]] {
+			return dtypes[name]
+		}
+	}
+	return ""
 }
 
 // classifyTensors — «как движок увидит этот файл»: семейство, название версии и
@@ -488,6 +554,11 @@ type sfHeader struct {
 	Prefixes     []string
 	Dims         map[string]int64
 	MetadataKeys []string
+	// Dtypes — какой тип данных у весов (ключ → dtype из шапки). Нужен, чтобы
+	// отличить обычный safetensors (F16/BF16/F8) от MLX-квантования, где веса
+	// лежат в U32 вместе с парами scales/biases: движок такие файлы не читает
+	// (см. HFDtypeUnsupported).
+	Dtypes map[string]string
 }
 
 func (h sfHeader) normalizedSet() tensorSet {
@@ -533,6 +604,7 @@ func parseSafetensorsHeader(b []byte) (sfHeader, error) {
 		h.TensorCount++
 		var info struct {
 			Shape []int64 `json:"shape"`
+			Dtype string  `json:"dtype"`
 		}
 		// Shape в safetensors — в порядке torch (строка-мажор), а ggml/движок
 		// считает ne[0] последней размерностью: для token_embedding [49408, 768]
@@ -541,6 +613,12 @@ func parseSafetensorsHeader(b []byte) (sfHeader, error) {
 			h.Dims[key] = info.Shape[len(info.Shape)-1]
 		} else {
 			h.Dims[key] = 0
+		}
+		if info.Dtype != "" {
+			if h.Dtypes == nil {
+				h.Dtypes = map[string]string{}
+			}
+			h.Dtypes[key] = info.Dtype
 		}
 		if p := tensorPrefix(key); p != "" {
 			seen[p] = true

@@ -293,6 +293,69 @@ func TestProbeSafetensors_VAEIsUnknown(t *testing.T) {
 	}
 }
 
+// buildSafetensorsDtypes — safetensors с ЯВНЫМИ типами тензоров (для MLX-случая).
+func buildSafetensorsDtypes(t *testing.T, dtypes map[string]string) []byte {
+	t.Helper()
+	doc := map[string]any{}
+	for name, dt := range dtypes {
+		doc[name] = map[string]any{"dtype": dt, "shape": []int{496, 8}, "data_offsets": []int{0, 32}}
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var buf bytes.Buffer
+	_ = binary.Write(&buf, binary.LittleEndian, uint64(len(raw)))
+	buf.Write(raw)
+	return buf.Bytes()
+}
+
+// TestProbeSafetensors_MLXQuantizationIsUnsupported — ЖИВОЙ СЛУЧАЙ (2026-10-06):
+// оператор скачал `qwen-image-2.1-UC-MLX-4bit.safetensors` из репозитория с
+// «GGUF» в названии и получил на загрузке `unsupported dtype "U32" (tensor
+// "img_in.weight")`. Пред-проверка обязана сказать это ДО скачивания гигабайтов.
+//
+// Раскладка взята из настоящей шапки файла: веса в U32, scales/biases в BF16.
+func TestProbeSafetensors_MLXQuantizationIsUnsupported(t *testing.T) {
+	raw := buildSafetensorsDtypes(t, map[string]string{
+		"img_in.weight": "U32",
+		"img_in.scales": "BF16",
+		"img_in.biases": "BF16",
+		"txt_in.weight": "U32",
+		"txt_in.scales": "BF16",
+	})
+	hdr, err := parseSafetensorsHeader(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := firstUnsupportedWeightDtype(hdr.Dtypes); got != "U32" {
+		t.Fatalf("firstUnsupportedWeightDtype=%q, want U32", got)
+	}
+	// Через полный разбор шапки: вердикт и причина.
+	res := probeHead(raw, "qwen-image-2.1-UC-MLX-4bit.safetensors")
+	if res.Verdict != HFProbeUnsupported {
+		t.Fatalf("verdict=%q, want %q (%s)", res.Verdict, HFProbeUnsupported, res.Reason)
+	}
+	if res.Format != "safetensors" {
+		t.Errorf("format=%q", res.Format)
+	}
+	if !strings.Contains(res.Reason, "MLX") || !strings.Contains(res.Reason, "GGUF") {
+		t.Errorf("причина должна объяснять и формат, и что нужно: %q", res.Reason)
+	}
+
+	// Обычный safetensors (F16) остаётся рабочим кандидатом.
+	ok := buildSafetensorsDtypes(t, map[string]string{"img_in.weight": "F16", "txt_in.weight": "BF16"})
+	resOK := probeHead(ok, "qwen_image_2.1-Q4_0.safetensors")
+	if resOK.Verdict == HFProbeUnsupported {
+		t.Fatalf("обычный safetensors не должен помечаться неподдерживаемым: %s", resOK.Reason)
+	}
+	// U32 только у служебного тензора (не *.weight) — тоже не приговор.
+	svc := buildSafetensorsDtypes(t, map[string]string{"img_in.weight": "F16", "img_in.shape": "U32"})
+	if resSvc := probeHead(svc, "x.safetensors"); resSvc.Verdict == HFProbeUnsupported {
+		t.Fatalf("служебный U32-тензор не должен блокировать файл: %s", resSvc.Reason)
+	}
+}
+
 // --- HTTP: Range-запрос и вердикт -------------------------------------------
 
 func TestProbeFile_UsesRangeAndReturnsVerdict(t *testing.T) {

@@ -703,6 +703,8 @@ POST /v1/chat/completions            # как обычно, tools можно н�
 | `LB_IMAGE_TOOL_TIMEOUT_SEC` | `600` | таймаут одной генерации |
 | `LB_IMAGE_TOOL_BASE_URL` | Host клиента | внешний адрес балансера для ссылок |
 
+R85 добавил ещё два флага (каталог моделей и автозагрузка) — см. §16.3.
+
 ### 14.6 Ограничения (честно)
 
 - turn 1 всегда нестриминговый: решение «исполнять ли вызов» принимается по целому
@@ -712,6 +714,159 @@ POST /v1/chat/completions            # как обычно, tools можно н�
   `/api/chat` и Anthropic `/v1/messages` — не покрыты;
 - n_ctx-переполнение на tools-запросе обрабатывается авто-реload'ом, но обычный
   ретрай сетевого уровня на первом turn не делается (ошибка уходит клиенту как есть);
-- инструмент недоступен, пока модель не загружена: это осознанный выбор оператора
-  (без «тихой» автозагрузки на первый вызов).
+- при `LB_IMAGE_TOOL_ALLOW_LOAD=off` инструмент объявляется только когда модель уже
+  загружена; при `on` (по умолчанию, R85) — см. §16.
+
+## 16. Каталог моделей, `list_image_models` и автозагрузка (R85)
+
+R85 (2026-10-06). Дополняет §14: `generate_image` отвечает «нарисуй»,
+`list_image_models` — «покажи, из чего выбирать», а сам вызов при необходимости
+поднимает нужную модель.
+
+### 16.1 Зачем каталог и второй инструмент
+
+Enum параметра `model` сообщает только ИМЕНА моделей. Для осмысленного выбора нужны
+семейство, требования к VRAM, размер картинки, число шагов и человеческое описание
+(«для чего эта модель хороша»). Каталог — это данные, а не код: описания живут в
+профиле модели (`strengths`/`notes`), правятся из WebUI и попадают и в API, и в
+инструмент.
+
+**Гейт объявления** (изменился в R85):
+
+| `LB_IMAGE_TOOL_ALLOW_LOAD` | Что объявляется | Условие |
+| --- | --- | --- |
+| `on` (по умолчанию) | `generate_image` + `list_image_models` | здоровый `image_cpp` **и есть что грузить** (модели видны в снимке) |
+| `off` | только `generate_image` | здоровый `image_cpp` **и модель уже в VRAM** (поведение R84) |
+
+**Автозагрузка.** При `on` вызов `generate_image` с `model=X`, где `X` ещё не в
+VRAM, поднимает модель сам: `POST /api/image/models/load` → опрос состояния до
+`state=loaded` → VRAM-гейт → генерация. В tool-результат добавляются `loadSeconds`
+(время загрузки) и `loadedNow`/`modelState`, чтобы модель объяснила пользователю
+паузу, а не молчала. Таймаут — `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` (по умолчанию 600 с);
+по его истечении в tool-сообщение уходит причина, а не обрыв.
+
+**Ответ инструмента** (сжатый, читаемый моделью):
+
+```json
+{ "status": "ok", "count": 3, "hasLoadedModel": true, "loadedModel": "sd15-q8-0",
+  "limits": { "minSide": 64, "maxSide": 4096, "sizeMultiple": 64, "minSteps": 1, "maxSteps": 100 },
+  "models": [ { "name": "sd15-q8-0", "backendId": "imageworker", "family": "sd15",
+                "state": "loaded", "loaded": true, "vramEstimateMb": 2100,
+                "defaults": { "steps": 25, "width": 512, "height": 512 },
+                "strengths": "эталон качества SD1.5 при малом VRAM" } ],
+  "summary": "Доступные image-модели (3):\n- sd15-q8-0 | семейство sd15 | состояние: loaded (уже в VRAM) | ~2100 MB VRAM | …" }
+```
+
+GPU инструмент **не занимает**: генерации нет, VRAM-гейт не берётся, в ленте
+image-запросов ничего не появляется.
+
+### 16.2 `GET /api/v1/image/models/catalog`
+
+Один ответ по всем живым `image_cpp`-бэкендам. Его же читает инструмент, поэтому
+каталог и решение о генерации не могут разойтись: оба источника — одни и те же
+снимки состояния воркеров.
+
+```bash
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  http://localhost:28081/api/v1/image/models/catalog | jq .
+```
+
+```json
+{
+  "generatedAt": "2026-10-06T11:20:00Z",
+  "cached": false, "cacheTtlSeconds": 5,
+  "backends": [{ "id": "imageworker", "host": "127.0.0.1", "port": 18093,
+                 "status": "healthy", "state": "loaded", "currentModel": "sd15-q8-0",
+                 "contractOk": true, "models": ["sd15-q8-0", "flux-schnell-q3-k"] }],
+  "models": [{
+    "name": "sd15-q8-0", "backendId": "imageworker", "family": "sd15",
+    "state": "loaded",            // loaded | loading | not_loaded | error
+    "sizeBytes": 1760000000, "vramEstimateMb": 2100, "vramSource": "profile",
+    "loaded": true,
+    "defaults": { "steps": 25, "cfgScale": 7, "sampler": "euler_a",
+                  "width": 512, "height": 512, "batchCount": 1, "seed": -1 },
+    "strengths": "эталон качества SD1.5 при малом VRAM (2.1 GB): лучший выбор по умолчанию для 4-6 GB",
+    "notes": "Эталон качества SD1.5 (1.76 GB) при пике 2.1 GB @512 по замерам sd.cpp…",
+    "source": "profile"           // profile | catalog | worker
+  }],
+  "limits": { "minSide": 64, "maxSide": 4096, "sizeMultiple": 64, "minSteps": 1, "maxSteps": 100 },
+  "hasLoadedModel": true
+}
+```
+
+Поля:
+
+| Поле | Источник | Смысл |
+| --- | --- | --- |
+| `state`, `loaded` | снимок воркера | `loaded` / `loading` / `not_loaded` / `error` |
+| `sizeBytes` | снимок воркера | размер bundle'а на диске |
+| `vramEstimateMb`, `vramSource` | профиль → воркер → размеры файлов | пиковая VRAM: `profile` / `catalog` / `worker` / `files` |
+| `defaults` | профиль → каталог пресетов | с какими шагами/размером модель запускается |
+| `strengths` | профиль → каталог пресетов → семейство | «для чего модель хороша» — ЧИТАЕТ МОДЕЛЬ |
+| `notes` | профиль → каталог пресетов | подробное описание — читает оператор |
+| `source` | — | откуда взяты `defaults`/описания |
+
+**Описания — данные, а не код.** Поля `notes` и `strengths` правятся в профиле
+модели (WebUI → Image-модели → профиль, `PUT /api/v1/image/model-profiles/{name}`):
+
+```bash
+curl -sS -X PUT -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"strengths":"быстро и дёшево: 512x512 за секунды","notes":"наш внутренний выбор"}' \
+  http://localhost:28081/api/v1/image/model-profiles/sd15-q8-0
+```
+
+Приоритет источников: **профиль оператора → каталог пресетов
+(`config/image-model-catalog.json`) → характеристика семейства**. Профиль
+приоритетнее каталога, потому что это живое намерение оператора; каталог пресетов
+намеренно уступает, чтобы правка из WebUI не «перетиралась» поставляемым файлом.
+Если файла каталога на диске нет (балансер запущен не из корня репозитория),
+используется вшитая в бинарь копия; если файл есть, но битый — `GET
+/api/v1/image/model-catalog` отдаёт 500 с причиной, а не тихо подменяет данные.
+
+### 16.3 Флаги автозагрузки
+
+| Флаг | По умолчанию | Смысл |
+| --- | --- | --- |
+| `LB_IMAGE_TOOL_ALLOW_LOAD` | `on` | `off` — вызов не поднимает модель и `list_image_models` не объявляется (поведение R84) |
+| `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` | `600` | сколько ждать загрузку модели, после чего в tool-сообщение уходит причина |
+
+### 16.4 Сценарий «пользователь просит картинку»
+
+```
+Пользователь: «нарисуй кота на подоконнике, и чтобы было красиво»
+  → cppworker (gemma-4/Qwen3) получает инструменты generate_image + list_image_models
+  → модель вызывает list_image_models → балансер отдаёт каталог (GPU не тратится)
+  → модель выбирает модель под «красиво» (например flux-schnell-q3-k, ~5.2 GB)
+  → вызывает generate_image{model:"flux-schnell-q3-k", prompt:"…"}
+  → балансер: модель не в VRAM → POST /api/image/models/load → ждёт state=loaded
+              (VRAM-гейт и очередь соблюдаются) → генерация
+  → в tool-сообщении: url, markdown, loadSeconds (~40 с), modelState=loaded
+  → модель пишет финальный ответ и предупреждает о времени загрузки
+  → клиент видит текст + markdown-картинку
+```
+
+Что видно оператору в Monitor: обе генерации с `surface=chat-tool` (если их две) и
+запись о загрузке модели; вызов каталога в ленту НЕ попадает — он ничего не
+генерировал.
+
+### 16.5 Диагностика
+
+```bash
+# какие модели видит балансер и что про них знает
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  http://localhost:28081/api/v1/image/models/catalog | jq '.models[] | {name, state, vramEstimateMb, source}'
+
+# профиль + фактический argv, который уйдёт в sd-server
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  http://localhost:28081/api/v1/image/model-profiles/sd15-q8-0 | jq '{profile, serverArgs}'
+
+# поднять модель вручную (то же, что делает автозагрузка)
+curl -sS -X POST -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"flux-schnell-q3-k"}' \
+  http://localhost:28081/api/v1/image/backends/imageworker/models/load
+```
+
+Частые причины «каталог пуст»: бэкенд нездоров (в `warnings` будет причина), воркер
+ответил не контрактом (`contractOk=false`), модель не скачана в воркер.
+
 

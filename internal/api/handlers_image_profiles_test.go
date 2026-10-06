@@ -442,8 +442,14 @@ func TestImageModelCatalogEndpoint_ServesRepoCatalog(t *testing.T) {
 	}
 }
 
-// TestImageModelCatalogEndpoint_NotFound — отсутствующий каталог = 404, а не 500.
-func TestImageModelCatalogEndpoint_NotFound(t *testing.T) {
+// TestImageModelCatalogEndpoint_MissingFileServesEmbedded — отсутствующий файл
+// каталога НЕ ломает API: отдаётся вшитая в бинарь копия (R85).
+//
+// ПОЧЕМУ ТАК, А НЕ 404: путь по умолчанию относительный, и балансер, запущенный
+// не из корня репозитория, иначе остался бы без каталога пресетов вообще — а
+// каталог нужен и WebUI, и выбору модели инструментом. При этом невалидный файл
+// (он ЕСТЬ, но битый) по-прежнему даёт 500: опечатку оператора скрывать нельзя.
+func TestImageModelCatalogEndpoint_MissingFileServesEmbedded(t *testing.T) {
 	imageProfilesPathForTest(t)
 	t.Setenv("LB_IMAGE_MODEL_CATALOG_PATH", filepath.Join(t.TempDir(), "missing.json"))
 
@@ -453,9 +459,38 @@ func TestImageModelCatalogEndpoint_NotFound(t *testing.T) {
 	resp, err := http.Get(server.URL + "/api/v1/image/model-catalog")
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var payload struct {
+		Total   int                       `json:"total"`
+		Presets []types.ImageModelProfile `json:"presets"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&payload))
+	assert.GreaterOrEqual(t, payload.Total, 9, "вшитая копия каталога должна отдаваться целиком")
+	names := map[string]bool{}
+	for _, p := range payload.Presets {
+		names[p.Name] = true
+	}
+	assert.True(t, names["sd15-q8-0"], "вшитая копия должна содержать штатные пресеты")
+}
+
+// TestImageModelCatalogEndpoint_InvalidFileIs500 — битый файл каталога = 500 с
+// причиной (не 404 и не тихая подмена вшитой копией).
+func TestImageModelCatalogEndpoint_InvalidFileIs500(t *testing.T) {
+	imageProfilesPathForTest(t)
+	bad := filepath.Join(t.TempDir(), "broken.json")
+	require.NoError(t, os.WriteFile(bad, []byte(`{"presets":[{"name":"x"}]}`), 0o600))
+	t.Setenv("LB_IMAGE_MODEL_CATALOG_PATH", bad)
+
+	server, _, _ := createTestServer(t)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/v1/image/model-catalog")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
-	assert.Contains(t, string(body), "catalog not found")
+	assert.Contains(t, string(body), "invalid catalog")
 }
 
 // TestImageProfile_UnsafeNameRejected — имя профиля = имя каталога bundle;

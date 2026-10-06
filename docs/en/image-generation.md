@@ -685,6 +685,8 @@ so they never bypass resource policy.
 | `LB_IMAGE_TOOL_TIMEOUT_SEC` | `600` | per-generation timeout |
 | `LB_IMAGE_TOOL_BASE_URL` | client Host | public balancer address for links |
 
+R85 added two more flags (model catalog and auto-load) - see 16.3.
+
 ### 14.6 Limitations (honestly)
 
 - turn 1 is always non-streaming: the "should we execute this call" decision needs the
@@ -694,6 +696,136 @@ so they never bypass resource policy.
   and Anthropic `/v1/messages` are not covered;
 - n_ctx overflow on a tools request triggers the usual auto-reload, but there is no
   network-level retry on the first turn (the error goes to the client as is);
-- the tool stays unavailable until a model is loaded - a deliberate choice (no silent
-  auto-load on the first call).
+- with `LB_IMAGE_TOOL_ALLOW_LOAD=off` the tool is announced only when a model is
+  already loaded; with `on` (the default since R85) see 16.
+
+## 16. Model catalog, `list_image_models` and auto-load (R85)
+
+R85 (2026-10-06). Extends 14: `generate_image` answers "draw it",
+`list_image_models` answers "show me what to choose from", and the call itself can
+bring the chosen model up.
+
+### 16.1 Why a catalog and a second tool
+
+The `model` enum only reports model NAMES. A meaningful choice needs the family, VRAM
+requirement, image size, step count and a human description ("what this model is good
+for"). The catalog is data, not code: descriptions live in the model profile
+(`strengths`/`notes`), are edited from the WebUI and reach both the API and the tool.
+
+**Announcement gate** (changed in R85):
+
+| `LB_IMAGE_TOOL_ALLOW_LOAD` | What is announced | Condition |
+| --- | --- | --- |
+| `on` (default) | `generate_image` + `list_image_models` | healthy `image_cpp` **and something to load** (models visible in the snapshot) |
+| `off` | `generate_image` only | healthy `image_cpp` **and a model already in VRAM** (R84 behaviour) |
+
+**Auto-load.** With `on`, a `generate_image` call with `model=X`, where `X` is not yet
+in VRAM, loads the model itself: `POST /api/image/models/load` -> poll until
+`state=loaded` -> VRAM gate -> generation. The tool result gains `loadSeconds` (load
+time), `loadedNow` and `modelState`, so the model can explain the pause to the user.
+Timeout: `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` (600 s by default); on expiry the reason goes
+into the tool message instead of a silent hang.
+
+**Tool result** (compact, model-readable):
+
+```json
+{ "status": "ok", "count": 3, "hasLoadedModel": true, "loadedModel": "sd15-q8-0",
+  "limits": { "minSide": 64, "maxSide": 4096, "sizeMultiple": 64, "minSteps": 1, "maxSteps": 100 },
+  "models": [ { "name": "sd15-q8-0", "backendId": "imageworker", "family": "sd15",
+                "state": "loaded", "loaded": true, "vramEstimateMb": 2100,
+                "defaults": { "steps": 25, "width": 512, "height": 512 },
+                "strengths": "SD1.5 quality benchmark at low VRAM" } ],
+  "summary": "Available image models (3):\n- sd15-q8-0 | family sd15 | state: loaded (already in VRAM) | ~2100 MB VRAM | ..." }
+```
+
+The tool takes **no GPU**: no generation, no VRAM gate, nothing in the image request
+feed.
+
+### 16.2 `GET /api/v1/image/models/catalog`
+
+One response across all live `image_cpp` backends. It is built from the same snapshots
+that feed the VRAM gate, so the catalog and the generation decision cannot disagree.
+
+```bash
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  http://localhost:28081/api/v1/image/models/catalog | jq .
+```
+
+Field sources:
+
+| Field | Source | Meaning |
+| --- | --- | --- |
+| `state`, `loaded` | worker snapshot | `loaded` / `loading` / `not_loaded` / `error` |
+| `sizeBytes` | worker snapshot | bundle size on disk |
+| `vramEstimateMb`, `vramSource` | profile -> worker -> file sizes | peak VRAM: `profile` / `catalog` / `worker` / `files` |
+| `defaults` | profile -> preset catalog | steps/size the model runs with |
+| `strengths` | profile -> preset catalog -> family | "what it is good for" - READ BY THE MODEL |
+| `notes` | profile -> preset catalog | detailed description - read by the operator |
+| `source` | - | where `defaults`/descriptions came from |
+
+**Descriptions are data, not code.** `notes` and `strengths` are edited in the model
+profile (WebUI -> Image models -> profile, `PUT /api/v1/image/model-profiles/{name}`):
+
+```bash
+curl -sS -X PUT -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"strengths":"fast and cheap: 512x512 in seconds"}' \
+  http://localhost:28081/api/v1/image/model-profiles/sd15-q8-0
+```
+
+Source priority: **operator profile -> preset catalog
+(`config/image-model-catalog.json`) -> family description**. The profile wins because it
+is the operator's live intent; the preset catalog deliberately yields so that a WebUI
+edit is not overwritten by a shipped file. If the catalog file is missing (balancer
+started outside the repository root), the copy embedded in the binary is used; if the
+file exists but is broken, `GET /api/v1/image/model-catalog` returns 500 with the reason
+instead of silently substituting data.
+
+### 16.3 Auto-load flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `LB_IMAGE_TOOL_ALLOW_LOAD` | `on` | `off` - a call never loads a model and `list_image_models` is not announced (R84 behaviour) |
+| `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` | `600` | how long to wait for a model load before the reason is reported |
+
+`LB_IMAGE_TOOL_ALLOW_LOAD` can also be toggled from the WebUI (the checkbox in the
+coexistence policy card); priority is config -> environment -> default `on`.
+
+### 16.4 Scenario: "user asks for a picture"
+
+```
+User: "draw a cat on a windowsill, make it beautiful"
+  -> cppworker (gemma-4/Qwen3) receives generate_image + list_image_models
+  -> the model calls list_image_models -> the balancer returns the catalog (no GPU)
+  -> the model picks a model for "beautiful" (e.g. flux-schnell-q3-k, ~5.2 GB)
+  -> calls generate_image{model:"flux-schnell-q3-k", prompt:"..."}
+  -> balancer: model not in VRAM -> POST /api/image/models/load -> waits for state=loaded
+              (VRAM gate and queue are respected) -> generation
+  -> tool message: url, markdown, loadSeconds (~40 s), modelState=loaded
+  -> the model writes the final answer and warns about the load time
+  -> the client sees text + a markdown image
+```
+
+In Monitor the operator sees tool generations with `surface=chat-tool` and the model
+load; the catalog call does not appear in the feed because it generated nothing.
+
+### 16.5 Diagnostics
+
+```bash
+# which models the balancer sees and what it knows about them
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  http://localhost:28081/api/v1/image/models/catalog | jq '.models[] | {name, state, vramEstimateMb, source}'
+
+# profile plus the actual argv that will go to sd-server
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  http://localhost:28081/api/v1/image/model-profiles/sd15-q8-0 | jq '{profile, serverArgs}'
+
+# load a model by hand (exactly what auto-load does)
+curl -sS -X POST -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"flux-schnell-q3-k"}' \
+  http://localhost:28081/api/v1/image/backends/imageworker/models/load
+```
+
+Common reasons for an empty catalog: the backend is unhealthy (the reason is in
+`warnings`), the worker did not answer with the contract (`contractOk=false`), or no
+model is downloaded on the worker.
 

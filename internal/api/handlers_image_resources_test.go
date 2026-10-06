@@ -149,3 +149,62 @@ func TestImageResources_MethodNotAllowedAndNoStore(t *testing.T) {
 		t.Fatalf("без хранилища ждём 503, получили %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestImageResources_AllowToolLoadRoundTrip — R85: галочка «разрешить инструменту
+// загружать модель» ходит через тот же API и различает три состояния.
+//
+// ПОЧЕМУ ЭТО ВАЖНО: у настройки три состояния (не задано / true / false), и
+// «не задано» отличается от «выключено» — незаданное значение означает «действует
+// флаг окружения LB_IMAGE_TOOL_ALLOW_LOAD». Обычный bool их бы склеил, и снятая
+// галочка выглядела бы как «настройку не сохраняли».
+func TestImageResources_AllowToolLoadRoundTrip(t *testing.T) {
+	s, store := newImageResourcesTestServer(t, types.ImageResourceSettings{})
+
+	// 1) Не задано: effective = true (дефолт), overridden = false, источник — env.
+	rec := doImageResources(t, s, http.MethodGet, "")
+	var doc map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("не JSON: %s", rec.Body.String())
+	}
+	atl, _ := doc["allowToolLoad"].(map[string]interface{})
+	if atl == nil {
+		t.Fatalf("в ответе нет блока allowToolLoad: %s", rec.Body.String())
+	}
+	if atl["effective"] != true || atl["overridden"] != false {
+		t.Fatalf("незаданная настройка должна показывать effective=true/overridden=false: %v", atl)
+	}
+	if atl["env"] != "LB_IMAGE_TOOL_ALLOW_LOAD" {
+		t.Errorf("UI должен знать имя флага окружения: %v", atl["env"])
+	}
+
+	// 2) Явное false: применяется сразу и сохраняется.
+	if rec := doImageResources(t, s, http.MethodPut, `{"allowToolLoad":false}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT false: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := s.config.Balancing.Image.AllowToolLoad; got == nil || *got {
+		t.Fatalf("выключение не применено: %+v", s.config.Balancing.Image.AllowToolLoad)
+	}
+	fresh := config.NewImageResourcesStore(store.Path())
+	if err := fresh.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := fresh.Settings().AllowToolLoad; got == nil || *got {
+		t.Fatalf("выключение не сохранено на диск: %+v", got)
+	}
+
+	// 3) PUT БЕЗ поля не должен затирать сохранённое значение.
+	if rec := doImageResources(t, s, http.MethodPut, `{"vramHeadroomMb":256}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT без allowToolLoad: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := s.config.Balancing.Image.AllowToolLoad; got == nil || *got {
+		t.Fatalf("PUT без поля обязан сохранить прежнее значение: %+v", got)
+	}
+
+	// 4) Явное true возвращает автозагрузку.
+	if rec := doImageResources(t, s, http.MethodPut, `{"allowToolLoad":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT true: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := s.config.Balancing.Image.AllowToolLoad; got == nil || !*got {
+		t.Fatalf("включение не применено: %+v", got)
+	}
+}

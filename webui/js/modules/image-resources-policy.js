@@ -255,12 +255,39 @@
                     escapeHtml(t('imagePolicy.gate_off', 'Выключить гейт VRAM и лок')) +
                 '</label>' +
             '</div>' +
-            (hint ? '<div style="margin-top:10px;font-size:12px;color:var(--text-muted);">' +
-                '<i class="fas fa-circle-info"></i> ' + escapeHtml(hint) + '</div>' : '') +
-            (warn ? '<div style="margin-top:10px;padding:8px 10px;border-left:3px solid var(--warning, #e0a030);background:var(--bg-secondary);border-radius:6px;font-size:12px;">' +
-                '<i class="fas fa-triangle-exclamation"></i> ' + escapeHtml(warn) + '</div>' : '') +
+            '<div id="imPolicyHint" style="margin-top:10px;font-size:12px;color:var(--text-muted);"' + (hint ? '' : ' hidden') + '>' +
+                '<i class="fas fa-circle-info"></i> <span>' + escapeHtml(hint) + '</span></div>' +
+            '<div id="imPolicyWarn" style="margin-top:10px;padding:8px 10px;border-left:3px solid var(--warning, #e0a030);background:var(--bg-secondary);border-radius:6px;font-size:12px;"' + (warn ? '' : ' hidden') + '>' +
+                '<i class="fas fa-triangle-exclamation"></i> <span>' + escapeHtml(warn) + '</span></div>' +
             (state.error ? '<div style="margin-top:10px;color:var(--danger);font-size:12px;">' + escapeHtml(state.error) + '</div>' : '');
         return true;
+    }
+
+    /**
+     * updateHints — обновить только подсказку и предупреждение по текущему выбору.
+     *
+     * ПОЧЕМУ НЕ render(): полная перерисовка формы на событие change сбрасывала
+     * выбор оператора (форма собиралась из state.data, где ещё старое значение) —
+     * на живом стенде «выбрал offload, нажал Сохранить» сохраняло exclusive.
+     */
+    function updateHints() {
+        var host = byId(HOST_ID);
+        if (!host || !state.data) return;
+        var f = readForm();
+        var hintNode = byId('imPolicyHint');
+        if (hintNode) {
+            var hint = policyHint(state.data, f.coexistence);
+            hintNode.hidden = !hint;
+            var hs = hintNode.querySelector ? hintNode.querySelector('span') : null;
+            if (hs) hs.textContent = hint;
+        }
+        var warnNode = byId('imPolicyWarn');
+        if (warnNode) {
+            var warn = warningFor(f);
+            warnNode.hidden = !warn;
+            var ws = warnNode.querySelector ? warnNode.querySelector('span') : null;
+            if (ws) ws.textContent = warn;
+        }
     }
 
     function readForm() {
@@ -373,7 +400,9 @@
         if (host && host.addEventListener) {
             // Подсказка и предупреждение зависят от выбранной политики — обновляем
             // их сразу, не дожидаясь «Сохранить».
-            host.addEventListener('change', function () { render(); });
+            // Меняем только подсказку/предупреждение: полная перерисовка стёрла
+            // бы выбор оператора.
+            host.addEventListener('change', function () { updateHints(); });
         }
         return true;
     }
@@ -393,6 +422,7 @@
         render: renderTab,
         tabIds: TAB_IDS,
         _actions: {
+            updateHints: updateHints,
             load: load,
             save: save,
             reset: reset,

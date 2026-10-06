@@ -46,7 +46,7 @@ async reload. Ручное управление сохранено (per-model `a
 
 ## Что нового
 
-**v0.7.11 — 2026-10-06** (релизы `balancer` `r83-submodule-v89` + `webui` `r83-submodule-v90`, [полный CHANGELOG](CHANGELOG.md)):
+**v0.7.11 — 2026-10-06** (релизы `balancer` и `webui` `r83-submodule-v89`, [полный CHANGELOG](CHANGELOG.md)):
 
 - **Политика сосуществования image-генерации с текстом правится из WebUI**: карточка
   «Политика сосуществования с текстом» на табе «Обзор» («Image-модели») — политика

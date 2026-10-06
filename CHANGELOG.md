@@ -5,7 +5,7 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [0.7.11 — Политика сосуществования (balancing.image) правится из WebUI (balancer r83-submodule-v89 + webui r83-submodule-v90, 2026-10-06)]
+## [0.7.11 — Политика сосуществования (balancing.image) правится из WebUI (balancer и webui r83-submodule-v89, 2026-10-06)]
 
 Вопрос оператора: «Есть ли возможность регулировать правила политики как ты говоришь
 через WebUI или это только в env доступно?»

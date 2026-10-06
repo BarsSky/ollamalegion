@@ -26,7 +26,9 @@ function makeElement(id) {
         checked: false,
         innerHTML: '',
         textContent: '',
+        hidden: false,
         getAttribute: function () { return null; },
+        querySelector: function () { return null; },
         setAttribute: function () { },
         addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
         dispatch: function (type, ev) { (listeners[type] || []).forEach(function (fn) { fn(ev || {}); }); },
@@ -247,6 +249,25 @@ const API_RESPONSE = {
         assert.strictEqual(ok, false);
         assert.ok(getEl('imPolicyHost').innerHTML.indexOf('unknown coexistence policy') !== -1, 'текст ошибки сервера не показан');
         assert.ok(toasts.some(function (x) { return /Не удалось сохранить/.test(x.message || ''); }), 'нет тоста об ошибке');
+    });
+
+
+    await check('change в форме не сбрасывает выбор оператора (живой дефект)', async function () {
+        requests.length = 0;
+        responseFor = function () { return { status: 200, body: API_RESPONSE }; };
+        await P._actions.load(true);
+        getEl('imPolicyCoexistence').value = 'offload';
+        // Событие change (его шлёт браузер при выборе в селекте) обязано обновить
+        // только подсказку/предупреждение, а не перерисовать форму из старых данных.
+        getEl('imPolicyHost').dispatch('change', {});
+        assert.strictEqual(getEl('imPolicyCoexistence').value, 'offload', 'выбор сброшен перерисовкой формы');
+
+        responseFor = function () { return { status: 200, body: Object.assign({}, API_RESPONSE, { overridden: true, effective: Object.assign({}, API_RESPONSE.effective, { coexistence: 'offload' }) }) }; };
+        await P._actions.save();
+        const rec = requests.filter(function (r) { return r.method === 'PUT'; })[0];
+        assert.ok(rec, 'PUT не ушёл');
+        assert.strictEqual(rec.body.coexistence, 'offload', 'на сервер ушло не то, что выбрал оператор');
+        getEl('imPolicyCoexistence').value = 'exclusive';
     });
 
     console.log('\n' + (failures.length ? 'FAILED: ' + failures.length : 'ИТОГ: все проверки пройдены (' + passed + ')'));

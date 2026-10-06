@@ -343,10 +343,24 @@ func buildOllamaFollowUpBody(body []byte, assistant map[string]interface{}, call
 	} else {
 		assistantMsg["content"] = ""
 	}
-	if rawCalls, ok := assistant["tool_calls"]; ok && rawCalls != nil {
+	// ВАЖНО ПРО ФОРМУ АРГУМЕНТОВ (R86-follow-up, 2026-10-06). На OpenAI-пути
+	// tool_calls[].function.arguments — СТРОКА с JSON. На Ollama-пути cppworker
+	// ждёт ОБЪЕКТ: см. cmd/cppworker/handlers_chat.go:22-31 — там прямо записано,
+	// что нативные Ollama-клиенты «шлют и ждут arguments как JSON-ОБЪЕКТ», а со
+	// строкой второй шаг падал с 400 `cannot unmarshal object into ... Arguments of
+	// type string`.
+	//
+	// Раньше здесь лежал ответ движка КАК ЕСТЬ (со строкой), и второй turn на
+	// Ollama-поверхности получал историю в чужой форме: модель либо путалась, либо
+	// отвечала текстом вместо финального ответа — ровно то, что отличало
+	// /api/chat от /v1/chat/completions в живых проверках. Теперь ВСЕГДА собираем
+	// каноничную Ollama-форму (arguments — объект), а исходную строку используем
+	// только как запасной вариант, если собрать не удалось.
+	synth := synthesizeOllamaToolCalls(calls)
+	if len(synth) > 0 {
+		assistantMsg["tool_calls"] = synth
+	} else if rawCalls, ok := assistant["tool_calls"]; ok && rawCalls != nil {
 		assistantMsg["tool_calls"] = rawCalls
-	} else {
-		assistantMsg["tool_calls"] = synthesizeOllamaToolCalls(calls)
 	}
 	messages = append(messages, assistantMsg)
 

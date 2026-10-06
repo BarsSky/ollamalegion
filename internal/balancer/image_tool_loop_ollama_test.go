@@ -399,6 +399,79 @@ func TestStripEmptyToolCallArtifact(t *testing.T) {
 	}
 }
 
+// TestBuildOllamaFollowUpBody_ArgumentsAreObjects — ЖИВОЙ ДЕФЕКТ (2026-10-06):
+// на Ollama-поверхности второй turn должен получать tool_calls с arguments
+// ОБЪЕКТОМ, а не строкой. cppworker (cmd/cppworker/handlers_chat.go:22-31) прямо
+// предупреждает: нативные Ollama-клиенты «шлют и ждут arguments как JSON-ОБЪЕКТ»,
+// со строкой агентский цикл ломается — именно это отличало /api/chat от
+// /v1/chat/completions в живых проверках.
+func TestBuildOllamaFollowUpBody_ArgumentsAreObjects(t *testing.T) {
+	body := []byte(`{"model":"qwen3","messages":[{"role":"user","content":"нарисуй кота"}],"tools":[{"type":"function","function":{"name":"generate_image"}}],"stream":false}`)
+	// Ответ движка приходит в OpenAI-форме: arguments — СТРОКА с JSON.
+	assistant := map[string]interface{}{
+		"role":    "assistant",
+		"content": "",
+		"tool_calls": []interface{}{map[string]interface{}{
+			"id":   "call_1",
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":      "generate_image",
+				"arguments": `{"prompt":"a cat","width":512}`,
+			},
+		}},
+	}
+	calls := []imageToolCall{{ID: "call_1", Name: "generate_image", Arguments: `{"prompt":"a cat","width":512}`}}
+	results := []map[string]interface{}{{"status": "ok", "url": "http://lb/v1/images/files/x.png"}}
+
+	out, err := buildOllamaFollowUpBody(body, assistant, calls, results)
+	if err != nil {
+		t.Fatalf("buildOllamaFollowUpBody: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	msgs, _ := doc["messages"].([]interface{})
+	if len(msgs) != 3 {
+		t.Fatalf("ожидали 3 сообщения, получили %d: %s", len(msgs), out)
+	}
+	asst, _ := msgs[1].(map[string]interface{})
+	tcs, _ := asst["tool_calls"].([]interface{})
+	if len(tcs) != 1 {
+		t.Fatalf("нет tool_calls в истории: %s", out)
+	}
+	entry, _ := tcs[0].(map[string]interface{})
+	fn, _ := entry["function"].(map[string]interface{})
+	args := fn["arguments"]
+	if _, isString := args.(string); isString {
+		t.Fatalf("arguments остались СТРОКОЙ — Ollama-форма требует объект: %v", args)
+	}
+	obj, isObj := args.(map[string]interface{})
+	if !isObj {
+		t.Fatalf("arguments = %T, want объект", args)
+	}
+	if obj["prompt"] != "a cat" {
+		t.Errorf("аргументы потерялись: %+v", obj)
+	}
+	if fn["name"] != "generate_image" {
+		t.Errorf("имя функции потеряно: %v", fn["name"])
+	}
+	if entry["id"] != "call_1" {
+		t.Errorf("id вызова потерян: %v", entry["id"])
+	}
+	// tool-сообщение — Ollama-форма (без tool_call_id, контент — JSON-строка).
+	toolMsg, _ := msgs[2].(map[string]interface{})
+	if toolMsg["role"] != "tool" {
+		t.Errorf("tool-сообщение: %+v", toolMsg)
+	}
+	if _, hasID := toolMsg["tool_call_id"]; hasID {
+		t.Errorf("в Ollama-форме у tool-сообщения нет tool_call_id: %+v", toolMsg)
+	}
+	if content, _ := toolMsg["content"].(string); !strings.Contains(content, "x.png") {
+		t.Errorf("результат инструмента потерян: %q", content)
+	}
+}
+
 // Диагностическая строка решения: причина отказа формулируется по-человечески.
 func TestImageToolSkipReason_AllReasons(t *testing.T) {
 	cases := map[string]string{

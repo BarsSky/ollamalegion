@@ -715,7 +715,10 @@ func (a *Agent) collectLlamaMetrics(base *types.BackendMetrics) *types.BackendMe
 	// недоступен через PATH), мы всё равно пытаемся собрать метрики. Если ничего
 	// не получилось — base.GPU остаётся нулевым и балансер не увидит GPU.
 	if len(llamaMetrics.GPUMetrics) > 0 {
-		base.GPU = mapLlamaGPUMetrics(llamaMetrics.GPUMetrics)
+		// UUID физических карт дописываем к метрикам воркера: cppworker их не
+		// отдаёт, а без них балансер удваивает память одной карты на хосте с
+		// двумя бэкендами (см. mapLlamaGPUMetricsWithUUIDs).
+		base.GPU = mapLlamaGPUMetricsWithUUIDs(llamaMetrics.GPUMetrics, collectGPUUUIDs())
 	} else {
 		// Попытка взять GPU-метрики из nvidia-smi / NVML, безусловно.
 		if gpu := a.collectGPUMetrics(); gpu.MemoryTotal > 0 || gpu.UsagePercent > 0 || gpu.Temperature > 0 {
@@ -798,6 +801,21 @@ func toBackendLoadFailure(lm *llamaLoadFailure) *types.LoadFailureInfo {
 
 // mapLlamaGPUMetrics конвертирует Llama LlamaGPUInfo → types.GPUMetrics
 func mapLlamaGPUMetrics(gpus []LlamaGPUInfo) types.GPUMetrics {
+	return mapLlamaGPUMetricsWithUUIDs(gpus, nil)
+}
+
+// mapLlamaGPUMetricsWithUUIDs — то же, но с физическими идентификаторами карт.
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ (R-Image follow-up, 2026-10-07). У llama.cpp-бэкендов
+// GPU-метрики приходят из cppworker (`/api/gpu`), где UUID карт НЕТ — там только
+// объём памяти. Без UUID балансер не может отличить «две машины по одной карте»
+// от «одна машина, два бэкенда» и складывает память одной карты дважды
+// (16 GB на карте 8 GB: cppworker + imageworker на одном хосте).
+//
+// Поэтому UUID берём из nvidia-smi (единственный источник, который их знает) и
+// дописываем к метрикам, полученным от cppworker. this сохраняет приоритет
+// данных воркера по памяти и добавляет к ним признак физической карты.
+func mapLlamaGPUMetricsWithUUIDs(gpus []LlamaGPUInfo, uuids []string) types.GPUMetrics {
 	if len(gpus) == 0 {
 		return types.GPUMetrics{}
 	}
@@ -823,5 +841,6 @@ func mapLlamaGPUMetrics(gpus []LlamaGPUInfo) types.GPUMetrics {
 		PowerLimit:   0,
 		GPUClock:     0,
 		MemClock:     0,
+		UUIDs:        uuids,
 	}
 }

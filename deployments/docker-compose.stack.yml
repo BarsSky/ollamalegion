@@ -318,6 +318,38 @@ services:
       # «failed to save config to cppworker-defaults.json: no such file or
       # directory»). Поэтому единственное надёжное место — эта переменная.
       - CPPWORKER_IDLE_UNLOAD_MINUTES=${CPPWORKER_IDLE_UNLOAD_MINUTES:-10}
+      # ─── ВСТРОЕННЫЙ АГЕНТ МЕТРИК (R-Image follow-up, 2026-10-07) ──────────
+      #
+      # ЗАЧЕМ. Внешний контейнер `agent` регистрируется ОТДЕЛЬНОЙ записью и
+      # переживает пересоздание воркера; встроенный агент живёт ровно столько,
+      # сколько воркер, и регистрируется ПОД ЕГО ЖЕ ID.
+      #
+      # ВЫКЛЮЧЕНО (off) ОСОЗНАННО: на этом стенде cppworker уже обслуживает
+      # внешний контейнер `agent`. Если включить и встроенного, метрики одного
+      # бэкенда начнут слать ДВА агента по очереди — значение будет «мигать»
+      # между двумя снимками (в частности gpu.uuids то есть, то нет).
+      # Переключение делается в один шаг: погасить внешний агент и поставить
+      # CPPWORKER_AGENT_EMBEDDED=on. Код встроенного агента в образе есть и
+      # покрыт тестами (internal/agent/embedded.go).
+      #
+      # ВАЖНО ПРО UUID КАРТ (дедуп VRAM): агент сообщает балансеру
+      # `gpu.uuids` из nvidia-smi. Без этого два бэкенда одной машины
+      # (cppworker + imageworker) выглядят как две машины, и суммарная VRAM
+      # удваивается (16 GB на карте 8 GB).
+      #
+      # AGENT_ID/AGENT_PUBLIC_HOST задавались бы ЯВНО: hostname контейнера — это
+      # его hex-ID (39224df94d55), и без явного значения агент зарегистрировался
+      # бы под нестабильным именем, отличным от имени бэкенда.
+      - AGENT_EMBEDDED=${CPPWORKER_AGENT_EMBEDDED:-off}
+      - AGENT_ID=${CPPWORKER_REGISTER_NAME:-cppworker-gpu}
+      - AGENT_PUBLIC_HOST=${CPPWORKER_REGISTER_NAME:-cppworker-gpu}
+      - AGENT_EMBEDDED_PORT=${CPPWORKER_AGENT_PORT:-18034}
+      - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      - BALANCER_TOKEN=${CPPWORKER_BALANCER_TOKEN:-${CPPWORKER_API_TOKEN:-}}
+      - GPU_MODE=${GPU_MODE:-auto}
+      - NVML_ENABLED=${NVML_ENABLED:-true}
+      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-5}
+      - COLLECT_INTERVAL=${COLLECT_INTERVAL:-5}
       # Сколько слоёв на GPU: 20 для 8 GB (RTX 3070) + 27B Q4; 99 для 24 GB.
       - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:-20}
       - CPPWORKER_FLASH_ATTN_TYPE=${CPPWORKER_FLASH_ATTN_TYPE:--1}

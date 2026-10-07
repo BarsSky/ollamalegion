@@ -1286,6 +1286,8 @@ window.I18N_RU = {
   "gguf.collapsed": "Свернуто",
   "gguf.total_size": "Общий размер",
   "gguf.more_files": "ещё файлов",
+  "gguf.show_more_files": "Показать все",
+  "gguf.show_less_files": "Свернуть список",
   "gguf.hide_files": "Скрыть файлы",
   "gguf.show_files": "Показать файлы",
   "gguf.download_file": "Скачать этот файл",

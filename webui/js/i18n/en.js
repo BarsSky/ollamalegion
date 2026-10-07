@@ -1408,6 +1408,8 @@ window.I18N_EN = {
   "gguf.collapsed": "Collapsed",
   "gguf.total_size": "Total size",
   "gguf.more_files": "more files",
+  "gguf.show_more_files": "Show all",
+  "gguf.show_less_files": "Collapse list",
   "gguf.hide_files": "Hide files",
   "gguf.show_files": "Show files",
   "gguf.download_file": "Download this file",

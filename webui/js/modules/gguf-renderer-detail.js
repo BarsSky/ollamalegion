@@ -189,6 +189,36 @@
             }
             return;
         }
+        // Развернуть/свернуть скрытый хвост списка файлов в карточке репозитория.
+        //
+        // ЗАЧЕМ (живой дефект 2026-10-07): в карточке показывались только 5 файлов,
+        // а строка «+N ещё файлов» была простым текстом БЕЗ обработчика — добраться
+        // до остальных файлов репозитория было нельзя вообще. Теперь хвост
+        // отрисован сразу и скрыт, кнопка его показывает/прячет.
+        var moreFiles = e.target.closest('.gguf-files-more-btn');
+        if (moreFiles) {
+            var wrapper = moreFiles.closest('.gguf-files-list');
+            var extra = wrapper ? wrapper.querySelector('.gguf-files-extra') : null;
+            if (extra) {
+                var label = moreFiles.querySelector('.gguf-files-more-label');
+                var expanded = extra.style.display !== 'none';
+                if (expanded) {
+                    extra.style.display = 'none';
+                    if (label) {
+                        label.textContent = label.getAttribute('data-more-text') || label.textContent;
+                    }
+                } else {
+                    extra.style.display = '';
+                    if (label) {
+                        if (!label.getAttribute('data-more-text')) {
+                            label.setAttribute('data-more-text', label.textContent);
+                        }
+                        label.textContent = (M._('gguf.show_less_files') || 'Collapse list');
+                    }
+                }
+            }
+            return;
+        }
         // Toggle file list in a result card
         var cardHeader = e.target.closest('.gguf-result-header');
         if (cardHeader) {
@@ -206,7 +236,18 @@
         var collapseAll = e.target.closest('.gguf-collapse-all-btn');
         if (collapseAll) {
             var lists = document.querySelectorAll('#ggufHfSearchResults .gguf-files-list');
-            lists.forEach(function (el) { el.style.display = 'none'; });
+            lists.forEach(function (el) {
+                el.style.display = 'none';
+                // Сворачиваем и раскрытые хвосты, иначе после «Свернуть все» карточка
+                // при следующем раскрытии выглядела бы «уже развёрнутой».
+                var extra = el.querySelector('.gguf-files-extra');
+                if (extra) {
+                    extra.style.display = 'none';
+                    var lbl = el.querySelector('.gguf-files-more-label');
+                    var saved = lbl && lbl.getAttribute('data-more-text');
+                    if (lbl && saved) lbl.textContent = saved;
+                }
+            });
             if (typeof M.showToast === 'function') {
                 M.showToast(M._('gguf.collapsed') || 'Collapsed', 'info');
             }

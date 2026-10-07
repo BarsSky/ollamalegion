@@ -1064,38 +1064,63 @@
                 const isLikelyGGUF = /gguf/i.test(modelId) || (model.hasGguf === true);
                 const totalSize = model.totalSize || 0;
                 const recommended = model.recommended || '';
-                const topFiles = pickTopGgufFiles(model.files, 5);
-                const remaining = (model.files || []).length - topFiles.length;
+                // COLLAPSED_VISIBLE — сколько файлов видно по умолчанию. Остальные
+                // НЕ выбрасываются: их отдаёт кнопка «Показать все» (см. обработчик
+                // .gguf-files-more-btn в gguf-renderer-detail.js). Раньше строка
+                // «+N ещё файлов» была просто текстом без обработчика, и добраться
+                // до остальных файлов репозитория было нельзя вообще.
+                const COLLAPSED_VISIBLE = 5;
+                const topFiles = pickTopGgufFiles(model.files, COLLAPSED_VISIBLE);
+                const allFiles = model.files || [];
+                
+                // Хвост = файлы, которых нет в topFiles (сравнение по имени, а не по
+                // индексу: pickTopGgufFiles сортирует по приоритету кванта).
+                const topNames = {};
+                topFiles.forEach(function (f) { topNames[hfFileName(f)] = true; });
+                const restFiles = allFiles.filter(function (f) { return !topNames[hfFileName(f)]; });
+                const restCount = restFiles.length;
+
+                // fileRowHtml — одна строка файла. Вынесено из прежнего инлайнового
+                // forEach, чтобы одинаково рисовать и видимые, и раскрытые файлы
+                // (разметка обязана совпадать: на .gguf-download-file-btn и
+                // .gguf-file-progress завязаны делегированные обработчики).
+                const fileRowHtml = function (f) {
+                    var fname = hfFileName(f);
+                    var fsize = formatBytesShort(hfFileSize(f));
+                    var fquant = hfFileQuant(f) || '-';
+                    var isRecommended = recommended && fname === recommended;
+                    return '<div class="gguf-file-row" data-model-idx="' + idx + '" data-filename="' + Utils.escapeHtml(fname) + '" style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border-subtle,#eee);">' +
+                        '<i class="fas fa-cube" style="color:var(--text-muted);"></i>' +
+                        '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:12px;" title="' + Utils.escapeHtml(fname) + '">' + Utils.escapeHtml(fname) + '</span>' +
+                        '<span class="badge" style="background:var(--accent);font-size:10px;">' + Utils.escapeHtml(fquant) + '</span>' +
+                        '<span style="font-size:11px;color:var(--text-muted);min-width:60px;text-align:right;">' + fsize + '</span>' +
+                        (isRecommended ? '<span class="badge" style="background:var(--success);font-size:9px;" title="' + (_('gguf.recommended') || 'Recommended') + '">' + (_('gguf.recommended') || '★') + '</span>' : '') +
+                        '<button class="btn btn-sm btn-primary gguf-download-file-btn" data-model-idx="' + idx + '" data-filename="' + Utils.escapeHtml(fname) + '" title="' + (_('gguf.download') || 'Download') + ': ' + Utils.escapeHtml(fname) + '" style="padding:2px 8px;font-size:12px;">' +
+                            '<i class="fas fa-download"></i>' +
+                        '</button>' +
+                        '<div class="gguf-file-progress" data-model-idx="' + idx + '" data-filename="' + Utils.escapeHtml(fname) + '" style="display:none;flex-basis:100%;margin-top:4px;">' +
+                            '<div class="gguf-progress-bar" style="height:4px;background:var(--bg-tertiary,#333);border-radius:2px;overflow:hidden;">' +
+                                '<div class="gguf-progress-fill" style="height:100%;width:0%;background:var(--success);transition:width 0.2s;"></div>' +
+                            '</div>' +
+                            '<div class="gguf-progress-text" style="font-size:10px;color:var(--text-muted);margin-top:2px;">0%</div>' +
+                        '</div>' +
+                    '</div>';
+                };
 
                 const filesHtml = (function () {
                     if (topFiles.length === 0) return '';
                     var html = '<div class="gguf-files-list" style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">';
-                    topFiles.forEach(function (f) {
-                        var fname = hfFileName(f);
-                        var fsize = formatBytesShort(hfFileSize(f));
-                        var fquant = hfFileQuant(f) || '-';
-                        var isRecommended = recommended && fname === recommended;
-                        html += '<div class="gguf-file-row" data-model-idx="' + idx + '" data-filename="' + Utils.escapeHtml(fname) + '" style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border-subtle,#eee);">' +
-                            '<i class="fas fa-cube" style="color:var(--text-muted);"></i>' +
-                            '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:12px;" title="' + Utils.escapeHtml(fname) + '">' + Utils.escapeHtml(fname) + '</span>' +
-                            '<span class="badge" style="background:var(--accent);font-size:10px;">' + Utils.escapeHtml(fquant) + '</span>' +
-                            '<span style="font-size:11px;color:var(--text-muted);min-width:60px;text-align:right;">' + fsize + '</span>' +
-                            (isRecommended ? '<span class="badge" style="background:var(--success);font-size:9px;" title="' + (_('gguf.recommended') || 'Recommended') + '">' + (_('gguf.recommended') || '★') + '</span>' : '') +
-                            '<button class="btn btn-sm btn-primary gguf-download-file-btn" data-model-idx="' + idx + '" data-filename="' + Utils.escapeHtml(fname) + '" title="' + (_('gguf.download') || 'Download') + ': ' + Utils.escapeHtml(fname) + '" style="padding:2px 8px;font-size:12px;">' +
-                                '<i class="fas fa-download"></i>' +
-                            '</button>' +
-                            '<div class="gguf-file-progress" data-model-idx="' + idx + '" data-filename="' + Utils.escapeHtml(fname) + '" style="display:none;flex-basis:100%;margin-top:4px;">' +
-                                '<div class="gguf-progress-bar" style="height:4px;background:var(--bg-tertiary,#333);border-radius:2px;overflow:hidden;">' +
-                                    '<div class="gguf-progress-fill" style="height:100%;width:0%;background:var(--success);transition:width 0.2s;"></div>' +
-                                '</div>' +
-                                '<div class="gguf-progress-text" style="font-size:10px;color:var(--text-muted);margin-top:2px;">0%</div>' +
-                            '</div>' +
+                    html += topFiles.map(fileRowHtml).join('');
+                    if (restCount > 0) {
+                        // Свёрнутый хвост. Рисуется сразу (без второго запроса), но
+                        // скрыт — раскрытие мгновенное и не зависит от сети.
+                        html += '<div class="gguf-files-extra" style="display:none;">' +
+                            restFiles.map(fileRowHtml).join('') +
                         '</div>';
-                    });
-                    if (remaining > 0) {
-                        html += '<div class="gguf-files-more" style="padding:4px;text-align:center;font-size:11px;color:var(--text-muted);">' +
-                            '+' + remaining + ' ' + (_('gguf.more_files') || 'more files') +
-                        '</div>';
+                        html += '<button type="button" class="gguf-files-more-btn" ' +
+                            'style="display:block;width:100%;padding:6px;margin-top:4px;background:transparent;border:1px dashed var(--border);border-radius:4px;text-align:center;font-size:11px;color:var(--accent);cursor:pointer;">' +
+                            '<span class="gguf-files-more-label">+' + restCount + ' ' + (_('gguf.more_files') || 'more files') + ' — ' + (_('gguf.show_more_files') || 'Show all') + '</span>' +
+                        '</button>';
                     }
                     html += '</div>';
                     return html;

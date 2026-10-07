@@ -320,29 +320,30 @@ services:
       - CPPWORKER_IDLE_UNLOAD_MINUTES=${CPPWORKER_IDLE_UNLOAD_MINUTES:-10}
       # ─── ВСТРОЕННЫЙ АГЕНТ МЕТРИК (R-Image follow-up, 2026-10-07) ──────────
       #
-      # ЗАЧЕМ. Внешний контейнер `agent` регистрируется ОТДЕЛЬНОЙ записью и
-      # переживает пересоздание воркера; встроенный агент живёт ровно столько,
-      # сколько воркер, и регистрируется ПОД ЕГО ЖЕ ID.
+      # ЗАЧЕМ. Внешний контейнер `agent` переживает пересоздание воркера и
+      # регистрируется отдельной сущностью; встроенный агент живёт ровно столько,
+      # сколько воркер, и пишет метрики в ЕГО ЖЕ запись бэкенда.
       #
-      # ВЫКЛЮЧЕНО (off) ОСОЗНАННО: на этом стенде cppworker уже обслуживает
-      # внешний контейнер `agent`. Если включить и встроенного, метрики одного
-      # бэкенда начнут слать ДВА агента по очереди — значение будет «мигать»
-      # между двумя снимками (в частности gpu.uuids то есть, то нет).
-      # Переключение делается в один шаг: погасить внешний агент и поставить
-      # CPPWORKER_AGENT_EMBEDDED=on. Код встроенного агента в образе есть и
-      # покрыт тестами (internal/agent/embedded.go).
+      # ВКЛЮЧЁН (on). Чтобы переключение не создало ВТОРУЮ запись, AGENT_ID
+      # совпадает с ID, под которым бэкенд зарегистрирован в балансере:
+      # `cppworker-gpu-bundled-agent` (историческое имя, см. сервис `agent` ниже,
+      # где то же значение стоит по умолчанию). MEНЯТЬ ЭТО ЗНАЧЕНИЕ НЕЛЬЗЯ без
+      # миграции: балансер привязывает агента по ID, а не по имени контейнера.
       #
-      # ВАЖНО ПРО UUID КАРТ (дедуп VRAM): агент сообщает балансеру
-      # `gpu.uuids` из nvidia-smi. Без этого два бэкенда одной машины
-      # (cppworker + imageworker) выглядят как две машины, и суммарная VRAM
-      # удваивается (16 GB на карте 8 GB).
+      # ВМЕСТЕ С ЭТИМ ВНЕШНИЙ КОНТЕЙНЕР `agent` ДОЛЖЕН БЫТЬ ПОГАШЕН — иначе два
+      # сборщика шлют метрики одного бэкенда по очереди, и значения «мигают»
+      # (в частности gpu.uuids то есть, то нет).
       #
-      # AGENT_ID/AGENT_PUBLIC_HOST задавались бы ЯВНО: hostname контейнера — это
-      # его hex-ID (39224df94d55), и без явного значения агент зарегистрировался
-      # бы под нестабильным именем, отличным от имени бэкенда.
-      - AGENT_EMBEDDED=${CPPWORKER_AGENT_EMBEDDED:-off}
-      - AGENT_ID=${CPPWORKER_REGISTER_NAME:-cppworker-gpu}
-      - AGENT_PUBLIC_HOST=${CPPWORKER_REGISTER_NAME:-cppworker-gpu}
+      # ВАЖНО ПРО UUID КАРТ (дедуп VRAM): агент сообщает балансеру `gpu.uuids` из
+      # nvidia-smi. Без этого два бэкенда одной машины (cppworker + imageworker)
+      # выглядят как две машины, и суммарная VRAM удваивается (16 GB на карте
+      # 8 GB).
+      #
+      # AGENT_PUBLIC_HOST — имя сервиса в сети ol-net: по нему балансер
+      # доезжает до /health встроенного агента.
+      - AGENT_EMBEDDED=${CPPWORKER_AGENT_EMBEDDED:-on}
+      - AGENT_ID=${AGENT_ID:-cppworker-gpu-bundled-agent}
+      - AGENT_PUBLIC_HOST=${BACKEND_HOST:-cppworker-gpu}
       - AGENT_EMBEDDED_PORT=${CPPWORKER_AGENT_PORT:-18034}
       - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
       - BALANCER_TOKEN=${CPPWORKER_BALANCER_TOKEN:-${CPPWORKER_API_TOKEN:-}}
@@ -583,10 +584,26 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
   # agent — регистрация бэкенда в балансере + метрики GPU/RAM/CPU
   # Профили: worker | full
+  #
+  # R-Image follow-up (2026-10-07): ВЫНЕСЕН ЗА ОТДЕЛЬНЫЙ ПРОФИЛЬ `legacy-agent`.
+  #
+  # ПОЧЕМУ. Сборщик метрик теперь живёт ВНУТРИ cppworker (AGENT_EMBEDDED=on,
+  # см. окружение сервиса cppworker-gpu) и пишет в ту же запись бэкенда. Два
+  # сборщика на одном бэкенде шлют метрики по очереди, и значения «мигают»
+  # (в частности gpu.uuids то есть, то нет) — а UUID нужен для дедупа VRAM.
+  #
+  # Сервис оставлен как ЗАПАСНОЙ вариант: включить можно, добавив профиль
+  # `legacy-agent` в команду и погасив встроенного агента
+  # (CPPWORKER_AGENT_EMBEDDED=off в .env):
+  #
+  #   docker compose -f docker-compose.stack.yml --profile full \
+  #     --profile legacy-agent up -d
+  #
   # ═══════════════════════════════════════════════════════════════════════════
   agent:
     image: ${IMAGE_REGISTRY:-}ollama-legion/agent:${AGENT_TAG:-r83-submodule-v22}
     container_name: ol-stack-agent
+    profiles: ["legacy-agent"]
     restart: unless-stopped
     runtime: nvidia
     depends_on:
@@ -667,7 +684,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-    profiles: ["worker", "full"]
 
 networks:
   ol-net:

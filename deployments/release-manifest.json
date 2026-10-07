@@ -33,13 +33,13 @@
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r83-submodule-v70",
-                       "imageTag":  "r83-submodule-v70",
-                       "imageId":  "sha256:5b91d7fb6cbde2868548c024e6aac34295d661571e1981a012bf00fe15ea4eae",
+                       "image":  "ollama-legion/cppworker:gpu-r83-submodule-v71",
+                       "imageTag":  "r83-submodule-v71",
+                       "imageId":  "sha256:c834e199b524c1c61b6d3df3460a17a5479c590796d496bc7ea17b203c8a9687",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {
-                       "service":  "agent",
+                       "service":  "agent (legacy, profile legacy-agent)",
                        "variable":  "AGENT_TAG",
                        "image":  "ollama-legion/agent:r83-submodule-v26",
                        "imageTag":  "r83-submodule-v26",
@@ -49,10 +49,10 @@
                ],
     "notes":  [
                   "ГЛАВНОЕ: суммарная VRAM кластера больше не удваивается, когда несколько бэкендов работают на одной машине с одной GPU. Признак — UUID карты от агента (nvidia-smi --query-gpu=uuid).",
-                  "Проверено живьём: оба бэкенда (cppworker-gpu и imageworker) отдают один UUID GPU-6f8d5f3b-…; Monitor считает 1 физическую GPU и 8.0 GB вместо наивных 16.0 GB.",
-                  "agent v26: доносит gpu.uuids и для llama.cpp-бэкендов (раньше UUID терялся в mapLlamaGPUMetrics, поэтому дедуп работал только для image-воркера).",
+                  "Проверено живьём: и cppworker-gpu, и imageworker отдают один UUID GPU-6f8d5f3b-…; Monitor считает 1 физическую GPU и 8.0 GB вместо наивных 16.0 GB.",
+                  "ВСТРОЕННЫЙ АГЕНТ ВКЛЮЧЁН в cppworker (AGENT_EMBEDDED=on, порт 18034). Внешний контейнер `agent` погашен и вынесен за профиль legacy-agent: два сборщика метрик на одном бэкенде давали «мигающие» значения.",
+                  "agent v26 остаётся запасным вариантом (docker compose --profile full --profile legacy-agent up -d); для возврата к нему нужен CPPWORKER_AGENT_EMBEDDED=off.",
                   "webui v97: три места, где память складывалась, переведены на общий хелпер MonitorAggregates.aggregateVRAM; фолбэк без UUID — дедуп по имени хоста.",
-                  "cppworker v70: включена автовыгрузка простаивающих моделей (CPPWORKER_IDLE_UNLOAD_MINUTES=10) — иначе две текстовые модели держали 7.8 GB и гейт отклонял генерацию картинки.",
-                  "Встроенный агент в cppworker реализован и покрыт тестами, но выключен (CPPWORKER_AGENT_EMBEDDED=off): на стенде cppworker обслуживает внешний контейнер agent. Переключение — погасить внешний агент и поставить on."
+                  "cppworker v71: включена автовыгрузка простаивающих моделей (CPPWORKER_IDLE_UNLOAD_MINUTES=10) — иначе две текстовые модели держали 7.8 GB и гейт отклонял генерацию картинки."
               ]
 }

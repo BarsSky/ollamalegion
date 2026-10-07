@@ -19,9 +19,22 @@
 
 | Сценарий | Профиль | Что поднимается | Когда нужен |
 |---|---|---|---|
-| **1. Всё на одной машине** | `--profile full` | cppworker + agent + balancer + webui | одна GPU-машина, к ней подключаются клиенты |
-| **2. Только бэкенд** | `--profile worker` | cppworker + agent | балансер уже работает на другой машине |
+| **1. Всё на одной машине** | `--profile full` | cppworker + imageworker + balancer + webui | одна GPU-машина, к ней подключаются клиенты |
+| **2. Только бэкенды** | `--profile worker` | cppworker + imageworker + agent | балансер уже работает на другой машине |
 | **3. Только управление** | `--profile balancer` | balancer + webui | бэкенды регистрируются сами с других машин |
+| 4. Откат к внешнему агенту | `--profile worker --profile legacy-agent` | то же, что (2), сборщик метрик — внешний | если встроенный агент в cppworker выключен |
+
+> **R-Image follow-up (2026-10-07): где теперь живёт агент метрик.**
+> Сборщик метрик для llama.cpp-воркеров встроен В cppworker
+> (`AGENT_EMBEDDED=on`, порт 18034) и пишет в ту же запись бэкенда. Поэтому в
+> профиле `full` отдельного контейнера `agent` больше НЕТ. Внешний агент
+> остаётся для **Ollama**-бэкендов (профили `worker` / `legacy-agent`): у Ollama
+> нет нашего Go-кода, и метрики собрать некому.
+>
+> Два сборщика на одном бэкенде ставить НЕЛЬЗЯ: метрики приходят по очереди, и
+> значения «мигают» — в частности `gpu.uuids`, по которому балансер понимает,
+> что несколько бэкендов делят одну физическую GPU (иначе суммарная VRAM
+> удваивается: 16 GB на карте 8 GB).
 
 ```bash
 cd deployments
@@ -32,18 +45,36 @@ cp .env.bundled-with-agent.example .env.bundled-with-agent
 
 # сценарий 1
 docker compose -f docker-compose.stack.yml --profile full up -d
-# сценарий 2
+# сценарий 2 (адрес внешнего балансера — BALANCER_URL в .env!)
 docker compose -f docker-compose.stack.yml --profile worker up -d
 # сценарий 3
 docker compose -f docker-compose.stack.yml --profile balancer up -d
+# сценарий 4 (откат): внешний агент вместо встроенного
+#   в .env: CPPWORKER_AGENT_EMBEDDED=off  и  BALANCER_URL=<внешний>
+docker compose -f docker-compose.stack.yml --profile worker --profile legacy-agent up -d
 ```
 
 Проверить, какие сервисы попадут в профиль, **не запуская** их:
 
 ```bash
 docker compose -f docker-compose.stack.yml --profile full --services
-# → agent, cppworker-gpu, loadbalancer, webui
+# → cppworker-gpu, imageworker, loadbalancer, webui
+docker compose -f docker-compose.stack.yml --profile worker --services
+# → agent, cppworker-gpu, imageworker
 ```
+
+**Сценарий 2 требует BALANCER_URL.** Без него воркеры пойдут на
+`http://loadbalancer:18081` — имя сервиса, которого в этом профиле нет
+(он живёт на другой машине), и регистрация будет вечно повторяться с ошибкой.
+Указывается ОДИН раз в `deployments/.env`:
+
+```bash
+BALANCER_URL=http://192.168.1.10:18081     # машина с балансером
+CPPWORKER_API_TOKEN=<тот же токен, что у балансера>
+```
+
+Значение уезжает во все три места: `CPPWORKER_BALANCER_URL` (сам воркер),
+`SDWORKER_BALANCER_URL` (image-воркер) и `BALANCER_URL` (встроенный агент).
 
 ---
 
@@ -163,6 +194,79 @@ docker compose -f docker-compose.stack.yml --profile balancer up -d
 Бэкенды на других машинах регистрируются сами (у них в `.env.bundled-with-agent`
 должен быть `BALANCER_URL=http://<этот-хост>:18081`). Пока их нет,
 `/api/v1/backends` пуст — это нормально.
+
+---
+
+## 4.1 Смешанный режим: Ollama и llama.cpp одновременно
+
+Балансер обслуживает **оба типа текстовых бэкендов одновременно** — это штатный
+режим, а не эксперимент. Разведены они по поверхностям (портам), поэтому клиент
+сам выбирает, каким путём идти, и ничего настраивать в клиенте не нужно.
+
+| Внешний порт | Поверхность | Что принимает | Куда маршрутизирует |
+|---|---|---|---|
+| `18079` | OpenAI | `/v1/chat/completions`, `/v1/models`, `/v1/images/*` | llama.cpp- и image-бэкенды |
+| `18080` | Ollama | `/api/chat`, `/api/generate`, `/api/tags`, `/api/ps` | Ollama- и llama.cpp-бэкенды |
+| `18081` | Admin | `/api/v1/*` (регистрация, метрики, WebUI) | — |
+
+**Как выбирается бэкенд.** У каждого типа — свой роутер: `OllamaRouter`
+(`BackendType=ollama`) и `LlamaCppRouter` (`BackendType=llama_cpp`), а image-путь
+идёт в `ImageRouter`. Роутер отбирает бэкенды СВОЕГО типа
+(`isBackendTypeAllowed`), поэтому запрос на Ollama-поверхность не уедет в
+llama.cpp-воркер «по ошибке» и наоборот. Плюс есть осознанный кросс-фолбэк: если
+на Ollama-поверхность пришла модель, которой у Ollama-бэкендов нет, а у
+llama.cpp она загружена, запрос уйдёт в llama.cpp (см. `ollama_router.go`).
+
+**Что это даёт на практике.** На одной машине можно держать «горячий» llama.cpp
+(GGUF, свой n_ctx, KV-типы) и рядом Ollama с её моделями — клиент ходит и туда, и
+туда через ОДИН адрес, а балансер учитывает оба пула.
+
+### Поднять оба типа
+
+```bash
+cd deployments
+
+# 1. llama.cpp-пул (cppworker + imageworker + балансер + webui)
+docker compose -f docker-compose.stack.yml --profile full up -d
+
+# 2. Ollama — на этой же машине, со своим портом (11434 по умолчанию).
+#    Её регистрирует АГЕНТ: у Ollama нет нашего Go-кода, метрики собрать некому.
+docker run -d --name ollama --gpus all -p 11434:11434 ollama/ollama
+# .env для агента:
+#   BACKEND_TYPE=ollama
+#   OLLAMA_URL=http://<host>:11434
+docker compose -f docker-compose.stack.yml --profile legacy-agent \
+  -e BACKEND_TYPE=ollama -e OLLAMA_URL=http://host.docker.internal:11434 up -d agent
+```
+
+> Внешний контейнер `agent` — **единственный** способ подключить Ollama-бэкенд:
+> он регистрирует его в балансере и поставляет метрики. Для llama.cpp-воркеров
+> агент не нужен — там он встроен (`AGENT_EMBEDDED=on`).
+
+### Проверка, что оба типа видны
+
+```bash
+# оба типа в реестре
+curl -s localhost:18081/api/v1/backends | jq '.backends[] | {id, type}'
+#   → {"id":"cppworker-gpu-bundled-agent","type":"llama_cpp"}
+#     {"id":"ollama-1","type":"ollama"}
+
+# смешанный кластер: effectiveBackendType ПУСТ — это НОРМА, а не ошибка
+curl -s localhost:18081/api/v1/cluster | jq '{effectiveBackendType, backendTypeCounts}'
+#   → {"effectiveBackendType":"","backendTypeCounts":{"llama_cpp":1,"ollama":1}}
+
+# какие роутеры задействованы (в логе балансера)
+docker logs ol-stack-balancer 2>&1 | grep 'routeRequest: backend type resolved'
+```
+
+**Ловушка смешанного режима: `backendEngine`.** Если в `config/config.json`
+(балансер) стоит `backendEngine: ollama_api`, то `getEffectiveBackendType()`
+вернёт `ollama`, и `filterBackendsByEffectiveType()` выбросит ВСЕ llama_cpp-бэкенды
+из выдачи `/api/v1/metrics` и `/api/ps`. Симптомы: монитор пуст, Ollama-клиенты
+получают 503 «no healthy backends». Для стека с cppworker значение обязано быть
+**`llama_cpp`**; при настоящей смеси оно остаётся `llama_cpp`, а
+`effectiveBackendType` в `/api/v1/cluster` становится пустым — это признак
+«показываем все типы».
 
 ---
 

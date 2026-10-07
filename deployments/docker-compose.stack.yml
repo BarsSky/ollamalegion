@@ -262,6 +262,18 @@ services:
     depends_on:
       loadbalancer:
         condition: service_healthy
+        # R-Image (2026-10-07): зависимость ОПЦИОНАЛЬНА, чтобы работал сценарий
+        # «только бэкенд» (--profile worker), где балансер живёт на ДРУГОЙ
+        # машине. Без required:false compose отвергает ВЕСЬ проект
+        # («service webui depends on undefined service loadbalancer»), потому
+        # что loadbalancer не входит в активный профиль — и развернуть бэкенды
+        # отдельно было невозможно.
+        #
+        # Почему это безопасно: depends_on задаёт только ПОРЯДОК запуска. Если
+        # loadbalancer активен (профили full/balancer) — ждём его healthy; если
+        # его нет в профиле — compose не ждёт и не падает, а воркеры
+        # регистрируются в ВНЕШНЕМ балансере по BALANCER_URL.
+        required: false
     ports:
       - "${WEBUI_PORT:-18083}:80"
     environment:
@@ -567,9 +579,16 @@ services:
     # Раньше зависимости не было вовсе: воркер стартовал первым, первый POST
     # /api/v1/backends уходил в недоступный порт и повторялся через 30 с — в
     # едином стенде это выглядело как «image-бэкенд не появился в балансере».
+    #
+    # R-Image (2026-10-07): зависимость ОПЦИОНАЛЬНА (required:false) — иначе
+    # сценарий «только бэкенд» (--profile worker, балансер на другой машине)
+    # отвергался целиком: compose валидирует depends_on даже для сервисов, не
+    # входящих в активный профиль. Без loadbalancer в профиле воркер просто
+    # регистрируется по BALANCER_URL во внешнем балансере.
     depends_on:
       loadbalancer:
         condition: service_healthy
+        required: false
     healthcheck:
       # Через сам бинарь (как у cppworker): /health отвечает 200 и без модели,
       # поэтому idle-unload не переводит контейнер в unhealthy.
@@ -582,33 +601,39 @@ services:
     profiles: ["worker", "full"]
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # agent — регистрация бэкенда в балансере + метрики GPU/RAM/CPU
-  # Профили: worker | full
+  # agent — метрики и регистрация для OLLAMA-бэкендов
+  # Профили: worker | legacy-agent
   #
-  # R-Image follow-up (2026-10-07): ВЫНЕСЕН ЗА ОТДЕЛЬНЫЙ ПРОФИЛЬ `legacy-agent`.
+  # R-Image follow-up (2026-10-07). РОЛЬ ЭТОГО КОНТЕЙНЕРА СУЗИЛАСЬ.
   #
-  # ПОЧЕМУ. Сборщик метрик теперь живёт ВНУТРИ cppworker (AGENT_EMBEDDED=on,
-  # см. окружение сервиса cppworker-gpu) и пишет в ту же запись бэкенда. Два
+  # Сборщик метрик для llama.cpp-воркеров (cppworker) теперь живёт ВНУТРИ
+  # cppworker: AGENT_EMBEDDED=on, тот же ID бэкенда, порт метрик 18034. Два
   # сборщика на одном бэкенде шлют метрики по очереди, и значения «мигают»
-  # (в частности gpu.uuids то есть, то нет) — а UUID нужен для дедупа VRAM.
+  # (в частности gpu.uuids то есть, то нет), поэтому в профиле `full` внешнего
+  # агента БОЛЬШЕ НЕТ — там работает встроенный.
   #
-  # Сервис оставлен как ЗАПАСНОЙ вариант: включить можно, добавив профиль
-  # `legacy-agent` в команду и погасив встроенного агента
-  # (CPPWORKER_AGENT_EMBEDDED=off в .env):
-  #
-  #   docker compose -f docker-compose.stack.yml --profile full \
-  #     --profile legacy-agent up -d
+  # ГДЕ ОН НУЖЕН:
+  #   • worker — сценарий «только бэкенды, балансер на другой машине»: поднимает
+  #     cppworker + imageworker + агента; агент закрывает те бэкенды, у которых
+  #     нет своего Go-кода (Ollama), и вообще удобен как внешний наблюдатель.
+  #   • legacy-agent — явный откат: внешний агент ВМЕСТО встроенного. Требует
+  #     CPPWORKER_AGENT_EMBEDDED=off, иначе два сборщика будут друг другу мешать.
   #
   # ═══════════════════════════════════════════════════════════════════════════
   agent:
     image: ${IMAGE_REGISTRY:-}ollama-legion/agent:${AGENT_TAG:-r83-submodule-v22}
     container_name: ol-stack-agent
-    profiles: ["legacy-agent"]
+    profiles: ["worker", "legacy-agent"]
     restart: unless-stopped
     runtime: nvidia
     depends_on:
       cppworker-gpu:
         condition: service_healthy
+        # R-Image (2026-10-07): ОПЦИОНАЛЬНА. Агент ждёт готовый cppworker, чтобы
+        # зарегистрироваться тем же адресом, но в профиле legacy-agent (откат к
+        # внешнему сборщику) cppworker может быть не поднят вовсе — без
+        # required:false compose отвергал бы такой запуск целиком.
+        required: false
     environment:
       - AGENT_ID=${AGENT_ID:-cppworker-gpu-bundled-agent}
       - AGENT_PORT=18032

@@ -132,7 +132,12 @@ services:
       - BALANCER_URL=${BALANCER_URL:-http://host.docker.internal:18081}
       - BALANCER_API_TOKEN=${LB_TOKEN:-}
       - AGENT_PUBLIC_HOST=${CPPWORKER_ADVERTISE_HOST:-cppworker-gpu-with-agent}
-      - AGENT_PUBLIC_PORT=${AGENT_PORT:-18032}
+      # TRAP (same class as the fixed imageworker line in stack.yml): reading a
+      # variable that an EARLIER line of this same service assigns does not work.
+      # Compose interpolation is static text substitution against the host
+      # environment / `.env`, so ${AGENT_PORT:-18032} never sees this service's own
+      # AGENT_PORT and the operator's AGENT_PUBLIC_PORT was simply ignored.
+      - AGENT_PUBLIC_PORT=${AGENT_PUBLIC_PORT:-${AGENT_PORT:-18032}}
       - AGENT_NODE_LABELS=${AGENT_NODE_LABELS:-gpu,llamacpp,cppworker}
       - AGENT_WEIGHT=${AGENT_WEIGHT:-1}
       - AGENT_MAX_CONCURRENT_REQUESTS=${AGENT_MAX_CONCURRENT_REQUESTS:-10}

@@ -254,7 +254,14 @@ services:
       # cppworker needs the balancer for pull-based model profile sync. In the
       # worker scenario this is the remote address from BALANCER_URL.
       - CPPWORKER_BALANCER_URL=${CPPWORKER_BALANCER_URL:-${BALANCER_URL:-http://loadbalancer:18081}}
-      - CPPWORKER_BALANCER_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
+      # TRAP (fixed 2026-10-07, same class as the imageworker AGENT_PUBLIC_HOST bug):
+      # this used to be CPPWORKER_BALANCER_TOKEN=${CPPWORKER_API_TOKEN:?...} — a
+      # plain assignment that ignores the operator entirely. The later line
+      # BALANCER_TOKEN=${CPPWORKER_BALANCER_TOKEN:-...} DOES read the operator's
+      # value, so setting CPPWORKER_BALANCER_TOKEN in .env would have made the
+      # balancer authenticate with one token while the worker expected another -> 401.
+      # Self-reference first, exactly like SDWORKER_BALANCER_TOKEN below.
+      - CPPWORKER_BALANCER_TOKEN=${CPPWORKER_BALANCER_TOKEN:-${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}}
       # Host under which the balancer reaches this worker. The Go-side default is
       # os.Hostname() — inside a container that is a hex id, useless from another
       # machine. On a SEPARATE machine this MUST be that machine's LAN address;
@@ -491,7 +498,35 @@ services:
       # external `agent` container instead (legacy-agent profile).
       - AGENT_EMBEDDED=${IMAGE_WORKER_AGENT_EMBEDDED:-on}
       - AGENT_ID=${SDWORKER_BACKEND_ID:-imageworker}
-      - AGENT_PUBLIC_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}
+      # TRAP (fixed 2026-10-07): this line used to read
+      #     AGENT_PUBLIC_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}
+      # and that silently defeated BACKEND_HOST.
+      #
+      # Compose interpolation is STATIC TEXT substitution: `${SDWORKER_ADVERTISE_HOST}`
+      # here reads the host environment / `.env`, NOT the value this service assigns to
+      # SDWORKER_ADVERTISE_HOST two lines up (line 467). Nothing sets
+      # SDWORKER_ADVERTISE_HOST in `.env`, so the expression always resolved to the
+      # literal fallback `imageworker` — the container name.
+      #
+      # Effect on a remote machine with BACKEND_HOST=192.168.13.34:
+      #   - sdworker's OWN self-registration got the right host (line 467 does nest
+      #     BACKEND_HOST), creating the record as 192.168.13.34;
+      #   - the embedded agent then registered under the SAME backend ID with
+      #     AGENT_PUBLIC_HOST=imageworker, and the balancer's "backend exists" branch
+      #     writes `Host` from the request — so it OVERWROTE the correct address with
+      #     the container name.
+      # cppworker was unaffected because its agent entry (line 301) uses
+      # ${BACKEND_HOST:-...} directly, with no intermediate variable.
+      #
+      # Symptom: the image record's HOST shows the container name, the balancer
+      # resolves it to ITS OWN container, and image requests for the remote machine
+      # silently go to the first machine — "models on disk exist" while that worker
+      # has none.
+      #
+      # Rule: an `environment:` entry may only interpolate a variable that the
+      # OPERATOR can set (.env) or one nested in the same expression. Never a
+      # variable that an earlier line of this same list produces.
+      - AGENT_PUBLIC_HOST=${SDWORKER_ADVERTISE_HOST:-${BACKEND_HOST:-imageworker}}
       # /health and metrics port of the embedded agent. NOT 18032: the external
       # `agent` container listens there, and the balancer polls metrics on the
       # record's own agentPort.

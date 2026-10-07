@@ -645,6 +645,57 @@ curl -s http://192.168.13.34:18093/health
 
 ## 5. Ловушка с именами переменных (главная причина «агент не коннектится»)
 
+### 5.0 Ловушка интерполяции: строка compose НЕ видит соседнюю строку того же сервиса
+
+Это стоило отдельного разбора: `BACKEND_HOST` на удалённой машине был задан, для
+cppworker всё работало, а image-воркер всё равно регистрировался под именем
+контейнера. Причина — в одной строке compose:
+
+```yaml
+- SDWORKER_ADVERTISE_HOST=${SDWORKER_ADVERTISE_HOST:-${BACKEND_HOST:-imageworker}}   # 1
+- AGENT_PUBLIC_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}                          # 2  ЛОВУШКА
+```
+
+**Интерполяция compose — статическая подстановка текста** по окружению хоста и
+файлу `.env`. Строка 2 не видит значения, которое строка 1 присваивает
+КОНТЕЙНЕРУ: `${SDWORKER_ADVERTISE_HOST}` читается из `.env`, а там переменной нет
+— значит выражение всегда даёт литерал `imageworker`. В результате:
+
+* саморегистрация воркера писала правильный адрес (строка 1 вкладывает
+  `BACKEND_HOST`) — запись создавалась как `192.168.13.34`;
+* встроенный агент регистрировался под тем же backend ID с `AGENT_PUBLIC_HOST`
+  = `imageworker`, и ветка «backend exists» **перекрывала адрес именем контейнера**.
+
+Дальше имя контейнера внутри docker-сети балансера разрешается в ЕГО контейнер, и
+запросы к удалённой машине молча уходят на первую: метрики приезжают от второй,
+бэкенд выглядит исправным, а «модели на диске» — от соседа.
+
+**Правило.** Внутри `environment:` переменная может интерполировать только то,
+что оператор задаёт в `.env`, либо то, что вложено в ТО ЖЕ выражение:
+
+```yaml
+- AGENT_PUBLIC_HOST=${SDWORKER_ADVERTISE_HOST:-${BACKEND_HOST:-imageworker}}   # верно
+- FOO=${FOO:-${BAR:-default}}                                                  # верно (самоссылка)
+- FOO=${BAR:-default}                                                          # верно, если BAR задаёт оператор
+```
+
+Проверка в коде: `TestComposeInterpolation_NoSelfServiceReferences` в
+`internal/api/compose_interpolation_lint_test.go` обходит все compose-файлы и
+падает с указанием файла, строки и сервиса. Запуск:
+
+```bash
+go test -tags llama_stub ./internal/api/ -run TestComposeInterpolation
+```
+
+Быстрая ручная проверка, что до воркера доехало именно то, что нужно:
+
+```bash
+# на машине с балансером, с тем же BACKEND_HOST, что в .env удалённой машины
+BACKEND_HOST=192.168.13.34 docker compose -f docker-compose.stack.yml \
+  --profile worker config --format json | jq '.services.imageworker.environment
+  | {SDWORKER_ADVERTISE_HOST, AGENT_PUBLIC_HOST}'
+```
+
 Код читает **не те** имена, которые исторически стоят в старых compose-файлах.
 Если скопировать блок из старого файла, сервис запустится, но параметр не
 подействует.

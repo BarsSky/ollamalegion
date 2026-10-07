@@ -251,8 +251,13 @@ services:
       - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
       # cppworker needs the balancer for pull-based model profile sync. In the
       # worker scenario this is the remote address from BALANCER_URL.
-      - CPPWORKER_BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      - CPPWORKER_BALANCER_URL=${CPPWORKER_BALANCER_URL:-${BALANCER_URL:-http://loadbalancer:18081}}
       - CPPWORKER_BALANCER_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
+      # Host under which the balancer reaches this worker. The Go-side default is
+      # os.Hostname() — inside a container that is a hex id, useless from another
+      # machine. On a SEPARATE machine this MUST be that machine's LAN address;
+      # the same BACKEND_HOST that fixes imageworker and the agent fixes this too.
+      - CPPWORKER_ADVERTISE_HOST=${CPPWORKER_ADVERTISE_HOST:-${BACKEND_HOST:-cppworker-gpu}}
 
       # --- Model and memory ---------------------------------------------------
       - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-32768}

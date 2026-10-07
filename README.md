@@ -407,13 +407,23 @@ r35 image deployed, no SIGSEGV в логах 26+ минут uptime.
 Требуется: Docker 24+ с поддержкой Compose v2, Git, NVIDIA драйвер + NVIDIA Container Toolkit (для GPU-режима).
 
 **Канонический compose — `deployments/docker-compose.stack.yml`.** Один файл,
-три сценария через профили (подробно: [docs/deployment-stack.md](docs/deployment-stack.md)):
+четыре сценария через профили (подробно: [docs/deployment-stack.md](docs/deployment-stack.md)):
 
-| Сценарий | Команда |
-|---|---|
-| Всё на одной машине (cppworker + agent + balancer + webui) | `--profile full` |
-| Только бэкенд (cppworker + agent), балансер на другой машине | `--profile worker` |
-| Только управление (balancer + webui), бэкенды подключаются сами | `--profile balancer` |
+| Сценарий | Команда | Что поднимается |
+|---|---|---|
+| Всё на одной машине | `--profile full` | cppworker + imageworker + balancer + webui |
+| Только бэкенды, балансер на другой машине | `--profile worker` | cppworker + imageworker + agent |
+| Только управление, бэкенды подключаются сами | `--profile balancer` | balancer + webui |
+| Откат: внешний сборщик метрик вместо встроенного | `--profile worker --profile legacy-agent` | то же, что `worker`, метрики собирает контейнер `agent` |
+
+> **Где живёт агент метрик (с 2026-10-07).** Для llama.cpp-воркеров он ВСТРОЕН в
+> cppworker (`AGENT_EMBEDDED=on`, порт метрик **18034**) и пишет в ту же запись
+> бэкенда, поэтому в профиле `full` отдельного контейнера `agent` нет. Внешний
+> `agent` нужен только для **Ollama**-бэкендов (профили `worker` /
+> `legacy-agent`): у Ollama нет нашего Go-кода, метрики собрать некому. Два
+> сборщика на одном бэкенде ставить нельзя — метрики «мигают», в частности
+> `gpu.uuids`, по которому балансер понимает, что несколько бэкендов делят одну
+> физическую GPU (иначе суммарная VRAM удваивается).
 
 ```bash
 # 1. Клонировать репозиторий (имя каталога — произвольное).
@@ -535,7 +545,8 @@ docker compose -f deployments/docker-compose.stack.yml --profile full up -d
       ├── KV-cache fallback — работает без GGUF metadata
       ├── Auto-reload API — /api/models/reload + /api/models/load
       └── Chat template — native C++ path wrapped in recover() (Round 35)
-    → Agent (:18032) — NVML GPU/CPU/RAM метрики, health check
+    → Agent (:18032 внешний для Ollama / :18034 встроенный в cppworker) — NVML GPU/CPU/RAM метрики, health check
+  → ImageWorker (:18093) — sd.cpp image_cpp бэкенд, метрики встроенного агента на :18033
   → WebUI (:18083) — дашборд, мониторинг, sparkline
 ```
 
@@ -544,12 +555,17 @@ docker compose -f deployments/docker-compose.stack.yml --profile full up -d
 | Порт | Компонент | Назначение |
 |------|-----------|------------|
 | 18080 | Balancer | Ollama API proxy (и `/v1/*` поверхность) |
-| 18081 | Balancer | Management API + WebSocket |
-| 18079 | Balancer | OpenAI-поверхность изображений (`/v1/images/generations`, `/sdapi/v1/*`) |
+| 18081 | Balancer | Management API + WebSocket (клиентских поверхностей нет) |
+| 18079 | Balancer | OpenAI-поверхность (`/v1/chat/completions`, `/v1/images/generations`, `/sdapi/v1/*`) |
 | 18092 | CppWorker | llama.cpp inference |
 | 18093 | ImageWorker | API sdworker (`/api/image/*`, `/api/hf/*`) — R-Image |
-| 18032 | Agent | Метрики GPU/CPU/RAM |
+| 18034 | CppWorker | Метрики **встроенного** агента (`AGENT_EMBEDDED=on`), R-Image |
+| 18033 | ImageWorker | Метрики **встроенного** агента (`AGENT_EMBEDDED=on`), R-Image |
+| 18032 | Agent (внешний) | Метрики GPU/CPU/RAM для **Ollama**-бэкендов |
 | 18083 | WebUI | Дашборд |
+
+Порты встроенных агентов разнесены специально: два процесса не должны слушать
+один порт, а балансер опрашивает метрики по `agentPort` конкретной записи.
 
 Порт движка изображений (по умолчанию 18094) слушает только localhost внутри
 контейнера воркера — снаружи он не публикуется, см. [docs/image-generation.md](docs/image-generation.md#7-порты-и-переменные-окружения).
@@ -562,34 +578,122 @@ docker compose -f deployments/docker-compose.stack.yml --profile full up -d
 
 ```powershell
 $env:DOCKER_BUILDKIT=1
-$env:CUDA_ARCH=86     # подставьте своё значение: 86/89/90/120
+$env:CUDA_ARCH=86     # 61 = GTX 10xx (Pascal), 75 = RTX 20xx, 86 = RTX 30xx, 89 = RTX 40xx, 90 = RTX 50xx
 # CUDA_ARCH читается compose'ом из deployments/.env — флаг --env-file его ПОДМЕНЯЛ,
 # и сборка уходила на 9 архитектур (~40 мин вместо ~3). Задайте CUDA_ARCH в .env.
+# ⚠️ CUDA 13 снял поддержку Pascal (GTX 10xx): для 1070/1080 оставайтесь на CUDA 12.x
+#    (в проекте это 12.2) и собирайте с CUDA_ARCH=61.
 
-# cppworker GPU (cuda 12.x, sm_86)
+# ── ЧТО СБИРАЕТСЯ ИЗ КАКОГО ФАЙЛА (проверено `build --dry-run`) ──────────────
+# Канонический docker-compose.stack.yml НЕ содержит build у cppworker-gpu
+# (сервис объявлен только image:) — текстовый воркер собирается отдельным файлом.
+
+# Текстовый воркер (llama.cpp + CUDA):
 docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build cppworker-gpu
 
-# Только balancer
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build loadbalancer
-
-# Всё вместе
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build
+# Картинки, балансер и WebUI — из канонического stack.yml:
+docker compose -f deployments/docker-compose.stack.yml --profile full build imageworker
+docker compose -f deployments/docker-compose.stack.yml --profile full build loadbalancer
+docker compose -f deployments/docker-compose.stack.yml --profile full build webui
 ```
 
 **Linux / macOS / WSL2:**
 
 ```bash
 export DOCKER_BUILDKIT=1
-export CUDA_ARCH=86
+export CUDA_ARCH=86          # 61 для GTX 10xx (Pascal)
 
 docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build cppworker-gpu
-
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build loadbalancer
-
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build
+docker compose -f deployments/docker-compose.stack.yml --profile full build imageworker
+docker compose -f deployments/docker-compose.stack.yml --profile full build loadbalancer
+docker compose -f deployments/docker-compose.stack.yml --profile full build webui
 ```
 
 BuildKit=1 обязателен — с ним Go-only изменения собираются за ~30 сек (cached CUDA layers).
+
+> **Альтернатива — скрипт `scripts/build-containers.ps1`**, он сам подставляет
+> тег и префикс реестра:
+> `-CppWorker -CudaArch 61` (текст), `-Balancer`, `-WebUI`, `-Agent`,
+> `-Tag <р83-тег>`. **Image-воркера в скрипте нет** — его собирайте через
+> `docker compose ... build imageworker` (команда выше).
+
+> **Карты прошлых поколений (GTX 1070 и родственные).** Для генерации картинок
+> подходят: `imageworker` собирается на **Vulkan** и работает независимо от
+> CUDA-архитектуры. Для текста тоже подходят — `cppworker` собирается на CUDA 12.2,
+> где Pascal (`sm_61`) поддерживается; собирайте с `CUDA_ARCH=61`. Оговорки
+> (fp16 на Pascal медленный, 8 ГБ требуют offload, память между картами НЕ
+> объединяется) — в [docs/deployment-stack.md](docs/deployment-stack.md) §4.3.
+
+## Воркеры: вместе и порознь
+
+Текстовый (`cppworker`) и image-воркер (`imageworker`) — **независимые сервисы**:
+у каждого свой порт, свой каталог моделей, свой движок. Поднимать их можно как
+вместе, так и по отдельности, и любой из них работает без второго.
+
+### Вместе (текст + картинки)
+
+```bash
+cd deployments
+docker compose -f docker-compose.stack.yml --profile full up -d
+docker ps --format '{{.Names}}\t{{.Status}}' | grep ol-stack
+```
+
+Оба пула встают за ОДНИМ балансером: текст маршрутизируется по типу бэкенда,
+картинки — по явному признаку запроса (`/v1/images/*`, `/sdapi/v1/*`,
+`/api/image/*`, префикс модели `sd:`). Проверка:
+
+```bash
+curl -s localhost:18081/api/v1/backends | jq '.backends[] | {id, type}'
+#  → {"id":"cppworker-gpu-bundled-agent","type":"llama_cpp"}
+#    {"id":"imageworker","type":"image_cpp"}
+```
+
+### Только текстовый воркер
+
+```bash
+cd deployments
+docker compose -f docker-compose.stack.yml --profile full up -d loadbalancer cppworker-gpu webui
+# или на отдельной машине, с балансером на другой (BALANCER_URL в .env!):
+docker compose -f docker-compose.stack.yml --profile worker up -d cppworker-gpu
+```
+
+### Только image-воркер
+
+```bash
+cd deployments
+docker compose -f docker-compose.stack.yml --profile full up -d loadbalancer imageworker webui
+# отдельно от балансера — SDWORKER_BALANCER_URL указывает на внешний:
+SDWORKER_BALANCER_URL=http://192.168.1.10:18081 \
+  docker compose -f docker-compose.stack.yml --profile worker up -d imageworker
+```
+
+### Оба воркера на РАЗНЫХ машинах
+
+На каждой машине — свой `--profile worker` и адрес общего балансера:
+
+```bash
+# машина 1 (текст):
+#   .env: BALANCER_URL=http://<хост-балансера>:18081
+docker compose -f docker-compose.stack.yml --profile worker up -d cppworker-gpu
+
+# машина 2 (картинки):
+#   .env: SDWORKER_BALANCER_URL=http://<хост-балансера>:18081
+docker compose -f docker-compose.stack.yml --profile worker up -d imageworker
+
+# машина 3 (управление) уже поднята профилем balancer; воркеры регистрируются сами
+```
+
+Балансер сам сведёт обе машины в один пул и будет учитывать VRAM каждой
+отдельно. Одинаковые бэкенды на разных хостах — это НЕ дубли: дедупликация
+идёт по `host` + порт, а совпадение физической карты определяется по её UUID
+(см. `gpu.uuids` в `/api/v1/metrics`).
+
+**Проверка, что воркер доехал до балансера** (любой сценарий):
+
+```bash
+docker logs <контейнер> 2>&1 | grep -E 'registered with balancer|Agent registered'
+curl -s localhost:18081/api/v1/backends | jq '.backends[] | {id, host, type, hasAgent, agentPort}'
+```
 
 ## Конфигурация
 

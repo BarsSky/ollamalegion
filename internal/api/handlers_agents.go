@@ -667,7 +667,7 @@ func (s *Server) agentStatsHandler(w http.ResponseWriter, r *http.Request) {
 	backends = dedupBackendsByHostPort(
 		backends,
 		func(b types.Backend) string { return b.Host },
-		func(b types.Backend) int { return backendEffectivePort(b.OllamaPort, b.CppWorkerPort) },
+		backendDedupPort,
 		func(b types.Backend) bool { return b.HasAgent },
 		true,
 	)

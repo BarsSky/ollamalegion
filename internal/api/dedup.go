@@ -22,6 +22,30 @@ func backendEffectivePort(ollamaPort, cppWorkerPort int) int {
 	return cppWorkerPort
 }
 
+// backendDedupPort — порт, по которому бэкенд участвует в де-дупликации.
+//
+// R-MultiHost (2026-10-07). Дефект на живой паре из двух машин: image-бэкенд
+// (image_cpp) НЕ имеет ни Ollama-, ни llama.cpp-поверхности, но в записи всё
+// равно лежит ollamaPort=11434 — это дефолт, который подставляет
+// agentRegisterHandler. Ключ де-дупликации получался (host, 11434), и на машине,
+// где текстовый и image-бэкенд объявляют ОДИН И ТОТ ЖЕ host (так делает
+// BACKEND_HOST=192.168.13.34 сразу для обоих воркеров), ключи совпадали.
+//
+// Следствие в WebUI: из двух записей оставалась одна (побеждал меньший ID —
+// CPPWORKER-34), а image-бэкенд «мигал»: он появлялся на секунды, когда запись
+// пересоздавалась саморегистрацией sdworker'а (там ollamaPort ещё 0 → ключ
+// (host, 0) не совпадал), и исчезал после обновления от встроенного агента,
+// который проставляет ollamaPort=11434.
+//
+// Для image-бэкенда ключ — его собственный порт (EffectiveImagePort), который
+// не пересекается ни с 11434, ни с портом cppworker на том же хосте.
+func backendDedupPort(b types.Backend) int {
+	if b.Type == types.BackendTypeImage {
+		return b.EffectiveImagePort()
+	}
+	return backendEffectivePort(b.OllamaPort, b.CppWorkerPort)
+}
+
 // dedupBackendsByHostPort — де-дупликация бэкендов по (host, port).
 //
 // Проблема (2026-06-30): один физический бэкенд (cppworker) может быть

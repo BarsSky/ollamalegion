@@ -49,6 +49,11 @@ type Server struct {
 	// после DELETE override мы восстанавливаем s.config.LlamaCpp из этого
 	// snapshot, иначе пользователь увидит reset в UI, но runtime не изменится.
 	baseLlamaCpp *types.LlamaCppConfig
+	// startedAt — R-MultiHost (2026-10-07): момент старта балансера.
+	// Нужен, чтобы сразу после перезапуска не считать восстановленные из
+	// state.json записи осиротевшими и не отдавать их чужому узлу с тем же ID
+	// (см. registrationOwnerIsLive в registration_guard.go).
+	startedAt time.Time
 }
 
 // EventBusLike — интерфейс EventBus из balancer.EventBus для тестирования.
@@ -175,6 +180,7 @@ func NewServer(proxy *balancer.Proxy, config *types.LoadBalancerConfig, healthCh
 		wsRateLimiter: wsRateLimiter,
 		authenticator: authenticator,
 		stopCh:        make(chan struct{}),
+		startedAt:     time.Now(),
 	}
 
 	s.setupRoutes()

@@ -31,6 +31,11 @@ type Agent struct {
 	balancerURL    string
 	registered     bool
 	platformMode   types.PlatformMode
+	// lastRegisterTry — R-MultiHost (2026-10-07): время последней ПОПЫТКИ
+	// регистрации, включая автоматические повторные. Ограничивает частоту
+	// (см. registerRetryCooldown), чтобы недоступный балансер не превращался
+	// в шквал запросов.
+	lastRegisterTry time.Time
 	// gpuUnavailable cache вынесен в collector_gpu.go (TTL-based, не зависит от Agent).
 
 	// Ollama статистика
@@ -397,6 +402,49 @@ func (a *Agent) collectAndSend() {
 	a.enqueueMetrics(metrics)
 }
 
+// registerRetryCooldown — R-MultiHost (2026-10-07): минимальный интервал между
+// автоматическими повторными регистрациями.
+const registerRetryCooldown = 20 * time.Second
+
+// ensureRegistered — R-MultiHost (2026-10-07): самовосстановление регистрации.
+//
+// ЗАЧЕМ. Регистрация выполняется РОВНО ОДИН раз — в Agent.Start(). Если запись
+// бэкенда на балансере исчезла (её удалили из WebUI, отобрал другой узел с тем
+// же ID, или она потерялась при перезапуске), агент об этом никак не узнаёт:
+// метрики и heartbeat продолжают уходить в никуда, а балансер отвечает
+// 404 «Backend not found. Please register agent first.» Наблюдалось на живой
+// паре: запись imageworker удалили, и воркер пропал со стенда НАВСЕГДА — до
+// ручного `docker restart`. В WebUI это выглядело как «бэкенд то есть, то нет».
+//
+// Теперь на 404/403 от эндпоинтов телеметрии агент повторяет регистрацию
+// (не чаще раза в registerRetryCooldown) и заново узнаёт свой backendId.
+func (a *Agent) ensureRegistered(reason string) {
+	a.mu.Lock()
+	if !a.lastRegisterTry.IsZero() && time.Since(a.lastRegisterTry) < registerRetryCooldown {
+		a.mu.Unlock()
+		return
+	}
+	a.lastRegisterTry = time.Now()
+	a.mu.Unlock()
+
+	fmt.Printf("[%s] Re-registering with balancer (%s)\n",
+		time.Now().Format(time.RFC3339), reason)
+
+	if err := a.register(); err != nil {
+		fmt.Printf("[%s] Re-registration failed: %v\n", time.Now().Format(time.RFC3339), err)
+		return
+	}
+	fmt.Printf("[%s] Re-registration succeeded (backendId=%q)\n",
+		time.Now().Format(time.RFC3339), a.config.BackendID)
+}
+
+// needsReregistration — ответ балансера означает, что запись бэкенда не наша
+// или её больше нет. 404 — «Backend not found», 403 — запись принадлежит
+// другому узлу (см. api/registration_guard.go).
+func needsReregistration(status int) bool {
+	return status == http.StatusNotFound || status == http.StatusForbidden
+}
+
 // sendMetrics - отправка метрик на балансировщик
 func (a *Agent) sendMetrics(data []byte) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -448,6 +496,12 @@ func (a *Agent) sendMetrics(data []byte) {
 		body, _ := io.ReadAll(resp.Body)
 		fmt.Printf("[%s] Metrics send failed with status %d: %s\n",
 			time.Now().Format(time.RFC3339), resp.StatusCode, string(body))
+		// R-MultiHost: запись исчезла или принадлежит другому узлу —
+		// восстанавливаем регистрацию, иначе воркер пропадёт со стенда
+		// до ручного перезапуска контейнера.
+		if needsReregistration(resp.StatusCode) {
+			a.ensureRegistered(fmt.Sprintf("metrics returned %d", resp.StatusCode))
+		}
 	}
 }
 
@@ -582,6 +636,14 @@ func (a *Agent) sendHeartbeat() {
 		}
 	}
 	defer resp.Body.Close()
+
+	// R-MultiHost (2026-10-07): heartbeat — самый частый сигнал, поэтому именно
+	// он быстрее всего сообщает, что запись бэкенда исчезла (404) или перешла
+	// другому узлу (403). Без восстановления регистрации воркер остаётся
+	// невидимым до ручного перезапуска контейнера.
+	if needsReregistration(resp.StatusCode) {
+		a.ensureRegistered(fmt.Sprintf("heartbeat returned %d", resp.StatusCode))
+	}
 
 	// Принимаем runtime-лимиты из ответа балансера
 	if resp.Body != nil {

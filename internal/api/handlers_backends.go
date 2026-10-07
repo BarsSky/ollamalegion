@@ -156,7 +156,7 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 	allBackends = dedupBackendsByHostPort(
 		allBackends,
 		func(b types.Backend) string { return b.Host },
-		func(b types.Backend) int { return backendEffectivePort(b.OllamaPort, b.CppWorkerPort) },
+		backendDedupPort,
 		func(b types.Backend) bool { return b.HasAgent },
 		true, // preferAgent: бэкенд с агентом даёт реальные GPU/VRAM метрики
 	)

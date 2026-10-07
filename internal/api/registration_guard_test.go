@@ -129,6 +129,8 @@ func TestRegistrationGuard_SameHostAllowed(t *testing.T) {
 // обязан перерегистрироваться, иначе стенд заклинивает в 409 навсегда.
 func TestRegistrationGuard_StaleOwnerTakeover(t *testing.T) {
 	s := newGuardServer(t)
+	// Балансер работает давно: стартовое окно (см. следующий тест) не мешает.
+	s.startedAt = time.Now().Add(-2 * foreignRegistrantGrace)
 
 	postRegister(t, s, registerRequest(t,
 		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "172.18.0.5:41234"))
@@ -148,6 +150,37 @@ func TestRegistrationGuard_StaleOwnerTakeover(t *testing.T) {
 	after := s.proxy.GetBackend("cppworker-gpu-bundled-agent")
 	if after.NodeAddr != "192.168.13.34" {
 		t.Fatalf("NodeAddr после takeover = %q, ожидался 192.168.13.34", after.NodeAddr)
+	}
+}
+
+// TestRegistrationGuard_NoTakeoverRightAfterStart — сразу после перезапуска
+// балансера записи, восстановленные из state.json, выглядят осиротевшими:
+// LastAgentContact в файле «старый» по определению. Если считать по нему,
+// чужой узел с тем же ID захватывает запись раньше законного владельца.
+//
+// Регрессия с живой пары: imageworker перешёл к удалённой машине
+// (ownerNode=172.23.0.1), и метрики живого локального воркера стали получать
+// 403, после чего запись пропала со стенда.
+func TestRegistrationGuard_NoTakeoverRightAfterStart(t *testing.T) {
+	s := newGuardServer(t) // startedAt = сейчас
+
+	postRegister(t, s, registerRequest(t,
+		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "172.18.0.5:41234"))
+
+	restored := s.proxy.GetBackend("cppworker-gpu-bundled-agent")
+	if restored == nil {
+		t.Fatal("бэкенд не создан")
+	}
+	// Так выглядит запись сразу после LoadState: контакт из state.json устарел.
+	restored.LastAgentContact = time.Now().Add(-10 * foreignRegistrantGrace)
+
+	rec := postRegister(t, s, registerRequest(t,
+		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "192.168.13.34:51000"))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("регистрация в стартовом окне: получен %d, ожидался 409 (%s)", rec.Code, rec.Body.String())
+	}
+	if got := s.proxy.GetBackend("cppworker-gpu-bundled-agent").NodeAddr; got != "172.18.0.5" {
+		t.Fatalf("NodeAddr = %q, ожидался 172.18.0.5 — чужой узел не должен захватывать запись в стартовом окне", got)
 	}
 }
 

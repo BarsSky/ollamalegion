@@ -64,9 +64,24 @@ func sameNode(a, b string) bool {
 }
 
 // registrationOwnerIsLive — агент-владелец записи выходил на связь недавно?
-func registrationOwnerIsLive(existing *types.Backend) bool {
+//
+// ВАЖНО про окно после старта балансера. `LastAgentContact` восстанавливается из
+// state.json, то есть после перезапуска оно «старое» по определению. Если
+// считать по нему, сразу после рестарта любая запись выглядит осиротевшей — и
+// чужой узел с тем же ID успевает её захватить раньше законного владельца.
+// Ровно это и наблюдалось на живой паре: imageworker перешёл к удалённой машине
+// (ownerNode=172.23.0.1) и больше не принимал метрики своей, хотя её агент был
+// жив и слал heartbeat.
+//
+// Поэтому пока балансер сам не прожил foreignRegistrantGrace, записи считаются
+// занятыми: у законного владельца есть минута, чтобы отметиться (heartbeat идёт
+// каждые 5 с), и только потом возможен takeover.
+func (s *Server) registrationOwnerIsLive(existing *types.Backend) bool {
 	if existing == nil {
 		return false
+	}
+	if !s.startedAt.IsZero() && time.Since(s.startedAt) < foreignRegistrantGrace {
+		return true
 	}
 	if existing.LastAgentContact.IsZero() {
 		return false
@@ -113,7 +128,7 @@ func (s *Server) rejectForeignRegistration(w http.ResponseWriter, r *http.Reques
 	}
 	// Владелец молчит дольше окна → запись осиротела, takeover разрешён
 	// (штатный рестарт контейнера).
-	if !registrationOwnerIsLive(existing) {
+	if !s.registrationOwnerIsLive(existing) {
 		logger.Get().Infow("registration guard: takeover of idle backend record",
 			"backend", backendID,
 			"ownerNode", existing.NodeAddr,

@@ -207,7 +207,11 @@ docker compose -f docker-compose.stack.yml --profile balancer up -d
 |---|---|---|---|
 | `18079` | OpenAI | `/v1/chat/completions`, `/v1/models`, `/v1/images/*` | llama.cpp- и image-бэкенды |
 | `18080` | Ollama | `/api/chat`, `/api/generate`, `/api/tags`, `/api/ps` | Ollama- и llama.cpp-бэкенды |
-| `18081` | Admin | `/api/v1/*` (регистрация, метрики, WebUI) | — |
+| `18081` | Admin | `/api/v1/*` (регистрация, метрики, WebUI) | — (клиентских поверхностей нет) |
+
+Проверено на живом стенде: `18079/v1/models` отвечает в формате OpenAI
+(`{"data":[{"id":…,"object":"model"}]}`), `18080/api/tags` — в формате Ollama,
+а `18081/v1/models` отдаёт 404: это админ-API, клиенты на него не ходят.
 
 **Как выбирается бэкенд.** У каждого типа — свой роутер: `OllamaRouter`
 (`BackendType=ollama`) и `LlamaCppRouter` (`BackendType=llama_cpp`), а image-путь

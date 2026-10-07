@@ -235,17 +235,23 @@ docker compose -f docker-compose.stack.yml --profile full up -d
 
 # 2. Ollama — на этой же машине, со своим портом (11434 по умолчанию).
 #    Её регистрирует АГЕНТ: у Ollama нет нашего Go-кода, метрики собрать некому.
+#    Для llama.cpp-воркеров агент не нужен — там он встроен (AGENT_EMBEDDED=on).
 docker run -d --name ollama --gpus all -p 11434:11434 ollama/ollama
-# .env для агента:
-#   BACKEND_TYPE=ollama
-#   OLLAMA_URL=http://<host>:11434
-docker compose -f docker-compose.stack.yml --profile legacy-agent \
-  -e BACKEND_TYPE=ollama -e OLLAMA_URL=http://host.docker.internal:11434 up -d agent
+
+# 3. Агент под Ollama. Две переменные в deployments/.env:
+#      AGENT_BACKEND_TYPE=ollama
+#      OLLAMA_URL=http://host.docker.internal:11434
+#    (обратите внимание: в .env имя AGENT_BACKEND_TYPE, а внутри контейнера оно
+#     превращается в BACKEND_TYPE — так устроен compose-файл; см. §5)
+docker compose -f docker-compose.stack.yml --profile legacy-agent up -d agent
 ```
 
 > Внешний контейнер `agent` — **единственный** способ подключить Ollama-бэкенд:
 > он регистрирует его в балансере и поставляет метрики. Для llama.cpp-воркеров
 > агент не нужен — там он встроен (`AGENT_EMBEDDED=on`).
+>
+> `AGENT_BACKEND_TYPE` по умолчанию `llama_cpp` — прежнее поведение, поэтому
+> стенды без Ollama ничего не замечают.
 
 ### Проверка, что оба типа видны
 

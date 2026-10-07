@@ -658,9 +658,28 @@ services:
       # поэтому agent не знал адрес cppworker.
       - CPPWORKER_URL=http://cppworker-gpu:18092
 
-      # Тип бэкенда ОБЯЗАТЕЛЕН: без него бэкенд регистрируется как Ollama
-      # (ранее стояло AGENT_BACKEND_TYPE — не читается кодом).
-      - BACKEND_TYPE=llama_cpp
+      # ─── Тип бэкенда: ЗАВИСИТ ОТ СЦЕНАРИЯ (R-Image follow-up, 2026-10-07) ──
+      #
+      # ЗАЧЕМ ПАРАМЕТРИЗОВАНО. Для llama.cpp-воркеров агент больше НЕ нужен —
+      # сборщик метрик встроен в cppworker (AGENT_EMBEDDED=on). Роль внешнего
+      # агента теперь ровно одна: подключить OLLAMA-бэкенд, у которого нет
+      # нашего Go-кода и метрики собрать некому.
+      #
+      # Было жёстко `BACKEND_TYPE=llama_cpp`, и это ЛОМАЛО смешанный режим:
+      # поднять рядом с cppworker ollama-бэкенд через штатный compose было
+      # нельзя — агент зарегистрировал бы Ollama как llama.cpp, и балансер
+      # повёл бы запросы по чужому пути (n_ctx/KV-правила к Ollama).
+      #
+      # ЗНАЧЕНИЯ:
+      #   llama_cpp — прежнее поведение (агент как внешний наблюдатель cppworker);
+      #   ollama    — подключить Ollama: указать OLLAMA_URL ниже.
+      # Без явного значения наследуется прежний дефолт llama_cpp, поэтому
+      # существующие стенды ничего не замечают.
+      - BACKEND_TYPE=${AGENT_BACKEND_TYPE:-llama_cpp}
+      # Адрес Ollama для сценария BACKEND_TYPE=ollama. Дефолт — хостовый Ollama
+      # на стандартном порту: agent видит его через host.docker.internal.
+      # Для Ollama на другой машине: OLLAMA_URL=http://<host>:11434 в .env.
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
 
       # Что agent отдаёт балансеру как адрес бэкенда. В сценарии 1 — имя
       # сервиса; в сценарии 2 — BACKEND_HOST (адрес машины, видимый с

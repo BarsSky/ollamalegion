@@ -44,6 +44,22 @@ func (mm *MetricsManager) GetLlamaCppMetrics(backendID string) *types.LlamaCppMe
 	return mm.llamaMetrics[backendID]
 }
 
+// ClearBackendMetrics — R-MultiHost (2026-10-07): удалить метрики, присланные
+// агентом бэкенда, вместе с его llama.cpp-срезом.
+//
+// Используется, когда агент замолчал: иначе последние GPU/CPU/VRAM остаются в
+// менеджере навсегда и продолжают отдаваться как текущие. Восстановление не
+// требуется — следующий же push агента создаст запись заново.
+func (mm *MetricsManager) ClearBackendMetrics(backendID string) {
+	if mm == nil || backendID == "" {
+		return
+	}
+	mm.mu.Lock()
+	delete(mm.metrics, backendID)
+	delete(mm.llamaMetrics, backendID)
+	mm.mu.Unlock()
+}
+
 // SnapshotBackendMetrics — КОПИЯ метрик бэкенда (под RLock).
 //
 // R66d (2026-09-22): читатели годами делали так —

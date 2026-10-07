@@ -51,6 +51,21 @@ func (p *Proxy) StartAgentTimeoutChecker(timeout time.Duration) {
 					state.mu.Unlock()
 					if stale {
 						logger.Get().Warnw("agent timeout", "backend", id, "timeout", timeout)
+						// R-MultiHost (2026-10-07): СНЯТЬ ЗАМОРОЖЕННЫЕ МЕТРИКИ.
+						//
+						// Раньше чекер только снимал флаг HasAgent, а последние
+						// присланные агентом GPU/CPU/VRAM оставались в
+						// MetricsManager навсегда и продолжали отдаваться в
+						// /api/v1/backends как «живые». Наблюдалось на живой
+						// паре: машину 192.168.13.34 выключили, а её imageworker
+						// всё ещё показывал 1.4% VRAM, 52°C и 405 MHz — числа
+						// последнего опроса, выданные за текущие.
+						//
+						// Удаляем запись целиком: GetClusterState собирает ответ
+						// из конфигурации плюс эти метрики, поэтому без них
+						// останется честный ноль/прочерк, а не замороженное
+						// значение.
+						p.ClearAgentMetrics(id)
 					}
 				}
 				p.mu.Unlock()

@@ -781,6 +781,16 @@ func (a *Agent) collectLlamaMetrics(base *types.BackendMetrics) *types.BackendMe
 		// отдаёт, а без них балансер удваивает память одной карты на хосте с
 		// двумя бэкендами (см. mapLlamaGPUMetricsWithUUIDs).
 		base.GPU = mapLlamaGPUMetricsWithUUIDs(llamaMetrics.GPUMetrics, collectGPUUUIDs())
+		// R-MultiHost (2026-10-07): cppworker знает только ОБЪЁМ памяти. Всё
+		// остальное (загрузка, температура, частоты, питание) в его ответе
+		// отсутствует, и mapLlamaGPUMetricsWithUUIDs ставил туда нули — поэтому
+		// текстовые бэкенды в WebUI показывали «TEMP 0 °C», «CLOCK —», «GPU 0.0%»,
+		// тогда как image-бэкенд на ТОЙ ЖЕ карте показывал реальные 55 °C и
+		// частоты (он идёт другим путём — collectGPUMetrics).
+		//
+		// Дополняем пропуски локальным опросом nvidia-smi/NVML ВНУТРИ контейнера
+		// воркера: он видит ту же карту, что и движок.
+		base.GPU = mergeGPUMetrics(base.GPU, a.collectGPUMetrics())
 	} else {
 		// Попытка взять GPU-метрики из nvidia-smi / NVML, безусловно.
 		if gpu := a.collectGPUMetrics(); gpu.MemoryTotal > 0 || gpu.UsagePercent > 0 || gpu.Temperature > 0 {
@@ -859,6 +869,55 @@ func toBackendLoadFailure(lm *llamaLoadFailure) *types.LoadFailureInfo {
 		Severity:    lm.Severity,
 		Diagnostics: lm.Diagnostics,
 	}
+}
+
+// mergeGPUMetrics — R-MultiHost (2026-10-07): собрать GPU-метрики из двух
+// источников вместо «или-или».
+//
+// ЗАЧЕМ. У llama.cpp-бэкенда метрики идут из cppworker (`/api/gpu`), который
+// отдаёт ТОЛЬКО объём памяти. `mapLlamaGPUMetricsWithUUIDs` честно ставил в
+// остальные поля нули («llama.cpp не даёт процент загрузки GPU»), и локальный
+// опрос nvidia-smi/NVML не выполнялся вовсе, если cppworker вернул хоть одну
+// карту. На живой паре это выглядело так: текстовый бэкенд на RTX 3070 —
+// «GPU 0.0%, TEMP 0 °C, CLOCK —», а image-бэкенд НА ТОЙ ЖЕ карте — «55 °C,
+// 1755 MHz» (он идёт путём collectGPUMetrics). Оператор справедливо решил, что
+// у gguf-бэкендов «нет достоверных метрик».
+//
+// ПРАВИЛА:
+//   - VRAM берём у движка (первичный источник): он знает память с учётом своих
+//     резерваций. Если движок памяти не дал — берём локальную.
+//   - загрузку, температуру, питание и частоты берём у локального опроса, потому
+//     что движок их не отдаёт ВООБЩЕ (а не «отдаёт ноль»): ноль там означал не
+//     «холодная карта», а «поля нет».
+//   - локальный опрос считается состоявшимся, если он принёс хоть один ненулевой
+//     признак (иначе в контейнере нет nvidia-smi/NVML, и подменять нечем).
+//   - UUID — из первичных, если они есть, иначе из локальных.
+func mergeGPUMetrics(primary, local types.GPUMetrics) types.GPUMetrics {
+	merged := primary
+
+	localUsable := local.MemoryTotal > 0 || local.UsagePercent > 0 || local.Temperature > 0 ||
+		local.GPUClock > 0 || local.MemClock > 0 || local.PowerUsage > 0
+
+	if merged.MemoryTotal == 0 {
+		merged.MemoryTotal = local.MemoryTotal
+		merged.MemoryUsed = local.MemoryUsed
+		merged.MemoryFree = local.MemoryFree
+	}
+
+	if localUsable {
+		merged.UsagePercent = local.UsagePercent
+		merged.Temperature = local.Temperature
+		merged.PowerUsage = local.PowerUsage
+		merged.PowerLimit = local.PowerLimit
+		merged.GPUClock = local.GPUClock
+		merged.MemClock = local.MemClock
+	}
+
+	if len(merged.UUIDs) == 0 {
+		merged.UUIDs = local.UUIDs
+	}
+
+	return merged
 }
 
 // mapLlamaGPUMetrics конвертирует Llama LlamaGPUInfo → types.GPUMetrics

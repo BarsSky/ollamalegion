@@ -230,6 +230,50 @@ func (p *Proxy) GetLlamaCppRouter() *LlamaCppRouter {
 	return p.llamaCppRouter
 }
 
+// ClearAgentMetrics — R-MultiHost (2026-10-07): забыть метрики, присланные
+// агентом бэкенда.
+//
+// Вызывается, когда агент замолчал (agent_manager.go). Без этого последние
+// присланные GPU/CPU/VRAM оставались в MetricsManager навсегда и отдавались в
+// /api/v1/backends как текущие: выключенная машина продолжала «показывать»
+// 52 °C и 405 MHz — числа последнего опроса, выданные за живые. После удаления
+// GetClusterState собирает ответ без них (честный ноль, UI рисует прочерк).
+func (p *Proxy) ClearAgentMetrics(backendID string) {
+	if p == nil || p.metricsMgr == nil || backendID == "" {
+		return
+	}
+	p.metricsMgr.ClearBackendMetrics(backendID)
+}
+
+// HasAmbiguousHost — R-MultiHost (2026-10-07): у ЭТОГО бэкенда такой же Host, как
+// у другого бэкенда, принадлежащего ДРУГОМУ узлу.
+//
+// Зачем это health-check'у. URL бэкенда строится из Host, а имя контейнера внутри
+// docker-сети балансера разрешается в ЕГО СОБСТВЕННЫЙ контейнер. Значит в такой
+// паре хотя бы один бэкенд заведомо проверяется не там, где находится, — и
+// проверка будет успешной даже когда его машина выключена. Наблюдалось на живой
+// паре: после выключения 192.168.13.34 запись IMAGEWORKER-34 (host «imageworker»)
+// оставалась healthy по health-check'у ЛОКАЛЬНОГО контейнера, хотя её
+// собственный агент замолчал, и в UI висели её замороженные метрики.
+func (p *Proxy) HasAmbiguousHost(backendID string) bool {
+	if p == nil {
+		return false
+	}
+	target := p.GetBackend(backendID)
+	if target == nil || target.Host == "" || target.NodeAddr == "" {
+		return false
+	}
+	for _, other := range p.GetAllBackends() {
+		if other.ID == backendID || other.Host != target.Host {
+			continue
+		}
+		if other.NodeAddr != "" && other.NodeAddr != target.NodeAddr {
+			return true
+		}
+	}
+	return false
+}
+
 // NewProxy - создание нового прокси
 
 func NewProxy(config *types.LoadBalancerConfig) *Proxy {

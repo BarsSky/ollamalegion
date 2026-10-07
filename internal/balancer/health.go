@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -127,6 +128,43 @@ func (hc *HealthChecker) checkBackend(backendID string) {
 
 	backend := state.Backend
 	hc.proxy.mu.RUnlock()
+
+	// R-MultiHost (2026-10-07): бэкенд с НЕОДНОЗНАЧНЫМ host'ом по HTTP проверять
+	// нельзя. Если такой же Host объявлен ещё одним бэкендом, принадлежащим
+	// другому узлу, то URL ведёт на чужую машину (имя контейнера разрешается в
+	// локальный контейнер балансера), и проверка всегда будет успешной — даже
+	// когда машина выключена.
+	//
+	// Наблюдалось на живой паре: после выключения 192.168.13.34 запись
+	// IMAGEWORKER-34 (host=imageworker) оставалась healthy по health-check'у
+	// ЛОКАЛЬНОГО контейнера, хотя её агент замолчал, — и в UI продолжали висеть
+	// её замороженные метрики.
+	//
+	// Единственное достоверное свидетельство для такой записи — её собственный
+	// агент: пока он шлёт heartbeat, бэкенд жив; замолчал — считаем недоступным.
+	// Это тот же критерий, что и для ветки «агент жив, но движок не отвечает»
+	// ниже (StatusOllamaUnavailable).
+	if hc.proxy.HasAmbiguousHost(backendID) {
+		agentAlive := backend.HasAgent && time.Since(backend.LastAgentContact) < 2*time.Minute
+
+		hc.mu.Lock()
+		status := hc.results[backendID]
+		if status == nil {
+			status = &HealthStatus{}
+			hc.results[backendID] = status
+		}
+		status.LastCheck = time.Now().UTC()
+		hc.mu.Unlock()
+
+		if agentAlive {
+			hc.proxy.UpdateBackendStatus(backendID, types.StatusHealthy)
+		} else {
+			hc.proxy.UpdateBackendStatus(backendID, types.StatusUnhealthy)
+			logger.Get().Warnw("health: backend skipped HTTP probe (host is shared with another node) and its agent is silent",
+				"backend", backendID, "host", backend.Host, "lastAgentContact", backend.LastAgentContact)
+		}
+		return
+	}
 
 	// Выполнение health check
 	result := hc.performCheck(backend)

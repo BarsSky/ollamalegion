@@ -61,22 +61,36 @@ func TestMergeGPUMetrics_FillsWhatEngineDoesNotKnow(t *testing.T) {
 	assert.Equal(t, 220, got.PowerLimit)
 }
 
-// TestMergeGPUMetrics_KeepsEngineVRAM — память остаётся за движком: он знает её с
-// учётом своих резерваций, и подменять её локальным снимком нельзя.
-func TestMergeGPUMetrics_KeepsEngineVRAM(t *testing.T) {
-	got := mergeGPUMetrics(llamaOnly(), localProbe())
+// TestMergeGPUMetrics_LocalVRAMWinsOverStaleEngine — ГЛАВНЫЙ сценарий жалобы
+// «агенты показывают разные ресурсы».
+//
+// cppworker измеряет VRAM через cudaMemGetInfo ОДИН РАЗ на инициализации, и
+// /api/gpu отдаёт этот снимок до конца жизни процесса: на живой стойке nvidia-smi
+// менялся (1559 → 1662 → 1565 MB), а cppworker всё это время отдавал неизменные
+// used=1094/free=7097. Поэтому два агента на ОДНОЙ карте показывали разное.
+//
+// Локальный опрос (он же нужен для температуры и частот) теперь даёт и память.
+func TestMergeGPUMetrics_LocalVRAMWinsOverStaleEngine(t *testing.T) {
+	engine := llamaOnly() // снимок cppworker: used=1094
+	local := localProbe()
+	local.MemoryUsed = 1662 // живое значение nvidia-smi
+	local.MemoryFree = 6530
 
+	got := mergeGPUMetrics(engine, local)
+
+	assert.Equal(t, uint64(1662), got.MemoryUsed,
+		"должно уйти живое значение nvidia-smi, а не замороженный снимок движка")
+	assert.Equal(t, uint64(6530), got.MemoryFree)
 	assert.Equal(t, uint64(8192), got.MemoryTotal)
-	assert.Equal(t, uint64(1094), got.MemoryUsed, "used должен остаться от движка (1094), а не локальный 1571")
-	assert.Equal(t, uint64(7098), got.MemoryFree)
 }
 
-// TestMergeGPUMetrics_LocalUnavailableKeepsEngineValues — если в контейнере нет
-// nvidia-smi/NVML, ничего не выдумываем: остаются данные движка и нули.
-func TestMergeGPUMetrics_LocalUnavailableKeepsEngineValues(t *testing.T) {
+// TestMergeGPUMetrics_KeepsEngineVRAMWhenLocalUnavailable — если локальный опрос
+// недоступен, снимок движка лучше, чем ничего: не обнуляем.
+func TestMergeGPUMetrics_KeepsEngineVRAMWhenLocalUnavailable(t *testing.T) {
 	got := mergeGPUMetrics(llamaOnly(), types.GPUMetrics{})
 
 	assert.Equal(t, uint64(8192), got.MemoryTotal)
+	assert.Equal(t, uint64(1094), got.MemoryUsed, "снимок движка должен остаться, если заменить нечем")
 	assert.Equal(t, 0, got.Temperature)
 	assert.Equal(t, 0, got.GPUClock)
 }

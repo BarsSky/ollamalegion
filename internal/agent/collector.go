@@ -883,26 +883,34 @@ func toBackendLoadFailure(lm *llamaLoadFailure) *types.LoadFailureInfo {
 // 1755 MHz» (он идёт путём collectGPUMetrics). Оператор справедливо решил, что
 // у gguf-бэкендов «нет достоверных метрик».
 //
+// ПОЧЕМУ VRAM БЕРЁТСЯ ЛОКАЛЬНАЯ, А НЕ ОТ ДВИЖКА (проверено на живой стойке).
+// cppworker измеряет память через cudaMemGetInfo ОДИН РАЗ — на инициализации
+// (bridge.GetGPUInfo в backend.go), и `/api/gpu` отдаёт этот снимок до конца
+// жизни процесса. Замеры подряд показали: nvidia-smi меняется (1559 → 1662 →
+// 1565 MB), а cppworker всё это время отдаёт неизменные used=1094/free=7097.
+// Поэтому два агента на ОДНОЙ карте показывали разные ресурсы: image-агент —
+// живое значение, cpp-агент — снимок времени старта контейнера. Хуже того, на
+// второй машине (RTX 5060, простой) cppworker показывал 1117 MB занятых при
+// реальных 140 MB.
+//
+// Локальный опрос nvidia-smi/NVML теперь делается всегда (он всё равно нужен для
+// температуры и частот) и он же даёт память: один живой источник для обоих типов
+// бэкендов на машине. Снимок движка используется только как запасной вариант,
+// когда локальный опрос недоступен.
+//
 // ПРАВИЛА:
-//   - VRAM берём у движка (первичный источник): он знает память с учётом своих
-//     резерваций. Если движок памяти не дал — берём локальную.
-//   - загрузку, температуру, питание и частоты берём у локального опроса, потому
-//     что движок их не отдаёт ВООБЩЕ (а не «отдаёт ноль»): ноль там означал не
-//     «холодная карта», а «поля нет».
 //   - локальный опрос считается состоявшимся, если он принёс хоть один ненулевой
-//     признак (иначе в контейнере нет nvidia-smi/NVML, и подменять нечем).
+//     признак (иначе в контейнере нет nvidia-smi/NVML, и подменять нечем);
+//   - если он состоялся — берём из него и память, и загрузку, и температуру, и
+//     частоты, и питание;
+//   - иначе оставляем память движка (лучше снимок, чем ничего) и нули в полях,
+//     которых движок не знает;
 //   - UUID — из первичных, если они есть, иначе из локальных.
 func mergeGPUMetrics(primary, local types.GPUMetrics) types.GPUMetrics {
 	merged := primary
 
 	localUsable := local.MemoryTotal > 0 || local.UsagePercent > 0 || local.Temperature > 0 ||
 		local.GPUClock > 0 || local.MemClock > 0 || local.PowerUsage > 0
-
-	if merged.MemoryTotal == 0 {
-		merged.MemoryTotal = local.MemoryTotal
-		merged.MemoryUsed = local.MemoryUsed
-		merged.MemoryFree = local.MemoryFree
-	}
 
 	if localUsable {
 		merged.UsagePercent = local.UsagePercent
@@ -911,6 +919,12 @@ func mergeGPUMetrics(primary, local types.GPUMetrics) types.GPUMetrics {
 		merged.PowerLimit = local.PowerLimit
 		merged.GPUClock = local.GPUClock
 		merged.MemClock = local.MemClock
+		// Память — тоже локальная: снимок движка замерзает на старте контейнера.
+		if local.MemoryTotal > 0 {
+			merged.MemoryTotal = local.MemoryTotal
+			merged.MemoryUsed = local.MemoryUsed
+			merged.MemoryFree = local.MemoryFree
+		}
 	}
 
 	if len(merged.UUIDs) == 0 {

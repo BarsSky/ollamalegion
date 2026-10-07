@@ -46,6 +46,26 @@ type Backend struct {
 	AgentID             string        `json:"agentId,omitempty"` // ID прикреплённого агента v2
 	LastAgentContact    time.Time     `json:"lastAgentContact"`
 
+	// NodeAddr — R-MultiHost (2026-10-07): сетевой адрес УЗЛА, с которого
+	// пришла регистрация (IP-источник запроса, см. api/registration_guard.go).
+	//
+	// ЗАЧЕМ. В multi-host развёртывании compose-файл на каждой машине
+	// одинаков, поэтому все «идентифицирующие» строки совпадают буквально:
+	// host = cppworker-gpu (имя контейнера), backendID = cppworker-gpu-bundled-agent,
+	// cppWorkerPort = 18092. Протокол регистрации до этого поля не нёс НИ ОДНОГО
+	// признака, отличающего машину A от машины B, поэтому вторая машина
+	// «прилипала» к записи первой: FindBackendByHostPort находил её по
+	// (host, port), BackendExists — по ID, и агент второй машины молча
+	// переписывал чужие AgentID/AgentPort/метрики. Наблюдалось на живой стойке:
+	// единственная llama_cpp-запись с URL первой машины показывала CPU/GPU
+	// второй (i5-13420H, чужой GPU UUID) — «странное отображение» страницы модели.
+	//
+	// NodeAddr — единственный признак, который различает узлы, и он же —
+	// основание для отказа (409) в registration_guard.go. Пустая строка =
+	// «узел неизвестен» (запись, созданная до этой ревизии, или ручное создание
+	// из WebUI): такие записи НЕ защищаются, поведение остаётся прежним.
+	NodeAddr string `json:"nodeAddr,omitempty"`
+
 	// Тип бэкенда (ollama / llama_cpp)
 	Type BackendType `json:"type"`
 

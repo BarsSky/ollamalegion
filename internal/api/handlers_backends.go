@@ -617,6 +617,14 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R-MultiHost (2026-10-07): саморегистрация узла, который выдаёт себя за
+	// бэкенд, уже обслуживаемый ДРУГОЙ машиной, отвергается здесь — до всех
+	// веток обновления. Иначе вторая машина с тем же compose (те же
+	// backendID/host/порт) молча переписывала бы чужую запись.
+	if s.rejectForeignRegistration(w, r, req.ID) {
+		return
+	}
+
 	// Проверка на дубликат.
 	//
 	// R70 (2026-09-24): саморегистрация cppworker'а (`POST /api/v1/backends` при
@@ -636,6 +644,11 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// R-MultiHost (2026-10-07): обновляем и узел-владелец записи, чтобы
+		// устаревший адрес не «защищал» ID от законного пересозданного
+		// контейнера (и наоборот — чтобы takeover чужой живой записи уже был
+		// отвергнут guard'ом выше).
+		s.stampNodeAddr(req.ID, peerIP(r))
 		s.refreshRegisteredBackend(w, req)
 		return
 	}
@@ -762,6 +775,12 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// R-MultiHost (2026-10-07): запоминаем узел, за которым закреплена запись.
+	// Без этого следующая регистрация с ТОЙ ЖЕ строкой host (вторая машина с
+	// тем же compose) снова считалась бы «своей»: протокол не несёт других
+	// признаков, различающих узлы.
+	s.stampNodeAddr(req.ID, peerIP(r))
 
 	// Запуск health check для нового бэкенда
 	go func() {

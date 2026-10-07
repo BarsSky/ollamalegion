@@ -79,6 +79,18 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R-MultiHost (2026-10-07): агент, пришедший с ДРУГОГО узла под ID уже
+	// живого бэкенда, отвергается здесь — ДО ветки dedup и ДО ветки «backend
+	// exists». На двух машинах с одинаковым compose совпадают буквально все
+	// поля запроса (agentId, host, cppWorkerPort), поэтому раньше вторая машина
+	// молча переписывала AgentID/AgentPort/метрики чужой записи: на странице
+	// модели показывались CPU/GPU второй машины под URL первой, а сама вторая
+	// машина не обслуживала запросов. Различить узлы позволяет только адрес
+	// источника (см. api/registration_guard.go).
+	if s.rejectForeignRegistration(w, r, req.AgentID) {
+		return
+	}
+
 	// Если host не указан, используем hostname или RemoteAddr
 	host := req.Host
 	if host == "" {
@@ -167,6 +179,11 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			s.proxy.AdoptCppWorkerToken(existingID, req.CppWorkerApiToken)
 
 			s.proxy.AttachAgentToBackend(existingID, req.AgentID, agentPort)
+
+			// R-MultiHost (2026-10-07): закрепляем запись за узлом источника.
+			// Только так следующая регистрация с чужой машины (та же строка
+			// host, тот же backendID) будет распознана как чужая.
+			s.stampNodeAddr(existingID, peerIP(r))
 
 			// Удаляем stale standalone бэкенд с тем же agentId (если есть).
 			// Это нужно когда агент ранее был зарегистрирован как standalone
@@ -306,6 +323,10 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		s.proxy.UpdateBackend(req.AgentID, updated)
 
+		// R-MultiHost (2026-10-07): запоминаем узел, за которым закреплена
+		// запись (см. api/registration_guard.go).
+		s.stampNodeAddr(req.AgentID, peerIP(r))
+
 		// R83 (2026-09-28): не возвращаем секрет клиенту.
 		// `updated` содержит CppWorkerApiToken (его прислал агент), а ответ
 		// уходит в тело JSON. Обнуляем только копию для ответа — запись
@@ -368,6 +389,9 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// R-MultiHost (2026-10-07): закрепляем запись за узлом-источником.
+	s.stampNodeAddr(req.AgentID, peerIP(r))
 
 	// Обновление статуса после health check
 	go func() {
@@ -808,8 +832,15 @@ func (s *Server) agentV2RegisterHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// R-MultiHost (2026-10-07): тот же запрет захвата, что и в v1 — запись,
+	// закреплённая за живым узлом, не принимает агента с другого узла.
+	if s.rejectForeignRegistration(w, r, backendID) {
+		return
+	}
+
 	// Прикрепляем агента к бэкенду (не создавая новый)
 	s.proxy.AttachAgentToBackend(backendID, req.AgentID, req.AgentPort)
+	s.stampNodeAddr(backendID, peerIP(r))
 
 	logger.Get().Infow("agent v2 attached to backend",
 		"agentID", req.AgentID,

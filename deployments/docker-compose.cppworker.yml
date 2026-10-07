@@ -221,7 +221,15 @@ services:
       # Round 15.1: opt-in batched parallel inference.
       - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
 
+    # R-MultiHost (2026-10-07): ключ был ПУСТЫМ, и `docker compose config` падал
+    # с «services.cppworker-stub.networks must be a array» — то есть весь файл не
+    # парсился и запустить его было нельзя. Сети те же, что у соседнего
+    # cppworker-gpu: cppworker-net — внутренняя (модели/кэш),
+    # ollama-legion-net — внешняя, в которой живёт балансер. Без второй
+    # стаб-бэкенд не был бы виден балансеру, и стенд распределения терял смысл.
     networks:
+      - cppworker-net
+      - ollama-legion-net
 
     healthcheck:
       test: ["CMD", "/app/cppworker", "-healthcheck"]

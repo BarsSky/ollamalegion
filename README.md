@@ -789,12 +789,10 @@ c/                   — C-bridge к llama.cpp (build-msvc-cuda / build-cpu-ming
   ggml/              — submodule: GGML tensor library
 
 deployments/
-  docker-compose.cppworker-bundled-with-agent.yml  — основной стек
-  docker-compose.cppworker-bundled.yml             — без sidecar-agent
-  docker-compose.cppworker.yml                     — одиночный cppworker
-  docker-compose.agent.yml                         — только agent
-  .env.bundled-with-agent.example                  — переменные для основного стека
-  .env.bundled.example                             — для упрощённого стека
+  docker-compose.stack.yml                — канонический: профили full / worker / balancer / legacy-agent
+  .env.example                            — переменные для stack (копируется в .env)
+  docker-compose.agent.yml                — только агент (то же, что --profile legacy-agent)
+  …остальные docker-compose.*.yml         — исторические/узкоспециальные, см. docs/deployment-stack.md §9
 
 config/
   config.example.json         — шаблон основного config балансера

@@ -1646,6 +1646,9 @@ curl -s -D - -o /dev/null ... http://127.0.0.1:18080/api/chat | grep -i x-backen
 
 ## 9. Остальные compose-файлы в папке
 
+**Канонический файл один — `docker-compose.stack.yml`.** Всё, что ниже, либо
+историческое, либо узкоспециальное; начинать всегда со stack.
+
 | Файл | Назначение | Статус |
 |---|---|---|
 | `docker-compose.yml` | самый ранний минимальный вариант (только balancer + том) | исторический |
@@ -1655,9 +1658,16 @@ curl -s -D - -o /dev/null ... http://127.0.0.1:18080/api/chat | grep -i x-backen
 | `docker-compose.cppworker-bundled-with-agent.yml` | то же + агент | **есть дефекты имён переменных**; заменён на stack |
 | `docker-compose.cppworker-with-agent.yml`, `…standalone.yml` | варианты пары cppworker+agent | исторические |
 | `docker-compose.cppworker-remote.yml` | cppworker+agent к внешнему балансеру | рабочий (см. п. 3), но stack покрывает и это |
-| `docker-compose.cppworker.yml`, `…llama.cpp.yml`, `…llama.cpu.yml` | разные варианты запуска cppworker | исторические |
-| `docker-compose.agent.yml`, `…agent.gpu.yml` | запуск только агента | исторические |
+| `docker-compose.cppworker.yml` | три варианта cppworker по профилям: `cpu` (по умолчанию), `gpu`, `stub` | рабочий; у `stub` до 0.7.39 был пустой `networks:` и файл не парсился |
+| `docker-compose.llama.cpp.yml`, `…llama.cpu.yml` | запуск llama.cpp-сервера без нашего воркера | исторические (используются `scripts/deploy-llama-remote.*`) |
+| `docker-compose.agent.yml` | запуск только агента (для Ollama-бэкендов) | рабочий; в stack то же самое — `--profile legacy-agent` |
+| `docker-compose.agent.gpu.yml` | **оверлей** к `agent.yml` (host-сеть, лимиты GPU) | не самостоятельный файл: `-f docker-compose.agent.yml -f docker-compose.agent.gpu.yml` |
 | `docker-compose.rpc.yml` | RPC-координатор (этап P2) | не исполняется, см. /api/v1/placement |
 | `docker-compose.cocoindex.yml` | внешний сервис cocoindex | не относится к ядру |
-| `docker-compose.test-stub.yml`, `…test-stub.override.yml`, `…test-stub-fast.yml` | стаб-стенды для тестов | тестовые |
+| `docker-compose.test-stub.yml` | стаб-стенд для тестов (им пользуется `playwright.config.js`) | тестовый |
 | `docker-compose.fanout-test.yml` | стенд проверки распределения запросов | тестовый (см. `scripts/test-backend-fanout.ps1`) |
+
+Удалены в 0.7.39 как мёртвые (не упоминались ни в одном файле репозитория):
+`docker-compose.test-stub-fast.yml` и `docker-compose.test-stub.override.yml`
+(последний к тому же настраивал `CPPWORKER_REGISTER_NAME`, который код не читает).
+

@@ -5,6 +5,49 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.7.39 — Уборка `deployments/`: карта папки, починка `cppworker.yml`, удаление мёртвых файлов, 2026-10-07]
+
+### 🧹 Что сделано
+
+- **`deployments/README.md`** — карта папки. В ней двадцать `docker-compose.*.yml`, и
+  без карты непонятно, какой файл нужен: теперь на входе написано, что канонический
+  один (`docker-compose.stack.yml`), какие четыре профиля у него есть, чем
+  отличаются `.env*`-файлы, какие compose исторические и какие локальные файлы в
+  git не попадают.
+- **`docker-compose.cppworker.yml` починен.** У сервиса `cppworker-stub` ключ
+  `networks:` был ПУСТЫМ, из-за чего `docker compose config` падал
+  (`services.cppworker-stub.networks must be a array`) и весь файл нельзя было
+  запустить — при том что на него ссылаются README и несколько разделов docs.
+  Стабу прописаны те же сети, что у соседнего `cppworker-gpu` (`cppworker-net` —
+  внутренняя, `ollama-legion-net` — внешняя, где балансер): без второй он не был
+  бы виден балансеру, и стенд распределения терял смысл.
+- **Удалены два мёртвых файла**: `docker-compose.test-stub-fast.yml` и
+  `docker-compose.test-stub.override.yml` — за всё время их не упоминал ни один
+  файл репозитория; оверлей к тому же настраивал `CPPWORKER_REGISTER_NAME`,
+  который код не читает. В рабочем стаб-стенде используется
+  `docker-compose.test-stub.yml` (на него ссылается `playwright.config.js`).
+- **README: список файлов в `deployments/` приведён к реальности.** Он называл
+  «основным стеком» `docker-compose.cppworker-bundled-with-agent.yml` — файл с
+  дефектами имён переменных, заменённый на `stack.yml`, о чём сам README пишет
+  выше. Теперь список начинается с канонического файла и ссылается на карту
+  остальных.
+- **`docs/deployment-stack.md` §9** — таблица «файл → назначение → статус»
+  уточнена: помечены оверлеи, которые по замыслу не проходят `config` в одиночку
+  (`agent.gpu.yml`), и записано, что было удалено в этой ревизии.
+
+### ℹ️ Что НЕ удалено и почему
+
+`docker-compose.agent.gpu.yml` и `docker-compose.cppworker-remote.yml` не проходят
+`compose config` **в одиночку** по замыслу: первый — оверлей к `agent.yml`
+(`-f docker-compose.agent.yml -f docker-compose.agent.gpu.yml`, так его и зовёт
+`scripts/deploy-agent-docker.ps1`), второй требует заданного `BALANCER_URL`. Оба
+оставлены и описаны в §9.
+
+Локальные файлы, которые в git не попадают и удалены не были: `.env` и прочие
+`.env.*` без `.example` (ваши токены), `.env*.bak*` (резервные копии, под них
+отдельное правило в `.gitignore`) и `deployments/data/` (рабочая директория
+балансера, её специально исключает из релизных архивов `scripts/release-sources.ps1`).
+
 ## [0.7.38 — Почему агенты на одной карте показывали разную VRAM: снимок cppworker вместо живого замера, 2026-10-07]
 
 ### 🔍 Найдено

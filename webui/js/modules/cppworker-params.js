@@ -1173,8 +1173,12 @@
                 fillEl.style.width = '30%';
                 setStep('busy', 'running');
                 steps.busy.querySelector('.reload-step-text').textContent =
+                    // Параметры передаём ОБЪЕКТОМ: i18n/index.js.t(key, params) —
+                    // второй аргумент это подстановки, а не текст fallback. Раньше
+                    // сюда шла готовая строка, поэтому при наличии перевода с
+                    // {count} число не подставлялось бы вовсе.
                     I18N.t('settings.profiles.step_busy_with_count',
-                        'Ожидание завершения активных генераций (initial: ' + (resp.initialActiveQueries || 0) + ')…');
+                        { count: resp.initialActiveQueries || 0 });
 
                 // Попробуем EventSource (SSE), fallback на polling
                 const useSSE = typeof EventSource !== 'undefined';

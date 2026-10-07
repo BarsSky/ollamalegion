@@ -637,6 +637,7 @@ window.I18N_EN = {
   // clients (SillyTavern/Open WebUI/n8n) require a non-empty "API key" field even
   // where the server does not check it.
   "clientAccess.title": "Client connection",
+  "clientAccess.internal_label": "Internal worker address (inside the cluster only)",
   "clientAccess.key_label": "Key (X-API-Token / Bearer)",
   "clientAccess.key_absent": "No key configured in the WebUI config (auth disabled)",
   "clientAccess.show": "Show",
@@ -1391,6 +1392,31 @@ window.I18N_EN = {
   "gguf.about_vram": "VRAM",
   "gguf.about_models_loaded": "Models currently in memory",
   "gguf.about_models_total": "Total loaded models count",
+  "gguf.about_models_on_disk": "models on disk",
+  // --- Keys the code used but had no translation for (2026-10-07).
+  // i18n/index.js logs a warning and returns the KEY itself when a translation is
+  // missing, so the console was noisy and, where the global I18N.t was called
+  // without a fallback wrapper (cppworker-params.js), the raw key was displayed.
+  // Guard: internal/api/i18n_keys_lint_test.go.
+  "image.bundle_failed": "Bundle download failed",
+  "imageModels.plan_loading": "building the bundle passport…",
+  "imageModels.plan_mode": "Launch mode",
+  "imageModels.plan_steps": "Steps",
+  "imageModels.probe_unsupported": "format not supported",
+  "imageModels.probe_unsupported_block": "The engine cannot read this file: {reason}",
+  "imageModels.probe_unsupported_hint": "This is an MLX quantization (U32 weights + scales/biases): stable-diffusion.cpp reads GGUF. Take a GGUF quant of this repository.",
+  "imagePolicy.allow_load": "Allow the tool to load an image model",
+  "imagePolicy.allow_load_env": "Environment flag: {flag}",
+  "imagePolicy.allow_load_hint": "With the checkbox on, the text model sees the model catalog (list_image_models) and can load the one it needs; with it off, the tool is advertised for the already loaded model only.",
+  "imagePolicy.err_load_timeout": "Waiting for the model to load: {min}…{max} s",
+  "imagePolicy.load_timeout": "Model load wait, s",
+  "imagePolicy.load_timeout_env": "Environment variable: {flag}",
+  "imagePolicy.load_timeout_hint": "Load wait: how many seconds to wait for the selected model to come up (large models on a slow disk take longer). When it expires, the reason goes back to the tool call and the model explains the delay to the user.",
+  "settings.profiles.step_busy": "Waiting for active generations to finish…",
+  "settings.profiles.step_busy_with_count": "Waiting for active generations to finish (initial: {count})…",
+  "wizard.cppworker_hint_title": "Apply to cppworker env (separate step):",
+  "wizard.cppworker_hint_footer": "Run: <code>python scripts/apply-hardware-preset.py {preset}</code>",
+  "wizard.recommended_models": "Recommended models: ",
   "gguf.copy_url": "Copy URL",
   "gguf.duplicate_host_warning": "Another backend is registered with the SAME HOST: requests for one of them will go to the wrong machine. Set BACKEND_HOST on that machine and recreate its worker.",
   "gguf.url_copied": "URL copied",

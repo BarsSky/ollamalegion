@@ -38,6 +38,25 @@
         return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
     };
 
+    /**
+     * formatVramMB — VRAM из метрик агента в человекочитаемый вид.
+     *
+     * ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. Агент отдаёт память GPU в МЕГАБАЙТАХ
+     * (pkg/types/metrics.go: GPUMetrics.MemoryTotal/MemoryUsed/MemoryFree —
+     * «Всего VRAM (MB)»), а formatFileSize ожидает БАЙТЫ. В панели «Инфо»
+     * страницы GGUF величина передавалась напрямую, поэтому 8192 MB рисовались
+     * как «8.0 KB», а свободные 7097 MB — как «6.9 KB» (замер на живом стенде).
+     *
+     * 0 и отсутствие значения — это «неизвестно», а не «0 B»: у бэкенда без
+     * NVIDIA-метрик честнее показать прочерк.
+     */
+    M.MB = 1024 * 1024;
+    M.formatVramMB = function(mb) {
+        var n = Number(mb);
+        if (!isFinite(n) || n <= 0) return '-';
+        return M.formatFileSize(n * M.MB);
+    };
+
     // showToast — local fallback toast (если window.showToast не зарегистрирован).
     // В обычном режиме делегирует к window.showToast (из app.js → app-core.js).
     M.showToast = function(message, type) {

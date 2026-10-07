@@ -705,6 +705,7 @@ window.I18N_RU = {
   // потому, что клиенты (SillyTavern/Open WebUI/n8n) требуют непустое поле
   // «API key» даже там, где сервер его не проверяет.
   "clientAccess.title": "Подключение клиентов",
+  "clientAccess.internal_label": "Внутренний адрес воркера (только внутри кластера)",
   "clientAccess.key_label": "Ключ (X-API-Token / Bearer)",
   "clientAccess.key_absent": "Ключ не задан в конфиге WebUI (проверка выключена)",
   "clientAccess.show": "Показать",
@@ -1269,6 +1270,31 @@ window.I18N_RU = {
   "gguf.about_vram": "VRAM",
   "gguf.about_models_loaded": "Моделей в памяти",
   "gguf.about_models_total": "Всего загружено моделей",
+  "gguf.about_models_on_disk": "моделей на диске",
+  // --- Восполнены ключи, которые код использовал, но перевода не имел (2026-10-07).
+  // Диагноз: i18n/index.js при отсутствии ключа пишет warning и возвращает САМ
+  // КЛЮЧ, поэтому в консоли шёл шум, а там, где вызывался глобальный I18N.t без
+  // обёртки с fallback (cppworker-params.js), пользователь видел сырой ключ
+  // вместо текста. Guard: internal/api/i18n_keys_lint_test.go.
+  "image.bundle_failed": "Ошибка скачивания набора",
+  "imageModels.plan_loading": "собираю паспорт набора…",
+  "imageModels.plan_mode": "Режим запуска",
+  "imageModels.plan_steps": "Порядок действий",
+  "imageModels.probe_unsupported": "формат не поддерживается",
+  "imageModels.probe_unsupported_block": "Этот файл движок не прочитает: {reason}",
+  "imageModels.probe_unsupported_hint": "Это MLX-квантование (веса U32 + scales/biases): stable-diffusion.cpp читает GGUF. Возьмите GGUF-квант этого репозитория.",
+  "imagePolicy.allow_load": "Разрешить инструменту загружать image-модель",
+  "imagePolicy.allow_load_env": "Флаг окружения: {flag}",
+  "imagePolicy.allow_load_hint": "При включённой галочке текстовая модель видит каталог моделей (list_image_models) и может сама поднять нужную; при выключенной инструмент объявляется только для уже загруженной модели.",
+  "imagePolicy.err_load_timeout": "Ожидание загрузки модели: {min}…{max} с",
+  "imagePolicy.load_timeout": "Ожидание загрузки модели, с",
+  "imagePolicy.load_timeout_env": "Переменная окружения: {flag}",
+  "imagePolicy.load_timeout_hint": "Ожидание загрузки: сколько секунд ждать, пока поднимется выбранная модель (большие модели на медленном диске грузятся дольше). По истечении в ответ инструменту уходит причина, и модель объяснит задержку пользователю.",
+  "settings.profiles.step_busy": "Ожидание завершения активных генераций…",
+  "settings.profiles.step_busy_with_count": "Ожидание завершения активных генераций (initial: {count})…",
+  "wizard.cppworker_hint_title": "Применить к env cppworker (отдельный шаг):",
+  "wizard.cppworker_hint_footer": "Запустите: <code>python scripts/apply-hardware-preset.py {preset}</code>",
+  "wizard.recommended_models": "Рекомендуемые модели: ",
   "gguf.copy_url": "Копировать URL",
   "gguf.duplicate_host_warning": "Другой бэкенд зарегистрирован с таким же HOST: запросы к одному из них уйдут на чужую машину. Задайте BACKEND_HOST на той машине и пересоздайте воркер.",
   "gguf.url_copied": "URL скопирован",

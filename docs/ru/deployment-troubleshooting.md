@@ -5,8 +5,37 @@
 `docker-compose.stack.yml`. Сам compose намеренно сокращён и переведён на
 английский: он должен читаться за минуту, а подробности — жить здесь.
 
-Короткие инструкции «что запустить» — в [deployment-stack.md](deployment-stack.md),
-английская версия — в [../en/deployment-stack.md](../en/deployment-stack.md).
+Короткие инструкции «что запустить» — в [deployment-stack.md](deployment-stack.md).
+Подробный сценарий развёртывания на нескольких машинах — там же, §4.4.
+
+---
+
+## 0. Шум в консоли WebUI: что наше, а что нет
+
+Прежде чем искать причину в проекте, разделите сообщения по источнику.
+
+**Наше** — строки, где в имени модуля есть токен версии, например
+`index.js?v=v0.7.36-multihost:180 [i18n] ...` или
+`gguf-renderer-refresh.js?v=v0.7.36-multihost:...`. Токен `?v=` подставляет
+Dockerfile при сборке образа webui, поэтому по нему видно, какая сборка отвечает.
+Если версия в консоли отличается от `WEBUI_TAG` в `deployments/.env` — браузер
+держит старые модули, нужен Ctrl+F5.
+
+**Не наше** — строки без токена версии, например `contentscript.js:14083
+MaxListenersExceededWarning` вместе с `ObjectMultiplex - orphaned data for stream
+"app-init-liveness"`. `contentscript.js` — это content script расширения браузера
+(кошелёк, менеджер паролей), к WebUI проекта он отношения не имеет; такие
+предупреждения безопасно игнорировать.
+
+Отдельно про `[i18n] Missing translation key: <ключ>` — это НАШЕ сообщение.
+`webui/js/i18n/index.js` при отсутствии перевода пишет warning и **возвращает сам
+ключ**, поэтому там, где вызов идёт без обёртки с fallback, на экране окажется
+`settings.profiles.step_busy` вместо текста. Полноту переводов проверяет
+`internal/api/i18n_keys_lint_test.go`:
+
+```bash
+go test -tags llama_stub ./internal/api/ -run TestI18nKeys
+```
 
 ---
 

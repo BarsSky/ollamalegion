@@ -42,6 +42,11 @@
         detailError: null,
         workerInfo: null,
         gpuInfo: null,
+        // workerVersions — кэш «backendId -> {version, at}» для поля «Версия» в
+        // панели «Инфо». Версия берётся из /health воркера через прокси балансера:
+        // в BackendMetrics (GET /api/v1/backends/{id}) её нет. См.
+        // fetchWorkerVersionAsync в gguf-renderer-refresh.js.
+        workerVersions: {},
         localModels: [],
         loadedModels: [],
         // Runtime-параметры (n_ctx, gpu_layers, batch_size, flash_attn, n_layers, n_embd,

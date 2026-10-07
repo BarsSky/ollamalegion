@@ -732,7 +732,7 @@
                 (window.I18N ? I18N.t('wizard.cppworker_hint_title') : 'Apply to cppworker env (separate step):') + '</div>' +
                 rows +
                 '<div class="preset-hint-footer">' +
-                (window.I18N ? I18N.t('wizard.cppworker_hint_footer') :
+                (window.I18N ? I18N.t('wizard.cppworker_hint_footer', { preset: presetKey }) :
                     'Run: <code>python scripts/apply-hardware-preset.py ' + presetKey + '</code>') +
                 '</div>' +
                 '<div class="preset-hint-models">' +

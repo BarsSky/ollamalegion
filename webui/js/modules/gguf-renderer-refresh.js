@@ -76,6 +76,56 @@
             });
     }
 
+    // ---- Версия воркера -------------------------------------------------------
+    //
+    // В панели «Инфо» поле «Версия» показывало прочерк: state.workerInfo
+    // синтезируется из /api/v1/backends/{id} (BackendMetrics), а там версии нет —
+    // ни у cppworker, ни у ollama-бэкенда. Версию знает сам воркер: GET /health
+    // отдаёт {"status":"ok","version":"0.2.0 (real llama.cpp linked)"}, и этот путь
+    // доступен через прокси балансера для ЛЮБОГО зарегистрированного бэкенда,
+    // включая удалённый.
+    //
+    // Результат кэшируется на 10 минут: версия меняется только при обновлении
+    // образа, а refreshDetail вызывается часто (выбор бэкенда, поллинг загрузок).
+    const WORKER_VERSION_TTL_MS = 10 * 60 * 1000;
+    const _workerVersionInFlight = new Set();
+    function fetchWorkerVersionAsync(backendId) {
+        if (!backendId) return;
+        const cached = state.workerVersions && state.workerVersions[backendId];
+        if (cached && (Date.now() - cached.at) < WORKER_VERSION_TTL_MS) {
+            if (state.workerInfo) state.workerInfo.version = cached.version;
+            return;
+        }
+        if (_workerVersionInFlight.has(backendId)) return;
+        if (typeof window.GgufApi === 'undefined' || typeof window.GgufApi.requestViaBackend !== 'function') return;
+        _workerVersionInFlight.add(backendId);
+        window.GgufApi.requestViaBackend(backendId, '/health')
+            .then(function (body) {
+                // requestViaBackend возвращает объект для application/json и строку
+                // иначе — разбираем обе формы, /health у воркеров отдаёт JSON.
+                let parsed = body;
+                if (typeof body === 'string') {
+                    try { parsed = JSON.parse(body); } catch (e) { parsed = null; }
+                }
+                const version = parsed && (parsed.version || parsed.build || parsed.llamaVersion);
+                if (!version) return;
+                if (!state.workerVersions) state.workerVersions = {};
+                state.workerVersions[backendId] = { version: String(version), at: Date.now() };
+                // Показываем только если этот бэкенд всё ещё выбран.
+                if (state.selectedBackendId === backendId && state.workerInfo) {
+                    state.workerInfo.version = String(version);
+                    if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel(backendId);
+                }
+            })
+            .catch(function () {
+                // best-effort: /health может быть недоступен (старый воркер,
+                // чужой бэкенд) — панель просто останется с прочерком.
+            })
+            .finally(function () {
+                _workerVersionInFlight.delete(backendId);
+            });
+    }
+
     // ---- Data refresh ----
 
     let _refreshInProgress = false;
@@ -179,6 +229,9 @@
                 };
                 // gpuInfo is at top level (BackendMetrics.GPU).
                 state.gpuInfo = data.gpu || null;
+                // Версия воркера: в BackendMetrics её нет, спрашиваем /health через
+                // прокси балансера (best-effort, с кэшем).
+                fetchWorkerVersionAsync(backend.id);
                 // localModels: list of model objects that exist on the backend.
                 // R60.4 (2026-09-04): switch source from `data.models` (array of strings,
                 // just names) to `data.llamaCpp.loadedModels` (array of objects with

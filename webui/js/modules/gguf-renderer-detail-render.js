@@ -37,6 +37,9 @@
     const _ = M._;
     const stripGGUF = M.stripGGUF;
     const formatFileSize = M.formatFileSize;
+    // formatVramMB — метрики GPU приходят в МБ, formatFileSize ждёт байты
+    // (см. gguf-renderer-helpers.js: M.formatVramMB).
+    const formatVramMB = M.formatVramMB;
     const showToast = M.showToast;
 
     /**
@@ -235,7 +238,7 @@
                     '<h4><i class="fas fa-cube"></i> ' + _('gguf.models_on_disk') + '</h4>' +
                     '<div class="gguf-stat-value">' +
                         (state.localModels ? state.localModels.length : 0) +
-                        ' <span class="gguf-stat-value muted">' + _('gguf.about_models_total') + '</span>' +
+                        ' <span class="gguf-stat-value muted">' + _('gguf.about_models_on_disk') + '</span>' +
                     '</div>' +
                 '</div>' +
             '</div>' +
@@ -247,17 +250,27 @@
             const devices = state.gpuInfo.devices || (Array.isArray(state.gpuInfo) ? state.gpuInfo : [state.gpuInfo]);
             if (devices.length > 0) {
                 return '<div class="gguf-stats-grid">' +
-                    devices.map(function (gpu) {
-                        const name = gpu.name || gpu.brand || gpu.model || '-';
+                    devices.map(function (gpu, idx) {
+                        // В BackendMetrics.GPU нет имени карты (GPUMetrics:
+                        // UsagePercent/Memory*/Temperature/Power/Clock/UUIDs), поэтому
+                        // раньше в подписи всегда стоял прочерк. Показываем индекс —
+                        // он же используется в других местах UI.
+                        const name = gpu.name || gpu.brand || gpu.model || ('GPU ' + idx);
                         const memTotal = gpu.memoryTotal || gpu.totalMemory || 0;
                         const memFree = gpu.memoryFree || gpu.freeMemory || 0;
-                        const memUsed = (memTotal && memFree) ? (memTotal - memFree) : (gpu.memoryUsed || 0);
                         const util = gpu.utilization || gpu.usagePercent || 0;
+                        // formatVramMB, а НЕ formatFileSize: метрики приходят в МБ
+                        // (см. gguf-renderer-helpers.js). Раньше 8192 MB рисовались
+                        // как «8.0 KB».
                         return '<div class="gguf-stat-card">' +
                             '<div class="gguf-stat-label">' + Utils.escapeHtml(name) + '</div>' +
-                            '<div class="gguf-stat-value">' + formatFileSize(memTotal) + '</div>' +
+                            // Подпись «Всего VRAM» обязательна: без неё первое число
+                            // в карточке висело без пояснения (оператор видел
+                            // «8.0 KB» и не понимал, что это вообще).
+                            '<div class="gguf-stat-label" style="margin-top:6px;">' + _('gguf.about_vram') + '</div>' +
+                            '<div class="gguf-stat-value">' + formatVramMB(memTotal) + '</div>' +
                             '<div class="gguf-stat-label" style="margin-top:6px;">' + _('common.free') + '</div>' +
-                            '<div class="gguf-stat-value muted">' + formatFileSize(memFree) + '</div>' +
+                            '<div class="gguf-stat-value muted">' + formatVramMB(memFree) + '</div>' +
                             '<div class="gguf-stat-label" style="margin-top:6px;">' + _('metrics.gpu_util') + '</div>' +
                             '<div class="gguf-stat-value muted">' + Math.round(util) + '%</div>' +
                         '</div>';

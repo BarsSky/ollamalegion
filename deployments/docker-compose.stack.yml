@@ -299,6 +299,25 @@ services:
       # ─── Модель и память ─────────────────────────────────────────────────
       - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-32768}
       - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
+      # АВТОВЫГРУЗКА ПРОСТАИВАЮЩИХ МОДЕЛЕЙ (R-Image follow-up, 2026-10-07).
+      #
+      # ЗАЧЕМ. cppworker держит в VRAM ВСЕ загруженные модели: idleUnloadMinutes=0
+      # означает «не выгружать никогда». На 8 GB это ловушка — живой случай:
+      # Qwen3-Instruct-2507 (5.4 GB) и gemma-4-E4B (ещё ~1.4 GB) остались в памяти
+      # после своих сессий, свободного VRAM стало 391 MB, и запрос на генерацию
+      # картинки был отклонён гейтом: «image model needs 520 MB VRAM, only 391 MB
+      # free» (политика coexistence=exclusive). При этом сама модель картинок
+      # способна работать — не хватало 130 MB, которые занимала ЧУЖАЯ модель.
+      #
+      # 0 = выключено (прежнее поведение). 10 минут — компромисс: активная сессия
+      # не теряет модель, а брошенная — освобождает карту под генерацию.
+      #
+      # ВНИМАНИЕ: настройка через WebUI/API (PUT /config/update) в контейнере
+      # НЕ сохраняется — `saveConfigToDefaultsFile` пишет в config/cppworker-defaults.json
+      # относительно рабочего каталога, а каталога config/ в образе нет (в логе
+      # «failed to save config to cppworker-defaults.json: no such file or
+      # directory»). Поэтому единственное надёжное место — эта переменная.
+      - CPPWORKER_IDLE_UNLOAD_MINUTES=${CPPWORKER_IDLE_UNLOAD_MINUTES:-10}
       # Сколько слоёв на GPU: 20 для 8 GB (RTX 3070) + 27B Q4; 99 для 24 GB.
       - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:-20}
       - CPPWORKER_FLASH_ATTN_TYPE=${CPPWORKER_FLASH_ATTN_TYPE:--1}

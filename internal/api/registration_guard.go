@@ -144,6 +144,54 @@ func (s *Server) rejectForeignRegistration(w http.ResponseWriter, r *http.Reques
 	return true
 }
 
+// rejectForeignNode — R-MultiHost: метрики и heartbeat принимаются только от
+// узла, за которым закреплена запись.
+//
+// ПОЧЕМУ ОТДЕЛЬНО ОТ guard'а РЕГИСТРАЦИИ. Агент регистрируется РОВНО ОДИН раз
+// при старте (collector.go: Start → register, без повторов), а метрики и
+// heartbeat шлёт в цикле. Если запись уже была «угнана» до этой ревизии (или на
+// стенде, где вторая машина успела зарегистрироваться раньше), запрет на
+// регистрацию ничего не изменит: чужой агент продолжит слать метрики по тому же
+// agentID, и балансер будет по-прежнему показывать его CPU/GPU под записью
+// первой машины. Наблюдалось на живой паре: CPU/GPU одной записи переключались
+// между двумя машинами от замера к замеру.
+//
+// Здесь окна «осиротевшей записи» нет намеренно: метрики обязан присылать сам
+// владелец. Смена владельца происходит только через регистрацию (см.
+// rejectForeignRegistration), которая и обновляет NodeAddr.
+func (s *Server) rejectForeignNode(w http.ResponseWriter, r *http.Request, backendID string) bool {
+	if backendID == "" {
+		return false
+	}
+	existing := s.proxy.GetBackend(backendID)
+	if existing == nil || existing.NodeAddr == "" {
+		return false
+	}
+	src := peerIP(r)
+	if src == "" || sameNode(src, existing.NodeAddr) {
+		return false
+	}
+
+	logger.Get().Warnw("registration guard: rejected telemetry from a node that does not own the backend",
+		"backend", backendID,
+		"ownerNode", existing.NodeAddr,
+		"requestNode", src,
+		"path", r.URL.Path,
+		"hint", "run only one collector per backend; the external agent belongs to Ollama backends only")
+
+	s.writeJSON(w, http.StatusForbidden, map[string]interface{}{
+		"success": false,
+		"error": fmt.Sprintf(
+			"Backend %q belongs to node %s; telemetry from node %s was rejected. "+
+				"Run only one metrics collector per backend (on a worker host that is the embedded agent, not the external `agent` container).",
+			backendID, existing.NodeAddr, src),
+		"backendId":      backendID,
+		"ownerNode":      existing.NodeAddr,
+		"registrantNode": src,
+	})
+	return true
+}
+
 // stampNodeAddr — запомнить узел, за которым закреплена запись бэкенда.
 //
 // Вызывается после успешной регистрации/прикрепления. Пустой addr игнорируется,

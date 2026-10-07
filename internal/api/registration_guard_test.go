@@ -192,3 +192,56 @@ func TestPeerIP_NormalizesIPv4Mapped(t *testing.T) {
 		}
 	}
 }
+
+// metricsRequest собирает POST метрик с заголовком X-Agent-ID.
+func metricsRequest(t *testing.T, agentID, remoteAddr string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/metrics", bytes.NewReader([]byte("{}")))
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("X-Agent-ID", agentID)
+	return req
+}
+
+// TestTelemetryGuard_ForeignNodeRejected — метрики от чужого узла не должны
+// попадать в запись. Это вторая половина фикса: агент регистрируется один раз,
+// а метрики шлёт в цикле, поэтому запрет одной лишь регистрации не мешает
+// чужой машине «перекрашивать» CPU/GPU чужой записи (наблюдалось на живой паре:
+// значения переключались между машинами от замера к замеру).
+func TestTelemetryGuard_ForeignNodeRejected(t *testing.T) {
+	s := newGuardServer(t)
+
+	postRegister(t, s, registerRequest(t,
+		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "172.23.0.4:41234"))
+
+	foreign := httptest.NewRecorder()
+	s.agentMetricsHandler(foreign, metricsRequest(t, "cppworker-gpu-bundled-agent", "192.168.13.34:51000"))
+	if foreign.Code != http.StatusForbidden {
+		t.Fatalf("метрики от чужого узла: получен %d, ожидался 403 (%s)", foreign.Code, foreign.Body.String())
+	}
+
+	owner := httptest.NewRecorder()
+	s.agentMetricsHandler(owner, metricsRequest(t, "cppworker-gpu-bundled-agent", "172.23.0.4:41235"))
+	if owner.Code != http.StatusOK {
+		t.Fatalf("метрики от узла-владельца: получен %d, ожидался 200 (%s)", owner.Code, owner.Body.String())
+	}
+}
+
+// TestTelemetryGuard_ForeignHeartbeatRejected — heartbeat чужого узла не должен
+// продлевать LastAgentContact: иначе запись никогда не считается осиротевшей и
+// законный takeover после пересоздания контейнера невозможен.
+func TestTelemetryGuard_ForeignHeartbeatRejected(t *testing.T) {
+	s := newGuardServer(t)
+
+	postRegister(t, s, registerRequest(t,
+		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "172.23.0.4:41234"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/heartbeat", bytes.NewReader([]byte("{}")))
+	req.RemoteAddr = "192.168.13.34:51000"
+	req.Header.Set("X-Agent-ID", "cppworker-gpu-bundled-agent")
+
+	rec := httptest.NewRecorder()
+	s.agentHeartbeatHandler(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("heartbeat от чужого узла: получен %d, ожидался 403 (%s)", rec.Code, rec.Body.String())
+	}
+}

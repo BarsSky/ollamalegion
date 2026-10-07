@@ -96,6 +96,15 @@ func (p *Proxy) LoadState() error {
 			// восстанавливал hasAgent=true, но терял agentId → миграция
 			// не находила canonical и оставляла оба бэкенда.
 			p.config.Backends[i].AgentID = saved.AgentID
+			// R-MultiHost (2026-10-07): узел-владелец записи тоже переживает
+			// перезапуск балансера — иначе после рестарта защита от захвата
+			// записи второй машиной исчезает, и её метрики снова начинают
+			// подменять метрики первой (наблюдалось на живой паре).
+			// Пустое значение из файла НЕ затирает уже известный узел: запись
+			// могла быть создана сборкой без этого поля.
+			if saved.NodeAddr != "" {
+				p.config.Backends[i].NodeAddr = saved.NodeAddr
+			}
 
 			if bs, exists := p.backends[p.config.Backends[i].ID]; exists {
 				bs.Backend = &p.config.Backends[i]

@@ -320,6 +320,13 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			// есть, но запись бэкенда не должна делить указатель со снимком
 			// existing, который мог быть отдан наружу.
 			GPUIndex: cloneGPUIndex(existing.GPUIndex),
+			// R-MultiHost (2026-10-07): узел-владелец переносится ВСЕГДА.
+			// Реконструкция записи по полям (а не копией existing) молча
+			// затирала его, и защита от захвата исчезала после первой же
+			// перерегистрации — ровно то, что наблюдалось на живой паре.
+			// Если запись берёт другой узел (владелец был мёртв), следующая
+			// строка stampNodeAddr переставит значение на нового владельца.
+			NodeAddr: existing.NodeAddr,
 		}
 		s.proxy.UpdateBackend(req.AgentID, updated)
 
@@ -478,6 +485,13 @@ func (s *Server) agentMetricsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R-MultiHost (2026-10-07): метрики принимаются только от узла-владельца
+	// записи. Иначе два агента с одинаковым agentID на разных машинах пишут в
+	// одну запись, и её CPU/GPU «мигают» между машинами.
+	if s.rejectForeignNode(w, r, agentID) {
+		return
+	}
+
 	// Обновление метрик в прокси
 	s.proxy.UpdateMetrics(agentID, &metrics)
 
@@ -512,6 +526,13 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 		MaxModels             int `json:"maxModels"`
 	}
 	_ = json.Unmarshal(body, &hbPayload)
+
+	// R-MultiHost (2026-10-07): heartbeat тоже принимается только от узла-владельца.
+	// Иначе чужой агент с тем же agentID продлевает LastAgentContact записи, и
+	// она никогда не считается осиротевшей — законный takeover невозможен.
+	if s.rejectForeignNode(w, r, agentID) {
+		return
+	}
 
 	// R81: heartbeat агента НЕ трогает health-статус бэкенда.
 	//
@@ -889,6 +910,11 @@ func (s *Server) agentV2MetricsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R-MultiHost (2026-10-07): метрики принимаются только от узла-владельца.
+	if s.rejectForeignNode(w, r, backendID) {
+		return
+	}
+
 	s.proxy.UpdateMetrics(backendID, &metrics)
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
@@ -919,6 +945,11 @@ func (s *Server) agentV2HeartbeatHandler(w http.ResponseWriter, r *http.Request)
 			"success": false,
 			"error":   "Agent not attached to any backend.",
 		})
+		return
+	}
+
+	// R-MultiHost (2026-10-07): heartbeat принимается только от узла-владельца.
+	if s.rejectForeignNode(w, r, backendID) {
 		return
 	}
 
@@ -963,6 +994,12 @@ func (s *Server) agentBackendHeartbeatHandler(w http.ResponseWriter, r *http.Req
 	// разрешаем attach от любого agent (первый attach становится владельцем).
 	if backend.AgentID != "" && backend.AgentID != agentID {
 		http.Error(w, "agent ID mismatch", http.StatusForbidden)
+		return
+	}
+
+	// R-MultiHost (2026-10-07): и по адресу узла — одного совпадения ID мало,
+	// когда на двух машинах он одинаков по умолчанию.
+	if s.rejectForeignNode(w, r, backendID) {
 		return
 	}
 
@@ -1095,6 +1132,14 @@ func (s *Server) agentBackendMetricsHandler(w http.ResponseWriter, r *http.Reque
 	// При первом attach (backend.AgentID пуст) — allow, потом attach ниже.
 	if backend.AgentID != "" && backend.AgentID != agentID {
 		http.Error(w, "agent ID mismatch", http.StatusForbidden)
+		return
+	}
+
+	// R-MultiHost (2026-10-07): адрес узла — вторая половина той же защиты.
+	// Одного X-Agent-ID мало: на двух машинах он одинаков по умолчанию, и чужой
+	// агент проходит проверку выше, после чего метрики одной записи начинают
+	// «мигать» между CPU/GPU двух машин.
+	if s.rejectForeignNode(w, r, backendID) {
 		return
 	}
 

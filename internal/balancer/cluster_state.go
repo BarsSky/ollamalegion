@@ -64,6 +64,9 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			Status:                status,
 			HasAgent:              hasAgent,
 			Host:                  backendConfig.Host,
+			// R-MultiHost (2026-10-07): узел-владелец едет в метрики — по нему
+			// де-дупликация различает две машины, объявившие одинаковый host.
+			NodeAddr:              backendConfig.NodeAddr,
 			OllamaPort:            backendConfig.OllamaPort,
 			CppWorkerPort:         backendConfig.CppWorkerPort,
 			BackendType:           backendConfig.Type,
@@ -92,6 +95,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		if agentMetrics, ok := p.metricsMgr.SnapshotBackendMetrics(id); ok {
 			// Сохраняем конфигурационные поля из backendConfig до перезаписи agent-метрик
 			savedHost := metrics.Host
+			savedNodeAddr := metrics.NodeAddr
 			savedOllamaPort := metrics.OllamaPort
 			savedMaxConcurrent := metrics.MaxConcurrentRequests
 			savedCppWorkerPort := backendConfig.CppWorkerPort
@@ -101,6 +105,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 
 			// Восстанавливаем конфигурационные поля — агент не отправляет их
 			metrics.Host = savedHost
+			metrics.NodeAddr = savedNodeAddr
 			metrics.OllamaPort = savedOllamaPort
 			metrics.MaxConcurrentRequests = savedMaxConcurrent
 			metrics.CppWorkerPort = savedCppWorkerPort

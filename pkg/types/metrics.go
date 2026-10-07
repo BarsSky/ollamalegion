@@ -18,7 +18,15 @@ type BackendMetrics struct {
 	Engine      BackendEngine `json:"engine"`
 
 	// Конфигурация бэкенда (атомарно копируется из Backend)
-	Host          string `json:"host"`
+	Host string `json:"host"`
+	// NodeAddr — R-MultiHost (2026-10-07): сетевой адрес узла, с которого пришла
+	// регистрация (см. types.Backend.NodeAddr). Нужен де-дупликации: имя хоста
+	// НЕ является идентичностью в multi-host — на двух машинах с одинаковым
+	// compose контейнеры называются одинаково, и две разные машины дают один и
+	// тот же (host, port). Наблюдалось на живой паре: `imageworker` (машина 1) и
+	// `IMAGEWORKER-34` (машина 2) получили host="imageworker", ключи совпали, и
+	// из списка пропадала одна из машин — в WebUI это выглядело как «мигание».
+	NodeAddr      string `json:"nodeAddr,omitempty"`
 	OllamaPort    int    `json:"ollamaPort"`
 	CppWorkerPort int    `json:"cppWorkerPort,omitempty"` // Порт cppworker для llama.cpp-бэкендов
 	// ImagePort — порт image-воркера (тип image_cpp). Заполняется из

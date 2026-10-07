@@ -153,10 +153,11 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 	// физический контейнер (cppworker-gpu-bundled + cppworker-gpu от агента).
 	// На вкладке Backends WebUI это выглядит как «один и тот же бэкенд дважды»,
 	// а в selectBackend вызывает race. См. internal/api/dedup.go.
-	allBackends = dedupBackendsByHostPort(
+	allBackends = dedupBackendsByEndpoint(
 		allBackends,
-		func(b types.Backend) string { return b.Host },
-		backendDedupPort,
+		func(b types.Backend) endpointKey {
+			return endpointKey{Host: b.Host, Port: backendDedupPort(b), NodeAddr: b.NodeAddr}
+		},
 		func(b types.Backend) bool { return b.HasAgent },
 		true, // preferAgent: бэкенд с агентом даёт реальные GPU/VRAM метрики
 	)

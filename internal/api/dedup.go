@@ -78,41 +78,67 @@ func backendDedupPort(b types.Backend) int {
 //   - listLoadedClusterModels (GET /api/v1/cluster/models/loaded)
 //   - handleGgufBackends (GET /api/v1/gguf/backends) — рефактор существующего кода.
 func dedupBackendsByHostPort[T any](backends []T, host func(T) string, port func(T) int, hasAgent func(T) bool, preferAgent bool) []T {
+	return dedupBackendsByEndpoint(
+		backends,
+		func(t T) endpointKey { return endpointKey{Host: host(t), Port: port(t)} },
+		hasAgent,
+		preferAgent,
+	)
+}
+
+// endpointKey — идентичность ФИЗИЧЕСКОГО эндпоинта.
+//
+// R-MultiHost (2026-10-07): к (host, port) добавлен NodeAddr — адрес узла, с
+// которого пришла регистрация. Имя хоста идентичностью не является: на двух
+// машинах с одинаковым compose контейнеры называются одинаково, поэтому
+// `imageworker` (машина 1) и `IMAGEWORKER-34` (машина 2) дали один и тот же
+// ключ (imageworker, 18093). Де-дупликация схлопывала их в одну запись, и
+// половина кластера пропадала из WebUI — со стороны это выглядело как
+// «карточка мигает»: какая из двух победит, зависело от того, у кого в этот
+// момент выставлен hasAgent.
+//
+// Пустой NodeAddr (запись, созданная до этой ревизии, или созданная вручную из
+// WebUI) остаётся отдельным значением ключа: показать лишний дубль на переходный
+// период безопаснее, чем молча спрятать целую машину.
+type endpointKey struct {
+	Host     string
+	Port     int
+	NodeAddr string
+}
+
+// dedupBackendsByEndpoint — де-дупликация по полной идентичности эндпоинта.
+// Правило выбора кандидата то же, что было в dedupBackendsByHostPort:
+// preferAgent + hasAgent побеждает, иначе — первый встретившийся.
+func dedupBackendsByEndpoint[T any](backends []T, key func(T) endpointKey, hasAgent func(T) bool, preferAgent bool) []T {
 	if len(backends) == 0 {
 		return backends
 	}
 
-	type bmKey struct {
-		host string
-		port int
-	}
-	keyOf := func(t T) bmKey { return bmKey{host: host(t), port: port(t)} }
-
 	// Первый проход: для каждого ключа выбираем кандидата.
-	candidateByKey := make(map[bmKey]T)
+	candidateByKey := make(map[endpointKey]T)
 	for _, b := range backends {
-		key := keyOf(b)
-		if existing, ok := candidateByKey[key]; ok {
+		k := key(b)
+		if existing, ok := candidateByKey[k]; ok {
 			// Приоритет: preferAgent + hasAgent > первый встретившийся.
 			if preferAgent && !hasAgent(existing) && hasAgent(b) {
-				candidateByKey[key] = b
+				candidateByKey[k] = b
 			}
 			continue
 		}
-		candidateByKey[key] = b
+		candidateByKey[k] = b
 	}
 
 	// Второй проход: восстанавливаем порядок исходного среза.
-	seen := make(map[bmKey]bool, len(candidateByKey))
+	seen := make(map[endpointKey]bool, len(candidateByKey))
 	result := make([]T, 0, len(candidateByKey))
 	for _, b := range backends {
-		key := keyOf(b)
-		if seen[key] {
+		k := key(b)
+		if seen[k] {
 			continue
 		}
-		if cand, ok := candidateByKey[key]; ok {
+		if cand, ok := candidateByKey[k]; ok {
 			result = append(result, cand)
-			seen[key] = true
+			seen[k] = true
 		}
 	}
 	return result

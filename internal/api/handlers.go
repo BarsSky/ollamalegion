@@ -185,6 +185,12 @@ func NewServer(proxy *balancer.Proxy, config *types.LoadBalancerConfig, healthCh
 
 	s.setupRoutes()
 
+	// R-MultiHost (2026-10-07): состояние уже загружено (balancer.NewProxy
+	// вызывает LoadState), поэтому проверяем, не объявили ли две разные машины
+	// один и тот же host. Это тихая и опасная ошибка: URL бэкенда строится из
+	// имени хоста, и запросы к удалённому воркеру уходят на локальный.
+	s.warnAmbiguousHostsAtStartup()
+
 	// Запуск goroutine для периодической отправки метрик
 	go s.metricsPublishLoop()
 

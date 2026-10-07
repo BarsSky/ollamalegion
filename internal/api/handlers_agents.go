@@ -664,10 +664,11 @@ func (s *Server) agentStatsHandler(w http.ResponseWriter, r *http.Request) {
 	// (с агентом). В WebUI на вкладке Agents это выглядит как дубль.
 	// preferAgent=true: оставляем запись с hasAgent=true, чтобы карточка
 	// показывала реальные GPU/VRAM метрики.
-	backends = dedupBackendsByHostPort(
+	backends = dedupBackendsByEndpoint(
 		backends,
-		func(b types.Backend) string { return b.Host },
-		backendDedupPort,
+		func(b types.Backend) endpointKey {
+			return endpointKey{Host: b.Host, Port: backendDedupPort(b), NodeAddr: b.NodeAddr}
+		},
 		func(b types.Backend) bool { return b.HasAgent },
 		true,
 	)

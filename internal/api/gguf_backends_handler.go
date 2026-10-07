@@ -101,10 +101,11 @@ func (s *Server) handleGgufBackends(w http.ResponseWriter, r *http.Request) {
 		filtered = append(filtered, bm)
 	}
 
-	deduped := dedupBackendsByHostPort(
+	deduped := dedupBackendsByEndpoint(
 		filtered,
-		func(bm types.BackendMetrics) string { return bm.Host },
-		func(bm types.BackendMetrics) int { return bm.CppWorkerPort },
+		func(bm types.BackendMetrics) endpointKey {
+			return endpointKey{Host: bm.Host, Port: bm.CppWorkerPort, NodeAddr: bm.NodeAddr}
+		},
 		func(bm types.BackendMetrics) bool { return bm.HasAgent },
 		true, // preferAgent: бэкенд с агентом предпочтительнее для отображения GPU/VRAM
 	)

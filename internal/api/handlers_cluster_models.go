@@ -92,10 +92,11 @@ func (s *Server) clusterLoadedModelsHandler(w http.ResponseWriter, r *http.Reque
 	// несколько раз (shell-script + Go-side cppworker + agent) — без
 	// де-дупа модели дублируются в ответе. Оставляем предпочитаемого
 	// кандидата: (a) бэкенд с hasAgent=true, (b) иначе первый встретившийся.
-	dedupedBackends := dedupBackendsByHostPort(
+	dedupedBackends := dedupBackendsByEndpoint(
 		cs.Backends,
-		func(b types.BackendMetrics) string { return b.Host },
-		func(b types.BackendMetrics) int { return b.CppWorkerPort },
+		func(b types.BackendMetrics) endpointKey {
+			return endpointKey{Host: b.Host, Port: b.CppWorkerPort, NodeAddr: b.NodeAddr}
+		},
 		func(b types.BackendMetrics) bool { return b.HasAgent },
 		true,
 	)
@@ -159,10 +160,11 @@ func (s *Server) clusterLoadingModelsHandler(w http.ResponseWriter, r *http.Requ
 	// Bug #11 (2026-06-30): де-дупликация бэкендов по (host, port) — иначе
 	// модели, загружаемые на одном физическом cppworker, видны несколько раз
 	// (по числу дублей регистрации в state).
-	dedupedBackends := dedupBackendsByHostPort(
+	dedupedBackends := dedupBackendsByEndpoint(
 		cs.Backends,
-		func(b types.BackendMetrics) string { return b.Host },
-		func(b types.BackendMetrics) int { return b.CppWorkerPort },
+		func(b types.BackendMetrics) endpointKey {
+			return endpointKey{Host: b.Host, Port: b.CppWorkerPort, NodeAddr: b.NodeAddr}
+		},
 		func(b types.BackendMetrics) bool { return b.HasAgent },
 		true,
 	)
@@ -473,10 +475,11 @@ func (s *Server) selectReloadTargets(backendID string) []string {
 	// cluster reload шлёт N HTTP-запросов на один физический cppworker,
 	// вызывая race в tryAcquireOp и параллельные попытки загрузить/выгрузить
 	// одну и ту же модель. Оставляем один backendId на физический эндпоинт.
-	deduped := dedupBackendsByHostPort(
+	deduped := dedupBackendsByEndpoint(
 		cs.Backends,
-		func(b types.BackendMetrics) string { return b.Host },
-		func(b types.BackendMetrics) int { return b.CppWorkerPort },
+		func(b types.BackendMetrics) endpointKey {
+			return endpointKey{Host: b.Host, Port: b.CppWorkerPort, NodeAddr: b.NodeAddr}
+		},
 		func(b types.BackendMetrics) bool { return b.HasAgent },
 		true,
 	)

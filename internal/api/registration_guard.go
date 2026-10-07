@@ -225,4 +225,75 @@ func (s *Server) stampNodeAddr(backendID, addr string) {
 		logger.Get().Warnw("registration guard: failed to stamp node address",
 			"backend", backendID, "nodeAddr", addr, "error", err)
 	}
+	s.warnAmbiguousHost(backendID, updated.Host, addr)
+}
+
+// warnAmbiguousHostsAtStartup — тот же контроль, но по уже загруженному
+// состоянию: две машины могли зарегистрироваться ДО того, как балансер узнал про
+// `NodeAddr`, и после перезапуска регистрации не будет — записи просто читаются из
+// state.json. Без стартовой проверки такое расхождение остаётся незамеченным,
+// пока кто-нибудь не перезапустит воркер.
+func (s *Server) warnAmbiguousHostsAtStartup() {
+	byHost := make(map[string][]types.Backend)
+	for _, b := range s.proxy.GetAllBackends() {
+		if b.Host == "" || b.NodeAddr == "" {
+			continue
+		}
+		byHost[b.Host] = append(byHost[b.Host], b)
+	}
+	for host, list := range byHost {
+		if len(list) < 2 {
+			continue
+		}
+		nodes := make(map[string]bool, len(list))
+		for _, b := range list {
+			nodes[b.NodeAddr] = true
+		}
+		if len(nodes) < 2 {
+			continue
+		}
+		ids := make([]string, 0, len(list))
+		for _, b := range list {
+			ids = append(ids, fmt.Sprintf("%s@%s", b.ID, b.NodeAddr))
+		}
+		logger.Get().Warnw("registration guard: two different nodes advertise the SAME host — HTTP requests for one of them will go to the wrong machine",
+			"host", host,
+			"backends", ids,
+			"hint", "set BACKEND_HOST=<this machine's LAN address> (and/or SDWORKER_ADVERTISE_HOST) on the remote worker and recreate it: the compose service name is NOT a valid identity across machines")
+	}
+}
+
+// warnAmbiguousHost — R-MultiHost (2026-10-07): два РАЗНЫХ узла объявили один и
+// тот же `host`, и по нему балансер строит URL.
+//
+// ЗАЧЕМ. Имя хоста внутри docker-сети разрешается через DNS compose — то есть
+// `imageworker` на машине-балансере указывает на ЕЁ СОБСТВЕННЫЙ контейнер. Если
+// удалённый воркер зарегистрировался с host="imageworker" (SDWORKER_ADVERTISE_HOST
+// не доехал, BACKEND_HOST не задан), его запись выглядит живой и «своей», но все
+// HTTP-запросы к ней уходят на ПЕРВУЮ машину. Метрики при этом честно приезжают
+// от второй (агент шлёт их сам), поэтому в WebUI бэкенд второй машины выглядит
+// исправным и показывает ЕЁ GPU. Проверено на живой паре: `/api/v1/image/backends/
+// IMAGEWORKER-34/models` возвращал ровно тот же список из 2 моделей, что и
+// локальный `imageworker`, тогда как у настоящего воркера машины 2 моделей 0.
+//
+// Такое не должно проходить молча: предупреждение называет обе записи и говорит,
+// что задать.
+func (s *Server) warnAmbiguousHost(backendID, host, nodeAddr string) {
+	if host == "" || nodeAddr == "" {
+		return
+	}
+	for _, other := range s.proxy.GetAllBackends() {
+		if other.ID == backendID || other.Host != host {
+			continue
+		}
+		if other.NodeAddr == "" || other.NodeAddr == nodeAddr {
+			continue
+		}
+		logger.Get().Warnw("registration guard: two different nodes advertise the SAME host — HTTP requests for one of them will go to the wrong machine",
+			"host", host,
+			"backend", backendID, "node", nodeAddr,
+			"otherBackend", other.ID, "otherNode", other.NodeAddr,
+			"hint", "set BACKEND_HOST=<this machine's LAN address> (and/or SDWORKER_ADVERTISE_HOST) on the remote worker and recreate it: the compose service name is NOT a valid identity across machines")
+		return
+	}
 }

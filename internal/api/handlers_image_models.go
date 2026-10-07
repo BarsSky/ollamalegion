@@ -100,10 +100,11 @@ func (s *Server) handleImageBackends(w http.ResponseWriter, r *http.Request) {
 	// Де-дупликация по физическому эндпоинту — та же логика, что на странице
 	// GGUF: один контейнер может быть зарегистрирован дважды (shell-script +
 	// авторегистрация воркера), и в UI появлялись бы две одинаковые записи.
-	deduped := dedupBackendsByHostPort(
+	deduped := dedupBackendsByEndpoint(
 		filtered,
-		func(bm types.BackendMetrics) string { return bm.Host },
-		func(bm types.BackendMetrics) int { return s.imagePortForBackend(bm.ID) },
+		func(bm types.BackendMetrics) endpointKey {
+			return endpointKey{Host: bm.Host, Port: s.imagePortForBackend(bm.ID), NodeAddr: bm.NodeAddr}
+		},
 		func(bm types.BackendMetrics) bool { return bm.HasAgent },
 		true,
 	)

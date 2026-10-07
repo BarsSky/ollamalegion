@@ -385,6 +385,49 @@ SDWORKER_BACKEND_ID=imageworker-34
 агента) и `CPPWORKER_ADVERTISE_HOST`. Раньше он подставлялся только в два из них,
 поэтому даже успешная регистрация давала недостижимый адрес.
 
+### ⚠️ Имя контейнера — НЕ адрес: проверьте поле HOST у каждого бэкенда
+
+Если `BACKEND_HOST` на удалённой машине не задан (или контейнер не пересоздан
+после его добавления), воркер регистрируется под именем своего контейнера —
+`imageworker` / `cppworker-gpu`. Внутри docker-сети балансера эти имена
+разрешаются в **его собственные** контейнеры, поэтому:
+
+* запись удалённой машины выглядит живой и «своей»;
+* метрики (CPU/GPU/VRAM) приезжают от неё честно — их шлёт её же агент;
+* а вот **HTTP-запросы уходят на первую машину**, потому что URL строится из
+  имени хоста.
+
+Проверка на живой паре: `/api/v1/image/backends/IMAGEWORKER-34/models` возвращал
+ровно тот же список из двух моделей, что и локальный `imageworker`, тогда как у
+настоящего воркера второй машины моделей было **0**.
+
+Как поймать:
+
+```bash
+# 1. В WebUI у каждого бэкенда поле HOST должно быть адресом (192.168.13.34),
+#    а не именем контейнера. В API:
+curl -s -H "X-API-Token: $TOKEN" http://localhost:18081/api/v1/backends \
+  | jq '.backends[] | {id, host, nodeAddr}'
+
+# 2. В логе балансера не должно быть предупреждения об одинаковом host:
+docker logs ol-stack-balancer 2>&1 | grep 'advertise the SAME host'
+#    registration guard: two different nodes advertise the SAME host —
+#    host=imageworker backend=IMAGEWORKER-34 node=172.23.0.1
+#    otherBackend=imageworker otherNode=172.23.0.5
+
+# 3. На удалённой машине — что реально видит контейнер:
+docker exec <imageworker-контейнер> env | grep -E 'BACKEND_HOST|ADVERTISE_HOST'
+```
+
+Лечение — задать `BACKEND_HOST=192.168.13.34` в `deployments/.env` на удалённой
+машине и **пересоздать** воркеры (правка `.env` сама по себе контейнер не
+трогает):
+
+```bash
+docker compose -f docker-compose.stack.yml --profile worker up -d --force-recreate cppworker-gpu imageworker
+```
+
+
 ### Запуск на удалённой машине
 
 ```bash

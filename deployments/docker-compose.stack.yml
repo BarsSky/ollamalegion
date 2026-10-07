@@ -35,11 +35,13 @@
 # -----------------------------------------------------------------------------
 # Documentation
 # -----------------------------------------------------------------------------
-#   docs/en/deployment-stack.md          — scenarios, profiles, ports (English)
-#   docs/deployment-stack.md             — same, in Russian, more detail
+#   README.md                            — quick start, profile table, ports
+#   docs/deployment-stack.md             — scenarios, profiles, ports, remote workers
 #   docs/ru/deployment-troubleshooting.md — incident write-ups and env-var traps
 #
-# The traps below are the short version of that troubleshooting file.
+# Both documents are written in Russian; every comment in THIS file is English.
+#
+# The traps below are the short version of the troubleshooting file.
 #
 # -----------------------------------------------------------------------------
 # Environment variables: `environment:` OVERRIDES `env_file`
@@ -477,8 +479,17 @@ services:
       # HasAgent=true and writes metrics into the same record. The image worker no
       # longer needs a separate container.
       #
-      # Set IMAGE_WORKER_AGENT_EMBEDDED=on to enable (default below).
-      - AGENT_EMBEDDED=${IMAGE_WORKER_AGENT_EMBEDDED:-off}
+      # ENABLED by default, exactly like cppworker (CPPWORKER_AGENT_EMBEDDED).
+      #
+      # This used to default to `off` while cppworker defaulted to `on`. A fresh
+      # remote worker following .env.example therefore got a visible image record
+      # with NO telemetry at all: hasAgent=false, agentPort=18032 (a foreign
+      # container's port), gpuMemory/vramUsagePercent stuck at zeros. Seen on the
+      # second machine of the live pair ("IMAGEWORKER-34: 0.0%, 0 MB"). Asymmetric
+      # defaults on two identical workers are a trap, so the default is now `on`.
+      # Set IMAGE_WORKER_AGENT_EMBEDDED=off only to collect image metrics with the
+      # external `agent` container instead (legacy-agent profile).
+      - AGENT_EMBEDDED=${IMAGE_WORKER_AGENT_EMBEDDED:-on}
       - AGENT_ID=${SDWORKER_BACKEND_ID:-imageworker}
       - AGENT_PUBLIC_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}
       # /health and metrics port of the embedded agent. NOT 18032: the external

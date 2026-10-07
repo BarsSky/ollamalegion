@@ -414,6 +414,45 @@ docker compose -f docker-compose.stack.yml stop agent
 встроенный агент cppworker и внешний агент читают `AGENT_ID` из одного места и
 будут отбирать запись друг у друга.
 
+### Метрики собирает встроенный агент воркера
+
+Оба воркера поднимают сборщик **в своём процессе** и регистрируются под ТЕМ ЖЕ
+ID, что и сам воркер — отдельный контейнер не нужен:
+
+| Воркер | Переменная | По умолчанию | Порт |
+|---|---|---|---|
+| `cppworker-gpu` | `CPPWORKER_AGENT_EMBEDDED` | `on` | `CPPWORKER_AGENT_PORT=18034` |
+| `imageworker` | `IMAGE_WORKER_AGENT_EMBEDDED` | `on` | `IMAGE_WORKER_AGENT_PORT=18033` |
+
+⚠️ **До 0.7.32 у imageworker это было `off`.** На удалённой машине, которая
+следовала `.env.example`, получалась запись бэкенда **без телеметрии вообще**:
+`hasAgent=false`, `agentPort=18032` (порт ЧУЖОГО контейнера) и
+`gpuMemory`/`vramUsagePercent` в нулях. В WebUI это выглядит так:
+
+```
+IMAGEWORKER-34    GPU 0.0%   VRAM 0.0%   POWER 0W   0 MB / 1 MB
+```
+
+Проверка на воркере — в логе должно быть видно запуск встроенного агента:
+
+```bash
+docker logs <контейнер imageworker> 2>&1 | grep -iE 'embedded agent|Agent registered'
+# ожидается:
+#   [..] Agent registered successfully: imageworker-34
+#   {"msg":"embedded agent started","agentId":"imageworker-34",...,"metricsPort":18033}
+```
+
+Если этих строк нет — задайте `IMAGE_WORKER_AGENT_EMBEDDED=on` в `deployments/.env`
+на этой машине и пересоздайте воркер:
+
+```bash
+docker compose -f docker-compose.stack.yml --profile worker up -d --force-recreate imageworker
+```
+
+Выключать встроенный агент имеет смысл только тогда, когда метрики этого бэкенда
+собирает внешний контейнер `agent` — и никогда оба одновременно.
+
+
 ### ⚠️ Почему вторая машина «не регистрируется»: одинаковые ID и host (R-MultiHost, 2026-10-07)
 
 Симптом на живой паре: вторая машина (`192.168.13.34`) поднята, оба воркера

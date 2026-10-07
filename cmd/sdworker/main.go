@@ -28,26 +28,28 @@ import (
 	"syscall"
 	"time"
 
+	"ollama-loadbalancer/internal/agent"
 	"ollama-loadbalancer/internal/sdbackend"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 	"ollama-loadbalancer/pkg/version"
 
 	"go.uber.org/zap"
 )
 
 var (
-	port      = flag.Int("port", sdbackend.DefaultPort, "HTTP API port (default 18093)")
-	serverPort = flag.Int("sd-server-port", 18094, "sd-server listen port (loopback)")
-	modelsDir = flag.String("models-dir", "./models/image", "Directory with image model bundles (<dir>/<model>/...)")
-	sdBin     = flag.String("sd-server-bin", "sd-server", "Path to the sd-server binary (or its name in PATH)")
-	configPath = flag.String("config", "", "Path to JSON config file (SDWORKER_CONFIG)")
-	preload   = flag.String("preload", "", "Load this image model at startup (empty = load on first request)")
-	idleMin   = flag.Int("idle-unload-minutes", -1, "Idle unload timeout in minutes (0 = never unload; -1 = keep config value)")
-	loraDir   = flag.String("lora-dir", "", "Directory with LoRA files (--lora-model-dir of sd-server)")
+	port         = flag.Int("port", sdbackend.DefaultPort, "HTTP API port (default 18093)")
+	serverPort   = flag.Int("sd-server-port", 18094, "sd-server listen port (loopback)")
+	modelsDir    = flag.String("models-dir", "./models/image", "Directory with image model bundles (<dir>/<model>/...)")
+	sdBin        = flag.String("sd-server-bin", "sd-server", "Path to the sd-server binary (or its name in PATH)")
+	configPath   = flag.String("config", "", "Path to JSON config file (SDWORKER_CONFIG)")
+	preload      = flag.String("preload", "", "Load this image model at startup (empty = load on first request)")
+	idleMin      = flag.Int("idle-unload-minutes", -1, "Idle unload timeout in minutes (0 = never unload; -1 = keep config value)")
+	loraDir      = flag.String("lora-dir", "", "Directory with LoRA files (--lora-model-dir of sd-server)")
 	upscalersDir = flag.String("hires-upscalers-dir", "", "Directory with ESRGAN upscalers (--hires-upscalers-dir)")
-	baseURL   = flag.String("base-url", "", "Public base URL of this worker (for response_format:\"url\")")
-	healthCheck = flag.Bool("healthcheck", false, "Run a one-shot health probe against /health and exit")
-	verbose   = flag.Bool("verbose", false, "Enable debug logging")
+	baseURL      = flag.String("base-url", "", "Public base URL of this worker (for response_format:\"url\")")
+	healthCheck  = flag.Bool("healthcheck", false, "Run a one-shot health probe against /health and exit")
+	verbose      = flag.Bool("verbose", false, "Enable debug logging")
 )
 
 func main() {
@@ -106,6 +108,24 @@ func main() {
 		log.Infow("balancer auto-registration disabled via SDWORKER_REGISTER_DISABLE")
 	} else {
 		log.Infow("balancer auto-registration disabled (SDWORKER_BALANCER_URL not set); standalone mode")
+	}
+
+	// ВСТРОЕННЫЙ АГЕНТ (R-Image, 2026-10-07). Включается AGENT_EMBEDDED=on.
+	//
+	// Зачем внутри воркера, а не отдельным контейнером: image-бэкенд
+	// регистрирует себя сам, и внешний агент создавал ВТОРУЮ запись о том же
+	// физическом воркере (host=agent, backendType=llama_cpp). При этом у самой
+	// image-записи оставались hasAgent=false и agentPort чужого контейнера, а
+	// gpuMemory/vramUsagePercent приходили нулями — отсюда «странное
+	// отображение» страницы модели в WebUI.
+	//
+	// Встроенный агент регистрируется ПОД ТЕМ ЖЕ ID, что и сам воркер: балансер
+	// принимает регистрацию, выставляет HasAgent=true и пишет метрики в ту же
+	// запись.
+	embedded := agent.RunEmbedded(agent.ResolveEmbeddedOptionsForWorker(
+		types.BackendTypeImage, "SDWORKER_BACKEND_ID", "SDWORKER_ADVERTISE_HOST", cfg.Port))
+	if embedded != nil {
+		defer embedded.Stop()
 	}
 
 	srv := &http.Server{

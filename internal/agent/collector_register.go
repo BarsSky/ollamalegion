@@ -94,6 +94,20 @@ func (a *Agent) register() error {
 		"cppWorkerApiToken": a.config.CppWorkerApiToken,
 	}
 
+	// R-Image (2026-10-07): image-бэкенд (sdworker/sd-server).
+	//
+	// Агент, встроенный в image-воркер, регистрируется ПОД ТЕМ ЖЕ ID, что и
+	// саморегистрация воркера, и обязан прислать тот же imagePort: иначе
+	// балансер в ветке «backend exists» пересобрал бы запись без imagePort, и
+	// EffectiveImagePort() упал бы в fallback 18093 — адрес воркера в WebUI
+	// разошёлся бы с реальным (например, при нестандартном SDWORKER_PORT).
+	//
+	// backendType=image_cpp агент берёт из BACKEND_TYPE (BackendTypeImage) —
+	// это то же значение, что шлёт сам sdworker.
+	if a.config.BackendType == types.BackendTypeImage {
+		reqBody["imagePort"] = a.resolveImagePort()
+	}
+
 	data, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("failed to marshal registration: %w", err)

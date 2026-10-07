@@ -50,6 +50,16 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		// запрос к cppworker защищённого эндпоинта, удаляет заголовок
 		// авторизации (R65d) → 401 «invalid or missing API token».
 		CppWorkerApiToken string `json:"cppWorkerApiToken"`
+		// R-Image (2026-10-07): порт image-воркера (sdworker/sd-server).
+		//
+		// Нужен встроенному агенту image-бэкенда: он регистрируется ПОД ТЕМ ЖЕ
+		// ID, что и саморегистрация sdworker, и обязан подтвердить тот же
+		// imagePort. Без поля балансер в ветке «backend exists» не мог бы
+		// отличить «агент не знает порт» от «порт равен нулю» и стирал бы
+		// ImagePort, уводя EffectiveImagePort() в fallback 18093.
+		//
+		// <= 0 = «не задано» → сохраняем прежнее значение записи.
+		ImagePort int `json:"imagePort"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -227,13 +237,31 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			cppToken = req.CppWorkerApiToken
 		}
 
+		// ПОРТЫ: берём из запроса, а при отсутствии — СОХРАНЯЕМ прежние.
+		//
+		// R-Image (2026-10-07): раньше ImagePort вообще не переносился, поэтому
+		// регистрация агента СТИРАЛА порт image-воркера у записи image_cpp:
+		// EffectiveImagePort() уходил в fallback 18093, и адрес воркера в WebUI
+		// разъезжался с реальным (видно на нестандартном SDWORKER_PORT).
+		// Тот же принцип для CppWorkerPort: агент Ollama-стенда его не шлёт и не
+		// должен обнулять координаты чужого cppworker-бэкенда.
+		imagePort := req.ImagePort
+		if imagePort <= 0 {
+			imagePort = existing.ImagePort
+		}
+		cppWorkerPort := req.CppWorkerPort
+		if cppWorkerPort <= 0 {
+			cppWorkerPort = existing.CppWorkerPort
+		}
+
 		updated := types.Backend{
 			ID:                           req.AgentID,
 			Name:                         req.Name,
 			Host:                         host,
 			OllamaPort:                   ollamaPort,
 			AgentPort:                    agentPort,
-			CppWorkerPort:                req.CppWorkerPort,
+			ImagePort:                    imagePort,
+			CppWorkerPort:                cppWorkerPort,
 			Weight:                       weight,
 			MaxConcurrentReqs:            maxReqs,
 			Labels:                       req.Labels,
@@ -247,10 +275,25 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			Engine:                       existing.Engine,
 			ApiStyle:                     existing.ApiStyle,
 			GPUMode:                      existing.GPUMode,
-			AgentID:                      existing.AgentID,
-			HasAgent:                     existing.HasAgent,
-			CppWorkerConfig:              existing.CppWorkerConfig,
-			OllamaConfig:                 existing.OllamaConfig,
+			// R-Image (2026-10-07): агент, зарегистрировавшийся под ID уже
+			// существующего бэкенда, ОБЯЗАН включать признак HasAgent.
+			//
+			// Было `AgentID/HasAgent: existing.*` — то есть повторная регистрация
+			// не могла ничего изменить. Следствие на живой стойке: image-бэкенд
+			// (sdworker) регистрирует себя сам и создаёт запись с HasAgent=false;
+			// когда под тем же ID регистрировался агент, ветка «backend exists»
+			// оставляла HasAgent=false, attach не происходил, и метрики
+			// GPU/VRAM/system вообще не приезжали. В WebUI это выглядело как
+			// «странное отображение» страницы модели: hasAgent=false и нули в
+			// gpuMemory/vramUsagePercent при живом image-воркере.
+			//
+			// Семантика поля: HasAgent = «у бэкенда есть агент-сборщик метрик».
+			// Сам факт регистрации агента и есть доказательство — поэтому
+			// выставляем true, а AgentID берём из запроса (он же req.AgentID).
+			AgentID:         req.AgentID,
+			HasAgent:        true,
+			CppWorkerConfig: existing.CppWorkerConfig,
+			OllamaConfig:    existing.OllamaConfig,
 			// GPUIndex — операторское/нодовое поле: heartbeat его НЕ трогает,
 			// но обязан перенести. Иначе ближайший же (каждые 30 с) heartbeat
 			// молча стирал бы индекс, и лок сосуществования возвращался бы к
@@ -304,6 +347,7 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		Host:              host,
 		OllamaPort:        ollamaPort,
 		AgentPort:         agentPort,
+		ImagePort:         req.ImagePort,
 		CppWorkerPort:     req.CppWorkerPort,
 		Weight:            weight,
 		MaxConcurrentReqs: maxReqs,

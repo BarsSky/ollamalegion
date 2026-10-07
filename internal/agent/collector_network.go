@@ -71,6 +71,28 @@ func (a *Agent) extractOllamaPort() int {
 	return 11434 // fallback
 }
 
+// resolveImagePort — R-Image (2026-10-07): порт image-воркера для регистрации.
+//
+// Источники по приоритету:
+//  1. AGENT_IMAGE_PORT — явная настройка (совпадает по смыслу с SDWORKER_PORT);
+//  2. ImagePort из AgentConfig (его заполняет встроенный агент — воркер знает
+//     свой реальный порт и передаёт его напрямую);
+//  3. types.DefaultImageWorkerPort (18093).
+//
+// Значение <= 0 трактуется как «не задано»: порт 0 в записи бэкенда сделал бы
+// EffectiveImagePort() неопределённым.
+func (a *Agent) resolveImagePort() int {
+	if v := strings.TrimSpace(os.Getenv("AGENT_IMAGE_PORT")); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 && p <= 65535 {
+			return p
+		}
+	}
+	if a.config.ImagePort > 0 {
+		return a.config.ImagePort
+	}
+	return types.DefaultImageWorkerPort
+}
+
 // getOllamaBaseURL - базовый URL Ollama из конфигурации
 func (a *Agent) getOllamaBaseURL() string {
 	if a.config.OllamaURL != "" {

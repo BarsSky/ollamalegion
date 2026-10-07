@@ -22,8 +22,10 @@ import (
 	"syscall"
 	"time"
 
+	"ollama-loadbalancer/internal/agent"
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 	"ollama-loadbalancer/pkg/version"
 
 	"go.uber.org/zap"
@@ -443,6 +445,22 @@ func main() {
 		default:
 			log.Infow("balancer auto-registration disabled (CPPWORKER_BALANCER_URL not set); cppworker will work in standalone mode")
 		}
+	}
+
+	// ВСТРОЕННЫЙ АГЕНТ (R-Image, 2026-10-07). Включается AGENT_EMBEDDED=on.
+	//
+	// Зачем: внешний контейнер `agent` регистрируется отдельной записью и
+	// переживает пересоздание воркера — отсюда «перерегистрация» в мониторинге,
+	// которую оператор видит как мигание записи. Встроенный агент живёт ровно
+	// столько, сколько живёт воркер, и регистрируется ПОД ЕГО ЖЕ ID, поэтому
+	// запись одна и её не нужно склеивать по host:port.
+	//
+	// Выключено по умолчанию: на стендах, где внешний агент уже поднят, второй
+	// сборщик метрик не нужен.
+	embeddedAgent := agent.RunEmbedded(agent.ResolveEmbeddedOptionsForWorker(
+		types.BackendTypeLlamaCpp, "CPPWORKER_REGISTER_NAME", "CPPWORKER_ADVERTISE_HOST", cfg.Port))
+	if embeddedAgent != nil {
+		defer embeddedAgent.Stop()
 	}
 
 	// Round 26 (2026-08-06): pull-based per-model profile sync. Self-healing после recreate:

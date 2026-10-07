@@ -79,8 +79,24 @@
 #   cppworker (cmd/cppworker, internal/cppbackend):
 #     ✅ CPPWORKER_* , API_TOKEN, CPPWORKER_BALANCER_URL,
 #        CPPWORKER_BALANCER_TOKEN, CPPWORKER_ADVERTISE_HOST
+#     ✅ CPPWORKER_REGISTER_NAME — ID записи бэкенда (он же AGENT_ID для
+#        встроенного агента: агент обязан регистрироваться под тем же ID)
 #     ❌ CPPWORKER_ADVERTISED_PORT — не читается; порт, по которому балансер
 #        доедет до бэкенда, задаётся через AGENT_CPPWORKER_PORT
+#
+#   встроенный агент (internal/agent/embedded.go, R-Image 2026-10-07):
+#     Включается AGENT_EMBEDDED=on и живёт В ПРОЦЕССЕ воркера (cppworker или
+#     sdworker). Читаются: AGENT_EMBEDDED, AGENT_ID, AGENT_PUBLIC_HOST,
+#     AGENT_EMBEDDED_PORT (или AGENT_PORT), AGENT_WORKER_PORT, BALANCER_URL,
+#     BALANCER_TOKEN, GPU_MODE, NVML_ENABLED, METRICS_INTERVAL/COLLECT_INTERVAL,
+#     HEARTBEAT_INTERVAL, AGENT_MAX_CONCURRENT_REQUESTS, AGENT_WEIGHT,
+#     API_TOKEN/CPPWORKER_API_TOKEN/BALANCER_API_TOKEN.
+#     ID по умолчанию берётся из SDWORKER_BACKEND_ID (image-воркер) или
+#     CPPWORKER_REGISTER_NAME (llama.cpp-воркер), иначе из hostname.
+#     ЗАЧЕМ: внешний контейнер `agent` регистрируется ОТДЕЛЬНОЙ записью и
+#     переживает пересоздание воркера — отсюда «перерегистрация» в мониторинге.
+#     Встроенный агент живёт ровно столько, сколько воркер, и пишет метрики в
+#     ЕГО ЖЕ запись (hasAgent=true, реальный agentPort).
 #
 #   balancer:
 #     ✅ LB_* (см. .env.bundled-with-agent.example), CPPWORKER_API_TOKEN,
@@ -442,6 +458,41 @@ services:
       # host, под которым воркер виден балансеру: DNS-имя сервиса в этой сети.
       - SDWORKER_ADVERTISE_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}
       - SDWORKER_REGISTER_DISABLE=${SDWORKER_REGISTER_DISABLE:-false}
+      # ─── ВСТРОЕННЫЙ АГЕНТ МЕТРИК (R-Image, 2026-10-07) ────────────────────
+      #
+      # ЗАЧЕМ. Раньше метрики image-бэкенда собирал отдельный контейнер `agent`.
+      # Он регистрировался в балансере ОТДЕЛЬНОЙ записью (host=cppworker-gpu-agent,
+      # backendType=llama_cpp), то есть об одном физическом воркере появлялись две
+      # записи. У самой image-записи при этом оставались hasAgent=false и
+      # agentPort=18032 (порт ЧУЖОГО контейнера), а gpuMemory/vramUsagePercent
+      # приходили нулями — страница модели в WebUI выглядела «странно».
+      #
+      # ТЕПЕРЬ: воркер поднимает агента в СВОЁМ процессе и регистрируется под ТЕМ
+      # ЖЕ ID (SDWORKER_BACKEND_ID). Балансер в ветке «backend exists» ставит
+      # HasAgent=true и пишет метрики в ту же запись. Отдельный контейнер для
+      # image-воркера больше не нужен.
+      #
+      # AGENT_EMBEDDED выключен по умолчанию: на стендах, где внешний агент уже
+      # поднят, второй сборщик метрик не нужен.
+      - AGENT_EMBEDDED=${IMAGE_WORKER_AGENT_EMBEDDED:-off}
+      - AGENT_ID=${SDWORKER_BACKEND_ID:-imageworker}
+      - AGENT_PUBLIC_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}
+      # Порт /health и метрик встроенного агента. НЕ 18032: там слушает внешний
+      # контейнер `agent`, а балансер опрашивает метрики по agentPort записи.
+      - AGENT_EMBEDDED_PORT=${IMAGE_WORKER_AGENT_PORT:-18033}
+      - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      - BALANCER_TOKEN=${SDWORKER_BALANCER_TOKEN:-${CPPWORKER_API_TOKEN:-}}
+      - GPU_MODE=${GPU_MODE:-auto}
+      - NVML_ENABLED=${NVML_ENABLED:-true}
+      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-5}
+      - COLLECT_INTERVAL=${COLLECT_INTERVAL:-5}
+      # Вместимость: столько же, сколько воркер обслуживает параллельно
+      # (SDWORKER_MAX_CONCURRENT). Значение >0 перекрывает автоопределение.
+      - AGENT_MAX_CONCURRENT_REQUESTS=${SDWORKER_MAX_CONCURRENT:-64}
+      # Токен, который ждёт сам image-воркер на защищённых эндпоинтах: балансер
+      # получит его в записи бэкенда и сможет авторизоваться при проксировании.
+      - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:-}
+      - API_TOKEN=${CPPWORKER_API_TOKEN:-}
     volumes:
       # Тот же каталог моделей, что у cppworker (../models): текстовые .gguf в
       # корне, image-bundle'ы — в image/. Внутри тома же лежат temp-загрузки

@@ -1,7 +1,7 @@
 {
-    "tag":  "r83-submodule-v98",
-    "builtAt":  "2026-10-06T21:30:00Z",
-    "gitCommit":  "7e2b6f2",
+    "tag":  "r83-submodule-v99",
+    "builtAt":  "2026-10-07T12:10:00Z",
+    "gitCommit":  "30c42f2",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
@@ -17,18 +17,23 @@
                    {
                        "service":  "balancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r83-submodule-v98",
-                       "imageTag":  "r83-submodule-v98",
-                       "imageId":  "sha256:3b3b33158fcfa697a7d1f54d0da9014725ae37b7ef028f2d320ce86dead15440",
+                       "image":  "ollama-legion/balancer:r83-submodule-v99",
+                       "imageTag":  "r83-submodule-v99",
+                       "imageId":  "sha256:a524efdb483bcedf053dc7cb2bddba90ad8b1fb1b165b98894eeb767794cbf0f",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {
                        "service":  "imageworker",
                        "variable":  "IMAGE_WORKER_TAG",
-                       "image":  "ollama-legion/imageworker:r83-submodule-v83",
-                       "imageTag":  "r83-submodule-v83",
-                       "imageId":  "sha256:68b812358e5c0aaf026a36ea85c8c4213a7af8bde0c10b823d1e2efc6e53a1b2",
+                       "image":  "ollama-legion/imageworker:r83-submodule-v84",
+                       "imageTag":  "r83-submodule-v84",
+                       "imageId":  "sha256:5ac9fba95d2c0c08207564a91489f8718a18f593dae528ed015259da5ad751bc",
                        "alias":  "ollama-legion/imageworker:latest-cuda"
                    }
-               ]
+               ],
+    "notes":  [
+                  "balancer v99: регистрация агента под существующим ID выставляет hasAgent=true и больше не теряет imagePort/cppWorkerPort.",
+                  "imageworker v84: встроенный агент метрик (AGENT_EMBEDDED=on, порт 18033) — GPU/VRAM/system пишутся в запись самого image-бэкенда.",
+                  "Проверено живьём: imageworker hasAgent=true, agentPort=18033, gpuMemory 8192/1446 MB, vramUsagePercent 17.65."
+              ]
 }

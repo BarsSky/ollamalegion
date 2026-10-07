@@ -44,8 +44,19 @@ type AgentConfig struct {
 	// 2026-06-30: явный host/port физического cppworker-бэкенда, который agent обёртывает.
 	// Используется в register() как host/cppWorkerPort, чтобы de-dup по (host, port)
 	// в /api/v1/gguf/backends корректно склеивал cppworker-gpu и cppworker-gpu-bundled-agent.
-	CppWorkerHost         string      `json:"cppWorkerHost"`         // host физического cppworker (например, "cppworker-gpu")
-	CppWorkerPort         int         `json:"cppWorkerPort"`         // port физического cppworker (например, 18092)
+	CppWorkerHost string `json:"cppWorkerHost"` // host физического cppworker (например, "cppworker-gpu")
+	CppWorkerPort int    `json:"cppWorkerPort"` // port физического cppworker (например, 18092)
+	// R-Image (2026-10-07): ImagePort — порт image-воркера (sdworker/sd-server),
+	// который агент обёртывает при BackendType=image_cpp.
+	//
+	// ЗАЧЕМ ПОЛЕ. image-бэкенд регистрирует себя сам (POST /api/v1/backends с
+	// imagePort и backendType=image_cpp), а агент при регистрации под тем же ID
+	// обязан сообщить тот же порт: без этого балансер при обновлении записи
+	// терял бы imagePort (EffectiveImagePort → CppWorkerPort(0) → 18093), и
+	// адрес воркера в WebUI разъезжался бы с реальным.
+	//
+	// Значение по умолчанию — types.DefaultImageWorkerPort (18093).
+	ImagePort             int         `json:"imagePort"`
 	MaxModels             int         `json:"maxModels"`             // максимум моделей (-1 = авто/не задано)
 	MaxConcurrentRequests int         `json:"maxConcurrentRequests"` // максимум одновременных запросов (-1 = авто/не задано)
 	Weight                int         `json:"weight"`                // приоритетный вес бэкенда (1-100, по умолчанию 1)

@@ -1,15 +1,17 @@
 // handlers_agents_dedup_test.go — tests for agent registration dedup logic.
 //
 // Bug context (2026-08-09):
-//   В bundled-режиме (cppworker + agent в одном docker-compose) при первом
-//   старте агент регистрировался как standalone бэкенд (id = agentId), потому
-//   что dedup-логики ещё не было. Затем cppworker регистрировался отдельно,
-//   и при следующей регистрации агента dedup attach'ил его к правильному
-//   бэкенду, но stale standalone оставался в /api/v1/backends.
+//
+//	В bundled-режиме (cppworker + agent в одном docker-compose) при первом
+//	старте агент регистрировался как standalone бэкенд (id = agentId), потому
+//	что dedup-логики ещё не было. Затем cppworker регистрировался отдельно,
+//	и при следующей регистрации агента dedup attach'ил его к правильному
+//	бэкенду, но stale standalone оставался в /api/v1/backends.
 //
 // Round 30 fix:
-//   При успешном attach агента к existing backend — удаляем stale standalone
-//   с тем же agentId.
+//
+//	При успешном attach агента к existing backend — удаляем stale standalone
+//	с тем же agentId.
 //
 // Покрывает:
 //   - Dedup attaches agent to cppworker backend AND removes stale standalone
@@ -33,8 +35,8 @@ import (
 //  1. Cppworker backend already exists at (host=cppworker-gpu, port=18092)
 //  2. Stale standalone backend with same agentId exists from previous run
 //  3. Agent tries to register with cppWorkerPort=18092
-//  → Must attach to cppworker AND remove the stale standalone
-//  → After: only 1 backend remains (the cppworker with agent attached)
+//     → Must attach to cppworker AND remove the stale standalone
+//     → After: only 1 backend remains (the cppworker with agent attached)
 func TestAgentRegister_DedupRemovesStaleStandalone(t *testing.T) {
 	server, _, proxy := createTestServer(t)
 	defer server.Close()
@@ -218,4 +220,78 @@ func TestAgentRegister_DedupByAgentId_StandaloneIsAttachedToItself(t *testing.T)
 	}
 	assert.Equal(t, 1, countWithID,
 		"update path should not create a duplicate backend with same ID")
+}
+
+// TestAgentRegister_ImageBackend_GetsHasAgent — R-Image (2026-10-07).
+//
+// ЖИВОЙ ДЕФЕКТ. Image-бэкенд (sdworker) регистрирует себя САМ и создаёт запись
+// с hasAgent=false. Когда под тем же ID регистрировался агент, ветка «backend
+// exists» собирала обновление как `AgentID/HasAgent: existing.*` — то есть
+// повторная регистрация НИЧЕГО не могла изменить. Следствие на стенде:
+// у imageworker в /api/v1/backends стояло hasAgent=false и agentPort=18032
+// (порт ЧУЖОГО контейнера), метрики GPU/VRAM не приезжали вовсе, а страница
+// модели в WebUI показывала нули.
+//
+// ЧТО ПРОВЕРЯЕМ. После регистрации агента под ID существующего image-бэкенда:
+//   - hasAgent становится true;
+//   - agentPort берётся из регистрации агента (не остаётся чужим);
+//   - imagePort НЕ теряется (иначе EffectiveImagePort() ушёл бы в fallback);
+//   - дубликата записи не появляется.
+func TestAgentRegister_ImageBackend_GetsHasAgent(t *testing.T) {
+	server, _, proxy := createTestServer(t)
+	defer server.Close()
+
+	const (
+		backendID = "imageworker"
+		imagePort = 18093
+		agentPort = 18033
+	)
+
+	// 1. Так выглядит запись после саморегистрации sdworker.
+	assert.NoError(t, proxy.AddBackend(types.Backend{
+		ID:                backendID,
+		Name:              backendID,
+		Host:              "imageworker",
+		ImagePort:         imagePort,
+		Weight:            100,
+		Labels:            []string{"sdworker", "auto-registered", "image"},
+		Status:            types.StatusHealthy,
+		Type:              types.BackendTypeImage,
+		MaxConcurrentReqs: 64,
+	}))
+
+	// 2. Регистрируется встроенный агент — ПОД ТЕМ ЖЕ ID.
+	req := map[string]interface{}{
+		"agentId":               backendID,
+		"host":                  "imageworker",
+		"backendType":           string(types.BackendTypeImage),
+		"agentPort":             agentPort,
+		"imagePort":             imagePort,
+		"maxConcurrentRequests": 64,
+	}
+	body, _ := json.Marshal(req)
+	resp, err := http.Post(server.URL+"/api/v1/agents/register", "application/json", bytes.NewBuffer(body))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "регистрация под существующим ID обновляет запись")
+
+	updated := proxy.GetBackend(backendID)
+	if updated == nil {
+		t.Fatal("imageworker исчез из реестра")
+	}
+	assert.True(t, updated.HasAgent,
+		"агент зарегистрировался — HasAgent обязан стать true, иначе метрики не поедут")
+	assert.Equal(t, backendID, updated.AgentID)
+	assert.Equal(t, agentPort, updated.AgentPort, "agentPort должен стать портом ВСТРОЕННОГО агента")
+	assert.Equal(t, imagePort, updated.ImagePort, "imagePort не должен теряться при обновлении")
+	assert.Equal(t, types.BackendTypeImage, updated.Type, "тип бэкенда не должен меняться")
+
+	// 3. Дубликата быть не должно: запись одна.
+	count := 0
+	for _, b := range proxy.GetAllBackends() {
+		if b.ID == backendID {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "регистрация агента не должна создавать вторую запись")
 }

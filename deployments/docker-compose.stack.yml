@@ -451,8 +451,13 @@ services:
       - SDWORKER_BALANCER_URL=${SDWORKER_BALANCER_URL:-${BALANCER_URL:-http://loadbalancer:18081}}
       - SDWORKER_BALANCER_TOKEN=${SDWORKER_BALANCER_TOKEN:-${CPPWORKER_API_TOKEN:-}}
       - SDWORKER_BACKEND_ID=${SDWORKER_BACKEND_ID:-imageworker}
-      # Host under which the balancer sees this worker: service DNS name on ol-net.
-      - SDWORKER_ADVERTISE_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}
+      # Host under which the balancer reaches this worker. Defaults to the ol-net
+      # service name (single-box case), but on a SEPARATE machine it MUST be that
+      # machine's LAN address — the balancer proxies image requests to
+      # <this host>:18093, and "imageworker" does not resolve from another host.
+      # Mirrors what AGENT_CPPWORKER_HOST=${BACKEND_HOST:-...} does for cppworker,
+      # so BACKEND_HOST in .env fixes both workers at once.
+      - SDWORKER_ADVERTISE_HOST=${SDWORKER_ADVERTISE_HOST:-${BACKEND_HOST:-imageworker}}
       - SDWORKER_REGISTER_DISABLE=${SDWORKER_REGISTER_DISABLE:-false}
       # --- EMBEDDED METRICS AGENT ---------------------------------------------
       #
@@ -566,7 +571,19 @@ services:
         GIT_COMMIT: ${AGENT_GIT_COMMIT:-unknown}
         BUILD_DATE: ${AGENT_BUILD_DATE:-unknown}
     container_name: ol-stack-agent
-    profiles: ["worker", "legacy-agent"]
+    # Profiles: legacy-agent ONLY.
+    #
+    # It used to be ["worker", "legacy-agent"], which meant `--profile worker`
+    # started the agent even though it has nothing to do on a backend-only host:
+    # cppworker and imageworker each run their OWN embedded metrics agent
+    # (AGENT_EMBEDDED=on), and the external agent's only remaining job is
+    # connecting an OLLAMA backend. On a worker host it was a useless container
+    # that additionally competed for the backend record's agentPort.
+    #
+    # If you DO need it (Ollama backend on this host, or a rollback to the
+    # external collector), start it explicitly:
+    #   docker compose ... --profile legacy-agent up -d agent
+    profiles: ["legacy-agent"]
     restart: unless-stopped
     runtime: nvidia
     depends_on:
@@ -625,10 +642,12 @@ services:
 
       # What the agent reports to the balancer as the backend address. In scenario
       # 1 a service name; in scenario 2 BACKEND_HOST (an address visible FROM the
-      # balancer). The port must match the container's CPPWORKER_PORT.
+      # balancer) — without it the record points at the container hostname and the
+      # balancer cannot reach :18092. The port must match CPPWORKER_PORT.
       - AGENT_CPPWORKER_HOST=${BACKEND_HOST:-cppworker-gpu}
       - AGENT_CPPWORKER_PORT=${CPPWORKER_PORT:-18092}
-      - AGENT_PUBLIC_HOST=${AGENT_PUBLIC_HOST:-cppworker-gpu-agent}
+      # Address the balancer uses for the agent's own /health.
+      - AGENT_PUBLIC_HOST=${AGENT_PUBLIC_HOST:-${BACKEND_HOST:-cppworker-gpu-agent}}
       - AGENT_PUBLIC_PORT=18032
       - NODE_LABELS=${NODE_LABELS:-gpu,llamacpp}
 

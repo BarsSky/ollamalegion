@@ -217,6 +217,24 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
   cppworker-gpu:
     image: ${IMAGE_REGISTRY:-}ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-r83-submodule-v22}
+    # Built from source so `up -d` also works on a machine with no prebuilt image:
+    # this service used to have ONLY `image:`, so compose failed with
+    # "pull access denied / not found" instead of building locally.
+    #
+    # The universal Dockerfile.gpu takes CUDA_ARCH.
+    # WARNING: CUDA_ARCH=all (default) builds for 9 architectures — ~40 min instead
+    # of ~3 min for a single one. Set CUDA_ARCH in deployments/.env (build args do
+    # NOT come from env_file): 61 = GTX 10xx / Pascal, 86 = RTX 30xx, 89 = RTX 40xx.
+    # Builds are cached: after the first run only changed layers rebuild (~30 s for
+    # Go-only changes).
+    build:
+      context: ..
+      dockerfile: docker/cppworker/Dockerfile.gpu
+      target: runtime
+      args:
+        CUDA_ARCH: ${CUDA_ARCH:-all}
+        GIT_COMMIT: ${CPPWORKER_GIT_COMMIT:-unknown}
+        BUILD_DATE: ${CPPWORKER_BUILD_DATE:-unknown}
     container_name: ol-stack-cppworker-gpu
     restart: unless-stopped
     runtime: nvidia
@@ -534,6 +552,19 @@ services:
   # ===========================================================================
   agent:
     image: ${IMAGE_REGISTRY:-}ollama-legion/agent:${AGENT_TAG:-r83-submodule-v22}
+    # Built from source for the same reason as cppworker-gpu: with only `image:`
+    # compose could not build locally when the image was missing.
+    # target agent-gpu + ENABLE_NVML=true match scripts/build-containers.ps1
+    # (`docker build --build-arg ENABLE_NVML=true ... -f docker/agent/Dockerfile`):
+    # the NVML build is what provides real GPU/VRAM metrics.
+    build:
+      context: ..
+      dockerfile: docker/agent/Dockerfile
+      target: agent-gpu
+      args:
+        ENABLE_NVML: "true"
+        GIT_COMMIT: ${AGENT_GIT_COMMIT:-unknown}
+        BUILD_DATE: ${AGENT_BUILD_DATE:-unknown}
     container_name: ol-stack-agent
     profiles: ["worker", "legacy-agent"]
     restart: unless-stopped

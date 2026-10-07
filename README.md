@@ -584,17 +584,16 @@ $env:CUDA_ARCH=86     # 61 = GTX 10xx (Pascal), 75 = RTX 20xx, 86 = RTX 30xx, 89
 # ⚠️ CUDA 13 снял поддержку Pascal (GTX 10xx): для 1070/1080 оставайтесь на CUDA 12.x
 #    (в проекте это 12.2) и собирайте с CUDA_ARCH=61.
 
-# ── ЧТО СБИРАЕТСЯ ИЗ КАКОГО ФАЙЛА (проверено `build --dry-run`) ──────────────
-# Канонический docker-compose.stack.yml НЕ содержит build у cppworker-gpu
-# (сервис объявлен только image:) — текстовый воркер собирается отдельным файлом.
-
-# Текстовый воркер (llama.cpp + CUDA):
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build cppworker-gpu
-
-# Картинки, балансер и WebUI — из канонического stack.yml:
+# ── СБОРКА: канонический stack.yml собирает ВСЁ САМ ───────────────────────────
+# У всех пяти сервисов (loadbalancer, webui, cppworker-gpu, imageworker, agent)
+# есть build:, поэтому `up -d` САМ СОБЕРЁТ отсутствующий образ — предварительная
+# сборка не обязательна и локальный реестр не нужен.
+docker compose -f deployments/docker-compose.stack.yml --profile full build          # всё
+docker compose -f deployments/docker-compose.stack.yml --profile full build cppworker-gpu
 docker compose -f deployments/docker-compose.stack.yml --profile full build imageworker
 docker compose -f deployments/docker-compose.stack.yml --profile full build loadbalancer
 docker compose -f deployments/docker-compose.stack.yml --profile full build webui
+docker compose -f deployments/docker-compose.stack.yml --profile legacy-agent build agent
 ```
 
 **Linux / macOS / WSL2:**
@@ -603,10 +602,7 @@ docker compose -f deployments/docker-compose.stack.yml --profile full build webu
 export DOCKER_BUILDKIT=1
 export CUDA_ARCH=86          # 61 для GTX 10xx (Pascal)
 
-docker compose -f deployments/docker-compose.cppworker-bundled-with-agent.yml build cppworker-gpu
-docker compose -f deployments/docker-compose.stack.yml --profile full build imageworker
-docker compose -f deployments/docker-compose.stack.yml --profile full build loadbalancer
-docker compose -f deployments/docker-compose.stack.yml --profile full build webui
+docker compose -f deployments/docker-compose.stack.yml --profile full build
 ```
 
 BuildKit=1 обязателен — с ним Go-only изменения собираются за ~30 сек (cached CUDA layers).

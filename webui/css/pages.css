@@ -1307,6 +1307,36 @@
     white-space: nowrap;
 }
 
+/* R-MultiHost (2026-10-07): у двух бэкендов одинаковый host.
+   Имя хоста - не идентичность: на двух машинах с одним compose контейнеры
+   называются одинаково, и URL одного бэкенда указывает на чужую машину.
+   Симптом - "модели на диске есть", хотя у этого воркера их нет: список
+   читается у соседа. */
+.gguf-url-warning {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: 6px;
+    padding: 6px 10px;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.45);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    color: var(--text-primary);
+    max-width: 100%;
+}
+
+.gguf-url-warning i {
+    color: #f59e0b;
+    flex-shrink: 0;
+}
+
+.gguf-url-warning .gguf-url-warning-list {
+    font-family: 'Courier New', monospace;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
 @media (max-width: 960px) {
     .gguf-master-layout {
         grid-template-columns: 1fr;

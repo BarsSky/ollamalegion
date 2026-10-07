@@ -129,6 +129,11 @@
     let _detailRefreshInProgress = false;
     M.refreshDetail = function() {
         const state = M.state;
+        // R-MultiHost (2026-10-07): синхронизируем выбранный бэкенд с API-клиентом
+        // ПЕРЕД любым действием с диском воркера. Выбор мог быть восстановлен не
+        // через M.selectBackend (например, общим renderers.js), поэтому одной
+        // синхронизации в обработчике клика недостаточно.
+        if (typeof M._syncBackendToApi === 'function') M._syncBackendToApi(state.selectedBackendId);
         if (!state.selectedBackendId) return Promise.resolve();
         if (_detailRefreshInProgress) return Promise.resolve();
         _detailRefreshInProgress = true;

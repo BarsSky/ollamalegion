@@ -134,11 +134,39 @@
                         '<span class="url-text">' + Utils.escapeHtml(url) + '</span>' +
                         '<button class="gguf-link-button" id="ggufCopyUrl" title="' + _('gguf.copy_url') + '"><i class="fas fa-copy"></i></button>' +
                     '</div>' +
+                    renderDuplicateHostWarning(backend) +
                 '</div>' +
                 '<div class="gguf-detail-actions">' +
                     '<button class="btn btn-sm btn-secondary" id="ggufRefreshDetail"><i class="fas fa-sync"></i> ' + _('gguf.refresh_backend') + '</button>' +
                 '</div>' +
             '</div>';
+    }
+
+    /**
+     * renderDuplicateHostWarning — R-MultiHost (2026-10-07).
+     *
+     * Показывает предупреждение, если ДРУГОЙ бэкенд зарегистрирован с тем же
+     * host. Имя хоста — не идентичность: на двух машинах с одинаковым compose
+     * контейнеры называются одинаково, и тогда URL этого бэкенда указывает на
+     * чужую машину. Симптом — «модели на диске есть, а на самом деле их нет»:
+     * список читается у соседа.
+     *
+     * Ничего не блокируем — только говорим оператору, что видит балансер.
+     */
+    function renderDuplicateHostWarning(backend) {
+        var list = (state && state.registeredBackends) || [];
+        var twins = list.filter(function (b) {
+            return b && b.id !== backend.id && b.host && b.host === backend.host;
+        });
+        if (!twins.length) return '';
+        var names = twins.map(function (b) { return b.id; }).join(', ');
+        var text = (typeof _ === 'function' && _('gguf.duplicate_host_warning')) ||
+            'Another backend is registered with the SAME host — requests for one of them will go to the wrong machine. Set BACKEND_HOST on the other machine and recreate its worker.';
+        return '<div class="gguf-url-warning" title="' + Utils.escapeHtml(text + ' [' + names + ']') + '">' +
+            '<i class="fas fa-triangle-exclamation"></i>' +
+            '<span>' + Utils.escapeHtml(text) + '</span>' +
+            '<span class="gguf-url-warning-list">' + Utils.escapeHtml(names) + '</span>' +
+        '</div>';
     }
 
     function renderDetailTabs() {

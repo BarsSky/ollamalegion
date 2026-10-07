@@ -33,12 +33,36 @@
 
     const M = (window.GgufModule = window.GgufModule || {});
 
+    /**
+     * syncBackendToApi — R-MultiHost (2026-10-07): передать выбранный бэкенд в
+     * API-клиент, чтобы операции с диском воркера (скачать модель, прогресс,
+     * отмена, удалить мусор, активные загрузки) адресовались ИМЕННО ему.
+     *
+     * Раньше эти операции шли прямым запросом из браузера: URL собирался как
+     * http://<host>:<port> из записи бэкенда и уходил с машины оператора в
+     * воркер, минуя балансер. Для удалённого воркера это либо не работало
+     * (имя контейнера из браузера не резолвится), либо уходило не на тот
+     * воркер — например, 13.6 GB модели могли лечь на первую машину.
+     */
+    function syncBackendToApi(backendId) {
+        var api = window.GgufApi;
+        if (api && typeof api.setBackendId === 'function') {
+            api.setBackendId(backendId || '');
+        }
+    }
+    M._syncBackendToApi = syncBackendToApi;
+
     // ---- Action handlers ----
 
     M.selectBackend = function(backendId) {
         const state = M.state;
         if (state.selectedBackendId === backendId) return;
         state.selectedBackendId = backendId;
+        // R-MultiHost (2026-10-07): сообщаем API-клиенту, на какой бэкенд
+        // адресовать операции с диском (скачивание, прогресс, отмена, чистка).
+        // Без этого они уходили прямым запросом из браузера по URL последнего
+        // соединения — то есть могли попасть не на тот воркер.
+        syncBackendToApi(backendId);
         // Invalidate cached Settings form (R32 #6) для нового бэкенда
         // (cache живёт до явной очистки, но renderSettingsPane() перерисует
         // когда панель будет открыта).

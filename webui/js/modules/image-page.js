@@ -263,16 +263,46 @@
         };
     }
 
+    /**
+     * backendHostCounts — R-MultiHost (2026-10-07): сколько бэкендов объявили
+     * каждый host. Имя хоста идентичностью НЕ является: на двух машинах с
+     * одинаковым compose контейнеры называются одинаково, и тогда URL одного из
+     * бэкендов ведёт на чужую машину.
+     */
+    function backendHostCounts(backends) {
+        var counts = {};
+        (backends || []).forEach(function (b) {
+            if (b && b.host) counts[b.host] = (counts[b.host] || 0) + 1;
+        });
+        return counts;
+    }
+
+    /**
+     * backendOptionLabel — подпись бэкенда в селекте {label, ambiguous}.
+     * ambiguous=true, когда такой же host есть ещё у кого-то: в этом случае
+     * список моделей и скачивание могут относиться к соседней машине.
+     */
+    function backendOptionLabel(b, hostCounts) {
+        var label = (b && (b.name || b.id)) || '';
+        if (b && b.host) {
+            label += ' (' + b.host + (b.imagePort ? ':' + b.imagePort : '') + ')';
+        }
+        var ambiguous = !!(b && b.host && hostCounts && hostCounts[b.host] > 1);
+        if (ambiguous) label = '\u26a0 ' + label;
+        return { label: label, ambiguous: ambiguous };
+    }
+
     var pure = {
-        escapeHtml: escapeHtml,
-        formatBytes: formatBytes,
+        escapeHtml: escapeHtml,        formatBytes: formatBytes,
         formatDuration: formatDuration,
         parseOpenAIError: parseOpenAIError,
         normalizeModels: normalizeModels,
         normalizeBackends: normalizeBackends,
         rolesSummary: rolesSummary,
         stateLabelKey: stateLabelKey,
-        normalizeLoadProgress: normalizeLoadProgress
+        normalizeLoadProgress: normalizeLoadProgress,
+        backendHostCounts: backendHostCounts,
+        backendOptionLabel: backendOptionLabel
     };
 
     // =====================================================================
@@ -544,11 +574,20 @@
             sel.innerHTML = '<option value="">' + escapeHtml(t('image.unknown', 'unknown')) + '</option>';
             return;
         }
+        // R-MultiHost (2026-10-07): имя хоста - не идентичность. Если у двух
+        // бэкендов один host (на двух машинах с одинаковым compose контейнеры
+        // называются одинаково), URL одного из них ведёт на чужую машину, и
+        // список моделей читается у соседа: «модели на диске есть», хотя у этого
+        // воркера их нет. Помечаем такие варианты, чтобы оператор не гадал.
+        var hostCounts = backendHostCounts(state.backends);
+        var dupWarning = t('image.duplicate_host_warning',
+            'Another backend uses the same host - requests for one of them will go to the wrong machine. Set BACKEND_HOST on that machine and recreate its worker.');
         sel.innerHTML = state.backends.map(function (b) {
-            var label = b.name || b.id;
-            if (b.host) label += ' (' + b.host + (b.imagePort ? ':' + b.imagePort : '') + ')';
-            return '<option value="' + escapeHtml(b.id) + '"' + (b.id === state.selectedBackendId ? ' selected' : '') + '>' +
-                escapeHtml(label) + '</option>';
+            var info = backendOptionLabel(b, hostCounts);
+            return '<option value="' + escapeHtml(b.id) + '"' +
+                (info.ambiguous ? ' title="' + escapeHtml(dupWarning) + '"' : '') +
+                (b.id === state.selectedBackendId ? ' selected' : '') + '>' +
+                escapeHtml(info.label) + '</option>';
         }).join('');
     }
 

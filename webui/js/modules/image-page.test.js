@@ -109,6 +109,55 @@ check('normalizeBackends: /api/v1/backends — фильтр по типу image_
     assert.strictEqual(list[0].imagePort, 18103);
 });
 
+// --- 3b. backendHostCounts / backendOptionLabel (R-MultiHost) --------------
+//
+// Имя хоста — не идентичность. На стенде из двух машин с одинаковым compose
+// image-воркер второй машины зарегистрировался как host=imageworker — то же имя,
+// что у контейнера первой. В WebUI подпись выглядела как
+// «IMAGEWORKER-34 (imageworker:18093)», а список моделей и скачивание уходили на
+// первую машину: «модели на диске есть», хотя у этого воркера их нет.
+// Такие варианты помечаем ⚠, чтобы оператор не гадал, чей это список.
+
+check('backendHostCounts: считает бэкенды по host', function () {
+    const counts = P.backendHostCounts([
+        { id: 'imageworker', host: 'imageworker' },
+        { id: 'IMAGEWORKER-34', host: 'imageworker' },
+        { id: 'CPPWORKER-34', host: '192.168.13.34' },
+        { id: 'no-host' },
+    ]);
+    assert.strictEqual(counts['imageworker'], 2);
+    assert.strictEqual(counts['192.168.13.34'], 1);
+    assert.strictEqual(counts[''], undefined, 'бэкенд без host не должен попадать в карту');
+});
+
+check('backendOptionLabel: уникальный host — обычная подпись без пометки', function () {
+    const counts = P.backendHostCounts([{ id: 'CPPWORKER-34', host: '192.168.13.34' }]);
+    const info = P.backendOptionLabel({ id: 'CPPWORKER-34', host: '192.168.13.34', imagePort: 18093 }, counts);
+    assert.strictEqual(info.ambiguous, false);
+    assert.strictEqual(info.label, 'CPPWORKER-34 (192.168.13.34:18093)');
+    assert.ok(info.label.indexOf('\u26a0') === -1, 'пометки быть не должно');
+});
+
+check('backendOptionLabel: одинаковый host у двух бэкендов — пометка ⚠', function () {
+    const list = [
+        { id: 'imageworker', host: 'imageworker', imagePort: 18093 },
+        { id: 'IMAGEWORKER-34', host: 'imageworker', imagePort: 18093 },
+    ];
+    const counts = P.backendHostCounts(list);
+    const info = P.backendOptionLabel(list[1], counts);
+    assert.strictEqual(info.ambiguous, true);
+    assert.ok(info.label.indexOf('\u26a0') === 0, 'подпись должна начинаться с пометки: ' + info.label);
+    assert.ok(info.label.indexOf('IMAGEWORKER-34') !== -1);
+    assert.ok(info.label.indexOf('imageworker:18093') !== -1);
+});
+
+check('backendOptionLabel: имя и порт необязательны', function () {
+    const counts = P.backendHostCounts([{ id: 'a', host: 'h' }, { id: 'b', host: 'h' }]);
+    const info = P.backendOptionLabel({ id: 'a', host: 'h' }, counts);
+    assert.strictEqual(info.label, '\u26a0 a (h)');
+    assert.strictEqual(P.backendOptionLabel({ id: 'x' }, {}).label, 'x');
+});
+
 // --- 4. normalizeLoadProgress ---------------------------------------------
 check('normalizeLoadProgress: формат image-воркера {progress:{state,stage,elapsed_ms}}', function () {
     const snap = P.normalizeLoadProgress({

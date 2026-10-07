@@ -20,6 +20,28 @@ const GgufApi = (function () {
     let apiToken = (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN) || '';
     const REQUEST_TIMEOUT_MS = 10000; // 10-second timeout for all requests
 
+    // selectedBackendId — R-MultiHost (2026-10-07): ID бэкенда, выбранного в
+    // списке слева на странице GGUF.
+    //
+    // ЗАЧЕМ. Операции, которые МЕНЯЮТ ДИСК ВОРКЕРА (скачать модель, посмотреть
+    // прогресс, отменить, удалить мусор, узнать активные загрузки), обязаны
+    // уходить ИМЕННО на выбранный бэкенд. Раньше они шли «прямым» режимом:
+    // URL собирался в БРАУЗЕРЕ как http://<host>:<port> из записи бэкенда, и
+    // запрос летел с машины оператора напрямую в воркер, минуя балансер.
+    //
+    // Следствия на живой паре из двух машин:
+    //   - если host не резолвится из браузера (имя контейнера — типичный случай),
+    //     скачивание на удалённый воркер не работало вовсе;
+    //   - скачивание уходило на ТОТ воркер, чей URL оказался в workerUrl, а не на
+    //     выбранный: легко положить 13.6 GB воркеру, которому эта модель не
+    //     нужна.
+    //
+    // Теперь при выбранном бэкенде те же операции идут через прокси балансера
+    // (/api/v1/gguf/backends/{id}/proxy/...), который сам решает, куда их
+    // доставить. Пустой selectedBackendId сохраняет прежнее поведение — режим
+    // прямого подключения по вручную заданному URL (кнопка «Подключиться»).
+    let selectedBackendId = '';
+
     // Default ports per backend type (used when backend.url has no port).
     // ВАЖНО: 18092 (а не 18090/18091) — это правильный default для llama.cpp CppWorker.
     const DEFAULT_LLAMACPP_PORT = 18092;
@@ -297,6 +319,24 @@ const GgufApi = (function () {
             return workerUrl;
         },
 
+        /**
+         * Set the SELECTED backend (from the backend list on the GGUF page).
+         *
+         * R-MultiHost (2026-10-07): пока бэкенд выбран, операции с диском воркера
+         * (скачать/прогресс/отмена/удалить/активные загрузки) идут через прокси
+         * балансера на ЭТОТ бэкенд, а не прямым запросом из браузера по URL
+         * выбранного ранее соединения. Пустая строка возвращает прямой режим.
+         *
+         * @param {string} backendId
+         */
+        setBackendId(backendId) {
+            selectedBackendId = backendId ? String(backendId) : '';
+        },
+
+        getBackendId() {
+            return selectedBackendId;
+        },
+
         /** Set HuggingFace API token for gated model access */
         setHFToken(token) {
             hfToken = token || '';
@@ -366,17 +406,31 @@ const GgufApi = (function () {
 
         // ---- Downloads ----
 
-        /** Start downloading a model file from HuggingFace */
+        /**
+         * Start downloading a model file from HuggingFace.
+         *
+         * R-MultiHost (2026-10-07): при выбранном бэкенде запрос идёт через
+         * прокси балансера ИМЕННО на него. Иначе (режим прямого подключения по
+         * URL) — как раньше, напрямую из браузера.
+         */
         async startDownload(modelId, filename, revision = 'main') {
-            return request('/api/hf/download', {
-                method: 'POST',
-                body: JSON.stringify({ modelId, filename, revision })
-            });
+            const body = JSON.stringify({ modelId, filename, revision });
+            if (selectedBackendId) {
+                return this.requestViaBackend(selectedBackendId, '/api/hf/download', {
+                    method: 'POST',
+                    body: body
+                });
+            }
+            return request('/api/hf/download', { method: 'POST', body: body });
         },
 
-        /** Get download progress */
+        /** Get download progress (на выбранном бэкенде — через балансер) */
         async getDownloadProgress(modelId, filename) {
-            return getJson('/api/hf/progress?modelId=' + encodeURIComponent(modelId) + '&filename=' + encodeURIComponent(filename));
+            const path = '/api/hf/progress?modelId=' + encodeURIComponent(modelId) + '&filename=' + encodeURIComponent(filename);
+            if (selectedBackendId) {
+                return this.requestViaBackend(selectedBackendId, path);
+            }
+            return getJson(path);
         },
 
         /**
@@ -386,23 +440,34 @@ const GgufApi = (function () {
          * idempotent — если файла нет, вернёт {status: "noop"}.
          */
         async deleteDownload(modelId, filename) {
-            return request('/api/hf/cleanup', {
-                method: 'POST',
-                body: JSON.stringify({ modelId, filename })
-            });
+            const body = JSON.stringify({ modelId, filename });
+            if (selectedBackendId) {
+                return this.requestViaBackend(selectedBackendId, '/api/hf/cleanup', {
+                    method: 'POST',
+                    body: body
+                });
+            }
+            return request('/api/hf/cleanup', { method: 'POST', body: body });
         },
 
-        /** List all active downloads */
+        /** List all active downloads (на выбранном бэкенде — через балансер) */
         async listActiveDownloads() {
+            if (selectedBackendId) {
+                return this.requestViaBackend(selectedBackendId, '/api/hf/downloads');
+            }
             return getJson('/api/hf/downloads');
         },
 
-        /** Cancel a download */
+        /** Cancel a download (на выбранном бэкенде — через балансер) */
         async cancelDownload(modelId, filename) {
-            return request('/api/hf/cancel', {
-                method: 'POST',
-                body: JSON.stringify({ modelId, filename })
-            });
+            const body = JSON.stringify({ modelId, filename });
+            if (selectedBackendId) {
+                return this.requestViaBackend(selectedBackendId, '/api/hf/cancel', {
+                    method: 'POST',
+                    body: body
+                });
+            }
+            return request('/api/hf/cancel', { method: 'POST', body: body });
         },
 
     // ---- Model Management via Balancer ----

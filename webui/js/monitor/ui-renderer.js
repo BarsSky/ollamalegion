@@ -7,6 +7,46 @@
   var T = MA.T;
 
   /**
+   * aggVRAM — суммарная VRAM кластера БЕЗ двойного счёта по одной физкарте.
+   *
+   * Берём общий хелпер из monitor-metrics.js (window.MonitorAggregates), потому
+   * что сумм по бэкендам в проекте несколько, и они обязаны считать одинаково;
+   * локальный fallback нужен на случай старого набора скриптов/кеша, когда
+   * monitor-metrics.js ещё не загрузился (порядок defer-скриптов).
+   *
+   * Почему это вообще нужно: cppworker и imageworker на ОДНОЙ машине читают
+   * nvidia-smi одной карты и присылают одинаковые memoryTotal/Used. Наивная
+   * сумма давала 16 GB на карте в 8 GB в шапке Monitor и в баннере
+   * «VRAM заполнена».
+   */
+  function aggVRAM(backends) {
+    if (window.MonitorAggregates && typeof window.MonitorAggregates.aggregateVRAM === 'function') {
+      return window.MonitorAggregates.aggregateVRAM(backends);
+    }
+    // Fallback: группируем по UUID карт, иначе по имени хоста, и берём максимум
+    // в группе (две записи об одной карте не складываем).
+    var byGPU = {};
+    (Array.isArray(backends) ? backends : []).forEach(function(b) {
+      var v = (b && b.vram) || null;
+      if (!v || !v.totalGB) return;
+      var g = (b && b.gpu) || {};
+      var rawUUIDs = g.uuids || g.UUIDs;
+      var uuids = Array.isArray(rawUUIDs) ? rawUUIDs.filter(Boolean).sort() : [];
+      var key = uuids.length ? 'gpu:' + uuids.join(',') : 'host:' + ((b && (b.host || b.id)) || 'unknown');
+      var prev = byGPU[key];
+      if (prev) {
+        prev.totalGB = Math.max(prev.totalGB, v.totalGB || 0);
+        prev.usedGB = Math.max(prev.usedGB, v.usedGB || 0);
+      } else {
+        byGPU[key] = { totalGB: v.totalGB || 0, usedGB: v.usedGB || 0 };
+      }
+    });
+    var totalGB = 0, usedGB = 0;
+    Object.keys(byGPU).forEach(function(k) { totalGB += byGPU[k].totalGB; usedGB += byGPU[k].usedGB; });
+    return { totalGB: totalGB, usedGB: usedGB, groups: Object.keys(byGPU).length, deduped: false };
+  }
+
+  /**
    * R-Image Phase 5 (2026-10-02): helpers для image-бэкенда
    * (BackendType=image_cpp, stable-diffusion.cpp).
    *
@@ -459,6 +499,13 @@
           models = (o.runningModels || []).map(function (m) { return m.name || m; });
         }
       }
+      // UUID физических карт — по ним Monitor понимает, что несколько бэкендов
+      // видят ОДНУ видеокарту, и не удваивает её память. Нормализуем к
+      // lowerCamelCase независимо от регистра исходного JSON.
+      g = Object.assign({}, g);
+      if (g.uuids === undefined && g.UUIDs !== undefined) g.uuids = g.UUIDs;
+      if (g.uuids === undefined && g.Uuids !== undefined) g.uuids = g.Uuids;
+
       return Object.assign({}, b, {
         id: b.id || b.ID,
         status: sm[sr] || sr || 'unknown',
@@ -553,8 +600,12 @@
       }
     });
     var pend = q.pending_count || 0, proc = q.processing_count || 0;
-    var totV = bk.reduce(function(s, b) { return s + ((b.vram && b.vram.totalGB) || 0); }, 0);
-    var usdV = bk.reduce(function(s, b) { return s + ((b.vram && b.vram.usedGB) || 0); }, 0);
+    // Дедуп по физической GPU (см. MonitorAggregates.aggregateVRAM): несколько
+    // бэкендов одной машины читают nvidia-smi ОДНОЙ карты, и наивная сумма
+    // показывала удвоенную память (16 GB на карте 8 GB).
+    var vramAgg = aggVRAM(bk);
+    var totV = vramAgg.totalGB;
+    var usdV = vramAgg.usedGB;
     var tml = bk.reduce(function(s, b) { return s + ((b.models || []).length); }, 0);
 
     document.getElementById('statBackends').textContent = bk.length;
@@ -669,8 +720,9 @@
     });
     var ms = data.cluster.queue ? data.cluster.queue.max_size : 100, cs = q.current_size || 0;
     if (cs > ms * 0.8) alerts.push({ level: 'red', text: T('monitor.alert.queueFull', { pct: (cs / ms * 100).toFixed(0), size: cs, max: ms }) });
-    var tv = bks.reduce(function(s, b) { return s + ((b.vram && b.vram.totalGB) || 0); }, 0);
-    var uv = bks.reduce(function(s, b) { return s + ((b.vram && b.vram.usedGB) || 0); }, 0);
+    var vramAlerts = aggVRAM(bks);
+    var tv = vramAlerts.totalGB;
+    var uv = vramAlerts.usedGB;
     if (tv > 0 && uv / tv > 0.85) alerts.push({ level: 'red', text: T('monitor.alert.vramFull', { pct: (uv / tv * 100).toFixed(0), used: uv.toFixed(1), total: tv.toFixed(0) }) });
 
     document.getElementById('alertContainer').innerHTML = alerts.map(function(a) {

@@ -29,6 +29,39 @@ func countGPUs(output string) int {
 	return len(lines)
 }
 
+// collectGPUUUIDs — физические идентификаторы карт этой машины.
+//
+// ЗАЧЕМ (R-Image follow-up, 2026-10-07): балансер обязан отличать «две машины по
+// одной карте» от «одна машина, два бэкенда». Имя хоста для этого не годится —
+// контейнеры на одном хосте регистрируются под разными именами
+// (cppworker-gpu, imageworker), поэтому балансер видел две «машины» и складывал
+// память одной карты дважды. UUID карты у контейнеров одного хоста совпадает
+// побайтово, а у разных физических карт — различается.
+//
+// Пустой результат означает «неизвестно» (нет nvidia-smi, нет прав, не-nvidia
+// платформа): вызывающая сторона трактует это как «отдельная машина», то есть
+// сохраняет прежнее поведение и ничего не ломает.
+//
+// Своя команда, а не общий запрос метрик: UUID — строковый столбец, и добавлять
+// его в parseNvidiaSmiOutput значило бы переиндексировать все числовые поля
+// (тесты и NVML-путь опираются на текущий порядок).
+func collectGPUUUIDs() []string {
+	cmd := exec.Command("nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var uuids []string
+	for _, line := range strings.Split(string(out), "\n") {
+		u := strings.TrimSpace(line)
+		if u == "" {
+			continue
+		}
+		uuids = append(uuids, u)
+	}
+	return uuids
+}
+
 // parseGPUMModels - парсинг названий GPU моделей
 func parseGPUMModels(output string) []string {
 	var models []string

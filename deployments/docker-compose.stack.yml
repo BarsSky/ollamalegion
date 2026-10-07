@@ -1,157 +1,98 @@
 # =============================================================================
-# OllamaLegion — единый docker-compose для всех сценариев запуска
+# OllamaLegion — single compose file for every deployment scenario
 # =============================================================================
 #
-# ОДИН ФАЙЛ, ТРИ СЦЕНАРИЯ (через профили). В deployments/ исторически лежало
-# 19 compose-файлов, где один и тот же сервис описывался по-разному, а часть
-# переменных не читалась кодом вовсе (см. «ИМЕНА ПЕРЕМЕННЫХ» ниже). Здесь один
-# источник правды; старые файлы оставлены, но новым стекам нужен этот.
+# ONE FILE, FOUR PROFILES. This is the canonical compose file; the other files in
+# deployments/ are historical/special-purpose (see docs/ru/docker-compose-guide.md).
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# СЦЕНАРИЙ 1. Всё на одной машине: cppworker + agent + balancer + webui
-# ─────────────────────────────────────────────────────────────────────────────
+#   full         cppworker-gpu + imageworker + loadbalancer + webui   (all on one box)
+#   worker       cppworker-gpu + imageworker + agent                  (balancer elsewhere)
+#   balancer     loadbalancer + webui                                 (backends connect in)
+#   legacy-agent external metrics collector instead of the embedded one
+#
+# Setup:
 #   cd deployments
-#   cp .env.bundled-with-agent.example .env.bundled-with-agent   # первый раз
-#   # в deployments/.env задать CPPWORKER_API_TOKEN (единый токен стека)
-#   docker compose -f docker-compose.stack.yml --profile full up -d --build
+#   cp .env.example .env                                  # compose interpolation
+#   cp .env.bundled-with-agent.example .env.bundled-with-agent
+#   # set CPPWORKER_API_TOKEN (the single stack token) in deployments/.env
 #
-#   Клиенты (OpenWebUI/Cline) → http://<хост>:18080
-#   WebUI оператора           → http://<хост>:18083
-#   Admin API                 → http://<хост>:18081
+# Run:
+#   docker compose -f docker-compose.stack.yml --profile full up -d
 #
-#   ТЕКСТ + КАРТИНКИ В ОДНОМ СТЕНДЕ (R-Image Phase 8). Профиль full поднимает
-#   ОБА пула бэкендов за ОДНИМ балансером:
-#     cppworker-gpu (llama_cpp, :18092) — текст;
-#     imageworker   (image_cpp,  :18093) — генерация изображений (sd.cpp).
-#   Оба регистрируются в балансере сами (метка auto-registered), поэтому в WebUI
-#   и Monitor видны как два разных типа бэкендов одного кластера; трафик
-#   расходится по типу запроса: текст → llama_cpp, /v1/images/* и /sdapi/v1/* →
-#   image_cpp. OpenAI-поверхность для картинок — http://<хост>:18079.
-#   Проверка после старта:
-#     curl -s localhost:18081/api/v1/backends | jq '.backends[] | {id, type}'
-#     curl -s localhost:18079/v1/images/generations -H 'Content-Type: application/json' \
-#          -d '{"model":"sd-cpp-local","prompt":"a cat"}'
-#   Модели картинок — это КАТАЛОГИ-bundle'ы в ${MODELS_DIR}/image/<имя>/; каталог
-#   общий с текстовыми .gguf (../models), поэтому один том моделей на весь стенд.
-#   Готовый смоук этого сценария: scripts/docker-stack-smoke.ps1.
+# Client endpoints: Ollama API :18080, OpenAI :18079, Admin API :18081, WebUI :18083.
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# СЦЕНАРИЙ 2. Только бэкенд: cppworker + agent (балансер уже есть на другой машине)
-# ─────────────────────────────────────────────────────────────────────────────
-#   В .env.bundled-with-agent задать ДВЕ вещи:
-#     BALANCER_URL=http://<хост-балансера>:18081   # ADMIN API, НЕ 18080
-#     BACKEND_HOST=<адрес этой машины, видимый С балансера>
-#   docker compose -f docker-compose.stack.yml --profile worker up -d
+# Scenario 1 also serves image generation: cppworker-gpu (llama_cpp, :18092) for
+# text and imageworker (image_cpp, :18093) for images, both behind one balancer.
+# Text goes to llama_cpp; /v1/images/*, /sdapi/v1/* and /api/image/* go to
+# image_cpp. Verify: curl -s localhost:18081/api/v1/backends | jq '.backends[]|{id,type}'
 #
-#   Agent зарегистрирует cppworker в удалённом балансере и будет слать метрики.
-#   Балансер начнёт проксировать инференс на BACKEND_HOST:18092 — этот порт
-#   обязан быть доступен с машины балансера (в сценарии 1 он нужен только
-#   внутри сети, здесь — наружу).
+# Scenario 2 (worker) REQUIRES BALANCER_URL in deployments/.env — it points at the
+# ADMIN API (:18081) of the balancer on ANOTHER machine, not the client port. Also
+# set the advertise host so the balancer can reach this worker. Without
+# BALANCER_URL the workers try the in-network name "loadbalancer", which does not
+# exist in this profile, and registration retries forever.
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# СЦЕНАРИЙ 3. Только управление: balancer + webui (бэкенды подключатся сами)
-# ─────────────────────────────────────────────────────────────────────────────
-#   docker compose -f docker-compose.stack.yml --profile balancer up -d
+# -----------------------------------------------------------------------------
+# Documentation
+# -----------------------------------------------------------------------------
+#   docs/en/deployment-stack.md          — scenarios, profiles, ports (English)
+#   docs/deployment-stack.md             — same, in Russian, more detail
+#   docs/ru/deployment-troubleshooting.md — incident write-ups and env-var traps
 #
-#   Бэкенды (cppworker+agent на других машинах) регистрируются сами, если у них
-#   задан BALANCER_URL=http://<этот-хост>:18081. Пока их нет,
-#   GET /api/v1/backends вернёт пустой список.
+# The traps below are the short version of that troubleshooting file.
 #
-# ═════════════════════════════════════════════════════════════════════════════
-# ⚠ ИМЕНА ПЕРЕМЕННЫХ: что читает код (проверено по исходникам)
-# ═════════════════════════════════════════════════════════════════════════════
-# В проекте встречались имена, которые КОД НЕ ЧИТАЕТ: переменная выглядит
-# заданной, но не влияет ни на что. Правильные имена:
+# -----------------------------------------------------------------------------
+# Environment variables: `environment:` OVERRIDES `env_file`
+# -----------------------------------------------------------------------------
+# Compose applies env_file first, then LAYERS environment on top. A line such as
+# `- LB_FOO=${LB_FOO:-}` therefore WIPES the value from .env.bundled-with-agent
+# with an empty string, because `${...}` only reads deployments/.env. Rule: set a
+# toggle EITHER in .env.bundled-with-agent (and do not mention it in environment)
+# OR in environment with a default from .env. Toggles are deliberately not
+# duplicated below.
 #
-#   agent (cmd/agent/main.go):
-#     ✅ BACKEND_TYPE            ❌ AGENT_BACKEND_TYPE   (иначе бэкенд = Ollama!)
-#     ✅ CPPWORKER_URL           ❌ AGENT_CPPWORKER_URL
-#     ✅ NODE_LABELS             ❌ AGENT_NODE_LABELS
-#     ✅ GPU_MODE                ❌ AGENT_MODE
-#     ✅ COLLECT_INTERVAL        ❌ AGENT_COLLECT_INTERVAL
-#     ✅ HEARTBEAT_INTERVAL      ❌ AGENT_HEARTBEAT_INTERVAL
-#     ✅ AGENT_CPPWORKER_HOST / AGENT_CPPWORKER_PORT (эти читаются)
-#     ✅ BALANCER_URL / BALANCER_TOKEN / AGENT_ID / AGENT_PORT /
-#        AGENT_PUBLIC_HOST / AGENT_MAX_MODELS / AGENT_MAX_CONCURRENT_REQUESTS /
-#        AGENT_WEIGHT / NVML_ENABLED
-#     ❌ AGENT_BACKEND_ID / AGENT_REGISTER_GPU_MODE — не читаются вовсе
+# -----------------------------------------------------------------------------
+# Variable names the code actually reads (the rest are ignored silently)
+# -----------------------------------------------------------------------------
+#   agent:      BACKEND_TYPE (NOT AGENT_BACKEND_TYPE — wrong name registers the
+#               backend as Ollama), CPPWORKER_URL, NODE_LABELS, GPU_MODE,
+#               COLLECT_INTERVAL, HEARTBEAT_INTERVAL, BALANCER_URL,
+#               BALANCER_TOKEN, AGENT_ID, AGENT_PORT, AGENT_PUBLIC_HOST.
+#   cppworker:  CPPWORKER_*, API_TOKEN, CPPWORKER_BALANCER_URL/_TOKEN,
+#               CPPWORKER_ADVERTISE_HOST, CPPWORKER_REGISTER_NAME (backend ID).
+#               CPPWORKER_ADVERTISED_PORT is NOT read — use AGENT_CPPWORKER_PORT.
+#   sdworker:   SDWORKER_BALANCER_URL/_TOKEN, SDWORKER_ADVERTISE_HOST/PORT,
+#               SDWORKER_BACKEND_ID, SDWORKER_PORT, SDWORKER_MAX_CONCURRENT.
+#   balancer:   LB_*, CPPWORKER_API_TOKEN, CPPWORKER_URL. BALANCER_PORT and
+#               BALANCER_API_PORT are NOT read — ports come from config/config.json.
 #
-#   cppworker (cmd/cppworker, internal/cppbackend):
-#     ✅ CPPWORKER_* , API_TOKEN, CPPWORKER_BALANCER_URL,
-#        CPPWORKER_BALANCER_TOKEN, CPPWORKER_ADVERTISE_HOST
-#     ✅ CPPWORKER_REGISTER_NAME — ID записи бэкенда (он же AGENT_ID для
-#        встроенного агента: агент обязан регистрироваться под тем же ID)
-#     ❌ CPPWORKER_ADVERTISED_PORT — не читается; порт, по которому балансер
-#        доедет до бэкенда, задаётся через AGENT_CPPWORKER_PORT
+# -----------------------------------------------------------------------------
+# Image registry: one variable, IMAGE_REGISTRY
+# -----------------------------------------------------------------------------
+#   IMAGE_REGISTRY=                        -> ollama-legion/balancer:<tag>
+#   IMAGE_REGISTRY=local-docker-hub:5000/  -> local-docker-hub:5000/ollama-legion/balancer:<tag>
 #
-#   встроенный агент (internal/agent/embedded.go, R-Image 2026-10-07):
-#     Включается AGENT_EMBEDDED=on и живёт В ПРОЦЕССЕ воркера (cppworker или
-#     sdworker). Читаются: AGENT_EMBEDDED, AGENT_ID, AGENT_PUBLIC_HOST,
-#     AGENT_EMBEDDED_PORT (или AGENT_PORT), AGENT_WORKER_PORT, BALANCER_URL,
-#     BALANCER_TOKEN, GPU_MODE, NVML_ENABLED, METRICS_INTERVAL/COLLECT_INTERVAL,
-#     HEARTBEAT_INTERVAL, AGENT_MAX_CONCURRENT_REQUESTS, AGENT_WEIGHT,
-#     API_TOKEN/CPPWORKER_API_TOKEN/BALANCER_API_TOKEN.
-#     ID по умолчанию берётся из SDWORKER_BACKEND_ID (image-воркер) или
-#     CPPWORKER_REGISTER_NAME (llama.cpp-воркер), иначе из hostname.
-#     ЗАЧЕМ: внешний контейнер `agent` регистрируется ОТДЕЛЬНОЙ записью и
-#     переживает пересоздание воркера — отсюда «перерегистрация» в мониторинге.
-#     Встроенный агент живёт ровно столько, сколько воркер, и пишет метрики в
-#     ЕГО ЖЕ запись (hasAgent=true, реальный agentPort).
-#
-#   balancer:
-#     ✅ LB_* (см. .env.bundled-with-agent.example), CPPWORKER_API_TOKEN,
-#        CPPWORKER_URL
-#     ❌ BALANCER_PORT / BALANCER_API_PORT — порты берутся из
-#        config/config.json (loadBalancer.port/.apiPort) или флагами
-#        -port/-api-port, а не из окружения
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# ⚠ ПОРЯДОК ПЕРЕМЕННЫХ: `environment:` ПЕРЕОПРЕДЕЛЯЕТ `env_file`
-# ─────────────────────────────────────────────────────────────────────────────
-# Compose сначала подставляет env_file, затем НАКЛАДЫВАЕТ environment. Поэтому
-# строка вида `- LB_FOO=${LB_FOO:-}` в environment ЗАТИРАЕТ значение из
-# .env.bundled-with-agent пустой строкой: интерполяция `${...}` читает только
-# deployments/.env, где таких переменных нет. Правило: переключатель задаётся
-# ЛИБО в .env.bundled-with-agent (и не упоминается в environment), ЛИБО в
-# environment с дефолтом из .env. Ниже переключатели намеренно не дублируются.
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# 🐳 СВОЙ РЕПОЗИТОРИЙ ОБРАЗОВ: одна переменная IMAGE_REGISTRY
-# ─────────────────────────────────────────────────────────────────────────────
-# Все четыре образа берут префикс из `IMAGE_REGISTRY` (deployments/.env):
-#
-#   IMAGE_REGISTRY=                        → локальные образы (по умолчанию):
-#                                            ollama-legion/balancer:<тег>
-#   IMAGE_REGISTRY=local-docker-hub:5000/  → local-docker-hub:5000/ollama-legion/balancer:<тег>
-#
-# ⚠️ СЛЭШ НА КОНЦЕ ОБЯЗАТЕЛЕН. Compose — не язык с нормализацией путей: он
-# склеивает строки буквально, и без слэша получится
-# `local-docker-hub:5000ollama-legion/balancer` — невалидная ссылка. Скрипты
-# сборки (scripts/lib-image-registry.ps1 → Get-ImageRegistryPrefix) слэш
-# добавляют сами и значения-заглушки (`local`, `docker.io`, `index.docker.io`)
-# превращают в пустой префикс.
+# The trailing slash is REQUIRED: compose concatenates strings literally, so a
+# missing slash yields "local-docker-hub:5000ollama-legion/..." (invalid reference).
+# scripts/lib-image-registry.ps1 adds the slash and maps placeholder values
+# (local, docker.io, index.docker.io) to an empty prefix.
 # =============================================================================
 
 name: ollama-legion-stack
 
 services:
-  # ═══════════════════════════════════════════════════════════════════════════
-  # balancer — точка входа для клиентов (OpenAI + Ollama API) и admin API
-  # Профили: balancer | full
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
+  # balancer — client entry point (OpenAI + Ollama API) and admin API
+  # Profiles: balancer | full
+  # ===========================================================================
   loadbalancer:
     image: ${IMAGE_REGISTRY:-}ollama-legion/balancer:${BALANCER_TAG:-r83-submodule-v22}
-    # Phase 8 (2026-10-03): сборка ИЗ ИСХОДНИКОВ. До этого build: был только у
-    # imageworker, поэтому `docker compose --profile full up -d --build`
-    # пересобирал ОДИН image-воркер, а балансер оставался старым образом: в
-    # стенде не появлялись ни 18079 (OpenAI-поверхность картинок), ни метрики
-    # image-запросов, ни cluster.image. Ровно это выглядело как «в докере новый
-    # бэкенд не активен».
-    #
-    # cppworker-gpu и agent сознательно остаются image-only: их код в этой фазе
-    # не менялся, а пересборка llama.cpp из исходников занимает десятки минут (и
-    # ломала бы работающий текстовый пул). Сборка всего из исходников — в
-    # docker-compose.bundled-full.yml.
+    # Built from source. Reason: `--build` used to rebuild only imageworker, so
+    # the balancer stayed on an old image and the image-generation surface
+    # (:18079) never appeared — it looked like "the new backend is inactive in
+    # docker". cppworker-gpu and agent are intentionally image-only: their code
+    # did not change in that phase, and rebuilding llama.cpp from source takes
+    # tens of minutes. Full source build: docker-compose.bundled-full.yml.
     build:
       context: ..
       dockerfile: docker/balancer/Dockerfile
@@ -163,31 +104,27 @@ services:
     security_opt:
       - no-new-privileges:true
     ports:
-      - "${LB_PORT:-18080}:18080"        # клиентский API (OpenWebUI, Cline)
-      - "${LB_ADMIN_PORT:-18081}:18081"  # admin API (регистрация, метрики, WebUI)
-      # R-Image (2026-09-27): OpenAI-поверхность image-генерации (/v1/images/*,
-      # /v1/images/generations|edits|variations). Внутри контейнера порт 18079
-      # (loadBalancer.openAIPort в config.json; env LB_OPENAI_PORT, дефолт 18079);
-      # здесь меняется только ВНЕШНИЙ порт — как у LB_PORT выше.
+      - "${LB_PORT:-18080}:18080"        # client API (OpenWebUI, Cline)
+      - "${LB_ADMIN_PORT:-18081}:18081"  # admin API (registration, metrics, WebUI)
+      # OpenAI surface for image generation (/v1/images/*, /sdapi/v1/*). Inside the
+      # container the port is 18079 (loadBalancer.openAIPort in config.json, env
+      # LB_OPENAI_PORT); only the EXTERNAL port changes here, same as LB_PORT above.
       - "${LB_OPENAI_PORT:-18079}:18079"
     environment:
       - GIN_MODE=release
       - LOG_LEVEL=${LB_LOG_LEVEL:-info}
       - LB_CONFIG_PATH=/app/config/config.json
-      # R83 (2026-09-28): версия запущенного образа — в первой шапке логов.
-      # Значение берётся из того же тега, что и image выше, поэтому лог всегда
-      # честно отвечает на вопрос «а точно ли в контейнере новая сборка?».
+      # Version of the running image in the startup banner, so the log always
+      # answers "is this really the build I deployed?".
       - APP_VERSION=${BALANCER_TAG:-r83-submodule-v22}
-      # ЕДИНЫЙ токен стека. Обязан совпадать с:
+      # SINGLE stack token. Must match:
       #   cppworker -> CPPWORKER_API_TOKEN / API_TOKEN
       #   agent     -> BALANCER_TOKEN
       #   webui     -> API_TOKEN
-      - LB_API_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
-      # R83 (2026-09-29): вместимость бэкенда = ФАКТИЧЕСКОЕ число слотов модели
-      # (cppworker отдаёт max_slots в /api/models). Так балансер пропускает столько
-      # параллельных запросов, сколько слотов заведено при загрузке (parallel=2 →
-      # два одновременно), а не сериализует их по одному. Значение живёт в
-      # deployments/.env; по умолчанию выключено (прежнее поведение).
+      - LB_API_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
+      # Backend capacity = the ACTUAL number of model slots (cppworker reports
+      # max_slots in /api/models), so the balancer admits as many parallel requests
+      # as the loaded model has slots instead of serialising them.
       - LB_CAPACITY_FROM_MODEL_SLOTS=${LB_CAPACITY_FROM_MODEL_SLOTS:-false}
       - LB_NCTX_RELOAD_ENABLED=${LB_NCTX_RELOAD_ENABLED:-true}
       - LB_NCTX_RELOAD_MAX_N_CTX=${LB_NCTX_RELOAD_MAX_N_CTX:-131072}
@@ -199,27 +136,22 @@ services:
       - LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=${LB_NCTX_PREFLIGHT_MAX_WAIT_SEC:-1800}
       - LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER=${LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER:-3}
       - LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC=${LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC:-300}
-      # Phase 8 (2026-10-03): где балансер хранит профили image-моделей.
-      #
-      # ЗАЧЕМ ЯВНО. По умолчанию стор пишет в config/image-model-profiles.json,
-      # то есть в /app/config — а он смонтирован ТОЛЬКО ДЛЯ ЧТЕНИЯ (`:ro` ниже).
-      # Сохранение профиля из WebUI падало бы на read-only файловой системе: в
-      # едином стенде оператор не смог бы ни создать, ни поправить профиль
-      # image-модели. /app/data — записываемый том (balancer_data).
+      # Where the balancer stores image-model profiles. Must be explicit: the
+      # default is config/image-model-profiles.json under /app/config, which is
+      # mounted READ-ONLY below, so saving a profile from the WebUI would fail.
+      # /app/data is a writable volume (balancer_data).
       - LB_IMAGE_MODEL_PROFILES_PATH=${LB_IMAGE_MODEL_PROFILES_PATH:-/app/data/image-model-profiles.json}
-      # R84: политика сосуществования image-генерации с текстом (balancing.image).
-      # Раньше её можно было задать только в config.json, а он смонтирован read-only
-      # (`../config:/app/config:ro`) — правка требовала доступа к хосту и
-      # перезапуска. Теперь переопределение из WebUI живёт здесь и применяется на
-      # ходу; env-переменных для самих полей политики в проекте нет.
+      # Coexistence policy for image generation vs text (balancing.image). It used
+      # to be settable only in the read-only config.json; now the WebUI override
+      # lives here and applies live (there are no env vars for the policy fields).
       - LB_IMAGE_RESOURCES_PATH=${LB_IMAGE_RESOURCES_PATH:-/app/data/image-resources.json}
-      # Сколько ждать авто-загрузку модели, прежде чем отдать 503 «попробуйте
-      # позже». Для 27B на A10/3070 загрузка 3–8 минут, поэтому дефолт 900 с
-      # (в коде дефолт 180 с — его мало). 0 = не ждать вовсе.
+      # How long to wait for auto-load before answering 503 "try later". A 27B model
+      # on A10/3070 takes 3-8 minutes, hence 900 s (the in-code default of 180 s is
+      # too short). 0 = do not wait at all.
       - LB_AUTO_LOAD_WAIT_SEC=${LB_AUTO_LOAD_WAIT_SEC:-900}
-      # Переключатели поведения (LB_OPENAI_AUTO_STREAM, LB_AUTO_LOAD_ASYNC,
-      # LB_AUTO_CONTINUE_*, LB_GPU_HEADROOM_PERCENT) НЕ дублируются здесь —
-      # они задаются в .env.bundled-with-agent (см. шапку про порядок).
+      # Behaviour toggles (LB_OPENAI_AUTO_STREAM, LB_AUTO_LOAD_ASYNC,
+      # LB_AUTO_CONTINUE_*, LB_GPU_HEADROOM_PERCENT) are deliberately NOT duplicated
+      # here — set them in .env.bundled-with-agent (see the header on ordering).
     env_file:
       - .env.bundled-with-agent
     volumes:
@@ -234,22 +166,20 @@ services:
       start_period: 15s
     profiles: ["balancer", "full"]
 
-  # ═══════════════════════════════════════════════════════════════════════════
-  # webui — дашборд оператора (мониторинг, загрузка моделей, настройки)
-  # Профили: balancer | full
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ===========================================================================
+  # webui — operator dashboard (monitoring, model loading, settings)
+  # Profiles: balancer | full
+  # ===========================================================================
   webui:
     image: ${IMAGE_REGISTRY:-}ollama-legion/webui:${WEBUI_TAG:-r83-submodule-v22}
-    # Phase 8: сборка из исходников — по той же причине, что у балансера: без
-    # build: пункт навигации «Image-бэкенды» и панель запросов в Monitor не
-    # доехали бы до оператора (образ оставался старым), и это выглядело как
-    # «WebUI не видит image-бэкенд».
+    # Built from source for the same reason as the balancer: with a stale image the
+    # "Image backends" navigation entry and the Monitor request panel never reach
+    # the operator, which looks like "the WebUI cannot see the image backend".
     #
-    # VERSION — не просто подпись: Dockerfile подменяет им токен ?v= во всех
-    # html (sed 's/?v=.../?v=${VERSION}/'), а nginx отдаёт js с expires 1y. При
-    # неизменном токене браузер оператора оставил бы СТАРЫЕ модули из кэша даже
-    # после пересборки (именно так правки R70 не доезжали). Поэтому дефолт —
-    # версия релиза, а не «dev».
+    # VERSION is not just a label: the Dockerfile substitutes it into the ?v= token
+    # of every html (sed 's/?v=.../?v=${VERSION}/'), and nginx serves js with
+    # expires 1y. With an unchanged token the browser would keep OLD modules from
+    # cache even after a rebuild. Hence the default is the release version.
     build:
       context: ..
       dockerfile: docker/webui/Dockerfile
@@ -262,17 +192,15 @@ services:
     depends_on:
       loadbalancer:
         condition: service_healthy
-        # R-Image (2026-10-07): зависимость ОПЦИОНАЛЬНА, чтобы работал сценарий
-        # «только бэкенд» (--profile worker), где балансер живёт на ДРУГОЙ
-        # машине. Без required:false compose отвергает ВЕСЬ проект
-        # («service webui depends on undefined service loadbalancer»), потому
-        # что loadbalancer не входит в активный профиль — и развернуть бэкенды
-        # отдельно было невозможно.
+        # OPTIONAL dependency, so the backend-only scenario (`--profile worker`,
+        # balancer on ANOTHER machine) works at all. Without required:false compose
+        # rejects the WHOLE project ("service webui depends on undefined service
+        # loadbalancer") because loadbalancer is not in the active profile.
         #
-        # Почему это безопасно: depends_on задаёт только ПОРЯДОК запуска. Если
-        # loadbalancer активен (профили full/balancer) — ждём его healthy; если
-        # его нет в профиле — compose не ждёт и не падает, а воркеры
-        # регистрируются в ВНЕШНЕМ балансере по BALANCER_URL.
+        # Why it is safe: depends_on only defines start ORDER. If loadbalancer is
+        # active (full/balancer) we wait for healthy; if it is absent from the
+        # profile compose neither waits nor fails, and the workers register with
+        # the EXTERNAL balancer via BALANCER_URL.
         required: false
     ports:
       - "${WEBUI_PORT:-18083}:80"
@@ -284,8 +212,8 @@ services:
     profiles: ["balancer", "full"]
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # cppworker-gpu — инференс llama.cpp на GPU
-  # Профили: worker | full
+  # cppworker-gpu — llama.cpp inference on GPU
+  # Profiles: worker | full
   # ═══════════════════════════════════════════════════════════════════════════
   cppworker-gpu:
     image: ${IMAGE_REGISTRY:-}ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-r83-submodule-v22}
@@ -296,63 +224,53 @@ services:
       - CPPWORKER_HOST=0.0.0.0
       - CPPWORKER_PORT=18092
       - CPPWORKER_MODELS_DIR=/app/models
-      # R83 (2026-09-28): версия — в стартовом логе cppworker.
+      # Version of the running image in the cppworker startup log.
       - APP_VERSION=${CPPWORKER_GPU_TAG:-r83-submodule-v22}
-      # Регистрацию бэкенда делает ТОЛЬКО agent. Если включить и Go-side
-      # регистрацию, в балансере появится ДВА бэкенда на один endpoint.
+      # ONLY the agent registers the backend. Enabling the Go-side registration as
+      # well would create TWO backend records for one endpoint.
       - CPPWORKER_REGISTER_DISABLE=true
-      - API_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
-      - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
-      # Балансер нужен cppworker для pull-based sync профилей моделей.
-      # В сценарии 2 сюда попадает удалённый адрес из BALANCER_URL.
+      - API_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
+      - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
+      # cppworker needs the balancer for pull-based model profile sync. In the
+      # worker scenario this is the remote address from BALANCER_URL.
       - CPPWORKER_BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
-      - CPPWORKER_BALANCER_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
+      - CPPWORKER_BALANCER_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
 
-      # ─── Модель и память ─────────────────────────────────────────────────
+      # --- Model and memory ---------------------------------------------------
       - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-32768}
       - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
-      # АВТОВЫГРУЗКА ПРОСТАИВАЮЩИХ МОДЕЛЕЙ (R-Image follow-up, 2026-10-07).
+      # AUTO-UNLOAD OF IDLE MODELS. cppworker keeps EVERY loaded model in VRAM:
+      # idleUnloadMinutes=0 means "never unload". On an 8 GB card that is a trap —
+      # two text models left over from their sessions took 7.8 GB, free VRAM
+      # dropped to 391 MB, and an image-generation request was rejected by the
+      # gate ("needs 520 MB, only 391 MB free", coexistence=exclusive) even though
+      # the image model itself was already loaded.
       #
-      # ЗАЧЕМ. cppworker держит в VRAM ВСЕ загруженные модели: idleUnloadMinutes=0
-      # означает «не выгружать никогда». На 8 GB это ловушка — живой случай:
-      # Qwen3-Instruct-2507 (5.4 GB) и gemma-4-E4B (ещё ~1.4 GB) остались в памяти
-      # после своих сессий, свободного VRAM стало 391 MB, и запрос на генерацию
-      # картинки был отклонён гейтом: «image model needs 520 MB VRAM, only 391 MB
-      # free» (политика coexistence=exclusive). При этом сама модель картинок
-      # способна работать — не хватало 130 MB, которые занимала ЧУЖАЯ модель.
+      # 0 = off (previous behaviour). 10 minutes is the compromise: an active
+      # session keeps its model, an abandoned one frees the card for generation.
       #
-      # 0 = выключено (прежнее поведение). 10 минут — компромисс: активная сессия
-      # не теряет модель, а брошенная — освобождает карту под генерацию.
-      #
-      # ВНИМАНИЕ: настройка через WebUI/API (PUT /config/update) в контейнере
-      # НЕ сохраняется — `saveConfigToDefaultsFile` пишет в config/cppworker-defaults.json
-      # относительно рабочего каталога, а каталога config/ в образе нет (в логе
-      # «failed to save config to cppworker-defaults.json: no such file or
-      # directory»). Поэтому единственное надёжное место — эта переменная.
+      # NOTE: setting this through the WebUI/API (PUT /config/update) is NOT
+      # persisted inside the container — saveConfigToDefaultsFile writes to
+      # config/cppworker-defaults.json relative to the workdir, and the image has
+      # no config/ directory. This env var is the only reliable place.
       - CPPWORKER_IDLE_UNLOAD_MINUTES=${CPPWORKER_IDLE_UNLOAD_MINUTES:-10}
-      # ─── ВСТРОЕННЫЙ АГЕНТ МЕТРИК (R-Image follow-up, 2026-10-07) ──────────
+      # --- EMBEDDED METRICS AGENT ---------------------------------------------
       #
-      # ЗАЧЕМ. Внешний контейнер `agent` переживает пересоздание воркера и
-      # регистрируется отдельной сущностью; встроенный агент живёт ровно столько,
-      # сколько воркер, и пишет метрики в ЕГО ЖЕ запись бэкенда.
+      # The external `agent` container outlives worker re-creation and registers
+      # as a separate entity; the embedded agent lives exactly as long as the
+      # worker and writes metrics into the SAME backend record.
       #
-      # ВКЛЮЧЁН (on). Чтобы переключение не создало ВТОРУЮ запись, AGENT_ID
-      # совпадает с ID, под которым бэкенд зарегистрирован в балансере:
-      # `cppworker-gpu-bundled-agent` (историческое имя, см. сервис `agent` ниже,
-      # где то же значение стоит по умолчанию). MEНЯТЬ ЭТО ЗНАЧЕНИЕ НЕЛЬЗЯ без
-      # миграции: балансер привязывает агента по ID, а не по имени контейнера.
+      # ENABLED (on). AGENT_ID matches the ID the backend is already registered
+      # under (`cppworker-gpu-bundled-agent`), so switching does not create a
+      # SECOND record. Do NOT change it without a migration: the balancer binds an
+      # agent by ID, not by container name.
       #
-      # ВМЕСТЕ С ЭТИМ ВНЕШНИЙ КОНТЕЙНЕР `agent` ДОЛЖЕН БЫТЬ ПОГАШЕН — иначе два
-      # сборщика шлют метрики одного бэкенда по очереди, и значения «мигают»
-      # (в частности gpu.uuids то есть, то нет).
+      # The external `agent` container MUST be stopped together with this —
+      # otherwise two collectors send metrics for one backend in turn and values
+      # flap (notably gpu.uuids, which is what VRAM de-duplication relies on).
       #
-      # ВАЖНО ПРО UUID КАРТ (дедуп VRAM): агент сообщает балансеру `gpu.uuids` из
-      # nvidia-smi. Без этого два бэкенда одной машины (cppworker + imageworker)
-      # выглядят как две машины, и суммарная VRAM удваивается (16 GB на карте
-      # 8 GB).
-      #
-      # AGENT_PUBLIC_HOST — имя сервиса в сети ol-net: по нему балансер
-      # доезжает до /health встроенного агента.
+      # AGENT_PUBLIC_HOST is the service name on ol-net: the balancer reaches the
+      # embedded agent's /health through it.
       - AGENT_EMBEDDED=${CPPWORKER_AGENT_EMBEDDED:-on}
       - AGENT_ID=${AGENT_ID:-cppworker-gpu-bundled-agent}
       - AGENT_PUBLIC_HOST=${BACKEND_HOST:-cppworker-gpu}
@@ -363,7 +281,7 @@ services:
       - NVML_ENABLED=${NVML_ENABLED:-true}
       - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-5}
       - COLLECT_INTERVAL=${COLLECT_INTERVAL:-5}
-      # Сколько слоёв на GPU: 20 для 8 GB (RTX 3070) + 27B Q4; 99 для 24 GB.
+      # GPU layers: 20 for 8 GB (RTX 3070) + 27B Q4; 99 for 24 GB.
       - CPPWORKER_GPU_LAYERS=${CPPWORKER_GPU_LAYERS:-20}
       - CPPWORKER_FLASH_ATTN_TYPE=${CPPWORKER_FLASH_ATTN_TYPE:--1}
       - CPPWORKER_N_THREADS=${CPPWORKER_N_THREADS:-0}
@@ -377,26 +295,22 @@ services:
       - CPPWORKER_DEFAULT_ENABLE_REASONING=${CPPWORKER_DEFAULT_ENABLE_REASONING:-false}
       - CPPWORKER_ENABLE_REASONING=${CPPWORKER_ENABLE_REASONING:-false}
       - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
-      # Параллельные слоты модели (n_parallel / n_seq_max). 0 = одиночный слот.
+      # Parallel model slots (n_parallel / n_seq_max). 0 = a single slot.
       #
-      # R83 (2026-09-29): раньше эта переменная вообще не доезжала до
-      # контейнера, поэтому «выделить кеш под несколько запросов» из compose
-      # было нельзя — только полем `parallel` в запросе загрузки/профиле.
-      # В контейнере код читает именно CPPWORKER_N_PARALLEL
+      # The in-container code reads exactly CPPWORKER_N_PARALLEL
       # (internal/cppbackend/config.go: LoadConfigFromEnv).
       #
-      # Что реально делает CPPWORKER_N_PARALLEL (проверено на стенде, c/llama.cpp
-      # gguf-v0.19.0-1369, kv_unified=false):
-      #   llama_context: n_ctx_seq = GGML_PAD(n_ctx / n_seq_max, 256)
-      # То есть слоты НЕ умножают KV-cache и НЕ увеличивают расход VRAM — они
-      # ДЕЛЯТ окно контекста между клиентами:
-      #   contextSize=8192 + parallel=2 → n_ctx=8192, n_ctx_seq=4096
-      #   свободная VRAM: parallel=1 → 5197 МБ, 2 → 5197 МБ, 3 → 5191 МБ
-      # Чтобы каждый клиент получил нужное окно, задайте суммарное окно
-      # = окно × слоты либо поле `contextPerSeq` («окно на клиента»).
+      # What it actually does (verified against c/llama.cpp gguf-v0.19.0-1369,
+      # kv_unified=false): llama_context: n_ctx_seq = GGML_PAD(n_ctx / n_seq_max, 256).
+      # Slots do NOT multiply the KV cache and do NOT increase VRAM usage — they
+      # SPLIT the context window between clients:
+      #   contextSize=8192 + parallel=2 -> n_ctx=8192, n_ctx_seq=4096
+      #   free VRAM: parallel=1 -> 5197 MB, 2 -> 5197 MB, 3 -> 5191 MB
+      # To give every client the window it needs, set the total window
+      # = window x slots, or use the `contextPerSeq` field ("window per client").
       #
-      # ВАЖНО: AGENT_MAX_CONCURRENT_REQUESTS задавать НЕ нужно — cppworker сам
-      # сообщает балансеру свою вместимость (effectiveNParallel).
+      # NOTE: AGENT_MAX_CONCURRENT_REQUESTS is NOT needed — cppworker reports its
+      # own capacity (effectiveNParallel) to the balancer.
       - CPPWORKER_N_PARALLEL=${CPPWORKER_N_PARALLEL:-0}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -404,8 +318,9 @@ services:
       - ${MODELS_DIR:-../models}:/app/models
       - cppworker_cache:/app/.cache
     ports:
-      # Порт инференса. Наружу обязателен в сценарии 2 (балансер на другой
-      # машине); в сценарии 1 достаточно внутри сети, но проброс не мешает.
+      # Inference port. Required outside in the worker scenario (balancer on
+      # another machine); on a single box it is enough inside the network, but
+      # publishing it does no harm.
       - "${CPPWORKER_PORT_HOST:-18092}:18092"
     networks: [ol-net]
     healthcheck:
@@ -416,66 +331,64 @@ services:
       start_period: 60s
     profiles: ["worker", "full"]
 
-  # ═══════════════════════════════════════════════════════════════════════════
-  # imageworker — R-Image: генерация изображений (sdworker → sd-server/sd.cpp)
-  # Профили: worker | full
-  # ═══════════════════════════════════════════════════════════════════════════
-  # ЧТО ЭТО. Отдельный бэкенд типа image_cpp (порт 18093): свой каталог
-  # моделей-bundle'ов, свой движок (stable-diffusion.cpp), своя OpenAI/A1111
-  # поверхность. Балансер маршрутизирует на него ТОЛЬКО image-запросы
-  # (internal/balancer/backend_type_filter.go: image_cpp никогда не попадает в
-  # текстовый пул и наоборот), а со своей OpenAI-поверхности (18079) отдаёт
-  # /v1/images/*. Текстовый трафик сюда не уходит.
+  # ===========================================================================
+  # imageworker — image generation (sdworker -> sd-server / stable-diffusion.cpp)
+  # Profiles: worker | full
+  # ===========================================================================
+  # A separate backend of type image_cpp (port 18093): its own bundle directory,
+  # its own engine, its own OpenAI/A1111 surface. The balancer routes ONLY image
+  # requests to it (image_cpp never enters the text pool and vice versa) and
+  # exposes /v1/images/* on its OpenAI surface (18079).
   #
-  # РЕГИСТРАЦИЮ ДЕЛАЕТ САМ ВОРКЕР (Go-side, cmd/sdworker/balancer_register.go):
-  # POST /api/v1/backends с backendType=image_cpp и imagePort=18093. Agent для
-  # image-бэкенда НЕ нужен — он умеет только llama_cpp/ollama; метрик GPU у
-  # image-бэкенда в WebUI поэтому не будет (это известное ограничение, не баг).
+  # The WORKER registers itself (Go-side, cmd/sdworker/balancer_register.go):
+  # POST /api/v1/backends with backendType=image_cpp and imagePort=18093. GPU
+  # metrics arrive from the embedded agent inside sdworker (AGENT_EMBEDDED=on).
   #
-  # ⚠️ GPU. sd.cpp НЕ выпускает Linux-CUDA-сборок (в релизе master-929 есть
-  # CPU/Vulkan/ROCm, CUDA — только под Windows). Поэтому дефолт — Vulkan, а
-  # драйвер NVIDIA отдаётся контейнеру через runtime: nvidia + capability
-  # `graphics` (именно она монтирует nvidia_icd.json/libnvidia-glcore — без неё
-  # Vulkan не увидит NVIDIA-карту). /dev/dri для NVIDIA не нужен; для AMD/Intel
-  # он обязателен — тогда уберите runtime: nvidia и раскомментируйте devices
-  # (готовый вариант — deployments/docker-compose.imageworker.yml).
-  # CUDA-вариант: собрать образ со СВОИМ бинарём sd-server (готовых Linux-CUDA
-  # релизов нет):
+  # GPU. sd.cpp publishes no Linux-CUDA builds (release master-929 has
+  # CPU/Vulkan/ROCm; CUDA is Windows-only), so the default is Vulkan and the
+  # NVIDIA driver reaches the container via `runtime: nvidia` + the `graphics`
+  # capability (that capability is what mounts nvidia_icd.json/libnvidia-glcore;
+  # without it Vulkan cannot see an NVIDIA card). /dev/dri is not needed for
+  # NVIDIA, but is required for AMD/Intel — then drop `runtime: nvidia` and
+  # uncomment `devices` (ready-made variant: deployments/docker-compose.imageworker.yml).
+  # CUDA variant: build an image with your OWN sd-server binary (there are no
+  # ready Linux-CUDA releases):
   #   cp build/bin/sd-server docker/imageworker/vendor/sd-server-cuda
   #   SD_SERVER_BIN=sd-server-cuda \
   #   IMAGE_WORKER_RUNTIME_BASE=nvidia/cuda:12.6.0-runtime-ubuntu24.04 \
   #   docker compose -f docker-compose.stack.yml --profile full up -d --build imageworker
   #
-  # КАК ВЫКЛЮЧИТЬ (если образ не собран / GPU занят текстовой моделью):
-  #   основной : docker compose -f docker-compose.stack.yml --profile full up -d --scale imageworker=0
-  #   гарантированный (любая версия compose; годится и когда контейнер уже есть):
-  #              docker compose -f docker-compose.stack.yml --profile full rm -sf imageworker
-  #   профилем : --profile balancer (только управление) вместо --profile full
-  #   насовсем : убрать сервис из этого файла
-  # Обратно включить — up -d без --scale imageworker=0 (образ соберётся при --build).
-  # ⚠️ У сервиса задан container_name (как у остальных сервисов стека), поэтому
-  # compose не даст поднять БОЛЬШЕ одного контейнера (--scale imageworker=2
-  # конфликтует по имени). Выключение (--scale ...=0) и запуск одного — работают.
+  # HOW TO DISABLE (image not built, or the GPU is busy with a text model):
+  #   primary : docker compose -f docker-compose.stack.yml --profile full up -d --scale imageworker=0
+  #   reliable (any compose version, works even when the container exists):
+  #             docker compose -f docker-compose.stack.yml --profile full rm -sf imageworker
+  #   by profile : --profile balancer (management only) instead of --profile full
+  #   permanently: remove the service from this file
+  # Re-enable: up -d without --scale imageworker=0 (the image builds on --build).
+  # NOTE: the service sets container_name, so compose refuses MORE than one
+  # container (--scale imageworker=2 conflicts on the name). Disabling (=0) and
+  # running one both work.
   #
-  # МОДЕЛИ. Bundle — это КАТАЛОГ <MODELS_DIR>/image/<имя>/ с файлами движка
-  # (diffusion + VAE + text encoders) и profile.json; кладётся вручную или
-  # HF-слоем воркера (кнопка image-моделей в WebUI). Пустой каталог — не ошибка:
-  # воркер поднимется, /health ответит 200, генерация вернёт model_not_found.
-  # ═══════════════════════════════════════════════════════════════════════════
+  # MODELS. A bundle is a DIRECTORY <MODELS_DIR>/image/<name>/ with engine files
+  # (diffusion + VAE + text encoders) and profile.json, created manually or by the
+  # worker's HF layer (image-model button in the WebUI). An empty directory is not
+  # an error: the worker starts, /health answers 200, generation returns
+  # model_not_found.
+  # ===========================================================================
   imageworker:
     image: ${IMAGE_REGISTRY:-}ollama-legion/imageworker:${IMAGE_WORKER_TAG:-vulkan}
     build:
       context: ..
       dockerfile: docker/imageworker/Dockerfile
-      # Phase 8 (2026-10-03): цель сборки выбирает ДВИЖОК образа.
-      #   imageworker-vulkan (дефолт) — релизный Vulkan-ассет sd.cpp: работает на
-      #     AMD/Intel и на NVIDIA там, где проброшен nvidia-ICD (Linux-хосты);
-      #   imageworker-cuda — сборка sd.cpp из исходников с CUDA (Linux-CUDA-релиза
-      #     у проекта нет). Нужна там, где Vulkan-NVIDIA в контейнер не приезжает
-      #     (например, Windows + Docker Desktop/WSL2: nvidia-smi видит карту, а
-      #     nvidia_icd.json отсутствует, и Vulkan-движок уходит на CPU: 251 с на
-      #     512x512/8 шагов против 9-76 с на GPU). Для CUDA обязателен
-      #     RUNTIME_BASE с CUDA-рантаймом — см. IMAGE_WORKER_RUNTIME_BASE ниже.
+      # The build target selects the ENGINE of the image:
+      #   imageworker-vulkan (default) — release Vulkan asset of sd.cpp: works on
+      #     AMD/Intel and on NVIDIA where the nvidia-ICD is passed through (Linux);
+      #   imageworker-cuda — sd.cpp built from source with CUDA (the project has no
+      #     Linux-CUDA release). Needed where Vulkan-NVIDIA does not reach the
+      #     container (e.g. Windows + Docker Desktop/WSL2: nvidia-smi sees the card
+      #     but nvidia_icd.json is missing, so the Vulkan engine falls back to CPU:
+      #     251 s for 512x512/8 steps vs 9-76 s on GPU). CUDA requires RUNTIME_BASE
+      #     with a CUDA runtime — see IMAGE_WORKER_RUNTIME_BASE below.
       target: ${IMAGE_WORKER_BUILD_TARGET:-imageworker-vulkan}
       args:
         SD_SERVER_REVISION: ${SD_SERVER_REVISION:-master-929-3f8527a}
@@ -487,62 +400,62 @@ services:
         SD_SERVER_REF: ${SD_SERVER_REF:-3f8527a46c54ecf4cb4ed6003da8e8982283c73c}
     container_name: ol-stack-imageworker
     restart: unless-stopped
-    # Тот же GPU-путь, что у cppworker-gpu выше: nvidia-container-runtime.
+    # Same GPU path as cppworker-gpu above: nvidia-container-runtime.
     runtime: nvidia
     environment:
       - SDWORKER_HOST=0.0.0.0
       - SDWORKER_PORT=18093
-      # Внутренний порт движка (loopback внутри контейнера). Не путать с 18093:
-      # наружу торчит API воркера, иначе клиенты обойдут нормализацию запросов.
+      # Internal engine port (loopback inside the container). Not to be confused
+      # with 18093: only the worker API is published, otherwise clients would
+      # bypass request normalisation.
       - SDWORKER_SD_SERVER_PORT=${SDWORKER_SD_SERVER_PORT:-18094}
-      # Каталог bundle'ов image-моделей внутри контейнера (host: <MODELS_DIR>/image).
+      # Image-model bundle directory inside the container (host: <MODELS_DIR>/image).
       - SDWORKER_IMAGE_MODELS_DIR=/app/models/image
       - SDWORKER_IMAGES_DIR=/app/data/images
       - SDWORKER_IDLE_UNLOAD_MINUTES=${SDWORKER_IDLE_UNLOAD_MINUTES:-30}
       - SDWORKER_MAX_CONCURRENT=${SDWORKER_MAX_CONCURRENT:-64}
       - SDWORKER_GENERATION_TIMEOUT_SEC=${SDWORKER_GENERATION_TIMEOUT_SEC:-600}
       - SDWORKER_PRELOAD_MODEL=${SDWORKER_PRELOAD_MODEL:-}
-      # URL воркера «как его видят клиенты»: подставляется в response_format:"url".
-      # Дефолт — локальный клиент на этой машине (порт опубликован ниже).
-      # Для клиентов снаружи: SDWORKER_BASE_URL=http://<хост>:18093 в .env.
+      # Worker URL as CLIENTS see it: used in response_format:"url".
+      # Default targets a local client (the port is published below).
+      # For external clients set SDWORKER_BASE_URL=http://<host>:18093 in .env.
       - SDWORKER_BASE_URL=${SDWORKER_BASE_URL:-http://localhost:18093}
-      # HF-слой image-bundle'ов (gated модели / зеркало).
+      # HF layer for image bundles (gated models / mirror).
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_MIRROR=${HF_MIRROR:-}
-      # Vulkan-ICD NVIDIA приезжает вместе с драйвером: capability `graphics`
-      # ОБЯЗАТЕЛЕН (compute,utility дают только CUDA/NVML).
+      # The NVIDIA Vulkan ICD ships with the driver: the `graphics` capability is
+      # REQUIRED (compute,utility provide only CUDA/NVML).
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
-      # ─── Авторегистрация в балансере (SDWORKER_* — имена из Go-кода) ───────
-      # BALANCER_URL — каноническое имя стека: в сценарии 2 из .env сюда
-      # попадает адрес УДАЛЁННОГО балансера, и воркер регистрируется там.
+      # --- Balancer auto-registration (SDWORKER_* — the names the Go code reads)
+      # BALANCER_URL is the canonical stack name: in the worker scenario the .env
+      # supplies the REMOTE balancer address and the worker registers there.
       - SDWORKER_BALANCER_URL=${SDWORKER_BALANCER_URL:-${BALANCER_URL:-http://loadbalancer:18081}}
       - SDWORKER_BALANCER_TOKEN=${SDWORKER_BALANCER_TOKEN:-${CPPWORKER_API_TOKEN:-}}
       - SDWORKER_BACKEND_ID=${SDWORKER_BACKEND_ID:-imageworker}
-      # host, под которым воркер виден балансеру: DNS-имя сервиса в этой сети.
+      # Host under which the balancer sees this worker: service DNS name on ol-net.
       - SDWORKER_ADVERTISE_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}
       - SDWORKER_REGISTER_DISABLE=${SDWORKER_REGISTER_DISABLE:-false}
-      # ─── ВСТРОЕННЫЙ АГЕНТ МЕТРИК (R-Image, 2026-10-07) ────────────────────
+      # --- EMBEDDED METRICS AGENT ---------------------------------------------
       #
-      # ЗАЧЕМ. Раньше метрики image-бэкенда собирал отдельный контейнер `agent`.
-      # Он регистрировался в балансере ОТДЕЛЬНОЙ записью (host=cppworker-gpu-agent,
-      # backendType=llama_cpp), то есть об одном физическом воркере появлялись две
-      # записи. У самой image-записи при этом оставались hasAgent=false и
-      # agentPort=18032 (порт ЧУЖОГО контейнера), а gpuMemory/vramUsagePercent
-      # приходили нулями — страница модели в WebUI выглядела «странно».
+      # Previously a separate `agent` container collected image-backend metrics. It
+      # registered as a SEPARATE record (host=cppworker-gpu-agent,
+      # backendType=llama_cpp), so one physical worker produced two records, while
+      # the image record itself kept hasAgent=false and agentPort=18032 (a FOREIGN
+      # container's port) with gpuMemory/vramUsagePercent reported as zeros.
       #
-      # ТЕПЕРЬ: воркер поднимает агента в СВОЁМ процессе и регистрируется под ТЕМ
-      # ЖЕ ID (SDWORKER_BACKEND_ID). Балансер в ветке «backend exists» ставит
-      # HasAgent=true и пишет метрики в ту же запись. Отдельный контейнер для
-      # image-воркера больше не нужен.
+      # NOW the worker starts an agent IN ITS OWN PROCESS and registers under the
+      # SAME ID (SDWORKER_BACKEND_ID). The balancer's "backend exists" branch sets
+      # HasAgent=true and writes metrics into the same record. The image worker no
+      # longer needs a separate container.
       #
-      # AGENT_EMBEDDED выключен по умолчанию: на стендах, где внешний агент уже
-      # поднят, второй сборщик метрик не нужен.
+      # Set IMAGE_WORKER_AGENT_EMBEDDED=on to enable (default below).
       - AGENT_EMBEDDED=${IMAGE_WORKER_AGENT_EMBEDDED:-off}
       - AGENT_ID=${SDWORKER_BACKEND_ID:-imageworker}
       - AGENT_PUBLIC_HOST=${SDWORKER_ADVERTISE_HOST:-imageworker}
-      # Порт /health и метрик встроенного агента. НЕ 18032: там слушает внешний
-      # контейнер `agent`, а балансер опрашивает метрики по agentPort записи.
+      # /health and metrics port of the embedded agent. NOT 18032: the external
+      # `agent` container listens there, and the balancer polls metrics on the
+      # record's own agentPort.
       - AGENT_EMBEDDED_PORT=${IMAGE_WORKER_AGENT_PORT:-18033}
       - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
       - BALANCER_TOKEN=${SDWORKER_BALANCER_TOKEN:-${CPPWORKER_API_TOKEN:-}}
@@ -550,76 +463,75 @@ services:
       - NVML_ENABLED=${NVML_ENABLED:-true}
       - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-5}
       - COLLECT_INTERVAL=${COLLECT_INTERVAL:-5}
-      # Вместимость: столько же, сколько воркер обслуживает параллельно
-      # (SDWORKER_MAX_CONCURRENT). Значение >0 перекрывает автоопределение.
+      # Capacity: same as the number of requests the worker serves in parallel
+      # (SDWORKER_MAX_CONCURRENT). A value >0 overrides auto-detection.
       - AGENT_MAX_CONCURRENT_REQUESTS=${SDWORKER_MAX_CONCURRENT:-64}
-      # Токен, который ждёт сам image-воркер на защищённых эндпоинтах: балансер
-      # получит его в записи бэкенда и сможет авторизоваться при проксировании.
+      # Token the image worker itself expects on protected endpoints: the balancer
+      # receives it in the backend record and can authorise when proxying.
       - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:-}
       - API_TOKEN=${CPPWORKER_API_TOKEN:-}
     volumes:
-      # Тот же каталог моделей, что у cppworker (../models): текстовые .gguf в
-      # корне, image-bundle'ы — в image/. Внутри тома же лежат temp-загрузки
-      # HF (../models/downloads) — иначе .download на 6-12 GB забивал бы слой
-      # контейнера и терялся при пересоздании.
+      # Same models directory as cppworker (../models): text .gguf in the root,
+      # image bundles under image/. The volume also holds HF temp downloads
+      # (../models/downloads) — otherwise a 6-12 GB .download would fill the
+      # container layer and be lost on re-creation.
       - ${MODELS_DIR:-../models}:/app/models:rw
-      # Сгенерированные картинки (response_format:"url") — забираются с хоста.
+      # Generated images (response_format:"url") — collected from the host.
       - ${IMAGE_OUTPUT_DIR:-../data/images}:/app/data/images:rw
       - imageworker_cache:/app/.cache/huggingface
-      # LoRA/ESRGAN-апскейлеры (опционально): движок сканирует каталоги в рантайме.
-      # Раскомментируйте, положив файлы в ../models/lora и ../models/upscalers:
+      # LoRA/ESRGAN upscalers (optional): the engine scans these directories at
+      # runtime. Uncomment after putting files into ../models/lora and
+      # ../models/upscalers:
       # - ${MODELS_DIR:-../models}/lora:/app/lora:ro
       # - ${MODELS_DIR:-../models}/upscalers:/app/upscalers:ro
     ports:
-      # API воркера. Публикуется наружу намеренно: response_format:"url" отдаёт
-      # ссылку на этот порт, и по нему же можно ходить в обход балансера.
+      # Worker API. Published on purpose: response_format:"url" returns a link to
+      # this port, and it can also be used to bypass the balancer.
       - "${SDWORKER_PORT:-18093}:18093"
     networks: [ol-net]
-    # Phase 8 (2026-10-03): ждём ГОТОВЫЙ балансер, а не просто «запущенный».
-    # Раньше зависимости не было вовсе: воркер стартовал первым, первый POST
-    # /api/v1/backends уходил в недоступный порт и повторялся через 30 с — в
-    # едином стенде это выглядело как «image-бэкенд не появился в балансере».
+    # Wait for a READY balancer, not merely a started one: without the dependency
+    # the worker started first, its first POST /api/v1/backends hit a closed port
+    # and retried every 30 s — which looked like "the image backend never appeared
+    # in the balancer".
     #
-    # R-Image (2026-10-07): зависимость ОПЦИОНАЛЬНА (required:false) — иначе
-    # сценарий «только бэкенд» (--profile worker, балансер на другой машине)
-    # отвергался целиком: compose валидирует depends_on даже для сервисов, не
-    # входящих в активный профиль. Без loadbalancer в профиле воркер просто
-    # регистрируется по BALANCER_URL во внешнем балансере.
+    # OPTIONAL dependency (required:false), otherwise the backend-only scenario
+    # (`--profile worker`, balancer elsewhere) was rejected entirely: compose
+    # validates depends_on even for services outside the active profile. With no
+    # loadbalancer in the profile the worker simply registers via BALANCER_URL
+    # with the external balancer.
     depends_on:
       loadbalancer:
         condition: service_healthy
         required: false
     healthcheck:
-      # Через сам бинарь (как у cppworker): /health отвечает 200 и без модели,
-      # поэтому idle-unload не переводит контейнер в unhealthy.
+      # Through the binary itself (as cppworker does): /health answers 200 even
+      # without a model, so idle-unload never marks the container unhealthy.
       test: ["CMD", "/app/sdworker", "-healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3
-      # Дольше, чем у cppworker: первый старт движка = прогрев Vulkan.
+      # Longer than cppworker: the first engine start warms up Vulkan.
       start_period: 60s
     profiles: ["worker", "full"]
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # agent — метрики и регистрация для OLLAMA-бэкендов
-  # Профили: worker | legacy-agent
+  # agent — metrics and registration for OLLAMA backends
+  # Profiles: worker | legacy-agent
   #
-  # R-Image follow-up (2026-10-07). РОЛЬ ЭТОГО КОНТЕЙНЕРА СУЗИЛАСЬ.
+  # The ROLE of this container has narrowed. The metrics collector for
+  # llama.cpp workers now lives INSIDE cppworker (AGENT_EMBEDDED=on, same backend
+  # ID, metrics port 18034). Two collectors on one backend send metrics in turn and
+  # values flap (notably gpu.uuids), so the `full` profile no longer has an
+  # external agent — it uses the embedded one.
   #
-  # Сборщик метрик для llama.cpp-воркеров (cppworker) теперь живёт ВНУТРИ
-  # cppworker: AGENT_EMBEDDED=on, тот же ID бэкенда, порт метрик 18034. Два
-  # сборщика на одном бэкенде шлют метрики по очереди, и значения «мигают»
-  # (в частности gpu.uuids то есть, то нет), поэтому в профиле `full` внешнего
-  # агента БОЛЬШЕ НЕТ — там работает встроенный.
-  #
-  # ГДЕ ОН НУЖЕН:
-  #   • worker — сценарий «только бэкенды, балансер на другой машине»: поднимает
-  #     cppworker + imageworker + агента; агент закрывает те бэкенды, у которых
-  #     нет своего Go-кода (Ollama), и вообще удобен как внешний наблюдатель.
-  #   • legacy-agent — явный откат: внешний агент ВМЕСТО встроенного. Требует
-  #     CPPWORKER_AGENT_EMBEDDED=off, иначе два сборщика будут друг другу мешать.
-  #
-  # ═══════════════════════════════════════════════════════════════════════════
+  # WHERE IT IS STILL NEEDED:
+  #   * worker — "backends only, balancer elsewhere": starts cppworker +
+  #     imageworker + this agent. The agent covers backends that have no Go code of
+  #     ours (Ollama).
+  #   * legacy-agent — explicit rollback: an external agent INSTEAD of the
+  #     embedded one. Requires CPPWORKER_AGENT_EMBEDDED=off, otherwise the two
+  #     collectors interfere.
+  # ===========================================================================
   agent:
     image: ${IMAGE_REGISTRY:-}ollama-legion/agent:${AGENT_TAG:-r83-submodule-v22}
     container_name: ol-stack-agent
@@ -629,92 +541,89 @@ services:
     depends_on:
       cppworker-gpu:
         condition: service_healthy
-        # R-Image (2026-10-07): ОПЦИОНАЛЬНА. Агент ждёт готовый cppworker, чтобы
-        # зарегистрироваться тем же адресом, но в профиле legacy-agent (откат к
-        # внешнему сборщику) cppworker может быть не поднят вовсе — без
-        # required:false compose отвергал бы такой запуск целиком.
+        # OPTIONAL: the agent waits for a ready cppworker to register the same
+        # address, but in the legacy-agent profile (rollback to the external
+        # collector) cppworker may not be up at all — without required:false
+        # compose would reject that launch entirely.
         required: false
     environment:
       - AGENT_ID=${AGENT_ID:-cppworker-gpu-bundled-agent}
       - AGENT_PORT=18032
-      # R83 (2026-09-28): версия — в стартовой шапке агента.
+      # Version of the running image in the agent startup banner.
       - APP_VERSION=${AGENT_TAG:-r83-submodule-v22}
 
-      # ─── Подключение к балансеру: ADMIN API, порт 18081 ──────────────────
-      # Сценарий 1: имя сервиса внутри этой сети (значение по умолчанию).
-      # Сценарий 2: задать BALANCER_URL в .env.bundled-with-agent —
-      #             http://<хост-балансера>:18081
+      # --- Balancer connection: ADMIN API, port 18081 -------------------------
+      # Scenario 1: service name inside this network (the default).
+      # Scenario 2: set BALANCER_URL in .env.bundled-with-agent —
+      #             http://<balancer-host>:18081
       - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
-      - BALANCER_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
-      # R83 (2026-09-28): агент передаёт балансеру токен, который ждёт cppworker.
-      # Без него балансер не может авторизоваться на защищённых эндпоинтах
-      # cppworker, и правка параметров модели из WebUI падает с 401
-      # «invalid or missing API token», хотя токен задан во всех .env одинаково.
-      # Источник — ОДНА переменная стека: deployments/.env → CPPWORKER_API_TOKEN.
-      - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
+      - BALANCER_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
+      # The agent passes the balancer the token cppworker expects. Without it the
+      # balancer cannot authorise on cppworker's protected endpoints, and editing
+      # model parameters from the WebUI fails with 401 "invalid or missing API
+      # token" even though the token is identical in every .env.
+      # Source: ONE stack variable — deployments/.env -> CPPWORKER_API_TOKEN.
+      - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
 
-      # ─── Как agent ходит в cppworker (внутри сети) ───────────────────────
-      # Ранее здесь стояло AGENT_CPPWORKER_URL — код это имя НЕ читает,
-      # поэтому agent не знал адрес cppworker.
+      # --- How the agent reaches cppworker (inside the network) ---------------
+      # This used to be AGENT_CPPWORKER_URL, which the code does NOT read, so the
+      # agent never knew cppworker's address.
       - CPPWORKER_URL=http://cppworker-gpu:18092
 
-      # ─── Тип бэкенда: ЗАВИСИТ ОТ СЦЕНАРИЯ (R-Image follow-up, 2026-10-07) ──
+      # --- Backend type: DEPENDS ON THE SCENARIO ------------------------------
       #
-      # ЗАЧЕМ ПАРАМЕТРИЗОВАНО. Для llama.cpp-воркеров агент больше НЕ нужен —
-      # сборщик метрик встроен в cppworker (AGENT_EMBEDDED=on). Роль внешнего
-      # агента теперь ровно одна: подключить OLLAMA-бэкенд, у которого нет
-      # нашего Go-кода и метрики собрать некому.
+      # llama.cpp workers no longer need this agent — their metrics collector is
+      # embedded in cppworker (AGENT_EMBEDDED=on). The external agent now has
+      # exactly one job: connect an OLLAMA backend, which has no Go code of ours.
       #
-      # Было жёстко `BACKEND_TYPE=llama_cpp`, и это ЛОМАЛО смешанный режим:
-      # поднять рядом с cppworker ollama-бэкенд через штатный compose было
-      # нельзя — агент зарегистрировал бы Ollama как llama.cpp, и балансер
-      # повёл бы запросы по чужому пути (n_ctx/KV-правила к Ollama).
+      # This used to be hardcoded to `BACKEND_TYPE=llama_cpp`, which BROKE mixed
+      # mode: running an Ollama backend next to cppworker via the stock compose was
+      # impossible — the agent would register Ollama as llama.cpp and the balancer
+      # would apply the wrong request path (n_ctx/KV rules to Ollama).
       #
-      # ЗНАЧЕНИЯ:
-      #   llama_cpp — прежнее поведение (агент как внешний наблюдатель cppworker);
-      #   ollama    — подключить Ollama: указать OLLAMA_URL ниже.
-      # Без явного значения наследуется прежний дефолт llama_cpp, поэтому
-      # существующие стенды ничего не замечают.
+      # VALUES:
+      #   llama_cpp — previous behaviour (agent as an external observer of cppworker);
+      #   ollama    — connect Ollama: also set OLLAMA_URL below.
+      # Without an explicit value the previous llama_cpp default applies, so
+      # existing stands notice nothing.
       - BACKEND_TYPE=${AGENT_BACKEND_TYPE:-llama_cpp}
-      # Адрес Ollama для сценария BACKEND_TYPE=ollama. Дефолт — хостовый Ollama
-      # на стандартном порту: agent видит его через host.docker.internal.
-      # Для Ollama на другой машине: OLLAMA_URL=http://<host>:11434 в .env.
+      # Ollama address for BACKEND_TYPE=ollama. The default is a host Ollama on the
+      # standard port, reachable via host.docker.internal.
+      # For Ollama on another machine: OLLAMA_URL=http://<host>:11434 in .env.
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
 
-      # Что agent отдаёт балансеру как адрес бэкенда. В сценарии 1 — имя
-      # сервиса; в сценарии 2 — BACKEND_HOST (адрес машины, видимый с
-      # балансера). Порт должен совпадать с CPPWORKER_PORT контейнера.
+      # What the agent reports to the balancer as the backend address. In scenario
+      # 1 a service name; in scenario 2 BACKEND_HOST (an address visible FROM the
+      # balancer). The port must match the container's CPPWORKER_PORT.
       - AGENT_CPPWORKER_HOST=${BACKEND_HOST:-cppworker-gpu}
       - AGENT_CPPWORKER_PORT=${CPPWORKER_PORT:-18092}
       - AGENT_PUBLIC_HOST=${AGENT_PUBLIC_HOST:-cppworker-gpu-agent}
       - AGENT_PUBLIC_PORT=18032
       - NODE_LABELS=${NODE_LABELS:-gpu,llamacpp}
 
-      # ─── Вместимость: сколько параллельных запросов примет бэкенд ────────
-      # 0 (по умолчанию) = AUTO: агент сам спросит у cppworker его
-      #   defaultNParallel (env CPPWORKER_N_PARALLEL) и сообщит балансеру
-      #   ровно это значение. Так настраивается ОДНО место — слоты воркера.
-      # >0 = операторский лимит: имеет приоритет и автоматикой не
-      #   перезаписывается. Нужен, только если надо сознательно пропускать
-      #   меньше (или больше) запросов, чем слотов у модели.
+      # --- Capacity: how many parallel requests the backend accepts -----------
+      # 0 (default) = AUTO: the agent asks cppworker for its defaultNParallel
+      #   (env CPPWORKER_N_PARALLEL) and reports exactly that. This keeps the
+      #   worker slots as the SINGLE place to configure.
+      # >0 = an operator limit: takes priority and is never overwritten by
+      #   automation. Needed only to deliberately admit fewer (or more) requests
+      #   than the model has slots.
       #
-      # R83-fix (2026-09-29): раньше здесь стоял дефолт 1, то есть переменная
-      # ВСЕГДА была задана — и агент никогда не брал значение из cppworker.
-      # При CPPWORKER_N_PARALLEL=2 это давало рассинхрон: воркер держит два
-      # слота, а балансер ставит второй запрос в очередь («второй клиент
-      # получил 503»). В старом комментарии фигурировало нечитаемое имя
-      # CPPWORKER_PARALLEL — правильное CPPWORKER_N_PARALLEL.
+      # The default used to be 1, so the variable was ALWAYS set and the agent
+      # never read the value from cppworker. With CPPWORKER_N_PARALLEL=2 that
+      # desynchronised them: the worker held two slots while the balancer queued the
+      # second request ("the second client got 503").
       #
-      # Почему нельзя завышать: cppworker с одним слотом обслуживает ОДИН
-      # запрос за раз, лишние «свободные слоты» дают отказы и зависания.
+      # Never inflate it: a single-slot cppworker serves ONE request at a time, and
+      # phantom "free slots" produce rejections and hangs.
       - AGENT_MAX_CONCURRENT_REQUESTS=${AGENT_MAX_CONCURRENT_REQUESTS:-0}
       - AGENT_MAX_MODELS=${AGENT_MAX_MODELS:-4}
       - AGENT_WEIGHT=${AGENT_WEIGHT:-1}
 
-      # Ранее стояло AGENT_MODE — код читает GPU_MODE.
+      # This used to be AGENT_MODE — the code reads GPU_MODE.
       - GPU_MODE=gpu
       - NVML_ENABLED=true
-      # Ранее стояли AGENT_COLLECT_INTERVAL / AGENT_HEARTBEAT_INTERVAL.
+      # These used to be AGENT_COLLECT_INTERVAL / AGENT_HEARTBEAT_INTERVAL.
       - COLLECT_INTERVAL=${COLLECT_INTERVAL:-15}
       - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-30}
       - LOG_LEVEL=${AGENT_LOG_LEVEL:-info}
@@ -738,6 +647,6 @@ volumes:
     name: ol-balancer-data
   cppworker_cache:
     name: ol-cppworker-cache
-  # HF-кэш image-воркера (веса text encoders/VAE, скачанные через HF-слой).
+  # HF cache of the image worker (text encoder/VAE weights fetched via the HF layer).
   imageworker_cache:
     name: ol-imageworker-cache

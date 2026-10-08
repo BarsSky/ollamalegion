@@ -61,7 +61,7 @@
 
     // Колонок в таблице: id, имя, хост, порт, GPU, состояние, модель, VRAM,
     // запросы, RPS, среднее время, действия. Нужно для colspan пустых строк.
-    var COLUMNS = 12;
+    var COLUMNS = 13;
 
     // Сколько вариантов GPU-индекса предлагаем в форме. Индекс - это номер
     // карты в хосте воркера; 8 карт в одной машине уже экзотика, а ввод
@@ -176,6 +176,8 @@
         // requestsPerSecond/avgResponseTime. Берём их, когда блока image нет.
         var gpu = (b.gpu && typeof b.gpu === 'object') ? b.gpu : {};
         var oll = (b.ollama && typeof b.ollama === 'object') ? b.ollama : {};
+        // R90: system.* — метрики ХОСТА (CPU/RAM/диск) от агента; RAM берём отсюда.
+        var sys = (b.system && typeof b.system === 'object') ? b.system : {};
         var clusterModels = Array.isArray(b.models) ? b.models : [];
         var runningModels = Array.isArray(oll.runningModels) ? oll.runningModels : [];
 
@@ -216,6 +218,11 @@
                 pickName(runningModels) || pickName(clusterModels) || pickName(models),
             vramFreeMb: firstNum(img.vramFreeMb, img.vram_free_mb, gpu.memoryFree, gpu.freeMemory),
             vramTotalMb: firstNum(img.vramTotalMb, img.vram_total_mb, gpu.memoryTotal, gpu.totalMemory),
+            // R90: ОПЕРАТИВНАЯ ПАМЯТЬ ХОСТА (RAM), а не память видеокарты. Агенты
+            // отдают её в system.memoryUsed/memoryTotal; для image-моделей с
+            // offload в RAM это главный ресурс, и в сводке по бэкенду её не было.
+            ramUsedMb: firstNum(sys.memoryUsed, sys.memory_used),
+            ramTotalMb: firstNum(sys.memoryTotal, sys.memory_total),
             lastError: trim(img.lastError || img.last_error || ''),
             models: models.map(function (m) {
                 m = m || {};
@@ -276,6 +283,25 @@
         var t = toNum(totalMb);
         if (f === null && t === null) return '-';
         return (f === null ? '?' : formatMB(f)) + ' / ' + (t === null ? '?' : formatMB(t));
+    }
+
+    /**
+     * «занято / всего (N%)» для ОПЕРАТИВНОЙ памяти хоста (R90).
+     *
+     * Отдельная функция, а не formatVramPair: у VRAM показываем СВОБОДНО (это
+     * ресурс «сколько ещё влезет»), у RAM — ЗАНЯТО (это ресурс «сколько уже
+     * съедено offload'ом»). Обе метрики стоят рядом в таблице, и путать их
+     * направления нельзя.
+     *
+     * Неизвестное значение даёт '-': «0 MB / 0 MB» читалось бы как «память
+     * кончилась», хотя это просто отсутствие данных (бэкенд без агента).
+     */
+    function formatRamPair(usedMb, totalMb) {
+        var u = toNum(usedMb);
+        var t = toNum(totalMb);
+        if (u === null || t === null || t <= 0) return '-';
+        var pct = (u / t) * 100;
+        return formatMB(u) + ' / ' + formatMB(t) + ' (' + pct.toFixed(1) + '%)';
     }
 
     /** Индекс GPU: число или локализованное «не задан». */
@@ -426,6 +452,7 @@
         normalizeModels: normalizeModels,
         formatMB: formatMB,
         formatVramPair: formatVramPair,
+        formatRamPair: formatRamPair,
         formatGpuIndex: formatGpuIndex,
         formatRps: formatRps,
         formatAvgMs: formatAvgMs,
@@ -656,6 +683,7 @@
             '<td>' + stateCell + '</td>' +
             '<td>' + modelCell + '</td>' +
             '<td>' + escapeHtml(formatVramPair(b.vramFreeMb, b.vramTotalMb)) + '</td>' +
+            '<td>' + escapeHtml(formatRamPair(b.ramUsedMb, b.ramTotalMb)) + '</td>' +
             '<td>' + requestsCell(b.requests) + '</td>' +
             '<td>' + escapeHtml(formatRps(b.requests.rps)) + '</td>' +
             '<td>' + escapeHtml(formatAvgMs(b.requests.avgDurationMs)) + '</td>' +

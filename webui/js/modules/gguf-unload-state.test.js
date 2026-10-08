@@ -49,6 +49,11 @@ window.GgufModule = {
         activeQueries: {},
     },
     formatFileSize: function (n) { return String(n) + ' B'; },
+    // R91: renderAboutPane строит блок «Хост (система)» через hostSystemStats из
+    // gguf-renderer-helpers.js. Этот тест про выгрузку, поэтому вместо всего
+    // модуля helpers достаточно одной заглушки (нужное поведение самой функции
+    // проверяет gguf-host-ram.test.js).
+    hostSystemStats: function () { return { known: false }; },
     stripGGUF: function (name) { return name; },
 };
 const M = window.GgufModule;

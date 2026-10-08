@@ -44,9 +44,9 @@ The agent collects **all available data** from the Ollama server and the host, f
 | `memoryTotal` | uint64 | MB | gopsutil | ✅ | Total RAM |
 | `memoryUsed` | uint64 | MB | gopsutil | ✅ | RAM used |
 | `memoryFree` | uint64 | MB | gopsutil | ✅ (computed) | RAM free |
-| `diskTotal` | uint64 | MB | gopsutil | ❌ | Total disk |
+| `diskTotal` | uint64 | MB | gopsutil | ✅ (GGUF Info) | Total disk |
 | `diskUsed` | uint64 | MB | gopsutil | ❌ | Disk used |
-| `diskFree` | uint64 | MB | gopsutil | ❌ | Disk free |
+| `diskFree` | uint64 | MB | gopsutil | ✅ (GGUF Info) | Disk free |
 | `networkRX` | uint64 | bytes | gopsutil | ❌ | Bytes received |
 | `networkTX` | uint64 | bytes | gopsutil | ❌ | Bytes sent |
 
@@ -64,6 +64,35 @@ The agent collects **all available data** from the Ollama server and the host, f
 | `loadAverage15` | float64 | — | /proc/loadavg | ✅ | Load avg 15 min |
 | `temperature` | int | °C | /sys/class/thermal | ✅ | CPU temperature |
 | `throttled` | bool | — | /sys/devices/system/cpu | ✅ | CPU throttling |
+
+### 2.2 Where host RAM shows up in the panel (R91)
+
+The agent (standalone and the one embedded into cppworker/sdworker) has been
+reporting `memoryTotal/Used/Free` for a long time - the values were missing only
+from the UI, which made the per-backend summary incomplete: GPU memory was
+visible, the machine's own RAM was not.
+
+| Panel location | What is shown |
+|---|---|
+| Dashboard, GPU card | `RAM 7.3%` next to `VRAM`; tooltip shows "used / total" |
+| Dashboard, CPU card | `RAM %` (already there) |
+| Backends -> backend state | `Host RAM: 1.8 GB / 24.5 GB (7.3%)` |
+| Dashboard/Backends -> image worker block | RAM row next to worker VRAM |
+| Image models -> table | `RAM` column: `1.8 GB / 24.5 GB (7.3%)` |
+| GGUF models -> Info -> Host (system) | RAM (used/total/%), free RAM, CPU load and temperature, disk size and free space |
+
+**Units.** `SystemMetrics` reports memory and disk in **MEGABYTES**, while the
+panel's `formatFileSize` expects **BYTES**: formatting RAM with it would render
+8192 MB as "8.0 KB" (exactly the defect VRAM had before R-MultiHost). RAM and
+disk therefore go through `formatVramMB`
+(`webui/js/modules/gguf-renderer-helpers.js`) or `formatMB` (`renderers.js`).
+
+**"0" means unknown, not zero.** When the agent cannot collect memory (or the
+host has no temperature sensor) the panel renders a dash plus an explanation
+instead of `0 B` / `0°C`: `hostSystemStats` in
+`webui/js/modules/gguf-renderer-helpers.js` treats `0` in
+`total`/`free`/`temperature` as "no data" and skips the percentage when `total`
+is empty (otherwise it would be `NaN%`).
 
 ---
 

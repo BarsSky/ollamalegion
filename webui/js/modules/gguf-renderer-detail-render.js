@@ -214,6 +214,7 @@
         const backend = M.currentBackend();
         if (!backend) return '';
         const gpus = renderGpuInfoCards();
+        const host = renderHostSystemCard();
         const worker = renderWorkerInfoCard();
         // 2026-10-03: блок «Подключение клиентов» (ключ + эндпоинты) прямо в
         // «О бэкенде» — оператор настраивает клиента, глядя на этот бэкенд, и
@@ -227,6 +228,15 @@
                 '<div class="gguf-about-section">' +
                     '<h4><i class="fas fa-microchip"></i> ' + _('gguf.gpu_info') + '</h4>' +
                     gpus +
+                '</div>' +
+                // R91: хост-метрики (RAM/CPU/диск). Раньше на странице
+                // llama.cpp-бэкенда были только GPU и версия воркера, хотя
+                // /api/v1/backends/{id} отдаёт system.* и refreshDetail уже
+                // складывает его в state.backendRuntime — данные приезжали, но
+                // нигде не рисовались.
+                '<div class="gguf-about-section" style="margin-top:12px;">' +
+                    '<h4><i class="fas fa-memory"></i> ' + _('gguf.host_info') + '</h4>' +
+                    host +
                 '</div>' +
             '</div>' +
             '<div>' +
@@ -279,6 +289,68 @@
             }
         }
         return '<div class="gguf-stat-value muted">' + _('gguf.no_gpu') + '</div>';
+    }
+
+    /**
+     * renderHostSystemCard — сводка по ХОСТУ бэкенда: RAM, CPU, диск (R91).
+     *
+     * Данные берём из state.backendRuntime.system — это JSON-поле `system`
+     * ответа GET /api/v1/backends/{id} (types.SystemMetrics, значения в МБ),
+     * которое refreshDetail уже складывает в state. Отдельных запросов нет.
+     * Разбор чисел — в hostSystemStats (gguf-renderer-helpers.js), чтобы это
+     * можно было проверить тестом без DOM. Форматирование — formatVramMB:
+     * память в МБ, а formatFileSize ждёт байты.
+     */
+    function renderHostSystemCard() {
+        const sys = M.hostSystemStats(hostSystemPayload());
+        if (!sys.known) {
+            // Прочерк с объяснением причины, а не пустая карточка: «нет данных»
+            // и «агент не отдаёт system.memory*» — разные вещи для оператора.
+            return '<div class="gguf-stat-value muted">' + _('renderers.ram_unknown') + '</div>';
+        }
+        const ramText = formatVramMB(sys.ramUsedMb) + ' / ' + formatVramMB(sys.ramTotalMb) +
+            (sys.ramPercent !== null ? ' (' + sys.ramPercent.toFixed(1) + '%)' : '');
+        let html = '<div class="gguf-stats-grid">' +
+            '<div class="gguf-stat-card">' +
+                '<div class="gguf-stat-label">' + _('metrics.ram_usage') + '</div>' +
+                '<div class="gguf-stat-value">' + ramText + '</div>' +
+                '<div class="gguf-stat-label" style="margin-top:6px;">' + _('common.free') + '</div>' +
+                '<div class="gguf-stat-value muted">' + formatVramMB(sys.ramFreeMb) + '</div>' +
+            '</div>';
+        if (sys.cpuPercent !== null || sys.cpuTempC !== null) {
+            html += '<div class="gguf-stat-card">' +
+                '<div class="gguf-stat-label">' + _('metrics.cpu_usage') + '</div>' +
+                '<div class="gguf-stat-value">' +
+                    (sys.cpuPercent !== null ? sys.cpuPercent.toFixed(1) + '%' : '-') +
+                '</div>' +
+                '<div class="gguf-stat-label" style="margin-top:6px;">' + _('metrics.cpu_temp') + '</div>' +
+                '<div class="gguf-stat-value muted">' +
+                    (sys.cpuTempC !== null ? sys.cpuTempC + '°C' : '-') +
+                '</div>' +
+            '</div>';
+        }
+        if (sys.diskTotalMb !== null || sys.diskFreeMb !== null) {
+            html += '<div class="gguf-stat-card">' +
+                '<div class="gguf-stat-label">' + _('gguf.disk_usage') + '</div>' +
+                '<div class="gguf-stat-value">' + formatVramMB(sys.diskTotalMb) + '</div>' +
+                '<div class="gguf-stat-label" style="margin-top:6px;">' + _('common.free') + '</div>' +
+                '<div class="gguf-stat-value muted">' + formatVramMB(sys.diskFreeMb) + '</div>' +
+            '</div>';
+        }
+        return html + '</div>';
+    }
+
+    /**
+     * hostSystemPayload — где искать system-метрики выбранного бэкенда.
+     * Основной источник — state.backendRuntime.system (полный BackendMetrics);
+     * запасной — сам объект бэкенда из /api/v1/gguf/backends (там тоже бывает
+     * system, если запись пришла из /api/v1/backends).
+     */
+    function hostSystemPayload() {
+        const rt = state.backendRuntime || {};
+        if (rt.system) return rt.system;
+        const backend = M.currentBackend();
+        return (backend && backend.system) || null;
     }
 
     function renderWorkerInfoCard() {
@@ -1979,6 +2051,11 @@
     M.renderDetailTabs = renderDetailTabs;
     M.renderDetailPane = renderDetailPane;
     M.renderAboutPane = renderAboutPane;
+    // R91: хост-метрики (RAM/CPU/диск) — экспортируем для юнит-тестов:
+    // webui/js/modules/gguf-host-ram.test.js проверяет, что RAM хоста реально
+    // попадает в разметку панели «Инфо», а не только парсится.
+    M.renderHostSystemCard = renderHostSystemCard;
+    M.hostSystemPayload = hostSystemPayload;
     M.renderModelsPane = renderModelsPane;
     M.renderLoadedPane = renderLoadedPane;
     M.renderDownloadsPane = renderDownloadsPane;

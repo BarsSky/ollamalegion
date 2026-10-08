@@ -47,6 +47,16 @@ window.I18N_RU = {
   "metrics.vramUsed": "VRAM занято",
   "metrics.ramUsed": "RAM занято",
   "metrics.cpuUsed": "CPU занято",
+  // R90: подписи секции «Состояние бэкенда» (renderBackendDetails). Этих ключей
+  // НЕ БЫЛО в переводах, а `_t()` при отсутствии перевода возвращает сам ключ —
+  // оператор видел «metrics.ram_usage» вместо «RAM». Значения под ними выводятся
+  // как «занято / всего (N%)», поэтому подпись это и говорит.
+  "metrics.gpu_usage": "Загрузка GPU",
+  "metrics.vram_usage": "Видеопамять (занято / всего)",
+  "metrics.ram_usage": "Оперативная память (занято / всего)",
+  "metrics.cpu_usage": "Загрузка CPU",
+  "metrics.gpu_temp": "Температура GPU",
+  "metrics.cpu_temp": "Температура CPU",
   "metrics.temperature": "Температура",
   "metrics.fan_speed": "Вентиляторы",
   "metrics.power": "Энергопотребление",
@@ -282,6 +292,8 @@ window.I18N_RU = {
   "common.connecting": "Подключение...",
   "common.version": "Версия",
   "common.free": "Свободно",
+  // R90: подпись строки «Всего (память модели)» в карточке параметров бэкенда.
+  "common.total": "Всего",
 
   // Footer
   "footer.documentation": "Документация",
@@ -705,6 +717,9 @@ window.I18N_RU = {
   "renderers.load_forecast": "Прогноз нагрузки",
   "renderers.load_forecast_hint": "Прогноз загрузки ЭТОГО бэкенда по его истории запросов, а не метрика видеокарты. У двух бэкендов на одной GPU значения разные по определению.",
   "renderers.gpu_card_sample_hint": "Карточка показывает последний замер СВОЕГО агента. У двух агентов на одной машине значения могут отличаться на один интервал опроса: частоты GPU меняются за секунды (простой 210 MHz → boost 1755 MHz).",
+  // R90: RAM хоста в карточке GPU (раньше её там не было — сводка была неполной).
+  "renderers.ram_hint": "Оперативная память ХОСТА (не видеопамять): занято / всего —",
+  "renderers.ram_unknown": "RAM хоста неизвестна: агент бэкенда не отдаёт system.memory*",
   // R89 (2026-10-08): перенос модели между бэкендами («Поделиться моделью»).
   "share.title": "Поделиться моделью",
   "share.source_hint": "Источник",
@@ -841,6 +856,14 @@ window.I18N_RU = {
   "renderers.kv_cache": "KV-кэш",
   "renderers.layers": "Слоёв",
   "renderers.kv_precision": "Точность KV",
+  // R90: подписи параметров llama.cpp/GGUF бэкенда в карточке (renderers.js).
+  // Ключи использовались через `_t(...) || 'English'`, но в переводах их не было,
+  // поэтому fallback молча показывал английский текст в русской панели.
+  "renderers.model_path": "Путь к модели",
+  "renderers.gpu_layers": "Слоёв на GPU",
+  "renderers.threads": "Потоков",
+  "renderers.batch_size": "Размер батча",
+  "renderers.quantization": "Квантование",
 
   // backendsPage / backendLoad
   "renderers.models_label": "Моделей:",
@@ -1082,6 +1105,9 @@ window.I18N_RU = {
   "gguf.no_gpu": "GPU не обнаружен",
   "gguf.gpu_count": "GPU",
   "gguf.worker_info": "Информация о Worker",
+  // R91: блок «Хост (система)» в панели «Инфо» GGUF-бэкенда — RAM/CPU/диск.
+  "gguf.host_info": "Хост (система)",
+  "gguf.disk_usage": "Диск (всего)",
   "gguf.version": "Версия",
   "gguf.refresh": "Обновить",
   "gguf.search_limit": "Лимит",
@@ -1210,6 +1236,11 @@ window.I18N_RU = {
   "gguf.master_title": "GGUF Модели — кластер llama.cpp",
   "gguf.select_backend_prompt": "Выберите зарегистрированный бэкенд слева, чтобы управлять его моделями, скачивать с HuggingFace или просматривать статистику.",
   "gguf.no_backend_selected": "Бэкенд не выбран",
+  // R90: тексты селектора бэкендов и пустых списков в GGUF-панели (renderers.js).
+  "gguf.select_backend": "Бэкенд",
+  "gguf.no_backends": "Нет зарегистрированных llama.cpp бэкендов",
+  "gguf.no_models": "Нет моделей",
+  "gguf.vram": "VRAM",
   "gguf.tab_models": "Модели",
   "gguf.tab_downloads": "Загрузки",
   "gguf.tab_hf": "HuggingFace",
@@ -1967,6 +1998,9 @@ window.I18N_RU = {
   "imageBackends.col_state": "Состояние",
   "imageBackends.col_model": "Текущая модель",
   "imageBackends.col_vram": "VRAM",
+  // R90: оперативная память ХОСТА (не видеокарты) — для image-моделей с offload
+  // в RAM это главный ресурс, и в сводке по бэкенду её не хватало.
+  "imageBackends.col_ram": "RAM",
   "imageBackends.col_requests": "Запросы",
   "imageBackends.col_rps": "RPS",
   "imageBackends.col_avg": "Среднее время",

@@ -57,6 +57,60 @@
         return M.formatFileSize(n * M.MB);
     };
 
+    /**
+     * hostSystemStats — сводка по ХОСТУ бэкенда из system-метрик агента (R91).
+     *
+     * ЗАЧЕМ. Панель «Инфо» страницы GGUF показывала только GPU и версию воркера:
+     * память хоста (system.memory*) агент отдаёт давно, но на странице
+     * llama.cpp-бэкенда её не было вообще — «полной сводки по состоянию
+     * бэкенда» не получалось. При этом /api/v1/backends/{id} уже приходит целиком
+     * и refreshDetail складывает его в state.backendRuntime, так что дополнительных
+     * запросов не нужно.
+     *
+     * ЕДИНИЦЫ. types.SystemMetrics.MemoryTotal/Used/Free и DiskTotal/Used/Free —
+     * МЕГАБАЙТЫ (pkg/types/metrics.go), поэтому рисуем их через formatVramMB, а не
+     * через formatFileSize.
+     *
+     * Возвращаем ЧИСТЫЕ числа и null для «неизвестно»: форматирование и перевод
+     * подписей делают вызывающие (renderHostSystemCard), а тест проверяет разбор
+     * без DOM и без i18n.
+     */
+    M.hostSystemStats = function(system) {
+        var sys = (system && typeof system === 'object') ? system : {};
+        // Первое непустое значение из списка; null — «неизвестно».
+        // strict=true: 0 считаем неизвестным (у агента это «датчика нет» либо
+        // «сбор не удался») — иначе на карточке появлялись бы «0 B» и «0°C».
+        function pick(strict, values) {
+            for (var i = 0; i < values.length; i++) {
+                var v = Number(values[i]);
+                if (!isFinite(v)) continue;
+                if (strict ? v > 0 : v >= 0) return v;
+            }
+            return null;
+        }
+        var cpu = (sys.cpu && typeof sys.cpu === 'object') ? sys.cpu : {};
+        var ramTotal = pick(true, [sys.memoryTotal, sys.memory_total]);
+        var ramUsed = pick(false, [sys.memoryUsed, sys.memory_used]);
+        var ramFree = pick(false, [sys.memoryFree, sys.memory_free]);
+        // Процент считаем только когда есть оба числа и total > 0: иначе деление
+        // на ноль дало бы «NaN%» вместо честного прочерка.
+        var ramPercent = (ramTotal !== null && ramUsed !== null)
+            ? Math.round(ramUsed / ramTotal * 1000) / 10
+            : null;
+        return {
+            known: ramTotal !== null || ramUsed !== null || ramFree !== null ||
+                sys.cpuUsagePercent !== undefined || sys.diskTotal !== undefined,
+            ramTotalMb: ramTotal,
+            ramUsedMb: ramUsed,
+            ramFreeMb: ramFree,
+            ramPercent: ramPercent,
+            cpuPercent: pick(false, [sys.cpuUsagePercent, sys.cpu_usage_percent]),
+            cpuTempC: pick(true, [cpu.temperature, sys.cpuTemperature, sys.cpu_temperature]),
+            diskTotalMb: pick(true, [sys.diskTotal, sys.disk_total]),
+            diskFreeMb: pick(false, [sys.diskFree, sys.disk_free])
+        };
+    };
+
     // showToast — local fallback toast (если window.showToast не зарегистрирован).
     // В обычном режиме делегирует к window.showToast (из app.js → app-core.js).
     M.showToast = function(message, type) {

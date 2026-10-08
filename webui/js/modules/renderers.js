@@ -359,6 +359,18 @@ const Renderers = (function () {
         const memClock = gpu.memClock !== undefined && gpu.memClock > 0 ? gpu.memClock : '-';
         const status = getGPUStatus(usage, vramPct, temp);
         const reqCap = pred.requestCapacity !== undefined ? pred.requestCapacity.toFixed(0) + '%' : '-';
+        // R90: ОПЕРАТИВНАЯ ПАМЯТЬ ХОСТА. Агенты её и раньше отдавали
+        // (system.memoryUsed/memoryTotal), но в GPU-карточке её не было — сводка по
+        // бэкенду выглядела неполной: видно VRAM (память карты), но не видно,
+        // сколько RAM занято на самой машине (а для image-моделей с offload в RAM
+        // это и есть главный ресурс).
+        const sys = backend.system || {};
+        const ramTotal = sys.memoryTotal || 0;
+        const ramUsed = sys.memoryUsed || 0;
+        const ramPct = ramTotal > 0 ? percent(ramUsed, ramTotal) : null;
+        const ramHint = ramPct !== null
+            ? _t('renderers.ram_hint') + ' ' + formatMB(ramUsed) + ' / ' + formatMB(ramTotal)
+            : _t('renderers.ram_unknown');
         // Capacity — это ПРОГНОЗ ЗАГРУЗКИ конкретного бэкенда (по его истории
         // запросов), а НЕ метрика видеокарты. Два бэкенда на одной карте дают
         // разные значения по определению; без подписи это выглядело как «агенты
@@ -375,6 +387,7 @@ const Renderers = (function () {
                     ${metric('Host', escapeHtml(backend.host || '-'))}
                     ${metric('GPU', `${usage.toFixed(1)}%`)}
                     ${metric('VRAM', `${vramPct.toFixed(1)}%`)}
+                    ${metric('RAM', ramPct !== null ? `${ramPct.toFixed(1)}%` : '-', ramHint)}
                     ${metric('Temp', `${temp}°C`)}
                     ${metric('Power', power !== '-' ? `${power}W${powerLimit !== '-' ? ' / ' + powerLimit + 'W' : ''}` : '-')}
                     ${metric('Clock', `${gpuClock !== '-' ? gpuClock + ' MHz' : '-'}`)}
@@ -793,6 +806,15 @@ const Renderers = (function () {
         if (img.vramFreeMb !== undefined || img.vramTotalMb !== undefined) {
             html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(t('image.worker_vram', 'Worker VRAM')) +
                 '</span><span class="be-param-value">' + escapeHtml(Utils.formatVramPair(img.vramFreeMb, img.vramTotalMb)) + '</span></div>';
+        }
+        // R90: RAM ХОСТА рядом с VRAM. Для image-моделей с offload в RAM это
+        // главный ресурс (веса живут в оперативке), и без него в блоке состояния
+        // воркера не понять, почему модель «не влезает».
+        var workerSys = backend.system || {};
+        if (workerSys.memoryTotal > 0) {
+            html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(t('metrics.ram_usage', 'RAM usage')) +
+                '</span><span class="be-param-value">' + formatMB(workerSys.memoryUsed) + ' / ' + formatMB(workerSys.memoryTotal) +
+                ' (' + percent(workerSys.memoryUsed, workerSys.memoryTotal).toFixed(1) + '%)</span></div>';
         }
         if (img.currentModel) {
             html += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(t('image.current_model', 'Current model')) +

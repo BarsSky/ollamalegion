@@ -106,6 +106,9 @@ const I18N_MAP = {
     'renderers.load_forecast': 'Load forecast',
     'renderers.load_forecast_hint': 'backend load forecast, NOT a gpu metric',
     'renderers.gpu_card_sample_hint': 'last sample of THIS agent',
+    // R90: RAM хоста в карточке GPU.
+    'renderers.ram_hint': 'HOST RAM (used / total):',
+    'renderers.ram_unknown': 'Host RAM unknown',
 };
 global.window.I18N = {
     t(k) { return Object.prototype.hasOwnProperty.call(I18N_MAP, k) ? I18N_MAP[k] : k; },
@@ -386,6 +389,33 @@ check('R88 GPU-карточка: реальная мощность и часто
     assert.ok(html.indexOf('510 MHz') !== -1, 'частота GPU должна показываться');
     assert.ok(html.indexOf('last sample of THIS agent') !== -1,
         'карточка поясняет, что показывает замер СВОЕГО агента (иначе расхождение с соседней карточкой читается как ошибка)');
+});
+
+// --- 7. R90: RAM хоста в сводке по бэкенду -----------------------------------
+//
+// Жалоба оператора: «в метрики что отдают агенты не хватает информации о
+// оперативной памяти для полной сводки по состоянию бэкенда». Агенты её отдают
+// (system.memoryUsed/memoryTotal), но в карточке GPU её не было: видно VRAM
+// (память карты), а сколько занято RAM на самой машине — нет. Для image-моделей
+// с offload в RAM это главный ресурс.
+
+check('R90 GPU-карточка: RAM хоста показана рядом с VRAM', function () {
+    const html = R.gpuCluster([gpuModeBackend({
+        system: { memoryUsed: 1817, memoryTotal: 25044, memoryFree: 23227, cpuUsagePercent: 3 },
+    })]);
+    assert.ok(html.indexOf('RAM') !== -1, 'нет метрики RAM в карточке: ' + html.slice(0, 400));
+    // 1817 / 25044 = 7.25% → 7.3%
+    assert.ok(html.indexOf('7.3%') !== -1, 'нет процента занятой RAM: ' + html.slice(0, 400));
+    assert.ok(html.indexOf('1.8 GB / 24.5 GB') !== -1,
+        'в подсказке должны быть абсолютные значения «занято / всего»: ' + html.slice(0, 600));
+});
+
+check('R90 GPU-карточка: без данных агента — прочерк, а не 0%', function () {
+    const html = R.gpuCluster([gpuModeBackend({ system: {} })]);
+    assert.ok(html.indexOf('0.0%') === -1,
+        'нельзя показывать 0% RAM, если данных нет: ' + html.slice(0, 300));
+    assert.ok(html.indexOf('Host RAM unknown') !== -1 || html.indexOf('renderers.ram_unknown') !== -1,
+        'нужна честная подсказка «RAM неизвестна»: ' + html.slice(0, 400));
 });
 
 console.log('\nrenderers-image: ' + passed + ' проверок пройдено');

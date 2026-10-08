@@ -31,8 +31,21 @@ import (
 	"testing"
 )
 
-// i18nCallRe — литеральный ключ в вызове t('...'), _('...'), tr('...') или .t('...').
-var i18nCallRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_$.])(?:t|_|tr)\(\s*['"]([A-Za-z][A-Za-z0-9_.]*)['"]|\.t\(\s*['"]([A-Za-z][A-Za-z0-9_.]*)['"]`)
+// i18nCallRe — литеральный ключ в вызове t('...'), _t('...'), _('...'), tr('...'),
+// .t('...') или ._t('...').
+//
+// R90 (2026-10-08): `_t(` ДОБАВЛЕН, и это не придирка. Старая регулярка требовала
+// перед именем функции символ не из [A-Za-z0-9_$.], а у `_t(` непосредственно
+// перед `t` стоит `_` — то есть подчёркнутый алиас перевода линт не видел ВООБЩЕ.
+// Следствие на живой панели: шесть ключей секции «Состояние бэкенда»
+// (metrics.gpu_usage, metrics.vram_usage, metrics.ram_usage, metrics.cpu_usage,
+// metrics.gpu_temp, metrics.cpu_temp) отсутствовали в ru.js/en.js, а `_t()` при
+// отсутствии перевода возвращает сам ключ — оператор видел в панели
+// «metrics.ram_usage» вместо «RAM». Линт обязан ловить и такой вызов.
+var i18nCallRe = regexp.MustCompile(
+	`(?:^|[^A-Za-z0-9_$])(?:_t|t|_|tr)\(\s*['"]([A-Za-z][A-Za-z0-9_.]*)['"]` +
+		`|\._t\(\s*['"]([A-Za-z][A-Za-z0-9_.]*)['"]` +
+		`|\.t\(\s*['"]([A-Za-z][A-Za-z0-9_.]*)['"]`)
 
 // i18nEntryRe — ключ в файле переводов: "key": "value".
 var i18nEntryRe = regexp.MustCompile(`"([A-Za-z][A-Za-z0-9_.]*)"\s*:`)
@@ -72,9 +85,13 @@ func collectUsedI18nKeys(t *testing.T, webuiDir string) map[string][]string {
 			return readErr
 		}
 		for _, m := range i18nCallRe.FindAllStringSubmatch(string(data), -1) {
-			key := m[1]
-			if key == "" {
-				key = m[2]
+			// Групп стало три (t/_t/_, ._t, .t) — берём первую непустую.
+			key := ""
+			for _, g := range m[1:] {
+				if g != "" {
+					key = g
+					break
+				}
 			}
 			// Префиксы для склейки: реального ключа в исходнике нет.
 			if strings.HasSuffix(key, "_") || strings.HasSuffix(key, ".") {

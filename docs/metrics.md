@@ -44,9 +44,9 @@
 | `memoryTotal` | uint64 | MB | gopsutil | ✅ | Всего RAM |
 | `memoryUsed` | uint64 | MB | gopsutil | ✅ | Использовано RAM |
 | `memoryFree` | uint64 | MB | gopsutil | ✅ (вычисл.) | Свободно RAM |
-| `diskTotal` | uint64 | MB | gopsutil | ❌ | Всего диска |
+| `diskTotal` | uint64 | MB | gopsutil | ✅ (GGUF «Инфо») | Всего диска |
 | `diskUsed` | uint64 | MB | gopsutil | ❌ | Использовано диска |
-| `diskFree` | uint64 | MB | gopsutil | ❌ | Свободно диска |
+| `diskFree` | uint64 | MB | gopsutil | ✅ (GGUF «Инфо») | Свободно диска |
 | `networkRX` | uint64 | bytes | gopsutil | ❌ | Получено по сети (накопительно) |
 | `networkTX` | uint64 | bytes | gopsutil | ❌ | Отправлено по сети (накопительно) |
 | `networkRXRate` | float64 | bytes/s | gopsutil | ❌ | Скорость получения (вычисляется из дельты) |
@@ -66,6 +66,33 @@
 | `loadAverage15` | float64 | — | /proc/loadavg | ✅ | Load avg 15 мин |
 | `temperature` | int | °C | /sys/class/thermal | ✅ | Температура CPU |
 | `throttled` | bool | — | /sys/devices/system/cpu | ✅ | CPU троттлинг |
+
+### 2.2 Где RAM хоста видна в панели (R91)
+
+Агент (и внешний, и встроенный в cppworker/sdworker) отдаёт `memoryTotal/Used/Free`
+давно — их не хватало только в интерфейсе, и сводка по бэкенду выглядела неполной:
+было видно память видеокарты, но не оперативную память самой машины.
+
+| Место в панели | Что показывается |
+|---|---|
+| Дашборд, карточка GPU | `RAM 7.3%` рядом с `VRAM`; тултип — «занято / всего» |
+| Дашборд, карточка CPU | `RAM %` (было и раньше) |
+| «Бэкенды» → состояние бэкенда | `Оперативная память: 1.8 GB / 24.5 GB (7.3%)` |
+| Дашборд/«Бэкенды» → блок image-воркера | строка RAM рядом с VRAM воркера |
+| «Image-модели» → таблица | колонка `RAM`: `1.8 GB / 24.5 GB (7.3%)` |
+| «GGUF модели» → «Инфо» → «Хост (система)» | RAM (занято/всего/%), свободная RAM, загрузка и температура CPU, объём и свободное место диска |
+
+**Единицы.** `SystemMetrics` отдаёт память и диск в **МЕГАБАЙТАХ**, а
+`formatFileSize` в панели ждёт **байты**: форматировать RAM через него нельзя —
+8192 MB рисуются как «8.0 KB» (ровно этот дефект был у VRAM до R-MultiHost).
+Поэтому RAM/диск идут через `formatVramMB` (`webui/js/modules/gguf-renderer-helpers.js`)
+или через `formatMB` (`renderers.js`).
+
+**«0» — это «неизвестно», а не ноль.** Если агент не смог собрать память (или у
+хоста нет датчика температуры), панель показывает прочерк и объяснение, а не
+`0 B` / `0°C`: `hostSystemStats` в `webui/js/modules/gguf-renderer-helpers.js`
+трактует `0` в `total`/`free`/`temperature` как отсутствие данных и не считает
+проценты, когда `total` пуст (иначе было бы `NaN%`).
 
 ---
 

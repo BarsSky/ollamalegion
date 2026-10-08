@@ -675,6 +675,11 @@
                                         <th data-i18n="imageBackends.col_state">Состояние</th>
                                         <th data-i18n="imageBackends.col_model">Текущая модель</th>
                                         <th data-i18n="imageBackends.col_vram">VRAM</th>
+                                        <!-- R90: оперативная память ХОСТА рядом с VRAM:
+                                             для image-моделей с offload в RAM это
+                                             главный ресурс, и без него сводка по
+                                             бэкенду неполная. -->
+                                        <th data-i18n="imageBackends.col_ram">RAM</th>
                                         <th data-i18n="imageBackends.col_requests">Запросы</th>
                                         <th data-i18n="imageBackends.col_rps">RPS</th>
                                         <th data-i18n="imageBackends.col_avg">Среднее время</th>

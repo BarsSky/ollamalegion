@@ -848,6 +848,40 @@ function lastRequest(filter) {
         assert.strictEqual(row[0].requests.total, 7);
     });
 
+    // R90 (2026-10-08): РАМ ХОСТА в таблице. Агенты отдают её в
+    // system.memoryUsed/memoryTotal, но колонки RAM не было — сводка по бэкенду
+    // была неполной (для image-моделей с offload в RAM это главный ресурс).
+    await check('R90: RAM хоста берётся из system.memory* и форматируется как «занято / всего (%)»', function () {
+        const row = pure.normalizeBackends([{
+            id: 'imageworker', backendType: 'image_cpp', status: 'healthy', host: 'imageworker',
+            system: { memoryUsed: 1817, memoryTotal: 25044, memoryFree: 23227 },
+        }]);
+        assert.strictEqual(row[0].ramUsedMb, 1817, 'занятая RAM должна браться из system.memoryUsed');
+        assert.strictEqual(row[0].ramTotalMb, 25044, 'всего RAM должно браться из system.memoryTotal');
+        assert.strictEqual(pure.formatRamPair(row[0].ramUsedMb, row[0].ramTotalMb), '1.8 GB / 24.5 GB (7.3%)',
+            'RAM в таблице должна показывать занято/всего и процент');
+    });
+
+    await check('R90: без данных агента RAM — прочерк, а не «0 MB / 0 MB»', function () {
+        const row = pure.normalizeBackends([{ id: 'no-agent', backendType: 'image_cpp', status: 'healthy' }]);
+        assert.strictEqual(row[0].ramUsedMb, null);
+        assert.strictEqual(row[0].ramTotalMb, null);
+        assert.strictEqual(pure.formatRamPair(row[0].ramUsedMb, row[0].ramTotalMb), '-',
+            'нулевые значения читались бы как «память кончилась»');
+        assert.strictEqual(pure.formatRamPair(100, 0), '-', 'total=0 — тоже «неизвестно»');
+        assert.strictEqual(pure.formatRamPair(0, 1024), '0 MB / 1.0 GB (0.0%)',
+            'реальный ноль (пустая машина) показывать можно');
+    });
+
+    await check('R90: snake_case system.memory_used тоже принимается', function () {
+        const row = pure.normalizeBackends([{
+            id: 'legacy-agent', backendType: 'image_cpp', status: 'healthy',
+            system: { memory_used: 512, memory_total: 2048 },
+        }]);
+        assert.strictEqual(row[0].ramUsedMb, 512);
+        assert.strictEqual(row[0].ramTotalMb, 2048);
+    });
+
     console.log('\n' + (failures.length ? 'FAILED: ' + failures.length : 'OK: ' + passed + ' checks passed'));
     if (failures.length) {
         failures.forEach(function (f) { console.error(' - ' + f); });

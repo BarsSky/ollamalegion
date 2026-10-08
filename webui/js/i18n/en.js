@@ -47,6 +47,14 @@ window.I18N_EN = {
   "metrics.vramUsed": "VRAM Used",
   "metrics.ramUsed": "RAM Used",
   "metrics.cpuUsed": "CPU Used",
+  // R90: labels of the "Backend state" section (renderBackendDetails). These keys
+  // were MISSING from the translations while `_t()` falls back to the raw key.
+  "metrics.gpu_usage": "GPU utilization",
+  "metrics.vram_usage": "VRAM (used / total)",
+  "metrics.ram_usage": "Host RAM (used / total)",
+  "metrics.cpu_usage": "CPU utilization",
+  "metrics.gpu_temp": "GPU temperature",
+  "metrics.cpu_temp": "CPU temperature",
   "metrics.temperature": "Temperature",
   "metrics.fan_speed": "Fan Speed",
   "metrics.power": "Power Draw",
@@ -637,6 +645,9 @@ window.I18N_EN = {
   "renderers.load_forecast": "Load forecast",
   "renderers.load_forecast_hint": "Load forecast for THIS backend from its own request history - not a GPU metric. Two backends on one GPU differ by definition.",
   "renderers.gpu_card_sample_hint": "The card shows the last sample of ITS OWN agent. Two agents on one machine can differ by one polling interval: GPU clocks swing within seconds (idle 210 MHz -> boost 1755 MHz).",
+  // R90: host RAM on the GPU card (it was missing there, the summary was incomplete).
+  "renderers.ram_hint": "HOST RAM (not GPU memory): used / total -",
+  "renderers.ram_unknown": "Host RAM unknown: the backend agent does not report system.memory*",
   // R89 (2026-10-08): model sharing between backends ("Share model").
   "share.title": "Share model",
   "share.source_hint": "Source",
@@ -772,6 +783,14 @@ window.I18N_EN = {
   "renderers.kv_cache": "KV Cache",
   "renderers.layers": "Layers",
   "renderers.kv_precision": "KV Precision",
+  // R90: llama.cpp/GGUF backend parameter labels (renderers.js). The keys were used
+  // via `_t(...) || 'English'` but were absent from the translations, so the
+  // fallback silently showed the hardcoded English string.
+  "renderers.model_path": "Model Path",
+  "renderers.gpu_layers": "GPU Layers",
+  "renderers.threads": "Threads",
+  "renderers.batch_size": "Batch Size",
+  "renderers.quantization": "Quantization",
 
   // backendsPage / backendLoad
   "renderers.models_label": "Models:",
@@ -1129,6 +1148,8 @@ window.I18N_EN = {
   "common.loaded": "Loaded",
   "common.notLoaded": "Not loaded",
   "common.free": "Free",
+  // R90: label of the "Total (Model Memory)" row in the backend parameter card.
+  "common.total": "Total",
 
   // ===== GGUF Models Tab (NEW) =====
   "gguf.title": "GGUF Models",
@@ -1202,6 +1223,9 @@ window.I18N_EN = {
   "gguf.no_gpu": "No GPU detected",
   "gguf.gpu_count": "GPUs",
   "gguf.worker_info": "Worker Info",
+  // R91: "Host (system)" block on the GGUF backend About pane - RAM/CPU/disk.
+  "gguf.host_info": "Host (system)",
+  "gguf.disk_usage": "Disk (total)",
   "gguf.version": "Version",
   "gguf.refresh": "Refresh",
   "gguf.search_limit": "Limit",
@@ -1332,6 +1356,11 @@ window.I18N_EN = {
   "gguf.master_title": "GGUF Models — llama.cpp Cluster",
   "gguf.select_backend_prompt": "Select a registered backend on the left to manage its models, download from HuggingFace, or view runtime stats.",
   "gguf.no_backend_selected": "No backend selected",
+  // R90: backend selector label and empty-state texts of the GGUF panel (renderers.js).
+  "gguf.select_backend": "Backend",
+  "gguf.no_backends": "No registered llama.cpp backends",
+  "gguf.no_models": "No models",
+  "gguf.vram": "VRAM",
   "gguf.tab_models": "Models",
   "gguf.tab_downloads": "Downloads",
   "gguf.tab_hf": "HuggingFace",
@@ -1961,6 +1990,9 @@ window.I18N_EN = {
   "imageBackends.col_state": "State",
   "imageBackends.col_model": "Current model",
   "imageBackends.col_vram": "VRAM",
+  // R90: HOST RAM (not GPU memory) - for image models with RAM offload this is the
+  // primary resource, and the backend summary was missing it.
+  "imageBackends.col_ram": "RAM",
   "imageBackends.col_requests": "Requests",
   "imageBackends.col_rps": "RPS",
   "imageBackends.col_avg": "Avg time",

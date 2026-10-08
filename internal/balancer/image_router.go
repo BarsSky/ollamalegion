@@ -258,20 +258,68 @@ func (ir *ImageRouter) writeGateError(w http.ResponseWriter, r *http.Request, ga
 // selectImageBackend — выбор image-бэкенда.
 //
 // Порядок:
-//  1. selectByResources — resource-aware выбор среди image_cpp (учитывает
-//     здоровье, лимиты и загрузку; при отсутствии метрик деградирует безопасно);
-//  2. selectFreeBackendAny — «любой свободный» image-бэкенд;
+//  1. selectByResourcesExcluding — resource-aware выбор среди image_cpp, из
+//     которого исключены бэкенды, физически не способные обслужить генерацию
+//     (пустой каталог моделей, см. backendsWithoutModels);
+//  2. selectFreeBackendAny — «любой свободный» image-бэкенд. Он НЕ учитывает
+//     исключение сознательно: если моделей нет нигде, честнее выбрать хоть
+//     кого-то и получить от гейта внятный image_model_not_loaded с подсказкой,
+//     чем отдать «нет бэкенда» и потерять подсказку о причине.
 //  3. "" → вызывающий отдаёт 503.
 //
-// Модель пока не участвует в выборе: sd-server всё равно работает с одной
-// загруженной моделью на процесс, а учёт моделей image-воркера появится
-// в Phase 3 (метрики + профили).
+// R88 (2026-10-08): учёт моделей появился именно здесь. Живой случай: вторая
+// машина (192.168.13.34) зарегистрирована и здорова, но каталог bundle'ов пуст,
+// и метрик у неё нет — прежний выбор «по ресурсам» отдавал ей КАЖДЫЙ запрос
+// (выглядела свободной), гейт отвечал image_model_not_loaded, и генерация не
+// работала целиком, хотя на локальном воркере модель была загружена.
 func (ir *ImageRouter) selectImageBackend() string {
 	allowed := []types.BackendType{types.BackendTypeImage}
-	if id := ir.proxy.selectByResources(allowed); id != "" {
+	if id := ir.proxy.selectByResourcesExcluding(ir.backendsWithoutModels(), allowed); id != "" {
 		return id
 	}
 	return ir.proxy.selectFreeBackendAny(allowed)
+}
+
+// backendsWithoutModels — image-бэкенды, у которых НЕТ ни загруженной модели, ни
+// моделей на диске: такой воркер не может обслужить генерацию НИКОГДА (модель
+// взять неоткуда), и выбирать его — гарантированный отказ.
+//
+// Решение принимается ТОЛЬКО по достоверному снимку: если снимка ещё нет
+// (воркер не опрошен) или последний опрос упал, бэкенд НЕ исключается — иначе
+// мы бы выкинули исправный узел из-за отсутствия данных.
+//
+// Возвращает nil, когда исключать нечего (тогда selectByResourcesExcluding
+// работает как обычный selectByResources).
+func (ir *ImageRouter) backendsWithoutModels() map[string]bool {
+	if ir == nil || ir.proxy == nil {
+		return nil
+	}
+	res := ir.proxy.imageResources()
+	if res == nil {
+		return nil // гейт/лок выключены — выбор не сужаем
+	}
+	var exclude map[string]bool
+	for _, state := range ir.proxy.filterBackendsByType(types.BackendTypeImage) {
+		if state == nil || state.Backend == nil {
+			continue
+		}
+		id := state.Backend.ID
+		snap := res.metricsSnapshot(id)
+		if snap == nil || snap.lastErr != "" {
+			continue // данных нет / опрос падал — не судим
+		}
+		if snap.loaded() != nil || len(snap.modelNames()) > 0 {
+			continue // есть чем обслужить
+		}
+		if exclude == nil {
+			exclude = map[string]bool{}
+		}
+		exclude[id] = true
+		logger.Get().Infow("image backend skipped: no models in its catalog",
+			"backend", id, "host", state.Backend.Host,
+			"hint", "скачайте bundle на этот узел (WebUI → HuggingFace) или выберите другой бэкенд")
+	}
+	return exclude
 }
 
 // imageModelAliases — идентификаторы, которые отдаются в GET /v1/models,

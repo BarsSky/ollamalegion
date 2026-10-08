@@ -1138,3 +1138,29 @@ Verified on the stand: `POST /v1/images/generations` (2048x2048/40 steps) throug
 panel -> `HTTP 200` in 22m30s; a stopped backend -> 503 with
 `error_type=connection_refused` and a hint about the container, not "502 + dial text".
 
+### 17.7 Backend selection: a node with an EMPTY catalog is not selected
+
+Live case (R88). The stand has two machines: the local `imageworker` (model loaded, two
+bundles on disk) and the remote `IMAGEWORKER-34` (192.168.13.34) - registered and
+healthy, but with an **empty** model catalog. The old resource-based selection sent it
+**every** request: it has no agent metrics, so it looked free. The gate answered
+`image_model_not_loaded` and generation stopped working entirely, even though the local
+worker had everything ready.
+
+The rule (`internal/balancer/image_router.go` -> `backendsWithoutModels`):
+
+- a backend whose snapshot has **neither a loaded model nor any model on disk** is
+  excluded from generation routing: it can never serve the request;
+- the decision is made **only from a trustworthy snapshot**: no snapshot, or the last
+  probe failed (`lastErr`) - the backend is NOT excluded;
+- a model **on disk** is enough to stay a candidate: it can be loaded (lazy load or the
+  tool's auto-load);
+- if **every** catalog is empty we still pick someone: it is more honest to get the
+  gate's `image_model_not_loaded` with a hint than "no backend" without a reason;
+- the skip is visible in the log: `image backend skipped: no models in its catalog`
+  (with `host` and a hint to download a bundle to that node).
+
+The remote node therefore stays in the cluster (models can still be downloaded to it
+from the panel) and starts receiving generations as soon as a bundle appears there -
+with no configuration changes.
+

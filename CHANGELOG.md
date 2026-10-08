@@ -25,8 +25,23 @@
   как `502` с сырым `image backend request failed: Post ...: dial tcp ...: connect:
   connection refused`; nginx отдавал HTML-страницу «504 Gateway Time-out», а панель
   показывала «HTTP 504». Ни `error_type`, ни `hint`, ни `retry_after`.
+- **Генерация уходила на узел с ПУСТЫМ каталогом моделей.** Живой случай: вторая
+  машина (`IMAGEWORKER-34`, 192.168.13.34) зарегистрирована и здорова, но bundle'ов
+  на ней нет. Выбор «по ресурсам» отдавал ей КАЖДЫЙ запрос (агентских метрик нет →
+  выглядела свободной), гейт отвечал `image_model_not_loaded`, и генерация не
+  работала вообще, хотя на локальном `imageworker` модель была загружена.
 
 ### 🔧 Что сделано
+
+- **Выбор image-бэкенда учитывает каталог моделей** (`image_router.go` →
+  `backendsWithoutModels`): бэкенд, у которого нет НИ загруженной модели, НИ моделей
+  на диске, исключается из выбора для генерации; решение принимается только по
+  достоверному снимку (нет данных или `lastErr` → не исключаем), модель на диске
+  остаётся достаточным признаком, при пустых каталогах у всех выбирается любой (чтобы
+  гейт объяснил причину). Пропуск виден в логе:
+  `image backend skipped: no models in its catalog` + подсказка скачать bundle.
+  Узел при этом остаётся в кластере и начинает получать генерации, как только на нём
+  появится модель.
 
 - **Воркер (`internal/sdbackend`)**: дефолты `GenerationTimeoutSec`/`StartupTimeoutSec`
   = **0 (без капа)**; `profile.timeoutSec` применяется ТОЛЬКО при
@@ -78,10 +93,12 @@
 
 - Go: новые тесты доктрины (`internal/sdbackend/timeout_policy_test.go`),
   подсказок (`cmd/sdworker/utils_hint_r88_test.go`), классификации транспорта
-  (`internal/balancer/upstream_error_response_r83_test.go` +R88) и предохранителя
-  (`pkg/types/image_policy_r88_test.go`); полные прогоны `internal/sdbackend`,
-  `cmd/sdworker`, `internal/balancer`, `pkg/types`, `internal/api`,
-  `internal/config` — зелёные.
+  (`internal/balancer/upstream_error_response_r83_test.go` +R88), предохранителя
+  (`pkg/types/image_policy_r88_test.go`) и выбора бэкенда
+  (`internal/balancer/image_backend_selection_r88_test.go`: пустой каталог
+  исключается, модель на диске — нет, недостоверный снимок — нет, все пусты —
+  кандидат всё равно есть); полные прогоны `internal/sdbackend`, `cmd/sdworker`,
+  `internal/balancer`, `pkg/types`, `internal/api`, `internal/config` — зелёные.
 - JS: `image-test-page.test.js` +3 проверки (нет клиентского капа на генерацию;
   `hint` сервера важнее эвристик; эвристики не сломаны) — 17/17;
   `image-resources-policy.test.js` — 14/14 (форма принимает 0 = «без капа»).
@@ -100,6 +117,16 @@
   ... ,"hint":"джоба неизвестна или истекла (completed_job_ttl_seconds)..."}`;
   отказ гейта → `{"error":{"code":"image_model_not_loaded","hint":"load a model
   first: POST /api/image/models/load ..."}}`.
+- **Выбор бэкенда вживую (после фикса)**: в логе балансера
+  `image backend skipped: no models in its catalog backend=IMAGEWORKER-34
+  host=192.168.13.34 hint=скачайте bundle...`, сам запрос ушёл на `imageworker` →
+  `HTTP 200` за 143 с (до фикса КАЖДЫЙ запрос падал с `image_model_not_loaded`,
+  потому что уходил на пустой удалённый узел).
+- Политика на стенде обнулена по доктрине: `exclusiveLockTimeoutSec=0`
+  (предохранитель снят) и `toolLoadTimeoutSec=0` (без капа) — WARN
+  «lock fuse armed» при старте пропал; попутно исправлена валидация: 0 для
+  `toolLoadTimeoutSec` больше не отклоняется (`minToolLoadTimeoutSec=0`), иначе
+  форму нельзя было сохранить с дефолтом.
 
 ### 🏷️ Образы
 

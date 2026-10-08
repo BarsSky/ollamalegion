@@ -362,7 +362,10 @@ services:
       - SDWORKER_IMAGES_DIR=/app/data/images
       - SDWORKER_IDLE_UNLOAD_MINUTES=${SDWORKER_IDLE_UNLOAD_MINUTES:-30}
       - SDWORKER_MAX_CONCURRENT=${SDWORKER_MAX_CONCURRENT:-64}
-      - SDWORKER_GENERATION_TIMEOUT_SEC=${SDWORKER_GENERATION_TIMEOUT_SEC:-600}
+      # R88: таймаут генерации. 0 = БЕЗ капа (доктрина проекта: кап только
+      # opt-in, ждём терминального состояния джобы). Ненулевое значение ОБОРВЁТ
+      # длинную генерацию (2048x2048/40 шагов ~22 минуты). См. docs §17.
+      - SDWORKER_GENERATION_TIMEOUT_SEC=${SDWORKER_GENERATION_TIMEOUT_SEC:-0}
       - SDWORKER_PRELOAD_MODEL=${SDWORKER_PRELOAD_MODEL:-}
       # response_format:"url" отдаёт ссылку на этот адрес; для клиентов не с
       # этой машины задайте SDWORKER_BASE_URL=http://<хост>:18093.

@@ -306,6 +306,24 @@ const BACKENDS = [
         assert.strictEqual(requests.filter(function (r) { return r.url.indexOf('/v1/images/generations') !== -1; }).length, 0);
     });
 
+    // --- 6. R88: политика капов и объяснение ошибок --------------------------
+    check('R88: у генерации нет клиентского капа (работа не рвётся по таймеру)', function () {
+        assert.strictEqual(P.TIMEOUT_GENERATE_MS, 0,
+            'панель не должна обрывать генерацию по таймеру: 2048x2048 на стенде идёт ~22 минуты');
+        assert.ok(P.TIMEOUT_CONTROL_MS > 0, 'опросы состояния остаются с коротким капом — это разрешено доктриной');
+    });
+
+    check('R88: подсказка сервера (hint) важнее эвристик по тексту', function () {
+        assert.strictEqual(P.errorHint('HTTP 504', { hint: 'поднимите таймаут' }), 'поднимите таймаут');
+        assert.strictEqual(P.errorHint('x', { error: { hint: 'вложенная подсказка' } }), 'вложенная подсказка');
+        assert.ok(P.errorHint('', { error_type: 'upstream_timeout' }).length > 0, 'upstream_timeout без подсказки');
+        assert.ok(P.errorHint('', { error_type: 'upstream_unavailable' }).length > 0, 'upstream_unavailable без подсказки');
+    });
+
+    check('R88: без подсказки сервера работают прежние эвристики', function () {
+        assert.ok(P.errorHint('out of memory').indexOf('VRAM') !== -1, 'эвристика OOM сохранилась');
+    });
+
     console.log('');
     if (failures.length) {
         console.log('ИТОГ: есть провалы (' + failures.length + ')');

@@ -509,9 +509,12 @@ const GgufApi = (function () {
                 ...options
             };
             const controller = new AbortController();
-            // Per-operation timeout: load — 5 min, остальное — 30s.
-            const timeoutMs = (operation === 'load') ? 300000 : 30000;
-            const timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+            // R88 (2026-10-08): загрузка модели — это РАБОТА, капа на неё нет
+            // (0 = таймер не взводим): доктрина проекта запрещает обрывать работу
+            // по будильнику, ждём терминального состояния. Остальные операции
+            // управления — быстрые, у них остаётся короткий кап.
+            const timeoutMs = (operation === 'load') ? 0 : 30000;
+            const timer = timeoutMs > 0 ? setTimeout(function () { controller.abort(); }, timeoutMs) : null;
             try {
                 const headers = { 'Content-Type': 'application/json' };
                 if (apiToken) {

@@ -554,11 +554,17 @@ func (s *Supervisor) Load(ctx context.Context, name string, opts LoadOptions) (*
 // examples/server/api.md). Capabilities — единственный дешёвый GET, который
 // подтверждает и «процесс слушает», и «модель загружена» (в ответе есть
 // model.stem/path).
+//
+// R88 (2026-10-08): timeout <= 0 = БЕЗ капа. Раньше 0 молча превращался в
+// 180 с, то есть выключить кап было нельзя. Терминальных состояний здесь два, и
+// оба дают внятную ошибку: процесс sd-server умер (exited) либо сработал явно
+// взведённый оператором кап (SDWORKER_STARTUP_TIMEOUT_SEC). Доктрина —
+// timeout_policy.go.
 func (s *Supervisor) waitReady(ctx context.Context, proc Process, client *SDServerClient, timeout time.Duration) (*Capabilities, error) {
-	if timeout <= 0 {
-		timeout = 180 * time.Second
+	var deadline time.Time
+	if timeout > 0 {
+		deadline = time.Now().Add(timeout)
 	}
-	deadline := time.Now().Add(timeout)
 	poll := s.readinessPoll
 	if poll <= 0 {
 		poll = 750 * time.Millisecond
@@ -577,8 +583,9 @@ func (s *Supervisor) waitReady(ctx context.Context, proc Process, client *SDServ
 			return caps, nil
 		}
 		lastErr = err
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("readiness timeout after %s: %w", timeout, lastErr)
+		if timeout > 0 && time.Now().After(deadline) {
+			return nil, fmt.Errorf("readiness timeout after %s (кап взведён явно: %s): %w",
+				timeout, EnvStartupTimeout, lastErr)
 		}
 		select {
 		case <-ctx.Done():

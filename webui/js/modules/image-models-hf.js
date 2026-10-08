@@ -361,10 +361,14 @@
     /** fetch + JSON с разбором конверта ошибки воркера ({error: "..."}). */
     function request(url, opts) {
         opts = opts || {};
-        var timeoutMs = opts.timeoutMs || TIMEOUT_CONTROL_MS;
+        // R88: timeoutMs=0 = без капа (доктрина: работу не рвём по будильнику),
+        // поэтому проверяем undefined/null, а не truthiness.
+        var timeoutMs = (opts.timeoutMs === undefined || opts.timeoutMs === null)
+            ? TIMEOUT_CONTROL_MS
+            : opts.timeoutMs;
         var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
         var timer = null;
-        if (ctrl) timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+        if (ctrl && timeoutMs > 0) timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
         var headers = authHeaders(opts.headers);
         // HF-токен шлём только HF-путям (как gguf-api.js:1015 и image-page.js:539):
         // воркер читает его из X-HF-Token (cmd/sdworker/handlers_hf.go:107).

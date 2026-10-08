@@ -36,12 +36,16 @@
     var TABS_ID = 'imTabs';
     var STORAGE_KEY = 'ollamalegion_image_models_tab';
     var SELFTEST_RESULT_ID = 'imSelfTestResult';
-    // Потолок ожидания проверки: 1 шаг 64x64 укладывается в секунды даже с
-    // холодной загрузкой модели, но кнопка не должна висеть вечно.
-    var SELFTEST_TIMEOUT_MS = 180000;
+    // R88 (2026-10-08): капов у проверки НЕТ (0 = не взводим). Причина — та же
+    // доктрина, что у балансера и воркера: работа не обрывается по будильнику,
+    // ждём терминального состояния (готово / явная ошибка). Раньше стояло 180 с
+    // на запрос и 180 с на ожидание загрузки — на холодной загрузке 14.6 ГБ это
+    // давало ложное «модель не загрузилась», хотя она поднималась.
+    var SELFTEST_TIMEOUT_MS = 0;
     // Ожидание загрузки модели внутри проверки (гейт пускает генерацию только
-    // с загруженной моделью) и интервал опроса её состояния.
-    var SELFTEST_LOAD_TIMEOUT_MS = 180000;
+    // с загруженной моделью) и интервал опроса её состояния. Терминальные
+    // состояния — loaded/ready и error/failed, оба обрабатываются ниже.
+    var SELFTEST_LOAD_TIMEOUT_MS = 0;
     var SELFTEST_LOAD_POLL_MS = 1500;
     // Окно повторов на транзиентные отказы гейта: кэш состояния бэкенда на
     // балансере обновляется опросом, поэтому «модель ещё не загружена» может
@@ -354,7 +358,7 @@
                         throw new Error(t('imageModels.selftest_load_failed', 'модель не загрузилась: {error}',
                             { error: String((data.progress && data.progress.error) || '') }));
                     }
-                    if (Date.now() > deadline) {
+                    if (SELFTEST_LOAD_TIMEOUT_MS > 0 && Date.now() > deadline) {
                         throw new Error(t('imageModels.selftest_load_timeout', 'модель не загрузилась за {s} с',
                             { s: Math.round(SELFTEST_LOAD_TIMEOUT_MS / 1000) }));
                     }
@@ -398,7 +402,8 @@
         };
         var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
         var timer = null;
-        if (ctrl) timer = setTimeout(function () { ctrl.abort(); }, SELFTEST_TIMEOUT_MS);
+        // R88: 0 = без капа (доктрина: работу не рвём по будильнику).
+        if (ctrl && SELFTEST_TIMEOUT_MS > 0) timer = setTimeout(function () { ctrl.abort(); }, SELFTEST_TIMEOUT_MS);
         var init = {
             method: 'POST',
             headers: authHeaders({ 'Content-Type': 'application/json' }),

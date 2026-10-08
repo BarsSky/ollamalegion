@@ -235,7 +235,10 @@ func (a *App) handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := a.svc.Registry.Profile(name); !ok {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("%s: %q", sdbackend.ErrModelNotFound, name))
+		// R88: не плоская ошибка, а код + подсказка — клиент/оператор должен
+		// видеть, что делать (список моделей, где скачать), а не только текст.
+		writeJSONError(w, http.StatusNotFound, "model_not_found",
+			fmt.Sprintf("%s: %q", sdbackend.ErrModelNotFound, name))
 		return
 	}
 	// Уже загружена и это не force-reload → идемпотентный 200.
@@ -258,14 +261,19 @@ func (a *App) handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		opts.ReadinessTimeout = time.Duration(req.TimeoutSec) * time.Second
 	}
 	if req.Wait {
-		ctx, cancel := context.WithTimeout(r.Context(), a.loadTimeout(opts))
+		// R88: без взведённого капа контекст живёт до терминального состояния.
+		ctx, cancel := sdbackend.WithOptionalTimeout(r.Context(), a.loadTimeout(opts))
 		defer cancel()
 		if _, err := a.svc.Sup.Load(ctx, name, opts); err != nil {
 			status, code := statusForError(err)
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			body := map[string]any{
 				"error": err.Error(), "code": code, "status_code": status,
 				"progress": a.progress.snapshot(),
-			})
+			}
+			if h := hintForCode(code); h != "" {
+				body["hint"] = h
+			}
+			writeJSON(w, http.StatusServiceUnavailable, body)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "loaded", "model": name, "progress": a.progress.snapshot()})
@@ -282,22 +290,26 @@ func (a *App) handleLoadModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // loadTimeout — сколько ждать readiness (с запасом к конфигу).
+//
+// R88 (2026-10-08): 0 = БЕЗ капа. Доктрина та же, что у текстового бэкенда:
+// работу не обрываем по времени, ждём терминального состояния — ready либо
+// смерть процесса sd-server (её ловит waitReady и отдаёт внятную ошибку).
+// Кап взводится явно: req.TimeoutSec в запросе либо SDWORKER_STARTUP_TIMEOUT_SEC.
 func (a *App) loadTimeout(opts sdbackend.LoadOptions) time.Duration {
 	if opts.ReadinessTimeout > 0 {
 		return opts.ReadinessTimeout + 30*time.Second
 	}
-	cfg := a.svc.Config
-	t := time.Duration(cfg.StartupTimeoutSec) * time.Second
-	if t <= 0 {
-		t = 180 * time.Second
+	if t := time.Duration(a.svc.Config.StartupTimeoutSec) * time.Second; t > 0 {
+		return t + 30*time.Second
 	}
-	return t + 30*time.Second
+	return 0
 }
 
 // loadInBackground — загрузка с публикацией прогресса.
 func (a *App) loadInBackground(name string, opts sdbackend.LoadOptions) {
 	a.progress.set("spawn", sdbackend.StateLoading, name, "")
-	ctx, cancel := context.WithTimeout(a.loadCtx, a.loadTimeout(opts))
+	// R88: 0 кап = контекст до терминального состояния (ready/ошибка/смерть процесса).
+	ctx, cancel := sdbackend.WithOptionalTimeout(a.loadCtx, a.loadTimeout(opts))
 	defer cancel()
 	_, err := a.svc.Sup.Load(ctx, name, opts)
 	if err != nil {
@@ -351,7 +363,10 @@ func (a *App) handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := a.svc.Registry.Profile(name); !ok {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("%s: %q", sdbackend.ErrModelNotFound, name))
+		// R88: не плоская ошибка, а код + подсказка — клиент/оператор должен
+		// видеть, что делать (список моделей, где скачать), а не только текст.
+		writeJSONError(w, http.StatusNotFound, "model_not_found",
+			fmt.Sprintf("%s: %q", sdbackend.ErrModelNotFound, name))
 		return
 	}
 	go func() {

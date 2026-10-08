@@ -85,6 +85,17 @@ func main() {
 		"max_concurrent", cfg.MaxConcurrent,
 		"pinned_sd_server_revision", sdbackend.PinnedRevision())
 
+	// R88: доктрина таймаутов — та же, что у текстового бэкенда. По умолчанию
+	// НИ ОДНОГО капа на работу (генерацию/загрузку): ждём терминального
+	// состояния. Взведённые капы печатаются WARN'ом, чтобы «почему оборвалось»
+	// имело ответ в логе. См. internal/sdbackend/timeout_policy.go.
+	log.Infow("timeout policy: no work caps by default (wait for terminal state)",
+		"generation_timeout_sec", cfg.GenerationTimeoutSec,
+		"startup_timeout_sec", cfg.StartupTimeoutSec,
+		"profile_timeouts_allowed", sdbackend.ProfileTimeoutsAllowed(),
+		"opt_in_envs", sdbackend.EnvGenerationTimeout+", "+sdbackend.EnvStartupTimeout+", "+sdbackend.EnvAllowProfileTimeouts)
+	sdbackend.WarnArmedCaps(cfg)
+
 	svc, err := sdbackend.NewService(&cfg)
 	if err != nil {
 		log.Fatalw("failed to initialize image service", "error", err)

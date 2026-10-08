@@ -89,6 +89,15 @@ type Config struct {
 	HiresUpscalersDir string `json:"hiresUpscalersDir,omitempty"`
 
 	// Таймауты процесса и генерации.
+	//
+	// R88 (2026-10-08): здесь ТА ЖЕ доктрина, что у текстового бэкенда
+	// (internal/balancer/timeout_policy.go, R83/v67): duration-кап на РАБОТУ
+	// запрещён по умолчанию, потому что он рвёт легитимную операцию ровно
+	// посередине (воркер отдаёт 504, а sd-server продолжает считать).
+	// Ждём ТЕРМИНАЛЬНОГО состояния; кап — только явный opt-in, см.
+	// WarnArmedCaps.
+	//
+	// По умолчанию 0 = без капа у обоих.
 	StartupTimeoutSec    int `json:"startupTimeoutSec"`
 	GenerationTimeoutSec int `json:"generationTimeoutSec"`
 
@@ -133,11 +142,16 @@ func DefaultConfig() Config {
 		SDServerBin:       "sd-server",
 		ListenIP:          "127.0.0.1",
 		ServerPort:        18094,
-		StartupTimeoutSec: 180,
-		// 600 с: пиковые замеры из исследования доходят до ~341 с
-		// (GTX 1060, Z-Image 512x1024, 20 шагов). Меньший дефолт рвал бы
-		// легитимные генерации на слабом железе.
-		GenerationTimeoutSec: 600,
+		// R88: readiness без капа. Смерть процесса sd-server — терминальное
+		// состояние с внятной ошибкой (см. Supervisor.waitReady: exited(proc)
+		// проверяется на каждой итерации), поэтому «вечное» ожидание не
+		// зависает молча. Кап взводится SDWORKER_STARTUP_TIMEOUT_SEC.
+		StartupTimeoutSec: 0,
+		// R88: генерация без капа. Пиковые замеры стенда — 22m30s на
+		// 2048x2048/40 шагов (RTX 3070 8 GB, Qwen-Image-2.1 Q4_K_M); кап 600 с
+		// обрывал такую генерацию ровно посередине, отдавая клиенту 504.
+		// Кап взводится SDWORKER_GENERATION_TIMEOUT_SEC.
+		GenerationTimeoutSec: 0,
 		IdleUnloadMinutes:    30,
 		// 64 — как max_queue_size у самого sd-server (AsyncJobManager): если
 		// наша очередь больше, движок начнёт отдавать 429 «job queue is full»

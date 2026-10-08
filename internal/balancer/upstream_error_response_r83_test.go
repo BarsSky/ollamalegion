@@ -120,3 +120,86 @@ func TestR83_WriteUpstreamError_TimeoutIs504(t *testing.T) {
 		t.Error("для таймаута тоже нужен Retry-After")
 	}
 }
+
+// ============================================================
+// R88 (2026-10-08): image-плоскость обязана объяснять транспортные ошибки так
+// же, как текстовая. До фикса image-роутер отдавал 502 с сырым
+// «image backend request failed: Post ...: dial tcp ...: connect: connection
+// refused» — без error_type, без retry_after и без единого слова «что делать».
+// ============================================================
+
+// TestR88_UpstreamErrorStatus_Mapping — один источник правды для статуса:
+// и тело ответа, и метрики image-плоскости берут его отсюда.
+func TestR88_UpstreamErrorStatus_Mapping(t *testing.T) {
+	cases := []struct {
+		errType string
+		want    int
+	}{
+		{"connection_refused", http.StatusServiceUnavailable},
+		{"network_unreachable", http.StatusServiceUnavailable},
+		{"dns_error", http.StatusServiceUnavailable},
+		{"timeout", http.StatusGatewayTimeout},
+		{"context_deadline", http.StatusGatewayTimeout},
+		{"unexpected_eof", http.StatusBadGateway},
+		{"upstream_error", http.StatusBadGateway},
+		{"", http.StatusBadGateway},
+	}
+	for _, c := range cases {
+		if got := UpstreamErrorStatus(c.errType); got != c.want {
+			t.Errorf("UpstreamErrorStatus(%q) = %d, want %d", c.errType, got, c.want)
+		}
+	}
+}
+
+// TestR88_UpstreamErrorType_FromRealTransportText — классификация по живому
+// тексту ошибок (ровно такие строки приходят из net/http).
+func TestR88_UpstreamErrorType_FromRealTransportText(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want string
+	}{
+		{`Post "http://imageworker:18093/v1/images/generations": dial tcp 172.23.0.5:18093: connect: connection refused`, "connection_refused"},
+		{`Get "http://imageworker:18093/api/image/models": dial tcp: lookup imageworker on 127.0.0.11:53: no such host`, "dns_error"},
+		{"context deadline exceeded", "timeout"},
+		{"Client.Timeout exceeded while awaiting headers", "timeout"},
+		{"unexpected EOF", "unexpected_eof"},
+	}
+	for _, c := range cases {
+		if got := UpstreamErrorType(errors.New(c.msg)); got != c.want {
+			t.Errorf("UpstreamErrorType(%q) = %q, want %q", c.msg, got, c.want)
+		}
+	}
+}
+
+// TestR88_WriteUpstreamError_AlwaysExplains — у КАЖДОГО класса ошибки есть hint.
+//
+// Требование оператора дословно: «отсутствие таймаутов и явное объяснение
+// ошибок». Hint — это и есть объяснение: что случилось и что делать.
+func TestR88_WriteUpstreamError_AlwaysExplains(t *testing.T) {
+	for _, err := range []error{
+		errors.New("connect: connection refused"),
+		errors.New("context deadline exceeded"),
+		errors.New("что-то невиданное"),
+	} {
+		w := httptest.NewRecorder()
+		writeUpstreamError(w, "imageworker", "qwen-image-2.1-uncensored-gguf", err)
+
+		var body map[string]interface{}
+		if e := json.Unmarshal(w.Body.Bytes(), &body); e != nil {
+			t.Fatalf("тело не JSON: %v (%s)", e, w.Body.String())
+		}
+		hint, _ := body["hint"].(string)
+		if hint == "" {
+			t.Errorf("для ошибки %q нет hint — оператор снова увидит «HTTP %d» без объяснения", err, w.Code)
+		}
+		if got, _ := body["error_type"].(string); got == "" {
+			t.Errorf("для ошибки %q нет error_type", err)
+		}
+		if got, _ := body["backend_id"].(string); got != "imageworker" {
+			t.Errorf("backend_id = %q, want imageworker", got)
+		}
+		if got, _ := body["model"].(string); got != "qwen-image-2.1-uncensored-gguf" {
+			t.Errorf("model = %q — клиент должен видеть, о какой модели речь", got)
+		}
+	}
+}

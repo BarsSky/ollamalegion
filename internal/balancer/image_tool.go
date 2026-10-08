@@ -70,11 +70,17 @@ const (
 	// пользователю), а не молчаливый обрыв.
 	imageToolEnvLoadTimeout = "LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC"
 
-	imageToolDefaultMaxCalls   = 2
-	imageToolDefaultTimeoutSec = 600
-	imageToolMaxCallsLimit     = 8
-	// 600 с — как таймаут генерации: FLUX Q3_K на слабой карте грузится минуты.
-	imageToolDefaultLoadTimeoutSec = 600
+	imageToolDefaultMaxCalls = 2
+	// R88 (2026-10-08): капов по умолчанию НЕТ — та же доктрина, что у
+	// текстового бэкенда (timeout_policy.go): duration-кап на РАБОТУ запрещён,
+	// ждём терминального состояния. Раньше здесь стояли 600 с на генерацию и на
+	// загрузку модели: генерация 2048x2048/40 шагов на стенде занимает 22m30s,
+	// то есть инструмент обрывал легитимный вызов ровно посередине.
+	// Кап взводится явно: LB_IMAGE_TOOL_TIMEOUT_SEC / LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC
+	// (или полем toolLoadTimeoutSec в настройках image-ресурсов).
+	imageToolDefaultTimeoutSec     = 0
+	imageToolMaxCallsLimit         = 8
+	imageToolDefaultLoadTimeoutSec = 0
 	// imageToolLoadPollInterval — период опроса состояния загрузки.
 	// 2 с = «быстрый» интервал поллера метрик (imageMetricsFastInterval), то есть
 	// состояние подхватывается с той же частотой, с какой его видит VRAM-гейт.
@@ -175,11 +181,23 @@ func imageToolSettingsFromEnv() imageToolConfig {
 	if v := strings.TrimSpace(os.Getenv(imageToolEnvTimeout)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Timeout = time.Duration(n) * time.Second
+			// Доктрина: взведённый кап обязан быть виден в логе, иначе на
+			// вопрос «почему оборвалось» ответа нет (см. timeout_policy.go).
+			if log := logger.Get(); log != nil {
+				log.Warnw("image tool generation timeout armed (operator opt-in)",
+					"env", imageToolEnvTimeout, "timeout_sec", n,
+					"hint", "по умолчанию капа нет: вызов инструмента ждёт терминального состояния генерации")
+			}
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv(imageToolEnvLoadTimeout)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.LoadTimeout = time.Duration(n) * time.Second
+			if log := logger.Get(); log != nil {
+				log.Warnw("image tool model-load timeout armed (operator opt-in)",
+					"env", imageToolEnvLoadTimeout, "timeout_sec", n,
+					"hint", "по умолчанию ждём терминального состояния загрузки (loaded/error)")
+			}
 		}
 	}
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(os.Getenv(imageToolEnvBaseURL)), "/")
@@ -1010,14 +1028,21 @@ func (p *Proxy) ensureImageModelLoaded(ctx context.Context, backendID, model str
 	// при протухании), а НЕ по SSE-прогрессу: состояние loaded/error — это
 	// то, чем живёт VRAM-гейт, и видеть его надо там же, где принимается решение
 	// о генерации. Прогресс-поток (load/progress) остаётся для WebUI.
-	deadline := started.Add(cfg.LoadTimeout)
+	//
+	// R88: cfg.LoadTimeout == 0 = БЕЗ капа. Терминальные состояния и без капа
+	// дают внятный ответ: state=loaded, state=error (воркер сообщил причину),
+	// «воркер поднял другую модель» или отмена запроса (ctx.Err()).
+	var deadline time.Time
+	if cfg.LoadTimeout > 0 {
+		deadline = started.Add(cfg.LoadTimeout)
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return time.Since(started), fmt.Errorf("загрузка модели %q прервана: %w", model, err)
 		}
-		if time.Now().After(deadline) {
+		if cfg.LoadTimeout > 0 && time.Now().After(deadline) {
 			return time.Since(started), fmt.Errorf(
-				"модель %q не поднялась за %s (state=%s): см. логи воркера и настройку %s",
+				"модель %q не поднялась за %s (state=%s): кап взведён явно (%s) — см. логи воркера",
 				model, cfg.LoadTimeout, imageStateLoading, imageToolEnvLoadTimeout)
 		}
 

@@ -147,7 +147,7 @@ Configuration — the `balancing.image` section:
       "vramHeadroomMb": 512,
       "blockOnUnknownVramEstimate": false,
       "queueWaitTimeoutSec": 30,
-      "exclusiveLockTimeoutSec": 600,
+      "exclusiveLockTimeoutSec": 0,
       "gateDisabled": false
     }
   }
@@ -160,7 +160,7 @@ Configuration — the `balancing.image` section:
 | `vramHeadroomMb` | VRAM to keep free on top of the model estimate |
 | `blockOnUnknownVramEstimate` | `false` (default) — when the estimate is unavailable, generation is **allowed** (a WARN is logged); `true` — strict mode, fails with `unknown_vram_estimate` |
 | `queueWaitTimeoutSec` | how long `exclusive` waits for the GPU before answering `429 image_gpu_busy` + `Retry-After` |
-| `exclusiveLockTimeoutSec` | safety valve: the lock is force-released (with a WARN) so a hung generation cannot block the card forever |
+| `exclusiveLockTimeoutSec` | safety valve: the lock is force-released (with a WARN) so a hung generation cannot block the card forever. **`0` (the default since R88) means DISARMED**: the doctrine forbids duration caps on work - at 600 s the lock was released mid-generation (2048x2048/40 steps = 22m30s) and text traffic was let onto a busy card. The lock is released by the request lifecycle; arm a cap only if you want a watchdog (the reference stand uses 6000) |
 | `gateDisabled` | disable both the gate and the lock (e.g. image generation runs on CPU) |
 
 How the estimate is derived (in priority order): the model profile (`vramEstimateMb` in `image-model-profiles.json`) → `vram_estimate_mb` from the worker → bundle file sizes × 1.15 → "unknown". Free VRAM: worker data → the worker's `nvidia-smi` snapshot from `/api/image/capabilities` → `available_vram_mb` of the text neighbour on the same host.
@@ -1010,17 +1010,19 @@ was cut at exactly second 600 (504).
 
 | Link | Default | Where to change | If left alone |
 |---|---|---|---|
-| panel nginx, `location /v1/` | **3600 s** (was 600) | `webui/nginx.conf` | the panel client gets 504 at second 600 |
-| panel nginx, `/api/v1/image/` | **3600 s**, `proxy_buffering off` (was 120 s and buffered) | `webui/nginx.conf` | model load and its SSE progress stream get cut |
-| panel nginx, `/api/image/` | 3600 s (previously no location at all -> 404) | `webui/nginx.conf` | the native `/api/image/generate` path in the Test tab does not work |
-| panel nginx, `/sdapi/` | 3600 s (previously no location -> `index.html` was served) | `webui/nginx.conf` | the A1111 path in the Test tab does not work |
-| panel nginx, `/api/worker/` | **3600 s** (was 300) | `webui/nginx.conf` | downloads/model loads from the GGUF page get cut |
-| panel nginx, `/api/` (catch-all) | 120 s | `webui/nginx.conf` | intended: management calls only, they are fast |
+| browser (panel), Test tab | **no cap** (`TIMEOUT_GENERATE_MS = 0`) | `webui/js/modules/image-test-page.js` | the panel aborted the request at minute 10 while the worker kept computing |
+| panel nginx, work paths | **86400 s** ("no cap") | `webui/nginx.conf` | 600 s on `/v1/` = 504 on 2048x2048 |
+| panel nginx, 502/503/504 | JSON with `error_type` + `hint` | `webui/nginx.conf` (`error_page`) | the client saw an HTML page and "HTTP 504" with no explanation |
 | balancer, generation cap | **none** (`0`) | `LB_ALLOW_IMAGE_TIMEOUT_SEC` | by default we wait for the engine's terminal state |
-| balancer, GPU-lock fuse | 6000 s | `/api/v1/image/resources` -> `exclusiveLockTimeoutSec` | at 600 s the lock was released MID-generation (`reason=fuse_timeout`) |
-| worker, job wait | profile `timeoutSec` (Qwen: 1800 s) | the model's `profile.json` / `SDWORKER_GENERATION_TIMEOUT_SEC` (600 s global default) | the worker returns `generation_timeout` -> HTTP 504 |
-| `generate_image` tool (balancer) | 600 s per image | `LB_IMAGE_TOOL_TIMEOUT_SEC` | a 2048^2 tool call hits the 10-minute cap - raise the variable |
+| balancer, GPU-lock fuse | **disarmed** (`0`) | `/api/v1/image/resources` -> `exclusiveLockTimeoutSec` | at 600 s the lock was released MID-generation (`reason=fuse_timeout`) |
+| balancer, `generate_image` tool | **none** (`0`) | `LB_IMAGE_TOOL_TIMEOUT_SEC` / `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` | a 2048^2 tool call was cut at minute 10 |
+| worker, job wait | **none** (`0`) | `SDWORKER_GENERATION_TIMEOUT_SEC` | an armed cap returns `generation_timeout` -> HTTP 504 |
+| worker, `profile.json` `timeoutSec` | **ignored** | `SDWORKER_ALLOW_PROFILE_TIMEOUTS=on` | the profile would silently cut a legitimate generation |
+| worker, sd-server readiness | **none** (`0`) | `SDWORKER_STARTUP_TIMEOUT_SEC` | we wait for ready OR process death (a clear error in the log) |
 | engine, `sd-server` | no cap | - | computes until it is done |
+
+> R88 disarmed every cap in this table by default (0 = no cap); a cap can only be
+> armed explicitly and announces itself with a WARN in the log. See 17.6.
 
 When you see a 504, check `docker logs <imageworker>` first: if it contains
 `image generation completed`, the culprit is a client-side link (nginx, balancer cap,
@@ -1074,4 +1076,65 @@ docker logs ol-stack-imageworker 2>&1 | grep 'spawning sd-server' | tail -1
   `index.html` instead of JSON;
 - `location /api/worker/`: 300s -> **3600s** (long worker operations: model load, HF
   bundle download).
+
+### 17.6 R88 doctrine: caps are opt-in only, and every error explains itself
+
+R87 removed one specific 600-second cap, but the image plane still had several more
+(worker, tool, lock fuse, browser). R88 brings the image plane onto **the same doctrine
+the text backend already follows** (`internal/balancer/timeout_policy.go`, R83/v67).
+
+**The rule (one for the whole project).**
+
+- Timers for **state polling** are allowed: "every N seconds check whether it is done"
+  (job/readiness poll interval, heartbeat, idle connection). Such a timer sets the
+  glance frequency and does **not** cancel the work.
+- Duration caps **on work** are forbidden: anything that cuts a generation, a model
+  load, a pull or a reload when the clock runs out. The defect is recognisable: the
+  server returned an error while the upstream kept working, so the state diverges from
+  the answer.
+- Instead of a cap, wait for the **terminal state** and return a concrete error.
+- If a cap is genuinely needed, it must be armed **explicitly** and must log a WARN.
+
+**Opt-in registry for the image plane** (all off by default):
+
+| Variable | What it arms |
+|---|---|
+| `SDWORKER_GENERATION_TIMEOUT_SEC` | generation job wait cap (worker) |
+| `SDWORKER_STARTUP_TIMEOUT_SEC` | sd-server readiness wait cap |
+| `SDWORKER_ALLOW_PROFILE_TIMEOUTS` | let `profile.timeoutSec` cut a generation |
+| `LB_ALLOW_IMAGE_TIMEOUT_SEC` | balancer HTTP cap for image generation |
+| `LB_IMAGE_TOOL_TIMEOUT_SEC` / `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` | `generate_image` tool caps |
+| `exclusiveLockTimeoutSec` (`/api/v1/image/resources`) | GPU-lock watchdog |
+
+**The second half of the requirement is "explicit error explanation".** An error must
+carry not just a code but an action. The response shape is the same at every link:
+
+```json
+{
+  "error": "backend imageworker is unavailable (connection_refused); retry in 30s",
+  "error_type": "connection_refused",
+  "backend_id": "imageworker",
+  "model": "qwen-image-2.1-uncensored-gguf",
+  "detail": "Post \"http://imageworker:18093/v1/images/generations\": dial tcp ...: connect: connection refused",
+  "hint": "the node does not answer: check the container (docker ps/logs) and the backend status in the WebUI",
+  "retry_after": 30
+}
+```
+
+Who contributes what:
+
+- **worker** - `hint` for every code (`model_not_loaded`, `generation_timeout`,
+  `sd_server_startup_failed`, `invalid_size`, ...; see `hintForCode`);
+- **balancer** - transport errors are classified and returned as `503`/`504`/`502` with
+  `error_type`, `detail`, `hint`, `retry_after` (`writeUpstreamError`), gate refusals
+  carry the OOM ladder (`writeGateError`);
+- **panel nginx** - its own 502/503/504 are returned as JSON instead of an HTML page
+  (`error_page` + `@panel_upstream_*`); balancer responses are deliberately NOT
+  intercepted so its explanation is never overwritten;
+- **panel** - shows the server `hint` before its own text heuristics
+  (`errorHint(text, body)`), and `TIMEOUT_GENERATE_MS = 0` no longer aborts the request.
+
+Verified on the stand: `POST /v1/images/generations` (2048x2048/40 steps) through the
+panel -> `HTTP 200` in 22m30s; a stopped backend -> 503 with
+`error_type=connection_refused` and a hint about the container, not "502 + dial text".
 

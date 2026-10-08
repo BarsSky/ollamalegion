@@ -565,14 +565,29 @@ func (r *JobRunner) defaultModel() string {
 }
 
 // generationTimeout — таймаут ожидания для модели.
+//
+// R88 (2026-10-08): кап на генерацию — только явный opt-in (доктрина — см.
+// timeout_policy.go). Приоритет:
+//
+//  1. profile.TimeoutSec — ТОЛЬКО при SDWORKER_ALLOW_PROFILE_TIMEOUTS=on.
+//     По умолчанию профильный кап игнорируется: значение в profile.json не
+//     должно молча обрезать легитимную генерацию (ровно как
+//     LB_ALLOW_PROFILE_TIMEOUTS у текстового бэкенда).
+//  2. cfg.GenerationTimeoutSec (SDWORKER_GENERATION_TIMEOUT_SEC или конфиг-файл).
+//  3. 0 = без капа: WaitJob ждёт терминального статуса джобы.
 func (r *JobRunner) generationTimeout(model string) time.Duration {
-	if p, ok := r.registry.Profile(model); ok && p.TimeoutSec > 0 {
+	if p, ok := r.registry.Profile(model); ok && p.TimeoutSec > 0 && ProfileTimeoutsAllowed() {
+		if log := sdLog(); log != nil {
+			log.Warnw("generation timeout armed by model profile (operator opt-in)",
+				"model", model, "timeout_sec", p.TimeoutSec, "env", EnvAllowProfileTimeouts,
+				"hint", "уберите SDWORKER_ALLOW_PROFILE_TIMEOUTS, чтобы профильный кап игнорировался")
+		}
 		return time.Duration(p.TimeoutSec) * time.Second
 	}
 	if r.cfg.GenerationTimeoutSec > 0 {
 		return time.Duration(r.cfg.GenerationTimeoutSec) * time.Second
 	}
-	return 0 // 0 = без таймаута (WaitJob ждёт терминального статуса)
+	return 0 // 0 = без таймаута (WaitJob ждёт терминального состояния)
 }
 
 // pollEvery — интервал опроса статуса джобы.

@@ -142,10 +142,16 @@ func (ir *ImageRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 	if err != nil {
 		logger.Get().Errorw("image request failed",
 			"path", r.URL.Path, "backend", backendID, "error", err)
-		handle.finish(types.ImageRequestStatusFailed, http.StatusBadGateway,
-			"image_backend_error", err.Error(), 0)
-		ir.writeError(w, r, http.StatusBadGateway, "image_backend_error",
-			"image backend request failed: "+err.Error())
+		// R88 (2026-10-08): та же классификация транспортных ошибок, что у
+		// текстовой стороны (writeUpstreamError): 503 + Retry-After для
+		// «бэкенд недоступен», 504 для таймаута, 502 иначе — с error_type,
+		// backend_id, detail и hint. До фикса клиент получал 502 и сырой текст
+		// транспорта: «image backend request failed: Post ...: dial tcp ...:
+		// connect: connection refused» без единого слова о том, что делать.
+		errType := UpstreamErrorType(err)
+		status := UpstreamErrorStatus(errType)
+		handle.finish(types.ImageRequestStatusFailed, status, "image_"+errType, err.Error(), 0)
+		writeUpstreamError(w, backendID, meta.Model, err)
 		return true
 	}
 

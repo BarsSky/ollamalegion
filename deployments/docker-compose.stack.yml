@@ -446,7 +446,11 @@ services:
       - SDWORKER_IMAGES_DIR=/app/data/images
       - SDWORKER_IDLE_UNLOAD_MINUTES=${SDWORKER_IDLE_UNLOAD_MINUTES:-30}
       - SDWORKER_MAX_CONCURRENT=${SDWORKER_MAX_CONCURRENT:-64}
-      - SDWORKER_GENERATION_TIMEOUT_SEC=${SDWORKER_GENERATION_TIMEOUT_SEC:-600}
+      # R88: generation timeout. 0 = NO CAP (project timeout doctrine: caps are
+      # opt-in only, we wait for the job's terminal state). A nonzero value WILL
+      # cut a long generation: 2048x2048/40 steps on an RTX 3070 takes ~22 min.
+      # See docs/image-generation.md §17.
+      - SDWORKER_GENERATION_TIMEOUT_SEC=${SDWORKER_GENERATION_TIMEOUT_SEC:-0}
       - SDWORKER_PRELOAD_MODEL=${SDWORKER_PRELOAD_MODEL:-}
       # Worker URL as CLIENTS see it: used in response_format:"url".
       # Default targets a local client (the port is published below).

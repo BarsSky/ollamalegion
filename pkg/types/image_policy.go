@@ -132,8 +132,18 @@ func EffectiveToolLoadTimeout(v *int, fallback int) int {
 
 // Дефолты (используются, когда поле в конфиге не задано).
 const (
-	DefaultImageQueueWaitTimeoutSec     = 30
-	DefaultImageExclusiveLockTimeoutSec = 600
+	DefaultImageQueueWaitTimeoutSec = 30
+	// DefaultImageExclusiveLockTimeoutSec — предохранитель «лок GPU нельзя
+	// держать вечно».
+	//
+	// R88 (2026-10-08): 600 → 0 = предохранитель СНЯТ по умолчанию. Доктрина
+	// таймаутов проекта (internal/balancer/timeout_policy.go) запрещает
+	// duration-кап на работу: при 600 с лок снимался ПОСРЕДИ легитимной
+	// генерации (2048x2048/40 шагов на стенде — 22m30s), и текстовый трафик
+	// пускался на карту, которая ещё считает. Лок освобождается по жизненному
+	// циклу запроса (defer/сторож джобы), а не по будильнику; оператор может
+	// взвести кап явно — полем exclusiveLockTimeoutSec в /api/v1/image/resources.
+	DefaultImageExclusiveLockTimeoutSec = 0
 )
 
 // EffectiveAllowToolLoad — действует ли автозагрузка модели из инструмента,

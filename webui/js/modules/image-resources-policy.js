@@ -114,12 +114,14 @@
         if (!(form.exclusiveLockTimeoutSec >= 0) || form.exclusiveLockTimeoutSec > maxFuse) {
             return t('imagePolicy.err_fuse', 'Предохранитель лока: 0…{max} с', { max: maxFuse });
         }
-        // Ожидание загрузки модели: 0 отклоняем — это «не ждать вовсе», то есть
-        // инструмент гарантированно не сможет поднять модель.
-        var minLoad = Number(limits.minToolLoadTimeoutSec || 1);
+        // Ожидание загрузки модели. R88: 0 = КАПА НЕТ (доктрина таймаутов:
+        // ждём терминального состояния loaded/error), поэтому нижняя граница 0,
+        // а не 1. Раньше 0 означал «не ждать вовсе» и отклонялся — но теперь это
+        // осмысленный дефолт, и форма обязана его принимать.
+        var minLoad = Number(limits.minToolLoadTimeoutSec || 0);
         var maxLoad = Number(limits.maxToolLoadTimeoutSec || 86400);
         if (!(form.toolLoadTimeoutSec >= minLoad) || form.toolLoadTimeoutSec > maxLoad) {
-            return t('imagePolicy.err_load_timeout', 'Ожидание загрузки модели: {min}…{max} с', { min: minLoad, max: maxLoad });
+            return t('imagePolicy.err_load_timeout', 'Ожидание загрузки модели: {min}…{max} с (0 = без капа)', { min: minLoad, max: maxLoad });
         }
         return '';
     }
@@ -291,8 +293,8 @@
                     '<input type="number" class="form-control" id="imPolicyFuse" min="0" step="1" style="width:150px;" value="' + f.exclusiveLockTimeoutSec + '">' +
                 '</label>' +
                 '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted);">' +
-                    escapeHtml(t('imagePolicy.load_timeout', 'Ожидание загрузки модели, с')) +
-                    '<input type="number" class="form-control" id="imPolicyLoadTimeout" min="1" step="10" style="width:150px;" value="' + f.toolLoadTimeoutSec + '">' +
+                    escapeHtml(t('imagePolicy.load_timeout', 'Ожидание загрузки модели, с (0 = без капа)')) +
+                    '<input type="number" class="form-control" id="imPolicyLoadTimeout" min="0" step="10" style="width:150px;" value="' + f.toolLoadTimeoutSec + '">' +
                 '</label>' +
             '</div>' +
             '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--text-muted);">' +
@@ -376,13 +378,13 @@
     function readForm() {
         var co = byId('imPolicyCoexistence');
         // Ожидание загрузки модели: если поля нет/пусто (старый DOM, ошибка
-        // отрисовки) — берём ДЕЙСТВУЮЩЕЕ значение, а не 0. Ноль здесь означал бы
-        // «не ждать вовсе» и отклонялся бы валидацией, то есть сохранение любой
-        // другой настройки падало бы из-за незаполненного поля.
+        // отрисовки) — берём ДЕЙСТВУЮЩЕЕ значение. R88: 0 = «капа нет» — это
+        // допустимое значение (валидация принимает 0), поэтому дефолт-заглушка
+        // нужна только когда поля нет вовсе.
         var loadNode = byId('imPolicyLoadTimeout');
         var loadSec = Number(loadNode && loadNode.value);
-        if (!(loadSec >= 1)) {
-            loadSec = Number((state.data && state.data.toolLoadTimeout && state.data.toolLoadTimeout.effectiveSec) || 600);
+        if (!loadNode || !(loadSec >= 0)) {
+            loadSec = Number((state.data && state.data.toolLoadTimeout && state.data.toolLoadTimeout.effectiveSec) || 0);
         }
         return {
             coexistence: co ? String(co.value || 'exclusive') : 'exclusive',

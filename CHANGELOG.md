@@ -5,6 +5,107 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.7.43 — Image-плоскость по доктрине текстового бэкенда: кап только opt-in, ошибка обязана объяснять, 2026-10-08]
+
+### 🐛 Что было не так
+
+- **Панель рвала генерацию сама.** `webui/js/modules/image-test-page.js` держал
+  `TIMEOUT_GENERATE_MS = 600000`: браузер прерывал запрос ровно на 10-й минуте,
+  хотя после R87 nginx/балансер/воркер уже не капали. То есть правка R87 не
+  закрывала сценарий оператора «генерация из панели». Тем же дефектом страдали
+  self-test (`SELFTEST_TIMEOUT_MS`/`SELFTEST_LOAD_TIMEOUT_MS` = 180 с) и загрузка
+  модели из GGUF-страницы (`gguf-api.js`: 300 с).
+- **Капы на работу жили на четырёх звеньях**, хотя доктрина проекта
+  (`internal/balancer/timeout_policy.go`, R83/v67) запрещает duration-кап на работу
+  и требует ждать терминального состояния: воркер (`SDWORKER_GENERATION_TIMEOUT_SEC`
+  = 600 с по умолчанию + `profile.timeoutSec` применялся молча), readiness
+  sd-server (0 молча превращался в 180 с), инструмент `generate_image` (600 с),
+  предохранитель GPU-лока (600 с — снимал лок ПОСРЕДИ генерации).
+- **Ошибки не объясняли, что делать.** Транспортный отказ image-бэкенда отдавался
+  как `502` с сырым `image backend request failed: Post ...: dial tcp ...: connect:
+  connection refused`; nginx отдавал HTML-страницу «504 Gateway Time-out», а панель
+  показывала «HTTP 504». Ни `error_type`, ни `hint`, ни `retry_after`.
+
+### 🔧 Что сделано
+
+- **Воркер (`internal/sdbackend`)**: дефолты `GenerationTimeoutSec`/`StartupTimeoutSec`
+  = **0 (без капа)**; `profile.timeoutSec` применяется ТОЛЬКО при
+  `SDWORKER_ALLOW_PROFILE_TIMEOUTS=on` (аналог `LB_ALLOW_PROFILE_TIMEOUTS` у текста);
+  `waitReady` при 0 ждёт ready ИЛИ смерть процесса (а не 180 с); новый
+  `internal/sdbackend/timeout_policy.go` — единое место доктрины + `WithOptionalTimeout`
+  + `WarnArmedCaps` (каждый взведённый кап печатает WARN при старте).
+- **Воркер: ошибки с объяснением** — `hintForCode` добавляет поле `hint` («что
+  делать») в `writeJSONError` и в OpenAI-конверт (`error.hint` + верхний уровень):
+  `model_not_loaded`, `generation_timeout`, `sd_server_startup_failed`,
+  `invalid_size`, `queue_full`, `generation_failed`, `job_not_found` и др. Путь
+  «модель не найдена» при загрузке/удалении отдавал плоское `{"error":"..."}` —
+  теперь это `404` с `code=model_not_found` и подсказкой, где взять список моделей
+  и как скачать набор.
+- **Балансер**: транспортные ошибки image-маршрута идут через `writeUpstreamError`
+  (`503` + `Retry-After` для «узел недоступен», `504` для таймаута, `502` иначе — с
+  `error_type`, `backend_id`, `model`, `detail`, `hint`); один источник статуса
+  (`UpstreamErrorStatus`) для тела и метрик. Капы инструмента `generate_image`
+  сняты по умолчанию (0), предохранитель GPU-лока снят по умолчанию
+  (`DefaultImageExclusiveLockTimeoutSec` = 0) — лок освобождается по жизненному
+  циклу запроса, а взведённый кап печатает WARN.
+- **nginx панели**: рабочие пути больше не капаются (`proxy_read_timeout`/
+  `proxy_send_timeout` = 86400 с, «без капа»); добавлен `location /api/v1/gguf/`
+  (долгие операции GGUF-страницы + потоковый прогресс); собственные 502/503/504
+  отдаются **JSON'ом** с `error_type` и `hint` через `error_page` + `@panel_upstream_*`
+  (ответы балансера не перехватываются — у него своё объяснение).
+- **Панель**: `TIMEOUT_GENERATE_MS = 0` (генерация не обрывается), self-test и
+  загрузка модели без капов, `timeoutMs: 0` корректно означает «без капа»
+  (проверка `undefined/null`, а не `||`); `errorHint(text, body)` показывает `hint`
+  сервера раньше собственных эвристик.
+- **compose/.env**: `SDWORKER_GENERATION_TIMEOUT_SEC` и `SDWORKER_STARTUP_TIMEOUT_SEC`
+  по умолчанию `0` (в четырёх compose-файлах и двух `.env.example`), с пояснением,
+  что ненулевое значение обрывает длинную работу.
+
+### 📚 Документация
+
+- `docs/image-generation.md` §17.2 (обновлённая таблица звеньев), §17.6 (доктрина:
+  правило, реестр opt-in переменных, форма ответа об ошибке и кто что добавляет) —
+  и то же в `docs/en/image-generation.md`.
+- Поле `exclusiveLockTimeoutSec` в §5: дефолт `0` = предохранитель снят, с
+  объяснением живого случая (лок снимался посреди 22-минутной генерации).
+- `deployments/README.md`: раздел «Сборка образов: imageworker собирайте ЧЕРЕЗ
+  compose» — живая ловушка R88: ручной `docker build --target imageworker-cuda` без
+  `RUNTIME_BASE` даёт образ без CUDA-библиотек, и `sd-server` падает на
+  `libcublasLt.so.12: cannot open shared object file` (compose подставляет
+  `IMAGE_WORKER_RUNTIME_BASE` из `.env`). Добавлена команда проверки образа.
+
+### ✅ Проверено
+
+- Go: новые тесты доктрины (`internal/sdbackend/timeout_policy_test.go`),
+  подсказок (`cmd/sdworker/utils_hint_r88_test.go`), классификации транспорта
+  (`internal/balancer/upstream_error_response_r83_test.go` +R88) и предохранителя
+  (`pkg/types/image_policy_r88_test.go`); полные прогоны `internal/sdbackend`,
+  `cmd/sdworker`, `internal/balancer`, `pkg/types`, `internal/api`,
+  `internal/config` — зелёные.
+- JS: `image-test-page.test.js` +3 проверки (нет клиентского капа на генерацию;
+  `hint` сервера важнее эвристик; эвристики не сломаны) — 17/17;
+  `image-resources-policy.test.js` — 14/14 (форма принимает 0 = «без капа»).
+- Живой стенд после раскатки: воркер печатает
+  `timeout policy: no work caps by default (wait for terminal state)`,
+  `generation_timeout_sec=0`, `startup_timeout_sec=0`,
+  `profile_timeouts_allowed=false`; `/api/v1/image/capabilities` больше не отдаёт
+  `generation_timeout_seconds`; nginx панели — все рабочие пути `86400s` + JSON
+  `error_page` для 502/503/504.
+- **Регресс-прогон 1536×1536 / 40 шагов через панель: `HTTP 200`, 10m8s (608 с)** —
+  это больше прежних 600 с на трёх звеньях сразу (браузер, nginx, воркер), то есть
+  генерация больше не обрывается. Отдельно подтверждено, что при обрыве КЛИЕНТА
+  (curl убит на 600-й секунде) воркер не отменяет работу: в логе
+  `image generation completed ... duration_ms=608134` и `status=200`.
+- Подсказки вживую: `GET .../api/image/jobs/<id>` → `{"code":"job_not_found",
+  ... ,"hint":"джоба неизвестна или истекла (completed_job_ttl_seconds)..."}`;
+  отказ гейта → `{"error":{"code":"image_model_not_loaded","hint":"load a model
+  first: POST /api/image/models/load ..."}}`.
+
+### 🏷️ Образы
+
+- `balancer` r83-submodule-v109, `imageworker` r83-submodule-v89,
+  `webui` r83-submodule-v105 (`WEBUI_VERSION=v0.7.43-timeout-doctrine`).
+
 ## [0.7.42 — Долгая генерация картинки рвалась на 600-й секунде: цепочка таймаутов панели, 2026-10-08]
 
 ### 🐛 Что было не так

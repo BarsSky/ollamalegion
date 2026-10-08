@@ -48,4 +48,39 @@ docker compose -f docker-compose.stack.yml --profile full up -d
 |---|---|
 | `data/` | рабочая директория балансера при локальном запуске; перечислена в `.gitignore` и специально исключается из релизных архивов (`scripts/release-sources.ps1`) |
 | `.env*` без `.example` | ваши токены и адреса |
+
+## Сборка образов: imageworker собирайте ЧЕРЕЗ compose
+
+Ловушка, проверенная на стенде (R88, 2026-10-08): ручная сборка
+
+```powershell
+# ТАК НЕЛЬЗЯ для CUDA-образа
+docker build -f docker/imageworker/Dockerfile --target imageworker-cuda -t ollama-legion/imageworker:vNN .
+```
+
+даёт образ, где у `sd-server` **нет CUDA-библиотек**, и движок падает уже в рантайме:
+
+```
+/app/sd-server/sd-server: error while loading shared libraries:
+libcublasLt.so.12: cannot open shared object file
+```
+
+Причина: compose передаёт `RUNTIME_BASE` из `.env`
+(`IMAGE_WORKER_RUNTIME_BASE=dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-runtime-ubuntu22.04`),
+а ручной `docker build` берёт дефолт `ubuntu:24.04`, в котором CUDA-runtime нет.
+Правильно — тем же способом, что и развёртывание:
+
+```powershell
+docker compose -p ollama-legion-stack --env-file deployments/.env `
+  -f deployments/docker-compose.stack.yml --profile full build imageworker
+```
+
+Проверка, что образ собран верно (до запуска): `libcublasLt.so.12` присутствует.
+
+```powershell
+docker run --rm --entrypoint sh ollama-legion/imageworker:<tag> `
+  -c 'find / -name "libcublasLt.so.12" 2>/dev/null | head -1'
+```
+
+Для `balancer` и `webui` ручная сборка безопасна (внешних runtime-зависимостей нет).
 | `.env*.bak*` | резервные копии env; под них отдельное правило в `.gitignore`, потому что в них те же секреты |

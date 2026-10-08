@@ -584,12 +584,34 @@ func (r *imageResources) queueWait() time.Duration {
 	return time.Duration(r.settings().EffectiveQueueWaitTimeout()) * time.Second
 }
 
+// lockFuseWarnOnce — WARN про взведённый предохранитель печатаем ОДИН раз за
+// процесс: lockFuse() вызывается на каждую генерацию, а оператор должен увидеть
+// причину «почему оборвалось» ровно один раз — без спама в логе.
+var lockFuseWarnOnce sync.Once
+
 // lockFuse — предохранитель «лок нельзя держать вечно».
+//
+// R88 (2026-10-08): по умолчанию СНЯТ (0 = без будильника). Доктрина
+// (timeout_policy.go) запрещает duration-кап на работу: при 600 с лок снимался
+// посреди легитимной генерации (2048x2048/40 шагов = 22m30s на стенде) и
+// пускал текстовый трафик на занятую карту. Взведённый кап печатает WARN.
 func (r *imageResources) lockFuse() time.Duration {
 	if r != nil && r.lockFuseOverride > 0 {
 		return r.lockFuseOverride
 	}
-	return time.Duration(r.settings().EffectiveExclusiveLockTimeout()) * time.Second
+	d := time.Duration(r.settings().EffectiveExclusiveLockTimeout()) * time.Second
+	if d > 0 {
+		lockFuseWarnOnce.Do(func() {
+			if log := logger.Get(); log != nil {
+				log.Warnw("image GPU lock fuse armed (operator opt-in)",
+					"timeout_sec", int(d.Seconds()),
+					"hint", "лок будет снят принудительно по будильнику; "+
+						"уберите exclusiveLockTimeoutSec, чтобы предохранитель был снят "+
+						"(лок освобождается по жизненному циклу запроса)")
+			}
+		})
+	}
+	return d
 }
 
 // probeTimeout — таймаут одного HTTP-опроса воркера.

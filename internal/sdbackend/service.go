@@ -115,7 +115,10 @@ func (s *Service) Start(ctx context.Context) {
 		model := s.Config.PreloadModel
 		go func() {
 			sdLog().Infow("preloading image model at startup", "model", model)
-			loadCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+			// R88: кап только если он взведён явно (SDWORKER_STARTUP_TIMEOUT_SEC);
+			// по умолчанию ждём терминального состояния — ready либо смерть
+			// процесса sd-server (доктрина: timeout_policy.go).
+			loadCtx, cancel := WithOptionalTimeout(ctx, time.Duration(s.Config.StartupTimeoutSec)*time.Second)
 			defer cancel()
 			if _, err := s.Sup.Load(loadCtx, model, LoadOptions{}); err != nil {
 				sdLog().Errorw("preload failed (worker keeps running, model will load on demand)",

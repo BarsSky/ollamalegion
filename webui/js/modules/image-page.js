@@ -409,10 +409,14 @@
     /** fetch + JSON + разбор конверта ошибки (бросает Error со status/body). */
     function requestJson(url, opts) {
         opts = opts || {};
-        var timeoutMs = opts.timeoutMs || TIMEOUT_CONTROL_MS;
+        // R88: timeoutMs=0 — осознанное «без капа» (доктрина: работу не рвём);
+        // поэтому именно undefined/null, а не `||` (0 || 15000 = 15000).
+        var timeoutMs = (opts.timeoutMs === undefined || opts.timeoutMs === null)
+            ? TIMEOUT_CONTROL_MS
+            : opts.timeoutMs;
         var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
         var timer = null;
-        if (ctrl) {
+        if (ctrl && timeoutMs > 0) {
             timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
         }
         var init = { method: opts.method || 'GET', headers: authHeaders(opts.headers) };
@@ -669,10 +673,12 @@
         var backendId = state.selectedBackendId;
         if (!backendId || !name) return;
         try {
+            // R88: у запуска загрузки капа нет (0): воркер отвечает 202 сразу, но
+            // если запрос пойдёт с wait=true, кап обрезал бы саму загрузку.
             await requestBackend(backendId, PATH_MODEL_LOAD, {
                 method: 'POST',
                 body: JSON.stringify({ name: name }),
-                timeoutMs: TIMEOUT_CONTROL_MS
+                timeoutMs: 0
             });
             toast(t('image.load_started', 'Loading {name}...', { name: name }), 'info');
             startLoadPolling(name);

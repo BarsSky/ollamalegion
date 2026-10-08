@@ -141,9 +141,13 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// writeJSONError — ошибка с машинным кодом.
+// writeJSONError — ошибка с машинным кодом и подсказкой «что делать».
 func writeJSONError(w http.ResponseWriter, status int, code, msg string) {
-	writeJSON(w, status, map[string]any{"error": msg, "code": code})
+	body := map[string]any{"error": msg, "code": code}
+	if h := hintForCode(code); h != "" {
+		body["hint"] = h
+	}
+	writeJSON(w, status, body)
 }
 
 // writeOpenAIError — OpenAI-конверт ошибки (§12.4 п.6).
@@ -151,6 +155,9 @@ func writeJSONError(w http.ResponseWriter, status int, code, msg string) {
 // sd-server отдаёт {"error":"строка"} — часть SDK (OpenAI Python/Node,
 // AnythingLLM) не умеет это парсить и показывает клиенту «Unknown error».
 // Форма: {"error":{"message","type","code"}}.
+//
+// R88: внутрь конверта добавлен `hint` (что делать), а также продублирован на
+// верхнем уровне — панель и curl читают его оттуда, а SDK его игнорируют.
 func writeOpenAIError(w http.ResponseWriter, status int, code, message string) {
 	kind := "invalid_request_error"
 	switch {
@@ -161,13 +168,95 @@ func writeOpenAIError(w http.ResponseWriter, status int, code, message string) {
 	case status == http.StatusUnauthorized:
 		kind = "authentication_error"
 	}
-	writeJSON(w, status, map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"type":    kind,
-			"code":    code,
-		},
-	})
+	inner := map[string]any{
+		"message": message,
+		"type":    kind,
+		"code":    code,
+	}
+	body := map[string]any{"error": inner}
+	if h := hintForCode(code); h != "" {
+		inner["hint"] = h
+		body["hint"] = h
+	}
+	writeJSON(w, status, body)
+}
+
+// hintForCode — ЧТО ДЕЛАТЬ при этой ошибке (явное объяснение, R88).
+//
+// ЗАЧЕМ: до R88 клиент и оператор видели только код и текст
+// (`generation_timeout`, `model_not_loaded`), а «что делать» приходилось
+// выяснять по документации. Балансер для своих отказов это уже делает
+// (writeGateError / writeUpstreamError) — воркер обязан отвечать так же.
+// Пустая строка = подсказки нет: выдумывать «на всякий случай» нельзя, иначе
+// подсказка перестаёт означать конкретное действие.
+func hintForCode(code string) string {
+	switch code {
+	case "generation_timeout":
+		return "генерация не уложилась в кап времени. Кап взведён явно " +
+			"(SDWORKER_GENERATION_TIMEOUT_SEC либо profile.timeoutSec при " +
+			"SDWORKER_ALLOW_PROFILE_TIMEOUTS=on) — уберите его, чтобы ждать " +
+			"терминального состояния генерации"
+	case "queue_full", "engine_queue_full":
+		return "очередь генераций заполнена: движок исполняет джобы последовательно. " +
+			"Повторите позже (Retry-After) или ориентируйтесь на active_queries"
+	case "model_not_found":
+		return "такой модели нет в каталоге воркера: список — GET /api/image/models; " +
+			"набор скачивается в разделе HuggingFace (WebUI) или через POST /api/hf/bundle"
+	case "model_not_loaded":
+		return "модель не загружена: POST /api/image/models/load {\"name\":\"<model>\"} " +
+			"(в WebUI — кнопка «Загрузить» в разделе image-моделей)"
+	case "model_loading":
+		return "модель ещё поднимается: дождитесь готовности — GET /api/image/models/load/progress " +
+			"(или поток .../progress/stream)"
+	case "cannot_cancel_generating":
+		return "джоба уже исполняется движком: отмена возможна только для очереди " +
+			"(cancel_queued_only). Дождитесь завершения — VRAM освободится по факту"
+	case "sd_server_startup_failed":
+		return "sd-server не поднялся: в логе воркера найдите «spawning sd-server» (полный argv) " +
+			"и следующий за ним вывод процесса — обычно это неверный плейсмент или отсутствующий файл роли"
+	case "sd_server_incompatible":
+		return "движок несовместим с набором файлов: проверьте роли diffusion/vae/llm в profile.json " +
+			"и версию sd-server (GET /health → sd_server_revision)"
+	case "job_not_found", "job_gone":
+		return "джоба неизвестна или истекла (completed_job_ttl_seconds): запросите статус заново " +
+			"либо перезапустите генерацию"
+	case "generation_failed", "engine_job_failed":
+		return "движок не отдал ни одной картинки. Чаще всего это холодный старт " +
+			"(веса 13.6 ГБ ещё подкачиваются с диска — первый прогон после load " +
+			"занимает минуты) либо нехватка VRAM на активациях: повторите запрос на " +
+			"прогретой модели и посмотрите вывод процесса рядом со «spawning sd-server» " +
+			"в логе воркера"
+	case "invalid_generation_params":
+		return "параметры вне границ движка: актуальные границы — GET /api/image/capabilities " +
+			"(размеры 64..4096, шаги 1..100, batch 1..8)"
+	case "invalid_size":
+		return "размер должен быть кратен 64 и лежать в 64..4096: границы движка — GET /api/image/capabilities"
+	case "invalid_strength":
+		return "strength для img2img лежит в [0,1]: 0 = без изменений, 1 = игнорировать исходное изображение"
+	case "payload_too_large":
+		return "тело запроса слишком большое: для img2img/edit передавайте изображение файлом " +
+			"(multipart), а не base64 в JSON"
+	case "image_required", "init_images_required":
+		return "для этой операции нужно исходное изображение: передайте его в multipart (image) " +
+			"или в init_images (base64)"
+	case "invalid_image", "invalid_mask":
+		return "не удалось прочитать изображение/маску: поддерживаются PNG/JPEG/WebP, " +
+			"маска — в оттенках серого той же геометрии, что и изображение"
+	case "prompt_required":
+		return "поле prompt обязательно (для img2img достаточно init_images + prompt)"
+	case "invalid_json":
+		return "тело запроса не разобралось как JSON: проверьте Content-Type и отсутствие BOM"
+	case "invalid_content_type":
+		return "ожидается application/json (или multipart/form-data для edit-эндпоинтов)"
+	case "invalid_multipart":
+		return "multipart-форма не разобралась: убедитесь, что поле с картинкой названо image/mask"
+	case "method_not_allowed":
+		return "метод не поддерживается этим эндпоинтом: POST для генерации, GET для моделей и capabilities"
+	case "not_implemented":
+		return "эндпоинт объявлен, но в этой сборке движка не реализован: " +
+			"смотрите /api/image/capabilities (features) перед использованием"
+	}
+	return ""
 }
 
 // setRetryAfter — заголовок Retry-After для 429 (клиенты его читают не все, но

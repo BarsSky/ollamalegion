@@ -217,7 +217,10 @@ func TestImageResources_AllowToolLoadRoundTrip(t *testing.T) {
 func TestImageResources_ToolLoadTimeoutRoundTrip(t *testing.T) {
 	s, store := newImageResourcesTestServer(t, types.ImageResourceSettings{})
 
-	// 1) Не задано: effective = дефолт (600), overridden = false, источник — env.
+	// 1) Не задано: R88 — effective = 0 («капа нет»), overridden = false,
+	//    источник — env. Раньше здесь стоял дефолт 600 с: живой случай на стенде
+	//    (модель 4.7 ГБ не поднялась за 600 с) показал, что кап на работу вредит,
+	//    поэтому по доктрине дефолт — без капа, а число взводится явно.
 	rec := doImageResources(t, s, http.MethodGet, "")
 	var doc map[string]interface{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
@@ -227,14 +230,14 @@ func TestImageResources_ToolLoadTimeoutRoundTrip(t *testing.T) {
 	if tlt == nil {
 		t.Fatalf("в ответе нет блока toolLoadTimeout: %s", rec.Body.String())
 	}
-	if tlt["effectiveSec"] != float64(600) || tlt["overridden"] != false {
-		t.Fatalf("незаданный таймаут: %v", tlt)
+	if tlt["effectiveSec"] != float64(0) || tlt["overridden"] != false {
+		t.Fatalf("незаданный таймаут должен значить «без капа»: %v", tlt)
 	}
 	if tlt["env"] != "LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC" {
 		t.Errorf("UI должен знать имя переменной окружения: %v", tlt["env"])
 	}
 	limits, _ := doc["limits"].(map[string]interface{})
-	if limits["minToolLoadTimeoutSec"] != float64(1) || limits["maxToolLoadTimeoutSec"] != float64(86400) {
+	if limits["minToolLoadTimeoutSec"] != float64(0) || limits["maxToolLoadTimeoutSec"] != float64(86400) {
 		t.Errorf("границы таймаута не отданы форме: %v", limits)
 	}
 
@@ -261,10 +264,22 @@ func TestImageResources_ToolLoadTimeoutRoundTrip(t *testing.T) {
 		t.Fatalf("PUT без поля обязан сохранить прежнее значение: %+v", got)
 	}
 
-	// 4) Ноль («не ждать вовсе») отклоняется на входе: инструмент не смог бы
-	//    поднять модель никогда, и это выглядело бы как «загрузка не работает».
-	if rec := doImageResources(t, s, http.MethodPut, `{"toolLoadTimeoutSec":0}`); rec.Code != http.StatusBadRequest {
-		t.Fatalf("нулевой таймаут должен отклоняться: status=%d body=%s", rec.Code, rec.Body.String())
+	// 4) Ноль — ВАЛИДНОЕ значение с R88: «капа нет» (ждём терминального
+	//    состояния). Раньше отклонялся как «не ждать вовсе», но теперь это
+	//    осмысленный дефолт, и форма обязана сохранять его без выдумывания числа.
+	if rec := doImageResources(t, s, http.MethodPut, `{"toolLoadTimeoutSec":0}`); rec.Code != http.StatusOK {
+		t.Fatalf("нулевой таймаут (без капа) должен приниматься: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := s.config.Balancing.Image.ToolLoadTimeoutSec; got == nil || *got != 0 {
+		t.Fatalf("ноль не применён: %+v", got)
+	}
+	// 4b) Отрицательное значение по-прежнему отклоняется.
+	if rec := doImageResources(t, s, http.MethodPut, `{"toolLoadTimeoutSec":-5}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("отрицательный таймаут должен отклоняться: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// Вернём прежнее значение для проверки пункта 5.
+	if rec := doImageResources(t, s, http.MethodPut, `{"toolLoadTimeoutSec":1800}`); rec.Code != http.StatusOK {
+		t.Fatalf("возврат 1800: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	// 5) Выше суток — тоже отказ (иначе вызов держал бы слот неограниченно).
 	if rec := doImageResources(t, s, http.MethodPut, `{"toolLoadTimeoutSec":86401}`); rec.Code != http.StatusBadRequest {

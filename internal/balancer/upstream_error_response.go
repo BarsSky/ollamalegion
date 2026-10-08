@@ -35,6 +35,29 @@ import (
 // уважают Retry-After и не устраивают storm.
 const upstreamUnavailableRetryAfter = 30 * time.Second
 
+// upstreamErrorStatus — HTTP-статус по классу транспортной ошибки.
+//
+// ОДНО место для статуса и для тела ответа (writeUpstreamError) и для метрик
+// image-плоскости: иначе «в ленте 504, а клиенту 502» — классический разъезд,
+// из-за которого оператор ищет причину не там.
+func upstreamErrorStatus(errType string) int {
+	switch errType {
+	case "connection_refused", "network_unreachable", "dns_error":
+		return http.StatusServiceUnavailable
+	case "timeout", "context_deadline":
+		return http.StatusGatewayTimeout
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+// UpstreamErrorStatus — экспорт для других плоскостей (image-роутер обязан
+// классифицировать транспортные ошибки так же, как текстовая сторона).
+func UpstreamErrorStatus(errType string) int { return upstreamErrorStatus(errType) }
+
+// UpstreamErrorType — экспорт classifyUpstreamError для image-плоскости.
+func UpstreamErrorType(err error) string { return classifyUpstreamError(err) }
+
 // writeUpstreamError — отдать клиенту понятную ошибку вместо сырого текста.
 //
 // isHeadersSent(w) обязателен: если стрим уже начался, заголовки менять нельзя —
@@ -50,23 +73,26 @@ func writeUpstreamError(w http.ResponseWriter, backendID, model string, err erro
 		"model":      model,
 		"detail":     err.Error(),
 	}
-	switch errType {
-	case "connection_refused", "network_unreachable", "dns_error":
+	switch upstreamErrorStatus(errType) {
+	case http.StatusServiceUnavailable:
 		retrySec := int(upstreamUnavailableRetryAfter.Seconds())
 		body["error"] = "backend " + backendID + " is unavailable (" + errType + "); " +
 			"the model is not being served right now — retry in " + strconv.Itoa(retrySec) + "s"
 		body["retry_after"] = retrySec
-		body["hint"] = "узел cppworker не отвечает: проверьте контейнер (docker ps/logs) и статус бэкенда в WebUI"
+		body["hint"] = "узел не отвечает: проверьте контейнер (docker ps/logs) и статус бэкенда в WebUI"
 		w.Header().Set("Retry-After", strconv.Itoa(retrySec))
 		writeJSON(w, http.StatusServiceUnavailable, body)
-	case "timeout", "context_deadline":
+	case http.StatusGatewayTimeout:
 		retrySec := int(upstreamUnavailableRetryAfter.Seconds())
 		body["error"] = "backend " + backendID + " timed out; retry in " + strconv.Itoa(retrySec) + "s"
 		body["retry_after"] = retrySec
+		body["hint"] = "кап времени на стороне клиента/прокси (по умолчанию капов нет — мы ждём " +
+			"терминального состояния: см. docs/image-generation.md §17)"
 		w.Header().Set("Retry-After", strconv.Itoa(retrySec))
 		writeJSON(w, http.StatusGatewayTimeout, body)
 	default:
 		body["error"] = err.Error()
+		body["hint"] = "бэкенд ответил ошибкой транспорта: смотрите detail и логи бэкенда"
 		writeJSON(w, http.StatusBadGateway, body)
 	}
 }

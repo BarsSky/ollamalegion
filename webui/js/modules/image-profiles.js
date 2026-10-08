@@ -715,10 +715,13 @@
 
     function requestJson(path, opts) {
         opts = opts || {};
-        var timeoutMs = opts.timeoutMs || TIMEOUT_CONTROL_MS;
+        // R88: timeoutMs=0 = без капа (доктрина: работу не рвём по будильнику).
+        var timeoutMs = (opts.timeoutMs === undefined || opts.timeoutMs === null)
+            ? TIMEOUT_CONTROL_MS
+            : opts.timeoutMs;
         var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
         var timer = null;
-        if (ctrl) timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+        if (ctrl && timeoutMs > 0) timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
         var init = { method: opts.method || 'GET', headers: authHeaders(opts.headers) };
         if (ctrl) init.signal = ctrl.signal;
         if (opts.body !== undefined) init.body = opts.body;

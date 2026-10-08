@@ -35,7 +35,12 @@
     var STATIC_SCHEDULERS = ['discrete', 'karras', 'exponential', 'ays', 'gits', 'smoothstep'];
 
     var TIMEOUT_CONTROL_MS = 15000;
-    var TIMEOUT_GENERATE_MS = 600000;
+    // R88 (2026-10-08): капа на ГЕНЕРАЦИЮ у панели нет (0 = не взводим таймер).
+    // Раньше здесь стояло 600000 мс, и браузер рвал запрос ровно на 10-й минуте,
+    // хотя воркер продолжал считать: 2048x2048/40 шагов на стенде — 22m30s.
+    // Это та же доктрина, что у балансера и воркера: работа не капается, ждём
+    // терминального состояния. Поллинг статусов (control) остаётся коротким.
+    var TIMEOUT_GENERATE_MS = 0;
     // Сколько ждём результат загрузки модели: движок поднимается в фоне (воркер
     // отвечает 202 сразу), а падение видно только в прогрессе.
     var LOAD_WAIT_MS = 180000;
@@ -269,7 +274,24 @@
      * оператор видит «не загрузилось» без понимания, что делать. Разбираем
      * несколько типовых случаев, которые уже ловили живьём.
      */
-    function errorHint(text) {
+    function errorHint(text, body) {
+        // R88: сначала — подсказка СЕРВЕРА. Балансер, воркер и nginx панели
+        // отдают структурированное поле hint («что делать»); дублировать эту
+        // работу эвристиками по тексту нужно только когда сервер промолчал.
+        var b = (body && typeof body === 'object') ? body : null;
+        if (b) {
+            if (typeof b.hint === 'string' && b.hint) return b.hint;
+            if (b.error && typeof b.error === 'object' && typeof b.error.hint === 'string' && b.error.hint) {
+                return b.error.hint;
+            }
+            var et = String(b.error_type || (b.error && b.error.code) || '');
+            if (et === 'upstream_timeout') {
+                return 'Ответ не пришёл в отведённое время. Работа при этом могла продолжиться: проверьте прогресс/логи воркера и балансера, прежде чем повторять генерацию.';
+            }
+            if (et === 'upstream_unavailable') {
+                return 'Балансер недоступен: проверьте контейнер (docker ps / docker logs ol-stack-balancer) и повторите запрос.';
+            }
+        }
         var s = String(text || '');
         if (!s) return '';
         if (/get sd version from file failed/i.test(s)) {
@@ -345,10 +367,15 @@
 
     function request(url, opts) {
         opts = opts || {};
-        var timeoutMs = opts.timeoutMs || TIMEOUT_CONTROL_MS;
+        // ВАЖНО: именно undefined/null, а не `||`: timeoutMs=0 — это ОСОЗНАННОЕ
+        // «без капа», и `0 || TIMEOUT_CONTROL_MS` превратил бы его в 15 с.
+        var timeoutMs = (opts.timeoutMs === undefined || opts.timeoutMs === null)
+            ? TIMEOUT_CONTROL_MS
+            : opts.timeoutMs;
         var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
         var timer = null;
-        if (ctrl) timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+        // R88: timeoutMs <= 0 = без капа (доктрина: длинную работу не рвём).
+        if (ctrl && timeoutMs > 0) timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
         var init = { method: opts.method || 'GET', headers: authHeaders(opts.headers) };
         if (ctrl) init.signal = ctrl.signal;
         if (opts.body !== undefined) init.body = opts.body;
@@ -362,9 +389,18 @@
                     if (parsed && typeof parsed === 'object' && parsed.error && typeof parsed.error === 'object') {
                         msg = parsed.error.message || parsed.error.code || msg;
                     }
+                    // R88: тянем из тела машинный код и подсказку «что делать» —
+                    // они есть у балансера, воркера и nginx панели.
+                    var code = '', hint = '';
+                    if (parsed && typeof parsed === 'object') {
+                        code = parsed.error_type || (parsed.error && typeof parsed.error === 'object' && parsed.error.code) || parsed.code || '';
+                        hint = parsed.hint || (parsed.error && typeof parsed.error === 'object' && parsed.error.hint) || '';
+                    }
                     var err = new Error(String(msg));
                     err.status = resp.status;
                     err.body = parsed;
+                    if (code) err.code = String(code);
+                    if (hint) err.hint = String(hint);
                     throw err;
                 }
                 return parsed;
@@ -753,7 +789,7 @@
             state.error = (e && e.body && typeof e.body === 'object')
                 ? JSON.stringify(e.body, null, 2)
                 : ((e && e.message) || String(e));
-            var h = errorHint(state.error);
+            var h = errorHint(state.error, e && e.body);
             notice(h || ((e && e.message) || String(e)), true);
         }
         state.busy = false;
@@ -999,6 +1035,10 @@
             extractImages: extractImages,
             normalizeCapabilities: normalizeCapabilities,
             errorHint: errorHint,
+            // R88: политика капов — часть контракта страницы, поэтому видна
+            // тестам: генерация БЕЗ капа, опросы состояния — с коротким.
+            TIMEOUT_GENERATE_MS: TIMEOUT_GENERATE_MS,
+            TIMEOUT_CONTROL_MS: TIMEOUT_CONTROL_MS,
             hasImageBackends: hasImageBackends,
             LIMITS: LIMITS,
             STATIC_SAMPLERS: STATIC_SAMPLERS,

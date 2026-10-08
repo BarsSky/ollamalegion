@@ -150,7 +150,7 @@ FLUX Q4 — пики 3.7–6.4 GB, Q8 — до 12 GB, а рядом живут �
       "vramHeadroomMb": 512,
       "blockOnUnknownVramEstimate": false,
       "queueWaitTimeoutSec": 30,
-      "exclusiveLockTimeoutSec": 600,
+      "exclusiveLockTimeoutSec": 0,
       "gateDisabled": false
     }
   }
@@ -163,7 +163,7 @@ FLUX Q4 — пики 3.7–6.4 GB, Q8 — до 12 GB, а рядом живут �
 | `vramHeadroomMb` | сколько VRAM оставить свободной сверх оценки модели |
 | `blockOnUnknownVramEstimate` | `false` (по умолчанию) — если оценить потребность не удалось, генерация **разрешается** (в лог идёт WARN); `true` — строгий режим, отказ `unknown_vram_estimate` |
 | `queueWaitTimeoutSec` | сколько ждать освобождения GPU в `exclusive`, прежде чем ответить `429 image_gpu_busy` + `Retry-After` |
-| `exclusiveLockTimeoutSec` | предохранитель: лок снимается принудительно (с WARN), чтобы зависшая генерация не блокировала карту навсегда |
+| `exclusiveLockTimeoutSec` | предохранитель: лок снимается принудительно (с WARN), чтобы зависшая генерация не блокировала карту навсегда. **`0` (по умолчанию с R88) = предохранитель снят**: доктрина запрещает duration-кап на работу — при 600 с лок снимался посреди легитимной генерации (2048×2048/40 шагов = 22m30s) и текстовый трафик шёл на занятую карту. Лок освобождается по жизненному циклу запроса; взводите кап только если нужен «будильник» (на стенде выставлено 6000) |
 | `gateDisabled` | полностью выключить гейт и лок (например, image работает на CPU) |
 
 Как считается оценка (по приоритету): профиль модели (`vramEstimateMb` в
@@ -1137,21 +1137,20 @@ sdworker/utils.go   POST /v1/images/generations status=200 duration=21m44.846s
 
 | Звено | Значение по умолчанию | Где меняется | Что будет, если не трогать |
 |---|---|---|---|
-| nginx панели, `location /v1/` | **3600 с** (было 600) | `webui/nginx.conf` | клиент панели получает 504 на 600-й секунде |
-| nginx панели, `/api/v1/image/` | **3600 с**, `proxy_buffering off` (было 120 с + буферизация) | `webui/nginx.conf` | загрузка модели и SSE-прогресс загрузки обрываются |
-| nginx панели, `/api/image/` | 3600 с (раньше location не было вовсе → 404) | `webui/nginx.conf` | нативный путь `/api/image/generate` из таба «Тест» не работает |
-| nginx панели, `/sdapi/` | 3600 с (раньше location не было → отдавался `index.html`) | `webui/nginx.conf` | A1111-путь из таба «Тест» не работает |
-| nginx панели, `/api/worker/` | **3600 с** (было 300) | `webui/nginx.conf` | скачивание/загрузка модели через страницу GGUF обрывается |
-| nginx панели, `/api/` (catch-all) | 120 с | `webui/nginx.conf` | так и задумано: это управляющие вызовы, они быстрые |
+| Браузер (панель), таб «Тест» | **капа нет** (`TIMEOUT_GENERATE_MS = 0`) | `webui/js/modules/image-test-page.js` | панель рвала запрос на 10-й минуте, хотя воркер продолжал считать |
+| nginx панели, рабочие пути | **86400 с** («без капа») | `webui/nginx.conf` | 600 с на `/v1/` = 504 на 2048×2048 |
+| nginx панели, ошибки 502/503/504 | JSON с `error_type` + `hint` | `webui/nginx.conf` (`error_page`) | клиент видел HTML-страницу и «HTTP 504» без объяснения |
 | Балансер, кап на генерацию | **нет** (`0`) | `LB_ALLOW_IMAGE_TIMEOUT_SEC` | по умолчанию ждём терминального состояния движка |
-| Балансер, предохранитель GPU-лока | 6000 с | `/api/v1/image/resources` → `exclusiveLockTimeoutSec` | при 600 с лок снимался ПОСРЕДИ генерации (`reason=fuse_timeout` в логе) |
-| Воркер, ожидание джобы | профиль `timeoutSec` (у Qwen — 1800 с) | `profile.json` модели / `SDWORKER_GENERATION_TIMEOUT_SEC` (600 с как общий дефолт) | воркер вернёт `generation_timeout` → HTTP 504 |
-| Инструмент `generate_image` (балансер) | 600 с на одну картинку | `LB_IMAGE_TOOL_TIMEOUT_SEC` | вызов инструмента на 2048² упрётся в 10 минут — поднимайте переменную |
+| Балансер, предохранитель GPU-лока | **снят** (`0`) | `/api/v1/image/resources` → `exclusiveLockTimeoutSec` | при 600 с лок снимался ПОСРЕДИ генерации (`reason=fuse_timeout` в логе) |
+| Балансер, инструмент `generate_image` | **капа нет** (`0`) | `LB_IMAGE_TOOL_TIMEOUT_SEC` / `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` | вызов инструмента на 2048² обрывался на 10-й минуте |
+| Воркер, ожидание джобы | **капа нет** (`0`) | `SDWORKER_GENERATION_TIMEOUT_SEC` | взведённый кап вернёт `generation_timeout` → HTTP 504 |
+| Воркер, кап из `profile.json` (`timeoutSec`) | **игнорируется** | `SDWORKER_ALLOW_PROFILE_TIMEOUTS=on` | профиль молча обрезал бы легитимную генерацию |
+| Воркер, readiness sd-server | **капа нет** (`0`) | `SDWORKER_STARTUP_TIMEOUT_SEC` | ждём ready ИЛИ смерть процесса (внятная ошибка в логе) |
 | Движок, `sd-server` | без капа | — | считает, пока не закончит |
 
 Порядок диагностики при 504: сначала смотреть `docker logs <imageworker>` —
-если там `image generation completed`, виноват таймаут ЗВЕНА-КЛИЕНТА (nginx,
-балансерный кап, лок), а не движок.
+если там `image generation completed`, виноват таймаут ЗВЕНА-КЛИЕНТА (панель,
+nginx, балансерный кап, лок), а не движок.
 
 ```bash
 # что реально ответил воркер и сколько это заняло
@@ -1226,5 +1225,66 @@ docker logs ol-stack-imageworker 2>&1 | grep 'spawning sd-server' | tail -1
   `index.html` вместо JSON;
 - `location /api/worker/`: 300s → **3600s** (долгие операции воркера: загрузка
   модели, скачивание HF-bundle).
+
+### 17.6 Доктрина R88: кап — только opt-in, ошибка — только с объяснением
+
+R87 убрал конкретный 600-секундный кап, но таких капов на image-плоскости было
+ещё несколько (воркер, инструмент, предохранитель лока, браузер). R88 переносит
+на image-плоскость **ту же доктрину, что уже работает у текстового бэкенда**
+(`internal/balancer/timeout_policy.go`, R83/v67).
+
+**Правило (одно на весь проект).**
+
+- Разрешены таймауты **опроса состояния**: «каждые N секунд проверить, готово
+  ли» (интервал поллинга джобы/readiness, heartbeat, idle-соединение). Такой
+  таймер задаёт частоту взгляда и **не отменяет** работу.
+- Запрещены duration-капы **на работу**: всё, что по истечении срока обрывает
+  генерацию, загрузку модели, pull/reload. Признак дефекта узнаваем: сервер
+  вернул ошибку, а работа продолжается — состояние расходится с ответом.
+- Вместо капа — ждать **терминального состояния** и вернуть конкретную ошибку.
+- Если кап всё-таки нужен — он включается **только явно** и печатает WARN в лог.
+
+**Реестр opt-in переменных image-плоскости** (все по умолчанию выключены):
+
+| Переменная | Что взводит |
+|---|---|
+| `SDWORKER_GENERATION_TIMEOUT_SEC` | кап ожидания джобы генерации (воркер) |
+| `SDWORKER_STARTUP_TIMEOUT_SEC` | кап ожидания readiness sd-server |
+| `SDWORKER_ALLOW_PROFILE_TIMEOUTS` | разрешить `profile.timeoutSec` обрывать генерацию |
+| `LB_ALLOW_IMAGE_TIMEOUT_SEC` | кап HTTP-запроса image-генерации на балансере |
+| `LB_IMAGE_TOOL_TIMEOUT_SEC` / `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` | капы вызова инструмента `generate_image` |
+| `exclusiveLockTimeoutSec` (`/api/v1/image/resources`) | предохранитель GPU-лока |
+
+**Вторая половина требования — «явное объяснение ошибок».** Ошибка обязана
+содержать не только код, но и действие. Форма ответа едина у всех звеньев:
+
+```json
+{
+  "error": "backend imageworker is unavailable (connection_refused); retry in 30s",
+  "error_type": "connection_refused",
+  "backend_id": "imageworker",
+  "model": "qwen-image-2.1-uncensored-gguf",
+  "detail": "Post \"http://imageworker:18093/v1/images/generations\": dial tcp ...: connect: connection refused",
+  "hint": "узел не отвечает: проверьте контейнер (docker ps/logs) и статус бэкенда в WebUI",
+  "retry_after": 30
+}
+```
+
+Кто что добавляет:
+
+- **воркер** — `hint` для каждого кода (`model_not_loaded`, `generation_timeout`,
+  `sd_server_startup_failed`, `invalid_size`, …; см. `hintForCode`);
+- **балансер** — транспортные ошибки классифицируются и отдаются как
+  `503`/`504`/`502` с `error_type`, `detail`, `hint`, `retry_after`
+  (`writeUpstreamError`), а отказы гейта — с OOM-лестницей (`writeGateError`);
+- **nginx панели** — собственные 502/503/504 отдаёт JSON'ом, а не HTML-страницей
+  (`error_page` + `@panel_upstream_*`); ответы самого балансера НЕ перехватывает,
+  чтобы не подменить его объяснение;
+- **панель** — показывает `hint` сервера раньше собственных эвристик по тексту
+  (`errorHint(text, body)`), а `TIMEOUT_GENERATE_MS = 0` больше не рвёт запрос.
+
+Проверка на стенде: `POST /v1/images/generations` (2048×2048/40 шагов) через
+портал панели → `HTTP 200` за 22m30s; остановленный бэкенд → 503 с
+`error_type=connection_refused` и `hint` про контейнер, а не «502 + dial-текст».
 
 

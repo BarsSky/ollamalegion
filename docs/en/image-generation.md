@@ -978,3 +978,100 @@ Common reasons for an empty catalog: the backend is unhealthy (the reason is in
 `warnings`), the worker did not answer with the contract (`contractOk=false`), or no
 model is downloaded on the worker.
 
+---
+
+## 17. Long generations: the timeout chain and RAM offload (R87)
+
+### 17.1 Symptom: "2048x2048 fails with HTTP 504, yet resources look sufficient"
+
+512x512 finishes in seconds, 2048x2048 at 40 steps "fails with 504", and the worker log
+shows a completed generation. This is not an out-of-memory condition: the worker does
+render and return the image - only the browser -> panel nginx -> balancer -> worker path
+is cut.
+
+Measured on the reference stand (RTX 3070 8 GB, Qwen-Image-2.1 Q4_K_M,
+`--offload-to-cpu --max-vram -1 --diffusion-fa --vae-tiling`, 2048x2048, 40 steps):
+
+```
+sdbackend/jobs.go   image generation completed  size=2048x2048 steps=40 duration_ms=1304815
+sdworker/utils.go   POST /v1/images/generations status=200 duration=21m44.846s
+```
+
+**21 minutes 45 seconds** - that is how long one 2048^2 request lives. Anything that
+fires earlier cuts the connection even though the generation keeps running.
+
+**Post-fix verification (same stand, request through the panel - nginx :18083):**
+`HTTP 200` in **1350 s (22m30s)**, the response carried a valid **2048x2048** PNG
+(9.0 MB). Peaks during the run: **VRAM 7447 / 8192 MiB** (91%), **worker RAM
+13.0 / 25.0 GiB** (52%), GPU utilization up to 100%. Before the fix the same request
+was cut at exactly second 600 (504).
+
+### 17.2 The timeout chain
+
+| Link | Default | Where to change | If left alone |
+|---|---|---|---|
+| panel nginx, `location /v1/` | **3600 s** (was 600) | `webui/nginx.conf` | the panel client gets 504 at second 600 |
+| panel nginx, `/api/v1/image/` | **3600 s**, `proxy_buffering off` (was 120 s and buffered) | `webui/nginx.conf` | model load and its SSE progress stream get cut |
+| panel nginx, `/api/image/` | 3600 s (previously no location at all -> 404) | `webui/nginx.conf` | the native `/api/image/generate` path in the Test tab does not work |
+| panel nginx, `/sdapi/` | 3600 s (previously no location -> `index.html` was served) | `webui/nginx.conf` | the A1111 path in the Test tab does not work |
+| panel nginx, `/api/worker/` | **3600 s** (was 300) | `webui/nginx.conf` | downloads/model loads from the GGUF page get cut |
+| panel nginx, `/api/` (catch-all) | 120 s | `webui/nginx.conf` | intended: management calls only, they are fast |
+| balancer, generation cap | **none** (`0`) | `LB_ALLOW_IMAGE_TIMEOUT_SEC` | by default we wait for the engine's terminal state |
+| balancer, GPU-lock fuse | 6000 s | `/api/v1/image/resources` -> `exclusiveLockTimeoutSec` | at 600 s the lock was released MID-generation (`reason=fuse_timeout`) |
+| worker, job wait | profile `timeoutSec` (Qwen: 1800 s) | the model's `profile.json` / `SDWORKER_GENERATION_TIMEOUT_SEC` (600 s global default) | the worker returns `generation_timeout` -> HTTP 504 |
+| `generate_image` tool (balancer) | 600 s per image | `LB_IMAGE_TOOL_TIMEOUT_SEC` | a 2048^2 tool call hits the 10-minute cap - raise the variable |
+| engine, `sd-server` | no cap | - | computes until it is done |
+
+When you see a 504, check `docker logs <imageworker>` first: if it contains
+`image generation completed`, the culprit is a client-side link (nginx, balancer cap,
+lock), not the engine.
+
+### 17.3 RAM: how the engine uses it (and why it is already engaged)
+
+"Can we involve system RAM too?" has a short answer: **it already is**. The worker's
+`argv` for Qwen-Image carries `--offload-to-cpu`, a shortcut for
+`--params-backend '*=cpu'`: weights live in RAM and are copied into VRAM segment by
+segment as the graph executes (the engine's automatic graph-cut). That is exactly why a
+14.6 GB bundle runs on an 8 GB card.
+
+- **Unsloth's rule (hard):** available **RAM + VRAM** must exceed the GGUF file size,
+  otherwise the model will not load even with offload. For the Qwen-Image bundle that is
+  14.6 GB against 24.5 GB of RAM on the stand - there is headroom.
+- **Offload is not a "slow mode":** sd.cpp officially calls it "without loss of speed";
+  the cost is PCIe traffic for segment streaming. Measured: 512x512/8 steps = 159 s,
+  2048x2048/40 steps = 21m45s on the same stand.
+- Memory knobs live in the profile `runtime` (`profile.json`, editable from the WebUI):
+  `offloadToCpu` (`--offload-to-cpu`), `paramsBackend: "diffusion=disk"`
+  (`--params-backend`, minimum VRAM *and* RAM but slow), `maxVram` (`--max-vram` budget
+  for graph-cut), `vaeTiling`/`vaeTileSize` (`--vae-tiling`, the main lever against VAE
+  decode OOM), `vaeConvDirect`, `backend: "te=cpu"` (`--backend te=cpu`, moves the
+  ~8 GB int8 text encoder out of VRAM), `threads`, `taesd` (TAEHV for Qwen).
+
+Verify the flags actually reached the engine (rather than "should have"):
+
+```bash
+docker logs ol-stack-imageworker 2>&1 | grep 'spawning sd-server' | tail -1
+```
+
+### 17.4 If 22 minutes is too long
+
+1. Generate 1024x1024 and finish with `--hires` - the base pass is 4x cheaper in pixels.
+2. Reduce steps: 20-30 steps with `flow-shift` 2-3 is close for Qwen-Image.
+3. Free VRAM rather than RAM: `--backend te=cpu` moves the int8 encoder (~8 GB) out of
+   VRAM, leaving room for the diffusion activations - the heaviest part at large sizes.
+4. Use a smaller text-encoder quant (Q4_K_M instead of int8).
+
+### 17.5 What was fixed (R87: `webui` r83-submodule-v104)
+
+- `location /v1/`: `proxy_read_timeout` 600s -> **3600s** (this was the 2048x2048 504:
+  600 s < 21m45s);
+- added `location /api/v1/image/` (**3600s**, `proxy_buffering off`) - it used to fall
+  into the `/api/` catch-all with 120 s and buffering, which broke 14.6 GB model loads
+  and their SSE progress stream;
+- added `location /api/image/` (**3600s**) - it used to go to the admin API (18081),
+  which does not serve the native image surface -> 404;
+- added `location /sdapi/` (**3600s**) - it used to fall into `location /` and return
+  `index.html` instead of JSON;
+- `location /api/worker/`: 300s -> **3600s** (long worker operations: model load, HF
+  bundle download).
+

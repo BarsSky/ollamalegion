@@ -31,6 +31,34 @@ const Api = (function () {
     }
     const API_BASE = resolveApiBase();
 
+    /**
+     * API_READ_TIMEOUT_MS — жёсткий таймаут на ЧТЕНИЕ (GET/HEAD).
+     *
+     * ЗАЧЕМ (R91, 2026-10-08). У `fetch` без AbortController нет таймаута вообще:
+     * если балансер не отвечает, промис не завершается НИКОГДА. Для панели это
+     * хуже ошибки: страница GGUF держит флаг «обновление уже идёт»
+     * (gguf-renderer-refresh.js: _detailRefreshInProgress) и снимает его только в
+     * then/catch — то есть один зависший запрос НАВСЕГДА отключает обновление
+     * выбранного бэкенда: вкладки «Модели»/«Настройки» остаются пустыми, пока
+     * оператор не перезагрузит страницу. Ровно это и наблюдалось, когда
+     * admin-плоскость балансера встала в дедлок (см. CHANGELOG 0.7.47): настройки
+     * открывались «с большой задержкой» (упирались во внешний 15-секундный
+     * таймаут спиннера), а остальная информация «пропадала».
+     *
+     * ПОЧЕМУ ТОЛЬКО ЧТЕНИЕ. Запись (POST/PUT/DELETE) намеренно БЕЗ таймаута:
+     * через неё идут длительные операции — применение профиля с reload модели,
+     * перенос модели, старт загрузки. Обрывать их по таймауту нельзя. Для чтений
+     * жёсткий предел правильный: данные либо есть, либо это ошибка, которую надо
+     * показать.
+     *
+     * Переопределяется на вызов: `request(url, { timeoutMs: 0 })` — без таймаута,
+     * `{ timeoutMs: 5000 }` — свой предел. Глобально — `WEBUI_CONFIG.API_READ_TIMEOUT_MS`
+     * (нужно тестам и тем, у кого балансер отвечает медленно).
+     */
+    const API_READ_TIMEOUT_MS = (Number(CFG.API_READ_TIMEOUT_MS) > 0)
+        ? Number(CFG.API_READ_TIMEOUT_MS)
+        : 20000;
+
     // Internal: build fetch options with auth headers
     function getOptions(options = {}) {
         const headers = {
@@ -45,8 +73,24 @@ const Api = (function () {
 
     // Internal: perform fetch with error handling
     async function request(url, options = {}) {
+        const method = String(options.method || 'GET').toUpperCase();
+        const isRead = method === 'GET' || method === 'HEAD';
+        // 0 = без таймаута (запись и явное переопределение).
+        const timeoutMs = options.timeoutMs !== undefined
+            ? options.timeoutMs
+            : (isRead ? API_READ_TIMEOUT_MS : 0);
+
+        const opts = getOptions(options);
+        let timer = null;
+        // Свой AbortController только если вызывающий не принёс свой signal —
+        // иначе мы отобрали бы у него управление отменой.
+        if (timeoutMs > 0 && !opts.signal && typeof AbortController !== 'undefined') {
+            const controller = new AbortController();
+            opts.signal = controller.signal;
+            timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+        }
         try {
-            const response = await fetch(url, getOptions(options));
+            const response = await fetch(url, opts);
             if (!response.ok) {
                 const text = await response.text().catch(() => '');
                 let body = text;
@@ -58,11 +102,26 @@ const Api = (function () {
             }
             return response;
         } catch (err) {
+            // Отмена по нашему таймауту: сообщение должно объяснять ПРИЧИНУ
+            // («балансер не ответил за 20 с»), а не показывать «The user aborted
+            // a request» — по такому тексту оператор не поймёт, что делать.
+            if (err && (err.name === 'AbortError') && timer) {
+                const timeoutErr = new Error(
+                    `Таймаут чтения (${Math.round(timeoutMs / 1000)} с): ${method} ${url} не ответил. ` +
+                    'Проверьте балансер: GET /health и логи контейнера ol-stack-balancer'
+                );
+                timeoutErr.code = 'timeout';
+                timeoutErr.timeoutMs = timeoutMs;
+                timeoutErr.url = url;
+                throw timeoutErr;
+            }
             // Network errors bubble up with message
             if (!err.status) {
                 err.message = `Network error: ${err.message}`;
             }
             throw err;
+        } finally {
+            if (timer) clearTimeout(timer);
         }
     }
 
@@ -183,10 +242,16 @@ const Api = (function () {
             return response.ok;
         },
 
-        // Generic POST helper returning JSON
-        async post(endpoint, data) {
+        // Generic POST helper returning JSON.
+        //
+        // R91 (2026-10-08): третий аргумент options — прокидывается в request как
+        // есть (signal для отмены, timeoutMs для явного предела). Раньше он не
+        // принимался вовсе, поэтому вызывающий не мог ни отменить длительную
+        // операцию, ни задать свой таймаут.
+        async post(endpoint, data, options = {}) {
             const response = await request(`${API_BASE}${endpoint}`, {
                 method: 'POST',
+                ...options,
                 ...(data ? { body: JSON.stringify(data) } : {})
             });
             if (response.status === 204 || response.headers.get('content-length') === '0') return null;

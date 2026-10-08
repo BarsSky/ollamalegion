@@ -1226,6 +1226,12 @@ window.I18N_EN = {
   // R91: "Host (system)" block on the GGUF backend About pane - RAM/CPU/disk.
   "gguf.host_info": "Host (system)",
   "gguf.disk_usage": "Disk (total)",
+  // R91 (2026-10-08): explicit error state instead of empty tabs. A failed or
+  // timed-out backend fetch used to be reported to the browser console only, so
+  // the operator saw empty Models/Settings tabs with no explanation.
+  "gguf.detail_load_failed": "Failed to load backend data",
+  "gguf.detail_load_timeout": "The balancer did not answer in time",
+  "gguf.detail_load_retry": "Retry",
   "gguf.version": "Version",
   "gguf.refresh": "Refresh",
   "gguf.search_limit": "Limit",

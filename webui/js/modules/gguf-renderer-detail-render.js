@@ -195,8 +195,22 @@
             return '<div class="gguf-empty-state"><i class="fas fa-spinner fa-spin"></i> ' + _('common.loading') + '</div>';
         }
         if (state.detailError) {
-            return '<div class="gguf-empty-state">' +
-                '<i class="fas fa-exclamation-triangle"></i> ' + state.detailError +
+            // R91 (2026-10-08): ошибка должна быть ЧИТАЕМОЙ и с выходом.
+            // Раньше текст ошибки вставлялся как HTML (сообщение сервера с
+            // угловыми скобками ломало разметку), а кнопки «повторить» не было —
+            // оператор видел пустые вкладки и не знал, что произошло.
+            return '<div class="gguf-empty-state" style="padding:12px;">' +
+                '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
+                    '<i class="fas fa-exclamation-triangle" style="color:var(--danger);"></i>' +
+                    '<strong>' + Utils.escapeHtml(_('gguf.detail_load_failed')) + '</strong>' +
+                '</div>' +
+                '<div style="font-family:monospace;font-size:11px;background:rgba(0,0,0,0.2);' +
+                    'padding:8px;border-radius:4px;margin-bottom:8px;word-break:break-all;">' +
+                    Utils.escapeHtml(state.detailError) +
+                '</div>' +
+                '<button class="btn btn-secondary btn-sm" id="ggufDetailRetry">' +
+                    '<i class="fas fa-sync"></i> ' + Utils.escapeHtml(_('gguf.detail_load_retry')) +
+                '</button>' +
             '</div>';
         }
         switch (state.detailPane) {

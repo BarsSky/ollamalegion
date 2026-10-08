@@ -90,6 +90,22 @@
     const WORKER_VERSION_TTL_MS = 10 * 60 * 1000;
     const _workerVersionInFlight = new Set();
     function fetchWorkerVersionAsync(backendId) {
+        // R91 (2026-10-08): КРИТИЧНО. Здесь была ссылка на `state` без объявления.
+        //
+        // История: изначально в этом файле был module-scope `const state =
+        // M.state;`, но в R65d (коммит 15ea588) его убрали, а функции перевели на
+        // параметр `state`. `fetchWorkerVersionAsync` добавили ПОЗЖЕ (коммит
+        // 196d625) в старом стиле — с голым `state` — и она падала с
+        // `ReferenceError: state is not defined` при КАЖДОМ обновлении деталей:
+        // вызов идёт из refreshDetail ПОСЛЕ заполнения workerInfo/gpuInfo, поэтому
+        // исключение обрывало остаток .then — state.localModels, state.loadedModels
+        // и state.backendRuntime не заполнялись, refreshDetailPanel не вызывался.
+        //
+        // Живая жалоба: «пропала вообще вся информация кроме инфо — какие модели,
+        // какие настройки»: «Инфо» рисуется из workerInfo/gpuInfo (они успевали
+        // заполниться), а вкладки «Модели»/«Загруженные»/«Настройки» — пустые,
+        // потому что их данные так и не записывались.
+        const state = M.state;
         if (!backendId) return;
         const cached = state.workerVersions && state.workerVersions[backendId];
         if (cached && (Date.now() - cached.at) < WORKER_VERSION_TTL_MS) {
@@ -159,12 +175,16 @@
                 var backends = (resp && resp.backends) || resp || [];
                 state.registeredBackends = Array.isArray(backends) ? backends : [];
                 state.backendDataLoaded = true;
-                _refreshInProgress = false;
                 if (typeof M.updateBackendsList === 'function') M.updateBackendsList();
             })
             .catch(function (err) {
-                _refreshInProgress = false;
                 console.warn('refreshBackends failed:', err);
+            })
+            .finally(function () {
+                // R91 (2026-10-08): снятие флага — в finally, а не в then/catch.
+                // Иначе единственный незавершившийся промис (зависший fetch без
+                // таймаута) навсегда блокирует обновление списка бэкендов.
+                _refreshInProgress = false;
             });
     };
 
@@ -177,6 +197,21 @@
     };
 
     let _detailRefreshInProgress = false;
+    // R91 (2026-10-08): момент старта текущего обновления — для сторожевого
+    // предела ниже.
+    let _detailRefreshStartedAt = 0;
+    // DETAIL_REFRESH_STALE_MS — через сколько миллисекунд незавершённое обновление
+    // считается зависшим и НЕ блокирует новое.
+    //
+    // ЗАЧЕМ. Флаг _detailRefreshInProgress защищает от параллельных запросов, но
+    // если промис не завершается (fetch без таймаута до неотвечающего балансера),
+    // флаг остаётся взведённым НАВСЕГДА, и панель деталей перестаёт обновляться:
+    // оператор выбирает другой бэкенд, вкладки «Модели»/«Настройки» пустые, а
+    // «Инфо» показывает последнее отрисованное. Живая жалоба 2026-10-08:
+    // «с большой задержкой открываются настройки бэкенда, пропала вся информация
+    // кроме инфо». Теперь у чтения есть таймаут (api.js: API_READ_TIMEOUT_MS), а
+    // этот предел разблокирует панель даже если промис подвесил не fetch.
+    const DETAIL_REFRESH_STALE_MS = 30000;
     M.refreshDetail = function() {
         const state = M.state;
         // R-MultiHost (2026-10-07): синхронизируем выбранный бэкенд с API-клиентом
@@ -185,8 +220,14 @@
         // синхронизации в обработчике клика недостаточно.
         if (typeof M._syncBackendToApi === 'function') M._syncBackendToApi(state.selectedBackendId);
         if (!state.selectedBackendId) return Promise.resolve();
-        if (_detailRefreshInProgress) return Promise.resolve();
+        if (_detailRefreshInProgress) {
+            const age = Date.now() - _detailRefreshStartedAt;
+            if (age < DETAIL_REFRESH_STALE_MS) return Promise.resolve();
+            console.warn('[gguf-renderer] предыдущее обновление деталей висит ' +
+                Math.round(age / 1000) + ' с — считаю зависшим и запускаю новое');
+        }
         _detailRefreshInProgress = true;
+        _detailRefreshStartedAt = Date.now();
         var backend = (state.registeredBackends || []).find(function (b) { return b.id === state.selectedBackendId; });
         if (!backend) {
             _detailRefreshInProgress = false;
@@ -208,6 +249,9 @@
         return window.Api.getBackend(backend.id)
             .then(function (data) {
                 data = data || {};
+                // R91 (2026-10-08): успешный ответ снимает ошибку предыдущей
+                // попытки — иначе панель осталась бы с плашкой ошибки навсегда.
+                state.detailError = null;
                 // workerInfo: synthesised from the metric's host/port/type/status
                 // — there is no separate "worker" field on the backend metrics.
                 state.workerInfo = {
@@ -292,7 +336,6 @@
                 if (!state.runtimeModels || typeof state.runtimeModels !== 'object') {
                     state.runtimeModels = {};
                 }
-                _detailRefreshInProgress = false;
                 // Подтягиваем реальные runtime-параметры загруженных моделей
                 // (n_ctx/gpu_layers/batch/flash_attn/n_layers) — без этого
                 // вкладка «Загруженные» показывает только defaults из метрик.
@@ -306,8 +349,27 @@
                 else if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
             })
             .catch(function (err) {
-                _detailRefreshInProgress = false;
+                // R91 (2026-10-08): НЕ молчим. Раньше здесь был только
+                // console.warn, поэтому при неудаче/таймауте оператор видел
+                // пустые вкладки без объяснения («пропала вся информация кроме
+                // инфо»). Теперь причина видна в самой панели вместе с кнопкой
+                // «Повторить».
                 console.warn('refreshDetail failed:', err);
+                const isTimeout = !!(err && err.code === 'timeout');
+                const msg = (err && err.message) ? String(err.message) : String(err);
+                state.detailError = (window.I18N
+                    ? I18N.t(isTimeout ? 'gguf.detail_load_timeout' : 'gguf.detail_load_failed')
+                    : (isTimeout ? 'Backend data timed out' : 'Failed to load backend data')) +
+                    ' — ' + msg;
+                if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel();
+                else if (typeof M.refreshDetailPane === 'function') M.refreshDetailPane();
+            })
+            .finally(function () {
+                // R91 (2026-10-08): флаг снимается в finally. Это главная защита
+                // от «зависшей панели»: раньше снятие жило в then/catch, и любой
+                // незавершившийся промис отключал обновление деталей до
+                // перезагрузки страницы.
+                _detailRefreshInProgress = false;
             });
     };
 
@@ -384,9 +446,15 @@
                     // Switch to fast mode if any model has active queries
                     var hasActive = Object.values(next).some(function (n) { return n && n > 0; });
                     fast = hasActive;
-                    scheduleNext();
                 })
                 .catch(function () {
+                    // best-effort: опрос активных запросов не критичен
+                })
+                .finally(function () {
+                    // R91 (2026-10-08): следующий тик планируется в finally —
+                    // иначе незавершившийся (зависший) запрос останавливал опрос
+                    // навсегда, и индикаторы «занято» на вкладке «Модели»
+                    // замирали.
                     scheduleNext();
                 });
         }

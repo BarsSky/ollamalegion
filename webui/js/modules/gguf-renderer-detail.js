@@ -27,6 +27,15 @@
 
     M.onDetailPanelClick = function(e) {
         const state = M.state;
+        // R91 (2026-10-08): «Повторить» на плашке ошибки загрузки деталей.
+        // Обрабатываем ДО табов: кнопка живёт внутри #ggufDetailContent, который
+        // целиком заменяется при перерисовке, поэтому обработчик делегированный.
+        if (e.target.closest('#ggufDetailRetry')) {
+            state.detailError = null;
+            if (typeof M.refreshDetail === 'function') M.refreshDetail();
+            if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel();
+            return;
+        }
         // Detail tabs
         var tab = e.target.closest('.gguf-detail-tab');
         if (tab) {

@@ -351,6 +351,12 @@ window.I18N_EN = {
   // Monitor
   "monitor.sparkline.empty": "Metrics are still being collected…",
   "monitor.sparkline.trend": "{metric}: min {min}% / max {max}% / current {current}%",
+  // R91 (2026-10-08): short summary line under the sparkline. Before it,
+  // min/avg/max lived only in the title and the scale was fitted to the window,
+  // so the picture gave no idea how big the peak was (13% looked like 90%).
+  // It shows the maximum over the window (what matters for load); full
+  // min/avg/max and the window stay in the tooltip. Kept short: cells are narrow.
+  "monitor.sparkline.caption": "max {max}",
   "monitor.status.live": "Live",
   "monitor.status.offline": "Offline",
   "monitor.status.demo": "Demo",

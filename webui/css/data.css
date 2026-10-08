@@ -807,9 +807,16 @@
   line-height: 0;
 }
 .sparkline-container {
-  display: inline-flex;
+  /* R91 (2026-10-08): раньше был inline-flex — контейнер растягивался по
+     содержимому, поэтому строка сводки вставала В ОДНУ строку с подписью и
+     вылезала в соседнюю колонку таблицы (видно на скриншоте). Теперь это flex с
+     ограниченной шириной: график и подпись на первой строке, сводка — на второй. */
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  width: 100%;
+  max-width: 104px;
+  gap: 2px 4px;
   font-family: var(--font-mono, monospace);
   font-size: 10px;
   color: var(--text-secondary);
@@ -820,6 +827,10 @@
   height: 24px;
   display: block;
   overflow: visible;
+  /* R91: график и подпись НЕ сжимаются. Без этого flex утрамбовывал все три
+     элемента в одну строку (svg ужимался), и строка сводки вставала вплотную к
+     значению — «66.3%макс 66%» вместо двух строк. */
+  flex: 0 0 auto;
 }
 .sparkline-path {
   fill: none;
@@ -828,8 +839,24 @@
   stroke-linecap: round;
 }
 .sparkline-area {
-  opacity: 0.15;
+  /* R91 (2026-10-08): 0.15 на тёмной теме читалось как чёрное пятно —
+     график выглядел «неинформативной кляксой». 0.25 + сетка дают читаемую
+     диаграмму, не споря с цветом линии. */
+  opacity: 0.25;
   stroke: none;
+}
+/* Сетка 25/50/75 % — масштаб, которого в спарклайне не было вовсе. */
+.sparkline-grid {
+  stroke: currentColor;
+  stroke-width: 0.5;
+  stroke-dasharray: 2 3;
+  opacity: 0.35;
+}
+/* Риска максимума в кластерном спарклайне. */
+.sparkline-max {
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  opacity: 0.9;
 }
 .sparkline-label {
   display: inline-block;
@@ -837,6 +864,22 @@
   font-variant-numeric: tabular-nums;
   min-width: 36px;
   text-align: right;
+  flex: 0 0 auto;
+}
+/* Строка сводки под спарклайном: «макс 13%».
+   Раньше min/max/avg были только в title — по картинке величину пика не понять.
+   flex-basis 100% без сжатия = всегда СВОЯ строка; ширина ограничена ячейкой,
+   иначе длинный текст вылезал в соседнюю колонку — проверено скриншотом. */
+.sparkline-caption {
+  flex: 1 0 100%;
+  max-width: 104px;
+  font-size: 9px;
+  line-height: 1.2;
+  color: var(--text-secondary);
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sparkline-empty {
   opacity: 0.55;

@@ -404,6 +404,31 @@
             });
     };
 
+    /**
+     * shareOnSelectedBackend — R89: перенести модель на другой бэкенд.
+     *
+     * Зачем: на второй машине модель часто отсутствует, и качать те же гигабайты
+     * из HuggingFace заново бессмысленно — балансер стримит файл с того узла, где
+     * он уже лежит. UI (выбор целей + прогресс) живёт в modules/model-share.js.
+     */
+    M.shareOnSelectedBackend = function(model) {
+        const backend = M.currentBackend();
+        if (!backend) {
+            M.showToast(M._('gguf.no_backend_selected') || 'No backend selected', 'error');
+            return;
+        }
+        var modelName = (model && typeof model === 'object') ? (model.name || model.path) : model;
+        if (!modelName) {
+            M.showToast('shareOnSelectedBackend: model name is empty', 'error');
+            return;
+        }
+        if (!window.ModelShare || typeof window.ModelShare.open !== 'function') {
+            M.showToast('ModelShare is not available', 'error');
+            return;
+        }
+        window.ModelShare.open({ backendId: backend.id, model: modelName, kind: 'text' });
+    };
+
     M.deleteOnSelectedBackend = function(model) {
         const backend = M.currentBackend();
         if (!backend) {

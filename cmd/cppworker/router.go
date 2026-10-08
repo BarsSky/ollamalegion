@@ -35,6 +35,12 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/models/files", handleListModelsDir)
 	mux.HandleFunc("/api/models/delete", handleDeleteModel)
 	mux.HandleFunc("/api/delete", handleDeleteModel) // Ollama-compatible alias
+	// R89: перенос модели между бэкендами (источник отдаёт файл, приёмник
+	// сохраняет). Под authMiddleware — как /api/models/reload: это чтение файлов
+	// и запись в каталог моделей, а не публичный трафик генерации. Если токен в
+	// воркере не сконфигурирован, middleware пропускает (legacy-поведение).
+	mux.HandleFunc("/api/models/export", authMiddleware(handleExportModel))
+	mux.HandleFunc("/api/models/import", authMiddleware(handleImportModel))
 	mux.HandleFunc("/api/generate", handleGenerate)
 	mux.HandleFunc("/api/chat", handleChat)
 	mux.HandleFunc("/api/embeddings", handleOllamaEmbeddings)

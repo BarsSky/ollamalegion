@@ -92,6 +92,15 @@
             }
             return;
         }
+        // R89: «Поделиться моделью» — перенос на другой бэкенд кластера
+        // (на второй машине модель может отсутствовать; качать её из
+        // HuggingFace заново не нужно).
+        var shareBtn = e.target.closest('.gguf-share-btn');
+        if (shareBtn) {
+            var shareName = shareBtn.getAttribute('data-share-model');
+            if (shareName && typeof M.shareOnSelectedBackend === 'function') M.shareOnSelectedBackend(shareName);
+            return;
+        }
         var cancelDl = e.target.closest('.gguf-cancel-dl-btn');
         if (cancelDl) {
             if (typeof M.cancelDownload === 'function') {

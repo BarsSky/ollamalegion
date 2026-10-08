@@ -374,6 +374,12 @@
                     '<button class="btn btn-sm btn-secondary gguf-delete-btn" data-idx="' + idx + '" title="' + _('gguf.delete_model') + '">' +
                         '<i class="fas fa-trash"></i>' +
                     '</button>' +
+                    // R89: перенос модели на другой бэкенд (второй машине не нужно
+                    // качать тот же файл из HuggingFace заново).
+                    '<button class="btn btn-sm btn-secondary gguf-share-btn" data-share-model="' +
+                        Utils.escapeHtml(name) + '" title="' + _('share.title', 'Поделиться моделью') + '">' +
+                        '<i class="fas fa-share-nodes"></i>' +
+                    '</button>' +
                 '</div>' +
             '</div>';
         }).join('');

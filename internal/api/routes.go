@@ -55,6 +55,16 @@ func (s *Server) setupRoutes() {
 	// Model operations status endpoint
 	s.mux.Handle("/api/v1/models/operations", AuthMiddleware(RateLimitMiddleware(s.modelOpsStatusHandler, s.rateLimiter), s.authenticator))
 
+	// R89 (2026-10-08): перенос модели между бэкендами (share).
+	//
+	// Отдельный путь, а не расширение /api/v1/models: это НЕ управление моделью
+	// на одном узле, а операция над кластером (источник → приёмники), и она
+	// асинхронная (202 + опрос прогресса). Литерал «/api/v1/models/share»
+	// выигрывает у префикса «/api/v1/models» в http.ServeMux, поэтому конфликта
+	// с существующими ручками нет.
+	s.mux.Handle("/api/v1/models/share", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleModelShare), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/models/share/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleModelShareByID), s.rateLimiter), s.authenticator))
+
 	// Metrics (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/metrics", AuthMiddleware(RateLimitMiddleware(s.metricsHandler, s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/metrics/", AuthMiddleware(RateLimitMiddleware(s.metricHandler, s.rateLimiter), s.authenticator))

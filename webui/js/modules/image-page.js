@@ -647,7 +647,11 @@
                     // кнопка, которая гарантированно даёт ошибку, — плохой UI.
                     ' <button class="btn btn-danger btn-sm" data-img-action="delete-model" data-model="' + escapeHtml(m.name) + '" ' +
                     'title="' + escapeHtml(t('gguf.delete_from_disk', 'Delete downloaded files from disk')) + '">' +
-                    '<i class="fas fa-trash"></i></button>';
+                    '<i class="fas fa-trash"></i></button>' +
+                    // R89: поделиться bundle с другим image-бэкендом.
+                    ' <button class="btn btn-secondary btn-sm" data-img-action="share-model" data-model="' + escapeHtml(m.name) + '" ' +
+                    'title="' + escapeHtml(t('share.title', 'Поделиться моделью')) + '">' +
+                    '<i class="fas fa-share-nodes"></i></button>';
             }
             var roles = (m.roles && m.roles.length)
                 ? m.roles.map(function (r) { return escapeHtml(t('imageModels.role_' + r, r)); }).join(', ')
@@ -718,6 +722,22 @@
      * Серверная сторона отказывает, если модель загружена (409): показываем её
      * текст как есть, а не своё «не получилось» — там есть подсказка про unload.
      */
+    /**
+     * onShareModel — R89: перенести bundle на другой image-бэкенд.
+     *
+     * UI (выбор целей + прогресс по каждой) — в modules/model-share.js; здесь
+     * только контекст: какой бэкенд выбран и какую модель берём источником.
+     */
+    function onShareModel(name) {
+        var backendId = state.selectedBackendId;
+        if (!backendId || !name) return;
+        if (!window.ModelShare || typeof window.ModelShare.open !== 'function') {
+            toast(t('share.unavailable', 'Модуль переноса моделей не загружен'), 'error');
+            return;
+        }
+        window.ModelShare.open({ backendId: backendId, model: name, kind: 'image' });
+    }
+
     async function onDeleteModel(name) {
         var backendId = state.selectedBackendId;
         if (!backendId || !name) return false;
@@ -911,6 +931,10 @@
             onUnloadModel(actionEl.getAttribute('data-model'));
         } else if (action === 'delete-model') {
             onDeleteModel(actionEl.getAttribute('data-model'));
+        } else if (action === 'share-model') {
+            // R89: перенос bundle на другой image-бэкенд (14 ГБ из HuggingFace
+            // заново качать не нужно — балансер стримит каталог с источника).
+            onShareModel(actionEl.getAttribute('data-model'));
         }
     }
 

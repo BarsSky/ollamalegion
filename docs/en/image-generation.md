@@ -1164,3 +1164,64 @@ The remote node therefore stays in the cluster (models can still be downloaded t
 from the panel) and starts receiving generations as soon as a bundle appears there -
 with no configuration changes.
 
+### 17.8 Sharing a model: transfer between backends (R89)
+
+**The problem.** A model often exists on only one machine of the cluster. Before R89 the
+only way to get it onto the second machine was to download it from HuggingFace again:
+internet, HF token, time, and the risk of a different file revision. Now a model can be
+**transferred** - the source serves what is already on its disk, the target stores it.
+
+**Mechanics (server-side copy through the balancer).** The balancer streams
+`GET source -> POST target`; neither a file on the balancer's disk nor a buffer in RAM
+(14 GB in RAM is unacceptable) is used - Go sends the body chunked.
+
+| Role | Worker endpoint | What is transferred |
+|---|---|---|
+| Source (text) | `GET /api/models/export?name=<file.gguf>` | a single `.gguf`; `Content-Length`, `X-Model-Filename`, `X-Model-SizeBytes` |
+| Source (image) | `GET /api/image/models/export?name=<bundle>` | tar of the bundle directory; `X-Bundle-Bytes` (sum of files), `X-Bundle-FileCount` |
+| Target (text) | `POST /api/models/import?filename=<f>&size=&sha256=[&overwrite=1]` | raw bytes; `.importing` -> atomic rename + inventory rescan |
+| Target (image) | `POST /api/image/models/import?name=<b>&bytes=&files=[&overwrite=1]` | tar; unpack into `.importing-<b>` -> rename + registry reload |
+
+Both pairs go through `authMiddleware` (when a token is configured in the worker) - this
+is reading files and writing into the models directory, not public generation traffic.
+
+**Balancer API** (management plane, `X-API-Token` required):
+
+```bash
+curl -sS -X POST http://<balancer>:18081/api/v1/models/share \
+  -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"source":"imageworker","model":"qwen-image-2.1-uncensored-gguf","targets":["IMAGEWORKER-34"]}'
+
+curl -sS http://<balancer>:18081/api/v1/models/share/<id> -H "X-API-Token: $LB_API_TOKEN"
+curl -sS -X POST http://<balancer>:18081/api/v1/models/share/<id>/cancel -H "X-API-Token: $LB_API_TOKEN"
+```
+
+States: the job is `running|done|partial|failed|canceled`; a target is
+`pending|running|done|skipped|failed` (with `percent`, `bytes`, `total`, `speedBps`,
+`note`/`error`). The transfer kind (file or bundle) is derived from the source backend
+type, so the request does not need to specify it.
+
+**What is verified so a broken model never reaches the target:**
+
+- payload size (mandatory) and `sha256` (if the source reported one);
+- file names: basename only, no `/` and no `..` - otherwise a foreign tar could write
+  outside the models directory (`unsafe tar entry`);
+- an incomplete stream never becomes a finished model: data is written to a temporary
+  name and renamed only after a successful check;
+- if the target **already has** the model and overwrite was not requested, the target is
+  `skipped` with a reason and no gigabytes are moved.
+
+**In the panel.** A "Share" button (➦) appeared on models in the GGUF Models page (text)
+and in the image models list: pick target backends of the same type, optionally tick
+"overwrite", then watch per-target progress with speed and a Cancel button. The source is
+the backend selected in the panel.
+
+**Timeouts.** There is no cap on a transfer (project doctrine, 17.6): 14 GB at 100 Mbit/s
+is ~20 minutes, and any "reasonable" timeout here would be a defect. Cancellation is
+explicit, via `/cancel`.
+
+**Not there yet** (honestly): the transfer does not check free space on the target (a
+write error comes back as text from it), and scheduling/automatic "spread the model to all
+nodes" is a separate task (see the read-only autosuggest
+`/api/v1/admin/cluster/autosuggest`, R59).
+

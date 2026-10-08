@@ -2365,6 +2365,10 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <!-- R-Image Phase 6 (2026-10-02): редактор профилей image-моделей.
          Грузится ДО image-page.js: его init() вызывает window.ImageProfiles.mount. -->
     <script defer src="js/modules/image-profiles.js?v=R83"></script>
+    <!-- R89 (2026-10-08): «Поделиться моделью» — перенос модели с одного бэкенда
+         на другие через балансер. Грузится ДО image-page.js и gguf-renderer-*.js:
+         их кнопки вызывают window.ModelShare.open(...). -->
+    <script defer src="js/modules/model-share.js?v=R89"></script>
     <script defer src="js/modules/image-page.js?v=R83"></script>
     <script defer src="js/modules/image-models-page.js?v=R83"></script>
     <!-- R-Image Phase 9: табы «HuggingFace» и «Загрузки» страницы «Image-модели»

@@ -64,6 +64,10 @@ func (a *App) setupRouter() http.Handler {
 	// R-Image Phase 9: удаление bundle с диска (аналог cppworker /api/models/delete) —
 	// без него оператор не мог освободить диск из WebUI.
 	mux.HandleFunc("/api/image/models/delete", a.handleDeleteModel)
+	// R89: перенос bundle между воркерами (источник отдаёт tar каталога, приёмник
+	// распаковывает и перерегистрирует модель). См. handlers_model_share.go.
+	mux.HandleFunc("/api/image/models/export", a.handleExportBundle)
+	mux.HandleFunc("/api/image/models/import", a.handleImportBundle)
 	mux.HandleFunc("/api/image/models/reload", a.handleReloadModel)
 	mux.HandleFunc("/api/image/models/load/progress", a.handleLoadProgress)
 	mux.HandleFunc("/api/image/models/load/progress/stream", a.handleLoadProgressStream)

@@ -637,6 +637,24 @@ window.I18N_EN = {
   "renderers.load_forecast": "Load forecast",
   "renderers.load_forecast_hint": "Load forecast for THIS backend from its own request history - not a GPU metric. Two backends on one GPU differ by definition.",
   "renderers.gpu_card_sample_hint": "The card shows the last sample of ITS OWN agent. Two agents on one machine can differ by one polling interval: GPU clocks swing within seconds (idle 210 MHz -> boost 1755 MHz).",
+  // R89 (2026-10-08): model sharing between backends ("Share model").
+  "share.title": "Share model",
+  "share.source_hint": "Source",
+  "share.loading_backends": "Loading cluster backends...",
+  "share.no_targets": "No other backends of the same type in the cluster - nowhere to copy to.",
+  "share.pick_targets": "Copy to:",
+  "share.overwrite": "Overwrite if the model already exists on the target",
+  "share.start": "Start transfer",
+  "share.starting": "Starting transfer...",
+  "share.need_target": "Select at least one target backend",
+  "share.job_state": "Job state",
+  "share.finished_hint": "Done. Refresh the backends page to see the model on the target.",
+  "share.unavailable": "Model sharing module is not loaded",
+  "share.pending": "queued",
+  "share.running": "copying",
+  "share.done": "done",
+  "share.skipped": "skipped",
+  "share.failed": "failed",
 
   // clientAccess — the "Client connection" block next to a backend (2026-10-03).
   // The key is the same one the WebUI sends as X-API-Token; we surface it because

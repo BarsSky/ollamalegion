@@ -2658,6 +2658,24 @@ func (b *Backend) CountTokens(modelName string, text string) int {
 	return n
 }
 
+// chatTemplateMu — сериализация вызовов chat template (R91, 2026-10-08).
+//
+// ЗАЧЕМ. llama_chat_apply_template / common_chat_templates_apply внутри держат
+// СОБСТВЕННОЕ кэшированное состояние шаблона (minja-парсер) и не потокобезопасны.
+// cppworker при этом обслуживает несколько запросов параллельно (n_parallel=2,
+// плюс /api/chat и /v1/chat/completions), и каждый строит промпт на своём
+// goroutine — то есть два вызова легко заходят в C одновременно.
+//
+// Живое следствие (нагрузочный прогон 2026-10-08, gemma-4, n_ctx=65536):
+// SIGSEGV в bridge_apply_chat_template «signal arrived during cgo execution» —
+// процесс падал целиком. Гонка такого класса воспроизводится не всегда, поэтому
+// кроме recover() в cmd/cppworker (chat_template_guard.go) нужна и защита от
+// одновременного входа.
+//
+// ЦЕНА: применение шаблона — короткая CPU-операция без GPU, поэтому сериализация
+// почти не влияет на пропускную способность, а падение узла стоит куда дороже.
+var chatTemplateMu sync.Mutex
+
 // ApplyChatTemplate applies GGUF chat template to messages for a model.
 // If no template is embedded in GGUF — returns bridge.ErrNoChatTemplate
 // (caller can fallback to raw completion).
@@ -2669,6 +2687,8 @@ func (b *Backend) ApplyChatTemplate(modelName, system string, messages []bridge.
 	if inst.handle == nil {
 		return "", fmt.Errorf("model %s has no loaded handle", modelName)
 	}
+	chatTemplateMu.Lock()
+	defer chatTemplateMu.Unlock()
 	return inst.handle.ApplyChatTemplate(system, messages, addAss)
 }
 
@@ -2706,6 +2726,10 @@ func (b *Backend) ApplyChatTemplateWithThinking(
 	if inst.handle == nil {
 		return "", false, fmt.Errorf("model %s has no loaded handle", modelName)
 	}
+	// Тот же мьютекс, что и в ApplyChatTemplate: native-путь и legacy-путь ходят
+	// в одно и то же не потокобезопасное состояние шаблона (см. chatTemplateMu).
+	chatTemplateMu.Lock()
+	defer chatTemplateMu.Unlock()
 	return inst.handle.ApplyChatTemplateWithThinking(
 		chatTemplateOverride, messages, enableThinking, addGenerationPrompt,
 	)
@@ -3444,6 +3468,7 @@ func readGGUFBoolArray(br *bufio.Reader, elemType uint32, arrLen uint64) (string
 	}
 	return string(b), true
 }
+
 // ggufTypeSize возвращает размер элемента GGUF metadata value по типу.
 // Для скалярных типов — их размер, для массивов — размер одного элемента.
 func ggufTypeSize(valType uint32) int64 {

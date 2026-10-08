@@ -62,6 +62,11 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// это canonical model name для inference / dedup / metrics.
 	modelName = strings.TrimSuffix(modelName, ".gguf")
 
+	// R91 (2026-10-08): явная загрузка модели — штатный способ оператора вылечить
+	// узел после cgo SIGSEGV в chat template (см. chat_template_guard.go). Снимаем
+	// пометку: следующий запрос снова попробует родной шаблон из GGUF.
+	clearChatTemplateBroken(modelName)
+
 	// ???????? ???? ??? HF-????????? ??????? (??????? hf:)
 	if strings.HasPrefix(modelName, "hf:") && backend.HFDownloader() != nil {
 		parts := strings.TrimPrefix(modelName, "hf:")
@@ -441,6 +446,11 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	// сохраняет as-is. Fix: TrimSuffix ВСЕГДА — basename без .gguf
 	// это canonical model name для inference / dedup / metrics.
 	modelName = strings.TrimSuffix(modelName, ".gguf")
+
+	// R91 (2026-10-08): явная загрузка модели — штатный способ оператора вылечить
+	// узел после cgo SIGSEGV в chat template (см. chat_template_guard.go). Снимаем
+	// пометку: следующий запрос снова попробует родной шаблон из GGUF.
+	clearChatTemplateBroken(modelName)
 
 	// ???????? ???? ??? HF-????????? ??????? (??????? hf:)
 	if strings.HasPrefix(modelName, "hf:") && backend.HFDownloader() != nil {

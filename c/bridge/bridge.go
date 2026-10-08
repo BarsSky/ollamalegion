@@ -1299,6 +1299,19 @@ func (m *ModelHandle) ApplyChatTemplate(system string, messages []ChatMessage, a
 		return "", fmt.Errorf("bridge_apply_chat_template failed: %d", ret)
 	}
 
+	// R91 (2026-10-08): ОБРЕЗАЕМ ret до размера буфера.
+	//
+	// llama_chat_apply_template ведёт себя как snprintf: если отрендеренный
+	// промпт не влез, она возвращает ТРЕБУЕМУЮ длину, а не записанную. Прежний
+	// код передавал это число в C.GoStringN(outBuf, ret) и читал за пределами
+	// 64-килобайтного буфера — чтение чужой памяти, вплоть до SIGSEGV. Сейчас
+	// отдаём то, что реально поместилось (промпт длиннее 64 КБ — уже редкость,
+	// а падение процесса из-за чтения мимо буфера недопустимо).
+	if int(ret) > outBufSize {
+		return "", fmt.Errorf("chat prompt too long for buffer: need %d bytes, buffer %d",
+			int(ret), outBufSize)
+	}
+
 	return C.GoStringN(outBuf, C.int(ret)), nil
 }
 

@@ -671,19 +671,14 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 		var nativePrompt string
 		var supportsThinking bool
 		var err error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					logger.Get().Errorw("buildChatPrompt: cgo SIGSEGV in ApplyChatTemplateWithThinking — recovered, falling back to C API",
-						"model", modelName, "panic", fmt.Sprintf("%v", r))
-					err = fmt.Errorf("native cgo panic: %v", r)
-				}
-			}()
-			nativePrompt, supportsThinking, err = backend.ApplyChatTemplateWithThinking(
-				modelName, "" /* chatTemplateOverride */, msgsToBridge(msgs),
-				true /* enableThinking */, true, /* addGenerationPrompt */
-			)
-		}()
+		// R91 (2026-10-08): recover() переехал внутрь
+		// safeApplyChatTemplateWithThinking — там же, где помечается «сломанная»
+		// модель, чтобы ВСЕ точки входа в C имели одну защиту (см.
+		// chat_template_guard.go).
+		nativePrompt, supportsThinking, err = safeApplyChatTemplateWithThinking(
+			modelName, "" /* chatTemplateOverride */, msgsToBridge(msgs),
+			true /* enableThinking */, true, /* addGenerationPrompt */
+		)
 		if err == nil && nativePrompt != "" {
 			if supportsThinking {
 				logger.Get().Debugw("buildChatPrompt: used native enable_thinking path",
@@ -697,7 +692,7 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 			logger.Get().Debugw("buildChatPrompt: native enable_thinking not supported by template, using soft prompt",
 				"model", modelName, "prompt_len", len(nativePrompt), "lang", lang.String())
 			injectThinking()
-			prompt2, err2 := backend.ApplyChatTemplate(modelName, system, msgsToBridge(msgs), true)
+			prompt2, err2 := safeApplyChatTemplate(modelName, system, msgsToBridge(msgs), true)
 			if err2 == nil && prompt2 != "" {
 				return prompt2, nil
 			}
@@ -717,8 +712,13 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 		injectThinking()
 	}
 
-	// Применяем chat template из GGUF
-	prompt, err := backend.ApplyChatTemplate(modelName, system, msgsToBridge(msgs), true)
+	// Применяем chat template из GGUF.
+	//
+	// R91 (2026-10-08): через safeApplyChatTemplate, а НЕ напрямую. Это тот самый
+	// вызов, на котором cppworker падал с SIGSEGV (bridge_apply_chat_template →
+	// SIGSEGV) и терял все запросы узла: recover() тогда стоял только вокруг
+	// native-пути выше, а этот остался без защиты.
+	prompt, err := safeApplyChatTemplate(modelName, system, msgsToBridge(msgs), true)
 	if err == nil && prompt != "" {
 		logger.Get().Debugw("buildChatPrompt: used GGUF chat template",
 			"model", modelName, "prompt_len", len(prompt))

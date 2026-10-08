@@ -20,9 +20,25 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 
 	p.mu.RUnlock()
 
-	p.metricsMgr.mu.RLock()
-	defer p.metricsMgr.mu.RUnlock()
-
+	// R91 (2026-10-08): ЗДЕСЬ БЫЛ DEADLOCK. Раньше функция брала
+	// p.metricsMgr.mu.RLock() и держала его до конца, а внутри цикла вызывала
+	// p.metricsMgr.SnapshotBackendMetrics/SnapshotLlamaCppMetrics — то есть
+	// ПОВТОРНО брала тот же RWMutex на чтение. По документации sync.RWMutex
+	// рекурсивный RLock запрещён: если между первым и вторым RLock встанет
+	// писатель (Lock), второй RLock не получит блокировку НИКОГДА — писатель
+	// ждёт первого читателя, а новые читатели ждут писателя.
+	//
+	// Живое следствие (нагрузочный прогон 2026-10-08): писателей у этого мьютекса
+	// много и они частые (llamaCppMetricsPoller каждые ~2 с, heartbeat агента,
+	// updateRunningModelInMetrics), поэтому при нагрузке дедлок наступал быстро и
+	// НАВСЕГДА: /api/v1/metrics, /api/v1/backends, /api/v1/cluster, /api/v1/predictions
+	// не отвечали (>13 минут, подтверждено дампом горутин по SIGQUIT), панель
+	// оператора полностью теряла кластер, а metricsPublishLoop переставал
+	// публиковать состояние.
+	//
+	// Поэтому внешней блокировки здесь НЕТ: каждый Snapshot* сам берёт RLock и
+	// возвращает КОПИЮ (metrics_manager.go). Прямое чтение карты llamaMetrics
+	// заменено на SnapshotLlamaCppMetrics по той же причине.
 	state := &types.ClusterState{
 		Timestamp:         time.Now().UTC(),
 		TotalBackends:     len(backendsCopy),
@@ -59,11 +75,11 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		runtimeTimeout := getRuntimeRequestTimeout(backendState)
 
 		metrics := types.BackendMetrics{
-			ID:                    id,
-			Timestamp:             time.Now().UTC(),
-			Status:                status,
-			HasAgent:              hasAgent,
-			Host:                  backendConfig.Host,
+			ID:        id,
+			Timestamp: time.Now().UTC(),
+			Status:    status,
+			HasAgent:  hasAgent,
+			Host:      backendConfig.Host,
 			// R-MultiHost (2026-10-07): узел-владелец едет в метрики — по нему
 			// де-дупликация различает две машины, объявившие одинаковый host.
 			NodeAddr:              backendConfig.NodeAddr,
@@ -185,7 +201,7 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 		// Merge выполняется ВСЕГДА — и для бэкендов с Ollama-агентом, и без него
 		// (типичный случай: cppworker без агента, метрики приходят через
 		// llamaCppMetricsPoller, который пишет напрямую в metricsMgr.llamaMetrics).
-		if lm, ok := p.metricsMgr.llamaMetrics[id]; ok && lm != nil {
+		if lm, ok := p.metricsMgr.SnapshotLlamaCppMetrics(id); ok && lm != nil {
 			metrics.LlamaCpp = *lm
 		}
 

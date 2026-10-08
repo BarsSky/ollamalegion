@@ -31,7 +31,15 @@
         error: '',
         data: null,
         mounted: false,
-        bound: false
+        bound: false,
+        // dirty — оператор правит форму прямо сейчас.
+        //
+        // ЗАЧЕМ. render() собирает форму заново из state.data через innerHTML, а
+        // вызывается он на КАЖДОМ обновлении страницы (renderTabs → mod.render).
+        // Пока оператор вводит таймаут, ближайший тик возвращал поля к
+        // сохранённым значениям, и «успеть нажать Сохранить» было единственным
+        // способом что-то поменять. Пока dirty=true, форму не перерисовываем.
+        dirty: false
     };
 
     // =====================================================================
@@ -228,6 +236,19 @@
         var badge = byId(BADGE_ID);
         if (badge) badge.style.display = (state.data && state.data.overridden) ? '' : 'none';
 
+        // ФОРМА РЕДАКТИРУЕТСЯ — не трогаем DOM.
+        //
+        // Проверяем именно наличие наших полей: вкладку могли переключить, тогда
+        // старый DOM выброшен и dirty больше не значит «оператор что-то правит»
+        // (иначе форма не отрисовалась бы уже никогда).
+        if (state.dirty) {
+            if (byId('imPolicyCoexistence')) {
+                markDirty(true);
+                return true;
+            }
+            state.dirty = false;
+        }
+
         if (state.loading && !state.data) {
             host.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">' +
                 escapeHtml(t('common.loading', 'Loading...')) + '</div>';
@@ -302,6 +323,12 @@
                 '<i class="fas fa-circle-info"></i> <span>' + escapeHtml(hint) + '</span></div>' +
             '<div id="imPolicyWarn" style="margin-top:10px;padding:8px 10px;border-left:3px solid var(--warning, #e0a030);background:var(--bg-secondary);border-radius:6px;font-size:12px;"' + (warn ? '' : ' hidden') + '>' +
                 '<i class="fas fa-triangle-exclamation"></i> <span>' + escapeHtml(warn) + '</span></div>' +
+            // Маркер «есть несохранённые правки». Живёт здесь, чтобы его можно было
+            // просто показать, НЕ перерисовывая форму (см. state.dirty).
+            '<div id="imPolicyDirty" style="margin-top:10px;font-size:12px;color:var(--text-muted);" hidden>' +
+                '<i class="fas fa-pen"></i> <span>' +
+                escapeHtml(t('imagePolicy.unsaved', 'Есть несохранённые изменения — нажмите «Сохранить». Автообновление формы приостановлено, чтобы не стереть ввод.')) +
+                '</span></div>' +
             (state.error ? '<div style="margin-top:10px;color:var(--danger);font-size:12px;">' + escapeHtml(state.error) + '</div>' : '');
         return true;
     }
@@ -331,6 +358,19 @@
             var ws = warnNode.querySelector ? warnNode.querySelector('span') : null;
             if (ws) ws.textContent = warn;
         }
+    }
+
+    /**
+     * markDirty — отметить, что форма правится (или что правки сохранены).
+     *
+     * Пока dirty=true, render() не перерисовывает поля: иначе ближайший тик
+     * обновления страницы возвращал бы сохранённые значения прямо под руками
+     * оператора (жалоба «приходится успевать нажать Сохранить»).
+     */
+    function markDirty(on) {
+        state.dirty = !!on;
+        var node = byId('imPolicyDirty');
+        if (node) node.hidden = !state.dirty;
     }
 
     function readForm() {
@@ -369,6 +409,9 @@
             state.loading = false;
             state.error = '';
             state.data = data;
+            // Явная (пере)загрузка — форма перерисовывается целиком, правок в ней
+            // уже нет по определению.
+            markDirty(false);
             render();
             return data;
         }).catch(function (e) {
@@ -394,6 +437,7 @@
         return request('/api/v1/image/resources', { method: 'PUT', body: form }).then(function (data) {
             state.saving = false;
             state.data = data;
+            markDirty(false);
             render();
             toast(t('imagePolicy.saved', 'Политика сохранена и применена'), 'success');
             refreshPolicyColumn();
@@ -414,6 +458,7 @@
         return request('/api/v1/image/resources', { method: 'DELETE' }).then(function (data) {
             state.saving = false;
             state.data = data;
+            markDirty(false);
             render();
             toast(t('imagePolicy.reset_done', 'Возвращены встроенные значения'), 'success');
             refreshPolicyColumn();
@@ -462,7 +507,10 @@
             // их сразу, не дожидаясь «Сохранить».
             // Меняем только подсказку/предупреждение: полная перерисовка стёрла
             // бы выбор оператора.
-            host.addEventListener('change', function () { updateHints(); });
+            host.addEventListener('change', function () { markDirty(true); updateHints(); });
+            // input — набор числа в поле: change на нём сработает только по
+            // потере фокуса, а перерисовка могла прийти и раньше.
+            host.addEventListener('input', function () { markDirty(true); });
         }
         return true;
     }

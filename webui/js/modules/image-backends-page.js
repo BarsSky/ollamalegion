@@ -163,6 +163,42 @@
         var img = (b.image && typeof b.image === 'object') ? b.image : {};
         var req = (img.requests && typeof img.requests === 'object') ? img.requests : {};
         var models = Array.isArray(img.models) ? img.models : [];
+        // R-MultiHost (2026-10-08): ЗАПАСНОЙ ИСТОЧНИК — сам ответ /api/v1/cluster.
+        //
+        // Дефект на живой стойке: страница берёт данные из GET /api/v1/cluster, а
+        // блок `image` в нём приходит ТОЛЬКО когда поллер ресурсов успел снять
+        // снапшот бэкенда. Пока его нет, img = {} — и вся таблица выглядела пустой:
+        // «не задан» в GPU, «-» в состоянии и модели, «0 / 0» в VRAM, нули в
+        // запросах, причём и у ЖИВОГО бэкенда с реальными метриками.
+        //
+        // В /api/v1/cluster те же сведения лежат в других полях: gpu.memoryFree/
+        // memoryTotal (agent), status, models, ollama.activeRequests/totalRequests/
+        // requestsPerSecond/avgResponseTime. Берём их, когда блока image нет.
+        var gpu = (b.gpu && typeof b.gpu === 'object') ? b.gpu : {};
+        var oll = (b.ollama && typeof b.ollama === 'object') ? b.ollama : {};
+        var clusterModels = Array.isArray(b.models) ? b.models : [];
+        var runningModels = Array.isArray(oll.runningModels) ? oll.runningModels : [];
+
+        function pickName(list) {
+            for (var i = 0; i < list.length; i++) {
+                var m = list[i];
+                if (typeof m === 'string' && m) return trim(m);
+                if (m && typeof m === 'object') {
+                    var n = trim(m.name || m.id || m.model || '');
+                    if (n) return n;
+                }
+            }
+            return '';
+        }
+
+        function firstNum() {
+            for (var i = 0; i < arguments.length; i++) {
+                var n = toNum(arguments[i]);
+                if (n !== null) return n;
+            }
+            return null;
+        }
+
         return {
             id: trim(b.id || b.ID || ''),
             name: trim(b.name || b.id || ''),
@@ -172,10 +208,14 @@
             port: num0(b.imagePort !== undefined ? b.imagePort : b.image_port),
             gpuIndex: gpuIndexOf(b),
             status: trim(b.status || ''),
-            state: trim(img.state || ''),
-            currentModel: trim(img.currentModel || img.current_model || ''),
-            vramFreeMb: toNum(img.vramFreeMb !== undefined ? img.vramFreeMb : img.vram_free_mb),
-            vramTotalMb: toNum(img.vramTotalMb !== undefined ? img.vramTotalMb : img.vram_total_mb),
+            // Состояние воркера: у image-блока это его собственный state, иначе —
+            // статус бэкенда из кластера (healthy/unhealthy), это то, что видит
+            // оператор в остальных вкладках.
+            state: trim(img.state || b.status || ''),
+            currentModel: trim(img.currentModel || img.current_model || '') ||
+                pickName(runningModels) || pickName(clusterModels) || pickName(models),
+            vramFreeMb: firstNum(img.vramFreeMb, img.vram_free_mb, gpu.memoryFree, gpu.freeMemory),
+            vramTotalMb: firstNum(img.vramTotalMb, img.vram_total_mb, gpu.memoryTotal, gpu.totalMemory),
             lastError: trim(img.lastError || img.last_error || ''),
             models: models.map(function (m) {
                 m = m || {};
@@ -187,13 +227,13 @@
                 };
             }).filter(function (m) { return !!m.name; }),
             requests: {
-                total: num0(req.total),
+                total: num0(firstNum(req.total, oll.totalRequests)),
                 ok: num0(req.ok),
                 failed: num0(req.failed),
                 rejected: num0(req.rejected),
-                inFlight: num0(req.inFlight !== undefined ? req.inFlight : req.in_flight),
-                rps: num0(req.rps),
-                avgDurationMs: num0(req.avgDurationMs !== undefined ? req.avgDurationMs : req.avg_duration_ms)
+                inFlight: num0(firstNum(req.inFlight, req.in_flight, oll.activeRequests)),
+                rps: num0(firstNum(req.rps, oll.requestsPerSecond)),
+                avgDurationMs: num0(firstNum(req.avgDurationMs, req.avg_duration_ms, oll.avgResponseTime))
             }
         };
     }

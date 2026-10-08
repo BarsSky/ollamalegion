@@ -1412,6 +1412,7 @@ window.I18N_EN = {
   "imagePolicy.load_timeout": "Model load wait, s",
   "imagePolicy.load_timeout_env": "Environment variable: {flag}",
   "imagePolicy.load_timeout_hint": "Load wait: how many seconds to wait for the selected model to come up (large models on a slow disk take longer). When it expires, the reason goes back to the tool call and the model explains the delay to the user.",
+  "imagePolicy.unsaved": "You have unsaved changes — press Save. The form auto-refresh is paused so it does not overwrite your input.",
   "settings.profiles.step_busy": "Waiting for active generations to finish…",
   "settings.profiles.step_busy_with_count": "Waiting for active generations to finish (initial: {count})…",
   "wizard.cppworker_hint_title": "Apply to cppworker env (separate step):",

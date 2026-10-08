@@ -298,6 +298,75 @@ const API_RESPONSE = {
         getEl('imPolicyCoexistence').value = 'exclusive';
     });
 
+    // Живая жалоба: «постоянно обновляется форма настроек, приходится успевать
+    // нажать Сохранить». Страница перерисовывает табы на каждом тике обновления
+    // (renderTabs → ImageResourcesPolicy.render), а render() собирает форму заново
+    // из state.data — то есть возвращает сохранённые значения прямо под руками.
+    await check('периодический render НЕ стирает ввод, пока оператор правит форму', async function () {
+        requests.length = 0;
+        responseFor = function () { return { status: 200, body: API_RESPONSE }; };
+        await P._actions.load(true);
+
+        // Оператор набирает таймаут ожидания загрузки.
+        getEl('imPolicyLoadTimeout').value = '1234';
+        getEl('imPolicyHost').dispatch('input', {});
+
+        // Три тика автообновления страницы подряд.
+        P.render({ backendId: 'img-1', tab: 'overview' });
+        P.render({ backendId: 'img-1', tab: 'overview' });
+        P.render({ backendId: 'img-1', tab: 'overview' });
+
+        assert.strictEqual(getEl('imPolicyLoadTimeout').value, '1234',
+            'ввод стёрт автообновлением формы');
+        assert.strictEqual(P._state.dirty, true, 'форма должна считаться «правленой»');
+        assert.strictEqual(getEl('imPolicyDirty').hidden, false, 'нет маркера о несохранённых правках');
+
+        // Сохранение применяет введённое и снимает флаг.
+        responseFor = function () {
+            return {
+                status: 200,
+                body: Object.assign({}, API_RESPONSE, {
+                    toolLoadTimeout: { configuredSec: 1234, effectiveSec: 1234, source: 'config', env: '' }
+                })
+            };
+        };
+        await P._actions.save();
+        const put = requests.filter(function (r) { return r.method === 'PUT'; })[0];
+        assert.ok(put, 'PUT не ушёл');
+        assert.strictEqual(put.body.toolLoadTimeoutSec, 1234, 'на сервер ушло не то, что ввёл оператор');
+        assert.strictEqual(P._state.dirty, false, 'после сохранения флаг должен сняться');
+    });
+
+    // Переключили вкладку и вернулись: панель вкладки пересобрана, наших полей в
+    // DOM больше нет, поэтому «правленая» форма не должна блокировать отрисовку
+    // навсегда. Мок создаёт элементы по требованию, поэтому потерю DOM
+    // эмулируем явно: getElementById перестаёт отдавать поля формы.
+    await check('после потери DOM флаг правки сбрасывается и форма рисуется снова', async function () {
+        requests.length = 0;
+        responseFor = function () { return { status: 200, body: API_RESPONSE }; };
+        await P._actions.load(true);
+        getEl('imPolicyLoadTimeout').value = '999';
+        getEl('imPolicyHost').dispatch('input', {});
+        assert.strictEqual(P._state.dirty, true, 'подготовка: форма должна считаться правленой');
+
+        const realGetById = global.document.getElementById;
+        global.document.getElementById = function (id) {
+            // Панель вкладки заменена целиком: полей формы в документе нет,
+            // а хост отрисовки — новый пустой элемент.
+            if (id === 'imPolicyCoexistence' || id === 'imPolicyLoadTimeout') return null;
+            return realGetById(id);
+        };
+        getEl('imPolicyHost').innerHTML = '';
+        try {
+            P.render({ backendId: 'img-1', tab: 'overview' });
+        } finally {
+            global.document.getElementById = realGetById;
+        }
+
+        assert.strictEqual(P._state.dirty, false, 'флаг должен сброситься, иначе форма не отрисуется уже никогда');
+        assert.ok(getEl('imPolicyHost').innerHTML.length > 0, 'форма должна быть отрисована заново');
+    });
+
     console.log('\n' + (failures.length ? 'FAILED: ' + failures.length : 'ИТОГ: все проверки пройдены (' + passed + ')'));
     if (failures.length) failures.forEach(function (f) { console.error(' - ' + f); });
     process.exit(failures.length ? 1 : 0);

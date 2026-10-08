@@ -805,6 +805,49 @@ function lastRequest(filter) {
         assert.deepStrictEqual(missing, [], 'нет в ru.js: ' + missing.join(', '));
     });
 
+    // Живой дефект (2026-10-08): таблица «Управление image-бэкендами» показывала
+    // «не задан» в GPU, «-» в состоянии и модели и «0 / 0» в VRAM — у ВСЕХ строк,
+    // включая живой бэкенд с реальными метриками. Причина: страница берёт данные
+    // из GET /api/v1/cluster, где блок `image` появляется только после первого
+    // снапшота поллера ресурсов. Пока его нет, всё читалось из пустого объекта.
+    // Те же сведения в кластере лежат в других полях — проверяем запасной путь.
+    await check('без блока image строка заполняется из полей /api/v1/cluster', function () {
+        const row = pure.normalizeBackends([{
+            id: 'imageworker', backendType: 'image_cpp', status: 'healthy', host: 'imageworker',
+            imagePort: 18093, maxConcurrentRequests: 64,
+            gpu: { memoryTotal: 8192, memoryUsed: 2023, memoryFree: 5995, temperature: 57, uuids: ['GPU-6f8d'] },
+            models: [{ name: 'qwen-image-2.1-uncensored-gguf', state: 'loaded' }],
+            ollama: { activeRequests: 0, totalRequests: 5, requestsPerSecond: 0.2, avgResponseTime: 9100, runningModels: null },
+        }]);
+
+        assert.strictEqual(row.length, 1, 'image-бэкенд должен попасть в таблицу');
+        const b = row[0];
+        assert.strictEqual(b.state, 'healthy', 'состояние должно браться из status');
+        assert.strictEqual(b.currentModel, 'qwen-image-2.1-uncensored-gguf', 'модель должна браться из models');
+        assert.strictEqual(b.vramFreeMb, 5995, 'VRAM free должен браться из gpu.memoryFree');
+        assert.strictEqual(b.vramTotalMb, 8192, 'VRAM total должен браться из gpu.memoryTotal');
+        assert.strictEqual(b.requests.total, 5, 'запросы должны браться из ollama.totalRequests');
+        assert.strictEqual(b.requests.avgDurationMs, 9100, 'среднее время должно браться из ollama.avgResponseTime');
+        assert.strictEqual(pure.formatVramPair(b.vramFreeMb, b.vramTotalMb), '5.9 GB / 8.0 GB',
+            'VRAM в таблице должна быть заполнена, а не «0 / 0»');
+    });
+
+    // Приоритет остаётся у блока image, когда он есть: он точнее (знает состояние
+    // воркера и его собственные счётчики запросов).
+    await check('блок image имеет приоритет над полями кластера', function () {
+        const row = pure.normalizeBackends([{
+            id: 'imageworker', backendType: 'image_cpp', status: 'healthy', host: 'imageworker',
+            gpu: { memoryTotal: 8192, memoryFree: 1 },
+            models: [{ name: 'from-cluster' }],
+            ollama: { totalRequests: 999 },
+            image: { state: 'loaded', currentModel: 'from-image', vramFreeMb: 894, vramTotalMb: 8192, requests: { total: 7 } },
+        }]);
+        assert.strictEqual(row[0].state, 'loaded', 'состояние должно остаться из image');
+        assert.strictEqual(row[0].currentModel, 'from-image');
+        assert.strictEqual(row[0].vramFreeMb, 894);
+        assert.strictEqual(row[0].requests.total, 7);
+    });
+
     console.log('\n' + (failures.length ? 'FAILED: ' + failures.length : 'OK: ' + passed + ' checks passed'));
     if (failures.length) {
         failures.forEach(function (f) { console.error(' - ' + f); });

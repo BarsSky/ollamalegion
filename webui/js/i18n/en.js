@@ -168,6 +168,21 @@ window.I18N_EN = {
   "queue.no_tasks": "Queue is empty",
   "queue.visualization": "Queue Visualization",
   "queue.utilization": "Utilization",
+  // R91 (2026-10-08): the REAL queue is waiting for a free slot
+  // (LB_ADMISSION_WAIT_SEC). Legacy counters (current_size/processed_total) are
+  // always zero in this mode, so the Queue page said "empty" while dozens of
+  // requests had waited. Labels switch together with the mode.
+  "queue.admission_waiting": "Waiting now",
+  "queue.admission_wait_max": "Wait limit, s",
+  "queue.admission_served": "Served (after waiting)",
+  "queue.admission_active": "Active sessions",
+  "queue.admission_status": "Waiting for slot",
+  "queue.admission_idle": "Nobody is waiting for a slot right now - every request is served immediately.",
+  "queue.admission_note": "Slot admission: served {served}, timeouts {timeouts}, wait limit {seconds} s.",
+  "queue.timeouts": "Wait timeouts",
+  "queue.col_client": "Client (session)",
+  "queue.max_size": "Maximum",
+  "queue.workers": "Workers",
 
   // Logs
   "logs.title": "System Logs",

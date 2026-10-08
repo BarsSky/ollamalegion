@@ -79,6 +79,11 @@ const ui = (function () {
             setupEventListeners();
         }
 
+        // R91: прямая ссылка (?page=queue / #queue) применяется ПОСЛЕ навигации,
+        // иначе setupNavigation() вернёт дашборд и перетрёт выбор.
+        var deepLink = pageFromURL();
+        if (deepLink && deepLink !== 'dashboard') switchPage(deepLink);
+
         // R84 (2026-10-03): индикатор свежести данных в шапке (#dataFreshness)
         // и переключатель авто-обновления. Провайдеры страниц регистрируем ДО
         // первого рендера, иначе первое нажатие «Обновить» не нашло бы их.
@@ -193,6 +198,25 @@ const ui = (function () {
         if (page === 'backends' || page === 'models' || page === 'image') {
             fetchClusterState();
         }
+    }
+
+    // R91 (2026-10-08): прямая ссылка на страницу — ?page=queue или #queue.
+    //
+    // Зачем: у WebUI не было никакого способа открыть страницу, кроме клика по
+    // меню, поэтому оператор не мог дать коллеге ссылку «вот очередь», а
+    // headless-проверка страниц (скриншоты) не могла выбрать нужную вкладку.
+    // Значение проверяем по списку известных страниц, чтобы мусор в URL не
+    // приводил к пустому экрану.
+    function pageFromURL() {
+        var known = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'logs', 'settings', 'help'];
+        var candidate = '';
+        try {
+            var qs = new URLSearchParams(window.location.search || '');
+            candidate = qs.get('page') || '';
+            if (!candidate && window.location.hash) candidate = window.location.hash.replace(/^#\/?/, '');
+        } catch (e) { /* старый браузер — просто останемся на дашборде */ }
+        candidate = String(candidate || '').toLowerCase();
+        return known.indexOf(candidate) >= 0 ? candidate : '';
     }
 
     function getPageTitle(page) {
@@ -976,8 +1000,14 @@ const ui = (function () {
     async function fetchQueue() {
         try {
             data.queue = await Api.queueStats();
-            Utils.setText('queueSize', data.queue.current_size || 0);
-            Utils.setText('queueProcessed', (data.queue.processed_total || 0) + ' ' + (window.I18N ? I18N.t('app.processed') : 'processed'));
+            // R91 (2026-10-08): реальная очередь — admission (ожидание слота), а
+            // не легаси-счётчики, которые в этом режиме всегда нули. Иначе на
+            // дашборде «В очереди 0» при пяти ожидающих запросах.
+            const qv = (window.Renderers && typeof Renderers.queueView === 'function')
+                ? Renderers.queueView(data.queue)
+                : { waiting: data.queue.current_size || 0, processed: data.queue.processed_total || 0 };
+            Utils.setText('queueSize', qv.waiting);
+            Utils.setText('dashboardQueueProcessed', qv.processed + ' ' + (window.I18N ? I18N.t('app.processed') : 'processed'));
             if (currentPage === 'queue') refreshPage('queue');
         } catch (e) {
             Api.handleError(e, window.I18N ? I18N.t('app.error_loading_queue') : 'Error loading queue statistics');

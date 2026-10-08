@@ -204,7 +204,11 @@
                             <span class="metric-label" data-i18n="dashboard.queue_size">В очереди</span>
                         </div>
                         <div class="metric-value" id="queueSize">-</div>
-                        <div class="metric-sub" id="queueProcessed">-</div>
+                        <!-- R91: id был queueProcessed — ТОТ ЖЕ, что на странице «Очередь»
+                             (ниже). getElementById возвращает первый элемент в документе,
+                             поэтому значение уезжало в эту подпись дашборда, а на странице
+                             «Очередь» карточка «Выполнено задач» навсегда оставалась «-». -->
+                        <div class="metric-sub" id="dashboardQueueProcessed">-</div>
                         <div class="metric-mini-bar">
                             <div class="metric-mini-fill" id="queueDashboardFill" style="width: 0%"></div>
                         </div>
@@ -525,37 +529,47 @@
                     <div class="metric-card">
                         <div class="metric-header">
                             <i class="fas fa-layer-group metric-icon-i"></i>
-                            <span class="metric-label" data-i18n="queue.position">Текущий размер</span>
+                            <span class="metric-label" id="queueLabelPosition" data-i18n="queue.position">Текущий размер</span>
                         </div>
                         <div class="metric-value" id="queueCurrentSize">-</div>
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
                             <i class="fas fa-arrow-up-wide-short metric-icon-i"></i>
-                            <span class="metric-label">Максимум</span>
+                            <span class="metric-label" id="queueLabelMax">Максимум</span>
                         </div>
                         <div class="metric-value" id="queueMaxSize">-</div>
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
                             <i class="fas fa-circle-check metric-icon-i"></i>
-                            <span class="metric-label" data-i18n="queue.completed">Выполнено задач</span>
+                            <span class="metric-label" id="queueLabelProcessed" data-i18n="queue.completed">Выполнено задач</span>
                         </div>
                         <div class="metric-value" id="queueProcessed">-</div>
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
                             <i class="fas fa-people-arrows metric-icon-i"></i>
-                            <span class="metric-label">Воркеры</span>
+                            <span class="metric-label" id="queueLabelWorkers">Воркеры</span>
                         </div>
                         <div class="metric-value" id="queueWorkers">-</div>
                     </div>
                     <div class="metric-card">
                         <div class="metric-header">
                             <i class="fas fa-clock metric-icon-i"></i>
-                            <span class="metric-label" data-i18n="queue.estimated_wait">Среднее ожидание</span>
+                            <span class="metric-label" id="queueLabelAvgWait" data-i18n="queue.estimated_wait">Среднее ожидание</span>
                         </div>
                         <div class="metric-value" id="queueAvgWait">-</div>
+                    </div>
+                    <!-- R91: таймауты ожидания слота. В легаси-режиме всегда 0, в
+                         admission-режиме это ответ на «очередь работает?» — сколько
+                         запросов НЕ дождались слота за предел ожидания. -->
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <i class="fas fa-triangle-exclamation metric-icon-i"></i>
+                            <span class="metric-label" id="queueLabelTimeouts" data-i18n="queue.timeouts">Таймауты ожидания</span>
+                        </div>
+                        <div class="metric-value" id="queueTimeouts">-</div>
                     </div>
                 </div>
                 <div class="card">
@@ -584,7 +598,7 @@
                             <thead>
                                 <tr>
                                     <th>#</th>
-                                    <th data-i18n="sessions.model">Модель</th>
+                                    <th id="queueColModel" data-i18n="sessions.model">Модель</th>
                                     <th data-i18n="sessions.backend">Бэкенд</th>
                                     <th data-i18n="queue.waiting_since">Время в очереди</th>
                                     <th data-i18n="queue.status">Статус</th>

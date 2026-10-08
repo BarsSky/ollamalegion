@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -114,22 +115,39 @@ type admissionWaiter struct {
 	seq      uint64
 }
 
+// admissionWaiterInfo — один ожидающий запрос для UI (R91, 2026-10-08).
+//
+// ЗАЧЕМ. На странице «Очередь» показывалась ЛЕГАСИ-очередь
+// (/api/v1/queue/details: current_size/processed_total), которая в этом
+// развёртывании всегда пуста: реальное ожидание слота живёт в admission-очереди
+// (LB_ADMISSION_WAIT_SEC). Оператор видел «Очередь пуста», «Выполнено 0» и
+// «Среднее ожидание —» при том, что в admission-статистике было
+// served_total=42, waited_total=42, avg_wait_ms=13926. То есть по странице нельзя
+// было понять, работает ли очередь вообще. Здесь отдаём по каждому ожидающему
+// то, что нужно таблице: кто ждёт, на каком бэкенде и сколько уже ждёт.
+type admissionWaiterInfo struct {
+	Session  string `json:"session"`
+	Backend  string `json:"backend"`
+	WaitedMs int64  `json:"waited_ms"`
+}
+
 // queueAdmissionStats — R67b: срез admission-очереди для /api/v1/queue/stats.
 //
 // Порядок полей — от «тяжёлых» к лёгким: golangci-lint включает govet
 // fieldalignment, поэтому map/slice (единственные поля с указателями) идут
 // первыми — иначе анализатор требует переставить их (pointer data prefix).
 type queueAdmissionStats struct {
-	ByBackend    map[string]int `json:"waiting_by_backend,omitempty"`
-	Sessions     []string       `json:"sessions,omitempty"`
-	Served       int64          `json:"served_total"`
-	Timeouts     int64          `json:"timeout_total"`
-	WaitedTotal  int64          `json:"waited_total"`
-	AvgWaitMs    int64          `json:"avg_wait_ms"`
-	WaitSec      int            `json:"wait_max_sec"`
-	Waiting      int            `json:"waiting"`
-	ActiveByUser int            `json:"active_sessions"`
-	Enabled      bool           `json:"enabled"`
+	ByBackend     map[string]int        `json:"waiting_by_backend,omitempty"`
+	Sessions      []string              `json:"sessions,omitempty"`
+	WaitingDetail []admissionWaiterInfo `json:"waiting_detail,omitempty"`
+	Served        int64                 `json:"served_total"`
+	Timeouts      int64                 `json:"timeout_total"`
+	WaitedTotal   int64                 `json:"waited_total"`
+	AvgWaitMs     int64                 `json:"avg_wait_ms"`
+	WaitSec       int                   `json:"wait_max_sec"`
+	Waiting       int                   `json:"waiting"`
+	ActiveByUser  int                   `json:"active_sessions"`
+	Enabled       bool                  `json:"enabled"`
 }
 
 // admissionQueue — очередь ожидающих слотов по бэкендам.
@@ -339,13 +357,29 @@ func (aq *admissionQueue) stats(wait time.Duration) queueAdmissionStats {
 	}
 	// Waiting — число ожидающих ЗАПРОСОВ (не бэкендов): на одном бэкенде их
 	// может быть несколько.
-	for backendID, list := range aq.waiters {
+	//
+	// R91: кроме счётчиков собираем поимённый список. Порядок внутри бэкенда —
+	// как в очереди (по seq), поэтому UI показывает реальные позиции. Бэкенды
+	// обходим в порядке ключей, чтобы выдача была стабильной между запросами.
+	backendIDs := make([]string, 0, len(aq.waiters))
+	for backendID := range aq.waiters {
+		backendIDs = append(backendIDs, backendID)
+	}
+	sort.Strings(backendIDs)
+	now := time.Now()
+	for _, backendID := range backendIDs {
+		list := aq.waiters[backendID]
 		out.Waiting += len(list)
 		out.ByBackend[backendID] = len(list)
 		for _, w := range list {
 			if w.session != "" {
 				out.Sessions = append(out.Sessions, w.session)
 			}
+			out.WaitingDetail = append(out.WaitingDetail, admissionWaiterInfo{
+				Session:  w.session,
+				Backend:  backendID,
+				WaitedMs: now.Sub(w.enqueued).Milliseconds(),
+			})
 		}
 	}
 	if aq.waitedTotal > 0 {

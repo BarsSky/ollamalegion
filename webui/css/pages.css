@@ -196,6 +196,54 @@
     color: var(--text-muted);
 }
 
+/* R91 (2026-10-08): визуализация РЕАЛЬНОЙ очереди — ожидание слота по бэкендам.
+   Легаси-полоса «0..100» показывала 0 при очереди из пяти запросов: у admission
+   нет предела по длине, поэтому полоса заполнения бессмысленна, а осмысленно —
+   сколько запросов ждёт на каком узле. */
+.queue-adm-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+.queue-adm-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+}
+.queue-adm-name {
+    flex: 0 0 auto;
+    min-width: 180px;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.queue-adm-bar {
+    flex: 1 1 auto;
+    height: 18px;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    position: relative;
+}
+.queue-adm-count {
+    flex: 0 0 auto;
+    min-width: 32px;
+    text-align: right;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+.queue-adm-empty {
+    color: var(--text-muted);
+    font-size: var(--font-size-sm);
+}
+.queue-adm-note {
+    margin-top: var(--space-3);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+
 .queue-tasks-section { padding: 0; }
 
 /* ===== Settings ===== */

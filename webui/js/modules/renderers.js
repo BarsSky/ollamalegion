@@ -123,9 +123,9 @@ const Renderers = (function () {
                 sum + (b.ollama?.runningModels?.length || 0) + (b.llamaCpp?.loadedModels?.length || 0), 0);
         const activeSessions = (sessions || []).filter(s => s.active).length;
         const totalRequests = (sessions || []).reduce((sum, s) => sum + (s.requestCount || 0), 0);
-        const queueSize = queue?.current_size || 0;
-        const queueProcessed = queue?.processed_total || 0;
-        const queueMax = queue?.max_size || 100;
+        const queueSize = queueView(queue).waiting;
+        const queueProcessed = queueView(queue).processed;
+        const queueMax = queueView(queue).mode === 'admission' ? 100 : (queue?.max_size || 100);
         const queuePct = percent(queueSize, queueMax);
 
         Utils.setText('totalBackends', backends.length);
@@ -135,7 +135,12 @@ const Renderers = (function () {
         Utils.setText('totalSessions', activeSessions);
         Utils.setText('sessionRate', _t('renderers.requests_count', { count: totalRequests }));
         Utils.setText('queueSize', queueSize);
-        Utils.setText('queueProcessed', _t('renderers.processed_count', { count: queueProcessed }));
+        // R91: подпись под числом очереди. В admission-режиме легаси-счётчик
+        // «обработано» всегда ноль, поэтому показываем РЕАЛЬНО обслуженные
+        // запросы (served_total) — иначе карточка врёт «0 processed» при
+        // работающей очереди. Дубликат id queueProcessed (дашборд и страница
+        // «Очередь») устранён: у дашборда он теперь dashboardQueueProcessed.
+        Utils.setText('dashboardQueueProcessed', _t('renderers.processed_count', { count: queueProcessed }));
         Utils.setStyle('queueDashboardFill', 'width', `${queuePct}%`);
 
         Utils.setHTML('runtimeCluster', runtimeCluster(backends));
@@ -1842,29 +1847,182 @@ const Renderers = (function () {
 
     // ---- Queue Page ----
 
+    // ---- Queue (R91, 2026-10-08) ----
+    //
+    // ЧТО БЫЛО НЕ ТАК. Страница «Очередь» рисовала ЛЕГАСИ-очередь балансера
+    // (/api/v1/queue/stats: current_size/processed_total/avg_wait_time_ms и
+    // /api/v1/queue/details: all/pending/processing). В этом развёртывании она
+    // ВСЕГДА пуста: реальное ожидание свободного слота живёт в admission-очереди
+    // (LB_ADMISSION_WAIT_SEC). Живой замер со стенда: queue/details → {"all":[],
+    // "total":0}, а queue/stats → admission{enabled:true, served_total:42,
+    // waited_total:42, avg_wait_ms:13926}. То есть 42 запроса прождали в среднем
+    // 13.9 с, а оператор видел «Очередь пуста», «Выполнено 0» и «Среднее
+    // ожидание —» — и справедливо спрашивал, работает ли очередь вообще.
+    //
+    // queueView — ЧИСТАЯ функция: превращает payload /api/v1/queue/stats в модель
+    // для отрисовки. Вынесена отдельно, чтобы её проверял юнит-тест
+    // (renderers-queue.test.js), а не DOM.
+    function queueView(queue) {
+        queue = (queue && typeof queue === 'object') ? queue : {};
+        const adm = (queue.admission && typeof queue.admission === 'object') ? queue.admission : {};
+        // Включённая admission-очередь = реальная очередь. Легаси-счётчики в этом
+        // режиме нули не потому, что «нет очереди», а потому что через них уже
+        // никто не ходит.
+        const admissionMode = !!adm.enabled;
+        const legacy = {
+            waiting: firstNumOr(queue.current_size, 0),
+            max: firstNumOr(queue.max_size, 100),
+            processed: firstNumOr(queue.processed_total, 0),
+            workers: firstNumOr(queue.workers, 0),
+            avgWaitMs: firstNumOr(queue.avg_wait_time_ms, 0)
+        };
+        const detail = Array.isArray(adm.waiting_detail) ? adm.waiting_detail.map(function(w) {
+            return {
+                session: String((w && w.session) || ''),
+                backend: String((w && w.backend) || ''),
+                waitedMs: firstNumOr(w && w.waited_ms, 0)
+            };
+        }) : [];
+        // Карта «по бэкендам» — из waiting_by_backend, но при её отсутствии
+        // считаем по поимённому списку: два источника одного факта не должны
+        // расходиться (иначе «счётчик 2, список пуст»).
+        let byBackend = [];
+        const rawBy = (adm.waiting_by_backend && typeof adm.waiting_by_backend === 'object') ? adm.waiting_by_backend : null;
+        if (rawBy) {
+            byBackend = Object.keys(rawBy).map(function(id) {
+                return { backend: id, count: firstNumOr(rawBy[id], 0) };
+            });
+        } else if (detail.length) {
+            const acc = {};
+            detail.forEach(function(w) { acc[w.backend] = (acc[w.backend] || 0) + 1; });
+            byBackend = Object.keys(acc).map(function(id) { return { backend: id, count: acc[id] }; });
+        }
+        byBackend.sort(function(a, b) { return b.count - a.count || (a.backend < b.backend ? -1 : 1); });
+
+        return {
+            mode: admissionMode ? 'admission' : 'legacy',
+            waiting: admissionMode ? firstNumOr(adm.waiting, 0) : legacy.waiting,
+            processed: admissionMode ? firstNumOr(adm.served_total, 0) : legacy.processed,
+            avgWaitMs: admissionMode ? firstNumOr(adm.avg_wait_ms, 0) : legacy.avgWaitMs,
+            // «Воркеры» у admission-режима — это не число воркеров, а число
+            // сессий с активным запросом; подменять смысл молча нельзя, поэтому
+            // значение кладём отдельным полем и подписываем по-другому.
+            activeSessions: firstNumOr(adm.active_sessions, 0),
+            workers: legacy.workers,
+            // Предел ожидания слота (секунды) — в admission-режиме он и есть
+            // «максимум»: длина очереди не ограничена, ограничено ожидание.
+            waitMaxSec: firstNumOr(adm.wait_max_sec, 0),
+            timeouts: firstNumOr(adm.timeout_total, 0),
+            waitedTotal: firstNumOr(adm.waited_total, 0),
+            legacyMax: legacy.max,
+            byBackend: byBackend,
+            detail: detail
+        };
+    }
+
+    function firstNumOr(v, fallback) {
+        const n = Number(v);
+        return isFinite(n) ? n : fallback;
+    }
+
     function queuePage(queue, queueTasks, queueHistory) {
-        const current = queue?.current_size || 0;
-        const max = queue?.max_size || 100;
-        const processed = queue?.processed_total || 0;
-        const workers = queue?.workers || 0;
-        const avgWait = queue?.avg_wait_time_ms || 0;
+        const v = queueView(queue);
 
-        Utils.setText('queueCurrentSize', current);
-        Utils.setText('queueMaxSize', max);
-        Utils.setText('queueProcessed', processed);
-        Utils.setText('queueWorkers', workers);
-        Utils.setText('queueAvgWait', avgWait > 0 ? _t('renderers.queue_avg_wait', { seconds: (avgWait / 1000).toFixed(1) }) : '-');
+        Utils.setText('queueCurrentSize', v.waiting);
+        Utils.setText('queueProcessed', v.processed);
+        Utils.setText('queueWorkers', v.mode === 'admission' ? v.activeSessions : v.workers);
+        Utils.setText('queueTimeouts', v.timeouts);
+        Utils.setText('queueAvgWait', v.avgWaitMs > 0
+            ? _t('renderers.queue_avg_wait', { seconds: (v.avgWaitMs / 1000).toFixed(1) })
+            : '-');
 
-        const pct = percent(current, max);
-        Utils.setStyle('queueFill', 'width', `${pct}%`);
-        Utils.setText('queueMidLabel', Math.round(max / 2));
-        Utils.setText('queueMaxLabel', max);
+        // Подписи карточек зависят от режима: в admission-режиме те же плитки
+        // означают другое, и оставлять «Максимум 100» рядом с очередью, у которой
+        // нет предела по длине, — вводить в заблуждение.
+        if (v.mode === 'admission') {
+            Utils.setText('queueMaxSize', v.waitMaxSec);
+            setLabel('queueLabelPosition', 'queue.admission_waiting');
+            setLabel('queueLabelMax', 'queue.admission_wait_max');
+            setLabel('queueLabelProcessed', 'queue.admission_served');
+            setLabel('queueLabelWorkers', 'queue.admission_active');
+            setLabel('queueLabelAvgWait', 'queue.estimated_wait');
+        } else {
+            Utils.setText('queueMaxSize', v.legacyMax);
+            setLabel('queueLabelPosition', 'queue.position');
+            setLabel('queueLabelMax', 'queue.max_size');
+            setLabel('queueLabelProcessed', 'queue.completed');
+            setLabel('queueLabelWorkers', 'queue.workers');
+            setLabel('queueLabelAvgWait', 'queue.estimated_wait');
+        }
+
+        // Визуализация: в admission-режиме — СКОЛЬКО ЖДЁТ НА КАКОМ БЭКЕНДЕ.
+        // Легаси-полоса «заполнение 0..100» показывала 0 при очереди из 5
+        // запросов и не говорила ничего.
+        Utils.setHTML('queueVisualization', queueVisualization(v));
 
         const badgeEl = document.getElementById('queueTasksCount');
-        if (badgeEl) badgeEl.textContent = current;
+        if (badgeEl) badgeEl.textContent = v.mode === 'admission' ? v.detail.length : v.waiting;
 
-        Utils.setHTML('queueTasksBody', queueTasksBody(queueTasks));
+        Utils.setHTML('queueTasksBody', v.mode === 'admission'
+            ? queueAdmissionRows(v)
+            : queueTasksBody(queueTasks));
+        // Заголовок «Модель» в admission-режиме не подходит: ожидающий запрос
+        // идентифицируется сессией клиента (модель в очередь не передаётся).
+        setLabel('queueColModel', v.mode === 'admission' ? 'queue.col_client' : 'sessions.model');
         Utils.setHTML('queueHistoryBody', queueHistoryBody(queueHistory));
+    }
+
+    function setLabel(id, key) {
+        const el = document.getElementById(id);
+        if (el && window.I18N) el.textContent = _t(key);
+    }
+
+    // queueVisualization — состояние очереди «по-человечески».
+    function queueVisualization(v) {
+        if (v.mode !== 'admission') {
+            const pct = percent(v.waiting, v.legacyMax);
+            return '<div class="queue-bar"><div class="queue-fill" id="queueFill" style="width: ' + pct + '%"></div></div>' +
+                '<div class="queue-labels"><span>0</span><span>' + Math.round(v.legacyMax / 2) + '</span><span>' + v.legacyMax + '</span></div>';
+        }
+        if (!v.byBackend.length) {
+            return '<div class="queue-adm-empty">' + escapeHtml(_t('queue.admission_idle')) + '</div>' +
+                queueAdmissionFootnote(v);
+        }
+        const maxCount = v.byBackend.reduce(function(m, b) { return Math.max(m, b.count); }, 1);
+        const rows = v.byBackend.map(function(b) {
+            const w = Math.round(percent(b.count, maxCount));
+            return '<div class="queue-adm-row">' +
+                '<span class="queue-adm-name">' + escapeHtml(b.backend) + '</span>' +
+                '<span class="queue-adm-bar"><span class="queue-fill" style="width: ' + w + '%"></span></span>' +
+                '<span class="queue-adm-count">' + b.count + '</span>' +
+            '</div>';
+        }).join('');
+        return '<div class="queue-adm-list">' + rows + '</div>' + queueAdmissionFootnote(v);
+    }
+
+    function queueAdmissionFootnote(v) {
+        // Явно называем режим: оператор должен понимать, что это ожидание СЛОТА,
+        // а не легаси-очередь с её нулями.
+        return '<div class="queue-adm-note">' + escapeHtml(_t('queue.admission_note', {
+            served: v.processed,
+            timeouts: v.timeouts,
+            seconds: v.waitMaxSec
+        })) + '</div>';
+    }
+
+    // queueAdmissionRows — таблица ожидающих слотов.
+    function queueAdmissionRows(v) {
+        if (!v.detail.length) return emptyRow(5, _t('queue.no_tasks'));
+        return v.detail.map(function(w, index) {
+            const waited = (w.waitedMs / 1000).toFixed(1) + _t('renderers.seconds');
+            return '<tr>' +
+                '<td>' + (index + 1) + '</td>' +
+                '<td><code>' + escapeHtml(w.session || '-') + '</code></td>' +
+                '<td>' + escapeHtml(w.backend || '-') + '</td>' +
+                '<td>' + waited + '</td>' +
+                '<td><span class="queue-task-status pending">' + escapeHtml(_t('queue.admission_status')) + '</span></td>' +
+            '</tr>';
+        }).join('');
     }
 
     function queueTasksBody(tasks) {
@@ -2345,6 +2503,9 @@ const Renderers = (function () {
         runtimeCluster,
         sessionsPage,
         queuePage,
+        // R91 (2026-10-08): чистый маппинг статистики очереди — экспортируем для
+        // юнит-теста (webui/js/modules/renderers-queue.test.js).
+        queueView,
         logs,
         predictionAlerts,
         proxyLogs,

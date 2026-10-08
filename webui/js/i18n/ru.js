@@ -168,6 +168,22 @@ window.I18N_RU = {
   "queue.no_tasks": "Очередь пуста",
   "queue.visualization": "Визуализация очереди",
   "queue.utilization": "Использование",
+  // R91 (2026-10-08): РЕАЛЬНАЯ очередь — ожидание свободного слота
+  // (LB_ADMISSION_WAIT_SEC). Легаси-счётчики (current_size/processed_total)
+  // в этом режиме всегда нули, поэтому страница «Очередь» показывала «пусто»
+  // при десятках прождавших запросов. Подписи плиток переключаются вместе с
+  // режимом (renderers.js: queueView + queuePage).
+  "queue.admission_waiting": "Ждут сейчас",
+  "queue.admission_wait_max": "Предел ожидания, с",
+  "queue.admission_served": "Обслужено (с ожиданием)",
+  "queue.admission_active": "Активных сессий",
+  "queue.admission_status": "Ждёт слот",
+  "queue.admission_idle": "Сейчас никто не ждёт слот — все запросы обслуживаются сразу.",
+  "queue.admission_note": "Ожидание слота: обслужено {served}, таймаутов {timeouts}, предел ожидания {seconds} с.",
+  "queue.timeouts": "Таймауты ожидания",
+  "queue.col_client": "Клиент (сессия)",
+  "queue.max_size": "Максимум",
+  "queue.workers": "Воркеры",
 
   // Logs
   "logs.title": "Системные логи",

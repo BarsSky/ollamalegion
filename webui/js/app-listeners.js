@@ -158,6 +158,13 @@
     function updateBackends(newBackends) {
         const ctx = App.context;
         if (!ctx || !ctx.data) return;
+        // R88 (2026-10-08): ЛЮБОЙ источник обязан получить конфигурацию.
+        // Метрики приходят и по WebSocket (clusterState/legacy), где полей
+        // autoTune/weight/labels/maxModels нет вовсе. До этой правки WS-тик
+        // подменял обогащённый REST-список «сырым» → карточка AutoTune мигала
+        // (есть пометка / нет пометки) на каждом обновлении.
+        const cfg = window.App && window.App.applyBackendConfig;
+        newBackends = cfg ? cfg(newBackends) : newBackends;
         newBackends = [...newBackends].sort(function(a, b) { return (a.id || '').localeCompare(b.id || ''); });
         if (backendsEqual(ctx.data.backends, newBackends)) return;
         ctx.data.backends = newBackends;

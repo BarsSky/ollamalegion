@@ -349,14 +349,24 @@ const Renderers = (function () {
         const vramTotal = gpu.memoryTotal || 1;
         const vramPct = percent(vramUsed, vramTotal);
         const temp = gpu.temperature !== undefined ? gpu.temperature : '-';
-        const power = gpu.powerUsage !== undefined ? gpu.powerUsage : '-';
+        // R88: 0 = «датчик не отдал значение», а не «0 ватт». До этой правки панель
+        // показывала «POWER 0W» на всех карточках, хотя nvidia-smi отдаёт 22–47 W
+        // (в агенте исправлен парсинг дробного значения). Если значение всё же
+        // неизвестно (карта без датчика мощности) — честный прочерк, а не ноль.
+        const power = (gpu.powerUsage !== undefined && gpu.powerUsage > 0) ? gpu.powerUsage : '-';
         const powerLimit = gpu.powerLimit !== undefined && gpu.powerLimit > 0 ? gpu.powerLimit : '-';
         const gpuClock = gpu.gpuClock !== undefined && gpu.gpuClock > 0 ? gpu.gpuClock : '-';
         const memClock = gpu.memClock !== undefined && gpu.memClock > 0 ? gpu.memClock : '-';
         const status = getGPUStatus(usage, vramPct, temp);
         const reqCap = pred.requestCapacity !== undefined ? pred.requestCapacity.toFixed(0) + '%' : '-';
+        // Capacity — это ПРОГНОЗ ЗАГРУЗКИ конкретного бэкенда (по его истории
+        // запросов), а НЕ метрика видеокарты. Два бэкенда на одной карте дают
+        // разные значения по определению; без подписи это выглядело как «агенты
+        // показывают разное про одну GPU».
+        const capHint = _t('renderers.load_forecast_hint');
+        const cardHint = _t('renderers.gpu_card_sample_hint');
         return `
-            <div class="gpu-card">
+            <div class="gpu-card" title="${escapeHtml(cardHint)}">
                 <div class="gpu-card-header">
                     <span class="gpu-card-title">${escapeHtml(backend.id)}</span>
                     <span class="gpu-status ${status}"></span>
@@ -366,19 +376,19 @@ const Renderers = (function () {
                     ${metric('GPU', `${usage.toFixed(1)}%`)}
                     ${metric('VRAM', `${vramPct.toFixed(1)}%`)}
                     ${metric('Temp', `${temp}°C`)}
-                    ${metric('Power', `${power}W ${powerLimit !== '-' ? '/ ' + powerLimit + 'W' : ''}`)}
+                    ${metric('Power', power !== '-' ? `${power}W${powerLimit !== '-' ? ' / ' + powerLimit + 'W' : ''}` : '-')}
                     ${metric('Clock', `${gpuClock !== '-' ? gpuClock + ' MHz' : '-'}`)}
                     ${metric('MemClk', `${memClock !== '-' ? memClock + ' MHz' : '-'}`)}
-                    ${metric('Capacity', reqCap)}
+                    ${metric(_t('renderers.load_forecast'), reqCap, capHint)}
                 </div>
                 <div class="progress-bar"><div class="progress-fill ${getProgressClass(usage)}" style="width: ${usage}%"></div></div>
             </div>
         `;
     }
 
-    function metric(label, value) {
+    function metric(label, value, title) {
         return `
-            <div class="gpu-metric">
+            <div class="gpu-metric"${title ? ` title="${escapeHtml(title)}"` : ''}>
                 <div class="gpu-metric-label">${escapeHtml(label)}</div>
                 <div class="gpu-metric-value">${escapeHtml(String(value))}</div>
             </div>
@@ -2306,6 +2316,11 @@ const Renderers = (function () {
         // (webui/js/modules/renderers-image.test.js).
         renderImageParams,
         openImagePage,
+        // R88 (2026-10-08): карточки дашборда экспортируем для юнит-тестов
+        // (webui/js/modules/renderers-image.test.js): подпись «прогноз нагрузки»
+        // и прочерк вместо «0W» — проверяемые свойства разметки.
+        gpuCluster,
+        runtimeCluster,
         sessionsPage,
         queuePage,
         logs,

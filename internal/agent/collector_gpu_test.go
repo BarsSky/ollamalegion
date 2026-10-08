@@ -278,6 +278,28 @@ func TestParseNvidiaSmiOutput(t *testing.T) {
 	// Пустой ввод — нулевые метрики без паники
 	m = parseNvidiaSmiOutput("")
 	assert.Equal(t, types.GPUMetrics{}, m)
+
+	// R88 (2026-10-08): ЖИВОЙ формат вывода (контейнер, RTX 3070) — мощность
+	// ДРОБНАЯ. До этой правки парсер использовал strconv.Atoi, дробь не
+	// разбиралась, и панель показывала «POWER 0W» на всех карточках, хотя
+	// nvidia-smi внутри контейнера отдаёт 25.49 W.
+	live := "0, NVIDIA GeForce RTX 3070, 12, 8192, 1870, 6322, 53, 25.49, 100.00, 510, 810"
+	m = parseNvidiaSmiOutput(live)
+	assert.Equal(t, 25, m.PowerUsage, "дробная мощность обязана разбираться: 25.49 W → 25")
+	assert.Equal(t, 100, m.PowerLimit, "power.limit тоже дробный: 100.00 → 100")
+	assert.Equal(t, 510, m.GPUClock)
+	assert.Equal(t, 810, m.MemClock)
+	assert.Equal(t, uint64(1870), m.MemoryUsed)
+	assert.Equal(t, float64(12), m.UsagePercent)
+
+	// Карта без датчика мощности отдаёт [N/A] — это «неизвестно» (0),
+	// а не мусор и не паника.
+	na := "0, Tesla T4, 5, 15360, 100, 15260, 40, [N/A], [N/A], 210, 405"
+	m = parseNvidiaSmiOutput(na)
+	assert.Equal(t, 0, m.PowerUsage)
+	assert.Equal(t, 0, m.PowerLimit)
+	assert.Equal(t, 210, m.GPUClock)
+	assert.Equal(t, 405, m.MemClock)
 }
 
 // TestCountGPUs — проверка подсчёта GPU из вывода nvidia-smi.

@@ -808,6 +808,74 @@ const ui = (function () {
     // ---- Data Fetching ----
 
     /**
+     * backendConfigCache — последняя УСПЕШНО полученная конфигурация бэкендов
+     * (id → объект из GET /api/v1/backends).
+     *
+     * R88 (2026-10-08). ЗАЧЕМ КЭШ. Конфигурационные поля (autoTune, weight,
+     * labels, maxModels, apiStyle, engine) есть ТОЛЬКО в /api/v1/backends, а
+     * метрики приходят и из других источников — в том числе из WebSocket
+     * (`clusterState`/`legacy`), где этих полей нет вовсе. Раньше список
+     * бэкендов из WS подменял обогащённый (app-listeners.js → updateBackends),
+     * и карточка AutoTune мигала: REST-тик её рисовал, следующий WS-тик стирал.
+     * Оператор видел «в какой-то тик пометка есть, в какой-то нет».
+     *
+     * Теперь конфигурация живёт в кэше и применяется к ЛЮБОМУ источнику, а
+     * недоступность /api/v1/backends больше не обнуляет поля — берём последнее
+     * известное значение (и только если его никогда не было, полей нет).
+     */
+    var backendConfigCache = {};
+
+    /**
+     * mergeBackendConfig — конфиг + метрики одного бэкенда.
+     *
+     * База — конфиг (там поля, которых в метриках НЕТ), метрики перекрывают
+     * значения, которые есть в обоих источниках (например host/status).
+     */
+    function mergeBackendConfig(cfg, b) {
+        if (!cfg) return b;
+        // Копия, чтобы не мутировать состояние, пришедшее из API.
+        var merged = Object.assign({}, cfg, b);
+        // Явно переносим поля, которых в metrics-типе нет вообще
+        // (Object.assign их бы взял из cfg, но список фиксируем, чтобы
+        // поведение не зависело от порядка аргументов).
+        merged.weight = cfg.weight;
+        merged.labels = cfg.labels || [];
+        merged.maxModels = cfg.maxModels;
+        merged.runtimeMaxModels = cfg.runtimeMaxModels;
+        merged.maxConcurrentRequests = (b.maxConcurrentRequests !== undefined && b.maxConcurrentRequests !== null)
+            ? b.maxConcurrentRequests
+            : cfg.maxConcurrentRequests;
+        merged.autoTune = cfg.autoTune;
+        merged.apiStyle = cfg.apiStyle;
+        merged.effectiveApiStyle = cfg.effectiveApiStyle;
+        merged.engine = cfg.engine;
+        merged.cppWorkerPort = cfg.cppWorkerPort;
+        merged.ollamaPort = cfg.ollamaPort;
+        merged.agentPort = cfg.agentPort;
+        merged.host = cfg.host || b.host;
+        merged.name = cfg.name || b.name;
+        merged.type = cfg.type || b.type;
+        merged.hasAgent = (cfg.hasAgent !== undefined) ? cfg.hasAgent : b.hasAgent;
+        merged.agentId = cfg.agentId || b.agentId;
+        merged.lastAgentContact = cfg.lastAgentContact || b.lastAgentContact;
+        return merged;
+    }
+
+    /**
+     * applyBackendConfig — применить КЭШ конфигурации к любому списку бэкендов.
+     *
+     * Вызывается и из REST-пути (fetchClusterState), и из app-listeners.js
+     * (WebSocket-тики), чтобы карточки не мигали между источниками.
+     */
+    function applyBackendConfig(backends) {
+        if (!Array.isArray(backends) || backends.length === 0) return backends;
+        return backends.map(function (b) {
+            if (!b || !b.id) return b;
+            return mergeBackendConfig(backendConfigCache[b.id], b);
+        });
+    }
+
+    /**
      * enrichBackendsWithConfig — R65d (2026-09-20).
      *
      * Мержит конфигурационные поля бэкенда (weight, labels, maxModels,
@@ -819,62 +887,35 @@ const ui = (function () {
      * отдаёт не всегда (зависит от наличия agent metrics для бэкенда).
      * Поэтому берём объединение: база — cluster state, конфиг — добавляем.
      *
-     * Fail-safe: если /api/v1/backends недоступен (401/500/сеть), возвращаем
-     * исходный список без изменений — страница продолжает работать на метриках,
-     * просто без колонок конфигурации (как было до R65d).
+     * Fail-safe (R88): если /api/v1/backends недоступен (401/500/сеть), берём
+     * ПОСЛЕДНЮЮ удачную конфигурацию из кэша — иначе поля AutoTune/Weight/Labels
+     * исчезали на один тик и возвращались на следующем (мигание в панели).
      */
     async function enrichBackendsWithConfig(clusterBackends) {
         if (!Array.isArray(clusterBackends) || clusterBackends.length === 0) {
             return clusterBackends;
         }
-        if (!Api.backends) {
-            return clusterBackends;
-        }
-        var configs = {};
-        try {
-            const resp = await Api.backends();
-            var list = (resp && resp.backends) || (Array.isArray(resp) ? resp : []);
-            for (var i = 0; i < list.length; i++) {
-                if (list[i] && list[i].id) configs[list[i].id] = list[i];
+        if (Api.backends) {
+            try {
+                const resp = await Api.backends();
+                var list = (resp && resp.backends) || (Array.isArray(resp) ? resp : []);
+                for (var i = 0; i < list.length; i++) {
+                    if (list[i] && list[i].id) backendConfigCache[list[i].id] = list[i];
+                }
+            } catch (e) {
+                // Конфиг недоступен — не ломаем страницу: применяем кэш ниже.
+                console.warn('[fetchClusterState] /api/v1/backends unavailable, ' +
+                    'использую последнюю известную конфигурацию из кэша:', e && e.message);
             }
-        } catch (e) {
-            // Конфиг недоступен — не ломаем страницу, просто нет доп. полей.
-            console.warn('[fetchClusterState] /api/v1/backends unavailable, ' +
-                'weight/labels/maxModels/autoTune will be missing:', e && e.message);
-            return clusterBackends;
         }
-
-        return clusterBackends.map(function (b) {
-            var cfg = configs[b.id];
-            if (!cfg) return b;
-            // Копия, чтобы не мутировать состояние, пришедшее из API.
-            var merged = Object.assign({}, cfg, b);
-            // Явно переносим поля, которых в metrics-типе нет вообще
-            // (Object.assign их бы взял из cfg, но список фиксируем, чтобы
-            // поведение не зависело от порядка аргументов).
-            merged.weight = cfg.weight;
-            merged.labels = cfg.labels || [];
-            merged.maxModels = cfg.maxModels;
-            merged.runtimeMaxModels = cfg.runtimeMaxModels;
-            merged.maxConcurrentRequests = (b.maxConcurrentRequests !== undefined && b.maxConcurrentRequests !== null)
-                ? b.maxConcurrentRequests
-                : cfg.maxConcurrentRequests;
-            merged.autoTune = cfg.autoTune;
-            merged.apiStyle = cfg.apiStyle;
-            merged.effectiveApiStyle = cfg.effectiveApiStyle;
-            merged.engine = cfg.engine;
-            merged.cppWorkerPort = cfg.cppWorkerPort;
-            merged.ollamaPort = cfg.ollamaPort;
-            merged.agentPort = cfg.agentPort;
-            merged.host = cfg.host || b.host;
-            merged.name = cfg.name || b.name;
-            merged.type = cfg.type || b.type;
-            merged.hasAgent = (cfg.hasAgent !== undefined) ? cfg.hasAgent : b.hasAgent;
-            merged.agentId = cfg.agentId || b.agentId;
-            merged.lastAgentContact = cfg.lastAgentContact || b.lastAgentContact;
-            return merged;
-        });
+        return applyBackendConfig(clusterBackends);
     }
+
+    // Экспорт для app-listeners.js (WebSocket-тики приносят бэкенды БЕЗ конфига:
+    // autoTune/weight/labels/maxModels — их надо добрать из кэша, иначе панель
+    // теряет карточку AutoTune на каждом WS-тике).
+    window.App = window.App || {};
+    window.App.applyBackendConfig = applyBackendConfig;
 
     async function fetchClusterState() {
         try {

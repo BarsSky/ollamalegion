@@ -120,14 +120,19 @@ func parseNvidiaSmiOutput(output string) types.GPUMetrics {
 			metrics.Temperature = val
 		}
 
-		// Power draw (W)
-		if val, err := strconv.Atoi(strings.TrimSpace(parts[7])); err == nil {
-			metrics.PowerUsage = val
+		// Power draw (W).
+		//
+		// R88 (2026-10-08): nvidia-smi с `--format=csv,noheader,nounits` печатает
+		// мощность ДРОБЬЮ («25.49»), поэтому strconv.Atoi здесь ВСЕГДА падал и в
+		// панели на каждой карточке было «POWER 0W» — при том что nvidia-smi
+		// внутри контейнера отдаёт реальные 22–47 W. Разбираем как float.
+		if val, err := strconv.ParseFloat(strings.TrimSpace(parts[7]), 64); err == nil {
+			metrics.PowerUsage = int(val + 0.5)
 		}
 
-		// Power limit (W)
-		if val, err := strconv.Atoi(strings.TrimSpace(parts[8])); err == nil {
-			metrics.PowerLimit = val
+		// Power limit (W) — та же дробная форма («100.00»).
+		if val, err := strconv.ParseFloat(strings.TrimSpace(parts[8]), 64); err == nil {
+			metrics.PowerLimit = int(val + 0.5)
 		}
 
 		// GPU Clock (MHz)

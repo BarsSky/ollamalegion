@@ -631,6 +631,12 @@ window.I18N_EN = {
   "renderers.loading_data": "Awaiting data...",
   "renderers.no_data": "No data",
   "renderers.no_backend_data": "No backend data",
+  // R88: GPU card labels. Capacity is the BACKEND's load forecast, not a card
+  // metric: two backends on one GPU legitimately differ, and without a label it
+  // looked like the agents disagreed about the same machine.
+  "renderers.load_forecast": "Load forecast",
+  "renderers.load_forecast_hint": "Load forecast for THIS backend from its own request history - not a GPU metric. Two backends on one GPU differ by definition.",
+  "renderers.gpu_card_sample_hint": "The card shows the last sample of ITS OWN agent. Two agents on one machine can differ by one polling interval: GPU clocks swing within seconds (idle 210 MHz -> boost 1755 MHz).",
 
   // clientAccess — the "Client connection" block next to a backend (2026-10-03).
   // The key is the same one the WebUI sends as X-API-Token; we surface it because

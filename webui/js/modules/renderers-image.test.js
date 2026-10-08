@@ -102,6 +102,10 @@ const I18N_MAP = {
     'models.memory_title': 'Memory',
     'renderers.digest': 'Digest',
     'renderers.expires': 'Expires',
+    // R88: подписи карточки GPU (Capacity → прогноз нагрузки + пояснения).
+    'renderers.load_forecast': 'Load forecast',
+    'renderers.load_forecast_hint': 'backend load forecast, NOT a gpu metric',
+    'renderers.gpu_card_sample_hint': 'last sample of THIS agent',
 };
 global.window.I18N = {
     t(k) { return Object.prototype.hasOwnProperty.call(I18N_MAP, k) ? I18N_MAP[k] : k; },
@@ -324,6 +328,64 @@ check('openImagePage: переключает вкладку на «Изобра�
 
 check('openImagePage: без backendId не падает', function () {
     R.openImagePage('');
+});
+
+// --- 6. R88: карточка GPU ----------------------------------------------------
+//
+// Жалоба оператора: «WebUI с тиком показывает разные параметры от одинаковых
+// бэкендов, но разных агентов — вводит в заблуждение». Разбор дал три причины,
+// две из которых видны в разметке карточки:
+//   1) «Capacity» — это prediction.requestCapacity, ПРОГНОЗ ЗАГРУЗКИ бэкенда, а не
+//      метрика видеокарты: у двух бэкендов на одной GPU он разный по определению
+//      (подписан и снабжён title);
+//   2) «POWER 0W» на всех карточках — баг парсинга дробной мощности в агенте
+//      (25.49 W не разбиралось Atoi); в UI неизвестное значение теперь прочерк.
+
+function gpuModeBackend(overrides) {
+    const base = {
+        id: 'cppworker-gpu-bundled-agent',
+        backendType: 'llama_cpp',
+        type: 'llama_cpp',
+        status: 'healthy',
+        host: 'cppworker-gpu',
+        labels: [],
+        gpu: {
+            usagePercent: 12,
+            memoryUsed: 1870,
+            memoryTotal: 8192,
+            temperature: 53,
+            powerUsage: 25,
+            powerLimit: 100,
+            gpuClock: 510,
+            memClock: 810,
+        },
+        prediction: { requestCapacity: 31 },
+    };
+    return Object.assign({}, base, overrides || {});
+}
+
+check('R88 GPU-карточка: Capacity подписан как прогноз нагрузки и пояснён', function () {
+    const html = R.gpuCluster([gpuModeBackend()]);
+    assert.ok(html.indexOf('Load forecast') !== -1,
+        'подпись должна объяснять, что это прогноз, а не метрика GPU: ' + html.slice(0, 400));
+    assert.ok(html.indexOf('backend load forecast, NOT a gpu metric') !== -1,
+        'нужен title с пояснением, почему у двух бэкендов на одной GPU значения разные');
+});
+
+check('R88 GPU-карточка: неизвестная мощность — прочерк, а не «0W»', function () {
+    const html = R.gpuCluster([gpuModeBackend({
+        gpu: { usagePercent: 2, memoryUsed: 100, memoryTotal: 8192, temperature: 45, powerUsage: 0, powerLimit: 0, gpuClock: 0, memClock: 0 },
+    })]);
+    assert.strictEqual(html.indexOf('0W'), -1, 'нуля ватт быть не должно: ' + html.slice(0, 400));
+    assert.strictEqual(html.indexOf('0 MHz'), -1, 'нулевых частот быть не должно');
+});
+
+check('R88 GPU-карточка: реальная мощность и частоты показываются', function () {
+    const html = R.gpuCluster([gpuModeBackend()]);
+    assert.ok(html.indexOf('25W') !== -1, 'мощность из nvidia-smi должна попадать в карточку');
+    assert.ok(html.indexOf('510 MHz') !== -1, 'частота GPU должна показываться');
+    assert.ok(html.indexOf('last sample of THIS agent') !== -1,
+        'карточка поясняет, что показывает замер СВОЕГО агента (иначе расхождение с соседней карточкой читается как ошибка)');
 });
 
 console.log('\nrenderers-image: ' + passed + ' проверок пройдено');

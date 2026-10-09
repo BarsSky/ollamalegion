@@ -33,6 +33,9 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/models", handleListModels)
 	mux.HandleFunc("/api/model", handleGetModel)
 	mux.HandleFunc("/api/models/files", handleListModelsDir)
+	// R93 (2026-10-09): принудительная проверка каталога моделей на диске
+	// (кнопка «Обновить» в WebUI и force-refresh каталога балансером).
+	mux.HandleFunc("/api/models/refresh", handleRefreshModelsDir)
 	mux.HandleFunc("/api/models/delete", handleDeleteModel)
 	mux.HandleFunc("/api/delete", handleDeleteModel) // Ollama-compatible alias
 	// R89: перенос модели между бэкендами (источник отдаёт файл, приёмник

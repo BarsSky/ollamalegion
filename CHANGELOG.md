@@ -5,6 +5,74 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.7.64 — Живой инвентарь моделей: WebUI без «призраков», изменения фиксируются без перезапуска контейнера, 2026-10-09]
+
+### 🐛 Что было не так
+
+Жалоба оператора: «надо почистить WebUI от моделей, что не лежат на диске, и
+отработать механизм, что будет проверять наличие и фиксировать изменения без
+перезапуска контейнера для бэкендов».
+
+Живой стенд: каталог моделей был bind-mount'ом (`D:\ollama-legion-models` →
+`/app/models`), каталог удалили. При этом:
+
+| Что смотрели | Что было |
+|---|---|
+| `ls /app/models` в контейнере | `No such file or directory` (висячий mount: `d?????????`), `mkdir -p` → «File exists» |
+| `GET cppworker /api/models/files` | **3 файла** («Qwen3-Instruct-2507-q4km», «Qwen3.8-27B-UD-Q4_K_M», «gemma-4-E4B-it-Q4_K_M») — список лежал в кэше `ModelManager`, `ScanModels` вызывался только на старте и после import/share |
+| `GET /api/v1/models/catalog` (балансер) | те же 3 файла: каталог — это кэш листинга воркера, а воркер врал |
+| Панель WebUI «Модели» | рисовала карточки этих моделей; более того, `fetchDiskModelsAsync` содержал `if (files.length === 0) return;` — **пустой ответ воркера не применялся**, и предыдущий список оставался на экране |
+
+Дополнительно: ошибка чтения каталога в `ScanModels` возвращалась наружу, **не
+трогая кэш**, то есть даже явный скан не убирал призраков; а интервал обновления
+каталога балансера (300 с) делал появление/исчезновение модели незаметным до 5 минут.
+
+### 🔧 Что сделано
+
+- **`internal/cppbackend/model_manager.go`**: инвентарь стал живым.
+  - `ScanModels()` фиксирует ИЗМЕНЕНИЯ (`diffInventory`: added/removed/resized),
+    пишет их в лог (`model inventory changed`) и в статус; ошибка каталога теперь
+    **обнуляет инвентарь** и запоминает причину (`dirError`) вместо сохранения
+    старого кэша (`recordDirFailure`);
+  - `ScanModelsIfStale()` — перескан по TTL `CPPWORKER_MODELS_RESCAN_SEC`
+    (default 30, 0 = выключить), `InventoryStatus()` — снимок для API
+    (scannedAt/changedAt/added/removed/dirError/scans/changes);
+  - тесты: `model_manager_rescan_r93_test.go` (4 проверки: каталог исчез → пусто;
+    каталог недоступен → пусто + причина; диф; TTL-скан).
+- **`cmd/cppworker`**: `/api/models/files` теперь пересканирует каталог по TTL (и
+  по `?refresh=1`), отдаёт `scannedAt/changedAt/added/removed/dirError/rescanTtlSec`;
+  добавлен `POST /api/models/refresh` (немедленный перескан, для WebUI и балансера);
+  в `main.go` — фоновый наблюдатель (`model inventory watcher`), который сам
+  замечает изменения и пишет их в лог — без перезапуска контейнера.
+- **`internal/balancer/model_catalog.go`**: каталог запоминает диф
+  (`changedAt/added/removed`), различает «моделей нет» и `dirError` воркера,
+  публикует уведомление об изменении состава (EventBus → колокольчик/recent-errors
+  в WebUI), период обновления по умолчанию 300 → **60 с**
+  (`LB_MODEL_CATALOG_REFRESH_SEC` по-прежнему переопределяет, 0 = выключить);
+  тест `model_catalog_r93_test.go`.
+- **`internal/api`**: `GET /api/v1/models/catalog` отдаёт `added/removed/changedAt/
+  dirError/refreshIntervalSec` и объясняет в `note`, что значит пустой список
+  (`?refresh=true` — принудительное обновление, было и раньше).
+- **WebUI**: `fetchDiskModelsAsync` применяет ЛЮБОЙ успешный ответ, включая пустой
+  (призраки исчезают), сохраняет свежесть и причину пустоты (`state.diskInventory`),
+  сбой транспорта помечает как «проверка не удалась» (а не «файлов нет»); на вкладке
+  «Модели» появилась строка «Каталог проверен: N с назад» и кнопка **«Проверить
+  наличие»** (`POST /api/models/refresh` через прокси), а пустое состояние объясняет
+  причину (`dirError`). Тест `gguf-disk-inventory-r93.test.js` (7 проверок).
+
+### ✅ Живая проверка
+
+- Каталог воркера недоступен: `GET /api/models/files` → `count=0` + `dirError`
+  (вместо 3 призраков), `/api/v1/models/catalog` → пусто + причина; панель «Модели»
+  в WebUI пуста и объясняет причину.
+- Механизм «без перезапуска» проверен на одноразовом контейнере
+  (`scripts`-одноразовик, `CPPWORKER_MODELS_RESCAN_SEC=2`): файл, положенный на диск,
+  появился в `/api/models/files` (`added`) без рестарта; удалённый — исчез
+  (`removed`); `POST /api/models/refresh` вернул состояние сразу; при удалении
+  каталога-источника ответ стал `count=0` + `dirError`.
+
+
+
 ## [0.7.63 — Монитор: переключатель типа бэкенда работает, поле топологии расширяется, частицы видны, 2026-10-09]
 
 ### 🐛 Что было не так

@@ -390,16 +390,57 @@
         return '<div class="gguf-stat-value muted">' + _('common.disconnected') + '</div>';
     }
 
+    // renderInventoryNote — R93 (2026-10-09): свежесть проверки каталога моделей и
+    // причина пустоты. Оператор должен видеть не только «моделей нет», но и КОГДА
+    // проверяли и не отвалился ли каталог: без этого пустой список выглядит как
+    // «страница сломалась», а исчезнувшая модель — как «ничего не произошло».
+    function renderInventoryNote(inv) {
+        if (!inv) return '';
+        const parts = [];
+        if (inv.dirError) {
+            parts.push('<span style="color:var(--danger);font-weight:600;">' +
+                Utils.escapeHtml(_('gguf.inventory_dir_error', { error: inv.dirError })) + '</span>');
+        } else if (inv.error) {
+            parts.push('<span style="color:var(--warning);">' +
+                Utils.escapeHtml(_('gguf.inventory_check_failed', { error: inv.error })) + '</span>');
+        } else {
+            const ageSec = inv.fetchedAt ? Math.round((Date.now() - inv.fetchedAt) / 1000) : 0;
+            parts.push(Utils.escapeHtml(_('gguf.inventory_checked', { sec: ageSec })) +
+                ' · <span style="color:var(--text-secondary)">' + inv.count + '</span>');
+            if ((inv.added && inv.added.length) || (inv.removed && inv.removed.length)) {
+                parts.push('<span style="color:var(--warning);">' + Utils.escapeHtml(_('gguf.inventory_changed', {
+                    added: (inv.added || []).join(', ') || '—',
+                    removed: (inv.removed || []).join(', ') || '—'
+                })) + '</span>');
+            }
+        }
+        return '<div class="gguf-inventory-note" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px;margin:0 0 10px 0;">' +
+            parts.join(' <span style="color:var(--border)">|</span> ') +
+            '<button class="btn btn-secondary btn-sm" id="ggufRescanModels" title="' +
+                Utils.escapeHtml(_('gguf.inventory_rescan_hint')) + '">' +
+                '<i class="fas fa-sync"></i> ' + Utils.escapeHtml(_('gguf.inventory_rescan')) + '</button>' +
+            '</div>';
+    }
+
     function renderModelsPane() {
         const models = state.localModels || [];
+        const inv = (state.diskInventory && state.selectedBackendId)
+            ? state.diskInventory[state.selectedBackendId] : null;
+        const note = renderInventoryNote(inv);
         if (models.length === 0) {
+            // R93: пустой список обязан объяснять причину. «Каталог недоступен»
+            // (удалённый bind-mount, отвалившийся том) — это не «моделей нет».
+            const hint = (inv && inv.dirError)
+                ? '<p style="font-size:12px;margin-top:8px;color:var(--danger);">' +
+                    Utils.escapeHtml(_('gguf.inventory_dir_error', { error: inv.dirError })) + '</p>'
+                : '<p style="font-size:12px;margin-top:8px;">' + _('gguf.no_models_on_disk_hint') + '</p>';
             return '<div class="gguf-empty-state">' +
                 '<div class="empty-icon"><i class="fas fa-folder-open"></i></div>' +
                 '<div>' + _('gguf.no_local_models') + '</div>' +
-                '<p style="font-size:12px;margin-top:8px;">' + _('gguf.no_models_on_disk_hint') + '</p>' +
-            '</div>';
+                hint +
+            '</div>' + note;
         }
-        return models.map(function (m, idx) {
+        return note + models.map(function (m, idx) {
             const name = m.name || m.filename || m.path || '-';
             const size = m.size ? formatFileSize(m.size) : '-';
             const quant = m.quantization || m.quant || '-';

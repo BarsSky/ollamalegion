@@ -14,7 +14,9 @@ package api
 import (
 	"net/http"
 	"strings"
+	"time"
 
+	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -52,6 +54,12 @@ func (s *Server) handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 		Host      string   `json:"host"`
 		Note      string   `json:"note,omitempty"`
 		Files     []string `json:"files,omitempty"`
+		// R93: что изменилось с прошлого снимка и когда — «модель исчезла из
+		// WebUI» должно быть видно в API, а не только в логе.
+		Added     []string `json:"added,omitempty"`
+		Removed   []string `json:"removed,omitempty"`
+		ChangedAt string   `json:"changedAt,omitempty"`
+		DirError  string   `json:"dirError,omitempty"`
 		Known     bool     `json:"known"`
 		// AgeSec без omitempty: 0 — это «снимок только что снят», и он должен быть
 		// виден в ответе (иначе свежий каталог выглядел бы как отсутствующий).
@@ -72,6 +80,19 @@ func (s *Server) handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 		if hasEntry {
 			row.Files = entry.Files
 			row.AgeSec = entry.AgeSec
+			row.Added = entry.Added
+			row.Removed = entry.Removed
+			row.DirError = entry.DirError
+			if !entry.ChangedAt.IsZero() {
+				row.ChangedAt = entry.ChangedAt.UTC().Format(time.RFC3339)
+			}
+			// R93: недоступный каталог у воркера — не «моделей нет», а
+			// «посмотреть не удалось». Оператору это надо различать.
+			if entry.DirError != "" {
+				row.Note = "каталог моделей воркера недоступен: " + entry.DirError
+			} else if len(entry.Files) == 0 {
+				row.Note = "на диске воркера нет ни одного .gguf (список пуст по факту, не из-за ошибки)"
+			}
 		} else if isLlama {
 			row.Note = "каталог этого бэкенда ещё не опрошен: выбор для незагруженной модели работает как раньше (любой healthy узел)"
 		} else {
@@ -81,10 +102,12 @@ func (s *Server) handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"backends":  rows,
-		"total":     len(rows),
-		"refreshed": refreshed,
+		"backends":           rows,
+		"total":              len(rows),
+		"refreshed":          refreshed,
+		"refreshIntervalSec": int(balancer.ModelCatalogRefreshInterval().Seconds()),
 		"note": "каталог — кэш листингов /api/models/files; «known» = снимок есть, " +
-			"пустой список файлов при known=true означает, что моделей на диске нет",
+			"пустой список файлов при known=true означает, что моделей на диске нет " +
+			"(а dirError — что каталог воркера недоступен)",
 	})
 }

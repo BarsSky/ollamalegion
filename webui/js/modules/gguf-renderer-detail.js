@@ -36,6 +36,17 @@
             if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel();
             return;
         }
+        // R93 (2026-10-09): «Проверить наличие» на вкладке «Модели» — принудительный
+        // перескан каталога моделей на воркере (POST /api/models/refresh через
+        // прокси балансера). Нужно, когда файл только что удалили/положили и ждать
+        // фоновый тик (воркер 30 с + балансер 60 с) не хочется.
+        if (e.target.closest('#ggufRescanModels')) {
+            const rescanId = state.selectedBackendId;
+            if (rescanId && typeof M.rescanBackendModels === 'function') {
+                M.rescanBackendModels(rescanId);
+            }
+            return;
+        }
         // Detail tabs
         var tab = e.target.closest('.gguf-detail-tab');
         if (tab) {

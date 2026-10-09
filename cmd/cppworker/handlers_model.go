@@ -1405,43 +1405,30 @@ func handleGetModel(w http.ResponseWriter, r *http.Request) {
 func handleListModelsDir(w http.ResponseWriter, r *http.Request) {
 	mm := backend.ModelManager()
 	if mm != nil {
-		models := mm.ListModels()
-		files := make([]map[string]interface{}, 0, len(models))
-		for _, m := range models {
-			files = append(files, ggufFileMeta(m.Filename, m.SizeBytes, m.ModifiedAt))
+		// R93 (2026-10-09): список обязан отражать ФАКТ на диске.
+		//
+		// До этого здесь отдавался кэш ModelManager без проверки: файл (или весь
+		// каталог) удалили на диске, а /api/models/files продолжал отдавать старые
+		// записи, и WebUI показывал модели-призраки до перезапуска контейнера
+		// именно этого воркера. ScanModelsIfStale() пересканирует каталог, если с
+		// прошлого скана прошло больше CPPWORKER_MODELS_RESCAN_SEC (default 30).
+		// ?refresh=1 — принудительная проверка вне зависимости от TTL.
+		if strings.TrimSpace(r.URL.Query().Get("refresh")) != "" {
+			_, _ = mm.ScanModels()
+		} else {
+			mm.ScanModelsIfStale()
 		}
-		// R66d (2026-09-23): отдаём и алиасы моделей (<name>.gguf.json из
-		// POST /api/create). Балансер собирает /api/tags именно из этого ответа,
-		// поэтому без поля aliases созданная модель не доезжала до клиентов.
-		aliases := make([]map[string]interface{}, 0)
-		for _, a := range mm.ListAliases() {
-			if !a.SourceExists {
-				// Незагружаемый алиас клиенту не показываем (в /api/tags его
-				// тоже нет) — только в лог.
-				logger.Get().Warnw("handleListModelsDir: alias source missing, skipping",
-					"alias", a.Name, "source", a.Source)
-				continue
-			}
-			aliases = append(aliases, map[string]interface{}{
-				"name":            a.Name,
-				"source":          a.Source,
-				"sourceSizeBytes": a.SourceSizeBytes,
-				"sourceExists":    a.SourceExists,
-				"parentModel":     strings.TrimSuffix(filepath.Base(a.Source), ".gguf"),
-				"createdAt":       a.CreatedAt.UTC().Format(time.RFC3339),
-			})
-		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"files": files, "aliases": aliases, "dir": mm.GetModelsDir(),
-			"count": len(files), "aliasCount": len(aliases),
-		})
+		writeJSON(w, http.StatusOK, modelsDirPayload(mm))
 		return
 	}
 	var files []map[string]interface{}
 	entries, err := os.ReadDir(*modelsDir)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"files": []interface{}{}, "dir": *modelsDir,
+			"files": []interface{}{}, "dir": *modelsDir, "count": 0,
+			// R93: недоступный каталог — это состояние, о котором оператор обязан
+			// узнать (раньше ответ был неотличим от «моделей нет»).
+			"dirError": err.Error(), "scannedAt": time.Now().UTC().Format(time.RFC3339),
 		})
 		return
 	}
@@ -1461,7 +1448,100 @@ func handleListModelsDir(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"files": files, "dir": *modelsDir, "count": len(files),
+		"scannedAt": time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// modelsDirPayload — тело ответа /api/models/files и /api/models/refresh:
+// список файлов, алиасы и СВЕЖЕСТЬ инвентаря (когда проверяли, что изменилось).
+//
+// R93: без этих полей «модель исчезла из WebUI» невозможно отличить от
+// «проверка не проходила» — оператор видел просто пустой/старый список.
+func modelsDirPayload(mm *cppbackend.ModelManager) map[string]interface{} {
+	files := make([]map[string]interface{}, 0)
+	for _, m := range mm.ListModels() {
+		files = append(files, ggufFileMeta(m.Filename, m.SizeBytes, m.ModifiedAt))
+	}
+	// R66d (2026-09-23): отдаём и алиасы моделей (<name>.gguf.json из
+	// POST /api/create). Балансер собирает /api/tags именно из этого ответа,
+	// поэтому без поля aliases созданная модель не доезжала до клиентов.
+	aliases := make([]map[string]interface{}, 0)
+	for _, a := range mm.ListAliases() {
+		if !a.SourceExists {
+			// Незагружаемый алиас клиенту не показываем (в /api/tags его
+			// тоже нет) — только в лог.
+			logger.Get().Warnw("handleListModelsDir: alias source missing, skipping",
+				"alias", a.Name, "source", a.Source)
+			continue
+		}
+		aliases = append(aliases, map[string]interface{}{
+			"name":            a.Name,
+			"source":          a.Source,
+			"sourceSizeBytes": a.SourceSizeBytes,
+			"sourceExists":    a.SourceExists,
+			"parentModel":     strings.TrimSuffix(filepath.Base(a.Source), ".gguf"),
+			"createdAt":       a.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	st := mm.InventoryStatus()
+	resp := map[string]interface{}{
+		"files": files, "aliases": aliases, "dir": mm.GetModelsDir(),
+		"count": len(files), "aliasCount": len(aliases),
+		"scans": st.Scans, "changes": st.Changes, "rescanTtlSec": st.RescanTTLSec,
+	}
+	if !st.ScannedAt.IsZero() {
+		resp["scannedAt"] = st.ScannedAt.UTC().Format(time.RFC3339)
+	}
+	if !st.ChangedAt.IsZero() {
+		resp["changedAt"] = st.ChangedAt.UTC().Format(time.RFC3339)
+	}
+	if len(st.Added) > 0 {
+		resp["added"] = st.Added
+	}
+	if len(st.Removed) > 0 {
+		resp["removed"] = st.Removed
+	}
+	if len(st.Resized) > 0 {
+		resp["resized"] = st.Resized
+	}
+	if st.DirError != "" {
+		resp["dirError"] = st.DirError
+		if !st.DirErrorAt.IsZero() {
+			resp["dirErrorAt"] = st.DirErrorAt.UTC().Format(time.RFC3339)
+		}
+	}
+	return resp
+}
+
+// handleRefreshModelsDir — POST /api/models/refresh (R93): принудительная
+// проверка каталога моделей на диске.
+//
+// Нужна двум потребителям:
+//   - WebUI (кнопка «Обновить» на странице моделей) — не ждать TTL;
+//   - балансеру (POST /api/v1/models/catalog/refresh) — перечитать каталог
+//     бэкенда сразу, а не по расписанию.
+//
+// Отвечает тем же форматом, что /api/models/files, поэтому вызывающий сразу
+// видит и новый список, и диф (added/removed/resized).
+func handleRefreshModelsDir(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	mm := backend.ModelManager()
+	if mm == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "model manager unavailable"})
+		return
+	}
+	before := len(mm.ListModels())
+	if _, err := mm.ScanModels(); err != nil {
+		logger.Get().Warnw("handleRefreshModelsDir: scan failed", "error", err)
+	}
+	st := mm.InventoryStatus()
+	logger.Get().Infow("handleRefreshModelsDir: manual rescan",
+		"dir", st.Dir, "before", before, "after", st.Count,
+		"added", st.Added, "removed", st.Removed, "dirError", st.DirError)
+	writeJSON(w, http.StatusOK, modelsDirPayload(mm))
 }
 
 // ggufFileMeta — собирает meta для одной записи /api/models/files.

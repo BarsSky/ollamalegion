@@ -49,6 +49,11 @@
         workerVersions: {},
         localModels: [],
         loadedModels: [],
+        // R93 (2026-10-09): свежесть каталога моделей на диске по бэкенду
+        // (scannedAt/changedAt/added/removed/dirError из /api/models/files).
+        // Нужно, чтобы вкладка «Модели» показывала не только список, но и когда
+        // его проверяли и не отвалился ли каталог у воркера.
+        diskInventory: {},
         // Runtime-параметры (n_ctx, gpu_layers, batch_size, flash_attn, n_layers, n_embd,
         // gguf_context_length) реально загруженных моделей. Загружаются параллельно
         // с loadedModels из /api/v1/cppworker/config/runtime. Используются в

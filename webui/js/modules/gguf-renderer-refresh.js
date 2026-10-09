@@ -29,9 +29,10 @@
     // (R60.3 endpoint). Используется когда state.localModels пуст (нет загруженных
     // моделей), чтобы вкладка «Модели» не выглядела пустой.
     let _diskFetchInFlight = new Set(); // debounce: backendId, чтобы не спамить
-    function fetchDiskModelsAsync(backendId, state) {
+    function fetchDiskModelsAsync(backendId, state, opts) {
         if (_diskFetchInFlight.has(backendId)) return;
         _diskFetchInFlight.add(backendId);
+        const force = !!(opts && opts.force);
         const tick = (state && state._diskFetchTick) || 0;
         if (state) state._diskFetchTick = tick + 1;
         if (typeof window.GgufApi === 'undefined' || typeof window.GgufApi.listLocalModelsViaBackend !== 'function') {
@@ -40,12 +41,9 @@
         }
         window.GgufApi.listLocalModelsViaBackend(backendId)
             .then(function (filesBody) {
-                // R60.3 /api/models/files: {count, dir, files: [{name, size, quantization, ...}]}
+                // R60.3 /api/models/files: {count, dir, files: [{name, size, quantization, ...}],
+                //                          scannedAt, changedAt, added, removed, dirError}
                 const files = (filesBody && Array.isArray(filesBody.files)) ? filesBody.files : [];
-                if (files.length === 0) {
-                    // No disk files either — leave localModels as []
-                    return;
-                }
                 // Normalize: webui renderModelsPane ожидает объекты с полями
                 // {name, size, quantization, state}. У файлов state всегда
                 // "available" (не загружен).
@@ -58,23 +56,129 @@
                         path: f.path || '',
                     };
                 });
-                // Replace localModels на нормализованный список файлов.
-                // Не мерджим с loadedModels — рендерер сам матчит isLoaded.
-                if (state.localModels.length === 0 || state._diskFetchTick > tick) {
+                // R93 (2026-10-09): ПУСТОЙ ответ применяем тоже.
+                //
+                // Было: `if (files.length === 0) return;` — список, который
+                // приехал раньше, оставался на экране, и WebUI показывал модели,
+                // которых на диске уже нет (живой случай: каталог моделей был
+                // bind-mount'ом, его удалили, воркер отдаёт count=0 + dirError, а
+                // карточки «Qwen3-Instruct…», «Qwen3.8-27B…», «gemma…» продолжали
+                // рисоваться до перезапуска контейнера). Теперь ответ воркера —
+                // источник истины: пусто значит пусто.
+                if (force || state.localModels.length === 0 || state._diskFetchTick > tick) {
                     state.localModels = normalized;
-                    // Force re-render detail pane.
-                    if (typeof M.refreshDetailPanel === 'function') {
-                        M.refreshDetailPanel(backendId);
-                    }
+                }
+                // Свежесть инвентаря и причина пустоты — оператору, а не только в лог.
+                state.diskInventory = state.diskInventory || {};
+                state.diskInventory[backendId] = {
+                    count: files.length,
+                    dir: (filesBody && filesBody.dir) || '',
+                    scannedAt: (filesBody && filesBody.scannedAt) || '',
+                    changedAt: (filesBody && filesBody.changedAt) || '',
+                    added: (filesBody && Array.isArray(filesBody.added)) ? filesBody.added : [],
+                    removed: (filesBody && Array.isArray(filesBody.removed)) ? filesBody.removed : [],
+                    dirError: (filesBody && filesBody.dirError) || '',
+                    rescanTtlSec: (filesBody && filesBody.rescanTtlSec) || 0,
+                    fetchedAt: Date.now(),
+                    error: ''
+                };
+                // Force re-render detail pane.
+                if (typeof M.refreshDetailPanel === 'function') {
+                    M.refreshDetailPanel(backendId);
                 }
             })
             .catch(function (err) {
+                // R93: сбой ТРАНСПОРТА — это не «файлов нет». Список не чистим
+                // (иначе моргнувшая сеть выглядела бы как удалённые модели), но
+                // помечаем, что проверка не удалась.
+                if (state) {
+                    state.diskInventory = state.diskInventory || {};
+                    state.diskInventory[backendId] = Object.assign({}, state.diskInventory[backendId] || {}, {
+                        error: String((err && err.message) || err),
+                        fetchedAt: Date.now()
+                    });
+                }
                 console.warn('[gguf-renderer] fetchDiskModelsAsync failed for', backendId, err);
             })
             .finally(function () {
                 _diskFetchInFlight.delete(backendId);
             });
     }
+
+    // ---- R93: принудительная проверка наличия моделей на диске ----------------
+    //
+    // Автоматически это делают воркер (CPPWORKER_MODELS_RESCAN_SEC, default 30 с) и
+    // балансер (LB_MODEL_CATALOG_REFRESH_SEC, default 60 с). Кнопка нужна, когда
+    // оператор только что удалил/положил файл и не хочет ждать тик: она просит
+    // воркер пересканировать каталог прямо сейчас (POST /api/models/refresh) и
+    // перечитывает список.
+    M.rescanBackendModels = function(backendId) {
+        const state = M.state;
+        if (!backendId) return Promise.resolve(null);
+        if (typeof window.GgufApi === 'undefined' || typeof window.GgufApi.requestViaBackend !== 'function') {
+            return Promise.resolve(null);
+        }
+        return window.GgufApi.requestViaBackend(backendId, '/api/models/refresh', { method: 'POST' })
+            .then(function (body) {
+                // Ответ — тот же формат, что /api/models/files: применяем сразу,
+                // без второго запроса.
+                const files = (body && Array.isArray(body.files)) ? body.files : [];
+                state.localModels = files.map(function (f) {
+                    return {
+                        name: f.name || '-',
+                        size: typeof f.size === 'number' ? f.size : (f.sizeBytes || 0),
+                        quantization: f.quantization || '',
+                        state: 'available',
+                        path: f.path || ''
+                    };
+                });
+                state.diskInventory = state.diskInventory || {};
+                state.diskInventory[backendId] = {
+                    count: files.length,
+                    dir: (body && body.dir) || '',
+                    scannedAt: (body && body.scannedAt) || '',
+                    changedAt: (body && body.changedAt) || '',
+                    added: (body && Array.isArray(body.added)) ? body.added : [],
+                    removed: (body && Array.isArray(body.removed)) ? body.removed : [],
+                    dirError: (body && body.dirError) || '',
+                    rescanTtlSec: (body && body.rescanTtlSec) || 0,
+                    fetchedAt: Date.now(),
+                    error: ''
+                };
+                if (typeof M.refreshDetailPanel === 'function') M.refreshDetailPanel(backendId);
+                if (typeof M.showToast === 'function') {
+                    const inv = state.diskInventory[backendId];
+                    const msg = inv.dirError
+                        ? 'Каталог моделей недоступен: ' + inv.dirError
+                        : 'На диске найдено файлов: ' + inv.count +
+                          (inv.removed.length ? ', удалено: ' + inv.removed.join(', ') : '') +
+                          (inv.added.length ? ', добавлено: ' + inv.added.join(', ') : '');
+                    M.showToast(msg);
+                }
+                return body;
+            })
+            .catch(function (err) {
+                console.warn('[gguf-renderer] rescanBackendModels failed for', backendId, err);
+                if (typeof M.showToast === 'function') {
+                    M.showToast('Проверка каталога не удалась: ' + ((err && err.message) || err));
+                }
+                return null;
+            });
+    };
+
+    // rescanAllBackendModels — кнопка тулбара: проверить наличие файлов на ВСЕХ
+    // llama.cpp-бэкендах. Возвращает количество опрошенных воркеров.
+    M.rescanAllBackendModels = function() {
+        const state = M.state;
+        const list = (state && state.registeredBackends) || [];
+        const targets = list.filter(function(b) {
+            return b && b.id && (b.backendType === 'llama_cpp' || b.type === 'llama_cpp' || b.backendType === undefined);
+        });
+        if (targets.length === 0) return Promise.resolve(0);
+        return Promise.all(targets.map(function(b) {
+            return M.rescanBackendModels(b.id).catch(function() { return null; });
+        })).then(function() { return targets.length; });
+    };
 
     // ---- Версия воркера -------------------------------------------------------
     //

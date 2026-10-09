@@ -220,7 +220,7 @@ func TestModelCatalog_StaleRule(t *testing.T) {
 	if !mc.stale("node-a", interval, now) {
 		t.Error("без снимка запись обязана считаться протухшей")
 	}
-	mc.store("node-a", []string{"m.gguf"}, now)
+	mc.store("node-a", []string{"m.gguf"}, "", now)
 	if mc.stale("node-a", interval, now.Add(4*time.Minute)) {
 		t.Error("снимок младше интервала не должен перечитываться")
 	}

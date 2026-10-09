@@ -164,10 +164,16 @@ services:
       # How often the balancer re-reads the ON-DISK model list of every llama.cpp
       # backend (/api/models/files), used to pick a node that actually has the
       # file when the model is not loaded anywhere (internal/balancer/
-      # model_catalog.go). 300 s is plenty for files that change rarely; 0 turns
-      # the background refresh off (the on-demand refresh and ?refresh=true on
+      # model_catalog.go) AND to notice that models appeared/disappeared on disk
+      # (the change is logged and published to the WebUI event feed).
+      #
+      # R93 (2026-10-09): 300 -> 60. The worker itself re-scans its models dir on
+      # CPPWORKER_MODELS_RESCAN_SEC (30 s, see the cppworker service), so the
+      # balancer only needs to poll a bit less often; with 300 s a removed model
+      # stayed visible in the WebUI for up to 5 minutes (looked like a ghost).
+      # 0 turns the background refresh off (on-demand refresh and ?refresh=true on
       # GET /api/v1/models/catalog keep working).
-      - LB_MODEL_CATALOG_REFRESH_SEC=${LB_MODEL_CATALOG_REFRESH_SEC:-300}
+      - LB_MODEL_CATALOG_REFRESH_SEC=${LB_MODEL_CATALOG_REFRESH_SEC:-60}
       # How long to wait for auto-load before answering 503 "try later". A 27B model
       # on A10/3070 takes 3-8 minutes, hence 900 s (the in-code default of 180 s is
       # too short). 0 = do not wait at all.
@@ -365,6 +371,15 @@ services:
       # NOTE: AGENT_MAX_CONCURRENT_REQUESTS is NOT needed — cppworker reports its
       # own capacity (effectiveNParallel) to the balancer.
       - CPPWORKER_N_PARALLEL=${CPPWORKER_N_PARALLEL:-0}
+      # R93 (2026-10-09): как часто воркер сам сверяет каталог моделей с диском.
+      #
+      # Раньше список .gguf читался только на старте контейнера и после
+      # import/share: удалённая (или скачанная) модель не появлялась/не исчезала в
+      # WebUI до перезапуска. Теперь /api/models/files пересканирует каталог по
+      # этому TTL, а фоновая горутина воркера пишет в лог, что именно изменилось
+      # (added/removed/resized). 0 = фоновая проверка выключена (скан по запросу
+      # и POST /api/models/refresh продолжают работать).
+      - CPPWORKER_MODELS_RESCAN_SEC=${CPPWORKER_MODELS_RESCAN_SEC:-30}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -121,6 +122,74 @@ type ModelManager struct {
 	totalScans   int64
 	lastScanTime time.Time
 	scanDuration time.Duration
+
+	// R93 (2026-10-09): живой инвентарь моделей.
+	//
+	// ЖАЛОБА: «надо почистить WebUI от моделей, что не лежат на диске, и отработать
+	// механизм, который проверяет наличие и фиксирует изменения без перезапуска
+	// контейнера». Живой случай: каталог моделей был bind-mount'ом
+	// (D:\ollama-legion-models → /app/models), каталог удалили, а /api/models/files
+	// продолжал отдавать 3 файла — потому что список лежал в кэше, а ScanModels
+	// вызывался только при старте и после import/share. Ошибка чтения каталога
+	// вообще оставляла старый кэш нетронутым (см. recordDirFailure).
+	rescanTTL    time.Duration // 0 = фоновой проверки нет (только явный ScanModels)
+	lastChangeAt time.Time
+	lastAdded    []string
+	lastRemoved  []string
+	lastResized  []string
+	dirError     string
+	dirErrorAt   time.Time
+	changeCount  int64
+}
+
+// DefaultModelRescanSec — период фоновой проверки каталога моделей.
+//
+// 30 с: достаточно, чтобы удаление/добавление файла (в т.ч. через WebUI, scp,
+// docker cp) появилось без перезапуска контейнера, и при этом скан каталога с
+// десятками GGUF не создаёт заметной нагрузки (os.ReadDir + Stat).
+const DefaultModelRescanSec = 30
+
+// EnvModelRescanSec — переменная окружения с периодом фоновой проверки (0 = выкл).
+const EnvModelRescanSec = "CPPWORKER_MODELS_RESCAN_SEC"
+
+// modelRescanTTLFromEnv разбирает CPPWORKER_MODELS_RESCAN_SEC.
+// Пусто/мусор → DefaultModelRescanSec; 0 → фоновая проверка выключена;
+// отрицательное → тоже выключена (явный request-time скан остаётся).
+func modelRescanTTLFromEnv() time.Duration {
+	v := strings.TrimSpace(os.Getenv(EnvModelRescanSec))
+	if v == "" {
+		return DefaultModelRescanSec * time.Second
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		logger.Get().Warnw("ModelManager: invalid "+EnvModelRescanSec+", using default",
+			"value", v, "default_sec", DefaultModelRescanSec)
+		return DefaultModelRescanSec * time.Second
+	}
+	if n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
+}
+
+// ModelInventoryStatus — снимок состояния каталога моделей для API/WebUI.
+//
+// Нужен, чтобы оператор видел не только список, но и КОГДА его проверяли и что
+// изменилось (иначе «модель исчезла из WebUI» невозможно отличить от «скан не
+// проходил»).
+type ModelInventoryStatus struct {
+	ScannedAt    time.Time `json:"scannedAt"`
+	ChangedAt    time.Time `json:"changedAt,omitempty"`
+	DirErrorAt   time.Time `json:"dirErrorAt,omitempty"`
+	Dir          string    `json:"dir"`
+	DirError     string    `json:"dirError,omitempty"`
+	Added        []string  `json:"added,omitempty"`
+	Removed      []string  `json:"removed,omitempty"`
+	Resized      []string  `json:"resized,omitempty"`
+	Count        int       `json:"count"`
+	Scans        int64     `json:"scans"`
+	Changes      int64     `json:"changes"`
+	RescanTTLSec int       `json:"rescanTtlSec"`
 }
 
 // NewModelManager создаёт новый ModelManager
@@ -131,6 +200,7 @@ func NewModelManager(modelsDir string, cfg Config) *ModelManager {
 		ggufFiles:   make(map[string]*GGUFModelMeta),
 		aliases:     make(map[string]GGUFAlias),
 		nameHistory: make(map[string]string),
+		rescanTTL:   modelRescanTTLFromEnv(),
 	}
 	// R60.61 (2026-09-14): restore persisted nameHistory (alias → path map).
 	// До этого фикса history терялся при рестарте → OpenWebUI с закешированным
@@ -329,26 +399,32 @@ func (m *ModelManager) ScanModels() ([]GGUFModelMeta, error) {
 	m.totalScans++
 	m.mu.Unlock()
 
-	// Проверяем существование директории
+	// Проверяем существование директории.
+	//
+	// R93: недоступный каталог (удалённый bind-mount, отвалившийся сетевой том)
+	// больше НЕ оставляет старый кэш — инвентарь обнуляется, причина пишется в
+	// dirError и уезжает в API. Иначе WebUI показывал модели, которых нет.
 	info, err := os.Stat(m.modelsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			log.Infow("models directory does not exist, creating",
 				"dir", m.modelsDir)
 			if mkErr := os.MkdirAll(m.modelsDir, 0755); mkErr != nil {
-				return nil, fmt.Errorf("create models dir: %w", mkErr)
+				// Живой случай: каталог был bind-mount'ом, том удалили —
+				// mkdir отвечает «File exists», а ls/ReadDir дают ENOENT.
+				return m.recordDirFailure(fmt.Errorf("create models dir: %w", mkErr))
 			}
 		} else {
-			return nil, fmt.Errorf("stat models dir: %w", err)
+			return m.recordDirFailure(fmt.Errorf("stat models dir: %w", err))
 		}
 	} else if !info.IsDir() {
-		return nil, fmt.Errorf("models path is not a directory: %s", m.modelsDir)
+		return m.recordDirFailure(fmt.Errorf("models path is not a directory: %s", m.modelsDir))
 	}
 
 	// Сканируем .gguf файлы
 	entries, err := os.ReadDir(m.modelsDir)
 	if err != nil {
-		return nil, fmt.Errorf("read models dir: %w", err)
+		return m.recordDirFailure(fmt.Errorf("read models dir: %w", err))
 	}
 
 	newFiles := make(map[string]*GGUFModelMeta)
@@ -459,21 +535,154 @@ func (m *ModelManager) ScanModels() ([]GGUFModelMeta, error) {
 		newAliases[name] = a
 	}
 
-	// Обновляем кэш
+	// Обновляем кэш + фиксируем ИЗМЕНЕНИЯ инвентаря (R93).
+	//
+	// Диф нужен, чтобы «модель исчезла/появилась» было видно в логе и в API, а не
+	// только по факту «список стал другим»: оператор должен понимать, что именно
+	// изменилось, без перезапуска контейнера.
 	m.mu.Lock()
+	added, removed, resized := diffInventory(m.ggufFiles, newFiles)
 	m.ggufFiles = newFiles
 	m.aliases = newAliases
 	m.lastScanTime = time.Now()
 	m.scanDuration = time.Since(start)
+	m.dirError = ""
+	m.dirErrorAt = time.Time{}
+	if len(added) > 0 || len(removed) > 0 || len(resized) > 0 {
+		m.lastChangeAt = time.Now()
+		m.lastAdded, m.lastRemoved, m.lastResized = added, removed, resized
+		m.changeCount++
+	}
+	changes := len(added) + len(removed) + len(resized)
 	m.mu.Unlock()
 
+	if changes > 0 {
+		log.Infow("model inventory changed",
+			"added", added, "removed", removed, "resized", resized,
+			"dir", m.modelsDir, "found", found)
+	}
 	log.Infow("model scan complete",
 		"found", found,
 		"aliases", aliasFound,
+		"changes", changes,
 		"dir", m.modelsDir,
 		"duration", m.scanDuration)
 
 	return m.ListModels(), nil
+}
+
+// diffInventory — что изменилось между двумя снимками каталога: добавленные,
+// удалённые и изменившие размер файлы (отсортированы, чтобы лог был стабильным).
+func diffInventory(oldFiles, newFiles map[string]*GGUFModelMeta) (added, removed, resized []string) {
+	for name, meta := range newFiles {
+		prev, ok := oldFiles[name]
+		if !ok {
+			added = append(added, name)
+			continue
+		}
+		if prev != nil && meta != nil && prev.SizeBytes != meta.SizeBytes {
+			resized = append(resized, name)
+		}
+	}
+	for name := range oldFiles {
+		if _, ok := newFiles[name]; !ok {
+			removed = append(removed, name)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	sort.Strings(resized)
+	return added, removed, resized
+}
+
+// recordDirFailure — каталог моделей недоступен: инвентарь ОБНУЛЯЕТСЯ.
+//
+// R93 (2026-10-09): раньше ошибка чтения каталога возвращалась наружу, а кэш
+// оставался прежним — WebUI продолжал показывать модели, которых на диске уже нет
+// (живой случай: bind-mount D:\ollama-legion-models удалили, /app/models даёт
+// «File exists» на mkdir и «No such file or directory» на ls). Теперь список
+// пуст, а причина лежит в dirError и уезжает в /api/models/files.
+func (m *ModelManager) recordDirFailure(cause error) ([]GGUFModelMeta, error) {
+	m.mu.Lock()
+	prev := make([]string, 0, len(m.ggufFiles))
+	for name := range m.ggufFiles {
+		prev = append(prev, name)
+	}
+	sort.Strings(prev)
+	m.ggufFiles = make(map[string]*GGUFModelMeta)
+	m.aliases = make(map[string]GGUFAlias)
+	m.dirError = cause.Error()
+	m.dirErrorAt = time.Now()
+	m.lastScanTime = time.Now()
+	if len(prev) > 0 {
+		m.lastChangeAt = time.Now()
+		m.lastAdded, m.lastRemoved, m.lastResized = nil, prev, nil
+		m.changeCount++
+	}
+	m.mu.Unlock()
+
+	logger.Get().Warnw("model inventory: models dir unavailable, inventory cleared",
+		"dir", m.modelsDir, "error", cause, "removed", prev)
+	// Возвращаем пустой список БЕЗ ошибки: вызывающий код (HTTP-хендлеры) должен
+	// отдать «моделей нет + причина», а не упасть. Операции импорта/удаления
+	// сообщают о своих ошибках сами.
+	return []GGUFModelMeta{}, nil
+}
+
+// ScanModelsIfStale — пересканировать каталог, если с прошлого скана прошло больше
+// rescanTTL (R93). Возвращает true, если скан выполнялся.
+//
+// Вызывается из /api/models/files и из фонового цикла воркера: так удаление или
+// добавление файла на диске становится видно без перезапуска контейнера.
+func (m *ModelManager) ScanModelsIfStale() bool {
+	m.mu.RLock()
+	ttl := m.rescanTTL
+	last := m.lastScanTime
+	m.mu.RUnlock()
+	if ttl <= 0 {
+		return false
+	}
+	if !last.IsZero() && time.Since(last) < ttl {
+		return false
+	}
+	_, _ = m.ScanModels()
+	return true
+}
+
+// SetRescanTTL — период фоновой проверки каталога (0 = выключить). Для тестов и
+// для оператора через env CPPWORKER_MODELS_RESCAN_SEC.
+func (m *ModelManager) SetRescanTTL(d time.Duration) {
+	m.mu.Lock()
+	m.rescanTTL = d
+	m.mu.Unlock()
+}
+
+// RescanTTL — текущий период фоновой проверки (0 = выключена).
+func (m *ModelManager) RescanTTL() time.Duration {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.rescanTTL
+}
+
+// InventoryStatus — снимок состояния инвентаря для API/WebUI.
+func (m *ModelManager) InventoryStatus() ModelInventoryStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	st := ModelInventoryStatus{
+		Dir:          m.modelsDir,
+		Count:        len(m.ggufFiles),
+		ScannedAt:    m.lastScanTime,
+		ChangedAt:    m.lastChangeAt,
+		Added:        append([]string(nil), m.lastAdded...),
+		Removed:      append([]string(nil), m.lastRemoved...),
+		Resized:      append([]string(nil), m.lastResized...),
+		DirError:     m.dirError,
+		DirErrorAt:   m.dirErrorAt,
+		Scans:        m.totalScans,
+		Changes:      m.changeCount,
+		RescanTTLSec: int(m.rescanTTL / time.Second),
+	}
+	return st
 }
 
 // ListAliases возвращает все алиасы моделей (отсортированы по имени).

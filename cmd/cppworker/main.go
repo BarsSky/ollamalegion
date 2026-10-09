@@ -396,6 +396,34 @@ func main() {
 	})
 
 	router := setupRouter()
+
+	// R93 (2026-10-09): фоновая проверка каталога моделей.
+	//
+	// ЗАЧЕМ. Каталог моделей может меняться без перезапуска контейнера (оператор
+	// удалил/скачал файл, docker cp, монтирование отвалилось). Раньше список
+	// обновлялся только на старте и после import/share, поэтому WebUI показывал
+	// модели-призраки, а новая модель не появлялась до рестарта. Теперь воркер сам
+	// раз в CPPWORKER_MODELS_RESCAN_SEC (default 30) сверяет каталог с диском и
+	// ПИШЕТ В ЛОГ, что изменилось (added/removed/resized); тот же скан выполняет
+	// /api/models/files по TTL. 0 = выключить фоновую проверку.
+	if mm := backend.ModelManager(); mm != nil {
+		if ttl := mm.RescanTTL(); ttl > 0 {
+			go func() {
+				ticker := time.NewTicker(ttl)
+				defer ticker.Stop()
+				for range ticker.C {
+					mm.ScanModelsIfStale()
+				}
+			}()
+			log.Infow("model inventory watcher started",
+				"interval_sec", int(ttl.Seconds()), "dir", mm.GetModelsDir(),
+				"env", cppbackend.EnvModelRescanSec, "hint", "0 отключает фоновую проверку")
+		} else {
+			log.Infow("model inventory watcher disabled (rescan TTL = 0)",
+				"env", cppbackend.EnvModelRescanSec, "dir", mm.GetModelsDir())
+		}
+	}
+
 	server := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Handler: router,

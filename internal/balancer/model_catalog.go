@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,7 +45,13 @@ import (
 //     должно ломать рабочий стенд.
 const (
 	// DefaultModelCatalogRefreshSec — период перечитывания списка файлов на диске.
-	DefaultModelCatalogRefreshSec = 300
+	//
+	// R93 (2026-10-09): 300 → 60. Воркер теперь и сам пересканирует каталог по TTL
+	// (CPPWORKER_MODELS_RESCAN_SEC, default 30 с), а балансеру нужно это заметить:
+	// при 300 с удалённая модель жила в WebUI до 5 минут, что и выглядело как
+	// «призраки». 60 с — компромисс: файловый листинг дешёвый, а задержка
+	// появления/исчезновения модели в WebUI ограничена ~1.5 минутами.
+	DefaultModelCatalogRefreshSec = 60
 
 	// EnvModelCatalogRefreshSec — переопределение периода, секунды (0 = выключить).
 	EnvModelCatalogRefreshSec = "LB_MODEL_CATALOG_REFRESH_SEC"
@@ -54,10 +61,15 @@ const (
 	modelCatalogFetchTimeout = 10 * time.Second
 )
 
+// ModelCatalogRefreshInterval — период фонового обновления каталога (экспорт для
+// админ-API: оператор должен видеть, с какой периодичностью балансер вообще
+// проверяет наличие моделей на диске).
+func ModelCatalogRefreshInterval() time.Duration { return modelCatalogRefreshInterval() }
+
 // modelCatalogRefreshInterval — период обновления каталога из окружения.
 //
 // LB_MODEL_CATALOG_REFRESH_SEC:
-//   - пусто        → DefaultModelCatalogRefreshSec (300 с);
+//   - пусто        → DefaultModelCatalogRefreshSec (60 с);
 //   - 0 или меньше → 0 = каталог не обновляется автоматически (выбор бэкенда
 //     работает как раньше);
 //   - не число     → default + WARN (опечатка в .env не ломает стенд и не прячется).
@@ -99,10 +111,27 @@ func normalizeCatalogModelName(name string) string {
 }
 
 // backendCatalogEntry — что известно о файлах одного бэкенда.
+//
+// R93 (2026-10-09): кроме списка храним ИЗМЕНЕНИЯ (added/removed/changedAt) и
+// причину недоступности каталога у воркера (dirError). Без этого оператор видел
+// только «список стал другим» и не мог отличить «файлы удалили» от «каталог
+// отвалился» — ровно та жалоба, из-за которой это и делалось.
 type backendCatalogEntry struct {
 	fetchedAt time.Time
+	changedAt time.Time
 	byName    map[string]string // нормализованное имя → имя у воркера
-	names     []string          // как у воркера (для API и логов)
+	dirError  string
+	names     []string // как у воркера (для API и логов)
+	added     []string
+	removed   []string
+}
+
+// catalogChange — результат обновления снимка: что изменилось и было ли изменение.
+type catalogChange struct {
+	DirError string
+	Added    []string
+	Removed  []string
+	Changed  bool
 }
 
 // modelCatalog — потокобезопасный кэш «какие модели лежат на диске у бэкенда».
@@ -120,14 +149,19 @@ func newModelCatalog() *modelCatalog {
 }
 
 // store — записать список файлов бэкенда (ключи нормализуются).
-func (mc *modelCatalog) store(backendID string, names []string, now time.Time) {
+//
+// R93: возвращает, ЧТО изменилось по сравнению с предыдущим снимком: добавленные
+// и удалённые модели (нормализованные ключи, отсортированы) + признак изменения.
+// Первый снимок изменением не считается (было «не знаем» → стало «знаем»).
+func (mc *modelCatalog) store(backendID string, names []string, dirError string, now time.Time) catalogChange {
 	if mc == nil || backendID == "" {
-		return
+		return catalogChange{}
 	}
 	entry := &backendCatalogEntry{
 		fetchedAt: now,
 		byName:    make(map[string]string, len(names)),
 		names:     make([]string, 0, len(names)),
+		dirError:  strings.TrimSpace(dirError),
 	}
 	for _, n := range names {
 		n = strings.TrimSpace(n)
@@ -139,9 +173,41 @@ func (mc *modelCatalog) store(backendID string, names []string, now time.Time) {
 			entry.byName[key] = n
 		}
 	}
+
 	mc.mu.Lock()
+	prev := mc.byID[backendID]
+	var change catalogChange
+	if prev != nil {
+		for key, name := range entry.byName {
+			if _, ok := prev.byName[key]; !ok {
+				change.Added = append(change.Added, name)
+			}
+		}
+		for key, name := range prev.byName {
+			if _, ok := entry.byName[key]; !ok {
+				change.Removed = append(change.Removed, name)
+			}
+		}
+		sort.Strings(change.Added)
+		sort.Strings(change.Removed)
+		change.Changed = len(change.Added) > 0 || len(change.Removed) > 0
+		if change.Changed {
+			entry.changedAt = now
+			entry.added = change.Added
+			entry.removed = change.Removed
+		} else {
+			// Изменений нет — сохраняем последнюю ИСТОРИЮ изменения, чтобы WebUI
+			// мог показать «последнее изменение: N минут назад».
+			entry.changedAt = prev.changedAt
+			entry.added = prev.added
+			entry.removed = prev.removed
+		}
+	}
+	entry.dirError = strings.TrimSpace(dirError)
+	change.DirError = entry.dirError
 	mc.byID[backendID] = entry
 	mc.mu.Unlock()
+	return change
 }
 
 // lookup — есть ли модель на диске бэкенда.
@@ -212,6 +278,10 @@ func (mc *modelCatalog) snapshot() map[string]ModelCatalogSnapshot {
 		out[id] = ModelCatalogSnapshot{
 			Files:     append([]string{}, entry.names...),
 			FetchedAt: entry.fetchedAt,
+			ChangedAt: entry.changedAt,
+			Added:     append([]string{}, entry.added...),
+			Removed:   append([]string{}, entry.removed...),
+			DirError:  entry.dirError,
 			AgeSec:    int(now.Sub(entry.fetchedAt).Seconds()),
 		}
 	}
@@ -220,10 +290,14 @@ func (mc *modelCatalog) snapshot() map[string]ModelCatalogSnapshot {
 
 // ModelCatalogSnapshot — снимок каталога одного бэкенда (для JSON-ответа).
 //
-// Порядок полей — time.Time, затем срез, затем скаляр (govet fieldalignment).
+// Порядок полей — time.Time, затем срезы, затем скаляры (govet fieldalignment).
 type ModelCatalogSnapshot struct {
 	FetchedAt time.Time `json:"fetchedAt"`
+	ChangedAt time.Time `json:"changedAt,omitempty"`
+	DirError  string    `json:"dirError,omitempty"`
 	Files     []string  `json:"files"`
+	Added     []string  `json:"added,omitempty"`
+	Removed   []string  `json:"removed,omitempty"`
 	AgeSec    int       `json:"ageSec"`
 }
 
@@ -261,18 +335,22 @@ func (p *Proxy) backendEndpointSnapshot(backendID string) (base, token string, o
 }
 
 // fetchBackendModelCatalog — прочитать список файлов (и алиасов) у воркера.
-func (p *Proxy) fetchBackendModelCatalog(ctx context.Context, backendID string) ([]string, error) {
+//
+// R93: вместе со списком возвращаем dirError воркера — «каталог моделей
+// недоступен» (удалённый bind-mount, отвалившийся том). Это НЕ то же самое, что
+// «моделей нет»: список в обоих случаях пуст, а причина видна только здесь.
+func (p *Proxy) fetchBackendModelCatalog(ctx context.Context, backendID string) ([]string, string, error) {
 	base, token, ok := p.backendEndpointSnapshot(backendID)
 	if !ok {
-		return nil, fmt.Errorf("backend %q not found or has no reachable endpoint", backendID)
+		return nil, "", fmt.Errorf("backend %q not found or has no reachable endpoint", backendID)
 	}
 	url := base + "/api/models/files"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	// Токен воркера — если он у записи есть (cppworker с включённой auth).
+	// Токен воркера — если он у записи есть (cppworker с включенной auth).
 	if tok := strings.TrimSpace(token); tok != "" {
 		req.Header.Set("X-API-Token", tok)
 		req.Header.Set("Authorization", "Bearer "+tok)
@@ -280,11 +358,11 @@ func (p *Proxy) fetchBackendModelCatalog(ctx context.Context, backendID string) 
 
 	resp, err := catalogHTTPClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	var doc struct {
@@ -294,9 +372,10 @@ func (p *Proxy) fetchBackendModelCatalog(ctx context.Context, backendID string) 
 		Aliases []struct {
 			Name string `json:"name"`
 		} `json:"aliases"`
+		DirError string `json:"dirError"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
-		return nil, fmt.Errorf("decode /api/models/files: %w", err)
+		return nil, "", fmt.Errorf("decode /api/models/files: %w", err)
 	}
 
 	names := make([]string, 0, len(doc.Files)+len(doc.Aliases))
@@ -310,7 +389,7 @@ func (p *Proxy) fetchBackendModelCatalog(ctx context.Context, backendID string) 
 			names = append(names, n)
 		}
 	}
-	return names, nil
+	return names, strings.TrimSpace(doc.DirError), nil
 }
 
 // refreshBackendModelCatalog — обновить каталог одного бэкенда.
@@ -321,15 +400,60 @@ func (p *Proxy) refreshBackendModelCatalog(backendID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), modelCatalogFetchTimeout)
 	defer cancel()
 
-	names, err := p.fetchBackendModelCatalog(ctx, backendID)
+	names, dirErr, err := p.fetchBackendModelCatalog(ctx, backendID)
 	if err != nil {
 		// Не ошибка уровня стенда: воркер мог моргнуть на reload. Каталог
 		// остаётся прежним, следующий цикл попробует снова.
 		logger.Get().Debugw("model catalog: fetch failed", "backend", backendID, "error", err)
 		return
 	}
-	p.modelCatalog.store(backendID, names, time.Now())
-	logger.Get().Debugw("model catalog refreshed", "backend", backendID, "files", len(names))
+	change := p.modelCatalog.store(backendID, names, dirErr, time.Now())
+	if change.Changed {
+		// R93: изменение инвентаря фиксируем явно — в лог и в EventBus (колокольчик
+		// и recent-errors в WebUI). Оператор узнаёт, что модели появились/исчезли,
+		// без похода по воркерам и без перезапуска контейнеров.
+		logger.Get().Infow("model catalog changed",
+			"backend", backendID, "added", change.Added, "removed", change.Removed,
+			"files", len(names))
+		p.publishModelInventoryChanged(backendID, change, len(names))
+	} else {
+		logger.Get().Debugw("model catalog refreshed",
+			"backend", backendID, "files", len(names), "dir_error", dirErr)
+	}
+	if dirErr != "" {
+		logger.Get().Warnw("model catalog: worker reports models dir unavailable",
+			"backend", backendID, "dir_error", dirErr)
+	}
+}
+
+// publishModelInventoryChanged — уведомление об изменении инвентаря моделей.
+//
+// Дедупликация по составу изменения: повторные снимки с тем же дифом не спамят
+// (каталог обновляется каждые LB_MODEL_CATALOG_REFRESH_SEC).
+func (p *Proxy) publishModelInventoryChanged(backendID string, change catalogChange, total int) {
+	if p == nil {
+		return
+	}
+	key := "model_inventory_changed|" + strings.Join(change.Added, ",") + "|" + strings.Join(change.Removed, ",")
+	msg := "Изменён состав моделей на диске: " + backendID
+	if len(change.Added) > 0 {
+		msg += ", добавлено: " + strings.Join(change.Added, ", ")
+	}
+	if len(change.Removed) > 0 {
+		msg += ", удалено: " + strings.Join(change.Removed, ", ")
+	}
+	severity := types.SeverityInfo
+	if len(change.Removed) > 0 && len(change.Added) == 0 {
+		severity = types.SeverityWarning
+	}
+	p.publishLoadFailureEventDeduped(backendID, key, severity, msg, map[string]interface{}{
+		"event_kind":      "model_inventory_changed",
+		"backend":         backendID,
+		"added":           change.Added,
+		"removed":         change.Removed,
+		"files_total":     total,
+		"catalog_refresh": EnvModelCatalogRefreshSec,
+	})
 }
 
 // refreshStaleModelCatalogs — обновить каталоги бэкендов, у которых снимок протух.

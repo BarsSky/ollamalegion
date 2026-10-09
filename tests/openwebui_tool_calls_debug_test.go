@@ -5,10 +5,11 @@
 // и явно логирует, на каком этапе теряется информация о tool_calls.
 //
 // Сценарии:
-//   A. llama.cpp/cppworker SSE с delta.tool_calls и [DONE] — happy path через proxyRequestLlamaCpp.
-//   B. Ollama-бэкенд NDJSON напрямую — путь через proxyRequest (без SSE-трансляции).
-//   C. Mock как в expanded_mock.go для tools (NDJSON без [DONE]) — проверка регрессии.
-//   D. cppworker behavior: text content + role chunk + tool_calls chunk + [DONE] — полная имитация.
+//
+//	A. llama.cpp/cppworker SSE с delta.tool_calls и [DONE] — happy path через proxyRequestLlamaCpp.
+//	B. Ollama-бэкенд NDJSON напрямую — путь через proxyRequest (без SSE-трансляции).
+//	C. Mock как в expanded_mock.go для tools (NDJSON без [DONE]) — проверка регрессии.
+//	D. cppworker behavior: text content + role chunk + tool_calls chunk + [DONE] — полная имитация.
 package tests
 
 import (
@@ -238,8 +239,8 @@ func setupLlamaCppProxy(t *testing.T, backendSrvURL string) (*httptest.Server, *
 	proxy := balancer.NewProxy(config)
 	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("cppworker-test", &types.BackendMetrics{
-		ID: "cppworker-test",
-		GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
+		ID:     "cppworker-test",
+		GPU:    types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
 		System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, MemoryUsed: 16000, MemoryFree: 49536, DiskFree: 20480},
 		Ollama: types.OllamaMetrics{
 			MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
@@ -262,15 +263,18 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioA_CppWorkerSSE(t *testing.T) {
 	t.Logf("OpenWebUI request body: %s", string(requestBody))
 
 	var backendRequestCount int64
-	var capturedBody string
 
 	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&backendRequestCount, 1)
 		body, _ := io.ReadAll(r.Body)
-		capturedBody = string(body)
 
+		// R91 (2026-10-09): логируем ЛОКАЛЬНУЮ копию тела запроса, а не общую
+		// переменную теста. Раньше тело складывалось в `capturedBody`, который
+		// писали и читали HTTP-горутины разных запросов — DATA RACE в полном
+		// прогоне `go test -race ./tests/` (падение приписывалось случайному тесту
+		// пакета, в CI это выглядело как флак TestImageSmoke_n8n_*).
 		t.Logf("\n[BALANCER → BACKEND] %s %s", r.Method, r.URL.Path)
-		t.Logf("Backend body: %s", capturedBody)
+		t.Logf("Backend body: %s", string(body))
 		var req map[string]interface{}
 		if err := json.Unmarshal(body, &req); err == nil {
 			if tools, ok := req["tools"]; ok {
@@ -369,8 +373,8 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioB_OllamaDirect(t *testing.T) {
 				"content":    "",
 				"tool_calls": toolCalls,
 			},
-			"done":          true,
-			"done_reason":   "stop",
+			"done":           true,
+			"done_reason":    "stop",
 			"total_duration": 1234567890,
 		}
 		data, _ := json.Marshal(chunk)

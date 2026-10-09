@@ -26,11 +26,47 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/types"
 )
+
+// getModelsAwaiting — GET /v1/models и ожидание нужной подстроки.
+//
+// R91 (2026-10-09): почему ожидание, а не один запрос. Список моделей собирается
+// из живой картины кластера (image-бэкенд должен быть виден как активный:
+// imageModelIDsForModelsList → filterBackendsByType/getAllActiveBackendsByType).
+// На загруженном раннере под -race первый же запрос иногда приходил раньше, чем
+// стенд это состояние отдавал, и тест падал на «нет dall-» — флак
+// TestImageSmoke_n8n_LegacyOpenAINode в CI (шаг tests, -race -short). Опрашиваем
+// до таймаута и в сообщении об ошибке показываем статус и тело последнего ответа:
+// без этого по логу нельзя понять, был ли это пустой список или ошибка.
+func getModelsAwaiting(t *testing.T, surfaceURL, want string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastBody string
+	var lastStatus int
+	for {
+		resp, err := http.Get(surfaceURL + "/v1/models")
+		if err != nil {
+			t.Fatalf("GET /v1/models failed: %v", err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		lastBody, lastStatus = string(raw), resp.StatusCode
+		if strings.Contains(lastBody, want) {
+			return lastBody
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("/v1/models не содержит %q за %s: status=%d body=%s",
+				want, timeout, lastStatus, lastBody)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
 
 // b64PNGStub — «картинка» в том виде, в каком её отдаёт sd-server
 // (base64 PNG в data[].b64_json / images[]).
@@ -151,9 +187,12 @@ func setupImageSmoke(t *testing.T, withImage bool) (*httptest.Server, *imageWork
 
 	// Текстовый бэкенд — отдельный мок, чтобы текстовый flow не висел на
 	// закрытом порту и тест оставался быстрым.
-	textHits := 0
+	// R91: счётчик инкрементируется в HTTP-handler'е (своя горутина на запрос) —
+	// обычный int здесь был бы гонкой, которую `-race` приписал бы случайному тесту
+	// пакета. Пишем атомарно.
+	var textHits atomic.Int64
 	textMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		textHits++
+		textHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"models":[],"message":{"role":"assistant","content":"ok"},"done":true}`))
 	}))
@@ -232,15 +271,9 @@ func TestImageSmoke_SillyTavern_SdcppSource(t *testing.T) {
 	}
 
 	// 2) Список моделей: ST читает data[].id / data[].name.
-	resp, err = http.Get(surface.URL + "/v1/models")
-	if err != nil {
-		t.Fatalf("GET /v1/models failed: %v", err)
-	}
-	modelsBody, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if !strings.Contains(string(modelsBody), "sd-cpp-local") {
-		t.Fatalf("/v1/models must expose sd-cpp-local (ST reads it as model id), got %s", modelsBody)
-	}
+	// R91: с ожиданием — список моделей зависит от того, видит ли кластер
+	// image-бэкенд активным (см. getModelsAwaiting).
+	getModelsAwaiting(t, surface.URL, "sd-cpp-local", 5*time.Second)
 
 	// 3) Генерация: ровно такое тело шлёт ST для источника sdcpp.
 	stBody := `{"model":"sd-cpp-local","prompt":"a cat sitting on a chair","negative_prompt":"blurry",
@@ -387,24 +420,22 @@ func TestImageSmoke_n8n_LegacyOpenAINode(t *testing.T) {
 	surface, _, _ := setupImageSmoke(t, true)
 
 	// Дропдаун модели в n8n фильтрует id по префиксу "dall-".
-	resp, err := http.Get(surface.URL + "/v1/models")
-	if err != nil {
-		t.Fatalf("GET /v1/models failed: %v", err)
-	}
-	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if !strings.Contains(string(raw), `"dall-`) {
-		t.Fatalf("n8n model dropdown filters ids by ^dall- ; got %s", raw)
-	}
+	//
+	// R91 (2026-10-09): раньше здесь был один GET без проверки статуса, и на
+	// загруженном CI-раннере под -race список моделей изредка приходил ещё без
+	// алиасов — тест падал «нет dall-» с пустым сообщением в логе (шаг
+	// tests, -race -short). Теперь ждём появления алиаса и печатаем статус+тело,
+	// если не дождались.
+	getModelsAwaiting(t, surface.URL, `"dall-`, 5*time.Second)
 
 	// Нода всегда шлёт response_format=b64_json при responseFormat=binaryData.
 	body := `{"model":"dall-e-2","prompt":"a robot","response_format":"b64_json"}`
-	resp, err = http.Post(surface.URL+"/v1/images/generations", "application/json", strings.NewReader(body))
+	resp, err := http.Post(surface.URL+"/v1/images/generations", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("failed: %v", err)
 	}
 	defer resp.Body.Close()
-	raw, _ = io.ReadAll(resp.Body)
+	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(raw), "b64_json") {
 		t.Fatalf("n8n needs data[].b64_json, status=%d body=%s", resp.StatusCode, raw)
 	}

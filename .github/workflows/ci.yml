@@ -474,7 +474,13 @@ jobs:
           # R60.29: bump 180s → 300s. R52.4b TestMain watchdog убран.
           # internal/balancer tests с leaked goroutines занимают 60-90s
           # в ubuntu-latest. 300s = matches self-hosted job per-step timeout.
-          go test -race -tags llama_stub -timeout 300s -v ./internal/balancer/ 2>&1 | tail -20
+          #
+          # R91 (2026-10-09): через run_go_test.sh, а не `| tail -20`. tail прятал
+          # ИМЯ упавшего теста: в прогоне 37914550305 от internal/balancer в логе
+          # остались только PASS-строки хвоста и `FAIL <pkg>` — по такому логу
+          # нельзя понять, что именно упало (ровно та проблема, ради которой
+          # run_go_test.sh и написан, см. его заголовок).
+          scripts/run_go_test.sh "internal/balancer (-race)" -race -tags llama_stub -timeout 300s ./internal/balancer/
 
       - name: Test internal/config (no race)
         if: always()
@@ -500,7 +506,10 @@ jobs:
           # Ловит регрессии маршрутизации/нормализации без внешних процессов:
           # 7 клиентских сценариев (SillyTavern, Open WebUI, LibreChat,
           # AnythingLLM, n8n) + изоляция текста + OpenAI-конверт ошибки.
-          go test -tags llama_stub -timeout 120s -run 'TestImageSmoke' -v ./tests/ 2>&1 | tail -30
+          #
+          # R91 (2026-10-09): run_go_test.sh вместо `| tail -30` — при падении
+          # печатает имена упавших тестов с их сообщениями, а не только хвост.
+          scripts/run_go_test.sh "image chain smoke" -tags llama_stub -timeout 120s -run 'TestImageSmoke' ./tests/
 
       - name: Test internal/rpccoordinator (no race)
         if: always()

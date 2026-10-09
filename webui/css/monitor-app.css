@@ -87,10 +87,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .overlay .spinner { width: 32px; height: 32px; border: 3px solid var(--border-color); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 main { display: flex; flex-direction: column; height: calc(100vh - 45px); overflow: hidden; }
-/* R92 (2026-10-09): полоса топологии — прокручиваемое поле.
+/* R92 (2026-10-09): полоса топологии - прокручиваемое поле.
    Раньше .topo-section сам держал канвас и статистику (padding-bottom:52px +
    .stats-bar{position:absolute;bottom:0}), поэтому полотно не могло быть выше
-   окна: раскладка прятала узлы за «+N». Теперь статистика — обычный футер
+   окна: раскладка прятала узлы за «+N». Теперь статистика - обычный футер
    секции, а канвас живёт в .topo-viewport и растёт под данные (canvas-topology.js:
    layoutCanvas), полоса прокручивается. */
 .topo-section { flex: 1 1 auto; position: relative; min-height: 260px; display: flex; flex-direction: column; overflow: hidden; }

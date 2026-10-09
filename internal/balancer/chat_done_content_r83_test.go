@@ -62,7 +62,11 @@ const liveDoneChunk = `{"created_at":"2026-09-27T14:09:54Z","done":true,"done_re
 // TestR83_StripNativeDoneContent_RemovesText — текст из done-чанка уходит, статы
 // остаются: именно это делает ответ неотличимым от Ollama.
 func TestR83_StripNativeDoneContent_RemovesText(t *testing.T) {
-	out := stripNativeDoneContent(liveDoneChunk)
+	// Текст, который уже уехал клиенту дельтами: cppworker кладёт в done-чанк тот
+	// же текст целиком (измерено на живом стенде — 63 символа в дельтах и те же
+	// 63 в done-чанке), поэтому дельты содержат текст done-чанка.
+	streamed := "<think>\nThe user wants me to reply with exactly \"OK\". This is a"
+	out := stripNativeDoneContent(liveDoneChunk, streamed)
 
 	var got map[string]interface{}
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
@@ -104,9 +108,46 @@ func TestR83_StripNativeDoneContent_LeavesOtherChunksAlone(t *testing.T) {
 		`{not json at all`,
 	}
 	for _, in := range cases {
-		if got := stripNativeDoneContent(in); got != in {
+		if got := stripNativeDoneContent(in, "текст уже отдан дельтами"); got != in {
 			t.Errorf("не-done чанк изменён:\n in: %s\nout: %s", in, got)
 		}
+	}
+}
+
+// TestR91_StripNativeDoneContent_KeepsOnlyCarrierOfTheAnswer — R91 (2026-10-09):
+// если дельтами ничего не отдано, текст done-чанка — ЕДИНСТВЕННЫЙ носитель
+// ответа, и вычищать его нельзя.
+//
+// Живой дефект (CI: tests/llamacpp_proxy TestChatStreaming,
+// TestResponseNotMarkdownBold/streaming; tests TestProxyOllama_*): апстрим отдал
+// весь ответ одним финальным чанком — балансер вычищал content безусловно, и
+// клиент получал `done:true` с пустым message.content, то есть пустой ответ.
+// Так же выглядит наш собственный фолбэк cppworker, когда модель ушла в
+// незакрытый reasoning и видимый текст удаётся отдать только в финале.
+func TestR91_StripNativeDoneContent_KeepsOnlyCarrierOfTheAnswer(t *testing.T) {
+	in := `{"created_at":"2026-10-09T10:30:00Z","done":true,"done_reason":"stop",` +
+		`"message":{"content":"Привет! Я работающая модель llama.cpp.","role":"assistant"},` +
+		`"model":"test-model"}`
+	if got := stripNativeDoneContent(in, ""); got != in {
+		t.Errorf("ответ потерян: единственный носитель текста вычищен\n in: %s\nout: %s", in, got)
+	}
+	// И то же самое, когда дельты были, но без текста (role-only чанки).
+	if got := stripNativeDoneContent(in, "   "); got != in {
+		t.Errorf("пробельные дельты не должны считаться «текст уже отдан»:\n%s", got)
+	}
+	// А когда текст уже уехал дельтами — снимаем дубль (поведение R83 §9.7).
+	streamed := "Привет! Я работающая модель llama.cpp."
+	out := stripNativeDoneContent(in, streamed)
+	var chunk map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &chunk); err != nil {
+		t.Fatalf("чанк не парсится: %v (%s)", err, out)
+	}
+	msg, _ := chunk["message"].(map[string]interface{})
+	if content, _ := msg["content"].(string); content != "" {
+		t.Errorf("дубль не снят: content = %q", content)
+	}
+	if done, _ := chunk["done"].(bool); !done {
+		t.Error("done потерян при снятии дубля")
 	}
 }
 
@@ -119,7 +160,7 @@ func TestR83_StripNativeDoneContent_DoneWithoutMessage(t *testing.T) {
 		`{"done":true,"message":{"content":null,"role":"assistant"},"eval_count":3}`, // content null
 	}
 	for _, in := range cases {
-		if got := stripNativeDoneContent(in); got != in {
+		if got := stripNativeDoneContent(in, "текст уже отдан дельтами"); got != in {
 			t.Errorf("чанк без текста изменён:\n in: %s\nout: %s", in, got)
 		}
 	}

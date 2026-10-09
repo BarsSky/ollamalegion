@@ -299,9 +299,20 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
 				isIdleTimeout = true
-			} else if err == io.EOF && time.Since(lastActivity) > (idleTimeout*60/100) {
+			} else if err == io.EOF && idleTimeout > 0 && time.Since(lastActivity) > (idleTimeout*60/100) {
 				// EOF пришёл после >60% idleTimeout с последнего чанка —
 				// вероятно Go-сокет конвертировал timeout в EOF. Помечаем как timeout.
+				//
+				// R91 (2026-10-09): только при ЗАДАННОМ idleTimeout. Без этой
+				// проверки idleTimeout=0 (0 = «капа нет» по доктрине таймаутов —
+				// конфиг без StreamingIdleTimeout) давал порог 0*60/100 = 0, и ЛЮБОЙ
+				// чистый EOF классифицировался как idle timeout: клиент получал
+				// `event: error {"error":"idle_timeout"...}` и `done:true` ПОСЛЕ
+				// успешного стрима. Ловилось интеграционными тестами
+				// (tests: /api/create, /api/pull, /api/push, TestTransferEncoding_
+				// RealOllamaNdjson, TestStreamingSession_CompleteLifecycle): в
+				// ответе появлялся лишний error-эвент, а последнее событие теряло
+				// свой status.
 				isIdleTimeout = true
 			}
 			if isIdleTimeout {

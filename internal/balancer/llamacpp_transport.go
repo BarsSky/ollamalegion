@@ -782,6 +782,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				}
 			}
 			var nativeChunk map[string]interface{}
+			// R91 (2026-10-09): текст, отданный ДЕЛЬТАМИ до этой строки. Нужен,
+			// чтобы снимать дубль в done-чанке только тогда, когда ответ уже уехал
+			// клиенту дельтами (см. stripNativeDoneContent).
+			streamedBeforeThisLine := accumulatedPlainContent
 			if err := json.Unmarshal([]byte(trimmed), &nativeChunk); err != nil {
 				// Не JSON (например, SSE-комментарий от старой версии
 				// cppworker) — отдаём как есть, клиент сам решит.
@@ -871,12 +875,20 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// ""`, и OpenWebUI с ней работает — значит дубль ломает именно
 			// клиентов, конкатенирующих чанки. Оставляем все статы.
 			//
+			// R91 (2026-10-09): ТОЛЬКО если текст уже уехал дельтами. Раньше
+			// content вычищался безусловно, и апстрим, отдавший весь ответ ОДНИМ
+			// финальным чанком (mock/статический ответ/фолбэк cppworker, когда
+			// модель ушла в незакрытый reasoning и текст отдан в done-чанке),
+			// терял ответ целиком: клиент получал done:true с пустым content.
+			// Именно это ловили tests/llamacpp_proxy (TestChatStreaming,
+			// TestResponseNotMarkdownBold/streaming) и tests (TestProxyOllama_*).
+			//
 			// ВАЖНО: accumulatedPlainContent/upstreamDoneContent выше уже
 			// накопили полный текст (для R60.21 auto-continue) — здесь правится
 			// только то, что уходит по проводу.
 			outLine := trimmed
 			if nativeDoneContentStrippingEnabled() {
-				outLine = stripNativeDoneContent(trimmed)
+				outLine = stripNativeDoneContent(trimmed, streamedBeforeThisLine)
 			}
 			n, errFwd := fmt.Fprintf(w, "%s\n", outLine)
 			bytesForwarded += int64(n)
@@ -1755,12 +1767,20 @@ func getEffectiveStreamTimeoutSec(p *Proxy, modelName string, isStreaming bool) 
 // конкатенирующие чанки, получают ответ дважды — измерено на живом балансере:
 // 63 символа в дельтах и те же 63 в done-чанке.
 //
+// R91 (2026-10-09). УСЛОВИЕ: `streamedContent` — текст, уже отданный дельтами
+// (может быть пустым). Если дельт не было, текст done-чанка — ЕДИНСТВЕННЫЙ носитель
+// ответа, и вычищать его нельзя: клиент получил бы `done:true` с пустым content
+// (это ловили integration-тесты tests/llamacpp_proxy и tests). Так выглядит
+// законный случай: апстрим отдал весь ответ одним финальным чанком (статический
+// ответ, mock-воркер, либо наш же фолбэк cppworker, когда модель ушла в
+// незакрытый reasoning-блок и видимый текст удалось отдать только в финале).
+//
 // ЧТО НЕ МЕНЯЕТСЯ: `done`, `done_reason`, `eval_count`, `prompt_eval_count`,
 // `total_duration`, `load_duration`, `eval_duration`, `prompt_eval_duration`,
 // `model`, `created_at` — всё остаётся как пришло. Не-done чанки и любая строка,
 // которую не удалось разобрать, возвращаются байт-в-байт: этот код не имеет
 // права испортить поток, если формат неожиданный.
-func stripNativeDoneContent(line string) string {
+func stripNativeDoneContent(line, streamedContent string) string {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" || !strings.HasPrefix(trimmed, "{") {
 		return line
@@ -1780,6 +1800,19 @@ func stripNativeDoneContent(line string) string {
 	content, _ := msg["content"].(string)
 	if content == "" {
 		return line
+	}
+	// Дельтами ничего не отдано — это единственный носитель ответа, оставляем.
+	if strings.TrimSpace(streamedContent) == "" {
+		return line
+	}
+	// Страховка от потери: если текст done-чанка НЕ совпадает с уже отданным,
+	// апстрим поменял семантику, и мы, возможно, режем не дубль, а новый текст.
+	// Тогда это видно в логе (WARN), а не только в жалобе клиента.
+	if !strings.Contains(streamedContent, strings.TrimSpace(content)) {
+		logger.Get().Warnw("stripNativeDoneContent: текст done-чанка не совпадает с "+
+			"уже отданным дельтами — снимаем его как дубль, но апстрим мог изменить "+
+			"семантику финального чанка",
+			"done_content_len", len(content), "streamed_len", len(streamedContent))
 	}
 	msg["content"] = ""
 	out, err := json.Marshal(chunk)

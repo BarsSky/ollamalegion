@@ -14,19 +14,72 @@
   var panStartX = 0, panStartY = 0;
   var panViewportStart = { offsetX: 0, offsetY: 0 };
 
-  function rsz() {
-    var r = cv.parentElement.getBoundingClientRect();
-    var h = Math.max(100, r.height - 52);
-    cv.width = r.width;
+  // layoutCanvas — «поле расширяется под данные».
+  //
+  // R92 (2026-10-09). Раньше высота полотна всегда равнялась высоте окна
+  // (r.height - 52), а раскладка подгоняла число плиток под неё и лишние прятала
+  // за «+N». Теперь наоборот: раскладка требует высоту под ВСЕ узлы с полным
+  // шагом (MonitorApp.columnNeedH), а полотно растёт до неё, и полоса топологии
+  // прокручивается (CSS .topo-viewport{overflow-y:auto}).
+  //
+  // Предохранители: MA.GEOM.maxCanvasH (память под bitmap) и maxNodes — только
+  // для патологического кластера; до них все узлы видны.
+  var lastCanvasH = 0;
+  var userScrolled = false;
+  var programmaticScroll = false;
+
+  function applyScrollGuard(host) {
+    if (!host || host.__topoScrollGuard) return;
+    host.__topoScrollGuard = true;
+    host.addEventListener('scroll', function() {
+      if (programmaticScroll) return;
+      userScrolled = true;
+    }, { passive: true });
+  }
+
+  function layoutCanvas() {
+    var host = cv.parentElement;
+    if (!host) return;
+    applyScrollGuard(host);
+    var r = host.getBoundingClientRect();
+    var visH = Math.max(120, Math.round(r.height));
+    var visW = Math.max(160, Math.round(r.width));
+    var needH = Math.max(MA.columnNeedH('session'), MA.columnNeedH('backend'));
+    var h = Math.max(visH, Math.min(needH, MA.GEOM.maxCanvasH));
+
+    cv.width = visW;
     cv.height = h;
     cv.style.height = h + 'px';
-    MA.topo.w = r.width;
+    MA.topo.w = visW;
     MA.topo.h = h;
+
+    // Конвейер — оверлей поверх той же полосы: держим его в тех же координатах,
+    // иначе при выросшем полотне bitmap и CSS-бокс разъезжаются и частицы
+    // «уезжают» (масштабирование канваса по CSS).
+    var ccv = document.getElementById('conveyorCanvas');
+    if (ccv) {
+      ccv.style.width = visW + 'px';
+      ccv.style.height = h + 'px';
+    }
+
+    // Хаб (центр полотна) должен оставаться в центре видимой области, иначе при
+    // росте числа узлов он уезжает за экран.
+    var max = Math.max(0, h - visH);
+    if (max > 0 && (!userScrolled || lastCanvasH !== h)) {
+      programmaticScroll = true;
+      host.scrollTop = max / 2;
+      var flag = function() { programmaticScroll = false; };
+      if (typeof setTimeout === 'function') setTimeout(flag, 0); else flag();
+    }
+    lastCanvasH = h;
   }
+  function rsz() { layoutCanvas(); }
   window.addEventListener('resize', rsz);
   rsz();
 
   function updateTopology(bk, ss, q, recentClients, warmingUpModels) {
+    var prevSess = MA.topo.sessions ? MA.topo.sessions.length : 0;
+    var prevBack = MA.topo.backends ? MA.topo.backends.length : 0;
     MA.topo.backends = bk;
     // R91 (2026-10-08): сначала самые СВЕЖИЕ клиенты. Когда узлов больше, чем
     // влезает в колонку, не поместившиеся не рисуются (вместо них счётчик «+N»),
@@ -40,6 +93,12 @@
     MA.topo.queue = q;
     MA.topo.recentClients = recentClients || [];
     MA.topo.warmingUpModels = warmingUpModels || [];
+    // Сменился «состав» кластера — снова держим хаб по центру (оператор не
+    // пострадал: его собственная прокрутка сбрасывается только на смене состава).
+    if (prevSess !== MA.topo.sessions.length || prevBack !== MA.topo.backends.length) {
+      userScrolled = false;
+    }
+    layoutCanvas();
   }
   window.updateTopology = updateTopology;
 
@@ -256,6 +315,20 @@
     var byTop = cY - bh / 2, byBot = cY + bh / 2;
 
     // --- Request particles: client -> balancer (L-path via elbow)
+    //
+    // R92 (2026-10-09): вероятность подъёма зависит от числа «живых» сессий.
+    // Раньше было жёсткое `Math.random() < 0.08` на сессию — при 1-2 активных
+    // клиентах поток частиц выглядел пустым («частицы не рисуются»), хотя трафик
+    // есть. Теперь при нескольких свежих сессиях частота растёт (потолок 0.5).
+    var recentSessions = 0;
+    for (var ci = 0; ci < visLimit('session', MA.topo.sessions.length); ci++) {
+      var cs = MA.topo.sessions[ci];
+      var cnm = (cs.clientName || '').toLowerCase();
+      if (cnm.indexOf('monitor') >= 0 || cnm.indexOf('health') >= 0 || cnm.indexOf('kube') >= 0) continue;
+      var cidle = cs.lastRequestAt ? (now - new Date(cs.lastRequestAt).getTime()) : 999999;
+      if (cidle <= 30000) recentSessions++;
+    }
+    var reqProb = Math.min(0.08 * Math.max(1, recentSessions), 0.5);
     for (var pi = 0; pi < visLimit('session', MA.topo.sessions.length); pi++) {
       var s = MA.topo.sessions[pi];
       var cn = (s.clientName || '').toLowerCase();
@@ -265,7 +338,7 @@
       var sy = MA.nY('session', pi);
       var sX = MA.GEOM.clientX;
       var tX = sX + (balInX - sX) * 0.55;
-      if (Math.random() < 0.08) {
+      if (Math.random() < reqProb) {
         spawnParticle([
           {x: sX, y: sy},
           {x: tX, y: sy},
@@ -283,7 +356,9 @@
       var by = MA.nY('backend', bpi);
       var eX = MA.GEOM.backendX(MA.topo.w);
       var tX = balOutX + (eX - balOutX) * 0.5;
-      var prob = Math.min(active * 0.08, 0.40);
+      // R92: было active*0.08 (потолок 0.40) — один активный запрос давал частицу
+      // раз в ~2.5 с. Стало заметнее: active*0.15, потолок 0.6.
+      var prob = Math.min(active * 0.15, 0.60);
       if (Math.random() < prob) {
         spawnParticle([
           {x: balOutX, y: cY},

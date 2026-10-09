@@ -21,14 +21,21 @@
 
   function applyMT(t) {
     document.documentElement.setAttribute('data-theme', t);
-    var ov = document.querySelectorAll('.overlay'), sb = document.querySelectorAll('.stats-bar');
+    var ov = document.querySelectorAll('.overlay');
     if (t === 'light') {
       ov.forEach(function(e) { e.style.background = 'rgba(241,245,249,0.92)'; });
-      sb.forEach(function(e) { e.style.background = 'rgba(255,255,255,0.92)'; });
     } else {
       ov.forEach(function(e) { e.style.background = 'rgba(11,17,32,0.92)'; });
-      sb.forEach(function(e) { e.style.background = 'rgba(17,24,39,0.92)'; });
     }
+    // R92 (2026-10-09): .stats-bar больше НЕ получает инлайновый фон.
+    //
+    // Живой симптом: страница в светлой теме, а полоса статистики тёмная, и
+    // значения в ней не читаются. Причина — инлайновый background, выставленный
+    // applyMT() при ПРЕДЫДУЩЕЙ теме: он перебивает CSS-переменные темы, и если
+    // тема сменилась без повторного applyMT (например, атрибут пришёл от
+    // родительского фрейма), полоса остаётся от старой темы. Теперь фон полосы
+    // берётся из темы (--glass-bg в themes.css), как у остальных стеклянных
+    // панелей, и не может «застрять».
     if (typeof window.drawTopo === 'function') window.drawTopo();
   }
 

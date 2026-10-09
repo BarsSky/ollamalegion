@@ -87,7 +87,8 @@
 <div id="topoTooltip" style="display:none;position:fixed;pointer-events:none;z-index:1000;background:var(--glass-bg);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid var(--glass-border);border-radius:10px;padding:10px 14px;font-size:12px;line-height:1.6;max-width:300px;box-shadow:var(--glass-shadow);color:var(--text-primary);white-space:nowrap"></div>
 <main>
   <div class="topo-section">
-    <canvas id="conveyorCanvas" style="position:absolute;top:0;left:0;right:0;bottom:52px;z-index:3;pointer-events:none;opacity:0.75"></canvas>
+    <div class="topo-viewport" id="topoViewport">
+    <canvas id="conveyorCanvas" style="position:absolute;top:0;left:0;z-index:3;pointer-events:none;opacity:0.75"></canvas>
     <canvas id="vizCanvas"></canvas>
     <div id="loadingOverlay" class="overlay">
       <div class="spinner"></div>
@@ -103,6 +104,7 @@
         <button onclick="retryNow()" data-i18n="monitor.overlay.retry">🔄 Retry</button>
         <button onclick="enterDemoMode()" style="margin-left:8px" data-i18n="monitor.overlay.demoMode">▶ Demo Mode</button>
       </div>
+    </div>
     </div>
     <div class="stats-bar">
       <div class="stat-item"><div id="statBackends" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.stats.backends">Backends</div></div>

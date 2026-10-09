@@ -142,12 +142,25 @@
     // «высота + зазор», а лишние узлы не рисуются вовсе — вместо них счётчик
     // «+N» (см. MonitorApp.nLayout).
     nodeH: { session: 44, backend: 52 },
-    nodeGap: 8,
+    nodeGap: 10,
     // Высота плашки «+N» внизу колонки, когда узлы не поместились.
     chipH: 22,
-    // Предел на число нарисованных узлов в колонке: даже если места хватает,
-    // сотня плиток не читается.
-    maxNodes: 40
+    // R92 (2026-10-09): «поле расширяется, а не ужимается».
+    //
+    // Было (R91): раскладка вписывала колонку в ТЕКУЩУЮ высоту канваса и лишние
+    // узлы прятала за плашкой «+N». На живом стенде это выглядело так: 14
+    // бэкендов и 12 клиентов → видно 5 и 6, остальные скрыты, хотя места в окне
+    // хватало (жалоба оператора). Замер до правки: canvas 1440x398,
+    // section.overflowY=visible, backendLayout={visible:5,hidden:9}.
+    //
+    // Стало: колонка всегда рисуется с ПОЛНЫМ шагом (плитка + зазор), а канвас
+    // растёт под неё (см. MonitorApp.columnNeedH и layoutCanvas в
+    // canvas-topology.js); полоса топологии прокручивается.
+    //
+    // maxNodes / maxCanvasH — только предохранители от патологического кластера
+    // (гигантский bitmap и нечитаемая простыня), а не способ «уместить всех».
+    maxNodes: 400,
+    maxCanvasH: 8000
   };
   MonitorApp.GEOM.backendX = function(w) { return w - MonitorApp.GEOM.backendMargin; };
   MonitorApp.GEOM.balInX = function(w) { return w / 2 - MonitorApp.GEOM.bw / 2; };
@@ -155,45 +168,60 @@
   MonitorApp.GEOM.balCenterX = function(w) { return w / 2; };
   MonitorApp.GEOM.balCenterY = function(h) { return h / 2; };
 
-  // nLayout — вертикальная раскладка узлов одного типа (R91).
+  // nodeCount — сколько узлов этого типа сейчас в состоянии (0 = пусто).
+  MonitorApp.nodeCount = function(type) {
+    return type === 'session'
+      ? (MonitorApp.topo.sessions || []).length
+      : (MonitorApp.topo.backends || []).length;
+  };
+
+  // columnNeedH — сколько вертикали НУЖНО колонке, чтобы показать все её узлы с
+  // полным шагом «высота плитки + зазор» (плюс полоса под плашку «+N», если
+  // сработал предохранитель). Это высота, под которую владелец канваса
+  // (canvas-topology.js: layoutCanvas) обязан вырастить полотно.
+  //
+  // Считается ЧЕРЕЗ nLayout, а не параллельной формулой: иначе раскладка и высота
+  // полотна разъедутся (ровно так «нужная высота» однажды оказалась больше
+  // maxCanvasH, потому что не учитывала предохранитель).
+  MonitorApp.columnNeedH = function(type) {
+    return MonitorApp.nLayout(type).contentH;
+  };
+
+  // nLayout — вертикальная раскладка узлов одного типа.
   //
   // Возвращает: сколько узлов РИСУЕМ (visible), сколько не поместилось (hidden),
   // шаг и верхний отступ. Единственное место, где считается геометрия: и
   // отрисовка, и hit-test, и тултип обязаны спрашивать её, иначе клики и
   // подсказки разъедутся с картинкой.
   //
-  // Гарантия отсутствия перекрытия: visible выбирается так, что
-  // (visible-1)*step ≤ av, поэтому spacing = av/(visible-1) ≥ step, а step и есть
-  // «высота плитки + зазор».
+  // Гарантия отсутствия перекрытия: шаг ЖЁСТКО равен «высота плитки + зазор» и
+  // никогда не сжимается под высоту окна (R92). hidden > 0 возможен только когда
+  // узлов больше предохранителя maxNodes или нужная высота превышает maxCanvasH.
   MonitorApp.nLayout = function(type) {
-    var cnt = type === 'session'
-      ? Math.max(1, MonitorApp.topo.sessions.length)
-      : Math.max(1, MonitorApp.topo.backends.length);
+    var cnt = Math.max(1, MonitorApp.nodeCount(type));
     var h = MonitorApp.topo.h || 0;
-    var av = Math.max(1, h - MonitorApp.GEOM.marginY * 2);
-    var nodeH = MonitorApp.GEOM.nodeH[type] || MonitorApp.GEOM.nodeH.session;
-    var step = nodeH + MonitorApp.GEOM.nodeGap;
-    var fitFull = Math.max(1, Math.floor(av / step) + 1);
-    // Если без плашки «+N» всё не влезает — отдаём плашке отдельную полосу внизу
-    // колонки. Иначе она рисовалась ПОД последней плиткой, за границей канваса, и
-    // оператор не видел, что часть узлов скрыта (ровно та жалоба, из-за которой
-    // это и делалось).
-    var willHide = cnt > Math.min(fitFull, MonitorApp.GEOM.maxNodes);
-    var band = willHide ? Math.max(1, av - MonitorApp.GEOM.chipH) : av;
-    var fit = Math.max(1, Math.floor(band / step) + 1);
-    var visible = Math.min(cnt, fit, MonitorApp.GEOM.maxNodes);
+    var G = MonitorApp.GEOM;
+    var nodeH = G.nodeH[type] || G.nodeH.session;
+    var step = nodeH + G.nodeGap;
+    // Сколько узлов влезает в МАКСИМАЛЬНОЕ полотно (предохранитель по памяти).
+    var maxFit = Math.max(1, Math.floor((G.maxCanvasH - G.marginY * 2 - nodeH) / step) + 1);
+    var visible = Math.min(cnt, G.maxNodes, maxFit);
     var hidden = cnt - visible;
-    var spacing = visible > 1 ? Math.max(step, band / (visible - 1)) : 0;
-    var totalHeight = (visible - 1) * spacing;
-    var offset = Math.max(0, (band - totalHeight) / 2);
-    var lastY = MonitorApp.GEOM.marginY + offset + (visible - 1) * spacing;
+    var spacing = step;
+    var contentH = G.marginY * 2 + Math.max(0, visible - 1) * spacing + nodeH;
+    if (hidden > 0) contentH += G.chipH;
+    // Полотно выше контента (мало узлов, большое окно) — колонка по центру полосы.
+    var offset = h > contentH ? (h - contentH) / 2 : 0;
+    var lastY = G.marginY + offset + (visible - 1) * spacing;
     return {
       count: cnt,
       visible: visible,
       hidden: hidden,
       spacing: spacing,
       offset: offset,
-      // Y плашки «+N»: сразу под последней плиткой, внутри канваса.
+      // Нужная высота полотна для этой колонки (её читает layoutCanvas).
+      contentH: contentH,
+      // Y плашки «+N»: сразу под последней плиткой.
       chipY: lastY + nodeH / 2 + 11
     };
   };

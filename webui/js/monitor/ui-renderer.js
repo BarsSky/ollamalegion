@@ -6,6 +6,88 @@
   var MA = window.MonitorApp;
   var T = MA.T;
 
+  // --- Фильтр по типу бэкенда (R92, 2026-10-09) -------------------------------
+  //
+  // ЖИВАЯ ЖАЛОБА: «кнопки смены типа бэкенда не отрабатывают и не рисуются
+  // правильно». Причина: monitor.html НЕ подключает js/modules/backend-type-filter.js
+  // (это модуль страницы настроек: он дёргает Api.updateConfig, вкладки agents/gguf,
+  // карточки режимов). Поэтому window.BackendTypeFilter на Monitor — undefined, и
+  // renderBackendTypeSwitcher() всегда видел тип «all»: подсветка не переезжала на
+  // нажатую кнопку, а данных это не фильтровало (замер: клик llama.cpp →
+  // localStorage=llama_cpp, active=['all'], строк таблицы столько же).
+  //
+  // Теперь состояние фильтра живёт здесь, синхронизируется с localStorage (тот же
+  // ключ, что у страницы настроек) и с BackendTypeFilter, если он всё-таки есть.
+  var LS_BACKEND_TYPE = 'ollamalegion_backend_type';
+  var BACKEND_TYPES = ['ollama', 'llama_cpp', 'image_cpp'];
+
+  function storedBackendType() {
+    try {
+      var v = localStorage.getItem(LS_BACKEND_TYPE) || '';
+      return BACKEND_TYPES.indexOf(v) >= 0 ? v : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  var monitorBackendType = storedBackendType();
+
+  function currentBackendType() {
+    if (window.BackendTypeFilter && typeof window.BackendTypeFilter.getCurrentType === 'function') {
+      try {
+        var t = window.BackendTypeFilter.getCurrentType() || '';
+        if (BACKEND_TYPES.indexOf(t) >= 0) return t;
+      } catch (e) { /* модуль настроек может быть в переходном состоянии */ }
+    }
+    return monitorBackendType;
+  }
+
+  // userChoseBackendType — оператор (или страница настроек) уже выбирал тип:
+  // ключ есть, даже если он пустой («Все»).
+  function userChoseBackendType() {
+    try { return localStorage.getItem(LS_BACKEND_TYPE) !== null; } catch (e) { return false; }
+  }
+
+  // effectiveMonitorType — тип, который монитор РЕАЛЬНО применяет.
+  //
+  // R92: подсветка кнопки и фильтр обязаны совпадать. Раньше при отсутствии
+  // выбора подсвечивалась «Все», а данные фильтровались серверным
+  // effectiveBackendType (в живом замере: активно «Все», а в таблице 2 бэкенда из
+  // 4) — ровно то, что оператор описал как «кнопки не рисуются правильно».
+  // Теперь при отсутствии выбора подсвечивается тот тип, который пришёл от
+  // сервера как доминирующий.
+  function effectiveMonitorType(serverEffectiveType) {
+    var user = currentBackendType();
+    if (user) return user;
+    if (userChoseBackendType()) return '';   // оператор явно выбрал «Все»
+    // Тип, который применил последний рендер (его же видит и подсветка кнопки —
+    // подсветка и данные обязаны совпадать).
+    if (typeof MA.monitorEffectiveType === 'string' && MA.monitorEffectiveType) {
+      return MA.monitorEffectiveType;
+    }
+    var server = String(serverEffectiveType || '');
+    if (!server) {
+      try {
+        server = String((MA.lastData && MA.lastData.cluster && MA.lastData.cluster.effectiveBackendType) || '');
+      } catch (e) { server = ''; }
+    }
+    return BACKEND_TYPES.indexOf(server) >= 0 ? server : '';
+  }
+
+  // backendTypeOf — тип бэкенда из ответа кластера (у image-воркеров
+  // backendType='image_cpp', у текстовых 'llama_cpp'/'ollama').
+  function backendTypeOf(b) {
+    return String((b && (b.backendType || b.BackendType || b.backend_type || b.type)) || '');
+  }
+
+  // matchesBackendType — «Все» (пусто) не фильтрует НИЧЕГО; выбранный тип
+  // показывает только свои бэкенды. До правки «llama.cpp» тянул ещё и image_cpp,
+  // а «ollama» — image_cpp, поэтому переключение почти не меняло картинку.
+  function matchesBackendType(b, type) {
+    if (!type) return true;
+    return backendTypeOf(b) === type;
+  }
+
   /**
    * aggVRAM — суммарная VRAM кластера БЕЗ двойного счёта по одной физкарте.
    *
@@ -248,39 +330,83 @@
     var container = document.getElementById('monitorBackendTypeSwitcher');
     if (!container) return;
 
-    var currentType = 'all';
-    if (window.BackendTypeFilter) {
-      currentType = window.BackendTypeFilter.getCurrentType() || 'all';
+    // R92: состояние берём из собственного (синхронизированного) значения, а не
+    // только из модуля настроек, которого на этой странице нет. Подсвечиваем
+    // ФАКТИЧЕСКИ применённый тип (см. effectiveMonitorType).
+    var currentType = effectiveMonitorType();
+
+    function btnClass(t) {
+      var active = (t === '' && currentType === '') || t === currentType;
+      return 'mtype-btn' + (active ? ' active' : '');
+    }
+    function btnStyle(t) {
+      var active = (t === '' && currentType === '') || t === currentType;
+      // Подсветка активной кнопки через класс (mtype-btn.active в monitor-app.css)
+      // + инлайн как fallback, чтобы состояние было видно даже без CSS.
+      return 'font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' +
+        (active ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' +
+        (active ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600';
+    }
+    function btn(type, label, title, extra) {
+      return '<button type="button" data-type="' + (type || 'all') + '" class="' + btnClass(type) + '"' +
+        ' onclick="window.switchBackendType(\'' + (type || 'all') + '\')" style="' + btnStyle(type) + '"' +
+        ' title="' + title + '"' + (extra || '') + '>' + label + '</button>';
     }
 
     // Round 18f: 3-state switcher (All / Ollama / llama.cpp) вместо 2-state.
+    // R-Image Phase 5: четвёртое состояние — image.cpp.
     // Кнопки вместо <select> — нагляднее и не зависит от native dropdown.
     container.innerHTML =
       '<div class="monitor-type-switcher" style="display:flex;align-items:center;gap:4px">' +
         '<span style="font-size:11px;color:var(--text-secondary);font-weight:600;margin-right:4px">' + T('monitor.common.backendType') + '</span>' +
-        '<button type="button" data-type="all" class="mtype-btn' + (currentType === 'all' || currentType === '' ? ' active' : '') + '" onclick="window.switchBackendType(\'all\')" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' + (currentType === 'all' || currentType === '' ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' + (currentType === 'all' || currentType === '' ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600" title="Все бэкенды">' + T('monitor.common.allBackends') + '</button>' +
-        '<button type="button" data-type="ollama" class="mtype-btn' + (currentType === 'ollama' ? ' active' : '') + '" onclick="window.switchBackendType(\'ollama\')" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' + (currentType === 'ollama' ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' + (currentType === 'ollama' ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600" title="Ollama API">🦙 Ollama</button>' +
-        '<button type="button" data-type="llama_cpp" class="mtype-btn' + (currentType === 'llama_cpp' ? ' active' : '') + '" onclick="window.switchBackendType(\'llama_cpp\')" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' + (currentType === 'llama_cpp' ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' + (currentType === 'llama_cpp' ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600" title="llama.cpp / GGUF">🦒 llama.cpp</button>' +
-        // R-Image Phase 5: четвёртое состояние переключателя — image-бэкенды.
-        '<button type="button" data-type="image_cpp" class="mtype-btn' + (currentType === 'image_cpp' ? ' active' : '') + '" onclick="window.switchBackendType(\'image_cpp\')" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' + (currentType === 'image_cpp' ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' + (currentType === 'image_cpp' ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600" title="image.cpp / stable-diffusion.cpp">🎨 image.cpp</button>' +
+        btn('', T('monitor.common.allBackends'), 'Все бэкенды') +
+        btn('ollama', '🦙 Ollama', 'Ollama API') +
+        btn('llama_cpp', '🦒 llama.cpp', 'llama.cpp / GGUF') +
+        btn('image_cpp', '🎨 image.cpp', 'image.cpp / stable-diffusion.cpp') +
+        '<span data-type="counter" class="mtype-counter" style="font-size:10px;color:var(--text-secondary);margin-left:4px"></span>' +
       '</div>';
+    updateSwitcherCounts();
+  }
+
+  // updateSwitcherCounts — сколько бэкендов каждого типа в последнем ответе.
+  // Оператор сразу видит, есть ли вообще смысл в переключении (и почему пусто).
+  function updateSwitcherCounts() {
+    var el = document.querySelector('#monitorBackendTypeSwitcher [data-type="counter"]');
+    if (!el) return;
+    // Защищаемся от отсутствующих lastData/topo: этот рендер вызывается и в
+    // урезанных окружениях (тесты), и до первого ответа API.
+    var cluster = (MA.lastData && MA.lastData.cluster) || null;
+    var bk = (cluster && cluster.backends) || (MA.topo && MA.topo.backends) || [];
+    var counts = { ollama: 0, llama_cpp: 0, image_cpp: 0 };
+    bk.forEach(function(b) {
+      var t = backendTypeOf(b);
+      if (counts[t] !== undefined) counts[t]++;
+    });
+    el.textContent = '🦙' + counts.ollama + ' 🦒' + counts.llama_cpp + ' 🎨' + counts.image_cpp;
   }
 
   function switchBackendType(type) {
-    // Round 18f: нормализуем 'all' → '' для BackendTypeFilter.
-    if (type === 'all') type = '';
-    if (window.BackendTypeFilter) {
-      window.BackendTypeFilter.setCurrentType(type);
-    }
-    localStorage.setItem('ollamalegion_backend_type', type || '');
-    // Trigger data refresh with new filter
-    if (window.MonitorApp && window.MonitorApp.fetchData) {
-      window.MonitorApp.fetchData();
+    // Round 18f: нормализуем 'all' → '' для фильтра.
+    if (type === 'all' || BACKEND_TYPES.indexOf(type) < 0) type = '';
+    monitorBackendType = type;
+    try { localStorage.setItem(LS_BACKEND_TYPE, type || ''); } catch (e) { /* private mode */ }
+    if (window.BackendTypeFilter && typeof window.BackendTypeFilter.setCurrentType === 'function') {
+      try { window.BackendTypeFilter.setCurrentType(type); } catch (e) { /* ignore */ }
     }
     // Re-render switcher buttons (active state changed)
-    if (typeof renderBackendTypeSwitcher === 'function') {
-      try { renderBackendTypeSwitcher(); } catch (e) { /* ignore */ }
-    }
+    try { renderBackendTypeSwitcher(); } catch (e) { /* ignore */ }
+
+    // R92: раньше здесь звался MonitorApp.fetchData() — такого метода нет
+    // (в api.js функция называется fetchAll), поэтому нажатие не давало НИКАКОЙ
+    // видимой реакции до следующего 2-секундного опроса. Теперь сразу
+    // перерисовываем из последнего ответа, а если его ещё нет — просим данные.
+    try {
+      if (MA.lastData && typeof window.updateUI === 'function') {
+        window.updateUI(MA.lastData);
+      } else if (typeof window.fetchAll === 'function') {
+        window.fetchAll();
+      }
+    } catch (e) { /* ignore */ }
   }
 
   function renderLoadFeasibility(bk) {
@@ -542,20 +668,14 @@
 
     // Фильтрация бэкендов по effectiveBackendType (клиентский fallback)
     // Если effectiveBackendType задан — оставляем только бэкенды этого типа
-    var effType = data.cluster.effectiveBackendType || '';
-    // Также учитываем выбор пользователя из localStorage (синхронизация с BackendTypeFilter)
-    var userType = localStorage.getItem('ollamalegion_backend_type') || '';
-    if (userType && (userType === 'llama_cpp' || userType === 'ollama' || userType === 'image_cpp')) {
-      effType = userType;
-    }
+    // R92: раньше здесь был только localStorage, а «Все» (пустая строка) не
+    // отменяло серверный effectiveBackendType. Теперь тип, который РЕАЛЬНО
+    // применяется, считает одна функция — effectiveMonitorType(); она же
+    // подсвечивает кнопку (подсветка и данные не могут разъехаться).
+    var effType = effectiveMonitorType(data.cluster.effectiveBackendType);
+    MA.monitorEffectiveType = effType;
     if (effType) {
-      bk = bk.filter(function(b) {
-        var bt = b.backendType || b.BackendType || b.backend_type || b.type || '';
-        if (effType === 'llama_cpp') return bt === 'llama_cpp' || bt === 'image_cpp';
-        if (effType === 'ollama') return bt === 'ollama' || bt === '' || bt === 'ollama_api' || bt === 'image_cpp';
-        if (effType === 'image_cpp') return bt === 'image_cpp';
-        return true;
-      });
+      bk = bk.filter(function(b) { return matchesBackendType(b, effType); });
     }
 
     // Сохраняем backendEngine глобально для использования в бейджах и топологии
@@ -1697,4 +1817,6 @@
   window.updateUI = updateUI;
   window.switchBackendType = switchBackendType;
   window.renderBackendTypeSwitcher = renderBackendTypeSwitcher;
+  // R92: текущий ПРИМЕНЯЕМЫЙ тип нужен плотности/топологии и тестам.
+  window.getMonitorBackendType = effectiveMonitorType;
 })();

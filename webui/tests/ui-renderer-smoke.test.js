@@ -628,6 +628,70 @@ console.log('ui-renderer smoke (' + path.relative(REPO_ROOT, TARGET) + ')');
     alertsHtml.indexOf('monitor.alert.parallelismUnused') === -1, alertsHtml.slice(0, 300));
 }
 
+// --- Тест 11: переключатель типа бэкенда реально фильтрует (R92) ------------
+// Живая жалоба: «кнопки смены типа бэкенда не отрабатывают и не рисуются
+// правильно». monitor.html не подключает modules/backend-type-filter.js, поэтому
+// window.BackendTypeFilter нет; старый рендерер читал тип только оттуда и всегда
+// подсвечивал «Все», а фильтр в updateUI ещё и был кривой (llama.cpp тянул
+// image_cpp, «Все» перебивалось серверным effectiveBackendType).
+{
+  const data = sampleImageData();
+  // Добавляем ещё два бэкенда других типов, чтобы фильтр было на чём проверять.
+  data.cluster.backends.push({
+    id: 'llama-1', status: 'healthy', backendType: 'llama_cpp',
+    activeRequests: 0, maxConcurrentRequests: 2, models: ['gemma'],
+    vram: { totalGB: 8, usedGB: 1, usagePercent: 12 }, gpu: {}, system: {}, llamaCpp: {},
+  });
+  data.cluster.backends.push({
+    id: 'ollama-1', status: 'healthy', backendType: 'ollama',
+    activeRequests: 0, maxConcurrentRequests: 8, models: ['llama3.1'],
+    vram: { totalGB: 8, usedGB: 1, usagePercent: 12 }, gpu: {}, system: {}, ollama: {},
+  });
+
+  const store = {};
+  const { sandbox } = makeSandbox(function (sb) {
+    sb.localStorage = {
+      getItem(k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+      setItem(k, v) { store[k] = String(v); },
+      removeItem(k) { delete store[k]; },
+    };
+  });
+  loadRenderer(sandbox, { withUtils: true });
+
+  // Изначально ключа нет → монитор следует серверному effectiveBackendType
+  // ('image_cpp' в sampleImageData) и показывает только image-бэкенд.
+  sandbox.updateUI(data);
+  check('switch: без выбора оператора работает серверный effectiveBackendType',
+    sandbox.document.querySelector('#backendsTable tbody').innerHTML.indexOf('llama-1') === -1 &&
+    sandbox.document.querySelector('#backendsTable tbody').innerHTML.indexOf('image-real') !== -1);
+  // …и подсветка обязана показывать ТОТ ЖЕ тип, а не «Все» (иначе оператор видит
+  // «Все», а в таблице 1 бэкенд из 3 — это и была живая жалоба).
+  check('switch: подсветка совпадает с применённым типом',
+    /data-type="image_cpp" class="mtype-btn active"/.test(sandbox.document.getElementById('monitorBackendTypeSwitcher').innerHTML),
+    sandbox.document.getElementById('monitorBackendTypeSwitcher').innerHTML.slice(0, 240));
+
+  // Клик по «llama.cpp» обязан: записать выбор, подсветить кнопку и отфильтровать.
+  sandbox.switchBackendType('llama_cpp');
+  sandbox.updateUI(data);
+  const llamaHtml = sandbox.document.querySelector('#backendsTable tbody').innerHTML;
+  check('switch: выбор записан в localStorage',
+    store['ollamalegion_backend_type'] === 'llama_cpp', JSON.stringify(store));
+  check('switch: активна кнопка llama.cpp',
+    /data-type="llama_cpp" class="mtype-btn active"/.test(sandbox.document.getElementById('monitorBackendTypeSwitcher').innerHTML),
+    sandbox.document.getElementById('monitorBackendTypeSwitcher').innerHTML.slice(0, 240));
+  check('switch: в таблице только llama_cpp',
+    llamaHtml.indexOf('llama-1') !== -1 && llamaHtml.indexOf('image-real') === -1 && llamaHtml.indexOf('ollama-1') === -1);
+
+  // «Все» (пустой тип) обязан показать всё, а не остаться под серверным фильтром.
+  sandbox.switchBackendType('all');
+  sandbox.updateUI(data);
+  const allHtml = sandbox.document.querySelector('#backendsTable tbody').innerHTML;
+  check('switch: «Все» показывает все типы',
+    allHtml.indexOf('llama-1') !== -1 && allHtml.indexOf('image-real') !== -1 && allHtml.indexOf('ollama-1') !== -1);
+  check('switch: выбор «Все» записан пустой строкой',
+    store['ollamalegion_backend_type'] === '', JSON.stringify(store));
+}
+
 console.log('');
 if (failures > 0) {
   console.log('ИТОГ: провалено проверок — ' + failures);

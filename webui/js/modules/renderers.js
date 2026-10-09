@@ -117,10 +117,21 @@ const Renderers = (function () {
         // хотя карточка Ollama Runtime на той же странице рисовала модель из
         // backend.llamaCpp.loadedModels (см. runtimeCluster ниже). Живой скрин с A10:
         // счётчик 0 при загруженной Qwen3.8-27B-UD-Q4_K_M (C-65.5K).
+        //
+        // R91 (2026-10-09): для llama.cpp берём ТОЛЬКО loadedModels — раньше сюда
+        // складывались оба списка (`runningModels.length + loadedModels.length`), и
+        // на одной загруженной модели счётчик показывал 2: ту же модель балансер
+        // отдавал ещё и в Ollama-совместимой проекции (см. cluster_state.go).
+        const loadedCount = (b) => {
+            const isLlama = Utils.getBackendType(b) === 'llama_cpp';
+            if (isLlama) {
+                return (b.llamaCpp?.loadedModels?.length || 0);
+            }
+            return (b.ollama?.runningModels?.length || 0) + (b.llamaCpp?.loadedModels?.length || 0);
+        };
         const totalModels = (typeof loadedModels === 'number')
             ? loadedModels
-            : backends.reduce((sum, b) =>
-                sum + (b.ollama?.runningModels?.length || 0) + (b.llamaCpp?.loadedModels?.length || 0), 0);
+            : backends.reduce((sum, b) => sum + loadedCount(b), 0);
         const activeSessions = (sessions || []).filter(s => s.active).length;
         const totalRequests = (sessions || []).reduce((sum, s) => sum + (s.requestCount || 0), 0);
         const queueSize = queueView(queue).waiting;
@@ -436,7 +447,9 @@ const Renderers = (function () {
                         <div class="capacity-cloud-row"><span>${_t('renderers.host')}</span><span>${escapeHtml(backend.host || '-')}</span></div>
                         <div class="capacity-cloud-row"><span>${_t('metrics.status')}</span><span>${badge(backend.status, backend.status === 'healthy' ? 'success' : 'danger')}</span></div>
                         <div class="capacity-cloud-row"><span>${_t('renderers.active_req')}</span><span>${backend.activeRequests || 0}</span></div>
-                        <div class="capacity-cloud-row"><span>${_t('renderers.models_loaded')}</span><span>${(backend.ollama?.runningModels || []).length}</span></div>
+                        <div class="capacity-cloud-row"><span>${_t('renderers.models_loaded')}</span><span>${(Utils.getBackendType(backend) === 'llama_cpp'
+                            ? (backend.llamaCpp?.loadedModels || [])
+                            : (backend.ollama?.runningModels || [])).length}</span></div>
                     </div>
                 </div>
             `;
@@ -639,9 +652,8 @@ const Renderers = (function () {
             // Model details tooltip for the Models column
             // Format expiresAt for display
             function fmtExpires(exp) {
-                if (!exp) return '';
+                if (isZeroTimestamp(exp)) return '';
                 var d = new Date(exp);
-                if (isNaN(d.getTime())) return '';
                 var now = Date.now();
                 var diff = d.getTime() - now;
                 if (diff < 0) return ' ⌛Expired';
@@ -1040,7 +1052,7 @@ const Renderers = (function () {
                 const sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
                 const ramGB = (m.ramUsage || 0) / 1024 / 1024 / 1024;
                 var digestShort = (m.digest || m.Digest || '').substring(0, 12);
-                var expDate = m.expiresAt || m.ExpiresAt || '';
+                var expDate = isZeroTimestamp(m.expiresAt || m.ExpiresAt) ? '' : (m.expiresAt || m.ExpiresAt || '');
                 modelsHtml += `<div class="be-param-item" style="grid-column: 1/-1;">
                     <span class="be-param-label">${escapeHtml(m.name)}</span>
                     <span class="be-param-value">${sizeGB.toFixed(1)} GB | ${escapeHtml(m.family || '-')} | ${escapeHtml(m.parameterSize || '-')} | ${escapeHtml(m.quantization || '-')}` +
@@ -1310,11 +1322,16 @@ const Renderers = (function () {
             }
         });
 
-        Utils.setText('modelsTotal', allModels.length);
-        Utils.setText('modelsLoaded', allModels.filter(m => m.backendStatus === 'healthy').length);
+        // R91 (2026-10-09): одна модель одного бэкенда — одна карточка и один
+        // счётчик. Без сведения дублей страница показывала ДВЕ карточки на одну
+        // модель: из Ollama-проекции (только имя, прочерки, «⌛ Истёк») и из
+        // llamaCpp.loadedModels (реальные данные). См. dedupModelCards.
+        const dedupedModels = dedupModelCards(allModels);
+        Utils.setText('modelsTotal', dedupedModels.length);
+        Utils.setText('modelsLoaded', dedupedModels.filter(m => m.backendStatus === 'healthy').length);
 
         Utils.setHTML('backendLoadList', backendLoad(backends));
-        Utils.setHTML('modelsGrid', modelsGrid(allModels, backendMap));
+        Utils.setHTML('modelsGrid', modelsGrid(dedupedModels, backendMap));
         // Применяем текущую сортировку (если в UI активна) сразу после рендера
         if (window.ui && typeof window.ui.applyModelsSort === 'function') {
             try { window.ui.applyModelsSort(); } catch (e) { /* ignore */ }
@@ -1481,9 +1498,8 @@ const Renderers = (function () {
     }
 
     function fmtExpiresShort(exp) {
-        if (!exp) return '';
+        if (isZeroTimestamp(exp)) return '';
         var expDate = new Date(exp);
-        if (isNaN(expDate.getTime())) return '';
         var now = Date.now();
         var diff = expDate.getTime() - now;
         if (diff < 0) return '⌛' + _t('renderers.expired');
@@ -1492,6 +1508,82 @@ const Renderers = (function () {
         if (sec < 3600) return '⌛' + Math.floor(sec / 60) + 'm';
         if (sec < 86400) return '⌛' + Math.floor(sec / 3600) + 'h';
         return '⌛' + exp.substring(0, 10);
+    }
+
+    /**
+     * isZeroTimestamp — «срока нет» вместо «срок истёк».
+     *
+     * R91 (2026-10-09): агент и Ollama-совместимая проекция балансера отдают
+     * нулевое время Go — `0001-01-01T00:00:00Z` — там, где срока жизни модели нет
+     * вовсе (llama.cpp его не отслеживает; expiresAt никто не заполняет). Строка
+     * truthy, `new Date(...)` парсится, разница отрицательная — и карточка писала
+     * «⌛ Истёк». Оператор читал это как «модель выгружена», хотя она загружена и
+     * обслуживает запросы. Ноль = «неизвестно», а не «истекло».
+     */
+    function isZeroTimestamp(exp) {
+        if (!exp) return true;
+        var d = new Date(exp);
+        if (isNaN(d.getTime())) return true;
+        return d.getUTCFullYear() <= 1;
+    }
+
+    /**
+     * modelCardKey — ключ «одна модель одного бэкенда».
+     *
+     * Имя приводим как каталог моделей на балансере (см.
+     * internal/balancer/model_catalog.go): регистр и расширение .gguf не должны
+     * делать из одной модели две.
+     */
+    function modelCardKey(backendId, name) {
+        return String(backendId || '') + '\u0000' +
+            String(name || '').trim().toLowerCase().replace(/\.gguf$/, '');
+    }
+
+    /**
+     * modelCardRichness — насколько запись «богаче» данными.
+     *
+     * Нужно при сведении дублей: у одной и той же модели может быть запись из
+     * Ollama-совместимой проекции (только имя, нулевые size/vram) и из
+     * llamaCpp.loadedModels (путь, размер, ctx, квантование). Оставляем вторую.
+     */
+    function modelCardRichness(m) {
+        var score = 0;
+        if (Number(m.size) > 0) score += 4;
+        if (m.ggufPath) score += 2;
+        if (m.contextLength) score += 1;
+        if (m.backendType === 'llama_cpp' && m.architecture) score += 1;
+        if (!isZeroTimestamp(m.expiresAt)) score += 1;
+        return score;
+    }
+
+    /**
+     * dedupModelCards — одна модель одного бэкенда = одна карточка.
+     *
+     * R91 (2026-10-09). Живой скриншот оператора: Qwen3-Instruct-2507-q4km
+     * рисовался ДВУМЯ карточками одного бэкенда cppworker-gpu-bundled-agent —
+     * с прочерками, «(сведения ещё не получены)» и «⌛ Истёк» и рядом с полными
+     * данными (2.3 GB, GGUF path, RAM 2620/25044). Источники: ollama.runningModels
+     * (проекция для /api/ps, только имя) и llamaCpp.loadedModels (реальные данные).
+     * Балансер больше не отдаёт проекцию, когда есть loadedModels (cluster_state.go),
+     * но WebUI обязан быть устойчив и к старому балансеру: образы WebUI и балансера
+     * обновляются отдельно.
+     */
+    function dedupModelCards(models) {
+        var byKey = {};
+        var order = [];
+        models.forEach(function (m) {
+            var key = modelCardKey(m.backend, m.name);
+            var prev = byKey[key];
+            if (!prev) {
+                byKey[key] = m;
+                order.push(key);
+                return;
+            }
+            if (modelCardRichness(m) > modelCardRichness(prev)) {
+                byKey[key] = m;
+            }
+        });
+        return order.map(function (k) { return byKey[k]; });
     }
 
     /**
@@ -1561,7 +1653,7 @@ const Renderers = (function () {
             const fmtMB = function (v) { return v === null ? '—' : v + ' MB'; };
             const fmtGB = function (v, fixed) { return v === null ? '—' : v.toFixed(fixed || 1) + ' GB'; };
             var digestShort = (m.digest || m.Digest || '').substring(0, 12);
-            var expDate = m.expiresAt || m.ExpiresAt || '';
+            var expDate = isZeroTimestamp(m.expiresAt || m.ExpiresAt) ? '' : (m.expiresAt || m.ExpiresAt || '');
             var expShort = fmtExpiresShort(expDate);
 
             const backend = backendMap[m.backend] || {};
@@ -2382,7 +2474,7 @@ const Renderers = (function () {
                 const sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
                 const ramGB = (m.ramUsage || 0) / 1024 / 1024 / 1024;
                 var digestShort = (m.digest || m.Digest || '').substring(0, 12);
-                var expDate = m.expiresAt || m.ExpiresAt || '';
+                var expDate = isZeroTimestamp(m.expiresAt || m.ExpiresAt) ? '' : (m.expiresAt || m.ExpiresAt || '');
                 html += '<div class="be-param-item" style="grid-column: 1/-1;">' +
                     '<span class="be-param-label">' + escapeHtml(m.name) + '</span>' +
                     '<span class="be-param-value">' + sizeGB.toFixed(1) + ' GB | ' + escapeHtml(m.family || '-') + ' | ' + escapeHtml(m.parameterSize || '-') + ' | ' + escapeHtml(m.quantization || '-') +
@@ -2506,6 +2598,13 @@ const Renderers = (function () {
         // R91 (2026-10-08): чистый маппинг статистики очереди — экспортируем для
         // юнит-теста (webui/js/modules/renderers-queue.test.js).
         queueView,
+        // R91 (2026-10-09): сведение дублей моделей и распознавание нулевой
+        // метки времени — экспортируем для юнит-теста
+        // (webui/js/modules/renderers-models-dedup.test.js): страница моделей
+        // рисовала одну модель двумя карточками одного бэкенда.
+        dedupModelCards,
+        modelCardKey,
+        isZeroTimestamp,
         logs,
         predictionAlerts,
         proxyLogs,

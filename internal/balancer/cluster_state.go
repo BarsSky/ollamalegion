@@ -162,9 +162,39 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 					metrics.BackendType = types.BackendTypeOllama
 				}
 			}
-			metrics.Models = make([]string, 0, len(metrics.Ollama.RunningModels))
-			for _, m := range metrics.Ollama.RunningModels {
-				metrics.Models = append(metrics.Models, m.Name)
+			// R91 (2026-10-09): ОДНА модель — ОДИН источник в cluster state.
+			//
+			// Загруженную llama.cpp-модель балансер пишет в ДВА места:
+			//   * updateRunningModelInMetrics (proxy_request.go) добавляет её в
+			//     Ollama-совместимую проекцию metrics.Ollama.RunningModels — она нужна
+			//     для /api/ps: клиенты Ollama иначе не увидят модель до следующего
+			//     heartbeat агента. У проекции есть только имя: size/vram/expiresAt
+			//     нулевые (expiresAt = 0001-01-01, то есть «истёк»);
+			//   * updateLlamaCppRunningModelInMetrics + поллер наполняют
+			//     LlamaCpp.LoadedModels — это реальные данные (путь, размер, ctx,
+			//     квантование, архитектура).
+			//
+			// В cluster state уезжали ОБА списка, и WebUI рисовал одну модель ДВУМЯ
+			// карточками одного и того же бэкенда: из проекции — с прочерками,
+			// «(сведения ещё не получены)» и «⌛ Истёк», из loadedModels — с данными.
+			// Оператор видел «дублирование и разные данные у одного агента».
+			//
+			// Поэтому: есть loadedModels — проекцию в ответ НЕ отдаём (единственный
+			// источник — llamaCpp). Пустое loadedModels (поллер ещё не успел) оставляем
+			// как есть: тогда проекция — единственный источник, дублировать нечего.
+			// Сама проекция в metricsMgr остаётся нетронутой, поэтому /api/ps и
+			// внутренняя логика (выбор бэкенда, scoring) работают как прежде.
+			hasLoadedModels := len(metrics.LlamaCpp.LoadedModels) > 0
+			metrics.Models = make([]string, 0, len(metrics.Ollama.RunningModels)+len(metrics.LlamaCpp.LoadedModels))
+			if hasLoadedModels {
+				for _, m := range metrics.LlamaCpp.LoadedModels {
+					metrics.Models = append(metrics.Models, m.Name)
+				}
+				metrics.Ollama.RunningModels = nil
+			} else {
+				for _, m := range metrics.Ollama.RunningModels {
+					metrics.Models = append(metrics.Models, m.Name)
+				}
 			}
 			if metrics.GPU.MemoryTotal > 0 {
 				metrics.VRAMUsagePercent = float64(metrics.GPU.MemoryUsed) / float64(metrics.GPU.MemoryTotal) * 100

@@ -73,17 +73,31 @@ func TestGetOllamaStats(t *testing.T) {
 }
 
 // TestCollectMetrics - проверка сбора метрик
+//
+// R91 (2026-10-09): свежесть Timestamp проверяется ОКНОМ СБОРА, а не
+// «не дальше 10 с от момента после вызова». collectMetrics делает реальные
+// системные вызовы (CPU/диск/GPU, на Windows — wmic/nvidia-smi), и на загруженной
+// машине под -race сбор занимает десятки секунд (CI: 23.94 с) — тогда метка,
+// снятая в НАЧАЛЕ сбора, законно оказывалась старше 10 с, и тест падал на ровном
+// месте (флак в CI-шаге «Test (internal packages, -race)»). Теперь проверяем, что
+// метка попала в интервал [до, после] вызова: это то же свойство свежести, но без
+// предположения о длительности сбора.
 func TestCollectMetrics(t *testing.T) {
 	t.Parallel()
 
 	config := createTestAgentConfig()
 	agent := NewAgent(config)
 
+	before := time.Now().UTC()
 	metrics := agent.collectMetrics()
+	after := time.Now().UTC()
 
 	assert.NotNil(t, metrics)
 	assert.Equal(t, "test-agent-1", metrics.ID)
-	assert.WithinDuration(t, time.Now().UTC(), metrics.Timestamp, 10*time.Second)
+	assert.False(t, metrics.Timestamp.Before(before.Add(-2*time.Second)),
+		"Timestamp %v старше начала сбора %v: метрики собраны не в этом вызове", metrics.Timestamp, before)
+	assert.False(t, metrics.Timestamp.After(after.Add(2*time.Second)),
+		"Timestamp %v новее конца сбора %v: время снято не в момент сбора", metrics.Timestamp, after)
 }
 
 // TestCollectGPUMetrics - проверка сбора GPU метрик

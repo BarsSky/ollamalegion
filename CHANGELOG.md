@@ -5,6 +5,67 @@
 Формат ведётся в соответствии с [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.7.60 — CI снова зелёный: пустой ответ на нативном стриме, ложный idle_timeout, гонки в тестах, линт, 2026-10-09]
+
+### 🐛 Что было не так
+
+Автосборка и тесты на GitHub падали на каждом пуше (и падали давно — не только на
+последних коммитах). Разобрано по шагам, четыре независимые причины:
+
+| Шаг CI | Симптом | Причина |
+|---|---|---|
+| `tests/...` (integration) | `TestChatStreaming`, `TestResponseNotMarkdownBold/streaming`, `TestProxyOllama_Create/Pull/Push`, `TestTransferEncoding_RealOllamaNdjson`, `TestStreamingSession_CompleteLifecycle`, `TestProxyAllEndpoints_Streaming/*` | Балансер **вычищал текст из финального NDJSON-чанка безусловно** (R83 §9.7) — если апстрим отдал весь ответ ОДНИМ финальным чанком, клиент получал `done:true` с пустым `message.content`, то есть пустой ответ |
+| `tests/...` (integration) | в том же ответе лишний `event: error {"error":"idle_timeout"}` и потерянный `status` последнего события | при `idleTimeout == 0` (0 = «капа нет» по доктрине таймаутов) порог «EOF после >60 % таймаута» превращался в `0`, и **любой чистый EOF** классифицировался как idle timeout |
+| `tests` (`TestOpenAIChat_HeaderTimeout_StillWorks`) | запрос не падал за 10 с при профильном таймауте 2 с | тест написан до R83/v62: профильные таймауты теперь **opt-in** (`LB_ALLOW_PROFILE_TIMEOUTS=1`), а тест этого не выставлял |
+| `internal/...` (-race) | `TestR83_AgentRegister_*`, `TestHeartbeatR71_*`, `TestRegistrationGuard_*` — DATA RACE | тестовые стенды писали поля записи бэкенда напрямую в указатель из `GetBackend` (без `state.mu`), а новый фоновый читатель (каталог моделей) брал те же поля под `p.mu`+`state.mu` |
+| Lint (golangci-lint) | 6 × `fieldalignment` | порядок полей в новых структурах каталога моделей |
+| `internal/balancer` (-race) в CI | `FAIL <pkg>` без имени теста | шаг гонял `go test ... \| tail -20`: имя упавшего теста уезжало за пределы хвоста |
+
+### 🔧 Что сделано
+
+- **`internal/balancer/llamacpp_transport.go`**: `stripNativeDoneContent(line, streamedContent)`
+  снимает дубль в done-чанке **только если текст уже уехал дельтами**. Нет дельт —
+  текст done-чанка остаётся (это единственный носитель ответа: статический ответ,
+  mock-воркер или наш же фолбэк cppworker, когда модель ушла в незакрытый
+  reasoning). Если текст done-чанка не совпадает с отданным дельтами — WARN в лог
+  (апстрим мог поменять семантику), но дубль всё равно снимается.
+- **`internal/balancer/streaming.go`**: эвристика «EOF после >60 % idle timeout =
+  timeout» работает только при `idleTimeout > 0`. Ноль — это «капа нет»: чистый EOF
+  больше не превращается в `idle_timeout` с error-событием клиенту.
+- **`internal/balancer/backend_registry.go`**: новый `Proxy.MutateBackend(id, mutate)` —
+  правка полей записи под `p.mu`+`state.mu` с зеркалированием в `config.Backends`.
+  Тестовые стенды (`internal/api`) больше не пишут поля напрямую; `-race` зелёный.
+- **`internal/balancer/model_catalog.go`**: `backendEndpointSnapshot` — host/port/token
+  снимаются под блокировкой, а не разыменованием указателя из `GetBackend`
+  (это и была гонка с `UpdateBackend`, найденная `-race`).
+- **`tests/first_byte_timeout_test.go`**: `TestOpenAIChat_HeaderTimeout_StillWorks`
+  выставляет `LB_ALLOW_PROFILE_TIMEOUTS=1` (механизм обязан работать, когда
+  оператор его разрешил) + новый тест `TestOpenAIChat_ProfileTimeoutIgnoredByDefault`
+  фиксирует доктрину: по умолчанию профиль не обрывает запрос, а отмена клиента
+  завершает его.
+- **Линт**: порядок полей в `modelCatalog`, `ModelCatalogSnapshot`, `candidate`
+  (ghost reaper), `catalogStub`, `catalogFileStub`, `backendCatalogView` приведён к
+  требованию `fieldalignment` (govet enable-all в `.golangci.yml`).
+- **CI-диагностика** (`.github/workflows/ci.yml`): шаги `internal/balancer (-race)` и
+  `image chain smoke` переведены на `scripts/run_go_test.sh` — он печатает имена
+  упавших тестов и их сообщения, а не только хвост вывода. Именно из-за `tail`
+  прошлый прогон отдал `FAIL internal/balancer` без единого имени теста.
+
+### ✅ Проверено (локально, командами из CI)
+
+- `go build -tags llama_stub ./...`, `go vet -tags llama_stub ./...` — чисто.
+- `go test -race -tags llama_stub -timeout 300s ./internal/...` — все пакеты
+  зелёные (единственное падение `internal/agent TestCollectMetrics` при
+  одновременном прогоне всего дерева не воспроизводится ни с `-race`, ни без него
+  при отдельном запуске — это таймаутная флака на загруженной машине; в CI
+  `internal/agent` идёт отдельным шагом без `-race`).
+- `go test -tags llama_stub -timeout 120s ./cmd/...` — зелёные.
+- `go test -race -tags llama_stub -short -timeout 900s ./tests/...` — зелёные
+  (все три пакета интеграционных тестов).
+- `go test -race ... -count=3` на каталоге моделей и `-count=2` на всей пачке
+  `internal/balancer` — без флаков; `fieldalignment` по новым файлам молчит.
+- WebUI: 37 node-тестов зелёные.
+
 ## [0.7.59 — Одна модель — одна карточка: дублирование на странице моделей, 2026-10-09]
 
 ### 🐛 Что видел оператор

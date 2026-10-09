@@ -58,6 +58,14 @@ admission-очереди, поэтому включать её за операт
   независимыми пробами (на загруженном раннере — на мегабайты). Теперь сверка с
   допуском `max(64 MiB, 1 %)`, суть проверки сохранена: бюджет берёт числа у
   `ProbeRAM`, а не выдумывает их.
+- **`internal/sdbackend/hf.go`**: **гонка данных** в `HFManager.BundleProgress`
+  (поймана `-race` в CI и локально: `Write at setStateFileSize hf.go:851 ← fillExpectedSizes
+  ← runBundle` против `Previous read at BundleProgress hf.go:803 ← ListDownloads`).
+  `copy(files, st.files)` копировал только слайс УКАЗАТЕЛЕЙ `*hfFileState`, и цикл
+  построения прогресса читал `fs.size` вне `statesMu`, пока фоновая загрузка писала
+  тот же объект под локом. Теперь под локом копируются ЗНАЧЕНИЯ файлов
+  (`[]hfFileState`), и наружу уходят только они. `-race -count=4 ./cmd/sdworker/`
+  и `-count=2 ./cmd/sdworker/ ./internal/sdbackend/` — чисто.
 - **`cmd/sdworker/handlers_hf_test.go`**: флак `TestHF_BOMBodyAccepted`
   (self-hosted Windows): `TempDir RemoveAll cleanup: … The directory is not empty`.
   Запись о bundle снимается раньше, чем писатель закрывает файлы, поэтому

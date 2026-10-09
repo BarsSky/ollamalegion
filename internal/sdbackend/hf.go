@@ -783,9 +783,20 @@ func (m *HFManager) BundleProgress(bundleID string) (*cppbackend.HFBundleProgres
 		return nil, fmt.Errorf("no bundle download found for %s", bundleID)
 	}
 	cp := *st
-	files := make([]*hfFileState, len(st.files))
-	copy(files, st.files)
-	cp.files = files
+	// R83-fix (2026-10-09): копируем ЗНАЧЕНИЯ файлов, а не указатели.
+	//
+	// Было `files := make([]*hfFileState, len(st.files)); copy(files, st.files)` —
+	// копировался только слайс указателей, и цикл ниже читал fs.size/status ВНЕ
+	// лока, пока fillExpectedSizes → setStateFileSize писал тот же *hfFileState под
+	// statesMu. Гонка поймана -race в cmd/sdworker (CI и локально):
+	//   Write at ... (*HFManager).setStateFileSize hf.go:851 ← fillExpectedSizes ← runBundle
+	//   Previous read at ... (*HFManager).BundleProgress hf.go:803 ← ListDownloads
+	fileValues := make([]hfFileState, len(st.files))
+	for i, f := range st.files {
+		if f != nil {
+			fileValues[i] = *f
+		}
+	}
 	m.statesMu.Unlock()
 
 	out := &cppbackend.HFBundleProgress{
@@ -796,9 +807,10 @@ func (m *HFManager) BundleProgress(bundleID string) (*cppbackend.HFBundleProgres
 		CompletedAt:  cp.endedAt,
 		ErrorMessage: cp.errText,
 		Registered:   cppbackend.IsBundleRegistered(cp.targetDir),
-		Files:        make([]cppbackend.HFBundleFileProgress, 0, len(cp.files)),
+		Files:        make([]cppbackend.HFBundleFileProgress, 0, len(fileValues)),
 	}
-	for _, fs := range cp.files {
+	for i := range fileValues {
+		fs := fileValues[i]
 		downloaded := fileBytesOnDisk(fs.local, fs.tempPath)
 		total := fs.size
 		status := fs.status

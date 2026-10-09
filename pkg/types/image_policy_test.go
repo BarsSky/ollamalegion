@@ -1,6 +1,9 @@
 package types
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // R-Image (2026-10-02): тесты гейта VRAM и политик сосуществования.
 // Контракт общий для балансера (гейт/лок) и конфига — фиксируем поведение.
@@ -90,6 +93,36 @@ func TestEvaluateImageVRAM(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEvaluateImageVRAM_MessageExplainsShortfall — R91: отказ по VRAM обязан
+// объяснять, из чего сложилась нехватка.
+//
+// Живой случай: оператор видел «image model needs 520 MB VRAM (+512 MB headroom),
+// only 512 MB free» и читал как «не хватает 8 МБ» — при том что блокировал резерв
+// сосуществования (512 МБ), а не вес модели. В тексте должны быть оба слагаемых и
+// итоговая недостача, иначе непонятно, что уменьшать.
+func TestEvaluateImageVRAM_MessageExplainsShortfall(t *testing.T) {
+	v := EvaluateImageVRAM(
+		ImageVramEstimate{RequiredMB: 520, Source: "profile"},
+		512,
+		ImageResourceSettings{VramHeadroomMB: 512},
+	)
+	if v.Allowed {
+		t.Fatal("520 + 512 > 512 — гейт обязан отказать")
+	}
+	if !strings.Contains(v.Message, "520") || !strings.Contains(v.Message, "512") {
+		t.Errorf("в сообщении нет слагаемых: %q", v.Message)
+	}
+	if !strings.Contains(v.Message, "reserved") {
+		t.Errorf("в сообщении резерв не назван резервом: %q", v.Message)
+	}
+	if !strings.Contains(v.Message, "short by 520") {
+		t.Errorf("в сообщении нет итоговой недостачи: %q", v.Message)
+	}
+	if !strings.Contains(v.Hint, "quantization") {
+		t.Errorf("hint потерял OOM-лестницу: %q", v.Hint)
 	}
 }
 

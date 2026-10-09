@@ -1180,14 +1180,36 @@ func (r *imageResources) checkVRAM(s *imageBackendMetrics, host string, settings
 		r.mu.Lock()
 		r.gateDenied[verdict.ReasonCode]++
 		r.mu.Unlock()
-		return imageGateDecision{
+		decision := imageGateDecision{
 			Allowed: false,
 			Status:  http.StatusServiceUnavailable,
 			Code:    verdict.ReasonCode,
 			Message: verdict.Message,
 			Hint:    verdict.Hint,
 			Verdict: verdict,
-		}, true
+		}
+		// R91 (2026-10-09): на общей карте к отказу добавляем КОНТЕКСТ.
+		//
+		// Живой случай: текстовая модель (gemma-4) занимала карту, image-модели не
+		// хватало ~8 МБ сверх резерва, и оператор видел только числа — «нужно 520,
+		// свободно 512». Из них не следует ни то, КТО держит память, ни то, что
+		// делать. Здесь мы знаем и то, и другое: называем текстовые бэкенды на этой
+		// же карте (по host ИЛИ по общему GPU UUID — на стенде имена контейнеров
+		// разные, см. textNeighbourIDs) и ведём к ручке политики, которая правится
+		// без рестарта.
+		if shared && verdict.ReasonCode == types.ImageGateInsufficientVRAM {
+			neighbours := r.textNeighbourIDs(host)
+			who := strings.Join(neighbours, ", ")
+			if who == "" {
+				who = "text backend on the same GPU"
+			}
+			decision.Message = fmt.Sprintf("%s; a text backend (%s) is occupying this GPU", verdict.Message, who)
+			decision.Hint = verdict.Hint + ". The text model occupies the same GPU: either free the card " +
+				"(unload the text model) or change the coexistence policy — GET/PUT /api/v1/image/resources: " +
+				"\"offload\" only if the image worker really runs with offload to RAM, \"dedicated\" only if the " +
+				"image worker has its own GPU; reducing vramHeadroomMb lowers the reserve the gate adds"
+		}
+		return decision, true
 	}
 	r.gateAllowed.Add(1)
 	return imageGateDecision{Allowed: true, Code: verdict.ReasonCode, Verdict: verdict}, false
@@ -1331,24 +1353,7 @@ func (r *imageResources) textNeighbourFreeVRAM(host string) (int, string) {
 		return 0, ""
 	}
 	p := r.proxy
-	ids := make([]string, 0, 2)
-	p.mu.RLock()
-	for id, st := range p.backends {
-		if st == nil || st.Backend == nil {
-			continue
-		}
-		if st.Backend.Host != host {
-			continue
-		}
-		if normalizeBackendType(st.Backend.Type) == types.BackendTypeImage {
-			continue
-		}
-		if st.Backend.Status == types.StatusOffline {
-			continue
-		}
-		ids = append(ids, id)
-	}
-	p.mu.RUnlock()
+	ids := r.textNeighbourIDs(host)
 	if len(ids) == 0 {
 		return 0, ""
 	}
@@ -1377,17 +1382,60 @@ func (r *imageResources) textNeighbourFreeVRAM(host string) (int, string) {
 // hostHasTextNeighbour — есть ли на хосте текстовый (не image) бэкенд.
 // Именно это делает сценарий «сосуществование» реальным.
 func (r *imageResources) hostHasTextNeighbour(host string) bool {
+	return len(r.textNeighbourIDs(host)) > 0
+}
+
+// textNeighbourIDs — текстовые (не image) бэкенды, которые делят с image-бэкендом
+// этого хоста ОДНУ физическую карту.
+//
+// ДВА признака, а не один:
+//
+//  1. Совпадение host — прежнее правило. Годится, когда ноды адресуются IP-ом
+//     (на второй машине стенда и текст, и image зарегистрированы как
+//     192.168.13.34).
+//  2. Совпадение GPU UUID — R91 (2026-10-09). На первой машине стенда текстовая
+//     нода регистрируется как `cppworker-gpu`, а image-воркер как `imageworker`
+//     (имена контейнеров), поэтому сравнение только по host НЕ находило соседа —
+//     хотя обе живут на одной RTX 3070 и агенты обеих отдают один и тот же
+//     `gpu.uuids: ["GPU-6f8d5f3b-..."]`. Следствие: сообщение VRAM-гейта не
+//     называло виновника («нужно 520 МБ, свободно 512 МБ» без ответа на вопрос
+//     «кто занял карту»), а fallback свободной VRAM не находил текстовый бюджет.
+//     UUID — тот же признак, по которому монитор схлопывает VRAM двух бэкендов в
+//     одну карту (webui: aggregate VRAM by UUID).
+//
+// Пустой список = «shared GPU не обнаружен» (нет метрик агента, у бэкендов нет
+// UUID). Это НЕ повод блокировать: вызывающие трактуют пустоту как «не знаем».
+func (r *imageResources) textNeighbourIDs(host string) []string {
 	if r == nil || r.proxy == nil || host == "" {
-		return false
+		return nil
 	}
 	p := r.proxy
+
+	// UUID карт, которые обслуживают image-бэкенды этого хоста.
+	imageUUIDs := map[string]bool{}
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	for _, st := range p.backends {
+	for id, st := range p.backends {
 		if st == nil || st.Backend == nil {
 			continue
 		}
+		if normalizeBackendType(st.Backend.Type) != types.BackendTypeImage {
+			continue
+		}
 		if st.Backend.Host != host {
+			continue
+		}
+		if m, ok := p.metricsMgr.SnapshotBackendMetrics(id); ok && m != nil {
+			for _, u := range m.GPU.UUIDs {
+				if u != "" {
+					imageUUIDs[u] = true
+				}
+			}
+		}
+	}
+
+	ids := make([]string, 0, 2)
+	for id, st := range p.backends {
+		if st == nil || st.Backend == nil {
 			continue
 		}
 		if normalizeBackendType(st.Backend.Type) == types.BackendTypeImage {
@@ -1396,9 +1444,24 @@ func (r *imageResources) hostHasTextNeighbour(host string) bool {
 		if st.Backend.Status == types.StatusOffline {
 			continue
 		}
-		return true
+		sameHost := st.Backend.Host == host
+		sameGPU := false
+		if !sameHost && len(imageUUIDs) > 0 {
+			if m, ok := p.metricsMgr.SnapshotBackendMetrics(id); ok && m != nil {
+				for _, u := range m.GPU.UUIDs {
+					if u != "" && imageUUIDs[u] {
+						sameGPU = true
+						break
+					}
+				}
+			}
+		}
+		if sameHost || sameGPU {
+			ids = append(ids, id)
+		}
 	}
-	return false
+	p.mu.RUnlock()
+	return ids
 }
 
 // profileFor — профиль image-модели на балансере (только чтение).

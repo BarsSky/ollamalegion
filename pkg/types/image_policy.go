@@ -280,9 +280,19 @@ func EvaluateImageVRAM(est ImageVramEstimate, freeMB int, s ImageResourceSetting
 	if est.RequiredMB+headroom > freeMB {
 		verdict.Allowed = false
 		verdict.ReasonCode = ImageGateInsufficientVRAM
+		// R91 (2026-10-09): в сообщении видно, ИЗ ЧЕГО сложилась нехватка.
+		//
+		// Прежний текст — «image model needs 520 MB VRAM (+512 MB headroom), only
+		// 512 MB free» — читался как абсурд: 520 против 512, «не хватает 8 МБ».
+		// На самом деле блокировал РЕЗЕРВ сосуществования (512 МБ), а не вес
+		// модели: 520 + 512 > 512. Оператор не понимал, что уменьшать. Теперь в
+		// тексте есть оба слагаемых и итоговая недостача, поэтому видно: либо
+		// снижаем резерв политики (balancing.image.vramHeadroomMb), либо
+		// освобождаем карту.
+		shortfall := est.RequiredMB + headroom - freeMB
 		verdict.Message = fmt.Sprintf(
-			"image model needs %d MB VRAM (+%d MB headroom), only %d MB free",
-			est.RequiredMB, headroom, freeMB)
+			"image model needs %d MB VRAM, plus %d MB reserved for GPU coexistence, but only %d MB is free — short by %d MB",
+			est.RequiredMB, headroom, freeMB, shortfall)
 		verdict.Hint = ImageOOMHint
 		return verdict
 	}

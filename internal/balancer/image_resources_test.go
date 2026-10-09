@@ -347,6 +347,20 @@ func newImgResProxyOpts(
 	if !keepPoller && p.imageRes != nil {
 		p.imageRes.Stop()
 	}
+	// R83-fix (2026-10-09): останавливаем и поллер llama.cpp-метрик.
+	//
+	// ЗАЧЕМ. Тесты гейта инжектят «живой» снимок соседа
+	// (`metricsMgr.llamaMetrics["llm-1"].AvailableVRAMMB = 400`) и ожидают, что гейт
+	// им воспользуется. Фоновый поллер ходит на CppWorkerPort стенда (18092) и на
+	// неудачном опросе сбрасывает/устаревает снимок — на загруженном CI-раннере тик
+	// успевал попасть в тест, снимок исчезал, гейт пропускал генерацию:
+	//   --- FAIL: TestImageGate_FreeVRAMFromTextNeighbour (0.02s)
+	//       status = 200, want 503 (рабочий набор 1024 MB, у соседа свободно 400 MB)
+	// (воспроизведено в CI 2026-10-09, локально зелёный). Тот же приём, что и с
+	// imageRes выше: решения теста не должны зависеть от момента фонового тика.
+	if p.llamaCppMetricsPoller != nil {
+		p.llamaCppMetricsPoller.Stop()
+	}
 	t.Cleanup(func() {
 		if p.imageRes != nil {
 			p.imageRes.Stop()

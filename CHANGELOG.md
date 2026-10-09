@@ -38,6 +38,20 @@ admission-очереди, поэтому включать её за операт
   (паритет ключей — 1812/1812, `scripts/i18n_diff.js --strict` зелёный).
 - **`deployments/.env.example`**: документирован `LB_CAPACITY_FROM_MODEL_SLOTS` —
   что он делает, почему по умолчанию `false` и что именно советует баннер.
+- **`webui/js/i18n/index.js`**: `I18N.t` подставлял параметры через
+  `String.replace` со строковым шаблоном, то есть менял ТОЛЬКО ПЕРВОЕ вхождение
+  `{name}`. Строка баннера содержит `{slots}` дважды, поэтому оператор видел
+  «…выставьте maxConcurrentRequests=**{slots}**…». Теперь подставляются все
+  вхождения (`split/join`), есть регресс-тест
+  `webui/tests/i18n-placeholders.test.js` (без правки падает 4 проверки).
+- **`internal/balancer/image_resources_test.go`**: флак
+  `TestImageGate_FreeVRAMFromTextNeighbour` (CI 2026-10-09: `status = 200, want 503`
+  на self-hosted Windows-раннере, локально зелёный). Тест инжектит «живой» снимок
+  соседа (`llamaMetrics["llm-1"].AvailableVRAMMB = 400`), а фоновый поллер
+  llama.cpp-метрик ходит на `CppWorkerPort` стенда и на неудачном опросе
+  сбрасывает снимок — на загруженном раннере тик попадал в окно теста. Стенд
+  `newImgResProxyOpts` теперь останавливает и этот поллер (тем же приёмом, что и
+  `imageRes`), поэтому решения теста не зависят от момента фонового тика.
 
 ### 📌 Что осталось осознанно не тронутым
 

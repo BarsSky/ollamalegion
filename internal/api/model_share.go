@@ -60,6 +60,80 @@ const (
 	shareProgressEvery = 500 * time.Millisecond
 )
 
+// R91 (2026-10-09): проверка свободного места у приёмника.
+//
+// ЗАЧЕМ. Перенос — это гигабайты, которые принимаются прямо в каталог моделей
+// приёмника. До этой правки единственным признаком нехватки места был отказ
+// ПОСЛЕ передачи всех байтов (или, хуже, забитый под ноль диск, на котором уже
+// лежат другие модели — тогда приёмник роняет запись логов и временных файлов).
+// Агент бэкенда сообщает свободное место (SystemMetrics.DiskFree, МБ), поэтому
+// причину можно назвать сразу, с числами и без сети.
+//
+// РЕЗЕРВ. Оставлять приёмнику ноль свободного места нельзя: модели занимают
+// почти весь объём, а ОС и воркеру нужен запас под логи, tmp и переиндексацию.
+// Величина настраивается (LB_SHARE_DISK_RESERVE_MB), 0 = требовать ровно размер
+// модели. Проверка НЕ блокирует перенос, когда телеметрии нет вовсе (нет агента
+// или он не присылал диск): отсутствие цифры — не повод отказывать.
+const (
+	// DefaultShareDiskReserveMB — запас свободного места на приёмнике (МБ).
+	DefaultShareDiskReserveMB = 512
+	// EnvShareDiskReserveMB — переопределение запаса, МБ (0 = без запаса).
+	EnvShareDiskReserveMB = "LB_SHARE_DISK_RESERVE_MB"
+)
+
+// shareDiskReserveMB — запас свободного места на приёмнике из окружения.
+func shareDiskReserveMB() int64 {
+	v := strings.TrimSpace(os.Getenv(EnvShareDiskReserveMB))
+	if v == "" {
+		return DefaultShareDiskReserveMB
+	}
+	mb, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		logger.Get().Warnw("LB_SHARE_DISK_RESERVE_MB is not a number, using default",
+			"value", v, "default_mb", DefaultShareDiskReserveMB)
+		return DefaultShareDiskReserveMB
+	}
+	if mb < 0 {
+		return 0
+	}
+	return mb
+}
+
+// shareTargetDiskShortfall — сколько байт не хватает приёмнику под перенос.
+//
+// Возвращает (недостача_байт, свободно_МБ, известно_ли_место). Третий результат
+// false означает «телеметрии о диске нет» — вызывающий пропускает проверку.
+func (s *Server) shareTargetDiskShortfall(backendID string, needBytes int64) (int64, uint64, bool) {
+	if s.proxy == nil || needBytes <= 0 {
+		return 0, 0, false
+	}
+	mm := s.proxy.GetMetricsManager()
+	if mm == nil {
+		return 0, 0, false
+	}
+	m, ok := mm.SnapshotBackendMetrics(backendID)
+	if !ok || m == nil || m.System.DiskFree == 0 {
+		return 0, 0, false
+	}
+	freeMB := int64(m.System.DiskFree)
+	needMB := (needBytes + (1 << 20) - 1) >> 20 // округляем вверх: половина мегабайта не влезет
+	availableMB := freeMB - shareDiskReserveMB()
+	if availableMB >= needMB {
+		return 0, m.System.DiskFree, true
+	}
+	return (needMB - availableMB) << 20, m.System.DiskFree, true
+}
+
+// shareHumanBytes — размер для сообщения об ошибке (ГБ с одним знаком; меньшие
+// значения — в МБ, чтобы «0.0 ГБ» не выглядело как «ничего не нужно»).
+func shareHumanBytes(b int64) string {
+	const gib = 1 << 30
+	if b >= gib {
+		return fmt.Sprintf("%.1f ГБ", float64(b)/float64(gib))
+	}
+	return fmt.Sprintf("%d МБ", (b+(1<<20)-1)>>20)
+}
+
 // modelShareTarget — одна цель переноса.
 type modelShareTarget struct {
 	BackendID  string    `json:"backendId"`
@@ -372,6 +446,7 @@ func (s *Server) shareToOne(ctx context.Context, job *modelShareJob, idx int) {
 	t.State = shareTargetRunning
 	t.StartedAt = time.Now()
 	backendID := t.BackendID
+	total := t.Total
 	job.mu.Unlock()
 
 	defer func() {
@@ -391,6 +466,26 @@ func (s *Server) shareToOne(ctx context.Context, job *modelShareJob, idx int) {
 			job.mu.Unlock()
 			return
 		}
+	}
+
+	// R91 (2026-10-09): проверка свободного места ДО потока — после проверки
+	// «модель уже есть» (переносить нечего — это не отказ по месту) и до
+	// открытия соединения с источником.
+	if shortfall, freeMB, known := s.shareTargetDiskShortfall(backendID, total); known && shortfall > 0 {
+		msg := fmt.Sprintf("на приёмнике мало места: нужно ~%s, свободно %s (резерв %d МБ)",
+			shareHumanBytes(total), shareHumanBytes(int64(freeMB)<<20), shareDiskReserveMB())
+		job.mu.Lock()
+		job.Targets[idx].State = shareTargetFailed
+		job.Targets[idx].Error = msg
+		job.Targets[idx].Note = "перенос не начат: не хватает места на диске приёмника"
+		job.mu.Unlock()
+		if log := logger.Get(); log != nil {
+			log.Warnw("model share target skipped: not enough disk space on receiver",
+				"job", job.ID, "source", job.Source, "target", backendID, "model", job.Model,
+				"need_bytes", total, "free_mb", freeMB, "shortfall_bytes", shortfall,
+				"reserve_mb", shareDiskReserveMB())
+		}
+		return
 	}
 
 	srcURL, targetURL, err := s.shareEndpointURLs(job, backendID)

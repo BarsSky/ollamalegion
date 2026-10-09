@@ -520,6 +520,15 @@ func TestReload_DegradedHeaderOnCPUOnly(t *testing.T) {
 	if got := rec.Header().Get("X-CppWorker-Degraded"); got != "insufficient_resources" {
 		t.Errorf("X-CppWorker-Degraded = %q", got)
 	}
+
+	// R91 (2026-10-09): дождаться фоновой перезагрузки ДО возврата из теста.
+	// Она пишет файлы в ModelsDir (t.TempDir), поэтому cleanup каталога падал на
+	// «directory not empty» (Linux) / «The directory is not empty» (Windows) —
+	// ожидание в t.Cleanup тут не помогает: TempDir-removal идёт после него, но
+	// горутина успевает создать файл уже во время обхода каталога.
+	if !WaitAsyncWork(15 * time.Second) {
+		t.Fatal("фоновая перезагрузка не завершилась за 15 с")
+	}
 }
 
 // backendWithTruncatedModel — стенд: fake-GGUF нужного размера + loaded-модель.

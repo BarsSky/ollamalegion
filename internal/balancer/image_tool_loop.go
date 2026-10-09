@@ -512,13 +512,49 @@ func synthesizeChatSSE(w http.ResponseWriter, raw []byte, model string, status i
 	}
 
 	chunk(map[string]interface{}{"role": "assistant"}, nil)
+	contentSent := false
+	callsSent := false
 	if message != nil {
 		if content, _ := message["content"].(string); content != "" {
 			chunk(map[string]interface{}{"content": content}, nil)
+			contentSent = true
 		}
 		if calls, ok := message["tool_calls"]; ok {
 			chunk(map[string]interface{}{"tool_calls": calls}, nil)
+			callsSent = true
 		}
+	}
+	// R91 (2026-10-08): НЕ отдаём молчаливый пустой ответ.
+	//
+	// Здесь балансер переизлучает буферизованный ответ апстрима как SSE. Если в
+	// message не оказалось ни content, ни tool_calls, клиент получал поток
+	// `{"delta":{}}` + `finish_reason:"stop"` + `[DONE]` — то есть УСПЕШНЫЙ ответ
+	// без текста. Живой замер (2026-10-08): 11 из 30 запросов под нагрузкой
+	// выглядели так, и по логу нельзя было понять, что произошло. Теперь такой
+	// случай виден клиенту как ошибка с причиной, а не как «модель промолчала».
+	if !contentSent && !callsSent {
+		logger.Get().Warnw("synthesizeChatSSE: пустой ответ апстрима — отдаём ошибку вместо пустого успеха",
+			"model", model, "finish_reason", finish, "status", status)
+		errChunk := map[string]interface{}{
+			"id":      id,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   model,
+			"choices": []interface{}{
+				map[string]interface{}{
+					"index":         0,
+					"delta":         map[string]interface{}{},
+					"finish_reason": "error",
+				},
+			},
+			"error": "upstream returned an empty completion (no content and no tool calls). " +
+				"Retry, or check the worker log: the model may have spent the whole max_tokens budget on its reasoning block.",
+		}
+		out, _ := json.Marshal(errChunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", out)
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		Flush(w)
+		return
 	}
 	chunk(map[string]interface{}{}, finish)
 	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")

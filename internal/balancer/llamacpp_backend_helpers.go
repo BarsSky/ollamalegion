@@ -942,15 +942,39 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 				// /api/v1/models/operations показывал операцию load в статусе
 				// running 1m18s+ и запросы продолжали получать «подожди 90с».
 				errStr := strings.ToLower(result.Error)
+				// «already in progress» — не провал загрузки, а дедупликация:
+				// предыдущая async-загрузка ещё идёт (она может завершиться
+				// успешно). Считать это failure нельзя, иначе breaker
+				// откроется на нормально загружающейся модели.
+				loadDeduped := strings.Contains(errStr, "already in progress")
 				isLazyLoadFallback := strings.Contains(errStr, "404") ||
 					strings.Contains(errStr, "not found") ||
 					strings.Contains(errStr, "not implemented") ||
 					strings.Contains(errStr, "501") ||
-					// «already in progress» — не провал загрузки, а дедупликация:
-					// предыдущая async-загрузка ещё идёт (она может завершиться
-					// успешно). Считать это failure нельзя, иначе breaker
-					// откроется на нормально загружающейся модели.
-					strings.Contains(errStr, "already in progress")
+					loadDeduped
+				if loadDeduped {
+					// R83-fix (2026-10-09): дедупликация — это НЕ провал, и
+					// ожидающему запросу нельзя сигналить об ошибке.
+					//
+					// Живой дефект (стенд, 2026-10-09): 6 пользователей пришли
+					// на холодную модель одновременно. Первый запрос реально
+					// стартовал загрузку (его ExecuteOperation блокируется на всё
+					// время загрузки), остальные 5 получили от ModelManager
+					// «operation 'load' ... is already in progress» → этот текст
+					// уходил в loadDone → waitForModelLoad/drainLoadFailure
+					// классифицировал его как "model load failed" → клиент
+					// получал 503 через ~0.5 с, хотя загрузка шла нормально и
+					// завершилась успехом. Итог: 5 из 6 пользователей получали
+					// отказ, обслуживался только «победитель» дедупликации.
+					//
+					// Теперь ожидающий продолжает поллить состояние загрузки
+					// (fetchModelLoadState вернёт "loaded", "error" или упрётся в
+					// бюджет ожидания) — как и задумано в R67a.
+					ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: async load already in progress on this backend, waiting for it",
+						"backend", backendID, "model", modelName, "error", result.Error)
+					loadDone <- nil
+					return
+				}
 				if !isLazyLoadFallback {
 					breakerOpened, retryAfter := lr.loadBackoff.recordFailure(backendID, modelName, result.Error)
 					if breakerOpened {

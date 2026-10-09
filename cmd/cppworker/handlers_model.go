@@ -303,7 +303,16 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		}
 		writeLoadAccepted(w, r, modelName, modelPath, sizeBytes, estimatedMs, lm)
 		// Spawn background load. runAsyncLoad handles UnlockLoad, notifyModelLoaded.
-		go runAsyncLoad(modelName, modelPath, opts, balancerReg)
+		// R91: снимок backend берём здесь (в этой же горутине) — фоновая работа не
+		// должна читать пакетную переменную, которую тесты подменяют и
+		// восстанавливают в cleanup (иначе DATA RACE под -race).
+		// Плюс регистрация в asyncWorkWG (см. async_work_tracker.go).
+		be := backend
+		done := trackAsyncWork()
+		go func() {
+			defer done()
+			runAsyncLoad(modelName, modelPath, opts, balancerReg, be)
+		}()
 		return
 	}
 
@@ -753,7 +762,16 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 			LoadingSizeBytes: sizeBytes,
 		}
 		writeLoadAccepted(w, r, modelName, modelPath, sizeBytes, estimatedMs, lm)
-		go runAsyncLoad(modelName, modelPath, opts, balancerReg)
+		// R91: снимок backend берём здесь (в этой же горутине) — фоновая работа не
+		// должна читать пакетную переменную, которую тесты подменяют и
+		// восстанавливают в cleanup (иначе DATA RACE под -race).
+		// Плюс регистрация в asyncWorkWG (см. async_work_tracker.go).
+		be := backend
+		done := trackAsyncWork()
+		go func() {
+			defer done()
+			runAsyncLoad(modelName, modelPath, opts, balancerReg, be)
+		}()
 		return
 	}
 
@@ -2154,7 +2172,16 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		setDegradedHeader(w, degradedStage)
 		writeLoadAccepted(w, r, req.Name, modelPath, sizeBytes, estimatedMs, lm)
 		// Background reload: UnloadModel + LoadModelWithOpts + notify.
-		go runAsyncReload(req.Name, modelPath, opts, current, balancerReg, degradedStage)
+		// R91: снимок backend берём здесь (в этой же горутине) — фоновая работа не
+		// должна читать пакетную переменную, которую тесты подменяют и
+		// восстанавливают в cleanup (иначе DATA RACE под -race).
+		// Плюс регистрация в asyncWorkWG (см. async_work_tracker.go).
+		be := backend
+		done := trackAsyncWork()
+		go func() {
+			defer done()
+			runAsyncReload(req.Name, modelPath, opts, current, balancerReg, degradedStage, be)
+		}()
 		return
 	}
 
@@ -2257,7 +2284,7 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	setDegradedHeader(w, degradedStage)
 	// Синхронный reload тоже обновляет регистр: запись о деградации должна
 	// появляться и исчезать одинаково во всех путях (иначе /api/models соврёт).
-	noteLoadDegradation(req.Name, opts)
+	noteLoadDegradation(req.Name, opts, backend)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "reloaded", "name": req.Name,
 		"contextSize": opts.ContextSize, "batchSize": opts.BatchSize,

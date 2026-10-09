@@ -507,6 +507,13 @@ func main() {
 	if profileSyncer != nil {
 		profileSyncer.stop()
 	}
+	// R91 (2026-10-09): фоновая загрузка/перезагрузка модели держит backend
+	// (дренаж, unload, load, rollback) — закрывать его под работающей горутиной
+	// нельзя: `-race` ловил это как DATA RACE (Backend.Close против GetModel из
+	// runAsyncReload), а в проде это обращение к освобождённым ресурсам.
+	// Ждём ограниченное время (LB_ASYNC_WORK_SHUTDOWN_WAIT_SEC, default 30 с):
+	// остановка процесса не должна зависеть от загрузки большой модели.
+	waitAsyncWorkBeforeClose()
 	backend.Close()
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalw("Server forced to shutdown", "error", err)

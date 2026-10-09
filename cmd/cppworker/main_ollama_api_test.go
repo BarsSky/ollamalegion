@@ -47,6 +47,14 @@ func setupCppWorkerTestServer(t *testing.T) (*httptest.Server, func()) {
 	srv := httptest.NewServer(router)
 	cleanup := func() {
 		srv.Close()
+		// R91 (2026-10-09): сначала дожидаемся фоновых загрузок/перезагрузок.
+		// runAsyncReload/runAsyncLoad держат backend (GetModel/UnloadModel/Load),
+		// и Close() под работающей горутиной — гонка, которую ловил -race:
+		//   Write  Backend.Close()          (этот cleanup)
+		//   Read   Backend.GetModel()  ← runAsyncReload
+		// Ждём с таймаутом: тест не должен висеть, если заглушка загрузилась
+		// нештатно, но факт таймаута видно в логе.
+		waitAsyncWorkBeforeClose()
 		backend.Close()
 	}
 	return srv, cleanup

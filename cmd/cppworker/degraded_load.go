@@ -207,8 +207,8 @@ func degradedNoticeFromVerdict(modelName string, v memfit.Verdict, nCtx int) *De
 // opts не содержит размера модели и числа слоёв, и «самодельная» запись
 // разошлась бы с логом вердикта. Если метаданных нет — записываем минимальную
 // достоверную запись (стадия cpu_only + gpu_layers=0), не выдумывая числа.
-func noteLoadDegradation(modelName string, opts cppbackend.LoadModelOpts) {
-	if modelName == "" || backend == nil {
+func noteLoadDegradation(modelName string, opts cppbackend.LoadModelOpts, be *cppbackend.Backend) {
+	if modelName == "" || be == nil {
 		return
 	}
 	if opts.GPULayers != 0 {
@@ -217,7 +217,7 @@ func noteLoadDegradation(modelName string, opts cppbackend.LoadModelOpts) {
 		degradedLoads.clear(modelName)
 		return
 	}
-	info, err := backend.GetModel(modelName)
+	info, err := be.GetModel(modelName)
 	if err != nil || info == nil {
 		return
 	}

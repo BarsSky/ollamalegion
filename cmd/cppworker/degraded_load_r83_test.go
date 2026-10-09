@@ -281,7 +281,7 @@ func TestNoteLoadDegradation_GpuLayersClears(t *testing.T) {
 	degradedLoads.clear("m")
 	degradedLoads.record(&DegradedNotice{Model: "m", Stage: "cpu_only", At: time.Now()})
 
-	noteLoadDegradation("m", cppbackend.LoadModelOpts{GPULayers: 22})
+	noteLoadDegradation("m", cppbackend.LoadModelOpts{GPULayers: 22}, backend)
 	if _, ok := degradedLoads.get("m"); ok {
 		t.Fatal("деградация не снята при 22 слоях на GPU — оператор получит ложное предупреждение")
 	}
@@ -349,7 +349,7 @@ func TestNoteLoadDegradation_CPUOnlyWithMetadata(t *testing.T) {
 
 	noteLoadDegradation(model+".gguf", cppbackend.LoadModelOpts{
 		GPULayers: 0, ContextSize: 32768, KVCacheType: "q8_0",
-	})
+	}, backend)
 
 	d, ok := degradedLoads.get(model + ".gguf")
 	if !ok {
@@ -529,6 +529,17 @@ func TestReload_DegradedHeaderOnCPUOnly(t *testing.T) {
 func backendWithTruncatedModel(t *testing.T, name string, nLayers, nHeads, nKvHeads, nEmbd uint32, size int64) (*cppbackend.Backend, string) {
 	t.Helper()
 	dir := t.TempDir()
+	// R91 (2026-10-09): тесты на этом стенде запускают ФОНОВУЮ загрузку/перезагрузку
+	// (handleReloadModel с wait=false), а она держит файлы в dir. Cleanup'ы идут
+	// LIFO, поэтому ожидание, зарегистрированное ПОСЛЕ t.TempDir(), выполняется
+	// РАНЬШЕ удаления каталога — иначе на Windows падало
+	// «TempDir RemoveAll cleanup: The directory is not empty», а под -race ещё и
+	// гонка с Close().
+	t.Cleanup(func() {
+		if !WaitAsyncWork(15 * time.Second) {
+			t.Logf("cleanup: фоновая загрузка/перезагрузка не завершилась за 15 с")
+		}
+	})
 	filename := name + ".gguf"
 	path := filepath.Join(dir, filename)
 	makeFakeGGUF(t, path, "qwen3", nLayers, nHeads, nKvHeads, nEmbd)

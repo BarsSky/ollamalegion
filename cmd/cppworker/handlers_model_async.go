@@ -292,8 +292,14 @@ func writeLoadWaitTimeout(w http.ResponseWriter, r *http.Request,
 // по таймауту, но load продолжится. CGo-вызов bridge.LoadModel не
 // отменяется через context, поэтому единственный способ "отменить"
 // загрузку — это дождаться её завершения или убить процесс.
+// R91 (2026-10-09): backend передаётся ЯВНО (be), а не читается из пакетной
+// переменной. Причина — гонка, найденная go test -race ./cmd/cppworker/:
+// тестовые стенды подменяют пакетный ackend и восстанавливают его в cleanup
+// (defer func() { backend = oldBackend }()), а фоновая горутина читала глобал —
+// DATA RACE «write backend (cleanup)» против «read backend (runAsyncLoad)».
+// Снимок берётся в вызывающем (в его же горутине) и дальше используется только он.
 func runAsyncLoad(modelName, modelPath string, opts cppbackend.LoadModelOpts,
-	balancerReg balancerRegNotifier) {
+	balancerReg balancerRegNotifier, be *cppbackend.Backend) {
 	start := time.Now()
 	logger.Get().Infow("runAsyncLoad: starting background load",
 		"name", modelName, "path", modelPath,
@@ -304,7 +310,7 @@ func runAsyncLoad(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	// не привязанная к HTTP request (HTTP запрос уже вернул 202 Accepted).
 	// ctx.Done() не сработает; abort возможен только через explicit Cancel
 	// (если будет добавлен в будущем) или через cppworker shutdown.
-	loadErr := backend.LoadModelWithOpts(context.Background(), modelName, modelPath, opts)
+	loadErr := be.LoadModelWithOpts(context.Background(), modelName, modelPath, opts)
 	duration := time.Since(start)
 
 	if loadErr != nil {
@@ -323,12 +329,12 @@ func runAsyncLoad(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 		// при ненулевом размере модели и есть осознанный CPU-only. Это делает
 		// запись достоверной и для путей, где memfit не вызывался вовсе
 		// (явный gpuLayers=0 от оператора).
-		noteLoadDegradation(modelName, opts)
+		noteLoadDegradation(modelName, opts, be)
 		logger.Get().Infow("runAsyncLoad: background load complete",
 			"name", modelName, "duration_ms", duration.Milliseconds())
 		// Notify balancer so the model becomes "ready" for routing.
 		if balancerReg != nil {
-			if info, err := backend.GetModel(modelName); err == nil {
+			if info, err := be.GetModel(modelName); err == nil {
 				// Round 34 (2026-08-12): передаём runtime params (kvCacheType,
 				// flashAttnType, useMmap) для profile mismatch detection в
 				// balancer preflight_nctx (Phase 2).
@@ -339,7 +345,7 @@ func runAsyncLoad(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 		}
 	}
 	// Always unlock so other load requests can proceed.
-	backend.UnlockLoad(modelName)
+	be.UnlockLoad(modelName)
 }
 
 // currentModelInfo — локальный snapshot типа *cppbackend.ModelInfo, чтобы
@@ -374,8 +380,11 @@ type currentModelInfo struct {
 // ставится в 202, а запись в регистр — уже после фактической загрузки, и оба
 // места должны говорить об одном и том же (иначе UI покажет деградацию там,
 // где её нет, или наоборот).
+// R91 (2026-10-09): см. комментарий у runAsyncLoad — backend приходит параметром,
+// чтобы подмена пакетной переменной в тестах (и любой будущий перезапуск) не
+// гоняли с фоновой работой.
 func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
-	current *cppbackend.ModelInfo, balancerReg balancerRegNotifier, degradedStage string) {
+	current *cppbackend.ModelInfo, balancerReg balancerRegNotifier, degradedStage string, be *cppbackend.Backend) {
 	start := time.Now()
 	logger.Get().Infow("runAsyncReload: starting background reload",
 		"name", modelName, "path", modelPath,
@@ -386,7 +395,7 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	// переинициализации (и в тестах). Раньше это давало панику всего процесса
 	// (nil pointer в InFlight) вместо пропущенного reload — фоновый сбой ронял
 	// cppworker, обслуживающий живые запросы.
-	if backend == nil {
+	if be == nil {
 		logger.Get().Errorw("runAsyncReload: backend не инициализирован — reload пропущен",
 			"name", modelName)
 		return
@@ -401,7 +410,7 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	// Теперь хендлер до запуска этой горутины либо отвечает 409 busy (без force),
 	// либо обрывает генерации (force=true) — здесь остаётся только короткое окно
 	// на дренаж уже отменённых запросов.
-	if inflight := backend.InFlight(); inflight != nil {
+	if inflight := be.InFlight(); inflight != nil {
 		if n := inflight.Get(modelName); n > 0 {
 			logger.Get().Infow("runAsyncReload: waiting for in-flight to drain (не дольше 10s)",
 				"name", modelName, "in_flight", n)
@@ -413,16 +422,16 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	}
 
 	// Unload old model.
-	if err := backend.UnloadModel(modelName); err != nil {
+	if err := be.UnloadModel(modelName); err != nil {
 		logger.Get().Errorw("runAsyncReload: unload failed",
 			"name", modelName, "error", err)
-		backend.UnlockLoad(modelName)
+		be.UnlockLoad(modelName)
 		return
 	}
 
 	// Load with new opts.
 	// R60.57: async reload — context.Background() (фон, не привязан к request).
-	loadErr := backend.LoadModelWithOpts(context.Background(), modelName, modelPath, opts)
+	loadErr := be.LoadModelWithOpts(context.Background(), modelName, modelPath, opts)
 	duration := time.Since(start)
 
 	if loadErr != nil {
@@ -440,11 +449,11 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 			UseMmap:       current.UseMmap,
 			TensorSplit:   current.TensorSplit,
 		}
-		if rollbackErr := backend.LoadModelWithOpts(context.Background(), modelName, modelPath, oldOpts); rollbackErr != nil {
+		if rollbackErr := be.LoadModelWithOpts(context.Background(), modelName, modelPath, oldOpts); rollbackErr != nil {
 			logger.Get().Errorw("runAsyncReload: rollback failed (model is no longer loaded!)",
 				"name", modelName, "rollback_error", rollbackErr)
 		}
-		backend.UnlockLoad(modelName)
+		be.UnlockLoad(modelName)
 		return
 	}
 
@@ -461,14 +470,14 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	// вердикта нет), а загрузка всё равно прошла без GPU. noteLoadDegradation
 	// смотрит на opts.GPULayers и числа модели, поэтому регистр не разойдётся с
 	// реальностью. degradedStage при этом остаётся нужен для заголовка в 202.
-	noteLoadDegradation(modelName, opts)
+	noteLoadDegradation(modelName, opts, be)
 	if degradedStage != "" {
 		logger.Get().Warnw("runAsyncReload: подтверждена деградированная загрузка",
 			"name", modelName, "stage", degradedStage, "gpu_layers", opts.GPULayers)
 	}
 
 	if balancerReg != nil {
-		if info, err := backend.GetModel(modelName); err == nil {
+		if info, err := be.GetModel(modelName); err == nil {
 			// Round 34 (2026-08-12): передаём runtime params для profile
 			// mismatch detection.
 			balancerReg.notifyModelLoaded(modelName, info.Path, info.SizeBytes,
@@ -476,7 +485,7 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 				info.KVCacheType, info.FlashAttnType, info.UseMmap)
 		}
 	}
-	backend.UnlockLoad(modelName)
+	be.UnlockLoad(modelName)
 }
 
 // balancerRegNotifier — локальный интерфейс чтобы не зависеть от точного типа

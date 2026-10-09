@@ -102,6 +102,15 @@
     border-left: 3px solid var(--success);
 }
 
+/* R94 (2026-10-09): смешанный кластер (есть и текстовые, и image-бэкенды).
+   Раньше в этом случае бейдж оставался нейтральным «Автоопределение…», и
+   оператор не понимал, в каком режиме WebUI. Теперь режим назван явно, а цвет
+   нейтральный (не warning): смешанный стенд - норма, а не ошибка. */
+.backend-engine-badge.engine-mixed {
+    color: var(--text-secondary);
+    border-left: 3px solid var(--accent);
+}
+
 /* ===== Nav (single-line, max 80px tall condensed) ===== */
 .nav {
     flex: 1;

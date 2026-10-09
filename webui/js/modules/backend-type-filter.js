@@ -21,6 +21,11 @@
         _savingInProgress: false,
         _lastSavedType: null,
 
+        // R94 (2026-10-09): данные балансера, по которым считается видимость
+        // engine-страниц и бейдж режима (см. applyChrome / resolvedEngineType).
+        _serverEngineType: '',
+        _clusterTypeCounts: null,
+
         /**
          * Получить текущий тип бэкенда.
          * Приоритет: localStorage > cluster state > API config > fallback (ollama).
@@ -251,6 +256,13 @@
             var serverEngine = (state.backendEngine || '');
             var effectiveType = state.effectiveBackendType || '';
 
+            // R94 (2026-10-09): запоминаем серверный режим и СОСТАВ КЛАСТЕРА —
+            // по ним считается видимость engine-страниц и бейдж режима, даже
+            // когда пользовательский фильтр («Все»/«image.cpp») не даёт звать
+            // updateUI (ветка ниже выходит раньше).
+            this._serverEngineType = effectiveType || serverEngine || '';
+            this._clusterTypeCounts = state.backendTypeCounts || this._clusterTypeCounts || null;
+
             console.log('[BackendTypeFilter.syncFromClusterState] localStorage:', localStorageType, 'serverEngine:', serverEngine, 'effectiveBackendType:', effectiveType);
 
             // Round 18g: пользователь явно выбрал "Все" (localStorage === '').
@@ -264,6 +276,10 @@
             // фильтр к ollama/llama_cpp и вкладка «Изображения» мигала.
             if (localStorageType === '' || localStorageType === 'image_cpp') {
                 window.__lastClusterState = state;
+                // R94: chrome (сайдбар + бейдж режима) обновляем ВСЕГДА — иначе
+                // после выбора «Все»/«image.cpp» страница GGUF пропадала из
+                // сайдбара, а бейдж застревал на «Автоопределение…».
+                try { this.applyChrome(); } catch (e) { /* chrome не критичен */ }
                 // UI уже показывает выбранный фильтр — updateUI не нужен.
                 return localStorageType === '' ? 'all' : 'image_cpp';
             }
@@ -327,6 +343,7 @@
          */
         updateUI: function (type) {
             this.toggleGgufTab(type);
+            this.toggleImageTab();
             this.toggleAgentsTab(type);
             this.toggleModeCards(type);
             this.toggleBackendFormFields(type);
@@ -342,7 +359,11 @@
             var label = document.getElementById('backendEngineLabel');
             if (!badge || !label) return;
 
-            badge.classList.remove('engine-ollama', 'engine-llama_cpp', 'engine-image_cpp', 'engine-auto');
+            // R94: пустой/неизвестный тип больше не оставляет «Автоопределение…» —
+            // режим восстанавливается из данных балансера.
+            type = this.resolvedEngineType(type);
+
+            badge.classList.remove('engine-ollama', 'engine-llama_cpp', 'engine-image_cpp', 'engine-auto', 'engine-mixed');
 
             var icon = '🔌';
             var text = (window.I18N ? I18N.t('dashboard.engine_auto') : 'Автоопределение...');
@@ -366,6 +387,14 @@
                 text = 'Ollama API';
                 cssClass = 'engine-ollama';
                 title = (window.I18N ? I18N.t('dashboard.engine_hint_ollama') : 'Движок: Ollama API');
+            } else if (type === 'mixed') {
+                // R94: смешанный кластер (есть и текстовые, и image-бэкенды) —
+                // раньше показывался нейтральный «Автоопределение…», и оператор
+                // не понимал, в каком режиме WebUI. Теперь режим назван явно.
+                icon = '🦒';
+                text = 'llama.cpp + image.cpp';
+                cssClass = 'engine-mixed';
+                title = 'В кластере есть и текстовые (llama.cpp), и image-бэкенды';
             }
 
             var iconEl = badge.querySelector('.engine-icon');
@@ -404,24 +433,103 @@
 
         /**
          * Показать/скрыть вкладку GGUF в сайдбаре.
-         * llama.cpp → видна, Ollama → скрыта.
+         *
+         * R94 (2026-10-09): видимость решает СОСТАВ КЛАСТЕРА (есть ли текстовые
+         * бэкенды), а не текущий UI-фильтр.
+         *
+         * БЫЛО: `type === 'llama_cpp' ? показать : скрыть`. Достаточно было
+         * выбрать «Все» (localStorage === '') или «image.cpp», чтобы страница
+         * «GGUF models» исчезла из сайдбара — а syncFromClusterState для этих
+         * значений выходит раньше и обратно её уже не показывал. Оператор видел
+         * «не может определить, в каком он режиме, и не отображает gguf models
+         * страницу» и вернуться мог только чисткой localStorage.
          */
         toggleGgufTab: function (type) {
             var ggufNav = document.querySelector('.nav-item[data-page="gguf"]');
             if (!ggufNav) return;
 
-            if (type === 'llama_cpp') {
-                ggufNav.style.display = '';
-                ggufNav.title = '';
-            } else {
-                ggufNav.style.display = 'none';
-                // Если текущая страница GGUF — переключаем на dashboard
-                if (window.ui && window.ui.currentPage === 'gguf') {
-                    if (typeof window.ui.switchPage === 'function') {
-                        window.ui.switchPage('dashboard');
-                    }
+            var show = this.clusterHasText();
+            ggufNav.style.display = show ? '' : 'none';
+            ggufNav.title = show ? '' : (window.I18N ? I18N.t('dashboard.engine_hint_auto') : '');
+            if (!show && window.ui && window.ui.currentPage === 'gguf') {
+                if (typeof window.ui.switchPage === 'function') {
+                    window.ui.switchPage('dashboard');
                 }
             }
+        },
+
+        /**
+         * R94: страница «Image-модели» — видна, когда в кластере есть image-бэкенды.
+         * Раньше её видимость никто не согласовывал, и на чисто текстовом стенде
+         * она могла висеть пустой (или наоборот пропадать после смены режима).
+         */
+        toggleImageTab: function () {
+            var nav = document.querySelector('.nav-item[data-page="image"]');
+            if (!nav) return;
+            var show = this.clusterHasImage();
+            nav.style.display = show ? '' : 'none';
+            if (!show && window.ui && window.ui.currentPage === 'image') {
+                if (typeof window.ui.switchPage === 'function') {
+                    window.ui.switchPage('dashboard');
+                }
+            }
+        },
+
+        /**
+         * clusterTypeCounts — состав кластера из последнего /api/v1/cluster
+         * (backendTypeCounts). Источник истины по типам бэкендов.
+         */
+        clusterTypeCounts: function () {
+            if (this._clusterTypeCounts) return this._clusterTypeCounts;
+            var st = window.__lastClusterState;
+            return (st && st.backendTypeCounts) || null;
+        },
+
+        /**
+         * clusterHasText — есть ли в кластере текстовые бэкенды (llama.cpp/Ollama).
+         * Состав неизвестен → true (лучше показать страницу, чем спрятать).
+         */
+        clusterHasText: function () {
+            var c = this.clusterTypeCounts();
+            if (!c) return true;
+            return ((c.llama_cpp || 0) + (c.ollama || 0)) > 0;
+        },
+
+        /** clusterHasImage — есть ли в кластере image-бэкенды. */
+        clusterHasImage: function () {
+            var c = this.clusterTypeCounts();
+            if (!c) return true;
+            return (c.image_cpp || 0) > 0;
+        },
+
+        /**
+         * resolvedEngineType — РЕЖИМ, который показывает WebUI.
+         *
+         * R94: раньше при «пустом» фильтре бейдж оставался «Автоопределение…»
+         * навсегда (жалоба «пропала определённость»). Теперь при отсутствии
+         * явного типа берём серверный backendEngine/effectiveBackendType, а если
+         * и его нет — состав кластера (в т.ч. смешанный режим).
+         */
+        resolvedEngineType: function (type) {
+            if (type === 'llama_cpp' || type === 'ollama' || type === 'image_cpp') return type;
+            var server = this._serverEngineType || '';
+            if (server === 'llama_cpp' || server === 'image_cpp') return server;
+            if (server === 'ollama' || server === 'ollama_api') return 'ollama';
+            if (this.clusterHasText() && this.clusterHasImage()) return 'mixed';
+            if (this.clusterHasImage()) return 'image_cpp';
+            if (this.clusterHasText()) return 'llama_cpp';
+            return '';
+        },
+
+        /**
+         * applyChrome — привести сайдбар и бейдж режима в соответствие с данными
+         * балансера. Вызывается на каждом cluster-update (в т.ч. когда
+         * пользовательский фильтр «Все»/«image.cpp» не даёт звать updateUI).
+         */
+        applyChrome: function () {
+            this.toggleGgufTab(this.resolvedEngineType(null));
+            this.toggleImageTab();
+            this.updateEngineBadge(this.resolvedEngineType(null));
         },
 
         /**

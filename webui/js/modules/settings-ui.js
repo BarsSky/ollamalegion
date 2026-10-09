@@ -222,12 +222,24 @@
 
         // Hide/show sidebar nav items for variant-specific pages
         // NOTE: monitor и agents всегда видны, независимо от режима
+        //
+        // R94 (2026-10-09): gguf и image добавлены в список ВСЕХ режимов.
+        //
+        // БЫЛО. Этот список не содержал 'gguf' и 'image', а код ниже прячет ЛЮБОЙ
+        // nav-item, которого нет в allowed. То есть при каждом рендере режима
+        // (страница настроек, wizard) из сайдбара исчезали страницы «GGUF models»
+        // и «Image-модели»; обратно их показывал только фильтр типа бэкенда, и
+        // достаточно было выбрать «image.cpp»/«Все», чтобы страница GGUF пропала
+        // НАВСЕГДА (жалоба: «не может определить, в каком он режиме, и не
+        // отображает gguf models страницу»). Эти страницы не зависят от режима
+        // (standard/replication/virtual_router/...), их видимость решает
+        // BackendTypeFilter по СОСТАВУ кластера (есть ли текстовые/image бэкенды).
         var navMap = {
-            standard: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'agents', 'logs', 'settings'] },
-            replication: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'agents', 'logs', 'settings'] },
-            rpc_coordinator: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'agents', 'logs', 'settings'] },
-            virtual_router: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'agents', 'logs', 'settings'] },
-            distributed_inference: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'agents', 'logs', 'settings'] }
+            standard: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'settings'] },
+            replication: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'settings'] },
+            rpc_coordinator: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'settings'] },
+            virtual_router: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'settings'] },
+            distributed_inference: { show: ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'agents', 'logs', 'settings'] }
         };
 
         var allowed = navMap[mode] ? navMap[mode].show : navMap.standard.show;
@@ -239,6 +251,12 @@
                 item.style.display = 'none';
             }
         });
+
+        // R94: возвращаем видимость engine-страниц по составу кластера —
+        // на случай, если их уже успел спрятать фильтр типа бэкенда.
+        if (window.BackendTypeFilter && typeof window.BackendTypeFilter.applyChrome === 'function') {
+            window.BackendTypeFilter.applyChrome();
+        }
     }
 
     function confirmModeChange(newMode) {

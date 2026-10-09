@@ -68,7 +68,26 @@ func TestMemfitBudget_ConsistentWithProbe(t *testing.T) {
 		t.Errorf("RAMKnown=%v, ProbeRAM.Known=%v — бюджет расходится с источником", budget.RAMKnown, pr.Known)
 	}
 	if budget.RAMKnown && budget.RAMAvail != pr.Available {
-		t.Errorf("RAMAvail=%s, ProbeRAM.Available=%s", budget.RAMAvail, pr.Available)
+		// R83-fix (2026-10-09): доступная RAM — ЖИВАЯ величина. Тест делал два
+		// независимых замера (MemfitBudget внутри бэкенда и ProbeRAM здесь) и
+		// требовал точного равенства; на загруженном CI-раннере значения
+		// расходились на мегабайты, и тест падал без сообщения:
+		//   --- FAIL: TestMemfitBudget_ConsistentWithProbe (0.00s)
+		//   FAIL	ollama-loadbalancer/internal/cppbackend	3.010s
+		// (ubuntu CI, 2026-10-09; локально зелёный). Проверяем суть — бюджет не
+		// выдумывает числа, а берёт их у ProbeRAM — с разумным допуском.
+		diff := budget.RAMAvail - pr.Available
+		if diff < 0 {
+			diff = -diff
+		}
+		tol := memfit.Bytes(64 << 20) // 64 MiB
+		if onePercent := pr.Available / 100; onePercent > tol {
+			tol = onePercent
+		}
+		if diff > tol {
+			t.Errorf("RAMAvail=%s, ProbeRAM.Available=%s — расхождение %s больше допуска %s",
+				budget.RAMAvail, pr.Available, diff, tol)
+		}
 	}
 	if budget.VRAMKnown {
 		t.Errorf("VRAMKnown=true без GPU — неизвестное обязано остаться неизвестным")

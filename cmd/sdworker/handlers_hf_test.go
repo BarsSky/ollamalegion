@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -85,16 +87,52 @@ func newHFTestApp(t *testing.T, mock *sdbackend.HFMockServer) (*App, *sdbackend.
 
 // waitHFIdle — ждём остановки фоновых HF-загрузок (Close отменяет их, но
 // горутина загрузчика завершается асинхронно и держит .download-файлы).
+//
+// R83-fix (2026-10-09): после исчезновения записей о загрузках проверяем ещё и
+// «тишину» в каталоге моделей. Запись о bundle снимается раньше, чем писатель
+// закрывает файлы, и на Windows TempDir RemoveAll падал:
+//
+//	TestHF_BOMBodyAccepted: TempDir RemoveAll cleanup: unlinkat ...\models\bom-bundle:
+//	    The directory is not empty.
+//
+// (self-hosted Windows runner, 2026-10-09). Два одинаковых снимка каталога подряд
+// означают, что писатели действительно закончили.
 func waitHFIdle(t *testing.T, hf *sdbackend.HFManager, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
+	prev, prevOK := "", false
 	for time.Now().Before(deadline) {
 		snap := hf.ListDownloads()
 		if len(snap.Bundles) == 0 && len(snap.Active) == 0 {
-			return
+			cur := dirFingerprint(hf.ModelsDir())
+			if prevOK && cur == prev {
+				return
+			}
+			prev, prevOK = cur, true
+			time.Sleep(250 * time.Millisecond)
+			continue
 		}
+		prevOK = false
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// dirFingerprint — «отпечаток» дерева каталога (пути + размеры): меняется, пока
+// писатель создаёт/дописывает файлы. Ошибки обхода игнорируются: цель — увидеть
+// два одинаковых снимка подряд.
+func dirFingerprint(root string) string {
+	var b strings.Builder
+	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil //nolint:nilerr // неполный обход допустим: важен факт изменений
+		}
+		b.WriteString(p)
+		b.WriteByte(':')
+		b.WriteString(strconv.FormatInt(info.Size(), 10))
+		b.WriteByte(';')
+		return nil
+	})
+	return b.String()
 }
 
 // newHFClient — HTTP-клиент к настоящему mux воркера (проверяются маршруты).

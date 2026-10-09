@@ -113,6 +113,12 @@ func (p *Proxy) AddBackend(backend types.Backend) error {
 
 	p.scheduleSave()
 
+	// R91 (2026-10-09): у нового бэкенда сразу читаем список моделей на диске —
+	// иначе первый же выбор бэкенда для незагруженной модели шёл бы «вслепую»
+	// (любой healthy узел) до следующего цикла обновления каталога. Асинхронно:
+	// AddBackend держит p.mu, а опрос воркера — сеть.
+	go p.refreshStaleModelCatalogs()
+
 	// R78 (P3): состав бэкендов изменился — раскладка по политике может
 	// требовать пересборки. Планируем асинхронно: синхронизация берёт RLock
 	// через callbacks менеджера репликации, поэтому под уже взятым p.mu её
@@ -321,6 +327,10 @@ drainLoop:
 	p.mu.Lock()
 	delete(p.backends, backendID)
 	p.mu.Unlock()
+
+	// R91: каталог моделей удалённого бэкенда больше не нужен (а если запись
+	// вернётся, каталог прочитается заново).
+	p.modelCatalog.drop(backendID)
 
 	p.metricsMgr.mu.Lock()
 	delete(p.metricsMgr.metrics, backendID)

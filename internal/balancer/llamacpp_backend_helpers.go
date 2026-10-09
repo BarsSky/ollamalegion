@@ -179,6 +179,12 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendExcluding(model string, exclude m
 	if id := lr.proxy.findBackendWithModelExcluding(model, exclude, lr.proxy.getAllowedTypesList(types.BackendTypeLlamaCpp)); id != "" {
 		return id
 	}
+	// R91 (2026-10-09): копии загруженной нет — берём узел, где файл модели есть
+	// на диске (иначе переезд/загрузка на узел с пустым каталогом даёт 503
+	// model_not_found; см. model_catalog.go).
+	if id := lr.proxy.findLeastLoadedBackendWithModelOnDiskExcluding(model, exclude); id != "" {
+		return id
+	}
 	for _, b := range lr.proxy.GetAllBackends() {
 		if exclude[b.ID] {
 			continue
@@ -405,9 +411,7 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendForModel(model string) string {
 	// Теперь при нескольких загруженных копиях нагрузка раскладывается по ним.
 	// Если модель загружена на одном узле — поведение прежнее (ждать его слот),
 	// потому что загрузка копии на второй узел стоит десятки секунд и запускать
-	// её молча, «на всякий случай», нельзя: балансер не знает каталога моделей на
-	// диске и может выбрать узел, где файла нет вовсе (такой случай уже был —
-	// 503 с model_not_found).
+	// её молча, «на всякий случай», нельзя.
 	if lr != nil && lr.proxy != nil && model != "" {
 		if id := lr.proxy.findLeastLoadedBackendWithModel(model, []types.BackendType{types.BackendTypeLlamaCpp}); id != "" {
 			return id
@@ -415,6 +419,24 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendForModel(model string) string {
 	}
 	if id := lr.findModelOnLlamaCppBackend(model); id != "" {
 		return id
+	}
+	// R91 (2026-10-09): модель не загружена нигде — выбираем узел, у которого
+	// ФАЙЛ модели есть на диске (каталог, model_catalog.go).
+	//
+	// ЧТО БЫЛО НЕ ТАК. Здесь стоял selectAnyLlamaCppHealthy — «первый healthy из
+	// обхода карты». На двухмашинном стенде у CPPWORKER-34 каталог моделей пуст, а
+	// у cppworker-gpu-bundled-agent лежит gemma-4; запрос, ушедший на первый узел,
+	// получал 503 model_not_found. Это же мешало cross-node warmup: поднимать
+	// модель было негде, потому что «где файл» балансер не знал.
+	//
+	// Если каталог не опрошен (known=false), шаг ничего не меняет и работает
+	// прежний fallback: отсутствие телеметрии не ломает стенд.
+	if lr != nil && lr.proxy != nil && model != "" {
+		if id := lr.proxy.findLeastLoadedBackendWithModelOnDisk(model, []types.BackendType{types.BackendTypeLlamaCpp}); id != "" {
+			logger.Get().Debugw("llama.cpp: модель не загружена — выбран узел, где файл есть на диске",
+				"model", model, "backend", id)
+			return id
+		}
 	}
 	return lr.selectAnyLlamaCppHealthy()
 }

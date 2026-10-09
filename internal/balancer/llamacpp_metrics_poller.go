@@ -141,6 +141,11 @@ func (p *llamaCppMetricsPoller) pollAll() {
 		}(b)
 	}
 	wg.Wait()
+
+	// R91 (2026-10-09): тот же цикл обновляет каталог моделей НА ДИСКЕ
+	// (LB_MODEL_CATALOG_REFRESH_SEC, default 300 с; 0 = выключить). В отдельной
+	// горутине: опрос /api/models/files не должен удлинять цикл метрик.
+	go p.proxy.refreshStaleModelCatalogs()
 }
 
 // pollBackend опрашивает /api/models у одного бэкенда и обновляет кэш.

@@ -161,6 +161,13 @@ services:
       # logs/temp files instead of being filled to zero. 0 = require exactly the
       # model size. When a backend reports no disk telemetry the check is skipped.
       - LB_SHARE_DISK_RESERVE_MB=${LB_SHARE_DISK_RESERVE_MB:-512}
+      # How often the balancer re-reads the ON-DISK model list of every llama.cpp
+      # backend (/api/models/files), used to pick a node that actually has the
+      # file when the model is not loaded anywhere (internal/balancer/
+      # model_catalog.go). 300 s is plenty for files that change rarely; 0 turns
+      # the background refresh off (the on-demand refresh and ?refresh=true on
+      # GET /api/v1/models/catalog keep working).
+      - LB_MODEL_CATALOG_REFRESH_SEC=${LB_MODEL_CATALOG_REFRESH_SEC:-300}
       # How long to wait for auto-load before answering 503 "try later". A 27B model
       # on A10/3070 takes 3-8 minutes, hence 900 s (the in-code default of 180 s is
       # too short). 0 = do not wait at all.

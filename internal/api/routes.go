@@ -52,6 +52,12 @@ func (s *Server) setupRoutes() {
 	// Models capacity (global)
 	s.mux.Handle("/api/v1/models/capacity", AuthMiddleware(RateLimitMiddleware(s.modelsCapacityHandler, s.rateLimiter), s.authenticator))
 
+	// R91 (2026-10-09): каталог моделей НА ДИСКЕ по бэкендам — read-only срез
+	// того, что балансер знает для выбора узла (internal/balancer/model_catalog.go).
+	// Нужен для диагностики «почему запрос ушёл на этот узел» и для проверки
+	// свежести снимков; ?refresh=true принудительно перечитывает листинги.
+	s.mux.Handle("/api/v1/models/catalog", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleModelsCatalog), s.rateLimiter), s.authenticator))
+
 	// Model operations status endpoint
 	s.mux.Handle("/api/v1/models/operations", AuthMiddleware(RateLimitMiddleware(s.modelOpsStatusHandler, s.rateLimiter), s.authenticator))
 

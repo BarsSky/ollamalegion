@@ -158,6 +158,12 @@ type Proxy struct {
 	weightTuner     *AdaptiveWeightTuner // Адаптивный тюнер весов
 	agentChecker    *agentTimeoutChecker // Проверка таймаута агентов
 
+	// R91 (2026-10-09): каталог моделей НА ДИСКЕ по бэкендам
+	// (см. model_catalog.go). Нужен, чтобы не отправлять запрос на узел, где
+	// файла модели нет вовсе, и чтобы можно было безопасно поднять модель на
+	// узле, где она лежит.
+	modelCatalog *modelCatalog
+
 	// RPC model distribution modules
 	modelReplication    *modelreplication.ModelGroupManager
 	replicationSelector *modelreplication.GroupAwareSelector
@@ -334,6 +340,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		predictor:     NewPredictor(),
 		statePath:     config.LoadBalancer.StatePath,
 		eventBus:      NewEventBus(),
+		modelCatalog:  newModelCatalog(),
 		recentClients: make(map[string]*types.RecentClient),
 		trustedNets:   parseTrustedProxyCIDRs(config.LoadBalancer.TrustedProxies),
 		warmupSem:     make(chan struct{}, maxConcurrentWarmups(config)),

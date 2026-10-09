@@ -847,6 +847,37 @@ plans/               — roadmap, ADR, фазовые отчёты
 - 🇬🇧 [docs/en/api.md](docs/en/api.md) — REST API (English)
 - [plans/README.md](plans/README.md) — roadmap
 
+## Коммиты и авторство
+
+Автор коммита определяется git-конфигом: локальный `user.name`/`user.email` в этом
+репозитории имеет приоритет над глобальным.
+
+```bash
+git config --local user.name  "BarsSky"
+git config --local user.email "knagaenko@mail.ru"     # или глобальные значения
+```
+
+Если коммиты делает ассистент/скрипт, задайте для него ту же или служебную
+идентичность осознанно: GitHub считает контрибьюторов **по полю author**, поэтому
+каждая новая identity с отдельной почтой превращается в отдельного контрибьютора
+в сайдбаре репозитория.
+
+Исторические служебные идентичности агента сводятся к владельцу файлом
+[`.mailmap`](.mailmap) (переписывания истории не требуется — SHA, теги и релизы не
+меняются):
+
+```
+BarsSky <knagaenko@mail.ru> Claude <noreply@anthropic.com>
+BarsSky <knagaenko@mail.ru> Mavis <Mavis@mavis.local>
+BarsSky <knagaenko@mail.ru> cline <cline@local>
+```
+
+Проверить, как идентичности сводятся локально:
+
+```bash
+git shortlog -sne github/centurion | head
+```
+
 ## Лицензия
 
 MIT

@@ -509,6 +509,7 @@ window.I18N_RU = {
   "monitor.alert.backendFull": "Бэкенд {backend} полностью загружен ({active}/{max} активных).",
   "monitor.alert.queueFull": "Очередь заполнена на {pct}% ({size}/{max}).",
   "monitor.alert.vramFull": "VRAM кластера заполнена на {pct}% ({used}/{total} ГБ).",
+  "monitor.alert.parallelismUnused": "Бэкенд {backend}: воркер держит {slots} параллельных слотов, а балансер пропускает {effective} — потенциал раскрыт не полностью. Балансер сам ничего не меняет: если это нужно, выставьте maxConcurrentRequests={slots} для этого бэкенда или включите LB_CAPACITY_FROM_MODEL_SLOTS=true — решение за вами.",
   "monitor.alert.rebalance": "Принудительное перераспределение",
 
   "monitor.common.noData": "Нет данных",

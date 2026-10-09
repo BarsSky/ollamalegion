@@ -73,13 +73,29 @@ type BackendMetrics struct {
 	Prediction Prediction `json:"prediction"`
 
 	// --- Monitor-friendly computed fields (filled by GetClusterState) ---
-	Score                 float64  `json:"score"`                 // Calculated routing score
-	MaxConcurrentRequests int      `json:"maxConcurrentRequests"` // From backend config
-	Models                []string `json:"models"`                // Names of running models
-	VRAMUsagePercent      float64  `json:"vramUsagePercent"`      // GPU memory usage %
-	VRAMTotalGB           float64  `json:"vramTotalGB"`           // Total VRAM in GB
-	VRAMUsedGB            float64  `json:"vramUsedGB"`            // Used VRAM in GB
-	MemoryUsagePercent    float64  `json:"memoryUsagePercent"`    // RAM usage %
+	Score                 float64 `json:"score"`                 // Calculated routing score
+	MaxConcurrentRequests int     `json:"maxConcurrentRequests"` // From backend config
+	// EffectiveMaxConcurrentRequests — R83-fix (2026-10-09): сколько запросов
+	// балансер РЕАЛЬНО пропускает на этот бэкенд
+	// (Backend.EffectiveMaxConcurrentRequests: слоты модели / runtime-лимит /
+	// статический лимит — по приоритету).
+	//
+	// ЗАЧЕМ В КЛАСТЕРНОМ ОТВЕТЕ. WebUI показывает предупреждение «потенциал
+	// параллельности не раскрыт» только когда фактическая вместимость МЕНЬШЕ
+	// слотов, с которыми загружена модель. Считать это в JS по одному
+	// maxConcurrentRequests нельзя: при LB_CAPACITY_FROM_MODEL_SLOTS=true
+	// вместимость берётся из слотов, и предупреждение было бы ложным.
+	// Балансер ничего не меняет сам — это только совет оператору.
+	EffectiveMaxConcurrentRequests int `json:"effectiveMaxConcurrentRequests,omitempty"`
+	// RuntimeModelSlots — фактическое число параллельных сессий, с которым
+	// загружена модель (cppworker max_slots, см. Backend.RuntimeModelSlots).
+	// 0 = неизвестно (старая сборка cppworker).
+	RuntimeModelSlots  int      `json:"runtimeModelSlots,omitempty"`
+	Models             []string `json:"models"`             // Names of running models
+	VRAMUsagePercent   float64  `json:"vramUsagePercent"`   // GPU memory usage %
+	VRAMTotalGB        float64  `json:"vramTotalGB"`        // Total VRAM in GB
+	VRAMUsedGB         float64  `json:"vramUsedGB"`         // Used VRAM in GB
+	MemoryUsagePercent float64  `json:"memoryUsagePercent"` // RAM usage %
 	// Таймауты запросов (заполняются в GetClusterState)
 	RequestTimeout        int      `json:"requestTimeout"`        // Per-backend статический таймаут
 	RuntimeRequestTimeout int      `json:"runtimeRequestTimeout"` // Runtime-значение (адаптивное)
@@ -119,7 +135,6 @@ type GPUMetrics struct {
 	// такие бэкенды считаются разными машинами, как раньше.
 	UUIDs []string `json:"uuids,omitempty"`
 }
-
 
 // CPUMetrics - расширенные метрики CPU
 type CPUMetrics struct {

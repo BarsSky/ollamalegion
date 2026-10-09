@@ -591,6 +591,43 @@ console.log('ui-renderer smoke (' + path.relative(REPO_ROOT, TARGET) + ')');
     feedHtml.indexOf('&lt;img') !== -1 && feedHtml.indexOf('&quot;&gt;') !== -1);
 }
 
+// --- Тест 9: «потенциал параллельности не раскрыт» — совет, без авто-правки ----
+// R83-fix (2026-10-09). Живой кейс: cppworker держит модель с n_parallel=2
+// (runtimeModelSlots=2), а балансер пропускает 1 запрос (effective=1), потому что
+// авто-привязка вместимости к слотам выключена (LB_CAPACITY_FROM_MODEL_SLOTS
+// opt-in). Оператор должен УВИДЕТЬ это в WebUI и получить конкретный совет, но
+// балансер не имеет права менять настройки сам — проверяем, что баннер есть,
+// в нём названы оба числа и нет кнопки применения.
+{
+  const data = sampleImageData();
+  data.cluster.backends[0].runtimeModelSlots = 2;
+  data.cluster.backends[0].effectiveMaxConcurrentRequests = 1;
+  data.cluster.backends[0].maxConcurrentRequests = 1;
+  const { sandbox } = makeSandbox();
+  loadRenderer(sandbox, { withUtils: true });
+  sandbox.updateUI(data);
+
+  const alertsHtml = String(sandbox.document.getElementById('alertContainer').innerHTML);
+  check('parallelism: баннер «потенциал не раскрыт» отрисован',
+    alertsHtml.indexOf('monitor.alert.parallelismUnused') !== -1, alertsHtml.slice(0, 300));
+  check('parallelism: в баннере нет кнопки применения (решение за оператором)',
+    alertsHtml.indexOf('forceRebalance()') === -1, alertsHtml.slice(0, 300));
+}
+
+// --- Тест 10: ложного баннера нет, когда вместимость = слотам -----------------
+{
+  const data = sampleImageData();
+  data.cluster.backends[0].runtimeModelSlots = 2;
+  data.cluster.backends[0].effectiveMaxConcurrentRequests = 2;
+  const { sandbox } = makeSandbox();
+  loadRenderer(sandbox, { withUtils: true });
+  sandbox.updateUI(data);
+
+  const alertsHtml = String(sandbox.document.getElementById('alertContainer').innerHTML);
+  check('parallelism: при effective == slots баннера нет',
+    alertsHtml.indexOf('monitor.alert.parallelismUnused') === -1, alertsHtml.slice(0, 300));
+}
+
 console.log('');
 if (failures > 0) {
   console.log('ИТОГ: провалено проверок — ' + failures);

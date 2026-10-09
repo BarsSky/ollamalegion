@@ -90,9 +90,17 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			System:                types.SystemMetrics{},
 			Ollama:                types.OllamaMetrics{RunningModels: []types.RunningModel{}},
 			MaxConcurrentRequests: maxConcurrent,
-			RequestTimeout:        backendConfig.RequestTimeout,
-			RuntimeRequestTimeout: runtimeTimeout,
-			EffectiveTimeout:      effectiveTimeout,
+			// R83-fix (2026-10-09): вместимость, которую балансер РЕАЛЬНО
+			// применяет (см. Backend.EffectiveMaxConcurrentRequests), и фактические
+			// слоты загруженной модели. Вместе они дают WebUI возможность
+			// предупредить «потенциал параллельности не раскрыт», не угадывая
+			// приоритет резолвера в JS (при LB_CAPACITY_FROM_MODEL_SLOTS=true
+			// maxConcurrentRequests — уже статический, а вместимость = слотам).
+			EffectiveMaxConcurrentRequests: maxConcurrent,
+			RuntimeModelSlots:              backendConfig.RuntimeModelSlots,
+			RequestTimeout:                 backendConfig.RequestTimeout,
+			RuntimeRequestTimeout:          runtimeTimeout,
+			EffectiveTimeout:               effectiveTimeout,
 		}
 
 		// R-Image (2026-10-02): image-бэкенд обязан быть виден в Monitor/WebUI
@@ -114,6 +122,13 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			savedNodeAddr := metrics.NodeAddr
 			savedOllamaPort := metrics.OllamaPort
 			savedMaxConcurrent := metrics.MaxConcurrentRequests
+			// R83-fix (2026-10-09): эти два поля посчитаны из backendConfig выше и
+			// в agent-метриках отсутствуют — без восстановления их затирала
+			// перезапись `metrics = *agentMetrics` (живая проверка: /api/v1/cluster
+			// не отдавал ни effectiveMaxConcurrentRequests, ни runtimeModelSlots, и
+			// баннер «потенциал параллельности не раскрыт» не мог появиться).
+			savedEffectiveMaxConcurrent := metrics.EffectiveMaxConcurrentRequests
+			savedRuntimeModelSlots := metrics.RuntimeModelSlots
 			savedCppWorkerPort := backendConfig.CppWorkerPort
 			savedLlamaCpp := metrics.LlamaCpp
 
@@ -124,6 +139,8 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			metrics.NodeAddr = savedNodeAddr
 			metrics.OllamaPort = savedOllamaPort
 			metrics.MaxConcurrentRequests = savedMaxConcurrent
+			metrics.EffectiveMaxConcurrentRequests = savedEffectiveMaxConcurrent
+			metrics.RuntimeModelSlots = savedRuntimeModelSlots
 			metrics.CppWorkerPort = savedCppWorkerPort
 			metrics.Status = status
 			metrics.HasAgent = hasAgent

@@ -718,6 +718,32 @@
       var m = b.maxConcurrentRequests || 10, l = (b.activeRequests || 0) / m;
       if (l >= 1.0) alerts.push({ level: 'red', text: T('monitor.alert.backendFull', { backend: b.id, active: b.activeRequests || 0, max: m }) });
     });
+    // R83-fix (2026-10-09): «потенциал параллельности не раскрыт».
+    //
+    // Воркер держит модель с N слотами (cppworker max_slots -> runtimeModelSlots),
+    // а балансер пропускает меньше (effectiveMaxConcurrentRequests). Это НЕ ошибка
+    // и НЕ повод что-то менять автоматически: авто-привязка вместимости к слотам
+    // меняет поведение admission-очереди, поэтому она opt-in
+    // (LB_CAPACITY_FROM_MODEL_SLOTS=true). Задача баннера — сказать оператору, что
+    // потенциал не раскрыт, и назвать конкретные настройки; решение остаётся за ним.
+    //
+    // Оба числа приходят из /api/v1/cluster (types.BackendMetrics): считать
+    // «эффективную вместимость» в JS нельзя — при включённом флаге она равна
+    // слотам, и предупреждение было бы ложным.
+    bks.forEach(function(b) {
+      var slots = b.runtimeModelSlots || 0;
+      var eff = b.effectiveMaxConcurrentRequests || 0;
+      if (slots > 1 && eff > 0 && eff < slots) {
+        alerts.push({
+          level: 'yellow',
+          text: T('monitor.alert.parallelismUnused', {
+            backend: b.id,
+            slots: slots,
+            effective: eff
+          })
+        });
+      }
+    });
     var ms = data.cluster.queue ? data.cluster.queue.max_size : 100, cs = q.current_size || 0;
     if (cs > ms * 0.8) alerts.push({ level: 'red', text: T('monitor.alert.queueFull', { pct: (cs / ms * 100).toFixed(0), size: cs, max: ms }) });
     var vramAlerts = aggVRAM(bks);

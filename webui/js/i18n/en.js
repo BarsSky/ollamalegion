@@ -397,6 +397,7 @@ window.I18N_EN = {
   "monitor.alert.backendFull": "Backend {backend} is full ({active}/{max} active).",
   "monitor.alert.queueFull": "Queue is {pct}% full ({size}/{max}).",
   "monitor.alert.vramFull": "Cluster VRAM is {pct}% full ({used}/{total} GB).",
+  "monitor.alert.parallelismUnused": "Backend {backend}: the worker holds {slots} parallel slots while the balancer admits {effective} — the parallelism potential is not fully used. The balancer changes nothing on its own: if you want it, set maxConcurrentRequests={slots} for this backend or enable LB_CAPACITY_FROM_MODEL_SLOTS=true — the decision is yours.",
   "monitor.alert.rebalance": "Force Rebalance",
 
   "monitor.common.noData": "No data",

@@ -57,7 +57,7 @@ func (p *Proxy) StartAgentTimeoutChecker(timeout time.Duration) {
 						// присланные агентом GPU/CPU/VRAM оставались в
 						// MetricsManager навсегда и продолжали отдаваться в
 						// /api/v1/backends как «живые». Наблюдалось на живой
-						// паре: машину 192.168.13.34 выключили, а её imageworker
+						// паре: машину 192.0.2.11 выключили, а её imageworker
 						// всё ещё показывал 1.4% VRAM, 52°C и 405 MHz — числа
 						// последнего опроса, выданные за текущие.
 						//

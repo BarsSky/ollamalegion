@@ -122,19 +122,19 @@ check('backendHostCounts: считает бэкенды по host', function () 
     const counts = P.backendHostCounts([
         { id: 'imageworker', host: 'imageworker' },
         { id: 'IMAGEWORKER-34', host: 'imageworker' },
-        { id: 'CPPWORKER-34', host: '192.168.13.34' },
+        { id: 'CPPWORKER-34', host: '192.0.2.11' },
         { id: 'no-host' },
     ]);
     assert.strictEqual(counts['imageworker'], 2);
-    assert.strictEqual(counts['192.168.13.34'], 1);
+    assert.strictEqual(counts['192.0.2.11'], 1);
     assert.strictEqual(counts[''], undefined, 'бэкенд без host не должен попадать в карту');
 });
 
 check('backendOptionLabel: уникальный host — обычная подпись без пометки', function () {
-    const counts = P.backendHostCounts([{ id: 'CPPWORKER-34', host: '192.168.13.34' }]);
-    const info = P.backendOptionLabel({ id: 'CPPWORKER-34', host: '192.168.13.34', imagePort: 18093 }, counts);
+    const counts = P.backendHostCounts([{ id: 'CPPWORKER-34', host: '192.0.2.11' }]);
+    const info = P.backendOptionLabel({ id: 'CPPWORKER-34', host: '192.0.2.11', imagePort: 18093 }, counts);
     assert.strictEqual(info.ambiguous, false);
-    assert.strictEqual(info.label, 'CPPWORKER-34 (192.168.13.34:18093)');
+    assert.strictEqual(info.label, 'CPPWORKER-34 (192.0.2.11:18093)');
     assert.ok(info.label.indexOf('\u26a0') === -1, 'пометки быть не должно');
 });
 

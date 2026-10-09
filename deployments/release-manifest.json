@@ -1,7 +1,7 @@
 {
     "tag":  "v0.7.66",
     "builtAt":  "2026-10-10T00:00:00Z",
-    "gitCommit":  "14e5955",
+    "gitCommit":  "e581966",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",

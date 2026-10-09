@@ -15,7 +15,7 @@ import (
 
 // R-MultiHost (2026-10-07).
 //
-// Живой стенд из двух машин (192.168.13.20 + 192.168.13.34) с ОДИНАКОВЫМ
+// Живой стенд из двух машин (192.0.2.10 + 192.0.2.11) с ОДИНАКОВЫМ
 // compose: на обеих совпадали agentId ("cppworker-gpu-bundled-agent"),
 // host ("cppworker-gpu") и cppWorkerPort (18092). Протокол регистрации не нёс
 // ни одного признака, различающего узлы, поэтому вторая машина проходила и
@@ -93,7 +93,7 @@ func TestRegistrationGuard_SecondHostRejected(t *testing.T) {
 	}
 
 	second := postRegister(t, s, registerRequest(t,
-		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "192.168.13.34:51000"))
+		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "192.0.2.11:51000"))
 	if second.Code != http.StatusConflict {
 		t.Fatalf("регистрация второй машины: получен %d, ожидался 409 (%s)", second.Code, second.Body.String())
 	}
@@ -142,13 +142,13 @@ func TestRegistrationGuard_StaleOwnerTakeover(t *testing.T) {
 	makeOwnerStale(t, s, "cppworker-gpu-bundled-agent")
 
 	takeover := postRegister(t, s, registerRequest(t,
-		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "192.168.13.34:51000"))
+		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "192.0.2.11:51000"))
 	if takeover.Code != http.StatusOK {
 		t.Fatalf("takeover осиротевшей записи: получен %d, ожидался 200 (%s)", takeover.Code, takeover.Body.String())
 	}
 	after := s.proxy.GetBackend("cppworker-gpu-bundled-agent")
-	if after.NodeAddr != "192.168.13.34" {
-		t.Fatalf("NodeAddr после takeover = %q, ожидался 192.168.13.34", after.NodeAddr)
+	if after.NodeAddr != "192.0.2.11" {
+		t.Fatalf("NodeAddr после takeover = %q, ожидался 192.0.2.11", after.NodeAddr)
 	}
 }
 
@@ -170,7 +170,7 @@ func TestRegistrationGuard_NoTakeoverRightAfterStart(t *testing.T) {
 	makeOwnerStale(t, s, "cppworker-gpu-bundled-agent")
 
 	rec := postRegister(t, s, registerRequest(t,
-		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "192.168.13.34:51000"))
+		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "192.0.2.11:51000"))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("регистрация в стартовом окне: получен %d, ожидался 409 (%s)", rec.Code, rec.Body.String())
 	}
@@ -212,7 +212,7 @@ func TestRegistrationGuard_LegacyRecordWithoutNodeAddrAllowed(t *testing.T) {
 	}
 
 	rec := postRegister(t, s, registerRequest(t,
-		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "192.168.13.34:51000"))
+		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "192.0.2.11:51000"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("регистрация в запись без NodeAddr: получен %d, ожидался 200 (%s)", rec.Code, rec.Body.String())
 	}
@@ -222,8 +222,8 @@ func TestRegistrationGuard_LegacyRecordWithoutNodeAddrAllowed(t *testing.T) {
 // два разных из-за формы записи адреса (::ffff:… vs …).
 func TestPeerIP_NormalizesIPv4Mapped(t *testing.T) {
 	cases := map[string]string{
-		"192.168.13.34:51000":          "192.168.13.34",
-		"[::ffff:192.168.13.34]:51000": "192.168.13.34",
+		"192.0.2.11:51000":          "192.0.2.11",
+		"[::ffff:192.0.2.11]:51000": "192.0.2.11",
 		"172.18.0.5:41234":             "172.18.0.5",
 		"":                             "",
 	}
@@ -257,7 +257,7 @@ func TestTelemetryGuard_ForeignNodeRejected(t *testing.T) {
 		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "172.23.0.4:41234"))
 
 	foreign := httptest.NewRecorder()
-	s.agentMetricsHandler(foreign, metricsRequest(t, "cppworker-gpu-bundled-agent", "192.168.13.34:51000"))
+	s.agentMetricsHandler(foreign, metricsRequest(t, "cppworker-gpu-bundled-agent", "192.0.2.11:51000"))
 	if foreign.Code != http.StatusForbidden {
 		t.Fatalf("метрики от чужого узла: получен %d, ожидался 403 (%s)", foreign.Code, foreign.Body.String())
 	}
@@ -279,7 +279,7 @@ func TestTelemetryGuard_ForeignHeartbeatRejected(t *testing.T) {
 		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "172.23.0.4:41234"))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/heartbeat", bytes.NewReader([]byte("{}")))
-	req.RemoteAddr = "192.168.13.34:51000"
+	req.RemoteAddr = "192.0.2.11:51000"
 	req.Header.Set("X-Agent-ID", "cppworker-gpu-bundled-agent")
 
 	rec := httptest.NewRecorder()

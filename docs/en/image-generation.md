@@ -1141,7 +1141,7 @@ panel -> `HTTP 200` in 22m30s; a stopped backend -> 503 with
 ### 17.7 Backend selection: a node with an EMPTY catalog is not selected
 
 Live case (R88). The stand has two machines: the local `imageworker` (model loaded, two
-bundles on disk) and the remote `IMAGEWORKER-34` (192.168.13.34) - registered and
+bundles on disk) and the remote `IMAGEWORKER-34` (192.0.2.11) - registered and
 healthy, but with an **empty** model catalog. The old resource-based selection sent it
 **every** request: it has no agent metrics, so it looked free. The gate answered
 `image_model_not_loaded` and generation stopped working entirely, even though the local

@@ -548,9 +548,9 @@ services:
       # SDWORKER_ADVERTISE_HOST in `.env`, so the expression always resolved to the
       # literal fallback `imageworker` — the container name.
       #
-      # Effect on a remote machine with BACKEND_HOST=192.168.13.34:
+      # Effect on a remote machine with BACKEND_HOST=192.0.2.11:
       #   - sdworker's OWN self-registration got the right host (line 467 does nest
-      #     BACKEND_HOST), creating the record as 192.168.13.34;
+      #     BACKEND_HOST), creating the record as 192.0.2.11;
       #   - the embedded agent then registered under the SAME backend ID with
       #     AGENT_PUBLIC_HOST=imageworker, and the balancer's "backend exists" branch
       #     writes `Host` from the request — so it OVERWROTE the correct address with

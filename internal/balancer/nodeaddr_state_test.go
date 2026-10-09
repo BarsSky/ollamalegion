@@ -88,7 +88,7 @@ func TestSaveStateRMultiHost_PersistsNodeAddr(t *testing.T) {
 		Host:          "localhost",
 		CppWorkerPort: 18092,
 		Type:          types.BackendTypeLlamaCpp,
-		NodeAddr:      "192.168.13.34",
+		NodeAddr:      "192.0.2.11",
 	}); err != nil {
 		t.Fatalf("AddBackend: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestSaveStateRMultiHost_PersistsNodeAddr(t *testing.T) {
 	if got == nil {
 		t.Fatal("бэкенд b1 не найден после перезагрузки состояния")
 	}
-	if got.NodeAddr != "192.168.13.34" {
-		t.Fatalf("NodeAddr после SaveState+LoadState = %q, ожидался 192.168.13.34", got.NodeAddr)
+	if got.NodeAddr != "192.0.2.11" {
+		t.Fatalf("NodeAddr после SaveState+LoadState = %q, ожидался 192.0.2.11", got.NodeAddr)
 	}
 }

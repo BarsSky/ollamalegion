@@ -22,6 +22,7 @@
 | **[Round 35c — env-tunable async load polling (2026-08-13)](round-35c-env-tunable-polling.md)** | `plans/round-35c-env-tunable-polling.md` | Round 35c (август 2026) | ✅ **DONE 2026-08-13**: 22GB Qwen3.6 на 3070 hit 8m7s timeout. Fix: `LB_NCTX_PREFLIGHT_MAX_WAIT_SEC` / `_WAIT_MULTIPLIER` / `_WAIT_BUFFER_SEC` env vars. Image r35c. |
 | **[Placement Policy — совместная работа режимов при 2+ бэкендах](2026-09-23-multi-backend-placement-policy.md)** | `plans/2026-09-23-multi-backend-placement-policy.md` | R66d (сентябрь 2026) | 🟡 **PROPOSAL**: per-model политика размещения (`single`/`pool`/`replicated`/`sharded`/`rpc` + `auto`) вместо глобального `operatingMode`; стандартная балансировка остаётся дефолтом, каждый нынешний режим выражается политикой. Открытый вопрос — транспорт раскладки (llama.cpp RPC vs B8.7) |
 | **[Qwen3.8 на A10 — загрузка, контекст, дублирование ответа + образы](2026-09-25-qwen38-load-context-dup-and-infra.md)** | `plans/2026-09-25-qwen38-load-context-dup-and-infra.md` | живой тест на A10 (2026-09-25) | 🔴 **PLAN**: 8 блоков. P0 — (1) `/monitor` мёртв из-за `updateText is not defined` (нет в R70/R77, обрывает `updateUI`), (2) потолок контекста: 32768 работает, >32768 уходит в RAM-fallback/auto-tune, а `CPPWORKER_RAM_FALLBACK_MAX_N_CTX=128000`/`LB_NCTX_RELOAD_MAX_N_CTX=131072` разрешают недостижимое, (3) дублирование ответа в OpenWebUI (fail-open подавление перегенерации + `LB_AUTO_CONTINUE_ON_TRUNCATION=1`; тест-репро `auto_continue_duplicate_api_r66d_test.go`), (4) `qwen3.8:latest` не резолвится нигде → 500/404. P1 — дашборд «0 загружено»; уведомления о причине провала по связке **cppworker → agent → webui** (без поллинга на балансере). P2 — образы (продовый compose, путь 1+2+3: переменные тегов + вариантные алиасы + релизный скрипт), i18n/`?v=` |
+| **[Распределение модели по нескольким GPU/бэкендам](2026-10-07-model-distribution-multi-gpu-next-session.md)** | `plans/2026-10-07-model-distribution-multi-gpu-next-session.md` | следующая сессия (2026-10-07) | 🟡 **PLAN**: логический бэкенд (группа RPC-узлов) + исполнитель стратегии `sharded`/`rpc`, редизайн setup-wizard с валидацией (8 проверок), окно «Объединение бэкендов», batch-split для imageworker, миграция `operatingMode` → `balancing.placement`. Сетевой бюджет посчитан под 1 Гбит/с: layer split <0.5 % к времени токена, row split +7…14 % (числа в §3) |
 
 **Все планы Q3 W3-4 + Phase 8 + Round 35 реализованы; далее R36…R70** (см.
 `CHANGELOG.md`): R67a/b — потолок n_ctx по KV-cache/VRAM, ожидание авто-загрузки,
@@ -64,6 +65,17 @@ Failover запроса, который ротация выбрала на ре�
 | 3 | `ensureModelLoadedWithFailover` во всех пяти inference-путях llama.cpp: до 3 альтернатив при отказе бэкенда; при неудачной загрузке — переезд на готовую копию; обновление `X-Backend-ID` и снапшота `state` | ✅ сделано |
 | 4 | Тесты `failover_r82_test.go` (5); регрессии `./internal/... -race` — зелёные | ✅ зелёные |
 | 5 | Живая проверка: 4 запроса сразу после `docker stop` реплики → 4×200 на живой копии за 0.5–3.7 с; во время падения 2 из 2 запросов обслужены, восстановление 23–33 с | ✅ проверено |
+
+### Следующая сессия (2026-10-07) — распределение модели по нескольким GPU/бэкендам
+
+Единственный оставшийся незакрытый пункт placement policy (P2: `sharded`/`rpc` на реальном транспорте,
+направление 7 в таблицах R73–R79) вынесен в отдельный план с разбивкой S1–S8, сетевым бюджетом под 1 Гбит/с
+и редизайном первоначальной настройки: **[`plans/2026-10-07-model-distribution-multi-gpu-next-session.md`](2026-10-07-model-distribution-multi-gpu-next-session.md)**.
+
+Порядок: S1 транспорт RPC → S2 логический бэкенд (группа) → S3 исполнитель `sharded` → S4 валидация →
+S5 setup-wizard → S6 окно объединения → S7 уход от режимов → S8 imageworker batch-split.
+Перед кодом — два замера: `iperf3` между машинами (ожидаемо 110–118 МБ/с) и проверка, что imageworker
+на машине 2 реально считает на CUDA (сейчас 512×512/8 шагов ≈ 287 с, похоже на CPU).
 
 ### R81 (2026-09-25) — закрытый раунд
 

@@ -4,7 +4,7 @@
 //
 // ЖИВОЙ СЛУЧАЙ. На стенде две машины: локальный `imageworker` (модель
 // загружена, 2 bundle'а на диске) и удалённый `IMAGEWORKER-34`
-// (192.168.13.34) — он зарегистрирован и здоров, но каталог моделей ПУСТ.
+// (192.0.2.11) — он зарегистрирован и здоров, но каталог моделей ПУСТ.
 // Прежний выбор «по ресурсам» отдавал удалённому КАЖДЫЙ запрос (метрик у него
 // нет → выглядел свободным), гейт отвечал image_model_not_loaded, и генерация не
 // работала целиком, хотя на локальном воркере всё было готово.
@@ -121,7 +121,7 @@ func TestR88_FailedProbeDoesNotExclude(t *testing.T) {
 	p, _ := newImgResProxy(t, toolTestImageSettings(), r88EmptyImageBackend(t, empty))
 
 	res := p.imageResources()
-	res.store(&imageBackendMetrics{backendID: "img-empty", lastErr: "dial tcp 192.168.13.34:18093: connect: connection refused"})
+	res.store(&imageBackendMetrics{backendID: "img-empty", lastErr: "dial tcp 192.0.2.11:18093: connect: connection refused"})
 
 	if exclude := NewImageRouter(p).backendsWithoutModels(); exclude["img-empty"] {
 		t.Fatalf("бэкенд с упавшим опросом исключён: %v — решение принято по недостоверным данным", exclude)

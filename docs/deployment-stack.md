@@ -362,14 +362,14 @@ RPC-инференс в проекте ещё заглушка, а нативн�
 
 ## 4.4 Вторая машина с воркерами: что задать и что проверить
 
-Проверено на живой паре: балансер на `192.168.13.20`, воркеры на `192.168.13.34`.
+Проверено на живой паре: балансер на `192.0.2.10`, воркеры на `192.0.2.11`.
 
 ### Что задать в `deployments/.env` НА УДАЛЁННОЙ МАШИНЕ
 
 ```bash
-BALANCER_URL=http://192.168.13.20:18081     # ADMIN API балансера (:18081, НЕ :18080)
+BALANCER_URL=http://192.0.2.10:18081     # ADMIN API балансера (:18081, НЕ :18080)
 CPPWORKER_API_TOKEN=<тот же токен, что на балансере>
-BACKEND_HOST=192.168.13.34                  # адрес ЭТОЙ машины, видимый с балансера
+BACKEND_HOST=192.0.2.11                  # адрес ЭТОЙ машины, видимый с балансера
 
 # ID записей — ОБЯЗАТЕЛЬНО уникальные между машинами (см. ниже про 409).
 # На worker-хосте текстовый бэкенд регистрирует АГЕНТ, поэтому его ID — это
@@ -404,7 +404,7 @@ SDWORKER_BACKEND_ID=imageworker-34
 Как поймать:
 
 ```bash
-# 1. В WebUI у каждого бэкенда поле HOST должно быть адресом (192.168.13.34),
+# 1. В WebUI у каждого бэкенда поле HOST должно быть адресом (192.0.2.11),
 #    а не именем контейнера. В API:
 curl -s -H "X-API-Token: $TOKEN" http://localhost:18081/api/v1/backends \
   | jq '.backends[] | {id, host, nodeAddr}'
@@ -419,7 +419,7 @@ docker logs ol-stack-balancer 2>&1 | grep 'advertise the SAME host'
 docker exec <imageworker-контейнер> env | grep -E 'BACKEND_HOST|ADVERTISE_HOST'
 ```
 
-Лечение — задать `BACKEND_HOST=192.168.13.34` в `deployments/.env` на удалённой
+Лечение — задать `BACKEND_HOST=192.0.2.11` в `deployments/.env` на удалённой
 машине и **пересоздать** воркеры (правка `.env` сама по себе контейнер не
 трогает):
 
@@ -522,7 +522,7 @@ docker compose -f docker-compose.stack.yml --profile worker up -d --force-recrea
 
 ### ⚠️ Почему вторая машина «не регистрируется»: одинаковые ID и host (R-MultiHost, 2026-10-07)
 
-Симптом на живой паре: вторая машина (`192.168.13.34`) поднята, оба воркера
+Симптом на живой паре: вторая машина (`192.0.2.11`) поднята, оба воркера
 здоровы, а в балансере по-прежнему **две** записи, и на странице модели видны
 CPU/GPU **второй** машины под URL **первой**. Вторая машина при этом не
 обслуживает ни одного запроса — выглядит как «не зарегистрировалась».
@@ -551,9 +551,9 @@ CPU/GPU **второй** машины под URL **первой**. Вторая 
 ```
 Backend "cppworker-gpu-bundled-agent" is already served by node 172.18.0.5
 (its agent is alive). Two hosts are using identical backend IDs and advertised
-host names because the compose file is the same. On this node (192.168.13.34)
+host names because the compose file is the same. On this node (192.0.2.11)
 set a unique AGENT_ID (or SDWORKER_BACKEND_ID for the image worker) and
-BACKEND_HOST=192.168.13.34, then restart the worker.
+BACKEND_HOST=192.0.2.11, then restart the worker.
 ```
 
 Правила guard'а (чтобы не сломать штатный рестарт):
@@ -611,7 +611,7 @@ docker run --rm -v ol-balancer-data:/data alpine chown -R 1000:1000 /data
 
 ```bash
 # 1. С удалённой машины: доступен ли балансер (ADMIN API)
-curl -sS -o /dev/null -w '%{http_code}\n' http://192.168.13.20:18081/api/v1/ping
+curl -sS -o /dev/null -w '%{http_code}\n' http://192.0.2.10:18081/api/v1/ping
 #    200 — сеть в порядке; 000 — firewall или неверный адрес; 401 — токен не тот
 #    ⚠️ На машине балансера должен быть РАЗРЕШЁН входящий TCP 18081
 
@@ -623,8 +623,8 @@ curl -s -H "X-API-Token: $TOKEN" http://localhost:18081/api/v1/backends \
   | jq '.backends[] | {id, host, type, status}'
 
 # 4. С балансера: доходит ли он до воркера в ответ
-curl -s http://192.168.13.34:18092/health
-curl -s http://192.168.13.34:18093/health
+curl -s http://192.0.2.11:18092/health
+curl -s http://192.0.2.11:18093/health
 ```
 
 Если шаг 3 показывает всё те же записи первой машины, а метрики в них — от
@@ -662,7 +662,7 @@ cppworker всё работало, а image-воркер всё равно ре�
 — значит выражение всегда даёт литерал `imageworker`. В результате:
 
 * саморегистрация воркера писала правильный адрес (строка 1 вкладывает
-  `BACKEND_HOST`) — запись создавалась как `192.168.13.34`;
+  `BACKEND_HOST`) — запись создавалась как `192.0.2.11`;
 * встроенный агент регистрировался под тем же backend ID с `AGENT_PUBLIC_HOST`
   = `imageworker`, и ветка «backend exists» **перекрывала адрес именем контейнера**.
 
@@ -691,7 +691,7 @@ go test -tags llama_stub ./internal/api/ -run TestComposeInterpolation
 
 ```bash
 # на машине с балансером, с тем же BACKEND_HOST, что в .env удалённой машины
-BACKEND_HOST=192.168.13.34 docker compose -f docker-compose.stack.yml \
+BACKEND_HOST=192.0.2.11 docker compose -f docker-compose.stack.yml \
   --profile worker config --format json | jq '.services.imageworker.environment
   | {SDWORKER_ADVERTISE_HOST, AGENT_PUBLIC_HOST}'
 ```

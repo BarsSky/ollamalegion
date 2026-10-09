@@ -56,7 +56,7 @@ M.state = {
     loadedModels: [],
     selectedBackendId: 'cppworker-gpu'
 };
-M.currentBackend = function () { return { id: 'cppworker-gpu', host: '192.168.13.20' }; };
+M.currentBackend = function () { return { id: 'cppworker-gpu', host: '192.0.2.10' }; };
 
 global.Utils = { escapeHtml: function (s) { return String(s === undefined || s === null ? '' : s); } };
 global.I18N = { t: M._ };
@@ -177,7 +177,7 @@ check('hostSystemPayload: берёт system из backendRuntime, а при ег�
 // --- 3. Панель «Инфо» --------------------------------------------------------
 
 check('renderAboutPane: блок «Хост (система)» с RAM присутствует в панели «Инфо»', function () {
-    M.currentBackend = function () { return { id: 'cppworker-gpu', host: '192.168.13.20', url: 'http://192.168.13.20:18092' }; };
+    M.currentBackend = function () { return { id: 'cppworker-gpu', host: '192.0.2.10', url: 'http://192.0.2.10:18092' }; };
     M.state.backendRuntime = { system: { memoryTotal: 25044, memoryUsed: 1817, memoryFree: 23227 } };
     M.state.gpuInfo = { devices: [{ name: 'RTX 3070', memoryTotal: 8192, memoryFree: 7097, usagePercent: 4 }] };
     M.state.workerInfo = { version: 'b4500' };

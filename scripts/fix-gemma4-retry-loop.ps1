@@ -17,7 +17,7 @@ Write-Host ""
 # 1. Check if gemma-4 profile exists
 $hdr = @{ Authorization = "Bearer $token" }
 try {
-    $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://192.168.13.20:18081/api/v1/cppworker/model-profiles/gemma-4-E4B-it-Q4_K_M" -Headers $hdr
+    $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://192.0.2.10:18081/api/v1/cppworker/model-profiles/gemma-4-E4B-it-Q4_K_M" -Headers $hdr
     $gemmaProfile = $r.Content | ConvertFrom-Json
     Write-Host "[1] gemma-4 profile EXISTS:" -ForegroundColor Green
     Write-Host "    contextLength: $($gemmaProfile.profile.contextLength)"
@@ -28,7 +28,7 @@ try {
     Write-Host "    Creating profile with contextLength=8192 (avoids upstream bug)..."
     $body = '{"contextLength":8192,"batchSize":512,"numGpuLayers":-1,"notes":"gemma-4 Cline tool use (n_ctx reduced to avoid upstream GGML_ASSERT)"}'
     try {
-        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri "http://192.168.13.20:18081/api/v1/cppworker/model-profiles/gemma-4-E4B-it-Q4_K_M" `
+        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri "http://192.0.2.10:18081/api/v1/cppworker/model-profiles/gemma-4-E4B-it-Q4_K_M" `
             -Method Put -Headers $hdr -ContentType "application/json" -Body $body
         Write-Host "    Created OK" -ForegroundColor Green
     } catch {
@@ -39,7 +39,7 @@ try {
 # 2. Check current model state
 Write-Host ""
 try {
-    $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://192.168.13.20:18092/api/models" -Headers $hdr
+    $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://192.0.2.10:18092/api/models" -Headers $hdr
     $j = $r.Content | ConvertFrom-Json
     $gemma = $j.models | Where-Object { $_.name -eq "gemma-4-E4B-it-Q4_K_M" } | Select-Object -First 1
     if ($gemma) {

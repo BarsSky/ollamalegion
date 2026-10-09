@@ -7,7 +7,7 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// R-MultiHost (2026-10-07). Машину 192.168.13.34 выключили, и в панели осталась
+// R-MultiHost (2026-10-07). Машину 192.0.2.11 выключили, и в панели осталась
 // живая запись её image-воркера: статус healthy, метрики (1.4% VRAM, 52 °C,
 // 405 MHz) — числа последнего опроса, выданные за текущие.
 //
@@ -89,7 +89,7 @@ func TestHasAmbiguousHost_UnknownNodeAddrIsNotAmbiguous(t *testing.T) {
 func TestHasAmbiguousHost_DifferentHosts(t *testing.T) {
 	p := newMultiHostProxy(t,
 		backendWithHost("imageworker", "imageworker", "172.23.0.5", true, time.Now()),
-		backendWithHost("IMAGEWORKER-34", "192.168.13.34", "172.23.0.1", true, time.Now()),
+		backendWithHost("IMAGEWORKER-34", "192.0.2.11", "172.23.0.1", true, time.Now()),
 	)
 	if p.HasAmbiguousHost("IMAGEWORKER-34") {
 		t.Fatal("разные host'ы — неоднозначности нет")

@@ -24,8 +24,8 @@ if (-not $token) {
 if (-not $token) { throw "CPPWORKER_API_TOKEN not set" }
 
 $hdr = @{ Authorization = "Bearer $token" }
-$cppworker = "http://192.168.13.20:18092"
-$balancer = "http://192.168.13.20:18081"
+$cppworker = "http://192.0.2.10:18092"
+$balancer = "http://192.0.2.10:18081"
 
 Write-Host "=== v0.5.13 Live Verify ===" -ForegroundColor Cyan
 

@@ -44,7 +44,7 @@ func peerIP(r *http.Request) string {
 		return ""
 	}
 	if ip := net.ParseIP(host); ip != nil {
-		// ::ffff:192.168.13.34 → 192.168.13.34: один и тот же узел не должен
+		// ::ffff:192.0.2.11 → 192.0.2.11: один и тот же узел не должен
 		// выглядеть как два разных из-за формы записи адреса.
 		if v4 := ip.To4(); v4 != nil {
 			return v4.String()

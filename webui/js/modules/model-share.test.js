@@ -33,9 +33,9 @@ function check(name, fn) {
 
 const backends = [
     { id: 'cppworker-gpu', type: 'llama_cpp', host: 'cppworker-gpu' },
-    { id: 'CPPWORKER-34', type: 'llama_cpp', host: '192.168.13.34' },
+    { id: 'CPPWORKER-34', type: 'llama_cpp', host: '192.0.2.11' },
     { id: 'imageworker', type: 'image_cpp', host: 'imageworker' },
-    { id: 'IMAGEWORKER-34', type: 'image_cpp', host: '192.168.13.34' },
+    { id: 'IMAGEWORKER-34', type: 'image_cpp', host: '192.0.2.11' },
     { id: 'legacy', backendType: 'ollama', host: 'legacy' },
 ];
 

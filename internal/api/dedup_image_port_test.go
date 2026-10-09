@@ -12,7 +12,7 @@ import (
 // Ollama-поверхности, но в записи всё равно лежит ollamaPort=11434 — дефолт,
 // который подставляет agentRegisterHandler. Ключ де-дупликации получался
 // (host, 11434), и на машине, где текстовый и image-бэкенд объявляют ОДИН host
-// (BACKEND_HOST=192.168.13.34 сразу для обоих воркеров), ключи совпадали.
+// (BACKEND_HOST=192.0.2.11 сразу для обоих воркеров), ключи совпадали.
 // Из двух записей оставалась одна — побеждал меньший ID (CPPWORKER-34), а
 // image-бэкенд «мигал» в WebUI: появлялся, пока запись была создана
 // саморегистрацией sdworker'а (ollamaPort ещё 0), и исчезал после обновления от
@@ -43,8 +43,8 @@ func dedupBackends(list []types.Backend) []types.Backend {
 // TestBackendDedupPort_ImageUsesImagePort — ключ image-бэкенда не должен
 // совпадать с ключом текстового на том же хосте.
 func TestBackendDedupPort_ImageUsesImagePort(t *testing.T) {
-	img := backendForDedup("IMAGEWORKER-34", "192.168.13.34", string(types.BackendTypeImage), 11434, 0, 18093, true)
-	txt := backendForDedup("CPPWORKER-34", "192.168.13.34", string(types.BackendTypeLlamaCpp), 11434, 18092, 0, true)
+	img := backendForDedup("IMAGEWORKER-34", "192.0.2.11", string(types.BackendTypeImage), 11434, 0, 18093, true)
+	txt := backendForDedup("CPPWORKER-34", "192.0.2.11", string(types.BackendTypeLlamaCpp), 11434, 18092, 0, true)
 
 	if got := backendDedupPort(img); got != 18093 {
 		t.Fatalf("backendDedupPort(image) = %d, ожидался 18093 (порт image-воркера, а не ollamaPort=11434)", got)
@@ -60,7 +60,7 @@ func TestBackendDedupPort_ImageUsesImagePort(t *testing.T) {
 // TestBackendDedupPort_ImageFallback — imagePort не задан → EffectiveImagePort
 // подставляет дефолт, ключ всё равно не равен 11434 и не равен нулю.
 func TestBackendDedupPort_ImageFallback(t *testing.T) {
-	img := backendForDedup("imageworker", "192.168.13.34", string(types.BackendTypeImage), 11434, 0, 0, true)
+	img := backendForDedup("imageworker", "192.0.2.11", string(types.BackendTypeImage), 11434, 0, 0, true)
 	got := backendDedupPort(img)
 	if got == 0 || got == 11434 {
 		t.Fatalf("backendDedupPort(image без imagePort) = %d, ожидался fallback EffectiveImagePort", got)
@@ -71,8 +71,8 @@ func TestBackendDedupPort_ImageFallback(t *testing.T) {
 // остаться в списке: именно их исчезновение и выглядело как «мигание».
 func TestDedup_TextAndImageOnSameHostBothVisible(t *testing.T) {
 	list := []types.Backend{
-		backendForDedup("CPPWORKER-34", "192.168.13.34", string(types.BackendTypeLlamaCpp), 11434, 18092, 0, true),
-		backendForDedup("IMAGEWORKER-34", "192.168.13.34", string(types.BackendTypeImage), 11434, 0, 18093, true),
+		backendForDedup("CPPWORKER-34", "192.0.2.11", string(types.BackendTypeLlamaCpp), 11434, 18092, 0, true),
+		backendForDedup("IMAGEWORKER-34", "192.0.2.11", string(types.BackendTypeImage), 11434, 0, 18093, true),
 	}
 	result := dedupBackends(list)
 	if len(result) != 2 {

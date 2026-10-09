@@ -50,6 +50,21 @@
   `image chain smoke` переведены на `scripts/run_go_test.sh` — он печатает имена
   упавших тестов и их сообщения, а не только хвост вывода. Именно из-за `tail`
   прошлый прогон отдал `FAIL internal/balancer` без единого имени теста.
+- **cppworker: фоновые load/reload стали отслеживаемыми** (`cmd/cppworker/async_work_tracker.go`).
+  `runAsyncLoad`/`runAsyncReload` — длинные фоновые горутины (дренаж in-flight,
+  unload, load, rollback), и они не были ни учтены, ни изолированы от подмены
+  пакетной переменной `backend`, которую делают 35 тестовых стендов. `-race` ловил
+  два класса гонок:
+  * `Backend.Close()` (cleanup тестового сервера) против `Backend.GetModel()` из
+    `runAsyncReload` — теперь каждая фоновая работа регистрируется в `asyncWorkWG`,
+    а `waitAsyncWorkBeforeClose()` (graceful shutdown в `main.go` и cleanup стенда)
+    ждёт её с таймаутом `LB_ASYNC_WORK_SHUTDOWN_WAIT_SEC` (default 30 с, 0 = не ждать);
+  * присваивание `backend = oldBackend` в cleanup против чтения глобала из фоновой
+    горутины — теперь backend **передаётся параметром** (`runAsyncLoad(... , be)`,
+    `runAsyncReload(... , be)`, `noteLoadDegradation(..., be)`), снимок берётся в
+    горутине вызывающего.
+  Плюс стенды, запускающие фоновую работу на `t.TempDir()`, дожидаются её в cleanup —
+  иначе на Windows падало `TempDir RemoveAll cleanup: The directory is not empty`.
 
 ### ✅ Проверено (локально, командами из CI)
 

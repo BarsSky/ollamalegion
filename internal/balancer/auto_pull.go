@@ -1,4 +1,4 @@
-﻿package balancer
+package balancer
 
 import (
 	"encoding/json"

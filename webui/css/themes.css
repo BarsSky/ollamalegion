@@ -97,7 +97,7 @@
 
     --text-primary: #e6e6f0;
     --text-secondary: #a8a8c0;
-    --text-muted: #6e6e8a;
+    --text-muted: #8a8aa4;
 
     /* Accent + semantics */
     --accent: #4a9eff;
@@ -195,7 +195,7 @@
 
     --text-primary: #1a1a2e;
     --text-secondary: #4a4a5a;
-    --text-muted: #8a8a9a;
+    --text-muted: #6e6e7e;
 
     --accent: #2563eb;
     --accent-hover: #1d4ed8;
@@ -369,6 +369,11 @@ body *::after {
     --success: #76b900;
     --success-soft: rgba(118,185,0,0.15);
     --glass-glow: radial-gradient(ellipse at 50% 0%, rgba(118,185,0,0.06) 0%, transparent 70%);
+    /* R95: nvidia не задавал --text-muted и наследовал значение тёмной темы
+       (#6e6e8a), которое на унаследованных поверхностях давало контраст 3.46
+       (ниже WCAG AA 4.5), из-за чего приглушённый текст сливался с фоном. Значение то же,
+       что в тёмной теме после правки контраста. */
+    --text-muted: #8a8aa4;
 }
 
 /* ============================================================
@@ -382,7 +387,7 @@ body *::after {
     --bg-hover: #222222;
     --text-primary: #fafafa;
     --text-secondary: #a1a1aa;
-    --text-muted: #71717a;
+    --text-muted: #7b7b84;
     --accent: #fafafa;
     --accent-hover: #ffffff;
     /* Phase 7: derive from --accent (was rgba(250,250,250,*) hardcoded). */
@@ -415,7 +420,7 @@ body *::after {
     --bg-hover: #3d3361;
     --text-primary: #ffffff;
     --text-secondary: #b8b0c8;
-    --text-muted: #8a8198;
+    --text-muted: #938aa2;
     --accent: #c2ef4e;
     --accent-hover: #d4f77a;
     --accent-soft:        color-mix(in srgb, var(--accent) 15%, transparent);
@@ -456,7 +461,7 @@ body *::after {
     --bg-hover: #e0e6e3;
     --text-primary: #1a2520;
     --text-secondary: #5e6a64;
-    --text-muted: #8a938f;
+    --text-muted: #69746e;
     --accent: #10b981;
     --accent-hover: #059669;
     --accent-soft:        color-mix(in srgb, var(--accent) 10%, transparent);

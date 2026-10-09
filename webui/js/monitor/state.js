@@ -239,6 +239,126 @@
     return MonitorApp.nLayout(type).visible;
   };
 
+  // ───────────────────────── палитра канваса из темы (R95) ────────────────────
+  //
+  // ЖАЛОБА: «в мониторе при теме mint не видно сетки и подписей в блоках».
+  // ПРИЧИНА: канвас выбирал цвета по ИМЕНИ темы — `data-theme === 'light'` —
+  // то есть знал ровно две палитры (light и «всё остальное, как dark»). Темы
+  // с фоном светлее среднего (mint: --bg-primary #f5f7f6, linear/vercel тоже
+  // не dark) получали ТЁМНУЮ палитру: сетка rgba(255,255,255,0.03) на светлом
+  // фоне даёт контраст 1.0, текст #e2e8f0 — 1.15, подписи в блоках #fff — 1.15.
+  // Замер аудита по всем 7 темам: grid=1.00-1.08, но у mint текст 1.15 → сливается.
+  //
+  // ТЕПЕРЬ палитра считается из ФАКТИЧЕСКИХ CSS-переменных темы (яркость фона
+  // решает, светлая тема или тёмная), поэтому любая новая тема получает
+  // контрастные цвета сетки/текста без правки канваса.
+  MonitorApp.parseCssColor = function(spec) {
+    if (!spec) return null;
+    var s = String(spec).trim();
+    var m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s);
+    if (m) {
+      var h = m[1];
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      return {
+        r: parseInt(h.slice(0, 2), 16),
+        g: parseInt(h.slice(2, 4), 16),
+        b: parseInt(h.slice(4, 6), 16),
+        a: 1
+      };
+    }
+    m = /^rgba?\(([^)]+)\)$/i.exec(s);
+    if (m) {
+      var p = m[1].split(',').map(function(x) { return parseFloat(x.trim()); });
+      if (p.length >= 3 && !isNaN(p[0]) && !isNaN(p[1]) && !isNaN(p[2])) {
+        return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+      }
+    }
+    return null;
+  };
+
+  // relativeLuminance — WCAG-яркость цвета (0 = чёрный, 1 = белый).
+  MonitorApp.relativeLuminance = function(c) {
+    if (!c) return 0;
+    var f = function(v) {
+      v = v / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+  };
+
+  // contrastRatio — отношение контрастов двух цветов (WCAG).
+  MonitorApp.contrastRatio = function(c1, c2) {
+    var l1 = MonitorApp.relativeLuminance(c1);
+    var l2 = MonitorApp.relativeLuminance(c2);
+    var hi = Math.max(l1, l2), lo = Math.min(l1, l2);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  // paletteFor — ЧИСТАЯ функция (тестируется без браузера): по цвету фона темы
+  // возвращает светлую или тёмную палитру канваса.
+  MonitorApp.paletteFor = function(bgColor) {
+    var bg = MonitorApp.parseCssColor(bgColor);
+    var isLight = bg ? MonitorApp.relativeLuminance(bg) > 0.5 : false;
+    return isLight ? MonitorApp._lightPalette() : MonitorApp._darkPalette();
+  };
+
+  MonitorApp._lightPalette = function() {
+    return {
+      isLight: true,
+      // Контраст сетки к светлому фону ≈ 1.33 (заметно, но не «шум»).
+      grid: 'rgba(15,23,42,0.14)',
+      gridStrong: 'rgba(15,23,42,0.26)',
+      text: '#0f172a',
+      textMuted: '#475569',
+      tileText: '#0f172a',
+      lane: 'rgba(15,23,42,0.12)',
+      laneLabel: 'rgba(15,23,42,0.5)',
+      barBg: 'rgba(15,23,42,0.12)',
+      boxShadow: 'rgba(15,23,42,0.10)',
+      overlayIcon: 'rgba(15,23,42,0.35)'
+    };
+  };
+
+  MonitorApp._darkPalette = function() {
+    return {
+      isLight: false,
+      // Контраст сетки к тёмному фону ≈ 1.29 на #0f0f23 и ≈ 1.20 на чистом
+      // чёрном (linear/vercel). При прежних 0.07 на чёрных темах сетка давала
+      // 1.12 и практически не читалась.
+      grid: 'rgba(255,255,255,0.10)',
+      gridStrong: 'rgba(255,255,255,0.18)',
+      text: '#e2e8f0',
+      textMuted: '#b0b7c4',
+      tileText: '#ffffff',
+      lane: 'rgba(255,255,255,0.12)',
+      laneLabel: 'rgba(255,255,255,0.40)',
+      barBg: 'rgba(255,255,255,0.14)',
+      boxShadow: 'rgba(255,255,255,0.10)',
+      overlayIcon: 'rgba(255,255,255,0.35)'
+    };
+  };
+
+  // themePalette — палитра ТЕКУЩЕЙ темы (кэш по значению data-theme, чтобы не
+  // читать computed style каждый кадр).
+  MonitorApp.themePalette = function() {
+    var root = document.documentElement;
+    var key = (root && root.getAttribute) ? (root.getAttribute('data-theme') || 'dark') : 'dark';
+    if (MonitorApp._paletteCache && MonitorApp._paletteCacheKey === key) {
+      return MonitorApp._paletteCache;
+    }
+    var bgSpec = '';
+    try {
+      if (window.getComputedStyle) {
+        var cs = window.getComputedStyle(root);
+        bgSpec = (cs.getPropertyValue('--bg-primary') || '').trim();
+      }
+    } catch (e) { /* no DOM (тесты) — палитра по умолчанию */ }
+    var pal = MonitorApp.paletteFor(bgSpec || (key === 'light' ? '#ffffff' : '#0b1120'));
+    MonitorApp._paletteCache = pal;
+    MonitorApp._paletteCacheKey = key;
+    return pal;
+  };
+
   // Common utilities
   //
   // MonitorApp.esc ОБЯЗАН реально экранировать HTML. До R-Image Phase 8 карта

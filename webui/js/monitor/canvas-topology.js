@@ -110,15 +110,19 @@
 
   // drawOverflowChip — счётчик не поместившихся узлов. Молча прятать их нельзя:
   // оператор должен видеть, что клиентов больше, чем показано.
+  //
+  // R95: цвета берём из палитры темы (аргумент lt больше не нужен — палитра
+  // вычисляется внутри, иначе на светлых темах плашка сливалась с фоном).
   function drawOverflowChip(type, x, y, hidden, lt) {
     if (hidden <= 0) return;
+    var pal = themePal();
     var label = '+ ' + hidden;
     cx.font = 'bold 10px ' + MA.vF();
     cx.textAlign = 'left';
     var tw = cx.measureText(label).width;
-    cx.fillStyle = lt ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)';
+    cx.fillStyle = pal.gridStrong;
     MA.rr(cx, x, y - 9, tw + 16, 18, 9); cx.fill();
-    cx.fillStyle = lt ? '#475569' : '#b0b7c4';
+    cx.fillStyle = pal.textMuted;
     cx.fillText(label, x + 8, y + 4);
   }
 
@@ -193,8 +197,17 @@
     vp.scale = newScale;
   }, { passive: false });
 
-  function isLightTheme() {
-    return document.documentElement.getAttribute('data-theme') === 'light';
+  // themePal — палитра канваса ИЗ ТЕКУЩЕЙ ТЕМЫ (R95).
+  //
+  // ЖАЛОБА: «в мониторе при теме mint не видно сетки и подписей в блоках».
+  // ПРИЧИНА: здесь была бинарная проверка `data-theme === 'light'`, поэтому все
+  // остальные темы (включая светлую mint) рисовались тёмной палитрой:
+  // сетка rgba(255,255,255,0.03) на фоне #f5f7f6 даёт контраст 1.0, текст
+  // #e2e8f0 — 1.15. Теперь цвета (сетка, текст, подписи в плитках, плашки)
+  // считаются по ФАКТИЧЕСКОМУ фону темы, см. MonitorApp.themePalette.
+  function themePal() {
+    if (MA.themePalette) return MA.themePalette();
+    return MA._darkPalette ? MA._darkPalette() : { isLight: false, grid: 'rgba(255,255,255,0.07)', gridStrong: 'rgba(255,255,255,0.14)', text: '#e2e8f0', textMuted: '#b0b7c4', tileText: '#fff', barBg: 'rgba(255,255,255,0.12)' };
   }
 
   // Tooltip
@@ -399,7 +412,8 @@
     var w = MA.topo.w, h = MA.topo.h;
     if (!w || !h) return;
     var vp = MA.viewport;
-    var lt = isLightTheme();
+    var pal = themePal();
+    var lt = pal.isLight;
 
     cx.save();
     cx.setTransform(vp.scale, 0, 0, vp.scale, vp.offsetX, vp.offsetY);
@@ -411,7 +425,7 @@
     var gy0 = Math.floor((-vp.offsetY / vp.scale) / gCell) * gCell;
     var gx1 = Math.ceil((w - vp.offsetX) / vp.scale);
     var gy1 = Math.ceil((h - vp.offsetY) / vp.scale);
-    cx.strokeStyle = lt ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.03)';
+    cx.strokeStyle = pal.grid;
     cx.lineWidth = 1 / vp.scale;
     for (var gx = gx0; gx <= gx1; gx += gCell) { cx.beginPath(); cx.moveTo(gx, gy0); cx.lineTo(gx, gy1); cx.stroke(); }
     for (var gy = gy0; gy <= gy1; gy += gCell) { cx.beginPath(); cx.moveTo(gx0, gy); cx.lineTo(gx1, gy); cx.stroke(); }
@@ -449,7 +463,7 @@
     }
 
     cx.setLineDash([]);
-    var textLight = lt ? '#1e293b' : '#e2e8f0', textMuted = lt ? '#475569' : '#b0b7c4';
+    var textLight = pal.text, textMuted = pal.textMuted;
     for (var si2 = 0; si2 < sessVis; si2++) {
       var s = MA.topo.sessions[si2];
       var y = MA.nY('session', si2), ia = s.backendId != null, isCloud = MA.isCloudModel(s.model);
@@ -471,12 +485,12 @@
     var qr = Math.min(pend / mq, 1), bc = qr > 0.75 ? '#ef4444' : qr > 0.3 ? '#f59e0b' : '#3b82f6';
     cx.shadowColor = bc; cx.shadowBlur = 20; cx.fillStyle = bc + '18'; MA.rr(cx, bx - 4, by - 4, bw + 8, bh + 8, 12); cx.fill(); cx.shadowBlur = 0;
     cx.fillStyle = bc + '22'; MA.rr(cx, bx, by, bw, bh, 10); cx.fill(); cx.strokeStyle = 'rgba(148,163,184,0.4)'; cx.lineWidth = 2; cx.stroke();
-    cx.fillStyle = lt ? '#0f172a' : '#fff'; cx.font = 'bold 13px ' + MA.vF(); cx.textAlign = 'center'; cx.fillText(MA.T('monitor.canvas.balancer'), cX, cY - 16);
+    cx.fillStyle = pal.text; cx.font = 'bold 13px ' + MA.vF(); cx.textAlign = 'center'; cx.fillText(MA.T('monitor.canvas.balancer'), cX, cY - 16);
     cx.fillStyle = textMuted; cx.font = '11px ' + MA.vF(); cx.fillText(MA.T('monitor.canvas.queue') + pend, cX, cY + 4);
     var qbX = bx + 20, qbY = by + bh / 2 + 14, qbW = bw - 40, qbH = 8;
-    cx.fillStyle = lt ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.06)'; MA.rr(cx, qbX, qbY, qbW, qbH, 4); cx.fill();
+    cx.fillStyle = pal.barBg; MA.rr(cx, qbX, qbY, qbW, qbH, 4); cx.fill();
     cx.fillStyle = qr > 0.75 ? '#ef4444' : '#60a5fa'; MA.rr(cx, qbX, qbY, qbW * qr, qbH, 4); cx.fill();
-    var backendIdleTxt = lt ? '#1e293b' : '#fff';
+    var backendIdleTxt = pal.tileText;
     for (var bi2 = 0; bi2 < backVis; bi2++) {
       var b = MA.topo.backends[bi2];
       var y = MA.nY('backend', bi2), ih = b.status === 'active' || b.status === 'healthy' || b.status === 'ready';
@@ -510,7 +524,7 @@
       } else if (mc > 0) { cx.fillStyle = '#a855f7'; cx.font = '9px ' + MA.vF(); cx.fillText('🧠 ' + mc + MA.T('models_lower'), w - 132, y + 20); }
       else if (ih && a > 0) { cx.fillStyle = '#f97316'; cx.font = '9px ' + MA.vF(); cx.fillText(MA.T('loading'), w - 132, y + 20); }
       var vp = b.vram ? b.vram.usagePercent : 0;
-      if (vp > 0) { cx.fillStyle = lt ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)'; MA.rr(cx, w - 132, y + 26, 100, 3, 2); cx.fill(); cx.fillStyle = vp > 85 ? '#ef4444' : vp > 60 ? '#f59e0b' : '#22c55e'; MA.rr(cx, w - 132, y + 26, 100 * (vp / 100), 3, 2); cx.fill(); }
+      if (vp > 0) { cx.fillStyle = pal.barBg; MA.rr(cx, w - 132, y + 26, 100, 3, 2); cx.fill(); cx.fillStyle = vp > 85 ? '#ef4444' : vp > 60 ? '#f59e0b' : '#22c55e'; MA.rr(cx, w - 132, y + 26, 100 * (vp / 100), 3, 2); cx.fill(); }
     }
     // R91: бэкендов больше, чем влезло — счётчик вместо молчания.
     drawOverflowChip('backend', w - 140, bLayout.chipY, bLayout.hidden, lt);

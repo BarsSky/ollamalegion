@@ -11,8 +11,12 @@
 
   var ccv = document.getElementById('conveyorCanvas'), ccx = ccv ? ccv.getContext('2d') : null;
 
-  function isLightTheme() {
-    return document.documentElement.getAttribute('data-theme') === 'light';
+  // R95: палитра берётся из темы (см. MonitorApp.themePalette) — раньше была
+  // бинарная проверка data-theme === 'light', из-за которой светлые темы кроме
+  // light (например mint) получали тёмные подписи и сетку и сливались с фоном.
+  function themePal() {
+    if (MA.themePalette) return MA.themePalette();
+    return { isLight: false, lane: 'rgba(255,255,255,0.10)', laneLabel: 'rgba(255,255,255,0.35)' };
   }
 
   // ---- Интерполяция по waypoints ----
@@ -88,8 +92,8 @@
     var spawnIntensity = Math.max(0.05, Math.min(0.50, utilization * 0.4 + rps * 0.02));
 
     // ---- Подписи зон ----
-    var lt = isLightTheme();
-    var labelColor = lt ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.2)';
+    var pal = themePal();
+    var labelColor = pal.laneLabel;
     ccx.fillStyle = labelColor;
     ccx.font = '10px ' + MA.vF();
     ccx.textAlign = 'center';
@@ -98,7 +102,7 @@
     ccx.fillText(MA.T('monitor.canvas.backends'), balOutX + (w - balOutX) / 2, h - 6);
 
     // Разделительные линии
-    ccx.strokeStyle = lt ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.05)';
+    ccx.strokeStyle = pal.lane;
     ccx.lineWidth = 1;
     ccx.setLineDash([4, 6]);
     ccx.beginPath(); ccx.moveTo(balInX, 10); ccx.lineTo(balInX, h - 14); ccx.stroke();

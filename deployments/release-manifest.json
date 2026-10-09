@@ -1,7 +1,7 @@
 {
-    "tag":  "v0.7.65",
-    "builtAt":  "2026-10-09T20:45:00Z",
-    "gitCommit":  "43dbd89",
+    "tag":  "v0.7.66",
+    "builtAt":  "2026-10-10T00:00:00Z",
+    "gitCommit":  "14e5955",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
@@ -9,10 +9,10 @@
                    {
                        "service":  "webui",
                        "variable":  "WEBUI_TAG",
-                       "image":  "ollama-legion/webui:r83-submodule-v127",
-                       "imageTag":  "r83-submodule-v127",
-                       "imageId":  "sha256:409c5acb23cf37e963c6c5589ceb2f74a17f2f2a1f3cdb322dbdfa2f95d7449a",
-                       "buildArg":  "VERSION=v0.7.65",
+                       "image":  "ollama-legion/webui:r83-submodule-v129",
+                       "imageTag":  "r83-submodule-v129",
+                       "imageId":  "sha256:12eb2c181fd00041fbae58bbef1b4863d22bc2d0673bb7f2c6e7c26e75d2721b",
+                       "buildArg":  "VERSION=v0.7.66",
                        "alias":  "ollama-legion/webui:latest"
                    },
                    {
@@ -49,6 +49,7 @@
                    }
                ],
     "notes":  [
+                   "ТЕМЫ WEBUI: палитра канваса монитора вычисляется из фактических CSS-переменных темы (яркость фона + WCAG-контраст), а не из проверки имени 'light'. В теме mint сетка и подписи снова видны: живой замер по всем 7 темам даёт сетку 1.20-1.34 при норме 1.15 и текст 13.95-17.03 при норме 4.5:1 (было 1.00-1.08 и 1.15).",
                   "ЖИВОЙ ИНВЕНТАРЬ МОДЕЛЕЙ: воркер сам сверяет каталог .gguf с диском (CPPWORKER_MODELS_RESCAN_SEC, default 30 s), балансер перечитывает листинги (LB_MODEL_CATALOG_REFRESH_SEC, default 60 s) и публикует изменение состава в ленту событий WebUI. Добавление и удаление файла видно без перезапуска контейнеров; POST /api/models/refresh проверяет немедленно.",
                   "Проверено на стенде: файл, положенный в каталог моделей, появился в /api/models/files (added) без рестарта, удалённый исчез (removed); при недоступном каталоге ответ count=0 + dirError вместо старого кэша.",
                   "WebUI без моделей-призраков: пустой ответ воркера применяется как есть, на вкладке «Модели» видно время проверки и причину пустоты, есть кнопка «Проверить наличие».",

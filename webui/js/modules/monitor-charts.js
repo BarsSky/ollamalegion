@@ -182,7 +182,13 @@ const MonitorCharts = (() => {
         ctx.fillRect(x, y, w, h);
 
         // Title
-        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+        // R95: светлая/тёмная палитра — по ФАКТИЧЕСКОМУ фону темы, а не по имени
+        // `light`: светлые темы кроме light (например mint) получали светлый
+        // заголовок на светлом фоне и подписи сливались.
+        const pal = (window.MonitorApp && window.MonitorApp.themePalette)
+            ? window.MonitorApp.themePalette()
+            : { isLight: document.documentElement.getAttribute('data-theme') === 'light' };
+        const isLight = !!pal.isLight;
         ctx.fillStyle = isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)';
         ctx.font = 'bold 11px system-ui, sans-serif';
         ctx.textAlign = 'left';

@@ -120,7 +120,10 @@
     if (rcCount > 0 && Math.random() < Math.min(0.4, rcCount * 0.05)) {
       var rc = recentClients[Math.floor(Math.random() * rcCount)];
       // Находим Y для этого клиента — только если есть сессия с таким именем
-      for (var si = 0; si < sessions.length; si++) {
+      // R91: и только если эта сессия РИСУЕТСЯ (не поместившиеся не имеют
+      // координат на картинке, и частица летела бы в пустоту).
+      var sessVis = MA.nVisible ? MA.nVisible('session') : sessions.length;
+      for (var si = 0; si < Math.min(sessions.length, sessVis); si++) {
         if (sessions[si].clientName === rc.clientName) {
           var rcY = MA.nY('session', si);
           var sX = G.clientX;
@@ -153,13 +156,14 @@
       var wm = warmingModels[Math.floor(Math.random() * warmingModels.length)];
       // Находим бэкенд, на котором warming
       var wbIdx = -1;
-      for (var bi = 0; bi < backends.length; bi++) {
+      var backVis = MA.nVisible ? MA.nVisible('backend') : backends.length;
+      for (var bi = 0; bi < Math.min(backends.length, backVis); bi++) {
         if ((backends[bi].warmingUpModels || []).indexOf(wm) >= 0 ||
             (backends[bi].status === 'warming_up')) {
           wbIdx = bi; break;
         }
       }
-      if (wbIdx < 0) wbIdx = Math.floor(Math.random() * Math.max(1, backends.length));
+      if (wbIdx < 0) wbIdx = Math.floor(Math.random() * Math.max(1, Math.min(backends.length, backVis)));
       var wbY = MA.nY('backend', wbIdx);
 
       // Путь через эльбоу на 50% между балансером и бэкендом
@@ -186,8 +190,13 @@
     // ============================================================
     if (activeTotal > 0 && Math.random() < spawnIntensity) {
       var clientIdx, sessionY;
-      if (sessions.length > 0) {
-        clientIdx = Math.floor(Math.random() * sessions.length);
+      // R91: частицы летят только к НАРИСОВАННЫМ узлам (nVisible).
+      var sessVisFull = MA.nVisible ? MA.nVisible('session') : sessions.length;
+      var backVisFull = MA.nVisible ? MA.nVisible('backend') : backends.length;
+      var drawableSessions = Math.min(sessions.length, sessVisFull);
+      var drawableBackends = Math.min(backends.length, backVisFull);
+      if (drawableSessions > 0) {
+        clientIdx = Math.floor(Math.random() * drawableSessions);
         sessionY = MA.nY('session', clientIdx);
       } else {
         sessionY = balCenterY;
@@ -195,10 +204,11 @@
 
       // Выбираем бэкенд пропорционально активным запросам
       var backendIdx = 0;
-      if (backends.length > 1) {
-        var weightedSum = backends.reduce(function(s, b) { return s + Math.max(1, b.activeRequests || 1); }, 0);
+      if (drawableBackends > 1) {
+        var weightedSum = 0;
+        for (var wi = 0; wi < drawableBackends; wi++) weightedSum += Math.max(1, backends[wi].activeRequests || 1);
         var rand = Math.random() * weightedSum;
-        for (var bi = 0; bi < backends.length; bi++) {
+        for (var bi = 0; bi < drawableBackends; bi++) {
           rand -= Math.max(1, backends[bi].activeRequests || 1);
           if (rand <= 0) { backendIdx = bi; break; }
         }
@@ -234,14 +244,16 @@
     var procCount = MA.topo.queue.processing_count || 0;
     if (procCount > 0 && Math.random() < Math.min(0.25, procCount * 0.05)) {
       var bIdx;
-      if (backends.length > 0) {
-        var busyBackends = backends.reduce(function(acc, b, idx) {
-          if (b.activeRequests > 0) acc.push(idx);
-          return acc;
-        }, []);
+      // R91: только нарисованные бэкенды — у остальных нет координат.
+      var backVisProc = Math.min(backends.length, MA.nVisible ? MA.nVisible('backend') : backends.length);
+      if (backVisProc > 0) {
+        var busyBackends = [];
+        for (var ci = 0; ci < backVisProc; ci++) {
+          if (backends[ci].activeRequests > 0) busyBackends.push(ci);
+        }
         bIdx = busyBackends.length > 0
           ? busyBackends[Math.floor(Math.random() * busyBackends.length)]
-          : Math.floor(Math.random() * backends.length);
+          : Math.floor(Math.random() * backVisProc);
       } else {
         bIdx = 0;
       }

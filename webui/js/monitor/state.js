@@ -131,8 +131,23 @@
     bh: 100,          // balancer height
     clientX: 140,     // client connector x
     backendMargin: 140, // backend right margin
-    minSpacing: 30,   // min vertical spacing between nodes
-    marginY: 80       // top/bottom margin for node placement
+    marginY: 40,      // top/bottom margin for node placement
+    // R91 (2026-10-08): ВЫСОТЫ ПЛИТОК и зазор — единственный источник правды.
+    //
+    // Прежний `minSpacing: 30` был МЕНЬШЕ высоты плитки (клиент 44 px, бэкенд
+    // 52 px — см. отрисовку ниже), поэтому как только узлов становилось больше,
+    // чем влезает, шаг упирался в 30 и плитки наезжали друг на друга: на живой
+    // картинке 12 клиентов и 6 бэкендов накрывали друг друга, скрывая и имя
+    // клиента, и модель, и статус бэкенда. Теперь шаг не может быть меньше
+    // «высота + зазор», а лишние узлы не рисуются вовсе — вместо них счётчик
+    // «+N» (см. MonitorApp.nLayout).
+    nodeH: { session: 44, backend: 52 },
+    nodeGap: 8,
+    // Высота плашки «+N» внизу колонки, когда узлы не поместились.
+    chipH: 22,
+    // Предел на число нарисованных узлов в колонке: даже если места хватает,
+    // сотня плиток не читается.
+    maxNodes: 40
   };
   MonitorApp.GEOM.backendX = function(w) { return w - MonitorApp.GEOM.backendMargin; };
   MonitorApp.GEOM.balInX = function(w) { return w / 2 - MonitorApp.GEOM.bw / 2; };
@@ -140,16 +155,60 @@
   MonitorApp.GEOM.balCenterX = function(w) { return w / 2; };
   MonitorApp.GEOM.balCenterY = function(h) { return h / 2; };
 
-  // Vertical node placement (sessions on left, backends on right)
-  MonitorApp.nY = function(type, i) {
+  // nLayout — вертикальная раскладка узлов одного типа (R91).
+  //
+  // Возвращает: сколько узлов РИСУЕМ (visible), сколько не поместилось (hidden),
+  // шаг и верхний отступ. Единственное место, где считается геометрия: и
+  // отрисовка, и hit-test, и тултип обязаны спрашивать её, иначе клики и
+  // подсказки разъедутся с картинкой.
+  //
+  // Гарантия отсутствия перекрытия: visible выбирается так, что
+  // (visible-1)*step ≤ av, поэтому spacing = av/(visible-1) ≥ step, а step и есть
+  // «высота плитки + зазор».
+  MonitorApp.nLayout = function(type) {
     var cnt = type === 'session'
       ? Math.max(1, MonitorApp.topo.sessions.length)
       : Math.max(1, MonitorApp.topo.backends.length);
-    var av = MonitorApp.topo.h - MonitorApp.GEOM.marginY * 2;
-    var st = Math.max(MonitorApp.GEOM.minSpacing, av / Math.max(1, cnt - 1));
-    var totalHeight = (cnt - 1) * st;
-    var offset = Math.max(0, (av - totalHeight) / 2);
-    return MonitorApp.GEOM.marginY + offset + i * st;
+    var h = MonitorApp.topo.h || 0;
+    var av = Math.max(1, h - MonitorApp.GEOM.marginY * 2);
+    var nodeH = MonitorApp.GEOM.nodeH[type] || MonitorApp.GEOM.nodeH.session;
+    var step = nodeH + MonitorApp.GEOM.nodeGap;
+    var fitFull = Math.max(1, Math.floor(av / step) + 1);
+    // Если без плашки «+N» всё не влезает — отдаём плашке отдельную полосу внизу
+    // колонки. Иначе она рисовалась ПОД последней плиткой, за границей канваса, и
+    // оператор не видел, что часть узлов скрыта (ровно та жалоба, из-за которой
+    // это и делалось).
+    var willHide = cnt > Math.min(fitFull, MonitorApp.GEOM.maxNodes);
+    var band = willHide ? Math.max(1, av - MonitorApp.GEOM.chipH) : av;
+    var fit = Math.max(1, Math.floor(band / step) + 1);
+    var visible = Math.min(cnt, fit, MonitorApp.GEOM.maxNodes);
+    var hidden = cnt - visible;
+    var spacing = visible > 1 ? Math.max(step, band / (visible - 1)) : 0;
+    var totalHeight = (visible - 1) * spacing;
+    var offset = Math.max(0, (band - totalHeight) / 2);
+    var lastY = MonitorApp.GEOM.marginY + offset + (visible - 1) * spacing;
+    return {
+      count: cnt,
+      visible: visible,
+      hidden: hidden,
+      spacing: spacing,
+      offset: offset,
+      // Y плашки «+N»: сразу под последней плиткой, внутри канваса.
+      chipY: lastY + nodeH / 2 + 11
+    };
+  };
+
+  // Vertical node placement (sessions on left, backends on right)
+  MonitorApp.nY = function(type, i) {
+    var L = MonitorApp.nLayout(type);
+    return MonitorApp.GEOM.marginY + L.offset + i * L.spacing;
+  };
+
+  // nVisible — сколько узлов этого типа реально нарисовано (R91).
+  // Нужна всем, кто двигает частицы по линиям к узлам (canvas-conveyor.js):
+  // индекс за пределами nVisible не имеет координат на картинке.
+  MonitorApp.nVisible = function(type) {
+    return MonitorApp.nLayout(type).visible;
   };
 
   // Common utilities

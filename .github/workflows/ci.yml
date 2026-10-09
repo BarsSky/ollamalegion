@@ -230,7 +230,16 @@ jobs:
           #   2) манифест выпуска расходится с .env — «пересобрали один
           #      компонент, остальные остались на старых версиях».
           # Docker не нужен: проверка чисто текстовая.
-          & .\scripts\check-image-tags.ps1
+          #
+          # R91 (2026-10-09): сверяем ИМЕННО тот compose, который записан в
+          # release-manifest.json (`composeFile: docker-compose.stack.yml`), и явно
+          # берём tracked-контракт `.env.example` (в CI `deployments/.env` нет —
+          # он в .gitignore). Раньше шаг вызывал скрипт без аргументов: он брал
+          # bundled-вариант compose, в котором нет imageworker, а переменные
+          # подставлялись из `.env.example`, где теги отставали на десятки
+          # выпусков — проверка падала пятью «рассинхрон выпуска» на ровном месте
+          # (и не проверяла тот файл, который манифест описывает).
+          & .\scripts\check-image-tags.ps1 -ComposeFile docker-compose.stack.yml -EnvFile .env.example
 
       - name: Verify healthcheck (stub) — start server, probe, stop
         run: |

@@ -147,6 +147,20 @@ services:
       # to be settable only in the read-only config.json; now the WebUI override
       # lives here and applies live (there are no env vars for the policy fields).
       - LB_IMAGE_RESOURCES_PATH=${LB_IMAGE_RESOURCES_PATH:-/app/data/image-resources.json}
+      # How long a SELF-REGISTERED backend record may outlive its agent before the
+      # balancer removes it (see internal/balancer/ghost_backend_reaper.go: a node
+      # that was decommissioned for good cannot deregister itself, and its record
+      # otherwise stays in state.json forever - it even survives restarts).
+      # 1800 s = 30 min: far above the 60 s agent timeout and the 10-30 s
+      # heartbeat, so an agent restart or a network pause never removes a live
+      # node. 0 disables the sweep; records created by the operator (no
+      # "auto-registered" label) are never removed by it.
+      - LB_GHOST_BACKEND_TTL_SEC=${LB_GHOST_BACKEND_TTL_SEC:-1800}
+      # Free-space reserve kept on a model-share RECEIVER, MB (R91): the transfer
+      # streams straight into the model directory, so a node must keep room for
+      # logs/temp files instead of being filled to zero. 0 = require exactly the
+      # model size. When a backend reports no disk telemetry the check is skipped.
+      - LB_SHARE_DISK_RESERVE_MB=${LB_SHARE_DISK_RESERVE_MB:-512}
       # How long to wait for auto-load before answering 503 "try later". A 27B model
       # on A10/3070 takes 3-8 minutes, hence 900 s (the in-code default of 180 s is
       # too short). 0 = do not wait at all.

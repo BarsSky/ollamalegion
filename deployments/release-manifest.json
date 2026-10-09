@@ -1,7 +1,7 @@
 {
-    "tag":  "r83-submodule-v100",
-    "builtAt":  "2026-10-07T14:20:00Z",
-    "gitCommit":  "f2d671c",
+    "tag":  "v0.7.65",
+    "builtAt":  "2026-10-09T20:45:00Z",
+    "gitCommit":  "43dbd89",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
@@ -9,34 +9,35 @@
                    {
                        "service":  "webui",
                        "variable":  "WEBUI_TAG",
-                       "image":  "ollama-legion/webui:r83-submodule-v98",
-                       "imageTag":  "r83-submodule-v98",
-                       "imageId":  "sha256:074f52025f7bd8097341bb0cc7c5b4098b97734307f1ab41da20e95a5306468d",
+                       "image":  "ollama-legion/webui:r83-submodule-v127",
+                       "imageTag":  "r83-submodule-v127",
+                       "imageId":  "sha256:409c5acb23cf37e963c6c5589ceb2f74a17f2f2a1f3cdb322dbdfa2f95d7449a",
+                       "buildArg":  "VERSION=v0.7.65",
                        "alias":  "ollama-legion/webui:latest"
                    },
                    {
                        "service":  "balancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r83-submodule-v100",
-                       "imageTag":  "r83-submodule-v100",
-                       "imageId":  "sha256:b8e93cc4aa6ed2b5db980727bde3d7ffc27c2c5b85a21e89ba068a870772bc87",
+                       "image":  "ollama-legion/balancer:r83-submodule-v125",
+                       "imageTag":  "r83-submodule-v125",
+                       "imageId":  "sha256:6bff20896d6a3219265db3966c49f58ede29bc1d070bb1ad4701cf7c352dc194",
                        "alias":  "ollama-legion/balancer:latest"
-                   },
-                   {
-                       "service":  "imageworker",
-                       "variable":  "IMAGE_WORKER_TAG",
-                       "image":  "ollama-legion/imageworker:r83-submodule-v85",
-                       "imageTag":  "r83-submodule-v85",
-                       "imageId":  "sha256:d8a00277aa9c38e4b98e3953194199d9c53ec19857e168b77386dde176bf22cb",
-                       "alias":  "ollama-legion/imageworker:latest-cuda"
                    },
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r83-submodule-v71",
-                       "imageTag":  "r83-submodule-v71",
-                       "imageId":  "sha256:c834e199b524c1c61b6d3df3460a17a5479c590796d496bc7ea17b203c8a9687",
+                       "image":  "ollama-legion/cppworker:gpu-r83-submodule-v79",
+                       "imageTag":  "r83-submodule-v79",
+                       "imageId":  "sha256:a9e5980375745a43e48edf6b305312c338dba6cd22419047be301aaf32980409",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
+                   },
+                   {
+                       "service":  "imageworker",
+                       "variable":  "IMAGE_WORKER_TAG",
+                       "image":  "ollama-legion/imageworker:r83-submodule-v91",
+                       "imageTag":  "r83-submodule-v91",
+                       "imageId":  "sha256:79f6d1526e59fed8671d9ecb6d4aa744d66d64a77c0e0e8af816afc60eb3ca9f",
+                       "alias":  "ollama-legion/imageworker:latest-cuda"
                    },
                    {
                        "service":  "agent (legacy, profile legacy-agent)",
@@ -48,11 +49,13 @@
                    }
                ],
     "notes":  [
-                  "ГЛАВНОЕ: суммарная VRAM кластера больше не удваивается, когда несколько бэкендов работают на одной машине с одной GPU. Признак — UUID карты от агента (nvidia-smi --query-gpu=uuid).",
-                  "Проверено живьём: и cppworker-gpu, и imageworker отдают один UUID GPU-6f8d5f3b-…; Monitor считает 1 физическую GPU и 8.0 GB вместо наивных 16.0 GB.",
-                  "ВСТРОЕННЫЙ АГЕНТ ВКЛЮЧЁН в cppworker (AGENT_EMBEDDED=on, порт 18034). Внешний контейнер `agent` погашен и вынесен за профиль legacy-agent: два сборщика метрик на одном бэкенде давали «мигающие» значения.",
-                  "agent v26 остаётся запасным вариантом (docker compose --profile full --profile legacy-agent up -d); для возврата к нему нужен CPPWORKER_AGENT_EMBEDDED=off.",
-                  "webui v97: три места, где память складывалась, переведены на общий хелпер MonitorAggregates.aggregateVRAM; фолбэк без UUID — дедуп по имени хоста.",
-                  "cppworker v71: включена автовыгрузка простаивающих моделей (CPPWORKER_IDLE_UNLOAD_MINUTES=10) — иначе две текстовые модели держали 7.8 GB и гейт отклонял генерацию картинки."
+                  "ЖИВОЙ ИНВЕНТАРЬ МОДЕЛЕЙ: воркер сам сверяет каталог .gguf с диском (CPPWORKER_MODELS_RESCAN_SEC, default 30 s), балансер перечитывает листинги (LB_MODEL_CATALOG_REFRESH_SEC, default 60 s) и публикует изменение состава в ленту событий WebUI. Добавление и удаление файла видно без перезапуска контейнеров; POST /api/models/refresh проверяет немедленно.",
+                  "Проверено на стенде: файл, положенный в каталог моделей, появился в /api/models/files (added) без рестарта, удалённый исчез (removed); при недоступном каталоге ответ count=0 + dirError вместо старого кэша.",
+                  "WebUI без моделей-призраков: пустой ответ воркера применяется как есть, на вкладке «Модели» видно время проверки и причину пустоты, есть кнопка «Проверить наличие».",
+                  "Страницы движка (GGUF/Image) показываются по составу кластера (backendTypeCounts), а не по текущему фильтру типа; бейдж режима всегда определён, включая смешанный «llama.cpp + image.cpp».",
+                  "Monitor: переключатель типа бэкенда работает, поле топологии расширяется под данные (полоса прокручивается, узлы не наезжают и не прячутся за «+N»), анимация потока запросов видна на путях клиент→балансер→бэкенд.",
+                  "Холодная модель: дедупликация авто-загрузки не считается провалом — параллельные запросы дожидаются загрузки и обслуживаются по очереди; ошибка загрузки отдаётся actionable-текстом.",
+                  "Предупреждение о неиспользованной параллельности: если воркер держит больше слотов, чем пропускает балансер, Monitor показывает баннер с конкретными настройками — изменения остаются за оператором.",
+                  "Устранена гонка данных в HFManager.BundleProgress и закрыт ряд флаков CI (memfit RAM, TempDir в sdworker HF, image-гейт, i18n-подстановка)."
               ]
 }

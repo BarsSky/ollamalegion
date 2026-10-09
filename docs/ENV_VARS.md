@@ -58,6 +58,8 @@
 | `LB_PREFLIGHT_STREAM_DIALOG_KEEPALIVE_SEC` | int | `5` | `keepaliveInterval` | Выше config | |
 | `LB_MODEL_AFFINITY` | bool | — | `conf.Balancing.ModelAffinity` | Выше config (если задан) | **Trap**: пустая строка не "оставить config" — она fallback к config. Чтобы реально переопределить, нужно явно `true` или `false`. |
 | `LB_SESSION_STICKINESS` | bool | — | `conf.Balancing.SessionStickiness` | Выше config (если задан) | Тот же trap что `LB_MODEL_AFFINITY`. |
+| `LB_MODEL_CATALOG_REFRESH_SEC` | int | `60` | период фонового перечитывания листинга `/api/models/files` каждого llama.cpp-бэкенда | Выше config (только env) | **R93 (2026-10-09)**: было 300 с. Каталог — кэш «что лежит на диске»: по нему выбирается узел для незагруженной модели и по нему WebUI узнаёт, что модели появились/исчезли. Изменение состава логируется (`model catalog changed`) и публикуется в ленту событий WebUI. `0` — фоновое обновление выключено (остаются on-demand refresh и `GET /api/v1/models/catalog?refresh=true`). |
+| `LB_CAPACITY_FROM_MODEL_SLOTS` | bool | `false` | вместимость бэкенда считается по фактическим слотам загруженной модели (`max_slots` от cppworker) | Выше config | Opt-in: меняет поведение admission-очереди, поэтому по умолчанию выключено. Если воркер держит больше слотов, чем пропускает балансер, WebUI показывает предупреждение «потенциал параллельности не раскрыт» с конкретными настройками — оператор решает сам. |
 
 ### **REMOVED** in R60.18
 
@@ -125,6 +127,7 @@
 | `BALANCER_URL` | string | — | (info endpoint display) | (init-time) | Display only. |
 | `NODE_NAME` | string | — | (k8s node name, display) | (init-time) | Display only. |
 | `NODE_LABELS` | string | — | (k8s node labels, display) | (init-time) | Display only. |
+| `CPPWORKER_MODELS_RESCAN_SEC` | int | `30` | период фоновой проверки каталога моделей на диске | (init-time) | **R93 (2026-10-09)**: живой инвентарь моделей. Воркер сам сверяет каталог с диском и пишет в лог, что изменилось (`added`/`removed`/`resized`); `/api/models/files` пересканирует каталог по этому TTL, `POST /api/models/refresh` — немедленно. Так удаление/добавление `.gguf` (в т.ч. вне контейнера) видно без перезапуска. `0` — фоновая проверка выключена. Недоступный каталог (удалённый bind-mount) больше не показывает старый список: ответ содержит `count=0` и `dirError`. |
 
 ---
 

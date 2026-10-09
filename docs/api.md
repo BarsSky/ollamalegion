@@ -271,7 +271,8 @@ WebUI-страницей GGUF или админскими скриптами, н
 | `/api/gpu` | `GET` | GPU info (NVML) | ❌ |
 | `/api/models` | `GET` | Список загруженных моделей (`{count, models:[...]}`) | ❌ |
 | `/api/model` | `GET` | Получить инфо по конкретной модели (по `?name=`) | ❌ |
-| `/api/models/files` | `GET` | Список `.gguf` в `modelsDir` | ❌ |
+| `/api/models/files` | `GET` | Список `.gguf` в `modelsDir` + живой инвентарь: `scannedAt`, `changedAt`, `added`, `removed`, `resized`, `dirError`, `rescanTtlSec`, `scans`, `changes`. Пересканирует каталог по TTL (`CPPWORKER_MODELS_RESCAN_SEC`, default 30 с); `?refresh=1` — принудительно. Недоступный каталог даёт `count=0` + `dirError` (а не старый кэш) | ❌ |
+| `/api/models/refresh` | `POST` | Принудительная проверка каталога моделей на диске (тот же ответ, что `/api/models/files`). Используется кнопкой «Проверить наличие» в WebUI и принудительным обновлением каталога балансером | ❌ |
 | `/api/models/load` | `POST` | Загрузить модель | ❌ |
 | `/api/models/load/progress` | `GET` | Прогресс загрузки (polling) | ❌ |
 | `/load` | `POST` | Alias для `/api/models/load` (используется balancer warmup) | ❌ |
@@ -643,6 +644,7 @@ API использует токен-аутентификацию на основ
 | `GET /api/v1/sessions` | — | ✅ Да | |
 | `GET /api/v1/agents/stats` | — | ✅ Да | |
 | `GET /api/v1/queue/stats` | — | ✅ Да | Статистика очереди запросов |
+| `GET /api/v1/models/catalog` | — | ✅ Да | Каталог моделей **на диске** по llama.cpp-бэкендам: `files`, `fetchedAt`, `ageSec`, `changedAt`, `added`, `removed`, `dirError`, `known`, `refreshIntervalSec`. `?refresh=true` — перечитать листинги у воркеров немедленно (независимо от `LB_MODEL_CATALOG_REFRESH_SEC`, в т.ч. когда фоновое обновление выключено). Пустой `files` при `known=true` = «моделей на диске нет»; `dirError` = «каталог воркера недоступен» |
 | `WebSocket /ws/metrics` | — | ✅ Если auth enabled | Токен передаётся через query parameter |
 
 ### Передача токена в HTTP

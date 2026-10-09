@@ -387,6 +387,35 @@ func SplitReasoningContent(s string) (reasoning, content string, hasReasoning bo
 	return sbReasoning.String(), sbContent.String(), foundAny
 }
 
+// ContentFromUnclosedReasoning — R91 (2026-10-08): ответ, целиком ушедший в
+// НЕЗАКРЫТЫЙ reasoning-блок, должен быть виден клиенту.
+//
+// ЖИВОЙ ФАКТ (стенд, gemma-4-E4B-it-Q4_K_M, max_tokens=96):
+//
+//	reasoning-чанков: 87, чанков content: 0, completion_tokens: 97 (= упор в кап),
+//	финальный чанк: {"delta":{"content":null,"role":"assistant"},"finish_reason":"stop"}
+//
+// То есть модель целиком потратила бюджет на незакрытый `<reasoning>` и не
+// успела дойти до ответа. Разбор по тегам для такого текста даёт
+// reasoning="весь текст", content="" (см. SplitReasoningContent: «незакрытый
+// блок: только тело → reasoning»), а клиенты (SillyTavern, Open WebUI, Cline)
+// показывают `content` — пользователь видит ПУСТОЙ ответ при 97 сгенерированных
+// токенах. С тем же промптом и max_tokens=400 ответ приходит нормально (6/6), то
+// есть проблема именно в связке «малый кап + незакрытый reasoning».
+//
+// Поэтому когда контента нет вовсе, а reasoning есть — отдаём reasoning как
+// видимый ответ. Дублирование текста в клиентах, показывающих оба канала, —
+// осознанная цена: пустой ответ хуже повторённого.
+func ContentFromUnclosedReasoning(reasoning, content string) (visible string, usedFallback bool) {
+	if strings.TrimSpace(content) != "" {
+		return content, false
+	}
+	if strings.TrimSpace(reasoning) == "" {
+		return content, false
+	}
+	return reasoning, true
+}
+
 // ============================================================
 // Incremental state machine для streaming
 // ============================================================
@@ -547,6 +576,13 @@ func (st *ReasoningStreamState) Finalize() (reasoningDelta, contentDelta string)
 	}
 	if len(content) >= prevCLen {
 		contentDelta = content[prevCLen:]
+	}
+	// R91: поток закончился, а видимого контента не было вовсе — значит модель
+	// ушла в незакрытый reasoning-блок (см. ContentFromUnclosedReasoning).
+	// Отдаём весь reasoning как content, иначе клиент получает пустой ответ.
+	visible, usedFallback := ContentFromUnclosedReasoning(reasoning, content)
+	if usedFallback {
+		contentDelta = visible
 	}
 	st.reasoningAll = reasoning
 	st.contentAll = content

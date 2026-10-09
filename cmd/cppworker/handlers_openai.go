@@ -706,9 +706,35 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	usage := buildUsage(prompt, result.Output, modelName)
 	finishReason := "stop"
 	if hasToolCalls {
 		finishReason = "tool_calls"
+	} else {
+		// R91 (2026-10-08): видимый ответ не должен быть пустым, если модель
+		// что-то сгенерировала. Незакрытый reasoning-блок (живой случай gemma-4
+		// при малом max_tokens: 97 токенов, все в reasoning, content пуст) раньше
+		// доезжал до клиента как успешный ответ без текста. Под tool_calls
+		// фолбэк НЕ применяем: там клиент получает действие, а не текст.
+		rc, _ := message["reasoning_content"].(string)
+		cur, _ := message["content"].(string)
+		if vis, used := ContentFromUnclosedReasoning(rc, cur); used {
+			message["content"] = vis
+			logger.Get().Warnw("handleV1ChatCompletions: модель ушла в незакрытый reasoning — "+
+				"текст отдан как content, иначе клиент получил бы пустой ответ",
+				"model", modelName, "reasoning_chars", len(rc))
+		}
+		// R91 (2026-10-09): честная причина остановки — как в streaming-пути
+		// (writeOpenAIChatStream). Здесь нет счётчика реально отданных токенов,
+		// поэтому опираемся на тот же расчёт, что уходит клиенту в usage:
+		// completion_tokens >= n_predict означает упор в кап (живой факт:
+		// max_tokens=96 → completion_tokens=97, а клиенту уходило "stop").
+		if ct, ok := usage["completion_tokens"].(int); ok && params.NPredict > 0 && ct >= params.NPredict {
+			finishReason = "length"
+			logger.Get().Warnw("handleV1ChatCompletions: ответ обрезан капом max_tokens — "+
+				"отдаём finish_reason=length (клиент должен продолжить или предупредить оператора)",
+				"model", modelName, "max_tokens", params.NPredict, "completion_tokens", ct)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -723,7 +749,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"finish_reason": finishReason,
 			},
 		},
-		"usage":       buildUsage(prompt, result.Output, modelName),
+		"usage":       usage,
 		"duration_ms": durationMs,
 	})
 }
@@ -1316,6 +1342,14 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			writeReasoningChunk(map[string]interface{}{"reasoning_content": rTail})
 		}
 		if cTail != "" {
+			// R91: если видимого контента за весь поток не было, Finalize отдал
+			// reasoning как ответ (см. ContentFromUnclosedReasoning). Логируем —
+			// иначе такой случай выглядит как «клиент получил пустой ответ».
+			if snap := rsParser.Snapshot(); snap.ContentChars == 0 && snap.ReasoningChars > 0 {
+				logger.Get().Warnw("writeOpenAIChatStream: модель ушла в незакрытый reasoning — "+
+					"текст отдан как content, иначе клиент получил бы пустой ответ",
+					"model", modelName, "reasoning_chars", snap.ReasoningChars)
+			}
 			writeReasoningChunk(map[string]interface{}{"content": cTail})
 		}
 	}
@@ -1347,6 +1381,15 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	finalDelta := map[string]interface{}{}
 	finishReason := "stop"
 
+	// R91 (2026-10-08): честная причина остановки.
+	//
+	// Раньше всегда стояло "stop", в том числе когда генерацию обрезал кап
+	// max_tokens. Живой факт: max_tokens=96, completion_tokens=97 (упор в кап),
+	// finish_reason="stop" — клиент считает ответ полным, хотя модель оборвалась
+	// на середине фразы, а авто-продолжение балансера
+	// (LB_AUTO_CONTINUE_ON_TRUNCATION=1) ждёт именно "length".
+	truncated := params.NPredict > 0 && sw.TokensSent() >= int64(params.NPredict)
+
 	if len(toolCalls) > 0 {
 		// Tool calls обнаружены — эмитим их в финальном чанке с finish_reason="tool_calls".
 		// Каждый tool_call должен иметь `index` per OpenAI streaming spec —
@@ -1365,6 +1408,12 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		// допускает (финальный chunk может иметь пустой delta.content).
 		finalDelta["role"] = "assistant"
 		finalDelta["content"] = nil
+	}
+	if truncated && len(toolCalls) == 0 {
+		finishReason = "length"
+		logger.Get().Warnw("writeOpenAIChatStream: ответ обрезан капом max_tokens — "+
+			"отдаём finish_reason=length (клиент должен продолжить или предупредить оператора)",
+			"model", modelName, "max_tokens", params.NPredict, "tokens_sent", sw.TokensSent())
 	}
 
 	stopChunk := map[string]interface{}{

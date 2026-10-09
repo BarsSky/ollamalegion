@@ -280,8 +280,16 @@ func TestStreamState_ThinkThenContent(t *testing.T) {
 	rd2, cd2 := st.Finalize()
 	totalR := rd1 + rd2
 	totalC := cd1 + cd2
-	if totalR != "rea" || totalC != "" {
-		t.Errorf("think-only → r=%q c=%q, want (\"rea\", \"\")", totalR, totalC)
+	if totalR != "rea" {
+		t.Errorf("think-only → r=%q, want \"rea\"", totalR)
+	}
+	// R91 (2026-10-08): на КОНЦЕ потока content НЕ может остаться пустым, если
+	// модель что-то сгенерировала. Живой случай (gemma-4, max_tokens=96):
+	// 97 токенов, все в незакрытом reasoning, content пуст → клиент
+	// (SillyTavern/Open WebUI) показывает пустой ответ. Поэтому Finalize отдаёт
+	// такой текст как content (см. ContentFromUnclosedReasoning).
+	if totalC != "rea" {
+		t.Errorf("think-only → c=%q, want \"rea\" (иначе клиент видит пустой ответ)", totalC)
 	}
 	// Следующий chunk — content.
 	rd3, cd3 := st.Feed("ans")
@@ -291,6 +299,23 @@ func TestStreamState_ThinkThenContent(t *testing.T) {
 	}
 	if !strings.Contains(cd3+cd4, "ans") {
 		t.Errorf("content-only → c=%q, want contains \"ans\"", cd3+cd4)
+	}
+}
+
+// TestContentFromUnclosedReasoning — R91: фолбэк применяется ТОЛЬКО когда
+// видимого контента нет вовсе.
+func TestContentFromUnclosedReasoning(t *testing.T) {
+	if vis, used := ContentFromUnclosedReasoning("thinking", "answer"); used || vis != "answer" {
+		t.Errorf("с непустым content фолбэк не нужен: vis=%q used=%v", vis, used)
+	}
+	if vis, used := ContentFromUnclosedReasoning("thinking", ""); !used || vis != "thinking" {
+		t.Errorf("пустой content → ожидался текст reasoning: vis=%q used=%v", vis, used)
+	}
+	if vis, used := ContentFromUnclosedReasoning("thinking", "   "); !used || vis != "thinking" {
+		t.Errorf("пробельный content считается пустым: vis=%q used=%v", vis, used)
+	}
+	if vis, used := ContentFromUnclosedReasoning("", ""); used || vis != "" {
+		t.Errorf("пусто и там и там → фолбэка нет: vis=%q used=%v", vis, used)
 	}
 }
 

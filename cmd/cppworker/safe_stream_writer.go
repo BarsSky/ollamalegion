@@ -189,6 +189,16 @@ func (sw *safeStreamWriter) IncTokens(n int) {
 	atomic.AddInt64(&sw.tokensSent, int64(n))
 }
 
+// TokensSent — сколько токенов ушло клиенту (R91).
+//
+// Нужен, чтобы отличить «модель закончила сама» (EOS) от «упёрлись в кап
+// max_tokens»: во втором случае finish_reason обязан быть "length", иначе клиент
+// считает обрезанный ответ полным, а авто-продолжение балансера
+// (LB_AUTO_CONTINUE_ON_TRUNCATION) не срабатывает.
+func (sw *safeStreamWriter) TokensSent() int64 {
+	return atomic.LoadInt64(&sw.tokensSent)
+}
+
 // IsBroken возвращает true если writer уже сломан (ctx.Done или write error).
 func (sw *safeStreamWriter) IsBroken() bool {
 	sw.mu.Lock()

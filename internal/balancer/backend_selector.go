@@ -464,6 +464,63 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool, allowedTypes
 	return bestBackend
 }
 
+// findLeastLoadedBackendWithModel — наименее загруженный узел, на котором модель
+// УЖЕ загружена (R91, 2026-10-08).
+//
+// ЧЕМ ОТЛИЧАЕТСЯ ОТ findLessLoadedBackendWithModel. Тот тоже ищет минимум
+// loadRatio, но при РАВНОЙ загрузке побеждает первый, попавшийся при обходе
+// КАРТЫ p.backends — а порядок обхода карты в Go случаен от вызова к вызову. Для
+// переезда «от перегруженного узла» это неважно, а для выбора узла под каждый
+// новый запрос — важно: клиент прыгал бы между двумя свободными узлами
+// (проверено тестом: два вызова подряд дали bk-a и bk-b). Здесь tie-break
+// детерминированный: выше score, затем меньший id — как в findLessLoadedBackendAny.
+func (p *Proxy) findLeastLoadedBackendWithModel(modelName string, allowedTypes []types.BackendType) string {
+	if p == nil || modelName == "" {
+		return ""
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var bestBackendID string
+	var bestLoadRatio float64 = 2.0
+	var bestScore float64 = 0
+
+	for id, state := range p.backends {
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
+			continue
+		}
+		if state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+		if !p.checkResourceLimits(id) {
+			continue
+		}
+		state.mu.Lock()
+		active := state.ActiveReqs
+		maxReqs := state.Backend.MaxConcurrentReqs
+		state.mu.Unlock()
+		if maxReqs <= 0 {
+			continue
+		}
+		metrics, hasMetrics := p.metricsMgr.SnapshotBackendMetrics(id)
+		if !hasMetrics || !p.backendHasModel(metrics, modelName) {
+			continue
+		}
+		loadRatio := float64(active) / float64(maxReqs)
+		if bestBackendID == "" || loadRatio < bestLoadRatio {
+			bestBackendID, bestLoadRatio, bestScore = id, loadRatio, p.calculateScore(id)
+			continue
+		}
+		if loadRatio == bestLoadRatio {
+			score := p.calculateScore(id)
+			if score > bestScore || (score == bestScore && id < bestBackendID) {
+				bestBackendID, bestScore = id, score
+			}
+		}
+	}
+	return bestBackendID
+}
+
 // findLessLoadedBackendWithModel — поиск менее загруженного бэкенда с той же моделью
 func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID string, allowedTypes []types.BackendType) string {
 	p.mu.RLock()

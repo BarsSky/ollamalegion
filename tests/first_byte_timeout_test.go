@@ -63,8 +63,8 @@ func TestOpenAIChat_SlowFirstToken_HoldsConnection(t *testing.T) {
 			OperatingMode:        "llama_cpp",
 		},
 		Resources: types.ResourceLimits{
-			GPU: types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 85},
-			CPU: types.CPULimits{MaxUsagePercent: 80},
+			GPU:    types.GPULimits{MaxUsagePercent: 90, MaxVRAMUsagePercent: 85},
+			CPU:    types.CPULimits{MaxUsagePercent: 80},
 			Memory: types.MemoryLimits{MaxUsagePercent: 85},
 		},
 	}
@@ -123,7 +123,17 @@ func TestOpenAIChat_SlowFirstToken_HoldsConnection(t *testing.T) {
 // TestOpenAIChat_HeaderTimeout_StillWorks проверяет, что если upstream вообще не
 // отправляет заголовки в течение FirstByteTimeout, балансер обрывает соединение
 // и возвращает ошибку (а не ждёт бесконечно).
+//
+// R91 (2026-10-09): механизм проверяется с ЯВНЫМ opt-in — LB_ALLOW_PROFILE_TIMEOUTS=1.
+// Профильные таймауты по умолчанию игнорируются (R83/v62: «таймаут — рубильник
+// оператора, а не скрытая настройка профиля модели», см. profileTimeoutsAllowed в
+// internal/balancer/proxy_timeout.go), поэтому без этой переменной тест ждал бы
+// вечно и падал по своему же 10-секундному дедлайну. Тест фиксирует, что
+// ResponseHeaderTimeout РАБОТАЕТ, когда оператор его разрешил; поведение по
+// умолчанию (профиль игнорируется) проверяет
+// TestOpenAIChat_ProfileTimeoutIgnoredByDefault ниже.
 func TestOpenAIChat_HeaderTimeout_StillWorks(t *testing.T) {
+	t.Setenv("LB_ALLOW_PROFILE_TIMEOUTS", "1")
 	upstream := startHungServer()
 	defer func() {
 		// hung-сервер держит соединения открытыми; Close может зависнуть.
@@ -171,8 +181,8 @@ func TestOpenAIChat_HeaderTimeout_StillWorks(t *testing.T) {
 			"gemma-4": {FirstByteTimeoutSec: 2},
 		},
 		Resources: types.ResourceLimits{
-			GPU: types.GPULimits{MaxUsagePercent: 90},
-			CPU: types.CPULimits{MaxUsagePercent: 80},
+			GPU:    types.GPULimits{MaxUsagePercent: 90},
+			CPU:    types.CPULimits{MaxUsagePercent: 80},
 			Memory: types.MemoryLimits{MaxUsagePercent: 85},
 		},
 	}
@@ -215,6 +225,105 @@ func TestOpenAIChat_HeaderTimeout_StillWorks(t *testing.T) {
 		t.Log("PASS ✅ header timeout enforced")
 	case <-time.After(10 * time.Second):
 		t.Fatal("request did not fail within 10s despite 2s header timeout")
+	}
+}
+
+// TestOpenAIChat_ProfileTimeoutIgnoredByDefault — R91 (2026-10-09): профильный
+// FirstByteTimeoutSec сам по себе НЕ обрывает запрос.
+//
+// Доктрина R83/v62: таймаут — рубильник оператора (LB_ALLOW_PROFILE_TIMEOUTS=1,
+// LB_REQUEST_TIMEOUT_SEC, LB_STREAMING_IDLE_TIMEOUT_SEC), а значение из профиля
+// модели по умолчанию игнорируется — иначе оператор не понимает, кто оборвал
+// генерацию (живой случай: запрос падал ровно на 300-й секунде из-за значения в
+// профиле, которого в логах не было видно).
+//
+// Тест держит зависший upstream дольше профильного таймаута (2 с) и проверяет,
+// что балансер по-прежнему ждёт — и завершается только по отмене клиента.
+func TestOpenAIChat_ProfileTimeoutIgnoredByDefault(t *testing.T) {
+	upstream := startHungServer()
+	defer func() {
+		upstream.Listener.Close()
+		upstream.CloseClientConnections()
+	}()
+
+	host, port := hostPort(upstream.URL)
+	cfg := &types.LoadBalancerConfig{
+		LoadBalancer: types.LoadBalancerSettings{
+			Host: "0.0.0.0", Port: 18080, APIPort: 18081,
+		},
+		Backends: []types.Backend{
+			{
+				ID: "cpp-gpu", Host: host,
+				CppWorkerPort: port, Weight: 1,
+				MaxConcurrentReqs: 10,
+				Status:            types.StatusHealthy,
+				Type:              types.BackendTypeLlamaCpp,
+			},
+		},
+		Balancing: types.BalancingSettings{
+			Algorithm:            types.AlgorithmResourceAware,
+			ModelAffinity:        true,
+			SessionStickiness:    true,
+			FirstByteTimeout:     2,
+			StreamingIdleTimeout: 120,
+			RequestTimeout:       120,
+			QueueTimeout:         300,
+			QueueMaxSize:         100,
+			QueueWorkers:         4,
+			SessionTTL:           900,
+			OperatingMode:        "llama_cpp",
+		},
+		LlamaCppModelProfiles: map[string]types.LlamaCppModelProfile{
+			"gemma-4": {FirstByteTimeoutSec: 2},
+		},
+		Resources: types.ResourceLimits{
+			GPU:    types.GPULimits{MaxUsagePercent: 90},
+			CPU:    types.CPULimits{MaxUsagePercent: 80},
+			Memory: types.MemoryLimits{MaxUsagePercent: 85},
+		},
+	}
+
+	proxy := balancer.NewProxy(cfg)
+	defer proxy.Shutdown(testCtx(t))
+
+	proxy.UpdateMetrics("cpp-gpu", &types.BackendMetrics{
+		ID:     "cpp-gpu",
+		Status: types.StatusHealthy,
+		LlamaCpp: types.LlamaCppMetrics{
+			LoadedModels: []types.LlamaCppModel{{Name: "gemma-4", State: "loaded"}},
+		},
+	})
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"model":    "gemma-4",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		"stream":   true,
+	})
+	ctx, cancel := context.WithCancel(testCtx(t))
+	defer cancel()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.101:54323"
+
+	rec := httptest.NewRecorder()
+	done := make(chan bool, 1)
+	go func() { proxy.ServeHTTP(rec, req); done <- true }()
+
+	// Профильный таймаут = 2 с; ждём заметно дольше и требуем, чтобы запрос
+	// продолжал ждать (то есть НЕ был оборван профилем).
+	select {
+	case <-done:
+		t.Fatalf("запрос завершился за 6 с при профильном таймауте 2 с — профиль "+
+			"перестал игнорироваться по умолчанию (status=%d body=%s)", rec.Code, rec.Body.String())
+	case <-time.After(6 * time.Second):
+	}
+
+	// Отмена КЛИЕНТА обязана завершить запрос: без этого «нет таймаута» = утечка.
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("запрос не завершился после отмены клиента")
 	}
 }
 

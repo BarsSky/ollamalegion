@@ -36,6 +36,16 @@ circuit breaker'а — «это дедупликация, а не провал»
   5 одновременных `ensureModelLoadedOnBackend` на медленную «успешную» загрузку —
   POST `/api/models/load` должен быть ровно 1 (дедупликация), а nil-ошибку обязаны
   получить ВСЕ 5. Без фикса тест падает на 4 из 5 («load started, waiting…»).
+- **`internal/balancer/autoload_wait.go`**: `waitForModelLoad` возвращает ошибку
+  async-загрузки из `loadDone` в той же форме, что и `drainLoadFailure` — с
+  префиксом `model load failed`. Второй живой дефект той же проверки: запрос на
+  модель, которой нет на диске выбранного бэкенда, получал общее «load started,
+  waiting for cppworker to finish (~30-180s)» + `Retry-After: 90` вместо
+  actionable-причины от cppworker («model … not found in ./models»), потому что
+  вызывающий (`ensureModelLoadedOnBackend`) узнаёт actionable-ошибку именно по
+  этому префиксу. Проверено живьём: до фикса — общий текст, после — 503 с причиной
+  за 0.6 с. Второй тест в том же файле (`..._SurfacesActionableError`) падает без
+  этой правки.
 
 ### ✅ Живая проверка после фикса (стенд, balancer `r83-submodule-v121`)
 

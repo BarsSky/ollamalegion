@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -157,5 +158,72 @@ func TestEnsureModelLoaded_AsyncInProgress_AllWaitersServed(t *testing.T) {
 	// прошли через дедупликацию и всё равно дождались.
 	if got := loadPosts.Load(); got != 1 {
 		t.Errorf("POST /api/models/load выполнен %d раз, ожидался 1 (дедупликация ModelManager)", got)
+	}
+}
+
+// TestEnsureModelLoaded_AsyncFailure_SurfacesActionableError — провал async-загрузки
+// должен доходить до клиента СВОИМ текстом.
+//
+// Живой дефект (стенд, 2026-10-09): запрос на модель, которой нет на диске
+// выбранного бэкенда (`Qwen3-Instruct-2507-q4km` на `cppworker-gpu-bundled-agent`),
+// получал 503 «model ... load started, waiting for cppworker to finish (~30-180s)»
+// + Retry-After 90, хотя cppworker уже ответил «model ... not found in ./models».
+// Причина: ошибку из канала loadDone возвращал select-ветка waitForModelLoad БЕЗ
+// префикса «model load failed», а вызывающий узнаёт actionable-ошибку именно по
+// этому префиксу (см. ensureModelLoadedOnBackend) — и отдавал клиенту общее
+// «подожди 90 секунд» вместо причины.
+func TestEnsureModelLoaded_AsyncFailure_SurfacesActionableError(t *testing.T) {
+	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "5")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"count":0,"models":[]}`))
+		case "/api/models/load/progress":
+			// Загрузка «идёт» — ошибка приходит не на первой итерации, а позже,
+			// то есть через select-ветку, а не через drainLoadFailure.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"state":"loading","elapsedMs":500}`))
+		case "/api/models/load", "/api/models/load-with-params":
+			time.Sleep(300 * time.Millisecond)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"failed to open GGUF file models/missing.gguf: No such file or directory"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	host, port := splitHostPort(t, srv.URL)
+	mm := NewModelManager(nil)
+	p := &Proxy{
+		config:          &types.LoadBalancerConfig{LlamaCppModelProfiles: map[string]types.LlamaCppModelProfile{}},
+		backends:        map[string]*BackendState{},
+		metricsMgr:      NewMetricsManager(),
+		modelManager:    mm,
+		lbAutoLoadAsync: true,
+	}
+	mm.proxy = p
+	p.backends["test-bk"] = &BackendState{
+		Backend: &types.Backend{
+			ID:            "test-bk",
+			Host:          host,
+			Status:        types.StatusHealthy,
+			Type:          types.BackendTypeLlamaCpp,
+			CppWorkerPort: port,
+		},
+	}
+	lr := NewLlamaCppRouter(p)
+
+	_, err := lr.ensureModelLoadedOnBackend("test-bk", "missing-model")
+	if err == nil {
+		t.Fatal("ожидалась ошибка загрузки отсутствующей модели, получен nil")
+	}
+	if !strings.Contains(err.Error(), "No such file") {
+		t.Errorf("ошибка = %q, ожидался actionable-текст cppworker («No such file»)", err.Error())
+	}
+	if strings.Contains(err.Error(), "load started, waiting for cppworker") {
+		t.Errorf("ошибка = %q: клиенту отдано «подожди 30-180 с» вместо причины провала", err.Error())
 	}
 }

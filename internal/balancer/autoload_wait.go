@@ -355,7 +355,15 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 			return fmt.Errorf("client canceled while waiting for model load: %w", ctx.Err())
 		case err := <-loadDoneChan:
 			if err != nil {
-				return err
+				// R83-fix (2026-10-09): ошибку async-загрузки надо отдавать в той
+				// же форме, что и drainLoadFailure — с префиксом "model load
+				// failed". Иначе вызывающий (ensureModelLoadedOnBackend) её не
+				// узнаёт (`strings.Contains(waitErr, "model load failed")` не
+				// срабатывает), и клиент вместо actionable причины («model ...
+				// not found in ./models», «No such file or directory») получает
+				// общее «load started, waiting for cppworker to finish ~30-180s»
+				// с Retry-After 90 — то есть совет ждать то, что уже провалилось.
+				return fmt.Errorf("model load failed: %w", err)
 			}
 		case <-time.After(nap):
 		}

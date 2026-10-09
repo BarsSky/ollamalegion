@@ -69,6 +69,11 @@ func (p *Proxy) StartAgentTimeoutChecker(timeout time.Duration) {
 					}
 				}
 				p.mu.Unlock()
+
+				// R91 (2026-10-09): тот же тик убирает записи, чей агент не
+				// вернётся (см. ghost_backend_reaper.go). Вызов ВНЕ p.mu:
+				// RemoveBackend берёт p.mu сам и дренирует активные запросы.
+				p.ReapGhostBackends(time.Now())
 			}
 		}
 	}()

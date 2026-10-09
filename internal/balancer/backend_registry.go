@@ -519,6 +519,11 @@ func (p *Proxy) UpdateBackendAgentStatus(backendID string, hasAgent bool) {
 		state.mu.Lock()
 		state.Backend.HasAgent = hasAgent
 		state.Backend.LastAgentContact = time.Now()
+		if hasAgent {
+			// R91: агент на связи — якорь «молчания» снимаем (см.
+			// ghost_backend_reaper.go).
+			state.Backend.AgentSilentSince = nil
+		}
 		state.mu.Unlock()
 	}
 	p.mu.Unlock()
@@ -772,6 +777,7 @@ func (p *Proxy) AttachAgentToBackend(backendID, agentID string, agentPort int) {
 	state.Backend.AgentID = agentID
 	state.AgentID = agentID
 	state.Backend.LastAgentContact = time.Now()
+	state.Backend.AgentSilentSince = nil // R91: агент на связи
 	state.mu.Unlock()
 }
 
@@ -792,6 +798,7 @@ func (p *Proxy) MarkAgentContact(backendID, agentID string) {
 		return
 	}
 	state.Backend.LastAgentContact = time.Now()
+	state.Backend.AgentSilentSince = nil // R91: агент на связи
 }
 
 // UpdateAgentPort — обновляет только AgentPort бэкенда.
@@ -835,5 +842,6 @@ func (p *Proxy) TouchAgentContact(backendID string) {
 	}
 	state.mu.Lock()
 	state.Backend.LastAgentContact = time.Now()
+	state.Backend.AgentSilentSince = nil // R91: агент на связи
 	state.mu.Unlock()
 }

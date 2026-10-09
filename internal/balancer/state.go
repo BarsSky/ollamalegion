@@ -81,6 +81,11 @@ func (p *Proxy) LoadState() error {
 			p.config.Backends[i].ActiveRequests = saved.ActiveRequests
 			p.config.Backends[i].HasAgent = saved.HasAgent
 			p.config.Backends[i].LastAgentContact = saved.LastAgentContact
+			// R91 (2026-10-09): якорь «запись молчит без агента» переживает
+			// рестарт — иначе уборка призрачных записей начинала бы отсчёт
+			// заново после каждого перезапуска балансера (см.
+			// ghost_backend_reaper.go).
+			p.config.Backends[i].AgentSilentSince = cloneTimePtr(saved.AgentSilentSince)
 			p.config.Backends[i].RuntimeRequestTimeout = saved.RuntimeRequestTimeout
 			// R71 (2026-09-24): восстанавливаем runtime-лимиты и признак
 			// «вместимость от ноды». До этого LoadState переносил из state.json
@@ -194,7 +199,46 @@ func (p *Proxy) LoadState() error {
 		reconcileNodeCapacity(bs.Backend)
 	}
 
+	// R91 (2026-10-09): якорь «молчания» для уборки призрачных записей
+	// (ghost_backend_reaper.go). У записи, чей агент ни разу не выходил на связь
+	// (lastAgentContact = 0001-01-01), нет собственной отметки времени, поэтому
+	// началом молчания считаем момент записи state.json: каждая запись в файле
+	// существовала на тот момент, значит молчит не меньше. Якорь сразу уезжает в
+	// саму запись (и в следующий state.json), поэтому дальнейшие рестарты его не
+	// сбрасывают — в отличие от времени записи файла, которое graceful shutdown
+	// обновляет на каждом перезапуске.
+	seedAt := state.Updated
+	if seedAt.IsZero() {
+		seedAt = time.Now().UTC()
+	}
+	seedAt = seedAt.UTC()
+	// Заполняем всем записям без контакта с агентом: поле безвредно для записей
+	// оператора (они не кандидаты на уборку — нет метки auto-registered), зато
+	// фильтровать здесь не нужно. Пишем в runtime-запись (p.backends): именно её
+	// сериализует SaveState, и её читает уборщик.
+	for _, bs := range p.backends {
+		if bs == nil || bs.Backend == nil {
+			continue
+		}
+		bs.mu.Lock()
+		if bs.Backend.LastAgentContact.IsZero() && bs.Backend.AgentSilentSince == nil {
+			t := seedAt
+			bs.Backend.AgentSilentSince = &t
+		}
+		bs.mu.Unlock()
+	}
+
 	return nil
+}
+
+// cloneTimePtr — копия *time.Time: запись бэкенда не должна делить указатель
+// со снимком из state.json (иначе правка якоря «молчания» меняла бы и файл-снимок).
+func cloneTimePtr(src *time.Time) *time.Time {
+	if src == nil {
+		return nil
+	}
+	v := *src
+	return &v
 }
 
 // reconcileNodeCapacity — R71: привести runtime-вместимость к реальной

@@ -34,6 +34,21 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
+// seedBackendMaxConcurrent — имитация унаследованной вместимости из state.json
+// старой сборки.
+//
+// Пишем через Proxy.MutateBackend (под p.mu+state.mu), а НЕ присваиванием в
+// указатель из GetBackend: незалоченная запись гоняет с фоновыми читателями
+// (GetAllBackends из poller'а и каталога моделей) и роняет `go test -race`.
+func seedBackendMaxConcurrent(t *testing.T, s *Server, backendID string, maxConcurrent int) {
+	t.Helper()
+	if err := s.proxy.MutateBackend(backendID, func(b *types.Backend) {
+		b.MaxConcurrentReqs = maxConcurrent
+	}); err != nil {
+		t.Fatalf("seed maxConcurrentReqs for %s: %v", backendID, err)
+	}
+}
+
 func newAgentCapacityServer(t *testing.T) *Server {
 	t.Helper()
 	cfg := &types.LoadBalancerConfig{
@@ -179,11 +194,9 @@ func TestR83_AgentRegister_ReregisterUpdatesCapacity(t *testing.T) {
 	}
 
 	// Имитируем унаследованное завышенное значение (state.json старой сборки).
-	stale := s.proxy.GetBackend(id)
-	if stale == nil {
-		t.Fatal("бэкенд не зарегистрирован")
-	}
-	stale.MaxConcurrentReqs = 10
+	// Пишем через MutateBackend: прямое присваивание в указатель из GetBackend —
+	// незалоченная запись, которую ловит `go test -race` (см. MutateBackend).
+	seedBackendMaxConcurrent(t, s, id, 10)
 
 	// Агент пересоздан с реальным n_parallel=1 — регистрация обязана это донести.
 	rec = doRegisterAgent(t, s, registerAgentPayload(id, string(types.BackendTypeLlamaCpp), 1))
@@ -252,7 +265,7 @@ func TestR83_AgentRegister_AttachAdoptsCapacity(t *testing.T) {
 	if stale == nil {
 		t.Fatal("cppworker-бэкенд не зарегистрирован")
 	}
-	stale.MaxConcurrentReqs = 10 // унаследованное завышенное значение
+	seedBackendMaxConcurrent(t, s, cppID, 10) // унаследованное завышенное значение
 
 	// 2. Агент приходит на тот же (host, cppWorkerPort) с реальным n_parallel=1.
 	rec = doRegisterAgent(t, s, registerAgentPayload(agentID, string(types.BackendTypeLlamaCpp), 1))

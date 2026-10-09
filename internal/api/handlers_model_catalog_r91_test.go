@@ -22,11 +22,12 @@ import (
 )
 
 // catalogFileStub — воркер, отдающий /api/models/files.
+//
+// Порядок полей — по требованию govet fieldalignment (указателесодержащие первыми).
 type catalogFileStub struct {
-	srv *httptest.Server
-
-	mu    sync.Mutex
+	srv   *httptest.Server
 	files []string
+	mu    sync.Mutex
 	hits  int
 }
 

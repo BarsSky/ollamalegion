@@ -42,17 +42,20 @@ func (s *Server) handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 	// Какие бэкенды каталог вообще покрывает: llama.cpp-тип и не offline.
 	// Записи без снимка показываем явно — «не опрошен» и «пусто на диске» разные
 	// вещи, и в диагностике это первое, что нужно различить.
+	// Порядок полей — по требованию govet fieldalignment (govet enable-all в
+	// .golangci.yml): сначала строки, затем срез (у него хвост len/cap —
+	// не указатели, поэтому префикс указателей короче), затем скаляры.
 	type backendCatalogView struct {
 		BackendID string   `json:"backendId"`
 		Type      string   `json:"type"`
 		Status    string   `json:"status"`
 		Host      string   `json:"host"`
-		Known     bool     `json:"known"`
+		Note      string   `json:"note,omitempty"`
 		Files     []string `json:"files,omitempty"`
+		Known     bool     `json:"known"`
 		// AgeSec без omitempty: 0 — это «снимок только что снят», и он должен быть
 		// виден в ответе (иначе свежий каталог выглядел бы как отсутствующий).
-		AgeSec int    `json:"ageSec"`
-		Note   string `json:"note,omitempty"`
+		AgeSec int `json:"ageSec"`
 	}
 
 	rows := make([]backendCatalogView, 0)

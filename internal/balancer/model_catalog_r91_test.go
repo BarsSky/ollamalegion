@@ -23,12 +23,13 @@ import (
 // «где файл» балансер не знал.
 
 // catalogStub — минимальный cppworker: отдаёт /api/models/files.
+//
+// Порядок полей — по требованию govet fieldalignment (указателесодержащие первыми).
 type catalogStub struct {
-	srv *httptest.Server
-
-	mu      sync.Mutex
+	srv     *httptest.Server
 	files   []string
 	aliases []string
+	mu      sync.Mutex
 	hits    int
 }
 
@@ -76,14 +77,13 @@ func (s *catalogStub) hitCount() int {
 	return s.hits
 }
 
-// resetHits — обнулить счётчик опросов (для проверок интервала).
-func (s *catalogStub) resetHits() {
-	s.mu.Lock()
-	s.hits = 0
-	s.mu.Unlock()
-}
-
 // newCatalogProxy — прокси с двумя llama.cpp-бэкендами (по одному стабу на узел).
+//
+// Фоновый poller метрик ОСТАНАВЛИВАЕТСЯ: его немедленный первый проход тоже
+// обновляет каталог (internal/balancer/llamacpp_metrics_poller.go), и проверки
+// «сколько раз опросили воркер» становились гонкой с этим проходом — тест падал
+// через раз (hits=2 вместо 1). Здесь важно поведение самой функции обновления,
+// поэтому фон выключаем.
 func newCatalogProxy(t *testing.T, a, b *catalogStub) *Proxy {
 	t.Helper()
 	p := newProxyWithCleanup(t, &types.LoadBalancerConfig{
@@ -102,6 +102,9 @@ func newCatalogProxy(t *testing.T, a, b *catalogStub) *Proxy {
 			QueueTimeout: 5, QueueMaxSize: 50, QueueWorkers: 2, OperatingMode: "standard",
 		},
 	})
+	if p.llamaCppMetricsPoller != nil {
+		p.llamaCppMetricsPoller.Stop()
+	}
 	for _, id := range []string{"node-a", "node-b"} {
 		p.UpdateBackendStatus(id, types.StatusHealthy)
 	}
@@ -206,39 +209,50 @@ func TestSelectBackendExcluding_PrefersNodeWithFileOnDisk(t *testing.T) {
 	}
 }
 
-// TestRefreshStaleModelCatalogs_RespectsInterval — «протух» ли снимок, решает
-// LB_MODEL_CATALOG_REFRESH_SEC; при 0 фоновое обновление молчит.
-func TestRefreshStaleModelCatalogs_RespectsInterval(t *testing.T) {
-	// Интервал выключаем ДО создания прокси: poller метрик делает немедленный
-	// первый проход, и с дефолтным интервалом он бы уже опросил воркеры.
+// TestModelCatalog_StaleRule — правило «снимок протух»: нет записи → протух,
+// запись свежее интервала → нет, старше → да. Проверяется на чистой функции
+// (без фоновых горутин и переменных окружения).
+func TestModelCatalog_StaleRule(t *testing.T) {
+	mc := newModelCatalog()
+	now := time.Now()
+	interval := 5 * time.Minute
+
+	if !mc.stale("node-a", interval, now) {
+		t.Error("без снимка запись обязана считаться протухшей")
+	}
+	mc.store("node-a", []string{"m.gguf"}, now)
+	if mc.stale("node-a", interval, now.Add(4*time.Minute)) {
+		t.Error("снимок младше интервала не должен перечитываться")
+	}
+	if !mc.stale("node-a", interval, now.Add(6*time.Minute)) {
+		t.Error("снимок старше интервала обязан перечитаться")
+	}
+	if mc.stale("node-a", 0, now.Add(100*time.Hour)) {
+		t.Error("интервал 0 = фоновая телеметрия выключена, перечитывать нечего")
+	}
+}
+
+// TestRefreshStaleModelCatalogs_DisabledByZeroInterval — LB_MODEL_CATALOG_REFRESH_SEC=0
+// выключает фоновое обновление: воркеры не опрашиваются вовсе (это документированный
+// рубильник, а не «почти выключено»).
+//
+// Переменная ставится ДО создания прокси и не меняется до конца теста: иначе
+// фоновые горутины (немедленный проход poller'а и eager-refresh из AddBackend)
+// читали бы её уже после переключения и счётчики опросов становились бы гонкой —
+// ровно так этот тест и падал через раз.
+func TestRefreshStaleModelCatalogs_DisabledByZeroInterval(t *testing.T) {
 	t.Setenv(EnvModelCatalogRefreshSec, "0")
 	a := newCatalogStub(t, []string{"m.gguf"}, nil)
 	b := newCatalogStub(t, nil, nil)
 	p := newCatalogProxy(t, a, b)
 
 	p.refreshStaleModelCatalogs()
-	if a.hitCount() != 0 {
-		t.Errorf("при интервале 0 опросов быть не должно (hits=%d)", a.hitCount())
-	}
-
-	t.Setenv(EnvModelCatalogRefreshSec, "300")
-	a.resetHits()
-	p.refreshStaleModelCatalogs() // снимка нет → считаем протухшим
-	if a.hitCount() != 1 {
-		t.Errorf("первый проход обязан опросить бэкенд (hits=%d)", a.hitCount())
-	}
-	p.refreshStaleModelCatalogs() // снимок свежий (300 с) → второй раз не опрашиваем
-	if a.hitCount() != 1 {
-		t.Errorf("свежий снимок не должен перечитываться (hits=%d)", a.hitCount())
-	}
-
-	// Искусственно старим снимок — обновление снова требуется.
-	p.modelCatalog.mu.Lock()
-	p.modelCatalog.byID["node-a"].fetchedAt = time.Now().Add(-10 * time.Minute)
-	p.modelCatalog.mu.Unlock()
 	p.refreshStaleModelCatalogs()
-	if a.hitCount() != 2 {
-		t.Errorf("протухший снимок обязан перечитаться (hits=%d)", a.hitCount())
+	if got := a.hitCount(); got != 0 {
+		t.Errorf("при интервале 0 опросов быть не должно (hits=%d)", got)
+	}
+	if _, known := p.BackendModelOnDisk("node-a", "m"); known {
+		t.Error("каталог не должен наполняться при выключенном обновлении")
 	}
 }
 

@@ -136,11 +136,10 @@ func TestRegistrationGuard_StaleOwnerTakeover(t *testing.T) {
 		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "172.18.0.5:41234"))
 
 	// Имитируем мёртвого владельца: контакт устарел за пределы окна.
-	dead := s.proxy.GetBackend("cppworker-gpu-bundled-agent")
-	if dead == nil {
-		t.Fatal("бэкенд не создан")
-	}
-	dead.LastAgentContact = time.Now().Add(-10 * foreignRegistrantGrace)
+	// Через MutateBackend (под p.mu+state.mu): прямое присваивание в указатель из
+	// GetBackend — незалоченная запись, её ловит `go test -race` (фоновые читатели
+	// берут те же поля под блокировкой).
+	makeOwnerStale(t, s, "cppworker-gpu-bundled-agent")
 
 	takeover := postRegister(t, s, registerRequest(t,
 		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "192.168.13.34:51000"))
@@ -167,12 +166,8 @@ func TestRegistrationGuard_NoTakeoverRightAfterStart(t *testing.T) {
 	postRegister(t, s, registerRequest(t,
 		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "172.18.0.5:41234"))
 
-	restored := s.proxy.GetBackend("cppworker-gpu-bundled-agent")
-	if restored == nil {
-		t.Fatal("бэкенд не создан")
-	}
 	// Так выглядит запись сразу после LoadState: контакт из state.json устарел.
-	restored.LastAgentContact = time.Now().Add(-10 * foreignRegistrantGrace)
+	makeOwnerStale(t, s, "cppworker-gpu-bundled-agent")
 
 	rec := postRegister(t, s, registerRequest(t,
 		"cppworker-gpu-bundled-agent", "cppworker-gpu", 18092, "192.168.13.34:51000"))
@@ -181,6 +176,21 @@ func TestRegistrationGuard_NoTakeoverRightAfterStart(t *testing.T) {
 	}
 	if got := s.proxy.GetBackend("cppworker-gpu-bundled-agent").NodeAddr; got != "172.18.0.5" {
 		t.Fatalf("NodeAddr = %q, ожидался 172.18.0.5 — чужой узел не должен захватывать запись в стартовом окне", got)
+	}
+}
+
+// makeOwnerStale — имитация владельца записи, чей агент замолчал (как сразу после
+// LoadState: LastAgentContact из state.json давно в прошлом).
+//
+// Через Proxy.MutateBackend — под p.mu+state.mu. Прямая запись поля в указатель из
+// GetBackend гоняет с фоновыми читателями (GetAllBackends, cluster state, каталог
+// моделей) и валит `go test -race ./internal/api`.
+func makeOwnerStale(t *testing.T, s *Server, backendID string) {
+	t.Helper()
+	if err := s.proxy.MutateBackend(backendID, func(b *types.Backend) {
+		b.LastAgentContact = time.Now().Add(-10 * foreignRegistrantGrace)
+	}); err != nil {
+		t.Fatalf("make owner stale (%s): %v", backendID, err)
 	}
 }
 

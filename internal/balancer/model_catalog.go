@@ -106,9 +106,13 @@ type backendCatalogEntry struct {
 }
 
 // modelCatalog — потокобезопасный кэш «какие модели лежат на диске у бэкенда».
+//
+// Порядок полей — по требованию govet fieldalignment (govet enable-all в
+// .golangci.yml): указателесодержащие поля первыми. Начни с sync.RWMutex, и префикс
+// указателей вырастет с 8 до 32 байт — CI-линт это ловит (only-new-issues).
 type modelCatalog struct {
-	mu   sync.RWMutex
 	byID map[string]*backendCatalogEntry
+	mu   sync.RWMutex
 }
 
 func newModelCatalog() *modelCatalog {
@@ -215,9 +219,11 @@ func (mc *modelCatalog) snapshot() map[string]ModelCatalogSnapshot {
 }
 
 // ModelCatalogSnapshot — снимок каталога одного бэкенда (для JSON-ответа).
+//
+// Порядок полей — time.Time, затем срез, затем скаляр (govet fieldalignment).
 type ModelCatalogSnapshot struct {
-	Files     []string  `json:"files"`
 	FetchedAt time.Time `json:"fetchedAt"`
+	Files     []string  `json:"files"`
 	AgeSec    int       `json:"ageSec"`
 }
 
@@ -225,13 +231,41 @@ type ModelCatalogSnapshot struct {
 // fs.ReadDir, а не генерация; висящий воркер не должен задерживать обновление).
 var catalogHTTPClient = &http.Client{Timeout: modelCatalogFetchTimeout}
 
+// backendEndpointSnapshot — базовый URL воркера и токен, снятые ПОД p.mu+state.mu.
+//
+// ПОЧЕМУ НЕ p.GetBackend + p.getBackendBaseURL. p.mu защищает только КАРТУ
+// бэкендов, а поля самой структуры пишутся под p.mu/state.mu (см. GetAllBackends и
+// UpdateBackend): прямое разыменование указателя из GetBackend вне блокировки —
+// гонка. Живой случай (ловится `go test -race ./internal/api`): фоновое обновление
+// каталога читало Host/CppWorkerPort/CppWorkerApiToken, пока heartbeat вызывал
+// UpdateBackend и перезаписывал структуру — DATA RACE в
+// fetchBackendModelCatalog → getBackendBaseURL.
+func (p *Proxy) backendEndpointSnapshot(backendID string) (base, token string, ok bool) {
+	p.mu.RLock()
+	state, exists := p.backends[backendID]
+	if !exists || state == nil || state.Backend == nil {
+		p.mu.RUnlock()
+		return "", "", false
+	}
+	state.mu.Lock()
+	host := state.Backend.Host
+	token = state.Backend.CppWorkerApiToken
+	port := p.getBackendPort(state.Backend)
+	state.mu.Unlock()
+	p.mu.RUnlock()
+
+	if host == "" || port <= 0 {
+		return "", "", false
+	}
+	return fmt.Sprintf("http://%s:%d", host, port), token, true
+}
+
 // fetchBackendModelCatalog — прочитать список файлов (и алиасов) у воркера.
 func (p *Proxy) fetchBackendModelCatalog(ctx context.Context, backendID string) ([]string, error) {
-	backend := p.GetBackend(backendID)
-	if backend == nil {
-		return nil, fmt.Errorf("backend %q not found", backendID)
+	base, token, ok := p.backendEndpointSnapshot(backendID)
+	if !ok {
+		return nil, fmt.Errorf("backend %q not found or has no reachable endpoint", backendID)
 	}
-	base := p.getBackendBaseURL(backend)
 	url := base + "/api/models/files"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -239,9 +273,9 @@ func (p *Proxy) fetchBackendModelCatalog(ctx context.Context, backendID string) 
 		return nil, err
 	}
 	// Токен воркера — если он у записи есть (cppworker с включённой auth).
-	if token := strings.TrimSpace(backend.CppWorkerApiToken); token != "" {
-		req.Header.Set("X-API-Token", token)
-		req.Header.Set("Authorization", "Bearer "+token)
+	if tok := strings.TrimSpace(token); tok != "" {
+		req.Header.Set("X-API-Token", tok)
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 
 	resp, err := catalogHTTPClient.Do(req)

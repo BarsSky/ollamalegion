@@ -112,8 +112,10 @@ func (p *Proxy) reapGhostBackends(now time.Time, ttl time.Duration) []string {
 	}
 
 	type candidate struct {
+		// Порядок полей — time.Time, затем строка, затем скаляр (требование
+		// govet fieldalignment: указателесодержащие поля первыми).
+		silent time.Time // ненулевое = известное время последнего контакта с агентом
 		id     string
-		silent time.Time
 		// anchor — запись без контакта с агентом и без якоря: его нужно
 		// проставить и сохранить, а срок начнётся со следующего прохода.
 		anchor bool

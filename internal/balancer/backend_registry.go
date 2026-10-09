@@ -357,6 +357,54 @@ drainLoop:
 	return nil
 }
 
+// MutateBackend — изменить поля записи бэкенда ПОД блокировками (p.mu + state.mu).
+//
+// ЗАЧЕМ ЭКСПОРТ. Тестовые стенды (internal/api) воспроизводят состояние живой
+// стойки: «в state.json лежала завышенная вместимость», «владелец записи замолчал
+// и должен быть вытеснен». Раньше такие тесты писали поля напрямую в указатель из
+// GetBackend — без блокировки, и это ГОНКА: читатели (GetAllBackends, cluster
+// state, каталог моделей, поллер метрик) берут p.mu+state.mu, а писатель не брал
+// ничего. `go test -race ./internal/api` падал:
+//
+//	Write at ... TestR83_AgentRegister_AttachAdoptsCapacity (stale.MaxConcurrentReqs = 10)
+//	Previous read at ... GetAllBackends
+//	  ← balancer.(*Proxy).refreshStaleModelCatalogs ← AddBackend
+//
+// Предупреждение в GetAllBackends (backend_registry.go:460) описывает ровно этот
+// класс ошибок: p.mu защищает КАРТУ, а не поля структуры.
+//
+// Мутация выполняется под state.mu, затем значения зеркалятся в p.config.Backends
+// (источник истины, как в UpdateBackend), чтобы правка не потерялась при следующем
+// FlushState/heartbeat.
+func (p *Proxy) MutateBackend(backendID string, mutate func(b *types.Backend)) error {
+	if p == nil || mutate == nil {
+		return fmt.Errorf("mutate backend %s: nil proxy or callback", backendID)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	state, exists := p.backends[backendID]
+	if !exists || state == nil || state.Backend == nil {
+		return fmt.Errorf("backend with ID %s not found", backendID)
+	}
+
+	state.mu.Lock()
+	mutate(state.Backend)
+	state.mu.Unlock()
+
+	// Держим config согласованным: там же лежит запись, которую читают
+	// перерегистрация/heartbeat/FlushState.
+	for i := range p.config.Backends {
+		if p.config.Backends[i].ID == backendID {
+			p.config.Backends[i] = *state.Backend
+			state.Backend = &p.config.Backends[i]
+			break
+		}
+	}
+	p.scheduleSave()
+	return nil
+}
+
 // UpdateBackend - обновление бэкенда
 func (p *Proxy) UpdateBackend(backendID string, updated types.Backend) error {
 	p.mu.Lock()

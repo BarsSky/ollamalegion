@@ -42,15 +42,17 @@ func nodeOwnedBackend() types.Backend {
 
 // seedCapacityState — воспроизводим состояние живой стойки: у записи
 // MaxConcurrentReqs = n_parallel, но runtime-значение осталось «эхом» (4).
-// AddBackend сам проставляет runtime = MaxConcurrentReqs для auto-registered
-// бэкендов (R71), поэтому «испорченное» состояние задаём явным UpdateBackend.
+//
+// Пишем через Proxy.MutateBackend (под p.mu+state.mu): копирование структуры из
+// GetBackend и её правка — незалоченные чтение/запись, которые ловит
+// `go test -race` (фоновые читатели берут те же поля под блокировкой).
 func seedCapacityState(t *testing.T, s *Server, maxConcurrentReqs, runtime int, fromNode bool) {
 	t.Helper()
-	b := *s.proxy.GetBackend("cppworker-gpu-bundled-agent")
-	b.MaxConcurrentReqs = maxConcurrentReqs
-	b.RuntimeMaxConcurrentRequests = runtime
-	b.RuntimeCapacityFromNode = fromNode
-	if err := s.proxy.UpdateBackend("cppworker-gpu-bundled-agent", b); err != nil {
+	if err := s.proxy.MutateBackend("cppworker-gpu-bundled-agent", func(b *types.Backend) {
+		b.MaxConcurrentReqs = maxConcurrentReqs
+		b.RuntimeMaxConcurrentRequests = runtime
+		b.RuntimeCapacityFromNode = fromNode
+	}); err != nil {
 		t.Fatalf("seed capacity state: %v", err)
 	}
 }

@@ -367,6 +367,39 @@ const API_RESPONSE = {
         assert.ok(getEl('imPolicyHost').innerHTML.length > 0, 'форма должна быть отрисована заново');
     });
 
+    // R91 (2026-10-09): пропавшее поле формы не должно превращаться в явный ноль.
+    //
+    // Живой дефект: PUT /api/v1/image/resources с телом, где часть полей нулевая,
+    // БЕСШУМНО сбрасывал политику (сервер брал отсутствующие поля нулями, а форма
+    // шлёт полный объект). Первопричина на клиенте — `Number((byId(...)||{}).value||0)`:
+    // если input'а в DOM нет (вкладка пересобрана, ошибка отрисовки), в теле
+    // оказывался явный 0, и сохранение стирало действующие значения.
+    await check('R91: пропавшие поля формы отправляют действующие значения, а не нули', async function () {
+        requests.length = 0;
+        responseFor = function () { return { status: 200, body: API_RESPONSE }; };
+        await P._actions.load(true);
+
+        const realGetById = global.document.getElementById;
+        const lost = ['imPolicyHeadroom', 'imPolicyWait', 'imPolicyFuse',
+            'imPolicyBlockUnknown', 'imPolicyGateOff', 'imPolicyAllowLoad'];
+        global.document.getElementById = function (id) {
+            if (lost.indexOf(id) !== -1) return null;
+            return realGetById(id);
+        };
+        try {
+            await P._actions.save();
+        } finally {
+            global.document.getElementById = realGetById;
+        }
+
+        const put = requests.filter(function (r) { return r.method === 'PUT'; })[0];
+        assert.ok(put, 'PUT не ушёл');
+        assert.strictEqual(put.body.vramHeadroomMb, 512, 'резерв VRAM сброшен в 0 вместо действующего значения');
+        assert.strictEqual(put.body.queueWaitTimeoutSec, 30, 'ожидание GPU сброшено в 0');
+        assert.strictEqual(put.body.exclusiveLockTimeoutSec, 600, 'предохранитель лока сброшен в 0');
+        assert.strictEqual(put.body.allowToolLoad, true, 'автозагрузка из инструмента сброшена в false');
+    });
+
     console.log('\n' + (failures.length ? 'FAILED: ' + failures.length : 'ИТОГ: все проверки пройдены (' + passed + ')'));
     if (failures.length) failures.forEach(function (f) { console.error(' - ' + f); });
     process.exit(failures.length ? 1 : 0);

@@ -375,7 +375,23 @@
         if (node) node.hidden = !state.dirty;
     }
 
+    /** numOr — значение input'а, либо fallback (поле отсутствует / не число). */
+    function numOr(id, fallback) {
+        var node = byId(id);
+        if (!node) return Number(fallback || 0);
+        var v = Number(node.value);
+        return isFinite(v) ? v : Number(fallback || 0);
+    }
+
+    /** checkedOr — состояние чекбокса, либо fallback (поля нет в DOM). */
+    function checkedOr(id, fallback) {
+        var node = byId(id);
+        if (!node) return !!fallback;
+        return !!node.checked;
+    }
+
     function readForm() {
+        var eff = (state.data && state.data.effective) || {};
         var co = byId('imPolicyCoexistence');
         // Ожидание загрузки модели: если поля нет/пусто (старый DOM, ошибка
         // отрисовки) — берём ДЕЙСТВУЮЩЕЕ значение. R88: 0 = «капа нет» — это
@@ -386,14 +402,24 @@
         if (!loadNode || !(loadSec >= 0)) {
             loadSec = Number((state.data && state.data.toolLoadTimeout && state.data.toolLoadTimeout.effectiveSec) || 0);
         }
+        // R91 (2026-10-09): fallback отсутствующего поля — ДЕЙСТВУЮЩЕЕ значение
+        // из ответа GET, а не 0/false. Прежние `Number((byId(...)||{}).value||0)`
+        // и `!!(byId(...)||{}).checked` превращали пропавший input (вкладка
+        // пересобрана, старый DOM, ошибка отрисовки) в ЯВНЫЙ ноль/false, и
+        // сохранение формы бесшумно сбрасывало политику: резерв VRAM, ожидание
+        // GPU, предохранитель лока, «блокировать при неизвестной оценке» и
+        // автозагрузку из инструмента. Сервер (R91) отсутствие поля трактует как
+        // «не менять», но форма шлёт полный объект — значит fallback обязан быть
+        // действующим значением.
+        var allowEff = !!(state.data && state.data.allowToolLoad && state.data.allowToolLoad.effective);
         return {
-            coexistence: co ? String(co.value || 'exclusive') : 'exclusive',
-            vramHeadroomMb: Number((byId('imPolicyHeadroom') || {}).value || 0),
-            queueWaitTimeoutSec: Number((byId('imPolicyWait') || {}).value || 0),
-            exclusiveLockTimeoutSec: Number((byId('imPolicyFuse') || {}).value || 0),
-            blockOnUnknownVramEstimate: !!(byId('imPolicyBlockUnknown') || {}).checked,
-            gateDisabled: !!(byId('imPolicyGateOff') || {}).checked,
-            allowToolLoad: !!(byId('imPolicyAllowLoad') || {}).checked,
+            coexistence: String((co && co.value) || eff.coexistence || 'exclusive'),
+            vramHeadroomMb: numOr('imPolicyHeadroom', eff.vramHeadroomMb),
+            queueWaitTimeoutSec: numOr('imPolicyWait', eff.queueWaitTimeoutSec),
+            exclusiveLockTimeoutSec: numOr('imPolicyFuse', eff.exclusiveLockTimeoutSec),
+            blockOnUnknownVramEstimate: checkedOr('imPolicyBlockUnknown', eff.blockOnUnknownVramEstimate),
+            gateDisabled: checkedOr('imPolicyGateOff', eff.gateDisabled),
+            allowToolLoad: checkedOr('imPolicyAllowLoad', allowEff),
             toolLoadTimeoutSec: loadSec
         };
     }

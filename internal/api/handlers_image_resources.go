@@ -33,13 +33,28 @@ import (
 
 // imageResourcesRequest — тело PUT: те же поля, что и в config.json
 // (balancing.image), плюс признак «сохранить» для совместимости с UI-формой.
+//
+// R91 (2026-10-09): ВСЕ поля — указатели. Раньше указателями были только
+// allowToolLoad/toolLoadTimeoutSec, а остальные читались «как есть» и
+// подставлялись нулями, если поля в теле нет. Частичное обновление (например,
+// тумблер «разрешить загрузку из инструмента», который шлёт одно поле, или curl
+// оператора) молча ЗАНОВО сохраняло всю политику нулями: coexistence → ""
+// (=exclusive), vramHeadroomMb → 0, queueWaitTimeoutSec → 0,
+// exclusiveLockTimeoutSec → 0, gateDisabled → false. Валидация такие значения
+// пропускает (0 и "" легальны), поэтому в ответе не было ни ошибки, ни признака
+// потери: оператор узнавал о пропаже только по «почему генерация снова ждёт
+// текст/почему гейт снова блокирует».
+//
+// Правило теперь одно для всех полей: поле отсутствует в теле → действующее
+// значение сохраняется; поле присутствует (в том числе explicit 0/false) →
+// принимается новое.
 type imageResourcesRequest struct {
-	Coexistence                types.ImageCoexistencePolicy `json:"coexistence"`
-	VramHeadroomMB             int                          `json:"vramHeadroomMb"`
-	BlockOnUnknownVRAMEstimate bool                         `json:"blockOnUnknownVramEstimate"`
-	QueueWaitTimeoutSec        int                          `json:"queueWaitTimeoutSec"`
-	ExclusiveLockTimeoutSec    int                          `json:"exclusiveLockTimeoutSec"`
-	GateDisabled               bool                         `json:"gateDisabled"`
+	Coexistence                *types.ImageCoexistencePolicy `json:"coexistence"`
+	VramHeadroomMB             *int                          `json:"vramHeadroomMb"`
+	BlockOnUnknownVRAMEstimate *bool                         `json:"blockOnUnknownVramEstimate"`
+	QueueWaitTimeoutSec        *int                          `json:"queueWaitTimeoutSec"`
+	ExclusiveLockTimeoutSec    *int                          `json:"exclusiveLockTimeoutSec"`
+	GateDisabled               *bool                         `json:"gateDisabled"`
 	// AllowToolLoad — R85: разрешать ли инструменту поднимать модель. Указатель,
 	// чтобы отличить «оператор снял галочку» (false) от «поля в теле нет» (nil):
 	// во втором случае уже сохранённое значение не трогаем.
@@ -49,25 +64,35 @@ type imageResourcesRequest struct {
 	ToolLoadTimeoutSec *int `json:"toolLoadTimeoutSec"`
 }
 
+// toSettings — наложить тело запроса на действующие значения. Поля, которых нет
+// в теле (nil), остаются как есть; явно присланные — заменяют.
 func (r imageResourcesRequest) toSettings(current types.ImageResourceSettings) types.ImageResourceSettings {
-	allow := current.AllowToolLoad
+	out := current
+	if r.Coexistence != nil {
+		out.Coexistence = *r.Coexistence
+	}
+	if r.VramHeadroomMB != nil {
+		out.VramHeadroomMB = *r.VramHeadroomMB
+	}
+	if r.BlockOnUnknownVRAMEstimate != nil {
+		out.BlockOnUnknownVRAMEstimate = *r.BlockOnUnknownVRAMEstimate
+	}
+	if r.QueueWaitTimeoutSec != nil {
+		out.QueueWaitTimeoutSec = *r.QueueWaitTimeoutSec
+	}
+	if r.ExclusiveLockTimeoutSec != nil {
+		out.ExclusiveLockTimeoutSec = *r.ExclusiveLockTimeoutSec
+	}
+	if r.GateDisabled != nil {
+		out.GateDisabled = *r.GateDisabled
+	}
 	if r.AllowToolLoad != nil {
-		allow = r.AllowToolLoad
+		out.AllowToolLoad = r.AllowToolLoad
 	}
-	loadTimeout := current.ToolLoadTimeoutSec
 	if r.ToolLoadTimeoutSec != nil {
-		loadTimeout = r.ToolLoadTimeoutSec
+		out.ToolLoadTimeoutSec = r.ToolLoadTimeoutSec
 	}
-	return types.ImageResourceSettings{
-		Coexistence:                r.Coexistence,
-		VramHeadroomMB:             r.VramHeadroomMB,
-		BlockOnUnknownVRAMEstimate: r.BlockOnUnknownVRAMEstimate,
-		QueueWaitTimeoutSec:        r.QueueWaitTimeoutSec,
-		ExclusiveLockTimeoutSec:    r.ExclusiveLockTimeoutSec,
-		GateDisabled:               r.GateDisabled,
-		AllowToolLoad:              allow,
-		ToolLoadTimeoutSec:         loadTimeout,
-	}
+	return out
 }
 
 // SetImageResourcesStore — внедрение хранилища переопределения из main.go.

@@ -39,6 +39,13 @@ JSON-поля `error`/`note`/`hint`/`message`, CLI-вывод (`fmt.Fprintf(os.S
 точный список того, что считается непереведённым, список намеренных исключений, как добавить
 сообщение, ограничения. Документ остаётся двуязычным и проходит `verify-doc-pairs`.
 
+**Ворота в CI.** Три проверки, которые до этого запускались руками (и потому могли
+не запуститься вовсе), встроены в `scripts/run-checks.ps1`, а через него — в `scripts/ci.ps1`:
+`scripts/i18n-scan.py` (бюджет непереведённых логов/ошибок = 0), `scripts/verify-doc-pairs.py`
+(паритет EN/RU) и `scripts/verify-docs-complete.py` (полнота docs/ и ссылки). Пакет
+`internal/i18n` добавлен в список Go-пакетов прогона, чтобы тесты каталога (паритет
+`%`-глаголов, дубликаты ключей, покрытие EN) тоже были в общих воротах.
+
 **Проверено.** `go build -tags llama_stub ./...` — чисто; `go test` по затронутым пакетам
 (`internal/i18n`, `internal/api`, `internal/balancer`, `internal/cppbackend`, `internal/agent`,
 `cmd/cppworker`, `cmd/sdworker`) — зелёные (один прогон `internal/balancer` упал на сетевом

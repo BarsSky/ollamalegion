@@ -365,6 +365,7 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 				i18n.Set(lang)
 				log.Print(i18n.T("i18n.changed", lang))
 			}
+			i18n.SetSource("webui")
 			s.config.Logging.Language = raw
 			updatedFields = append(updatedFields, "logLanguage")
 		}

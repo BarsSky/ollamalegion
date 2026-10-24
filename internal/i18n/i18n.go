@@ -46,8 +46,14 @@ const Auto = "auto"
 // WebUI не требовало блокировок на каждом log-вызове.
 var currentLang atomic.Value
 
+// currentSource — откуда взят действующий язык: env, config, locale, webui.
+// Нужен GET /api/v1/i18n: после смены через WebUI «source: env» выглядел бы
+// ложью (env действительно задан, но действует уже выбор оператора).
+var currentSource atomic.Value
+
 func init() {
 	currentLang.Store(RU)
+	currentSource.Store("")
 }
 
 // Supported — список языков, которые умеет отдавать каталог.
@@ -116,6 +122,15 @@ func Set(l Lang) {
 		return
 	}
 	currentLang.Store(l)
+}
+
+// SetSource запоминает источник действующего языка (env/config/locale/webui).
+func SetSource(src string) { currentSource.Store(strings.TrimSpace(src)) }
+
+// Source возвращает источник действующего языка ("" — не задан).
+func Source() string {
+	v, _ := currentSource.Load().(string)
+	return v
 }
 
 // Get возвращает действующий язык (всегда RU или EN).

@@ -25,6 +25,10 @@ var messages = map[string]map[Lang]string{
 		RU: "[i18n] язык логов и ошибок: %s (из logging.language в конфиге)",
 		EN: "[i18n] log and error language: %s (from logging.language in the config)",
 	},
+	"i18n.start.applied": {
+		RU: "[i18n] язык логов и ошибок: %s (источник: %s)",
+		EN: "[i18n] log and error language: %s (source: %s)",
+	},
 	"i18n.changed": {
 		RU: "[i18n] язык логов и ошибок переключён на %s",
 		EN: "[i18n] log and error language switched to %s",

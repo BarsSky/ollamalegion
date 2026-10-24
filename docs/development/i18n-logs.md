@@ -127,6 +127,33 @@ breaks log searching.
 | `internal/api` `TestI18nKeyParity_EN_RU` | `webui/js/i18n/{ru,en}.js` have no keys in only one language |
 | `scripts/i18n-scan.py` | the number of untranslated log strings does not grow |
 
+## Live verification on the stand
+
+Unit tests are not enough: the language is a **stand** setting and must be checked on one.
+Procedure (verified in R236):
+
+```bash
+# 1. Rebuild the images: the workers must contain the language sync code.
+pwsh -File scripts/build-containers.ps1 -Balancer -Tag i18n-live
+pwsh -File scripts/build-containers.ps1 -CppWorker -Tag i18n-live   # and webui/agent as needed
+
+# 2. Start the balancer with the required language and check the startup line:
+docker run -d --name i18n-balancer -p 18086:18081 -e OLLAMALEGION_LOG_LANG=en <balancer-image>
+docker logs i18n-balancer | grep i18n
+# 2026/... [i18n] log and error language: en (source: OLLAMALEGION_LOG_LANG)
+
+# 3. Switching on the fly and back:
+curl -s -H "X-API-Token: $TOKEN" http://127.0.0.1:18086/api/v1/i18n
+curl -s -X PUT -H "X-API-Token: $TOKEN" -H "Content-Type: application/json" \
+     -d '{"language":"ru"}' http://127.0.0.1:18086/api/v1/i18n
+# a new log line: [i18n] язык логов и ошибок переключён на ru
+```
+
+A worker picks the language up by itself (60 s by default,
+`OLLAMALEGION_LOG_LANG_SYNC_SEC`): the log shows `[i18n] язык с балансера: ru`.
+To check the whole panel: `node scripts/webui-e2e/check-i18n-logs-r236.js` (needs a webui
+that proxies `/api/` to the balancer; `WEBUI` and `API_TOKEN` are environment variables).
+
 ## Limitations
 
 - A language switch **does not rewrite history**: records already written stay in the previous

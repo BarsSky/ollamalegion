@@ -126,6 +126,33 @@ python scripts/i18n-scan.py --update   # перезаписать бюджет (
 | `internal/api` `TestI18nKeyParity_EN_RU` | в `webui/js/i18n/{ru,en}.js` нет ключей только на одном языке |
 | `scripts/i18n-scan.py` | остаток непереведённых лог-строк не растёт |
 
+## Живая проверка на стенде
+
+Юнит-тестов недостаточно: язык — это настройка **стенда**, и проверять её нужно на нём.
+Порядок (проверено в R236):
+
+```bash
+# 1. Пересоберите образы: в воркерах должен быть код синхронизации языка.
+pwsh -File scripts/build-containers.ps1 -Balancer -Tag i18n-live
+pwsh -File scripts/build-containers.ps1 -CppWorker -Tag i18n-live   # и webui/agent при необходимости
+
+# 2. Запустите балансер с нужным языком и проверьте стартовую строку:
+docker run -d --name i18n-balancer -p 18086:18081 -e OLLAMALEGION_LOG_LANG=en <balancer-image>
+docker logs i18n-balancer | grep i18n
+# 2026/... [i18n] log and error language: en (source: OLLAMALEGION_LOG_LANG)
+
+# 3. Переключение на лету и обратно:
+curl -s -H "X-API-Token: $TOKEN" http://127.0.0.1:18086/api/v1/i18n
+curl -s -X PUT -H "X-API-Token: $TOKEN" -H "Content-Type: application/json" \
+     -d '{"language":"ru"}' http://127.0.0.1:18086/api/v1/i18n
+# новый лог: [i18n] язык логов и ошибок переключён на ru
+```
+
+Воркер подхватывает язык сам (по умолчанию ≤ 60 с, `OLLAMALEGION_LOG_LANG_SYNC_SEC`):
+в логе появляется `[i18n] язык с балансера: ru`. Проверить панель целиком:
+`node scripts/webui-e2e/check-i18n-logs-r236.js` (нужен webui, проксирующий `/api/` на
+балансер; `WEBUI` и `API_TOKEN` — переменные окружения).
+
 ## Ограничения
 
 - Смена языка **не переписывает историю**: записи, уже попавшие в лог, остаются на прежнем

@@ -77,6 +77,7 @@ func (s *Server) handleI18n(w http.ResponseWriter, r *http.Request) {
 		}
 		changed := lang != i18n.Get()
 		i18n.Set(lang)
+		i18n.SetSource("webui")
 		if changed {
 			log.Print(i18n.T("i18n.changed", lang))
 		}
@@ -112,6 +113,11 @@ func (s *Server) handleI18n(w http.ResponseWriter, r *http.Request) {
 // logLanguageSource — откуда сейчас взят язык (для GET /api/v1/i18n).
 // Порядок совпадает с приоритетом в main: env > config > локаль.
 func (s *Server) logLanguageSource() string {
+	// Смена через WebUI перекрывает стартовые источники — иначе GET продолжал
+	// бы показывать env, хотя действует уже выбор оператора.
+	if src := i18n.Source(); src == "webui" {
+		return src
+	}
 	for _, name := range []string{"OLLAMALEGION_LOG_LANG", "LB_LOG_LANG"} {
 		if strings.TrimSpace(os.Getenv(name)) != "" {
 			return "env"

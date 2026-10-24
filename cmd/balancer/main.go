@@ -70,9 +70,11 @@ func main() {
 		langFromFlagOrEnv, langSource = applyConfigLogLanguage(conf.Logging.Language)
 		i18n.Set(langFromFlagOrEnv)
 	}
-	// Переменная нужна и дальше: /api/v1/i18n отдаёт источник, а WebUI
-	// показывает, чем язык задан (env/config/locale).
-	_ = langSource
+	// Строка в лог: без неё оператор не видит, какой язык реально действует и
+	// откуда он взят (env/config/locale) — а именно это первым спрашивают,
+	// когда «переключил, а логи не поменялись».
+	i18n.SetSource(langSource)
+	log.Printf("%s", i18n.T("i18n.start.applied", i18n.Get(), langSource))
 
 	// Применение переопределений из командной строки
 	if *port > 0 {

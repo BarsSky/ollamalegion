@@ -201,11 +201,18 @@ inspect_out.txt
 *.zip
 *.tar.gz
 
-# Old task tracker / plan files (replaced by docs/plans/README.md roadmap)
-plan.md
-task_progress.md
-task_progress.json
-DEPLOYMENT.md
+# Old task tracker / plan files (replaced by docs/plans/README.md roadmap).
+#
+# R237: правила ЯКОРНЫЕ и в обоих регистрах. Раньше `plan.md`/`DEPLOYMENT.md`
+# без слэша матчились на любой глубине (а на Windows ещё и без учёта регистра),
+# из-за чего в репозиторий не попадали реальные документы:
+# docs/getting-started/deployment.md и docs/plans/*/PLAN.md. Именно так
+# «двуязычная документация» уезжала на GitHub без пары EN-документа.
+/plan.md
+/PLAN.md
+/task_progress.md
+/task_progress.json
+/DEPLOYMENT.md
 
 # Round 17 (2026-07-10): misc dev artifacts.
 # One-off dev scripts that should live in scripts/ instead of source tree.

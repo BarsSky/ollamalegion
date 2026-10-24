@@ -1,3 +1,38 @@
+## [0.7.217 - R237: гигиена репозитория, флейки тестов и хвосты переводов, 2026-10-24]
+
+**Уборка.** Дерево освобождено на **441 МБ** (691 -> 214 МБ): удалены локальные `debug/`
+(198 МБ), `_diag/` (179 МБ), `loadtest-reports/`, `test-results/`, `data/`, пустые каталоги
+`plans/`, корневые артефакты (`*.exe`, `*.7z`, `build-*.log`, `*.err.log`), 15 бэкапов
+`deployments/.env.bak-*`, `__pycache__`, старые архивы `dist/` (оставлен только v0.7.216).
+
+**Найденный дефект репозитория.** Правила `.gitignore` `plan.md` и `DEPLOYMENT.md` были без
+слэша: на Windows они матчились без учёта регистра на любой глубине, из-за чего в git **не
+попадали реальные документы** — `docs/getting-started/deployment.md` (английская пара
+deployment) и `docs/plans/*/PLAN.md`. Правила сделаны якорными (`/plan.md`, `/DEPLOYMENT.md`),
+файлы добавлены; теперь `verify-docs-complete` видит 39 пар.
+
+**Флейки тестов.** (1) Три теста R133 в `cmd/cppworker` падали на чистом дереве: они вызывали
+`cppbackend.LoadConfigFromEnv()`, который RPC-переменные не читает (решение принимает
+`resolveRPCMode` в `main()`), и проходили лишь на локальном артефакте
+`cmd/cppworker/config/cppworker-defaults.json`. Добавлен helper `rpcConfigFromEnv()`,
+повторяющий путь `main()`. (2) `internal/sdbackend` `TestHFBundle_FileProgressShape` падал на
+Windows при уборке `t.TempDir()` («directory is not empty») — добавлен `tempDirTolerant` с
+повторной уборкой. (3) В шапку `scripts/run-checks.ps1` добавлено предупреждение: параллельный
+`go test` с прогоном ворот даёт средовые падения (наблюдалось на balancer/cppworker).
+
+**Переводы.** Дочищены оставшиеся русские абзацы в английских документах:
+`docs/architecture/bridge-api.md` (вступление, сноски, «Оглавление») и
+`docs/architecture/balancer-cppworker-contract.md` (блоки R113 и R108), нормализован регистр
+`llm` -> `LLM`. Остаток кириллицы в прозе EN-документов — только цитаты русских логов
+(намеренно).
+
+**Проверено.** `scripts/run-checks.ps1` — 4 шага, 0 провалов; `i18n-scan` 0/0;
+`verify-doc-pairs` и `verify-docs-complete` зелёные. Образы: `balancer`/`webui` собраны и
+проверены в R236 (`r236-i18n`), `agent` пересобран в R237 (`r237-i18n`). Пересборка
+`cppworker:gpu` с кодом синхронизации языка отложена: на этой машине сборка CUDA-слоёв идёт
+десятки минут и на время компиляции делает Docker CLI неотзывчивым. Команда для отдельного
+прогона: `pwsh -File scripts/build-containers.ps1 -CppWorker -CudaArch 86 -Tag r237-i18n`.
+
 ## [0.7.216 - R235: полная локализация логов и ошибок - 734 ключа, 749 мест, бюджет 0, сканер расширен, 2026-10-24]
 
 **Задача.** R234 дал механизм (каталог, env, WebUI, синхронизация воркеров), но не закрыл

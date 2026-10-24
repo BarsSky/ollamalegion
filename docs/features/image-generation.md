@@ -975,7 +975,7 @@ Field meanings:
 
 Operator steps (the same as `steps[]`):
 
-1. tick the files the passport proposes in the file list (diffusion + vae + llm);
+1. tick the files the passport proposes in the file list (diffusion + vae + LLM);
 2. check the roles of the files (they are filled in from the names and can be changed);
 3. pick the **family** from the passport — for DiT this is mandatory, otherwise the
    engine gets `--model` and answers "get sd version from file failed";

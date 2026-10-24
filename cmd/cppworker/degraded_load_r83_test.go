@@ -15,11 +15,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -535,6 +537,22 @@ func TestReload_DegradedHeaderOnCPUOnly(t *testing.T) {
 //
 // Размер задаётся truncate, а не записью нулей: 5 GiB padding'а в CI недопустимы,
 // а GGUF-заголовок читается лениво с начала файла, поэтому truncate корректен.
+// isNoSpaceOnDevice — ошибка «на диске нет места» в любом виде: Windows отдаёт
+// ERROR_DISK_FULL строкой, Linux — syscall.ENOSPC. Нужна, чтобы тесты с большими
+// (разряжёнными) файлами пропускались на забитом хосте, а не падали.
+func isNoSpaceOnDevice(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ENOSPC) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not enough space") ||
+		strings.Contains(msg, "no space left") ||
+		strings.Contains(msg, "недостаточно места")
+}
+
 func backendWithTruncatedModel(t *testing.T, name string, nLayers, nHeads, nKvHeads, nEmbd uint32, size int64) (*cppbackend.Backend, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -552,7 +570,16 @@ func backendWithTruncatedModel(t *testing.T, name string, nLayers, nHeads, nKvHe
 	filename := name + ".gguf"
 	path := filepath.Join(dir, filename)
 	makeFakeGGUF(t, path, "qwen3", nLayers, nHeads, nKvHeads, nEmbd)
+	// R237: модель «на N ГиБ» делается разряжённым файлом (Truncate). На NTFS это
+	// не всегда бесплатно: при нехватке места на диске truncate падает с
+	// "There is not enough space on the disk", и тест краснел из-за состояния
+	// ХОСТА, а не из-за кода (наблюдалось при 4 ГБ свободных на C:). Такой случай
+	// — повод пропустить тест с явной причиной, а не падать.
 	if err := os.Truncate(path, size); err != nil {
+		if isNoSpaceOnDevice(err) {
+			t.Skipf("пропуск: на диске нет места для файла модели %d байт (%v); "+
+				"тест проверяет поведение при нехватке RAM/VRAM, а не диск хоста", size, err)
+		}
 		t.Fatalf("truncate: %v", err)
 	}
 

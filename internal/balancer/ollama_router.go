@@ -256,4 +256,4 @@ func (or *OllamaRouter) proxyHTTP(r *http.Request, backendID string) (*http.Resp
 // NOTE: writeJSON and copyResponse moved to proxy_helpers.go in R51.1.
 // This file used to define them (lines 258-273 of R48) but the placement
 // was fragile — R49 audit tried to remove them as "dead code" and broke
-// the build. See docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md §4.1.
+// the build. See docs/archive/superpowers/specs/2026-08-19-balancer-api-routing-design.md §4.1.

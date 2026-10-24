@@ -302,7 +302,7 @@ const (
 	// (RAM mmap → partial offload → cpu-only + auto_tune n_ctx).
 	// 2026-06-25: генерируется cppworker (cmd/cppworker/utils.go:writeInsufficientResourcesResponse)
 	// и балансером не считается reloadable — проброс клиенту как HTTP 413
-	// с actionable details (см. docs/runbook-tools.md сценарий G).
+	// с actionable details (см. docs/operations/runbook-tools.ru.md сценарий G).
 	ErrCodeInsufficientResources = 6
 	// ErrCodeAborted (-100) — Round 31 #6 (2026-08-09): soft cancel от Go-стороны
 	// через bridge.RequestAbort (ctx.Done, user Stop, balancer shutdown). Отрицательное
@@ -1856,7 +1856,7 @@ func (m *ModelHandle) GetMetadata() (*ModelMetadata, error) {
 // sequences параллельно в одной CUDA-операции.
 //
 // Round 15.1 (true batched parallel inference): см. дизайн-доку
-// docs/plans/round-15-batched-parallel.md.
+// docs/archive/plans/round-15-batched-parallel.md.
 type BatchedSequence struct {
 	Tokens   []int32 // токены этой sequence (borrowed, не копируется)
 	SeqID    int32   // llama_seq_id (уникальный в пределах batch)

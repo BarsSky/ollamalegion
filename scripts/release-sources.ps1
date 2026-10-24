@@ -6,7 +6,7 @@
 .DESCRIPTION
   Делает ровно три вещи и ничего больше:
     1. собирает архив текущего дерева (git archive — только отслеживаемые файлы);
-    2. кладёт рядом краткое описание (по умолчанию docs/v1.0-release-notes.md);
+    2. кладёт рядом краткое описание (по умолчанию docs/releases/v1.0-release-notes.ru.md);
     3. печатает контрольную сумму и содержимое верхнего уровня архива.
 
   ЧЕГО НЕ ДЕЛАЕТ (осознанно):
@@ -28,7 +28,7 @@
   Куда класть артефакты. По умолчанию dist/.
 
 .PARAMETER NotesPath
-  Файл с описанием релиза. По умолчанию docs/v1.0-release-notes.md.
+  Файл с описанием релиза. По умолчанию docs/releases/v1.0-release-notes.ru.md.
   Если файла нет — архив всё равно соберётся, но об этом будет предупреждение.
 
 .PARAMETER Format
@@ -46,7 +46,7 @@
 param(
     [string]$Tag = "",
     [string]$OutDir = "dist",
-    [string]$NotesPath = "docs/v1.0-release-notes.md",
+    [string]$NotesPath = "docs/releases/v1.0-release-notes.ru.md",
     [ValidateSet("zip", "tar.gz")]
     [string]$Format = "zip",
     [switch]$TagOnly

@@ -74,7 +74,7 @@ type BalancingSettings struct {
 	// internal/balancer/*. Операторы, которые писали streamingMaxDuration: 1800
 	// в config.json, получали silent no-op. Архитектурно total stream timeout —
 	// wrong abstraction для LLM streaming. Используйте streamingIdleTimeout +
-	// firstByteTimeout + n_predict per-model. См. docs/R60.18-env-flags-audit.md.
+	// firstByteTimeout + n_predict per-model. См. docs/archive/rounds/r60.18-env-flags-audit.ru.md.
 
 	// AutoPull - автоматическая загрузка модели при запросе (Pull-on-Demand)
 	AutoPull AutoPullConfig `json:"autoPull"`
@@ -116,7 +116,7 @@ type BalancingSettings struct {
 	OperatingMode string `json:"operatingMode"` // "standard"|"replication"|"rpc_coordinator"|"virtual_router"|"distributed_inference"
 
 	// Placement — политика размещения моделей (R72, план
-	// plans/2026-09-23-multi-backend-placement-policy.md).
+	// docs/plans/2026-09-23-multi-backend-placement-policy.md).
 	//
 	// Позволяет задавать стратегию (single/pool/replicated/sharded/rpc/auto)
 	// ДЛЯ КОНКРЕТНОЙ МОДЕЛИ, а не глобально: operatingMode остаётся дефолтом
@@ -125,7 +125,7 @@ type BalancingSettings struct {
 	Placement PlacementSettings `json:"placement"`
 
 	// BackendGroups — логические бэкенды (R92, S2 плана
-	// plans/2026-10-07-model-distribution-multi-gpu-next-session.md §5):
+	// docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md §5):
 	// группы физических узлов, между которыми разрезана ОДНА модель.
 	//
 	// Мастер группы держит первую часть слоёв и открывает RPC-канал к воркерам;
@@ -409,7 +409,7 @@ type LlamaCppModelProfile struct {
 	// То есть contextLength здесь — СУММАРНОЕ окно, а каждый клиент получает
 	// n_ctx / slots. Если нужно окно НА КЛИЕНТА, задавайте ContextPerSeq.
 	// (Прежний комментарий утверждал обратное — «KV-cache × n_parallel»; это
-	// было неверно, см. docs/deployment-stack.md §7.2.)
+	// было неверно, см. docs/operations/deployment-stack.ru.md §7.2.)
 	Parallel int `json:"parallel,omitempty"` // 0 = inherit, 1..8 = parallel slots
 	// EnableReasoning — R83/v62 (2026-10-02): per-model переключатель
 	// reasoning/thinking. WebUI его уже отправляет (cppworker-params.js: enableReasoning),

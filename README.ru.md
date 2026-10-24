@@ -46,7 +46,7 @@ OllamaLegion собирает одну или несколько машин с �
 - **Больше модели на том же железе.** Раскладка слоёв отправляет часть из них на донорный
   узел по `llama.cpp` RPC: замерено **20/66 -> 48/66 слоёв на GPU** и **~2.9x скорости
   генерации** на 27B Q4 с двумя картами по 8 ГБ
-  ([замер](docs/rpc-benchmark-qwen38.md)). Пропал донор - гард возвращает локальную загрузку
+  ([замер](docs/features/rpc-benchmark-qwen38.ru.md)). Пропал донор - гард возвращает локальную загрузку
   вместо отказа.
 - **Текст и картинки за одним балансером.** Воркер `image_cpp` (`sd-server`) регистрируется
   рядом с текстовыми; маршрутизация идёт по типу бэкенда и по явным признакам запроса
@@ -107,8 +107,8 @@ curl -s localhost:18081/api/v1/backends | jq '.backends[] | {id, host, type, sta
 ```
 
 Новое железо или миграция? Начните с пресета под GPU (RTX 30xx/40xx/50xx, A10):
-`python scripts/apply-hardware-preset.py <name>` - [RU](docs/ru/hardware-presets.md) /
-[EN](docs/en/hardware-presets.md).
+`python scripts/apply-hardware-preset.py <name>` - [RU](docs/getting-started/hardware-presets.ru.md) /
+[EN](docs/getting-started/hardware-presets.ru.md).
 
 ## Архитектура
 
@@ -163,23 +163,23 @@ per-model тумблеры, живые обновления по WebSocket, ис
 curl -s -X POST localhost:18081/api/v1/admin/autotune/<backendID>/apply
 ```
 
-Документация: [API](docs/api.md#autotune-api-r541--r552-2026-08-24), живая проверка
+Документация: [API](docs/api/api.ru.md#autotune-api-r541--r552-2026-08-24), живая проверка
 `pwsh -File scripts/verify-autotune-r230.ps1`.
 
 ### Раскладка слоёв по RPC (донорный узел)
 
 Слои делятся между GPU мастера, донорным узлом и CPU. Обе стороны обязаны иметь один коммит
 `llama.cpp` и одну архитектуру; у режима есть выключатель и свой учёт ёмкости. Правила,
-добытые живыми падениями: [docs/rpc-layout-rules.md](docs/rpc-layout-rules.md); жизненный
-цикл: [docs/rpc-donor-vram-lifecycle.md](docs/rpc-donor-vram-lifecycle.md); обновление и
-откат донора: [docs/donor-update.md](docs/donor-update.md).
+добытые живыми падениями: [docs/architecture/rpc-layout-rules.ru.md](docs/architecture/rpc-layout-rules.ru.md); жизненный
+цикл: [docs/operations/rpc-donor-vram-lifecycle.ru.md](docs/operations/rpc-donor-vram-lifecycle.ru.md); обновление и
+откат донора: [docs/operations/donor-update.ru.md](docs/operations/donor-update.ru.md).
 
 ### Генерация изображений на том же балансере
 
 `imageworker` (stable-diffusion.cpp / `sd-server`, сборка на Vulkan - работает и на старых
 картах без CUDA) регистрируется как бэкенд `image_cpp`. Клиенты используют OpenAI images,
 A1111 и sdworker API. Модели: GGUF/safetensors с Hugging Face, per-model профили.
-Документация: [docs/image-generation.md](docs/image-generation.md).
+Документация: [docs/features/image-generation.ru.md](docs/features/image-generation.ru.md).
 
 ### WebUI
 
@@ -188,7 +188,7 @@ RPC, живые логи, настройки, управление пользо�
 плюс **демо-режим** (`WEBUI_DEMO_MODE=1`, только через env): детерминированный синтетический
 сценарий - клиенты -> балансер -> очередь -> донор RPC -> AutoTune - для гостя без входа и без
 единого запроса к реальному кластеру.
-Документация: [вход и роли](docs/webui-auth.md), [демо-режим](docs/webui-demo.md).
+Документация: [вход и роли](docs/features/webui-auth.ru.md), [демо-режим](docs/features/webui-demo.ru.md).
 
 ### Совместимость с клиентами
 
@@ -196,7 +196,7 @@ Ollama, OpenAI (chat/completions, инструменты, стрим) и A1111 �
 Стрим следует одному контракту: размышления не дублируются в `content`, маркеры вида
 `</think>` не доезжают до клиента, `[DONE]` приходит ровно один раз и последним событием.
 Проверки: `node scripts/verify-stream-r231.js`, `node scripts/clients/contract-suite.js`,
-агентский цикл: [docs/cline-agent-loop.md](docs/cline-agent-loop.md).
+агентский цикл: [docs/features/cline-agent-loop.ru.md](docs/features/cline-agent-loop.ru.md).
 
 ## Производительность
 
@@ -212,7 +212,7 @@ Ollama, OpenAI (chat/completions, инструменты, стрим) и A1111 �
 | скорость | **0.65-0.77 tok/s** | **1.95-2.15 tok/s** | **~2.9x** |
 | средняя задержка | 136 с | **46 с** | **-66 %** |
 
-Методика и воспроизведение: [docs/rpc-benchmark-qwen38.md](docs/rpc-benchmark-qwen38.md),
+Методика и воспроизведение: [docs/features/rpc-benchmark-qwen38.ru.md](docs/features/rpc-benchmark-qwen38.ru.md),
 `pwsh -File scripts/bench-rpc-qwen38.ps1 -Mode both`.
 
 > Большие модели: загрузка 15 ГБ с медленного диска дольше дефолтного watchdog - выставьте
@@ -251,7 +251,7 @@ docker compose -f deployments/docker-compose.stack.yml --profile full build webu
 ## Сценарии развёртывания
 
 Один compose-файл `deployments/docker-compose.stack.yml`, четыре сценария
-([подробно](docs/deployment-stack.md)):
+([подробно](docs/operations/deployment-stack.ru.md)):
 
 | Сценарий | Команда | Что поднимается |
 |---|---|---|
@@ -318,7 +318,7 @@ ENV-overrides для `nctxReload` важнее файла: `LB_NCTX_RELOAD_ENABL
 `LB_NCTX_RELOAD_MAX_N_CTX`, `LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR`,
 `LB_NCTX_RELOAD_TIMEOUT_SEC`.
 
-Полный справочник переменных: [docs/ENV_VARS.md](docs/ENV_VARS.md).
+Полный справочник переменных: [docs/api/env-vars.ru.md](docs/api/env-vars.ru.md).
 
 ## Структура проекта
 
@@ -345,18 +345,23 @@ plans/           roadmap и отчёты по фазам
 
 ## Документация
 
-- [docs/README.md](docs/README.md) - индекс русской документации (исходный язык)
-- [docs/en/README.md](docs/en/README.md) - English documentation index
-- [Установка](docs/installation.md) / [Развёртывание](docs/deployment.md) /
-  [API](docs/api.md) / [Метрики](docs/metrics.md) /
-  [Troubleshooting](docs/troubleshooting.md)
-- [Генерация изображений](docs/image-generation.md) /
-  [Пресеты под железо](docs/ru/hardware-presets.md)
-- [ENV_VARS.md](docs/ENV_VARS.md) - все переменные с дефолтами и эффектом
-- Глубокие разборы: [правила RPC-раскладки](docs/rpc-layout-rules.md),
-  [замер RPC на 27B](docs/rpc-benchmark-qwen38.md), [демо-режим WebUI](docs/webui-demo.md),
-  [вход и роли WebUI](docs/webui-auth.md), [агентский цикл Cline](docs/cline-agent-loop.md)
-- [plans/README.md](plans/README.md) - roadmap
+- **[Индекс документации (Русский)](docs/README.ru.md)** - единое оглавление всех документов
+- **[Documentation index (English)](docs/README.ru.md)**
+- [Установка](docs/getting-started/installation.ru.md) /
+  [Развёртывание](docs/getting-started/deployment.ru.md) /
+  [Конфигурация](docs/getting-started/configuration.ru.md) /
+  [API](docs/api/api.ru.md) / [Метрики](docs/api/metrics.ru.md) /
+  [Troubleshooting](docs/operations/troubleshooting.ru.md)
+- [Генерация изображений](docs/features/image-generation.ru.md) /
+  [Пресеты под железо](docs/getting-started/hardware-presets.ru.md) /
+  [Параметры моделей](docs/features/cppworker-model-params.ru.md)
+- [Переменные окружения](docs/api/env-vars.ru.md) - все переменные с дефолтами и эффектом
+- Глубокие разборы: [правила RPC-раскладки](docs/architecture/rpc-layout-rules.ru.md),
+  [замер RPC на 27B](docs/features/rpc-benchmark-qwen38.ru.md),
+  [демо-режим WebUI](docs/features/webui-demo.ru.md),
+  [вход и роли WebUI](docs/features/webui-auth.ru.md),
+  [агентский цикл Cline](docs/features/cline-agent-loop.ru.md)
+- [Roadmap и отчёты сессий](docs/plans/README.md) | [Архив](docs/archive/README.ru.md)
 
 ## Безопасность
 
@@ -370,7 +375,7 @@ plans/           roadmap и отчёты по фазам
 - **Личные данные в git не попадают.** `.env`, `_diag/`, `debug/` (дампы сессий, трейсы)
   игнорируются; в примерах - placeholder'ы (`example.com`, `192.0.2.x`, `<user>@<host>`).
 - **У WebUI настоящая авторизация.** Сессии, роли и CSRF:
-  [docs/webui-auth.md](docs/webui-auth.md). Аварийный токен вводит оператор, в образ он не
+  [docs/features/webui-auth.ru.md](docs/features/webui-auth.ru.md). Аварийный токен вводит оператор, в образ он не
   вшивается.
 
 ## Коммиты и авторство
@@ -404,11 +409,11 @@ MIT - см. [LICENSE.md](LICENSE.md).
   превращает панель в гостевую read-only витрину: детерминированный сценарий на 150 с
   (клиенты -> балансер -> очередь -> донор RPC -> AutoTune) с баннером, счётчиками и живой
   лентой событий. Все `/api/`-, WebSocket- и SSE-запросы перехватываются в браузере, до
-  реального балансера не доходит ничего. [Документация](docs/webui-demo.md)
+  реального балансера не доходит ничего. [Документация](docs/features/webui-demo.ru.md)
 - **v1.0-rc2 (v0.7.210, 2026-10-24) - релиз исходников.** README с замером RPC, документация
   приведена к фактическому состоянию (AutoTune R230, контракт стрима Cline R231, ENV,
   troubleshooting), из дерева убраны личные данные и артефакты стенда.
-  [Release notes](docs/v1.0-rc2-release-notes.md)
+  [Release notes](docs/releases/v1.0-rc2-release-notes.ru.md)
 - **R230 / R231 (v0.7.208-209) - корректный AutoTune и контракт стрима Cline.** AutoTune
   перестал видеть «свободно 0 GB» и советовать `-2/q4_0` (единицы, reload-бюджет,
   архитектура из `/api/show`, проверка применения); стрим больше не дублирует размышления в

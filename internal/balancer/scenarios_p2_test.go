@@ -1,7 +1,7 @@
 // Package balancer — scenario tests for Phase 8 P.2 (virtual_router).
 //
-// Покрывает все documented behaviors из docs/virtual-router.md и
-// plans/2026-q3-production-ready-plan.md §3:
+// Покрывает все documented behaviors из docs/architecture/virtual-router.md и
+// docs/plans/2026-q3-production-ready-plan.md §3:
 //   - 3 selector strategies (round_robin, least_loaded, random)
 //   - 4 endpoint shapes (Ollama generate/chat, OpenAI chat/completions)
 //   - Auto-failover (5xx retry, 4xx no-retry)

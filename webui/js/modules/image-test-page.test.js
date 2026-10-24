@@ -210,7 +210,7 @@ const BACKENDS = [
         assert.ok(/семейство/i.test(hint), 'подсказка должна говорить про семейство профиля: ' + hint);
         assert.ok(/DiT/.test(hint), 'подсказка должна назвать DiT-семейства: ' + hint);
         assert.strictEqual(/ComfyUI/.test(hint), false,
-            'ComfyUI-версия причины опровергнута на живом движке (docs/image-generation.md §8.2): ' + hint);
+            'ComfyUI-версия причины опровергнута на живом движке (docs/features/image-generation.ru.md §8.2): ' + hint);
         assert.ok(/no image model is loaded/i.test(P.errorHint('no image model is loaded on the image backend')) === false);
         assert.ok(/VRAM/.test(P.errorHint('cuda out of memory')), 'нет подсказки про VRAM');
         assert.ok(/Загрузить модель/.test(P.errorHint('no image model is loaded')), 'нет подсказки про загрузку модели');

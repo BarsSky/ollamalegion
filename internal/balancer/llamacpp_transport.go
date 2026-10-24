@@ -1535,7 +1535,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// LB_AUTO_CONTINUE_ON_TRUNCATION=1, send a "continue" request to
 	// upstream and emit the continuation to client.
 	//
-	// Default: OFF (opt-in). See docs/ENV_VARS.md.
+	// Default: OFF (opt-in). See docs/api/env-vars.ru.md.
 	// For Qwen3-Instruct-2507-q4km which has a tendency to emit
 	// ChatML-EOS <|im_end|> mid-code (R60.20), this auto-recovers
 	// from unclosed code blocks and mid-line cutoffs.

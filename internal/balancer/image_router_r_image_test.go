@@ -2,7 +2,7 @@
 // запросов генерации изображений.
 //
 // Покрывают обязательные утверждения Phase 1 плана
-// (plans/2026-09-27-image-generation-backend-plan.md §7):
+// (docs/plans/2026-09-27-image-generation-backend-plan.md §7):
 //   - явные признаки image-запроса (endpoint + префикс модели) дают тип image_cpp;
 //   - текстовые пути НЕ классифицируются как image;
 //   - normalizeBackendType не превращает image_cpp в ollama (главная ловушка);

@@ -259,7 +259,7 @@ func (a *App) handleHFFiles(w http.ResponseWriter, r *http.Request) {
 // вещи; паспорт отвечает на второе: семейство и режим (--model против
 // --diffusion-model), обязательные роли (vae/llm/t5xxl/...), чего не хватает, и
 // пошаговая инструкция для WebUI. Тот же ответ подсказывает, какое ИМЯ модели
-// передавать инструменту generate_image (см. docs/image-generation.md §16.9).
+// передавать инструменту generate_image (см. docs/features/image-generation.md §16.9).
 func (a *App) handleHFPlan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "use GET")

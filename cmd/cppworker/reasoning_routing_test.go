@@ -1,7 +1,7 @@
 // reasoning_routing_test.go — Round 17 (2026-07-31) tests for the
 // IsReasoningEnabledForRequest helper.
 //
-// Bug context: см. plans/bug-2026-07-31-reasoning-not-routed.md.
+// Bug context: см. docs/plans/bug-2026-07-31-reasoning-not-routed.md.
 // До Round 17 IsReasoningModel(name) был единственным способом определить,
 // split'ить ли <think> блоки — что пропускало модели с включённым
 // SOFT prompt reasoning, но не входящие в whitelist (например, qwen3-instruct).

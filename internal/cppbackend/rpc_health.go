@@ -4,7 +4,7 @@
 // `rpc-server`. Отказ узла в llama.cpp обрабатывается не ошибкой, а `abort()`:
 // живой факт — «`SIGABRT: abort` + `signal arrived during cgo execution` во время
 // `bridge_load_model`, после чего cppworker перезапускается и модель теряется»
-// (см. `docs/layer-sharding.md` §4.6).
+// (см. `docs/architecture/layer-sharding.ru.md` §4.6).
 //
 // Отсюда два механизма:
 //

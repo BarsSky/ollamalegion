@@ -201,7 +201,7 @@ inspect_out.txt
 *.zip
 *.tar.gz
 
-# Old task tracker / plan files (replaced by plans/README.md roadmap)
+# Old task tracker / plan files (replaced by docs/plans/README.md roadmap)
 plan.md
 task_progress.md
 task_progress.json

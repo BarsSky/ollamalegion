@@ -2,7 +2,7 @@
 
 // rpc_health_r114_test.go — R114 (2026-10-13): гейт и watchdog узлов раскладки.
 //
-// ЖИВОЙ ФАКТ, ради которого это появилось (docs/layer-sharding.md §4.6):
+// ЖИВОЙ ФАКТ, ради которого это появилось (docs/architecture/layer-sharding.ru.md §4.6):
 // пересоздание узла `rpc-server` под живым соединением мастера роняет мастера —
 // `SIGABRT: abort` + `signal arrived during cgo execution` внутри
 // `bridge_load_model`, контейнер перезапускается, модель теряется. Обработать это

@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Маркеры, которыми модели открывают/закрывают блок размышлений
-# (см. docs/BALANCER_CPPWORKER_API_CONTRACT.md §4.2 и thinkTagPairs в
+# (см. docs/architecture/balancer-cppworker-contract.md §4.2 и thinkTagPairs в
 # cmd/cppworker/reasoning_content.go). Любой из них в content — дефект.
 #
 # R108 (2026-10-13): добавлены служебные токены chat-шаблонов — они тоже не

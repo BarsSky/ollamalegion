@@ -6,7 +6,7 @@
 //   ssh legion2 'docker inspect cppworker-node2' | Out-File -Encoding utf8 _diag/donor-full.json
 //   node scripts/make-donor-update-cmd.js _diag/donor-full.json <new-image> [old-name]
 //
-// Пишет deployments/donor/update.cmd. См. docs/donor-update.md.
+// Пишет deployments/donor/update.cmd. См. docs/operations/donor-update.ru.md.
 const fs = require('fs');
 
 const inspectPath = process.argv[2] || '_diag/donor-full.json';

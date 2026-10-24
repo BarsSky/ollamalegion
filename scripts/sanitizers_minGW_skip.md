@@ -80,4 +80,4 @@ void test_T6_concurrent_flag_writes(void) {
 
 Sanitizers пропущены в этой итерации (MinGW limitation).
 Рекомендуется запускать перед каждым release на WSL2 / Linux CI.
-См. `plans/cppworker-abort-api/PLAN.md` для деталей.
+См. `docs/plans/cppworker-abort-api/PLAN.md` для деталей.

@@ -24,8 +24,8 @@ import (
 // internal/sdbackend). Менять его — только синхронно, с обеих сторон.
 //
 // Обоснование решений (флаги, лимиты, подводные камни) —
-// docs/research-sdcpp-lowvram-integration.md, план —
-// plans/2026-09-27-image-generation-backend-plan.md §5.4–5.6, §12.
+// docs/archive/research/sdcpp-lowvram-integration.ru.md, план —
+// docs/plans/2026-09-27-image-generation-backend-plan.md §5.4–5.6, §12.
 
 // Роли файлов внутри bundle. Значение роли определяет флаг sd-server
 // (см. (p *ImageModelProfile) ServerArgs) и требование обязательности.
@@ -148,7 +148,7 @@ type ImageModelProfile struct {
 	// бы «зашитое знание о моделях»: оператор не смог бы их поправить без
 	// пересборки. Поэтому описание — ДАННЫЕ профиля, правится из WebUI и
 	// попадает в каталог (GET /api/v1/image/models/catalog, см.
-	// plans/2026-10-06-image-tool-catalog-autoload.md).
+	// docs/plans/2026-10-06-image-tool-catalog-autoload.md).
 	Notes string `json:"notes,omitempty"`
 	// Strengths — «для чего эта модель хороша»: короткая фраза для выбора модели
 	// (скорость против качества, VRAM, размер картинки). Отдельное поле от Notes,
@@ -174,7 +174,7 @@ func IsDiTFamily(family string) bool {
 
 // DefaultImageGenDefaults — рекомендованные дефолты по семейству.
 //
-// Значения из docs/research-sdcpp-lowvram-integration.md §1.2 (рекомендации
+// Значения из docs/archive/research/sdcpp-lowvram-integration.ru.md §1.2 (рекомендации
 // проекта sd.cpp) и §6 плана. Для distilled-моделей cfg = 1.0 обязательно.
 func DefaultImageGenDefaults(family string) ImageGenDefaults {
 	base := ImageGenDefaults{

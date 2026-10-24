@@ -43,7 +43,7 @@ Clients keep the APIs they already use: **Ollama**, **OpenAI**, and A1111 (`/sda
   actually fits - then verifies the applied plan against the fact.
 - **More model on the same hardware.** Layer sharding sends part of the layers to a donor
   node over `llama.cpp` RPC: measured **20/66 -> 48/66 layers on GPU** and **~2.9x generation
-  speed** on a 27B Q4 model with two 8 GB cards ([measurement](docs/rpc-benchmark-qwen38.md)).
+  speed** on a 27B Q4 model with two 8 GB cards ([measurement](docs/features/rpc-benchmark-qwen38.ru.md)).
   If the donor disappears, the guard falls back to local loading instead of failing.
 - **Text and images behind the same balancer.** An `image_cpp` worker (`sd-server`)
   registers next to texters; routing is by backend type and by explicit request markers
@@ -105,7 +105,7 @@ curl -s localhost:18081/api/v1/backends | jq '.backends[] | {id, host, type, sta
 
 New hardware or migrating? Start with a hardware preset (RTX 30xx/40xx/50xx, A10):
 `python scripts/apply-hardware-preset.py <name>` - see
-[RU](docs/ru/hardware-presets.md) / [EN](docs/en/hardware-presets.md).
+[RU](docs/getting-started/hardware-presets.md) / [EN](docs/getting-started/hardware-presets.md).
 
 ## Architecture
 
@@ -159,7 +159,7 @@ WebSocket updates, event history and a WebUI timeline. Manual apply:
 curl -s -X POST localhost:18081/api/v1/admin/autotune/<backendID>/apply
 ```
 
-Docs: [API (RU)](docs/api.md#autotune-api-r541--r552-2026-08-24), live check
+Docs: [API (RU)](docs/api/api.md#autotune-api-r541--r552-2026-08-24), live check
 `pwsh -File scripts/verify-autotune-r230.ps1`.
 
 ### RPC layer sharding (donor node)
@@ -167,15 +167,15 @@ Docs: [API (RU)](docs/api.md#autotune-api-r541--r552-2026-08-24), live check
 Layers are split between the master GPU, a donor node and CPU. Both sides must run the same
 `llama.cpp` commit and the same architecture; the feature has a kill switch and its own
 capacity accounting. Rules learned from real crashes:
-[RU](docs/rpc-layout-rules.md) / lifecycle: [RU](docs/rpc-donor-vram-lifecycle.md).
-Updating a donor node and rolling back: [RU](docs/donor-update.md).
+[RU](docs/architecture/rpc-layout-rules.ru.md) / lifecycle: [RU](docs/operations/rpc-donor-vram-lifecycle.ru.md).
+Updating a donor node and rolling back: [RU](docs/operations/donor-update.ru.md).
 
 ### Image generation on the same balancer
 
 `imageworker` (stable-diffusion.cpp / `sd-server`, Vulkan build - works on old cards without
 CUDA) registers as an `image_cpp` backend. Clients use OpenAI images, A1111 and the sdworker
 API. Models: GGUF/safetensors from Hugging Face, per-model profiles.
-Docs: [RU](docs/image-generation.md) / [EN](docs/en/image-generation.md).
+Docs: [RU](docs/features/image-generation.md) / [EN](docs/features/image-generation.md).
 
 ### WebUI
 
@@ -184,7 +184,7 @@ logs, settings, user management with roles (`admin` / `viewer`) and CSRF, plus a
 mode** (`WEBUI_DEMO_MODE=1`, env only) that shows a deterministic synthetic scenario -
 clients -> balancer -> queue -> RPC donor -> AutoTune - to guests with no login and no
 requests to the real cluster.
-Docs: [auth and roles (RU)](docs/webui-auth.md), [demo mode (RU)](docs/webui-demo.md).
+Docs: [auth and roles (RU)](docs/features/webui-auth.ru.md), [demo mode (RU)](docs/features/webui-demo.ru.md).
 
 ### Client compatibility
 
@@ -192,7 +192,7 @@ Ollama, OpenAI (chat/completions, tools, streaming) and A1111 surfaces are serve
 same balancer. Streaming follows one contract: reasoning is not duplicated into `content`,
 `</think>`-style markers never reach the client, and `[DONE]` arrives exactly once, last.
 Checks: `node scripts/verify-stream-r231.js`, `node scripts/clients/contract-suite.js`,
-agent loop: [RU](docs/cline-agent-loop.md).
+agent loop: [RU](docs/features/cline-agent-loop.ru.md).
 
 ## Performance
 
@@ -208,7 +208,7 @@ Donor: second node, 8 GB VRAM, RPC `:50052`, link ~8.9 Gbit/s.
 | throughput | **0.65-0.77 tok/s** | **1.95-2.15 tok/s** | **~2.9x** |
 | mean latency | 136 s | **46 s** | **-66 %** |
 
-Method and reproduction: [RU](docs/rpc-benchmark-qwen38.md),
+Method and reproduction: [RU](docs/features/rpc-benchmark-qwen38.ru.md),
 `pwsh -File scripts/bench-rpc-qwen38.ps1 -Mode both`.
 
 > Large models: loading a 15 GB model from a slow disk takes longer than the default
@@ -247,7 +247,7 @@ Notes:
 ## Deployment profiles
 
 One compose file, `deployments/docker-compose.stack.yml`, four scenarios
-([details](docs/deployment-stack.md)):
+([details](docs/operations/deployment-stack.ru.md)):
 
 | Scenario | Command | What starts |
 |---|---|---|
@@ -314,7 +314,7 @@ ENV overrides of `nctxReload` win over the file: `LB_NCTX_RELOAD_ENABLED`,
 `LB_NCTX_RELOAD_MAX_N_CTX`, `LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR`,
 `LB_NCTX_RELOAD_TIMEOUT_SEC`.
 
-Full variable reference: [ENV_VARS.md](docs/ENV_VARS.md).
+Full variable reference: [ENV_VARS.md](docs/api/env-vars.ru.md).
 
 ## Project layout
 
@@ -341,17 +341,23 @@ plans/           roadmap and phase reports
 
 ## Documentation
 
-- [docs/en/README.md](docs/en/README.md) - English documentation index
-- [docs/README.md](docs/README.md) - Russian documentation index (source language)
-- [Installation](docs/en/installation.md) / [Deployment](docs/en/deployment.md) /
-  [Configuration](docs/en/configuration.md) / [API](docs/en/api.md) /
-  [Metrics](docs/en/metrics.md) / [Troubleshooting](docs/en/troubleshooting.md)
-- [Image generation](docs/en/image-generation.md) / [Hardware presets](docs/en/hardware-presets.md)
-- [ENV_VARS.md](docs/ENV_VARS.md) - every variable with default and effect
-- Russian-only deep dives: [RPC layout rules](docs/rpc-layout-rules.md),
-  [RPC benchmark (27B)](docs/rpc-benchmark-qwen38.md), [WebUI demo mode](docs/webui-demo.md),
-  [WebUI auth](docs/webui-auth.md), [Cline agent loop](docs/cline-agent-loop.md)
-- [plans/README.md](plans/README.md) - roadmap
+- **[Documentation index (English)](docs/README.ru.md)** - one table of contents for every document
+- **[Индекс документации (Русский)](docs/README.ru.md)**
+- [Installation](docs/getting-started/installation.md) /
+  [Deployment (RU)](docs/getting-started/deployment.ru.md) /
+  [Configuration (RU)](docs/getting-started/configuration.ru.md) /
+  [API](docs/api/api.md) / [Metrics](docs/api/metrics.md) /
+  [Troubleshooting](docs/operations/troubleshooting.md)
+- [Image generation](docs/features/image-generation.md) /
+  [Hardware presets](docs/getting-started/hardware-presets.md) /
+  [Model parameters](docs/features/cppworker-model-params.md)
+- [Environment variables (RU)](docs/api/env-vars.ru.md) - every variable with default and effect
+- Russian-only deep dives: [RPC layout rules](docs/architecture/rpc-layout-rules.ru.md),
+  [RPC benchmark (27B)](docs/features/rpc-benchmark-qwen38.ru.md),
+  [WebUI demo mode](docs/features/webui-demo.ru.md),
+  [WebUI auth](docs/features/webui-auth.ru.md),
+  [Cline agent loop](docs/features/cline-agent-loop.ru.md)
+- [Roadmap and session reports](docs/plans/README.md) (RU) | [Archive](docs/archive/README.md) (original language)
 
 ## Security
 
@@ -363,7 +369,7 @@ plans/           roadmap and phase reports
   keep your own values in `deployments/.env`, which is git-ignored.
 - **Personal data stays out of git.** `.env`, `_diag/`, `debug/` (session dumps, traces)
   are ignored; use placeholders (`example.com`, `192.0.2.x`, `<user>@<host>`).
-- **WebUI has real auth.** Sessions, roles and CSRF: [auth docs](docs/webui-auth.md).
+- **WebUI has real auth.** Sessions, roles and CSRF: [auth docs](docs/features/webui-auth.ru.md).
   The emergency token is entered by the operator, never baked into the image.
 
 ## Commits and authorship
@@ -396,11 +402,11 @@ Full history with dates, image tags and the defect behind each fix:
   the panel into a guest-visible, read-only showcase: a deterministic 150 s scenario
   (clients -> balancer -> queue -> RPC donor -> AutoTune) with banner, counters and live
   event feed. All `/api/`, WebSocket and SSE traffic is intercepted in the browser, nothing
-  reaches the real balancer. [Docs](docs/webui-demo.md)
+  reaches the real balancer. [Docs](docs/features/webui-demo.ru.md)
 - **v1.0-rc2 (v0.7.210, 2026-10-24) - source release.** README with the RPC measurement,
   documentation brought up to the real state (AutoTune R230, Cline stream contract R231,
   ENV vars, troubleshooting), personal data and stand artifacts removed from the tree.
-  [Release notes](docs/v1.0-rc2-release-notes.md)
+  [Release notes](docs/releases/v1.0-rc2-release-notes.ru.md)
 - **R230 / R231 (v0.7.208-209) - AutoTune memory correctness and the Cline stream contract.**
   AutoTune stopped seeing "0 GB free" and recommending `-2/q4_0` (units, reload budget,
   architecture from `/api/show`, applied-plan verification); streaming no longer duplicates

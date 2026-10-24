@@ -21,7 +21,7 @@ import (
 // Tools system prompt cache (Шаг 2 — компактный prompt + кеш по fingerprint)
 // ============================================================
 //
-// Проблема (см. docs/remaining-real-plan.md, OpenWebUI tools-flow):
+// Проблема (см. docs/plans/archive/remaining-real-plan.md, OpenWebUI tools-flow):
 // При работе с OpenWebUI tools каждая итерация диалога добавляет в запрос
 // один и тот же набор tool definitions (несколько KB JSON Schema на каждый
 // tool). buildToolsSystemPrompt вызывался на КАЖДОМ запросе и пересобирал

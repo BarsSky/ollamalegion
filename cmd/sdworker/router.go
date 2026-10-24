@@ -93,7 +93,7 @@ func (a *App) setupRouter() http.Handler {
 	// (Range-запрос) и говорим, КАК движок увидит файл: какое семейство он узнаёт
 	// по именам тензоров и нужен ли --diffusion-model. Приговоров «движок это не
 	// прочитает» нет: «голые» diffusers-имена есть и у сборок под sd.cpp
-	// (см. internal/cppbackend/hf_probe.go и docs/image-generation.md §8.2).
+	// (см. internal/cppbackend/hf_probe.go и docs/features/image-generation.ru.md §8.2).
 	mux.HandleFunc("/api/hf/probe", a.handleHFProbe)
 	mux.HandleFunc("/api/hf/plan", a.handleHFPlan)
 	mux.HandleFunc("/api/hf/download", a.handleHFDownload)

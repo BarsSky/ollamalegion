@@ -1,6 +1,6 @@
 // autosuggest_test.go — TDD for R59 cluster autosuggest algorithm.
 //
-// Reference: docs/superpowers/specs/2026-09-03-cluster-autodistribute.md
+// Reference: docs/archive/superpowers/specs/2026-09-03-cluster-autodistribute.md
 //
 // These tests are pure unit tests — no HTTP, no real backends. They verify
 // the algorithm with mock backend states.

@@ -3,7 +3,7 @@
 // Pure function (no HTTP, no real backends). Validates suggestions, applies
 // them via injected `applyFn` callback, and returns a summary.
 //
-// Reference: docs/superpowers/specs/2026-09-03-cluster-autosuggest-apply.md
+// Reference: docs/archive/superpowers/specs/2026-09-03-cluster-autosuggest-apply.md
 package balancer
 
 import (

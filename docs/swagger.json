@@ -36,7 +36,7 @@
     }
   ],
   "x-backend-api-style": {
-    "description": "Per-Backend API Style (R50, 2026-08-19). Backend speaks either Ollama API (/api/*) or OpenAI-compat API (/v1/*). Translation required when client and backend use different styles. R50: inferred from `type` field (llama_cpp → openai-compatible, ollama → ollama-native). R51+: explicit `api_style` field. Details: docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md",
+    "description": "Per-Backend API Style (R50, 2026-08-19). Backend speaks either Ollama API (/api/*) or OpenAI-compat API (/v1/*). Translation required when client and backend use different styles. R50: inferred from `type` field (llama_cpp → openai-compatible, ollama → ollama-native). R51+: explicit `api_style` field. Details: docs/archive/superpowers/specs/2026-08-19-balancer-api-routing-design.md",
     "enum": ["ollama-native", "openai-compatible"],
     "default": "inferred from type field",
     "examples": {

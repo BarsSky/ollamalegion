@@ -10,7 +10,7 @@
 //	                                 curl-примеры и JSON-Schema инструмента
 //	                                 `generate_image` + инструкция для агента.
 //
-// ЗАЧЕМ: план (plans/2026-09-27-image-generation-backend-plan.md §3.3, Phase 4)
+// ЗАЧЕМ: план (docs/plans/2026-09-27-image-generation-backend-plan.md §3.3, Phase 4)
 // требует, чтобы клиент, прочитав ОДИН документ, мог собрать валидный запрос БЕЗ
 // чтения кода, а LLM-агент — вызвать генерацию по схеме инструмента.
 //
@@ -185,7 +185,7 @@ type imageContractEndpoint struct {
 //
 // Normalization — то, что делает НАША сторона (sdbackend.NormalizeGeneration),
 // а не движок: движок width/height не валидирует, batch/steps клампятся молча,
-// а seed в OpenAI-ветке не читает вовсе (см. docs/image-generation.md §4).
+// а seed в OpenAI-ветке не читает вовсе (см. docs/features/image-generation.ru.md §4).
 type imageContractField struct {
 	Name          string      `json:"name"`
 	Type          string      `json:"type"`

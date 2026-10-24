@@ -1,7 +1,7 @@
 package types
 
 // R72 (P0): placement policy — типы, валидация, разбор выражений размера.
-// План: plans/2026-09-23-multi-backend-placement-policy.md
+// План: docs/plans/2026-09-23-multi-backend-placement-policy.md
 
 import (
 	"strings"

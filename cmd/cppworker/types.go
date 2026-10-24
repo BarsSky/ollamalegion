@@ -259,7 +259,7 @@ type loadWithParamsRequest struct {
 	EnableBatchedParallel *bool `json:"enableBatchedParallel,omitempty"`
 
 	// Round 17 (2026-07-31): per-model override для reasoning parser routing.
-	// Решает баг plans/bug-2026-07-31-reasoning-not-routed.md: для моделей ВНЕ
+	// Решает баг docs/plans/bug-2026-07-31-reasoning-not-routed.md: для моделей ВНЕ
 	// IsReasoningModel() whitelist (например, qwen3-instruct) при включённом
 	// SOFT prompt reasoning text не попадал в reasoning_content.
 	//   nil = inherit global cfg.DefaultEnableReasoning

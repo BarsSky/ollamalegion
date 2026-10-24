@@ -163,7 +163,7 @@ func memfitGPULayersForModel(m cppbackend.ModelInfo, kvCacheType string) (int, b
 
 // legacyCalculateOptimalGPULayersForModel — прежняя формула (веса ×0.7,
 // KV «256 Б/токен»). Оставлена как fallback без метаданных; удаляется шагом 2
-// протокола plans/2026-09-26-estimator-unification-protocol.md.
+// протокола docs/plans/2026-09-26-estimator-unification-protocol.md.
 func legacyCalculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType string) int {
 	if m.SizeBytes == 0 || m.NLayers == 0 {
 		// Нет метаданных (только что загруженная без path/size) — fallback.

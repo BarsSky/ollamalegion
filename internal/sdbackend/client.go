@@ -20,7 +20,7 @@ import (
 // ============================================================
 //
 // ПОЧЕМУ ИМЕННО /sdcpp/v1/*, А НЕ OpenAI/A1111-ветки движка (см.
-// docs/research-sdcpp-lowvram-integration.md §4.4):
+// docs/archive/research/sdcpp-lowvram-integration.ru.md §4.4):
 //   - только у нативного API есть очередь со статусами, TTL и cancel;
 //   - только он отдаёт limits (границы, которые движок НЕ валидирует);
 //   - только он принимает seed как поле верхнего уровня (в OpenAI-ветке seed

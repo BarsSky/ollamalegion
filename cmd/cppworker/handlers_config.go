@@ -963,7 +963,7 @@ func handleCppWorkerReloadConfig(w http.ResponseWriter, r *http.Request) {
 // База настраивается через CPPWORKER_CONFIG_DIR. Переменная нужна в двух случаях:
 //   - контейнер: каталог можно смонтировать томом. Иначе настройка живёт в
 //     writable-слое и теряется при пересоздании контейнера (docker compose up
-//     после смены образа) — см. docs/deployment-stack.md;
+//     после смены образа) — см. docs/operations/deployment-stack.ru.md;
 //   - тесты: уводят запись в temp, чтобы прогон `go test ./cmd/cppworker/` не
 //     затирал отслеживаемый config/cppworker-defaults.json — он копируется в
 //     образ, поэтому загрязнение дерева равносильно загрязнению образа.
@@ -1000,7 +1000,7 @@ func saveConfigToDefaultsFile(cfg *cppbackend.Config) error {
 	// ВАЖНО: это writable-слой контейнера — файл переживает restart, но НЕ
 	// пересоздание контейнера (docker compose up после смены образа). Для
 	// долговременного хранения каталог надо смонтировать томом (см.
-	// docs/deployment-stack.md); env-переменные CPPWORKER_* остаются источником
+	// docs/operations/deployment-stack.ru.md); env-переменные CPPWORKER_* остаются источником
 	// истины и имеют приоритет над файлом.
 	if dir := filepath.Dir(defaultsPath); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

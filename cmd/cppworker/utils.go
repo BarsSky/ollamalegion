@@ -558,7 +558,7 @@ func roundUpPow2Local(v int) int {
 // пользователю «уменьшите num_ctx / используйте меньшую модель».
 //
 // 2026-06-25: добавлен как часть каскадного auto-fallback (см. CHANGELOG,
-// docs/runbook-tools.md сценарий G, .clinerules Section 4 + 17).
+// docs/operations/runbook-tools.md сценарий G, .clinerules Section 4 + 17).
 type InsufficientResourcesError struct {
 	Model              string
 	RequestedNCtx      int

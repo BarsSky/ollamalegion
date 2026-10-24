@@ -1,7 +1,7 @@
 // auto_detect_reasoning_test.go — Round 17 Layer 3 (2026-07-31) tests for
 // the LAZY AUTO-DETECT mechanism.
 //
-// Контекст: см. plans/bug-2026-07-31-reasoning-not-routed.md.
+// Контекст: см. docs/plans/bug-2026-07-31-reasoning-not-routed.md.
 // Round 17 Layer 1 (per-model override) требует от пользователя явно задать
 // enableReasoning=true при load-with-params. Layer 3 (lazy auto-detect) —
 // страховка: если модель не в IsReasoningModel whitelist, парсер всё равно

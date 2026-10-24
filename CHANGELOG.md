@@ -1,11 +1,68 @@
-## [0.7.212 — README: английский как основной, навигация, блок преимуществ, изменения в конце, 2026-10-24]
+## [0.7.213 - R233: рефакторинг документации - одна структура, категории, единый индекс, архив истории, 2026-10-24]
+
+**Задача.** `docs/` разросся в свалку: 99 файлов, из них 46 лежали прямо в корне каталога
+(`AUDIT-*`, `phase-8-*`, `round-13/14`, `R60.*-summary`, `research-*`, отчёты и тесты), рядом
+жили три параллельных набора - корень (RU), `docs/en/` (EN), `docs/ru/` (старые копии RU). Часть
+файлов в `docs/en/` была не переведена, а скопирована по-русски (`agent-deployment.md`,
+`deployment.md`, `configuration.md`, `ollamalegion-metrics.md`), часть - побайтово дублировала
+друг друга (`agent-deployment.md` = `ru/agent-deployment.md` = `en/agent-deployment.md`,
+`ru/deployment.md` = `en/deployment.md`, `en/ollamalegion-metrics.md` =
+`ru/ollamalegion-metrics.md`). Единого оглавления не было, понять «какой документ актуальный»
+было невозможно.
+
+**Структура.** Документация разложена по категориям, один документ - один файл в своей
+категории, язык в имени файла: `<имя>.md` - английский, `<имя>.ru.md` - русский.
+
+| Каталог | Что внутри |
+|---|---|
+| `docs/getting-started/` | installation, deployment, configuration, hardware-presets |
+| `docs/architecture/` | balancing-guide, backend-type-isolation, rpc-coordinator, virtual-router, layer-sharding, rpc-layout-rules, rpc-link-bandwidth, bridge-api, balancer-cppworker-contract |
+| `docs/operations/` | deployment-stack, deployment-remote-balancer, docker-compose-guide, agent-deployment, donor-update, rpc-donor-vram-lifecycle, troubleshooting, deployment-troubleshooting, runbook-tools |
+| `docs/api/` | api, env-vars, metrics, cppworker-metrics-collection |
+| `docs/features/` | image-generation, cppworker-model-params, rpc-benchmark-qwen38, webui-auth, webui-demo, cline-agent-loop |
+| `docs/releases/` | v1.0-release-notes, v1.0-rc2-release-notes, v1.0-smoke-checklist |
+| `docs/development/` | style-compliance, ci-self-hosted-runner |
+| `docs/plans/` | roadmap, ADR и отчёты сессий (перенесены из корневого `plans/`) |
+| `docs/archive/` | аудиты, research-заметки, отчёты раундов, разборы инцидентов, ранние планы, superpowers-спеки, заменённые документы |
+
+**Единое оглавление.** Новые `docs/README.md` (EN) и `docs/README.ru.md` (RU) - полный индекс:
+категории, таблицы «документ / язык / о чём», планы и архив. Индекс генерируется
+`scripts/gen-docs-index.py`, поэтому он не расходится с деревом: прочерк в колонке языка
+означает «перевод ещё не готов». Отдельный `docs/archive/README.md` / `README.ru.md` описывает
+архив и перечисляет его содержимое. `README.md` и `README.ru.md` проекта теперь ведут в эти
+индексы.
+
+**Дубли и мусор.** Удалены побайтовые копии и устаревшие версии (`ru/api.md`, `ru/troubleshooting.md`,
+`ru/agent-deployment.md`, `en/agent-deployment.md`, `en/deployment.md`, `en/configuration.md`,
+`en/ollamalegion-metrics.md`, `ru/ollamalegion-metrics.md`, `en/virtual-router.md`,
+`en/phase-8-*.md`), устаревшие RU-версии `deployment` и `installation` перенесены в
+`docs/archive/legacy/` вместо удаления (содержимое сохранено). 32-строчная заглушка
+`docs/configuration.md` заменена реальным документом в `getting-started/`.
+
+**Ссылки.** Переписаны все относительные ссылки в 108 markdown-файлах и 112 файлах кода и
+конфигов (`.go`, `.js`, `.ps1`, `.yml`, `.clinerules`, Dockerfile, nginx.conf и др.), включая
+`docs/ru/README.md` в WebUI-футере. Итоговая проверка: 534 относительные ссылки, битых 0.
+Устаревшие ссылки на давно удалённые файлы (`DEPLOYMENT.md`, `docs/deployment-bundled.md`,
+`docs/audit-2026-06.md`, `docs/tools-request-debug-runbook.md`) перенаправлены на актуальные
+документы, а в исторических материалах архива мёртвые ссылки заменены inline-кодом.
+
+**Проверено.** `pwsh -File scripts/run-checks.ps1` - Go + 70 JS-тестов, всё зелёное; проверка
+ссылок по всему дереву - 0 битых; `scripts/webui-e2e/check-demo-mode-r232.js` и его воротный тест
+обновлены под новый путь `docs/features/webui-demo.ru.md`.
+
+**Что осталось (следующий раунд).** Локализация: 20 документов пока только на русском
+(в индексе отмечены прочерком), `virtual-router` и `bridge-api` - только на английском.
+Худшие случаи (`api.md` 2878 строк, `deployment-stack.md` 1697, `image-generation.md` 1381)
+переводятся отдельными батчами.
+
+﻿## [0.7.212 — README: английский как основной, навигация, блок преимуществ, изменения в конце, 2026-10-24]
 
 **Задача.** README разросся (611 строк) и начинался с длинного блока изменений: новый читатель
 попадал в историю вместо ответа «что это и зачем», а сам файл был только на русском.
 
 **Что сделано.** README стал двуязычным с **английским как основным** (`README.md`) и отдельным
 русским файлом ([`README.ru.md`](README.ru.md)), связанными переключателем в первой строке;
-индексы `docs/README.md` и `docs/en/README.md` ссылаются на оба. В начале — оглавление
+индексы `docs/README.md` и `docs/README.ru.md` ссылаются на оба. В начале — оглавление
 (навигация по 15 разделам) и новый блок **«Why OllamaLegion»**: что проект даёт (один адрес
 вместо N бэкендов, подбор параметров без ручной настройки, больше модели на том же железе за
 счёт RPC-раскладки, текст и картинки за одним балансером, деградация вместо отказа, WebUI с
@@ -66,8 +123,8 @@ origin вычисляется явно, свои абсолютные URL пер
 **Включение.** `WEBUI_DEMO_MODE=1` (принимаются `1/true/yes/on`) для сервиса `webui`
 (`deployments/docker-compose.stack.yml`), разбор — `docker/webui/entrypoint.sh`, дефолт в
 `webui/js/modules/config.js` — `DEMO_MODE: false`. Переменная описана в
-`deployments/.env.example`, `webui/.env.example`, `docs/ENV_VARS.md`; сценарий, ограничения и
-проверка — в новом `docs/webui-demo.md`; в README — раздел «Демо-режим WebUI (витрина без стенда)».
+`deployments/.env.example`, `webui/.env.example`, `docs/api/env-vars.ru.md`; сценарий, ограничения и
+проверка — в новом `docs/features/webui-demo.ru.md`; в README — раздел «Демо-режим WebUI (витрина без стенда)».
 
 **Честные ограничения.** Демо показывает имитацию, а не замер: числа и фазы фиксированы, реальные
 метрики отсутствуют, тесты/бенчмарки из витрины не запускаются; режим предназначен для показа
@@ -97,16 +154,16 @@ origin вычисляется явно, свои абсолютные URL пер
 **Замер RPC (новое).** `Qwen3.8-27B-UD-Q4_K_M` (15.33 GiB), `ctx=16384`, KV q8_0, мастер 8 ГБ
 VRAM + донор 8 ГБ (канал ≈8.9 Гбит/с): раскладка 20/66 слоёв на GPU → **48/66** (26 локально +
 22 на доноре), CPU 46 → 18; генерация 96 токенов **136 с → 46 с (≈×2.9)**, загрузка 278 с →
-285 с (+2.5 %). Методика и ограничения — `docs/rpc-benchmark-qwen38.md`, воспроизведение —
+285 с (+2.5 %). Методика и ограничения — `docs/features/rpc-benchmark-qwen38.ru.md`, воспроизведение —
 `scripts/bench-rpc-qwen38.ps1 -Mode both`. Попутно поднят `CPPWORKER_LOAD_STALL_SEC=1200`:
 дефолтные 300 с обрывали загрузку 15-ГБ модели на медленном диске.
 
 **Документация.** README: раздел «Производительность: RPC-раскладка», актуальный блок AutoTune
-(R230), «Что нового» и ссылки; `docs/README.md` — новые документы; `docs/rpc-layout-rules.md` §10
-(замер); `docs/ENV_VARS.md` (`CPPWORKER_LOAD_STALL_SEC`); `docs/troubleshooting.md` (§12 —
+(R230), «Что нового» и ссылки; `docs/README.ru.md` — новые документы; `docs/architecture/rpc-layout-rules.ru.md` §10
+(замер); `docs/api/env-vars.ru.md` (`CPPWORKER_LOAD_STALL_SEC`); `docs/operations/troubleshooting.ru.md` (§12 —
 «свободно 0 GB»/`-2`, `</think>` и `[DONE]` у Cline, обрыв загрузки 15-ГБ модели);
-`docs/cline-agent-loop.md` §5 (стриминговый контракт R231); новый
-`docs/v1.0-rc2-release-notes.md` (что вошло, как проверялось, обновление с rc1).
+`docs/features/cline-agent-loop.ru.md` §5 (стриминговый контракт R231); новый
+`docs/releases/v1.0-rc2-release-notes.ru.md` (что вошло, как проверялось, обновление с rc1).
 
 **Чистка личных данных.** Из индекса убран `debug/` (дампы Cline-сессий `sessions.db`/`teams.db`,
 трейсы диалогов, env-снимок узла) — правило в `.gitignore`; убран тестовый артефакт
@@ -122,7 +179,7 @@ placeholder'ами: `.mailmap` → публичный GitHub-noreply, README —
 **Проверка.** Полный набор Go-тестов (balancer, cppbackend, api, cppworker, cmd/balancer), JS-тесты
 WebUI и e2e-ворота — зелёные после чистки; живой замер RPC выполнен на стенде (результаты выше);
 ворота `ci.ps1 -Live -Clients` — 4/4 PASS. Сборка релиза:
-`pwsh -File scripts/release-sources.ps1 -NotesPath docs/v1.0-rc2-release-notes.md`.
+`pwsh -File scripts/release-sources.ps1 -NotesPath docs/releases/v1.0-rc2-release-notes.ru.md`.
 
 ## [0.7.209 — R231: почему Cline рвал сессию и видел `</think>` в теле ответа — дубль reasoning, фильтр-пустышка и потерянный `[DONE]`, 2026-10-24]
 
@@ -261,7 +318,7 @@ GiB × RAM 16/32/64/120 GiB × 3 модели (4B/8B/30B) × 3 контекст�
 **Диагностика и документация.** `scripts/diagnose-webui-auth.ps1` — read-only доктор: проверяет
 контейнеры, env именно балансера (пароль не печатает), путь и наличие `users.json` внутри
 контейнера, `/api/v1/auth/me` напрямую и через панель, логи `auth:`, и выдаёт вердикт с типовыми
-причинами. `docs/webui-auth.md` — разделы «где лежит users.json» и «если вход не появился» (6 причин),
+причинами. `docs/features/webui-auth.ru.md` — разделы «где лежит users.json» и «если вход не появился» (6 причин),
 пароли исправлены с argon2id на фактический PBKDF2-HMAC-SHA256; устаревшие комментарии
 `config/users.json` в коде и compose заменены.
 
@@ -669,7 +726,7 @@ IP/UA/`current` и отзыв по короткому id, короткий пр�
 JS — `users-admin.test.js` (7): рендер сессий с пометкой текущей, отзыв через DELETE, гость не
 грузит. Попутно исправлена невалидная разметка: в ячейке действий была вложенная `<td>`.
 
-**Документация.** `docs/webui-auth.md` — разделы про активные сессии, политику пароля и
+**Документация.** `docs/features/webui-auth.ru.md` — разделы про активные сессии, политику пароля и
 admin-only для `/auth/users`.
 
 ## [0.7.191 — R224: потеря сессии узла — честный диагноз и авто-восстановление модели, 2026-10-22]
@@ -718,7 +775,7 @@ admin-only для `/auth/users`.
 убивается посреди генерации, проверяются живой мастер, честный диагноз, авто-выгрузка и повторная
 загрузка после возврата узла.
 
-**Документация.** `docs/rpc-donor-vram-lifecycle.md` — раздел «что происходит дальше» переписан под
+**Документация.** `docs/operations/rpc-donor-vram-lifecycle.ru.md` — раздел «что происходит дальше» переписан под
 R224 (авто-выгрузка, переменная отключения, живая проверка).
 
 ## [0.7.190 — R223: сессии WebUI переживают рестарт балансера; страница не дёргает API до входа, 2026-10-22]
@@ -755,7 +812,7 @@ logout гасит сессию).
 (`usersConfigured=false`), запросы идут как раньше — открытая панель не теряет данные. Тесты JS:
 +3 в `auth.test.js` (14 всего). Живая проверка: анонимный контекст — ноль 401-ответов на `/api/`.
 
-**Документация.** `docs/webui-auth.md` — ограничение «рестарт = повторный вход» заменено описанием
+**Документация.** `docs/features/webui-auth.ru.md` — ограничение «рестарт = повторный вход» заменено описанием
 персистентности и переменной `LB_SESSIONS_FILE`; пункт про 401 до входа переписан.
 
 ## [0.7.189 — R222: WebUI без вшитого токена, роли в разметке, страница пользователей, 2026-10-22]
@@ -804,7 +861,7 @@ bootstrap из sessionStorage, полоса состояния, наблюдат
 нет. Плюс curl-проверки: `usersConfigured:true`, вход 200 + cookie, мутация без CSRF → 403,
 с CSRF → 200, break-glass токен работает.
 
-**Документация.** `docs/webui-auth.md` — где живёт вход, что нужно на новой машине (балансер,
+**Документация.** `docs/features/webui-auth.ru.md` — где живёт вход, что нужно на новой машине (балансер,
 пользователи, том, env), чек-лист curl, роли, break-glass и ограничения.
 
 **Осталось (честно).** Сессии в памяти балансера (рестарт = повторный вход); несколько балансеров
@@ -907,7 +964,7 @@ OpenAI-ошибка `{"error":{"code":"empty_upstream_stream",...}}` с прич
 раньше скрипт начинал с `docker rm -f cppworker-node2` и при повторном запуске удалял РАБОЧИЙ
 контейнер (живой инцидент: rename после этого падал «no such container»). Теперь: проверка
 наличия контейнера → освобождение имени бэкапа → rename → stop → run; откат остаётся одной
-командой. Процедура — `docs/donor-update.md`.
+командой. Процедура — `docs/operations/donor-update.ru.md`.
 
 **Обновлены мастер и донор** на `cppworker:gpu-r219-rpc` (содержит R214 keepalive и R218 graceful
 RPC connect), балансер `r220b-upstream`. После обновления: раскладка `CPU 1 / CUDA0 23 / RPC0 19`,
@@ -1046,7 +1103,7 @@ SSE-сессию, клиент терял ответ посреди генера
 - Образ `ollama-legion/cppworker:gpu-r216c-reasoning` перенесён на донор
   (`docker save` → `scp` → `docker load`), контейнер `cppworker-node2` пересоздан с сохранением
   env/портов/монтирований. Процедура вынесена в `scripts/make-donor-update-cmd.js` +
-  `deployments/donor/update.cmd` и описана в `docs/donor-update.md` (включая откат).
+  `deployments/donor/update.cmd` и описана в `docs/operations/donor-update.ru.md` (включая откат).
 - Проверено на доноре: `rpc_server.enabled=true running=true port=50052`, `rpc_layout` в API есть,
   в бинарях нового образа присутствует R214 keepalive (`grep keepalive /app/rpc-server` = 1).
 - Раскладка: загрузка gemma дала `CPU:1 CUDA0:23 RPC0:19 (192.0.2.10:50052)`,
@@ -1062,7 +1119,7 @@ SSE-сессию, клиент терял ответ посреди генера
 
 **Новые скрипты/документы.** `scripts/probe-balancer-restart-r217.js`,
 `scripts/probe-stream-drain-r217.js`, `scripts/test-cancel-layout-r217.js`,
-`scripts/make-donor-update-cmd.js`, `deployments/donor/update.cmd`, `docs/donor-update.md`.
+`scripts/make-donor-update-cmd.js`, `deployments/donor/update.cmd`, `docs/operations/donor-update.ru.md`.
 
 **Тесты.** `internal/balancer` 203 с ok, `cmd/cppworker` 9 с ok, `cmd/balancer` ok,
 `run-checks.ps1 -SkipGo` — 0 провалов.
@@ -1190,7 +1247,7 @@ balancer 120 с ok, cppworker 12 с ok. `run-checks.ps1 -SkipGo` — 2 шага,
 `scripts/test-cancel-inflight-r215.js` (возвращает 0 только если отмена подтверждена логом и
 VRAM освобождена).
 
-**Документация.** `docs/rpc-donor-vram-lifecycle.md`: таблица сценариев, раздел «Что изменил
+**Документация.** `docs/operations/rpc-donor-vram-lifecycle.ru.md`: таблица сценариев, раздел «Что изменил
 R215», переписанные ограничения (инициализация модели не прерывается и не показывает прогресс;
 зависший процесс лечится только перезапуском узла; «один клиент на узел» — конструкция
 llama.cpp), и как повторить замер.
@@ -1238,7 +1295,7 @@ keepalive не лечит: пробы отвечает ядро. Лечение 
 предупреждение гейта R177 теперь прямо называет эту гипотезу и действие, а не только факт
 «узел не отдал устройства».
 
-**Документация.** `docs/rpc-donor-vram-lifecycle.md` — таблица «сценарий → освобождается ли
+**Документация.** `docs/operations/rpc-donor-vram-lifecycle.ru.md` — таблица «сценарий → освобождается ли
 VRAM», что именно держит память, как проверить (`nvidia-smi` на узле, лог узла, `/api/models`)
 и какие ограничения остаются.
 
@@ -2114,7 +2171,7 @@ stdout контейнера — `docker logs` работает как раньш
 `run-checks.ps1` — зелёный.
 
 **7. Заодно починена документация.** В `CHANGELOG.md` и
-`plans/2026-10-16-session-report.md` восстановлены символы, съеденные при записи из
+`docs/plans/2026-10-16-session-report.md` восстановлены символы, съеденные при записи из
 PowerShell: 28 «голых» CR (ломали строки и съедали букву `r` — отсюда `pc-node` вместо
 `rpc-node`) и 20 управляющих байтов (NUL/BEL/BS/VT/TAB — исчезнувшая обратная кавычка
 вместе со следующей буквой). Восстановление однозначное: `0x07`→`` `a ``, `0x08`→`` `b ``,
@@ -2366,7 +2423,7 @@ standalone не участвует). JS: \`backend-merge-dom.test.js\ — +2 п�
 кнопка в панели; 800 Мбит/с → 100 МБ/с в теле плана и валидатора, пустое поле → 0).
 `run-checks.ps1` зелёный целиком.
 
-**7. Документация.** \docs/rpc-link-bandwidth.md\ (в оглавлении \docs/README.md\):
+**7. Документация.** \docs/architecture/rpc-link-bandwidth.ru.md\ (в оглавлении \docs/README.ru.md\):
 лестница источников, автоопределение с обеих сторон, поле/кнопка в WebUI, API,
 конфигурация, ориентиры 1 vs 10 Гбит/с, разбор сбоев (409 без ролей, jumbo/MTU,
 почему автозамер меньше хостового).
@@ -2636,7 +2693,7 @@ reach=True\. Роль снята — узел погашен. Стенд ост�
 **3. Нерешённое на доноре: авто-логин после перезагрузки.** Keepalive работает только
 при залогиненной сессии; `AutoAdminLogon` на доноре не выставлен. Включение требует
 ПАРОЛЯ пользователя, поэтому оставлено владельцу машины (шаги — в
-`plans/2026-10-16-session-report.md`, §13).
+`docs/plans/2026-10-16-session-report.md`, §13).
 
 **4. Правда об арках imageworker.** Заявленное в 0.7.142 «образ под три карты» **не
 было выполнено фактически**: `.env` содержал `IMAGE_WORKER_CUDA_ARCH=75;86;120`, но
@@ -3090,7 +3147,7 @@ image-инструменте) в живом логе НЕ вызывался н�
 прислал (чистый чат для Cline/Open WebUI/deepseek harness работает без наценки в
 токенах). Но и картинок там нет: нативному клиенту, которому нужна генерация
 изображений, нужен префиксный путь `/ollama/api/chat`. Записано в
-`docs/en/image-generation.md` (§14.6b) с этими числами.
+`docs/features/image-generation.ru.md` (§14.6b) с этими числами.
 
 Матрица клиентов расширена до СЕМИ профилей (`/ollama/api/chat` со своими tools
 добавлен; прямой вызов для префиксного случая идёт на обычный `/api/chat`, потому что
@@ -3424,7 +3481,7 @@ FAIL применились ИМЕННО заданные параметры —
 
 Правка (R141): новая настройка `LB_IMAGE_TOOL_INJECT=always|auto` (дефолт `always` — поведение стендов не меняется молча). В режиме `auto` инструмент объявляется только тем запросам, где клиент прислал хотя бы один свой `tools[]`: именно такой клиент умеет обрабатывать `tool_calls`. Пропуск логируется причиной с ценой объявления (`imageToolSkipReason`), чтобы «почему модель не видит инструменты» не требовало чтения исходников.
 
-Тесты `internal/balancer/image_tool_inject_mode_r141_test.go` (режимы, разбор env, текст причины) + документация `docs/en/image-generation.md`.
+Тесты `internal/balancer/image_tool_inject_mode_r141_test.go` (режимы, разбор env, текст причины) + документация `docs/features/image-generation.ru.md`.
 
 ЖИВАЯ ПРОВЕРКА (стенд, `LB_IMAGE_TOOL_INJECT=auto`, образ `balancer:r141-inject-mode`):
 
@@ -3760,7 +3817,7 @@ Ollama-бэкенд».
 * Раскладка переживает пересоздание контейнера:
   `cppworker-runtime-overrides.json` хранит `rpcEnabled`/`rpcServers` рядом с
   `rpcServerEnabled`/`rpcServerPort` и читается ПОСЛЕ окружения. `deployments/.env`
-  и `.env.example` больше не задают донора; `docs/rpc-layout-rules.md` §6 описывает
+  и `.env.example` больше не задают донора; `docs/architecture/rpc-layout-rules.ru.md` §6 описывает
   новые правила (кто решает, где видно, что нельзя изменить из панели).
 * `vram_remote_source` (R132) выведен в панель: `none` («на этом пути узлы не
   измерялись») больше не выглядит как «узлов нет».
@@ -5118,7 +5175,7 @@ go test ./internal/balancer/ ./tests/llamacpp_proxy/ ./tests/ → всё зел�
 
 ### 🐛 Что было не так
 
-`docs/AUDIT-client-api-fidelity-2026.md` перечислял 7 дефектов клиентского API
+`docs/archive/audits/AUDIT-client-api-fidelity-2026.md` перечислял 7 дефектов клиентского API
 (C1–C7), и долг числился открытым целиком. Аудит писался **до** R65d (нативная
 поверхность Ollama) и R66b (`tool_choice`), поэтому часть пунктов к сегодняшнему
 дню уже закрыта кодом — а документ об этом не знал. То есть «долг» был partly
@@ -5206,11 +5263,11 @@ cppworker на **нативном** пути (`/api/chat`, `/api/generate`) от
 
 **3. Документированный API балансера отвечал 404.** `GET
 /api/v1/cppworker/config/runtime` (агрегированные runtime-параметры загруженных
-моделей: n_ctx, gpu_layers, раскладка) был описан в `docs/api.md`, но не работал:
+моделей: n_ctx, gpu_layers, раскладка) был описан в `docs/api/api.ru.md`, но не работал:
 Round 40 #3 увёл ВСЕ `/api/v1/*` на API-сервер (порт 18081), а тот этот путь не
 регистрирует, поэтому ветка `LlamaCppRouter` для него была недостижимым кодом. Это
 уже было зафиксировано в аудите как дефект C6
-(`docs/AUDIT-client-api-fidelity-2026.md`), но не исправлено.
+(`docs/archive/audits/AUDIT-client-api-fidelity-2026.md`), но не исправлено.
 
 ### ✅ Что сделано
 
@@ -6898,7 +6955,7 @@ static void get_device_memory(...) { ... RPC_STATUS_ASSERT(status); }  // ggml-r
 **6. Один образ на все машины.** `CUDA_ARCH=86;120`, `CUDA_VERSION=12.8.0`,
 build-arg `CUDA_VERSION` в compose. Дефолт `all` в `Dockerfile.gpu` НЕ содержит
 `120` (`50;61;70;75;80;86;89;90`), а дефолт `12.2.0` не знает `sm_120` — обе
-ловушки описаны в `docs/rpc-layout-rules.md`. Проверка архитектуры — запуском, а
+ловушки описаны в `docs/architecture/rpc-layout-rules.ru.md`. Проверка архитектуры — запуском, а
 не поиском строки: `grep sm_86` в собранном бинарнике даёт 0, при этом модель
 грузится и считает на CUDA0 (fatbin-представление). Живой перенос образа на
 донора и раскладка на двух машинах: `state=loaded`, `RPC0[...] KV buffer 18 MiB +
@@ -6914,8 +6971,8 @@ RS buffer 18.7 MiB + compute buffer 505 MiB`, `restarts=0`.
 
 ### 📚 Документация
 
-`docs/rpc-layout-rules.md` — правила с живыми симптомами нарушений, ловушки
-сборки, состав ёмкости, >2 машин, настройка из WebUI; ссылка из `docs/README.md`.
+`docs/architecture/rpc-layout-rules.ru.md` — правила с живыми симптомами нарушений, ловушки
+сборки, состав ёмкости, >2 машин, настройка из WebUI; ссылка из `docs/README.ru.md`.
 
 ### ⚠️ Что осталось (сознательно не выдано за сделанное)
 
@@ -7090,7 +7147,7 @@ content ассистента оказался **обрывок JSON вызова
 | # | Дефект | Доказательство |
 |---|---|---|
 | 1 | **Мастер падал от обычного чтения списка моделей.** При мёртвом узле `GET /api/models` → `MemfitBudget` → `rpcDeviceSnapshot` → `bridge.CollectDevices` → `ggml_backend_rpc_add_server` → `abort()`. То есть процесс убивал НЕ инференс, а health/capability-опрос балансера | стек abort'а: `handleListModels` → `MemfitBudget` → `rpcDeviceSnapshot` → `CollectDevices` → `_Cfunc_bridge_collect_devices`; `restarts=1`, `signal arrived during cgo execution` |
-| 2 | Загрузка против недоступного узла не проверялась вообще: llama.cpp подключался к мёртвому узлу и падал | `docs/layer-sharding.md` §4.6 (живой факт) |
+| 2 | Загрузка против недоступного узла не проверялась вообще: llama.cpp подключался к мёртвому узлу и падал | `docs/architecture/layer-sharding.ru.md` §4.6 (живой факт) |
 | 3 | `buildInfo` у всех бэкендов был пуст → проверка `version_mismatch` (совместимость сторон RPC) не работала, оставался вечный warning `version_unknown` | на стенде `version=`/`buildInfo=` пусты; скрипт регистрации версию не передавал, хотя Go-путь передавал |
 
 ### 🔧 Что сделано
@@ -7176,7 +7233,7 @@ Watchdog полезен для случая «сокет ещё открыт, у
 | Удержание дельт распространено на JSON-форму вызова ВНУТРИ прозы (прежние предохранители срабатывали только когда ответ НАЧИНАЛСЯ с JSON/фенса) | `cmd/cppworker/tools_stream_r83.go` (`toolsStreamJSONCallPos`), `handlers_chat.go` |
 | **Восстановление вызова из эха**: модель повторяет в ответе сериализованный вызов из истории (`… I will execute it again. [[{"id":"call_1","type":"function","function":{"name":"run_commands",…}}]]`) — такой JSON распознаётся как вызов (клиент получает `tool_calls` и цикл продолжается), а не уезжает текстом | `cmd/cppworker/tool_args_schema_r113.go` (`recoverToolCallsFromText`, `toolCallFromJSONObject`), единая точка разбора `parseToolCallsForRequest` |
 | Резервное вырезание разметки распространено на JSON-формы вызова в любом месте текста (прежняя проверка смотрела только начало ответа) | там же (`stripToolCallMarkup`, `looksLikeToolCallMarkup`) |
-| Контракт и порядок проверки описаны отдельным документом | `docs/cline-agent-loop.md` |
+| Контракт и порядок проверки описаны отдельным документом | `docs/features/cline-agent-loop.ru.md` |
 
 ### ✅ Проверено
 
@@ -7212,7 +7269,7 @@ gemma-4-E4B-it-Q4_K_M, payload — НАСТОЯЩИЙ запрос Cline из е
   аргументы вообще не объект; решение «повторить генерацию, если в объекте нет
   обязательных полей» не реализовано (требует решения по политике: повторять или
   отдавать вызов как есть).
-* Приёмка раскладки слоёв (§6 `docs/layer-sharding.md`) — нужен донор в сети.
+* Приёмка раскладки слоёв (§6 `docs/architecture/layer-sharding.ru.md`) — нужен донор в сети.
 
 ## [0.7.74 — Тип бэкенда больше не делит кластер: llama.cpp и Ollama работают вместе, 2026-10-13]
 
@@ -7254,7 +7311,7 @@ gemma-4-E4B-it-Q4_K_M, payload — НАСТОЯЩИЙ запрос Cline из е
 | Мастер настройки и сохранение настроек отправляют `auto` для «Все»/«Авто», а не подменяют его на `ollama_api` | `webui/js/modules/setup-wizard.js`, `webui/js/app.js` |
 | `deployments/.env`: `BALANCER_TAG`/`WEBUI_TAG` = `r112-auto2`, `WEBUI_VERSION=v0.7.76` (токен `?v=` — иначе браузер отдаёт старый js из кэша) | `deployments/.env` |
 | Инструмент проверки маркера на ЖИВЫХ данных стенда (берёт `GET /api/v1/cluster` и печатает текст/класс маркера так, как его увидит браузер) | `debug/r112-marker-live.js` |
-| Документ про раскладку слоёв по нескольким бэкендам (уровень, контейнеры, параметры, грабли) | `docs/layer-sharding.md` |
+| Документ про раскладку слоёв по нескольким бэкендам (уровень, контейнеры, параметры, грабли) | `docs/architecture/layer-sharding.ru.md` |
 
 ### 🔬 Живая проверка на стенде (2026-10-13)
 
@@ -7294,7 +7351,7 @@ gemma-4-E4B-it-Q4_K_M, payload — НАСТОЯЩИЙ запрос Cline из е
 ### ⚠️ Осталось
 
 * Приёмка производительности раскладки слоёв (§6) — нужен донор `192.0.2.10`
-  в сети (см. `docs/layer-sharding.md` §4.7).
+  в сети (см. `docs/architecture/layer-sharding.ru.md` §4.7).
 * Health-гейт и watchdog узла RPC: сейчас отказ узла под живой моделью роняет
   мастера (`SIGABRT` в `bridge_load_model`).
 
@@ -7486,7 +7543,7 @@ llama-API отдавался клиенту не полностью, «слов�
 `writeChatStreamResponse` вызывал `IsReasoningModel(modelName)`, и при `false` ВСЕ токены уходили в
 `message.content` — вместе с ` thinking…` и `<|channel>thought…`. Модели Qwen3.8-27B в whitelist
 префиксов нет, поэтому клиент видел служебные маркеры как обычный текст ответа. По контракту
-(`docs/BALANCER_CPPWORKER_API_CONTRACT.md` §4.2) cppworker ОБЯЗАН распознавать тег-пары в выводе
+(`docs/architecture/balancer-cppworker-contract.md` §4.2) cppworker ОБЯЗАН распознавать тег-пары в выводе
 модели — без оговорок про имя.
 
 **2. OpenAI-поверхность (`/v1/chat/completions`, `/v1/completions`) разделяла ответ по
@@ -7518,7 +7575,7 @@ llama-API отдавался клиенту не полностью, «слов�
 | Чистка видимого ответа применена и на OpenAI-поверхности (`/v1/chat/completions`, `/v1/completions`) и на `/api/generate`: один и тот же ответ больше не выглядит по-разному на разных API | `cmd/cppworker/handlers_openai.go`, `handlers_generate.go` |
 | Клиентский `/api/generate` (его балансер проксирует НАТИВНО) разбирает размышления и чистит ответ так же, как `/api/chat`: `response` — только видимый текст, `thinking` — отдельным полем (и в потоке, и в non-stream) | `cmd/cppworker/handlers_generate.go`, `types.go` |
 | Устаревший doc-комментарий `IsReasoningEnabledForRequest` приведён в соответствие: функция отвечает на вопрос о модели (промпт/дефолты/диагностика), а не о разборе ответа | `cmd/cppworker/reasoning_content.go` |
-| Контракт §4.1 дополнен: cppworker отдаёт `message.thinking` и legacy-алиас `reasoning` | `docs/BALANCER_CPPWORKER_API_CONTRACT.md` |
+| Контракт §4.1 дополнен: cppworker отдаёт `message.thinking` и legacy-алиас `reasoning` | `docs/architecture/balancer-cppworker-contract.md` |
 | Компоуз передаёт `CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD` — переключатель планировщика на загрузке (`cmd/cppworker/lazyload_calc.go`) существовал в коде, но со стенда был недоступен | `deployments/docker-compose.stack.yml` |
 
 ### 🔬 S1 (RPC): живая проба транспорта на 27B — что подтвердилось и что мешает
@@ -7532,7 +7589,7 @@ RTX 5060 Laptop 8 ГБ; модель `Qwen3.8-27B-UD-Q4_K_M`, 15.33 ГБ, 64 с�
 | Транспорт до донора | ✅ `[bridge] RPC: узел 192.0.2.10:50052 подключён, его устройств: 1`; `устройств в раскладке 2`; список передан в `llama_model_load_from_file` |
 | Раскладка слоёв на донора | ❌ не происходит: число слоёв урезается ДО моста (`gpu_layers=20`) двумя планировщиками, знающими только локальную VRAM — memfit (`cppbackend/backend.go:1651`) и `lazyload_calc.go:271`; `gpu_distribution.go` считает `gpuCount=1`. llama.cpp печатает `using device CUDA0 ... 7097 MiB free` и донор простаивает |
 | Ориентир производительности (одиночная карта, 20 слоёв, ctx=8192) | ~1.1 tok/s, TTFT ≈ 210 с — выигрыш от второй карты измерим |
-| Следующий шаг | отдать планировщикам свободную VRAM RPC-устройств (источник — мост), затем проверить, что llama.cpp берёт RPC0; порядок и файлы — в `docs/rpc-coordinator.md` → «Живая проба транспорта RPC (2026-10-13)» |
+| Следующий шаг | отдать планировщикам свободную VRAM RPC-устройств (источник — мост), затем проверить, что llama.cpp берёт RPC0; порядок и файлы — в `docs/architecture/rpc-coordinator.ru.md` → «Живая проба транспорта RPC (2026-10-13)» |
 | ⚠️ Наблюдение по стенду | балансер распределяет запросы и на ДОНОР (`cppworker-cyborg-bundled-agent`, 192.0.2.10) — там работает СТАРЫЙ образ: его `/api/chat` отдаёт `ок<end_of_turn>` (нет R106c/R108), а `/api/generate` — свой прежний формат. Пока вторая машина не обновлена до того же образа, ОДИН И ТОТ ЖЕ клиентский запрос ведёт себя по-разному в зависимости от того, какой узел ответил |
 
 ### ✅ Проверено
@@ -7693,7 +7750,7 @@ overflow: hidden }` обрезал секцию настроек llama.cpp (фо
 (3) переменные `CPPWORKER_ENABLE_REASONING=true` / `CPPWORKER_DEFAULT_ENABLE_REASONING=true` в
 `deployments/.env` (так сделано на стенде — с комментарием о приоритете). Если правки из формы
 должны переживать и пересоздание контейнера, каталог монтируется томом (пример — в
-`docs/deployment-stack.md`).
+`docs/operations/deployment-stack.ru.md`).
 
 ## [0.7.67 — Cline: продолжение старой сессии на :18080 (unknown field "thinking"), 2026-10-11]
 
@@ -7707,7 +7764,7 @@ invalid JSON: json: unknown field "thinking"
 ```
 
 Причина — не клиент, а наш собственный контракт. `message.thinking` — каноническое имя
-reasoning-поля в Ollama API (`docs/BALANCER_CPPWORKER_API_CONTRACT.md` §4.1), и наши поверхности
+reasoning-поля в Ollama API (`docs/architecture/balancer-cppworker-contract.md` §4.1), и наши поверхности
 отдают рассуждения под обоими именами: нативный `/api/chat` — `reasoning`
 (`handlers_chat.go:1070`), трансляция SSE→NDJSON балансера — `thinking`
 (`internal/balancer/llamacpp_translate_resp.go:970`), `/api/generate` — `thinking`. Клиент
@@ -7798,7 +7855,7 @@ curl -s -X POST http://127.0.0.1:18080/api/chat -H 'Content-Type: application/js
 
 Распределение модели по нескольким GPU и разным бэкендам (llama.cpp RPC + imageworker), редизайн
 первоначальной настройки с валидацией, окно объединения бэкендов и уход от режимов работы:
-[`plans/2026-10-07-model-distribution-multi-gpu-next-session.md`](plans/2026-10-07-model-distribution-multi-gpu-next-session.md).
+[`docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md`](docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md).
 В плане сетевой бюджет под 1 Гбит/с: layer split даёт < 0.5 % к времени токена, row split — +7…14 % на
 декоде и ≈2.4 с на префилл 512, поэтому приоритет отдан layer split.
 
@@ -9011,7 +9068,7 @@ max 13.3%», «GPU Утилизация: min 40.0% / max 40.0%».
 - **Переводы**: добавлены все 16 ключей в `ru.js` и `en.js`; линт i18n расширен на
   `_t(` и `._t(` — теперь не переведённый ключ панели валит тест, а не тихо
   показывается оператору.
-- **Документация**: `docs/metrics.md` §2/§2.2 (+ EN) — какие поля `SystemMetrics`
+- **Документация**: `docs/api/metrics.ru.md` §2/§2.2 (+ EN) — какие поля `SystemMetrics`
   где видны, почему RAM форматируется не как размер файла и почему `0` от агента
   означает «неизвестно».
 
@@ -9075,7 +9132,7 @@ max 13.3%», «GPU Утилизация: min 40.0% / max 40.0%».
   перезапись не запрошена — цель получает `skipped` с причиной, гигабайты не гоняются.
 - **Таймауты**: капа на перенос НЕТ (доктрина проекта, 0.7.43) — 14 ГБ по 100 Мбит/с
   это ~20 минут; отмена только явная.
-- **Документация**: `docs/image-generation.md` §17.8 (+ EN) — механика, таблица
+- **Документация**: `docs/features/image-generation.ru.md` §17.8 (+ EN) — механика, таблица
   эндпоинтов, API балансера, что именно проверяется и чего пока нет.
 
 ### ✅ Проверено
@@ -9230,9 +9287,9 @@ max 13.3%», «GPU Утилизация: min 40.0% / max 40.0%».
 
 ### 📚 Документация
 
-- `docs/image-generation.md` §17.2 (обновлённая таблица звеньев), §17.6 (доктрина:
+- `docs/features/image-generation.ru.md` §17.2 (обновлённая таблица звеньев), §17.6 (доктрина:
   правило, реестр opt-in переменных, форма ответа об ошибке и кто что добавляет) —
-  и то же в `docs/en/image-generation.md`.
+  и то же в `docs/features/image-generation.ru.md`.
 - Поле `exclusiveLockTimeoutSec` в §5: дефолт `0` = предохранитель снят, с
   объяснением живого случая (лок снимался посреди 22-минутной генерации).
 - `deployments/README.md`: раздел «Сборка образов: imageworker собирайте ЧЕРЕЗ
@@ -9324,7 +9381,7 @@ max 13.3%», «GPU Утилизация: min 40.0% / max 40.0%».
 
 ### 📚 Документация
 
-- `docs/image-generation.md` §17 и `docs/en/image-generation.md` §17: полная
+- `docs/features/image-generation.ru.md` §17 и `docs/features/image-generation.ru.md` §17: полная
   **цепочка таймаутов** (nginx → балансер → воркер → движок) с указанием, где какое
   значение меняется; разбор, почему 504 ≠ нехватка ресурсов; как движок использует
   RAM (`--offload-to-cpu` = `--params-backend '*=cpu'`, правило «RAM + VRAM > размер
@@ -9434,7 +9491,7 @@ max 13.3%», «GPU Утилизация: min 40.0% / max 40.0%».
   дефектами имён переменных, заменённый на `stack.yml`, о чём сам README пишет
   выше. Теперь список начинается с канонического файла и ссылается на карту
   остальных.
-- **`docs/deployment-stack.md` §9** — таблица «файл → назначение → статус»
+- **`docs/operations/deployment-stack.ru.md` §9** — таблица «файл → назначение → статус»
   уточнена: помечены оверлеи, которые по замыслу не проходят `config` в одиночку
   (`agent.gpu.yml`), и записано, что было удалено в этой ревизии.
 
@@ -9878,7 +9935,7 @@ cppworker не пострадал, потому что его агентская
 
 - `deployments/.env.example`: новый раздел «EMBEDDED METRICS AGENT» — обе
   переменные, их порты и симптом «бэкенд есть, метрик нет».
-- `docs/deployment-stack.md` §4.4: таблица встроенных сборщиков, проверка по
+- `docs/operations/deployment-stack.ru.md` §4.4: таблица встроенных сборщиков, проверка по
   логу воркера (`embedded agent started`) и команда пересоздания воркера.
 
 ## [0.7.31 — R-MultiHost, часть 2: воркер сам восстанавливает регистрацию, балансер не отдаёт чужие записи сразу после старта, 2026-10-07]
@@ -10043,7 +10100,7 @@ registration guard: rejected telemetry from a node that does not own the backend
 
 ### 📚 Документация
 
-- `docs/deployment-stack.md` §4.4 переписан: таблица совпадающих
+- `docs/operations/deployment-stack.ru.md` §4.4 переписан: таблица совпадающих
   идентификаторов, разбор симптома, правила guard'а и предупреждение остановить
   внешний `agent` на worker-хосте (два сборщика на одну запись недопустимы).
 
@@ -10093,11 +10150,11 @@ registration guard: rejected telemetry from a node that does not own the backend
 Проверено по живой паре: порт `18081` у машины с воркерами ЗАКРЫТ, а `18092`/`18093`
 открыты, то есть воркеры не могут дойти до балансера — регистрации не будет даже
 в его логах. Диагностика в 4 шага и `curl` для проверки каждого шага —
-в `docs/deployment-stack.md` §4.4.
+в `docs/operations/deployment-stack.ru.md` §4.4.
 
 ### 📄 Документация
 
-- `docs/deployment-stack.md` §4.4 «Вторая машина с воркерами»: что задать в `.env`
+- `docs/operations/deployment-stack.ru.md` §4.4 «Вторая машина с воркерами»: что задать в `.env`
   (BALANCER_URL, BACKEND_HOST, уникальные ID), команды запуска, разбор 409,
   диагностика за 4 шага и напоминание, что модели на каждой машине свои.
 - Таблица сценариев в §1 приведена к новому составу профилей.
@@ -10227,7 +10284,7 @@ compose валидирует зависимости ДАЖЕ для сервис
 
   Все четыре состава проверены `docker compose config --services`; живой стенд
   (профиль `full`) совпадает с объявленным составом.
-- **`docs/deployment-stack.md`**: таблица сценариев переписана, добавлен раздел
+- **`docs/operations/deployment-stack.ru.md`**: таблица сценариев переписана, добавлен раздел
   «4.1 Смешанный режим: Ollama и llama.cpp одновременно» — таблица поверхностей
   и портов (18079 OpenAI / 18080 Ollama / 18081 admin), роль роутеров, порядок
   подъёма обоих типов, команды проверки и ловушка `backendEngine: ollama_api`
@@ -10925,7 +10982,7 @@ Open WebUI):
 
 ## [0.7.13 — Каталог image-моделей и загрузка по запросу из инструмента (balancer r83-submodule-v90 + webui r83-submodule-v92, 2026-10-06)]
 
-Требование оператора (план `plans/2026-10-06-image-tool-catalog-autoload.md`):
+Требование оператора (план `docs/plans/2026-10-06-image-tool-catalog-autoload.md`):
 «разрешить инструменту самому загружать модель» и «отдавать модели каталог с
 параметрами и описаниями». До этого текстовая модель получала `generate_image`
 **только когда image-модель уже в VRAM**, не знала, какие модели вообще доступны, и
@@ -10978,7 +11035,7 @@ Open WebUI):
   (балансер запущен не из корня репозитория, другой WORKDIR в контейнере), описания
   моделей не пропадают; битый файл по-прежнему даёт 500 с причиной. Тест ловит
   расхождение вшитой копии с `config/image-model-catalog.json`.
-- Документация: `docs/image-generation.md` §16 (ru) — контракт каталога, таблица
+- Документация: `docs/features/image-generation.ru.md` §16 (ru) — контракт каталога, таблица
   полей, флаги, сценарий «пользователь просит картинку → каталог → автозагрузка →
   картинка», диагностика; флаги добавлены и в §14.5.
 
@@ -11578,8 +11635,8 @@ imageworker?».
 - `README.md`: обновлено описание (генерация изображений как второй тип бэкенда),
   раздел «Что нового» приведён к текущему релизу, в таблицу портов добавлены
   `18079` (OpenAI-поверхность изображений) и `18093` (API imageworker).
-  `docs/en/README.md` — то же в английской шапке.
-- `docs/image-generation.md` (§8.1, +en): разбор «какие файлы видно в поиске и что
+  `docs/README.ru.md` — то же в английской шапке.
+- `docs/features/image-generation.ru.md` (§8.1, +en): разбор «какие файлы видно в поиске и что
   реально грузится» — фильтр весов `.gguf/.safetensors/.sft/.ckpt`, вывод ролей из
   имён (`ae.safetensors → vae` и т.д.) и нативная загрузка safetensors движком;
   отдельная оговорка про непроверенную поддержку `.sft`.
@@ -12087,7 +12144,7 @@ Q4_0 (1.5 GB) на RTX 3070. Картинка 512×512, полученная **�
 - CI: сборка `sdworker` и `mock-sdserver` в обоих job'ах, тесты `internal/sdbackend` и
   `cmd/sdworker`, новый шаг живого E2E на self-hosted Windows-раннере
   (`scripts/image-e2e-smoke.ps1`) и in-process smoke клиентских сценариев на ubuntu-fallback.
-- `docs/en/image-generation.md` — EN-зеркало документации; в русской версии добавлены
+- `docs/features/image-generation.ru.md` — EN-зеркало документации; в русской версии добавлены
   разделы про `balancing.image`, discovery и живой стенд.
 
 ### ✅ Проверка
@@ -12175,7 +12232,7 @@ Q4_0 (1.5 GB) на RTX 3070. Картинка 512×512, полученная **�
 - Живой E2E `scripts/image-e2e-smoke.ps1` (мок `sd-server` + `sdworker` + балансер) — **17/17 PASS**;
   отдельно проверены гейт (профиль 8000 MB при 2496 MB free → `503 insufficient_vram` + hint;
   профиль 64 MB → 200 + лок acquired/released; оценка unknown → 200 согласно fail-open дефолту).
-- Документация: `docs/image-generation.md` дополнена разделами про `balancing.image` и discovery.
+- Документация: `docs/features/image-generation.ru.md` дополнена разделами про `balancing.image` и discovery.
 
 ## [0.6.0 — R-Image: генерация изображений (тип `image_cpp`, OpenAI-порт 18079, `sdworker`, WebUI) (2026-10-02)]
 
@@ -12266,14 +12323,14 @@ Q4_0 (1.5 GB) на RTX 3070. Картинка 512×512, полученная **�
 - `tests/image_surface_smoke_test.go` — 7/7 PASS (SillyTavern, Open WebUI, LibreChat, AnythingLLM, n8n, изоляция, OpenAI-конверт).
 - `scripts/image-e2e-smoke.ps1` — живой E2E реальными процессами (мок `sd-server` + `sdworker` + балансер):
   **17/17 PASS**, включая seed-нормализацию на проводе, CORS/OPTIONS, изоляцию текста и A1111-заглушки.
-- Документация: `docs/image-generation.md` (подключение клиентов), `docs/research-sdcpp-lowvram-integration.md`
-  (движок/флаги/модели/замеры), `plans/2026-09-27-image-generation-backend-plan.md` (план и статус фаз).
+- Документация: `docs/features/image-generation.ru.md` (подключение клиентов), `docs/archive/research/sdcpp-lowvram-integration.ru.md`
+  (движок/флаги/модели/замеры), `docs/plans/2026-09-27-image-generation-backend-plan.md` (план и статус фаз).
 
 ## [0.5.50 — D6 закрыт: контракт `done`-чанка по коду клиента + честные поля режима (2026-09-27)]
 
 ### 📋 D6: контракт `done`-чанка зафиксирован под реального клиента
 
-План A10 (`plans/2026-09-25-qwen38-load-context-dup-and-infra.md`, блок 3) требовал
+План A10 (`docs/plans/2026-09-25-qwen38-load-context-dup-and-infra.md`, блок 3) требовал
 «зафиксировать контракт под версию OpenWebUI из деплоя». Проверка показала, что
 такой версии нет и быть не может: **OpenWebUI в деплой не входит** — в compose
 только наш дашборд `ollama-legion/webui`, а chat-клиент оператор запускает снаружи
@@ -12925,12 +12982,12 @@ per-model профиль. Загрузка же идёт по `opts.KVCacheType`
 веса `×0.7` в прежнем коде). Поведение не изменилось, рабочий стек не тронут.
 
 План миграции и таблица «какая находка чем закрывается»:
-`plans/2026-09-25-memory-fit-subsystem.md`.
+`docs/plans/2026-09-25-memory-fit-subsystem.md`.
 
 Верификация R83 на **реальном GPU** (RTX 3070 8 GB + тот же
 `Qwen3.8-27B-UD-Q4_K_M.gguf`, 16 464 440 224 байт), образ
 `ollama-legion/cppworker:r83-gpu-local`, отдельный standalone-контейнер рядом с
-рабочим стеком. Разбор и числа — `plans/2026-09-25-qwen38-load-context-dup-and-infra.md`, §11.
+рабочим стеком. Разбор и числа — `docs/plans/2026-09-25-qwen38-load-context-dup-and-infra.md`, §11.
 
 ### 🐛 Ollama-тег ломал таймаут-эвристику: 120 s вместо 1800 s
 
@@ -13210,7 +13267,7 @@ POST /api/models/load-with-params  {"name":"qwen3.8:latest","contextSize":131072
 (15.3 ГБ, 64 слоя): при **n_ctx=32768** модель отвечает без ошибок, при **65536** и
 **128000** — нет; клиент **OpenWebUI** показывал ответ **дважды**, Cline получал
 `Did not receive done or success response in stream`. Разбор дал восемь
-независимых дефектов — закрыты все. План: `plans/2026-09-25-qwen38-load-context-dup-and-infra.md`.
+независимых дефектов — закрыты все. План: `docs/plans/2026-09-25-qwen38-load-context-dup-and-infra.md`.
 
 ### 🐛 /monitor был пустым: `updateText is not defined`
 
@@ -13339,7 +13396,7 @@ llama.cpp-стенде счётчик всегда был нулевым, хот
 * Единый токен cache-busting: `?v=` был пер-файловым (`monitor.html` тянул `R66d`
   рядом с `R77`), теперь один на сборку и подставляется в образе из `VERSION`.
 * Добавлен ключ i18n `common.search` (использовался, но отсутствовал).
-* Раздел «n_ctx на 24 GB» в `docs/ENV_VARS.md`.
+* Раздел «n_ctx на 24 GB» в `docs/api/env-vars.ru.md`.
 
 ### ⚠️ Что осталось на стенде
 
@@ -13422,7 +13479,7 @@ llama.cpp-стенде счётчик всегда был нулевым, хот
 ### 🐛 Хвосты P4: health-статус, усыновление реплик по всем метрикам, честный обход копий
 
 Четыре дефекта, найденных нагрузочным стендом P4 (отчёт
-`plans/2026-09-25-placement-p4-load-kpi.md`), закрыты.
+`docs/plans/2026-09-25-placement-p4-load-kpi.md`), закрыты.
 
 **1. Heartbeat агента больше не владеет health-статусом бэкенда**
 
@@ -13486,7 +13543,7 @@ a/b/a, приоритет наименее загруженного), `internal/
 
 Нагрузочный стенд (2×cppworker на одной RTX 3070, стратегия `replicated`)
 вскрыл три дефекта — они закрыты в этом же раунде; полный отчёт с таблицами:
-`plans/2026-09-25-placement-p4-load-kpi.md`.
+`docs/plans/2026-09-25-placement-p4-load-kpi.md`.
 
 **1. Группа репликации усыновляет уже загруженные копии**
 
@@ -13720,7 +13777,7 @@ legacy-поля `pending`/`processing` (всегда пусты — сохран
 
 ### ✨ Placement policy, этап P3: честный отказ вместо тихой подмены стратегии (§6)
 
-План `plans/2026-09-23-multi-backend-placement-policy.md` §6 требует: «никогда не
+План `docs/plans/2026-09-23-multi-backend-placement-policy.md` §6 требует: «никогда не
 выдавать 200 с неполным/чужим ответом и не уходить в другую стратегию молча».
 До R76 политика, которую нельзя было исполнить, молча обслуживалась обычным
 путём (single) — оператор видел только строку в логе.
@@ -13772,7 +13829,7 @@ allowDegraded → 503 с числами; `requireHomogeneous` сужает на�
 
 ### ✨ Placement policy, этап P1.5: auto выбирает стратегию по VRAM-fit (§4)
 
-Завершение правила `auto` из `plans/2026-09-23-multi-backend-placement-policy.md`
+Завершение правила `auto` из `docs/plans/2026-09-23-multi-backend-placement-policy.md`
 (§4): раньше auto различала только «алиас → pool» и «prefer=replicated +
 достаточно бэкендов → replicated», теперь учитывается **вместимость по VRAM**.
 
@@ -13823,7 +13880,7 @@ replicated при prefer+fit и созданная группа; degraded с ч�
 
 ### ✨ Placement policy, этап P1: pool и replicated исполняются политикой
 
-Продолжение `plans/2026-09-23-multi-backend-placement-policy.md`. В P0 (R72)
+Продолжение `docs/plans/2026-09-23-multi-backend-placement-policy.md`. В P0 (R72)
 политика только резолвила стратегию и показывала её оператору — маршрутизацию
 определял глобальный `operatingMode`. P1 подключает исполнение.
 
@@ -13948,7 +14005,7 @@ fieldalignment для новых структур чист.
 ### ✨ Placement policy (этап P0: resolution + наблюдаемость)
 
 Продолжение направления «placement policy для мультибэкенда»
-(`plans/2026-09-23-multi-backend-placement-policy.md`). Проблема: режим работы
+(`docs/plans/2026-09-23-multi-backend-placement-policy.md`). Проблема: режим работы
 балансера — **один глобальный переключатель** `balancing.operatingMode`
 (`standard` / `replication` / `rpc_coordinator` / `virtual_router` /
 `distributed_inference`), который обслуживает **все** модели одинаково, а
@@ -14211,7 +14268,7 @@ heartbeat-обработчиках/агенте (или явный приори�
 * **Тесты не пачкают рабочее дерево**: `tests/testdata/state.json` (трекаемая
   фикстура) больше не перезаписывается прогонами — тесты `./tests` копируют её во
   временный каталог (`testStatePath(t)`); `git status` после прогона чистый.
-* **plans/README.md** актуализирован (HEAD/образы, таблица текущего раунда).
+* **docs/plans/README.md** актуализирован (HEAD/образы, таблица текущего раунда).
 * **Self-hosted CI-раннер `skyworker-ci`**: сервис запущен, но связь с GitHub
   отвалилась (`SocketException 995`, backoff ~3.2 ч), поэтому джоба
   «Test (self-hosted Windows)» висит в очереди. Нужен перезапуск от
@@ -14644,7 +14701,7 @@ Min floor = `cap/10` (вместо hardcoded 3min) — позволяет unit-�
 - `deployments/.env.bundled-with-agent.example`: +3 ENV + Round 35c notes
 - `deployments/docker-compose.cppworker-bundled-with-agent.yml`:
   +3 env vars + image tag r35 → r35c
-- `plans/round-35c-env-tunable-polling.md` (NEW, 12KB): полный план
+- `docs/plans/round-35c-env-tunable-polling.md` (NEW, 12KB): полный план
 
 **Image**: `ollama-legion/balancer:cppworker-bundled-r35c` (61.6MB, SHA
 `b5d19ab5759b`). Built 2026-08-13 11:00 UTC.
@@ -14683,7 +14740,7 @@ default cap. Для 70B+ моделей поднять `MAX_WAIT=1800`.
 Три связанных бага, все исправлены в cppworker image
 `gpu-86-abort-r35` (3.86GB) + balancer image
 `cppworker-bundled-r35` (61.6MB). Полный план — в
-[`plans/round-35-cppworker-bundled-r35.md`](plans/round-35-cppworker-bundled-r35.md).
+[`docs/plans/round-35-cppworker-bundled-r35.md`](docs/plans/round-35-cppworker-bundled-r35.md).
 
 1. **Reload→Load fallback** (Round 35 main, commit `df7962e`):
    - `internal/balancer/nctx_reload_handlers.go:786` — async reload path
@@ -14719,9 +14776,9 @@ default cap. Для 70B+ моделей поднять `MAX_WAIT=1800`.
 
 ### 📚 Документация
 
-- `plans/round-35-cppworker-bundled-r35.md` (NEW) — полный план с 9
+- `docs/plans/round-35-cppworker-bundled-r35.md` (NEW) — полный план с 9
   reusable cross-project patterns
-- `plans/README.md` (UPDATED) — Round 35 row добавлен, roadmap обновлён
+- `docs/plans/README.md` (UPDATED) — Round 35 row добавлен, roadmap обновлён
 - `README.md` (UPDATED) — v0.5.22 entry в "Что нового" + architecture diagram
 - `deployments/.env.bundled-with-agent.example` (UPDATED) — Round 34/35
   env vars (LB_NCTX_PREFLIGHT_*, CPPWORKER_GPU_TAG=86-abort-r35)
@@ -15511,7 +15568,7 @@ natural completion.
 - Docker: `docker/cppworker/Dockerfile.cpu` (4 bug fixes)
 - Tests: `c/bridge/bridge_abort_test.go` (NEW), `c/bridge/tests/abort_syntax_*` (NEW),
   `cmd/cppworker/abort_watcher_test.go` (NEW)
-- Docs: `plans/cppworker-abort-api/PLAN.md` (33KB, все 5 open questions resolved)
+- Docs: `docs/plans/cppworker-abort-api/PLAN.md` (33KB, все 5 open questions resolved)
 
 **Not done (deferred per spec)**:
 - Hard cancel через pthread_kill (PLAN.md §3) — явно отложен как
@@ -15524,7 +15581,7 @@ natural completion.
 - v0.5.15 (Round 31 #1): auto-stream workaround — основа для Round 31 #6
 - v0.5.15 docs: original cancel через callback (5% gap покрыт)
 - Round 31 #1 + #6 = 100% cancel coverage
-- PLAN: `plans/cppworker-abort-api/PLAN.md` (33KB, 6 phases, 10-17h estimated)
+- PLAN: `docs/plans/cppworker-abort-api/PLAN.md` (33KB, 6 phases, 10-17h estimated)
 - Spec: `c/bridge/ABORT_API_C_PATCH.md` (16KB, applied)
 
 ## [0.5.15 — 2026-08-05]
@@ -16457,7 +16514,7 @@ GitHub UI. **Все остальные CI scripts (`check-runner.ps1`, `setup-ru
 - **Example IP в demo data**: `10.0.0.50/55` в `cmd/monitor/monitor.html`
   и `webui/js/monitor/api.js` гармонизированы с `192.0.2.100` (используется
   в остальных записях) → `192.0.2.50/55`.
-- **Test fixtures**: `10.0.0.1` в `plans/pre-existing-test-failures.md`,
+- **Test fixtures**: `10.0.0.1` в `docs/plans/pre-existing-test-failures.md`,
   `10.99.99.99` в `scripts/cline_routing_test.py` → RFC5737.
 - **nctxReload harmonized**: `config/config.example.json` приведён к
   значениям из `config/config.json` и `.env.bundled-full` (131072/120,
@@ -16516,7 +16573,7 @@ GitHub UI. **Все остальные CI scripts (`check-runner.ps1`, `setup-ru
 - `scripts/run-setup-runner-elevated.ps1` — убран реальный PAT
 - `cmd/monitor/monitor.html` — `10.0.0.50` → `192.0.2.50`
 - `webui/js/monitor/api.js` — `10.0.0.55/50` → `192.0.2.55/50`
-- `plans/pre-existing-test-failures.md` — `10.0.0.1` → `192.0.2.1`
+- `docs/plans/pre-existing-test-failures.md` — `10.0.0.1` → `192.0.2.1`
 - `scripts/cline_routing_test.py` — `10.99.99.99` → `192.0.2.99`
 - `scripts/start-bundled-full.ps1` — пофикшен путь копирования .env.example
 - `config/config.example.json` — nctxReload 131072/120 (harmonized)
@@ -16691,7 +16748,7 @@ header. В проде между клиентом и cppworker должен бы
 - **new** `cmd/cppworker/user_id.go` — `getUserID` + `sanitizeUserID`
 - **new** `cmd/cppworker/user_id_test.go` — 4 unit tests (12 sub-tests для sanitize)
 - **new** `cmd/cppworker/handlers_user.go` — `handleInferUsers`
-- **new** `plans/round-18-p0.3-user-parallel.md` — план
+- **new** `docs/plans/round-18-p0.3-user-parallel.md` — план
 - `internal/cppbackend/config.go` — `MaxParallelPerUser` field + env loading + default
 - `internal/cppbackend/backend.go` — `userTracker` field + `NewUserTracker()` init + `UserTracker()` accessor
 - `cmd/cppworker/handlers_chat.go` — admission в `handleChat`
@@ -16766,7 +16823,7 @@ None. Полностью backward-compatible.
 
 ## [0.5.4 — 2026-08-03]
 
-MINOR-релиз. **Round 22 — общий аудит полноты проброса Ollama API** (plans/round-22-balancer-general-audit.md).
+MINOR-релиз. **Round 22 — общий аудит полноты проброса Ollama API** (docs/plans/round-22-balancer-general-audit.md).
 
 Закрывает 12 ранее необнаруженных багов в пробросе Ollama/OpenAI API до llama.cpp бэкендов:
 read/mgmt endpoints зависали на 10-60s, `/v1/embeddings` не работал, unsupported endpoints
@@ -16829,7 +16886,7 @@ read/mgmt endpoints зависали на 10-60s, `/v1/embeddings` не рабо
 - `cmd/cppworker/handlers_openai.go` — handleV1Embeddings extensions (batch + load)
 - `cmd/cppworker/handlers_embeddings.go` — cleanup (убран handleOpenAIEmbeddings)
 - `cmd/cppworker/router.go` — убран duplicate registration
-- `plans/round-22-balancer-general-audit.md` — обновлён до "Closed" статуса
+- `docs/plans/round-22-balancer-general-audit.md` — обновлён до "Closed" статуса
 
 ### ⚠️ Breaking changes
 
@@ -16855,7 +16912,7 @@ HF resume+cleanup, и ships `bundled-full` — single-compose стек для pr
 
 ### 🟡 Round 17: Reasoning routing for unknown models (commits `775f011` + `b971104` + `02bc98f`)
 
-**Bug** (см. `plans/bug-2026-07-31-reasoning-not-routed.md`): при `CPPWORKER_ENABLE_REASONING=true`
+**Bug** (см. `docs/plans/bug-2026-07-31-reasoning-not-routed.md`): при `CPPWORKER_ENABLE_REASONING=true`
 + soft prompt injection в `handlers_chat.go`, парсер `SplitReasoningContent` срабатывал
 ТОЛЬКО для моделей из `IsReasoningModel()` whitelist (qwen3.5, qwen3.6, deepseek-r1, ...).
 Для `qwen3-instruct` (нет в whitelist) reasoning text попадал в `content` вместо
@@ -17416,7 +17473,7 @@ return inst.handle.Infer(prompt, params)        // 4. work
 - `internal/cppbackend/slot_manager.go` (новый, 220 строк)
 - `internal/cppbackend/round13_slot_test.go` (новый, 250 строк)
 - `internal/cppbackend/backend.go` (+76 строк, slots + Acquire/Release wiring)
-- `docs/round-13-n-parallel-full-design.md` (новый, design proposal)
+- `docs/archive/rounds/round-13-n-parallel-design.md` (новый, design proposal)
 
 ### Container state (post-v0.4.11 deploy)
 
@@ -18134,7 +18191,7 @@ retry отсутствовал.
 
 **Цель**: production-ready `virtual_router` mode для high-availability
 балансировки одной модели по нескольким backends. План см.
-`plans/2026-q3-production-ready-plan.md` §P.2.
+`docs/plans/2026-q3-production-ready-plan.md` §P.2.
 
 ### Сделано (Step 1-5 в одном коммите `a320f3a`)
 
@@ -18194,7 +18251,7 @@ retry отсутствовал.
 - 4 Proxy.ServeHTTP integration теста: intercept, standard mode noop,
   non-virtual model fallback, non-rpc path noop.
 
-**Step 5 — docs** (этот commit + `docs/virtual-router.md`):
+**Step 5 — docs** (этот commit + `docs/architecture/virtual-router.md`):
 - User guide с архитектурой, конфигурацией, error responses, метриками,
   примерами, сравнением с P.1, известными ограничениями.
 
@@ -18314,7 +18371,7 @@ post-failover semantic).
 - **No auth**: в отличие от P.1, virtual_router пока не проверяет token.
   Phase 9. ✅ DONE (commit `1b0e537` — TokenAuthenticator wire)
 
-См. также: `docs/virtual-router.md`, `docs/phase-8-rpc-coordinator.md`.
+См. также: `docs/architecture/virtual-router.md`, `docs/archive/rounds/phase-8-p1-rpc-coordinator.md`.
 
 ## [Unreleased — 2026-07-11] — Phase 8 P.3: research-spike (post-1.0)
 
@@ -18322,7 +18379,7 @@ post-failover semantic).
 `internal/rptensor/` stub. **NO code changes** — pure research + planning.
 Implementation отложена в post-1.0 фазу.
 
-**Deliverable:** `docs/phase-8-p3-research.md` (~250 LOC) с comprehensive
+**Deliverable:** `docs/archive/rounds/phase-8-p3-tensor-parallel-research.md` (~250 LOC) с comprehensive
 survey + integration plan + risks.
 
 ### Key findings
@@ -18374,12 +18431,12 @@ P.3 (real ggml/NCCL integration) — **RESEARCH SPIKE COMPLETE**.
 Implementation deferred to post-1.0 (P.4 / P.5 / P.6) при наличии
 CUDA/NCCL expertise + multi-GPU test rig.
 
-См. также: `docs/phase-8-p3-research.md`.
+См. также: `docs/archive/rounds/phase-8-p3-tensor-parallel-research.md`.
 
 ## [Unreleased — 2026-07-11] — Phase 8: rpc_coordinator production mode (P.1)
 
 **Цель**: production-ready rpc_coordinator mode для распределённого
-inference через несколько worker'ов. План см. `plans/2026-q3-production-ready-plan.md`
+inference через несколько worker'ов. План см. `docs/plans/2026-q3-production-ready-plan.md`
 §P.1.
 
 **Сделано в 3 сессиях:**
@@ -18477,7 +18534,7 @@ inference через несколько worker'ов. План см. `plans/2026-
   (только Infer / InferStream errors). Health-check как signal для
   CB — Phase 9 enhancement.
 
-См. также: `docs/phase-8-rpc-coordinator.md`, `docs/rpc-coordinator.md`.
+См. также: `docs/archive/rounds/phase-8-p1-rpc-coordinator.md`, `docs/architecture/rpc-coordinator.ru.md`.
 
 ## [Unreleased — 2026-07-11] — i18n: полный набор EN docs + parity tests
 
@@ -18488,16 +18545,16 @@ WebUI i18n keys синхронизированы между `en.js` и `ru.js` (
 ### Added
 
 **English translations (10 новых EN docs)**:
-- `docs/en/rpc-coordinator.md` — P.1 production mode (10KB, hand-translated)
-- `docs/en/virtual-router.md` — P.2 production mode (10KB, hand-translated)
-- `docs/en/runbook-tools.md` — operational runbook scenarios A-G (29KB)
-- `docs/en/backend-type-isolation.md` — Ollama vs llama.cpp isolation
-- `docs/en/cppworker-metrics-collection.md` — agent metrics
-- `docs/en/cppworker-model-params.md` — n_ctx resolver, profiles, RAM fallback
-- `docs/en/metrics.md` — full metrics reference
-- `docs/en/phase-7-style-compliance.md` — style guide
-- `docs/en/phase-8-p3-research.md` — Tensor Parallelism research
-- `docs/en/phase-8-rpc-coordinator.md` — P.1 implementation log
+- `docs/architecture/rpc-coordinator.ru.md` — P.1 production mode (10KB, hand-translated)
+- `docs/architecture/virtual-router.md` — P.2 production mode (10KB, hand-translated)
+- `docs/operations/runbook-tools.ru.md` — operational runbook scenarios A-G (29KB)
+- `docs/architecture/backend-type-isolation.ru.md` — Ollama vs llama.cpp isolation
+- `docs/api/cppworker-metrics-collection.ru.md` — agent metrics
+- `docs/features/cppworker-model-params.ru.md` — n_ctx resolver, profiles, RAM fallback
+- `docs/api/metrics.ru.md` — full metrics reference
+- `docs/development/style-compliance.ru.md` — style guide
+- `docs/archive/rounds/phase-8-p3-tensor-parallel-research.md` — Tensor Parallelism research
+- `docs/archive/rounds/phase-8-p1-rpc-coordinator.md` — P.1 implementation log
 
 **WebUI i18n additions** (5 missing keys found via HTML scan, добавлены в en.js + ru.js):
 - `backends.ollama_port` — "Ollama Port" / "Ollama Порт"
@@ -18516,7 +18573,7 @@ WebUI i18n keys синхронизированы между `en.js` и `ru.js` (
   "Max Concurrent", "Max Models", "Все") получили `data-i18n` атрибуты.
 - Теперь переключение языка в реальном времени работает для всех полей.
 
-**Docs README** (`docs/README.md`):
+**Docs README** (`docs/README.ru.md`):
 - Добавлена секция "🌍 Multilingual" с ссылками на оба языка.
 - Каждый документ в таблице имеет ссылку на свой EN аналог.
 - 19 EN docs теперь доступны (15 main + 4 reference).
@@ -18615,9 +18672,9 @@ ubuntu-latest (fallback, ephemeral). Это разблокирует P.4 (CI/CD 
    - Таймаут 5 мин, max-issues-per-linter: 50.
 
 3. **README.md** — обновлены CI badges:
-   - `[![CI](actions/workflows/ci.yml/badge.svg)]` — реальный GitHub Actions badge.
-   - `[![Go Report Card](goreportcard.com/...)]` — качество кода.
-   - Status line ссылается на оба файла (`.github/workflows/ci.yml` + `docs/ci/self-hosted-runner.md`).
+   - `[![CI](https://github.com/BarsSky/ollamalegion/actions/workflows/ci.yml/badge.svg)]` — реальный GitHub Actions badge.
+   - `[![Go Report Card]()]` — качество кода.
+   - Status line ссылается на оба файла (`.github/workflows/ci.yml` + `docs/development/ci-self-hosted-runner.ru.md`).
 
 **Архитектура CI:**
 
@@ -18661,7 +18718,7 @@ push/PR ──┬──► [self-hosted Windows] ──┐
 - `only-new-issues: true` означает, что pre-existing lint warnings не валят CI,
   но новый код должен проходить чисто. Это стандартная практика для устаревших проектов.
 
-**Refs:** plans/2026-q3-roadmap.md §7.1, plans/2026-q3-production-ready-plan.md §5 (P.4)
+**Refs:** docs/plans/2026-q3-roadmap.md §7.1, docs/plans/2026-q3-production-ready-plan.md §5 (P.4)
 **Files:** 2 new + 1 modified, +275 LOC, 0 Go-tests
 **Branch:** feature/7.1-github-actions (от feature/7.1a-self-hosted-runner)
 
@@ -18688,17 +18745,17 @@ Windows-специфичные тесты (`internal/agent/nvml_unix.go` build t
   проверок (CI prerequisites, runner service, persistent build cache, write permissions,
   GitHub API connectivity, workflow files). Exit code: 0 = OK, 1 = warnings, 2 = errors.
   Подсчитывает OK/WARN/ERR счётчики.
-- `docs/ci/self-hosted-runner.md` (новый, ~180 LOC) — полная документация: зачем нужен
+- `docs/development/ci-self-hosted-runner.ru.md` (новый, ~180 LOC) — полная документация: зачем нужен
   self-hosted (таблица сравнения с GitHub-hosted), prerequisites, установка за 5 минут,
   метки и их использование, безопасность (3 стратегии защиты от supply-chain атак),
   обслуживание (обновление runner'а, логи, очистка диска, удаление), troubleshooting
   (5 типичных проблем), дальнейшее развитие (TODO: ephemeral Docker runner).
-- `plans/2026-q3-roadmap.md` — добавлена строка `7.1a | Self-hosted CI runner` (0.5–1 день)
+- `docs/plans/2026-q3-roadmap.md` — добавлена строка `7.1a | Self-hosted CI runner` (0.5–1 день)
   в секцию `## 7. CI/CD и тестирование`. Обновлён `## 7.1` — ссылка на self-hosted runner
   с fallback на GitHub-hosted.
-- `plans/2026-q3-production-ready-plan.md` — добавлен раздел «Предусловие — 7.1a Self-hosted
+- `docs/plans/2026-q3-production-ready-plan.md` — добавлен раздел «Предусловие — 7.1a Self-hosted
   runner» в `## 5. P.4 — CI/CD scaffolding` (P.4 теперь зависит от 7.1a).
-- `README.md` — добавлен CI badge `[![CI](https://img.shields.io/badge/CI-self--hosted--windows--blue.svg)](docs/ci/self-hosted-runner.md)`
+- `README.md` — добавлен CI badge `[![CI](https://img.shields.io/badge/CI-self--hosted--windows--blue.svg)](docs/development/ci-self-hosted-runner.ru.md)`
   + статус-строка с командами проверки/установки runner'а.
 
 **Результат**: self-hosted Windows runner готов к работе. Следующий шаг — `7.1` (CI workflow
@@ -18713,9 +18770,9 @@ Windows-специфичные тесты (`internal/agent/nvml_unix.go` build t
 3. ✅ Регистрирует runner с метками `[self-hosted, windows, ollamalegion-ci]`.
 4. ✅ Устанавливает как Windows service, автозапуск при загрузке.
 5. ✅ `scripts/check-runner.ps1` — 6 секций диагностики, exit codes 0/1/2.
-6. ✅ `docs/ci/self-hosted-runner.md` — 180 LOC, 5 troubleshooting секций, TODO список.
-7. ✅ `plans/2026-q3-roadmap.md` §7.1a — задача задокументирована с оценкой.
-8. ✅ `plans/2026-q3-production-ready-plan.md` §5 — P.4 ссылается на 7.1a как блокирующую.
+6. ✅ `docs/development/ci-self-hosted-runner.ru.md` — 180 LOC, 5 troubleshooting секций, TODO список.
+7. ✅ `docs/plans/2026-q3-roadmap.md` §7.1a — задача задокументирована с оценкой.
+8. ✅ `docs/plans/2026-q3-production-ready-plan.md` §5 — P.4 ссылается на 7.1a как блокирующую.
 9. ✅ `README.md` — CI badge + quick-start команды для setup/check.
 10. ✅ Текущая машина готова: Go 1.25.4, Docker 29.5.3, persistent cache работает.
 
@@ -19955,17 +20012,17 @@ llama_cpp бэкендов кластера. До этой сессии:
 и балансировщик (`internal/balancer/llamacpp_handlers_inference.go`).
 Задача закрыта как **not-applicable** — другие методы работы (прямой embeddings
 через балансировщик + cocoindex MCP-сервис для code-search) уже настроены.
-Описание roadmap оставлено для истории в `plans/2026-q3-roadmap.md` (секция 1.1).
+Описание roadmap оставлено для истории в `docs/plans/2026-q3-roadmap.md` (секция 1.1).
 
 **Изменения**:
-- `plans/2026-q3-roadmap.md`:
+- `docs/plans/2026-q3-roadmap.md`:
   - Секция 1.1 — добавлен warning-блок «⚠️ NOT APPLICABLE» с обоснованием.
   - Секция 9 (Месяц 1 Week 2) — помечен как SKIPPED, рекомендован переход к Models tab.
   - Секция 10 (Приоритеты) — PF-5/6/7 отмечены как ✅ DONE Session 13.
 
 ### Fixed (Roadmap Q3 — PF-5/PF-6/PF-7: закрытие pre-existing failures)
 
-**Задача**: из `plans/2026-q3-roadmap.md` раздел 1.2–1.4 — три pre-existing
+**Задача**: из `docs/plans/2026-q3-roadmap.md` раздел 1.2–1.4 — три pre-existing
 test failure в `tests/` оставались красными даже после Session 4:
 
 - **PF-5**: `TestOpenAIChat_HeaderTimeout_StillWorks` (timeout 10s при
@@ -20109,7 +20166,7 @@ curl -X POST -H "X-API-Token: $LB_TOKEN" -H "Content-Type: application/json" \
 5. `go test -tags llama_stub -count=1 ./internal/...` — все тесты
    зелёные.
 6. Pre-existing failures в `./tests/...` (PF-3, PF-4, PF-5, PF-6, PF-7)
-   задокументированы в `plans/pre-existing-test-failures.md` и **не
+   задокументированы в `docs/plans/pre-existing-test-failures.md` и **не
    связаны** с этим изменением.
 
 ### Bugfixes (Session 2 — большая модель на 20GB VRAM + обрыв стрима)
@@ -20292,7 +20349,7 @@ fallback на `n_ctx=4096`, либо ошибку.
     (`tests/first_byte_timeout_test.go:114`) — flaky test,
     `httptest.Server.Close()` зависает на `WaitGroup`. Требует
     `srv.CloseClientConnections()` перед `srv.Close()`.
-  Подробности в `plans/pre-existing-test-failures.md` (секция «Обнаруженные
+  Подробности в `docs/plans/pre-existing-test-failures.md` (секция «Обнаруженные
   pre-existing failures»).
 
 ### Техдолг (Session 1 — A-1, A-2, A-3)
@@ -20616,7 +20673,7 @@ fallback на `n_ctx=4096`, либо ошибку.
     параллельный LoadModel API отменяется (ждёт через `WaitReloadDone`).
   - **Quick-win**: `POST /api/v1/cppworker/reset-reload-counter` уже существует в
     cppworker (cmd/cppworker/handlers_reset_reload.go) — позволяет сбросить
-    `ramFallbackAttempts` без `docker restart` (см. docs/runbook-tools.md).
+    `ramFallbackAttempts` без `docker restart` (см. docs/operations/runbook-tools.ru.md).
 
 ### Добавлено
 - **Конфиг `Balancing.PreflightSyncEnabled` + `Balancing.PreflightSyncTimeoutMs`** —
@@ -20839,7 +20896,7 @@ fallback на `n_ctx=4096`, либо ошибку.
     (en/ru: `wizard.params_title`, `wizard.apply`, `renderers.section_llama_cpp_params`).
   - **Шаг 7 (Тесты)**: `internal/balancer/num_ctx_resolver_test.go` (15+ unit-тестов для resolver),
     `tests/cppworker_lazy_load/` (integration: lazy load 5 сценариев).
-  - **Шаг 8 (Документация)**: `docs/cppworker-model-params.md` (полный справочник параметров
+  - **Шаг 8 (Документация)**: `docs/features/cppworker-model-params.ru.md` (полный справочник параметров
     llama.cpp), `docs/cline-troubleshooting.md` (диагностика n_ctx overflow + рецепт
     увеличения n_ctx через профиль), `docs/rebuild-after-fixes.md` (инструкции по rebuild).
   - **Шаг 9 (Rebuild + верификация)**: документирован в `docs/rebuild-after-fixes.md` —
@@ -20941,7 +20998,7 @@ reload семантика (n_ctx иммутабельна без reload) соб�
 
 - **Новый `deployments/docker-compose.cppworker-bundled.yml`** — минимальный compose на 3 сервиса
   (баллансировщик + cppworker-gpu + webui), без cpu/stub/agent, без профилей. Замена полного
-  `docker-compose.full.yml` для single-GPU dev/test/мини-продакшн. Документация: [docs/deployment-bundled.md](docs/deployment-bundled.md).
+  `docker-compose.full.yml` для single-GPU dev/test/мини-продакшн. Документация: [docs/operations/deployment-stack.ru.md](docs/operations/deployment-stack.ru.md).
 - **Auto-registration cppworker → balancer (`cmd/cppworker/balancer_register.go`)** — новая фоновая
   горутина в cppworker, которая при старте регистрирует себя в балансировщике через
   `POST /api/v1/backends` с заголовком `X-API-Token`. ENV: `CPPWORKER_BALANCER_URL`,

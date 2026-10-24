@@ -1,7 +1,7 @@
 // Package balancer — scenario tests for Phase 8 P.1 (rpc_coordinator).
 //
-// Эти тесты покрывают все documented behaviors из docs/rpc-coordinator.md и
-// plans/2026-q3-production-ready-plan.md §2, особенно в части:
+// Эти тесты покрывают все documented behaviors из docs/architecture/rpc-coordinator.md и
+// docs/plans/2026-q3-production-ready-plan.md §2, особенно в части:
 //   - Все 4 response shapes: OpenAI chat, OpenAI completion, Ollama generate, Ollama chat
 //   - Streaming: SSE (OpenAI) и NDJSON (Ollama)
 //   - Error mapping: 5xx → 502, 4xx passthrough, network → 502, timeout → 504

@@ -15,8 +15,8 @@ import (
 // ЗАЧЕМ ИСКЛЮЧЕНИЕ. Round 40 #3 увёл ВСЕ /api/v1/* на API-сервер (порт 18081),
 // и ветка LlamaCppRouter для runtime-конфига стала недостижимой: эндпоинт
 // GET /api/v1/cppworker/config/runtime отвечал 404, хотя документирован
-// (docs/api.md) и разобран в аудите как дефект C6
-// (docs/AUDIT-client-api-fidelity-2026.md). Путь ниже возвращается в proxy flow,
+// (docs/api/api.ru.md) и разобран в аудите как дефект C6
+// (docs/archive/audits/AUDIT-client-api-fidelity-2026.md). Путь ниже возвращается в proxy flow,
 // где его обрабатывает LlamaCppRouter.Route.
 //
 // Остальные /api/v1/cppworker/* (config/update, model-profiles, load-defaults,

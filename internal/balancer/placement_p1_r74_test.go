@@ -2,7 +2,7 @@ package balancer
 
 // R74 (P1, placement policy): исполнение стратегий pool/replicated/auto.
 //
-// План: plans/2026-09-23-multi-backend-placement-policy.md, этап P1.
+// План: docs/plans/2026-09-23-multi-backend-placement-policy.md, этап P1.
 // P0 (R72) только резолвил стратегию и показывал её оператору; R74 подключает
 // исполнение:
 //   - pool       → тот же VirtualRouter, что и operatingMode=virtual_router,

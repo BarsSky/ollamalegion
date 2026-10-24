@@ -2,7 +2,7 @@
   "version": 1,
   "updatedAt": "2026-09-27",
   "notices": [
-    "Все репозитории в каталоге проверены вручную (см. docs/research-sdcpp-lowvram-integration.md §2.3 и plans/2026-09-27-image-generation-backend-plan.md §6). НЕ заменять их на 'похожие' из поиска HF.",
+    "Все репозитории в каталоге проверены вручную (см. docs/archive/research/sdcpp-lowvram-integration.ru.md §2.3 и docs/plans/2026-09-27-image-generation-backend-plan.md §6). НЕ заменять их на 'похожие' из поиска HF.",
     "Для FLUX/Z-Image/klein GGUF берём ТОЛЬКО leejet/*: city96-GGUF для FLUX — это формат ComfyUI-GGUF, sd.cpp падает с 'new_sd_ctx_t failed'.",
     "Репозитории black-forest-labs/FLUX.1-schnell и black-forest-labs/FLUX.2-dev содержат ae.safetensors (VAE) и ОТДАЮТСЯ ТОЛЬКО с принятой лицензией: без HF_TOKEN загрузка VAE упадёт (HF отвечает 401/gated).",
     "T5-XXL — только квантованный: fp16 9.79 GB против Q4_K_M 2.90 GB, при одном и том же результате.",

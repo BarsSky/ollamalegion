@@ -109,7 +109,7 @@ type Backend struct {
 	// (ollama-native / openai-compatible). Round 51.2 (2026-08-20):
 	// если пусто — EffectiveAPIStyle() выводит из Type. R51.3+ routing
 	// будет использовать EffectiveAPIStyle() вместо isLlamaCppBackend.
-	// См. docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md §2.
+	// См. docs/archive/superpowers/specs/2026-08-19-balancer-api-routing-design.md §2.
 	ApiStyle APIStyle `json:"apiStyle,omitempty"`
 
 	// GPU Mode (auto / gpu / cpu)

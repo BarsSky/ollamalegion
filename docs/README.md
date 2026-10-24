@@ -1,187 +1,162 @@
-﻿# OllamaLegion — документация
+# OllamaLegion - Documentation
 
-> **Версия:** 2.1 (2026-10-24) — актуализация после R230/R231 (AutoTune, стрим Cline,
-> измеренный выигрыш RPC) и релиза [v1.0-rc2](v1.0-rc2-release-notes.md)  
-> **Языки:** [English](en/README.md) | **Русский** (текущий) | **README проекта:** [English](../README.md) / [Русский](../README.ru.md)  
-> **Roadmap:** [`../plans/README.md`](../plans/README.md) | **Audit:** [`audit-2026-06.md`](audit-2026-06.md)
+> **English** (current) | [Russian](README.ru.md)
 >
-> 📋 **Phase 8 (2026-07-11):** полный набор документации доступен на двух языках.
-> См. [`en/README.md`](en/README.md) для English версии документов; новые
-> RPC-документы (`rpc-benchmark-qwen38.md`, `rpc-layout-rules.md`, `rpc-link-bandwidth.md`)
-> пока только на русском.
+> Table of contents for the whole documentation set. One document - one file in its category directory.
+> Naming: `<name>.md` is English, `<name>.ru.md` is Russian.
 
-OllamaLegion — балансировщик нагрузки + WebUI для кластера Ollama и llama.cpp (через CppWorker) с мониторингом GPU/CPU/RAM/Disk/Network и умным распределением запросов.
+Russian is the source language of the project, so a few documents exist only in Russian (a dash `-` in the English column means the English translation is still pending). Historical material (audits, round reports, research notes) lives in [`archive/`](archive/README.md) in its original language.
 
----
+## Contents
 
-## 🌍 Мультиязычность / Multilingual
+- [Getting started](#getting-started)
+- [Architecture](#architecture)
+- [Operations](#operations)
+- [API and reference](#api-and-reference)
+- [Features](#features)
+- [Releases](#releases)
+- [Development](#development)
+- [Plans and session reports](#plans-and-session-reports)
+- [Archive](#archive)
 
-| Язык | Директория | Описание |
-|---|---|---|
-| 🇷🇺 Русский | `./` (текущая) | Все документы на русском (исходный язык) |
-| 🇬🇧 English | [`en/`](en/README.md) | All docs translated to English (15+ files) |
+## Getting started
 
-WebUI (Dashboard) также поддерживает переключение языка в реальном времени:
-- 🌍 В правом верхнем углу → language switcher
-- 🇬🇧 English (`en.js`) / 🇷🇺 Русский (`ru.js`) — автоопределение по `navigator.language`
-- 💾 Выбор сохраняется в `localStorage` (key: `ollamalegion_lang`)
-- Тесты parity: `internal/api/lint_css_i18n_test.go::TestI18nKeyParity_EN_RU`
+Install, configure and bring the stack up.
 
----
-
-## 📚 Содержание
-
-### Основные разделы
-
-| Документ | English | Описание |
-|---|---|---|
-| [**installation.md**](installation.md) | [en/installation.md](en/installation.md) | Требования, Docker, локальная сборка, stub-режим |
-| [**deployment.md**](deployment.md) | [en/deployment.md](en/deployment.md) | Docker Compose, bundled-стек, production-конфигурация, масштабирование |
-| [**agent-deployment.md**](agent-deployment.md) | [en/agent-deployment.md](en/agent-deployment.md) | Развёртывание агента CPU/GPU (включая Windows + WSL2) |
-| [**api.md**](api.md) | [en/api.md](en/api.md) | REST API + WebSocket + CppWorker API + Ollama-совместимость |
-| [**cppworker-model-params.md**](cppworker-model-params.md) | [en/cppworker-model-params.md](en/cppworker-model-params.md) | n_ctx resolver, Per-Model Profiles, RAM fallback, Ollama ↔ OpenAI proxy |
-| [**backend-type-isolation.md**](backend-type-isolation.md) | [en/backend-type-isolation.md](en/backend-type-isolation.md) | Изоляция Ollama vs llama.cpp бэкендов (R112: типы больше не разделяются по режиму) |
-| [**layer-sharding.md**](layer-sharding.md) | — | **Раскладка слоёв по нескольким бэкендам** (llama.cpp RPC): уровень, контейнеры, параметры, проверка, грабли |
-| [**rpc-link-bandwidth.md**](rpc-link-bandwidth.md) | — | **Канал между узлами раскладки**: автоопределение скорости (балансер и бэкенд), лестница источников, поле и кнопка «Замерить» в WebUI, API, разбор сбоев |
-| [**cline-agent-loop.md**](cline-agent-loop.md) | — | **Агентский цикл Cline**: контракт tool_calls, ожидание готовности модели, трассировка хода и проверка цикла |
-| [**metrics.md**](metrics.md) | [en/metrics.md](en/metrics.md) | Полный справочник всех метрик (GPU/System/Ollama/Proxy) |
-| [**rpc-coordinator.md**](rpc-coordinator.md) | [en/rpc-coordinator.md](en/rpc-coordinator.md) | **P.1**: распределённый inference через RPC (production mode) |
-| [**rpc-layout-rules.md**](rpc-layout-rules.md) | — | **R115**: правила раскладки, добытые живыми падениями: один коммит + своя архитектура, выключение флагом, состав ёмкости, >2 машин, настройка из WebUI; §10 — замер выигрыша |
-| [**rpc-benchmark-qwen38.md**](rpc-benchmark-qwen38.md) | — | **R231**: замер выигрыша RPC на qwen3.8-27B (раскладка, загрузка, tok/s), методика и воспроизведение |
-| [**webui-demo.md**](webui-demo.md) | — | **R232**: демо-режим WebUI — витрина без стенда, гостевой доступ, включение только через env |
-| [**v1.0-rc2-release-notes.md**](v1.0-rc2-release-notes.md) | — | **Релиз v1.0-rc2**: что вошло, как проверялось, обновление с rc1, ограничения |
-| [**virtual-router.md**](virtual-router.md) | [en/virtual-router.md](en/virtual-router.md) | **P.2**: alias-on-pool virtual models |
-| [**phase-8-rpc-coordinator.md**](phase-8-rpc-coordinator.md) | [en/phase-8-rpc-coordinator.md](en/phase-8-rpc-coordinator.md) | P.1 implementation log |
-| [**phase-8-p3-research.md**](phase-8-p3-research.md) | [en/phase-8-p3-research.md](en/phase-8-p3-research.md) | P.3 research: real ggml/NCCL (post-1.0) |
-| [**phase-7-style-compliance.md**](phase-7-style-compliance.md) | [en/phase-7-style-compliance.md](en/phase-7-style-compliance.md) | Phase 7 style guide (em-dash → ASCII) |
-| [**troubleshooting.md**](troubleshooting.md) | [en/troubleshooting.md](en/troubleshooting.md) | FAQ + диагностика n_ctx + tools/tool_calls |
-| [**runbook-tools.md**](runbook-tools.md) | [en/runbook-tools.md](en/runbook-tools.md) | **Детальный runbook** для диагностики tools/tool_calls (сценарии A-G) |
-| [**audit-2026-06.md**](audit-2026-06.md) | — | Финальный аудит-отчёт (реализовано / осталось / ограничения) |
-
-### API спецификации
-
-| Документ | Описание |
-|---|---|
-| [`openapi.yaml`](openapi.yaml) | OpenAPI 3.0.3 спецификация |
-| [`swagger.json`](swagger.json) | Swagger 2.0 спецификация |
-
-### Архитектурные решения
-
-| Документ | Описание |
-|---|---|
-| [`cline-skills/cppworker-gpu-e2e-routing-test.md`](cline-skills/) | Тестовый сценарий GPU routing |
-| [`cline-skills/vulkan-scene-debug.md`](cline-skills/) | Vulkan scene debug |
-
----
-
-## Краткая архитектура
-
-```
-┌─────────────┐     ┌──────────────────────────┐     ┌─────────────┐
-│   Clients   │────▶│      Load Balancer       │────▶│  Agent +    │
-│ (OpenWebUI, │     │  (18080 proxy / 18081    │     │  Ollama     │
-│  Cline)     │     │   management + WS)       │     │  (11434)    │
-└─────────────┘     └──────────┬───────────────┘     └─────────────┘
-                              │
-                              ▼
-                     ┌──────────────────┐         ┌─────────────┐
-                     │      Web UI      │         │  CppWorker  │
-                     │  (18083 Nginx)   │         │  (18091)    │
-                     └──────────────────┘         │  llama.cpp  │
-                                                    └─────────────┘
-```
-
-**Ключевые компоненты:**
-
-- **Load Balancer** (`internal/balancer/`) — proxy, селектор бэкенда, очередь, сессии, scoring.
-- **Agent** (`internal/agent/`) — сбор метрик GPU/CPU/RAM/Disk/Network.
-- **API** (`internal/api/`) — REST API + WebSocket.
-- **CppWorker** (`cmd/cppworker/`) — сервер инференса на llama.cpp с Ollama-compat API.
-- **WebUI** (`webui/`) — Dashboard, Monitor, Settings, Models, Agents.
-
-Подробнее о реализации: [`audit-2026-06.md` §2](audit-2026-06.md#2-реализованные-архитектурные-блоки-с-привязкой-к-коду).
-
----
-
-## Таблица портов
-
-| Порт | Компонент | Описание |
-|---|---|---|
-| **18080** | Load Balancer | Ollama/OpenAI API Proxy |
-| **18081** | Load Balancer | Management API + WebSocket `/ws/metrics` |
-| **18083** | Web UI | Dashboard |
-| **18032** | Agent | Метрики |
-| **11434** | Ollama | Ollama API |
-| **18091** | CppWorker | Ollama-compat + OpenAI (`/v1/*`) |
-| **18092** | CppWorker (хост) | маппинг на 18091 внутри контейнера (bundled) |
-| **8443/8444** | Load Balancer | HTTPS (TLS) |
-
----
-
-## Алгоритм принятия решений (кратко)
-
-```
-HTTP Request → ServeHTTP()
-  ├─ determineRequestBackendType(r):       [backend-type-isolation.md §4]
-  │   /v1/* → llama_cpp, /api/* → main flow
-  │
-  ├─ selectBackend(model, bt):            [backend-selector.go]
-  │   ├─ expandCandidates(allowedTypes)   [candidate.go]
-  │   ├─ findBackendWithModel             (Model Affinity)
-  │   ├─ selectByResources                (Resource-Aware)
-  │   └─ selectFreeBackendAny             (fallback)
-  │
-  └─ proxyRequest(w, r, backendID):       [proxy_request.go]
-      └─ IsModeCompatibleWithBackendType  (защита)
-```
-
-Подробнее: [`backend-type-isolation.md` §6](backend-type-isolation.md#6-поток-запроса-с-фильтрацией).
-
----
-
-## Архитектурные ограничения (Known Limitations)
-
-Зафиксированы и не планируются к реализации:
-
-| Ограничение | Где задокументировано |
-|---|---|
-| Ollama `images[]` в `/api/generate` (cppworker не multimodal) | [`api.md`](api.md) |
-| `context` (base64 KV-cache) между запросами (KV-cache не сохраняется) | [`cppworker-model-params.md`](cppworker-model-params.md) |
-| `keep_alive` таймер unload (только `applyKeepAlive`) | [`api.md`](api.md) |
-| Agent → Ollama runtime config (Ollama не имеет публичного API) | [`troubleshooting.md` §9](troubleshooting.md) |
-| `ollama pull <name>` для cppworker → HTTP 501 (нет Ollama registry) | [`api.md`](api.md) |
-| Точная `modelLoadFeasibility` (требует GGUF metadata parser) | [`metrics.md`](metrics.md) |
-| `rpc_coordinator` / `virtual_router` режимы (каркас без pipeline execution) | [`rpc-coordinator.md`](rpc-coordinator.md), [`audit-2026-06.md` §3 KL-7](audit-2026-06.md) |
-
----
-
-## Быстрые ссылки
-
-- 🚀 [**Установка**](installation.md) — `git clone`, Docker, локальная сборка.
-- ⚙️ [**Конфигурация**](deployment.md#3-production-конфигурация) — `config.json` + ENV.
-- 🔧 [**Bundled-стек**](deployment.md#2-bundled-стек-cppworker-gpu--balancer--webui) — за 5 минут до production.
-- 📖 [**API**](api.md) — все endpoints + curl примеры.
-- 🛠 [**Troubleshooting**](troubleshooting.md) — частые проблемы + решения.
-- 🐛 [**Tools debug runbook**](runbook-tools.md) — диагностика tools/tool_calls.
-
----
-
-## Roadmap
-
-См. [`../plans/README.md`](../plans/README.md) — единственный живой roadmap с задачами R-1…R-7.
-
-| # | Задача | Приоритет | Статус |
+| Document | English | Russian | What it covers |
 |---|---|---|---|
-| R-1 | Windows GPU metrics через nvidia-smi/WMI fallback | 🟢 P2 | ⬜ |
-| R-2 | WebUI фильтры по типу бэкенда | 🟢 P2 | ⬜ |
-| R-3 | Убрать условный t.Skip (proxy_streaming_test.go:638) | 🟢 P2 | ⬜ |
-| R-4 | setup-wizard — полноценный выбор типа бэкенда | 🟡 P1 | ⬜ |
-| R-5 | cocoindex.js — поддержка llama_cpp API | 🟢 P2 | Backlog (после 1.0) |
-| R-6 | Endpoint POST /api/v1/cppworker/reset-reload-counter | 🟡 P1 | ⬜ |
-| R-7 | Документация nctx-reload endpoints | ⚪ P3 | ⬜ (выполнено в [`cppworker-model-params.md` §7.2](cppworker-model-params.md)) |
+| **Installation and build** | [EN](getting-started/installation.md) | [RU](getting-started/installation.ru.md) | Requirements, Docker build, local build, stub mode. |
+| **Deployment** | — | [RU](getting-started/deployment.ru.md) | Deploying the stack: profiles, workers, environments, ports. |
+| **Configuration** | — | [RU](getting-started/configuration.ru.md) | Balancer config.json, env overrides, nginx and WebUI settings. |
+| **Hardware presets** | [EN](getting-started/hardware-presets.md) | [RU](getting-started/hardware-presets.ru.md) | Ready .env presets for RTX 30xx/40xx/50xx and A10. |
+
+## Architecture
+
+How routing, sharding and inference work inside.
+
+| Document | English | Russian | What it covers |
+|---|---|---|---|
+| **Balancing guide** | [EN](architecture/balancing-guide.md) | [RU](architecture/balancing-guide.ru.md) | Scoring, backend selection, session and model affinity. |
+| **Backend type isolation** | [EN](architecture/backend-type-isolation.md) | [RU](architecture/backend-type-isolation.ru.md) | How llama.cpp and Ollama backends coexist in one cluster. |
+| **RPC coordinator** | [EN](architecture/rpc-coordinator.md) | [RU](architecture/rpc-coordinator.ru.md) | Distributed inference over llama.cpp RPC: roles, state, limits. |
+| **Virtual models** | [EN](architecture/virtual-router.md) | — | Alias-on-pool virtual models and routing rules. |
+| **Layer sharding** | — | [RU](architecture/layer-sharding.ru.md) | Splitting layers across backends, containers, parameters. |
+| **RPC layout rules** | — | [RU](architecture/rpc-layout-rules.ru.md) | Rules learned from real crashes: same commit, arch, kill switch. |
+| **RPC link bandwidth** | — | [RU](architecture/rpc-link-bandwidth.ru.md) | How link speed between nodes is measured and where it is stored. |
+| **C-bridge API** | [EN](architecture/bridge-api.md) | — | Go <-> C bridge to llama.cpp: functions, structures, contract. |
+| **Balancer <-> cppworker contract** | [EN](architecture/balancer-cppworker-contract.md) | — | Wire contract between the balancer and the worker, field by field. |
+
+## Operations
+
+Run, update and debug a live cluster.
+
+| Document | English | Russian | What it covers |
+|---|---|---|---|
+| **Deployment stack** | — | [RU](operations/deployment-stack.ru.md) | One compose file, profiles, tokens, registry, diagnostics. |
+| **Worker behind a remote balancer** | — | [RU](operations/deployment-remote-balancer.ru.md) | cppworker + agent on one machine, balancer on another. |
+| **Compose files guide** | — | [RU](operations/docker-compose-guide.ru.md) | Which compose file is canonical and what the historical ones do. |
+| **Agent deployment** | — | [RU](operations/agent-deployment.ru.md) | Metrics agent: GPU and CPU modes, systemd, Windows, WSL2. |
+| **Donor node update** | — | [RU](operations/donor-update.ru.md) | Updating and rolling back the donor node image. |
+| **Donor VRAM lifecycle** | — | [RU](operations/rpc-donor-vram-lifecycle.ru.md) | When VRAM is released on layout nodes and what stays occupied. |
+| **Troubleshooting** | [EN](operations/troubleshooting.md) | [RU](operations/troubleshooting.ru.md) | Symptoms, causes and fixes collected from live incidents. |
+| **Deployment incidents** | — | [RU](operations/deployment-troubleshooting.ru.md) | Deployment traps and incident write-ups. |
+| **Tools/tool_calls runbook** | [EN](operations/runbook-tools.md) | [RU](operations/runbook-tools.ru.md) | Step-by-step debugging of tool-call resets (scenarios A-G). |
+
+## API and reference
+
+Endpoint, env and metrics references.
+
+| Document | English | Russian | What it covers |
+|---|---|---|---|
+| **REST API reference** | [EN](api/api.md) | [RU](api/api.ru.md) | All balancer endpoints, auth, WebSocket, Ollama/OpenAI compatibility. |
+| **Environment variables** | — | [RU](api/env-vars.ru.md) | Single source of truth for every env var, default and effect. |
+| **Metrics reference** | [EN](api/metrics.md) | [RU](api/metrics.ru.md) | GPU, system, Ollama and proxy metrics with units and meaning. |
+| **Worker metrics collection** | [EN](api/cppworker-metrics-collection.md) | [RU](api/cppworker-metrics-collection.ru.md) | Embedded agent vs external poller: what collects what. |
+
+## Features
+
+What the cluster can do for clients.
+
+| Document | English | Russian | What it covers |
+|---|---|---|---|
+| **Image generation** | [EN](features/image-generation.md) | [RU](features/image-generation.ru.md) | sd.cpp image backend, models, clients, VRAM profiles. |
+| **Model parameters** | [EN](features/cppworker-model-params.md) | [RU](features/cppworker-model-params.ru.md) | n_ctx resolver, per-model profiles, RAM fallback, proxy surfaces. |
+| **RPC benchmark (27B)** | — | [RU](features/rpc-benchmark-qwen38.ru.md) | Measured layer sharding win on qwen3.8 27B: method and results. |
+| **WebUI auth and roles** | — | [RU](features/webui-auth.ru.md) | Sessions, roles, CSRF, break-glass token, nginx proxy. |
+| **WebUI demo mode** | — | [RU](features/webui-demo.ru.md) | Guest showcase of the whole scenario, enabled by WEBUI_DEMO_MODE only. |
+| **Cline agent loop** | — | [RU](features/cline-agent-loop.ru.md) | Tool-call contract, readiness, tracing and verification. |
+
+## Releases
+
+What shipped and how it was checked.
+
+| Document | English | Russian | What it covers |
+|---|---|---|---|
+| **v1.0 release notes** | — | [RU](releases/v1.0-release-notes.ru.md) | What v1.0 contains: working / partial / stubbed. |
+| **v1.0-rc2 release notes** | — | [RU](releases/v1.0-rc2-release-notes.ru.md) | Changes since rc1 and how they were verified. |
+| **v1.0 smoke checklist** | — | [RU](releases/v1.0-smoke-checklist.ru.md) | Manual smoke checklist on A10 24 GB before the final tag. |
+
+## Development
+
+Conventions and CI for contributors.
+
+| Document | English | Russian | What it covers |
+|---|---|---|---|
+| **Style compliance** | [EN](development/style-compliance.md) | [RU](development/style-compliance.ru.md) | Em-dash lint, i18n parity, docs sync rules. |
+| **Self-hosted CI runner** | — | [RU](development/ci-self-hosted-runner.ru.md) | Runner setup, labels, operations and troubleshooting. |
+
+## Roadmap and session reports
+
+Plans, ADR and working session reports (Russian, historical).
+
+- [Roadmap and plan index](plans/README.md) (RU)
+- [2026-08-04-settings-busy-and-streaming-cutoff](plans/2026-08-04-settings-busy-and-streaming-cutoff.md) (RU)
+- [2026-09-23-admission-queue-and-sessions](plans/2026-09-23-admission-queue-and-sessions.md) (RU)
+- [2026-09-23-multi-backend-placement-policy](plans/2026-09-23-multi-backend-placement-policy.md) (RU)
+- [2026-09-25-handoff-r83-next-session](plans/2026-09-25-handoff-r83-next-session.md) (RU)
+- [2026-09-25-memory-fit-subsystem](plans/2026-09-25-memory-fit-subsystem.md) (RU)
+- [2026-09-25-placement-p4-load-kpi](plans/2026-09-25-placement-p4-load-kpi.md) (RU)
+- [2026-09-25-qwen38-load-context-dup-and-infra](plans/2026-09-25-qwen38-load-context-dup-and-infra.md) (RU)
+- [2026-09-26-estimator-unification-protocol](plans/2026-09-26-estimator-unification-protocol.md) (RU)
+- [2026-09-26-step1b-fit-refusal-proposal](plans/2026-09-26-step1b-fit-refusal-proposal.md) (RU)
+- [2026-09-27-image-generation-backend-plan](plans/2026-09-27-image-generation-backend-plan.md) (RU)
+- [2026-10-03-image-ui-gguf-style-unification](plans/2026-10-03-image-ui-gguf-style-unification.md) (RU)
+- [2026-10-06-image-tool-catalog-autoload](plans/2026-10-06-image-tool-catalog-autoload.md) (RU)
+- [2026-10-07-model-distribution-multi-gpu-next-session](plans/2026-10-07-model-distribution-multi-gpu-next-session.md) (RU)
+- [2026-10-13-rpc-full-mode](plans/2026-10-13-rpc-full-mode.md) (RU)
+- [2026-10-14-donor-update-and-layout](plans/2026-10-14-donor-update-and-layout.md) (RU)
+- [2026-10-14-handoff-r115-r116](plans/2026-10-14-handoff-r115-r116.md) (RU)
+- [2026-10-14-handoff-r117](plans/2026-10-14-handoff-r117.md) (RU)
+- [2026-10-14-handoff-r118](plans/2026-10-14-handoff-r118.md) (RU)
+- [2026-10-14-model-settings-refactor-r116](plans/2026-10-14-model-settings-refactor-r116.md) (RU)
+- [2026-10-16-session-report](plans/2026-10-16-session-report.md) (RU)
+- [2026-10-17-qwen38-flash-next-a10](plans/2026-10-17-qwen38-flash-next-a10.md) (RU)
+- [2026-10-18-inworker-node-r172](plans/2026-10-18-inworker-node-r172.md) (RU)
+- [2026-10-18-layout-on-reload-r174-check](plans/2026-10-18-layout-on-reload-r174-check.md) (RU)
+- [2026-10-21-webui-auth](plans/2026-10-21-webui-auth.md) (RU)
+- [2026-10-22-r220-r226-summary](plans/2026-10-22-r220-r226-summary.md) (RU)
+- [2026-q3-production-ready-plan](plans/2026-q3-production-ready-plan.md) (RU)
+- [2026-q3-roadmap](plans/2026-q3-roadmap.md) (RU)
+- [2026-q3-session-f-quick-wins](plans/2026-q3-session-f-quick-wins.md) (RU)
+- [README](plans/README.md) (RU)
+- [b8-tensor-parallelism-plan](plans/b8-tensor-parallelism-plan.md) (RU)
+- [bug-2026-07-31-reasoning-not-routed](plans/bug-2026-07-31-reasoning-not-routed.md) (RU)
+- [pre-existing-test-failures](plans/pre-existing-test-failures.md) (RU)
+- [round-17-multi-gpu-test-plan](plans/round-17-multi-gpu-test-plan.md) (RU)
+- [round-18-balancer-architecture-audit](plans/round-18-balancer-architecture-audit.md) (RU)
+- [round-18-p0.3-user-parallel](plans/round-18-p0.3-user-parallel.md) (RU)
+- [round-20-ollama-api-coverage-audit](plans/round-20-ollama-api-coverage-audit.md) (RU)
+- [round-22-balancer-general-audit](plans/round-22-balancer-general-audit.md) (RU)
+- [round-35-cppworker-bundled-r35](plans/round-35-cppworker-bundled-r35.md) (RU)
+- [round-35c-env-tunable-polling](plans/round-35c-env-tunable-polling.md) (RU)
+- [rpc-model-distribution-plan](plans/rpc-model-distribution-plan.md) (RU)
+
+## Archive
+
+Historical material in its original language: audits, research notes, round reports, incident write-ups, early plans. Not part of the current documentation set.
+
+Full list: [archive/README.md](archive/README.md)
 
 ---
 
-## Лицензия
-
-MIT License
+Project README: [../README.md](../README.md). Russian: [../README.ru.md](../README.ru.md).

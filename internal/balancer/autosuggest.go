@@ -1,6 +1,6 @@
 // autosuggest.go — Cluster AutoDistribute algorithm (R59, 2026-09-03).
 //
-// Reference: docs/superpowers/specs/2026-09-03-cluster-autodistribute.md
+// Reference: docs/archive/superpowers/specs/2026-09-03-cluster-autodistribute.md
 //
 // This is the MINIMUM useful version. It analyzes cluster state and produces
 // suggestions WITHOUT applying them. Operator reviews + applies via separate

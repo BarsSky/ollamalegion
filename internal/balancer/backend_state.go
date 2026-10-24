@@ -111,7 +111,7 @@ func (p *Proxy) backendHTTPAddrByID(backendID string) string {
 // для текущих деплоев = ollama→ollama-native, llama_cpp→openai-compatible.
 // Bit-identical для всех существующих тестов (см. backend_state_test.go).
 //
-// Reference: docs/superpowers/specs/2026-09-03-routing-apistyle-migration.md
+// Reference: docs/archive/superpowers/specs/2026-09-03-routing-apistyle-migration.md
 func (p *Proxy) isLlamaCppBackend(backend *types.Backend) bool {
 	return backend.EffectiveAPIStyle() == types.APIStyleOpenAICompatible
 }

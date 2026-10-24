@@ -52,7 +52,7 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
       -DGGML_CUDA=ON \
       # S1 (2026-10-11): RPC-бэкенд — цель `rpc-server` для раскладки слоями
       # между машинами. Собирается тем же исходником и архитектурой, что
-      # libllama: протокол RPC версионно-чувствителен (docs/rpc-coordinator.md).
+      # libllama: протокол RPC версионно-чувствителен (docs/architecture/rpc-coordinator.ru.md).
       -DGGML_RPC=ON \
       -DCMAKE_CUDA_ARCHITECTURES="86" \
       -DGGML_CCACHE=ON \

@@ -3,7 +3,7 @@
 // B8 (Session 12) — каркас для tensor parallelism: domain types
 // (PartitionStrategy, TensorShard, ShardedModel) без реальной
 // матричной математики. Реальная llama.cpp-интеграция через ggml
-// bridge отложена в post-1.0 (см. plans/b8-tensor-parallelism-plan.md).
+// bridge отложена в post-1.0 (см. docs/plans/b8-tensor-parallelism-plan.md).
 //
 // ShardedModel описывает модель, разбитую по rank'ам (TP world size).
 // Для каждого слоя хранится список TensorShard'ов — по одному на каждый

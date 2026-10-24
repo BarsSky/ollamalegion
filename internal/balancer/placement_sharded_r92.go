@@ -1,6 +1,6 @@
 // Package balancer — R92 (S3 плана 2026-10-07): исполнитель стратегии `sharded`.
 //
-// План: plans/2026-10-07-model-distribution-multi-gpu-next-session.md §6 (S3):
+// План: docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md §6 (S3):
 //
 //	«Снять executable:false для sharded; исполнитель строит/находит группу под
 //	 модель. VRAM-fit считает СУММУ по узлам, а не max. fallback: error → 503 с

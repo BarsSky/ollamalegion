@@ -608,7 +608,7 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// R72 (P0): placement policy — предупреждения валидации в лог при старте.
 	// Ошибки не блокируют запуск: политика выключена по умолчанию, а решения
 	// видны в GET /api/v1/placement. План:
-	// plans/2026-09-23-multi-backend-placement-policy.md
+	// docs/plans/2026-09-23-multi-backend-placement-policy.md
 	if cfg := config.Balancing.Placement; cfg.Enabled || len(cfg.Models) > 0 || len(cfg.Classes) > 0 {
 		warnings := cfg.Validate()
 		logger.Get().Infow("placement policy initialized",

@@ -1,0 +1,656 @@
+# Передача в следующую сессию: R83, память и надёжность загрузки
+
+**Дата передачи:** 2026-09-25
+**Состояние:** всё в рабочем дереве, **не закоммичено** (последний коммит `30f28ed`).
+**Развёрнутый стек:** тег `r83-submodule-v2` (4 контейнера healthy), модели не загружены, VRAM свободна.
+
+Документ самодостаточен: диагностику повторять не нужно, все замеры и локации ниже.
+
+---
+
+## 1. Что произошло (кратко, с фактами)
+
+Исходная жалоба: `Qwen3.8-27B-UD-Q4_K_M` не грузится с окном 65536/128000 (на A10 24 GB), при 32768 работает; OpenWebUI дублировал ответ; позже контейнер cppworker **упал**.
+
+Диагностика на живом железе (RTX 3070 8 GB, тот же файл модели, 16 464 440 224 байт):
+
+| Что | Факт |
+|---|---|
+| KV-кэш считался неверно | llama.cpp отдаёт KV **16 слоям** из 65 (рекуррентные SSM-слои KV не хранят, MTP-слой в кэш не входит), `head_dim` KV = **256** (`attention.key_length`), а не 213 (`n_embd/n_heads`). Наивная формула завышала KV в **3.38×** (221 520 против 65 536 Б/токен при f16; 61 344 против 18 432 при q4_0). Подтверждено прямо: `llama_kv_cache: size = 144.00 MiB (8192 cells, 16 layers)` = 2×16×4×256×18/32×8192 |
+| Решение об оффлоаде | из-за завышенного KV давало `gpu_layers=0` → модель грузилась целиком на CPU. После правки: **22–24 слоя на GPU** (замерено на живом стеке) |
+| Гейт n_ctx | был fail-open для холодной модели (лимиты приезжали нулями из-за точного lookup имени с тегом) → 131072 проходил как 202 без причины; и потолок считался по `MemTotal` без весов |
+| Падение контейнера | **не OOM и не Go-паника**: `malloc(): unaligned tcache chunk detected` → glibc `abort()` → **SIGABRT** → рестарт (`OOMKilled=false`). Триггер: перекрывающиеся загрузки (два плана: `gpu_layers=33→29` и `-2→18`) при `free=0 MB` VRAM |
+| Симптом «таймаут вместо ожидания» | балансер ждал 180 с (`LB_AUTO_LOAD_WAIT_SEC`, default) и отдавал «auto-load failed», пока cppworker продолжал грузить; повторный запрос запускал вторую загрузку |
+
+---
+
+## 2. Что уже сделано (в дереве, не закоммичено)
+
+### 2.1. Единая подсистема решений о памяти `internal/memfit`
+
+Новый пакет без cgo: типизированные байты, **одна** формула KV, `Budget` с `Known`-флагами, один `ProbeRAM` (env → `/proc/meminfo` → cgroup v2/v1), явная `Policy`, **один предикат** `computeSplit` (потолки считаются по нему же двоичным поиском), `Verdict` с машинными `ReasonCode`.
+
+Тесты (17 функций, без тегов, 0.4 с): golden на реальных числах 3070 и A10, регрессы на конкретные дефекты, инварианты (монотонность по n_ctx, согласованность сплита, «потолок ⇔ вердикт», порядок KV, «из отсутствия данных не следует поместится»).
+
+**Политика: одна скидка на ресурс** — VRAM − 2 GiB (`CPPWORKER_VRAM_OVERHEAD_MB`), RAM − 4 GiB. `RAMUtil` по умолчанию 1.0: сочетание 0.8 и резерва давало двойную скидку и отказывало в загрузке 27B там, где она физически грузится.
+
+### 2.2. Правки в cppbackend / cppworker
+
+- `kv_layers.go` — единственный источник числа KV-слоёв и `head_dim` KV (`KVLayersFor`/`KVHeadDimFor`), со ссылками на исходники llama.cpp и защитой от угадывания (`exact=false` для gemma4/gemma3e и явного списка рекуррентных слоёв).
+- Парсер GGUF читает `attention.key_length`, `attention.value_length`, `nextn_predict_layers`, `full_attention_interval`, фиксирует наличие `attention.recurrent_layers`.
+- `CalculateResourceLimits` — теперь адаптер над `memfit.Ceilings` (+ новое поле `VRAMKnown`).
+- `checkVRAMForModel` — решение (влезает/сколько слоёв/mmap) принимает `memfit.Evaluate`; `stage == unknown` (нет метаданных) — **не отказ** (иначе ломались stub-тесты и модели без файла).
+- `checkNCtxBeforeLoad` — решение по `memfit.Evaluate`, форма 422 сохранена (`code=n_ctx_infeasible`, те же поля), подсказка из вердикта (с причиной «поможет q4_0»).
+- **Single-flight загрузок**: `Backend.loadSingleFlight` в `LoadModelWithOpts` — вторая загрузка ждёт первую (тест `load_singleflight_r83_test.go`, без мьютекса падает).
+- `/api/models`: `vram_known` (per-model и top-level), `n_ctx_degraded` учитывает «VRAM известна».
+- Удалены: shadow-сравнение решений, счётчики `cppworker_memfit_shadow_*`, `memfit_shadow.go`.
+
+### 2.3. Правки в балансере
+
+- `autoload_wait.go`: ожидание загрузки — **датчик бездействия**. Пока `elapsedMs` растёт, дедлайн продлевается; общий предел `autoLoadHardCeiling = 30 min`. Без прогресса таймаут как раньше (тесты: новый `autoload_wait_progress_r83_test.go` + прежний `TestWaitForModelLoad_Timeout_R67a`).
+- `autotune.go`: перед `executeAutoTuneReload` — проверка `p.nctxReload.IsReloadPending(...)` (тот же реестр, что в `llamacpp_backend_helpers.go:631`, `nctx_reload_handlers.go:627`).
+- `model_name_match.go`: срезание ollama-тега (иначе размер модели для таймаут-эвристики не находился → idle 120 s вместо 1800 s).
+
+### 2.4. Инфраструктура
+
+- `scripts/release-all.ps1`: в `.env` пишется тег **без** префикса `gpu-` (compose добавляет сам) — исправлен `gpu-gpu-<tag>`.
+- `deployments/.env`: `CPPWORKER_GPU_TAG=r83-submodule-v2` и остальные три тега.
+
+### 2.5. Живые проверки, которые уже пройдены
+
+```
+гейт:      contextSize=999999 → 422, hard_max_n_ctx=262144 (обучающий контекст)
+           contextSize=131072 → 202, stage=degraded (раньше 422 из-за завышенного KV)
+раскладка: gpuLayers=-1 → optimalGPULayers=22..24, stage=partial_offload,
+           [bridge] loading model ... gpu_layers=24   (было 0)
+надёжность: два перекрывающихся запроса → restarts=0, SIGABRT=0,
+           "VRAM insufficient (free=0 MB)"=0, [bridge] loading model=1,
+           лог: "model is already being loaded by another request; waiting"
+```
+
+---
+
+## 3. Что осталось (в порядке приоритета) — ВСЁ ЗАКРЫТО (2026-09-27, `r83-submodule-v21`)
+
+Соответствие пунктов этого раздела и того, что сделано:
+
+| §3 | статус | где смотреть |
+|---|---|---|
+| 3.1 выпустить v3 | закрыто | выпуски v3…v21, `deployments/release-manifest.json` |
+| 3.2 C-bridge guard | закрыто | guard стоит в `c/bridge/bridge.c` (R83 §3.2), путь — страховка |
+| 3.3 тир ожидания загрузки | закрыто | §9.1: `autoLoadWaitTimeoutForModel`; `AutoLoadWaitTimeout()` остался только как env-парсер |
+| 3.4 KV-тип между гейтом и раскладкой | закрыто | §3.4 / `effectiveKVCacheTypeForLoad` |
+| 3.5 `fallback_no_fit` → отказ | закрыто | §9.3 |
+| 3.6 продово-мёртвые оценки | закрыто | §9.4 (шаги 1, 1б, 2, 3, 3б, 4) |
+| 3.7 `vram_known` в балансере | закрыто | §9.2 |
+| 3.8 устаревшие профили | закрыто | §9.8 (дефекта в коде нет; добавлен блок `[7]` в верификатор) |
+| 3.9 D-A / D-B / D-C | закрыто | §9.6 (v18 и v20) |
+| 3.9 механизм A (дубль в `done`) | закрыто | §9.7 — дефект был в балансере, исправлено в v21 |
+
+Ниже — исходный разбор (сохранён как история; формулировки не переписывались).
+
+### 3.1. Выпустить `r83-submodule-v3` (готовые правки не на стенде)
+
+Раскатанный `r83-submodule-v2` **не содержит** guard автотюна и top-level `vram_known`.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release-all.ps1 -Tag r83-submodule-v3
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-image-tags.ps1
+```
+
+### 3.2. C-bridge: клампить `gpu_layers`, а не только предупреждать
+
+**Где:** `c/bridge/bridge.c`, функция оценки `max_vram_n_ctx` — блок, печатающий
+`[bridge] WARNING: VRAM insufficient for KV-cache with current gpu_layers=%d (free=%lld MB, gpu_model=%llu MB)`.
+**Что:** при `estimated_max == 0` (свободной VRAM нет) уменьшить запрошенные `gpu_layers` до помещающихся либо вернуть ошибку — не отдавать план в llama.cpp.
+**Критерий:** запрос заведомо непомещающегося плана не приводит к аллокации в переподписке.
+**Примечание:** после single-flight + memfit-клампа путь больше не воспроизводится на живом стеке, это страховка. Требует пересборки cppworker (llama.cpp-слой берётся из кэша, ~1–2 мин).
+
+### 3.3. `LB_AUTO_LOAD_WAIT_SEC` — тир по размеру модели
+
+**Где:** `internal/balancer/autoload_wait.go`, `AutoLoadWaitTimeout()` (сейчас default 180 с, модель размера не знает).
+**Что:** резерв на случай, если прогресс недоступен: масштабировать бюджет по размеру GGUF (как сделано для idle/first-byte тиров) либо сделать per-request с учётом модели.
+
+### 3.4. Свести KV-тип между гейтом и раскладкой
+
+**Симптом:** гейт логирует `kv_cache_type=q4_0` (`EffectiveKVCacheType("")`), а раскладка в том же процессе посчитала по **f16** (по числам: total ≈17.7 GiB для ctx=32768 соответствует f16).
+**Что:** найти, кто заполняет `LoadModelOpts.KVCacheType` на пути загрузки (`cmd/cppworker/handlers_model.go`, `lazyload.go`, `internal/cppbackend/backend.go`), и свести к одному источнику.
+
+### 3.5. `fallback_no_fit` — сделать отказом
+
+**Где:** `cmd/cppworker/lazyload_calc.go` (ветка «model doesn't fit even in CPU-only mode»): сейчас ставит `rationale.Source = "fallback_no_fit"` и всё равно пробует.
+**Что:** вернуть отказ с `insufficient_resources` + suggestion либо, минимум, warning-событие в WebUI (данные для него есть).
+
+### 3.6. Удалить продово-мёртвые оценки (после 3.2)
+
+`EstimateGPUMemoryForModel` (веса ×0.7, KV как 256 Б/токен), `backwardCompatEstimateGPUMemoryForModel`, `EstimateModelVRAM` (нет продовых вызовов), `CalculateOptimalGPULayers` (используется теперь только тестами), `cmd/cppworker.availableRAMBytes` (в `vram_detect.go`; заменить на `memfit.ProbeRAM`; те же значения нужны в `adaptive_loader.go:116,202`, `auto_tune_nctx.go:162,210`, `inference.go:768,878,917`).
+Вместе с ними удалить/переписать их тесты: `backend_r52_test.go`, `kv_cache_type_r67a_test.go`, `tests/cppbackend_test.go:TestEstimateGPUMemoryForModel`, `tests/gpu_distribution_test.go:TestEstimateModelVRAM`.
+
+### 3.7. Балансер: читать `vram_known` вместо «0 = неизвестно»
+
+**Где:** `internal/balancer/preflight_nctx.go:287,480`, `nctx_reload_handlers.go:96,424` — сейчас `MaxVRAMNCtx <= 0` трактуется как «нет данных». После появления `vram_known` в `/api/models` различать два случая (нет данных / веса не влезают).
+Плюс домен `/api/models` в `pkg/types` — добавить поле `vram_known`.
+
+### 3.8. Устаревшие профили моделей
+
+В логе живого cppworker видны попытки грузить несуществующие `r81-model.gguf`, `m-auto.gguf`, `llama-3-8b.gguf`. В конфигах репозитория (`config/*.json`, `deployments/*.json`) этих имён **нет** → источник вне репозитория (состояние балансера/WebUI, сохранённые профили). Найти и почистить.
+
+### 3.9. Прочие открытые дефекты (из более раннего разбора, §11 плана)
+
+- **D-A**: `load-with-params` рекламирует асинхронность (202 + `progressUrl`), но фактически блокирует запрос до конца загрузки (в логе HTTP: `status:202 duration:9m6.6s`).
+- **D-B**: расхождение реестра после перекрывающихся load/unload (`model loaded` в логе, `/api/models` → `count=0`).
+- **D-C**: `unload` не барьер (200 за 824 µs при идущей загрузке 16 GB).
+- **Механизм A дублирования в OpenWebUI**: `cmd/cppworker/handlers_chat.go:1397-1407` кладёт полный текст в `done`-чанк (замерено 2.00× на `/api/chat`); решение по контракту — за владельцем.
+- **SSE ring-buffer**: `internal/api/handlers_events.go:197` — события без подключённого клиента теряются из snapshot и `/api/v1/health`.
+
+---
+
+## 4. Команды
+
+```powershell
+# сборка и тесты (тег llama_stub обязателен для всего, что тянет c/bridge)
+go build -tags llama_stub ./cmd/...
+go test -tags llama_stub -p 1 ./internal/memfit/ ./internal/cppbackend/ ./cmd/cppworker/ ./internal/balancer/ ./internal/api/
+go test ./internal/memfit/            # пакет без cgo, 0.4 с — годится в CI
+
+# выпуск и сверка тегов
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release-all.ps1 -Tag r83-submodule-v3
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-image-tags.ps1
+
+# живая проверка (токен из deployments/.env: CPPWORKER_API_TOKEN)
+#   гейт: выше обучающего контекста → 422
+curl.exe -s -o resp.json -w '%{http_code}' -X POST 'http://127.0.0.1:18092/api/models/load-with-params' `
+  -H 'Content-Type: application/json' -H 'Authorization: Bearer changeme-bundled-with-agent-token' `
+  --data-binary "@body.json"      # body.json: {"name":"qwen3.8:latest","contextSize":999999}
+#   раскладка/загрузка: ожидать "auto-adapting GPU layers for model (memfit)" и gpu_layers=22..24
+docker logs ol-bundled-cppworker-gpu 2>&1 | Select-String 'memfit|\[bridge\] loading model'
+#   репро инцидента: два перекрывающихся запроса, затем проверить restarts/SIGABRT
+docker inspect ol-bundled-cppworker-gpu --format '{{.RestartCount}}'
+docker logs ol-bundled-cppworker-gpu 2>&1 | Select-String 'SIGABRT|VRAM insufficient'
+#   выгрузить модель и/или прервать тестовую загрузку
+docker restart ol-bundled-cppworker-gpu
+```
+
+---
+
+## 5. Грабли окружения (проверено на этой машине)
+
+- **Только Windows PowerShell 5.1** (`pwsh` нет). `"$var:"` в двойных кавычках — ошибка парсинга, писать `${var}:`.
+- **PowerShell пишет файлы с CRLF** → `gofmt` видит весь файл изменённым. После правок через PowerShell нормализовать: `[System.IO.File]::ReadAllText($f).Replace("`r`n","`n")` и `WriteAllText`.
+- **Не запускать `gofmt -w` на файлах с предсуществующим форматированием** (`cmd/cppworker/handlers_metrics.go` и др.) — иначе в дифф попадает весь файл. Проверять: `gofmt -l` на версии из HEAD.
+- **JSON в curl**: `--data-binary "@file"` с UTF-8 без BOM (`New-Object System.Text.UTF8Encoding($false)`); `-d $body` ломает кавычки.
+- **Фоновые job'ы**: `| Select-Object -Last N` буферизует весь вывод — прогресс не видно до конца; проверять результат по факту (образ/контейнер).
+- `go build ./...` **без** тега падает на `c/bridge` (`llama.h: No such file`) — это нормально, нужен `-tags llama_stub`.
+- **Docker Desktop/WSL2**: `nvidia-smi` на хосте не видит процессы GPU; контейнеры не видят память друг друга (NVML слепнет к соседям) → два cppworker на одной GPU переподписывают VRAM. RAM контейнера ≈24.5 GB (лимит WSL), не 50 GB хоста.
+- **Модели на bind-mount Windows**: чтение 16 GB идёт минутами, упор в I/O (CPU 0.1%). Отсюда `estimatedLoadTimeMs` ≈175 с не соответствует фактическим минутам.
+- Живой стек: balancer `:18080/:18081`, cppworker `:18092`, webui `:18083`, agent без порта; сеть `ollama-legion-bundled-net`; токен `changeme-bundled-with-agent-token`.
+
+---
+
+## 6. Готовые стартовые промпты для новой сессии
+
+- «Прочитай `docs/plans/2026-09-25-handoff-r83-next-session.md` и выполни §3.1 (выпуск `r83-submodule-v3`) с проверкой `check-image-tags.ps1`».
+- «Возьми §3.2: в `c/bridge/bridge.c` при `estimated_max == 0` клампи `gpu_layers` вместо предупреждения, пересобери cppworker и проверь на живом стенде».
+- «Возьми §3.4: сведи KV-тип между гейтом и раскладкой слоёв — найди, кто заполняет `LoadModelOpts.KVCacheType`».
+- «Возьми §3.6: удали продово-мёртвые оценки вместе с их тестами, прогони полный набор».
+
+---
+
+## 7. Ключевые файлы документации
+
+- `docs/plans/2026-09-25-memory-fit-subsystem.md` — подсистема памяти: принципы, инварианты, миграция, §8 шаг 3, §9 шаг 3.1.
+- `docs/plans/2026-09-25-qwen38-load-context-dup-and-infra.md` — исходный план R83, §11 живая проверка на GPU, §11.6 учёт RAM.
+- `CHANGELOG.md` — `0.5.42` и ниже: KV-слои, учёт RAM, шаги 3 / 3.1, инцидент SIGABRT, ожидание по прогрессу, тест надёжности; `0.5.43` — итог этой сессии.
+
+---
+
+## 8. Итог сессии 2026-09-26 (какие пункты §3 закрыты)
+
+**Закрыто.** Дерево закоммичено (`e22df3e`, `e42c6e4`, `2a535db`, `ccef344`),
+выпущены теги `r83-submodule-v3` → `v6`, `scripts/check-image-tags.ps1` — OK.
+
+- **§3.1** — `r83-submodule-v3` (затем `v5`/`v6`) раскатан; `deployments/.env`
+  и `release-manifest.json` согласованы, top-level `vram_known=true` в
+  `/api/models` подтверждён живым запросом.
+- **§3.2** — сделано, но иначе, чем предполагалось в хендоффе:
+  - **пред-загрузочный кламп `gpu_layers` отклонён по замеру.** Эвристика
+    «размер файла > свободной VRAM → 0 слоёв» срезает нормальный partial
+    offload (16.4 GB модель на 8 GB карте), а мягкая «влезает доля
+    free/файл» срезала бы план memfit (22 слоя → 1): per-tensor размеры до
+    `llama_model_load_from_file` не существуют;
+  - **что сделано вместо:** KV-проверка перенесена ДО `llama_init_from_model`
+    (именно там аллоцируется KV-cache). При `estimated_max == 0` и
+    `gpu_layers > 0` загрузка отклоняется `BRIDGE_ERR_GPU_OOM` с числами,
+    модель освобождается — аллокации в переподписке нет. CPU-only
+    (`gpu_layers == 0`) проходит;
+  - **побочно закрыт §3.4 в части C-оценки:** числа KV (`kv_layers`,
+    `kv_head_dim`) приходят от планировщика (`ModelConfig.kv_layers` /
+    `kv_head_dim` ← `KVLayersFor`/`KVHeadDimFor`). Наивная формула завышала KV
+    в 10 раз: было `max n_ctx = 17 673` / `kv_per_token = 59 800`, стало
+    `60 219` / `18 432` — ровно то, что аллоцирует `llama_kv_cache`
+    (16 layers, K/V head_dim 256, q4_0);
+  - **живая проверка v5/v6:** `gpu_layers=22`, `state=loaded`, `restarts=0`,
+    нет `SIGABRT` и «VRAM insufficient»; `scripts/verify-r83-v3-v4.ps1` — все
+    проверки пройдены (одна ложная тревога скрипта исправлена).
+
+**Осталось открытым (для следующей сессии).**
+
+- **§3.2-cont:** перекрывающиеся загрузки на живом стеке не воспроизводились
+  (после single-flight путь не достигается) — страховка остаётся непроверенной
+  на инциденте.
+- **§3.3, §3.5–§3.9** — без изменений (см. §3 выше).
+- **Инфраструктура:** `release-all.ps1` прерывает выпуск при падении любого
+  `docker build` (например `context deadline exceeded` к Docker Hub) и не
+  меняет `.env`; повторный запуск с тем же тегом достраивает образы из кэша.
+  Контекст сборки cppworker ≈1 GB (`c/`), каждый релиз его передаёт.
+
+**Закрыто во второй половине сессии.**
+
+- **§3.4 (Go-часть) — `0.5.44`, теги `r83-submodule-v7` → `v10`.** Здесь
+  оказалось **три** дефекта подряд, каждый находился только живой проверкой:
+
+  1. **гейт считал KV не тем типом.** Гейт вызывал
+     `EffectiveKVCacheType("")` = дефолт конфига (`q4_0`), а раскладка — тип из
+     плана загрузки, куда профиль модели пишет своё (`q8_0`). Расхождение 1.88×
+     по KV и по потолку n_ctx. Исправлено: `effectiveKVCacheTypeForLoad`
+     повторяет порядок хендлеров (*явный параметр → профиль → дефолт*), все три
+     вызова `checkNCtxBeforeLoad` передают `opts.KVCacheType`, а
+     `feasibilityFromMemfit` стал чистой функцией (spec + budget + kvType) —
+     поэтому гейт тестируется без GPU.
+  2. **профиль не находился по имени клиента.** `applyProfileOnLoad` искал
+     профиль сырым подстрочным сравнением: `"Qwen3.8-27B"` против
+     `"qwen3.8:latest"` обрывалось на `':'` против `'-'`. Живое следствие шире
+     KV: для загрузок по имени клиента не применялся **весь** pull-профиль —
+     ни `kvCacheType`, ни `contextLength`, ни `numGpuLayers` (это же объясняет
+     §3.8: `contextLength` из профиля «не доезжал»). Заменено на нормализацию
+     имён (`normalizeProfileKey`, срез ollama-тега и `.gguf`).
+  3. **ложное совпадение версии и имени модели.** После п.2 живой стенд показал
+     `profileKVCacheType=""` вместо `q8_0`: при приведении всех разделителей к
+     одному `"Qwen3-8B-Instruct-2507"` → `qwen3.8b…` начинается на `qwen3.8`,
+     как и запрос `"qwen3.8:latest"`, поэтому выигрывал профиль **другой**
+     модели. Исправлено двухпроходным резолвом: сначала строгий (`-`/`_` не
+     разделители — различают версию и имя), затем мягкий (для `gemma-4` ↔
+     `gemma-4-E4B-it-Q4_K_M`); выбор детерминированный (самый длинный ключ, при
+     равенстве — лексикографически первый), потому что обход map случаен.
+
+  **Живая проверка v10** (`qwen3.8:latest`, ctx=32768, дефолт конфига `q4_0`,
+  профиль `q8_0`):
+  ```
+  applied profile (pull-based sync from balancer) … profileKVCacheType:"q8_0"
+  R83 гейт n_ctx: тип KV-cache из плана загрузки … kv_cache_type:"q8_0"
+  loading model with extended params … kvCacheType:"q8_0"
+  [bridge] KV cache type: Q8_0 (-50% VRAM)
+  [bridge] VRAM-estimated max n_ctx = 57916 (… kv_layers=16 kv_head_dim=256
+           kv_per_token=34816 bytes, requested n_ctx=32768)
+  llama_kv_cache: size = 1088.00 MiB (32768 cells, 16 layers, K/V (q8_0): 544.00 MiB)
+  state=loaded kv=q8_0 ctx=32768 restarts=0
+  ```
+  То есть гейт, план загрузки, C-оценка и фактическая аллокация llama.cpp
+  сходятся на одном типе и одном числе (`34 816 Б/токен × 32 768 = 1088 МиБ`).
+
+**Порядок вывода наружу (для следующей сессии).** Все правки этой сессии
+закоммичены и раскатаны: `r83-submodule-v10` — актуальный тег в
+`deployments/.env` и `release-manifest.json`; `check-image-tags.ps1` — OK.
+
+---
+
+## 8б. Третья часть сессии: §9.4 шаг 1б (вариант B+D), тег `r83-submodule-v19`
+
+**Решение владельца — B+D** (из `docs/plans/2026-09-26-step1b-fit-refusal-proposal.md`):
+отказ 413 только на `does_not_fit` и только без явного `gpuLayers`; `cpu_only`
+грузится, а оператор получает заголовки, поле в `/api/models` и warning-событие.
+Подробности — `CHANGELOG.md` 0.5.47.
+
+**Живая проверка (временный stub-контейнер, подменённые RAM/VRAM).** На живом
+стенде `cpu_only` не воспроизводится (модель влезает в VRAM → `partial_offload`),
+поэтому деградация проверялась на отдельном контейнере из образа v19 с
+`--models-dir /tmp/m`, фейковым GGUF (470 MiB, 64 слоя) и подменёнными
+`CPPWORKER_AVAILABLE_RAM_BYTES` / `CPPWORKER_VRAM_BYTES`. Что подтвердилось:
+
+```
+POST /api/models/reload {"name":"cpuonly-probe","contextSize":8192} →
+HTTP/1.1 202 Accepted
+X-Cppworker-Degraded: insufficient_resources
+X-Cppworker-Degraded-Stage: cpu_only
+{"gpuLayers":0, "status":"loading"}
+
+cppworker: warn "reload: загрузка в режиме CPU-only (деградация)"
+           name=cpuonly-probe requested_n_ctx=8192 weights_mb=470 usable_ram_mb=16384
+
+GET /api/models →
+"load_degraded":{"model":"cpuonly-probe","stage":"cpu_only",
+  "reason":"insufficient_resources","severity":"warning",
+  "detail":"vram_unknown: свободная VRAM неизвестна — расчёт только по RAM",
+  "diagnostics":{"gpu_layers":0,"kv_cache_type":"f16","kv_total_mb":3408,
+                 "max_hard_n_ctx":38253,"requested_n_ctx":8192,
+                 "total_layers":64,"usable_ram_mb":16384,"usable_vram_mb":0,
+                 "weights_mb":470}}
+
+GET /api/models/load/progress?model=cpuonly-probe → {"state":"loaded"}
+```
+
+Модель при этом **загрузилась** — то есть деградация корректно отличается от
+провала: в `load_failure` записи нет, событие «не хватило памяти» не публикуется.
+
+**Отказ (B) на том же контейнере с `CPPWORKER_AVAILABLE_RAM_BYTES=4 GiB`:** и
+`/api/models/load`, и `/api/models/load-with-params` получают **HTTP 422
+`n_ctx_infeasible`** с числами (`max_vram_n_ctx=0, max_ram_n_ctx=0,
+gguf_max_context=262144`) — загрузка не начинается. Это гейт `checkNCtxBeforeLoad`,
+который стоит первым; 413-ветка по вердикту `does_not_fit` остаётся страховкой
+для случая, когда гейт и раскладка разошлись по входным данным (см. протокол
+§9.4). Полезная деталь того же прогона: `loadModelRequest` не имеет поля `force`,
+поэтому на пути `load`/`load-with-params` escape-hatch — это только `?force=true`
+(и он не обходит гейт: если модель не влезает физически, отказ правилен).
+
+**Наблюдение на будущее (не дефект этого шага).** В stub-контейнере без GPU
+вердикт получил `Reason = vram_unknown` и всё равно выбрал `cpu_only`, а не
+`unknown`: при неизвестной VRAM memfit безопасно считает, что на GPU не влезает
+ничего. На реальном стенде `gpu_count=1` и VRAM известна, поэтому этот путь не
+задействован; но если однажды VRAM перестанет читаться (сломанный NVML), модели
+начнут грузиться CPU-only с честным предупреждением — это лучше, чем молчаливая
+переподписка, однако стоит помнить как источник «внезапно медленно».
+
+**Артефакты живой сверки:** `scripts/verify-r83-section9.ps1` дополнен блоком
+`[1b]` (контракт поля `load_degraded`: нет деградации → поля нет; есть → обязан
+нести `stage`, `diagnostics`, `severity=warning`) и `[6b]` (событие деградации в
+`recentErrors`). На живом стенде оба блока проходят (поле отсутствует — штатно),
+позитивная ветка покрыта `cmd/cppworker/degraded_load_r83_test.go`.
+
+---
+
+## 8в. Четвёртая часть сессии: D-A, D-B и §9.4 шаг 2, тег `r83-submodule-v20`
+
+Порядок взят из предыдущего разбора (D-A → шаг 2 → D-B): D-A самый дешёвый и с
+готовыми проверками, шаг 2 затрагивает раскладку, D-B без симулятора не проверить.
+
+**D-A (202 «на бумаге»).** Причина оказалась узкой и конкретной: ветка «модель
+уже грузится другим запросом» звала `backend.WaitForLoad(name)` **до** проверки
+`waitSync`. Общий хелпер `respondWhileAnotherLoadInProgress` разводит режимы:
+`wait=false` → 202 сразу (`state=loading` + `progressUrl`), `wait=true` →
+ожидание и `loaded_by_other`. Следствие для связки: балансер шлёт запросы без
+`wait` и поллит `/api/models/load/progress`, поэтому до правки второй
+одновременный запрос висел до конца чужой загрузки и мог упасть по своему
+таймауту.
+
+**§9.4 шаг 2.** `EstimateGPUMemoryForModel` оказался мёртвым кодом (ноль
+продовых вызовов — только тест), удалён. Настоящий дефект был рядом: legacy-фоллбэк
+`auto_offload` считал KV по `block_count` и `n_embd/n_heads`, то есть завышал на
+гибридных моделях, а константа «байт на элемент» дублировалась в cppworker и
+расходилась с memfit (q8_0: 2 против 34/32). Теперь KV берётся из
+`KVLayersForModel` (реальные `kv_layers`/`kv_head_dim`), а константа одна —
+`memfit.KVBytesPerElement`. Абсолютная проверка: 1088 MiB при ctx=32768, 16
+слоях KV, 4 головах и head_dim=256 — ровно то, что печатает llama.cpp.
+
+**D-B (реестр расходится).** Безусловный `delete(b.models, name)` на пути ошибки
+загрузки выбивал чужую (уже новую) запись — снаружи «model loaded в логе,
+`/api/models` → count=0». Теперь `removeOwnInstance` удаляет только свой инстанс;
+тест-симулятор перекрытия построен на настоящих `TryLockLoad`/`WaitForLoad`.
+
+**Что проверено живьём (v20).** Тег раскатан, теги согласованы, оба верификатора
+проходят, модель по-прежнему грузится `partial_offload` (не CPU-only) — то есть
+шаг 2 не сломал раскладку на 3070 (это главный риск правки: legacy-путь считает
+KV иначе, и ошибка в эту сторону уводила бы модель на CPU).
+
+---
+
+## 9. Что осталось: разбор с локациями и критериями
+
+> **ОБНОВЛЕНО 2026-09-27 (тег `r83-submodule-v21`).**
+> Закрыто ВСЁ: **9.1**, **9.2**, **9.3**, **9.4** (шаги 1, 1б, 2, 3, 3б, 4),
+> **9.5**, **9.6** (D-A, D-B, D-C), **9.7** (дефект оказался в балансере, не в
+> контракте — исправлено в v21) и **9.8** (дефекта в коде нет, разбор ниже).
+> Открытых пунктов §9 не осталось. Ниже формулировки сохранены как исходный
+> разбор; отметки «ЗАКРЫТО» стоят у сделанного.
+
+Проверено по коду и на стенде `r83-submodule-v10` (2026-09-26). Порядок —
+по отношению «риск / стоимость».
+
+### 9.1. `LB_AUTO_LOAD_WAIT_SEC` не знает размера модели (§3.3) — ЗАКРЫТО
+
+**Сделано:** `(*Proxy).autoLoadWaitTimeoutForModel(modelName)`:
+`LB_AUTO_LOAD_WAIT_SEC` задан явно → уважаем; иначе
+`max(180s, sizeBytes / 20 MB/s)`, потолок `autoLoadHardCeiling` (30 мин).
+`ensureModelLoadedOnBackend` использует его вместо глобального `lbAutoLoadWait`.
+Тестовый шов `modelSizeBytesForTest`; тесты `autoload_wait_tier_r83_test.go`
+(4 GB → 3.4 мин, 8 GB → 6.8 мин, 16.4 GB → 13 мин, явный env, 0, −1, мусор,
+потолок, неизвестный размер → 180 с).
+
+### 9.2. Балансер всё ещё трактует `max_vram_n_ctx == 0` как «нет данных» (§3.7) — ЗАКРЫТО
+
+**Сделано:** `types.LlamaCppMetrics.VramKnown` + per-model
+`LlamaCppModel.VramKnown` (poller читает top-level и per-model `vram_known`),
+`NCtxBackendState.VRAMKnown`/`AvailableVRAMMB` в `collectPreflightState`
+(per-model приоритетнее), отказ 413 с `vram_known: true` и suggestion про
+меньшую модель/квант — **только если клиент просит больше текущего n_ctx**
+(работающую partial-offload сессию не ломаем).
+`makePreflightRejectWithSuggestion`. Тесты `preflight_vram_known_r83_test.go`.
+
+### 9.3. `fallback_no_fit` всё ещё не отказ (§3.5) — ЗАКРЫТО
+
+**Сделано:** `insufficientResourcesFromFallbackNoFit` строит
+`*InsufficientResourcesError` (её понимает `handleInferenceError` → 413 +
+`code=6`); вызывается в `ensureModelLoaded` и `handleLoadWithParams`. Поведение
+`calculateLazyLoadOpts` не менялось. Тесты `lazyload_nofit_refusal_r83_test.go`.
+
+**Дополнительно к §9.3:** провал **async auto-load** теперь публикуется в
+EventBus (`publishLoadFailureEventDeduped`): раньше оператор узнавал о нём только
+из лога, и события не доходили до bell-меню. Дедупликация по
+(backend, модель+текст), иначе повторные попытки забивали 100-событийный буфер.
+Тесты `load_failure_events_dedup_r83_test.go`.
+
+### 9.4. Продово-мёртвые оценки (§3.6) — ЗАКРЫТО (шаги 1, 1б, 2, 3, 3б, 4)
+
+**Сделано (RAM):** `cmd/cppworker.availableRAMBytes` больше не имеет своей
+реализации — делегирует в `memfit.ProbeRAM` (единственный ридер системной
+памяти) с сохранением контракта R66c «некорректный env → 0 + warning».
+Это устранило расхождение: своя реализация не читала cgroup-лимит, поэтому в
+Docker «доступная RAM» показывала память всей VM.
+
+**Сделано (v17–v20):** `availableVRAMBytes` разделён на «полная ёмкость» и
+`freeVRAMBytes` (шаг 4); `EstimateModelVRAM` → `WeightsOnGPUBytes` без ×0.7
+(шаг 3); `CalculateOptimalGPULayers`/`EstimateGPUMemoryForModel`/
+`backwardCompat…` удалены — решение принимает memfit (шаги 1 и 2);
+`memfitPlanForModel` отдаёт полный вердикт, и на нём же построено решение
+«отказ или деградация» (шаг 1б, вариант B+D — см.
+`docs/plans/2026-09-26-step1b-fit-refusal-proposal.md`); KV-кэш в legacy-пути считается
+из реальных `kv_layers`/`kv_head_dim`, а константа «байт на элемент» стала одна
+на стек (`memfit.KVBytesPerElement`, шаг 2).
+
+**Осознанно отложено (не долг):** `estimateKVCacheBytes` остаётся
+консервативной оценкой сверху для путей, где известны только параметры модели
+(`auto_tune_nctx`, `inference.go`, `lazyLoad`). Перевод их на реальные
+метаданные — отдельная задача: `GGUFModelMeta` там не всегда под рукой, а
+завышение безопаснее занижения.
+
+**Подготовлено, чтобы не делать вслепую:**
+- `internal/cppbackend/estimator_compare_r83_test.go` — эталон «до»: обе оценки
+  на 4 сценариях. **Измеренный факт:** legacy ЗАНИЖАЕТ число слоёв, а не
+  завышает: на живом стенде (3070 8 GB, Qwen3.8-27B, ctx=32768) legacy=18 слоёв
+  при `q8_0` и **0 слоёв** при `f16`, memfit=23/22 (`partial_offload`). На A10
+  24 GB и на мелкой модели обе оценки совпадают (64/64 и 36/36). Причина: веса
+  ×0.7 уменьшают вес, но KV «256 Б/токен» (≈3.9 GB против реальных 1.1 GB)
+  перекрывает это с запасом — отсюда исторический симптом «gpu_layers=0».
+- `docs/plans/2026-09-26-estimator-unification-protocol.md` — пошаговый протокол
+  замены с проверками на каждом шаге, приёмочными критериями и откатом.
+- `scripts/verify-r83-section9.ps1` — живая сверка инвариантов §9 (в т.ч.
+  `-Strict` для сверки шагов рефактора).
+
+### 9.9. Диск C: и выпуск (грабля 2026-09-26)
+
+Выпуск `r83-submodule-v14` **упал** на `docker build` с
+`write .../metadata_v2.db: read-only file system`, а `docker system df` отвечал
+`Docker Desktop is unable to start`. Причина — **на диске C: оставалось ~3 МБ**:
+`buildx` не мог писать в свой overlay, Docker Desktop не поднимал бэкенд. Это не
+ошибка кода и не сеть.
+
+Что съедало место (замерено):
+
+| каталог | размер |
+|---|---|
+| `%LOCALAPPDATA%\Docker` | 69.6 GB |
+| `%LOCALAPPDATA%\go-build` | 23.7 GB |
+| Docker Build Cache (`docker system df`) | 28.6 GB (21.4 GB reclaimable) |
+| `%LOCALAPPDATA%\Temp` | 3.8 GB |
+
+Что помогло (безопасно, ничего рабочего не удалено):
+
+```powershell
+go clean -cache                              # 23.7 GB, кэш пересобирается
+Remove-Item "$env:TEMP\*" -Recurse -Force    # 3.8 GB
+```
+
+После этого Docker Desktop поднялся сам (~30 с), стек остался на прежнем теге,
+`.env` не менялся — `release-all.ps1` при падении `docker build` ничего не
+раскатывает. Повторный запуск с тем же тегом собрал образы (llama.cpp-слой
+пересобирался ~16 мин: ccache частично вытеснен).
+
+**Правило:** перед выпуском смотреть `Get-PSDrive C`; при <5 ГБ свободного
+сначала `go clean -cache` и очистка `%TEMP%`, иначе получите
+`read-only file system` и ложное впечатление, что сломан Docker.
+
+**Как закрывать.** Взять размер GGUF тем же способом, что idle-тиры
+(`getModelSizeBytes` — с учётом ollama-тега, см. правку R83 в
+`model_name_match.go`), и масштабировать базовый бюджет: например
+`max(180s, sizeBytes / 20 MB/s)` с потолком `autoLoadHardCeiling` (30 мин).
+Функция должна принимать имя модели: `AutoLoadWaitTimeout(model string)`.
+Критерий: на 16.4 GB модели без доступного прогресса ожидание ≥ 10 мин, на
+4 GB — не больше ~3 мин.
+
+### 9.2. Балансер всё ещё трактует `max_vram_n_ctx == 0` как «нет данных» (§3.7)
+
+**Где:** `pkg/types/llama_cpp_metrics.go:8` — в домене `LlamaCppMetrics` поля
+`vram_known` **нет** (cppworker его отдаёт с R83, а poller не читает);
+`internal/balancer/preflight_nctx.go:287` (`MaxVRAMNCtx int // 0 = unknown`),
+`:480` (`if state.MaxVRAMNCtx > 0 {…}` — при нуле VRAM-потолок вообще не
+проверяется), `nctx_reload_handlers.go:96,424`.
+
+**Почему это важно.** После R83 ноль означает ДВА разных случая: «метрик нет» и
+«VRAM известна, но веса не влезают». Во втором случае reload заведомо не поднимет
+потолок (веса не поместятся ни при каком `gpu_layers`), а балансер сейчас
+молча пропускает проверку и уходит в reload-ветку — клиент получает таймаут
+вместо внятного отказа.
+
+### 9.5. SSE ring buffer пуст, пока нет подключённого клиента — ЗАКРЫТО
+
+**Сделано:** `eventsHub.startPump(bus)` — одна подписка на EventBus (идемпотентная),
+живущая независимо от SSE-клиентов, пишет нотификации в ring buffer;
+`SetEventBus` её запускает, push из `handleEvents` убран (иначе история
+вытеснялась бы вдвое быстрее). Потребители буфера — snapshot при подключении к
+`/api/v1/events` и `recentErrors` в `/api/v1/health/detailed`.
+Тесты `events_pump_r83_test.go` (событие без клиентов попадает в snapshot,
+не-нотификации игнорируются, повторный `startPump` не плодит подписки).
+
+### 9.6. Дефекты загрузки (D-A, D-B, D-C из §3.9 хендоффа)
+
+- **D-C (unload не барьер) — ЗАКРЫТО (v18).** `handleUnloadModel` проверял только
+  активные inference-запросы (`InFlight`), а фоновая загрузка в этот счётчик не
+  попадает: unload 16 GB модели во время чтения с диска отвечал 200, модель
+  удалялась из реестра и через минуты возвращалась туда фоновой загрузкой.
+  Теперь `Backend.IsLoading(name)` (реестр `loading` под `loadMu`) + 409 Conflict
+  с подсказкой «дождитесь state=loaded или `?force=true`»; force продавливает,
+  но загрузка не отменяется мгновенно — у неё свои checkpoints.
+  Тесты `unload_loading_guard_r83_test.go`.
+- **D-A (асинхронность только на бумаге) — ЗАКРЫТО (v20).** Причина оказалась
+  конкретнее, чем в исходной формулировке: ветка «модель уже грузится другим
+  запросом» вызывала `backend.WaitForLoad(name)` **до** проверки `waitSync`, а
+  это ожидание канала без таймаута. Исправлено общим хелпером
+  `respondWhileAnotherLoadInProgress`: при `wait=false` (default) — 202 сразу со
+  `state=loading` + `progressUrl`, при `wait=true` — прежнее ожидание и
+  `loaded_by_other`. Тесты `cmd/cppworker/concurrent_load_r83_test.go` (в т.ч.
+  async отвечает мгновенно там, где чужая загрузка идёт 30 с).
+- **D-B (реестр расходится) — ЗАКРЫТО (v20).** `LoadModelWithOpts` на ошибке
+  делал безусловный `delete(b.models, name)` и при перекрытии загрузок выбивал
+  уже НОВУЮ запись — снаружи «model loaded в логе, `/api/models` → count=0».
+  Теперь `(*Backend).removeOwnInstance` удаляет только свой инстанс. Тесты
+  `internal/cppbackend/registry_overlap_r83_test.go`, включая симулятор
+  перекрытия на настоящих `TryLockLoad`/`WaitForLoad`. Замечание: после D-C
+  (409 на unload во время загрузки) исходный триггер стал труднодостижим, но
+  инвариант защищает весь класс «чужой провал стирает рабочую запись».
+- **§9.4 шаг 1б — ЗАКРЫТО (v19).** Решение владельца — вариант **B+D**: отказ
+  413 только на `StageDoesNotFit` (и только без явного `gpuLayers`), `cpu_only`
+  грузится с warning-событием и заголовками `X-CppWorker-Degraded[-Stage]`,
+  escape-hatch `force:true`/`?force=true`. Детали — `CHANGELOG.md` 0.5.47 и
+  `docs/plans/2026-09-26-step1b-fit-refusal-proposal.md` («Итог»).
+- **§9.4 шаг 2 — ЗАКРЫТО (v20).** `EstimateGPUMemoryForModel` оказался мёртвым
+  кодом (ноль продовых вызовов) и удалён. Настоящий дефект был рядом:
+  legacy-фоллбэк считал KV по `block_count` и `n_embd/n_heads` вместо реальных
+  `kv_layers`/`kv_head_dim`, а константа «байт на элемент» дублировалась и
+  расходилась с memfit. Подробности — `CHANGELOG.md` 0.5.48 и протокол §9.4,
+  шаг 2. Осталось осознанно отложенное: `estimateKVCacheBytes` как
+  консервативная оценка на путях без метаданных (`auto_tune_nctx`,
+  `inference.go`, `lazyLoad`).
+
+### 9.7. Дублирование ответа на `/api/chat` — ЗАКРЫТО (v21), дефект был в БАЛАНСЕРЕ
+
+Исходная формулировка («за владельцем контракта, менять нельзя без решения»)
+оказалась ошибочной: владелец верно указал, что с настоящей Ollama OpenWebUI
+работает, значит дубль — наша ошибка, а не свойство контракта. Проверка это
+подтвердила.
+
+**Что измерено.** Собрал отдельный стенд (stub cppworker + stub balancer того же
+тега) и снял поток байтами, затем повторил на **живом** балансере:
+
+```
+$ curl -N .../api/chat   (через балансер, стрим)
+текст в дельтах:      63 символа
+текст в done-чанке:   63 символа   ← тот же текст второй раз, done:true один
+```
+
+**Причина (найдена точно).**
+
+1. cppworker в своём `/api/chat` кладёт ПОЛНЫЙ текст в done-чанк
+   (`handlers_chat.go`, `msg["content"] = cleanFinalContent(fullOutput)`) — отсюда
+   «2.00×». Настоящая Ollama там отдаёт `message.content: ""`; подтверждение —
+   живой сырой лог OpenWebUI `_diag/openwebui_closing_backticks_raw_*.txt`: один
+   `"done":true` и `"content":""`, content только дельтами.
+2. Балансер для llama.cpp-бэкенда идёт **нативным** путём
+   (`llamacpp_transport.go`, ветка `nativePath`) и отдаёт NDJSON cppworker
+   байт-в-байт, поэтому дубль доезжает до клиента. SSE-ветка (OpenAI→Ollama) дубль
+   снимала — поэтому на части конфигураций его не наблюдалось.
+
+**Исправлено (v21).** `stripNativeDoneContent` нормализует финальный чанк: content
+пустой, вся статистика на месте — ответ становится неотличим от Ollama. Внутреннее
+накопление (`accumulatedPlainContent` для R60.21 auto-continue) не тронуто.
+Выключатель `LB_OLLAMA_DONE_CONTENT=keep` — на случай клиента, читающего ответ
+только из done-чанка. Тесты
+`internal/balancer/chat_done_content_r83_test.go`.
+
+### 9.8. Устаревшие профили моделей (§3.8) — ЗАКРЫТО (2026-09-27), дефекта в коде нет
+
+Исходный симптом: в логе живого cppworker — попытки грузить `r81-model.gguf`,
+`m-auto.gguf`, `llama-3-8b.gguf`, которых нет ни в `config/*.json`, ни в
+`deployments/*.json`.
+
+**Разбор (поиск по всему дереву, исключая `.git`, `node_modules` и вендоренный
+`c/llama.cpp`):**
+
+| имя | где реально встречается |
+|---|---|
+| `llama-3-8b.gguf` | `_diag/r73_balancer_test.log:303`, `_diag/r78_ci_job.log:412` — **артефакты прошлых сессий** |
+| `r81-model` | фикстуры `internal/api/agent_health_r81_test.go:105`, `internal/modelreplication/model_group_r81_test.go:23` |
+| `m-auto.gguf` | только текст этого хендоффа |
+
+Ни в живом `config.json` контейнера, ни в `/app/data/state.json`, ни в
+`models/.name_history.json` этих имён **нет**; в логах балансера за 24 часа — **0
+упоминаний**. То есть источником были клиенты/логи прошлых прогонов, а не
+конфигурация репозитория.
+
+**Понял и класс проблемы.** Профиль — это настройки для имени модели; он
+применяется, **только когда модель с таким именем запрошена**, и никаких загрузок
+не инициирует (ни prewarm-контроллер, ни model-instance-контроллер профили не
+перебирают). Поэтому «мёртвый профиль» безвреден: он даёт `model not found` тому
+клиенту, который попросил несуществующее имя.
+
+**Что здесь полезно знать (нашёл попутно).** На живом стенде **14 из 17**
+профилей не соответствуют ни одной модели в каталоге, и один из них —
+`Qwen3-8B-Instruct-2507`. Именно он давал ложное совпадение с `qwen3.8:latest` в
+§3.4 (нормализация имени `Qwen3-8B-…` начинается на `qwen3.8`), и это же имя
+выглядит как «почти наша модель» при разборе логов. Так что «устаревшие профили»
+из симптома — это в том числе он.
+
+**Действие вместо кода:** `scripts/verify-r83-section9.ps1` получил блок `[7]` —
+он сверяет профили балансера с каталогом cppworker (`/api/models/files`) и печатает
+те, для которых модели нет. Теперь класс «профиль на отсутствующую модель» виден
+сразу, без поиска по логам. Дополнительно: чистить такие профили теперь можно
+осознанно (они не мешают), а не «на всякий случай».
+

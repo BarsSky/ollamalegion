@@ -8,7 +8,7 @@
 // Здесь остаётся только сбор ВХОДНЫХ данных: снимок ресурсов (Budget) и описание
 // модели (ModelSpec). Формулы и вердикт — в internal/memfit.
 //
-// Подробности: plans/2026-09-25-memory-fit-subsystem.md.
+// Подробности: docs/plans/2026-09-25-memory-fit-subsystem.md.
 package cppbackend
 
 import (

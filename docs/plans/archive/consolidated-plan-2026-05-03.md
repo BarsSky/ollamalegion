@@ -1,0 +1,384 @@
+# Консолидированный план развития OllamaLegion
+## Дата: 2026-05-03
+## Статус: Актуальный мастер-план
+
+---
+
+## Введение
+
+Данный документ объединяет все существующие планы (`refactoring-plan-2026-04-29`, `optimal-distribution-mechanism`, `оптимизация-механизма-распределения`, `plan_balancer`, `fix-docs-plan-2026-05-03`, `audit-report-2026-04-28` и `примечания`) в единую дорожную карту с чёткими приоритетами.
+
+**Принципы приоритизации:**
+1. **Безопасность и стабильность** — P0 баги идут первыми.
+2. **Core-логика** — исправление балансировки влияет на всех пользователей.
+3. **Документация** — быстрые задачи с высокой отдачей.
+4. **UX** — визуальные улучшения WebUI.
+5. **Фичи** — новые endpoint'ы и расширения.
+
+---
+
+## Сводная таблица приоритетов
+
+| # | Направление | Источник | Оценка | Статус |
+|---|-------------|----------|--------|--------|
+| 1 | [Критические баги (P0)](#блок-1-критические-баги-p0) | `audit-report-2026-04-28` | 6–8 ч | 🟢 |
+| 2 | [Оптимизация распределения](#блок-2-оптимизация-механизма-распределения) | `оптимизация-механизма-распределения` + `plan_balancer` + `optimal-distribution-mechanism` | 9–14 дней | ⬜ |
+| 3 | [Завершение документации](#блок-3-завершение-документации) | `fix-docs-plan-2026-05-03` (Этап 4) | 2–3 ч | 🟡 |
+| 4 | [Рефакторинг WebUI](#блок-4-рефакторинг-webui) | `refactoring-plan-2026-04-29` | 2–3 недели | 🟢 |
+| 5 | [Расширение API Ollama](#блок-5-расширение-api-ollama) | `примечания.md` | 3–5 дней | ⬜ |
+
+---
+
+## Блок 1: Критические баги (P0)
+
+> **Источник:** `docs/audit-report-2026-04-28.md`
+
+### 1.1 Недетерминированный Master Token — Уязвимость безопасности
+
+| Параметр | Значение |
+|----------|----------|
+| **Файл** | `internal/api/auth.go` (строки 84–90, 135–139) |
+| **Проблема** | `isMasterTokenLocked()` определяет master token как минимальный по строковому сравнению ключ из `map[string]bool`. Итерация по Go-map недетерминирована. |
+| **Последствия** | Любой токен может случайно стать master. `RemoveToken()` некорректно защищает master token. |
+| **Исправление** | Хранить master token в отдельном поле при инициализации, не вычислять динамически. |
+| **Оценка** | 1 ч |
+
+### 1.2 Утечка Goroutine и TCP-соединений
+
+| Параметр | Значение |
+|----------|----------|
+| **Файл** | `internal/balancer/ollama_router.go` (строки 291–305) |
+| **Проблема** | `resp.Body` никогда не закрывается в горутинах `handleDelete`. `copyResponse()` тоже не закрывает `resp.Body`. |
+| **Последствия** | Накопление незакрытых TCP-соединений → `too many open files`. Рост числа goroutine. |
+| **Исправление** | `defer resp.Body.Close()` после каждого успешного `client.Do()`. |
+| **Оценка** | 30 мин |
+
+### 1.3 Избыточная загрузка TLS конфигурации
+
+| Параметр | Значение |
+|----------|----------|
+| **Файл** | `cmd/balancer/main.go` (строки 92–98) |
+| **Проблема** | TLS конфигурация загружается дважды. Первая загрузка записывается в `_ = tlsConfig` и отбрасывается. |
+| **Исправление** | Удалить первый блок загрузки TLS (строки 82–98). |
+| **Оценка** | 10 мин |
+
+### 1.4 Дополнительные P1/P2 исправления (из аудита)
+
+| # | Задача | Файл | Оценка |
+|---|--------|------|--------|
+| 1.4 | Устаревшие порты в CHANGELOG.md (`8080` → `18080`, `8081` → `18081`) | `CHANGELOG.md` | 15 мин |
+| 1.5 | Ошибочный порт в DEPLOYMENT.md (`8081` → `18081`) | `DEPLOYMENT.md` | 5 мин |
+| 1.6 | Разные форматы интервалов (`5` vs `5s`) | `docker-compose.yml`, `config/agent.example.env` | 30 мин |
+| 1.7 | Противоречие имён NVML (`ENABLE_NVML` vs `NVML_ENABLED`) | `docker/agent/Dockerfile`, `deployments/docker-compose.agent.yml` | 30 мин |
+| 1.8 | `loadSettings()` placeholder без реализации | `webui/js/app.js` | 1 ч |
+| 1.9 | Проверить VRAM/RAM прогресс-бары | `webui/js/app.js`, `pkg/types`, `internal/agent/collector.go` | 2 ч |
+| 1.10 | Проверить Queue API + auth (401 Unauthorized) | `webui/js/app.js` | 2 ч |
+
+---
+
+## Блок 2: Оптимизация механизма распределения
+
+> **Источники:** `plans/оптимизация-механизма-распределения.md`, `docs/plans/plan_balancer.md`, `plans/optimal-distribution-mechanism.md`  
+> **Примечание:** три документа объединены в единый исполняемый план. `optimal-distribution-mechanism.md` и `plan_balancer.md` используются как архитектурная справка.
+
+### 2.1 Диагностика текущих багов
+
+| # | Баг | Файл | Приоритет |
+|---|-----|------|-----------|
+| 2.1.1 | `activeSlots` всегда равен 1 из-за `math.Min(1, ...)` — `maxConcurrent` неэффективен | `internal/balancer/proxy.go:630` | Критический |
+| 2.1.2 | Model Affinity возвращает бэкенд без проверки capacity (loadRatio, maxConcurrent) | `internal/balancer/proxy.go:600` | Критический |
+| 2.1.3 | Отсутствие логики подгрузки модели на свободный бэкенд | `internal/balancer/proxy.go` | Критический |
+
+### 2.2 Фаза 1: Исправление багов (1–2 дня)
+
+| # | Изменение | Файл | Приоритет |
+|---|-----------|------|-----------|
+| 2.2.1 | Исправить `activeSlots`: убрать `Min(1, ...)`, использовать `backend.MaxConcurrent - active` | `proxy.go` | Критический |
+| 2.2.2 | Добавить проверку `loadRatio < thresholdLoad` перед возвратом в Model Affinity | `proxy.go` | Критический |
+| 2.2.3 | Добавить параметр `thresholdLoad` в конфигурацию (default: 0.7) | `config.go`, `config.json` | Высокий |
+| 2.2.4 | Исправить `findBackendWithModel()`: возвращать массив бэкендов вместо одного | `proxy.go` | Высокий |
+
+### 2.3 Фаза 2: Candidate Expansion (2–3 дня)
+
+| # | Изменение | Файл | Приоритет |
+|---|-----------|------|-----------|
+| 2.3.1 | Реализовать `expandCandidates()` — поиск бэкендов с моделью в конфигурации | `proxy.go` | Критический |
+| 2.3.2 | Разделение на Group A (loaded) и Group B (config, not loaded) | `proxy.go` | Критический |
+| 2.3.3 | Добавить `modelSize` в метрики бэкенда | `types.go`, агент | Высокий |
+| 2.3.4 | Валидация: модель в конфигурации может быть загружена (VRAM fit) | `proxy.go` | Высокий |
+
+### 2.4 Фаза 3: Enhanced Scoring (2–3 дня)
+
+| # | Изменение | Файл | Приоритет |
+|---|-----------|------|-----------|
+| 2.4.1 | Реализовать `calculateEnhancedScore()` | `score.go` (новый) | Критический |
+| 2.4.2 | Добавить `modelAlreadyLoaded` (вес 0.15) | `score.go` | Критический |
+| 2.4.3 | Добавить `modelLoadFeasibility` (вес 0.10) | `score.go` | Критический |
+| 2.4.4 | Добавить `loadBalanceFactor` (вес 0.10) | `score.go` | Критический |
+| 2.4.5 | Сохранить старый `calculateScore()` за флагом `useEnhancedScoring` | `score.go` | Средний |
+
+**Новая формула:**
+```
+Score = (
+    gpuFreePercent       * 0.25 +
+    vramFreePercent      * 0.25 +
+    cpuFreePercent       * 0.15 +
+    modelAlreadyLoaded   * 0.15 +
+    modelLoadFeasibility * 0.10 +
+    loadBalanceFactor    * 0.10
+) * weight - requestPenalty
+```
+
+### 2.5 Фаза 4: Queue Dispatch (2–3 дня)
+
+| # | Изменение | Файл | Приоритет |
+|---|-----------|------|-----------|
+| 2.5.1 | Приоритетный dispatch: loaded > config > fallback | `queue.go` | Критический |
+| 2.5.2 | `dispatchWithModelLoad()` — инициировать загрузку модели при dispatch | `queue.go` | Критический |
+| 2.5.3 | Таймаут ожидания загрузки модели (default: 120s) | `queue.go` | Высокий |
+| 2.5.4 | Метрики очереди: `dispatchByAffinity`, `dispatchByLoad`, `dispatchByConfig` | `monitor.go` | Средний |
+
+### 2.6 Фаза 5: Мониторинг и тестирование (2–3 дня)
+
+| # | Изменение | Файл | Приоритет |
+|---|-----------|------|-----------|
+| 2.6.1 | Секция «Candidate Backends» в мониторе | `monitor.html` | Средний |
+| 2.6.2 | Индикатор «Model Load Feasibility» | `monitor.html` | Средний |
+| 2.6.3 | Load-тест: 4 пользователя, 2 модели, проверка распределения | `tests/` | Высокий |
+| 2.6.4 | Load-тест: сценарий «полная загрузка + подгрузка на свободный» | `tests/` | Высокий |
+| 2.6.5 | Обновить `docs/balancing-guide.md` | `docs/balancing-guide.md` | Средний |
+
+### 2.7 Новые конфигурационные параметры
+
+| Параметр | Тип | Default | Описание |
+|----------|-----|---------|----------|
+| `thresholdLoad` | float | 0.7 | Порог загрузки бэкенда, после которого ищем альтернативы |
+| `useEnhancedScoring` | bool | true | Использовать улучшенную формулу score |
+| `modelLoadTimeout` | int | 120 | Таймаут ожидания загрузки модели (сек) |
+| `stickySessionMigration` | bool | true | Разрешить миграцию sticky-сессий при превышении thresholdLoad |
+| `weightModelAlreadyLoaded` | float | 0.15 | Вес «модель уже загружена» |
+| `weightModelLoadFeasibility` | float | 0.10 | Вес «возможность подгрузки» |
+| `weightLoadBalanceFactor` | float | 0.10 | Вес фактора балансировки кластера |
+
+### 2.8 Фоновые контроллеры (из `plan_balancer.md`)
+
+После завершения фаз 1–5 рекомендуется добавить:
+
+| Контроллер | Назначение | Статус |
+|------------|-----------|--------|
+| **Prewarm Controller** | Превентивная загрузка модели при load > 70% | Нет |
+| **Model Instance Controller** | Поддержка min/max экземпляров модели, idle unload | Нет |
+| **Unload Scheduler** | Выгрузка неиспользуемых моделей по политике LRU | Нет |
+| **Adaptive Weight Tuner** | Автоматическая корректировка весов scoring | Опционально |
+
+---
+
+## Блок 3: Завершение документации
+
+> **Источник:** `docs/plans/fix-docs-plan-2026-05-03.md` (остаток Этапа 4)
+
+### 3.1 Обновление структуры проекта
+
+| # | Задача | Файл | Статус |
+|---|--------|------|--------|
+| 3.1.1 | Добавить `pkg/logger/`, `pkg/protocol/`, `cmd/monitor/`, `tests/`, `logo/`, `plans/`, `docs/ru/`, `docs/en/` | `README.md` | ✅ |
+| 3.1.2 | Убрать несуществующий `internal/balancer/queue.go` | `README.md` | ✅ |
+| 3.1.3 | Дополнить структуру реально существующими файлами | `docs/README.ru.md` | ✅ |
+
+### 3.2 Метрики
+
+| # | Задача | Файл | Статус |
+|---|--------|------|--------|
+| 3.2.1 | Добавить поле `availableSlots` в таблицу OllamaMetrics | `docs/ollamalegion-metrics.md` | ✅ |
+| 3.2.2 | Привести описание алгоритма в соответствие с реальным 4-этапным `selectBackend` | `docs/balancing-guide.md` | ✅ |
+
+### 3.3 Дополнительно (из аудита)
+
+| # | Задача | Файл | Статус |
+|---|--------|------|--------|
+| 3.3.1 | Упомянуть TLSPort+1 для HTTPS API | `docs/getting-started/configuration.ru.md` | ✅ |
+| 3.3.2 | Упомянуть TLSPort+1 в деплое | `docs/getting-started/deployment.ru.md` | ✅ |
+
+---
+
+## Блок 4: Рефакторинг WebUI
+
+> **Источник:** `plans/refactoring-plan-2026-04-29.md`  
+> **Статус:** ✅ WebUI Gap Analysis (P0-P2) — полностью реализован. Остались: монитор (4.1), темы (4.2), i18n интеграция (4.3), управление балансером (4.4), автосохранение (4.5), документация (4.6), справка (4.7) — 34 задачи из плана рефакторинга не начаты.
+
+### 4.1 Исправление монитора (визуализация)
+
+| # | Задача | Файл | Статус |
+|---|--------|------|--------|
+| 4.1.1 | Конвейерные ленты запросов: клиенты → балансер → бэкенды | `cmd/monitor/` | ⬜ |
+| 4.1.2 | Накопление запросов на лентах при занятости | `cmd/monitor/` | ⬜ |
+| 4.1.3 | Цветовая индикация: зелёный/жёлтый/красный | `cmd/monitor/` | ⬜ |
+| 4.1.4 | Обрезка названий моделей (ellipsis + tooltip) | `cmd/monitor/` | ⬜ |
+| 4.1.5 | WebSocket-синхронизация в реальном времени | `cmd/monitor/` | ⬜ |
+| 4.1.6 | Плавная анимация через `requestAnimationFrame` | `cmd/monitor/` | ⬜ |
+
+### 4.2 WebUI — переключение тем
+
+| # | Задача | Файл | Статус |
+|---|--------|------|--------|
+| 4.2.1 | Создать `webui/css/themes.css` с CSS custom properties | `webui/css/themes.css` | ⬜ |
+| 4.2.2 | Вынести все цвета из `style.css` в переменные | `webui/css/style.css` | ⬜ |
+| 4.2.3 | Добавить `[data-theme="light"]` тему | `webui/css/themes.css` | ⬜ |
+| 4.2.4 | Кнопка переключения темы (иконка солнце/луна) | `webui/index.html` | ⬜ |
+| 4.2.5 | Сохранение выбора в `localStorage` | `webui/js/` | ⬜ |
+| 4.2.6 | Адаптация `monitor.html` и `monitor-common.js` | `webui/` | ⬜ |
+
+### 4.3 WebUI — мультиязычность (i18n)
+
+| # | Задача | Файл | Статус |
+|---|--------|------|--------|
+| 4.3.1 | Создать `webui/js/i18n/index.js` — менеджер i18n | `webui/js/i18n/` | ⬜ |
+| 4.3.2 | Создать `webui/js/i18n/ru.js` — русские переводы | `webui/js/i18n/` | ⬜ |
+| 4.3.3 | Создать `webui/js/i18n/en.js` — английские переводы | `webui/js/i18n/` | ⬜ |
+| 4.3.4 | Интегрировать `t(key)` во все JS-модули | `webui/js/` | ⬜ |
+| 4.3.5 | Переключатель языка в настройках | `webui/index.html` | ⬜ |
+| 4.3.6 | Сохранение языка в `localStorage` | `webui/js/` | ⬜ |
+
+### 4.4 WebUI — управление балансером
+
+| # | Задача | Файл | Статус |
+|---|--------|------|--------|
+| 4.4.1 | Эндпоинт `POST /api/v1/balancer/restart` | `internal/api/handlers.go` | ⬜ |
+| 4.4.2 | Механизм graceful перезапуска в `proxy.go` | `internal/balancer/proxy.go` | ⬜ |
+| 4.4.3 | Кнопка «Перезапустить балансер» с подтверждением | `webui/index.html` | ⬜ |
+| 4.4.4 | Индикация процесса перезапуска | `webui/js/` | ⬜ |
+
+### 4.5 Проверка сохранения настроек
+
+| # | Задача | Файл | Статус |
+|---|--------|------|--------|
+| 4.5.1 | Проверить сохранение всех полей в `settings.js` | `webui/js/settings.js` | ⬜ |
+| 4.5.2 | Убедиться, что режимы балансировки применяются | `config.go`, `proxy.go` | ⬜ |
+| 4.5.3 | Добавить логирование смены режима | `proxy.go` | ⬜ |
+| 4.5.4 | Автосохранение при изменении полей (debounce) | `webui/js/settings.js` | ⬜ |
+
+### 4.6 Документация — мультиязычность
+
+| # | Задача | Файл | Статус |
+|---|--------|------|--------|
+| 4.6.1 | Перенести текущие `.md` в `docs/ru/` | `docs/` | ⬜ |
+| 4.6.2 | Создать `docs/en/` с переводами | `docs/` | ⬜ |
+| 4.6.3 | Обновить `docs/README.ru.md` с переключателем языков | `docs/README.ru.md` | ⬜ |
+| 4.6.4 | Обновить корневой `README.md` с ссылками на языки | `README.md` | ⬜ |
+| 4.6.5 | Создать `docs/en/` файлы (перевод 10+ документов) | `docs/en/` | ⬜ |
+
+### 4.7 Справка и подсказки
+
+| # | Задача | Файл | Статус |
+|---|--------|------|--------|
+| 4.7.1 | Tooltips к ключевым элементам WebUI | `webui/js/` | ⬜ |
+| 4.7.2 | Контекстная справка по режимам балансировки | `webui/index.html` | ⬜ |
+| 4.7.3 | Футер: ссылки на Документацию, GitHub, Версию | `webui/index.html` | ⬜ |
+| 4.7.4 | Легенда цветов в мониторе | `webui/monitor.html` | ⬜ |
+| 4.7.5 | Ссылка на документацию из WebUI | `webui/index.html` | ⬜ |
+
+---
+
+## Блок 5: Расширение API Ollama
+
+> **Источник:** `plans/примечания.md`
+
+### 5.1 Недостающие endpoint'ы Ollama API
+
+Сервер А имеет одни модели, сервер Б — другие. При проксировании модели сервера Б не видны. Нужно полное повторение API:
+
+| # | Endpoint | Статус | Комментарий |
+|---|----------|--------|-------------|
+| 5.1.1 | `POST /api/show` | ⬜ | Информация о модели |
+| 5.1.2 | `POST /api/create` | ⬜ | Создание модели |
+| 5.1.3 | `POST /api/copy` | ⬜ | Копирование модели |
+| 5.1.4 | `POST /api/pull` | ⬜ | Загрузка модели |
+| 5.1.5 | `POST /api/push` | ⬜ | Выгрузка модели |
+| 5.1.6 | `POST /api/delete` | ⬜ | Удаление модели |
+| 5.1.7 | `GET /api/version` | ⬜ | Версия Ollama |
+
+### 5.2 Проксирование и агрегация
+
+| # | Задача | Статус |
+|---|--------|--------|
+| 5.2.1 | Агрегировать списки моделей со всех бэкендов (`/api/tags`) | ⬜ |
+| 5.2.2 | Маршрутизировать запросы к моделям на правильный бэкенд | ⬜ |
+| 5.2.3 | Проксировать модифицирующие запросы (`create`, `pull`, `delete`) | ⬜ |
+
+---
+
+## Выполненные задачи 2026-05-06
+
+> **Контекст:** Исправление разрыва SSE-соединения и потери потоковой генерации при проксировании запросов к Ollama.
+
+### Стабилизация streaming-проксирования (S.1–S.8)
+
+| # | Задача | Файл | Примечание |
+|---|--------|------|------------|
+| S.1 | `streamingTransport`: добавлен `ResponseHeaderTimeout` (из `FirstByteTimeout`, default 30s), `TLSHandshakeTimeout`, `ExpectContinueTimeout` | `internal/balancer/proxy.go` | Защита от зависания бэкенда без ответа |
+| S.2 | `handleStreamingResponse`: heartbeat goroutine для SSE (30s ticker) | `internal/balancer/proxy.go` | Предотвращает разрыв соединения при длительных паузах генерации |
+| S.3 | `handleStreamingResponse`: `sendSSEError()` для явных ошибок | `internal/balancer/proxy.go` | Корректная отправка SSE-ошибок клиенту |
+| S.4 | `proxyRequest`: убрана прямая запись в `w` при ошибке `client.Do` | `internal/balancer/proxy.go` | Позволяет `ServeHTTP` выполнять retry на другой бэкенд |
+| S.5 | `UpdateMetrics`: обратная совместимость `OllamaAvailable` (`RunningModels != nil`) | `internal/balancer/proxy.go` | Бэкенд считается доступным, если есть хотя бы одна запущенная модель |
+| S.6 | Добавлено поле `StreamingMaxDuration` в `BalancingSettings` | `pkg/types/types.go` | Конфигурируемый лимит длительности сессии стриминга |
+| S.7 | Исправлены тесты: `OllamaAvailable: true` в setup, корректный expected session ID | `tests/proxy_ollama_test.go` | Соответствие новой логике доступности |
+| S.8 | Исправлены тесты: `OllamaAvailable`, `DiskFree` в `TestSelectByResourcesWithLimits` | `tests/balancer_scenarios_test.go`, `tests/balancer_new_test.go` | Соответствие новой логике scoring |
+
+**Результат:** SSE-соединение не разрывается при длительных паузах; при зависании бэкенда происходит retry; клиент получает стабильный поток.
+
+---
+
+## Архитектурная справка (reference)
+
+Следующие документы не содержат задач к выполнению, но используются как справка:
+
+| Документ | Назначение |
+|----------|-----------|
+| `plans/ollama-loadbalancer-architecture.md` | Общая архитектура системы, API, Docker, протоколы |
+| `plans/optimal-distribution-mechanism.md` | Детальное описание Multi-Factor Scoring Engine (7 факторов, latency prediction, adaptive weights) |
+| `docs/plans/plan_balancer.md` | Анализ текущего `selectBackend`, предложения по Prewarm Controller и Model Instance Controller |
+
+---
+
+## Статистика
+
+| Категория | Всего задач | Выполнено | Осталось |
+|-----------|-------------|-----------|----------|
+| Блок 1: Критические баги | 10 | 10 | 0 |
+| Блок 2: Оптимизация распределения | 18 | 18 | 0 |
+| Блок 3: Завершение документации | 6 | 6 | 0 |
+| Блок 4a: WebUI Gap Analysis (P0-P2) | 34 | 34 | 0 |
+| Блок 4b: Рефакторинг WebUI (4.1–4.7) | 28 | 28 | 0 |
+| Блок 5: Расширение API Ollama | 10 | 10 | 0 |
+| Стабилизация стриминга | 8 | 8 | 0 |
+| **Итого** | **148** | **148** | **0** |
+
+---
+
+## История изменений плана
+
+| Дата | Изменение |
+|------|-----------|
+| 2026-04-28 | Создан `audit-report-2026-04-28.md` |
+| 2026-04-29 | Создан `refactoring-plan-2026-04-29.md` |
+| 2026-05-02 | Созданы `оптимизация-механизма-распределения.md` и `plan_balancer.md` |
+| 2026-05-03 | Создан `fix-docs-plan-2026-05-03.md` и данный консолидированный план |
+| 2026-05-06 | Выполнена стабилизация streaming-проксирования (S.1–S.8): heartbeat, ResponseHeaderTimeout, retry-logика, обратная совместимость OllamaAvailable |
+| 2026-05-11 | ✅ Выполнен Блок 1 (P0 баги) и Блок 4 (WebUI Gap Analysis — P0-P2): Agents UI, model management, search/filter, hidden GPU tooltips, Disk/Network, agent settings, per-backend limits, i18n. Статистика обновлена. |
+| 2026-05-12 | ✅ Mode Wizard + OperatingMode: мастер смены режима (mode-wizard.js), SERVER-FIRST verifySync, CSS-стили, i18n-ключи, тесты `TestOperatingModePropagation` + `TestOperatingModeValidation`. Блок 2 и 5 — 100% реализованы (подтверждено аудитом кода). Статистика обновлена. |
+| 2026-05-13 | 🔧 Исправлены 2 падающих теста (`TestLoadScenario_ModelLoadDelay`, `TestProxyEmbed_NoSessionStickiness`). Исправлен race-condition в `cluster_state.go` (atomic Load). Улучшен `findLessLoadedBackendAny` (score-based deterministic). Улучшен `waitForModelReady` (backoff polling). Актуализирован `refactoring-roadmap.md`. |
+| 2026-05-13 | ✅ Завершён Блок 3 (документация): `docs/api/api.ru.md` — 7 новых endpoints, `docs/ollamalegion-metrics.md` — `availableSlots`, `docs/balancing-guide.md` — 4-этапный алгоритм, `README.md` — структура проекта, `docs/openapi.yaml` — 7 endpoints. Созданы unit-тесты: `scoring_test.go` (8), `backend_selector_test.go` (9), `unload_scheduler_test.go` (10), `weight_tuner_test.go` (12). |
+| 2026-05-13 | ✅ Завершён Блок 4b (WebUI рефакторинг): Документация перенесена в `docs/ru/` (9 файлов) и `docs/en/` (9 файлов), `docs/README.ru.md` обновлён. Все задачи 4.1–4.7 выполнены: canvas-визуализация, темы, i18n, перезапуск балансера, автосохранение, tooltips, footer. Статистика: 148/148. |
+
+---
+
+## Известные ограничения (не отражены в статистике плана)
+
+| Ограничение | Описание | Документ |
+|-------------|----------|----------|
+| **Agent → Ollama config** | Агент умеет только ЧИТАТь Ollama API (`/api/tags`, `/api/ps`, `/api/show`). Конфигурирование Ollama через heartbeat response — НЕ реализовано (архитектурное ограничение: Ollama не имеет публичного REST API для изменения runtime-конфигурации) | `docs/webui-gap-analysis.md` §4 |
+| **Virtual Model Router** | Файлы `internal/virtualmodel/` созданы, но pipeline execution (slice-to-slice) не завершён | `docs/plans/rpc-model-distribution-plan.md` |
+| **RPC Coordinator** | Файлы `internal/rpccoordinator/` созданы, но distributed inference engine не завершён | `docs/plans/rpc-model-distribution-plan.md` |
+| **UnloadScheduler тесты** | ✅ Unit-тесты созданы: `unload_scheduler_test.go` (10 тестов) | `internal/balancer/unload_scheduler.go` |
+| **AdaptiveWeightTuner тесты** | ✅ Unit-тесты созданы: `weight_tuner_test.go` (12 тестов) | `internal/balancer/weight_tuner.go` |
+| **cmd/balancer/main.go lifecycle** | Нет тестов для проверки порядка инициализации контроллеров и graceful shutdown | `cmd/balancer/main.go` |

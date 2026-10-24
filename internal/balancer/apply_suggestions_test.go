@@ -1,6 +1,6 @@
 // apply_suggestions_test.go — TDD for R59.1 apply endpoint.
 //
-// Reference: docs/superpowers/specs/2026-09-03-cluster-autosuggest-apply.md
+// Reference: docs/archive/superpowers/specs/2026-09-03-cluster-autosuggest-apply.md
 //
 // Tests cover the ApplySuggestions pure function (no HTTP, no real backends).
 // HTTP handler tests will be in handlers_autosuggest_test.go (R59.1+).

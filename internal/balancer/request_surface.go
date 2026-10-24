@@ -134,7 +134,7 @@ func isImageEndpointPath(path string) bool {
 // isOllamaAPIPath — Ollama-нативные пути API. На OpenAI-поверхности (18079) они
 // не обслуживаются: клиенту возвращается понятная ошибка со ссылкой на 18080.
 // Это осознанное решение первого этапа; проксирование этих путей на 18079 —
-// задел на будущее (см. plans/2026-09-27-image-generation-backend-plan.md §3.0).
+// задел на будущее (см. docs/plans/2026-09-27-image-generation-backend-plan.md §3.0).
 //
 // NB: не путать с isOllamaNativePath (llamacpp_native_path.go) — там про
 // трансляцию тела в OpenAI-формат для cppworker, а не про поверхность.

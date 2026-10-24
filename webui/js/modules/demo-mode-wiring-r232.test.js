@@ -84,11 +84,11 @@ check('env-примеры документируют WEBUI_DEMO_MODE', function 
 });
 
 check('документация демо-режима существует и объясняет включение', function () {
-  const doc = read('docs/webui-demo.md');
+  const doc = read('docs/features/webui-demo.ru.md');
   assert.ok(/WEBUI_DEMO_MODE=1/.test(doc), 'документ не объясняет включение через env');
   assert.ok(/гост/i.test(doc), 'документ не описывает гостевой доступ');
   const readme = read('README.md');
-  assert.ok(readme.indexOf('docs/webui-demo.md') >= 0, 'README не ссылается на docs/webui-demo.md');
+  assert.ok(readme.indexOf('docs/features/webui-demo.ru.md') >= 0, 'README не ссылается на docs/features/webui-demo.ru.md');
 });
 
 console.log('');

@@ -577,7 +577,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		EnableBatchedParallel: req.EnableBatchedParallel,
 		// Round 17 (2026-07-31): per-model override для reasoning parser routing.
 		// nil = inherit global cfg.DefaultEnableReasoning. non-nil = explicit choice.
-		// Решает bug plans/bug-2026-07-31-reasoning-not-routed.md.
+		// Решает bug docs/plans/bug-2026-07-31-reasoning-not-routed.md.
 		EnableReasoning: req.EnableReasoning,
 	}
 	if req.NThreads != nil && *req.NThreads > 0 {
@@ -1544,7 +1544,7 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 	// устройства и сколько неудач подряд. stuck_suspected=true означает «узел
 	// доступен по TCP, но команды не обслуживает несколько загрузок подряд»:
 	// это зависший процесс, keepalive его не лечит, нужен перезапуск rpc-server
-	// на доноре (docs/rpc-donor-vram-lifecycle.md).
+	// на доноре (docs/operations/rpc-donor-vram-lifecycle.ru.md).
 	resp["rpc_layout"] = map[string]interface{}{
 		"ready_timeout_streak": backend.RPCReadyTimeoutStreak(),
 		"stuck_suspected":      backend.RPCLayoutStuckSuspected(),
@@ -2163,7 +2163,7 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		// формулой, а memfit попадал в игру лишь как fallback без globalEnv.
 		// Из-за этого отказ по «не влезает даже в CPU-only» зависел от того,
 		// инициализировано ли окружение, и на живом стенде не срабатывал
-		// вовсе (см. plans/2026-09-26-step1b-fit-refusal-proposal.md).
+		// вовсе (см. docs/plans/2026-09-26-step1b-fit-refusal-proposal.md).
 		if verdict, ok := memfitPlanForModel(m, opts.KVCacheType); ok {
 			// Явный gpuLayers в запросе = «я знаю, что делаю»: не отказываем и
 			// не подменяем стадию, оператор сам просил раскладку (§9.4: явное

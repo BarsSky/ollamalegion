@@ -5,7 +5,7 @@ test_ollama_api_compliance.py — Full Ollama API compliance test.
 Verifies that balancer correctly proxies EVERY documented Ollama endpoint
 to cppworker and returns spec-compliant responses.
 
-Per https://github.com/ollama/ollama/blob/main/docs/api.md
+Per https://github.com/ollama/ollama/blob/main/docs/api/api.md
 
 Endpoints covered:
   GET  /api/tags           - list local models

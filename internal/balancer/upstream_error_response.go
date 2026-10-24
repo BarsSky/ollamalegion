@@ -87,7 +87,7 @@ func writeUpstreamError(w http.ResponseWriter, backendID, model string, err erro
 		body["error"] = "backend " + backendID + " timed out; retry in " + strconv.Itoa(retrySec) + "s"
 		body["retry_after"] = retrySec
 		body["hint"] = "кап времени на стороне клиента/прокси (по умолчанию капов нет — мы ждём " +
-			"терминального состояния: см. docs/image-generation.md §17)"
+			"терминального состояния: см. docs/features/image-generation.ru.md §17)"
 		w.Header().Set("Retry-After", strconv.Itoa(retrySec))
 		writeJSON(w, http.StatusGatewayTimeout, body)
 	default:

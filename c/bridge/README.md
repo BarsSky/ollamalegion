@@ -170,9 +170,9 @@ go test -tags llama_stub ./c/bridge/ ./cmd/cppworker/ -run "Abort|IsAborted|Abor
 
 ## Связанная документация
 
-- **[docs/BRIDGE_API.md](../docs/BRIDGE_API.md)** — полный reference C API
+- **[docs/architecture/bridge-api.md](../../docs/architecture/bridge-api.md)** — полный reference C API
   (все функции, параметры, коды ошибок, lifecycle).
-- **[plans/cppworker-abort-api/PLAN.md](../plans/cppworker-abort-api/PLAN.md)** —
+- **[docs/plans/cppworker-abort-api/PLAN.md](../../docs/plans/cppworker-abort-api/PLAN.md)** —
   Round 31 #6 план: gap analysis, design decisions, AC, risks.
 - **[c/bridge/ABORT_API_C_PATCH.md](ABORT_API_C_PATCH.md)** — reference
   для abort-патча (atomic_init/store/load patterns, 6 check points).
@@ -196,4 +196,4 @@ go test -tags llama_stub ./c/bridge/ ./cmd/cppworker/ -run "Abort|IsAborted|Abor
   kv_cache_type, override-tensors.
 - **Round 13** — multi-slot batched inference (seq_id).
 
-См. [CHANGELOG.md](../CHANGELOG.md) для полной истории.
+См. [CHANGELOG.md](../../CHANGELOG.md) для полной истории.

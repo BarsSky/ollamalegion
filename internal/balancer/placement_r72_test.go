@@ -1,7 +1,7 @@
 package balancer
 
 // R72 (P0): placement policy — resolution и наблюдаемость.
-// План: plans/2026-09-23-multi-backend-placement-policy.md
+// План: docs/plans/2026-09-23-multi-backend-placement-policy.md
 //
 // Ключевое требование P0: поведение маршрутизации НЕ меняется. Поэтому
 // проверяем чистое решение (ResolvePlacementDecision) и счётчики, а не прокси.

@@ -3,9 +3,9 @@
 // GET  /api/v1/admin/cluster/autosuggest        — R59 read-only suggestions.
 // POST /api/v1/admin/cluster/autosuggest/apply  — R59.1 apply (operator-confirmed).
 //
-// Reference: docs/superpowers/specs/2026-09-03-cluster-autodistribute.md
+// Reference: docs/archive/superpowers/specs/2026-09-03-cluster-autodistribute.md
 //
-//	docs/superpowers/specs/2026-09-03-cluster-autosuggest-apply.md
+//	docs/archive/superpowers/specs/2026-09-03-cluster-autosuggest-apply.md
 package api
 
 import (

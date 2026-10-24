@@ -295,7 +295,7 @@
         var s = String(text || '');
         if (!s) return '';
         if (/get sd version from file failed/i.test(s)) {
-            // Разбор на движке pinned master-929-3f8527a (docs/image-generation.md §8.2):
+            // Разбор на движке pinned master-929-3f8527a (docs/features/image-generation.ru.md §8.2):
             // причина — НЕ «чужой формат», а несовпадение семейства профиля с файлом.
             // DiT-модель (FLUX/SD3/Qwen-Image/Z-Image/Chroma), подключённая как
             // all-in-one (--model), движком не узнаётся: нужен --diffusion-model,

@@ -68,7 +68,7 @@ type Config struct {
 	// HFBundleAutoFit — runtime.autoFit для профилей, которые воркер
 	// генерирует сам после HF-bundle-загрузки: on|off|"" (пусто = не передавать
 	// флаг). Дефолт "on": движок сам ужимает плейсмент под доступную VRAM —
-	// именно то, что нужно слабым GPU (см. docs/research-sdcpp-lowvram-integration.md).
+	// именно то, что нужно слабым GPU (см. docs/archive/research/sdcpp-lowvram-integration.ru.md).
 	HFBundleAutoFit string `json:"hfBundleAutoFit,omitempty"`
 
 	// SDServerBin — путь к бинарю sd-server (или имя в PATH).

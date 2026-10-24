@@ -109,7 +109,7 @@ $allOk = (Test-Tool "cmake" "CMake (опционально, для 7.2 GPU)" @("
 
 if (-not $allOk) {
     Write-Err "`nНе все prerequisites установлены. Установите недостающие и перезапустите."
-    Write-Warn "См. docs/ci/self-hosted-runner.md для инструкций."
+    Write-Warn "См. docs/development/ci-self-hosted-runner.ru.md для инструкций."
     exit 1
 }
 

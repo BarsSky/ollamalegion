@@ -2,7 +2,7 @@
 
 **Канонический файл — `docker-compose.stack.yml`.** Всё остальное в этой папке
 либо историческое, либо узкоспециальное. Если вы разворачиваете стек впервые —
-читайте [../README.md](../README.md) и [../docs/deployment-stack.md](../docs/deployment-stack.md),
+читайте [../README.md](../README.md) и [../docs/operations/deployment-stack.ru.md](../docs/operations/deployment-stack.ru.md),
 а из этой папки вам нужны только два файла:
 
 ```bash
@@ -24,14 +24,14 @@ docker compose -f docker-compose.stack.yml --profile full up -d
 | Файл | Для чего |
 |---|---|
 | `.env.example` → `.env` | **основной источник**: интерполяция `${...}` в compose, токен, теги образов |
-| `.env.bundled-with-agent.example` | `env_file` для старых compose (модели, GPU, лимиты). `environment:` в compose переопределяет его — см. docs/deployment-stack.md §6 |
+| `.env.bundled-with-agent.example` | `env_file` для старых compose (модели, GPU, лимиты). `environment:` в compose переопределяет его — см. docs/operations/deployment-stack.ru.md §6 |
 | `.env.bundled-full.example`, `.env.bundled.example`, `.env.llama.example`, `.env.cppworker-remote.example` | под свои исторические compose-файлы |
 | `.env` и остальные `.env.*` без `.example` | **локальные**, в git не попадают (там токены). Восстанавливаются из `.example` |
 
 ## Остальные compose-файлы
 
 Полная таблица «файл → назначение → статус» — в
-[docs/deployment-stack.md §9](../docs/deployment-stack.md#9-остальные-compose-файлы-в-папке).
+[docs/operations/deployment-stack.ru.md §9](../docs/operations/deployment-stack.ru.md#9-остальные-compose-файлы-в-папке).
 Коротко о том, что чаще всего ищут:
 
 | Файл | Что это |

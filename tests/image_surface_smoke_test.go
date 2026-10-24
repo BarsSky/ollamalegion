@@ -1,6 +1,6 @@
 // image_surface_smoke_test.go — R-Image (2026-09-27): клиентский smoke
 // (обязательный пункт приёмки Phase 1 плана,
-// plans/2026-09-27-image-generation-backend-plan.md §12.5).
+// docs/plans/2026-09-27-image-generation-backend-plan.md §12.5).
 //
 // Проверяем на РЕАЛЬНОМ балансере с мок-`sd-server`, что готовые клиенты
 // работают БЕЗ правок на своей стороне:

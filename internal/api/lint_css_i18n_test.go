@@ -99,7 +99,7 @@ func TestLintCSSAndI18nNoEmDash(t *testing.T) {
 		t.Errorf(
 			"Phase 7 lint: found %d em-dash violation(s) in webui/. "+
 				"Use ASCII hyphen (-) instead. Locations:\n  %s\n"+
-				"See docs/phase-7-style-compliance.md for the convention.",
+				"See docs/development/style-compliance.md for the convention.",
 			len(violations), strings.Join(violations, "\n  "),
 		)
 	}

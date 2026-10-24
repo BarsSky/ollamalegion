@@ -211,7 +211,7 @@ const CASES = [
     // байт-в-байт), а /ollama/api/chat нормализуется в LlamaCppRouter и объявляет
     // (+144 токена, в логе injected:true). Клиенту, которому нужны картинки по
     // нативной поверхности, нужен именно префиксный путь — см.
-    // docs/en/image-generation.md.
+    // docs/features/image-generation.ru.md.
     {
         name: 'Ollama /ollama/api/chat не-стрим, СО СВОИМИ tools (префиксный путь)',
         path: '/ollama/api/chat', tools: true,

@@ -9,7 +9,7 @@
 //     fragile — R49 audit (commit e66c6da) tried to remove them as "dead code"
 //     and broke `go build ./...`. R49b (commit 2a06f70) restored them via
 //     `git checkout d3f7003 -- internal/balancer/ollama_router.go`.
-//   - R50 design doc (docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md,
+//   - R50 design doc (docs/archive/superpowers/specs/2026-08-19-balancer-api-routing-design.md,
 //     §4.1) flagged writeJSON + copyResponse as a known-fragile design.
 //   - R51.1: this file. Helpers moved to dedicated proxy_helpers.go.
 //     Same package (balancer), same signatures, same semantics.

@@ -1,0 +1,1260 @@
+# Image generation in OllamaLegion (image backend)
+
+> **Version:** 1.0 (2026-10-02)
+> **Status:** Phases 1–6 implemented (types, OpenAI port, routing, worker, WebUI, VRAM gate, discovery)
+> **Engine:** `stable-diffusion.cpp` (`sd-server`), contract pinned to `master-929-3f8527a`
+> **Related:** [`backend-type-isolation.md`](../architecture/backend-type-isolation.md), [`../docs/plans/2026-09-27-image-generation-backend-plan.md`](../plans/2026-09-27-image-generation-backend-plan.md), [`../research-sdcpp-lowvram-integration.md`](../archive/research/sdcpp-lowvram-integration.ru.md) (Russian)
+
+## 1. What this is
+
+OllamaLegion serves **two different classes of requests** on different ports:
+
+| Port | Purpose | Who talks to it |
+|---|---|---|
+| **18080** | universal proxy (as before): Ollama `/api/*`, `/v1/*`, translations | OpenWebUI, CLI, Ollama clients |
+| **18079** | **OpenAI surface**: `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, `/v1/images/*`, `/sdapi/v1/*` | OpenAI-compatible clients and image generators |
+| 18081 | management API (`/api/v1/*`) | WebUI, scripts |
+| 18093 | image worker (`sdworker` + `sd-server`) — a separate process | the balancer |
+
+How the OpenAI surface differs from 18080:
+
+- streaming is enabled **only** by an explicit `stream` field in the request body (18080 keeps the legacy `stream: true` default);
+- Ollama-native paths (`/api/chat`, `/api/tags`, `/api/pull`, …) are **not served** here — the client gets a 404 pointing at 18080;
+- image requests (`/v1/images/*`, `/sdapi/v1/*`, model prefix `sd:`) go **only** to backends of type `image_cpp`;
+- text requests (`/v1/chat/completions` and friends) go only to `llama_cpp`/Ollama backends.
+
+State (sessions, queue, scoring, metrics) is **shared** between 18079 and 18080: it is the same `*Proxy`, just two surfaces.
+
+## 2. Registering an image backend
+
+```bash
+curl -X POST http://localhost:18081/api/v1/backends \
+  -H "Content-Type: application/json" \
+  -H "X-API-Token: $LB_TOKEN" \
+  -d '{"id":"image-1","name":"image worker","host":"192.0.2.30","imagePort":18093,"backendType":"image_cpp"}'
+```
+
+- `imagePort` defaults to **18093** (18091/18092 belong to cppworker instances); when omitted the balancer falls back to `cppWorkerPort` and then to 18093.
+- Health probing tries `GET /health` (our worker) and then `GET /sdcpp/v1/capabilities` (a bare `sd-server`, which has no `/health`).
+- `image_cpp` is accepted in the `standard`, `replication` and `rpc_coordinator` operating modes. It is deliberately **not** accepted in `virtual_router`/`distributed_inference` (those modes are locked to llama.cpp).
+
+## 3. Connecting clients
+
+### 3.1 SillyTavern (source "stable-diffusion.cpp server")
+
+SillyTavern speaks to `sd-server` natively — no adapter needed.
+
+1. Extensions → Image Generation → Source: **stable-diffusion.cpp server**.
+2. URL: `http://<balancer>:18079` (through the balancer) or `http://<worker>:18093` (direct).
+3. The **Connect** button issues `OPTIONS /v1/images/generations` — the balancer answers `204`.
+4. The model list comes from `GET /v1/models` (it contains `sd-cpp-local`).
+5. Generation is sent to `POST /sdapi/v1/txt2img`.
+
+Engine limitations worth knowing: switching models via `POST /sdapi/v1/set-model` returns 500 (there is no model-switch endpoint — the model is chosen when the process starts); some samplers from SillyTavern's list have no sd.cpp equivalent and silently fall back to the default.
+
+### 3.2 Open WebUI
+
+Both engines work:
+
+```env
+ENABLE_IMAGE_GENERATION=true
+# Option A: OpenAI Images
+IMAGE_GENERATION_ENGINE=openai
+IMAGES_OPENAI_API_BASE_URL=http://<balancer>:18079/v1
+IMAGES_OPENAI_API_KEY=any
+IMAGE_GENERATION_MODEL=dall-e-2      # any id from /v1/models
+IMAGE_SIZE=512x512                   # default is 512x512
+IMAGE_STEPS=20                       # NOTE: Open WebUI default is 50 (minutes on CPU)
+
+# Option B: A1111
+# IMAGE_GENERATION_ENGINE=automatic1111
+# AUTOMATIC1111_BASE_URL=http://<balancer>:18079
+```
+
+`IMAGES_OPENAI_API_BASE_URL` **must** include `/v1`.
+
+### 3.3 LibreChat
+
+```env
+# A1111 path (Stable Diffusion tool)
+SD_WEBUI_URL=http://<balancer>:18079
+
+# OpenAI Images (agent image tools)
+IMAGE_GEN_OAI_BASEURL=http://<balancer>:18079/v1
+IMAGE_GEN_OAI_API_KEY=any
+IMAGE_GEN_OAI_MODEL=dall-e-2
+```
+
+### 3.4 AnythingLLM
+
+The `openai` provider is hardwired to api.openai.com, so use **`localai`**:
+
+```env
+IMAGE_GEN_PROVIDER=localai
+IMAGE_GEN_LOCALAI_BASE_PATH=http://<balancer>:18079/v1
+IMAGE_GEN_LOCALAI_API_KEY=any
+IMAGE_GEN_MODEL_PREF=sd-cpp-local
+IMAGE_GEN_SIZE_PREF=512x512
+```
+
+### 3.5 n8n
+
+An OpenAI credential with `url = http://<balancer>:18079/v1`. Both nodes work: the legacy `OpenAI (image → create)` and LangChain `Image → Generate an Image`. The model dropdown filters ids by the `dall-` prefix, which is why the balancer exposes the `dall-e-2`/`dall-e-3` aliases.
+
+### 3.6 OpenAI SDK
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://<balancer>:18079/v1", api_key="any")
+r = client.images.generate(model="dall-e-2", prompt="a cat", size="512x512", n=1)
+print(len(r.data[0].b64_json))   # url is None: sd.cpp returns b64_json only
+```
+
+### 3.7 What does not work
+
+- **Home Assistant** — supports the official OpenAI Responses API only, no `base_url`.
+- **Jan** — has no image generation feature.
+- **ComfyUI transport** in LobeChat/Cherry Studio — expects an actual ComfyUI.
+
+## 4. Request handling (normalization)
+
+| Field | How it is handled |
+|---|---|
+| `model` | any value is accepted and **ignored** by the engine (one model per `sd-server` process) |
+| `size` | `"auto"`/`""`/`"WxH"`; clamped to 64…4096 and rounded to a multiple of 64 |
+| `n` / `batch_size` | 1…8 (the engine clamps silently); `data[]` always has exactly as many entries as were produced |
+| `steps` | 1…100 |
+| `seed` | when omitted, resolved to a random positive number. **This normalization is mandatory:** sd.cpp's OpenAI handler does not read `seed` at all and defaults to 42, so without it every image would be identical |
+| `response_format` | `b64_json` or absent → base64; `url` → we store the PNG and return a URL (sd.cpp only ever returns base64) |
+| `output_format`, `output_compression` | passed through (`png`/`jpeg`/`webp`, 0…100) |
+| input images (init/mask) | PNG and JPEG pass through unchanged; **WebP is decoded and re-encoded to PNG** (the engine contract is PNG/JPEG). If a webp file cannot be decoded the response explicitly asks for PNG, and a mask is never forwarded to the engine |
+| `quality`, `style`, `user`, `background` | ignored |
+| errors | OpenAI envelope `{"error":{"message","type","code"}}` (sd.cpp returns `{"error":"string"}`) |
+
+Cancellation works only for jobs in the `queued` state; a generation already running cannot be interrupted (409) — that is an engine limitation, not a balancer one. The engine reports no per-step progress either.
+
+## 5. VRAM gate and coexistence with text inference
+
+A diffusion model and a text LLM usually do not fit in one GPU's VRAM at the same time (FLUX Q4 peaks at 3.7–6.4 GB, Q8 up to 12 GB). The balancer therefore (1) checks whether the image model fits and (2) serializes the two load classes.
+
+Configuration — the `balancing.image` section:
+
+```json
+{
+  "balancing": {
+    "image": {
+      "coexistence": "exclusive",
+      "vramHeadroomMb": 512,
+      "blockOnUnknownVramEstimate": false,
+      "queueWaitTimeoutSec": 30,
+      "exclusiveLockTimeoutSec": 0,
+      "gateDisabled": false
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `coexistence` | `exclusive` (default) — during generation the image backend owns the card, text slots on the same host are withheld; `offload` — generation runs with RAM offload, both work together; `dedicated` — the image backend has its own GPU, no restrictions |
+| `vramHeadroomMb` | VRAM to keep free on top of the model estimate |
+| `blockOnUnknownVramEstimate` | `false` (default) — when the estimate is unavailable, generation is **allowed** (a WARN is logged); `true` — strict mode, fails with `unknown_vram_estimate` |
+| `queueWaitTimeoutSec` | how long `exclusive` waits for the GPU before answering `429 image_gpu_busy` + `Retry-After` |
+| `exclusiveLockTimeoutSec` | safety valve: the lock is force-released (with a WARN) so a hung generation cannot block the card forever. **`0` (the default since R88) means DISARMED**: the doctrine forbids duration caps on work - at 600 s the lock was released mid-generation (2048x2048/40 steps = 22m30s) and text traffic was let onto a busy card. The lock is released by the request lifecycle; arm a cap only if you want a watchdog (the reference stand uses 6000) |
+| `gateDisabled` | disable both the gate and the lock (e.g. image generation runs on CPU) |
+
+How the estimate is derived (in priority order): the model profile (`vramEstimateMb` in `image-model-profiles.json`) → `vram_estimate_mb` from the worker → bundle file sizes × 1.15 → "unknown". Free VRAM: worker data → the worker's `nvidia-smi` snapshot from `/api/image/capabilities` → `available_vram_mb` of the text neighbour on the same host.
+
+The gate blocks **exactly one** meaningful case: the estimate is known, free VRAM is known, and the model does not fit. The answer is `503` with code `insufficient_vram`, a message, and a **hint listing the memory-reduction ladder**: lower the quantization → `--diffusion-fa` → text encoder on CPU (`--backend te=cpu`) → `--vae-tiling` → `--vae-conv-direct` → `--taesd` → `--offload-to-cpu` → lower resolution.
+
+**What is actually compared against free VRAM (important).** When the model is already loaded — which is precisely when the gate runs, weights being resident — the gate compares the **generation working set** (20% of the weights, no less than 256 MB and no more than 1 GB), not the full model weight: the weights are already held by the model itself, and demanding them again would reject generation on any card where less than the model size is free after loading. The "do the weights fit" question belongs to model-load time. This was fixed after a live run: SD1.5 Q4 (2.6 GB) on a card with 895 MB free answered `503` to every request while the engine was perfectly ready.
+
+The lock is keyed by backend host, and by "host + GPU" when the backend's `gpuIndex` is **known**. This matters on multi-GPU machines: a card busy with generation no longer blocks text traffic going to another card on the same host. If only one side declares an index, the conflict is treated as host-wide (conservative).
+
+`gpuIndex` is a backend field with **three states**, not two (a plain `int` cannot express them: `0` is a valid first-card index and is indistinguishable from "unset"):
+
+| Field value | Meaning | Lock key |
+|---|---|---|
+| absent / `null` | index **unknown**: we do not know which card the backend uses | `host` (whole host) |
+| `0` | **explicitly the first card** | `host#gpu0` |
+| `N > 0` | explicitly card N | `host#gpuN` |
+
+- `PUT /api/v1/backends/{id}` distinguishes all three: no key in the body → "do not change" (a partial PUT from the WebUI must not wipe the setting), `"gpuIndex": null` → **reset** to unknown, `"gpuIndex": 0` → explicit first card. A negative index → `400`.
+- `POST /api/v1/backends` accepts the same field (including `0`); a missing key means "unknown".
+- `GET /api/v1/backends` returns `gpuIndex` as a **number** when the index is explicit and **omits the field** when the index is unknown, so consumers can tell the difference.
+- `gpuLockHeldFor` (whether a text request waits for generation) follows the same rule: an unknown index on either side means a host-wide lock.
+- For llama.cpp, when no explicit `gpuIndex` is set the index falls back to `cppWorkerConfig.mainGpu`, but **only when `mainGpu > 0`**: zero there means "auto/unset", and treating it as "explicitly card 0" would narrow the lock on a guess.
+
+Waiting for a text request blocked by generation is capped by `queueWaitTimeoutSec` (not by the shared admission queue): after the cap the client gets the standard `503` with `Retry-After`, the `X-Queue-Wait-Reason: image_gpu_lock` header and a `waitReason` field in the body.
+
+## 6. Discovery: ask instead of reading the source
+
+| Endpoint | What it returns |
+|---|---|
+| `GET /api/v1/image/contract` | the "decoded" contract: actual ports, endpoint list, request fields with normalization rules, limits, available models with defaults, curl examples, the **JSON Schema of the `generate_image` tool**, and instructions for an LLM agent (which URL to call, that the image arrives as `b64_json`) |
+| `GET /api/v1/image/capabilities` | aggregate over all healthy image backends: samplers/schedulers/loras/upscalers (union), conservative limit merge (`min_*` = max, `max_*` = min, queues = sum), models per backend, and a report of probe failures |
+
+**Where the image backend appears in general monitoring:** `GET /api/v1/metrics`
+and `GET /api/v1/cluster` expose `backendType: "image_cpp"` with the `imagePort`
+field (worker port) and an `image` block containing the worker state, the current
+model, every known model (`models[]`: name, state, family, size, VRAM estimate,
+active queries) and host VRAM. The WebUI (Backends/Dashboard/Monitor/Models) renders
+this data, including the 🎨 image.cpp badge.
+
+Both require `X-API-Token` (port 18081). The aggregate is cached for 8 s and the cache is invalidated whenever the backend set or statuses change.
+
+## 7. Ports and environment variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LB_OPENAI_PORT` | 18079 | the balancer's OpenAI surface; a negative value disables the listener |
+| `SDWORKER_PORT` | 18093 | image worker port |
+| `SDWORKER_SD_SERVER_BIN` | `sd-server` | path to the engine binary |
+| `SDWORKER_IMAGE_MODELS_DIR` | `models/image` | image model directory |
+| `LB_ALLOW_IMAGE_TIMEOUT_SEC` | 0 (no cap) | opt-in cap for image generation |
+
+## 8. Engine limitations (set expectations)
+
+### 8.1 Which files you see in search, and what actually loads
+
+The file list on the **HuggingFace** tab is NOT "the whole repository" — it is a
+filtered set of **weights**: the worker only returns the
+`ModelWeightExtensions = .gguf, .safetensors, .sft, .ckpt` extensions
+(`internal/cppbackend/hf_bundle.go`), so `model_index.json`, README files and
+scheduler configs never show up. On bundle start the extension is validated again
+(`validateBundleRequest`) — an arbitrary file cannot be slipped in.
+
+**`.safetensors` is recognized, not merely listed:**
+
+- the file role is inferred from the name by the server-side heuristic
+  (`internal/sdbackend/models.go` → `roleFromFilename`, exposed to the UI as
+  `suggestedRole`): `ae.safetensors` → `vae`, `clip_l.safetensors` → `clip_l`,
+  `clip_g.safetensors` → `clip_g`, `t5xxl*.safetensors/.gguf` → `t5xxl`,
+  `*taesd*` → `taesd`, everything else (including `flux1-schnell.safetensors`) →
+  `diffusion`. The **directory** counts too: `vae/...` → `vae` and
+  `text_encoders/qwen3vl_8b_bf16.safetensors` → `llm` (the Qwen-Image LLM encoder),
+  while `qwen-image-2.1-UC-Q4_0.gguf` in the repository root stays `diffusion` —
+  the LLM rule only applies inside an encoder directory;
+- the file list is **recursive** (`tree API?recursive=true`): DiT repositories keep
+  their VAE and text encoder in subdirectories (`vae/`, `text_encoders/`,
+  `split_files/`), and before 2026-10-03 such files never reached the UI, so a DiT
+  bundle could not be assembled at all. HF pages the response, so pages are followed
+  via the `cursor` from the `Link` header (without leaving the configured mirror);
+  files are downloaded by their original path and stored under their base name;
+- the engine loads safetensors natively, because sd.cpp runs on ggml: an
+  all-in-one `.ckpt/.safetensors/.gguf` is passed via `--model`, separate files go
+  through `--vae` (`ae.safetensors`), `--clip_l/--clip_g`, `--t5xxl`, `--taesd`,
+  `--llm` (see `docs/archive/research/sdcpp-lowvram-integration.ru.md`, the file layout
+  section);
+- in practice: SD 1.5/SDXL need a single all-in-one `.safetensors`, while
+  DiT families (FLUX/SD3/Qwen-Image/Z-Image) need a set of `diffusion` (usually a
+  GGUF from `leejet/*`) + `ae.safetensors` + text encoders.
+
+Caveat: `.sft` passes the file filter (a legacy of the shared HF helper), but
+sd.cpp support for `.sft` specifically has not been verified — treat it as
+at-your-own-risk and prefer `.gguf`/`.safetensors`.
+
+### 8.2 How the engine identifies a model version (and where "get sd version from file failed" comes from)
+
+The engine does NOT read `general.architecture`: it derives the model version from
+**tensor names** (`ModelLoader::get_sd_version`, `src/model_loader.cpp` of the
+pinned `master-929-3f8527a`). And those names depend on the flag the file is
+attached with (`src/pipeline/diffusion_engine.cpp`:726 and :733):
+
+| flag | effect on tensor names | for |
+| --- | --- | --- |
+| `--diffusion-model f.gguf` | prepends `model.diffusion_model.` | DiT: FLUX/FLUX2/SD3/Qwen-Image/Z-Image/Chroma |
+| `--model f.gguf` | keeps the names as stored in the file | all-in-one: SD1.x/SD2.x/SDXL |
+
+Both traps we have already hit follow from this:
+
+- **A DiT file attached as all-in-one.** Bare names (`transformer_blocks.*`,
+  `double_blocks.*`) are unrecognisable in that mode → `get sd version from file
+  failed` after gigabytes were downloaded. The fix is the profile family: for DiT
+  families the worker passes `--diffusion-model` itself (`pkg/types/image_model.go`,
+  `IsDiTFamily`).
+- **"sd.cpp cannot read ComfyUI builds" is wrong.** Verified on the
+  `master-929-3f8527a` engine with synthetic GGUF files carrying real HF tensor
+  names: both the `leejet/*` build (fused `img_mlp.gate_up`) and the ComfyUI export
+  (split `img_mlp.gate_layer` + `img_mlp.proj`,
+  `general.architecture="qwen_image21"`) report `Version: Qwen Image 2.1` — the
+  engine supports both layouts (`src/model/diffusion/qwen_image_2_1.hpp`).
+
+**UI marks (so this is not discovered at load time).** The **HuggingFace** tab
+pre-checks the file header: the Check button next to a file (and automatically for
+the largest file right after a repository is picked) calls
+`GET /api/hf/probe?modelId=&filename=&revision=`. The worker reads the first
+512 KB with a Range request (`internal/cppbackend/hf_probe.go`, not a single byte
+of weights) and answers with facts:
+
+- `verdict=supported` + `family` + `versionLabel` — which family and which engine
+  version it recognises in the file (e.g. `qwen_image` / "Qwen Image 2.1");
+- `dit=true` — the file is attached as `--diffusion-model`, so the profile family
+  must be a DiT family. The UI sets it automatically unless the operator picked a
+  family by hand, and warns separately on a mismatch ("the profile says `other`,
+  the engine will answer get sd version from file failed");
+- `verdict=unknown` — not identifiable from the header (VAE, text encoder, LoRA or
+  an unknown family). The pre-check never issues "the engine cannot read it"
+  verdicts: 512 KB of header do not contain everything the engine needs.
+
+### 8.3 Other limitations
+
+- **One model per process.** Switching models means restarting `sd-server` (the worker's `load`/`unload` do exactly that).
+- **Generation is serialized** by a single mutex: concurrent requests queue up.
+- **No in-flight cancellation and no per-step progress** (the C API has the primitives, the server does not expose them).
+- **The tensor layout matters more than who built the file.** `city96/*`,
+  `unsloth/*` and other ComfyUI-oriented repositories do load when their tensor set
+  matches what the engine expects (see 8.2) — use the Check button rather than the
+  author name. An unfamiliar layout (for example a different implementation of the
+  same family) yields `get sd version from file failed`.
+- **`/v1/images/variations` is implemented on top of img2img** (empty prompt + `strength` 0.5): sd.cpp has no dedicated variations mode, and the engine's behaviour with an empty prompt has not been verified against real sd.cpp (no engine binary in the test environment) — if it refuses, the client receives that error verbatim.
+- **`--vae-on-cpu` costs ~5×** — prefer `--vae-tiling`; on AMD/RADV tiling is mandatory.
+- sd.cpp releases several times a day and flag names have changed (`--host/--port` → `--listen-ip/--listen-port`) — the version is pinned in `types.PinnedSDServerRevision`.
+
+## 9. Diagnostics
+
+```bash
+# image backend health
+curl -s http://localhost:18081/api/v1/backends | grep -i image_cpp
+
+# engine capabilities and limits (worker directly; balancer-side aggregation is /api/v1/image/capabilities)
+curl -s http://<worker>:18093/api/image/capabilities
+
+# model list (must contain sd-cpp-local and dall-*)
+curl -s http://localhost:18079/v1/models
+
+# contract and cluster capabilities (X-API-Token required)
+curl -s -H "X-API-Token: $LB_TOKEN" http://localhost:18081/api/v1/image/contract | head -c 400
+curl -s -H "X-API-Token: $LB_TOKEN" http://localhost:18081/api/v1/image/capabilities | head -c 400
+
+# generate directly
+curl -s -X POST http://localhost:18079/v1/images/generations \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"dall-e-2","prompt":"a cat","size":"512x512","n":1}' | head -c 200
+```
+
+If `/v1/images/generations` answers `503 image_backend_unavailable`, no healthy `image_cpp` backend is registered. A `503 insufficient_vram` means the model does not fit the currently free VRAM — see the `hint` field in the response.
+
+## 10. Live test stand
+
+`scripts/image-e2e-smoke.ps1` builds a mock `sd-server` (`tools/mock-sdserver`), `sdworker` and the balancer, starts them as real processes and runs 21 checks. It shifts busy ports automatically and kills every process in `finally`.
+
+```powershell
+# protocol run on the mock engine (seconds)
+powershell -ExecutionPolicy Bypass -File scripts/image-e2e-smoke.ps1
+
+# run on the REAL engine and a real model (Vulkan/CPU; minutes on CPU)
+powershell -ExecutionPolicy Bypass -File scripts/image-e2e-smoke.ps1 -Real
+```
+
+With `-Real` the engine and the model are downloaded automatically if missing:
+`tools/fetch-sdcpp` fetches `stable-diffusion.cpp` release assets from GitHub and
+files from HuggingFace (Range resume, retries, `HF_TOKEN`):
+
+```powershell
+go run ./tools/fetch-sdcpp list-release leejet/stable-diffusion.cpp win-vulkan
+go run ./tools/fetch-sdcpp get-release  leejet/stable-diffusion.cpp win-vulkan .\bin\sdcpp
+go run ./tools/fetch-sdcpp hf-get   second-state/stable-diffusion-v1-5-GGUF stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf .\bin\hf-models
+```
+
+What `-Real` proves that the mock cannot: real `sd.cpp` accepts our requests, and
+**the image obtained through the balancer is a valid PNG of the expected size**
+(check B8; the file is saved into the stand working directory). Checks that rely on
+the mock's log (seed normalization, `init_image` for img2img) are marked `SKIP` in
+this mode.
+
+The same stand runs in CI (job `test-self-hosted`, step "Image chain E2E"); the
+in-process version of the client scenarios runs on the ubuntu fallback
+(`go test -run TestImageSmoke ./tests/`).
+
+## 11. Docker
+
+The image worker image is built from an `sd.cpp` release (Vulkan is the default
+path; the project publishes no Linux-CUDA release, CUDA is wired through your own
+binary in `docker/imageworker/vendor/`).
+
+```bash
+# bundled-full: the image worker starts BY DEFAULT (no profiles)
+docker compose -f deployments/docker-compose.bundled-full.yml up -d --build
+
+# stack: enable the image worker with the worker|full profile
+docker compose -f deployments/docker-compose.stack.yml --profile full up -d --build imageworker
+
+# image worker only (self-contained file)
+docker compose -f deployments/docker-compose.imageworker.yml --profile vulkan up -d
+
+# disable
+docker compose -f deployments/docker-compose.stack.yml --profile full rm -sf imageworker
+```
+
+The balancer publishes the OpenAI surface (`18079`) — that is where clients send
+requests: `POST http://<host>:18079/v1/images/generations`. To confirm the backend
+registered as an image backend:
+
+```bash
+curl -H "X-API-Token: $TOKEN" http://<host>:18081/api/v1/image/backends
+```
+
+NVIDIA requires nvidia-container-runtime with `NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics`
+(without `graphics` no Vulkan ICD is mounted into the container); AMD/Intel need
+`/dev/dri` plus `group_add: video,render` (see `docker-compose.imageworker.yml`).
+
+### 11.1 Single stand: text and images behind one balancer
+
+The `full` profile of `deployments/docker-compose.stack.yml` brings up **both**
+backend pools behind one balancer:
+
+```bash
+cd deployments
+docker compose -f docker-compose.stack.yml --profile full up -d --build
+```
+
+| Service | Backend type | Port | Role |
+|---|---|---|---|
+| `loadbalancer` | — | 18080 / 18081 / **18079** | entry point, admin API, image OpenAI surface |
+| `webui` | — | 18083 | operator UI (including the "Image backends" page) |
+| `cppworker-gpu` | `llama_cpp` | 18092 | text |
+| `imageworker` | `image_cpp` | 18093 | image generation (sd.cpp) |
+| `agent` | — | 18032 | GPU/RAM metrics and text backend registration |
+
+Both workers register themselves with the balancer (label `auto-registered`), so
+there is no need for two balancers: routing follows the request type (text →
+`llama_cpp`, `/v1/images/*` and `/sdapi/v1/*` → `image_cpp`). The model directory
+is shared: `${MODELS_DIR}/image/<name>/` holds image bundles, `${MODELS_DIR}/*.gguf`
+holds text models.
+
+What is handled specifically for the single stand:
+
+- `imageworker` waits for a **ready** balancer (`depends_on: condition: service_healthy`);
+  otherwise its first registration POST hits a closed port;
+- **re-registration with a changed address** updates the record instead of a
+  permanent `409`: a recreated container (new host/port) no longer leaves a dead
+  record behind (see `isReRegistrationOfAutoBackend`);
+- image model profiles are stored in `/app/data/image-model-profiles.json`
+  (`LB_IMAGE_MODEL_PROFILES_PATH`) because `../config` is mounted `:ro` — saving a
+  profile from the WebUI would otherwise fail on a read-only filesystem;
+- stand smoke test: `powershell -File scripts\docker-stack-smoke.ps1` (checks the
+  profile composition, both backend types, `cluster.image`, the WebUI page, and
+  with `-Generate` a real generation plus growing metrics).
+
+```bash
+# what the balancer actually sees after startup
+curl -s -H "X-API-Token: $TOKEN" http://<host>:18081/api/v1/backends | jq '.backends[] | {id, type, status}'
+curl -s -H "X-API-Token: $TOKEN" http://<host>:18081/api/v1/cluster  | jq '.cluster.image.requests'
+```
+
+**About building the images.** In `docker-compose.stack.yml` the `build:` section
+exists for `loadbalancer`, `webui` and `imageworker`, so
+`--profile full up -d --build` rebuilds exactly those; `cppworker-gpu` and `agent`
+come from images (their code did not change in this phase, and rebuilding llama.cpp
+takes tens of minutes). Without `build:` on the balancer and WebUI, `--build`
+rebuilt only the image worker while the balancer/UI stayed on old images — which is
+exactly what looks like "the new backend is not active in Docker" and "the WebUI
+does not see the image backend".
+
+**About the WebUI `?v=` token.** The Dockerfile replaces the `?v=` token in all
+html files with `WEBUI_VERSION` (build arg), and nginx serves js with
+`expires 1y`. The compose default is `0.7.0`; with an unchanged token the
+operator's browser keeps the OLD modules from cache even after a rebuild. Bump
+`WEBUI_VERSION` when you ship new frontend code.
+
+#### GPU inside the container: verify, do not assume
+
+`nvidia-smi` inside the container sees the card (compute/utility are passed
+through), but sd.cpp needs **Vulkan**, and the NVIDIA ICD only reaches the
+container with the `graphics` capability and a Vulkan ICD in the host driver
+store:
+
+```bash
+docker exec ol-stack-imageworker sh -c 'ls /usr/share/vulkan/icd.d/'
+# no nvidia_icd.json  -> NVIDIA Vulkan is unavailable in the container
+docker exec ol-stack-imageworker nvidia-smi -L   # GPU present (CUDA), but not Vulkan
+```
+
+Measured on the live stand (Windows + Docker Desktop/WSL2, RTX 3070): inside the
+container 512x512 / 8 steps took **251 s** (the engine falls back to CPU/software
+Vulkan), while the native `sd-server` with Vulkan on the same host took **9-76 s**.
+
+**Solution: build sd.cpp with CUDA right in the image.** The project publishes no
+Linux CUDA release, so `docker/imageworker/Dockerfile` can compile the engine from
+source, and the variant is selected by the build TARGET:
+
+| Target | Engine | When it is needed |
+|---|---|---|
+| `imageworker-vulkan` (default) | the released Vulkan asset | Linux hosts with an nvidia ICD, AMD/Intel |
+| `imageworker-cuda` | sd.cpp built with CUDA (`-DSD_CUDA=ON`) | where NVIDIA Vulkan never reaches the container (Windows + Docker Desktop/WSL2) |
+
+```bash
+# deployments/.env
+IMAGE_WORKER_BUILD_TARGET=imageworker-cuda
+IMAGE_WORKER_RUNTIME_BASE=dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-runtime-ubuntu22.04
+IMAGE_WORKER_CUDA_ARCH=86          # compute capability: 86 = RTX 30xx
+IMAGE_WORKER_TAG=cuda12            # local build; a release (release-all.ps1) writes the release tag here
+
+cd deployments
+docker compose -f docker-compose.stack.yml --profile full build imageworker
+docker compose -f docker-compose.stack.yml --profile full up -d
+```
+
+On a release, `scripts/release-all.ps1` changes `IMAGE_WORKER_TAG` (service
+`imageworker`): it builds the image through the compose target and writes the
+release tag into `deployments/.env` — the same tag the balancer and WebUI get.
+The old image name (`:cuda12`) stays in the local daemon as the previous
+version, so rolling back means restoring the previous `IMAGE_WORKER_TAG` value and
+running `docker compose ... up -d`.
+
+Why CUDA 12.2 and ubuntu 22.04: there is no Linux CUDA build of sd.cpp, and
+`nvidia/cuda:12.2.0-devel/runtime-ubuntu22.04` is already in the local cache (the
+text `cppworker` is built on it), so the build does not pull a multi-gigabyte
+image. The binary is built on the devel base and runs on the runtime base of the
+same version; `SD_BUILD_SHARED_LIBS=OFF` (the sd.cpp default) produces a static
+ggml/stable-diffusion, so the runtime needs only the CUDA runtime and
+libstdc++/libgomp.
+
+Alternative when you would rather not build: **a native image worker on the host +
+the same balancer** — run `sdworker` outside Docker with
+`SDWORKER_BALANCER_URL=http://<host>:18081`,
+`SDWORKER_BALANCER_TOKEN=<stack token>`,
+`SDWORKER_ADVERTISE_HOST=host.docker.internal` and
+`SDWORKER_REGISTER_DISABLE=true` on the containerized worker — then the balancer
+(in Docker) proxies images to the native worker with GPU Vulkan.
+
+## 12. Image request metrics and backend management in the UI
+
+### 12.1 What is counted
+
+The balancer counts **generation** requests: `POST /v1/images/*`,
+`POST /sdapi/v1/txt2img|img2img`, `POST /api/image/generate`. Management calls
+(model list, `load`/`unload`, `capabilities`) are NOT counted — otherwise RPS and
+"average time" would show service traffic instead of generation.
+
+There are five outcomes, and they mean different things:
+
+| Status | What happened |
+|---|---|
+| `ok` | a synchronous generation returned an image |
+| `failed` | the request reached the worker/engine and failed (5xx, broken connection) |
+| `rejected` | the balancer gate refused it (no model, not enough VRAM, GPU lock held, queue timeout, no backend) |
+| `accepted` | asynchronous submission (`202`), generation still running |
+| `finished` | asynchronous generation finished (the balancer does not track per-job results — the worker only exposes `active_queries`) |
+
+### 12.2 Where to look
+
+- `GET /api/v1/metrics` (requires `X-API-Token`) → the `image` block:
+  `requests` (pool aggregate plus `recent`, the shared feed) and
+  `backends[<id>].requests` (counters of one worker);
+- `GET /api/v1/cluster` → `cluster.image` (same aggregate and feed) plus
+  `cluster.backends[<id>].image.requests` (per backend). This is what the Monitor
+  reads, so the requests panel needs no extra poll per tick;
+- `GET /api/v1/image/backends/{id}/models` → the worker's model state.
+
+Aggregate fields: `inFlight`, `total` (requests started), `ok`, `failed`,
+`rejected`, `accepted`, `finished`, `rps` (60 s window), `avgDurationMs`,
+`p50DurationMs`, `p95DurationMs`, `lastDurationMs`, `lastRequestAt`,
+`failuresByCode` (engine error codes), `gateDeniedByCode` (gate refusal reasons).
+Memory is hard-capped: a 20-entry feed per backend and 50 shared entries, with
+512 duration samples.
+
+### 12.3 UI
+
+The WebUI part is a single **"Image models"** page (`#image-page`) built like the
+"GGUF models" page: the nav item appears once the cluster has at least one
+`image_cpp` backend, and it contains six tabs.
+
+| Tab | What it does |
+|---|---|
+| **Overview** | Image backend CRUD, worker port, GPU index, state, current model, VRAM, request counters, text/image coexistence policy; the **"Backend check"** button loads a model first if none is loaded and then runs 1 step at 64x64 over the client path `POST /v1/images/generations`; only the result, the time and the model name reach the UI, no image is displayed |
+| **HuggingFace** | Repository search (query + `text-to-image` filter), file list with suggested roles, selection and role override, bundle name/family, `HF token`, "Download bundle". Every file has a header pre-check ("Check"): which family the engine recognises and whether `--diffusion-model` is required; the profile family is auto-filled from the file (see 8.2) |
+| **Models on disk** | Bundle table: name, state, size, family, **contents by role**, active queries, VRAM estimate; actions — load, unload, **delete from disk** |
+| **Loaded** | Worker state and current model plus load progress (stage, time) over SSE `/api/image/models/load/progress/stream` with a polling fallback |
+| **Downloads** | Active bundle and single-file downloads, history, residual `.download` files with cleanup, cancel |
+| **Settings** | Parameters of the selected backend (entry into its card) and image model profiles (`image-profiles.js` editor) |
+
+Why it works this way:
+
+- **Showing generated images in the WebUI is gone.** The WebUI is a panel for
+  configuring the balancer and understanding system state; displaying results is the
+  clients' job (OpenAI/A1111 on `:18079`), which have previews and their own history.
+  The generation form, "Result" and the localStorage gallery were removed; the
+  "Backend check" button (1 step at 64x64, no image) remains — it answers "is the
+  engine alive?", it does not replace a client.
+- **File roles are computed by the server.** In the repository file list the worker
+  returns `suggestedRole` (`internal/sdbackend.SuggestRole`); the UI only displays it
+  and lets the operator override it. If the "which file is a VAE" heuristic lived in
+  JS, the rules would drift from the worker and bundles would be assembled wrongly.
+- **Auto-selection is conservative.** `diffusion`, `vae`, `clip_l`, `clip_g` are
+  selected by default; `t5xxl`/`llm` (3-9 GB) must be picked by hand.
+- **Bundle deletion** goes through `POST /api/image/models/delete`: only inside
+  `ModelsDir`, a loaded bundle returns `409` with an `unload` hint (the engine keeps
+  the weights open), and the worker registry is reloaded after the delete.
+- **Monitor** stays the second observation window: the "Image backend requests" panel
+  (aggregates plus a feed of the latest requests with path, model, size, steps,
+  duration and status), and in the backends table the Active/RPS/Avg RT columns of an
+  `image_cpp` backend are filled from `image.requests`.
+
+### 12.4 "Test" tab - try model settings and see the result
+
+The seventh tab of the "Image models" page (the "Test" button), available
+**only when the cluster has an `image_cpp` backend** - like the whole page.
+
+WHY A SEPARATE TAB: the other tabs are about configuration and state, and showing
+generated images there is deliberately excluded (see 12.3). The "Test" tab is the
+opposite: it is the only WebUI place that displays an image, and it does not get in
+the way until opened.
+
+What it does:
+
+- pick a backend (`image_cpp`) and a model, buttons "Load/Unload model",
+  "From profile" - fill the form with the model profile defaults
+  (steps/cfg/sampler/size);
+- pick the request surface: OpenAI `/v1/images/generations`, A1111
+  `/sdapi/v1/txt2img`, native `/api/image/generate`; parameters - prompt,
+  negative, width, height, steps, cfg, sampler, scheduler, seed, batch
+  (limits come from `/api/image/capabilities`);
+- a "What the request will contain" block with live JSON and curl: you can see
+  which settings are applied instead of guessing from the picture;
+- the result: image, duration, HTTP status, `model`, `seed`, size; run history is
+  **in-memory (this tab only)** to compare settings, "To form" restores the
+  parameters - no localStorage, no gallery;
+- the request goes over the balancer **client path**, so it passes the VRAM gate
+  and is counted in metrics: your own checks show up in Monitor;
+- engine errors are explained: "get sd version from file failed" means the profile
+  family does not match the file (a DiT model attached as all-in-one, see 8.2 — the
+  family is auto-filled on the HuggingFace tab via the Check button); "no image
+  model is loaded" means press "Load model"; OOM means reduce size/steps/batch or
+  enable offload; "port still busy" means the engine is still releasing the socket.
+
+## 14. The `generate_image` tool: a text model draws pictures itself
+
+R84 (2026-10-03). When the cluster has a healthy image backend with a **loaded**
+model, the balancer advertises a `generate_image` tool to text models
+(llama.cpp / cppworker) and **executes the call itself**: it generates the image,
+appends the result to the conversation as a tool message and asks the model to
+finish its answer. Clients (Open WebUI, LibreChat, Cline, your agent) need no
+configuration at all - they get the text plus a markdown link to the picture.
+
+### 14.1 Why the balancer executes it, not the client
+
+The tool is declared by the PROXY, not by the client: the client does not know about
+it and cannot execute it. If the client declares its own tool named `generate_image`,
+the balancer steps aside and never intercepts it.
+
+### 14.2 The "someone must be able to execute it" gate
+
+The tool is added only when ALL of these hold:
+
+- a healthy `image_cpp` backend exists;
+- its state snapshot is trustworthy (`contractOK`, no `lastErr`);
+- a model is **loaded** on it (`state=loaded`) - otherwise the call would hit
+  "no image model is loaded" after the tool was already invoked.
+
+Otherwise the request body stays byte-for-byte identical and the response has no
+`X-Image-Tool` header.
+
+### 14.3 What the client sees
+
+```
+POST /v1/chat/completions            # as usual; you need not pass tools
+{ "model": "gemma-4-E4B-it-Q4_K_M.gguf",
+  "messages": [{"role":"user","content":"Draw a ginger cat on a windowsill"}] }
+```
+
+- the response carries `X-Image-Tool: generate_image`;
+- the model calls the tool, the balancer generates the image (VRAM gate, queue) and
+  appends `assistant(tool_calls)` + `tool(result)` to the conversation;
+- the client receives the final text plus a markdown image block; `tool_calls` are
+  NOT returned to the client - there is nothing to execute on its side.
+
+Image URL: `GET /v1/images/files/{name}` (same client surface as generation, no token;
+the file name is random). The absolute URL is built from the client's `Host` or from
+`LB_IMAGE_TOOL_BASE_URL` (needed behind a TLS proxy).
+
+### 14.4 What the operator sees
+
+Tool generations flow through the same request feed as ordinary ones: in Monitor they
+appear with `surface=chat-tool` and the path
+`/v1/chat/completions→generate_image`. They take the VRAM gate and the worker queue,
+so they never bypass resource policy.
+
+### 14.5 Flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `LB_IMAGE_TOOL` | `on` | `off` disables the tool entirely |
+| `LB_IMAGE_TOOL_MAX_CALLS` | `2` | images per request (cap 8) |
+| `LB_IMAGE_TOOL_TIMEOUT_SEC` | `600` | per-generation timeout |
+| `LB_IMAGE_TOOL_BASE_URL` | client Host | public balancer address for links |
+| `LB_IMAGE_TOOL_INJECT` | `always` | `auto` announces the tool only to clients that sent their own `tools[]` |
+
+`LB_IMAGE_TOOL_INJECT=auto` (R141) exists because announcing the tool is not free:
+the worker sees a non-empty `tools[]` and prepends a ~200-token preamble about tool
+calling to the prompt. Measured on the stand: `prompt_tokens` 19 direct against 220
+through the balancer (+201 tokens on *every* request), `has_tools` false against
+true, and the model switched from a plain answer to a reasoning stream about calling
+a tool the client never declared. A client that sent no `tools[]` at all reports
+this as an unrealistic tokens/s. `auto` leaves such requests byte-identical on the
+wire; tool-capable clients (Open WebUI with its own tools) still get image
+generation. The default stays `always` so no stand changes behaviour silently.
+
+R85 added two more flags (model catalog and auto-load) - see 16.3.
+
+### 14.6b Which surface actually announces the tool (measured)
+
+The announcement happens in the llama.cpp router, which serves the prefixed surfaces
+(`/ollama/*`, `/openai/*`) plus the OpenAI paths. Measured on the stand, one request
+carrying the client's own `tools[]`:
+
+| Path | Prompt seen by the worker | Tool announced |
+| --- | --- | --- |
+| `/v1/chat/completions` | 93 -> 237 tokens | yes |
+| `/ollama/api/chat` | 357 -> 1068 chars | yes |
+| `/api/chat` (unprefixed) | 357 chars, unchanged | **no** |
+
+The unprefixed `/api/chat` goes through the generic Ollama-compatible proxy and is
+passed through byte for byte: a pure-chat native client (Cline, Open WebUI, the
+deepseek harness) gets exactly the prompt it sent - no tool preamble, no extra
+tokens - and for the same reason no image generation. A native client that should be
+able to generate images has to talk to `/ollama/api/chat`.
+
+`scripts/webui-e2e/client-matrix.js` checks this for seven client profiles on both
+surfaces (prompt parity, response shape, token accounting), so a future change to
+either routing or announcement shows up as a failing check instead of a surprise.
+
+### 14.6 Limitations (honestly)
+
+- turn 1 is always non-streaming: the "should we execute this call" decision needs the
+  whole answer. A client that asked for a stream still receives SSE (synthesised
+  chunks); cppworker buffers the tools path anyway;
+- works on two surfaces: `/v1/chat/completions` (OpenAI) and `/api/chat` (Ollama,
+  including the `/ollama/*` and `/openai/*` prefixes). Anthropic `/v1/messages` is
+  not covered;
+- n_ctx overflow on a tools request triggers the usual auto-reload, but there is no
+  network-level retry on the first turn (the error goes to the client as is);
+- with `LB_IMAGE_TOOL_ALLOW_LOAD=off` the tool is announced only when a model is
+  already loaded; with `on` (the default since R85) see 16.
+
+## 16. Model catalog, `list_image_models` and auto-load (R85)
+
+R85 (2026-10-06). Extends 14: `generate_image` answers "draw it",
+`list_image_models` answers "show me what to choose from", and the call itself can
+bring the chosen model up.
+
+### 16.1 Why a catalog and a second tool
+
+The `model` enum only reports model NAMES. A meaningful choice needs the family, VRAM
+requirement, image size, step count and a human description ("what this model is good
+for"). The catalog is data, not code: descriptions live in the model profile
+(`strengths`/`notes`), are edited from the WebUI and reach both the API and the tool.
+
+**Announcement gate** (changed in R85):
+
+| `LB_IMAGE_TOOL_ALLOW_LOAD` | What is announced | Condition |
+| --- | --- | --- |
+| `on` (default) | `generate_image` + `list_image_models` | healthy `image_cpp` **and something to load** (models visible in the snapshot) |
+| `off` | `generate_image` only | healthy `image_cpp` **and a model already in VRAM** (R84 behaviour) |
+
+**Auto-load.** With `on`, a `generate_image` call with `model=X`, where `X` is not yet
+in VRAM, loads the model itself: `POST /api/image/models/load` -> poll until
+`state=loaded` -> VRAM gate -> generation. The tool result gains `loadSeconds` (load
+time), `loadedNow` and `modelState`, so the model can explain the pause to the user.
+Timeout: `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` (600 s by default); on expiry the reason goes
+into the tool message instead of a silent hang.
+
+**Tool result** (compact, model-readable):
+
+```json
+{ "status": "ok", "count": 3, "hasLoadedModel": true, "loadedModel": "sd15-q8-0",
+  "limits": { "minSide": 64, "maxSide": 4096, "sizeMultiple": 64, "minSteps": 1, "maxSteps": 100 },
+  "models": [ { "name": "sd15-q8-0", "backendId": "imageworker", "family": "sd15",
+                "state": "loaded", "loaded": true, "vramEstimateMb": 2100,
+                "defaults": { "steps": 25, "width": 512, "height": 512 },
+                "strengths": "SD1.5 quality benchmark at low VRAM" } ],
+  "summary": "Available image models (3):\n- sd15-q8-0 | family sd15 | state: loaded (already in VRAM) | ~2100 MB VRAM | ..." }
+```
+
+The tool takes **no GPU**: no generation, no VRAM gate, nothing in the image request
+feed.
+
+### 16.2 `GET /api/v1/image/models/catalog`
+
+One response across all live `image_cpp` backends. It is built from the same snapshots
+that feed the VRAM gate, so the catalog and the generation decision cannot disagree.
+
+```bash
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  http://localhost:28081/api/v1/image/models/catalog | jq .
+```
+
+Field sources:
+
+| Field | Source | Meaning |
+| --- | --- | --- |
+| `state`, `loaded` | worker snapshot | `loaded` / `loading` / `not_loaded` / `error` |
+| `sizeBytes` | worker snapshot | bundle size on disk |
+| `vramEstimateMb`, `vramSource` | profile -> worker -> file sizes | peak VRAM: `profile` / `catalog` / `worker` / `files` |
+| `defaults` | profile -> preset catalog | steps/size the model runs with |
+| `strengths` | profile -> preset catalog -> family | "what it is good for" - READ BY THE MODEL |
+| `notes` | profile -> preset catalog | detailed description - read by the operator |
+| `source` | - | where `defaults`/descriptions came from |
+
+**Descriptions are data, not code.** `notes` and `strengths` are edited in the model
+profile (WebUI -> Image models -> profile, `PUT /api/v1/image/model-profiles/{name}`):
+
+```bash
+curl -sS -X PUT -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"strengths":"fast and cheap: 512x512 in seconds"}' \
+  http://localhost:28081/api/v1/image/model-profiles/sd15-q8-0
+```
+
+Source priority: **operator profile -> preset catalog
+(`config/image-model-catalog.json`) -> family description**. The profile wins because it
+is the operator's live intent; the preset catalog deliberately yields so that a WebUI
+edit is not overwritten by a shipped file. If the catalog file is missing (balancer
+started outside the repository root), the copy embedded in the binary is used; if the
+file exists but is broken, `GET /api/v1/image/model-catalog` returns 500 with the reason
+instead of silently substituting data.
+
+### 16.3 Auto-load flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `LB_IMAGE_TOOL_ALLOW_LOAD` | `on` | `off` - a call never loads a model and `list_image_models` is not announced (R84 behaviour) |
+| `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` | `600` | how long to wait for a model load before the reason is reported |
+
+**Both values are editable from the WebUI without a restart** (Image models -> Overview
+-> policy card): the "let the tool load an image model" checkbox and the "Model load
+wait, s" field. Priority: **WebUI value** (`/app/data/image-resources.json`) ->
+environment variable -> default.
+
+This matters for large models: `qwen-image-2.1` (4.7 GB) does not fit into 600 s on a
+slow disk, and the call returns "model did not come up in 600s" - raise the field to
+1800-3600 s. Bounds: 1..86400 s; **0 is rejected**, because that means "do not wait at
+all" (the tool could never bring the model up).
+
+Check the effective values:
+
+```bash
+curl -sS -H "X-API-Token: $LB_API_TOKEN" http://localhost:28081/api/v1/image/resources \
+  | jq '{allow: .allowToolLoad, loadTimeout: .toolLoadTimeout, limits: .limits}'
+```
+
+`overridden: false` means "the environment variable / default is in effect"; after
+saving from the WebUI it becomes `true` and `effectiveSec` is your value.
+
+`LB_IMAGE_TOOL_ALLOW_LOAD` can also be toggled from the WebUI (the checkbox in the
+coexistence policy card); priority is config -> environment -> default `on`.
+
+### 16.4 Scenario: "user asks for a picture"
+
+```
+User: "draw a cat on a windowsill, make it beautiful"
+  -> cppworker (gemma-4/Qwen3) receives generate_image + list_image_models
+  -> the model calls list_image_models -> the balancer returns the catalog (no GPU)
+  -> the model picks a model for "beautiful" (e.g. flux-schnell-q3-k, ~5.2 GB)
+  -> calls generate_image{model:"flux-schnell-q3-k", prompt:"..."}
+  -> balancer: model not in VRAM -> POST /api/image/models/load -> waits for state=loaded
+              (VRAM gate and queue are respected) -> generation
+  -> tool message: url, markdown, loadSeconds (~40 s), modelState=loaded
+  -> the model writes the final answer and warns about the load time
+  -> the client sees text + a markdown image
+```
+
+In Monitor the operator sees tool generations with `surface=chat-tool` and the model
+load; the catalog call does not appear in the feed because it generated nothing.
+
+### 16.5 Two surfaces: `/v1/chat/completions` and `/api/chat` (R86)
+
+**Why this matters for Open WebUI.** Tools are announced on BOTH chat surfaces,
+because clients connect differently:
+
+| Client / connection mode | Path | Tool announced |
+| --- | --- | --- |
+| Open WebUI, **OpenAI** connection | `POST /v1/chat/completions` | yes |
+| Open WebUI, **Ollama** connection (default) | `POST /api/chat` | yes (R86) |
+| Cline / Roo / Continue / OpenAI SDK | `POST /v1/chat/completions` | yes |
+| curl to `/api/chat` directly | `POST /api/chat` | yes |
+
+Before R86 `/api/chat` had no tools at all - that is exactly why the model "did not
+see the tools" when used through Open WebUI. The Ollama surface now runs the same
+loop: `tools` announcement, `tool_calls` capture from the NDJSON response, execution
+(catalog/generation with auto-load) and the model's final answer.
+
+Deliberate differences on `/api/chat`:
+
+- **client tools are preserved** - in Open WebUI the user usually has their own
+  (web search etc.), and they keep working alongside ours;
+- if the client declared a tool with **our name** (`generate_image` or
+  `list_image_models`), ours are not added at all: the client side executes;
+- `tool_choice: "none"` is honoured: no tools are announced at all;
+- a client asking for `stream: true` receives an NDJSON stream with a mandatory
+  `done: true` (turn 1 is non-streaming anyway - the decision needs the whole answer).
+
+### 16.6 Diagnostics: "the model does not see the tools"
+
+For every chat request the balancer logs one INFO line describing the decision, so the
+reason is visible immediately:
+
+```bash
+docker logs ol-stack-balancer --since 30m 2>&1 | grep "image tool:"
+```
+
+Examples (log messages are emitted in Russian, as the rest of the balancer logs):
+
+```json
+{"msg":"image tool: инструменты объявлены модели","path":"/api/chat","model":"Qwen3-...","client_tools":3,"injected":true,"injected_tools":"generate_image,list_image_models"}
+{"msg":"image tool: инструменты НЕ объявлены","path":"/v1/chat/completions","client_tools":1,"injected":false,"reason":"клиент прислал tool_choice=\"none\" — инструменты запрещены в этом запросе"}
+{"msg":"image tool: инструменты НЕ объявлены","path":"/api/chat","client_tools":0,"injected":false,"reason":"на image-бэкенде нет моделей (нечего генерировать)"}
+```
+
+Possible `reason` values: `LB_IMAGE_TOOL=off`, no healthy `image_cpp`, no models on the
+worker, no loaded model while `LB_IMAGE_TOOL_ALLOW_LOAD=off`, `tool_choice="none"` from
+the client, the client declared our tools itself.
+
+**If the model called the tool but no image appeared**, read the consecutive
+`image tool (ollama):` / `image tool:` lines: they show whether the call was recognized
+(`генерация по вызову модели`), which backend and model were chosen, and how it ended
+(`генерация не удалась: …`). Common cases:
+
+- `загрузка модели "X" прервана: context canceled` - the load ran out of time: raise
+  "Model load wait, s" in the policy card (16.3) or pass `model` explicitly;
+- `модели "X" нет на image-воркере. Доступные модели: …` - the model invented a name.
+  The tool result lists the available names, so the model can correct itself on the
+  next turn; if it keeps repeating the invented name, ask it to call
+  `list_image_models` and choose from the list;
+- the client sees `[]` or `[TOOL_CALLS]=[]` - that is a Qwen3 template artifact; the
+  balancer strips it (if you still see it, the request went straight to cppworker,
+  bypassing the balancer).
+
+If there is no `image tool:` line at all, the request does not look like a chat with
+tools (e.g. it went to `/api/generate`) or the client is hitting the wrong port: the
+OpenAI and Ollama surfaces listen on **18079** and **18080**, management API on 18081.
+
+### 16.7 Other checks
+
+```bash
+# which models the balancer sees and what it knows about them
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  http://localhost:28081/api/v1/image/models/catalog | jq '.models[] | {name, state, vramEstimateMb, source}'
+
+# profile plus the actual argv that will go to sd-server
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  http://localhost:28081/api/v1/image/model-profiles/sd15-q8-0 | jq '{profile, serverArgs}'
+
+# load a model by hand (exactly what auto-load does)
+curl -sS -X POST -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"flux-schnell-q3-k"}' \
+  http://localhost:28081/api/v1/image/backends/imageworker/models/load
+```
+
+### 16.8 Repository passport: what to download, in which mode, and what to do
+
+R86-follow-up (2026-10-06). Model search lists files, but did not answer the main
+question: **which set the engine will actually run and in what mode**. Live case: the
+repository contained diffusion, VAE and text encoder, but only diffusion went into the
+bundle - the engine answered "VAE tensor ... not in model metadata" and never started.
+
+Now, when you pick a repository, the card shows the passport (WebUI -> Image models ->
+HuggingFace); the same answer is available from the API:
+
+```bash
+curl -sS -H "X-API-Token: $LB_API_TOKEN" \
+  'http://localhost:28081/api/v1/image/backends/imageworker/hf/plan?modelId=<repo>'
+```
+
+Field meanings:
+
+| Field | Meaning |
+| --- | --- |
+| `family`, `versionLabel` | what the engine recognizes from the main file header |
+| `engineMode` | `model` - all-in-one (`--model`); `diffusion-model` - DiT (`--diffusion-model` + separate VAE/text encoder) |
+| `roles[]` | required roles: found (with paths) or missing plus what to look for |
+| `missing[]` | what is missing - the load will fail without it |
+| `verdict`, `summary` | `ready` / `incomplete` / `unsupported` / `unknown` in one line |
+| `steps[]` | the order of actions in the WebUI |
+| `modelHint` | **what to pass to the text model** |
+
+Operator steps (same as `steps[]`): tick the files the passport proposes, check their
+roles, pick the family from the passport (mandatory for DiT, otherwise the engine gets
+`--model` and answers "get sd version from file failed"), download the bundle, press
+"Load" on the model, and if the load fails read the engine error - it lists the missing
+tensors (VAE/conditioner), meaning a role is absent from the set.
+
+**What matters for the model that loads models by itself**: `modelHint` (and the tool
+description, see 16.1) says to pass the **bundle directory name** to `generate_image`
+(`model="qwen-image-2.1-UC-Q4_K_M"`), not "stable-diffusion.cpp" and not the repository
+id; `list_image_models` returns the valid names. A wrong name makes the balancer
+substitute the already loaded model and report it (`requestedModel`/`modelNote`), which
+costs a whole turn.
+### 16.9 "The model downloaded but will not load" - how to diagnose
+
+The load error is shown in the WebUI (and in the worker log). Live cases from the stand:
+
+- `unsupported dtype "U32" (tensor "img_in.weight")` + `new_sd_ctx_t failed` - the
+  WRONG FORMAT was downloaded: a `*.safetensors` with MLX quantization (the name
+  usually contains `MLX`, and the file header carries `U32` tensors together with
+  `scales`/`biases`). stable-diffusion.cpp reads **GGUF** and cannot read MLX quants.
+  Check it directly:
+
+  ```bash
+  head -c 3000 file.safetensors | tr -d '\0' | grep -o '"dtype":"[A-Z0-9]*"' | sort -u
+  ```
+
+  If `*.weight` has `U32`, the file will not work; you need GGUF quants for the
+  `diffusion` role (the VAE may stay safetensors - it is readable);
+- `GGUF files cannot be loaded by stable-diffusion.cpp - img_in.weight is stored
+  reshaped` - a known problem with some Qwen-Image 2.1 GGUF publications
+  ([HF discussion](https://huggingface.co/realrebelai/Qwen-Image-2.1_GGUFs/discussions/2)):
+  the tensor is repacked and the engine rejects it - use another quant source;
+- the reference working configuration on the stand is `sd15-q4` (all-in-one GGUF):
+  if it loads, the problem is the specific file, not the worker.
+Common reasons for an empty catalog: the backend is unhealthy (the reason is in
+`warnings`), the worker did not answer with the contract (`contractOk=false`), or no
+model is downloaded on the worker.
+
+---
+
+## 17. Long generations: the timeout chain and RAM offload (R87)
+
+### 17.1 Symptom: "2048x2048 fails with HTTP 504, yet resources look sufficient"
+
+512x512 finishes in seconds, 2048x2048 at 40 steps "fails with 504", and the worker log
+shows a completed generation. This is not an out-of-memory condition: the worker does
+render and return the image - only the browser -> panel nginx -> balancer -> worker path
+is cut.
+
+Measured on the reference stand (RTX 3070 8 GB, Qwen-Image-2.1 Q4_K_M,
+`--offload-to-cpu --max-vram -1 --diffusion-fa --vae-tiling`, 2048x2048, 40 steps):
+
+```
+sdbackend/jobs.go   image generation completed  size=2048x2048 steps=40 duration_ms=1304815
+sdworker/utils.go   POST /v1/images/generations status=200 duration=21m44.846s
+```
+
+**21 minutes 45 seconds** - that is how long one 2048^2 request lives. Anything that
+fires earlier cuts the connection even though the generation keeps running.
+
+**Post-fix verification (same stand, request through the panel - nginx :18083):**
+`HTTP 200` in **1350 s (22m30s)**, the response carried a valid **2048x2048** PNG
+(9.0 MB). Peaks during the run: **VRAM 7447 / 8192 MiB** (91%), **worker RAM
+13.0 / 25.0 GiB** (52%), GPU utilization up to 100%. Before the fix the same request
+was cut at exactly second 600 (504).
+
+### 17.2 The timeout chain
+
+| Link | Default | Where to change | If left alone |
+|---|---|---|---|
+| browser (panel), Test tab | **no cap** (`TIMEOUT_GENERATE_MS = 0`) | `webui/js/modules/image-test-page.js` | the panel aborted the request at minute 10 while the worker kept computing |
+| panel nginx, work paths | **86400 s** ("no cap") | `webui/nginx.conf` | 600 s on `/v1/` = 504 on 2048x2048 |
+| panel nginx, 502/503/504 | JSON with `error_type` + `hint` | `webui/nginx.conf` (`error_page`) | the client saw an HTML page and "HTTP 504" with no explanation |
+| balancer, generation cap | **none** (`0`) | `LB_ALLOW_IMAGE_TIMEOUT_SEC` | by default we wait for the engine's terminal state |
+| balancer, GPU-lock fuse | **disarmed** (`0`) | `/api/v1/image/resources` -> `exclusiveLockTimeoutSec` | at 600 s the lock was released MID-generation (`reason=fuse_timeout`) |
+| balancer, `generate_image` tool | **none** (`0`) | `LB_IMAGE_TOOL_TIMEOUT_SEC` / `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` | a 2048^2 tool call was cut at minute 10 |
+| worker, job wait | **none** (`0`) | `SDWORKER_GENERATION_TIMEOUT_SEC` | an armed cap returns `generation_timeout` -> HTTP 504 |
+| worker, `profile.json` `timeoutSec` | **ignored** | `SDWORKER_ALLOW_PROFILE_TIMEOUTS=on` | the profile would silently cut a legitimate generation |
+| worker, sd-server readiness | **none** (`0`) | `SDWORKER_STARTUP_TIMEOUT_SEC` | we wait for ready OR process death (a clear error in the log) |
+| engine, `sd-server` | no cap | - | computes until it is done |
+
+> R88 disarmed every cap in this table by default (0 = no cap); a cap can only be
+> armed explicitly and announces itself with a WARN in the log. See 17.6.
+
+When you see a 504, check `docker logs <imageworker>` first: if it contains
+`image generation completed`, the culprit is a client-side link (nginx, balancer cap,
+lock), not the engine.
+
+### 17.3 RAM: how the engine uses it (and why it is already engaged)
+
+"Can we involve system RAM too?" has a short answer: **it already is**. The worker's
+`argv` for Qwen-Image carries `--offload-to-cpu`, a shortcut for
+`--params-backend '*=cpu'`: weights live in RAM and are copied into VRAM segment by
+segment as the graph executes (the engine's automatic graph-cut). That is exactly why a
+14.6 GB bundle runs on an 8 GB card.
+
+- **Unsloth's rule (hard):** available **RAM + VRAM** must exceed the GGUF file size,
+  otherwise the model will not load even with offload. For the Qwen-Image bundle that is
+  14.6 GB against 24.5 GB of RAM on the stand - there is headroom.
+- **Offload is not a "slow mode":** sd.cpp officially calls it "without loss of speed";
+  the cost is PCIe traffic for segment streaming. Measured: 512x512/8 steps = 159 s,
+  2048x2048/40 steps = 21m45s on the same stand.
+- Memory knobs live in the profile `runtime` (`profile.json`, editable from the WebUI):
+  `offloadToCpu` (`--offload-to-cpu`), `paramsBackend: "diffusion=disk"`
+  (`--params-backend`, minimum VRAM *and* RAM but slow), `maxVram` (`--max-vram` budget
+  for graph-cut), `vaeTiling`/`vaeTileSize` (`--vae-tiling`, the main lever against VAE
+  decode OOM), `vaeConvDirect`, `backend: "te=cpu"` (`--backend te=cpu`, moves the
+  ~8 GB int8 text encoder out of VRAM), `threads`, `taesd` (TAEHV for Qwen).
+
+Verify the flags actually reached the engine (rather than "should have"):
+
+```bash
+docker logs ol-stack-imageworker 2>&1 | grep 'spawning sd-server' | tail -1
+```
+
+### 17.4 If 22 minutes is too long
+
+1. Generate 1024x1024 and finish with `--hires` - the base pass is 4x cheaper in pixels.
+2. Reduce steps: 20-30 steps with `flow-shift` 2-3 is close for Qwen-Image.
+3. Free VRAM rather than RAM: `--backend te=cpu` moves the int8 encoder (~8 GB) out of
+   VRAM, leaving room for the diffusion activations - the heaviest part at large sizes.
+4. Use a smaller text-encoder quant (Q4_K_M instead of int8).
+
+### 17.5 What was fixed (R87: `webui` r83-submodule-v104)
+
+- `location /v1/`: `proxy_read_timeout` 600s -> **3600s** (this was the 2048x2048 504:
+  600 s < 21m45s);
+- added `location /api/v1/image/` (**3600s**, `proxy_buffering off`) - it used to fall
+  into the `/api/` catch-all with 120 s and buffering, which broke 14.6 GB model loads
+  and their SSE progress stream;
+- added `location /api/image/` (**3600s**) - it used to go to the admin API (18081),
+  which does not serve the native image surface -> 404;
+- added `location /sdapi/` (**3600s**) - it used to fall into `location /` and return
+  `index.html` instead of JSON;
+- `location /api/worker/`: 300s -> **3600s** (long worker operations: model load, HF
+  bundle download).
+
+### 17.6 R88 doctrine: caps are opt-in only, and every error explains itself
+
+R87 removed one specific 600-second cap, but the image plane still had several more
+(worker, tool, lock fuse, browser). R88 brings the image plane onto **the same doctrine
+the text backend already follows** (`internal/balancer/timeout_policy.go`, R83/v67).
+
+**The rule (one for the whole project).**
+
+- Timers for **state polling** are allowed: "every N seconds check whether it is done"
+  (job/readiness poll interval, heartbeat, idle connection). Such a timer sets the
+  glance frequency and does **not** cancel the work.
+- Duration caps **on work** are forbidden: anything that cuts a generation, a model
+  load, a pull or a reload when the clock runs out. The defect is recognisable: the
+  server returned an error while the upstream kept working, so the state diverges from
+  the answer.
+- Instead of a cap, wait for the **terminal state** and return a concrete error.
+- If a cap is genuinely needed, it must be armed **explicitly** and must log a WARN.
+
+**Opt-in registry for the image plane** (all off by default):
+
+| Variable | What it arms |
+|---|---|
+| `SDWORKER_GENERATION_TIMEOUT_SEC` | generation job wait cap (worker) |
+| `SDWORKER_STARTUP_TIMEOUT_SEC` | sd-server readiness wait cap |
+| `SDWORKER_ALLOW_PROFILE_TIMEOUTS` | let `profile.timeoutSec` cut a generation |
+| `LB_ALLOW_IMAGE_TIMEOUT_SEC` | balancer HTTP cap for image generation |
+| `LB_IMAGE_TOOL_TIMEOUT_SEC` / `LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC` | `generate_image` tool caps |
+| `exclusiveLockTimeoutSec` (`/api/v1/image/resources`) | GPU-lock watchdog |
+
+**The second half of the requirement is "explicit error explanation".** An error must
+carry not just a code but an action. The response shape is the same at every link:
+
+```json
+{
+  "error": "backend imageworker is unavailable (connection_refused); retry in 30s",
+  "error_type": "connection_refused",
+  "backend_id": "imageworker",
+  "model": "qwen-image-2.1-uncensored-gguf",
+  "detail": "Post \"http://imageworker:18093/v1/images/generations\": dial tcp ...: connect: connection refused",
+  "hint": "the node does not answer: check the container (docker ps/logs) and the backend status in the WebUI",
+  "retry_after": 30
+}
+```
+
+Who contributes what:
+
+- **worker** - `hint` for every code (`model_not_loaded`, `generation_timeout`,
+  `sd_server_startup_failed`, `invalid_size`, ...; see `hintForCode`);
+- **balancer** - transport errors are classified and returned as `503`/`504`/`502` with
+  `error_type`, `detail`, `hint`, `retry_after` (`writeUpstreamError`), gate refusals
+  carry the OOM ladder (`writeGateError`);
+- **panel nginx** - its own 502/503/504 are returned as JSON instead of an HTML page
+  (`error_page` + `@panel_upstream_*`); balancer responses are deliberately NOT
+  intercepted so its explanation is never overwritten;
+- **panel** - shows the server `hint` before its own text heuristics
+  (`errorHint(text, body)`), and `TIMEOUT_GENERATE_MS = 0` no longer aborts the request.
+
+Verified on the stand: `POST /v1/images/generations` (2048x2048/40 steps) through the
+panel -> `HTTP 200` in 22m30s; a stopped backend -> 503 with
+`error_type=connection_refused` and a hint about the container, not "502 + dial text".
+
+### 17.7 Backend selection: a node with an EMPTY catalog is not selected
+
+Live case (R88). The stand has two machines: the local `imageworker` (model loaded, two
+bundles on disk) and the remote `IMAGEWORKER-34` (192.0.2.11) - registered and
+healthy, but with an **empty** model catalog. The old resource-based selection sent it
+**every** request: it has no agent metrics, so it looked free. The gate answered
+`image_model_not_loaded` and generation stopped working entirely, even though the local
+worker had everything ready.
+
+The rule (`internal/balancer/image_router.go` -> `backendsWithoutModels`):
+
+- a backend whose snapshot has **neither a loaded model nor any model on disk** is
+  excluded from generation routing: it can never serve the request;
+- the decision is made **only from a trustworthy snapshot**: no snapshot, or the last
+  probe failed (`lastErr`) - the backend is NOT excluded;
+- a model **on disk** is enough to stay a candidate: it can be loaded (lazy load or the
+  tool's auto-load);
+- if **every** catalog is empty we still pick someone: it is more honest to get the
+  gate's `image_model_not_loaded` with a hint than "no backend" without a reason;
+- the skip is visible in the log: `image backend skipped: no models in its catalog`
+  (with `host` and a hint to download a bundle to that node).
+
+The remote node therefore stays in the cluster (models can still be downloaded to it
+from the panel) and starts receiving generations as soon as a bundle appears there -
+with no configuration changes.
+
+### 17.8 Sharing a model: transfer between backends (R89)
+
+**The problem.** A model often exists on only one machine of the cluster. Before R89 the
+only way to get it onto the second machine was to download it from HuggingFace again:
+internet, HF token, time, and the risk of a different file revision. Now a model can be
+**transferred** - the source serves what is already on its disk, the target stores it.
+
+**Mechanics (server-side copy through the balancer).** The balancer streams
+`GET source -> POST target`; neither a file on the balancer's disk nor a buffer in RAM
+(14 GB in RAM is unacceptable) is used - Go sends the body chunked.
+
+| Role | Worker endpoint | What is transferred |
+|---|---|---|
+| Source (text) | `GET /api/models/export?name=<file.gguf>` | a single `.gguf`; `Content-Length`, `X-Model-Filename`, `X-Model-SizeBytes` |
+| Source (image) | `GET /api/image/models/export?name=<bundle>` | tar of the bundle directory; `X-Bundle-Bytes` (sum of files), `X-Bundle-FileCount` |
+| Target (text) | `POST /api/models/import?filename=<f>&size=&sha256=[&overwrite=1]` | raw bytes; `.importing` -> atomic rename + inventory rescan |
+| Target (image) | `POST /api/image/models/import?name=<b>&bytes=&files=[&overwrite=1]` | tar; unpack into `.importing-<b>` -> rename + registry reload |
+
+Both pairs go through `authMiddleware` (when a token is configured in the worker) - this
+is reading files and writing into the models directory, not public generation traffic.
+
+**Balancer API** (management plane, `X-API-Token` required):
+
+```bash
+curl -sS -X POST http://<balancer>:18081/api/v1/models/share \
+  -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"source":"imageworker","model":"qwen-image-2.1-uncensored-gguf","targets":["IMAGEWORKER-34"]}'
+
+curl -sS http://<balancer>:18081/api/v1/models/share/<id> -H "X-API-Token: $LB_API_TOKEN"
+curl -sS -X POST http://<balancer>:18081/api/v1/models/share/<id>/cancel -H "X-API-Token: $LB_API_TOKEN"
+```
+
+States: the job is `running|done|partial|failed|canceled`; a target is
+`pending|running|done|skipped|failed` (with `percent`, `bytes`, `total`, `speedBps`,
+`note`/`error`). The transfer kind (file or bundle) is derived from the source backend
+type, so the request does not need to specify it.
+
+**What is verified so a broken model never reaches the target:**
+
+- payload size (mandatory) and `sha256` (if the source reported one);
+- file names: basename only, no `/` and no `..` - otherwise a foreign tar could write
+  outside the models directory (`unsafe tar entry`);
+- an incomplete stream never becomes a finished model: data is written to a temporary
+  name and renamed only after a successful check;
+- if the target **already has** the model and overwrite was not requested, the target is
+  `skipped` with a reason and no gigabytes are moved.
+
+**In the panel.** A "Share" button (➦) appeared on models in the GGUF Models page (text)
+and in the image models list: pick target backends of the same type, optionally tick
+"overwrite", then watch per-target progress with speed and a Cancel button. The source is
+the backend selected in the panel.
+
+**Timeouts.** There is no cap on a transfer (project doctrine, 17.6): 14 GB at 100 Mbit/s
+is ~20 minutes, and any "reasonable" timeout here would be a defect. Cancellation is
+explicit, via `/cancel`.
+
+**Not there yet** (honestly): the transfer does not check free space on the target (a
+write error comes back as text from it), and scheduling/automatic "spread the model to all
+nodes" is a separate task (see the read-only autosuggest
+`/api/v1/admin/cluster/autosuggest`, R59).
+

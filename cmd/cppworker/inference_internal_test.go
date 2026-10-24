@@ -3,7 +3,7 @@
 //
 // Build tag: llama_stub (компилируется со stub-bridge, без CGo/llama.cpp).
 //
-// Каждый тест соответствует конкретному симптому из docs/tools-request-debug-runbook.md:
+// Каждый тест соответствует конкретному симптому из docs/operations/runbook-tools.ru.md:
 //
 //   B1. TestClampNPredictToFitContext_ToolsPromptOverflow —
 //       длинный prompt + tools, n_predict должен быть занижен до n_ctx - actualTokens.
@@ -15,13 +15,13 @@
 //       при hasTools=true reload НЕ выполняется, возвращается *ReloadDisabledForToolsError.
 //   B5. TestReloadLoopLimit_CycleTriggersAfterMaxAttempts —
 //       после 3 попыток getReloadAttempts возвращает isLimit=true (поведение, описанное
-//       в docs/remaining-real-plan.md как «бесконечный reload-loop»).
+//       в docs/plans/archive/remaining-real-plan.md как «бесконечный reload-loop»).
 //   B6. TestReloadLoopLimit_ResetAfterWindowExpires —
 //       по истечении ramFallbackCycleResetInterval счётчик сбрасывается.
 //   B7. TestReloadLoopLimit_ResetReloadAttemptsClears —
 //       успешный инференс сбрасывает счётчик (моделируется вызовом resetReloadAttempts).
 //
-// Runbook: docs/tools-request-debug-runbook.md
+// Runbook: docs/operations/runbook-tools.ru.md
 // Диагностические логи: cmd/cppworker/inference.go (clampNPredictToFitContext, tryRamFallbackReload).
 
 package main

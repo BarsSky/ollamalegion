@@ -1266,7 +1266,7 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		maybeRestartOnMemorySlotError(streamErr, modelName)
 		// Round 31 #6 (2026-08-09): cancelled response. OpenAI-compatible клиенты
 		// строгие к finish_reason, поэтому используем "stop" (safer) + cancelled: true.
-		// См. plans/cppworker-abort-api/PLAN.md DECISION Q3.
+		// См. docs/plans/cppworker-abort-api/PLAN.md DECISION Q3.
 		if errors.Is(streamErr, bridge.ErrAborted) {
 			cancelledChunk := map[string]interface{}{
 				"id":      chatID,

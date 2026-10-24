@@ -12,7 +12,7 @@
 // The warning IS THE FIX — operator sees "profile conservative, increase to 65536
 // via PUT /api/v1/cppworker/model-profiles/<model>" and can act immediately.
 //
-// See docs/runbook-tools.md for the operator runbook.
+// See docs/operations/runbook-tools.md for the operator runbook.
 package main
 
 import (

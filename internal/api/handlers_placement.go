@@ -11,7 +11,7 @@ package api
 //
 // Требует X-API-Token (как остальные admin-endpoint'ы).
 //
-// План: plans/2026-09-23-multi-backend-placement-policy.md (§5).
+// План: docs/plans/2026-09-23-multi-backend-placement-policy.md (§5).
 
 import (
 	"net/http"
@@ -55,7 +55,7 @@ func (s *Server) placementHandler(w http.ResponseWriter, r *http.Request) {
 		"executable":           executableStrategies(),
 		"warnings":             warningsOrEmpty(s.proxy.PlacementWarnings()),
 		"replication":          s.proxy.PlacementReplicationStatus(),
-		"plan":                 "plans/2026-09-23-multi-backend-placement-policy.md",
+		"plan":                 "docs/plans/2026-09-23-multi-backend-placement-policy.md",
 		"stage": "R92 (S2+S3 плана 2026-10-07): исполняются single/pool/replicated/sharded; " +
 			"auto — VRAM-fit §4 (для sharded — по СУММЕ узлов группы); при fallback=error " +
 			"неисполнимая СЕЙЧАС стратегия и degraded без allowDegraded отклоняются 503-й; " +

@@ -40,7 +40,7 @@ servers:
 # R50 (2026-08-19): Per-Backend API Style.
 # Каждый бэкенд при регистрации указывает api_style: ollama-native | openai-compatible.
 # Балансер маршрутизирует и (опционально) конвертит API-стиль между клиентом и бэкендом.
-# Детали: docs/superpowers/specs/2026-08-19-balancer-api-routing-design.md
+# Детали: docs/archive/superpowers/specs/2026-08-19-balancer-api-routing-design.md
 x-backend-api-style:
   description: |
     When a backend is registered (via config.json or /api/v1/backends/register),

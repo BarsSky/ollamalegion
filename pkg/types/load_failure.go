@@ -63,7 +63,7 @@ func (l *LoadFailureInfo) Key() string {
 // Единственная стадия сегодня — cpu_only: веса не влезли в VRAM (или вердикт
 // memfit так решил), раскладка целиком на CPU. Модель работает, инференс
 // медленный; отказ (HTTP 413) в этом случае был бы неверен, потому что памяти
-// (RAM) достаточно — см. plans/2026-09-26-step1b-fit-refusal-proposal.md.
+// (RAM) достаточно — см. docs/plans/2026-09-26-step1b-fit-refusal-proposal.md.
 type DegradedLoadInfo struct {
 	// Model — имя модели, под которым её загрузили.
 	Model string `json:"model"`

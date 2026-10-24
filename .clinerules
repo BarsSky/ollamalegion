@@ -402,7 +402,7 @@ curl -X POST -H "X-API-Token: $LB_TOKEN" \
 - **Инвариант маршрутизации:** image-бэкенд достижим ТОЛЬКО по явному признаку — endpoint (`/v1/images/*`, `/sdapi/v1/*`, `/api/image/*`) или префикс модели (`sd:`, `image:`, `img/`, `sd_cpp:`, `diffusion:`). `getDefaultAllowedTypes()` **намеренно исключает** `image_cpp`: иначе текстовый `/api/generate` (где тип не определён) мог бы уйти на image-бэкенд. Тест — `TestGetDefaultAllowedTypes_NeverContainsImage`.
 - **OpenAI-поверхность (порт 18079):** отдельный слушатель (`openaiSurface`), обслуживающий `/v1/*` + `/sdapi/v1/*`; стриминг включается ТОЛЬКО полем `stream` в теле (на 18080 сохранился legacy-дефолт `true`); Ollama-нативные пути отвечают 404 со ссылкой на 18080. Состояние общее с 18080 — это один и тот же `*Proxy`.
 - **Прочее:** `filterBackendsByEffectiveType` пропускает `image_cpp` всегда (иначе Monitor теряет image-ноды при `backendEngine=llama_cpp`); `warmupModel` пропускает image-бэкенды (нет текстового прогрева); `/v1/models` получает алиасы `sd-cpp-local`, `dall-e-2`, `dall-e-3`.
-- **Документация:** `docs/image-generation.md` (подключение клиентов), `docs/research-sdcpp-lowvram-integration.md` (движок, флаги, модели), `plans/2026-09-27-image-generation-backend-plan.md` (план и статус фаз).
+- **Документация:** `docs/features/image-generation.ru.md` (подключение клиентов), `docs/archive/research/sdcpp-lowvram-integration.ru.md` (движок, флаги, модели), `docs/plans/2026-09-27-image-generation-backend-plan.md` (план и статус фаз).
 
 ### Маршрутизация по пути
 
@@ -1095,7 +1095,7 @@ curl -H "X-API-Token: $LB_TOKEN" http://localhost:18081/api/v1/cluster/cppworker
   ответа на вопрос «почему Cline получает prompt_exceeds_context, если визуально
   диалог маленький?» — чаще всего виноваты длинные tool definitions или system prompt.
 - Если `prompt_tokens` около `n_ctx_override` — нужно либо укоротить prompt (история),
-  либо увеличить `n_ctx` в профиле модели (см. секцию 5 в `docs/cppworker-model-params.md`).
+  либо увеличить `n_ctx` в профиле модели (см. секцию 5 в `docs/features/cppworker-model-params.ru.md`).
 - Если `n_ctx_override` существенно меньше `n_ctx_loaded` — возможно, профиль модели
   не применяется; проверьте, что `applyCppCtxHeader` в cppworker корректно
   обрабатывает `X-Cpp-Ctx` от балансировщика.

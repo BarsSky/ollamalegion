@@ -57,7 +57,7 @@ type chatMessage struct {
 	// ассистента, который клиент присылает ОБРАТНО в истории сообщений.
 	//
 	// `message.thinking` — каноническое имя reasoning-поля в Ollama API
-	// (docs/BALANCER_CPPWORKER_API_CONTRACT.md §4.1). Наши поверхности отдают
+	// (docs/architecture/balancer-cppworker-contract.md §4.1). Наши поверхности отдают
 	// рассуждения под обоими именами: нативный /api/chat — `reasoning`
 	// (handlers_chat.go:1070,1209), трансляция SSE→NDJSON балансера — `thinking`
 	// (internal/balancer/llamacpp_translate_resp.go:970), /api/generate —
@@ -464,7 +464,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	if rsn, cnt, has := SplitReasoningContentFromPrompt(prompt, output); has {
 		resp.Message.Reasoning = rsn
 		// R108 (2026-10-13): каноническое имя поля в Ollama — `thinking`
-		// (docs/BALANCER_CPPWORKER_API_CONTRACT.md §4.1). Отдаём оба имени:
+		// (docs/architecture/balancer-cppworker-contract.md §4.1). Отдаём оба имени:
 		// `thinking` понимают Ollama-клиенты (Cline/OpenWebUI), `reasoning`
 		// остаётся для обратной совместимости с прежними сборками.
 		resp.Message.Thinking = rsn

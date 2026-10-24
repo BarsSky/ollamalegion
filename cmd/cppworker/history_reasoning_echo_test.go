@@ -10,7 +10,7 @@
 //
 // Что происходило:
 //  1. `message.thinking` — каноническое имя reasoning-поля в Ollama API
-//     (docs/BALANCER_CPPWORKER_API_CONTRACT.md §4.1); наши поверхности отдают
+//     (docs/architecture/balancer-cppworker-contract.md §4.1); наши поверхности отдают
 //     рассуждения под обоими именами — нативный /api/chat как `reasoning`
 //     (handlers_chat.go:1070), трансляция SSE→NDJSON балансера как `thinking`
 //     (internal/balancer/llamacpp_translate_resp.go:970), /api/generate как

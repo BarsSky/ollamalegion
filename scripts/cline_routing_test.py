@@ -686,7 +686,7 @@ def print_summary() -> None:
             if status == "FAIL":
                 print(f"  ❌ {test_id} — {detail}")
         print()
-        print("💡 Смотри также: docs/cline-troubleshooting.md")
+        print("💡 Смотри также: docs/plans/archive/cline-troubleshooting.md")
         sys.exit(1)
 
     if SKIPPED:

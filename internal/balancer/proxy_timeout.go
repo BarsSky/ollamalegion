@@ -190,7 +190,7 @@ func (p *Proxy) getStreamingIdleTimeout() time.Duration {
 //
 // R60.18 F3 (2026-09-08): REMOVED LB_LLAMACPP_STREAM_TIMEOUT_SEC env override.
 // Архитектурно total stream timeout — wrong abstraction для LLM streaming
-// (см. docs/R60.18-env-flags-audit.md). Use:
+// (см. docs/archive/rounds/r60.18-env-flags-audit.ru.md). Use:
 //   - streamingIdleTimeout — hang detection (no chunks for N sec)
 //   - firstByteTimeout — prefill hang (no first chunk for N sec)
 //   - n_predict per-request/per-model — explicit response length cap
@@ -337,7 +337,7 @@ func (p *Proxy) getModelRequestTimeout(modelName string) time.Duration {
 //
 // Практический вывод: уменьшить first-byte timeout для конкретной модели можно
 // только профилем; глобальное значение ниже эвристики эффекта не даёт.
-// Подробности — docs/R60.18-env-flags-audit.md и _note_streaming_round42 в
+// Подробности — docs/archive/rounds/r60.18-env-flags-audit.ru.md и _note_streaming_round42 в
 // config/config.json.
 // getModelFirstByteTimeout — сколько ждать ПЕРВЫЙ БАЙТ (HTTP-заголовки) от бэкенда.
 //

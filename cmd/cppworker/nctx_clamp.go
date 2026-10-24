@@ -5,8 +5,8 @@
 // переиспользования в /api/generate, /api/chat, /v1/chat/completions, /v1/completions.
 //
 // Связанная документация:
-//   - docs/test-report-2026-06-09-cppworker-clamping.md
-//   - docs/cppworker-routing-fixes-2026-06-07.md (Phase D.3-fix оригинал)
+//   - docs/plans/archive/test-report-2026-06-09-cppworker-clamping.md
+//   - docs/plans/archive/cppworker-routing-fixes-2026-06-07.md (Phase D.3-fix оригинал)
 package main
 
 import (

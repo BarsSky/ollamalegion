@@ -1,6 +1,6 @@
 // Package balancer — R79 (P4-подготовка): исполнимость ЯВНОЙ стратегии.
 //
-// План: plans/2026-09-23-multi-backend-placement-policy.md §6 —
+// План: docs/plans/2026-09-23-multi-backend-placement-policy.md §6 —
 //
 //	«Стратегия из политики недоступна (нет воркеров / мало бэкендов): при
 //	 fallback: error — ошибка; при fallback: single — standard + WARN и

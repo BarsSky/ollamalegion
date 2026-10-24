@@ -8,7 +8,7 @@
 // R60.17 fix: закомментировали env var в .env.bundled-with-agent.
 //
 // R60.18 F3 fix: УДАЛЕН код который читал этот env var. Total stream timeout —
-// wrong abstraction для LLM streaming (см. docs/R60.18-env-flags-audit.md).
+// wrong abstraction для LLM streaming (см. docs/archive/rounds/r60.18-env-flags-audit.ru.md).
 //
 // Этот тест ловит регрессию: если кто-то опять добавит LB_LLAMACPP_STREAM_TIMEOUT_SEC
 // env override, тест сломается (показывая что env var вернулся = баг OpenWebUI

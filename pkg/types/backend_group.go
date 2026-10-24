@@ -1,6 +1,6 @@
 // Package types — логический бэкенд (backend group), R92 (S2 плана).
 //
-// План: plans/2026-10-07-model-distribution-multi-gpu-next-session.md
+// План: docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md
 //
 //	§5 правило 2: «Логический бэкенд — новый первоклассный объект: id, members[],
 //	role (master/worker), strategy, vramBudget. Все существующие счётчики

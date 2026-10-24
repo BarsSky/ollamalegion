@@ -5,7 +5,7 @@
 # схему — «координатор + rpcworker со слоями 1-16/17-32» на образе
 # `ollama-legion/rpcworker:0.1.0-stub`, которого давно нет в сборке. Реальная
 # раскладка слоями между машинами делается на штатном llama.cpp rpc-server:
-# см. `docker-compose.rpc-node.yml` (и `docs/rpc-coordinator.md`). Файл оставлен
+# см. `docker-compose.rpc-node.yml` (и `docs/architecture/rpc-coordinator.md`). Файл оставлен
 # как история решения; запускать его не нужно.
 #
 # Запускает:

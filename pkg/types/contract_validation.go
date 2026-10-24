@@ -1,7 +1,7 @@
 // Package types provides type-safe models for the balancer ↔ cppworker API.
 //
 // Round 36 Phase 2 (2026-08-17): contract enforcement via Go types + strict
-// JSON decoding. See docs/BALANCER_CPPWORKER_API_CONTRACT.md for the full
+// JSON decoding. See docs/architecture/balancer-cppworker-contract.md for the full
 // specification.
 package types
 
@@ -170,7 +170,7 @@ func DecodeJSONRequest(r io.Reader, maxBytes int64, v interface{}) error {
 //     неизвестные поля игнорируются и возвращаются для лога;
 //   - УПРАВЛЯЮЩИЕ API (/api/models/load*, /reload, /config/update, /api/hf/*) —
 //     остаются строгими: там клиент — наш балансер, и 400 действительно ловит
-//     наш собственный баг (см. docs/BALANCER_CPPWORKER_API_CONTRACT.md).
+//     наш собственный баг (см. docs/architecture/balancer-cppworker-contract.md).
 //
 // Возвращает имена неизвестных полей верхнего уровня (отсортированные) — чтобы
 // диагностика не терялась: мы не отказываем клиенту, но пишем это в лог.

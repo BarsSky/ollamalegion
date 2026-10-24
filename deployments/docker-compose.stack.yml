@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # ONE FILE, FOUR PROFILES. This is the canonical compose file; the other files in
-# deployments/ are historical/special-purpose (see docs/ru/docker-compose-guide.md).
+# deployments/ are historical/special-purpose (see docs/operations/docker-compose-guide.ru.md).
 #
 #   full         cppworker-gpu + imageworker + loadbalancer + webui   (all on one box)
 #   worker       cppworker-gpu + imageworker + agent                  (balancer elsewhere)
@@ -36,8 +36,8 @@
 # Documentation
 # -----------------------------------------------------------------------------
 #   README.md                            — quick start, profile table, ports
-#   docs/deployment-stack.md             — scenarios, profiles, ports, remote workers
-#   docs/ru/deployment-troubleshooting.md — incident write-ups and env-var traps
+#   docs/operations/deployment-stack.ru.md             — scenarios, profiles, ports, remote workers
+#   docs/operations/deployment-troubleshooting.ru.md — incident write-ups and env-var traps
 #
 # Both documents are written in Russian; every comment in THIS file is English.
 #
@@ -379,7 +379,7 @@ services:
       #
       # Пусто = выключено (поведение прежнее, ничего не меняется). Задаётся в
       # deployments/.env; узлы-доноры поднимаются файлом
-      # docker-compose.rpc-node.yml, см. docs/rpc-coordinator.md.
+      # docker-compose.rpc-node.yml, см. docs/architecture/rpc-coordinator.md.
       # CPPWORKER_SPLIT_MODE: -1 = дефолт llama.cpp (layer), 1 = layer явно,
       # 0 = без раскладки. Для сети нужен layer — только он делит слои между
       # устройствами, включая удалённые.
@@ -588,7 +588,7 @@ services:
   # ЗАЧЕМ ОТДЕЛЬНЫЙ СЕРВИС (R171, 2026-10-17). Встроенный узел внутри cppworker
   # (R123, CPPWORKER_RPC_SERVER_ENABLED) работает, когда клиент на ТОЙ ЖЕ машине,
   # но при раскладке между машинами клиент получает неразборчивый ответ и падает
-  # (ggml-rpc.cpp:566 "malformed response"; разбор — docs/layer-sharding.md,
+  # (ggml-rpc.cpp:566 "malformed response"; разбор — docs/architecture/layer-sharding.ru.md,
   # CHANGELOG 0.7.155). Отдельный контейнер с ТЕМ ЖЕ образом работает (проверено
   # с чистым env и с env-файлом воркера).
   #
@@ -710,7 +710,7 @@ services:
       # R88: generation timeout. 0 = NO CAP (project timeout doctrine: caps are
       # opt-in only, we wait for the job's terminal state). A nonzero value WILL
       # cut a long generation: 2048x2048/40 steps on an RTX 3070 takes ~22 min.
-      # See docs/image-generation.md §17.
+      # See docs/features/image-generation.md §17.
       - SDWORKER_GENERATION_TIMEOUT_SEC=${SDWORKER_GENERATION_TIMEOUT_SEC:-0}
       - SDWORKER_PRELOAD_MODEL=${SDWORKER_PRELOAD_MODEL:-}
       # Worker URL as CLIENTS see it: used in response_format:"url".

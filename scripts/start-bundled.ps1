@@ -125,7 +125,7 @@ if ($LASTEXITCODE -eq 0 -and -not $NoDetach) {
         Write-Host ""
         Write-Host "    ВНИМАНИЕ: nginx в webui не может достучаться до балансера по DNS." -ForegroundColor Yellow
         Write-Host "    Типичное решение: 'docker network connect --alias loadbalancer ollama-legion-bundled-net ol-bundled-balancer'" -ForegroundColor Yellow
-        Write-Host "    Подробности: docs/test-report-2026-06-08-cppworker-multiclient.md (Phase 10)" -ForegroundColor Yellow
+        Write-Host "    Подробности: docs/plans/archive/test-report-2026-06-08-cppworker-multiclient.md (Phase 10)" -ForegroundColor Yellow
     }
 
     Write-Host ""

@@ -2,7 +2,7 @@
 // читаем только заголовок (Range-запрос) и говорим, КАК движок увидит этот файл.
 //
 // ЗАЧЕМ. Оператор скачал 4 ГБ GGUF и получил на загрузке «get sd version from
-// file failed». Разбор (см. debug-сессию и docs/image-generation.md §8.2) показал
+// file failed». Разбор (см. debug-сессию и docs/features/image-generation.ru.md §8.2) показал
 // важное: сам файл при этом РАБОЧИЙ. sd.cpp определяет версию модели по именам
 // тензоров (ModelLoader::get_sd_version, src/model_loader.cpp), и имя тензоров
 // зависит от того, КАК файл подключён:

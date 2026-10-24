@@ -127,7 +127,7 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
       # регистрирует узлы как ggml-устройства, а регистрировать нечего.
       # Версия протокола RPC чувствительна к коммиту, поэтому rpc-server
       # собирается здесь же, тем же исходником и с теми же
-      # CUDA_ARCHITECTURES, что libllama — см. docs/rpc-coordinator.md.
+      # CUDA_ARCHITECTURES, что libllama — см. docs/architecture/rpc-coordinator.ru.md.
       -DGGML_RPC=ON \
       -DCMAKE_CUDA_ARCHITECTURES="${GGML_CUDA_ARCH_LIST}" \
       -DGGML_CCACHE=ON \

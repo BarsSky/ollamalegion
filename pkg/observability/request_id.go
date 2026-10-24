@@ -4,7 +4,7 @@
 //
 // Round 36 Phase 4 (2026-08-17): X-Request-Id propagation across
 // the entire balancer ↔ cppworker chain. Per the contract
-// (docs/BALANCER_CPPWORKER_API_CONTRACT.md Section 7), every request
+// (docs/architecture/balancer-cppworker-contract.md Section 7), every request
 // MUST be traceable end-to-end with a single ID.
 package observability
 

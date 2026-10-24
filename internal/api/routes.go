@@ -122,7 +122,7 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/queue/history", AuthMiddleware(RateLimitMiddleware(s.queueHistoryHandler, s.rateLimiter), s.authenticator))
 
 	// R72 (P0): placement policy — резолв стратегии размещения и её
-	// наблюдаемость (план plans/2026-09-23-multi-backend-placement-policy.md).
+	// наблюдаемость (план docs/plans/2026-09-23-multi-backend-placement-policy.md).
 	s.mux.Handle("/api/v1/placement", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.placementHandler), s.rateLimiter), s.authenticator))
 
 	// R95 (S4 плана 2026-10-07): сухой прогон композиции кластера — проверки §7

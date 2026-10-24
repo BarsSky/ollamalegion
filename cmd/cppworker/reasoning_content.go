@@ -181,7 +181,7 @@ func IsReasoningModel(modelName string) bool {
 }
 
 // IsReasoningEnabledForRequest — Round 17 (2026-07-31) — фикс bug
-// plans/bug-2026-07-31-reasoning-not-routed.md.
+// docs/plans/bug-2026-07-31-reasoning-not-routed.md.
 //
 // R108 (2026-10-13): БОЛЬШЕ НЕ ГЕЙТИТ РАЗБОР ОТВЕТА. Раньше эти проверки решали,
 // вызывать ли SplitReasoningContent/ReasoningStreamState в путях ответа; именно

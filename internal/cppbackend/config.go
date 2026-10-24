@@ -35,7 +35,7 @@ type Config struct {
 	// DefaultTensorSplit — массив пропорций (e.g. [0.5, 0.5] для 2 GPU).
 	// nil/empty = auto (llama.cpp решает по VRAM). Применяется при n_gpu_layers > 0.
 	// DefaultSplitMode — -1=default (LAYER), 0=NONE, 1=LAYER, 2=ROW, 3=TENSOR.
-	// См. также docs/phase-8-p3-research.md.
+	// См. также docs/archive/rounds/phase-8-p3-tensor-parallel-research.md.
 	DefaultTensorSplit []float32 `json:"defaultTensorSplit,omitempty"`
 	DefaultSplitMode   int       `json:"defaultSplitMode"`
 

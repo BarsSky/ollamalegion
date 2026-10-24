@@ -456,7 +456,7 @@ type LoadModelOpts struct {
 	KVHeadDim int
 
 	// Round 17 (2026-07-31): per-model override для reasoning parser routing.
-	// Решает баг 2026-07-31 (см. plans/bug-2026-07-31-reasoning-not-routed.md):
+	// Решает баг 2026-07-31 (см. docs/plans/bug-2026-07-31-reasoning-not-routed.md):
 	// SOFT prompt injection работает для ЛЮБОЙ модели при cfg.EnableReasoning=true,
 	// но парсер SplitReasoningContent срабатывал ТОЛЬКО для моделей из
 	// IsReasoningModel() whitelist (qwen3.5, qwen3.6, deepseek-r1, ...).
@@ -992,7 +992,7 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	// Стоит ДО checkVRAMForModel и до C-моста: недоступный узел должен быть
 	// обнаружен, пока llama.cpp к нему ещё не подключился. Иначе загрузка
 	// заканчивается `abort()` внутри моста (SIGABRT + перезапуск контейнера,
-	// см. docs/layer-sharding.md §4.6), а планировщик ещё и считает бюджет по
+	// см. docs/architecture/layer-sharding.ru.md §4.6), а планировщик ещё и считает бюджет по
 	// мёртвому узлу.
 	// R229 (2026-10-22): НЕДОСТУПНЫЙ узел раскладки больше НЕ отменяет загрузку
 	// целиком: исключаем его и грузим на живых узлах (или локально), если модель
@@ -1323,7 +1323,7 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 			// деструктор ещё не сработал), и VRAM держит веса этой сессии, а
 			// новые подключения не обслуживаются. Говорим это прямо и называем
 			// действие: перезапустить узел, иначе раскладка снова уедет на
-			// локальную карту. Подробности — docs/rpc-donor-vram-lifecycle.md.
+			// локальную карту. Подробности — docs/operations/rpc-donor-vram-lifecycle.ru.md.
 			logger.Get().Warnw("узел раскладки не отдал устройства за отведённое время - "+
 				"загрузка пойдёт без раскладки (будет помечена layout_degraded); "+
 				"вероятная причина: на узле висит сессия прошлого клиента и держит VRAM - "+

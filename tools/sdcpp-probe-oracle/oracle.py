@@ -17,7 +17,7 @@ sd-server, без скачивания гигабайтов весов.
                 разница fused `img_mlp.gate_up` против split
                 `img_mlp.gate_layer` + `img_mlp.proj`).
 
-КАК ПРОВЕРИТЬ (порядок из docs/image-generation.md §8.2):
+КАК ПРОВЕРИТЬ (порядок из docs/features/image-generation.md §8.2):
 
     python tools/sdcpp-probe-oracle/oracle.py dump leejet/Qwen-Image-2.1-GGUF::qwen_image_2.1-Q4_0.gguf
     python tools/sdcpp-probe-oracle/oracle.py synth /tmp/fake.gguf <repo>::<file> --arch qwen_image21

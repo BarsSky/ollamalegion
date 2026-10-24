@@ -1,5 +1,5 @@
 // Package backendgroup — логический бэкенд (backend group), R92 (S2 плана
-// plans/2026-10-07-model-distribution-multi-gpu-next-session.md).
+// docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md).
 //
 // ЗАЧЕМ ПАКЕТ. Placement-стратегия `sharded` обещает «модель разрезана между
 // бэкендами», но у балансера до R92 не было объекта, который эту раскладку

@@ -36,7 +36,7 @@ import (
 // =====================================================================
 
 // cppworkerSimulator — sophisticated mock of a cppworker backend.
-// Поддерживает все endpoints из docs/api.md §CppWorker API.
+// Поддерживает все endpoints из docs/api/api.md §CppWorker API.
 type cppworkerSimulator struct {
 	server   *httptest.Server
 	host     string

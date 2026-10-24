@@ -224,7 +224,7 @@ func TestRouteRequest_APIv1_VsUnsupportedOpenAI(t *testing.T) {
 }
 
 // TestRouteRequest_RuntimeConfigGoesToRouterNotAPIServer — аудит C6
-// (docs/AUDIT-client-api-fidelity-2026.md): Round 40 #3 увёл все /api/v1/* на
+// (docs/archive/audits/AUDIT-client-api-fidelity-2026.md): Round 40 #3 увёл все /api/v1/* на
 // API-сервер, из-за чего ветка LlamaCppRouter для runtime-конфига стала
 // недостижимой и документированный эндпоинт отвечал 404.
 //

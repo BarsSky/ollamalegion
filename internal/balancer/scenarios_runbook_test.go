@@ -1,6 +1,6 @@
 // Package balancer — scenario tests для runbook-tools.md.
 //
-// Документ: docs/runbook-tools.md — 7 scenarios A-G с типичными проблемами
+// Документ: docs/operations/runbook-tools.md — 7 scenarios A-G с типичными проблемами
 // tool calling + cppworker RAM fallback reload. Каждый scenario test
 // покрывает конкретный failure mode и ожидаемое поведение.
 

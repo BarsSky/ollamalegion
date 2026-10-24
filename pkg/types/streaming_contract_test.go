@@ -1,7 +1,7 @@
 // Round 36 Phase 3: contract conformance tests for SSE and NDJSON streaming.
 //
 // These tests capture the EXACT byte-level format that the contract
-// (docs/BALANCER_CPPWORKER_API_CONTRACT.md) requires. They are
+// (docs/architecture/balancer-cppworker-contract.md) requires. They are
 // reference implementations — production code MUST produce output
 // matching these golden strings byte-for-byte.
 //

@@ -1,6 +1,6 @@
 // Package balancer — R92 (S2 плана 2026-10-07): логический бэкенд в балансере.
 //
-// План: plans/2026-10-07-model-distribution-multi-gpu-next-session.md §5:
+// План: docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md §5:
 //
 //	«Логический бэкенд — новый первоклассный объект: id, members[], role
 //	(master/worker), strategy, vramBudget. Все существующие счётчики (слоты,
@@ -45,7 +45,7 @@ func (p *Proxy) initBackendGroupsR92(cfg types.BalancingSettings) {
 	}
 	logger.Get().Infow("backend groups initialized",
 		"groups", len(groups), "workers", workers,
-		"plan", "plans/2026-10-07-model-distribution-multi-gpu-next-session.md")
+		"plan", "docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md")
 	for _, w := range types.ValidateBackendGroups(groups) {
 		logger.Get().Warnw("backend group config needs attention", "warning", w)
 	}

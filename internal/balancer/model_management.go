@@ -752,7 +752,7 @@ func (mm *ModelManager) profileForLoad(modelName string) (types.LlamaCppModelPro
 //
 // IgnoreDefaults=true — профиль не подставляет НИЧЕГО: оператор явно отказался
 // от скрытых дефолтов (env-значения cppworker должны выигрывать, см.
-// docs/deployment-stack.md §7.0). Параллельность в этом режиме задаётся
+// docs/operations/deployment-stack.ru.md §7.0). Параллельность в этом режиме задаётся
 // окружением контейнера (CPPWORKER_N_PARALLEL) — см. internal/cppbackend
 // resolveNParallel, где то же число уходит и в C-bridge, и в SlotManager.
 func applyProfileLoadParams(req *ModelOpRequest, prof types.LlamaCppModelProfile) {

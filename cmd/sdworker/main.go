@@ -1,14 +1,14 @@
 // sdworker — Go-воркер генерации изображений: управляет субпроцессом sd-server
 // (stable-diffusion.cpp) и отдаёт HTTP API для балансера и клиентов.
 //
-// R-Image / Phase 3 (2026-09-28). См. plans/2026-09-27-image-generation-backend-plan.md §5.
+// R-Image / Phase 3 (2026-09-28). См. docs/plans/2026-09-27-image-generation-backend-plan.md §5.
 //
 // ПОЧЕМУ ОТДЕЛЬНЫЙ ПРОЦЕСС С СУБПРОЦЕССОМ, А НЕ cgo-ВСТРАИВАНИЕ sd.cpp:
 // у sd-server нет hot-swap модели (sd_ctx создаётся один раз до listen()),
 // он использует ПАТЧЕННЫЙ форк ggml — линковка в один бинарь с llama.cpp даёт
 // конфликт символов/ABI. Внешний процесс даёт изоляцию падений (OOM VAE на
 // Vulkan роняет движок, а не воркер), независимый апгрейд и простой kill.
-// См. docs/research-sdcpp-lowvram-integration.md §5.3.
+// См. docs/archive/research/sdcpp-lowvram-integration.ru.md §5.3.
 //
 // Usage:
 //

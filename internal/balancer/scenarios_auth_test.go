@@ -1,6 +1,6 @@
-// Package balancer — scenario tests для auth lifecycle (документ docs/api.md §Auth).
+// Package balancer — scenario tests для auth lifecycle (документ docs/api/api.md §Auth).
 //
-// Покрывает все behaviors из docs/api.md §Authentication:
+// Покрывает все behaviors из docs/api/api.md §Authentication:
 //   - Token-based auth (X-API-Token header, ?token= для WebSocket)
 //   - Master token (first in list) — может генерировать новые tokens
 //   - Missing token → 401

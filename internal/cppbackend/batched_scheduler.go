@@ -7,7 +7,7 @@
 // sessions параллельно), сэмплирует следующий токен per-session
 // (пока greedy argmax), и рассылает токены в каналы каждой session.
 //
-// Это шаг 3.3 из дизайн-дока docs/plans/round-15-batched-parallel.md.
+// Это шаг 3.3 из дизайн-дока docs/archive/plans/round-15-batched-parallel.md.
 // Предыдущие шаги (3.1-3.2) добавили C-side build_batched_batch + bridge_batched_decode.
 // Round 13 multi-slot path остаётся default (opt-in через EnableBatchedParallel).
 //

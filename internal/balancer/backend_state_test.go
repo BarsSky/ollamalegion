@@ -10,7 +10,7 @@
 // (operator-explicit ApiStyle override) FAIL on the pre-R56 code —
 // that is the gap R51.2 left open and R56 closes.
 //
-// Reference: docs/superpowers/specs/2026-09-03-routing-apistyle-migration.md
+// Reference: docs/archive/superpowers/specs/2026-09-03-routing-apistyle-migration.md
 package balancer
 
 import (

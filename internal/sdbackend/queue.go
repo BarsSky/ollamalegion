@@ -14,7 +14,7 @@ import (
 // а его внутренняя FIFO на 64 слота (AsyncJobManager) не даёт ни приоритетов,
 // ни честного queue_position для клиента балансера. Поэтому воркер держит
 // собственную очередь и использует sd-server как односоставный исполнитель
-// (см. docs/research-sdcpp-lowvram-integration.md §4.4).
+// (см. docs/archive/research/sdcpp-lowvram-integration.ru.md §4.4).
 //
 // Реализация — счётный семафор на канале. Acquire НЕ блокируется: при
 // заполненной очереди немедленно возвращает ErrQueueFull, а вызывающий отдаёт

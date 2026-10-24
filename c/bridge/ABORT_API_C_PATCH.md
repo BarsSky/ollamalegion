@@ -379,6 +379,6 @@ Go-side останется работоспособным (compile success, Requ
 ---
 
 **Связанные документы**:
-- `plans/cppworker-abort-api/PLAN.md` — полный план с обоснованиями
-- `plans/cppworker-abort-api/spec.md` — оригинальная спека
-- `plans/cppworker-abort-api/task-breakdown.md` — 5-phase breakdown
+- `docs/plans/cppworker-abort-api/PLAN.md` — полный план с обоснованиями
+- `docs/plans/cppworker-abort-api/spec.md` — оригинальная спека
+- `docs/plans/cppworker-abort-api/task-breakdown.md` — 5-phase breakdown

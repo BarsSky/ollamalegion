@@ -9,7 +9,7 @@
 //
 // ЧТО ЗДЕСЬ: тот же цикл, что в image_tool_loop.go, но в терминах Ollama:
 //   - объявление: `tools: [{type:"function", function:{...}}]` — тот же формат,
-//     что у OpenAI, и cppworker его понимает (docs/api.md §Tool Calling);
+//     что у OpenAI, и cppworker его понимает (docs/api/api.ru.md §Tool Calling);
 //   - ответ: NDJSON (`{"model":...,"message":{...},"done":false}`), НЕ SSE;
 //   - tool-результат: `{"role":"tool","content":"<JSON-строка>"}` (в Ollama-формате
 //     у tool-сообщения нет tool_call_id — связь идёт по порядку и по имени);

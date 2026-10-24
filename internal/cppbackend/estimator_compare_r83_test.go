@@ -10,7 +10,7 @@
 // f16 (CPU-only), memfit — 23 и 22.
 //
 // Затем legacy-функция удалена (продовых вызовов не было, раскладку считает
-// memfit — см. plans/2026-09-26-estimator-unification-protocol.md). Поэтому
+// memfit — см. docs/plans/2026-09-26-estimator-unification-protocol.md). Поэтому
 // колонка «legacy» здесь теперь ЗАМОРОЖЕННЫЙ ЗАМЕР: он остаётся точкой
 // сравнения (что именно изменилось) и одновременно фиксирует, что после
 // унификации весов (WeightsOnGPUBytes вместо ×0.7) legacy стал ещё

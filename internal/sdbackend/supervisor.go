@@ -23,7 +23,7 @@ import (
 // Супервизор субпроцесса sd-server
 // ============================================================
 //
-// КЛЮЧЕВОЙ ФАКТ (docs/research-sdcpp-lowvram-integration.md §4.5): у sd-server
+// КЛЮЧЕВОЙ ФАКТ (docs/archive/research/sdcpp-lowvram-integration.ru.md §4.5): у sd-server
 // НЕТ hot-swap и НЕТ эндпоинта смены модели. sd_ctx создаётся ОДИН РАЗ в
 // main() до listen(), все хендлеры держат указатель на него. Поэтому:
 //

@@ -1,7 +1,7 @@
 package config
 
 // R72 (P0): валидация placement-политики на загрузке конфига.
-// План: plans/2026-09-23-multi-backend-placement-policy.md
+// План: docs/plans/2026-09-23-multi-backend-placement-policy.md
 
 import (
 	"strings"

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -69,7 +70,7 @@ func NewModelManager(proxy *Proxy) *ModelManager {
 // возвращается только явным opt-in оператора, и при взведении печатается WARN,
 // чтобы причина обрыва больше не искалась вслепую.
 func modelOpHTTPTimeout() time.Duration {
-	return optInTimeoutSeconds("LB_ALLOW_MODEL_OP_TIMEOUT_SEC", "операции с моделью (pull/push/load/unload)")
+	return optInTimeoutSeconds("LB_ALLOW_MODEL_OP_TIMEOUT_SEC", i18n.T("balancer.model_management.opt_in_what_model_ops"))
 }
 
 // loadRequestTimeout — duration-кап на конкретный HTTP-запрос загрузки модели.
@@ -77,7 +78,7 @@ func modelOpHTTPTimeout() time.Duration {
 // здесь подставлялся Balancing.ModelLoadTimeout (120s), который на больших
 // моделях обрывал загрузку, продолжавшуюся на бэкенде.
 func loadRequestTimeout() time.Duration {
-	return optInTimeoutSeconds("LB_ALLOW_MODEL_LOAD_TIMEOUT_SEC", "HTTP-запрос загрузки модели")
+	return optInTimeoutSeconds("LB_ALLOW_MODEL_LOAD_TIMEOUT_SEC", i18n.T("balancer.model_management.opt_in_what_load_request"))
 }
 
 // ModelOpRequest — запрос на выполнение операции с моделью
@@ -772,7 +773,7 @@ func applyProfileLoadParams(req *ModelOpRequest, prof types.LlamaCppModelProfile
 	// ТЕПЕРЬ: профиль модели применяется всегда; ignoreDefaults гасит только
 	// применение defaultModelProfile (см. executeLlamaCppLoad).
 	if prof.IgnoreDefaults && logger.Get() != nil {
-		logger.Get().Infow("applyProfileLoadParams: применён профиль модели, «настройки по умолчанию» для неё отключены (ignoreDefaults=true)",
+		logger.Get().Infow(i18n.T("balancer.model_management.profile_applied_ignore_defaults_info"),
 			"model", req.ModelName,
 			"profile_context_length", prof.ContextLength,
 			"profile_num_gpu_layers", prof.NumGPULayers)
@@ -991,8 +992,7 @@ func (mm *ModelManager) pollLoadCompletionUntilLoaded(
 					Operation: "load",
 					ModelName: modelName,
 					BackendID: backendID,
-					Error: fmt.Sprintf("auto-load failed: model %q did not appear in cppworker model list or load progress "+
-						"for %d consecutive polls — load did not start (проверь наличие GGUF-файла и логи cppworker)",
+					Error: i18n.T("balancer.model_management.auto_load_not_appeared_error",
 						modelName, missPolls),
 				}
 			}
@@ -1237,7 +1237,7 @@ func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID
 	if dp, ok := mm.proxy.GetDefaultModelProfile(); ok && !ignoreDefaultsSet {
 		provenance.observe(LoadSourceDefaultProfile, func() { applyProfileLoadParams(&req, dp) })
 	} else if ignoreDefaultsSet && logger.Get() != nil {
-		logger.Get().Infow("executeLlamaCppLoad: «настройки по умолчанию» не применены (ignoreDefaults=true в профиле модели)",
+		logger.Get().Infow(i18n.T("balancer.model_management.default_profile_skipped_info"),
 			"model", req.ModelName, "backend", backendID)
 	}
 
@@ -1272,7 +1272,7 @@ func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID
 	// причины. Теперь спрашиваем /api/info и отказываем терминально, с текстом.
 	if refuse, reason := mm.proxy.cudaArchRefusal(backendID, host, port); refuse {
 		if logger.Get() != nil {
-			logger.Get().Errorw("load refused: несовместимые CUDA-архитектуры",
+			logger.Get().Errorw(i18n.T("balancer.model_management.cuda_arch_refused_error"),
 				"backend", backendID, "model", req.ModelName, "reason", reason)
 		}
 		// R185: запоминаем отказ, чтобы клиент получил ТЕРМИНАЛЬНЫЙ 400 (а не 503
@@ -1298,7 +1298,7 @@ func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID
 		}
 		if refuse, reason := mm.proxy.loadFitRefusal(backendID, req.ModelName, host, port, token); refuse {
 			if lg := logger.Get(); lg != nil {
-				lg.Errorw("load refused: модель не влезает в свободную память",
+				lg.Errorw(i18n.T("balancer.model_management.load_fit_refused_error"),
 					"backend", backendID, "model", req.ModelName, "reason", reason)
 			}
 			return &ModelOpResult{
@@ -1491,7 +1491,7 @@ func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID
 								extended = capWait
 							}
 							if extended > maxWait {
-								logger.Get().Infow("executeLlamaCppLoad: раскладка активна — окно ожидания расширено",
+								logger.Get().Infow(i18n.T("balancer.model_management.layout_wait_extended_info"),
 									"backend", backendID, "model", req.ModelName,
 									"was", maxWait, "now", extended)
 								maxWait = extended

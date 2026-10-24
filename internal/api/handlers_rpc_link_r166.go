@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"strings"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -31,14 +32,14 @@ func (s *Server) rpcLinkMeasureHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
 			"success": false,
-			"error":   "method not allowed (только POST)",
+			"error":   i18n.T("api.handlers_rpc_link_r166.method_post_only"),
 		})
 		return
 	}
 	if s.proxy == nil {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"success": false,
-			"error":   "балансер недоступен",
+			"error":   i18n.T("api.handlers_rpc_link_r166.balancer_unavailable"),
 		})
 		return
 	}
@@ -50,7 +51,7 @@ func (s *Server) rpcLinkMeasureHandler(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 				"success": false,
-				"error":   "некорректное тело запроса: " + err.Error(),
+				"error":   i18n.T("api.handlers_rpc_link_r166.bad_request_body", err),
 			})
 			return
 		}
@@ -71,7 +72,7 @@ func (s *Server) rpcLinkMeasureHandler(w http.ResponseWriter, r *http.Request) {
 	if len(targets) == 0 {
 		s.writeJSON(w, http.StatusConflict, map[string]interface{}{
 			"success": false,
-			"error":   "нет узлов раскладки: назначьте роли main/donor (без них канал мерить не к чему)",
+			"error":   i18n.T("api.handlers_rpc_link_r166.no_layout_nodes"),
 		})
 		return
 	}
@@ -96,7 +97,7 @@ func (s *Server) rpcLinkMeasureHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Effective — что фактически пойдёт в оценку трафика прямо сейчас.
 	effective := s.proxy.LinkBandwidthInfo(0)
-	logger.Get().Infow("RPC link measure по запросу оператора",
+	logger.Get().Infow(i18n.T("api.handlers_rpc_link_r166.measure_requested"),
 		"targets", len(targets), "effective_mbps", effective.Mbps, "source", effective.Source)
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{

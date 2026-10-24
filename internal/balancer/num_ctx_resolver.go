@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -196,8 +197,9 @@ func (p *Proxy) SetModelProfile(modelName string, profile types.LlamaCppModelPro
 	if raw != "" && raw != key {
 		delete(p.config.LlamaCppModelProfiles, raw)
 		if logger.Get() != nil {
-			logger.Get().Infow("R136: профиль сохранён под нормализованным ключом",
-				"input", raw, "key", key, "hint", "карточка диска и карточка загруженной модели пишут одну запись")
+			logger.Get().Infow(i18n.T("balancer.num_ctx_resolver.profile_saved_normalized_key_info"),
+				"input", raw, "key", key,
+				"hint", i18n.T("balancer.num_ctx_resolver.profile_saved_normalized_key_hint"))
 		}
 	}
 	p.config.LlamaCppModelProfiles[key] = profile
@@ -651,14 +653,14 @@ func (p *Proxy) resolveLoadedWindowNCtx(backendID, modelName string, allowRefres
 	// 2. Спрашиваем cppworker ОДИН раз.
 	b, ok := p.backendInfoForPoller(backendID)
 	if !ok || p.llamaCppMetricsPoller == nil {
-		logger.Get().Warnw("resolveLoadedWindowNCtx: адрес бэкенда неизвестен — состояние модели не определить",
+		logger.Get().Warnw(i18n.T("balancer.num_ctx_resolver.backend_addr_unknown_warn"),
 			"backend", backendID, "model", modelName, "state", loadedWindowUnknown.String())
 		return 0, loadedWindowUnknown
 	}
 	if !p.llamaCppMetricsPoller.pollBackend(b) {
-		logger.Get().Warnw("resolveLoadedWindowNCtx: опрос /api/models не удался — состояние модели неизвестно",
+		logger.Get().Warnw(i18n.T("balancer.num_ctx_resolver.poll_failed_state_unknown_warn"),
 			"backend", backendID, "model", modelName, "state", loadedWindowUnknown.String(),
-			"hint", "по недостоверным данным reload не запускаем")
+			"hint", i18n.T("balancer.num_ctx_resolver.poll_failed_state_unknown_hint"))
 		return 0, loadedWindowUnknown
 	}
 	// Опрос прошёл: теперь кэш достоверен, и «нет записи» = «модели нет».
@@ -883,7 +885,7 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 		// 32768 означают по 16384 на клиента, и запрос с num_ctx=32768 слоту
 		// не по силам. Суммарное окно при этом НЕ меняется — оно закреплено.
 		if perSeqLoaded > 0 && n > perSeqLoaded {
-			logger.Get().Infow("ResolveNumCtx: R83 — ограничиваем запрос окном слота",
+			logger.Get().Infow(i18n.T("balancer.num_ctx_resolver.clamp_to_per_seq_window_info"),
 				"model", modelName, "backend", backendID,
 				"requested_n_ctx", n, "context_per_seq", perSeqLoaded)
 			// В «желаемое» пишем ИСХОДНУЮ просьбу клиента (а не урезанное
@@ -892,7 +894,7 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 			return ResolvedNumCtx{Value: perSeqLoaded, Source: NumCtxSourceRequest}
 		}
 		if loadedNCtx := p.loadedWindowNCtx(backendID, modelName); loadedNCtx > 0 && n > loadedNCtx {
-			logger.Get().Infow("ResolveNumCtx: R83 — не просим больше загруженного окна",
+			logger.Get().Infow(i18n.T("balancer.num_ctx_resolver.clamp_to_loaded_window_info"),
 				"model", modelName, "backend", backendID,
 				"requested_n_ctx", n, "loaded_n_ctx", loadedNCtx)
 			p.recordDesiredNCtx(backendID, modelName, loadedNCtx)

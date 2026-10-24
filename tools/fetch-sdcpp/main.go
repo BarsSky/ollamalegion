@@ -20,6 +20,7 @@ package main
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,11 +29,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"ollama-loadbalancer/internal/i18n"
 )
 
 const userAgent = "ollamalegion-fetch-sdcpp"
 
 func main() {
+	initLogLang()
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -52,21 +56,28 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ОШИБКА: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("tools.fetch_sdcpp.error_prefix", err))
 		os.Exit(1)
 	}
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `fetch-sdcpp — скачивание движка sd.cpp и моделей
+	fmt.Fprint(os.Stderr, i18n.T("tools.fetch_sdcpp.usage"))
+}
 
-  list-release <owner/repo> [substring]            список ассетов последнего релиза
-  get-release  <owner/repo> <substring> <destdir>  скачать и распаковать ассет (zip/tar.gz)
-  hf-list      <repo> [substring]                  список файлов репозитория HF
-  hf-get       <repo> <filename> <destdir>         скачать файл с HF
-
-Переменные: HF_TOKEN (или HUGGING_FACE_HUB_TOKEN) — токен HuggingFace.
-`)
+// initLogLang — R234: язык сообщений хелпера.
+//
+// Источники те же, что у воркеров (internal/i18n/bootstrap.go): FETCH_SDCPP_LOG_LANG,
+// затем OLLAMALEGION_LOG_LANG / LB_LOG_LANG, иначе локаль LANG/LC_ALL, иначе ru.
+// Отличие одно: BootstrapFromEnv печатает строку «откуда взят язык», а здесь она
+// была бы шумом — инструмент выводит только результат. Без вызова язык остался бы
+// русским по умолчанию, и перевод на английский был бы недостижим.
+func initLogLang() {
+	if lang, _, src := i18n.FromEnv("FETCH_SDCPP_LOG_LANG", "OLLAMALEGION_LOG_LANG", "LB_LOG_LANG"); src != "" {
+		i18n.Set(lang)
+		return
+	}
+	i18n.Set(i18n.FromLocale())
 }
 
 // args — позиционные аргументы начиная с индекса from, не более max.
@@ -102,7 +113,7 @@ func fetchLatestRelease(repo string) (*ghRelease, error) {
 
 func listRelease(a []string) error {
 	if len(a) < 1 {
-		return fmt.Errorf("нужен <owner/repo>")
+		return errors.New(i18n.T("tools.fetch_sdcpp.owner_repo_required"))
 	}
 	rel, err := fetchLatestRelease(a[0])
 	if err != nil {
@@ -112,7 +123,7 @@ func listRelease(a []string) error {
 	if len(a) > 1 {
 		pat = strings.ToLower(a[1])
 	}
-	fmt.Printf("релиз %s (%s)\n", a[0], rel.TagName)
+	fmt.Println(i18n.T("tools.fetch_sdcpp.release_header", a[0], rel.TagName))
 	for _, as := range rel.Assets {
 		if pat != "" && !strings.Contains(strings.ToLower(as.Name), pat) {
 			continue
@@ -124,7 +135,7 @@ func listRelease(a []string) error {
 
 func getRelease(a []string) error {
 	if len(a) < 3 {
-		return fmt.Errorf("нужны <owner/repo> <substring> <destdir>")
+		return errors.New(i18n.T("tools.fetch_sdcpp.get_release_args_required"))
 	}
 	rel, err := fetchLatestRelease(a[0])
 	if err != nil {
@@ -140,7 +151,7 @@ func getRelease(a []string) error {
 		}
 	}
 	if chosen == "" {
-		return fmt.Errorf("в релизе %s нет ассета с %q (см. list-release)", rel.TagName, a[1])
+		return errors.New(i18n.T("tools.fetch_sdcpp.asset_not_found", rel.TagName, a[1]))
 	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
@@ -152,7 +163,7 @@ func getRelease(a []string) error {
 	if strings.HasSuffix(strings.ToLower(archive), ".zip") {
 		return unzip(archive, dest)
 	}
-	return fmt.Errorf("распаковка %s не поддерживается (только .zip)", filepath.Base(archive))
+	return errors.New(i18n.T("tools.fetch_sdcpp.unsupported_archive", filepath.Base(archive)))
 }
 
 func unzip(archive, dest string) error {
@@ -183,7 +194,7 @@ func unzip(archive, dest string) error {
 		}
 		rc.Close()
 		w.Close()
-		fmt.Printf("  распакован %s (%.1f MB)\n", name, float64(f.UncompressedSize64)/(1<<20))
+		fmt.Printf("  %s\n", i18n.T("tools.fetch_sdcpp.unpacked_file", name, float64(f.UncompressedSize64)/(1<<20)))
 	}
 	return nil
 }
@@ -202,7 +213,7 @@ type hfModel struct {
 
 func hfList(a []string) error {
 	if len(a) < 1 {
-		return fmt.Errorf("нужен <repo>")
+		return errors.New(i18n.T("tools.fetch_sdcpp.repo_required"))
 	}
 	var m hfModel
 	url := "https://huggingface.co/api/models/" + a[0] + "?blobs=true"
@@ -215,7 +226,7 @@ func hfList(a []string) error {
 	}
 	files := append([]hfSibling(nil), m.Siblings...)
 	sort.Slice(files, func(i, j int) bool { return files[i].RFilename < files[j].RFilename })
-	fmt.Printf("репозиторий %s\n", m.ID)
+	fmt.Println(i18n.T("tools.fetch_sdcpp.repo_header", m.ID))
 	for _, f := range files {
 		if pat != "" && !strings.Contains(strings.ToLower(f.RFilename), pat) {
 			continue
@@ -227,7 +238,7 @@ func hfList(a []string) error {
 
 func hfGet(a []string) error {
 	if len(a) < 3 {
-		return fmt.Errorf("нужны <repo> <filename> <destdir>")
+		return errors.New(i18n.T("tools.fetch_sdcpp.hf_get_args_required"))
 	}
 	url := "https://huggingface.co/" + a[0] + "/resolve/main/" + a[1]
 	if err := os.MkdirAll(a[2], 0o755); err != nil {
@@ -289,13 +300,13 @@ func download(url, out string, headers map[string]string) error {
 			return nil
 		} else {
 			lastErr = err
-			fmt.Printf("\n  попытка %d/%d не удалась: %v\n", attempt, attempts, err)
+			fmt.Printf("\n  %s\n", i18n.T("tools.fetch_sdcpp.attempt_failed", attempt, attempts, err))
 			if attempt < attempts {
 				time.Sleep(time.Duration(attempt) * 2 * time.Second)
 			}
 		}
 	}
-	return fmt.Errorf("не удалось скачать после %d попыток: %w", attempts, lastErr)
+	return fmt.Errorf("%s: %w", i18n.T("tools.fetch_sdcpp.download_failed", attempts), lastErr)
 }
 
 func downloadOnce(url, out string, headers map[string]string) error {
@@ -372,7 +383,7 @@ func downloadOnce(url, out string, headers map[string]string) error {
 		}
 		if rerr != nil {
 			f.Close()
-			return fmt.Errorf("чтение потока: %w", rerr)
+			return fmt.Errorf("%s: %w", i18n.T("tools.fetch_sdcpp.stream_read"), rerr)
 		}
 	}
 	if err := f.Close(); err != nil {
@@ -380,7 +391,7 @@ func downloadOnce(url, out string, headers map[string]string) error {
 	}
 	// Файл считаем готовым только если размер совпал с ожидаемым (когда он известен).
 	if total > 0 && done != total {
-		return fmt.Errorf("получено %d из %d байт", done, total)
+		return errors.New(i18n.T("tools.fetch_sdcpp.bytes_short", done, total))
 	}
 	if err := os.Rename(tmp, out); err != nil {
 		return err

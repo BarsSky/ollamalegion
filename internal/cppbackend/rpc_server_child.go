@@ -32,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -283,14 +284,13 @@ func (c *RPCServerChild) Start() error {
 		c.enabled = true
 		reachable := rpcNodeProbeExternal(c.externalAddr, rpcServerListenGrace)
 		if reachable {
-			logger.Get().Infow("rpc-server: внешний узел раскладки доступен (управление у оператора)",
+			logger.Get().Infow(i18n.T("cppbackend.rpc_server_child.external_node_available"),
 				"addr", c.externalAddr)
 			c.lastErr = ""
 			return nil
 		}
-		c.lastErr = "внешний узел не отвечает на " + c.externalAddr +
-			": поднимите контейнер rpc-node (docker compose --profile rpc-node up -d rpc-node)"
-		logger.Get().Warnw("rpc-server: внешний узел не отвечает",
+		c.lastErr = i18n.T("cppbackend.rpc_server_child.external_unreachable_error", c.externalAddr)
+		logger.Get().Warnw(i18n.T("cppbackend.rpc_server_child.external_node_unreachable"),
 			"addr", c.externalAddr, "hint", c.lastErr)
 		return fmt.Errorf("%s", c.lastErr)
 	}
@@ -330,8 +330,8 @@ func (c *RPCServerChild) Start() error {
 	c.stopped = false
 	c.restartAt = time.Time{}
 	if err := cmd.Start(); err != nil {
-		c.lastErr = fmt.Sprintf("не удалось запустить %s %s: %v", c.bin, strings.Join(args, " "), err)
-		logger.Get().Errorw("rpc-server: запуск не удался",
+		c.lastErr = i18n.T("cppbackend.rpc_server_child.start_failed_error", c.bin, strings.Join(args, " "), err)
+		logger.Get().Errorw(i18n.T("cppbackend.rpc_server_child.start_failed"),
 			"bin", c.bin, "bind", c.bind, "port", c.port, "error", err)
 		return fmt.Errorf("%s", c.lastErr)
 	}
@@ -340,9 +340,9 @@ func (c *RPCServerChild) Start() error {
 	c.startedAt = time.Now()
 	c.lastErr = ""
 
-	logger.Get().Infow("rpc-server: узел раскладки поднят внутри cppworker",
+	logger.Get().Infow(i18n.T("cppbackend.rpc_server_child.node_started"),
 		"bin", c.bin, "bind", c.bind, "port", c.port, "pid", cmd.Process.Pid,
-		"note", "отдельный контейнер ol-rpc-server больше не нужен")
+		"note", i18n.T("cppbackend.rpc_server_child.node_started_note"))
 
 	go c.reap(cmd, stopCh)
 
@@ -350,13 +350,13 @@ func (c *RPCServerChild) Start() error {
 	// Ждём ПОД замком (Start идемпотентен и не должен запускать второй процесс
 	// параллельно), поэтому опрос короткий — rpcServerListenWait.
 	if c.waitListeningLocked(rpcServerListenWait) {
-		logger.Get().Infow("rpc-server: порт узла слушается",
+		logger.Get().Infow(i18n.T("cppbackend.rpc_server_child.port_listening"),
 			"addr", net.JoinHostPort(c.bind, strconv.Itoa(c.port)), "pid", cmd.Process.Pid)
 	} else {
 		// Не ошибка запуска: процесс жив, но порт молчит — говорим об этом
 		// честно и оставляем решение мастеру (его гейт CheckRPCServers не
 		// допустит узел в раскладку).
-		logger.Get().Warnw("rpc-server: процесс поднят, но порт пока не отвечает",
+		logger.Get().Warnw(i18n.T("cppbackend.rpc_server_child.process_up_port_silent"),
 			"addr", net.JoinHostPort(c.bind, strconv.Itoa(c.port)),
 			"waited_ms", rpcServerListenWait.Milliseconds())
 	}
@@ -411,9 +411,9 @@ func (c *RPCServerChild) reap(cmd *exec.Cmd, stopCh chan struct{}) {
 	c.exitTimes = append(c.exitTimes, now)
 	c.exitTimes = trimRPCServerExitTimes(c.exitTimes, now)
 	if waitErr != nil {
-		c.lastErr = "rpc-server завершился: " + c.lastExit
+		c.lastErr = i18n.T("cppbackend.rpc_server_child.exited_error", c.lastExit)
 	} else {
-		c.lastErr = "rpc-server завершился (" + c.lastExit + ")"
+		c.lastErr = i18n.T("cppbackend.rpc_server_child.exited_code_error", c.lastExit)
 	}
 	restart, delay := c.restartBudgetLocked(now)
 	if restart {
@@ -438,15 +438,15 @@ func (c *RPCServerChild) reap(cmd *exec.Cmd, stopCh chan struct{}) {
 		fields = append(fields, fmt.Sprintf("tail%d", i+1), ln.Text)
 	}
 	if waitErr != nil {
-		logger.Get().Warnw("rpc-server: процесс завершился нештатно", fields...)
+		logger.Get().Warnw(i18n.T("cppbackend.rpc_server_child.process_exited_abnormally"), fields...)
 	} else {
-		logger.Get().Warnw("rpc-server: процесс завершился", fields...)
+		logger.Get().Warnw(i18n.T("cppbackend.rpc_server_child.process_exited"), fields...)
 	}
 
 	if restart {
-		logger.Get().Infow("rpc-server: узел будет поднят автоматически",
+		logger.Get().Infow(i18n.T("cppbackend.rpc_server_child.node_will_restart"),
 			"pid", cmd.Process.Pid, "delay_ms", delay.Milliseconds(),
-			"note", "бюджет перезапусков — не больше "+strconv.Itoa(rpcServerRestartMaxPerHour)+" в час")
+			"note", i18n.T("cppbackend.rpc_server_child.restart_budget_note", rpcServerRestartMaxPerHour))
 		go c.restartAfter(delay)
 	}
 }
@@ -465,7 +465,7 @@ func describeRPCServerExit(waitErr error, ps *os.ProcessState) string {
 	if waitErr != nil {
 		return waitErr.Error()
 	}
-	return "код 0"
+	return i18n.T("cppbackend.rpc_server_child.exit_code_zero")
 }
 
 // trimRPCServerExitTimes — оставить только смерти за последний час (бюджет
@@ -517,10 +517,10 @@ func (c *RPCServerChild) restartAfter(delay time.Duration) {
 	if err := c.Start(); err != nil {
 		// Start уже записал lastErr и залогировал причину — здесь только факт,
 		// что автоматический подъём не удался (молчать об этом нельзя).
-		logger.Get().Errorw("rpc-server: автоперезапуск узла не удался", "error", err)
+		logger.Get().Errorw(i18n.T("cppbackend.rpc_server_child.restart_failed"), "error", err)
 		return
 	}
-	logger.Get().Infow("rpc-server: узел поднят автоматически после падения",
+	logger.Get().Infow(i18n.T("cppbackend.rpc_server_child.restarted_after_crash"),
 		"addr", net.JoinHostPort(c.bind, strconv.Itoa(c.port)))
 }
 
@@ -534,7 +534,7 @@ func (c *RPCServerChild) Stop() error {
 	if c.externalAddr != "" {
 		c.enabled = false
 		c.mu.Unlock()
-		logger.Get().Infow("rpc-server: внешний узел оставлен работать (гасит оператор)",
+		logger.Get().Infow(i18n.T("cppbackend.rpc_server_child.external_left_running"),
 			"addr", c.externalAddr)
 		return nil
 	}
@@ -557,10 +557,10 @@ func (c *RPCServerChild) Stop() error {
 	pid := cmd.Process.Pid
 	if err := cmd.Process.Kill(); err != nil {
 		// Процесс уже мёртв — цель достигнута, это не ошибка.
-		logger.Get().Infow("rpc-server: процесс уже завершён", "pid", pid, "error", err)
+		logger.Get().Infow(i18n.T("cppbackend.rpc_server_child.process_already_exited"), "pid", pid, "error", err)
 		return nil
 	}
-	logger.Get().Infow("rpc-server: узел раскладки остановлен", "pid", pid)
+	logger.Get().Infow(i18n.T("cppbackend.rpc_server_child.node_stopped"), "pid", pid)
 	return nil
 }
 
@@ -700,9 +700,9 @@ func (c *RPCServerChild) Status() RPCServerStatus {
 		// «не отвечает» было бы ложной тревогой (живой замер: узел включали из
 		// WebUI и видели «порт не отвечает» при полностью рабочем процессе).
 		if st.UptimeSec*int64(time.Second) >= int64(rpcServerListenGrace) {
-			st.Notes = append(st.Notes, "процесс запущен, но порт не отвечает: "+err.Error())
+			st.Notes = append(st.Notes, i18n.T("cppbackend.rpc_server_child.status_port_not_answering", err.Error()))
 		} else {
-			st.Notes = append(st.Notes, "порт открывается (процесс только запущен)")
+			st.Notes = append(st.Notes, i18n.T("cppbackend.rpc_server_child.status_port_opening"))
 		}
 		return st
 	}

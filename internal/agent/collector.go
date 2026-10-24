@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/protocol"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -273,10 +274,10 @@ func (a *Agent) detectPlatformMode() types.PlatformMode {
 				fmt.Printf("[%s] GPU detected via NVML (libnvidia-ml.so.1)\n", now)
 				return types.ModeGPU
 			} else {
-				reasons = append(reasons, "nvml.Init() failed (см. лог NVML выше)")
+				reasons = append(reasons, i18n.T("agent.collector.reason_nvml_init"))
 			}
 		} else {
-			reasons = append(reasons, "/dev/nvidia0 отсутствует — NVML skip (защита от SIGSEGV)")
+			reasons = append(reasons, i18n.T("agent.collector.reason_dev_nvidia0_missing"))
 		}
 	}
 
@@ -287,14 +288,15 @@ func (a *Agent) detectPlatformMode() types.PlatformMode {
 			fmt.Printf("[%s] GPU detected via nvidia-smi\n", now)
 			return types.ModeGPU
 		} else {
-			reasons = append(reasons, "nvidia-smi не вернул GPU")
+			reasons = append(reasons, i18n.T("agent.collector.reason_nvidia_smi_no_gpu"))
 		}
 	} else {
 		reasons = append(reasons, "nvidia-smi not in PATH")
 	}
 
 	// Ничего не нашли — подробный лог причин.
-	fmt.Printf("[%s] No GPU detected, CPU mode. Причины: %s\n", now, strings.Join(reasons, "; "))
+	fmt.Printf("[%s] %s\n", now,
+		i18n.T("agent.collector.no_gpu_reasons", strings.Join(reasons, "; ")))
 	return types.ModeCPU
 }
 

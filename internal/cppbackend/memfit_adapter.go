@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -246,7 +247,7 @@ func (b *Backend) memfitBudget(withRPC bool) memfit.Budget {
 			budget.VRAMKnown = true
 			budget.Source = budget.Source + "+rpc"
 			if logger.Get() != nil {
-				logger.Get().Infow("MemfitBudget: ёмкость RPC-узлов добавлена в бюджет",
+				logger.Get().Infow(i18n.T("cppbackend.memfit_adapter.rpc_capacity_added"),
 					"rpc_devices", n,
 					"remote_free_mb", remoteFree/(1024*1024),
 					"remote_total_mb", remoteTotal/(1024*1024),
@@ -328,8 +329,7 @@ func (b *Backend) rpcDeviceSnapshot() []bridge.DeviceInfo {
 		if good, age, ok := b.lastGoodRPCSnapshotLocked(servers); ok {
 			if logger.Get() != nil && (b.rpcWarnAt.IsZero() || time.Since(b.rpcWarnAt) >= rpcDeviceTTL) {
 				b.rpcWarnAt = time.Now()
-				logger.Get().Infow("снимок устройств раскладки взят из последнего успешного замера: "+
-					"идёт работа, обращение к узлу заняло бы его соединение",
+				logger.Get().Infow(i18n.T("cppbackend.memfit_adapter.snapshot_from_last_good"),
 					"reason", why, "age_sec", int(age.Seconds()),
 					"servers", key)
 			}
@@ -344,8 +344,7 @@ func (b *Backend) rpcDeviceSnapshot() []bridge.DeviceInfo {
 		b.rpcDevAt = time.Now()
 		if logger.Get() != nil && (b.rpcWarnAt.IsZero() || time.Since(b.rpcWarnAt) >= rpcDeviceTTL) {
 			b.rpcWarnAt = time.Now()
-			logger.Get().Warnw("снимок устройств взят БЕЗ RPC: идёт работа, а успешного замера узлов "+
-				"ещё не было — планирование пойдёт по локальной карте",
+			logger.Get().Warnw(i18n.T("cppbackend.memfit_adapter.snapshot_without_rpc"),
 				"reason", why, "servers", key)
 		}
 		return snapshot
@@ -366,9 +365,7 @@ func (b *Backend) rpcDeviceSnapshot() []bridge.DeviceInfo {
 	if bad := unreachableRPCServers(servers, RPCHealthDialTimeout); len(bad) > 0 {
 		if b.rpcWarnAt.IsZero() || time.Since(b.rpcWarnAt) >= rpcDeviceTTL {
 			b.rpcWarnAt = time.Now()
-			logger.Get().Errorw("узел раскладки недоступен — снимок устройств без RPC "+
-				"(планирование по локальной карте); обращение к узлу здесь уронило бы процесс: "+
-				"llama.cpp на мёртвом узле вызывает abort()",
+			logger.Get().Errorw(i18n.T("cppbackend.memfit_adapter.node_unreachable_snapshot"),
 				"unreachable", strings.Join(bad, ","),
 				"servers", strings.Join(servers, ","))
 		}
@@ -429,7 +426,7 @@ func remoteDevices(list []bridge.DeviceInfo) []bridge.DeviceInfo {
 		}
 		if dev.MemoryFree == 0 {
 			if logger.Get() != nil {
-				logger.Get().Warnw("RPC-узел без свободной видеопамяти исключён из раскладки",
+				logger.Get().Warnw(i18n.T("cppbackend.memfit_adapter.rpc_node_no_free_vram"),
 					"device", dev.Name,
 					"memory_total_mb", dev.MemoryTotal/(1024*1024))
 			}
@@ -501,7 +498,7 @@ func (b *Backend) MemfitBudgetFor(reclaimModel string) memfit.Budget {
 		budget.VRAMFree = budget.VRAMTotal
 	}
 	if logger.Get() != nil {
-		logger.Get().Debugw("MemfitBudgetFor: память перезагружаемой модели возвращена в бюджет",
+		logger.Get().Debugw(i18n.T("cppbackend.memfit_adapter.reclaim_returned"),
 			"model", reclaimModel,
 			"reclaim_mb", reclaim/(1024*1024),
 			"free_before_mb", before.MiB(),

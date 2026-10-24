@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/balancer"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -100,7 +101,7 @@ func (s *Server) restoreBackendRoles() {
 	}
 	roles, exists, err := store.LoadBackendRoles()
 	if err != nil {
-		logger.Get().Warnw("restoreBackendRoles: не удалось прочитать роли", "error", err)
+		logger.Get().Warnw(i18n.T("api.handlers_backends.restore_roles_failed"), "error", err)
 		return
 	}
 	if !exists || len(roles) == 0 {
@@ -109,13 +110,13 @@ func (s *Server) restoreBackendRoles() {
 	s.backendRolesMu.Lock()
 	s.backendRoles = roles
 	s.backendRolesMu.Unlock()
-	logger.Get().Infow("restoreBackendRoles: роли бэкендов восстановлены", "roles", len(roles))
+	logger.Get().Infow(i18n.T("api.handlers_backends.restore_roles_done"), "roles", len(roles))
 	// Бэкенды к этому моменту могут быть ещё не зарегистрированы (агенты
 	// регистрируются позже) — тогда роль подставится в roleForBackend.
 	if donors, applied, aerr := s.applyBackendRoles(); aerr != nil {
-		logger.Get().Warnw("restoreBackendRoles: раскладка не применена", "error", aerr)
+		logger.Get().Warnw(i18n.T("api.handlers_backends.restore_layout_failed"), "error", aerr)
 	} else if len(applied) > 0 {
-		logger.Get().Infow("restoreBackendRoles: раскладка применена",
+		logger.Get().Infow(i18n.T("api.handlers_backends.restore_layout_applied"),
 			"donors", donors, "applied", applied)
 	}
 	// Страховка: записи бэкендов пересобираются НЕСКОЛЬКИМИ путями (создание,
@@ -174,14 +175,14 @@ func (s *Server) reapplyBackendRolesOnce() int {
 		}
 		if s.proxy.SetBackendRole(b.ID, want) {
 			restored++
-			logger.Get().Infow("reapplyBackendRoles: роль возвращена в запись бэкенда",
+			logger.Get().Infow(i18n.T("api.handlers_backends.reapply_role_returned"),
 				"backend", b.ID, "role", want)
 		}
 	}
 	// Если что-то вернули — раскладку главного тоже приводим в соответствие.
 	if restored > 0 {
 		if _, _, err := s.applyBackendRoles(); err != nil {
-			logger.Get().Warnw("reapplyBackendRoles: раскладка не применена", "error", err)
+			logger.Get().Warnw(i18n.T("api.handlers_backends.reapply_layout_failed"), "error", err)
 		}
 	}
 	// R118.2 (2026-10-14): КАЖДЫЙ тик (не только когда роль восстановлена)
@@ -232,7 +233,7 @@ func (s *Server) persistBackendRoles() error {
 	s.backendRoles = roles
 	s.backendRolesMu.Unlock()
 	if err := store.SaveBackendRoles(roles); err != nil {
-		logger.Get().Warnw("persistBackendRoles: не удалось сохранить роли", "error", err)
+		logger.Get().Warnw(i18n.T("api.handlers_backends.persist_roles_failed"), "error", err)
 		return err
 	}
 	return nil
@@ -321,7 +322,7 @@ func (s *Server) updateBackendRole(w http.ResponseWriter, r *http.Request, backe
 	if err != nil {
 		resp["warning"] = err.Error()
 	}
-	logger.Get().Infow("updateBackendRole: роль бэкенда изменена",
+	logger.Get().Infow(i18n.T("api.handlers_backends.role_changed"),
 		"backend", backendID, "role", role, "donors", len(donors), "applied", applied)
 	writeJSONResponse(w, http.StatusOK, resp)
 }
@@ -371,7 +372,7 @@ func (s *Server) backendRPCLayout(w http.ResponseWriter, r *http.Request, backen
 		// увидеть результат в этом же ответе (или warning, если воркер не ответил).
 		_, reason = s.proxy.EnsureRPCLayout(backendID)
 		mutated = true
-		logger.Get().Infow("backendRPCLayout: выбор оператора сохранён",
+		logger.Get().Infow(i18n.T("api.handlers_backends.layout_choice_saved"),
 			"backend", backendID, "mode", s.proxy.RPCEnabledOverrideMode(backendID), "reason", reason)
 	} else if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -403,7 +404,6 @@ func (s *Server) backendRPCLayout(w http.ResponseWriter, r *http.Request, backen
 	}
 	writeJSONResponse(w, http.StatusOK, resp)
 }
-
 
 // applyBackendRoles — R118: привести раскладку главного бэкенда к списку доноров.
 //
@@ -438,7 +438,7 @@ func (s *Server) applyBackendRoles() (donors []string, applied []string, err err
 		return donors, nil, nil
 	}
 	if main.CppWorkerPort <= 0 {
-		return donors, nil, fmt.Errorf("backend %s: неизвестен порт cppworker", main.ID)
+		return donors, nil, fmt.Errorf("%s", i18n.T("api.handlers_backends.unknown_cppworker_port", main.ID))
 	}
 	// R118.2 (2026-10-14): раскладку применяет гард балансера, а не прямой push:
 	// он проверяет TCP-доступность узлов и отправляет ТОЛЬКО живой состав (а если
@@ -447,7 +447,7 @@ func (s *Server) applyBackendRoles() (donors []string, applied []string, err err
 	// returned malformed response» + SIGABRT.
 	degraded, reason := s.proxy.EnsureRPCLayout(main.ID)
 	if degraded {
-		return donors, []string{main.ID}, fmt.Errorf("раскладка деградировала: %s", reason)
+		return donors, []string{main.ID}, fmt.Errorf("%s", i18n.T("api.handlers_backends.layout_degraded", reason))
 	}
 	return donors, []string{main.ID}, nil
 }
@@ -1770,17 +1770,16 @@ func (s *Server) deleteBackend(w http.ResponseWriter, r *http.Request, backendID
 	if backend := s.proxy.GetBackend(backendID); backend != nil && strings.TrimSpace(backend.Role) != "" {
 		role := strings.TrimSpace(backend.Role)
 		detached := s.proxy.DetachAgentFromBackend(backendID)
-		logger.Get().Warnw("deleteBackend: узел с ролью оставлен в списке (откреплён агент, не удалён)",
+		logger.Get().Warnw(i18n.T("api.handlers_backends.delete_backend_role_kept"),
 			"backend", backendID, "role", role, "detached", detached,
-			"hint", "чтобы удалить запись — сначала снимите роль (PUT /role с пустым значением)")
+			"hint", i18n.T("api.handlers_backends.delete_backend_role_hint"))
 		s.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"success":  true,
 			"id":       backendID,
 			"kept":     true,
 			"detached": detached,
 			"role":     role,
-			"message": "Узел с явной ролью оставлен в списке: агент откреплён, роль и раскладка сохранены. " +
-				"Чтобы удалить запись, сначала снимите роль.",
+			"message":  i18n.T("api.handlers_backends.delete_backend_role_kept_message"),
 		})
 		return
 	}
@@ -2029,7 +2028,7 @@ func (s *Server) listLaunchConfigs(w http.ResponseWriter, r *http.Request, backe
 				},
 				"configs":   configs,
 				"isOptimal": true,
-				"message":   "Текущая конфигурация оптимальна. Альтернативные варианты показаны для ознакомления.",
+				"message":   i18n.T("api.handlers_backends.current_config_optimal"),
 			})
 			return
 		}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -106,7 +107,7 @@ func (p *Proxy) DisableRPCLayoutFor(backendID, reason string) {
 		return
 	}
 	if err := pushRPCLayoutConfig(b, false, nil); err != nil {
-		logger.Get().Warnw("DisableRPCLayoutFor: не удалось выключить раскладку",
+		logger.Get().Warnw(i18n.T("balancer.rpc_layout_failure.disable_failed_warn"),
 			"backend", backendID, "error", err)
 		return
 	}
@@ -117,7 +118,7 @@ func (p *Proxy) DisableRPCLayoutFor(backendID, reason string) {
 	p.rpcLayoutApplied[backendID] = layoutKey(false, nil)
 	p.mu.Unlock()
 	p.setLayoutReason(backendID, reason)
-	logger.Get().Warnw("DisableRPCLayoutFor: раскладка выключена после неудачной загрузки",
+	logger.Get().Warnw(i18n.T("balancer.rpc_layout_failure.disabled_after_failed_load_warn"),
 		"backend", backendID, "reason", reason)
 }
 
@@ -185,7 +186,7 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	if mm.proxy != nil {
 		layoutActive = mm.proxy.RPCLayoutActive(backendID)
 		if degraded, reason := mm.proxy.EnsureRPCLayout(backendID); degraded {
-			logger.Get().Warnw("executeLlamaCppLoad: раскладка деградировала — грузим без мёртвых узлов",
+			logger.Get().Warnw(i18n.T("balancer.rpc_layout_failure.degraded_warn"),
 				"backend", backendID, "model", req.ModelName, "reason", reason)
 			layoutActive = mm.proxy.RPCLayoutActive(backendID)
 		}
@@ -201,20 +202,20 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 		// факт налицо: cppworker перестал отвечать ровно на загрузке с раскладкой.
 		// Без узла те же модели грузятся локально — повторяем.
 		retry = true
-		marker = "cppworker не отвечает после загрузки с раскладкой (вероятно, рестарт из-за узла)"
+		marker = i18n.T("balancer.rpc_layout_failure.unresponsive_marker")
 	}
 	if !retry {
 		return res
 	}
 
-	reason := fmt.Sprintf("загрузка с раскладкой не удалась (%s: %s) — раскладка выключена, грузим локально",
+	reason := i18n.T("balancer.rpc_layout_failure.disabled_reason",
 		marker, firstErrorLine(res.Error))
-	logger.Get().Warnw("executeLlamaCppLoad: загрузка упала с включённой раскладкой — повторяю локально",
+	logger.Get().Warnw(i18n.T("balancer.rpc_layout_failure.retry_locally_warn"),
 		"backend", backendID, "model", req.ModelName, "marker", marker, "error", firstErrorLine(res.Error))
 	mm.proxy.DisableRPCLayoutFor(backendID, reason)
 
 	if !mm.proxy.WaitBackendReachable(backendID, layoutFailureRetryMaxWait) {
-		res.Error = fmt.Sprintf("%s; раскладка выключена (%s), но бэкенд %s не ответил за %s — повтор локально не сделан",
+		res.Error = i18n.T("balancer.rpc_layout_failure.retry_not_done_error",
 			firstErrorLine(res.Error), reason, backendID, layoutFailureRetryMaxWait)
 		return res
 	}
@@ -224,17 +225,17 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 		return res
 	}
 	if retryRes.Success {
-		note := "раскладка отключена: " + reason
+		note := i18n.T("balancer.rpc_layout_failure.disabled_note", reason)
 		if strings.TrimSpace(retryRes.Message) == "" {
 			retryRes.Message = note
 		} else {
 			retryRes.Message = retryRes.Message + " | " + note
 		}
-		logger.Get().Infow("executeLlamaCppLoad: локальный повтор после отказа раскладки удался",
+		logger.Get().Infow(i18n.T("balancer.rpc_layout_failure.retry_ok_info"),
 			"backend", backendID, "model", req.ModelName)
 		return retryRes
 	}
-	retryRes.Error = fmt.Sprintf("загрузка с раскладкой не удалась (%s); локальный повтор тоже не удался: %s",
+	retryRes.Error = i18n.T("balancer.rpc_layout_failure.retry_failed_error",
 		firstErrorLine(res.Error), firstErrorLine(retryRes.Error))
 	return retryRes
 }

@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -54,7 +55,7 @@ func (s *Server) placementApplyR100(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"success": false,
-			"error":   "некорректное тело запроса: " + err.Error(),
+			"error":   i18n.T("api.handlers_placement_apply.bad_request_body", err),
 		})
 		return
 	}
@@ -81,12 +82,11 @@ func (s *Server) placementApplyR100(w http.ResponseWriter, r *http.Request) {
 
 	if len(errors) > 0 && !req.AllowWarnings {
 		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success": false,
-			"error": "политика не применена: конфиг не проходит валидацию " +
-				"(исправьте замечания или подтвердите allowWarnings)",
+			"success":  false,
+			"error":    i18n.T("api.handlers_placement_apply.validation_failed"),
 			"warnings": errors,
 			"applied":  false,
-			"hint":     "проверьте тело через POST /api/v1/placement/validate — тот же набор проверок с числами",
+			"hint":     i18n.T("api.handlers_placement_apply.hint_validate"),
 		})
 		return
 	}
@@ -116,8 +116,7 @@ func (s *Server) placementApplyR100(w http.ResponseWriter, r *http.Request) {
 		"placement":    s.proxy.PlacementSettings(),
 		"groups":       s.proxy.BackendGroupStatuses(),
 		"persistError": persistErr,
-		"hint": "политика применена к живому балансеру; при persisted=false " +
-			"после рестарта стенд вернётся к конфиг-файлу",
+		"hint":         i18n.T("api.handlers_placement_apply.hint_applied"),
 	})
 }
 
@@ -140,8 +139,7 @@ func placementApplyIssuesR100(req placementApplyRequestR100) []string {
 // причина, а не паника.
 func (s *Server) persistPlacementR100() (bool, string) {
 	if s.configSaver == nil {
-		return false, "configSaver не установлен: конфиг не сохраняется на диск " +
-			"(изменения действуют до перезапуска)"
+		return false, i18n.T("api.handlers_placement_apply.config_saver_missing")
 	}
 	if err := s.configSaver(); err != nil {
 		logger.Get().Warnw("placement apply: configSaver failed", "error", err)

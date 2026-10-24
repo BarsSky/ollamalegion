@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -73,8 +74,7 @@ var ErrModelFileNotFound = errors.New("model file not found")
 func lazyLoadDetachedTimeout() time.Duration {
 	if v := os.Getenv("CPPWORKER_LAZY_LOAD_TIMEOUT_SEC"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 30 && n <= 86400 {
-			logger.Get().Warnw("armed lazy-load timeout (operator opt-in): загрузка модели будет "+
-				"прервана по таймеру, а не по терминальному состоянию",
+			logger.Get().Warnw(i18n.T("cppworker.lazyload.armed_timeout"),
 				"timeout_sec", n, "source", "CPPWORKER_LAZY_LOAD_TIMEOUT_SEC")
 			return time.Duration(n) * time.Second
 		}
@@ -213,16 +213,16 @@ func waitForModelReady(ctx context.Context, modelName string) error {
 			switch {
 			case err == nil:
 				if waited := time.Since(started); waited > 2*modelReadyPollInterval {
-					logger.Get().Infow("waitForModelReady: модель готова после ожидания",
+					logger.Get().Infow(i18n.T("cppworker.lazyload.model_ready_after_wait"),
 						"model", modelName, "waited_ms", waited.Milliseconds())
 				}
 				return nil
 			case errors.Is(err, cppbackend.ErrModelIsLoading):
-				logger.Get().Warnw("waitForModelReady: модель не готова — отдаём 503 (повторите запрос)",
+				logger.Get().Warnw(i18n.T("cppworker.lazyload.model_not_ready_503"),
 					"model", modelName,
 					"waited_ms", time.Since(started).Milliseconds(),
 					"limit_sec", int(limit.Seconds()),
-					"hint", "CPPWORKER_LOAD_WAIT_SEC увеличивает предел ожидания")
+					"hint", i18n.T("cppworker.lazyload.model_not_ready_hint"))
 				return errModelIsLoading
 			default:
 				return err
@@ -232,7 +232,7 @@ func waitForModelReady(ctx context.Context, modelName string) error {
 			if st, ok := backend.ModelState(modelName); ok {
 				state = string(st)
 			}
-			logger.Get().Infow("waitForModelReady: ждём готовности модели",
+			logger.Get().Infow(i18n.T("cppworker.lazyload.waiting_for_model"),
 				"model", modelName, "state", state,
 				"waited_ms", time.Since(started).Milliseconds(),
 				"limit_sec", int(limit.Seconds()))
@@ -387,7 +387,7 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 	// здесь, а слияние с профилем (applyProfileToLoadRequest) заполняет только
 	// ПУСТЫЕ поля — поэтому профильное окно не применялось никогда (живой случай:
 	// gemma-4-E4B-it-Q4_K_M грузилась с 32768 вместо профильных 12288).
-	log.Debugw("lazy-load: начинаю поиск модели",
+	log.Debugw(i18n.T("cppworker.lazyload.search_started"),
 		"model", modelName, "requested_n_ctx", requestedNCtx, "env_default_n_ctx", *ctxSize)
 
 	// Ищем модель в файловой системе
@@ -479,7 +479,7 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 		}
 		loadNCtx, loadNCtxSource := chooseLazyLoadWindow(requestedNCtx, *ctxSize, slots, winProfile)
 		if winProfile != nil && winProfile.ContextLength > 0 && requestedNCtx <= 0 {
-			log.Infow("lazy-load: окно загрузки взято из профиля модели (R229)",
+			log.Infow(i18n.T("cppworker.lazyload.window_from_profile"),
 				"model", modelName, "profile", winProfileName,
 				"contextLength", winProfile.ContextLength, "env_default", *ctxSize)
 		}
@@ -805,19 +805,17 @@ func backendGPUVRAMFree() uint64 {
 // поэтому окно, выбранное под клиента (opts.ContextSize), не перезаписывается.
 func applySyncedProfileToLazyLoadOpts(modelName string, opts *cppbackend.LoadModelOpts) error {
 	if opts == nil || profileSyncer == nil {
-		logger.Get().Warnw("lazy-load: профили моделей недоступны (синхронизатор не запущен) — "+
-			"загрузка пойдёт с параметрами по умолчанию", "model", modelName)
+		logger.Get().Warnw(i18n.T("cppworker.lazyload.profiles_unavailable"), "model", modelName)
 		return nil
 	}
 	// R228: пустой кэш профилей — не «нет профиля» (см. lazyLoadProfileFor).
 	prof := lazyLoadProfileFor(modelName)
 	if prof == nil {
-		logger.Get().Warnw("lazy-load: профиль модели не найден — загрузка с параметрами по умолчанию "+
-			"(n_ctx из CPPWORKER_CTX_SIZE)", "model", modelName,
+		logger.Get().Warnw(i18n.T("cppworker.lazyload.profile_not_found"), "model", modelName,
 			"profiles_known", profileSyncer.snapshotSize())
 		return nil
 	}
-	logger.Get().Infow("lazy-load: применяю профиль модели", "model", modelName,
+	logger.Get().Infow(i18n.T("cppworker.lazyload.applying_profile"), "model", modelName,
 		"contextLength", prof.ContextLength, "numGpuLayers", prof.NumGPULayers,
 		"kvCacheType", prof.KVCacheType, "parallel", prof.Parallel)
 	ctxSize, batch, gpuLayers := opts.ContextSize, opts.BatchSize, opts.GPULayers
@@ -830,11 +828,11 @@ func applySyncedProfileToLazyLoadOpts(modelName string, opts *cppbackend.LoadMod
 		return fmt.Errorf("model %s is marked as disabled in profile", modelName)
 	}
 	if parallel != opts.Parallel {
-		logger.Get().Infow("lazy-load: parallel взят из профиля модели (R135)",
+		logger.Get().Infow(i18n.T("cppworker.lazyload.parallel_from_profile"),
 			"model", modelName, "parallel", parallel, "was", opts.Parallel)
 	}
 	if kvCacheType != opts.KVCacheType {
-		logger.Get().Infow("lazy-load: kvCacheType взят из профиля модели (R83/v52)",
+		logger.Get().Infow(i18n.T("cppworker.lazyload.kv_cache_from_profile"),
 			"model", modelName,
 			"kv_cache_type", kvCacheType,
 			"was", opts.KVCacheType)
@@ -848,7 +846,7 @@ func applySyncedProfileToLazyLoadOpts(modelName string, opts *cppbackend.LoadMod
 	// хотя галочка в WebUI стоит. Явный запрос (opts уже задан) приоритетнее.
 	if opts.EnableReasoning == nil && prof.EnableReasoning != nil {
 		opts.EnableReasoning = prof.EnableReasoning
-		logger.Get().Infow("lazy-load: enableReasoning взят из профиля модели (R83/v67)",
+		logger.Get().Infow(i18n.T("cppworker.lazyload.enable_reasoning_from_profile"),
 			"model", modelName, "enable_reasoning", *prof.EnableReasoning)
 	}
 	return nil

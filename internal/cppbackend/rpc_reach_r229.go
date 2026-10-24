@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -117,10 +118,10 @@ func (b *Backend) filterReachableRPC(servers []string) []string {
 	}
 	b.rememberExcludedRPC(dead)
 	if logger.Get() != nil {
-		logger.Get().Warnw("раскладка: недоступный узел исключён на время работы с моделью",
+		logger.Get().Warnw(i18n.T("cppbackend.rpc_reach_r229.node_excluded"),
 			"excluded", strings.Join(dead, ","),
 			"alive", strings.Join(alive, ","),
-			"hint", "llama.cpp на мёртвом узле падает abort(); модель будет работать на живых узлах локально")
+			"hint", i18n.T("cppbackend.rpc_reach_r229.node_excluded_hint"))
 	}
 	if len(alive) == 0 {
 		return nil

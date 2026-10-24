@@ -20,13 +20,14 @@ import (
 
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/composition"
+	"ollama-loadbalancer/internal/i18n"
 )
 
 func (s *Server) placementValidateHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
 			"success": false,
-			"error":   "method not allowed (только POST: сухой прогон принимает тело)",
+			"error":   i18n.T("api.handlers_placement_validate.method_post_only"),
 		})
 		return
 	}
@@ -36,14 +37,14 @@ func (s *Server) placementValidateHandler(w http.ResponseWriter, r *http.Request
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"success": false,
-			"error":   "некорректное тело запроса: " + err.Error(),
+			"error":   i18n.T("api.handlers_placement_validate.bad_request_body", err),
 		})
 		return
 	}
 	if len(req.Group.Members) == 0 {
 		s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"success": false,
-			"error": "нужен объект group с составом: " +
+			"error": i18n.T("api.handlers_placement_validate.group_required") + " " +
 				`{"group":{"id":"g1","model":"qwen3-14b","strategy":"layer","members":[{"backendId":"a","role":"master"},{"backendId":"b","role":"worker","rpcEndpoint":"host:50052"}]}}`,
 		})
 		return
@@ -80,8 +81,7 @@ func (s *Server) placementValidateHandler(w http.ResponseWriter, r *http.Request
 		// Полный список проверок: UI показывает «проверок 11, ошибок 0», а не
 		// пустой блок, когда всё хорошо.
 		"checks": composition.AllChecks(),
-		"hint": "сухой прогон: ничего не сохранено и не изменено — " +
-			"примените настройку отдельной операцией конфига",
+		"hint":   i18n.T("api.handlers_placement_validate.hint_dry_run"),
 	})
 }
 

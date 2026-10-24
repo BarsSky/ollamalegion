@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"ollama-loadbalancer/internal/i18n"
 )
 
 // TokenAuthenticator - аутентификатор на основе API токенов
@@ -192,7 +194,7 @@ func AuthMiddleware(next http.Handler, auth *TokenAuthenticator) http.Handler {
 					w.WriteHeader(http.StatusForbidden)
 					json.NewEncoder(w).Encode(map[string]interface{}{
 						"success": false,
-						"error":   "Forbidden: требуются права администратора (роль viewer только читает)",
+						"error":   i18n.T("api.auth.admin_required_viewer"),
 					})
 					return
 				}
@@ -201,7 +203,7 @@ func AuthMiddleware(next http.Handler, auth *TokenAuthenticator) http.Handler {
 					w.WriteHeader(http.StatusForbidden)
 					json.NewEncoder(w).Encode(map[string]interface{}{
 						"success": false,
-						"error":   "Forbidden: отсутствует или неверен X-CSRF-Token",
+						"error":   i18n.T("api.auth.csrf_check_failed"),
 					})
 					return
 				}

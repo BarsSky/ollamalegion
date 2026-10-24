@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -129,7 +130,7 @@ func (p *Proxy) recordModelMissing(backendID, modelName string, body []byte) {
 	p.modelMissing[key] = modelMissing{Reason: reason, Available: available, At: time.Now()}
 	p.mu.Unlock()
 
-	logger.Get().Warnw("model missing: запомнил, что модели нет на бэкенде — перезагрузку планировать не будем",
+	logger.Get().Warnw(i18n.T("balancer.model_missing.recorded_warn"),
 		"backend", backendID, "model", modelName,
 		"available_models", len(available), "reason", truncateForLog(reason, 200))
 }
@@ -318,7 +319,7 @@ func (p *Proxy) writeModelMissingIfKnownFor(w http.ResponseWriter, requestPath, 
 	if !known {
 		return false
 	}
-	logger.Get().Warnw("auto-load: модели нет на бэкенде — отдаю 404 вместо 503 «повтори»",
+	logger.Get().Warnw(i18n.T("balancer.model_missing.auto_load_404_warn"),
 		"backend", backendID, "model", model, "available_models", len(available))
 	writeModelMissingResponseFor(w, requestPath, model, reason, available)
 	return true

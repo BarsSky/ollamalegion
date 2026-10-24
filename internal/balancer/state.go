@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -257,7 +258,7 @@ func reconcileNodeCapacity(backend *types.Backend) {
 		return
 	}
 	if backend.RuntimeMaxConcurrentRequests > backend.MaxConcurrentReqs {
-		logger.Get().Infow("R71: runtime-вместимость выше n_parallel узла — приведена к вместимости ноды",
+		logger.Get().Infow(i18n.T("balancer.state.runtime_capacity_clamped_info"),
 			"backend", backend.ID,
 			"runtime_max_concurrent_requests", backend.RuntimeMaxConcurrentRequests,
 			"max_concurrent_requests", backend.MaxConcurrentReqs)

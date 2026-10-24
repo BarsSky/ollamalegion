@@ -32,7 +32,7 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 BUDGET = os.path.join(ROOT, 'scripts', 'i18n-budget.json')
 CYR = re.compile(r'[А-Яа-яЁё]')
-SKIP_DIRS = {'.git', 'node_modules', '_diag', 'dist', 'c'}
+SKIP_DIRS = {'.git', 'node_modules', '_diag', 'dist', 'c', 'debug', 'plans'}
 SKIP_FILES = {
     'internal/i18n/messages.go',
     'internal/i18n/i18n.go',
@@ -42,14 +42,20 @@ SKIP_FILES = {
 }
 # Места, где русский литерал — это сообщение (лог или ошибка).
 CALL_PATTERNS = [
-    re.compile(r'\blog\.(Print|Printf|Println|Fatal|Fatalf|Panic|Panicf)\s*\('),
-    re.compile(r'\blogger\.(Debug|Info|Warn|Error|Fatal|Print)[a-zA-Z]*\s*\('),
-    re.compile(r'\bs\.log(ger)?\.(Debug|Info|Warn|Error)[a-zA-Z]*\s*\('),
+    # стандартная библиотека и zap-логи: R234 расширил список, иначе Warnw/Infof
+    # в cppworker/sdworker не считались вовсе (было ложное «0 нарушений»).
+    re.compile(r'\b(log|logger|s\.log|s\.logger|sdLog\(\))\.'
+               r'(Debug|Debugf|Debugw|Info|Infof|Infow|Warn|Warnf|Warnw|Warning|Warningf|'
+               r'Error|Errorf|Errorw|Fatal|Fatalf|Fatalw|Panic|Panicf|Print|Printf|Println)\s*\('),
+    re.compile(r'\blogger\.Get\(\)\.(Debug|Info|Warn|Error)[a-zA-Z]*\s*\('),
     re.compile(r'\bfmt\.Errorf\s*\('),
     re.compile(r'\berrors\.New\s*\('),
     re.compile(r'\bpanic\s*\('),
     re.compile(r'\bhttp\.Error\s*\('),
-    re.compile(r'"error"\s*:'),
+    # сообщения, которые уходят клиенту в JSON (error/note/hint/message)
+    re.compile(r'"(error|note|hint|message)"\s*:'),
+    # CLI-вывод: usage/help и ошибки в stderr
+    re.compile(r'\bfmt\.(Fprintf|Fprintln|Printf|Println|Print)\s*\(\s*(os\.(Stdout|Stderr)|)'),
     re.compile(r'\bi18n\.(T|Logf|Tf)\s*\('),
 ]
 

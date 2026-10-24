@@ -18,6 +18,7 @@ package balancer
 import (
 	"fmt"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/modelreplication"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -130,10 +131,10 @@ func (p *Proxy) ensureReplicationManager() bool {
 	}
 	p.setupReplicationManager()
 	if p.replicationSelector == nil || p.modelReplication == nil {
-		logger.Get().Warnw("placement: не удалось поднять менеджер репликации для strategy=replicated")
+		logger.Get().Warnw(i18n.T("balancer.placement_replication_r74.manager_start_failed_warn"))
 		return false
 	}
-	logger.Get().Infow("placement: менеджер репликации поднят по требованию политики")
+	logger.Get().Infow(i18n.T("balancer.placement_replication_r74.manager_started_on_demand_info"))
 	return true
 }
 
@@ -162,11 +163,11 @@ func (p *Proxy) syncPlacementReplicationGroups() []string {
 			continue
 		}
 		if _, isMask := maskOrName(name); isMask {
-			actions = append(actions, "пропущено (маска, нужен точный model): "+name)
+			actions = append(actions, i18n.T("balancer.placement_replication_r74.action_skipped_mask", name))
 			continue
 		}
 		if !p.ensureReplicationManager() {
-			actions = append(actions, "менеджер репликации недоступен: "+name)
+			actions = append(actions, i18n.T("balancer.placement_replication_r74.action_manager_unavailable", name))
 			continue
 		}
 		if group := p.modelReplication.GetGroup(name); group != nil {
@@ -214,13 +215,13 @@ func (p *Proxy) syncPlacementReplicationGroups() []string {
 			TargetBackends: rule.Pool,
 		}
 		if err := p.modelReplication.CreateGroup(groupCfg); err != nil {
-			actions = append(actions, fmt.Sprintf("ошибка создания группы %s: %v", name, err))
+			actions = append(actions, i18n.T("balancer.placement_replication_r74.action_group_create_failed", name, err))
 			continue
 		}
-		logger.Get().Infow("placement: группа репликации создана по политике",
+		logger.Get().Infow(i18n.T("balancer.placement_replication_r74.group_created_by_policy_info"),
 			"model", name, "min_instances", minInstances,
 			"max_instances", maxInstances, "targets", rule.Pool)
-		actions = append(actions, fmt.Sprintf("группа создана: %s (min=%d max=%d targets=%d)",
+		actions = append(actions, i18n.T("balancer.placement_replication_r74.action_group_created",
 			name, minInstances, maxInstances, len(rule.Pool)))
 	}
 	// Сразу поднимаем инстансы по minInstances (не ждём тика GroupController):
@@ -258,11 +259,11 @@ func (p *Proxy) schedulePlacementResync(reason string) {
 		// тика GroupController).
 		p.ensurePlacementInstances()
 		if len(actions) == 0 {
-			logger.Get().Infow("placement: раскладка пересобрана после изменения состава бэкендов",
+			logger.Get().Infow(i18n.T("balancer.placement_replication_r74.layout_resynced_info"),
 				"reason", reason)
 			return
 		}
-		logger.Get().Infow("placement: раскладка пересобрана после изменения состава бэкендов",
+		logger.Get().Infow(i18n.T("balancer.placement_replication_r74.layout_resynced_info"),
 			"reason", reason, "actions", actions)
 	}()
 }

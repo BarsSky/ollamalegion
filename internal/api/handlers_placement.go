@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -32,7 +33,7 @@ func (s *Server) placementHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
 			"success": false,
-			"error":   "method not allowed (GET — состояние, PUT — применить политику)",
+			"error":   i18n.T("api.handlers_placement.method_not_allowed"),
 		})
 		return
 	}

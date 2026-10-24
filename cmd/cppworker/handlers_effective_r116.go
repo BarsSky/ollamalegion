@@ -36,6 +36,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -195,11 +196,11 @@ func handleModelEffective(w http.ResponseWriter, r *http.Request) {
 	// «подмена настроек», которую нужно показывать, а не прятать.
 	if info, err := backend.GetModel(name); err == nil && info != nil {
 		loaded := map[string]interface{}{
-			"state":           string(info.State),
-			"ctx":             info.ContextSize,
-			"gpu_layers":      info.GPULayers,
-			"kv_cache_type":   info.KVCacheType,
-			"reasoning":       info.ReasoningEnabled,
+			"state":                  string(info.State),
+			"ctx":                    info.ContextSize,
+			"gpu_layers":             info.GPULayers,
+			"kv_cache_type":          info.KVCacheType,
+			"reasoning":              info.ReasoningEnabled,
 			"differs_from_effective": info.ContextSize > 0 && effCtx > 0 && info.ContextSize != effCtx,
 		}
 		resp["loaded"] = loaded
@@ -226,15 +227,15 @@ func handleModelEffective(w http.ResponseWriter, r *http.Request) {
 		if effCtx > 0 {
 			if f, verdict, ok2 := feasibilityFromMemfitCached(spec, backend.MemfitBudgetCached(), kvType, effCtx); ok2 {
 				mem := map[string]interface{}{
-					"stage":              f.Stage,
-					"feasible":           f.Stage != nctxStageInfeasible,
-					"degraded":           f.Degraded,
-					"max_vram_n_ctx":     f.MaxVRAMNCtx,
-					"max_ram_n_ctx":      f.MaxRAMNCtx,
-					"gguf_max_context":   f.GGUFMaxContext,
+					"stage":                f.Stage,
+					"feasible":             f.Stage != nctxStageInfeasible,
+					"degraded":             f.Degraded,
+					"max_vram_n_ctx":       f.MaxVRAMNCtx,
+					"max_ram_n_ctx":        f.MaxRAMNCtx,
+					"gguf_max_context":     f.GGUFMaxContext,
 					"feasible_max_context": f.FeasibleMaxNCtx,
-					"suggestion":         nctxSuggestion(f),
-					"verdict":            verdict.String(),
+					"suggestion":           nctxSuggestion(f),
+					"verdict":              verdict.String(),
 				}
 				if f.Breakdown != nil {
 					mem["memory_breakdown"] = f.Breakdown.Fields()
@@ -244,7 +245,7 @@ func handleModelEffective(w http.ResponseWriter, r *http.Request) {
 		} else {
 			resp["memory"] = map[string]interface{}{
 				"error": "ctx_not_determined",
-				"hint":  "укажите ?ctx= или задайте контекст в профиле модели",
+				"hint":  i18n.T("cppworker.handlers_effective_r116.ctx_hint"),
 			}
 		}
 	} else {
@@ -252,7 +253,7 @@ func handleModelEffective(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if logger.Get() != nil {
-		logger.Get().Infow("R116 effective: эффективные параметры модели",
+		logger.Get().Infow(i18n.T("cppworker.handlers_effective_r116.log_effective"),
 			"model", name, "ctx", effCtx, "ctx_source", ctxSource,
 			"kv_cache_type", effKV, "kv_source", kvSource)
 	}

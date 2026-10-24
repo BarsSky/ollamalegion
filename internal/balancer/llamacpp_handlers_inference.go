@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -81,7 +82,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 			logImageToolDecision(r.URL.Path, model, clientTools, false, nil,
 				imageToolSkipReason(imageToolNoInjectReason(lr.proxy.imageToolSettings())))
 		} else if injected, ok, injErr := injectImageTool(bodyBuf, tools); injErr != nil {
-			logger.Get().Warnw("handleOpenAIChatCompletions: не удалось добавить image-инструмент",
+			logger.Get().Warnw(i18n.T("balancer.llamacpp_handlers_inference.image_tool_inject_failed_warn"),
 				"error", injErr)
 		} else if ok {
 			bodyBuf = injected
@@ -105,9 +106,9 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	// балансер клиент получал 200 и ответ ДРУГОЙ (загруженной) модели. Для агента
 	// (Cline) это тихая ошибка: он уверен, что говорит с выбранной моделью.
 	if ok, available := lr.proxy.modelAnswerable(backendID, model); !ok {
-		logger.Get().Warnw("handleChat: модели нет в каталоге бэкенда — терминальный 404",
+		logger.Get().Warnw(i18n.T("balancer.llamacpp_handlers_inference.model_missing_catalog_warn"),
 			"backend", backendID, "model", model, "available", len(available))
-		writeModelMissingResponseFor(w, r.URL.Path, model, "модели нет в каталоге бэкенда", available)
+		writeModelMissingResponseFor(w, r.URL.Path, model, i18n.T("balancer.llamacpp_handlers_inference.model_missing_reason"), available)
 		return
 	}
 
@@ -203,7 +204,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 			if st, ok := lr.proxy.backends[backendID]; ok {
 				state = st
 			}
-			logger.Get().Infow("handleOpenAIChatCompletions: R82 переезд на другую копию модели",
+			logger.Get().Infow(i18n.T("balancer.llamacpp_handlers_inference.r82_migrate_chat_completions_info"),
 				"backend", backendID, "model", model)
 		}
 	}
@@ -411,9 +412,9 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
 	// R193 (2026-10-20): неизвестное имя модели не подменяем загруженной — 404.
 	if ok, available := lr.proxy.modelAnswerable(backendID, model); !ok {
-		logger.Get().Warnw("llama.cpp: модели нет в каталоге бэкенда — терминальный 404",
+		logger.Get().Warnw(i18n.T("balancer.llamacpp_handlers_inference.model_missing_catalog_llamacpp_warn"),
 			"backend", backendID, "model", model, "available", len(available))
-		writeModelMissingResponseFor(w, r.URL.Path, model, "модели нет в каталоге бэкенда", available)
+		writeModelMissingResponseFor(w, r.URL.Path, model, i18n.T("balancer.llamacpp_handlers_inference.model_missing_reason"), available)
 		return
 	}
 
@@ -505,7 +506,7 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 			if st, ok := lr.proxy.backends[backendID]; ok {
 				state = st
 			}
-			logger.Get().Infow("handleOpenAICompletion: R82 переезд на другую копию модели",
+			logger.Get().Infow(i18n.T("balancer.llamacpp_handlers_inference.r82_migrate_completion_info"),
 				"backend", backendID, "model", model)
 		}
 	}
@@ -647,9 +648,9 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
 	// R193 (2026-10-20): неизвестное имя модели не подменяем загруженной — 404.
 	if ok, available := lr.proxy.modelAnswerable(backendID, model); !ok {
-		logger.Get().Warnw("llama.cpp: модели нет в каталоге бэкенда — терминальный 404",
+		logger.Get().Warnw(i18n.T("balancer.llamacpp_handlers_inference.model_missing_catalog_llamacpp_warn"),
 			"backend", backendID, "model", model, "available", len(available))
-		writeModelMissingResponseFor(w, r.URL.Path, model, "модели нет в каталоге бэкенда", available)
+		writeModelMissingResponseFor(w, r.URL.Path, model, i18n.T("balancer.llamacpp_handlers_inference.model_missing_reason"), available)
 		return
 	}
 
@@ -692,7 +693,7 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 			if st, ok := lr.proxy.backends[backendID]; ok {
 				state = st
 			}
-			logger.Get().Infow("handleOpenAIEmbeddings: R82 переезд на другую копию модели",
+			logger.Get().Infow(i18n.T("balancer.llamacpp_handlers_inference.r82_migrate_embeddings_info"),
 				"backend", backendID, "model", model)
 		}
 	}
@@ -867,7 +868,7 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		// R82: исходный бэкенд выпал — обслуживаем с живой копии.
 		backendID = newBackend
 		w.Header().Set("X-Backend-ID", backendID)
-		logger.Get().Infow("handleChat: R82 переезд на другую копию модели",
+		logger.Get().Infow(i18n.T("balancer.llamacpp_handlers_inference.r82_migrate_chat_info"),
 			"backend", backendID, "model", model)
 	}
 
@@ -906,7 +907,7 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		}) {
 			return
 		}
-		logger.Get().Warnw("handleChat: image tool loop не справился, отдаём обычным путём",
+		logger.Get().Warnw(i18n.T("balancer.llamacpp_handlers_inference.image_tool_loop_fallback_warn"),
 			"model", model, "backend", backendID)
 	}
 
@@ -975,9 +976,9 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
 	// R193 (2026-10-20): неизвестное имя модели не подменяем загруженной — 404.
 	if ok, available := lr.proxy.modelAnswerable(backendID, model); !ok {
-		logger.Get().Warnw("llama.cpp: модели нет в каталоге бэкенда — терминальный 404",
+		logger.Get().Warnw(i18n.T("balancer.llamacpp_handlers_inference.model_missing_catalog_llamacpp_warn"),
 			"backend", backendID, "model", model, "available", len(available))
-		writeModelMissingResponseFor(w, r.URL.Path, model, "модели нет в каталоге бэкенда", available)
+		writeModelMissingResponseFor(w, r.URL.Path, model, i18n.T("balancer.llamacpp_handlers_inference.model_missing_reason"), available)
 		return
 	}
 
@@ -1036,7 +1037,7 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 		// R82: исходный бэкенд выпал — обслуживаем с живой копии.
 		backendID = newBackend
 		w.Header().Set("X-Backend-ID", backendID)
-		logger.Get().Infow("handleGenerate: R82 переезд на другую копию модели",
+		logger.Get().Infow(i18n.T("balancer.llamacpp_handlers_inference.r82_migrate_generate_info"),
 			"backend", backendID, "model", model)
 	}
 

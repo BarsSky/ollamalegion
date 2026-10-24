@@ -16,6 +16,7 @@ import (
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -92,7 +93,7 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// Поэтому грузим/регистрируем под именем ВЛАДЕЛЬЦА ФАЙЛА, а клиенту сообщаем
 	// заголовками, что имя заменено (он вправе ожидать своё).
 	if owner := canonicalModelName(modelName, modelPath); owner != modelName {
-		logger.Get().Infow("load: имя модели канонизировано по владельцу файла",
+		logger.Get().Infow(i18n.T("cppworker.handlers_model.load_canonical_name"),
 			"requested", modelName, "canonical", owner, "path", modelPath)
 		w.Header().Set("X-Model-Canonical", owner)
 		w.Header().Set("X-Model-Requested", modelName)
@@ -505,7 +506,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	// Поэтому грузим/регистрируем под именем ВЛАДЕЛЬЦА ФАЙЛА, а клиенту сообщаем
 	// заголовками, что имя заменено (он вправе ожидать своё).
 	if owner := canonicalModelName(modelName, modelPath); owner != modelName {
-		logger.Get().Infow("load: имя модели канонизировано по владельцу файла",
+		logger.Get().Infow(i18n.T("cppworker.handlers_model.load_canonical_name"),
 			"requested", modelName, "canonical", owner, "path", modelPath)
 		w.Header().Set("X-Model-Canonical", owner)
 		w.Header().Set("X-Model-Requested", modelName)
@@ -628,7 +629,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		// gemma-4-E4B-it-Q4_K_M → ctx=65536, q8_0, reasoning=off).
 		profileName := profileLookupNameForPath(modelName, modelPath)
 		if profileName != modelName {
-			logger.Get().Infow("handleLoadWithParams: профиль берём у владельца файла",
+			logger.Get().Infow(i18n.T("cppworker.handlers_model.load_profile_from_file_owner"),
 				"requested", modelName, "profile_key", profileName, "path", modelPath)
 		}
 		if prof := profileSyncer.applyProfileOnLoad(profileName); prof != nil {
@@ -650,7 +651,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 			// opts.EnableReasoning оставался nil → cfg.DefaultEnableReasoning.
 			if opts.EnableReasoning == nil && prof.EnableReasoning != nil {
 				opts.EnableReasoning = prof.EnableReasoning
-				logger.Get().Infow("handleLoadWithParams: enableReasoning из профиля модели (R83/v67)",
+				logger.Get().Infow(i18n.T("cppworker.handlers_model.load_enable_reasoning_from_profile"),
 					"name", modelName, "enable_reasoning", *prof.EnableReasoning)
 			}
 		}
@@ -680,7 +681,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		// «попробуем всё равно». Отдача плана в llama.cpp означала загрузку
 		// 16.4 GB в RAM (вытесняя всё) и OOM/таймаут у клиента вместо причины.
 		if fitErr := insufficientResourcesFromFallbackNoFit(modelName, tunedRationale); fitErr != nil {
-			logger.Get().Warnw("handleLoadWithParams: отказано — модель не влезает даже в CPU-only",
+			logger.Get().Warnw(i18n.T("cppworker.handlers_model.load_refused_no_fit"),
 				"name", modelName,
 				"model_size_mb", tunedRationale.ModelSize/(1024*1024),
 				"available_ram_mb", tunedRationale.AvailableRAMBytes/(1024*1024),
@@ -1118,7 +1119,7 @@ func handleUnloadModel(w http.ResponseWriter, r *http.Request) {
 		// загруженная модель освобождается самим llama.cpp (включая буферы на
 		// узлах).
 		aborted := backend.AbortLoad(name)
-		logger.Get().Warnw("unload force=true during active load: загрузка отменяется",
+		logger.Get().Warnw(i18n.T("cppworker.handlers_model.unload_force_cancels_load"),
 			"name", name, "abort_requested", aborted)
 		// Ждём, пока загрузка реально отпустит: C-мост проверяет флаг не чаще,
 		// чем на каждом тензоре, поэтому это сотни миллисекунд, а не мгновение.
@@ -1136,7 +1137,7 @@ func handleUnloadModel(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, map[string]interface{}{
 					"status":  "load_cancelled",
 					"name":    name,
-					"message": "загрузка отменена, VRAM освобождена",
+					"message": i18n.T("cppworker.handlers_model.unload_load_cancelled_message"),
 					"aborted": aborted,
 				})
 				return
@@ -2104,7 +2105,7 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		// R154: то же правило, что при загрузке — профиль владельца ФАЙЛА.
 		profileName := profileLookupNameForPath(req.Name, modelPath)
 		if profileName != req.Name {
-			logger.Get().Infow("handleReloadModel: профиль берём у владельца файла",
+			logger.Get().Infow(i18n.T("cppworker.handlers_model.reload_profile_from_file_owner"),
 				"requested", req.Name, "profile_key", profileName, "path", modelPath)
 		}
 		if prof := profileSyncer.applyProfileOnLoad(profileName); prof != nil {
@@ -2127,7 +2128,7 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			// проставлено выше — здесь трогаем только незаданное.
 			if req.EnableReasoning == nil && prof.EnableReasoning != nil {
 				opts.EnableReasoning = prof.EnableReasoning
-				logger.Get().Infow("handleReloadModel: enableReasoning из профиля модели (R83/v67)",
+				logger.Get().Infow(i18n.T("cppworker.handlers_model.reload_enable_reasoning_from_profile"),
 					"name", req.Name, "enable_reasoning", *prof.EnableReasoning)
 			}
 		}
@@ -2172,13 +2173,13 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			explicitGPULayers := req.GPULayers != nil && *req.GPULayers != -2
 			if verdict.Stage == memfit.StageDoesNotFit && !explicitGPULayers {
 				if forceReload {
-					logger.Get().Warnw("reload: does_not_fit, но force=true — загрузка разрешена оператором",
+					logger.Get().Warnw(i18n.T("cppworker.handlers_model.reload_no_fit_forced"),
 						"name", req.Name,
 						"requested_n_ctx", m.ContextSize,
 						"max_hard_n_ctx", verdict.MaxHardCtx,
 						"stage", string(verdict.Stage))
 				} else {
-					logger.Get().Warnw("reload: отказано — модель не влезает даже в CPU-only",
+					logger.Get().Warnw(i18n.T("cppworker.handlers_model.reload_refused_no_fit"),
 						"name", req.Name,
 						"requested_n_ctx", m.ContextSize,
 						"max_hard_n_ctx", verdict.MaxHardCtx,
@@ -2204,7 +2205,7 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 				if degraded != nil {
 					degradedLoads.record(degraded)
 				}
-				logger.Get().Warnw("reload: загрузка в режиме CPU-only (деградация)",
+				logger.Get().Warnw(i18n.T("cppworker.handlers_model.reload_cpu_only_degraded"),
 					"name", req.Name,
 					"requested_n_ctx", m.ContextSize,
 					"weights_mb", verdict.Weights.MiB(),
@@ -2231,7 +2232,7 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			// ветку ниже и загрузка всё равно стартовала: unload текущей модели,
 			// загрузка 16 GB в RAM, таймаут у клиента вместо причины.
 			if strategy.Stage == "fallback_no_fit" {
-				logger.Get().Warnw("reload: отказано — модель не влезает даже в CPU-only",
+				logger.Get().Warnw(i18n.T("cppworker.handlers_model.reload_refused_no_fit"),
 					"name", req.Name,
 					"model_size_mb", m.SizeBytes/(1024*1024),
 					"available_ram_mb", availableRAMBytes()/(1024*1024),
@@ -2444,11 +2445,11 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if inflightN > 0 {
-			logger.Get().Infow("reload force=true: ждём дренажа активных запросов (не дольше 5s)",
+			logger.Get().Infow(i18n.T("cppworker.handlers_model.reload_wait_drain"),
 				"name", req.Name, "in_flight", inflightN)
 			if inflight := backend.InFlight(); inflight != nil {
 				if !inflight.WaitZero(req.Name, 5*time.Second) {
-					logger.Get().Warnw("reload force=true: запросы не дренировались за 5s — грузим всё равно",
+					logger.Get().Warnw(i18n.T("cppworker.handlers_model.reload_drain_timeout"),
 						"name", req.Name, "in_flight", inflight.Get(req.Name))
 				}
 			}

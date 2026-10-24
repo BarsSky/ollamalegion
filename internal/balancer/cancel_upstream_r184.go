@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -68,14 +69,14 @@ func (p *Proxy) cancelUpstreamGeneration(backendID, model, reason string) {
 		resp, doErr := client.Do(req)
 		if doErr != nil {
 			if logger.Get() != nil {
-				logger.Get().Warnw("cancel upstream: воркер не принял отмену",
+				logger.Get().Warnw(i18n.T("balancer.cancel_upstream.not_accepted_warn"),
 					"backend", backendID, "model", model, "reason", reason, "error", doErr)
 			}
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
 		if logger.Get() != nil {
-			logger.Get().Infow("cancel upstream: генерация отменена на воркере",
+			logger.Get().Infow(i18n.T("balancer.cancel_upstream.cancelled_info"),
 				"backend", backendID, "model", model, "reason", reason, "status", resp.StatusCode)
 		}
 	}()

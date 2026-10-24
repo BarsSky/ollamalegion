@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -85,7 +86,7 @@ func (p *Proxy) measureRPCLinkOnce(b *types.Backend) (int, error) {
 	host := strings.TrimSpace(b.Host)
 	port := p.getBackendPort(b)
 	if host == "" || port <= 0 {
-		return 0, fmt.Errorf("backend %s: неизвестен адрес cppworker", b.ID)
+		return 0, fmt.Errorf(i18n.T("balancer.rpc_link.unknown_address"), b.ID)
 	}
 
 	url := fmt.Sprintf("http://%s:%d/api/rpc-link-probe?bytes=%d", host, port, rpcLinkProbeBytes)
@@ -107,7 +108,7 @@ func (p *Proxy) measureRPCLinkOnce(b *types.Backend) (int, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("узел %s:%d ответил HTTP %d (обработчик замера есть в сборке cppworker r118-probe1+)",
+		return 0, fmt.Errorf(i18n.T("balancer.rpc_link.probe_http_status"),
 			host, port, resp.StatusCode)
 	}
 	n, err := io.Copy(io.Discard, resp.Body)
@@ -116,11 +117,11 @@ func (p *Proxy) measureRPCLinkOnce(b *types.Backend) (int, error) {
 	}
 	elapsed := time.Since(start)
 	if elapsed <= 0 || n <= 0 {
-		return 0, fmt.Errorf("пустой замер: %d байт за %s", n, elapsed)
+		return 0, fmt.Errorf(i18n.T("balancer.rpc_link.empty_measure"), n, elapsed)
 	}
 	mbps := int(float64(n) * 8 / elapsed.Seconds() / 1e6)
 	if mbps <= 0 {
-		return 0, fmt.Errorf("замер дал 0 Мбит/с (%d байт за %s)", n, elapsed)
+		return 0, fmt.Errorf(i18n.T("balancer.rpc_link.zero_mbps"), n, elapsed)
 	}
 	return mbps, nil
 }
@@ -138,7 +139,7 @@ func (p *Proxy) MeasureRPCLinkForBackend(backendID string) (int, error) {
 	}
 	if strings.TrimSpace(b.Role) != types.BackendRoleDonor && strings.TrimSpace(b.Role) != types.BackendRoleMain {
 		// Мерить имеет смысл только у узлов-участников раскладки.
-		return 0, fmt.Errorf("backend %s не участвует в раскладке (role=%q)", backendID, b.Role)
+		return 0, fmt.Errorf(i18n.T("balancer.rpc_link.backend_not_in_layout"), backendID, b.Role)
 	}
 
 	mbps, err := p.measureRPCLinkOnce(b)
@@ -161,11 +162,11 @@ func (p *Proxy) MeasureRPCLinkForBackend(backendID string) (int, error) {
 	p.mu.Unlock()
 
 	if err != nil {
-		logger.Get().Warnw("RPCLinkMeasure: замер канала не удался",
+		logger.Get().Warnw(i18n.T("balancer.rpc_link.measure_failed_warn"),
 			"backend", backendID, "node", node, "error", err)
 		return 0, err
 	}
-	logger.Get().Infow("RPCLinkMeasure: канал измерен",
+	logger.Get().Infow(i18n.T("balancer.rpc_link.measured_info"),
 		"backend", backendID, "node", node, "mbps", mbps, "bytes", rpcLinkProbeBytes)
 	return mbps, nil
 }

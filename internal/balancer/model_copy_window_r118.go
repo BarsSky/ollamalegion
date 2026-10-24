@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -215,7 +216,7 @@ func (p *Proxy) modelCopyCoversWindow(backendID, modelName string, requestedNCtx
 func (p *Proxy) selectBackendPreferWindow(model string, bt types.BackendType, requestedNCtx int) string {
 	if p != nil && requestedNCtx > 0 && model != "" {
 		if id, why := p.selectModelCopyForWindow(model, requestedNCtx, nil, p.getAllowedTypesList(bt)); id != "" {
-			logger.Get().Infow("selectBackend: копия модели выбрана по окну клиента",
+			logger.Get().Infow(i18n.T("balancer.model_copy_window.select_backend_info"),
 				"model", model, "backend", id, "requested_n_ctx", requestedNCtx, "reason", why)
 			return id
 		}
@@ -242,7 +243,7 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendForModelWithNCtx(model string, re
 	}
 	allowed := lr.proxy.getAllowedTypesList(types.BackendTypeLlamaCpp)
 	if id, why := lr.proxy.selectModelCopyForWindow(model, requestedNCtx, nil, allowed); id != "" {
-		logger.Get().Infow("llama.cpp: копия модели выбрана по окну клиента",
+		logger.Get().Infow(i18n.T("balancer.model_copy_window.llamacpp_info"),
 			"model", model, "backend", id, "requested_n_ctx", requestedNCtx, "reason", why)
 		return id
 	}

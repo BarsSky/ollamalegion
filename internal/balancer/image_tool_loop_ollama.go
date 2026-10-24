@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -80,13 +81,13 @@ func (lr *LlamaCppRouter) runImageToolLoopOllama(w http.ResponseWriter, r *http.
 	// --- turn 1: нестриминговый, чтобы увидеть вызов целиком ---
 	body1, err := forceNonStream(a.bodyBuf)
 	if err != nil {
-		logger.Get().Warnw("image tool (ollama): не удалось подготовить запрос", "error", err)
+		logger.Get().Warnw(i18n.T("balancer.image_tool_loop_ollama.prepare_failed"), "error", err)
 		return false
 	}
 	raw1, status1, err := lr.postOllamaChat(r, a, body1)
 	if err != nil {
 		// Сетевую ошибку отдаём штатным путём: он умеет 503 + Retry-After.
-		logger.Get().Warnw("image tool (ollama): turn 1 не удался, отдаём обычным путём",
+		logger.Get().Warnw(i18n.T("balancer.image_tool_loop_ollama.turn1_failed"),
 			"backend", a.backendURL, "error", err)
 		return false
 	}
@@ -121,7 +122,7 @@ func (lr *LlamaCppRouter) runImageToolLoopOllama(w http.ResponseWriter, r *http.
 		// починить по факту, а не по догадке.
 		if content, _ := message["content"].(string); strings.Contains(content, "[TOOL_CALLS]") ||
 			strings.Contains(content, "<tool_call>") || strings.Contains(content, "<|python_tag|>") {
-			logger.Get().Warnw("image tool (ollama): в ответе есть маркер вызова, но вызов НЕ распознан",
+			logger.Get().Warnw(i18n.T("balancer.image_tool_loop_ollama.marker_unrecognized"),
 				"content_head", shortForLog(content), "content_len", len(content))
 		}
 		lr.writeOllamaChatResponse(w, a, stripEmptyToolCallArtifact(raw1), status1, clientStream)
@@ -137,7 +138,7 @@ func (lr *LlamaCppRouter) runImageToolLoopOllama(w http.ResponseWriter, r *http.
 			if generations >= cfg.MaxCalls {
 				results = append(results, map[string]interface{}{
 					"status": "error",
-					"error":  fmt.Sprintf("лимит генераций на один запрос (%d) исчерпан", cfg.MaxCalls),
+					"error":  i18n.T("balancer.image_tool_loop_ollama.limit_exhausted", cfg.MaxCalls),
 				})
 				continue
 			}
@@ -149,14 +150,14 @@ func (lr *LlamaCppRouter) runImageToolLoopOllama(w http.ResponseWriter, r *http.
 	// --- turn 2: финальный ответ модели без наших инструментов ---
 	body2, err := buildOllamaFollowUpBody(a.bodyBuf, message, calls, results)
 	if err != nil {
-		logger.Get().Errorw("image tool (ollama): не удалось собрать follow-up", "error", err)
+		logger.Get().Errorw(i18n.T("balancer.image_tool_loop_ollama.followup_failed"), "error", err)
 		lr.writeOllamaToolFallback(w, a, message, results, clientStream)
 		return true
 	}
 	body2, _ = setStreamFlag(body2, false)
 	raw2, status2, err := lr.postOllamaChat(r, a, body2)
 	if err != nil || status2 >= 400 {
-		logger.Get().Warnw("image tool (ollama): turn 2 не удался — отдаём ссылку напрямую",
+		logger.Get().Warnw(i18n.T("balancer.image_tool_loop_ollama.turn2_failed"),
 			"error", err, "status", status2)
 		lr.writeOllamaToolFallback(w, a, message, results, clientStream)
 		return true
@@ -171,13 +172,13 @@ func (lr *LlamaCppRouter) runImageToolLoopOllama(w http.ResponseWriter, r *http.
 func (lr *LlamaCppRouter) executeOneImageToolCallOllama(r *http.Request, a imageToolLoopArgsOllama, call imageToolCall) map[string]interface{} {
 	args, err := parseImageToolArgsFor(call.Arguments, call.isListCall())
 	if err != nil {
-		logger.Get().Warnw("image tool (ollama): некорректные аргументы вызова",
+		logger.Get().Warnw(i18n.T("balancer.image_tool_loop_ollama.bad_args"),
 			"call", call.ID, "tool", call.Name, "args", call.Arguments, "error", err)
 		return map[string]interface{}{"status": "error", "error": err.Error()}
 	}
 
 	if call.isListCall() {
-		logger.Get().Infow("image tool (ollama): модель запросила каталог моделей",
+		logger.Get().Infow(i18n.T("balancer.image_tool_loop_ollama.catalog_requested"),
 			"call", call.ID, "family", args.Family)
 		res := lr.proxy.imageToolCatalogResult(r.Context(), args.Family)
 		res["tool_call_id"] = call.ID
@@ -200,20 +201,20 @@ func (lr *LlamaCppRouter) executeOneImageToolCallOllama(r *http.Request, a image
 		return res
 	}
 
-	logger.Get().Infow("image tool (ollama): генерация по вызову модели",
+	logger.Get().Infow(i18n.T("balancer.image_tool_loop_ollama.generating"),
 		"backend", a.target.BackendID, "model", a.target.Model,
 		"requested_model", args.Model, "prompt_len", len(args.Prompt), "call", call.ID)
 	// Промпт в лог (кратко): живой случай 2026-10-06 — генерация ушла с
 	// prompt_len=6, и клиент получил красный квадрат вместо картинки. Без текста
 	// промпта в логе причину не видно.
-	logger.Get().Infow("image tool (ollama): промпт вызова",
+	logger.Get().Infow(i18n.T("balancer.image_tool_loop_ollama.prompt_info"),
 		"call", call.ID, "prompt", shortForLog(args.Prompt),
 		"negative_prompt", shortForLog(args.NegativePrompt),
 		"width", args.Width, "height", args.Height, "steps", args.Steps)
 
 	res, err := lr.proxy.generateImageForTool(r.Context(), a.target, args)
 	if err != nil {
-		logger.Get().Warnw("image tool (ollama): генерация не удалась", "error", err)
+		logger.Get().Warnw(i18n.T("balancer.image_tool_loop_ollama.generation_failed"), "error", err)
 		// R119: отказ гейта несёт машинный код и числа — отдаём их модели.
 		return imageToolErrorPayload(err)
 	}
@@ -230,7 +231,7 @@ func (lr *LlamaCppRouter) executeOneImageToolCallOllama(r *http.Request, a image
 // postOllamaChat — один вызов модели на /api/chat (NDJSON-ответ читаем целиком).
 func (lr *LlamaCppRouter) postOllamaChat(r *http.Request, a imageToolLoopArgsOllama, body []byte) ([]byte, int, error) {
 	if a.backendURL == "" {
-		return nil, 0, fmt.Errorf("пустой адрес бэкенда")
+		return nil, 0, fmt.Errorf(i18n.T("balancer.image_tool_loop_ollama.empty_backend_url"))
 	}
 	// Адрес приходит СО СХЕМОЙ (Proxy.backendHTTPAddrByID → "http://host:port"):
 	// добавлять "http://" здесь нельзя — получается "http://http//host:port".
@@ -366,7 +367,7 @@ func buildOllamaFollowUpBody(body []byte, assistant map[string]interface{}, call
 	messages = append(messages, assistantMsg)
 
 	for i := range calls {
-		payload := map[string]interface{}{"status": "error", "error": "результат не получен"}
+		payload := map[string]interface{}{"status": "error", "error": i18n.T("balancer.image_tool_loop_ollama.result_missing")}
 		if i < len(results) && results[i] != nil {
 			payload = results[i]
 		}

@@ -20,6 +20,7 @@ package balancer
 import (
 	"net/http"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -48,20 +49,18 @@ func (p *Proxy) placementRejection(d PlacementDecision) (string, bool) {
 	}
 
 	if !d.Executable {
-		return "стратегия размещения " + string(d.Strategy) + " не исполняется этой сборкой " +
-			"(исполняются single/pool/replicated/sharded/auto; rpc — legacy-путь координатора-" +
-			"заглушки, переведённый §9 плана в sharded), а placement.fallback=error: запрос не " +
-			"будет обслужен другой стратегией молча. Причина: " + d.Reason, true
+		return i18n.T("balancer.placement_reject.strategy_not_executable",
+			string(d.Strategy), d.Reason), true
 	}
 	// Refined=true означает, что стратегию выбирала auto (P1): тогда «не смогла
 	// выбрать» — точная формулировка. Для ЯВНОГО правила (Refined=false)
 	// стратегия выбрана оператором, а исполнить её сейчас нечем — это другое
 	// сообщение, иначе оператор ищет проблему в auto-правиле, которого нет.
 	if d.Refined {
-		return "auto не смогла выбрать стратегию размещения (placement.fallback=error): " + d.Reason, true
+		return i18n.T("balancer.placement_reject.auto_could_not_choose", d.Reason), true
 	}
-	return "стратегия размещения " + string(d.Strategy) + " не может быть исполнена сейчас " +
-		"(placement.fallback=error): " + d.Reason, true
+	return i18n.T("balancer.placement_reject.strategy_not_executable_now",
+		string(d.Strategy), d.Reason), true
 }
 
 // placementFallbackMode — как политика предписано поступать при невозможности
@@ -76,7 +75,7 @@ func (p *Proxy) placementFallbackMode() string {
 // writePlacementUnavailable — 503 с причиной и решением (клиент/оператор видит,
 // что именно не так с политикой размещения).
 func writePlacementUnavailable(w http.ResponseWriter, d PlacementDecision, reason string) {
-	logger.Get().Warnw("placement: запрос отклонён политикой (fallback=error)",
+	logger.Get().Warnw(i18n.T("balancer.placement_reject.rejected_by_policy_warn"),
 		"model", d.Model, "strategy", d.Strategy, "source", d.Source,
 		"degraded", d.Degraded, "executable", d.Executable, "reason", reason)
 
@@ -90,7 +89,6 @@ func writePlacementUnavailable(w http.ResponseWriter, d PlacementDecision, reaso
 			"reason":     d.Reason,
 			"model":      d.Model,
 		},
-		"hint": "исправьте balancing.placement для этой модели, включите fallback=single " +
-			"или auto.allowDegraded=true — см. GET /api/v1/placement",
+		"hint": i18n.T("balancer.placement_reject.hint"),
 	})
 }

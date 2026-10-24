@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -107,13 +108,14 @@ func tryNvidiaSMI() int64 {
 // calculateOptimalGPULayersForModel при reload.
 //
 // Стратегии (от лучшей к худшей):
-//  1a. ENV CPPWORKER_FREE_VRAM_BYTES — override для free VRAM (тесты/CI)
-//  1b. ENV CPPWORKER_VRAM_BYTES — override для total VRAM (тесты/CI)
-//      Приоритет выше nvidia-smi: ENV — явная инструкция оператора/теста.
-//      На хосте с загруженной моделью nvidia-smi вернёт маленькое значение
-//      свободной VRAM, но тесты задают CPPWORKER_VRAM_BYTES как override.
-//  2. bridge.GetGPUInfo() → VRAMFreeMB (если C-bridge возвращает free VRAM)
-//  3. nvidia-smi --query-gpu=memory.free — fallback через CLI
+//
+//	1a. ENV CPPWORKER_FREE_VRAM_BYTES — override для free VRAM (тесты/CI)
+//	1b. ENV CPPWORKER_VRAM_BYTES — override для total VRAM (тесты/CI)
+//	    Приоритет выше nvidia-smi: ENV — явная инструкция оператора/теста.
+//	    На хосте с загруженной моделью nvidia-smi вернёт маленькое значение
+//	    свободной VRAM, но тесты задают CPPWORKER_VRAM_BYTES как override.
+//	2. bridge.GetGPUInfo() → VRAMFreeMB (если C-bridge возвращает free VRAM)
+//	3. nvidia-smi --query-gpu=memory.free — fallback через CLI
 //
 // Возвращает 0 если ничего не удалось определить.
 func freeVRAMBytes() int64 {
@@ -224,9 +226,7 @@ func availableRAMBytes() int64 {
 	if v := strings.TrimSpace(os.Getenv("CPPWORKER_AVAILABLE_RAM_BYTES")); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n <= 0 {
-			logger.Get().Warnw("CPPWORKER_AVAILABLE_RAM_BYTES задан, но некорректен — "+
-				"автоопределение RAM пропущено, возвращаем 0 (AutoTune пропустит RAM-проверку). "+
-				"Ожидалось положительное целое число байт.",
+			logger.Get().Warnw(i18n.T("cppworker.vram_detect.ram_env_invalid"),
 				"value", v, "parse_error", err)
 			return 0
 		}
@@ -235,7 +235,7 @@ func availableRAMBytes() int64 {
 
 	probe := memfit.ProbeRAM()
 	if !probe.Known {
-		logger.Get().Debugw("availableRAMBytes: memfit.ProbeRAM не смог определить память")
+		logger.Get().Debugw(i18n.T("cppworker.vram_detect.probe_ram_failed"))
 		return 0
 	}
 	// cgroup-лимит — более жёсткая граница, чем память VM: если он известен,

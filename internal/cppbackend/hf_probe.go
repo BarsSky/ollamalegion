@@ -33,12 +33,15 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+
+	"ollama-loadbalancer/internal/i18n"
 )
 
 // HFProbeRangeBytes — сколько байт заголовка читаем. GGUF-метаданные (KV + описание
@@ -211,7 +214,7 @@ func probeHeadInto(res *HFProbeResult, head []byte, filename string) *HFProbeRes
 		hdr, perr := parseGGUFHeader(head)
 		if perr != nil {
 			res.Verdict = HFProbeUnknown
-			res.Reason = "GGUF-заголовок не читается: " + perr.Error()
+			res.Reason = i18n.T("cppbackend.hf_probe.reason_gguf_unreadable", perr)
 			return res
 		}
 		res.Arch = hdr.Arch
@@ -223,7 +226,7 @@ func probeHeadInto(res *HFProbeResult, head []byte, filename string) *HFProbeRes
 		hdr, perr := parseSafetensorsHeader(head)
 		if perr != nil {
 			res.Verdict = HFProbeUnknown
-			res.Reason = "safetensors-заголовок не читается: " + perr.Error()
+			res.Reason = i18n.T("cppbackend.hf_probe.reason_safetensors_unreadable", perr)
 			return res
 		}
 		res.Arch = hdr.Arch
@@ -234,15 +237,13 @@ func probeHeadInto(res *HFProbeResult, head []byte, filename string) *HFProbeRes
 		// точный отказ — и оператор узнаёт о нём ДО скачивания гигабайтов.
 		if t := firstUnsupportedWeightDtype(hdr.Dtypes); t != "" {
 			res.Verdict = HFProbeUnsupported
-			res.Reason = fmt.Sprintf(
-				"MLX-квантование (тип весов %s вместе с scales/biases): stable-diffusion.cpp читает GGUF и обычные safetensors (F16/BF16/F8), такой файл не загрузится — нужен GGUF-квант",
-				t)
+			res.Reason = i18n.T("cppbackend.hf_probe.reason_mlx_quantized", t)
 			return res
 		}
 		res.Family, res.Version, res.DiT, res.Reason = classifyTensors(hdr.normalizedSet())
 	default:
 		res.Verdict = HFProbeUnknown
-		res.Reason = "не похоже на файл весов (.gguf/.safetensors)"
+		res.Reason = i18n.T("cppbackend.hf_probe.reason_not_weights_file")
 		return res
 	}
 	if res.Version != "" {
@@ -289,11 +290,11 @@ func classifyTensors(ts tensorSet) (family, version string, dit bool, reason str
 	for _, a := range EngineAnchors {
 		for _, pat := range a.Any {
 			if ts.has(pat) {
-				why := fmt.Sprintf("движок узнаёт семейство по тензору %q", pat)
+				why := i18n.T("cppbackend.hf_probe.reason_anchored", pat)
 				if a.DiT {
-					why += "; файл нужно подключать как --diffusion-model (семейство DiT: отдельные VAE/text encoder)"
+					why += i18n.T("cppbackend.hf_probe.reason_anchor_dit")
 				} else {
-					why += "; файл подключается как --model"
+					why += i18n.T("cppbackend.hf_probe.reason_anchor_model")
 				}
 				return a.Family, a.Version, a.DiT, why
 			}
@@ -307,19 +308,19 @@ func classifyTensors(ts tensorSet) (family, version string, dit bool, reason str
 		dim := ts.dim0("token_embedding.weight")
 		switch {
 		case sdxl:
-			return "sdxl", "SDXL", false, "UNet с двумя текстовыми энкодерами — движок подключит как --model"
+			return "sdxl", "SDXL", false, i18n.T("cppbackend.hf_probe.reason_unet_two_encoders")
 		case dim == 768:
-			return "sd15", "SD1.x", false, "UNet с токен-эмбеддингом 768 — движок подключит как --model"
+			return "sd15", "SD1.x", false, i18n.T("cppbackend.hf_probe.reason_unet_dim_768")
 		case dim == 1024:
-			return "sd21", "SD2.x", false, "UNet с токен-эмбеддингом 1024 — движок подключит как --model"
+			return "sd21", "SD2.x", false, i18n.T("cppbackend.hf_probe.reason_unet_dim_1024")
 		default:
-			return "", "", false, "UNet-тензоры есть, но размерности токен-эмбеддинга в заголовке нет — версию не определить (движок решит по своей таблице)"
+			return "", "", false, i18n.T("cppbackend.hf_probe.reason_unet_dim_unknown")
 		}
 	}
 
 	// Ни один якорь не совпал: это может быть VAE, text encoder, LoRA — или
 	// семейство, которого мы не знаем. Обещать тут нечего.
-	return "", "", false, "в заголовке нет тензоров, по которым движок узнаёт версию модели (возможно, это VAE/text encoder/LoRA, а не diffusion-файл)"
+	return "", "", false, i18n.T("cppbackend.hf_probe.reason_no_version_tensors")
 }
 
 // parseContentRangeTotal достаёт полный размер файла из "bytes 0-524287/4151573280".
@@ -384,16 +385,16 @@ func (h ggufHeader) normalizedSet() tensorSet {
 func parseGGUFHeader(b []byte) (ggufHeader, error) {
 	h := ggufHeader{Dims: map[string]int64{}}
 	if len(b) < 24 {
-		return h, fmt.Errorf("слишком короткий файл (%d байт)", len(b))
+		return h, errors.New(i18n.T("cppbackend.hf_probe.file_too_short", len(b)))
 	}
 	if string(b[:4]) != "GGUF" {
-		return h, fmt.Errorf("нет magic GGUF")
+		return h, errors.New(i18n.T("cppbackend.hf_probe.no_gguf_magic"))
 	}
 	off := 4
 	version := binary.LittleEndian.Uint32(b[off:])
 	off += 4
 	if version < 2 || version > 3 {
-		return h, fmt.Errorf("неизвестная версия GGUF %d", version)
+		return h, errors.New(i18n.T("cppbackend.hf_probe.unknown_gguf_version", version))
 	}
 	tensorCount := binary.LittleEndian.Uint64(b[off:])
 	off += 8
@@ -491,14 +492,14 @@ func parseGGUFHeader(b []byte) (ggufHeader, error) {
 				case 10, 11, 12:
 					size = 8
 				default:
-					return h, fmt.Errorf("неизвестный тип элемента массива %d у ключа %q", et, key)
+					return h, errors.New(i18n.T("cppbackend.hf_probe.unknown_array_element_type", et, key))
 				}
 				if n > uint64(len(b)) || !skip(int(n)*size) {
 					return h, nil
 				}
 			}
 		default:
-			return h, fmt.Errorf("неизвестный тип значения %d у ключа %q", vt, key)
+			return h, errors.New(i18n.T("cppbackend.hf_probe.unknown_value_type", vt, key))
 		}
 	}
 
@@ -576,16 +577,16 @@ func (h sfHeader) normalizedSet() tensorSet {
 func parseSafetensorsHeader(b []byte) (sfHeader, error) {
 	h := sfHeader{Dims: map[string]int64{}}
 	if len(b) < 9 {
-		return h, fmt.Errorf("слишком короткий файл (%d байт)", len(b))
+		return h, errors.New(i18n.T("cppbackend.hf_probe.file_too_short", len(b)))
 	}
 	n := binary.LittleEndian.Uint64(b[:8])
 	if n == 0 || n > uint64(len(b)-8) {
-		return h, fmt.Errorf("длина JSON-заголовка вне прочитанного куска (%d байт)", n)
+		return h, errors.New(i18n.T("cppbackend.hf_probe.header_length_out_of_range", n))
 	}
 	raw := b[8 : 8+int(n)]
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return h, fmt.Errorf("JSON-заголовок: %w", err)
+		return h, fmt.Errorf("%s: %w", i18n.T("cppbackend.hf_probe.json_header"), err)
 	}
 	seen := map[string]bool{}
 	for key, val := range doc {

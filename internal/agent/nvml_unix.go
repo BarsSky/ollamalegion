@@ -9,6 +9,7 @@ import (
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -72,7 +73,7 @@ func initNVML() bool {
 	// прежде чем вызывать nvml.Init() (который может SIGSEGV при NULL dlopen).
 	libPath, ok := nvmlLibraryPresent()
 	if !ok {
-		fmt.Println("[NVML] libnvidia-ml.so.1 not found в известных путях — NVML недоступен (безопасно пропускаем)")
+		fmt.Println(i18n.T("agent.nvml_unix.lib_not_found"))
 		return false
 	}
 
@@ -84,7 +85,7 @@ func initNVML() bool {
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				fmt.Printf("[NVML] Panic during Init (lib=%s): %v — NVML помечен как недоступный\n", libPath, r)
+				fmt.Printf("%s\n", i18n.T("agent.nvml_unix.panic_during_init", libPath, r))
 			}
 		}()
 		ret := nvml.Init()

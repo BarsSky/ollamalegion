@@ -14,6 +14,7 @@ import (
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/tokencount"
 	"ollama-loadbalancer/pkg/types"
@@ -82,9 +83,9 @@ var logitBiasWarnOnce sync.Once
 // logit_bias проигнорирован.
 func warnLogitBiasOnce(field string, count int) {
 	logitBiasWarnOnce.Do(func() {
-		logger.Get().Warnw("logit_bias принят, но НЕ применяется: C-bridge не поддерживает logit-bias/грамматики",
+		logger.Get().Warnw(i18n.T("cppworker.handlers_openai.logit_bias_ignored"),
 			"field", field, "entries", count,
-			"hint", "используйте параметры сэмплинга (temperature/top_k/min_p/repeat_penalty) — они реально применяются")
+			"hint", i18n.T("cppworker.handlers_openai.logit_bias_hint"))
 	})
 }
 
@@ -448,7 +449,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		params.NPredict = ResolveNPredict(0, actualModel)
 	}
 	if upperBound > 0 && params.NPredict > upperBound {
-		logger.Get().Infow("buildOpenAIChatParams: max_output_tokens ограничил длину ответа сверху",
+		logger.Get().Infow(i18n.T("cppworker.handlers_openai.max_output_tokens_capped_chat"),
 			"model", actualModel, "max_output_tokens", upperBound, "n_predict", params.NPredict)
 		params.NPredict = upperBound
 	}
@@ -733,8 +734,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// content пуст, finish_reason=length. Для не-стрима R91 сохранён.
 		if vis, used := ContentFromUnclosedReasoning(rc, cur); used && !PromptOpensReasoning(prompt) && !req.Stream {
 			message["content"] = vis
-			logger.Get().Warnw("handleV1ChatCompletions: модель ушла в незакрытый reasoning — "+
-				"текст отдан как content, иначе клиент получил бы пустой ответ",
+			logger.Get().Warnw(i18n.T("cppworker.handlers_openai.unclosed_reasoning_as_content"),
 				"model", modelName, "reasoning_chars", len(rc))
 		}
 		// R91 (2026-10-09): честная причина остановки — как в streaming-пути
@@ -744,8 +744,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// max_tokens=96 → completion_tokens=97, а клиенту уходило "stop").
 		if ct, ok := usage["completion_tokens"].(int); ok && params.NPredict > 0 && ct >= params.NPredict {
 			finishReason = "length"
-			logger.Get().Warnw("handleV1ChatCompletions: ответ обрезан капом max_tokens — "+
-				"отдаём finish_reason=length (клиент должен продолжить или предупредить оператора)",
+			logger.Get().Warnw(i18n.T("cppworker.handlers_openai.truncated_by_max_tokens"),
 				"model", modelName, "max_tokens", params.NPredict, "completion_tokens", ct)
 		}
 	}
@@ -926,8 +925,7 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 	// reasoning_content есть, content пуст.
 	content = stripToolCallMarkup(cleanFinalContent(content))
 	if strings.TrimSpace(content) == "" && strings.TrimSpace(reasoning) == "" {
-		logger.Get().Warnw("writeStaticTextStream: пустой ответ (ни content, ни reasoning) — "+
-			"клиент увидит пустой ответ; проверьте max_tokens и stop-последовательности",
+		logger.Get().Warnw(i18n.T("cppworker.handlers_openai.static_text_stream_empty"),
 			"model", modelName)
 	}
 
@@ -1390,8 +1388,7 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			// reasoning как ответ (см. ContentFromUnclosedReasoning). Логируем —
 			// иначе такой случай выглядит как «клиент получил пустой ответ».
 			if snap := rsParser.Snapshot(); snap.ContentChars == 0 && snap.ReasoningChars > 0 {
-				logger.Get().Warnw("writeOpenAIChatStream: модель ушла в незакрытый reasoning — "+
-					"текст отдан как content, иначе клиент получил бы пустой ответ",
+				logger.Get().Warnw(i18n.T("cppworker.handlers_openai.stream_unclosed_reasoning_as_content"),
 					"model", modelName, "reasoning_chars", snap.ReasoningChars)
 			}
 			writeReasoningChunk(map[string]interface{}{"content": cTail})
@@ -1439,8 +1436,7 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	// пустой/обрезанный content полным ответом. См. FinalizeForStream.
 	if !truncated && rsParser.Snapshot().Unclosed {
 		truncated = true
-		logger.Get().Warnw("writeOpenAIChatStream: блок размышлений не закрыт — "+
-			"отдаём finish_reason=length (content без дубля размышлений)",
+		logger.Get().Warnw(i18n.T("cppworker.handlers_openai.stream_reasoning_unclosed_length"),
 			"model", modelName, "tokens_sent", sw.TokensSent(),
 			"reasoning_chars", rsParser.Snapshot().ReasoningChars)
 	}
@@ -1466,8 +1462,7 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	}
 	if truncated && len(toolCalls) == 0 {
 		finishReason = "length"
-		logger.Get().Warnw("writeOpenAIChatStream: ответ обрезан капом max_tokens — "+
-			"отдаём finish_reason=length (клиент должен продолжить или предупредить оператора)",
+		logger.Get().Warnw(i18n.T("cppworker.handlers_openai.stream_truncated_by_max_tokens"),
 			"model", modelName, "max_tokens", params.NPredict, "tokens_sent", sw.TokensSent())
 	}
 
@@ -1603,7 +1598,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		params.NPredict = ResolveNPredict(0, modelName)
 	}
 	if upperBound2 > 0 && params.NPredict > upperBound2 {
-		logger.Get().Infow("handleOpenAICompletions: max_output_tokens ограничил длину ответа сверху",
+		logger.Get().Infow(i18n.T("cppworker.handlers_openai.max_output_tokens_capped_completions"),
 			"model", modelName, "max_output_tokens", upperBound2, "n_predict", params.NPredict)
 		params.NPredict = upperBound2
 	}

@@ -16,6 +16,7 @@
 package balancer
 
 import (
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -42,7 +43,7 @@ func (p *Proxy) shardedMasterForRequestR92(model string, bt types.BackendType) s
 		// на llama.cpp-узлах и сюда не относится.
 		return ""
 	}
-	logger.Get().Infow("sharded: запрос направлен на мастер логического бэкенда",
+	logger.Get().Infow(i18n.T("balancer.sharded_master.routed_to_master_info"),
 		"model", model, "group", decision.GroupID, "master", master,
 		"members", decision.GroupMembers,
 		"strategy", decision.Strategy, "source", decision.Source)

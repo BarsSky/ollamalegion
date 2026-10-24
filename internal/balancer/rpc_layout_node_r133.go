@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -79,7 +80,7 @@ func pushRPCNodeConfig(b *types.Backend, enabled bool, port int) error {
 		return fmt.Errorf("backend is nil")
 	}
 	if b.CppWorkerPort <= 0 {
-		return fmt.Errorf("backend %s: неизвестен порт cppworker", b.ID)
+		return fmt.Errorf(i18n.T("balancer.rpc_layout_node.unknown_port"), b.ID)
 	}
 	if port <= 0 {
 		port = 50052
@@ -392,16 +393,16 @@ func (p *Proxy) EnsureRPCNodeServing(backendID string) (bool, string) {
 			return false, ""
 		}
 		if err := pushRPCNodeConfig(b, false, wantPort); err != nil {
-			reason := fmt.Sprintf("не удалось погасить узел раскладки после смены роли: %v", err)
+			reason := i18n.T("balancer.rpc_layout_node.stop_failed_reason", err)
 			p.setRPCNodeState(backendID, true, false, reason)
-			logger.Get().Warnw("EnsureRPCNodeServing: узел не погашен",
+			logger.Get().Warnw(i18n.T("balancer.rpc_layout_node.stop_failed_warn"),
 				"backend", backendID, "role", role, "error", err)
 			return false, reason
 		}
 		p.forgetRPCNodeServed(backendID)
 		p.setRPCNodeState(backendID, false, false, "")
 		p.rememberRPCNodeOrder(backendID, rpcNodeOrderKey(false, wantPort), "off")
-		logger.Get().Infow("EnsureRPCNodeServing: узел раскладки погашен (роль больше не донор)",
+		logger.Get().Infow(i18n.T("balancer.rpc_layout_node.stopped_info"),
 			"backend", backendID, "role", role)
 		return true, ""
 	}
@@ -427,7 +428,7 @@ func (p *Proxy) EnsureRPCNodeServing(backendID string) (bool, string) {
 				prevKnown, prevRunning, prevListening := known, running, listening
 				running, listening, reportedPort, known = p.cppworkerRPCNode(backendID)
 				if prevRunning != running || prevListening != listening || prevKnown != known {
-					logger.Get().Infow("EnsureRPCNodeServing: снимок узла обновлён принудительно — состояние отличалось от кэша",
+					logger.Get().Infow(i18n.T("balancer.rpc_layout_node.snapshot_refreshed_info"),
 						"backend", backendID,
 						"was_known", prevKnown, "was_running", prevRunning, "was_listening", prevListening,
 						"known", known, "running", running, "listening", listening)
@@ -444,14 +445,13 @@ func (p *Proxy) EnsureRPCNodeServing(backendID string) (bool, string) {
 		if addr != "" {
 			reachable = p.rpcProbeFunc()(addr, rpcNodeServeDialTimeout)
 			if !reachable {
-				reason = fmt.Sprintf("узел раскладки поднят на %s, но с балансера недоступен "+
-					"(проверьте публикацию порта при запуске контейнера и фаервол)", addr)
+				reason = i18n.T("balancer.rpc_layout_node.not_reachable_reason", addr)
 			}
 		}
 		p.setRPCNodeState(backendID, true, reachable, reason)
 		p.rememberRPCNodeOrder(backendID, rpcNodeOrderKey(true, wantPort), "up")
 		if !reachable {
-			logger.Get().Warnw("EnsureRPCNodeServing: узел донора недоступен с балансера",
+			logger.Get().Warnw(i18n.T("balancer.rpc_layout_node.unreachable_warn"),
 				"backend", backendID, "addr", addr)
 		}
 		return false, reason
@@ -463,8 +463,7 @@ func (p *Proxy) EnsureRPCNodeServing(backendID string) (bool, string) {
 	// НЕ снимаем: оператор может настраивать узел (доктрина R118.10), приказ уйдёт
 	// сам, как только запись станет здоровой.
 	if addr != "" && p.nodeMarkedUnavailable(addr) {
-		reason := fmt.Sprintf("узел %s не в сети (балансер помечает запись недоступной): "+
-			"приказ поднять узел будет отправлен, когда узел вернётся", addr)
+		reason := i18n.T("balancer.rpc_layout_node.offline_reason", addr)
 		p.setRPCNodeState(backendID, false, false, reason)
 		return false, reason
 	}
@@ -476,19 +475,19 @@ func (p *Proxy) EnsureRPCNodeServing(backendID string) (bool, string) {
 	if p.rpcNodeOrderSuppressed(backendID, true, wantPort, state) {
 		// Диагностика на уровне Debug осознанно: при залипшем поллере именно эти
 		// четыре поля показывают, что балансер видит «не так», как воркер.
-		logger.Get().Debugw("EnsureRPCNodeServing: приказ уже отправлен, ждём смены состояния",
+		logger.Get().Debugw(i18n.T("balancer.rpc_layout_node.order_pending_debug"),
 			"backend", backendID, "state", state, "known", known,
 			"running", running, "listening", listening, "port", wantPort)
 		return false, p.RPCNodeReport(backendID).Reason
 	}
-	logger.Get().Debugw("EnsureRPCNodeServing: состояние узла не соответствует роли донора",
+	logger.Get().Debugw(i18n.T("balancer.rpc_layout_node.state_mismatch_debug"),
 		"backend", backendID, "state", state, "known", known,
 		"running", running, "listening", listening, "reported_port", reportedPort, "want_port", wantPort)
 
 	if err := pushRPCNodeConfig(b, true, wantPort); err != nil {
-		reason := fmt.Sprintf("не удалось поднять узел раскладки: %v", err)
+		reason := i18n.T("balancer.rpc_layout_node.start_failed_reason", err)
 		p.setRPCNodeState(backendID, true, false, reason)
-		logger.Get().Warnw("EnsureRPCNodeServing: приказ поднять узел не доставлен",
+		logger.Get().Warnw(i18n.T("balancer.rpc_layout_node.order_not_delivered_warn"),
 			"backend", backendID, "addr", addr, "error", err)
 		return false, reason
 	}
@@ -496,9 +495,8 @@ func (p *Proxy) EnsureRPCNodeServing(backendID string) (bool, string) {
 	// что узел ещё не подтверждён, а не выдаём приказ за готовность.
 	p.rememberRPCNodeOrder(backendID, rpcNodeOrderKey(true, wantPort), state)
 	p.setRPCNodeState(backendID, true, false,
-		fmt.Sprintf("узлу %s отправлен приказ поднять rpc-server на порту %d: ждём подтверждения",
-			b.ID, wantPort))
-	logger.Get().Infow("EnsureRPCNodeServing: донору отправлен приказ поднять узел раскладки",
+		i18n.T("balancer.rpc_layout_node.order_sent_reason", b.ID, wantPort))
+	logger.Get().Infow(i18n.T("balancer.rpc_layout_node.order_sent_info"),
 		"backend", backendID, "addr", addr, "port", wantPort, "state", state)
 	return true, ""
 }

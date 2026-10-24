@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/balancer"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -89,14 +90,14 @@ func (s *Server) handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 			// R93: недоступный каталог у воркера — не «моделей нет», а
 			// «посмотреть не удалось». Оператору это надо различать.
 			if entry.DirError != "" {
-				row.Note = "каталог моделей воркера недоступен: " + entry.DirError
+				row.Note = i18n.T("api.handlers_model_catalog.dir_unavailable", entry.DirError)
 			} else if len(entry.Files) == 0 {
-				row.Note = "на диске воркера нет ни одного .gguf (список пуст по факту, не из-за ошибки)"
+				row.Note = i18n.T("api.handlers_model_catalog.no_gguf")
 			}
 		} else if isLlama {
-			row.Note = "каталог этого бэкенда ещё не опрошен: выбор для незагруженной модели работает как раньше (любой healthy узел)"
+			row.Note = i18n.T("api.handlers_model_catalog.not_polled_yet")
 		} else {
-			row.Note = "каталог ведётся только для llama.cpp-бэкендов (у них есть /api/models/files)"
+			row.Note = i18n.T("api.handlers_model_catalog.llamacpp_only")
 		}
 		rows = append(rows, row)
 	}
@@ -106,8 +107,6 @@ func (s *Server) handleModelsCatalog(w http.ResponseWriter, r *http.Request) {
 		"total":              len(rows),
 		"refreshed":          refreshed,
 		"refreshIntervalSec": int(balancer.ModelCatalogRefreshInterval().Seconds()),
-		"note": "каталог — кэш листингов /api/models/files; «known» = снимок есть, " +
-			"пустой список файлов при known=true означает, что моделей на диске нет " +
-			"(а dirError — что каталог воркера недоступен)",
+		"note":               i18n.T("api.handlers_model_catalog.note"),
 	})
 }

@@ -16,13 +16,14 @@ package cppbackend
 // (memfit/CUDA/RPC/GGUF). Сторож не вмешивается в работу и не прерывает load.
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"runtime/pprof"
 	"strconv"
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -70,8 +71,7 @@ func loadStallWatchdog(modelName string, stall time.Duration, done <-chan struct
 		case <-time.After(stall):
 		}
 		stack := dump()
-		logger.Get().Errorw("загрузка модели не завершилась за отведённое время — "+
-			"печатаю стек горутин, чтобы увидеть, на чём стоит (memfit/CUDA/RPC/GGUF)",
+		logger.Get().Errorw(i18n.T("cppbackend.load_stall.watchdog_fired"),
 			"model", modelName, "stall_sec", int(stall.Seconds()), "stacks", stack)
 		// R227 (шаг 2): не только сообщаем, но и пытаемся прекратить загрузку.
 		// llama.cpp чтит флаг отмены на ближайшем checkpoint; если он висит до
@@ -114,6 +114,5 @@ func (b *Backend) acquireLoadFlight(wait time.Duration) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("загрузка заблокирована: предыдущая загрузка не завершилась за %s "+
-		"(вероятно, зависла в native load — см. ERROR со стеком горутин в логе воркера)", wait)
+	return errors.New(i18n.T("cppbackend.load_stall.blocked", wait))
 }

@@ -64,6 +64,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/config"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -605,9 +606,7 @@ func (r *imageResources) lockFuse() time.Duration {
 			if log := logger.Get(); log != nil {
 				log.Warnw("image GPU lock fuse armed (operator opt-in)",
 					"timeout_sec", int(d.Seconds()),
-					"hint", "лок будет снят принудительно по будильнику; "+
-						"уберите exclusiveLockTimeoutSec, чтобы предохранитель был снят "+
-						"(лок освобождается по жизненному циклу запроса)")
+					"hint", i18n.T("balancer.image_resources.lock_fuse_hint"))
 			}
 		})
 	}
@@ -1693,7 +1692,7 @@ func (r *imageResources) forceRelease(h *imageLockHolder) {
 		return // уже освобождён штатно — предохранитель не нужен
 	}
 	r.lockForced.Add(1)
-	logger.Get().Warnw("image GPU lock held too long — forced release (предохранитель exclusiveLockTimeoutSec)",
+	logger.Get().Warnw(i18n.T("balancer.image_resources.lock_forced_release_warn"),
 		"host", h.host,
 		"gpu_index", h.gpu.index,
 		"gpu_known", h.gpu.known,

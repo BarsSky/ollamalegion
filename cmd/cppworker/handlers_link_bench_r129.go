@@ -19,6 +19,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"ollama-loadbalancer/internal/i18n"
 )
 
 // linkBenchMaxMB — верхняя граница одного замера: защита от того, что кто-то
@@ -29,17 +31,15 @@ func handleCppWorkerLinkBench(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"usage": "POST тело произвольного размера; воркер читает и отбрасывает его, " +
-				"возвращая bytes/durationMs/mbps",
+			"usage": i18n.T("cppworker.handlers_link_bench_r129.usage"),
 			"maxMb": linkBenchMaxMB,
-			"note": "измеряется пропускная способность TCP между узлами; " +
-				"это не health-check и не замер протокола llama.cpp RPC",
+			"note":  i18n.T("cppworker.handlers_link_bench_r129.note"),
 		})
 		return
 	case http.MethodPost:
 		// читаем и отбрасываем
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "use POST (замер) or GET (описание)")
+		writeError(w, http.StatusMethodNotAllowed, i18n.T("cppworker.handlers_link_bench_r129.method_not_allowed"))
 		return
 	}
 
@@ -47,7 +47,7 @@ func handleCppWorkerLinkBench(w http.ResponseWriter, r *http.Request) {
 	n, err := io.Copy(io.Discard, r.Body)
 	elapsed := time.Since(started)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "тело не прочитано: "+err.Error())
+		writeError(w, http.StatusBadRequest, i18n.T("cppworker.handlers_link_bench_r129.body_unread", err.Error()))
 		return
 	}
 	// Нулевой интервал возможен: на локальном loopback чтение мегабайтов из

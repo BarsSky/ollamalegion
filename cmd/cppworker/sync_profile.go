@@ -39,6 +39,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -203,8 +204,8 @@ func lazyLoadProfileFor(modelName string) *types.LlamaCppModelProfile {
 	if prof == nil {
 		if profileSyncer.snapshotSize() == 0 {
 			if err := profileSyncer.fetchNow(context.Background()); err != nil {
-				logger.Get().Warnw("lazy-load: не удалось подтянуть профили моделей — "+
-					"использую параметры по умолчанию", "model", modelName, "error", err)
+				logger.Get().Warnw(i18n.T("cppworker.sync_profile.lazy_load_failed"),
+					"model", modelName, "error", err)
 			}
 			prof = profileSyncer.applyProfileOnLoad(modelName)
 		}

@@ -26,9 +26,9 @@ package balancer
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -102,7 +102,7 @@ func (p *Proxy) applyPrimaryModelPolicy(backendID, modelName string, bodyBuf []b
 		if patched == nil {
 			patched = bodyBuf
 		}
-		logger.Get().Infow("primary: запрос обслужен с зафиксированным n_ctx (настройки модели не меняются)",
+		logger.Get().Infow(i18n.T("balancer.primary_model_policy.served_info"),
 			"backend", backendID, "model", modelName,
 			"fixed_n_ctx", fixed,
 			"client_num_ctx", meta.RequestedNCtxOverride,
@@ -113,7 +113,7 @@ func (p *Proxy) applyPrimaryModelPolicy(backendID, modelName string, bodyBuf []b
 	}
 
 	// Не хватает — отказ с понятным объяснением вместо тихой перезагрузки.
-	logger.Get().Warnw("primary: запрос требует контекста больше зафиксированного — отказ",
+	logger.Get().Warnw(i18n.T("balancer.primary_model_policy.insufficient_warn"),
 		"backend", backendID, "model", modelName,
 		"fixed_n_ctx", fixed,
 		"client_num_ctx", meta.RequestedNCtxOverride,
@@ -121,12 +121,7 @@ func (p *Proxy) applyPrimaryModelPolicy(backendID, modelName string, bodyBuf []b
 		"estimated_prompt_tokens", meta.EstimatedPromptTokens,
 		"n_predict", nPredict)
 
-	msg := fmt.Sprintf(
-		"model %q имеет ЗАФИКСИРОВАННЫЕ настройки: n_ctx=%d, и его нельзя изменить "+
-			"клиентским запросом. Этому запросу нужно %d токенов "+
-			"(prompt≈%d + generation=%d + reserve). Уменьшите num_predict/размер промпта "+
-			"или попросите администратора увеличить контекст модели в WebUI "+
-			"(GGUF → настройки бэкенда) и перезагрузить её.",
+	msg := i18n.T("balancer.primary_model_policy.settings_locked_message",
 		modelName, fixed, required, meta.EstimatedPromptTokens, nPredict)
 
 	// Формат ответа зависит от клиента: streaming-клиенты (OpenWebUI/Cline)
@@ -219,7 +214,7 @@ func writePrimaryRejection(rw http.ResponseWriter, body []byte, rejectMsg string
 		"settings_locked":  true,
 		"fixed_n_ctx":      fixed,
 		"reason":           "primary_model_settings_fixed_by_administrator",
-		"admin_action":     "измените настройки модели в WebUI (GGUF → настройки) и перезагрузите её",
+		"admin_action":     i18n.T("balancer.primary_model_policy.admin_action"),
 		"profile_endpoint": "/api/v1/cppworker/model-profiles",
 	}
 	_ = json.NewEncoder(rw).Encode(resp)

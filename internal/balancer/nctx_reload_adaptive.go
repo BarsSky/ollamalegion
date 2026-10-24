@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -79,8 +80,7 @@ func queryAdaptiveStrategy(backendAddr, modelName string, targetNCtx int, kvHint
 		// 404 здесь означает, что имя модели не разрезолвилось (или файла нет) —
 		// это диагностически важно, поэтому Warn. Остальные коды — тоже Warn:
 		// без стратегии загрузка уходит в дефолты и может не влезть в память.
-		logger.Get().Warnw("queryAdaptiveStrategy: non-200 status (стратегия не получена, "+
-			"загрузка пойдёт по значениям по умолчанию)",
+		logger.Get().Warnw(i18n.T("balancer.nctx_reload_adaptive.non_200_strategy_warn"),
 			"url", url, "status", resp.StatusCode, "model", modelName)
 		return nil
 	}

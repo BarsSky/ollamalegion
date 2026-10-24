@@ -25,12 +25,12 @@ package cppbackend
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -59,11 +59,7 @@ func (e *RPCSessionLostError) Error() string {
 	if endpoint == "" && len(e.Servers) > 0 {
 		endpoint = e.Servers[0]
 	}
-	return fmt.Sprintf(
-		"RPC-сессия с узлом раскладки %s потеряна во время генерации: узел не отвечает "+
-			"по TCP. Это не OOM и не n_ctx: узел ушёл. Модель выгружена — повторите "+
-			"запрос, раскладка соберётся заново (узел проверяется перед подключением)",
-		endpoint)
+	return i18n.T("cppbackend.rpc_session_lost_r224.session_lost_error", endpoint)
 }
 
 // Unwrap сохраняет исходную причину для errors.Is/As.
@@ -159,8 +155,7 @@ func (b *Backend) unloadAfterSessionLoss(inst *modelInstance, modelName string) 
 	if !b.shouldAutoUnload(modelName, time.Now()) {
 		return
 	}
-	logger.Get().Warnw("раскладка: сессия с узлом потеряна — выгружаю модель, "+
-		"чтобы следующая загрузка собрала раскладку заново",
+	logger.Get().Warnw(i18n.T("cppbackend.rpc_session_lost_r224.session_lost_unloading"),
 		"model", modelName, "session_auto_unload", true)
 	unload := b.unloadForRecovery
 	go func() {
@@ -173,11 +168,11 @@ func (b *Backend) unloadAfterSessionLoss(inst *modelInstance, modelName string) 
 			err = b.unloadModel(modelName, inst)
 		}
 		if err != nil {
-			logger.Get().Errorw("раскладка: авто-выгрузка после потери сессии не удалась — "+
-				"выгрузите модель вручную", "model", modelName, "error", err)
+			logger.Get().Errorw(i18n.T("cppbackend.rpc_session_lost_r224.auto_unload_failed"),
+				"model", modelName, "error", err)
 			return
 		}
-		logger.Get().Infow("раскладка: модель выгружена после потери сессии — "+
-			"следующий запрос загрузит её заново", "model", modelName)
+		logger.Get().Infow(i18n.T("cppbackend.rpc_session_lost_r224.unloaded_after_loss"),
+			"model", modelName)
 	}()
 }

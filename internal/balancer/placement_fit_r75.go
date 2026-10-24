@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -252,7 +253,7 @@ func (p *Proxy) resolveAutoStrategy(d PlacementDecision, rule types.PlacementMod
 	if len(skipped) > 0 {
 		reason += "; пропущено: " + joinR75(skipped)
 	}
-	logger.Get().Warnw("placement auto: не удалось выбрать стратегию по VRAM, деградация на single",
+	logger.Get().Warnw(i18n.T("balancer.placement_fit.auto_degraded_warn"),
 		"model", d.Model, "reason", reason, "fit_backends", fit.FitBackends)
 	return types.PlacementSingle, true, reason
 }

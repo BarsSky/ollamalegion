@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/modelname"
 	"ollama-loadbalancer/pkg/types"
@@ -240,7 +241,7 @@ func (lr *LlamaCppRouter) ensureModelLoadedWithFailover(
 	// (2) Загрузка не удалась/не уложилась в окно ожидания, но рядом есть ГОТОВАЯ
 	// копия модели — обслуживаем с неё, а не заставляем клиента ждать и ретраить.
 	if alt := lr.selectReadyModelCopyExcluding(modelName, exclude); alt != "" {
-		logger.Get().Warnw("R82: переезд на готовую копию модели (загрузка не удалась)",
+		logger.Get().Warnw(i18n.T("balancer.llamacpp_backend_helpers.r82_ready_copy_after_load_failure_warn"),
 			"model", modelName, "from", backendID, "to", alt, "error", err)
 		return alt, nil
 	}
@@ -261,12 +262,12 @@ func (lr *LlamaCppRouter) loadOnAlternativeWithFailover(
 		// R82: копия уже готова (узел отвечает, метрики говорят «модель
 		// загружена») — обслуживаем без загрузки и ожидания.
 		if lr.backendReadyWithModelByMetrics(alt, modelName) {
-			logger.Get().Warnw("R82: переезд на готовую копию после отказа бэкенда",
+			logger.Get().Warnw(i18n.T("balancer.llamacpp_backend_helpers.r82_ready_copy_after_backend_failure_warn"),
 				"model", modelName, "from", backendID, "to", alt)
 			return alt
 		}
 		if _, altErr := lr.ensureModelLoadedOnBackend(alt, modelName, opts); altErr == nil {
-			logger.Get().Warnw("R82: переезд на живую копию после отказа бэкенда",
+			logger.Get().Warnw(i18n.T("balancer.llamacpp_backend_helpers.r82_live_copy_after_backend_failure_warn"),
 				"model", modelName, "from", backendID, "to", alt)
 			return alt
 		}
@@ -398,7 +399,7 @@ func (lr *LlamaCppRouter) backendReadyWithModelByMetrics(backendID, modelName st
 func (lr *LlamaCppRouter) selectLlamaCppBackendForModel(model string) string {
 	if lr != nil && lr.proxy != nil && model != "" && lr.proxy.replicationSelector != nil {
 		if id := lr.proxy.replicationSelector.Select(model); id != "" {
-			logger.Get().Debugw("llama.cpp: реплика выбрана группой",
+			logger.Get().Debugw(i18n.T("balancer.llamacpp_backend_helpers.replica_selected_by_group_debug"),
 				"model", model, "backend", id)
 			return id
 		}
@@ -441,7 +442,7 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendForModel(model string) string {
 	// прежний fallback: отсутствие телеметрии не ломает стенд.
 	if lr != nil && lr.proxy != nil && model != "" {
 		if id := lr.proxy.findLeastLoadedBackendWithModelOnDisk(model, []types.BackendType{types.BackendTypeLlamaCpp}); id != "" {
-			logger.Get().Debugw("llama.cpp: модель не загружена — выбран узел, где файл есть на диске",
+			logger.Get().Debugw(i18n.T("balancer.llamacpp_backend_helpers.model_not_loaded_node_with_file_debug"),
 				"model", model, "backend", id)
 			return id
 		}
@@ -697,7 +698,7 @@ func loadWaitDeadline() time.Time {
 	if logger.Get() != nil {
 		logger.Get().Warnw("armed load wait cap (operator opt-in)",
 			"cap_sec", sec, "source", "LB_ALLOW_LOAD_WAIT_CAP_SEC",
-			"hint", "по умолчанию капа нет: ждём loaded/error/недоступность бэкенда")
+			"hint", i18n.T("balancer.llamacpp_backend_helpers.load_wait_cap_hint"))
 	}
 	return time.Now().Add(time.Duration(sec) * time.Second)
 }
@@ -788,7 +789,7 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 			}
 		}
 		if loadPending {
-			ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: проба не ответила, но загрузка идёт — ждём, а не считаем узел мёртвым",
+			ridLog(lr_recentCtx()).Infow(i18n.T("balancer.llamacpp_backend_helpers.probe_failed_but_loading_wait_info"),
 				"backend", backendID, "model", modelName)
 		} else {
 			ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: backend unreachable, refusing to trust stale snapshot",
@@ -1019,7 +1020,7 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 				lr.proxy.publishLoadFailureEventDeduped(backendID,
 					"auto_load_failed|"+modelName+"|"+result.Error,
 					types.SeverityWarning,
-					"Не удалось загрузить модель "+modelName+": "+result.Error,
+					i18n.T("balancer.llamacpp_backend_helpers.load_failed_event_message", modelName, result.Error),
 					map[string]interface{}{
 						"event_kind": "auto_load_failed",
 						"model":      modelName,

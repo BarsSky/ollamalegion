@@ -26,6 +26,7 @@ import (
 	"net/http"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -186,7 +187,7 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 				// обновления metrics poller увидит старый n_ctx и запустит второй
 				// reload уже после того, как клиент дождался первого.
 				lr.proxy.cacheLoadedContextLength(args.backendID, meta.ModelName, res.TargetNCtx)
-				logger.Get().Infow("preflight: модель готова после ожидания reload — запрос обслуживается",
+				logger.Get().Infow(i18n.T("balancer.preflight_helper.model_ready_after_reload_info"),
 					"backend", args.backendID, "model", meta.ModelName,
 					"target_n_ctx", res.TargetNCtx, "waited_sec", int(wait.Seconds()))
 				return false, res

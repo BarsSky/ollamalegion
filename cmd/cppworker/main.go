@@ -271,12 +271,11 @@ func main() {
 		}
 	}
 	if *writeTimeout > 0 {
-		log.Warnw("CPPWORKER_WRITE_TIMEOUT включён: сервер ОБОРВЁТ потоковый ответ по истечении срока "+
-			"(это duration-кап на работу, а не таймаут опроса состояния)",
+		log.Warnw(i18n.T("cppworker.main.write_timeout_enabled"),
 			"write_timeout", writeTimeout.String())
 	}
 	if *readTimeout > 0 {
-		log.Warnw("CPPWORKER_READ_TIMEOUT включён: сервер ОБОРВЁТ приём запроса по истечении срока",
+		log.Warnw(i18n.T("cppworker.main.read_timeout_enabled"),
 			"read_timeout", readTimeout.String())
 	}
 
@@ -346,12 +345,12 @@ func main() {
 	cfg.RPCEnabled = rpcDecision.Enabled
 	cfg.RPCServers = rpcDecision.Servers
 	for _, note := range rpcDecision.Notes {
-		log.Infow("RPC-режим: "+note,
+		log.Infow(i18n.T("cppworker.main.rpc_mode", note),
 			"rpc_enabled", rpcDecision.Enabled,
 			"servers", rpcDecision.Servers)
 	}
 	for _, warn := range rpcDecision.Warnings {
-		log.Warnw("RPC-режим: "+warn,
+		log.Warnw(i18n.T("cppworker.main.rpc_mode", warn),
 			"rpc_enabled", rpcDecision.Enabled,
 			"servers", rpcDecision.Servers)
 	}
@@ -371,9 +370,9 @@ func main() {
 	// обязаны быть на одном коммите llama.cpp, иначе слои не поедут.
 	envLlamaBuildValue = strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD"))
 	if facts := currentLlamaBuildFacts(); !facts.Compatible {
-		log.Warnw("llama.cpp: КОММИТ В ENV НЕ СОВПАДАЕТ С БИНАРНИКОМ — раскладка с другими узлами может не поехать",
+		log.Warnw(i18n.T("cppworker.main.llama_build_mismatch"),
 			"env_llama_build", facts.Env, "binary_llama_build", facts.Binary,
-			"hint", "обновите CPPWORKER_LLAMA_BUILD в .env под образ (git -C c/llama.cpp rev-parse --short HEAD)")
+			"hint", i18n.T("cppworker.main.llama_build_mismatch_hint"))
 	} else {
 		log.Infow("llama.cpp build info", "env_llama_build", envLlamaBuildValue,
 			"image_llama_build", strings.TrimSpace(os.Getenv(envLlamaBuildBaked)))
@@ -386,7 +385,7 @@ func main() {
 		// строки «узел подключён, его устройств: N» и «устройств в раскладке 2».
 		// Истину говорит сам мост — только он отличает «узел недоступен» от
 		// «RPC не собран в этой сборке llama.cpp».
-		log.Infow("RPC-раскладка запрошена: узлы регистрируются при загрузке модели",
+		log.Infow(i18n.T("cppworker.main.rpc_layout_requested"),
 			"servers", cfg.RPCServers)
 	}
 
@@ -403,19 +402,19 @@ func main() {
 	rpcServerChild = cppbackend.NewRPCServerChild(cfg)
 	if rpcServerChild.Enabled() {
 		if err := rpcServerChild.Start(); err != nil {
-			log.Errorw("rpc-server: узел раскладки НЕ поднялся",
+			log.Errorw(i18n.T("cppworker.main.rpc_server_start_failed"),
 				"bin", cfg.RPCServerBin, "bind", cfg.RPCServerBind, "port", cfg.RPCServerPort,
 				"error", err,
-				"hint", "проверьте CPPWORKER_RPC_SERVER_BIN (в образе это /app/rpc-server) и свободен ли порт")
+				"hint", i18n.T("cppworker.main.rpc_server_start_failed_hint"))
 		} else {
-			log.Infow("rpc-server: узел раскладки поднят внутри cppworker",
+			log.Infow(i18n.T("cppworker.main.rpc_server_started"),
 				"addr", rpcServerChild.Addr(),
-				"note", "отдельный контейнер ol-rpc-server для этой машины больше не нужен")
+				"note", i18n.T("cppworker.main.rpc_server_started_note"))
 		}
 	} else {
-		log.Infow("rpc-server: узел раскладки выключен (CPPWORKER_RPC_SERVER_ENABLED)",
+		log.Infow(i18n.T("cppworker.main.rpc_server_disabled"),
 			"env", "CPPWORKER_RPC_SERVER_ENABLED",
-			"hint", "включается здесь же или из WebUI (runtime-ключ rpcServerEnabled)")
+			"hint", i18n.T("cppworker.main.rpc_server_disabled_hint"))
 	}
 
 	flag.Visit(func(f *flag.Flag) {
@@ -468,9 +467,7 @@ func main() {
 	// Предупреждаем о пустом токене: тогда защищённые эндпоинты открыты, и
 	// балансер не сможет выполнить ни reload, ни правку параметров модели.
 	if resolveAPIToken() == "" {
-		log.Warnw("API token is empty: protected cppworker endpoints are UNAUTHENTICATED. " +
-			"Задайте API_TOKEN (или CPPWORKER_API_TOKEN) в окружении контейнера — " +
-			"иначе балансер не сможет менять параметры модели, а сам воркер открыт всем.")
+		log.Warnw(i18n.T("cppworker.main.api_token_empty"))
 	}
 
 	if err := os.MkdirAll(cfg.ModelsDir, 0755); err != nil {
@@ -542,7 +539,7 @@ func main() {
 			}()
 			log.Infow("model inventory watcher started",
 				"interval_sec", int(ttl.Seconds()), "dir", mm.GetModelsDir(),
-				"env", cppbackend.EnvModelRescanSec, "hint", "0 отключает фоновую проверку")
+				"env", cppbackend.EnvModelRescanSec, "hint", i18n.T("cppworker.main.model_watcher_hint"))
 		} else {
 			log.Infow("model inventory watcher disabled (rescan TTL = 0)",
 				"env", cppbackend.EnvModelRescanSec, "dir", mm.GetModelsDir())
@@ -561,7 +558,7 @@ func main() {
 		WriteTimeout: *writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
-	log.Infow("cppworker HTTP server timeouts (0 = без ограничения)",
+	log.Infow(i18n.T("cppworker.main.http_timeouts"),
 		"read_timeout_sec", server.ReadTimeout.Seconds(),
 		"write_timeout_sec", server.WriteTimeout.Seconds(),
 		"idle_timeout_sec", server.IdleTimeout.Seconds())
@@ -684,7 +681,7 @@ func main() {
 	// держал порт 50052 (следующий старт не смог бы его занять).
 	if rpcServerChild != nil {
 		if err := rpcServerChild.Stop(); err != nil {
-			log.Warnw("rpc-server: остановка узла раскладки", "error", err)
+			log.Warnw(i18n.T("cppworker.main.rpc_server_stopping"), "error", err)
 		}
 	}
 	waitAsyncWorkBeforeClose()

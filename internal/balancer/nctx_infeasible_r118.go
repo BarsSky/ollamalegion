@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -85,7 +86,7 @@ func (p *Proxy) recordNCtxInfeasible(backendID, modelName string, requestedTotal
 	}
 	p.mu.Unlock()
 
-	logger.Get().Warnw("nctxInfeasible: перезагрузка окна отвергнута cppworker'ом — запомнил потолок",
+	logger.Get().Warnw(i18n.T("balancer.nctx_infeasible.ceiling_remembered_warn"),
 		"backend", backendID, "model", modelName,
 		"requested_total_n_ctx", requestedTotal, "ceiling_n_ctx", ceiling,
 		"loaded_now_n_ctx", loadedNow, "reason", reason)

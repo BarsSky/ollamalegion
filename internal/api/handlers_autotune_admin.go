@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/balancer"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -533,7 +534,7 @@ func (s *Server) handleAdminAutotuneConfigUpdate(w http.ResponseWriter, r *http.
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":       true,
 		"globalEnabled": cfg.Balancing.AutoTune,
-		"message":       "AutoTune config updated (in-memory; reload balancer для персистенции в bundled config.json если не через runtime overrides)",
+		"message":       i18n.T("api.handlers_autotune_admin.config_updated"),
 	})
 }
 

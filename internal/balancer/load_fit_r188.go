@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -124,7 +125,7 @@ func (p *Proxy) loadFitRefusal(backendID, modelName, host string, port int, toke
 	limit := free - free/20
 	if sizeMB <= limit {
 		if logger.Get() != nil {
-			logger.Get().Debugw("load fit check: модель влезает",
+			logger.Get().Debugw(i18n.T("balancer.load_fit.fits_debug"),
 				"backend", backendID, "model", modelName,
 				"size_mb", sizeMB, "free_mb", free,
 				"ram_mb", cap.AvailableRAMMB, "vram_mb", cap.AvailableVRAMMB,
@@ -132,10 +133,7 @@ func (p *Proxy) loadFitRefusal(backendID, modelName, host string, port int, toke
 		}
 		return false, ""
 	}
-	reason := fmt.Sprintf(
-		"модель %s (%d МБ) не влезает в свободную память бэкенда %s: свободно %d МБ "+
-			"(RAM %d МБ, VRAM %d МБ, раскладка %d МБ при %d узлах). Загрузка НЕ запущена: "+
-			"выгрузите другую модель на этом бэкенде, уменьшите контекст/квант или добавьте узел раскладки [%s]",
+	reason := i18n.T("balancer.load_fit.not_fit_reason",
 		modelName, sizeMB, backendID, free,
 		cap.AvailableRAMMB, cap.AvailableVRAMMB, cap.VRAMLayoutFreeMB, cap.VRAMRemoteNodes,
 		loadFitRefusalCode)

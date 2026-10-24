@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -100,7 +101,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		// n_ctx_infeasible) — клиенту понятный 413, а не «async-reload» 503,
 		// который он будет повторять бесконечно.
 		if preflightStatus == http.StatusRequestEntityTooLarge {
-			logger.Get().Infow("proxyRequestLlamaCpp: окно недостижимо — отдаю 413 клиенту",
+			logger.Get().Infow(i18n.T("balancer.llamacpp_transport.window_infeasible_413_info"),
 				"backend", backendID, "model", modelFromCtx, "msg", preflightMsg)
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-NCtx-Reload-Decision", "infeasible")
@@ -120,7 +121,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		// preflight'а — короткое ожидание делает САМЫЙ ПЕРВЫЙ запрос терминальным.
 		if p.awaitModelMissing(backendID, modelFromCtx, 500*time.Millisecond) {
 			reason, available, _ := p.modelMissingFor(backendID, modelFromCtx)
-			logger.Get().Warnw("proxyRequestLlamaCpp: модели нет на бэкенде — отдаю 404 клиенту",
+			logger.Get().Warnw(i18n.T("balancer.llamacpp_transport.model_missing_404_info"),
 				"backend", backendID, "model", modelFromCtx,
 				"msg", preflightMsg, "available_models", len(available))
 			writeModelMissingResponseFor(w, originalPath, modelFromCtx, reason, available)
@@ -938,8 +939,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 							if reloadModel == "" {
 								reloadModel = backendID
 							}
-							logger.Get().Infow("proxyRequestLlamaCpp: done-chunk сообщил n_ctx-ошибку — "+
-								"кэш n_ctx устарел, запускаю auto-reload вместо отдачи ошибки клиенту",
+							logger.Get().Infow(i18n.T("balancer.llamacpp_transport.done_chunk_nctx_error_reload_info"),
 								"backend", backendID, "model", reloadModel, "error", c)
 							nctxErr := newNCtxErrorFromDoneChunk(c, backendID)
 							p.handleNCtxReload(r.Context(), w, r, backendID, reloadModel, nctxErr, bodyBuf)
@@ -1349,7 +1349,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 							}
 							contentToolCallsProcessed = true
 							upstreamDoneContent = cleanContentAfterToolCallExtraction(stripServiceTokens(remainingTC))
-							logger.Get().Infow("proxyRequestLlamaCpp: tool_calls извлечены из финального (done) чанка",
+							logger.Get().Infow(i18n.T("balancer.llamacpp_transport.tool_calls_extracted_info"),
 								"backend", backendID, "model", modelFromCtx,
 								"tool_calls_count", len(detectedTC),
 								"remaining_content_len", len(upstreamDoneContent))
@@ -1683,8 +1683,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// Агентский ход: продолжаем только если клиент НЕ ограничил ответ и
 			// модель не вызвала инструмент. Здесь ничего не доделываем.
 			recordAutoContinueSuppressed()
-			logger.Get().Infow("proxyRequestLlamaCpp: R187 auto-continue пропущен — агентский ход "+
-				"(в запросе есть tools[] или ответ содержит tool_calls)",
+			logger.Get().Infow(i18n.T("balancer.llamacpp_transport.auto_continue_agent_turn_skipped_info"),
 				"backend", backendID, "model", modelFromCtx,
 				"api_path", originalPath,
 				"tools_in_request", countClientTools(bodyBuf) > 0,
@@ -1704,8 +1703,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// deepseek harness, hermes) ставят max_tokens на КАЖДЫЙ запрос.
 			if capped, capField := ClientOutputCapped(bodyBuf); capped {
 				recordAutoContinueSuppressed()
-				logger.Get().Infow("proxyRequestLlamaCpp: R60.21 auto-continue пропущен — "+
-					"клиент сам ограничил длину ответа",
+				logger.Get().Infow(i18n.T("balancer.llamacpp_transport.auto_continue_client_capped_info"),
 					"backend", backendID, "model", modelFromCtx,
 					"api_path", originalPath, "cap_field", capField,
 					"content_chars", len(finalContent))
@@ -1733,11 +1731,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					// который уходит в /api/v1/metrics (см. auto_continue_stats.go).
 					if policy := GetAutoContinueChatPolicy(); policy != "smart" {
 						recordAutoContinuePolicyDisabled()
-						logger.Get().Warnw("proxyRequestLlamaCpp: R83 подавление перегенерации выключено политикой — "+
-							"дубли ответа в клиенте ВОЗМОЖНЫ",
+						logger.Get().Warnw(i18n.T("balancer.llamacpp_transport.regeneration_suppression_disabled_warn"),
 							"backend", backendID, "model", modelFromCtx,
 							"api_path", originalPath, "policy", policy,
-							"hint", "LB_AUTO_CONTINUE_CHAT_POLICY=smart (дефолт) включает подавление")
+							"hint", i18n.T("balancer.llamacpp_transport.regeneration_suppression_hint"))
 					}
 					// R60.55 (2026-09-13): if "smart" chat-policy and continuation
 					// looks like a regeneration (model restarted with greeting),
@@ -2174,9 +2171,7 @@ func stripNativeDoneContent(line, streamedContent string) string {
 	// апстрим поменял семантику, и мы, возможно, режем не дубль, а новый текст.
 	// Тогда это видно в логе (WARN), а не только в жалобе клиента.
 	if !strings.Contains(streamedContent, strings.TrimSpace(content)) {
-		logger.Get().Warnw("stripNativeDoneContent: текст done-чанка не совпадает с "+
-			"уже отданным дельтами — снимаем его как дубль, но апстрим мог изменить "+
-			"семантику финального чанка",
+		logger.Get().Warnw(i18n.T("balancer.llamacpp_transport.strip_done_content_mismatch_warn"),
 			"done_content_len", len(content), "streamed_len", len(streamedContent))
 	}
 	msg["content"] = ""

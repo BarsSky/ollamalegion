@@ -41,6 +41,7 @@ import (
 	"strings"
 	"sync"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -156,7 +157,7 @@ func imageBatchBodyR99(body []byte, style string, count int) ([]byte, error) {
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
-		return nil, fmt.Errorf("image batch: тело не JSON: %w", err)
+		return nil, fmt.Errorf(i18n.T("balancer.image_batch.body_not_json"), err)
 	}
 	if fields == nil {
 		fields = map[string]json.RawMessage{}
@@ -192,7 +193,7 @@ func imageBatchBodyR99(body []byte, style string, count int) ([]byte, error) {
 // получить их в предсказуемом порядке, а не «как успели».
 func mergeImageBatchResponsesR99(style string, parts [][]byte) ([]byte, int, error) {
 	if len(parts) == 0 {
-		return nil, 0, fmt.Errorf("image batch: пустой набор ответов")
+		return nil, 0, fmt.Errorf(i18n.T("balancer.image_batch.empty_responses"))
 	}
 	switch style {
 	case imageBatchStyleA1111:
@@ -205,7 +206,7 @@ func mergeImageBatchResponsesR99(style string, parts [][]byte) ([]byte, int, err
 				Info       json.RawMessage   `json:"info"`
 			}
 			if err := json.Unmarshal(part, &payload); err != nil {
-				return nil, 0, fmt.Errorf("image batch: ответ узла %d не JSON: %w", i+1, err)
+				return nil, 0, fmt.Errorf(i18n.T("balancer.image_batch.part_not_json"), i+1, err)
 			}
 			images = append(images, payload.Images...)
 			if i == 0 {
@@ -236,7 +237,7 @@ func mergeImageBatchResponsesR99(style string, parts [][]byte) ([]byte, int, err
 				Data    []json.RawMessage `json:"data"`
 			}
 			if err := json.Unmarshal(part, &payload); err != nil {
-				return nil, 0, fmt.Errorf("image batch: ответ узла %d не JSON: %w", i+1, err)
+				return nil, 0, fmt.Errorf(i18n.T("balancer.image_batch.part_not_json"), i+1, err)
 			}
 			data = append(data, payload.Data...)
 			if i == 0 && payload.Created > 0 {
@@ -308,7 +309,7 @@ func (ir *ImageRouter) routeImageBatchR99(w http.ResponseWriter, r *http.Request
 		}
 		gate := ir.proxy.imageResources().beforeGeneration(r.Context(), id)
 		if !gate.Allowed {
-			logger.Get().Infow("image batch: узел пропущен (гейт отказал)",
+			logger.Get().Infow(i18n.T("balancer.image_batch.node_skipped_info"),
 				"backend", id, "code", gate.Code, "count", count)
 			continue
 		}
@@ -334,7 +335,7 @@ func (ir *ImageRouter) routeImageBatchR99(w http.ResponseWriter, r *http.Request
 
 	merged, images, err := mergeImageBatchResponsesR99(style, bodiesOfR99(parts))
 	if err != nil {
-		logger.Get().Errorw("image batch: не удалось склеить ответы", "error", err)
+		logger.Get().Errorw(i18n.T("balancer.image_batch.merge_failed_error"), "error", err)
 		writeUpstreamError(w, parts[0].backendID, meta.Model, err)
 		return true
 	}

@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -1414,10 +1415,10 @@ func PlanApplyAutoTuneWithMinContext(
 			// (конкретное число) применяются как раньше.
 			if rec.RecommendedNumGPULayers == -2 {
 				if logger.Get() != nil {
-					logger.Get().Infow("autotune: рекомендация layers=-2 (auto) не превращается в reload",
+					logger.Get().Infow(i18n.T("balancer.autotune.layers_auto_no_reload_info"),
 						"model", currentLoaded.Name,
 						"current_gpu_layers", currentLoaded.NumGPULayers,
-						"reason", "факт после auto-загрузки не равен -2: план повторялся бы бесконечно")
+						"reason", i18n.T("balancer.autotune.layers_auto_no_reload_reason"))
 				}
 				continue
 			}

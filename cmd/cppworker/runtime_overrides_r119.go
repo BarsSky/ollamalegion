@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -50,7 +51,7 @@ func loadRuntimeOverrides() map[string]json.RawMessage {
 		return out
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		logger.Get().Warnw("runtime overrides: файл не разобран, игнорирую",
+		logger.Get().Warnw(i18n.T("cppworker.runtime_overrides_r119.file_unparsed"),
 			"path", runtimeOverridesPath(), "error", err)
 		return map[string]json.RawMessage{}
 	}
@@ -82,17 +83,17 @@ func recordRuntimeOverride(key string, value interface{}) {
 	overrides := loadRuntimeOverrides()
 	encoded, err := json.Marshal(value)
 	if err != nil {
-		logger.Get().Warnw("runtime overrides: значение не сериализуется",
+		logger.Get().Warnw(i18n.T("cppworker.runtime_overrides_r119.value_not_serializable"),
 			"key", key, "error", err)
 		return
 	}
 	overrides[key] = encoded
 	if err := saveRuntimeOverrides(overrides); err != nil {
-		logger.Get().Warnw("runtime overrides: не удалось сохранить",
+		logger.Get().Warnw(i18n.T("cppworker.runtime_overrides_r119.save_failed"),
 			"path", runtimeOverridesPath(), "key", key, "error", err)
 		return
 	}
-	logger.Get().Infow("runtime overrides: сохранено (приоритет над env)",
+	logger.Get().Infow(i18n.T("cppworker.runtime_overrides_r119.saved"),
 		"path", runtimeOverridesPath(), "key", key, "value", string(encoded))
 }
 
@@ -128,13 +129,13 @@ func applyRuntimeOverrides(cfg *cppbackend.Config) []string {
 		var minutes int
 		if err := json.Unmarshal(raw, &minutes); err == nil && minutes >= 0 {
 			if cfg.IdleUnloadMinutes != minutes {
-				logger.Get().Infow("runtime overrides: idleUnloadMinutes переопределён оператором",
+				logger.Get().Infow(i18n.T("cppworker.runtime_overrides_r119.idle_unload_overridden"),
 					"env_or_default", cfg.IdleUnloadMinutes, "operator_value", minutes)
 			}
 			cfg.IdleUnloadMinutes = minutes
 			applied = append(applied, "idleUnloadMinutes")
 		} else {
-			logger.Get().Warnw("runtime overrides: idleUnloadMinutes не разобран",
+			logger.Get().Warnw(i18n.T("cppworker.runtime_overrides_r119.idle_unload_unparsed"),
 				"value", string(raw))
 		}
 	}
@@ -151,13 +152,13 @@ func applyRuntimeOverrides(cfg *cppbackend.Config) []string {
 		var enabled bool
 		if err := json.Unmarshal(raw, &enabled); err == nil {
 			if cfg.RPCServerEnabled != enabled {
-				logger.Get().Infow("runtime overrides: rpcServerEnabled переопределён оператором",
+				logger.Get().Infow(i18n.T("cppworker.runtime_overrides_r119.rpc_server_enabled_overridden"),
 					"env_or_default", cfg.RPCServerEnabled, "operator_value", enabled)
 			}
 			cfg.RPCServerEnabled = enabled
 			applied = append(applied, "rpcServerEnabled")
 		} else {
-			logger.Get().Warnw("runtime overrides: rpcServerEnabled не разобран", "value", string(raw))
+			logger.Get().Warnw(i18n.T("cppworker.runtime_overrides_r119.rpc_server_enabled_unparsed"), "value", string(raw))
 		}
 	}
 	if raw, ok := overrides["rpcServerPort"]; ok {
@@ -166,7 +167,7 @@ func applyRuntimeOverrides(cfg *cppbackend.Config) []string {
 			cfg.RPCServerPort = port
 			applied = append(applied, "rpcServerPort")
 		} else {
-			logger.Get().Warnw("runtime overrides: rpcServerPort не разобран", "value", string(raw))
+			logger.Get().Warnw(i18n.T("cppworker.runtime_overrides_r119.rpc_server_port_unparsed"), "value", string(raw))
 		}
 	}
 
@@ -184,19 +185,19 @@ func applyRuntimeOverrides(cfg *cppbackend.Config) []string {
 		var enabled bool
 		if err := json.Unmarshal(raw, &enabled); err == nil {
 			if cfg.RPCEnabled != enabled {
-				logger.Get().Infow("runtime overrides: rpcEnabled переопределён применённым состоянием",
+				logger.Get().Infow(i18n.T("cppworker.runtime_overrides_r119.rpc_enabled_overridden"),
 					"env_or_default", cfg.RPCEnabled, "applied_value", enabled)
 			}
 			cfg.RPCEnabled = enabled
 			applied = append(applied, "rpcEnabled")
 		} else {
-			logger.Get().Warnw("runtime overrides: rpcEnabled не разобран", "value", string(raw))
+			logger.Get().Warnw(i18n.T("cppworker.runtime_overrides_r119.rpc_enabled_unparsed"), "value", string(raw))
 		}
 	}
 	if raw, ok := overrides["rpcServers"]; ok {
 		var servers []string
 		if err := json.Unmarshal(raw, &servers); err != nil {
-			logger.Get().Warnw("runtime overrides: rpcServers не разобран", "value", string(raw))
+			logger.Get().Warnw(i18n.T("cppworker.runtime_overrides_r119.rpc_servers_unparsed"), "value", string(raw))
 		} else if len(servers) == 0 {
 			// Пустой список — это ЗНАЧИМОЕ состояние («доноров нет»), а не мусор:
 			// именно его записывает балансер, когда снимает раскладку. Через
@@ -204,17 +205,17 @@ func applyRuntimeOverrides(cfg *cppbackend.Config) []string {
 			// поэтому обрабатываем отдельно — иначе env-список доноров остался бы
 			// в конфиге и вернулся бы при следующем включении раскладки.
 			if len(cfg.RPCServers) > 0 {
-				logger.Get().Infow("runtime overrides: rpcServers очищены применённым состоянием",
+				logger.Get().Infow(i18n.T("cppworker.runtime_overrides_r119.rpc_servers_cleared"),
 					"env_or_default", len(cfg.RPCServers))
 			}
 			cfg.RPCServers = nil
 			applied = append(applied, "rpcServers")
 		} else if parsed, perr := parseRPCServersR101(strings.Join(servers, ",")); perr != nil {
-			logger.Get().Warnw("runtime overrides: rpcServers не прошёл проверку",
+			logger.Get().Warnw(i18n.T("cppworker.runtime_overrides_r119.rpc_servers_invalid"),
 				"value", string(raw), "error", perr)
 		} else {
 			if len(cfg.RPCServers) != len(parsed) {
-				logger.Get().Infow("runtime overrides: rpcServers переопределены применённым состоянием",
+				logger.Get().Infow(i18n.T("cppworker.runtime_overrides_r119.rpc_servers_overridden"),
 					"env_or_default", len(cfg.RPCServers), "applied_count", len(parsed))
 			}
 			cfg.RPCServers = parsed

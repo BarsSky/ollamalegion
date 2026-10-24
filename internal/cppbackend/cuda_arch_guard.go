@@ -31,12 +31,12 @@
 package cppbackend
 
 import (
-	"fmt"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -117,15 +117,7 @@ func CheckCUDAArchCompat(built []string, deviceName string, major, minor int) (b
 	}
 	withFix := append(append([]string{}, built...), need)
 	sort.Strings(withFix)
-	return false, fmt.Sprintf(
-		"CUDA-ядра образа не подходят этой карте: %s имеет compute capability %d.%d (sm_%s), "+
-			"а образ собран под %s. Загрузка модели начнётся и даже завершится, но ПЕРВОЕ "+
-			"вычисление на GPU вызовет «CUDA error: no kernel image is available for execution "+
-			"on the device» и SIGABRT — процесс cppworker погибнет вместе с загруженной моделью "+
-			"(снаружи это выглядит как «backend недоступен», а следующая загрузка идёт уже с "+
-			"другими параметрами). Пересоберите образ с этой архитектурой: "+
-			"CUDA_ARCH=%s (или CUDA_ARCH=%s, чтобы сохранить прежние карты) — "+
-			"см. scripts/build-containers.ps1 -CudaArch",
+	return false, i18n.T("cppbackend.cuda_arch_guard.arch_mismatch_detail",
 		name, major, minor, need, strings.Join(smNames, ", "),
 		need, strings.Join(withFix, ";"))
 }
@@ -164,16 +156,16 @@ func (b *Backend) LogCUDAArchCompat() string {
 		}
 		problems = append(problems, msg)
 		if logger.Get() != nil {
-			logger.Get().Errorw("CUDA-архитектуры образа и карты не совпадают — GPU-вычисления уронят процесс",
+			logger.Get().Errorw(i18n.T("cppbackend.cuda_arch_guard.arch_mismatch"),
 				"gpu_index", dev.Index, "gpu", dev.Name,
 				"device_sm", CUDAArchOfCapability(dev.ComputeCapMajor, dev.ComputeCapMinor),
 				"image_sm", strings.Join(built, ";"),
-				"hint", "пересоберите образ с CUDA_ARCH, включающим архитектуру карты")
+				"hint", i18n.T("cppbackend.cuda_arch_guard.arch_mismatch_hint"))
 		}
 	}
 	if len(problems) == 0 {
 		if logger.Get() != nil {
-			logger.Get().Infow("CUDA-архитектуры: образ и карты совместимы", "image_sm", strings.Join(built, ";"))
+			logger.Get().Infow(i18n.T("cppbackend.cuda_arch_guard.arch_compatible"), "image_sm", strings.Join(built, ";"))
 		}
 		return ""
 	}

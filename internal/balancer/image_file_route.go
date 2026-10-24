@@ -18,12 +18,12 @@
 package balancer
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -69,7 +69,7 @@ func imageFileNameFromPath(path string) (string, bool) {
 func (ir *ImageRouter) serveImageFile(w http.ResponseWriter, r *http.Request, name string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		ir.writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed",
-			"используйте GET для получения изображения")
+			i18n.T("balancer.image_file_route.method_not_allowed"))
 		return
 	}
 	states := ir.proxy.filterBackendsByType(types.BackendTypeImage)
@@ -90,7 +90,7 @@ func (ir *ImageRouter) serveImageFile(w http.ResponseWriter, r *http.Request, na
 		}
 		resp, err := ir.proxy.proxyRequestToBackend(req, st.Backend.ID, imageFileTimeout)
 		if err != nil {
-			logger.Get().Debugw("image file: бэкенд не ответил",
+			logger.Get().Debugw(i18n.T("balancer.image_file_route.backend_unreachable_debug"),
 				"backend", st.Backend.ID, "file", name, "error", err)
 			continue
 		}
@@ -113,15 +113,15 @@ func (ir *ImageRouter) serveImageFile(w http.ResponseWriter, r *http.Request, na
 		_, copyErr := io.Copy(w, io.LimitReader(resp.Body, imageFileMaxBytes))
 		_ = resp.Body.Close()
 		if copyErr != nil {
-			logger.Get().Warnw("image file: клиент отвалился во время отдачи",
+			logger.Get().Warnw(i18n.T("balancer.image_file_route.client_gone_warn"),
 				"backend", st.Backend.ID, "file", name, "error", copyErr)
 		}
 		return
 	}
 
-	logger.Get().Infow("image file: файл не найден ни на одном бэкенде", "file", name)
+	logger.Get().Infow(i18n.T("balancer.image_file_route.not_found_any_backend_info"), "file", name)
 	ir.writeError(w, r, http.StatusNotFound, "image_file_not_found",
-		fmt.Sprintf("image %q not found on any image backend (файлы живут в каталоге воркера и могут быть очищены)", name))
+		i18n.T("balancer.image_file_route.not_found_message", name))
 }
 
 // imageFileTimeout — таймаут отдачи файла. Внутренняя сеть, файл уже на диске:

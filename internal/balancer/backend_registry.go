@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -751,7 +752,7 @@ func (p *Proxy) AdoptCapacityFromNode(backendID string, reported int) {
 		state.Backend.RuntimeMaxConcurrentRequests = reported
 	}
 
-	logger.Get().Infow("AdoptCapacityFromNode: зафиксирована заявка узла о вместимости",
+	logger.Get().Infow(i18n.T("balancer.backend_registry.adopt_capacity_info"),
 		"backendId", backendID,
 		"oldNodeClaim", old,
 		"newNodeClaim", reported,
@@ -797,7 +798,7 @@ func (p *Proxy) AdoptCppWorkerToken(backendID, reported string) {
 		return
 	}
 
-	logger.Get().Infow("AdoptCppWorkerToken: сохранён токен cppworker, сообщённый агентом",
+	logger.Get().Infow(i18n.T("balancer.backend_registry.adopt_token_info"),
 		"backendId", backendID,
 		"hadTokenBefore", state.Backend.CppWorkerApiToken != "")
 

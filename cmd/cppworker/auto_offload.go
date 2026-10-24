@@ -9,12 +9,12 @@
 // legacy-формула ниже остаётся только fallback'ом на случай, когда метаданных
 // модели нет и судить не о чем:
 //
-//   availableVRAM_safety = freeVRAM * 0.85
-//   overhead = 1.5 GB (CUDA + activations + llama.cpp)
-//   kvCacheBytes = n_ctx * kv_cache_per_token (по РЕАЛЬНЫМ kv_layers/kv_head_dim,
-//                  когда они есть; иначе консервативно по block_count)
-//   weightsPerLayer = SizeBytes / NLayers
-//   gpu_layers = floor((availableVRAM_safety - overhead - kvCacheBytes) / weightsPerLayer)
+//	availableVRAM_safety = freeVRAM * 0.85
+//	overhead = 1.5 GB (CUDA + activations + llama.cpp)
+//	kvCacheBytes = n_ctx * kv_cache_per_token (по РЕАЛЬНЫМ kv_layers/kv_head_dim,
+//	               когда они есть; иначе консервативно по block_count)
+//	weightsPerLayer = SizeBytes / NLayers
+//	gpu_layers = floor((availableVRAM_safety - overhead - kvCacheBytes) / weightsPerLayer)
 //
 // kvCacheType влияет на размер KV-cache. Константа одна на весь стек —
 // memfit.KVBytesPerElement: f16 = 2 байта на элемент, q8_0 = 34/32, q4_0 = 18/32
@@ -26,6 +26,7 @@ package main
 
 import (
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
 	"strings"
@@ -183,8 +184,7 @@ func legacyCalculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType
 		// верхнюю границу и предупреждаем: оценка будет оптимистичной.
 		freeVRAM = availableVRAMBytes()
 		if freeVRAM > 0 {
-			logger.Get().Warnw("auto_offload: свободная VRAM неизвестна, используем полную ёмкость карты "+
-				"(оценка числа слоёв оптимистична)",
+			logger.Get().Warnw(i18n.T("cppworker.auto_offload.free_vram_unknown"),
 				"model", m.Name, "total_vram_mb", freeVRAM/(1024*1024))
 		}
 	}
@@ -222,7 +222,7 @@ func legacyCalculateOptimalGPULayersForModel(m cppbackend.ModelInfo, kvCacheType
 	if backend != nil {
 		if l, hd, kvOK := backend.KVLayersForModel(m.Name); l > 0 && hd > 0 {
 			kvLayers, kvHeadDim = l, hd
-			logger.Get().Infow("auto_offload: KV посчитан по реальным параметрам кэша (R83 §9.4 шаг 2)",
+			logger.Get().Infow(i18n.T("cppworker.auto_offload.kv_real_params"),
 				"model", m.Name,
 				"kv_layers", l,
 				"kv_head_dim", hd,
@@ -335,16 +335,18 @@ func estimateKVCacheBytesForLayers(nCtx, kvLayers, nKvHeads, kvHeadDim int, kvCa
 // занижать gpu_layers (см. R83 §9.4 шаг 2).
 //
 // Формула для f16 (4 байта на KV-pair на токен на слой):
-//   bytes = bytesPerType * n_ctx * n_layers * head_dim * 2 (K+V)
+//
+//	bytes = bytesPerType * n_ctx * n_layers * head_dim * 2 (K+V)
 //
 // head_dim для MHA = n_embd
 // head_dim для GQA = n_embd / n_heads * n_kv_heads
 // Для простоты используем среднее: head_dim ≈ n_embd / n_heads * min(n_heads, n_kv_heads)
 //
 // Параметр kvCacheType влияет на множитель bytesPerType:
-//   "f16" или "" → 4
-//   "q8_0"      → 2
-//   "q4_0"      → 1
+//
+//	"f16" или "" → 4
+//	"q8_0"      → 2
+//	"q4_0"      → 1
 func estimateKVCacheBytes(nCtx, nLayers, nEmbd, nHeads, nKvHeads int, kvCacheType string) int64 {
 	if nCtx <= 0 || nLayers <= 0 {
 		return 0

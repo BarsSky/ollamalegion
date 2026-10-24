@@ -21,11 +21,11 @@
 package cppbackend
 
 import (
-	"fmt"
 	"net"
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -65,13 +65,9 @@ type RPCNodeUnreachableError struct {
 func (e *RPCNodeUnreachableError) Error() string {
 	reason := e.Reason
 	if reason == "" {
-		reason = "нет соединения"
+		reason = i18n.T("cppbackend.rpc_health.no_connection")
 	}
-	return fmt.Sprintf(
-		"RPC-узел раскладки %s недоступен (%s). Загрузка отменена намеренно: "+
-			"llama.cpp на недоступном узле падает с abort() (SIGABRT) и роняет мастер. "+
-			"Проверьте узел (на доноре: docker ps -> ol-rpc-server, порт 50052) и повторите запрос",
-		e.Endpoint, reason)
+	return i18n.T("cppbackend.rpc_health.node_unreachable_error", e.Endpoint, reason)
 }
 
 // unreachableRPCServers — узлы из списка, к которым нет РАБОЧЕГО RPC-соединения.
@@ -160,7 +156,7 @@ func CheckRPCServers(servers []string, timeout time.Duration) error {
 	}
 	return &RPCNodeUnreachableError{
 		Endpoint: bad[0],
-		Reason:   fmt.Sprintf("не отвечает TCP; недоступно узлов: %d из %d", len(bad), len(servers)),
+		Reason:   i18n.T("cppbackend.rpc_health.tcp_no_answer_reason", len(bad), len(servers)),
 	}
 }
 
@@ -247,8 +243,7 @@ func (b *Backend) runRPCWatchdog(wd *rpcWatchdog) {
 				continue
 			}
 			lost = bad[0]
-			logger.Get().Errorw("RPC-узел потерян: модель будет выгружена в простое, "+
-				"иначе первый же запрос к ней уронит мастер (abort в C-мосте)",
+			logger.Get().Errorw(i18n.T("cppbackend.rpc_health.node_lost_unload_pending"),
 				"model", wd.model, "endpoint", lost,
 				"unreachable", strings.Join(bad, ","),
 				"servers", strings.Join(wd.servers, ","))
@@ -259,26 +254,25 @@ func (b *Backend) runRPCWatchdog(wd *rpcWatchdog) {
 		// генерацией нельзя — это use-after-free в C-мосте (та же причина, по
 		// которой /api/models/unload отказывает при активных запросах).
 		if active := b.activeQueriesFor(wd.model); active > 0 {
-			logger.Get().Warnw("RPC-узел потерян, но модель занята — выгрузка отложена",
+			logger.Get().Warnw(i18n.T("cppbackend.rpc_health.node_lost_model_busy"),
 				"model", wd.model, "endpoint", lost, "active_queries", active)
 			continue
 		}
 
 		if state, ok := b.ModelState(wd.model); !ok {
 			// Модель уже выгружена кем-то другим — наблюдать нечего.
-			logger.Get().Infow("RPC-watchdog: модель уже выгружена", "model", wd.model)
+			logger.Get().Infow(i18n.T("cppbackend.rpc_health.watchdog_model_already_unloaded"), "model", wd.model)
 			return
 		} else if state != StateLoaded {
 			continue
 		}
 
 		if err := b.UnloadModel(wd.model); err != nil {
-			logger.Get().Errorw("RPC-watchdog: не удалось выгрузить модель после потери узла",
+			logger.Get().Errorw(i18n.T("cppbackend.rpc_health.watchdog_unload_failed"),
 				"model", wd.model, "endpoint", lost, "error", err)
 			continue
 		}
-		logger.Get().Warnw("RPC-watchdog: модель выгружена после потери узла — "+
-			"следующий запрос загрузит её заново (гейт проверит узлы)",
+		logger.Get().Warnw(i18n.T("cppbackend.rpc_health.watchdog_model_unloaded"),
 			"model", wd.model, "endpoint", lost)
 		return
 	}
@@ -302,13 +296,12 @@ func (b *Backend) checkRPCNodesForInference() error {
 	if len(bad) == 0 {
 		return nil
 	}
-	logger.Get().Errorw("RPC-узел недоступен — генерация не начата "+
-		"(llama.cpp на мёртвом узле вызывает abort и роняет мастер)",
+	logger.Get().Errorw(i18n.T("cppbackend.rpc_health.inference_not_started"),
 		"unreachable", strings.Join(bad, ","),
 		"servers", strings.Join(b.cfg.RPCServers, ","))
 	return &RPCNodeUnreachableError{
 		Endpoint: bad[0],
-		Reason:   "не отвечает TCP перед генерацией",
+		Reason:   i18n.T("cppbackend.rpc_health.no_tcp_answer_before_generation"),
 	}
 }
 

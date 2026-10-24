@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/agent"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/sdbackend"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -54,6 +55,12 @@ var (
 
 func main() {
 	flag.Parse()
+
+	// R234 (2026-10-24): язык логов и ошибок. Без этого sdworker всегда писал
+	// по-русски, даже если весь стенд переключён на английский: каталог i18n
+	// подключался, но язык never выставлялся. Локальная настройка применяется
+	// до первого сообщения, дальше StartFromBalancer подтягивает язык стенда.
+	i18n.BootstrapFromEnv("SDWORKER")
 
 	if *healthCheck {
 		runHealthCheck()
@@ -106,6 +113,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	svc.Start(ctx)
+
+	// R234: язык логов с балансера (источник истины — балансер, смена в WebUI
+	// действует без перезапуска контейнера).
+	if cancelLang, langErr := i18n.StartFromBalancer(context.Background(),
+		strings.TrimRight(os.Getenv("SDWORKER_BALANCER_URL"), "/"),
+		os.Getenv("BALANCER_TOKEN")); langErr == nil {
+		defer cancelLang()
+	} else {
+		fmt.Fprintf(os.Stderr, "[i18n] language sync: %v\n", langErr)
+	}
 
 	// AUTO-REGISTRATION в балансере (SDWORKER_BALANCER_URL). Отключается
 	// SDWORKER_REGISTER_DISABLE — bundled-стек регистрирует воркера скриптом.

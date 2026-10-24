@@ -26,6 +26,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +34,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -229,23 +231,23 @@ func (s *ImageResourcesStore) Remove() error {
 // дефолт exclusive, и оператор не понял бы, почему «ничего не поменялось».
 func ValidateImageResourceSettings(s types.ImageResourceSettings) error {
 	if !types.IsValidImageCoexistencePolicy(s.Coexistence) {
-		return fmt.Errorf("unknown coexistence policy %q (допустимо: exclusive, offload, dedicated или пусто = exclusive)", s.Coexistence)
+		return errors.New(i18n.T("config.image_resources.unknown_policy", s.Coexistence))
 	}
 	if s.VramHeadroomMB < 0 || s.VramHeadroomMB > ImageResourceMaxHeadroomMB {
-		return fmt.Errorf("vramHeadroomMb вне диапазона 0..%d (получено %d)", ImageResourceMaxHeadroomMB, s.VramHeadroomMB)
+		return errors.New(i18n.T("config.image_resources.headroom_out_of_range", ImageResourceMaxHeadroomMB, s.VramHeadroomMB))
 	}
 	if s.QueueWaitTimeoutSec < 0 || s.QueueWaitTimeoutSec > ImageResourceMaxQueueWaitS {
-		return fmt.Errorf("queueWaitTimeoutSec вне диапазона 0..%d (получено %d)", ImageResourceMaxQueueWaitS, s.QueueWaitTimeoutSec)
+		return errors.New(i18n.T("config.image_resources.queue_wait_out_of_range", ImageResourceMaxQueueWaitS, s.QueueWaitTimeoutSec))
 	}
 	if s.ExclusiveLockTimeoutSec < 0 || s.ExclusiveLockTimeoutSec > ImageResourceMaxLockFuseS {
-		return fmt.Errorf("exclusiveLockTimeoutSec вне диапазона 0..%d (получено %d)", ImageResourceMaxLockFuseS, s.ExclusiveLockTimeoutSec)
+		return errors.New(i18n.T("config.image_resources.lock_timeout_out_of_range", ImageResourceMaxLockFuseS, s.ExclusiveLockTimeoutSec))
 	}
 	// nil = «не задано» (действует env), поэтому проверяем только заданное значение.
 	if s.ToolLoadTimeoutSec != nil {
 		v := *s.ToolLoadTimeoutSec
 		if v < ImageResourceMinToolLoadTimeoutS || v > ImageResourceMaxToolLoadTimeoutS {
-			return fmt.Errorf("toolLoadTimeoutSec вне диапазона %d..%d (получено %d)",
-				ImageResourceMinToolLoadTimeoutS, ImageResourceMaxToolLoadTimeoutS, v)
+			return errors.New(i18n.T("config.image_resources.tool_load_out_of_range",
+				ImageResourceMinToolLoadTimeoutS, ImageResourceMaxToolLoadTimeoutS, v))
 		}
 	}
 	return nil

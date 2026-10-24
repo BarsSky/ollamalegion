@@ -25,6 +25,7 @@ package main
 import (
 	"net/http"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -44,7 +45,7 @@ func decodeClientJSON(r *http.Request, maxBytes int64, v interface{}, where stri
 		// Debug, а не Warn: клиенты шлют свои расширения постоянно (OpenWebUI
 		// advanced params, Cline tool_choice), и Warn на каждый запрос превратил
 		// бы лог в шум. Диагностика при этом не теряется.
-		logger.Get().Debugw("клиент прислал поля, которых нет в структуре — игнорируем (Ollama-совместимость)",
+		logger.Get().Debugw(i18n.T("cppworker.json_decode_client_r106c.unknown_fields"),
 			"handler", where, "fields", unknown)
 	}
 	return nil

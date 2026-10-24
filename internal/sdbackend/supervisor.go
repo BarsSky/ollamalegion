@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -584,8 +585,8 @@ func (s *Supervisor) waitReady(ctx context.Context, proc Process, client *SDServ
 		}
 		lastErr = err
 		if timeout > 0 && time.Now().After(deadline) {
-			return nil, fmt.Errorf("readiness timeout after %s (кап взведён явно: %s): %w",
-				timeout, EnvStartupTimeout, lastErr)
+			return nil, fmt.Errorf("%s: %w",
+				i18n.T("sdbackend.supervisor.readiness_timeout", timeout, EnvStartupTimeout), lastErr)
 		}
 		select {
 		case <-ctx.Done():
@@ -648,7 +649,7 @@ func (s *Supervisor) Unload(ctx context.Context) error {
 	if portErr := s.waitPortFree(ctx, 5*time.Second); portErr != nil {
 		sdLog().Warnw("port still busy after unload",
 			"port", s.cfg.ServerPort, "error", portErr,
-			"hint", "следующая загрузка подождёт освобождения порта (CUDA-процесс отпускает сокет не сразу)")
+			"hint", i18n.T("sdbackend.supervisor.port_busy_hint"))
 	}
 	return err
 }

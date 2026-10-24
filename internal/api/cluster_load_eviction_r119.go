@@ -27,10 +27,10 @@
 package api
 
 import (
-	"fmt"
 	"strings"
 
 	"ollama-loadbalancer/internal/balancer"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -97,7 +97,7 @@ func loadWithEvictionOnMemoryFailure(
 		return first, ""
 	}
 
-	logger.Get().Infow("cluster load: загрузка не влезла рядом с другой моделью — пробуем освободить",
+	logger.Get().Infow(i18n.T("api.cluster_load_eviction_r119.load_not_fit"),
 		"backend_id", backendID, "requested_model", modelName, "loaded_model", otherLoaded)
 
 	unloadResult := runner.ExecuteOperation(backendID, balancer.ModelOpRequest{
@@ -112,26 +112,21 @@ func loadWithEvictionOnMemoryFailure(
 			busy = unloadResult.Busy
 		}
 		if busy {
-			return first, fmt.Sprintf(
-				"модель %q занята активными inference-запросами — выгрузка не выполнена, "+
-					"поэтому вторая модель не загружена; повторите после завершения запросов",
-				otherLoaded)
+			return first, i18n.T("api.cluster_load_eviction_r119.busy_note", otherLoaded)
 		}
-		return first, fmt.Sprintf(
-			"не удалось выгрузить %q, чтобы освободить память (%s)", otherLoaded, errText)
+		return first, i18n.T("api.cluster_load_eviction_r119.unload_failed_note",
+			otherLoaded, errText)
 	}
 
 	retry := runner.ExecuteOperation(backendID, req)
 	if retry != nil && retry.Success {
-		logger.Get().Infow("cluster load: загружено после выгрузки другой модели",
+		logger.Get().Infow(i18n.T("api.cluster_load_eviction_r119.loaded_after_evict"),
 			"backend_id", backendID, "requested_model", modelName, "unloaded_model", otherLoaded)
-		return retry, fmt.Sprintf(
-			"загружено после выгрузки %q: памяти не хватало на две модели", otherLoaded)
+		return retry, i18n.T("api.cluster_load_eviction_r119.loaded_after_evict_note", otherLoaded)
 	}
 	retryErr := "load failed"
 	if retry != nil {
 		retryErr = retry.Error
 	}
-	return retry, fmt.Sprintf(
-		"загрузка не удалась даже после выгрузки %q: %s", otherLoaded, retryErr)
+	return retry, i18n.T("api.cluster_load_eviction_r119.retry_failed_note", otherLoaded, retryErr)
 }

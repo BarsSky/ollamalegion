@@ -20,10 +20,10 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"strings"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -93,22 +93,22 @@ func applyEnvAuthTokens(auth *types.AuthConfig) {
 // в исходниках.
 func authTokenSource(auth *types.AuthConfig) string {
 	if auth == nil {
-		return "auth не сконфигурирован"
+		return i18n.T("balancer.env_auth.not_configured")
 	}
 	if !auth.Enabled {
-		return "auth ВЫКЛЮЧЕН (запросы без токена)"
+		return i18n.T("balancer.env_auth.disabled")
 	}
 
 	if single := strings.TrimSpace(os.Getenv("LB_API_TOKEN")); single != "" {
-		return fmt.Sprintf("LB_API_TOKEN (len=%d) ЗАМЕНЯЕТ config.json", len(single))
+		return i18n.T("balancer.env_auth.single_replaces", len(single))
 	}
 	if csv := strings.TrimSpace(os.Getenv("LB_AUTH_TOKENS")); csv != "" {
-		return fmt.Sprintf("LB_AUTH_TOKENS (%d шт.) ЗАМЕНЯЕТ config.json", len(strings.Split(csv, ",")))
+		return i18n.T("balancer.env_auth.csv_replaces", len(strings.Split(csv, ",")))
 	}
 	if len(auth.Tokens) == 1 && auth.Tokens[0] == "bundled-default" {
-		return "config.json: 'bundled-default' — ЗАМЕНИТЕ (LB_API_TOKEN)"
+		return i18n.T("balancer.env_auth.bundled_default")
 	}
-	return fmt.Sprintf("config.json (%d шт.)", len(auth.Tokens))
+	return i18n.T("balancer.env_auth.config_count", len(auth.Tokens))
 }
 
 // warnIfConfigTokensShadowed — R83 (2026-09-28): громкое предупреждение, когда
@@ -133,8 +133,7 @@ func warnIfConfigTokensShadowed(auth *types.AuthConfig) {
 	if winner == "" {
 		return
 	}
-	logger.Get().Warnw("auth.tokens из config.json НЕ ДЕЙСТВУЕТ: список полностью переопределён переменной окружения. "+
-		"Меняйте токен в deployments/.env (CPPWORKER_API_TOKEN → LB_API_TOKEN), правка config/config.json результата не даст.",
+	logger.Get().Warnw(i18n.T("balancer.env_auth.tokens_shadowed"),
 		"winner", winner,
 		"config_token_count", len(auth.Tokens))
 }

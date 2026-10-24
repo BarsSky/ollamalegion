@@ -43,10 +43,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -75,11 +77,9 @@ func markChatTemplateBroken(modelName, reason string) {
 	chatTemplateBroken[modelName] = reason
 	chatTemplateBrokenMu.Unlock()
 	if !already {
-		logger.Get().Errorw("chat template отключён для модели до перезапуска cppworker: "+
-			"cgo SIGSEGV в chat template (повторные вызовы не выполняются, "+
-			"промпт собирается вручную)",
+		logger.Get().Errorw(i18n.T("cppworker.chat_template_guard.disabled"),
 			"model", modelName, "reason", reason,
-			"hint", "проверьте n_ctx/template модели; для полного сброса состояния C перезапустите cppworker")
+			"hint", i18n.T("cppworker.chat_template_guard.disabled_hint"))
 	}
 }
 
@@ -94,7 +94,7 @@ func clearChatTemplateBroken(modelName string) {
 	delete(chatTemplateBroken, modelName)
 	chatTemplateBrokenMu.Unlock()
 	if had {
-		logger.Get().Infow("chat template разблокирован для модели (загружена заново)",
+		logger.Get().Infow(i18n.T("cppworker.chat_template_guard.reenabled"),
 			"model", modelName)
 	}
 }
@@ -103,7 +103,7 @@ func clearChatTemplateBroken(modelName string) {
 // повторного вызова на уже упавшей модели.
 func safeApplyChatTemplate(modelName, system string, msgs []bridge.ChatMessage, addAss bool) (prompt string, err error) {
 	if reason, broken := chatTemplateBrokenReason(modelName); broken {
-		return "", fmt.Errorf("chat template отключён после cgo SIGSEGV (%s); промпт собирается вручную", reason)
+		return "", errors.New(i18n.T("cppworker.chat_template_guard.broken", reason))
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -125,7 +125,7 @@ func safeApplyChatTemplateWithThinking(
 	enableThinking, addGenerationPrompt bool,
 ) (prompt string, supportsThinking bool, err error) {
 	if reason, broken := chatTemplateBrokenReason(modelName); broken {
-		return "", false, fmt.Errorf("chat template отключён после cgo SIGSEGV (%s); промпт собирается вручную", reason)
+		return "", false, errors.New(i18n.T("cppworker.chat_template_guard.broken", reason))
 	}
 	defer func() {
 		if r := recover(); r != nil {

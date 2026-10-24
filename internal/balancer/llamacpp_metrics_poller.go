@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -531,7 +532,7 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 		// R159: диагностика «что именно воркер сказал про СВОЙ узел». Без неё
 		// расхождение «воркер: listening=true / балансер: listening=false»
 		// неотличимо от залипшего кэша — ровно это и наблюдалось живьём.
-		logger.Get().Debugw("llamaCppMetricsPoller: rpc_server из воркера",
+		logger.Get().Debugw(i18n.T("balancer.llamacpp_metrics_poller.rpc_server_from_worker_debug"),
 			"backend", b.id, "enabled", data.RPCServer.Enabled,
 			"running", data.RPCServer.Running, "listening", data.RPCServer.Listening,
 			"pid", data.RPCServer.PID, "port", data.RPCServer.Port)
@@ -626,7 +627,7 @@ func (p *llamaCppMetricsPoller) adoptCapacityFromLoadedModels(backendID string, 
 			old := state.RuntimeModelSlots
 			p.proxy.SetBackendModelSlots(backendID, 0)
 			if logger.Get() != nil {
-				logger.Get().Infow("llamaCppMetricsPoller: слотов у загруженной модели нет — вместимость сброшена",
+				logger.Get().Infow(i18n.T("balancer.llamacpp_metrics_poller.slots_missing_capacity_reset_info"),
 					"backend", backendID, "old_model_slots", old,
 					"loaded_models", len(models),
 					"enabled", types.CapacityFromModelSlotsEnabled())
@@ -634,7 +635,7 @@ func (p *llamaCppMetricsPoller) adoptCapacityFromLoadedModels(backendID string, 
 			return
 		}
 		if logger.Get() != nil {
-			logger.Get().Debugw("llamaCppMetricsPoller: слоты модели не распознаны, вместимость прежняя",
+			logger.Get().Debugw(i18n.T("balancer.llamacpp_metrics_poller.slots_unrecognized_debug"),
 				"backend", backendID, "loaded_models", len(models),
 				"enabled", types.CapacityFromModelSlotsEnabled())
 		}
@@ -651,9 +652,9 @@ func (p *llamaCppMetricsPoller) adoptCapacityFromLoadedModels(backendID string, 
 
 	old := state.RuntimeModelSlots
 	p.proxy.SetBackendModelSlots(backendID, slots)
-	logger.Get().Infow("llamaCppMetricsPoller: вместимость бэкенда приведена к числу слотов модели",
+	logger.Get().Infow(i18n.T("balancer.llamacpp_metrics_poller.capacity_adopted_info"),
 		"backend", backendID, "old_model_slots", old, "new_model_slots", slots,
-		"note", "значение живёт в RuntimeModelSlots: MaxConcurrentReqs переписывается перерегистрацией агента")
+		"note", i18n.T("balancer.llamacpp_metrics_poller.capacity_from_slots_note"))
 }
 
 // pollLoadingProgress опрашивает /api/models/load/progress у бэкенда и

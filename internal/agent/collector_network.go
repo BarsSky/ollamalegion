@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -142,9 +143,8 @@ func (a *Agent) detectCppWorkerParallelism() int {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Printf("[%s] detectCppWorkerParallelism: cppworker недоступен (%v) — "+
-			"вместимость оставляем на усмотрение балансера\n",
-			time.Now().Format(time.RFC3339), err)
+		fmt.Printf("[%s] %s\n", time.Now().Format(time.RFC3339),
+			i18n.T("agent.collector_network.cppworker_unavailable", err))
 		return 0
 	}
 	defer resp.Body.Close()
@@ -185,14 +185,12 @@ func (a *Agent) detectCppWorkerParallelism() int {
 		// Поэтому при явном enableBatchedParallel=false заявляем 1: балансер
 		// поставит второго клиента в admission-очередь, где ожидание ВИДНО.
 		if n > 1 && parsed.Config.EnableBatchedParallel != nil && !*parsed.Config.EnableBatchedParallel {
-			fmt.Printf("[%s] detectCppWorkerParallelism: cppworker сообщил "+
-				"defaultNParallel=%d при enableBatchedParallel=false — сообщаем балансеру 1 "+
-				"(legacy-путь сериализует llama_decode; иначе второй клиент ждёт молча внутри cppworker)\n",
-				time.Now().Format(time.RFC3339), n)
+			fmt.Printf("[%s] %s\n", time.Now().Format(time.RFC3339),
+				i18n.T("agent.collector_network.batched_disabled", n))
 			return 1
 		}
-		fmt.Printf("[%s] detectCppWorkerParallelism: cppworker сообщил defaultNParallel=%d\n",
-			time.Now().Format(time.RFC3339), n)
+		fmt.Printf("[%s] %s\n", time.Now().Format(time.RFC3339),
+			i18n.T("agent.collector_network.parallelism_reported", n))
 		return n
 	}
 	return 0

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -220,7 +221,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		// Контракт Ollama: /api/show отдаёт метаданные СРАЗУ, не ждёт загрузку, не
 		// меняет состояние и не отвечает 503. Поэтому такие пути проксируем напрямую.
 		if isReadOnlyOrMgmtEndpoint(r.URL.Path) {
-			logger.Get().Infow("proxyRequest: read-only/mgmt путь — прямой прокси без n_ctx preflight и слотов",
+			logger.Get().Infow(i18n.T("balancer.proxy_request.readonly_direct_info"),
 				"backend", backendID, "path", r.URL.Path, "method", r.Method)
 			return p.proxyReadOnlyRequest(w, r, backendID)
 		}

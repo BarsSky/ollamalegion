@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -51,7 +52,7 @@ func NewIdleUnloadManager(cfg *Config, registry *Registry, sup *Supervisor, metr
 func (m *IdleUnloadManager) Start() {
 	timeout := m.idleTimeout()
 	if timeout <= 0 {
-		sdLog().Infow("idle unload disabled (idleUnloadMinutes=0) — sd-server будет держать модель в VRAM до явного unload")
+		sdLog().Infow(i18n.T("sdbackend.idle.disabled_note"))
 		return
 	}
 	m.interval = timeout / 2

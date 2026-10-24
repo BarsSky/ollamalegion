@@ -11,13 +11,18 @@
 // упоминания rpc. Поэтому вызов с включённым RPC честно логирует, что раскладка
 // не заработает, вместо тихой видимости настройки: оператор не должен гадать,
 // почему вторая машина простаивает.
+//
+// R234: тексты ошибок вынесены в каталог i18n (internal/i18n), поэтому оператор
+// с английской локалью видит английское сообщение, а не русское в логе.
 package main
 
 import (
-	"fmt"
+	"errors"
 	"net"
 	"strconv"
 	"strings"
+
+	"ollama-loadbalancer/internal/i18n"
 )
 
 // maxRPCServersR101 — предел числа RPC-узлов в списке.
@@ -35,12 +40,11 @@ const maxRPCServersR101 = 16
 func parseRPCServersR101(raw string) ([]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return nil, fmt.Errorf("пустой список")
+		return nil, errors.New(i18n.T("cppworker.rpc_env.empty_list"))
 	}
 	parts := strings.Split(raw, ",")
 	if len(parts) > maxRPCServersR101 {
-		return nil, fmt.Errorf("узлов %d, максимум %d (проверьте, не лишний ли элемент в списке)",
-			len(parts), maxRPCServersR101)
+		return nil, errors.New(i18n.T("cppworker.rpc_env.too_many", len(parts), maxRPCServersR101))
 	}
 
 	out := make([]string, 0, len(parts))
@@ -48,26 +52,26 @@ func parseRPCServersR101(raw string) ([]string, error) {
 	for i, part := range parts {
 		entry := strings.TrimSpace(part)
 		if entry == "" {
-			return nil, fmt.Errorf("элемент %d пуст (лишняя запятая?)", i+1)
+			return nil, errors.New(i18n.T("cppworker.rpc_env.empty_item", i+1))
 		}
 		host, portStr, err := net.SplitHostPort(entry)
 		if err != nil {
-			return nil, fmt.Errorf("элемент %d (%q): ожидается host:port — %v", i+1, entry, err)
+			return nil, errors.New(i18n.T("cppworker.rpc_env.bad_hostport", i+1, entry, err))
 		}
 		host = strings.TrimSpace(host)
 		if host == "" {
-			return nil, fmt.Errorf("элемент %d (%q): пустой host", i+1, entry)
+			return nil, errors.New(i18n.T("cppworker.rpc_env.empty_host", i+1, entry))
 		}
 		port, err := strconv.Atoi(strings.TrimSpace(portStr))
 		if err != nil {
-			return nil, fmt.Errorf("элемент %d (%q): порт не число", i+1, entry)
+			return nil, errors.New(i18n.T("cppworker.rpc_env.bad_port", i+1, entry))
 		}
 		if port < 1 || port > 65535 {
-			return nil, fmt.Errorf("элемент %d (%q): порт %d вне диапазона 1..65535", i+1, entry, port)
+			return nil, errors.New(i18n.T("cppworker.rpc_env.port_range", i+1, entry, port))
 		}
 		normalized := net.JoinHostPort(host, strconv.Itoa(port))
 		if seen[normalized] {
-			return nil, fmt.Errorf("элемент %d (%q): узел указан дважды", i+1, entry)
+			return nil, errors.New(i18n.T("cppworker.rpc_env.duplicate_host", i+1, entry))
 		}
 		seen[normalized] = true
 		out = append(out, normalized)

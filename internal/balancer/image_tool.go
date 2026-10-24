@@ -43,6 +43,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/imagetool"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -229,7 +230,7 @@ func imageToolSettingsFromEnv() imageToolConfig {
 			if log := logger.Get(); log != nil {
 				log.Warnw("image tool generation timeout armed (operator opt-in)",
 					"env", imageToolEnvTimeout, "timeout_sec", n,
-					"hint", "по умолчанию капа нет: вызов инструмента ждёт терминального состояния генерации")
+					"hint", i18n.T("balancer.image_tool.generation_timeout_hint"))
 			}
 		}
 	}
@@ -239,7 +240,7 @@ func imageToolSettingsFromEnv() imageToolConfig {
 			if log := logger.Get(); log != nil {
 				log.Warnw("image tool model-load timeout armed (operator opt-in)",
 					"env", imageToolEnvLoadTimeout, "timeout_sec", n,
-					"hint", "по умолчанию ждём терминального состояния загрузки (loaded/error)")
+					"hint", i18n.T("balancer.image_tool.load_timeout_hint"))
 			}
 		}
 	}
@@ -320,7 +321,7 @@ func (p *Proxy) imageToolDecision(ctx context.Context) (*imageToolTarget, string
 	}
 	states := p.filterBackendsByType(types.BackendTypeImage)
 	if len(states) == 0 {
-		logger.Get().Debugw("image tool: не объявляем — нет здоровых image_cpp-бэкендов")
+		logger.Get().Debugw(i18n.T("balancer.image_tool.no_backend_debug"))
 		return nil, imageToolSkipNoBackend
 	}
 
@@ -359,11 +360,11 @@ func (p *Proxy) imageToolDecision(ctx context.Context) (*imageToolTarget, string
 		if !cfg.AllowLoad {
 			// Прежнее поведение: без загруженной модели исполнять нечего, потому
 			// что LB_IMAGE_TOOL_ALLOW_LOAD=off запрещает поднимать её из вызова.
-			logger.Get().Debugw("image tool: не объявляем — нет загруженной модели (LB_IMAGE_TOOL_ALLOW_LOAD=off)",
+			logger.Get().Debugw(i18n.T("balancer.image_tool.no_loaded_model_debug"),
 				"env", imageToolEnvAllowLoad)
 			return nil, imageToolSkipAllowLoadOff
 		}
-		logger.Get().Debugw("image tool: не объявляем — ни на одном image-бэкенде нет моделей",
+		logger.Get().Debugw(i18n.T("balancer.image_tool.no_models_debug"),
 			"confident_backends", len(catalog.Backends))
 		return nil, imageToolSkipNoModels
 	}
@@ -610,10 +611,10 @@ func logImageToolDecision(path, model string, clientTools int, injected bool, na
 	}
 	switch {
 	case injected:
-		log.Infow("image tool: инструменты объявлены модели", fields...)
+		log.Infow(i18n.T("balancer.image_tool.injected_info"), fields...)
 	default:
 		// Отказ — не ошибка: чаще всего это «нечего грузить» или «клиент запретил».
-		log.Infow("image tool: инструменты НЕ объявлены", fields...)
+		log.Infow(i18n.T("balancer.image_tool.not_injected_info"), fields...)
 	}
 }
 
@@ -655,22 +656,21 @@ func imageToolShouldInject(cfg imageToolConfig, clientTools int) bool {
 func imageToolSkipReason(skip string) string {
 	switch skip {
 	case imageToolSkipDisabled:
-		return "LB_IMAGE_TOOL=off — инструмент отключён оператором"
+		return i18n.T("balancer.image_tool.skip_disabled")
 	case imageToolSkipNoBackend:
-		return "в кластере нет здорового image_cpp-бэкенда"
+		return i18n.T("balancer.image_tool.skip_no_backend")
 	case imageToolSkipNoModels:
-		return "на image-бэкенде нет моделей (нечего генерировать)"
+		return i18n.T("balancer.image_tool.skip_no_models")
 	case imageToolSkipAllowLoadOff:
-		return "нет загруженной модели, а LB_IMAGE_TOOL_ALLOW_LOAD=off"
+		return i18n.T("balancer.image_tool.skip_allow_load_off")
 	case imageToolSkipClientNone:
-		return `клиент прислал tool_choice="none" — инструменты запрещены в этом запросе`
+		return i18n.T("balancer.image_tool.skip_client_none")
 	case imageToolSkipClientOwns:
-		return "клиент сам объявил наши инструменты — исполняет его сторона"
+		return i18n.T("balancer.image_tool.skip_client_owns")
 	case imageToolSkipNoClientTools:
-		return "LB_IMAGE_TOOL_INJECT=auto, а клиент не прислал ни одного tools[] — " +
-			"объявление добавило бы ~200 токенов преамбулы в промпт и увело модель в reasoning"
+		return i18n.T("balancer.image_tool.skip_no_client_tools")
 	case imageToolSkipInjectOff:
-		return "LB_IMAGE_TOOL_INJECT=off — инструмент не объявляется никому (R216)"
+		return i18n.T("balancer.image_tool.skip_inject_off")
 	default:
 		return skip
 	}
@@ -815,7 +815,7 @@ func parseImageToolArgsFor(raw string, list bool) (imageToolArgs, error) {
 		return args, nil
 	}
 	if strings.TrimSpace(args.Prompt) == "" {
-		return args, errors.New("в аргументах нет prompt")
+		return args, errors.New(i18n.T("balancer.image_tool.args_no_prompt"))
 	}
 	return args, nil
 }
@@ -853,7 +853,7 @@ func decodeToolArguments(raw string) (map[string]interface{}, error) {
 			return nested, nil
 		}
 	}
-	return nil, fmt.Errorf("arguments не JSON-объект: %s", shortForLog(trimmed))
+	return nil, fmt.Errorf(i18n.T("balancer.image_tool.args_not_json"), shortForLog(trimmed))
 }
 
 // shortForLog — обрезать аргументы для текста ошибки (они уходят модели).
@@ -980,7 +980,7 @@ func (p *Proxy) resolveImageToolTarget(ctx context.Context, target *imageToolTar
 			}
 		}
 	}
-	logger.Get().Warnw("image tool: запрошенной модели нет в каталоге — отдаём имя воркеру как есть",
+	logger.Get().Warnw(i18n.T("balancer.image_tool.resolve_missing_debug"),
 		"requested", requested, "known", len(catalog.Models))
 	return imageToolResolved{BackendID: target.BackendID, Model: requested, State: imageStateNotLoaded, NotFound: true}
 }
@@ -1024,17 +1024,17 @@ const imageToolMinPromptChars = 3
 func validateImageToolPrompt(prompt string) error {
 	trimmed := strings.TrimSpace(prompt)
 	if trimmed == "" {
-		return errors.New("prompt пуст: опиши изображение словами (движок на пустом промпте заливает картинку одним цветом)")
+		return errors.New(i18n.T("balancer.image_tool.prompt_empty"))
 	}
 	if utf8.RuneCountInString(trimmed) < imageToolMinPromptChars {
 		return fmt.Errorf(
-			"prompt слишком короткий (%q): нужен осмысленный текстовый запрос, иначе движок выдаст однотонную заливку",
+			i18n.T("balancer.image_tool.prompt_too_short"),
 			trimmed)
 	}
 	// Один и тот же символ/пара повторов («ааааа», «....») — тоже заливка.
 	if isDegeneratePrompt(trimmed) {
 		return fmt.Errorf(
-			"prompt %q не описывает изображение (повтор одного символа): сформулируй, что нарисовать",
+			i18n.T("balancer.image_tool.prompt_degenerate"),
 			trimmed)
 	}
 	return nil
@@ -1063,11 +1063,9 @@ func isDegeneratePrompt(s string) bool {
 func (p *Proxy) imageToolUnknownModelError(ctx context.Context, requested string) string {
 	names := imageCatalogNames(p.ImageCatalogFor(ctx))
 	if len(names) == 0 {
-		return fmt.Sprintf("модели %q нет на image-воркере, а загруженных моделей нет вовсе: "+
-			"вызови list_image_models и выбери из доступного, либо попроси оператора загрузить модель", requested)
+		return i18n.T("balancer.image_tool.unknown_model_none", requested)
 	}
-	return fmt.Sprintf("модели %q нет на image-воркере. Доступные модели (имя использовать ровно как есть): %s. "+
-		"Вызови list_image_models, чтобы увидеть их описания, и повтори генерацию с одним из этих имён.",
+	return i18n.T("balancer.image_tool.unknown_model_list",
 		requested, strings.Join(names, ", "))
 }
 
@@ -1099,19 +1097,19 @@ func (p *Proxy) ensureImageModelLoaded(ctx context.Context, backendID, model str
 
 	resp, err := p.proxyRequestToBackend(req, backendID, cfg.LoadTimeout)
 	if err != nil {
-		return 0, fmt.Errorf("не удалось отправить запрос на загрузку модели %q: %w", model, err)
+		return 0, fmt.Errorf(i18n.T("balancer.image_tool.load_request_failed"), model, err)
 	}
 	raw, truncated, readErr := readImageToolResponse(resp.Body)
 	_ = resp.Body.Close()
 	if readErr != nil {
-		return 0, fmt.Errorf("чтение ответа на загрузку модели %q: %w", model, readErr)
+		return 0, fmt.Errorf(i18n.T("balancer.image_tool.load_read_failed"), model, readErr)
 	}
 	if truncated {
 		// R120: обрезка — своя причина, а не «воркер отказал в загрузке».
 		return 0, imageToolResponseTooLargeError(imageToolResponseLimitBytes)
 	}
 	if resp.StatusCode >= 400 {
-		return 0, fmt.Errorf("воркер отказал в загрузке модели %q (HTTP %d): %s",
+		return 0, fmt.Errorf(i18n.T("balancer.image_tool.load_refused"),
 			model, resp.StatusCode, upstreamErrorMessage(raw, resp.StatusCode))
 	}
 
@@ -1129,11 +1127,11 @@ func (p *Proxy) ensureImageModelLoaded(ctx context.Context, backendID, model str
 	}
 	for {
 		if err := ctx.Err(); err != nil {
-			return time.Since(started), fmt.Errorf("загрузка модели %q прервана: %w", model, err)
+			return time.Since(started), fmt.Errorf(i18n.T("balancer.image_tool.load_interrupted"), model, err)
 		}
 		if cfg.LoadTimeout > 0 && time.Now().After(deadline) {
 			return time.Since(started), fmt.Errorf(
-				"модель %q не поднялась за %s (state=%s): кап взведён явно (%s) — см. логи воркера",
+				i18n.T("balancer.image_tool.load_timeout"),
 				model, cfg.LoadTimeout, imageStateLoading, imageToolEnvLoadTimeout)
 		}
 
@@ -1145,21 +1143,21 @@ func (p *Proxy) ensureImageModelLoaded(ctx context.Context, backendID, model str
 				case imageStateLoaded:
 					return elapsed, nil
 				case imageStateError:
-					return elapsed, fmt.Errorf("модель %q не поднялась: %s", model,
-						firstNonEmptyStr(m.Error, "воркер сообщил state=error"))
+					return elapsed, fmt.Errorf(i18n.T("balancer.image_tool.load_failed"), model,
+						firstNonEmptyStr(m.Error, i18n.T("balancer.image_tool.load_worker_error_state")))
 				}
 			} else if snap.loaded() != nil && snap.loaded().Name != model {
 				// Воркер поднял другую модель (одна модель на процесс): подменять
 				// её молча нельзя — пользователь просил конкретную.
 				return elapsed, fmt.Errorf(
-					"воркер поднял модель %q вместо запрошенной %q (одна модель на процесс; выгрузите текущую)",
+					i18n.T("balancer.image_tool.load_wrong_model"),
 					snap.loaded().Name, model)
 			}
 		}
 
 		select {
 		case <-ctx.Done():
-			return time.Since(started), fmt.Errorf("загрузка модели %q прервана: %w", model, ctx.Err())
+			return time.Since(started), fmt.Errorf(i18n.T("balancer.image_tool.load_interrupted"), model, ctx.Err())
 		case <-time.After(imageToolLoadPollInterval):
 		}
 	}
@@ -1240,7 +1238,7 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 	needLoad := !resolved.Loaded && model != ""
 	if needLoad && !cfg.AllowLoad {
 		return nil, fmt.Errorf(
-			"модель %q не загружена, а автозагрузка выключена (%s=off): загрузите модель заранее",
+			i18n.T("balancer.image_tool.not_loaded_allow_load_off"),
 			model, imageToolEnvAllowLoad)
 	}
 	if needLoad && resolved.NotFound {
@@ -1324,7 +1322,7 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 		//
 		// Теперь отказ структурирован: машинный код + числа + подсказка доезжают
 		// до модели (image_tool_gate_r119.go).
-		logger.Get().Warnw("image tool: гейт ресурсов отказал",
+		logger.Get().Warnw(i18n.T("balancer.image_tool.gate_denied_warn"),
 			"backend", resolved.BackendID, "model", model, "code", gate.Code,
 			"required_mb", gate.Verdict.RequiredMB, "free_mb", gate.Verdict.FreeMB,
 			"headroom_mb", gate.Verdict.HeadroomMB, "retry_after_sec", gate.RetryAfterSec)
@@ -1368,7 +1366,7 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 	if resp.StatusCode >= 400 {
 		msg := upstreamErrorMessage(raw, resp.StatusCode)
 		handle.finish(types.ImageRequestStatusFailed, resp.StatusCode, "image_backend_error", msg, 0)
-		return nil, fmt.Errorf("движок отказал (HTTP %d): %s", resp.StatusCode, msg)
+		return nil, fmt.Errorf(i18n.T("balancer.image_tool.engine_http_error"), resp.StatusCode, msg)
 	}
 
 	var doc map[string]interface{}
@@ -1379,7 +1377,7 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 	url := firstImageURL(doc)
 	if url == "" {
 		handle.finish(types.ImageRequestStatusFailed, resp.StatusCode, "image_backend_no_image", "no image in response", 0)
-		return nil, errors.New("движок не вернул изображение")
+		return nil, errors.New(i18n.T("balancer.image_tool.engine_no_image"))
 	}
 
 	handle.finish(types.ImageRequestStatusOK, resp.StatusCode, "", "", 1)

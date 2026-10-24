@@ -27,6 +27,7 @@ import (
 	"strconv"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 )
 
 // rpcServerLogDefaultLines / rpcServerLogMaxRequestLines — сколько строк отдавать
@@ -48,7 +49,7 @@ func handleRPCServerLog(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"enabled": false,
 			"lines":   []interface{}{},
-			"note":    "узел раскладки в этом процессе не настроен (CPPWORKER_RPC_SERVER_ENABLED)",
+			"note":    i18n.T("cppworker.handlers_rpc_server_log_r172.not_configured"),
 		})
 		return
 	}

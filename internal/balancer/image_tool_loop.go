@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/imagetool"
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -63,12 +64,12 @@ func (lr *LlamaCppRouter) runImageToolLoop(w http.ResponseWriter, r *http.Reques
 	// --- turn 1: нестриминговый, чтобы увидеть вызов целиком ---
 	body1, err := forceNonStream(a.bodyBuf)
 	if err != nil {
-		logger.Get().Warnw("image tool: не удалось подготовить запрос", "error", err)
+		logger.Get().Warnw(i18n.T("balancer.image_tool_loop.prepare_failed"), "error", err)
 		return false
 	}
 	resp1, raw1, err := lr.postChatUpstream(r, a.targetURL, body1, a.client)
 	if err != nil {
-		logger.Get().Warnw("image tool: turn 1 не удался, отдаём обычным путём", "error", err)
+		logger.Get().Warnw(i18n.T("balancer.image_tool_loop.turn1_failed"), "error", err)
 		return false // штатный путь сам обработает ошибку (503/Retry-After)
 	}
 	if resp1.StatusCode >= 400 {
@@ -108,7 +109,7 @@ func (lr *LlamaCppRouter) runImageToolLoop(w http.ResponseWriter, r *http.Reques
 				// «модель решила нарисовать десять вариантов» на слабой GPU.
 				results = append(results, map[string]interface{}{
 					"status": "error",
-					"error":  fmt.Sprintf("лимит генераций на один запрос (%d) исчерпан", cfg.MaxCalls),
+					"error":  i18n.T("balancer.image_tool_loop.limit_exhausted", cfg.MaxCalls),
 				})
 				continue
 			}
@@ -121,7 +122,7 @@ func (lr *LlamaCppRouter) runImageToolLoop(w http.ResponseWriter, r *http.Reques
 	// --- turn 2: финальный ответ модели без наших инструментов (R85: обоих) ---
 	body2, err := buildFollowUpBody(a.bodyBuf, message, calls, results)
 	if err != nil {
-		logger.Get().Errorw("image tool: не удалось собрать follow-up", "error", err)
+		logger.Get().Errorw(i18n.T("balancer.image_tool_loop.followup_failed"), "error", err)
 		lr.writeImageToolFallback(w, a.model, message, results, clientStream)
 		return true
 	}
@@ -133,7 +134,7 @@ func (lr *LlamaCppRouter) runImageToolLoop(w http.ResponseWriter, r *http.Reques
 	body2, _ = setStreamFlag(body2, false)
 	resp2, raw2, err := lr.postChatUpstream(r, a.targetURL, body2, a.client)
 	if err != nil || resp2.StatusCode >= 400 {
-		logger.Get().Warnw("image tool: turn 2 не удался — отдаём ссылку напрямую",
+		logger.Get().Warnw(i18n.T("balancer.image_tool_loop.turn2_failed"),
 			"error", err, "status", statusOf(resp2))
 		lr.writeImageToolFallback(w, a.model, message, results, clientStream)
 		return true
@@ -205,7 +206,7 @@ func ensureImageMarkdown(raw []byte, results []map[string]interface{}) []byte {
 func (lr *LlamaCppRouter) executeOneImageToolCall(r *http.Request, a imageToolLoopArgs, call imageToolCall) map[string]interface{} {
 	args, err := parseImageToolArgsFor(call.Arguments, call.isListCall())
 	if err != nil {
-		logger.Get().Warnw("image tool: некорректные аргументы вызова",
+		logger.Get().Warnw(i18n.T("balancer.image_tool_loop.bad_args"),
 			"call", call.ID, "tool", call.Name, "args", call.Arguments, "error", err)
 		return map[string]interface{}{"status": "error", "error": err.Error()}
 	}
@@ -214,20 +215,20 @@ func (lr *LlamaCppRouter) executeOneImageToolCall(r *http.Request, a imageToolLo
 	// записи в ленту image-запросов (генерации не было — считать её запросом
 	// значило бы портить статистику и занимать слот).
 	if call.isListCall() {
-		logger.Get().Infow("image tool: модель запросила каталог моделей",
+		logger.Get().Infow(i18n.T("balancer.image_tool_loop.catalog_requested"),
 			"call", call.ID, "family", args.Family)
 		res := lr.proxy.imageToolCatalogResult(r.Context(), args.Family)
 		res["tool_call_id"] = call.ID
 		return res
 	}
 
-	logger.Get().Infow("image tool: генерация по вызову модели",
+	logger.Get().Infow(i18n.T("balancer.image_tool_loop.generating"),
 		"backend", a.target.BackendID, "model", a.target.Model,
 		"requested_model", args.Model, "prompt_len", len(args.Prompt), "call", call.ID)
 
 	res, err := lr.proxy.generateImageForTool(r.Context(), a.target, args)
 	if err != nil {
-		logger.Get().Warnw("image tool: генерация не удалась", "error", err)
+		logger.Get().Warnw(i18n.T("balancer.image_tool_loop.generation_failed"), "error", err)
 		// R119: отказ гейта несёт машинный код и числа — отдаём их модели, чтобы
 		// она могла объяснить пользователю, чего не хватает и что сделать.
 		return imageToolErrorPayload(err)
@@ -349,7 +350,7 @@ func buildFollowUpBody(body []byte, assistant map[string]interface{}, calls []im
 	messages = append(messages, assistantMsg)
 
 	for i, c := range calls {
-		payload := map[string]interface{}{"status": "error", "error": "результат не получен"}
+		payload := map[string]interface{}{"status": "error", "error": i18n.T("balancer.image_tool_loop.result_missing")}
 		if i < len(results) && results[i] != nil {
 			payload = results[i]
 		}
@@ -469,6 +470,7 @@ func synthesizeChatSSE(w http.ResponseWriter, raw []byte, model string, status i
 //   - без `index` — ключа склейки фрагментов по спецификации OpenAI;
 //   - с finish_reason="stop" вместо "tool_calls";
 //   - без приведения аргументов к схеме инструмента из запроса.
+//
 // Снаружи это выглядело так: Cline показывает `Error: {"error":"✖ Invalid input"}`,
 // повторяет вызов и через 6 одинаковых попыток останавливает задачу.
 func synthesizeChatSSEWithSchemas(w http.ResponseWriter, raw []byte, model string, status int, schemas map[string]*toolParamSchema) {
@@ -559,7 +561,7 @@ func synthesizeChatSSEWithSchemas(w http.ResponseWriter, raw []byte, model strin
 	// выглядели так, и по логу нельзя было понять, что произошло. Теперь такой
 	// случай виден клиенту как ошибка с причиной, а не как «модель промолчала».
 	if !contentSent && !callsSent {
-		logger.Get().Warnw("synthesizeChatSSE: пустой ответ апстрима — отдаём ошибку вместо пустого успеха",
+		logger.Get().Warnw(i18n.T("balancer.image_tool_loop.empty_upstream_warn"),
 			"model", model, "finish_reason", finish, "status", status)
 		errChunk := map[string]interface{}{
 			"id":      id,

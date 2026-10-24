@@ -229,6 +229,14 @@ func TestBootstrapFromEnv(t *testing.T) {
 	}
 }
 
+// TestNoDuplicateKeys — один ключ не может быть зарегистрирован дважды:
+// иначе один текст молча затирает другой (Register это отслеживает).
+func TestNoDuplicateKeys(t *testing.T) {
+	if dups := Duplicates(); len(dups) > 0 {
+		t.Fatalf("duplicate message keys: %v", dups)
+	}
+}
+
 // TestAllKeysHaveTranslations — каталог не должен содержать ключей без EN.
 func TestAllKeysHaveTranslations(t *testing.T) {
 	for key, entry := range messages {

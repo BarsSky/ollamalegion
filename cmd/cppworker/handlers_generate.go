@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -70,7 +71,7 @@ func normalizeGenerateRequest(req *generateRequest) {
 	// (clampNPredictToClientUpperBound в handlers_openai/buildGenerationParams).
 	if req.MaxTokens == 0 && req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
 		req._upperBoundNumPredict = *req.MaxOutputTokens
-		logger.Get().Infow("normalizeGenerateRequest: max_output_tokens учтён как ВЕРХНЯЯ ГРАНИЦА (не как длина ответа)",
+		logger.Get().Infow(i18n.T("cppworker.handlers_generate.upper_bound_noted"),
 			"model", req.Model, "max_output_tokens", *req.MaxOutputTokens)
 	}
 	if req.RepeatPenalty == nil && req.Options.RepeatPenalty != 0 {
@@ -172,7 +173,7 @@ func buildGenerationParams(req generateRequest) bridge.GenerationParams {
 	// только УМЕНЬШИТЬ длину ответа, но не задать её. Раньше граница попадала в
 	// req.MaxTokens, то есть «приму до 64000» = «сгенерируй до 64000».
 	if req._upperBoundNumPredict > 0 && params.NPredict > req._upperBoundNumPredict {
-		logger.Get().Infow("buildGenerationParams: max_output_tokens ограничил длину ответа сверху",
+		logger.Get().Infow(i18n.T("cppworker.handlers_generate.upper_bound_clamped"),
 			"model", req.Model,
 			"max_output_tokens", req._upperBoundNumPredict,
 			"n_predict_before", params.NPredict)
@@ -557,7 +558,7 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		}
 	}
 	if snap := genParser.Snapshot(); snap.HasReasoning {
-		logger.Get().Debugw("writeStreamResponse: reasoning отделён от ответа",
+		logger.Get().Debugw(i18n.T("cppworker.handlers_generate.reasoning_split"),
 			"model", modelName,
 			"reasoning_chars", snap.ReasoningChars,
 			"visible_chars", contentSeen.Len(),

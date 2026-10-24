@@ -13,6 +13,7 @@ import (
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -94,7 +95,7 @@ func apiTokenSource() string {
 			return fmt.Sprintf("%s(len=%d)", name, len(strings.TrimSpace(v)))
 		}
 	}
-	return "не задан (защищённые эндпоинты открыты)"
+	return i18n.T("cppworker.utils.token_not_set")
 }
 
 // corsMiddleware — Round 22 deferred fix (2026-08-04).
@@ -264,8 +265,7 @@ func writeModelLoadError(w http.ResponseWriter, modelName string, err error) boo
 			"error": fmt.Sprintf("model %q not found: %s", modelName, err.Error()),
 			"code":  "model_file_not_found",
 			"model": modelName,
-			"hint": "проверьте имя модели (алиасы) и что файл .gguf лежит в каталоге моделей; " +
-				"список доступных файлов — GET /api/models/files",
+			"hint":  i18n.T("cppworker.utils.hint_model_not_found"),
 		})
 	default:
 		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
@@ -398,8 +398,7 @@ func handleInferenceError(w http.ResponseWriter, err error) bool {
 			"code":       "rpc_node_unreachable",
 			"endpoint":   rpcErr.Endpoint,
 			"retryAfter": 10,
-			"hint": "поднимите узел раскладки (на доноре: " +
-				"docker compose -f docker-compose.rpc-node.yml up -d) и повторите запрос",
+			"hint":       i18n.T("cppworker.utils.hint_rpc_node_unreachable"),
 		})
 		return true
 	}
@@ -419,7 +418,7 @@ func handleInferenceError(w http.ResponseWriter, err error) bool {
 			"code":       "rpc_session_lost",
 			"endpoint":   sessLost.Endpoint,
 			"retryAfter": 5,
-			"hint":       "модель выгружена, повторите запрос через несколько секунд — раскладка соберётся заново",
+			"hint":       i18n.T("cppworker.utils.hint_rpc_session_lost"),
 		})
 		return true
 	}

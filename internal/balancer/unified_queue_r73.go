@@ -28,6 +28,7 @@ import (
 	"errors"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -131,7 +132,7 @@ func (p *Proxy) waitForInferenceBackend(
 	}
 	if noCandidate {
 		if capped, ok := p.imageLockWaitCap(model, bt); ok && capped < wait {
-			logger.Get().Warnw("unified queue: кандидатов нет из-за активного image-лока — лимит ожидания сужен до balancing.image.queueWaitTimeoutSec",
+			logger.Get().Warnw(i18n.T("balancer.unified_queue_r73.image_lock_no_candidates_wait_capped_warn"),
 				"model", model, "session", session,
 				"reason", imageLockWaitReason,
 				"wait_max_sec", int(capped.Seconds()),
@@ -143,7 +144,7 @@ func (p *Proxy) waitForInferenceBackend(
 		}
 	}
 	if p.admissionOverloaded() {
-		logger.Get().Warnw("unified queue: очередь переполнена, быстрый 503",
+		logger.Get().Warnw(i18n.T("balancer.unified_queue_r73.queue_overloaded_fast_503_warn"),
 			"model", model, "waiting", p.admission.waitingCount(),
 			"max_size", p.queueMaxSize())
 		return "", nil, 0, 0, errAdmissionOverloaded
@@ -154,7 +155,7 @@ func (p *Proxy) waitForInferenceBackend(
 	position = aq.position(admissionAnyBackend, w)
 	enqueued := w.enqueued
 	deadline := enqueued.Add(wait)
-	logger.Get().Infow("unified queue: запрос встал в admission-очередь (любой бэкенд)",
+	logger.Get().Infow(i18n.T("balancer.unified_queue_r73.enqueued_any_backend_info"),
 		"model", model, "session", session, "position", position,
 		"wait_max_sec", int(wait.Seconds()))
 	defer aq.remove(admissionAnyBackend, w)
@@ -171,7 +172,7 @@ func (p *Proxy) waitForInferenceBackend(
 				if p.queueMgr != nil {
 					p.queueMgr.RecordUnified(model, id, enqueued)
 				}
-				logger.Get().Infow("unified queue: слот получен после ожидания",
+				logger.Get().Infow(i18n.T("balancer.unified_queue_r73.slot_acquired_after_wait_info"),
 					"backend", id, "model", model, "session", session,
 					"waited_ms", waited.Milliseconds(), "position", position)
 				return id, lease.Release, waited, position, nil
@@ -181,7 +182,7 @@ func (p *Proxy) waitForInferenceBackend(
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			aq.recordTimeout()
-			logger.Get().Warnw("unified queue: ожидание слота истекло, 503",
+			logger.Get().Warnw(i18n.T("balancer.unified_queue_r73.slot_wait_timeout_warn"),
 				"model", model, "session", session,
 				"waited_ms", time.Since(enqueued).Milliseconds(),
 				"wait_max_sec", int(wait.Seconds()))
@@ -197,7 +198,7 @@ func (p *Proxy) waitForInferenceBackend(
 		case <-timer.C:
 		case <-ctx.Done():
 			timer.Stop()
-			logger.Get().Infow("unified queue: клиент отменил запрос, пока ждал слот",
+			logger.Get().Infow(i18n.T("balancer.unified_queue_r73.client_canceled_while_waiting_info"),
 				"model", model, "session", session,
 				"waited_ms", time.Since(enqueued).Milliseconds())
 			return "", nil, time.Since(enqueued), position, ctx.Err()

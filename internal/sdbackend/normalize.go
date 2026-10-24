@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -32,6 +33,7 @@ import (
 	// (движку гарантированно понятный 1-канальный формат), а не отдаём как есть.
 	_ "golang.org/x/image/webp"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -151,7 +153,7 @@ func NormalizeGeneration(in GenerationRequest, profile *types.ImageModelProfile,
 		out.Steps = defSteps
 	}
 	if out.Steps > maxSteps {
-		out.Notes = append(out.Notes, fmt.Sprintf("steps clamped to %d (движок молча клампит сам, но длина data[] тогда расходится с ожиданием клиента)", maxSteps))
+		out.Notes = append(out.Notes, i18n.T("sdbackend.normalize.notes_steps_clamped", maxSteps))
 		out.Steps = maxSteps
 	}
 	if out.Steps < MinSteps {
@@ -484,7 +486,7 @@ func transcodeWebPToPNG(raw []byte) ([]byte, bool, error) {
 	}
 	img, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
-		return nil, false, webpDecodeError(err, "PNG или JPEG")
+		return nil, false, webpDecodeError(err, i18n.T("sdbackend.normalize.want_png_jpeg"))
 	}
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
@@ -571,7 +573,7 @@ func looksLikeWebP(raw []byte) bool {
 // разные (маска строго 1 канал, init — 3/4 канала), и «пришлите PNG» без
 // уточнения отправляло бы клиента по кругу.
 func webpDecodeError(err error, want string) error {
-	return fmt.Errorf("webp не декодирован: %v; пришлите %s", err, want)
+	return errors.New(i18n.T("sdbackend.normalize.webp_decode_failed", err, want))
 }
 
 // ImageSizeFromBase64 — геометрия изображения из payload (PNG/JPEG/webp).
@@ -592,7 +594,7 @@ func ImageSizeFromBase64(payload string) (int, int, error) {
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
 		if format == "webp" || looksLikeWebP(raw) {
-			return 0, 0, webpDecodeError(err, "PNG или JPEG")
+			return 0, 0, webpDecodeError(err, i18n.T("sdbackend.normalize.want_png_jpeg"))
 		}
 		return 0, 0, fmt.Errorf("decode image header: %w", err)
 	}
@@ -677,7 +679,7 @@ func maskGray(payload string) (*image.Gray, error) {
 	img, format, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
 		if format == "webp" || looksLikeWebP(raw) {
-			return nil, webpDecodeError(err, "PNG-маску (1 канал)")
+			return nil, webpDecodeError(err, i18n.T("sdbackend.normalize.want_png_mask"))
 		}
 		return nil, fmt.Errorf("decode mask image (%s): %w", format, err)
 	}

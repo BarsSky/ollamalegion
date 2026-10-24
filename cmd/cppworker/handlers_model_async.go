@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -396,7 +397,7 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	// (nil pointer в InFlight) вместо пропущенного reload — фоновый сбой ронял
 	// cppworker, обслуживающий живые запросы.
 	if be == nil {
-		logger.Get().Errorw("runAsyncReload: backend не инициализирован — reload пропущен",
+		logger.Get().Errorw(i18n.T("cppworker.handlers_model_async.backend_nil"),
 			"name", modelName)
 		return
 	}
@@ -412,10 +413,10 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	// на дренаж уже отменённых запросов.
 	if inflight := be.InFlight(); inflight != nil {
 		if n := inflight.Get(modelName); n > 0 {
-			logger.Get().Infow("runAsyncReload: waiting for in-flight to drain (не дольше 10s)",
+			logger.Get().Infow(i18n.T("cppworker.handlers_model_async.drain_wait"),
 				"name", modelName, "in_flight", n)
 			if !inflight.WaitZero(modelName, 10*time.Second) {
-				logger.Get().Warnw("runAsyncReload: запросы не дренировались за 10s — перезагружаем всё равно",
+				logger.Get().Warnw(i18n.T("cppworker.handlers_model_async.drain_timeout"),
 					"name", modelName, "in_flight", inflight.Get(modelName))
 			}
 		}
@@ -442,7 +443,7 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	// отсутствие, только медленнее.
 	if len(be.ActiveRPCServers()) > 0 {
 		settle := 800 * time.Millisecond
-		logger.Get().Infow("runAsyncReload: пауза на закрытие сессии узла перед загрузкой",
+		logger.Get().Infow(i18n.T("cppworker.handlers_model_async.settle_pause"),
 			"name", modelName, "servers", be.ActiveRPCServers(), "sleep_ms", settle.Milliseconds())
 		time.Sleep(settle)
 	}
@@ -491,7 +492,7 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	// реальностью. degradedStage при этом остаётся нужен для заголовка в 202.
 	noteLoadDegradation(modelName, opts, be)
 	if degradedStage != "" {
-		logger.Get().Warnw("runAsyncReload: подтверждена деградированная загрузка",
+		logger.Get().Warnw(i18n.T("cppworker.handlers_model_async.degraded_confirmed"),
 			"name", modelName, "stage", degradedStage, "gpu_layers", opts.GPULayers)
 	}
 

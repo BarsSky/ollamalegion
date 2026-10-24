@@ -1,4 +1,4 @@
-﻿// auto_continue.go — R60.21: detect truncated LLM responses and
+// auto_continue.go — R60.21: detect truncated LLM responses and
 // auto-retry with "continue" prompt to recover from model-side
 // antiprompt emission (Qwen3-Instruct emits <|im_end|> mid-code).
 //
@@ -46,6 +46,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -829,15 +830,14 @@ func GetAutoContinueTimeout() time.Duration {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 0 {
-		logger.Get().Warnw("LB_AUTO_CONTINUE_TIMEOUT_SEC не распознан — автопродолжение без капа",
+		logger.Get().Warnw(i18n.T("balancer.auto_continue.timeout_unparsed_warn"),
 			"value", v, "error", err)
 		return 0
 	}
 	if n == 0 {
 		return 0
 	}
-	logger.Get().Warnw("armed auto-continue timeout (operator opt-in): продолжение будет "+
-		"оборвано по таймеру, а не по завершению генерации",
+	logger.Get().Warnw(i18n.T("balancer.auto_continue.timeout_armed_warn"),
 		"timeout_sec", n, "source", "LB_AUTO_CONTINUE_TIMEOUT_SEC")
 	return time.Duration(n) * time.Second
 }
@@ -1244,6 +1244,7 @@ func ClientOutputCapped(body []byte) (bool, string) {
 	}
 	return false, ""
 }
+
 // AutoContinueAllowedForTurn — R187 (2026-10-20): можно ли продлевать ответ.
 //
 // ЗАЧЕМ. Клиент (Cline, Roo, deepseek harness, hermes) ведёт агентскую сессию
@@ -1255,6 +1256,7 @@ func ClientOutputCapped(body []byte) (bool, string) {
 //   - балансер тянет ВТОРОЙ запрос генерации (на 27B-модели это десятки
 //     секунд), после чего дописывает текст ПОСЛЕ finish (клиенты игнорируют)
 //     или подавляет его — и поток заканчивается поздно или не заканчивается.
+//
 // Живой симптом в Cline: «completed», затем размышления, затем тишина.
 //
 // Правило: если в запросе есть tools[] (агентский ход) или в ответе есть

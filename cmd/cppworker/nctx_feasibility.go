@@ -35,6 +35,7 @@ import (
 	"net/http"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -134,16 +135,13 @@ func logNCtxFeasibility(f NCtxFeasibility) {
 	}
 	switch f.Stage {
 	case nctxStageInfeasible:
-		log.Warnw("R83 n_ctx превышает физический предел: загрузка обречена "+
-			"(выше RAM-границы или обучающего контекста модели)", fields...)
+		log.Warnw(i18n.T("cppworker.nctx_feasibility.log_infeasible"), fields...)
 	case nctxStageDegraded:
-		log.Warnw("R83 n_ctx выше VRAM-границы: загрузка уйдёт в partial_offload/cpu_only "+
-			"(часть слоёв в RAM, ответ будет заметно медленнее; для A10 24 GB "+
-			"используйте n_ctx в пределах max_vram_n_ctx и kvCacheType=q4_0)", fields...)
+		log.Warnw(i18n.T("cppworker.nctx_feasibility.log_degraded"), fields...)
 	case nctxStageExactFit:
-		log.Infow("R83 n_ctx укладывается в VRAM (exact_fit)", fields...)
+		log.Infow(i18n.T("cppworker.nctx_feasibility.log_exact_fit"), fields...)
 	default:
-		log.Debugw("R83 n_ctx-оценка недоступна: нет метрик VRAM/RAM/GGUF", fields...)
+		log.Debugw(i18n.T("cppworker.nctx_feasibility.log_unknown"), fields...)
 	}
 }
 
@@ -158,9 +156,7 @@ func nctxSuggestion(f NCtxFeasibility) string {
 	// любом n_ctx. Живой прогон дал ровно такую подсказку, поэтому порядок
 	// веток здесь — не стилистика, а исправление.
 	if f.HardMaxNCtx <= 0 {
-		return "Веса модели не помещаются ни в VRAM, ни в доступную RAM при любом " +
-			"n_ctx — уменьшение контекста не поможет. Нужна меньшая модель или " +
-			"более сильное квантование."
+		return i18n.T("cppworker.nctx_feasibility.suggest_no_fit")
 	}
 	// R83 шаг 3: если решение принял memfit, его подсказка конкретнее (в ней есть
 	// и потолок, и — когда применимо — выигрыш от kvCacheType=q4_0).
@@ -169,15 +165,13 @@ func nctxSuggestion(f NCtxFeasibility) string {
 	}
 	switch {
 	case f.GGUFMaxContext > 0 && f.HardMaxNCtx == f.GGUFMaxContext:
-		return fmt.Sprintf("n_ctx ограничен обучающим контекстом модели: %d. "+
-			"Укажите n_ctx <= %d.", f.GGUFMaxContext, f.GGUFMaxContext)
+		return i18n.T("cppworker.nctx_feasibility.suggest_train_ctx",
+			f.GGUFMaxContext, f.GGUFMaxContext)
 	case f.FeasibleMaxNCtx > 0:
-		return fmt.Sprintf("Для загрузки целиком в VRAM используйте n_ctx <= %d "+
-			"(feasible_max_context). До %d возможно с выгрузкой части слоёв в RAM "+
-			"(partial_offload) — это заметно медленнее.",
+		return i18n.T("cppworker.nctx_feasibility.suggest_exact_fit",
 			f.FeasibleMaxNCtx, f.HardMaxNCtx)
 	default:
-		return "Снизьте n_ctx или используйте модель/железо с большим объёмом памяти."
+		return i18n.T("cppworker.nctx_feasibility.suggest_reduce_ctx")
 	}
 }
 
@@ -286,7 +280,7 @@ func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx 
 		// но говорим об этом явно, а не молча (прежний fail-open был неотличим от
 		// «всё хорошо»).
 		if logger.Get() != nil {
-			logger.Get().Debugw("R83 гейт n_ctx: метаданные модели недоступны — проверка пропущена",
+			logger.Get().Debugw(i18n.T("cppworker.nctx_feasibility.log_metadata_missing"),
 				"model", modelName, "requested_n_ctx", requestedNCtx)
 		}
 		return true
@@ -311,9 +305,7 @@ func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx 
 	// а не по конфигу — значение из .env остаётся верхней границей, но перестаёт
 	// молча обещать невозможное.
 	if *ramFallbackMaxNCtx > 0 && f.HardMaxNCtx > 0 && *ramFallbackMaxNCtx > f.HardMaxNCtx {
-		logger.Get().Warnw("R83 потолок n_ctx из конфига недостижим на этом железе: "+
-			"CPPWORKER_RAM_FALLBACK_MAX_N_CTX больше физического предела — "+
-			"уменьшите его, иначе конфиг обещает то, чего не будет",
+		logger.Get().Warnw(i18n.T("cppworker.nctx_feasibility.log_config_ceiling"),
 			"model", f.Model,
 			"configured_max_n_ctx", *ramFallbackMaxNCtx,
 			"hard_max_n_ctx", f.HardMaxNCtx,

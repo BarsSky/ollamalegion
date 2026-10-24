@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/backendgroup"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/modelreplication"
 	"ollama-loadbalancer/internal/rpccoordinator"
 	"ollama-loadbalancer/internal/virtualmodel"
@@ -900,8 +901,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				p.virtualRouter.ServeHTTP(w, r)
 				return
 			}
-			logger.Get().Warnw("virtual_router: модель — виртуальный алиас, но pool не разрешён "+
-				"(operatingMode != virtual_router и placement-стратегия != pool); идём стандартным путём",
+			logger.Get().Warnw(i18n.T("balancer.proxy.virtual_alias_pool_not_allowed_warn"),
 				"path", r.URL.Path, "model", virtualModel,
 				"operating_mode", p.config.Balancing.OperatingMode)
 		}
@@ -955,7 +955,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-LB-Placement", string(decision.Strategy))
 		w.Header().Set("X-LB-Placement-Source", string(decision.Source))
 		if decision.Source != PlacementSourceDisabled {
-			ridLog(ctxWithRID).Debugw("placement: решение о размещении",
+			ridLog(ctxWithRID).Debugw(i18n.T("balancer.proxy.placement_decision_debug"),
 				"model", model, "strategy", decision.Strategy,
 				"declared_strategy", declaredStrategy,
 				"source", decision.Source, "reason", decision.Reason,
@@ -1105,7 +1105,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// покрывает — перепривязываемся (это и есть «prepared copy wins»).
 				if parsed.NumCtx > 0 && !p.modelCopyCoversWindow(targetBackend, model, parsed.NumCtx) {
 					if better, why := p.selectModelCopyForWindow(model, parsed.NumCtx, nil, allowedTypes); better != "" && better != targetBackend {
-						logger.Get().Infow("session re-stick: привязанная копия не покрывает окно клиента",
+						logger.Get().Infow(i18n.T("balancer.proxy.session_restick_copy_not_covering_window_info"),
 							"session", sessionID, "model", model,
 							"from", targetBackend, "to", better,
 							"requested_n_ctx", parsed.NumCtx, "reason", why)
@@ -1308,7 +1308,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if sessionID != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
 				p.sessionMgr.SetWithProtocol(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 			}
-			logger.Get().Infow("unified queue: слот получен, продолжаем без legacy-очереди",
+			logger.Get().Infow(i18n.T("balancer.proxy.unified_slot_acquired_info"),
 				"backend", acquiredBackend, "model", model,
 				"waited_ms", waited.Milliseconds(), "position", position)
 		} else {
@@ -1326,7 +1326,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
 			default:
 				// Клиент отменил запрос, пока ждал слот: отвечать уже некому.
-				logger.Get().Infow("unified queue: запрос отменён до получения слота",
+				logger.Get().Infow(i18n.T("balancer.proxy.unified_request_canceled_info"),
 					"model", model, "session", sessionKey, "error", waitErr)
 			}
 			// Слот не получен — выполняем запрос нечем: выходим (как и раньше
@@ -1442,7 +1442,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Раньше здесь безусловно выполнялось UpdateBackendStatus(Unhealthy), поэтому
 	// после обрыва клиента следующий запрос получал 503 (живой замер: 740 мс).
 	if isClientDisconnectErr(err) {
-		logger.Get().Infow("backend request canceled by client — бэкенд НЕ помечаем нездоровым",
+		logger.Get().Infow(i18n.T("balancer.proxy.client_canceled_not_unhealthy_info"),
 			"backend", acquiredBackend, "model", model, "error", err)
 		releaseAcquired()
 		return

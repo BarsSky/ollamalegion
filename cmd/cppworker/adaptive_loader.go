@@ -26,6 +26,7 @@ import (
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -149,7 +150,7 @@ func applyRPCCapacity(ep *EnvironmentProfile) {
 	}
 	ep.FreeVRAM += int64(free)
 	ep.TotalVRAM += int64(total)
-	logger.Get().Infow("EnvironmentProfile: ёмкость RPC-узлов добавлена",
+	logger.Get().Infow(i18n.T("cppworker.adaptive_loader.rpc_capacity_added"),
 		"rpc_devices", n,
 		"remote_free_mb", free/(1024*1024),
 		"remote_total_mb", total/(1024*1024),
@@ -1140,13 +1141,13 @@ func handleAdaptiveStrategy(w http.ResponseWriter, r *http.Request) {
 			if env.TotalVRAM > 0 && env.FreeVRAM > env.TotalVRAM {
 				env.FreeVRAM = env.TotalVRAM
 			}
-			logger.Get().Infow("handleAdaptiveStrategy: бюджет reload'а учитывает память самой модели",
+			logger.Get().Infow(i18n.T("cppworker.adaptive_loader.reload_budget_reclaim"),
 				"model", resolvedName,
 				"free_vram_before_mb", before/(1024*1024),
 				"model_vram_mb", int64(reclaim)/(1024*1024),
 				"free_vram_for_reload_mb", env.FreeVRAM/(1024*1024),
 				"total_vram_mb", env.TotalVRAM/(1024*1024),
-				"reason", "reload освобождает память перезагружаемой модели")
+				"reason", i18n.T("cppworker.adaptive_loader.reload_reclaim_reason"))
 		}
 	}
 	strategy := SelectStrategyWithKV(

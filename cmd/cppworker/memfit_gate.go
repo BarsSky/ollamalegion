@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -40,7 +41,7 @@ func effectiveKVCacheTypeForLoad(modelName, explicit string) string {
 		// и раскладка — то есть что §3.4 не вернулся (раньше здесь молча
 		// подставлялся дефолт конфига, обычно q4_0 при профиле q8_0).
 		if logger.Get() != nil {
-			logger.Get().Infow("R83 гейт n_ctx: тип KV-cache из плана загрузки",
+			logger.Get().Infow(i18n.T("cppworker.memfit_gate.kv_from_plan"),
 				"model", modelName, "kv_cache_type", explicit)
 		}
 		return explicit
@@ -52,7 +53,7 @@ func effectiveKVCacheTypeForLoad(modelName, explicit string) string {
 			// которые не применяют профиль в opts до гейта (handleLoadModel,
 			// handleReloadModel) — поэтому резолв делается здесь.
 			if logger.Get() != nil {
-				logger.Get().Infow("R83 гейт n_ctx: тип KV-cache взят из профиля модели",
+				logger.Get().Infow(i18n.T("cppworker.memfit_gate.kv_from_profile"),
 					"model", modelName, "kv_cache_type", prof.KVCacheType)
 			}
 			return prof.KVCacheType
@@ -179,7 +180,7 @@ func logResolvedKVCacheType(modelName, kvType string) {
 	if logger.Get() == nil {
 		return
 	}
-	logger.Get().Debugw("R83 гейт n_ctx: тип KV-cache для оценки",
+	logger.Get().Debugw(i18n.T("cppworker.memfit_gate.kv_for_estimate"),
 		"model", modelName, "kv_cache_type", kvType)
 }
 
@@ -189,5 +190,5 @@ func logMemfitVerdict(v memfit.Verdict) {
 	if logger.Get() == nil {
 		return
 	}
-	logger.Get().Debugw("memfit: вердикт по памяти", "verdict", v.String())
+	logger.Get().Debugw(i18n.T("cppworker.memfit_gate.verdict"), "verdict", v.String())
 }

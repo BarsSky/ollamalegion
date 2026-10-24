@@ -40,6 +40,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -730,13 +731,12 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 	// здесь — громкое предупреждение о конфигурации, из-за которой он нарушается.
 	if cfg.AutoReloadMaxNCtx > 0 && required > cfg.AutoReloadMaxNCtx {
 		if bridgeErr.CurrentNCtx > 0 && cfg.AutoReloadMaxNCtx < bridgeErr.CurrentNCtx {
-			logger.Get().Errorw("auto_reload_max_n_ctx НИЖЕ загруженного окна модели — "+
-				"запросы на границе будут отклоняться 413",
+			logger.Get().Errorw(i18n.T("balancer.nctx_reload.auto_reload_ceiling_below_loaded_error"),
 				"backend", backendID,
 				"loaded_n_ctx", bridgeErr.CurrentNCtx,
 				"auto_reload_max_n_ctx", cfg.AutoReloadMaxNCtx,
 				"required_n_ctx", required,
-				"hint", "поднимите LB_NCTX_RELOAD_MAX_N_CTX до окна модели (или 0 = без потолка)")
+				"hint", i18n.T("balancer.nctx_reload.auto_reload_ceiling_below_loaded_hint"))
 		}
 		return c.makeRejectPlan(backendID, bridgeErr, required,
 			nCtxLimitReason(required, cfg.AutoReloadMaxNCtx, bridgeErr.MaxVRAMNCtx),
@@ -931,7 +931,7 @@ func (c *DefaultNCtxReloadHTTPClient) PostReload(ctx context.Context, endpoint s
 		// newNCtxReloadHTTPClient; сюда попадаем лишь если клиент не задан.
 		client = &http.Client{Timeout: 0}
 		if logger.Get() != nil {
-			logger.Get().Warnw("nctx reload: HTTP-клиент не задан — используем без таймаута",
+			logger.Get().Warnw(i18n.T("balancer.nctx_reload.no_http_client_no_timeout_warn"),
 				"endpoint", endpoint, "source", "PostReload fallback")
 		}
 	}
@@ -1040,13 +1040,13 @@ func (c *NCtxReloadCoordinator) DoReload(
 	// выкидывал модель из VRAM. Здесь оставляем не меньше слоёв, чем работает
 	// сейчас: хуже текущей раскладки перезагрузка быть не должна.
 	if clampStrategyToCurrentLayout(strategy, hints.GPULayers) {
-		logger.Get().Warnw("nctx_reload: адаптивная стратегия понижает GPU-оффлоад — оставляю текущий",
+		logger.Get().Warnw(i18n.T("balancer.nctx_reload.strategy_lowers_gpu_offload_warn"),
 			"backend", backendID,
 			"model", modelName,
 			"strategy_gpu_layers", strategy.GPULayers,
 			"current_gpu_layers", hints.GPULayers,
 			"stage", strategy.Stage,
-			"reason", "бюджет стратегии считает свободную VRAM без учёта памяти самой модели")
+			"reason", i18n.T("balancer.nctx_reload.strategy_lowers_gpu_offload_reason"))
 	}
 
 	// Cap target n_ctx to MaxViableNCtx from adaptive strategy.
@@ -1081,7 +1081,7 @@ func (c *NCtxReloadCoordinator) DoReload(
 			"reload skipped: effective target n_ctx=%d does not exceed currently loaded n_ctx=%d "+
 				"(adaptive strategy clamped the target); window would not change",
 			effectiveTarget, hints.WindowNCtx)
-		logger.Get().Warnw("[nctx_reload] reload пропущен — окно не изменилось бы",
+		logger.Get().Warnw(i18n.T("balancer.nctx_reload.reload_skipped_window_unchanged_warn"),
 			"backend", backendID,
 			"model", modelName,
 			"plan_target_n_ctx", plan.NewNCtx,
@@ -1093,7 +1093,7 @@ func (c *NCtxReloadCoordinator) DoReload(
 			}(),
 			"effective_target_n_ctx", effectiveTarget,
 			"loaded_n_ctx", hints.WindowNCtx,
-			"reason", "перезагрузка стоила бы 1–3 минуты простоя без выигрыша в окне")
+			"reason", i18n.T("balancer.nctx_reload.reload_skipped_reason"))
 		return cur.err
 	}
 
@@ -1306,13 +1306,13 @@ func (c *NCtxReloadCoordinator) DoReload(
 	// new n_ctx=131072» (бралось из плана). Оператор видел успех и не понимал,
 	// почему клиент по-прежнему получает половину окна.
 	if actual < plan.NewNCtx {
-		logger.Get().Warnw("[nctx_reload] окно выросло МЕНЬШЕ запрошенного — клиент получит меньше контекста",
+		logger.Get().Warnw(i18n.T("balancer.nctx_reload.window_grew_less_than_requested_warn"),
 			"backend", backendID, "model", modelName,
 			"requested_n_ctx", plan.NewNCtx,
 			"achieved_n_ctx", actual,
 			"shortfall", plan.NewNCtx-actual,
-			"reason", "адаптивная стратегия cppworker ограничила размер окна (VRAM/RAM)",
-			"hint", "уменьшите окно, поставьте parallel=1 или возьмите модель/квант полегче")
+			"reason", i18n.T("balancer.nctx_reload.window_grew_less_reason"),
+			"hint", i18n.T("balancer.nctx_reload.window_grew_less_hint"))
 	}
 	return nil
 }

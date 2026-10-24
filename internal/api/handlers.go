@@ -10,6 +10,7 @@ import (
 
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/config"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 
@@ -228,10 +229,10 @@ func NewServer(proxy *balancer.Proxy, config *types.LoadBalancerConfig, healthCh
 	s.authSessions = NewSessionStoreFromFile(resolveSessionsPath(usersPath))
 	authenticator.SetSessions(s.authSessions)
 	if s.authUsers.Enabled() {
-		logger.Get().Infow("auth: WebUI-вход включён (/users, сессии)", "users_file", s.authUsers.Path(), "users", len(s.authUsers.List()),
+		logger.Get().Infow(i18n.T("api.handlers.auth_webui_enabled"), "users_file", s.authUsers.Path(), "users", len(s.authUsers.List()),
 			"sessions_file", s.authSessions.Path(), "sessions", s.authSessions.Count())
 	} else {
-		logger.Get().Warnw("auth: пользователей нет — вход в WebUI недоступен, работает только X-API-Token (break-glass)", "users_file", s.authUsers.Path())
+		logger.Get().Warnw(i18n.T("api.handlers.auth_no_users"), "users_file", s.authUsers.Path())
 	}
 
 	s.setupRoutes()

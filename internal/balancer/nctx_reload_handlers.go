@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -122,7 +123,7 @@ func (p *Proxy) handleNCtxReload(
 		// по РЕАЛЬНОЙ ошибке «prompt too long», а не по оценке).
 		if bridgeErr != nil && bridgeErr.CurrentNCtx > 0 && requestedOverride > 0 &&
 			requestedOverride <= bridgeErr.CurrentNCtx {
-			logger.Get().Warnw("nctx_reload: рост окна НЕ запрошен клиентом — reload отменён",
+			logger.Get().Warnw(i18n.T("balancer.nctx_reload_handlers.window_growth_not_requested_warn"),
 				"backend", backendID,
 				"model", modelName,
 				"requested_num_ctx", requestedOverride,
@@ -155,30 +156,21 @@ func writeRequestedWindowTooSmall(
 	_ = loadedPerClient
 	var msg string
 	if requestedPerClient > 0 {
-		msg = fmt.Sprintf(
-			"Промпт не помещается в контекстное окно, которое запросил клиент: "+
-				"запрошено %d токенов, а промпту нужно %d. "+
-				"Увеличьте num_ctx в настройках модели клиента (до %d или больше) либо сократите промпт/историю.",
+		msg = i18n.T("balancer.nctx_reload_handlers.client_window_too_small_error",
 			requestedPerClient, required, required)
 	} else {
-		msg = fmt.Sprintf(
-			"Промпт не помещается в загруженное окно модели: промпту нужно %d токенов. "+
-				"Клиент не указал num_ctx, поэтому балансер не перезагружает модель сам: "+
-				"укажите num_ctx в клиенте (не меньше %d) или сократите промпт/историю.",
+		msg = i18n.T("balancer.nctx_reload_handlers.loaded_window_too_small_error",
 			required, required)
 	}
 	body := map[string]interface{}{
 		"error":                     msg,
-		"reason":                    "клиент не запросил большее окно — автоматическая перезагрузка модели не выполняется",
+		"reason":                    i18n.T("balancer.nctx_reload_handlers.window_not_requested_reason"),
 		"requested_num_ctx":         requestedPerClient,
 		"required_n_ctx":            required,
 		"cppworker_effective_n_ctx": loadedPerClient,
 		"model":                     modelName,
 		"backend_id":                backendID,
-		"what_to_do": fmt.Sprintf(
-			"В клиенте (Cline: «Model Context Window», OpenWebUI: num_ctx) поставьте не меньше %d "+
-				"и сократите историю/промпт. Балансер не меняет окно модели без явного запроса клиента.",
-			required),
+		"what_to_do":                i18n.T("balancer.nctx_reload_handlers.window_too_small_what_to_do", required),
 	}
 	// Streaming-клиенты (Cline) ждут NDJSON-чанк с done:true, а не plain JSON:
 	// иначе они не понимают, что это конец стрима (см. DecisionReject выше).
@@ -726,7 +718,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// уходят в retry-цикл, а модели от повторения не появится. Ollama для
 	// неизвестной модели тоже отдаёт 404.
 	if reason, available, known := p.modelMissingFor(backendID, modelName); known {
-		logger.Get().Warnw("preflightNCtxReloadIfNeeded: модели нет на бэкенде — отдаю 404, перезагрузку не планирую",
+		logger.Get().Warnw(i18n.T("balancer.nctx_reload_handlers.preflight_model_missing_404_warn"),
 			"backend", backendID, "model", modelName,
 			"request_path", requestPath, "available_models", len(available))
 		return bodyBuf, false,
@@ -871,13 +863,13 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		if physicalMax > 0 && physicalMax < binding {
 			binding = physicalMax
 		}
-		logger.Get().Warnw("preflightNCtxReload: запрошенный n_ctx выше предела — reload НЕ запускаю",
+		logger.Get().Warnw(i18n.T("balancer.nctx_reload_handlers.requested_above_limit_no_reload_warn"),
 			"backend", backendID, "model", modelName,
 			"requested_n_ctx", requestedNCtx,
 			"auto_reload_max_n_ctx", cfg.AutoReloadMaxNCtx,
 			"max_vram_n_ctx", physicalMax,
 			"binding_limit", binding,
-			"hint", "поднимите LB_NCTX_RELOAD_MAX_N_CTX или загрузите модель с нужным contextSize явно")
+			"hint", i18n.T("balancer.nctx_reload_handlers.requested_above_limit_hint"))
 		return bodyBuf, false,
 			formatNCtxCeilingRefusal(requestedNCtx, cfg.AutoReloadMaxNCtx, physicalMax, modelName),
 			http.StatusRequestEntityTooLarge
@@ -901,19 +893,19 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	loadedNCtx, loadedState := p.resolveLoadedWindowNCtx(backendID, modelName, true)
 	switch loadedState {
 	case loadedWindowLoading:
-		logger.Get().Infow("preflightNCtxReload: модель загружается на бэкенде — вторую загрузку не запускаю",
+		logger.Get().Infow(i18n.T("balancer.nctx_reload_handlers.model_loading_skip_second_load_info"),
 			"backend", backendID, "model", modelName,
 			"requested_n_ctx", requestedNCtx,
-			"hint", "ждём завершения текущей загрузки: окно выставит она сама")
+			"hint", i18n.T("balancer.nctx_reload_handlers.model_loading_hint"))
 		return bodyBuf, false,
 			fmt.Sprintf("model %q is loading on backend %s; waiting for the load already in progress "+
 				"(no second load started, prepared n_ctx is preserved)", modelName, backendID),
 			http.StatusServiceUnavailable
 	case loadedWindowUnknown:
-		logger.Get().Warnw("preflightNCtxReload: состояние модели неизвестно — reload не запускаю, запрос идёт как есть",
+		logger.Get().Warnw(i18n.T("balancer.nctx_reload_handlers.model_state_unknown_no_reload_warn"),
 			"backend", backendID, "model", modelName,
 			"requested_n_ctx", requestedNCtx,
-			"hint", "опрос /api/models не удался; выгружать подготовленную модель по недостоверным данным нельзя")
+			"hint", i18n.T("balancer.nctx_reload_handlers.model_state_unknown_hint"))
 		return bodyBuf, true, "", http.StatusOK
 	}
 
@@ -932,7 +924,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// остаётся для reload-таргета (окно клиента × слоты) и для кэша метрик.
 	if perSeq := p.loadedPerSeqNCtx(backendID, modelName); perSeq > 0 {
 		if perSeq != loadedNCtx {
-			logger.Get().Infow("preflightNCtxReload: окно модели суммарное/на клиента",
+			logger.Get().Infow(i18n.T("balancer.nctx_reload_handlers.window_total_vs_per_seq_info"),
 				"backend", backendID, "model", modelName,
 				"total_n_ctx", loadedNCtx, "context_per_seq", perSeq)
 		}
@@ -963,11 +955,11 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// работает обычный приоритет «профиль → дефолт бэкенда», то есть загрузка
 	// идёт значениями из настроек.
 	if clientSilentAboutNCtx && loadedNCtx > 0 {
-		logger.Get().Infow("preflightNCtxReload: клиент не задал num_ctx, модель уже загружена — reload не нужен",
+		logger.Get().Infow(i18n.T("balancer.nctx_reload_handlers.client_silent_loaded_no_reload_info"),
 			"backend", backendID, "model", modelName,
 			"loaded_n_ctx", loadedNCtx,
 			"profile_hint_n_ctx", profileNCtx,
-			"note", "настройки загруженной модели не меняем; клиент, которому не хватит контекста, получит ошибку и сработает реактивный reload")
+			"note", i18n.T("balancer.nctx_reload_handlers.client_silent_loaded_note"))
 		return bodyBuf, true, "", http.StatusOK
 	}
 
@@ -1145,7 +1137,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	if slots := p.loadedSlotsNCtx(backendID, modelName); slots > 1 {
 		if total, per := cppbackend.EffectiveContextSize(0, requestedNCtx, slots); total > 0 {
 			reloadTarget = total
-			logger.Get().Infow("preflightNCtxReload: клиентское окно — на клиента, суммарное окно пересчитано",
+			logger.Get().Infow(i18n.T("balancer.nctx_reload_handlers.client_window_total_recalculated_info"),
 				"backend", backendID, "model", modelName,
 				"requested_per_seq", per, "slots", slots, "total_n_ctx", total)
 		}
@@ -1159,7 +1151,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// помещаются ни в VRAM, ни в RAM») → запрос снова → снова reload… Клиент при
 	// этом ждал до 33 с и получал окно меньше запрошенного без объяснения.
 	if ceiling, infeasibleReason, known := p.nctxInfeasibleFor(backendID, modelName); known && reloadTarget > ceiling {
-		logger.Get().Warnw("preflightNCtxReload: окно физически недостижимо — reload не планирую",
+		logger.Get().Warnw(i18n.T("balancer.nctx_reload_handlers.window_infeasible_no_reload_warn"),
 			"backend", backendID, "model", modelName,
 			"loaded_n_ctx", loadedNCtx, "requested_n_ctx", requestedNCtx,
 			"reload_target_total", reloadTarget, "ceiling_n_ctx", ceiling,
@@ -1247,7 +1239,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// в полёте). Короткое ожидание делает вызывающий транспорт перед тем, как
 	// отдать клиенту 503 (см. llamacpp_transport*.go).
 	if reason, available, known := p.modelMissingFor(backendID, modelName); known {
-		logger.Get().Warnw("preflightNCtxReload: модели нет на бэкенде — отдаю 404",
+		logger.Get().Warnw(i18n.T("balancer.nctx_reload_handlers.model_missing_404_warn"),
 			"backend", backendID, "model", modelName,
 			"available_models", len(available))
 		return bodyBuf, false,
@@ -1374,6 +1366,7 @@ func patchNumCtxInBody(body []byte, newNCtx int) []byte {
 //   - Streaming-клиенты (curl без retry, скрипты) — async 503 + Retry-After лучше.
 //   - Если reload ОЧЕНЬ долгий (cold start большой модели > 60s) — async
 //     даст клиенту возможность повторить через 15s.
+//
 // formatNCtxCeilingRefusal — отказ на окно выше предела авто-перезагрузки.
 //
 // R140 (2026-10-16): предел зависит от ДВУХ чисел, и клиенту нужно то, которое
@@ -1771,7 +1764,7 @@ func (p *Proxy) resolveModelMaxContext(backendID, model string, profileMaxContex
 					"profile_n_ctx", cap,
 					"feasible_n_ctx", feasible,
 					"headroom_ratio", float64(feasible)/float64(cap),
-					"recommendation", "Add contextLengthAuto:true к profile для auto-relax",
+					"recommendation", i18n.T("balancer.nctx_reload_handlers.profile_conservative_recommendation"),
 				)
 			}
 			return cap

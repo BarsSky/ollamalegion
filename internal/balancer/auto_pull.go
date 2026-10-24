@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -436,8 +437,7 @@ func (apm *AutoPullManager) pullWaitTimeout() <-chan time.Time {
 	if d <= 0 {
 		return nil
 	}
-	logger.Get().Warnw("auto-pull: PullTimeout включён — ожидание закачки будет прервано по таймеру "+
-		"(это лимит на работу, а не таймаут опроса состояния; pull продолжится в фоне)",
+	logger.Get().Warnw(i18n.T("balancer.auto_pull.pull_timeout_armed_warn"),
 		"pull_timeout", d.String())
 	return time.After(d)
 }
@@ -455,7 +455,7 @@ func (apm *AutoPullManager) getPullTimeout() time.Duration {
 	if err != nil {
 		// Не распарсили — не выдумываем кап: ошибка конфигурации не должна
 		// превращаться в «закачка отменена через 5 минут».
-		logger.Get().Warnw("auto-pull: PullTimeout не распознан, ожидание без лимита",
+		logger.Get().Warnw(i18n.T("balancer.auto_pull.pull_timeout_unparsed_warn"),
 			"pull_timeout", timeoutStr, "error", err)
 		return 0
 	}

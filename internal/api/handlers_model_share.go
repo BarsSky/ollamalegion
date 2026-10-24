@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"ollama-loadbalancer/internal/i18n"
 )
 
 // handleModelShare — POST (создать) / GET (список).
@@ -33,7 +35,7 @@ func (s *Server) handleModelShare(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 				"error": "invalid JSON body: " + err.Error(),
-				"hint":  "ожидается {\"source\":\"<backendId>\",\"model\":\"<имя>\",\"targets\":[\"<backendId>\",...],\"overwrite\":false}",
+				"hint":  i18n.T("api.handlers_model_share.hint_expected_body"),
 			})
 			return
 		}
@@ -41,8 +43,7 @@ func (s *Server) handleModelShare(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 				"error": err.Error(),
-				"hint": "source — бэкенд, где модель ЕСТЬ; targets — бэкенды того же типа, куда её нужно положить; " +
-					"типы: llama_cpp (файл .gguf) и image_cpp (каталог bundle)",
+				"hint":  i18n.T("api.handlers_model_share.hint_source_targets"),
 			})
 			return
 		}
@@ -62,7 +63,7 @@ func (s *Server) handleModelShareByID(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/models/share/")
 	if rest == "" {
 		s.writeJSON(w, http.StatusNotFound, map[string]interface{}{
-			"error": "job id is required", "hint": "GET /api/v1/models/share — список заданий",
+			"error": "job id is required", "hint": i18n.T("api.handlers_model_share.hint_job_list"),
 		})
 		return
 	}
@@ -75,7 +76,7 @@ func (s *Server) handleModelShareByID(w http.ResponseWriter, r *http.Request) {
 	if job == nil {
 		s.writeJSON(w, http.StatusNotFound, map[string]interface{}{
 			"error": "share job not found", "job": id,
-			"hint": "задания живут до перезапуска балансера; сам файл либо доехал до приёмника, либо нет — это видно в списке моделей бэкенда",
+			"hint": i18n.T("api.handlers_model_share.hint_job_lifetime"),
 		})
 		return
 	}
@@ -92,7 +93,7 @@ func (s *Server) handleModelShareByID(w http.ResponseWriter, r *http.Request) {
 			for i := range job.Targets {
 				if job.Targets[i].State == shareTargetPending {
 					job.Targets[i].State = shareTargetSkipped
-					job.Targets[i].Note = "отменено оператором"
+					job.Targets[i].Note = i18n.T("api.model_share.canceled_by_operator")
 				}
 			}
 			job.mu.Unlock()
@@ -100,7 +101,7 @@ func (s *Server) handleModelShareByID(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, job.snapshot())
 	case action != "":
 		s.writeJSON(w, http.StatusNotFound, map[string]interface{}{
-			"error": "unknown action", "action": action, "hint": "поддерживается только /cancel",
+			"error": "unknown action", "action": action, "hint": i18n.T("api.handlers_model_share.hint_cancel_only"),
 		})
 	case r.Method != http.MethodGet:
 		s.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "use GET"})

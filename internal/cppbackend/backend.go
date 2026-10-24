@@ -23,6 +23,7 @@ import (
 	"unsafe"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/memfit"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/tokencount"
@@ -963,7 +964,7 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	defer close(loadDone)
 	loadStallWatchdog(name, loadStallThreshold(), loadDone, nil, func() {
 		if b.AbortLoad(name) {
-			logger.Get().Warnw("загрузка отменяется по таймауту — ждём выхода из native load",
+			logger.Get().Warnw(i18n.T("cppbackend.backend.load_abort_on_timeout"),
 				"model", name)
 		}
 	})
@@ -978,7 +979,7 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	slotsRequested := resolveNParallel(opts.Parallel, b.cfg.DefaultNParallel)
 	if opts.ContextPerSeq > 0 {
 		total, per := EffectiveContextSize(opts.ContextSize, opts.ContextPerSeq, slotsRequested)
-		logger.Get().Infow("load: окно на клиента пересчитано в суммарный n_ctx",
+		logger.Get().Infow(i18n.T("cppbackend.backend.context_per_seq_recomputed"),
 			"model", name,
 			"context_per_seq", opts.ContextPerSeq,
 			"slots", parallelSlotsFor(slotsRequested),
@@ -1005,10 +1006,10 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		loadRPCServers = b.filterReachableRPC(b.activeRPCServers())
 		if excluded := b.ExcludedRPCServers(); len(excluded) > 0 {
 			if len(loadRPCServers) == 0 {
-				logger.Get().Warnw("загрузка: все узлы раскладки недоступны — грузим ЛОКАЛЬНО",
+				logger.Get().Warnw(i18n.T("cppbackend.backend.all_layout_nodes_unreachable"),
 					"model", name, "excluded", strings.Join(excluded, ","))
 			} else {
-				logger.Get().Warnw("загрузка: недоступные узлы раскладки исключены",
+				logger.Get().Warnw(i18n.T("cppbackend.backend.layout_nodes_excluded"),
 					"model", name, "use", strings.Join(loadRPCServers, ","),
 					"excluded", strings.Join(excluded, ","))
 			}
@@ -1314,7 +1315,7 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		ready, attempt := b.waitRPCNodeReadyForLoad(servers, attempts, rpcReadyProbeDelay)
 		b.noteRPCReadyGate(ready)
 		if ready {
-			logger.Get().Infow("узел раскладки готов принять загрузку",
+			logger.Get().Infow(i18n.T("cppbackend.backend.layout_node_ready"),
 				"model", name, "servers", servers, "attempt", attempt,
 				"waited_ms", int64(attempt-1)*rpcReadyProbeDelay.Milliseconds())
 		} else {
@@ -1324,24 +1325,20 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 			// новые подключения не обслуживаются. Говорим это прямо и называем
 			// действие: перезапустить узел, иначе раскладка снова уедет на
 			// локальную карту. Подробности — docs/operations/rpc-donor-vram-lifecycle.ru.md.
-			logger.Get().Warnw("узел раскладки не отдал устройства за отведённое время - "+
-				"загрузка пойдёт без раскладки (будет помечена layout_degraded); "+
-				"вероятная причина: на узле висит сессия прошлого клиента и держит VRAM - "+
-				"перезапустите rpc-server узла (rpcServerEnabled off/on) или его контейнер",
+			logger.Get().Warnw(i18n.T("cppbackend.backend.layout_node_no_devices"),
 				"model", name, "servers", servers, "attempts", attempt,
 				"waited_ms", int64(attempt-1)*rpcReadyProbeDelay.Milliseconds(),
 				"timeout_streak", b.RPCReadyTimeoutStreak(),
 				"stuck_suspected", b.RPCLayoutStuckSuspected())
 			if b.RPCLayoutStuckSuspected() {
-				logger.Get().Errorw("раскладка: узел не обслуживает команды несколько загрузок подряд - "+
-					"похоже, процесс узла завис и держит VRAM; keepalive такое НЕ лечит",
+				logger.Get().Errorw(i18n.T("cppbackend.backend.layout_node_stuck"),
 					"model", name, "servers", servers, "timeout_streak", b.RPCReadyTimeoutStreak())
 			}
 		}
 	}
 
 	if servers := applyRPCServersR105(&cfg, loadRPCServers); len(servers) > 0 {
-		logger.Get().Infow("RPC-раскладка передана в мост",
+		logger.Get().Infow(i18n.T("cppbackend.backend.rpc_layout_handed_to_bridge"),
 			"model", name, "servers", servers)
 	}
 
@@ -1360,14 +1357,14 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 			for _, d := range remoteDevices(snap) {
 				rem = append(rem, d.Name)
 			}
-			logger.Get().Infow("раскладка: какие устройства видит планировщик",
+			logger.Get().Infow(i18n.T("cppbackend.backend.layout_devices_seen"),
 				"model", name, "local_gpus", b.gpuCount, "remote_devices", rem,
 				"active_servers", b.activeRPCServers(), "admitted_servers", b.admittedRPCServers(),
 				"snapshot_devices", len(snap))
 		}
 		devices := b.gpuCount + len(remoteDevices(b.rpcDeviceSnapshot()))
 		if !splitFitsDevices(opts.TensorSplit, devices) {
-			logger.Get().Warnw("tensor split НЕ применён: посчитан для другого числа устройств - пересчитываю по факту",
+			logger.Get().Warnw(i18n.T("cppbackend.backend.tensor_split_not_applied"),
 				"model", name, "split_len", len(opts.TensorSplit), "devices", devices,
 				"split", opts.TensorSplit)
 			opts.TensorSplit = nil
@@ -1472,7 +1469,7 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		if degraded, reason := layoutRegistration(servers, layers); degraded {
 			inst.info.LayoutDegraded = true
 			inst.info.LayoutDegradedReason = reason
-			logger.Get().Warnw("раскладка НЕ применилась: узлы переданы, а RPC-устройств в загрузке нет",
+			logger.Get().Warnw(i18n.T("cppbackend.backend.layout_not_applied"),
 				"name", name, "servers", servers, "layers", len(layers), "reason", reason)
 		} else {
 			inst.info.LayoutDegraded = false
@@ -1569,7 +1566,7 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		if c, s, err := bridge.GetContextSizes(handle); err == nil && c > 0 {
 			actualCtx, actualCtxSeq = c, s
 		} else if err != nil {
-			logger.Get().Debugw("LoadModelWithOpts: не удалось прочитать реальные размеры контекста, используем запрошенные",
+			logger.Get().Debugw(i18n.T("cppbackend.backend.ctx_sizes_unreadable"),
 				"name", name, "requested_n_ctx", ctxSize, "error", err)
 		}
 	}
@@ -1580,7 +1577,7 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		inst.info.ContextPerSeq = ContextPerSlot(actualCtx, requestedParallel)
 	}
 	if actualCtx != ctxSize {
-		logger.Get().Infow("LoadModelWithOpts: фактическое окно отличается от запрошенного (выравнивание llama.cpp)",
+		logger.Get().Infow(i18n.T("cppbackend.backend.ctx_window_differs"),
 			"name", name, "requested_n_ctx", ctxSize,
 			"actual_n_ctx", actualCtx, "context_per_seq", inst.info.ContextPerSeq)
 	}
@@ -1874,7 +1871,7 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 	}, b.MemfitBudgetFor(name), MemfitPolicy())
 
 	if logger.Get() != nil {
-		logger.Get().Debugw("checkVRAMForModel: решение о памяти (memfit)",
+		logger.Get().Debugw(i18n.T("cppbackend.backend.memory_verdict"),
 			"model", name, "kv_cache_type", effectiveKV,
 			"requested_gpu_layers", opts.GPULayers, "verdict", verdict.String())
 	}
@@ -1893,11 +1890,10 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 	// на клиента, а не про «KV × слотов».
 	if slots := resolveNParallel(opts.Parallel, b.cfg.DefaultNParallel); slots > 1 && logger.Get() != nil {
 		total, per := EffectiveContextSize(opts.ContextSize, opts.ContextPerSeq, slots)
-		logger.Get().Infow("checkVRAMForModel: несколько параллельных слотов — окно делится между клиентами",
+		logger.Get().Infow(i18n.T("cppbackend.backend.parallel_slots_window_divided"),
 			"model", name, "parallel_slots", slots,
 			"total_n_ctx", total, "context_per_slot", per,
-			"hint", "llama.cpp делит СУММАРНОЕ окно между слотами (n_ctx_seq = n_ctx / слоты); "+
-				"чтобы каждый клиент получил нужное окно, задайте contextPerSeq или суммарное n_ctx = окно × слоты")
+			"hint", i18n.T("cppbackend.backend.parallel_slots_window_hint"))
 	}
 
 	// 2026-06-26 BUGFIX (сохранено): для больших моделей (model_size > 70% свободной
@@ -1953,7 +1949,7 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 	// stub-режим, где моделей на диске нет вовсе).
 	if verdict.Stage == memfit.StageUnknown {
 		if logger.Get() != nil {
-			logger.Get().Debugw("checkVRAMForModel: метаданных модели нет — раскладка слоёв без изменений",
+			logger.Get().Debugw(i18n.T("cppbackend.backend.no_model_metadata"),
 				"model", name, "requested_gpu_layers", opts.GPULayers)
 		}
 		return opts, nil
@@ -2118,7 +2114,7 @@ func (b *Backend) calculateResourceLimits(name string, budget memfit.Budget) Res
 	limits.ModelMaxContext = spec.TrainCtx
 
 	if logger.Get() != nil {
-		logger.Get().Debugw("CalculateResourceLimits: потолки n_ctx (memfit)",
+		logger.Get().Debugw(i18n.T("cppbackend.backend.resource_limits_ceilings"),
 			"model", name,
 			"kv_type", string(kvType),
 			"kv_layers", spec.EffectiveKVLayers(),
@@ -2226,7 +2222,7 @@ func (b *Backend) removeOwnInstance(name string, inst *modelInstance) {
 	default:
 		// В реестре уже НОВЫЙ инстанс этой модели: он нашему провалу не
 		// принадлежит и трогать его нельзя.
-		logger.Get().Warnw("load failure: запись в реестре заменена новым инстансом — не удаляем",
+		logger.Get().Warnw(i18n.T("cppbackend.backend.load_failure_entry_replaced"),
 			"name", name)
 	}
 }
@@ -2253,7 +2249,7 @@ func (b *Backend) unloadModel(name string, expect *modelInstance) error {
 	}
 	if expect != nil && inst != expect {
 		b.mu.Unlock()
-		logger.Get().Infow("unload: в реестре уже новый инстанс модели — выгрузку не делаю",
+		logger.Get().Infow(i18n.T("cppbackend.backend.unload_new_instance"),
 			"model", name, "reason", "instance_replaced")
 		return nil
 	}
@@ -2595,10 +2591,10 @@ func (b *Backend) AbortLoad(name string) bool {
 	if err := bridge.RequestLoadAbort(inst.handle); err != nil {
 		// ptr ещё не выставлен (ранний expose не успел): загрузка не отменена.
 		// Это не ошибка оператора, но и не успех - говорим честно.
-		logger.Get().Warnw("AbortLoad: запрос отмены не применён", "model", name, "error", err)
+		logger.Get().Warnw(i18n.T("cppbackend.backend.abort_request_not_applied"), "model", name, "error", err)
 		return false
 	}
-	logger.Get().Infow("AbortLoad: загрузка помечена на отмену", "model", name)
+	logger.Get().Infow(i18n.T("cppbackend.backend.abort_request_applied"), "model", name)
 	return true
 }
 
@@ -4029,7 +4025,7 @@ func (b *Backend) SetIdleUnloadTimeout(d time.Duration) time.Duration {
 		if b.idleUnloader != nil {
 			b.idleUnloader.Stop()
 			b.idleUnloader = nil
-			logger.Get().Infow("idle unload: автовыгрузка выключена (idleUnloadMinutes=0)")
+			logger.Get().Infow(i18n.T("cppbackend.backend.idle_unload_disabled_runtime"))
 		}
 		return 0
 	}
@@ -4037,14 +4033,14 @@ func (b *Backend) SetIdleUnloadTimeout(d time.Duration) time.Duration {
 	if b.idleUnloader == nil {
 		b.idleUnloader = NewIdleUnloadManager(b, d)
 		b.idleUnloader.Start()
-		logger.Get().Infow("idle unload: автовыгрузка включена на ходу",
+		logger.Get().Infow(i18n.T("cppbackend.backend.idle_unload_enabled_runtime"),
 			"timeout", d.String())
 		return d
 	}
 
 	b.idleUnloader.SetIdleTimeout(d)
 	b.idleUnloader.Start() // идемпотентно: уже запущенный цикл не дублируется
-	logger.Get().Infow("idle unload: таймаут изменён на ходу",
+	logger.Get().Infow(i18n.T("cppbackend.backend.idle_unload_timeout_changed"),
 		"timeout", d.String(), "check_interval", b.idleUnloader.CheckInterval().String())
 	return b.idleUnloader.IdleTimeout()
 }

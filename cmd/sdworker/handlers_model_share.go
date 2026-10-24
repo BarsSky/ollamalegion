@@ -20,6 +20,7 @@ package main
 
 import (
 	"archive/tar"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -83,7 +85,7 @@ func (a *App) resolveExportableBundle(name string) (string, []bundleEntry, int64
 		total += info.Size()
 	}
 	if len(files) == 0 {
-		return "", nil, 0, fmt.Errorf("bundle %q is empty (нет файлов для переноса)", clean)
+		return "", nil, 0, errors.New(i18n.T("sdworker.model_share.bundle_empty", clean))
 	}
 	return clean, files, total, nil
 }
@@ -207,7 +209,7 @@ func (a *App) handleImportBundle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)
 		writeJSONError(w, http.StatusBadRequest, "import_failed",
-			fmt.Sprintf("распаковка прервана: %v (получено %d байт, файлов %d)", err, written, fileCount))
+			i18n.T("sdworker.model_share.extract_failed", err, written, fileCount))
 		return
 	}
 
@@ -215,7 +217,7 @@ func (a *App) handleImportBundle(w http.ResponseWriter, r *http.Request) {
 		if expected, perr := strconv.ParseInt(want, 10, 64); perr == nil && expected != written {
 			_ = os.RemoveAll(tmpDir)
 			writeJSONError(w, http.StatusBadRequest, "size_mismatch",
-				fmt.Sprintf("перенос неполный: получено %d байт полезной нагрузки, ожидалось %d", written, expected))
+				i18n.T("sdworker.model_share.bytes_mismatch", written, expected))
 			return
 		}
 	}
@@ -223,7 +225,7 @@ func (a *App) handleImportBundle(w http.ResponseWriter, r *http.Request) {
 		if expected, perr := strconv.Atoi(want); perr == nil && expected != fileCount {
 			_ = os.RemoveAll(tmpDir)
 			writeJSONError(w, http.StatusBadRequest, "filecount_mismatch",
-				fmt.Sprintf("получено файлов %d, ожидалось %d", fileCount, expected))
+				i18n.T("sdworker.model_share.filecount_mismatch", fileCount, expected))
 			return
 		}
 	}
@@ -314,7 +316,7 @@ func extractBundleTar(r io.Reader, dir string) (int64, int, error) {
 		files++
 	}
 	if files == 0 {
-		return written, files, fmt.Errorf("tar содержит 0 файлов")
+		return written, files, errors.New(i18n.T("sdworker.model_share.empty_tar"))
 	}
 	return written, files, nil
 }

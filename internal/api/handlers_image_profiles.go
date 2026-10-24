@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/config"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -494,7 +495,7 @@ func (s *Server) probeImageBackends(model string) []imageModelProfileApplyBacken
 			results = append(results, imageModelProfileApplyBackendResult{
 				BackendID: backend.ID,
 				Status:    "persisted",
-				Message:   fmt.Sprintf("профиль %q сохранён; воркер доступен и применит его при загрузке модели", model),
+				Message:   i18n.T("api.handlers_image_profiles.profile_saved", model),
 			})
 			continue
 		}
@@ -807,7 +808,7 @@ func applyImageProfileDefaults(p *types.ImageModelProfile, presence imageProfile
 		return fmt.Errorf("profile is nil")
 	}
 	if strings.TrimSpace(p.Family) == "" {
-		return fmt.Errorf("family is required (см. types.ImageModelFamilies)")
+		return fmt.Errorf("%s", i18n.T("api.handlers_image_profiles.family_required"))
 	}
 	if !types.IsValidImageFamily(p.Family) {
 		return fmt.Errorf("unknown family %q", p.Family)

@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"strings"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -95,11 +96,11 @@ func (p *Proxy) handleStaleModelSnapshot(w http.ResponseWriter, r *http.Request,
 	if present, definitive := p.modelPresence(model); definitive && !present {
 		available := p.catalogModelNames()
 		p.recordModelMissing(backendID, model, upstreamBody)
-		logger.Get().Warnw("handleStaleModelSnapshot: модели нет ни на одной машине — отдаю 404 вместо 503",
+		logger.Get().Warnw(i18n.T("balancer.stale_model_snapshot.missing_everywhere_404_warn"),
 			"backend", backendID, "model", model,
 			"available", available, "upstream_body", string(upstreamBody)[:min(300, len(upstreamBody))])
 		writeModelMissingResponseFor(w, r.URL.Path, model,
-			"модели нет ни на одной машине: файла нет в каталоге ни одного узла", available)
+			i18n.T("balancer.stale_model_snapshot.missing_everywhere_reason"), available)
 		return
 	}
 
@@ -112,7 +113,7 @@ func (p *Proxy) handleStaleModelSnapshot(w http.ResponseWriter, r *http.Request,
 			go func(bid string) {
 				if _, err := p.llamaCppRouter.ensureModelLoadedOnBackend(bid, model,
 					warmupOptions{Ctx: context.Background()}); err != nil {
-					logger.Get().Debugw("handleStaleModelSnapshot: загрузка после устаревшего снимка не стартовала",
+					logger.Get().Debugw(i18n.T("balancer.stale_model_snapshot.load_not_started_debug"),
 						"backend", bid, "model", model, "error", err)
 				}
 			}(target)
@@ -128,7 +129,7 @@ func (p *Proxy) handleStaleModelSnapshot(w http.ResponseWriter, r *http.Request,
 		msg += ", model load started"
 	}
 	msg += "; retry the request"
-	logger.Get().Warnw("handleStaleModelSnapshot: воркер не знает модель — снимок обновлён, вместо 502 отдаём 503",
+	logger.Get().Warnw(i18n.T("balancer.stale_model_snapshot.worker_unknown_model_warn"),
 		"backend", backendID, "model", model,
 		"upstream_status", upstreamStatus, "load_kicked", loadKicked,
 		"upstream_body", string(upstreamBody)[:min(300, len(upstreamBody))])

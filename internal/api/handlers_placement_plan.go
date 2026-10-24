@@ -23,13 +23,14 @@ import (
 	"net/http"
 
 	"ollama-loadbalancer/internal/balancer"
+	"ollama-loadbalancer/internal/i18n"
 )
 
 func (s *Server) placementPlanHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{
 			"success": false,
-			"error":   "method not allowed (только POST: план принимает список моделей)",
+			"error":   i18n.T("api.handlers_placement_plan.method_post_only"),
 		})
 		return
 	}
@@ -42,7 +43,7 @@ func (s *Server) placementPlanHandler(w http.ResponseWriter, r *http.Request) {
 			if r.ContentLength > 0 {
 				s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 					"success": false,
-					"error":   "некорректное тело запроса: " + err.Error(),
+					"error":   i18n.T("api.handlers_placement_plan.bad_request_body", err),
 				})
 				return
 			}

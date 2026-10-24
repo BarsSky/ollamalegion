@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -278,9 +279,7 @@ func (bs *BatchedScheduler) RegisterSession(params BatchedSessionParams) (Batche
 	// перечнем проигнорированных полей. Отключается через
 	// `enableBatchedParallel: false` в профиле модели.
 	if ignored := unsupportedBatchedSamplerParams(params); len(ignored) > 0 {
-		logger.Get().Warnw("BatchedScheduler: запрос задал sampler-параметры, "+
-			"которые batched-режим не поддерживает (они БУДУТ проигнорированы; "+
-			"отключите enableBatchedParallel для этой модели, если это критично)",
+		logger.Get().Warnw(i18n.T("cppbackend.batched_scheduler.unsupported_sampler_params"),
 			"id", bs.nextID, "ignored_params", ignored)
 	}
 

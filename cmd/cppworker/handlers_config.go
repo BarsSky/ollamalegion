@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -468,7 +469,7 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if rpcChanged && logger.Get() != nil {
-		logger.Get().Infow("RPC-режим изменён через API",
+		logger.Get().Infow(i18n.T("cppworker.handlers_config.rpc_mode_changed"),
 			"rpc_enabled", currentConfig.RPCEnabled,
 			"servers", currentConfig.RPCServers,
 			"applied", applied)
@@ -616,7 +617,7 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			effective := backend.SetIdleUnloadTimeout(
 				time.Duration(currentConfig.IdleUnloadMinutes) * time.Minute)
 			idleUnloadEffective = int(effective / time.Minute)
-			logger.Get().Infow("idle unload: применено из WebUI",
+			logger.Get().Infow(i18n.T("cppworker.handlers_config.idle_unload_applied"),
 				"requested_minutes", currentConfig.IdleUnloadMinutes,
 				"effective_minutes", idleUnloadEffective)
 		}
@@ -653,8 +654,7 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			// Единственный случай, когда сессия раскладки рвётся осознанно —
 			// поэтому и предупреждение, а не тихая пересборка процесса.
 			prev := rpcServerChild.Status()
-			logger.Get().Warnw("rpc-server: идентичность узла изменилась — процесс пересоздаётся "+
-				"(активная сессия раскладки, если она есть, будет прервана)",
+			logger.Get().Warnw(i18n.T("cppworker.handlers_config.rpc_identity_changed"),
 				"was_bind", prev.Bind, "was_port", prev.Port, "was_bin", prev.Bin,
 				"was_external", prev.External,
 				"bind", currentConfig.RPCServerBind, "port", currentConfig.RPCServerPort,
@@ -667,17 +667,17 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			// Ошибка запуска НЕ отменяет желаемое состояние: оператор увидит
 			// enabled=true, running=false и причину — как в статусе супервизора.
 			rpcServerNote = err.Error()
-			logger.Get().Errorw("rpc-server: узел раскладки не поднялся из WebUI",
+			logger.Get().Errorw(i18n.T("cppworker.handlers_config.rpc_start_failed"),
 				"enabled", currentConfig.RPCServerEnabled,
 				"port", currentConfig.RPCServerPort, "error", err)
 		} else if recreated {
-			logger.Get().Infow("rpc-server: узел раскладки пересоздан по настройкам",
+			logger.Get().Infow(i18n.T("cppworker.handlers_config.rpc_recreated"),
 				"enabled", currentConfig.RPCServerEnabled,
 				"port", currentConfig.RPCServerPort, "addr", rpcServerChild.Addr())
 		} else {
 			// Явно фиксируем «ничего не менялось»: иначе следующий разбор снова
 			// будет искать, кто убил узел.
-			logger.Get().Debugw("rpc-server: приказ подтверждён без изменений — процесс не тронут",
+			logger.Get().Debugw(i18n.T("cppworker.handlers_config.rpc_confirmed_noop"),
 				"enabled", currentConfig.RPCServerEnabled,
 				"port", currentConfig.RPCServerPort, "addr", rpcServerChild.Addr())
 		}

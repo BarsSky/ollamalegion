@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/tokencount"
 )
@@ -474,7 +475,7 @@ func reloadTargetForState(perSeqTarget int, state *NCtxBackendState) int {
 		return perSeqTarget
 	}
 	total := cppbackend.PadContext(perSeqTarget) * slots
-	logger.Get().Infow("preflight: целевое окно пересчитано «на клиента → суммарно»",
+	logger.Get().Infow(i18n.T("balancer.preflight_nctx.target_window_recalculated"),
 		"backend_id", state.BackendID,
 		"per_seq_target", perSeqTarget, "slots", slots, "total_target", total)
 	return total
@@ -569,8 +570,7 @@ func (c *NCtxReloadCoordinator) growthWorthReload(
 		// Диагностика для оператора: сама по себе не отменяет рост окна
 		// (см. комментарий выше), но объясняет, почему раскладка может
 		// измениться.
-		logger.Get().Warnw("preflight: стратегия предлагает cpu_only — окно растим, "+
-			"раскладку решает cppworker (gpuLayers=0 для него = «из профиля»)",
+		logger.Get().Warnw(i18n.T("balancer.preflight_nctx.strategy_cpu_only_warn"),
 			"backend_id", backendID, "model", modelName,
 			"strategy_gpu_layers", strategy.GPULayers,
 			"current_gpu_layers", currentGPULayers,
@@ -587,9 +587,8 @@ func (c *NCtxReloadCoordinator) growthWorthReload(
 		if slots > 1 {
 			achievablePerClient = strategy.NCtx / slots
 		}
-		return false, achievablePerClient, fmt.Sprintf(
-			"стратегия даёт суммарное окно %d при текущем %d (на клиента %d): "+
-				"reload не изменил бы окно, но выгрузил бы модель на 1–3 минуты",
+		return false, achievablePerClient, i18n.T(
+			"balancer.preflight_nctx.growth_not_worth_reason",
 			strategy.NCtx, currentTotalNCtx, currentPerSeqNCtx)
 	}
 
@@ -647,7 +646,7 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	// нет. Перезагрузкой это НЕ лечим (пользователь просил именно ошибку), и
 	// молчать нельзя — ответ был бы другим по смыслу.
 	if diffs := semanticParamDiffs(meta, state); len(diffs) > 0 {
-		logger.Get().Warnw("preflight: отказ — параметры загруженной модели не совпадают с требованием запроса",
+		logger.Get().Warnw(i18n.T("balancer.preflight_nctx.param_mismatch_reject_warn"),
 			"backend_id", state.BackendID,
 			"model", meta.ModelName,
 			"differences", len(diffs),
@@ -659,7 +658,7 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 
 	// (2) Клиент не сообщил окно — не гадаем и не перезагружаем.
 	if reqWindow <= 0 {
-		logger.Get().Infow("preflight: клиент не указал num_ctx — модель не перезагружаем",
+		logger.Get().Infow(i18n.T("balancer.preflight_nctx.client_silent_no_reload_info"),
 			"backend_id", state.BackendID,
 			"model", meta.ModelName,
 			"loaded_n_ctx", state.CurrentNCtx,
@@ -671,7 +670,7 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	// принимает cppworker (ensureModelLoaded получает num_ctx запроса), поэтому
 	// здесь именно NoOp: «проксируй запрос как есть».
 	if state.effectivePerSeqNCtx() <= 0 && state.CurrentNCtx <= 0 {
-		logger.Get().Infow("preflight: модель не загружена — грузим окном клиента",
+		logger.Get().Infow(i18n.T("balancer.preflight_nctx.model_not_loaded_load_with_client_window_info"),
 			"backend_id", state.BackendID,
 			"model", meta.ModelName,
 			"requested_n_ctx", reqWindow)
@@ -681,7 +680,7 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	// (4) Загруженное окно на клиента уже не меньше запрошенного → NoOp.
 	perSeq := state.effectivePerSeqNCtx()
 	if perSeq > 0 && reqWindow <= perSeq {
-		logger.Get().Infow("preflight: загруженное окно не меньше запрошенного — reload не нужен",
+		logger.Get().Infow(i18n.T("balancer.preflight_nctx.loaded_window_covers_request_info"),
 			"backend_id", state.BackendID,
 			"model", meta.ModelName,
 			"requested_n_ctx", reqWindow,
@@ -700,7 +699,7 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	slots := state.effectiveSlots()
 	targetTotal := perClientToTotal(reqWindow, slots)
 	if ceil := state.physicalCeiling(); ceil > 0 && targetTotal > ceil {
-		logger.Get().Warnw("preflight: запрошенное окно больше физического потолка — отказ",
+		logger.Get().Warnw(i18n.T("balancer.preflight_nctx.requested_window_above_physical_ceiling_warn"),
 			"backend_id", state.BackendID,
 			"model", meta.ModelName,
 			"requested_per_client", reqWindow,
@@ -708,20 +707,19 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 			"slots", slots,
 			"physical_ceiling", ceil)
 		return makeWindowTooBigReject(state, meta, reqWindow, targetTotal, ceil,
-			fmt.Sprintf("модель поддерживает не более %d токенов контекста", ceil))
+			i18n.T("balancer.preflight_nctx.model_supports_max_context", ceil))
 	}
 	if cfg.AutoReloadMaxNCtx > 0 && targetTotal > cfg.AutoReloadMaxNCtx {
-		logger.Get().Warnw("preflight: запрошенное окно больше операторского потолка — отказ",
+		logger.Get().Warnw(i18n.T("balancer.preflight_nctx.requested_window_above_operator_ceiling_warn"),
 			"backend_id", state.BackendID,
 			"model", meta.ModelName,
 			"requested_total", targetTotal,
 			"auto_reload_max_n_ctx", cfg.AutoReloadMaxNCtx)
 		return makeWindowTooBigReject(state, meta, reqWindow, targetTotal, cfg.AutoReloadMaxNCtx,
-			fmt.Sprintf("в настройках балансера задан потолок авто-перезагрузки %d токенов (LB_NCTX_RELOAD_MAX_N_CTX)",
-				cfg.AutoReloadMaxNCtx))
+			i18n.T("balancer.preflight_nctx.auto_reload_ceiling_reason", cfg.AutoReloadMaxNCtx))
 	}
 
-	logger.Get().Infow("preflight: загруженное окно меньше запрошенного — перезагружаем под клиента",
+	logger.Get().Infow(i18n.T("balancer.preflight_nctx.reload_for_client_window_info"),
 		"backend_id", state.BackendID,
 		"model", meta.ModelName,
 		"requested_per_client", reqWindow,
@@ -783,16 +781,15 @@ func semanticParamDiffs(meta *RequestMeta, state *NCtxBackendState) []ParamDiff 
 	if *meta.RequestedThink == *state.CurrentReasoningEnabled {
 		return nil
 	}
-	want := "включено"
-	have := "выключено"
+	want := i18n.T("balancer.preflight_nctx.reasoning_enabled")
+	have := i18n.T("balancer.preflight_nctx.reasoning_disabled")
 	if *state.CurrentReasoningEnabled {
-		have = "включено"
+		have = i18n.T("balancer.preflight_nctx.reasoning_enabled")
 	}
 	if !*meta.RequestedThink {
-		want = "выключено"
+		want = i18n.T("balancer.preflight_nctx.reasoning_disabled")
 	}
-	explain := fmt.Sprintf(
-		"Запрос требует %s размышление (reasoning), а модель %s уже загружена с %s.",
+	explain := i18n.T("balancer.preflight_nctx.reasoning_mismatch_explain",
 		want, meta.ModelName, have)
 	return []ParamDiff{{
 		Parameter: "reasoning",
@@ -810,7 +807,7 @@ func semanticParamDiffs(meta *RequestMeta, state *NCtxBackendState) []ParamDiff 
 func makeParamMismatchReject(state *NCtxBackendState, meta *RequestMeta, diffs []ParamDiff) *PreflightResult {
 	parts := make([]string, 0, len(diffs))
 	for _, d := range diffs {
-		parts = append(parts, fmt.Sprintf("%s: загружено «%s», запрос требует «%s»", d.Parameter, d.Loaded, d.Requested))
+		parts = append(parts, i18n.T("balancer.preflight_nctx.param_diff_line", d.Parameter, d.Loaded, d.Requested))
 	}
 	loaded := map[string]interface{}{
 		"context_per_seq":   state.effectivePerSeqNCtx(),
@@ -824,20 +821,15 @@ func makeParamMismatchReject(state *NCtxBackendState, meta *RequestMeta, diffs [
 		"think":   reqStr(meta.RequestedThink),
 	}
 	body := map[string]interface{}{
-		"error": fmt.Sprintf(
-			"Модель %s загружена с другими параметрами, чем требует запрос: %s. "+
-				"Перезагрузка под этот запрос не выполняется — измените параметр в клиенте "+
-				"или перезагрузите модель с нужными настройками в WebUI.",
+		"error": i18n.T("balancer.preflight_nctx.param_mismatch_error",
 			meta.ModelName, strings.Join(parts, "; ")),
 		"reason":            strings.Join(parts, "; "),
 		"param_differences": diffs,
 		"loaded":            loaded,
 		"requested":         requested,
-		"what_to_do": "Измените параметр в клиенте (например, уберите think=true) — либо " +
-			"перезагрузите модель с этим параметром: WebUI → Настройки → llama.cpp → профиль " +
-			"модели → Enable reasoning → «Применить (reload)».",
-		"backend_id": state.BackendID,
-		"model":      meta.ModelName,
+		"what_to_do":        i18n.T("balancer.preflight_nctx.param_mismatch_what_to_do"),
+		"backend_id":        state.BackendID,
+		"model":             meta.ModelName,
 	}
 	encoded, _ := json.Marshal(body)
 	return &PreflightResult{
@@ -860,14 +852,11 @@ func makeWindowTooBigReject(
 	if slots > 1 {
 		perClientCeil = ceiling / slots
 	}
-	msg := fmt.Sprintf(
-		"Запрошенное контекстное окно %d токенов на клиента не поместится: %s. "+
-			"При %d параллельных слотах суммарное окно %d делится между клиентами, "+
-			"поэтому одному клиенту доступно не больше %d токенов.",
+	msg := i18n.T("balancer.preflight_nctx.window_too_big_error",
 		requestedPerClient, because, slots, ceiling, perClientCeil)
 	body := map[string]interface{}{
 		"error":                 msg,
-		"reason":                fmt.Sprintf("требуется %d (суммарно %d), доступно не более %d на клиента", requestedPerClient, requestedTotal, perClientCeil),
+		"reason":                i18n.T("balancer.preflight_nctx.window_too_big_reason", requestedPerClient, requestedTotal, perClientCeil),
 		"requested_n_ctx":       requestedPerClient,
 		"requested_total_n_ctx": requestedTotal,
 		"max_per_client_n_ctx":  perClientCeil,
@@ -877,13 +866,9 @@ func makeWindowTooBigReject(
 		"context_per_seq":       state.effectivePerSeqNCtx(),
 		"gguf_max_context":      state.GGUFMaxContext,
 		"auto_reload_max_n_ctx": state.AutoReloadMaxNCtx,
-		"what_to_do": fmt.Sprintf(
-			"Уменьшите окно в клиенте (до %d или меньше), либо поставьте параллельные слоты в 1 "+
-				"(тогда всё окно достанется одному клиенту), либо поднимите потолок "+
-				"(профиль модели → contextLengthMax / LB_NCTX_RELOAD_MAX_N_CTX).",
-			perClientCeil),
-		"backend_id": state.BackendID,
-		"model":      meta.ModelName,
+		"what_to_do":            i18n.T("balancer.preflight_nctx.window_too_big_what_to_do", perClientCeil),
+		"backend_id":            state.BackendID,
+		"model":                 meta.ModelName,
 	}
 	encoded, _ := json.Marshal(body)
 	return &PreflightResult{
@@ -933,7 +918,7 @@ func nctxPreflightWaitTimeout() time.Duration {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		logger.Get().Warnw("LB_NCTX_PREFLIGHT_WAIT_SEC не распознан — ждём терминального состояния reload",
+		logger.Get().Warnw(i18n.T("balancer.preflight_nctx.wait_env_unrecognized_warn"),
 			"value", v, "error", err)
 		return nctxPreflightWaitUnlimited
 	}
@@ -943,8 +928,7 @@ func nctxPreflightWaitTimeout() time.Duration {
 	case n < 0:
 		return nctxPreflightWaitUnlimited
 	default:
-		logger.Get().Warnw("armed preflight wait cap (operator opt-in): первый запрос клиента "+
-			"получит 503, если reload не успеет за этот срок",
+		logger.Get().Warnw(i18n.T("balancer.preflight_nctx.wait_cap_armed_warn"),
 			"wait_sec", n, "source", "LB_NCTX_PREFLIGHT_WAIT_SEC")
 		return time.Duration(n) * time.Second
 	}
@@ -1082,7 +1066,7 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 			// cppworker дать не может → это тот самый случай, о котором надо
 			// уведомить понятным текстом (а не молча обслужить в меньшем окне).
 			if reqWindow > 0 && achievablePerClient > 0 && reqWindow > achievablePerClient {
-				logger.Get().Warnw("preflight: запрошенное окно недостижимо — отказ с объяснением",
+				logger.Get().Warnw(i18n.T("balancer.preflight_nctx.window_unreachable_reject_warn"),
 					"backend_id", backendID,
 					"model", gateModelName,
 					"requested_per_client", reqWindow,
@@ -1090,10 +1074,10 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 					"reason", why)
 				return makeWindowTooBigReject(state, meta, reqWindow, plan.NewNCtx,
 					achievablePerClient*state.effectiveSlots(),
-					fmt.Sprintf("cppworker может дать не больше %d токенов на клиента при %d слотах",
+					i18n.T("balancer.preflight_nctx.achievable_window_reason",
 						achievablePerClient, state.effectiveSlots())), nil
 			}
-			logger.Get().Warnw("preflight: рост окна пропущен — reload не дал бы выигрыша",
+			logger.Get().Warnw(i18n.T("balancer.preflight_nctx.growth_skipped_warn"),
 				"backend_id", backendID,
 				"model", gateModelName,
 				"target_n_ctx", plan.NewNCtx,
@@ -1101,8 +1085,7 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 				"context_per_seq", state.effectivePerSeqNCtx(),
 				"slots", state.effectiveSlots(),
 				"reason", why,
-				"action", "запрос обслуживается в текущем окне; cppworker ответит честным "+
-					"413, если prompt действительно не влезает")
+				"action", i18n.T("balancer.preflight_nctx.growth_skipped_action"))
 			return &PreflightResult{Decision: PreflightNoOp, TargetNCtx: state.CurrentNCtx}, nil
 		}
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -143,8 +144,7 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 					"backend", backendID, "vram_percent", vramPercent, "headroom_pct", headroom)
 				return false
 			}
-			logger.Get().Infow("backend VRAM выше резерва headroom (soft, не блокирует): "+
-				"занятая VRAM загруженной модели — норма, лишние запросы ждут в admission-очереди",
+			logger.Get().Infow(i18n.T("balancer.slot_manager.vram_above_headroom_soft_info"),
 				"backend", backendID, "vram_percent", vramPercent, "headroom_pct", headroom)
 		}
 	}
@@ -154,8 +154,7 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 			logger.Get().Warnw("backend GPU usage critical, blocking", "backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
 			return false
 		}
-		logger.Get().Infow("backend GPU занят (soft, не блокирует): бэкенд продолжает "+
-			"принимать запросы, параллелизм ограничен слотами",
+		logger.Get().Infow(i18n.T("balancer.slot_manager.gpu_busy_soft_info"),
 			"backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
 	}
 
@@ -172,8 +171,7 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 			logger.Get().Warnw("backend CPU usage critical, blocking", "backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent)
 			return false
 		}
-		logger.Get().Infow("backend CPU занят (soft, не блокирует): генерация на CPU — "+
-			"норма для частичного offload, запрос встанет в очередь",
+		logger.Get().Infow(i18n.T("balancer.slot_manager.cpu_busy_soft_info"),
 			"backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent)
 	}
 

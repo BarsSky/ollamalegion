@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 )
 
 // linkBenchTimeout — сколько максимум длится замер пропускной способности.
@@ -83,8 +84,7 @@ func handleCppWorkerRPCPeers(w http.ResponseWriter, r *http.Request) {
 		"rpcEnabled": currentConfig.RPCEnabled,
 		"checkedAt":  time.Now().UTC().Format(time.RFC3339),
 		"probe":      "tcp",
-		"note": strings.TrimSpace("проверяется доступность узла (TCP) и задержка соединения; " +
-			"пропускная способность — только по запросу ?bench=1 (поле linkSpeed)"),
+		"note":       i18n.T("cppworker.handlers_rpc_peers_r125.note"),
 	}
 	if speed != nil {
 		resp["linkSpeed"] = speed

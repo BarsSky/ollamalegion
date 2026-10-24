@@ -34,6 +34,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -129,9 +130,9 @@ func (s *Server) shareTargetDiskShortfall(backendID string, needBytes int64) (in
 func shareHumanBytes(b int64) string {
 	const gib = 1 << 30
 	if b >= gib {
-		return fmt.Sprintf("%.1f ГБ", float64(b)/float64(gib))
+		return i18n.T("api.model_share.bytes_gib", float64(b)/float64(gib))
 	}
-	return fmt.Sprintf("%d МБ", (b+(1<<20)-1)>>20)
+	return i18n.T("api.model_share.bytes_mib", (b+(1<<20)-1)>>20)
 }
 
 // modelShareTarget — одна цель переноса.
@@ -272,11 +273,11 @@ func (s *Server) startModelShare(req shareRequest) (*modelShareJob, error) {
 	src := strings.TrimSpace(req.Source)
 	model := strings.TrimSpace(req.Model)
 	if src == "" || model == "" {
-		return nil, errors.New("source и model обязательны")
+		return nil, errors.New(i18n.T("api.model_share.source_required"))
 	}
 	sourceBackend := s.proxy.GetBackend(src)
 	if sourceBackend == nil {
-		return nil, fmt.Errorf("бэкенд-источник %q не найден", src)
+		return nil, fmt.Errorf("%s", i18n.T("api.model_share.source_backend_not_found", src))
 	}
 	kind, err := shareKindOf(sourceBackend)
 	if err != nil {
@@ -293,7 +294,7 @@ func (s *Server) startModelShare(req shareRequest) (*modelShareJob, error) {
 		targets = append(targets, id)
 	}
 	if len(targets) == 0 {
-		return nil, errors.New("нужен хотя бы один бэкенд-приёмник (кроме источника)")
+		return nil, errors.New(i18n.T("api.model_share.target_required"))
 	}
 
 	job := &modelShareJob{
@@ -305,21 +306,21 @@ func (s *Server) startModelShare(req shareRequest) (*modelShareJob, error) {
 		if tb == nil {
 			job.Targets = append(job.Targets, modelShareTarget{
 				BackendID: id, State: shareTargetFailed,
-				Error: fmt.Sprintf("бэкенд %q не найден", id)})
+				Error: i18n.T("api.model_share.target_backend_not_found", id)})
 			continue
 		}
 		tKind, kerr := shareKindOf(tb)
 		if kerr != nil || tKind != kind {
 			job.Targets = append(job.Targets, modelShareTarget{
 				BackendID: id, State: shareTargetFailed,
-				Error: fmt.Sprintf("тип бэкенда не совпадает: %s vs %s (%s)", tKind, kind, strings.TrimSpace(errstr(kerr)))})
+				Error: i18n.T("api.model_share.target_kind_mismatch", tKind, kind, strings.TrimSpace(errstr(kerr)))})
 			continue
 		}
 		job.Targets = append(job.Targets, modelShareTarget{BackendID: id, State: shareTargetPending})
 	}
 	if !anyPending(job.Targets) {
 		job.State = shareStateFailed
-		job.Error = "все приёмники отклонены (нет подходящих бэкендов)"
+		job.Error = i18n.T("api.model_share.all_targets_rejected")
 		job.FinishedAt = time.Now()
 		s.modelShare.add(job)
 		return job, nil
@@ -357,7 +358,7 @@ func shareKindOf(b *types.Backend) (string, error) {
 	case types.BackendTypeLlamaCpp, types.BackendTypeOllama:
 		return "text", nil
 	}
-	return "", fmt.Errorf("бэкенд %q типа %q не поддерживает перенос моделей", b.ID, b.Type)
+	return "", fmt.Errorf("%s", i18n.T("api.model_share.kind_unsupported", b.ID, b.Type))
 }
 
 // runModelShare — фоновая копия по всем целям (последовательно).
@@ -422,7 +423,7 @@ func (s *Server) runModelShare(ctx context.Context, job *modelShareJob) {
 			for k := range job.Targets {
 				if job.Targets[k].State == shareTargetPending {
 					job.Targets[k].State = shareTargetSkipped
-					job.Targets[k].Note = "отменено оператором"
+					job.Targets[k].Note = i18n.T("api.model_share.canceled_by_operator")
 				}
 			}
 			job.State = shareStateCanceled
@@ -461,7 +462,7 @@ func (s *Server) shareToOne(ctx context.Context, job *modelShareJob, idx int) {
 		if has, listErr := s.shareTargetHasModel(ctx, job, backendID); listErr == nil && has {
 			job.mu.Lock()
 			job.Targets[idx].State = shareTargetSkipped
-			job.Targets[idx].Note = "модель уже есть на этом бэкенде (перезапись не запрошена)"
+			job.Targets[idx].Note = i18n.T("api.model_share.target_already_has_model")
 			job.Targets[idx].Percent = 100
 			job.mu.Unlock()
 			return
@@ -472,12 +473,12 @@ func (s *Server) shareToOne(ctx context.Context, job *modelShareJob, idx int) {
 	// «модель уже есть» (переносить нечего — это не отказ по месту) и до
 	// открытия соединения с источником.
 	if shortfall, freeMB, known := s.shareTargetDiskShortfall(backendID, total); known && shortfall > 0 {
-		msg := fmt.Sprintf("на приёмнике мало места: нужно ~%s, свободно %s (резерв %d МБ)",
+		msg := i18n.T("api.model_share.target_disk_shortfall",
 			shareHumanBytes(total), shareHumanBytes(int64(freeMB)<<20), shareDiskReserveMB())
 		job.mu.Lock()
 		job.Targets[idx].State = shareTargetFailed
 		job.Targets[idx].Error = msg
-		job.Targets[idx].Note = "перенос не начат: не хватает места на диске приёмника"
+		job.Targets[idx].Note = i18n.T("api.model_share.target_disk_shortfall_note")
 		job.mu.Unlock()
 		if log := logger.Get(); log != nil {
 			log.Warnw("model share target skipped: not enough disk space on receiver",
@@ -523,12 +524,12 @@ func (s *Server) streamModel(ctx context.Context, job *modelShareJob, idx int, s
 
 	resp, err := s.shareHTTPClient().Do(srcReq)
 	if err != nil {
-		return 0, fmt.Errorf("источник %s не отдал модель: %w", job.Source, err)
+		return 0, fmt.Errorf("%s: %w", i18n.T("api.model_share.source_failed", job.Source), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return 0, fmt.Errorf("источник %s вернул HTTP %d: %s", job.Source, resp.StatusCode, strings.TrimSpace(string(body)))
+		return 0, fmt.Errorf("%s", i18n.T("api.model_share.source_http_status", job.Source, resp.StatusCode, strings.TrimSpace(string(body))))
 	}
 
 	// Полный размер — из заголовков источника (Content-Length либо X-Bundle-Bytes):
@@ -556,13 +557,13 @@ func (s *Server) streamModel(ctx context.Context, job *modelShareJob, idx int, s
 
 	targetResp, err := s.shareHTTPClient().Do(targetReq)
 	if err != nil {
-		return pr.n, fmt.Errorf("приёмник %s не принял поток: %w", job.Targets[idx].BackendID, err)
+		return pr.n, fmt.Errorf("%s: %w", i18n.T("api.model_share.target_failed", job.Targets[idx].BackendID), err)
 	}
 	defer targetResp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(targetResp.Body, 8<<10))
 	if targetResp.StatusCode != http.StatusOK {
-		return pr.n, fmt.Errorf("приёмник %s вернул HTTP %d: %s",
-			job.Targets[idx].BackendID, targetResp.StatusCode, strings.TrimSpace(string(body)))
+		return pr.n, fmt.Errorf("%s", i18n.T("api.model_share.target_http_status",
+			job.Targets[idx].BackendID, targetResp.StatusCode, strings.TrimSpace(string(body))))
 	}
 	return pr.n, nil
 }
@@ -625,16 +626,16 @@ func (s *Server) probeShareSource(ctx context.Context, job *modelShareJob) (int6
 	s.addWorkerAuth(req, job.Source, job.Kind)
 	resp, err := s.shareHTTPClient().Do(req)
 	if err != nil {
-		return 0, "", fmt.Errorf("источник %s недоступен: %w", job.Source, err)
+		return 0, "", fmt.Errorf("%s: %w", i18n.T("api.model_share.source_unreachable", job.Source), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return 0, "", fmt.Errorf("на источнике %s нет модели %q: %s",
-			job.Source, job.Model, strings.TrimSpace(string(body)))
+		return 0, "", fmt.Errorf("%s", i18n.T("api.model_share.source_model_missing",
+			job.Source, job.Model, strings.TrimSpace(string(body))))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return 0, "", fmt.Errorf("источник %s вернул HTTP %d на запрос размера", job.Source, resp.StatusCode)
+		return 0, "", fmt.Errorf("%s", i18n.T("api.model_share.source_size_http_status", job.Source, resp.StatusCode))
 	}
 	total := resp.ContentLength
 	if n := headerInt64(resp.Header, "X-Bundle-Bytes"); n > 0 {

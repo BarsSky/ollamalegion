@@ -89,19 +89,33 @@ curl -s -X PUT http://localhost:18081/api/v1/i18n \
 3. Do not rename keys: the remaining untranslated places are counted by key
    (`scripts/i18n-scan.py`) and the key is cited in this document.
 
-## What is translated and what is not
+## Current state (R235)
 
-The catalog grows as the code is touched and **is not complete yet**: Russian log strings
-that have not been moved into the catalog still exist. Their number is counted and printed by
+The catalog is complete: **731 keys** in 11 files `internal/i18n/messages*.go`, **749 places**
+in **115** Go files call `i18n.T`/`i18n.Logf`. The scanner reports **0** untranslated logs and
+errors, and the budget in `scripts/i18n-budget.json` is pinned to zero - any new hard-coded
+Russian log string fails the run.
 
 ```bash
-python scripts/i18n-scan.py           # summary + budget
-python scripts/i18n-scan.py --list    # files and counts only
+python scripts/i18n-scan.py            # summary + budget (0)
+python scripts/i18n-scan.py --list     # per file
+python scripts/i18n-scan.py --update   # rewrite the budget (down only!)
 ```
 
-The script is a ratchet: the budget (`scripts/i18n-budget.json`) may only go down. That is
-more honest than declaring "everything is localised" while some strings are still hard-coded
-Russian.
+## What is intentionally NOT translated
+
+Logs and error messages are localised. The following deliberately stay outside:
+
+| What | Why |
+|---|---|
+| Code comments | never reach a log or a client response |
+| Prompts and hints sent **to the model** (`auto_continue`, the image catalog text for the tool) | model input, not operator diagnostics; translating changes behaviour |
+| Marker strings the code **matches** against foreign text (`"памят"`, `"помеща"`, `"не найдена"`) | must stay byte-identical to what the worker prints, otherwise the heuristic silently stops working |
+| Fact strings produced by external programs (llama.cpp, sd-server, nvcc) | operators grep for them; translation would distort the source |
+| Presentation labels of UI catalogs (`label`/`description`/`limitations`) | showcase data, not an error message |
+
+Translating those is a separate decision: it changes model behaviour, the JSON contract, or
+breaks log searching.
 
 ## Checks
 

@@ -8,9 +8,10 @@
 //   - клиент/UI видели бесконечные попытки без причины.
 //
 // Теперь балансер перед загрузкой спрашивает у воркера /api/info:
-//   cuda_arch_ok=false (или непустой cuda_arch_warning) -> ЗАГРУЗКУ НЕ ЗАПУСКАЕМ,
-//   возвращаем терминальную ошибку с причиной и что делать. Повтор бессмысленен:
-//   от перезагрузки архитектура образа не изменится.
+//
+//	cuda_arch_ok=false (или непустой cuda_arch_warning) -> ЗАГРУЗКУ НЕ ЗАПУСКАЕМ,
+//	возвращаем терминальную ошибку с причиной и что делать. Повтор бессмысленен:
+//	от перезагрузки архитектура образа не изменится.
 //
 // Границы: старый образ поля не отдаёт -> отказ не срабатывает (поведение прежнее,
 // менять его вслепую нельзя); недоступный /api/info -> тоже не блокируем, иначе
@@ -25,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -83,16 +85,13 @@ func (p *Proxy) cudaArchRefusal(backendID, host string, port int) (bool, string)
 	}
 	detail := strings.TrimSpace(facts.Warning)
 	if detail == "" {
-		detail = "CUDA-архитектуры образа и карты не совпадают"
+		detail = i18n.T("balancer.cuda_arch_refusal.arch_mismatch_detail")
 	}
-	built := "неизвестно"
+	built := i18n.T("balancer.cuda_arch_refusal.built_unknown")
 	if len(facts.Built) > 0 {
 		built = strings.Join(facts.Built, ";")
 	}
-	return true, fmt.Sprintf(
-		"бэкенд %s не может считать на этой карте: %s (образ собран под sm_%s). "+
-			"Загрузка НЕ запущена, повторы бессмысленны: пересоберите образ с CUDA_ARCH, "+
-			"включающим архитектуру карты (например 75;86;120), и перезапустите воркер [%s]",
+	return true, i18n.T("balancer.cuda_arch_refusal.refusal_reason",
 		backendID, detail, built, cudaArchUnsupportedCode)
 }
 
@@ -225,7 +224,7 @@ func (p *Proxy) writeModelArchUnsupportedIfKnownFor(w http.ResponseWriter, reque
 		return false
 	}
 	if logger.Get() != nil {
-		logger.Get().Errorw("auto-load: карта не поддерживается образом — отдаю 400 вместо 503 «повтори»",
+		logger.Get().Errorw(i18n.T("balancer.cuda_arch_refusal.auto_load_400_warn"),
 			"backend", backendID, "model", model, "reason", truncateForLog(rec.Reason, 300))
 	}
 	writeModelArchUnsupportedResponseFor(w, requestPath, model, rec.Reason)

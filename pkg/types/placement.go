@@ -17,9 +17,12 @@
 package types
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"ollama-loadbalancer/internal/i18n"
 )
 
 // PlacementStrategy — способ обслуживания модели при нескольких бэкендах.
@@ -216,23 +219,21 @@ func (p *PlacementSettings) Validate() []string {
 	switch strings.ToLower(strings.TrimSpace(p.Fallback)) {
 	case "", PlacementFallbackError, PlacementFallbackSingle:
 	default:
-		errs = append(errs, fmt.Sprintf(
-			"placement.fallback: неизвестное значение %q (допустимо: %q, %q)",
+		errs = append(errs, i18n.T("types.placement.invalid_fallback",
 			p.Fallback, PlacementFallbackError, PlacementFallbackSingle))
 	}
 
 	if p.Enabled && len(p.Models) == 0 && len(p.Classes) == 0 {
-		errs = append(errs, "placement.enabled=true, но не задано ни одного правила "+
-			"(models[] или classes[]) — политика не на что не влияет")
+		errs = append(errs, i18n.T("types.placement.enabled_without_rules"))
 	}
 
 	for i, rule := range p.Models {
 		prefix := fmt.Sprintf("placement.models[%d]", i)
 		if strings.TrimSpace(rule.Model) == "" {
-			errs = append(errs, prefix+": пустое поле model (нужно имя модели или маска)")
+			errs = append(errs, prefix+": "+i18n.T("types.placement.empty_model"))
 		}
 		if !IsValidPlacementStrategy(rule.Strategy) {
-			errs = append(errs, fmt.Sprintf("%s: неизвестная стратегия %q (допустимо: %s)",
+			errs = append(errs, i18n.T("types.placement.rule_invalid_strategy",
 				prefix, rule.Strategy, placementStrategyList()))
 			continue
 		}
@@ -242,9 +243,7 @@ func (p *PlacementSettings) Validate() []string {
 				// R74: для виртуального алиаса пул берётся из registry
 				// (balancing.virtualModels[].backendPool), поэтому pool[] в
 				// правиле не обязателен — это предупреждение, а не ошибка.
-				errs = append(errs, prefix+": strategy=pool без списка pool[] — "+
-					"пул будет взят из balancing.virtualModels[].backendPool, если модель "+
-					"зарегистрирована как виртуальный алиас (alias-on-pool)")
+				errs = append(errs, prefix+": "+i18n.T("types.placement.pool_without_list"))
 			}
 		case PlacementSharded:
 			// R92 (S3): стратегия исполняется, но требует логического бэкенда
@@ -254,21 +253,19 @@ func (p *PlacementSettings) Validate() []string {
 			// резолвер (Degraded с числами, §6). Ошибкой это не объявляем, иначе
 			// валидация политики ломала бы стенды, где группа появится позже.
 		case PlacementRPC:
-			errs = append(errs, fmt.Sprintf(
-				"%s: стратегия %q не исполняется (legacy-путь координатора-заглушки; §9 плана "+
-					"переводит rpc_coordinator в sharded — используйте strategy=sharded) — "+
-					"запросы пойдут по fallback=%s", prefix, rule.Strategy, fallbackOrDefault(p.Fallback)))
+			errs = append(errs, i18n.T("types.placement.rpc_not_executable",
+				prefix, rule.Strategy, fallbackOrDefault(p.Fallback)))
 		}
 		switch strings.ToLower(strings.TrimSpace(rule.Selection)) {
 		case "", "round_robin", "least_loaded":
 		default:
-			errs = append(errs, fmt.Sprintf("%s: неизвестный selection %q (допустимо: round_robin, least_loaded)",
+			errs = append(errs, i18n.T("types.placement.invalid_selection",
 				prefix, rule.Selection))
 		}
 		if rule.Auto != nil {
 			for j, st := range rule.Auto.Prefer {
 				if !IsValidPlacementStrategy(st) {
-					errs = append(errs, fmt.Sprintf("%s.auto.prefer[%d]: неизвестная стратегия %q",
+					errs = append(errs, i18n.T("types.placement.auto_prefer_invalid_strategy",
 						prefix, j, st))
 				}
 			}
@@ -278,8 +275,7 @@ func (p *PlacementSettings) Validate() []string {
 	for i, rule := range p.Classes {
 		prefix := fmt.Sprintf("placement.classes[%d]", i)
 		if strings.TrimSpace(rule.Match.Model) == "" && strings.TrimSpace(rule.Match.SizeGB) == "" {
-			errs = append(errs, prefix+": пустое match — нужно хотя бы одно условие "+
-				"(match.model или match.sizeGB)")
+			errs = append(errs, prefix+": "+i18n.T("types.placement.empty_match"))
 		}
 		if strings.TrimSpace(rule.Match.SizeGB) != "" {
 			if _, err := ParseSizeGBExpression(rule.Match.SizeGB); err != nil {
@@ -287,7 +283,7 @@ func (p *PlacementSettings) Validate() []string {
 			}
 		}
 		if !IsValidPlacementStrategy(rule.Strategy) {
-			errs = append(errs, fmt.Sprintf("%s: неизвестная стратегия %q (допустимо: %s)",
+			errs = append(errs, i18n.T("types.placement.rule_invalid_strategy",
 				prefix, rule.Strategy, placementStrategyList()))
 		}
 	}
@@ -301,7 +297,7 @@ func ValidatePlacementStrategyName(s string) error {
 		return nil
 	}
 	if !IsValidPlacementStrategy(s) {
-		return fmt.Errorf("неизвестная стратегия %q (допустимо: %s)", s, placementStrategyList())
+		return errors.New(i18n.T("types.placement.invalid_strategy", s, placementStrategyList()))
 	}
 	return nil
 }
@@ -328,13 +324,13 @@ func placementStrategyList() string {
 func ParseSizeGBExpression(expr string) (func(sizeGB float64) bool, error) {
 	e := strings.TrimSpace(expr)
 	if e == "" {
-		return nil, fmt.Errorf("пустое выражение размера (примеры: \">12\", \"<4\", \"4-8\")")
+		return nil, errors.New(i18n.T("types.placement.empty_size_expression"))
 	}
 
 	parse := func(s string) (float64, error) {
 		v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 		if err != nil {
-			return 0, fmt.Errorf("не число: %q", strings.TrimSpace(s))
+			return 0, errors.New(i18n.T("types.placement.not_a_number", strings.TrimSpace(s)))
 		}
 		return v, nil
 	}
@@ -382,14 +378,14 @@ func ParseSizeGBExpression(expr string) (func(sizeGB float64) bool, error) {
 			return nil, err
 		}
 		if lo > hi {
-			return nil, fmt.Errorf("диапазон %q перевёрнут: нижняя граница больше верхней", e)
+			return nil, errors.New(i18n.T("types.placement.range_reversed", e))
 		}
 		return func(sizeGB float64) bool { return sizeGB >= lo && sizeGB <= hi }, nil
 	}
 
 	exact, err := parse(e)
 	if err != nil {
-		return nil, fmt.Errorf("неизвестное выражение размера %q (примеры: \">12\", \"<4\", \"4-8\")", e)
+		return nil, errors.New(i18n.T("types.placement.unknown_size_expression", e))
 	}
 	return func(sizeGB float64) bool { return sizeGB == exact }, nil
 }

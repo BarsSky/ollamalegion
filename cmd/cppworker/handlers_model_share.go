@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -91,7 +92,7 @@ func knownModelNames(mm *cppbackend.ModelManager) []string {
 		}
 	}
 	if len(out) == 0 {
-		return []string{"(каталог пуст)"}
+		return []string{i18n.T("cppworker.model_share.no_models")}
 	}
 	return out
 }
@@ -111,7 +112,7 @@ func handleExportModel(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]interface{}{
 			"error": err.Error(), "code": "model_not_found",
-			"hint": "имя можно посмотреть в GET /api/models/files (или в панели, список моделей бэкенда)",
+			"hint": i18n.T("cppworker.model_share.hint_list_files"),
 		})
 		return
 	}
@@ -172,14 +173,14 @@ func handleImportModel(w http.ResponseWriter, r *http.Request) {
 	if rawFilename != filename || strings.ContainsAny(rawFilename, `/\`) {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"error": "filename must be a plain file name (no path separators)", "code": "invalid_filename",
-			"hint": "передайте filename=<model>.gguf без каталогов",
+			"hint": i18n.T("cppworker.model_share.hint_plain_name"),
 		})
 		return
 	}
 	if !strings.HasSuffix(strings.ToLower(filename), ".gguf") {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"error": "only .gguf files can be imported", "code": "invalid_filename",
-			"hint":  "передайте filename=<model>.gguf (каталоги/прочие расширения не переносятся)",
+			"hint": i18n.T("cppworker.model_share.hint_gguf_only"),
 		})
 		return
 	}
@@ -194,7 +195,7 @@ func handleImportModel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]interface{}{
 			"error": fmt.Sprintf("model %q already exists on this worker", filename),
 			"code":  "model_exists",
-			"hint":  "повторите с overwrite=1, если файл нужно заменить",
+			"hint":  i18n.T("cppworker.model_share.hint_overwrite"),
 		})
 		return
 	}
@@ -234,7 +235,7 @@ func handleImportModel(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 				"error": fmt.Sprintf("size mismatch: got %d bytes, want %d", n, expected),
 				"code":  "size_mismatch", "received": n, "expected": expected,
-				"hint": "копия прервалась (сеть/диск) — повторите перенос",
+				"hint": i18n.T("cppworker.model_share.hint_size_mismatch"),
 			})
 			return
 		}
@@ -243,7 +244,7 @@ func handleImportModel(w http.ResponseWriter, r *http.Request) {
 	if want := strings.ToLower(strings.TrimSpace(q.Get("sha256"))); want != "" && want != sum {
 		_ = os.Remove(tmp)
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"error": "sha256 mismatch — файл побился при переносе", "code": "sha256_mismatch",
+			"error": i18n.T("cppworker.model_share.sha256_mismatch"), "code": "sha256_mismatch",
 			"received": sum, "expected": want,
 		})
 		return

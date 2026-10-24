@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/internal/balancer"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -232,7 +233,7 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 	if !hasExisting && incoming.ContextLength == 0 {
 		if factsCtx := s.proxy.LoadedContextForModel(modelName); factsCtx > 0 {
 			incoming.ContextLength = factsCtx
-			log.Infow("model profile: contextLength взят из загруженного инстанса",
+			log.Infow(i18n.T("api.cppworker_profiles.context_from_loaded"),
 				"model", modelName, "context_length", factsCtx)
 		}
 	}
@@ -257,7 +258,7 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 		if defCtx, src := s.defaultContextLengthForNewProfile(); defCtx > 0 {
 			incoming.ContextLength = defCtx
 			profileDefaulted = src
-			log.Infow("model profile: contextLength взят из умолчаний (модель не загружена)",
+			log.Infow(i18n.T("api.cppworker_profiles.context_from_defaults"),
 				"model", modelName, "context_length", defCtx, "source", src)
 		}
 	}
@@ -299,7 +300,7 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 		if mv.Degraded {
 			// Предупреждение оператору: профиль сохраняем (это его право), но
 			// говорим прямо, что модель пойдёт частично на CPU.
-			log.Warnw("upsertModelProfile: профиль влезает только с выгрузкой в RAM",
+			log.Warnw(i18n.T("api.cppworker_profiles.upsert_ram_only"),
 				"model", modelName, "ctx", incoming.ContextLength,
 				"kv_cache_type", incoming.KVCacheType, "message", mv.Message)
 		}
@@ -351,8 +352,7 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 	// оператора.
 	if profileDefaulted != "" {
 		resp["contextLengthSource"] = profileDefaulted
-		resp["message"] = "модель не загружена: contextLength взят из умолчаний (" +
-			profileDefaulted + "). Остальные параметры сохранены и применятся при загрузке."
+		resp["message"] = i18n.T("api.cppworker_profiles.saved_with_defaults", profileDefaulted)
 	}
 	s.writeJSON(w, http.StatusOK, resp)
 }
@@ -634,12 +634,12 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 			low := strings.ToLower(err.Error())
 			if strings.Contains(low, "not currently loaded") || strings.Contains(low, "404") ||
 				strings.Contains(low, "not found") {
-				log.Infow("applyModelProfile: модели нет на бэкенде — пропуск",
+				log.Infow(i18n.T("api.cppworker_profiles.apply_model_absent"),
 					"backend", backendID, "model", modelName, "error", err)
 				results = append(results, modelProfileApplyBackendResult{
 					BackendID: backendID,
 					Status:    "skipped",
-					Message:   "модель не загружена на этом бэкенде",
+					Message:   i18n.T("api.cppworker_profiles.not_loaded_on_backend"),
 				})
 				continue
 			}
@@ -660,7 +660,7 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 				BackendID: backendID,
 				Status:    "skipped",
 				Message: "cppworker reported already_loaded: " +
-					"текущие параметры модели не изменились (см. runtime-параметры на вкладке загруженных моделей)",
+					i18n.T("api.cppworker_profiles.already_loaded"),
 			})
 			continue
 		}
@@ -988,8 +988,7 @@ func mergeProfileUpdate(existing, values types.LlamaCppModelProfile, presence pr
 	// всегда побеждает — это и есть намерение оператора.
 	if presence.ContextPerSeq == nil && presence.Parallel != nil {
 		if out.ContextPerSeq != 0 {
-			logger.Get().Infow("mergeProfileUpdate: окно на слот сброшено — оператор задал "+
-				"суммарное окно и/или число слотов, значение пересчитает cppworker",
+			logger.Get().Infow(i18n.T("api.cppworker_profiles.per_slot_window_reset"),
 				"was_contextPerSeq", out.ContextPerSeq,
 				"contextLength", out.ContextLength, "parallel", out.Parallel)
 		}

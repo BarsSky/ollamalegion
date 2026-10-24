@@ -27,6 +27,7 @@ import (
 
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/config"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -209,9 +210,9 @@ func (s *Server) writeImageResources(w http.ResponseWriter) {
 		// Подсказки для формы: что означает каждая политика. Держим их рядом с
 		// данными, чтобы UI не дублировал тексты и не расходился с движком.
 		"policies": []map[string]string{
-			{"value": string(types.ImageCoexistenceExclusive), "hint": "во время генерации image-бэкенд владеет картой: текстовый трафик ждёт (безопасный дефолт)"},
-			{"value": string(types.ImageCoexistenceOffload), "hint": "совместная работа разрешена: применяйте, только если image-воркер запущен с offload в RAM (--offload-to-cpu / --backend te=cpu), иначе рискуете OOM"},
-			{"value": string(types.ImageCoexistenceDedicated), "hint": "под image-бэкенд выделена отдельная GPU: ограничения сосуществования не применяются"},
+			{"value": string(types.ImageCoexistenceExclusive), "hint": i18n.T("api.image_resources.hint_exclusive")},
+			{"value": string(types.ImageCoexistenceOffload), "hint": i18n.T("api.image_resources.hint_offload")},
+			{"value": string(types.ImageCoexistenceDedicated), "hint": i18n.T("api.image_resources.hint_dedicated")},
 		},
 		// R85: автозагрузка модели из инструмента. Показываем и действующее
 		// значение, и источник (env, если поле не задано) — иначе непонятно,
@@ -220,14 +221,14 @@ func (s *Server) writeImageResources(w http.ResponseWriter) {
 			"effective":  types.EffectiveAllowToolLoad(effective.AllowToolLoad),
 			"overridden": effective.AllowToolLoad != nil,
 			"env":        balancer.ImageToolAllowLoadEnv(),
-			"hint":       "разрешить текстовой модели поднимать image-модель, которой нет в VRAM (инструмент generate_image + list_image_models); при выключении инструмент объявляется только для уже загруженной модели",
+			"hint":       i18n.T("api.image_resources.hint_allow_tool_load"),
 		},
 		// R86-follow-up: ожидание загрузки модели из вызова инструмента.
 		"toolLoadTimeout": map[string]interface{}{
 			"effectiveSec": types.EffectiveToolLoadTimeout(effective.ToolLoadTimeoutSec, balancer.DefaultImageToolLoadTimeoutSec),
 			"overridden":   effective.ToolLoadTimeoutSec != nil,
 			"env":          balancer.ImageToolLoadTimeoutEnv(),
-			"hint":         "сколько секунд ждать загрузку image-модели, которую поднимает вызов инструмента (большие модели на медленном диске грузятся дольше); по истечении в tool-сообщение уходит причина",
+			"hint":         i18n.T("api.image_resources.hint_tool_load_timeout"),
 		},
 		"checkedAt": time.Now().UTC().Format(time.RFC3339),
 	})

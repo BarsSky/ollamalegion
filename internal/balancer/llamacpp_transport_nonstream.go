@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -86,7 +87,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		// бы 200 с окном меньше запрошенного — ровно то, на что жаловались.
 		// Отдаём понятный отказ с числами и причиной от cppworker'а.
 		if preflightStatus == http.StatusRequestEntityTooLarge {
-			logger.Get().Infow("proxyRequestLlamaCppNonStream: окно недостижимо — отдаю 413 клиенту",
+			logger.Get().Infow(i18n.T("balancer.llamacpp_transport_nonstream.window_unreachable_413_info"),
 				"backend", backendID, "model", modelFromCtx, "msg", preflightMsg)
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-NCtx-Reload-Decision", "infeasible")
@@ -108,7 +109,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		// 503 «повтори через 30 с».
 		if p.awaitModelMissing(backendID, modelFromCtx, 500*time.Millisecond) {
 			reason, available, _ := p.modelMissingFor(backendID, modelFromCtx)
-			logger.Get().Warnw("proxyRequestLlamaCppNonStream: модели нет на бэкенде — отдаю 404 клиенту",
+			logger.Get().Warnw(i18n.T("balancer.llamacpp_transport_nonstream.model_missing_404_warn"),
 				"backend", backendID, "model", modelFromCtx,
 				"msg", preflightMsg, "available_models", len(available))
 			writeModelMissingResponseFor(w, originalPath, modelFromCtx, reason, available)
@@ -133,7 +134,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		// запущен в фоне), и только по исчерпании бюджета отдаём прежний 503.
 		wait := AutoLoadWaitTimeout()
 		if p.waitForBackendNCtx(r.Context(), backendID, modelFromCtx, 1, wait) {
-			logger.Get().Infow("proxyRequestLlamaCppNonStream: модель готова после ожидания reload — запрос продолжается",
+			logger.Get().Infow(i18n.T("balancer.llamacpp_transport_nonstream.model_ready_after_reload_info"),
 				"backend", backendID, "model", modelFromCtx,
 				"waited_sec", int(wait.Seconds()), "preflight_msg", preflightMsg)
 		} else {

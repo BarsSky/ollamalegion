@@ -22,7 +22,7 @@ package cppbackend
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -81,7 +82,7 @@ func nodeHTTPAddr(endpoint string) string {
 func fetchNodeBuild(endpoint string, timeout time.Duration) (string, error) {
 	addr := nodeHTTPAddr(endpoint)
 	if addr == "" {
-		return "", fmt.Errorf("некорректный адрес узла %q", endpoint)
+		return "", errors.New(i18n.T("cppbackend.rpc_version_gate.node_addr_invalid", endpoint))
 	}
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get("http://" + addr + "/api/v1/cppworker/config")
@@ -90,7 +91,7 @@ func fetchNodeBuild(endpoint string, timeout time.Duration) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("узел %s ответил HTTP %d", addr, resp.StatusCode)
+		return "", errors.New(i18n.T("cppbackend.rpc_version_gate.node_http_status", addr, resp.StatusCode))
 	}
 	var payload struct {
 		Config struct {
@@ -131,7 +132,7 @@ func (b *Backend) nodeBuildMatches(endpoint string) (bool, string) {
 		if err != nil {
 			build = ""
 			if logger.Get() != nil {
-				logger.Get().Warnw("узел раскладки: версию узнать не удалось",
+				logger.Get().Warnw(i18n.T("cppbackend.rpc_version_gate.version_lookup_failed"),
 					"endpoint", endpoint, "error", err.Error())
 			}
 		}
@@ -190,10 +191,9 @@ func (b *Backend) admittedRPCServers() []string {
 		ok, reason := b.nodeBuildMatches(ep)
 		if !ok {
 			if logger.Get() != nil {
-				logger.Get().Errorw("узел раскладки исключён: версия llama.cpp не совпала",
+				logger.Get().Errorw(i18n.T("cppbackend.rpc_version_gate.node_excluded"),
 					"endpoint", ep, "reason", reason,
-					"hint", "обновите образ узла до того же коммита; несовпадение "+
-						"приводит к GGML_ABORT на мастере")
+					"hint", i18n.T("cppbackend.rpc_version_gate.node_excluded_hint"))
 			}
 			continue
 		}

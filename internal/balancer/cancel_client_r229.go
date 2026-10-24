@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -92,7 +93,7 @@ func (p *Proxy) handleClientCancel(w http.ResponseWriter, r *http.Request) {
 		status = "no_active_generation"
 	}
 	if logger.Get() != nil {
-		logger.Get().Infow("client cancel: отмена от клиента разослана воркерам",
+		logger.Get().Infow(i18n.T("balancer.cancel_client.broadcast_info"),
 			"model", req.Model, "request_id", req.RequestID, "user_id", req.UserID,
 			"targets", targets, "accepted", accepted, "status", status)
 	}
@@ -194,7 +195,7 @@ func (p *Proxy) sendCancelToBackend(backendID string, req clientCancelBody) (boo
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		if logger.Get() != nil {
-			logger.Get().Warnw("client cancel: воркер не принял отмену",
+			logger.Get().Warnw(i18n.T("balancer.cancel_client.not_accepted_warn"),
 				"backend", backendID, "model", req.Model, "error", err)
 		}
 		return false, nil

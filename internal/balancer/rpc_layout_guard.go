@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -197,7 +198,7 @@ func pushRPCLayoutConfig(b *types.Backend, enabled bool, servers []string) error
 		return fmt.Errorf("backend is nil")
 	}
 	if b.CppWorkerPort <= 0 {
-		return fmt.Errorf("backend %s: неизвестен порт cppworker", b.ID)
+		return fmt.Errorf(i18n.T("balancer.rpc_layout.unknown_port"), b.ID)
 	}
 	if servers == nil {
 		servers = []string{}
@@ -282,10 +283,10 @@ func (p *Proxy) EnsureRPCLayout(backendID string) (degraded bool, reason string)
 
 	alive, dead := probeRPCNodes(p.rpcProbeFunc(), wanted)
 	if len(wanted) > 0 && len(alive) == 0 {
-		reason = fmt.Sprintf("узлы раскладки недоступны (%s): раскладка выключена, загрузка идёт локально",
+		reason = i18n.T("balancer.rpc_layout.nodes_unreachable",
 			strings.Join(dead, ", "))
 	} else if len(dead) > 0 {
-		reason = fmt.Sprintf("часть узлов раскладки недоступна (%s): работаем на живых (%s)",
+		reason = i18n.T("balancer.rpc_layout.nodes_partial",
 			strings.Join(dead, ", "), strings.Join(alive, ", "))
 	}
 
@@ -313,10 +314,10 @@ func (p *Proxy) EnsureRPCLayout(backendID string) (degraded bool, reason string)
 	}
 
 	if err := pushRPCLayoutConfig(b, enabled, alive); err != nil {
-		logger.Get().Warnw("EnsureRPCLayout: не удалось применить раскладку",
+		logger.Get().Warnw(i18n.T("balancer.rpc_layout.apply_failed_warn"),
 			"backend", backendID, "role", role, "enabled", enabled,
 			"servers", alive, "error", err)
-		return true, fmt.Sprintf("раскладка не применена: %v", err)
+		return true, i18n.T("balancer.rpc_layout.not_applied", err)
 	}
 
 	p.mu.Lock()
@@ -325,14 +326,14 @@ func (p *Proxy) EnsureRPCLayout(backendID string) (degraded bool, reason string)
 	p.setLayoutReason(backendID, reason)
 
 	if reason != "" {
-		logger.Get().Warnw("EnsureRPCLayout: раскладка работает не в полном составе",
+		logger.Get().Warnw(i18n.T("balancer.rpc_layout.degraded_warn"),
 			"backend", backendID, "role", role,
 			"enabled", enabled, "servers", alive, "reason", reason)
 	} else if enabled {
-		logger.Get().Infow("EnsureRPCLayout: раскладка применена",
+		logger.Get().Infow(i18n.T("balancer.rpc_layout.applied_info"),
 			"backend", backendID, "servers", alive)
 	} else {
-		logger.Get().Infow("EnsureRPCLayout: раскладка выключена (самодостаточный режим)",
+		logger.Get().Infow(i18n.T("balancer.rpc_layout.disabled_info"),
 			"backend", backendID)
 	}
 	return reason != "", reason

@@ -37,6 +37,7 @@ import (
 	"strings"
 	"sync"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"time"
 )
@@ -164,15 +165,12 @@ func NewUserStore(path string) *UserStore {
 				// LB_ADMIN_* и ждёт users.json — файла нет, в логе тишина, вход «работает»
 				// до пересоздания контейнера и пропадает после. Теперь причина видна.
 				if saveErr := us.saveLocked(); saveErr != nil && logger.Get() != nil {
-					logger.Get().Warnw("auth: администратор создан в ПАМЯТИ, но файл users.json "+
-						"не записан — после пересоздания контейнера вход пропадёт",
+					logger.Get().Warnw(i18n.T("api.auth_session.admin_memory_only"),
 						"path", us.path, "error", saveErr,
-						"hint", "путь должен быть на смонтированном томе: "+
-							"LB_USERS_FILE=/app/data/users.json + volume balancer_data:/app/data")
+						"hint", i18n.T("api.auth_session.admin_hint_mount_volume"))
 				}
 				if logger := logger.Get(); logger != nil {
-					logger.Warnw("auth: создан администратор из LB_ADMIN_USER/LB_ADMIN_PASSWORD — "+
-						"пароль теперь хранится хешем; переменные можно убрать", "user", user)
+					logger.Warnw(i18n.T("api.auth_session.admin_created_from_env"), "user", user)
 				}
 			}
 		}
@@ -211,12 +209,12 @@ func (u *UserStore) syncAdminFromEnv() {
 		u.list[i].Role = "admin"
 		if err := u.saveLocked(); err != nil {
 			if logger.Get() != nil {
-				logger.Get().Errorw("auth: не удалось применить новый пароль администратора из .env", "error", err)
+				logger.Get().Errorw(i18n.T("api.auth_session.admin_password_apply_failed"), "error", err)
 			}
 			return
 		}
 		if logger.Get() != nil {
-			logger.Get().Warnw("auth: пароль администратора обновлён из LB_ADMIN_PASSWORD (.env)", "user", u.list[i].Name)
+			logger.Get().Warnw(i18n.T("api.auth_session.admin_password_updated"), "user", u.list[i].Name)
 		}
 		return
 	}
@@ -229,13 +227,13 @@ func (u *UserStore) syncAdminFromEnv() {
 	u.list = append(u.list, AuthUser{Name: user, Role: "admin", PasswordHash: hash})
 	if err := u.saveLocked(); err != nil {
 		if logger.Get() != nil {
-			logger.Get().Errorw("auth: не удалось создать администратора из .env", "error", err)
+			logger.Get().Errorw(i18n.T("api.auth_session.admin_create_failed"), "error", err)
 		}
 		return
 	}
 	if logger.Get() != nil {
-		logger.Get().Warnw("auth: создан администратор из LB_ADMIN_USER/LB_ADMIN_PASSWORD", "user", user,
-			"note", "если в файле остались другие админы — удалите их через PUT /api/v1/auth/users")
+		logger.Get().Warnw(i18n.T("api.auth_session.admin_created_from_env_note"), "user", user,
+			"note", i18n.T("api.auth_session.admin_created_others_hint"))
 	}
 }
 
@@ -244,7 +242,7 @@ func (u *UserStore) load() {
 	raw, err := os.ReadFile(u.path)
 	if err != nil {
 		if !os.IsNotExist(err) && logger.Get() != nil {
-			logger.Get().Warnw("auth: не удалось прочитать users.json", "path", u.path, "error", err)
+			logger.Get().Warnw(i18n.T("api.auth_session.users_read_failed"), "path", u.path, "error", err)
 		}
 		return
 	}
@@ -253,7 +251,7 @@ func (u *UserStore) load() {
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		if logger.Get() != nil {
-			logger.Get().Errorw("auth: users.json не разобран", "path", u.path, "error", err)
+			logger.Get().Errorw(i18n.T("api.auth_session.users_parse_failed"), "path", u.path, "error", err)
 		}
 		return
 	}
@@ -325,7 +323,7 @@ func (u *UserStore) Upsert(name, password, role string) error {
 		return os.ErrInvalid
 	}
 	if strings.TrimSpace(password) != "" && len([]rune(password)) < minPasswordLength {
-		return fmt.Errorf("пароль короче %d символов", minPasswordLength)
+		return fmt.Errorf("%s", i18n.T("api.auth_session.password_too_short", minPasswordLength))
 	}
 	if role != "admin" && role != "viewer" {
 		role = "viewer"
@@ -449,14 +447,14 @@ func NewSessionStoreFromFile(path string) *SessionStore {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			logger.Get().Warnw("auth: файл сессий не прочитан — старт без сохранённых сессий",
+			logger.Get().Warnw(i18n.T("api.auth_session.sessions_read_failed"),
 				"path", path, "error", err)
 		}
 		return s
 	}
 	var file sessionFile
 	if err := json.Unmarshal(raw, &file); err != nil {
-		logger.Get().Warnw("auth: файл сессий не разобран — старт без сохранённых сессий",
+		logger.Get().Warnw(i18n.T("api.auth_session.sessions_parse_failed"),
 			"path", path, "error", err)
 		return s
 	}
@@ -471,7 +469,7 @@ func NewSessionStoreFromFile(path string) *SessionStore {
 		s.m[sess.ID] = sess
 	}
 	if n := len(s.m); n > 0 {
-		logger.Get().Infow("auth: сессии восстановлены из файла — вход в WebUI пережил рестарт",
+		logger.Get().Infow(i18n.T("api.auth_session.sessions_restored"),
 			"path", path, "sessions", n)
 	}
 	return s
@@ -761,7 +759,7 @@ func AuthSessionsHandler(sessions *SessionStore) http.HandlerFunc {
 		}
 		if !requestIsAdmin(r, sessions) {
 			writeAuthJSON(w, http.StatusForbidden, map[string]interface{}{
-				"error": "Forbidden: требуются права администратора",
+				"error": i18n.T("api.auth_session.admin_required"),
 			})
 			return
 		}
@@ -789,7 +787,7 @@ func AuthSessionsHandler(sessions *SessionStore) http.HandlerFunc {
 			}
 			if !sessions.DeleteByShortID(short) {
 				writeAuthJSON(w, http.StatusNotFound, map[string]interface{}{
-					"error": "сессия не найдена (или id неоднозначен)",
+					"error": i18n.T("api.auth_session.session_not_found"),
 				})
 				return
 			}
@@ -919,7 +917,7 @@ func AuthUsersHandler(users *UserStore, sessions *SessionStore) http.HandlerFunc
 		// viewer мог читать список пользователей с ролями.
 		if !requestIsAdmin(r, sessions) {
 			writeAuthJSON(w, http.StatusForbidden, map[string]interface{}{
-				"error": "Forbidden: требуются права администратора",
+				"error": i18n.T("api.auth_session.admin_required"),
 			})
 			return
 		}
@@ -938,7 +936,7 @@ func AuthUsersHandler(users *UserStore, sessions *SessionStore) http.HandlerFunc
 			}
 			if err := users.Upsert(req.Name, req.Password, req.Role); err != nil {
 				writeAuthJSON(w, http.StatusBadRequest, map[string]interface{}{
-					"error": "не удалось сохранить пользователя: " + err.Error(),
+					"error": i18n.T("api.auth_session.user_save_failed", err),
 				})
 				return
 			}
@@ -958,10 +956,10 @@ func AuthUsersHandler(users *UserStore, sessions *SessionStore) http.HandlerFunc
 			}
 			if err := users.Delete(name, caller); err != nil {
 				code := http.StatusBadRequest
-				msg := "не удалось удалить пользователя: " + err.Error()
+				msg := i18n.T("api.auth_session.user_delete_failed", err)
 				if err == os.ErrPermission {
 					code = http.StatusConflict
-					msg = "нельзя удалить самого себя"
+					msg = i18n.T("api.auth_session.cannot_delete_self")
 				}
 				writeAuthJSON(w, code, map[string]interface{}{"error": msg})
 				return

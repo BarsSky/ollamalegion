@@ -25,6 +25,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"ollama-loadbalancer/internal/i18n"
 )
 
 // imageToolError — отказ инструмента генерации картинок с машиночитаемыми полями.
@@ -105,7 +107,7 @@ func (e *imageToolError) toolPayload() map[string]interface{} {
 // `{"status":"error","error": err.Error()}`, и код с числами терялся.
 func imageToolErrorPayload(err error) map[string]interface{} {
 	if err == nil {
-		return map[string]interface{}{"status": "error", "error": "результат не получен"}
+		return map[string]interface{}{"status": "error", "error": i18n.T("balancer.image_tool_gate.result_missing")}
 	}
 	var gateErr *imageToolError
 	if errors.As(err, &gateErr) {

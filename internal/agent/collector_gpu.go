@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/types"
 )
 
@@ -127,8 +128,8 @@ func (a *Agent) collectGPUMetrics() types.GPUMetrics {
 		metrics = a.collectGPUMetricsNVML()
 		if metrics.MemoryTotal == 0 && metrics.UsagePercent == 0 && metrics.Temperature == 0 {
 			markGPUUnavailable()
-			fmt.Printf("[%s] GPU metrics unavailable (nvidia-smi failed, NVML returned zeros). Retry через %s.\n",
-				time.Now().Format(time.RFC3339), gpuUnavailableTTL)
+			fmt.Printf("[%s] %s\n", time.Now().Format(time.RFC3339),
+				i18n.T("agent.collector_gpu.metrics_unavailable", gpuUnavailableTTL))
 		}
 		return metrics
 	}
@@ -156,7 +157,7 @@ func logNvidiaSmiError(err error) {
 	now := time.Now().Format(time.RFC3339)
 	// Различаем: команда не найдена (отсутствует в PATH) vs. бинарь есть, но ошибка.
 	if _, ok := err.(*exec.Error); ok {
-		fmt.Printf("[%s] nvidia-smi: binary not found in PATH (ожидаемо в nvidia/cuda base)\n", now)
+		fmt.Printf("[%s] %s\n", now, i18n.T("agent.collector_gpu.smi_binary_missing"))
 		return
 	}
 	// *exec.ExitError — nvidia-smi запустился, но вернул ненулевой код (например,

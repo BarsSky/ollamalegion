@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -104,9 +105,9 @@ func (p *Proxy) LoadProfilesFromFile() (int, error) {
 			key = name
 		}
 		if key != name {
-			logger.Get().Infow("R136: ключ профиля нормализован при загрузке",
+			logger.Get().Infow(i18n.T("balancer.profiles_persistence.key_normalized_info"),
 				"was", name, "now", key,
-				"hint", "карточка диска и карточка загруженной модели теперь пишут одну запись")
+				"hint", i18n.T("balancer.profiles_persistence.key_normalized_hint"))
 		}
 		// Skip if config.json already has this profile (config wins — bundled defaults)
 		if _, exists := p.config.LlamaCppModelProfiles[key]; exists {

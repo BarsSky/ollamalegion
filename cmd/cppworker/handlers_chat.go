@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -556,7 +557,7 @@ func buildGenerateRequestFromChat(req chatRequest, prompt string) generateReques
 	// только уменьшает финальный num_predict.
 	if req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
 		genReq._upperBoundNumPredict = *req.MaxOutputTokens
-		logger.Get().Infow("buildGenerateRequestFromChat: max_output_tokens учтён как ВЕРХНЯЯ ГРАНИЦА",
+		logger.Get().Infow(i18n.T("cppworker.handlers_chat.max_output_tokens_upper_bound"),
 			"model", req.Model, "max_output_tokens", *req.MaxOutputTokens)
 	}
 	if req.NumCtx != nil && *req.NumCtx > 0 {
@@ -1264,7 +1265,7 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		if !shouldRetryEmptyStreamingOutput(fullOutput, contentSeen.Len(), ctx) {
 			break
 		}
-		logger.Get().Warnw("writeChatStreamResponse: пустой вывод модели — повторная генерация",
+		logger.Get().Warnw(i18n.T("cppworker.handlers_chat.empty_output_retry"),
 			"model", modelName, "attempt", attempt, "raw_len", len(fullOutput),
 			"raw_head", truncateForLog(fullOutput, 80),
 			"prompt_tokens", countTokensSafe(modelName, prompt))
@@ -1273,13 +1274,13 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		emittedContentRawLen = 0
 		atomic.StoreInt64(&firstTokenAt, 0)
 		if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr != nil {
-			logger.Get().Warnw("writeChatStreamResponse: повторная генерация не удалась",
+			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.empty_output_retry_failed"),
 				"model", modelName, "attempt", attempt, "error", retryErr)
 			break
 		}
 		fullOutput = outputBuf.String()
 		duration = time.Since(start)
-		logger.Get().Infow("writeChatStreamResponse: повторная генерация завершена",
+		logger.Get().Infow(i18n.T("cppworker.handlers_chat.empty_output_retry_done"),
 			"model", modelName, "attempt", attempt, "raw_len", len(fullOutput),
 			"visible_len", contentSeen.Len())
 	}
@@ -1604,7 +1605,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				reasoningHold = false
 				toolsHold = false
 				emittedLen = end
-				logger.Get().Debugw("writeChatStreamResponseWithTools: блок размышлений закрыт — дельты ответа отдаём",
+				logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_reasoning_block_closed"),
 					"model", modelName, "reasoning_end", end)
 			} else {
 				return true
@@ -1633,7 +1634,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		if emittedLen == 0 && startsWithReasoningMarker(buf) {
 			reasoningHold = true
 			toolsHold = true
-			logger.Get().Debugw("writeChatStreamResponseWithTools: вывод начинается с reasoning-блока — дельты не отдаём",
+			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_starts_with_reasoning"),
 				"model", modelName)
 			return true
 		}
@@ -1645,7 +1646,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// CONTENT<end_of_turn>» в записи сессии Cline).
 		if emittedLen == 0 && toolsStreamStartsWithServiceToken(buf) {
 			toolsHold = true
-			logger.Get().Debugw("writeChatStreamResponseWithTools: вывод начинается со служебного токена — дельты не отдаём",
+			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_starts_with_service_token"),
 				"model", modelName)
 			return true
 		}
@@ -1658,7 +1659,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				emittedLen = pos
 			}
 			toolsHold = true
-			logger.Get().Debugw("writeChatStreamResponseWithTools: маркер tool call — content больше не отдаём дельтами",
+			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_marker_found"),
 				"model", modelName, "emitted", emittedLen, "buffered", len(buf))
 			return true
 		}
@@ -1672,7 +1673,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				emittedLen = pos
 			}
 			toolsHold = true
-			logger.Get().Debugw("writeChatStreamResponseWithTools: JSON вызова внутри прозы — content больше не отдаём дельтами",
+			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_json_call_in_prose"),
 				"model", modelName, "emitted", emittedLen, "buffered", len(buf))
 			return true
 		}
@@ -1688,7 +1689,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				emittedLen = pos
 			}
 			toolsHold = true
-			logger.Get().Debugw("writeChatStreamResponseWithTools: в хвосте началась JSON-структура — content больше не отдаём дельтами",
+			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_json_struct_in_tail"),
 				"model", modelName, "emitted", emittedLen, "buffered", len(buf))
 			return true
 		}
@@ -1696,7 +1697,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// блок начался после отданной прозы, и его тело не является ответом.
 		if reason, hold := toolsStreamHoldsTailStart(buf[emittedLen:]); hold {
 			toolsHold = true
-			logger.Get().Debugw("writeChatStreamResponseWithTools: хвост удержан — content больше не отдаём дельтами",
+			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_tail_held"),
 				"model", modelName, "reason", reason,
 				"emitted", emittedLen, "buffered", len(buf))
 			return true
@@ -1777,7 +1778,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// reasoning» в reasoning_content.go.
 	reasoningOut, outputForParse, toolCalls, hasReasoning := splitToolsOutput(fullOutput, thinkOverride, tools)
 	if hasReasoning {
-		logger.Get().Infow("writeChatStreamResponseWithTools: reasoning отделён от ответа",
+		logger.Get().Infow(i18n.T("cppworker.handlers_chat.tools_reasoning_split"),
 			"model", modelName, "reasoning_len", len(reasoningOut), "content_len", len(outputForParse),
 			"reasoning_sent", reasoningOut != "")
 	}
@@ -1803,7 +1804,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// один повтор (см. handlers_chat_retry_r188.go).
 		retryBudget := emptyOutputRetryBudget(params.NPredict > 0)
 		if params.NPredict > 0 {
-			logger.Get().Infow("writeChatStreamResponseWithTools: R188 повтор ограничен — клиент задал длину ответа",
+			logger.Get().Infow(i18n.T("cppworker.handlers_chat.tools_retry_limited_r188"),
 				"model", modelName, "n_predict", params.NPredict, "retries_allowed", retryBudget)
 		}
 		for attempt := 1; attempt <= retryBudget; attempt++ {
@@ -1816,7 +1817,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			if !emptyOutput && !unparsedMarkup {
 				break
 			}
-			logger.Get().Warnw("writeChatStreamResponseWithTools: повторная генерация",
+			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_retry"),
 				"model", modelName, "attempt", attempt, "reason", retryReasonLabel(emptyOutput, unparsedMarkup),
 				"raw_len", len(fullOutput),
 				"raw_head", truncateForLog(fullOutput, 80),
@@ -1826,14 +1827,14 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			toolsHold = false
 			atomic.StoreInt64(&firstTokenAt, 0)
 			if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr != nil {
-				logger.Get().Warnw("writeChatStreamResponseWithTools: повторная генерация не удалась",
+				logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_retry_failed"),
 					"model", modelName, "attempt", attempt, "error", retryErr)
 				break
 			}
 			fullOutput = outputBuf.String()
 			duration = time.Since(start)
 			reasoningOut, outputForParse, toolCalls, hasReasoning = splitToolsOutput(fullOutput, thinkOverride, tools)
-			logger.Get().Infow("writeChatStreamResponseWithTools: повторная генерация завершена",
+			logger.Get().Infow(i18n.T("cppworker.handlers_chat.tools_retry_done"),
 				"model", modelName, "attempt", attempt, "raw_len", len(fullOutput),
 				"tool_calls", len(toolCalls), "visible_len", len(cleanFinalContent(outputForParse)),
 				"has_reasoning", hasReasoning)
@@ -1854,7 +1855,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	if len(toolCalls) == 0 && looksLikeToolCallMarkup(outputForParse) {
 		visibleAfterStrip := strings.TrimSpace(stripToolCallMarkup(cleanFinalContent(outputForParse)))
 		if visibleAfterStrip == "" {
-			logger.Get().Warnw("writeChatStreamResponseWithTools: разметка вызова в выводе, но вызов не распознан — отдаём error-чанк (в content разметку не кладём)",
+			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_markup_unparsed"),
 				"model", modelName,
 				"raw_len", len(fullOutput),
 				"emitted_len", emittedLen,
@@ -1873,7 +1874,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			sw.Flush()
 			return
 		}
-		logger.Get().Warnw("writeChatStreamResponseWithTools: разметка вызова вырезана из видимого ответа",
+		logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_markup_stripped"),
 			"model", modelName,
 			"visible_len", len(visibleAfterStrip),
 			"raw_len", len(fullOutput))
@@ -1900,7 +1901,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// Правильное поведение: если в выводе есть обёртка вызова, а вызов не
 		// распознан — сообщить об ошибке, а не отдавать разметку текстом.
 		if looksLikeToolCallMarkup(outputForParse) && stripToolCallMarkup(meaningful) == "" {
-			logger.Get().Warnw("writeChatStreamResponseWithTools: разметка вызова в выводе, но вызов не распознан — отдаём error-чанк (в content разметку не кладём)",
+			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_markup_unparsed"),
 				"model", modelName,
 				"raw_len", len(fullOutput),
 				"emitted_len", emittedLen,
@@ -1928,7 +1929,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			}
 			// R113: даже в «сыром» тексте вырезаем разметку вызова — она не ответ.
 			tail = stripToolCallMarkup(tail)
-			logger.Get().Warnw("writeChatStreamResponseWithTools: tool call не распознан — отдаём сырой вывод как content",
+			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_unparsed_raw_content"),
 				"model", modelName,
 				"raw_len", len(fullOutput),
 				"clean_len", len(cleanFinalContent(outputForParse)),
@@ -1950,7 +1951,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// R83/v56: если что-то уже отдано дельтами, «пустым» ответ назвать
 		// нельзя — закрываем стрим обычным stop, без ложной ошибки.
 		if emittedLen > 0 {
-			logger.Get().Warnw("writeChatStreamResponseWithTools: вывод пуст после отданного префикса — закрываем стрим stop",
+			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_empty_after_prefix"),
 				"model", modelName, "emitted_len", emittedLen, "raw_len", len(fullOutput))
 			doneChunk := map[string]interface{}{
 				"model":       modelName,
@@ -1966,7 +1967,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		}
 		// R83/v51: сырой вывод тоже пуст или состоит только из служебных
 		// токенов — только тогда честно сообщаем об ошибке.
-		logger.Get().Warnw("writeChatStreamResponseWithTools: inference вернула пустой вывод — отдаём error-чанк",
+		logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_empty_inference"),
 			"model", modelName,
 			"raw_len", len(fullOutput))
 		errChunk := map[string]interface{}{
@@ -2065,7 +2066,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			msg["thinking"] = reasoningOut
 			msg["reasoning"] = reasoningOut
 			msg["content"] = content
-			logger.Get().Debugw("writeChatStreamResponseWithTools: reasoning отдельно, ответ в финальном чанке",
+			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_reasoning_separate_final_chunk"),
 				"model", modelName, "reasoning_len", len(reasoningOut), "content_len", len(content))
 		} else if streamContent && emittedLen > 0 {
 			// R83/v56: префикс ответа уже ушёл дельтами. В финальный чанк кладём
@@ -2090,7 +2091,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			}
 			emitContentDelta(tail)
 			msg["content"] = ""
-			logger.Get().Debugw("writeChatStreamResponseWithTools: text response отдан дельтами",
+			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_text_response_streamed"),
 				"model", modelName, "emitted_len", emittedLen, "tail_len", len(tail),
 				"tools_hold", toolsHold, "json_mode", jsonMode)
 		} else {

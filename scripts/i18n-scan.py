@@ -56,6 +56,9 @@ CALL_PATTERNS = [
     re.compile(r'"(error|note|hint|message)"\s*:'),
     # CLI-вывод: usage/help и ошибки в stderr
     re.compile(r'\bfmt\.(Fprintf|Fprintln|Printf|Println|Print)\s*\(\s*(os\.(Stdout|Stderr)|)'),
+    # любой zap-получатель после вызова: appLog().Warnw(, ridLog(...).Debugw( —
+    # без этого правила два реальных сообщения не считались вовсе.
+    re.compile(r'\)\s*\.(Debug|Info|Warn|Error|Fatal|Panic)(w|f)?\s*\('),
     re.compile(r'\bi18n\.(T|Logf|Tf)\s*\('),
 ]
 

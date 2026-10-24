@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/sdbackend"
 )
 
@@ -456,9 +457,9 @@ func (a *App) handleSDAPIOptions(w http.ResponseWriter, r *http.Request) {
 		requested, _ := body["sd_model_checkpoint"].(string)
 		current := a.svc.Sup.CurrentModel()
 		if requested != "" && requested != current {
-			appLog().Warnw("sdapi/options: модель не переключена (hot-swap в sd-server отсутствует)",
+			appLog().Warnw(i18n.T("sdworker.handlers_sdapi.model_not_switched"),
 				"requested", requested, "current", current,
-				"hint", "используйте POST /api/image/models/load для смены модели (kill+spawn)")
+				"hint", i18n.T("sdworker.handlers_sdapi.model_switch_hint"))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "detail": "options accepted; model switch requires process restart (POST /api/image/models/load)"})
 	default:

@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"ollama-loadbalancer/internal/i18n"
 	"os"
 	"strconv"
 	"strings"
@@ -319,7 +320,7 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 			if st.ElapsedMs > lastElapsedMs {
 				lastElapsedMs = st.ElapsedMs
 				deadline = time.Now().Add(timeout)
-				ridLog(lr_recentCtx()).Debugw("autoload_wait: загрузка прогрессирует, дедлайн продлён",
+				ridLog(lr_recentCtx()).Debugw(i18n.T("balancer.autoload_wait.progress_deadline_extended"),
 					"backend", backendID, "model", modelName,
 					"elapsed_ms", st.ElapsedMs, "idle_budget", timeout)
 			}

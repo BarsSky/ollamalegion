@@ -229,5 +229,268 @@ A backend is considered healthy if:
 
 ---
 
-<!--CHUNK3-->
+## 3. Step-by-Step Balancing Scenarios
+
+### 3.1 Scenario 1: One user — one model
+
+```
+Time: t0
+
+┌─────────────────────┐
+│ Backend: ollama-1   │
+│ VRAM: 0 / 24 GB     │
+│ Active: 0 / 8       │
+│ Models: []          │
+└─────────────────────┘
+┌─────────────────────┐
+│ Backend: ollama-2   │
+│ VRAM: 0 / 24 GB     │
+│ Active: 0 / 8       │
+│ Models: []          │
+└─────────────────────┘
+
+Action: User A → request for model llama3.1 (8 GB)
+
+Result:
+1. No session → a new one is created
+2. Model affinity: the model is not loaded anywhere → skip
+3. Resource-aware fallback:
+   - ollama-1: score 1.0 (everything free, lastUsed far away)
+   - ollama-2: score 1.0 (everything free, lastUsed recent)
+   - Tie-breaking: ollama-1 (older lastUsed)
+4. Capacity check: 0/8 < 1, maxModels not exceeded
+5. The request goes to ollama-1
+
+After:
+┌─────────────────────┐
+│ Backend: ollama-1   │
+│ VRAM: 8 / 24 GB     │
+│ Active: 1 / 8       │
+│ Models: [llama3.1] │
+│ Sessions: [sess-A]  │
+└─────────────────────┘
+```
+
+### 3.2 Scenario 2: Two users — one model
+
+```
+Time: t1 (after scenario 1)
+
+┌─────────────────────┐
+│ Backend: ollama-1   │
+│ VRAM: 8 / 24 GB     │
+│ Active: 1 / 8       │
+│ Models: [llama3.1] │
+│ Sessions: [sess-A]  │
+└─────────────────────┘
+┌─────────────────────┐
+│ Backend: ollama-2   │
+│ VRAM: 0 / 24 GB     │
+│ Active: 0 / 8       │
+│ Models: []          │
+└─────────────────────┘
+
+Action: User B → request for model llama3.1 (8 GB)
+
+Result (CURRENT LOGIC):
+1. No session → a new one is created
+2. Model affinity: the model is loaded on ollama-1
+3. Check ollama-1: healthy? Yes. active < max? 1/8 → Yes
+4. RETURN ollama-1 (sticky to the same backend)
+
+After:
+┌─────────────────────┐
+│ Backend: ollama-1   │
+│ VRAM: 8 / 24 GB     │ ← the model is already loaded, no
+│ Active: 2 / 8       │   additional VRAM is taken
+│ Models: [llama3.1] │
+│ Sessions: [sess-A,  │
+│            sess-B]  │
+└─────────────────────┘
+
+⚠️ LIMITATION: ollama-2 stays idle even though it could
+   serve in parallel. This is due to Model Affinity:
+   the balancer prefers to use the already loaded model
+   to avoid an extra load on ollama-2.
+```
+
+**Ideal scenario (to be implemented):**
+
+```
+If load on the first backend > threshold (for example, 50% of maxConcurrent):
+  → look for a second backend where the model can be loaded
+  → load the model onto ollama-2
+  → create sess-B on ollama-2
+```
+
+### 3.3 Scenario 3: Three users — one model (queue)
+
+```
+Time: t2
+
+┌─────────────────────┐
+│ Backend: ollama-1   │
+│ Active: 8 / 8       │ ← fully loaded
+│ Models: [llama3.1] │
+└─────────────────────┘
+┌─────────────────────┐
+│ Backend: ollama-2   │
+│ Active: 2 / 8       │
+│ Models: [gemma2]    │
+└─────────────────────┘
+
+Action: User C → request for model llama3.1 (8 GB)
+
+Result:
+1. No session → a new one is created
+2. Model affinity: llama3.1 on ollama-1
+3. Check ollama-1: active 8/8 → NO room
+4. Resource-aware: ollama-2 healthy, but the model is NOT loaded
+5. Check capacity of ollama-2: active 2/8 → room available
+6. RETURN ollama-2 (fallback without affinity)
+
+After:
+┌─────────────────────┐
+│ Backend: ollama-2   │
+│ VRAM: 8 + 6 = 14 GB │ ← llama3.1 is loading
+│ Active: 3 / 8       │
+│ Models: [gemma2,    │
+│          llama3.1]  │
+│ Sessions: [sess-C]  │
+└─────────────────────┘
+```
+
+**If both backends are full at maxConcurrent:**
+
+```
+Time: t3
+
+┌─────────────────────┐
+│ Backend: ollama-1   │
+│ Active: 8 / 8       │
+│ Models: [llama3.1] │
+└─────────────────────┘
+┌─────────────────────┐
+│ Backend: ollama-2   │
+│ Active: 8 / 8       │
+│ Models: [gemma2]    │
+└─────────────────────┘
+
+Action: User D → request for llama3.1
+
+Result:
+1. No session → a new one is created
+2. Model affinity: ollama-1 is fully busy → skip
+3. Resource-aware: both are fully busy
+4. Check capacity: neither passes
+5. → PUT INTO QUEUE
+
+Queue:
+┌─────────────────────────────────────────────┐
+│ Queue:                                      │
+│  1. [llama3.1, sess-D]  status: pending   │
+│     wait: 0s                                │
+└─────────────────────────────────────────────┘
+```
+
+**Queue release:**
+
+```
+Time: t4 — user A finished the request
+
+1. ollama-1: active 7/8
+2. QueueManager checks the queue
+3. Request D matches affinity (llama3.1 on ollama-1)
+4. Dispatch: request D is sent to ollama-1
+5. Session D is bound to ollama-1
+```
+
+### 3.4 Scenario 4: Four users — two models (VRAM contention)
+
+```
+Time: t0
+
+┌─────────────────────┐
+│ Backend: ollama-1   │
+│ VRAM: 24 GB         │
+│ Models: []          │
+└─────────────────────┘
+┌─────────────────────┐
+│ Backend: ollama-2   │
+│ VRAM: 24 GB         │
+│ Models: []          │
+└─────────────────────┘
+
+t1: User A → llama3.1 (8 GB) → ollama-1
+t2: User B → llama3.1 (8 GB) → ollama-1 (affinity)
+
+After t2:
+┌─────────────────────┐
+│ Backend: ollama-1   │
+│ VRAM: 8 / 24 GB     │
+│ Active: 2 / 8       │
+│ Models: [llama3.1] │
+└─────────────────────┘
+
+t3: User C → gemma2 (6 GB) → ???
+
+Result:
+1. Model affinity: gemma2 is not loaded anywhere → skip
+2. Resource-aware:
+   - ollama-1: score = (GPU free) * 0.35 + ...
+              = healthy, 2/8 active, VRAM 8/24
+   - ollama-2: score = healthy, 0/8 active, VRAM 0/24
+   → ollama-2 wins (it is freer)
+3. Request goes to ollama-2
+
+After t3:
+┌─────────────────────┐
+│ Backend: ollama-1   │
+│ VRAM: 8 / 24 GB     │
+│ Active: 2 / 8       │
+│ Models: [llama3.1] │
+└─────────────────────┘
+┌─────────────────────┐
+│ Backend: ollama-2   │
+│ VRAM: 6 / 24 GB     │
+│ Active: 1 / 8       │
+│ Models: [gemma2]    │
+└─────────────────────┘
+
+t4: User D → mistral (7 GB) → ???
+
+Result:
+1. Model affinity: mistral is not loaded anywhere
+2. Resource-aware:
+   - ollama-1: VRAM free = 16 GB, active = 2/8
+   - ollama-2: VRAM free = 18 GB, active = 1/8
+   → ollama-2 wins on score (it is freer)
+3. Capacity check: 6 + 7 = 13 ≤ 24? Yes.
+   → Request goes to ollama-2
+
+After t4:
+┌─────────────────────┐
+│ Backend: ollama-2   │
+│ VRAM: 13 / 24 GB    │
+│ Active: 2 / 8       │
+│ Models: [gemma2,    │
+│          mistral]   │
+└─────────────────────┘
+
+t5: User E → llama3.1 (8 GB) → ???
+
+Result:
+1. Model affinity: llama3.1 on ollama-1
+2. ollama-1: active 2/8 → room available
+3. → Request goes to ollama-1
+
+⚠️ Potential problem: if both backends were loaded
+   and ollama-2 ran out of VRAM (for example, 6+7+8 > 24),
+   the request would land in the queue.
+```
+
+---
+
+<!--CHUNK4-->
+
 

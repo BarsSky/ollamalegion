@@ -829,7 +829,7 @@ visible whether the fix was applied:
 
 ```bash
 docker logs ol-stack-balancer 2>&1 | head -10 | grep Version
-docker logs ol-stack-agent 2>&1 | head -12 | grep Version
+docker logs ol-stack-agent    2>&1 | head -12 | grep Version
 docker logs ol-stack-cppworker-gpu 2>&1 | grep -m1 'Worker starting'
 #   → "version":"r83-submodule-v22 (commit …, …)","apiTokenSource":"API_TOKEN(len=33)"
 ```

@@ -1,9 +1,9 @@
 # Image generation in OllamaLegion (image backend)
 
 > **Version:** 1.0 (2026-10-02)
-> **Status:** Phases 1–6 implemented (types, OpenAI port, routing, worker, WebUI, VRAM gate, discovery)
+> **Status:** Phase 1 implemented (types, OpenAI port, routing, client smoke)
 > **Engine:** `stable-diffusion.cpp` (`sd-server`), contract pinned to `master-929-3f8527a`
-> **Related:** [`backend-type-isolation.md`](../architecture/backend-type-isolation.md), [`../docs/plans/2026-09-27-image-generation-backend-plan.md`](../plans/2026-09-27-image-generation-backend-plan.md), [`../research-sdcpp-lowvram-integration.md`](../archive/research/sdcpp-lowvram-integration.ru.md) (Russian)
+> **Related documents:** [`backend-type-isolation.md`](../architecture/backend-type-isolation.md), [`../docs/plans/2026-09-27-image-generation-backend-plan.md`](../plans/2026-09-27-image-generation-backend-plan.md), [`../docs/archive/research/sdcpp-lowvram-integration.ru.md`](../archive/research/sdcpp-lowvram-integration.ru.md) (Russian)
 
 ## 1. What this is
 
@@ -19,7 +19,7 @@ OllamaLegion serves **two different classes of requests** on different ports:
 How the OpenAI surface differs from 18080:
 
 - streaming is enabled **only** by an explicit `stream` field in the request body (18080 keeps the legacy `stream: true` default);
-- Ollama-native paths (`/api/chat`, `/api/tags`, `/api/pull`, …) are **not served** here — the client gets a 404 pointing at 18080;
+- Ollama-native paths (`/api/chat`, `/api/tags`, `/api/pull`, …) are **not served** here — the client gets an error pointing at 18080;
 - image requests (`/v1/images/*`, `/sdapi/v1/*`, model prefix `sd:`) go **only** to backends of type `image_cpp`;
 - text requests (`/v1/chat/completions` and friends) go only to `llama_cpp`/Ollama backends.
 
@@ -35,7 +35,7 @@ curl -X POST http://localhost:18081/api/v1/backends \
 ```
 
 - `imagePort` defaults to **18093** (18091/18092 belong to cppworker instances); when omitted the balancer falls back to `cppWorkerPort` and then to 18093.
-- Health probing tries `GET /health` (our worker) and then `GET /sdcpp/v1/capabilities` (a bare `sd-server`, which has no `/health`).
+- The balancer health probe for an image backend is `GET /sdcpp/v1/capabilities` (`sd-server` has no `/health`).
 - `image_cpp` is accepted in the `standard`, `replication` and `rpc_coordinator` operating modes. It is deliberately **not** accepted in `virtual_router`/`distributed_inference` (those modes are locked to llama.cpp).
 
 ## 3. Connecting clients
@@ -235,7 +235,7 @@ scheduler configs never show up. On bundle start the extension is validated agai
   `text_encoders/qwen3vl_8b_bf16.safetensors` → `llm` (the Qwen-Image LLM encoder),
   while `qwen-image-2.1-UC-Q4_0.gguf` in the repository root stays `diffusion` —
   the LLM rule only applies inside an encoder directory;
-- the file list is **recursive** (`tree API?recursive=true`): DiT repositories keep
+- the file list is **recursive** (`tree-API?recursive=true`): DiT repositories keep
   their VAE and text encoder in subdirectories (`vae/`, `text_encoders/`,
   `split_files/`), and before 2026-10-03 such files never reached the UI, so a DiT
   bundle could not be assembled at all. HF pages the response, so pages are followed
@@ -354,6 +354,7 @@ files from HuggingFace (Range resume, retries, `HF_TOKEN`):
 ```powershell
 go run ./tools/fetch-sdcpp list-release leejet/stable-diffusion.cpp win-vulkan
 go run ./tools/fetch-sdcpp get-release  leejet/stable-diffusion.cpp win-vulkan .\bin\sdcpp
+go run ./tools/fetch-sdcpp hf-list  second-state/stable-diffusion-v1-5-GGUF
 go run ./tools/fetch-sdcpp hf-get   second-state/stable-diffusion-v1-5-GGUF stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf .\bin\hf-models
 ```
 
@@ -649,7 +650,9 @@ The tool is added only when ALL of these hold:
   "no image model is loaded" after the tool was already invoked.
 
 Otherwise the request body stays byte-for-byte identical and the response has no
-`X-Image-Tool` header.
+`X-Image-Tool` header. A model can be loaded in advance
+(`POST /api/v1/image/backends/{id}/models/load`) or from the WebUI ("Image models"
+tab → "Overview" → "Load model").
 
 ### 14.3 What the client sees
 
@@ -674,7 +677,7 @@ the file name is random). The absolute URL is built from the client's `Host` or 
 Tool generations flow through the same request feed as ordinary ones: in Monitor they
 appear with `surface=chat-tool` and the path
 `/v1/chat/completions→generate_image`. They take the VRAM gate and the worker queue,
-so they never bypass resource policy.
+so they do not interfere with direct client requests.
 
 ### 14.5 Flags
 

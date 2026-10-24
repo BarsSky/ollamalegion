@@ -40,9 +40,9 @@
 | **Изоляция типов бэкендов** | [RU](architecture/backend-type-isolation.ru.md) | [EN](architecture/backend-type-isolation.md) | Как бэкенды llama.cpp и Ollama живут в одном кластере. |
 | **RPC-координатор** | [RU](architecture/rpc-coordinator.ru.md) | [EN](architecture/rpc-coordinator.md) | Распределённый вывод через llama.cpp RPC: роли, состояние, лимиты. |
 | **Виртуальные модели** | [RU](architecture/virtual-router.ru.md) | [EN](architecture/virtual-router.md) | Виртуальные модели alias-on-pool и правила маршрутизации. |
-| **Раскладка слоёв** | [RU](architecture/layer-sharding.ru.md) | — | Раскладка слоёв по бэкендам, контейнеры, параметры. |
-| **Правила RPC-раскладки** | [RU](architecture/rpc-layout-rules.ru.md) | — | Правила, добытые живыми падениями: один коммит, архитектура, флаг. |
-| **Канал между узлами** | [RU](architecture/rpc-link-bandwidth.ru.md) | — | Как измеряется скорость канала между узлами и где хранится. |
+| **Раскладка слоёв** | [RU](architecture/layer-sharding.ru.md) | [EN](architecture/layer-sharding.md) | Раскладка слоёв по бэкендам, контейнеры, параметры. |
+| **Правила RPC-раскладки** | [RU](architecture/rpc-layout-rules.ru.md) | [EN](architecture/rpc-layout-rules.md) | Правила, добытые живыми падениями: один коммит, архитектура, флаг. |
+| **Канал между узлами** | [RU](architecture/rpc-link-bandwidth.ru.md) | [EN](architecture/rpc-link-bandwidth.md) | Как измеряется скорость канала между узлами и где хранится. |
 | **C-bridge API** | [RU](architecture/bridge-api.ru.md) | [EN](architecture/bridge-api.md) | Мост Go <-> C к llama.cpp: функции, структуры, контракт. |
 | **Контракт балансер <-> cppworker** | — | [EN](architecture/balancer-cppworker-contract.md) | Сетевой контракт балансера и воркера, поле за полем. |
 
@@ -52,14 +52,14 @@
 
 | Документ | Русский | English | О чём |
 |---|---|---|---|
-| **Compose-стек** | [RU](operations/deployment-stack.ru.md) | — | Один compose-файл, профили, токены, реестр, диагностика. |
-| **Воркер за удалённым балансером** | [RU](operations/deployment-remote-balancer.ru.md) | — | cppworker + agent на одной машине, балансер на другой. |
-| **Руководство по compose-файлам** | [RU](operations/docker-compose-guide.ru.md) | — | Какой compose-файл канонический и что делают исторические. |
-| **Развёртывание агента** | [RU](operations/agent-deployment.ru.md) | — | Агент метрик: режимы GPU и CPU, systemd, Windows, WSL2. |
+| **Compose-стек** | [RU](operations/deployment-stack.ru.md) | [EN](operations/deployment-stack.md) | Один compose-файл, профили, токены, реестр, диагностика. |
+| **Воркер за удалённым балансером** | [RU](operations/deployment-remote-balancer.ru.md) | [EN](operations/deployment-remote-balancer.md) | cppworker + agent на одной машине, балансер на другой. |
+| **Руководство по compose-файлам** | [RU](operations/docker-compose-guide.ru.md) | [EN](operations/docker-compose-guide.md) | Какой compose-файл канонический и что делают исторические. |
+| **Развёртывание агента** | [RU](operations/agent-deployment.ru.md) | [EN](operations/agent-deployment.md) | Агент метрик: режимы GPU и CPU, systemd, Windows, WSL2. |
 | **Обновление донора** | [RU](operations/donor-update.ru.md) | [EN](operations/donor-update.md) | Обновление и откат образа узла-донора. |
 | **VRAM на узлах раскладки** | [RU](operations/rpc-donor-vram-lifecycle.ru.md) | [EN](operations/rpc-donor-vram-lifecycle.md) | Когда освобождается VRAM на узлах раскладки и что остаётся занятым. |
 | **Troubleshooting** | [RU](operations/troubleshooting.ru.md) | [EN](operations/troubleshooting.md) | Симптомы, причины и исправления из живых инцидентов. |
-| **Инциденты развёртывания** | [RU](operations/deployment-troubleshooting.ru.md) | — | Ловушки развёртывания и разборы инцидентов. |
+| **Инциденты развёртывания** | [RU](operations/deployment-troubleshooting.ru.md) | [EN](operations/deployment-troubleshooting.md) | Ловушки развёртывания и разборы инцидентов. |
 | **Runbook tools/tool_calls** | [RU](operations/runbook-tools.ru.md) | [EN](operations/runbook-tools.md) | Пошаговый дебаг сбросов tool_calls (сценарии A-G). |
 
 ## API и справочники
@@ -84,7 +84,7 @@
 | **Замер RPC (27B)** | [RU](features/rpc-benchmark-qwen38.ru.md) | [EN](features/rpc-benchmark-qwen38.md) | Измеренный выигрыш раскладки на qwen3.8 27B: методика и результаты. |
 | **Вход и роли WebUI** | [RU](features/webui-auth.ru.md) | [EN](features/webui-auth.md) | Сессии, роли, CSRF, аварийный токен, nginx-прокси. |
 | **Демо-режим WebUI** | [RU](features/webui-demo.ru.md) | [EN](features/webui-demo.md) | Гостевая витрина сценария, включается только WEBUI_DEMO_MODE. |
-| **Агентский цикл Cline** | [RU](features/cline-agent-loop.ru.md) | — | Контракт tool_calls, ожидание готовности, трассировка, проверка. |
+| **Агентский цикл Cline** | [RU](features/cline-agent-loop.ru.md) | [EN](features/cline-agent-loop.md) | Контракт tool_calls, ожидание готовности, трассировка, проверка. |
 
 ## Релизы
 
@@ -103,7 +103,7 @@
 | Документ | Русский | English | О чём |
 |---|---|---|---|
 | **Стиль и синхронизация документации** | [RU](development/style-compliance.ru.md) | [EN](development/style-compliance.md) | Линт em-dash, паритет i18n, правила синхронизации документации. |
-| **Self-hosted CI runner** | [RU](development/ci-self-hosted-runner.ru.md) | — | Настройка runner-а, лейблы, эксплуатация и диагностика. |
+| **Self-hosted CI runner** | [RU](development/ci-self-hosted-runner.ru.md) | [EN](development/ci-self-hosted-runner.md) | Настройка runner-а, лейблы, эксплуатация и диагностика. |
 
 ## Roadmap и отчёты сессий
 

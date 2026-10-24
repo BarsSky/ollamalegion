@@ -1,4 +1,4 @@
-﻿# OllamaLegion CppWorker: n_ctx, Per-Model Profiles, Ollama ↔ OpenAI Proxy
+# OllamaLegion CppWorker: n_ctx, Per-Model Profiles, Ollama ↔ OpenAI Proxy
 
 > **Version:** 2.0 (2026-06-22)  
 > **Related documents:** [`api.md`](../api/api.md), [`runbook-tools.md`](../operations/runbook-tools.md), [`audit-2026-06.md`](../../.cline/audit-2026-06.md), [`../.clinerules`](../../.clinerules) §3–4  
@@ -160,6 +160,14 @@ Additionally:
 When a model requests an `n_ctx` that exceeds VRAM, cppworker tries to:
 1. Check the `ramFallbackNCtx` flag (env `CPPWORKER_RAM_FALLBACK_N_CTX=true` or `--ram-fallback-n-ctx`).
 2. Compare with `ramFallbackMaxNCtx` (env `CPPWORKER_RAM_FALLBACK_MAX_N_CTX`, default no limit).
+
+> **R60.18 F4 (2026-09-08)**: the flag takes priority over the env variable for all
+> `CPPWORKER_RAM_FALLBACK_*` variables, uniformly in the startup and reload paths.
+> Before R60.18, on `POST /config/reload` the env silently overwrote the CLI flag
+> (silent state divergence). Now both paths call the
+> `applyRAMFallbackFromEnvWithSkip()` helper with the same `isFlagSet()` check.
+> Details: `docs/archive/rounds/r60.18-env-flags-audit.ru.md`.
+
 3. `UnloadModel()` the current model.
 4. `LoadModelWithOpts(n_ctx=requestedNCtx, use_mmap=true, gpu_layers=ramFallbackGpuLayers)`.
 5. On success — retry inference.

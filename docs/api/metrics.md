@@ -49,6 +49,8 @@ The agent collects **all available data** from the Ollama server and the host, f
 | `diskFree` | uint64 | MB | gopsutil | ✅ (GGUF Info) | Disk free |
 | `networkRX` | uint64 | bytes | gopsutil | ❌ | Bytes received |
 | `networkTX` | uint64 | bytes | gopsutil | ❌ | Bytes sent |
+| `networkRXRate` | float64 | bytes/s | gopsutil | ❌ | Receive rate (computed from the delta) |
+| `networkTXRate` | float64 | bytes/s | gopsutil | ❌ | Send rate (computed from the delta) |
 
 ### 2.1 CPU Details (`SystemMetrics.CPU` / `CPUMetrics`)
 

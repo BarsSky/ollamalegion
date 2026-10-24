@@ -1,5 +1,29 @@
 # OllamaLegion Backend Type Isolation (Ollama vs llama.cpp)
 
+> **R112 (2026-10-11) — PARTIALLY OUT OF DATE.** The separation by backend TYPE has been removed:
+>
+> * `operatingMode` no longer restricts the backend type and no longer assigns the engine
+>   (`pkg/types/backend_type.go`: `ModeBackendTypes` is the same set for all modes,
+>   `ModeEngines` is `EngineAuto` everywhere);
+> * `backendEngine` defaults to `auto` and is NOT derived from the mode
+>   (`internal/config/config.go`); the actual engine is computed from the cluster
+>   composition (`internal/balancer/backend_type_filter.go`);
+> * a mixed `llama.cpp + Ollama` cluster is allowed: the same-type check
+>   (`ValidateBackendTypeConsistency`, `validateBackendTypeConsistencyForAdd`) and the
+>   reset of a "foreign" type on mode switch (`SanitizeConfigOnModeSwitch`) were removed;
+> * `/api/*` does not impose a type from the saved `backendEngine` — the request goes to
+>   the backend where the model is loaded.
+>
+> Why: cppworker (llama.cpp) exposes the same Ollama surface `/api/*` as an Ollama node,
+> so there is no reason to cut the second type out — the operator requirement is
+> "the Ollama API must work the same for all clients". The marker in the WebUI
+> shows the actual composition (`llama.cpp + Ollama`).
+>
+> What remains in force: the isolation of **image_cpp** (a separate class of backends,
+> reachable only via an explicit request attribute) and routing by surface
+> (`/v1/*` is served by the balancer dispatcher, `/api/*` by the shared flow).
+> Below is a description of the historical model; read it with this note in mind.
+
 > **Version:** 1.3 (2026-06-22)  
 > **Related documents:** [`api.md`](../api/api.md), [`audit-2026-06.md`](../../.cline/audit-2026-06.md), [`../.clinerules`](../../.clinerules) §6  
 > **Tests:** `tests/backend_type_isolation_test.go` (15 tests), `tests/operating_mode_dispatch_test.go`
@@ -81,6 +105,41 @@ An empty `Backend.Type` (legacy) is normalized to `"ollama"` via `internal/balan
 
 When attempting to add an Ollama backend to `virtual_router` — the API returns 400 (see §7).
 
+### 3.1 Moving away from modes: `operatingMode` → `balancing.placement` migration (R97, S7)
+
+Plan: `docs/plans/2026-10-07-model-distribution-multi-gpu-next-session.md` §9. The mode
+stops being the thing that "chooses" behavior: it stays in the config **for reading**
+(backward compatibility) and is converted once into a placement policy when the config is
+loaded (`internal/config/mode_migration.go`, the hook is in `config.Load`, not in
+`ValidateConfigOnLoad`: that function is not called in production at all).
+
+| Was (`operatingMode`) | Became (`balancing.placement`) | What is written |
+|---|---|---|
+| `standard` / empty | — (`single` is the default as it is) | nothing; the log tells you how to enable `auto` with an explicit rule |
+| `virtual_router` | `pool` for aliases | `models[]` per model in alias-on-pool mode (`backendPool[]` + `selection`); the pipeline mode (slices) cannot be expressed by the policy and is not touched |
+| `replication` | `replicated` | `models[]` per model from `modelReplication.groups[]`, `auto.minBackends` = `minInstances` |
+| `rpc_coordinator` | `sharded` | a rule of class `model: "*"`; the legacy coordinator (stub) intercepts requests before the policy, behavior is unchanged |
+| `distributed_inference` | `sharded` | the same rule; while there is no `backendGroups[]` — service by a single node |
+
+**Why the conversion sets `fallback: single` and not `error` (the §6 default).** With
+`placement.enabled=false` the §6 mechanism does not work at all: the request is served by
+whatever is available, and 503 never happens. If the migration enabled a policy with
+`fallback=error`, a balancer upgrade would turn requests that were being served into
+503s — a behavior change "on upgrade". With `fallback=single` service is preserved, and
+degradation becomes visible (the `X-LB-Placement-Fallback` header, metrics,
+`/api/v1/placement`). Switching to `error` is a deliberate operator step; the note in the
+log and in `modeMigration` (`GET /api/v1/placement`) tells them about it.
+
+**What the migration does not do:**
+
+- does not remove `operatingMode` (§9: remove it from the examples through a release, then from the code);
+- does not enable `auto` for `standard` — auto would start creating model copies where
+  the operator did not ask for replication. A ready snippet for adaptivity is given in
+  the note;
+- **is not executed on the reload path** (`PUT /api/v1/cluster/config`): the conversion
+  triggers when the config is loaded. Changing the mode via the API after startup does
+  not rewrite the policy — this is a known S7 gap.
+
 ---
 
 ## 4. Request routing
@@ -139,6 +198,29 @@ func isBackendTypeAllowed(bt types.BackendType, allowedTypes []types.BackendType
 `getAllowedTypesList(bt)` + `getDefaultAllowedTypes()`:
 - From `ModeBackendTypes[p.config.OperatingMode]` (list of allowed types).
 - If `bt != ""` — the explicitly requested type is added.
+
+### 5.4 Logical backend (R92, S2 of the 2026-10-07 plan): workers outside the common selection
+
+A separate case of filtering is a **logical backend worker**. A group
+(`balancing.backendGroups[]`, see `internal/backendgroup`) describes ONE model split by
+layers between the master and the workers. A worker holds only part of the layers,
+therefore:
+
+| Rule | Where implemented | Why |
+|---|---|---|
+| The worker is excluded from ANY request target selection | `isGroupWorkerR92` in `expandCandidates`, `backend_selector.go`, `slot_manager.go` | A direct request to a worker will break: it does not have the full model |
+| The group's model is routed to the **master** | `shardedMasterForRequestR92` (`sharded_master_r92.go`) | The master opens an RPC channel to the workers; the client sees a single `X-Backend-ID` |
+| The worker is not counted as a place where the model "fits entirely" | `placementFitForModel` (`placement_fit_r75.go`) | Otherwise `auto` would choose `single`/`replicated` where a layout is needed |
+| Slots are counted by the **master**, not by the sum of the nodes | `backendgroup.GroupState.Slots` | Having summed the node slots, the queue would decide that capacity has doubled (the R70/R71 rakes) |
+
+Routing through a group is enabled by a **policy**, not by a "mode": the group is the
+executor of the `sharded` strategy (`balancing.placement.models[].strategy`). If the
+policy chose `single`/`pool`/`replicated` for the model, the group does not participate in
+routing; if it chose `sharded` but the group is not ready (the master or a worker is
+unavailable) — the request goes the usual way, and honesty is provided by the policy
+decision: with `fallback=error` it will not reach routing at all (a 503 with numbers),
+with `fallback=single` it is served as `single` with the header
+`X-LB-Placement-Fallback: sharded`.
 
 ---
 

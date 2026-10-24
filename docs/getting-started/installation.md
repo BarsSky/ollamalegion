@@ -1,14 +1,14 @@
 # OllamaLegion Installation and Build
 
-> **Version:** 2026-06-22  
-> **Related documents:** [`deployment.md`](deployment.ru.md), [`configuration.md`](configuration.ru.md), [`audit-2026-06.md`](../../.cline/audit-2026-06.md)
+> **Version:** 2026-07-31 (updated for v0.5.2)
+> **Related documents:** [`deployment.md`](deployment.md), [`configuration.md`](configuration.md), [`../../CHANGELOG.md`](../../CHANGELOG.md)
 
 ## Table of Contents
 
 1. [System Requirements](#1-system-requirements)
 2. [Docker Installation (recommended)](#2-docker-installation)
 3. [Local Installation (from source)](#3-local-installation-from-source)
-4. [Building CppWorker](#4-building-cppworker)
+4. [Building CppWorker](#4-building-cppworker-with-real-llamacpp)
 5. [Operating Modes Without an Agent](#5-operating-modes-without-an-agent)
 6. [Smoke Verification](#6-smoke-verification)
 
@@ -78,6 +78,51 @@ cp deployments/.env.bundled.example deployments/.env.bundled  # optional
 
 ### 2.3 Starting the bundled stack
 
+> **Before starting**, pick the hardware preset for your GPU. It affects
+> CUDA_ARCH, balancer tuning and cppworker parameters.
+>
+> **RTX 3070/3080/3090 (sm_86, 8GB):** the default parameters are suitable.
+> **RTX 4080/4090 (sm_89, 16-24GB):** run `python scripts/apply-hardware-preset.py rtx40-24gb`
+> **A10/A10G (sm_86, 24GB):** `python scripts/apply-hardware-preset.py a10-24gb`
+> **RTX 5090 (sm_120, 32GB, Blackwell):** `python scripts/apply-hardware-preset.py rtx50-32gb` (requires an image rebuild)
+>
+> Details: [`hardware-presets.md`](hardware-presets.md).
+
+**Variant A: with the sidecar metrics agent (recommended for production)**
+
+This is the variant used by default. The sidecar agent feeds real
+GPU/VRAM/CPU metrics into the WebUI.
+
+```bash
+# 1) Once — copy the .env files
+cd deployments
+cp .env.example .env                          # compose interpolation (ports, tags, TOKEN)
+cp .env.bundled-with-agent.example .env.bundled-with-agent   # env_file (models, GPU, limits)
+
+# R66d (2026-09-23): the API token is set ONLY in .env (CPPWORKER_API_TOKEN) —
+# it is a single token for balancer/cppworker/agent/webui. The CPPWORKER_API_TOKEN
+# line in .env.bundled-with-agent does NOT affect the services (`environment:`
+# overrides `env_file`); changing it produces 401 in the WebUI. Details — in .env.example.
+
+# 2) Linux/macOS/WSL
+export DOCKER_BUILDKIT=1
+export CUDA_ARCH=86    # sm_86 (RTX 30xx), sm_89 (RTX 40xx), sm_90 (RTX 50xx)
+docker compose -f docker-compose.cppworker-bundled-with-agent.yml up -d --build
+
+#    Windows PowerShell
+$env:DOCKER_BUILDKIT=1
+$env:CUDA_ARCH=86
+docker compose -f docker-compose.cppworker-bundled-with-agent.yml up -d --build
+```
+
+> **`--env-file` is no longer needed** (and is harmful): all services already mount
+> `.env.bundled-with-agent` via `env_file:`, and compose reads `.env` itself.
+> The `--env-file` flag replaced `.env` entirely, which lost `CUDA_ARCH`,
+> `CPPWORKER_GPU_TAG` and `CPPWORKER_API_TOKEN` — hence "the token was changed,
+> but the 401 remained".
+
+**Variant B: without an agent (simpler, but without GPU/VRAM metrics in the WebUI)**
+
 ```bash
 # Linux/macOS/WSL
 ./scripts/start-bundled.sh
@@ -87,16 +132,39 @@ $env:DOCKER_BUILDKIT=0
 .\scripts\start-bundled.ps1
 ```
 
-The stack brings up:
+The stack (variant A or B) brings up:
 - `cppworker-gpu` (port 18092)
 - `loadbalancer` (ports 18080, 18081)
 - `webui` (port 18083)
+- `agent` (variant A only, sidecar to cppworker-gpu, port 18032 internal)
+
+Useful endpoints:
+- WebUI: http://localhost:18083
+- Balancer OpenAI API: http://localhost:18080
+- Balancer admin: http://localhost:18081
+- CppWorker direct: http://localhost:18092
+
+Smoke-check:
+```bash
+# Balancer
+curl http://localhost:18081/api/v1/ping
+
+# Take the token from the single source — deployments/.env
+export CPPWORKER_API_TOKEN=$(grep -E '^\s*CPPWORKER_API_TOKEN=' deployments/.env | cut -d= -f2)
+
+# Backends
+curl -H "X-API-Token: $CPPWORKER_API_TOKEN" http://localhost:18081/api/v1/backends
+
+# CppWorker info
+curl -H "X-API-Token: $CPPWORKER_API_TOKEN" http://localhost:18092/api/info
+```
 
 ### 2.4 Alternative compose files
 
 ```bash
 # Balancer + WebUI only (without CppWorker)
-cd deployments && docker compose up -d
+cd deployments
+docker compose -f docker-compose.yml up -d --build
 
 # CppWorker only (CPU)
 docker compose -f docker-compose.cppworker.yml --profile cpu up -d --build
@@ -107,9 +175,23 @@ docker compose -f docker-compose.cppworker.yml --profile gpu up -d --build
 # CppWorker only (stub — for tests without llama.cpp)
 docker compose -f docker-compose.cppworker.yml --profile stub up -d --build
 
+# Bundled without an agent (Variant B from 2.3)
+docker compose -f docker-compose.cppworker-bundled.yml \
+  --env-file .env.bundled up -d --build
+
+# Bundled with the sidecar agent (Variant A from 2.3, recommended)
+# R66d: NO --env-file — compose reads .env itself, and .env.bundled-with-agent
+# is mounted via env_file:. With --env-file, CUDA_ARCH/CPPWORKER_GPU_TAG/
+# CPPWORKER_API_TOKEN from .env are lost (9 architectures instead of one, token desync → 401).
+docker compose -f docker-compose.cppworker-bundled-with-agent.yml up -d --build
+
 # Agent on a separate server
 docker compose -f docker-compose.agent.yml --env-file .env up -d --build
 ```
+
+> **Note:** the `start-bundled.sh` / `start-bundled.ps1` script wraps
+> Variant B (bundled without an agent). For Variant A use
+> `docker-compose.cppworker-bundled-with-agent.yml` directly (command above).
 
 ### 2.5 Building images manually
 
@@ -280,7 +362,7 @@ If all 6 steps pass — installation is successful.
 
 ## 7. Related Documents
 
-- [`deployment.md`](deployment.ru.md) — Docker Compose deployment.
-- [`agent-deployment.md`](../operations/agent-deployment.ru.md) — CPU/GPU agent deployment.
+- [`deployment.md`](deployment.md) — Docker Compose deployment.
+- [`agent-deployment.md`](../operations/agent-deployment.md) — CPU/GPU agent deployment.
 - [`audit-2026-06.md`](../../.cline/audit-2026-06.md) — current state of the code.
 - [`../.clinerules`](../../.clinerules) §12 — useful commands (section "Local Development").

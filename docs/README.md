@@ -40,9 +40,9 @@ How routing, sharding and inference work inside.
 | **Backend type isolation** | [EN](architecture/backend-type-isolation.md) | [RU](architecture/backend-type-isolation.ru.md) | How llama.cpp and Ollama backends coexist in one cluster. |
 | **RPC coordinator** | [EN](architecture/rpc-coordinator.md) | [RU](architecture/rpc-coordinator.ru.md) | Distributed inference over llama.cpp RPC: roles, state, limits. |
 | **Virtual models** | [EN](architecture/virtual-router.md) | [RU](architecture/virtual-router.ru.md) | Alias-on-pool virtual models and routing rules. |
-| **Layer sharding** | — | [RU](architecture/layer-sharding.ru.md) | Splitting layers across backends, containers, parameters. |
-| **RPC layout rules** | — | [RU](architecture/rpc-layout-rules.ru.md) | Rules learned from real crashes: same commit, arch, kill switch. |
-| **RPC link bandwidth** | — | [RU](architecture/rpc-link-bandwidth.ru.md) | How link speed between nodes is measured and where it is stored. |
+| **Layer sharding** | [EN](architecture/layer-sharding.md) | [RU](architecture/layer-sharding.ru.md) | Splitting layers across backends, containers, parameters. |
+| **RPC layout rules** | [EN](architecture/rpc-layout-rules.md) | [RU](architecture/rpc-layout-rules.ru.md) | Rules learned from real crashes: same commit, arch, kill switch. |
+| **RPC link bandwidth** | [EN](architecture/rpc-link-bandwidth.md) | [RU](architecture/rpc-link-bandwidth.ru.md) | How link speed between nodes is measured and where it is stored. |
 | **C-bridge API** | [EN](architecture/bridge-api.md) | [RU](architecture/bridge-api.ru.md) | Go <-> C bridge to llama.cpp: functions, structures, contract. |
 | **Balancer <-> cppworker contract** | [EN](architecture/balancer-cppworker-contract.md) | — | Wire contract between the balancer and the worker, field by field. |
 
@@ -52,14 +52,14 @@ Run, update and debug a live cluster.
 
 | Document | English | Russian | What it covers |
 |---|---|---|---|
-| **Deployment stack** | — | [RU](operations/deployment-stack.ru.md) | One compose file, profiles, tokens, registry, diagnostics. |
-| **Worker behind a remote balancer** | — | [RU](operations/deployment-remote-balancer.ru.md) | cppworker + agent on one machine, balancer on another. |
-| **Compose files guide** | — | [RU](operations/docker-compose-guide.ru.md) | Which compose file is canonical and what the historical ones do. |
-| **Agent deployment** | — | [RU](operations/agent-deployment.ru.md) | Metrics agent: GPU and CPU modes, systemd, Windows, WSL2. |
+| **Deployment stack** | [EN](operations/deployment-stack.md) | [RU](operations/deployment-stack.ru.md) | One compose file, profiles, tokens, registry, diagnostics. |
+| **Worker behind a remote balancer** | [EN](operations/deployment-remote-balancer.md) | [RU](operations/deployment-remote-balancer.ru.md) | cppworker + agent on one machine, balancer on another. |
+| **Compose files guide** | [EN](operations/docker-compose-guide.md) | [RU](operations/docker-compose-guide.ru.md) | Which compose file is canonical and what the historical ones do. |
+| **Agent deployment** | [EN](operations/agent-deployment.md) | [RU](operations/agent-deployment.ru.md) | Metrics agent: GPU and CPU modes, systemd, Windows, WSL2. |
 | **Donor node update** | [EN](operations/donor-update.md) | [RU](operations/donor-update.ru.md) | Updating and rolling back the donor node image. |
 | **Donor VRAM lifecycle** | [EN](operations/rpc-donor-vram-lifecycle.md) | [RU](operations/rpc-donor-vram-lifecycle.ru.md) | When VRAM is released on layout nodes and what stays occupied. |
 | **Troubleshooting** | [EN](operations/troubleshooting.md) | [RU](operations/troubleshooting.ru.md) | Symptoms, causes and fixes collected from live incidents. |
-| **Deployment incidents** | — | [RU](operations/deployment-troubleshooting.ru.md) | Deployment traps and incident write-ups. |
+| **Deployment incidents** | [EN](operations/deployment-troubleshooting.md) | [RU](operations/deployment-troubleshooting.ru.md) | Deployment traps and incident write-ups. |
 | **Tools/tool_calls runbook** | [EN](operations/runbook-tools.md) | [RU](operations/runbook-tools.ru.md) | Step-by-step debugging of tool-call resets (scenarios A-G). |
 
 ## API and reference
@@ -84,7 +84,7 @@ What the cluster can do for clients.
 | **RPC benchmark (27B)** | [EN](features/rpc-benchmark-qwen38.md) | [RU](features/rpc-benchmark-qwen38.ru.md) | Measured layer sharding win on qwen3.8 27B: method and results. |
 | **WebUI auth and roles** | [EN](features/webui-auth.md) | [RU](features/webui-auth.ru.md) | Sessions, roles, CSRF, break-glass token, nginx proxy. |
 | **WebUI demo mode** | [EN](features/webui-demo.md) | [RU](features/webui-demo.ru.md) | Guest showcase of the whole scenario, enabled by WEBUI_DEMO_MODE only. |
-| **Cline agent loop** | — | [RU](features/cline-agent-loop.ru.md) | Tool-call contract, readiness, tracing and verification. |
+| **Cline agent loop** | [EN](features/cline-agent-loop.md) | [RU](features/cline-agent-loop.ru.md) | Tool-call contract, readiness, tracing and verification. |
 
 ## Releases
 
@@ -103,7 +103,7 @@ Conventions and CI for contributors.
 | Document | English | Russian | What it covers |
 |---|---|---|---|
 | **Style compliance** | [EN](development/style-compliance.md) | [RU](development/style-compliance.ru.md) | Em-dash lint, i18n parity, docs sync rules. |
-| **Self-hosted CI runner** | — | [RU](development/ci-self-hosted-runner.ru.md) | Runner setup, labels, operations and troubleshooting. |
+| **Self-hosted CI runner** | [EN](development/ci-self-hosted-runner.md) | [RU](development/ci-self-hosted-runner.ru.md) | Runner setup, labels, operations and troubleshooting. |
 
 ## Roadmap and session reports
 

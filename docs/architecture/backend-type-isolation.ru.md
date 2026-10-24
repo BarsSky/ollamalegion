@@ -1,4 +1,4 @@
-# Backend Type Isolation (Ollama vs llama.cpp)
+﻿# Backend Type Isolation (Ollama vs llama.cpp)
 
 > **R112 (2026-10-11) — ЧАСТИЧНО УСТАРЕЛО.** Разделение по ТИПУ бэкенда убрано:
 >
@@ -397,3 +397,4 @@ curl -X POST http://localhost:18081/api/v1/backends \
 ```bash
 go test ./tests -run TestBackendType -count=1 -v
 go test ./tests -run TestOperatingMode -count=1 -v
+```

@@ -214,29 +214,52 @@ func DefaultLlamaCppConfig() *LlamaCppConfig {
 	}
 }
 
-// ModeBackendTypes — маппинг OperatingMode → допустимые типы бэкендов
+// R112 (2026-10-11): РАЗДЕЛЕНИЕ ПО ТИПУ БЭКЕНДА УБРАНО.
 //
-// R-Image (2026-09-27): image_cpp добавлен только в «смешанные» режимы
-// (standard/replication/rpc_coordinator). В virtual_router/distributed_inference
-// он НЕ добавлен намеренно: эти режимы жёстко привязаны к llama.cpp
-// (getDefaultAllowedTypes возвращает ровно один тип, и добавление второго
-// ломало бы резолв `/api/*` → llama.cpp — воспроизведено тестом
-// TestServeHTTP_MixedCluster_RoutingByURLPath).
+// Раньше operatingMode определял, какой ТИП бэкенда допустим: virtual_router и
+// distributed_inference разрешали ТОЛЬКО llama_cpp, остальные — оба текстовых
+// типа. Из-за этого llama.cpp и Ollama не могли работать в одном кластере:
+// второй тип не регистрировался (валидация), отфильтровывался (allowedTypes) или
+// деактивировался при смене режима. Живое следствие — cppworker с Ollama-
+// поверхностью (/api/*) и Ollama-нода рядом не уживались, хотя это ровно тот
+// сценарий, ради которого балансер существует: «Ollama API должно работать
+// одинаково для всех клиентов, независимо от того, кто обслуживает запрос».
+//
+// Новое правило: ТИП БЭКЕНДА — свойство БЭКЕНДА, а не режима. Режим управляет
+// только своими функциональными блоками (replication / rpc_coordinator /
+// virtual_models / dist_inference). Любой режим совместим с любым типом, а
+// фактический состав кластера определяется зарегистрированными бэкендами
+// (см. balancer.getBackendEngine / getEffectiveBackendType).
+//
+// Массив один и тот же для всех режимов намеренно: он read-only (никто его не
+// мутирует — только читает и фильтрует), а разные литералы неизбежно разошлись
+// бы при следующем добавлении типа.
+var allModeBackendTypes = []BackendType{BackendTypeOllama, BackendTypeLlamaCpp, BackendTypeImage}
+
+// ModeBackendTypes — маппинг OperatingMode → допустимые типы бэкендов.
+// С R112 у всех режимов один и тот же набор (см. комментарий выше).
 var ModeBackendTypes = map[string][]BackendType{
-	"standard":              {BackendTypeOllama, BackendTypeLlamaCpp, BackendTypeImage},
-	"replication":           {BackendTypeOllama, BackendTypeLlamaCpp, BackendTypeImage},
-	"rpc_coordinator":       {BackendTypeOllama, BackendTypeLlamaCpp, BackendTypeImage},
-	"virtual_router":        {BackendTypeLlamaCpp},
-	"distributed_inference": {BackendTypeLlamaCpp},
+	"standard":              allModeBackendTypes,
+	"replication":           allModeBackendTypes,
+	"rpc_coordinator":       allModeBackendTypes,
+	"virtual_router":        allModeBackendTypes,
+	"distributed_inference": allModeBackendTypes,
 }
 
-// ModeEngines — маппинг OperatingMode → движок инференса
+// ModeEngines — маппинг OperatingMode → движок инференса.
+//
+// R112: у всех режимов EngineAuto. Режим больше НЕ назначает движок — иначе
+// переключение режима меняло бы правила инференса (n_ctx, KV-типы, offload) для
+// бэкендов, которые к этому режиму отношения не имеют. Движок определяется
+// составом кластера: только llama.cpp → EngineLlamaCPP, только Ollama →
+// EngineOllamaAPI, оба типа → EngineAuto (правила одного движка не навязываются
+// чужому пулу).
 var ModeEngines = map[string]BackendEngine{
 	"standard":              EngineAuto,
 	"replication":           EngineAuto,
 	"rpc_coordinator":       EngineAuto,
-	"virtual_router":        EngineLlamaCPP,
-	"distributed_inference": EngineLlamaCPP,
+	"virtual_router":        EngineAuto,
+	"distributed_inference": EngineAuto,
 }
 
 // IsModeCompatibleWithBackendType проверяет совместимость режима и типа бэкенда
@@ -270,16 +293,23 @@ func ResolveEngine(engine BackendEngine, bt BackendType) BackendEngine {
 	}
 }
 
-// IsModeOllama возвращает true, если режим использует Ollama
+// IsModeOllama возвращает true, если режим ЖЁСТКО привязан к Ollama.
+//
+// R112: с момента унификации такой привязки нет ни у одного режима (ModeEngines
+// везде EngineAuto), поэтому функция всегда возвращает false для штатных
+// режимов. Оставлена как публичный контракт для внешних вызывающих и для
+// будущих режимов с явной привязкой; НЕ используйте её для выбора типа бэкенда —
+// фактический состав кластера даёт balancer.getBackendEngine().
 func IsModeOllama(mode string) bool {
 	engine, ok := ModeEngines[mode]
 	if !ok {
-		return true // по умолчанию считаем Ollama
+		return false
 	}
 	return engine == EngineOllamaAPI
 }
 
-// IsModeLlamaCpp возвращает true, если режим использует llama.cpp
+// IsModeLlamaCpp возвращает true, если режим ЖЁСТКО привязан к llama.cpp.
+// R112: см. IsModeOllama — штатные режимы больше не привязывают движок.
 func IsModeLlamaCpp(mode string) bool {
 	engine, ok := ModeEngines[mode]
 	if !ok {

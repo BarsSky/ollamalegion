@@ -276,7 +276,15 @@ const ui = (function () {
                 // Запрашиваем асинхронно, не блокируем рендер dashboard.
                 Api.clusterModels.loaded().then(function (loadedResp) {
                     if (loadedResp && typeof loadedResp.count === 'number') {
-                        Utils.setText('loadedModels', _t('renderers.models_count_loaded', { count: loadedResp.count }));
+                        // R232: здесь раньше стоял вызов _t(), а он объявлен ЛОКАЛЬНО
+                        // внутри renderModelDetails* — в этой области видимости его нет,
+                        // ReferenceError молча съедался .catch(), и кластерный счётчик
+                        // «загружено моделей» не обновлялся никогда (в демо это было
+                        // видно как «0», хотя модель уже загружена).
+                        var loadedLabel = (window.I18N && window.I18N.t)
+                            ? window.I18N.t('renderers.models_count_loaded', { count: loadedResp.count })
+                            : ('Загружено: ' + loadedResp.count);
+                        Utils.setText('loadedModels', loadedLabel);
                         Utils.setText('totalModels', loadedResp.count);
                     }
                 }).catch(function () { /* тихо: fallback на ollama.runningModels внутри dashboard() */ });
@@ -588,7 +596,7 @@ const ui = (function () {
         });
 
         // Auto-save on settings form changes
-        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'rpcCoordinatorTimeout', 'virtualModelsCoordMode', 'virtualModelsTimeout', 'distInferenceGrpcPort', 'agentCollectInterval', 'agentHeartbeatInterval', 'agentMaxConcurrent', 'agentMaxModels', 'agentTimeout', 'gpuLayers', 'ctxSize', 'batchSize', 'flashAttnType', 'nThreads', 'gpuStrategy', 'tensorSplit', 'splitMode', 'mainGpu', 'rpcBackend', 'noMemoryMap', 'kvCacheType', 'noKvOffload', 'ropeFreqBase', 'ropeFreqScale', 'ropeScalingType', 'ropeScalingFactor', 'yarnExtFactor', 'yarnAttnFactor', 'yarnBetaFast', 'yarnBetaSlow', 'rmsNormEps', 'idleUnloadMinutes', 'enableMetrics', 'metricsRetention', 'autoGpuDistribution', 'flashAttn', 'numa', 'useMmap', 'useMlock', 'enableReasoning', 'reasoningBudget'];
+        var settingsFields = ['balancingAlgorithm', 'useEnhancedScoring', 'modelAffinity', 'sessionStickiness', 'predictionFiltering', 'gpuMaxUsage', 'vramMaxUsage', 'cpuMaxUsage', 'ramMaxUsage', 'minFreeDisk', 'modelReplicationMinInstances', 'modelReplicationMaxInstances', 'modelReplicationIdleUnload', 'rpcCoordinatorURL', 'rpcCoordinatorWorkerPort', 'rpcCoordinatorProtocol', 'virtualModelsCoordMode', 'distInferenceGrpcPort', 'agentCollectInterval', 'agentHeartbeatInterval', 'agentMaxConcurrent', 'agentMaxModels', 'gpuLayers', 'ctxSize', 'batchSize', 'flashAttnType', 'nThreads', 'gpuStrategy', 'tensorSplit', 'splitMode', 'mainGpu', 'rpcBackend', 'noMemoryMap', 'kvCacheType', 'noKvOffload', 'ropeFreqBase', 'ropeFreqScale', 'ropeScalingType', 'ropeScalingFactor', 'yarnExtFactor', 'yarnAttnFactor', 'yarnBetaFast', 'yarnBetaSlow', 'rmsNormEps', 'idleUnloadMinutes', 'enableMetrics', 'metricsRetention', 'autoGpuDistribution', 'flashAttn', 'numa', 'useMmap', 'useMlock', 'enableReasoning', 'reasoningBudget'];
         settingsFields.forEach(function (id) {
             var el = document.getElementById(id);
             if (el) {
@@ -1148,31 +1156,31 @@ const ui = (function () {
         // Backend Engine — серверный конфиг как fallback.
         // Приоритет: localStorage (выбор пользователя) > серверный config.
         if (serverConfig.backendEngine) {
-            var engineType = (serverConfig.backendEngine === 'llama_cpp') ? 'llama_cpp' : 'ollama';
+            // R112 (2026-10-11): единое преобразование «серверный движок → UI-тип»
+            // живёт в BackendTypeFilter._engineToType; 'auto' — это UI-тип «Все»
+            // («тип не навязан, движок по составу кластера»). Раньше здесь
+            // считалось, что «всё, что не llama_cpp, — это Ollama», и смешанный
+            // стенд показывал «🦙 Ollama API».
+            var engineType = window.BackendTypeFilter
+                ? BackendTypeFilter._engineToType(serverConfig.backendEngine)
+                : ((serverConfig.backendEngine === 'llama_cpp') ? 'llama_cpp' : 'ollama');
             var currentType = window.BackendTypeFilter ? BackendTypeFilter.getCurrentType() : null;
             // Если пользователь уже выбрал тип — не перезаписываем UI из сервера
-            if (currentType !== 'llama_cpp' && currentType !== 'ollama') {
+            if (currentType !== 'llama_cpp' && currentType !== 'ollama' && currentType !== 'image_cpp') {
                 if (window.BackendTypeFilter) {
                     BackendTypeFilter.updateUI(engineType);
                 }
             }
             var formBackendTypeEl = document.getElementById('formBackendType');
-            if (formBackendTypeEl) {
+            if (formBackendTypeEl && engineType !== 'all') {
                 formBackendTypeEl.value = engineType;
             }
-            // Обновляем маркер типа движка в сайдбаре (текст + иконка)
-            var badge = document.getElementById('backendEngineBadge');
-            var label = document.getElementById('backendEngineLabel');
-            var iconEl = badge ? badge.querySelector('.engine-icon') : null;
-            if (badge) {
-                badge.classList.remove('engine-ollama', 'engine-llama_cpp', 'engine-auto');
-                badge.classList.add('engine-' + engineType);
-            }
-            if (label) {
-                label.textContent = engineType === 'llama_cpp' ? '🦒 llama.cpp' : '🦙 Ollama API';
-            }
-            if (iconEl) {
-                iconEl.textContent = engineType === 'llama_cpp' ? '🦒' : '🦙';
+            // Маркер типа движка в сайдбаре рисует ТОЛЬКО BackendTypeFilter:
+            // он знает фактический состав кластера (clusterComposition) и
+            // показывает «llama.cpp + Ollama». Вторая копия этой логики здесь
+            // уже расходилась с модулем фильтра (см. updateBackendEngineBadge).
+            if (window.BackendTypeFilter && BackendTypeFilter.updateEngineBadge) {
+                BackendTypeFilter.updateEngineBadge(engineType, false);
             }
         }
 
@@ -1207,16 +1215,14 @@ const ui = (function () {
         if (rcPortEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.workerPort) rcPortEl.value = serverConfig.rpcCoordinator.workerPort;
         var rcProtoEl = document.getElementById('rpcCoordinatorProtocol');
         if (rcProtoEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.protocol) rcProtoEl.value = serverConfig.rpcCoordinator.protocol;
-        var rcTimeoutEl = document.getElementById('rpcCoordinatorTimeout');
-        if (rcTimeoutEl && serverConfig.rpcCoordinator && serverConfig.rpcCoordinator.timeout) rcTimeoutEl.value = serverConfig.rpcCoordinator.timeout;
+        // R106c (2026-10-12): поле rpcCoordinatorTimeout убрано из формы.
 
         // RPC Settings — Virtual Models (Вариант C)
         var vmEnabledEl = document.getElementById('virtualModelsEnabled');
         if (vmEnabledEl && serverConfig.virtualModels) vmEnabledEl.checked = serverConfig.virtualModels.enabled === true;
         var vmModeEl = document.getElementById('virtualModelsCoordMode');
         if (vmModeEl && serverConfig.virtualModels && serverConfig.virtualModels.coordMode) vmModeEl.value = serverConfig.virtualModels.coordMode;
-        var vmTimeoutEl = document.getElementById('virtualModelsTimeout');
-        if (vmTimeoutEl && serverConfig.virtualModels && serverConfig.virtualModels.timeout) vmTimeoutEl.value = serverConfig.virtualModels.timeout;
+        // R106c (2026-10-12): поле virtualModelsTimeout убрано из формы.
 
         // RPC Settings — Distributed Inference (Вариант D)
         var diEnabledEl = document.getElementById('distInferenceEnabled');
@@ -1406,8 +1412,8 @@ const ui = (function () {
             if (agentMcEl && ag.maxConcurrentRequests) agentMcEl.value = ag.maxConcurrentRequests;
             var agentMmEl = document.getElementById('agentMaxModels');
             if (agentMmEl && ag.maxModels) agentMmEl.value = ag.maxModels;
-            var agentToEl = document.getElementById('agentTimeout');
-            if (agentToEl && ag.timeout) agentToEl.value = ag.timeout;
+            // R106c (2026-10-12): поле agentTimeout убрано из формы —
+            // состояние агента видно по heartbeat/метрикам, а не по таймеру.
         }
     }
 
@@ -1458,11 +1464,11 @@ const ui = (function () {
         var rpcCoordinatorURL = (document.getElementById('rpcCoordinatorURL') && document.getElementById('rpcCoordinatorURL').value) || '';
         var rpcCoordinatorWorkerPort = parseInt((document.getElementById('rpcCoordinatorWorkerPort') && document.getElementById('rpcCoordinatorWorkerPort').value)) || 18050;
         var rpcCoordinatorProtocol = (document.getElementById('rpcCoordinatorProtocol') && document.getElementById('rpcCoordinatorProtocol').value) || 'http';
-        var rpcCoordinatorTimeout = (document.getElementById('rpcCoordinatorTimeout') && document.getElementById('rpcCoordinatorTimeout').value) || '30s';
+        // R106c: rpcCoordinatorTimeout из формы убран — серверное значение сохраняется.
 
         var virtualModelsEnabled = modeEnabled('virtualModelsEnabled', 'virtual_router');
         var virtualModelsCoordMode = (document.getElementById('virtualModelsCoordMode') && document.getElementById('virtualModelsCoordMode').value) || 'sequential';
-        var virtualModelsTimeout = parseInt((document.getElementById('virtualModelsTimeout') && document.getElementById('virtualModelsTimeout').value)) || 30000;
+        // R106c: virtualModelsTimeout из формы убран — серверное значение сохраняется.
 
         var distInferenceEnabled = modeEnabled('distInferenceEnabled', 'distributed_inference');
         var distInferenceGrpcPort = parseInt((document.getElementById('distInferenceGrpcPort') && document.getElementById('distInferenceGrpcPort').value)) || 19000;
@@ -1551,6 +1557,12 @@ const ui = (function () {
                 backendEngine = 'llama_cpp';
             } else if (currentType === 'ollama') {
                 backendEngine = 'ollama_api';
+            } else if (currentType === 'all') {
+                // R112 (2026-10-11): «Все» = тип не навязан. Раньше в payload
+                // уходило старое значение (или ничего), и сохранение настроек
+                // могло вернуть стенд к одному движку. Сервер принимает auto
+                // (см. clusterConfigHandler).
+                backendEngine = 'auto';
             }
             // если тип не определён (null/undefined) — не включаем backendEngine в payload,
             // чтобы не перезаписать существующее значение на сервере
@@ -1588,13 +1600,11 @@ const ui = (function () {
                 enabled: rpcCoordinatorEnabled,
                 coordinatorURL: rpcCoordinatorURL,
                 workerPort: rpcCoordinatorWorkerPort,
-                protocol: rpcCoordinatorProtocol,
-                timeout: rpcCoordinatorTimeout
+                protocol: rpcCoordinatorProtocol
             },
             virtualModels: {
                 enabled: virtualModelsEnabled,
-                coordMode: virtualModelsCoordMode,
-                timeout: virtualModelsTimeout
+                coordMode: virtualModelsCoordMode
             },
             distInference: {
                 enabled: distInferenceEnabled,
@@ -2058,9 +2068,19 @@ const ui = (function () {
     /**
      * Обновление маркера типа движка инференса в сайдбаре.
      * Принимает clusterState (или любой объект с полями backendEngine, backendTypeCounts, operatingMode).
-     * Отображает: 🦙 Ollama API, 🦒 llama.cpp, или 🔌 Автоопределение...
+     * Отображает: 🦙 Ollama API, 🦒 llama.cpp, 🦒🦙 llama.cpp + Ollama, или 🔌 Автоопределение...
+     *
+     * R112 (2026-10-11): ЕДИНАЯ реализация маркера — BackendTypeFilter.updateEngineBadge
+     * (он учитывает фактический состав кластера: clusterComposition). Здесь раньше
+     * лежала ВТОРАЯ копия той же логики — две копии неизбежно расходились, поэтому
+     * функция делегирует, а старая ветка оставлена только как аварийный fallback
+     * на случай, если модуль фильтра не загрузился.
      */
     function updateBackendEngineBadge(state) {
+        if (window.BackendTypeFilter && window.BackendTypeFilter.updateEngineBadge) {
+            BackendTypeFilter.updateEngineBadge((state && state.effectiveBackendType) || '', false);
+            return;
+        }
         var badge = document.getElementById('backendEngineBadge');
         var label = document.getElementById('backendEngineLabel');
         if (!badge || !label) return;
@@ -3139,7 +3159,23 @@ window.App = window.App || {};
 window.App.ui = ui;
 
 // Auto-init when DOM ready
-document.addEventListener('DOMContentLoaded', () => ui.init());
+// R206 (2026-10-21): СНАЧАЛА ВХОД, ПОТОМ ДАННЫЕ.
+//
+// Раньше ui.init() стартовал сразу и дёргал /api/v1/* до аутентификации: на экране
+// входа это давало 401 в консоли и «пустые» панели. Теперь ждём /auth/me; если вход
+// не настроен на сервере — стартуем сразу (режим break-glass токена).
+document.addEventListener('DOMContentLoaded', () => {
+    const ready = (typeof window.__authReady === 'function') ? window.__authReady() : Promise.resolve();
+    Promise.resolve(ready).then(() => {
+        // R222: пользователи есть, входа нет — панель за экраном входа. Данные не
+        // грузим: иначе десятки запросов получают 401 и в консоли висит «HTTP 401:
+        // Unauthorized» (живая проверка R222 это ловила). После входа страница
+        // перезагружается и init проходит уже с сессией.
+        const st = (window.Auth && typeof window.Auth.state === 'function') ? window.Auth.state() : null;
+        if (st && st.usersConfigured && !st.authenticated && !st.tokenAuth) { return; }
+        ui.init();
+    });
+});
 
 // ---- Global helpers for model card actions (used by renderers.js modelsGrid) ----
 window.modelCardAction = function(operation, backendId, modelName) {

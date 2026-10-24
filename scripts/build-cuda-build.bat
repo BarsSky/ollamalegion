@@ -9,7 +9,7 @@ if errorlevel 1 (
 )
 
 REM === Add Ninja to PATH ===
-set "PATH=C:\Users\knaga\AppData\Local\Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe;%PATH%"
+set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe;%PATH%"
 
 REM === Build llama.cpp ===
 cd /d "C:\Ollama\ollamalegion\c\llama.cpp\build-msvc-cuda"

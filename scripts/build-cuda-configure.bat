@@ -6,7 +6,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-set "PATH=C:\Users\knaga\AppData\Local\Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe;%PATH%"
+set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe;%PATH%"
 
 if not exist "C:\Ollama\ollamalegion\c\llama.cpp\build-msvc-cuda" mkdir "C:\Ollama\ollamalegion\c\llama.cpp\build-msvc-cuda"
 cd /d "C:\Ollama\ollamalegion\c\llama.cpp\build-msvc-cuda"

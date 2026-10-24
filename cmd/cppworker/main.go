@@ -119,6 +119,14 @@ var feasibleSync *feasibleSyncT
 var backend *cppbackend.Backend
 var uptimeStart = time.Now()
 
+// rpcServerChild — R123 (2026-10-16, пункт 2): узел раскладки (llama.cpp
+// rpc-server) ДОЧЕРНИМ процессом cppworker. nil, если супервизор не создан.
+//
+// Пакетная переменная — по той же причине, что backend/balancerReg: до неё
+// дотягивается runtime-конфиг (/api/v1/cppworker/config), которым оператор
+// включает и выключает узел из WebUI без пересоздания контейнера.
+var rpcServerChild *cppbackend.RPCServerChild
+
 // packageLogger ? ?????? ????? ??????? ? zap-??????? ??? goroutine'??,
 // ??????? ?? ???????? *zap.SugaredLogger ??????????. ???????????? ?
 // balancerRegistration.notifyModelLoaded (fire-and-forget callback).
@@ -133,6 +141,18 @@ func packageLogger() *zap.SugaredLogger {
 
 func main() {
 	flag.Parse()
+
+	// R173 (2026-10-18): SIGPIPE НЕ ДОЛЖЕН УБИВАТЬ ВОРКЕР.
+	//
+	// ЖИВАЯ АВАРИЯ. Мастер раскладки грузил модель с удалённым узлом: 1251 МиБ
+	// весов лились в RPC-сокет, и когда сокет закрывался (узел пересоздавался
+	// приказом балансера), процесс умирал с кодом 141 = SIGPIPE. Ни сообщения, ни
+	// паники в логе — только точки трейса ggml. Go свои записи от SIGPIPE
+	// защищает сам, но C++-слой llama.cpp пишет в сокет напрямую, и для него
+	// действует умолчание ОС: процесс завершается. Выключение SIGPIPE превращает
+	// смерть в обычную ошибку записи (EPIPE), которую llama.cpp сообщает как отказ
+	// операции — клиент выживает, а причина видна в логе.
+	signal.Ignore(syscall.SIGPIPE)
 
 	if *healthCheck {
 		runHealthCheck()
@@ -165,6 +185,14 @@ func main() {
 	}
 
 	cfg := cppbackend.LoadConfigFromEnv()
+	// R119 (2026-10-15): операторские переопределения читаются ПОСЛЕ окружения и
+	// побеждают его. Иначе правка из WebUI (например idleUnloadMinutes) жила
+	// только до пересоздания контейнера: env CPPWORKER_IDLE_UNLOAD_MINUTES=10
+	// затирал сохранённое значение. См. runtime_overrides_r119.go.
+	if appliedOverrides := applyRuntimeOverrides(&cfg); len(appliedOverrides) > 0 {
+		log.Infow("applied runtime overrides (operator values win over env)",
+			"keys", appliedOverrides, "idleUnloadMinutes", cfg.IdleUnloadMinutes)
+	}
 	// ???? --port ?? ??????? ???? (????? default 18092), ? CPPWORKER_PORT
 	// ????? ? env ? ???????? ????????? ? ????????? env.
 	if !isFlagSet("port") {
@@ -291,6 +319,97 @@ func main() {
 		} else {
 			log.Warnw("CPPWORKER_SPLIT_MODE: invalid value, ignoring (use -1..3)", "value", envVal)
 		}
+	}
+
+	// R101 (S1 плана 2026-10-07): раскладка модели между узлами через llama.cpp RPC.
+	//
+	// R115 (2026-10-13): РАЗБОР ВЫНЕСЕН В resolveRPCMode (rpc_mode_r115.go).
+	//
+	// ЧТО БЫЛО НЕ ТАК. Список узлов безусловно ставил `RPCEnabled = true`, поэтому
+	// `CPPWORKER_RPC_ENABLE=false` не выключал раскладку: мастер продолжал
+	// дозваниваться до узлов и планировать по их памяти. Выключить режим можно
+	// было только стерев список узлов, то есть потеряв настройку.
+	//
+	// ТЕПЕРЬ. Явный флаг — решающий: `false` выключает раскладку и очищает список
+	// узлов (чтобы он не всплыл при следующем включении). Если флаг не задан,
+	// поведение прежнее: непустой список узлов включает раскладку.
+	rpcDecision := resolveRPCMode(
+		os.Getenv("CPPWORKER_RPC_ENABLE"),
+		os.Getenv("CPPWORKER_RPC_SERVERS"),
+	)
+	cfg.RPCEnabled = rpcDecision.Enabled
+	cfg.RPCServers = rpcDecision.Servers
+	for _, note := range rpcDecision.Notes {
+		log.Infow("RPC-режим: "+note,
+			"rpc_enabled", rpcDecision.Enabled,
+			"servers", rpcDecision.Servers)
+	}
+	for _, warn := range rpcDecision.Warnings {
+		log.Warnw("RPC-режим: "+warn,
+			"rpc_enabled", rpcDecision.Enabled,
+			"servers", rpcDecision.Servers)
+	}
+	if envVal := strings.TrimSpace(os.Getenv("CPPWORKER_MAIN_GPU")); envVal != "" {
+		if v, err := strconv.Atoi(envVal); err == nil && v >= 0 {
+			cfg.DefaultMainGPU = v
+			log.Infow("applied CPPWORKER_MAIN_GPU from env", "main_gpu", v)
+		} else {
+			log.Warnw("CPPWORKER_MAIN_GPU: invalid GPU index, ignoring (use >=0)", "value", envVal)
+		}
+	}
+	if envVal := strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD")); envVal != "" {
+		cfg.LlamaBuild = envVal
+	}
+	// R167 (2026-10-17): env — это НАМЕРЕНИЕ, а не факт. Сверяем с коммитом,
+	// вшитым в бинарник, и говорим вслух, если они разошлись: узлы раскладки
+	// обязаны быть на одном коммите llama.cpp, иначе слои не поедут.
+	envLlamaBuildValue = strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD"))
+	if facts := currentLlamaBuildFacts(); !facts.Compatible {
+		log.Warnw("llama.cpp: КОММИТ В ENV НЕ СОВПАДАЕТ С БИНАРНИКОМ — раскладка с другими узлами может не поехать",
+			"env_llama_build", facts.Env, "binary_llama_build", facts.Binary,
+			"hint", "обновите CPPWORKER_LLAMA_BUILD в .env под образ (git -C c/llama.cpp rev-parse --short HEAD)")
+	} else {
+		log.Infow("llama.cpp build info", "env_llama_build", envLlamaBuildValue,
+			"image_llama_build", strings.TrimSpace(os.Getenv(envLlamaBuildBaked)))
+	}
+	if cfg.RPCEnabled {
+		// R108 (2026-10-12): предупреждение «транспорт не подключён» убрано.
+		//
+		// Оно было честным ДО S1. После того как мост начал регистрировать узлы
+		// (bridge_collect_rpc_devices), оно стало врать: в логе рядом появлялись
+		// строки «узел подключён, его устройств: N» и «устройств в раскладке 2».
+		// Истину говорит сам мост — только он отличает «узел недоступен» от
+		// «RPC не собран в этой сборке llama.cpp».
+		log.Infow("RPC-раскладка запрошена: узлы регистрируются при загрузке модели",
+			"servers", cfg.RPCServers)
+	}
+
+	// R123 (2026-10-16, пункт 2 разбора стенда): УЗЕЛ РАСКЛАДКИ ВНУТРИ cppworker.
+	//
+	// Раньше донором был отдельный контейнер (deployments/docker-compose.rpc-node.yml:
+	// тот же образ с entrypoint ["/app/rpc-server"]). Теперь узел поднимает сам
+	// воркер — флагом CPPWORKER_RPC_SERVER_ENABLED, без второго сервиса; состояние
+	// процесса уезжает в /api/v1/cppworker/config и в метрики.
+	//
+	// ВАЖНО: это НЕ то же самое, что CPPWORKER_RPC_ENABLE (тот флаг — про то, что
+	// ЭТОТ воркер сам является МАСТЕРОМ и подключает чужие GPU). Один воркер может
+	// быть и тем, и другим: отдавать свою карту соседу и забирать чужую.
+	rpcServerChild = cppbackend.NewRPCServerChild(cfg)
+	if rpcServerChild.Enabled() {
+		if err := rpcServerChild.Start(); err != nil {
+			log.Errorw("rpc-server: узел раскладки НЕ поднялся",
+				"bin", cfg.RPCServerBin, "bind", cfg.RPCServerBind, "port", cfg.RPCServerPort,
+				"error", err,
+				"hint", "проверьте CPPWORKER_RPC_SERVER_BIN (в образе это /app/rpc-server) и свободен ли порт")
+		} else {
+			log.Infow("rpc-server: узел раскладки поднят внутри cppworker",
+				"addr", rpcServerChild.Addr(),
+				"note", "отдельный контейнер ol-rpc-server для этой машины больше не нужен")
+		}
+	} else {
+		log.Infow("rpc-server: узел раскладки выключен (CPPWORKER_RPC_SERVER_ENABLED)",
+			"env", "CPPWORKER_RPC_SERVER_ENABLED",
+			"hint", "включается здесь же или из WebUI (runtime-ключ rpcServerEnabled)")
 	}
 
 	flag.Visit(func(f *flag.Flag) {
@@ -541,6 +660,14 @@ func main() {
 	// runAsyncReload), а в проде это обращение к освобождённым ресурсам.
 	// Ждём ограниченное время (LB_ASYNC_WORK_SHUTDOWN_WAIT_SEC, default 30 с):
 	// остановка процесса не должна зависеть от загрузки большой модели.
+	// R123 (2026-10-16): узел раскладки — дочерний процесс, гасим его вместе с
+	// воркером. Без этого при остановке контейнера процесс остался бы сиротой и
+	// держал порт 50052 (следующий старт не смог бы его занять).
+	if rpcServerChild != nil {
+		if err := rpcServerChild.Stop(); err != nil {
+			log.Warnw("rpc-server: остановка узла раскладки", "error", err)
+		}
+	}
 	waitAsyncWorkBeforeClose()
 	backend.Close()
 	if err := server.Shutdown(ctx); err != nil {

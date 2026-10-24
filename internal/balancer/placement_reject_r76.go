@@ -10,7 +10,9 @@
 //	обычным путём, но деградация видна в логах, заголовках и метриках.
 //
 // Что считается «не обслужить»:
-//   - стратегия не исполняется в этой версии (sharded/rpc — этап P2);
+//   - стратегия не исполняется в этой версии (rpc — legacy-путь координатора);
+//   - стратегия исполнима, но исполнителя под неё сейчас нет: sharded без
+//     готового логического бэкенда (R92/S3), replicated с нехваткой копий;
 //   - auto не смогла выбрать (Degraded) и правило не разрешает деградацию
 //     (`auto.allowDegraded=false`).
 package balancer
@@ -47,10 +49,19 @@ func (p *Proxy) placementRejection(d PlacementDecision) (string, bool) {
 
 	if !d.Executable {
 		return "стратегия размещения " + string(d.Strategy) + " не исполняется этой сборкой " +
-			"(sharded/rpc — этап P2 плана), а placement.fallback=error: запрос не будет " +
-			"обслужен другой стратегией молча. Причина: " + d.Reason, true
+			"(исполняются single/pool/replicated/sharded/auto; rpc — legacy-путь координатора-" +
+			"заглушки, переведённый §9 плана в sharded), а placement.fallback=error: запрос не " +
+			"будет обслужен другой стратегией молча. Причина: " + d.Reason, true
 	}
-	return "auto не смогла выбрать стратегию размещения (placement.fallback=error): " + d.Reason, true
+	// Refined=true означает, что стратегию выбирала auto (P1): тогда «не смогла
+	// выбрать» — точная формулировка. Для ЯВНОГО правила (Refined=false)
+	// стратегия выбрана оператором, а исполнить её сейчас нечем — это другое
+	// сообщение, иначе оператор ищет проблему в auto-правиле, которого нет.
+	if d.Refined {
+		return "auto не смогла выбрать стратегию размещения (placement.fallback=error): " + d.Reason, true
+	}
+	return "стратегия размещения " + string(d.Strategy) + " не может быть исполнена сейчас " +
+		"(placement.fallback=error): " + d.Reason, true
 }
 
 // placementFallbackMode — как политика предписано поступать при невозможности

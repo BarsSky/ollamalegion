@@ -1,5 +1,82 @@
 package types
 
+import "strings"
+
+// Состояния модели в том виде, в каком они уходят КЛИЕНТУ (cppworker `state`
+// в /api/models, `status` модели в /api/v1/gguf/backends, state в /api/ps).
+//
+// Не путать с типом ModelState в model_state.go: там внутренние состояния
+// балансера (LOADED/LOADING/…, верхний регистр) для warmup-логики. Здесь —
+// строчные значения, которые исторически отдаёт llama.cpp-стек, и менять их
+// нельзя: их читают WebUI и внешние клиенты.
+const (
+	// WireStateLoaded — модель в памяти и обслуживает запросы.
+	WireStateLoaded = "loaded"
+	// WireStateLoading — загрузка в полёте: модель ещё НЕ обслуживает запросы.
+	WireStateLoading = "loading"
+	// WireStateError — загрузка провалилась.
+	WireStateError = "error"
+)
+
+// NormalizeModelState — R119: свести `state` модели cppworker к трём понятным
+// значениям (WireState*).
+//
+// ЗАЧЕМ общий helper. Строку состояния отдаёт cppworker (`state` в /api/models),
+// и до R119 каждый потребитель толковал её по-своему:
+//   - поллер балансера считал пустое значение «loaded» (llamacpp_metrics_poller.go);
+//   - хендлер /api/v1/gguf/backends вообще не смотрел на state и жёстко рисовал
+//     «loaded» (gguf_backends_handler.go);
+//   - /api/ps показывал loading-модель как running (llamacpp_handlers_readonly.go).
+//
+// Живой дефект (2026-10-15, стенд): cppworker сообщал state="loading",
+// context_size=0, а WebUI писал «загружено» — оператор не видел ни загрузки,
+// ни провала и слал запросы в пустоту.
+//
+// Пустое значение трактуется как loaded намеренно: старые сборки cppworker
+// state не отдавали, и «потерять» реально загруженную модель хуже, чем показать
+// её загруженной.
+func NormalizeModelState(state string) string {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "":
+		return WireStateLoaded
+	case "ready", "loaded":
+		return WireStateLoaded
+	case "loading":
+		return WireStateLoading
+	case "error", "failed":
+		return WireStateError
+	default:
+		return strings.ToLower(strings.TrimSpace(state))
+	}
+}
+
+// ModelStateUsable — R119: обслуживает ли модель запросы ПРЯМО СЕЙЧАС.
+//
+// Единственный критерий: state нормализуется в loaded. Модель, которая ещё
+// грузится (или уже падает), не «загружена» ни для клиента, ни для выбора
+// бэкенда, ни для счётчика загруженных моделей.
+func ModelStateUsable(state string) bool {
+	return NormalizeModelState(state) == WireStateLoaded
+}
+
+// RPCNodeStatus — состояние узла раскладки (rpc-server) на самом бэкенде.
+//
+// R133 (2026-10-16): приходит из /api/models cppworker (поле rpc_server, тот же
+// снимок, что отдаёт супервизор дочернего процесса). Балансер назначает роль
+// donor — и обязан видеть, что узел действительно поднялся: «enabled» — это
+// желание, «running» — процесс, «listening» — порт. Три разных утверждения,
+// которые раньше были неотличимы снаружи.
+type RPCNodeStatus struct {
+	Enabled   bool   `json:"enabled"`
+	Running   bool   `json:"running"`
+	Listening bool   `json:"listening"`
+	Port      int    `json:"port,omitempty"`
+	Addr      string `json:"addr,omitempty"`
+	PID       int    `json:"pid,omitempty"`
+	Restarts  int    `json:"restarts,omitempty"`
+	LastError string `json:"lastError,omitempty"`
+}
+
 // LlamaCppMetrics - метрики llama.cpp бэкенда
 type LlamaCppMetrics struct {
 	// MaxVRAMNCtx — макс. n_ctx, помещающийся в VRAM (из /api/models cppworker).
@@ -15,7 +92,27 @@ type LlamaCppMetrics struct {
 	MaxRAMNCtx      int    `json:"maxRamNCtx"`
 	AvailableVRAMMB uint64 `json:"availableVramMb"`
 	TotalVRAMMB     uint64 `json:"totalVramMb"`
-	ModelMaxContext int    `json:"modelMaxContext"`
+	// R115: состав ёмкости. AvailableVRAMMB — ИТОГ (локальная карта + узлы
+	// раскладки, так его считает memfit в cppworker), и по одному числу балансер
+	// не может отличить «8 ГБ на карте» от «8 ГБ карты + 7 ГБ удалённого узла».
+	// Разница существенна: во втором случае половина слоёв считается по сети, и
+	// узел может отвалиться. Поля приходят из /api/models cppworker (R115).
+	RPCEnabled       bool     `json:"rpcEnabled"`
+	RPCServersActive []string `json:"rpcServersActive"`
+	VramLocalFreeMB  uint64   `json:"vramLocalFreeMb"`
+	VramRemoteFreeMB uint64   `json:"vramRemoteFreeMb"`
+	VramRemoteNodes  int      `json:"vramRemoteNodes"`
+	// R132 (2026-10-16): откуда вклад узлов в бюджет у СПРАВОЧНЫХ путей:
+	// none (узлы на этом пути не опрашивались) | cache (последний собранный
+	// снимок) | probed (узлы спрошены). Без этого «0 МБ узлов» и «узлы не
+	// измерялись» в панели выглядят одинаково.
+	VramRemoteSource string `json:"vramRemoteSource,omitempty"`
+	// RPCNode — состояние СОБСТВЕННОГО узла раскладки ЭТОГО бэкенда (R133).
+	// Донор поднимает rpc-server по приказу балансера (роль donor) и обязан
+	// отчитываться: поднят ли процесс, слушается ли порт, какая ошибка. Иначе
+	// роль в панели — это команда в пустоту, а «поднят» путается с «доступен».
+	RPCNode *RPCNodeStatus `json:"rpcNode,omitempty"`
+	ModelMaxContext  int      `json:"modelMaxContext"`
 	// === Round 37 (2026-08-18): auto-adapt n_ctx 3-tier fields ===
 	// Populated from /api/models → feasible_max_context / gguf_max_context.
 	// 0 = unknown (cppworker didn't report — pre-Round 37 build).
@@ -77,6 +174,15 @@ type LlamaCppModel struct {
 	// пропускал num_ctx=32768 — cppworker принимал (32768 ≤ 32768), а фактически
 	// слот столько не вмещает.
 	ContextPerSeq int `json:"context_per_seq,omitempty"`
+	// DeviceLayersExact — R162 (2026-10-17): ТОЧНАЯ раскладка слоёв по устройствам
+	// (cppworker перехватывает `load_tensors: layer N assigned to device X`).
+	//
+	// ЗАЧЕМ ЭТО ЗДЕСЬ. cppworker НЕ отдаёт `gpu_layers` в /api/models (поле пустое),
+	// а отдаёт именно раскладку. Балансер раскладку декодировал, но в модель не
+	// переносил — и WebUI, читая `numGpuLayers=0`, показывал «gpu_layers=0/42 —
+	// модель целиком на CPU» при фактических 42/42 на GPU. Ложное предупреждение
+	// отправляло оператора искать несуществующую проблему.
+	DeviceLayersExact []DeviceLayerRange `json:"device_layers_exact,omitempty"`
 	// === Architecture metadata (Round 18+ — для оценки VRAM/RAM split по слоям) ===
 	// cppworker reports per-model architecture details, используем для расчёта
 	// estimatedVram/estimatedRam (cppworker не сообщает actual usage per-model).
@@ -121,12 +227,44 @@ type LlamaCppModel struct {
 	// и запрос с think=true обязан получить внятную ошибку, а не тихую подмену
 	// поведения.
 	ReasoningEnabled *bool `json:"reasoningEnabled,omitempty"`
+	// DeviceLayers — R118.16 (2026-10-14): ТОЧНАЯ раскладка слоёв по устройствам
+	// (`device_layers` в /api/models cppworker) — строки `load_tensors: layer N
+	// assigned to device X` из лога llama.cpp, перехваченные мостом.
+	//
+	// Пусто = неизвестно (старая сборка cppworker или stub) — и это НЕ то же
+	// самое, что «все слои на CPU»: пустой список нельзя показывать как раскладку.
+	DeviceLayers []DeviceLayerRange `json:"deviceLayers,omitempty"`
+	// Parameters — R119 (2026-10-15, пункт 4): происхождение КАЖДОГО параметра
+	// загрузки — {"contextLength":{"value":8192,"source":"profile"},…}, где source
+	// это request | profile | default_profile | backend.
+	//
+	// ЗАЧЕМ на этой структуре. WebUI рисует карточку загруженной модели из
+	// /api/v1/backends (loadedModels), и до R119 оператор видел только значения:
+	// какой слой их поставил — клиентский запрос, per-model профиль, «настройки по
+	// умолчанию» или env cppworker — не было видно нигде, и вопрос «настройки
+	// применяются?» оставался догадкой. Заполняется балансером из своего реестра
+	// provenance при сборке cluster state (cluster_state.go).
+	Parameters map[string]interface{} `json:"parameters,omitempty"`
 	// === Loading state (Шаг «отображение загрузки в мониторе и вкладке бэкендов») ===
 	// Заполняются только пока State == "loading" / "error". После успешной
 	// загрузки поля обнуляются (omitempty).
 	LoadingStartedAt *string `json:"loadingStartedAt,omitempty"` // RFC3339Nano
 	LoadingSizeBytes int64   `json:"loadingSizeBytes,omitempty"` // ожидаемый размер модели
 	LoadingError     string  `json:"loadingError,omitempty"`     // причина сбоя (если State="error")
+}
+
+// DeviceLayerRange — R118.16 (2026-10-14): непрерывный диапазон слоёв на одном
+// устройстве. Это ФАКТ из лога llama.cpp (`load_tensors: layer N assigned to
+// device X`), который перехватывает мост cppworker'а (c/bridge/layers_plan.go).
+//
+// Нумерация слоёв — как в логе: 0…n_layer, где последний номер это выходной
+// слой. Node заполняется для устройств RPC0/RPC1 (адрес узла раскладки).
+type DeviceLayerRange struct {
+	Device string `json:"device"`
+	From   int    `json:"from"`
+	To     int    `json:"to"`
+	Count  int    `json:"count"`
+	Node   string `json:"node,omitempty"`
 }
 
 // LlamaCppGPUInfo - информация о GPU для llama.cpp

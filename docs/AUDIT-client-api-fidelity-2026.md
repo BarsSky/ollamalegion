@@ -38,6 +38,31 @@ Two things dominate the audit:
 
 ---
 
+### Статус пунктов на 2026-10-15 (R118.17)
+
+Аудит писался до R65d/R66b, и часть пунктов к этому моменту уже закрыта кодом —
+но документ об этом не знал. Ниже сверка каждого пункта с текущим кодом и тестами.
+«Легаси-путь» — трансляция Ollama→OpenAI в балансере (`llamacpp_translate_req.go`);
+с R65d Ollama-поверхность по умолчанию идёт **нативно** (`shouldRouteOllamaNative`,
+в живом логе `native_path: true`), поэтому часть пунктов касается только
+выключенного флага `LB_OLLAMA_NATIVE_PATH=0`.
+
+| # | Статус | Доказательство |
+|---|---|---|
+| C1 `options.top_k` → 400 | **закрыт**: upstream больше не отвергает `top_k` — поле есть в структуре OpenAI-запроса cppworker и применяется | `cmd/cppworker/handlers_openai.go:63,135,466`; проброс в `internal/balancer/llamacpp_translate_req.go:148`; тест `TestR6052_TranslateOllamaChatToOpenAI_AllFieldsPreserved` |
+| C2 `presence_penalty` / `frequency_penalty` / `stop` | **закрыт (R118.19)**: штрафы пробрасываются на путь трансляции (cppworker их принимает: `PresencePenalty`/`FrequencyPenalty` в `handlers_openai.go`), `stop` нормализуется в массив | `internal/balancer/llamacpp_translate_req.go` (`normalizeOpenAIStop`, проброс штрафов); тесты `TestR118_19_PenaltiesForwardedToUpstream`, `TestR118_19_StopStringBecomesArray`, `TestR118_19_NormalizeOpenAIStop` |
+| C3 `options.stop` строкой ломает `/v1/completions` | **закрыт (R118.19)**: подтверждён (cppworker ждёт `Stop []string`, строка давала 400 «cannot unmarshal string into … []string»), строка и смешанный массив нормализуются в массив строк, пустые строки не пробрасываются | `internal/balancer/llamacpp_translate_req.go` (`normalizeOpenAIStop`); тесты `TestR118_19_StopStringBecomesArray{,ForGenerate}`, `TestR118_19_NormalizeOpenAIStop` |
+| C4 `thinking` для `/api/generate` (стриминг) | **закрыт (R118.23)**: generate-транслятор отдавал `thinking` полем верхнего уровня, но разбирал только `choice.reasoning_content` (legacy) и top-level; chat-форма `delta.reasoning_content` (её cppworker шлёт в SSE) не разбиралась — рассуждение на generate-пути терялось. Теперь разбираются все три формы | `internal/balancer/llamacpp_translate_resp.go` (`translateSSEGenerateToOllama`); тест `TestR118_23_C4_GenerateStreamingThinkingTopLevel_AllShapes` (3 формы); живая регрессия легаси-пути: `/api/generate` стриминг → 200, NDJSON с `response` |
+| C5 tool-call дельты | **закрыт (R118.20)**: фрагменты `delta.tool_calls` копятся в транспорте (`toolCallAccumulator`, состояние на стрим) и отдаются Ollama-клиенту ОДНИМ полным вызовом — в Ollama-форме частичных аргументов не бывает; накопительные фрагменты не дублируются, неполные чанки клиенту не уходят | `internal/balancer/toolcall_accum_r118_20.go` + вставка в `llamacpp_transport.go`; тесты `R118_20` (склейка, отсутствие дубля, passthrough, сквозная трансляция в Ollama-форму); живая регрессия легаси-пути: `/api/chat` стриминг → 200, NDJSON с `done:true` |
+| C6 `apiReverseProxy` перекрывает runtime-конфиг | **закрыт (R118.17)**: путь исключён из «всё `/api/v1/*` → API-сервер» и обслуживается `LlamaCppRouter` | `internal/balancer/router.go` (`balancerOwnedAPIPaths`), тест `TestRouteRequest_RuntimeConfigGoesToRouterNotAPIServer`, живая проверка: 200 + `loaded_models` |
+| C7 `tool_choice` не учитывается | **закрыт**: `tool_choice:"none"` больше не инжектит инструменты | `cmd/cppworker/handlers_chat.go:177,292` (`toolsDisabledByChoice`), тест `cmd/cppworker/chat_tool_choice_r66b_test.go` |
+
+Остаток долга после сверки: **C2** (решение по потерянным штрафам/`stop` на легаси-пути),
+**C3** (живая проверка `stop`-строки), **C4** (место `thinking` в generate-стриминге),
+**C5** (тест на фрагментированные `arguments`). Остальное закрыто.
+
+---
+
 #### C1. `options.top_k` is forwarded as OpenAI `top_k` → upstream rejects with HTTP 400 (breaks every OpenWebUI `/api/chat` with advanced params)
 
 **Evidence**

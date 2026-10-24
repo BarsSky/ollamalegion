@@ -39,7 +39,7 @@ func (p *Proxy) resolveSessionBackend(r *http.Request, model, sessionID, clientN
 
 	// Обновляем привязку сессии
 	if targetBackend != "" && p.config.Balancing.SessionStickiness {
-		p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
+		p.sessionMgr.SetWithProtocol(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 	}
 
 	return targetBackend
@@ -52,11 +52,19 @@ func (p *Proxy) rebalanceIfNeeded(model, targetBackend, sessionID, clientName st
 	maxReqs := backendState.Backend.MaxConcurrentReqs
 	backendState.mu.Unlock()
 
-	if maxReqs <= 0 || active <= 0 {
+	// R139: нагрузку ЭТОЙ ЖЕ сессии не считаем поводом уводить её на другой
+	// backend — см. sessionInflight и такой же блок в proxy.go.
+	own := p.sessionInflight(sessionID)
+	foreign := active - own
+	if foreign < 0 {
+		foreign = 0
+	}
+
+	if maxReqs <= 0 || foreign <= 0 {
 		return targetBackend
 	}
 
-	loadRatio := float64(active) / float64(maxReqs)
+	loadRatio := float64(foreign) / float64(maxReqs)
 	forceRebalance := loadRatio >= 1.0
 
 	if loadRatio > 0.50 || forceRebalance {
@@ -89,9 +97,24 @@ func (p *Proxy) rebalanceIfNeeded(model, targetBackend, sessionID, clientName st
 	return targetBackend
 }
 
+// sessionInflight — сколько запросов этой сессии сейчас в полёте.
+//
+// R139 (2026-10-16): различие «backend занят моим же стримом» и «backend занят
+// чужими запросами» — ключевое для длинных генераций. Живой дефект (deepseek
+// harness через балансер): сессия привязана к прогретой копии, её собственный
+// стрим в полёте (ActiveReqs=1 при MaxConcurrentReqs=1) — и следующий запрос
+// той же сессии ребалансировался на ХОЛОДНЫЙ backend, где модель грузится
+// заново. Клиент при этом видит тишину (pi-ai stream idle timeout 300000ms).
+func (p *Proxy) sessionInflight(sessionID string) int {
+	if p.admission == nil {
+		return 0
+	}
+	return p.admission.inflightOf(sessionID)
+}
+
 // bindSession — привязывает сессию к выбранному бэкенду.
 func (p *Proxy) bindSession(sessionID, backendID, model, clientName string, r *http.Request) {
 	if sessionID != "" && p.config.Balancing.SessionStickiness {
-		p.sessionMgr.Set(sessionID, backendID, model, clientName, p.getClientRealIP(r), r.UserAgent())
+		p.sessionMgr.SetWithProtocol(sessionID, backendID, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 	}
 }

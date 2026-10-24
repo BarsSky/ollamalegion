@@ -26,6 +26,15 @@ WORKDIR /build/llama.cpp
 COPY c/llama.cpp .
 RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build commit -m "llama.cpp"
 
+# R214: TCP keepalive на сокете раскладки (см. Dockerfile.gpu и patches/0001-rpc-tcp-keepalive.patch).
+COPY docker/cppworker/patches /tmp/patches
+# R218: патчи применяются по порядку и падают громко, если хоть один не встал.
+#  0001 — TCP keepalive сокета раскладки (R214);
+#  0002 — недоступный RPC-узел больше не GGML_ABORT'ит процесс (R218).
+RUN for p in /tmp/patches/*.patch; do \
+        git apply "$p" || exit 1; \
+    done && rm -rf /tmp/patches
+
 RUN --mount=type=cache,target=/root/.ccache,mode=0755 \
     mkdir -p build && cd build && \
     GGML_CUDA_ARCH_LIST="${CUDA_ARCH}" cmake .. \

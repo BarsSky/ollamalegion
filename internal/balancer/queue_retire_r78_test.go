@@ -62,11 +62,15 @@ func TestPlacementMetricsSummary_CountsDegradedAndReplication_R78(t *testing.T) 
 	if summary["rules"] != 2 {
 		t.Errorf("rules = %v, ожидалось 2", summary["rules"])
 	}
-	if summary["degraded"] != 1 {
-		t.Errorf("degraded = %v, ожидалось 1 (m-big не влезает)", summary["degraded"])
+	// R92 (S3): m-sharded больше не «неисполнимая стратегия» — неисполнимого
+	// (notExecutable) в сводке нет вовсе. Зато нет и группы backendGroups под
+	// m-sharded, поэтому решение помечается Degraded: деградаций две (m-big не
+	// влезает + m-sharded без исполнителя).
+	if summary["degraded"] != 2 {
+		t.Errorf("degraded = %v, ожидалось 2 (m-big не влезает, m-sharded без группы)", summary["degraded"])
 	}
-	if summary["notExecutable"] != 1 {
-		t.Errorf("notExecutable = %v, ожидалось 1 (m-sharded — этап P2)", summary["notExecutable"])
+	if summary["notExecutable"] != 0 {
+		t.Errorf("notExecutable = %v, ожидалось 0 (sharded исполним с R92)", summary["notExecutable"])
 	}
 	byStrategy, ok := summary["byStrategy"].(map[string]int)
 	if !ok {

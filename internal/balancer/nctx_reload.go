@@ -406,6 +406,20 @@ type ReloadHints struct {
 	// адаптивная стратегия может срезать цель (131072 → 65536), и тогда reload
 	// стоит 1–3 минуты простоя, не давая клиенту ничего.
 	WindowNCtx int
+	// Parallel — R119 (2026-10-15): число слотов модели (профиль оператора, иначе
+	// фактическое из /api/models).
+	//
+	// ЗАЧЕМ. Тело reload собиралось с нуля и `parallel` в него не попадало:
+	// cppworker брал CPPWORKER_N_PARALLEL, и модель, поднятая профилем с
+	// parallel=3, после preflight-перезагрузки молча возвращалась к 2 слотам.
+	Parallel int
+	// EnableReasoning — R119 (2026-10-15): per-model переключатель размышлений из
+	// профиля. nil = «не задан» (наследовать политику cppworker).
+	//
+	// ЗАЧЕМ. На reload это поле не отправлялось, и `opts.EnableReasoning`
+	// оставался nil → cppbackend падал на cfg.DefaultEnableReasoning (false):
+	// любая перезагрузка тихо выключала уже включённые размышления.
+	EnableReasoning *bool
 }
 
 // SetReloadHintsProvider — установка поставщика хинтов (вызывается Proxy'ем).
@@ -504,6 +518,18 @@ func (c *NCtxReloadCoordinator) IsReloadPending(backendID, modelName string) boo
 		return false
 	}
 	return c.reloadDedup.IsReloadPending(backendID, modelName)
+}
+
+// BeginExternalReload — R230: пометить reload идущим для путей, которые сами
+// выполняют unload+load (AutoTune apply). Пока маркер жив, ensureModelLoaded-
+// OnBackend не запускает параллельную ленивую загрузку с профильными params
+// (это перехватывало reload AutoTune и оставляло конфигурацию неизменной).
+// Возвращает finish (идемпотентный) и ok=false, если reload уже идёт.
+func (c *NCtxReloadCoordinator) BeginExternalReload(backendID, modelName string) (func(), bool) {
+	if c == nil || c.reloadDedup == nil {
+		return func() {}, true
+	}
+	return c.reloadDedup.BeginExternalReload(backendID, modelName)
 }
 
 func (c *NCtxReloadCoordinator) WaitReloadDone(backendID, modelName string, timeout time.Duration) error {
@@ -648,7 +674,7 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 		// Check configured max limit
 		if cfg.AutoReloadMaxNCtx > 0 && required > cfg.AutoReloadMaxNCtx {
 			return c.makeRejectPlan(backendID, bridgeErr, required,
-				fmt.Sprintf("required n_ctx=%d exceeds configured max=%d", required, cfg.AutoReloadMaxNCtx),
+				nCtxLimitReason(required, cfg.AutoReloadMaxNCtx, bridgeErr.MaxVRAMNCtx),
 				"prompt_exceeds_context")
 		}
 
@@ -713,7 +739,7 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 				"hint", "поднимите LB_NCTX_RELOAD_MAX_N_CTX до окна модели (или 0 = без потолка)")
 		}
 		return c.makeRejectPlan(backendID, bridgeErr, required,
-			fmt.Sprintf("required n_ctx=%d exceeds configured max=%d", required, cfg.AutoReloadMaxNCtx),
+			nCtxLimitReason(required, cfg.AutoReloadMaxNCtx, bridgeErr.MaxVRAMNCtx),
 			"n_ctx_too_large_for_backend")
 	}
 
@@ -839,6 +865,24 @@ func (c *NCtxReloadCoordinator) makeRejectPlan(
 		Reason:    reason,
 		RejectMsg: string(b),
 	}
+}
+
+// nCtxLimitReason — причина отказа «окно больше потолка авто-перезагрузки».
+//
+// R140 (2026-10-16): предел зависит от двух чисел, и называть надо то, которое
+// реально связывает. max_vram_n_ctx воркер считает по фактически свободной VRAM,
+// поэтому он учитывает и другие загруженные модели. Если связывает он, совет
+// «поднять LB_NCTX_RELOAD_MAX_N_CTX» невыполним — окно не влезет. Когда
+// физический потолок неизвестен (0), текст прежний: число не выдумываем.
+// Структурированное тело отказа (makeRejectPlan) несёт оба числа полями
+// max_vram_n_ctx и safe_max_n_ctx независимо от этой строки.
+func nCtxLimitReason(required, operatorMax, physicalMax int) string {
+	if physicalMax > 0 && physicalMax < operatorMax {
+		return fmt.Sprintf("required n_ctx=%d exceeds the backend's physical limit max_vram_n_ctx=%d "+
+			"(free VRAM with the models loaded now); operator limit auto_reload_max_n_ctx=%d is higher",
+			required, physicalMax, operatorMax)
+	}
+	return fmt.Sprintf("required n_ctx=%d exceeds configured max=%d", required, operatorMax)
 }
 
 func roundUpPow2(v int) int {
@@ -1071,6 +1115,10 @@ func (c *NCtxReloadCoordinator) DoReload(
 		// 400 "invalid JSON: unknown field 'reason'" → reload always failed.
 		// The reason is for balancer logs only — moved to the Infow below.
 	}
+	// R119 (2026-10-15): переносим в тело reload намерения оператора из профиля
+	// (kvCacheType / parallel / enableReasoning) ДО адаптивной стратегии, чтобы
+	// стратегия могла их переопределить, а не наоборот.
+	applyReloadHintsToPayload(payloadMap, hints)
 	if strategy != nil {
 		payloadMap = enrichReloadPayload(payloadMap, strategy)
 		logger.Get().Infow("nctx_reload: using adaptive strategy",
@@ -1152,14 +1200,14 @@ func (c *NCtxReloadCoordinator) DoReload(
 		// fix, fallback path always returns "invalid JSON: unknown field 'reason'"
 		// → reload effectively never succeeds via fallback → cascading retries
 		// → "Did not receive done" errors in Cline clients.
-		loadPayload, _ := json.Marshal(map[string]interface{}{
-			"name":        modelName,
-			"contextSize": plan.NewNCtx,
-			"kvCacheType": payloadMap["kvCacheType"],
-			"gpuLayers":   payloadMap["gpuLayers"],
-			"useMmap":     payloadMap["useMmap"],
-			"flashAttn":   payloadMap["flashAttn"],
-		})
+		//
+		// R119 (2026-10-15): тело больше НЕ собирается заново — копируем
+		// payloadMap (см. loadBodyFromReloadPayload). Раньше здесь перечислялись
+		// четыре ключа, и всё, что добавили hint'ы/стратегия (parallel,
+		// enableReasoning, overrideTensors), на fallback-пути терялось.
+		loadBody := loadBodyFromReloadPayload(payloadMap)
+		loadBody["contextSize"] = plan.NewNCtx
+		loadPayload, _ := json.Marshal(loadBody)
 		resp.Body.Close()
 		resp, err = loader.PostReload(rctx, loadEndpoint, loadPayload)
 		if err != nil {

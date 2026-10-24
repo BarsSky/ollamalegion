@@ -4,8 +4,9 @@ package balancer
 // стратегию молча» + requireHomogeneous.
 //
 //   - при `fallback=error` (default) запрос, который нельзя обслужить заявленной
-//     стратегией (sharded/rpc — этап P2; auto degraded без allowDegraded),
-//     получает явную 503 с причиной и блоком placement;
+//     стратегией (rpc как legacy-путь; sharded без готового логического бэкенда
+//     — R92/S3; auto degraded без allowDegraded), получает явную 503 с причиной и
+//     блоком placement;
 //   - при `fallback=single` запрос обслуживается обычным путём, а деградация
 //     видна в заголовке X-LB-Placement-Fallback;
 //   - `auto.allowDegraded=true` разрешает обслужить деградировавшее решение;
@@ -64,19 +65,23 @@ func postChatPlacementR76(proxy *Proxy, model string) (*httptest.ResponseRecorde
 }
 
 func TestPlacementP3_RejectsShardedWithFallbackError_R76(t *testing.T) {
+	// R92 (S3): посылка теста изменилась. Раньше sharded отказывал потому, что
+	// «не исполняется этой сборкой». Теперь исполнитель есть, но в конфиге нет
+	// логического бэкенда (balancing.backendGroups[]) — и §6 требует ровно того
+	// же: честная 503 с причиной вместо тихой подмены стратегии.
 	proxy, upstream := placementRejectProxyR76(t, types.PlacementSettings{
 		Enabled:  true,
 		Fallback: types.PlacementFallbackError,
 		Models: []types.PlacementModelRule{{
 			Model:    "m-sharded",
 			Strategy: string(types.PlacementSharded),
-			Reason:   "R76: раскладка ещё не исполняется",
+			Reason:   "R92: раскладка требует логического бэкенда",
 		}},
 	})
 
 	rec, header := postChatPlacementR76(proxy, "m-sharded")
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("HTTP %d, ожидался 503 (fallback=error, sharded не исполняется): %s",
+		t.Fatalf("HTTP %d, ожидался 503 (fallback=error, группы для модели нет): %s",
 			rec.Code, rec.Body.String())
 	}
 	if got := upstream.Load(); got != 0 {
@@ -87,8 +92,11 @@ func TestPlacementP3_RejectsShardedWithFallbackError_R76(t *testing.T) {
 		t.Fatalf("ответ не JSON: %v (%s)", err, rec.Body.String())
 	}
 	msg, _ := body["error"].(string)
-	if !strings.Contains(msg, "не исполняется") || !strings.Contains(msg, "P2") {
-		t.Errorf("в ошибке должно быть объяснение про этап P2: %s", msg)
+	if !strings.Contains(msg, "sharded") || !strings.Contains(msg, "не может быть исполнена сейчас") {
+		t.Errorf("в ошибке должно быть объяснение про неисполнимую сейчас стратегию: %s", msg)
+	}
+	if !strings.Contains(msg, "логические бэкенды не настроены") {
+		t.Errorf("в ошибке должна быть причина с указанием на backendGroups: %s", msg)
 	}
 	placement, ok := body["placement"].(map[string]interface{})
 	if !ok {
@@ -97,8 +105,13 @@ func TestPlacementP3_RejectsShardedWithFallbackError_R76(t *testing.T) {
 	if placement["strategy"] != string(types.PlacementSharded) {
 		t.Errorf("placement.strategy = %v, ожидалось sharded", placement["strategy"])
 	}
-	if placement["executable"] != false {
-		t.Errorf("placement.executable = %v, ожидалось false", placement["executable"])
+	// Исполнитель в сборке ЕСТЬ (R92 снял executable:false) — неисполнима не
+	// стратегия, а её конкретное исполнение здесь и сейчас.
+	if placement["executable"] != true {
+		t.Errorf("placement.executable = %v, ожидалось true (sharded исполним с R92)", placement["executable"])
+	}
+	if placement["degraded"] != true {
+		t.Errorf("placement.degraded = %v, ожидалось true (группы нет)", placement["degraded"])
 	}
 	if header.Get("X-LB-Placement") != "" {
 		t.Errorf("при отказе заголовок X-LB-Placement не нужен, получено %q", header.Get("X-LB-Placement"))

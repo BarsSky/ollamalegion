@@ -86,6 +86,16 @@ func (ir *ImageRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 		meta = imageRequestBriefFor(r)
 	}
 
+	// R99 (S8 плана 2026-10-07): пачка изображений (n > 1) раскладывается по
+	// нескольким image-бэкендам как НЕЗАВИСИМЫЕ задачи с общим ответом. sd.cpp не
+	// умеет делить одну генерацию по GPU, но n картинок — это n задач, и их можно
+	// считать параллельно. Если раскладка неприменима (одна картинка, один узел,
+	// не та поверхность), функция возвращает false — запрос идёт обычным путём
+	// без изменений (тело восстановлено).
+	if generation && ir.routeImageBatchR99(w, r, store, meta) {
+		return true
+	}
+
 	backendID := ir.selectImageBackend()
 	if backendID == "" {
 		logger.Get().Warnw("image request: no healthy image backend",

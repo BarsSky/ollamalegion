@@ -13,17 +13,18 @@ import (
 // HandleStatsTokens — GET /api/v1/stats/tokens
 //
 // Response:
-//   [
-//     {
-//       "model": "gemma-4-E4B-it-Q4_K_M",
-//       "prompt_tokens": 1234567,
-//       "completion_tokens": 789012,
-//       "total_tokens": 2023579,
-//       "request_count": 543,
-//       "last_updated": "2026-08-09T10:30:00Z"
-//     },
-//     ...
-//   ]
+//
+//	[
+//	  {
+//	    "model": "gemma-4-E4B-it-Q4_K_M",
+//	    "prompt_tokens": 1234567,
+//	    "completion_tokens": 789012,
+//	    "total_tokens": 2023579,
+//	    "request_count": 543,
+//	    "last_updated": "2026-08-09T10:30:00Z"
+//	  },
+//	  ...
+//	]
 func (s *Server) HandleStatsTokens(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

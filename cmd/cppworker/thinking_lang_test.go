@@ -104,6 +104,13 @@ func TestDetectPrimaryLanguage_OnlyEmojis(t *testing.T) {
 // TestThinkingInstructionFor_RU — Russian instruction содержит
 // "Перед ответом" и явное указание отвечать на русском.
 // Round 32 #13 (2026-08-11): также проверяет наличие CODE RULES.
+//
+// R114b (2026-10-13): инструкция БОЛЬШЕ НЕ НАЗЫВАЕТ ТЕГИ размышлений. Было
+// требование «оберни рассуждение в <reasoning>…</reasoning>» — для модели со
+// своим каналом в чат-шаблоне (gemma-4: `<|channel>thought`) это навязывало чужой
+// тег, и в ответе появлялись одиночные маркеры (живая жалоба оператора про
+// `</think>`). Теперь тестов на наличие тегов быть НЕ должно, а тест на их
+// ОТСУТСТВИЕ — должен.
 func TestThinkingInstructionFor_RU(t *testing.T) {
 	inst := thinkingInstructionFor(LangRU)
 	if !strings.Contains(inst, "Перед ответом") {
@@ -112,11 +119,11 @@ func TestThinkingInstructionFor_RU(t *testing.T) {
 	if !strings.Contains(inst, "русском") {
 		t.Error("RU instruction missing 'русском' (отвечай на русском)")
 	}
-	if !strings.Contains(inst, "<reasoning>") {
-		t.Error("RU instruction missing <reasoning> tag instruction")
+	if strings.Contains(inst, "<reasoning>") || strings.Contains(inst, "</reasoning>") {
+		t.Error("RU instruction снова навязывает тег <reasoning>: это давало одиночные маркеры в ответе (R114b)")
 	}
-	if !strings.Contains(inst, "</reasoning>") {
-		t.Error("RU instruction missing </reasoning> tag instruction")
+	if !strings.Contains(inst, "пошагово") {
+		t.Error("RU instruction missing 'пошагово' (требование думать по шагам)")
 	}
 	// Round 32 #13: code block rules
 	if !strings.Contains(inst, "fenced") {
@@ -131,15 +138,18 @@ func TestThinkingInstructionFor_RU(t *testing.T) {
 }
 
 // TestThinkingInstructionFor_EN — English instruction содержит
-// "Before answering" и tag wrapper.
+// "Before answering" и требование отделить финальный ответ.
 // Round 32 #13: также проверяет наличие CODE RULES.
 func TestThinkingInstructionFor_EN(t *testing.T) {
 	inst := thinkingInstructionFor(LangEN)
 	if !strings.Contains(inst, "Before answering") {
 		t.Error("EN instruction missing 'Before answering'")
 	}
-	if !strings.Contains(inst, "<reasoning>") {
-		t.Error("EN instruction missing <reasoning> tag instruction")
+	if strings.Contains(inst, "<reasoning>") || strings.Contains(inst, "</reasoning>") {
+		t.Error("EN instruction снова навязывает тег <reasoning> (R114b)")
+	}
+	if !strings.Contains(inst, "step by step") {
+		t.Error("EN instruction missing 'step by step'")
 	}
 	// Round 32 #13: code block rules
 	if !strings.Contains(inst, "fenced") {
@@ -154,11 +164,11 @@ func TestThinkingInstructionFor_EN(t *testing.T) {
 // Round 32 #13: также проверяет наличие CODE RULES в universal version.
 func TestThinkingInstructionFor_Other(t *testing.T) {
 	inst := thinkingInstructionFor(LangOther)
-	if !strings.Contains(inst, "<reasoning>") {
-		t.Error("Other instruction missing <reasoning> tag")
+	if strings.Contains(inst, "<reasoning>") || strings.Contains(inst, "</reasoning>") {
+		t.Error("Other instruction снова навязывает тег <reasoning> (R114b)")
 	}
-	if !strings.Contains(inst, "OUTSIDE") {
-		t.Error("Other instruction missing 'OUTSIDE' (final answer outside tag)")
+	if !strings.Contains(inst, "step by step") {
+		t.Error("Other instruction missing 'step by step'")
 	}
 	// Round 32 #13: code block rules even in universal short
 	if !strings.Contains(inst, "fenced") {
@@ -177,8 +187,9 @@ func TestInjectThinkingInstructionWithLang_EmptySystem(t *testing.T) {
 	if !strings.HasPrefix(got, "Перед ответом") {
 		t.Errorf("expected RU instruction prefix, got: %q", got[:50])
 	}
-	if !strings.Contains(got, "<reasoning>") {
-		t.Error("expected <reasoning> tag in output")
+	// R114b: разметку не навязываем — модель использует канал своего шаблона.
+	if strings.Contains(got, "<reasoning>") {
+		t.Error("инструкция снова содержит тег <reasoning> (R114b: это давало одиночные маркеры в ответе)")
 	}
 }
 

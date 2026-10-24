@@ -284,10 +284,27 @@ func detectHermesToolCallsInContent(content string) (toolCalls []interface{}, re
 		return nil, content, false
 	}
 
-	// Удаляем найденные блоки из content
-	remaining := hermesToolCallRegex.ReplaceAllString(content, "")
+	// Удаляем найденные блоки из content (JSON- и angle-форма).
+	remaining := stripHermesToolCallBlocks(content)
 	remaining = strings.TrimSpace(remaining)
 	return result, remaining, true
+}
+
+// hermesAngleBlockRegex — полный angle-блок:
+// `<tool_call><function=NAME>…</function></tool_call>`.
+var hermesAngleBlockRegex = regexp.MustCompile(`(?s)<tool_call>\s*<function=[^>\s]*>.*?</function>\s*(?:</tool_call>)?`)
+
+// hermesAngleOpenRegex — оборванный angle-блок: модель не дописала `</function>`,
+// поэтому режем до конца текста (хвост генерации обрезан).
+var hermesAngleOpenRegex = regexp.MustCompile(`(?s)<tool_call>\s*<function=[^>\s]*>.*`)
+
+// stripHermesToolCallBlocks вырезает из видимого текста все распознанные
+// Hermes-блоки вызова: JSON-форму (`<tool_call>{…}</tool_call>`) и angle-форму
+// (`<tool_call><function=NAME>…</function></tool_call>`).
+func stripHermesToolCallBlocks(content string) string {
+	out := hermesToolCallRegex.ReplaceAllString(content, "")
+	out = hermesAngleBlockRegex.ReplaceAllString(out, "")
+	return hermesAngleOpenRegex.ReplaceAllString(out, "")
 }
 
 // findHermesToolCallBlocks — возвращает JSON-фрагменты tool_calls из
@@ -323,6 +340,21 @@ func findHermesToolCallBlocks(content string) []string {
 				}
 			}
 			if jsonStart < 0 {
+				// TOOLCALL-ANGLE (живой дефект, скриншот оператора): angle-форма
+				// Hermes, которую gemma-4 эмитит вместо JSON —
+				//   <tool_call> <function=bash> <parameter=command> pwd && ls -la
+				//   </parameter> <parameter=description> … </parameter>
+				//   </function> </tool_call>
+				// После `<tool_call>` стоит `<`, а не `{`/`[`, поэтому раньше
+				// цикл делал break, found оставался false и разметка уезжала
+				// клиенту обычным текстом (инструмент не вызывался). JSON здесь
+				// нет вообще — синтезируем Hermes-объект из angle-разметки и
+				// отдаём его тому же parseHermesToOpenAI.
+				if jsonStr, blockEnd, ok := parseHermesAngleToolCall(content, start); ok {
+					blocks = append(blocks, jsonStr)
+					searchFrom = blockEnd
+					continue
+				}
 				searchFrom = start
 				continue
 			}
@@ -338,6 +370,83 @@ func findHermesToolCallBlocks(content string) []string {
 		}
 	}
 	return blocks
+}
+
+// angleFunctionOpen — открывающий тег angle-формы Hermes.
+const angleFunctionOpen = "<function="
+
+// angleParameterRegex — параметр angle-формы: <parameter=KEY>VALUE</parameter>.
+// VALUE может быть многострочным (команды, тексты файлов), поэтому (?s) и `.*?`.
+var angleParameterRegex = regexp.MustCompile(`(?s)<parameter=([^>\s]+)\s*>(.*?)</parameter>`)
+
+// parseHermesAngleToolCall разбирает angle-форму вызова инструмента, стоящую
+// сразу после открывающего тега (from — позиция за `<tool_call>`/`<answer>`):
+//
+//	<tool_call> <function=bash> <parameter=command> pwd && ls -la </parameter>
+//	<parameter=description> … </parameter> </function> </tool_call>
+//
+// Возвращает:
+//   - jsonStr — синтезированный Hermes-JSON {"name":…,"arguments":{…}}, который
+//     дальше разбирает обычный parseHermesToOpenAI;
+//   - blockEnd — позиция сразу за блоком (включая `</tool_call>`, если он есть);
+//   - ok=false, если angle-разметки после тега нет.
+//
+// Живой дефект (скриншот оператора): JSON в блоке нет вообще, `<function=NAME>`
+// и `<parameter=KEY>` — единственный носитель имени и аргументов.
+func parseHermesAngleToolCall(content string, from int) (jsonStr string, blockEnd int, ok bool) {
+	if from < 0 || from > len(content) {
+		return "", 0, false
+	}
+	rest := content[from:]
+	fnIdx := strings.Index(rest, angleFunctionOpen)
+	if fnIdx < 0 {
+		return "", 0, false
+	}
+	// Между тегом и <function= допустимы только пробелы/переводы строк.
+	if strings.TrimSpace(rest[:fnIdx]) != "" {
+		return "", 0, false
+	}
+	nameStart := fnIdx + len(angleFunctionOpen)
+	nameEnd := strings.IndexByte(rest[nameStart:], '>')
+	if nameEnd < 0 {
+		return "", 0, false
+	}
+	name := strings.TrimSpace(rest[nameStart : nameStart+nameEnd])
+	if name == "" {
+		return "", 0, false
+	}
+
+	body := rest[nameStart+nameEnd+1:]
+	bodyEnd := len(body)
+	if i := strings.Index(body, "</function>"); i >= 0 {
+		body = body[:i]
+		bodyEnd = i + len("</function>")
+	}
+
+	args := map[string]string{}
+	for _, m := range angleParameterRegex.FindAllStringSubmatch(body, -1) {
+		key := strings.TrimSpace(m[1])
+		if key == "" {
+			continue
+		}
+		// Обрамляющие пробелы/переводы строк — форматирование модели
+		// (см. скриншот оператора: `<parameter=command> pwd && ls -la `),
+		// а не часть значения. Внутренние переводы строк сохраняются.
+		args[key] = strings.TrimSpace(m[2])
+	}
+
+	raw, err := json.Marshal(map[string]interface{}{"name": name, "arguments": args})
+	if err != nil {
+		return "", 0, false
+	}
+
+	blockEnd = from + nameStart + nameEnd + 1 + bodyEnd
+	// Съедаем закрывающий тег, если модель его вывела.
+	tail := content[blockEnd:]
+	if trimmedTail := strings.TrimLeft(tail, " \t\r\n"); strings.HasPrefix(trimmedTail, "</tool_call>") {
+		blockEnd += len(tail) - len(trimmedTail) + len("</tool_call>")
+	}
+	return string(raw), blockEnd, true
 }
 
 // scanBalancedJSON возвращает индекс закрывающей скобки, парной к открывающей
@@ -797,7 +906,21 @@ func findMatchingClosingBracket(s string, openPos int) int {
 // или nil, если изменений не требуется.
 //
 // Используется в SSE→SSE passthrough для /v1/chat/completions.
+// extractToolCallsFromSSEContent — без схем: приведение к схеме не выполняется
+// (старое поведение, для тестов и путей без tools).
 func extractToolCallsFromSSEContent(sseData []byte) []byte {
+	return extractToolCallsFromSSEContentWithSchema(sseData, nil)
+}
+
+// extractToolCallsFromSSEContentWithSchema — R186: то же, но с приведением
+// аргументов к объявленной схеме инструмента и с полем `index` в каждом вызове.
+//
+// ЗАЧЕМ `index`. По спецификации OpenAI delta.tool_calls несёт `index` — ключ,
+// по которому клиент склеивает фрагменты одного вызова. Собранные здесь вызовы
+// уходили без него; при параллельных вызовах (Cline прямо просит модель делать
+// их) клиент склеивал все фрагменты в один и получал битый JSON →
+// «✖ Invalid input» и повтор того же вызова до остановки по циклу.
+func extractToolCallsFromSSEContentWithSchema(sseData []byte, schemas map[string]*toolParamSchema) []byte {
 	var chunk map[string]interface{}
 	if err := json.Unmarshal(sseData, &chunk); err != nil {
 		return nil
@@ -828,6 +951,9 @@ func extractToolCallsFromSSEContent(sseData []byte) []byte {
 	if !found || len(toolCalls) == 0 {
 		return nil
 	}
+
+	// R186: форма OpenAI (id/type/index) + аргументы по объявленной схеме.
+	toolCalls, _ = repairToolCallsForSchema(toolCalls, schemas)
 
 	// Модифицируем delta: удаляем content, добавляем tool_calls
 	// remaining (сервисные токены) не возвращаем — они будут отфильтрованы

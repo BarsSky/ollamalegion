@@ -47,17 +47,17 @@ func createTestCRUDConfig() *types.LoadBalancerConfig {
 			},
 		},
 		Balancing: types.BalancingSettings{
-			Algorithm:       types.AlgorithmRoundRobin,
+			Algorithm:           types.AlgorithmRoundRobin,
 			HealthCheckInterval: 60,
 			VirtualModels: types.VirtualModelsConfig{
 				Enabled: true,
 			},
 		},
 		Resources: types.ResourceLimits{
-			GPU:   types.GPULimits{MaxUsagePercent: 90},
-			CPU:   types.CPULimits{MaxUsagePercent: 90},
+			GPU:    types.GPULimits{MaxUsagePercent: 90},
+			CPU:    types.CPULimits{MaxUsagePercent: 90},
 			Memory: types.MemoryLimits{MaxUsagePercent: 90},
-			Disk:  types.DiskLimits{MinFreeMB: 1000},
+			Disk:   types.DiskLimits{MinFreeMB: 1000},
 		},
 	}
 }

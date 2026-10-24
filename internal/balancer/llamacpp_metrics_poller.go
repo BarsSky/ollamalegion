@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,10 +42,28 @@ type llamaCppMetricsPoller struct {
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
+	// doneCh закрывается, когда цикл опроса ДЕЙСТВИТЕЛЬНО завершился.
+	//
+	// ЗАЧЕМ (R161, 2026-10-17). Stop() только сигналит о остановке, но не ждёт:
+	// тик, уже начатый, продолжает ходить по бэкендам и ПИСАТЬ в кэш метрик.
+	// Тесты гейта инжектируют «живой» снимок соседа (400 MB) — а этот поздний
+	// тик переписывал его настоящими числами реального стенда
+	// (127.0.0.1:18092), и гейт пропускал генерацию:
+	//   status = 200, want 503 (рабочий набор 1024 MB, у соседа свободно 400 MB)
+	// Флейк воспроизводился и в изоляции: 9 падений из 40 прогонов БЕЗ правок
+	// кода продукта. Теперь после Stop() можно дождаться цикла (WaitStopped) и
+	// инжектить снимок в уже неподвижное состояние.
+	doneCh chan struct{}
 
 	// lastLoadingSeen — время последнего наблюдения loading-моделей.
 	// Используется для решения, какой интервал использовать в следующем цикле.
 	lastLoadingSeen time.Time
+
+	// R230: кэш параметров архитектуры (n_kv_heads/head_dim_k), добранных из
+	// /api/show — /api/models их не отдаёт, а без них AutoTune не может
+	// посчитать KV cache (см. arch_enrich_r230.go).
+	archMu    sync.Mutex
+	archCache map[string]archParams
 }
 
 // newLlamaCppMetricsPoller создаёт poller с интервалом по умолчанию 30 секунд.
@@ -70,7 +89,10 @@ func (p *llamaCppMetricsPoller) Start() {
 	}
 	p.running = true
 	p.stopCh = make(chan struct{})
-	go p.loop()
+	// R161: свой канал завершения на каждый запуск — WaitStopped ждёт именно его.
+	done := make(chan struct{})
+	p.doneCh = done
+	go p.loop(done)
 	logger.Get().Infow("llamaCppMetricsPoller started", "interval", p.interval)
 }
 
@@ -85,6 +107,26 @@ func (p *llamaCppMetricsPoller) Stop() {
 	close(p.stopCh)
 }
 
+// WaitStopped ждёт, пока цикл опроса действительно завершится (или истечёт d).
+//
+// Нужен там, где после Stop() состояние кэша должно стать НЕПОДВИЖНЫМ: тесты
+// гейта инжектируют снимок соседа, и поздний тик не должен его переписать
+// (см. комментарий у doneCh — это и был флейк R161).
+func (p *llamaCppMetricsPoller) WaitStopped(d time.Duration) bool {
+	p.mu.Lock()
+	done := p.doneCh
+	p.mu.Unlock()
+	if done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
 // loop — основной цикл поллера. Сначала делает немедленный poll
 // (чтобы не ждать первый интервал после старта), затем спит interval.
 //
@@ -96,7 +138,10 @@ func (p *llamaCppMetricsPoller) Stop() {
 // Это позволяет:
 //   - мгновенно показывать прогресс загрузки в UI (каждые 2 сек)
 //   - не тратить ресурсы, когда загрузок нет (каждые 30 сек)
-func (p *llamaCppMetricsPoller) loop() {
+func (p *llamaCppMetricsPoller) loop(done chan struct{}) {
+	// R161: цикл завершается только через этот defer — WaitStopped узнаёт, что
+	// поздних записей в кэш метрик больше не будет.
+	defer close(done)
 	// Немедленный первый poll (для быстрого старта после перезапуска)
 	p.pollAll()
 
@@ -149,27 +194,34 @@ func (p *llamaCppMetricsPoller) pollAll() {
 }
 
 // pollBackend опрашивает /api/models у одного бэкенда и обновляет кэш.
-func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
+//
+// R118 (2026-10-14): возвращает true, если состояние бэкенда УДАЛОСЬ узнать
+// (запрос прошёл, HTTP 2xx и JSON разобран). Это принципиально для n_ctx-preflight:
+// раньше «поллинг не удался» и «модель не загружена» выглядели одинаково
+// (loaded_n_ctx=0), и балансер в обоих случаях планировал загрузку — то есть по
+// недостоверным данным ВЫГРУЖАЛ подготовленную модель. Теперь вызывающий может
+// отличить «состояние неизвестно» от «модели действительно нет».
+func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 	url := fmt.Sprintf("http://%s:%d/api/models", b.host, b.port)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return
+		return false
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		logger.Get().Debugw("llamaCppMetricsPoller: request failed",
 			"backend", b.id, "url", url, "error", err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logger.Get().Debugw("llamaCppMetricsPoller: non-2xx status",
 			"backend", b.id, "url", url, "status", resp.StatusCode)
-		return
+		return false
 	}
 
 	// Round 45 (2026-08-19): JSON tags changed from camelCase to snake_case
@@ -200,7 +252,33 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 		GGUFMaxContext     int    `json:"gguf_max_context"`
 		AvailableVRAMMB    uint64 `json:"available_vram_mb"`
 		TotalVRAMMB        uint64 `json:"total_vram_mb"`
-		Models             []struct {
+		// R115: состав ёмкости раскладки (cppworker R115). Нужен, чтобы балансер
+		// и его UI видели, что часть бюджета приходит с удалённых узлов: без этих
+		// полей бэкенд в режиме раскладки неотличим от обычного с той же суммой.
+		RPCEnabled       bool     `json:"rpc_enabled"`
+		RPCServersActive []string `json:"rpc_servers_active"`
+		VramLocalFreeMB  uint64   `json:"vram_local_free_mb"`
+		VramRemoteFreeMB uint64   `json:"vram_remote_free_mb"`
+		VramRemoteNodes  int      `json:"vram_remote_nodes"`
+		// R132 (2026-10-16): откуда вклад узлов у СПРАВОЧНЫХ путей —
+		// none | cache | probed. Нужен панели: «0 МБ узлов» и «узлы не
+		// измерялись» снаружи выглядели одинаково.
+		VramRemoteSource string `json:"vram_remote_source"`
+		// R133 (2026-10-16): состояние СОБСТВЕННОГО узла раскладки этой машины
+		// (cppworker отдаёт его в /api/models, поле rpc_server). Донор поднимает
+		// узел по приказу балансера и обязан отчитаться: enabled (желание),
+		// running (процесс), listening (порт) — три разных утверждения.
+		RPCServer *struct {
+			Enabled   bool   `json:"enabled"`
+			Running   bool   `json:"running"`
+			Listening bool   `json:"listening"`
+			Port      int    `json:"port"`
+			Addr      string `json:"addr"`
+			PID       int    `json:"pid"`
+			Restarts  int    `json:"restarts"`
+			LastError string `json:"lastError"`
+		} `json:"rpc_server"`
+		Models []struct {
 			Name             string `json:"name"`
 			Path             string `json:"path,omitempty"`
 			State            string `json:"state,omitempty"`
@@ -266,12 +344,23 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			// балансер решает, расходится ли требование клиента (think=true)
 			// с загруженной моделью.
 			ReasoningEnabled *bool `json:"reasoning_enabled,reasoningEnabled"`
+			// R118.16 (2026-10-14): точная раскладка слоёв из лога llama.cpp
+			// (cppworker перехватывает строки `load_tensors: layer N assigned to
+			// device X`). Пусто = cppworker не сообщил — потребитель обязан
+			// отличить это от «все слои на CPU».
+			DeviceLayers []struct {
+				Device string `json:"device"`
+				From   int    `json:"from"`
+				To     int    `json:"to"`
+				Count  int    `json:"count"`
+				Node   string `json:"node,omitempty"`
+			} `json:"device_layers_exact,omitempty"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		logger.Get().Debugw("llamaCppMetricsPoller: decode failed",
 			"backend", b.id, "error", err)
-		return
+		return false
 	}
 
 	// Конвертируем в LlamaCppModel
@@ -306,6 +395,37 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 		if m.SizeVRAM > 0 {
 			vram = m.SizeVRAM / (1024 * 1024)
 		}
+		// R162 (2026-10-17): переносим ТОЧНУЮ раскладку слоёв по устройствам.
+		// Без этого WebUI читал numGpuLayers=0 (cppworker gpu_layers не отдаёт) и
+		// показывал «модель целиком на CPU» при фактических слоях на GPU.
+		var devLayers []types.DeviceLayerRange
+		for _, d := range m.DeviceLayers {
+			devLayers = append(devLayers, types.DeviceLayerRange{
+				Device: d.Device, From: d.From, To: d.To, Count: d.Count, Node: d.Node,
+			})
+		}
+		// R213 (2026-10-21): gpu_layers как ФАКТ, а не ноль.
+		//
+		// Живой дефект (стенд, gemma-4-E4B-it-Q4_K_M загружена с 42/42 слоями на
+		// CUDA0): cppworker в /api/models НЕ отдаёт `gpu_layers` вовсе (поля нет в
+		// ответе), поэтому NumGPULayers оставался 0, and /api/v1/backends показывал
+		// «0 слоёв на GPU». Раскладка device_layers_exact при этом есть и она
+		// АВТОРИТЕТНА: если llama.cpp сказал, что N слоёв ушли на GPU, то их N.
+		// Считаем только когда сам воркер число не сообщил (>0), чтобы не спорить
+		// с явным значением.
+		gpuLayers := m.GPULayers
+		if gpuLayers <= 0 && len(devLayers) > 0 {
+			sum := 0
+			for _, d := range devLayers {
+				if strings.HasPrefix(strings.ToUpper(d.Device), "CPU") {
+					continue
+				}
+				sum += d.Count
+			}
+			if sum > 0 {
+				gpuLayers = sum
+			}
+		}
 		loadedModels = append(loadedModels, types.LlamaCppModel{
 			Name:          m.Name,
 			Path:          m.Path,
@@ -317,11 +437,12 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 			MaxSlots:      m.MaxSlots, // R83: сколько слотов завёл cppworker (>=1)
 			// R83-fix: окно ОДНОГО слота — по нему ограничиваем запрос клиента,
 			// а не по суммарному ContextLength.
-			ContextPerSeq: m.ContextPerSeq,
-			BatchSize:     0, // cppworker reports batchSize too, см. ниже в более широкой структуре
-			NumGPULayers:  m.GPULayers,
-			Quantization:  quant,
-			State:         state,
+			ContextPerSeq:     m.ContextPerSeq,
+			BatchSize:         m.BatchSize, // R213: было жёстко 0 — воркер это поле отдаёт
+			NumGPULayers:      gpuLayers,
+			Quantization:      quant,
+			State:             state,
+			DeviceLayersExact: devLayers,
 			// Round 18: architecture metadata — frontend использует для оценки
 			// VRAM/RAM split по слоям (cppworker не сообщает actual per-model usage).
 			Architecture: m.Architecture,
@@ -356,8 +477,15 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 				m.ReasoningEnabled != nil && *m.ReasoningEnabled),
 			// R83-политика (2026-10-01): nil = cppworker не сообщил.
 			ReasoningEnabled: m.ReasoningEnabled,
+			// R118.16 (2026-10-14): точная раскладка слоёв — как её напечатал
+			// llama.cpp. Копируем как есть: это факт, а не оценка.
+			DeviceLayers: deviceLayersFromWire(m.DeviceLayers),
 		})
 	}
+
+	// R230: добрать параметры архитектуры (n_kv_heads/head_dim_k) из /api/show —
+	// без них AutoTune не может посчитать KV cache для текущего n_ctx.
+	loadedModels = p.enrichLoadedModelsArch(b, loadedModels)
 
 	// Обновляем кэш
 	p.proxy.metricsMgr.mu.Lock()
@@ -388,6 +516,38 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 	}
 	lm.AvailableVRAMMB = data.AvailableVRAMMB
 	lm.TotalVRAMMB = data.TotalVRAMMB
+	// R115: состав ёмкости раскладки. Итог (available_vram_mb) уже включает узлы —
+	// эти поля нужны, чтобы различать «всё локально» и «часть по сети», и чтобы
+	// WebUI мог показать состав, а не одно число.
+	lm.RPCEnabled = data.RPCEnabled
+	lm.RPCServersActive = append([]string(nil), data.RPCServersActive...)
+	lm.VramLocalFreeMB = data.VramLocalFreeMB
+	lm.VramRemoteFreeMB = data.VramRemoteFreeMB
+	lm.VramRemoteNodes = data.VramRemoteNodes
+	// R132/R133: источник вклада узлов у справочных путей и состояние
+	// СОБСТВЕННОГО узла раскладки этого бэкенда (донор отчитывается сам).
+	lm.VramRemoteSource = data.VramRemoteSource
+	if data.RPCServer != nil {
+		// R159: диагностика «что именно воркер сказал про СВОЙ узел». Без неё
+		// расхождение «воркер: listening=true / балансер: listening=false»
+		// неотличимо от залипшего кэша — ровно это и наблюдалось живьём.
+		logger.Get().Debugw("llamaCppMetricsPoller: rpc_server из воркера",
+			"backend", b.id, "enabled", data.RPCServer.Enabled,
+			"running", data.RPCServer.Running, "listening", data.RPCServer.Listening,
+			"pid", data.RPCServer.PID, "port", data.RPCServer.Port)
+		lm.RPCNode = &types.RPCNodeStatus{
+			Enabled:   data.RPCServer.Enabled,
+			Running:   data.RPCServer.Running,
+			Listening: data.RPCServer.Listening,
+			Port:      data.RPCServer.Port,
+			Addr:      data.RPCServer.Addr,
+			PID:       data.RPCServer.PID,
+			Restarts:  data.RPCServer.Restarts,
+			LastError: data.RPCServer.LastError,
+		}
+	} else {
+		lm.RPCNode = nil
+	}
 	p.proxy.metricsMgr.mu.Unlock()
 
 	// R83 (2026-09-29): согласуем вместимость бэкенда с числом слотов модели.
@@ -406,6 +566,9 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 	// Опрос loading-прогресса (если есть активные загрузки — обновим
 	// LoadingModels и переключим poller на быстрый режим).
 	p.pollLoadingProgress(b)
+
+	// Состояние бэкенда известно достоверно.
+	return true
 }
 
 // adoptCapacityFromLoadedModels — R83 (2026-09-29): привести вместимость бэкенда
@@ -424,8 +587,14 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) {
 //     или AGENT_MAX_CONCURRENT_REQUESTS), значение оператора не трогаем;
 //   - меняем только когда есть что менять (иначе poller каждые 30 c писал бы
 //     состояние и вызывал autosave).
+//
+// R117 (2026-10-14): пустой список моделей — это НЕ «нечего делать», а факт
+// «загруженных моделей нет». Раньше len(models) == 0 отсекался здесь же, поэтому
+// слоты выгруженной модели оставались в RuntimeModelSlots (живой замер: unload →
+// отчёт всё ещё показывал maxConcurrentRequests=2 при count=0). Теперь пустой
+// список приводит к сбросу слотов — см. блок slots <= 0 ниже.
 func (p *llamaCppMetricsPoller) adoptCapacityFromLoadedModels(backendID string, models []types.LlamaCppModel) {
-	if p == nil || p.proxy == nil || backendID == "" || len(models) == 0 {
+	if p == nil || p.proxy == nil || backendID == "" {
 		return
 	}
 
@@ -444,7 +613,26 @@ func (p *llamaCppMetricsPoller) adoptCapacityFromLoadedModels(backendID string, 
 	}
 	if slots <= 0 {
 		// Слотов нет: либо старая сборка cppworker (не отдаёт max_slots/parallel),
-		// либо модель не в состоянии loaded. Поведение прежнее.
+		// либо модель не в состоянии loaded.
+		//
+		// R117 (2026-10-14): прежнее значение СБРАСЫВАЕМ. Раньше здесь был просто
+		// return, и вместимость оставалась от ПРЕДЫДУЩЕЙ загрузки — на живом стенде
+		// после unload /api/v1/backends показывал maxConcurrentRequests=2 при
+		// count=0 на узле. Выгрузка/загрузка — обычная смена состояния, и «сколько
+		// слотов сейчас» обязано следовать за ней; вместо истории резолвер отдаёт
+		// консервативную 1 (types.ResolveCapacity).
+		state := p.proxy.GetBackend(backendID)
+		if state != nil && state.RuntimeModelSlots != 0 {
+			old := state.RuntimeModelSlots
+			p.proxy.SetBackendModelSlots(backendID, 0)
+			if logger.Get() != nil {
+				logger.Get().Infow("llamaCppMetricsPoller: слотов у загруженной модели нет — вместимость сброшена",
+					"backend", backendID, "old_model_slots", old,
+					"loaded_models", len(models),
+					"enabled", types.CapacityFromModelSlotsEnabled())
+			}
+			return
+		}
 		if logger.Get() != nil {
 			logger.Get().Debugw("llamaCppMetricsPoller: слоты модели не распознаны, вместимость прежняя",
 				"backend", backendID, "loaded_models", len(models),
@@ -591,4 +779,33 @@ func capabilitiesOrFallback(cppCaps *types.ModelCapabilities, name, architecture
 	}
 	caps := types.CapabilitiesFromModelInfo(name, reasoningEnabled, architecture, maxContext, maxContext)
 	return &caps
+}
+
+// deviceLayersFromWire — R118.16 (2026-10-14): перевести точную раскладку слоёв
+// из ответа cppworker в тип состояния балансера.
+//
+// Отдельная функция, потому что поля анонимной структуры-декодера наружу не
+// отдаются. Пустой вход остаётся nil («cppworker не сообщил»), а не пустым
+// слайсом: потребитель обязан отличать «неизвестно» от «слоёв нет».
+func deviceLayersFromWire(in []struct {
+	Device string `json:"device"`
+	From   int    `json:"from"`
+	To     int    `json:"to"`
+	Count  int    `json:"count"`
+	Node   string `json:"node,omitempty"`
+}) []types.DeviceLayerRange {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]types.DeviceLayerRange, 0, len(in))
+	for _, r := range in {
+		out = append(out, types.DeviceLayerRange{
+			Device: r.Device,
+			From:   r.From,
+			To:     r.To,
+			Count:  r.Count,
+			Node:   r.Node,
+		})
+	}
+	return out
 }

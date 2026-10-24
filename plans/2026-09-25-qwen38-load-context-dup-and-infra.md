@@ -345,7 +345,7 @@ gguf_init_from_file: failed to open GGUF file models/qwen3.8:latest.gguf (No suc
 POST /api/models/load status=500
 GET  /api/v1/cppworker/adaptive/strategy status=404
 ```
-Клиент (Cline: Ollama, `http://192.168.50.26:18080`) просит `qwen3.8:latest`;
+Клиент (Cline: Ollama, `http://192.0.2.126:18080`) просит `qwen3.8:latest`;
 на диске — `Qwen3.8-27B-UD-Q4_K_M.gguf`.
 
 ### Доказательство

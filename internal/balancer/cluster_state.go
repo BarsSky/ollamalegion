@@ -201,11 +201,25 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			// как есть: тогда проекция — единственный источник, дублировать нечего.
 			// Сама проекция в metricsMgr остаётся нетронутой, поэтому /api/ps и
 			// внутренняя логика (выбор бэкенда, scoring) работают как прежде.
-			hasLoadedModels := len(metrics.LlamaCpp.LoadedModels) > 0
+			hasLoadedModels := false
+			for _, m := range metrics.LlamaCpp.LoadedModels {
+				// R119: «загружена» — только state, нормализованный в loaded.
+				// Модель в состоянии loading (загрузка в полёте) ещё не
+				// обслуживает запросы, и подавать её в metrics.Models как
+				// загруженную — тот же дефект, что и жёсткий status="loaded"
+				// в /api/v1/gguf/backends: оператор видит «загружено», пока
+				// cppworker сообщает state="loading", context_size=0.
+				if m.Name != "" && types.ModelStateUsable(m.State) {
+					hasLoadedModels = true
+					break
+				}
+			}
 			metrics.Models = make([]string, 0, len(metrics.Ollama.RunningModels)+len(metrics.LlamaCpp.LoadedModels))
 			if hasLoadedModels {
 				for _, m := range metrics.LlamaCpp.LoadedModels {
-					metrics.Models = append(metrics.Models, m.Name)
+					if types.ModelStateUsable(m.State) {
+						metrics.Models = append(metrics.Models, m.Name)
+					}
 				}
 				metrics.Ollama.RunningModels = nil
 			} else {
@@ -252,6 +266,19 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			metrics.LlamaCpp = *lm
 		}
 
+		// R119 (2026-10-15, пункт 4): происхождение параметров загрузки. Поллер
+		// cppworker про provenance не знает (это знание балансера: какой слой
+		// поставил значение), поэтому приписываем его здесь — тогда WebUI видит
+		// источник рядом со значением и на этой ветке API, а не только на
+		// /api/v1/gguf/backends.
+		if len(metrics.LlamaCpp.LoadedModels) > 0 {
+			for i := range metrics.LlamaCpp.LoadedModels {
+				if prov := p.LoadProvenanceJSON(id, metrics.LlamaCpp.LoadedModels[i].Name); len(prov) > 0 {
+					metrics.LlamaCpp.LoadedModels[i].Parameters = prov
+				}
+			}
+		}
+
 		// --- Round 32 #4 fix (2026-08-10): append LlamaCpp.LoadedModels в metrics.Models ---
 		// До этого фикса `metrics.Models` (используется WebUI Monitor как `b.models`)
 		// строился ТОЛЬКО из `Ollama.RunningModels` (line 127-130). Но для cppworker-бэкенда
@@ -272,7 +299,8 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 				seen[m] = true
 			}
 			for _, m := range metrics.LlamaCpp.LoadedModels {
-				if m.Name != "" && !seen[m.Name] {
+				// R119: loading-модель не «реально загружена» — см. выше.
+				if m.Name != "" && types.ModelStateUsable(m.State) && !seen[m.Name] {
 					metrics.Models = append(metrics.Models, m.Name)
 					seen[m.Name] = true
 				}
@@ -373,7 +401,9 @@ func (p *Proxy) GetQueueStats() QueueStats {
 	p.queueMgr.historyMu.RUnlock()
 
 	return QueueStats{
-		Admission: p.admission.stats(p.admissionWaitTimeout()),
+		// R117: в отчёт идёт РЕАЛЬНЫЙ бюджет ожидания (max(admission, auto-load)):
+		// UI показывает wait_max_sec именно как предел ожидания запроса.
+		Admission: p.admission.stats(p.admissionWaitBudget()),
 		// R78: current_size — сколько запросов ЖДЁТ слот в единой
 		// (admission-)очереди; legacy-канал QueueManager удалён, поэтому раньше
 		// здесь всегда был 0 и панель очереди показывала пустоту.
@@ -386,6 +416,9 @@ func (p *Proxy) GetQueueStats() QueueStats {
 		DispatchByAffinity: atomic.LoadInt64(&p.queueMgr.dispatchAffinity),
 		DispatchByLoad:     atomic.LoadInt64(&p.queueMgr.dispatchLoad),
 		DispatchByConfig:   atomic.LoadInt64(&p.queueMgr.dispatchConfig),
+		// R98 (S8): image-нагрузка видна на странице очереди, а не только в
+		// /api/v1/metrics (nil — если image-путь на стенде не используется).
+		Image: p.imageQueueStatsR98(),
 	}
 }
 

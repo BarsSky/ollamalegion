@@ -150,8 +150,10 @@ func TestBuildChatPrompt_ExplicitThinkWinsOverPerModel(t *testing.T) {
 	}
 }
 
-// containsThinkingInstruction — маркер soft-инструкции (thinking_lang.go):
-// требование обернуть рассуждение в теги <reasoning>.
+// containsThinkingInstruction — маркер soft-инструкции (thinking_lang.go).
+//
+// R114b (2026-10-13): инструкция больше НЕ требует тегов (модель использует канал
+// своего чат-шаблона), поэтому маркер — текстовая формулировка, а не "<reasoning>".
 func containsThinkingInstruction(prompt string) bool {
-	return strings.Contains(prompt, "<reasoning>")
+	return strings.Contains(prompt, "think step by step") || strings.Contains(prompt, "подумай пошагово")
 }

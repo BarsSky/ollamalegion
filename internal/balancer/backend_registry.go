@@ -725,23 +725,37 @@ func (p *Proxy) AdoptCapacityFromNode(backendID string, reported int) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-	// Операторский лимит — граница, которую узел не имеет права поднять.
-	if state.Backend.RuntimeMaxConcurrentRequests > 0 {
-		return
-	}
-	if state.Backend.MaxConcurrentReqs == reported {
+	// Операторский троттлинг — граница, которую узел не имеет права поднять.
+	// R121 (2026-10-15): владелец значения различается по RuntimeCapacityFromNode:
+	// если runtime-значение принадлежит УЗЛУ, повторная заявка узла имеет право
+	// его обновить (иначе после рестарта балансера запись застревала на статике
+	// конфига). Троттлинг оператора (runtime значение без владельца-ноды) не
+	// перезаписывается — резолвер применит его сам как понижение.
+	operatorThrottle := state.Backend.RuntimeMaxConcurrentRequests > 0 && !state.Backend.RuntimeCapacityFromNode
+
+	// Заявка узла — ФАКТ о его способности, поэтому она фиксируется всегда, в
+	// собственном поле (NodeClaimedCapacity). Оно переживает перезапуск балансера
+	// и не путается ни со статикой конфига, ни с «эхом» собственного ответа.
+	if state.Backend.NodeClaimedCapacity == reported && !operatorThrottle &&
+		state.Backend.RuntimeCapacityFromNode {
+		// Идемпотентно: heartbeat приходит раз в несколько секунд, а каждая
+		// запись тянет autosave state.json.
 		return
 	}
 
-	old := state.Backend.MaxConcurrentReqs
-	state.Backend.MaxConcurrentReqs = reported
-	state.Backend.RuntimeCapacityFromNode = true
-	state.Backend.RuntimeMaxConcurrentRequests = reported
+	old := state.Backend.NodeClaimedCapacity
+	state.Backend.NodeClaimedCapacity = reported
+	if !operatorThrottle {
+		state.Backend.MaxConcurrentReqs = reported
+		state.Backend.RuntimeCapacityFromNode = true
+		state.Backend.RuntimeMaxConcurrentRequests = reported
+	}
 
-	logger.Get().Infow("AdoptCapacityFromNode: вместимость бэкенда приведена к n_parallel узла",
+	logger.Get().Infow("AdoptCapacityFromNode: зафиксирована заявка узла о вместимости",
 		"backendId", backendID,
-		"oldMaxConcurrentReqs", old,
-		"newMaxConcurrentReqs", reported)
+		"oldNodeClaim", old,
+		"newNodeClaim", reported,
+		"operatorThrottle", operatorThrottle)
 
 	p.scheduleSave()
 }
@@ -791,6 +805,27 @@ func (p *Proxy) AdoptCppWorkerToken(backendID, reported string) {
 	p.scheduleSave()
 }
 
+// SetBackendRole — R118 (2026-10-14): роль бэкенда в раскладке слоёв
+// (главный / донор / самодостаточный). Решение оператора, поэтому оно обязано
+// ПЕРЕЖИТЬ рестарт балансера: живая проверка показала, что без сохранения роли
+// терялись после перезапуска, и главный оставался без узлов (rpcEnabled=false).
+// Отдельный метод, а не UpdateBackend: тот не пишет состояние на диск.
+func (p *Proxy) SetBackendRole(backendID, role string) bool {
+	if p == nil || backendID == "" {
+		return false
+	}
+	p.mu.Lock()
+	state, ok := p.backends[backendID]
+	if !ok || state == nil || state.Backend == nil {
+		p.mu.Unlock()
+		return false
+	}
+	state.Backend.Role = role
+	p.mu.Unlock()
+	p.scheduleSave()
+	return true
+}
+
 // SetBackendModelSlots — R83 (2026-09-29): записать фактические слоты модели.
 //
 // Отдельный сеттер, а не правка MaxConcurrentReqs: MaxConcurrentReqs — статическая
@@ -800,8 +835,16 @@ func (p *Proxy) AdoptCppWorkerToken(backendID, reported string) {
 // живом стенде. RuntimeModelSlots хранит ФАКТ и агентом не трогается, а итоговую
 // вместимость считает EffectiveMaxConcurrentRequests() (факт, ограниченный
 // операторским лимитом).
+//
+// R117 (2026-10-14): slots == 0 — это СБРОС, а не «нечего записывать». Загруженной
+// модели со слотами нет (выгружена / грузится / узел не отдал max_slots), значит
+// прежнее значение недействительно. Без сброса балансер жил со слотами ПРЕДЫДУЩЕЙ
+// модели: живой замер — unload после загрузки с max_slots=2 оставлял
+// maxConcurrentRequests=2 при count=0 на узле, а после следующей загрузки с
+// parallel=1 там же оставалось 1. То есть число было следом истории, а не фактом.
+// Резолвер (types.ResolveCapacity) при slots == 0 отдаёт консервативную 1.
 func (p *Proxy) SetBackendModelSlots(backendID string, slots int) {
-	if slots <= 0 {
+	if slots < 0 {
 		return
 	}
 	p.mu.Lock()
@@ -839,8 +882,43 @@ func (p *Proxy) AttachAgentToBackend(backendID, agentID string, agentPort int) {
 	state.mu.Unlock()
 }
 
-// MarkAgentContact — обновляет только LastAgentContact уже прикреплённого агента.
-// Round 13 (2026-07-10): используется в heartbeat-цикле после attach для
+// DetachAgentFromBackend — R118.10 (2026-10-14): узел ушёл, запись остаётся.
+//
+// ЗАЧЕМ. cppworker при штатной остановке (SIGTERM) делает best-effort
+// `DELETE /api/v1/backends/{id}` (cmd/cppworker/balancer_register.go). Если у
+// записи есть ЯВНАЯ роль в раскладке (main/donor/standalone) — это операторское
+// решение, и удалять его вместе с остановленным узлом нельзя: «остановил узел,
+// чтобы настроить» превращалось в «потерял роль и раскладку». Поэтому вместо
+// удаления снимаем признак агента: запись остаётся в списке (со статусом
+// offline), роль и раскладка целы, а вернувшийся агент прикрепится к той же
+// записи (dedup по endpoint) и роль вернётся через roleForBackend.
+//
+// Возвращает true, если запись найдена и агент откреплён.
+func (p *Proxy) DetachAgentFromBackend(backendID string) bool {
+	if p == nil || backendID == "" {
+		return false
+	}
+	p.mu.Lock()
+	state, ok := p.backends[backendID]
+	if !ok || state == nil || state.Backend == nil {
+		p.mu.Unlock()
+		return false
+	}
+	state.mu.Lock()
+	state.Backend.HasAgent = false
+	state.AgentID = ""
+	state.Backend.Status = types.StatusOffline
+	// Отсчёт «молчания» для авто-уборки начинается с этого момента; у записей с
+	// ролью уборка выключена (ghost_backend_reaper), но якорь пусть будет честным.
+	t := time.Now().UTC()
+	state.Backend.AgentSilentSince = &t
+	state.mu.Unlock()
+	p.mu.Unlock()
+	p.scheduleSave()
+	return true
+}
+
+// MarkAgentContact — обновляет только LastAgentContact уже прикреплённого агента.// Round 13 (2026-07-10): используется в heartbeat-цикле после attach для
 // лёжких обновлений (без race-condition на повторный attach).
 // Если backendID не найден или agentID не совпадает с прикреплённым — no-op.
 func (p *Proxy) MarkAgentContact(backendID, agentID string) {

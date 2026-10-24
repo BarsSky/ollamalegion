@@ -154,15 +154,46 @@ func (a *Agent) detectCppWorkerParallelism() int {
 	var parsed struct {
 		Config struct {
 			DefaultNParallel int `json:"defaultNParallel"`
+			// R119 (2026-10-15): режим планировщика. Указатель, чтобы отличить
+			// «cppworker явно сказал false» от «старая сборка поля не отдаёт»:
+			// в последнем случае поведение менять нельзя.
+			EnableBatchedParallel *bool `json:"enableBatchedParallel"`
 		} `json:"config"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		return 0
 	}
 	if parsed.Config.DefaultNParallel > 0 {
+		n := parsed.Config.DefaultNParallel
+		// R119 (2026-10-15): n_parallel — это КОНФИГУРАЦИЯ, а не способность.
+		//
+		// ЖИВОЙ ЗАМЕР (стенд, CPPWORKER_ENABLE_BATCHED_PARALLEL=false,
+		// CPPWORKER_N_PARALLEL=2, загружено parallel=2/max_slots=2). Два
+		// одновременных /api/chat НАПРЯМУЮ в cppworker:
+		//
+		//	A(long):  headers=1.09 c  firstData=1.09 c  total=12.29 c
+		//	B(short): headers=11.76 c firstData=11.76 c total=11.76 c  ← конец A
+		//
+		// То есть без batched-планировщика legacy-путь держит inst.mu на весь
+		// инференс (Round 8 race-fix) и llama_decode сериализуется — ровно как
+		// написано в ModelInfo.BatchedParallel («false = legacy Round 13
+		// multi-slot path с serialized llama_decode»). Агент же сообщал балансеру
+		// 2, балансер пропускал двух клиентов, и второй ждал МОЛЧА внутри
+		// cppworker: без X-Queue-Wait-Ms, без позиции в очереди и без строки в
+		// UI. Это и есть жалоба «два запроса с одной машины не разделяются».
+		//
+		// Поэтому при явном enableBatchedParallel=false заявляем 1: балансер
+		// поставит второго клиента в admission-очередь, где ожидание ВИДНО.
+		if n > 1 && parsed.Config.EnableBatchedParallel != nil && !*parsed.Config.EnableBatchedParallel {
+			fmt.Printf("[%s] detectCppWorkerParallelism: cppworker сообщил "+
+				"defaultNParallel=%d при enableBatchedParallel=false — сообщаем балансеру 1 "+
+				"(legacy-путь сериализует llama_decode; иначе второй клиент ждёт молча внутри cppworker)\n",
+				time.Now().Format(time.RFC3339), n)
+			return 1
+		}
 		fmt.Printf("[%s] detectCppWorkerParallelism: cppworker сообщил defaultNParallel=%d\n",
-			time.Now().Format(time.RFC3339), parsed.Config.DefaultNParallel)
-		return parsed.Config.DefaultNParallel
+			time.Now().Format(time.RFC3339), n)
+		return n
 	}
 	return 0
 }

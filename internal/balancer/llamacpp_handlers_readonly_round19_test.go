@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -36,9 +37,10 @@ type fileStub struct {
 }
 
 type stubFileEntry struct {
-	ModifiedAt string `json:"modifiedAt"`
-	Name       string `json:"name"`
-	SizeBytes  int64  `json:"sizeBytes"`
+	ModifiedAt   string `json:"modifiedAt"`
+	Name         string `json:"name"`
+	Quantization string `json:"quantization,omitempty"` // R60.3: cppworker отдаёт квантование
+	SizeBytes    int64  `json:"sizeBytes"`
 }
 
 // stubAliasEntry — алиас модели в ответе /api/models/files (R66d).
@@ -216,6 +218,70 @@ func TestRound19_HandleTags_NoLoaded_StillReturnsOnDisk(t *testing.T) {
 	}
 	if len(tagsResp.Models) > 0 && tagsResp.Models[0].Name != "model-X" {
 		t.Errorf("handleTags: expected name=model-X (without .gguf), got %q", tagsResp.Models[0].Name)
+	}
+}
+
+// TestRound19_HandleTags_OnDiskOnly_HasDetailsAndDigest — H6 (остаток аудита):
+// один .gguf на диске и НИ ОДНОЙ загруженной модели.
+//
+// До фикса запись из ветви «новых on-disk моделей» создавалась без Details, а
+// OllamaTag.Details — map без omitempty, поэтому клиент получал
+// "details":null (OpenWebUI/ollama list не могли показать карточку модели).
+// Заодно проверяем, что quantization из /api/models/files доезжает до
+// details.quantization_level, а digest имеет формат Ollama "sha256:<64 hex>".
+func TestRound19_HandleTags_OnDiskOnly_HasDetailsAndDigest(t *testing.T) {
+	proxy, _ := buildProxyWithStub(t,
+		[]stubFileEntry{
+			{
+				Name:         "Qwen3-Instruct-2507-Q4_K_M.gguf",
+				SizeBytes:    2_497_281_120,
+				ModifiedAt:   "2026-07-30T12:15:43Z",
+				Quantization: "Q4_K_M",
+			},
+		},
+		nil, // 0 loaded — вся запись строится из ветви новых on-disk моделей
+	)
+
+	req := httptest.NewRequest("GET", "/api/tags", nil)
+	w := httptest.NewRecorder()
+	proxy.llamaCppRouter.handleTags(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleTags: статус %d, body=%s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Models []struct {
+			Name    string                 `json:"name"`
+			Digest  string                 `json:"digest"`
+			Details map[string]interface{} `json:"details"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("handleTags: bad JSON: %v", err)
+	}
+	if len(resp.Models) != 1 {
+		t.Fatalf("handleTags: ожидали ровно 1 on-disk модель, получили %d: %+v",
+			len(resp.Models), resp.Models)
+	}
+
+	m := resp.Models[0]
+	if m.Details == nil {
+		t.Errorf("details = null (H6): on-disk модель без загруженных должна иметь непустой details; body=%s",
+			w.Body.String())
+	} else {
+		if got, _ := m.Details["format"].(string); got != "gguf" {
+			t.Errorf("details.format = %q, want gguf", got)
+		}
+		if got, _ := m.Details["parameter_size"].(string); got != "unknown" {
+			t.Errorf("details.parameter_size = %q, want unknown", got)
+		}
+		if got, _ := m.Details["quantization_level"].(string); got != "Q4_K_M" {
+			t.Errorf("details.quantization_level = %q, want Q4_K_M (поле quantization из /api/models/files)", got)
+		}
+	}
+
+	if !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(m.Digest) {
+		t.Errorf("digest = %q, want sha256:<64 hex>", m.Digest)
 	}
 }
 

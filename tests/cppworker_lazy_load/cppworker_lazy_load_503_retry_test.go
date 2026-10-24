@@ -295,14 +295,19 @@ func createTestProxyForCppWorker503Retry(t *testing.T, cppWorkerURL string) *bal
 }
 
 // TestCppWorker_LazyLoad_503Retry_RecoversFromRaceCondition —
-// cppworker возвращает 503 + "model is loading" на первые 2 запроса, на 3-й — 200.
-// Балансер должен:
-//   1. Получить 200 OK на клиентский /api/chat
-//   2. Сделать ровно 3 вызова POST /api/models/load (2 неудачных + 1 успешный)
-//   3. Время запроса >= суммы retry-интервалов (~6 секунд при retryInterval=3s)
+// cppworker возвращает 503 + "model is loading" на первые 2 запроса загрузки,
+// на 3-й — 200. Балансер должен:
+//   1. Получить 200 OK на клиентский запрос
+//   2. Сделать не меньше 3 вызовов POST /api/models/load (2 неудачных + 1 успешный)
 //
 // ЭТО ТЕСТ ДЛЯ ИСПРАВЛЕНИЯ RACE CONDITION: до фикса балансер возвращал бы
 // клиенту 503 "auto-load failed: model is loading" после первого же 503.
+//
+// R112-разбор (2026-10-15): «балансер сам пробует загрузку и повторяет её при
+// 503» — это контракт OpenAI-поверхности /v1/* (LlamaCppRouter +
+// ModelManager.ExecuteOperation). На Ollama-поверхности /api/* смешанного
+// кластера балансер загрузку не инициирует: её делает cppworker, а балансер
+// ждёт в транспорте — там этой логики нет и повторять 503 загрузки некому.
 func TestCppWorker_LazyLoad_503Retry_RecoversFromRaceCondition(t *testing.T) {
 	const failuresBeforeSuccess = int32(2)
 
@@ -323,7 +328,7 @@ func TestCppWorker_LazyLoad_503Retry_RecoversFromRaceCondition(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	req := httptest.NewRequest("POST", "/api/chat", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 

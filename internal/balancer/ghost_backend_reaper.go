@@ -140,6 +140,17 @@ func (p *Proxy) reapGhostBackends(now time.Time, ttl time.Duration) []string {
 			b.Status != types.StatusHealthy &&
 			b.Status != types.StatusDraining &&
 			state.ActiveReqs == 0
+		// R118 (2026-10-14): узел с ЯВНОЙ ролью в раскладке авто-уборка не трогает.
+		//
+		// Требование оператора: «оставлять узел в списке, так как может происходить
+		// настройка». Запись с ролью (main/donor/standalone) — решение человека:
+		// узел может молчать часами, пока его настраивают или пока он спит, и
+		// выкидывать его вместе с ролью из списка нельзя — иначе пропадёт и роль,
+		// и раскладка. Убираются только записи без роли (обычный auto-registered
+		// мусор).
+		if strings.TrimSpace(b.Role) != "" {
+			eligible = false
+		}
 		silent := ghostSilentSince(b)
 		if eligible && silent.IsZero() {
 			// Первое наблюдение записи без единого контакта агента: якорь

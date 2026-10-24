@@ -94,6 +94,10 @@
 | `CPPWORKER_WRITE_TIMEOUT` | duration | `30s` | `writeTimeout` | Env проигрывает flag | |
 | `CPPWORKER_TENSOR_SPLIT` | string | — | `tensorSplit` | (init-time) | |
 | `CPPWORKER_SPLIT_MODE` | int | — | `splitMode` | (init-time) | |
+| `CPPWORKER_RPC_SERVERS` | string | — | `cfg.RPCServers` | (init-time) | R101: `host:port,host:port` — узлы раскладки через llama.cpp RPC. Список принимается **целиком или отвергается** (частично принятый означал бы модель, разрезанную не так, как думал оператор); ошибка называет позицию и причину. Максимум 16 узлов. **Транспорт в текущей сборке не подключён** (C-мост не прокидывает `rpc_servers` в устройства llama.cpp) — включённый RPC даёт явное предупреждение в лог, а не тихую настройку |
+| `CPPWORKER_RPC_ENABLE` | bool | `false` | `cfg.RPCEnabled` | (init-time) | R101: запрошена раскладка. Непустой `CPPWORKER_RPC_SERVERS` включает её и сам |
+| `CPPWORKER_MAIN_GPU` | int | `0` | `cfg.DefaultMainGPU` | (init-time) | R101: индекс главного GPU (>0 — не первая карта) |
+| `CPPWORKER_LLAMA_BUILD` | string | — | `cfg.LlamaBuild` | (init-time) | R101: версия/коммит сборки llama.cpp. Узел сообщает её балансеру при регистрации (`types.Backend.BuildInfo`), балансер сравнивает у узлов одной раскладки: протокол RPC версионно-чувствителен, и расхождение видно в `POST /api/v1/placement/validate`, а не таймаутом загрузки. Не задано — проверка честно помечается неподтверждённой (`version_unknown`) |
 | `CPPWORKER_GPU_LAYERS` | int | — | `currentConfig.DefaultGPULayers` | (handlers path) | |
 | `CPPWORKER_CTX_SIZE` | int | — | `currentConfig.DefaultCtxSize` | (handlers path) | |
 | `CPPWORKER_BATCH_SIZE` | int | — | `currentConfig.DefaultBatchSize` | (handlers path) | |
@@ -128,6 +132,19 @@
 | `NODE_NAME` | string | — | (k8s node name, display) | (init-time) | Display only. |
 | `NODE_LABELS` | string | — | (k8s node labels, display) | (init-time) | Display only. |
 | `CPPWORKER_MODELS_RESCAN_SEC` | int | `30` | период фоновой проверки каталога моделей на диске | (init-time) | **R93 (2026-10-09)**: живой инвентарь моделей. Воркер сам сверяет каталог с диском и пишет в лог, что изменилось (`added`/`removed`/`resized`); `/api/models/files` пересканирует каталог по этому TTL, `POST /api/models/refresh` — немедленно. Так удаление/добавление `.gguf` (в т.ч. вне контейнера) видно без перезапуска. `0` — фоновая проверка выключена. Недоступный каталог (удалённый bind-mount) больше не показывает старый список: ответ содержит `count=0` и `dirError`. |
+| `CPPWORKER_LOAD_STALL_SEC` | int | `300` | watchdog загрузки модели (сек) | (init-time) | **R231 (2026-10-24)**: если загрузка не двигается N секунд, воркер печатает стек горутин и отменяет её (`model load cancelled`). 300 с достаточно для моделей до ~8–10 ГБ; **для 15+ ГБ моделей на медленном диске ставьте `1200`** — иначе загрузка обрывается на середине (живой замер: 15.3-ГБ GGUF грузился ~280–480 с, дефолт его убивал). Не путать с `CPPWORKER_WRITE_TIMEOUT` (HTTP-запись ответа). |
+
+---
+
+## WebUI ENV vars
+
+| Env var | Type | Default | Notes |
+|---------|------|---------|-------|
+| `WEBUI_DEMO_MODE` | bool | `0` | **R232 (2026-10-24)**: демо-режим панели. `1` — WebUI показывает синтетический сценарий (клиенты → балансер → очередь → донор RPC → AutoTune), вход не требуется (гость `viewer`), все `/api/`-запросы перехватываются в браузере (реальный балансер не опрашивается), мутации запрещены (`403 read-only`). Включается **только** этой переменной при старте контейнера; переключателя в UI нет. Подробности: [webui-demo.md](webui-demo.md). |
+| `API_HOST` / `API_PORT` | string/int | `loadbalancer` / `18081` | Куда nginx панели проксирует `/api/` (admin-плоскость балансера). |
+| `LB_PORT` | int | `18080` | Прокси-поверхность балансера для `/v1/`. |
+| `CPPWORKER_HOST` / `CPPWORKER_PORT` | string/int | `cppworker-gpu` / `18092` | Поверхность воркера для `/api/worker`. |
+| `REFRESH_INTERVAL` | int (мс) | `5000` | Интервал автообновления данных в UI. |
 
 ---
 

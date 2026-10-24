@@ -111,6 +111,16 @@
     border-left: 3px solid var(--accent);
 }
 
+/* R112 (2026-10-11): смешанный стенд llama.cpp + Ollama - маркер называет оба
+   типа («llama.cpp + Ollama»), поэтому строке разрешён перенос: иначе название
+   второго типа обрезалось бы многоточием и состав кластера снова стал бы
+   нечитаемым. */
+.backend-engine-badge.engine-mixed .engine-label {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+}
+
 /* ===== Nav (single-line, max 80px tall condensed) ===== */
 .nav {
     flex: 1;

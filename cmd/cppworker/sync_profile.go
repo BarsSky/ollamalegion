@@ -184,6 +184,34 @@ func (ps *profileSyncerT) fetchNow(ctx context.Context) error {
 	return ps.fetchOnce(ctx)
 }
 
+// lazyLoadProfileFor — профиль модели для пути ленивой загрузки, с реанимацией
+// ПУСТОГО кэша (R228).
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. Пустой кэш — не «у модели нет профиля»: после
+// пересоздания воркера pull-синхронизация приходит позже, и загрузка молча
+// поднимала модель на env-дефолтах. Теперь первая же загрузка, которой нужен
+// профиль (окно/R135-окно/kv), тянет профили один раз по месту.
+//
+// R229: функция используется ДВАЖДЫ за загрузку — при выборе окна (профиль
+// важнее env-дефолта) и при слиянии остальных полей. Повторного запроса нет:
+// после первого успешного fetchNow кэш уже не пуст.
+func lazyLoadProfileFor(modelName string) *types.LlamaCppModelProfile {
+	if profileSyncer == nil {
+		return nil
+	}
+	prof := profileSyncer.applyProfileOnLoad(modelName)
+	if prof == nil {
+		if profileSyncer.snapshotSize() == 0 {
+			if err := profileSyncer.fetchNow(context.Background()); err != nil {
+				logger.Get().Warnw("lazy-load: не удалось подтянуть профили моделей — "+
+					"использую параметры по умолчанию", "model", modelName, "error", err)
+			}
+			prof = profileSyncer.applyProfileOnLoad(modelName)
+		}
+	}
+	return prof
+}
+
 // applyProfileOnLoad — вызывается из handleLoadWithParams / handleReloadModel.
 // Возвращает профиль для модели (nil если нет) и merged с effective defaults.
 //
@@ -353,6 +381,7 @@ func applyProfileToLoadRequest(
 	contextSize, batchSize, gpuLayers *int,
 	flashAttnType *int,
 	kvCacheType *string,
+	parallel *int,
 ) (allowed bool) {
 	if profile == nil {
 		return true
@@ -408,6 +437,29 @@ func applyProfileToLoadRequest(
 			kvCacheType = &v
 		} else if *kvCacheType == "" {
 			*kvCacheType = profile.KVCacheType
+		}
+	}
+	// R135 (2026-10-16): PARALLEL из профиля. Раньше это поле профиля здесь НЕ
+	// применялось вовсе (функция знала только ctx/batch/layers/flash/kv), поэтому
+	// путь, идущий через профиль (ленивая загрузка по запросу клиента и
+	// profile-sync reload), поднимал модель с ОДНИМ слотом независимо от того,
+	// что оператор выставил в панели. Живой замер инструмента
+	// scripts/e2e/02-model-params.js: профиль parallel=2 → факт parallel=1,
+	// maxSlots=1 (в логе воркера `slot manager initialized maxSlots:1,
+	// parallel:1, defaultNParallel:2`), тогда как ЯВНЫЙ parallel=2 в запросе
+	// загрузки даёт n_seq_max=2 и maxSlots=2 — то есть сам воркер исправен, терял
+	// именно профиль. Последствие для оператора: «поставил 2 слота, а второй
+	// клиент ждёт» — ровно то, на что жаловались («перезагрузка с совсем другими
+	// параметрами, не теми что указывал в полях»).
+	//
+	// Приоритет тот же, что у остальных полей: значение из запроса клиента
+	// побеждает, профиль заполняет только пустое (0 = наследовать).
+	if profile.Parallel > 0 {
+		if parallel == nil {
+			v := profile.Parallel
+			parallel = &v
+		} else if *parallel == 0 {
+			*parallel = profile.Parallel
 		}
 	}
 	return true

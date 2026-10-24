@@ -1579,6 +1579,83 @@ curl -X POST http://localhost:18081/api/v1/agents/heartbeat \
 | `dispatch_by_load` | int64 | Запросов, направленных через **Resource-Aware** выбор (свободные ресурсы) |
 | `dispatch_by_config` | int64 | Запросов, направленных по **весам/конфигурации** (fallback) |
 
+##### Блок `image` (R98 / S8 плана 2026-10-07)
+
+Появляется, когда на стенде есть image-бэкенды (`image_cpp`) или был image-трафик.
+На чисто текстовом стенде ключа нет: нулевой image-блок выглядел бы как
+«image-путь задействован».
+
+```json
+{
+  "image": {
+    "in_flight": 1,
+    "total": 12,
+    "ok": 10,
+    "failed": 1,
+    "rejected": 0,
+    "accepted": 1,
+    "finished": 11,
+    "rps": 0.05,
+    "avg_duration_ms": 4800,
+    "backends": ["img-1", "img-2"],
+    "backends_in_flight": { "img-1": 1 },
+    "recent": [
+      { "id": "img-7", "backendId": "img-1", "model": "sd:flux", "path": "/v1/images/generations",
+        "batch": 1, "status": "accepted", "width": 1024, "height": 1024, "steps": 20 }
+    ]
+  }
+}
+```
+
+| Поле | Смысл |
+|---|---|
+| `in_flight` | Сколько генераций идёт прямо сейчас (**int**, не int64 — как в `/api/v1/metrics`) |
+| `total` / `ok` / `failed` / `rejected` | Стартовало / успешно / с ошибкой / отклонено гейтом VRAM (складывать нельзя: `accepted` и `finished` — подмножества) |
+| `rps` | Запросов в секунду по скользящему окну 60 с |
+| `avg_duration_ms` | Средняя длительность завершённых запросов, мс |
+| `backends` | id зарегистрированных image-бэкендов (детерминированный порядок) |
+| `backends_in_flight` | По какому узлу сколько генераций: без этого видно только суммарное «в полёте», и непонятно, кого ждать |
+| `recent` | Лента последних запросов (id, модель, размеры, шаги, статус) — запись появляется сразу на старте, а не только на финише: долгая генерация иначе выглядела бы как тишина |
+
+Те же ключи отдаются в `/api/v1/metrics` в блоке `image` (общий источник —
+`imageRequestStore`), плюс там есть разбивка по каждому бэкенду целиком.
+
+##### Пачка изображений: `n > 1` раскладывается по узлам (R99 / S8 плана 2026-10-07)
+
+sd.cpp не умеет делить ОДНУ генерацию по GPU, но `n` изображений — это `n`
+**независимых** задач: балансер считает их параллельно на разных image-бэкендах и
+склеивает ответ. Это единственное настоящее ускорение imageworker'а без форка
+движка.
+
+| Поверхность | Число картинок | Раскладывается |
+|---|---|---|
+| `POST /v1/images/generations` | `n` | да |
+| `POST /sdapi/v1/txt2img` | `batch_size` × `n_iter` | да |
+| `POST /api/image/generate` | `batch_count` | **нет** — это постановка асинхронной джобы (202 + job id), у неё нет «общего ответа» из картинок |
+| `POST /v1/images/edits`, `/variations` | — | **нет** — multipart-форма и иная семантика `n` |
+
+Условия раскладки: картинок больше одной, узлов `image_cpp` не меньше двух, и
+**VRAM-гейт с локом берутся на каждый узел** (`beforeGeneration`). Узел, чей гейт
+отказал (занят, не хватает VRAM), в раскладке не участвует; если готовых узлов
+меньше двух — работает обычный одиночный путь, поведение не меняется.
+
+Ответ — обычный ответ поверхности, склеенный из ответов задач (у OpenAI
+объединяется `data[]`, у A1111 — `images[]`; `parameters`/`info` берутся от первой
+задачи, потому что описывают запрос, а не картинку). Порядок картинок = порядок
+задач. Дополнительные заголовки:
+
+| Заголовок | Смысл |
+|---|---|
+| `X-LB-Image-Batch` | `2 backends / 4 images` — раскладка состоялась |
+| `X-LB-Image-Batch-Parts` | `img-a=2,img-b=2` — кто сколько считал |
+| `X-LB-Image-Batch-Failed-Backend` | узел, из-за которого пачка упала |
+
+**Отказ честный, а не частичный:** если хотя бы одна задача упала, клиент получает
+ошибку с указанием узла (и исходный текст движка), а не «3 картинки вместо 4».
+Каждая задача пишется в статистику отдельно — видно в `/api/v1/queue/stats` и
+`/api/v1/metrics` (блок `image`), поэтому на живом стенде можно убедиться, что
+пачка действительно разошлась.
+
 > **💡 Как работает dispatch:**
 > 1. **Model Affinity** — запрос идёт на бэкенд, где модель уже загружена (этапы 1–3 в `selectBackend`)
 > 2. **Resource-Aware** — выбор по свободным ресурсам (GPU, VRAM, CPU) с prediction bonus
@@ -1684,6 +1761,363 @@ curl -X POST http://localhost:18081/api/v1/agents/heartbeat \
   "message": "reconciliation triggered"
 }
 ```
+
+---
+
+### Backend Groups (логические бэкенды, R92 / S2 плана 2026-10-07)
+
+Логический бэкенд — группа физических узлов, между которыми разрезана **одна**
+модель (мастер + воркеры RPC). Для балансера такая группа — ОДИН бэкенд: один
+health, один слот в очереди, один `X-Backend-ID`. Это не репликация: копия
+требует, чтобы модель целиком влезла в каждый узел, а группа существует ровно
+потому, что целиком она не влезает ни в один.
+
+Конфигурация — `balancing.backendGroups[]`:
+
+```json
+{
+  "balancing": {
+    "backendGroups": [
+      {
+        "id": "g1",
+        "model": "qwen3-14b*",
+        "strategy": "layer",
+        "reason": "14B не влезает в 8 ГБ одной карты",
+        "members": [
+          { "backendId": "cppworker-a", "role": "master" },
+          { "backendId": "cppworker-b", "role": "worker", "rpcEndpoint": "192.0.2.11:50052" }
+        ]
+      }
+    ],
+    "placement": {
+      "enabled": true,
+      "models": [{ "model": "qwen3-14b*", "strategy": "sharded" }]
+    }
+  }
+}
+```
+
+Правила валидации (`types.ValidateBackendGroups`, видны в предупреждениях при
+загрузке и в `GET /api/v1/placement`): уникальный `id`, непустая маска `model`,
+`strategy` ∈ `layer|row`, ровно один `master`, минимум два участника, у каждого
+воркера обязателен `rpcEndpoint`.
+
+#### `GET /api/v1/placement` — блок `groups`
+
+Состояние каждой группы: состав с ролями, health каждого узла, причина
+деградации, суммарный свободный VRAM и слоты.
+
+```json
+{
+  "groups": [
+    {
+      "id": "g1",
+      "model": "qwen3-14b*",
+      "strategy": "layer",
+      "masterBackendId": "cppworker-a",
+      "members": [
+        { "backendId": "cppworker-a", "role": "master", "registered": true, "healthy": true,
+          "vramFreeMB": 3000, "vramTotalMB": 8192, "vramKnown": true },
+        { "backendId": "cppworker-b", "role": "worker", "rpcEndpoint": "192.0.2.11:50052",
+          "registered": true, "healthy": true, "vramFreeMB": 5000, "vramTotalMB": 8192, "vramKnown": true }
+      ],
+      "vramFreeMB": 8000,
+      "vramTotalMB": 16384,
+      "vramKnownMembers": 2,
+      "slots": 1,
+      "loadedModels": ["gemma-3-4b", "qwen3-14b"],
+      "healthy": true,
+      "degraded": false,
+      "usable": true
+    }
+  ],
+  "backendGroupWarnings": [],
+  "placement": { "enabled": true, "fallback": "error", "models": [] },
+  "backendGroups": []
+}
+```
+
+С `R102` GET дополнительно отдаёт **сырые** `placement` и `backendGroups` (то, что
+принимает `PUT`), а с `R104` — `loadedModels` в состоянии группы и её узлов: при
+«Разъединить» эти модели будут выгружены, и окно объединения показывает список ДО
+подтверждения, а не оставляет оператора узнавать об этом по таймауту следующего
+запроса.
+
+Семантика полей:
+
+| Поле | Смысл |
+|---|---|
+| `healthy` | Жив ли **мастер** — «группа жива, пока жив мастер» |
+| `degraded` | Раскладка исполнима не полностью: выпал мастер ИЛИ хотя бы один воркер |
+| `usable` | `healthy && !degraded` — только такая группа маршрутизирует запросы |
+| `vramFreeMB` / `vramTotalMB` | **Сумма** по узлам: при layer/row split слои лежат на разных картах |
+| `vramKnownMembers` | Сколько узлов отдали метрики VRAM (числа не выдумываются) |
+| `slots` | Слоты **мастера**, а не сумма по узлам (иначе очередь переоценит вместимость) |
+| `loadedModels` | Что загружено на узлах группы (R104): при «Разъединить» это и будет выгружено. Есть и у каждого `members[]` |
+
+Решение политики для модели дополнительно содержит `groupId` и `groupMembers`.
+Если группа не готова, решение помечается `degraded: true` с числами в `reason`
+(сколько нужно и сколько доступно по узлам), и дальше работает общий механизм §6:
+`fallback=error` → HTTP 503 с блоком `placement`, `fallback=single` → обслуживание
+одним бэкендом с заголовком `X-LB-Placement-Fallback: sharded`.
+
+#### `GET /api/v1/backends` — ключ `groups`
+
+Тот же список состояний групп (при наличии хотя бы одной группы). Отдельным
+ключом, чтобы не менять формат массива `backends`: физические узлы группы там
+остаются обычными записями.
+
+#### `PUT /api/v1/placement` — применить политику и логические бэкенды (R100 / S5-S6)
+
+«Запись `balancing.placement`»: до R100 сервер умел только предлагать (см. `plan`
+и `validate` ниже), а применить результат было нечем — мастер настройки и окно
+объединения упирались в ручную правку `config.json`.
+
+```json
+{
+  "placement": {
+    "enabled": true, "fallback": "error",
+    "models": [{ "model": "qwen3-14b*", "strategy": "sharded", "reason": "раскладка на две машины" }]
+  },
+  "backendGroups": [{
+    "id": "g1", "model": "qwen3-14b*", "strategy": "layer",
+    "members": [
+      { "backendId": "cppworker-a", "role": "master" },
+      { "backendId": "cppworker-b", "role": "worker", "rpcEndpoint": "192.0.2.11:50052" }
+    ]
+  }],
+  "dryRun": false,
+  "allowWarnings": false
+}
+```
+
+Поведение:
+
+| Аспект | Как есть |
+|---|---|
+| **Полная замена, не merge** | Присланные `placement` и `backendGroups` заменяют секции целиком — иначе нельзя выразить удаление (снятие правила, «Разъединить» группу) |
+| Валидация до применения | Те же проверки, что у конфига при загрузке (`PlacementSettings.Validate` + `ValidateBackendGroups`). Ошибка → HTTP 400, `applied: false`, **ничего не меняется** |
+| `allowWarnings: true` | Применить, несмотря на предупреждения (например legacy-стратегию `rpc`). Замечания всё равно перечисляются в ответе |
+| `dryRun: true` | Только проверить: `valid`, `warnings`, `applied: false`, конфиг не сохраняется |
+| Применение | Сразу к живому балансеру (политика + реестр групп), затем запись файла — как у остальных админ-операций |
+| `persisted` / `persistError` | В bundled-стеке `config.json` смонтирован только для чтения: политика **действует**, но `persisted: false` и причина в `persistError`. После рестарта стенд вернётся к файлу — ответ об этом говорит прямо |
+
+Ответ (200):
+
+```json
+{
+  "success": true, "applied": true, "persisted": true,
+  "warnings": [],
+  "placement": { "enabled": true, "fallback": "error", "models": ["…"] },
+  "groups": [ { "id": "g1", "usable": false,
+                "degradeReason": "узел cppworker-b (worker) не зарегистрирован в балансере" } ],
+  "persistError": "",
+  "hint": "политика применена к живому балансеру; при persisted=false после рестарта стенд вернётся к конфиг-файлу"
+}
+```
+
+Состояние групп возвращается **после** применения — по нему видно, собралась ли
+раскладка на самом деле, а не только записалась ли она в файл.
+
+`GET /api/v1/placement` — состояние, `PUT` — применение; остальные методы → 405.
+
+С `R102` GET отдаёт ещё и **сырые секции** — `placement` (правила `models[]`/`classes[]`
+как они записаны) и `backendGroups` (конфиг групп). Это нужно редактирующему UI: PUT
+заменяет секции целиком, поэтому окно объединения обязано перенести чужие правила и
+группы как есть. В `decisions` для этого данных нет — там РЕЗУЛЬТАТ резолва, по которому
+нельзя восстановить, что написал оператор. Круг «GET → дописать своё → PUT» проверен
+тестом `TestPlacementEndpoint_RawConfigForEditing_R102`.
+
+#### `POST /api/v1/placement/validate` — сухой прогон композиции (R95 / S4)
+
+Проверяет ПРЕДЛАГАЕМЫЙ состав кластера **до сохранения** и ничего не меняет
+(правило стенда: WebUI только предлагает). Проверки — §7 плана
+2026-10-07: доступность узлов и RPC-портов, совместимость версий llama.cpp,
+сумма свободного VRAM узлов против весов с запасом 25 %, память под KV при
+заданном `nCtx`, оценка трафика раскладки по §3, подсказка «достаточно single»,
+совместимость типов бэкендов, однородность GPU.
+
+Тело запроса:
+
+```json
+{
+  "group": {
+    "id": "g1", "model": "qwen3-14b", "strategy": "layer",
+    "members": [
+      { "backendId": "cppworker-a", "role": "master" },
+      { "backendId": "cppworker-b", "role": "worker", "rpcEndpoint": "192.0.2.11:50052" }
+    ]
+  },
+  "model": {
+    "name": "qwen3-14b", "backendType": "llama_cpp",
+    "sizeBytes": 8589934592, "hiddenSize": 4096, "layers": 32,
+    "nCtx": 65536, "kvLayers": 32, "kvHeads": 8, "kvHeadDim": 128
+  },
+  "lang": "ru",
+  "bandwidthMBps": 112,
+  "prefillTokens": 512,
+  "tokensPerSecond": 30,
+  "requireHomogeneous": true,
+  "skipProbes": false
+}
+```
+
+Чего нет в запросе — берётся из живого состояния балансера: health, VRAM и RAM
+узлов (метрики), тип бэкенда, «личность» GPU (метки `gpu:*`/`sm_*`), размер модели
+(профиль/метрики). `bandwidthMBps` по умолчанию 112 МБ/с (1 Гбит/с по §3).
+
+Ответ:
+
+```json
+{
+  "success": true,
+  "dryRun": true,
+  "lang": "ru",
+  "groupId": "g1",
+  "model": "qwen3-14b",
+  "hasErrors": true,
+  "errors": [
+    {
+      "check": "vram_sum_insufficient",
+      "level": "error",
+      "target": "g1",
+      "text": "нужно ≈10.0 ГБ (веса 8.0 ГБ + запас 25%), доступно 4.0 ГБ по 2 узл(ам) (максимум на одном узле 2.0 ГБ)",
+      "params": { "needMB": 10240, "availableMB": 4096, "maxNodeMB": 2048, "nodeCount": 2, "safety": 1.25 }
+    }
+  ],
+  "warnings": [],
+  "hints": [],
+  "issues": [],
+  "configWarnings": [],
+  "checks": ["node_unreachable", "rpc_unreachable", "version_mismatch", "version_unknown",
+             "vram_sum_insufficient", "kv_ram_insufficient", "kv_unknown", "traffic_row_high",
+             "fits_single", "backend_type_mismatch", "homogeneous"],
+  "hint": "сухой прогон: ничего не сохранено и не изменено — примените настройку отдельной операцией конфига"
+}
+```
+
+Поля замечания:
+
+| Поле | Смысл |
+|---|---|
+| `check` | Стабильный идентификатор проверки (`CheckID`) — UI рисует свои подписи по нему + `params` |
+| `level` | `error` (собирать нельзя) \| `warning` (можно, но осознанно) \| `hint` (подсказка) |
+| `target` | К чему относится: id узла или id группы |
+| `text` | Готовый текст на языке `lang` (ru/en) — для логов, CLI и API-ответа «как есть» |
+| `params` | ЧИСЛА (МБ, байты, проценты, nCtx) для машинной обработки |
+
+Что валидатор **не** выдумывает:
+
+- **Версия llama.cpp.** Узел её сегодня не сообщает (её нет ни в heartbeat агента,
+  ни в метриках cppworker), поэтому вместо ложной ошибки отдаётся `warning`
+  `version_unknown` — «совместимость протокола RPC не подтверждена». Само поле
+  появится вместе с реальным транспортом (S1).
+- **KV.** Без `kvLayers`/`kvHeads`/`kvHeadDim` проверка `nCtx` помечается
+  `hint`-ом `kv_unknown`, а не считается пройденной.
+- **Трафик.** Без измеренной `bandwidthMBps`/`tokensPerSecond` абсолютная задержка
+  считается, а доля времени токена — нет (`-1` в оценке).
+
+`configWarnings` — структурные ошибки самой группы (нет мастера, воркер без
+`rpcEndpoint`, один узел). Они приходят строками русского конфиг-валидатора
+(`types.ValidateBackendGroups`); сведение их в тот же локализованный каталог —
+работа S5, где UI начнёт рисовать подписи по `check`.
+
+---
+
+#### `POST /api/v1/placement/plan` — предлагаемый план размещения (R96 / S5)
+
+Серверная часть шага «состав кластера вместо выбора режима»: мастер показывает,
+какая модель на что ложится, **с числами**, и получает готовый фрагмент конфига.
+Ничего не применяет (правило стенда: WebUI только предлагает).
+
+Тело запроса (все поля кроме `models[].name` необязательны):
+
+```json
+{
+  "models": [
+    { "name": "qwen3-14b", "sizeBytes": 8589934592, "hiddenSize": 4096, "layers": 32, "nCtx": 32768 }
+  ],
+  "lang": "ru",
+  "bandwidthMBps": 112,
+  "prefillTokens": 512,
+  "tokensPerSecond": 30,
+  "requireHomogeneous": false,
+  "allowDegraded": false,
+  "singleOnly": false
+}
+```
+
+`models` пустой означает «планировать все известные стенду модели» (профили
+`llamaCppModelProfiles` + каталог GGUF-файлов на узлах, R91); их число приходит в
+`discoveredModels`. Размер модели, не заданный в запросе, берётся из профиля или
+из метрик загруженной модели.
+
+Как выбирается стратегия (матрица §8 плана):
+
+| Условие | Предложение |
+|---|---|
+| размер модели неизвестен | `single` + `degraded` + подсказка «нет профиля/метрик» |
+| влезает в ≥2 узла (и `singleOnly=false`) | `replicated`: копии дают кратную пропускную способность |
+| влезает ровно в один узел | `single` |
+| не влезает ни в один, но влезает в **сумму** ≥2 узлов | `sharded` + предложенная группа (мастер — узел с большим свободным VRAM) |
+| не влезает никуда | `single` + `degraded` + числа (нужно / максимум / суммарно) |
+
+Ответ:
+
+```json
+{
+  "success": true,
+  "dryRun": true,
+  "lang": "ru",
+  "discoveredModels": 2,
+  "plans": [
+    {
+      "model": "qwen3-14b", "strategy": "sharded", "source": "proposal",
+      "reason": "ни один узел не вмещает модель (нужно 10.0 ГБ, максимум свободно 6.0 ГБ), а сумма по 2 узлам (12.0 ГБ) — вмещает: раскладка слоями",
+      "groupId": "group-qwen3-14b",
+      "backendGroup": {
+        "id": "group-qwen3-14b", "model": "qwen3-14b", "strategy": "layer",
+        "members": [
+          { "backendId": "cppworker-a", "role": "master" },
+          { "backendId": "cppworker-b", "role": "worker", "rpcEndpoint": "192.0.2.11:50052" }
+        ]
+      },
+      "traffic": {
+        "layer": { "bytesPerToken": 8192, "tokenOverheadMs": 0.073, "tokenOverheadPercent": 0.22, "prefillMs": 37.4, "known": true },
+        "row":   { "bytesPerToken": 262144, "tokenOverheadMs": 2.34, "tokenOverheadPercent": 7.03, "prefillMs": 1198, "known": true }
+      },
+      "issues": [],
+      "notes": ["порт RPC воркеров предложен по умолчанию (50052) — проверьте его в валидаторе"],
+      "rule": { "model": "qwen3-14b", "strategy": "auto",
+                "auto": { "prefer": ["sharded", "single"], "allowDegraded": false } },
+      "sizeGB": 8.0, "needGB": 10.0, "maxNodeGB": 6.0, "sumFreeGB": 12.0,
+      "knownSize": true, "degraded": false
+    }
+  ],
+  "placement": { "enabled": true, "fallback": "error", "models": ["…rule…"] },
+  "backendGroups": ["…backendGroup…"],
+  "warnings": [],
+  "hint": "Это предложение, а не применение: политика записывается отдельной операцией конфига после подтверждения."
+}
+```
+
+Что важно в семантике:
+
+- **`rule.strategy = "auto"`, а не «застывшая» стратегия.** Состав кластера и
+  свободный VRAM меняются, поэтому в политику пишется `auto` с
+  `prefer: [<предложенная>, "single"]`: сегодня он выберет ровно то, что оператор
+  увидел в плане, а завтра — то, что соответствует стенду.
+- **`traffic` считается только для `sharded`** (у `single`/`replicated`
+  межсетевого обмена между узлами нет) и сразу для обеих стратегий — оператор
+  выбирает между `layer` и `row` по числам, а не «на глаз».
+- **`issues`** — тот же валидатор §7 (`POST /api/v1/placement/validate`),
+  приложенный к предложенной раскладке.
+- **Занятые GPU не переиспользуются**: узлы, уже отданные воркерами
+  существующих групп, и image-бэкенды в предложение не попадают.
+- **`warnings`** — структурные ошибки предложенных групп (например, отсутствующий
+  `rpcEndpoint`, если у узла неизвестен host).
+- **Порт RPC воркера угадывается** (`host:50052`) и помечается в `notes`:
+  реальный порт знает только оператор, а проверит его валидатор.
 
 ---
 

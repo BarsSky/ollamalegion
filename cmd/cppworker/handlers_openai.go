@@ -182,6 +182,27 @@ type openAIChatMessage struct {
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 	Name       string           `json:"name,omitempty"`
+
+	// ReasoningContent — R106 (2026-10-11): reasoning ПРЕДЫДУЩЕГО ответа
+	// ассистента, который клиент присылает ОБРАТНО в истории.
+	//
+	// OpenAI-поверхность cppworker САМА отдаёт `reasoning_content`
+	// (handlers_openai.go:630-690), а клиент (Cline/OpenWebUI/OpenAI SDK) при
+	// продолжении сохранённой сессии отправляет историю целиком, включая это
+	// поле. Строгий декодер отвечал
+	//
+	//	400 {"error":"invalid JSON: json: unknown field \"reasoning_content\""}
+	//
+	// Ровно тот же класс дефекта, что `thinking` на Ollama-поверхности
+	// (handlers_chat.go, chatMessage.Thinking).
+	//
+	// Принимается и в промпт не попадает (openAIToChatMessage переносит только
+	// role/content/tool_calls).
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+
+	// Thinking — тот же history-echo в Ollama-написании: клиент с одним кодом на
+	// оба API (и балансер в mixed-режиме) может прислать его и сюда.
+	Thinking string `json:"thinking,omitempty"`
 }
 
 // openAIToChatMessage converts an openAIChatMessage slice to chatMessage slice
@@ -303,9 +324,11 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req openAIChatCompletionRequest
-	// Round 36 Phase 2: strict JSON decoder. Rejects unknown fields per
-	// the contract — catches client bugs like `max_tokens` vs `maxTokens`.
-	if err := types.DecodeJSONRequest(r.Body, types.MaxStreamingBodyBytes, &req); err != nil {
+	// R106c (2026-10-12): терпимое декодирование — /v1/chat/completions это
+	// клиентский API (Cline в OpenAI-режиме, Roo Code, OpenAI SDK шлют свои
+	// расширения: stream_options, parallel_tool_calls, reasoning_effort …).
+	// Незнакомые поля игнорируем, как это делает сам OpenAI/llama.cpp.
+	if err := decodeClientJSON(r, types.MaxStreamingBodyBytes, &req, "handleV1ChatCompletions"); err != nil {
 		switch {
 		case errors.Is(err, types.ErrBodyEmpty):
 			writeError(w, http.StatusBadRequest, "empty request body")
@@ -359,11 +382,10 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.NumCtx)
 	if err != nil {
-		if isModelLoadingError(err) {
-			writeLoadingResponse(w, req.Model, err)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
+		// R119 (2026-10-15): 503/404/500 — одна точка перевода (см.
+		// writeModelLoadError). До этого неизвестная модель давала 500 с пустым
+		// телом, и OpenAI-клиент не мог показать причину.
+		writeModelLoadError(w, req.Model, err)
 		return
 	}
 	// R62 (2026-09-14): use actualModel для всех downstream calls (chat template,
@@ -545,7 +567,20 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				writeCppWorkerErrorWithBridgeInfo(w, statusCode, "chat completions (tool) failed", err)
 				return
 			}
-			if calls := parseToolCallsFromOutput(result.Output); len(calls) > 0 {
+			// R113: схема инструментов запроса — arguments приводится к объекту.
+			//
+			// R216 (2026-10-21): РАЗМЫШЛЕНИЯ БОЛЬШЕ НЕ ТЕРЯЮТСЯ И НЕ ПРИКЛЕИВАЮТСЯ
+			// К ОТВЕТУ. Буферизированная ветка (stream + tools) раньше отдавала
+			// результат.Output целиком в delta.content: модель с reasoning
+			// (gemma-4/Qwen3) писала `<think>…</think>` прямо в тело ответа, и
+			// OpenWebUI показывал размышления как ответ без закрывающего маркера.
+			// При наличии tool_calls размышления пропадали вовсе.
+			// Теперь reasoning отделяется и уходит отдельным delta.reasoning_content.
+			reasoningOut, visibleOut, hasReasoning := SplitReasoningContentFromPrompt(prompt, result.Output)
+			if !hasReasoning {
+				visibleOut = result.Output
+			}
+			if calls := parseToolCallsForRequest(result.Output, req.Tools); len(calls) > 0 {
 				// Round 15 (2026-07-29): default includeUsage=true (кроме явного
 				// include_usage=false в stream_options). OpenAI/стандарт говорит
 				// "по умолчанию false", но Cline/Roo/Aider/Continue и другие IDE-агенты
@@ -555,17 +590,19 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				// на локальной машине. Совместимость: клиент может явно opt-out
 				// через "stream_options": {"include_usage": false}.
 				includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
-				writeToolCallsStream(w, actualModel, chatID(), time.Now().Unix(), calls, prompt, includeUsage)
+				writeToolCallsStream(w, actualModel, chatID(), time.Now().Unix(), calls, reasoningOut, prompt, includeUsage)
 			} else {
-				// Нет tool_calls — стримим как обычный текст
+				// Нет tool_calls — стримим как обычный текст.
+				// R216: reasoning отделяем (см. комментарий выше): в content уходит
+				// только видимый ответ, размышления — отдельным delta.reasoning_content.
 				includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
-				writeStaticTextStream(w, actualModel, chatID(), time.Now().Unix(), result.Output, prompt, includeUsage)
+				writeStaticTextStream(w, actualModel, chatID(), time.Now().Unix(), reasoningOut, visibleOut, prompt, includeUsage)
 			}
 			return
 		}
 		// Без tools — обычный real-time streaming
 		includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
-		writeOpenAIChatStream(w, r, actualModel, prompt, params, includeUsage)
+		writeOpenAIChatStream(w, r, actualModel, prompt, params, includeUsage, req.Tools)
 		return
 	}
 
@@ -611,7 +648,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var hasToolCalls bool
 	var toolCalls []openAIToolCall
 	if len(req.Tools) > 0 {
-		toolCalls = parseToolCallsFromOutput(result.Output)
+		toolCalls = parseToolCallsForRequest(result.Output, req.Tools)
 		hasToolCalls = len(toolCalls) > 0
 	}
 
@@ -619,90 +656,56 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	message := map[string]interface{}{
 		"role": "assistant",
 	}
+	// R108 (2026-10-13): разбор reasoning'а — БЕЗУСЛОВНЫЙ и по тегам формата.
+	//
+	// Раньше он был в развилке IsReasoningEnabledForRequest(modelName) плюс два
+	// почти одинаковых блока «post-hoc auto-detect»; модель вне whitelist отдавала
+	// маркеры размышлений прямо в message.content, и клиент (Cline/OpenWebUI)
+	// показывал их как обычный текст ответа. См. «Политика отдачи reasoning» в
+	// reasoning_content.go.
+	reasoningOut, visibleOut, hasReasoning := SplitReasoningContentFromPrompt(prompt, result.Output)
+	if hasReasoning && backend != nil {
+		// Автодетект остаётся, но только ради per-model состояния (подходящие
+		// дефолты n_predict на следующих запросах) — на разбор он не влияет.
+		if backend.AutoEnableReasoning(modelName) {
+			logger.Get().Warnw("reasoning auto-detected (non-stream)",
+				"handler", "handleV1ChatCompletions",
+				"model", modelName,
+				"reasoning_chars", len(reasoningOut),
+				"hint", "model emits reasoning tags but is not in reasoning whitelist; "+
+					"auto-enabled per-model reasoning defaults for future requests. "+
+					"To pre-set, use load-with-params enableReasoning=true "+
+					"or set CPPWORKER_REASONING_ARCHS env var.")
+		}
+	}
 	if hasToolCalls {
-		// Round 6 #4+#10: for reasoning models we still want to expose
-		// reasoning_content alongside tool_calls. SplitReasoningContent
-		// peels off ``...`` block from output; remaining content goes
-		// into tool_calls via parser above.
-		if IsReasoningEnabledForRequest(modelName) {
-			r, c, has := SplitReasoningContent(result.Output)
-			if has {
-				message["reasoning_content"] = r
-				// c is normally empty when tool_calls cover the rest,
-				// but keep it as plain content if non-empty (some models
-				// stream prose before tool_call even with tools present).
-				if c != "" {
-					message["content"] = c
-				} else {
-					message["content"] = nil
-				}
-			} else {
-				message["content"] = nil
-			}
+		// tool_calls распарсены из СЫРОГО output (см. выше): вызов может стоять и
+		// внутри reasoning-блока, а parseToolCallsFromOutput сам снимает фенс и
+		// служебные токены.
+		if hasReasoning {
+			message["reasoning_content"] = reasoningOut
+		}
+		if strings.TrimSpace(visibleOut) != "" {
+			// Проза перед вызовом инструмента — это ответ, его не выбрасываем.
+			// R108 (2026-10-13): чистим хвостовые служебные токены шаблона — как
+			// нативный /api/chat (см. cleanFinalContent).
+			// R113 (2026-10-13): и вырезаем разметку вызова — она не ответ
+			// (в теле ответа клиент видит вызов инструмента текстом).
+			message["content"] = stripToolCallMarkup(cleanFinalContent(visibleOut))
 		} else {
-			// === Round 17 Layer 3 (2026-07-31): POST-HOC AUTO-DETECT (tools path) ===
-			// Если reasoning был ВЫКЛЮЧЕН, но output содержит `<think>` — split'им
-			// + auto-enable routing для будущих запросов. Стоимость: 1 split + check.
-			r, c, has := SplitReasoningContent(result.Output)
-			if has {
-				message["reasoning_content"] = r
-				if c != "" {
-					message["content"] = c
-				} else {
-					message["content"] = nil
-				}
-				if backend != nil {
-					if backend.AutoEnableReasoning(modelName) {
-						logger.Get().Warnw("reasoning auto-detected (non-stream tools)",
-							"handler", "handleV1ChatCompletions",
-							"model", modelName,
-							"reasoning_chars", len(r),
-							"hint", "model emits <think> but not in reasoning whitelist; "+
-								"auto-enabled routing for future requests. "+
-								"To pre-set, use load-with-params enableReasoning=true "+
-								"or set CPPWORKER_REASONING_ARCHS env var.")
-					}
-				}
-			} else {
-				message["content"] = nil
-			}
+			message["content"] = nil
 		}
 		message["tool_calls"] = toolCalls
 	} else {
-		if IsReasoningEnabledForRequest(modelName) {
-			r, c, has := SplitReasoningContent(result.Output)
-			if has {
-				message["content"] = c
-				message["reasoning_content"] = r
-			} else {
-				message["content"] = result.Output
-			}
+		if hasReasoning {
+			// R108 (2026-10-13): видимый ответ чистим так же, как нативный
+			// /api/chat — иначе один и тот же ответ выглядит по-разному на двух
+			// поверхностях («ок» против «ок<end_of_turn>»), а клиент
+			// OpenAI-поверхности видит служебный токен шаблона как текст.
+			message["content"] = cleanFinalContent(visibleOut)
+			message["reasoning_content"] = reasoningOut
 		} else {
-			// === Round 17 Layer 3 (2026-07-31): POST-HOC AUTO-DETECT (non-stream) ===
-			// Если reasoning был ВЫКЛЮЧЕН, но output содержит `<think>` — split'им anyway
-			// + auto-enable routing для ВСЕХ будущих запросов на этой модели.
-			// Стоимость: 1 SplitReasoningContent + 1 strings.Contains на не-reasoning
-			// запрос. Ложных срабатываний не бывает: если <think> в output — модель
-			// РЕАЛЬНО reasoning, и пользователь увидит корректный routing на следующий запрос.
-			r, c, has := SplitReasoningContent(result.Output)
-			if has {
-				message["content"] = c
-				message["reasoning_content"] = r
-				if backend != nil {
-					if backend.AutoEnableReasoning(modelName) {
-						logger.Get().Warnw("reasoning auto-detected (non-stream)",
-							"handler", "handleV1ChatCompletions",
-							"model", modelName,
-							"reasoning_chars", len(r),
-							"hint", "model emits <think> but not in reasoning whitelist; "+
-								"auto-enabled routing for future requests. "+
-								"To pre-set, use load-with-params enableReasoning=true "+
-								"or set CPPWORKER_REASONING_ARCHS env var.")
-					}
-				}
-			} else {
-				message["content"] = result.Output
-			}
+			message["content"] = cleanFinalContent(result.Output)
 		}
 	}
 
@@ -716,9 +719,19 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// при малом max_tokens: 97 токенов, все в reasoning, content пуст) раньше
 		// доезжал до клиента как успешный ответ без текста. Под tool_calls
 		// фолбэк НЕ применяем: там клиент получает действие, а не текст.
+		//
+		// R216: НЕ применяем и тогда, когда блок размышлений открыт САМИМ ПРОМПТОМ
+		// (шаблон дописал `<think>`): этот текст — размышления, и копировать их в
+		// content значит ровно то, на что жаловался оператор («размышления попали
+		// в основной блок, тела ответа нет»). Клиент получает reasoning_content и
+		// finish_reason=length — честно: ответа ещё нет, упёрлись в max_tokens.
 		rc, _ := message["reasoning_content"].(string)
 		cur, _ := message["content"].(string)
-		if vis, used := ContentFromUnclosedReasoning(rc, cur); used {
+		// R231 (2026-10-24): в СТРИМЕ (в т.ч. buffered-стриме с tools) фолбэк не
+		// применяем — reasoning_content уже доставлен клиенту, копия в content
+		// даёт дубль «ответ = размышления» (живая жалоба Cline). Честный ответ:
+		// content пуст, finish_reason=length. Для не-стрима R91 сохранён.
+		if vis, used := ContentFromUnclosedReasoning(rc, cur); used && !PromptOpensReasoning(prompt) && !req.Stream {
 			message["content"] = vis
 			logger.Get().Warnw("handleV1ChatCompletions: модель ушла в незакрытый reasoning — "+
 				"текст отдан как content, иначе клиент получил бы пустой ответ",
@@ -769,7 +782,7 @@ func chatID() string {
 //
 // Параметр includeUsage включает финальный usage-чанк (после finish_reason
 // но до [DONE]) — соответствует OpenAI stream_options.include_usage=true.
-func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, created int64, calls []openAIToolCall, prompt string, includeUsage bool) {
+func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, created int64, calls []openAIToolCall, reasoning string, prompt string, includeUsage bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return
@@ -780,12 +793,46 @@ func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, creat
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	// R216 (2026-10-21): размышления уходят ОТДЕЛЬНЫМ delta.reasoning_content
+	// ПЕРЕД tool_calls. Раньше они просто терялись: клиент видел вызов
+	// инструмента без объяснения, а в логах воркера reasoning_len был непустым.
+	roleSent := false
+	if strings.TrimSpace(reasoning) != "" {
+		reasoningChunk := map[string]interface{}{
+			"id":      chatID,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   modelName,
+			"choices": []map[string]interface{}{
+				{
+					"index": 0,
+					"delta": map[string]interface{}{
+						"role":              "assistant",
+						"reasoning_content": reasoning,
+					},
+					"finish_reason": nil,
+				},
+			},
+		}
+		reasoningJSON, _ := json.Marshal(reasoningChunk)
+		fmt.Fprintf(w, "data: %s\n\n", reasoningJSON)
+		flusher.Flush()
+		roleSent = true
+	}
+
 	// OpenAI streaming spec требует поле `index` для каждого tool_call,
 	// чтобы клиент мог склеивать инкрементальные deltas по index.
 	// helper indexedToolCalls добавляет индексы 0..N-1.
 	indexed := indexedToolCalls(calls)
 
 	// Chunk 1: роль ассистента (без content, с tool_calls)
+	firstDelta := map[string]interface{}{
+		"content":    nil,
+		"tool_calls": indexed,
+	}
+	if !roleSent {
+		firstDelta["role"] = "assistant"
+	}
 	firstChunk := map[string]interface{}{
 		"id":      chatID,
 		"object":  "chat.completion.chunk",
@@ -793,12 +840,8 @@ func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, creat
 		"model":   modelName,
 		"choices": []map[string]interface{}{
 			{
-				"index": 0,
-				"delta": map[string]interface{}{
-					"role":       "assistant",
-					"content":    nil,
-					"tool_calls": indexed,
-				},
+				"index":         0,
+				"delta":         firstDelta,
 				"finish_reason": nil,
 			},
 		},
@@ -829,7 +872,7 @@ func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, creat
 	// Для tool_calls output completion=JSON аргументы функций.
 	// Тут output = serialized tool_calls (см. caller), используем как есть.
 	if includeUsage {
-		writeOpenAIUsageChunk(w, flusher, chatID, created, modelName, prompt, serializeToolCallsForUsage(indexed), includeUsage)
+		writeOpenAIUsageChunk(w, flusher, chatID, created, modelName, prompt, reasoning+serializeToolCallsForUsage(indexed), includeUsage)
 	}
 
 	fmt.Fprintf(w, "data: [DONE]\n\n")
@@ -850,10 +893,17 @@ func serializeToolCallsForUsage(calls []map[string]interface{}) string {
 // writeStaticTextStream отправляет SSE-поток с фиксированным текстом
 // (используется когда tools запросили буферизированный ответ).
 //
+// R216 (2026-10-21): reasoning отделяется от видимого ответа. До правки сюда
+// передавался result.Output целиком, поэтому модель с `<think>…</think>`
+// отдавала размышления в delta.content: OpenWebUI показывал их как тело ответа
+// (без закрывающего маркера — он оставался в тексте), а при наличии tool_calls
+// размышления терялись совсем. Теперь reasoning уходит отдельным
+// delta.reasoning_content ПЕРЕД content.
+//
 // Параметр includeUsage добавляет финальный usage-чанк перед [DONE]
 // (OpenAI stream_options.include_usage=true). Используется Cline/Roo для
 // корректного трекинга контекстного окна.
-func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, created int64, content, prompt string, includeUsage bool) {
+func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, created int64, reasoning, content, prompt string, includeUsage bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return
@@ -864,7 +914,52 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	// Отправляем весь контент одним chunk
+	// R219 (2026-10-21): НЕ подставляем reasoning в content, если видимого
+	// ответа нет.
+	//
+	// R216 добавил сюда R91-фолбэк («незакрытый reasoning → content»), и это
+	// воспроизвело ровно ту жалобу оператора, ради которой R216 и делался: при
+	// обрезанной генерации одни и те же размышления приходили И в
+	// reasoning_content, И в content. На буферизированной ветке caller уже
+	// разложил вывод по каналам (SplitReasoningContentFromPrompt); если content
+	// пуст — значит видимого ответа действительно нет, и честный ответ клиенту:
+	// reasoning_content есть, content пуст.
+	content = stripToolCallMarkup(cleanFinalContent(content))
+	if strings.TrimSpace(content) == "" && strings.TrimSpace(reasoning) == "" {
+		logger.Get().Warnw("writeStaticTextStream: пустой ответ (ни content, ни reasoning) — "+
+			"клиент увидит пустой ответ; проверьте max_tokens и stop-последовательности",
+			"model", modelName)
+	}
+
+	roleSent := false
+	if strings.TrimSpace(reasoning) != "" {
+		reasoningChunk := map[string]interface{}{
+			"id":      chatID,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   modelName,
+			"choices": []map[string]interface{}{
+				{
+					"index": 0,
+					"delta": map[string]interface{}{
+						"role":              "assistant",
+						"reasoning_content": reasoning,
+					},
+					"finish_reason": nil,
+				},
+			},
+		}
+		reasoningJSON, _ := json.Marshal(reasoningChunk)
+		fmt.Fprintf(w, "data: %s\n\n", reasoningJSON)
+		flusher.Flush()
+		roleSent = true
+	}
+
+	// Отправляем видимый контент одним chunk
+	delta := map[string]interface{}{"content": content}
+	if !roleSent {
+		delta["role"] = "assistant"
+	}
 	chunk := map[string]interface{}{
 		"id":      chatID,
 		"object":  "chat.completion.chunk",
@@ -872,11 +967,8 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 		"model":   modelName,
 		"choices": []map[string]interface{}{
 			{
-				"index": 0,
-				"delta": map[string]string{
-					"role":    "assistant",
-					"content": content,
-				},
+				"index":         0,
+				"delta":         delta,
 				"finish_reason": nil,
 			},
 		},
@@ -905,7 +997,7 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 
 	// Финальный usage chunk (если include_usage=true) — перед [DONE].
 	// OpenAI stream_options.include_usage=true → клиент получает prompt/completion/total_tokens.
-	writeOpenAIUsageChunk(w, flusher, chatID, created, modelName, prompt, content, includeUsage)
+	writeOpenAIUsageChunk(w, flusher, chatID, created, modelName, prompt, reasoning+content, includeUsage)
 
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
@@ -919,7 +1011,7 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 // сессию ("один источник найден, ответа нет"). Также поддерживаем детекцию tool_calls
 // в выходном тексте — если модель сгенерировала <tool_call>...</tool_call> (Hermes/Gemma-4/Qwen),
 // эмитим tool_calls в финальном чанке и обнуляем content.
-func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, includeUsage bool) {
+func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, includeUsage bool, tools []openAITool) {
 	// Round 15 (2026-07-29): debug-логирование для диагностики missing usage chunk.
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -1004,30 +1096,24 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	// и OpenWebUI считал бы ответ пустым после done:true.
 	var outputBuf strings.Builder
 
-	// 2026-07-01: reasoning-парсер. Для reasoning-моделей (qwen3.5, deepseek-r1,
-	// gemma-4 и т.п.) разделяем токены на (reasoning, content) и эмитим
-	// отдельный `delta.reasoning_content` в SSE — это позволяет OpenWebUI/Cline
-	// корректно отображать think-блок и видимый ответ раздельно.
+	// 2026-07-01: reasoning-парсер. Разделяем токены на (reasoning, content) и
+	// эмитим отдельный `delta.reasoning_content` в SSE — это позволяет
+	// OpenWebUI/Cline корректно отображать think-блок и видимый ответ раздельно.
+	//
+	// R108 (2026-10-13): разбор БЕЗУСЛОВНЫЙ — по тегам формата, не по имени
+	// модели. Раньше стоял гейт IsReasoningEnabledForRequest(modelName) с
+	// «ленивым» auto-detect: до момента обнаружения тега токены уходили клиенту
+	// как content, и первые символы маркера (`<thi`, `<|channel>`) утекали в
+	// видимый ответ. Парсер сам удерживает неполный тег в хвосте
+	// (trailingTagPrefixLen), поэтому утечки больше нет. См. «Политика отдачи
+	// reasoning» в reasoning_content.go.
 	rsParser := NewReasoningStreamState()
-	rsIsReasoning := IsReasoningEnabledForRequest(modelName)
+	// R216: если шаблон открыл блок размышлений в ПРОМПТЕ, вывод начинается внутри него.
+	rsParser.SetImpliedOpen(PromptOpensReasoning(prompt))
 	rsSentHeader := false
-	// Round 17 Layer 3 (2026-07-31): LAZY AUTO-DETECT.
-	// Round 17.1 fix (2026-07-31): увеличен threshold 64→1024 + проверка
-	// ВСЕГО outputBuf (не только префикса). Раньше bug: модели с длинным
-	// preamble ("Here's my thinking process..." + 200+ chars) — `<think>`
-	// появлялся ПОСЛЕ первых 64 chars, L3 уже сдавался, тег не находился,
-	// routing не включался. С новой логикой: пока outputBuf < 1024 chars,
-	// проверяем ВЕСЬ outputBuf на `<think>`; после 1024 — сдаёмся.
-	// Стоимость: O(N²) на 1024 chars max = ~1M ops worst case — приемлемо.
-	rsAutoDetectActive := !rsIsReasoning // false если уже reasoning
-	rsAutoDetectChecked := false
-	const autoDetectThreshold = 1024 // max chars для проверки на reasoning-теги
-	// Round 17.1 (2026-07-31): check ВСЕ supported tag-pairs, не только <think>.
-	// Live test: qwen3-instruct при soft prompt "use <think> tags" выдаёт
-	// `<reasoning>...</reasoning>`. Без multi-tag check L3 бы его пропустил.
-	// Используем len(smallestTag) как стартовое окно для первого символа —
-	// см. detectFirstReasoningTagOpen.
-	thinkStartTags := []string{"<think>", "<thinking>", "<reasoning>", "<analysis>"}
+	// Автодетект — только ради per-model состояния (дефолты n_predict на будущих
+	// запросах), на разбор он не влияет.
+	rsAutoEnableDone := false
 
 	keepaliveWG.Add(1)
 	go func() {
@@ -1099,80 +1185,17 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		// Накапливаем output для финального чанка.
 		outputBuf.WriteString(token)
 
-		// === Round 17 Layer 3 + Round 17.1 fix: LAZY AUTO-DETECT ===
-		// Если rsIsReasoning=false (модель не в whitelist + пользователь не задал
-		// load-with-params enableReasoning=true) — всё равно прогоняем токен
-		// через парсер и смотрим ВЕСЬ outputBuf на reasoning-теги. Как только видим —
-		// auto-включаем routing:
-		//   1) rsIsReasoning = true → split'им и шлём как reasoning для ЭТОГО стрима
-		//   2) backend.AutoEnableReasoning(modelName) → ВСЕ будущие запросы тоже
-		//      будут split'ить (persist через inst.reasoningEnabled)
-		// 3) логируем warning с подсказкой как превентивно задать флаг
+		// 2026-07-01: reasoning-парсер — разделяем токены на (reasoning, content).
+		// Эмитим отдельный `delta.reasoning_content` в SSE, что позволяет
+		// OpenWebUI/Cline корректно отображать think-блок и видимый ответ раздельно.
 		//
-		// Round 17.1 fix: threshold увеличен 64→1024 + проверяем ВСЕ tag-пары
-		// (не только `<think>`, но и `<reasoning>`, `<thinking>`, `<analysis>`).
-		// qwen3-instruct при soft prompt "use <think> tags" выдаёт
-		// `<reasoning>...</reasoning>` — это detected теперь.
-		//
-		// Стоимость: O(N²) max на autoDetectThreshold=1024 chars = ~1M ops worst
-		// case. Для типичных 200-500 token streams — десятки тысяч ops, < 1ms.
-		if rsAutoDetectActive && !rsAutoDetectChecked && len(token) > 0 {
-			fullOutput := outputBuf.String()
-			// Ищем первый matching tag (любой из thinkStartTags).
-			detectedTag := ""
-			detectedPos := -1
-			for _, tag := range thinkStartTags {
-				if i := strings.Index(fullOutput, tag); i >= 0 {
-					if detectedPos < 0 || i < detectedPos {
-						detectedTag = tag
-						detectedPos = i
-					}
-				}
-			}
-			if detectedTag != "" {
-				// AUTO-DETECT FIRED! Модель эмитит reasoning с этим тегом.
-				rsAutoDetectChecked = true
-				rsIsReasoning = true
-				rsAutoDetectActive = false
-				// Persist для будущих запросов на этой модели.
-				if backend != nil {
-					backend.AutoEnableReasoning(modelName)
-				}
-				logger.Get().Warnw("reasoning auto-detected mid-stream",
-					"handler", "writeOpenAIChatStream",
-					"model", modelName,
-					"output_len", len(fullOutput),
-					"detected_tag", detectedTag,
-					"tag_position", detectedPos,
-					"hint", "model emits reasoning tag but is not in reasoning whitelist; "+
-						"auto-enabled routing. To pre-set, use load-with-params "+
-						"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
-			}
-			// Round 23 (2026-08-04) FIX: убрали "give up" на autoDetectThreshold=1024 chars.
-			//
-			// Проблема (issue #7): если модель выдаёт длинный preamble (>1024 chars) перед
-			// `<think>` тегом, L3 сдавался и тег не находился. Дальнейшие токены шли
-			// в `content` без split'а → think-блок УТЕКАЛ в финальный ответ клиенту.
-			//
-			// Решение: ВСЕГДА проверяем ВЕСЬ outputBuf на think-теги. Стоимость: O(N²) per
-			// token (strings.Index на полном буфере). Для типичных стримов 200-2000 токенов
-			// (≈1-10KB) это ~10K-100K ops на токен = ~1-10ms per token. На стриме 100 токенов
-			// это < 1s дополнительной CPU. Приемлемо для correctness.
-			//
-			// Ограничение: токены, УЖЕ отправленные клиенту до L3 fire, остаются в `content`.
-			// То есть если preamble + think block > 200 chars и до этого уже отправлено
-			// несколько чанков, первые чанки будут содержать preamble в content. Это
-			// неизбежно для streaming (протокол SSE не позволяет "отменить" отправленное).
-			// Round 23 partial mitigation: в Finalize (после EOS) cppworker отправляет
-			// финальный chunk с split'нутым reasoning и content — клиент может его
-			// использовать для отображения если ещё не закрыл UI.
-		}
-
-		// 2026-07-01: reasoning-парсер — разделяем токены на (reasoning, content)
-		// для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4/...). Эмитим
-		// отдельный `delta.reasoning_content` в SSE, что позволяет OpenWebUI/Cline
-		// корректно отображать think-блок и видимый ответ раздельно.
-		if rsIsReasoning {
+		// R108 (2026-10-13): безусловно — разбор идёт по тегам формата, а не по
+		// имени модели. Раньше стоял гейт IsReasoningEnabledForRequest(modelName) с
+		// «ленивым» auto-detect: до обнаружения тега токены уходили клиенту как
+		// content, и первые символы маркера (`<thi`, `<|channel>`) утекали в
+		// видимый ответ. Парсер сам удерживает неполный тег в хвосте
+		// (см. trailingTagPrefixLen). Политика: reasoning_content.go.
+		{
 			reasoningDelta, contentDelta := rsParser.Feed(token)
 			// Round 32 #18 (2026-08-11): workaround для gemma-4 Q4_K_M detokenizer.
 			// C-bridge отдаёт literal `\\n` (2 chars) вместо LF (1 char).
@@ -1184,6 +1207,22 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			reasoningDelta = sanitizeStreamText(reasoningDelta)
 			contentDelta = sanitizeStreamText(contentDelta)
 
+			// R108: автодетект остаётся только ради per-model состояния
+			// (подходящие дефолты n_predict на будущих запросах) — на разбор и на
+			// emit он больше не влияет.
+			if !rsAutoEnableDone && reasoningDelta != "" {
+				rsAutoEnableDone = true
+				if backend != nil && backend.AutoEnableReasoning(modelName) {
+					logger.Get().Warnw("reasoning auto-detected mid-stream",
+						"handler", "writeOpenAIChatStream",
+						"model", modelName,
+						"output_len", len(outputBuf.String()),
+						"hint", "model emits reasoning tags but is not in reasoning whitelist; "+
+							"auto-enabled per-model reasoning defaults. To pre-set, use load-with-params "+
+							"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
+				}
+			}
+
 			// Header-chunk: первый чанк содержит role=assistant. Отправляется ОДИН раз
 			// до первого reasoning/content delta. Это упрощает клиент-парсер.
 			if !rsSentHeader {
@@ -1194,6 +1233,15 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			}
 
 			ok := true
+			// R114b (2026-10-13): маркеры размышлений не должны утекать в
+			// ВИДИМУЮ потоковую дельту. cleanFinalContent → stripOrphanReasoningTags
+			// работает только на НЕ-потоковых путях, поэтому одиночный `</think>`
+			// (prefill-канал шаблона) уезжал клиенту как текст ответа — живой
+			// скриншот: строка ответа начиналась с «Let me retry the command. </think>».
+			// Чистим ровно дельту content, reasoning_content не трогаем.
+			if contentDelta != "" {
+				contentDelta = stripReasoningTagsInStreamDelta(contentDelta)
+			}
 			// Сначала отправляем reasoning_delta (если есть), затем content_delta.
 			// Каждый — отдельный SSE чанк с одним непустым полем.
 			if reasoningDelta != "" {
@@ -1211,15 +1259,6 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 			sw.IncTokens(1)
 			return ok
 		}
-
-		// Non-reasoning путь: legacy-логика с одним SSE чанком и content=token.
-		// R83 (2026-09-26): управляющие символы вычищаем и здесь.
-		delta := map[string]interface{}{"role": "assistant", "content": sanitizeStreamText(token)}
-		if !writeReasoningChunk(delta) {
-			return false
-		}
-		sw.IncTokens(1)
-		return true
 	}
 	// writeOpenAIChatStream вызывается только когда tools НЕ заданы (для tools идёт буферизированный путь в handleV1ChatCompletions). Поэтому reload при n_ctx overflow разрешён.
 	streamErr = generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false)
@@ -1325,7 +1364,7 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	// Раньше здесь был критичный bug: финальный SSE чанк имел пустой delta.content,
 	// OpenWebUI после done:true видел пустой content и завершал сессию.
 	fullOutput := outputBuf.String()
-	toolCalls := parseToolCallsFromOutput(fullOutput)
+	toolCalls := parseToolCallsForRequest(fullOutput, tools)
 
 	// R83/v67 (2026-10-02): финальный сброс reasoning-парсера.
 	//
@@ -1334,10 +1373,15 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	// «content=<|chann, reasoning=though ...»). После EOS удерживать больше
 	// нечего — выпускаем хвост как обычный текст, иначе последние символы
 	// ответа потеряются.
-	if rsIsReasoning {
-		rTail, cTail := rsParser.Finalize()
+	//
+	// R108 (2026-10-13): безусловно (разбор — по тегам, не по имени модели).
+	{
+		rTail, cTail := rsParser.FinalizeForStream()
 		rTail = sanitizeStreamText(strings.ReplaceAll(rTail, `\\n`, "\n"))
 		cTail = sanitizeStreamText(strings.ReplaceAll(cTail, `\\n`, "\n"))
+		// R114b: хвост — тот же видимый канал, что и дельты: одиночный `</think>`,
+		// выпущенный Finalize, тоже не должен дойти до клиента.
+		cTail = stripReasoningTagsInStreamDelta(cTail)
 		if rTail != "" {
 			writeReasoningChunk(map[string]interface{}{"reasoning_content": rTail})
 		}
@@ -1389,6 +1433,17 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	// на середине фразы, а авто-продолжение балансера
 	// (LB_AUTO_CONTINUE_ON_TRUNCATION=1) ждёт именно "length".
 	truncated := params.NPredict > 0 && sw.TokensSent() >= int64(params.NPredict)
+	// R231: незакрытый блок размышлений — ответ НЕ дописан, даже если кап
+	// формально не достигнут (модель открыла <think>/<|channel> и оборвалась).
+	// Честный finish_reason=length: клиент (Cline) продолжит, а не сочтёт
+	// пустой/обрезанный content полным ответом. См. FinalizeForStream.
+	if !truncated && rsParser.Snapshot().Unclosed {
+		truncated = true
+		logger.Get().Warnw("writeOpenAIChatStream: блок размышлений не закрыт — "+
+			"отдаём finish_reason=length (content без дубля размышлений)",
+			"model", modelName, "tokens_sent", sw.TokensSent(),
+			"reasoning_chars", rsParser.Snapshot().ReasoningChars)
+	}
 
 	if len(toolCalls) > 0 {
 		// Tool calls обнаружены — эмитим их в финальном чанке с finish_reason="tool_calls".
@@ -1457,8 +1512,8 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req openAICompletionRequest
-	// Round 36 Phase 2: strict JSON decoder.
-	if err := types.DecodeJSONRequest(r.Body, types.MaxStreamingBodyBytes, &req); err != nil {
+	// R106c (2026-10-12): терпимое декодирование клиентского тела (/v1/completions).
+	if err := decodeClientJSON(r, types.MaxStreamingBodyBytes, &req, "handleV1Completions"); err != nil {
 		switch {
 		case errors.Is(err, types.ErrBodyEmpty):
 			writeError(w, http.StatusBadRequest, "empty request body")
@@ -1512,11 +1567,10 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 
 	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.NumCtx)
 	if err != nil {
-		if isModelLoadingError(err) {
-			writeLoadingResponse(w, req.Model, err)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
+		// R119 (2026-10-15): 503/404/500 — одна точка перевода (см.
+		// writeModelLoadError). До этого неизвестная модель давала 500 с пустым
+		// телом, и OpenAI-клиент не мог показать причину.
+		writeModelLoadError(w, req.Model, err)
 		return
 	}
 	// R62 (2026-09-14): use actualModel для downstream calls.
@@ -1604,35 +1658,27 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	}
 	durationMs := time.Since(start).Milliseconds()
 
-	// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
-	// разделяем output на (reasoning_content, text) на верхнем уровне ответа.
-	// Это позволяет OpenWebUI/Cline отображать think-блок и видимый ответ раздельно.
-	// Round 17 Layer 3: post-hoc auto-detect (см. handleV1ChatCompletions).
+	// 2026-07-01: разделяем output на (reasoning_content, text) на верхнем уровне
+	// ответа. Это позволяет OpenWebUI/Cline отображать think-блок и видимый ответ
+	// раздельно.
+	//
+	// R108 (2026-10-13): безусловно — разбор идёт по тегам формата, а не по имени
+	// модели (см. «Политика отдачи reasoning» в reasoning_content.go). Автодетект
+	// остаётся только ради per-model состояния для будущих запросов.
 	textValue := result.Output
 	reasoningValue := ""
-	if IsReasoningEnabledForRequest(modelName) {
-		r, c, has := SplitReasoningContent(result.Output)
-		if has {
-			textValue = c
-			reasoningValue = r
-		}
-	} else {
-		// Layer 3: даже если reasoning был ВЫКЛЮЧЕН — split'им anyway если <think> есть
-		// + persist для будущих запросов.
-		r, c, has := SplitReasoningContent(result.Output)
-		if has {
-			textValue = c
-			reasoningValue = r
-			if backend != nil {
-				if backend.AutoEnableReasoning(modelName) {
-					logger.Get().Warnw("reasoning auto-detected (non-stream /v1/completions)",
-						"handler", "handleV1Completions",
-						"model", modelName,
-						"reasoning_chars", len(r),
-						"hint", "model emits <think> but not in reasoning whitelist; "+
-							"auto-enabled routing for future requests.")
-				}
-			}
+	if r, c, has := SplitReasoningContent(result.Output); has {
+		textValue = c
+		reasoningValue = r
+		if backend != nil && backend.AutoEnableReasoning(modelName) {
+			logger.Get().Warnw("reasoning auto-detected (non-stream /v1/completions)",
+				"handler", "handleV1Completions",
+				"model", modelName,
+				"reasoning_chars", len(r),
+				"hint", "model emits reasoning tags but is not in reasoning whitelist; "+
+					"auto-enabled per-model reasoning defaults for future requests. "+
+					"To pre-set, use load-with-params enableReasoning=true "+
+					"or set CPPWORKER_REASONING_ARCHS env var.")
 		}
 	}
 
@@ -1643,7 +1689,9 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		"model":   modelName,
 		"choices": []map[string]interface{}{
 			{
-				"text":          textValue,
+				// R108 (2026-10-13): видимый текст чистим от хвостовых служебных
+				// токенов шаблона — так же, как нативные пути.
+				"text":          cleanFinalContent(textValue),
 				"index":         0,
 				"finish_reason": "stop",
 			},
@@ -1715,15 +1763,15 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	var outputBuf strings.Builder
 
 	// 2026-07-01: reasoning-парсер (по аналогии с writeOpenAIChatStream).
+	//
+	// R108 (2026-10-13): разбор БЕЗУСЛОВНЫЙ (по тегам формата, не по имени
+	// модели); auto-detect-блок удалён — он утекал начало маркера в видимый текст
+	// до момента срабатывания. Автодетект остаётся только ради per-model
+	// состояния для будущих запросов. Политика: reasoning_content.go.
 	rcParser := NewReasoningStreamState()
-	rcIsReasoning := IsReasoningEnabledForRequest(modelName)
-	// Round 17 Layer 3 + Round 17.1 fix: lazy auto-detect.
-	// Round 17.1 fix: threshold увеличен 64→1024 + проверяем ВСЕ tag-пары.
-	// См. writeOpenAIChatStream — та же логика.
-	rcAutoDetectActive := !rcIsReasoning
-	rcAutoDetectChecked := false
-	const rcAutoDetectThreshold = 1024
-	rcThinkStartTags := []string{"<think>", "<thinking>", "<reasoning>", "<analysis>"}
+	// R216: если шаблон открыл блок размышлений в ПРОМПТЕ, вывод начинается внутри него.
+	rcParser.SetImpliedOpen(PromptOpensReasoning(prompt))
+	rcAutoEnableDone := false
 
 	// writeCompletionChunk — низкоуровневый helper, эмитит ОДИН SSE чанк с указанным
 	// полями (text + опционально reasoning_content). Возвращает false при обрыве.
@@ -1761,48 +1809,26 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		}
 		outputBuf.WriteString(token)
 
-		// === Round 17 Layer 3 + Round 17.1 fix: LAZY AUTO-DETECT ===
-		// (аналогично writeOpenAIChatStream — см. подробный комментарий там)
-		if rcAutoDetectActive && !rcAutoDetectChecked && len(token) > 0 {
-			fullOutput := outputBuf.String()
-			detectedTag := ""
-			detectedPos := -1
-			for _, tag := range rcThinkStartTags {
-				if i := strings.Index(fullOutput, tag); i >= 0 {
-					if detectedPos < 0 || i < detectedPos {
-						detectedTag = tag
-						detectedPos = i
-					}
-				}
-			}
-			if detectedTag != "" {
-				rcAutoDetectChecked = true
-				rcIsReasoning = true
-				rcAutoDetectActive = false
-				if backend != nil {
-					backend.AutoEnableReasoning(modelName)
-				}
-				logger.Get().Warnw("reasoning auto-detected mid-stream",
-					"handler", "writeOpenAICompletionStream",
-					"model", modelName,
-					"output_len", len(fullOutput),
-					"detected_tag", detectedTag,
-					"tag_position", detectedPos,
-					"hint", "auto-enabled routing. To pre-set, use load-with-params "+
-						"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
-			}
-			// Round 23 (2026-08-04) FIX: убрали "give up" на autoDetectThreshold.
-			// Аналогично writeOpenAIChatStream — ВСЕГДА проверяем весь outputBuf.
-		}
-
-		// 2026-07-01: reasoning-парсер — для reasoning-моделей разделяем токен на
-		// (reasoning, text) и эмитим отдельный `reasoning_content` в SSE.
-		if rcIsReasoning {
+		// 2026-07-01: reasoning-парсер — разделяем токен на (reasoning, text) и
+		// эмитим отдельный `reasoning_content` в SSE.
+		// R108 (2026-10-13): безусловно (разбор — по тегам, не по имени модели).
+		{
 			reasoningDelta, textDelta := rcParser.Feed(token)
+			// R108: автодетект — только per-model состояние для будущих запросов.
+			if !rcAutoEnableDone && reasoningDelta != "" {
+				rcAutoEnableDone = true
+				if backend != nil && backend.AutoEnableReasoning(modelName) {
+					logger.Get().Warnw("reasoning auto-detected mid-stream",
+						"handler", "writeOpenAICompletionStream",
+						"model", modelName,
+						"output_len", len(outputBuf.String()),
+						"hint", "model emits reasoning tags but is not in reasoning whitelist; "+
+							"auto-enabled per-model reasoning defaults. To pre-set, use load-with-params "+
+							"enableReasoning=true or set CPPWORKER_REASONING_ARCHS env var.")
+				}
+			}
 			return writeCompletionChunk(textDelta, reasoningDelta)
 		}
-
-		return writeCompletionChunk(token, "")
 	}
 	// writeOpenAICompletionStream — /v1/completions, tools не поддерживаются.
 	streamErr = generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false)
@@ -1859,8 +1885,9 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 	fullOutput := outputBuf.String()
 	// R83/v67 (2026-10-02): финальный сброс reasoning-парсера (см. подробный
 	// комментарий в writeOpenAIChatStream) — выпускаем удержанный хвост.
-	if rcIsReasoning {
-		rTail, tTail := rcParser.Finalize()
+	// R108 (2026-10-13): безусловно (разбор — по тегам, не по имени модели).
+	{
+		rTail, tTail := rcParser.FinalizeForStream()
 		if rTail != "" || tTail != "" {
 			writeCompletionChunk(sanitizeStreamText(tTail), sanitizeStreamText(rTail))
 		}
@@ -1927,8 +1954,8 @@ func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 		Model string      `json:"model"`
 		Input interface{} `json:"input"` // string OR []string
 	}
-	// Round 36 Phase 2: strict JSON decoder.
-	if err := types.DecodeJSONRequest(r.Body, types.MaxRequestBodyBytes, &req); err != nil {
+	// R106c (2026-10-12): терпимое декодирование клиентского тела (/v1/embeddings).
+	if err := decodeClientJSON(r, types.MaxRequestBodyBytes, &req, "handleV1Embeddings"); err != nil {
 		switch {
 		case errors.Is(err, types.ErrBodyEmpty):
 			writeError(w, http.StatusBadRequest, "empty request body")
@@ -1972,12 +1999,9 @@ func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 	// в tokensToBridge / Embed call ниже.
 	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
 	if err != nil {
-		if isModelLoadingError(err) {
-			writeLoadingResponse(w, req.Model, err)
-			return
-		}
 		logger.Get().Errorw("v1/embeddings: model load failed", "model", req.Model, "error", err)
-		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
+		// R119: 503/404/500 — одна точка перевода.
+		writeModelLoadError(w, req.Model, err)
 		return
 	}
 	modelName := actualModel

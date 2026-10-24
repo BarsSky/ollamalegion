@@ -132,6 +132,9 @@ func TestPlacementAuto_UnknownSizeSingleWithNote_R75(t *testing.T) {
 }
 
 func TestPlacementAuto_ShardedSkipped_R75(t *testing.T) {
+	// R92 (S3): sharded больше не «этап P2» — стратегия исполнима, но только
+	// через логический бэкенд. Группы в конфиге нет, поэтому auto честно
+	// пропускает sharded с причиной и уходит на следующий prefer (single).
 	proxy := placementAutoProxyR75(t, "m-any", 4<<30, 20*1024, types.PlacementModelRule{
 		Model:    "m-any",
 		Strategy: string(types.PlacementAuto),
@@ -140,10 +143,10 @@ func TestPlacementAuto_ShardedSkipped_R75(t *testing.T) {
 
 	d := proxy.ResolvePlacement("m-any", 4, "")
 	if d.Strategy != types.PlacementSingle {
-		t.Fatalf("strategy = %q, ожидалось single (sharded — этап P2)", d.Strategy)
+		t.Fatalf("strategy = %q, ожидалось single (для sharded нет группы backendGroups)", d.Strategy)
 	}
-	if !strings.Contains(d.Reason, "P2") {
-		t.Errorf("reason должен сообщать, что sharded пропущен до P2: %s", d.Reason)
+	if !strings.Contains(d.Reason, "логические бэкенды не настроены") {
+		t.Errorf("reason должен сообщать, что группа не настроена: %s", d.Reason)
 	}
 }
 

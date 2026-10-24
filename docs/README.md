@@ -1,11 +1,14 @@
-# OllamaLegion — документация
+﻿# OllamaLegion — документация
 
-> **Версия:** 2.0 (2026-06-22) — ревизия и консолидация  
-> **Языки:** [English](en/README.md) | **Русский** (текущий)  
+> **Версия:** 2.1 (2026-10-24) — актуализация после R230/R231 (AutoTune, стрим Cline,
+> измеренный выигрыш RPC) и релиза [v1.0-rc2](v1.0-rc2-release-notes.md)  
+> **Языки:** [English](en/README.md) | **Русский** (текущий) | **README проекта:** [English](../README.md) / [Русский](../README.ru.md)  
 > **Roadmap:** [`../plans/README.md`](../plans/README.md) | **Audit:** [`audit-2026-06.md`](audit-2026-06.md)
 >
-> 📋 **Phase 8 (2026-07-11):** полный набор документации теперь доступен на двух языках.
-> См. [`en/README.md`](en/README.md) для English версии всех 15+ документов.
+> 📋 **Phase 8 (2026-07-11):** полный набор документации доступен на двух языках.
+> См. [`en/README.md`](en/README.md) для English версии документов; новые
+> RPC-документы (`rpc-benchmark-qwen38.md`, `rpc-layout-rules.md`, `rpc-link-bandwidth.md`)
+> пока только на русском.
 
 OllamaLegion — балансировщик нагрузки + WebUI для кластера Ollama и llama.cpp (через CppWorker) с мониторингом GPU/CPU/RAM/Disk/Network и умным распределением запросов.
 
@@ -37,9 +40,16 @@ WebUI (Dashboard) также поддерживает переключение �
 | [**agent-deployment.md**](agent-deployment.md) | [en/agent-deployment.md](en/agent-deployment.md) | Развёртывание агента CPU/GPU (включая Windows + WSL2) |
 | [**api.md**](api.md) | [en/api.md](en/api.md) | REST API + WebSocket + CppWorker API + Ollama-совместимость |
 | [**cppworker-model-params.md**](cppworker-model-params.md) | [en/cppworker-model-params.md](en/cppworker-model-params.md) | n_ctx resolver, Per-Model Profiles, RAM fallback, Ollama ↔ OpenAI proxy |
-| [**backend-type-isolation.md**](backend-type-isolation.md) | [en/backend-type-isolation.md](en/backend-type-isolation.md) | Изоляция Ollama vs llama.cpp бэкендов |
+| [**backend-type-isolation.md**](backend-type-isolation.md) | [en/backend-type-isolation.md](en/backend-type-isolation.md) | Изоляция Ollama vs llama.cpp бэкендов (R112: типы больше не разделяются по режиму) |
+| [**layer-sharding.md**](layer-sharding.md) | — | **Раскладка слоёв по нескольким бэкендам** (llama.cpp RPC): уровень, контейнеры, параметры, проверка, грабли |
+| [**rpc-link-bandwidth.md**](rpc-link-bandwidth.md) | — | **Канал между узлами раскладки**: автоопределение скорости (балансер и бэкенд), лестница источников, поле и кнопка «Замерить» в WebUI, API, разбор сбоев |
+| [**cline-agent-loop.md**](cline-agent-loop.md) | — | **Агентский цикл Cline**: контракт tool_calls, ожидание готовности модели, трассировка хода и проверка цикла |
 | [**metrics.md**](metrics.md) | [en/metrics.md](en/metrics.md) | Полный справочник всех метрик (GPU/System/Ollama/Proxy) |
 | [**rpc-coordinator.md**](rpc-coordinator.md) | [en/rpc-coordinator.md](en/rpc-coordinator.md) | **P.1**: распределённый inference через RPC (production mode) |
+| [**rpc-layout-rules.md**](rpc-layout-rules.md) | — | **R115**: правила раскладки, добытые живыми падениями: один коммит + своя архитектура, выключение флагом, состав ёмкости, >2 машин, настройка из WebUI; §10 — замер выигрыша |
+| [**rpc-benchmark-qwen38.md**](rpc-benchmark-qwen38.md) | — | **R231**: замер выигрыша RPC на qwen3.8-27B (раскладка, загрузка, tok/s), методика и воспроизведение |
+| [**webui-demo.md**](webui-demo.md) | — | **R232**: демо-режим WebUI — витрина без стенда, гостевой доступ, включение только через env |
+| [**v1.0-rc2-release-notes.md**](v1.0-rc2-release-notes.md) | — | **Релиз v1.0-rc2**: что вошло, как проверялось, обновление с rc1, ограничения |
 | [**virtual-router.md**](virtual-router.md) | [en/virtual-router.md](en/virtual-router.md) | **P.2**: alias-on-pool virtual models |
 | [**phase-8-rpc-coordinator.md**](phase-8-rpc-coordinator.md) | [en/phase-8-rpc-coordinator.md](en/phase-8-rpc-coordinator.md) | P.1 implementation log |
 | [**phase-8-p3-research.md**](phase-8-p3-research.md) | [en/phase-8-p3-research.md](en/phase-8-p3-research.md) | P.3 research: real ggml/NCCL (post-1.0) |

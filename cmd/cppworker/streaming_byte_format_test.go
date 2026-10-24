@@ -20,6 +20,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"ollama-loadbalancer/pkg/types"
 )
 
 // captureResponse is a helper that invokes a handler with a given
@@ -99,10 +101,10 @@ func TestChat_NDJSONFormat_BasicEventStructure(t *testing.T) {
 // `data: <json>\n\n` — both newlines mandatory.
 func TestSSEEventBoundary(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		want     bool
-		desc     string
+		name  string
+		input string
+		want  bool
+		desc  string
 	}{
 		{
 			name:  "valid event",
@@ -311,29 +313,100 @@ func TestOpenAIStreaming_LostTokenDetection(t *testing.T) {
 }
 
 // =====================================================================
-// DisallowUnknownFields integration (Phase 2 with Phase 3)
+// Decode policy: client endpoints are tolerant, management endpoints are strict
 // =====================================================================
 
-// TestStrictDecode_RejectsClientTypo is the integration of Phase 2
-// (strict decoder) with Phase 3 (conformance test). It verifies the
-// real handler rejects an unknown field.
-func TestStrictDecode_RejectsClientTypo(t *testing.T) {
-	// Build a request body with a typo: "maxTokens" (camelCase)
-	// instead of "max_tokens" (snake_case).
-	body := `{"model":"gemma-4","messages":[{"role":"user","content":"hi"}],"maxTokens":100}`
-	r := httptest.NewRequest("POST", "/api/chat", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	handleChat(w, r)
-
-	respBody, _ := io.ReadAll(w.Body)
-
-	// The strict decoder MUST reject the request with 400.
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 BadRequest for typo maxTokens, got %d", w.Code)
-		t.Logf("response: %s", respBody)
+// TestR106c_ClientEndpoints_TolerateUnknownFields — R106c (2026-10-12).
+//
+// КОНТРАКТ ИЗМЕНЁН СОЗНАТЕЛЬНО. До этой правки КЛИЕНТСКИЕ API отвергали любое
+// незнакомое поле: `400 invalid JSON: json: unknown field "…"`. Это ломало живых
+// клиентов и повторялось из релиза в релиз:
+//
+//	options.top_k / use_mmap / use_mlock / num_gpu / num_thread — OpenWebUI
+//	                 (advanced params модели)
+//	tool_choice / tool_name / max_output_tokens      — Cline (ollama-провайдер)
+//	thinking / reasoning_content                     — история сессии, которую
+//	                 клиент вернул нам же
+//
+// Настоящая Ollama (и llama.cpp-сервер) декодируют тело обычным encoding/json —
+// неизвестные поля ИГНОРИРУЮТСЯ. Запрос оператора «ollama api должно работать
+// одинаково для всех клиентов» выполним только при такой же терпимости, поэтому
+// клиентские endpoint'ы теперь терпимы, а строгость осталась на УПРАВЛЯЮЩИХ
+// (там клиент — наш балансер, см. TestLoadWithParams_StrictDecode_RejectsUnknownField).
+func TestR106c_ClientEndpoints_TolerateUnknownFields(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{
+			name: "ollama /api/chat: OpenWebUI advanced params",
+			body: `{"model":"gemma-4","messages":[{"role":"user","content":"hi"}],` +
+				`"options":{"num_ctx":8192,"use_mmap":true,"use_mlock":false,"num_gpu":-1,"num_thread":8,"repeat_last_n":64}}`,
+			handler: handleChat,
+		},
+		{
+			name: "ollama /api/chat: расширения Cline",
+			body: `{"model":"gemma-4","messages":[{"role":"user","content":"hi"}],` +
+				`"tool_choice":"auto","max_output_tokens":4096,"top_level_unknown":1}`,
+			handler: handleChat,
+		},
+		{
+			name:    "ollama /api/generate: неизвестные поля",
+			body:    `{"model":"gemma-4","prompt":"hi","options":{"use_mmap":true,"num_gpu":-1},"keep_it":true}`,
+			handler: handleGenerate,
+		},
+		{
+			name: "openai /v1/chat/completions: опечатка + расширения вендора",
+			body: `{"model":"gemma-4","messages":[{"role":"user","content":"hi"}],` +
+				`"maxTokens":100,"reasoning_effort":"low","unknown_vendor_field":1}`,
+			handler: handleV1ChatCompletions,
+		},
+		{
+			name:    "openai /v1/completions: неизвестные поля",
+			body:    `{"model":"gemma-4","prompt":"hi","maxTokens":100,"nonsense":true}`,
+			handler: handleV1Completions,
+		},
 	}
-	if !bytes.Contains(respBody, []byte("maxTokens")) {
-		t.Errorf("error should mention the unknown field name: %s", respBody)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(tc.body))
+			w := httptest.NewRecorder()
+			tc.handler(w, r)
+			respBody, _ := io.ReadAll(w.Body)
+			if w.Code == http.StatusBadRequest && bytes.Contains(respBody, []byte("unknown field")) {
+				t.Errorf("клиентский API отверг незнакомое поле (400 unknown field) — это ломает "+
+					"OpenWebUI/Cline и противоречит поведению Ollama.\nbody: %s", respBody)
+			}
+			t.Logf("%s → HTTP %d", tc.name, w.Code)
+		})
+	}
+}
+
+// TestR106c_LenientDecode_ReportsUnknownFields — терпимость не должна означать
+// потерю диагностики: имена неизвестных полей возвращаются вызывающему для лога.
+func TestR106c_LenientDecode_ReportsUnknownFields(t *testing.T) {
+	body := `{"model":"m","messages":[],"use_mmap":true,"num_gpu":-1}`
+	var req struct {
+		Model    string        `json:"model"`
+		Messages []interface{} `json:"messages"`
+	}
+	unknown, err := types.DecodeJSONRequestLenient(strings.NewReader(body), types.MaxStreamingBodyBytes, &req)
+	if err != nil {
+		t.Fatalf("терпимый декодер вернул ошибку на валидном JSON: %v", err)
+	}
+	if req.Model != "m" {
+		t.Errorf("model = %q, want m", req.Model)
+	}
+	want := map[string]bool{"use_mmap": true, "num_gpu": true}
+	if len(unknown) != 2 || !want[unknown[0]] || !want[unknown[1]] {
+		t.Errorf("unknown fields = %v, want [num_gpu use_mmap] (для лога)", unknown)
+	}
+
+	// А строгий декодер на том же теле обязан отвергнуть — он остаётся для
+	// управляющих endpoint'ов.
+	if err := types.DecodeJSONRequest(strings.NewReader(body), types.MaxStreamingBodyBytes, &req); err == nil {
+		t.Error("строгий декодер принял незнакомое поле — управляющие endpoint'ы потеряли защиту от опечаток")
 	}
 }
 
@@ -391,6 +464,11 @@ func TestLoadModel_StrictDecode_RejectsUnknownField(t *testing.T) {
 
 // TestLoadWithParams_StrictDecode_RejectsUnknownField tests the
 // load-with-params endpoint also rejects unknown fields.
+//
+// R106c (2026-10-12): это УПРАВЛЯЮЩИЙ endpoint (клиент — наш балансер), поэтому
+// строгость здесь сохраняется: 400 ловит наш собственный баг, а не прихоть
+// чужого клиента. Именно на этой границе разница с клиентскими API (см.
+// TestR106c_ClientEndpoints_TolerateUnknownFields).
 func TestLoadWithParams_StrictDecode_RejectsUnknownField(t *testing.T) {
 	body := `{"name":"gemma-4","context_size":32768,"unknownParam":"foo"}`
 	r := httptest.NewRequest("POST", "/api/models/load-with-params", strings.NewReader(body))
@@ -403,46 +481,17 @@ func TestLoadWithParams_StrictDecode_RejectsUnknownField(t *testing.T) {
 	}
 }
 
-// TestCancel_StrictDecode_RejectsUnknownField tests the cancel
-// endpoint also rejects unknown fields.
-func TestCancel_StrictDecode_RejectsUnknownField(t *testing.T) {
+// TestCancel_ToleratesUnknownFields — /api/cancel вызывают клиенты
+// (OpenWebUI, Cline), поэтому его тело тоже терпимо (R106c).
+func TestCancel_ToleratesUnknownFields(t *testing.T) {
 	body := `{"request_id":"abc","extra_unknown_field":"oops"}`
 	r := httptest.NewRequest("POST", "/api/cancel", strings.NewReader(body))
 	w := httptest.NewRecorder()
-	// authMiddleware requires X-API-Token. Bypass for this test.
 	handleCancel(w, r)
 
-	_, _ = io.ReadAll(w.Body)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for unknown field, got %d", w.Code)
-	}
-}
-
-// TestV1ChatCompletions_StrictDecode_RejectsUnknownField tests
-// the OpenAI endpoint also rejects unknown fields.
-func TestV1ChatCompletions_StrictDecode_RejectsUnknownField(t *testing.T) {
-	body := `{"model":"gemma-4","messages":[{"role":"user","content":"hi"}],"maxTokens":100}`
-	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	handleV1ChatCompletions(w, r)
-
-	_, _ = io.ReadAll(w.Body)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for typo maxTokens, got %d", w.Code)
-	}
-}
-
-// TestV1Completions_StrictDecode_RejectsUnknownField tests the
-// /v1/completions endpoint.
-func TestV1Completions_StrictDecode_RejectsUnknownField(t *testing.T) {
-	body := `{"model":"gemma-4","prompt":"hi","maxTokens":100}`
-	r := httptest.NewRequest("POST", "/v1/completions", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	handleV1Completions(w, r)
-
-	_, _ = io.ReadAll(w.Body)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for typo maxTokens, got %d", w.Code)
+	respBody, _ := io.ReadAll(w.Body)
+	if w.Code == http.StatusBadRequest && bytes.Contains(respBody, []byte("unknown field")) {
+		t.Errorf("/api/cancel отверг незнакомое поле — клиент не сможет отменить генерацию: %s", respBody)
 	}
 }
 

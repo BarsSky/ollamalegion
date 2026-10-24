@@ -4,6 +4,13 @@
 # Копирует docker-compose.llama.cpp.yml, .env и конфигурацию
 # на удалённую Windows-машину по WinRM/SSH и запускает контейнеры.
 #
+# Шаг 6 открывает входящие порты узла правилами фаервола (scripts\stand-ports.ps1).
+# Без него узел РЕГИСТРИРУЕТСЯ в балансере (это исходящее соединение с узла —
+# правила ему не нужны), но балансер не может достучаться ДО него: входящие на
+# Windows по умолчанию закрыты, и снаружи это выглядит как таймаут, а не отказ.
+# Если удалённая сессия без прав администратора — скрипт скажет об этом и
+# подскажет команду для запуска на самой машине.
+#
 # Использование:
 #   .\deploy-llama-remote.ps1 -ComputerName <host> -ModelsDir <path> -BalancerUrl <url> [-NodeName <name>] [-ApiToken <token>] [-GpuCount <n>] [-Variant <cpu|gpu>]
 #
@@ -128,16 +135,16 @@ New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
 try {
     # --- Шаг 1: Создание директорий ---
-    Write-Host ">>> Шаг 1/5: Создание директорий на $ComputerName ..."
+    Write-Host ">>> Шаг 1/6: Создание директорий на $ComputerName ..."
     Invoke-RemoteCommand "mkdir -p $RemoteDir/config $RemoteDir/models 2>$null; New-Item -ItemType Directory -Path '$RemoteDir\config', '$RemoteDir\models' -Force -ErrorAction SilentlyContinue"
 
     # --- Шаг 2: Копирование compose-файла ---
-    Write-Host ">>> Шаг 2/5: Копирование $ComposeFile ..."
+    Write-Host ">>> Шаг 2/6: Копирование $ComposeFile ..."
     $composeSource = Join-Path $ProjectDir "deployments\$ComposeFile"
     Copy-RemoteFile $composeSource "$RemoteDir/docker-compose.yml"
 
     # --- Шаг 3: Подготовка и копирование cppworker.env ---
-    Write-Host ">>> Шаг 3/5: Подготовка cppworker.env ..."
+    Write-Host ">>> Шаг 3/6: Подготовка cppworker.env ..."
     $envSource = Join-Path $ProjectDir "config\cppworker.example.env"
     $envContent = Get-Content $envSource -Raw
 
@@ -156,7 +163,7 @@ try {
     Copy-RemoteFile $envTempPath "$RemoteDir/config/cppworker.env"
 
     # --- Шаг 4: Подготовка и копирование .env ---
-    Write-Host ">>> Шаг 4/5: Подготовка .env для docker compose ..."
+    Write-Host ">>> Шаг 4/6: Подготовка .env для docker compose ..."
     $dotEnvContent = @"
 MODELS_DIR=$ModelsDir
 BALANCER_URL=$BalancerUrl
@@ -182,8 +189,24 @@ NODE_LABELS=$(if ($Variant -eq "cpu") { "zone=lan,cpu_only=true" } else { "zone=
     Copy-RemoteFile $dotEnvTempPath "$RemoteDir/.env"
 
     # --- Шаг 5: Запуск контейнеров ---
-    Write-Host ">>> Шаг 5/5: Запуск контейнеров на $ComputerName ..."
+    Write-Host ">>> Шаг 5/6: Запуск контейнеров на $ComputerName ..."
     Invoke-RemoteCommand "cd $RemoteDir && docker compose up -d"
+
+    # --- Шаг 6: Входящие правила фаервола ---
+    # Порядок «сначала поднять, потом открыть» намеренный: если контейнеры не
+    # поднялись, открытые порты всё равно ничего не отдают, а причина видна выше.
+    # Список портов — из .env выше (18091/19000/18032) плюс RPC-порт раскладки и
+    # iperf3: без 50052 мастер не сможет подключить GPU этого узла слоями, без
+    # 5201 не измерить сеть (шаг 0 плана распределения).
+    Write-Host ">>> Шаг 6/6: Входящие правила фаервола на $ComputerName ..."
+    $portsScript = Join-Path $PSScriptRoot 'stand-ports.ps1'
+    if (Test-Path -LiteralPath $portsScript) {
+        Copy-RemoteFile $portsScript "$RemoteDir/stand-ports.ps1"
+        $nodePorts = '18091,19000,18032,50052,5201'
+        Invoke-RemoteCommand "powershell -NoProfile -ExecutionPolicy Bypass -File $RemoteDir\stand-ports.ps1 -Ports $nodePorts"
+    } else {
+        Write-Warning "нет scripts\stand-ports.ps1 — шаг правил пропущен (узлу будут недоступны входящие соединения)"
+    }
 
     Write-Host ""
     Write-Host ">>> Ожидание запуска (15 секунд) ..."

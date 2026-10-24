@@ -41,12 +41,12 @@ func TestListBackends_IncludesLoadedModels(t *testing.T) {
 	resp := map[string]interface{}{
 		"backends": []map[string]interface{}{
 			{
-				"id":                 "cppworker-test",
-				"type":               types.BackendTypeLlamaCpp,
-				"loadedModels":       []types.LlamaCppModel{{Name: "test-model", State: "loaded"}},
-				"loadedModelCount":   1,
-				"loadingModels":      []types.LlamaCppModel{},
-				"loadingModelCount":  0,
+				"id":                "cppworker-test",
+				"type":              types.BackendTypeLlamaCpp,
+				"loadedModels":      []types.LlamaCppModel{{Name: "test-model", State: "loaded"}},
+				"loadedModelCount":  1,
+				"loadingModels":     []types.LlamaCppModel{},
+				"loadingModelCount": 0,
 			},
 		},
 		"total": 1,

@@ -42,15 +42,15 @@ func NewRateLimiter(maxTokens, refillRate float64) *RateLimiter {
 func (rl *RateLimiter) refill() {
 	now := time.Now()
 	elapsed := now.Sub(rl.lastRefill).Seconds()
-	
+
 	// Добавляем токены на основе прошедшего времени
 	rl.tokens += elapsed * rl.refillRate
-	
+
 	// Ограничиваем максимальным количеством
 	if rl.tokens > rl.maxTokens {
 		rl.tokens = rl.maxTokens
 	}
-	
+
 	rl.lastRefill = now
 }
 
@@ -125,21 +125,21 @@ func RateLimitMiddleware(next http.HandlerFunc, limiter *RateLimiter) http.Handl
 			// Лимит превышен - возвращаем 429
 			retryAfter := limiter.GetRetryAfter()
 			_, maxTokens := limiter.GetStatus()
-			
+
 			// Устанавливаем заголовки rate limiting
 			w.Header().Set("X-RateLimit-Limit", formatFloat(maxTokens))
 			w.Header().Set("X-RateLimit-Remaining", "0")
 			w.Header().Set("Retry-After", formatDuration(retryAfter))
-			
+
 			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 			return
 		}
-		
+
 		// Токен доступен - устанавливаем заголовки и передаем запрос дальше
 		tokens, maxTokens := limiter.GetStatus()
 		w.Header().Set("X-RateLimit-Limit", formatFloat(maxTokens))
 		w.Header().Set("X-RateLimit-Remaining", formatFloat(tokens))
-		
+
 		next(w, r)
 	}
 }
@@ -170,10 +170,10 @@ func RateLimitStatusHandler(limiter *RateLimiter) http.HandlerFunc {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		
+
 		tokens, maxTokens := limiter.GetStatus()
 		refillRate := limiter.GetRefillRate()
-		
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, `{"tokens": %.1f, "max_tokens": %.0f, "refill_rate": %.0f}`,

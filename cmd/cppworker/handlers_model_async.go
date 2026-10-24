@@ -429,6 +429,25 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 		return
 	}
 
+	// R179 (2026-10-19): ОКНО ЗАВЕРШЕНИЯ ПРЕДЫДУЩЕЙ СЕССИИ УЗЛА.
+	//
+	// Пауза НЕ является причиной потери раскладки: причина была в SplitMode=0 (R179).
+	// Оставлена как защита для узла, который обслуживает одно соединение:
+	// даём ему закрыть сокет прошлой модели до рукопожатия новой, иначе первая
+	// же рукопожатие может уйти в очередь accept и упереться в таймаут.
+	// (В R179 исправлена настоящая причина — см. reloadSplitMode.)
+
+	//
+	// Пауза измеряется и логируется: молчаливое ожидание - то же самое, что его
+	// отсутствие, только медленнее.
+	if len(be.ActiveRPCServers()) > 0 {
+		settle := 800 * time.Millisecond
+		logger.Get().Infow("runAsyncReload: пауза на закрытие сессии узла перед загрузкой",
+			"name", modelName, "servers", be.ActiveRPCServers(), "sleep_ms", settle.Milliseconds())
+		time.Sleep(settle)
+	}
+
+	// Load with new opts.
 	// Load with new opts.
 	// R60.57: async reload — context.Background() (фон, не привязан к request).
 	loadErr := be.LoadModelWithOpts(context.Background(), modelName, modelPath, opts)

@@ -96,6 +96,17 @@ type ModelInfo struct {
 	// Parallel=0 = дефолт cppworker (=1), KVCacheType=0 = F16.
 	Parallel    int    `json:"parallel"`    // n_parallel в llama.cpp
 	KVCacheType string `json:"kvCacheType"` // "f16"/"q8_0"/"q4_0"
+	// R118.16 (2026-10-14): ТОЧНАЯ раскладка слоёв по устройствам, как её
+	// напечатал llama.cpp при загрузке (`load_tensors: layer N assigned to
+	// device X`). Пусто = не удалось перехватить (stub-сборка или старая
+	// llama.cpp) — потребитель обязан отличить это от «все слои на CPU».
+	DeviceLayers []bridge.DeviceLayerRange `json:"deviceLayers,omitempty"`
+	// R176 (2026-10-19): РАСКЛАДКА НЕ ПРИМЕНИЛАСЬ, ХОТЯ УЗЛЫ ПЕРЕДАЛИ.
+	// Заполняется по ФАКТУ после загрузки (сверка переданных серверов с
+	// фактической раскладкой слоёв): иначе тихое выпадение узла выглядело как
+	// успешная загрузка, и оператор узнавал о деградации по скорости.
+	LayoutDegraded       bool   `json:"layout_degraded,omitempty"`
+	LayoutDegradedReason string `json:"layout_degraded_reason,omitempty"`
 	// ContextPerSeq — R83 (2026-09-30): окно, которое фактически получил ОДИН
 	// слот (llama.cpp: n_ctx_seq = n_ctx / n_seq_max). Показывается оператору,
 	// потому что ContextSize в API — суммарное окно, и без этого поля «16384 +
@@ -107,6 +118,11 @@ type ModelInfo struct {
 	LoadingStartedAt time.Time `json:"loadingStartedAt,omitempty"`
 	LoadingSizeBytes int64     `json:"loadingSizeBytes,omitempty"`
 	LoadingError     string    `json:"loadingError,omitempty"`
+	// LoadingProgressPct — R215 (2026-10-21): реальный процент прочитанных
+	// весов (0..100) из progress-callback llama.cpp. -1 = неизвестно (stub-сборка
+	// или загрузка ещё не отдала первый callback). Заполняется на ходу, поэтому
+	// оператор видит, сколько осталось, и отмена перестаёт быть «наугад».
+	LoadingProgressPct int `json:"loadingProgressPct,omitempty"`
 	// LastUsedAt — момент последнего обращения к модели (генерация/стрим).
 	// Поле заполняется в Backend.GetModel/ListModels из inst.lastUsedAt,
 	// чтобы UI мог отображать «idle 5s» и для отладки reload-циклов.
@@ -142,6 +158,72 @@ type Backend struct {
 	initOnce   sync.Once
 	initErr    error
 	startTime  time.Time
+
+	// R135 (2026-10-16): предупреждение о несовпадении CUDA-арок образа и карт
+	// (см. cuda_arch_guard.go). Пусто = расхождений нет или образ не сообщил
+	// свои архитектуры. Отдаётся в /api/info как cuda_arch_warning, чтобы
+	// оператор увидел причину до первой загрузки модели.
+	cudaArchWarning string
+
+	// S1 (2026-10-13): снимок устройств раскладки (локальные + RPC-узлы) для
+	// планировщика. Заполняется через rpcDeviceSnapshot с TTL rpcDeviceTTL:
+	// список нужен ДО загрузки (memfit/tensor_split), а его получение — сетевой
+	// запрос к узлам.
+	rpcDevMu   sync.Mutex
+	rpcDevices []bridge.DeviceInfo
+	rpcDevAt   time.Time
+	// R229: состав узлов, для которого собран rpcDevices. Изменился (донор исключён)
+	// → снимок недействителен, иначе в нём остаются устройства мёртвого узла.
+	rpcDevKey string
+
+	// R229 (2026-10-22): узлы, исключённые как НЕДОСТУПНЫЕ на время работы с
+	// моделью (TCP-проба, см. rpc_reach_r229.go). Отдаётся в /api/models как
+	// rpc_excluded: оператор видит, почему модель работает без донора.
+	// Отдельный мьютекс: b.mu/rpcDevMu не должны пересекаться с этим полем.
+	excludedRPCMu sync.Mutex
+	excludedRPC   []string
+	excludedRPCAt time.Time
+	// R215 (2026-10-21): сколько гейтов готовности узла подряд не смогли получить
+	// устройства. Два подряд при доступном по TCP узле = он завис и держит VRAM
+	// прошлой сессии (см. rpc_ready_budget_r215.go); счётчик отдаётся в
+	// /api/models как rpc_layout.stuck_suspected.
+	rpcReadyTimeoutStreak atomic.Int32
+	// R224 (2026-10-22): восстановление после потери RPC-сессии ВО ВРЕМЯ
+	// генерации. Сессия с узлом может умереть после загрузки (узел пересоздан,
+	// сеть порвана): декодирование падает, а модель остаётся загруженной с мёртвым
+	// устройством — каждая генерация падает, пока её не выгрузят вручную.
+	// Выгружаем сами по факту сбоя (см. rpc_session_lost_r224.go), не чаще
+	// rpcSessionUnloadCooldown на модель.
+	sessionLostMu sync.Mutex
+	sessionLostAt map[string]time.Time
+	// unloadForRecovery — точка подмены для тестов (nil → b.UnloadModel).
+	unloadForRecovery func(name string) error
+	// R174 (2026-10-18): ПОСЛЕДНИЙ УСПЕШНЫЙ снимок С УЗЛАМИ и список узлов, для
+	// которых он снят.
+	//
+	// ЗАЧЕМ. Живой дефект на стенде: применить профиль из WebUI → модель
+	// перезагружается → раскладка ИСЧЕЗАЕТ (было CPU:1 CUDA0:23 RPC0:19, стало
+	// CPU:23 CUDA0:20). Причина не в приказе, а в защите R115: во время работы
+	// (reload держит loadMu) rpcDeviceSnapshot НЕ обращается к узлу — иначе
+	// запрос памяти устройства влезает в единственное соединение узла и клиент
+	// падает по GGML_ABORT. Если кэш (TTL 30 с) к этому моменту истёк, снимок
+	// собирался БЕЗ узлов → планировщик видел только локальную карту, клал 23 слоя
+	// в RAM и молчал. Теперь при занятости берём последний успешный снимок, если
+	// список узлов не менялся: планирование перестаёт зависеть от того, успел ли
+	// истечь кэш, а к занятому узлу мы по-прежнему не лезем.
+	rpcDevGood    []bridge.DeviceInfo
+	rpcDevGoodAt  time.Time
+	rpcDevGoodKey string
+	// rpcWarnAt — когда последний раз писали в лог «узел раскладки недоступен»
+	// (R114): без ограничения GET /api/models, который зовёт MemfitBudget, сыпал бы
+	// одной и той же ошибкой на каждый запрос.
+	rpcWarnAt time.Time
+
+	// R114 (2026-10-13): наблюдение за узлами раскладки у ЗАГРУЖЕННЫХ моделей.
+	// Пропал узел → модель выгружается в простое, иначе первый же запрос к ней
+	// уронит мастер (abort внутри C-моста). См. rpc_health.go.
+	rpcWatchMu   sync.Mutex
+	rpcWatchdogs map[string]*rpcWatchdog
 
 	modelManager *ModelManager
 	metrics      *Metrics
@@ -526,7 +608,6 @@ func NewBackend(cfg Config) *Backend {
 	if cfg.IdleUnloadMinutes > 0 {
 		b.idleUnloader = NewIdleUnloadManager(b, time.Duration(cfg.IdleUnloadMinutes)*time.Minute)
 	}
-
 	// HuggingFace downloader
 	b.hfDownloader = NewHuggingFaceDownloader(
 		cfg.HuggingFaceToken,
@@ -617,6 +698,19 @@ func (b *Backend) Init() error {
 		// Инициализируем GPUManager
 		if b.gpuManager != nil && b.gpuCount > 0 {
 			b.gpuManager.InitGPU(b.gpuDevices)
+		}
+
+		// R135 (2026-10-16): совместимы ли CUDA-ядра ОБРАЗА с этими картами.
+		//
+		// ЖИВОЙ ДЕФЕКТ: образ, собранный под sm_86/sm_120, на Quadro RTX 4000
+		// (sm_75) загружал модель успешно и падал с SIGABRT на первом ядре
+		// («CUDA error: no kernel image is available for execution on the
+		// device»). Снаружи это «backend недоступен» и следующая загрузка с
+		// другими параметрами. Проверка дешёвая (строки + capability из NVML) и
+		// выполняется ДО первой загрузки модели, чтобы причина была в логе и в
+		// API, а не выяснялась по стеку из C-моста.
+		if warn := b.LogCUDAArchCompat(); warn != "" {
+			b.cudaArchWarning = warn
 		}
 
 		// Сканируем директорию моделей
@@ -835,12 +929,44 @@ func (b *Backend) LoadModel(name string, path string) error {
 // (Approach b — out_handle parameter). R60.57 follow-up (commit a62853e)
 // завершает эту работу: bridge.LoadModelWithEarlyHandle + раннее
 // заполнение inst.handle.ptr в bridge_load_model.
+// applyRPCServersR105 — прокинуть RPC-узлы из конфига в параметры моста (S1).
+//
+// Отдельная функция, а не строка в середине загрузки модели: её можно проверить
+// юнит-тестом, тогда как сам путь загрузки требует реального GGUF и GPU. Копия
+// среза — намеренно: параметры моста живут дольше вызова и не должны разделять
+// память с конфигом (его перезаписывает reload конфигурации).
+func applyRPCServersR105(cfg *bridge.ModelConfig, configured []string) []string {
+	if cfg == nil || len(configured) == 0 {
+		return nil
+	}
+	servers := make([]string, len(configured))
+	copy(servers, configured)
+	cfg.RPCServers = servers
+	return servers
+}
+
+// LoadModelWithOpts — загрузка модели с опциями (кэш, GPU-слои, split).
 func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path string, opts LoadModelOpts) error {
 	// R83: single-flight — загрузка одной модели за раз (см. loadSingleFlight).
 	// Без него второй запрос проходит checkVRAMForModel на устаревшем снимке
 	// свободной VRAM и запускает вторую загрузку того же файла параллельно.
-	b.loadSingleFlight.Lock()
+	// R227: захват слота загрузки с дедлайном. Раньше зависшая загрузка держала
+	// loadSingleFlight, и КАЖДАЯ следующая загрузка висела молча до рестарта.
+	if err := b.acquireLoadFlight(loadFlightWait()); err != nil {
+		return err
+	}
 	defer b.loadSingleFlight.Unlock()
+
+	// R227: сторож. По таймауту — стек горутин в лог и попытка отменить загрузку;
+	// без этого клинч выглядел как «модель просто исчезла».
+	loadDone := make(chan struct{})
+	defer close(loadDone)
+	loadStallWatchdog(name, loadStallThreshold(), loadDone, nil, func() {
+		if b.AbortLoad(name) {
+			logger.Get().Warnw("загрузка отменяется по таймауту — ждём выхода из native load",
+				"model", name)
+		}
+	})
 
 	// R83 (2026-09-30): «окно на клиента» → суммарный n_ctx.
 	//
@@ -859,6 +985,34 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 			"total_n_ctx", total,
 			"context_per_seq_actual", per)
 		opts.ContextSize = total
+	}
+
+	// R114 (2026-10-13): ГЕЙТ ГОТОВНОСТИ УЗЛОВ РАСКЛАДКИ.
+	//
+	// Стоит ДО checkVRAMForModel и до C-моста: недоступный узел должен быть
+	// обнаружен, пока llama.cpp к нему ещё не подключился. Иначе загрузка
+	// заканчивается `abort()` внутри моста (SIGABRT + перезапуск контейнера,
+	// см. docs/layer-sharding.md §4.6), а планировщик ещё и считает бюджет по
+	// мёртвому узлу.
+	// R229 (2026-10-22): НЕДОСТУПНЫЙ узел раскладки больше НЕ отменяет загрузку
+	// целиком: исключаем его и грузим на живых узлах (или локально), если модель
+	// без него влезает. Прежнее «загрузка отменена» оставляло оператора без
+	// модели, хотя донор — необязательный ресурс. Планирование использует тот же
+	// отфильтрованный список (PlanningRPCServers), поэтому фантомной памяти
+	// мёртвого узла в плане уже нет.
+	var loadRPCServers []string
+	if b.cfg.RPCEnabled && len(b.cfg.RPCServers) > 0 {
+		loadRPCServers = b.filterReachableRPC(b.activeRPCServers())
+		if excluded := b.ExcludedRPCServers(); len(excluded) > 0 {
+			if len(loadRPCServers) == 0 {
+				logger.Get().Warnw("загрузка: все узлы раскладки недоступны — грузим ЛОКАЛЬНО",
+					"model", name, "excluded", strings.Join(excluded, ","))
+			} else {
+				logger.Get().Warnw("загрузка: недоступные узлы раскладки исключены",
+					"model", name, "use", strings.Join(loadRPCServers, ","),
+					"excluded", strings.Join(excluded, ","))
+			}
+		}
 	}
 
 	// Валидация VRAM перед загрузкой и авто-подбор оптимальных gpuLayers.
@@ -989,6 +1143,45 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		}()
 	}
 
+	// R215 (2026-10-21): прогресс чтения весов для UI.
+	//
+	// ЗАЧЕМ. До R215 во время загрузки было видно только «loading» и ожидаемое
+	// время: оператор не мог понять, осталось 20 секунд или две минуты, а
+	// отмена (unload force) отрабатывала лишь ПОСЛЕ возврата загрузки. Теперь
+	// llama.cpp сообщает процент через progress-callback (c/bridge: см.
+	// bridge_load_progress_cb), и здесь он попадает в ModelInfo.
+	//
+	// Читаем ПО ПУТИ (bridge.LoadProgressByPath), а не по handle: на пути ошибки
+	// C-мост освобождает InternalModel, и разыменование handle из этой горутины
+	// было бы use-after-free.
+	defer bridge.ClearLoadProgress(path) // объявлен раньше close: снимает запись ПОСЛЕ остановки опроса
+	progressDone := make(chan struct{})
+	defer close(progressDone)
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-progressDone:
+				return
+			case <-ticker.C:
+				pct := bridge.LoadProgressByPath(path)
+				if pct < 0 {
+					continue
+				}
+				b.mu.Lock()
+				// R215: процент держим МОНОТОННЫМ. llama.cpp зовёт callback
+				// отдельно на каждую группу буферов (CPU_Mapped, CUDA0, ...), и
+				// счётчик внутри группы начинается с нуля: без этого UI видел бы
+				// «60% → 0% → 30%» на одной загрузке.
+				if pct > inst.info.LoadingProgressPct {
+					inst.info.LoadingProgressPct = pct
+				}
+				b.mu.Unlock()
+			}
+		}
+	}()
+
 	// Логгируем старт загрузки (UI может полагаться на наличие этой записи).
 	logger.Get().Infow("model load started",
 		"name", name,
@@ -1052,6 +1245,19 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	// вместимость 2 (effectiveNParallel), а SlotManager пропускал по одному
 	// запросу — второй клиент молча ждал в Acquire и получал 503 по таймауту.
 	cfg.NParallel = resolveNParallel(opts.Parallel, b.cfg.DefaultNParallel)
+	// S1 (2026-10-13): режим раскладки слоёв между устройствами ОБЯЗАН доехать
+	// до моста. До этой правки opts.SplitMode (его считает
+	// cmd/cppworker/handlers_model.go из CPPWORKER_SPLIT_MODE/профиля/запроса)
+	// нигде не присваивался в bridge.ModelConfig, поэтому мост всегда видел 0 =
+	// LLAMA_SPLIT_MODE_NONE. С NONE llama.cpp (src/llama.cpp:284) оставляет из
+	// списка устройств ТОЛЬКО main_gpu — и удалённый RPC-узел отбрасывался, даже
+	// когда мост честно передал массив из двух устройств. Живая проба: при
+	// CPPWORKER_SPLIT_MODE=1 в логе было «using device CUDA0 ... 7097 MiB free»
+	// (одна строка) при «устройств в раскладке 2».
+	//
+	// Соглашение моста (c/bridge/bridge.h): -1 = дефолт llama.cpp (LAYER),
+	// 0 = NONE (одно устройство), 1 = LAYER, 2 = ROW, 3 = TENSOR.
+	cfg.SplitMode = opts.SplitMode
 	// NThreads: было cfg.NThreads = b.cfg.DefaultNThreads (ВСЕГДА затирал opts).
 	// Сейчас opts.NThreads > 0 — выигрывает opts, иначе — дефолт.
 	if opts.NThreads > 0 {
@@ -1077,6 +1283,96 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	cfg.MainGPU = b.cfg.DefaultMainGPU
 	cfg.NoMemoryMap = b.cfg.DefaultNoMemoryMap
 	cfg.RPCBackend = b.cfg.DefaultRPCBackend
+	// R105 (S1 плана 2026-10-07): узлы раскладки — в параметры моста.
+	//
+	// R108 (2026-10-12): предупреждение «транспорт не подключён» убрано — мост
+	// теперь читает rpc_servers и сам сообщает, какие узлы подключились и сколько
+	// устройств попало в раскладку. Прежний текст врал бы ровно рядом с этими
+	// строками (живой прогон: «узел подключён, устройств 2» сразу после
+	// «транспорт не подключён»).
+	// R115: узлы берём только у activeRPCServers — при выключенном флаге
+	// раскладки нет, и в мост не уходит ни одного адреса (иначе «выключено»
+	// продолжало бы подключаться к узлам при загрузке модели).
+
+	// R177 (2026-10-19): ПЕРЕД ЗАГРУЗКОЙ - ДОЖДАТЬСЯ, ПОКА УЗЕЛ СВОБОДЕН.
+	//
+	// Живая причина R174/R176: при reload узел ещё доигрывает прошлую сессию
+	// (он обслуживает одно соединение), загрузка не регистрирует RPC-устройство,
+	// и все слои уезжают на локальную карту. Раньше это выяснялось по скорости.
+	// Теперь короткий гейт: пробуем РЕАЛЬНУЮ команду протокола (запрос памяти
+	// устройства) несколько раз, и только потом грузим.
+	if servers := b.activeRPCServers(); len(servers) > 0 {
+		// R177: «узел ответил на реальную команду» фиксируем ВСЕГДА. Без этого
+		// успешный гейт молчал, и по логу нельзя было отличить «узел был готов, а
+		// загрузка всё равно не зарегистрировала RPC0» от «узел не был готов».
+		//
+		// R215: бюджет ожидания больше не 1.2 с. Узел обслуживает одно соединение,
+		// и после сбоя мастера освобождается до ~1.5-2 минут (keepalive). За это
+		// время лучше подождать, чем сложить все слои на локальную карту.
+		budget := rpcReadyWaitBudget()
+		attempts := rpcReadyWaitAttempts(budget, rpcReadyProbeDelay)
+		ready, attempt := b.waitRPCNodeReadyForLoad(servers, attempts, rpcReadyProbeDelay)
+		b.noteRPCReadyGate(ready)
+		if ready {
+			logger.Get().Infow("узел раскладки готов принять загрузку",
+				"model", name, "servers", servers, "attempt", attempt,
+				"waited_ms", int64(attempt-1)*rpcReadyProbeDelay.Milliseconds())
+		} else {
+			// R214 (2026-10-21): узел слушает, но команду не принял — самый частый
+			// случай на живом стенде: на узле висит сессия прошлого клиента (его
+			// деструктор ещё не сработал), и VRAM держит веса этой сессии, а
+			// новые подключения не обслуживаются. Говорим это прямо и называем
+			// действие: перезапустить узел, иначе раскладка снова уедет на
+			// локальную карту. Подробности — docs/rpc-donor-vram-lifecycle.md.
+			logger.Get().Warnw("узел раскладки не отдал устройства за отведённое время - "+
+				"загрузка пойдёт без раскладки (будет помечена layout_degraded); "+
+				"вероятная причина: на узле висит сессия прошлого клиента и держит VRAM - "+
+				"перезапустите rpc-server узла (rpcServerEnabled off/on) или его контейнер",
+				"model", name, "servers", servers, "attempts", attempt,
+				"waited_ms", int64(attempt-1)*rpcReadyProbeDelay.Milliseconds(),
+				"timeout_streak", b.RPCReadyTimeoutStreak(),
+				"stuck_suspected", b.RPCLayoutStuckSuspected())
+			if b.RPCLayoutStuckSuspected() {
+				logger.Get().Errorw("раскладка: узел не обслуживает команды несколько загрузок подряд - "+
+					"похоже, процесс узла завис и держит VRAM; keepalive такое НЕ лечит",
+					"model", name, "servers", servers, "timeout_streak", b.RPCReadyTimeoutStreak())
+			}
+		}
+	}
+
+	if servers := applyRPCServersR105(&cfg, loadRPCServers); len(servers) > 0 {
+		logger.Get().Infow("RPC-раскладка передана в мост",
+			"model", name, "servers", servers)
+	}
+
+	// R176 (2026-10-19): СПЛИТ ПРИМЕНЯЕТСЯ ТОЛЬКО К ТОМУ ЧИСЛУ УСТРОЙСТВ, ДЛЯ КОТОРОГО ПОСЧИТАН.
+	//
+	// Живой случай (reload из WebUI): сплит копировался из прошлого инстанса
+	// (manual tensor split applied tensorSplit=[0.538, 0.462]), хотя RPC-узел на
+	// этой загрузке не зарегистрировался, и устройство было одно. Лишние пропорции
+	// llama.cpp молча игнорирует - ошибка не всплывает, слои уезжают на одну карту.
+	if len(opts.TensorSplit) > 0 {
+		// R178: ОДНА строка, объясняющая выбор устройств. Мост получает серверы
+		// отдельно от сплита, поэтому расхождение «серверы передали, а сплит на одно
+		// устройство» до сих пор было невидимым.
+		if snap := b.rpcDeviceSnapshot(); true {
+			var rem []string
+			for _, d := range remoteDevices(snap) {
+				rem = append(rem, d.Name)
+			}
+			logger.Get().Infow("раскладка: какие устройства видит планировщик",
+				"model", name, "local_gpus", b.gpuCount, "remote_devices", rem,
+				"active_servers", b.activeRPCServers(), "admitted_servers", b.admittedRPCServers(),
+				"snapshot_devices", len(snap))
+		}
+		devices := b.gpuCount + len(remoteDevices(b.rpcDeviceSnapshot()))
+		if !splitFitsDevices(opts.TensorSplit, devices) {
+			logger.Get().Warnw("tensor split НЕ применён: посчитан для другого числа устройств - пересчитываю по факту",
+				"model", name, "split_len", len(opts.TensorSplit), "devices", devices,
+				"split", opts.TensorSplit)
+			opts.TensorSplit = nil
+		}
+	}
 
 	// Пользовательский tensor split (если не авто)
 	if len(opts.TensorSplit) > 0 {
@@ -1091,7 +1387,15 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		}
 	} else if b.cfg.AutoGPUDistribution && b.gpuManager != nil && b.gpuCount > 0 {
 		// Multi-GPU: рассчитываем tensor split если включено авто-распределение
+		//
+		// S1 (2026-10-13): если подключены RPC-узлы, пропорции обязаны включать и
+		// их — иначе llama.cpp раскладывает слои только по локальным картам, а
+		// удалённое устройство из списка остаётся без весов (живой симптом:
+		// «устройств в раскладке 2», а свободная память узла не используется).
 		ts := b.gpuManager.CalculateTensorSplit(0) // 0 = unknown estimate
+		if remote := remoteDevices(b.rpcDeviceSnapshot()); len(remote) > 0 {
+			ts = b.gpuManager.CalculateTensorSplitWithRPC(remote)
+		}
 		if ts.GPUCount > 1 {
 			cfg.TensorSplit = ts.Ratios
 			cfg.MainGPU = ts.MainGPU
@@ -1113,6 +1417,10 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	//
 	// inst.handle уже pre-allocated (path установлен). LoadModelWithEarlyHandle
 	// заполнит ptr во время выполнения.
+	// R118.16 (2026-10-14): сбрасываем план ПЕРЕД загрузкой — llama.cpp
+	// наполнит его строками `load_tensors: layer N assigned to device X`, и без
+	// сброса в план попали бы слои предыдущей модели.
+	bridge.ResetDeviceLayers()
 	handle, err := bridge.LoadModelWithEarlyHandle(cfg, inst.handle)
 	// Round 25 (2026-08-04): замеряем реальное время load'а для истории.
 	// bridge.LoadModelWithEarlyHandle — blocking CGo, возвращает после
@@ -1152,6 +1460,26 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 			"appliedGpuLayers", applied)
 	}
 
+	// R176 (2026-10-19): СВЕРКА «ПЕРЕДАЛИ / ЗАГРУЗИЛОСЬ».
+	//
+	// Причина, найденная R174: серверы передавались (`RPC-раскладка передана в мост`),
+	// бюджет их учитывал, но llama.cpp на загрузке печатал только `using device CUDA0` -
+	// узел не становился устройством модели, и 42 слоя уезжали на локальную карту.
+	// Проверяем ПО ФАКТУ и говорим вслух, а не оставляем оператору догадки по скорости.
+	{
+		servers := b.activeRPCServers()
+		layers := bridge.DeviceLayers()
+		if degraded, reason := layoutRegistration(servers, layers); degraded {
+			inst.info.LayoutDegraded = true
+			inst.info.LayoutDegradedReason = reason
+			logger.Get().Warnw("раскладка НЕ применилась: узлы переданы, а RPC-устройств в загрузке нет",
+				"name", name, "servers", servers, "layers", len(layers), "reason", reason)
+		} else {
+			inst.info.LayoutDegraded = false
+			inst.info.LayoutDegradedReason = ""
+		}
+	}
+
 	// Получаем метаданные
 	meta, err := handle.GetMetadata()
 	if err != nil {
@@ -1188,6 +1516,14 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	inst.info.GGUFContextLength = meta.ContextLength
 	inst.info.SizeBytes = meta.SizeTotalBytes
 	inst.info.GPUCount = b.gpuCount
+	// R118.16 (2026-10-14): точная раскладка из лога этой загрузки.
+	//
+	// Ограничение (осознанное): план хранится в мосте глобально, поэтому при
+	// ДВУХ одновременных загрузках он относится к последней завершившейся.
+	// От перепутывания защищает проверка суммы в потребителе (балансер
+	// принимает план только если сумма слоёв = n_layers + 1, см.
+	// layerPlanFromExactR118) — при несовпадении он показывает расчёт.
+	inst.info.DeviceLayers = bridge.DeviceLayers()
 
 	// Round 25: записываем реальное время load'а в историю для
 	// последующей динамической оценки estimatedLoadTimeMs.
@@ -1358,6 +1694,14 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		"batchSize", batchSize,
 		"flashAttnType", opts.FlashAttnType,
 		"gpuCount", b.gpuCount)
+
+	// R114 (2026-10-13): модель загружена с раскладкой — включаем наблюдение за
+	// узлами. Пропажа узла ПОСЛЕ загрузки иначе проявляется только на следующем
+	// запросе: llama.cpp обращается к мёртвому устройству и падает с abort().
+	// Watchdog выгружает модель в простое, и следующий запрос грузит её заново.
+	if len(loadRPCServers) > 0 {
+		b.startRPCWatchdog(name, loadRPCServers)
+	}
 
 	return nil
 }
@@ -1565,6 +1909,12 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 		totalVRAMMB += uint64(dev.VRAMFreeMB)
 	}
 	b.mu.RUnlock()
+	// S1 (2026-10-13): эвристика «модель больше 70% доступной VRAM → mmap» тоже
+	// обязана видеть удалённые узлы: иначе для модели, которая влезает только в
+	// паре «локальная карта + узел», mmap включался/выключался по локальной карте.
+	if _, remoteFree, n := b.remoteVRAMBytes(); n > 0 {
+		totalVRAMMB += remoteFree / (1024 * 1024)
+	}
 	modelSizeMB := fi.Size() / (1024 * 1024)
 	if totalVRAMMB > 0 && uint64(modelSizeMB)*100 > totalVRAMMB*70 && !opts.UseMmap {
 		logger.Get().Infow("forcing useMmap=true for large model",
@@ -1717,9 +2067,33 @@ type ResourceLimits struct {
 //   - cppworker: handleListModels (/api/models) и пред-загрузочный гейт n_ctx;
 //   - тесты cppbackend.
 func (b *Backend) CalculateResourceLimits(name string) ResourceLimits {
+	return b.calculateResourceLimits(name, b.MemfitBudget())
+}
+
+// CalculateResourceLimitsLocal — то же, но БЕЗ обращения к RPC-узлам.
+//
+// R131 (2026-10-16): для справочных (read-only) ручек вроде GET /api/models.
+// Раньше этот путь звал расчёт с RPC, отдавал недоступный узел в C-мост, и
+// llama.cpp вызывал abort() — мастер падал от ЧТЕНИЯ СПИСКА МОДЕЛЕЙ. Ёмкость
+// донора справочному ответу не нужна: раскладку планирует путь загрузки.
+func (b *Backend) CalculateResourceLimitsLocal(name string) ResourceLimits {
+	return b.calculateResourceLimits(name, b.MemfitBudgetLocal())
+}
+
+// CalculateResourceLimitsCached — лимиты с учётом ПОСЛЕДНЕГО СОБРАННОГО снимка
+// узлов, без их опроса (R132, 2026-10-16).
+//
+// Для справочных ручек: они обязаны отвечать мгновенно и не зависеть от того,
+// жив ли узел раскладки, но при этом показывать ту же ёмкость, что и решение о
+// загрузке, — иначе WebUI и балансер видят «не влезает» там, где раскладка на
+// донора проходит.
+func (b *Backend) CalculateResourceLimitsCached(name string) ResourceLimits {
+	return b.calculateResourceLimits(name, b.MemfitBudgetCached())
+}
+
+func (b *Backend) calculateResourceLimits(name string, budget memfit.Budget) ResourceLimits {
 	var limits ResourceLimits
 
-	budget := b.MemfitBudget()
 	limits.VRAMKnown = budget.VRAMKnown
 	limits.TotalVRAMMB = uint64(budget.VRAMTotal.MiB())
 	limits.AvailableVRAMMB = uint64(budget.VRAMFree.MiB())
@@ -1859,14 +2233,37 @@ func (b *Backend) removeOwnInstance(name string, inst *modelInstance) {
 
 // UnloadModel выгружает модель
 func (b *Backend) UnloadModel(name string) error {
+	return b.unloadModel(name, nil)
+}
+
+// unloadModel — выгрузка с проверкой идентичности инстанса (R224).
+//
+// ЗАЧЕМ ПАРАМЕТР expect. Авто-выгрузка после потери RPC-сессии запускается в
+// горутине по факту сбоя. Между сбоем и фактической выгрузкой следующий запрос
+// может успеть перезагрузить модель (lazy-load) — и тогда `UnloadModel(name)`
+// освободил бы НОВЫЙ, только что загруженный инстанс: загрузка падала (живой
+// прогон на паре контейнеров закончился exit code 2), а модель пропадала из
+// реестра. Поэтому: если в реестре уже другой инстанс — не трогаем его.
+func (b *Backend) unloadModel(name string, expect *modelInstance) error {
 	b.mu.Lock()
 	inst, exists := b.models[name]
 	if !exists {
 		b.mu.Unlock()
 		return fmt.Errorf("model %s not found", name)
 	}
+	if expect != nil && inst != expect {
+		b.mu.Unlock()
+		logger.Get().Infow("unload: в реестре уже новый инстанс модели — выгрузку не делаю",
+			"model", name, "reason", "instance_replaced")
+		return nil
+	}
 	delete(b.models, name)
 	b.mu.Unlock()
+
+	// R114: снимаем наблюдение за узлами раскладки — модель уходит из памяти,
+	// наблюдать нечего. Делаем ПОСЛЕ проверки идентичности: у нового инстанса
+	// сторож свой, останавливать его нельзя.
+	b.stopRPCWatchdog(name)
 
 	// Round 15.1: stop BatchedScheduler ДО FreeModel, чтобы in-flight
 	// sessions получили ошибку через ctx.Done() и закрыли каналы.
@@ -2167,6 +2564,44 @@ func (b *Backend) IsLoading(name string) bool {
 	return ok
 }
 
+// AbortLoad — R215 (2026-10-21): прервать ИДУЩУЮ загрузку модели.
+//
+// Ставит флаг отмены в C-мосте (bridge.RequestLoadAbort); llama.cpp проверяет
+// его в progress-callback и останавливает чтение весов, после чего сам
+// освобождает частично загруженную модель - включая буферы на узлах раскладки.
+//
+// ЗАЧЕМ. До R215 единственный вызывающий RequestLoadAbort передавал
+// context.Background(), то есть флаг не выставлялся НИКОГДА: «отменить загрузку»
+// было невозможно, `unload?force=true` означал «дождаться конца загрузки».
+// На крупной модели веса успевали лечь на GPU и держали VRAM минуты.
+//
+// Возвращает true, если флаг выставлен (или загрузка уже завершилась).
+func (b *Backend) AbortLoad(name string) bool {
+	if b == nil {
+		return false
+	}
+	b.mu.RLock()
+	inst := b.models[name]
+	b.mu.RUnlock()
+	if inst == nil || inst.handle == nil {
+		return false
+	}
+	b.mu.RLock()
+	state := inst.info.State
+	b.mu.RUnlock()
+	if state != StateLoading {
+		return false
+	}
+	if err := bridge.RequestLoadAbort(inst.handle); err != nil {
+		// ptr ещё не выставлен (ранний expose не успел): загрузка не отменена.
+		// Это не ошибка оператора, но и не успех - говорим честно.
+		logger.Get().Warnw("AbortLoad: запрос отмены не применён", "model", name, "error", err)
+		return false
+	}
+	logger.Get().Infow("AbortLoad: загрузка помечена на отмену", "model", name)
+	return true
+}
+
 // TryLockLoad пытается зарезервировать эксклюзивное право на загрузку модели name.
 // Возвращает:
 //   - (true, nil): блокировка получена, вызывающий может начинать загрузку.
@@ -2181,18 +2616,32 @@ func (b *Backend) TryLockLoad(name string) (bool, error) {
 	b.loadMu.Lock()
 	defer b.loadMu.Unlock()
 
-	// Проверяем, не загружена ли уже модель
+	// R152 (2026-10-16): СНАЧАЛА проверяем «идёт загрузка/перезагрузка», и только
+	// потом «модель уже загружена». Раньше порядок был обратный, и это ломало
+	// приоритет оператора.
+	//
+	// ЖИВОЙ ДЕФЕКТ (мастер, 2026-10-16). Оператор нажал «применить и перезагрузить»
+	// (асинхронный reload, ctx=8192). Пока он шёл, прилетел load-with-params:
+	// TryLockLoad увидел в b.models СТАРУЮ запись (reload ещё не успел её убрать),
+	// вернул «model already loaded», и handleLoadWithParams решил «параметры
+	// изменились» → UnloadModel + новая загрузка. Первая загрузка получила
+	// "load cancelled: model load aborted by user (R60.57 ... BRIDGE_ERR_ABORTED)",
+	// а модель поднялась с параметрами ВТОРОГО запроса (32768/q8_0/reasoning off) —
+	// то есть применение оператора было молча отменено.
+	//
+	// Теперь занятый load/reload честно сообщается как «грузится» (false, nil):
+	// вызывающий уходит в respondWhileAnotherLoadInProgress (202 + progressUrl) и
+	// НЕ выгружает модель, то есть не отменяет чужую загрузку.
+	if _, ok := b.loading[name]; ok {
+		return false, nil
+	}
+
+	// Модель уже загружена и никакой загрузки не идёт — прежний смысл ошибки.
 	b.mu.RLock()
 	_, exists := b.models[name]
 	b.mu.RUnlock()
 	if exists {
 		return true, fmt.Errorf("model %s already loaded", name)
-	}
-
-	// Проверяем, не грузит ли её другая горутина
-	if _, ok := b.loading[name]; ok {
-		// Модель уже в процессе загрузки — ждём
-		return false, nil
 	}
 
 	// Создаём канал, который будет закрыт после завершения загрузки
@@ -2303,6 +2752,12 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 		return nil, err
 	}
 
+	// R114 (2026-10-13): узел раскладки пропал — генерацию не начинаем: llama.cpp
+	// на мёртвом RPC-устройстве вызывает abort() и роняет процесс.
+	if err := b.checkRPCNodesForInference(); err != nil {
+		return nil, err
+	}
+
 	// Round 13: acquire slot FIRST. Если все слоты заняты — блокируемся
 	// (FIFO) пока не освободится. Для defaultNParallel=1 — никогда не
 	// блокируется (единственный слот занят только текущим call'ом).
@@ -2368,6 +2823,11 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 	}()
 
 	result, inferErr = inst.handle.Infer(prompt, params)
+	// R224: по факту сбоя уточняем причину (узлы раскладки живы?) и при потере
+	// сессии запускаем выгрузку модели — см. rpc_session_lost_r224.go.
+	if inferErr != nil {
+		inferErr = b.diagnoseInferenceFailure(inst, modelName, inferErr)
+	}
 	return result, inferErr
 }
 
@@ -2402,6 +2862,13 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 func (b *Backend) GenerateStreamWithAbort(modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback, streamAbortFlag unsafe.Pointer) (unsafe.Pointer, error) {
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
+		return nil, err
+	}
+
+	// R114 (2026-10-13): узел раскладки пропал — генерацию не начинаем: llama.cpp
+	// на мёртвом RPC-устройстве вызывает abort() и роняет процесс (клиент получил
+	// бы не ошибку, а перезапуск мастера).
+	if err := b.checkRPCNodesForInference(); err != nil {
 		return nil, err
 	}
 
@@ -2465,6 +2932,11 @@ func (b *Backend) GenerateStreamWithAbort(modelName string, prompt string, param
 		abortFlag, streamErr = inst.handle.InferStreamWithAbort(prompt, params, countedCallback, streamAbortFlag)
 	} else {
 		abortFlag, streamErr = inst.handle.InferStream(prompt, params, countedCallback)
+	}
+	if streamErr != nil {
+		// R224: тот же диагноз на потоковом пути — текст ошибки уходит в
+		// error-чанк SSE, и «KV-cache overflow» там так же вводит в заблуждение.
+		streamErr = b.diagnoseInferenceFailure(inst, modelName, streamErr)
 	}
 	return abortFlag, streamErr
 }
@@ -2619,7 +3091,8 @@ streamLoop:
 	// TokenCh закрыт scheduler'ом. Проверяем session.Err.
 	if state.Err != nil {
 		opErr = state.Err
-		return nil, state.Err
+		// R224: батчевый путь (parallel > 1) — та же диагностика.
+		return nil, b.diagnoseInferenceFailure(inst, modelName, state.Err)
 	}
 	return nil, nil
 }
@@ -2874,6 +3347,17 @@ func (b *Backend) Close() {
 	if b.idleUnloader != nil {
 		b.idleUnloader.Stop()
 	}
+
+	// R114 (2026-10-13): останавливаем наблюдение за узлами раскладки — при
+	// завершении процесса выгружать модели «по потере узла» нечего.
+	b.rpcWatchMu.Lock()
+	for model, wd := range b.rpcWatchdogs {
+		if wd != nil {
+			close(wd.stop)
+		}
+		delete(b.rpcWatchdogs, model)
+	}
+	b.rpcWatchMu.Unlock()
 
 	// Останавливаем HuggingFace загрузчик
 	if b.hfDownloader != nil {
@@ -3515,4 +3999,68 @@ func estimateLayersFromFileSize(sizeBytes int64) int {
 // GetSystemRAMGB — экспортированная обёртка для использования из других пакетов
 func GetSystemRAMGB() uint64 {
 	return getSystemRAMGB()
+}
+
+// SetIdleUnloadTimeout — R119 (2026-10-15): применить значение idleUnloadMinutes
+// к ЖИВОМУ менеджеру автовыгрузки.
+//
+// ЗАЧЕМ. Оператор задаёт idleUnloadMinutes из WebUI
+// (PUT /api/v1/cppworker/config/update), и до этой правки менялся только
+// currentConfig: таймаут «зашивался» в менеджер в момент его создания, поэтому UI
+// показывал новые минуты, а выгрузка продолжала происходить по старому значению.
+// Живая проверка на стенде: PUT idleUnloadMinutes=3 → конфиг отдаёт 3, а живой
+// менеджер продолжает считать по 10 минутам (и интервал проверки — по 5 минутам).
+//
+// Поведение:
+//   - d > 0: менеджер создаётся (если его не было — например, значение было 0 и
+//     автовыгрузка вообще не запускалась), получает новый таймаут и запускается;
+//   - d <= 0: менеджер останавливается и снимается (0 = выключено).
+//
+// Возвращает действующий таймаут после вызова (0 = выключено): вызывающий код
+// отдаёт его в ответе, чтобы UI показывал ФАКТ, а не только отправленное значение.
+func (b *Backend) SetIdleUnloadTimeout(d time.Duration) time.Duration {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if d <= 0 {
+		if b.idleUnloader != nil {
+			b.idleUnloader.Stop()
+			b.idleUnloader = nil
+			logger.Get().Infow("idle unload: автовыгрузка выключена (idleUnloadMinutes=0)")
+		}
+		return 0
+	}
+
+	if b.idleUnloader == nil {
+		b.idleUnloader = NewIdleUnloadManager(b, d)
+		b.idleUnloader.Start()
+		logger.Get().Infow("idle unload: автовыгрузка включена на ходу",
+			"timeout", d.String())
+		return d
+	}
+
+	b.idleUnloader.SetIdleTimeout(d)
+	b.idleUnloader.Start() // идемпотентно: уже запущенный цикл не дублируется
+	logger.Get().Infow("idle unload: таймаут изменён на ходу",
+		"timeout", d.String(), "check_interval", b.idleUnloader.CheckInterval().String())
+	return b.idleUnloader.IdleTimeout()
+}
+
+// IdleUnloadStatus — действующий таймаут автовыгрузки и признак «цикл запущен».
+// Нужен диагностике и WebUI: currentConfig может расходиться с фактом, а
+// оператору нужно показывать факт.
+func (b *Backend) IdleUnloadStatus() (time.Duration, bool) {
+	if b == nil {
+		return 0, false
+	}
+	b.mu.Lock()
+	u := b.idleUnloader
+	b.mu.Unlock()
+	if u == nil {
+		return 0, false
+	}
+	return u.IdleTimeout(), u.Running()
 }

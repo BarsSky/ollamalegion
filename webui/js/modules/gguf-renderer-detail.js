@@ -26,6 +26,13 @@
     // ---- Delegated detail panel click handler ----
 
     M.onDetailPanelClick = function(e) {
+        // R134 (2026-10-16): раскрыли карточку параметров модели — подтянуть
+        // значения ПРОФИЛЯ (иначе модель на диске открывалась пустой, хотя в
+        // профиле значения были). Один запрос списка профилей на все формы.
+        if (e.target && e.target.closest && e.target.closest('.gguf-mp-summary') &&
+            typeof M.hydrateOnOpen === 'function') {
+            M.hydrateOnOpen(e.target);
+        }
         const state = M.state;
         // R91 (2026-10-08): «Повторить» на плашке ошибки загрузки деталей.
         // Обрабатываем ДО табов: кнопка живёт внутри #ggufDetailContent, который
@@ -102,6 +109,25 @@
         if (unloadBtn) {
             var handle = unloadBtn.getAttribute('data-handle');
             if (handle && typeof M.unloadOnSelectedBackend === 'function') M.unloadOnSelectedBackend(handle);
+            return;
+        }
+        // R126 (пункты 5-6): «Применить и перезагрузить» из редактора параметров
+        // модели (карточка загруженной модели и список моделей на диске).
+        var paramsApply = e.target.closest('[data-model-params-apply]');
+        if (paramsApply) {
+            var paramsModel = paramsApply.getAttribute('data-model-params-apply');
+            if (paramsModel && typeof M.applyModelParams === 'function') {
+                M.applyModelParams(paramsModel);
+            }
+            e.preventDefault();
+            return;
+        }
+        // R129 (пункт 3): замер скорости обмена с узлами раскладки — по кнопке,
+        // потому что это дорогая проверка (десятки МБ трафика).
+        var benchBtn = e.target.closest('[data-rpc-bench]');
+        if (benchBtn) {
+            if (typeof M.measureLinkSpeed === 'function') M.measureLinkSpeed();
+            e.preventDefault();
             return;
         }
         var delBtn = e.target.closest('.gguf-delete-btn');

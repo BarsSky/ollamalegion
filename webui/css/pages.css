@@ -1,4 +1,4 @@
-/*
+﻿/*
  * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
  *   DESIGN_VARIANCE = 5, MOTION_INTENSITY = 3, VISUAL_DENSITY = 5
  * Anti-slop rules applied:
@@ -40,6 +40,8 @@
 }
 .log-entry {
     display: flex;
+    /* R208: многострочное сообщение об ошибке не должно центрироваться. */
+    align-items: flex-start;
     gap: var(--space-3);
     padding: 10px 14px;
     border-radius: var(--radius-sm);
@@ -60,7 +62,24 @@
 .log-level.info  { background: var(--info-soft); color: var(--info); }
 .log-level.warn  { background: var(--warning-bg-soft); color: var(--warning); }
 .log-level.error { background: var(--danger-bg-soft); color: var(--danger); }
-.log-message { flex: 1; color: var(--text-secondary); }
+.log-message {
+    flex: 1 1 auto;
+    /* R208 (2026-10-21): ДЛИННЫЕ СООБЩЕНИЯ (ошибки) ДОЛЖНЫ ЧИТАТЬСЯ, А НЕ ОБРЕЗАТЬСЯ.
+     *
+     * Живая жалоба: поле с ошибкой в системных логах нельзя прочитать - текст выводился
+     * обрезанным. Причина: flex-элемент без min-width:0 не сжимается, а длинные токены
+     * (URL, JSON, пути без пробелов) не переносятся - строка уезжала за край контейнера.
+     *
+     * Теперь: перенос по словам (pre-wrap сохраняет переводы строк из стека), длинные
+     * токены ломаются (overflow-wrap: anywhere), текст можно выделить и скопировать.
+     * Полный текст дублируется в title у .log-entry (см. renderers.js). */
+    min-width: 0;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    user-select: text;
+}
 
 /* ===== Logs Tabs (System / Proxy) ===== */
 .logs-tabs {
@@ -615,6 +634,19 @@
     justify-content: space-between;
     align-items: center;
     gap: var(--space-4);
+    /* R207 (2026-10-21): параметры раскрываются ПОД карточкой, а не справа от неё.
+     *
+     * Живая жалоба: во вкладке «Загружено» блок «Параметры модели» открывался сбоку -
+     * `details.gguf-mp-acc` такой же flex-ребёнок карточки, как имя и кнопка, поэтому
+     * вставал в тот же ряд. Во вкладке «Модели» аккордеон лежит в отдельном блоке и
+     * ведёт себя правильно. Правим раскладку: карточка переносит строки, аккордеон
+     * занимает всю ширину под содержимым. */
+    flex-wrap: wrap;
+}
+.gguf-loaded-model-item > .gguf-mp-acc {
+    flex: 1 0 100%;
+    width: 100%;
+    margin-top: 8px;
 }
 .gguf-loaded-model-item .loaded-info { flex: 1; }
 .gguf-loaded-model-item .loaded-name,

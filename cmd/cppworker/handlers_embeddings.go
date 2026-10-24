@@ -1,7 +1,7 @@
 package main
 
 import (
-		"net/http"
+	"net/http"
 
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -64,12 +64,9 @@ func handleOllamaEmbeddings(w http.ResponseWriter, r *http.Request) {
 	// Ленивая загрузка модели для embeddings
 	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
 	if err != nil {
-		if isModelLoadingError(err) {
-			writeLoadingResponse(w, req.Model, err)
-			return
-		}
 		logger.Get().Errorw("embeddings: model load failed", "model", req.Model, "error", err)
-		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
+		// R119: 503 (грузится) / 404 (нет файла) / 500 — одна точка перевода.
+		writeModelLoadError(w, req.Model, err)
 		return
 	}
 	modelName := actualModel
@@ -101,9 +98,9 @@ func handleOllamaEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Model    string        `json:"model"`
-		Input    interface{}   `json:"input"`    // string OR []string
-		Truncate *bool         `json:"truncate,omitempty"`
+		Model    string                  `json:"model"`
+		Input    interface{}             `json:"input"` // string OR []string
+		Truncate *bool                   `json:"truncate,omitempty"`
 		Options  *map[string]interface{} `json:"options,omitempty"`
 	}
 	if err := decodeJSONRequest(r, &req, 0); err != nil {
@@ -145,12 +142,9 @@ func handleOllamaEmbed(w http.ResponseWriter, r *http.Request) {
 	// Ленивая загрузка модели для embeddings
 	actualModel, err := ensureModelLoaded(r.Context(), req.Model)
 	if err != nil {
-		if isModelLoadingError(err) {
-			writeLoadingResponse(w, req.Model, err)
-			return
-		}
 		logger.Get().Errorw("embed: model load failed", "model", req.Model, "error", err)
-		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
+		// R119: 503 (грузится) / 404 (нет файла) / 500 — одна точка перевода.
+		writeModelLoadError(w, req.Model, err)
 		return
 	}
 	modelName := actualModel
@@ -170,8 +164,8 @@ func handleOllamaEmbed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"model":      req.Model,
-		"embeddings": embeddings,
+		"model":             req.Model,
+		"embeddings":        embeddings,
 		"prompt_eval_count": totalTokens,
 	})
 }

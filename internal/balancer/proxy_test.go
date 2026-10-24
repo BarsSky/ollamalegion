@@ -600,7 +600,19 @@ func TestCheckResourceLimits(t *testing.T) {
 	assert.True(t, proxy.checkResourceLimits("backend-1"))
 }
 
-// TestCheckResourceLimitsExceeded - проверка превышения лимитов
+// TestCheckResourceLimitsExceeded — R118 (2026-10-14): занятый GPU больше НЕ
+// исключает бэкенд из кандидатов.
+//
+// ПРЕЖНЕЕ ОЖИДАНИЕ (assert.False на GPU 95%) было дефектом: checkResourceLimits
+// вызывается из 13 точек выбора бэкенда, и блокировка по мгновенной утилизации
+// выкидывала занятый бэкенд из кандидатов — запрос не вставал в admission-очередь,
+// а получал 503 («all backends busy»). На стенде с частичным offload GPU ~100% и
+// CPU ~96% во время любой генерации, поэтому блокировались ВСЕ запросы: второй
+// экземпляр Cline, OpenWebUI, вторая модель. Параллелизм уже ограничен слотами
+// (EffectiveMaxConcurrentRequests) — лишний запрос обязан ЖДАТЬ в очереди.
+//
+// Полная матрица «soft vs жёсткий (RAM/диск)» — в
+// resource_limits_soft_r118_test.go; здесь проверяем сам факт смены контракта.
 func TestCheckResourceLimitsExceeded(t *testing.T) {
 	t.Parallel()
 
@@ -625,8 +637,11 @@ func TestCheckResourceLimitsExceeded(t *testing.T) {
 		},
 	})
 
-	// Проверяем что лимиты превышены
-	assert.False(t, proxy.checkResourceLimits("backend-1"))
+	// GPU занят (95%) — по R118 это НЕ повод выкинуть бэкенд из кандидатов:
+	// запрос должен встать в admission-очередь и дождаться слота.
+	assert.True(t, proxy.checkResourceLimits("backend-1"),
+		"занятый GPU обязан оставаться кандидатом (R118): иначе второй запрос "+
+			"получает 503 вместо очереди")
 }
 
 // TestFindBackendWithModel - проверка поиска бэкенда с моделью

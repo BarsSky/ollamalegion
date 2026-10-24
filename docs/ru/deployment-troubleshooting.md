@@ -281,7 +281,7 @@ IMAGE_REGISTRY=local-docker-hub:5000/  → local-docker-hub:5000/ollama-legion/b
 Задаётся **один раз** в `deployments/.env`:
 
 ```bash
-BALANCER_URL=http://192.168.1.10:18081
+BALANCER_URL=http://192.0.2.110:18081
 CPPWORKER_API_TOKEN=<тот же токен, что у балансера>
 ```
 

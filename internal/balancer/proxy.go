@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ollama-loadbalancer/internal/backendgroup"
 	"ollama-loadbalancer/internal/modelreplication"
 	"ollama-loadbalancer/internal/rpccoordinator"
 	"ollama-loadbalancer/internal/virtualmodel"
@@ -71,6 +72,10 @@ type Proxy struct {
 	// API /api/v1/gguf/backends, когда модели загружены в обход балансера.
 	llamaCppMetricsPoller *llamaCppMetricsPoller
 
+	// R118.15: канал закрытия петли замеров пропускной способности до узлов
+	// раскладки (rpc_link_measure_r118.go). nil — замеры не запускались.
+	linkMeasureStop chan struct{}
+
 	// R72 (P0): placement policy — решение о размещении модели.
 	// Состояния в Proxy нет: политика читается из конфига
 	// (p.config.Balancing.Placement), см. placement.go.
@@ -80,6 +85,66 @@ type Proxy struct {
 	// позволяет), или вернуть клиенту 413. Вызывается из llamacpp_transport.go
 	// когда upstream (cppworker) возвращает ErrNCtxNeedsReload.
 	nctxReload *NCtxReloadCoordinator
+
+	// R118.2 (2026-10-14): состояние раскладки слоёв (rpc_layout_guard.go).
+	// rpcLayoutApplied — последний применённый состав узлов на бэкенд (чтобы не
+	// переписывать конфиг cppworker'а на каждом тике), rpcLayoutReason — причина
+	// деградации для API/WebUI, rpcProbe — проверка узла (подменяется в тестах).
+	// Все три читаются и пишутся под p.mu; нулевое значение пригодно к работе.
+	rpcLayoutApplied map[string]string
+	rpcLayoutReason  map[string]string
+	rpcProbe         func(string, time.Duration) bool
+
+	// R133 (2026-10-16): управление СОБСТВЕННЫМ узлом раскладки бэкенда-донора
+	// (rpc_layout_node_r133.go). rpcNodeServed — помним, что узел подняли МЫ
+	// (роль donor), чтобы при смене роли погасить именно своё решение, а не
+	// ручной тумблер оператора; rpcNodeReason — почему узел не в том состоянии,
+	// которого требует роль (для API/WebUI); rpcNodeReachable — последняя
+	// проверка доступности узла с балансера. Под p.mu.
+	rpcNodeServed    map[string]bool
+	rpcNodeReason    map[string]string
+	rpcNodeReachable map[string]bool
+	// rpcNodeOrder/rpcNodeOrderAt — последний отправленный приказ узлу и его
+	// время: повторяем не каждый тик, а только когда он снова нужен.
+	// rpcNodeOrderState (R159) — грубое состояние воркера на момент приказа
+	// (unknown|up|starting|down): пока состояние не изменилось, повтор глушим,
+	// а как только изменилось (узел упал/начал слушать) — действуем сразу.
+	rpcNodeOrder      map[string]string
+	rpcNodeOrderAt    map[string]time.Time
+	rpcNodeOrderState map[string]string
+
+	// R118.15 (2026-10-14): замеры канала до узлов раскладки, сделанные САМИМ
+	// балансером (rpc_link_measure_r118.go): backendID → последний замер.
+	// Раньше значение приходило только из .env оператора (LB_RPC_LINK_MBPS) и
+	// молча устаревало. Под p.mu; нулевое значение пригодно к работе.
+	rpcLinkMeasured map[string]rpcLinkMeasurement
+
+	// R118.7 (2026-10-14): запомненные отказы «окно физически недостижимо»
+	// (nctx_infeasible_r118.go): cppworker ответил 422 на перезагрузку окна.
+	// Пока запись жива, preflight не планирует перезагрузку выше потолка, а
+	// отвечает клиенту 413 с причиной. Ключ — backendID|model. Под p.mu.
+	nctxInfeasible map[string]nctxInfeasible
+
+	// R119 (2026-10-15): запомненные отказы «такой модели на бэкенде НЕТ»
+	// (model_missing_r119.go): cppworker ответил 404 на попытку загрузки, то есть
+	// модель отсутствует на диске. Пока запись жива (TTL 60 c), preflight НЕ
+	// планирует перезагрузку, а клиент сразу получает 404 с причиной и списком
+	// доступных моделей — иначе клиент уходил в retry-цикл 503 «is being
+	// reloaded … retry in 30s» и падал по своему таймауту («Internal Server
+	// Error»). Ключ — backendID|model. Под p.mu.
+	modelMissing map[string]modelMissing
+	// R185 (2026-10-20): запомненные ТЕРМИНАЛЬНЫЕ отказы «эта карта не
+	// поддерживается образом» (cuda_arch_refusal_r185.go). Живой разбор: образ
+	// собран под CUDA_ARCH=86;120, карта sm_75 — первое GPU-ядро убивало воркер
+	// SIGABRT, а клиент получал 503 «повтори» и крутил перезагрузки вечно.
+	// Теперь отказ запоминается и клиент получает 400 с причиной и советом.
+	// Ключ — backendID|model. Под p.mu.
+	modelArchUnsupported map[string]modelArchUnsupported
+	// R119 (2026-10-15, пункт 4): происхождение параметров загрузки модели —
+	// какой слой дал каждое значение (request / profile / default_profile /
+	// backend). Считается при загрузке (load_provenance_r119.go) и отдаётся API,
+	// чтобы оператор видел источник рядом со значением. Ключ — backendID|model.
+	loadProvenance map[string]loadProvenanceRecord
 
 	// lbAutoLoadAsync — R60.33 (2026-09-10): если true, auto-load
 	// запускается в goroutine и balancer сразу возвращает 503+Retry-After
@@ -99,6 +164,10 @@ type Proxy struct {
 	// (LB_ADMISSION_WAIT_SEC) хранится внутри очереди — так Proxy не растёт и
 	// остаётся в своей allocator size class (govet fieldalignment).
 	admission *admissionQueue
+
+	// R229 (2026-10-22): протокол ключа admission-очереди (openai/ollama) — бейджи
+	// в waiting_detail. Указатель: структура Proxy не растёт (fieldalignment).
+	admissionProto *admissionProtocols
 
 	// lbNCtxReloadAsync — R60.47 (2026-09-11): если true, n_ctx auto-reload
 	// (triggered by cppworker 400 prompt_too_long) запускается в goroutine и
@@ -171,6 +240,12 @@ type Proxy struct {
 	virtualModels       *virtualmodel.Registry
 	virtualModelRouter  *virtualmodel.Router
 	rpcCoordinator      *rpccoordinator.ModelCoordinator
+
+	// R92 (S2, план 2026-10-07): логические бэкенды — группы узлов, между
+	// которыми разрезана ОДНА модель (мастер + воркеры RPC). Реестр неизменяем
+	// после построения; состояние узлов подтягивается замыканием
+	// groupMemberInfoR92. См. backend_group_r92.go.
+	backendGroups *backendgroup.Registry
 
 	// Phase 8 (2026-07-10): P.1 — rpc_coordinator production mode.
 	// RpcCoordinatorDispatcher routes inference через coordinator при
@@ -399,6 +474,11 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// Прокси-логгер использует тот же EventBus для WebSocket-трансляции
 	p.proxyLogger = NewProxyLogger(1000, p.eventBus)
 
+	// R229 (2026-10-22): очередь знает протокол сессии (openai/ollama) — бейджи
+	// в waiting_detail. Резолвер — менеджер сессий этого же прокси.
+	p.admission.protocolOf = p.protocolOfSession
+	p.admissionProto = newAdmissionProtocols()
+
 	// Инициализация бэкендов из config
 	for i := range config.Backends {
 		backend := config.Backends[i]
@@ -477,6 +557,11 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	p.llamaCppMetricsPoller = newLlamaCppMetricsPoller(p)
 	p.llamaCppMetricsPoller.Start()
 
+	// R118.15 (2026-10-14): фоновые замеры канала до узлов раскладки (можно
+	// выключить LB_RPC_LINK_MEASURE_SEC=0).
+	p.linkMeasureStop = make(chan struct{})
+	p.StartRPCLinkMeasurer(p.linkMeasureStop)
+
 	// Инициализация AutoPullManager (Pull-on-Demand)
 	if config.Balancing.AutoPull.Enabled {
 		p.AutoPull = NewAutoPullManager(p, config.Balancing.AutoPull)
@@ -505,6 +590,10 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 
 	// Инициализация RPC Model Distribution модулей
 	p.initRpcModules()
+
+	// R92 (S2 плана 2026-10-07): логические бэкенды из balancing.backendGroups[].
+	// Пустой список (default) → реестр пуст, поведение полностью прежнее.
+	p.initBackendGroupsR92(config.Balancing)
 
 	// Инициализация ModelManager для управления моделями на бэкендах
 	p.modelManager = NewModelManager(p)
@@ -541,10 +630,11 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 
 // determineRequestBackendType определяет тип бэкенда на основе пути входящего запроса.
 //   - Ollama API endpoints (/api/generate, /api/chat, /api/tags, ...) →
-//     если OperatingMode разрешает оба типа (standard/replication/rpc_coordinator) — возвращает "",
-//     позволяя selectBackend выбрать бэкенд любого типа где загружена модель.
-//     Если mode жёстко привязан к одному типу — возвращает этот тип.
-//   - llama.cpp / OpenAI-compatible endpoints (/v1/chat/completions, /v1/completions, ...) → BackendTypeLlamaCpp
+//     если режим разрешает оба текстовых типа — возвращает "", позволяя
+//     selectBackend выбрать бэкенд ЛЮБОГО типа, где загружена модель (это и есть
+//     «Ollama API работает одинаково для всех клиентов», независимо от того,
+//     обслуживает запрос cppworker или Ollama-нода).
+//   - llama.cpp / OpenAI-compatible endpoints (/v1/chat/completions, ...) → BackendTypeLlamaCpp
 //   - Прочие пути → "" (будет определено из OperatingMode через getDefaultAllowedTypes)
 func (p *Proxy) determineRequestBackendType(r *http.Request) types.BackendType {
 	path := r.URL.Path
@@ -565,23 +655,18 @@ func (p *Proxy) determineRequestBackendType(r *http.Request) types.BackendType {
 	}
 
 	if strings.HasPrefix(path, "/api/") {
-		// Проверяем, какие типы бэкендов разрешены текущим OperatingMode
+		// Проверяем, какие типы бэкендов разрешены текущим режимом.
+		//
+		// R112 (2026-10-11): ЗДЕСЬ БЫЛО НАВЯЗЫВАНИЕ ТИПА ПО КОНФИГУ. Если в
+		// config.json лежал явный backendEngine (а он выводился из operatingMode
+		// при инициализации и сохранялся), /api/* жёстко уезжал на бэкенд только
+		// этого типа — второй тип не получал запросов вообще, и клиент видел
+		// «модель не найдена» при живой модели на соседнем бэкенде другого типа.
+		// Теперь тип определяет selectBackend по фактическому наличию модели.
 		allowed := p.getDefaultAllowedTypes()
 		if len(allowed) > 1 {
-			// Режим разрешает оба типа (standard/replication/rpc_coordinator).
-			// Если явно задан BackendEngine (не auto), используем его для
-			// обратной совместимости с legacy-конфигурациями, где operatingMode
-			// не выставлен, а backendEngine = llama_cpp.
-			if p.config.BackendEngine != "" && p.config.BackendEngine != types.EngineAuto {
-				switch p.config.BackendEngine {
-				case types.EngineLlamaCPP:
-					return types.BackendTypeLlamaCpp
-				case types.EngineOllamaAPI:
-					return types.BackendTypeOllama
-				}
-			}
-			// Возвращаем "", чтобы selectBackend мог выбрать бэкенд любого типа
-			// на основе того, где модель фактически загружена.
+			// Разрешено больше одного типа — "", чтобы selectBackend выбрал
+			// бэкенд любого из них по модели/ресурсам.
 			return ""
 		}
 		if len(allowed) == 1 {
@@ -591,6 +676,11 @@ func (p *Proxy) determineRequestBackendType(r *http.Request) types.BackendType {
 		return types.BackendTypeOllama
 	}
 	if strings.HasPrefix(path, "/v1/") {
+		// OpenAI-поверхность обслуживается ДИСПЕТЧЕРОМ balancer'а
+		// (llamaCppRouter: handleOpenAIChatCompletions/handleOpenAICompletion),
+		// который выбирает бэкенд сам. Тип остаётся llama_cpp: это не «деление
+		// стенда по типу», а признак того, каким кодом обслуживается путь.
+		// R112: Ollama-поверхность (/api/*) от типа не зависит вовсе.
 		return types.BackendTypeLlamaCpp
 	}
 	return ""
@@ -648,6 +738,13 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 	if p.agentChecker != nil {
 		logger.Get().Infow("stopping agent timeout checker...")
 		p.StopAgentTimeoutChecker()
+	}
+
+	// R118.15: останавливаем петлю замеров канала раскладки.
+	if p.linkMeasureStop != nil {
+		logger.Get().Infow("stopping rpc link measurer...")
+		close(p.linkMeasureStop)
+		p.linkMeasureStop = nil
 	}
 	if p.sessionMgr != nil {
 		logger.Get().Infow("stopping session manager...")
@@ -738,6 +835,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Обработка CORS preflight (OPTIONS) запросов
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// R229 (2026-10-22): явная ОТМЕНА генерации клиентом (Ollama POST /api/cancel).
+	// Живой дефект: балансер маршрутизировал отмену как обычную генерацию, не
+	// отвечал (таймаут 15 с), а стрим доходил до конца (380 чанков, 62 с).
+	// Отмена — служебный приказ воркерам, а не генерация: обрабатываем сразу.
+	if isClientCancelPath(r.URL.Path) {
+		p.handleClientCancel(w, r)
 		return
 	}
 
@@ -988,14 +1094,54 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				)
 				targetBackend = ""
 			} else {
+				// R118.5 (2026-10-14): ПРИВЯЗКА К КОПИИ, КОТОРАЯ НЕ ПОКРЫВАЕТ ОКНО.
+				//
+				// Живой дефект: сессия клиента была привязана к копии модели с окном
+				// 4096 на слот, клиент просил 8192 — при этом на мастере лежала
+				// подготовленная копия с 16384 на слот. Запрос уходил в привязанную
+				// копию, preflight планировал reload, cppworker отвечал 422, клиент
+				// ждал ~33 с и получал окно меньше заготовленного. Теперь, если
+				// привязанная копия окно не покрывает, а другая ГОТОВАЯ копия
+				// покрывает — перепривязываемся (это и есть «prepared copy wins»).
+				if parsed.NumCtx > 0 && !p.modelCopyCoversWindow(targetBackend, model, parsed.NumCtx) {
+					if better, why := p.selectModelCopyForWindow(model, parsed.NumCtx, nil, allowedTypes); better != "" && better != targetBackend {
+						logger.Get().Infow("session re-stick: привязанная копия не покрывает окно клиента",
+							"session", sessionID, "model", model,
+							"from", targetBackend, "to", better,
+							"requested_n_ctx", parsed.NumCtx, "reason", why)
+						targetBackend = better
+					}
+				}
+
 				forceRebalance := false
 				backendState.mu.Lock()
 				active := backendState.ActiveReqs
 				maxReqs := backendState.Backend.MaxConcurrentReqs
 				backendState.mu.Unlock()
 
-				if maxReqs > 0 && active > 0 {
-					loadRatio := float64(active) / float64(maxReqs)
+				// R139 (2026-10-16): нагрузку ЭТОЙ ЖЕ сессии не считаем поводом
+				// уводить её на другой backend.
+				//
+				// Живой дефект (deepseek harness через балансер, длинная
+				// генерация): сессия привязана к прогретой копии, её
+				// собственный стрим в полёте (ActiveReqs=1 при
+				// MaxConcurrentReqs=1) — и следующий запрос той же сессии
+				// «ребалансировался» на менее загруженный backend, где модели
+				// нет и её надо грузить заново. Клиент получает десятки секунд
+				// тишины (pi-ai stream idle timeout 300000ms), а если тот
+				// воркер затем падает — EOF/502. Сессия должна дождаться
+				// СВОЕГО слота на прогретой копии.
+				//
+				// Чужую нагрузку (другие сессии) учитываем как раньше:
+				// ребалансировка ради справедливости сохраняется.
+				own := p.sessionInflight(sessionID)
+				foreign := active - own
+				if foreign < 0 {
+					foreign = 0
+				}
+
+				if maxReqs > 0 && foreign > 0 {
+					loadRatio := float64(foreign) / float64(maxReqs)
 					if loadRatio >= 1.0 {
 						forceRebalance = true
 					}
@@ -1024,7 +1170,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 				// Always update session binding — new backend or re-sticky to current
 				if targetBackend != "" && p.config.Balancing.SessionStickiness {
-					p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
+					p.sessionMgr.SetWithProtocol(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 				}
 			}
 		}
@@ -1049,11 +1195,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				targetBackend = p.selectAnyHealthy(bt)
 			}
 		} else {
-			targetBackend = p.selectBackend(model, bt, false)
+			// R118.5: при нескольких загруженных копиях предпочитаем ту, что
+			// покрывает окно клиента (см. model_copy_window_r118.go).
+			targetBackend = p.selectBackendPreferWindow(model, bt, parsed.NumCtx)
 		}
 		if targetBackend != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
 			sessionID = p.getSessionIDWithModel(r, clientName, model)
-			p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
+			p.sessionMgr.SetWithProtocol(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 		}
 	}
 
@@ -1114,7 +1262,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				acquiredBackend = altBackend
 				targetBackend = altBackend
 				if sessionID != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
-					p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
+					p.sessionMgr.SetWithProtocol(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 				}
 				logger.Get().Infow("acquired slot on alternate backend",
 					"backend", targetBackend, "original", attemptedBackends)
@@ -1158,7 +1306,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if sessionID != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
-				p.sessionMgr.Set(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
+				p.sessionMgr.SetWithProtocol(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 			}
 			logger.Get().Infow("unified queue: слот получен, продолжаем без legacy-очереди",
 				"backend", acquiredBackend, "model", model,
@@ -1171,7 +1319,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Retry-After", "5")
 				http.Error(w, "Service overloaded", http.StatusServiceUnavailable)
 			case errors.Is(waitErr, errAdmissionTimeout):
-				writeAdmissionUnavailable(w, model, sessionKey, position, waited, p.admissionWaitTimeout())
+				// R117: отчитываемся РЕАЛЬНЫМ бюджетом ожидания (max(admission,
+				// auto-load)), иначе клиент видит 300 c там, где ждал 900.
+				writeAdmissionUnavailable(w, model, sessionKey, position, waited, p.admissionWaitBudget())
 			case errors.Is(waitErr, errAdmissionDisabled):
 				http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
 			default:
@@ -1218,7 +1368,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			acquiredBackend = altBackend
 			if sessionID != "" && p.config.Balancing.SessionStickiness {
-				p.sessionMgr.Set(sessionID, altBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
+				p.sessionMgr.SetWithProtocol(sessionID, altBackend, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 			}
 			attemptedBackends[altBackend] = true
 
@@ -1250,7 +1400,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			// Обновляем привязку сессии к новому бэкенду
 			if sessionID != "" && p.config.Balancing.SessionStickiness {
-				p.sessionMgr.Set(sessionID, newBackendID, model, clientName, p.getClientRealIP(r), r.UserAgent())
+				p.sessionMgr.SetWithProtocol(sessionID, newBackendID, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 			}
 
 			// Освобождаем старый слот и захватываем новый
@@ -1288,6 +1438,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Обычная обработка ошибки (не model-not-found или auto-pull выключен/недоступен)
 	logger.Get().Errorw("backend request failed",
 		"backend", acquiredBackend, "error", err, "model", model)
+	// R194 (2026-10-20): ОТМЕНА КЛИЕНТА — НЕ ОТКАЗ БЭКЕНДА.
+	// Раньше здесь безусловно выполнялось UpdateBackendStatus(Unhealthy), поэтому
+	// после обрыва клиента следующий запрос получал 503 (живой замер: 740 мс).
+	if isClientDisconnectErr(err) {
+		logger.Get().Infow("backend request canceled by client — бэкенд НЕ помечаем нездоровым",
+			"backend", acquiredBackend, "model", model, "error", err)
+		releaseAcquired()
+		return
+	}
+
 	p.UpdateBackendStatus(acquiredBackend, types.StatusUnhealthy)
 	p.scheduleRecoveryCheck(acquiredBackend)
 
@@ -1312,7 +1472,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		acquiredBackend = altBackend
 		if sessionID != "" && p.config.Balancing.SessionStickiness {
-			p.sessionMgr.Set(sessionID, altBackend, model, clientName, p.getClientRealIP(r), r.UserAgent())
+			p.sessionMgr.SetWithProtocol(sessionID, altBackend, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 		}
 		attemptedBackends[altBackend] = true
 
@@ -1655,6 +1815,14 @@ type parsedRequest struct {
 	Model   string
 	Stream  bool
 	RawBody []byte
+	// NumCtx — окно, которое запросил клиент (0 = не задавал).
+	//
+	// R118.5 (2026-10-14): нужно ДО выбора бэкенда: при нескольких загруженных
+	// копиях одной модели выбирать надо ту, чьё окно на слот покрывает запрос
+	// (иначе подготовленная копия мастера подменялась свободной копией с меньшим
+	// окном — живой случай: num_ctx=8192 ушёл на копию с 4096 на слот, +33 с и
+	// reload). Тело уже разобрано здесь, поэтому дополнительного чтения нет.
+	NumCtx int
 }
 
 // parseRequestBody — читает и разбирает тело запроса ровно один раз.
@@ -1700,6 +1868,9 @@ func (p *Proxy) parseRequestBody(r *http.Request) *parsedRequest {
 	if stream, ok := req["stream"].(bool); ok {
 		result.Stream = stream
 	}
+	// R118.5: окно клиента (options.num_ctx у Ollama, num_ctx/context_length у
+	// OpenAI-совместимых тел) — тем же извлекателем, что и в preflight.
+	result.NumCtx = ExtractNumCtxFromBody(body)
 
 	return result
 }
@@ -1797,4 +1968,27 @@ func (r *statusRecorder) Flush() {
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// isClientDisconnectErr — ошибка означает, что запрос отменил КЛИЕНТ (или наш же
+// стрим закрылся по отмене контекста), а не сбой бэкенда.
+//
+// R194 (2026-10-20). Живой дефект (errors-matrix-r180): после обрыва клиента
+// следующий запрос получал 503, потому что здесь безусловно выполнялось
+// `UpdateBackendStatus(StatusUnhealthy)`. Отмена клиента — не отказ бэкенда:
+// модель и слот в порядке, помечать узел нездоровым нельзя.
+func isClientDisconnectErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	low := strings.ToLower(err.Error())
+	for _, marker := range []string{"context canceled", "context_canceled", "client disconnected", "broken pipe", "connection reset by peer"} {
+		if strings.Contains(low, marker) {
+			return true
+		}
+	}
+	return false
 }

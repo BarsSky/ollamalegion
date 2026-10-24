@@ -177,9 +177,7 @@ func (s *Server) getLoadDefaults(w http.ResponseWriter, _ *http.Request) {
 		source["flashAttn"] = "none"
 	}
 
-	// useMmap и reasoning в cppworker-конфиге — bool. В профиле модели (и в
-	// defaultModelProfile) поля EnableReasoning нет: reasoning задаётся env
-	// контейнера или per-model запросом, поэтому источник здесь только env.
+	// useMmap и reasoning в cppworker-конфиге — bool.
 	if hasProfile && prof.UseMmap != nil {
 		effective["useMmap"] = profileMmap
 		source["useMmap"] = "defaultProfile"
@@ -190,7 +188,30 @@ func (s *Server) getLoadDefaults(w http.ResponseWriter, _ *http.Request) {
 		source["useMmap"] = "none"
 	}
 
-	if v, ok := cw.boolValue("defaultEnableReasoning"); ok {
+	// R106b (2026-10-12): reasoning — из ТОГО ЖЕ слоя, из которого его берёт
+	// загрузка (executeLlamaCppLoad → applyProfileLoadParams), иначе WebUI
+	// показывал «выключено», хотя оператор только что сохранил «включено».
+	//
+	// ЖИВОЙ ДЕФЕКТ (жалоба оператора): в WebUI он переключал размышления
+	// выкл → вкл и сохранял; PUT отвечал 200 и значение честно ложилось в
+	// config.defaultModelProfile.enableReasoning, но GET строил effective только
+	// из env контейнера (`defaultEnableReasoning`), поля профиля не читал вовсе.
+	// Оператор видел в списке «reasoning по умолчанию: off (env контейнера)» —
+	// то есть «галочка не применяется», хотя загрузка это значение уже получала.
+	//
+	// Приоритет тот же, что у остальных полей: профиль (defaultModelProfile) >
+	// env контейнера. В профиле поле указатель (*bool), поэтому явное «выкл»
+	// отличимо от «не задавать».
+	if hasProfile && prof.EnableReasoning != nil {
+		effective["enableReasoning"] = *prof.EnableReasoning
+		source["enableReasoning"] = "defaultProfile"
+	} else if v, ok := cw.boolValue("defaultEnableReasoning"); ok {
+		effective["enableReasoning"] = v
+		source["enableReasoning"] = "cppworker-env"
+	} else if v, ok := cw.boolValue("enableReasoning"); ok {
+		// Фолбэк: контейнер старой сборки без defaultEnableReasoning, но с
+		// включённым runtime-переключателем — честнее показать «вкл», чем
+		// «не задано» (промпт-путь использует именно его).
 		effective["enableReasoning"] = v
 		source["enableReasoning"] = "cppworker-env"
 	} else {
@@ -384,6 +405,30 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 						entry.Effective["contextPerSeq"] = p.ContextPerSeq
 						entry.Source["contextPerSeq"] = src
 					}
+					// R106b (2026-10-12): flash attention / mmap / reasoning.
+					//
+					// Они уходят в тело загрузки (buildLlamaCppLoadBody: flashAttn,
+					// useMmap, enableReasoning), поэтому оператор обязан видеть их в
+					// ответе «что применится к ЭТОЙ модели» — иначе WebUI показывал
+					// только окно/слоты/KV, а расхождение по размышлениям и flash
+					// оставалось невидимым (ровно жалоба «модель грузится не с теми
+					// параметрами, что в настройках»).
+					if entry.Effective["flashAttn"] == nil && p.FlashAttn != nil {
+						fa := 0
+						if *p.FlashAttn {
+							fa = 1
+						}
+						entry.Effective["flashAttn"] = fa
+						entry.Source["flashAttn"] = src
+					}
+					if entry.Effective["useMmap"] == nil && p.UseMmap != nil {
+						entry.Effective["useMmap"] = *p.UseMmap
+						entry.Source["useMmap"] = src
+					}
+					if entry.Effective["enableReasoning"] == nil && p.EnableReasoning != nil {
+						entry.Effective["enableReasoning"] = *p.EnableReasoning
+						entry.Source["enableReasoning"] = src
+					}
 				}
 				prof, hasProf := s.proxy.GetModelProfile(f.Name)
 				if !hasProf {
@@ -393,16 +438,31 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 					cp := prof
 					entry.Profile = &cp
 					entry.HasProfile = true
+					// R106b (2026-10-12): профиль модели применяется ВСЕГДА — это
+					// настройки оператора, и именно так ведёт себя загрузка
+					// (executeLlamaCppLoad вызывает applyProfileLoadParams до
+					// проверки ignoreDefaults, см. R83/v62).
+					//
+					// ignoreDefaults означает только «не подставлять НАСТРОЙКИ ПО
+					// УМОЛЧАНИЮ для этой модели» (и это правило применяется ниже, к
+					// слою defaultModelProfile).
+					//
+					// БЫЛО (дефект): при ignoreDefaults=true значения профиля не
+					// попадали в effective ВООБЩЕ, и карточка показывала значения
+					// слоя по умолчанию/env. На живом стенде ВСЕ 18 профилей
+					// помечены ignoreDefaults — то есть WebUI врал про каждую
+					// модель, а оператор видел «модель грузится не с теми
+					// параметрами, что указаны в настройках» (его модель грузилась
+					// с профилем, а карточка показывала env контейнера).
+					fillFrom(prof, "profile")
 					if prof.IgnoreDefaults {
-						// Профиль есть, но его параметры отключены: оператор явно
-						// просил «пусть решает окружение». Показываем это честно,
-						// иначе в UI выглядело бы, что настройки применяются.
 						entry.ProfileIgnored = true
-					} else {
-						fillFrom(prof, "profile")
 					}
 				}
-				if hasDefaults && !defaults.IgnoreDefaults {
+				// Слой «настройки по умолчанию» — ровно с тем же условием, что в
+				// executeLlamaCppLoad: он не применяется, если у профиля модели
+				// стоит ignoreDefaults (тогда действуют только профиль и env).
+				if hasDefaults && !defaults.IgnoreDefaults && !(hasProf && prof.IgnoreDefaults) {
 					fillFrom(defaults, "defaultProfile")
 				}
 				// Последний уровень — env контейнера cppworker.
@@ -467,11 +527,27 @@ func fillFromCppWorker(effective map[string]interface{}, source map[string]strin
 			source[key] = "cppworker-env"
 		}
 	}
+	// R106b (2026-10-12): булевы поля контейнера — flash attention, mmap и
+	// размышления. Без них карточка модели показывала «не задано» там, где
+	// cppworker реально подставит своё значение (скажем, CPPWORKER_ENABLE_REASONING
+	// или defaultEnableReasoning из cppworker-defaults.json).
+	setBool := func(key, cppKey string) {
+		if effective[key] != nil {
+			return
+		}
+		if v, ok := cw.boolValue(cppKey); ok {
+			effective[key] = v
+			source[key] = "cppworker-env"
+		}
+	}
 	setInt("contextLength", "defaultCtxSize")
 	setInt("batchSize", "defaultBatchSize")
 	setInt("numGpuLayers", "defaultGpuLayers")
 	setInt("parallel", "defaultNParallel")
 	setStr("kvCacheType", "defaultKvCacheType")
+	setInt("flashAttn", "defaultFlashAttnType")
+	setBool("useMmap", "defaultUseMmap")
+	setBool("enableReasoning", "defaultEnableReasoning")
 }
 
 // intFromEffective — целое значение из карты effective (там лежат int/float64).

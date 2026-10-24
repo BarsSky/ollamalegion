@@ -193,14 +193,14 @@ func TestBackendsHandler_Post(t *testing.T) {
 	defer server.Close()
 
 	newBackend := map[string]interface{}{
-		"id":                  "backend3",
-		"name":                "Test Backend 3",
-		"host":                "localhost",
-		"ollamaPort":          11436,
-		"agentPort":           9092,
-		"weight":              1,
+		"id":                    "backend3",
+		"name":                  "Test Backend 3",
+		"host":                  "localhost",
+		"ollamaPort":            11436,
+		"agentPort":             9092,
+		"weight":                1,
 		"maxConcurrentRequests": 15,
-		"labels":              []string{"gpu:intel"},
+		"labels":                []string{"gpu:intel"},
 	}
 
 	body, _ := json.Marshal(newBackend)
@@ -357,13 +357,13 @@ func TestBackendHandler_Put(t *testing.T) {
 	defer server.Close()
 
 	updateData := map[string]interface{}{
-		"name":                "Updated Backend 2",
-		"host":                "localhost",
-		"ollamaPort":          11435,
-		"agentPort":           9091,
-		"weight":              3,
+		"name":                  "Updated Backend 2",
+		"host":                  "localhost",
+		"ollamaPort":            11435,
+		"agentPort":             9091,
+		"weight":                3,
 		"maxConcurrentRequests": 25,
-		"labels":              []string{"gpu:amd", "updated"},
+		"labels":                []string{"gpu:amd", "updated"},
 	}
 
 	body, _ := json.Marshal(updateData)
@@ -601,7 +601,7 @@ func TestAgentStatsHandler(t *testing.T) {
 	assert.Contains(t, response, "totalAgents")
 	assert.Contains(t, response, "healthyAgents")
 	assert.Contains(t, response, "agents")
-	
+
 	agents := response["agents"].([]interface{})
 	assert.GreaterOrEqual(t, len(agents), 2)
 }
@@ -894,10 +894,10 @@ func TestAgentRegisterHandler_UpdateExisting(t *testing.T) {
 
 	// Сначала регистрируем агента
 	payload := map[string]interface{}{
-		"agentId":  "agent-test-2",
-		"host":     "192.0.2.101",
-		"name":     "Original Name",
-		"labels":   []string{"gpu:nvidia"},
+		"agentId": "agent-test-2",
+		"host":    "192.0.2.101",
+		"name":    "Original Name",
+		"labels":  []string{"gpu:nvidia"},
 	}
 	body, _ := json.Marshal(payload)
 	resp, _ := http.Post(server.URL+"/api/v1/agents/register", "application/json", bytes.NewBuffer(body))

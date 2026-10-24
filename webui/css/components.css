@@ -835,7 +835,13 @@
     padding: 0 24px;
 }
 .settings-section-body.open {
-    max-height: 2000px;
+    /* R106c (2026-10-12): потолок 2000px обрезал секцию настроек llama.cpp -
+       она выше (форма бэкенда + профили моделей + «настройки по умолчанию для
+       новых моделей» + каталог моделей), а overflow: hidden не давал доскроллить
+       до нижних полей: оператор видел форму «до середины». Потолок нужен только
+       как стартовая точка анимации раскрытия, поэтому поднимаем его заведомо
+       выше любой реальной высоты секции. */
+    max-height: 200000px;
     opacity: 1;
     padding: 16px 24px;
 }
@@ -2103,6 +2109,225 @@
 .gguf-section-header:first-of-type {
     margin-top: 8px;
 }
+
+/* ================================================
+   R124 (2026-10-16): компактные раскрываемые секции формы бэкенда.
+   Живая жалоба оператора: «всё вперемешку, неудобно пролистывать вниз, чтобы от
+   дефолтных перейти к профилям и параметрам модели». Секции формы (~25 полей)
+   свёрнуты в <details>: видно заголовок и состояние, содержимое раскрывается по
+   клику. Первая секция раскрыта - её правят чаще всего.
+   ================================================ */
+.gguf-acc {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 10px 0;
+    background: rgba(255, 255, 255, 0.02);
+}
+.gguf-acc > .gguf-acc-summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.gguf-acc > .gguf-acc-summary::-webkit-details-marker {
+    display: none;
+}
+.gguf-acc > .gguf-acc-summary:hover {
+    color: var(--text-primary);
+}
+.gguf-acc .gguf-acc-caret {
+    transition: transform 0.15s ease;
+    font-size: 10px;
+    color: var(--text-muted);
+}
+.gguf-acc[open] .gguf-acc-caret {
+    transform: rotate(90deg);
+}
+.gguf-acc .gguf-acc-body {
+    padding: 4px 12px 12px 12px;
+    border-top: 1px solid var(--border);
+}
+/* Заголовки внутри раскрытой секции больше не рисуем как разделители: рамку
+   секции уже даёт <details>. */
+.gguf-acc .gguf-acc-summary .fas {
+    color: var(--accent, #3b82f6);
+}
+
+/* === R134 (2026-10-16): ДВЕ ТАБЛИЦЫ ПАРАМЕТРОВ МОДЕЛИ ===
+   Было: параметры разбросаны по форме сеткой (2-3 колонки), часть подписей без
+   перевода, и не было видно, что РЕАЛЬНО действует у загруженной модели.
+   Стало: таблица «действующие значения» (факт + источник) и таблица «задать для
+   загрузки/перезагрузки» (профиль). Один и тот же вид для модели на диске и для
+   загруженной. */
+.gguf-mp-editor { margin-top: 8px; }
+.gguf-mp-block { margin-bottom: 14px; }
+.gguf-mp-title {
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px;
+}
+.gguf-mp-sub {
+    font-weight: 400;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.gguf-mp-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    table-layout: fixed;
+}
+.gguf-mp-table th {
+    text-align: left;
+    font-weight: 600;
+    font-size: 11px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    padding: 4px 6px;
+}
+.gguf-mp-table td {
+    vertical-align: top;
+    padding: 5px 6px;
+    border-bottom: 1px solid var(--border-subtle, var(--border));
+}
+.gguf-mp-table th:nth-child(1), .gguf-mp-table td:nth-child(1) { width: 42%; }
+.gguf-mp-table th:nth-child(2), .gguf-mp-table td:nth-child(2) { width: 24%; }
+.gguf-mp-table th:nth-child(3), .gguf-mp-table td:nth-child(3) { width: 34%; }
+.gguf-mp-hint {
+    display: block;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+.gguf-mp-val { font-variant-numeric: tabular-nums; }
+/* R136: под контролом формы - что действует СЕЙЧАС (форма редактирует профиль). */
+.gguf-mp-fact {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+.gguf-mp-src { color: var(--text-secondary); font-size: 11px; }
+.gguf-mp-none { color: var(--text-muted); }
+.gguf-mp-input .form-control { width: 100%; }
+.gguf-mp-input input[type="checkbox"] { margin-top: 4px; }
+.gguf-mp-adv-head td {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary, transparent);
+    padding-top: 8px;
+}
+.gguf-mp-adv-row td:nth-child(1) { padding-left: 12px; }
+.gguf-mp-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.gguf-mp-warn { color: var(--text-muted); }
+.gguf-mp-acc { margin-top: 6px; }
+.gguf-mp-summary { cursor: pointer; font-size: 12px; }
+/* R124: состояние узла раскладки (донор/приёмник) - факт, а не галочка. */
+.gguf-rpc-state-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 12px;
+}
+.gguf-rpc-state-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.gguf-rpc-state-dot.is-ok { background: #22c55e; }
+.gguf-rpc-state-dot.is-warn { background: #f59e0b; }
+.gguf-rpc-state-dot.is-off { background: var(--text-muted, #6b7280); }
+.gguf-rpc-state-error {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--danger, #ef4444);
+    word-break: break-word;
+}
+.gguf-rpc-state-note {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.gguf-rpc-state-unknown {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+}
+/* R172 (2026-10-18): причина смерти встроенного узла и его собственный вывод.
+   Exit-статус - единственное, что отличает «сервер разбился» от «сервер ответил
+   false»: клиент раскладки в обоих случаях пишет одно и то же сообщение. */
+.gguf-rpc-state-exit {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--warning, #f59e0b);
+    word-break: break-word;
+}
+.gguf-rpc-state-log {
+    margin-top: 6px;
+    font-size: 11px;
+}
+.gguf-rpc-state-log summary {
+    cursor: pointer;
+    color: var(--text-muted);
+}
+.gguf-rpc-state-log pre {
+    margin: 4px 0 0;
+    padding: 6px 8px;
+    max-height: 220px;
+    overflow: auto;
+    background: var(--surface-2, rgba(0, 0, 0, 0.15));
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* R125 (2026-10-16, пункт 3): какие узлы раскладки реально отвечают. */
+.gguf-rpc-peers {
+    margin-top: 8px;
+    font-size: 12px;
+}
+.gguf-rpc-peers-summary {
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+.gguf-rpc-peer-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 2px 0;
+}
+.gguf-rpc-peer-latency {
+    color: var(--text-muted);
+}
+.gguf-rpc-peer-error {
+    color: var(--danger, #ef4444);
+    word-break: break-word;
+}
+.gguf-rpc-peers-unknown {
+    font-style: italic;
+}
 /* ============================================================================
    R66b (2026-09-22): mode-wizard (webui/js/modules/mode-wizard.js) markup.
 
@@ -2396,3 +2621,135 @@
 .imgp-server-args:empty {
     display: none;
 }
+
+/* R175 (2026-10-18): ОФОРМЛЕНИЕ ПАНЕЛИ «Объединение бэкендов».
+   Живая жалоба оператора: «css стили не применились к новой вкладке» - блок был
+   отрисован голыми контролами. Причина: разметка блока (webui/js/modules/
+   backend-merge.js) использовала ТОЛЬКО собственные классы .bm-*, а в стилях не
+   было ни одного правила для них, и штатные классы (form-control/btn/form-group)
+   не применялись. Теперь контролы берут штатные примитивы, а здесь - только
+   раскладка этого блока и строки состояния. */
+/* R181 (2026-10-19): ПЛАШКА «ОБЪЕДИНЕНИЕ БЭКЕНДОВ» - АККУРАТНАЯ РАССТАНОВКА.
+   Живая жалоба: «не красиво отображается плашка». Что было не так по факту:
+   панель лежала прямо в .card БЕЗ .card-body, поэтому текст упирался в края
+   карточки; заголовок дублировался (шапка карточки + свой strong); у полей
+   стеклянный фон на белой карточке не давал видимой рамки - поле читалось как
+   пустая полоса; отступы были разнобойные (14px у полей, 4px у подсказок). */
+#backendMergePanel {
+    /* те же отступы, что у .card-body: панель - содержимое карточки */
+    padding: var(--space-5) var(--space-6) var(--space-6);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+#backendMergePanel .bm-header { margin: 0; }
+#backendMergePanel .bm-header strong { display: none; }
+#backendMergePanel .bm-hint {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.4;
+}
+#backendMergePanel .bm-hint-inline {
+    margin-left: 8px;
+    font-size: 11px;
+    font-weight: normal;
+    color: var(--text-muted);
+}
+/* Поля: подпись сверху мелким вторичным текстом, контрол компактный и с ВИДИМОЙ
+   рамкой (на белой карточке стеклянный фон невидим). Ширина ограничена - полоса
+   на всю карточку читалась как пустое место. */
+#backendMergePanel .bm-field.form-group { display: block; margin: 0; }
+#backendMergePanel .bm-field {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+#backendMergePanel .bm-field > .form-control,
+#backendMergePanel .bm-link-row { margin-top: var(--space-1); }
+#backendMergePanel .bm-field .form-control {
+    max-width: 520px;
+    padding: 8px 12px;
+    font-size: var(--font-size-sm);
+    background: var(--surface, #fff);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+#backendMergePanel .bm-link-row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+#backendMergePanel .bm-link-row input[type="number"] {
+    width: 132px;
+    padding: 8px 10px;
+    font-size: var(--font-size-sm);
+    background: var(--surface, #fff);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+#backendMergePanel .bm-link-unit { font-size: var(--font-size-xs); color: var(--text-muted); }
+#backendMergePanel .bm-list { margin: var(--space-2) 0 0; }
+#backendMergePanel .bm-backends {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: var(--font-size-sm);
+}
+#backendMergePanel .bm-backends th {
+    padding: 6px 8px;
+    text-align: left;
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+}
+#backendMergePanel .bm-col-pick { width: 40px; }
+#backendMergePanel .bm-col-master { width: 80px; text-align: center; }
+#backendMergePanel .bm-backends th:nth-child(2) { width: 44%; }
+#backendMergePanel .bm-backends th:nth-child(3) { width: 26%; }
+#backendMergePanel .bm-backends th:nth-child(4) { width: 16%; }
+#backendMergePanel .bm-backends td {
+    padding: 8px;
+    vertical-align: middle;
+    border-bottom: 1px solid var(--border-subtle, var(--border));
+    overflow-wrap: anywhere;
+}
+#backendMergePanel .bm-backends tbody tr:hover { background: var(--border-subtle, rgba(0, 0, 0, 0.03)); }
+#backendMergePanel .bm-backends input[type="checkbox"],
+#backendMergePanel .bm-backends input[type="radio"] { width: 16px; height: 16px; cursor: pointer; }
+#backendMergePanel .bm-actions {
+    margin: var(--space-4) 0 0;
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--border-subtle, var(--border));
+}
+#backendMergePanel .bm-actions .btn { min-width: 132px; }
+    font-size: 13px;
+    color: var(--text-muted);
+    background: var(--glass-bg);
+    border: 1px dashed var(--glass-border);
+    border-radius: var(--radius-md);
+}
+#backendMergePanel .bm-groups { margin-top: 12px; font-size: 13px; }
+#backendMergePanel .bm-groups ul { margin: 6px 0 0; padding-left: 20px; }
+#backendMergePanel .bm-applied { margin-top: 10px; font-size: 13px; }
+#backendMergePanel .bm-ok { margin-top: 6px; font-size: 12px; color: var(--success, #22c55e); }
+#backendMergePanel .bm-warn { margin-top: 6px; font-size: 12px; color: var(--warning, #f59e0b); }
+#backendMergePanel .bm-error { margin-top: 6px; font-size: 12px; color: var(--danger, #ef4444); }
+#backendMergePanel .bm-plan,
+#backendMergePanel .bm-report {
+    margin-top: 10px;
+    padding: 10px 12px;
+    font-size: 12px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    line-height: 1.45;
+}
+/* R175 (2026-10-18): СТРАНИЦА НЕ УЕЗЖАЕТ ПОД БОКОВУЮ ПАНЕЛЬ.
+   Живой замер (страница «Бэкенды», вьюпорт 1400px): docScrollWidth 1769 при
+   clientWidth 1400 - .main это flex-элемент с min-width:auto, и широкая таблица
+   бэкендов (14 колонок, min-content ~1461px) распирала его шире окна. Следствие
+   для оператора: контент прокручивался вправо и уходил ПОД фиксированное меню
+   (заголовок и левая часть карточек обрезаны). Теперь контейнер ужимается до окна,
+   а широкие таблицы прокручиваются ВНУТРИ своей карточки. */
+.main { min-width: 0; }
+#backends-page .card { overflow-x: auto; }

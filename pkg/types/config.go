@@ -23,6 +23,16 @@ type LoadBalancerConfig struct {
 	// записи в LlamaCppModelProfiles. Используется как fallback-потолок при
 	// clamping per-request num_ctx (Phase D.3-fix).
 	DefaultModelProfile *LlamaCppModelProfile `json:"defaultModelProfile,omitempty"`
+
+	// ModeMigrationNotes — R97 (S7 плана 2026-10-07): заметки автоконверта
+	// `operatingMode` → `balancing.placement`, снятые при загрузке конфига.
+	//
+	// json:"-" НАМЕРЕННО: это служебная диагностика, а не часть конфиг-файла.
+	// Если бы поле сериализовалось, миграция записывала бы себя в конфиг и
+	// «залипала» (а вместе с ней и устаревшие заметки). Нужно, чтобы оператор
+	// видел конвертацию не только в логе, но и в GET /api/v1/placement:
+	// «режим X переведён в политику Y, fallback=single выставлен автоматически».
+	ModeMigrationNotes []string `json:"-"`
 }
 
 // LoadBalancerSettings - настройки балансировщика

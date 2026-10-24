@@ -9,14 +9,35 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
+// balancerOwnedAPIPaths — /api/v1/* пути, которые обслуживает САМ балансер
+// (LlamaCppRouter), а не API-сервер.
+//
+// ЗАЧЕМ ИСКЛЮЧЕНИЕ. Round 40 #3 увёл ВСЕ /api/v1/* на API-сервер (порт 18081),
+// и ветка LlamaCppRouter для runtime-конфига стала недостижимой: эндпоинт
+// GET /api/v1/cppworker/config/runtime отвечал 404, хотя документирован
+// (docs/api.md) и разобран в аудите как дефект C6
+// (docs/AUDIT-client-api-fidelity-2026.md). Путь ниже возвращается в proxy flow,
+// где его обрабатывает LlamaCppRouter.Route.
+//
+// Остальные /api/v1/cppworker/* (config/update, model-profiles, load-defaults,
+// active-queries, debug/last-prompt и т.п.) обслуживает API-сервер — их
+// исключать нельзя.
+var balancerOwnedAPIPaths = map[string]bool{
+	"/api/v1/cppworker/config/runtime": true,
+}
+
 // isAPIv1Path — Round 40 #3 (2026-08-18): проверяет, является ли путь
 // admin / management endpoint'ом, обслуживаемым API-сервером (порт 18081).
 // Все пути под /api/v1/ (cluster/*, cppworker/*, events SSE, rpc/tp/*, gguf/*,
-// llama-cpp/overrides, и т.д.) живут на API сервере, не на proxy flow.
+// llama-cpp/overrides, и т.д.) живут на API сервере, не на proxy flow —
+// кроме перечисленных в balancerOwnedAPIPaths.
 //
 // Без этой проверки balancer проксирует /api/v1/* на backend → 404 (cppworker
 // не знает /api/v1/cluster/* и т.п.) → 30s timeout (Round 22 BUG #7).
 func isAPIv1Path(path string) bool {
+	if balancerOwnedAPIPaths[path] {
+		return false
+	}
 	return strings.HasPrefix(path, "/api/v1/")
 }
 
@@ -232,6 +253,11 @@ func isReadOnlyOrMgmtEndpoint(path string) bool {
 	}
 	// /api/blobs/<digest> — upload/download
 	if len(path) >= len("/api/blobs/") && path[:len("/api/blobs/")] == "/api/blobs/" {
+		return true
+	}
+	// H7: GET /v1/models/{id} (by-id) — читает тот же набор моделей, что и
+	// /v1/models, поэтому слот не занимает.
+	if strings.HasPrefix(path, "/v1/models/") {
 		return true
 	}
 	return false

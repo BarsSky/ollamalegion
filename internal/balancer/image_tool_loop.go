@@ -228,7 +228,9 @@ func (lr *LlamaCppRouter) executeOneImageToolCall(r *http.Request, a imageToolLo
 	res, err := lr.proxy.generateImageForTool(r.Context(), a.target, args)
 	if err != nil {
 		logger.Get().Warnw("image tool: генерация не удалась", "error", err)
-		return map[string]interface{}{"status": "error", "error": err.Error()}
+		// R119: отказ гейта несёт машинный код и числа — отдаём их модели, чтобы
+		// она могла объяснить пользователю, чего не хватает и что сделать.
+		return imageToolErrorPayload(err)
 	}
 	// Ссылку переписываем на публичный маршрут балансера: адрес воркера
 	// клиенту недоступен, а имя файла случайно — перебором не угадать.
@@ -394,7 +396,7 @@ func (lr *LlamaCppRouter) writeBufferedChatResponse(w http.ResponseWriter, r *ht
 		_, _ = w.Write(raw)
 		return
 	}
-	synthesizeChatSSE(w, raw, model, status)
+	synthesizeChatSSEWithSchemas(w, raw, model, status, lr.proxy.toolSchemasForRequest(r))
 }
 
 // writeImageToolFallback — что отдать клиенту, если финальный ответ модели не
@@ -455,6 +457,21 @@ func (lr *LlamaCppRouter) writeImageToolFallback(w http.ResponseWriter, model st
 // tool_calls (инструменты КЛИЕНТА, если модель вызвала их) → finish_reason →
 // [DONE]. Дробить content не нужно: клиенты принимают контент одним чанком.
 func synthesizeChatSSE(w http.ResponseWriter, raw []byte, model string, status int) {
+	synthesizeChatSSEWithSchemas(w, raw, model, status, nil)
+}
+
+// synthesizeChatSSEWithSchemas — R186 (2026-10-20): тот же переизлучатель, но с
+// приведением вызовов к форме OpenAI и к объявленной схеме.
+//
+// ЖИВОЙ ДЕФЕКТ (Cline). Когда балансер объявляет модели свой инструмент картинок,
+// ответ идёт через этот переизлучатель, и tool_calls уходили клиенту КАК ЕСТЬ, из
+// буферизованного сообщения апстрима:
+//   - без `index` — ключа склейки фрагментов по спецификации OpenAI;
+//   - с finish_reason="stop" вместо "tool_calls";
+//   - без приведения аргументов к схеме инструмента из запроса.
+// Снаружи это выглядело так: Cline показывает `Error: {"error":"✖ Invalid input"}`,
+// повторяет вызов и через 6 одинаковых попыток останавливает задачу.
+func synthesizeChatSSEWithSchemas(w http.ResponseWriter, raw []byte, model string, status int, schemas map[string]*toolParamSchema) {
 	var doc map[string]interface{}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		http.Error(w, "invalid upstream response", http.StatusBadGateway)
@@ -520,7 +537,16 @@ func synthesizeChatSSE(w http.ResponseWriter, raw []byte, model string, status i
 			contentSent = true
 		}
 		if calls, ok := message["tool_calls"]; ok {
-			chunk(map[string]interface{}{"tool_calls": calls}, nil)
+			// R186: форма OpenAI (index/id/type) + аргументы по схеме запроса.
+			if callsArr, isArr := calls.([]interface{}); isArr && len(callsArr) > 0 {
+				normalized, _ := repairToolCallsForSchema(callsArr, schemas)
+				chunk(map[string]interface{}{"tool_calls": normalized}, nil)
+				// finish_reason для вызова инструмента — "tool_calls", иначе клиент
+				// считает ответ обычным текстом и не исполняет инструмент.
+				finish = "tool_calls"
+			} else {
+				chunk(map[string]interface{}{"tool_calls": calls}, nil)
+			}
 			callsSent = true
 		}
 	}

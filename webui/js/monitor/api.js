@@ -40,8 +40,48 @@
     });
   }
 
-  function setConnStatus(text, cls) {
-    document.getElementById('connBadge').textContent = text;
+  // apiJSON — api() с методом и телом (PUT/POST). R118.4: нужен панели раскладки
+  // (PUT /api/v1/backends/{id}/role).
+  function apiJSON(path, method, body) {
+    var token = new URLSearchParams(location.search).get('token')
+             || localStorage.getItem('apiToken')
+             || (window.WEBUI_CONFIG && window.WEBUI_CONFIG.API_TOKEN)
+             || '';
+    var ctrl = new AbortController();
+    var tid = setTimeout(function() { ctrl.abort(); }, 20000);
+    var headers = { 'Content-Type': 'application/json' };
+    if (token) headers['X-API-Token'] = token;
+    return fetch(MA.API_BASE + path, {
+      method: method || 'GET',
+      headers: headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: ctrl.signal
+    }).then(function(r) {
+      clearTimeout(tid);
+      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      return r.json().catch(function() { return {}; });
+    }).catch(function(e) {
+      clearTimeout(tid);
+      throw e;
+    });
+  }
+
+  // fetchBackends — GET /api/v1/backends: role (кто главный/донор), rpcLayout
+  // (состояние раскладки и причина деградации), rpcLink (замер канала).
+  // cluster/state этих полей не отдаёт, поэтому панель раскладки берёт их здесь.
+  function fetchBackends() {
+    return api('/api/v1/backends');
+  }
+
+  // setBackendRole — PUT /api/v1/backends/{id}/role.
+  // role: 'main' | 'donor' | 'standalone' | '' (снять роль).
+  function setBackendRole(id, role) {
+    return apiJSON('/api/v1/backends/' + encodeURIComponent(id) + '/role', 'PUT', { role: role || '' })
+      .then(function() { return true; })
+      .catch(function() { return false; });
+  }
+
+  function setConnStatus(text, cls) {    document.getElementById('connBadge').textContent = text;
     document.getElementById('connBadge').className = 'badge badge-' + cls;
     var dot = document.getElementById('statusDot');
     dot.className = 'dot ' + (cls === 'green' ? '' : cls === 'red' ? 'offline' : cls === 'yellow' ? 'error' : 'demo');
@@ -336,9 +376,17 @@
     );
   }
 
+  // R118.4: панель раскладки слоёв (js/monitor/layout-panel.js) ходит за ролями
+  // и состоянием раскладки через этот объект.
+  window.MonitorApiXhr = {
+    fetchBackends: fetchBackends,
+    setBackendRole: setBackendRole,
+    put: function(path, body) { return apiJSON(path, 'PUT', body); },
+    post: function(path, body) { return apiJSON(path, 'POST', body); }
+  };
+
   // Expose to global for inline onclick handlers
-  window.retryNow = retryNow;
-  window.enterDemoMode = enterDemoMode;
+  window.retryNow = retryNow;  window.enterDemoMode = enterDemoMode;
   window.togglePause = togglePause;
   window.fetchAllSafe = fetchAllSafe;
   window.fetchAll = fetchAll;

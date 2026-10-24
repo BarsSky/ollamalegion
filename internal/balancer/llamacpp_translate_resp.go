@@ -581,29 +581,43 @@ func translateOpenAIEmbeddingsToOllama(body []byte, modelName string) ([]byte, e
 //     (for prompt_eval_duration = TTFT and eval_duration = total - TTFT).
 //     Zero value = no content yet (usage chunk would have eval_duration=total).
 func translateOpenAISSEDataToOllama(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, streamStart time.Time, firstContentTime time.Time, accumulatedContent string) []byte {
-	return translateOpenAISSEDataToOllamaWithDoneFlag(ollamaPath, sseData, modelName, seenReasoning, streamStart, firstContentTime, accumulatedContent, nil)
+	return translateOpenAISSEDataToOllamaWithFlags(ollamaPath, sseData, modelName, seenReasoning, streamStart, firstContentTime, accumulatedContent, nil, nil)
 }
 
-// translateOpenAISSEDataToOllamaWithDoneFlag — R60.55 (2026-09-13) variant that
-// accepts a *bool "priorDoneEmitted" flag. When priorDoneEmitted is non-nil
-// and points to true, AND this chunk is a usage chunk (canonical done:true),
-// the function returns nil to suppress emitting a SECOND done:true chunk.
-//
-// Why this matters: R51.3 / R53.1 safety-net emits done:true on a non-wrapper
-// finish_reason+content chunk (e.g. content+finish_reason="length" combined
-// chunk from cppworker). If a usage chunk follows (canonical Ollama done
-// chunk with eval_count + total_duration), translateUsageChunkToOllama
-// ALSO emits done:true → client receives TWO done:true chunks → OpenWebUI
-// displays as "duplicate response".
-//
-// Qwen3-Instruct antipattern: model emits greeting+code, then finish_reason
-// + content in one chunk, then usage chunk. Without this flag, balancer
-// emits 2 done-chunks (R60.54 dedup catches it inside one chunk's
-// message.content, but CAN'T help when there are 2 distinct done-chunks).
-//
-// The flag is passed as a pointer so callers can mutate it after each
-// emission to track state across the stream.
+// translateOpenAISSEDataToOllamaWithDoneFlag — R60.55 (2026-09-13) compatibility
+// wrapper around translateOpenAISSEDataToOllamaWithFlags. Он знает только про
+// отправленный done:true; состояние статистики неизвестно, поэтому статистика
+// здесь НИКОГДА не подавляется (H2: терять статистику нельзя).
 func translateOpenAISSEDataToOllamaWithDoneFlag(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, streamStart time.Time, firstContentTime time.Time, accumulatedContent string, priorDoneEmitted *bool) []byte {
+	return translateOpenAISSEDataToOllamaWithFlags(ollamaPath, sseData, modelName, seenReasoning, streamStart, firstContentTime, accumulatedContent, priorDoneEmitted, nil)
+}
+
+// translateOpenAISSEDataToOllamaWithFlags — R60.55 (2026-09-13) + H2 (2026-10-16)
+// variant that tracks TWO independent per-stream states:
+//
+//   - priorDoneEmitted — клиенту уже ушёл чанк с done:true (R51.3/R53.1
+//     safety-net на finish_reason+content, либо путь tool_calls через
+//     writeStreamingSSEDone).
+//   - priorStatsEmitted — клиенту уже ушла статистика (eval_count /
+//     prompt_eval_count / total_duration).
+//
+// R60.55 (баг): без раздельного учёта usage-чанк, пришедший ПОСЛЕ done:true,
+// гасился целиком — вместе с ним терялись eval_count / prompt_eval_count /
+// total_duration (H2: OpenWebUI показывал нули и N/A).
+//
+// H2-семантика для usage-чанка (canonical Ollama done-чанк):
+//   - статистика уже ушла (priorStatsEmitted=true) → suppress (nil), дубля нет;
+//   - done:true уже ушёл, статистики ещё не было → отдаём ТОЛЬКО статистику
+//     строкой с done:false (второй done:true сломал бы инвариант R51.3/R53.1);
+//   - ничего ещё не уходило → обычный canonical done:true со статистикой.
+//
+// Почему важен инвариант «ровно один done:true»: два done-чанка дают у
+// Ollama-клиентов (Cline, ollama npm) «Did not receive done or success response
+// in stream», а OpenWebUI показывает «duplicate response».
+//
+// Флаги передаются указателями, чтобы caller мог менять их после каждой
+// отправки и вести состояние по всему стриму.
+func translateOpenAISSEDataToOllamaWithFlags(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, streamStart time.Time, firstContentTime time.Time, accumulatedContent string, priorDoneEmitted *bool, priorStatsEmitted *bool) []byte {
 	if len(sseData) == 0 || bytes.Equal(sseData, []byte("[DONE]")) {
 		return nil
 	}
@@ -629,14 +643,18 @@ func translateOpenAISSEDataToOllamaWithDoneFlag(ollamaPath string, sseData []byt
 	// чтобы done-чанк имел реальный message.content (= accumulatedContent),
 	// а не "" (пустой). Без этого OpenWebUI показывал обрезанный/пустой ответ.
 	if usage, hasUsage := openaiChunk["usage"].(map[string]interface{}); hasUsage && !hasNonEmptyChoices(openaiChunk) {
-		// R60.55 (2026-09-13): если предыдущий чанк уже эмитил done:true
-		// (например, finish_reason+content safety-net от R51.3) — подавляем
-		// usage чанк, иначе клиент увидит ДВА done:true. usage чанк после
-		// finish_reason+content — избыточен, canonical done уже эмитился.
-		if priorDoneEmitted != nil && *priorDoneEmitted {
+		// H2 (2026-10-16): usage чанк подавляем ТОЛЬКО если статистика уже
+		// ушла клиенту. Раньше здесь стояла проверка priorDoneEmitted — и
+		// вместе с «лишним» done:true терялись eval_count / prompt_eval_count /
+		// total_duration (баг H2), если done:true ушёл раньше (R51.3 safety-net
+		// на finish_reason+content или путь tool_calls).
+		if priorStatsEmitted != nil && *priorStatsEmitted {
 			return nil
 		}
-		return translateUsageChunkToOllama(ollamaPath, modelName, usage, openaiChunk, streamStart, firstContentTime, accumulatedContent)
+		// H2: если done:true уже отправлен, статистику отдаём строкой с
+		// done:false — второй done:true нарушил бы инвариант R51.3/R53.1.
+		doneAlreadyEmitted := priorDoneEmitted != nil && *priorDoneEmitted
+		return translateUsageChunkToOllama(ollamaPath, modelName, usage, openaiChunk, streamStart, firstContentTime, accumulatedContent, !doneAlreadyEmitted)
 	}
 	switch ollamaPath {
 	case "/api/chat":
@@ -682,7 +700,8 @@ func hasNonEmptyChoices(chunk map[string]interface{}) bool {
 	return false
 }
 
-// translateUsageChunkToOllama — конвертирует OpenAI usage-only chunk в Ollama done-чанк.
+// translateUsageChunkToOllama — конвертирует OpenAI usage-only chunk в Ollama чанк
+// со статистикой.
 // usage содержит: prompt_tokens, completion_tokens, total_tokens.
 // Ollama поля: prompt_eval_count, eval_count, total_duration (нс) и др.
 //
@@ -698,7 +717,12 @@ func hasNonEmptyChoices(chunk map[string]interface{}) bool {
 //     до момента, когда пришёл usage-чанк. Используется для message.content
 //     в Ollama done-чанке. Без этого content был "" (пустой), и OpenWebUI
 //     показывал обрезанный ответ если перезаписывал streaming content.
-func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]interface{}, openaiChunk map[string]interface{}, streamStart time.Time, firstContentTime time.Time, accumulatedContent string) []byte {
+//   - emitDone — H2 (2026-10-16): true = обычный canonical done-чанк
+//     (done:true + статистика). false = done:true уже ушёл раньше, поэтому
+//     отдаём ТОЛЬКО статистику строкой с done:false. В этом режиме content
+//     намеренно пустой: ответ уже уехал клиенту предыдущим done-чанком, и
+//     повтор его в не-финальном чанке дал бы дубль ответа в OpenWebUI.
+func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]interface{}, openaiChunk map[string]interface{}, streamStart time.Time, firstContentTime time.Time, accumulatedContent string, emitDone bool) []byte {
 	promptTokens := intFromUsage(usage, "prompt_tokens")
 	completionTokens := intFromUsage(usage, "completion_tokens")
 
@@ -715,10 +739,13 @@ func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]
 	ollamaChunk := map[string]interface{}{
 		"model":             modelName,
 		"created_at":        time.Now().UTC().Format(time.RFC3339Nano),
-		"done":              true,
-		"done_reason":       doneReason,
+		"done":              emitDone,
 		"prompt_eval_count": promptTokens,
 		"eval_count":        completionTokens,
+	}
+	// H2: done_reason имеет смысл только у финального (done:true) чанка.
+	if emitDone {
+		ollamaChunk["done_reason"] = doneReason
 	}
 
 	// Round 35c+ (2026-08-13): real duration tracking.
@@ -790,6 +817,16 @@ func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]
 	// из TestTranslateSSEGenerateToOllama_DoneHasModel).
 	switch ollamaPath {
 	case "/api/chat":
+		// H2 (2026-10-16): stats-only строка (done:false) не повторяет content —
+		// ответ уже уехал предыдущим done:true чанком, дубль привёл бы к
+		// «duplicate response» в OpenWebUI.
+		if !emitDone {
+			ollamaChunk["message"] = map[string]interface{}{
+				"role":    "assistant",
+				"content": "",
+			}
+			break
+		}
 		// R60.49 (2026-09-12): используем накопленный content из streaming
 		// чанков вместо "" (пустого). До этого фикса OpenWebUI показывал
 		// обрезанный/пустой content когда брал message.content из done-чанка
@@ -807,6 +844,11 @@ func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]
 			"content": dedupedContent,
 		}
 	case "/api/generate":
+		// H2: та же логика, что и для /api/chat — stats-only строка без content.
+		if !emitDone {
+			ollamaChunk["response"] = ""
+			break
+		}
 		// Same fix: accumulatedContent вместо "".
 		// R60.54: dedup применяется так же.
 		dedupedContent, _ := deduplicateResponseContent(accumulatedContent)
@@ -964,6 +1006,14 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 	// Emit NDJSON with message.thinking only — content stays empty.
 	// Round 29 (2026-08-09): if reasoning comes WITH tool_calls, merge into single chunk.
 	if hasReasoning && !hasContent {
+		// ОТКРЫТЫЙ ПУНКТ C4 (аудит клиентского API): здесь форма всегда
+		// chat-ная (`message.thinking`). У /api/generate рассуждения обязаны быть
+		// полем ВЕРХНЕГО уровня, но эта функция (`translateSSEChatToOllama`) не
+		// знает пути и вообще не вызывается для generate: ветка /api/generate идёт
+		// через translateOpenAICompletionToOllama, которая `delta.reasoning_content`
+		// НЕ разбирает вовсе. Правка требует добавить поддержку reasoning в
+		// generate-путь (а не поменять место в этой функции) — см. характеризующий
+		// тест TestR118_19_C4_…_KnownLimitation.
 		msg := map[string]interface{}{
 			"role":     roleStr,
 			"content":  "",
@@ -1005,6 +1055,13 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 		// поэтому ответы, где такой токен упомянут как текст (документация по
 		// chat-шаблонам, код парсеров, разбор спец-токенов), теряли слова и
 		// целые предложения у пользователя.
+		// R231: маркеры размышлений в видимом content — на границе балансера
+		// тоже не пропускаем (см. stripReasoningMarkersFromVisible).
+		if strippedMarkers, markersRemoved := stripReasoningMarkersFromVisible(contentStr); markersRemoved > 0 {
+			logger.Get().Debugw("translateSSEChatToOllama: stripped reasoning markers from content",
+				"model", modelName, "markers_removed", markersRemoved)
+			contentStr = strippedMarkers
+		}
 		if stripped, removed := stripLlamaCppServiceTokens(contentStr); removed > 0 {
 			logger.Get().Debugw("translateSSEChatToOllama: stripped service tokens from content",
 				"model", modelName, "tokens_removed", removed,
@@ -1158,6 +1215,16 @@ func translateSSEGenerateToOllama(chunk map[string]interface{}, modelName string
 		}
 		if rc, ok := choice["reasoning_content"].(string); ok && rc != "" {
 			reasoningStr = rc
+		}
+		// R118.23 (2026-10-15), аудит C4: cppworker вправе прислать рассуждение и в
+		// chat-форме — `choices[0].delta.reasoning_content` (так он делает на
+		// /api/chat SSE, handlers_openai.go:998). На generate-пути эту форму раньше
+		// не разбирали, и рассуждение терялось целиком: клиент /api/generate
+		// (OpenWebUI, Cline через ollama-провайдер) не видел thinking.
+		if delta, ok := choice["delta"].(map[string]interface{}); ok {
+			if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+				reasoningStr = rc
+			}
 		}
 		// Round 51.3 (2026-08-20) + Round 53.1 (2026-08-24): см. translateSSEChatToOllama.
 		// Аналогичная защита от double-done: пустой text + finish_reason — это wrapper-чанк

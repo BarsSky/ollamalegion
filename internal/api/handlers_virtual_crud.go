@@ -1,11 +1,12 @@
 // Phase 8 P.2 — CRUD REST API для VirtualModels в alias-on-pool mode.
 //
 // Endpoints:
-//   GET    /api/v1/virtual-models                  — list all VMs
-//   POST   /api/v1/virtual-models                  — register new VM
-//   GET    /api/v1/virtual-models/{name}           — get VM details
-//   DELETE /api/v1/virtual-models/{name}           — unregister VM
-//   POST   /api/v1/virtual-models/{name}/infer     — test inference (proxy one request)
+//
+//	GET    /api/v1/virtual-models                  — list all VMs
+//	POST   /api/v1/virtual-models                  — register new VM
+//	GET    /api/v1/virtual-models/{name}           — get VM details
+//	DELETE /api/v1/virtual-models/{name}           — unregister VM
+//	POST   /api/v1/virtual-models/{name}/infer     — test inference (proxy one request)
 //
 // Legacy pipeline-mode endpoints на /api/v1/virtualmodels (без дефиса) остаются
 // в handlers_virtual.go для backward compat.
@@ -98,12 +99,12 @@ func virtualModelToInfo(cfg types.VirtualModelConfig) map[string]interface{} {
 // =====================================================================
 
 type virtualModelCreateRequest struct {
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	Selection    string   `json:"selection"`
-	BackendPool  []string `json:"backendPool"`
-	ModelName    string   `json:"modelName"`
-	TimeoutMs    int      `json:"timeoutMs"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Selection   string   `json:"selection"`
+	BackendPool []string `json:"backendPool"`
+	ModelName   string   `json:"modelName"`
+	TimeoutMs   int      `json:"timeoutMs"`
 }
 
 func (s *Server) virtualModelsCRUDCreateHandler(w http.ResponseWriter, r *http.Request) {
@@ -183,8 +184,8 @@ func (s *Server) virtualModelsCRUDCreateHandler(w http.ResponseWriter, r *http.R
 // validateVirtualModelCreate — basic validation.
 //
 // Phase 8 P.2: поддерживает 2 режима VirtualModel:
-//   1. Alias-on-pool (Phase 8 P.2) — требует modelName + backendPool.
-//   2. Pipeline (legacy) — требует slices (валидируется в handler, не здесь).
+//  1. Alias-on-pool (Phase 8 P.2) — требует modelName + backendPool.
+//  2. Pipeline (legacy) — требует slices (валидируется в handler, не здесь).
 //
 // Если modelName+backendPool заданы → alias-on-pool (требуем оба).
 // Иначе → pipeline mode (только name обязателен).

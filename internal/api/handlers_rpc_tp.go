@@ -91,20 +91,20 @@ type TPInferAPIRequest struct {
 
 // TPInferAPIResponse — ответ с агрегированным output'ом и метаданными.
 type TPInferAPIResponse struct {
-	RequestID  string                   `json:"request_id"`
-	Output     string                   `json:"output"`
-	LatencyMs  int64                    `json:"latency_ms"`
-	WorldSize  int                      `json:"world_size"`
-	NumLayers  int                      `json:"num_layers"`
-	Degraded   bool                     `json:"degraded"`
-	LayerStats []rptensor.LayerStat    `json:"layer_stats,omitempty"`
-	RankErrors []rptensor.RankError    `json:"rank_errors,omitempty"`
+	RequestID  string               `json:"request_id"`
+	Output     string               `json:"output"`
+	LatencyMs  int64                `json:"latency_ms"`
+	WorldSize  int                  `json:"world_size"`
+	NumLayers  int                  `json:"num_layers"`
+	Degraded   bool                 `json:"degraded"`
+	LayerStats []rptensor.LayerStat `json:"layer_stats,omitempty"`
+	RankErrors []rptensor.RankError `json:"rank_errors,omitempty"`
 }
 
 // TPStatusAPIResponse — статус TP coordinator'ов в кластере.
 type TPStatusAPIResponse struct {
-	Count  int                              `json:"count"`
-	Models []TPStatusModelEntry             `json:"models,omitempty"`
+	Count  int                  `json:"count"`
+	Models []TPStatusModelEntry `json:"models,omitempty"`
 }
 
 // TPStatusModelEntry — entry для одной модели.

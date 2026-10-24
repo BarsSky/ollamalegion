@@ -69,8 +69,31 @@ func effectiveKVCacheTypeForLoad(modelName, explicit string) string {
 // kvType — итоговый тип KV-cache ("" = взять дефолт конфига). Параметр
 // обязателен: без него гейт считал бы KV по одному типу, а раскладка — по
 // другому (R83 §3.4).
+//
+// ВНИМАНИЕ: этот вариант МОЖЕТ дозвониться до узлов раскладки (счётчик узлов для
+// раскладки решения берётся у моста). Он для путей РЕШЕНИЯ (гейт n_ctx перед
+// загрузкой). Справочные ручки обязаны звать feasibilityFromMemfitCached.
 func feasibilityFromMemfit(spec memfit.ModelSpec, budget memfit.Budget,
 	kvType string, requested int) (NCtxFeasibility, memfit.Verdict, bool) {
+	return feasibilityFromMemfitMode(spec, budget, kvType, requested, true)
+}
+
+// feasibilityFromMemfitCached — то же, но узлы раскладки НЕ опрашиваются: их
+// число берётся из уже собранного снимка (R132, 2026-10-16).
+//
+// ЖИВОЙ ДЕФЕКТ, ЗАКРЫТЫЙ ЭТИМ. `GET /api/models/effective` (карточка модели в
+// WebUI) звал feasibilityFromMemfit, а внутри него — RPCCapacityBytes(). На узле,
+// который принимает TCP и молчит, вызов уходил в C-мост, и ручка переставала
+// отвечать (замер: 30 с без ответа, дублёр узла принял соединение). Правка
+// вызывающего (MemfitBudgetCached) этого не лечила: дозвон был внутри помощника.
+func feasibilityFromMemfitCached(spec memfit.ModelSpec, budget memfit.Budget,
+	kvType string, requested int) (NCtxFeasibility, memfit.Verdict, bool) {
+	return feasibilityFromMemfitMode(spec, budget, kvType, requested, false)
+}
+
+// feasibilityFromMemfitMode — общий расчёт; withRPC решает, спрашивать ли узлы.
+func feasibilityFromMemfitMode(spec memfit.ModelSpec, budget memfit.Budget,
+	kvType string, requested int, withRPC bool) (NCtxFeasibility, memfit.Verdict, bool) {
 	var zero memfit.Verdict
 	if requested <= 0 {
 		return NCtxFeasibility{}, zero, false
@@ -124,6 +147,28 @@ func feasibilityFromMemfit(spec memfit.ModelSpec, budget memfit.Budget,
 	if detail := v.ReasonDetail(memfit.ReasonKVQuantLever); detail != "" {
 		f.VerdictSuggestion = strings.TrimSpace(f.VerdictSuggestion + " " + detail)
 	}
+
+	// R115: раскладка решения. Узлы RPC считаем отдельно: без этого отказ по
+	// памяти не отличим от «удалённый узел отвалился» — а это разные действия
+	// оператора (уменьшить контекст против починить узел). Счётчик берём у моста
+	// через тот же кэш снимка устройств, что и бюджет.
+	//
+	// R132: справочный вариант берёт счётчик из КЭША и не дозванивается —
+	// RPCCapacityBytes на молчащем узле уходит в мост и вешает ручку.
+	rpcDevices := 0
+	if backend != nil {
+		n := 0
+		if withRPC {
+			_, _, n = backend.RPCCapacityBytes()
+		} else {
+			n = backend.CachedRemoteDeviceCount()
+		}
+		if n > 0 {
+			rpcDevices = n
+		}
+	}
+	bd := buildMemoryBreakdown(budget, v, rpcDevices)
+	f.Breakdown = &bd
 	return f, v, true
 }
 

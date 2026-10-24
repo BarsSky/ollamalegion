@@ -1082,10 +1082,31 @@ func GetFileTypeFromName(filename string) string {
 
 // IdleUnloadManager управляет выгрузкой неактивных моделей
 type IdleUnloadManager struct {
-	backend       *Backend
+	backend idleUnloadBackend
+
+	// R119 (2026-10-15): таймаут и интервал проверки меняются НА ХОДУ — оператор
+	// задаёт idleUnloadMinutes из WebUI (PUT /api/v1/cppworker/config/update), и
+	// значение обязано дойти до живого менеджера. Раньше оба поля записывались
+	// один раз в конструкторе, поэтому правка в UI меняла только JSON-конфиг:
+	// UI показывал 3 минуты, а выгрузка по-прежнему происходила через 10.
+	mu            sync.RWMutex
 	idleTimeout   time.Duration
 	checkInterval time.Duration
-	stopCh        chan struct{}
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	running  bool
+}
+
+// idleUnloadBackend — минимум, нужный менеджеру автовыгрузки: список моделей с их
+// состоянием/активностью и выгрузка. Интерфейс (а не конкретный *Backend) —
+// чтобы инвариант «не выгружать модель во время генерации» проверялся
+// детерминированным юнит-тестом: живьём генерацию дольше таймаута простоя
+// воспроизвести быстро нельзя (стенд отдаёт 300 токенов за 10 c), а цена ошибки —
+// оборванный ответ клиенту.
+type idleUnloadBackend interface {
+	ListModels() []ModelInfo
+	UnloadModel(name string) error
 }
 
 // NewIdleUnloadManager создаёт менеджер выгрузки неактивных моделей
@@ -1093,34 +1114,123 @@ func NewIdleUnloadManager(backend *Backend, idleTimeout time.Duration) *IdleUnlo
 	return &IdleUnloadManager{
 		backend:       backend,
 		idleTimeout:   idleTimeout,
-		checkInterval: min(idleTimeout/2, 5*time.Minute),
+		checkInterval: idleCheckIntervalFor(idleTimeout),
 		stopCh:        make(chan struct{}),
 	}
 }
 
-// Start запускает фоновый мониторинг
-func (m *IdleUnloadManager) Start() {
-	if m.idleTimeout <= 0 {
+// newIdleUnloadManagerFor — конструктор для тестов: принимает любой источник
+// моделей (см. idleUnloadBackend).
+func newIdleUnloadManagerFor(backend idleUnloadBackend, idleTimeout time.Duration) *IdleUnloadManager {
+	return &IdleUnloadManager{
+		backend:       backend,
+		idleTimeout:   idleTimeout,
+		checkInterval: idleCheckIntervalFor(idleTimeout),
+		stopCh:        make(chan struct{}),
+	}
+}
+
+// idleCheckIntervalFor — как часто проверять простой: половина таймаута, но не
+// чаще 5 минут (для больших таймаутов) и не реже 1 секунды (для тестов и
+// маленьких значений).
+func idleCheckIntervalFor(idleTimeout time.Duration) time.Duration {
+	interval := idleTimeout / 2
+	if interval > 5*time.Minute {
+		interval = 5 * time.Minute
+	}
+	if interval < time.Second {
+		interval = time.Second
+	}
+	return interval
+}
+
+// SetIdleTimeout — R119: применить новый таймаут к ЖИВОМУ менеджеру.
+//
+// Тикер пересоздаётся с новым интервалом: старый тикер продолжает тикать по
+// прежнему расписанию, и без перезапуска изменение вступало бы в силу только
+// после следующего (старого) срабатывания — то есть «через 5 минут» вместо
+// «сразу». d <= 0 игнорируется: выключение делает Backend.SetIdleUnloadTimeout.
+func (m *IdleUnloadManager) SetIdleTimeout(d time.Duration) {
+	if m == nil || d <= 0 {
 		return
 	}
-	go func() {
-		ticker := time.NewTicker(m.checkInterval)
-		defer ticker.Stop()
+	m.mu.Lock()
+	m.idleTimeout = d
+	m.checkInterval = idleCheckIntervalFor(d)
+	m.mu.Unlock()
+}
 
+// IdleTimeout — действующий таймаут (для диагностики и тестов).
+func (m *IdleUnloadManager) IdleTimeout() time.Duration {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.idleTimeout
+}
+
+// CheckInterval — действующий интервал проверки (для диагностики и тестов).
+func (m *IdleUnloadManager) CheckInterval() time.Duration {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.checkInterval
+}
+
+// Running — запущен ли фоновый цикл.
+func (m *IdleUnloadManager) Running() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.running
+}
+
+// Start запускает фоновый мониторинг. Идемпотентен: повторный вызов не создаёт
+// второй цикл (иначе две горутины выгружали бы модели параллельно).
+func (m *IdleUnloadManager) Start() {
+	m.mu.Lock()
+	if m.running || m.idleTimeout <= 0 {
+		m.mu.Unlock()
+		return
+	}
+	m.running = true
+	m.mu.Unlock()
+
+	go func() {
 		for {
+			m.mu.RLock()
+			interval := m.checkInterval
+			m.mu.RUnlock()
+
+			timer := time.NewTimer(interval)
 			select {
-			case <-ticker.C:
+			case <-timer.C:
 				m.checkAndUnload()
 			case <-m.stopCh:
+				timer.Stop()
+				m.mu.Lock()
+				m.running = false
+				m.mu.Unlock()
 				return
 			}
 		}
 	}()
 }
 
-// Stop останавливает мониторинг
+// Stop останавливает мониторинг. Идемпотентен (stopOnce): повторный вызов не
+// паникует на закрытии уже закрытого канала.
 func (m *IdleUnloadManager) Stop() {
-	close(m.stopCh)
+	if m == nil {
+		return
+	}
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+	})
 }
 
 // idleUnloadModelRef — минимальный интерфейс модели, нужный для проверки idle.
@@ -1129,6 +1239,13 @@ func (m *IdleUnloadManager) Stop() {
 func (m *IdleUnloadManager) checkAndUnload() {
 	models := m.backend.ListModels()
 	now := time.Now()
+
+	m.mu.RLock()
+	idleTimeout := m.idleTimeout
+	m.mu.RUnlock()
+	if idleTimeout <= 0 {
+		return
+	}
 
 	for _, model := range models {
 		if model.State != StateLoaded {
@@ -1178,13 +1295,13 @@ func (m *IdleUnloadManager) checkAndUnload() {
 		// независимо от того, был ли хоть один запрос. Если idleTimeout задан
 		// и модель простаивает — она выгружается. Если idleTimeout=0 — менеджер
 		// не запускается вовсе (см. Start()).
-		if idleTime > m.idleTimeout {
+		if idleTime > idleTimeout {
 			logger.Get().Infow("idle unload",
 				"model", model.Name,
 				"idleTime", idleTime.String(),
 				"referenceTime", referenceTime.Format(time.RFC3339Nano),
 				"lastUsedAtSet", !model.LastUsedAt.IsZero(),
-				"timeout", m.idleTimeout.String(),
+				"timeout", idleTimeout.String(),
 				"totalQueries", model.TotalQueries)
 			if err := m.backend.UnloadModel(model.Name); err != nil {
 				logger.Get().Warnw("idle unload failed",

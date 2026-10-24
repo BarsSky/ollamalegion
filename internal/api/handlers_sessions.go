@@ -29,6 +29,8 @@ func (s *Server) sessionsHandler(w http.ResponseWriter, r *http.Request) {
 			LastRequestAt time.Time `json:"lastRequestAt"`
 			RequestCount  int       `json:"requestCount"`
 			IdleSeconds   int       `json:"idleSeconds"`
+			// R229 (2026-10-22): openai (/v1/...) или ollama (/api/...); пусто = не определён.
+			Protocol string `json:"protocol,omitempty"`
 		}
 
 		result := make([]SessionInfo, 0, len(sessions))
@@ -49,6 +51,7 @@ func (s *Server) sessionsHandler(w http.ResponseWriter, r *http.Request) {
 				LastRequestAt: session.LastRequestAt,
 				RequestCount:  session.RequestCount,
 				IdleSeconds:   int(time.Since(session.LastRequestAt).Seconds()),
+				Protocol:      session.Protocol,
 			})
 		}
 

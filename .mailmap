@@ -16,10 +16,14 @@
 #
 #   Канонический Имя <канонический@email>  Другое Имя <другой@email>
 #
+# Каноническим адресом выбран публичный GitHub-noreply: он не раскрывает личную
+# почту (и не обязан совпадать с адресом в старых коммитах — mailmap меняет
+# только отображение, не историю).
+#
 # На будущее идентичность коммитов задаётся git-конфигом (см. README →
 # «Коммиты и авторство»): без локального override применяется глобальный
 # user.name/user.email, поэтому новые служебные identity не появляются.
 
-BarsSky <knagaenko@mail.ru> Claude <noreply@anthropic.com>
-BarsSky <knagaenko@mail.ru> Mavis <Mavis@mavis.local>
-BarsSky <knagaenko@mail.ru> cline <cline@local>
+BarsSky <BarsSky@users.noreply.github.com> Claude <noreply@anthropic.com>
+BarsSky <BarsSky@users.noreply.github.com> Mavis <Mavis@mavis.local>
+BarsSky <BarsSky@users.noreply.github.com> cline <cline@local>

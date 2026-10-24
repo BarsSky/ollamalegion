@@ -8,14 +8,70 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"ollama-loadbalancer/pkg/types"
 )
 
+// operatorMaxConcurrentRequests — явно заданный оператором лимит
+// (AGENT_MAX_CONCURRENT_REQUESTS), 0 = не задан.
+//
+// R119 (2026-10-15): читаем ПЕРЕМЕННУЮ, а не a.config.MaxConcurrentRequests.
+// В a.config то же поле перезаписывается значением из ответа балансера
+// (collector.go: "Heartbeat response: applied maxConcurrentRequests=…"), и по нему
+// нельзя отличить «оператор задал» от «балансер вернул».
+func operatorMaxConcurrentRequests() int {
+	for _, name := range []string{"AGENT_MAX_CONCURRENT_REQUESTS"} {
+		v := strings.TrimSpace(os.Getenv(name))
+		if v == "" {
+			continue
+		}
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// claimMaxConcurrent — какую вместимость агент ЗАЯВЛЯЕТ балансеру при регистрации.
+//
+// ЖИВОЙ ДЕФЕКТ (стенд, 2026-10-15). cppworker честно отдавал `max_slots=1` и
+// `enableBatchedParallel=false`, агент в логе писал «сообщаем балансеру 1» — а
+// `/api/v1/backends` показывал `maxConcurrentRequests=2 src=static`, и второй
+// клиент снова ждал молча внутри cppworker вместо очереди балансера.
+//
+// Причина — самоподдерживающаяся петля:
+//
+//	state.json (старое 2) → heartbeat отдаёт 2 → агент кладёт 2 в
+//	a.config.MaxConcurrentRequests → регистрация заявляет 2 → балансер
+//	сохраняет 2 → heartbeat снова отдаёт 2 → …
+//
+// Точно та же петля «эхо», что описана в R83, но починка R83 закрыла только
+// ветку attach, а не источник значения: заявка по-прежнему бралась из поля,
+// которое перезаписывает heartbeat.
+//
+// ПРАВИЛА:
+//  1. явный операторский лимит (env) — приоритетен;
+//  2. иначе ФАКТИЧЕСКАЯ способность узла (detected, учитывает
+//     enableBatchedParallel — без планировщика она равна 1);
+//  3. echo — только последний fallback, когда узел не ответил вообще.
+func claimMaxConcurrent(operator, detected, echoed int) int {
+	if operator > 0 {
+		return operator
+	}
+	if detected > 0 {
+		return detected
+	}
+	if echoed > 0 {
+		return echoed
+	}
+	return 0
+}
+
 // register - регистрация на балансировщике
-func (a *Agent) register() error {
-	// Сбор информации о системе
+func (a *Agent) register() error { // Сбор информации о системе
 	hostname, _ := os.Hostname()
 	osName := os.Getenv("OS")
 	if osName == "" {
@@ -69,10 +125,22 @@ func (a *Agent) register() error {
 	// cppworker его defaultNParallel (env CPPWORKER_N_PARALLEL) и сообщает
 	// балансеру ИМЕННО ЭТО значение. Явно заданный AGENT_MAX_CONCURRENT_REQUESTS
 	// остаётся операторским лимитом и имеет приоритет.
-	maxConcurrent := a.config.MaxConcurrentRequests
-	if maxConcurrent <= 0 {
-		maxConcurrent = a.detectCppWorkerParallelism()
-	}
+	// Опрос cppworker делается ОДИН раз: он ходит по HTTP и печатает строку в лог.
+	detected := a.detectCppWorkerParallelism()
+	maxConcurrent := claimMaxConcurrent(
+		operatorMaxConcurrentRequests(),
+		detected,
+		a.config.MaxConcurrentRequests,
+	)
+	// R121 (2026-10-15): запоминаем СВОЮ заявку — её будет слать каждый heartbeat
+	// отдельным полем, чтобы балансер восстановил вместимость после своего
+	// перезапуска, не дожидаясь перезапуска агента. Значение из ответа балансера
+	// (echo) сюда НЕ подмешивается — иначе вернулась бы петля «эхо».
+	a.setNodeCapacityClaim(claimMaxConcurrent(
+		operatorMaxConcurrentRequests(),
+		detected,
+		0,
+	))
 	reqBody := map[string]interface{}{
 		"agentId":               a.config.AgentID,
 		"hostname":              hostname,
@@ -92,6 +160,14 @@ func (a *Agent) register() error {
 		// параметров модели из WebUI через прокси балансера возвращает 401
 		// («invalid or missing API token»), хотя токен задан во всех .env.
 		"cppWorkerApiToken": a.config.CppWorkerApiToken,
+		// R101 (2026-10-11): версия сборки llama.cpp от узла.
+		//
+		// НАХОДКА ПРИЁМКИ (находка 6): в бандл-стенде бэкенд регистрирует
+		// встроенный агент, а поле buildInfo клала только Go-сторона cppworker,
+		// чья регистрация в этом стеке выключена (CPPWORKER_REGISTER_DISABLE).
+		// Из-за этого buildInfo у бэкендов всегда оставался пустым, и валидатор
+		// композиции не мог сверить версии сторон RPC — писал version_unknown.
+		"buildInfo": llamaBuildInfoR101Agent(),
 	}
 
 	// R-Image (2026-10-07): image-бэкенд (sdworker/sd-server).
@@ -189,4 +265,16 @@ func (a *Agent) healthCheckOllama() error {
 		return fmt.Errorf("ollama health-check returned status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// llamaBuildInfoR101Agent - версия сборки llama.cpp, которую узел сообщает
+// балансеру при регистрации.
+//
+// Источник тот же, что у Go-стороны cppworker (env CPPWORKER_LLAMA_BUILD,
+// проставляет образ): встроенный агент живёт в том же процессе и видит то же
+// окружение. Внешнему контейнеру agent переменную нужно передать отдельно -
+// иначе версия не доедет, и проверка совместимости сторон RPC в валидаторе
+// композиции останется неподтверждённой (version_unknown).
+func llamaBuildInfoR101Agent() string {
+	return strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD"))
 }

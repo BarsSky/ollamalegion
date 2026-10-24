@@ -22,6 +22,9 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/info", handleInfo)
 	mux.HandleFunc("/api/info", handleInfo)
 	mux.HandleFunc("/api/gpu", handleGPUInfo)
+	// R118.15 (2026-10-14): замер канала до узла раскладки средствами продукта —
+	// отдаём N байт известного объёма, время скачивания засекает балансер.
+	mux.HandleFunc("/api/rpc-link-probe", handleLinkProbe)
 	mux.HandleFunc("/api/models/load", handleLoadModel)
 	mux.HandleFunc("/api/models/load-with-params", handleLoadWithParams)         // ??????????? ????????? (Session 4 P-1)
 	mux.HandleFunc("/load", handleLoadModel)                                     // alias for balancer warmup
@@ -32,6 +35,9 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/models/active-queries", handleGetActiveQueries) // Round 26 v0.5.13: WebUI busy badge
 	mux.HandleFunc("/api/models", handleListModels)
 	mux.HandleFunc("/api/model", handleGetModel)
+	// R116: эффективные параметры модели — «что применится и почему» (профиль
+	// против дефолта бэкенда, плюс вердикт памяти тем же расчётом, что загрузка).
+	mux.HandleFunc("/api/models/effective", handleModelEffective)
 	mux.HandleFunc("/api/models/files", handleListModelsDir)
 	// R93 (2026-10-09): принудительная проверка каталога моделей на диске
 	// (кнопка «Обновить» в WebUI и force-refresh каталога балансером).
@@ -77,6 +83,18 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/v1/cppworker/config/update", authMiddleware(handleCppWorkerUpdateConfig))
 	mux.HandleFunc("/api/v1/cppworker/config/reload", authMiddleware(handleCppWorkerReloadConfig))
 	mux.HandleFunc("/api/v1/cppworker/config/runtime", handleCppWorkerRuntimeConfig)
+	// R125 (2026-10-16, пункт 3): какие узлы раскладки РЕАЛЬНО отвечают.
+	// Отдельная ручка, потому что проверка — сетевой I/O с таймаутом, а конфиг
+	// читают и в фоне (балансер, WebUI).
+	mux.HandleFunc("/api/v1/cppworker/rpc-peers", handleCppWorkerRPCPeers)
+	// R172 (2026-10-18): вывод ВСТРОЕННОГО узла раскладки (дочерний rpc-server)
+	// и причина его смерти. Закрыт токеном: в строках видны пути моделей и
+	// параметры буферов, а ручка нужна оператору, а не клиенту.
+	mux.HandleFunc("/api/v1/cppworker/rpc-server/log", authMiddleware(handleRPCServerLog))
+	// R129 (2026-10-16, пункт 3): приёмник замера пропускной способности между
+	// узлами. Дорогая ручка (десятки МБ трафика) — вызывается только по явному
+	// запросу мастера/оператора, не поллером.
+	mux.HandleFunc("/api/v1/cppworker/link-bench", handleCppWorkerLinkBench)
 	mux.HandleFunc("/api/v1/cppworker/reset-reload-counter", authMiddleware(handleResetReloadCounter))
 	mux.HandleFunc("/api/v1/cppworker/health", handleHealth)
 	mux.HandleFunc("/api/v1/cppworker/metrics", handleInfo)

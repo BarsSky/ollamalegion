@@ -160,6 +160,107 @@ func clampStrategyToCurrentLayout(strategy *AdaptiveStrategy, currentGPULayers i
 	return true
 }
 
+// asyncReloadLoadBody — R119 (2026-10-15): тело async-перезагрузки
+// (`executeAsyncReload` → POST /api/models/load).
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. Это был ТРЕТИЙ независимый сборщик тела (после
+// DoReload и его load-fallback), и он жёстко зашивал настройки:
+//
+//	"kvCacheType": "q4_0", "gpuLayers": -2, "useMmap": true
+//
+// Комментарий Phase 1 объяснял q4_0 необходимостью влезть в 8 ГБ VRAM — для
+// gemma-4 это верно, но означало, что ЯВНАЯ настройка оператора (профиль с
+// kvCacheType=q8_0) молча перебивается константой: preflight-перезагрузка
+// возвращала модель с другим типом KV-кэша, а параллельность и размышления
+// терялись вовсе (их в теле не было).
+//
+// ПРАВИЛО: намерение оператора (профиль) важнее исторических констант, но сами
+// константы остаются fallback'ом — при отсутствии профиля поведение ровно
+// прежнее (иначе на 8 ГБ можно потерять достижимое окно).
+func asyncReloadLoadBody(modelName string, requestedNCtx int, hints ReloadHints) map[string]interface{} {
+	body := map[string]interface{}{
+		"name":        modelName,
+		"contextSize": requestedNCtx,
+		// "force" removed: /api/models/load doesn't have this field.
+		// The "reason" field is load-specific (it triggers profile re-apply).
+		"reason": "balancer preflight async auto-load-or-reload (loaded<requested or cppworker restart)",
+		// Phase 1 (2026-07-06): RAM fallback to maximize n_ctx in 8GB VRAM.
+		// Without q4_0 KV-cache + GPU-offload=-2, gemma-4 maxes at ~17K n_ctx.
+		"kvCacheType": "q4_0",
+		"gpuLayers":   -2,
+		"useMmap":     true,
+	}
+	// R119: значения из профиля/фактические перекрывают константы.
+	if hints.KVCacheType != "" {
+		body["kvCacheType"] = hints.KVCacheType
+	}
+	if hints.Parallel > 0 {
+		body["parallel"] = hints.Parallel
+	}
+	if hints.EnableReasoning != nil {
+		body["enableReasoning"] = *hints.EnableReasoning
+	}
+	return body
+}
+
+// applyReloadHintsToPayload — R119 (2026-10-15): перенести в тело reload те
+// параметры, которые оператор задал в профиле модели (или которые фактически
+// действуют у загруженной модели).
+//
+// ЗАЧЕМ. До этой правки payload n_ctx-перезагрузки собирался С НУЛЯ
+// (name/contextSize/force/gpuLayers/flashAttn/useMmap) и профиль в него не
+// попадал вообще. Живые последствия:
+//   - kvCacheType не уходил → cppworker брал свой дефолт (в стенде q8_0, в
+//     других сборках f16), и модель незаметно переезжала с q4_0 на другой тип
+//     KV-кэша. Оператор узнавал об этом по расходу VRAM, а не по UI;
+//   - parallel не уходил → cppworker брал CPPWORKER_N_PARALLEL, и модель,
+//     поднятая профилем с parallel=3, возвращалась к 2 слотам;
+//   - enableReasoning не уходил → перезагрузка молча выключала размышления.
+//
+// ПРО contextPerSeq — НАМЕРЕННО не отправляем. На этом пути цель перезагрузки —
+// СУММАРНОЕ окно (`plan.NewNCtx`; клиентское окно «на клиента» балансер
+// пересчитывает в суммарное через loadedSlotsNCtx). cppworker же при
+// contextPerSeq > 0 считает суммарное как PAD256(contextPerSeq) × слотов и
+// `contextSize` ИГНОРИРУЕТ — то есть отправка contextPerSeq здесь сделала бы
+// contextSize недействующим и перезагрузка не достигла бы запрошенного окна.
+// При `contextSize` + `parallel` cppworker выводит окно слота сам
+// (PAD256(total/slots)) — это ровно то же число. Путь «Применить профиль»
+// (reloadModelOnCppWorker) contextPerSeq отправляет: там окно задаёт оператор.
+func applyReloadHintsToPayload(payload map[string]interface{}, hints ReloadHints) {
+	if payload == nil {
+		return
+	}
+	if hints.KVCacheType != "" {
+		payload["kvCacheType"] = hints.KVCacheType
+	}
+	if hints.Parallel > 0 {
+		payload["parallel"] = hints.Parallel
+	}
+	if hints.EnableReasoning != nil {
+		payload["enableReasoning"] = *hints.EnableReasoning
+	}
+}
+
+// loadBodyFromReloadPayload — R119 (2026-10-15): тело для резервного
+// /api/models/load из уже собранного тела reload.
+//
+// ЗАЧЕМ. Fallback (reload → 404 «not currently loaded») собирал тело заново и
+// переносил только kvCacheType/gpuLayers/useMmap/flashAttn — то есть терял всё,
+// что добавили hint'ы и стратегия (parallel, enableReasoning, overrideTensors).
+// Один builder на оба пути: копируем как есть и убираем только `force`, которого
+// в loadModelRequest нет (cppworker декодирует тело строгим декодером и ответил бы
+// 400 «unknown field force»).
+func loadBodyFromReloadPayload(payload map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(payload))
+	for k, v := range payload {
+		if k == "force" {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // enrichReloadPayload добавляет параметры из AdaptiveStrategy в payload reload-запроса.
 // Возвращает модифицированный payload (gpuLayers, kvCacheType, contextSize, useMmap, flashAttn).
 //

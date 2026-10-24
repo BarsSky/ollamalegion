@@ -1,4 +1,4 @@
-// auto_continue.go — R60.21: detect truncated LLM responses and
+﻿// auto_continue.go — R60.21: detect truncated LLM responses and
 // auto-retry with "continue" prompt to recover from model-side
 // antiprompt emission (Qwen3-Instruct emits <|im_end|> mid-code).
 //
@@ -996,24 +996,56 @@ func PerformAutoContinue(
 		return "", 0, fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(errBody))
 	}
 
-	// 5. Read response, extract content
+	// 5. Read response, extract content.
+	//
+	// R118.17 (2026-10-15): продолжение запрашивается по ТОМУ ЖЕ URL, что и
+	// исходный запрос, поэтому ответ приходит в формате ТОЙ поверхности, с
+	// которой пришёл клиент:
+	//   /v1/chat/completions       → OpenAI: choices[0].message.content, usage.completion_tokens
+	//   /api/chat, /api/generate   → Ollama: message.content / response, eval_count
+	// Раньше разбирался только OpenAI-формат, и на нативной поверхности
+	// авто-продолжение всегда падало: живой лог стенда (мастер, gemma через
+	// /api/chat) — «R60.21 auto-continue failed ... error="upstream response had
+	// no choices" url=http://cppworker-gpu:18092/api/chat». Клиент получал
+	// обрезанный ответ, потеряв ~140 c на неудачную попытку продолжения.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return "", 0, err
+	}
+	return extractAutoContinueContent(raw)
+}
+
+// extractAutoContinueContent — вытащить текст продолжения из ответа upstream,
+// приняв ЛЮБУЮ из двух форм: OpenAI (choices[].message.content) и Ollama
+// (message.content для /api/chat, response для /api/generate).
+func extractAutoContinueContent(raw []byte) (content string, evalCount int, err error) {
 	var respBody struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
-		Usage struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+		Response string `json:"response"`
+		Usage    struct {
 			CompletionTokens int `json:"completion_tokens"`
 		} `json:"usage"`
+		EvalCount int `json:"eval_count"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+	if err := json.Unmarshal(raw, &respBody); err != nil {
 		return "", 0, err
 	}
-	if len(respBody.Choices) == 0 {
-		return "", 0, errEmptyChoices
+	switch {
+	case len(respBody.Choices) > 0:
+		return respBody.Choices[0].Message.Content, respBody.Usage.CompletionTokens, nil
+	case respBody.Message.Content != "":
+		return respBody.Message.Content, respBody.EvalCount, nil
+	case respBody.Response != "":
+		return respBody.Response, respBody.EvalCount, nil
 	}
-	return respBody.Choices[0].Message.Content, respBody.Usage.CompletionTokens, nil
+	return "", 0, errEmptyChoices
 }
 
 // Sentinel errors for PerformAutoContinue.
@@ -1164,4 +1196,76 @@ func FixMarkdownCodeFences(content string) string {
 	after := content[firstFence+3:]
 	after = strings.ReplaceAll(after, "```", "` `")
 	return before + after
+}
+
+// ClientOutputCapped — клиент САМ ограничил длину ответа в этом запросе.
+//
+// R174 (2026-10-18, найдено сценариями клиентов через балансер).
+//
+// ЖИВОЙ ДЕФЕКТ. Матрица клиентов показала: на стриминговом Ollama-пути воркер
+// видит промпт на 254 символа/45 токенов больше прямого вызова, хотя клиент не
+// присылал ни tools, ни системного промпта. Причина — НЕ инъекция инструмента, а
+// auto-continue (R60.21): клиент просил `num_predict: 6`, ответ обрывался на
+// лимите, балансер считал обрыв «усечением» и слал ВТОРОЙ запрос с уже полученным
+// текстом. Клиент видел ответ длиннее запрошенного, платил за двойной промпт, а в
+// учёте токенов появлялся «нереальный» расход (та же жалоба, что мотивировала
+// R141).
+//
+// ПОЧЕМУ ЭТО ПРАВИЛО, А НЕ НАСТРОЙКА. Ограничение клиента — часть контракта
+// запроса: агентные клиенты (Cline, deepseek harness, hermes) ставят max_tokens на
+// КАЖДЫЙ запрос и полагаются на finish_reason=length; продолжать за них нельзя.
+// Auto-continue остаётся полезным там, где клиент лимит НЕ ставил (модель оборвала
+// код своим EOS) — именно ради этого случая R60.21 и делался.
+//
+// Возвращает (true, имя поля) и (false, "") если ограничения нет.
+// Отрицательный num_predict (Ollama) = «без ограничения», это НЕ лимит.
+func ClientOutputCapped(body []byte) (bool, string) {
+	if len(body) == 0 {
+		return false, ""
+	}
+	var doc struct {
+		Options struct {
+			NumPredict *int `json:"num_predict"`
+		} `json:"options"`
+		MaxTokens           *int `json:"max_tokens"`
+		MaxCompletionTokens *int `json:"max_completion_tokens"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return false, ""
+	}
+	if doc.Options.NumPredict != nil && *doc.Options.NumPredict > 0 {
+		return true, "options.num_predict"
+	}
+	if doc.MaxTokens != nil && *doc.MaxTokens > 0 {
+		return true, "max_tokens"
+	}
+	if doc.MaxCompletionTokens != nil && *doc.MaxCompletionTokens > 0 {
+		return true, "max_completion_tokens"
+	}
+	return false, ""
+}
+// AutoContinueAllowedForTurn — R187 (2026-10-20): можно ли продлевать ответ.
+//
+// ЗАЧЕМ. Клиент (Cline, Roo, deepseek harness, hermes) ведёт агентскую сессию
+// сам: каждый запрос — отдельный ход, который ЗАКОННО заканчивается вызовом
+// инструмента, коротким текстом или лимитом, поставленным клиентом. Эвристика
+// «ответ выглядит усечённым» (незакрытый блок кода / обрыв строки) на таких
+// ходах срабатывает штатно, и автопродолжение вредит:
+//   - клиент уже получил finish_reason и показал «completed»;
+//   - балансер тянет ВТОРОЙ запрос генерации (на 27B-модели это десятки
+//     секунд), после чего дописывает текст ПОСЛЕ finish (клиенты игнорируют)
+//     или подавляет его — и поток заканчивается поздно или не заканчивается.
+// Живой симптом в Cline: «completed», затем размышления, затем тишина.
+//
+// Правило: если в запросе есть tools[] (агентский ход) или в ответе есть
+// tool_calls — не продолжаем. Клиентский лимит (max_tokens/num_predict)
+// проверяется отдельно и тоже запрещает продление.
+func AutoContinueAllowedForTurn(toolsInRequest bool, toolCallsInResponse int) bool {
+	if toolsInRequest {
+		return false
+	}
+	if toolCallsInResponse > 0 {
+		return false
+	}
+	return true
 }

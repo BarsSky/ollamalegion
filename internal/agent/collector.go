@@ -18,6 +18,30 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
+// setNodeCapacityClaim — зафиксировать заявку узла о вместимости (R121).
+func (a *Agent) setNodeCapacityClaim(n int) {
+	if a == nil || n <= 0 {
+		return
+	}
+	a.mu.Lock()
+	a.nodeCapacityClaim = n
+	a.mu.Unlock()
+}
+
+// NodeCapacityClaim — заявка узла о вместимости (0 = ещё не посчитана).
+//
+// R121 (2026-10-15): значение уходит в каждом heartbeat полем
+// `nodeMaxConcurrentRequests`, поэтому балансер восстанавливает вместимость после
+// СВОЕГО перезапуска сам, без перезапуска агента.
+func (a *Agent) NodeCapacityClaim() int {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.nodeCapacityClaim
+}
+
 // Agent - агент сбора метрик
 type Agent struct {
 	config         *types.AgentConfig
@@ -36,6 +60,20 @@ type Agent struct {
 	// (см. registerRetryCooldown), чтобы недоступный балансер не превращался
 	// в шквал запросов.
 	lastRegisterTry time.Time
+
+	// nodeCapacityClaim — R121 (2026-10-15): вместимость, которую УЗЕЛ считает
+	// своей фактической (операторский AGENT_MAX_CONCURRENT_REQUESTS либо опрос
+	// cppworker, см. claimMaxConcurrent в collector_register.go).
+	//
+	// Зачем кэш, а не расчёт на каждом heartbeat: расчёт делает HTTP-запрос к
+	// cppworker и печатает строку в лог — на heartbeat раз в несколько секунд это
+	// шум. Значение вычисляется при регистрации (там же, где формируется заявка)
+	// и отправляется в КАЖДОМ heartbeat отдельным полем
+	// (`nodeMaxConcurrentRequests`), чтобы балансер мог восстановить вместимость
+	// после СВОЕГО перезапуска, не дожидаясь перезапуска агента.
+	//
+	// Хранится под mu.
+	nodeCapacityClaim int
 	// gpuUnavailable cache вынесен в collector_gpu.go (TTL-based, не зависит от Agent).
 
 	// Ollama статистика
@@ -568,18 +606,28 @@ func (a *Agent) sendHeartbeat() {
 
 	// Сериализация сообщения с локальными лимитами
 	wrapper := map[string]interface{}{
-		"type":                  "heartbeat",
-		"agentId":               a.config.AgentID,
-		"timestamp":             time.Now().UTC(),
-		"uptime":                uptime,
-		"sequence":              seq,
-		"status":                status,
-		"platform":              a.platformMode,
-		"weight":                a.config.Weight,
-		"maxConcurrentRequests": a.config.MaxConcurrentRequests,
-		"maxModels":             a.config.MaxModels,
-		"backendType":           string(a.config.BackendType),
-		"nodeLabels":            a.config.NodeLabels,
+		"type":                      "heartbeat",
+		"agentId":                   a.config.AgentID,
+		"timestamp":                 time.Now().UTC(),
+		"uptime":                    uptime,
+		"sequence":                  seq,
+		"status":                    status,
+		"platform":                  a.platformMode,
+		"weight":                    a.config.Weight,
+		"maxConcurrentRequests":     a.config.MaxConcurrentRequests,
+		"maxModels":                 a.config.MaxModels,
+		"nodeMaxConcurrentRequests": a.NodeCapacityClaim(),
+		// R121 (2026-10-15): СОБСТВЕННАЯ заявка узла — отдельным полем.
+		//
+		// maxConcurrentRequests выше — это значение, которое балансер прислал
+		// агенту в ответе на прошлый heartbeat (агент его «применяет» и возвращает
+		// обратно). Принимать его за заявку узла нельзя: именно так возникала петля
+		// «эхо», из-за которой узел с n_parallel=1 жил с чужим лимитом. Здесь же
+		// едет то, что узел посчитал сам (операторский env или опрос cppworker),
+		// поэтому балансер может восстановить вместимость после своего
+		// перезапуска, не дожидаясь перезапуска агента.
+		"backendType": string(a.config.BackendType),
+		"nodeLabels":  a.config.NodeLabels,
 		// Round 14 (2026-07-10): шлём свой agentPort чтобы cppworker-бэкенд
 		// (созданный без знания про agent) получил правильный порт. Без этого
 		// AttachAgentToBackend использовал backend.AgentPort=0 → UI показывал 0.

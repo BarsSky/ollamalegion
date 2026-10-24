@@ -84,6 +84,8 @@ const I18N_MAP = {
     'queue.admission_note': 'Ожидание слота: обслужено {served}, таймаутов {timeouts}, предел ожидания {seconds} с.',
     'queue.no_tasks': 'Очередь пуста',
     'queue.col_client': 'Клиент (сессия)',
+    // R118: подпись для клиента, которого очередь не может различить.
+    'queue.session_unidentified': 'клиент не различает сессии',
     'sessions.model': 'Модель',
     'renderers.seconds': ' с',
     'renderers.queue_avg_wait': '~{seconds} с',
@@ -243,6 +245,50 @@ check('легаси-режим возвращает прежние подпис�
     assert.strictEqual(String(byId.queueCurrentSize.textContent), '3');
     assert.ok(/queue-bar/.test(byId.queueVisualization.innerHTML), 'нет легаси-полосы');
     assert.strictEqual(byId.queueColModel.textContent, 'Модель');
+});
+
+// R118 (2026-10-14): очередь показывает позицию с балансера и честно говорит,
+// когда клиента не отличить от другого (ключ = IP+User-Agent или общий токен).
+// ЖАЛОБА: «запрос от одной машины, но от двух экземпляров клиента Cline —
+// балансер не разделяет»: две строки с одинаковым `fp:`-ключом выглядели как
+// разные клиенты, хотя это один и тот же отпечаток.
+check('R118: позиция из очереди и пометка «клиент не различает сессии»', function () {
+    const v = R.queueView({
+        admission: {
+            enabled: true,
+            waiting: 2,
+            unidentified_waiting: 1,
+            waiting_by_backend: { bk: 2 },
+            waiting_detail: [
+                { session: 'fp:d1c51dca::curl::m::gen', backend: 'bk', waited_ms: 900, position: 1, session_known: false, session_source: 'derived' },
+                { session: 'sess-B::m::gen', backend: 'bk', waited_ms: 100, position: 2, session_known: true, session_source: 'client' },
+            ],
+        },
+    });
+
+    assert.strictEqual(v.detail[0].position, 1, 'позиция должна приходить из очереди');
+    assert.strictEqual(v.detail[1].position, 2);
+    assert.strictEqual(v.detail[0].sessionKnown, false, 'отпечаток IP+User-Agent не различает клиентов');
+    assert.strictEqual(v.detail[1].sessionKnown, true, 'клиентский X-Session-Id различает');
+    assert.strictEqual(v.unidentified, 1);
+
+    R.queuePage({
+        admission: {
+            enabled: true, waiting: 2, unidentified_waiting: 1,
+            waiting_by_backend: { bk: 2 },
+            waiting_detail: [
+                { session: 'fp:d1c51dca::curl::m::gen', backend: 'bk', waited_ms: 900, position: 1, session_known: false },
+                { session: 'sess-B::m::gen', backend: 'bk', waited_ms: 100, position: 2, session_known: true },
+            ],
+        },
+    }, [], []);
+
+    const rows = byId.queueTasksBody.innerHTML;
+    assert.ok(/клиент не различает сессии/.test(rows),
+        'нет честной пометки вместо синтетического ключа: ' + rows);
+    assert.ok(/<td>1<\/td>/.test(rows) && /<td>2<\/td>/.test(rows),
+        'нет позиций из очереди: ' + rows);
+    assert.ok(/sess-B::m::gen/.test(rows), 'клиентский ключ должен показываться как есть');
 });
 
 console.log('\nOK: ' + checks + ' checks passed');

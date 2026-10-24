@@ -120,6 +120,85 @@ func setupMixedCluster(t *testing.T) *balancer.Proxy {
 	return proxy
 }
 
+// advertiseLlamaCppModel — объявить модель загруженной на llama.cpp-бэкенде.
+//
+// Нужно потому, что с R112 изоляция типов держится на факте наличия модели
+// (backendHasModel), а не на режиме: без объявления модель «неизвестна никому»,
+// и выбор становится разрешающим — тест изоляции тогда ничего не проверяет.
+func advertiseLlamaCppModel(t *testing.T, proxy *balancer.Proxy, backendID, model string) {
+	t.Helper()
+	mm := proxy.GetMetricsManager()
+	if mm == nil {
+		t.Fatal("metrics manager недоступен")
+	}
+	m, ok := mm.SnapshotBackendMetrics(backendID)
+	if !ok || m == nil {
+		t.Fatalf("нет метрик для %s", backendID)
+	}
+	m.LlamaCpp.LoadedModels = append(m.LlamaCpp.LoadedModels, types.LlamaCppModel{
+		Name: model, State: "loaded",
+	})
+	proxy.SetBackendMetrics(backendID, m)
+}
+
+// advertiseOllamaModel — то же для Ollama-бэкенда (RunningModels).
+func advertiseOllamaModel(t *testing.T, proxy *balancer.Proxy, backendID, model string) {
+	t.Helper()
+	mm := proxy.GetMetricsManager()
+	if mm == nil {
+		t.Fatal("metrics manager недоступен")
+	}
+	m, ok := mm.SnapshotBackendMetrics(backendID)
+	if !ok || m == nil {
+		t.Fatalf("нет метрик для %s", backendID)
+	}
+	m.Ollama.RunningModels = append(m.Ollama.RunningModels, types.RunningModel{Name: model})
+	proxy.SetBackendMetrics(backendID, m)
+}
+
+// makeBackendsAttractive / makeBackendsLoaded — R112-разбор: чтобы тест изоляции
+// что-то доказывал, «неправильный» тип должен выглядеть ЛУЧШЕ по нагрузке
+// (свободная VRAM, ноль активных запросов, низкая утилизация). Тогда удержать
+// запрос на «правильном» типе может только знание о наличии модели; потеряй это
+// знание — выбор уедет на более свободный бэкенд, и тест упадёт.
+func makeBackendsAttractive(t *testing.T, proxy *balancer.Proxy, ids []string) {
+	t.Helper()
+	for _, id := range ids {
+		mm := proxy.GetMetricsManager()
+		m, ok := mm.SnapshotBackendMetrics(id)
+		if !ok || m == nil {
+			t.Fatalf("нет метрик для %s", id)
+		}
+		m.GPU.MemoryTotal = 24576
+		m.GPU.MemoryUsed = 256
+		m.GPU.MemoryFree = 24320
+		m.GPU.UsagePercent = 1
+		m.System.CPUUsagePercent = 1
+		m.Ollama.ActiveRequests = 0
+		m.Ollama.MaxConcurrentRequests = 10
+		proxy.SetBackendMetrics(id, m)
+	}
+}
+
+func makeBackendsLoaded(t *testing.T, proxy *balancer.Proxy, ids []string) {
+	t.Helper()
+	for _, id := range ids {
+		mm := proxy.GetMetricsManager()
+		m, ok := mm.SnapshotBackendMetrics(id)
+		if !ok || m == nil {
+			t.Fatalf("нет метрик для %s", id)
+		}
+		m.GPU.MemoryTotal = 24576
+		m.GPU.MemoryUsed = 16384
+		m.GPU.MemoryFree = 8192
+		m.GPU.UsagePercent = 70
+		m.System.CPUUsagePercent = 60
+		m.Ollama.ActiveRequests = 5
+		m.Ollama.MaxConcurrentRequests = 10
+		proxy.SetBackendMetrics(id, m)
+	}
+}
+
 // ============================================================
 // Test: selectBackend с явным BackendTypeOllama выбирает только Ollama-бэкенды
 // ============================================================
@@ -199,25 +278,43 @@ func TestExpandCandidates_FiltersByType_OllamaOnly(t *testing.T) {
 }
 
 // ============================================================
-// Test: при OperatingMode=virtual_router выбираются только llama.cpp бэкенды
+// Test: режим virtual_router больше НЕ фильтрует по типу (R112)
 // ============================================================
-func TestSelectBackend_VirtualRouterMode_LlamaCppOnly(t *testing.T) {
+//
+// Раньше здесь проверялось «virtual_router выбирает только llama.cpp». С R112
+// тип определяется наличием модели, поэтому проверяем обе стороны:
+//   - модель только на llama.cpp → уходит на llama.cpp (никогда на Ollama);
+//   - модель только у Ollama → уходит на Ollama (никогда на llama.cpp).
+func TestSelectBackend_VirtualRouterMode_NoTypePinning(t *testing.T) {
 	proxy := setupMixedCluster(t)
+	proxy.GetConfig().Balancing.OperatingMode = "virtual_router"
 
-	// Меняем OperatingMode на virtual_router (только llama.cpp)
-	cfg := proxy.GetConfig()
-	cfg.Balancing.OperatingMode = "virtual_router"
-
-	// 50 итераций — должен выбирать только llama.cpp бэкенды
+	for _, id := range []string{"llamacpp-1", "llamacpp-2"} {
+		advertiseLlamaCppModel(t, proxy, id, "llama3:8b")
+	}
 	for i := 0; i < 50; i++ {
 		backendID := proxy.SelectBackend("llama3:8b")
 		if backendID == "" {
 			t.Logf("Iteration %d: no backend available (all busy)", i)
 			continue
 		}
-		assert.True(t,
-			backendID == "llamacpp-1" || backendID == "llamacpp-2",
-			"virtual_router mode should only select llama.cpp backends, got: %s", backendID)
+		assert.True(t, strings.HasPrefix(backendID, "llamacpp-"),
+			"модель есть только на llama.cpp — выбран %s", backendID)
+	}
+
+	// Обратная сторона: модель только у Ollama.
+	proxy2 := setupMixedCluster(t)
+	proxy2.GetConfig().Balancing.OperatingMode = "virtual_router"
+	for _, id := range []string{"ollama-1", "ollama-2"} {
+		advertiseOllamaModel(t, proxy2, id, "llama3:8b")
+	}
+	for i := 0; i < 50; i++ {
+		backendID := proxy2.SelectBackend("llama3:8b")
+		if backendID == "" {
+			continue
+		}
+		assert.True(t, strings.HasPrefix(backendID, "ollama-"),
+			"модель есть только у Ollama — выбран %s", backendID)
 	}
 }
 
@@ -310,6 +407,73 @@ func TestFindBackendWithModel_WithTypeFilter(t *testing.T) {
 }
 
 // ============================================================
+// Test: режим НЕ привязывает тип бэкенда (R112), изоляция — по наличию модели
+// ============================================================
+//
+// R112 (2026-10-11) убрал навязывание типа по конфигу: ModeBackendTypes у всех
+// режимов = все типы, ModeEngines = EngineAuto. Раньше virtual_router жёстко
+// уезжал только на llama.cpp, и второй тип не получал запросов вообще — клиент
+// видел «модель не найдена» при живой модели на соседнем бэкенде.
+//
+// Что обязано остаться (и что проверяет этот тест): изоляция по ФАКТУ наличия
+// модели. Если модель есть только на llama.cpp-бэкендах, Ollama-бэкенд её
+// обслуживать не может, и наоборот.
+func TestSelectBackend_ModeDoesNotPinType_IsolationByModel(t *testing.T) {
+	for _, mode := range []string{"virtual_router", "distributed_inference", "standard"} {
+		t.Run(mode, func(t *testing.T) {
+			proxy := setupMixedCluster(t)
+			proxy.GetConfig().Balancing.OperatingMode = mode
+
+			// Модель «есть» только на llama.cpp-бэкендах: Ollama-бэкенды её не
+			// отдают в /api/tags, llama.cpp — в LoadedModels.
+			for _, id := range []string{"llamacpp-1", "llamacpp-2"} {
+				advertiseLlamaCppModel(t, proxy, id, "llama3:8b")
+			}
+			// «Неправильный» тип (Ollama) выглядит свободнее — удержать запрос на
+			// llama.cpp может только знание о наличии модели.
+			makeBackendsAttractive(t, proxy, []string{"ollama-1", "ollama-2"})
+			makeBackendsLoaded(t, proxy, []string{"llamacpp-1", "llamacpp-2"})
+
+			ollamaCount := 0
+			llamaCount := 0
+			for i := 0; i < 50; i++ {
+				backendID := proxy.SelectBackend("llama3:8b")
+				if backendID == "" {
+					continue
+				}
+				if strings.HasPrefix(backendID, "ollama-") {
+					ollamaCount++
+				}
+				if strings.HasPrefix(backendID, "llamacpp-") {
+					llamaCount++
+				}
+			}
+			assert.Equal(t, 0, ollamaCount,
+				"режим %s: модель есть только на llama.cpp — Ollama-бэкенд выбран быть не может", mode)
+			assert.Greater(t, llamaCount, 0,
+				"режим %s: запрос обязан уехать на бэкенд, у которого модель есть", mode)
+
+			// Обратная сторона изоляции: та же модель, но «есть» только у Ollama.
+			proxy2 := setupMixedCluster(t)
+			proxy2.GetConfig().Balancing.OperatingMode = mode
+			for _, id := range []string{"ollama-1", "ollama-2"} {
+				advertiseOllamaModel(t, proxy2, id, "llama3:8b")
+			}
+			makeBackendsAttractive(t, proxy2, []string{"llamacpp-1", "llamacpp-2"})
+			makeBackendsLoaded(t, proxy2, []string{"ollama-1", "ollama-2"})
+			llamaCount2 := 0
+			for i := 0; i < 50; i++ {
+				if id := proxy2.SelectBackend("llama3:8b"); strings.HasPrefix(id, "llamacpp-") {
+					llamaCount2++
+				}
+			}
+			assert.Equal(t, 0, llamaCount2,
+				"режим %s: модель есть только у Ollama — llama.cpp-бэкенд выбран быть не может", mode)
+		})
+	}
+}
+
+// ============================================================
 // Test: mixed cluster no cross-contamination over 100 iterations
 // ============================================================
 func TestSelectBackend_MixedCluster_NoCrossContamination_VirtualRouter(t *testing.T) {
@@ -317,6 +481,12 @@ func TestSelectBackend_MixedCluster_NoCrossContamination_VirtualRouter(t *testin
 
 	cfg := proxy.GetConfig()
 	cfg.Balancing.OperatingMode = "virtual_router"
+
+	// R112: изоляция — по модели, а не по режиму. Объявляем модель только на
+	// llama.cpp-бэкендах и требуем, чтобы выбор никогда не уходил на Ollama.
+	for _, id := range []string{"llamacpp-1", "llamacpp-2"} {
+		advertiseLlamaCppModel(t, proxy, id, "llama3:8b")
+	}
 
 	ollamaCount := 0
 	llamaCount := 0
@@ -337,18 +507,23 @@ func TestSelectBackend_MixedCluster_NoCrossContamination_VirtualRouter(t *testin
 	}
 
 	t.Logf("Total selections: %d, Ollama: %d, llama.cpp: %d", total, ollamaCount, llamaCount)
-	assert.Equal(t, 0, ollamaCount, "virtual_router mode should NEVER select Ollama backends")
-	assert.Greater(t, llamaCount, 0, "virtual_router mode should select llama.cpp backends")
+	assert.Equal(t, 0, ollamaCount,
+		"модель есть только на llama.cpp — Ollama-бэкенд не должен выбираться ни разу")
+	assert.Greater(t, llamaCount, 0, "должны выбираться бэкенды, у которых модель есть")
 }
 
 // ============================================================
-// Test: Distributed inference mode only allows llama.cpp
+// Test: Distributed inference mode — тип не навязан, изоляция по модели
 // ============================================================
-func TestOperatingMode_DistributedInference_LlamaCppOnly(t *testing.T) {
+func TestOperatingMode_DistributedInference_IsolationByModel(t *testing.T) {
 	proxy := setupMixedCluster(t)
 
 	cfg := proxy.GetConfig()
 	cfg.Balancing.OperatingMode = "distributed_inference"
+
+	for _, id := range []string{"llamacpp-1", "llamacpp-2"} {
+		advertiseLlamaCppModel(t, proxy, id, "llama3:8b")
+	}
 
 	ollamaCount := 0
 	llamaCount := 0
@@ -366,33 +541,24 @@ func TestOperatingMode_DistributedInference_LlamaCppOnly(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 0, ollamaCount, "distributed_inference mode should NEVER select Ollama backends")
-	assert.Greater(t, llamaCount, 0, "distributed_inference mode should select llama.cpp backends")
+	assert.Equal(t, 0, ollamaCount,
+		"distributed_inference: модель есть только на llama.cpp — Ollama-бэкенд выбирать нельзя")
+	assert.Greater(t, llamaCount, 0, "distributed_inference: запрос уходит на бэкенд с моделью")
 }
 
 // ============================================================
 // Test: IsModeCompatibleWithBackendType — проверка хелпера
 // ============================================================
 func TestIsModeCompatibleWithBackendType(t *testing.T) {
-	// standard mode — both types
-	assert.True(t, types.IsModeCompatibleWithBackendType("standard", types.BackendTypeOllama))
-	assert.True(t, types.IsModeCompatibleWithBackendType("standard", types.BackendTypeLlamaCpp))
-
-	// replication mode — both types
-	assert.True(t, types.IsModeCompatibleWithBackendType("replication", types.BackendTypeOllama))
-	assert.True(t, types.IsModeCompatibleWithBackendType("replication", types.BackendTypeLlamaCpp))
-
-	// rpc_coordinator mode — both types
-	assert.True(t, types.IsModeCompatibleWithBackendType("rpc_coordinator", types.BackendTypeOllama))
-	assert.True(t, types.IsModeCompatibleWithBackendType("rpc_coordinator", types.BackendTypeLlamaCpp))
-
-	// virtual_router mode — only llama_cpp
-	assert.False(t, types.IsModeCompatibleWithBackendType("virtual_router", types.BackendTypeOllama))
-	assert.True(t, types.IsModeCompatibleWithBackendType("virtual_router", types.BackendTypeLlamaCpp))
-
-	// distributed_inference mode — only llama_cpp
-	assert.False(t, types.IsModeCompatibleWithBackendType("distributed_inference", types.BackendTypeOllama))
-	assert.True(t, types.IsModeCompatibleWithBackendType("distributed_inference", types.BackendTypeLlamaCpp))
+	// R112 (2026-10-11): ни один штатный режим больше не запрещает тип бэкенда —
+	// запрет вернул бы «модель не найдена» при живой модели на соседнем типе.
+	// Проверяем консистентность хелпера с ModeBackendTypes по всем режимам.
+	for _, mode := range []string{"standard", "replication", "rpc_coordinator", "virtual_router", "distributed_inference"} {
+		assert.True(t, types.IsModeCompatibleWithBackendType(mode, types.BackendTypeOllama),
+			"режим %s обязан допускать Ollama-бэкенды (R112)", mode)
+		assert.True(t, types.IsModeCompatibleWithBackendType(mode, types.BackendTypeLlamaCpp),
+			"режим %s обязан допускать llama.cpp-бэкенды (R112)", mode)
+	}
 
 	// unknown mode — both types (permissive fallback)
 	assert.True(t, types.IsModeCompatibleWithBackendType("unknown_mode", types.BackendTypeOllama))
@@ -543,26 +709,26 @@ func TestServeHTTP_VirtualRouterMode_RejectsOllamaBackends(t *testing.T) {
 // ============================================================
 // Test: GetAllowedTypesList — helper function
 // ============================================================
+//
+// R112 (2026-10-11): режим больше не назначает допустимые типы — у всех режимов
+// один и тот же набор (все типы), потому что тип определяется фактическим
+// составом кластера и наличием модели. Тест фиксирует именно это: попытка снова
+// «пришпилить» тип к режиму обязана его уронить.
 func TestGetAllowedTypesList_EmptyUsesOperatingMode(t *testing.T) {
-	// Тестируем через ModeBackendTypes напрямую
+	for _, mode := range []string{"standard", "replication", "rpc_coordinator", "virtual_router", "distributed_inference"} {
+		allowed, ok := types.ModeBackendTypes[mode]
+		assert.True(t, ok, "режим %s должен быть в ModeBackendTypes", mode)
+		assert.Contains(t, allowed, types.BackendTypeOllama,
+			"R112: режим %s не должен запрещать Ollama-бэкенды", mode)
+		assert.Contains(t, allowed, types.BackendTypeLlamaCpp,
+			"режим %s должен допускать llama.cpp", mode)
+	}
 
-	// standard mode
-	allowed, ok := types.ModeBackendTypes["standard"]
-	assert.True(t, ok)
-	assert.Contains(t, allowed, types.BackendTypeOllama)
-	assert.Contains(t, allowed, types.BackendTypeLlamaCpp)
-
-	// virtual_router mode
-	allowed, ok = types.ModeBackendTypes["virtual_router"]
-	assert.True(t, ok)
-	assert.NotContains(t, allowed, types.BackendTypeOllama)
-	assert.Contains(t, allowed, types.BackendTypeLlamaCpp)
-
-	// distributed_inference mode
-	allowed, ok = types.ModeBackendTypes["distributed_inference"]
-	assert.True(t, ok)
-	assert.NotContains(t, allowed, types.BackendTypeOllama)
-	assert.Contains(t, allowed, types.BackendTypeLlamaCpp)
+	// Движок также не назначается режимом: состав кластера решает.
+	for _, mode := range []string{"standard", "replication", "rpc_coordinator", "virtual_router", "distributed_inference"} {
+		assert.Equal(t, types.EngineAuto, types.ModeEngines[mode],
+			"R112: режим %s не должен навязывать движок", mode)
+	}
 }
 
 // ============================================================
@@ -746,7 +912,7 @@ func TestServeHTTP_MixedCluster_RoutingByURLPath(t *testing.T) {
 
 	// Проверяем что determineRequestBackendType работает корректно:
 	// в standard mode /api/ допускает любой тип (пустая строка),
-	// /v1/ всегда → llama_cpp, в virtual_router /api/ → llama_cpp.
+	// /v1/ всегда → llama_cpp.
 	bt1 := proxy.DetermineRequestBackendTypeForTest("/api/generate")
 	assert.Equal(t, types.BackendType(""), bt1, "standard mode /api/ should allow any backend type")
 
@@ -756,10 +922,15 @@ func TestServeHTTP_MixedCluster_RoutingByURLPath(t *testing.T) {
 	bt3 := proxy.DetermineRequestBackendTypeForTest("/v1/completions")
 	assert.Equal(t, types.BackendTypeLlamaCpp, bt3)
 
-	// В virtual_router mode /api/ жёстко привязан к llama.cpp
+	// R112 (2026-10-11): режим больше НЕ привязывает тип бэкенда. Раньше
+	// virtual_router жёстко уводил /api/ на llama.cpp, и бэкенды второго типа не
+	// получали запросов вообще (клиент видел «модель не найдена» при живой модели
+	// рядом). Теперь тип решает selectBackend по фактическому составу кластера и
+	// наличию модели, поэтому для /api/-путей тип остаётся «любой».
 	cfg.Balancing.OperatingMode = "virtual_router"
 	bt4 := proxy.DetermineRequestBackendTypeForTest("/api/generate")
-	assert.Equal(t, types.BackendTypeLlamaCpp, bt4, "virtual_router mode /api/ should be llama.cpp")
+	assert.Equal(t, types.BackendType(""), bt4,
+		"R112: virtual_router не должен навязывать тип для /api/-путей")
 }
 
 // ============================================================

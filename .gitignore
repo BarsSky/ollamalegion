@@ -251,3 +251,21 @@ dist/
 # (scripts/loadtest/loadtest.mjs --out). В репозиторий не кладём: это JSON на
 # десятки мегабайт с таймсерией сэмплов, у каждого прогона свои цифры.
 /loadtest-reports/
+
+# R217: генерируется scripts/make-donor-update-cmd.js из docker inspect донора
+# (содержит полный env контейнера, включая токены) — не коммитим.
+/deployments/donor/update.cmd
+
+# R231 (2026-10-24): ЛИЧНЫЕ ДАННЫЕ И ОКРУЖЕНИЕ — не коммитим.
+#
+# debug/ — отладочные дампы сессий Cline (SQLite sessions.db/teams.db), трейсы
+# диалогов (trace-turn-*.ndjson), env-снимки узлов (node2.env с адресами и
+# токенами), локальные скрипты и бинарник rpc-server. Это данные машины
+# оператора, а не проекта; удалено из индекса при подготовке релиза.
+/debug/
+
+# Каталог, в который `go test ./cmd/cppworker/` пишет относительный
+# cppworker-defaults.json (см. CHANGELOG: тесты «пачкали» дерево, и файл
+# попадал в git вместе со стендовыми RPC-адресами). Шаблон дефолтов живёт в
+# config/cppworker-defaults.json.
+cmd/cppworker/config/

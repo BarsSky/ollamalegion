@@ -62,7 +62,7 @@ func TestMetricsBrokerPublish(t *testing.T) {
 
 	done := make(chan struct{})
 	defer close(done)
-	
+
 	ch := broker.Subscribe("client-1", done)
 
 	// Создаем тестовые метрики
@@ -83,9 +83,9 @@ func TestMetricsBrokerPublish(t *testing.T) {
 			MemoryFree:      16384,
 		},
 		Ollama: types.OllamaMetrics{
-			ActiveRequests:  5,
-			TotalRequests:   100,
-			AvgResponseTime: 250.5,
+			ActiveRequests:    5,
+			TotalRequests:     100,
+			AvgResponseTime:   250.5,
 			RequestsPerSecond: 10.0,
 		},
 	}
@@ -167,7 +167,7 @@ func TestMetricsBrokerPublishMultiple(t *testing.T) {
 
 	done := make(chan struct{})
 	defer close(done)
-	
+
 	ch := broker.Subscribe("client-1", done)
 
 	// Публикуем 5 метрик
@@ -185,7 +185,7 @@ func TestMetricsBrokerPublishMultiple(t *testing.T) {
 	// Получаем все метрики
 	received := 0
 	timeout := time.After(3 * time.Second)
-	
+
 	for received < 5 {
 		select {
 		case _, ok := <-ch:
@@ -294,7 +294,7 @@ func TestMetricsBrokerConcurrentPublish(t *testing.T) {
 
 	done := make(chan struct{})
 	defer close(done)
-	
+
 	ch := broker.Subscribe("client-1", done)
 	_ = ch // используем переменную
 
@@ -345,7 +345,7 @@ func TestMetricsBrokerChannelBufferSizeUnused(t *testing.T) {
 
 	done := make(chan struct{})
 	defer close(done)
-	
+
 	ch := broker.Subscribe("client-1", done)
 	_ = ch // используем переменную
 
@@ -378,7 +378,7 @@ func TestMetricsBrokerChannelBufferSize(t *testing.T) {
 
 	done := make(chan struct{})
 	defer close(done)
-	
+
 	ch := broker.Subscribe("client-1", done)
 
 	// Заполняем буфер (100 элементов)
@@ -410,7 +410,7 @@ func TestMetricsBrokerMultiplePublishesSequential(t *testing.T) {
 
 	done := make(chan struct{})
 	defer close(done)
-	
+
 	ch := broker.Subscribe("client-1", done)
 
 	// Последовательно публикуем и получаем
@@ -448,7 +448,7 @@ func TestMetricsBrokerSubscribeUnsubscribeMultiple(t *testing.T) {
 		ch := broker.Subscribe("client-"+string(rune('0'+i)), done)
 		assert.NotNil(t, ch)
 		broker.Unsubscribe("client-" + string(rune('0'+i)))
-		
+
 		// Канал должен быть закрыт
 		_, ok := <-ch
 		assert.False(t, ok)

@@ -74,7 +74,20 @@ COPY webui/favicon.ico .
 # при выпуске больше не нужно.
 #
 # Все *.html лежат в корне WORKDIR (COPY webui/*.html ./), поэтому glob достаточен.
-RUN sed -i "s/?v=[A-Za-z0-9._-]*/?v=${VERSION}/g" *.html
+#
+# R134 (2026-10-16): токен — ХЕШ СОДЕРЖИМОГО статики, а не VERSION.
+#
+# ЖИВОЙ ДЕФЕКТ. Токен брался из VERSION (git describe или тег сборки). Пересборка
+# того же коммита, сборка из «грязного» дерева или `docker load` уже собранного
+# образа дают ТОТ ЖЕ токен при ДРУГОМ содержимом — и браузер оставляет старые
+# js/css/i18n на год (`expires 1y` ниже в nginx.conf). Оператор видит прежний
+# интерфейс: «нет вкладки», «иконки не отображаются», сырые ключи i18n вместо
+# подписей. Хеш содержимого закрывает класс: меняется любой файл статики —
+# меняется URL, и браузер обязан перезапросить.
+RUN set -eux; \
+    HASH="$(find . -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' -o -name '*.svg' -o -name '*.png' -o -name '*.woff2' \) | sort | xargs md5sum | md5sum | cut -c1-12)"; \
+    echo "static-cache-token=${HASH}"; \
+    sed -i "s/?v=[A-Za-z0-9._-]*/?v=${HASH}/g" *.html
 
 # Копирование nginx шаблона конфига (будет обработан envsubst при старте)
 COPY webui/nginx.conf /etc/nginx/conf.d/default.conf.template

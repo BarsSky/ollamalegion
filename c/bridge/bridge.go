@@ -26,6 +26,10 @@ package bridge
 // extern-прототип для Go-функции, экспортируемой в C через //export
 extern int streamCallbackGo(char* token, int token_len, void* user_data);
 
+// R118.16 (2026-10-14): лог-строка llama.cpp (без завершающего \n) — из неё
+// собирается точная раскладка слоёв по устройствам (см. layers_plan.go).
+extern void goBridgeLogLine(char* line, int len);
+
 // Round 31 #6 (2026-08-09): Abort API — см. c/bridge/ABORT_API_C_PATCH.md
 extern int  bridge_request_abort(ModelHandle model);
 extern void bridge_request_abort_all(void);
@@ -202,6 +206,23 @@ type ModelConfig struct {
 	// Прочее
 	NoMemoryMap bool
 	RPCBackend  string
+	// RPCServers — R105 (S1 плана 2026-10-07): адреса rpc-server'ов (`host:port`),
+	// между которыми разрезана модель. Мастер считает свою часть и отдаёт
+	// активации воркерам по сети.
+	//
+	// ЧТО ОСТАЛОСЬ СДЕЛАТЬ В C. Поле доезжает сюда из cppworker
+	// (CPPWORKER_RPC_SERVERS → cppbackend.Config.RPCServers), но мост его ПОКА НЕ
+	// ЧИТАЕТ: в bridge.c нет ни одного упоминания rpc. Чтобы транспорт заработал,
+	// C-сторона обязана:
+	//   1. до создания контекста вызвать rpc-регистрацию ggml один раз на endpoint
+	//      (ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_add_server"));
+	//   2. включить RPC-устройства в список `devices` для llama_model_load_from_file
+	//      и в llama_context (иначе слои не распределятся);
+	//   3. сообщать понятную ошибку, если endpoint недоступен, ДО загрузки модели
+	//      (сейчас недоступный воркер выглядел бы таймаутом).
+	// Пока этого нет, включённый RPC честно логируется как нерабочий — см.
+	// cmd/cppworker/main.go.
+	RPCServers []string
 
 	// Round 7: override-tensors. Parallel arrays (length = OverrideTensorCount).
 	// Patterns are POSIX regex (e.g. `blk\\..*\\.ffn_.*_exps\\.weight`),
@@ -448,6 +469,90 @@ func GetGPUInfo(index int) (*GPUDevice, error) {
 	}, nil
 }
 
+// DeviceInfo — устройство раскладки слоёв: локальная карта (CUDA) или
+// устройство подключённого RPC-узла. Порядок элементов совпадает с тем, что
+// уходит в llama_model_params.devices (локальные первыми), поэтому по нему
+// строится tensor_split.
+type DeviceInfo struct {
+	Name        string
+	Type        int // ggml_backend_dev_type: 0=CPU, 1=GPU, 2=IGPU, 3=ACCEL, 4=META
+	IsRemote    bool
+	MemoryFree  uint64 // байт (для RPC — с удалённого узла)
+	MemoryTotal uint64
+}
+
+// maxPlanningDevices — сколько устройств раскладки читает Go-планировщик.
+// Двух машин хватает с запасом (локальные + по одному устройству на узел);
+// значение нужно только как размер C-массива.
+const maxPlanningDevices = 32
+
+// CollectDevices — S1 (2026-10-13): список устройств раскладки ДО загрузки модели.
+//
+// Зачем Go-стороне: memfit и расчёт tensor_split принимают решение о числе слоёв
+// раньше, чем вызывается bridge_load_model. Без этого списка они видят только
+// локальную карту и урезают план так, что удалённый узел простаивает (живая
+// проба: requested=48 → reduced=20, llama.cpp получил одну строку «using device
+// CUDA0»).
+//
+// Пустой результат = RPC не настроен или ни один узел не подключился: вызывающий
+// обязан вести себя как раньше (планировать по локальным GPU), а не считать, что
+// устройств нет вовсе.
+func CollectDevices(cfg ModelConfig) []DeviceInfo {
+	cCfg := C.ModelConfig{}
+	cCfg.split_mode = C.int(cfg.SplitMode)
+	cleanupRPC := fillRPCEndpointsR108(&cCfg, cfg.RPCServers)
+	defer cleanupRPC()
+
+	buf := make([]C.BridgeDeviceInfo, maxPlanningDevices)
+	n := C.bridge_collect_devices(&cCfg, &buf[0], C.int(maxPlanningDevices))
+	if n <= 0 {
+		return nil
+	}
+	out := make([]DeviceInfo, 0, int(n))
+	for i := 0; i < int(n); i++ {
+		d := buf[i]
+		out = append(out, DeviceInfo{
+			Name:        C.GoString(&d.name[0]),
+			Type:        int(d.dev_type),
+			IsRemote:    d.is_remote != 0,
+			MemoryFree:  uint64(d.memory_free),
+			MemoryTotal: uint64(d.memory_total),
+		})
+	}
+	return out
+}
+
+// fillRPCEndpointsR108 — S1 (2026-10-11): положить RPC-узлы раскладки в C-конфиг.
+//
+// Возвращает функцию освобождения: C-строки и массив указателей должны жить,
+// пока bridge_load_model не вернулся (C-сторона читает их при регистрации
+// устройств и при создании модели). Caller обязан сделать defer.
+//
+// ПОЧЕМУ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ ДВЕ ВСТАВКИ. Конфиг собирается в ДВУХ местах —
+// LoadModel и LoadModelWithEarlyHandle. Если заполнить RPC только в одном,
+// раскладка останется локальной ровно на том пути, которым ходит cppworker
+// (cancellable load), и это будет выглядеть как «RPC не работает» без единой
+// ошибки в логе.
+func fillRPCEndpointsR108(cCfg *C.ModelConfig, servers []string) func() {
+	if len(servers) == 0 {
+		return func() {}
+	}
+	cs := make([]*C.char, len(servers))
+	for i, ep := range servers {
+		cs[i] = C.CString(ep)
+	}
+	var pinner runtime.Pinner
+	pinner.Pin(&cs[0])
+	cCfg.rpc_endpoints = &cs[0]
+	cCfg.rpc_endpoints_len = C.int(len(servers))
+	return func() {
+		for _, p := range cs {
+			C.free(unsafe.Pointer(p))
+		}
+		pinner.Unpin()
+	}
+}
+
 // LoadModel загружает GGUF модель
 func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 	cCfg := C.ModelConfig{}
@@ -472,16 +577,32 @@ func LoadModel(cfg ModelConfig) (*ModelHandle, error) {
 	}
 
 	// Tensor split (Phase 8 P.4): array + split_mode.
+	//
+	// S1 (2026-10-13): массив ОБЯЗАН быть pinned. Раньше здесь был просто
+	// `cCfg.tensor_split = &ts[0]`, и как только раскладка реально включалась
+	// (несколько устройств), cgo падал с
+	//
+	//	panic: runtime error: cgo argument has Go pointer to unpinned Go pointer
+	//
+	// Это живой дефект: до S1 tensor_split не заполнялся (одна карта → GPUCount=1),
+	// поэтому паника не воспроизводилась. Pin держим до конца C-вызова.
+	var tsPinner runtime.Pinner
+	defer tsPinner.Unpin()
 	if len(cfg.TensorSplit) > 0 {
 		ts := make([]C.float, len(cfg.TensorSplit))
 		for i, v := range cfg.TensorSplit {
 			ts[i] = C.float(v)
 		}
+		tsPinner.Pin(&ts[0])
 		cCfg.tensor_split = &ts[0]
 		cCfg.tensor_split_len = C.int(len(cfg.TensorSplit))
 	}
 	// split_mode: -1 = use llama.cpp default; 0-3 = explicit value.
 	cCfg.split_mode = C.int(cfg.SplitMode)
+
+	// S1: RPC-узлы раскладки (см. fillRPCEndpointsR108).
+	cleanupRPC := fillRPCEndpointsR108(&cCfg, cfg.RPCServers)
+	defer cleanupRPC()
 
 	if cfg.UseMmap {
 		cCfg.use_mmap = 1
@@ -599,15 +720,27 @@ func LoadModelWithEarlyHandle(cfg ModelConfig, earlyHandle *ModelHandle) (*Model
 	}
 
 	// Tensor split (Phase 8 P.4): array + split_mode.
+	//
+	// S1 (2026-10-13): см. подробный комментарий в LoadModel — массив обязан быть
+	// pinned, иначе cgo паникует «Go pointer to unpinned Go pointer» на первой же
+	// реальной раскладке (несколько устройств).
+	var tsPinner runtime.Pinner
+	defer tsPinner.Unpin()
 	if len(cfg.TensorSplit) > 0 {
 		ts := make([]C.float, len(cfg.TensorSplit))
 		for i, v := range cfg.TensorSplit {
 			ts[i] = C.float(v)
 		}
+		tsPinner.Pin(&ts[0])
 		cCfg.tensor_split = &ts[0]
 		cCfg.tensor_split_len = C.int(len(cfg.TensorSplit))
 	}
 	cCfg.split_mode = C.int(cfg.SplitMode)
+
+	// S1: RPC-узлы раскладки (см. fillRPCEndpointsR108). Второй путь сборки
+	// конфига — именно им ходит cppworker при cancellable load.
+	cleanupRPC := fillRPCEndpointsR108(&cCfg, cfg.RPCServers)
+	defer cleanupRPC()
 
 	if cfg.UseMmap {
 		cCfg.use_mmap = 1
@@ -892,6 +1025,50 @@ func IsLoadAborted(model *ModelHandle) bool {
 		return false
 	}
 	return bool(C.bridge_is_load_aborted(model.ptr))
+}
+
+// GetLoadProgress возвращает прогресс чтения весов (0..100), который пишет
+// progress-callback llama.cpp (R215, 2026-10-21).
+//
+// ЗАЧЕМ. Пока загрузка идёт, воркер показывал только «loading» и ожидаемое
+// время: оператор не знал, осталось 20 секунд или две минуты, и отменял
+// загрузку «наугад». Callback даёт реальный процент и, что важнее, позволяет
+// прервать чтение весов по RequestLoadAbort - без него отмена срабатывала
+// только после возврата llama_model_load_from_file, а веса уже лежали на GPU
+// мастера и узлов раскладки.
+//
+// Возвращает -1, если handle ещё не выставлен, и 0..100 иначе.
+func GetLoadProgress(model *ModelHandle) int {
+	if model == nil || model.ptr == nil {
+		return -1
+	}
+	return int(C.bridge_get_load_progress(model.ptr))
+}
+
+// LoadProgressByPath возвращает прогресс загрузки по пути модели (0..100) или
+// -1, если этот путь сейчас не загружается (R215, 2026-10-21).
+//
+// Читать по пути, а не по handle, обязательно: пока загрузка идёт, её
+// InternalModel может быть освобождён на пути ошибки, и разыменование handle из
+// другой горутины было бы use-after-free.
+func LoadProgressByPath(path string) int {
+	if path == "" {
+		return -1
+	}
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	return int(C.bridge_load_progress_by_path(cpath))
+}
+
+// ClearLoadProgress снимает запись реестра прогресса после завершения загрузки
+// (успех или ошибка). Без этого слоты реестра кончились бы за четыре загрузки.
+func ClearLoadProgress(path string) {
+	if path == "" {
+		return
+	}
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	C.bridge_clear_load_progress(cpath)
 }
 
 // fillAntiprompts — копирует Go-строки params.Antiprompts в C-массив const char*.
@@ -1857,3 +2034,24 @@ func kvCacheTypeToBridgeInt(s string) int {
 // stderrFile — для warning-логов из kvCacheTypeToBridgeInt и подобных
 // утилит, которые не должны ломать основной flow LoadModel.
 var stderrFile = func() *os.File { return os.Stderr }
+
+// installLogCapture — поставить C-мосту перехват лог-строк llama.cpp
+// (R118.16). Идемпотентно: C-сторона игнорирует повторный вызов.
+func installLogCapture() {
+	C.bridge_install_log_capture(C.BridgeLogLineFn(C.goBridgeLogLine))
+}
+
+// goBridgeLogLine — вызывается из C на каждую строку лога llama.cpp.
+//
+// ВАЖНО: функция не должна делать ничего, кроме разбора строки: она работает в
+// потоке загрузки модели (CGo-колбэк), и любая блокировка здесь удлиняет load.
+// Разбор — только строковые операции, спор за map — под своим мьютексом
+// (см. layers_plan.go: recordLayerAssignment).
+//
+//export goBridgeLogLine
+func goBridgeLogLine(line *C.char, length C.int) {
+	if line == nil || length <= 0 {
+		return
+	}
+	recordLayerAssignment(C.GoStringN(line, length))
+}

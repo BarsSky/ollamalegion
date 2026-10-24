@@ -14,39 +14,32 @@ func (s *Server) validateBackendTypeForMode(backend types.Backend) error {
 	return config.ValidateModeBackendCompatibility(s.config.Balancing.OperatingMode, []types.Backend{backend})
 }
 
-// validateBackendTypeConsistencyForAdd проверяет, что добавляемый бэкенд совместим с существующими.
+// validateBackendTypeConsistencyForAdd проверяет, что добавляемый бэкенд
+// совместим с текущим режимом.
+//
+// R112 (2026-10-11): проверка однотипности с уже зарегистрированными бэкендами
+// УБРАНА. Она запрещала добавить Ollama-ноду в кластер с cppworker'ом (и
+// наоборот), хотя оба типа текстов и обслуживают одну и ту же Ollama-поверхность
+// /api/*, а выбор делает selectBackend по фактически загруженной модели. Отказ
+// выглядел как «cannot add backend of type X: existing backend Y is of type Z» и
+// не давал собрать смешанный стенд.
+//
+// Совместимость с режимом проверяется и сейчас, но с R112 любой режим совместим
+// с любым типом (см. types.ModeBackendTypes), то есть проверка проходит всегда и
+// остаётся только на случай будущих ограничений.
 func (s *Server) validateBackendTypeConsistencyForAdd(newBackend types.Backend) error {
 	newType := normalizeBackendAPIType(newBackend.Type)
 	if newType == "" {
 		newType = types.BackendTypeOllama
 	}
-
-	// Проверяем совместимость с режимом
-	if err := s.validateBackendTypeForMode(types.Backend{Type: newType, Status: types.StatusStarting}); err != nil {
-		return err
-	}
-
-	// Проверяем консистентность с существующими активными бэкендами
-	for _, b := range s.config.Backends {
-		if b.Status == types.StatusOffline {
-			continue
-		}
-		existingType := normalizeBackendAPIType(b.Type)
-		if existingType == "" {
-			existingType = types.BackendTypeOllama
-		}
-		if existingType != newType {
-			return &BackendTypeMismatchError{
-				NewType:      newType,
-				ExistingType: existingType,
-				ExistingID:   b.ID,
-			}
-		}
-	}
-	return nil
+	return s.validateBackendTypeForMode(types.Backend{Type: newType, Status: types.StatusStarting})
 }
 
-// BackendTypeMismatchError — ошибка несовместимости типов бэкендов
+// BackendTypeMismatchError — ошибка несовместимости типов бэкендов.
+//
+// R112: больше не возвращается из validateBackendTypeConsistencyForAdd (смешение
+// типов разрешено), но тип сохранён — на него ссылаются внешние обработчики
+// ошибок и тесты.
 type BackendTypeMismatchError struct {
 	NewType      types.BackendType
 	ExistingType types.BackendType
@@ -112,11 +105,11 @@ func (s *Server) handleBackendTypeInfo(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		typeInfos = append(typeInfos, map[string]interface{}{
-			"type":             bt,
-			"label":            bt.Label(),
-			"emoji":            bt.Emoji(),
-			"compatibleModes":  compatibleModes,
-			"isCurrent":        normalizeBackendAPIType(types.BackendType(s.config.BackendEngine)) == bt || bt == types.BackendTypeOllama && s.config.BackendEngine == types.EngineOllamaAPI || bt == types.BackendTypeLlamaCpp && s.config.BackendEngine == types.EngineLlamaCPP,
+			"type":            bt,
+			"label":           bt.Label(),
+			"emoji":           bt.Emoji(),
+			"compatibleModes": compatibleModes,
+			"isCurrent":       normalizeBackendAPIType(types.BackendType(s.config.BackendEngine)) == bt || bt == types.BackendTypeOllama && s.config.BackendEngine == types.EngineOllamaAPI || bt == types.BackendTypeLlamaCpp && s.config.BackendEngine == types.EngineLlamaCPP,
 		})
 	}
 
@@ -158,8 +151,8 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 	if err := config.ValidateModeBackendCompatibility(req.OperatingMode, s.config.Backends); err != nil {
 		if !req.Force {
 			s.writeJSON(w, http.StatusConflict, map[string]interface{}{
-				"error":   err.Error(),
-				"message": "Use force=true to deactivate incompatible backends",
+				"error":       err.Error(),
+				"message":     "Use force=true to deactivate incompatible backends",
 				"currentMode": s.config.Balancing.OperatingMode,
 			})
 			return

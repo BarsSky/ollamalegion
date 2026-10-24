@@ -19,9 +19,9 @@ import (
 
 // GPUManager управляет multi-GPU распределением
 type GPUManager struct {
-	mu         sync.RWMutex
-	devices    []bridge.GPUDevice
-	strategy   string // "vram-ratio", "manual", "round-robin"
+	mu       sync.RWMutex
+	devices  []bridge.GPUDevice
+	strategy string // "vram-ratio", "manual", "round-robin"
 
 	// Отслеживание загрузки GPU
 	gpuUsage map[int]uint64 // gpuIndex → estimatedUsedMB (включая загруженные модели)
@@ -85,10 +85,10 @@ func (m *GPUManager) GetDevices() []bridge.GPUDevice {
 
 // TensorSplit представляет рассчитанные пропорции для multi-GPU
 type TensorSplit struct {
-	Ratios    []float32 // пропорции для каждого GPU (сумма = 1.0)
-	MainGPU   int       // индекс главного GPU
-	GPUCount  int       // количество используемых GPU
-	NGPULayers int      // количество слоёв на GPU
+	Ratios     []float32 // пропорции для каждого GPU (сумма = 1.0)
+	MainGPU    int       // индекс главного GPU
+	GPUCount   int       // количество используемых GPU
+	NGPULayers int       // количество слоёв на GPU
 }
 
 // CalculateTensorSplit рассчитывает tensor split пропорции на основе стратегии
@@ -99,9 +99,9 @@ func (m *GPUManager) CalculateTensorSplit(totalVRAMEstimateMB uint64) TensorSpli
 	deviceCount := len(m.devices)
 	if deviceCount == 0 {
 		return TensorSplit{
-			Ratios:      []float32{1.0},
-			MainGPU:     0,
-			GPUCount:    1,
+			Ratios:     []float32{1.0},
+			MainGPU:    0,
+			GPUCount:   1,
 			NGPULayers: -1, // все на CPU (нет GPU)
 		}
 	}
@@ -124,8 +124,8 @@ func (m *GPUManager) calculateVRAMRatio(totalVRAMEstimateMB uint64) TensorSplit 
 
 	// Сортируем GPU по свободной VRAM (с учётом уже занятой)
 	type gpuInfo struct {
-		index   int
-		freeMB  uint64
+		index  int
+		freeMB uint64
 	}
 	gpus := make([]gpuInfo, 0, len(m.devices))
 	totalFree := uint64(0)
@@ -148,9 +148,9 @@ func (m *GPUManager) calculateVRAMRatio(totalVRAMEstimateMB uint64) TensorSplit 
 			ratios[i] = float32(ratio)
 		}
 		return TensorSplit{
-			Ratios:      ratios,
-			MainGPU:     m.devices[0].Index,
-			GPUCount:    len(m.devices),
+			Ratios:     ratios,
+			MainGPU:    m.devices[0].Index,
+			GPUCount:   len(m.devices),
 			NGPULayers: -1,
 		}
 	}
@@ -187,9 +187,85 @@ func (m *GPUManager) calculateVRAMRatio(totalVRAMEstimateMB uint64) TensorSplit 
 		"mainGPU", gpus[0].index)
 
 	return TensorSplit{
-		Ratios:      ratios,
-		MainGPU:     gpus[0].index,
-		GPUCount:    len(m.devices),
+		Ratios:     ratios,
+		MainGPU:    gpus[0].index,
+		GPUCount:   len(m.devices),
+		NGPULayers: -1,
+	}
+}
+
+// CalculateTensorSplitWithRPC — раскладка с учётом удалённых RPC-устройств.
+//
+// Порядок элементов ОБЯЗАН совпадать с порядком, в котором мост отдаёт устройства
+// в llama_model_params.devices: локальные карты первыми, затем удалённые
+// (c/bridge/bridge.c: bridge_collect_device_list). Поэтому mainGPU остаётся 0 —
+// мастер не должен оказаться на чужой машине, а проксировать его активации было
+// бы и медленнее, и хрупче.
+//
+// remote — удалённые устройства в порядке моста; локальные берутся из
+// GPUManager (их порядок — индекс CUDA, он же порядок моста).
+func (m *GPUManager) CalculateTensorSplitWithRPC(remote []bridge.DeviceInfo) TensorSplit {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(remote) == 0 {
+		return m.calculateVRAMRatio(0)
+	}
+
+	type devInfo struct {
+		freeMB uint64
+	}
+	devs := make([]devInfo, 0, len(m.devices)+len(remote))
+	for _, dev := range m.devices {
+		used := m.gpuUsage[dev.Index]
+		free := uint64(0)
+		if dev.VRAMTotalMB > used {
+			free = dev.VRAMTotalMB - used
+		}
+		devs = append(devs, devInfo{freeMB: free})
+	}
+	for _, dev := range remote {
+		devs = append(devs, devInfo{freeMB: dev.MemoryFree / (1024 * 1024)})
+	}
+
+	var totalFree uint64
+	for _, d := range devs {
+		totalFree += d.freeMB
+	}
+	ratios := make([]float32, len(devs))
+	if totalFree == 0 {
+		for i := range ratios {
+			ratios[i] = 1.0 / float32(len(devs))
+		}
+	} else {
+		sum := float32(0)
+		for i, d := range devs {
+			r := float32(float64(d.freeMB) / float64(totalFree))
+			if r < 0.05 {
+				r = 0.05 // минимум 5%: узел не должен выпасть из раскладки
+			}
+			ratios[i] = r
+			sum += r
+		}
+		for i := range ratios {
+			ratios[i] /= sum
+		}
+	}
+
+	// master всегда первое устройство списка = локальная карта (или, если
+	// локальных нет, — удалённый узел, иначе llama.cpp не создаст контекст).
+	mainGPU := 0
+	logger.Get().Infow("tensor split calculated (local + RPC)",
+		"localGPUs", len(m.devices),
+		"rpcGPUs", len(remote),
+		"ratios", ratios,
+		"totalFreeMB", totalFree,
+		"mainGPU", mainGPU)
+
+	return TensorSplit{
+		Ratios:     ratios,
+		MainGPU:    mainGPU,
+		GPUCount:   len(devs),
 		NGPULayers: -1,
 	}
 }
@@ -208,9 +284,9 @@ func (m *GPUManager) calculateManual() TensorSplit {
 	}
 
 	return TensorSplit{
-		Ratios:      ratios,
-		MainGPU:     0,
-		GPUCount:    n,
+		Ratios:     ratios,
+		MainGPU:    0,
+		GPUCount:   n,
 		NGPULayers: -1,
 	}
 }
@@ -241,9 +317,9 @@ func (m *GPUManager) calculateRoundRobin() TensorSplit {
 	}
 
 	return TensorSplit{
-		Ratios:      ratios,
-		MainGPU:     mainIdx,
-		GPUCount:    n,
+		Ratios:     ratios,
+		MainGPU:    mainIdx,
+		GPUCount:   n,
 		NGPULayers: -1,
 	}
 }
@@ -379,10 +455,10 @@ func (m *GPUManager) GetVRAMSummary() map[string]interface{} {
 		used += usage
 
 		devices = append(devices, map[string]interface{}{
-			"index":      dev.Index,
-			"name":       dev.Name,
+			"index":       dev.Index,
+			"name":        dev.Name,
 			"vramTotalMB": dev.VRAMTotalMB,
-			"vramUsedMB": usage,
+			"vramUsedMB":  usage,
 			"vramFreeMB": func() uint64 {
 				if dev.VRAMTotalMB > usage {
 					return dev.VRAMTotalMB - usage
@@ -393,12 +469,12 @@ func (m *GPUManager) GetVRAMSummary() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"gpuCount":  len(m.devices),
+		"gpuCount":    len(m.devices),
 		"vramTotalMB": total,
 		"vramUsedMB":  used,
 		"vramFreeMB":  total - used,
-		"devices":   devices,
-		"strategy":  m.strategy,
+		"devices":     devices,
+		"strategy":    m.strategy,
 	}
 }
 

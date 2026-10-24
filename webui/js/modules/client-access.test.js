@@ -249,7 +249,9 @@ const OLLAMA_BACKEND = { id: 'ollama-1', host: 'legion.host', ollamaPort: 11434 
         try {
             const h = CA.render(CPP_BACKEND);
             assert.ok(h.indexOf('data-client-key-value') === -1, 'рисуется кнопка показа при отсутствии ключа');
-            assert.ok(h.indexOf('Ключ не задан') !== -1, 'нет пояснения про отсутствующий ключ');
+            // R222: токен больше не вшивается в страницу — блок обязан сказать это,
+            // а не «ключ не задан в конфиге» (конфиг тут ни при чём).
+            assert.ok(h.indexOf('Токен не отдаётся в страницу') !== -1, 'нет пояснения, что токен больше не отдаётся в страницу');
         } finally {
             window.WEBUI_CONFIG.API_TOKEN = saved;
         }

@@ -60,6 +60,19 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		//
 		// <= 0 = «не задано» → сохраняем прежнее значение записи.
 		ImagePort int `json:"imagePort"`
+		// R101 (2026-10-11): версия сборки llama.cpp от узла.
+		//
+		// НАХОДКА ПРИЁМКИ (находка 6): поле принимал только PUT /api/v1/backends
+		// (Go-сторона cppworker), а в бандл-стенде регистрацию делает встроенный
+		// агент — и до этой правки его регистрация поле просто не читала. Следствие
+		// на живом стенде: buildInfo у бэкендов всегда пустой, а валидатор
+		// композиции честно предупреждает version_unknown («совместимость
+		// протокола RPC не подтверждена»), хотя узлы версию знают и сообщают.
+		//
+		// Пустая строка = «не сообщил» → сохраняем прежнее значение записи
+		// (buildInfoOrKeepR101), иначе повторная регистрация старым агентом
+		// стирала бы уже известную версию.
+		BuildInfo string `json:"buildInfo"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -288,10 +301,17 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			RuntimeMaxConcurrentRequests: existing.RuntimeMaxConcurrentRequests,
 			RuntimeCapacityFromNode:      existing.RuntimeCapacityFromNode,
 			RuntimeRequestTimeout:        existing.RuntimeRequestTimeout,
-			CppWorkerApiToken:            cppToken,
-			Engine:                       existing.Engine,
-			ApiStyle:                     existing.ApiStyle,
-			GPUMode:                      existing.GPUMode,
+			// R118 (2026-10-14): роль бэкенда в раскладке слоёв (главный/донор/
+			// самодостаточный) — операторское решение, агент о ней не знает.
+			// Берём из записи, а если её там нет (запись пересобрана после
+			// рестарта балансера) — из persistent-override: без этого главный
+			// оставался без доноров (rpcEnabled=false), проверено живьём.
+			Role:              s.roleForBackend(req.AgentID, existing.Role),
+			CppWorkerApiToken: cppToken,
+			BuildInfo:         buildInfoOrKeepR101(req.BuildInfo, existing.BuildInfo),
+			Engine:            existing.Engine,
+			ApiStyle:          existing.ApiStyle,
+			GPUMode:           existing.GPUMode,
 			// R-Image (2026-10-07): агент, зарегистрировавшийся под ID уже
 			// существующего бэкенда, ОБЯЗАН включать признак HasAgent.
 			//
@@ -329,6 +349,24 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			NodeAddr: existing.NodeAddr,
 		}
 		s.proxy.UpdateBackend(req.AgentID, updated)
+
+		// R121 (2026-10-15): заявку узла помечаем как «от ноды».
+		//
+		// Раньше она оседала в СТАТИЧЕСКОМ MaxConcurrentReqs (см. maxReqs выше), а
+		// признак владельца не выставлялся. Живой замер на стенде: сразу после
+		// рестарта cppworker `/api/v1/backends` отдавал `effective=1 source=static`,
+		// а после рестарта БАЛАНСЕРА — `effective=2 source=static`, потому что
+		// MaxConcurrentReqs читается из config.json при каждом старте, а агент
+		// заново не регистрируется (он регистрируется только при СВОЁМ старте).
+		// Следствие: admission-очередь пускала два запроса на узел, который
+		// сериализует llama_decode, и второй клиент ждал МОЛЧА внутри cppworker.
+		//
+		// AdoptCapacityFromNode пишет заявку в собственное поле
+		// NodeClaimedCapacity (переживает перезапуск) и не перетирает
+		// операторский троттлинг.
+		if req.MaxConcurrentRequests > 0 {
+			s.proxy.AdoptCapacityFromNode(req.AgentID, req.MaxConcurrentRequests)
+		}
 
 		// R-MultiHost (2026-10-07): запоминаем узел, за которым закреплена
 		// запись (см. api/registration_guard.go).
@@ -383,9 +421,17 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		// авторизоваться на его защищённых эндпоинтах (см. комментарий к полю
 		// в структуре запроса выше).
 		CppWorkerApiToken: req.CppWorkerApiToken,
+		BuildInfo:         req.BuildInfo,
 		Labels:            req.Labels,
 		Status:            types.StatusStarting,
 		Type:              backendType,
+		// R118 (2026-10-14): роль бэкенда в раскладке слоёв — операторское
+		// решение, оно живёт в persistent-override (backend-roles.json).
+		// После перезапуска балансера записей нет вовсе (состояние тоже не
+		// сохраняется — config.json readonly), поэтому роль подставляем и здесь,
+		// при СОЗДАНИИ записи, а не только в ветке «уже существует». Без этого
+		// главный оставался без доноров (rpcEnabled=false) — проверено живьём.
+		Role: s.roleForBackend(req.AgentID, ""),
 	}
 
 	// Добавление бэкенда в прокси
@@ -524,8 +570,17 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 		Weight                int `json:"weight"`
 		MaxConcurrentRequests int `json:"maxConcurrentRequests"`
 		MaxModels             int `json:"maxModels"`
+		// R121 (2026-10-15): собственная заявка узла о вместимости (см. подробный
+		// комментарий в agentBackendHeartbeatHandler: отдельное поле существует
+		// именно потому, что maxConcurrentRequests — «эхо» ответа балансера).
+		NodeMaxConcurrentRequests int `json:"nodeMaxConcurrentRequests"`
 	}
 	_ = json.Unmarshal(body, &hbPayload)
+
+	// R121: самолечение вместимости после перезапуска балансера — без рестарта агента.
+	if hbPayload.NodeMaxConcurrentRequests > 0 {
+		s.proxy.AdoptCapacityFromNode(agentID, hbPayload.NodeMaxConcurrentRequests)
+	}
 
 	// R-MultiHost (2026-10-07): heartbeat тоже принимается только от узла-владельца.
 	// Иначе чужой агент с тем же agentID продлевает LastAgentContact записи, и
@@ -1014,6 +1069,15 @@ func (s *Server) agentBackendHeartbeatHandler(w http.ResponseWriter, r *http.Req
 		MaxModels             int    `json:"maxModels"`
 		Status                string `json:"status"`
 		BackendType           string `json:"backendType"`
+		// R121 (2026-10-15): СОБСТВЕННАЯ заявка узла о вместимости, отдельным полем.
+		//
+		// Почему не maxConcurrentRequests: в этом поле агент возвращает то, что
+		// балансер САМ прислал ему в ответе на heartbeat («эхо», см. R71). Принимать
+		// его за заявку узла — значит вернуть петлю, из-за которой узел с n_parallel=1
+		// жил с чужим лимитом. Здесь же — значение, посчитанное самим агентом
+		// (операторский env или опрос cppworker), и оно позволяет восстановить
+		// вместимость без перезапуска агента.
+		NodeMaxConcurrentRequests int `json:"nodeMaxConcurrentRequests"`
 		// Round 14 (2026-07-10): agent шлёт свой agentPort чтобы cppworker-бэкенд
 		// (который не знал про agent при создании) получил правильный port.
 		// Раньше AttachAgentToBackend использовал backend.AgentPort=0, что было
@@ -1021,6 +1085,14 @@ func (s *Server) agentBackendHeartbeatHandler(w http.ResponseWriter, r *http.Req
 		AgentPort int `json:"agentPort"`
 	}
 	_ = json.Unmarshal(body, &hbPayload)
+
+	// R121: самолечение записи о вместимости. После перезапуска балансера значение
+	// откатывается к статике конфига, а агент об этом не узнаёт и заново не
+	// регистрируется — сутки напролёт запись живёт с чужим лимитом. Заявка в
+	// каждом heartbeat закрывает это без рестарта воркера.
+	if hbPayload.NodeMaxConcurrentRequests > 0 {
+		s.proxy.AdoptCapacityFromNode(backendID, hbPayload.NodeMaxConcurrentRequests)
+	}
 
 	// R81: heartbeat агента НЕ трогает health-статус (см. подробный комментарий в
 	// agentHeartbeatHandler). Раньше безусловный UpdateBackendStatus(..., Healthy)

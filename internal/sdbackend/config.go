@@ -118,7 +118,7 @@ type Config struct {
 
 	// BaseURL — базовый http-URL воркера «как его видят клиенты»; нужен для
 	// response_format:"url" (клиент получает абсолютную ссылку на PNG).
-	// Пример: http://192.168.1.10:18093
+	// Пример: http://192.0.2.110:18093
 	BaseURL string `json:"baseUrl,omitempty"`
 
 	// ImageModelsDir — куда складывать PNG/JPEG/WebP для response_format:"url".

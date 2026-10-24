@@ -533,15 +533,23 @@ func (s *Server) executeReloadOnBackend(backendID, modelName string, req *cluste
 	}
 
 	// ============================================================
-	// Bug #8: auto-unload чужой модели при load (балансировщик не блокирует выбор другой модели)
+	// R119 (2026-10-15): auto-unload чужой модели — ТОЛЬКО по факту нехватки памяти
 	// ============================================================
 	//
-	// Проблема: когда через WebUI выбирают model B для загрузки, а на этом же бэкенде
-	// уже загружена model A (другая), балансировщик шлёт cppworker'у LoadModel с model B.
-	// cppworker пытается загрузить B, но model A уже заняла VRAM → OOM или падение.
+	// БЫЛО (Bug #8): перед ЛЮБОЙ загрузкой безусловно выгружалась чужая модель с
+	// того же бэкенда. Мотив — страх OOM («cppworker пытается загрузить B, но
+	// model A уже заняла VRAM»), но правило было грубее проблемы: пока на бэкенде
+	// лежит модель, балансер физически не мог поднять вторую, даже если обе
+	// влезают. Живая жалоба оператора: «вторая модель не грузится, первая пропала».
 	//
-	// Решение: перед operation="load" проверяем getLoadedModelOnBackend(). Если на бэкенде
-	// загружена ДРУГАЯ модель (не запрошенная) — сначала делаем unload для неё.
+	// ТЕПЕРЬ: сначала пробуем загрузить как есть (cppworker сам считает memfit и
+	// при нехватке отвечает понятной ошибкой), и только если попытка упала по
+	// памяти — выгружаем чужую модель и повторяем один раз. Если чужую модель
+	// нельзя выгрузить (занята активными запросами), честно говорим об этом.
+	// Правило живёт в loadWithEvictionOnMemoryFailure (cluster_load_eviction_r119.go)
+	// и покрыто юнит-тестами с фейковым раннером.
+	var loadedOther string
+	otherLoaded := false
 	if req.Operation == "load" {
 		// Если модель уже загружена на этом бэкенде — идемпотентный skip.
 		if s.isModelLoaded(backendID, modelName) {
@@ -550,39 +558,21 @@ func (s *Server) executeReloadOnBackend(backendID, modelName string, req *cluste
 			result.HTTPStatus = http.StatusOK
 			return result
 		}
-
-		// Проверяем, не загружена ли ДРУГАЯ модель на этом же бэкенде.
-		loadedModel, loaded := s.getLoadedModelOnBackend(backendID)
-		if loaded && loadedModel != modelName {
-			logger.Get().Infow("cluster reload: auto-unloading different model before load",
-				"backend_id", backendID,
-				"loaded_model", loadedModel,
-				"requested_model", modelName)
-			unloadOp := balancer.ModelOpRequest{
-				Operation: "unload",
-				ModelName: loadedModel,
-			}
-			unloadResult := mm.ExecuteOperation(backendID, unloadOp)
-			if !unloadResult.Success {
-				// unload чужой модели не удался — логируем, но не блокируем load.
-				// Балансировщик всё равно попытается загрузить запрошенную модель.
-				// Если VRAM не хватит — cppworker вернёт понятную ошибку.
-				logger.Get().Warnw("cluster reload: auto-unload of different model failed, "+
-					"continuing with load anyway",
-					"backend_id", backendID,
-					"loaded_model", loadedModel,
-					"error", unloadResult.Error)
-			} else {
-				logger.Get().Infow("cluster reload: auto-unload succeeded",
-					"backend_id", backendID,
-					"unloaded_model", loadedModel)
-			}
+		loadedOther, otherLoaded = s.getLoadedModelOnBackend(backendID)
+		if loadedOther == modelName {
+			otherLoaded = false
 		}
 	}
 
 	opReq := req.toModelOpRequest(modelName, req.Operation)
 
-	opResult := mm.ExecuteOperation(backendID, opReq)
+	var opResult *balancer.ModelOpResult
+	var evictionNote string
+	if otherLoaded {
+		opResult, evictionNote = loadWithEvictionOnMemoryFailure(mm, backendID, modelName, loadedOther, opReq)
+	} else {
+		opResult = mm.ExecuteOperation(backendID, opReq)
+	}
 
 	result.HTTPStatus = http.StatusOK
 	if !opResult.Success {
@@ -596,11 +586,17 @@ func (s *Server) executeReloadOnBackend(backendID, modelName string, req *cluste
 		// повтором с force=true. WebUI по этому полю показывает подтверждение.
 		result.Busy = opResult.Busy
 		result.RetryWithForce = opResult.RetryWithForce
+		if evictionNote != "" {
+			result.Message = strings.TrimSpace(result.Message + " (" + evictionNote + ")")
+		}
 		return result
 	}
 
 	result.Status = "ok"
 	result.Message = opResult.Message
+	if evictionNote != "" {
+		result.Message = strings.TrimSpace(result.Message + " (" + evictionNote + ")")
+	}
 	return result
 }
 

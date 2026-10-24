@@ -149,8 +149,8 @@ func (f *failingStore) LoadLlamaCpp() (*types.LlamaCppConfig, bool, error) {
 	return nil, false, errors.New("disk i/o error")
 }
 func (f *failingStore) SaveLlamaCpp(ll *types.LlamaCppConfig) error { return nil }
-func (f *failingStore) ClearLlamaCpp() error                          { return nil }
-func (f *failingStore) HasLlamaCppOverride() bool                    { return false }
+func (f *failingStore) ClearLlamaCpp() error                        { return nil }
+func (f *failingStore) HasLlamaCppOverride() bool                   { return false }
 func (f *failingStore) ApplyLlamaCppToConfig(*types.LoadBalancerConfig) error {
 	return nil
 }

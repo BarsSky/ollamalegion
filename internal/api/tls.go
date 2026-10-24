@@ -189,12 +189,12 @@ func HTTPSRedirectMiddleware(next http.Handler) http.Handler {
 		if colonIndex := findColon(host); colonIndex != -1 {
 			host = host[:colonIndex]
 		}
-		
+
 		url := "https://" + host + r.URL.Path
 		if r.URL.RawQuery != "" {
 			url += "?" + r.URL.RawQuery
 		}
-		
+
 		http.Redirect(w, r, url, http.StatusMovedPermanently)
 	})
 }

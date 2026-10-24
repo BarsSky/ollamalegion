@@ -48,8 +48,8 @@ func TestIsExecutablePlacementStrategy_R72(t *testing.T) {
 		PlacementPool:       true,
 		PlacementReplicated: true,
 		PlacementAuto:       true,
-		PlacementSharded:    false, // этап P2 (нужен транспорт раскладки)
-		PlacementRPC:        false, // этап P2
+		PlacementSharded:    true,  // R92 (S3): исполнитель — логический бэкенд (backendGroups)
+		PlacementRPC:        false, // legacy-путь координатора-заглушки (§9 → sharded)
 	}
 	for st, want := range executable {
 		if got := IsExecutablePlacementStrategy(st); got != want {
@@ -126,7 +126,7 @@ func TestPlacementSettingsValidate_R72(t *testing.T) {
 			{Model: "", Strategy: "single"},                     // пустое имя
 			{Model: "a", Strategy: "spread"},                    // неизвестная стратегия
 			{Model: "b", Strategy: "pool"},                      // pool без списка
-			{Model: "c", Strategy: "sharded"},                   // не исполняется (P2)
+			{Model: "c", Strategy: "rpc"},                       // legacy-путь координатора (не исполняется)
 			{Model: "d", Strategy: "single", Selection: "best"}, // неизвестный selection
 			{Model: "e", Strategy: "auto", Auto: &PlacementAutoRule{Prefer: []string{"nope"}}},
 		},
@@ -140,7 +140,9 @@ func TestPlacementSettingsValidate_R72(t *testing.T) {
 	if len(errs) < 9 {
 		t.Errorf("ожидалось много ошибок валидации, получено %d: %v", len(errs), errs)
 	}
-	for _, want := range []string{"model", "spread", "pool", "P2", "selection", "prefer", "match", "sizeGB"} {
+	// R92 (S3): раньше здесь ждали "P2" (sharded был неисполним). Теперь
+	// неисполним только rpc, и его сообщение объясняет переход на sharded.
+	for _, want := range []string{"model", "spread", "pool", "sharded", "selection", "prefer", "match", "sizeGB"} {
 		found := false
 		for _, e := range errs {
 			if containsFold(e, want) {

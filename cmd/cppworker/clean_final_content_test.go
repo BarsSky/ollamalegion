@@ -128,6 +128,36 @@ func BenchmarkCleanFinalContent_Realistic(b *testing.B) {
 	}
 }
 
+// TestR108_WhitespaceBetweenTextAndServiceToken — R108 (2026-10-13): служебный
+// токен, за которым остался пробел или перевод строки, обязан срезаться так же.
+//
+// Живой дефект: gemma-4 ответила «ок<end_of_turn> » (с пробелом после токена) —
+// HasSuffix не срабатывал ни на «<end_of_turn>», ни на «<end_of_turn>\n», и
+// клиент увидел служебный токен прямо в тексте ответа.
+func TestR108_WhitespaceBetweenTextAndServiceToken(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"пробел после токена", "ок<end_of_turn> ", "ок"},
+		{"перевод строки после токена", "ок<end_of_turn>\n", "ок"},
+		{"пробел перед токеном", "ок <end_of_turn>", "ок"},
+		{"пустые строки вокруг токена", "ок\n<end_of_turn>\n\n", "ок"},
+		{"табуляция после tool_call", "ок</tool_call> \t", "ок"},
+		{"два токена через пробел", "ок<end_of_turn> <|end|> ", "ок"},
+		{"без токена", "ок", "ок"},
+		{"токен в СЕРЕДИНЕ не трогаем", "до <end_of_turn> после", "до <end_of_turn> после"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cleanFinalContent(tc.in); got != tc.want {
+				t.Errorf("cleanFinalContent(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestTrailingToolTokens_AreTrimmedFromSuffix — все токены из списка должны
 // успешно удаляться с суффикса (это unit test для самого списка).
 func TestTrailingToolTokens_AreTrimmedFromSuffix(t *testing.T) {

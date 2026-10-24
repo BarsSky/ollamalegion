@@ -108,8 +108,59 @@ func getReasoningArchList() []string {
 	return out
 }
 
+// ============================================================
+// Политика отдачи reasoning: разбор — по формату ответа, НЕ по имени модели
+// ============================================================
+//
+// R108 (2026-10-13). Живой дефект (Cline → балансер :18080 → cppworker,
+// Qwen3.8-27B): ответ приходил «перемешанным» с маркерами ` thinking…` — текст
+// размышлений уезжал в message.content / delta.content и клиент показывал
+// служебные теги как обычный текст ответа.
+//
+// Причина: пути ОТВЕТА решали «разделять ли (reasoning, content)» по имени
+// модели — IsReasoningModel(name) (whitelist префиксов) или
+// IsReasoningEnabledForRequest(name) (whitelist + per-model галочка). Модель,
+// которой нет в списке, отдавала ответ целиком в content.
+//
+// Правило (одинаково для всех клиентов и обеих поверхностей — Ollama и OpenAI):
+//  1. Разделение ответа — свойство ФОРМАТА, а не имени модели. Разбор всегда
+//     делают SplitReasoningContent / ReasoningStreamState по тегам формата.
+//     Нет тегов — весь текст остаётся content'ом (поведение не меняется).
+//  2. Имя модели и per-model флаг влияют ТОЛЬКО на ЗАПРОС: просить ли у модели
+//     размышления (native enable_thinking / soft prompt — см.
+//     buildChatPromptWithOptions) и какой n_predict давать по умолчанию
+//     (ResolveNPredict).
+//  3. Явный think=false от клиента — единственное исключение: размышления не
+//     отдаются вообще (ни в content, ни в reasoning) — ровно как в non-stream
+//     /api/chat (handlers_chat.go, handleChat).
+//
+// Поэтому IsReasoningModel / IsReasoningEnabledForRequest /
+// PerModelReasoningEnabled НЕ гейтят emit reasoning'а — они остаются только для
+// промпта и дефолтов. Автодетект (backend.AutoEnableReasoning) на разбор тоже
+// не влияет: он лишь сохраняет per-model состояние, чтобы у thinking-модели
+// были подходящие дефолты (n_predict) на следующих запросах.
+//
+// ReasoningWantedByClient — правило 3 политики (см. блок «Политика отдачи
+// reasoning» выше): отдавать ли размышления в ответе.
+//
+// nil (клиент не задавал think / поле отсутствует) → true: размышления отдаём
+// отдельным полем, если модель их эмитит.
+// Явный think=false → false: размышления не отдаются НИ в content, ни отдельным
+// полем — ровно как в non-stream /api/chat (см. handleChat).
+//
+// Используется всеми потоковыми путями ответа, чтобы семантика think=false была
+// одинаковой у стрима и non-stream.
+func ReasoningWantedByClient(thinkOverride *bool) bool {
+	if thinkOverride == nil {
+		return true
+	}
+	return *thinkOverride
+}
+
 // IsReasoningModel возвращает true, если имя модели содержит одну из
 // reasoning-архитектур (см. ReasoningArchPrefixes). Регистр игнорируется.
+//
+// ВАЖНО: это политика ПРОМПТА/дефолтов (см. блок выше), не гейт разбора ответа.
 //
 // Примеры:
 //   - "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf" → true
@@ -132,21 +183,21 @@ func IsReasoningModel(modelName string) bool {
 // IsReasoningEnabledForRequest — Round 17 (2026-07-31) — фикс bug
 // plans/bug-2026-07-31-reasoning-not-routed.md.
 //
-// Source of truth для "эта модель в текущем запросе эмитит reasoning → split'ить".
+// R108 (2026-10-13): БОЛЬШЕ НЕ ГЕЙТИТ РАЗБОР ОТВЕТА. Раньше эти проверки решали,
+// вызывать ли SplitReasoningContent/ReasoningStreamState в путях ответа; именно
+// из-за этого модель вне whitelist (например Qwen3.8-27B) отдавала маркеры
+// размышлений прямо в content. Теперь разбор безусловный и определяется тегами
+// формата — см. блок «Политика отдачи reasoning» выше.
+//
+// Отвечает на вопрос «эмитит ли эта модель reasoning вообще» — для промпта
+// (просить ли размышления), дефолтов n_predict и диагностики. Оставлен для
+// обратной совместимости и тестов; НЕ добавляйте его в пути ОТВЕТА (за этим
+// следит TestR108_ResponsePathsDoNotGateReasoningByModelName).
+//
 // Проверяет ОБА источника:
 //  1. IsReasoningModel(name) — hardcoded whitelist префиксов (legacy).
 //  2. per-model EnableReasoning, resolved в modelInstance.reasoningEnabled
 //     при LoadModel (см. internal/cppbackend/backend.go:LoadModelWithOpts).
-//
-// Используется парсерами во всех 4 точках:
-//   - handleV1ChatCompletions (non-stream)
-//   - writeOpenAIChatStream (stream)
-//   - handleV1Completions (non-stream legacy)
-//   - writeOpenAICompletionStream (stream legacy)
-//
-// Раньше: IsReasoningModel(name) — qwen3-instruct (нет в whitelist) с
-// включённым SOFT prompt reasoning → parser не split'ил → OpenWebUI не
-// видел reasoning_content. Теперь: также проверяется inst.reasoningEnabled.
 //
 // Nil-safe: backend может быть nil в тестах (или при ранней инициализации).
 // В этом случае fallback на whitelist (IsReasoningModel) — graceful degradation.
@@ -329,6 +380,99 @@ func openThinkTagLegacy(s string, from int) (int, int, bool) {
 	return pos, end, kind == 1
 }
 
+// PromptOpensReasoning — R216 (2026-10-21): заканчивается ли prompt ВНУТРИ
+// открытого блока размышлений.
+//
+// ЗАЧЕМ. Чат-шаблон Qwen3 при enable_thinking=true дописывает в конец промпта
+// `assistant\n<think>\n` (gemma-4 — `<|channel>thought\n`). Модель продолжает
+// этот блок, поэтому её вывод НАЧИНАЕТСЯ внутри размышлений и может не содержать
+// открывающего маркера вовсе. SplitReasoningContent такой вывод считает видимым
+// ответом: живой стенд (Qwen3.8-27B, max_tokens=16) отдал клиенту
+// `The user is asking me to memorize a code "КРАСНЫЙ-` в message.content без
+// reasoning_content и без закрывающего `</think>` — ровно жалоба оператора
+// «размышления попали в основной блок, тело ответа не пришло».
+func PromptOpensReasoning(prompt string) bool {
+	if prompt == "" {
+		return false
+	}
+	return reasoningBlockOpenAtEnd(prompt)
+}
+
+// reasoningBlockOpenAtEnd — заканчивается ли текст ВНУТРИ открытого блока
+// размышлений: последний открывающий маркер позже последнего закрывающего.
+//
+// R231: вынесено из PromptOpensReasoning, чтобы тем же правилом отвечать на
+// вопрос «поток оборвался ДО закрытия think-блока?» (Snapshot().Unclosed).
+// Прежняя реализация hasOpenThink считала только `<think>`/`<thinking>` и
+// игнорировала gemma-4 `<|channel>thought` — из-за этого незакрытый канал
+// gemma выглядел как «закрытый», и finish_reason оставался stop при пустом
+// content (клиент считал ответ полным).
+func reasoningBlockOpenAtEnd(s string) bool {
+	lastOpenEnd, lastCloseEnd := -1, -1
+	for _, pair := range thinkTagPairs {
+		if pair.open != "" {
+			if i := strings.LastIndex(s, pair.open); i >= 0 {
+				if e := i + len(pair.open); e > lastOpenEnd {
+					lastOpenEnd = e
+				}
+			}
+		}
+		if pair.close == "" {
+			continue
+		}
+		if i := strings.LastIndex(s, pair.close); i >= 0 {
+			if e := i + len(pair.close); e > lastCloseEnd {
+				lastCloseEnd = e
+			}
+		}
+	}
+	return lastOpenEnd > lastCloseEnd
+}
+
+// SplitReasoningContentFromPrompt — R216: разбор вывода с учётом состояния
+// ПРОМПТА. Если prompt закончился внутри размышлений, весь вывод до первого
+// закрывающего маркера — reasoning (даже когда маркера нет вовсе: тогда модель
+// обрезали до `</think>`, и это НЕ видимый ответ).
+//
+// Отличие от SplitReasoningContent: тот применяет правило «закрывающий маркер
+// без открывающего» только когда закрывающий есть. Незакрытый и неоткрытый
+// вывод (обрезанные размышления) он считает content.
+func SplitReasoningContentFromPrompt(prompt, output string) (reasoning, content string, hasReasoning bool) {
+	if output == "" {
+		return "", "", false
+	}
+	if !PromptOpensReasoning(prompt) {
+		return SplitReasoningContent(output)
+	}
+	if pos, tagLen, found := firstOrphanCloseTag(output); found {
+		// R219: в остатке могут быть ЕЩЁ закрывающие маркеры (модель закрыла блок
+		// несколько раз). Клиенту они не нужны: живой ответ с `</think>` в теле
+		// читается как «размышления попали в ответ». Вырезаем служебные маркеры,
+		// текст ответа не трогаем.
+		return output[:pos], stripReasoningMarkers(output[pos+tagLen:]), true
+	}
+	// Маркера закрытия нет: весь вывод — продолжение размышлений.
+	return output, "", strings.TrimSpace(output) != ""
+}
+
+// stripReasoningMarkers удаляет служебные маркеры размышлений из видимого
+// текста (R219). Нужен для implied-open вывода и для «незакрытых» случаев,
+// где после первого закрывающего маркера в хвосте могут остаться другие.
+func stripReasoningMarkers(s string) string {
+	if s == "" {
+		return s
+	}
+	for _, pair := range thinkTagPairs {
+		if pair.open != "" {
+			s = strings.ReplaceAll(s, pair.open, "")
+		}
+		if pair.close != "" {
+			s = strings.ReplaceAll(s, pair.close, "")
+		}
+	}
+	return s
+}
+
 // SplitReasoningContent разделяет строку на (reasoning, content) по think-блокам.
 //
 // Семантика:
@@ -384,7 +528,48 @@ func SplitReasoningContent(s string) (reasoning, content string, hasReasoning bo
 		foundAny = true
 		pos = closePos
 	}
-	return sbReasoning.String(), sbContent.String(), foundAny
+
+	// R114b (2026-10-13): ЗАКРЫВАЮЩИЙ маркер БЕЗ открывающего.
+	//
+	// Живая жалоба оператора: «в ответе перемешка с ответом и маркером </think>».
+	// Причина — prefill-канал: чат-шаблон модели открывает канал размышлений в
+	// ПРОМПТЕ (`<|channel>thought\n` уже в промпте, см. комментарий к thinkTagPairs),
+	// поэтому вывод модели начинается ВНУТРИ размышлений и содержит только
+	// ЗАКРЫВАЮЩИЙ маркер. Парный разбор открывающий тег не находит, весь текст
+	// (размышления!) уходил в content, а сам маркер оставался в нём же.
+	//
+	// Правило: если открывающих тегов в выводе НЕТ ВООБЩЕ, а закрывающий есть —
+	// всё ДО него размышления, всё ПОСЛЕ — ответ. Если же хотя бы одна пара
+	// нашлась (foundAny), правило не применяется: остаток после пары — обычный
+	// content, и резать его по одинокому маркеру было бы потерей ответа.
+	if !foundAny {
+		content := sbContent.String()
+		if closePos, closeTagLen, found := firstOrphanCloseTag(content); found && closePos > 0 {
+			// R231: после первого закрывающего маркера в хвосте могут быть ЕЩЁ
+			// маркеры (модель закрыла блок несколько раз) — вырезаем их, текст
+			// ответа не трогаем (та же политика, что в R219).
+			return content[:closePos], stripReasoningMarkers(content[closePos+closeTagLen:]), true
+		}
+	}
+	contentOut := stripReasoningMarkers(sbContent.String())
+	return sbReasoning.String(), contentOut, foundAny
+}
+
+// firstOrphanCloseTag — первый закрывающий маркер размышлений в тексте.
+// Возвращает (позицию, длину маркера, найден).
+func firstOrphanCloseTag(s string) (int, int, bool) {
+	bestPos, bestLen := -1, 0
+	for _, p := range thinkTagPairs {
+		if p.close == "" {
+			continue
+		}
+		if i := strings.Index(s, p.close); i >= 0 {
+			if bestPos < 0 || i < bestPos {
+				bestPos, bestLen = i, len(p.close)
+			}
+		}
+	}
+	return bestPos, bestLen, bestPos >= 0
 }
 
 // ContentFromUnclosedReasoning — R91 (2026-10-08): ответ, целиком ушедший в
@@ -444,11 +629,40 @@ type ReasoningStreamState struct {
 	full         strings.Builder // весь полученный текст
 	reasoningAll string          // reasoning-часть последнего split
 	contentAll   string          // content-часть последнего split
+	// impliedOpen — R216: prompt закончился внутри размышлений (шаблон дописал
+	// `<think>`/`<|channel>thought`), значит вывод начинается ВНУТРИ блока и
+	// открывающего маркера в потоке может не быть. Раскладываем по этому правилу
+	// (см. SplitReasoningContentFromPrompt).
+	impliedOpen bool
 }
 
 // NewReasoningStreamState создаёт новый incremental-парсер.
 func NewReasoningStreamState() *ReasoningStreamState {
 	return &ReasoningStreamState{}
+}
+
+// SetImpliedOpen — R216: сказать парсеру, что вывод начинается внутри блока
+// размышлений (prompt заканчивается открытым `<think>`/<|channel>thought).
+func (st *ReasoningStreamState) SetImpliedOpen(on bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.impliedOpen = on
+}
+
+// split — общий разбор с учётом impliedOpen.
+func (st *ReasoningStreamState) split(s string) (reasoning, content string, has bool) {
+	if st.impliedOpen {
+		if pos, tagLen, found := firstOrphanCloseTag(s); found {
+			// R231: дубли закрывающих маркеров в хвосте вырезаем — иначе они
+			// попадают в content-дельту (живой Cline: `answer</think>`).
+			return s[:pos], stripReasoningMarkers(s[pos+tagLen:]), true
+		}
+		if strings.TrimSpace(s) == "" {
+			return "", "", false
+		}
+		return s, "", true
+	}
+	return SplitReasoningContent(s)
 }
 
 // Feed принимает очередной chunk от C-bridge и возвращает
@@ -468,7 +682,7 @@ func (st *ReasoningStreamState) Feed(chunk string) (reasoningDelta, contentDelta
 	full := st.full.String()
 	holdBack := trailingTagPrefixLen(full)
 	safe := full[:len(full)-holdBack]
-	reasoning, content, _ := SplitReasoningContent(safe)
+	reasoning, content, _ := st.split(safe)
 	prevRLen := len(st.reasoningAll)
 	prevCLen := len(st.contentAll)
 	// Безопасное вычисление дельты: reasoning/content могут стать короче
@@ -560,7 +774,34 @@ func trailingTagPrefixLen(s string) int {
 // немедленно. Теперь Feed удерживает потенциальный неполный маркер, поэтому
 // каждый потоковый путь ОБЯЗАН вызвать Finalize после EOS и эмитить
 // возвращённые дельты — иначе последние символы ответа потеряются.
+//
+// R231: оставлен для НЕ-потоковых путей (R91-фолбэк «незакрытый reasoning →
+// content» там осознан: клиент, показывающий только content, иначе увидит
+// пустой ответ). В стриме использовать FinalizeForStream.
 func (st *ReasoningStreamState) Finalize() (reasoningDelta, contentDelta string) {
+	return st.finalize(true)
+}
+
+// FinalizeForStream — R231 (2026-10-24): завершение ПОТОКА без R91-фолбэка.
+//
+// ЖИВОЙ ДЕФЕКТ (Cline → балансер :18080 → cppworker, gemma-4-E4B, stream=true,
+// max_tokens=120): модель открыла канал размышлений и не успела его закрыть;
+// все ~115 чанков ушли в reasoning_content, а затем Finalize отдал ТОТ ЖЕ текст
+// ещё раз единственным чанком delta.content (433 символа «Thinking Process: …»).
+// Cline склеивает content и видит «ответ», целиком повторяющий размышления.
+// Для агентских клиентов это ещё и ломает контекст сессии.
+//
+// Причина: R91-фолбэк применялся и к стриму, хотя в стриме reasoning уже
+// доставлен отдельным каналом — копия в content не «спасает пустой ответ», а
+// дублирует. В стриме честный ответ: reasoning_content есть, content пуст,
+// finish_reason=length (вызывающий ставит его по Snapshot().Unclosed).
+func (st *ReasoningStreamState) FinalizeForStream() (reasoningDelta, contentDelta string) {
+	return st.finalize(false)
+}
+
+// finalize — общая реализация Finalize/FinalizeForStream.
+// allowUnclosedFallback=true включает R91-фолбэк (не-потоковые пути).
+func (st *ReasoningStreamState) finalize(allowUnclosedFallback bool) (reasoningDelta, contentDelta string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	full := st.full.String()
@@ -568,7 +809,7 @@ func (st *ReasoningStreamState) Finalize() (reasoningDelta, contentDelta string)
 		return "", ""
 	}
 	// Поток закончился: неопределённости больше нет, разбираем весь текст.
-	reasoning, content, _ := SplitReasoningContent(full)
+	reasoning, content, _ := st.split(full)
 	prevRLen := len(st.reasoningAll)
 	prevCLen := len(st.contentAll)
 	if len(reasoning) >= prevRLen {
@@ -580,9 +821,21 @@ func (st *ReasoningStreamState) Finalize() (reasoningDelta, contentDelta string)
 	// R91: поток закончился, а видимого контента не было вовсе — значит модель
 	// ушла в незакрытый reasoning-блок (см. ContentFromUnclosedReasoning).
 	// Отдаём весь reasoning как content, иначе клиент получает пустой ответ.
-	visible, usedFallback := ContentFromUnclosedReasoning(reasoning, content)
-	if usedFallback {
-		contentDelta = visible
+	//
+	// R216 (2026-10-21): НЕ отдаём, если блок размышлений открыт САМИМ ПРОМПТОМ
+	// (impliedOpen). Тогда текст — заведомо размышления, и копирование его в
+	// content даёт ДУБЛЬ: живой стенд отдавал одни и те же 76 символов и в
+	// reasoning_content (19 чанков), и в content (1 чанк) — ровно жалоба
+	// оператора «размышления попали в основной блок». Честный ответ клиенту:
+	// reasoning_content есть, content пуст, finish_reason=length.
+	//
+	// R231: фолбэк вообще не применяется к стриму (allowUnclosedFallback=false) —
+	// дубль в content наблюдался и на модели, которая открыла блок САМА
+	// (impliedOpen=false), см. FinalizeForStream.
+	if allowUnclosedFallback && !st.impliedOpen {
+		if visible, usedFallback := ContentFromUnclosedReasoning(reasoning, content); usedFallback {
+			contentDelta = visible
+		}
 	}
 	st.reasoningAll = reasoning
 	st.contentAll = content
@@ -606,6 +859,13 @@ type ReasoningSnapshot struct {
 func (st *ReasoningStreamState) Snapshot() ReasoningSnapshot {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	full := st.full.String()
+	unclosed := hasOpenThink(full)
+	if !unclosed && st.impliedOpen && !hasReasoningCloseTag(full) {
+		// R231: блок открыт промптом — в выводе открывающего маркера нет,
+		// поэтому «закрыто» только если пришёл закрывающий.
+		unclosed = true
+	}
 	return ReasoningSnapshot{
 		ReasoningChars: len(st.reasoningAll),
 		ContentChars:   len(st.contentAll),
@@ -614,7 +874,7 @@ func (st *ReasoningStreamState) Snapshot() ReasoningSnapshot {
 		ContentHead:    headString(st.contentAll, 256),
 		ReasoningTail:  tailString(st.reasoningAll, 128),
 		ContentTail:    tailString(st.contentAll, 128),
-		Unclosed:       hasOpenThink(st.full.String()),
+		Unclosed:       unclosed,
 	}
 }
 
@@ -637,11 +897,46 @@ func tailString(s string, n int) string {
 }
 
 func hasOpenThink(full string) bool {
-	// Эвристика: считаем `<think>` и `</think>` в full. Если количество
-	// открывающих больше количества закрывающих — есть незакрытый блок.
-	open := strings.Count(full, thinkStart) + strings.Count(full, thinkStart2)
-	close := strings.Count(full, thinkEnd) + strings.Count(full, thinkEnd2)
-	return open > close
+	if full == "" {
+		return false
+	}
+	// R231: классические пары — по КОЛИЧЕСТВУ (устойчиво к вложенности:
+	// `<think>a<think>b</think>` — блок не закрыт, R83-семантика).
+	for _, p := range []struct{ open, close string }{
+		{"<think>", "</think>"},
+		{"<thinking>", "</thinking>"},
+		{"<reasoning>", "</reasoning>"},
+		{"<analysis>", "</analysis>"},
+		{"<|think>", "<think|>"},
+	} {
+		if strings.Count(full, p.open) > strings.Count(full, p.close) {
+			return true
+		}
+	}
+	// gemma-4 каналы — по ПОЗИЦИИ последнего события: подсчёт ломается, потому
+	// что короткий `<|channel>` входит в `<|channel>thought` и даёт лишний open.
+	openIdx := strings.LastIndex(full, "<|channel>")
+	if openIdx < 0 {
+		return false
+	}
+	closeIdx := strings.LastIndex(full, "<channel|>")
+	return closeIdx < 0 || closeIdx < openIdx
+}
+
+// hasReasoningCloseTag — есть ли в тексте ХОТЬ ОДИН закрывающий маркер
+// размышлений (любой пары). Нужен для impliedOpen-случая: блок открыт
+// ПРОМПТОМ, поэтому открывающего маркера в выводе нет, и hasOpenThink сам по
+// себе сказал бы «закрыто» даже когда модель оборвалась внутри размышлений.
+func hasReasoningCloseTag(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, pair := range thinkTagPairs {
+		if pair.close != "" && strings.Contains(s, pair.close) {
+			return true
+		}
+	}
+	return false
 }
 
 // ============================================================

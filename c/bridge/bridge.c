@@ -23,6 +23,20 @@
 #include <math.h>
 #include <stdatomic.h>  // Round 31 #6 (2026-08-09): atomic_int abort_requested
 #include <time.h>  // для time() — time-based RNG seed (для seed=0)
+// R218: сокеты нужны для быстрой TCP-проверки узлов раскладки до llama.cpp
+// (там connect блокирующий, а неудачное подключение раньше GGML_ABORT'ило процесс).
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#else
+#  include <sys/socket.h>
+#  include <sys/select.h>
+#  include <netinet/in.h>
+#  include <netdb.h>
+#  include <unistd.h>
+#  include <fcntl.h>
+#  include <errno.h>
+#endif
 
 // Отключаем буферизацию stdout для Docker-логов — все printf выводятся немедленно.
 // Без этого [bridge] сообщения могут не появляться в `docker compose logs`
@@ -30,6 +44,55 @@
 __attribute__((constructor)) static void disable_stdout_buffering(void) {
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
+}
+
+// ============================================================
+// R118.16 (2026-10-14): перехват лог-строк llama.cpp
+// ============================================================
+
+// Раскладку слоёв по устройствам знает только llama.cpp — он печатает её при
+// загрузке (`load_tensors: layer N assigned to device X`). Здесь строки
+// перехватываются и уходят в Go (см. c/bridge/layers_plan.go), а вывод в stderr
+// сохраняется через колбэк, который стоял до нас.
+static BridgeLogLineFn g_log_line_fn = NULL;
+static ggml_log_callback g_log_prev_cb = NULL;
+static void* g_log_prev_ud = NULL;
+
+// bridge_log_capture — режем текст на строки: llama.cpp зовёт колбэк с куском
+// вывода, внутри которого может быть несколько строк, и без завершающего \n.
+static void bridge_log_capture(enum ggml_log_level level, const char* text, void* user_data) {
+    if (text != NULL && g_log_line_fn != NULL) {
+        const char* p = text;
+        while (*p != '\0') {
+            const char* nl = strchr(p, '\n');
+            size_t len = (nl != NULL) ? (size_t) (nl - p) : strlen(p);
+            if (len > 0) {
+                g_log_line_fn((char*) p, (int) len);
+            }
+            if (nl == NULL) {
+                break;
+            }
+            p = nl + 1;
+        }
+    }
+    if (g_log_prev_cb != NULL) {
+        g_log_prev_cb(level, text, user_data);
+    }
+}
+
+void bridge_install_log_capture(BridgeLogLineFn fn) {
+    if (fn == NULL || g_log_line_fn != NULL) {
+        return;
+    }
+    g_log_line_fn = fn;
+    // llama_log_get отдаёт колбэк ggml-логгера (llama_log_set делегирует ему) —
+    // это и есть печать в stderr по умолчанию.
+    llama_log_get(&g_log_prev_cb, &g_log_prev_ud);
+    // llama_log_set ставит колбэк и llama-, и ggml-логгеру: строки load_tensors
+    // приходят от llama (LLAMA_LOG_DEBUG), сообщения бэкендов — от ggml.
+    // llama.cpp зовёт колбэк на любом уровне, без фильтра, — поэтому DEBUG-строки
+    // раскладки доходят до нас так же, как доходят до stderr контейнера.
+    llama_log_set(bridge_log_capture, NULL);
 }
 
 // ============================================================
@@ -67,6 +130,14 @@ typedef struct {
     // находится в load-фазе, поэтому flag остаётся no-op (idempotent —
     // повторный RequestLoadAbort на loaded model безвреден).
     atomic_int load_abort_requested;
+    // R215 (2026-10-21): прогресс чтения весов (0..100). Пишет progress-callback
+    // llama.cpp из потока загрузки, читает Go-сторона (bridge_get_load_progress).
+    atomic_int load_progress_pct;
+    // R215: последний напечатанный шаг прогресса (кратно 10) - чтобы лог не
+    // заполнялся строкой на каждый тензор.
+    int load_progress_logged;
+    // R215: слот в реестре прогресса (см. bridge_load_progress_cb); -1 = нет.
+    int progress_slot;
     // Round 39 (2026-08-18): embeddings mode for cparams.embeddings toggle.
     //   0 = chat (cparams.embeddings=false, no per-decode override warning)
     //   1 = embedding (cparams.embeddings=true, llama_get_embeddings works)
@@ -966,6 +1037,248 @@ struct ggml_backend_buffer_type * resolve_buft_by_name(const char *name) {
 }
 
 // ============================================================
+// S1 (2026-10-11): RPC-узлы раскладки слоями между машинами
+// ============================================================
+//
+// ЗАЧЕМ. `split_mode=layer` распределяет слои между устройствами, которые
+// llama.cpp видит в МОМЕНТ СОЗДАНИЯ модели. Удалённые GPU появляются в списке
+// устройств только после регистрации rpc-сервера, поэтому регистрация обязана
+// произойти до `llama_model_load_from_file`. Иначе раскладка молча посчитается
+// локально: оператор уверен, что распределил, а вторая машина простаивает —
+// исход хуже честной ошибки, потому что выглядит как успех.
+//
+// ПОЧЕМУ через реестр, а не прямым вызовом `ggml_backend_rpc_add_server`:
+// прямой вызов — это символ, которого НЕТ в сборке llama.cpp без
+// `-DGGML_RPC=ON`, и мост перестал бы линковаться вовсе (в т.ч. в сборке под
+// CPU). Через реестр отсутствие RPC обнаруживается в рантайме и превращается в
+// понятное сообщение, а не в ошибку линковки.
+typedef ggml_backend_reg_t (* bridge_rpc_add_server_fn)(const char * endpoint);
+
+// bridge_collect_device_list — общая часть: зарегистрировать RPC-узлы и собрать
+// массив устройств раскладки (локальные не-CPU первыми, затем удалённые).
+//
+// out_devices  — malloc'ed NULL-terminated массив (как требует
+//                llama_model_params.devices); caller освобождает через free().
+// out_remote   — malloc'ed массив флагов «устройство удалённое», той же длины
+//                (может быть NULL, если вызывающему флаги не нужны).
+
+// R218: быстрый TCP-тест узла раскладки (без отправики данных).
+//
+// Возвращает 1 — порт принимает соединения, 0 — нет/ошибка/таймаут.
+// Нужен ДО ggml_backend_rpc_add_server: connect внутри llama.cpp блокирующий и
+// без таймаута, а на недоступном хосте это десятки секунд ожидания (и GGML_ABORT
+// в llama.cpp, если узел пропал между проверкой и подключением).
+static int bridge_rpc_tcp_probe(const char * endpoint, int timeout_ms) {
+    if (endpoint == NULL || endpoint[0] == '\0') return 0;
+    char host[256];
+    char port[16];
+    const char * colon = strrchr(endpoint, ':');
+    if (colon == NULL || colon == endpoint) return 0;
+    size_t host_len = (size_t)(colon - endpoint);
+    if (host_len >= sizeof(host)) return 0;
+    memcpy(host, endpoint, host_len);
+    host[host_len] = '\0';
+    snprintf(port, sizeof(port), "%s", colon + 1);
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo * res = NULL;
+    if (getaddrinfo(host, port, &hints, &res) != 0 || res == NULL) {
+        return 0;
+    }
+    int ok = 0;
+    for (struct addrinfo * ai = res; ai != NULL && !ok; ai = ai->ai_next) {
+        int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) continue;
+#ifdef _WIN32
+        u_long nonblock = 1;
+        ioctlsocket(fd, FIONBIO, &nonblock);
+#else
+        int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+#endif
+        int rc = connect(fd, ai->ai_addr, (int) ai->ai_addrlen);
+        if (rc == 0) {
+            ok = 1;
+        } else {
+#ifdef _WIN32
+            int err = WSAGetLastError();
+            int in_progress = (err == WSAEWOULDBLOCK);
+#else
+            int err = errno;
+            int in_progress = (err == EINPROGRESS);
+#endif
+            if (in_progress) {
+                fd_set wset;
+                FD_ZERO(&wset);
+                FD_SET(fd, &wset);
+                struct timeval tv;
+                tv.tv_sec = timeout_ms / 1000;
+                tv.tv_usec = (timeout_ms % 1000) * 1000;
+#ifdef _WIN32
+                int sel = select(0, NULL, &wset, NULL, &tv);
+#else
+                int sel = select(fd + 1, NULL, &wset, NULL, &tv);
+#endif
+                if (sel > 0) {
+                    int so_err = 0;
+#ifdef _WIN32
+                    int so_len = (int) sizeof(so_err);
+#else
+                    socklen_t so_len = sizeof(so_err);
+#endif
+                    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *) &so_err, &so_len) == 0 && so_err == 0) {
+                        ok = 1;
+                    }
+                }
+            }
+        }
+#ifdef _WIN32
+        closesocket(fd);
+#else
+        close(fd);
+#endif
+    }
+    freeaddrinfo(res);
+    return ok;
+}
+
+static ggml_backend_dev_t * bridge_collect_device_list(
+    const ModelConfig * config, int * out_len, int ** out_remote
+) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_remote != NULL) *out_remote = NULL;
+    if (config == NULL || config->rpc_endpoints_len <= 0) return NULL;
+
+    ggml_backend_reg_t rpc_reg = ggml_backend_reg_by_name("RPC");
+    if (rpc_reg == NULL) {
+        fprintf(stderr,
+            "[bridge] RPC: запрошено узлов %d, но бэкенд RPC не собран в этой сборке "
+            "llama.cpp (нужен -DGGML_RPC=ON) — раскладка по сети невозможна\n",
+            config->rpc_endpoints_len);
+        return NULL;
+    }
+    bridge_rpc_add_server_fn add_server = (bridge_rpc_add_server_fn)
+        ggml_backend_reg_get_proc_address(rpc_reg, "ggml_backend_rpc_add_server");
+    if (add_server == NULL) {
+        fprintf(stderr,
+            "[bridge] RPC: реестр RPC есть, но ggml_backend_rpc_add_server в нём недоступен\n");
+        return NULL;
+    }
+
+    // Локальные не-CPU устройства идут ПЕРВЫМИ: main_gpu и tensor_split
+    // считаются по порядку этого массива, и мастер обязан остаться нулевым —
+    // иначе «мастер» окажется на удалённой машине.
+    size_t cap = ggml_backend_dev_count() + (size_t) config->rpc_endpoints_len * 4 + 1;
+    ggml_backend_dev_t * devices = (ggml_backend_dev_t *) malloc(cap * sizeof(ggml_backend_dev_t));
+    int * remote = NULL;
+    if (out_remote != NULL) {
+        remote = (int *) malloc(cap * sizeof(int));
+    }
+    if (devices == NULL || (out_remote != NULL && remote == NULL)) {
+        fprintf(stderr, "[bridge] RPC: не удалось выделить массив устройств\n");
+        free(devices);
+        free(remote);
+        return NULL;
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < ggml_backend_dev_count() && n < cap - 1; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (dev == NULL) continue;
+        if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) continue;
+        devices[n] = dev;
+        if (remote != NULL) remote[n] = 0;
+        ++n;
+    }
+
+    int connected = 0;
+    for (int i = 0; i < config->rpc_endpoints_len; ++i) {
+        const char * endpoint = config->rpc_endpoints[i];
+        if (endpoint == NULL || endpoint[0] == '\0') continue;
+        // R218: недоступный узел не отдаём в llama.cpp — там connect блокирующий,
+        // а ошибка подключения в старых сборках вообще GGML_ABORT'ит процесс.
+        if (!bridge_rpc_tcp_probe(endpoint, 700)) {
+            fprintf(stderr, "[bridge] RPC: узел %s недоступен (TCP), пропускаем\n", endpoint);
+            continue;
+        }
+        ggml_backend_reg_t reg = add_server(endpoint);
+        if (reg == NULL) {
+            fprintf(stderr, "[bridge] RPC: узел %s НЕ подключён\n", endpoint);
+            continue;
+        }
+        size_t dev_count = ggml_backend_reg_dev_count(reg);
+        for (size_t d = 0; d < dev_count && n < cap - 1; ++d) {
+            devices[n] = ggml_backend_reg_dev_get(reg, d);
+            if (remote != NULL) remote[n] = 1;
+            ++n;
+        }
+        ++connected;
+        fprintf(stderr, "[bridge] RPC: узел %s подключён, его устройств: %zu\n", endpoint, dev_count);
+    }
+
+    if (connected == 0) {
+        fprintf(stderr,
+            "[bridge] RPC: ни один из %d узлов не подключился — грузим только на локальные устройства\n",
+            config->rpc_endpoints_len);
+        free(devices);
+        free(remote);
+        return NULL;
+    }
+    devices[n] = NULL;  // контракт llama_model_params.devices
+    if (out_len != NULL) *out_len = (int) n;
+    if (out_remote != NULL) *out_remote = remote;
+    fprintf(stderr, "[bridge] RPC: устройств в раскладке %zu (локальные + удалённые)\n", n);
+    return devices;
+}
+
+// bridge_collect_rpc_devices — массив устройств для llama_model_load_from_file.
+static ggml_backend_dev_t * bridge_collect_rpc_devices(
+    const ModelConfig * config, int * out_len
+) {
+    return bridge_collect_device_list(config, out_len, NULL);
+}
+
+// bridge_collect_devices — список устройств раскладки для планировщика (Go).
+//
+// Отдельная точка входа нужна потому, что планировщик принимает решение о числе
+// слоёв (memfit) и пропорциях tensor_split ДО загрузки модели: он обязан видеть
+// свободную память удалённых узлов, иначе считает ёмкость только по локальной
+// карте и урезает план так, что удалённый узел простаивает.
+int bridge_collect_devices(const ModelConfig * config, BridgeDeviceInfo * out, int max) {
+    if (out == NULL || max <= 0) return 0;
+    int n = 0;
+    int * remote = NULL;
+    ggml_backend_dev_t * devices = bridge_collect_device_list(config, &n, &remote);
+    if (devices == NULL) return 0;
+
+    int written = 0;
+    for (int i = 0; i < n && written < max; ++i) {
+        ggml_backend_dev_t dev = devices[i];
+        if (dev == NULL) continue;
+        BridgeDeviceInfo * info = &out[written];
+        memset(info, 0, sizeof(*info));
+        const char * name = ggml_backend_dev_name(dev);
+        if (name != NULL) {
+            snprintf(info->name, sizeof(info->name), "%s", name);
+        }
+        info->dev_type = (int) ggml_backend_dev_type(dev);
+        info->is_remote = (remote != NULL) ? remote[i] : 0;
+        size_t free_bytes = 0;
+        size_t total_bytes = 0;
+        ggml_backend_dev_memory(dev, &free_bytes, &total_bytes);
+        info->memory_free = free_bytes;
+        info->memory_total = total_bytes;
+        ++written;
+    }
+    free(devices);
+    free(remote);
+    return written;
+}
+
+
+// ============================================================
 // R83 §3.2 (2026-09-26): C-сторона не отдаёт в llama.cpp план,
 // который заведомо не помещается
 // ============================================================
@@ -1010,6 +1323,112 @@ static bool r83_cuda_free_vram_bytes(unsigned long long* out_free) {
 
 // 
 
+// R215 (2026-10-21): реестр прогресса загрузок - путь модели -> процент весов.
+//
+// ЗАЧЕМ ОТДЕЛЬНЫЙ РЕЕСТР, А НЕ handle. Go-сторона читает прогресс из другой
+// горутины, пока загрузка идёт. На пути ошибки мост освобождает InternalModel
+// (и ранний handle становится невалидным), поэтому чтение прогресса по
+// указателю было бы use-after-free. Здесь живёт только строка пути и атомарный
+// процент: читатель приходит со строкой и никогда не трогает память инстанса.
+#define BRIDGE_LOAD_PROGRESS_SLOTS 4
+
+typedef struct {
+    int        active;
+    char       path[512];
+    atomic_int pct;
+} bridge_load_progress_slot;
+
+static bridge_load_progress_slot g_load_progress[BRIDGE_LOAD_PROGRESS_SLOTS];
+
+// Тот же приём, что у g_err_mutex: mutex нужен только для поиска/занятия слота
+// и для записи пути, процент пишется атомарно без него.
+static void progress_registry_lock(void)   { err_mutex_lock(); }
+static void progress_registry_unlock(void) { err_mutex_unlock(); }
+
+static int load_progress_register(const char* path) {
+    int idx = -1;
+    progress_registry_lock();
+    for (int i = 0; i < BRIDGE_LOAD_PROGRESS_SLOTS; ++i) {
+        if (!g_load_progress[i].active) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) {
+        // Все слоты заняты: значит Go-сторона не сняла прошлые загрузки. Берём
+        // нулевой и говорим об этом - прогресс важнее, чем аккуратность реестра.
+        idx = 0;
+        fprintf(stderr, "[bridge] load progress registry full, reusing slot 0\n");
+    }
+    g_load_progress[idx].active = 1;
+    snprintf(g_load_progress[idx].path, sizeof(g_load_progress[idx].path), "%s", path ? path : "");
+    atomic_store(&g_load_progress[idx].pct, 0);
+    progress_registry_unlock();
+    return idx;
+}
+
+static int load_progress_find(const char* path) {
+    int idx = -1;
+    if (path == NULL || path[0] == '\0') return -1;
+    progress_registry_lock();
+    for (int i = 0; i < BRIDGE_LOAD_PROGRESS_SLOTS; ++i) {
+        if (g_load_progress[i].active && strcmp(g_load_progress[i].path, path) == 0) {
+            idx = i;
+            break;
+        }
+    }
+    progress_registry_unlock();
+    return idx;
+}
+
+static void load_progress_unregister(const char* path) {
+    if (path == NULL || path[0] == '\0') return;
+    progress_registry_lock();
+    for (int i = 0; i < BRIDGE_LOAD_PROGRESS_SLOTS; ++i) {
+        if (g_load_progress[i].active && strcmp(g_load_progress[i].path, path) == 0) {
+            g_load_progress[i].active = 0;
+            break;
+        }
+    }
+    progress_registry_unlock();
+}
+
+// R215 (2026-10-21): ОТМЕНА ЗАГРУЗКИ НА ЛЕТУ.
+//
+// llama.cpp умеет прерывать llama_model_load_from_file: если progress_callback
+// вернул false, чтение весов останавливается (llama-model-loader.cpp), а
+// load_from_file_impl САМ освобождает частично загруженную модель (включая
+// буферы на узлах раскладки) и возвращает NULL. До R215 мост callback не
+// передавал, поэтому отмена (unload force, обрыв клиента, таймаут) отрабатывала
+// только ПОСЛЕ возврата загрузки: веса уже лежали на GPU мастера и узлов и
+// держали VRAM всё время чтения файла.
+//
+// Callback также отдаёт реальный прогресс: Go-сторона показывает его оператору
+// (вместо «грузится, сколько - неизвестно»), а мост печатает шаг кратно 10%,
+// чтобы по логу было видно, на чём загрузка остановилась.
+static bool bridge_load_progress_cb(float progress, void* user_data) {
+    InternalModel* im = (InternalModel*) user_data;
+    if (im == NULL) {
+        return true;
+    }
+    int pct = (int) (progress * 100.0f);
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    atomic_store(&im->load_progress_pct, pct);
+    if (im->progress_slot >= 0 && im->progress_slot < BRIDGE_LOAD_PROGRESS_SLOTS) {
+        atomic_store(&g_load_progress[im->progress_slot].pct, pct);
+    }
+    if (pct >= im->load_progress_logged + 10) {
+        im->load_progress_logged = pct - (pct % 10);
+        fprintf(stderr, "[bridge] load progress %d%%\n", im->load_progress_logged);
+    }
+    if (atomic_load(&im->load_abort_requested)) {
+        fprintf(stderr, "[bridge] load cancelled at %d%% (progress callback)\n", pct);
+        return false;
+    }
+    return true;
+}
+
 ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, ModelHandle* out_handle) {
     if (!initialized) {
         set_error("bridge not initialized");
@@ -1047,12 +1466,15 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
         return NULL;
     }
     memset(im, 0, sizeof(InternalModel));
+    // R215: memset обнуляет progress_slot, а "нет слота" - это -1.
+    im->progress_slot = -1;
     // R60.57: init atomic flags. 0 = "не aborted" по дефолту. atomic_init —
     // единственная функция, которую можно вызывать на uninitialized atomic
     // (до этого любое обращение — UB). Должна быть вызвана ровно один раз
     // перед первым atomic_load/atomic_store.
     atomic_init(&im->abort_requested, 0);
     atomic_init(&im->load_abort_requested, 0);
+    atomic_init(&im->load_progress_pct, 0);
 
     // R60.57 follow-up (2026-09-13): expose early-allocated handle to caller
     // BEFORE any blocking C call. Это критично для Go-side watcher pattern:
@@ -1165,11 +1587,43 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
     // memfit (Go), а C-сторона отказывает только там, где уже знает факты:
     // после загрузки модели, до создания контекста (см. блок KV ниже).
 
+    // S1: RPC-узлы раскладки. Регистрация обязана быть ДО создания модели —
+    // см. комментарий у bridge_collect_rpc_devices: после загрузки список
+    // устройств уже не изменить, и раскладка осталась бы локальной.
+    int rpc_devices_len = 0;
+    ggml_backend_dev_t * rpc_devices = bridge_collect_rpc_devices(config, &rpc_devices_len);
+    if (rpc_devices != NULL) {
+        model_params.devices = rpc_devices;
+        fprintf(stderr,
+            "[bridge] RPC: список устройств передан в llama_model_load_from_file (устройств %d)\n",
+            rpc_devices_len);
+    }
+
+    // R215: отмена и прогресс - прямо в процессе чтения весов, а не после него.
+    model_params.progress_callback = bridge_load_progress_cb;
+    model_params.progress_callback_user_data = im;
+    im->progress_slot = load_progress_register(config->model_path);
+
     // Загружаем модель
     struct llama_model *model = llama_model_load_from_file(config->model_path, model_params);
+    // Массив устройств был нужен только на время загрузки: модель держит ссылки
+    // на сами устройства (они глобальные), а не на массив. Освобождаем сразу
+    // после вызова, чтобы покрыть free() и путь ошибки, и путь отмены.
+    free(rpc_devices);
+    rpc_devices = NULL;
     if (model == NULL) {
         char buf[512];
-        snprintf(buf, sizeof(buf), "failed to load model from %s", config->model_path);
+        // R215: отмена во время чтения весов - отдельный текст. llama.cpp уже
+        // освободил частично загруженную модель (включая буферы на узлах
+        // раскладки), поэтому «failed to load» здесь врал бы: загрузка не
+        // сломалась, её остановили.
+        if (atomic_load(&im->load_abort_requested)) {
+            snprintf(buf, sizeof(buf),
+                "model load cancelled by user (stopped at %d%% of weights)",
+                atomic_load(&im->load_progress_pct));
+        } else {
+            snprintf(buf, sizeof(buf), "failed to load model from %s", config->model_path);
+        }
         set_error(buf);
         if (error_msg) *error_msg = strdup(buf);
         // R60.57 follow-up: clear *out_handle ПЕРЕД free, чтобы watcher
@@ -1314,6 +1768,31 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
             int64_t free_for_kv = (int64_t)free_bytes;
             if (free_for_kv < 0) free_for_kv = 0;
 
+            // R115 (2026-10-13): ЭКСПЕРИМЕНТ R114g УДАЛЁН — решение о памяти
+            // принимается ДО вызова моста, в Go (memfit_gate.go + memory_breakdown).
+            //
+            // ПОЧЕМУ УДАЛЁН, А НЕ ОСТАВЛЕН. Блок расширял бюджет KV до
+            // «локальная карта + свободная память RPC-узлов» и ни разу не был
+            // подтверждён на живом стенде: в обоих прогонах (r114f — пропуск
+            // гейта, r114g — расширенный бюджет) процесс падал в abort РАНЬШЕ
+            // этой проверки, на загрузке весов, поэтому строка «R114g: бюджет KV»
+            // в логе так и не появилась. Непроверенная ветка в последней линии
+            // защиты опаснее её отсутствия: она либо пропускает загрузку, которая
+            // упадёт в llama.cpp (r114f дал SIGABRT), либо отклоняет ту, которую
+            // Go уже признал выполнимой — и тогда отказ противоречит вердикту.
+            //
+            // ЧТО ВМЕСТО. Бюджет с учётом RPC-узлов уже считает
+            // internal/cppbackend.MemfitBudget (локальная VRAM + свободная память
+            // узлов, недоступные узлы исключаются), и вердикт с раскладкой
+            // уходит клиенту как 422 n_ctx_infeasible + memory_breakdown. Гейт
+            // ниже остаётся тем, чем и должен быть: последней проверкой по
+            // локальной карте для случая, когда вердикт уже выдан.
+            //
+            // ШАГ 3 (не в этом выпуске): передать в ModelConfig решение memfit
+            // (usable_vram_mb), чтобы гейт сравнивал ровно то же число. Это
+            // правка bridge.h + bridge.go + этой проверки и пересборка CUDA-образа,
+            // поэтому делается отдельно и с проверкой на двух машинах.
+
             int head_dim = (n_heads > 0) ? (n_embd / n_heads) : n_embd;
             if (n_kv_heads <= 0) {
                 n_kv_heads = n_heads; // fallback для MHA
@@ -1370,18 +1849,33 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
             g_last_error_info.max_vram_n_ctx = estimated_max;
             err_mutex_unlock();
 
+            // R115 (2026-10-13): условия с rpc_endpoints_len убраны вместе с
+            // экспериментами r114f/r114g — от них остались только мёртвые ветки
+            // и комментарии, противоречившие коду (`rpc_endpoints_len >= 0`
+            // истинно всегда, то есть «гейт только без узлов» никогда не был
+            // правдой). Гейт применяется по факту нехватки локальной VRAM — это
+            // проверенное на живом стенде поведение r114e.
             if (estimated_max == 0 && gpu_layers > 0) {
                 // Свободной VRAM не хватает даже на один токен KV-cache.
                 // R83 §3.2: НЕ отдаём план в llama_init_from_model — иначе
                 // аллокация уходит в переподписку (SIGABRT, §1).
                 // gpu_layers == 0 означает CPU-only раскладку: KV-cache тоже
                 // на CPU, дефицита VRAM здесь нет и отказывать не за что.
+                //
+                // R115: это ПОСЛЕДНЯЯ линия защиты по ЛОКАЛЬНОЙ карте
+                // (cuMemGetInfo). Бюджет с учётом RPC-узлов считает Go
+                // (internal/cppbackend.MemfitBudget) и отказывает РАНЬШЕ — до
+                // вызова моста, ответом 422 n_ctx_infeasible с раскладкой
+                // memory_breakdown. Здесь остаётся случай, когда вердикт уже
+                // выдан, а локальная аллокация всё равно не проходит.
                 char buf[512];
                 snprintf(buf, sizeof(buf),
-                         "VRAM insufficient for KV-cache: requested n_ctx=%u with "
-                         "gpu_layers=%d does not fit in %.0f MB free VRAM "
-                         "(gpu_model=%llu MB, kv_per_token=%lld bytes) — "
-                         "reduce n_gpu_layers or n_ctx",
+                         "memory breakdown (local GPU only): VRAM insufficient for "
+                         "KV-cache: requested n_ctx=%u with gpu_layers=%d does not fit "
+                         "in %.0f MB free VRAM (gpu_model=%llu MB, kv_per_token=%lld "
+                         "bytes) — RAM and per-node VRAM are in the pre-flight verdict "
+                         "(code n_ctx_infeasible, field memory_breakdown); reduce "
+                         "n_gpu_layers or n_ctx",
                          ctx_params.n_ctx, gpu_layers,
                          (double)free_bytes / (1024.0 * 1024.0),
                          (unsigned long long)(model_size_bytes / (1024 * 1024)),
@@ -2702,6 +3196,36 @@ bool bridge_is_load_aborted(ModelHandle model) {
     if (model == NULL) return false;
     InternalModel *im = (InternalModel *)model;
     return atomic_load(&im->load_abort_requested) == 1;
+}
+
+// R215: прогресс чтения весов (0..100). -1 = handle невалиден.
+int bridge_get_load_progress(ModelHandle model) {
+    if (model == NULL) return -1;
+    InternalModel *im = (InternalModel *)model;
+    int pct = atomic_load(&im->load_progress_pct);
+    if (pct < 0) return 0;
+    if (pct > 100) return 100;
+    return pct;
+}
+
+// R215: прогресс загрузки по пути модели. -1 = путь не загружается сейчас.
+//
+// Читать по строке, а не по handle, обязательно: пока загрузка идёт, её
+// InternalModel может быть освобождён на пути ошибки (см. реестр выше).
+int bridge_load_progress_by_path(const char * path) {
+    int idx = load_progress_find(path);
+    if (idx < 0) return -1;
+    int pct = atomic_load(&g_load_progress[idx].pct);
+    if (pct < 0) return 0;
+    if (pct > 100) return 100;
+    return pct;
+}
+
+// R215: снять запись реестра после завершения загрузки (успех или ошибка).
+// Зовётся Go-стороной в defer — без этого слоты кончились бы после четырёх
+// разных загрузок.
+void bridge_clear_load_progress(const char * path) {
+    load_progress_unregister(path);
 }
 
 #endif // GO_BRIDGE_LLAMA_STUB guard

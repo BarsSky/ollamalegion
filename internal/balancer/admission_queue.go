@@ -40,7 +40,6 @@ package balancer
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"sort"
@@ -107,6 +106,34 @@ var (
 	errAdmissionTimeout = errors.New("no free slot within admission wait")
 )
 
+// admissionWaitBudget — R117 (2026-10-14): сколько запрос реально ждёт слот.
+//
+// Это НЕ то же самое, что LB_ADMISSION_WAIT_SEC: ожидание в очереди не имеет
+// смысла быть короче ожидания авто-загрузки, за которой этот запрос стоит.
+//
+// ЖИВОЙ ЗАМЕР (стенд: LB_ADMISSION_WAIT_SEC по умолчанию 300,
+// LB_AUTO_LOAD_WAIT_SEC=900). Два запроса к выгруженной модели: первый ушёл
+// загружать модель (загрузка заняла ~345 с), второй встал в admission-очередь и
+// получил 503 «waited in queue and timed out» ровно через 300 с — за 45 с ДО
+// готовности модели, хотя был первым в очереди на освободившийся слот:
+//
+//	t+300s B_exit=True  model=loading  | 503 waitMaxSec=300
+//	t+345s              model=loaded
+//
+// Правило: бюджет = max(LB_ADMISSION_WAIT_SEC, LB_AUTO_LOAD_WAIT_SEC). Оба
+// значения читаются из env на каждом вызове; при выключенном ожидании слотов (0)
+// бюджет тоже 0, то есть прежнее поведение «сразу 503» сохраняется.
+func (p *Proxy) admissionWaitBudget() time.Duration {
+	wait := p.admissionWaitTimeout()
+	if wait <= 0 {
+		return wait
+	}
+	if autoLoad := AutoLoadWaitTimeout(); autoLoad > wait {
+		return autoLoad
+	}
+	return wait
+}
+
 // admissionWaiter — ожидающий слот запрос.
 // Порядок полей — под fieldalignment (time.Time несёт указатель на Location).
 type admissionWaiter struct {
@@ -114,6 +141,23 @@ type admissionWaiter struct {
 	session  string
 	seq      uint64
 }
+
+// Источники ключа сессии, который показывает очередь (R118, 2026-10-14).
+//
+// Ключ сессии порождается в client.go (getSessionIDWithModel / getClientFingerprint)
+// и в RequestSessionKey (autoload_wait.go); здесь он только классифицируется —
+// чтобы оператор видел, различает ли балансер двух клиентов с одной машины.
+const (
+	// sessionIdentityClient — ключ пришёл от клиента (заголовок, тело, cookie):
+	// два разных запроса этого клиента получают РАЗНЫЕ ключи, если клиент их даёт.
+	sessionIdentityClient = "client"
+	// sessionIdentityDerived — ключ выведен балансером из окружения (IP+User-Agent
+	// или общий токен). Два экземпляра клиента с одной машины получают ОДИН ключ —
+	// именно этот случай оператор видит как «балансер не разделяет».
+	sessionIdentityDerived = "derived"
+	// sessionIdentityNone — идентификатора нет вовсе.
+	sessionIdentityNone = "none"
+)
 
 // admissionWaiterInfo — один ожидающий запрос для UI (R91, 2026-10-08).
 //
@@ -125,10 +169,44 @@ type admissionWaiter struct {
 // served_total=42, waited_total=42, avg_wait_ms=13926. То есть по странице нельзя
 // было понять, работает ли очередь вообще. Здесь отдаём по каждому ожидающему
 // то, что нужно таблице: кто ждёт, на каком бэкенде и сколько уже ждёт.
+//
+// R118: добавлены Position (позиция в очереди по порядку постановки — UI брал
+// индекс строки), SessionSource и SessionKnown (различает ли балансер клиентов).
 type admissionWaiterInfo struct {
-	Session  string `json:"session"`
-	Backend  string `json:"backend"`
-	WaitedMs int64  `json:"waited_ms"`
+	Session       string `json:"session"`
+	SessionSource string `json:"session_source,omitempty"`
+	Backend       string `json:"backend"`
+	WaitedMs      int64  `json:"waited_ms"`
+	Position      int    `json:"position"`
+	SessionKnown  bool   `json:"session_known"`
+	// R229: протокол запроса (openai/ollama) — из сессии, если она известна.
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// SessionIdentitySource — R118: чем является ключ сессии, который показывает
+// очередь: client (различает клиентов), derived (выведен из IP+User-Agent или
+// общего токена — НЕ различает), none (идентификатора нет).
+//
+// Префиксы заданы ровно там, где ключ порождается (client.go,
+// autoload_wait.go), поэтому список закрыт и проверяется тестом.
+func SessionIdentitySource(session string) string {
+	s := strings.TrimSpace(session)
+	switch {
+	case s == "":
+		return sessionIdentityNone
+	case strings.HasPrefix(s, "fp:"), strings.HasPrefix(s, "tkn:"):
+		// fp: — хеш IP+User-Agent, tkn: — хеш Authorization: у двух экземпляров
+		// клиента на одной машине (или под одним токеном) они совпадают.
+		return sessionIdentityDerived
+	case strings.HasPrefix(s, "conv:"):
+		// R118.9 (2026-10-14): ключ выведен балансером из НАЧАЛА РАЗГОВОРА. Он не
+		// пришёл от клиента, но РАЗЛИЧАЕТ экземпляры: два клиента с одной машины
+		// получают разные ключи, пока работают над разными задачами. Для счётчика
+		// «неразличимых ожидающих» это идентифицированный ожидающий.
+		return sessionIdentityClient
+	default:
+		return sessionIdentityClient
+	}
 }
 
 // queueAdmissionStats — R67b: срез admission-очереди для /api/v1/queue/stats.
@@ -146,8 +224,13 @@ type queueAdmissionStats struct {
 	AvgWaitMs     int64                 `json:"avg_wait_ms"`
 	WaitSec       int                   `json:"wait_max_sec"`
 	Waiting       int                   `json:"waiting"`
-	ActiveByUser  int                   `json:"active_sessions"`
-	Enabled       bool                  `json:"enabled"`
+	// R118: сколько ожидающих балансер НЕ может различить между собой —
+	// ключ выведен из окружения (IP+User-Agent, общий токен) или отсутствует.
+	// На странице «Очередь» это повод сказать оператору прямо: «клиент не
+	// различает сессии», а не показывать одинаковые строки как разные клиенты.
+	Unidentified int  `json:"unidentified_waiting"`
+	ActiveByUser int  `json:"active_sessions"`
+	Enabled      bool `json:"enabled"`
 }
 
 // admissionQueue — очередь ожидающих слотов по бэкендам.
@@ -166,6 +249,8 @@ type admissionQueue struct {
 	// в Proxy: так структура Proxy не растёт (allocator size class, см. govet
 	// fieldalignment) — очередь и её настройка живут одним указателем.
 	wait time.Duration
+	// R229: как узнать протокол сессии для waiting_detail (nil = неизвестен).
+	protocolOf func(string) string
 	// стата
 	waitedTotal  int64
 	timeoutTotal int64
@@ -274,6 +359,22 @@ func (aq *admissionQueue) markInflight(session string, delta int) {
 	aq.inflight[session] = next
 }
 
+// inflightOf — сколько запросов ЭТОЙ сессии сейчас в полёте.
+//
+// R139 (2026-10-16): нужен, чтобы отличить «backend занят МОИМ же длинным
+// стримом» от «backend занят чужими запросами». Первое — не повод уводить
+// сессию на другой backend (см. proxy.go, rebalanceIfNeeded): там модель
+// придётся грузить заново, клиент видит тишину. Второе — повод, ради этой
+// справедливости ребалансировка и сделана.
+func (aq *admissionQueue) inflightOf(session string) int {
+	if aq == nil || session == "" {
+		return 0
+	}
+	aq.mu.Lock()
+	defer aq.mu.Unlock()
+	return aq.inflight[session]
+}
+
 // canProceed — имеет ли ПРАВО этот ожидающий попытаться взять слот.
 //
 // Приоритет: (1) сессии, которые не обслуживались (нет активного запроса и не
@@ -371,14 +472,26 @@ func (aq *admissionQueue) stats(wait time.Duration) queueAdmissionStats {
 		list := aq.waiters[backendID]
 		out.Waiting += len(list)
 		out.ByBackend[backendID] = len(list)
-		for _, w := range list {
+		for i, w := range list {
 			if w.session != "" {
 				out.Sessions = append(out.Sessions, w.session)
 			}
+			// R118: позиция считается здесь, а не в UI по индексу строки: порядок
+			// отрисовки и порядок очереди — разные вещи, и оператору нужна позиция
+			// В ОЧЕРЕДИ (1-based, по seq постановки).
+			source := SessionIdentitySource(w.session)
+			known := source == sessionIdentityClient
+			if !known {
+				out.Unidentified++
+			}
 			out.WaitingDetail = append(out.WaitingDetail, admissionWaiterInfo{
-				Session:  w.session,
-				Backend:  backendID,
-				WaitedMs: now.Sub(w.enqueued).Milliseconds(),
+				Protocol:      aq.protocolOfSession(w.session),
+				Session:       w.session,
+				SessionSource: source,
+				Backend:       backendID,
+				WaitedMs:      now.Sub(w.enqueued).Milliseconds(),
+				Position:      i + 1,
+				SessionKnown:  known,
 			})
 		}
 	}
@@ -480,7 +593,8 @@ func (p *Proxy) acquireInferenceSlot(
 	if p == nil || backendID == "" {
 		return nil, 0, errAdmissionDisabled
 	}
-	wait := p.admissionWaitTimeout()
+	// R117: бюджет ожидания — max(admission, auto-load), см. admissionWaitBudget.
+	wait := p.admissionWaitBudget()
 
 	if p.tryAcquireSlot(backendID) {
 		return p.newAdmissionLease(backendID, session, 0, 0), 0, nil
@@ -610,42 +724,11 @@ func admissionStreamKind(path string, body []byte) (contentType string, keepaliv
 	}
 }
 
-// startAdmissionKeepalive — R70: пока запрос ждёт слот, шлём keepalive, чтобы
-// клиент (OpenWebUI/Cline, таймаут 300 c) не закрыл соединение. Возвращает
-// stop-функцию (идемпотентную).
-func startAdmissionKeepalive(w http.ResponseWriter, keepalive []byte, period time.Duration) func() {
-	if period <= 0 {
-		return func() {}
-	}
-	done := make(chan struct{})
-	var once sync.Once
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		ticker := time.NewTicker(period)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				if _, err := w.Write(keepalive); err != nil {
-					return
-				}
-				if f, okFlush := w.(http.Flusher); okFlush {
-					f.Flush()
-				}
-			}
-		}
-	}()
-	return func() {
-		once.Do(func() {
-			close(done)
-			wg.Wait()
-		})
-	}
-}
+// ADMISSION-HONEST (2026-10-15): функция startAdmissionKeepalive удалена вместе
+// с преждевременной коммитой заголовков. Keepalive во время ожидания слота
+// невозможен без отправки статуса 200, а именно он и был живым дефектом
+// («OpenWebUI получает 200 + `: keepalive` 30-50 c»). Клиент теперь ждёт молча
+// и получает либо 200 со слотом и X-Queue-*, либо честный 503.
 
 // acquireInferenceAdmission — R67b: точка входа для inference-хендлеров
 // llama.cpp. Берёт слот бэкенда через admission-очередь (с ожиданием) и
@@ -661,11 +744,16 @@ func startAdmissionKeepalive(w http.ResponseWriter, keepalive []byte, period tim
 // Заголовки X-Queue-Wait-Ms / X-Queue-Position выставляются ДО того, как
 // транспорт пишет свои заголовки, поэтому клиент видит факт ожидания в очереди.
 //
-// R70 (2026-09-24): если слот занят и клиент streaming — заголовки коммитятся
-// сразу (200 + Content-Type формата) и во время ожидания шлются keepalive'ы
-// (`: keepalive` для SSE, пустая строка для NDJSON Ollama). Для таких запросов
-// X-Queue-* заголовки выставить уже нельзя (заголовки отправлены) — это
-// осознанный компромисс: клиент получает ответ вместо таймаута.
+// ADMISSION-HONEST (2026-10-15): раньше (R70) для streaming-клиента заголовки
+// коммитились СРАЗУ при занятом слоте (200 + Content-Type) и во время ожидания
+// слались keepalive'ы. Живой дефект стенда: второй клиент OpenWebUI на
+// /v1/chat/completions мгновенно получал 200 + `X-Queue-Keepalive: 1` и 30-50 c
+// пустого тела (`: keepalive`), а честные X-Queue-Wait-Ms/X-Queue-Position и
+// 503+Retry-After при исчерпании ожидания были НЕДОСТИЖИМЫ — статус уже
+// отправлен, и 503-ветка не могла его изменить. Теперь заголовки не коммитятся
+// до выдачи слота: клиент ждёт молча и получает либо 200 с ожиданием в
+// заголовках и настоящим ответом, либо 503 + Retry-After + X-Queue-Position.
+// Поведение /api/chat и /v1/chat/completions на этом пути одинаково.
 func (lr *LlamaCppRouter) acquireInferenceAdmission(
 	w http.ResponseWriter, r *http.Request, backendID, model string, body []byte,
 ) (func(), bool) {
@@ -673,65 +761,43 @@ func (lr *LlamaCppRouter) acquireInferenceAdmission(
 		return nil, true
 	}
 	session := RequestSessionKey(r, body)
+	// R229: запомнить протокол для ключа очереди (ключ != ID сессии — см.
+	// admissionProtocols: без этой записи waiting_detail.protocol был пустым).
+	lr.proxy.noteAdmissionProtocol(session, RequestProtocol(r.URL.Path))
 
-	// Быстрый путь: слот свободен — keepalive не нужен.
+	// Быстрый путь: слот свободен — очередь не нужна.
 	if lease, err := lr.proxy.acquireInferenceSlotNow(backendID, session); err == nil {
 		return lease.Release, true
 	}
 
-	// Слот занят: для streaming-клиентов держим соединение живым, пока ждём.
-	keepalivePeriod := AdmissionKeepaliveInterval()
-	contentType, keepalive, streaming := admissionStreamKind(r.URL.Path, body)
-	var stopKeepalive func()
-	if streaming && keepalivePeriod > 0 {
-		w.Header().Set("X-Queue-Keepalive", "1")
-		w.Header().Set("Content-Type", contentType)
-		w.WriteHeader(http.StatusOK)
-		if f, okFlush := w.(http.Flusher); okFlush {
-			f.Flush()
-		}
-		stopKeepalive = startAdmissionKeepalive(w, keepalive, keepalivePeriod)
-		logger.Get().Infow("admission: streaming client waits for slot, sending keepalives",
-			"backend", backendID, "model", model, "session", session,
-			"content_type", contentType, "period_sec", int(keepalivePeriod.Seconds()))
-	}
-
+	// Слот занят. ADMISSION-HONEST (2026-10-15): НЕ коммитим заголовки и не шлём
+	// keepalive'ы до выдачи слота (см. комментарий к функции) — иначе 200 уходит
+	// клиенту раньше, чем он получил слот, и ни X-Queue-*, ни 503 при таймауте
+	// до него уже не доедут.
 	lease, position, err := lr.proxy.acquireInferenceSlot(r.Context(), backendID, session)
-	if stopKeepalive != nil {
-		stopKeepalive()
-	}
 	switch {
 	case err == nil:
-		if lease.Waited > 0 && stopKeepalive == nil {
+		if lease.Waited > 0 {
+			// Заголовки ещё не отправлены — клиент увидит, что запрос стоял в
+			// очереди, и на /api/chat, и на /v1/chat/completions.
 			w.Header().Set("X-Queue-Wait-Ms", strconv.FormatInt(lease.Waited.Milliseconds(), 10))
 			w.Header().Set("X-Queue-Position", strconv.Itoa(position))
-		}
-		if lease.Waited > 0 {
 			logger.Get().Infow("admission: slot granted after waiting",
 				"backend", backendID, "model", model, "session", session,
-				"waited_ms", lease.Waited.Milliseconds(), "streaming_keepalive", stopKeepalive != nil)
+				"waited_ms", lease.Waited.Milliseconds())
 		}
 		return lease.Release, true
 	case errors.Is(err, errAdmissionDisabled):
 		// Ожидание выключено — сохраняем поведение до R67b (без гейта).
-		if stopKeepalive == nil {
-			return nil, true
-		}
-		// Заголовки уже отправлены (streaming keepalive) — завершаем стрим.
-		writeStreamErrorChunk(w, r.URL.Path, model, "admission queue disabled while streaming; retry the request")
-		return nil, false
+		return nil, true
 	case errors.Is(err, errAdmissionTimeout):
-		maxWait := lr.proxy.admissionWaitTimeout()
-		if stopKeepalive == nil {
-			// waited == предела ожидания: запрос действительно стоял в очереди
-			// весь разрешённый интервал и только потом получил 503.
-			writeAdmissionUnavailable(w, model, session, position, maxWait, maxWait)
-			return nil, false
-		}
-		// Стрим уже начат: корректно завершаем его (клиент увидит done + ошибку).
-		writeStreamErrorChunk(w, r.URL.Path, model, fmt.Sprintf(
-			"all inference slots are busy: request waited %s in queue (position %d) and timed out; retry",
-			maxWait, position))
+		// R117: бюджет, а не голый LB_ADMISSION_WAIT_SEC — см. admissionWaitBudget.
+		// waited == предела ожидания: запрос действительно стоял в очереди весь
+		// разрешённый интервал и только потом получил 503. Заголовки не
+		// отправлены, поэтому статус честный (до ADMISSION-HONEST здесь был 200
+		// с keepalive-телом или с chunk с ошибкой внутри стрима).
+		maxWait := lr.proxy.admissionWaitBudget()
+		writeAdmissionUnavailable(w, model, session, position, maxWait, maxWait)
 		return nil, false
 	default:
 		// Клиент отменил запрос, пока ждал слот: отвечать уже некому.

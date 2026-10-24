@@ -130,13 +130,65 @@ func (r *reloadDedupRegistry) IsReloadPending(backendID, modelName string) bool 
 	return false
 }
 
+// BeginExternalReload — R230: пометить reload как идущий для путей, которые
+// САМИ выполняют unload+load (AutoTune apply).
+//
+// ЗАЧЕМ. Живой дефект (R230): AutoTune выгружал модель и шёл загружать её с
+// новыми params, но параллельный клиентский запрос успевал раньше и вызывал
+// ЛЕНИВУЮ загрузку по профилю (q4_0/40 слоёв). Загрузка AutoTune видела
+// «concurrent load already in progress», дожидалась чужой загрузки и
+// возвращала success — при фактически неизменённой конфигурации. В результате
+// AutoTune бесконечно «применял» один и тот же план (circuit breaker только
+// растягивал интервал), а оператор видел перезагрузки без эффекта.
+//
+// Теперь на время apply реестр сообщает «reload идёт»: ensureModelLoadedOnBackend
+// ждёт завершения вместо запуска собственной загрузки с профильными params.
+//
+// Возвращает finish (идемпотентный) и ok=false, если reload уже идёт.
+func (r *reloadDedupRegistry) BeginExternalReload(backendID, modelName string) (finish func(), ok bool) {
+	r.mu.Lock()
+	key := reloadKey{backendID: backendID, modelName: modelName}
+	now := time.Now()
+	for k, v := range r.entries {
+		if k.backendID == backendID && k.modelName == modelName && v.expiry.After(now) {
+			r.mu.Unlock()
+			return nil, false
+		}
+	}
+	entry := &reloadEntry{
+		done:   make(chan struct{}),
+		expiry: now.Add(r.defaultTTL),
+	}
+	r.entries[key] = entry
+	r.mu.Unlock()
+
+	logger.Get().Infow("reloadDedup: external reload begin",
+		"backend", backendID, "model", modelName)
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			// Порядок как в StartReloadIfNotPending: сначала убрать запись из
+			// реестра, потом закрыть done (иначе ожидающий видит pending после
+			// сигнала о завершении).
+			r.mu.Lock()
+			if cur, exists := r.entries[key]; exists && cur == entry {
+				delete(r.entries, key)
+			}
+			r.mu.Unlock()
+			close(entry.done)
+			logger.Get().Infow("reloadDedup: external reload finished",
+				"backend", backendID, "model", modelName)
+		})
+	}, true
+}
+
 // WaitReloadDone ждёт завершения reload для данной модели (любого targetNCtx).
 // timeout == 0 → без лимита.
 //
 // Возвращает nil при успехе (reload завершился), error при таймауте или
 // если reload с такой моделью не запущен.
-func (r *reloadDedupRegistry) WaitReloadDone(backendID, modelName string, timeout time.Duration) error {
-	r.mu.RLock()
+func (r *reloadDedupRegistry) WaitReloadDone(backendID, modelName string, timeout time.Duration) error {	r.mu.RLock()
 	var found *reloadEntry
 	for k, v := range r.entries {
 		if k.backendID == backendID && k.modelName == modelName {

@@ -172,15 +172,7 @@ func (s *Server) executeBackendModelOp(w http.ResponseWriter, r *http.Request, b
 
 	result := mm.ExecuteOperation(backendID, opReq)
 
-	statusCode := http.StatusOK
-	if !result.Success {
-		statusCode = http.StatusInternalServerError
-	}
-	// R66c: «модель занята» — это 409 Conflict, а не 500: клиенту нужно
-	// отличить «повтори с force=true» от реальной ошибки сервера.
-	if result.Busy {
-		statusCode = http.StatusConflict
-	}
+	statusCode := modelOpStatusCode(result)
 
 	logger.Get().Infow("model operation result",
 		"operation", req.Operation,
@@ -213,4 +205,29 @@ func (s *Server) modelOpsStatusHandler(w http.ResponseWriter, r *http.Request) {
 		"success":    true,
 		"operations": ops,
 	})
+}
+
+// modelOpStatusCode — HTTP-статус по результату операции с моделью.
+//
+// R185 (2026-10-20): вынесено из обработчика, чтобы правило было проверяемым
+// без поднятия всего сервера. Живой разбор: воркер собран не под ту карту, и
+// клиент получал 500 на КАЖДЫЙ повтор — 5xx для клиентов значит «повтори,
+// станет лучше», а архитектура образа от повтора не меняется. Отказ обязан быть
+// 4xx, иначе балансер «бесконечно крутит», не показывая причину.
+func modelOpStatusCode(result *balancer.ModelOpResult) int {
+	if result == nil || result.Success {
+		return http.StatusOK
+	}
+	// «Модель занята» — 409: клиенту нужно отличить «повтори с force=true».
+	if result.Busy {
+		return http.StatusConflict
+	}
+	if balancer.IsCUDAArchRefusalText(result.Error) {
+		if balancer.IsLoadFitRefusalText(result.Error) {
+			// R188: «модель не влезает в память бэкенда» — терминально, 4xx останавливает повторы.
+			return http.StatusBadRequest
+		}
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }

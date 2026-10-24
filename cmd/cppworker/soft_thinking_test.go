@@ -18,7 +18,7 @@ import (
 // только instruction (без "\n\n" в конце).
 func TestInjectThinkingInstruction_Empty(t *testing.T) {
 	result := injectThinkingInstruction("")
-	if !strings.Contains(result, "step-by-step thinking") {
+	if !strings.Contains(result, "step by step") {
 		t.Errorf("expected thinking instruction, got %q", result)
 	}
 	// Не должно быть лишних whitespace в начале/конце
@@ -34,7 +34,7 @@ func TestInjectThinkingInstruction_Existing(t *testing.T) {
 	result := injectThinkingInstruction(existing)
 
 	// Должен содержать оба: instruction И existing
-	if !strings.Contains(result, "step-by-step thinking") {
+	if !strings.Contains(result, "step by step") {
 		t.Errorf("expected thinking instruction, got %q", result)
 	}
 	if !strings.Contains(result, existing) {
@@ -46,7 +46,7 @@ func TestInjectThinkingInstruction_Existing(t *testing.T) {
 	}
 
 	// Проверяем порядок: instruction ПЕРВЫЙ
-	idxInst := strings.Index(result, "step-by-step thinking")
+	idxInst := strings.Index(result, "step by step")
 	idxExisting := strings.Index(result, existing)
 	if idxInst >= idxExisting {
 		t.Errorf("expected instruction before existing, got instruction at %d, existing at %d",
@@ -68,7 +68,7 @@ func TestInjectThinkingIntoMessages_Prepend(t *testing.T) {
 	if result[0].Role != "system" {
 		t.Errorf("expected first message to be system, got role=%q", result[0].Role)
 	}
-	if !strings.Contains(result[0].Content, "step-by-step thinking") {
+	if !strings.Contains(result[0].Content, "step by step") {
 		t.Errorf("expected thinking instruction in first system message, got %q", result[0].Content)
 	}
 	// Original messages preserved
@@ -93,7 +93,7 @@ func TestInjectThinkingIntoMessages_Merge(t *testing.T) {
 		t.Errorf("expected first message to be system, got role=%q", result[0].Role)
 	}
 	// System должен содержать instruction + original
-	if !strings.Contains(result[0].Content, "step-by-step thinking") {
+	if !strings.Contains(result[0].Content, "step by step") {
 		t.Errorf("expected thinking instruction, got %q", result[0].Content)
 	}
 	if !strings.Contains(result[0].Content, existingSystem) {
@@ -116,7 +116,7 @@ func TestInjectThinkingIntoMessages_OnlySystem(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
 	}
-	if !strings.Contains(result[0].Content, "step-by-step thinking") {
+	if !strings.Contains(result[0].Content, "step by step") {
 		t.Errorf("expected thinking instruction, got %q", result[0].Content)
 	}
 	if !strings.Contains(result[0].Content, "Be brief.") {
@@ -134,7 +134,7 @@ func TestInjectThinkingIntoMessages_Empty(t *testing.T) {
 	if result[0].Role != "system" {
 		t.Errorf("expected first message to be system, got role=%q", result[0].Role)
 	}
-	if !strings.Contains(result[0].Content, "step-by-step thinking") {
+	if !strings.Contains(result[0].Content, "step by step") {
 		t.Errorf("expected thinking instruction, got %q", result[0].Content)
 	}
 }

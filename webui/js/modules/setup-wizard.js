@@ -11,27 +11,25 @@
  */
 (function () {
     'use strict';
-
     var currentStep = 1;
-    var totalSteps = 6;
+    // R195 (2026-10-20): шаг «Тип бэкенда» УДАЛЁН — стек обслуживает оба типа одновременно
+    // (llama.cpp-воркер отдаёт и нативный Ollama API, и OpenAI-совместимую поверхность).
+    var totalSteps = 4;
+    // R195: состояние серверного конфига (объявление восстановлено — при удалении шага
+    // «Тип бэкенда» оно было потеряно, и start() падал с "currentServerConfig is not defined").
     var currentServerConfig = null;
-
-    // === ИЗОЛИРОВАННОЕ СОСТОЯНИЕ WIZARD ===
-    // Накапливает выборы пользователя. Применяется только при finishWizard().
     var wizardState = {
-        backendType: 'ollama',        // 'ollama' | 'llama_cpp'
-        operatingMode: 'standard',    // режим работы балансера
-        // настройки общего характера (шаг 5)
+        backendType: 'llama_cpp',      // R195: выбор типа удалён — стек обслуживает оба типа одновременно
+        // настройки общего характера (шаг 4)
         algorithm: 'resource-aware',
         gpuMaxUsage: 90,
         vramMaxUsage: 85,
         cpuMaxUsage: 80,
-        ramMaxUsage: 85,
-        // mode-specific params (шаг 4)
-        replication: null,
-        rpcCoordinator: null,
-        virtualModels: null,
-        distInference: null
+        ramMaxUsage: 85
+        // R107 (чистовая уборка S5/S7): поля режимов (operatingMode, replication,
+        // rpcCoordinator, virtualModels, distInference) убраны вместе с шагом
+        // «параметры режима». Раскладку задаёт политика размещения (шаг «состав
+        // кластера» → balancing.placement), а не режим работы.
     };
 
     /**
@@ -87,17 +85,12 @@
         var initialType = (savedType === 'llama_cpp' || savedType === 'ollama') ? savedType : 'ollama';
 
         wizardState = {
-            backendType: initialType,
-            operatingMode: 'standard',
+            backendType: 'llama_cpp',       // R195: тип больше не выбирается (стек обслуживает оба)
             algorithm: 'resource-aware',
             gpuMaxUsage: 90,
             vramMaxUsage: 85,
             cpuMaxUsage: 80,
-            ramMaxUsage: 85,
-            replication: null,
-            rpcCoordinator: null,
-            virtualModels: null,
-            distInference: null
+            ramMaxUsage: 85
         };
 
         currentStep = 1;
@@ -109,9 +102,8 @@
             // ВАЖНО: backendType НЕ перезаписываем из сервера —
             // доверяем localStorage (initialType), установленному выше.
             if (currentServerConfig) {
-                if (currentServerConfig.operatingMode) {
-                    wizardState.operatingMode = currentServerConfig.operatingMode;
-                }
+                // R107: operatingMode из сервера больше не читаем — режим не
+                // выбирается в мастере, раскладку задаёт политика размещения.
                 if (currentServerConfig.algorithm) wizardState.algorithm = currentServerConfig.algorithm;
                 if (currentServerConfig.gpuMaxUsage) wizardState.gpuMaxUsage = currentServerConfig.gpuMaxUsage;
                 if (currentServerConfig.vramMaxUsage) wizardState.vramMaxUsage = currentServerConfig.vramMaxUsage;
@@ -199,9 +191,7 @@
         var t = window.I18N ? I18N.t.bind(I18N) : function(k) { return k; };
         var steps = [
             t('wizard.step1'),
-            t('wizard.step_backend_type') || 'Backend Type',
-            t('wizard.step2'),
-            t('wizard.step3'),
+            t('wizard.step_cluster'),
             t('wizard.step4'),
             t('wizard.step5')
         ];
@@ -227,26 +217,22 @@
         var html = '';
         switch (step) {
             case 1: html = renderWelcomeStep(); break;
-            case 2: html = renderBackendTypeStep(); break;
-            case 3: html = renderModeSelectionStep(); break;
-            case 4: html = renderModeParamsStep(); break;
-            case 5: html = renderGeneralSettingsStep(); break;
-            case 6: html = renderSummaryStep(); break;
+            case 2: html = renderClusterPlanStep(); break;
+            case 3: html = renderGeneralSettingsStep(); break;
+            case 4: html = renderSummaryStep(); break;
         }
         body.innerHTML = html;
 
-        if (step === 3 && window.SettingsUI) {
-            window.SettingsUI.setupModeSelector();
+        // R103 (S5 плана 2026-10-07): шаг «состав кластера» вместо выбора режима.
+        // Панель (план с числами + запись balancing.placement) рисует модуль
+        // setup-plan.js; здесь только монтирование. Режим работы на этом шаге
+        // больше НЕ выбирается: раскладка задаётся политикой (S7 плана).
+        if (step === 2 && window.SetupPlan) {
+            window.SetupPlan.mount('setupPlanPanel').catch(function () {});
         }
-        if (step === 4) {
-            if (window.SettingsUI) {
-                // R66b: скоупим на контейнер мастера — иначе выбор падал на
-                // одноимённый блок страницы Settings и шаг оставался пустым.
-                window.SettingsUI.showModeFields(wizardState.operatingMode, wizardRoot());
-            }
-            applyWizardStateToModeFields();
-        }
-        if (step === 5) {
+        // R107: шаг «параметры режима» удалён вместе с выбором режима; из
+        // настраиваемого остались общие параметры (шаг 4) и сводка (шаг 5).
+        if (step === 3) {
             applyWizardStateToGeneralFields();
         }
     }
@@ -282,28 +268,6 @@
     // APPLY WIZARDSTATE TO FORM FIELDS
     // ================================================================
 
-    function applyWizardStateToModeFields() {
-        var mode = wizardState.operatingMode;
-        if (mode === 'replication' && wizardState.replication) {
-            setFieldValue('modelReplicationMinInstances', wizardState.replication.defaultMinInstances);
-            setFieldValue('modelReplicationMaxInstances', wizardState.replication.defaultMaxInstances);
-            setFieldValue('modelReplicationIdleUnload', wizardState.replication.idleUnloadAfter);
-        }
-        if (mode === 'rpc_coordinator' && wizardState.rpcCoordinator) {
-            setFieldValue('rpcCoordinatorURL', wizardState.rpcCoordinator.coordinatorURL);
-            setFieldValue('rpcCoordinatorWorkerPort', wizardState.rpcCoordinator.workerPort);
-            setFieldValue('rpcCoordinatorProtocol', wizardState.rpcCoordinator.protocol);
-            setFieldValue('rpcCoordinatorTimeout', wizardState.rpcCoordinator.timeout);
-            setFieldValue('rpcCoordinatorMaxRetries', wizardState.rpcCoordinator.maxRetries);
-        }
-        if (mode === 'virtual_router' && wizardState.virtualModels) {
-            setFieldValue('virtualModelsCoordMode', wizardState.virtualModels.coordMode);
-            setFieldValue('virtualModelsTimeout', wizardState.virtualModels.timeout);
-        }
-        if (mode === 'distributed_inference' && wizardState.distInference) {
-            setFieldValue('distInferenceGrpcPort', wizardState.distInference.grpcPort);
-        }
-    }
 
     function applyWizardStateToGeneralFields() {
         setFieldValue('balancingAlgorithm', wizardState.algorithm);
@@ -311,38 +275,6 @@
         setFieldValue('vramMaxUsage', wizardState.vramMaxUsage);
         setFieldValue('cpuMaxUsage', wizardState.cpuMaxUsage);
         setFieldValue('ramMaxUsage', wizardState.ramMaxUsage);
-    }
-
-    function readModeParamsIntoState() {
-        var mode = wizardState.operatingMode;
-        if (mode === 'replication') {
-            wizardState.replication = {
-                enabled: true,
-                defaultMinInstances: parseInt(getFieldValue('modelReplicationMinInstances', 1)),
-                defaultMaxInstances: parseInt(getFieldValue('modelReplicationMaxInstances', 3)),
-                idleUnloadAfter: getFieldValue('modelReplicationIdleUnload', '10m')
-            };
-        } else if (mode === 'rpc_coordinator') {
-            wizardState.rpcCoordinator = {
-                enabled: true,
-                coordinatorURL: getFieldValue('rpcCoordinatorURL', ''),
-                workerPort: parseInt(getFieldValue('rpcCoordinatorWorkerPort', 18050)),
-                protocol: getFieldValue('rpcCoordinatorProtocol', 'http'),
-                timeout: getFieldValue('rpcCoordinatorTimeout', '30s'),
-                maxRetries: parseInt(getFieldValue('rpcCoordinatorMaxRetries', 3))
-            };
-        } else if (mode === 'virtual_router') {
-            wizardState.virtualModels = {
-                enabled: true,
-                coordMode: getFieldValue('virtualModelsCoordMode', 'sequential'),
-                timeout: parseInt(getFieldValue('virtualModelsTimeout', 30000))
-            };
-        } else if (mode === 'distributed_inference') {
-            wizardState.distInference = {
-                enabled: true,
-                grpcPort: parseInt(getFieldValue('distInferenceGrpcPort', 19000))
-            };
-        }
     }
 
     function readGeneralFieldsIntoState() {
@@ -396,102 +328,12 @@
             '</div>';
     }
 
-    function getAvailableModesForType(type) {
-        if (type === 'llama_cpp') return ['standard', 'virtual_router', 'distributed_inference'];
-        return ['standard', 'replication', 'rpc_coordinator'];
-    }
-
-    function renderModeSelectionStep() {
-        var availableModes = getAvailableModesForType(wizardState.backendType);
-        // Если текущий выбранный режим недоступен для типа — сбрасываем на standard
-        if (availableModes.indexOf(wizardState.operatingMode) < 0) {
-            wizardState.operatingMode = 'standard';
-        }
-
-        var allModeCards = {
-            standard: { icon: '⚙️', title: window.I18N ? I18N.t('settings.mode.standard') : 'Standard Balancer', desc: window.I18N ? I18N.t('settings.mode.standard_desc') : 'Basic load balancing' },
-            replication: { icon: '📋', title: window.I18N ? I18N.t('settings.mode.replication') : 'Model Replication (A)', desc: window.I18N ? I18N.t('settings.mode.replication_desc') : 'Replicate models across backends' },
-            rpc_coordinator: { icon: '🌐', title: window.I18N ? I18N.t('settings.mode.rpc_coordinator') : 'RPC Coordinator (B)', desc: window.I18N ? I18N.t('settings.mode.rpc_coordinator_desc') : 'External RPC coordinator' },
-            virtual_router: { icon: '🧩', title: window.I18N ? I18N.t('settings.mode.virtual_router') : 'Virtual Model Router (C)', desc: window.I18N ? I18N.t('settings.mode.virtual_router_desc') : 'Pipeline parallelism via slices' },
-            distributed_inference: { icon: '🔬', title: window.I18N ? I18N.t('settings.mode.distributed') : 'Distributed Inference (D)', desc: window.I18N ? I18N.t('settings.mode.distributed_desc') : 'Custom gRPC distributed inference' }
-        };
-
-        var cardsHtml = '';
-        availableModes.forEach(function (mode) {
-            var mc = allModeCards[mode];
-            if (mc) {
-                cardsHtml += '<label class="mode-card' + (wizardState.operatingMode === mode ? ' active' : '') + '" data-mode="' + mode + '">' +
-                    '<input type="radio" name="operatingMode" value="' + mode + '" ' + (wizardState.operatingMode === mode ? 'checked' : '') + '>' +
-                    '<div class="mode-card-icon">' + mc.icon + '</div>' +
-                    '<div class="mode-card-title">' + mc.title + '</div>' +
-                    '<div class="mode-card-desc">' + mc.desc + '</div>' +
-                    '</label>';
-            }
-        });
-
-        if (!cardsHtml) {
-            cardsHtml = '<p style="color:var(--text-muted);">' +
-                (window.I18N ? I18N.t('wizard.summary_empty') : 'No modes available for this backend type') + '</p>';
-        }
-
-        var t = window.I18N ? I18N.t.bind(I18N) : function(k) { return k; };
-        return '<div class="wizard-step-content mode-step">' +
-            '<h3>' + (t('wizard.step2') || 'Select Operating Mode') + '</h3>' +
-            '<p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">' +
-                (t('wizard.mode_selection_desc') || 'Choose the operating mode.') + '</p>' +
-            '<div class="mode-selector"><div class="mode-cards">' + cardsHtml + '</div></div>' +
-            '</div>';
-    }
-
-    function renderModeParamsStep() {
-        var mode = wizardState.operatingMode;
-        var sc = wizardState;
-
-        return '<div class="wizard-step-content params-step">' +
-            '<h3>' + (window.I18N ? I18N.t('wizard.step3') : 'Mode Parameters') + '</h3>' +
-            '<div id="wiz-modeFields-standard" class="mode-fields">' +
-            '<p style="color:var(--text-muted);">' + (window.I18N ? I18N.t('wizard.summary_empty') : 'Standard mode — no additional parameters required') + '</p>' +
-            '</div>' +
-            '<div id="wiz-modeFields-replication" class="mode-fields" style="display:none;">' +
-            '<div class="form-row">' +
-            '<div class="form-group"><label>' + t_label('settings.model_replication_min', 'Min Instances', 'wizard.tooltip.replication_min', 'Min number of model instances across backends. 0 = replication disabled.') + '</label>' +
-            '<input type="number" id="wiz-modelReplicationMinInstances" class="form-control" value="' + ((sc.replication && sc.replication.defaultMinInstances) || 1) + '" min="0" max="10"></div>' +
-            '<div class="form-group"><label>' + t_label('settings.model_replication_max', 'Max Instances', 'wizard.tooltip.replication_max', 'Max number of instances. New replicas spin up to this limit.') + '</label>' +
-            '<input type="number" id="wiz-modelReplicationMaxInstances" class="form-control" value="' + ((sc.replication && sc.replication.defaultMaxInstances) || 3) + '" min="0" max="20"></div>' +
-            '</div>' +
-            '<div class="form-group"><label>' + t_label('settings.model_replication_idle_unload', 'Idle Unload After', 'wizard.tooltip.replication_idle_unload', 'How long to keep an idle replica before unloading. Format: 10m, 30m, 1h.') + '</label>' +
-            '<input type="text" id="wiz-modelReplicationIdleUnload" class="form-control" value="' + ((sc.replication && sc.replication.idleUnloadAfter) || '10m') + '" placeholder="10m, 30m, 1h"></div>' +
-            '</div>' +
-            '<div id="wiz-modeFields-rpc_coordinator" class="mode-fields" style="display:none;">' +
-            '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_url', 'Coordinator URL', 'wizard.tooltip.rpc_url', 'URL of external RPC coordinator (e.g. http://coordinator:8080).') + '</label>' +
-            '<input type="text" id="wiz-rpcCoordinatorURL" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.coordinatorURL) || '') + '" placeholder="http://coordinator:8080"></div>' +
-            '<div class="form-row">' +
-            '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_port', 'Worker Port', 'wizard.tooltip.rpc_worker_port', 'Port where workers listen for commands. Must match across all workers.') + '</label>' +
-            '<input type="number" id="wiz-rpcCoordinatorWorkerPort" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.workerPort) || 18050) + '"></div>' +
-            '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_protocol', 'Protocol', 'wizard.tooltip.rpc_protocol', 'HTTP — simple, gRPC — faster for streaming.') + '</label>' +
-            '<select id="wiz-rpcCoordinatorProtocol" class="form-control"><option value="http">HTTP</option><option value="grpc">gRPC</option></select></div>' +
-            '</div>' +
-            '<div class="form-row">' +
-            '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_timeout', 'Timeout', 'wizard.tooltip.rpc_timeout', 'Timeout for worker response. Format: 30s, 60s, 2m.') + '</label>' +
-            '<input type="text" id="wiz-rpcCoordinatorTimeout" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.timeout) || '30s') + '" placeholder="30s, 60s"></div>' +
-            '<div class="form-group"><label>' + t_label('settings.rpc_coordinator_retries', 'Max Retries', 'wizard.tooltip.rpc_max_retries', 'How many times to retry on worker failure.') + '</label>' +
-            '<input type="number" id="wiz-rpcCoordinatorMaxRetries" class="form-control" value="' + ((sc.rpcCoordinator && sc.rpcCoordinator.maxRetries) || 3) + '" min="0" max="10"></div>' +
-            '</div>' +
-            '</div>' +
-            '<div id="wiz-modeFields-virtual_router" class="mode-fields" style="display:none;">' +
-            '<div class="form-group"><label>' + t_label('settings.virtual_models_coord_mode', 'Coordination Mode', 'wizard.tooltip.virtual_coord_mode', 'Sequential — chain. Parallel — concurrent. Tree — parent → children.') + '</label>' +
-            '<select id="wiz-virtualModelsCoordMode" class="form-control">' +
-            '<option value="sequential">Sequential</option>' +
-            '<option value="parallel">Parallel</option>' +
-            '<option value="tree">Tree</option>' +
-            '</select></div>' +
-            '<div class="form-group"><label>' + t_label('settings.virtual_models_timeout', 'Timeout (ms)', 'wizard.tooltip.virtual_timeout', 'Timeout for virtual model request (ms).') + '</label>' +
-            '<input type="number" id="wiz-virtualModelsTimeout" class="form-control" value="' + ((sc.virtualModels && sc.virtualModels.timeout) || 30000) + '" min="1000"></div>' +
-            '</div>' +
-            '<div id="wiz-modeFields-distributed_inference" class="mode-fields" style="display:none;">' +
-            '<div class="form-group"><label>' + t_label('settings.dist_inference_grpc_port', 'gRPC Port', 'wizard.tooltip.dist_grpc_port', 'gRPC server port for custom distributed inference.') + '</label>' +
-            '<input type="number" id="wiz-distInferenceGrpcPort" class="form-control" value="' + ((sc.distInference && sc.distInference.grpcPort) || 19000) + '" min="1024" max="65535"></div>' +
-            '</div>' +
+    function renderClusterPlanStep() {
+        return '<div class="wizard-step-content cluster-step">' +
+            '<p class="wizard-hint">' +
+            (window.I18N ? I18N.t('plan.stepHint') : 'Cluster composition') +
+            '</p>' +
+            '<div id="setupPlanPanel"></div>' +
             '</div>';
     }
 
@@ -542,28 +384,19 @@
     }
 
     function renderSummaryStep() {
-        var modeIcons = { standard: '⚙️', replication: '📋', rpc_coordinator: '🌐', virtual_router: '🧩', distributed_inference: '🔬' };
-        var modeNames = { standard: 'Standard', replication: 'Model Replication', rpc_coordinator: 'RPC Coordinator', virtual_router: 'Virtual Model Router', distributed_inference: 'Distributed Inference' };
-
         var html = '<div class="wizard-step-content summary-step">' +
             '<h3>' + (window.I18N ? I18N.t('wizard.step5') : 'Summary') + '</h3>' +
             '<div class="wizard-summary-card">' +
             '<div class="wizard-summary-row"><span class="wizard-summary-label">Backend Type:</span>' +
             '<span class="wizard-summary-value">' + (wizardState.backendType === 'llama_cpp' ? '🦒 llama.cpp' : '🦙 Ollama') + '</span></div>' +
-            '<div class="wizard-summary-row"><span class="wizard-summary-label">Mode:</span>' +
-            '<span class="wizard-summary-value">' + (modeIcons[wizardState.operatingMode] || '') + ' ' + (modeNames[wizardState.operatingMode] || wizardState.operatingMode) + '</span></div>';
-
-        var mode = wizardState.operatingMode;
-        if (mode === 'replication' && wizardState.replication) {
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Min Instances:</span><span class="wizard-summary-value">' + wizardState.replication.defaultMinInstances + '</span></div>';
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Max Instances:</span><span class="wizard-summary-value">' + wizardState.replication.defaultMaxInstances + '</span></div>';
-        } else if (mode === 'rpc_coordinator' && wizardState.rpcCoordinator) {
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">URL:</span><span class="wizard-summary-value">' + wizardState.rpcCoordinator.coordinatorURL + '</span></div>';
-        } else if (mode === 'virtual_router' && wizardState.virtualModels) {
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Coord Mode:</span><span class="wizard-summary-value">' + wizardState.virtualModels.coordMode + '</span></div>';
-        } else if (mode === 'distributed_inference' && wizardState.distInference) {
-            html += '<div class="wizard-summary-row"><span class="wizard-summary-label">gRPC Port:</span><span class="wizard-summary-value">' + wizardState.distInference.grpcPort + '</span></div>';
-        }
+            // R107 (чистовая уборка S5/S7): вместо строки «Mode» — то, чем мастер
+            // теперь реально управляет. Режим работы не выбирается: раскладку
+            // задаёт политика размещения, записанная на шаге «состав кластера».
+            '<div class="wizard-summary-row"><span class="wizard-summary-label">' +
+            tr('wizard.summary_placement', 'Placement policy') + ':</span>' +
+            '<span class="wizard-summary-value">' +
+            escapeHtml(tr('wizard.summary_placement_value', 'written on the cluster composition step (balancing.placement)')) +
+            '</span></div>';
 
         html += '<div class="wizard-summary-divider"></div>';
         html += '<div class="wizard-summary-row"><span class="wizard-summary-label">Algorithm:</span><span class="wizard-summary-value">' + wizardState.algorithm + '</span></div>';
@@ -623,19 +456,14 @@
             var target = e.target;
 
             if (target.id === 'wizardPrevBtn' || target.closest('#wizardPrevBtn')) {
-                if (currentStep === 4) readModeParamsIntoState();
-                if (currentStep === 5) readGeneralFieldsIntoState();
+                // R107: шаг «параметры режима» удалён — читать нечего, кроме общих полей.
+                if (currentStep === 4) readGeneralFieldsIntoState();
                 if (currentStep > 1) { currentStep--; renderStep(currentStep); }
                 return;
             }
 
             if (target.id === 'wizardNextBtn' || target.closest('#wizardNextBtn')) {
-                if (currentStep === 4) {
-                    var errors = validateWizardModeParams();
-                    if (errors.length > 0) { showWizardError(errors.join('<br>')); return; }
-                    readModeParamsIntoState();
-                }
-                if (currentStep === 5) readGeneralFieldsIntoState();
+                if (currentStep === 4) readGeneralFieldsIntoState();
                 if (currentStep < totalSteps) { currentStep++; renderStep(currentStep); }
                 return;
             }
@@ -662,33 +490,14 @@
                 var btRadio = btCard.querySelector('input[name="backendType"]');
                 if (btRadio) {
                     btRadio.checked = true;
-                    var newType = btRadio.value;
-                    if (newType !== wizardState.backendType) {
-                        wizardState.backendType = newType;
-                        // Если текущий режим недоступен для нового типа — сбрасываем
-                        var availableModes = getAvailableModesForType(newType);
-                        if (availableModes.indexOf(wizardState.operatingMode) < 0) {
-                            wizardState.operatingMode = 'standard';
-                        }
-                    }
+                    // R107: сброс режима при смене типа бэкенда убран — режим в
+                    // мастере больше не выбирается (раскладка = политика).
+                    wizardState.backendType = btRadio.value;
                     document.querySelectorAll('.mode-card[data-backend-type]').forEach(function (c) {
                         c.classList.toggle('active', c === btCard);
                     });
                 }
                 return;
-            }
-
-            // Mode card selection — ТОЛЬКО в wizardState
-            var card = target.closest('.mode-card[data-mode]');
-            if (card) {
-                var radio = card.querySelector('input[type="radio"]');
-                if (radio) {
-                    radio.checked = true;
-                    wizardState.operatingMode = card.getAttribute('data-mode');
-                    document.querySelectorAll('.mode-card').forEach(function (c) {
-                        c.classList.toggle('active', c === card);
-                    });
-                }
             }
         });
 
@@ -744,20 +553,6 @@
         }
     }
 
-    function validateWizardModeParams() {
-        var errors = [];
-        var mode = wizardState.operatingMode;
-        if (mode === 'rpc_coordinator') {
-            var url = getFieldValue('rpcCoordinatorURL', '');
-            if (!url) errors.push('Coordinator URL is required');
-        }
-        if (mode === 'replication') {
-            var min = parseInt(getFieldValue('modelReplicationMinInstances', 0));
-            var max = parseInt(getFieldValue('modelReplicationMaxInstances', 0));
-            if (max < min) errors.push('Max must be >= Min');
-        }
-        return errors;
-    }
 
     function showWizardError(msg) {
         var existing = document.getElementById('wizardError');
@@ -788,7 +583,8 @@
             return window.ConfigIO.showImportPreview(data).then(function (confirmed) {
                 if (confirmed) {
                     applyWizardConfig(data);
-                    currentStep = 6;
+                    // R107: шагов стало 5 (шаг «параметры режима» удалён).
+                    currentStep = 5;
                     renderStep(currentStep);
                 }
             });
@@ -799,7 +595,9 @@
 
     function applyWizardConfig(data) {
         if (!data) return;
-        if (data.operating_mode) wizardState.operatingMode = data.operating_mode;
+        // R107 (чистовая уборка S5/S7): режим и его параметры из импортируемого
+        // конфига больше не читаем — мастер их не редактирует и не записывает.
+        // Раскладка задаётся политикой размещения (balancing.placement).
         if (data.settings) {
             var s = data.settings;
             if (s.algorithm) wizardState.algorithm = s.algorithm;
@@ -807,13 +605,6 @@
             if (s.vramMaxUsage) wizardState.vramMaxUsage = s.vramMaxUsage;
             if (s.cpuMaxUsage) wizardState.cpuMaxUsage = s.cpuMaxUsage;
             if (s.ramMaxUsage) wizardState.ramMaxUsage = s.ramMaxUsage;
-        }
-        if (data.mode_config) {
-            var mc = data.mode_config;
-            if (mc.modelReplication) wizardState.replication = mc.modelReplication;
-            if (mc.rpcCoordinator) wizardState.rpcCoordinator = mc.rpcCoordinator;
-            if (mc.virtualModels) wizardState.virtualModels = mc.virtualModels;
-            if (mc.distInference) wizardState.distInference = mc.distInference;
         }
     }
 
@@ -823,8 +614,8 @@
 
     function finishWizard() {
         // Считываем параметры с текущих форм если нужно
-        if (currentStep === 4) readModeParamsIntoState();
-        if (currentStep === 5) readGeneralFieldsIntoState();
+        // R107: остался только шаг общих параметров (был шаг 5 → стал 4).
+        if (currentStep === 4) readGeneralFieldsIntoState();
 
         var payload = buildWizardPayload();
         payload.initialized = true;
@@ -882,22 +673,26 @@
     }
 
     function buildWizardPayload() {
-        var payload = {
-            operatingMode: wizardState.operatingMode,
-            backendEngine: wizardState.backendType === 'llama_cpp' ? 'llama_cpp' : 'ollama_api',
+        // R107 (чистовая уборка S5/S7): `operatingMode` и секции режимов
+        // (modelReplication / rpcCoordinator / virtualModels / distInference) из
+        // payload УБРАНЫ. Причина: мастер их больше не редактирует, а PUT
+        // /api/v1/cluster/config применяет `operatingMode` только если поле
+        // непустое (handlers_cluster.go) — то есть текущее значение на стенде
+        // сохраняется как есть. Раскладку мастер пишет отдельно, политикой
+        // (PUT /api/v1/placement, шаг «состав кластера»).
+        return {
+            // R112 (2026-10-11): 'auto' — тип не навязан (llama.cpp и Ollama
+            // работают вместе); раньше любое значение, кроме llama_cpp, молча
+            // превращалось в ollama_api и вырезало llama.cpp-бэкенды.
+            backendEngine: wizardState.backendType === 'llama_cpp'
+                ? 'llama_cpp'
+                : (wizardState.backendType === 'auto' || wizardState.backendType === 'all' ? 'auto' : 'ollama_api'),
             algorithm: wizardState.algorithm,
             gpuMaxUsage: wizardState.gpuMaxUsage,
             vramMaxUsage: wizardState.vramMaxUsage,
             cpuMaxUsage: wizardState.cpuMaxUsage,
             ramMaxUsage: wizardState.ramMaxUsage
         };
-
-        if (wizardState.replication) payload.modelReplication = wizardState.replication;
-        if (wizardState.rpcCoordinator) payload.rpcCoordinator = wizardState.rpcCoordinator;
-        if (wizardState.virtualModels) payload.virtualModels = wizardState.virtualModels;
-        if (wizardState.distInference) payload.distInference = wizardState.distInference;
-
-        return payload;
     }
 
     // ================================================================

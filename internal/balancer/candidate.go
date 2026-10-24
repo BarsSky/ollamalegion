@@ -44,6 +44,15 @@ func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendT
 	var loaded, warming, free, fallback []string
 
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда не самостоятелен — он держит
+		// только часть слоёв раскладки, и прямой запрос на него сломается.
+		// Воркеров обслуживает мастер группы (см. sharded_master_r92.go), а из
+		// общего пула кандидатов они исключены. Реестр неизменяем, поэтому
+		// проверка безопасна под уже взятым p.mu.RLock.
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
+
 		// Фильтрация по типу бэкенда
 		if len(allowedTypes) > 0 {
 			bt := normalizeBackendType(state.Backend.Type)

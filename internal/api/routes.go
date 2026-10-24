@@ -26,6 +26,16 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/events", AuthMiddleware(http.HandlerFunc(s.handleEvents), s.authenticator))
 
 	// Auth endpoints (требуют токен, кроме health)
+	// R201 (2026-10-21): вход в WebUI. login/logout/me доступны БЕЗ сессии (иначе
+	// некуда войти), users — только с админскими правами.
+	s.mux.Handle("/api/v1/auth/login", RateLimitMiddleware(AuthLoginHandler(s.authUsers, s.authSessions), s.rateLimiter))
+	s.mux.Handle("/api/v1/auth/logout", RateLimitMiddleware(AuthLogoutHandler(s.authSessions), s.rateLimiter))
+	s.mux.Handle("/api/v1/auth/me", RateLimitMiddleware(AuthMeHandler(s.authUsers, s.authSessions, s.authenticator), s.rateLimiter))
+	s.mux.Handle("/api/v1/auth/users", AuthMiddleware(RateLimitMiddleware(AuthUsersHandler(s.authUsers, s.authSessions), s.rateLimiter), s.authenticator))
+	// R225: активные сессии (список и отзыв) — только администратор, проверка внутри.
+	s.mux.Handle("/api/v1/auth/sessions", AuthMiddleware(RateLimitMiddleware(AuthSessionsHandler(s.authSessions), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/auth/sessions/", AuthMiddleware(RateLimitMiddleware(AuthSessionsHandler(s.authSessions), s.rateLimiter), s.authenticator))
+
 	s.mux.Handle("/api/v1/auth/status", AuthMiddleware(RateLimitMiddleware(AuthStatusHandler(s.authenticator), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/auth/token", AuthMiddleware(RateLimitMiddleware(TokenManagementHandler(s.authenticator), s.rateLimiter), s.authenticator))
 
@@ -115,6 +125,22 @@ func (s *Server) setupRoutes() {
 	// наблюдаемость (план plans/2026-09-23-multi-backend-placement-policy.md).
 	s.mux.Handle("/api/v1/placement", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.placementHandler), s.rateLimiter), s.authenticator))
 
+	// R95 (S4 плана 2026-10-07): сухой прогон композиции кластера — проверки §7
+	// (доступность узлов, версии, сумма VRAM, KV под n_ctx, трафик раскладки)
+	// ДО сохранения настройки. Ничего не меняет: POST только возвращает отчёт.
+	s.mux.Handle("/api/v1/placement/validate", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.placementValidateHandler), s.rateLimiter), s.authenticator))
+
+	// R96 (S5 плана 2026-10-07): предлагаемый план размещения для мастера
+	// первоначальной настройки — «состав кластера вместо выбора режима».
+	// Возвращает числа и готовый фрагмент balancing.placement; не применяет.
+	s.mux.Handle("/api/v1/placement/plan", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.placementPlanHandler), s.rateLimiter), s.authenticator))
+
+	// R166 (2026-10-17): пропускная способность канала — ключевой параметр для
+	// раскладки слоёв. Автозамер идёт сам (при старте и раз в период), а эта
+	// ручка позволяет перезамерить по кнопке в WebUI и вернуть «что пойдёт в
+	// оценку трафика» вместе с источником значения.
+	s.mux.Handle("/api/v1/rpc/link/measure", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.rpcLinkMeasureHandler), s.rateLimiter), s.authenticator))
+
 	// Round 31 #7 (2026-08-09): per-model token usage (с аутентификацией).
 	// Атомарно обновляется в proxyRequestLlamaCppNonStream при каждом успешном response.
 	s.mux.Handle("/api/v1/stats/tokens", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.HandleStatsTokens), s.rateLimiter), s.authenticator))
@@ -182,11 +208,48 @@ func (s *Server) setupRoutes() {
 	// monitor.html запрашивала /js/modules/*.js и /css/*.css, получала 404 и
 	// выглядела пустой страницей. health.html это не задевало — она
 	// самодостаточна (вся i18n и стили inline).
+	//
+	// R134 (2026-10-16): ЖИВАЯ ЖАЛОБА ОПЕРАТОРА — «в панели нет вкладки агенты и
+	// не отображаются все иконки». Причин было две, и обе здесь:
+	//   * маршрута для /webfonts/ не существовало, поэтому Font Awesome CSS
+	//     ссылался на ../webfonts/fa-solid-900.woff2, получал 404 и иконки не
+	//     рисовались;
+	//   * страницы дашборда (index.html с навигацией, включая «Агенты») и
+	//     остальных html-страниц тоже не маршрутизировались — только /monitor и
+	//     /health имели обработчики, а /index.html отдавал 404.
+	// Вторая половина дефекта (файлов этих вообще не было в образе) закрыта в
+	// docker/balancer/Dockerfile; проверку состава образа держит
+	// scripts/check_webui_assets.py.
 	if staticDir, ok := webuiStaticDir(); ok {
 		fileServer := http.FileServer(http.Dir(staticDir))
 		s.mux.Handle("/js/", fileServer)
 		s.mux.Handle("/css/", fileServer)
 		s.mux.Handle("/img/", fileServer)
+		// Шрифты: без этого маршрута иконки в панели балансера не рисуются.
+		s.mux.Handle("/webfonts/", fileServer)
+		// Страницы, которые балансер может отдать сам (навигация на них ведёт
+		// из index.html). monitor.html и health.html имеют свои обработчики выше
+		// (им нужны токен и параметры), поэтому здесь их нет.
+		for _, page := range []string{
+			"/index.html",
+			"/rpc-status.html",
+			"/tp-pipeline.html",
+			"/virtual-models.html",
+		} {
+			s.mux.Handle(page, fileServer)
+		}
+		// Корень — дашборд (index.html). Без этого маршрута /index.html отвечал
+		// бы 301 на /, а / отдавал 404: «страница в образе есть, а открыть
+		// нельзя». Паттерн "/" — catch-all mux'а, но он срабатывает только когда
+		// не совпал ни один более длинный (/api/..., /monitor, /health),
+		// поэтому существующие маршруты не затрагиваются.
+		//
+		// ОГРАНИЧЕНИЕ (честно): /js/modules/config.js в образе балансера —
+		// шаблон из репозитория (API_TOKEN пуст), своего генератора у балансера
+		// нет. Дашборд отрисуется (навигация и вкладка «Агенты» на месте), но
+		// действия, требующие токена, выполняются в каноническом WebUI. Панель
+		// балансера — резервный вход, и это осознанно.
+		s.mux.Handle("/", fileServer)
 	}
 
 	// Restart endpoint (c аутентификацией и rate limiting, только от webui)

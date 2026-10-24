@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // Round 10 (2026-07-28) BUGFIX: env-var overrides для hardcoded fallback-параметров.
@@ -35,6 +37,22 @@ var (
 	fallbackOverheadMB      int64   = 1536
 	fallbackSafetyFactor    float64 = 0.85
 )
+
+// ErrModelFileNotFound — R119 (2026-10-15): «модели нет на диске» как
+// ТИПИЗИРОВАННАЯ ошибка, а не просто текст.
+//
+// ЗАЧЕМ. Раньше lazy-load возвращал строку «model file not found: <path>», и
+// HTTP-слой не мог отличить «модель не найдена» от «внутренняя поломка»: все
+// ошибки догрузки превращались в 500 Internal Server Error с ПУСТЫМ телом.
+//
+// ЖИВОЙ СЛУЧАЙ (стенд, 2026-10-15): OpenWebUI просил модель `llama-3-8b`,
+// которой нет в каталоге, получал 500 без объяснения и повторял запрос (в логе —
+// три 500 подряд с интервалом 150 мс). Оператор видел «Internal Server Error» и
+// не понимал, что модель просто не найдена; ollama-совместимый клиент не мог
+// показать причину, потому что тела не было вовсе.
+//
+// Теперь это 404 + машиночитаемое тело (см. writeModelLoadError).
+var ErrModelFileNotFound = errors.New("model file not found")
 
 // lazyLoadDetachedTimeout — R83 (2026-09-29): сколько ждать загрузку модели,
 // отвязанную от клиентского запроса.
@@ -143,6 +161,85 @@ func ensureModelLoaded(ctx context.Context, modelName string) (string, error) {
 	return ensureModelLoadedWithNCtx(ctx, modelName, 0)
 }
 
+// modelReadyPollInterval — период опроса состояния загрузки.
+const modelReadyPollInterval = 500 * time.Millisecond
+
+// modelReadyWaitTimeout — сколько ждать готовности модели, если запрос не задал
+// собственный дедлайн. Значение переопределяется CPPWORKER_LOAD_WAIT_SEC.
+//
+// Почему по умолчанию так долго (15 минут): загрузка большой модели на этом
+// стенде занимает минуты, а n_ctx-перезагрузка под клиента — это ТА ЖЕ загрузка.
+// Ollama в такой ситуации тоже держит запрос, а не отвечает ошибкой; ранний
+// отказ выглядит у клиента как «задача выполнена» (done:true) без ответа.
+const modelReadyWaitTimeout = 15 * time.Minute
+
+// modelReadyWaitLimit — предел ожидания (env CPPWORKER_LOAD_WAIT_SEC).
+func modelReadyWaitLimit() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("CPPWORKER_LOAD_WAIT_SEC")); v != "" {
+		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
+			return time.Duration(sec) * time.Second
+		}
+	}
+	return modelReadyWaitTimeout
+}
+
+// waitForModelReady — ждёт, пока модель перейдёт в StateLoaded.
+//
+// R113 (2026-10-13). До этой функции «модель загружена» означало «есть запись в
+// b.models»: при активной загрузке/перезагрузке (n_ctx другого клиента, auto-tune,
+// параллельный запрос) запись уже существует, состояние — loading, и генерация
+// падала с «model X is not loaded (state: loading)». В стриминговом пути эта
+// ошибка уходила клиенту как done:true, то есть как ЗАВЕРШЁННЫЙ ход без единого
+// токена (живая жалоба: «COMPLETE прилетает до того, как вообще происходит
+// потоковая генерация ответа»).
+//
+// Само ожидание живёт в cppbackend (там же состояние модели), здесь — предел из
+// окружения, журнал и перевод в errModelIsLoading, который handleChat отдаёт как
+// 503 + Retry-After.
+func waitForModelReady(ctx context.Context, modelName string) error {
+	limit := modelReadyWaitLimit()
+	started := time.Now()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- backend.WaitForModelReady(ctx, modelName, modelReadyPollInterval, limit)
+	}()
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			switch {
+			case err == nil:
+				if waited := time.Since(started); waited > 2*modelReadyPollInterval {
+					logger.Get().Infow("waitForModelReady: модель готова после ожидания",
+						"model", modelName, "waited_ms", waited.Milliseconds())
+				}
+				return nil
+			case errors.Is(err, cppbackend.ErrModelIsLoading):
+				logger.Get().Warnw("waitForModelReady: модель не готова — отдаём 503 (повторите запрос)",
+					"model", modelName,
+					"waited_ms", time.Since(started).Milliseconds(),
+					"limit_sec", int(limit.Seconds()),
+					"hint", "CPPWORKER_LOAD_WAIT_SEC увеличивает предел ожидания")
+				return errModelIsLoading
+			default:
+				return err
+			}
+		case <-ticker.C:
+			state := "unknown"
+			if st, ok := backend.ModelState(modelName); ok {
+				state = string(st)
+			}
+			logger.Get().Infow("waitForModelReady: ждём готовности модели",
+				"model", modelName, "state", state,
+				"waited_ms", time.Since(started).Milliseconds(),
+				"limit_sec", int(limit.Seconds()))
+		}
+	}
+}
+
 // loadTotalNCtxForRequest — окно НА КЛИЕНТА → СУММАРНОЕ окно загрузки модели.
 //
 // llama.cpp при kv_unified=false делит суммарное окно между слотами
@@ -157,6 +254,34 @@ func loadTotalNCtxForRequest(requestedPerClient, slots int) int {
 		slots = 1
 	}
 	return cppbackend.PadContext(requestedPerClient) * slots
+}
+
+// chooseLazyLoadWindow — R229 (2026-10-22): окно ленивой загрузки по лестнице
+// приоритета, которая раньше существовала только в комментариях:
+//
+//	явный num_ctx клиента  >  профиль модели  >  env CPPWORKER_CTX_SIZE
+//
+// Живой дефект. env-дефолт записывался в план ДО слияния с профилем, а
+// applyProfileToLoadRequest заполняет только ПУСТЫЕ поля, поэтому профильное
+// окно не применялось никогда: gemma-4-E4B-it-Q4_K_M (профиль 12288) поднималась
+// ленивой загрузкой с 32768 (лог: load_n_ctx=32768, n_ctx_source=env).
+//
+// Единицы. requestedPerClient — окно НА КЛИЕНТА, поэтому переводится в суммарное
+// n_ctx умножением на слоты (loadTotalNCtxForRequest). Профильное окно — итоговое
+// для плана загрузки (как его задаёт панель настроек), слоты на него не
+// умножаются: профиль уже описывает окно модели.
+func chooseLazyLoadWindow(requestedPerClient, envDefault, slots int, prof *types.LlamaCppModelProfile) (int, string) {
+	if requestedPerClient > 0 {
+		if slots < 1 {
+			slots = 1
+		}
+		return loadTotalNCtxForRequest(requestedPerClient, slots),
+			fmt.Sprintf("num_ctx запроса клиента (%d на клиента × %d слота)", requestedPerClient, slots)
+	}
+	if prof != nil && prof.ContextLength > 0 {
+		return prof.ContextLength, "профиль модели"
+	}
+	return envDefault, "env CPPWORKER_CTX_SIZE"
 }
 
 // ensureModelLoadedWithNCtx — R83-политика (2026-10-01): загрузка модели с
@@ -180,23 +305,74 @@ func loadTotalNCtxForRequest(requestedPerClient, slots int) int {
 // Если запрошенное окно физически не влезает, его уменьшит адаптивная
 // стратегия/auto-tune, а rationale.AppliedNCtx покажет, что реально применилось.
 func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedNCtx int) (string, error) {
-	// 0) Если модель уже загружена — сразу выходим.
-	if _, err := backend.GetModel(modelName); err == nil {
-		return modelName, nil
+	// 0) Если модель уже загружена И ГОТОВА — сразу выходим.
+	//
+	// R113 (2026-10-13): проверяем СОСТОЯНИЕ, а не факт наличия в b.models.
+	// GetModel() отдаёт запись модели в любом состоянии, включая loading: раньше
+	// этого хватало, чтобы считать модель загруженной, и дальше генерация падала
+	// с «model X is not loaded (state: loading)». Стриминговый путь превращал эту
+	// ошибку в чанк done:true → клиент (Cline) видел завершение хода, не получив
+	// ни одного токена: «COMPLETE прилетает до того, как вообще происходит
+	// потоковая генерация ответа». Ждём готовности — так же, как это делает
+	// Ollama: запрос к загружаемой модели блокируется, а не падает.
+	if info, err := backend.GetModel(modelName); err == nil {
+		switch info.State {
+		case cppbackend.StateLoaded:
+			return modelName, nil
+		case cppbackend.StateLoading:
+			if err := waitForModelReady(ctx, modelName); err != nil {
+				return "", err
+			}
+			return modelName, nil
+		case cppbackend.StateError:
+			// Запись осталась после неудачной загрузки: повторять её ожиданием
+			// бессмысленно — отдаём понятную ошибку (балансер решает, перезагружать ли).
+			return "", fmt.Errorf("model %s is in error state (previous load failed)", modelName)
+		default:
+			// unloaded/неизвестное: запись есть, но загрузку надо начинать —
+			// уходим в обычный путь ниже (как было до R113).
+		}
 	}
 
 	// 1) Используем TryLockLoad для постановки в очередь загрузки.
 	lockOk, lockErr := backend.TryLockLoad(modelName)
 	if lockErr != nil {
-		// Модель уже загружена (успели загрузить между нашей проверкой и TryLockLoad).
+		// R113: НЕ считаем это успехом «на глаз». TryLockLoad отвечает ошибкой и
+		// тогда, когда модель есть в b.models, но перезагружается (состояние
+		// loading) — например под n_ctx другого клиента. Ждём готовности только
+		// для loading: для error/unloaded ждать нечего (ждать пришлось бы весь
+		// предел ожидания впустую).
+		if state, exists := backend.ModelState(modelName); exists {
+			switch state {
+			case cppbackend.StateLoading:
+				if err := waitForModelReady(ctx, modelName); err != nil {
+					return "", err
+				}
+				return modelName, nil
+			case cppbackend.StateLoaded:
+				return modelName, nil
+			case cppbackend.StateError:
+				return "", fmt.Errorf("model %s is in error state (previous load failed)", modelName)
+			}
+		}
+		if err := waitForModelReady(ctx, modelName); err != nil {
+			return "", err
+		}
 		return modelName, nil
 	}
 	if !lockOk {
 		// Другая горутина уже грузит эту модель — ждём завершения.
+		// R113: WaitForLoad смотрит на b.models (тоже без состояния), поэтому
+		// решающим считаем waitForModelReady.
 		if backend.WaitForLoad(modelName) {
-			return modelName, nil
+			if info, err := backend.GetModel(modelName); err == nil && info.State == cppbackend.StateLoaded {
+				return modelName, nil
+			}
 		}
-		return "", errModelIsLoading
+		if err := waitForModelReady(ctx, modelName); err != nil {
+			return "", err
+		}
+		return modelName, nil
 	}
 
 	// lockOk == true — мы отвечаем за загрузку.
@@ -204,27 +380,15 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 
 	log := logger.Get()
 	loadStart := time.Now()
-	// R83-политика (2026-10-01): окно загрузки. Явный num_ctx клиента важнее
-	// env/профиля — иначе клиент, которому нужно 32768, получает 8192 и
-	// вынужден ждать перезагрузку (или работать хуже, чем может).
-	//
-	// ВАЖНО про единицы измерения. `num_ctx` клиента — это окно НА КЛИЕНТА, а
-	// n_ctx модели — СУММАРНОЕ: llama.cpp делит его между слотами
-	// (n_ctx_seq = PAD(n_ctx / n_seq_max, 256)). Поэтому переводим одно в другое
-	// здесь: иначе клиент, попросивший 32768 при parallel=2, получил бы 16384.
-	loadNCtx := *ctxSize
-	loadNCtxSource := "env CPPWORKER_CTX_SIZE"
-	if requestedNCtx > 0 {
-		slots := 1
-		if currentConfig != nil && currentConfig.DefaultNParallel > 1 {
-			slots = currentConfig.DefaultNParallel
-		}
-		loadNCtx = loadTotalNCtxForRequest(requestedNCtx, slots)
-		loadNCtxSource = fmt.Sprintf("num_ctx запроса клиента (%d на клиента × %d слота)",
-			requestedNCtx, slots)
-	}
-	log.Infow("lazy-loading model from filesystem", "model", modelName,
-		"load_n_ctx", loadNCtx, "n_ctx_source", loadNCtxSource)
+	// R229 (2026-10-22): окно загрузки выбирается НИЖЕ — после того, как найден
+	// файл модели. Причина: профиль ищется у ВЛАДЕЛЬЦА ФАЙЛА (R154), а лестница
+	// приоритета (явный num_ctx клиента > профиль модели > env CPPWORKER_CTX_SIZE)
+	// требует профиля ДО расчёта стратегии. До R229 env-дефолт записывался в план
+	// здесь, а слияние с профилем (applyProfileToLoadRequest) заполняет только
+	// ПУСТЫЕ поля — поэтому профильное окно не применялось никогда (живой случай:
+	// gemma-4-E4B-it-Q4_K_M грузилась с 32768 вместо профильных 12288).
+	log.Debugw("lazy-load: начинаю поиск модели",
+		"model", modelName, "requested_n_ctx", requestedNCtx, "env_default_n_ctx", *ctxSize)
 
 	// Ищем модель в файловой системе
 	mm := backend.ModelManager()
@@ -288,8 +452,39 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 			loadFailures.recordDetailed(modelName, LoadFailureModelNotFound,
 				fmt.Errorf("model file not found: %s", modelPath),
 				failAttempt.Diagnostics)
-			return "", fmt.Errorf("model file not found: %s", modelPath)
+			// R119 (2026-10-15): типизированная ошибка — иначе HTTP-слой не мог
+			// отличить «модели нет» от «внутренней поломки» и отвечал 500 с
+			// ПУСТЫМ телом. Живой случай (стенд): OpenWebUI просил llama-3-8b
+			// (модели нет в каталоге), получал 500 Internal Server Error без
+			// объяснения и повторял запрос — оператор видел «Internal Server
+			// Error» и не понимал, что модель просто не найдена.
+			return "", fmt.Errorf("%w: %s", ErrModelFileNotFound, modelPath)
 		}
+
+		// R229 (2026-10-22): окно загрузки — лестница приоритета
+		//   явный num_ctx клиента  >  профиль модели  >  env CPPWORKER_CTX_SIZE.
+		// Раньше env-дефолт попадал в план ДО слияния с профилем, а слияние
+		// заполняет только пустые поля, поэтому профильное окно не применялось
+		// никогда: gemma-4-E4B-it-Q4_K_M (профиль 12288) поднималась с 32768.
+		// Профиль ищем у ВЛАДЕЛЬЦА ФАЙЛА (R154) — он же используется ниже при
+		// слиянии остальных полей.
+		winProfileName := profileLookupNameForPath(modelName, modelPath)
+		var winProfile *types.LlamaCppModelProfile
+		if requestedNCtx <= 0 {
+			winProfile = lazyLoadProfileFor(winProfileName)
+		}
+		slots := 1
+		if currentConfig != nil && currentConfig.DefaultNParallel > 1 {
+			slots = currentConfig.DefaultNParallel
+		}
+		loadNCtx, loadNCtxSource := chooseLazyLoadWindow(requestedNCtx, *ctxSize, slots, winProfile)
+		if winProfile != nil && winProfile.ContextLength > 0 && requestedNCtx <= 0 {
+			log.Infow("lazy-load: окно загрузки взято из профиля модели (R229)",
+				"model", modelName, "profile", winProfileName,
+				"contextLength", winProfile.ContextLength, "env_default", *ctxSize)
+		}
+		log.Infow("lazy-loading model from filesystem", "model", modelName,
+			"load_n_ctx", loadNCtx, "n_ctx_source", loadNCtxSource)
 
 		// === Auto-tune на LOAD (2026-06-26 BUGFIX) ===
 		//
@@ -518,7 +713,7 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 		// Профиль только ДОПОЛНЯЕТ: applyProfileToLoadRequest заполняет поля,
 		// которые остались пустыми/нулевыми, поэтому окно от клиента
 		// (opts.ContextSize) не перезаписывается.
-		if err := applySyncedProfileToLazyLoadOpts(modelName, &opts); err != nil {
+		if err := applySyncedProfileToLazyLoadOpts(winProfileName, &opts); err != nil {
 			return "", err
 		}
 
@@ -610,16 +805,33 @@ func backendGPUVRAMFree() uint64 {
 // поэтому окно, выбранное под клиента (opts.ContextSize), не перезаписывается.
 func applySyncedProfileToLazyLoadOpts(modelName string, opts *cppbackend.LoadModelOpts) error {
 	if opts == nil || profileSyncer == nil {
+		logger.Get().Warnw("lazy-load: профили моделей недоступны (синхронизатор не запущен) — "+
+			"загрузка пойдёт с параметрами по умолчанию", "model", modelName)
 		return nil
 	}
-	prof := profileSyncer.applyProfileOnLoad(modelName)
+	// R228: пустой кэш профилей — не «нет профиля» (см. lazyLoadProfileFor).
+	prof := lazyLoadProfileFor(modelName)
 	if prof == nil {
+		logger.Get().Warnw("lazy-load: профиль модели не найден — загрузка с параметрами по умолчанию "+
+			"(n_ctx из CPPWORKER_CTX_SIZE)", "model", modelName,
+			"profiles_known", profileSyncer.snapshotSize())
 		return nil
 	}
+	logger.Get().Infow("lazy-load: применяю профиль модели", "model", modelName,
+		"contextLength", prof.ContextLength, "numGpuLayers", prof.NumGPULayers,
+		"kvCacheType", prof.KVCacheType, "parallel", prof.Parallel)
 	ctxSize, batch, gpuLayers := opts.ContextSize, opts.BatchSize, opts.GPULayers
 	flashAttn, kvCacheType := opts.FlashAttnType, opts.KVCacheType
-	if !applyProfileToLoadRequest(prof, &ctxSize, &batch, &gpuLayers, &flashAttn, &kvCacheType) {
+	// R135 (2026-10-16): parallel из профиля — иначе ленивая загрузка поднимала
+	// модель с одним слотом, хотя оператор выставил два (живой замер инструмента
+	// scripts/e2e/02-model-params.js: профиль parallel=2 → maxSlots=1).
+	parallel := opts.Parallel
+	if !applyProfileToLoadRequest(prof, &ctxSize, &batch, &gpuLayers, &flashAttn, &kvCacheType, &parallel) {
 		return fmt.Errorf("model %s is marked as disabled in profile", modelName)
+	}
+	if parallel != opts.Parallel {
+		logger.Get().Infow("lazy-load: parallel взят из профиля модели (R135)",
+			"model", modelName, "parallel", parallel, "was", opts.Parallel)
 	}
 	if kvCacheType != opts.KVCacheType {
 		logger.Get().Infow("lazy-load: kvCacheType взят из профиля модели (R83/v52)",
@@ -629,6 +841,7 @@ func applySyncedProfileToLazyLoadOpts(modelName string, opts *cppbackend.LoadMod
 	}
 	opts.ContextSize, opts.BatchSize, opts.GPULayers = ctxSize, batch, gpuLayers
 	opts.FlashAttnType, opts.KVCacheType = flashAttn, kvCacheType
+	opts.Parallel = parallel
 	// R83/v67 (2026-10-02): per-model reasoning из профиля при lazy-load.
 	// Иначе LoadModelOpts.EnableReasoning оставался nil → cppbackend брал
 	// cfg.DefaultEnableReasoning=false, и модель грузилась БЕЗ размышлений,

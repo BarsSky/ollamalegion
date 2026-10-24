@@ -224,8 +224,8 @@ func TestPeerIP_NormalizesIPv4Mapped(t *testing.T) {
 	cases := map[string]string{
 		"192.0.2.11:51000":          "192.0.2.11",
 		"[::ffff:192.0.2.11]:51000": "192.0.2.11",
-		"172.18.0.5:41234":             "172.18.0.5",
-		"":                             "",
+		"172.18.0.5:41234":          "172.18.0.5",
+		"":                          "",
 	}
 	for addr, want := range cases {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)

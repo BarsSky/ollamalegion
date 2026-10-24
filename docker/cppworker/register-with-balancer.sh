@@ -109,6 +109,21 @@ LABELS_JSON="${LABELS_JSON}]"
 REGISTER_CPP_PORT="${CPPWORKER_ADVERTISED_PORT}"
 echo "[register] Using cppWorkerPort=${REGISTER_CPP_PORT} (advertised=${CPPWORKER_ADVERTISED_PORT}, internal=${CPPWORKER_PORT})"
 
+# R114 (2026-10-13): версия/коммит llama.cpp узла — уходит в регистрацию.
+#
+# ЗАЧЕМ. Балансер сравнивает эту строку у узлов группы раскладки
+# (types.Backend.BuildInfo → composition.checkVersionMismatch): мастер и донор
+# обязаны быть из ОДНОГО коммита llama.cpp — протокол RPC версионно-чувствителен.
+# Раньше значение передавал только Go-путь регистрации
+# (cmd/cppworker/balancer_register.go), а этот скрипт (он и работает на стенде при
+# CPPWORKER_REGISTER_DISABLE=true) — нет, поэтому у всех бэкендов buildInfo был
+# пуст, и проверка давала вечный warning `version_unknown` вместо сравнения.
+#
+# Источник: окружение контейнера (печётся в образ ARG LLAMA_BUILD, переопределяется
+# в deployments/.env). "unknown" — честный признак «узел версию не сообщил».
+CPPWORKER_LLAMA_BUILD="${CPPWORKER_LLAMA_BUILD:-unknown}"
+echo "[register] llama.cpp build: ${CPPWORKER_LLAMA_BUILD}"
+
 REGISTER_JSON=$(cat <<EOF
 {
   "id": "${CPPWORKER_BACKEND_ID}",
@@ -124,6 +139,7 @@ REGISTER_JSON=$(cat <<EOF
   "backendType": "llama_cpp",
   "backendEngine": "llama_cpp",
   "gpuMode": "${CPPWORKER_GPU_MODE}",
+  "buildInfo": "${CPPWORKER_LLAMA_BUILD:-unknown}",
   "cppWorkerApiToken": "${CPPWORKER_API_TOKEN:-${API_TOKEN:-}}"
 }
 EOF

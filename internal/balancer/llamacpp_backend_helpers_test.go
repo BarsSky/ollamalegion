@@ -332,25 +332,36 @@ func TestReloadDedup_FirstCallRegisters(t *testing.T) {
 	t.Parallel()
 	r := newReloadDedupRegistry()
 
+	// R119 (2026-10-15): callerFn теперь УДЕРЖИВАЕТ reload в полёте, пока тест не
+	// отпустит его. До этого callerFn возвращался мгновенно, обёртка удаляла
+	// запись из реестра, и проверка IsReloadPending ниже превращалась в гонку:
+	// под нагрузкой (полный прогон ./...) горутина успевала завершиться раньше
+	// проверки → «после StartReloadIfNotPending IsReloadPending должен быть true»
+	// падало. Флейк маскировал бы реальные регрессии dedup'а.
 	var done sync.WaitGroup
 	done.Add(1)
+	callerStarted := make(chan struct{})
+	releaseCaller := make(chan struct{})
 	entry, started := r.StartReloadIfNotPending("backend-A", "model-X", 8192, func(e *reloadEntry) {
-		// Симулируем reload. callerFn не закрывает entry.done — это делает
-		// обёртка StartReloadIfNotPending после возврата callerFn.
+		close(callerStarted)
+		<-releaseCaller
+		// callerFn не закрывает entry.done — это делает обёртка
+		// StartReloadIfNotPending после возврата callerFn.
 		done.Done()
 	})
-	// callerFn быстро вернётся (done.Done → возврат), обёртка закроет entry.done.
-	// Тест ждёт на done.Wait, поэтому defer cleanup не нужен.
 	if !started {
 		t.Fatal("первый вызов должен вернуть started=true")
 	}
 	if entry == nil {
 		t.Fatal("entry не должен быть nil")
 	}
-	// Проверяем, что reload теперь помечен как pending.
+	// Дожидаемся, что callerFn реально стартовал, и только потом проверяем
+	// состояние: теперь reload гарантированно ещё в полёте.
+	<-callerStarted
 	if !r.IsReloadPending("backend-A", "model-X") {
 		t.Error("после StartReloadIfNotPending IsReloadPending должен быть true")
 	}
+	close(releaseCaller)
 	done.Wait()
 }
 

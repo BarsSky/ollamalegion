@@ -21,13 +21,31 @@
 package balancer
 
 import (
+	"net/http"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestMain(m *testing.M) {
 	_ = os.Setenv("LB_AUTO_LOAD_WAIT_SEC", "0")
 	_ = os.Setenv("LB_ADMISSION_WAIT_SEC", "0")
 	_ = os.Setenv("LB_NCTX_PREFLIGHT_WAIT_SEC", "0")
+
+	// R118.14 (2026-10-14): ПРЕДОХРАНИТЕЛЬ ОТ ЗАВИСАНИЯ ВСЕГО ПАКЕТА.
+	//
+	// Десятки тестов в этом пакете ходят в свои httptest-серверы через
+	// http.Post/http.Get, то есть через http.DefaultClient — БЕЗ таймаута. Если
+	// конкретный сценарий (например «обрыв соединения», scenarios_cppworker_test.go)
+	// подвисает, зависает не тест, а ВЕСЬ пакет: `go test` падал по общему
+	// таймауту с «panic: test timed out», и по выводу нельзя было понять, какой
+	// тест виноват (живой прогон: пакет прошёл за 105 с, следующий запуск повис
+	// на TestCPPWorker_Failure_NetworkDrop и упал по таймауту 2m30s).
+	//
+	// Таймаут на DefaultClient превращает такое зависание в обычный FAIL того
+	// самого теста. 90 c — с запасом больше любого легитимного ожидания в тестах
+	// (все «ждём вместо ошибки» ручки здесь выключены выше).
+	http.DefaultClient.Timeout = 90 * time.Second
+
 	os.Exit(m.Run())
 }

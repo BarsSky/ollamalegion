@@ -1,17 +1,22 @@
 // admission_keepalive_r70_test.go — R70 (2026-09-24): keepalive для
 // streaming-клиента, который ждёт свободный слот.
 //
-// ПРОБЛЕМА: пока запрос стоит в admission-очереди (до LB_ADMISSION_WAIT_SEC,
-// default 300 c), балансер не отправлял клиенту ни одного байта. OpenWebUI/Cline
-// с таймаутом 300 c отваливались, и пользователь видел ошибку вместо ответа.
+// ПРОБЛЕМА (R70): пока запрос стоял в admission-очереди (до
+// LB_ADMISSION_WAIT_SEC, default 300 c), балансер не отправлял клиенту ни
+// одного байта. OpenWebUI/Cline с таймаутом 300 c отваливались, и пользователь
+// видел ошибку вместо ответа.
 //
-// ФИКС: для streaming-запросов заголовки коммитятся сразу (200 + Content-Type
-// формата) и во время ожидания шлются keepalive'ы:
+// R70-ФИКС (ОТМЕНЁН, см. ADMISSION-HONEST ниже): для streaming-запросов
+// заголовки коммитились сразу (200 + Content-Type формата) и во время ожидания
+// слались keepalive'ы. Это оказалось ЖИВЫМ ДЕФЕКТОМ: второй клиент OpenWebUI на
+// /v1/chat/completions мгновенно получал 200 + `X-Queue-Keepalive: 1` и 30-50 c
+// пустого тела, а честные X-Queue-Wait-Ms/X-Queue-Position и 503+Retry-After при
+// исчерпании ожидания были недостижимы (статус уже отправлен).
 //
-//   - SSE (/v1/*)     — комментарий `: keepalive`;
-//   - NDJSON (/api/*) — пустая строка (построчные парсеры её пропускают).
-//
-// Non-stream запросы keepalive не получают: статус ещё может стать 503.
+// ADMISSION-HONEST (R118.20, 2026-10-15): преждевременная коммита и keepalive во
+// время ожидания УБРАНЫ (см. admission_queue.go + admission_honest_test.go).
+// Здесь остаются только два теста классификатора путей и env-ручки периода —
+// они описывают контракт LB_ADMISSION_KEEPALIVE_SEC, который сохранён.
 package balancer
 
 import (
@@ -100,10 +105,15 @@ func TestAdmissionKeepaliveInterval_R70(t *testing.T) {
 	}
 }
 
-// TestHandleChat_KeepaliveWhileWaiting_R70 — HTTP-уровень: пока слот занят,
-// streaming-клиент получает keepalive'ы (пустые строки NDJSON), затем обычный
-// ответ; заголовок X-Queue-Keepalive сигнализирует, что стрим уже начат.
-func TestHandleChat_KeepaliveWhileWaiting_R70(t *testing.T) {
+// TestHandleChat_NoEarlyCommitWhileWaiting_AdmissionHonest — HTTP-уровень:
+// пока слот занят, streaming-клиент не получает НИ БАЙТА и никакого
+// X-Queue-Keepalive; после освобождения слота приходит обычный ответ, а ожидание
+// видно в честных заголовках X-Queue-Wait-Ms/X-Queue-Position.
+//
+// Заменяет R70-тест TestHandleChat_KeepaliveWhileWaiting_R70, который закреплял
+// обратное (200 + keepalive-тело до выдачи слота) — именно это и было живым
+// дефектом «OpenWebUI висит на пустом стриме» (ADMISSION-HONEST, R118.20).
+func TestHandleChat_NoEarlyCommitWhileWaiting_AdmissionHonest(t *testing.T) {
 	t.Setenv("LB_ADMISSION_KEEPALIVE_SEC", "1") // 1 c — чтобы не ждать долго
 	var received []byte
 	var mu sync.Mutex
@@ -135,10 +145,12 @@ func TestHandleChat_KeepaliveWhileWaiting_R70(t *testing.T) {
 		router.handleChat(rec, req)
 	}()
 
-	// Держим слот дольше периода keepalive (1 c), затем отпускаем.
+	// Держим слот дольше периода keepalive (1 c), затем отпускаем: если бы
+	// keepalive-во-время-ожидания остался, клиент получил бы 200 и keepalive-тело
+	// ещё до выдачи слота (гонку чтения ответа до `<-done` не создаём — сам факт
+	// виден в финальном ответе: X-Queue-Keepalive и ведущие пустые строки).
 	time.Sleep(1200 * time.Millisecond)
 	p.releaseSlot("llama_test")
-
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -148,15 +160,17 @@ func TestHandleChat_KeepaliveWhileWaiting_R70(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("ожидался 200, получено %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("X-Queue-Keepalive"); got != "1" {
-		t.Errorf("X-Queue-Keepalive = %q, ожидалось \"1\" (стрим начат до выдачи слота)", got)
+	if got := rec.Header().Get("X-Queue-Keepalive"); got != "" {
+		t.Errorf("X-Queue-Keepalive = %q, ожидалось отсутствие заголовка (стрим не начат раньше слота)", got)
 	}
-	// Keepalive — пустые строки NDJSON в начале тела (до реальных чанков).
-	if !strings.HasPrefix(rec.Body.String(), "\n") {
-		t.Errorf("тело должно начинаться с keepalive-строк, получено: %q", firstBytes(rec.Body.String(), 40))
+	if wait := rec.Header().Get("X-Queue-Wait-Ms"); wait == "" || wait == "0" {
+		t.Errorf("X-Queue-Wait-Ms = %q, ожидалось значение > 0 (ожидание видно клиенту)", wait)
 	}
-	t.Logf("✅ keepalive: тело начинается с %d пустых строк, размер ответа %d",
-		countLeadingNewlines(rec.Body.String()), rec.Body.Len())
+	if n := countLeadingNewlines(rec.Body.String()); n != 0 {
+		t.Errorf("тело начинается с %d keepalive-строк, ожидался настоящий ответ", n)
+	}
+	t.Logf("✅ honest: во время ожидания ни байта, после слота X-Queue-Wait-Ms=%s",
+		rec.Header().Get("X-Queue-Wait-Ms"))
 }
 
 // TestHandleChat_NoKeepaliveForNonStream_R70 — non-stream запрос keepalive не

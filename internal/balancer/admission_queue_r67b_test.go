@@ -39,10 +39,9 @@ import (
 // обслуживается (в ответе — X-Queue-Wait-Ms). До R67b такой запрос отбивался
 // «all backends busy»/«no free slot».
 //
-// R70: keepalive для streaming-ожидающих выключаем явно — при нём заголовки
-// коммитятся ДО выдачи слота (X-Queue-Keepalive вместо X-Queue-*), а этот тест
-// проверяет именно «очередь видна в заголовках». Поведение с keepalive —
-// admission_keepalive_r70_test.go.
+// ADMISSION-HONEST (R118.20): keepalive-во-время-ожидания, из-за которого
+// заголовки коммитились ДО выдачи слота, удалён — теперь X-Queue-* видны всегда,
+// а env-переменная оставлена только ради обратной совместимости конфигов.
 func TestHandleChat_QueuesWhenSlotsBusy_R67b(t *testing.T) {
 	t.Setenv("LB_ADMISSION_KEEPALIVE_SEC", "0")
 

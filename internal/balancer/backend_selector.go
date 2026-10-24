@@ -207,6 +207,14 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 		}
 	}
 
+	// R92 (S3): раскладка (sharded) — модель обслуживается логическим бэкендом,
+	// и маршрутизируется только его мастер. Если группа не готова, функция
+	// возвращает "" и запрос идёт обычным путём (честная деградация уже решена
+	// политикой в ServeHTTP: 503 либо fallback=single).
+	if master := p.shardedMasterForRequestR92(model, bt); master != "" {
+		return master
+	}
+
 	allowedTypes := p.getAllowedTypesList(bt)
 
 	candidates := p.expandCandidates(model, allowedTypes)
@@ -347,6 +355,12 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 	var bestScore float64 = -1
 
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда держит только часть слоёв
+		// раскладки — как самостоятельная цель запроса он не годится. Его
+		// обслуживает мастер группы (см. sharded_master_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if exclude[id] {
 			continue
 		}
@@ -420,6 +434,12 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool, allowedTypes
 	var bestScore float64 = -1
 
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда держит только часть слоёв
+		// раскладки — как самостоятельная цель запроса он не годится. Его
+		// обслуживает мастер группы (см. sharded_master_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if exclude[id] {
 			continue
 		}
@@ -486,6 +506,12 @@ func (p *Proxy) findLeastLoadedBackendWithModel(modelName string, allowedTypes [
 	var bestScore float64 = 0
 
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда держит только часть слоёв
+		// раскладки — как самостоятельная цель запроса он не годится. Его
+		// обслуживает мастер группы (см. sharded_master_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
@@ -530,6 +556,12 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 	var bestLoadRatio float64 = 2.0
 
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда держит только часть слоёв
+		// раскладки — как самостоятельная цель запроса он не годится. Его
+		// обслуживает мастер группы (см. sharded_master_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if id == excludeBackendID {
 			continue
 		}
@@ -583,6 +615,12 @@ func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string, all
 	var bestScore float64 = -1
 
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда держит только часть слоёв
+		// раскладки — как самостоятельная цель запроса он не годится. Его
+		// обслуживает мастер группы (см. sharded_master_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if id == excludeBackendID {
 			continue
 		}
@@ -678,6 +716,12 @@ func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.Back
 	var bestScore float64 = -1
 
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда держит только часть слоёв
+		// раскладки — как самостоятельная цель запроса он не годится. Его
+		// обслуживает мастер группы (см. sharded_master_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
@@ -731,6 +775,12 @@ func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.Back
 // findWarmingBackendForModelUnsafe — поиск WARMING_UP бэкенда (без блокировки, вызывается под p.mu.RLock)
 func (p *Proxy) findWarmingBackendForModelUnsafe(model string) string {
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда держит только часть слоёв
+		// раскладки — как самостоятельная цель запроса он не годится. Его
+		// обслуживает мастер группы (см. sharded_master_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
@@ -749,6 +799,12 @@ func (p *Proxy) findFreeBackendForModelUnsafe(model string, allowedTypes []types
 	var best string
 	var maxFree uint64
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда держит только часть слоёв
+		// раскладки — как самостоятельная цель запроса он не годится. Его
+		// обслуживает мастер группы (см. sharded_master_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
@@ -800,6 +856,12 @@ func (p *Proxy) selectFreeBackendAny(allowedTypes []types.BackendType) string {
 	var bestLoadRatio float64 = 2.0
 
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда держит только часть слоёв
+		// раскладки — как самостоятельная цель запроса он не годится. Его
+		// обслуживает мастер группы (см. sharded_master_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
@@ -853,6 +915,12 @@ func (p *Proxy) selectByResources(allowedTypes []types.BackendType) string {
 	var bestLastUsed time.Time
 
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда держит только часть слоёв
+		// раскладки — как самостоятельная цель запроса он не годится. Его
+		// обслуживает мастер группы (см. sharded_master_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}

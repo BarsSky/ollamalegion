@@ -104,6 +104,16 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 	logger.Get().Infow("Round 31 #1: auto-stream workaround active",
 		"backend", backendID, "upstream_url", upstreamURL, "model", modelName)
 
+	// R142: точка отсчёта для duration_ms — момент ОТПРАВКИ апстрим-запроса.
+	//
+	// Почему не время создания аккумулятора (ниже по коду): аккумулятор
+	// создаётся после получения заголовков ответа, а на этом стенде тело
+	// приходит целиком, поэтому его часы давали duration_ms=0 (живой замер: 0
+	// против 2033 мс у воркера). Окно «отправка → последний чанк» покрывает
+	// работу воркера над запросом и НЕ включает очередь/ожидание слота на самом
+	// балансере — именно то разделение, которое нужно для честного tokens/s.
+	upstreamStartedAt := time.Now()
+
 	upstreamResp, err := clientForReq.Do(upstreamReq)
 	if err != nil {
 		return fmt.Errorf("upstream request failed: %w", err)
@@ -144,6 +154,10 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 
 	// === Аккумулируем SSE чанки ===
 	accum := newOpenAIStreamAccumulator(modelName)
+	// R142: часы ответа считаем от отправки апстрим-запроса, а не от создания
+	// аккумулятора — иначе клиент получает duration_ms=0 и считает tokens/s по
+	// своим часам (см. комментарий у upstreamStartedAt).
+	accum.startedAt = upstreamStartedAt
 	scanner := bufio.NewScanner(upstreamResp.Body)
 	// SSE строки могут быть длинными (reasoning chunks)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // до 4MB на строку
@@ -175,8 +189,13 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 		logger.Get().Errorw("Round 31 #1: scanner error",
 			"backend", backendID, "error", err,
 			"chunks_processed", accum.chunksProcessed)
-		// Best effort: отправляем что накопили
-		body := accum.toNonStreamResponse(false)
+		// R220 (2026-10-22): «ноль чанков» — это НЕ пустой ответ модели, а
+		// оборванный апстрим (живой случай: узел раскладки умер посреди сессии —
+		// воркер убит abort'ом RPC, поток кончился unexpected EOF). Раньше сюда
+		// писали accum.toNonStreamResponse(false), и клиент получал HTTP 200 с
+		// пустым content, пустым finish_reason и пустым id: ошибка выглядела как
+		// успешный пустой ответ. Теперь отдаём явную ошибку.
+		body := accum.orEmptyUpstreamError(err)
 		_, _ = w.Write(body)
 		if flusher != nil {
 			flusher.Flush()
@@ -185,6 +204,17 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 	}
 
 	// === Финальный чанк: формируем non-stream JSON ===
+	if accum.isEmpty() {
+		// Поток завершился без единого чанка с данными: та же ситуация, что выше.
+		logger.Get().Errorw("Round 31 #1: upstream stream ended with no data — "+
+			"отдаём ошибку вместо пустого 200",
+			"backend", backendID, "model", accum.model)
+		_, _ = w.Write(accum.orEmptyUpstreamError(nil))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
+	}
 	finalResp := accum.toNonStreamResponse(false)
 	if _, err := w.Write(finalResp); err != nil {
 		logger.Get().Errorw("Round 31 #1: failed to write final response",
@@ -245,7 +275,13 @@ func (a *openAIStreamAccumulator) addChunk(payload string) {
 	if v, ok := chunk["created"].(float64); ok && a.created == 0 {
 		a.created = int64(v)
 	}
-	if v, ok := chunk["object"].(string); ok {
+	// R142 (2026-10-16): object собранного non-stream ответа — ВСЕГДА
+	// "chat.completion". Раньше значение перезатиралось последним SSE-чанком
+	// ("chat.completion.chunk"), и клиент получал НЕ-стриминговый ответ, помеченный
+	// как стриминговый чанк. Строгие OpenAI-SDK выбирают разбор по object, так что
+	// это не косметика. Апстрим в режиме auto-stream отвечает чанками всегда —
+	// значит перезатирание срабатывало на каждом запросе.
+	if v, ok := chunk["object"].(string); ok && !strings.HasSuffix(v, ".chunk") {
 		a.object = v
 	}
 	if u, ok := chunk["usage"].(map[string]interface{}); ok {
@@ -286,6 +322,35 @@ func (a *openAIStreamAccumulator) addChunk(payload string) {
 	}
 }
 
+// isEmpty — был ли поток совсем без данных (ни content, ни reasoning, ни
+// tool_calls). Такое состояние означает оборванный апстрим, а не пустой ответ.
+func (a *openAIStreamAccumulator) isEmpty() bool {
+	return a.content.Len() == 0 && a.reasoning.Len() == 0 && len(a.toolCalls) == 0
+}
+
+// orEmptyUpstreamError — тело явной ошибки вместо пустого 200.
+//
+// R220 (2026-10-22). Живой случай: узел раскладки умер посреди сессии, воркер
+// был убит abort'ом RPC, поток кончился «unexpected EOF» с 0 чанков. Балансер
+// сформировал non-stream ответ из пустого аккумулятора: HTTP 200,
+// message.content="", finish_reason="", id="" — клиент видел «успешный пустой
+// ответ» и не мог отличить сбой инфраструктуры от пустого ответа модели.
+func (a *openAIStreamAccumulator) orEmptyUpstreamError(cause error) []byte {
+	msg := "upstream stream ended with no data: узел раскладки/воркер оборвал ответ до первого чанка. " +
+		"Проверьте узел раскладки (rpc-server) и состояние воркера, повторите запрос"
+	if cause != nil {
+		msg += " (" + cause.Error() + ")"
+	}
+	body, _ := json.Marshal(map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": msg,
+			"type":    "upstream_error",
+			"code":    "empty_upstream_stream",
+		},
+	})
+	return body
+}
+
 // toNonStreamResponse — финальный OpenAI non-stream JSON.
 func (a *openAIStreamAccumulator) toNonStreamResponse(fallback bool) []byte {
 	role := a.role
@@ -297,6 +362,15 @@ func (a *openAIStreamAccumulator) toNonStreamResponse(fallback bool) []byte {
 		"content": a.content.String(),
 	}
 	if a.reasoning.Len() > 0 {
+		// R216 (2026-10-21): reasoning_content — поле OPENAI-поверхности, и
+		// именно его читают клиенты /v1 (deepseek harness, OpenWebUI).
+		//
+		// Раньше здесь было только `reasoning` (имя Ollama-поверхности), и через
+		// балансер размышления ИСЧЕЗАЛИ: живая проверка — прямой ответ воркера
+		// содержит reasoning_content (171 символ), а тот же запрос через
+		// балансер приходил с пустым reasoning. Клиент видел только ответ.
+		// Отдаём оба имени: reasoning — совместимость с Ollama-клиентами.
+		message["reasoning_content"] = a.reasoning.String()
 		message["reasoning"] = a.reasoning.String()
 	}
 	if len(a.toolCalls) > 0 {
@@ -314,6 +388,25 @@ func (a *openAIStreamAccumulator) toNonStreamResponse(fallback bool) []byte {
 				"finish_reason": a.finishReason,
 			},
 		},
+	}
+	// R142 (2026-10-16): отдаём длительность инференса — так же, как её отдаёт
+	// сам воркер в своём non-stream ответе (поле duration_ms).
+	//
+	// Живой дефект: через балансер поле терялось (в режиме auto-stream ответ
+	// собирается из чанков, а у чанков его нет), и клиент считал tokens/s по
+	// СВОИМ часам. В эти часы попадает всё, что балансер делал до и вокруг
+	// инференса — очередь, ожидание перезагрузки модели (на стенде 65 с на
+	// запросе во время reload), сеть. Отсюда «нереальный расчёт токенов/с»:
+	// на одном и том же ответе цифра зависела от того, что происходило с
+	// моделью, а не от скорости генерации.
+	//
+	// startedAt — момент ОТПРАВКИ апстрим-запроса (см. proxyRequestOpenAIStreamAsNonStream);
+	// окно покрывает работу воркера над запросом, но не очередь и не ожидание слота
+	// на самом балансере.
+	if !a.startedAt.IsZero() {
+		if ms := time.Since(a.startedAt).Milliseconds(); ms >= 0 {
+			resp["duration_ms"] = ms
+		}
 	}
 	if a.usage != nil {
 		resp["usage"] = a.usage

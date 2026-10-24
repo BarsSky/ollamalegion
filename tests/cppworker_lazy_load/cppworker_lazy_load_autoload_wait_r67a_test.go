@@ -25,7 +25,14 @@ import (
 	"ollama-loadbalancer/internal/balancer"
 )
 
-// coldStartChat — один запрос /api/chat (stream) к незагруженной модели.
+// coldStartChat — один inference-запрос (stream) к незагруженной модели.
+//
+// R112-разбор (2026-10-15): запрос уходит на OpenAI-поверхность /v1/chat/completions,
+// потому что именно там балансер сам инициирует загрузку и сам решает, ждать её
+// (LB_AUTO_LOAD_WAIT_SEC) или отдать быстрый 503. На Ollama-поверхности /api/*
+// смешанного кластера загрузку инициирует cppworker, и ручки LB_AUTO_LOAD_* к
+// этой ветке не относятся (проверено живьём на стенде: холодный /api/chat
+// обслуживается за 66 c — воркер грузит модель и держит запрос).
 func coldStartChat(t *testing.T, proxy *balancer.Proxy) (*http.Response, string, time.Duration) {
 	t.Helper()
 	body, _ := json.Marshal(map[string]interface{}{
@@ -33,7 +40,7 @@ func coldStartChat(t *testing.T, proxy *balancer.Proxy) (*http.Response, string,
 		"messages": []map[string]string{{"role": "user", "content": "Привет!"}},
 		"stream":   true,
 	})
-	req := httptest.NewRequest("POST", "/api/chat", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-Id", "r67a-user")
 	rec := httptest.NewRecorder()

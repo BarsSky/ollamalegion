@@ -36,7 +36,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -69,6 +68,35 @@ const (
 	// истечение — честная ошибка в tool-результате (модель объяснит её
 	// пользователю), а не молчаливый обрыв.
 	imageToolEnvLoadTimeout = "LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC"
+	// imageToolEnvInject — КОМУ объявлять инструмент (R141, 2026-10-16):
+	// always (по умолчанию, прежнее поведение) | auto.
+	//
+	// Живой дефект, ради которого появился режим: балансер объявлял инструмент
+	// ВСЕМ клиентам, включая те, что не прислали ни одного tools[]. Воркер,
+	// увидев непустой tools, вклеивает в промпт ~200-токенную преамбулу про
+	// вызов инструментов — замер на стенде: prompt_tokens 19 без балансера
+	// против 220 через балансер (+201 токен на КАЖДЫЙ запрос), has_tools=false
+	// против true. Побочно модель уходит в reasoning: на «скажи ок» без
+	// балансера ответ «Ок.», через балансер — `"The user simply said \""` с
+	// reasoning_content, то есть бюджет ответа потрачен на размышление о
+	// вызове инструмента, которого клиент не объявлял.
+	//
+	// Для клиента это ровно «нереальный расчёт токенов/с»: он видит 220
+	// prompt-токенов там, где послал 19, и вдвое больший duration.
+	//
+	// auto — объявлять только когда клиент САМ прислал хотя бы один tools[]:
+	// именно такой клиент умеет обрабатывать tool_calls. Стенды, где картинки
+	// нужны и клиентам без инструментов, оставляют always (дефолт).
+	//
+	// R216 (2026-10-21): off — НЕ объявлять инструмент вовсе. Значение пришло из
+	// живой практики: оператор выставляет LB_IMAGE_TOOL_INJECT=off, ожидая
+	// «не добавляй tools», а прежний разбор знал только auto — любой другой
+	// текст (включая off) молча означал always. Последствие на стенде: каждый
+	// запрос OpenWebUI уходил в воркер с непустым tools[], попадал в
+	// буферизированную ветку /v1 (см. handlers_openai.go: stream + tools), и
+	// размышления приезжали клиенту как обычный content без отдельного
+	// reasoning_content.
+	imageToolEnvInject = "LB_IMAGE_TOOL_INJECT" // always | auto | off
 
 	imageToolDefaultMaxCalls = 2
 	// R88 (2026-10-08): капов по умолчанию НЕТ — та же доктрина, что у
@@ -116,6 +144,14 @@ type imageToolConfig struct {
 	AllowLoad bool
 	// LoadTimeout — сколько ждать загрузку модели.
 	LoadTimeout time.Duration
+	// InjectAuto — режим LB_IMAGE_TOOL_INJECT=auto: объявлять инструмент только
+	// тем запросам, где клиент сам прислал непустой tools[]. См. imageToolEnvInject
+	// и imageToolShouldInject.
+	InjectAuto bool
+	// InjectOff — R216 (2026-10-21): LB_IMAGE_TOOL_INJECT=off. Инструмент не
+	// объявляется НИКОГДА. Прежний разбор знал только auto, поэтому off тихо
+	// означал always (см. imageToolEnvInject).
+	InjectOff bool
 }
 
 // ImageToolAllowLoadEnv — имя флага окружения автозагрузки (для API/WebUI).
@@ -169,6 +205,13 @@ func imageToolSettingsFromEnv() imageToolConfig {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(imageToolEnvAllowLoad))) {
 	case "0", "false", "no", "off":
 		cfg.AllowLoad = false
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(imageToolEnvInject))) {
+	case "auto":
+		cfg.InjectAuto = true
+	case "off", "false", "no", "0", "none":
+		// R216: «не объявлять вовсе». До этого off молча превращался в always.
+		cfg.InjectOff = true
 	}
 	if v := strings.TrimSpace(os.Getenv(imageToolEnvMaxCalls)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -253,6 +296,11 @@ const (
 	imageToolSkipAllowLoadOff = "no_loaded_model_and_allow_load_off"
 	imageToolSkipClientNone   = "client_tool_choice_none"
 	imageToolSkipClientOwns   = "client_owns_tool"
+	// imageToolSkipNoClientTools — R141: режим auto, а клиент не прислал ни
+	// одного tools[] — объявлять нечего и незачем (см. imageToolEnvInject).
+	imageToolSkipNoClientTools = "auto_mode_client_sent_no_tools"
+	// R216: LB_IMAGE_TOOL_INJECT=off — инструмент не объявляем никогда.
+	imageToolSkipInjectOff = "inject_mode_off"
 )
 
 // imageToolDecision — гейт доступности ВМЕСТЕ с причиной отказа.
@@ -569,6 +617,40 @@ func logImageToolDecision(path, model string, clientTools int, injected bool, na
 	}
 }
 
+// imageToolNoInjectReason — почему в этом запросе не объявляем инструмент,
+// когда imageToolShouldInject вернул false (R216).
+//
+// Разделение важно для лога: «auto, клиент не прислал tools» и «оператор
+// поставил off» — разные решения, и раньше второе выглядело как первое.
+func imageToolNoInjectReason(cfg imageToolConfig) string {
+	if cfg.InjectOff {
+		return imageToolSkipInjectOff
+	}
+	return imageToolSkipNoClientTools
+}
+
+// imageToolShouldInject — объявлять ли наш инструмент в ЭТОМ запросе.
+//
+// R141 (2026-10-16). В режиме always (дефолт) — да, как раньше: фича
+// «модель умеет генерировать картинки» доступна любому клиенту, а исполняет
+// вызов сам балансер (см. image_tool_loop*).
+//
+// В режиме auto — только если клиент прислал хотя бы один свой инструмент.
+// Причина не в экономии как таковой: клиент, не объявивший инструментов, не
+// может обработать tool_calls, а воркер, увидев непустой tools, вклеивает в
+// промпт ~200 токенов преамбулы и уводит модель в reasoning (замер на стенде:
+// 19 → 220 prompt-токенов, has_tools=false → true). Клиент видит это как
+// «нереальный tokens/s»: 220 prompt-токенов на сообщение из трёх слов.
+func imageToolShouldInject(cfg imageToolConfig, clientTools int) bool {
+	if cfg.InjectOff {
+		return false
+	}
+	if !cfg.InjectAuto {
+		return true
+	}
+	return clientTools > 0
+}
+
 // imageToolSkipReason — человеческая причина отказа объявления (для лога).
 func imageToolSkipReason(skip string) string {
 	switch skip {
@@ -584,6 +666,11 @@ func imageToolSkipReason(skip string) string {
 		return `клиент прислал tool_choice="none" — инструменты запрещены в этом запросе`
 	case imageToolSkipClientOwns:
 		return "клиент сам объявил наши инструменты — исполняет его сторона"
+	case imageToolSkipNoClientTools:
+		return "LB_IMAGE_TOOL_INJECT=auto, а клиент не прислал ни одного tools[] — " +
+			"объявление добавило бы ~200 токенов преамбулы в промпт и увело модель в reasoning"
+	case imageToolSkipInjectOff:
+		return "LB_IMAGE_TOOL_INJECT=off — инструмент не объявляется никому (R216)"
 	default:
 		return skip
 	}
@@ -1014,10 +1101,14 @@ func (p *Proxy) ensureImageModelLoaded(ctx context.Context, backendID, model str
 	if err != nil {
 		return 0, fmt.Errorf("не удалось отправить запрос на загрузку модели %q: %w", model, err)
 	}
-	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, imageToolResponseLimitBytes))
+	raw, truncated, readErr := readImageToolResponse(resp.Body)
 	_ = resp.Body.Close()
 	if readErr != nil {
 		return 0, fmt.Errorf("чтение ответа на загрузку модели %q: %w", model, readErr)
+	}
+	if truncated {
+		// R120: обрезка — своя причина, а не «воркер отказал в загрузке».
+		return 0, imageToolResponseTooLargeError(imageToolResponseLimitBytes)
 	}
 	if resp.StatusCode >= 400 {
 		return 0, fmt.Errorf("воркер отказал в загрузке модели %q (HTTP %d): %s",
@@ -1087,6 +1178,34 @@ func (s *imageBackendMetrics) entryByName(name string) *imageModelEntry {
 	return nil
 }
 
+// imageToolLoadFields — поля «эту картинку сделала только что поднятая модель»
+// для tool-результата.
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ (живой флейк 2026-10-16). Раньше право на поля
+// решалось значением: `if loadSeconds > 0`. На быстрой загрузке (стенд, уже
+// прогретый диск) операция укладывается в один тик монотонных часов, и
+// time.Since даёт РОВНО 0 — тогда оба поля молча пропадали, и результат
+// утверждал «загрузки не было» (loadedNow=false), хотя POST load уходил и
+// модель поднималась. Модель-читатель на этом основании врала пользователю:
+// объяснить задержку было нечем.
+//
+// Теперь присутствие полей определяется ФАКТОМ загрузки (loadedNow), а значение
+// не бывает нулевым: всё, что быстрее разрешения измерения, отдаём как 0.001 с
+// («меньше миллисекунды»), а не как 0, который читался бы как «мгновенно».
+func imageToolLoadFields(loadedNow bool, elapsed time.Duration) map[string]interface{} {
+	if !loadedNow {
+		return nil
+	}
+	ms := elapsed.Milliseconds()
+	if ms <= 0 {
+		ms = 1
+	}
+	return map[string]interface{}{
+		"loadSeconds": float64(ms) / 1000,
+		"loadedNow":   true,
+	}
+}
+
 // generateImageForTool — сгенерировать картинку на выбранном image-бэкенде.
 //
 // Идём НАТИВНЫМ путём воркера (/api/image/generate, sync=true,
@@ -1115,7 +1234,8 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 	resolved := p.resolveImageToolTarget(ctx, target, args.Model)
 	model := resolved.Model
 
-	var loadSeconds float64
+	var loadElapsed time.Duration
+	loadedNow := false
 	substitutedFrom := ""
 	needLoad := !resolved.Loaded && model != ""
 	if needLoad && !cfg.AllowLoad {
@@ -1144,7 +1264,11 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 	}
 	if needLoad {
 		elapsed, err := p.ensureImageModelLoaded(ctx, resolved.BackendID, model)
-		loadSeconds = elapsed.Seconds()
+		loadElapsed = elapsed
+		// ФАКТ загрузки фиксируем ФЛАГОМ, а не значением часов: см.
+		// imageToolLoadFields — иначе быстрая загрузка, уложившаяся в один тик
+		// монотонных часов, объявляла бы себя «загрузки не было».
+		loadedNow = err == nil
 		if err != nil {
 			return nil, err
 		}
@@ -1190,7 +1314,21 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 	res := p.imageResources()
 	gate := res.beforeGeneration(ctx, resolved.BackendID)
 	if !gate.Allowed {
-		return nil, fmt.Errorf("генерация недоступна: %s", gate.Message)
+		// R119 (2026-10-15): раньше здесь был обычный fmt.Errorf("генерация
+		// недоступна: %s", gate.Message) — код причины (insufficient_vram /
+		// gpu_busy), числа (needed/free/headroom) и подсказка OOM-лестницы
+		// ТЕРЯЛИСЬ. Результат уходил модели как {"status":"error","error":"<текст>"},
+		// и она не могла объяснить пользователю, чего не хватает и что сделать —
+		// хотя соседний путь (прямой image-API) отвечает
+		// `503 {code, hint, freeMb, requiredMb}`.
+		//
+		// Теперь отказ структурирован: машинный код + числа + подсказка доезжают
+		// до модели (image_tool_gate_r119.go).
+		logger.Get().Warnw("image tool: гейт ресурсов отказал",
+			"backend", resolved.BackendID, "model", model, "code", gate.Code,
+			"required_mb", gate.Verdict.RequiredMB, "free_mb", gate.Verdict.FreeMB,
+			"headroom_mb", gate.Verdict.HeadroomMB, "retry_after_sec", gate.RetryAfterSec)
+		return nil, imageToolGateDenied(gate, model)
 	}
 	defer gate.Release()
 
@@ -1213,10 +1351,19 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 		return nil, fmt.Errorf("image backend request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, imageToolResponseLimitBytes))
+	raw, truncated, err := readImageToolResponse(resp.Body)
 	if err != nil {
 		handle.finish(types.ImageRequestStatusFailed, resp.StatusCode, "image_backend_error", err.Error(), 0)
 		return nil, fmt.Errorf("read image backend response: %w", err)
+	}
+	if truncated {
+		// R120: раньше здесь был молчаливый обрез на limit байт, и json.Unmarshal
+		// ниже сообщал «invalid JSON: unexpected end of JSON input» — вина
+		// выглядела как ошибка воркера, хотя тело обрезал балансер.
+		err := imageToolResponseTooLargeError(imageToolResponseLimitBytes)
+		handle.finish(types.ImageRequestStatusFailed, resp.StatusCode,
+			imageToolErrResponseTooLarge, err.Error(), 0)
+		return nil, err
 	}
 	if resp.StatusCode >= 400 {
 		msg := upstreamErrorMessage(raw, resp.StatusCode)
@@ -1255,11 +1402,11 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 		"modelState": imageStateLoaded,
 		"backendId":  resolved.BackendID,
 	}
-	// loadSeconds присутствует ТОЛЬКО когда была загрузка: ноль в поле читался
-	// бы как «загрузили мгновенно» и сбивал бы модель с толку.
-	if loadSeconds > 0 {
-		out["loadSeconds"] = loadSeconds
-		out["loadedNow"] = true
+	// Поля о загрузке присутствуют ТОЛЬКО когда загрузка была (их наличие —
+	// ответ на вопрос «картинку сделала поднятая сейчас модель или та, что уже
+	// была в VRAM»): см. imageToolLoadFields.
+	for k, v := range imageToolLoadFields(loadedNow, loadElapsed) {
+		out[k] = v
 	}
 	// Подмена модели: модель назвала имя, которого нет на воркере (например
 	// заученное "stable-diffusion.cpp"), и мы нарисовали уже загруженной моделью.
@@ -1274,10 +1421,8 @@ func (p *Proxy) generateImageForTool(ctx context.Context, target *imageToolTarge
 	return out, nil
 }
 
-// imageToolResponseLimitBytes — предел чтения ответа воркера: в url-режиме тело
-// маленькое (метаданные + ссылка), но лимит нужен, чтобы битый/чужой сервис на
-// порту не вылил в память гигабайты.
-const imageToolResponseLimitBytes = 1 << 20
+// imageToolResponseLimitBytes и чтение ответа воркера с обнаружением обрезки —
+// см. image_tool_response_r120.go (R120: ложный «invalid JSON» на живом прогоне).
 
 // firstImageURL — ссылка на первую картинку в ответе генерации.
 func firstImageURL(doc map[string]interface{}) string {

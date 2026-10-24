@@ -53,6 +53,12 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		bodyBuf = normalized
 	}
 
+	// R186 (2026-10-20): схемы инструментов — в контекст запроса, чтобы привести
+	// аргументы вызовов к объявленным типам на ЛЮБОМ пути отдачи SSE.
+	// Живой случай: Cline получал `{"commands":"git status"}` при схеме
+	// `commands: array` → «✖ Invalid input» и повтор до остановки по циклу.
+	r = r.WithContext(WithToolSchemas(r.Context(), toolSchemasFromBody(bodyBuf)))
+
 	// R84 (2026-10-03): инструмент генерации изображений для текстовой модели.
 	//
 	// Объявляем его ТОЛЬКО когда есть кому исполнять: здоровый image_cpp и либо
@@ -70,7 +76,11 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	var imageTool *imageToolTarget
 	if tgt, skip := lr.proxy.imageToolDecision(r.Context()); tgt != nil {
 		tools := imageToolOpenAITools(tgt)
-		if injected, ok, injErr := injectImageTool(bodyBuf, tools); injErr != nil {
+		// R141: в режиме auto объявляем только тем, кто прислал свои tools[].
+		if !imageToolShouldInject(lr.proxy.imageToolSettings(), clientTools) {
+			logImageToolDecision(r.URL.Path, model, clientTools, false, nil,
+				imageToolSkipReason(imageToolNoInjectReason(lr.proxy.imageToolSettings())))
+		} else if injected, ok, injErr := injectImageTool(bodyBuf, tools); injErr != nil {
 			logger.Get().Warnw("handleOpenAIChatCompletions: не удалось добавить image-инструмент",
 				"error", injErr)
 		} else if ok {
@@ -89,7 +99,18 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	}
 
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
-	backendID := lr.selectLlamaCppBackendForModel(model)
+	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
+	// R193 (2026-10-20): НЕИЗВЕСТНУЮ МОДЕЛЬ НЕ ПОДМЕНЯЕМ ЗАГРУЖЕННОЙ.
+	// Живой дефект: напрямую воркер отвечает 404 model_file_not_found, а через
+	// балансер клиент получал 200 и ответ ДРУГОЙ (загруженной) модели. Для агента
+	// (Cline) это тихая ошибка: он уверен, что говорит с выбранной моделью.
+	if ok, available := lr.proxy.modelAnswerable(backendID, model); !ok {
+		logger.Get().Warnw("handleChat: модели нет в каталоге бэкенда — терминальный 404",
+			"backend", backendID, "model", model, "available", len(available))
+		writeModelMissingResponseFor(w, r.URL.Path, model, "модели нет в каталоге бэкенда", available)
+		return
+	}
+
 	if backendID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
 		return
@@ -109,7 +130,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		clientName := lr.proxy.getClientName(r)
 		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
 		if sessionID != "" {
-			lr.proxy.sessionMgr.Set(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent())
+			lr.proxy.sessionMgr.SetWithProtocol(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 			w.Header().Set("X-Session-ID", sessionID)
 		}
 		w.Header().Set("X-Backend-ID", backendID)
@@ -131,17 +152,25 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	if model != "" {
 		loadOpts := warmupOptions{}
 		resolved := lr.proxy.ResolveNumCtx(model, bodyBuf, backendID)
+		// R127 (2026-10-16, пункт 7 разбора стенда): окно для АВТОЗАГРУЗКИ берём
+		// из резолвера, без отдельной «подгонки под загруженное».
+		//
+		// ЖИВОЙ ДЕФЕКТ. Снимок метрик может ещё несколько секунд считать модель
+		// загруженной, когда она уже выгружена. Тогда ветка «не понижаем
+		// загруженное» подменяла ПАРАМЕТР ЗАПРОСА чужим числом, и автозагрузка
+		// уходила без num_ctx: в логе
+		//   ResolveNumCtx: R60.37 — body num_ctx < loaded, upgrading (4096 -> 32768)
+		//   ensureModelLoadedOnBackend: auto-loading model ... numCtx=null
+		// а модель поднималась с профильными 8192 — запрос 4096 не влиял ни на что.
+		//
+		// ПОЧЕМУ ВЕТКА БЫЛА ЛИШНЕЙ. Резолвер УЖЕ поднимает клиентское значение до
+		// загруженного окна (R60.37 внутри ResolveNumCtx). А этот код исполняется
+		// только когда модель НЕ готова (иначе ensureModelLoadedWithFailover
+		// выходит сразу), то есть «загруженное» здесь — либо то же число, либо
+		// устаревшее. Правильный источник в момент загрузки — запрос → профиль →
+		// дефолт (то, что и вернул резолвер).
 		if resolved.Value > 0 {
-			loadedNCtx := lr.proxy.getLoadedNCtxFromMetrics(backendID, model)
-			if loadedNCtx > resolved.Value {
-				logger.Get().Infow("handleChat: keeping loaded n_ctx (not lowering)",
-					"model", model, "backend", backendID,
-					"loaded_n_ctx", loadedNCtx, "requested_n_ctx", resolved.Value,
-					"source", resolved.Source)
-				loadOpts.NumCtx = loadedNCtx
-			} else {
-				loadOpts.NumCtx = resolved.Value
-			}
+			loadOpts.NumCtx = resolved.Value
 		}
 		if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 			logger.Get().Errorw("handleOpenAIChatCompletions: auto-load failed",
@@ -149,6 +178,19 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 			// R60.16: include Retry-After so clients (Cline/Roo/openai-python)
 			// back off instead of busy-looping. Default 30s matches R60.6
 			// async-reload Retry-After.
+			// R119 (2026-10-15): для ОТСУТСТВУЮЩЕЙ модели — терминальный 404, а не
+			// 503 «повтори» (см. model_missing_r119.go): модели от повторения не
+			// появится, а клиент уходил в retry-цикл на каждый запрос.
+			if lr.proxy.writeModelMissingIfKnownFor(w, r.URL.Path, backendID, model, loadErr) {
+				return
+			}
+			// R185 (2026-10-20): карта не поддерживается образом воркера —
+			// терминальный 400 с причиной и советом. 503 здесь означал бы
+			// «повтори, станет лучше», и клиент крутил бы перезагрузки вечно,
+			// пока воркер падал по SIGABRT на первом GPU-ядре.
+			if lr.proxy.writeModelArchUnsupportedIfKnownFor(w, r.URL.Path, backendID, model, loadErr) {
+				return
+			}
 			writeServiceUnavailable(w,
 				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
 				writeAutoLoadRetryAfter(loadErr))
@@ -366,7 +408,15 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	model, _ := req["model"].(string)
 
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
-	backendID := lr.selectLlamaCppBackendForModel(model)
+	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
+	// R193 (2026-10-20): неизвестное имя модели не подменяем загруженной — 404.
+	if ok, available := lr.proxy.modelAnswerable(backendID, model); !ok {
+		logger.Get().Warnw("llama.cpp: модели нет в каталоге бэкенда — терминальный 404",
+			"backend", backendID, "model", model, "available", len(available))
+		writeModelMissingResponseFor(w, r.URL.Path, model, "модели нет в каталоге бэкенда", available)
+		return
+	}
+
 	if backendID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
 		return
@@ -386,7 +436,7 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 		clientName := lr.proxy.getClientName(r)
 		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
 		if sessionID != "" {
-			lr.proxy.sessionMgr.Set(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent())
+			lr.proxy.sessionMgr.SetWithProtocol(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 			w.Header().Set("X-Session-ID", sessionID)
 		}
 		w.Header().Set("X-Backend-ID", backendID)
@@ -408,22 +458,41 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	if model != "" {
 		loadOpts := warmupOptions{}
 		resolved := lr.proxy.ResolveNumCtx(model, bodyBuf, backendID)
+		// R127 (2026-10-16, пункт 7): см. подробный комментарий в handleOpenAIChatCompletions: окно для АВТОЗАГРУЗКИ берём
+		// из резолвера, без отдельной «подгонки под загруженное».
+		//
+		// ЖИВОЙ ДЕФЕКТ. Снимок метрик может ещё несколько секунд считать модель
+		// загруженной, когда она уже выгружена. Тогда ветка «не понижаем
+		// загруженное» подменяла ПАРАМЕТР ЗАПРОСА чужим числом, и автозагрузка
+		// уходила без num_ctx: в логе
+		//   ResolveNumCtx: R60.37 — body num_ctx < loaded, upgrading (4096 -> 32768)
+		//   ensureModelLoadedOnBackend: auto-loading model ... numCtx=null
+		// а модель поднималась с профильными 8192 — запрос 4096 не влиял ни на что.
+		//
+		// ПОЧЕМУ ВЕТКА БЫЛА ЛИШНЕЙ. Резолвер УЖЕ поднимает клиентское значение до
+		// загруженного окна (R60.37 внутри ResolveNumCtx). А этот код исполняется
+		// только когда модель НЕ готова (иначе ensureModelLoadedWithFailover
+		// выходит сразу), то есть «загруженное» здесь — либо то же число, либо
+		// устаревшее. Правильный источник в момент загрузки — запрос → профиль →
+		// дефолт (то, что и вернул резолвер).
 		if resolved.Value > 0 {
-			loadedNCtx := lr.proxy.getLoadedNCtxFromMetrics(backendID, model)
-			if loadedNCtx > resolved.Value {
-				logger.Get().Infow("handleOpenAICompletion: keeping loaded n_ctx (not lowering)",
-					"model", model, "backend", backendID,
-					"loaded_n_ctx", loadedNCtx, "requested_n_ctx", resolved.Value,
-					"source", resolved.Source)
-				loadOpts.NumCtx = loadedNCtx
-			} else {
-				loadOpts.NumCtx = resolved.Value
-			}
+			loadOpts.NumCtx = resolved.Value
 		}
 		if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
 			logger.Get().Errorw("handleOpenAICompletion: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
 			// R60.16: include Retry-After so clients back off (see chat completions).
+			// R119: отсутствующая модель даёт терминальный 404, а не 503 «повтори».
+			if lr.proxy.writeModelMissingIfKnownFor(w, r.URL.Path, backendID, model, loadErr) {
+				return
+			}
+			// R185 (2026-10-20): карта не поддерживается образом воркера —
+			// терминальный 400 с причиной и советом. 503 здесь означал бы
+			// «повтори, станет лучше», и клиент крутил бы перезагрузки вечно,
+			// пока воркер падал по SIGABRT на первом GPU-ядре.
+			if lr.proxy.writeModelArchUnsupportedIfKnownFor(w, r.URL.Path, backendID, model, loadErr) {
+				return
+			}
 			writeServiceUnavailable(w,
 				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
 				0)
@@ -575,7 +644,15 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 	model, _ := req["model"].(string)
 
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
-	backendID := lr.selectLlamaCppBackendForModel(model)
+	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
+	// R193 (2026-10-20): неизвестное имя модели не подменяем загруженной — 404.
+	if ok, available := lr.proxy.modelAnswerable(backendID, model); !ok {
+		logger.Get().Warnw("llama.cpp: модели нет в каталоге бэкенда — терминальный 404",
+			"backend", backendID, "model", model, "available", len(available))
+		writeModelMissingResponseFor(w, r.URL.Path, model, "модели нет в каталоге бэкенда", available)
+		return
+	}
+
 	if backendID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
 		return
@@ -593,6 +670,17 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 			logger.Get().Errorw("handleOpenAIEmbeddings: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
 			// R60.16: include Retry-After so clients back off (see chat completions).
+			// R119: отсутствующая модель даёт терминальный 404, а не 503 «повтори».
+			if lr.proxy.writeModelMissingIfKnownFor(w, r.URL.Path, backendID, model, loadErr) {
+				return
+			}
+			// R185 (2026-10-20): карта не поддерживается образом воркера —
+			// терминальный 400 с причиной и советом. 503 здесь означал бы
+			// «повтори, станет лучше», и клиент крутил бы перезагрузки вечно,
+			// пока воркер падал по SIGABRT на первом GPU-ядре.
+			if lr.proxy.writeModelArchUnsupportedIfKnownFor(w, r.URL.Path, backendID, model, loadErr) {
+				return
+			}
 			writeServiceUnavailable(w,
 				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
 				0)
@@ -701,7 +789,11 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	clientTools := countClientTools(bodyBuf)
 	var imageToolOllama *imageToolTarget
 	if tgt, skip := lr.proxy.imageToolDecision(r.Context()); tgt != nil {
-		if injected, added := injectImageToolOllama(bodyBuf, tgt); len(added) > 0 {
+		// R141: в режиме auto объявляем только тем, кто прислал свои tools[].
+		if !imageToolShouldInject(lr.proxy.imageToolSettings(), clientTools) {
+			logImageToolDecision(r.URL.Path, model, clientTools, false, nil,
+				imageToolSkipReason(imageToolNoInjectReason(lr.proxy.imageToolSettings())))
+		} else if injected, added := injectImageToolOllama(bodyBuf, tgt); len(added) > 0 {
 			bodyBuf = injected
 			imageToolOllama = tgt
 			w.Header().Set("X-Image-Tool", strings.Join(added, ","))
@@ -715,7 +807,7 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
-	backendID := lr.selectLlamaCppBackendForModel(model)
+	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
 	if backendID == "" {
 		logger.Get().Errorw("handleChat: no llama.cpp backend available",
 			"model", model)
@@ -731,7 +823,7 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 		clientName := lr.proxy.getClientName(r)
 		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
 		if sessionID != "" {
-			lr.proxy.sessionMgr.Set(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent())
+			lr.proxy.sessionMgr.SetWithProtocol(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 			w.Header().Set("X-Session-ID", sessionID)
 		}
 		w.Header().Set("X-Backend-ID", backendID)
@@ -880,7 +972,15 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	}
 
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
-	backendID := lr.selectLlamaCppBackendForModel(model)
+	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
+	// R193 (2026-10-20): неизвестное имя модели не подменяем загруженной — 404.
+	if ok, available := lr.proxy.modelAnswerable(backendID, model); !ok {
+		logger.Get().Warnw("llama.cpp: модели нет в каталоге бэкенда — терминальный 404",
+			"backend", backendID, "model", model, "available", len(available))
+		writeModelMissingResponseFor(w, r.URL.Path, model, "модели нет в каталоге бэкенда", available)
+		return
+	}
+
 	if backendID == "" {
 		logger.Get().Errorw("handleGenerate: no llama.cpp backend available",
 			"model", model)
@@ -896,7 +996,7 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 		clientName := lr.proxy.getClientName(r)
 		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
 		if sessionID != "" {
-			lr.proxy.sessionMgr.Set(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent())
+			lr.proxy.sessionMgr.SetWithProtocol(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 			w.Header().Set("X-Session-ID", sessionID)
 		}
 		w.Header().Set("X-Backend-ID", backendID)
@@ -924,6 +1024,10 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 		logger.Get().Errorw("handleGenerate: auto-load failed",
 			"backend", backendID, "model", model, "error", loadErr)
 		// R60.16: include Retry-After so clients back off (see chat completions).
+		// R185: карта не поддерживается образом — терминальный 400, не 503.
+		if lr.proxy.writeModelArchUnsupportedIfKnownFor(w, r.URL.Path, backendID, model, loadErr) {
+			return
+		}
 		writeServiceUnavailable(w,
 			fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
 			0)

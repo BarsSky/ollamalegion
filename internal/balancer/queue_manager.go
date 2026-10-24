@@ -90,6 +90,16 @@ type QueueStats struct {
 	DispatchByAffinity int64               `json:"dispatch_by_affinity"`
 	DispatchByLoad     int64               `json:"dispatch_by_load"`
 	DispatchByConfig   int64               `json:"dispatch_by_config"`
+
+	// Image — R98 (S8 плана 2026-10-07): поток запросов image-бэкендов
+	// (in_flight/тоталы/rps/длительности, по какому узлу сколько генераций,
+	// лента последних запросов). Раньше это было видно только в
+	// /api/v1/metrics, и на странице очереди долгая генерация выглядела как
+	// «ничего не происходит».
+	//
+	// omitempty: на стенде без image-бэкендов и без image-трафика блока нет —
+	// нулевой image-блок только путал бы (см. image_queue_visibility_r98.go).
+	Image map[string]interface{} `json:"image,omitempty"`
 }
 
 // NewQueueManager - создание хранилища статистики очереди.

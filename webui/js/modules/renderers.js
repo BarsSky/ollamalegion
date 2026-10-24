@@ -759,8 +759,8 @@ const Renderers = (function () {
                     <td class="col-right">${reqCap}</td>
                     <td>${badge(predText, predClass)}</td>
                     <td>
-                        <button class="action-btn edit" onclick="ui.editBackend('${escapeHtml(b.id)}')">${_t('common.edit')}</button>
-                        <button class="action-btn delete" onclick="ui.confirmDeleteBackend('${escapeHtml(b.id)}')">${_t('common.delete')}</button>
+                        <button class="action-btn edit" data-admin-only onclick="ui.editBackend('${escapeHtml(b.id)}')">${_t('common.edit')}</button>
+                        <button class="action-btn delete" data-admin-only onclick="ui.confirmDeleteBackend('${escapeHtml(b.id)}')">${_t('common.delete')}</button>
                     </td>
                 </tr>
             `;
@@ -1156,7 +1156,7 @@ const Renderers = (function () {
 
             const agentActionsHtml = b.hasAgent ? `
                 <div class="agent-actions">
-                    <button class="btn btn-restart" onclick="ui.restartAgent('${safeId}')" title="${_t('agents.restart_hint')}">${_t('agents.restart')}</button>
+                    <button class="btn btn-restart" data-admin-only onclick="ui.restartAgent('${safeId}')" title="${_t('agents.restart_hint')}">${_t('agents.restart')}</button>
                     <button class="btn btn-logs" onclick="ui.viewAgentLogs('${safeId}')" title="${_t('agents.view_logs_hint')}">${_t('agents.view_logs')}</button>
                     <button class="btn btn-config" onclick="ui.showAgentDetails('${safeId}')" title="${_t('agents.config_hint')}">${_t('agents.config')}</button>
                 </div>
@@ -1178,9 +1178,9 @@ const Renderers = (function () {
                     <td>${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}</td>
                     <td class="col-right" style="min-width:140px;max-width:240px;">${loadingCell}</td>
                     <td>
-                        <button class="action-btn edit" onclick="event.stopPropagation(); ui.editBackend('${safeId}')">${_t('common.edit')}</button>
-                        <button class="action-btn delete" onclick="event.stopPropagation(); ui.confirmDeleteBackend('${safeId}')">${_t('common.delete')}</button>
-                        <button class="action-btn model" onclick="event.stopPropagation(); ui.openModelManageModal('${safeId}')" title="${_t('models.manage_title')}">${_t('models.manage_action')}</button>
+                        <button class="action-btn edit" data-admin-only onclick="event.stopPropagation(); ui.editBackend('${safeId}')">${_t('common.edit')}</button>
+                        <button class="action-btn delete" data-admin-only onclick="event.stopPropagation(); ui.confirmDeleteBackend('${safeId}')">${_t('common.delete')}</button>
+                        <button class="action-btn model" data-admin-only onclick="event.stopPropagation(); ui.openModelManageModal('${safeId}')" title="${_t('models.manage_title')}">${_t('models.manage_action')}</button>
                     </td>
                 </tr>
                 <tr class="be-detail-row" id="${rowId}" style="display:none;">
@@ -1698,9 +1698,9 @@ const Renderers = (function () {
                     // backend, где есть полноценное управление (load options,
                     // profiles, file management, delete).
                     ? ''
-                    : `<button class="btn btn-load" onclick="window.modelCardAction('load', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.load')}</button>` +
-                      `<button class="btn btn-unload" onclick="window.modelCardAction('unload', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.unload')}</button>` +
-                      `<button class="btn btn-delete" onclick="window.modelCardAction('delete', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.delete')}</button>`);
+                    : `<button class="btn btn-load" data-admin-only onclick="window.modelCardAction('load', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.load')}</button>` +
+                      `<button class="btn btn-unload" data-admin-only onclick="window.modelCardAction('unload', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.unload')}</button>` +
+                      `<button class="btn btn-delete" data-admin-only onclick="window.modelCardAction('delete', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.delete')}</button>`);
 
             return `
                 <div class="model-card" data-backend="${safeBackend}" data-model="${safeName}" data-model-name="${escapeHtml(m.name).toLowerCase()}" data-backend-type="${escapeHtml(backendType)}" data-size-bytes="${sizeBytes}" data-vram-mb="${vramMB === null ? 0 : vramMB}">
@@ -1914,6 +1914,27 @@ const Renderers = (function () {
         return '👤';
     }
 
+    // R229 (2026-10-22): БЕЙДЖ ПРОТОКОЛА — каким путём пришёл клиент.
+    //
+    // ЖИВЫЕ ЖАЛОБЫ ОПЕРАТОРА: «Cline жалуется на инструменты», «Open WebUI получает
+    // не тот n_ctx», «сессия висит» — почти все относятся к одному из двух путей,
+    // а в сессиях/очереди пути были неразличимы: видно клиента, но не видно,
+    // говорил он по OpenAI-совместимому API (/v1/...) или по родному Ollama
+    // (/api/...). Бренд-имена не переводятся — это названия API.
+    function protocolBadge(protocol) {
+        const p = String(protocol || '').toLowerCase();
+        if (p === 'openai') {
+            return ' <span class="badge protocol-badge protocol-openai" title="OpenAI API (/v1/...)" ' +
+                'style="background:#10a37f;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;">OpenAI</span>';
+        }
+        if (p === 'ollama') {
+            return ' <span class="badge protocol-badge protocol-ollama" title="Ollama API (/api/...)" ' +
+                'style="background:#64748b;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;">Ollama</span>';
+        }
+        // Пусто/неизвестно — бейджа нет: выдуманный протокол вводил бы в заблуждение.
+        return '';
+    }
+
     function sessionsPage(sessions) {
         const tbody = document.getElementById('sessionsTableBody');
         if (!tbody) return;
@@ -1927,7 +1948,7 @@ const Renderers = (function () {
             <tr>
                 <td><code>${escapeHtml(s.id?.substring(0, 16) || 'N/A')}...</code></td>
                 <td>${escapeHtml(s.backendId || '-')}</td>
-                <td>${escapeHtml(s.model || '-')}</td>
+                <td>${escapeHtml(s.model || '-')}${protocolBadge(s.protocol)}</td>
                 <td>${s.requestCount || 0}</td>
                 <td>${Utils.formatDate(s.lastRequestAt)}</td>
                 <td>${escapeHtml(s.clientIP || '-')}</td>
@@ -1968,11 +1989,28 @@ const Renderers = (function () {
             workers: firstNumOr(queue.workers, 0),
             avgWaitMs: firstNumOr(queue.avg_wait_time_ms, 0)
         };
-        const detail = Array.isArray(adm.waiting_detail) ? adm.waiting_detail.map(function(w) {
+        const detail = Array.isArray(adm.waiting_detail) ? adm.waiting_detail.map(function(w, index) {
+            const session = String((w && w.session) || '');
+            // R118 (2026-10-14): позиция приходит с балансера (position). Индекс
+            // строки — только запасной вариант для старого балансера без поля.
+            const position = firstNumOr(w && w.position, index + 1);
+            // R118: различает ли балансер этого клиента. `fp:` — отпечаток
+            // IP+User-Agent, `tkn:` — общий Authorization-токен: у двух экземпляров
+            // клиента с одной машины они совпадают, и очередь физически не может их
+            // разделить. Оператор должен видеть это прямо, а не две одинаковые
+            // строки, выглядящие как разные клиенты.
+            const sessionKnown = (w && typeof w.session_known === 'boolean')
+                ? w.session_known
+                : !/^(fp:|tkn:)/.test(session);
             return {
-                session: String((w && w.session) || ''),
+                session: session,
                 backend: String((w && w.backend) || ''),
-                waitedMs: firstNumOr(w && w.waited_ms, 0)
+                waitedMs: firstNumOr(w && w.waited_ms, 0),
+                position: position,
+                sessionKnown: sessionKnown,
+                sessionSource: String((w && w.session_source) || ''),
+                // R229: протокол ожидающего (openai/ollama), если сессия известна.
+                protocol: String((w && w.protocol) || '')
             };
         }) : [];
         // Карта «по бэкендам» — из waiting_by_backend, но при её отсутствии
@@ -2006,6 +2044,9 @@ const Renderers = (function () {
             waitMaxSec: firstNumOr(adm.wait_max_sec, 0),
             timeouts: firstNumOr(adm.timeout_total, 0),
             waitedTotal: firstNumOr(adm.waited_total, 0),
+            // R118: сколько ожидающих балансер не может различить между собой
+            // (ключ выведен из IP+User-Agent или общего токена).
+            unidentified: firstNumOr(adm.unidentified_waiting, 0),
             legacyMax: legacy.max,
             byBackend: byBackend,
             detail: detail
@@ -2107,9 +2148,17 @@ const Renderers = (function () {
         if (!v.detail.length) return emptyRow(5, _t('queue.no_tasks'));
         return v.detail.map(function(w, index) {
             const waited = (w.waitedMs / 1000).toFixed(1) + _t('renderers.seconds');
+            // R118: позиция — из очереди (не индекс отрисовки), а для клиента,
+            // которого балансер не различает, показываем честную подпись вместо
+            // синтетического ключа (сам ключ остаётся в title для разбора).
+            const pos = (w.position && w.position > 0) ? w.position : (index + 1);
+            const sess = w.sessionKnown
+                ? '<code>' + escapeHtml(w.session || '-') + '</code>'
+                : '<code title="' + escapeHtml(w.session || '') + '">' +
+                    escapeHtml(_t('queue.session_unidentified')) + '</code>';
             return '<tr>' +
-                '<td>' + (index + 1) + '</td>' +
-                '<td><code>' + escapeHtml(w.session || '-') + '</code></td>' +
+                '<td>' + pos + '</td>' +
+                '<td>' + sess + protocolBadge(w.protocol) + '</td>' +
                 '<td>' + escapeHtml(w.backend || '-') + '</td>' +
                 '<td>' + waited + '</td>' +
                 '<td><span class="queue-task-status pending">' + escapeHtml(_t('queue.admission_status')) + '</span></td>' +
@@ -2169,7 +2218,9 @@ const Renderers = (function () {
             return;
         }
         container.innerHTML = logEntries.map(log => `
-            <div class="log-entry">
+            // R208 (2026-10-21): полный текст в title — длинное сообщение (ошибка) можно прочитать
+            // наведением: в поле оно раньше обрезалось.
+            <div class="log-entry" title="${escapeHtml(log.time + ' ' + log.level + ': ' + log.message)}">
                 <span class="log-time">${escapeHtml(log.time)}</span>
                 <span class="log-level ${log.level.toLowerCase()}">${escapeHtml(log.level)}</span>
                 <span class="log-message">${escapeHtml(log.message)}</span>
@@ -2502,12 +2553,27 @@ const Renderers = (function () {
             return;
         }
 
-        Utils.setText('ggufTotalBackends', data.backends.length);
+        // R211 (2026-10-21): НА СТРАНИЦЕ GGUF - ТОЛЬКО llama.cpp-БЭКЕНДЫ.
+        //
+        // Живая жалоба (скриншот): на странице «GGUF Models» выбираешь llama.cpp-бэкенд,
+        // но в списке присутствует imageworker (и другие типы), и действия по модели
+        // уходят на бэкенд, который к GGUF-моделям отношения не имеет - отсюда ошибки
+        // «not a llama_cpp backend» и попытки грузить модель в image-воркер.
+        var ggufBackends = data.backends.filter(function (b) {
+            var t = (Utils.getBackendType ? Utils.getBackendType(b) : (b.backendType || b.type || ''));
+            return String(t || '').toLowerCase() === 'llama_cpp';
+        });
+        if (!ggufBackends.length) {
+            container.innerHTML = loading(_t('gguf.no_backends'));
+            return;
+        }
+
+        Utils.setText('ggufTotalBackends', ggufBackends.length);
 
         // Build backend selector
         var selectorHtml = '<div class="gguf-backend-selector"><label>' + _t('gguf.select_backend') + ': </label><select id="ggufBackendSelect" onchange="Renderers.ggufFilterBackend()" style="margin-left:0.5rem;padding:0.3rem 0.5rem;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);">';
         selectorHtml += '<option value="">' + _t('gguf.all_backends') + '</option>';
-        data.backends.forEach(function(b) {
+        ggufBackends.forEach(function(b) {
             var selected = (window._ggufSelectedBackend === b.id) ? ' selected' : '';
             selectorHtml += '<option value="' + escapeHtml(b.id) + '"' + selected + '>' + escapeHtml(b.id) + ' (' + escapeHtml(b.status) + ')</option>';
         });
@@ -2518,10 +2584,10 @@ const Renderers = (function () {
         // генерируемой разметке → счётчик в шапке GGUF не отображался.
         var totalHtml = '<div class="gguf-total-backends-row">' +
             '<span data-i18n="gguf.total_backends">' + _t('gguf.total_backends') + '</span>: ' +
-            '<span id="ggufTotalBackends">' + data.backends.length + '</span></div>';
+            '<span id="ggufTotalBackends">' + ggufBackends.length + '</span></div>';
 
         container.innerHTML = totalHtml + selectorHtml + '<div id="ggufBackendCards" style="display:grid;gap:1rem;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));"></div>';
-        renderGgufCardsInto(data.backends);
+        renderGgufCardsInto(ggufBackends);
     }
 
     function ggufFilterBackend() {
@@ -2531,10 +2597,15 @@ const Renderers = (function () {
         // Re-fetch data and re-render
         if (window.Api && window.Api.fetchGgufBackends) {
             window.Api.fetchGgufBackends().then(function(data) {
+                    // R211: фильтр «все» тоже не должен возвращать image/ollama.
+                    var llamaOnly = data.backends.filter(function (b) {
+                        var t = (Utils.getBackendType ? Utils.getBackendType(b) : (b.backendType || b.type || ''));
+                        return String(t || '').toLowerCase() === 'llama_cpp';
+                    });
                 if (data && data.backends) {
                     var filtered = selected
-                        ? data.backends.filter(function(b) { return b.id === selected; })
-                        : data.backends;
+                        ? llamaOnly.filter(function(b) { return b.id === selected; })
+                        : llamaOnly;
                     renderGgufCardsInto(filtered);
                 }
             }).catch(function() {});
@@ -2598,6 +2669,8 @@ const Renderers = (function () {
         // R91 (2026-10-08): чистый маппинг статистики очереди — экспортируем для
         // юнит-теста (webui/js/modules/renderers-queue.test.js).
         queueView,
+        // R229 (2026-10-22): бейдж протокола — экспортируем для юнит-теста.
+        protocolBadge,
         // R91 (2026-10-09): сведение дублей моделей и распознавание нулевой
         // метки времени — экспортируем для юнит-теста
         // (webui/js/modules/renderers-models-dedup.test.js): страница моделей

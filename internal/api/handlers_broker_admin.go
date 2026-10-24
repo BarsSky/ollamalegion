@@ -36,11 +36,11 @@ import (
 // brokerStatsSnapshot явно (а не встраивает тип), чтобы HTTP-контракт не
 // менялся молча при рефакторинге внутренней структуры.
 type brokerStatsResponse struct {
-	BrokerDrops    int64  `json:"broker_drops"`
-	ClientDrops    int64  `json:"client_drops"`
-	Subscribers    int    `json:"subscribers"`
-	MetricsChanLen int    `json:"metrics_chan_len"`
-	ClusterChanLen int    `json:"cluster_chan_len"`
+	BrokerDrops    int64 `json:"broker_drops"`
+	ClientDrops    int64 `json:"client_drops"`
+	Subscribers    int   `json:"subscribers"`
+	MetricsChanLen int   `json:"metrics_chan_len"`
+	ClusterChanLen int   `json:"cluster_chan_len"`
 	// TotalDrops — brokerage + client, чтобы мониторингу не считать самому.
 	TotalDrops int64  `json:"total_drops"`
 	Timestamp  string `json:"timestamp"`

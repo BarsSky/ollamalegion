@@ -1,4 +1,4 @@
-// js/monitor/init.js — Initialization, rebalance, animation loop
+﻿// js/monitor/init.js — Initialization, rebalance, animation loop
 
 (function() {
   'use strict';
@@ -10,7 +10,10 @@
     if (MA.demoMode) { alert(MA.T('monitor.rebalance.disabled')); return; }
     var enabled = document.getElementById('autoPullEnabled').checked;
     var maxConcurrent = parseInt(document.getElementById('autoPullMaxConcurrent').value) || 2;
-    var pullTimeout = document.getElementById('autoPullPullTimeout').value || '120s';
+    // R106c (2026-10-12): поле Pull Timeout убрано из панели (ожидание идёт по
+    // состоянию закачки, а не по таймеру). Значение не задаём — сервер
+    // использует своё; читать несуществующий элемент нельзя (был бы TypeError).
+    var pullTimeout = '120s';
     var retryCount = parseInt(document.getElementById('autoPullRetryCount').value) || 1;
     // Validate
     if (maxConcurrent < 1) maxConcurrent = 1;
@@ -134,15 +137,28 @@
   };
 
   // Animation loop
+  // R192 (2026-10-20): цикл анимации не должен умирать от одного исключения.
+  //
+  // ЖАЛОБА: «монитор подвисает, картинка смазывается, ничего не обновляется».
+  // drawTopo/drawConveyor вызываются на каждом кадре; любое исключение внутри
+  // (например, из-за временно отсутствующих данных) выбрасывало нас из anim(),
+  // и requestAnimationFrame больше НЕ ПЛАНИРОВАЛСЯ — канвас навсегда замирал
+  // с последним (недочищенным) кадром. Теперь исключение логируется, а кадр
+  // планируется всегда.
   function anim() {
-    if (typeof window.drawTopo === 'function') window.drawTopo();
-    if (typeof window.drawConveyor === 'function') window.drawConveyor();
+    try {
+      if (typeof window.drawTopo === 'function') window.drawTopo();
+      if (typeof window.drawConveyor === 'function') window.drawConveyor();
+    } catch (err) {
+      if (!anim._warned) {
+        anim._warned = true;
+        console.warn('[monitor] render loop error (further errors suppressed):', err);
+      }
+    }
     requestAnimationFrame(anim);
   }
-
   // INIT
   document.documentElement.setAttribute('lang', MA.LANG());
-  if (typeof window.updateMonitorTexts === 'function') window.updateMonitorTexts();
   setTimeout(function() { if (typeof window.updateMonitorTexts === 'function') window.updateMonitorTexts(); }, 100);
   setTimeout(function() { if (typeof window.updateMonitorTexts === 'function') window.updateMonitorTexts(); }, 500);
 

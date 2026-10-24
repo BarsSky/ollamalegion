@@ -79,8 +79,9 @@ func TestMetricsPlacementSummary_R78(t *testing.T) {
 	if placement["rules"] != float64(2) {
 		t.Errorf("rules = %v, ожидалось 2", placement["rules"])
 	}
-	if placement["notExecutable"] != float64(1) {
-		t.Errorf("notExecutable = %v, ожидалось 1 (m-sharded — этап P2)", placement["notExecutable"])
+	// R92 (S3): sharded исполним, поэтому «неисполнимого» в сводке больше нет.
+	if placement["notExecutable"] != float64(0) {
+		t.Errorf("notExecutable = %v, ожидалось 0 (sharded исполним с R92)", placement["notExecutable"])
 	}
 	if placement["warnings"] == nil {
 		t.Error("warnings должен присутствовать (даже 0)")

@@ -393,9 +393,18 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			updatedFields = append(updatedFields, "initialized")
 		}
 
-		// --- Backend Engine Switch (Ollama / llama.cpp) ---
+		// --- Backend Engine Switch (Ollama / llama.cpp / auto) ---
+		//
+		// R112 (2026-10-11): добавлено значение auto. До этого PUT принимал
+		// только ollama_api/llama_cpp, то есть «тип не навязан» выразить было
+		// нельзя — а именно это значение (дефолт config.Load) позволяет
+		// llama.cpp и Ollama работать в одном кластере. WebUI отправляет auto
+		// при выборе карточки «Авто»; без этой ветки сервер отвечал 400
+		// «Invalid backendEngine».
 		if req.BackendEngine != "" {
 			switch req.BackendEngine {
+			case "auto":
+				s.config.BackendEngine = types.EngineAuto
 			case "llama_cpp":
 				s.config.BackendEngine = types.EngineLlamaCPP
 			case "ollama_api":
@@ -403,7 +412,7 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			default:
 				s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 					"success": false,
-					"error":   "Invalid backendEngine. Valid: ollama_api, llama_cpp",
+					"error":   "Invalid backendEngine. Valid: auto, ollama_api, llama_cpp",
 				})
 				return
 			}

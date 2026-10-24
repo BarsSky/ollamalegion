@@ -232,7 +232,7 @@ func TestListenIP_ForcesLoopback(t *testing.T) {
 			t.Errorf("listenIP(%q) = %q, want 127.0.0.1", in, got)
 		}
 	}
-	if got := listenIP("192.168.1.5"); got != "192.168.1.5" {
+	if got := listenIP("192.0.2.105"); got != "192.0.2.105" {
 		t.Errorf("явный адрес должен сохраняться, got %q", got)
 	}
 }

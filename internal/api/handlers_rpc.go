@@ -252,9 +252,9 @@ func (s *Server) handleRpcModelInfer_POST(w http.ResponseWriter, r *http.Request
 	}
 
 	out := map[string]interface{}{
-		"model_name": modelName,
-		"output":     resp.Output,
-		"total_ms":   resp.TotalMs,
+		"model_name":  modelName,
+		"output":      resp.Output,
+		"total_ms":    resp.TotalMs,
 		"slice_stats": resp.SliceStats,
 	}
 	if resp.RequestID != "" {

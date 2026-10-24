@@ -566,7 +566,7 @@ func TestPlanApplyAutoTune_LayersReload(t *testing.T) {
 	a := &AutoTuneAnalysis{
 		IsSubOptimal: true,
 		Recommendations: []AutoTuneRecommendation{
-			{Category: "layers", CurrentNumGPULayers: 36, RecommendedNumGPULayers: -2},
+			{Category: "layers", CurrentNumGPULayers: 36, RecommendedNumGPULayers: 28},
 		},
 	}
 	currentLoaded := types.LlamaCppModel{Name: "test", NumGPULayers: 36}
@@ -574,8 +574,10 @@ func TestPlanApplyAutoTune_LayersReload(t *testing.T) {
 	if plan == nil {
 		t.Fatal("expected non-nil plan with layers reload")
 	}
-	if plan.NumGPULayers != -2 {
-		t.Errorf("expected NumGPULayers=-2, got %d", plan.NumGPULayers)
+	// R229 (2026-10-22): -2 больше НЕ цель reload'а (см. autotune_auto2_r229_test.go);
+	// здесь проверяем обычную конкретную рекомендацию слоёв.
+	if plan.NumGPULayers != 28 {
+		t.Errorf("expected NumGPULayers=28, got %d", plan.NumGPULayers)
 	}
 	if plan.ContextSize != 0 || plan.KVCacheType != "" {
 		t.Errorf("expected only layers change, got ContextSize=%d KVCache=%s",
@@ -689,7 +691,7 @@ func TestPlanApplyAutoTune_LayersModelName(t *testing.T) {
 	a := &AutoTuneAnalysis{
 		IsSubOptimal: true,
 		Recommendations: []AutoTuneRecommendation{
-			{Category: "layers", CurrentNumGPULayers: 36, RecommendedNumGPULayers: -2},
+			{Category: "layers", CurrentNumGPULayers: 36, RecommendedNumGPULayers: 28},
 		},
 	}
 	currentLoaded := types.LlamaCppModel{Name: "qwen3-4b", NumGPULayers: 36}

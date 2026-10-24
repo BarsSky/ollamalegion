@@ -187,8 +187,27 @@ func TestR83v56_StreamCanBeDisabled(t *testing.T) {
 	defer cleanup()
 
 	chunks := postChatWithTools(t, srv.URL)
-	if len(chunks) != 1 {
-		t.Errorf("чанков %d, want 1 (флаг CPPWORKER_TOOLS_STREAM_CONTENT=false)", len(chunks))
+	// R215 (2026-10-21): считаем ЧАНКИ С СОДЕРЖИМЫМ, а не общее число.
+	//
+	// С R189 (/api/chat с tools отдаёт первый байт сразу) поток начинается со
+	// стартового чанка без контента: он нужен клиенту, чтобы не ждать тишины, и
+	// к «потоковой отдаче контента» отношения не имеет. Проверка «ровно 1 чанк»
+	// ловила этот стартовый кадр и падала даже при исправном рубильнике.
+	contentChunks := 0
+	for _, c := range chunks {
+		if done, _ := c["done"].(bool); done {
+			contentChunks++
+			continue
+		}
+		if ka, _ := c["keepalive"].(bool); ka {
+			continue
+		}
+		if getContentFromMessage(c) != "" {
+			contentChunks++
+		}
+	}
+	if contentChunks != 1 {
+		t.Errorf("чанков с содержимым %d, want 1 (флаг CPPWORKER_TOOLS_STREAM_CONTENT=false)", contentChunks)
 	}
 	streamed, final := joinContentDeltas(t, chunks)
 	want := strings.Join(tokens, "")

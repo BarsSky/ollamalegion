@@ -43,6 +43,17 @@ func Load(path string) (*Config, error) {
 	// Установка значений по умолчанию
 	setDefaults(&config)
 
+	// R97 (S7 плана 2026-10-07): миграция operatingMode → balancing.placement.
+	// Именно здесь, а не в ValidateConfigOnLoad: та функция в продакшене не
+	// вызывается вовсе (только из тестов), и хук в ней не сработал бы никогда.
+	// Заметки идут в лог: оператор должен видеть, что конфиг сконвертирован и
+	// почему выставлен fallback=single. Дублируем их в конфиг (json:"-"), чтобы
+	// то же самое было видно в GET /api/v1/placement, а не только в логе старта.
+	config.ModeMigrationNotes = MigrateOperatingModeToPlacement(&config)
+	for _, note := range config.ModeMigrationNotes {
+		log.Printf("[config] mode migration: %s", note)
+	}
+
 	return &Config{
 		path: absPath,
 		data: &config,
@@ -541,13 +552,21 @@ func setDefaults(config *types.LoadBalancerConfig) {
 		config.Backends[i].Status = types.StatusStarting
 	}
 
-	// BackendEngine defaults
+	// BackendEngine defaults.
+	//
+	// R112 (2026-10-11): дефолт — auto, а не выведенный из operatingMode движок.
+	// Раньше здесь стоял вывод «режим llama.cpp → backendEngine=llama_cpp, иначе
+	// ollama_api», и это значение СОХРАНЯЛОСЬ в config.json. Дальше оно начинало
+	// работать как жёсткий фильтр: determineRequestBackendType и
+	// getEffectiveBackendType видели явный (не auto) движок и разрешали только
+	// один тип бэкенда — второй тип молча выпадал из маршрутизации и из выдачи
+	// WebUI. То есть разные типы бэкендов не могли работать вместе из-за значения,
+	// которое никто не выбирал: оно было ВЫВЕДЕНО из режима при инициализации.
+	//
+	// Теперь движок по умолчанию auto = «определять по фактическому составу
+	// кластера»; явное значение остаётся только осознанным выбором оператора.
 	if config.BackendEngine == "" {
-		if types.IsModeLlamaCpp(config.Balancing.OperatingMode) {
-			config.BackendEngine = types.EngineLlamaCPP
-		} else {
-			config.BackendEngine = types.EngineOllamaAPI
-		}
+		config.BackendEngine = types.EngineAuto
 	}
 
 	// OperatingMode — определяем из enabled-флагов или ставим дефолт

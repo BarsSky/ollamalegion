@@ -4,13 +4,13 @@
 // not reappear in CSS comments or i18n file headers after Phase 7.1 cleanup.
 //
 // Что проверяет:
-//   1. webui/css/*.css — em-dash внутри /* ... */ комментариев не допускается
-//      (comment-only marker; считаются "плохой" typography в CSS-коде, т.к.
-//      em-dash это литературный знак, а в коде ожидается ASCII).
-//      В user-facing CSS rules em-dash отсутствует (никогда не было).
-//   2. webui/js/i18n/en.js и ru.js — только первая строка (file header).
-//      Внутри i18n-объекта em-dash ДОПУСТИМ: это легитимная русская/английская
-//      типографика в user-facing copy ("P1 - Model Affinity" — это пунктуация).
+//  1. webui/css/*.css — em-dash внутри /* ... */ комментариев не допускается
+//     (comment-only marker; считаются "плохой" typography в CSS-коде, т.к.
+//     em-dash это литературный знак, а в коде ожидается ASCII).
+//     В user-facing CSS rules em-dash отсутствует (никогда не было).
+//  2. webui/js/i18n/en.js и ru.js — только первая строка (file header).
+//     Внутри i18n-объекта em-dash ДОПУСТИМ: это легитимная русская/английская
+//     типографика в user-facing copy ("P1 - Model Affinity" — это пунктуация).
 //
 // Что НЕ проверяет:
 //   - User-facing copy внутри i18n-объектов (P1-P4, help text) — там em-dash

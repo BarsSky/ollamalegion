@@ -594,4 +594,3 @@ func setupTestServerForHealthUI(t *testing.T) (*httptest.Server, string) {
 	ts := httptest.NewServer(mux)
 	return ts, ts.URL
 }
-

@@ -39,6 +39,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"ollama-loadbalancer/pkg/logger"
 	"time"
 )
 
@@ -496,4 +498,29 @@ func (p *Proxy) proxyRequestToBackend(r *http.Request, backendID string, timeout
 	}
 
 	return client.Do(req)
+}
+
+// proxyReadOnlyRequest — R118 (2026-10-14): прямой прокси READ-ONLY/MGMT запроса
+// на бэкенд. Ни preflight n_ctx, ни захват слота, ни авто-загрузка модели.
+//
+// ЗАЧЕМ. Read-only пути (/api/show, /api/tags, /api/ps, /api/version, /v1/models,
+// /api/models[/files], /api/pull, /api/copy, /api/delete, /api/create, /api/blobs/*)
+// читают состояние и по контракту Ollama ОБЯЗАНЫ отвечать сразу. Раньше на
+// llama.cpp-бэкенде они уходили в inference-транспорт (proxyRequest →
+// proxyRequestLlamaCppNonStream), где preflight n_ctx решал «модель не загружена
+// / ctx не тот» и запускал РЕАЛЬНУЮ загрузку модели (POST /api/models/load,
+// ctx 32768 → на стенде partial_offload/cpu_only, CPU 96%), после чего запрос
+// ждал загрузку и получал 503. Так обычное POST /api/show со стороны OpenWebUI
+// (открытие чата) грузило модель и блокировало остальных клиентов.
+func (p *Proxy) proxyReadOnlyRequest(w http.ResponseWriter, r *http.Request, backendID string) error {
+	resp, err := p.proxyRequestToBackend(r, backendID, modelOpHTTPTimeout())
+	if err != nil {
+		logger.Get().Warnw("proxyReadOnlyRequest: upstream failed",
+			"backend", backendID, "path", r.URL.Path, "method", r.Method, "error", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return err
+	}
+	// copyResponse сам закрывает тело ответа.
+	copyResponse(w, resp)
+	return nil
 }

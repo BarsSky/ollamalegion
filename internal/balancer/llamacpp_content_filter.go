@@ -148,6 +148,45 @@ var llamaCppServiceTokens = []string{
 	"<unk>",
 }
 
+// llamaCppReasoningMarkers — маркеры размышлений, которые не должны попадать
+// в ВИДИМЫЙ текст ответа. Порядок — от длинных к коротким (иначе
+// `<|channel>thought` оставит после себя `thought`).
+//
+// R231: единый список для защиты на границе балансера (см.
+// stripReasoningMarkersFromVisible). cppworker чистит их сам, но клиент не
+// должен зависеть от версии воркера.
+var llamaCppReasoningMarkers = []string{
+	"<|channel>thought\n", "<|channel>thought",
+	"<|channel>analysis\n", "<|channel>analysis",
+	"<|channel>", "<channel|>",
+	"<|think>", "<think|>",
+	"<thinking>", "</thinking>",
+	"<reasoning>", "</reasoning>",
+	"<analysis>", "</analysis>",
+	"<think>", "</think>",
+}
+
+// stripReasoningMarkersFromVisible вырезает маркеры размышлений из видимого
+// текста, сохраняя сам текст и пробелы вокруг (клиент склеивает дельты, срезать
+// пробелы нельзя).
+//
+// Возвращает (очищенный текст, сколько маркеров вырезано).
+func stripReasoningMarkersFromVisible(s string) (string, int) {
+	if s == "" {
+		return s, 0
+	}
+	out := s
+	removed := 0
+	for _, tag := range llamaCppReasoningMarkers {
+		if tag == "" || !strings.Contains(out, tag) {
+			continue
+		}
+		removed += strings.Count(out, tag)
+		out = strings.ReplaceAll(out, tag, "")
+	}
+	return out, removed
+}
+
 // stripLlamaCppServiceTokens вырезает ВСЕ служебные токены из content,
 // оставляя окружающий полезный текст.
 //
@@ -243,6 +282,15 @@ func filterOpenAIStreamingLine(line []byte) ([]byte, bool) {
 	// (см. stripLlamaCppServiceTokens) — это удаляло из ответа легитимные
 	// слова и предложения, если модель упоминала спец-токен как текст.
 	stripped, removed := stripLlamaCppServiceTokens(content)
+	// R231 (2026-10-24): маркеры размышлений не должны доезжать до КЛИЕНТА в
+	// видимом канале. cppworker чистит их сам, но старая версия воркера (или
+	// путь без reasoning-парсера) может прислать `</think>`/`<|channel>thought`
+	// в delta.content — живая жалоба Cline: «в основном теле ответа </think>».
+	// Здесь вторая линия обороны на границе балансера (Cline/OpenWebUI).
+	if s, n := stripReasoningMarkersFromVisible(stripped); n > 0 {
+		stripped = s
+		removed += n
+	}
 	if removed == 0 {
 		// Служебных токенов нет — строка не изменяется.
 		return line, false

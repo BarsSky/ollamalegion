@@ -1,0 +1,71 @@
+# =============================================================================
+# docker-compose.rpc-node.yml — узел раскладки слоями (llama.cpp rpc-server)
+# =============================================================================
+#
+# ЗАЧЕМ. Мастер раскладки (cppworker с CPPWORKER_RPC_SERVERS) подключает чужие
+# GPU как ggml-устройства и распределяет по ним слои модели. Подключить он может
+# только то, что отдаёт rpc-server: на каждой машине-доноре должен быть поднят
+# этот сайдкар.
+#
+# ПОЧЕМУ ОТДЕЛЬНЫЙ ФАЙЛ. `docker-compose.rpc.yml` — заготовка под ДРУГУЮ схему
+# («координатор + rpcworker со слоями 1-16/17-32», образ
+# `ollama-legion/rpcworker:0.1.0-stub`), она не собирается и к llama.cpp RPC
+# отношения не имеет. Здесь — ровно то, что нужно транспорту S1.
+#
+# ЗАПУСК НА МАШИНЕ-ДОНОРЕ (её GPU отдаётся мастеру):
+#   cd deployments
+#   printf 'CPPWORKER_GPU_TAG=r107-120\nRPC_PORT=50052\n' > .env.rpc
+#   docker compose -f docker-compose.rpc-node.yml --env-file .env.rpc up -d
+#
+# ПРОВЕРКА С МАШИНЫ МАСТЕРА:
+#   powershell -File scripts\stand-ports.ps1 -Action Probe -Target <ip> -Ports 50052
+#   # ожидаем CONNECTED; timeout = порт закрыт фаерволом, refused = сайдкар не поднят
+#
+# ВАЖНО ПРО ВЕРСИИ. Протокол RPC чувствителен к коммиту llama.cpp: rpc-server
+# лежит в ТОМ ЖЕ образе cppworker, что и мост мастера, поэтому обе стороны
+# собираются из одного исходника. Разные теги образов на машинах = риск
+# version_mismatch, который сухой прогон покажет в POST /api/v1/placement/validate.
+# =============================================================================
+
+services:
+  rpc-server:
+    image: ${IMAGE_REGISTRY:-}ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:?задайте CPPWORKER_GPU_TAG (например r107-120)}
+    container_name: ol-rpc-server
+    restart: unless-stopped
+    runtime: nvidia
+
+    # ВНИМАНИЕ: у образа cppworker ENTRYPOINT = /entrypoint.sh, и он ВСЕГДА
+    # запускает ./cppworker (плюс ждёт его PID). Поэтому entrypoint надо
+    # переопределить: `command:` сам по себе ушёл бы аргументами в cppworker,
+    # и сайдкар молча поднял бы второй инференс-воркер вместо RPC-узла.
+    entrypoint: ["/app/rpc-server"]
+    # -H 0.0.0.0 — слушать снаружи контейнера (мастер приходит по сети);
+    # -p 50052 — тот же порт, что стоит в правилах фаервола и в RPC-эндпоинтах
+    # группы раскладки.
+    command: ["-H", "0.0.0.0", "-p", "50052"]
+
+    # R108 (2026-10-13): УНАСЛЕДОВАННЫЙ HEALTHCHECK НАДО ВЫКЛЮЧИТЬ.
+    #
+    # Образ cppworker несёт свой HEALTHCHECK (проверка HTTP-порта 18092), а
+    # сайдкар его не слушает — поэтому `docker ps` показывал «unhealthy» при
+    # полностью рабочем RPC-сервере (живая проба: раскладка прошла, а статус
+    # контейнера пугал). Комментарий ниже про отсутствие своей проверки остаётся
+    # в силе, но без этой строки проверка образа всё равно применялась.
+    healthcheck:
+      disable: true
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+    ports:
+      - "${RPC_PORT:-50052}:50052"
+
+    # HEALTHCHECK СОЗНАТЕЛЬНО НЕТ.
+    #
+    # У rpc-server нет ручки здоровья (в отличие от cppworker), а проверка «порт
+    # слушается» через `bash -c '</dev/tcp/...'` на живом стенде дала
+    # health=unhealthy при работающем сервере — и `docker ps` начал врать в
+    # сторону «всё плохо». Отказ от проверки честнее ложной: контейнер и так
+    # перезапускается политикой restart, а доступность порта видна пробником
+    # scripts/stand-ports.ps1 с машины мастера.

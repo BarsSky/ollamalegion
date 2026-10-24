@@ -5,16 +5,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 )
 
 // TokenAuthenticator - аутентификатор на основе API токенов
 type TokenAuthenticator struct {
-	tokens     map[string]bool
+	// R201: серверные сессии WebUI. nil — режим только X-API-Token (legacy).
+	sessions    *SessionStore
+	tokens      map[string]bool
 	masterToken string
-	headerName string
-	enabled    bool
-	mu         sync.RWMutex
+	headerName  string
+	enabled     bool
+	mu          sync.RWMutex
 }
 
 // NewTokenAuthenticator - создание нового аутентификатора
@@ -54,7 +57,7 @@ func (a *TokenAuthenticator) Authenticate(r *http.Request) (bool, string) {
 
 	// Проверка заголовка
 	token := r.Header.Get(a.headerName)
-	
+
 	// Для WebSocket: проверка query parameter (браузер не поддерживает custom headers)
 	if token == "" {
 		token = r.URL.Query().Get("token")
@@ -87,6 +90,24 @@ func (a *TokenAuthenticator) IsMasterToken(token string) bool {
 	return token == a.masterToken
 }
 
+// ValidToken - есть ли такой токен среди разрешённых (без побочных эффектов).
+//
+// R225: нужен /auth/me. До правки там считался «аутентификацией» ЛЮБОЙ непустой
+// заголовок X-API-Token — неверный токен включал в UI админские действия, а
+// запросы всё равно получали 401.
+func (a *TokenAuthenticator) ValidToken(token string) bool {
+	if a == nil || !a.enabled {
+		return false
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.tokens[token]
+}
+
 // AddToken - добавление нового токена
 func (a *TokenAuthenticator) AddToken(token string) {
 	a.mu.Lock()
@@ -113,6 +134,20 @@ func (a *TokenAuthenticator) GetTokenCount() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return len(a.tokens)
+}
+
+// SetSessions - включить серверные сессии (R201).
+func (a *TokenAuthenticator) SetSessions(s *SessionStore) {
+	a.mu.Lock()
+	a.sessions = s
+	a.mu.Unlock()
+}
+
+// Sessions - текущее хранилище сессий (может быть nil).
+func (a *TokenAuthenticator) Sessions() *SessionStore {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.sessions
 }
 
 // IsEnabled - проверка, включена ли аутентификация
@@ -149,6 +184,33 @@ func AuthMiddleware(next http.Handler, auth *TokenAuthenticator) http.Handler {
 			return
 		}
 
+		// R201: серверная сессия (WebUI) — приоритетнее токена.
+		if sess := auth.sessionFor(r); sess != nil {
+			if !isReadOnlyMethod(r.Method) {
+				if sess.Role != "admin" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"success": false,
+						"error":   "Forbidden: требуются права администратора (роль viewer только читает)",
+					})
+					return
+				}
+				if csrf := r.Header.Get(csrfHeaderName); csrf == "" || csrf != sess.CSRF {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"success": false,
+						"error":   "Forbidden: отсутствует или неверен X-CSRF-Token",
+					})
+					return
+				}
+			}
+			r.Header.Set("X-Authenticated-Token", "session:"+sess.User)
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		valid, token := auth.Authenticate(r)
 		if !valid {
 			w.Header().Set("Content-Type", "application/json")
@@ -165,6 +227,33 @@ func AuthMiddleware(next http.Handler, auth *TokenAuthenticator) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// sessionFor - сессия из cookie запроса (nil, если нет/истекла).
+func (a *TokenAuthenticator) sessionFor(r *http.Request) *AuthSession {
+	a.mu.RLock()
+	store := a.sessions
+	a.mu.RUnlock()
+	if store == nil {
+		return nil
+	}
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return nil
+	}
+	if sess, ok := store.Get(c.Value); ok {
+		return sess
+	}
+	return nil
+}
+
+// isReadOnlyMethod - методы, разрешённые роли viewer.
+func isReadOnlyMethod(m string) bool {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	return false
 }
 
 // AuthStatusHandler - handler для получения статуса аутентификации

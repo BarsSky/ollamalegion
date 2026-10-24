@@ -27,6 +27,20 @@ const (
 	ModeCPU  PlatformMode = "cpu"
 )
 
+// Роли бэкенда в раскладке слоёв (R118, 2026-10-14).
+//
+// Задаёт оператор явно (WebUI: PUT /api/v1/backends/{id}/role). Это решение
+// человека, а не авто-вывод: «кто главный, кто донор, кто самодостаточный».
+const (
+	// BackendRoleStandalone — самодостаточный: раскладку не использует, слои не отдаёт.
+	BackendRoleStandalone = "standalone"
+	// BackendRoleMain — главный (мастер раскладки): держит модель и раскладывает её
+	// слои на доноров (cppworker получает rpcServers, собранный из доноров).
+	BackendRoleMain = "main"
+	// BackendRoleDonor — донор (узел раскладки): отдаёт свою GPU через rpc-server.
+	BackendRoleDonor = "donor"
+)
+
 // Backend - конфигурация бэкенда
 type Backend struct {
 	ID                  string        `json:"id"`
@@ -127,6 +141,53 @@ type Backend struct {
 	// 0 = неизвестно (старая сборка cppworker) → прежнее поведение.
 	RuntimeModelSlots int `json:"runtimeModelSlots,omitempty"`
 
+	// NodeClaimedCapacity — R121 (2026-10-15): сколько параллельных запросов
+	// заявил САМ УЗЕЛ при регистрации (cppworker через агент: `maxConcurrentRequests`
+	// в payload регистрации, см. internal/agent/collector_register.go).
+	//
+	// ЗАЧЕМ ОТДЕЛЬНОЕ ПОЛЕ. Раньше заявка узла записывалась в СТАТИЧЕСКОЕ
+	// MaxConcurrentReqs, а признак «от ноды» не выставлялся. Живой замер: сразу
+	// после рестарта cppworker `/api/v1/backends` отдавал `effective=1 source=static`,
+	// а после рестарта БАЛАНСЕРА — `effective=2 source=static` (статика конфига
+	// победила заявку узла, потому что MaxConcurrentReqs читается из конфига, а
+	// агент заново не регистрируется). Из-за этого admission-очередь пускала два
+	// запроса на узел, который сериализует llama_decode: второй ждал МОЛЧА внутри
+	// cppworker, без позиции в очереди и без X-Queue-Wait-Ms.
+	//
+	// Здесь живёт именно заявка узла — однозначная (её не путать ни со статикой
+	// конфига, ни с «эхом» собственного ответа балансера) и переживающая
+	// перезапуск балансера (сериализуется в state.json).
+	//
+	// 0 = узел вместимость не сообщал → работает прежнее правило.
+	NodeClaimedCapacity int `json:"nodeClaimedCapacity,omitempty"`
+
+	// Role — R118 (2026-10-14): РОЛЬ бэкенда в раскладке слоёв. Задаётся оператором
+	// явно (WebUI/API), а не выводится автоматически: «кто главный, кто донор, кто
+	// самодостаточный» — решение человека, и оно должно быть видно в панели.
+	//
+	//	BackendRoleStandalone — самодостаточный: раскладку не использует, слои не отдаёт;
+	//	BackendRoleMain       — главный (мастер раскладки): держит модель и раскладывает
+	//	                        её слои на доноров (cppworker получает rpcServers доноров);
+	//	BackendRoleDonor      — донор (узел раскладки): отдаёт свою GPU через rpc-server.
+	//
+	// Пустая строка = роль не задана (обычная запись, её может убрать авто-уборка
+	// «молчащих» узлов). Узел с ЯВНОЙ ролью авто-уборка не трогает: он может молчать
+	// именно потому, что его настраивают (требование оператора «оставлять узел в
+	// списке, так как может происходить настройка»).
+	Role string `json:"role,omitempty"`
+
+	// RPCEnabledOverride — R229 (2026-10-22): ЯВНЫЙ тумблер раскладки от оператора
+	// (WebUI «RPC: вкл/выкл» + «Применить»). nil = авто по ролям (как было),
+	// non-nil = решение человека, которое гард раскладки обязан уважать.
+	//
+	// ЗАЧЕМ. Живой дефект: оператор выключал раскладку через
+	// PUT /api/v1/cppworker/config/update (rpcEnabled=false), а балансерский гард
+	// EnsureRPCLayout (тик ролей раз в 15 с и вызов перед каждой загрузкой) через
+	// несколько секунд возвращал rpcEnabled=true со списком доноров — тумблер
+	// «не работал»: следующая загрузка снова уходила на донора. Настройку нельзя
+	// перезаписывать молча: пока оператор не вернёт «авто», побеждает его выбор.
+	RPCEnabledOverride *bool `json:"rpcEnabledOverride,omitempty"`
+
 	// OllamaConfig — желаемые runtime-флаги Ollama, передаваемые агенту (только для ollama-типа)
 	OllamaConfig *OllamaDesiredConfig `json:"ollamaConfig,omitempty"`
 
@@ -174,6 +235,17 @@ type Backend struct {
 	// (подходит для bundled-режима без auth или если cppworker тоже без auth).
 	// Round 7 (2026-07-09): используется в reloadModelOnCppWorker для apply профилей.
 	CppWorkerApiToken string `json:"cppWorkerApiToken,omitempty"`
+
+	// BuildInfo — R101 (S1 плана 2026-10-07): версия/коммит сборки llama.cpp,
+	// которую сообщает сам узел при регистрации (env `CPPWORKER_LLAMA_BUILD`).
+	//
+	// Зачем: обе стороны RPC обязаны быть собраны из ОДНОГО коммита — протокол
+	// версионно-чувствителен, и несовпадение даёт таймаут загрузки вместо
+	// понятной ошибки (§0.6 плана). Балансер сравнивает BuildInfo узлов группы и
+	// показывает расхождение в сухом прогоне `/api/v1/placement/validate` и в
+	// состоянии групп. Пусто = узел версию не сообщает: проверка честно
+	// помечается неподтверждённой (warning), а не считается пройденной.
+	BuildInfo string `json:"buildInfo,omitempty"`
 
 	// RequestTimeout — пер-бэкенд таймаут запроса (сек), 0 = использовать глобальный LB_REQUEST_TIMEOUT
 	RequestTimeout int `json:"requestTimeout"`
@@ -243,6 +315,106 @@ func (b *Backend) EffectiveGPUIndex() (int, bool) {
 	return 0, false
 }
 
+// Источники эффективной вместимости бэкенда (R117, 2026-10-14). Отдаются в
+// /api/v1/backends как maxConcurrentRequestsSource: без этого оператор видит
+// только число и не может отличить «столько слотов у модели» от «столько
+// заявила нода» и «слотов нет, работаем консервативно».
+const (
+	// CapacitySourceModelSlots — фактическое число слотов загруженной модели.
+	CapacitySourceModelSlots = "model_slots" // CapacitySourceModelSlotsUnknown — загруженной модели со слотами нет:
+	// вместимость консервативно 1 (см. CapUnknownModelSlots).
+	CapacitySourceModelSlotsUnknown = "model_slots_unknown"
+	// CapacitySourceOperator — операторский runtime-лимит (PUT /limits, WebUI).
+	CapacitySourceOperator = "operator"
+	// CapacitySourceNode — значение саморегистрации узла (n_parallel).
+	CapacitySourceNode = "node"
+	// CapacitySourceStatic — статический лимит из конфига.
+	CapacitySourceStatic = "static"
+)
+
+// unknownModelSlotsCapacity — R117 (2026-10-14): сколько параллельных запросов
+// балансер пропускает, когда фактическое число слотов НЕИЗВЕСТНО (модель не
+// загружена, ещё грузится или только что выгружена).
+//
+// ЖИВОЙ ДЕФЕКТ (стенд, LB_CAPACITY_FROM_MODEL_SLOTS=true). Балансер сообщал
+// вместимость 2, хотя загруженной модели не было вообще:
+//
+//	[pwsh] unload → count=0 | balancer cap=2 runtimeMax=0
+//	[pwsh] load parallel=1 → max_slots=1 | balancer cap=1   ← факт принят поллером
+//
+// То есть источником «2» была статическая заявка узла (n_parallel=2), а не факт.
+// Пока модель не загружена, число слотов БУДУЩЕЙ загрузки неизвестно: профиль
+// модели и память дают 1 даже при defaultNParallel=2 (проверено: ctx 8192 +
+// parallel=1 → max_slots=1). Раздавать два слота в этом окне нельзя: оба запроса
+// проходят admission балансера, и второй молча блокируется внутри llama.cpp
+// (SlotManager.Acquire) — ни позиции в очереди, ни keepalive, ни строки в
+// WebUI. Именно так выглядит жалоба «два запроса с одной машины не разделяются».
+//
+// Поэтому при неизвестных слотах балансер пропускает РОВНО ОДИН запрос, а
+// остальные встают в admission-очередь — с позицией, keepalive и видимостью в
+// UI. Как только поллер увидит max_slots загруженной модели, вместимость станет
+// фактической (1, 2, 3…).
+const unknownModelSlotsCapacity = 1
+
+// ResolveCapacity — R117: вместимость бэкенда И источник, из которого она взята.
+// EffectiveMaxConcurrentRequests() = первое значение этой функции; источник нужен
+// отчёту /api/v1/backends.
+func (b *Backend) ResolveCapacity() (int, string) {
+	if b == nil {
+		return 0, ""
+	}
+	// R83 (2026-09-29): учёт ФАКТИЧЕСКИХ слотов модели — opt-in. При выключенном
+	// флаге правило R117 не применяется: стенды без флага работают ровно как
+	// раньше (там нода — единственный источник правды).
+	slots := 0
+	if CapacityFromModelSlotsEnabled() {
+		slots = b.RuntimeModelSlots
+	}
+	// R121 (2026-10-15): заявка УЗЛА идёт перед статикой конфига.
+	//
+	// Почему не через MaxConcurrentReqs, как раньше: MaxConcurrentReqs — поле
+	// КОНФИГА, и после перезапуска балансера оно снова читается из config.json
+	// (на стенде 2), потому что агент регистрируется только при СВОЁМ старте.
+	// Заявка узла в отдельном поле переживает рестарт балансера и не путается с
+	// «эхом» (значением, которое балансер сам же и навязал агенту).
+	//
+	// Правила: троттлинг оператора (RuntimeMaxConcurrentRequests>0 при отсутствии
+	// владельца-ноды) может только ПОНИЗИТЬ заявку — узел физически обслуживает
+	// не больше, чем заявил.
+	if claim := b.NodeClaimedCapacity; claim > 0 && slots <= 0 {
+		if b.RuntimeMaxConcurrentRequests > 0 && !b.RuntimeCapacityFromNode {
+			if b.RuntimeMaxConcurrentRequests < claim {
+				return b.RuntimeMaxConcurrentRequests, CapacitySourceOperator
+			}
+			return claim, CapacitySourceOperator
+		}
+		return claim, CapacitySourceNode
+	}
+	eff := ResolveEffectiveCapacity(slots, b.RuntimeMaxConcurrentRequests,
+		b.RuntimeCapacityFromNode, b.MaxConcurrentReqs)
+
+	switch {
+	case slots > 0 && b.RuntimeMaxConcurrentRequests > 0 && b.RuntimeMaxConcurrentRequests <= slots:
+		return eff, CapacitySourceOperator
+	case slots > 0:
+		return eff, CapacitySourceModelSlots
+	case b.Type == BackendTypeLlamaCpp && CapacityFromModelSlotsEnabled() &&
+		b.RuntimeMaxConcurrentRequests <= 0 && eff > unknownModelSlotsCapacity:
+		// Слотов нет, а разрешённый параллелизм больше одного: урезаем до одного
+		// (см. unknownModelSlotsCapacity). Операторский лимит (runtimeMax > 0) —
+		// исключение: это осознанное решение человека (PUT /limits, WebUI), и оно
+		// уже разбирается ветками ниже. Урезаем только ЗАЯВКУ УЗЛА (статический
+		// n_parallel) — она фактом не является.
+		return unknownModelSlotsCapacity, CapacitySourceModelSlotsUnknown
+	case b.RuntimeCapacityFromNode && b.MaxConcurrentReqs > 0:
+		return eff, CapacitySourceNode
+	case b.RuntimeMaxConcurrentRequests > 0:
+		return eff, CapacitySourceOperator
+	default:
+		return eff, CapacitySourceStatic
+	}
+}
+
 // EffectiveMaxConcurrentRequests — R71 (2026-09-24): единое правило вместимости
 // бэкенда для admission-очереди, слотов и отчётов.
 //
@@ -265,23 +437,13 @@ func (b *Backend) EffectiveGPUIndex() (int, bool) {
 // держать параллельные сессии; MaxConcurrentReqs — лишь статический дефолт,
 // который вдобавок переписывается перерегистрацией агента каждые 30 секунд
 // (поэтому авто-значение там не выживало).
+//
+// R117 (2026-10-14): если слотов нет (модель не загружена/грузится/выгружена),
+// llama.cpp-бэкенд получает 1, а не статическую заявку узла — подробности в
+// ResolveCapacity и unknownModelSlotsCapacity.
 func (b *Backend) EffectiveMaxConcurrentRequests() int {
-	if b == nil {
-		return 0
-	}
-	// R83 (2026-09-29): учёт ФАКТИЧЕСКИХ слотов модели — opt-in.
-	//
-	// Авто-привязка вместимости к слотам меняет поведение уже проверенных путей
-	// (admission-очередь, слот-менеджер, выбор бэкенда), поэтому по умолчанию она
-	// ВЫКЛЮЧЕНА: стенд работает ровно как раньше. Оператор включает её осознанно,
-	// когда модель загружена с parallel > 1 и он хочет, чтобы балансер пропускал
-	// столько запросов параллельно: LB_CAPACITY_FROM_MODEL_SLOTS=true.
-	slots := 0
-	if CapacityFromModelSlotsEnabled() {
-		slots = b.RuntimeModelSlots
-	}
-	return ResolveEffectiveCapacity(slots, b.RuntimeMaxConcurrentRequests,
-		b.RuntimeCapacityFromNode, b.MaxConcurrentReqs)
+	eff, _ := b.ResolveCapacity()
+	return eff
 }
 
 // CapacityFromModelSlotsEnabled — включён ли учёт фактических слотов модели.

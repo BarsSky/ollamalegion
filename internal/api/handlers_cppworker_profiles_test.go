@@ -53,9 +53,9 @@ func TestValidateModelProfile_ParallelBounds(t *testing.T) {
 // TestValidateModelProfile_KVCacheTypeValid — KVCacheType ∈ {"", "f16", "q8_0", "q4_0"}.
 func TestValidateModelProfile_KVCacheTypeValid(t *testing.T) {
 	tests := []struct {
-		name       string
+		name        string
 		kvCacheType string
-		wantErr    bool
+		wantErr     bool
 	}{
 		{"empty (default F16)", "", false},
 		{"f16 (default precision)", "f16", false},
@@ -94,7 +94,7 @@ func TestMergeModelProfile_PartialUpdate_Parallel(t *testing.T) {
 	// partial update: только Notes, Parallel=0 (zero-value) — не должен перезаписывать.
 	update := types.LlamaCppModelProfile{
 		ContextLength: 16384, // меняем n_ctx
-		Parallel:      0,      // zero-value — не трогаем existing
+		Parallel:      0,     // zero-value — не трогаем existing
 		Notes:         "extended context for long prompts",
 	}
 	out := mergeModelProfile(existing, update)

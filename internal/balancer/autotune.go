@@ -125,105 +125,192 @@ func computeOptimalKVCacheType(p *ModelProfileInfo) (recommendation string, reas
 // minSamples защищает от cold start: без samples workload неопределён,
 // fallback к R54.1 logic.
 func computeOptimalKVCacheTypeWithWorkload(p *ModelProfileInfo, workload WorkloadStats, minSamples int) (recommendation string, reasoning string) {
-	// R54.9: workload-aware overrides только если есть loaded n_ctx и достаточно samples
-	loadedNCtx := p.CurrentContextLength
-	if loadedNCtx > 0 {
-		if workload.IsLight(loadedNCtx, minSamples) {
-			return "f16", fmt.Sprintf("R54.9 workload-light: p95=%d < 25%% of loaded=%d → f16 (high quality)",
-				workload.P95NumCtx, loadedNCtx)
-		}
-		if workload.IsHeavy(loadedNCtx, minSamples) {
-			return "q4_0", fmt.Sprintf("R54.9 workload-heavy: p95=%d > 75%% of loaded=%d → q4_0 (max context)",
-				workload.P95NumCtx, loadedNCtx)
-		}
+	if p == nil {
+		return "", "нет профиля модели"
 	}
-
-	// R54.1: model-size-based logic (fallback если workload unknown)
-	// Estimate KV cache size per token (in bytes)
-	// KV cache = 2 (K+V) * NLayers * NKvHeads * HeadDimK * dtype_bytes
-	// dtype_bytes: f16=2, q8_0=1, q4_0=0.5
-	kvBytesPerTokenF16 := 2 * 2 * p.NLayers * p.NKvHeads * p.HeadDimK
-	if kvBytesPerTokenF16 == 0 {
+	if p.NLayers <= 0 || p.NKvHeads <= 0 || p.HeadDimK <= 0 {
 		// Missing architecture data — can't compute, fall back to current
 		return p.CurrentKVCacheType, "недостаточно данных для расчёта (NLayers/NKvHeads/HeadDimK не указаны)"
 	}
-
-	modelSizeGB := float64(p.SizeBytes) / (1024 * 1024 * 1024)
-	freeVRAMGB := float64(p.FreeVRAMBytes) / (1024 * 1024 * 1024)
-
-	// Compute max context with f16 KV cache (in free VRAM)
-	maxCtxF16 := int((freeVRAMGB * 1024 * 1024 * 1024 * 0.7) / float64(kvBytesPerTokenF16))
-	// 0.7 = safety margin (model weights + activations)
-
-	// For small models (≤4B Q4_K_M, ~2.5GB), f16 KV cache fits well
-	if modelSizeGB <= 3.5 && maxCtxF16 >= 16384 {
-		return "f16", fmt.Sprintf("model_size=%.1fGB, f16 KV cache fits в %.1fGB freeVRAM (max_ctx=%d)",
-			modelSizeGB, freeVRAMGB, maxCtxF16)
+	if p.FreeVRAMBytes == 0 {
+		// R230: пустая VRAM в профиле = неполные метрики. Раньше это давало
+		// «свободно 0 GB» и совет q4_0; правильнее не трогать конфигурацию.
+		return p.CurrentKVCacheType, "нет данных о свободной VRAM (метрики неполные) — оставляем текущий KV cache"
 	}
 
-	// Medium models (4-8B Q4): q8_0 — баланс качества и контекста
+	// R230: бюджет = free (уже reload-бюджет: free + usage модели, см.
+	// AnalyzeBackend/triggerAutoTuneReload). Считаем в байтах, не в «GB».
+	budgetGB := bytesToGB(p.FreeVRAMBytes)
+	reserve := autotuneReserveBytes(p.TotalVRAMBytes)
+	reserveGB := bytesToGB(reserve)
+	modelSizeGB := bytesToGB(p.SizeBytes)
+
+	availForKV := int64(0)
+	if int64(p.FreeVRAMBytes) > int64(reserve)+int64(p.SizeBytes) {
+		availForKV = int64(p.FreeVRAMBytes) - int64(reserve) - int64(p.SizeBytes)
+	}
+	availKVGB := bytesToGB(uint64(availForKV))
+
+	fits := func(kvType string) bool {
+		need := kvCacheBytesForContext(p, kvType, p.CurrentContextLength)
+		return need > 0 && int64(need) <= availForKV
+	}
+
+	// R54.9: workload-aware overrides — но только физически исполнимая рекомендация
+	// (R230: f16 не советуем, если KV для загруженного n_ctx не влезает в бюджет).
+	loadedNCtx := p.CurrentContextLength
+	if loadedNCtx > 0 {
+		if workload.IsLight(loadedNCtx, minSamples) && fits("f16") {
+			return "f16", fmt.Sprintf(
+				"R54.9 workload-light: p95=%d < 25%% от loaded=%d, f16 KV (%.1fGB) влезает в бюджет %.1fGB → f16 (high quality)",
+				workload.P95NumCtx, loadedNCtx,
+				bytesToGB(kvCacheBytesForContext(p, "f16", loadedNCtx)), budgetGB)
+		}
+		if workload.IsHeavy(loadedNCtx, minSamples) && fits("q4_0") {
+			return "q4_0", fmt.Sprintf(
+				"R54.9 workload-heavy: p95=%d > 75%% от loaded=%d, q4_0 KV (%.1fGB) влезает в бюджет %.1fGB → q4_0 (max context)",
+				workload.P95NumCtx, loadedNCtx,
+				bytesToGB(kvCacheBytesForContext(p, "q4_0", loadedNCtx)), budgetGB)
+		}
+
+		// R230: fit-aware выбор типа KV для фактического n_ctx.
+		switch {
+		case fits("f16"):
+			return "f16", fmt.Sprintf(
+				"f16 KV (%.1fGB) для n_ctx=%d влезает в бюджет %.1fGB (free+usage модели, model=%.1fGB, резерв=%.1fGB) → f16 (лучшее качество)",
+				bytesToGB(kvCacheBytesForContext(p, "f16", loadedNCtx)), loadedNCtx,
+				budgetGB, modelSizeGB, reserveGB)
+		case fits("q8_0"):
+			return "q8_0", fmt.Sprintf(
+				"f16 KV (%.1fGB) не влезает в доступные %.1fGB, q8_0 KV (%.1fGB) влезает → q8_0 (компромисс качество/контекст)",
+				bytesToGB(kvCacheBytesForContext(p, "f16", loadedNCtx)), availKVGB,
+				bytesToGB(kvCacheBytesForContext(p, "q8_0", loadedNCtx)))
+		case fits("q4_0"):
+			return "q4_0", fmt.Sprintf(
+				"f16 (%.1fGB) и q8_0 (%.1fGB) KV не влезают в доступные %.1fGB, q4_0 (%.1fGB) влезает → q4_0",
+				bytesToGB(kvCacheBytesForContext(p, "f16", loadedNCtx)),
+				bytesToGB(kvCacheBytesForContext(p, "q8_0", loadedNCtx)),
+				availKVGB,
+				bytesToGB(kvCacheBytesForContext(p, "q4_0", loadedNCtx)))
+		default:
+			// R230: ни один тип KV не влезает — перезагрузка не даст выигрыша,
+			// поэтому не рекомендуем смену (иначе reload ради деградации).
+			return p.CurrentKVCacheType, fmt.Sprintf(
+				"ни один тип KV не влезает в доступные %.1fGB (f16=%.1fGB, q8_0=%.1fGB, q4_0=%.1fGB) — оставляем текущий",
+				availKVGB,
+				bytesToGB(kvCacheBytesForContext(p, "f16", loadedNCtx)),
+				bytesToGB(kvCacheBytesForContext(p, "q8_0", loadedNCtx)),
+				bytesToGB(kvCacheBytesForContext(p, "q4_0", loadedNCtx)))
+		}
+	}
+
+	// ctx неизвестен (модель без загруженного контекста): эвристика R54.1 по
+	// размеру модели. Единицы и бюджет — корректные (R230).
+	if modelSizeGB <= 3.5 {
+		return "f16", fmt.Sprintf("n_ctx неизвестен, model=%.1fGB ≤ 3.5GB и бюджет %.1fGB позволяет f16 KV", modelSizeGB, budgetGB)
+	}
 	if modelSizeGB <= 8.0 {
-		return "q8_0", fmt.Sprintf("model_size=%.1fGB, q8_0 KV cache (f16 не влезет в %.1fGB)",
-			modelSizeGB, freeVRAMGB)
+		return "q8_0", fmt.Sprintf("n_ctx неизвестен, model=%.1fGB ≤ 8GB → q8_0 KV (бюджет %.1fGB)", modelSizeGB, budgetGB)
 	}
-
-	// Large models (>8B Q4): q4_0 — максимальный контекст
-	return "q4_0", fmt.Sprintf("model_size=%.1fGB, q4_0 KV cache нужен для контекста", modelSizeGB)
+	return "q4_0", fmt.Sprintf("n_ctx неизвестен, model=%.1fGB > 8GB → q4_0 KV для максимального контекста (бюджет %.1fGB)", modelSizeGB, budgetGB)
 }
 
-// computeOptimalNumGPULayers — Round 54.1: optimal num_gpu_layers для модели.
+// computeOptimalNumGPULayers — Round 54.1 + R230: optimal num_gpu_layers.
 //
-// Логика:
-//   - Если model помещается в VRAM с GPU layers = -1 (all): рекомендуем -1
-//   - Иначе если есть auto_offload в cppworker: рекомендуем -2 (auto)
-//   - Иначе: estimate layers that fit
+// R230: рекомендация обязана быть физически исполнимой. Бюджет — reload-бюджет
+// (free + usage модели, см. autotune_budget_r230.go), из него вычитаются
+// резерв на activations и KV cache для загруженного n_ctx. Раньше freeVRAM
+// приезжал в МБ как байты (≈0 GB) и на любой модели выдавалось -2.
 //
 // Семантика значений:
-//   - -1 = все слои на GPU (auto-detect by cppworker)
+//   - -1 = все слои на GPU
 //   - -2 = auto offload (cppworker решает сколько влезает)
 //   - N (positive) = явно N слоёв на GPU
 //
-// Current "all layers" = N (where N == NLayers). Если current = -1, current
-// is also "all layers" (cppworker's auto-detect). Need to compare semantically.
+// Политика R230: рекомендовать УМЕНЬШЕНИЕ слоёв нельзя (текущая конфигурация
+// могла быть подобрана cppworker'ом с KV в RAM; «оптимизация» вниз = лишний
+// reload и деградация). Рекомендуем только -1, когда всё влезает, или больше
+// слоёв, когда расчёт показывает запас.
 func computeOptimalNumGPULayers(p *ModelProfileInfo) (recommendation int, reasoning string) {
+	return computeOptimalNumGPULayersWithKV(p, p.CurrentKVCacheType)
+}
+
+// computeOptimalNumGPULayersWithKV — R230: та же логика, но явно для KV-типа,
+// который будет применён планом (например, рекомендованный q4_0).
+func computeOptimalNumGPULayersWithKV(p *ModelProfileInfo, kvType string) (recommendation int, reasoning string) {
 	if p.SizeBytes == 0 || p.FreeVRAMBytes == 0 || p.NLayers == 0 {
 		return p.CurrentNumGPULayers, "недостаточно данных"
 	}
 
-	modelGB := float64(p.SizeBytes) / (1024 * 1024 * 1024)
-	freeGB := float64(p.FreeVRAMBytes) / (1024 * 1024 * 1024)
+	budgetGB := bytesToGB(p.FreeVRAMBytes)
+	modelGB := bytesToGB(p.SizeBytes)
+	reserve := autotuneReserveBytes(p.TotalVRAMBytes)
+	reserveGB := bytesToGB(reserve)
+	kvBytes := kvCacheBytesForContext(p, kvType, p.CurrentContextLength)
+	kvGB := bytesToGB(kvBytes)
 
-	// Estimate per-layer size
+	availForWeights := int64(0)
+	if int64(p.FreeVRAMBytes) > int64(reserve)+int64(kvBytes) {
+		availForWeights = int64(p.FreeVRAMBytes) - int64(reserve) - int64(kvBytes)
+	}
 	bytesPerLayer := float64(p.SizeBytes) / float64(p.NLayers)
-	layersThatFit := int(freeGB * 1024 * 1024 * 1024 * 0.85 / bytesPerLayer)
 
-	var optimalLayers int
-	var optimalReasoning string
+	current := p.CurrentNumGPULayers
+	currentMeansAll := current == -1 || current == p.NLayers
+
+	// R230: без n_kv_heads/head_dim_k KV не посчитать, а значит нельзя
+	// доказать, что слои влезут. Не трогаем раскладку: «оптимизация» вслепую —
+	// ровно то, на что была жалоба (16 → -2 → хуже начальной загрузки).
+	if p.CurrentContextLength > 0 && normalizeKVType(kvType) != "" && kvBytes == 0 {
+		return current, "нет параметров архитектуры (n_kv_heads/head_dim_k) для расчёта KV — num_gpu_layers не меняем"
+	}
+
+	// 1) Все слои вместе с KV влезают в бюджет → -1 (all).
+	if availForWeights >= int64(p.SizeBytes) {
+		if currentMeansAll {
+			return current, "current = all layers, optimal = all layers"
+		}
+		return -1, fmt.Sprintf(
+			"model=%.1fGB + KV_%s(%.1fGB) + резерв(%.1fGB) влезают в бюджет %.1fGB — рекомендуем -1 (all layers)",
+			modelGB, normalizeKVType(kvType), kvGB, reserveGB, budgetGB)
+	}
+
+	// 2) Не всё влезает: сколько слоёв помещается по весам (KV может быть в RAM).
+	layersThatFit := int(float64(availForWeights) * autotuneLayerSafetyFactor / bytesPerLayer)
 	if layersThatFit >= p.NLayers {
-		optimalLayers = -1 // all layers
-		optimalReasoning = fmt.Sprintf("model=%.1fGB, free=%.1fGB, все %d слоёв влезут (≈%.1fGB) — рекомендуем -1 (all)",
-			modelGB, freeGB, p.NLayers, float64(p.NLayers)*bytesPerLayer/(1024*1024*1024))
-	} else {
-		optimalLayers = -2 // auto offload
-		optimalReasoning = fmt.Sprintf("model=%.1fGB не влезает в free=%.1fGB, нужен auto offload (cppworker решает)",
-			modelGB, freeGB)
+		layersThatFit = p.NLayers - 1
+	}
+	if layersThatFit < 1 {
+		return current, fmt.Sprintf(
+			"model=%.1fGB не влезает в бюджет %.1fGB даже без KV; оставляем num_gpu_layers=%d (cppworker балансирует сам)",
+			modelGB, budgetGB, current)
 	}
 
-	// Compare semantically: if current == NLayers or current == -1, it's "all layers"
-	currentMeansAll := p.CurrentNumGPULayers == p.NLayers || p.CurrentNumGPULayers == -1
-	optimalMeansAll := optimalLayers == -1
-
-	if currentMeansAll && optimalMeansAll {
-		// Both are "all layers" — no recommendation
-		return p.CurrentNumGPULayers, "current = all layers, optimal = all layers"
+	// 3) Auto offload уже выбран — cppworker сам решает, не трогаем (-2 не
+	// попадает в reload-план с R229, поэтому и не рекомендуем менять).
+	if current == -2 {
+		return current, fmt.Sprintf(
+			"current = auto offload (-2): по бюджету %.1fGB влезает ≈%d из %d слоёв, cppworker выберет сам",
+			budgetGB, layersThatFit, p.NLayers)
 	}
 
-	// If both are "auto offload" (-2), no recommendation
-	if p.CurrentNumGPULayers == -2 && optimalLayers == -2 {
-		return p.CurrentNumGPULayers, "current = auto offload, optimal = auto offload"
+	// 4) current=-1 (все слои), но по бюджету не влезает → конкретное число.
+	if currentMeansAll {
+		return layersThatFit, fmt.Sprintf(
+			"model=%.1fGB + KV_%s(%.1fGB) не влезают в бюджет %.1fGB: влезает ≈%d из %d слоёв — рекомендуем %d вместо -1",
+			modelGB, normalizeKVType(kvType), kvGB, budgetGB, layersThatFit, p.NLayers, layersThatFit)
 	}
 
-	return optimalLayers, optimalReasoning
+	// 5) Есть запас по слоям → поднимаем. Меньшать не советуем никогда.
+	if layersThatFit > current {
+		return layersThatFit, fmt.Sprintf(
+			"model=%.1fGB, бюджет %.1fGB, KV_%s(%.1fGB): влезает ≈%d из %d слоёв (сейчас %d) — есть смысл поднять num_gpu_layers до %d",
+			modelGB, budgetGB, normalizeKVType(kvType), kvGB, layersThatFit, p.NLayers, current, layersThatFit)
+	}
+
+	return current, fmt.Sprintf(
+		"num_gpu_layers=%d уже ≥ расчётного %d для бюджета %.1fGB — не трогаем (KV может быть частично в RAM)",
+		current, layersThatFit, budgetGB)
 }
 
 // AnalyzeLoadedModelPublic — R54.6 (2026-08-24): public wrapper для analyzeLoadedModel
@@ -257,12 +344,17 @@ func analyzeLoadedModelWithWorkload(p *ModelProfileInfo, workload WorkloadStats,
 	}
 
 	// 1) Analyze KV cache type (R54.9: workload-aware)
+	// R230: тип KV, который будет применён планом, используется и для расчёта
+	// num_gpu_layers — иначе рекомендации противоречат друг другу
+	// («q4_0 + -2»/«q8_0 + слои под q4_0»).
+	kvForLayers := normalizeKVType(p.CurrentKVCacheType)
 	if p.CurrentKVCacheType != "" {
 		optimalKV, reasoningKV := computeOptimalKVCacheTypeWithWorkload(p, workload, minSamples)
-		if optimalKV != "" && optimalKV != p.CurrentKVCacheType {
+		if optimalKV != "" && normalizeKVType(optimalKV) != normalizeKVType(p.CurrentKVCacheType) {
+			kvForLayers = normalizeKVType(optimalKV)
 			// Severity: f16 < q4_0 (closer to f16 = better quality)
 			severity := "info"
-			if p.CurrentKVCacheType == "q4_0" && optimalKV == "f16" {
+			if normalizeKVType(p.CurrentKVCacheType) == "q4_0" && normalizeKVType(optimalKV) == "f16" {
 				severity = "warning" // significant quality loss
 			}
 			analysis.Recommendations = append(analysis.Recommendations, AutoTuneRecommendation{
@@ -279,7 +371,7 @@ func analyzeLoadedModelWithWorkload(p *ModelProfileInfo, workload WorkloadStats,
 
 	// 2) Analyze num_gpu_layers
 	if p.CurrentNumGPULayers != 0 {
-		optimalLayers, reasoningLayers := computeOptimalNumGPULayers(p)
+		optimalLayers, reasoningLayers := computeOptimalNumGPULayersWithKV(p, kvForLayers)
 		if optimalLayers != 0 && optimalLayers != p.CurrentNumGPULayers {
 			analysis.Recommendations = append(analysis.Recommendations, AutoTuneRecommendation{
 				Severity:                "info",
@@ -342,6 +434,11 @@ func AnalyzeBackend(proxy *Proxy, backendID, backendType string, models []types.
 		if m.State != "loaded" {
 			continue
 		}
+		// R230: free VRAM/RAM измерены при загруженной модели, а reload её
+		// выгружает — бюджет пополняется usage этой модели (иначе анализ видит
+		// остаток и советует q4_0/-2). m.VRAMUsage/RAMUsage — в МБ.
+		modelFreeVRAM := reloadBudgetBytes(freeVRAMBytes, totalVRAMBytes, m.VRAMUsage)
+		modelFreeRAM := reloadBudgetBytes(freeRAMBytes, 0, m.RAMUsage)
 		prof := &ModelProfileInfo{
 			Name:                 m.Name,
 			Architecture:         m.Architecture,
@@ -356,8 +453,8 @@ func AnalyzeBackend(proxy *Proxy, backendID, backendType string, models []types.
 			CurrentNumGPULayers:  m.NumGPULayers,
 			CurrentFlashAttn:     0, // not in metrics yet
 			CurrentUseMmap:       m.UseMmap,
-			FreeVRAMBytes:        freeVRAMBytes,
-			FreeRAMBytes:         freeRAMBytes,
+			FreeVRAMBytes:        modelFreeVRAM,
+			FreeRAMBytes:         modelFreeRAM,
 			TotalVRAMBytes:       totalVRAMBytes,
 			FeasibleMaxContext:   m.FeasibleMaxContext,
 			// R54.2: per-model AutoTune switch (after inheritance).
@@ -481,6 +578,12 @@ type AutoTuneReloadPlan struct {
 	FlashAttn    int    // 0 = no change
 	UseMmap      *bool  // nil = no change
 	Reason       string // for logging (e.g., "R54.4: n_ctx over-allocation")
+
+	// R230: маркер «reload идёт», уже взятый вызывающим. Async trigger берёт его
+	// СИНХРОННО (до запуска горутины и до форварда текущего запроса), чтобы
+	// параллельные запросы не успели перехватить reload ленивой загрузкой по
+	// профилю. Не сериализуется (unexported).
+	externalFinish func()
 }
 
 // NeedsReload — true если хотя бы одно поле отличается от current (т.е. есть что менять).
@@ -757,6 +860,8 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 	}
 
 	// 3) Build profile + analysis
+	// R230: reload выгружает текущую копию модели → бюджет = free + usage этой
+	// модели (VRAMUsage/RAMUsage в МБ), иначе анализ видит только остаток.
 	prof := &ModelProfileInfo{
 		Name:                 loadedModel.Name,
 		Architecture:         loadedModel.Architecture,
@@ -769,8 +874,8 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 		CurrentContextLength: loadedModel.ContextLength,
 		CurrentKVCacheType:   loadedModel.KvCacheType,
 		CurrentNumGPULayers:  loadedModel.NumGPULayers,
-		FreeVRAMBytes:        freeVRAM,
-		FreeRAMBytes:         freeRAM,
+		FreeVRAMBytes:        reloadBudgetBytes(freeVRAM, totalVRAM, loadedModel.VRAMUsage),
+		FreeRAMBytes:         reloadBudgetBytes(freeRAM, 0, loadedModel.RAMUsage),
 		TotalVRAMBytes:       totalVRAM,
 		FeasibleMaxContext:   loadedModel.FeasibleMaxContext,
 		AutoTuneEnabled:      true,
@@ -845,6 +950,22 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 
 	// 6) Trigger async reload via existing nctx_reload infrastructure
 	circuit.RecordAttempt()
+
+	// R230: берём маркер «reload идёт» СИНХРОННО, до запуска горутины и до
+	// форварда текущего запроса. Иначе запрос успевал уйти в воркер, тот видел
+	// выгруженную модель и делал ленивую загрузку по профилю (q4_0/40), а наш
+	// load с планом (f16/-1) потом только дожидался чужой загрузки и рапортовал
+	// success при неизменной конфигурации. Неудача (reload уже идёт) — план не
+	// запускаем вовсе.
+	if p.nctxReload != nil {
+		finish, started := p.nctxReload.BeginExternalReload(backendID, modelName)
+		if !started {
+			res.SkippedReason = "reload already in progress for model"
+			return res
+		}
+		plan.externalFinish = finish
+	}
+
 	logger.Get().Infow("autotune: triggering async reload",
 		"backend", backendID, "model", modelName,
 		"reason", plan.Reason,
@@ -873,15 +994,9 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 			},
 		})
 
-		// R83: не запускаем reload, пока для этой модели уже идёт reload/загрузка.
-		// Живой инцидент 2026-09-25: автотюн запускал reload вторым планом, пока
-		// первая загрузка ещё держала память → переподписка VRAM (free=0 MB) →
-		// повреждение кучи glibc → SIGABRT и рестарт контейнера.
-		if p.nctxReload != nil && p.nctxReload.IsReloadPending(backendID, modelName) {
-			logger.Get().Infow("autotune: reload уже идёт для модели — повторный запуск пропущен",
-				"backend", backendID, "model", modelName, "reason", plan.Reason)
-			return
-		}
+		// R83: проверка «reload уже идёт» перенесена ВЫШЕ, в синхронную часть:
+		// маркер (BeginExternalReload) берётся до запуска горутины, иначе проверка
+		// видела бы собственный маркер и план не запускался бы никогда (R230).
 
 		err := p.executeAutoTuneReload(backendID, modelName, plan, circuit)
 		if err != nil {
@@ -969,6 +1084,13 @@ func (p *Proxy) executeAutoTuneReload(backendID, modelName string, plan *AutoTun
 	// Параметры плана не теряются: ApplyAutoTunePlan прокидывает ContextSize,
 	// NumGPULayers, KVCacheType, UseMmap и FlashAttn (см. ниже) — ровно те же
 	// поля, что раньше складывались в env.
+	// R230: маркер, взятый синхронно в triggerAutoTuneReload, обязан быть снят
+	// на ЛЮБОМ пути (в т.ч. ошибка «backend not found» до ApplyAutoTunePlan),
+	// иначе модель осталась бы «reload идёт» до истечения TTL. Повторный вызов
+	// идемпотентен (sync.Once внутри).
+	if plan.externalFinish != nil {
+		defer plan.externalFinish()
+	}
 	applyRes := p.ApplyAutoTunePlan(backendID, plan)
 	if applyRes == nil {
 		return fmt.Errorf("autotune: apply plan returned nil result")
@@ -1040,6 +1162,30 @@ func (p *Proxy) ApplyAutoTunePlan(backendID string, plan *AutoTuneReloadPlan) *A
 		return result
 	}
 
+	// R230: пока идёт apply, помечаем reload как идущий. Иначе клиентский
+	// запрос, пришедший между unload и load, успевает вызвать ленивую загрузку
+	// по профилю — и она выигрывает гонку, оставляя конфигурацию неизменной
+	// (см. reloadDedupRegistry.BeginExternalReload).
+	//
+	// Async trigger (executeAutoTuneReload) уже взял маркер СИНХРОННО — тогда
+	// используем его, а не пытаемся взять второй (иначе получили бы «reload уже
+	// идёт» на собственном маркере).
+	var finishReload func()
+	if plan.externalFinish != nil {
+		finishReload = plan.externalFinish
+	} else if p.nctxReload != nil {
+		var started bool
+		finishReload, started = p.nctxReload.BeginExternalReload(backendID, plan.ModelName)
+		if !started {
+			result.Error = "reload already in progress for model"
+			result.FinishedAt = time.Now()
+			return result
+		}
+	}
+	if finishReload != nil {
+		defer finishReload()
+	}
+
 	// 2) Unload current model
 	unloadResult := p.executeLlamaCppUnload(backend.Host, backend.CppWorkerPort, plan.ModelName)
 	if !unloadResult.Success {
@@ -1089,10 +1235,73 @@ func (p *Proxy) ApplyAutoTunePlan(backendID string, plan *AutoTuneReloadPlan) *A
 		return result
 	}
 
+	// R230: проверяем, что план ДЕЙСТВИТЕЛЬНО применился. Раньше apply отвечал
+	// success, даже когда параллельная ленивая загрузка успевала раньше и грузила
+	// модель с профильными params (q4_0/40 вместо f16/-1) — AutoTune «применял»
+	// неизменную конфигурацию снова и снова, а оператор видел reload без эффекта.
+	if actual, ok := p.freshLoadedModel(backendID, backend.Host, backend.CppWorkerPort, plan.ModelName); ok {
+		if mismatch := autoTuneAppliedMismatch(plan, actual); mismatch != "" {
+			result.Error = fmt.Sprintf("load reported success, но конфигурация не применилась: %s", mismatch)
+			result.Message = "plan not applied"
+			result.FinishedAt = time.Now()
+			return result
+		}
+	}
+
 	result.Success = true
 	result.Message = fmt.Sprintf("reloaded with new params: %s", plan.Reason)
 	result.FinishedAt = time.Now()
 	return result
+}
+
+// freshLoadedModel — R230: принудительно опрашивает /api/models бэкенда и
+// возвращает загруженную модель (нужно, чтобы проверить факт применения плана,
+// а не ждать следующего тика поллера).
+func (p *Proxy) freshLoadedModel(backendID, host string, port int, modelName string) (types.LlamaCppModel, bool) {
+	if p == nil || p.metricsMgr == nil {
+		return types.LlamaCppModel{}, false
+	}
+	if poller := p.llamaCppMetricsPoller; poller != nil {
+		poller.pollBackend(backendInfo{id: backendID, host: host, port: port})
+	}
+	lm := p.metricsMgr.GetLlamaCppMetrics(backendID)
+	if lm == nil {
+		return types.LlamaCppModel{}, false
+	}
+	for _, m := range lm.LoadedModels {
+		if modelNameMatches(m.Name, modelName) && m.State == "loaded" {
+			return m, true
+		}
+	}
+	return types.LlamaCppModel{}, false
+}
+
+// autoTuneAppliedMismatch — R230: расхождение между планом и фактически
+// загруженной моделью. Пустая строка = план применён.
+func autoTuneAppliedMismatch(plan *AutoTuneReloadPlan, actual types.LlamaCppModel) string {
+	if plan == nil {
+		return ""
+	}
+	var diffs []string
+	// Сверяем только то, что воркер реально сообщил: старые сборки/моки могут
+	// не отдавать параметры вообще (0/""), и это не повод объявлять провал.
+	if plan.ContextSize > 0 && actual.ContextLength > 0 && actual.ContextLength != plan.ContextSize {
+		diffs = append(diffs, fmt.Sprintf("n_ctx=%d, ожидалось %d", actual.ContextLength, plan.ContextSize))
+	}
+	if want := normalizeKVType(plan.KVCacheType); want != "" && actual.KvCacheType != "" {
+		if got := normalizeKVType(actual.KvCacheType); got != want {
+			diffs = append(diffs, fmt.Sprintf("kv_cache=%s, ожидалось %s", actual.KvCacheType, plan.KVCacheType))
+		}
+	}
+	if plan.NumGPULayers > 0 && actual.NumGPULayers > 0 {
+		// -1 (all) в плане не сравниваем: cppworker сообщает фактическое число.
+		allLayers := actual.NumGPULayers == actual.NLayers && actual.NLayers > 0
+		wantAll := plan.NumGPULayers >= actual.NLayers && actual.NLayers > 0
+		if !(allLayers && wantAll) && actual.NumGPULayers != plan.NumGPULayers {
+			diffs = append(diffs, fmt.Sprintf("num_gpu_layers=%d, ожидалось %d", actual.NumGPULayers, plan.NumGPULayers))
+		}
+	}
+	return strings.Join(diffs, "; ")
 }
 
 // AutoTuneApplyResult — R54.6 (2026-08-24): результат apply AutoTune plan.
@@ -1192,6 +1401,26 @@ func PlanApplyAutoTuneWithMinContext(
 				}
 			}
 		case "layers":
+			// R229 (2026-10-22): -2 («auto offload») — не ЦЕЛЬ reload'а, а режим,
+			// в котором воркер сам решает раскладку. После перезагрузки с -2 воркер
+			// сообщает ФАКТ (реальное число слоёв, например 20), анализ снова видит
+			// «рекомендуется -2, а стоит 20» и выдаёт тот же план — получается серия
+			// одинаковых reload'ов (AutoTune «включает авто» снова и снова), пока не
+			// сработает circuit breaker. Живой симптом: модель перезагружается без
+			// видимой причины, клиент получает 503.
+			//
+			// Поэтому -2 в план НЕ попадает никогда: auto — это настройка профиля/
+			// панели, а не решение автоматики. Остальные рекомендации слоёв
+			// (конкретное число) применяются как раньше.
+			if rec.RecommendedNumGPULayers == -2 {
+				if logger.Get() != nil {
+					logger.Get().Infow("autotune: рекомендация layers=-2 (auto) не превращается в reload",
+						"model", currentLoaded.Name,
+						"current_gpu_layers", currentLoaded.NumGPULayers,
+						"reason", "факт после auto-загрузки не равен -2: план повторялся бы бесконечно")
+				}
+				continue
+			}
 			if rec.RecommendedNumGPULayers != 0 && rec.RecommendedNumGPULayers != currentLoaded.NumGPULayers {
 				plan.NumGPULayers = rec.RecommendedNumGPULayers
 				if plan.Reason == "" {

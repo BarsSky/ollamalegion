@@ -61,6 +61,7 @@ type mockCppWorkerLazy struct {
 	generateCalls  atomic.Int32
 	tagsCalls      atomic.Int32
 	modelsCalls    atomic.Int32
+	progressCalls  atomic.Int32
 	loadBodiesLog  []string
 	loadStartTimes []time.Time
 
@@ -104,6 +105,28 @@ func newMockCppWorkerLazy(loadDelay time.Duration) *mockCppWorkerLazy {
 					{"name": "lazy-model", "path": "/models/lazy-model.gguf", "state": currentState},
 				},
 			})
+			return
+
+		case "/api/models/load/progress":
+			// R112-разбор (2026-10-15): балансер ждёт загрузку, опрашивая этот
+			// путь (checkLlamaCppModelLoaded). 404 = «модель не в списке
+			// загрузки» → балансер считает её загруженной и повторяет запрос —
+			// ровно так ведёт себя настоящий cppworker, когда загрузка уже
+			// закончилась.
+			m.progressCalls.Add(1)
+			m.mu.Lock()
+			progressState := m.state["lazy-model"]
+			m.mu.Unlock()
+			if progressState == "loading" {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"model":     "lazy-model",
+					"state":     "loading",
+					"known":     true,
+					"elapsedMs": 100,
+				})
+				return
+			}
+			http.Error(w, "model is not loading", http.StatusNotFound)
 			return
 
 		case "/api/models/load":
@@ -192,6 +215,68 @@ func newMockCppWorkerLazy(loadDelay time.Duration) *mockCppWorkerLazy {
 // ollamaMockText — текст, который «генерирует» мок (проверяется в тестах).
 const ollamaMockText = "Привет! Это ответ от lazy-loaded модели."
 
+// lazyLoadIfNeeded — R112-разбор (2026-10-15): поведение НАСТОЯЩЕГО cppworker.
+//
+// Раньше мок отвечал 200 на inference к незагруженной модели, и авто-загрузку
+// обязан был инициировать балансер. Так было до R112 (2026-10-11): /api/*-пути
+// в смешанном кластере уходят в основной flow, и балансер НЕ грузит модель сам
+// на Ollama-поверхности — он ждёт, пока её поднимет cppworker
+// (cmd/cppworker/lazyload.go: 503 «model is loading» + Retry-After, затем
+// транспорт балансера опрашивает /api/models/load/progress и повторяет запрос).
+//
+// Теперь мок ведёт себя как продукт: inference к незагруженной модели сам
+// запускает загрузку и отвечает 503 с признаком loading. Возвращает true, если
+// ответ уже отправлен (загрузка идёт или провалилась) — тогда хендлер выходит.
+func (m *mockCppWorkerLazy) lazyLoadIfNeeded(w http.ResponseWriter) bool {
+	m.mu.Lock()
+	state := m.state["lazy-model"]
+	m.mu.Unlock()
+	if state == "loaded" {
+		return false
+	}
+
+	// Загрузка заведомо проваливается (LoadFails-сценарий): отдаём ошибку БЕЗ
+	// признака loading — такую загрузку балансер не должен ждать.
+	if v := m.loadErr.Load(); v != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": v.(string)})
+		return true
+	}
+
+	if state == "unloaded" {
+		m.mu.Lock()
+		alreadyLoading := m.state["lazy-model"] != "unloaded"
+		if !alreadyLoading {
+			m.state["lazy-model"] = "loading"
+		}
+		m.mu.Unlock()
+		if !alreadyLoading {
+			m.loadCalls.Add(1)
+			select {
+			case m.loadStarted <- struct{}{}:
+			default:
+			}
+			go func() {
+				time.Sleep(m.loadDelay)
+				m.mu.Lock()
+				m.state["lazy-model"] = "loaded"
+				m.mu.Unlock()
+			}()
+		}
+	}
+
+	w.Header().Set("Retry-After", "1")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"error":        "model is loading: lazy-model",
+		"loading":      true,
+		"model":        "lazy-model",
+		"elapsedMs":    100,
+		"retryAfterMs": 1000,
+	})
+	return true
+}
+
 // handleOllamaNative — имитация нативных Ollama-ответов cppworker:
 //
 //	stream=false → один JSON {model, message|response, done:true, ...}
@@ -200,6 +285,10 @@ const ollamaMockText = "Привет! Это ответ от lazy-loaded мод�
 // Формат соответствует cmd/cppworker/handlers_chat.go (writeChatStreamResponse)
 // и handlers_generate.go, чтобы балансер мог проксировать байты как есть.
 func (m *mockCppWorkerLazy) handleOllamaNative(w http.ResponseWriter, r *http.Request, isChat bool) {
+	// Незагруженная модель: cppworker сам запускает загрузку и отвечает 503.
+	if m.lazyLoadIfNeeded(w) {
+		return
+	}
 	body, _ := io.ReadAll(r.Body)
 	var req map[string]interface{}
 	_ = json.Unmarshal(body, &req)
@@ -274,6 +363,12 @@ func (m *mockCppWorkerLazy) handleOllamaNative(w http.ResponseWriter, r *http.Re
 // handleChatCompletion — общая имитация ответа на /v1/chat/completions
 // и /v1/completions. Возвращает OpenAI-стиль streaming (SSE) или non-streaming.
 func (m *mockCppWorkerLazy) handleChatCompletion(w http.ResponseWriter, r *http.Request, isChat bool) {
+	// Незагруженная модель: cppworker сам запускает загрузку и отвечает 503
+	// (на OpenAI-поверхности балансер обычно уже загрузил её сам и сюда не
+	// попадает — проверка нужна для тестов, которые гоняют /v1/* напрямую).
+	if m.lazyLoadIfNeeded(w) {
+		return
+	}
 	body, _ := io.ReadAll(r.Body)
 	var req map[string]interface{}
 	_ = json.Unmarshal(body, &req)
@@ -749,8 +844,17 @@ func TestCppWorker_LazyLoad_GenerateStreaming_ClientWaitsForModel(t *testing.T) 
 }
 
 // TestCppWorker_LazyLoad_LoadFails_Returns503 —
-// Если cppworker возвращает 500 на POST /api/models/load, балансер должен
-// вернуть клиенту 503 с информативным сообщением (НЕ 200 и НЕ тишину).
+// Если cppworker не может загрузить модель (HTTP 500 на загрузке), клиент обязан
+// увидеть ОШИБКУ с причиной, а не 200 и не тишину.
+//
+// R112-разбор (2026-10-15): код ответа зависит от поверхности, и это осознанно:
+//   - OpenAI-поверхность / locked llama.cpp режим (LlamaCppRouter): балансер сам
+//     инициирует загрузку и отдаёт 503 + диагностику («auto-load failed»);
+//   - Ollama-поверхность (/api/*) идёт основным flow: загрузку инициирует
+//     cppworker, а транспорт балансера отдаёт клиенту Ollama-форму ошибки с
+//     кодом 502 и ПРИЧИНОЙ от воркера внутри тела.
+// Тест проверяет суть контракта (ошибка + причина + ни одного inference-запроса),
+// а не конкретный код: подмена 502 на 200 здесь была бы дефектом.
 func TestCppWorker_LazyLoad_LoadFails_Returns503(t *testing.T) {
 	const loadDelay = 100 * time.Millisecond
 
@@ -780,29 +884,33 @@ func TestCppWorker_LazyLoad_LoadFails_Returns503(t *testing.T) {
 	resp := rec.Result()
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusServiceUnavailable {
+	if resp.StatusCode < 500 {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 503 Service Unavailable, got %d: %s", resp.StatusCode, string(body))
+		t.Fatalf("провал загрузки обязан быть виден клиенту как 5xx, получено %d: %s",
+			resp.StatusCode, string(body))
 	}
 
 	body, _ := io.ReadAll(resp.Body)
 	bodyStr := string(body)
-	if !strings.Contains(bodyStr, "auto-load failed") {
-		t.Errorf("expected error message about auto-load failure, got: %s", bodyStr)
+	// Главное: причина видна клиенту (а не «что-то пошло не так»).
+	if !strings.Contains(bodyStr, "bad magic number") && !strings.Contains(bodyStr, "corrupted") {
+		t.Errorf("в ответе нет причины провала загрузки, получено: %s", bodyStr)
 	}
 	if !strings.Contains(bodyStr, "lazy-model") {
 		t.Errorf("expected error to mention model name, got: %s", bodyStr)
 	}
 
-	// cppworker увидел попытку загрузки, но НЕ получил inference-запрос
-	if got := worker.loadCalls.Load(); got != 1 {
-		t.Errorf("expected 1 POST /api/models/load attempt, got %d", got)
+	// На этой поверхности загрузку инициирует воркер прямо в inference-запросе
+	// (как cppworker: lazy-load внутри хендлера), поэтому отдельного вызова
+	// /api/models/load нет, а inference-попытка ровно одна — и она вернула ошибку.
+	if got := worker.loadCalls.Load(); got != 0 {
+		t.Errorf("на Ollama-поверхности отдельной загрузки быть не должно, получено %d", got)
 	}
-	if got := worker.chatCalls.Load(); got != 0 {
-		t.Errorf("expected 0 POST /v1/chat/completions calls (load failed), got %d", got)
+	if got := worker.chatCalls.Load(); got != 1 {
+		t.Errorf("ожидалась ровно 1 inference-попытка (она и упала на загрузке), получено %d", got)
 	}
 
-	t.Logf("✅ 503 on load failure: %s", bodyStr)
+	t.Logf("✅ 5xx on load failure (status=%d): %s", resp.StatusCode, bodyStr)
 }
 
 // TestCppWorker_LazyLoad_ConnectionNotReset —

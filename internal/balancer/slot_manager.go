@@ -1,6 +1,8 @@
 package balancer
 
 import (
+	"os"
+	"strings"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -106,21 +108,55 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 	}
 
 	limits := p.config.Resources
+	hard := resourceLimitsHardBlockEnabled()
 
+	// R118 (2026-10-14): МГНОВЕННАЯ УТИЛИЗАЦИЯ (VRAM-процент, GPU, CPU) больше НЕ
+	// исключает здоровый бэкенд из кандидатов — она только логируется.
+	//
+	// ПОЧЕМУ. Живая жалоба: «второй запрос с той же машины не проходит», «нельзя
+	// вести параллельную работу», «OpenWebUI получает 503». Разбор: checkResourceLimits
+	// вызывается из 13 точек выбора бэкенда, и блокировка возвращала false —
+	// бэкенд выпадал из кандидатов, запрос не вставал в admission-очередь, а
+	// получал «all backends busy» (503). При этом на стенде модель загружена
+	// частично на GPU, частично на CPU (16 слоёв), поэтому во время ЛЮБОЙ генерации
+	// CPU ~96% и GPU ~100% — то есть занятый работой бэкенд блокировался сразу и для
+	// всех: и второй экземпляр Cline, и OpenWebUI, и вторая модель.
+	//
+	// Это ещё и противоречило собственному контракту функции («SOFT-режим» в
+	// комментарии) и дублировало admission: параллелизм уже ограничен слотами
+	// (EffectiveMaxConcurrentRequests), и лишний запрос должен ЖДАТЬ в очереди, а не
+	// получать 503. Процент занятой VRAM при загруженной модели — норма, а не
+	// признак «нельзя обслуживать»: влезает ли НОВАЯ модель, решает путь загрузки
+	// (preflight/memfit), а не допуск запроса к уже загруженной.
+	//
+	// Жёсткими остаются ФАКТЫ, при которых обслуживание физически невозможно:
+	// критическая занятость RAM (своп/OOM) и нехватка места на диске. Их можно
+	// вернуть к прежнему поведению флагом LB_RESOURCE_LIMITS_HARD_BLOCK=true.
+	//
 	// Headroom reservation: учитываем GPU headroom из конфигурации balancing
 	headroom := p.config.Balancing.ResourceReservation.GPUHeadroomPercent
 	if headroom > 0 && metrics.GPU.MemoryTotal > 0 {
 		vramPercent := float64(metrics.GPU.MemoryUsed) * 100 / float64(metrics.GPU.MemoryTotal)
 		if vramPercent > (100 - headroom) {
-			logger.Get().Warnw("backend VRAM exceeds headroom reservation, blocking",
+			if hard {
+				logger.Get().Warnw("backend VRAM exceeds headroom reservation, blocking",
+					"backend", backendID, "vram_percent", vramPercent, "headroom_pct", headroom)
+				return false
+			}
+			logger.Get().Infow("backend VRAM выше резерва headroom (soft, не блокирует): "+
+				"занятая VRAM загруженной модели — норма, лишние запросы ждут в admission-очереди",
 				"backend", backendID, "vram_percent", vramPercent, "headroom_pct", headroom)
-			return false
 		}
 	}
 
 	if metrics.GPU.UsagePercent > 90 {
-		logger.Get().Warnw("backend GPU usage critical, blocking", "backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
-		return false
+		if hard {
+			logger.Get().Warnw("backend GPU usage critical, blocking", "backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
+			return false
+		}
+		logger.Get().Infow("backend GPU занят (soft, не блокирует): бэкенд продолжает "+
+			"принимать запросы, параллелизм ограничен слотами",
+			"backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
 	}
 
 	if limits.GPU.MaxVRAMUsagePercent > 0 && metrics.GPU.MemoryTotal > 0 {
@@ -132,8 +168,13 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 	}
 
 	if metrics.System.CPUUsagePercent > 95 {
-		logger.Get().Warnw("backend CPU usage critical, blocking", "backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent)
-		return false
+		if hard {
+			logger.Get().Warnw("backend CPU usage critical, blocking", "backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent)
+			return false
+		}
+		logger.Get().Infow("backend CPU занят (soft, не блокирует): генерация на CPU — "+
+			"норма для частичного offload, запрос встанет в очередь",
+			"backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent)
 	}
 
 	if limits.Memory.MaxUsagePercent > 0 && metrics.System.MemoryTotal > 0 {
@@ -163,6 +204,25 @@ func (p *Proxy) checkResourceLimits(backendID string) bool {
 	return true
 }
 
+// resourceLimitsHardBlockEnabled — R118 (2026-10-14): возвращать ли прежнее
+// ЖЁСТКОЕ поведение сторожа ресурсов (блокировать бэкенд по мгновенной
+// утилизации: VRAM-процент выше резерва, GPU > 90%, CPU > 95%).
+//
+// По умолчанию — нет: занятый работой бэкенд остаётся кандидатом, а лишние
+// запросы ждут в admission-очереди (параллелизм ограничен слотами). Жёсткая
+// блокировка по утилизации делала 503 из нормальной ситуации «GPU/CPU заняты
+// собственной генерацией» — на стенде с частичным offload это блокировало ВСЕ
+// запросы, включая второй экземпляр Cline и OpenWebUI.
+//
+//	LB_RESOURCE_LIMITS_HARD_BLOCK=true — вернуть прежнее поведение.
+func resourceLimitsHardBlockEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LB_RESOURCE_LIMITS_HARD_BLOCK"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 // findModelOnAnyBackendNoVRAMCheck — ищет backend с загруженной моделью,
 // игнорируя VRAM headroom check. Для read/mgmt endpoints (Round 22).
 //
@@ -178,6 +238,11 @@ func (p *Proxy) findModelOnAnyBackendNoVRAMCheck(model string, bt types.BackendT
 	defer p.mu.RUnlock()
 
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда не обслуживает запросы сам —
+		// модель на нём только частью слоёв (см. backend_group_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
@@ -218,6 +283,11 @@ func (p *Proxy) selectAnyHealthy(bt types.BackendType) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	for id, state := range p.backends {
+		// R92 (S2): воркер логического бэкенда не обслуживает запросы сам —
+		// модель на нём только частью слоёв (см. backend_group_r92.go).
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}

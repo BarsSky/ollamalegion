@@ -65,8 +65,36 @@
                 // карточки «Qwen3-Instruct…», «Qwen3.8-27B…», «gemma…» продолжали
                 // рисоваться до перезапуска контейнера). Теперь ответ воркера —
                 // источник истины: пусто значит пусто.
+                // R116 (2026-10-14): СЛИЯНИЕ, а не замена.
+                //
+                // ЗАЧЕМ. Дисковый ответ теперь запрашивается ВСЕГДА (а не только
+                // когда нет загруженных), поэтому он обязан ДОПОЛНЯТЬ уже
+                // известный список, а не стирать его. Живая жалоба: «загрузил одну
+                // модель — остальные исчезли со страницы GGUF»; наивное «грузить
+                // всегда» без слияния ловится тестом gguf-refresh-resilience
+                // («localModels не заполнены»), потому что пустой/частичный ответ
+                // затирал список, собранный из загруженных моделей.
+                //
+                // ПРАВИЛО, которое при этом сохраняем (R93): ответ воркера —
+                // источник истины по СОСТАВУ ФАЙЛОВ. Удалённый с диска файл
+                // исчезает; к дисковому списку добавляются только ЗАГРУЖЕННЫЕ
+                // модели, которых в нём нет (они по определению существуют).
+                // R137 (2026-10-16): слияние по НОРМАЛИЗОВАННОМУ имени (без .gguf).
+                //
+                // ЖИВАЯ ЖАЛОБА ОПЕРАТОРА: «во вкладке модели одна и та же модель
+                // появилась дважды, но с разными именами — Qwen3.8-27B-UD-Q4_K_M и
+                // Qwen3.8-27B-UD-Q4_K_M.gguf». Причина: сравнение имён КАК ЕСТЬ:
+                // файл на диске называется с расширением, загруженный инстанс — без,
+                // поэтому «уже известная» модель добавлялась вторым рядом.
+                //
+                // Совпавший дисковый ряд помечаем загруженным и запоминаем handle
+                // ИНСТАНСА: иначе действие «Выгрузить» уходит в API с именем файла и
+                // получает 404 «model not currently loaded» (тот же класс, что и
+                // профиль модели, R136).
+                const merged = mergeModelRows(normalized, state.loadedModels || []);
+
                 if (force || state.localModels.length === 0 || state._diskFetchTick > tick) {
-                    state.localModels = normalized;
+                    state.localModels = merged;
                 }
                 // Свежесть инвентаря и причина пустоты — оператору, а не только в лог.
                 state.diskInventory = state.diskInventory || {};
@@ -316,6 +344,81 @@
     // кроме инфо». Теперь у чтения есть таймаут (api.js: API_READ_TIMEOUT_MS), а
     // этот предел разблокирует панель даже если промис подвесил не fetch.
     const DETAIL_REFRESH_STALE_MS = 30000;
+    // mergeModelRows — слить дисковый инвентарь и загруженные модели в ОДИН список
+    // по НОРМАЛИЗОВАННОМУ имени (R137, 2026-10-16).
+    //
+    // ЖИВАЯ ЖАЛОБА ОПЕРАТОРА: «во вкладке модели одна и та же модель появилась
+    // дважды, но с разными именами — Qwen3.8-27B-UD-Q4_K_M и
+    // Qwen3.8-27B-UD-Q4_K_M.gguf». Причина: списки сливались сравнением имён КАК
+    // ЕСТЬ; файл на диске называется С расширением, загруженный инстанс — БЕЗ,
+    // поэтому «уже известная» модель добавлялась вторым рядом, а её дисковый ряд
+    // продолжал показывать «Загрузить модель» вместо «Выгрузить».
+    //
+    // Совпавший дисковый ряд помечается загруженным и получает loadedHandle
+    // ИНСТАНСА (без расширения): иначе действие уходит в API с именем файла и
+    // получает 404 «model not currently loaded» — тот же класс, что и профиль.
+    // mergeModelRows — ЕДИНСТВЕННАЯ реализация слияния (R165, 2026-10-17).
+    //
+    // Раньше копий было ДВЕ: здесь и в gguf-renderer-detail-render.js. Они не
+    // расходились только потому, что их правили вместе: R156 («модель поднята под
+    // алиасом, и карточка канонического имени её не видит») потребовал правки в
+    // ОБОИХ файлах, а второй экземпляр к тому же перекрывал первый при загрузке
+    // страницы. Теперь источник один: эта функция; detail-render её только
+    // переиспользует (M.mergeModelRows определён ниже и загружается раньше).
+    //
+    // stripFn — необязательная нормализация имени (detail-render умел снимать
+    // расширение по-своему); без неё поведение прежнее.
+    function mergeModelRows(diskRows, loadedModels, stripFn) {
+        const norm = function (nm) {
+            const s = String(nm || '');
+            return (typeof stripFn === 'function') ? stripFn(s) : s.replace(/\.gguf$/i, '');
+        };
+        const rows = (diskRows || []).map(function (m) { return Object.assign({}, m); });
+        const byNorm = {};
+        const byPath = {};
+        rows.forEach(function (m) {
+            byNorm[norm(m.name)] = m;
+            // R156 (2026-10-16): дисковая строка помнит ПУТЬ файла — по нему найдём
+            // инстанс, поднятый под ДРУГИМ именем (алиасом).
+            if (m && m.path) byPath[String(m.path)] = m;
+        });
+        const seen = {};
+        (loadedModels || []).forEach(function (lm) {
+            const nm = lm && (lm.model || lm.name || lm.handle);
+            if (!nm) return;
+            const key = norm(nm);
+            if (seen[key]) return;
+            seen[key] = true;
+            const handle = lm.handle || lm.model || lm.name || nm;
+            // R156: сначала по имени, затем ПО ПУТИ ФАЙЛА.
+            //
+            // ЖИВОЙ ДЕФЕКТ: модель поднимали под коротким именем-алиасом (`gemma-4`),
+            // а файл тот же `gemma-4-E4B-it-Q4_K_M.gguf`. По имени инстанс не находил
+            // свою дисковую строку, карточка канонической модели показывала «не
+            // загружена» (и вообще не показывала факты загрузки: чипов 0), а оператор
+            // считал, что модель не поднялась. Теперь строка находится по пути, и
+            // видно, под каким именем инстанс реально загружен.
+            const diskRow = byNorm[key] || (lm && lm.path ? byPath[String(lm.path)] : null);
+            if (diskRow) {
+                diskRow.state = 'loaded';
+                diskRow.loadedHandle = handle;
+                if (norm(diskRow.name) !== key) diskRow.loadedAs = nm; // загружена как алиас
+                return;
+            }
+            const extra = { name: nm, state: 'loaded', loadedHandle: handle };
+            if (lm && lm.path) extra.path = lm.path;
+            rows.push(extra);
+            byNorm[key] = extra;
+        });
+        return rows;
+    }
+
+    // R165 (2026-10-17): экспорт НА УРОВНЕ МОДУЛЯ. Раньше эта строка стояла внутри
+    // refreshDetail(), то есть до первого обновления панели M.mergeModelRows не
+    // существовал — тесты и detail-render получали undefined (и вторая копия в
+    // detail-render это маскировала).
+    M.mergeModelRows = mergeModelRows;
+
     M.refreshDetail = function() {
         const state = M.state;
         // R-MultiHost (2026-10-07): синхронизируем выбранный бэкенд с API-клиентом
@@ -399,7 +502,17 @@
                 // нет загруженных моделей. Иначе вкладка "Модели" пустая если ни одна
                 // модель не загружена, хотя файлы .gguf есть на диске. Догружаем
                 // асинхронно, не блокируем основной refresh.
-                if (state.localModels.length === 0 && data.backendType === 'llama_cpp' && state.selectedBackendId) {
+                // R116 (2026-10-14): диск запрашивается ВСЕГДА, а не только когда
+                // список пуст.
+                //
+                // ЧТО БЫЛО НЕ ТАК (живая жалоба): localModels выше заполняется
+                // ЗАГРУЖЕННЫМИ моделями, а условие `state.localModels.length === 0`
+                // означало, что файлы с диска запрашиваются лишь когда загруженных
+                // нет. Как только одна модель загружена, длина переставала быть
+                // нулевой — и остальные модели ИСЧЕЗАЛИ со страницы GGUF, хотя
+                // лежали на диске. Слияние с уже известными делает этот запрос
+                // безопасным (см. fetchDiskModelsAsync).
+                if (data.backendType === 'llama_cpp' && state.selectedBackendId) {
                     fetchDiskModelsAsync(backend.id, state);
                 }
                 // loadedModels: detailed objects (BackendMetrics.llamaCpp.loadedModels).
@@ -436,6 +549,17 @@
                     score: data.score || 0,
                     llamaCpp: data.llamaCpp || null,
                     ollama: data.ollama || null,
+                    // R118: замер канала до узлов раскладки (LB_RPC_LINK_* на
+                    // балансере) — показывается в пометках раскладки.
+                    rpcLink: data.rpcLink || null,
+                    // R118.15: АВТОзамер канала балансером (отдельно от замера
+                    // оператора: см. rpcLinkAutoInfo в API — числа означают разное).
+                    rpcLinkAuto: data.rpcLinkAuto || null,
+                    // R118.2: состояние раскладки глазами балансера (включена ли
+                    // она сейчас и не работает ли в неполном составе). Раньше
+                    // оператор видел только «раскладка» из /api/models воркера и
+                    // не понимал, почему модель загрузилась локально.
+                    rpcLayoutGuard: data.rpcLayout || null,
                 };
                 if (!state.runtimeModels || typeof state.runtimeModels !== 'object') {
                     state.runtimeModels = {};
@@ -503,6 +627,16 @@
                     if (m && m.name) map[m.name] = m;
                 });
                 state.runtimeModels = map;
+                // R118 (2026-10-14): состояние раскладки слоёв (узлы, VRAM,
+                // замер канала) — из того же ответа. Нужно для пометок в строке
+                // загруженной модели: «раскладка на донора, слои, канал».
+                state.rpcLayout = (rtData && rtData.layout) || null;
+                // Если балансерный агрегатор не отдал layout (в этом развёртывании
+                // WebUI ходит напрямую на воркер через прокси), собираем состояние
+                // раскладки из /api/models воркера + замера канала из записи бэкенда.
+                if (!state.rpcLayout) {
+                    applyLayoutState(backendId, state);
+                }
                 // Перерисовываем только активную вкладку — не запускаем
                 // refreshDetail (иначе получим цикл запросов).
                 if (state.detailPane === 'models' && typeof M.refreshDetailPane === 'function') {
@@ -517,8 +651,93 @@
             });
     }
 
-    M.startActiveQueriesPolling = function() {
-        const state = M.state;
+    /**
+     * resolveDeviceLayers — R118.16 (2026-10-14): какой план слоёв показывать.
+     *
+     * ПОРЯДОК ВАЖЕН: сначала ФАКТ, потом расчёт.
+     *   1) cppworker отдал device_layers_exact — это перехваченные строки лога
+     *      llama.cpp («load_tensors: layer N assigned to device X»), строим из
+     *      них точный план (estimated=false);
+     *   2) уже готовый объект-план (estimated=false) не перекрываем;
+     *   3) расчёт — только если раскладка включена и факта нет.
+     *
+     * Раньше расчётная формула перекрывала device_layers безусловно, и оператор
+     * видел оценку даже тогда, когда факт был известен.
+     *
+     * @param {Object} state состояние модуля (state.runtimeModels, state.rpcLayout)
+     */
+    function resolveDeviceLayers(state) {
+        if (!state) return;
+        var models = state.runtimeModels || {};
+        if (typeof M.exactLayerPlanJS === 'function') {
+            Object.keys(models).forEach(function (name) {
+                var m = models[name];
+                if (!m || !Array.isArray(m.device_layers_exact)) return;
+                var exact = M.exactLayerPlanJS(m.device_layers_exact, m.n_layers);
+                if (exact) m.device_layers = exact;
+            });
+        }
+        if (state.rpcLayout && state.rpcLayout.active && typeof M.deriveLayerPlanJS === 'function') {
+            Object.keys(models).forEach(function (name) {
+                var m = models[name];
+                if (!m) return;
+                if (m.device_layers && m.device_layers.estimated === false) return;
+                m.device_layers = M.deriveLayerPlanJS(m.n_layers, m.gpu_layers,
+                    m.tensor_split, m.gpu_count, state.rpcLayout.nodes);
+            });
+        }
+    }
+
+    /**
+     * applyLayoutState — R118 (2026-10-14): состояние раскладки слоёв для WebUI.
+     *
+     * ЗАЧЕМ ОТДЕЛЬНО ОТ АГРЕГАТОРА. В этом развёртывании WebUI ходит за runtime-
+     * параметрами НАПРЯМУЮ на воркер через прокси балансера
+     * (/api/v1/gguf/backends/<id>/proxy/...), поэтому балансерный блок layout в
+     * ответе не приходит. Берём факты у воркера: /api/models отдаёт rpc_enabled,
+     * rpc_servers_active, vram_*; замер канала (LB_RPC_LINK_*) — из записи бэкенда.
+     * Слои по устройствам считаем из n_layers/gpu_layers/tensor_split (та же
+     * формула, что и в балансере: deriveLayerPlanJS, сверена с логом llama.cpp).
+     */
+    function applyLayoutState(backendId, state) {
+        var api = window.GgufApi;
+        if (!api || typeof api.requestViaBackend !== 'function') return;
+        api.requestViaBackend(backendId, '/api/models').then(function (d) {
+            d = d || {};
+            var link = (state.backendRuntime && state.backendRuntime.rpcLink) || null;
+            var linkAuto = (state.backendRuntime && state.backendRuntime.rpcLinkAuto) || null;
+            var guard = (state.backendRuntime && state.backendRuntime.rpcLayoutGuard) || null;
+            state.rpcLayout = {
+                active: !!d.rpc_enabled,
+                // R118.2: раскладка «включена, но не в полном составе» либо
+                // выключена балансером из-за недоступного узла. Причину даёт
+                // балансер (rpcLayout.reason) — показываем её оператору.
+                degraded: !!(guard && guard.degraded),
+                degrade_reason: (guard && guard.reason) || '',
+                guard_enabled: !!(guard && guard.enabled),
+                guard_servers: (guard && Array.isArray(guard.servers)) ? guard.servers : [],
+                nodes: Array.isArray(d.rpc_servers_active) ? d.rpc_servers_active : [],
+                remote_nodes: d.vram_remote_nodes || 0,
+                vram_local_free_mb: d.vram_local_free_mb || 0,
+                vram_remote_free_mb: d.vram_remote_free_mb || 0,
+                vram_layout_free_mb: d.vram_layout_free_mb || 0,
+                link_mbps: (link && link.mbps) || 0,
+                link_measured_at: (link && link.measured_at) || '',
+                link_source: (link && link.source) || '',
+                link_auto_mbps: (linkAuto && linkAuto.mbps) || 0,
+                link_auto_at: (linkAuto && linkAuto.measured_at) || '',
+                link_auto_node: (linkAuto && linkAuto.node) || ''
+            };
+            resolveDeviceLayers(state);
+            if (state.detailPane === 'models' && typeof M.refreshDetailPane === 'function') {
+                M.refreshDetailPane();
+            }
+        }).catch(function () {
+            // Без данных раскладки вкладка просто не показывает пометки.
+        });
+    }
+
+    M.startActiveQueriesPolling = function() {        const state = M.state;
         if (state._activeQueriesTimer) return;
         // 3s baseline, 1s when active inference detected (adaptive)
         var SLOW_INTERVAL_MS = 3000;
@@ -711,4 +930,8 @@ M.refreshActiveQueriesPolling = function() {
             pane.innerHTML = M.renderDetailPane();
         }
     };
+
+    // R118.16: отдельно — чтобы тест мог проверить приоритет «факт важнее
+    // расчёта» без похода в сеть (applyLayoutState ходит на воркер).
+    M.resolveDeviceLayers = resolveDeviceLayers;
 })();

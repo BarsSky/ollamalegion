@@ -23,8 +23,8 @@
     "backends":  [
 
                  ],
-    "_note_backendEngine":  "R66b (2026-09-22): backendEngine ОБЯЗАТЕЛЕН для bundled llama.cpp-стека. Без него internal/config/config.go:535-541 подставляет дефолт ollama_api (operatingMode=standard не считается llama.cpp-режимом), после чего getEffectiveBackendType()/getBackendEngine() возвращают ollama, и filterBackendsByEffectiveType() (internal/balancer/backend_type_filter.go:149) выбрасывает ВСЕ llama_cpp-бэкенды из выдачи. Симптомы: GET /api/v1/metrics → \"backends\": [] при totalBackends=1 (в WebUI монитор пуст), GET /api/ps → 503 \"no healthy backends for read endpoint\" (а OpenWebUI/ollama-CLI именно им и пользуются), /api/v1/cluster/models/loaded пуст. Значение llama_cpp — единственно корректное для этого стека: cppworker регистрируется сам (см. CPPWORKER_BALANCER_URL в compose). Эталон — config/config.example.json:229.",
-    "backendEngine":  "llama_cpp",
+    "_note_backendEngine":  "R112 (2026-10-13): ЗНАЧЕНИЕ auto. До R112 здесь стоял llama_cpp — он был ОБЯЗАТЕЛЕН, потому что config.go выводил дефолт из operatingMode (standard → ollama_api), и явный backendEngine работал как жёсткий фильтр: getEffectiveBackendType()/getBackendEngine() возвращали один тип, а filterBackendsByEffectiveType() (internal/balancer/backend_type_filter.go) выбрасывал бэкенды ВТОРОГО типа из /api/v1/metrics, /api/v1/cluster и /api/ps (симптомы: \"backends\": [] при totalBackends>0, 503 \"no healthy backends\", пустой монитор). Теперь дефолт — auto, тип бэкенда определяется фактическим составом кластера, поэтому llama.cpp и Ollama могут работать в одном стенде, а залипшее значение больше не прячет второй тип (оно уважается, только пока бэкенды этого типа реально есть). Эталон — config/config.example.json:229.",
+    "backendEngine":  "auto",
     "balancing":  {
                       "algorithm":  "resource-aware",
                       "modelAffinity":  true,

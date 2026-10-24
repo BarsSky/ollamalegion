@@ -234,6 +234,38 @@ const Api = (function () {
             return getJson(`/api/v1/backends/${id}`);
         },
 
+        // R118 (2026-10-14): роль бэкенда в раскладке слоёв.
+        //
+        // Оператор в панели указывает, кто главный (мастер раскладки), кто донор
+        // (узел раскладки), а кто самодостаточный. Роли хранит и применяет
+        // балансер: главному он сам пришлёт rpcEnabled + список адресов доноров,
+        // поэтому править .env и заходить на машины не нужно.
+        //   role: 'standalone' | 'main' | 'donor' | '' (снять роль)
+        async setBackendRole(id, role) {
+            const response = await request(`${API_BASE}/api/v1/backends/${id}/role`, {
+                method: 'PUT',
+                body: JSON.stringify({ role: role || '' })
+            });
+            return response.ok;
+        },
+
+        // R229 (2026-10-22): тумблер раскладки RPC — решение оператора.
+        //
+        // Живой дефект: выключенная вручную раскладка возвращалась гардом балансера
+        // через ~15 секунд (роль главного + живой донор = «включить»). Теперь выбор
+        // хранится в записи бэкенда и побеждает роль, пока оператор не вернёт «авто».
+        //   mode: 'on' | 'off' | 'auto'
+        // Возвращаем тело ответа: у «Применить» есть смысл показать warning, если
+        // воркер не подтвердил (тогда «нажал и ничего не произошло» не повторится).
+        async setBackendRPCLayout(id, mode) {
+            const response = await request(`${API_BASE}/api/v1/backends/${id}/rpc-layout`, {
+                method: 'PUT',
+                body: JSON.stringify({ mode: mode || 'auto' })
+            });
+            let body = null;
+            try { body = await response.json(); } catch (e) { body = null; }
+            return { ok: response.ok, status: response.status, body: body };
+        },
         async updateBackendLimitsFull(id, maxConcurrentRequests, maxModels) {
             const response = await request(`${API_BASE}/api/v1/backends/${id}/limits`, {
                 method: 'PUT',
@@ -395,7 +427,7 @@ const Api = (function () {
              * @returns {Promise<Object>} — синхронный ответ 200 (все бэкенды idle),
              *                                ИЛИ 202 + {applyId, progressUrl, ...} (async path при занятом бэкенде).
              */
-            async apply(modelName, profile) {
+            async apply(modelName, profile, backendID) {
                 // R66d (2026-09-23): БАГ — здесь был raw fetch с
                 // `request._getAuthHeaders ? ... : {}`, а такой функции у
                 // `request` НЕТ (она нигде в проекте не определена). В итоге
@@ -407,7 +439,9 @@ const Api = (function () {
                 // X-API-Token из WEBUI_CONFIG.API_TOKEN (см. getOptions).
                 // 202 Accepted не считается ошибкой: request() пропускает любой
                 // 2xx, а статус отдаём наружу через _status (async apply path).
-                const url = `${API_BASE}/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}/apply`;
+                // R228: скоуп — только выбранный бэкенд (иначе задевало все, включая донора).
+                let url = `${API_BASE}/api/v1/cppworker/model-profiles/${encodeURIComponent(modelName)}/apply`;
+                if (backendID) { url += "?backend=" + encodeURIComponent(backendID); }
                 const options = { method: 'POST' };
                 if (profile && Object.keys(profile).length > 0) {
                     options.body = JSON.stringify(profile);
@@ -720,8 +754,14 @@ const Api = (function () {
         // one; empty object otherwise (e.g. when token is not yet loaded).
         getAuthHeaders() {
             const headers = { 'Content-Type': 'application/json' };
+            // R202 (2026-10-21): браузер работает через сессию (cookie), токен из
+            // страницы не нужен. Мутирующие запросы требуют X-CSRF-Token (из /auth/me).
+            if (typeof window !== 'undefined' && window.Auth && typeof window.Auth.csrf === 'function') {
+                const csrf = window.Auth.csrf();
+                if (csrf) { headers['X-CSRF-Token'] = csrf; }
+            }
             if (CFG.API_TOKEN) {
-                headers['X-API-Token'] = CFG.API_TOKEN;
+                headers['X-API-Token'] = CFG.API_TOKEN; // break-glass
             }
             return headers;
         }

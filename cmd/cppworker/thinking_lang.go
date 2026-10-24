@@ -125,12 +125,23 @@ func detectPrimaryLanguage(msgs []chatMessage) LangCode {
 func thinkingInstructionFor(lang LangCode) string {
 	switch lang {
 	case LangRU:
-		return "Перед ответом используй подробное пошаговое рассуждение. " +
-			"Тщательно продумай задачу, рассмотри разные точки зрения, " +
-			"покажи свою работу, затем дай чёткий финальный ответ. " +
-			"Отвечай на русском языке. " +
-			"ВАЖНО: Оберни пошаговое рассуждение в теги <reasoning>...</reasoning>. " +
-			"Твой финальный ответ должен быть ВНЕ тега </reasoning>. " +
+		// R114b (2026-10-13): ИНСТРУКЦИЯ БОЛЬШЕ НЕ НАЗЫВАЕТ ТЕГИ.
+		//
+		// Было: «Оберни рассуждение в теги <reasoning>…</reasoning>, финальный
+		// ответ должен быть ВНЕ тега </reasoning>». Для модели со СВОИМ каналом
+		// размышлений в чат-шаблоне (gemma-4: `<|channel>thought … <channel|>`;
+		// Qwen: `<think>…</think>`) это указание навязывало ЧУЖОЙ тег — живая
+		// жалоба оператора: «в ответе перемешка с ответом и маркером </think>,
+		// размышления пошли не тем путём».
+		//
+		// Теперь инструкция задаёт ПОВЕДЕНИЕ (думать пошагово, ответ отдельно) и
+		// разметку не диктует: модель использует канал своего шаблона, а cppworker
+		// разбирает его теги (reasoning_content.go) и вырезает одиночные маркеры
+		// (reasoning_orphan_tags_r114.go).
+		return "Перед ответом подумай пошагово. Тщательно разбери задачу, рассмотри " +
+			"разные варианты, покажи ход рассуждения, затем дай чёткий финальный " +
+			"ответ. Финальный ответ должен содержать ТОЛЬКО ответ, без хода " +
+			"рассуждения. Отвечай на русском языке. " +
 			"ПРАВИЛА ДЛЯ КОДА: Весь многострочный код (HTML, CSS, JavaScript, Python и т.д.) " +
 			"ОБЯЗАТЕЛЬНО оборачивай в fenced code blocks с указанием языка: " +
 			"```html\n[код]\n``` или ```css\n[код]\n```. " +
@@ -138,11 +149,11 @@ func thinkingInstructionFor(lang LangCode) string {
 			"ЗАПРЕЩЕНО смешивать explanations с кодом внутри code block — " +
 			"explanations ВСЕГДА снаружи, code ВСЕГДА внутри ```."
 	case LangEN:
-		return "Before answering, use detailed step-by-step thinking. " +
-			"Reason about the problem carefully, consider different angles, " +
-			"show your work, then provide a clear final answer. " +
-			"IMPORTANT: Wrap your step-by-step reasoning inside <reasoning>...</reasoning> tags. " +
-			"Your final answer (the user-facing response) should be OUTSIDE the </reasoning> tag. " +
+		// R114b: см. комментарий в LangRU — разметку не навязываем.
+		return "Before answering, think step by step. Reason about the problem " +
+			"carefully, consider different angles, show your work, then provide a " +
+			"clear final answer. The final answer must contain ONLY the answer, " +
+			"not the step-by-step reasoning. " +
 			"CODE RULES: ALL multi-line code (HTML, CSS, JavaScript, Python, etc.) " +
 			"MUST be wrapped in fenced code blocks with the language specified: " +
 			"```html\n[code]\n``` or ```css\n[code]\n```. " +
@@ -150,9 +161,8 @@ func thinkingInstructionFor(lang LangCode) string {
 			"NEVER mix explanations with code inside a code block — " +
 			"explanations ALWAYS outside, code ALWAYS inside ```."
 	default: // LangOther — universal short
-		return "Think step by step before answering. " +
-			"Wrap your step-by-step reasoning in <reasoning>...</reasoning> tags. " +
-			"Your final answer must be OUTSIDE the </reasoning> tag. " +
+		return "Think step by step before answering; the final answer must contain " +
+			"only the answer, not the reasoning. " +
 			"CODE RULES: All multi-line code MUST be in fenced blocks (```lang\ncode\n```). " +
 			"NEVER use inline backticks for multi-line code. " +
 			"Explanations outside, code inside. " +

@@ -51,12 +51,19 @@ func splitHostPortTest(t *testing.T, rawURL string) (string, int) {
 func mockReloadCppworker(t *testing.T, wantToken string) (*httptest.Server, *int) {
 	t.Helper()
 	calls := 0
-	// Поля, которые реально понимает reloadModelRequest (cmd/cppworker/types.go:134).
+	// Поля, которые реально понимает reloadModelRequest (cmd/cppworker/types.go:173).
+	//
+	// R119 (2026-10-15): добавлены contextPerSeq и enableReasoning — cppworker их
+	// принимает (там же), а балансер на пути «Применить профиль» их не отправлял.
+	// Мок обязан знать полный набор: иначе он «пропускал» бы дефект, отвечая 200
+	// на неполное тело.
 	knownFields := map[string]bool{
 		"name": true, "contextSize": true, "batchSize": true, "gpuLayers": true,
 		"flashAttn": true, "numa": true, "useMmap": true, "force": true,
-		"parallel": true, "kvCacheType": true,
-		"overrideTensors": true, "overrideTensorBufts": true,
+		"parallel": true, "contextPerSeq": true, "enableReasoning": true,
+		"kvCacheType":         true,
+		"overrideTensors":     true,
+		"overrideTensorBufts": true,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/models/reload" {

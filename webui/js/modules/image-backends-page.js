@@ -621,7 +621,7 @@
 
     /** Кнопка действия строки: data-ib-action - ключ для делегированного клика. */
     function actionButton(action, id, label, cls, disabled) {
-        return '<button class="btn ' + cls + ' btn-sm" type="button"' +
+        return '<button class="btn ' + cls + ' btn-sm" data-admin-only type="button"' +
             ' data-ib-action="' + escapeHtml(action) + '"' +
             ' data-ib-id="' + escapeHtml(id) + '"' +
             (disabled ? ' disabled' : '') + '>' + escapeHtml(label) + '</button>';

@@ -57,8 +57,13 @@ type PlacementDecision struct {
 	MatchedRule string `json:"matchedRule,omitempty"`
 	// Fallback — что делать, если стратегия недоступна (error|single).
 	Fallback string `json:"fallback"`
+	// GroupID — R92 (S3): логический бэкенд, через который исполняется
+	// strategy=sharded (пусто — раскладка не выбрана/недоступна).
+	GroupID string `json:"groupId,omitempty"`
 	// RuleIndex — индекс правила в конфиге (-1 = правило не применялось).
 	RuleIndex int `json:"ruleIndex"`
+	// GroupMembers — R92 (S3): сколько узлов в группе GroupID.
+	GroupMembers int `json:"groupMembers,omitempty"`
 	// Executable — реализована ли стратегия в этой версии (sharded/rpc — нет).
 	Executable bool `json:"executable"`
 	// Refined — R74 (P1): strategy=auto превращена в конкретную стратегию.
@@ -104,6 +109,23 @@ func (p *Proxy) OperatingMode() string {
 		return "standard"
 	}
 	return operatingModeName(p.config.Balancing.OperatingMode)
+}
+
+// ModeMigrationNotes — R97 (S7 плана 2026-10-07): заметки автоконверта
+// `operatingMode` → `balancing.placement`, снятые при загрузке конфига.
+//
+// Зачем наружу: §9 требует «автоконверт + запись в лог», но по логу старта
+// оператор не увидит, ПОЧЕМУ у него fallback=single и откуда взялись правила.
+// Список отдаётся в GET /api/v1/placement, чтобы переход от режимов к политике
+// был виден в том же месте, где оператор смотрит решения.
+//
+// Поле служебное (json:"-" в types.LoadBalancerConfig) и в конфиг-файл не
+// попадает: иначе миграция писала бы себя в конфиг и «залипала».
+func (p *Proxy) ModeMigrationNotes() []string {
+	if p == nil || p.config == nil {
+		return nil
+	}
+	return p.config.ModeMigrationNotes
 }
 
 // PlacementWarnings — ошибки валидации placement-конфига.
@@ -159,7 +181,10 @@ func (p *Proxy) refinePlacementDecision(d PlacementDecision) PlacementDecision {
 		// R79 (P3 §6, хвост): явная стратегия тоже проверяется на исполнимость
 		// здесь и сейчас (replicated с одним подходящим бэкендом — деградация,
 		// а не тихая выдача одной копией).
-		return p.checkExplicitStrategyFeasibilityR79(d)
+		//
+		// R92 (S3): sharded дополнительно проверяется на наличие готового
+		// логического бэкенда и фит по СУММЕ VRAM его узлов.
+		return p.checkShardedFeasibilityR92(p.checkExplicitStrategyFeasibilityR79(d))
 	}
 	d.Refined = true
 
@@ -171,7 +196,9 @@ func (p *Proxy) refinePlacementDecision(d PlacementDecision) PlacementDecision {
 	if autoReason != "" {
 		d.Reason = strings.TrimSpace(d.Reason + "; " + autoReason)
 	}
-	return d
+	// R92: auto могла выбрать sharded — приложить группу к решению (проверка
+	// внутри уже пройдена, здесь только заполняются GroupID/GroupMembers).
+	return p.checkShardedFeasibilityR92(d)
 }
 
 // PlacementMetricsSummary — R78 (P3): компактная сводка политики размещения для
@@ -403,58 +430,17 @@ func classMatches(m types.PlacementMatch, model string, sizeGB float64) bool {
 
 // matchModelMask — сопоставление имени модели с маской.
 //
-// Поддерживаются `*` (любая последовательность) и `?` (один символ),
-// регистр не важен. Сравниваем и полное имя, и имя без расширения `.gguf`
-// (cgpt-подобные клиенты присылают и то, и другое).
+// R92: канонический матчер переехал в pkg/types (types.MatchModelMask) — он
+// нужен ещё и логическому бэкенду (internal/backendgroup), а две расходящиеся
+// реализации дали бы «группа есть, а политика её не видит». Обёртка оставлена,
+// чтобы вызовы в этом файле читались как раньше.
 func matchModelMask(pattern, model string) bool {
-	pat := strings.ToLower(strings.TrimSpace(pattern))
-	if pat == "" {
-		return false
-	}
-	candidates := []string{strings.ToLower(strings.TrimSpace(model))}
-	if trimmed := strings.TrimSuffix(candidates[0], ".gguf"); trimmed != candidates[0] {
-		candidates = append(candidates, trimmed)
-	}
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		if wildcardMatch(pat, candidate) {
-			return true
-		}
-	}
-	return false
+	return types.MatchModelMask(pattern, model)
 }
 
-// wildcardMatch — простой матчер `*`/`?` (path.Match не подходит: он
-// останавливается на `/`, а имена моделей содержат `hf.co/...`).
+// wildcardMatch — простой матчер `*`/`?` (types.WildcardMatch).
 func wildcardMatch(pattern, s string) bool {
-	pi, si := 0, 0
-	star, mark := -1, 0
-	for si < len(s) {
-		if pi < len(pattern) && (pattern[pi] == '?' || pattern[pi] == s[si]) {
-			pi++
-			si++
-			continue
-		}
-		if pi < len(pattern) && pattern[pi] == '*' {
-			star = pi
-			mark = si
-			pi++
-			continue
-		}
-		if star >= 0 {
-			pi = star + 1
-			mark++
-			si = mark
-			continue
-		}
-		return false
-	}
-	for pi < len(pattern) && pattern[pi] == '*' {
-		pi++
-	}
-	return pi == len(pattern)
+	return types.WildcardMatch(pattern, s)
 }
 
 func describeMatch(m types.PlacementMatch) string {

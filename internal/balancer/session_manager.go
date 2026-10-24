@@ -161,6 +161,17 @@ func (sm *SessionManager) Get(id string) *types.Session {
 // Нужен вместо `s := Get(id); s.BackendID`: сессия одна на клиента+модель,
 // поэтому два параллельных запроса от одного клиента делят один *Session, и
 // второй запрос пишет в него через Set, пока первый читает.
+// ProtocolOf — R229: протокол сессии (openai/ollama) под блокировкой; пусто =
+// протокол ещё не определён (служебное обновление или старый клиент).
+func (sm *SessionManager) ProtocolOf(id string) string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	s, ok := sm.sessions[id]
+	if !ok || s == nil {
+		return ""
+	}
+	return s.Protocol
+}
 func (sm *SessionManager) GetBackendID(id string) (string, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -227,6 +238,14 @@ func (sm *SessionManager) Clear() {
 
 // Set - установка сессии (с clientName, clientIP и userAgent)
 func (sm *SessionManager) Set(id, backendID, model, clientName, clientIP, userAgent string) {
+	sm.SetWithProtocol(id, backendID, model, clientName, clientIP, userAgent, "")
+}
+
+// SetWithProtocol — R229 (2026-10-22): то же, что Set, но с протоколом запроса
+// (openai/ollama). Протокол ПИШЕТСЯ только непустым значением: последующий вызов
+// Set (из места, где протокол не определён) не должен стирать уже известный —
+// иначе бейдж исчезнет после первого же служебного обновления сессии.
+func (sm *SessionManager) SetWithProtocol(id, backendID, model, clientName, clientIP, userAgent, protocol string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -239,6 +258,9 @@ func (sm *SessionManager) Set(id, backendID, model, clientName, clientIP, userAg
 		session.UserAgent = userAgent
 		session.LastRequestAt = now
 		session.RequestCount++
+		if protocol != "" {
+			session.Protocol = protocol
+		}
 	} else {
 		if clientIP == "" {
 			// Не используем fingerprint/id как IP — оставляем пустым
@@ -252,6 +274,7 @@ func (sm *SessionManager) Set(id, backendID, model, clientName, clientIP, userAg
 			ClientName:    clientName,
 			ClientIP:      clientIP,
 			UserAgent:     userAgent,
+			Protocol:      protocol,
 			CreatedAt:     now,
 			LastRequestAt: now,
 			RequestCount:  1,

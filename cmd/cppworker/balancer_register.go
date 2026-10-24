@@ -179,6 +179,20 @@ type registerPayload struct {
 	// В bundled-режиме это устраняет необходимость вручную настраивать
 	// CppWorkerApiToken в конфиге каждого backend'а.
 	CppWorkerApiToken string `json:"cppWorkerApiToken,omitempty"`
+	// BuildInfo — R101 (S1 плана 2026-10-07): версия/коммит сборки llama.cpp.
+	// Балансер хранит её на бэкенде (types.Backend.BuildInfo) и сравнивает у
+	// узлов одной раскладки: расхождение ловится до загрузки модели.
+	BuildInfo string `json:"buildInfo,omitempty"`
+}
+
+// llamaBuildInfoR101 — что узел сообщает о своей сборке llama.cpp.
+//
+// Источник — env `CPPWORKER_LLAMA_BUILD` (его проставляет образ: build-arg или
+// тег образа). Если он не задан, узел ЧЕСТНО сообщает пусто, и балансер помечает
+// совместимость сторон RPC неподтверждённой: выдумывать версию нельзя — именно
+// на ней строится вывод «можно ли соединять эти два узла».
+func llamaBuildInfoR101() string {
+	return strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD"))
 }
 
 // effectiveNParallel — R70 (2026-09-24): сколько inference-запросов cppworker
@@ -191,11 +205,39 @@ type registerPayload struct {
 // Значение уходит в POST /api/v1/backends → балансер использует его как
 // maxConcurrentRequests, то есть его admission-очередь включается ровно тогда,
 // когда cppworker действительно занят (раньше там была константа 4).
+//
+// R119 (2026-10-15): заявка обязана совпадать со СПОСОБНОСТЬЮ. Без
+// batched-планировщика legacy-путь держит inst.mu на весь инференс (Round 8
+// race-fix, internal/cppbackend/backend.go), то есть llama_decode сериализуется —
+// сколько бы слотов ни завёл SlotManager. Именно это и записано в комментарии
+// ModelInfo.BatchedParallel: «false = legacy Round 13 multi-slot path с
+// serialized llama_decode».
+//
+// ЖИВОЙ ЗАМЕР (стенд 2026-10-15, CPPWORKER_ENABLE_BATCHED_PARALLEL=false,
+// CPPWORKER_N_PARALLEL=2, загружено parallel=2/max_slots=2). Два одновременных
+// /api/chat НАПРЯМУЮ в cppworker:
+//
+//	A(long):  headers=1.09 c  firstData=1.09 c  total=12.29 c
+//	B(short): headers=11.76 c firstData=11.76 c total=11.76 c   ← ровно конец A
+//
+// То есть B не получил ни байта, пока A не закончился. При этом балансер уже
+// пропустил оба клиента (вместимость 2 из этой самой заявки), и второй ждал
+// молча: без X-Queue-Wait-Ms, без позиции в очереди и без строки в UI. Это ровно
+// тот же дефект, что чинили в R70 (тогда балансеру уходила константа 4), только
+// источником «2» была не константа, а n_parallel при выключенном планировщике.
+//
+// Поэтому без batched-планировщика заявляем 1: балансер поставит второго клиента
+// в admission-очередь, где ожидание ВИДНО. Per-model /api/models отдаёт ту же
+// правду полем max_slots (см. handlers_model.go).
 func effectiveNParallel() int {
+	n := 1
 	if currentConfig != nil && currentConfig.DefaultNParallel > 0 {
-		return currentConfig.DefaultNParallel
+		n = currentConfig.DefaultNParallel
 	}
-	return 1
+	if n > 1 && (currentConfig == nil || !currentConfig.EnableBatchedParallel) {
+		return 1
+	}
+	return n
 }
 
 // register отправляет POST /api/v1/backends.
@@ -229,6 +271,10 @@ func (r *balancerRegistration) register(ctx context.Context, log *zap.SugaredLog
 		// Берём из того же источника, что и для авторизации на balancer
 		// (CPPWORKER_BALANCER_TOKEN → API_TOKEN → LB_API_TOKEN).
 		CppWorkerApiToken: r.apiTokenForCppWorker,
+		// R101 (S1 плана 2026-10-07): версия сборки llama.cpp — балансер сравнит
+		// её у узлов одной раскладки (протокол RPC версионно-чувствителен) и
+		// покажет расхождение в сухом прогоне, а не таймаутом загрузки.
+		BuildInfo: llamaBuildInfoR101(),
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

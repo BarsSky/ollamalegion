@@ -80,8 +80,13 @@ type generateRequest struct {
 }
 
 type generateResponse struct {
-	Model              string  `json:"model"`
-	Response           string  `json:"response"`
+	Model    string `json:"model"`
+	Response string `json:"response"`
+	// Thinking — R108 (2026-10-13): размышления отдельным полем, как в Ollama
+	// (`thinking`), а не внутри `response`. Раньше клиентский /api/generate
+	// (handleGenerate) отдавал сырой вывод модели: и think-блок, и служебные
+	// токены шаблона уезжали в response.
+	Thinking           string  `json:"thinking,omitempty"`
 	Done               bool    `json:"done"`
 	Tokens             int     `json:"tokens"`
 	DurationMs         int64   `json:"durationMs"`
@@ -92,6 +97,13 @@ type generateResponse struct {
 	PromptEvalDuration int64   `json:"prompt_eval_duration,omitempty"`
 	EvalCount          int     `json:"eval_count,omitempty"`
 	EvalDuration       int64   `json:"eval_duration,omitempty"`
+	// Context — R119 (H1): Ollama-клиенты (и Ollama API-контракт) ожидают ключ
+	// `context` в ответе /api/generate даже тогда, когда cppworker не умеет
+	// отдавать реальный KV-контекст. Без ключа клиент считает ответ
+	// неполным/несовместимым. Конвенция — `[]int{}` (так же, как в
+	// /api/ollama/generate non-stream, handlers_generate.go).
+	// Без omitempty: ключ обязан присутствовать всегда.
+	Context []int `json:"context"`
 }
 
 type streamChunk struct {
@@ -167,6 +179,11 @@ type reloadModelRequest struct {
 	NUMA        *bool  `json:"numa,omitempty"`
 	UseMmap     *bool  `json:"useMmap,omitempty"`
 	Force       *bool  `json:"force,omitempty"`
+	// SplitMode — R179 (2026-10-19): режим раскладки слоёв (-1 дефолт llama.cpp,
+	// 0 NONE, 1 LAYER, 2 ROW, 3 TENSOR). Без этого поля reload не мог передать
+	// режим в мост: мост получал 0=NONE, и RPC-узел отбрасывался (живая причина
+	// потери раскладки при «Применить профиль»).
+	SplitMode *int `json:"splitMode,omitempty"`
 	// Session 16 (2026-06-27): расширенные поля для Per-Model Profiles.
 	// Применяются при reload через /api/models/reload, если профиль содержит
 	// parallel/kvCacheType. nil/0 = использовать cppworker defaults.

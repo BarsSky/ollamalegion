@@ -227,5 +227,5 @@
     }
   },
   "initialized": false,
-  "backendEngine": "llama_cpp"
+  "backendEngine": "auto"
 }

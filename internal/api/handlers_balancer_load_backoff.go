@@ -1,14 +1,15 @@
 // Package api — R60.11 (2026-09-07) handler для /api/v1/balancer/load-backoff.
 //
 // Endpoints:
-//   GET  /api/v1/balancer/load-backoff
-//     — JSON snapshot всех circuit breaker states (failures count,
-//       breakerOpenUntil timestamp). Используется для diagnostics.
 //
-//   POST /api/v1/balancer/load-backoff/reset[?backend=X&model=Y]
-//     — Manual reset of balancer's loadBackoff circuit breaker.
-//       Без query params: reset ALL states.
-//       С ?backend=X&model=Y: reset specific (backend, model) pair.
+//	GET  /api/v1/balancer/load-backoff
+//	  — JSON snapshot всех circuit breaker states (failures count,
+//	    breakerOpenUntil timestamp). Используется для diagnostics.
+//
+//	POST /api/v1/balancer/load-backoff/reset[?backend=X&model=Y]
+//	  — Manual reset of balancer's loadBackoff circuit breaker.
+//	    Без query params: reset ALL states.
+//	    С ?backend=X&model=Y: reset specific (backend, model) pair.
 //
 // R60.11 motivation: pre-R60.11 единственный способ сбросить breaker —
 // подождать TTL (60s default) или рестартовать balancer container.

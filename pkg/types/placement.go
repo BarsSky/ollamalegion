@@ -75,13 +75,24 @@ func IsValidPlacementStrategy(s string) bool {
 
 // IsExecutablePlacementStrategy — реализована ли стратегия в текущей версии.
 //
-// R72 (P0): исполнимы single (обычный путь), pool (virtual_router) и
-// replicated (modelreplication) — их подключение к политике идёт в P1.
-// sharded/rpc требуют транспорта раскладки (P2) и пока только
-// резолвятся/логируются: честная ошибка вместо тихой деградации — §6 плана.
+// R72 (P0): single (обычный путь), pool (virtual_router), replicated
+// (modelreplication), auto — подключены к политике на этапах P1/P1.5.
+//
+// R92 (S3 плана 2026-10-07-model-distribution-multi-gpu-next-session.md):
+// `sharded` стал исполнимым — сборка умеет находить логический бэкенд (группу
+// RPC-узлов, `balancing.backendGroups[]`) и считать VRAM-fit по СУММЕ узлов
+// (internal/balancer/placement_sharded_r92.go). Это СТАТИЧЕСКИЙ ответ «в сборке
+// есть исполнитель»: готовность конкретной модели здесь проверить нечем, её
+// считает резолвер и помечает решение Degraded с числами, когда группы для
+// модели нет. Так сохраняется §6 плана: отсутствие исполнителя не подменяется
+// молча (fallback=error → 503, fallback=single → single + явный заголовок).
+//
+// `rpc` остаётся неисполнимым намеренно: это legacy-путь координатора-заглушки
+// (internal/rpccoordinator, stub-mode). §9 плана переводит режим
+// rpc_coordinator в стратегию sharded, поэтому `rpc` — deprecated-алиас.
 func IsExecutablePlacementStrategy(s PlacementStrategy) bool {
 	switch s {
-	case PlacementSingle, PlacementPool, PlacementReplicated, PlacementAuto:
+	case PlacementSingle, PlacementPool, PlacementReplicated, PlacementAuto, PlacementSharded:
 		return true
 	default:
 		return false
@@ -235,9 +246,17 @@ func (p *PlacementSettings) Validate() []string {
 					"пул будет взят из balancing.virtualModels[].backendPool, если модель "+
 					"зарегистрирована как виртуальный алиас (alias-on-pool)")
 			}
-		case PlacementSharded, PlacementRPC:
+		case PlacementSharded:
+			// R92 (S3): стратегия исполняется, но требует логического бэкенда
+			// (`balancing.backendGroups[]`). Проверить это здесь нечем —
+			// PlacementSettings не видит balancing целиком: состав группы
+			// проверяет ValidateBackendGroups, а готовность КОНКРЕТНОЙ модели —
+			// резолвер (Degraded с числами, §6). Ошибкой это не объявляем, иначе
+			// валидация политики ломала бы стенды, где группа появится позже.
+		case PlacementRPC:
 			errs = append(errs, fmt.Sprintf(
-				"%s: стратегия %q пока не исполняется (нужен транспорт раскладки, этап P2) — "+
+				"%s: стратегия %q не исполняется (legacy-путь координатора-заглушки; §9 плана "+
+					"переводит rpc_coordinator в sharded — используйте strategy=sharded) — "+
 					"запросы пойдут по fallback=%s", prefix, rule.Strategy, fallbackOrDefault(p.Fallback)))
 		}
 		switch strings.ToLower(strings.TrimSpace(rule.Selection)) {

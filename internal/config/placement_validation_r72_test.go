@@ -22,7 +22,7 @@ func TestValidateConfigOnLoad_PlacementWarnings_R72(t *testing.T) {
 				Models: []types.PlacementModelRule{
 					{Model: "a", Strategy: "spread"},                     // неизвестная стратегия
 					{Model: "b", Strategy: "pool"},                       // pool без списка
-					{Model: "c", Strategy: "sharded"},                    // не исполняется (P2)
+					{Model: "c", Strategy: "rpc"},                        // legacy-путь координатора (не исполняется)
 					{Model: "", Strategy: "single"},                      // пустое имя
 					{Model: "d", Strategy: "single", Selection: "magic"}, // неизвестный selection
 				},

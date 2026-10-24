@@ -64,7 +64,7 @@ func TestBuildChatPrompt_EnableReasoningFalse_NoNativeCall(t *testing.T) {
 	}
 	// В stub режиме manual fallback → НЕ должно быть thinking instruction
 	// (EnableReasoning=false).
-	if strings.Contains(prompt, "Before answering, use detailed step-by-step thinking") {
+	if strings.Contains(prompt, "Before answering, think step by step") {
 		t.Errorf("soft prompt injected despite EnableReasoning=false")
 	}
 }
@@ -100,7 +100,7 @@ func TestBuildChatPrompt_EnableReasoningTrue_StubFallback(t *testing.T) {
 	// Stub mode: native API fails (no real bridge), fallback to manual.
 	// Manual fallback применяет injectThinkingIntoMessages.
 	// Проверяем что thinking instruction в prompt.
-	if !strings.Contains(prompt, "Before answering, use detailed step-by-step thinking") {
+	if !strings.Contains(prompt, "Before answering, think step by step") {
 		t.Errorf("soft prompt NOT injected in stub fallback (got: %s)", prompt)
 	}
 }

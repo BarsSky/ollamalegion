@@ -27,7 +27,20 @@
 # -----------------------------------------------------------------------------
 # Stage 1: deps — загрузка зависимостей (golang:1.24-alpine, локальный)
 # -----------------------------------------------------------------------------
-FROM dockerhub.timeweb.cloud/library/golang:1.24-alpine AS deps
+# R128 (2026-10-16): база запиннена по патч-версии — ради воспроизводимости.
+#
+# ЧЕСТНО ПРО ПРИЧИНУ. Изначально я объяснил этим пином «нестабильный линкер»:
+# сборка падала, печатая usage линкера, то есть выглядела как несовместимость
+# тулчейна. Диагноз оказался НЕВЕРНЫМ: причина была в моём build-arg —
+# `--build-arg "BUILD_DATE=(Get-Date -Format yyyy-MM-dd)"` PowerShell не
+# вычисляет внутри кавычек, и литерал `(Get-Date -Format yyyy-MM-dd)` попадал в
+# `-ldflags`, где пробелы разбивали его на лишние флаги (`flag provided but not
+# defined: -Format`). Одинаковый симптом давал и отказ сборки cppworker ранее.
+#
+# Пин оставлен как самостоятельная польза (сборка не зависит от того, какой патч
+# Go отдал реестр), но НЕ как «лечение» той ошибки — она лечится корректной
+# передачей BUILD_DATE (переменная, а не выражение в кавычках).
+FROM dockerhub.timeweb.cloud/library/golang:1.24.3-alpine AS deps
 
 WORKDIR /build
 
@@ -64,9 +77,17 @@ COPY . .
 # build-args (см. scripts/rebuild_balancer_r66a.ps1 / release-all.ps1).
 ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
+# R127 (2026-10-16): -extldflags БЕЗ вложенных кавычек.
+#
+# ЖИВОЙ СЛУЧАЙ. Базовая стадия — плавающий тег `golang:1.24-alpine`; при
+# пересборке он подтянул более новый патч тулчейна, и сборка упала: линкер Go
+# печатал свою usage, то есть `-extldflags` доезжал до него как НЕИЗВЕСТНЫЙ
+# ВЕРХНЕУРОВНЕВЫЙ флаг. Причина — вложенные одинарные кавычки внутри
+# double-quoted `-ldflags`: старый тулчейн их съедал, новый отдаёт как есть.
+# Форма `-extldflags=-static` равнозначна и не зависит от разбора кавычек.
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -tags llama_stub -trimpath \
-    -ldflags "-w -s -extldflags '-static' \
+    -ldflags "-w -s -extldflags=-static \
       -X ollama-loadbalancer/pkg/version.Commit=${GIT_COMMIT} \
       -X ollama-loadbalancer/pkg/version.BuildDate=${BUILD_DATE}" \
     -a -o balancer ./cmd/balancer
@@ -91,12 +112,26 @@ COPY --from=builder /build/config/config.example.json ./config.json
 COPY docker/balancer/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Копирование webui статики (monitor.html, health.html, css, js, img, favicon)
-COPY --from=builder /build/webui/monitor.html ./webui/monitor.html
-COPY --from=builder /build/webui/health.html ./webui/health.html
+# Копирование webui статики (все страницы, css, js, img, webfonts, favicon).
+#
+# R134 (2026-10-16): ЖИВАЯ ЖАЛОБА ОПЕРАТОРА «в панели балансера нет вкладки
+# агенты и не отображаются иконки». Причина была здесь: копировались только
+# monitor.html и health.html, а index.html (дашборд со всей навигацией, включая
+# «Агенты»), rpc-status.html, tp-pipeline.html, virtual-models.html и КАТАЛОГ
+# webfonts — нет. Следствие: /webfonts/fa-solid-900.woff2 отдавал 404 и иконки
+# Font Awesome не рисовались, /index.html отдавал 404, поэтому панель
+# балансера выглядела «обрезанной» версией WebUI. Проверка этого класса —
+# scripts/check_webui_assets.py (--balancer-dockerfile): она падает, если
+# маска страниц или каталог шрифтов не скопированы.
+#
+# Маска `*.html` вместо перечисления файлов — та же доктрина, что в
+# docker/webui/Dockerfile: новая страница попадает в образ сама, без правки
+# Dockerfile (иначе /virtual-models.html однажды уже отдавал 404).
+COPY --from=builder /build/webui/*.html ./webui/
 COPY --from=builder /build/webui/css ./webui/css
 COPY --from=builder /build/webui/js ./webui/js
 COPY --from=builder /build/webui/img ./webui/img
+COPY --from=builder /build/webui/webfonts ./webui/webfonts
 COPY --from=builder /build/webui/favicon.ico ./webui/favicon.ico
 COPY --from=builder /build/webui/favicon-16x16.png ./webui/favicon-16x16.png
 COPY --from=builder /build/webui/favicon-32x32.png ./webui/favicon-32x32.png

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
@@ -119,19 +120,70 @@ func (p *Proxy) GetModelProfileNumCtx(modelName string) int {
 	return 0
 }
 
+// NormalizeModelProfileKey — привести имя модели к КЛЮЧУ ПРОФИЛЯ (R136, 2026-10-16).
+//
+// ЖИВОЙ ДЕФЕКТ (воспроизведён сквозным тестом от лица WebUI). Карточка модели НА
+// ДИСКЕ называет модель именем файла — `gemma-4-E4B-it-Q4_K_M.gguf`, — а путь
+// загрузки ищет профиль по имени модели БЕЗ расширения
+// (`gemma-4-E4B-it-Q4_K_M`). Профили сохранялись ПОД РАЗНЫМИ КЛЮЧАМИ, и оператор
+// получал ровно то, на что жаловался: выставил параметры в карточке, нажал
+// «Применить и перезагрузить», увидел «сохранено», а модель поднялась с ДРУГИМИ
+// (профильными или дефолтными) значениями. Живой замер на стенде — в хранилище
+// лежали одновременно:
+//
+//	gemma-4-E4B-it-Q4_K_M.gguf  -> {parallel:2, enableReasoning:true}   (карточка диска)
+//	gemma-4-E4B-it-Q4_K_M       -> {parallel:1, enableReasoning:false}  (читает загрузка)
+//
+// Ключ нормализуется в ОДНОМ месте (здесь), поэтому обе карточки — «Модели» на
+// диске и «Загружено» — пишут и читают одну и ту же запись профиля. Это и есть
+// требование оператора: «параметры должны быть одинаковы как для моделей на диске,
+// так и для загруженных».
+func NormalizeModelProfileKey(modelName string) string {
+	name := strings.TrimSpace(modelName)
+	if name == "" {
+		return ""
+	}
+	name = strings.ReplaceAll(name, "\\", "/")
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	if len(name) > 5 && strings.EqualFold(name[len(name)-5:], ".gguf") {
+		name = name[:len(name)-5]
+	}
+	return strings.TrimSpace(name)
+}
+
 // GetModelProfile — полный профиль (для API endpoints).
 // Возвращает (profile, true) если найден, иначе (zero, false).
 func (p *Proxy) GetModelProfile(modelName string) (types.LlamaCppModelProfile, bool) {
 	if p == nil || p.config == nil || p.config.LlamaCppModelProfiles == nil {
 		return types.LlamaCppModelProfile{}, false
 	}
-	profile, ok := p.config.LlamaCppModelProfiles[modelName]
-	return profile, ok
+	key := NormalizeModelProfileKey(modelName)
+	if profile, ok := p.config.LlamaCppModelProfiles[key]; ok {
+		return profile, true
+	}
+	// Совместимость: запись могла остаться под старым ключом с расширением
+	// (до R136). Читаем её, чтобы настройки оператора не потерялись; миграция
+	// ключей при загрузке убирает такие записи (profiles_persistence.go).
+	for _, legacy := range []string{key + ".gguf", strings.TrimSpace(modelName)} {
+		if legacy == "" || legacy == key {
+			continue
+		}
+		if profile, ok := p.config.LlamaCppModelProfiles[legacy]; ok {
+			return profile, true
+		}
+	}
+	return types.LlamaCppModelProfile{}, false
 }
 
 // SetModelProfile — upsert профиля (для API endpoints).
 // ВАЖНО: эта функция только обновляет in-memory config. Сохранение на диск —
 // ответственность вызывающей стороны (через config.Save()).
+//
+// R136: ключ нормализуется, старый ключ с расширением .gguf убирается — иначе
+// рядом оставалась бы мёртвая запись, которую оператор видит в списке профилей,
+// а загрузка не читает.
 func (p *Proxy) SetModelProfile(modelName string, profile types.LlamaCppModelProfile) {
 	if p == nil || p.config == nil {
 		return
@@ -139,7 +191,16 @@ func (p *Proxy) SetModelProfile(modelName string, profile types.LlamaCppModelPro
 	if p.config.LlamaCppModelProfiles == nil {
 		p.config.LlamaCppModelProfiles = make(map[string]types.LlamaCppModelProfile)
 	}
-	p.config.LlamaCppModelProfiles[modelName] = profile
+	key := NormalizeModelProfileKey(modelName)
+	raw := strings.TrimSpace(modelName)
+	if raw != "" && raw != key {
+		delete(p.config.LlamaCppModelProfiles, raw)
+		if logger.Get() != nil {
+			logger.Get().Infow("R136: профиль сохранён под нормализованным ключом",
+				"input", raw, "key", key, "hint", "карточка диска и карточка загруженной модели пишут одну запись")
+		}
+	}
+	p.config.LlamaCppModelProfiles[key] = profile
 }
 
 // DeleteModelProfile — удаляет профиль.
@@ -148,10 +209,19 @@ func (p *Proxy) DeleteModelProfile(modelName string) bool {
 	if p == nil || p.config == nil || p.config.LlamaCppModelProfiles == nil {
 		return false
 	}
-	if _, ok := p.config.LlamaCppModelProfiles[modelName]; !ok {
+	// R136: удаляем и нормализованный ключ, и старый с расширением .gguf —
+	// иначе «снять профиль» из карточки диска оставлял бы мёртвую запись.
+	raw := strings.TrimSpace(modelName)
+	key := NormalizeModelProfileKey(modelName)
+	_, hadKey := p.config.LlamaCppModelProfiles[key]
+	_, hadRaw := p.config.LlamaCppModelProfiles[raw]
+	if !hadKey && !hadRaw {
 		return false
 	}
-	delete(p.config.LlamaCppModelProfiles, modelName)
+	delete(p.config.LlamaCppModelProfiles, key)
+	if raw != "" {
+		delete(p.config.LlamaCppModelProfiles, raw)
+	}
 	return true
 }
 
@@ -412,6 +482,12 @@ func (p *Proxy) loadedSlotsNCtx(backendID, modelName string) int {
 // memfit-бюджет больше не зовёт CUDA в горячем пути) и только тогда, когда
 // кэши говорят «не загружена», то есть на пути, который иначе принял бы
 // неверное решение.
+// refreshLoadedWindowNCtx — R83-fix (2026-09-30): принудительно обновить кэш
+// метрик и вернуть окно модели (0 — если окно неизвестно).
+//
+// R118 (2026-10-14): решение «загружена/грузится/нет/неизвестно» переехало в
+// resolveLoadedWindowNCtx (она же используется preflight'ом). Эта обёртка
+// осталась для вызовов, которым нужно только ЧИСЛО окна.
 func (p *Proxy) refreshLoadedWindowNCtx(backendID, modelName string) int {
 	if p == nil || backendID == "" {
 		return 0
@@ -422,6 +498,174 @@ func (p *Proxy) refreshLoadedWindowNCtx(backendID, modelName string) int {
 		}
 	}
 	return p.loadedWindowNCtx(backendID, modelName)
+}
+
+// loadedWindowState — R118 (2026-10-14): ЧТО ИМЕННО известно о модели на бэкенде.
+//
+// ЗАЧЕМ РАЗЛИЧАТЬ. До R118 все эти случаи выглядели одинаково — `loaded_n_ctx=0`,
+// — и preflight в КАЖДОМ из них планировал загрузку (перезагрузку). Живое
+// воспроизведение на стенде (22:02:51, cppworker-лог):
+//
+//	оператор запустил загрузку gemma-4-E4B с ctx=32768 (state=loading)
+//	клиент прислал num_ctx=8192, пока загрузка ещё шла:
+//	  balancer: detected n_ctx mismatch, loaded_n_ctx=0, requested_n_ctx=8192
+//	            → starting reload ... target_n_ctx=8192
+//	  cppworker: loading model ctxSize=8192 gpuLayers=-2
+//	             "reloading model because parameters changed"
+//	             model unloaded            ← подготовленная модель ВЫГРУЖЕНА
+//	             runAsyncLoad: background load failed: load cancelled:
+//	             model load aborted by user (71 c работы впустую)
+//	  клиент получил 503 «being reloaded to n_ctx=8192 (loaded=0); retry in 30s»
+//
+// То есть загрузка, которая вот-вот дала бы оператору окно 32768, была прервана
+// ради клиентского (меньшего) окна. Причина ровно одна: «нет данных» и «модели
+// нет» считались одним и тем же.
+type loadedWindowState int
+
+const (
+	// loadedWindowUnknown — состояние бэкенда узнать НЕ удалось (запрос к
+	// /api/models не прошёл). Разрушительные решения (выгрузка/перезагрузка)
+	// по недостоверным данным запрещены.
+	loadedWindowUnknown loadedWindowState = iota
+	// loadedWindowAbsent — опрос прошёл и модели на бэкенде нет. Загрузка нужна.
+	loadedWindowAbsent
+	// loadedWindowLoading — модель есть, но она грузится прямо сейчас. Свою
+	// загрузку НЕ запускаем (cppworker отменит текущую — «load aborted by user»),
+	// а ждём её завершения.
+	loadedWindowLoading
+	// loadedWindowLoaded — модель загружена, окно известно (nCtx > 0).
+	loadedWindowLoaded
+)
+
+// String — для логов и тестов.
+func (s loadedWindowState) String() string {
+	switch s {
+	case loadedWindowAbsent:
+		return "absent"
+	case loadedWindowLoading:
+		return "loading"
+	case loadedWindowLoaded:
+		return "loaded"
+	default:
+		return "unknown"
+	}
+}
+
+// loadedWindowFromCache — что говорит кэш метрик о конкретной модели.
+// Возвращает (0, loadedWindowUnknown), если записи о модели в кэше нет: сам по
+// себе кэш не отличает «модели нет» от «опрос не проходил» — это решает
+// resolveLoadedWindowNCtx.
+func (p *Proxy) loadedWindowFromCache(backendID, modelName string) (int, loadedWindowState) {
+	if p == nil || p.metricsMgr == nil || backendID == "" {
+		return 0, loadedWindowUnknown
+	}
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+	lm := p.metricsMgr.llamaMetrics[backendID]
+	if lm == nil {
+		return 0, loadedWindowUnknown
+	}
+	best := 0
+	loadingState := false
+	otherState := false
+	found := false
+	for _, m := range lm.LoadedModels {
+		if modelName != "" && m.Name != modelName &&
+			!containsFold(m.Name, modelName) && !containsFold(modelName, m.Name) {
+			continue
+		}
+		found = true
+		if m.ContextLength > 0 {
+			if m.ContextLength > best {
+				best = m.ContextLength
+			}
+			continue
+		}
+		// Запись есть, окна нет: cppworker ещё не знает n_ctx. Это либо загрузка
+		// (state=loading) — тогда вторую запускать НЕЛЬЗЯ, она отменит текущую,
+		// — либо неудача/иное состояние (state=error) — тогда загрузка нужна.
+		if m.State == "loading" {
+			loadingState = true
+		} else {
+			otherState = true
+		}
+	}
+	if best > 0 {
+		return best, loadedWindowLoaded
+	}
+	if !found {
+		// Кэш вообще ничего не знает об этой модели: отличить «модели нет» от
+		// «опрос не проходил» здесь невозможно.
+		return 0, loadedWindowUnknown
+	}
+	if loadingState && !otherState {
+		return 0, loadedWindowLoading
+	}
+	// Запись без окна и не в состоянии загрузки (state=error/неизвестное):
+	// загрузка нужна, иначе модель так и останется нерабочей.
+	return 0, loadedWindowAbsent
+}
+
+// resolveLoadedWindowNCtx — R118 (2026-10-14): единая точка принятия решения
+// «загружена ли модель и с каким окном», разделяющая «неизвестно», «нет»,
+// «грузится» и «загружена».
+//
+// allowRefresh=true разрешает ОДИН запрос к /api/models, если кэш молчит: поллер
+// опрашивает бэкенды раз в 30 c, а загрузку могли сделать мимо балансера. Именно
+// этот refresh (R83-fix) спасает prepared-модель от перезагрузки на клиентское
+// окно; отличие R118 в том, что неудачный refresh НЕ объявляется «модели нет»,
+// а возвращает loadedWindowUnknown.
+func (p *Proxy) resolveLoadedWindowNCtx(backendID, modelName string, allowRefresh bool) (int, loadedWindowState) {
+	if p == nil || backendID == "" {
+		return 0, loadedWindowUnknown
+	}
+	// Координатор reload'а знает окно сразу после успешной перезагрузки, а поллер
+	// — только через ~30 c. Большее значение достоверно: модель могла быть
+	// перезагружена с бОльшим окном. НО «модель грузится» он не перебивает:
+	// LastKnownNCtx — значение по БЭКЕНДУ, а не по модели, и не должно выдавать
+	// грузящуюся модель за готовую.
+	withCoordinator := func(n int, st loadedWindowState) (int, loadedWindowState) {
+		if st == loadedWindowLoaded && p.nctxReload != nil {
+			if lk := p.nctxReload.LastKnownNCtx(backendID); lk > n {
+				return lk, loadedWindowLoaded
+			}
+		}
+		return n, st
+	}
+
+	// 1. Кэш метрик.
+	if n, st := p.loadedWindowFromCache(backendID, modelName); st != loadedWindowUnknown {
+		return withCoordinator(n, st)
+	}
+	// Кэш молчит о модели, но координатор может знать окно: если модель только что
+	// перезагружена балансером, /api/models обновится ещё не скоро.
+	if p.nctxReload != nil {
+		if lk := p.nctxReload.LastKnownNCtx(backendID); lk > 0 {
+			return lk, loadedWindowLoaded
+		}
+	}
+	if !allowRefresh {
+		return 0, loadedWindowUnknown
+	}
+
+	// 2. Спрашиваем cppworker ОДИН раз.
+	b, ok := p.backendInfoForPoller(backendID)
+	if !ok || p.llamaCppMetricsPoller == nil {
+		logger.Get().Warnw("resolveLoadedWindowNCtx: адрес бэкенда неизвестен — состояние модели не определить",
+			"backend", backendID, "model", modelName, "state", loadedWindowUnknown.String())
+		return 0, loadedWindowUnknown
+	}
+	if !p.llamaCppMetricsPoller.pollBackend(b) {
+		logger.Get().Warnw("resolveLoadedWindowNCtx: опрос /api/models не удался — состояние модели неизвестно",
+			"backend", backendID, "model", modelName, "state", loadedWindowUnknown.String(),
+			"hint", "по недостоверным данным reload не запускаем")
+		return 0, loadedWindowUnknown
+	}
+	// Опрос прошёл: теперь кэш достоверен, и «нет записи» = «модели нет».
+	if n, st := p.loadedWindowFromCache(backendID, modelName); st != loadedWindowUnknown {
+		return withCoordinator(n, st)
+	}
+	return 0, loadedWindowAbsent
 }
 
 // backendInfoForPoller — (host, port) бэкенда в виде, который понимает поллер.
@@ -807,4 +1051,29 @@ func containsFold(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// LoadedContextForModel — фактический n_ctx загруженного инстанса модели на любом
+// llama.cpp-бэкенде (0 = неизвестно/не загружена).
+//
+// R212: нужен API-слою, чтобы создавать профиль модели «по факту», когда клиент
+// (WebUI) прислал неполный набор полей. Ищем по тому же правилу сравнения имён,
+// что и IsLlamaCppModelLoaded — иначе .gguf/регистр снова разойдутся.
+func (p *Proxy) LoadedContextForModel(modelName string) int {
+	if p == nil || modelName == "" || p.metricsMgr == nil {
+		return 0
+	}
+	p.metricsMgr.mu.RLock()
+	defer p.metricsMgr.mu.RUnlock()
+	for _, lm := range p.metricsMgr.llamaMetrics {
+		if lm == nil {
+			continue
+		}
+		for _, m := range lm.LoadedModels {
+			if modelNameMatches(m.Name, modelName) && m.ContextLength > 0 {
+				return int(m.ContextLength)
+			}
+		}
+	}
+	return 0
 }

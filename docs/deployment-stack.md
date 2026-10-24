@@ -69,7 +69,7 @@ docker compose -f docker-compose.stack.yml --profile worker --services
 Указывается ОДИН раз в `deployments/.env`:
 
 ```bash
-BALANCER_URL=http://192.168.1.10:18081     # машина с балансером
+BALANCER_URL=http://192.0.2.110:18081     # машина с балансером
 CPPWORKER_API_TOKEN=<тот же токен, что у балансера>
 ```
 
@@ -1634,6 +1634,7 @@ curl -s -D - -o /dev/null ... http://127.0.0.1:18080/api/chat | grep -i x-backen
 | Второй одновременный клиент получает 503 «model is not loaded» / «model load aborted by user» | загрузку инициировал первый клиент, и её контекст был привязан к нему; либо модель поднята с `max_slots=1` | R83: контекст загрузки отвязан (`loadContextForSharedLoad`), `parallel` из профиля доезжает до cppworker; для 2 слотов — `CPPWORKER_N_PARALLEL=2`, см. §7.2 |
 | Клиент (Cline) «не работает», запрос висит и рвётся | таймаут клиента меньше времени загрузки 27B | см. п. 2.1: грузить модель заранее, поднять таймаут клиента |
 | `400 unknown field "options"` на `/v1/chat/completions` | клиент шлёт Ollama-поле в OpenAI-формат | `options` — только для `/api/chat`; в OpenAI-формате используйте `max_tokens`/`temperature` |
+| `400 invalid JSON: json: unknown field "thinking"` при **продолжении старой сессии** в Cline | клиент вернул в истории `message.thinking` — рассуждения, которые сам же получил от нас (Ollama-поле, балансер его отдаёт штатно); до 0.7.67 cppworker отвергал поле строгим декодером | обновить образ cppworker (≥ 0.7.67): `thinking` и `reasoning_content` принимаются и в промпт не идут. Тот же класс — `400 unknown field "reasoning_content"` на `/v1/chat/completions` |
 | Правка параметров модели из WebUI: 401 «invalid or missing API token» | балансер не знает токен cppworker (или у бэкенда пустой `cppWorkerApiToken`) | см. п. 5.1; проверить шапку агента (`API token`) и балансера |
 | Токен изменён в `config/config.json`, но 401 остался | список токенов переопределён `LB_API_TOKEN` | см. п. 5.1: менять надо `deployments/.env` |
 | Бэкенд `unhealthy` | балансер не может достучаться до `host:18092` | проверить `BACKEND_HOST`/сеть/файрвол (сценарий 2) |
@@ -1641,6 +1642,28 @@ curl -s -D - -o /dev/null ... http://127.0.0.1:18080/api/chat | grep -i x-backen
 | `maxConcurrentRequests=10` при `AGENT_MAX_CONCURRENT_REQUESTS=1` | унаследованное значение в `state.json` + старый образ балансера | см. п. 7.1 |
 | Сомнение «применилась ли правка / какая сборка в контейнере» | неизвестна версия образа | см. п. 5.2: версия печатается в шапке логов |
 | Два бэкенда на один endpoint | включена Go-регистрация cppworker и agent | `CPPWORKER_REGISTER_DISABLE=true` |
+| `400 invalid JSON: json: unknown field "thinking"` при **продолжении старой сессии** в Cline | клиент вернул в истории `message.thinking` — рассуждения, которые сам же получил от нас (Ollama-поле, балансер его отдаёт штатно); до 0.7.67 cppworker отвергал поле строгим декодером | обновить образ cppworker (≥ 0.7.67): `thinking` и `reasoning_content` принимаются и в промпт не идут. Тот же класс — `400 unknown field "reasoning_content"` на `/v1/chat/completions` |
+| «Сохранил настройки бэкенда, а модель грузится не с теми параметрами» | значения формы — слой **env контейнера**, он слабее профиля модели и «настроек по умолчанию для новых моделей»; у модели с `ignoreDefaults` слой по умолчанию не применяется вовсе | смотреть во вкладке настроек бэкенда блоки «Что получат новые модели» и «Модели в папке» (там указан ИСТОЧНИК каждого значения) и кнопку «Сделать приоритетом для новых моделей»; для конкретной модели — её профиль + «Применить (reload)» |
+| Галочка «размышления» не действует на новую загрузку | у reasoning два поля: `enableReasoning` (политика промпта) и `defaultEnableReasoning` (что наследует загрузка); форма писала только первое | с 0.7.68 форма пишет оба, а `config/update` их принимает. Для конкретной модели — поле «Размышления» в её профиле |
+
+**Где хранятся правки настроек из WebUI.** Долговременные слои: `defaultModelProfile` и профили
+моделей — в `config/config.json` балансера (переживают всё). Env-переменные `CPPWORKER_*` в
+`deployments/.env` — источник истины для контейнера и **приоритетнее** файла
+`config/cppworker-defaults.json` (`cppbackend.LoadConfigFromEnv`: env > файл). При этом
+`docker-compose.stack.yml` передаёт часть переменных **всегда**, с дефолтом:
+`CPPWORKER_ENABLE_REASONING=${CPPWORKER_ENABLE_REASONING:-false}` и то же для
+`CPPWORKER_DEFAULT_ENABLE_REASONING`. Поэтому правка такой настройки в форме бэкенда действует до
+первого перезапуска контейнера, а дальше снова выигрывает значение из `.env`. Хотите долговременно —
+задайте переменную в `deployments/.env` (или правьте профиль модели / «настройки по умолчанию»).
+Сам файл `cppworker-defaults.json` пишется в writable-слой контейнера: переживает `docker restart`,
+но не пересоздание контейнера. Если правки формы должны переживать и обновление образа, смонтируйте
+каталог томом:
+
+```yaml
+  cppworker-gpu:
+    volumes:
+      - ./cppworker-config:/app/config   # cppworker-defaults.json переживёт up -d --build
+```
 
 ---
 

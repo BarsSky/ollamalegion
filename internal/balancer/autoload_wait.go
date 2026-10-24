@@ -414,6 +414,14 @@ func (p *Proxy) waitForBackendNCtx(
 		if ctx != nil && ctx.Err() != nil {
 			return false
 		}
+		// R119 (2026-10-15): ожидание модели, которой НЕТ, бессмысленно — выходим
+		// сразу, а не выжигаем весь бюджет (живой замер: запрос к llama-3-8b
+		// висел на балансере больше 4 минут, потому что фоновая загрузка уже
+		// получила терминальный 404, а этот цикл продолжал ждать появления
+		// модели). Запись ставит executeAsyncReload при 404 от cppworker.
+		if _, _, missing := p.modelMissingFor(backendID, modelName); missing {
+			return false
+		}
 		if nctx, loaded := p.fetchBackendModelNCtx(ctx, client, baseURL, modelName); loaded && nctx >= want {
 			return true
 		}
@@ -557,6 +565,36 @@ func RequestSessionKey(r *http.Request, body []byte) string {
 				if v = strings.TrimSpace(v); v != "" {
 					return "chat:" + v
 				}
+			}
+		}
+	}
+	// R118.9 (2026-10-14): различитель экземпляра клиента — начало разговора.
+	// Ставим его ПОСЛЕ явных идентификаторов (пользователь/сессия/chat) и ПЕРЕД
+	// X-Request-Id: в отличие от id запроса он стабилен внутри задачи, поэтому
+	// admission-очередь видит два экземпляра Cline с одной машины как две разные
+	// сессии, не теряя справедливость между ходами одной задачи. С id запроса
+	// каждый ход получал бы НОВЫЙ ключ, то есть кошелёк справедливости не работал
+	// бы вовсе (живой случай: одна задача, десять ходов, десять «сессий»).
+	if conv := conversationFingerprint(body); conv != "" {
+		return "conv:" + conv
+	}
+	// R118 (2026-10-14): X-Request-Id — идентификатор ЗАПРОСА, а не сессии, и
+	// поэтому берётся ПОСЛЕДНИМ рубежом (после пользователя, сессии, chat_id и
+	// начала разговора): устойчивый идентификатор всегда важнее.
+	//
+	// Зачем вообще. Клиент, который не называет ни пользователя, ни сессию, ни
+	// разговор, но даёт уникальный id запроса, получает различимые строки в
+	// очереди вместо одной слипшейся. Префикс `request:` виден в UI/статистике, так
+	// что это не путается с настоящей сессией.
+	//
+	// На липкость к бэкенду (sessionMgr) это не влияет: там ключ считает
+	// getSessionIDWithModel (client.go), а RequestSessionKey вызывается только как
+	// fallback (proxy.go: sessionKey = sessionID, иначе RequestSessionKey) и в
+	// llama.cpp admission-пути.
+	if r != nil {
+		for _, h := range []string{"X-Request-Id", "X-Request-ID"} {
+			if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+				return "request:" + v
 			}
 		}
 	}

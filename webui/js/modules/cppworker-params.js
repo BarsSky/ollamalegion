@@ -10,11 +10,11 @@
  *  - POST   /api/v1/cppworker/model-profiles/{name}/apply — save + reload
  *
  * UI:
- *  - список профилей с метаданными (modelName, contextLength, notes, timeouts)
+ *  - список профилей с метаданными (modelName, contextLength, notes, reasoning)
  *  - wizard с пресетами 4K/8K/16K/32K/64K/128K/256K/Custom
  *  - slider 256..262144 (для gemma-4 — 256K)
  *  - advanced секция: flash_attn / numa / use_mmap (флажки с 3 состояниями inherit/on/off)
- *  - per-model timeouts (collapsed по умолчанию)
+ *  - per-model timeouts УБРАНЫ из формы (R106c): работа идёт по состоянию
  *  - reload progress modal с шагами и результатом по бэкендам
  *  - refresh button рядом со списком
  *
@@ -47,47 +47,13 @@
     const CTX_MIN = 256;
     const CTX_MAX = 262144; // 256K — для gemma-4
 
-    // Allowed timeout range (сек). 0 = использовать глобальное значение.
-    const TIMEOUT_MIN = 0;
-    const TIMEOUT_MAX = 24 * 3600; // 24ч максимум
-
-    // Round 32 #11 (2026-08-10): JS port of balancer's EstimateStreamTimeoutFromModelSize
-    // / EstimateIdleTimeoutFromModelSize (internal/balancer/model_latency_tracker.go,
-    // Round 32 #9 + #11 bumps). Used for placeholder hints in the wizard.
-    // ДЕРЖИТЕ В СИНХРОНЕ с Go-кодом — при изменении tier'ов в Go менять и здесь.
-    function estimateStreamTimeoutGB(gb) {
-        if (gb <= 0) return 0;
-        if (gb < 2.0) return 120;
-        if (gb < 5.0) return 1800;  // reasoning-capable 4-8B (gemma-4, Qwen3-8B), 30 min
-        if (gb < 12.0) return 2400; // reasoning 8-20B, 40 min
-        if (gb < 24.0) return 3600; // 20-40B, 60 min
-        return 5400;                 // >40B, 90 min
-    }
-    function estimateIdleTimeoutGB(gb) {
-        if (gb <= 0) return 0;
-        if (gb < 2.0) return 120;
-        if (gb < 5.0) return 600;   // reasoning 4-8B, 10 min pause
-        if (gb < 12.0) return 1200; // 8-20B, 20 min
-        if (gb < 24.0) return 1800; // 20-40B, 30 min
-        return 2400;                 // >40B, 40 min
-    }
-
-    // Достаём размер модели из window.CPPWORKER_LOADED_MODELS (если уже загружена)
-    // или возвращаем 0 — fallback на "typical 2-5GB" в openWizard.
-    function getModelSizeBytesForName(modelName) {
-        if (!modelName) return 0;
-        try {
-            const models = (window.CPPWORKER_LOADED_MODELS && window.CPPWORKER_LOADED_MODELS.models) || [];
-            for (const m of models) {
-                if (m.name === modelName || (m.path && m.path.indexOf(modelName) >= 0)) {
-                    return m.sizeBytes || m.size || 0;
-                }
-            }
-        } catch (e) {
-            // ignore — fallback к typical
-        }
-        return 0;
-    }
+    // R106c (2026-10-12): ЗДЕСЬ БЫЛИ функции estimateStreamTimeoutGB /
+    // estimateIdleTimeoutGB / getModelSizeBytesForName и константы TIMEOUT_MIN/MAX.
+    // Они существовали только для подсказок и автозаполнения per-model ТАЙМАУТОВ,
+    // а сами поля таймаутов убраны из формы по договорённости с оператором:
+    // работа идёт ПО СОСТОЯНИЮ (загрузка → готово → ошибка), а не по «эфимерному
+    // времени». Таймаут ничего не гарантирует, зато молча обрывает длинную
+    // генерацию; при ошибке UI реагирует сразу, а не ждёт N секунд.
 
     // Max gpu layers (верхний предел для slider/number).
     // -2 = AUTO (Round 23, 2026-08-04): cppworker auto-рассчитывает на основе
@@ -129,19 +95,39 @@
 
     // ----- Настройки по умолчанию для новых моделей -----
 
+    // R106b (2026-10-12): блок ищется и по id (страница «Настройки»), и по
+    // data-role. ЗАЧЕМ: те же блоки нужны на странице GGUF во вкладке настроек
+    // бэкенда (там оператор и настраивает загрузку). Дублировать id нельзя —
+    // document.getElementById вернул бы первый (скрытый) и блок молча не
+    // отрисовался бы; поэтому второе размещение помечается data-role.
+    function findTargets(id, role) {
+        const out = [];
+        const byId = document.getElementById(id);
+        if (byId) out.push(byId);
+        if (document.querySelectorAll) {
+            const list = document.querySelectorAll('[data-role="' + role + '"]') || [];
+            for (let i = 0; i < list.length; i++) {
+                if (list[i] && out.indexOf(list[i]) === -1) out.push(list[i]);
+            }
+        }
+        return out;
+    }
+
     async function loadAndRenderDefaults() {
-        const el = document.getElementById('cppLoadDefaults');
-        if (!el) return;
+        const targets = findTargets('cppLoadDefaults', 'cpp-load-defaults');
+        if (targets.length === 0) return;
         if (!LOAD_DEFAULTS) {
-            el.innerHTML = '';
+            targets.forEach(function (t) { t.innerHTML = ''; });
             return;
         }
-        el.innerHTML = '<div class="loading">' + escapeHtml(I18N.t('common.loading', 'Загрузка...')) + '</div>';
+        const loading = '<div class="loading">' + escapeHtml(I18N.t('common.loading', 'Загрузка...')) + '</div>';
+        targets.forEach(function (t) { t.innerHTML = loading; });
         try {
             const data = await LOAD_DEFAULTS.get();
-            renderLoadDefaults(data || {}, el);
+            targets.forEach(function (t) { renderLoadDefaults(data || {}, t); });
         } catch (e) {
-            el.innerHTML = '<div class="cpp-profiles-empty">' + escapeHtml(e.message || String(e)) + '</div>';
+            const msg = '<div class="cpp-profiles-empty">' + escapeHtml(e.message || String(e)) + '</div>';
+            targets.forEach(function (t) { t.innerHTML = msg; });
         }
     }
 
@@ -173,7 +159,14 @@
             if (v === 0) return 'off';
             if (v === 1) return 'on';
         }
-        if (key === 'useMmap' || key === 'enableReasoning') return v ? 'on' : 'off';
+        // R106b (2026-10-12): для reasoning — слова, а не «on/off»: это то
+        // значение, которое оператор искал в списке и не находил («галочка не
+        // применяется»). Для mmap оставляем прежний компактный on/off.
+        if (key === 'enableReasoning') {
+            return v ? I18N.t('settings.load_defaults.reasoning_on', 'включено')
+                     : I18N.t('settings.load_defaults.reasoning_off', 'выключено');
+        }
+        if (key === 'useMmap') return v ? 'on' : 'off';
         return String(v);
     }
 
@@ -201,10 +194,23 @@
     }
 
     function renderLoadDefaults(data, el) {
-        const eff = data.effective || {};
-        const src = data.source || {};
+        let eff = data.effective || {};
+        let src = data.source || {};
         const cw = data.cppworker || {};
         const prof = data.defaultModelProfile || null;
+
+        // R106b (2026-10-12): страховка по reasoning. Сервер (до обновления
+        // 0.7.67) строил effective.enableReasoning ТОЛЬКО из env контейнера и не
+        // читал одноимённое поле профиля. Тогда сразу после сохранения «включено»
+        // список показывал «off (env контейнера)» — оператор справедливо считал,
+        // что галочка не применяется (живая жалоба). Значение самого профиля
+        // приходит в ответе всегда, поэтому показываем его как источник
+        // «настройки по умолчанию», а не врём про env.
+        if (prof && typeof prof.enableReasoning === 'boolean' && src.enableReasoning !== 'defaultProfile') {
+            eff = Object.assign({}, eff, { enableReasoning: prof.enableReasoning });
+            src = Object.assign({}, src, { enableReasoning: 'defaultProfile' });
+        }
+
         const rows = DEFAULTS_FIELDS.map(([key, label]) => {
             return '<tr>' +
                 '<td>' + escapeHtml(label) + '</td>' +
@@ -241,17 +247,23 @@
                 </div>
             </div>
             <table class="cpp-defaults-table"><tbody>${rows}</tbody></table>
-            <div id="cppDefaultsForm"></div>
+            <div class="cpp-defaults-form-host" data-role="cpp-defaults-form"></div>
         `;
 
         const btn = el.querySelector('#cppDefaultsEditBtn');
-        if (btn) btn.addEventListener('click', () => openDefaultsForm(data));
+        if (btn) btn.addEventListener('click', () => openDefaultsForm(data, el));
     }
 
     // openDefaultsForm — компактная форма правки конфига инициализации.
     // Пустое поле = «не задавать» (тогда работает env cppworker).
-    function openDefaultsForm(data) {
-        const box = document.getElementById('cppDefaultsForm');
+    //
+    // R106b: hostEl — контейнер блока (у блока может быть несколько размещений:
+    // страница «Настройки» и вкладка настроек бэкенда на странице GGUF).
+    // Форма ищется ВНУТРИ своего контейнера, поэтому id не конфликтуют.
+    function openDefaultsForm(data, hostEl) {
+        const box = hostEl
+            ? hostEl.querySelector('[data-role="cpp-defaults-form"]')
+            : document.getElementById('cppDefaultsForm');
         if (!box) return;
         const prof = data.defaultModelProfile || {};
         const eff = data.effective || {};
@@ -259,6 +271,31 @@
         const field = (id, label, value, attrs) =>
             '<label class="cpp-defaults-field"><span>' + escapeHtml(label) + '</span>' +
             '<input class="form-control" id="' + id + '" type="number" value="' + escapeHtml(num(value)) + '" ' + (attrs || '') + '></label>';
+        // R106b (2026-10-12): reasoning — единственное поле настроек, которое
+        // имеет три состояния, а не число: «не задавать» / «включено» /
+        // «выключено». Раньше его в форме не было ВООБЩЕ, поэтому оператор не мог
+        // включить размышления для новых моделей (жалоба «не дало поменять
+        // параметры размышления с выключенного на включенный»). Значение читаем из
+        // профиля (там *bool), а не из effective — иначе «не задавать» нельзя
+        // было бы отличить от «выключено».
+        const reasoningState = (prof.enableReasoning === true) ? 'on'
+            : (prof.enableReasoning === false ? 'off' : '');
+        const reasoningSelect =
+            '<label class="cpp-defaults-field"><span>' +
+                escapeHtml(I18N.t('settings.load_defaults.reasoning', 'размышления (reasoning/thinking)')) +
+            '</span>' +
+            '<select class="form-control" id="cppDefReasoning">' +
+                '<option value=""' + (reasoningState === '' ? ' selected' : '') + '>' +
+                    escapeHtml(I18N.t('settings.load_defaults.reasoning_inherit', '— не задавать (решит env контейнера) —')) + '</option>' +
+                '<option value="on"' + (reasoningState === 'on' ? ' selected' : '') + '>' +
+                    escapeHtml(I18N.t('settings.load_defaults.reasoning_on', 'включено')) + '</option>' +
+                '<option value="off"' + (reasoningState === 'off' ? ' selected' : '') + '>' +
+                    escapeHtml(I18N.t('settings.load_defaults.reasoning_off', 'выключено')) + '</option>' +
+            '</select>' +
+            '<span class="cpp-defaults-hint">' +
+                escapeHtml(I18N.t('settings.load_defaults.reasoning_help',
+                    'Применяется к новым моделям БЕЗ своего профиля. У модели со своим профилем значение берётся из него (секция «Профили моделей»), поэтому для конкретной модели правьте её профиль.')) +
+            '</span></label>';
 
         box.innerHTML = `
             <div class="cpp-defaults-form">
@@ -277,6 +314,7 @@
                         </select>
                     </label>
                     ${field('cppDefFlash', 'flash attention (-1 auto, 0 off, 1 on)', prof.flashAttn === true ? 1 : (prof.flashAttn === false ? 0 : ''), 'min="-1" max="1"')}
+                    ${reasoningSelect}
                 </div>
                 <div class="cpp-profiles-hint">${escapeHtml(I18N.t('settings.load_defaults.form_hint',
                     'Пустое поле = не задавать (тогда значение берётся из env контейнера cppworker). Сохранение пишет значения в конфиг балансера.'))}</div>
@@ -316,6 +354,13 @@
             if (kv) body.kvCacheType = kv;
             const fa = (box.querySelector('#cppDefFlash').value || '').trim();
             if (fa !== '') body.flashAttn = (parseInt(fa, 10) === 1);
+            // R106b (2026-10-12): reasoning — три состояния. Пустая строка =
+            // «не задавать» (ключ не отправляем, сервер оставит прежнее значение).
+            // «выключено» отправляем ЯВНЫМ false: сервер различает «не прислали» и
+            // «прислали false» (profilePresence), иначе выключить было бы нельзя.
+            const rsn = (box.querySelector('#cppDefReasoning') || {}).value || '';
+            if (rsn === 'on') body.enableReasoning = true;
+            else if (rsn === 'off') body.enableReasoning = false;
             const ignoreEl = box.querySelector('#cppDefIgnore');
             if (ignoreEl) body.ignoreDefaults = !!ignoreEl.checked;
 
@@ -339,18 +384,20 @@
     // ----- Модели в папке -----
 
     async function loadAndRenderCatalog() {
-        const el = document.getElementById('cppModelCatalog');
-        if (!el) return;
+        const targets = findTargets('cppModelCatalog', 'cpp-model-catalog');
+        if (targets.length === 0) return;
         if (!LOAD_DEFAULTS || !LOAD_DEFAULTS.catalog) {
-            el.innerHTML = '';
+            targets.forEach(function (t) { t.innerHTML = ''; });
             return;
         }
-        el.innerHTML = '<div class="loading">' + escapeHtml(I18N.t('common.loading', 'Загрузка...')) + '</div>';
+        const loading = '<div class="loading">' + escapeHtml(I18N.t('common.loading', 'Загрузка...')) + '</div>';
+        targets.forEach(function (t) { t.innerHTML = loading; });
         try {
             const data = await LOAD_DEFAULTS.catalog();
-            renderModelCatalog(data || {}, el);
+            targets.forEach(function (t) { renderModelCatalog(data || {}, t); });
         } catch (e) {
-            el.innerHTML = '<div class="cpp-profiles-empty">' + escapeHtml(e.message || String(e)) + '</div>';
+            const msg = '<div class="cpp-profiles-empty">' + escapeHtml(e.message || String(e)) + '</div>';
+            targets.forEach(function (t) { t.innerHTML = msg; });
         }
     }
 
@@ -376,7 +423,13 @@
                 : '<span class="cpp-source-badge is-none">' + escapeHtml(I18N.t('settings.catalog.not_loaded', 'не загружена')) + '</span>';
             const profBadge = f.hasProfile
                 ? (f.profileIgnored
-                    ? '<span class="cpp-source-badge is-env">' + escapeHtml(I18N.t('settings.catalog.profile_ignored', 'профиль отключён (ignoreDefaults)')) + '</span>'
+                    // R106b (2026-10-12): смысл флага уточнён. Профиль модели
+                    // применяется ВСЕГДА (это настройки оператора); ignoreDefaults
+                    // означает лишь «для этой модели не подставлять общие
+                    // настройки по умолчанию». Прежняя подпись «профиль отключён»
+                    // вводила в заблуждение — оператор думал, что его настройки не
+                    // действуют, хотя грузится именно профиль.
+                    ? '<span class="cpp-source-badge is-default">' + escapeHtml(I18N.t('settings.catalog.profile_ignored', 'свой профиль (общие настройки для неё отключены)')) + '</span>'
                     : '<span class="cpp-source-badge is-default">' + escapeHtml(I18N.t('settings.catalog.has_profile', 'свой профиль')) + '</span>')
                 : '<span class="cpp-source-badge is-env">' + escapeHtml(I18N.t('settings.catalog.no_profile', 'по умолчанию')) + '</span>';
             const perSlot = eff.contextPerSlot || 0;
@@ -384,7 +437,14 @@
                 'n_ctx=' + fmtValue('contextLength', eff.contextLength) + ' суммарно (' + (src.contextLength || '—') + ')',
                 perSlot ? 'на клиента=' + fmtValue('contextLength', perSlot) : null,
                 eff.parallel ? 'parallel=' + eff.parallel + ' (' + (src.parallel || '—') + ')' : 'parallel=1',
-                eff.kvCacheType ? 'kv=' + eff.kvCacheType + ' (' + (src.kvCacheType || '—') + ')' : 'kv=f16'
+                // R213 (2026-10-21): «kv=f16» при отсутствии значения было
+                // догадкой, напечатанной как факт (та же жалоба оператора, что и
+                // в карточке модели: «в настройках q4_0, а тут f16»). Если
+                // эффективное значение не посчитано — показываем прочерк.
+                eff.kvCacheType ? 'kv=' + eff.kvCacheType + ' (' + (src.kvCacheType || '—') + ')' : 'kv=—',
+                // R106b: reasoning — то значение, которое оператор искал и не
+                // находил в карточке («модель грузится не с теми параметрами»).
+                'reasoning=' + fmtValue('enableReasoning', eff.enableReasoning === true) + ' (' + (src.enableReasoning || '—') + ')'
             ].filter(Boolean).join(' · ');
             return `
                 <div class="cpp-profile-item" data-file="${escapeHtml(f.name)}">
@@ -493,13 +553,12 @@
         // Session 16 (2026-06-27): Parallel + KVCacheType (advanced fields).
         if (profile.parallel && profile.parallel > 0) meta.push('parallel=' + profile.parallel);
         if (profile.kvCacheType && profile.kvCacheType !== '') meta.push('kv=' + profile.kvCacheType);
-        // Per-model timeouts (только non-zero)
-        const timeouts = [];
-        if (profile.streamingTimeoutSec > 0) timeouts.push('stream=' + profile.streamingTimeoutSec + 's');
-        if (profile.streamingIdleTimeoutSec > 0) timeouts.push('idle=' + profile.streamingIdleTimeoutSec + 's');
-        if (profile.requestTimeoutSec > 0) timeouts.push('req=' + profile.requestTimeoutSec + 's');
-        if (profile.firstByteTimeoutSec > 0) timeouts.push('fb=' + profile.firstByteTimeoutSec + 's');
-        if (timeouts.length > 0) meta.push('⏱ ' + timeouts.join(' · '));
+        // R106c (2026-10-12): per-model timeouts больше не показываем — из формы
+        // они убраны (работа идёт по состоянию). Значения, оставшиеся в старых
+        // профилях, сервер продолжает применять, но в UI они не выставляются.
+        if (profile.enableReasoning !== null && profile.enableReasoning !== undefined) {
+            meta.push('reasoning=' + (profile.enableReasoning ? 'on' : 'off'));
+        }
         const notes = profile.notes ? ' • ' + escapeHtml(profile.notes) : '';
         return `
             <div class="cpp-profile-item" data-name="${escapeHtml(name)}">
@@ -564,7 +623,9 @@
     /**
      * Преобразование профиля из API в payload для UI и обратно.
      * API контракт: {contextLength, batchSize, numGpuLayers, flashAttn?, numa?, useMmap?, notes?,
-     *                streamingTimeoutSec?, streamingIdleTimeoutSec?, requestTimeoutSec?, firstByteTimeoutSec?}.
+     *                parallel?, kvCacheType?, enableReasoning?}.
+     * flashAttn/numa/useMmap/enableReasoning могут быть null (наследовать) или boolean.
+     * R106c: per-model таймауты из UI не отправляются (поля убраны).
      * flashAttn/numa/useMmap могут быть null (наследовать) или boolean.
      */
     function profileToWizardState(profile) {
@@ -580,11 +641,26 @@
             // kvCacheType — "f16"/"q8_0"/"q4_0", "" = наследовать default (F16).
             parallel: (profile.parallel === undefined || profile.parallel === null) ? 0 : profile.parallel,
             kvCacheType: profile.kvCacheType || '',
+            // R106b (2026-10-12): reasoning/thinking ДЛЯ ЭТОЙ МОДЕЛИ.
+            // Три состояния: '' = наследовать (настройки по умолчанию → env
+            // контейнера), 'on' = включено, 'off' = выключено.
+            //
+            // ПОЧЕМУ ПОЯВИЛОСЬ: поля не было ни в одной форме WebUI — оператор
+            // не мог ни включить размышления конкретной модели, ни выключить их
+            // (жалоба «не дало поменять параметры размышления с выключенного на
+            // включенный»). Поле профиля (types.LlamaCppModelProfile.EnableReasoning)
+            // и presence-мерж на сервере поддерживают его с R83/v62 — не хватало
+            // только органа управления.
+            enableReasoning: (profile.enableReasoning === null || profile.enableReasoning === undefined)
+                ? '' : (profile.enableReasoning ? 'on' : 'off'),
             notes: profile.notes || '',
-            streamingTimeoutSec: profile.streamingTimeoutSec || 0,
-            streamingIdleTimeoutSec: profile.streamingIdleTimeoutSec || 0,
-            requestTimeoutSec: profile.requestTimeoutSec || 0,
-            firstByteTimeoutSec: profile.firstByteTimeoutSec || 0,
+            // R106c (2026-10-12): per-model ТАЙМАУТЫ УБРАНЫ из UI.
+            //
+            // Договорённость оператора: работа идёт ПО СОСТОЯНИЮ (загрузка/ошибка/
+            // готовность), а не по «эфимерному времени»: таймаут ничего не
+            // гарантирует, зато молча обрывает длинную генерацию. Поля больше не
+            // показываются и не отправляются; серверные значения (0 = авто/
+            // глобальные) остаются как были.
             // R67a: потолок n_ctx. Раньше эти поля не переносились и не
             // отправлялись — сохранение профиля из UI теряло авто-режим, и
             // профиль превращался в жёсткий потолок contextLength (32768).
@@ -593,10 +669,7 @@
             // R83 (2026-09-29): primary — «настройки модели зафиксированы
             // администратором, клиентский запрос их не меняет». См.
             // internal/balancer/primary_model_policy.go.
-            primary: !!profile.primary,
-            // Round 32 #10 (2026-08-10): reasoning mode toggle. UI-only — не
-            // отправляется в API. На save конвертируется в ×3 таймауты.
-            reasoningMode: false
+            primary: !!profile.primary
         };
     }
 
@@ -618,11 +691,13 @@
         // Оба поля опциональные (omit = inherit). Если >0 / != "" — пробрасываем в API.
         if (state.parallel > 0) body.parallel = state.parallel;
         if (state.kvCacheType && state.kvCacheType !== '') body.kvCacheType = state.kvCacheType;
-        // Timeouts (только non-zero)
-        if (state.streamingTimeoutSec > 0) body.streamingTimeoutSec = state.streamingTimeoutSec;
-        if (state.streamingIdleTimeoutSec > 0) body.streamingIdleTimeoutSec = state.streamingIdleTimeoutSec;
-        if (state.requestTimeoutSec > 0) body.requestTimeoutSec = state.requestTimeoutSec;
-        if (state.firstByteTimeoutSec > 0) body.firstByteTimeoutSec = state.firstByteTimeoutSec;
+        // R106b (2026-10-12): reasoning — 3 состояния. '' = ключ НЕ отправляем
+        // (тогда сервер оставляет прежнее значение: мерж-семантика профиля).
+        // Сервер различает «не прислали» и «прислали false» через profilePresence,
+        // поэтому явное «выключено» доезжает и не подменяется наследованием.
+        if (state.enableReasoning === 'on') body.enableReasoning = true;
+        else if (state.enableReasoning === 'off') body.enableReasoning = false;
+        // R106c: таймауты больше не отправляются из UI (см. комментарий выше).
         // R67a: auto/max отправляем ВСЕГДА (в т.ч. false/0) — сервер применяет их
         // по факту передачи, поэтому явное «выключить авто» и «снять потолок»
         // работают, а частичные обновления больше не обнуляют остальные поля.
@@ -638,30 +713,10 @@
         const isNew = !profile;
         const state = profileToWizardState(profile || {});
 
-        // Round 32 #10 (2026-08-10): heuristic-based placeholder text для таймаутов.
-        // JS port of EstimateStreamTimeoutFromModelSize / EstimateIdleTimeoutFromModelSize
-        // (см. internal/balancer/model_latency_tracker.go — Round 32 #9 bumps).
-        // Если modelName есть — пробуем достать реальный size из ранее загруженных
-        // моделей. Иначе используем "typical 2-5GB" (наиболее частый случай).
-        const ggufSizeBytes = getModelSizeBytesForName(modelName);
-        const ggufSizeGB = ggufSizeBytes > 0 ? ggufSizeBytes / (1024 * 1024 * 1024) : 3.5;  // default 3.5GB ≈ 2-5GB tier
-        const reasoningMult = state.reasoningMode ? 3 : 1;
-        const streamAuto = estimateStreamTimeoutGB(ggufSizeGB) * reasoningMult;
-        const idleAuto = estimateIdleTimeoutGB(ggufSizeGB) * reasoningMult;
-        const streamingTimeoutPlaceholder = state.reasoningMode
-            ? '0 = auto (5400s × 3 reasoning) или задайте явно'
-            : '0 = auto (heuristic 1800s для 2-5GB, stats)';
-        const streamingIdleTimeoutPlaceholder = state.reasoningMode
-            ? '0 = auto (1800s × 3 reasoning) или задайте явно'
-            : '0 = auto (heuristic 600s для 2-5GB, stats)';
-        const requestTimeoutPlaceholder = '0 = global (default 600s)';
-        // R66c (2026-09-22): раньше здесь было '0 = global (default 120s)' — это
-        // неверно и вводило в заблуждение. При 0 действует 3-tier резолвер:
-        // профиль → измеренная статистика → эвристика по размеру GGUF (≥300s,
-        // 900s при неизвестном размере, до 2400s для >24GB). Глобальный
-        // firstByteTimeout из Settings — только база, эвристика его перекрывает,
-        // поэтому КОРОТКИЙ таймаут для модели задаётся только здесь, в профиле.
-        const firstByteTimeoutPlaceholder = '0 = авто: профиль → статистика → эвристика по размеру GGUF (300s+). Задайте явно, чтобы ограничить';
+        // R106c (2026-10-12): расчёты «эвристических таймаутов» удалены вместе с
+        // полями: UI больше не предлагает выставлять время на работу модели.
+        // Резолвер таймаутов на сервере остался (0 = авто), но оператор им не
+        // управляет из формы: состояние важнее часов.
 
         const overlay = document.createElement('div');
         overlay.className = 'mode-wizard-overlay cpp-profile-wizard';
@@ -790,36 +845,22 @@
                             <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.kv_cache_type_help', "Тип квантизации KV-cache. q8_0 экономит ~50% VRAM с минимальной потерей качества. q4_0 экономит ~75%, но заметная потеря на длинных контекстах. '' = default (F16)."))}</div>
                         </div>
                         <div class="wizard-field">
-                            <label>${escapeHtml(I18N.t('settings.profiles.timeouts_section', 'Per-model таймауты (сек, 0 = глобальные)'))}</label>
-                            <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.timeout_help', '0 = auto (3-tier resolver: per-model profile → stats из истории → heuristic по размеру GGUF → global config). После 1-й успешной генерации автоподстройка включится и заменит heuristic. > 0 переопределяет только для этой модели.'))}</div>
+                            <label>${escapeHtml(I18N.t('settings.profiles.enable_reasoning', 'Размышления (reasoning/thinking)'))}</label>
+                            <select id="wizEnableReasoning">
+                                <option value="" ${state.enableReasoning === '' ? 'selected' : ''}>— наследовать (настройки по умолчанию → env) —</option>
+                                <option value="on" ${state.enableReasoning === 'on' ? 'selected' : ''}>включено</option>
+                                <option value="off" ${state.enableReasoning === 'off' ? 'selected' : ''}>выключено</option>
+                            </select>
+                            <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.enable_reasoning_help', 'Включает soft+native thinking для этой модели (gemma-4, deepseek-r1, qwen3-thinking). «Наследовать» = взять из «настроек по умолчанию для новых моделей», а если и там не задано — из env контейнера cppworker. Значение применяется при следующей загрузке и по кнопке «Применить (reload)».'))}</div>
                         </div>
-                        <div class="wizard-field">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="wizReasoningMode" ${state.reasoningMode ? 'checked' : ''}>
-                                <span>${escapeHtml(I18N.t('settings.profiles.reasoning_mode', 'Reasoning mode (×3 таймаут для thinking моделей)'))}</span>
-                            </label>
-                            <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.reasoning_mode_help', 'Включите для моделей с reasoning (gemma-4, Qwen3-Instruct с thinking): эвристический таймаут автоматически умножается на 3 (например, 900s → 2700s). Не трогайте поля ниже — они заполнятся автоматически. Можно потом переопределить вручную.'))}</div>
-                        </div>
-                        <div class="wizard-field wizard-field-row">
-                            <div class="wizard-field-col">
-                                <label>${escapeHtml(I18N.t('settings.profiles.streaming_timeout', 'Общий таймаут streaming'))}</label>
-                                <input type="number" id="wizStreamingTimeout" value="${state.streamingTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="${streamingTimeoutPlaceholder}">
-                            </div>
-                            <div class="wizard-field-col">
-                                <label>${escapeHtml(I18N.t('settings.profiles.streaming_idle_timeout', 'Таймаут простоя streaming'))}</label>
-                                <input type="number" id="wizStreamingIdleTimeout" value="${state.streamingIdleTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="${streamingIdleTimeoutPlaceholder}">
-                            </div>
-                        </div>
-                        <div class="wizard-field wizard-field-row">
-                            <div class="wizard-field-col">
-                                <label>${escapeHtml(I18N.t('settings.profiles.request_timeout', 'Таймаут non-streaming запроса'))}</label>
-                                <input type="number" id="wizRequestTimeout" value="${state.requestTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="${requestTimeoutPlaceholder}">
-                            </div>
-                            <div class="wizard-field-col">
-                                <label>${escapeHtml(I18N.t('settings.profiles.first_byte_timeout', 'Таймаут первого байта'))}</label>
-                                <input type="number" id="wizFirstByteTimeout" value="${state.firstByteTimeoutSec}" min="${TIMEOUT_MIN}" max="${TIMEOUT_MAX}" placeholder="${firstByteTimeoutPlaceholder}">
-                            </div>
-                        </div>
+                        <!-- R106c (2026-10-12): per-model ТАЙМАУТЫ УБРАНЫ.
+                             Договорённость оператора: работа идёт ПО СОСТОЯНИЮ
+                             (загрузка/ошибка/готовность), а не по «эфимерному
+                             времени» — таймаут ничего не гарантирует, зато молча
+                             обрывает длинную генерацию. Вместе с полями убран и
+                             переключатель «Reasoning mode (×3 таймаут)»: он
+                             существовал только ради этих множителей.
+                             Серверные значения (0 = авто) остаются как были. -->
                     </div>
                 </div>
                 <div class="wizard-footer">
@@ -885,51 +926,11 @@
         overlay.querySelector('#wizCancel').addEventListener('click', closeWizard);
         overlay.querySelector('#wizSave').addEventListener('click', () => onWizardSave(overlay, isNew));
 
-        // Round 32 #10 (2026-08-10): Reasoning mode toggle handler.
-        // При включении — обновляем placeholder'ы и автоматически заполняем поля
-        // значениями ×3 от heuristic (если они пустые). Пользователь может потом
-        // переопределить вручную. Это UX-улучшение для reasoning моделей, которые
-        // генерят в 3-5x дольше (gemma-4, Qwen3-Instruct с thinking).
-        const reasoningToggle = overlay.querySelector('#wizReasoningMode');
-        const streamInput = overlay.querySelector('#wizStreamingTimeout');
-        const idleInput = overlay.querySelector('#wizStreamingIdleTimeout');
-        function updateReasoningPlaceholders() {
-            const isReasoning = reasoningToggle.checked;
-            const mult = isReasoning ? 3 : 1;
-            const curGb = getModelSizeBytesForName(modelNameInput.value) / (1024*1024*1024) || 3.5;
-            const sAuto = estimateStreamTimeoutGB(curGb) * mult;
-            const iAuto = estimateIdleTimeoutGB(curGb) * mult;
-            streamInput.placeholder = isReasoning
-                ? '0 = auto (' + sAuto + 's = heuristic × 3 reasoning) или задайте явно'
-                : '0 = auto (heuristic 1800s для 2-5GB, stats)';
-            idleInput.placeholder = isReasoning
-                ? '0 = auto (' + iAuto + 's = heuristic × 3 reasoning) или задайте явно'
-                : '0 = auto (heuristic 600s для 2-5GB, stats)';
-        }
-        reasoningToggle.addEventListener('change', () => {
-            const wasChecked = !reasoningToggle.checked;
-            const isNowChecked = reasoningToggle.checked;
-            // Если тогглим ON — и поля пустые — заполняем ×3 значениями.
-            if (isNowChecked) {
-                const curGb = getModelSizeBytesForName(modelNameInput.value) / (1024*1024*1024) || 3.5;
-                if (!streamInput.value || parseInt(streamInput.value, 10) === 0) {
-                    streamInput.value = String(estimateStreamTimeoutGB(curGb) * 3);
-                }
-                if (!idleInput.value || parseInt(idleInput.value, 10) === 0) {
-                    idleInput.value = String(estimateIdleTimeoutGB(curGb) * 3);
-                }
-            } else if (wasChecked) {
-                // Тогглим OFF — очищаем поля (пользователь может заново задать).
-                streamInput.value = '';
-                idleInput.value = '';
-            }
-            updateReasoningPlaceholders();
-        });
-        // При смене имени модели в isNew-режиме — обновляем placeholder с новым размером.
-        if (isNew) {
-            modelNameInput.addEventListener('change', updateReasoningPlaceholders);
-        }
-        updateReasoningPlaceholders();  // initial render
+        // R106c (2026-10-12): обработчики «Reasoning mode (×3 таймаут)» и
+        // автозаполнения таймаутов удалены вместе с полями. Работа идёт по
+        // состоянию: пока модель грузится/генерирует — UI показывает состояние,
+        // при ошибке — сразу ошибку (см. gguf-load-progress/preflight), а не
+        // «подождём N секунд».
 
         // Сохранение по Enter
         overlay.addEventListener('keydown', e => {
@@ -963,11 +964,9 @@
             // Session 16 (2026-06-27): Parallel + KVCacheType (advanced fields).
             parallel: parseInt(overlay.querySelector('#wizParallel').value, 10) || 0,
             kvCacheType: overlay.querySelector('#wizKVCacheType').value,
+            // R106b (2026-10-12): reasoning для конкретной модели (3 состояния).
+            enableReasoning: ((overlay.querySelector('#wizEnableReasoning') || {}).value || ''),
             notes: (overlay.querySelector('#wizNotes').value || '').trim(),
-            streamingTimeoutSec: parseInt(overlay.querySelector('#wizStreamingTimeout').value, 10) || 0,
-            streamingIdleTimeoutSec: parseInt(overlay.querySelector('#wizStreamingIdleTimeout').value, 10) || 0,
-            requestTimeoutSec: parseInt(overlay.querySelector('#wizRequestTimeout').value, 10) || 0,
-            firstByteTimeoutSec: parseInt(overlay.querySelector('#wizFirstByteTimeout').value, 10) || 0,
             // R67a: потолок n_ctx (авто-режим + максимум).
             contextLengthAuto: !!(overlay.querySelector('#wizCtxAuto') && overlay.querySelector('#wizCtxAuto').checked),
             contextLengthMax: parseInt((overlay.querySelector('#wizCtxMax') || {}).value, 10) || 0,
@@ -1003,19 +1002,14 @@
             showToast('error', "kvCacheType должен быть одним из ['', 'f16', 'q8_0', 'q4_0']");
             return false;
         }
-        // Timeout валидация
-        const timeoutFields = [
-            ['streamingTimeoutSec', state.streamingTimeoutSec],
-            ['streamingIdleTimeoutSec', state.streamingIdleTimeoutSec],
-            ['requestTimeoutSec', state.requestTimeoutSec],
-            ['firstByteTimeoutSec', state.firstByteTimeoutSec]
-        ];
-        for (const [name_, v] of timeoutFields) {
-            if (v < TIMEOUT_MIN || v > TIMEOUT_MAX) {
-                showToast('error', name_ + ' должен быть в [0, ' + TIMEOUT_MAX + ']');
-                return false;
-            }
+        // R106b: reasoning — 3 состояния (наследовать / вкл / выкл).
+        const allowedReasoning = ['', 'on', 'off'];
+        if (allowedReasoning.indexOf(state.enableReasoning) === -1) {
+            showToast('error', "enableReasoning должен быть одним из ['', 'on', 'off']");
+            return false;
         }
+        // R106c (2026-10-12): валидация таймаутов удалена вместе с полями
+        // (в форме их больше нет — работа идёт по состоянию, а не по времени).
         return true;
     }
 
@@ -1088,7 +1082,7 @@
     // Async path: detect busy → 202 + SSE progress → terminal state.
     // Sync path: 200 + final backends list → close modal.
 
-    async function applyProfileWithProgress(modelName) {
+    async function applyProfileWithProgress(modelName, backendID) {
         // Создаём modal
         const overlay = document.createElement('div');
         overlay.className = 'mode-wizard-overlay';
@@ -1163,7 +1157,7 @@
             setStep('save', 'running');
             fillEl.style.width = '20%';
 
-            const resp = await PROFILES.apply(modelName);
+            const resp = await PROFILES.apply(modelName, undefined, backendID);
 
             setStep('save', 'done');
 

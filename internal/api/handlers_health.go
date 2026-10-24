@@ -31,18 +31,19 @@ import (
 // healthDetailedHandler — отдаёт расширенный HealthReport для UI страницы health.html.
 //
 // Формат ответа — types.HealthReport (JSON):
-//   {
-//     "timestamp": "...",
-//     "status": "healthy" | "degraded" | "unhealthy" | "empty",
-//     "healthScore": 0..100,
-//     "totalBackends": N,
-//     "healthyBackends": M,
-//     "unhealthyBackends": K,
-//     "withAgent": A,
-//     "recentErrors": [...],  // до 50 записей
-//     "errorsBySource": {"healthcheck": X, "transport": Y, "event": Z},
-//     "backends": [...]
-//   }
+//
+//	{
+//	  "timestamp": "...",
+//	  "status": "healthy" | "degraded" | "unhealthy" | "empty",
+//	  "healthScore": 0..100,
+//	  "totalBackends": N,
+//	  "healthyBackends": M,
+//	  "unhealthyBackends": K,
+//	  "withAgent": A,
+//	  "recentErrors": [...],  // до 50 записей
+//	  "errorsBySource": {"healthcheck": X, "transport": Y, "event": Z},
+//	  "backends": [...]
+//	}
 //
 // Стоимость: O(B) где B — число бэкендов + O(E) где E — размер ring buffer (≤100).
 // Без блокировок на длительных операциях (никаких HTTP-вызовов).
@@ -65,19 +66,19 @@ func (s *Server) healthDetailedHandler(w http.ResponseWriter, r *http.Request) {
 // buildHealthReport — собирает HealthReport из 3 источников данных.
 //
 // Шаги:
-//   1. Per-backend health: HealthChecker.GetAllStatuses + ClusterState.Backends (host/port).
-//   2. Health score: простая формула от процента healthy бэкендов минус штраф за ошибки.
-//   3. Recent errors: eventsHub.buf.snapshot() → фильтр по severity, маппинг на ErrorSource.
-//   4. Сортировка: ошибки по timestamp DESC, бэкенды по id ASC.
+//  1. Per-backend health: HealthChecker.GetAllStatuses + ClusterState.Backends (host/port).
+//  2. Health score: простая формула от процента healthy бэкендов минус штраф за ошибки.
+//  3. Recent errors: eventsHub.buf.snapshot() → фильтр по severity, маппинг на ErrorSource.
+//  4. Сортировка: ошибки по timestamp DESC, бэкенды по id ASC.
 func (s *Server) buildHealthReport() *types.HealthReport {
 	now := time.Now().UTC()
 	report := &types.HealthReport{
-		Timestamp:       now,
-		Status:          types.HealthLevelHealthy,
-		HealthScore:     100,
-		RecentErrors:    []types.RecentError{},
-		ErrorsBySource:  map[string]int{},
-		Backends:        []types.BackendHealth{},
+		Timestamp:      now,
+		Status:         types.HealthLevelHealthy,
+		HealthScore:    100,
+		RecentErrors:   []types.RecentError{},
+		ErrorsBySource: map[string]int{},
+		Backends:       []types.BackendHealth{},
 	}
 
 	// 1) Per-backend data: HealthChecker (latency/fails) + ClusterState (host/port/agent).

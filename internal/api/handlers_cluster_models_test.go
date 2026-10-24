@@ -55,14 +55,14 @@ func TestSplitClusterModelPath(t *testing.T) {
 			wantOK:   true,
 		},
 		{
-			name:    "missing prefix",
-			path:    "/api/v1/other/models/foo",
-			wantOK:  false,
+			name:   "missing prefix",
+			path:   "/api/v1/other/models/foo",
+			wantOK: false,
 		},
 		{
-			name:    "empty model name",
-			path:    "/api/v1/cluster/models/",
-			wantOK:  false,
+			name:   "empty model name",
+			path:   "/api/v1/cluster/models/",
+			wantOK: false,
 		},
 	}
 

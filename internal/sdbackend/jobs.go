@@ -218,7 +218,17 @@ func (r *JobRunner) runGeneration(ctx context.Context, model string, urlMode, in
 
 	images := make([]JobImage, 0, len(job.Result.Images))
 	for _, img := range job.Result.Images {
-		out := JobImage{Index: img.Index, B64JSON: img.B64JSON}
+		// R120 (2026-10-15): в url-режиме base64 НЕ кладём в результат.
+		//
+		// ЖИВОЙ ДЕФЕКТ: инструмент generate_image балансера просит url (ему нужна
+		// ссылка), но получал И ссылку, И полный base64 картинки. Для 768x512 это
+		// ~766 KB, для 1024x1024 — ~4 MB, а балансер читает ответ с ограничением
+		// (imageToolResponseLimitBytes): тело обрезалось на середине JSON и
+		// УЖЕ СГЕНЕРИРОВАННАЯ картинка терялась с диагнозом «invalid JSON».
+		// Пиксели уже лежат файлом на диске (Save ниже) — второй копии в JSON быть
+		// не должно; контракт воркера это и обещает: «"url" — воркер сохраняет PNG
+		// и отдаёт ссылку».
+		out := JobImage{Index: img.Index}
 		if urlMode {
 			url, serr := r.store.Save(img.B64JSON, job.Result.OutputFormat)
 			if serr != nil {
@@ -226,6 +236,8 @@ func (r *JobRunner) runGeneration(ctx context.Context, model string, urlMode, in
 				return nil, serr
 			}
 			out.URL = url
+		} else {
+			out.B64JSON = img.B64JSON
 		}
 		images = append(images, out)
 	}

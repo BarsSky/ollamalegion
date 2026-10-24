@@ -122,7 +122,10 @@ func (p *Proxy) waitForInferenceBackend(
 		return id, lease.Release, 0, 0, nil
 	}
 
-	wait := p.admissionWaitTimeout()
+	// R117: бюджет ожидания — max(admission, auto-load), см. admissionWaitBudget.
+	// Иначе запрос, вставший за холодной загрузкой, получает 503 раньше, чем
+	// загрузка успевает закончиться (живой замер: 300 c против ~345 c загрузки).
+	wait := p.admissionWaitBudget()
 	if wait <= 0 || p.admission == nil {
 		return "", nil, 0, 0, errAdmissionDisabled
 	}

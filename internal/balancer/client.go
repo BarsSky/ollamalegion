@@ -353,6 +353,22 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 	}
 
 	fp := p.getClientFingerprint(r)
+
+	// R118.9 (2026-10-14): ДВА ЭКЗЕМПЛЯРА КЛИЕНТА С ОДНОЙ МАШИНЫ.
+	//
+	// Живая жалоба: «запрос от одной машины, но от двух экземпляров клиента Cline —
+	// балансер не разделяет». Отпечаток `fp` (IP+UA) и имя клиента у них совпадают,
+	// поэтому до этой правки оба экземпляра попадали в ОДНУ сессию: общая привязка к
+	// бэкенду, общий кошелёк справедливости в admission-очереди, одна строка в
+	// панели. Различаем их по НАЧАЛУ РАЗГОВОРА (см. session_instance_r118.go):
+	// Cline пересылает историю целиком, поэтому системная инструкция + первая задача
+	// стабильны внутри задачи и различаются между задачами/экземплярами.
+	if conv := conversationFingerprintFromRequest(r); conv != "" {
+		composite := fp + "::" + clientName + "::" + model + "::" + endpointType + "::conv:" + conv
+		h := sha256.Sum256([]byte(composite))
+		return "conv:" + hex.EncodeToString(h[:16]) + "::" + model
+	}
+
 	return fp + "::" + clientName + "::" + model + "::" + endpointType
 }
 

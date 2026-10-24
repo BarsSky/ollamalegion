@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 
+	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -86,6 +87,33 @@ func (s *Server) handleModelProfile(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.SplitN(trimmed, "/", 2)
 	modelName := parts[0]
+	// R212 (2026-10-21): ИМЯ ПРОФИЛЯ НОРМАЛИЗУЕТСЯ ОТ .gguf.
+	//
+	// ЖИВОЙ ДЕФЕКТ (WebUI, вкладка GGUF → «применить и перезагрузить»): фронт присылал
+	// имя файла `Qwen3.8-27B-UD-Q4_K_M.gguf`, профили же ключуются именем модели БЕЗ
+	// расширения. PUT считал это НОВЫМ профилем и требовал contextLength →
+	// 400 «invalid profile», перезагрузка не запускалась вообще.
+	//
+	// Чистим суффикс здесь, чтобы исправление работало для любого клиента (WebUI,
+	// скрипты, curl), а не только для текущей версии фронта.
+	modelName = strings.TrimSuffix(strings.TrimSuffix(modelName, ".gguf"), ".GGUF")
+	// R138 (2026-10-16): ИМЯ МОДЕЛИ НОРМАЛИЗУЕМ НА ГРАНИЦЕ API.
+	//
+	// ЖИВОЙ ДЕФЕКТ (найден сквозным тестом из WebUI и логом балансера). Карточка
+	// модели НА ДИСКЕ называет модель именем файла (`gemma-4-…gguf`), а реестр
+	// воркера и путь загрузки знают её без расширения. Из-за этого:
+	//   * профиль сохранялся под другим ключом (R136 закрыл хранилище);
+	//   * применение профиля отправляло в воркер POST /api/models/reload с именем
+	//     файла → 404 «model not currently loaded», а API рапортовал «applied»:
+	//     applyModelProfile: reload failed on backend
+	//       error: cppworker reload returned 404: model gemma-4-…gguf not found
+	// Нормализация здесь закрывает ВСЕ подпути сразу (get/upsert/delete/apply и
+	// прогресс), потому что имя приходит из URL одной точкой.
+	modelName = balancer.NormalizeModelProfileKey(strings.TrimSpace(modelName))
+	if modelName == "" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model name required"})
+		return
+	}
 	// sub может быть пустым, "apply" и т.п.
 	sub := ""
 	if len(parts) > 1 {
@@ -191,6 +219,49 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 	existing, hasExisting := s.proxy.GetModelProfile(modelName)
 	incoming := mergeProfileUpdate(existing, upd, presence)
 
+	// R212 (2026-10-21): НОВЫЙ ПРОФИЛЬ БЕЗ contextLength — БЕРЁМ ФАКТ ИЗ РАНТАЙМА.
+	//
+	// Живой дефект (WebUI GGUF → «применить и перезагрузить»): для модели, у которой
+	// профиля ещё НЕ БЫЛО, форма отправляет неполный набор полей, сервер отвечал
+	// 400 «contextLength is required for a new profile», и перезагрузка не
+	// запускалась вообще — со стороны UI это выглядело как «не перезагружается».
+	//
+	// Правильно: если модель уже загружена на каком-то бэкенде, её фактический n_ctx
+	// и есть разумный contextLength для нового профиля (явное значение в теле запроса
+	// всегда приоритетнее). Если факта нет — прежнее поведение (400 с причиной).
+	if !hasExisting && incoming.ContextLength == 0 {
+		if factsCtx := s.proxy.LoadedContextForModel(modelName); factsCtx > 0 {
+			incoming.ContextLength = factsCtx
+			log.Infow("model profile: contextLength взят из загруженного инстанса",
+				"model", modelName, "context_length", factsCtx)
+		}
+	}
+
+	// R213 (2026-10-21): НОВЫЙ ПРОФИЛЬ ДЛЯ НЕЗАГРУЖЕННОЙ МОДЕЛИ — не 400.
+	//
+	// R212 подставил n_ctx загруженного инстанса, но модель может быть НЕ
+	// загружена (оператор только выставил настройки). Тогда оставался 400
+	// «contextLength is required for a new profile», и кнопка «применить и
+	// перезагрузить» в карточке GGUF не сохраняла ни одного параметра — со
+	// стороны оператора это выглядит как «WebUI игнорирует мои настройки».
+	//
+	// Теперь берём то окно, с которым модель загрузилась бы БЕЗ профиля:
+	// default-профиль балансера, иначе env cppworker (defaultCtxSize). Явное
+	// значение из тела запроса всегда приоритетнее. Это не выдумка: значение
+	// записывается в профиль и одновременно называется в ответе (profileSaved /
+	// contextLengthSource), чтобы UI не выдавал его за выбор оператора.
+	profileDefaulted := ""
+	if !hasExisting && incoming.ContextLength == 0 {
+		// Порядок тот же, что в GET /api/v1/cppworker/load-defaults:
+		// default-профиль балансера, затем env cppworker.
+		if defCtx, src := s.defaultContextLengthForNewProfile(); defCtx > 0 {
+			incoming.ContextLength = defCtx
+			profileDefaulted = src
+			log.Infow("model profile: contextLength взят из умолчаний (модель не загружена)",
+				"model", modelName, "context_length", defCtx, "source", src)
+		}
+	}
+
 	// Валидация смерженного профиля (балансировщик и cppworker имеют одинаковые
 	// границы). Для НОВОГО профиля contextLength обязателен — сообщаем явно.
 	if err := validateModelProfile(incoming); err != nil {
@@ -203,6 +274,35 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 			"message": msg,
 		})
 		return
+	}
+
+	// R116: ПРОВЕРКА ПАМЯТИ НА КОНФИГУРАЦИЮ ПОЛЬЗОВАТЕЛЯ.
+	//
+	// Профиль — источник истины: именно его contextLength/kvCacheType уйдут в
+	// загрузку. Если они не влезают в суммарную память (VRAM карты + память узлов
+	// раскладки + RAM), сохранять профиль молча нельзя: оператор узнает об этом
+	// только при загрузке — отказом или падением, а причина останется в профиле.
+	//
+	// Вердикт спрашиваем у cppworker тем же расчётом (memfit), что и загрузка
+	// (profile_memory_check_r116.go). Недоступность cppworker — не повод
+	// запрещать настройку: тогда сохраняем как раньше (fail-open).
+	if mv, asked := s.checkProfileMemory(modelName, incoming.ContextLength, incoming.KVCacheType); asked {
+		if !mv.Feasible {
+			s.writeJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{
+				"error":   "profile_does_not_fit_memory",
+				"message": mv.Message,
+				"model":   modelName,
+				"memory":  mv.Memory,
+			})
+			return
+		}
+		if mv.Degraded {
+			// Предупреждение оператору: профиль сохраняем (это его право), но
+			// говорим прямо, что модель пойдёт частично на CPU.
+			log.Warnw("upsertModelProfile: профиль влезает только с выгрузкой в RAM",
+				"model", modelName, "ctx", incoming.ContextLength,
+				"kv_cache_type", incoming.KVCacheType, "message", mv.Message)
+		}
 	}
 
 	// Upsert в config (in-memory)
@@ -241,11 +341,43 @@ func (s *Server) upsertModelProfile(w http.ResponseWriter, r *http.Request, mode
 
 	log.Infow("model profile upserted", "model", modelName, "contextLength", incoming.ContextLength)
 
-	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"status":  "ok",
 		"model":   modelName,
 		"profile": incoming,
-	})
+	}
+	// R213: если contextLength пришёл не из тела запроса, а из умолчаний (модель
+	// не загружена) — говорим это явно, чтобы UI не выдавал значение за выбор
+	// оператора.
+	if profileDefaulted != "" {
+		resp["contextLengthSource"] = profileDefaulted
+		resp["message"] = "модель не загружена: contextLength взят из умолчаний (" +
+			profileDefaulted + "). Остальные параметры сохранены и применятся при загрузке."
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// defaultContextLengthForNewProfile — какое окно подставить НОВОМУ профилю,
+// когда оператор не задал contextLength, а модель не загружена (R213).
+//
+// Источник ровно тот, с которым модель грузилась бы БЕЗ профиля:
+//   - default-профиль балансера (defaultProfile), иначе
+//   - env/config cppworker (defaultCtxSize).
+//
+// Возвращает (0, "") если ни один источник недоступен — тогда сохраняется
+// прежнее поведение (400 с внятной причиной): выдумывать число нельзя.
+func (s *Server) defaultContextLengthForNewProfile() (int, string) {
+	if s.proxy == nil {
+		return 0, ""
+	}
+	if def, ok := s.proxy.GetDefaultModelProfile(); ok && def.ContextLength > 0 {
+		return def.ContextLength, "defaultProfile"
+	}
+	cw := s.fetchCppWorkerSnapshot()
+	if v, ok := cw.intValue("defaultCtxSize"); ok && v > 0 {
+		return v, "cppworker-env"
+	}
+	return 0, ""
 }
 
 // deleteModelProfile — DELETE /api/v1/cppworker/model-profiles/{name}.
@@ -315,7 +447,20 @@ func (s *Server) deleteModelProfile(w http.ResponseWriter, r *http.Request, mode
 // Reload делается через cppworker endpoint POST /api/models/reload.
 // Если модель не загружена ни на одном бэкенде — это не ошибка, просто
 // в ответе будет "skipped" с reason "not loaded".
+// matchesBackendFilter — попадает ли бэкенд под ?backend=<id> (R228).
+//
+// ЖИВОЙ ДЕФЕКТ. «Применить и перезагрузить» из карточки модели одного бэкенда
+// уходило на ВСЕ llama.cpp-бэкенды, где модель загружена, включая недоступного
+// донора (connect refused), а локальный бэкенд всё равно перезагружался.
+// Пустой фильтр сохраняет прежнее поведение (применить везде).
+func matchesBackendFilter(backendID, filter string) bool {
+	filter = strings.TrimSpace(filter)
+	return filter == "" || backendID == filter
+}
+
 func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, modelName string) {
+	// R228: скоуп применения — только выбранный бэкенд (если он передан).
+	targetFilter := strings.TrimSpace(r.URL.Query().Get("backend"))
 	// R66d: apply делает unload+load на бэкендах — это минуты для крупных
 	// моделей, а серверный WriteTimeout=60s (cmd/balancer/main.go:383) обрывает
 	// ответ (клиент видит HTTP 000 и «Apply failed»). Снимаем deadline.
@@ -417,6 +562,9 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 	// и продолжает polling /api/v1/cppworker/model-profiles/{name}/apply/progress.
 	busyBackends := make([]string, 0)
 	for _, backend := range s.proxy.GetAllBackends() {
+		if !matchesBackendFilter(backend.ID, targetFilter) {
+			continue
+		}
 		if backend.Type != types.BackendTypeLlamaCpp {
 			log.Debugw("applyModelProfile: skipping non-llama_cpp backend",
 				"backend", backend.ID, "type", backend.Type)
@@ -451,30 +599,50 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 		return
 	}
 
-	for _, backend := range s.proxy.GetAllBackends() {
+	for i := range s.proxy.GetAllBackends() {
+		if !matchesBackendFilter(s.proxy.GetAllBackends()[i].ID, targetFilter) {
+			continue
+		}
+		allBackends := s.proxy.GetAllBackends()
+		backend := allBackends[i]
 		backendID := backend.ID
+		// R210 (2026-10-21): в результате — ТОЛЬКО llama.cpp-бэкенды.
+		//
+		// Живая жалоба (скриншот диалога «Применение профиля…»): в списке мелькали
+		// ollama-хосты и imageworker с текстами «not a llama_cpp backend» и
+		// «model not currently loaded on this backend» — это не ошибки применения,
+		// а шум: к текстовым моделям llama.cpp они отношения не имеют.
 		if backend.Type != types.BackendTypeLlamaCpp {
-			results = append(results, modelProfileApplyBackendResult{
-				BackendID: backendID,
-				Status:    "skipped",
-				Message:   "not a llama_cpp backend",
-			})
 			continue
 		}
 
-		// Проверяем, загружена ли модель на этом бэкенде
-		if !s.proxy.IsLlamaCppModelLoaded(backendID, modelName) {
-			results = append(results, modelProfileApplyBackendResult{
-				BackendID: backendID,
-				Status:    "skipped",
-				Message:   "model not currently loaded on this backend",
-			})
-			continue
-		}
+		// R210: НЕ пропускаем бэкенд по устаревшим метрикам.
+		//
+		// Было: `if !IsLlamaCppModelLoaded(...) { skipped }` — и живой стенд показал
+		// «model not currently loaded» ДЛЯ ЗАГРУЖЕННОЙ модели (метрики плеера отстают
+		// после рестартов/перезагрузок), из-за чего применение профиля не перезагружало
+		// модель вообще. Теперь пробуем перезагрузку, а факт «модели нет» берём из
+		// ответа воркера (404/not loaded) — это авторитетный источник.
 
 		// Reload через cppworker
 		status, err := s.reloadModelOnCppWorker(backend, modelName, merged)
 		if err != nil {
+			// R210: «модели нет на этом бэкенде» — это НЕ ошибка применения профиля:
+			// на других бэкендах модель может быть загружена и перезагрузится. Такие
+			// ответы воркера (404 / not currently loaded) помечаем skipped, а не error,
+			// иначе оператор видит красный крест там, где всё в порядке.
+			low := strings.ToLower(err.Error())
+			if strings.Contains(low, "not currently loaded") || strings.Contains(low, "404") ||
+				strings.Contains(low, "not found") {
+				log.Infow("applyModelProfile: модели нет на бэкенде — пропуск",
+					"backend", backendID, "model", modelName, "error", err)
+				results = append(results, modelProfileApplyBackendResult{
+					BackendID: backendID,
+					Status:    "skipped",
+					Message:   "модель не загружена на этом бэкенде",
+				})
+				continue
+			}
 			log.Warnw("applyModelProfile: reload failed on backend",
 				"backend", backendID, "model", modelName, "error", err)
 			results = append(results, modelProfileApplyBackendResult{
@@ -589,6 +757,35 @@ func (s *Server) reloadModelOnCppWorker(backend types.Backend, modelName string,
 	if profile.KVCacheType != "" {
 		body["kvCacheType"] = profile.KVCacheType
 	}
+	// R119 (2026-10-15): contextPerSeq и enableReasoning — профиль их хранит,
+	// cppworker их принимает (reloadModelRequest, cmd/cppworker/types.go), а
+	// «Применить профиль» их НЕ отправлял.
+	//
+	// ЖИВОЙ ДЕФЕКТ (стенд): оператор выставлял «8192 на клиента» и галочку
+	// «размышления», нажимал «Применить» — cppworker получал только
+	// contextSize/parallel/kvCacheType, окно снова делилось между слотами, а
+	// reasoning оставался выключенным. Параметры 5/5 «доезжали», а эти два —
+	// нет, и отличить это по UI было нечем.
+	//
+	// ContextPerSeq — указатель + проверка > 0: 0 в профиле означает «не
+	// задано» (окно считается от contextSize), и отправлять его нельзя.
+	//
+	// R174: СОГЛАСОВАННОСТЬ ОКНА РЕШАЕТСЯ ПРИ СЛИЯНИИ ПРОФИЛЯ, а не здесь.
+	//
+	// Устаревший contextPerSeq (профиль хранил 4096, оператор выставил «8192
+	// суммарно, 1 слот») сбрасывается в mergeProfileUpdate, когда в запросе есть
+	// contextLength/parallel без явного contextPerSeq. Пересчитывать его ЗДЕСЬ
+	// нельзя: R119 разрешает задать окно на слот НАМЕРЕННО (например 8192 при 3
+	// слотах = 24576 суммарно), и такая пара не обязана совпадать с делением.
+	if profile.ContextPerSeq > 0 {
+		body["contextPerSeq"] = profile.ContextPerSeq
+	}
+	// EnableReasoning — *bool: nil = «наследовать глобальную политику
+	// cppworker», и в этом случае поля в теле быть не должно (cppworker сам
+	// разберётся с cfg.DefaultEnableReasoning).
+	if profile.EnableReasoning != nil {
+		body["enableReasoning"] = *profile.EnableReasoning
+	}
 	// Round 7 (2026-07-09): прокидываем override-tensors в reload endpoint.
 	// Применяется к MoE моделям для роутинга routed-expert тензоров на CPU
 	// (освобождает VRAM для KV-cache). Параллельные массивы должны быть
@@ -702,6 +899,18 @@ type profilePresence struct {
 	// reasoning_enabled=false (живая проверка на стенде: PUT 200, в GET профиля
 	// ключа нет, инстанс — reasoning_enabled=False).
 	EnableReasoning *bool `json:"enableReasoning"`
+	// Parallel — R119 (2026-10-15): указатель, чтобы число слотов можно было
+	// СНЯТЬ (`"parallel": 0` = «наследовать CPPWORKER_N_PARALLEL»).
+	//
+	// ЗАЧЕМ. Мерж трактует 0 как «поле не передано» (PATCH-like), поэтому
+	// оператор, один раз выставивший parallel=3, НЕ МОГ вернуться к дефолту
+	// окружения: PUT с 0 молча сохранял 3, и «сбросить настройку» через WebUI
+	// было невозможно. С pointer'ом 0 становится осмысленным значением.
+	Parallel *int `json:"parallel"`
+	// ContextPerSeq — R119: то же для окна НА КЛИЕНТА. Без указателя снять
+	// per-slot окно (`"contextPerSeq": 0` = «считать от contextLength») было
+	// нельзя — поле оставалось в профиле навсегда.
+	ContextPerSeq *int `json:"contextPerSeq"`
 }
 
 // mergeProfileUpdate — R67a: полный мерж обновления профиля.
@@ -746,6 +955,45 @@ func mergeProfileUpdate(existing, values types.LlamaCppModelProfile, presence pr
 	// WebUI галочка была активна (живая жалоба оператора).
 	if presence.EnableReasoning != nil {
 		out.EnableReasoning = presence.EnableReasoning
+	}
+	// R119 (2026-10-15): числовые настройки, которые нельзя было СНЯТЬ.
+	//
+	// mergeModelProfile трактует 0 как «не менять» (чтобы WebUI-форма, шлющая
+	// только contextLength/batchSize/numGpuLayers, не обнуляла остальное), из-за
+	// чего `"parallel": 0` и `"contextPerSeq": 0` молча игнорировались: оператор,
+	// однажды выставивший parallel=3, не мог вернуться к дефолту окружения —
+	// настройка оставалась в профиле навсегда.
+	//
+	// Явно переданный 0 теперь означает «снять» (наследовать значение cppworker).
+	// Живое подтверждение необходимости: восстановление профиля после теста
+	// потребовало DELETE + PUT — иначе contextPerSeq/parallel оставались в файле.
+	if presence.Parallel != nil {
+		out.Parallel = *presence.Parallel
+	}
+	if presence.ContextPerSeq != nil {
+		out.ContextPerSeq = *presence.ContextPerSeq
+	}
+	// R174 (2026-10-18, найдено сценариями настроек): УСТАРЕВШЕЕ ОКНО НА СЛОТ
+	// СБРАСЫВАЕТСЯ, когда оператор задал суммарное окно и/или число слотов.
+	//
+	// Живой дефект: профиль хранил contextPerSeq=4096; оператор выставил в
+	// карточке «8192 суммарно» и «parallel=1», нажал «Применить» — WebUI шлёт
+	// только изменённые поля, merge оставлял старый perSeq, и cppworker считал
+	// слоты от perSeq (8192/4096 = 2) вместо явного parallel=1. Модель
+	// поднималась как ctx=4096 / perSeq=2048 / 2 слота — не то, что заказали.
+	//
+	// Почему сброс, а не пересчёт: R119 разрешает задать окно на слот НАМЕРЕННО
+	// (8192 при 3 слотах = 24576 суммарно), и такая пара не обязана совпадать с
+	// делением. Явно присланный contextPerSeq (presence.ContextPerSeq != nil)
+	// всегда побеждает — это и есть намерение оператора.
+	if presence.ContextPerSeq == nil && presence.Parallel != nil {
+		if out.ContextPerSeq != 0 {
+			logger.Get().Infow("mergeProfileUpdate: окно на слот сброшено — оператор задал "+
+				"суммарное окно и/или число слотов, значение пересчитает cppworker",
+				"was_contextPerSeq", out.ContextPerSeq,
+				"contextLength", out.ContextLength, "parallel", out.Parallel)
+		}
+		out.ContextPerSeq = 0
 	}
 	return out
 }
@@ -832,6 +1080,21 @@ func mergeModelProfile(existing, update types.LlamaCppModelProfile) types.LlamaC
 				"bufts", len(update.OverrideTensorBufts))
 		}
 	}
+	// R119 (2026-10-15): ContextPerSeq («окно НА КЛИЕНТА») сохранялся в профиль
+	// ТОЛЬКО если его никто не трогал: мерж его не знал, и PUT с
+	// contextPerSeq=8192 возвращал 200, а профиль оставался без поля.
+	//
+	// ЖИВОЙ ДЕФЕКТ (стенд): оператор задавал «16384 суммарно, 8192 на клиента,
+	// parallel=3» — cppworker поднимал ctx=16896 / per_seq=5632, то есть окно
+	// ДЕЛИЛОСЬ между слотами вместо того, чтобы быть на слот. Причина ровно
+	// здесь: поле терялось при сохранении профиля, и на загрузку уходил только
+	// contextLength.
+	//
+	// Семантика как у Parallel/BatchSize: 0 = «не менять» (PATCH-like частичное
+	// обновление), >0 = задать окно на слот.
+	if update.ContextPerSeq != 0 {
+		out.ContextPerSeq = update.ContextPerSeq
+	}
 	return out
 }
 
@@ -867,6 +1130,11 @@ func validateModelProfile(p types.LlamaCppModelProfile) error {
 	// KVCacheType ∈ {"", "f16", "q8_0", "q4_0"} — только эти 4 значения валидны.
 	if p.Parallel < 0 || p.Parallel > 8 {
 		return fmt.Errorf("parallel must be in [0, 8], got %d", p.Parallel)
+	}
+	// R119 (2026-10-15): окно НА КЛИЕНТА. 0 = «не задано» (считать от
+	// contextLength), поэтому нижняя граница именно 0, а не 256.
+	if p.ContextPerSeq < 0 || p.ContextPerSeq > 262144 {
+		return fmt.Errorf("contextPerSeq must be in [0, 262144], got %d", p.ContextPerSeq)
 	}
 	switch p.KVCacheType {
 	case "", "f16", "q8_0", "q4_0":

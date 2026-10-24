@@ -484,8 +484,24 @@ func TestWebUI_ClusterState_ReflectsBackendEngineChange(t *testing.T) {
 	err = json.NewDecoder(resp2.Body).Decode(&clusterState)
 	require.NoError(t, err)
 
-	assert.Equal(t, "llama_cpp", clusterState["backendEngine"],
-		"ClusterState should reflect backendEngine change to llama_cpp")
+	// R112 (2026-10-11): /api/v1/cluster отдаёт ЭФФЕКТИВНЫЙ движок — он выводится
+	// из фактического состава кластера, а не из настройки. В этой фикстуре
+	// зарегистрирован только Ollama-бэкенд (agent-1), поэтому эффективный движок
+	// ollama_api, хотя оператор выставил llama_cpp. Раньше настройка навязывала
+	// движок всему кластеру, и второй тип бэкендов не получал запросов вовсе.
+	assert.Equal(t, "ollama_api", clusterState["backendEngine"],
+		"R112: /api/v1/cluster обязан показывать эффективный движок по составу кластера")
+
+	// Настройка при этом сохраняется — WebUI должен видеть выставленное значение.
+	resp3, err := http.Get(baseURL + "/api/v1/cluster/config")
+	require.NoError(t, err)
+	defer resp3.Body.Close()
+	var cfgState map[string]interface{}
+	require.NoError(t, json.NewDecoder(resp3.Body).Decode(&cfgState))
+	if cfg, ok := cfgState["config"].(map[string]interface{}); ok {
+		assert.Equal(t, "llama_cpp", cfg["backendEngine"],
+			"настройка backendEngine должна сохраняться, даже если кластер обслуживает иначе")
+	}
 }
 
 func TestWebUI_BackendEngineSync_FromServerAfterPageReload(t *testing.T) {

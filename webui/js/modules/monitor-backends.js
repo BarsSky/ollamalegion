@@ -12,6 +12,351 @@ const MonitorBackends = (() => {
     let currentSort = { column: 'id', asc: true };
     let currentFilter = '';
 
+    // ===== R185 (2026-10-20): «архитектура такого-то бэкенда не поддерживается» =====
+    //
+    // ЖИВОЙ РАЗБОР. cppworker был собран под CUDA_ARCH=86;120, а карта — Quadro
+    // RTX 4000 (sm_75). Загрузка модели «проходила», первое GPU-ядро убивало
+    // процесс (no kernel image is available), балансер повторял загрузку, а UI
+    // показывал только «не грузится» — причины оператор не видел.
+    //
+    // Что делаем: спрашиваем у воркера /api/info (через прокси балансера) и, если
+    // cuda_arch_ok=false, выводим ПРЯМО НАД ТАБЛИЦЕЙ явное уведомление: какой
+    // бэкенд, под что собран образ, что карта не поддерживается и что делать.
+    // Опрос редкий (TTL), чтобы не дёргать воркер на каждой перерисовке.
+    const archFacts = {};   // backendId -> { ok: bool, warning: string, built: string }
+    const archProbeAt = {}; // backendId -> ms последнего опроса
+    const ARCH_PROBE_TTL_MS = 60000;
+
+    function backendTypeOf(b) {
+        return String((b && (b.backendType || b.backend_type || b.type)) || '').toLowerCase();
+    }
+
+    // archProbeList — каких бэкендов не хватает в кэше (или пора переспросить).
+    function archProbeList(backends) {
+        const need = [];
+        (backends || []).forEach(function (b) {
+            if (!b || !b.id) return;
+            if (backendTypeOf(b) !== 'llama_cpp') return; // у ollama/image архитектур нет
+            const f = archFacts[b.id];
+            if (f && f.ok) return; // совместимо — переспрашивать незачем
+            if (Date.now() - (archProbeAt[b.id] || 0) < ARCH_PROBE_TTL_MS) return;
+            archProbeAt[b.id] = Date.now();
+            need.push(b.id);
+        });
+        return need;
+    }
+
+    // rememberArchInfo — сложить факты из /api/info. Старый образ полей не отдаёт:
+    // тогда считаем «совместимо» и не тревожим оператора ложной тревогой.
+    function rememberArchInfo(backendId, info) {
+        if (!backendId || !info || typeof info !== 'object') return;
+        if (info.cuda_arch_ok === undefined || info.cuda_arch_ok === null) {
+            archFacts[backendId] = { ok: true, warning: '', built: '' };
+            return;
+        }
+        const built = Array.isArray(info.cuda_arch_built) ? info.cuda_arch_built.join(';') :
+            (info.cuda_arch_built ? String(info.cuda_arch_built) : '');
+        archFacts[backendId] = {
+            ok: info.cuda_arch_ok !== false,
+            warning: String(info.cuda_arch_warning || ''),
+            built: built
+        };
+    }
+
+    // t() с русским фолбэком — как в остальном этом модуле: страница должна
+    // показывать причину даже если i18n-модуль ещё не загрузился.
+    function archT(key, fallback) {
+        const i18n = (typeof window !== 'undefined') ? window.I18N : null;
+        if (i18n && typeof i18n.t === 'function') {
+            const s = i18n.t(key);
+            if (s && s !== key) return s;
+        }
+        return fallback;
+    }
+
+    // archBannerHtml — чистая функция (тест: monitor-arch-r185.test.js).
+    function archBannerHtml(rows) {
+        const esc = (MA && typeof MA.esc === 'function') ? MA.esc : function (s) { return String(s == null ? '' : s); };
+        const list = (rows || []).filter(function (r) { return r && r.backend; });
+        if (!list.length) return '';
+        const title = archT('monitor.arch.title', 'Архитектура бэкенда не поддерживается');
+        const hint = archT('monitor.arch.hint',
+            'Загрузка моделей ОТКЛОНЕНА — повторять бесполезно: пересоберите образ с CUDA_ARCH, ' +
+            'включающим архитектуру карты (например 75;86;120), и перезапустите воркер.');
+        return list.map(function (r) {
+            const detail = r.warning ? r.warning : 'архитектура образа и карты не совпадают';
+            const built = r.built ? (' образ собран под sm ' + r.built + '.') : '';
+            const text = title + ': ' + esc(r.backend) + '. ' + esc(detail) + '.' + built + ' ' + hint;
+            return '<div class="arch-warning" data-backend="' + esc(r.backend) + '" role="alert" ' +
+                'title="' + esc(detail) + '" style="display:flex;gap:8px;align-items:flex-start;' +
+                'margin:0 0 10px;padding:10px 12px;border-radius:6px;' +
+                'background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.45);' +
+                'color:#f87171;font-size:13px;line-height:1.45">' +
+                '<span aria-hidden="true">⛔</span><span>' + text + '</span></div>';
+        }).join('');
+    }
+
+    // renderArchBanner — перерисовать уведомление из накопленных фактов.
+    function renderArchBanner(backends) {
+        const rows = [];
+        (backends || []).forEach(function (b) {
+            const f = b && b.id ? archFacts[b.id] : null;
+            if (f && f.ok === false) rows.push({ backend: b.id, warning: f.warning, built: f.built });
+        });
+        const html = archBannerHtml(rows);
+        const host = (typeof document !== 'undefined' && document.getElementById) ? document.getElementById('backendsArchWarning') : null;
+        if (host) {
+            host.innerHTML = html;
+            host.style.display = html ? '' : 'none';
+        }
+        return html;
+    }
+
+    // probeBackendArch — доопросить /api/info у тех бэкендов, чьё состояние протухло.
+    function probeBackendArch(backends) {
+        const api = (typeof window !== 'undefined') ? window.GgufApi : null;
+        if (!api || typeof api.requestViaBackend !== 'function') return [];
+        const ids = archProbeList(backends);
+        ids.forEach(function (id) {
+            Promise.resolve(api.requestViaBackend(id, '/api/info')).then(function (info) {
+                rememberArchInfo(id, info);
+            }).catch(function () {
+                // Воркер недоступен / старый образ: молчим. Архитектуру в этом
+                // случае назвать нельзя, а ложная тревога хуже молчания.
+            }).then(function () {
+                renderArchBanner(backends);
+            });
+        });
+        return ids;
+    }
+
+
+    // ===== R118 (2026-10-14): роль бэкенда в раскладке слоёв =====
+    //
+    // ТРЕБОВАНИЕ ОПЕРАТОРА: «явное управление от балансера через WEBUI, чтобы можно
+    // было в панели настроить режим для бэкенда, указав кто донор, а кто главный
+    // или же самодостаточный». Здесь это и есть: селектор в строке узла.
+    //
+    // Значение уходит в PUT /api/v1/backends/{id}/role (балансер). Роли хранит и
+    // применяет балансер: главному он сам пришлёт rpcEnabled + список адресов
+    // доноров, поэтому оператору не нужно править .env и заходить на машины.
+    // У image-воркеров раскладки нет — у них селектора не показываем.
+    function roleSelect(b) {
+        b = b || {};
+        const type = String(b.backendType || b.backend_type || b.type || '').toLowerCase();
+        if (type && type !== 'llama_cpp') return '';
+        const t = function (key, fallback) {
+            return (typeof window !== 'undefined' && window.I18N && typeof window.I18N.t === 'function')
+                ? window.I18N.t(key) : fallback;
+        };
+        const role = String(b.role || '');
+        const opts = [
+            { v: '', t: t('monitor.role.none', '— не задана —') },
+            { v: 'standalone', t: t('monitor.role.standalone', 'самодостаточный') },
+            { v: 'main', t: t('monitor.role.main', 'главный (раскладка)') },
+            { v: 'donor', t: t('monitor.role.donor', 'донор (узел)') }
+        ];
+        return '<div style="margin-top:2px">' +
+            '<select class="backend-role-select" data-backend="' + MA.esc(b.id) + '" ' +
+                'title="' + MA.esc(t('monitor.role.title', 'Роль бэкенда в раскладке слоёв')) + '">' +
+                opts.map(function (o) {
+                    return '<option value="' + o.v + '"' + (o.v === role ? ' selected' : '') + '>' +
+                        MA.esc(o.t) + '</option>';
+                }).join('') +
+            '</select></div>' + rpcToggle(b);
+    }
+
+    // ===== R229 (2026-10-22): тумблер раскладки RPC принадлежит ОПЕРАТОРУ =====
+    //
+    // ЖИВОЙ ДЕФЕКТ. Оператор выключал раскладку главного (rpcEnabled=false), воркер
+    // применял, а балансерский гард EnsureRPCLayout через ~15 с возвращал
+    // rpcEnabled=true: роль главного + живой донор означают «раскладка включена».
+    // В панели это выглядело как «тумблер сам включается обратно», и следующая
+    // загрузка снова уходила на донора.
+    //
+    // Теперь выбор уходит в PUT /api/v1/backends/{id}/rpc-layout, хранится в записи
+    // бэкенда (переживает рестарт) и побеждает роль; «авто» возвращает решение
+    // балансеру. Донору тумблер не показываем: донор — источник слоёв, свою
+    // раскладку он не держит.
+    function rpcToggle(b) {
+        b = b || {};
+        const type = String(b.backendType || b.backend_type || b.type || '').toLowerCase();
+        if (type && type !== 'llama_cpp') return '';
+        const role = String(b.role || '');
+        if (role === 'donor') return '';
+        const t = function (key, fallback) {
+            return (typeof window !== 'undefined' && window.I18N && typeof window.I18N.t === 'function')
+                ? window.I18N.t(key) : fallback;
+        };
+        const mode = String(b.rpcEnabledOverride || 'auto');
+        // Чекбокс показывает ЖЕЛАНИЕ: в «авто» — то, что решит роль.
+        const checked = mode === 'on' ? true : (mode === 'off' ? false : role === 'main');
+        const state = mode === 'on' ? t('monitor.rpc.state.on', 'вкл оператором')
+            : (mode === 'off' ? t('monitor.rpc.state.off', 'выкл оператором')
+                : t('monitor.rpc.state.auto', 'авто (по ролям)'));
+        const applyTitle = t('monitor.rpc.apply.title',
+            'Применить выбор: включить/выключить раскладку. Балансер не будет его перезаписывать');
+        const autoTitle = t('monitor.rpc.auto.title', 'Вернуть раскладку под управление ролями');
+        return '<div style="margin-top:2px;display:flex;gap:4px;align-items:center">' +
+            '<label class="backend-rpc-toggle" title="' + MA.esc(applyTitle) + '">' +
+                '<input type="checkbox" class="backend-rpc-enabled" data-backend="' + MA.esc(b.id) + '"' +
+                    (checked ? ' checked' : '') + '> RPC' +
+            '</label>' +
+            '<button class="backend-rpc-apply" data-backend="' + MA.esc(b.id) + '" title="' +
+                MA.esc(applyTitle) + '">' + MA.esc(t('monitor.rpc.apply', 'Применить')) + '</button>' +
+            '<button class="backend-rpc-auto" data-backend="' + MA.esc(b.id) + '" title="' +
+                MA.esc(autoTitle) + '">' + MA.esc(t('monitor.rpc.auto', 'авто')) + '</button>' +
+            '<span class="backend-rpc-state" style="font-size:10px;color:var(--text-secondary)">' +
+                MA.esc(state) + '</span>' +
+        '</div>';
+    }
+
+    // Навешивает обработчики на селекторы ролей после перерисовки таблицы.
+    function bindRoleSelectors() {
+        const tbody = document.querySelector('#backendsTable tbody');
+        if (!tbody || typeof tbody.querySelectorAll !== 'function') return;
+        tbody.querySelectorAll('.backend-role-select').forEach(function (sel) {
+            sel.addEventListener('change', function () {
+                const id = sel.getAttribute('data-backend');
+                const role = sel.value;
+                const api = window.Api || window.BalancerApi;
+                if (!api || typeof api.setBackendRole !== 'function') {
+                    console.warn('[monitor] Api.setBackendRole недоступен');
+                    return;
+                }
+                api.setBackendRole(id, role).then(function (ok) {
+                    if (window.Utils && Utils.showToast) {
+                        Utils.showToast('Роль «' + (role || 'не задана') + '» применена: ' + id, ok ? 'success' : 'error');
+                    }
+                }).catch(function (err) {
+                    if (window.Utils && Utils.showToast) {
+                        Utils.showToast('Не удалось сохранить роль: ' +
+                            (err && err.message ? err.message : err), 'error');
+                    }
+                });
+            });
+        });
+        bindRpcToggles(tbody);
+    }
+
+    // R229 (2026-10-22): обработчики тумблера раскладки RPC.
+    //
+    // «Применить» отправляет выбор оператора (on/off), «авто» — возвращает решение
+    // балансеру по ролям. Оба проходят через Api.setBackendRPCLayout и показывают
+    // ответ сервера: важно видеть не «нажал», а «применилось» (воркер мог не
+    // ответить — тогда приходит warning).
+    function bindRpcToggles(tbody) {
+        if (!tbody || typeof tbody.querySelectorAll !== 'function') return;
+        const apiOf = function () { return window.Api || window.BalancerApi; };
+        const toast = function (text, kind) {
+            if (window.Utils && Utils.showToast) Utils.showToast(text, kind);
+        };
+        const send = function (id, mode, okText) {
+            const api = apiOf();
+            if (!api || typeof api.setBackendRPCLayout !== 'function') {
+                console.warn('[monitor] Api.setBackendRPCLayout недоступен');
+                return;
+            }
+            api.setBackendRPCLayout(id, mode).then(function (res) {
+                const ok = !!(res && res.ok !== false);
+                const warning = res && res.body && res.body.warning ? (': ' + res.body.warning) : '';
+                toast(ok ? (okText + ': ' + id + warning) : ('RPC не применилось: ' + id + warning), ok ? 'success' : 'error');
+            }).catch(function (err) {
+                toast('Не удалось сохранить RPC: ' + (err && err.message ? err.message : err), 'error');
+            });
+        };
+        tbody.querySelectorAll('.backend-rpc-apply').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const id = btn.getAttribute('data-backend');
+                // Чекбокс ищем в той же строке; data-атрибут — запасной путь для
+                // таблиц, где строка не <tr> (тесты и компактные раскладки).
+                let box = null;
+                const row = btn.closest ? btn.closest('tr') : null;
+                if (row && typeof row.querySelector === 'function') {
+                    box = row.querySelector('.backend-rpc-enabled');
+                }
+                if (!box && typeof tbody.querySelector === 'function') {
+                    box = tbody.querySelector('.backend-rpc-enabled[data-backend="' + id + '"]');
+                }
+                send(id, box && box.checked ? 'on' : 'off',
+                    box && box.checked ? 'RPC включено' : 'RPC выключено');
+            });
+        });
+        tbody.querySelectorAll('.backend-rpc-auto').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                send(btn.getAttribute('data-backend'), 'auto', 'RPC снова по ролям');
+            });
+        });
+    }
+
+    // ===== R133 (2026-10-16): состояние узла раскладки у САМОГО бэкенда =====
+    //
+    // Роль в селекторе — это ПРИКАЗ. Он бесполезен, если рядом не видно
+    // исполнения: поднялся ли rpc-server, слушается ли порт и доступен ли он
+    // С БАЛАНСЕРА (порт мог не опубликоваться при запуске контейнера — тогда
+    // процесс живёт, а мастер до него не дойдёт). До R133 донор не отчитывался
+    // вовсе, поэтому «выбрал донора — ничего не произошло» было неотличимо от
+    // «всё работает».
+    //
+    // Данные — из GET /api/v1/backends → rpcNode (балансер складывает туда то,
+    // что воркер сообщает в /api/models: enabled/running/listening + проверку
+    // доступности с балансера).
+    function rpcNodeBadge(b) {
+        b = b || {};
+        const node = b.rpcNode || null;
+        if (!node) return '';
+        const t = function (key, fallback, params) {
+            return (typeof window !== 'undefined' && window.I18N && typeof window.I18N.t === 'function')
+                ? window.I18N.t(key, params) : fallback;
+        };
+        const port = node.port ? (':' + node.port) : '';
+        const reason = node.reason ? MA.esc(node.reason) : '';
+        const style = 'display:inline-block;margin-top:2px;font-size:10px;padding:0 4px;border-radius:3px;border:1px solid ';
+        // Порт показываем РЯДОМ с подписью, а не внутри неё: подпись переводится,
+        // а номер порта — это факт, который оператор сверяет с compose/фаерволом.
+        const withPort = function (text) { return port ? (text + ' ' + port) : text; };
+        // Донор: узел обязана поднять эта машина — показываем расхождение.
+        if (node.wanted) {
+            if (node.running && node.listening && node.reachable) {
+                return '<div style="' + style + '#22c55e55;color:#22c55e" title="' + reason + '">' +
+                    MA.esc(withPort(t('monitor.rpcnode.up', 'узел раскладки поднят'))) + '</div>';
+            }
+            if (node.running && !node.reachable) {
+                return '<div style="' + style + '#f9731655;color:#f97316" title="' + reason + '">' +
+                    MA.esc(withPort(t('monitor.rpcnode.unreachable', 'узел раскладки недоступен с балансера'))) + '</div>';
+            }
+            return '<div style="' + style + '#ef444455;color:#ef4444" title="' + reason + '">' +
+                MA.esc(withPort(t('monitor.rpcnode.down', 'узел раскладки не поднят'))) + '</div>';
+        }
+        // Не донор: узел мог поднять оператор руками — это факт, а не требование.
+        if (node.running) {
+            return '<div style="' + style + '#64748b55;color:var(--text-secondary)" title="' + reason + '">' +
+                MA.esc(withPort(t('monitor.rpcnode.manual', 'узел раскладки поднят вручную'))) + '</div>';
+        }
+        return '';
+    }
+
+    // vramRemoteSource (R132): откуда вклад узлов раскладки в бюджет у
+    // СПРАВОЧНЫХ путей — none | cache | probed. «0 МБ узлов» и «узлы не
+    // измерялись» снаружи выглядели одинаково; теперь это разные подписи.
+    function vramRemoteSourceNote(b) {
+        b = b || {};
+        const src = String(b.vramRemoteSource || '');
+        if (!src) return '';
+        const t = function (key, fallback) {
+            return (typeof window !== 'undefined' && window.I18N && typeof window.I18N.t === 'function')
+                ? window.I18N.t(key) : fallback;
+        };
+        const map = {
+            none: t('monitor.layout.source_none', 'узлы раскладки не измерялись'),
+            cache: t('monitor.layout.source_cache', 'узлы раскладки — из последнего замера'),
+            probed: t('monitor.layout.source_probed', 'узлы раскладки измерены')
+        };
+        const text = map[src];
+        if (!text) return '';
+        return '<div style="font-size:10px;color:var(--text-muted)">' + MA.esc(text) + '</div>';
+    }
+
     // ===== Sorting =====
     function sort(backends, column, asc) {
         currentSort = { column, asc };
@@ -72,6 +417,11 @@ const MonitorBackends = (() => {
 
         tbody.innerHTML = sorted.map(b => renderRow(b)).join('');
         bindSortHeaders();
+        // R118: селекторы роли бэкенда в раскладке — навешиваем после перерисовки.
+        bindRoleSelectors();
+        // R185: уведомление о несовместимой CUDA-архитектуре (опрос — с TTL).
+        renderArchBanner(sorted);
+        probeBackendArch(sorted);
     }
 
     function renderRow(b) {
@@ -204,7 +554,7 @@ const MonitorBackends = (() => {
         const moreModels = modelsSource.length > 3 ? (' +' + (modelsSource.length - 3)) : '';
 
         return `<tr data-backend="${MA.esc(b.id)}" title="${MA.esc(tooltip)}">
-            <td><strong>${MA.esc(b.id)}</strong> ${hasAgent}${imageBadges}${typeBadge}</td>
+            <td><strong>${MA.esc(b.id)}</strong> ${hasAgent}${imageBadges}${typeBadge}${roleSelect(b)}${rpcNodeBadge(b)}${vramRemoteSourceNote(b)}</td>
             <td><span class="badge ${scs}">${b.status}</span></td>
             <td>${bar(gu)} ${gu.toFixed(0)}%</td>
             <td>${bar(vu)} ${vu.toFixed(0)}%</td>
@@ -319,6 +669,18 @@ const MonitorBackends = (() => {
         filter,
         setupFilter,
         bindUnloadHandlers,
+        // R118: для теста селектора роли бэкенда (monitor-role-r118.test.js).
+        renderRow,
+        roleSelect,
+        // R133: состояние узла раскладки и источник вклада узлов — для тестов.
+        rpcNodeBadge,
+        vramRemoteSourceNote,
+        // R185: уведомление «архитектура не поддерживается» — для теста
+        // (monitor-arch-r185.test.js).
+        archBannerHtml,
+        rememberArchInfo,
+        renderArchBanner,
+        archProbeList,
         getCurrentSort: () => currentSort,
         getCurrentFilter: () => currentFilter
     };

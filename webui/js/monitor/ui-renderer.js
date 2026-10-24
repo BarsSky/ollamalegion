@@ -1078,7 +1078,7 @@
   function renderBackends(bk, modelOps) {
     document.getElementById('backendCount').textContent = bk.length;
     var tb = document.querySelector('#backendsTable tbody');
-    if (!bk.length) { tb.innerHTML = '<tr><td colspan="17" style="color:var(--text-secondary);text-align:center;padding:16px">' + T('monitor.common.noData') + '</td></tr>'; return; }
+    if (!bk.length) { tb.innerHTML = '<tr><td colspan="18" style="color:var(--text-secondary);text-align:center;padding:16px">' + T('monitor.common.noData') + '</td></tr>'; return; }
     // Build a lookup: backendId -> array of operations running on it
     var opsByBackend = {};
     if (modelOps) {
@@ -1237,8 +1237,20 @@
           '<td class="col-right" style="color:var(--success)">' + (imgReq.ok || 0) + '</td>' +
           '<td class="col-right" style="color:' + ((imgReq.failed || 0) > 0 ? 'var(--danger)' : 'var(--text-secondary)') + '">' + (imgReq.failed || 0) + '</td>'
         : '<td class="col-right">-</td><td class="col-right">-</td><td class="col-right">-</td>';
-      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + imageBadges + typeBadge + '</td><td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + modelsCell + '</td>' + imgReqCells + '<td class="col-right">' + up + '</td></tr>';
+      // R118.4 (2026-10-14): ячейка «Раскладка (RPC)» — селектор роли бэкенда
+      // (главный/донор/самодостаточный) и состояние раскладки. Рисует
+      // js/monitor/layout-panel.js: он же навешивает обработчики ниже. Раньше
+      // управление раскладкой было только в API/.env — в панели его не было.
+      var layoutCell = (window.MonitorLayout && typeof window.MonitorLayout.rowLayoutCell === 'function')
+        ? window.MonitorLayout.rowLayoutCell(b) : '<td></td>';
+      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + imageBadges + typeBadge + '</td>' + layoutCell + '<td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + modelsCell + '</td>' + imgReqCells + '<td class="col-right">' + up + '</td></tr>';
     }).join('');
+    // R118.4: селекторы роли в свежеотрисованных строках + обновление панели
+    // раскладки (роли/состояние приходят из /api/v1/backends, а не из cluster/state).
+    if (window.MonitorLayout) {
+      if (typeof window.MonitorLayout.bindRowSelectors === 'function') window.MonitorLayout.bindRowSelectors(tb);
+      if (typeof window.MonitorLayout.load === 'function') window.MonitorLayout.load(false);
+    }
   }
 
   // renderAdmissionStats — R70: admission-очередь (кто ждёт свободный слот).
@@ -1292,8 +1304,7 @@
       var cand = (g.candidates || []).join(', ') || '—';
       return name + ': ' + (g.hasGroup ? T('monitor.placement.groupYes') : T('monitor.placement.groupNo')) + ' [' + cand + ']';
     });
-    var gl = document.getElementById('plGroups');
-    if (gl) {
+    var gl = document.getElementById('plGroups');    if (gl) {
       gl.textContent = groupLines.length ? T('monitor.placement.groups') + ': ' + groupLines.join(' · ') : '';
     }
     var wl = document.getElementById('plWarnList');
@@ -1329,6 +1340,13 @@
         '<td>' + MA.esc((d && d.fallback) || '-') + '</td>' +
         '<td style="font-size:11px">' + reason + '</td></tr>';
     }).join('');
+
+    // R104 (S6 плана 2026-10-07): карточка логических бэкендов (объединённых
+    // узлов) — из ТЕХ ЖЕ данных. Монитор опрашивает /api/v1/placement каждые ~2 с,
+    // и отдельный запрос из карточки удваивал бы трафик на каждом тике.
+    if (window.MonitorGroups && window.MonitorGroups.renderFromPlacement) {
+      window.MonitorGroups.renderFromPlacement(pl);
+    }
   }
 
   /**
@@ -1472,6 +1490,15 @@
       var idl = s.lastRequestAt ? MA.fmtDur(Date.now() - new Date(s.lastRequestAt).getTime()) : '-';
       var modelCell = MA.esc(s.model || '-');
       if (MA.isCloudModel(s.model)) modelCell += ' ☁️';
+      // R229 (2026-10-22): бейдж протокола — OpenAI (/v1/...) или Ollama (/api/...).
+      // В мониторе сессии выглядели одинаково, и жалобы «не работают инструменты»
+      // (OpenAI-путь) и «n_ctx превышен» (Ollama-путь) было не различить по строке.
+      var proto = String(s.protocol || '').toLowerCase();
+      if (proto === 'openai') {
+        modelCell += ' <span class="badge badge-green" title="OpenAI API (/v1/...)">OpenAI</span>';
+      } else if (proto === 'ollama') {
+        modelCell += ' <span class="badge badge-yellow" title="Ollama API (/api/...)">Ollama</span>';
+      }
       var ipCol = MA.ipColor(s.clientIP);
       var ci = MA.getCI(s.clientName);
       // Индикатор активного стриминга: зелёная точка для активного, серая для idle
@@ -1524,7 +1551,9 @@
     var enabledEl = document.getElementById('autoPullEnabled');
     var enabledLabel = document.getElementById('autoPullEnabledLabel');
     var maxConcurrentEl = document.getElementById('autoPullMaxConcurrent');
-    var pullTimeoutEl = document.getElementById('autoPullPullTimeout');
+    // R106c (2026-10-12): поле Pull Timeout убрано из панели — элемент может не
+    // существовать, поэтому обращения к нему ниже защищены (иначе TypeError и
+    // вся панель auto-pull перестаёт отрисовываться).
     var retryCountEl = document.getElementById('autoPullRetryCount');
     var activeCountEl = document.getElementById('autoPullActiveCount');
     var tableBody = document.querySelector('#autoPullTable tbody');
@@ -1535,7 +1564,6 @@
     // but DON'T reset the checkbox — preserve user interaction
     if (!cfg) {
       maxConcurrentEl.value = 2;
-      pullTimeoutEl.value = '120s';
       retryCountEl.value = 1;
       if (activeCountEl) activeCountEl.textContent = '0';
       if (tableBody) tableBody.innerHTML = '<tr><td colspan="6" style="color:var(--text-secondary);text-align:center;padding:12px">' + (T('monitor.autoPull.noData') || 'No data') + '</td></tr>';
@@ -1548,7 +1576,6 @@
       ? (T('monitor.autoPull.on') || 'Вкл')
       : (T('monitor.autoPull.off') || 'Выкл');
     maxConcurrentEl.value = cfg.maxConcurrent || 2;
-    pullTimeoutEl.value = cfg.pullTimeout || '120s';
     retryCountEl.value = cfg.retryCount || 1;
 
     // Update active pulls count from status

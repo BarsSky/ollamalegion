@@ -15,6 +15,7 @@
 package balancer
 
 import (
+	"strings"
 	"testing"
 
 	"ollama-loadbalancer/pkg/types"
@@ -120,5 +121,92 @@ func TestSelectLlamaCppBackendForModel_FallsBackWithoutMetrics(t *testing.T) {
 	got := lr.selectLlamaCppBackendForModel(model)
 	if got == "" {
 		t.Fatal("без метрик выбор пуст — запрос получит 503 «no llama.cpp backend available»")
+	}
+}
+
+// balanceTestRouterStoredName — H8: два healthy llama.cpp-бэкенда, модель
+// загружена ТОЛЬКО у второго (bk-b), причём под именем, которое клиент никогда
+// не присылает дословно (другой регистр + расширение .gguf).
+func balanceTestRouterStoredName(t *testing.T, storedName string) *LlamaCppRouter {
+	t.Helper()
+
+	p := &Proxy{
+		config:     &types.LoadBalancerConfig{},
+		backends:   map[string]*BackendState{},
+		metricsMgr: NewMetricsManager(),
+	}
+	for _, spec := range []struct {
+		id     string
+		hasMod bool
+	}{{"bk-a", false}, {"bk-b", true}} {
+		p.backends[spec.id] = &BackendState{
+			Backend: &types.Backend{
+				ID:                spec.id,
+				Host:              "127.0.0.1",
+				Status:            types.StatusHealthy,
+				Type:              types.BackendTypeLlamaCpp,
+				CppWorkerPort:     18092,
+				MaxConcurrentReqs: 1,
+			},
+			ActiveReqs: 0,
+		}
+		m := &types.BackendMetrics{
+			ID:                    spec.id,
+			Status:                types.StatusHealthy,
+			BackendType:           types.BackendTypeLlamaCpp,
+			MaxConcurrentRequests: 1,
+			GPU:                   types.GPUMetrics{MemoryTotal: 8192, MemoryUsed: 1000},
+			System:                types.SystemMetrics{MemoryTotal: 24576, MemoryUsed: 2048},
+		}
+		if spec.hasMod {
+			m.LlamaCpp = types.LlamaCppMetrics{LoadedModels: []types.LlamaCppModel{{Name: storedName}}}
+		}
+		// SetBackendMetrics синхронизирует и llamaMetrics — ровно то, что делает
+		// боевой UpdateMetrics.
+		p.SetBackendMetrics(spec.id, m)
+	}
+	return NewLlamaCppRouter(p)
+}
+
+// TestSelectLlamaCppBackendForModel_MatchesNormalizedStoredName_H8 — H8
+// (2026-10-09): тёплый узел должен находиться и когда cppworker отдаёт имя
+// модели в другом регистре/с расширением .gguf, а клиент зовёт её Ollama-тегом.
+//
+// ЖИВОЙ ДЕФЕКТ. findModelOnLlamaCppBackend сравнивал имена СЫРО
+// (`m.Name == model || strings.TrimSuffix(m.Name, ".gguf") == model`), тогда как
+// рядом (IsLlamaCppModelLoaded) уже был нормализующий modelNameMatches. Запрос
+// "gemma-4-e4b-it-q4_k_m:latest" при загруженной "Gemma-4-E4B-it-Q4_K_M.gguf"
+// не находил узел с моделью в VRAM: выбор уходил в selectAnyLlamaCppHealthy —
+// произвольный healthy узел (в т.ч. холодный), что давало лишний unload+load
+// (десятки секунд — минуты на модель).
+func TestSelectLlamaCppBackendForModel_MatchesNormalizedStoredName_H8(t *testing.T) {
+	const (
+		storedName  = "Gemma-4-E4B-it-Q4_K_M.gguf"
+		requestName = "gemma-4-e4b-it-q4_k_m:latest"
+	)
+	if !modelNameMatches(storedName, requestName) {
+		t.Fatalf("предпосылка теста нарушена: modelNameMatches(%q, %q) == false", storedName, requestName)
+	}
+	// Сырое сравнение (прежнее поведение) эту пару НЕ ловит — иначе тест ничего
+	// не проверял бы.
+	if storedName == requestName || strings.TrimSuffix(storedName, ".gguf") == requestName {
+		t.Fatalf("пара %q / %q совпадает сырым сравнением — тест не воспроизводит дефект H8", storedName, requestName)
+	}
+
+	lr := balanceTestRouterStoredName(t, storedName)
+
+	// (1) Точка правки: поиск узла с уже загруженной моделью.
+	if got := lr.findModelOnLlamaCppBackend(requestName); got != "bk-b" {
+		t.Fatalf("findModelOnLlamaCppBackend(%q) = %q, ожидался bk-b — единственный узел с моделью в VRAM (иначе запрос уйдёт на холодный узел)", requestName, got)
+	}
+
+	// (2) Боевой выбор бэкенда: без нормализации он падал в
+	// selectAnyLlamaCppHealthy, который отдаёт узел из обхода карты — то есть
+	// мог вернуть холодный bk-a. Повторяем, чтобы поймать недетерминированный
+	// фолбэк, а не разовое совпадение.
+	for i := 0; i < 20; i++ {
+		if got := lr.selectLlamaCppBackendForModel(requestName); got != "bk-b" {
+			t.Fatalf("selectLlamaCppBackendForModel(%q) = %q (попытка %d), ожидался тёплый bk-b", requestName, got, i+1)
+		}
 	}
 }

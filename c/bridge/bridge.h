@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>  // size_t: заголовок включают и C++ файлы (csrc/*.cpp), где
+                     // без него `size_t` не виден (BridgeDeviceInfo)
 
 #ifdef __cplusplus
 extern "C" {
@@ -115,6 +117,16 @@ typedef struct {
     //   3=LLAMA_SPLIT_MODE_TENSOR (experimental, requires NCCL + Flash Attn + dense model)
     // -1 = use llama.cpp default (LAYER).
     int split_mode;                 // -1 (default) / 0 / 1 / 2 / 3
+    // S1 (2026-10-11): RPC-узлы раскладки слоями между машинами.
+    //
+    // Массив строк "host:port" (NULL если RPC не настроен). Мост регистрирует
+    // каждый узел как ggml-устройство ДО создания модели и передаёт устройства
+    // в llama_model_params.devices: иначе llama.cpp их не увидит, и
+    // split_mode=LAYER молча посчитает модель локально — оператор будет уверен,
+    // что распределил, а вторая машина останется простаивать. Требуется сборка
+    // llama.cpp с -DGGML_RPC=ON; без неё мост честно сообщает об этом в stderr.
+    const char** rpc_endpoints;     // массив строк "host:port" (NULL если нет)
+    int rpc_endpoints_len;          // длина массива rpc_endpoints
     int vocab_only;                 // 0/1 — загрузить только словарь
     int use_mmap;                   // 0/1 — использовать mmap
     int use_mlock;                  // 0/1 — заблокировать память
@@ -212,6 +224,37 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
 // молчаливое понижение gpu_layers скрывало бы деградацию до CPU-only.
 int bridge_get_last_gpu_layers(void);
 
+// BridgeDeviceInfo — устройство, которое реально участвует в раскладке слоёв:
+// локальные не-CPU устройства (CUDA) плюс устройства подключённых RPC-узлов.
+//
+// Зачем отдельная структура, а не GPUDeviceInfo: GPUDeviceInfo описывает
+// ЛОКАЛЬНУЮ карту по данным CUDA/NVML, а планировщику в Go (memfit, tensor
+// split) нужен тот же список, который уйдёт в llama_model_params.devices —
+// вместе со свободной памятью удалённых узлов. Без неё планировщик считает
+// ёмкость только по своей карте и урезает число слоёв так, что удалённый узел
+// простаивает (живая проба S1 2026-10-13).
+typedef struct {
+    char   name[128];     // имя устройства (CUDA0, RPC0, ...)
+    int    dev_type;      // ggml_backend_dev_type: 0=CPU, 1=GPU, 2=IGPU, 3=ACCEL
+    int    is_remote;     // 1 = устройство RPC-узла (другая машина)
+    size_t memory_free;   // свободно байт (для RPC — с удалённого узла)
+    size_t memory_total;  // всего байт
+} BridgeDeviceInfo;
+
+// bridge_collect_devices — список устройств раскладки БЕЗ загрузки модели.
+//
+// Нужен планировщику ДО загрузки: он обязан видеть свободную память удалённых
+// узлов, иначе урежет число слоёв по локальной карте. Порядок элементов тот же,
+// что у массива для llama_model_params.devices (локальные первыми), поэтому по
+// нему можно строить tensor_split: позиция i = устройство i.
+//
+// Идемпотентна: ggml_backend_rpc_add_server кэширует реестр по endpoint'у, так
+// что повторный вызов не создаёт дубликатов устройств.
+//
+// Возвращает число записанных устройств (0, если RPC не настроен или ни один
+// узел не подключился — тогда раскладка локальная, как было).
+int bridge_collect_devices(const ModelConfig* config, BridgeDeviceInfo* out, int max);
+
 // Выгрузка модели
 void bridge_free_model(ModelHandle model);
 
@@ -234,6 +277,18 @@ InferenceResult bridge_infer(
 
 // Стриминг инференс (через callback)
 typedef int (*StreamCallback)(const char* token, int token_len, void* user_data);
+
+// R118.16 (2026-10-14): перехват лог-строк llama.cpp для ТОЧНОЙ раскладки слоёв.
+//
+// llama.cpp печатает раскладку сам (`load_tensors: layer N assigned to device X`),
+// но ни в один API её не отдаёт. Мост ставит свой llama/ggml лог-колбэк, режет
+// поток на строки и передаёт их Go-стороне (bridge.go: goBridgeLogLine), сохраняя
+// вывод в stderr через ранее установленный колбэк.
+typedef void (*BridgeLogLineFn)(char* line, int len);
+
+// bridge_install_log_capture — поставить колбэк. Идемпотентно (повторный вызов
+// ничего не меняет), вызывается перед загрузкой модели.
+void bridge_install_log_capture(BridgeLogLineFn fn);
 
 // R83 (2026-09-29): abort_flag — ЗАРАНЕЕ созданный флаг (bridge_infer_abort_create).
 //
@@ -360,6 +415,24 @@ void bridge_request_load_abort_all(void);
 // После успешного завершения load флаг остаётся в InternalModel (не
 // сбрасывается автоматически — load уже completed, проверки не релевантны).
 bool bridge_is_load_aborted(ModelHandle model);
+
+// bridge_get_load_progress — R215 (2026-10-21): прогресс чтения весов, 0..100.
+//
+// Заполняется progress-callback llama.cpp (bridge_load_progress_cb) и потому
+// обновляется ВО ВРЕМЯ загрузки, а не после неё: этим пользуются /api/models и
+// /api/models/load/progress, чтобы оператор видел, сколько осталось, и мог
+// отменить загрузку осмысленно. Возвращает -1 для NULL handle и 100 после
+// успешной загрузки.
+int bridge_get_load_progress(ModelHandle model);
+
+// bridge_load_progress_by_path — тот же прогресс, но по ПУТИ модели (-1 = этот
+// путь сейчас не загружается). Нужен потому, что Go-сторона читает прогресс из
+// другой горутины: на пути ошибки InternalModel освобождается, и разыменование
+// handle было бы use-after-free.
+int bridge_load_progress_by_path(const char * path);
+
+// bridge_clear_load_progress — снять запись реестра после завершения загрузки.
+void bridge_clear_load_progress(const char * path);
 
 // Получение последней ошибки (legacy: только текст, не различает причины)
 const char* bridge_last_error(void);

@@ -97,9 +97,9 @@ $env:GITHUB_TOKEN = "ghp_xxx..."
 **Ожидаемый вывод:**
 ```
 === 2/6 Self-hosted runner service ===
-  ✅ Service: actions.runner.BarsSky-ollamalegion.knaga-ci — Status: Running
+  ✅ Service: actions.runner.<owner>-<repo>.<runner-name> — Status: Running
   ✅ Runner config: C:\actions-runner\.runner
-    Agent: knaga-ci
+    Agent: <runner-name>
     Pool:  Default
     URL:   https://github.com/BarsSky/ollamalegion
 ```
@@ -202,7 +202,7 @@ GitHub выпускает обновления runner'а ~1 раз в 2-4 нед
 
 ```powershell
 # Остановить service
-Stop-Service "actions.runner.BarsSky-ollamalegion.knaga-ci"
+Stop-Service "actions.runner.<owner>-<repo>.<runner-name>"
 
 # Скачать новую версию (замените X.Y.Z на актуальную)
 cd C:\actions-runner
@@ -210,7 +210,7 @@ Invoke-WebRequest -Uri "https://github.com/actions/runner/releases/download/vX.Y
 Expand-Archive update.zip -DestinationPath . -Force
 
 # Запустить service
-Start-Service "actions.runner.BarsSky-ollamalegion.knaga-ci"
+Start-Service "actions.runner.<owner>-<repo>.<runner-name>"
 ```
 
 ### Логи

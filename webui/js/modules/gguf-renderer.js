@@ -88,7 +88,15 @@ const GgufRenderer = (window.GgufRenderer = (function () {
     var formatFileSize = M.formatFileSize;
     var showToast = M.showToast;
 
+    // R134 (2026-10-16): один helper локализации на страницу. Раньше здесь была
+    // ВТОРАЯ реализация, которая тоже не умела fallback (второй аргумент уходил в
+    // I18N.t как {vars}) — из-за этого в карточке параметров были видны ключи
+    // «gguf.parallel»/«gguf.reasoning» вместо подписей. Делегируем M._ (state.js
+    // загружается первым), чтобы поведение было одно и то же.
     const _ = function (key, vars) {
+        if (window.GgufModule && typeof window.GgufModule._ === 'function') {
+            return window.GgufModule._(key, vars);
+        }
         return window.I18N ? I18N.t(key, vars) : key;
     };
 

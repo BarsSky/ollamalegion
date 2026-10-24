@@ -1,0 +1,12 @@
+# ВРЕМЕННЫЙ override для живой проверки «двух режимов» авто-продолжения
+# (R118.17). environment переопределяет env_file (см. комментарий в
+# docker-compose.stack.yml), поэтому флаг выключается без правки .env-файлов.
+#
+#   docker compose -p ollama-legion-stack -f docker-compose.stack.yml \
+#     -f docker-compose.auto-continue-off.yml up -d --no-deps loadbalancer
+#
+# После проверки: удалить файл и поднять сервис без него (флаг вернётся =1).
+services:
+  loadbalancer:
+    environment:
+      - LB_AUTO_CONTINUE_ON_TRUNCATION=0

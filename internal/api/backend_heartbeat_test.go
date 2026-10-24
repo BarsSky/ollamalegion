@@ -16,11 +16,11 @@ import (
 func TestAgentBackendHeartbeat_HappyPath(t *testing.T) {
 	s, cleanup := setupTestServerWithBackends(t, []types.Backend{
 		{
-			ID:              "cppworker-gpu-bundled",
-			Host:            "cppworker-gpu",
-			CppWorkerPort:   18092,
-			Type:            types.BackendTypeLlamaCpp,
-			Status:          types.StatusHealthy,
+			ID:                "cppworker-gpu-bundled",
+			Host:              "cppworker-gpu",
+			CppWorkerPort:     18092,
+			Type:              types.BackendTypeLlamaCpp,
+			Status:            types.StatusHealthy,
 			MaxConcurrentReqs: 4,
 		},
 	})
@@ -67,11 +67,11 @@ func TestAgentBackendHeartbeat_AutoAttach(t *testing.T) {
 	// и автоматически attach'нуться (первый пришедший становится владельцем).
 	s, cleanup := setupTestServerWithBackends(t, []types.Backend{
 		{
-			ID:              "cppworker-gpu-bundled",
-			Host:            "cppworker-gpu",
-			CppWorkerPort:   18092,
-			Type:            types.BackendTypeLlamaCpp,
-			Status:          types.StatusHealthy,
+			ID:                "cppworker-gpu-bundled",
+			Host:              "cppworker-gpu",
+			CppWorkerPort:     18092,
+			Type:              types.BackendTypeLlamaCpp,
+			Status:            types.StatusHealthy,
 			MaxConcurrentReqs: 4,
 		},
 	})
@@ -103,11 +103,11 @@ func TestAgentBackendHeartbeat_AgentIDMismatch(t *testing.T) {
 	// агент B не может обновить heartbeat.
 	s, cleanup := setupTestServerWithBackends(t, []types.Backend{
 		{
-			ID:              "cppworker-gpu-bundled",
-			Host:            "cppworker-gpu",
-			CppWorkerPort:   18092,
-			Type:            types.BackendTypeLlamaCpp,
-			Status:          types.StatusHealthy,
+			ID:                "cppworker-gpu-bundled",
+			Host:              "cppworker-gpu",
+			CppWorkerPort:     18092,
+			Type:              types.BackendTypeLlamaCpp,
+			Status:            types.StatusHealthy,
 			MaxConcurrentReqs: 4,
 		},
 	})

@@ -1,4 +1,4 @@
-// sync_profile_test.go — Unit tests for pull-based profile sync.
+﻿// sync_profile_test.go — Unit tests for pull-based profile sync.
 //
 // Round 26 (2026-08-06): verifies the merge function handles all edge cases
 // without making real HTTP calls. HTTP-based tests live in handlers_model_*_test.go
@@ -14,7 +14,7 @@ import (
 func TestApplyProfileToLoadRequest_NoProfile(t *testing.T) {
 	var ctxSize, batch, gpu, flash int
 	kv := ""
-	allowed := applyProfileToLoadRequest(nil, &ctxSize, &batch, &gpu, &flash, &kv)
+	allowed := applyProfileToLoadRequest(nil, &ctxSize, &batch, &gpu, &flash, &kv, nil)
 	if !allowed {
 		t.Error("expected allowed=true when no profile")
 	}
@@ -25,7 +25,7 @@ func TestApplyProfileToLoadRequest_NoProfile(t *testing.T) {
 
 func TestApplyProfileToLoadRequest_Disabled(t *testing.T) {
 	prof := &types.LlamaCppModelProfile{Disabled: true}
-	allowed := applyProfileToLoadRequest(prof, newInt(0), nil, nil, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, newInt(0), nil, nil, nil, nil, nil)
 	if allowed {
 		t.Error("expected allowed=false for disabled profile")
 	}
@@ -39,7 +39,7 @@ func TestApplyProfileToLoadRequest_FillsZeroes(t *testing.T) {
 		NumGPULayers:  38,
 		KVCacheType:   "f16",
 	}
-	allowed := applyProfileToLoadRequest(prof, nil, nil, nil, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, nil, nil, nil, nil, nil, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
@@ -57,7 +57,7 @@ func TestApplyProfileToLoadRequest_RespectsExisting(t *testing.T) {
 		BatchSize:     512,
 	}
 	ctxSize := 8192
-	allowed := applyProfileToLoadRequest(prof, &ctxSize, nil, nil, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, &ctxSize, nil, nil, nil, nil, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
@@ -79,7 +79,7 @@ func TestApplyProfileToLoadRequest_OverridesWhenCallerZero(t *testing.T) {
 	// Test that with a non-nil zero pointer, profile applies.
 	zero := 0
 	prof := &types.LlamaCppModelProfile{ContextLength: 65536}
-	allowed := applyProfileToLoadRequest(prof, &zero, nil, nil, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, &zero, nil, nil, nil, nil, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
@@ -94,7 +94,7 @@ func TestApplyProfileToLoadRequest_FlashAttnBoolToInt(t *testing.T) {
 		b := true
 		prof := &types.LlamaCppModelProfile{FlashAttn: &b}
 		flash := 0
-		allowed := applyProfileToLoadRequest(prof, nil, nil, nil, &flash, nil)
+		allowed := applyProfileToLoadRequest(prof, nil, nil, nil, &flash, nil, nil)
 		if !allowed || flash != 1 {
 			t.Errorf("expected flash=1, got %d (allowed=%v)", flash, allowed)
 		}
@@ -103,7 +103,7 @@ func TestApplyProfileToLoadRequest_FlashAttnBoolToInt(t *testing.T) {
 		b := false
 		prof := &types.LlamaCppModelProfile{FlashAttn: &b}
 		flash := 0
-		allowed := applyProfileToLoadRequest(prof, nil, nil, nil, &flash, nil)
+		allowed := applyProfileToLoadRequest(prof, nil, nil, nil, &flash, nil, nil)
 		if !allowed || flash != -1 {
 			t.Errorf("expected flash=-1, got %d (allowed=%v)", flash, allowed)
 		}
@@ -119,7 +119,7 @@ func TestApplyProfileToLoadRequest_OnlyFillMissingFields(t *testing.T) {
 	}
 	ctxSize := 0
 	batch := 256
-	allowed := applyProfileToLoadRequest(prof, &ctxSize, &batch, nil, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, &ctxSize, &batch, nil, nil, nil, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
@@ -134,7 +134,7 @@ func TestApplyProfileToLoadRequest_OnlyFillMissingFields(t *testing.T) {
 func TestApplyProfileToLoadRequest_KVCacheType(t *testing.T) {
 	prof := &types.LlamaCppModelProfile{KVCacheType: "q8_0"}
 	kv := ""
-	allowed := applyProfileToLoadRequest(prof, nil, nil, nil, nil, &kv)
+	allowed := applyProfileToLoadRequest(prof, nil, nil, nil, nil, &kv, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
@@ -168,12 +168,53 @@ func TestApplyProfileToLoadRequest_NumGPULayersNegativeOne(t *testing.T) {
 	// profile.NumGPULayers = -1 (all GPU) → caller должен это интерпретировать.
 	prof := &types.LlamaCppModelProfile{NumGPULayers: -1}
 	gpu := 0
-	allowed := applyProfileToLoadRequest(prof, nil, nil, &gpu, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, nil, nil, &gpu, nil, nil, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
 	if gpu != -1 {
 		t.Errorf("expected gpu=-1, got %d", gpu)
+	}
+}
+
+// TestR135_ProfileParallelReachesLoad — R135 (2026-10-16): parallel из профиля
+// обязан попадать в параметры загрузки.
+//
+// ЖИВОЙ ДЕФЕКТ (найден инструментом scripts/e2e/02-model-params.js на стенде):
+// профиль модели с `parallel: 2` поднимал инстанс с ОДНИМ слотом — в логе воркера
+// `slot manager initialized maxSlots:1, parallel:1, defaultNParallel:2`, а факт в
+// runtime-конфиге показывал parallel=1. Явный `parallel: 2` в запросе загрузки
+// при этом даёт n_seq_max=2 и maxSlots=2, то есть сам воркер исправен: терял
+// именно профиль — эта функция о параллельности не знала вообще.
+//
+// Последствие для оператора: «поставил 2 слота, а второй клиент ждёт», и
+// «перезагрузка идёт с совсем другими параметрами, не теми что указывал».
+func TestR135_ProfileParallelReachesLoad(t *testing.T) {
+	// 1. Профиль задаёт слоты, запрос — нет: профиль заполняет.
+	prof := &types.LlamaCppModelProfile{Parallel: 2}
+	parallel := 0
+	if !applyProfileToLoadRequest(prof, nil, nil, nil, nil, nil, &parallel) {
+		t.Fatal("allowed=false при обычном профиле")
+	}
+	if parallel != 2 {
+		t.Errorf("parallel = %d, want 2: профиль не применяется к загрузке "+
+			"(именно это давало maxSlots=1 при заданных двух слотах)", parallel)
+	}
+
+	// 2. Явный запрос клиента побеждает профиль (тот же приоритет, что у ctx/batch/kv).
+	prof3 := &types.LlamaCppModelProfile{Parallel: 3}
+	explicit := 1
+	applyProfileToLoadRequest(prof3, nil, nil, nil, nil, nil, &explicit)
+	if explicit != 1 {
+		t.Errorf("parallel = %d, want 1: профиль перебил явный запрос клиента", explicit)
+	}
+
+	// 3. Профиль без слотов ничего не выдумывает.
+	prof0 := &types.LlamaCppModelProfile{}
+	untouched := 0
+	applyProfileToLoadRequest(prof0, nil, nil, nil, nil, nil, &untouched)
+	if untouched != 0 {
+		t.Errorf("parallel = %d, want 0: профиль без parallel не должен ничего менять", untouched)
 	}
 }
 

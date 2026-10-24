@@ -414,28 +414,33 @@
                 if (!radio) return;
 
                 var newType = radio.value;
+                // R112 (2026-10-11): карточка «Авто» — это UI-тип «Все» (тип бэкенда
+                // не навязан, движок определяется составом кластера).
+                var uiType = (newType === 'auto') ? 'all' : newType;
                 var currentType = window.BackendTypeFilter
                     ? BackendTypeFilter.getCurrentType()
                     : (localStorage.getItem('ollamalegion_backend_type') || 'ollama');
 
                 // Проверяем, что тип действительно меняется
-                if (newType === currentType) return;
-                
+                if (uiType === currentType) return;
+
                 // Принудительно переключаем визуально (браузер уже сделал это,
                 // но гарантируем синхронизацию с нашим состоянием)
-                syncBackendEngineCards(newType);
+                syncBackendEngineCards(uiType);
 
-                // Проверяем совместимость режима с новым типом
+                // Проверяем совместимость режима с новым типом.
+                // R112: режим и тип развязаны — доступны все режимы, сброса нет.
                 var currentMode = getCurrentMode();
                 var availableModes = window.BackendTypeFilter
-                    ? BackendTypeFilter.getAvailableModes(newType)
-                    : (newType === 'llama_cpp' ? ['standard', 'virtual_router', 'distributed_inference'] : ['standard', 'replication', 'rpc_coordinator']);
+                    ? BackendTypeFilter.getAvailableModes(uiType)
+                    : ['standard', 'replication', 'rpc_coordinator', 'virtual_router', 'distributed_inference'];
 
                 var modeNeedsReset = availableModes.indexOf(currentMode) < 0;
 
+                var targetLabel = newType === 'auto' ? 'Авто (llama.cpp + Ollama)' : (newType === 'llama_cpp' ? 'llama.cpp' : 'Ollama API');
                 var msg = window.I18N
                     ? I18N.t('wizard.backend_type_confirm_change')
-                    : '\u0412\u044B \u0443\u0432\u0435\u0440\u0435\u043D\u044B, \u0447\u0442\u043E \u0445\u043E\u0442\u0438\u0442\u0435 \u0441\u043C\u0435\u043D\u0438\u0442\u044C \u0442\u0438\u043F \u0434\u0432\u0438\u0436\u043A\u0430 \u043D\u0430 \u00AB' + (newType === 'llama_cpp' ? 'llama.cpp' : 'Ollama API') + '\u00BB?';
+                    : '\u0412\u044B \u0443\u0432\u0435\u0440\u0435\u043D\u044B, \u0447\u0442\u043E \u0445\u043E\u0442\u0438\u0442\u0435 \u0441\u043C\u0435\u043D\u0438\u0442\u044C \u0442\u0438\u043F \u0434\u0432\u0438\u0436\u043A\u0430 \u043D\u0430 \u00AB' + targetLabel + '\u00BB?';
 
                 if (modeNeedsReset) {
                     msg += '\n\n' + (window.I18N
@@ -446,8 +451,11 @@
                 if (!confirm(msg)) return;
 
                 // Сохраняем на сервер
+                // R112: 'Авто' уходит как backendEngine=auto — сервер определяет
+                // движок по фактическому составу кластера (llama.cpp и Ollama
+                // работают вместе), а не по сохранённому значению.
                 var payload = {
-                    backendEngine: newType === 'llama_cpp' ? 'llama_cpp' : 'ollama_api'
+                    backendEngine: newType === 'auto' ? 'auto' : (newType === 'llama_cpp' ? 'llama_cpp' : 'ollama_api')
                 };
 
                 // Если режим нужно сбросить — включаем standard
@@ -479,29 +487,31 @@
 
                         // Обновляем кэш
                         if (window.__lastServerConfig) {
-                            window.__lastServerConfig.backendEngine = newType === 'llama_cpp' ? 'llama_cpp' : 'ollama_api';
+                            window.__lastServerConfig.backendEngine = newType === 'auto' ? 'auto' : (newType === 'llama_cpp' ? 'llama_cpp' : 'ollama_api');
                             if (modeNeedsReset) {
                                 window.__lastServerConfig.operatingMode = 'standard';
                             }
                         }
 
-                        // Обновляем UI
+                        // Обновляем UI (setCurrentType сам пишет localStorage в
+                        // каноническом виде: «Все» = пустая строка).
                         if (window.BackendTypeFilter) {
-                            BackendTypeFilter.setCurrentType(newType);
-                            localStorage.setItem('ollamalegion_backend_type', newType);
+                            BackendTypeFilter.setCurrentType(uiType);
                         }
 
                         // Синхронизируем карточки режимов
-                        syncBackendEngineCards(newType);
+                        syncBackendEngineCards(uiType);
 
                         if (modeNeedsReset && window.SettingsUI) {
                             SettingsUI.syncModeFromServer('standard');
                         }
 
                         if (statusMsg) {
-                            statusMsg.textContent = newType === 'llama_cpp'
-                                ? '\u2705 \u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 llama.cpp'
-                                : '\u2705 \u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 Ollama API';
+                            statusMsg.textContent = newType === 'auto'
+                                ? '\u2705 \u0420\u0435\u0436\u0438\u043C \u00AB\u0410\u0432\u0442\u043E\u00BB: \u0434\u0432\u0438\u0436\u043E\u043A \u043E\u043F\u0440\u0435\u0434\u0435\u043B\u044F\u0435\u0442\u0441\u044F \u0441\u043E\u0441\u0442\u0430\u0432\u043E\u043C \u043A\u043B\u0430\u0441\u0442\u0435\u0440\u0430'
+                                : (newType === 'llama_cpp'
+                                    ? '\u2705 \u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 llama.cpp'
+                                    : '\u2705 \u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 Ollama API');
                             statusMsg.style.color = 'var(--success)';
                             setTimeout(function () {
                                 if (statusMsg) statusMsg.style.display = 'none';
@@ -510,9 +520,11 @@
 
                         if (typeof showToast === 'function') {
                             showToast(
-                                newType === 'llama_cpp'
-                                    ? (window.I18N ? I18N.t('wizard.backend_type_switched_llama') : '\u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 llama.cpp')
-                                    : (window.I18N ? I18N.t('wizard.backend_type_switched_ollama') : '\u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 Ollama API'),
+                                newType === 'auto'
+                                    ? (window.I18N ? I18N.t('wizard.backend_type_switched_auto') : '\u0414\u0432\u0438\u0436\u043E\u043A: \u0430\u0432\u0442\u043E (llama.cpp + Ollama)')
+                                    : (newType === 'llama_cpp'
+                                        ? (window.I18N ? I18N.t('wizard.backend_type_switched_llama') : '\u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 llama.cpp')
+                                        : (window.I18N ? I18N.t('wizard.backend_type_switched_ollama') : '\u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u043D\u0430 Ollama API')),
                                 'success'
                             );
                         }
@@ -534,10 +546,9 @@
                         BackendTypeFilter._savingInProgress = false;
                     }
                     if (window.BackendTypeFilter) {
-                        BackendTypeFilter.setCurrentType(newType);
+                        BackendTypeFilter.setCurrentType(uiType);
                     }
-                    localStorage.setItem('ollamalegion_backend_type', newType);
-                    syncBackendEngineCards(newType);
+                    syncBackendEngineCards(uiType);
                     if (modeNeedsReset && window.SettingsUI) {
                         SettingsUI.syncModeFromServer('standard');
                     }
@@ -552,11 +563,17 @@
 
     /**
      * Синхронизировать карточки выбора backend engine с текущим типом.
+     *
+     * R112 (2026-10-11): UI-тип «Все»/'all' и смешанный кластер ('mixed')
+     * соответствуют карточке «Авто» — именно она означает «тип не навязан».
      */
     function syncBackendEngineCards(type) {
+        var cardValue = (type === 'all' || type === 'mixed' || type === '' || type === null || type === undefined)
+            ? 'auto'
+            : type;
         document.querySelectorAll('#backendEngineCards .mode-card[data-backend-engine-type]').forEach(function (card) {
             var radio = card.querySelector('input[name="settingsBackendEngine"]');
-            if (radio && radio.value === type) {
+            if (radio && radio.value === cardValue) {
                 radio.checked = true;
                 card.classList.add('active');
             } else {

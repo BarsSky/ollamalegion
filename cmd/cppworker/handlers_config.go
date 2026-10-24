@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"ollama-loadbalancer/internal/cppbackend"
@@ -25,13 +27,24 @@ func handleCppWorkerGetConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "backend not initialized yet")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"config":      currentConfig,
 		"nodeName":    os.Getenv("NODE_NAME"),
 		"nodeLabels":  os.Getenv("NODE_LABELS"),
 		"balancerUrl": os.Getenv("BALANCER_URL"),
 		"uptime":      time.Since(uptimeStart).String(),
-	})
+	}
+	// R123 (2026-10-16, пункт 2): состояние узла раскладки — в КАЖДОМ чтении
+	// конфига, а не только в ответе на его изменение.
+	//
+	// ЗАЧЕМ. Балансер и WebUI опрашивают именно GET /config; если статус
+	// дочернего процесса отдавать лишь в ответе на PUT, оператор видел бы узел
+	// «включённым» ровно в момент переключения, а после перезагрузки страницы —
+	// ничего. Здесь же видно и факт (running/listening), и причину отказа.
+	if rpcServerChild != nil {
+		resp["rpcServer"] = rpcServerChild.Status()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleCppWorkerRuntimeConfig ? GET /api/v1/cppworker/config/runtime.
@@ -95,6 +108,20 @@ func handleCppWorkerRuntimeConfig(w http.ResponseWriter, r *http.Request) {
 			"reasoning_enabled": m.ReasoningEnabled,
 			"batched_parallel":  m.BatchedParallel,
 			"flash_attn":        m.FlashAttnType,
+			// R118.16 (2026-10-14): ТОЧНАЯ раскладка слоёв по устройствам из
+			// лога llama.cpp (`load_tensors: layer N assigned to device X`).
+			//
+			// Имя ключа с суффиксом _exact — потому что балансер декодирует
+			// этот ответ в ту же структуру, которой отвечает WebUI, а там
+			// `device_layers` уже занят ОБЪЕКТОМ-планом (см.
+			// internal/balancer/llamacpp_runtime_config.go). Разные имена не
+			// дают двум полям перекрыться в одном JSON.
+			"device_layers_exact": func() interface{} {
+				if len(m.DeviceLayers) == 0 {
+					return nil
+				}
+				return m.DeviceLayers
+			}(),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -329,6 +356,31 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			applied = append(applied, key)
 		}
 	}
+	// R115: список узлов раскладки приходит массивом строк (["host:port", …]).
+	// Пустой массив — законное значение («узлов нет»), поэтому отличается от
+	// «поле не прислали»: nil-указатель и пустой срез здесь разные вещи.
+	getStringSlice := func(key string) ([]string, bool) {
+		v, ok := updates[key]
+		if !ok || v == nil {
+			return nil, false
+		}
+		arr, ok := v.([]interface{})
+		if !ok {
+			validationErrors = append(validationErrors, key+": expected array of strings")
+			return nil, false
+		}
+		out := make([]string, 0, len(arr))
+		for i, item := range arr {
+			s, ok := item.(string)
+			if !ok {
+				validationErrors = append(validationErrors,
+					fmt.Sprintf("%s[%d]: expected string", key, i))
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return out, true
+	}
 
 	// === Базовые параметры загрузки ===
 	// defaultCtxSize: минимум 256 (lower bound C-bridge), максимум 262144 (gemma-4 256K).
@@ -361,6 +413,77 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	applyInt("defaultMainGpu", &currentConfig.DefaultMainGPU, 0, 0)
 	applyString("defaultRpcBackend", &currentConfig.DefaultRPCBackend,
 		[]string{"", "cuda", "vulkan", "kompute"})
+
+	// === Раскладка слоёв между машинами (RPC) — R115 ===
+	//
+	// ЗАЧЕМ ЗДЕСЬ. До R115 раскладка настраивалась ТОЛЬКО переменными окружения
+	// при старте: ни WebUI, ни API не могли её ни увидеть, ни изменить. Оператор
+	// правил .env и перезапускал контейнер — то есть «интерфейса настройки RPC»
+	// не существовало.
+	//
+	// ПРАВИЛО ТО ЖЕ, ЧТО У ФЛАГА ПРИ СТАРТЕ (см. resolveRPCMode): явный
+	// rpcEnabled=false — решающий и очищает список узлов, чтобы «выключено» нельзя
+	// было перепутать с «список есть, но не используется». Непустой список без
+	// явного false включает раскладку (совместимость с прежним поведением).
+	//
+	// Список узлов разбирается ТЕМ ЖЕ парсером, что и переменная окружения
+	// (parseRPCServersR101): второй реализации правил «host:port» быть не должно.
+	if raw, ok := getStringSlice("rpcServers"); ok {
+		if len(raw) == 0 {
+			currentConfig.RPCServers = nil
+			applied = append(applied, "rpcServers")
+		} else if parsed, err := parseRPCServersR101(strings.Join(raw, ",")); err != nil {
+			validationErrors = append(validationErrors, "rpcServers: "+err.Error())
+		} else {
+			currentConfig.RPCServers = parsed
+			applied = append(applied, "rpcServers")
+		}
+	}
+	explicitRPCFalse := false
+	if v, ok := updates["rpcEnabled"]; ok && v != nil {
+		if b, isBool := v.(bool); isBool {
+			currentConfig.RPCEnabled = b
+			applied = append(applied, "rpcEnabled")
+			explicitRPCFalse = !b
+		} else {
+			validationErrors = append(validationErrors, "rpcEnabled: expected boolean")
+		}
+	}
+	if explicitRPCFalse && len(currentConfig.RPCServers) > 0 {
+		currentConfig.RPCServers = nil
+		applied = append(applied, "rpcServers(cleared)")
+	}
+	if !explicitRPCFalse && len(currentConfig.RPCServers) > 0 {
+		currentConfig.RPCEnabled = true
+	}
+	// Раскладка применяется при СЛЕДУЮЩЕЙ загрузке: перезагружать модель молча
+	// нельзя (это минуты простоя), но и молчать об этом нельзя — ответ несёт
+	// rpc_reload_required, а WebUI говорит оператору «применится при следующей
+	// загрузке».
+	rpcChanged := false
+	for _, k := range applied {
+		if k == "rpcEnabled" || k == "rpcServers" || k == "rpcServers(cleared)" {
+			rpcChanged = true
+			break
+		}
+	}
+	if rpcChanged && logger.Get() != nil {
+		logger.Get().Infow("RPC-режим изменён через API",
+			"rpc_enabled", currentConfig.RPCEnabled,
+			"servers", currentConfig.RPCServers,
+			"applied", applied)
+	}
+	if rpcChanged && backend != nil {
+		// R115: донести режим до ЖИВОГО конфига бэкенда.
+		//
+		// `currentConfig` (пакет cppworker) и `b.cfg` (бэкенд) — РАЗНЫЕ объекты.
+		// Живая проверка 2026-10-13: ответ был
+		// `{"applied":["rpcEnabled","rpcServers(cleared)"]}`, а /api/models
+		// продолжал отдавать rpc_enabled=true, узел и 7009 MB удалённой памяти —
+		// то есть настройка сохранялась без эффекта, и WebUI показывал бы успех,
+		// ничего не меняя.
+		backend.SetRPCConfig(currentConfig.RPCEnabled, currentConfig.RPCServers)
+	}
 	applyBool("defaultNoMemoryMap", &currentConfig.DefaultNoMemoryMap)
 	applyFloatSlice("defaultTensorSplit", &currentConfig.DefaultTensorSplit)
 	applyInt("defaultSplitMode", &currentConfig.DefaultSplitMode, -1, 3)
@@ -393,12 +516,39 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// Без верхней границы (для long-running тестов можно поставить 99999).
 	applyInt("idleUnloadMinutes", &currentConfig.IdleUnloadMinutes, 0, 0)
 
+	// R123 (2026-10-16, пункт 2): узел раскладки (донор) — llama.cpp rpc-server
+	// дочерним процессом. Включается здесь (и из WebUI), состояние процесса
+	// возвращается в ответе как rpcServer.
+	applyBool("rpcServerEnabled", &currentConfig.RPCServerEnabled)
+	applyInt("rpcServerPort", &currentConfig.RPCServerPort, 0, 65535)
+
 	// Session 18 (2026-07-28): Reasoning/Thinking — для моделей gemma-4,
 	// deepseek-r1, qwen3-thinking и др. Включает thinking-режим в chat
 	// template (если GGUF содержит tokenizer.chat_template с поддержкой).
 	// Парсер think-блоков уже работает в reasoning_content.go.
 	applyBool("enableReasoning", &currentConfig.EnableReasoning)
 	applyInt("reasoningBudget", &currentConfig.ReasoningBudget, 0, 100000)
+
+	// R106b (2026-10-12): «размышления» для НОВОЙ загрузки.
+	//
+	// ЗАЧЕМ ОТДЕЛЬНЫЕ КЛЮЧИ. У reasoning в cppbackend.Config два поля с разной
+	// ролью: EnableReasoning — runtime-политика (включает thinking-инструкцию в
+	// промпте, действует сразу), DefaultEnableReasoning — значение, которое
+	// НАСЛЕДУЕТ модель при загрузке, если клиент/балансер его не задал
+	// (backend.go:1344: enableReasoning := b.cfg.DefaultEnableReasoning).
+	//
+	// ЖИВОЙ ДЕФЕКТ (жалоба оператора «поменял размышления с выключенного на
+	// включенный, а модель грузится не с теми параметрами»): WebUI писал только
+	// `enableReasoning`, а эти два ключа обработчик НЕ принимал вовсе — поле
+	// загрузки оставалось false, и инстанс поднимался с reasoning_enabled=false.
+	// Теперь WebUI пишет оба поля сразу (см. gguf-renderer-detail-render.js:
+	// saveBackendOptions → defaultEnableReasoning).
+	//
+	// Reload загруженных моделей эти ключи НЕ запускают (в loadAffecting их нет):
+	// смена политики размышлений не обязана перезагружать модель, а «применить
+	// сейчас» делает явный apply профиля (POST .../model-profiles/{name}/apply).
+	applyBool("defaultEnableReasoning", &currentConfig.DefaultEnableReasoning)
+	applyInt("defaultReasoningBudget", &currentConfig.DefaultReasoningBudget, 0, 100000)
 
 	// === Логируем нераспознанные ключи (помогает WebUI отлаживать) ===
 	knownKeys := map[string]bool{
@@ -421,8 +571,12 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		"defaultYarnBetaFast": true, "defaultYarnBetaSlow": true,
 		// Метрики и lifecycle
 		"enableMetrics": true, "metricsRetentionSeconds": true, "idleUnloadMinutes": true,
-		// Session 18 (Round 11/14): Reasoning/Thinking — runtime fields, не load-affecting.
+		// Session 18 (Round 11/14): Reasoning/Thinking.
+		// enableReasoning/reasoningBudget — runtime-политика (промпт);
+		// defaultEnableReasoning/defaultReasoningBudget — то, что наследует
+		// НОВАЯ загрузка (R106b, 2026-10-12). Оба набора — не load-affecting.
 		"enableReasoning": true, "reasoningBudget": true,
+		"defaultEnableReasoning": true, "defaultReasoningBudget": true,
 	}
 	for k := range updates {
 		if !knownKeys[k] {
@@ -446,6 +600,107 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			"defaultUseMmap", currentConfig.DefaultUseMmap)
 	}
 
+	// Шаг 0 (R119 2026-10-15): настройки, которые обязаны действовать НА ХОДУ.
+	//
+	// idleUnloadMinutes раньше менял только currentConfig: таймаут был «зашит» в
+	// IdleUnloadManager при его создании, поэтому UI показывал новые минуты, а
+	// выгрузка шла по старому значению (живой замер: PUT 3 → конфиг 3, менеджер
+	// 10). Теперь значение применяется к живому менеджеру и сохраняется в файл
+	// операторских переопределений, который читается ПОСЛЕ env — то есть правка
+	// из WebUI переживает пересоздание контейнера и побеждает
+	// CPPWORKER_IDLE_UNLOAD_MINUTES.
+	idleUnloadEffective := -1
+	if appliedListContains(applied, "idleUnloadMinutes") {
+		recordRuntimeOverride("idleUnloadMinutes", currentConfig.IdleUnloadMinutes)
+		if backend != nil {
+			effective := backend.SetIdleUnloadTimeout(
+				time.Duration(currentConfig.IdleUnloadMinutes) * time.Minute)
+			idleUnloadEffective = int(effective / time.Minute)
+			logger.Get().Infow("idle unload: применено из WebUI",
+				"requested_minutes", currentConfig.IdleUnloadMinutes,
+				"effective_minutes", idleUnloadEffective)
+		}
+	}
+
+	// R123 (2026-10-16, пункт 2): узел раскладки — применяем НА ХОДУ и сохраняем
+	// как операторское переопределение (приоритет над env, переживает пересоздание
+	// контейнера).
+	//
+	// R173 (2026-10-18): ПРИКАЗ НЕ ГАСИТ ЖИВОЙ УЗЕЛ. Живая авария, доказанная на
+	// доноре: балансер присылает rpcServerEnabled/rpcServerPort на каждом
+	// согласовании роли, а этот блок реагировал на ФАКТ ПОЛЯ в запросе, а не на
+	// изменение значения — и убивал дочерний rpc-server прямо во время передачи
+	// весов мастером. Мастер терял RPC-сессию и умирал (SIGPIPE/abort), контейнер
+	// перезапускался; оператор видел «встроенный узел падает», хотя узел был
+	// исправен, а его гасили. Отдельный контейнер узла не страдал ровно потому,
+	// что его процесс никто не гасил (в режиме external Stop() только снимает
+	// желание — R171).
+	//
+	// Теперь: настройки не изменились — процесса не касаемся вообще (SetEnabled
+	// идемпотентен: уже запущенный узел он не перезапускает); сменилась только
+	// «включённость» — SetEnabled; сменилась ИДЕНТИЧНОСТЬ (адрес/порт/бинарь/
+	// внешний адрес/отладка) — только тогда пересоздание, потому что порт зашит в
+	// argv, а GGML_RPC_DEBUG — в env процесса.
+	rpcServerNote := ""
+	if appliedListContains(applied, "rpcServerEnabled") || appliedListContains(applied, "rpcServerPort") {
+		recordRuntimeOverride("rpcServerEnabled", currentConfig.RPCServerEnabled)
+		recordRuntimeOverride("rpcServerPort", currentConfig.RPCServerPort)
+		recreated := false
+		if rpcServerChild == nil {
+			rpcServerChild = cppbackend.NewRPCServerChild(*currentConfig)
+			recreated = true
+		} else if rpcServerChild.RequiresRecreate(*currentConfig) {
+			// Единственный случай, когда сессия раскладки рвётся осознанно —
+			// поэтому и предупреждение, а не тихая пересборка процесса.
+			prev := rpcServerChild.Status()
+			logger.Get().Warnw("rpc-server: идентичность узла изменилась — процесс пересоздаётся "+
+				"(активная сессия раскладки, если она есть, будет прервана)",
+				"was_bind", prev.Bind, "was_port", prev.Port, "was_bin", prev.Bin,
+				"was_external", prev.External,
+				"bind", currentConfig.RPCServerBind, "port", currentConfig.RPCServerPort,
+				"bin", currentConfig.RPCServerBin)
+			_ = rpcServerChild.Stop()
+			rpcServerChild = cppbackend.NewRPCServerChild(*currentConfig)
+			recreated = true
+		}
+		if err := rpcServerChild.SetEnabled(currentConfig.RPCServerEnabled); err != nil {
+			// Ошибка запуска НЕ отменяет желаемое состояние: оператор увидит
+			// enabled=true, running=false и причину — как в статусе супервизора.
+			rpcServerNote = err.Error()
+			logger.Get().Errorw("rpc-server: узел раскладки не поднялся из WebUI",
+				"enabled", currentConfig.RPCServerEnabled,
+				"port", currentConfig.RPCServerPort, "error", err)
+		} else if recreated {
+			logger.Get().Infow("rpc-server: узел раскладки пересоздан по настройкам",
+				"enabled", currentConfig.RPCServerEnabled,
+				"port", currentConfig.RPCServerPort, "addr", rpcServerChild.Addr())
+		} else {
+			// Явно фиксируем «ничего не менялось»: иначе следующий разбор снова
+			// будет искать, кто убил узел.
+			logger.Get().Debugw("rpc-server: приказ подтверждён без изменений — процесс не тронут",
+				"enabled", currentConfig.RPCServerEnabled,
+				"port", currentConfig.RPCServerPort, "addr", rpcServerChild.Addr())
+		}
+	}
+
+	// R133 (2026-10-16): САМА раскладка (кто донор) — тоже решение, которое
+	// обязано переживать пересоздание контейнера.
+	//
+	// ЖИВОЙ ДЕФЕКТ. В deployments/.env лежат CPPWORKER_RPC_ENABLE=true и
+	// CPPWORKER_RPC_SERVERS=192.0.2.10:50052, поэтому при КАЖДОМ recreate
+	// мастер снова включал раскладку на выключенного донора — хотя балансер
+	// (единственный, кто теперь назначает доноров ролями) оставлял раскладку
+	// выключенной. Оператор видел «настройка не сохраняется» и не понимал,
+	// какой параметр обязателен. Теперь последнее применённое состояние лежит в
+	// файле операторских переопределений и побеждает env — тот же контракт, что
+	// у idleUnloadMinutes и rpcServerEnabled.
+	if appliedListContains(applied, "rpcEnabled") ||
+		appliedListContains(applied, "rpcServers") ||
+		appliedListContains(applied, "rpcServers(cleared)") {
+		recordRuntimeOverride("rpcEnabled", currentConfig.RPCEnabled)
+		recordRuntimeOverride("rpcServers", currentConfig.RPCServers)
+	}
+
 	// Шаг 1: auto-reload загруженных моделей с новыми defaults, если изменены
 	// параметры нагрузки. При изменении только метрик/lifecycle — reload не нужен.
 	reloadStarted := []string{}
@@ -462,8 +717,36 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		"reload_started": reloadStarted,
 		"reload_failed":  reloadFailed,
 	}
+	// R119: показываем ФАКТ, а не отправленное значение — иначе UI снова будет
+	// утверждать «сохранено», пока менеджер живёт по старому таймауту.
+	if idleUnloadEffective >= 0 {
+		resp["idleUnloadMinutesEffective"] = idleUnloadEffective
+	}
+	if backend != nil {
+		if d, running := backend.IdleUnloadStatus(); d > 0 {
+			resp["idleUnloadMinutesEffective"] = int(d / time.Minute)
+			resp["idleUnloadRunning"] = running
+		} else {
+			resp["idleUnloadMinutesEffective"] = 0
+			resp["idleUnloadRunning"] = false
+		}
+	}
 	if len(validationErrors) > 0 {
 		resp["validation_errors"] = validationErrors
+	}
+	// R123: состояние узла раскладки — ФАКТ (running/listening/pid/причина отказа),
+	// а не отправленное значение: WebUI обязан показывать, поднялся ли процесс.
+	if rpcServerChild != nil {
+		resp["rpcServer"] = rpcServerChild.Status()
+	}
+	if rpcServerNote != "" {
+		resp["rpcServerError"] = rpcServerNote
+	}
+	// R115: раскладка меняется не «на лету» — модель получит новую схему при
+	// следующей загрузке. Поле говорит это явно, чтобы WebUI не показывал
+	// «применено» как «уже работает».
+	if rpcChanged {
+		resp["rpc_reload_required"] = true
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -674,14 +957,55 @@ func handleCppWorkerReloadConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "reloaded", "config": currentConfig})
 }
 
-// saveConfigToDefaultsFile ????????? ??????? ???????????? ?
-// config/cppworker-defaults.json ? ?????? ???????? ?????? ???
-// ????????? ?????????? CppWorker.
+// defaultsFilePath — путь файла runtime-настроек CppWorker
+// (config/cppworker-defaults.json по умолчанию).
+//
+// База настраивается через CPPWORKER_CONFIG_DIR. Переменная нужна в двух случаях:
+//   - контейнер: каталог можно смонтировать томом. Иначе настройка живёт в
+//     writable-слое и теряется при пересоздании контейнера (docker compose up
+//     после смены образа) — см. docs/deployment-stack.md;
+//   - тесты: уводят запись в temp, чтобы прогон `go test ./cmd/cppworker/` не
+//     затирал отслеживаемый config/cppworker-defaults.json — он копируется в
+//     образ, поэтому загрязнение дерева равносильно загрязнению образа.
+func defaultsFilePath() string {
+	dir := strings.TrimSpace(os.Getenv("CPPWORKER_CONFIG_DIR"))
+	if dir == "" {
+		dir = "config"
+	}
+	return filepath.Join(dir, "cppworker-defaults.json")
+}
+
+// saveConfigToDefaultsFile сохраняет runtime-настройку CppWorker в файл
+// defaultsFilePath() — единственный источник истины для значений, которые
+// оператор меняет из WebUI (env CPPWORKER_* имеет приоритет над файлом).
 func saveConfigToDefaultsFile(cfg *cppbackend.Config) error {
-	defaultsPath := "config/cppworker-defaults.json"
+	defaultsPath := defaultsFilePath()
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
+	}
+	// R106b (2026-10-12): каталог config/ может отсутствовать.
+	//
+	// ЖИВОЙ ДЕФЕКТ: в контейнере cppworker рабочая директория — /app, и каталога
+	// config там НЕТ (проверено: ls /app → только бинарники и models). Поэтому
+	// каждое сохранение из WebUI отвечало 200, а на диск не попадало ничего:
+	//
+	//	failed to save config to cppworker-defaults.json:
+	//	open config/cppworker-defaults.json: no such file or directory
+	//
+	// Настройка (в т.ч. галочка размышлений) терялась при рестарте контейнера —
+	// ровно то, что оператор описывал как «Сохранить отрабатывает, но не
+	// применяется». Создаём каталог сами.
+	//
+	// ВАЖНО: это writable-слой контейнера — файл переживает restart, но НЕ
+	// пересоздание контейнера (docker compose up после смены образа). Для
+	// долговременного хранения каталог надо смонтировать томом (см.
+	// docs/deployment-stack.md); env-переменные CPPWORKER_* остаются источником
+	// истины и имеют приоритет над файлом.
+	if dir := filepath.Dir(defaultsPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
 	}
 	return os.WriteFile(defaultsPath, data, 0644)
 }

@@ -265,11 +265,10 @@ func runGenerateCore(w http.ResponseWriter, r *http.Request, req generateRequest
 	// R83-политика (2026-10-01): окно загрузки = num_ctx запроса (если задан).
 	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.Options.NumCtx)
 	if err != nil {
-		if isModelLoadingError(err) {
-			writeLoadingResponse(w, req.Model, err)
-			return bridge.GenerationParams{}, "", false
-		}
-		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
+		// R119 (2026-10-15): 404 «модели нет» вместо 500 с пустым телом —
+		// живой случай: запрос к llama-3-8b давал Internal Server Error без
+		// объяснения, и клиент повторял запрос.
+		writeModelLoadError(w, req.Model, err)
 		return bridge.GenerationParams{}, "", false
 	}
 	_ = actualModel
@@ -315,8 +314,10 @@ func isEmptyInferenceResult(result *bridge.InferenceResult) bool {
 
 func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	var req generateRequest
-	// Round 36 Phase 2: strict JSON decoder (rejects unknown fields).
-	if err := types.DecodeJSONRequest(r.Body, types.MaxStreamingBodyBytes, &req); err != nil {
+	// R106c (2026-10-12): терпимое декодирование клиентского тела — /api/generate
+	// клиентский API, незнакомые поля игнорируем, как настоящая Ollama
+	// (см. json_decode_client_r106c.go).
+	if err := decodeClientJSON(r, types.MaxStreamingBodyBytes, &req, "handleGenerate"); err != nil {
 		switch {
 		case errors.Is(err, types.ErrBodyEmpty):
 			writeError(w, http.StatusBadRequest, "empty request body")
@@ -417,12 +418,28 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	duration := time.Since(start)
 	tokens := countTokens(modelName, result.Output)
+	// R108 (2026-10-13): это КЛИЕНТСКИЙ /api/generate (балансер проксирует его
+	// нативно), и он раньше отдавал сырой вывод модели: think-блок и служебные
+	// токены шаблона попадали прямо в `response`. Разбираем так же, как /api/chat:
+	// размышления — отдельным полем `thinking`, ответ — очищенный в `response`.
+	response := result.Output
+	thinking := ""
+	if r, c, has := SplitReasoningContent(result.Output); has {
+		response = c
+		thinking = r
+	}
 	resp := generateResponse{
 		Model:      modelName,
-		Response:   result.Output,
+		Response:   cleanFinalContent(response),
+		Thinking:   thinking,
 		Done:       true,
 		Tokens:     tokens,
 		DurationMs: duration.Milliseconds(),
+		// R119 (H1): `context` + prompt_eval_count — Ollama-клиент использует их
+		// для продолжения беседы и подсчёта usage. Реальный KV-контекст отдать
+		// нечем, поэтому по конвенции пустой массив.
+		Context:         []int{},
+		PromptEvalCount: countTokens(modelName, prompt),
 	}
 	if duration.Seconds() > 0 {
 		resp.TokensPerSec = float64(tokens) / duration.Seconds()
@@ -465,6 +482,13 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 	defer func() {
 		recordLastPromptFromError(modelName, "/api/generate", prompt, &params, false, streamErr)
 	}()
+	// R108 (2026-10-13): разбор reasoning'а и здесь — клиентский /api/generate
+	// раньше отдавал сырые токены, поэтому think-блок и служебные маркеры
+	// шаблона уезжали клиенту как текст ответа. Политика — reasoning_content.go.
+	genParser := NewReasoningStreamState()
+	// R216: шаблон мог открыть блок размышлений в ПРОМПТЕ.
+	genParser.SetImpliedOpen(PromptOpensReasoning(prompt))
+	var contentSeen strings.Builder
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
@@ -472,14 +496,28 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		default:
 		}
 		outputBuf.WriteString(token)
-		chunk := map[string]interface{}{
-			"model":    modelName,
-			"response": token,
-			"done":     false,
+		thinkingDelta, responseDelta := genParser.Feed(token)
+		if thinkingDelta != "" {
+			tc := map[string]interface{}{
+				"model":    modelName,
+				"thinking": sanitizeStreamText(thinkingDelta),
+				"done":     false,
+			}
+			tcJSON, _ := json.Marshal(tc)
+			fmt.Fprintf(w, "%s\n", tcJSON)
+			flusher.Flush()
 		}
-		jsonData, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "%s\n", jsonData)
-		flusher.Flush()
+		if responseDelta != "" {
+			contentSeen.WriteString(responseDelta)
+			chunk := map[string]interface{}{
+				"model":    modelName,
+				"response": sanitizeStreamText(responseDelta),
+				"done":     false,
+			}
+			jsonData, _ := json.Marshal(chunk)
+			fmt.Fprintf(w, "%s\n", jsonData)
+			flusher.Flush()
+		}
 		tokens++
 		return true
 	}
@@ -501,6 +539,30 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		return
 	}
 	fullOutput := outputBuf.String()
+	// R108 (2026-10-13): выпускаем удержанный хвост парсера (возможный неполный
+	// маркер) — иначе последние символы ответа потеряются.
+	if thinkingTail, responseTail := genParser.FinalizeForStream(); thinkingTail != "" || responseTail != "" {
+		if thinkingTail != "" {
+			tc := map[string]interface{}{"model": modelName, "thinking": sanitizeStreamText(thinkingTail), "done": false}
+			tcJSON, _ := json.Marshal(tc)
+			fmt.Fprintf(w, "%s\n", tcJSON)
+			flusher.Flush()
+		}
+		if responseTail != "" {
+			contentSeen.WriteString(responseTail)
+			rc := map[string]interface{}{"model": modelName, "response": sanitizeStreamText(responseTail), "done": false}
+			rcJSON, _ := json.Marshal(rc)
+			fmt.Fprintf(w, "%s\n", rcJSON)
+			flusher.Flush()
+		}
+	}
+	if snap := genParser.Snapshot(); snap.HasReasoning {
+		logger.Get().Debugw("writeStreamResponse: reasoning отделён от ответа",
+			"model", modelName,
+			"reasoning_chars", snap.ReasoningChars,
+			"visible_chars", contentSeen.Len(),
+			"raw_len", len(fullOutput))
+	}
 	// 2026-06-24: проверка на пустой ответ после cleanFinalContent (gemma antiprompt).
 	if strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
 		errChunk := map[string]interface{}{
@@ -521,16 +583,27 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 	if duration.Seconds() > 0 {
 		tps = float64(tokens) / duration.Seconds()
 	}
+	// R231: незакрытый блок размышлений = ответ не дописан (см.
+	// FinalizeForStream) — честный done_reason=length.
+	doneReason := "stop"
+	if genParser.Snapshot().Unclosed {
+		doneReason = "length"
+	}
 	doneChunk := map[string]interface{}{
 		"model":             modelName,
 		"created_at":        createdAt,
 		"response":          "",
 		"done":              true,
-		"done_reason":       "stop",
+		"done_reason":       doneReason,
 		"total_duration":    duration.Microseconds() * 1000,
 		"eval_count":        tokens,
 		"eval_duration":     duration.Microseconds() * 1000,
 		"tokens_per_second": tps,
+		// R119 (H1): `context` + prompt_eval_count в ФИНАЛЬНОМ чанке стрима —
+		// Ollama-клиент читает их именно отсюда. Чанк остаётся единственным
+		// done=true (инвариант R51.3/R53.1) — ключи только добавляются.
+		"context":           []int{},
+		"prompt_eval_count": countTokens(modelName, prompt),
 	}
 	doneJSON, _ := json.Marshal(doneChunk)
 	fmt.Fprintf(w, "%s\n", doneJSON)
@@ -604,23 +677,27 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start)
 	tokens := countTokens(modelName, result.Output)
 
-	// 2026-07-01: для reasoning-моделей (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
-	// разделяем output на (reasoning, response) и кладём в отдельные поля.
-	// Ollama API использует `thinking` (не `reasoning`!), OpenAI — `reasoning_content`.
-	// Здесь используем `thinking` для совместимости с Ollama-клиентами (Cline/OpenWebUI).
+	// 2026-07-01: разделяем output на (reasoning, response) и кладём в отдельные
+	// поля. Ollama API использует `thinking` (не `reasoning`!), OpenAI —
+	// `reasoning_content`. Здесь используем `thinking` для совместимости с
+	// Ollama-клиентами (Cline/OpenWebUI).
+	//
+	// R108 (2026-10-13): разбор безусловный — по тегам формата, а не по имени
+	// модели. Раньше здесь стоял гейт IsReasoningModel(modelName), из-за чего
+	// модель вне whitelist отдавала размышления прямо в `response`. См. «Политика
+	// отдачи reasoning» в reasoning_content.go.
 	response := result.Output
 	thinking := ""
-	if IsReasoningModel(modelName) {
-		r, c, has := SplitReasoningContent(result.Output)
-		if has {
-			response = c
-			thinking = r
-		}
+	if r, c, has := SplitReasoningContent(result.Output); has {
+		response = c
+		thinking = r
 	}
 
 	resp := map[string]interface{}{
-		"model":                modelName,
-		"response":             response,
+		"model": modelName,
+		// R108 (2026-10-13): видимый ответ чистим от хвостовых служебных токенов
+		// шаблона — так же, как /api/chat и OpenAI-поверхности.
+		"response":             cleanFinalContent(response),
 		"done":                 true,
 		"context":              []int{},
 		"total_duration":       duration.Microseconds() * 1000,
@@ -672,9 +749,13 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	defer func() {
 		recordLastPromptFromError(modelName, "/api/ollama/generate", prompt, &params, false, streamErr)
 	}()
-	// 2026-07-01: reasoning-парсер (для reasoning-моделей).
+	// 2026-07-01: reasoning-парсер.
+	//
+	// R108 (2026-10-13): безусловный разбор по тегам (имя модели больше не
+	// гейтит emit) — см. «Политика отдачи reasoning» в reasoning_content.go.
 	ogParser := NewReasoningStreamState()
-	ogIsReasoning := IsReasoningModel(modelName)
+	// R216: шаблон мог открыть блок размышлений в ПРОМПТЕ.
+	ogParser.SetImpliedOpen(PromptOpensReasoning(prompt))
 
 	callback := func(token string) bool {
 		select {
@@ -683,27 +764,19 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		default:
 		}
 		outputBuf.WriteString(token)
-		if ogIsReasoning {
-			thinkingDelta, responseDelta := ogParser.Feed(token)
-			if thinkingDelta != "" {
-				tc := map[string]interface{}{"model": modelName, "thinking": thinkingDelta, "done": false}
-				tcJSON, _ := json.Marshal(tc)
-				fmt.Fprintf(w, "%s\n", tcJSON)
-				flusher.Flush()
-			}
-			if responseDelta != "" {
-				rc := map[string]interface{}{"model": modelName, "response": responseDelta, "done": false}
-				rcJSON, _ := json.Marshal(rc)
-				fmt.Fprintf(w, "%s\n", rcJSON)
-				flusher.Flush()
-			}
-			tokens++
-			return true
+		thinkingDelta, responseDelta := ogParser.Feed(token)
+		if thinkingDelta != "" {
+			tc := map[string]interface{}{"model": modelName, "thinking": thinkingDelta, "done": false}
+			tcJSON, _ := json.Marshal(tc)
+			fmt.Fprintf(w, "%s\n", tcJSON)
+			flusher.Flush()
 		}
-		chunk := map[string]interface{}{"model": modelName, "response": token, "done": false}
-		jsonData, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "%s\n", jsonData)
-		flusher.Flush()
+		if responseDelta != "" {
+			rc := map[string]interface{}{"model": modelName, "response": responseDelta, "done": false}
+			rcJSON, _ := json.Marshal(rc)
+			fmt.Fprintf(w, "%s\n", rcJSON)
+			flusher.Flush()
+		}
 		tokens++
 		return true
 	}
@@ -729,8 +802,9 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	// R83/v67 (2026-10-02): финальный сброс reasoning-парсера — выпускаем
 	// удержанный хвост (возможный неполный think-тег), иначе последние символы
 	// ответа потеряются (см. ReasoningStreamState.Finalize).
-	if ogIsReasoning {
-		thinkingTail, responseTail := ogParser.Finalize()
+	// R108 (2026-10-13): безусловно (разбор — по тегам, не по имени модели).
+	{
+		thinkingTail, responseTail := ogParser.FinalizeForStream()
 		if thinkingTail != "" {
 			tc := map[string]interface{}{"model": modelName, "thinking": sanitizeStreamText(thinkingTail), "done": false}
 			tcJSON, _ := json.Marshal(tc)
@@ -763,13 +837,24 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	if duration.Seconds() > 0 {
 		tps = float64(tokens) / duration.Seconds()
 	}
+	// R231: незакрытый блок размышлений = ответ не дописан — done_reason=length
+	// (см. FinalizeForStream; дубль размышлений в response больше не отдаём).
+	doneReason := "stop"
+	if ogParser.Snapshot().Unclosed {
+		doneReason = "length"
+	}
 	doneJSON, _ := json.Marshal(map[string]interface{}{
-		"model": modelName, "done": true, "done_reason": "stop",
+		"model": modelName, "done": true, "done_reason": doneReason,
 		"created_at":        createdAt,
 		"total_duration":    duration.Microseconds() * 1000,
 		"eval_count":        tokens,
 		"eval_duration":     duration.Microseconds() * 1000,
 		"tokens_per_second": tps,
+		// R119 (H1): та же конвенция, что и в негстрим-ответе
+		// /api/ollama/generate (см. handleOllamaGenerate) — финальный чанк
+		// стрима тоже обязан нести `context`.
+		"context":           []int{},
+		"prompt_eval_count": countTokens(modelName, prompt),
 	})
 	fmt.Fprintf(w, "%s\n", doneJSON)
 	flusher.Flush()

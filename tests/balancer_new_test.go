@@ -155,29 +155,45 @@ func TestPrewarmController_MarksWarmingUp(t *testing.T) {
 	}
 }
 
-// TestHeadroomBlocksOverloadedBackend — headroom блокирует загруженный бэкенд
-func TestHeadroomBlocksOverloadedBackend(t *testing.T) {
-	f1 := startFakeOllama(t); defer f1.close()
+// TestBusyBackendIsNotExcludedFromSelection — R118 (2026-10-14): высокая
+// утилизация бэкенда НЕ выбрасывает его из кандидатов.
+//
+// ПРЕЖНЕЕ ПОВЕДЕНИЕ (тест назывался TestHeadroomBlocksOverloadedBackend):
+// бэкенд с занятой VRAM выпадал из выбора, и клиент получал «all backends busy»
+// (503). На стенде это ломало вторую сессию Cline/OpenWebUI и вторую модель:
+// при partial-offload во время ЛЮБОЙ генерации CPU ~96%, GPU ~100%, поэтому
+// занятый бэкенд блокировался сразу и для всех.
+//
+// С R118 мгновенная утилизация только логируется: параллелизм ограничивают
+// слоты (EffectiveMaxConcurrentRequests), а лишний запрос ЖДЁТ в
+// admission-очереди. Поэтому здесь проверяется обратное прежнему: занятый
+// бэкенд обязан быть выбран (запрос уйдёт в очередь, а не получит 503).
+// Детали политики и живой лог — internal/balancer/resource_limits_soft_r118_test.go.
+func TestBusyBackendIsNotExcludedFromSelection(t *testing.T) {
+	f1 := startFakeOllama(t)
+	defer f1.close()
 	f1.addModel("qwen2.5:14b")
 
 	proxy := createProxy2(t, []*fakeOllama{f1})
 
-	// 93% VRAM used — превышает headroom 85%
+	// 93% VRAM занято моделью, 5 активных запросов из 10.
 	proxy.UpdateMetrics("b1", &types.BackendMetrics{
 		GPU:    types.GPUMetrics{UsagePercent: 50, MemoryTotal: 16384, MemoryUsed: 15237, MemoryFree: 1147},
 		System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 32768, MemoryUsed: 16384},
 		Ollama: types.OllamaMetrics{
-			ActiveRequests:         5,
-			MaxConcurrentRequests:  10,
-			RunningModels:          []types.RunningModel{{Name: "qwen2.5:14b", VRAMUsage: 10240}},
+			ActiveRequests:        5,
+			MaxConcurrentRequests: 10,
+			RunningModels:         []types.RunningModel{{Name: "qwen2.5:14b", VRAMUsage: 10240}},
 		},
 	})
 
-	result := proxy.SelectBackend("llama3.2:3b")
-	if result != "" {
-		t.Errorf("expected empty (headroom block), got %s", result)
+	// Второй клиент просит ту же модель, пока бэкенд занят.
+	result := proxy.SelectBackend("qwen2.5:14b")
+	if result == "" {
+		t.Error("R118: занятый бэкенд не должен выпадать из кандидатов — " +
+			"иначе клиент получает «all backends busy» 503 вместо ожидания в очереди")
 	} else {
-		t.Log("Headroom correctly blocked backend")
+		t.Logf("занятый бэкенд выбран (запрос встанет в очередь): %s", result)
 	}
 }
 

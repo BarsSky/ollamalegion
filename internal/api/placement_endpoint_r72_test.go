@@ -71,7 +71,8 @@ func TestPlacementEndpoint_Summary_R72(t *testing.T) {
 		t.Errorf("source дефолта = %v, ожидалось global", first["source"])
 	}
 
-	// Неисполнимые стратегии перечислены отдельно — оператор видит границу P2.
+	// R92 (S3): исполнитель sharded появился (логический бэкенд), поэтому
+	// граница сместилась: неисполним остался только legacy-путь `rpc`.
 	exec, ok := resp["executable"].([]interface{})
 	if !ok {
 		t.Fatalf("executable отсутствует: %T", resp["executable"])
@@ -80,11 +81,11 @@ func TestPlacementEndpoint_Summary_R72(t *testing.T) {
 	for _, v := range exec {
 		found[v.(string)] = true
 	}
-	if !found["single"] || !found["replicated"] {
-		t.Errorf("executable = %v, ожидались single/replicated", exec)
+	if !found["single"] || !found["replicated"] || !found["sharded"] {
+		t.Errorf("executable = %v, ожидались single/replicated/sharded", exec)
 	}
-	if found["sharded"] {
-		t.Error("sharded пока не исполняется (P2) — не должен попадать в executable")
+	if found["rpc"] {
+		t.Error("rpc — legacy-путь координатора-заглушки, не должен попадать в executable")
 	}
 }
 
@@ -106,8 +107,15 @@ func TestPlacementEndpoint_SingleModelDecision_R72(t *testing.T) {
 	if decision["source"] != "model" {
 		t.Errorf("source = %v, ожидалось model", decision["source"])
 	}
-	if decision["executable"] != false {
-		t.Errorf("executable = %v, ожидалось false (sharded — этап P2)", decision["executable"])
+	// R92 (S3): стратегия исполнима (в сборке есть исполнитель), но группы под
+	// модель нет — решение помечается degraded с причиной. Разделение
+	// «executable=false» (нет в сборке) и «degraded=true» (нет исполнителя
+	// сейчас) здесь и проверяется.
+	if decision["executable"] != true {
+		t.Errorf("executable = %v, ожидалось true (sharded исполним с R92)", decision["executable"])
+	}
+	if decision["degraded"] != true {
+		t.Errorf("degraded = %v, ожидалось true (группа backendGroups не описана)", decision["degraded"])
 	}
 	if decision["reason"] == "" {
 		t.Error("reason не должен быть пустым")

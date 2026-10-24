@@ -117,9 +117,59 @@ def check_css(path: Path, root: Path, errors: list[str]) -> int:
     return checked
 
 
+def check_balancer_panel_copy(dockerfile: Path, root: Path, errors: list[str]) -> int:
+    """R134 (2026-10-16): панель балансера обязана нести ТУ ЖЕ статику WebUI.
+
+    ЖИВОЙ ДЕФЕКТ, ради которого эта проверка появилась. Образ балансера
+    копирует webui-статику в /app/webui и отдаёт её сам (GET /monitor, /health,
+    /js/..., /css/...). Копировались только monitor.html и health.html, поэтому:
+
+      * `/webfonts/fa-solid-900.woff2` отдавал 404, и иконки Font Awesome не
+        рисовались («не отображаются все иконки» — живая жалоба оператора);
+      * `/index.html` отдавал 404, то есть дашборда с навигацией (включая
+        вкладку «Агенты») в панели балансера не существовало вовсе.
+
+    Падает, если в Dockerfile нет маски страниц (`*.html`) или каталога
+    (css/js/img/webfonts): перечислять файлы поимённо нельзя — именно поимённый
+    список и разошёлся с реальным набором страниц.
+    """
+    if not dockerfile.exists():
+        errors.append(f"{dockerfile}: файла нет — нечем проверить панель балансера")
+        return 0
+
+    text = dockerfile.read_text(encoding="utf-8", errors="replace")
+    joined = "\n".join(ln.strip() for ln in text.splitlines() if ln.strip().startswith("COPY"))
+
+    checked = 0
+    if "/build/webui/*.html" in joined:
+        checked += 1
+    else:
+        listed = re.findall(r"/build/webui/([\w.-]+\.html)\b", joined)
+        present = sorted(p.name for p in root.glob("*.html"))
+        not_covered = [p for p in present if p not in listed]
+        if not_covered:
+            errors.append(
+                "docker/balancer/Dockerfile: страницы панели копируются поимённо, и без "
+                f"{', '.join(not_covered)} — GET /index.html (дашборд с вкладкой «Агенты») "
+                "вернёт 404. Нужна маска /build/webui/*.html")
+        else:
+            checked += 1
+
+    for sub in ("css", "js", "img", "webfonts"):
+        if re.search(rf"/build/webui/{sub}(\s|$)", joined):
+            checked += 1
+        else:
+            errors.append(
+                f"docker/balancer/Dockerfile: каталог webui/{sub} не копируется — "
+                "панель балансера отдаст 404 на этих файлах (иконки/стили/скрипты)")
+    return checked
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="webui", help="каталог статики WebUI")
+    ap.add_argument("--balancer-dockerfile", default="docker/balancer/Dockerfile",
+                    help="Dockerfile панели балансера (проверка состава статики)")
     args = ap.parse_args()
 
     root = Path(args.root)
@@ -134,6 +184,8 @@ def main() -> int:
         html_checked += check_html(html, root, errors)
     for css in sorted((root / "css").glob("*.css")):
         css_checked += check_css(css, root, errors)
+
+    panel_checked = check_balancer_panel_copy(Path(args.balancer_dockerfile), root, errors)
 
     # Шрифты Font Awesome должны быть локальными.
     fa = root / "css" / "font-awesome.min.css"
@@ -159,7 +211,8 @@ def main() -> int:
         return 1
 
     print(f"[assets] OK: {html_checked} локальных ассетов в HTML + "
-          f"{css_checked} url() в CSS; внешних CDN нет, шрифты на месте")
+          f"{css_checked} url() в CSS; внешних CDN нет, шрифты на месте; "
+          f"панель балансера: {panel_checked} групп(ы) статики (страницы/css/js/img/webfonts)")
     return 0
 
 

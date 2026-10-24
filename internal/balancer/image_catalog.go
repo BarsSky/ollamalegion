@@ -176,6 +176,14 @@ func (p *Proxy) ImageCatalogFor(ctx context.Context) *ImageCatalog {
 		imageCatalogCacheMu.Unlock()
 		return &hit
 	}
+	// R153 (2026-10-16): запоминаем ПОКОЛЕНИЕ кэша до сборки. Живой флейк:
+	// сборка идёт (сетевые запросы), а ResetImageCatalogCache в этот момент
+	// сбрасывает кэш (так делает teardown теста) — и наша запись «догоняла» сброс,
+	// оставляя в кэше устаревший каталог. Следующий читатель с тем же ключом
+	// получал чужие данные: тест видел модель «уже загруженной» и не запускал
+	// автозагрузку (нет loadSeconds/loadedNow). Теперь пишем только если поколение
+	// не менялось, то есть сброс авторитетен.
+	epoch := imageCatalogCacheEpoch
 	imageCatalogCacheMu.Unlock()
 
 	cat := p.buildImageCatalog(ctx, backends)
@@ -184,7 +192,12 @@ func (p *Proxy) ImageCatalogFor(ctx context.Context) *ImageCatalog {
 	cat.CacheTTLSeconds = int(imageCatalogCacheTTL.Seconds())
 
 	imageCatalogCacheMu.Lock()
-	imageCatalogCache = imageCatalogCacheEntry{valid: true, key: key, at: now, value: cat}
+	if imageCatalogCacheEpoch == epoch {
+		imageCatalogCache = imageCatalogCacheEntry{valid: true, key: key, at: now, value: cat}
+	}
+	// Если поколение изменилось — сброс произошёл во время сборки, и кэшировать
+	// устаревший результат нельзя. Результат всё равно возвращаем вызывающему: он
+	// корректен для этого вызова, просто не попадает в общий кэш.
 	imageCatalogCacheMu.Unlock()
 	return cat
 }
@@ -444,14 +457,23 @@ type imageCatalogCacheEntry struct {
 var (
 	imageCatalogCacheMu sync.Mutex
 	imageCatalogCache   imageCatalogCacheEntry
+	// imageCatalogCacheEpoch — поколение кэша (R153). Увеличивается при сбросе;
+	// сборка пишет результат, только если поколение не изменилось за время сборки.
+	imageCatalogCacheEpoch uint64
 )
 
 // ResetImageCatalogCache — сброс кэша каталога (тесты и ручная диагностика
 // оператором после load/unload модели).
+//
+// R153 (2026-10-16): сброс увеличивает ПОКОЛЕНИЕ. Сборка, начатая до сброса, уже не
+// имеет права записать свой (устаревший) результат — иначе сброс «догонялся» записью
+// и в кэше оставались данные прошлого состояния (живой флейк: тест видел модель
+// «уже загруженной» и не проверял автозагрузку).
 func ResetImageCatalogCache() {
 	imageCatalogCacheMu.Lock()
 	defer imageCatalogCacheMu.Unlock()
 	imageCatalogCache = imageCatalogCacheEntry{}
+	imageCatalogCacheEpoch++
 }
 
 // imageCatalogCacheKey — отпечаток топологии image-бэкендов.

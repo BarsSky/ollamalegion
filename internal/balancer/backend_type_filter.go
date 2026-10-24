@@ -91,48 +91,67 @@ func normalizeBackendType(bt types.BackendType) types.BackendType {
 	}
 }
 
-// getBackendEngine возвращает текущий движок балансировщика.
-// Приоритет: явный конфиг → операционный режим → автоопределение по зарегистрированным бэкендам.
+// getBackendEngine возвращает движок кластера.
+//
+// R112 (2026-10-11): РАЗДЕЛЕНИЕ ПО ТИПУ УБРАНО. Раньше здесь был приоритет
+// «явный конфиг → operatingMode → автоопределение», и operatingMode жёстко
+// назначал llama.cpp для virtual_router/distributed_inference. Следствие: смена
+// режима меняла правила инференса для ЧУЖИХ бэкендов, а смешанный кластер
+// (llama.cpp + Ollama) вообще не мог существовать — режим оставлял ровно один тип.
+//
+// Теперь движок выводится из фактического состава кластера:
+//   - только llama.cpp → EngineLlamaCPP;
+//   - только Ollama    → EngineOllamaAPI;
+//   - оба текстовых типа → EngineAuto (правила одного движка не навязываются
+//     другому пулу: иначе n_ctx/KV-типы/offload считались бы по чужой модели);
+//   - нет бэкендов → EngineAuto.
+//
+// Явный backendEngine из конфига (осознанный выбор оператора) уважается ТОЛЬКО
+// пока бэкенды этого типа реально зарегистрированы. Иначе он считается
+// устаревшим — например, был выведен из operatingMode старой версией при
+// инициализации и сохранился в config.json; такой «призрак» не должен прятать
+// второй тип (ровно так llama.cpp и Ollama не работали вместе).
 func (p *Proxy) getBackendEngine() types.BackendEngine {
-	if p.config.BackendEngine != "" && p.config.BackendEngine != types.EngineAuto {
-		return p.config.BackendEngine
+	counts := p.countBackendsByType()
+	hasOllama := counts[types.BackendTypeOllama] > 0
+	hasLlama := counts[types.BackendTypeLlamaCpp] > 0
+
+	if configured := p.config.BackendEngine; configured != "" && configured != types.EngineAuto {
+		switch configured {
+		case types.EngineLlamaCPP:
+			if hasLlama {
+				return types.EngineLlamaCPP
+			}
+		case types.EngineOllamaAPI:
+			if hasOllama {
+				return types.EngineOllamaAPI
+			}
+		case types.EngineImageCPP:
+			return types.EngineImageCPP
+		}
+		// Предпочтение не подтверждено составом кластера — идём в автоопределение.
 	}
-	if types.IsModeLlamaCpp(p.config.Balancing.OperatingMode) {
+
+	if hasLlama && !hasOllama {
 		return types.EngineLlamaCPP
 	}
-	if p.config.Balancing.OperatingMode == "standard" || p.config.Balancing.OperatingMode == "" {
-		// Стандартный режим: автоопределение по типам зарегистрированных бэкендов
-		counts := p.countBackendsByType()
-		hasOllama := counts[types.BackendTypeOllama] > 0
-		hasLlama := counts[types.BackendTypeLlamaCpp] > 0
-		if hasLlama && !hasOllama {
-			return types.EngineLlamaCPP
-		}
-		if hasOllama && !hasLlama {
-			return types.EngineOllamaAPI
-		}
-		// Смешанный кластер или нет бэкендов — возвращаем auto
-		return types.EngineAuto
+	if hasOllama && !hasLlama {
+		return types.EngineOllamaAPI
 	}
-	return types.EngineLlamaCPP
+	return types.EngineAuto
 }
 
 // getEffectiveBackendType возвращает доминирующий тип бэкенда в кластере.
-// Приоритет: явный backendEngine из конфигурации → автоопределение по фактическим бэкендам.
 // Используется для фильтрации отображения бэкендов в WebUI и мониторе.
-// При смешанном кластере и отсутствии явного конфига возвращает пустую строку (показывать все).
+//
+// R112 (2026-10-11): тип считается ТОЛЬКО по фактическому составу кластера.
+// Раньше первым приоритетом шёл явный backendEngine из конфига, поэтому
+// сохранённое при инициализации значение (выведенное из operatingMode) прятало
+// бэкенды второго типа из /api/v1/cluster и /api/v1/metrics — оператор видел
+// «подключилась только половина стенда». Конфиг учитывается лишь как подсказка,
+// когда бэкендов нет вообще (кластер ещё не зарегистрировался).
+// При смешанном кластере возвращает пустую строку = «показывать все типы».
 func (p *Proxy) getEffectiveBackendType() types.BackendType {
-	// Приоритет 1: явно заданный backendEngine в конфигурации (выбран при инициализации)
-	if p.config.BackendEngine != "" && p.config.BackendEngine != types.EngineAuto {
-		if p.config.BackendEngine == types.EngineLlamaCPP {
-			return types.BackendTypeLlamaCpp
-		}
-		if p.config.BackendEngine == types.EngineOllamaAPI {
-			return types.BackendTypeOllama
-		}
-	}
-
-	// Приоритет 2: автоопределение по фактически зарегистрированным бэкендам
 	counts := p.countBackendsByType()
 	hasOllama := counts[types.BackendTypeOllama] > 0
 	hasLlama := counts[types.BackendTypeLlamaCpp] > 0
@@ -143,7 +162,20 @@ func (p *Proxy) getEffectiveBackendType() types.BackendType {
 	if hasOllama && !hasLlama {
 		return types.BackendTypeOllama
 	}
-	// Смешанный кластер или нет бэкендов — показываем все
+	if hasLlama && hasOllama {
+		// Смешанный кластер — доминанты нет, показываем оба пула.
+		return ""
+	}
+
+	// Бэкендов нет (старт/пустой кластер): подсказка из конфига, иначе «все».
+	switch p.config.BackendEngine {
+	case types.EngineLlamaCPP:
+		return types.BackendTypeLlamaCpp
+	case types.EngineOllamaAPI:
+		return types.BackendTypeOllama
+	case types.EngineImageCPP:
+		return types.BackendTypeImage
+	}
 	return ""
 }
 

@@ -712,6 +712,28 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		return bodyBuf, true, "", http.StatusOK
 	}
 
+	// R119 (2026-10-15): модели вообще НЕТ на этом бэкенде — перезагрузкой её не
+	// создать. Проверяем ЭТО ПЕРВЫМ, до primary/IsReloadPending/streaming-веток:
+	// живой цикл выглядел так — запрос → async-загрузка → cppworker ответил 404
+	// со списком available_models → балансер проигнорировал, на следующий запрос
+	// снова планировал загрузку, а на запрос после этого срабатывал
+	// IsReloadPending-guard и клиент получал 503 «reload already in progress» /
+	// «is being reloaded to n_ctx=… retry in 30s». Клиент ждал сотни секунд и
+	// падал по своему таймауту («Internal Server Error» у OpenWebUI); замер:
+	// POST /api/generate через балансер не отвечал более 4 минут.
+	//
+	// 404 (а не 503) принципиален: 503 означает «повтори, станет лучше», и клиенты
+	// уходят в retry-цикл, а модели от повторения не появится. Ollama для
+	// неизвестной модели тоже отдаёт 404.
+	if reason, available, known := p.modelMissingFor(backendID, modelName); known {
+		logger.Get().Warnw("preflightNCtxReloadIfNeeded: модели нет на бэкенде — отдаю 404, перезагрузку не планирую",
+			"backend", backendID, "model", modelName,
+			"request_path", requestPath, "available_models", len(available))
+		return bodyBuf, false,
+			formatModelMissingMessage(modelName, reason, available),
+			http.StatusNotFound
+	}
+
 	// R83 (2026-09-29): PRIMARY — настройки модели зафиксированы администратором.
 	//
 	// Клиентский запрос НЕ меняет параметры загруженной модели:
@@ -834,67 +856,65 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// объяснением вместо тихой перезагрузки. Сам потолок НЕ ограничивает
 	// явную загрузку модели (WebUI/load-with-params) — он про авто-reload.
 	if cfg := p.nctxReload.Config(); cfg.AutoReloadMaxNCtx > 0 && requestedNCtx > cfg.AutoReloadMaxNCtx {
-		logger.Get().Warnw("preflightNCtxReload: запрошенный n_ctx выше потолка auto-reload — reload НЕ запускаю",
+		// R140 (2026-10-16): называем СВЯЗЫВАЮЩИЙ предел, а не только
+		// операторский.
+		//
+		// max_vram_n_ctx воркер считает по ФАКТИЧЕСКИ свободной VRAM, поэтому
+		// он учитывает и другие загруженные модели. Если он ниже операторского
+		// лимита, совет «поднимите LB_NCTX_RELOAD_MAX_N_CTX» невыполним: окно
+		// всё равно не влезет, и клиент уйдёт в бесплодный цикл поднятия
+		// настройки. Когда физический потолок неизвестен (0 = poller ещё не
+		// опросил бэкенд) — не выдумываем число и говорим только про
+		// операторский лимит, как раньше.
+		physicalMax := p.getMaxVRAMNCtxFromMetrics(backendID)
+		binding := cfg.AutoReloadMaxNCtx
+		if physicalMax > 0 && physicalMax < binding {
+			binding = physicalMax
+		}
+		logger.Get().Warnw("preflightNCtxReload: запрошенный n_ctx выше предела — reload НЕ запускаю",
 			"backend", backendID, "model", modelName,
 			"requested_n_ctx", requestedNCtx,
 			"auto_reload_max_n_ctx", cfg.AutoReloadMaxNCtx,
+			"max_vram_n_ctx", physicalMax,
+			"binding_limit", binding,
 			"hint", "поднимите LB_NCTX_RELOAD_MAX_N_CTX или загрузите модель с нужным contextSize явно")
 		return bodyBuf, false,
-			fmt.Sprintf("requested num_ctx=%d exceeds operator limit auto_reload_max_n_ctx=%d "+
-				"(model %q keeps its loaded n_ctx). Raise LB_NCTX_RELOAD_MAX_N_CTX "+
-				"or load the model explicitly with the needed contextSize.",
-				requestedNCtx, cfg.AutoReloadMaxNCtx, modelName),
+			formatNCtxCeilingRefusal(requestedNCtx, cfg.AutoReloadMaxNCtx, physicalMax, modelName),
 			http.StatusRequestEntityTooLarge
 	}
 
-	// 2. Получаем loaded n_ctx из метрик.
-	p.metricsMgr.mu.RLock()
-	lm, hasLm := p.metricsMgr.llamaMetrics[backendID]
-	var loadedNCtx int
-	if hasLm && lm != nil {
-		for _, m := range lm.LoadedModels {
-			if m.Name == modelName || containsFold(m.Name, modelName) || containsFold(modelName, m.Name) {
-				if m.ContextLength > 0 {
-					loadedNCtx = m.ContextLength
-				}
-				break
-			}
-		}
-	}
-	p.metricsMgr.mu.RUnlock()
-
-	// R68 (2026-09-23): координатор reload'а (NCtxReloadCoordinator) знает
-	// фактический n_ctx СРАЗУ после успешного reload'а, а metrics poller
-	// обновляется раз в ~30 c. Из-за рассинхрона здесь брался устаревший
-	// (меньший) n_ctx: transport-level smart-skip патчил body обратно на 8192 и
-	// ставил X-Cpp-Ctx=8192, cppworker отвечал 413 «prompt exceeds n_ctx», а
-	// обработчик 413 запускал ВТОРОЙ reload на 16384 — клиент (Cline) получал
-	// 503 «reload in progress» уже после того, как дождался 65536.
-	// R83-fix (2026-09-30): «загружено ли» — по ОБОИМ источникам (метрики поллера
-	// + координатор). Метрики обновляются раз в 30 c, поэтому сразу после загрузки
-	// (особенно сделанной мимо координатора — WebUI/auto-load) здесь был 0, и
-	// preflight считал модель незагруженной: планировал reload на КЛИЕНТСКОЕ
-	// (меньшее) окно. Так «подготовленная модель с окном 131k выгружалась в пользу
-	// меньшего окна от клиента».
-	// R83-fix (2026-09-30): кэш может быть пуст — загрузку сделали мимо
-	// балансера (WebUI/прямой вызов cppworker), а поллер ещё не прошёл. Тогда
-	// здесь было loaded_n_ctx=0, и preflight планировал reload УЖЕ ЗАГРУЖЕННОЙ
-	// модели на клиентское (меньшее) окно:
-	//   "detected n_ctx mismatch, scheduling async reload, loaded_n_ctx=0,
-	//    requested_n_ctx=8192, loaded_n_ctx_is_zero=true"
-	// Спрашиваем cppworker один раз и только в этом случае.
-	if loadedNCtx == 0 {
-		if live := p.refreshLoadedWindowNCtx(backendID, modelName); live > 0 {
-			logger.Get().Infow("preflightNCtxReload: кэш метрик пуст, окно взято у cppworker",
-				"backend", backendID, "model", modelName, "live_n_ctx", live)
-			loadedNCtx = live
-		}
-	}
-	if lk := p.loadedWindowNCtx(backendID, modelName); lk > loadedNCtx {
-		logger.Get().Infow("preflightNCtxReload: loaded n_ctx from coordinator is fresher than metrics cache",
+	// 2. R118 (2026-10-14): ЧТО ИМЕННО известно о модели — «загружена»,
+	//    «грузится прямо сейчас», «модели нет» или «состояние неизвестно».
+	//
+	// ДО R118 все четыре случая приходили сюда как loaded_n_ctx=0, и preflight в
+	// каждом из них планировал загрузку/перезагрузку. Живое воспроизведение на
+	// стенде (см. шапку loadedWindowState в num_ctx_resolver.go): пока оператор
+	// грузил модель с ctx=32768, клиентский запрос с num_ctx=8192 запустил
+	// ВТОРУЮ загрузку, cppworker выгрузил первую («reloading model because
+	// parameters changed»), она упала с «model load aborted by user» (71 c
+	// впустую), а клиент получил 503 «being reloaded ... retry in 30s».
+	//
+	// ТЕПЕРЬ: «грузится» — ждём свою же загрузку, второй не запускаем;
+	// «неизвестно» (опрос /api/models не прошёл) — не принимаем разрушительных
+	// решений, запрос идёт как есть; «загружена» — обычная логика ниже;
+	// «модели нет» — загрузка с окном из настроек (тоже ниже).
+	loadedNCtx, loadedState := p.resolveLoadedWindowNCtx(backendID, modelName, true)
+	switch loadedState {
+	case loadedWindowLoading:
+		logger.Get().Infow("preflightNCtxReload: модель загружается на бэкенде — вторую загрузку не запускаю",
 			"backend", backendID, "model", modelName,
-			"metrics_n_ctx", loadedNCtx, "coordinator_n_ctx", lk)
-		loadedNCtx = lk
+			"requested_n_ctx", requestedNCtx,
+			"hint", "ждём завершения текущей загрузки: окно выставит она сама")
+		return bodyBuf, false,
+			fmt.Sprintf("model %q is loading on backend %s; waiting for the load already in progress "+
+				"(no second load started, prepared n_ctx is preserved)", modelName, backendID),
+			http.StatusServiceUnavailable
+	case loadedWindowUnknown:
+		logger.Get().Warnw("preflightNCtxReload: состояние модели неизвестно — reload не запускаю, запрос идёт как есть",
+			"backend", backendID, "model", modelName,
+			"requested_n_ctx", requestedNCtx,
+			"hint", "опрос /api/models не удался; выгружать подготовленную модель по недостоверным данным нельзя")
+		return bodyBuf, true, "", http.StatusOK
 	}
 
 	// R83-fix (2026-09-30): сравниваем с ОКНОМ СЛОТА, а не с суммарным.
@@ -910,7 +930,6 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	//
 	// Поэтому все сравнения/патчи тела ниже идут по perSeq, а суммарное значение
 	// остаётся для reload-таргета (окно клиента × слоты) и для кэша метрик.
-	loadedTotalNCtx := loadedNCtx
 	if perSeq := p.loadedPerSeqNCtx(backendID, modelName); perSeq > 0 {
 		if perSeq != loadedNCtx {
 			logger.Get().Infow("preflightNCtxReload: окно модели суммарное/на клиента",
@@ -919,7 +938,6 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		}
 		loadedNCtx = perSeq
 	}
-	_ = loadedTotalNCtx
 
 	// R83-fix (2026-09-30): КЛИЕНТ НЕ ЗАДАЛ ОКНО + МОДЕЛЬ ЗАГРУЖЕНА → НЕ ТРОГАЕМ.
 	//
@@ -1133,6 +1151,34 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		}
 	}
 
+	// R118.7 (2026-10-14): cppworker уже отвечал 422 n_ctx_infeasible на такое
+	// окно — не планируем эту перезагрузку снова, а объясняем клиенту.
+	//
+	// ЖИВОЙ ЦИКЛ (лог стенда): запрос → «detected n_ctx mismatch» → async reload
+	// target 16384 → 422 n_ctx_infeasible («stage: does_not_fit», «веса не
+	// помещаются ни в VRAM, ни в RAM») → запрос снова → снова reload… Клиент при
+	// этом ждал до 33 с и получал окно меньше запрошенного без объяснения.
+	if ceiling, infeasibleReason, known := p.nctxInfeasibleFor(backendID, modelName); known && reloadTarget > ceiling {
+		logger.Get().Warnw("preflightNCtxReload: окно физически недостижимо — reload не планирую",
+			"backend", backendID, "model", modelName,
+			"loaded_n_ctx", loadedNCtx, "requested_n_ctx", requestedNCtx,
+			"reload_target_total", reloadTarget, "ceiling_n_ctx", ceiling,
+			"reason", infeasibleReason)
+		return bodyBuf, false,
+			fmt.Sprintf("backend %s cannot grow the context to %d tokens (client asked %d per slot): %s",
+				backendID, reloadTarget, requestedNCtx, infeasibleReason),
+			http.StatusRequestEntityTooLarge
+	}
+
+	// R119 (2026-10-15): модели вообще НЕТ на этом бэкенде — перезагрузкой её не
+	// создать. Проверка стоит В НАЧАЛЕ функции (см. выше), сюда доходит только
+	// случай, когда запись появилась уже во время этого запроса.
+	if reason, available, known := p.modelMissingFor(backendID, modelName); known {
+		return bodyBuf, false,
+			formatModelMissingMessage(modelName, reason, available),
+			http.StatusNotFound
+	}
+
 	logger.Get().Infow("preflightNCtxReload: detected n_ctx mismatch, scheduling async reload",
 		"backend", backendID, "model", modelName,
 		"loaded_n_ctx", loadedNCtx,
@@ -1187,6 +1233,26 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 			"backend", backendID, "model", modelName,
 			"requested_n_ctx", requestedNCtx,
 			"waited_ms", time.Since(waitStart).Milliseconds())
+	}
+
+	// R119 (2026-10-15): пока клиент ждал, фоновая загрузка могла получить от
+	// cppworker терминальный 404 «модели нет» (executeAsyncReload записал это в
+	// реестр). Тогда отдаём 404 сразу, а не 503 «повтори через 30 с»: модели от
+	// повторения не появится, а клиент (OpenWebUI) на 503 уходит в retry-цикл и в
+	// итоге показывает «Internal Server Error».
+	//
+	// Гонку «запись появилась на миллисекунды позже решения» здесь НЕ закрываем
+	// ожиданием: preflight обязан возвращать управление сразу после планирования
+	// перезагрузки (на это опираются тесты роста окна — им важно, что reload ещё
+	// в полёте). Короткое ожидание делает вызывающий транспорт перед тем, как
+	// отдать клиенту 503 (см. llamacpp_transport*.go).
+	if reason, available, known := p.modelMissingFor(backendID, modelName); known {
+		logger.Get().Warnw("preflightNCtxReload: модели нет на бэкенде — отдаю 404",
+			"backend", backendID, "model", modelName,
+			"available_models", len(available))
+		return bodyBuf, false,
+			formatModelMissingMessage(modelName, reason, available),
+			http.StatusNotFound
 	}
 
 	// Возвращаем клиенту 503 + Retry-After: 30. needsProxy=false — вызывающий код
@@ -1308,6 +1374,34 @@ func patchNumCtxInBody(body []byte, newNCtx int) []byte {
 //   - Streaming-клиенты (curl без retry, скрипты) — async 503 + Retry-After лучше.
 //   - Если reload ОЧЕНЬ долгий (cold start большой модели > 60s) — async
 //     даст клиенту возможность повторить через 15s.
+// formatNCtxCeilingRefusal — отказ на окно выше предела авто-перезагрузки.
+//
+// R140 (2026-10-16): предел зависит от ДВУХ чисел, и клиенту нужно то, которое
+// реально связывает:
+//
+//   - operatorMax — потолок оператора (LB_NCTX_RELOAD_MAX_N_CTX);
+//   - physicalMax — max_vram_n_ctx от воркера: сколько токенов контекста влезает
+//     в ФАКТИЧЕСКИ свободную VRAM, то есть с учётом других загруженных моделей.
+//
+// Когда связывает физический предел, совет «поднимите LB_NCTX_RELOAD_MAX_N_CTX»
+// невыполним — окно не влезет. Тогда говорим именно это и подсказываем то, что
+// действительно освобождает окно (выгрузить другие модели, меньшая модель,
+// меньше слоёв на GPU). Когда физический предел неизвестен (0) — не выдумываем
+// число, текст остаётся прежним.
+func formatNCtxCeilingRefusal(requested, operatorMax, physicalMax int, modelName string) string {
+	if physicalMax > 0 && physicalMax < operatorMax {
+		return fmt.Sprintf("requested num_ctx=%d exceeds the backend's physical limit max_vram_n_ctx=%d "+
+			"(what fits in free VRAM with the models loaded now; operator limit auto_reload_max_n_ctx=%d is higher). "+
+			"Model %q keeps its loaded n_ctx. Free VRAM (unload other models, use a smaller model or fewer GPU layers) "+
+			"or load the model explicitly with the needed contextSize.",
+			requested, physicalMax, operatorMax, modelName)
+	}
+	return fmt.Sprintf("requested num_ctx=%d exceeds operator limit auto_reload_max_n_ctx=%d "+
+		"(model %q keeps its loaded n_ctx). Raise LB_NCTX_RELOAD_MAX_N_CTX "+
+		"or load the model explicitly with the needed contextSize.",
+		requested, operatorMax, modelName)
+}
+
 func (p *Proxy) preflightNCtxReloadIfNeededSync(
 	ctx context.Context,
 	backendID, modelName string,
@@ -1494,18 +1588,8 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 	// is ready and metrics_poller will pick up the state on next 30s poll.
 	targetURL := p.getBackendBaseURL(backend) + "/api/models/load"
 
-	reloadPayload, _ := json.Marshal(map[string]interface{}{
-		"name":        modelName,
-		"contextSize": requestedNCtx,
-		// "force" removed: /api/models/load doesn't have this field.
-		// The "reason" field is also load-specific (it triggers profile re-apply).
-		"reason": "balancer preflight async auto-load-or-reload (loaded<requested or cppworker restart)",
-		// Phase 1 (2026-07-06): RAM fallback to maximize n_ctx in 8GB VRAM.
-		// Without q4_0 KV-cache + GPU-offload=-2, gemma-4 maxes at ~17K n_ctx.
-		"kvCacheType": "q4_0",
-		"gpuLayers":   -2,
-		"useMmap":     true,
-	})
+	reloadPayload, _ := json.Marshal(asyncReloadLoadBody(modelName, requestedNCtx,
+		p.reloadHintsFor(backendID, modelName)))
 
 	reloadCtx, cancel := reloadTimeoutContext(context.Background(), 0)
 	defer cancel()
@@ -1564,6 +1648,21 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 			"status", resp.StatusCode,
 			"duration_ms", duration.Milliseconds(),
 			"body", string(body))
+		// R118.7 (2026-10-14): 422 n_ctx_infeasible — окно физически не помещается.
+		// Запоминаем потолок, чтобы НЕ планировать эту перезагрузку на каждом
+		// следующем запросе (живой цикл: запрос → reload → 422 → запрос → reload…),
+		// и чтобы клиент получил внятный отказ с числами и причиной.
+		if isNCtxInfeasibleResponse(resp.StatusCode, body) {
+			p.recordNCtxInfeasible(backendID, modelName, requestedNCtx, body)
+		}
+		// R119 (2026-10-15): 404 «модели нет» — ТЕРМИНАЛЬНЫЙ отказ, а не повод
+		// повторить. Раньше он игнорировался, и балансер на каждый следующий
+		// запрос снова планировал загрузку, а клиенту отдавал 503 «is being
+		// reloaded … retry in 30s» → retry-цикл до таймаута клиента (живой замер:
+		// POST /api/generate через балансер не отвечал более 4 минут).
+		if isModelMissingResponse(resp.StatusCode, body) {
+			p.recordModelMissing(backendID, modelName, body)
+		}
 		return
 	}
 
@@ -1571,6 +1670,10 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 		"backend", backendID, "model", modelName,
 		"target_n_ctx", requestedNCtx,
 		"duration_ms", duration.Milliseconds())
+	// Перезагрузка удалась — прежний отказ больше не актуален.
+	p.clearNCtxInfeasible(backendID, modelName)
+	// R119: модель загрузилась — значит она ЕСТЬ, и запись «модели нет» устарела.
+	p.clearModelMissing(backendID, modelName)
 }
 
 // getLoadedNCtxFromMetrics — возвращает загруженный n_ctx модели из метрик.

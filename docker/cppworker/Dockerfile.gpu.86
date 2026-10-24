@@ -2,7 +2,15 @@
 # CppBackend Worker GPU — реальный llama.cpp + CUDA 86 only (RTX 3070)
 # =============================================================================
 
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS llama-builder
+# CUDA_BASE / CUDA_VERSION — как в универсальном Dockerfile.gpu. Раньше здесь
+# стоял литерал nvidia/cuda:12.2.0, и это давало два расхождения с универсальным
+# файлом: (1) базовый образ тянулся с docker.io, где в отцепленном билде (WMI, без
+# сессии входа) Docker не может достать учётные данные и сборка падает на первом
+# же FROM; (2) версия CUDA не переопределялась, хотя для sm_120 нужна 12.8.
+ARG CUDA_BASE=nvidia/cuda
+ARG CUDA_VERSION=12.2.0
+
+FROM ${CUDA_BASE}:${CUDA_VERSION}-devel-ubuntu22.04 AS llama-builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -23,6 +31,15 @@ COPY c/llama.cpp .
 
 RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build commit -m "llama.cpp"
 
+# R214: TCP keepalive на сокете раскладки (см. Dockerfile.gpu и patches/0001-rpc-tcp-keepalive.patch).
+COPY docker/cppworker/patches /tmp/patches
+# R218: патчи применяются по порядку и падают громко, если хоть один не встал.
+#  0001 — TCP keepalive сокета раскладки (R214);
+#  0002 — недоступный RPC-узел больше не GGML_ABORT'ит процесс (R218).
+RUN for p in /tmp/patches/*.patch; do \
+        git apply "$p" || exit 1; \
+    done && rm -rf /tmp/patches
+
 # Round 15 follow-up (2026-07-29): --mount=type=cache,target=/root/.ccache
 # персистит ccache между билдами.
 #
@@ -33,6 +50,10 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
     mkdir -p build && cd build && \
     cmake .. \
       -DGGML_CUDA=ON \
+      # S1 (2026-10-11): RPC-бэкенд — цель `rpc-server` для раскладки слоями
+      # между машинами. Собирается тем же исходником и архитектурой, что
+      # libllama: протокол RPC версионно-чувствителен (docs/rpc-coordinator.md).
+      -DGGML_RPC=ON \
       -DCMAKE_CUDA_ARCHITECTURES="86" \
       -DGGML_CCACHE=ON \
       -DLLAMA_CURL=OFF \
@@ -51,7 +72,7 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
     cmake --build . --config Release -j$(nproc) && \
     ccache -s | tail -5
 
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-builder
+FROM ${CUDA_BASE}:${CUDA_VERSION}-devel-ubuntu22.04 AS bridge-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends cmake nlohmann-json3-dev && rm -rf /var/lib/apt/lists/*
 
@@ -73,7 +94,7 @@ RUN mkdir -p build && cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release && \
     cmake --build . --config Release
 
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS go-builder
+FROM ${CUDA_BASE}:${CUDA_VERSION}-devel-ubuntu22.04 AS go-builder
 
 ARG GO_VERSION=1.24.3
 
@@ -107,7 +128,9 @@ COPY --from=bridge-builder /build/bridge/build /build/c/bridge/build
 
 ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-DGGML_USE_CUDA -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include -fopenmp"
-ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/llama.cpp/build/common -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -Wl,--start-group -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lllama-common -lllama-common-base -lollamalegion_bridge -Wl,--end-group -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
+ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-rpc -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/llama.cpp/build/common -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -Wl,--start-group -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lggml-rpc -lllama-common -lllama-common-base -lollamalegion_bridge -Wl,--end-group -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
+# -lggml-rpc нужен при GGML_RPC=ON (libggml.a ссылается на ggml_backend_rpc_reg);
+# библиотека лежит в подкаталоге build/ggml/src/ggml-rpc, поэтому нужен свой -L.
 
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags "-w -s" \
@@ -120,7 +143,7 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
 # выставить batch.n_tokens после populate loop) или build_batched_batch
 # регрессирует (Round 15.1: same n_tokens=0 bug в multi-seq batch), build
 # сломается. Это — страховка от тихих регрессий в C-bridge.
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS bridge-tests
+FROM ${CUDA_BASE}:${CUDA_VERSION}-devel-ubuntu22.04 AS bridge-tests
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends cmake gcc g++ && \
@@ -139,7 +162,7 @@ RUN mkdir -p build && cd build && \
     ./test_batch_n_tokens && \
     ./test_batched_batch
 
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS runtime
+FROM ${CUDA_BASE}:${CUDA_VERSION}-runtime-ubuntu22.04 AS runtime
 
 WORKDIR /app
 
@@ -152,6 +175,10 @@ COPY docker/cppworker/entrypoint.sh /entrypoint.sh
 COPY docker/cppworker/register-with-balancer.sh /register-with-balancer.sh
 RUN chmod +x /entrypoint.sh /register-with-balancer.sh
 COPY --from=go-builder /build/cppworker .
+# S1 (2026-10-11): rpc-server — узел раскладки слоями. COPY до chown ниже,
+# чтобы бинарь сразу принадлежал appuser. Цель llama.cpp зовётся
+# `ggml-rpc-server` (tools/rpc/CMakeLists.txt), копируем под /app/rpc-server.
+COPY --from=llama-builder /build/llama.cpp/build/bin/ggml-rpc-server /app/rpc-server
 
 RUN mkdir -p /app/models && \
     groupadd -g 1000 appgroup && \

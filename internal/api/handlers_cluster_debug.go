@@ -44,32 +44,32 @@ import (
 //
 // ВАЖНО: при изменении cmd/cppworker/debug_last_prompt.go нужно обновить и эту структуру.
 type debugLastPromptInfo struct {
-	Model          string    `json:"model"`
-	Endpoint       string    `json:"endpoint"`
-	PromptChars    int       `json:"prompt_chars"`
-	PromptTokens   int       `json:"prompt_tokens"`
-	NCtxOverride   int       `json:"n_ctx_override"`
-	NCtxLoaded     int       `json:"n_ctx_loaded"`
-	HasTools       bool      `json:"has_tools"`
-	Status         string    `json:"status"`
-	Timestamp      time.Time `json:"timestamp"`
-	PromptHead     string    `json:"prompt_head,omitempty"`
-	PromptTail     string    `json:"prompt_tail,omitempty"`
-	PromptLinesHint int      `json:"prompt_lines_hint,omitempty"`
-	Error          string    `json:"error,omitempty"`
+	Model           string    `json:"model"`
+	Endpoint        string    `json:"endpoint"`
+	PromptChars     int       `json:"prompt_chars"`
+	PromptTokens    int       `json:"prompt_tokens"`
+	NCtxOverride    int       `json:"n_ctx_override"`
+	NCtxLoaded      int       `json:"n_ctx_loaded"`
+	HasTools        bool      `json:"has_tools"`
+	Status          string    `json:"status"`
+	Timestamp       time.Time `json:"timestamp"`
+	PromptHead      string    `json:"prompt_head,omitempty"`
+	PromptTail      string    `json:"prompt_tail,omitempty"`
+	PromptLinesHint int       `json:"prompt_lines_hint,omitempty"`
+	Error           string    `json:"error,omitempty"`
 }
 
 // debugLastPromptBackendResult — результат с одного cppworker бэкенда.
 type debugLastPromptBackendResult struct {
-	BackendID string              `json:"backendId"`
-	Status    string              `json:"status"` // "ok" | "error" | "unavailable"
+	BackendID string               `json:"backendId"`
+	Status    string               `json:"status"` // "ok" | "error" | "unavailable"
 	Info      *debugLastPromptInfo `json:"info,omitempty"`
-	Error     string              `json:"error,omitempty"`
+	Error     string               `json:"error,omitempty"`
 }
 
 // debugLastPromptResponse — агрегированный ответ.
 type debugLastPromptResponse struct {
-	Count    int                          `json:"count"`
+	Count    int                            `json:"count"`
 	Backends []debugLastPromptBackendResult `json:"backends"`
 }
 

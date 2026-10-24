@@ -130,11 +130,11 @@ func (s *Server) configImportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":     true,
-		"config":      buildConfigExport(s.config),
-		"importedAt":  time.Now().UTC().Format(time.RFC3339),
+		"success":      true,
+		"config":       buildConfigExport(s.config),
+		"importedAt":   time.Now().UTC().Format(time.RFC3339),
 		"backendCount": len(s.config.Backends),
-		"message":     "Configuration imported successfully",
+		"message":      "Configuration imported successfully",
 	})
 }
 
@@ -142,33 +142,33 @@ func (s *Server) configImportHandler(w http.ResponseWriter, r *http.Request) {
 func buildConfigExport(cfg *types.LoadBalancerConfig) map[string]interface{} {
 	export := map[string]interface{}{
 		"loadBalancer": map[string]interface{}{
-			"host":           cfg.LoadBalancer.Host,
-			"port":           cfg.LoadBalancer.Port,
-			"apiPort":        cfg.LoadBalancer.APIPort,
-			"tlsHost":        cfg.LoadBalancer.TLSHost,
-			"tlsPort":        cfg.LoadBalancer.TLSPort,
-			"trustedProxies": cfg.LoadBalancer.TrustedProxies,
+			"host":            cfg.LoadBalancer.Host,
+			"port":            cfg.LoadBalancer.Port,
+			"apiPort":         cfg.LoadBalancer.APIPort,
+			"tlsHost":         cfg.LoadBalancer.TLSHost,
+			"tlsPort":         cfg.LoadBalancer.TLSPort,
+			"trustedProxies":  cfg.LoadBalancer.TrustedProxies,
 			"clientIPHeaders": cfg.LoadBalancer.ClientIPHeaders,
-			"statePath":      cfg.LoadBalancer.StatePath,
+			"statePath":       cfg.LoadBalancer.StatePath,
 		},
 		"backends":      cfg.Backends,
 		"backendEngine": string(cfg.BackendEngine),
 		"initialized":   cfg.Initialized,
 		"balancing": map[string]interface{}{
-			"algorithm":           string(cfg.Balancing.Algorithm),
-			"modelAffinity":       cfg.Balancing.ModelAffinity,
-			"sessionStickiness":   cfg.Balancing.SessionStickiness,
-			"useEnhancedScoring":  cfg.Balancing.UseEnhancedScoring,
-			"operatingMode":       cfg.Balancing.OperatingMode,
-			"healthCheckInterval": cfg.Balancing.HealthCheckInterval,
-			"metricsInterval":     cfg.Balancing.MetricsInterval,
-			"requestTimeout":      cfg.Balancing.RequestTimeout,
-			"firstByteTimeout":    cfg.Balancing.FirstByteTimeout,
+			"algorithm":            string(cfg.Balancing.Algorithm),
+			"modelAffinity":        cfg.Balancing.ModelAffinity,
+			"sessionStickiness":    cfg.Balancing.SessionStickiness,
+			"useEnhancedScoring":   cfg.Balancing.UseEnhancedScoring,
+			"operatingMode":        cfg.Balancing.OperatingMode,
+			"healthCheckInterval":  cfg.Balancing.HealthCheckInterval,
+			"metricsInterval":      cfg.Balancing.MetricsInterval,
+			"requestTimeout":       cfg.Balancing.RequestTimeout,
+			"firstByteTimeout":     cfg.Balancing.FirstByteTimeout,
 			"streamingIdleTimeout": cfg.Balancing.StreamingIdleTimeout,
-			"queueTimeout":        cfg.Balancing.QueueTimeout,
-			"queueMaxSize":        cfg.Balancing.QueueMaxSize,
-			"queueWorkers":        cfg.Balancing.QueueWorkers,
-			"sessionTTL":          cfg.Balancing.SessionTTL,
+			"queueTimeout":         cfg.Balancing.QueueTimeout,
+			"queueMaxSize":         cfg.Balancing.QueueMaxSize,
+			"queueWorkers":         cfg.Balancing.QueueWorkers,
+			"sessionTTL":           cfg.Balancing.SessionTTL,
 		},
 		"resources": map[string]interface{}{
 			"gpu": map[string]interface{}{
@@ -201,18 +201,18 @@ func buildConfigExport(cfg *types.LoadBalancerConfig) map[string]interface{} {
 			"maxRetries":     cfg.Balancing.RpcCoordinator.MaxRetries,
 		},
 		"virtualModels": map[string]interface{}{
-			"enabled":     cfg.Balancing.VirtualModels.Enabled,
-			"modelCount":  len(cfg.Balancing.VirtualModels.Models),
+			"enabled":    cfg.Balancing.VirtualModels.Enabled,
+			"modelCount": len(cfg.Balancing.VirtualModels.Models),
 		},
 		"distInference": map[string]interface{}{
 			"enabled":  cfg.Balancing.DistInference.Enabled,
 			"grpcPort": cfg.Balancing.DistInference.GrpcPort,
 		},
 		"prewarm": map[string]interface{}{
-			"enabled":             cfg.Balancing.Prewarm.Enabled,
+			"enabled":              cfg.Balancing.Prewarm.Enabled,
 			"triggerLoadThreshold": cfg.Balancing.Prewarm.TriggerLoadThreshold,
-			"maxPrewarmPerCycle":  cfg.Balancing.Prewarm.MaxPrewarmPerCycle,
-			"checkIntervalSec":    cfg.Balancing.Prewarm.CheckIntervalSec,
+			"maxPrewarmPerCycle":   cfg.Balancing.Prewarm.MaxPrewarmPerCycle,
+			"checkIntervalSec":     cfg.Balancing.Prewarm.CheckIntervalSec,
 		},
 		"modelInstances": map[string]interface{}{
 			"defaultMinInstances": cfg.Balancing.ModelInstances.DefaultMinInstances,

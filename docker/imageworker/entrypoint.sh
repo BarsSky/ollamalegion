@@ -32,7 +32,7 @@
 #
 # Пример docker run (Vulkan, AMD/Intel — драйвер берётся из хоста через /dev/dri):
 #   docker run --device /dev/dri --group-add video --group-add render \
-#     -e SDWORKER_BASE_URL=http://192.168.1.10:18093 \
+#     -e SDWORKER_BASE_URL=http://192.0.2.110:18093 \
 #     -v ./models/image:/app/models/image \
 #     -p 18093:18093 ollama-legion/imageworker:vulkan
 #
@@ -40,7 +40,7 @@
 # /dev/dri для NVIDIA НЕ нужен и ничего не даёт, в образе нет его ICD):
 #   docker run --runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all \
 #     -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
-#     -e SDWORKER_BASE_URL=http://192.168.1.10:18093 \
+#     -e SDWORKER_BASE_URL=http://192.0.2.110:18093 \
 #     -v ./models/image:/app/models/image \
 #     -p 18093:18093 ollama-legion/imageworker:vulkan
 # =============================================================================

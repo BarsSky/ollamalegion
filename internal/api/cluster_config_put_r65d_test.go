@@ -276,4 +276,3 @@ func TestR65d_ClusterConfigPut_GetReturnsAllSections(t *testing.T) {
 		}
 	}
 }
-

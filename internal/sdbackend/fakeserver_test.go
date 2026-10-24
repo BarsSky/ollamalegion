@@ -57,6 +57,9 @@ type fakepServer struct {
 	generatingForever bool
 	// jobs — статусы джоб.
 	jobs map[string]string
+	// imageB64 — payload картинки, которую отдаёт движок. Пусто → tinyPNG.
+	// Нужен, чтобы проверять размер ответа на реалистичном PNG (R120).
+	imageB64 string
 	// cancels — какие джобы пытались отменить.
 	cancels []string
 	// delayedReady — сколько запросов capabilities должны вернуть 404 до успеха
@@ -213,8 +216,14 @@ func (f *fakepServer) handleJob(w http.ResponseWriter, r *http.Request) {
 			f.mu.Unlock()
 		}
 		images := make([]map[string]any, 0, imgCount)
+		f.mu.Lock()
+		payload := f.imageB64
+		f.mu.Unlock()
+		if payload == "" {
+			payload = tinyPNG
+		}
 		for i := 0; i < imgCount; i++ {
-			images = append(images, map[string]any{"index": i, "b64_json": tinyPNG})
+			images = append(images, map[string]any{"index": i, "b64_json": payload})
 		}
 		resp["result"] = map[string]any{"output_format": "png", "images": images}
 	}
@@ -265,6 +274,14 @@ func (f *fakepServer) setJobStatus(id, status string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.jobs[id] = status
+}
+
+// setImagePayload — подменить картинку, которую отдаёт движок (R120): нужна,
+// чтобы размер ответа проверялся на реалистичном PNG, а не на 1x1.
+func (f *fakepServer) setImagePayload(b64 string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.imageB64 = b64
 }
 
 func (f *fakepServer) hostPort() (string, int) {

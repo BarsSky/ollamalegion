@@ -45,6 +45,22 @@ type GPUDevice struct {
 	VRAMFreeSource int
 }
 
+// DeviceInfo — stub-двойник реального типа (см. bridge.go): список устройств
+// раскладки нужен планировщику, чтобы код собирался и без llama.cpp.
+type DeviceInfo struct {
+	Name        string
+	Type        int
+	IsRemote    bool
+	MemoryFree  uint64
+	MemoryTotal uint64
+}
+
+// CollectDevices — stub: устройств раскладки нет, планировщик считает по
+// локальным GPU (поведение как до S1).
+func CollectDevices(cfg ModelConfig) []DeviceInfo {
+	return nil
+}
+
 // GenerationParams — параметры генерации
 type GenerationParams struct {
 	NPredict         int
@@ -139,6 +155,15 @@ type ModelConfig struct {
 	RMSNormEps  float32
 	NoMemoryMap bool
 	RPCBackend  string
+	// RPCServers — R105 (S1 плана 2026-10-07): адреса rpc-server'ов.
+	// В stub-режиме не используются, но обязаны присутствовать для совместимости
+	// типов между bridge.go (!llama_stub) и bridge_stub.go (llama_stub).
+	RPCServers []string
+	// SplitMode — S1 (2026-10-13): режим раскладки слоёв между устройствами.
+	// -1 = дефолт llama.cpp (LAYER), 0 = NONE, 1 = LAYER, 2 = ROW, 3 = TENSOR.
+	// В stub-режиме не используется, но обязан присутствовать для совместимости
+	// типов: без него cppbackend не собирается под llama_stub.
+	SplitMode int
 	// R83 §3.2/§3.4 (2026-09-26): параметры KV-кэша от планировщика.
 	// В stub-режиме не используются, но обязаны присутствовать для совместимости
 	// типов между bridge.go (!llama_stub) и bridge_stub.go (llama_stub).
@@ -275,6 +300,12 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 // ============================================================
 
 var initDone bool
+
+// installLogCapture — stub-аналог R118.16. В stub-режиме llama.cpp нет, логов
+// нет, перехватывать нечего: точную раскладку получить невозможно, и
+// DeviceLayers() останется пустым (вызывающий обязан трактовать это как
+// «неизвестно», а не как «слоёв нет»).
+func installLogCapture() {}
 
 // Init инициализирует bridge (заглушка)
 func Init() error {
@@ -437,6 +468,20 @@ func RequestLoadAbortAll() error {
 func IsLoadAborted(model *ModelHandle) bool {
 	return false
 }
+
+// GetLoadProgress — stub: -1 (в stub-режиме загрузки весов нет, поэтому
+// прогресса нет; потребитель обязан отличать «неизвестно» от «0%»).
+func GetLoadProgress(model *ModelHandle) int {
+	return -1
+}
+
+// LoadProgressByPath — stub: -1 (прогресса нет).
+func LoadProgressByPath(path string) int {
+	return -1
+}
+
+// ClearLoadProgress — stub: реестра нет, вызов безвреден.
+func ClearLoadProgress(path string) {}
 
 // ============================================================
 // Inference (stub)

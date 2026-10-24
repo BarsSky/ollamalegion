@@ -117,7 +117,14 @@ func TestR83_Poller_TakesMaxAcrossModels(t *testing.T) {
 
 // TestR83_Poller_IgnoresNotLoadedAndLegacyPayload — незагруженные модели не
 // учитываются, а старая сборка cppworker (без max_slots) не должна менять
-// вместимость.
+// RuntimeModelSlots.
+//
+// R117 (2026-10-14) ИЗМЕНИЛ ОЖИДАЕМУЮ ВМЕСТИМОСТЬ: было 2 («прежнее поведение»),
+// стало 1. Причина — живой дефект на стенде: загруженной модели нет вовсе
+// (count=0), а /api/v1/backends показывал maxConcurrentRequests=2 (статическая
+// заявка узла n_parallel=2), и второй одновременный запрос проходил admission
+// балансера, после чего молча ждал внутри llama.cpp. Теперь при неизвестных
+// слотах llama.cpp-бэкенд получает 1 — см. types.ResolveCapacity.
 func TestR83_Poller_IgnoresNotLoadedAndLegacyPayload(t *testing.T) {
 	t.Setenv("LB_CAPACITY_FROM_MODEL_SLOTS", "true")
 	p := capacityHarness(t, 2, 0)
@@ -131,10 +138,14 @@ func TestR83_Poller_IgnoresNotLoadedAndLegacyPayload(t *testing.T) {
 	b := p.backends["bk"].Backend
 	if b.RuntimeModelSlots != 0 {
 		t.Errorf("RuntimeModelSlots = %d, want 0: незагруженные модели и legacy-payload "+
-			"не должны менять вместимость", b.RuntimeModelSlots)
+			"не должны менять RuntimeModelSlots", b.RuntimeModelSlots)
 	}
-	if got := b.EffectiveMaxConcurrentRequests(); got != 2 {
-		t.Errorf("EffectiveMaxConcurrentRequests() = %d, want 2 (прежнее поведение)", got)
+	got, source := b.ResolveCapacity()
+	if got != 1 || source != types.CapacitySourceModelSlotsUnknown {
+		t.Errorf("ResolveCapacity() = (%d, %q), want (1, %q): пока слотов нет, "+
+			"балансер не имеет права раздавать больше одного слота, иначе запрос "+
+			"уходит в llama.cpp и ждёт там молча",
+			got, source, types.CapacitySourceModelSlotsUnknown)
 	}
 }
 

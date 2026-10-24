@@ -75,6 +75,13 @@ func (p *Proxy) placementFitForModel(model string) placementFit {
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
+		// R92 (S2): воркер логического бэкенда не является местом, куда модель
+		// «влезает целиком» — на нём лежит только часть слоёв раскладки. Посчитав
+		// его, auto решила бы, что модель помещается на бэкенд, и выбрала
+		// single/replicated там, где нужна именно раскладка.
+		if p.isGroupWorkerR92(id) {
+			continue
+		}
 		backends = append(backends, id)
 	}
 	p.mu.RUnlock()
@@ -124,8 +131,15 @@ func (p *Proxy) autoStrategyAllowed(strategy types.PlacementStrategy, rule types
 			return 0, true, ""
 		}
 		return 0, false, "pool: модель не зарегистрирована как виртуальный алиас"
-	case types.PlacementSharded, types.PlacementRPC:
-		return 0, false, string(strategy) + ": не исполняется до этапа P2 (нужен транспорт раскладки)"
+	case types.PlacementSharded:
+		// R92 (S3): раскладка исполнима, но только через логический бэкенд
+		// (balancing.backendGroups[]). Готовность проверяет отдельная ветка в
+		// resolveAutoStrategy: там нужен фит по СУММЕ узлов группы, а не
+		// per-backend fit, поэтому общий счётчик `need` здесь не используется.
+		return 2, true, ""
+	case types.PlacementRPC:
+		return 0, false, string(strategy) + ": legacy-путь координатора-заглушки; §9 плана " +
+			"переводит rpc_coordinator в sharded — используйте prefer: [\"sharded\"]"
 	default:
 		return 0, false, "неизвестная стратегия " + string(strategy)
 	}
@@ -179,6 +193,27 @@ func (p *Proxy) resolveAutoStrategy(d PlacementDecision, rule types.PlacementMod
 		}
 		if strategy == types.PlacementPool {
 			continue // алиас уже обработан выше
+		}
+		if strategy == types.PlacementSharded {
+			// R92 (S3): раскладка проверяется по СУММЕ свободного VRAM узлов
+			// группы, а не per-backend fit'ом — поэтому отдельная ветка, а не
+			// общий счётчик `need`.
+			shardFit := p.shardedFitR92(d.Model)
+			if !shardFit.OK {
+				skipped = append(skipped, shardFit.Reason)
+				continue
+			}
+			shardReason := describeShardedR92(shardFit)
+			if rule.Auto != nil && rule.Auto.RequireHomogeneous {
+				if forbidden, homoNote := p.homogeneousShardedNoteR92(shardFit.Group); forbidden {
+					skipped = append(skipped, homoNote)
+					continue
+				}
+			}
+			if len(skipped) > 0 {
+				shardReason += "; пропущено: " + joinR75(skipped)
+			}
+			return types.PlacementSharded, false, shardReason
 		}
 		if len(fit.FitBackends) >= need && (need > 0 || strategy == types.PlacementPool) {
 			reason := fmt.Sprintf("auto → %s: влезает на %d бэкенд(ах) из %d (need≈%s)",

@@ -106,6 +106,26 @@ func quantizationOrUnknown(q string) string {
 	return q
 }
 
+// onDiskFileDetails — Details для модели, известной только по файлу на диске
+// (/api/models/files).
+//
+// H6 (остаток аудита): записи из files-ответа создавались без Details, а
+// OllamaTag.Details — map без omitempty, поэтому клиент получал
+// "details":null и не мог отрисовать карточку модели (OpenWebUI/`ollama list`).
+// Набор полей соответствует Ollama API; богатых метаданных (architecture и
+// т.п.) у on-disk файла нет, поэтому family/parameter_size — "unknown",
+// а quantization берём из ответа cppworker, если он её прислал.
+func onDiskFileDetails(f llamaCppFileEntry) map[string]interface{} {
+	return map[string]interface{}{
+		"parent_model":       "",
+		"format":             "gguf",
+		"family":             "unknown",
+		"families":           []string{"unknown"},
+		"parameter_size":     "unknown",
+		"quantization_level": quantizationOrUnknown(f.Quantization),
+	}
+}
+
 // digestForOnDiskModel — digest для модели, известной только по имени и размеру
 // (ответ /api/models/files не содержит путь).
 //
@@ -251,6 +271,12 @@ func (lr *LlamaCppRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 				if existing.Model == "" {
 					existing.Model = name
 				}
+				// H6 (остаток аудита): загруженная запись без Details (например
+				// из /v1/models) должна получить его из on-disk файла, иначе
+				// клиент видит "details":null.
+				if existing.Details == nil {
+					existing.Details = onDiskFileDetails(f)
+				}
 				uniqueModels[name] = existing
 				continue
 			}
@@ -263,6 +289,8 @@ func (lr *LlamaCppRouter) handleTags(w http.ResponseWriter, r *http.Request) {
 				// для идентификации модели. Считаем от имени+размера (файла под
 				// рукой нет — путь не отдан в files-ответе).
 				Digest: digestForOnDiskModel(name, f.SizeBytes),
+				// H6 (остаток аудита): Details обязателен — поле без omitempty.
+				Details: onDiskFileDetails(f),
 			}
 		}
 	}
@@ -374,9 +402,10 @@ func (lr *LlamaCppRouter) fetchLlamaCppModels(host string, port int) ([]OllamaTa
 //   - всегда возвращает актуальный список (не зависит от того, загружена модель или нет)
 //   - не зависает если какая-то модель в состоянии loading
 type llamaCppFileEntry struct {
-	Name       string
-	SizeBytes  int64
-	ModifiedAt time.Time
+	Name         string
+	Quantization string
+	SizeBytes    int64
+	ModifiedAt   time.Time
 }
 
 // llamaCppAliasEntry — алиас модели (<name>.gguf.json, POST /api/create).
@@ -411,9 +440,10 @@ func (lr *LlamaCppRouter) fetchLlamaCppFilesWithAliases(host string, port int) (
 
 	var result struct {
 		Files []struct {
-			ModifiedAt string `json:"modifiedAt"`
-			Name       string `json:"name"`
-			SizeBytes  int64  `json:"sizeBytes"`
+			ModifiedAt   string `json:"modifiedAt"`
+			Name         string `json:"name"`
+			Quantization string `json:"quantization"`
+			SizeBytes    int64  `json:"sizeBytes"`
 		} `json:"files"`
 		Aliases []struct {
 			CreatedAt       string `json:"createdAt"`
@@ -436,9 +466,10 @@ func (lr *LlamaCppRouter) fetchLlamaCppFilesWithAliases(host string, port int) (
 			}
 		}
 		entries = append(entries, llamaCppFileEntry{
-			Name:       f.Name,
-			SizeBytes:  f.SizeBytes,
-			ModifiedAt: modTime,
+			Name:         f.Name,
+			Quantization: f.Quantization,
+			SizeBytes:    f.SizeBytes,
+			ModifiedAt:   modTime,
 		})
 	}
 
@@ -745,6 +776,21 @@ func (lr *LlamaCppRouter) handlePS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, m := range lm.LoadedModels {
+			// R119 (2026-10-15): /api/ps у Ollama — список моделей, ЗАНЯВШИХ
+			// память и обслуживающих запросы (running). Модель со state="loading"
+			// (загрузка в полёте) ещё никого не обслуживает, поэтому в running
+			// её показывать нельзя: именно из-за этого WebUI писал «загружено»,
+			// пока cppworker сообщал state="loading", context_size=0, и клиент
+			// шёл в модель, которой ещё нет. loading-модель при этом НЕ теряется:
+			// она видна на /api/v1/gguf/backends с честным status="loading"
+			// (см. buildGgufBgInfo) и на /api/models/load/progress.
+			//
+			// Пустой state поллер нормализует в "loaded" (старые сборки
+			// cppworker state не отдавали), поэтому здесь фильтр не режет
+			// реально загруженные модели.
+			if !types.ModelStateUsable(m.State) {
+				continue
+			}
 			// R60.58 fix (2026-09-14): было hardcoded Size=0/SizeVRAM=0 — OpenWebUI
 			// видел пустой /api/ps, считал модель не загруженной и зависал на auto-load.
 			// LlamaCppModel уже имеет Size (bytes) и VRAMUsage (MB).
@@ -775,6 +821,14 @@ func (lr *LlamaCppRouter) handlePS(w http.ResponseWriter, r *http.Request) {
 				if loadedAt, perr := time.Parse(time.RFC3339, m.LoadedAt); perr == nil {
 					expiresAt = loadedAt.Add(defaultPSExpiresWindow)
 				}
+			}
+			// H5 (остаток аудита): LoadedAt — момент ЗАГРУЗКИ, а cppworker держит
+			// модель по LastUsedAt + keep_alive, поэтому живая модель легко старше
+			// 30 минут (keep_alive=1h/24h). Без зажима expires_at уезжал в прошлое
+			// и клиент (OpenWebUI, `ollama ps`) снова считал модель протухшей.
+			// Модель в LoadedModels загружена сейчас — прошлого отдавать нельзя.
+			if !expiresAt.After(time.Now()) {
+				expiresAt = time.Now().Add(defaultPSExpiresWindow)
 			}
 
 			allProcesses = append(allProcesses, OllamaProcess{
@@ -821,6 +875,58 @@ func (lr *LlamaCppRouter) handleOpenAIModels(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	uniqueModels := lr.openAIModelIDs()
+
+	now := time.Now().Unix()
+	data := make([]map[string]interface{}, 0, len(uniqueModels))
+	for name := range uniqueModels {
+		entry := map[string]interface{}{
+			"id":       name,
+			"object":   "model",
+			"created":  now,
+			"owned_by": "ollamalegion",
+		}
+		// R216 (2026-10-21): окно контекста в описании модели.
+		//
+		// Клиенты (deepseek harness, OpenWebUI) подбирают длину истории по
+		// описанию модели. Раньше здесь не было ни одного поля про контекст, и
+		// клиент оставался со своим жёстко заданным значением: отправлял больше,
+		// чем у загруженного инстанса есть (n_ctx=8192 при потолке 131072), и
+		// получал 413 «prompt too long» либо внезапную перезагрузку — снаружи
+		// это выглядело как «контекст не учитывается».
+		// context_length — ФАКТИЧЕСКОЕ окно инстанса (на слот),
+		// max_context_length — потолок модели из GGUF.
+		if loaded, maxCtx := lr.proxy.modelContextInfo(name); loaded > 0 || maxCtx > 0 {
+			if loaded > 0 {
+				entry["context_length"] = loaded
+			}
+			if maxCtx > 0 {
+				entry["max_context_length"] = maxCtx
+			}
+		}
+		data = append(data, entry)
+	}
+	sort.Slice(data, func(i, j int) bool {
+		idI, _ := data[i]["id"].(string)
+		idJ, _ := data[j]["id"].(string)
+		return idI < idJ
+	})
+
+	logger.Get().Infow("handleOpenAIModels: returning models",
+		"count", len(data),
+	)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"object": "list",
+		"data":   data,
+	})
+}
+
+// openAIModelIDs — единый агрегированный набор известных моделей в OpenAI-форме
+// (loaded + on-disk .gguf + fallback + image). Вынесено из handleOpenAIModels
+// для H7: GET /v1/models/{id} обязан отвечать по ТОМУ ЖЕ набору, что и
+// /v1/models, иначе by-id и список расходятся (модель есть в списке, но 404).
+func (lr *LlamaCppRouter) openAIModelIDs() map[string]bool {
 	backends := lr.getLlamaCppBackends()
 	uniqueModels := make(map[string]bool)
 
@@ -843,7 +949,7 @@ func (lr *LlamaCppRouter) handleOpenAIModels(w http.ResponseWriter, r *http.Requ
 	for _, b := range backends {
 		files, err := lr.fetchLlamaCppFiles(b.host, b.port)
 		if err != nil {
-			logger.Get().Debugw("handleOpenAIModels: /api/models/files fetch failed (non-fatal)",
+			logger.Get().Debugw("openAIModelIDs: /api/models/files fetch failed (non-fatal)",
 				"backend", b.id, "error", err)
 			continue
 		}
@@ -861,7 +967,7 @@ func (lr *LlamaCppRouter) handleOpenAIModels(w http.ResponseWriter, r *http.Requ
 		for _, b := range backends {
 			models, err := lr.fetchLlamaCppModels(b.host, b.port)
 			if err != nil {
-				logger.Get().Warnw("handleOpenAIModels: final fallback /v1/models failed",
+				logger.Get().Warnw("openAIModelIDs: final fallback /v1/models failed",
 					"backend", b.id, "error", err)
 				continue
 			}
@@ -881,28 +987,56 @@ func (lr *LlamaCppRouter) handleOpenAIModels(w http.ResponseWriter, r *http.Requ
 		uniqueModels[id] = true
 	}
 
-	now := time.Now().Unix()
-	data := make([]map[string]interface{}, 0, len(uniqueModels))
-	for name := range uniqueModels {
-		data = append(data, map[string]interface{}{
-			"id":       name,
-			"object":   "model",
-			"created":  now,
-			"owned_by": "ollamalegion",
-		})
-	}
-	sort.Slice(data, func(i, j int) bool {
-		idI, _ := data[i]["id"].(string)
-		idJ, _ := data[j]["id"].(string)
-		return idI < idJ
-	})
+	return uniqueModels
+}
 
-	logger.Get().Infow("handleOpenAIModels: returning models",
-		"count", len(data),
-	)
+// openAIModelErrorBody — тело ошибки в форме OpenAI
+// {"error":{"message":...,"type":...,"code":...}} (клиенты читают error.code).
+func openAIModelErrorBody(message, errType, code string) map[string]interface{} {
+	return map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": message,
+			"type":    errType,
+			"code":    code,
+		},
+	}
+}
+
+// handleOpenAIModelByID — H7: GET /v1/models/{id}.
+//
+// До фикса в Route был только точный case "/v1/models", поэтому by-id не
+// матчился: Route возвращал false, запрос уходил в общий proxy-flow (балансер
+// отдавал тело воркера), а на Ollama-only кластере мог встать в
+// admission-очередь. Отвечаем сами и только чтением (слот не занимаем).
+//
+//   - известная модель → 200 {"id","object":"model","created","owned_by"};
+//   - неизвестная      → 404 {"error":{...,"code":"model_not_found"}};
+//   - /v1/models/a/b   → 400 (id модели не содержит '/').
+func (lr *LlamaCppRouter) handleOpenAIModelByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/v1/models/")
+	if id == "" || strings.Contains(id, "/") {
+		writeJSON(w, http.StatusBadRequest, openAIModelErrorBody(
+			"invalid model id: "+strconv.Quote(id),
+			"invalid_request_error", "invalid_model_id"))
+		return
+	}
+
+	if !lr.openAIModelIDs()[id] {
+		writeJSON(w, http.StatusNotFound, openAIModelErrorBody(
+			"model '"+id+"' not found",
+			"invalid_request_error", "model_not_found"))
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"object": "list",
-		"data":   data,
+		"id":       id,
+		"object":   "model",
+		"created":  time.Now().Unix(),
+		"owned_by": "ollamalegion",
 	})
 }

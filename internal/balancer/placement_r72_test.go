@@ -138,14 +138,16 @@ func TestResolvePlacement_OverrideGated_R72(t *testing.T) {
 func TestResolvePlacement_ExecutableFlag_R72(t *testing.T) {
 	cfg := placementCfgR72()
 
-	// sharded резолвится (правило сработало), но помечен как неисполнимый:
-	// запрос пойдёт по fallback, а оператор увидит причину в метриках.
+	// R92 (S3): sharded СТАТИЧЕСКИ исполним — в сборке есть исполнитель
+	// (логический бэкенд). Готовность конкретной модели проверяет уже не эта
+	// чистая функция, а резолвер Proxy: при отсутствии группы решение помечается
+	// Degraded с числами (см. TestPlacementR92_* в placement_sharded_r92_test.go).
 	d := ResolvePlacementDecision(cfg, "standard", "unknown-13b", 13, "")
 	if d.Strategy != types.PlacementSharded {
 		t.Fatalf("strategy = %q, ожидалось sharded", d.Strategy)
 	}
-	if d.Executable {
-		t.Error("sharded пока не исполняется (P2) — Executable должен быть false")
+	if !d.Executable {
+		t.Error("sharded исполняется с R92 (S3) — Executable должен быть true")
 	}
 	if d.Fallback != types.PlacementFallbackError {
 		t.Errorf("fallback = %q, ожидалось error (default)", d.Fallback)

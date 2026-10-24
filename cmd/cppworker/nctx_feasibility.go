@@ -63,6 +63,11 @@ type NCtxFeasibility struct {
 	// задан, он предпочтительнее собранного здесь: memfit добавляет к нему причину
 	// «поможет квантизация KV», которую прежняя логика не знала.
 	VerdictSuggestion string
+	// Breakdown — раскладка того же вердикта по статьям расхода (R115):
+	// сколько свободно в VRAM (включая RPC-узлы), сколько в RAM, сколько просят
+	// веса и KV, какие потолки n_ctx из этого следуют. Заполняется из memfit,
+	// не пересчитывается. nil, если вердикта не было.
+	Breakdown *memoryBreakdown
 }
 
 // evaluateNCtxFeasibility применяет гибридную политику R83 к посчитанным
@@ -209,6 +214,7 @@ func writeNCtxInfeasibleResponse(w http.ResponseWriter, f NCtxFeasibility) {
 			"gguf_max_context":     f.GGUFMaxContext,
 			"hard_max_n_ctx":       f.HardMaxNCtx,
 			"suggestion":           nctxSuggestion(f),
+			"memory_breakdown":     breakdownFieldsOrNil(f.Breakdown),
 		})
 
 	// R83 §9.4 шаг 2 / B3 (2026-09-27): текст отказа должен быть непротиворечивым.
@@ -234,7 +240,11 @@ func writeNCtxInfeasibleResponse(w http.ResponseWriter, f NCtxFeasibility) {
 			f.Model, f.GGUFMaxContext, f.RequestedNCtx)
 	}
 
-	writeJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{
+	// R115: к отказу прикладываем раскладку того же решения. Причина отказа
+	// теперь читается из ответа, а не восстанавливается по логам: видно, чего
+	// именно не хватило — локальной VRAM, памяти RPC-узла, RAM или лимита
+	// cgroup. Текст — та же структура, что уходит полем memory_breakdown.
+	body := map[string]interface{}{
 		"error":                errText,
 		"code":                 "n_ctx_infeasible",
 		"model":                f.Model,
@@ -245,7 +255,12 @@ func writeNCtxInfeasibleResponse(w http.ResponseWriter, f NCtxFeasibility) {
 		"gguf_max_context":     f.GGUFMaxContext,
 		"hard_max_n_ctx":       f.HardMaxNCtx,
 		"suggestion":           nctxSuggestion(f),
-	})
+	}
+	if f.Breakdown != nil {
+		body["error"] = errText + ". " + f.Breakdown.Text()
+		body["memory_breakdown"] = f.Breakdown.Fields()
+	}
+	writeJSON(w, http.StatusUnprocessableEntity, body)
 }
 
 // checkNCtxBeforeLoad — общая точка входа для всех load/reload-хендлеров

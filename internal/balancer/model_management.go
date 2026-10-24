@@ -1153,7 +1153,7 @@ func buildLlamaCppLoadBody(req ModelOpRequest, overrideTensors, overrideTensorBu
 	return body
 }
 
-func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
+func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID string, req ModelOpRequest) *ModelOpResult {
 	// Round 27 follow-up (v0.5.14 follow-up #2): если у модели стоит профиль
 	// с disabled=true (например, gemma-4 с upstream GGML_ASSERT на любом n_ctx >= 8192)
 	// — отказываем в авто-загрузке с понятной ошибкой. Без этого клиент (Cline/OpenWebUI)
@@ -1173,6 +1173,10 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 			Error:     msg,
 		}
 	}
+
+	// R118.2/R118.3: гард раскладки и локальный повтор после её отказа живут в
+	// обёртке executeLlamaCppLoad (rpc_layout_failure_r118.go) — здесь остаётся
+	// только сама загрузка.
 
 	// R66d (2026-09-23): профиль модели — источник параметров загрузки, если
 	// запрос их не задал.
@@ -1195,8 +1199,12 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	// NumGPULayers: 0 трактуем как «не задано» (в типе профиля нет признака
 	// «поле отсутствует», а 0 = CPU-only на практике не использовался;
 	// ValidateProfile допускает 0).
+	// R119 (2026-10-15, пункт 4): происхождение параметров считается ПО ХОДУ
+	// применения слоёв (сравнением снимков), поэтому не может разойтись с тем,
+	// что реально уехало в cppworker. См. load_provenance_r119.go.
+	provenance := newLoadProvenanceBuilder(&req)
 	if prof, ok := mm.profileForLoad(req.ModelName); ok {
-		applyProfileLoadParams(&req, prof)
+		provenance.observe(LoadSourceProfile, func() { applyProfileLoadParams(&req, prof) })
 	}
 	// R83 (2026-09-30): «настройки по умолчанию для новых моделей».
 	//
@@ -1227,10 +1235,16 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 		ignoreDefaultsSet = modelProf.IgnoreDefaults
 	}
 	if dp, ok := mm.proxy.GetDefaultModelProfile(); ok && !ignoreDefaultsSet {
-		applyProfileLoadParams(&req, dp)
+		provenance.observe(LoadSourceDefaultProfile, func() { applyProfileLoadParams(&req, dp) })
 	} else if ignoreDefaultsSet && logger.Get() != nil {
 		logger.Get().Infow("executeLlamaCppLoad: «настройки по умолчанию» не применены (ignoreDefaults=true в профиле модели)",
 			"model", req.ModelName, "backend", backendID)
+	}
+
+	// R119 (пункт 4): сохраняем provenance для API/UI — оператор видит, какой слой
+	// дал каждое значение (request / profile / default_profile / backend).
+	if mm.proxy != nil {
+		mm.proxy.RecordLoadProvenance(backendID, req.ModelName, provenance.finalize())
 	}
 
 	// R83-fix (2026-09-30): явная загрузка с окном от оператора (WebUI,
@@ -1249,6 +1263,53 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 	// Round 7: resolve override-tensors (req override > profile > none).
 	overrideTensors, overrideTensorBufts := mm.resolveOverrideTensors(req)
 	useLoadWithParams := len(overrideTensors) > 0 && len(overrideTensors) == len(overrideTensorBufts)
+
+	// R185 (2026-10-20): ОТКАЗ ДО ЗАГРУЗКИ, если образ воркера собран не под эту карту.
+	//
+	// ДЕФЕКТ (живой разбор). Образ собран с CUDA_ARCH=86;120, карта sm_75: веса
+	// мапятся, загрузка «успешна», а первое GPU-ядро убивает процесс по SIGABRT
+	// (no kernel image is available). Клиент и UI видели бесконечные повторы без
+	// причины. Теперь спрашиваем /api/info и отказываем терминально, с текстом.
+	if refuse, reason := mm.proxy.cudaArchRefusal(backendID, host, port); refuse {
+		if logger.Get() != nil {
+			logger.Get().Errorw("load refused: несовместимые CUDA-архитектуры",
+				"backend", backendID, "model", req.ModelName, "reason", reason)
+		}
+		// R185: запоминаем отказ, чтобы клиент получил ТЕРМИНАЛЬНЫЙ 400 (а не 503
+		// «повтори») на первом же запросе, без ожидания повторной загрузки.
+		mm.proxy.recordModelArchUnsupported(backendID, req.ModelName, reason, nil)
+		return &ModelOpResult{
+			Success:   false,
+			Operation: req.Operation,
+			ModelName: req.ModelName,
+			BackendID: backendID,
+			Error:     reason,
+		}
+	}
+
+	// R188 (2026-10-20): ОТКАЗ ДО ЗАГРУЗКИ, если модель заведомо не влезает в
+	// свободную память бэкенда. Живой разбор: балансер ставил тяжёлую модель на
+	// узел, где уже жила другая, и запускал загрузку, которая не могла
+	// поместиться — слот и очередь занимались на десятки минут, клиент терял ход.
+	if mm.proxy != nil {
+		token := ""
+		if b := mm.proxy.GetBackend(backendID); b != nil {
+			token = b.CppWorkerApiToken
+		}
+		if refuse, reason := mm.proxy.loadFitRefusal(backendID, req.ModelName, host, port, token); refuse {
+			if lg := logger.Get(); lg != nil {
+				lg.Errorw("load refused: модель не влезает в свободную память",
+					"backend", backendID, "model", req.ModelName, "reason", reason)
+			}
+			return &ModelOpResult{
+				Success:   false,
+				Operation: req.Operation,
+				ModelName: req.ModelName,
+				BackendID: backendID,
+				Error:     reason,
+			}
+		}
+	}
 
 	url := fmt.Sprintf("http://%s:%d/api/models/load", host, port)
 	if useLoadWithParams {
@@ -1414,6 +1475,30 @@ func (mm *ModelManager) executeLlamaCppLoad(host string, port int, backendID str
 						"estimated_ms", loadResp.EstimatedLoadTimeMs,
 						"max_wait", maxWait, "cap_wait", capWait,
 						"multiplier", multiplier, "buffer", bufDur)
+					// R191 (2026-10-20): РАСКЛАДКА РАСШИРЯЕТ ОКНО ОЖИДАНИЯ.
+					// Живой случай: gemma с узлом-донором (RPC0 = 19 слоёв) грузилась дольше
+					// окна, балансер отдал 500 «model not ready after 2m26.408s», хотя модель
+					// догрузилась и работала (layout_degraded=false): оценка загрузки от воркера
+					// не знает про сетевой узел (передача весов + инициализация RPC).
+					if mm.proxy != nil {
+						token := ""
+						if b := mm.proxy.GetBackend(backendID); b != nil {
+							token = b.CppWorkerApiToken
+						}
+						if mm.proxy.rpcLayoutActive(host, port, token) {
+							extended := maxWait * 2
+							if extended > capWait {
+								extended = capWait
+							}
+							if extended > maxWait {
+								logger.Get().Infow("executeLlamaCppLoad: раскладка активна — окно ожидания расширено",
+									"backend", backendID, "model", req.ModelName,
+									"was", maxWait, "now", extended)
+								maxWait = extended
+							}
+						}
+					}
+
 					if pollResult := mm.pollLoadCompletionUntilLoaded(
 						host, port, backendID, req.ModelName, maxWait); pollResult != nil {
 						return pollResult

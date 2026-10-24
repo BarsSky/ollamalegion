@@ -37,6 +37,14 @@ import (
 // R67a: «быстрый 503» теперь только при LB_AUTO_LOAD_WAIT_SEC=0. По умолчанию
 // балансер ЖДЁТ загрузку (см. cppworker_lazy_load_autoload_wait_r67a_test.go),
 // поэтому legacy-контракт проверяется с явно выключенным ожиданием.
+//
+// R112-разбор (2026-10-15): контракт «балансер сам инициирует загрузку и решает,
+// ждать её или отдать 503» живёт на OpenAI-поверхности /v1/* (и в locked
+// llama.cpp режиме) — там запрос обслуживает LlamaCppRouter
+// (ensureModelLoadedOnBackend). На Ollama-поверхности /api/* смешанного кластера
+// запрос идёт основным flow (router.go: mixed mode, falling through), загрузку
+// инициирует сам cppworker, а балансер ждёт её в транспорте. Поэтому тест
+// проверяет контракт там, где он реализован сегодня.
 func TestCppWorker_LazyLoad_Async_Returns503WithRetryAfter(t *testing.T) {
 	t.Setenv("LB_AUTO_LOAD_ASYNC", "1")
 	t.Setenv("LB_AUTO_LOAD_WAIT_SEC", "0")
@@ -52,7 +60,7 @@ func TestCppWorker_LazyLoad_Async_Returns503WithRetryAfter(t *testing.T) {
 		"messages": []map[string]string{{"role": "user", "content": "Привет!"}},
 		"stream":   true,
 	})
-	req := httptest.NewRequest("POST", "/api/chat", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 

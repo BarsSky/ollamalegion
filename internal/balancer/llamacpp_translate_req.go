@@ -1,4 +1,4 @@
-// llamacpp_translate_req.go — Translation of Ollama API requests to OpenAI-compatible format
+﻿// llamacpp_translate_req.go — Translation of Ollama API requests to OpenAI-compatible format
 // for llama.cpp/cppworker backends.
 package balancer
 
@@ -152,7 +152,18 @@ func translateOllamaChatToOpenAI(body []byte) ([]byte, error) {
 			openaiReq["max_tokens"] = maxTokens
 		}
 		if stop, ok := options["stop"]; ok {
-			openaiReq["stop"] = stop
+			if norm := normalizeOpenAIStop(stop); len(norm) > 0 {
+				openaiReq["stop"] = norm
+			}
+		}
+		// R118.19: штрафы cppworker принимает в OpenAI-форме
+		// (handlers_openai.go: PresencePenalty/FrequencyPenalty), но раньше они не
+		// пробрасывались вовсе — клиент выставлял их и молча не получал.
+		if v, ok := options["presence_penalty"]; ok {
+			openaiReq["presence_penalty"] = v
+		}
+		if v, ok := options["frequency_penalty"]; ok {
+			openaiReq["frequency_penalty"] = v
 		}
 	}
 	return json.Marshal(openaiReq)
@@ -191,10 +202,57 @@ func translateOllamaGenerateToOpenAI(body []byte) ([]byte, error) {
 			openaiReq["max_tokens"] = maxTokens
 		}
 		if stop, ok := options["stop"]; ok {
-			openaiReq["stop"] = stop
+			if norm := normalizeOpenAIStop(stop); len(norm) > 0 {
+				openaiReq["stop"] = norm
+			}
+		}
+		if v, ok := options["presence_penalty"]; ok {
+			openaiReq["presence_penalty"] = v
+		}
+		if v, ok := options["frequency_penalty"]; ok {
+			openaiReq["frequency_penalty"] = v
 		}
 	}
 	return json.Marshal(openaiReq)
+}
+
+// normalizeOpenAIStop — R118.19 (2026-10-15): OpenAI и cppworker за ним ждут
+// `stop` МАССИВОМ строк (`Stop []string` в cmd/cppworker/handlers_openai.go), а
+// Ollama-клиент вправе прислать одну строку `options.stop: "фраза"`. Без
+// нормализации строгий декодер cppworker отвечал
+//
+//	json: cannot unmarshal string into Go struct field ... of type []string → HTTP 400
+//
+// и запрос клиента падал целиком (аудит клиентского API, пункт C3).
+//
+// Принимаем строку, массив строк и массив смешанного вида (не-строки
+// отбрасываем). Пустые строки не пробрасываем: `stop: [""]` останавливает
+// генерацию на первом же токене.
+func normalizeOpenAIStop(v interface{}) []string {
+	switch t := v.(type) {
+	case string:
+		if t == "" {
+			return nil
+		}
+		return []string{t}
+	case []string:
+		out := make([]string, 0, len(t))
+		for _, s := range t {
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // translateOllamaEmbeddingsToOpenAI — маппит Ollama /api/embeddings на OpenAI /v1/embeddings.

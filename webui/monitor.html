@@ -14,6 +14,8 @@
   <link rel="stylesheet" href="css/base.css?v=R83">
   <link rel="stylesheet" href="css/monitor-app.css?v=R83">
   <link rel="stylesheet" href="css/monitor.css?v=R83">
+  <!-- R232: стили демо-режима (активны только при body.demo-mode) -->
+  <link rel="stylesheet" href="css/demo.css?v=R232">
   <script src="js/i18n/ru.js?v=R83"></script>
   <script src="js/i18n/en.js?v=R83"></script>
   <script src="js/i18n/index.js?v=R83"></script>
@@ -24,6 +26,11 @@
        без ?token= и без localStorage.apiToken). -->
   <script defer>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
   <script defer src="js/modules/config.js?v=R83"></script>
+    <!-- R232: демо-режим (no-op, если WEBUI_DEMO_MODE не включён). Ставится ДО
+         auth.js и после config.js: перехват fetch должен быть внешним слоем,
+         иначе auth.js успевает сходить за /auth/me на реальный сервер. -->
+    <script defer src="js/modules/demo-mode.js?v=R232"></script>
+    <script defer src="js/modules/auth.js?v=R202"></script>
 </head>
 <body>
 <header>
@@ -161,6 +168,38 @@
         </div>
       </div>
     </div>
+    <!-- R118.4 (2026-10-14): ПАНЕЛЬ РАСКЛАДКИ СЛОЁВ (RPC).
+         Требование оператора: связывать бэкенды и указывать, кто главный, а кто
+         донор, из веб-панели. Состояние (включена/деградация с причиной, узлы,
+         замер канала) приходит из GET /api/v1/backends: role + rpcLayout + rpcLink. -->
+    <div class="panel open" id="panelLayout">
+      <div class="panel-header" onclick="togglePanel('panelLayout')">
+        <span class="panel-title-group">
+          <span data-i18n="monitor.layout.title">🧩 Раскладка слоёв (RPC)</span>
+          <span class="panel-badge" id="layoutStateBadge">—</span>
+        </span>
+        <span class="chevron">▼</span>
+      </div>
+      <div class="panel-body">
+        <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end">
+          <div>
+            <div style="font-size:11px;color:var(--text-secondary)" data-i18n="monitor.layout.main">Главный (мастер раскладки)</div>
+            <select id="layoutMainSelect" style="min-width:240px"></select>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text-secondary)" data-i18n="monitor.layout.donors">Доноры (узлы раскладки)</div>
+            <div id="layoutDonorList" style="display:flex;gap:12px;flex-wrap:wrap;padding-top:4px"></div>
+          </div>
+          <button id="layoutApplyBtn" data-admin-only data-i18n="monitor.layout.apply"
+                  style="padding:6px 14px;cursor:pointer">Применить раскладку</button>
+          <button id="layoutLocalBtn" data-admin-only data-i18n="monitor.layout.localOnly"
+                  style="padding:6px 14px;cursor:pointer">Только локально</button>
+        </div>
+        <div id="layoutStatus" style="margin-top:10px;font-size:12px;color:var(--text-secondary)"></div>
+        <div id="layoutHint" style="margin-top:6px;font-size:11px;color:var(--text-secondary)"
+             data-i18n="monitor.layout.hint">Главному балансер сам присылает список живых узлов (rpcEnabled + адреса rpc-server'ов). Недоступные узлы отключаются автоматически, загрузка идёт локально; вернувшийся узел включается сам. Роль можно задать и селектором в строке бэкенда ниже.</div>
+      </div>
+    </div>
     <div class="panel open" id="panelBackends">
       <div class="panel-header" onclick="togglePanel('panelBackends')">
         <span class="panel-title-group">
@@ -173,11 +212,21 @@
         <div class="backend-filter">
           <input type="text" id="backendFilter" data-i18n-placeholder="monitor.backendFilter.placeholder" placeholder="🔍 Filter by ID, status, or model…" />
         </div>
+        <!-- R185 (2026-10-20): архитектура бэкенда не поддерживается.
+             Живой разбор: образ собран под CUDA_ARCH=86;120, карта sm_75, и воркер
+             падал по SIGABRT на первом GPU-ядре — а UI показывал только «не грузится».
+             Заполняется modules/monitor-backends.js (нужен для getElementById). -->
+        <div id="backendsArchWarning" style="display:none"></div>
         <div style="overflow-x:auto">
           <table id="backendsTable">
             <thead>
               <tr>
                 <th data-sort="id" data-i18n="monitor.table.id">ID</th>
+                <!-- R118.4 (2026-10-14): колонка «Раскладка (RPC)»: селектор роли
+                     (главный / донор / самодостаточный) и состояние раскладки прямо
+                     в строке бэкенда. data-sort не ставим: колонка — управление, а
+                     не метрика для сортировки. -->
+                <th data-i18n="monitor.table.layout">Раскладка (RPC)</th>
                 <th data-sort="status" data-i18n="monitor.table.status">Status</th>
                 <th data-sort="gpu" data-i18n="monitor.table.gpu">GPU</th>
                 <th data-sort="vram" data-i18n="monitor.table.vram">VRAM</th>
@@ -363,6 +412,10 @@
         </div>
         <div id="plGroups" style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;word-break:break-all"></div>
         <div id="plWarnList" style="font-size:11px;color:var(--warning);margin-bottom:8px;word-break:break-all"></div>
+        <!-- R104 (S6 плана 2026-10-07): карточка логических бэкендов — узлы, роли,
+             VRAM, слоты, загруженные модели, измеренная скорость и трафик раскладки.
+             Рисует js/modules/monitor-groups.js; карточка только читает состояние. -->
+        <div id="monitorGroupsPanel" style="margin-bottom:12px"></div>
         <div style="overflow-x:auto">
           <table id="placementTable">
             <thead>
@@ -477,14 +530,13 @@
                   <input type="number" id="autoPullMaxConcurrent" value="2" min="1" max="10" style="width:52px;padding:3px 5px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:12px">
                 </div>
                 <div style="display:flex;align-items:center;gap:6px">
-                  <label style="font-size:11px;color:var(--text-secondary);white-space:nowrap" data-i18n="monitor.autoPull.pullTimeout">Pull Timeout:</label>
-                  <input type="text" id="autoPullPullTimeout" value="120s" style="width:60px;padding:3px 5px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:12px">
-                </div>
-                <div style="display:flex;align-items:center;gap:6px">
                   <label style="font-size:11px;color:var(--text-secondary);white-space:nowrap" data-i18n="monitor.autoPull.retryCount">Retry Count:</label>
                   <input type="number" id="autoPullRetryCount" value="1" min="0" max="5" style="width:48px;padding:3px 5px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:12px">
                 </div>
-                <button id="autoPullSaveBtn" onclick="saveAutoPullConfig()" style="padding:4px 12px;font-size:11px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600" data-i18n="monitor.autoPull.save">💾 Save</button>
+                <!-- R106c (2026-10-12): поле «Pull Timeout» убрано. Ожидание идёт
+                     ПО СОСТОЯНИЮ закачки (прогресс/готово/ошибка), а не по
+                     таймеру: таймаут обрывал долгую загрузку большого GGUF. -->
+                <button id="autoPullSaveBtn" data-admin-only onclick="saveAutoPullConfig()" style="padding:4px 12px;font-size:11px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600" data-i18n="monitor.autoPull.save">💾 Save</button>
                 <span id="autoPullSaveStatus" style="font-size:11px;color:var(--success);display:none" data-i18n="monitor.autoPull.saved">✓ Saved</span>
               </div>
             </div>
@@ -618,11 +670,17 @@
        execute in document order, and config.js (defer) runs before
        init.js (defer) before any api() call. -->
   <script defer src="js/modules/utils.js?v=R83"></script>
+  <!-- R104 (S6 плана 2026-10-07): карточка логических бэкендов (групп). -->
+  <script defer src="js/modules/monitor-groups.js?v=R104"></script>
   <script defer src="js/modules/monitor-charts.js?v=R83"></script>
   <script defer src="js/modules/monitor-metrics.js?v=R83"></script>
   <script defer src="js/modules/monitor-backends.js?v=R83"></script>
   <script defer src="js/monitor/state.js?v=R83"></script>
   <script defer src="js/monitor/api.js?v=R83"></script>
+  <!-- R118.4 (2026-10-14): панель раскладки слоёв (RPC). Загружается после api.js
+       (использует window.MonitorApiXhr) и до ui-renderer.js (тот зовёт
+       MonitorLayout.rowLayoutCell/bindRowSelectors при отрисовке таблицы). -->
+  <script defer src="js/monitor/layout-panel.js?v=R118"></script>
   <script defer src="js/monitor/ui-renderer.js?v=R83"></script>
   <script defer src="js/monitor/sparkline.js?v=R83"></script>
   <script defer src="js/monitor/canvas-topology.js?v=R83"></script>

@@ -1,10 +1,11 @@
-package balancer
+﻿package balancer
 
 import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"testing"
 
 	"ollama-loadbalancer/pkg/types"
@@ -25,7 +26,8 @@ func TestIsAPIv1Path(t *testing.T) {
 		{"cppworker config", "/api/v1/cppworker/config", true},
 		{"cppworker config update", "/api/v1/cppworker/config/update", true},
 		{"cppworker config reload", "/api/v1/cppworker/config/reload", true},
-		{"cppworker runtime", "/api/v1/cppworker/config/runtime", true},
+		// Аудит C6: этот путь обслуживает балансер (LlamaCppRouter), а не API-сервер.
+		{"cppworker runtime (balancer-owned)", "/api/v1/cppworker/config/runtime", false},
 		{"cppworker health", "/api/v1/cppworker/health", true},
 		{"cppworker metrics", "/api/v1/cppworker/metrics", true},
 		{"cluster models loaded", "/api/v1/cluster/models/loaded", true},
@@ -218,6 +220,88 @@ func TestRouteRequest_APIv1_VsUnsupportedOpenAI(t *testing.T) {
 	}
 	if w.Body.String() != `{"forwarded":true}` {
 		t.Errorf("body not from API server: %s", w.Body.String())
+	}
+}
+
+// TestRouteRequest_RuntimeConfigGoesToRouterNotAPIServer — аудит C6
+// (docs/AUDIT-client-api-fidelity-2026.md): Round 40 #3 увёл все /api/v1/* на
+// API-сервер, из-за чего ветка LlamaCppRouter для runtime-конфига стала
+// недостижимой и документированный эндпоинт отвечал 404.
+//
+// Тест держит РАЗДЕЛЕНИЕ: runtime-конфиг уходит в router (и агрегирует модели
+// бэкендов), а остальные /api/v1/cppworker/* — по-прежнему на API-сервер.
+func TestRouteRequest_RuntimeConfigGoesToRouterNotAPIServer(t *testing.T) {
+	apiHits := 0
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiHits++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"from":"api"}`))
+	}))
+	defer apiServer.Close()
+
+	// Mock cppworker: отдаёт один загруженный модель-конфиг.
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/cppworker/config/runtime" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"loaded_models":[{"name":"m","path":"/models/m.gguf","state":"loaded","n_layers":42}],"count":1}`))
+	}))
+	defer worker.Close()
+
+	conf := &types.LoadBalancerConfig{
+		LoadBalancer: types.LoadBalancerSettings{
+			Host: "127.0.0.1", Port: 18080, APIPort: 18081,
+		},
+		Backends: []types.Backend{
+			{
+				ID: "worker-1", Name: "worker", Host: "127.0.0.1", OllamaPort: 11434,
+				AgentPort: 9090, CppWorkerPort: extractPort(worker.URL),
+				Type: types.BackendTypeLlamaCpp, Weight: 1, Status: types.StatusHealthy,
+			},
+		},
+		Balancing: types.BalancingSettings{
+			Algorithm: types.AlgorithmResourceAware, HealthCheckInterval: 60,
+			MetricsInterval: 60, StreamingIdleTimeout: 30,
+		},
+		API:  types.APISettings{RateLimit: 100, RateBurst: 200},
+		Auth: types.AuthConfig{Enabled: false},
+	}
+	proxy := newProxyWithCleanup(t, conf)
+	proxy.apiReverseProxy = mustNewSingleHost(mustParseURL(t, apiServer.URL))
+
+	// 1. runtime-конфиг: обслуживает router (в теле — агрегированные модели,
+	//    а не ответ API-сервера).
+	req := httptest.NewRequest("GET", "/api/v1/cppworker/config/runtime", nil)
+	w := httptest.NewRecorder()
+	if !proxy.routeRequest(w, req) {
+		t.Fatal("routeRequest не обработал /api/v1/cppworker/config/runtime")
+	}
+	if w.Body.String() == `{"from":"api"}` {
+		t.Error("C6 вернулся: runtime-конфиг ушёл на API-сервер вместо LlamaCppRouter (404 на стенде)")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"loaded_models"`) {
+		t.Errorf("ожидался агрегированный ответ router'а, получено: %s", w.Body.String())
+	}
+	if apiHits != 0 {
+		t.Errorf("API-сервер получил %d запросов, ожидалось 0", apiHits)
+	}
+
+	// 2. Остальные /api/v1/cppworker/* — по-прежнему на API-сервер.
+	req2 := httptest.NewRequest("GET", "/api/v1/cppworker/config/update", nil)
+	w2 := httptest.NewRecorder()
+	if !proxy.routeRequest(w2, req2) {
+		t.Fatal("routeRequest не обработал /api/v1/cppworker/config/update")
+	}
+	if w2.Body.String() != `{"from":"api"}` {
+		t.Errorf("config/update должен уходить на API-сервер, получено: %s", w2.Body.String())
+	}
+	if apiHits != 1 {
+		t.Errorf("API-сервер получил %d запросов, ожидался 1", apiHits)
 	}
 }
 

@@ -20,13 +20,13 @@ If missing, build it first (the user usually already has a working build; do not
 ## Step 2 — Start the full GPU stack
 
 ```bash
-wsl -d Ubuntu -e bash -c "cd /home/knaga/ollamalegion && docker compose -f deployments/docker-compose.full.yml --profile gpu up -d"
+wsl -d Ubuntu -e bash -c "cd $HOME/ollamalegion && docker compose -f deployments/docker-compose.full.yml --profile gpu up -d"
 ```
 
 Wait for containers:
 
 ```bash
-wsl -d Ubuntu -e bash -c "cd /home/knaga/ollamalegion && docker compose -f deployments/docker-compose.full.yml --profile gpu ps"
+wsl -d Ubuntu -e bash -c "cd $HOME/ollamalegion && docker compose -f deployments/docker-compose.full.yml --profile gpu ps"
 ```
 
 Expected: `loadbalancer` healthy, `cppworker-gpu` at least running.
@@ -60,7 +60,7 @@ If cppworker is `unhealthy` with `cppWorkerPort=18092` or `host=0.0.0.0`, fix en
 After changes, recreate stack and remove stale backends:
 
 ```bash
-wsl -d Ubuntu -e bash -c "cd /home/knaga/ollamalegion && docker compose -f deployments/docker-compose.full.yml --profile gpu down -v && docker compose -f deployments/docker-compose.full.yml --profile gpu up -d"
+wsl -d Ubuntu -e bash -c "cd $HOME/ollamalegion && docker compose -f deployments/docker-compose.full.yml --profile gpu down -v && docker compose -f deployments/docker-compose.full.yml --profile gpu up -d"
 ```
 
 ---
@@ -70,7 +70,7 @@ wsl -d Ubuntu -e bash -c "cd /home/knaga/ollamalegion && docker compose -f deplo
 Option A: copy an existing model into the project `models/` directory (requires root):
 
 ```bash
-wsl -d Ubuntu -e bash -c "sudo cp /path/to/model.gguf /home/knaga/ollamalegion/models/ && sudo chown $(id -u):$(id -g) /home/knaga/ollamalegion/models/model.gguf"
+wsl -d Ubuntu -e bash -c "sudo cp /path/to/model.gguf $HOME/ollamalegion/models/ && sudo chown $(id -u):$(id -g) $HOME/ollamalegion/models/model.gguf"
 ```
 
 Option B: temporary bind-mount another models directory by editing the compose volume:

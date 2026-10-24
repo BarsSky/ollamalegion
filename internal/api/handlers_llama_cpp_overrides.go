@@ -2,18 +2,19 @@
 // llamaCpp-секции (Session 17, 2026-07-27).
 //
 // Endpoints:
-//   GET    /api/v1/cluster/llama-cpp/overrides  — есть ли активный override?
-//                                              (200 + body / 404 not found)
-//   DELETE /api/v1/cluster/llama-cpp/overrides  — сбросить override (Reset to bundled)
+//
+//	GET    /api/v1/cluster/llama-cpp/overrides  — есть ли активный override?
+//	                                           (200 + body / 404 not found)
+//	DELETE /api/v1/cluster/llama-cpp/overrides  — сбросить override (Reset to bundled)
 //
 // Эти endpoint'ы обслуживают кнопку "Reset to bundled defaults" в WebUI
 // (раздел "Настройки llama.cpp / GGUF"). Пользователь может:
-//   1. Изменить параметры через WebUI → PUT /api/v1/cluster/config
-//      сохраняет в /app/data/runtime-overrides/llama-cpp.json.
-//   2. Перезагрузить стек → balancer на старте применяет override
-//      поверх config.json (host = source of truth).
-//   3. Решить откатиться → DELETE этот endpoint стирает override,
-//      in-memory конфиг возвращается к base значениям из config.json.
+//  1. Изменить параметры через WebUI → PUT /api/v1/cluster/config
+//     сохраняет в /app/data/runtime-overrides/llama-cpp.json.
+//  2. Перезагрузить стек → balancer на старте применяет override
+//     поверх config.json (host = source of truth).
+//  3. Решить откатиться → DELETE этот endpoint стирает override,
+//     in-memory конфиг возвращается к base значениям из config.json.
 package api
 
 import (
@@ -25,9 +26,10 @@ import (
 // handleGetLlamaCppOverride — GET /api/v1/cluster/llama-cpp/overrides
 //
 // Ответ:
-//   200 + {"exists": true, "config": {...}}  — override есть
-//   200 + {"exists": false}                  — override нет (нормальная ситуация)
-//   503                                          — overrides отключены (store == nil)
+//
+//	200 + {"exists": true, "config": {...}}  — override есть
+//	200 + {"exists": false}                  — override нет (нормальная ситуация)
+//	503                                          — overrides отключены (store == nil)
 func (s *Server) handleGetLlamaCppOverride(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed; use GET", http.StatusMethodNotAllowed)
@@ -48,7 +50,7 @@ func (s *Server) handleGetLlamaCppOverride(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	resp := map[string]interface{}{
-		"exists": exists,
+		"exists":  exists,
 		"enabled": true,
 	}
 	if exists && ll != nil {
@@ -64,8 +66,9 @@ func (s *Server) handleGetLlamaCppOverride(w http.ResponseWriter, r *http.Reques
 // s.config.LlamaCpp к base значениям).
 //
 // Ответ:
-//   200 + {"status": "reset", "existed": true|false}  — успех
-//   503                                                  — overrides отключены
+//
+//	200 + {"status": "reset", "existed": true|false}  — успех
+//	503                                                  — overrides отключены
 func (s *Server) handleDeleteLlamaCppOverride(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "Method not allowed; use DELETE", http.StatusMethodNotAllowed)

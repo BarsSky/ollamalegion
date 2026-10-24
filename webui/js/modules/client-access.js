@@ -214,7 +214,7 @@
         var keyHtml;
         if (!key) {
             keyHtml = '<span class="be-param-value" style="color:var(--text-secondary)">' +
-                esc(t('clientAccess.key_absent', 'Ключ не задан в конфиге WebUI (auth выключен)')) + '</span>';
+                esc(t('clientAccess.key_absent', 'Токен не отдаётся в страницу (R222): он задан на балансере (CPPWORKER_API_TOKEN) и нужен только внешним клиентам')) + '</span>';
         } else {
             keyHtml =
                 '<span class="be-param-value">' +

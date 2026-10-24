@@ -274,7 +274,15 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	bufrw.WriteString("Content-Type: text/event-stream\r\n")
 	bufrw.WriteString("Cache-Control: no-cache\r\n")
 	bufrw.WriteString("Transfer-Encoding: chunked\r\n")
-	bufrw.WriteString("Connection: keep-alive\r\n")
+	// R219 (2026-10-21): НЕ обещаем keep-alive.
+	//
+	// Живой дефект: здесь писалось "Connection: keep-alive", но после стрима
+	// соединение ЗАКРЫВАЕТСЯ (defer clientConn.Close()). Клиенты с пулом
+	// соединений (Node/OpenAI SDK/OpenWebUI) считали сокет переиспользуемым,
+	// брали его для следующего запроса и получали ECONNRESET. На стенде это
+	// давало «один из трёх параллельных запросов упал» без ответа.
+	// Честнее сказать close: клиент откроет новое соединение.
+	bufrw.WriteString("Connection: close\r\n")
 	bufrw.WriteString("X-Accel-Buffering: no\r\n")
 	// Copy selected headers: сначала заголовки балансера из w.Header()
 	// (X-Backend-ID / X-Session-ID / X-Model-* / CORS), затем upstream'а.
@@ -282,6 +290,15 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	writeHijackedHeaders(bufrw, w, resp.Header, hijackSSEReservedHeaders)
 	bufrw.WriteString("\r\n")
 	bufrw.Flush()
+
+	// R217 (2026-10-21): регистрируем активный SSE-стрим для graceful shutdown.
+	//
+	// Живой дефект: рестарт балансера рвал активный ответ клиенту, а в логе
+	// было «all active streams completed» мгновенно — Shutdown не видел стрим,
+	// потому что учёт жил только в handleStreamingResponse (путь Ollama), а /v1
+	// стримит через hijack. Теперь рестарт ждёт активные стримы (дренаж).
+	p.activeStreams.Add(1)
+	defer p.activeStreams.Done()
 
 	// 4. Polling goroutine — periodic SetReadDeadline(time.Unix(0,0)) для detect close.
 	// time.Unix(0, 0) = epoch — deadline в прошлом, read returns **немедленно**
@@ -403,7 +420,9 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			}
 			if isOpenAISSEDataLine(lineToWrite) {
 				if payload := extractSSEDataPayload(lineToWrite); payload != nil {
-					if modified := extractToolCallsFromSSEContent(payload); modified != nil {
+					// R186: извлечение из текста + форма OpenAI (id/type/INDEX) и
+					// приведение аргументов к схеме инструмента из запроса.
+					if modified := normalizeOpenAISSEPayload(payload, p.toolSchemasForRequest(r)); modified != nil {
 						lineToWrite = rewriteSSEDataPayload(lineToWrite, modified)
 					}
 				}

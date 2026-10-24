@@ -214,7 +214,8 @@ func (lr *LlamaCppRouter) executeOneImageToolCallOllama(r *http.Request, a image
 	res, err := lr.proxy.generateImageForTool(r.Context(), a.target, args)
 	if err != nil {
 		logger.Get().Warnw("image tool (ollama): генерация не удалась", "error", err)
-		return map[string]interface{}{"status": "error", "error": err.Error()}
+		// R119: отказ гейта несёт машинный код и числа — отдаём их модели.
+		return imageToolErrorPayload(err)
 	}
 	if url, _ := res["url"].(string); url != "" {
 		public := imageToolPublicURL(r, url)

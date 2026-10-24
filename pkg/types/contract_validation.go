@@ -11,6 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"sort"
+	"strings"
 )
 
 // Common protocol errors. These are returned to clients in error responses.
@@ -37,19 +40,31 @@ type StrictDecoder struct {
 // and enforces a max body size of maxBytes (use 0 for unlimited). The body
 // is read fully into memory so the size can be enforced accurately.
 func NewStrictDecoder(r io.Reader, maxBytes int64) (*StrictDecoder, error) {
+	body, n, err := readRequestBodyBytes(r, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	return &StrictDecoder{dec: dec, maxBytes: maxBytes, bodyBytes: n}, nil
+}
+
+// readRequestBodyBytes читает тело целиком с ограничением размера и снимает
+// ведущий UTF-8 BOM. Общий код для строгого и терпимого декодеров.
+func readRequestBodyBytes(r io.Reader, maxBytes int64) ([]byte, int64, error) {
 	if r == nil {
-		return nil, ErrBodyEmpty
+		return nil, 0, ErrBodyEmpty
 	}
 	var buf bytes.Buffer
 	n, err := io.Copy(&buf, io.LimitReader(r, maxBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
+		return nil, 0, fmt.Errorf("read body: %w", err)
 	}
 	if maxBytes > 0 && n > maxBytes {
-		return nil, ErrBodyTooLarge
+		return nil, 0, ErrBodyTooLarge
 	}
 	if n == 0 {
-		return nil, ErrBodyEmpty
+		return nil, 0, ErrBodyEmpty
 	}
 	// R60.16 (2026-09-08): strip leading UTF-8 BOM (EF BB BF) if present.
 	// PowerShell Out-File default, Notepad, and some older curl builds
@@ -62,14 +77,10 @@ func NewStrictDecoder(r io.Reader, maxBytes int64) (*StrictDecoder, error) {
 		if n == 0 {
 			// BOM-only body (e.g. 0xEF 0xBB 0xBF and nothing else)
 			// is treated as empty — same as `n == 0` before the strip.
-			return nil, ErrBodyEmpty
+			return nil, 0, ErrBodyEmpty
 		}
-		buf.Reset()
-		buf.Write(body)
 	}
-	dec := json.NewDecoder(&buf)
-	dec.DisallowUnknownFields()
-	return &StrictDecoder{dec: dec, maxBytes: maxBytes, bodyBytes: n}, nil
+	return body, n, nil
 }
 
 // NewStrictDecoderFromBytes wraps raw JSON bytes with a strict decoder.
@@ -136,6 +147,103 @@ func DecodeJSONRequest(r io.Reader, maxBytes int64, v interface{}) error {
 	return dec.Decode(v)
 }
 
+// DecodeJSONRequestLenient — декодирование тела БЕЗ DisallowUnknownFields.
+//
+// ЗАЧЕМ. Настоящая Ollama (и llama.cpp-сервер) декодируют запрос обычным
+// encoding/json: неизвестные поля ИГНОРИРУЮТСЯ. Наш строгий декодер отвечал
+// HTTP 400 на любое поле, которого нет в структуре, и это годами ломало живых
+// клиентов на КЛИЕНТСКИХ (инференс) API:
+//
+//	options.top_k            — OpenWebUI (advanced params)
+//	options.use_mmap         — OpenWebUI (advanced params)
+//	options.num_gpu          — OpenWebUI
+//	tool_choice / tool_name  — Cline (Ollama-провайдер)
+//	max_output_tokens        — Cline
+//	thinking / reasoning_content — история сессии, которую клиент вернул нам же
+//
+// Каждый раз это лечилось добавлением ОДНОГО поля — и повторялось со следующим.
+// Причина не в поле, а в политике: клиентский API обязан быть терпимым (как у
+// Ollama), иначе «работает одинаково для всех клиентов» недостижимо.
+//
+// Контракт:
+//   - КЛИЕНТСКИЕ API (/api/chat, /api/generate, /api/embed*, /v1/*) — терпимы,
+//     неизвестные поля игнорируются и возвращаются для лога;
+//   - УПРАВЛЯЮЩИЕ API (/api/models/load*, /reload, /config/update, /api/hf/*) —
+//     остаются строгими: там клиент — наш балансер, и 400 действительно ловит
+//     наш собственный баг (см. docs/BALANCER_CPPWORKER_API_CONTRACT.md).
+//
+// Возвращает имена неизвестных полей верхнего уровня (отсортированные) — чтобы
+// диагностика не терялась: мы не отказываем клиенту, но пишем это в лог.
+func DecodeJSONRequestLenient(r io.Reader, maxBytes int64, v interface{}) ([]string, error) {
+	body, _, err := readRequestBodyBytes(r, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, v); err != nil {
+		return nil, err
+	}
+	return UnknownTopLevelFields(body, v), nil
+}
+
+// UnknownTopLevelFields возвращает имена полей верхнего уровня JSON-объекта,
+// которых нет в структуре v (сравнение по json-тегам). Пустой список — тело
+// точно соответствует структуре.
+func UnknownTopLevelFields(body []byte, v interface{}) []string {
+	if v == nil {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	known := jsonFieldNames(reflect.TypeOf(v))
+	var unknown []string
+	for k := range raw {
+		if !known[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	return unknown
+}
+
+// jsonFieldNames собирает имена полей структуры (json-теги) рекурсивно по
+// вложенным и встроенным структурам.
+func jsonFieldNames(t reflect.Type) map[string]bool {
+	out := map[string]bool{}
+	var walk func(rt reflect.Type, depth int)
+	walk = func(rt reflect.Type, depth int) {
+		if rt == nil || depth > 4 {
+			return
+		}
+		for rt.Kind() == reflect.Ptr || rt.Kind() == reflect.Slice || rt.Kind() == reflect.Array {
+			rt = rt.Elem()
+		}
+		if rt.Kind() != reflect.Struct {
+			return
+		}
+		for i := 0; i < rt.NumField(); i++ {
+			f := rt.Field(i)
+			if f.PkgPath != "" && !f.Anonymous {
+				continue // неэкспортируемое
+			}
+			tag := f.Tag.Get("json")
+			name := strings.Split(tag, ",")[0]
+			if name == "-" {
+				continue
+			}
+			if name != "" {
+				out[name] = true
+			}
+			if f.Anonymous || (name == "" && f.Type.Kind() == reflect.Struct) {
+				walk(f.Type, depth+1)
+			}
+		}
+	}
+	walk(t, 0)
+	return out
+}
+
 // IsJSONSyntaxError reports whether err is a JSON syntax error (e.g. the
 // client sent invalid JSON). The returned wrappedError is suitable for
 // HTTP 400 responses.
@@ -157,51 +265,51 @@ func IsJSONSyntaxError(err error) bool {
 // of hardcoding field names to prevent typos that DisallowUnknownFields
 // would catch (but only at the request boundary, not at the source).
 const (
-	FieldModel              = "model"
-	FieldMessages            = "messages"
-	FieldPrompt              = "prompt"
-	FieldStream              = "stream"
-	FieldTools               = "tools"
-	FieldToolChoice          = "tool_choice"
-	FieldToolCalls           = "tool_calls"
-	FieldToolCallID          = "tool_call_id"
-	FieldName                = "name"
-	FieldContent             = "content"
-	FieldRole                = "role"
-	FieldReasoning           = "reasoning"
-	FieldReasoningContent    = "reasoning_content"
-	FieldThinking            = "thinking"
-	FieldTemperature         = "temperature"
-	FieldTopP                = "top_p"
-	FieldMaxTokens           = "max_tokens"
-	FieldNumCtx              = "num_ctx"
-	FieldNumPredict          = "num_predict"
-	FieldSeed                = "seed"
-	FieldStop                = "stop"
-	FieldTopK                = "top_k"
-	FieldRepeatPenalty       = "repeat_penalty"
-	FieldFrequencyPenalty    = "frequency_penalty"
-	FieldPresencePenalty     = "presence_penalty"
-	FieldStreamOptions       = "stream_options"
-	FieldIncludeUsage        = "include_usage"
-	FieldKeepAlive           = "keep_alive"
-	FieldContextSize         = "contextSize"
-	FieldBatchSize           = "batchSize"
-	FieldGpuLayers           = "gpuLayers"
-	FieldKvCacheType         = "kvCacheType"
-	FieldFlashAttn           = "flashAttn"
-	FieldUseMmap             = "useMmap"
-	FieldEnableReasoning     = "enableReasoning"
-	FieldReasoningEffort     = "reasoning_effort"
-	FieldN                   = "n"
-	FieldUser                = "user"
-	FieldResponseFormat      = "response_format"
-	FieldLogitBias           = "logit_bias"
-	FieldLogprobs            = "logprobs"
-	FieldTopLogprobs         = "top_logprobs"
-	FieldSuffix              = "suffix"
-	FieldEcho                = "echo"
-	FieldBestOf              = "best_of"
+	FieldModel            = "model"
+	FieldMessages         = "messages"
+	FieldPrompt           = "prompt"
+	FieldStream           = "stream"
+	FieldTools            = "tools"
+	FieldToolChoice       = "tool_choice"
+	FieldToolCalls        = "tool_calls"
+	FieldToolCallID       = "tool_call_id"
+	FieldName             = "name"
+	FieldContent          = "content"
+	FieldRole             = "role"
+	FieldReasoning        = "reasoning"
+	FieldReasoningContent = "reasoning_content"
+	FieldThinking         = "thinking"
+	FieldTemperature      = "temperature"
+	FieldTopP             = "top_p"
+	FieldMaxTokens        = "max_tokens"
+	FieldNumCtx           = "num_ctx"
+	FieldNumPredict       = "num_predict"
+	FieldSeed             = "seed"
+	FieldStop             = "stop"
+	FieldTopK             = "top_k"
+	FieldRepeatPenalty    = "repeat_penalty"
+	FieldFrequencyPenalty = "frequency_penalty"
+	FieldPresencePenalty  = "presence_penalty"
+	FieldStreamOptions    = "stream_options"
+	FieldIncludeUsage     = "include_usage"
+	FieldKeepAlive        = "keep_alive"
+	FieldContextSize      = "contextSize"
+	FieldBatchSize        = "batchSize"
+	FieldGpuLayers        = "gpuLayers"
+	FieldKvCacheType      = "kvCacheType"
+	FieldFlashAttn        = "flashAttn"
+	FieldUseMmap          = "useMmap"
+	FieldEnableReasoning  = "enableReasoning"
+	FieldReasoningEffort  = "reasoning_effort"
+	FieldN                = "n"
+	FieldUser             = "user"
+	FieldResponseFormat   = "response_format"
+	FieldLogitBias        = "logit_bias"
+	FieldLogprobs         = "logprobs"
+	FieldTopLogprobs      = "top_logprobs"
+	FieldSuffix           = "suffix"
+	FieldEcho             = "echo"
+	FieldBestOf           = "best_of"
 )
 
 // Header name constants. Use these instead of string literals to prevent

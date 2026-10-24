@@ -23,13 +23,13 @@ type Config struct {
 	CacheDir     string `json:"cacheDir,omitempty"`
 
 	// Параметры по умолчанию
-	DefaultCtxSize    int  `json:"defaultCtxSize"`
-	DefaultBatchSize  int  `json:"defaultBatchSize"`
-	DefaultGPULayers  int  `json:"defaultGpuLayers"`
+	DefaultCtxSize       int  `json:"defaultCtxSize"`
+	DefaultBatchSize     int  `json:"defaultBatchSize"`
+	DefaultGPULayers     int  `json:"defaultGpuLayers"`
 	DefaultFlashAttnType int  `json:"defaultFlashAttnType"`
 	DefaultNUMA          bool `json:"defaultNuma"`
-	DefaultUseMmap    bool `json:"defaultUseMmap"`
-	DefaultUseMlock   bool `json:"defaultUseMlock"`
+	DefaultUseMmap       bool `json:"defaultUseMmap"`
+	DefaultUseMlock      bool `json:"defaultUseMlock"`
 
 	// Phase 8 P.4 (2026-07-11): multi-GPU tensor_split + split_mode defaults.
 	// DefaultTensorSplit — массив пропорций (e.g. [0.5, 0.5] для 2 GPU).
@@ -51,9 +51,9 @@ type Config struct {
 	DefaultNParallel int `json:"defaultNParallel"` // 0 = bridge default (1)
 
 	// RoPE параметры контекста
-	DefaultRopeFreqBase     float64 `json:"defaultRopeFreqBase"`
-	DefaultRopeFreqScale    float64 `json:"defaultRopeFreqScale"`
-	DefaultRopeScalingType  string  `json:"defaultRopeScalingType"`  // none / linear / yarn
+	DefaultRopeFreqBase      float64 `json:"defaultRopeFreqBase"`
+	DefaultRopeFreqScale     float64 `json:"defaultRopeFreqScale"`
+	DefaultRopeScalingType   string  `json:"defaultRopeScalingType"` // none / linear / yarn
 	DefaultRopeScalingFactor float64 `json:"defaultRopeScalingFactor"`
 
 	// YaRN параметры
@@ -71,17 +71,85 @@ type Config struct {
 
 	// Мulti-GPU
 	AutoGPUDistribution bool   `json:"autoGpuDistribution"`
-	TensorSplitStrategy  string `json:"tensorSplitStrategy"`  // "auto", "vram-ratio", "manual"
-	DefaultMainGPU       int    `json:"defaultMainGpu"`
-	DefaultRPCBackend    string `json:"defaultRpcBackend"`    // cuda / vulkan / kompute
-	DefaultNoMemoryMap   bool   `json:"defaultNoMemoryMap"`   // отключить mmap для конкретных моделей
+	TensorSplitStrategy string `json:"tensorSplitStrategy"` // "auto", "vram-ratio", "manual"
+	DefaultMainGPU      int    `json:"defaultMainGpu"`
+	DefaultRPCBackend   string `json:"defaultRpcBackend"`  // cuda / vulkan / kompute
+	DefaultNoMemoryMap  bool   `json:"defaultNoMemoryMap"` // отключить mmap для конкретных моделей
+
+	// RPC-раскладка (R101, S1 плана 2026-10-07): модель разрезается между
+	// узлами, мастер считает на воркерах через rpc-server.
+	//
+	// ВАЖНО: в текущей сборке транспорт не подключён (C-мост не прокидывает
+	// rpc_servers в устройства llama.cpp), поэтому включённый RPC честно
+	// логируется как нерабочий — см. cmd/cppworker/main.go.
+	RPCServers []string `json:"rpcServers,omitempty"`
+	// RPCEnabled — раскладка запрошена (env CPPWORKER_RPC_ENABLE или непустой список).
+	RPCEnabled bool `json:"rpcEnabled"`
+
+	// RPC-УЗЕЛ (донор) ВНУТРИ cppworker — R123 (2026-10-16, пункт 2 разбора стенда).
+	//
+	// РАНЬШЕ донором был ОТДЕЛЬНЫЙ контейнер: deployments/docker-compose.rpc-node.yml
+	// поднимал `rpc-server` из того же образа cppworker с переопределённым
+	// entrypoint. Оператору приходилось держать второй сервис, отдельный .env и
+	// отдельный пробник здоровья ради одного порта — и на машине-доноре всё равно
+	// стоял второй контейнер рядом с воркером, который эту карту и так занимал.
+	//
+	// ТЕПЕРЬ cppworker умеет поднять `rpc-server` ДОЧЕРНИМ процессом (флаг ниже),
+	// а состояние процесса видно в его же метриках. Отдельный контейнер остаётся
+	// совместимым путём (entrypoint образа по-прежнему rpc-server).
+	//
+	// ВНИМАНИЕ ПРО СОВМЕСТИМОСТЬ ВЕРСИЙ: протокол RPC чувствителен к коммиту
+	// llama.cpp — здесь это гарантировано конструктивно, потому что дочерний
+	// процесс запускается БИНАРНИКОМ ИЗ ТОГО ЖЕ ОБРАЗА, что и мост мастера.
+	RPCServerEnabled bool `json:"rpcServerEnabled"`
+	// RPCServerBind — адрес прослушивания (по умолчанию 0.0.0.0: мастер приходит
+	// по сети; 127.0.0.1 оставил бы узел бесполезным для раскладки).
+	RPCServerBind string `json:"rpcServerBind,omitempty"`
+	// RPCServerPort — порт узла (по умолчанию 50052: то же значение, что в
+	// правилах фаервола и в RPC-эндпоинтах групп раскладки).
+	RPCServerPort int `json:"rpcServerPort,omitempty"`
+	// RPCServerBin — путь к бинарю rpc-server внутри контейнера.
+	RPCServerBin string `json:"rpcServerBin,omitempty"`
+
+	// RPCServerExternalAddr — R171 (2026-10-17): режим ВНЕШНЕГО узла.
+	//
+	// Пусто = как раньше: воркер поднимает rpc-server дочерним процессом. Задано
+	// (host:port) = узел живёт ОТДЕЛЬНЫМ контейнером (compose-профиль `rpc-node`),
+	// воркер его не порождает, а только проверяет и честно показывает статус.
+	//
+	// ЗАЧЕМ РЕЖИМ. R170: встроенный узел падает, когда клиент на другой машине
+	// (ggml-rpc.cpp:566 "malformed response"), а отдельный контейнер с тем же
+	// образом работает. Дать воркеру docker-сокет ради запуска контейнера - не тот
+	// обмен; поэтому управление разделено: желанием управляет балансер, контейнером
+	// - оператор (docker compose --profile rpc-node up -d rpc-node).
+	RPCServerExternalAddr string `json:"rpcServerExternalAddr,omitempty"`
+
+	// RPCServerDebug — R172 (2026-10-18): отладочный режим узла.
+	//
+	// Включает в ggml-rpc построчный лог протокола (GGML_RPC_DEBUG=1) — каждая
+	// операция клиента печатается сервером в stderr. Нужен ровно для одного:
+	// увидеть НА СЕРВЕРЕ, чем закончилась операция, после которой клиент
+	// сообщает «Remote RPC server crashed or returned malformed response».
+	// По умолчанию выключено: лог объёмный и замедляет загрузку модели.
+	RPCServerDebug bool `json:"rpcServerDebug,omitempty"`
+	// RPCServerRestart — R172: поднимать узел заново после нештатной смерти.
+	//
+	// Отдельный контейнер узла жил с restart: unless-stopped, а дочерний процесс
+	// умирал навсегда — мастер видел «узел был, спланировал по нему, узла нет».
+	// Перезапуск ограничен (rpcServerRestartMaxPerHour) и никогда не прячет
+	// причину: exit-статус и хвост лога остаются в статусе.
+	RPCServerRestart bool `json:"rpcServerRestart,omitempty"`
+	// LlamaBuild — версия/коммит сборки llama.cpp, которую узел сообщает
+	// балансеру при регистрации (env CPPWORKER_LLAMA_BUILD). Нужна для проверки
+	// совместимости сторон RPC (см. types.Backend.BuildInfo).
+	LlamaBuild string `json:"llamaBuild,omitempty"`
 
 	// Session 18 (2026-07-28): Включает reasoning-режим для моделей которые
 	// поддерживают thinking (gemma-4, deepseek-r1, qwen3-thinking, и т.п.).
 	// При включении — к chat template добавляется thinking_mode и парсер
 	// извлекает think-блоки в отдельное поле `reasoning_content`.
-	DefaultEnableReasoning bool  `json:"defaultEnableReasoning"`
-	DefaultReasoningBudget  int   `json:"defaultReasoningBudget"` // max tokens for thinking (0 = no limit)
+	DefaultEnableReasoning bool `json:"defaultEnableReasoning"`
+	DefaultReasoningBudget int  `json:"defaultReasoningBudget"` // max tokens for thinking (0 = no limit)
 
 	// HuggingFace
 	HuggingFaceToken string `json:"huggingFaceToken,omitempty"`
@@ -135,12 +203,12 @@ type Config struct {
 // DefaultConfig возвращает конфигурацию по умолчанию
 func DefaultConfig() Config {
 	return Config{
-		Port:              18091,
-		Host:              "0.0.0.0",
-		MetricsPort:       18092,
-		ModelsDir:         "./models",
-		DownloadsDir:      "./downloads",
-		CacheDir:          "./cache",
+		Port:         18091,
+		Host:         "0.0.0.0",
+		MetricsPort:  18092,
+		ModelsDir:    "./models",
+		DownloadsDir: "./downloads",
+		CacheDir:     "./cache",
 		// DefaultCtxSize = 32768: достаточно для длинных диалогов
 		// (system + history ~7000 токенов + user message) с запасом
 		// ~25000 токенов на ответ. Предыдущее значение 8192 было
@@ -148,19 +216,19 @@ func DefaultConfig() Config {
 		// с длинными сессиями этого недостаточно.
 		// Можно override через CPPWORKER_CTX_SIZE, CPPWORKER_DEFAULT_CTX_SIZE
 		// или config/cppworker-defaults.json.
-		DefaultCtxSize:    32768,
-		DefaultBatchSize:  512,
-		DefaultGPULayers:  -1, // все слои на GPU
-		DefaultFlashAttnType:  -1,
-		DefaultNUMA:         false,
-		DefaultUseMmap:    true,
-		DefaultUseMlock:   false,
+		DefaultCtxSize:       32768,
+		DefaultBatchSize:     512,
+		DefaultGPULayers:     -1, // все слои на GPU
+		DefaultFlashAttnType: -1,
+		DefaultNUMA:          false,
+		DefaultUseMmap:       true,
+		DefaultUseMlock:      false,
 
-		DefaultNThreads:         0, // auto
-		DefaultNParallel:        0, // 0 = bridge default (1); >0 = multi-slot batched
-		DefaultRopeFreqBase:     10000.0,
-		DefaultRopeFreqScale:    1.0,
-		DefaultRopeScalingType:  "none",
+		DefaultNThreads:          0, // auto
+		DefaultNParallel:         0, // 0 = bridge default (1); >0 = multi-slot batched
+		DefaultRopeFreqBase:      10000.0,
+		DefaultRopeFreqScale:     1.0,
+		DefaultRopeScalingType:   "none",
 		DefaultRopeScalingFactor: 1.0,
 
 		DefaultYarnExtFactor:  1.0,
@@ -169,21 +237,35 @@ func DefaultConfig() Config {
 		DefaultYarnBetaSlow:   1.0,
 
 		DefaultNoKVOffload: false,
-		DefaultKVCacheType: "f16",
+		// R116 (2026-10-14): было "f16". Дефолт — ОТПРАВНАЯ ТОЧКА для моделей без
+		// своего профиля, и он определяет, сколько памяти съест KV-cache. f16
+		// вчетверо тяжелее q4_0 и вдвое тяжелее q8_0: для 27B на n_ctx=32768 это
+		// ≈2 ГБ против ≈0.5 ГБ, а на длинных контекстах — разница между «влезает» и
+		// «не влезает». Живая жалоба: «при запуске указана f16, что сильно ест
+		// память» — оператор видел именно этот дефолт. Последнее слово остаётся за
+		// профилем модели и параметром запроса (профиль побеждает дефолт —
+		// проверено живьём), но модель БЕЗ профиля больше не берёт самый тяжёлый
+		// режим молча.
+		DefaultKVCacheType: "q8_0",
 		DefaultRMSNormEps:  1e-5,
 
-		AutoGPUDistribution: true,
-		TensorSplitStrategy: "vram-ratio",
-		DefaultMainGPU:      0,
+		AutoGPUDistribution:    true,
+		TensorSplitStrategy:    "vram-ratio",
+		DefaultMainGPU:         0,
 		DefaultEnableReasoning: false, // по умолчанию выключено; пользователь включает per-model
 		DefaultReasoningBudget: 0,     // 0 = без лимита; иначе макс. токенов на thinking
-		DefaultRPCBackend:   "cuda",
-		DefaultNoMemoryMap:  false,
+		DefaultRPCBackend:      "cuda",
+		DefaultNoMemoryMap:     false,
 
 		EnableMetrics:     true,
 		MetricsRetentionS: 3600,
-		EnableReasoning:    false, // Session 18: по умолчанию выключено
-		ReasoningBudget:    0,     // 0 = без лимита на thinking-токены
+		EnableReasoning:   false, // Session 18: по умолчанию выключено
+		ReasoningBudget:   0,     // 0 = без лимита на thinking-токены
+
+		// R172 (2026-10-18): узел раскладки переживает падение так же, как его
+		// переживал отдельный контейнер (restart: unless-stopped). Причина смерти
+		// при этом не прячется: exit-статус и хвост лога остаются в статусе.
+		RPCServerRestart: true,
 
 		// Round 15.1: opt-in. Greedy argmax пока — НЕ для production
 		// creative generation, только для тестов / classification workloads.
@@ -427,6 +509,52 @@ func LoadConfigFromEnv() Config {
 		}
 	}
 
+	// R123 (2026-10-16, пункт 2): узел раскладки (донор) внутри cppworker.
+	//
+	// cppworker сам поднимает llama.cpp rpc-server дочерним процессом — вместо
+	// отдельного контейнера ol-rpc-server. Порт по умолчанию 50052 (совпадает с
+	// docker-compose.rpc-node.yml и правилами фаервола стенда).
+	if v := os.Getenv("CPPWORKER_RPC_SERVER_ENABLED"); v != "" {
+		cfg.RPCServerEnabled = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+	}
+	if v := os.Getenv("CPPWORKER_RPC_SERVER_BIND"); strings.TrimSpace(v) != "" {
+		cfg.RPCServerBind = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("CPPWORKER_RPC_SERVER_PORT"); v != "" {
+		if n := parseInt(v, cfg.RPCServerPort); n > 0 && n <= 65535 {
+			cfg.RPCServerPort = n
+		}
+	}
+	// R171 (2026-10-17): адрес ВНЕШНЕГО узла раскладки (отдельный контейнер).
+	if v := os.Getenv("CPPWORKER_RPC_EXTERNAL_ADDR"); strings.TrimSpace(v) != "" {
+		cfg.RPCServerExternalAddr = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("CPPWORKER_RPC_SERVER_BIN"); strings.TrimSpace(v) != "" {
+		cfg.RPCServerBin = strings.TrimSpace(v)
+	}
+	// R172 (2026-10-18): наблюдаемость и живучесть ВСТРОЕННОГО узла.
+	//
+	// Debug — только по явному требованию: включает GGML_RPC_DEBUG (построчный
+	// лог протокола на сервере) и заметно замедляет загрузку модели.
+	// Restart — наоборот, по умолчанию включён (DefaultConfig), потому что
+	// отдельный контейнер узла жил с restart: unless-stopped, а дочерний процесс
+	// умирал навсегда; отключить можно значением 0/false/no.
+	if v := os.Getenv("CPPWORKER_RPC_SERVER_DEBUG"); strings.TrimSpace(v) != "" {
+		cfg.RPCServerDebug = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+	}
+	if v := os.Getenv("CPPWORKER_RPC_SERVER_RESTART"); strings.TrimSpace(v) != "" {
+		cfg.RPCServerRestart = !(v == "0" || strings.EqualFold(v, "false") || strings.EqualFold(v, "no"))
+	}
+	if cfg.RPCServerBind == "" {
+		cfg.RPCServerBind = DefaultRPCServerBind
+	}
+	if cfg.RPCServerPort == 0 {
+		cfg.RPCServerPort = DefaultRPCServerPort
+	}
+	if cfg.RPCServerBin == "" {
+		cfg.RPCServerBin = DefaultRPCServerBin
+	}
+
 	return cfg
 }
 
@@ -495,38 +623,38 @@ func LoadDotEnvFile(path string) error {
 // mapLlamaToCppWorkerEnv — маппинг переменных LLAMA_* → CPPWORKER_*
 func mapLlamaToCppWorkerEnv(key string) string {
 	mapping := map[string]string{
-		"LLAMA_HTTP_PORT":        "CPPWORKER_PORT",
-		"LLAMA_WRITE_TIMEOUT":    "CPPWORKER_WRITE_TIMEOUT",
-		"LLAMA_GRPC_PORT":        "", // grpc порт отдельно
-		"LLAMA_MODELS_DIR":       "CPPWORKER_MODELS_DIR",
-		"LLAMA_CTX_SIZE":         "CPPWORKER_CTX_SIZE",
-		"LLAMA_BATCH_SIZE":       "CPPWORKER_BATCH_SIZE",
-		"LLAMA_N_GPU_LAYERS":     "CPPWORKER_GPU_LAYERS",
-		"LLAMA_FLASH_ATTN":       "CPPWORKER_FLASH_ATTN",
-		"LLAMA_NUMA":             "CPPWORKER_NUMA",
-		"LLAMA_MMAP":             "CPPWORKER_USE_MMAP",
-		"LLAMA_MLOCK":            "CPPWORKER_USE_MLOCK",
-		"LLAMA_MAIN_GPU":         "CPPWORKER_MAIN_GPU",
-		"LLAMA_THREADS":          "CPPWORKER_N_THREADS",
-		"LLAMA_ROPE_FREQ_BASE":   "CPPWORKER_ROPE_FREQ_BASE",
-		"LLAMA_ROPE_FREQ_SCALE":  "CPPWORKER_ROPE_FREQ_SCALE",
-		"LLAMA_CACHE_TYPE_K":     "CPPWORKER_KV_CACHE_TYPE",
-		"LLAMA_CACHE_TYPE_V":     "",
-		"LLAMA_RMS_NORM_EPS":     "CPPWORKER_RMS_NORM_EPS",
-		"LLAMA_TENSOR_SPLIT":     "",
-		"LLAMA_IDLE_UNLOAD":      "",
+		"LLAMA_HTTP_PORT":           "CPPWORKER_PORT",
+		"LLAMA_WRITE_TIMEOUT":       "CPPWORKER_WRITE_TIMEOUT",
+		"LLAMA_GRPC_PORT":           "", // grpc порт отдельно
+		"LLAMA_MODELS_DIR":          "CPPWORKER_MODELS_DIR",
+		"LLAMA_CTX_SIZE":            "CPPWORKER_CTX_SIZE",
+		"LLAMA_BATCH_SIZE":          "CPPWORKER_BATCH_SIZE",
+		"LLAMA_N_GPU_LAYERS":        "CPPWORKER_GPU_LAYERS",
+		"LLAMA_FLASH_ATTN":          "CPPWORKER_FLASH_ATTN",
+		"LLAMA_NUMA":                "CPPWORKER_NUMA",
+		"LLAMA_MMAP":                "CPPWORKER_USE_MMAP",
+		"LLAMA_MLOCK":               "CPPWORKER_USE_MLOCK",
+		"LLAMA_MAIN_GPU":            "CPPWORKER_MAIN_GPU",
+		"LLAMA_THREADS":             "CPPWORKER_N_THREADS",
+		"LLAMA_ROPE_FREQ_BASE":      "CPPWORKER_ROPE_FREQ_BASE",
+		"LLAMA_ROPE_FREQ_SCALE":     "CPPWORKER_ROPE_FREQ_SCALE",
+		"LLAMA_CACHE_TYPE_K":        "CPPWORKER_KV_CACHE_TYPE",
+		"LLAMA_CACHE_TYPE_V":        "",
+		"LLAMA_RMS_NORM_EPS":        "CPPWORKER_RMS_NORM_EPS",
+		"LLAMA_TENSOR_SPLIT":        "",
+		"LLAMA_IDLE_UNLOAD":         "",
 		"LLAMA_ENFORCE_REPLICATION": "",
-		"NODE_NAME":              "",
-		"BALANCER_URL":           "",
-		"AGENT_ENABLED":          "",
-		"AGENT_PORT":             "",
-		"AGENT_COLLECT_INTERVAL": "",
-		"AGENT_HEARTBEAT_INTERVAL": "",
-		"AGENT_TIMEOUT":          "",
-		"API_TOKEN":              "",
-		"RPC_COORDINATOR_URL":    "",
-		"RPC_WORKER_PORT":        "",
-		"NODE_LABELS":            "",
+		"NODE_NAME":                 "",
+		"BALANCER_URL":              "",
+		"AGENT_ENABLED":             "",
+		"AGENT_PORT":                "",
+		"AGENT_COLLECT_INTERVAL":    "",
+		"AGENT_HEARTBEAT_INTERVAL":  "",
+		"AGENT_TIMEOUT":             "",
+		"API_TOKEN":                 "",
+		"RPC_COORDINATOR_URL":       "",
+		"RPC_WORKER_PORT":           "",
+		"NODE_LABELS":               "",
 	}
 	if mapped, ok := mapping[key]; ok {
 		return mapped

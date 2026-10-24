@@ -144,9 +144,9 @@ type ctxLike struct {
 }
 
 func (c ctxLike) Deadline() (time.Time, bool) { return time.Time{}, false }
-func (c ctxLike) Done() <-chan struct{}        { return c.done }
-func (c ctxLike) Err() error                   { return nil }
-func (c ctxLike) Value(key any) any            { return nil }
+func (c ctxLike) Done() <-chan struct{}       { return c.done }
+func (c ctxLike) Err() error                  { return nil }
+func (c ctxLike) Value(key any) any           { return nil }
 
 // Не используется напрямую, но гарантирует что http импорт не пропадает.
 var _ = http.MethodGet

@@ -17,12 +17,12 @@ import (
 // recover'ит горутины), но клиент оставался в подвешенном состоянии.
 //
 // Решение: middleware recoverMiddleware оборачивает все handler'ы и при panic:
-//   1. Логирует stack trace через zap (с structured fields).
-//   2. Пишет HTTP 500 + JSON {"error":"internal_error","message":...} если
-//      headers ещё не записаны.
-//   3. Если headers уже записаны (streaming in progress) — логирует и завершает
-//      соединение; клиент увидит truncated stream с явным diagnostic event
-//      (а не EOF без диагностики).
+//  1. Логирует stack trace через zap (с structured fields).
+//  2. Пишет HTTP 500 + JSON {"error":"internal_error","message":...} если
+//     headers ещё не записаны.
+//  3. Если headers уже записаны (streaming in progress) — логирует и завершает
+//     соединение; клиент увидит truncated stream с явным diagnostic event
+//     (а не EOF без диагностики).
 //
 // Размещение: внешний слой (последний в цепочке wrap), чтобы catch'ить panic
 // от corsMiddleware, loggingMiddleware и любого handler'а.
@@ -78,7 +78,7 @@ func recoverMiddleware(next http.Handler) http.Handler {
 type recoverResponseWriter struct {
 	http.ResponseWriter
 	headersWritten bool
-	wroteHeader   bool
+	wroteHeader    bool
 }
 
 // WriteHeader перехватывает вызов и помечает headersWritten=true.
@@ -98,4 +98,23 @@ func (rw *recoverResponseWriter) Write(p []byte) (int, error) {
 		rw.wroteHeader = true
 	}
 	return rw.ResponseWriter.Write(p)
+}
+
+// Flush — R189 (2026-10-20): ПРОБРАСЫВАЕМ Flush в нижний writer.
+//
+// ЖИВОЙ РАЗБОР. safeStreamWriter берёт флашер так:
+//
+//	if f, ok := w.(http.Flusher); ok { sw.flusher = f }
+//
+// recoverResponseWriter встраивает ИНТЕРФЕЙС http.ResponseWriter, а Flush в
+// этот интерфейс не входит — значит обёртка http.Flusher НЕ реализует, и
+// sw.flusher оставался nil. Все Flush() в стриминговых путях были no-op:
+// Go-сервер копил NDJSON/SSE в своём буфере и отдавал разом при возврате
+// хендлера. Снаружи это ровно «модель думает и молчит минутами, потом всё
+// сразу» и обрыв сессии клиентом, хотя воркер отдавал кадры по мере генерации
+// (живой замер: firstByte = 12447 мс при total = 12447 мс, два кадра в конце).
+func (rw *recoverResponseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }

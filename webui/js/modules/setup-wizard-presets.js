@@ -99,6 +99,64 @@
     // Order for dropdown (newest/biggest first)
     const order = ['rtx50-32gb', 'rtx40-24gb', 'a10-24gb', 'rtx30-8gb'];
 
+    // ================================================================
+    // R106 (S5 плана 2026-10-07): ПРЕСЕТЫ РАСКЛАДКИ
+    // ================================================================
+    //
+    // ВАЖНОЕ УТОЧНЕНИЕ К ПЛАНУ. План предполагал, что в этом файле лежат пресеты
+    // РЕЖИМОВ работы и их надо «перевести на планы размещения». На деле здесь
+    // только ЖЕЛЕЗО (cudaArch, лимиты VRAM, подсказки cppworker): пресетов режимов
+    // тут не было и нет — мастер рисовал карточки режимов своим кодом. Поэтому
+    // набор ниже — НЕ перевод существующего, а новый самостоятельный список.
+    //
+    // Зачем он нужен. Мастер (шаг «состав кластера») показывает план, который
+    // посчитал балансер. Оператору нужно понимать, ЧТО этот план означает и когда
+    // применим каждый вариант, — иначе «sharded (слоями)» остаётся словом. Пресет
+    // связывает СЛУЧАЙ стенда с раскладкой, которую сервер для него предложит
+    // (матрица §8 плана), и подсвечивается в мастере, когда план с ним совпал.
+    //
+    // Поля: strategy — стратегия placement; groupStrategy — для sharded
+    // (layer|row); labelKey/hintKey — ключи i18n (ru/en); label — запасной текст,
+    // если i18n недоступен.
+    const placementPresets = {
+        single: {
+            label: 'Single node',
+            labelKey: 'plan.preset.single.label',
+            hintKey: 'plan.preset.single.hint',
+            strategy: 'single'
+        },
+        replicated: {
+            label: 'Replicas',
+            labelKey: 'plan.preset.replicated.label',
+            hintKey: 'plan.preset.replicated.hint',
+            strategy: 'replicated'
+        },
+        'sharded-layer': {
+            label: 'Two nodes, layers',
+            labelKey: 'plan.preset.shardedLayer.label',
+            hintKey: 'plan.preset.shardedLayer.hint',
+            strategy: 'sharded',
+            groupStrategy: 'layer'
+        },
+        'sharded-row': {
+            label: 'Two nodes, tensors',
+            labelKey: 'plan.preset.shardedRow.label',
+            hintKey: 'plan.preset.shardedRow.hint',
+            strategy: 'sharded',
+            groupStrategy: 'row'
+        },
+        pool: {
+            label: 'Alias on pool',
+            labelKey: 'plan.preset.pool.label',
+            hintKey: 'plan.preset.pool.hint',
+            strategy: 'pool'
+        }
+    };
+
+    // Порядок = от простого к сложному: оператор читает сверху вниз и видит, что
+    // раскладка нужна не всегда.
+    const placementOrder = ['single', 'replicated', 'sharded-layer', 'sharded-row', 'pool'];
+
     window.HardwarePresets = {
         presets: presets,
         order: order,
@@ -108,6 +166,30 @@
                 var p = presets[key];
                 return { key: key, label: p.label, description: p.description };
             });
+        },
+        // --- пресеты раскладки (R106) ---
+        placementPresets: placementPresets,
+        placementOrder: placementOrder,
+        getPlacement: function(name) { return placementPresets[name] || null; },
+        listPlacements: function() {
+            return placementOrder.map(function (key) {
+                var p = placementPresets[key];
+                return {
+                    key: key,
+                    label: p.label,
+                    labelKey: p.labelKey,
+                    hintKey: p.hintKey,
+                    strategy: p.strategy,
+                    groupStrategy: p.groupStrategy || '',
+                    // Абсолютный идентификатор для подсветки: у sharded различаем
+                    // layer и row, иначе две разные раскладки выглядели бы одной.
+                    match: p.strategy + (p.groupStrategy ? ':' + p.groupStrategy : '')
+                };
+            });
+        },
+        // matchKey — чем план модели сопоставляется с пресетом.
+        matchKey: function(strategy, groupStrategy) {
+            return String(strategy || '') + (groupStrategy ? ':' + groupStrategy : '');
         }
     };
 })();

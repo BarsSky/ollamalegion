@@ -28,6 +28,16 @@ NGINX_CONF="/etc/nginx/conf.d/default.conf"
 : "${REFRESH_INTERVAL:=5000}"
 : "${MAX_RECONNECT_ATTEMPTS:=10}"
 : "${RECONNECT_INTERVAL_BASE:=3000}"
+# === R232: ДЕМО-РЕЖИМ (только через env, без переключателя в UI) ===
+#
+# WEBUI_DEMO_MODE=1 → панель показывает синтетический сценарий (клиенты, очередь,
+# распределение, донор RPC, AutoTune) и НЕ обращается к балансеру: все /api/
+# запросы перехватываются в браузере, мутации запрещены (read-only). Нужен для
+# показа/обучения без реального стенда; по умолчанию выключен.
+case "$(printf '%s' "${WEBUI_DEMO_MODE:-0}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) DEMO_MODE=true ;;
+    *) DEMO_MODE=false ;;
+esac
 # === Build info (передаются через --build-arg в docker build) ===
 # VERSION: git tag (v0.5.0, v0.4.12, ...) или "dev" для локальных сборок
 # GIT_COMMIT: короткий SHA (abc1234) или "unknown"
@@ -80,8 +90,15 @@ Object.assign(window.WEBUI_CONFIG, {
     API_BASE: '',
     // WebSocket endpoint
     WS_URL: null,
-    // API токен для аутентификации
-    API_TOKEN: '${API_TOKEN}',
+    // R222: API-токен в страницу БОЛЬШЕ НЕ ВШИВАЕТСЯ.
+    //
+    // Почему: с R201/R202 у балансера есть сессии, роли и CSRF, но пока токен
+    // лежал в config.js, каждый, кто открыл панель, действовал как администратор
+    // в обход входа — роль viewer ничего не ограничивала. Теперь браузер ходит
+    // только сессией (cookie ol_session + X-CSRF-Token). Аварийный вход по токену
+    // остался, но токен вводит сам оператор на экране входа (хранится в
+    // sessionStorage вкладки, а не в отданной странице).
+    API_TOKEN: '',
     // cppworker URL (через nginx proxy)
     CPPWORKER_URL: '/api/worker',
     // Интервал обновления данных (мс)
@@ -89,12 +106,24 @@ Object.assign(window.WEBUI_CONFIG, {
     // WebSocket reconnect
     MAX_RECONNECT_ATTEMPTS: ${MAX_RECONNECT_ATTEMPTS},
     RECONNECT_INTERVAL_BASE: ${RECONNECT_INTERVAL_BASE},
+    // R232: демо-режим (включается ТОЛЬКО env WEBUI_DEMO_MODE=1 на контейнере).
+    DEMO_MODE: ${DEMO_MODE},
     // === Build info (из Docker --build-arg VERSION=...) ===
     // Показывается в sidebar footer + page footer через JS init.
     VERSION: '${VERSION}',
     GIT_COMMIT: '${GIT_COMMIT}',
     BUILD_DATE: '${BUILD_DATE}'
 });
+
+// R222: аварийный API-токен вводит сам оператор, значение живёт в sessionStorage
+// вкладки. Читаем его ЗДЕСЬ, а не только в auth.js: с R232 страница подключает
+// config.js ПЕРЕД auth.js, поэтому Object.assign выше мог бы обнулить
+// WEBUI_CONFIG.API_TOKEN до того, как auth.js его выставит, а модули
+// (gguf-api.js и др.) читают WEBUI_CONFIG.API_TOKEN на своей загрузке.
+try {
+  var olBgToken = sessionStorage.getItem('ol_break_glass_token');
+  if (olBgToken) { window.WEBUI_CONFIG.API_TOKEN = olBgToken; }
+} catch (e) { /* приватный режим: работаем без токена */ }
 EOF
 
 echo "[entrypoint] Config generated:"
@@ -103,8 +132,9 @@ echo "  API_HOST=$API_HOST"
 echo "  API_PORT=$API_PORT"
 echo "  CPPWORKER_HOST=$CPPWORKER_HOST"
 echo "  CPPWORKER_PORT=$CPPWORKER_PORT"
-echo "  API_TOKEN=${API_TOKEN:+(set)}"
+echo "  API_TOKEN=(не вшивается; вход по токену — на экране входа, R222)"
 echo "  REFRESH_INTERVAL=$REFRESH_INTERVAL"
+echo "  DEMO_MODE=$DEMO_MODE (WEBUI_DEMO_MODE=${WEBUI_DEMO_MODE:-0})"
 echo "  VERSION=$VERSION"
 echo "  GIT_COMMIT=$GIT_COMMIT"
 echo "  BUILD_DATE=$BUILD_DATE"

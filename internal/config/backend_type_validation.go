@@ -7,44 +7,19 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// ValidateBackendTypeConsistency проверяет, что все активные ТЕКСТОВЫЕ бэкенды
-// одного типа (ollama или llama_cpp).
+// ValidateBackendTypeConsistency — ИСТОРИЧЕСКАЯ проверка «все активные текстовые
+// бэкенды одного типа». С R112 (2026-10-11) она ВСЕГДА возвращает nil.
 //
-// R-Image (2026-09-27): бэкенды типа image_cpp исключены из проверки — это
-// «полностью отдельный» класс бэкендов (свой порт, свой движок, своя
-// маршрутизация по явному признаку), он по определению сосуществует с текстовыми.
-// Смешивать ollama и llama_cpp в одной роли по-прежнему не рекомендуется.
-// Возвращает ошибку, если обнаружены текстовые бэкенды разных типов.
+// Почему проверка снята. Требование «all text backends must be of the same type»
+// прямо запрещало то, ради чего балансер существует: держать в одном кластере
+// cppworker (llama.cpp, говорит на Ollama API по /api/*) рядом с Ollama-нодой и
+// маршрутизировать запрос туда, где реально загружена модель. На практике запрет
+// проявлялся как отказ регистрации второго типа, деактивация бэкендов при смене
+// режима и «пропавшие» бэкенды в WebUI.
+//
+// Функция сохранена (её зовёт ValidateConfigOnLoad и внешние вызовы), чтобы не
+// ломать контракт; жёсткие проверки типов убраны.
 func ValidateBackendTypeConsistency(backends []types.Backend) error {
-	if len(backends) == 0 {
-		return nil
-	}
-
-	activeBackends := make([]types.Backend, 0, len(backends))
-	for _, b := range backends {
-		if b.Status == types.StatusOffline {
-			continue
-		}
-		// image_cpp — отдельный класс, в проверке однотипности не участвует.
-		if normalizeBackendType(b.Type) == types.BackendTypeImage {
-			continue
-		}
-		activeBackends = append(activeBackends, b)
-	}
-
-	if len(activeBackends) <= 1 {
-		return nil
-	}
-
-	// Все активные текстовые бэкенды должны быть одного типа
-	firstType := normalizeBackendType(activeBackends[0].Type)
-	for _, b := range activeBackends[1:] {
-		bt := normalizeBackendType(b.Type)
-		if bt != firstType {
-			return fmt.Errorf("backend type mismatch: backend %q is %s, but backend %q is %s — all text backends must be of the same type (ollama or llama_cpp); image_cpp backends may coexist",
-				activeBackends[0].ID, firstType.Label(), b.ID, bt.Label())
-		}
-	}
 	return nil
 }
 
@@ -68,45 +43,41 @@ func ValidateModeBackendCompatibility(mode string, backends []types.Backend) err
 	return nil
 }
 
-// SanitizeConfigOnModeSwitch очищает нерелевантные настройки при смене режима.
-// Например, при переключении на llama.cpp-режим удаляет OllamaConfig у бэкендов.
+// SanitizeConfigOnModeSwitch управляет функциональными блоками режима при его
+// смене.
+//
+// R112 (2026-10-11): функция больше НЕ трогает типы бэкендов, их конфиги и
+// backendEngine. Раньше переключение на llama.cpp-режим (virtual_router /
+// distributed_inference) обнуляло Ollama-поля у ВСЕХ бэкендов и навязывало
+// backendEngine=llama_cpp — то есть один щелчок по режиму разбирал смешанный
+// стенд. Режим теперь управляет только своими функциональными блоками; тип
+// бэкенда — свойство бэкенда.
 func SanitizeConfigOnModeSwitch(config *types.LoadBalancerConfig, newMode string) {
-	isOllama := types.IsModeOllama(newMode)
-	isLlamaCpp := types.IsModeLlamaCpp(newMode)
-
-	// Очищаем нерелевантные RPC-конфиги
-	if isOllama {
-		config.Balancing.DistInference.Enabled = false
+	if config == nil {
+		return
+	}
+	// standard и неизвестный режим ничего не включают — как и раньше, не трогаем
+	// уже настроенные блоки (оператор мог держать их включёнными осознанно).
+	switch newMode {
+	case "replication":
+		config.Balancing.RpcCoordinator.Enabled = false
 		config.Balancing.VirtualModels.Enabled = false
-	} else if isLlamaCpp {
+		config.Balancing.DistInference.Enabled = false
+	case "rpc_coordinator":
+		config.Balancing.ModelReplication.Enabled = false
+		config.Balancing.VirtualModels.Enabled = false
+		config.Balancing.DistInference.Enabled = false
+	case "virtual_router":
 		config.Balancing.ModelReplication.Enabled = false
 		config.Balancing.RpcCoordinator.Enabled = false
+		config.Balancing.DistInference.Enabled = false
+	case "distributed_inference":
+		config.Balancing.ModelReplication.Enabled = false
+		config.Balancing.RpcCoordinator.Enabled = false
+		config.Balancing.VirtualModels.Enabled = false
 	}
-
-	// Очищаем настройки бэкендов
-	for i := range config.Backends {
-		b := &config.Backends[i]
-		if isOllama {
-			// Для Ollama удаляем llama.cpp-конфиг
-			b.CppWorkerConfig = nil
-			b.CppWorkerPort = 0
-			b.Type = types.BackendTypeOllama
-		} else if isLlamaCpp {
-			// Для llama.cpp удаляем Ollama-конфиг
-			b.OllamaConfig = nil
-			b.OllamaPort = 0
-			b.AgentPort = 0
-			b.HasAgent = false
-			b.Type = types.BackendTypeLlamaCpp
-		}
-	}
-
-	// Устанавливаем движок
-	if isOllama {
-		config.BackendEngine = types.EngineOllamaAPI
-	} else if isLlamaCpp {
-		config.BackendEngine = types.EngineLlamaCPP
-	}
+	// backendEngine намеренно не выставляется: с R112 его значение по умолчанию —
+	// auto, а фактический движок выводится из состава кластера.
 }
 
 // DeactivateIncompatibleBackends помечает бэкенды несовместимого типа как offline.
@@ -184,17 +155,13 @@ func MigrateLegacyBackendTypes(config *types.LoadBalancerConfig) {
 			}
 		}
 	}
-	// Если BackendEngine не задан и есть бэкенды, определяем из типа
-	if config.BackendEngine == "" && len(config.Backends) > 0 {
-		firstType := normalizeBackendType(config.Backends[0].Type)
-		switch firstType {
-		case types.BackendTypeOllama:
-			config.BackendEngine = types.EngineOllamaAPI
-		case types.BackendTypeLlamaCpp:
-			config.BackendEngine = types.EngineLlamaCPP
-		case types.BackendTypeImage:
-			config.BackendEngine = types.EngineImageCPP
-		}
+	// Если BackendEngine не задан — auto.
+	//
+	// R112 (2026-10-11): раньше здесь движок выводился из типа ПЕРВОГО бэкенда,
+	// из-за чего смешанный кластер получал движок одного типа и второй пул
+	// отфильтровывался. Тип отдельного бэкенда не описывает кластер целиком.
+	if config.BackendEngine == "" {
+		config.BackendEngine = types.EngineAuto
 	}
 }
 
@@ -218,19 +185,21 @@ func ValidateConfigOnLoad(config *types.LoadBalancerConfig) []string {
 		}
 	}
 
-	// Проверка соответствия BackendEngine и OperatingMode
-	if config.BackendEngine != "" && config.Balancing.OperatingMode != "" {
-		expectedEngine, ok := types.ModeEngines[config.Balancing.OperatingMode]
-		if ok && expectedEngine != config.BackendEngine {
-			warnings = append(warnings,
-				fmt.Sprintf("BackendEngine %q does not match OperatingMode %q (expected %q)",
-					config.BackendEngine, config.Balancing.OperatingMode, expectedEngine))
-		}
-	}
+	// R112 (2026-10-11): проверка «BackendEngine соответствует OperatingMode»
+	// убрана. Режим больше не владеет движком (ModeEngines везде auto), поэтому
+	// предупреждение срабатывало бы на КАЖДОМ конфиге с осознанно выбранным
+	// backendEngine и не сообщало ничего полезного. Фактический движок выводится
+	// из состава кластера: balancer.getBackendEngine().
 
 	// R72 (P0): валидация placement-политики. Ошибки не блокируют запуск:
 	// они видны в предупреждениях при загрузке и в GET /api/v1/placement.
 	warnings = append(warnings, config.Balancing.Placement.Validate()...)
+
+	// R92 (S2): валидация логических бэкендов (balancing.backendGroups[]).
+	// Проверяются состав (ровно один master, ≥1 worker с rpcEndpoint),
+	// уникальность id и допустимость strategy. Семантику «влезает ли модель в
+	// группу» проверяет не конфиг, а резолвер: она зависит от живых метрик.
+	warnings = append(warnings, types.ValidateBackendGroups(config.Balancing.BackendGroups)...)
 
 	return warnings
 }

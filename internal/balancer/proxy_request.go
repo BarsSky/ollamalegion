@@ -198,6 +198,33 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 			}
 		}
 
+		// R118 (2026-10-14): READ-ONLY/MGMT пути НЕ идут в inference-транспорт.
+		//
+		// ЖИВОЙ ДЕФЕКТ (OpenWebUI → POST /api/show на :18080). Запрос попадал сюда,
+		// дальше в proxyRequestLlamaCppNonStream, где живёт preflight n_ctx. Тот
+		// видел `loaded_n_ctx=0` (модель не загружена), решал «надо перезагрузить»
+		// и РЕАЛЬНО запускал загрузку — цепочка логов со стенда:
+		//
+		//	proxyRequest: checking backend type for llamacpp routing  path=/api/show
+		//	preflightNCtxReload: detected n_ctx mismatch, loaded_n_ctx=0 requested=32768
+		//	preflightNCtxReload(async): starting reload ... target_n_ctx=32768
+		//	cppworker: loading model ctxSize=32768 gpuLayers=-2 (partial_offload/cpu_only)
+		//	proxyRequestLlamaCppNonStream: preflight n_ctx reload, returning 503
+		//
+		// То есть ЧТЕНИЕ МЕТАДАННЫХ грузило модель — на этом стенде почти целиком на
+		// CPU (16 слоёв на GPU), CPU уходил в 96% и сторож `checkResourceLimits`
+		// начинал блокировать бэкенд для остальных запросов. Клиент при этом ждал
+		// до таймаута или получал 503: OpenWebUI показывает это как
+		// «Server Connection Error» и 503 не повторяет.
+		//
+		// Контракт Ollama: /api/show отдаёт метаданные СРАЗУ, не ждёт загрузку, не
+		// меняет состояние и не отвечает 503. Поэтому такие пути проксируем напрямую.
+		if isReadOnlyOrMgmtEndpoint(r.URL.Path) {
+			logger.Get().Infow("proxyRequest: read-only/mgmt путь — прямой прокси без n_ctx preflight и слотов",
+				"backend", backendID, "path", r.URL.Path, "method", r.Method)
+			return p.proxyReadOnlyRequest(w, r, backendID)
+		}
+
 		// Выбираем прокси по режиму streaming.
 		// Для streaming — proxyRequestLlamaCpp (SSE→NDJSON).
 		// Для non-streaming — proxyRequestLlamaCppNonStream (JSON→JSON с Content-Type: application/json).
@@ -455,7 +482,7 @@ retrySucceeded:
 		}
 		sessionID := p.getSessionIDWithModel(r, clientNameForSession, modelFromCtx)
 		if sessionID != "" {
-			p.sessionMgr.Set(sessionID, backendID, modelFromCtx, clientNameForSession, p.getClientRealIP(r), r.UserAgent())
+			p.sessionMgr.SetWithProtocol(sessionID, backendID, modelFromCtx, clientNameForSession, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 			w.Header().Set("X-Session-ID", sessionID)
 		}
 		w.Header().Set("X-Backend-ID", backendID)
@@ -739,6 +766,10 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 
 	// 3. SSE-стрим. Сначала фиксируем headers, потом WriteHeader, потом стрим.
 	w.WriteHeader(resp.StatusCode)
+	// R217: тот же учёт активных стримов, что и в hijack-пути: без него
+	// graceful shutdown не ждёт этот ответ и рвёт его при рестарте.
+	p.activeStreams.Add(1)
+	defer p.activeStreams.Done()
 	flusher, canFlush := w.(http.Flusher)
 
 	heartbeatInterval := p.getHeartbeatInterval()
@@ -816,7 +847,12 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 			lineToWrite, _ := filterOpenAIStreamingLine(res.line)
 			if isOpenAISSEDataLine(lineToWrite) {
 				if payload := extractSSEDataPayload(lineToWrite); payload != nil {
-					if modified := extractToolCallsFromSSEContent(payload); modified != nil {
+					// R186 (2026-10-20): извлечение вызова из текста + приведение
+					// НАТИВНЫХ вызовов к форме OpenAI (id/type/INDEX). Раньше здесь
+					// вызывался только extract: нативные чанки без `index` уходили
+					// клиенту как есть, и Cline не мог склеить фрагменты/параллельные
+					// вызовы → «✖ Invalid input» и повтор до остановки по циклу.
+					if modified := normalizeOpenAISSEPayload(payload, p.toolSchemasForRequest(r)); modified != nil {
 						lineToWrite = rewriteSSEDataPayload(lineToWrite, modified)
 					}
 				}
@@ -1184,6 +1220,18 @@ func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model stri
 	if opts.GPULayers > 0 {
 		loadBody["gpuLayers"] = opts.GPULayers
 	}
+	// R119 (2026-10-15): прогрев обязан поднимать модель с ТЕМИ ЖЕ настройками,
+	// что и обычная загрузка из профиля.
+	//
+	// Было: тело прогрева состояло из name/path/contextSize/gpuLayers, поэтому
+	// kvCacheType не уходил вовсе и cppworker брал свой дефолт (f16/q8_0), а
+	// parallel не уходил — модель поднималась с CPPWORKER_N_PARALLEL. Оператор
+	// видел «модель загружена не так, как настроено», и первая же сессия шла на
+	// модели с другим KV-кэшем и другим числом слотов.
+	//
+	// Поля добавляются ТОЛЬКО когда хинт известен (профиль/фактическое
+	// состояние), поэтому на стендах без профилей тело не меняется.
+	applyReloadHintsToPayload(loadBody, p.reloadHintsFor(backendID, model))
 	loadBodyBytes, _ := json.Marshal(loadBody)
 
 	go func() {

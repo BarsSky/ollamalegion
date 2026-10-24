@@ -187,9 +187,25 @@ func TestComputeOptimalKVCacheTypeWithWorkload(t *testing.T) {
 		TotalVRAMBytes:       8_000_000_000, // RTX 3070
 	}
 
-	t.Run("workload light: p95=4096, loaded=65536 → f16", func(t *testing.T) {
+	// R230: workload-override больше не выдаёт физически неисполнимую
+	// рекомендацию. Для этого профиля (2.5GB весов, бюджет 6GB, n_ctx=65536)
+	// доступно под KV = 6.0 - 0.4 (резерв) - 2.5 = 3.1GB:
+	//   f16 KV = 92160 B/токен * 65536 ≈ 6.0GB  — не влезает
+	//   q8_0 KV ≈ 3.0GB                        — влезает
+	t.Run("workload light: p95=4096, loaded=65536 → лучший влезающий тип (q8_0)", func(t *testing.T) {
 		workload := WorkloadStats{SampleCount: 10, P95NumCtx: 4096}
 		rec, reasoning := computeOptimalKVCacheTypeWithWorkload(p, workload, 5)
+		if rec != "q8_0" {
+			t.Errorf("expected q8_0 (f16 KV 6GB не влезает в 3.1GB), got %s (reasoning: %s)", rec, reasoning)
+		}
+	})
+
+	t.Run("workload light + f16 влезает (n_ctx=32768) → f16", func(t *testing.T) {
+		// R54.9 intent сохранён: при light workload выбираем f16, если он влезает.
+		small := *p
+		small.CurrentContextLength = 32768 // f16 KV ≈ 3.0GB ≤ 3.1GB
+		workload := WorkloadStats{SampleCount: 10, P95NumCtx: 4096}
+		rec, reasoning := computeOptimalKVCacheTypeWithWorkload(&small, workload, 5)
 		if rec != "f16" {
 			t.Errorf("expected f16, got %s (reasoning: %s)", rec, reasoning)
 		}
@@ -203,23 +219,22 @@ func TestComputeOptimalKVCacheTypeWithWorkload(t *testing.T) {
 		}
 	})
 
-	t.Run("workload medium: p95=20000, loaded=65536 → R54.1 logic (f16 since model<3.5GB)", func(t *testing.T) {
+	t.Run("workload medium: p95=20000, loaded=65536 → fit-aware (q8_0)", func(t *testing.T) {
 		workload := WorkloadStats{SampleCount: 10, P95NumCtx: 20000}
-		rec, _ := computeOptimalKVCacheTypeWithWorkload(p, workload, 5)
+		rec, reasoning := computeOptimalKVCacheTypeWithWorkload(p, workload, 5)
 		// 25% of 65536 = 16384 → 20000 > 16384 → not light
 		// 75% of 65536 = 49152 → 20000 not > 49152 → not heavy
-		// → fallback to R54.1: model=2.5GB ≤ 3.5GB → f16
-		if rec != "f16" {
-			t.Errorf("expected f16 from R54.1 fallback, got %s", rec)
+		// → R230 fit-aware: f16 (6.0GB) не влезает в 3.1GB, q8_0 (3.0GB) влезает.
+		if rec != "q8_0" {
+			t.Errorf("expected q8_0 (f16 KV не влезает), got %s (reasoning: %s)", rec, reasoning)
 		}
 	})
 
-	t.Run("insufficient samples → R54.1 logic", func(t *testing.T) {
+	t.Run("insufficient samples → fit-aware (q8_0)", func(t *testing.T) {
 		workload := WorkloadStats{SampleCount: 2, P95NumCtx: 4096} // would be "light" but too few samples
-		rec, _ := computeOptimalKVCacheTypeWithWorkload(p, workload, 5)
-		if rec != "f16" {
-			// R54.1: small model + freeVRAM → f16, same result
-			t.Errorf("expected R54.1 fallback (f16 for small model), got %s", rec)
+		rec, reasoning := computeOptimalKVCacheTypeWithWorkload(p, workload, 5)
+		if rec != "q8_0" {
+			t.Errorf("expected q8_0 (f16 KV не влезает в 3.1GB), got %s (reasoning: %s)", rec, reasoning)
 		}
 	})
 }

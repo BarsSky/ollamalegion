@@ -103,6 +103,14 @@ services:
         BUILD_DATE: ${BALANCER_BUILD_DATE:-unknown}
     container_name: ol-stack-balancer
     restart: unless-stopped
+    # R217 (2026-10-21): graceful shutdown с дренажом активных стримов.
+    #
+    # Docker по умолчанию даёт контейнеру 10 с на остановку и затем SIGKILL.
+    # Балансер после SIGTERM ждёт активные SSE-ответы (LB_SHUTDOWN_DRAIN_SEC,
+    # дефолт 60 с) и только потом выходит — при 10 с дренаж гарантированно
+    # обрывался, а клиент (OpenWebUI) видел «socket hang up» посреди ответа.
+    # Значение обязано быть БОЛЬШЕ LB_SHUTDOWN_DRAIN_SEC.
+    stop_grace_period: 180s
     security_opt:
       - no-new-privileges:true
     ports:
@@ -113,6 +121,18 @@ services:
       # LB_OPENAI_PORT); only the EXTERNAL port changes here, same as LB_PORT above.
       - "${LB_OPENAI_PORT:-18079}:18079"
     environment:
+      # R201 (2026-10-21): первый администратор WebUI. Пароль хешируется при старте
+      # в LB_USERS_FILE (по умолчанию ниже — /app/data/users.json на томе balancer_data;
+    # относительный config/users.json бывает только если переменная не задана — тогда
+    # файл живёт ВНУТРИ контейнера и пропадает при пересоздании); после создания файла переменные
+      # можно убрать.
+      - LB_ADMIN_USER=${LB_ADMIN_USER:-}
+      - LB_ADMIN_PASSWORD=${LB_ADMIN_PASSWORD:-}
+      - LB_USERS_FILE=${LB_USERS_FILE:-/app/data/users.json}
+      # R223: сессии WebUI переживают рестарт балансера. Файл лежит на том же томе,
+      # что и users.json (в нём cookie-id и CSRF — секреты, права 0600). Пусто =
+      # только память, поведение прежних версий.
+      - LB_SESSIONS_FILE=${LB_SESSIONS_FILE:-/app/data/sessions.json}
       - GIN_MODE=release
       - LOG_LEVEL=${LB_LOG_LEVEL:-info}
       - LB_CONFIG_PATH=/app/config/config.json
@@ -130,6 +150,14 @@ services:
       - LB_CAPACITY_FROM_MODEL_SLOTS=${LB_CAPACITY_FROM_MODEL_SLOTS:-false}
       - LB_NCTX_RELOAD_ENABLED=${LB_NCTX_RELOAD_ENABLED:-true}
       - LB_NCTX_RELOAD_MAX_N_CTX=${LB_NCTX_RELOAD_MAX_N_CTX:-131072}
+      # R158: кому объявлять image-инструмент. auto = только клиентам, которые сами
+      # прислали tools[] (без этого воркер вклеивал ~200 токенов преамбулы всем и уводил
+      # модель в reasoning: живой замер 220 против 19 prompt-токенов). always = прежнее.
+      - LB_IMAGE_TOOL_INJECT=${LB_IMAGE_TOOL_INJECT:-auto}
+      # R217: бюджет дренажа активных стримов при остановке балансера (секунды).
+      # Должен быть МЕНЬШЕ stop_grace_period выше, иначе Docker убьёт процесс
+      # раньше, чем закончится ожидание ответов клиентов.
+      - LB_SHUTDOWN_DRAIN_SEC=${LB_SHUTDOWN_DRAIN_SEC:-60}
       - LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=${LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR:-0.95}
       - LB_NCTX_RELOAD_TIMEOUT_SEC=${LB_NCTX_RELOAD_TIMEOUT_SEC:-300}
       - LB_NCTX_PREFLIGHT_ENABLED=${LB_NCTX_PREFLIGHT_ENABLED:-true}
@@ -156,6 +184,14 @@ services:
       # node. 0 disables the sweep; records created by the operator (no
       # "auto-registered" label) are never removed by it.
       - LB_GHOST_BACKEND_TTL_SEC=${LB_GHOST_BACKEND_TTL_SEC:-1800}
+      # R118 (2026-10-14): замер пропускной способности канала до узла раскладки.
+      # Число — РЕЗУЛЬТАТ ЗАМЕРА (scripts/measure-network.ps1), а не оценка: из
+      # процесса его измерить нельзя, поэтому оператор кладёт замер в .env, а WebUI
+      # показывает его в пометках раскладки («канал=889 Мбит/с»). Живой замер
+      # стенда 2026-10-14: 111.1 МБ/с = 889 Мбит/с в обе стороны.
+      - LB_RPC_LINK_MBPS=${LB_RPC_LINK_MBPS:-0}
+      - LB_RPC_LINK_MEASURED_AT=${LB_RPC_LINK_MEASURED_AT:-}
+      - LB_RPC_LINK_SOURCE=${LB_RPC_LINK_SOURCE:-scripts/measure-network.ps1}
       # Free-space reserve kept on a model-share RECEIVER, MB (R91): the transfer
       # streams straight into the model directory, so a node must keep room for
       # logs/temp files instead of being filled to zero. 0 = require exactly the
@@ -237,6 +273,10 @@ services:
       - API_TOKEN=${CPPWORKER_API_TOKEN:?задайте CPPWORKER_API_TOKEN в deployments/.env}
       - LB_API_URL=http://loadbalancer:18081
       - LOG_LEVEL=${WEBUI_LOG_LEVEL:-info}
+      # R232: демо-режим. Выключен по умолчанию; включается ТОЛЬКО здесь
+      # (WEBUI_DEMO_MODE=1 в deployments/.env). Внутри UI переключателя нет:
+      # это режим развёртывания (витрина/обучение без доступа к стенду).
+      - WEBUI_DEMO_MODE=${WEBUI_DEMO_MODE:-0}
     networks: [ol-net]
     profiles: ["balancer", "full"]
 
@@ -262,20 +302,110 @@ services:
       target: runtime
       args:
         CUDA_ARCH: ${CUDA_ARCH:-all}
+        # R115: ВЕРСИЯ CUDA и ЗЕРКАЛО базового образа. Дефолт Dockerfile.gpu —
+        # 12.2.0 (не знает sm_120 = Blackwell), поэтому узлы раскладки на новых
+        # картах требуют CUDA_VERSION=12.8.0 в deployments/.env.
+        #
+        # CUDA_BASE выведен в build-arg, потому что дефолтное зеркало
+        # dockerhub.timeweb.cloud на образе 12.8-devel (~6 ГБ) практически
+        # останавливает сборку: живой прогон — 50+ минут на низком CPU и
+        # `docker pull` того же образа не завершился за 4 минуты. Быстрый обход
+        # описан в Dockerfile.gpu: CUDA_BASE=mirror.gcr.io/nvidia/cuda.
+        CUDA_VERSION: ${CUDA_VERSION:-12.2.0}
+        CUDA_BASE: ${CUDA_BASE:-dockerhub.timeweb.cloud/nvidia/cuda}
         GIT_COMMIT: ${CPPWORKER_GIT_COMMIT:-unknown}
         BUILD_DATE: ${CPPWORKER_BUILD_DATE:-unknown}
+        # R114 (2026-10-13): коммит llama.cpp, который узел сообщает балансеру.
+        # Печётся в образ (ENV CPPWORKER_LLAMA_BUILD) и служит для проверки
+        # version_mismatch у узлов раскладки: мастер и донор обязаны быть из
+        # одного коммита. Обновлять в deployments/.env при апдейте сабмодуля:
+        #   git -C c/llama.cpp rev-parse --short HEAD
+        LLAMA_BUILD: ${CPPWORKER_LLAMA_BUILD:-unknown}
     container_name: ol-stack-cppworker-gpu
     restart: unless-stopped
+    # R217: генерация на большом контексте может идти минуты; дефолтные 10 с
+    # Docker убивали воркер посреди ответа и посреди выгрузки модели (R215 cancel
+    # тоже требует времени). Даём воркеру дренаж.
+    stop_grace_period: 120s
     runtime: nvidia
+    # R115 (2026-10-13): лимит RAM для контейнера — по умолчанию ВЫКЛЮЧЕН (0 =
+    # без лимита), поведение стенда не меняется.
+    #
+    # ЗАЧЕМ. Без лимита контейнер видит MemAvailable ХОСТА и может занять всю
+    # память машины: cgroup не остановит, остановит OOM-killer — и он выберет
+    # жертву сам (в живом случае это был cppworker, ушедший в abort во время
+    # загрузки). Заданный лимит превращает это в предсказуемое решение:
+    # memfit.ProbeRAM читает memory.max и memory.current и судит по остатку
+    # лимита, поэтому пред-загрузочный вердикт (memfit_gate.go) отказывает
+    # заранее и с раскладкой, а не падает в середине загрузки.
+    #
+    # ЗАЧЕМ НЕ ВКЛЮЧЕНО ПО УМОЛЧАНИЮ. Лимит меньше суммы «веса CPU-слоёв + их KV»
+    # отклоняет загрузки, которые раньше проходили (mmap вытесняет веса, но KV
+    # живёт резидентно). Включать только осознанно, задав значение выше рабочего
+    # профиля, например 20g на машине 24 GB:
+    #   CPPWORKER_MEM_LIMIT=20g
+    # mem_limit: ${CPPWORKER_MEM_LIMIT:-0}
+    mem_limit: ${CPPWORKER_MEM_LIMIT:-0}
     environment:
       - CPPWORKER_HOST=0.0.0.0
       - CPPWORKER_PORT=18092
       - CPPWORKER_MODELS_DIR=/app/models
       # Version of the running image in the cppworker startup log.
       - APP_VERSION=${CPPWORKER_GPU_TAG:-r83-submodule-v22}
+      # R114 (2026-10-13): версия llama.cpp для проверки совместимости узлов
+      # раскладки. Значение печётся в образ (Dockerfile.gpu: ARG LLAMA_BUILD),
+      # здесь — точка переопределения на запуске; дефолт совпадает с образом,
+      # чтобы пустая переменная в .env не обнуляла её.
+      - CPPWORKER_LLAMA_BUILD=${CPPWORKER_LLAMA_BUILD:-unknown}
+      # R135 (2026-10-16): под какие архитектуры CUDA собран образ — чтобы
+      # cppworker мог ЗАРАНЕЕ предупредить, что на этой карте первое GPU-ядро
+      # убьёт процесс («no kernel image is available»), вместо SIGABRT и
+      # «backend недоступен».
+      #
+      # ЗДЕСЬ НАМЕРЕННО НЕ ПЕРЕОПРЕДЕЛЯЕТСЯ. Значение печётся в образ
+      # (Dockerfile.gpu: ARG CUDA_ARCH → ENV CPPWORKER_CUDA_ARCH_BUILT), и образ
+      # — единственный, кто знает правду о себе. Строка вида
+      # `CPPWORKER_CUDA_ARCH_BUILT=${CUDA_ARCH:-all}` создавала ВТОРОЙ источник
+      # правды и могла его перекрыть: на машине, куда образ привезли (docker
+      # save/load — ровно случай удалённого хоста), в .env другой CUDA_ARCH или
+      # его нет вовсе, и проверка либо замолкала бы на несовместимой карте, либо
+      # кричала бы на совместимой. Если нужно переопределить на запуске — задайте
+      # переменную явно в .env.bundled-with-agent, понимая, что она должна
+      # совпадать с образом.
       # ONLY the agent registers the backend. Enabling the Go-side registration as
       # well would create TWO backend records for one endpoint.
       - CPPWORKER_REGISTER_DISABLE=true
+      # S1 (2026-10-12): раскладка слоями между машинами.
+      #
+      # Пусто = выключено (поведение прежнее, ничего не меняется). Задаётся в
+      # deployments/.env; узлы-доноры поднимаются файлом
+      # docker-compose.rpc-node.yml, см. docs/rpc-coordinator.md.
+      # CPPWORKER_SPLIT_MODE: -1 = дефолт llama.cpp (layer), 1 = layer явно,
+      # 0 = без раскладки. Для сети нужен layer — только он делит слои между
+      # устройствами, включая удалённые.
+      - CPPWORKER_RPC_ENABLE=${CPPWORKER_RPC_ENABLE:-}
+      - CPPWORKER_RPC_SERVERS=${CPPWORKER_RPC_SERVERS:-}
+      # R172 (2026-10-18): узел раскладки ВНУТРИ этого же воркера (дочерний
+      # rpc-server) — чтобы донору не требовался ВТОРОЙ контейнер.
+      #
+      # Пусто = выключено (поведение прежнее). Включение — одной строкой в
+      # deployments/.env: CPPWORKER_RPC_SERVER_ENABLED=true. Порт должен
+      # совпадать с публикацией ниже, иначе узел будет слушать внутри
+      # контейнера и останется недоступен мастеру снаружи.
+      # DEBUG — построчный лог протокола на стороне узла (объёмный, временно).
+      # RESTART — пусто = включён (как restart: unless-stopped у контейнера);
+      # 0/false выключает, например на время разбора аварии.
+      - CPPWORKER_RPC_SERVER_ENABLED=${CPPWORKER_RPC_SERVER_ENABLED:-}
+      - CPPWORKER_RPC_SERVER_PORT=${CPPWORKER_RPC_SERVER_PORT:-}
+      - CPPWORKER_RPC_SERVER_DEBUG=${CPPWORKER_RPC_SERVER_DEBUG:-}
+      - CPPWORKER_RPC_SESSION_AUTO_UNLOAD=${CPPWORKER_RPC_SESSION_AUTO_UNLOAD:-}
+      # R227: через сколько секунд зависшая загрузка печатает стек горутин.
+      - CPPWORKER_LOAD_STALL_SEC=${CPPWORKER_LOAD_STALL_SEC:-}
+      - CPPWORKER_RPC_SERVER_RESTART=${CPPWORKER_RPC_SERVER_RESTART:-}
+      - CPPWORKER_RPC_EXTERNAL_ADDR=${CPPWORKER_RPC_EXTERNAL_ADDR:-}
+      # R224: авто-выгрузка модели после потери RPC-сессии (0/false/off = выключить).
+      - CPPWORKER_SPLIT_MODE=${CPPWORKER_SPLIT_MODE:-}
+      - CPPWORKER_MAIN_GPU=${CPPWORKER_MAIN_GPU:-}
       - API_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
       - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
       # cppworker needs the balancer for pull-based model profile sync. In the
@@ -313,6 +443,23 @@ services:
       # config/cppworker-defaults.json relative to the workdir, and the image has
       # no config/ directory. This env var is the only reliable place.
       - CPPWORKER_IDLE_UNLOAD_MINUTES=${CPPWORKER_IDLE_UNLOAD_MINUTES:-10}
+      # R119 (2026-10-15): где cppworker хранит настройки, которые оператор меняет
+      # из WebUI, и которые ОБЯЗАНЫ переживать пересоздание контейнера.
+      #
+      # ЗАЧЕМ. Порядок загрузки конфигурации — JSON-дефолты → окружение, поэтому
+      # значение, сохранённое в cppworker-defaults.json, на рестарте затирается
+      # переменной CPPWORKER_*: оператор ставил в WebUI «выгружать через 3 минуты»
+      # (или 0 = не выгружать), получал 200 «сохранено», а после `docker compose up`
+      # возвращалось 10 минут. Файл операторских переопределений
+      # (cppworker-runtime-overrides.json) читается ПОСЛЕ окружения и потому
+      # побеждает его.
+      #
+      # Путь обязан быть на СМОНТИРОВАННОМ томе: writable-слой контейнера (./config)
+      # переживает restart, но НЕ пересоздание. Том ol-cppworker-config монтируется
+      # в /app/config; каталог создаётся в образе и принадлежит appuser — иначе
+      # Docker создал бы точку монтирования от root и запись падала бы с
+      # «permission denied» (проверено живьём на /app/.cache).
+      - CPPWORKER_CONFIG_DIR=/app/config
       # --- EMBEDDED METRICS AGENT ---------------------------------------------
       #
       # The external `agent` container outlives worker re-creation and registers
@@ -348,6 +495,15 @@ services:
       - CPPWORKER_USE_MMAP=${CPPWORKER_USE_MMAP:-true}
       - CPPWORKER_AUTO_OFFLOAD=${CPPWORKER_AUTO_OFFLOAD:-true}
       - CPPWORKER_AUTO_TUNE_NCTX=${CPPWORKER_AUTO_TUNE_NCTX:-true}
+      # R108 (2026-10-13): сам планировщик частичного offload'а и подгонки n_ctx
+      # при загрузке — это ДРУГОЙ переключатель, чем CPPWORKER_AUTO_OFFLOAD:
+      # он читается в cmd/cppworker/lazyload_calc.go (`_ON_LOAD`, default true), и
+      # до этой правки из compose он не передавался вовсе — то есть выключить
+      # автоподгонку со стенда было нельзя. Живой пример: при живой пробе RPC
+      # планировщик урезал запрошенные 48 слоёв до 16 («calculateLazyLoadOpts:
+      # applying partial offload»), считая VRAM только по локальной карте, и
+      # раскладка на удалённый узел не происходила.
+      - CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD=${CPPWORKER_AUTO_TUNE_NCTX_ON_LOAD:-true}
       - CPPWORKER_RAM_FALLBACK_N_CTX=${CPPWORKER_RAM_FALLBACK_N_CTX:-true}
       - CPPWORKER_RAM_FALLBACK_GPU_LAYERS=${CPPWORKER_RAM_FALLBACK_GPU_LAYERS:--2}
       - CPPWORKER_RAM_FALLBACK_MAX_N_CTX=${CPPWORKER_RAM_FALLBACK_MAX_N_CTX:-128000}
@@ -383,13 +539,39 @@ services:
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
+      # Путь к моделям берётся из deployments/.env (MODELS_DIR, дефолт ../models =
+      # <репозиторий>/models). В compose его НЕТ намеренно: у каждой машины свой
+      # диск, а .env не отслеживается git — поэтому правка делается в ОДНОМ
+      # месте, и искать её по volume-строкам не нужно. См. .env.example, раздел
+      # MODELS_DIR.
       - ${MODELS_DIR:-../models}:/app/models
       - cppworker_cache:/app/.cache
+      # R119 (2026-10-15): настройки оператора из WebUI (cppworker-defaults.json и
+      # cppworker-runtime-overrides.json). Том, а не writable-слой: правка обязана
+      # переживать `docker compose up` (пересоздание), иначе env CPPWORKER_*
+      # затирает её на рестарте. Каталог /app/config создан в образе и принадлежит
+      # appuser, поэтому свежий том получает правильные права.
+      - cppworker_config:/app/config
     ports:
       # Inference port. Required outside in the worker scenario (balancer on
       # another machine); on a single box it is enough inside the network, but
       # publishing it does no harm.
       - "${CPPWORKER_PORT_HOST:-18092}:18092"
+      # RPC-УЗЕЛ РАСКЛАДКИ (R123, 2026-10-16). cppworker умеет поднимать
+      # llama.cpp rpc-server дочерним процессом (CPPWORKER_RPC_SERVER_ENABLED),
+      # заменив ОТДЕЛЬНЫЙ контейнер ol-rpc-server. Но узел бесполезен, если порт
+      # не опубликован: мастер раскладки приходит ПО СЕТИ.
+      #
+      # ЖИВОЙ ЗАМЕР (сразу после слияния): внутри контейнера узел поднялся и
+      # слушал 0.0.0.0:50059 (rpcServer.listening=true), а с хоста тот же порт
+      # отвечал ECONNREFUSED — публикации порта не было, потому что у отдельного
+      # контейнера её делал docker-compose.rpc-node.yml, а у cppworker — никто.
+      #
+      # Порт публикуется всегда (даже когда узел выключен): он слушается только
+      # при включённом CPPWORKER_RPC_SERVER_ENABLED, а постоянная публикация
+      # избавляет от «включил галочку — не работает, пока не пересоздашь compose».
+      # ВНИМАНИЕ: 50052 в правилах фаервола стенда (см. scripts/stand-ports.ps1).
+      - "${CPPWORKER_RPC_SERVER_PORT:-50052}:${CPPWORKER_RPC_SERVER_PORT:-50052}"
     networks: [ol-net]
     healthcheck:
       test: ["CMD", "/app/cppworker", "-healthcheck"]
@@ -398,6 +580,49 @@ services:
       retries: 3
       start_period: 60s
     profiles: ["worker", "full"]
+
+  # ===========================================================================
+  # rpc-node — ОТДЕЛЬНЫЙ узел раскладки слоёв (llama.cpp rpc-server)
+  # Profiles: rpc-node
+  # ===========================================================================
+  # ЗАЧЕМ ОТДЕЛЬНЫЙ СЕРВИС (R171, 2026-10-17). Встроенный узел внутри cppworker
+  # (R123, CPPWORKER_RPC_SERVER_ENABLED) работает, когда клиент на ТОЙ ЖЕ машине,
+  # но при раскладке между машинами клиент получает неразборчивый ответ и падает
+  # (ggml-rpc.cpp:566 "malformed response"; разбор — docs/layer-sharding.md,
+  # CHANGELOG 0.7.155). Отдельный контейнер с ТЕМ ЖЕ образом работает (проверено
+  # с чистым env и с env-файлом воркера).
+  #
+  # РАЗДЕЛЕНИЕ УПРАВЛЕНИЯ. Балансер по-прежнему управляет ЖЕЛАНИЕМ (роль donor ->
+  # приказ воркеру, R133/R164). Контейнер поднимает оператор этим профилем, а
+  # воркер в режиме CPPWORKER_RPC_EXTERNAL_ADDR=<host>:<port> не порождает
+  # процесс, а проверяет внешний адрес и честно отчитывается (external=true).
+  #
+  # Запуск на узле-доноре:
+  #   docker compose --profile rpc-node up -d rpc-node
+  #   # и в env воркера этого хоста:
+  #   #   CPPWORKER_RPC_EXTERNAL_ADDR=<host>:${RPC_NODE_PORT:-50055}
+  rpc-node:
+    image: ${IMAGE_REGISTRY:-}ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-r83-submodule-v22}
+    container_name: ol-stack-rpc-node
+    # Тот же образ, что у воркера: протокол RPC чувствителен к коммиту llama.cpp,
+    # поэтому узел и мастер обязаны быть из одной сборки (правило стенда).
+    entrypoint: ["/app/rpc-server"]
+    command: ["-H", "0.0.0.0", "-p", "${RPC_NODE_PORT:-50055}"]
+    restart: unless-stopped
+    runtime: nvidia
+    ports:
+      # Порт узла: его указывает мастер в rpcServers. Не 50052, чтобы не
+      # конфликтовать с портом встроенного узла в cppworker (если он включён).
+      - "${RPC_NODE_PORT:-50055}:${RPC_NODE_PORT:-50055}"
+    networks: [ol-net]
+    healthcheck:
+      # Процесс без модели: проверяем, что порт узла реально слушается.
+      test: ["CMD-SHELL", "timeout 2 sh -c '</dev/tcp/127.0.0.1/${RPC_NODE_PORT:-50055}' 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    profiles: ["rpc-node"]
 
   # ===========================================================================
   # imageworker — image generation (sdworker -> sd-server / stable-diffusion.cpp)
@@ -491,7 +716,13 @@ services:
       # Worker URL as CLIENTS see it: used in response_format:"url".
       # Default targets a local client (the port is published below).
       # For external clients set SDWORKER_BASE_URL=http://<host>:18093 in .env.
-      - SDWORKER_BASE_URL=${SDWORKER_BASE_URL:-http://localhost:18093}
+      # R115: адрес выводится из ЕДИНСТВЕННОГО источника — BACKEND_HOST — плюс
+      # SDWORKER_PORT. Раньше здесь стоял жёсткий http://localhost:18093, и на
+      # удалённой машине клиенты получали ссылку на свой же localhost; оператор
+      # был вынужден дублировать адрес отдельной строкой в .env.
+      # Явное значение всё ещё сильнее: задайте SDWORKER_BASE_URL, только если
+      # адрес для клиентов действительно отличается.
+      - SDWORKER_BASE_URL=${SDWORKER_BASE_URL:-http://${BACKEND_HOST:-localhost}:${SDWORKER_PORT:-18093}}
       # HF layer for image bundles (gated models / mirror).
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_MIRROR=${HF_MIRROR:-}
@@ -585,10 +816,12 @@ services:
       - CPPWORKER_API_TOKEN=${CPPWORKER_API_TOKEN:-}
       - API_TOKEN=${CPPWORKER_API_TOKEN:-}
     volumes:
-      # Same models directory as cppworker (../models): text .gguf in the root,
-      # image bundles under image/. The volume also holds HF temp downloads
-      # (../models/downloads) — otherwise a 6-12 GB .download would fill the
-      # container layer and be lost on re-creation.
+      # Same models directory as cppworker: path comes from deployments/.env
+      # (MODELS_DIR, default ../models), NOT from this file - see the MODELS_DIR
+      # section in .env.example. Text .gguf in the root, image bundles under
+      # image/. The volume also holds HF temp downloads (../models/downloads) —
+      # otherwise a 6-12 GB .download would fill the container layer and be lost
+      # on re-creation.
       - ${MODELS_DIR:-../models}:/app/models:rw
       # Generated images (response_format:"url") — collected from the host.
       - ${IMAGE_OUTPUT_DIR:-../data/images}:/app/data/images:rw
@@ -788,6 +1021,9 @@ volumes:
     name: ol-balancer-data
   cppworker_cache:
     name: ol-cppworker-cache
+  # R119: настройки cppworker, изменяемые из WebUI (переживают пересоздание контейнера).
+  cppworker_config:
+    name: ol-cppworker-config
   # HF cache of the image worker (text encoder/VAE weights fetched via the HF layer).
   imageworker_cache:
     name: ol-imageworker-cache

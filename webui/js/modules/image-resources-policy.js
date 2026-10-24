@@ -292,10 +292,12 @@
                     escapeHtml(t('imagePolicy.fuse', 'Предохранитель лока, с')) +
                     '<input type="number" class="form-control" id="imPolicyFuse" min="0" step="1" style="width:150px;" value="' + f.exclusiveLockTimeoutSec + '">' +
                 '</label>' +
-                '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted);">' +
-                    escapeHtml(t('imagePolicy.load_timeout', 'Ожидание загрузки модели, с (0 = без капа)')) +
-                    '<input type="number" class="form-control" id="imPolicyLoadTimeout" min="0" step="10" style="width:150px;" value="' + f.toolLoadTimeoutSec + '">' +
-                '</label>' +
+                // R106c (2026-10-12): поле «Ожидание загрузки модели, с» убрано из
+                // формы — договорённость оператора: работа идёт ПО СОСТОЯНИЮ
+                // (загрузка → loaded/error), а не по «эфимерному времени».
+                // readForm() отсутствие поля уже обрабатывает: берёт ДЕЙСТВУЮЩЕЕ
+                // значение из GET (state.data.toolLoadTimeout.effectiveSec), то
+                // есть сохранение формы ничего не сбрасывает.
             '</div>' +
             '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--text-muted);">' +
                 '<label style="display:flex;gap:6px;align-items:center;cursor:pointer;">' +

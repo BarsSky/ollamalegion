@@ -96,6 +96,15 @@ func (p *Proxy) LoadState() error {
 			p.config.Backends[i].RuntimeMaxModels = saved.RuntimeMaxModels
 			p.config.Backends[i].RuntimeMaxConcurrentRequests = saved.RuntimeMaxConcurrentRequests
 			p.config.Backends[i].RuntimeCapacityFromNode = saved.RuntimeCapacityFromNode
+			// R121 (2026-10-15): заявка УЗЛА о вместимости переживает перезапуск.
+			//
+			// Без этой строки живой дефект: агент заявил 1, но значение жило в
+			// MaxConcurrentReqs — поле КОНФИГА, которое при следующем старте снова
+			// читается из config.json (там 2). Агент заново не регистрируется (он
+			// регистрируется только при своём старте), поэтому /api/v1/backends
+			// отдавал 2, и heartbeat нёс узлу 2 — admission-очередь пускала два
+			// запроса на узел, который сериализует llama_decode.
+			p.config.Backends[i].NodeClaimedCapacity = saved.NodeClaimedCapacity
 			// Round 13 (2026-07-10): restore AgentID — нужен для dedup migration
 			// (canonical = hasAgent && agentId!=""). Без этого LoadState
 			// восстанавливал hasAgent=true, но терял agentId → миграция

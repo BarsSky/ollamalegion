@@ -80,35 +80,100 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		}
 	}
 	if !preflightOK && (preflightMsg != "" || preflightStatus != http.StatusOK) {
-		// Reload запущен в фоне (async) ИЛИ sync timeout — отдаём 503.
-		logger.Get().Infow("proxyRequestLlamaCppNonStream: preflight n_ctx reload, returning 503",
-			"backend", backendID, "model", modelFromCtx,
-			"msg", preflightMsg, "status", preflightStatus, "retry_after", retryAfter)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-		w.Header().Set("X-NCtx-Reload-Decision", "async-reload")
-		body := []byte(fmt.Sprintf(`{"error":%q,"decision":"async_reload","retry_after_seconds":%d}`,
-			preflightMsg, retryAfter))
-		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write(body)
-		return nil
+		// R118.7 (2026-10-14): окно ФИЗИЧЕСКИ недостижимо (cppworker уже отвечал
+		// 422 n_ctx_infeasible, потолок запомнен). Ждать нечего и проксировать
+		// нельзя: запрос ушёл бы на бэкенд с меньшим окном слота, и клиент получил
+		// бы 200 с окном меньше запрошенного — ровно то, на что жаловались.
+		// Отдаём понятный отказ с числами и причиной от cppworker'а.
+		if preflightStatus == http.StatusRequestEntityTooLarge {
+			logger.Get().Infow("proxyRequestLlamaCppNonStream: окно недостижимо — отдаю 413 клиенту",
+				"backend", backendID, "model", modelFromCtx, "msg", preflightMsg)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-NCtx-Reload-Decision", "infeasible")
+			body := []byte(fmt.Sprintf(`{"error":%q,"decision":"n_ctx_infeasible"}`, preflightMsg))
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write(body)
+			return nil
+		}
+
+		// R119 (2026-10-15): модели НЕТ на бэкенде — терминальный 404 с причиной и
+		// списком доступных моделей (см. model_missing_r119.go). Живой дефект:
+		// запрос к llama-3-8b через балансер не отвечал более 4 минут, клиент
+		// падал по своему таймауту с «Internal Server Error».
+		//
+		// awaitModelMissing закрывает гонку: фоновая загрузка отсутствующей модели
+		// падает за миллисекунды, а запись в реестр появляется чуть позже решения
+		// preflight'а. Ждём её коротко, чтобы САМЫЙ ПЕРВЫЙ запрос получил 404, а не
+		// 503 «повтори через 30 с».
+		if p.awaitModelMissing(backendID, modelFromCtx, 500*time.Millisecond) {
+			reason, available, _ := p.modelMissingFor(backendID, modelFromCtx)
+			logger.Get().Warnw("proxyRequestLlamaCppNonStream: модели нет на бэкенде — отдаю 404 клиенту",
+				"backend", backendID, "model", modelFromCtx,
+				"msg", preflightMsg, "available_models", len(available))
+			writeModelMissingResponseFor(w, originalPath, modelFromCtx, reason, available)
+			return nil
+		}
+
+		// R115 (2026-10-14): СНАЧАЛА ЖДЁМ ЗАГРУЗКУ, И ТОЛЬКО ПОТОМ 503.
+		//
+		// Живой случай (Ollama-поверхность :18080, клиент OpenWebUI, модель не
+		// загружена): лог балансера показывал
+		//   "detected n_ctx mismatch ... loaded_n_ctx=0 requested_n_ctx=32768
+		//    loaded_n_ctx_is_zero=true" → "returning 503 ... retry in 30s".
+		// То есть при ПУСТОМ бэкенде балансер решал «надо перезагрузить» и сразу
+		// отдавал 503, хотя модель в этот момент только начинала грузиться
+		// (27B на раскладке — 256-485 с, а советовали подождать 30). OpenWebUI,
+		// в отличие от Cline, 503 не повторяет — пользователь видел ошибку.
+		//
+		// Потоковым клиентам повезло: у них есть stream dialog с keepalive и
+		// ожиданием без капа. Нестриминговый путь ожидания не имел вовсе —
+		// теперь имеет: ждём появления модели на бэкенде (want=1 означает «модель
+		// загружена», конкретный n_ctx выставит тот самый reload, который уже
+		// запущен в фоне), и только по исчерпании бюджета отдаём прежний 503.
+		wait := AutoLoadWaitTimeout()
+		if p.waitForBackendNCtx(r.Context(), backendID, modelFromCtx, 1, wait) {
+			logger.Get().Infow("proxyRequestLlamaCppNonStream: модель готова после ожидания reload — запрос продолжается",
+				"backend", backendID, "model", modelFromCtx,
+				"waited_sec", int(wait.Seconds()), "preflight_msg", preflightMsg)
+		} else {
+			// Reload запущен в фоне (async) ИЛИ sync timeout — отдаём 503.
+			logger.Get().Infow("proxyRequestLlamaCppNonStream: preflight n_ctx reload, returning 503",
+				"backend", backendID, "model", modelFromCtx,
+				"msg", preflightMsg, "status", preflightStatus, "retry_after", retryAfter)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			w.Header().Set("X-NCtx-Reload-Decision", "async-reload")
+			body := []byte(fmt.Sprintf(`{"error":%q,"decision":"async_reload","retry_after_seconds":%d}`,
+				preflightMsg, retryAfter))
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write(body)
+			return nil
+		}
 	}
 
 	// R54.4 (2026-08-24): AutoTune autonomous reload hook (non-stream path).
+	// R230: выполняется ПОСЛЕ ответа (defer): запрос-триггер успевал стать
+	// «busy with active inference requests», и unload отклонялся. После ответа
+	// модель простаивает — план применяется по-настоящему.
 	// Тот же hook что и в proxyRequestLlamaCpp — AutoTune ловит ДРУГИЕ
 	// sub-optimal state'ы которые n_ctx preflight пропускает (kv_cache, layers).
-	if modelFromCtx != "" {
+	defer func() {
+		if modelFromCtx == "" {
+			return
+		}
 		var freeVRAM, freeRAM, totalVRAM uint64
 		if p.metricsMgr != nil {
+			// R230: метрики в МБ → байты (triggerAutoTuneReload ждёт байты).
 			clusterState := p.GetClusterState()
 			for _, b := range clusterState.Backends {
 				if b.ID == backendID {
-					totalVRAM = b.GPU.MemoryTotal
+					totalVRAM = mbToBytes(b.GPU.MemoryTotal)
 					if b.GPU.MemoryFree > 0 {
-						freeVRAM = b.GPU.MemoryFree
+						freeVRAM = mbToBytes(b.GPU.MemoryFree)
 					}
-					freeRAM = b.System.MemoryFree
+					freeRAM = mbToBytes(b.System.MemoryFree)
 					break
 				}
 			}
@@ -123,7 +188,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 				"backend", backendID, "model", modelFromCtx,
 				"skipped_reason", autoTuneRes.SkippedReason)
 		}
-	}
+	}()
 
 	translatedBody := bodyNoStream
 	if !nativePath {
@@ -413,6 +478,16 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			logger.Get().Debugw("proxyRequestLlamaCppNonStream: passed through upstream 4xx (R60.10)",
 				"backend", backendID, "status", resp.StatusCode,
 				"original_path", originalPath, "body_len", len(respBody))
+			return nil
+		}
+
+		// R160 (2026-10-17): устаревший снимок «модель загружена» — не 502.
+		// Живой случай: балансер знал модель загруженной на доноре, донор её не
+		// знал ("model ... not found"), клиент получал 502 за 13 мс. Вместо
+		// «плохого шлюза» — обновить снимок, запустить загрузку, ответить 503
+		// с Retry-After (см. stale_model_snapshot_r160.go).
+		if isUpstreamModelAbsent(resp.StatusCode, respBody) && modelFromCtx != "" {
+			p.handleStaleModelSnapshot(w, r, backendID, modelFromCtx, resp.StatusCode, respBody)
 			return nil
 		}
 

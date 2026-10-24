@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,10 @@ import (
 
 // Server - API сервер
 type Server struct {
+	// R201: аутентификация WebUI (сессии + пользователи).
+	authUsers    *UserStore
+	authSessions *SessionStore
+
 	proxy  *balancer.Proxy
 	config *types.LoadBalancerConfig
 	// imageResources — переопределение политики сосуществования
@@ -44,6 +49,12 @@ type Server struct {
 	// (writable named volume `balancer_data`). Опционально — если nil, PUT
 	// llamaCpp пишет в in-memory только, без персистенции.
 	overridesStore OverridesStore
+	// R118 (2026-10-14): роли бэкендов в раскладке слоёв, снятые с диска
+	// (runtime-overrides/backend-roles.json). Запись бэкенда пересобирается при
+	// саморегистрации агента, поэтому роль подставляется из этой карты, когда в
+	// записи её ещё нет.
+	backendRolesMu sync.Mutex
+	backendRoles   map[string]string
 	// baseLlamaCpp — snapshot LlamaCppConfig из config.json ПРИ СТАРТЕ (до
 	// применения override). Используется для "Reset to bundled defaults":
 	// после DELETE override мы восстанавливаем s.config.LlamaCpp из этого
@@ -91,6 +102,19 @@ type OverridesStore interface {
 	ApplyLlamaCppToConfig(target *types.LoadBalancerConfig) error
 }
 
+// BackendRolesStore — R118 (2026-10-14): НЕОБЯЗАТЕЛЬНАЯ часть хранилища —
+// персист ролей бэкендов в раскладке слоёв («главный / донор / самодостаточный»,
+// решение оператора).
+//
+// Отдельный интерфейс, а не расширение OverridesStore: существующие реализации и
+// тестовые дубли не обязаны про роли знать, а проверяем мы type-assert'ом.
+// Нужен потому, что config.json в bundled-развёртывании read-only: без sidecar
+// роли терялись после перезапуска балансера (живая проверка).
+type BackendRolesStore interface {
+	LoadBackendRoles() (map[string]string, bool, error)
+	SaveBackendRoles(map[string]string) error
+}
+
 // SetOverridesStore — устанавливает persistent runtime overrides store.
 // nil = оверрайды отключены (по умолчанию для dev-режима).
 // baseSnapshot — snapshot LlamaCppConfig из config.json ДО применения override.
@@ -98,6 +122,9 @@ type OverridesStore interface {
 func (s *Server) SetOverridesStore(store OverridesStore, baseSnapshot *types.LlamaCppConfig) {
 	s.overridesStore = store
 	s.baseLlamaCpp = baseSnapshot
+	// R118: сразу поднимаем сохранённые роли бэкендов — иначе после перезапуска
+	// балансера они терялись (config.json readonly, запись пересобирается агентом).
+	s.restoreBackendRoles()
 }
 
 // GetConfig — возвращает текущую конфигурацию (для тестов и отладки)
@@ -187,6 +214,24 @@ func NewServer(proxy *balancer.Proxy, config *types.LoadBalancerConfig, healthCh
 		stopCh:        make(chan struct{}),
 		startedAt:     time.Now(),
 		modelShare:    newModelShareManager(),
+	}
+
+	// R201 (2026-10-21): пользователи и серверные сессии для WebUI-аутентификации.
+	usersPath := os.Getenv("LB_USERS_FILE")
+	if usersPath == "" {
+		usersPath = "config/users.json"
+	}
+	s.authUsers = NewUserStore(usersPath)
+	// R223: сессии переживают рестарт. Путь задаётся LB_SESSIONS_FILE, иначе берём
+	// sessions.json рядом с users.json (тот же том) — так compose ничего не требует,
+	// а ручной `docker run` без файла работает как раньше (память).
+	s.authSessions = NewSessionStoreFromFile(resolveSessionsPath(usersPath))
+	authenticator.SetSessions(s.authSessions)
+	if s.authUsers.Enabled() {
+		logger.Get().Infow("auth: WebUI-вход включён (/users, сессии)", "users_file", s.authUsers.Path(), "users", len(s.authUsers.List()),
+			"sessions_file", s.authSessions.Path(), "sessions", s.authSessions.Count())
+	} else {
+		logger.Get().Warnw("auth: пользователей нет — вход в WebUI недоступен, работает только X-API-Token (break-glass)", "users_file", s.authUsers.Path())
 	}
 
 	s.setupRoutes()

@@ -80,6 +80,25 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		modelPath = resolveModelPath(modelName)
 	}
 
+	// R157 (2026-10-16): КАНОНИЗАЦИЯ ИМЕНИ по владельцу файла.
+	//
+	// ЖИВОЙ ДЕФЕКТ (оба бэкенда стенда). Модель поднимали под коротким именем-алиасом
+	// (`gemma-4`), файл тот же `gemma-4-E4B-it-Q4_K_M.gguf`. Инстанс регистрировался
+	// под алиасом, и запрос по КАНОНИЧЕСКОМУ имени падал на воркере:
+	//   "chat generate failed: model gemma-4-E4B-it-Q4_K_M not found"
+	// а балансер отдавал клиенту 502. Ни параметры (R154 их уже починил), ни видимость
+	// в карточке (R156) этого не лечат: реестр моделей знает только алиас.
+	//
+	// Поэтому грузим/регистрируем под именем ВЛАДЕЛЬЦА ФАЙЛА, а клиенту сообщаем
+	// заголовками, что имя заменено (он вправе ожидать своё).
+	if owner := canonicalModelName(modelName, modelPath); owner != modelName {
+		logger.Get().Infow("load: имя модели канонизировано по владельцу файла",
+			"requested", modelName, "canonical", owner, "path", modelPath)
+		w.Header().Set("X-Model-Canonical", owner)
+		w.Header().Set("X-Model-Requested", modelName)
+		modelName = owner
+	}
+
 	// Round 19 (2026-07-10): fallbacks from currentConfig.Default* so that
 	// CPPWORKER_GPU_LAYERS / CPPWORKER_CTX_SIZE / ... env vars are honored
 	// by load handlers. Without this, *gpuLayers flag default (-1 = "all layers
@@ -116,7 +135,12 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// (CPPWORKER_TENSOR_SPLIT / CPPWORKER_SPLIT_MODE env vars or config file).
 	// Falls back to request value if set explicitly.
 	defTensorSplit := req.TensorSplit
-	defSplitMode := 0
+	// S1 (2026-10-13): -1 = «дефолт llama.cpp» = LAYER (см. c/bridge/bridge.h).
+	// Раньше по умолчанию стоял 0 = LLAMA_SPLIT_MODE_NONE, и llama.cpp оставлял
+	// из списка устройств только main_gpu: авто-tensor-split по локальным GPU и
+	// RPC-узел не использовались вовсе (живая проба S1: «устройств в раскладке 2»,
+	// а в логе — одна строка «using device CUDA0»).
+	defSplitMode := -1
 	if req.SplitMode != nil {
 		defSplitMode = *req.SplitMode
 	}
@@ -126,11 +150,8 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		}
 		if currentConfig.DefaultSplitMode != 0 || os.Getenv("CPPWORKER_SPLIT_MODE") != "" {
 			if v := currentConfig.DefaultSplitMode; v >= -1 && v <= 3 {
-				if v == -1 {
-					defSplitMode = 0 // bridge: 0 = use llama.cpp default
-				} else {
-					defSplitMode = v
-				}
+				// -1 пробрасываем как есть: мост сам подставит LAYER.
+				defSplitMode = v
 			}
 		}
 	}
@@ -472,6 +493,25 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		modelPath = resolveModelPath(modelName)
 	}
 
+	// R157 (2026-10-16): КАНОНИЗАЦИЯ ИМЕНИ по владельцу файла.
+	//
+	// ЖИВОЙ ДЕФЕКТ (оба бэкенда стенда). Модель поднимали под коротким именем-алиасом
+	// (`gemma-4`), файл тот же `gemma-4-E4B-it-Q4_K_M.gguf`. Инстанс регистрировался
+	// под алиасом, и запрос по КАНОНИЧЕСКОМУ имени падал на воркере:
+	//   "chat generate failed: model gemma-4-E4B-it-Q4_K_M not found"
+	// а балансер отдавал клиенту 502. Ни параметры (R154 их уже починил), ни видимость
+	// в карточке (R156) этого не лечат: реестр моделей знает только алиас.
+	//
+	// Поэтому грузим/регистрируем под именем ВЛАДЕЛЬЦА ФАЙЛА, а клиенту сообщаем
+	// заголовками, что имя заменено (он вправе ожидать своё).
+	if owner := canonicalModelName(modelName, modelPath); owner != modelName {
+		logger.Get().Infow("load: имя модели канонизировано по владельцу файла",
+			"requested", modelName, "canonical", owner, "path", modelPath)
+		w.Header().Set("X-Model-Canonical", owner)
+		w.Header().Set("X-Model-Requested", modelName)
+		modelName = owner
+	}
+
 	// Round 19 (2026-07-10): fallbacks from currentConfig.Default* so that
 	// CPPWORKER_GPU_LAYERS / CPPWORKER_CTX_SIZE / ... env vars are honored
 	// by load handlers. Without this, *gpuLayers flag default (-1 = "all layers
@@ -508,7 +548,8 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	// (CPPWORKER_TENSOR_SPLIT / CPPWORKER_SPLIT_MODE env vars or config file).
 	// Falls back to request value if set explicitly.
 	defTensorSplit2 := req.TensorSplit
-	defSplitMode2 := 0
+	// S1 (2026-10-13): см. комментарий в handleLoadModel — -1 = LAYER (дефолт).
+	defSplitMode2 := -1
 	if req.SplitMode != nil {
 		defSplitMode2 = *req.SplitMode
 	}
@@ -518,11 +559,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		}
 		if currentConfig.DefaultSplitMode != 0 || os.Getenv("CPPWORKER_SPLIT_MODE") != "" {
 			if v := currentConfig.DefaultSplitMode; v >= -1 && v <= 3 {
-				if v == -1 {
-					defSplitMode2 = 0
-				} else {
-					defSplitMode2 = v
-				}
+				defSplitMode2 = v
 			}
 		}
 	}
@@ -585,8 +622,17 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	// мог ещё уменьшить n_ctx/gpu_layers, если профиль задал слишком много
 	// (partial offload fallback).
 	if profileSyncer != nil {
-		if prof := profileSyncer.applyProfileOnLoad(modelName); prof != nil {
-			if !applyProfileToLoadRequest(prof, &opts.ContextSize, &opts.BatchSize, &opts.GPULayers, &opts.FlashAttnType, &opts.KVCacheType) {
+		// R154: профиль ищем у ВЛАДЕЛЬЦА ФАЙЛА, а не у имени запроса. Загрузка под
+		// коротким именем-алиасом поднимает тот же файл, и профиль алиаса/env-дефолты
+		// молча подменяли параметры оператора (живой случай: gemma-4 вместо
+		// gemma-4-E4B-it-Q4_K_M → ctx=65536, q8_0, reasoning=off).
+		profileName := profileLookupNameForPath(modelName, modelPath)
+		if profileName != modelName {
+			logger.Get().Infow("handleLoadWithParams: профиль берём у владельца файла",
+				"requested", modelName, "profile_key", profileName, "path", modelPath)
+		}
+		if prof := profileSyncer.applyProfileOnLoad(profileName); prof != nil {
+			if !applyProfileToLoadRequest(prof, &opts.ContextSize, &opts.BatchSize, &opts.GPULayers, &opts.FlashAttnType, &opts.KVCacheType, &opts.Parallel) {
 				logger.Get().Warnw("handleLoadWithParams: profile is disabled, refusing load",
 					"name", modelName, "profile", prof)
 				writeError(w, http.StatusForbidden, "model "+modelName+" is disabled by profile")
@@ -899,12 +945,13 @@ func handleLoadProgress(w http.ResponseWriter, r *http.Request) {
 				elapsed = now.Sub(m.LoadingStartedAt).Milliseconds()
 			}
 			out = append(out, map[string]interface{}{
-				"name":             m.Name,
-				"state":            m.State,
-				"loadingStartedAt": m.LoadingStartedAt.UTC().Format(time.RFC3339Nano),
-				"loadingSizeBytes": m.LoadingSizeBytes,
-				"elapsedMs":        elapsed,
-				"error":            m.LoadingError,
+				"name":               m.Name,
+				"state":              m.State,
+				"loadingStartedAt":   m.LoadingStartedAt.UTC().Format(time.RFC3339Nano),
+				"loadingSizeBytes":   m.LoadingSizeBytes,
+				"elapsedMs":          elapsed,
+				"loadingProgressPct": m.LoadingProgressPct,
+				"error":              m.LoadingError,
 			})
 		}
 		// R66d: добавляем провалившиеся загрузки. Без этого «failed» был
@@ -933,7 +980,8 @@ func handleLoadProgress(w http.ResponseWriter, r *http.Request) {
 					"name": lm.Name, "state": lm.State,
 					"loadingStartedAt": lm.LoadingStartedAt.UTC().Format(time.RFC3339Nano),
 					"loadingSizeBytes": lm.LoadingSizeBytes, "elapsedMs": elapsed,
-					"error": lm.LoadingError,
+					"loadingProgressPct": lm.LoadingProgressPct,
+					"error":              lm.LoadingError,
 				})
 				return
 			}
@@ -959,11 +1007,22 @@ func handleLoadProgress(w http.ResponseWriter, r *http.Request) {
 	if !m.LoadedAt.IsZero() {
 		elapsed = time.Since(m.LoadedAt).Milliseconds()
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"name": m.Name, "state": m.State,
 		"loadedAt":  m.LoadedAt.UTC().Format(time.RFC3339Nano),
 		"elapsedMs": elapsed, "sizeBytes": m.SizeBytes, "contextSize": m.ContextSize,
-	})
+	}
+	// R215 (2026-10-21): прогресс весов нужен и на этом пути. Пока модель
+	// грузится, она уже есть в реестре, и ответ выше - единственный, который
+	// видит поллер: прежний вариант отдавал «loading» без процента, и новый
+	// loadingProgressPct до UI не доезжал.
+	if m.LoadingProgressPct > 0 {
+		resp["loadingProgressPct"] = m.LoadingProgressPct
+	}
+	if !m.LoadingStartedAt.IsZero() {
+		resp["loadingStartedAt"] = m.LoadingStartedAt.UTC().Format(time.RFC3339Nano)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func handleUnloadModel(w http.ResponseWriter, r *http.Request) {
@@ -1045,12 +1104,44 @@ func handleUnloadModel(w http.ResponseWriter, r *http.Request) {
 				"error": "model is currently loading",
 				"name":  name,
 				"hint": "wait for the load to finish (poll /api/models until state=loaded), " +
-					"or retry with ?force=true to unload right after it completes",
+					"or retry with ?force=true to CANCEL the load and free VRAM immediately",
 			})
 			return
 		}
-		logger.Get().Warnw("unload force=true during active load — модель будет выгружена после завершения загрузки",
-			"name", name)
+		// R215 (2026-10-21): force-выгрузка грузящейся модели = ОТМЕНА загрузки.
+		//
+		// До этого force означал «дождаться конца загрузки и выгрузить»: веса
+		// успевали лечь на GPU мастера и узлов раскладки, и VRAM держалась всё
+		// время чтения файла (минуты для крупных моделей). Теперь C-мост
+		// получает флаг отмены, progress-callback llama.cpp возвращает false, и
+		// загрузка останавливается в пределах одного тензора; частично
+		// загруженная модель освобождается самим llama.cpp (включая буферы на
+		// узлах).
+		aborted := backend.AbortLoad(name)
+		logger.Get().Warnw("unload force=true during active load: загрузка отменяется",
+			"name", name, "abort_requested", aborted)
+		// Ждём, пока загрузка реально отпустит: C-мост проверяет флаг не чаще,
+		// чем на каждом тензоре, поэтому это сотни миллисекунд, а не мгновение.
+		deadline := time.Now().Add(15 * time.Second)
+		for backend.IsLoading(name) && time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !backend.IsLoading(name) {
+			// Загрузка завершилась: либо отменена (инстанс удалён), либо успела
+			// загрузиться — во втором случае обычный unload ниже её выгрузит.
+			if _, err := backend.GetModel(name); err != nil {
+				if balancerReg != nil {
+					balancerReg.notifyModelUnloaded(name)
+				}
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"status":  "load_cancelled",
+					"name":    name,
+					"message": "загрузка отменена, VRAM освобождена",
+					"aborted": aborted,
+				})
+				return
+			}
+		}
 	}
 
 	if err := backend.UnloadModel(name); err != nil {
@@ -1112,13 +1203,25 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 	perModelFeasible := make(map[string]feasibleAgg, len(models))
 	// R83: top-level vram_known отражает НАЛИЧИЕ GPU, а не наличие загруженных
 	// моделей: раньше при count=0 поле было false, хотя GPU есть.
-	vramKnownAgg := backend.MemfitBudget().VRAMKnown
+	// R131 (2026-10-16): справочная ручка НЕ ходит к RPC-узлам.
+	//
+	// ЖИВОЙ ДЕФЕКТ: здесь считался бюджет с RPC, недоступный узел уезжал в C-мост,
+	// llama.cpp вызывал abort() — и МАСТЕР ПАДАЛ ОТ GET /api/models (обычного
+	// чтения списка моделей). Ёмкость донора справочному ответу не нужна:
+	// раскладку планирует путь загрузки, где есть явное намерение и гейт узлов.
+	//
+	// R132 (2026-10-16): «не ходить к узлам» ≠ «не знать про узлы». Берём
+	// ПОСЛЕДНИЙ СОБРАННЫЙ снимок (MemfitBudgetCached): дозвона нет ни при каком
+	// состоянии узла, но если путь загрузки только что измерял донора, ответ
+	// показывает ту же ёмкость, что и решение о раскладке (иначе балансер видел
+	// «не влезает» там, где раскладка на донора проходит).
+	vramKnownAgg := backend.MemfitBudgetCached().VRAMKnown
 
 	for _, m := range models {
 		if m.State != cppbackend.StateLoaded {
 			continue
 		}
-		limits := backend.CalculateResourceLimits(m.Name)
+		limits := backend.CalculateResourceLimitsCached(m.Name)
 		if limits.VRAMKnown {
 			vramKnownAgg = true
 		}
@@ -1251,11 +1354,69 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 				}
 				return cppbackend.ContextPerSlot(m.ContextSize, m.Parallel)
 			}(),
+			// R119 (2026-10-15): max_slots — сколько запросов модель РЕАЛЬНО
+			// обслуживает ОДНОВРЕМЕННО, а не сколько слотов заведено.
+			//
+			// ЖИВОЙ ЗАМЕР (стенд, CPPWORKER_ENABLE_BATCHED_PARALLEL=false,
+			// parallel=2): два одновременных /api/chat обслуживались
+			// ПОСЛЕДОВАТЕЛЬНО — второй получил первый байт ровно тогда, когда
+			// закончился первый (firstData 11.76 c против total 12.29 c).
+			// Причина в самом cppworker: legacy-путь держит inst.mu на ВЕСЬ
+			// инференс (backend.go, Round 8 race-fix), поэтому llama_decode
+			// сериализуется независимо от числа слотов SlotManager. Так это и
+			// описано у ModelInfo.BatchedParallel: «false = legacy Round 13
+			// multi-slot path с serialized llama_decode».
+			//
+			// ПОЧЕМУ ЭТО КРИТИЧНО НАРУЖУ. Балансер берёт вместимость бэкенда из
+			// этого числа (max_slots/parallel) и пропускает два клиента вперёд.
+			// Второй молча блокируется внутри SlotManager.Acquire — без
+			// X-Queue-Wait-Ms, без позиции в очереди и без строки в UI. Ровно
+			// так выглядит жалоба «два запроса с одной машины не разделяются».
+			//
+			// Поэтому max_slots = способность: без batched-планировщика она
+			// равна 1. Настроенное `parallel` не меняем — оно остаётся в ответе
+			// как конфигурация (и как число слотов llama.cpp).
 			"max_slots": func() int {
+				if !m.BatchedParallel {
+					return 1
+				}
 				if m.Parallel > 0 {
 					return m.Parallel
 				}
 				return 1
+			}(),
+			// R119: режим планировщика — виден наружу, потому что именно он
+			// объясняет разницу между parallel=2 и max_slots=1. UI показывает
+			// «Batched: ON/OFF», оператор видит, что параллелизм не включён.
+			"batched_parallel": m.BatchedParallel,
+			// R118.16 (2026-10-14): точная раскладка слоёв по устройствам —
+			// llama.cpp печатает её в лог при загрузке, мост ловит строки
+			// (c/bridge/layers_plan.go). Здесь это ФАКТ, а не расчёт: WebUI
+			// показывает именно его, и оператор сверяет с `docker logs`.
+			// Пусто (ключ отсутствует) = перехватить не удалось; это не то же
+			// самое, что «все слои на CPU».
+			//
+			// Имя `device_layers_exact` — то же, что в /config/runtime: один
+			// факт называется одинаково везде. Отдельное имя нужно потому, что
+			// `device_layers` в ответе балансера занято ОБЪЕКТОМ-планом
+			// (estimated true/false), и путать факт с планом нельзя.
+			"device_layers_exact": func() interface{} {
+				if len(m.DeviceLayers) == 0 {
+					return nil
+				}
+				return m.DeviceLayers
+			}(),
+			// R176 (2026-10-19): раскладка НЕ применилась, хотя узлы передали.
+			// Поле показывает ФАКТ сверки «переданные серверы vs фактическая
+			// раскладка слоёв»: без него тихое выпадение узла на загрузке
+			// выглядело как обычная успешная загрузка (R174: 42 слоя на одной
+			// карте вместо 21+17 с донором).
+			"layout_degraded": m.LayoutDegraded,
+			"layout_degraded_reason": func() string {
+				if !m.LayoutDegraded {
+					return ""
+				}
+				return m.LayoutDegradedReason
 			}(),
 		}
 		// R83-политика (2026-10-01): режим reasoning ЗАГРУЖЕННОЙ модели.
@@ -1337,6 +1498,56 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		// загрузка пойдёт в partial_offload/cpu_only). Раньше эти случаи были
 		// неразличимы, и UI не мог предупредить о режиме загрузки.
 		"vram_known": vramKnownAgg,
+	}
+
+	// R115: раскладка памяти по источникам. available_vram_mb выше — ИТОГ
+	// (memfit считает бюджет как локальная карта + узлы раскладки), и по одному
+	// числу нельзя понять, откуда гигабайты: «8 ГБ» и «8 ГБ + 7 ГБ донора»
+	// выглядят одинаково, хотя это разные решения о загрузке. Смысл прежних полей
+	// не меняется — балансер читает их как раньше.
+	//
+	// R132 (2026-10-16): раскладка берётся БЕЗ дозвона до узлов (LayoutBreakdownCached).
+	// После R131 здесь оставался `LayoutBreakdown()` — то есть чтение списка моделей
+	// всё ещё звонило на узел раскладки и на узле «принял и молчит» уходило в C-мост.
+	// Источник вклада узлов отдаётся полем vram_remote_source: none (не измерялись
+	// на этом пути) / cache (из уже собранного снимка) / probed (узлы спрошены).
+	layout := backend.LayoutBreakdownCached()
+	resp["rpc_enabled"] = layout.RPCEnabled
+	resp["rpc_servers_active"] = layout.Servers
+	// R229 (2026-10-22): узлы раскладки, ИСКЛЮЧЁННЫЕ как недоступные на время
+	// работы с моделью (TCP-проба). Оператор видит, почему модель работает без
+	// донора, вместо догадок по логу.
+	resp["rpc_excluded"] = backend.ExcludedRPCServers()
+	resp["vram_local_free_mb"] = layout.LocalFree >> 20
+	resp["vram_local_total_mb"] = layout.LocalTotal >> 20
+	resp["vram_remote_free_mb"] = layout.RemoteFree >> 20
+	resp["vram_remote_total_mb"] = layout.RemoteTotal >> 20
+	resp["vram_layout_free_mb"] = layout.LayoutFree >> 20
+	resp["vram_layout_total_mb"] = layout.LayoutTotal >> 20
+	resp["vram_remote_nodes"] = layout.Nodes
+	resp["vram_remote_source"] = layout.RemoteSource
+
+	// R133 (2026-10-16): состояние СОБСТВЕННОГО узла раскладки этой машины.
+	//
+	// ЗАЧЕМ ЗДЕСЬ. Донор обязан отчитываться о своём узле тем же ответом, который
+	// балансер и так опрашивает (поллер /api/models), иначе «поднят ли узел, на
+	// каком порту, что за ошибка» видно только в /api/v1/cppworker/config, куда
+	// балансер не ходит. Без этого тумблер роли в панели выглядел бы как
+	// «нажал — и ничего не произошло».
+	if rpcServerChild != nil {
+		resp["rpc_server"] = rpcServerChild.Status()
+	}
+	// R215 (2026-10-21): состояние РАСКЛАДКИ со стороны мастера.
+	//
+	// rpc_server выше описывает СВОЙ узел (мастер тоже может быть донором).
+	// Здесь — про узлы, к которым подключаемся мы: смог ли гейт получить от них
+	// устройства и сколько неудач подряд. stuck_suspected=true означает «узел
+	// доступен по TCP, но команды не обслуживает несколько загрузок подряд»:
+	// это зависший процесс, keepalive его не лечит, нужен перезапуск rpc-server
+	// на доноре (docs/rpc-donor-vram-lifecycle.md).
+	resp["rpc_layout"] = map[string]interface{}{
+		"ready_timeout_streak": backend.RPCReadyTimeoutStreak(),
+		"stuck_suspected":      backend.RPCLayoutStuckSuspected(),
 	}
 
 	// R83 (2026-09-25): причина последнего провала загрузки — машиночитаемо.
@@ -1812,6 +2023,18 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		NUMA:          defaultBoolPtr(req.NUMA, current.NUMA),
 		UseMmap:       defaultBoolPtr(req.UseMmap, current.UseMmap),
 		TensorSplit:   current.TensorSplit,
+		// R179 (2026-10-19): РЕЖИМ РАСКЛАДКИ ОБЯЗАН ДОЕХАТЬ ДО МОСТА И ЗДЕСЬ.
+		//
+		// ЖИВАЯ ПРИЧИНА потери раскладки при «Применить профиль»: reload собирал
+		// LoadModelOpts из current, но SplitMode НЕ передавал вовсе — в мост уходил
+		// 0 = LLAMA_SPLIT_MODE_NONE. При NONE llama.cpp оставляет из списка устройств
+		// только main_gpu и RPC-узел отбрасывает (тот же класс дефекта, что описан в
+		// internal/cppbackend/backend.go рядом с cfg.SplitMode = opts.SplitMode).
+		// Внешне это выглядело так: планировщик видел ДВА устройства, серверы
+		// передавались в мост, а llama.cpp печатал только `using device CUDA0`.
+		// Путь /api/models/load-with-params передавал режим всегда — поэтому свежая
+		// загрузка раскладывала слои, а reload нет.
+		SplitMode: reloadSplitMode(req.SplitMode),
 		// Session 16 (2026-06-27): Parallel + KVCacheType ????? /api/models/reload
 		// ??? ?????????? Per-Model Profile (parallel + kvCacheType).
 		// ?? ????????? (nil ?? ???????) ? inherit ?? ??????? ????????.
@@ -1878,10 +2101,16 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	// При reload запрошенные параметры имеют приоритет над профилем (явный вызов),
 	// но если reload идёт без параметров (пустой body) — профиль задаёт дефолты.
 	if profileSyncer != nil {
-		if prof := profileSyncer.applyProfileOnLoad(req.Name); prof != nil {
+		// R154: то же правило, что при загрузке — профиль владельца ФАЙЛА.
+		profileName := profileLookupNameForPath(req.Name, modelPath)
+		if profileName != req.Name {
+			logger.Get().Infow("handleReloadModel: профиль берём у владельца файла",
+				"requested", req.Name, "profile_key", profileName, "path", modelPath)
+		}
+		if prof := profileSyncer.applyProfileOnLoad(profileName); prof != nil {
 			// For reload: apply profile to fields that are still zero-value
 			// (i.e. user didn't override them via body).
-			if !applyProfileToLoadRequest(prof, &opts.ContextSize, &opts.BatchSize, &opts.GPULayers, &opts.FlashAttnType, &opts.KVCacheType) {
+			if !applyProfileToLoadRequest(prof, &opts.ContextSize, &opts.BatchSize, &opts.GPULayers, &opts.FlashAttnType, &opts.KVCacheType, &opts.Parallel) {
 				logger.Get().Warnw("handleReloadModel: profile is disabled, refusing reload",
 					"name", req.Name, "profile", prof)
 				writeError(w, http.StatusForbidden, "model "+req.Name+" is disabled by profile")
@@ -2776,6 +3005,19 @@ func writeOllamaShowLoadedResponse(w http.ResponseWriter, info *cppbackend.Model
 	// of the broken n_layers × n_embd / 1e9 formula, which gave "0.0B" for 7B models
 	// (e.g. Qwen3-Instruct: 36 × 2560 = 92160 → 9.2e-5B → "0.0B").
 	paramSize := modelParameterSize(info.NLayers, info.NEmbd)
+	modelInfo := map[string]interface{}{
+		"architecture": info.Architecture, "n_layers": info.NLayers,
+		"n_heads": info.NHeads, "n_embd": info.NEmbd,
+		"n_kv_heads": info.NKvHeads, "head_dim_k": info.HeadDimK, "head_dim_v": info.HeadDimV,
+		"n_vocab": info.NVocab, "context_size": info.ContextSize,
+		"gpu_layers": info.GPULayers, "kv_cache_type": info.KVCacheType, "state": info.State,
+	}
+	// H3 (аудит): на загруженной модели тоже отдаём "<arch>.context_length" —
+	// training context из GGUF-заголовка, ровно как Path 2 (незагруженная ветка,
+	// writeOllamaShowMetadataResponse). context_size выше остаётся runtime n_ctx.
+	if info.GGUFContextLength > 0 && info.Architecture != "" {
+		modelInfo[info.Architecture+".context_length"] = info.GGUFContextLength
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"license": "unknown", "modelfile": "",
 		"parameters": paramSize,
@@ -2786,13 +3028,7 @@ func writeOllamaShowLoadedResponse(w http.ResponseWriter, info *cppbackend.Model
 			"parameter_size":     paramSize,
 			"quantization_level": "unknown",
 		},
-		"model_info": map[string]interface{}{
-			"architecture": info.Architecture, "n_layers": info.NLayers,
-			"n_heads": info.NHeads, "n_embd": info.NEmbd,
-			"n_kv_heads": info.NKvHeads, "head_dim_k": info.HeadDimK, "head_dim_v": info.HeadDimV,
-			"n_vocab": info.NVocab, "context_size": info.ContextSize,
-			"gpu_layers": info.GPULayers, "kv_cache_type": info.KVCacheType, "state": info.State,
-		},
+		"model_info": modelInfo,
 	})
 }
 
@@ -3101,4 +3337,31 @@ func resolveModelPath(modelName string) string {
 		modelPath += ".gguf"
 	}
 	return modelPath
+}
+
+// reloadSplitMode — режим раскладки для /api/models/reload.
+//
+// R179 (2026-10-19). Причина живого дефекта «Применить профиль теряет раскладку»:
+// reload не передавал SplitMode, в мост уходил 0 = LLAMA_SPLIT_MODE_NONE, и
+// llama.cpp оставлял из списка устройств только main_gpu (RPC-узел отбрасывался),
+// хотя планировщик видел два устройства и серверы передавались. Путь
+// /api/models/load-with-params режим передавал всегда — поэтому свежая загрузка
+// раскладывала слои, а reload нет.
+//
+// Правило: явный splitMode запроса (если задан) > CPPWORKER_SPLIT_MODE >
+// DefaultSplitMode конфига > -1 (дефолт llama.cpp = LAYER). Ноль как «не задано»
+// здесь НЕ трактуем: 0 — это законное NONE, и подменять его нельзя.
+func reloadSplitMode(requested *int) int {
+	if requested != nil && *requested >= -1 && *requested <= 3 {
+		return *requested
+	}
+	if v := strings.TrimSpace(os.Getenv("CPPWORKER_SPLIT_MODE")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= -1 && n <= 3 {
+			return n
+		}
+	}
+	if currentConfig != nil && currentConfig.DefaultSplitMode >= -1 && currentConfig.DefaultSplitMode <= 3 {
+		return currentConfig.DefaultSplitMode
+	}
+	return -1
 }

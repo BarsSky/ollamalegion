@@ -628,7 +628,26 @@ func main() {
 	// (done:true) до закрытия keep-alive соединений. Prewarm/Health/ModelInstance
 	// идут последними — они зависят от proxy state который уже заморожен.
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// R217 (2026-10-21): сколько ждать активные стримы при остановке.
+	//
+	// Было жёстко 30 с. На стенде рестарт балансера рвал активный ответ клиенту:
+	// учёт стримов не включал /v1 (см. proxy_request_hijack.go / proxy_request.go),
+	// а даже с учётом 30 с мало для генерации на 27B (живой замер: 40-120 с на
+	// ответ). Теперь значение настраивается, а Docker stop_grace_period обязан
+	// быть больше него — иначе контейнер получит SIGKILL раньше, чем дренаж
+	// закончится (см. deployments/docker-compose.stack.yml).
+	drainSec := 60
+	if raw := strings.TrimSpace(os.Getenv("LB_SHUTDOWN_DRAIN_SEC")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
+			drainSec = v
+		}
+	}
+	if drainSec > 600 {
+		drainSec = 600
+	}
+	fmt.Printf("[Shutdown] drain budget: %ds (LB_SHUTDOWN_DRAIN_SEC)\n", drainSec)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(drainSec)*time.Second)
 	defer shutdownCancel()
 
 	fmt.Println("[Shutdown] Stopping proxy (waiting for active streams)...")

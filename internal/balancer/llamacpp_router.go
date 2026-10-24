@@ -87,6 +87,16 @@ func (lr *LlamaCppRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 		r = r2
 	}
 
+	// H7 (остаток аудита): GET /v1/models/{id}. В switch ниже есть только точный
+	// case "/v1/models", поэтому by-id не матчился: Route возвращал false, запрос
+	// уходил в общий proxy-flow (отдавал тело воркера), а на Ollama-only кластере
+	// мог встать в admission-очередь. Обрабатываем сами, по тому же набору
+	// моделей, что и /v1/models.
+	if strings.HasPrefix(r.URL.Path, "/v1/models/") {
+		lr.handleOpenAIModelByID(w, r)
+		return true
+	}
+
 	switch r.URL.Path {
 	case "/api/tags":
 		lr.handleTags(w, r)

@@ -232,6 +232,47 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// writeModelLoadError — R119 (2026-10-15): ЕДИНАЯ точка перевода ошибки догрузки
+// модели в HTTP-ответ.
+//
+// ЗАЧЕМ. Все хендлеры (/api/generate, /api/chat, /api/embeddings, /v1/*) писали
+// `writeError(w, 500, "model load failed: "+err)` — то есть ЛЮБАЯ причина
+// выглядела как «внутренняя ошибка сервера» и, что хуже, уходила с пустым телом.
+// Живой случай: клиент просит модель, которой нет на диске → 500 без объяснения,
+// OpenWebUI повторяет запрос, оператор видит «Internal Server Error» и не знает,
+// что модель просто не найдена.
+//
+// Правило:
+//   - модель ещё грузится → 503 + Retry-After (writeLoadingResponse);
+//   - файла модели нет / имя не разрешилось → 404 + понятное тело
+//     (Ollama-совместимые клиенты показывают `error` как есть);
+//   - всё остальное → 500, как раньше.
+//
+// Возвращает true, если ответ уже записан (вызывающий обязан сделать return).
+func writeModelLoadError(w http.ResponseWriter, modelName string, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case isModelLoadingError(err):
+		writeLoadingResponse(w, modelName, err)
+	case errors.Is(err, ErrModelFileNotFound):
+		// Тело намеренно совместимо с Ollama: `error` — человекочитаемое
+		// сообщение (его показывают OpenWebUI/Cline), `code` — машинный код для
+		// инструментов и авто-ретраев, `model` — что именно просили.
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{
+			"error": fmt.Sprintf("model %q not found: %s", modelName, err.Error()),
+			"code":  "model_file_not_found",
+			"model": modelName,
+			"hint": "проверьте имя модели (алиасы) и что файл .gguf лежит в каталоге моделей; " +
+				"список доступных файлов — GET /api/models/files",
+		})
+	default:
+		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
+	}
+	return true
+}
+
 // writeReloadLoopLimitResponse — пишет HTTP 413 с детальным JSON-ответом,
 // когда cppworker отказывается делать reload из-за превышения лимита попыток.
 // Используется всеми handler'ами после генерации (если err это *ReloadLoopLimitError).
@@ -340,6 +381,46 @@ func handleInferenceError(w http.ResponseWriter, err error) bool {
 	var rdtErr *ReloadDisabledForToolsError
 	if errors.As(err, &rdtErr) {
 		writeReloadDisabledForToolsResponse(w, rdtErr)
+		return true
+	}
+	// R114 (2026-10-13): узел раскладки недоступен — 503 + Retry-After, а не 500.
+	//
+	// 503 (а не 500) важен для балансера: он трактует его как «бэкенд временно
+	// недоступен» и выбирает другой/повторяет, вместо того чтобы отдать клиенту
+	// «внутреннюю ошибку» на состоянии, которое исправится поднятием узла.
+	var rpcErr *cppbackend.RPCNodeUnreachableError
+	if errors.As(err, &rpcErr) {
+		w.Header().Set("Retry-After", "10")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":      rpcErr.Error(),
+			"code":       "rpc_node_unreachable",
+			"endpoint":   rpcErr.Endpoint,
+			"retryAfter": 10,
+			"hint": "поднимите узел раскладки (на доноре: " +
+				"docker compose -f docker-compose.rpc-node.yml up -d) и повторите запрос",
+		})
+		return true
+	}
+	// R224 (2026-10-22): сессия с узлом раскладки потеряна ВО ВРЕМЯ генерации.
+	//
+	// Отдельно от rpc_node_unreachable (тот — про отказ ДО запроса): здесь модель
+	// уже работала, узел ушёл, мастер выгружает её и просит повторить. 503 +
+	// Retry-After: для балансера это «бэкенд временно недоступен», то есть
+	// повтор/переключение, а не внутренняя ошибка.
+	var sessLost *cppbackend.RPCSessionLostError
+	if errors.As(err, &sessLost) {
+		w.Header().Set("Retry-After", "5")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":      sessLost.Error(),
+			"code":       "rpc_session_lost",
+			"endpoint":   sessLost.Endpoint,
+			"retryAfter": 5,
+			"hint":       "модель выгружена, повторите запрос через несколько секунд — раскладка соберётся заново",
+		})
 		return true
 	}
 	// 2026-06-25: AutoTuneNCtx exhausted (n_ctx не помещается даже cpu-only + mmap в RAM).

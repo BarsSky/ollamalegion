@@ -27,6 +27,7 @@ import (
 
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // runInferencePreflightArgs — параметры для runInferencePreflight.
@@ -162,6 +163,36 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		// hardcoded cfg.effectiveAsyncRetryAfter(). Так client (OpenWebUI) retry-ит
 		// не раньше чем реально закончится reload, и не триггерит cascading
 		// reload requests пока первая ещё в процессе.
+		// R115: СНАЧАЛА ЖДЁМ ГОТОВНОСТИ, И ТОЛЬКО ПОТОМ 503.
+		//
+		// Живой случай (Ollama-поверхность балансера :18080, клиент OpenWebUI):
+		// модель не загружена → клиент сразу получал 503 + Retry-After: 30, хотя
+		// модель в этот момент грузилась. Для 27B на раскладке загрузка занимает
+		// 256-485 с, то есть совет «повторите через 30» заведомо не работал, а
+		// OpenWebUI, в отличие от Cline, 503 не повторяет — пользователь видел
+		// ошибку.
+		//
+		// Инструмент ожидания УЖЕ БЫЛ и заведён ровно под этот случай
+		// (autoload_wait.go: waitForBackendNCtx — «Cline/OpenWebUI показывали
+		// ошибку, хотя reload занимал десятки секунд; теперь запрос ждёт
+		// готовности»), но на этой ветке он не вызывался. Теперь вызывается:
+		// бюджет берётся из LB_AUTO_LOAD_WAIT_SEC (autoLoadWaitTimeoutForModel).
+		// 503 остаётся страховкой — когда ожидание исчерпано или запрос отменён.
+		if args.r != nil {
+			wait := lr.proxy.autoLoadWaitTimeoutForModel(meta.ModelName)
+			if lr.proxy.waitForBackendNCtx(args.r.Context(), args.backendID, meta.ModelName,
+				res.TargetNCtx, wait) {
+				// Кэш обновляем СРАЗУ: иначе следующий (transport-level) чек до
+				// обновления metrics poller увидит старый n_ctx и запустит второй
+				// reload уже после того, как клиент дождался первого.
+				lr.proxy.cacheLoadedContextLength(args.backendID, meta.ModelName, res.TargetNCtx)
+				logger.Get().Infow("preflight: модель готова после ожидания reload — запрос обслуживается",
+					"backend", args.backendID, "model", meta.ModelName,
+					"target_n_ctx", res.TargetNCtx, "waited_sec", int(wait.Seconds()))
+				return false, res
+			}
+		}
+
 		retryAfter := res.EstimatedRetryAfter
 		if retryAfter <= 0 {
 			retryAfter = coord.Config().effectiveAsyncRetryAfter()
@@ -380,17 +411,14 @@ func (p *Proxy) reloadHintsFor(backendID, modelName string) ReloadHints {
 	// выходила по профилю модели — из-за этого «сколько слоёв сейчас на GPU»
 	// не доезжало до reload'а, и он мог понизить раскладку (см. ReloadHints.GPULayers).
 	hints := ReloadHints{}
-	if p.config.LlamaCppModelProfiles != nil {
-		if mp, ok := p.config.LlamaCppModelProfiles[modelName]; ok && mp.KVCacheType != "" {
-			hints.KVCacheType = mp.KVCacheType
-		} else {
-			for name, mp := range p.config.LlamaCppModelProfiles {
-				if (containsFold(name, modelName) || containsFold(modelName, name)) && mp.KVCacheType != "" {
-					hints.KVCacheType = mp.KVCacheType
-					break
-				}
-			}
-		}
+	if prof, ok := profileForReloadHints(p.config.LlamaCppModelProfiles, modelName); ok {
+		hints.KVCacheType = prof.KVCacheType
+		// R119 (2026-10-15): параллельность и размышления из профиля — раньше
+		// тело reload собиралось с нуля, и эти настройки оператора до cppworker
+		// не доезжали (модель возвращалась к CPPWORKER_N_PARALLEL и теряла
+		// включённые размышления).
+		hints.Parallel = prof.Parallel
+		hints.EnableReasoning = prof.EnableReasoning
 	}
 	if p.metricsMgr != nil && backendID != "" {
 		p.metricsMgr.mu.RLock()
@@ -402,6 +430,12 @@ func (p *Proxy) reloadHintsFor(backendID, modelName string) ReloadHints {
 						hints.KVCacheType = m.KvCacheType
 					}
 					hints.GPULayers = m.NumGPULayers
+					// R119: если в профиле параллельность не задана, берём
+					// фактическую у загруженной модели — перезагрузка не имеет
+					// права менять число слотов «по умолчанию окружения».
+					if hints.Parallel <= 0 {
+						hints.Parallel = m.Parallel
+					}
 					// R83-политика (2026-10-01): суммарное окно загруженной
 					// модели — по нему DoReload отсекает «пустые» перезагрузки.
 					hints.WindowNCtx = m.ContextLength
@@ -411,6 +445,27 @@ func (p *Proxy) reloadHintsFor(backendID, modelName string) ReloadHints {
 		}
 	}
 	return hints
+}
+
+// profileForReloadHints — R119 (2026-10-15): профиль модели для хинтов reload'а.
+//
+// Точное совпадение имени важнее частичного (та же логика, что была у
+// kvCacheType-хинта): профиль "gemma-4" подходит модели
+// "gemma-4-E4B-it-Q4_K_M" — иначе на стенде с такими именами хинты не находятся
+// вовсе.
+func profileForReloadHints(profiles map[string]types.LlamaCppModelProfile, modelName string) (types.LlamaCppModelProfile, bool) {
+	if len(profiles) == 0 || modelName == "" {
+		return types.LlamaCppModelProfile{}, false
+	}
+	if mp, ok := profiles[modelName]; ok {
+		return mp, true
+	}
+	for name, mp := range profiles {
+		if containsFold(name, modelName) || containsFold(modelName, name) {
+			return mp, true
+		}
+	}
+	return types.LlamaCppModelProfile{}, false
 }
 
 // preflightAutoReloadMaxNCtx — operator cap (LB_NCTX_RELOAD_MAX_N_CTX) из

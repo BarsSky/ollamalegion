@@ -184,6 +184,28 @@ var ollamaChatClientBodies = []clientOllamaRequest{
 		client: "Ollama truncate + logprobs",
 		body: `{"model":"dummy","messages":[{"role":"user","content":"hi"}],"truncate":false,"logprobs":true,"top_logprobs":5}`,
 	},
+	{
+		// R106 (2026-10-11): ПРОДОЛЖЕНИЕ СТАРОЙ СЕССИИ в Cline (провайдер
+		// "ollama"). В истории — сообщение ассистента с `thinking`, то есть с
+		// рассуждениями, которые клиент получил от нас же (балансер отдаёт
+		// Ollama-поле message.thinking, как и настоящая Ollama) и вернул назад.
+		// До R106 строгий декодер отвечал 400 `unknown field "thinking"`, и
+		// сессию нельзя было продолжить вовсе: оператор видел
+		// `invalid JSON: json: unknown field "thinking"` в Cline.
+		client: "Cline (ollama provider, continuation of an old session with thinking history)",
+		body: `{
+			"model":"dummy",
+			"messages":[
+				{"role":"system","content":"You are Cline."},
+				{"role":"user","content":"Сколько будет 17*23?"},
+				{"role":"assistant","content":"391","thinking":"17*23 = 340 + 51 = 391"},
+				{"role":"user","content":"а 18*23?"}
+			],
+			"options":{"num_ctx":32768,"temperature":0},
+			"tool_choice":"auto",
+			"stream":true
+		}`,
+	},
 }
 
 // openAIChatClientBodies — реальные тела клиентов OpenAI-совместимого режима.
@@ -217,6 +239,23 @@ var openAIChatClientBodies = []clientOllamaRequest{
 	{
 		client: "OpenWebUI (OpenAI mode, tools + parallel_tool_calls)",
 		body: `{"model":"dummy","messages":[{"role":"user","content":"hi"}],"tools":[],"parallel_tool_calls":false,"stream":true,"stream_options":{"include_usage":true}}`,
+	},
+	{
+		// R106 (2026-10-11): history-echo рассуждений на OpenAI-поверхности.
+		// cppworker сам отдаёт `reasoning_content` в ответе, клиент при
+		// продолжении сохранённой сессии возвращает историю вместе с ним.
+		// До R106 — 400 `unknown field "reasoning_content"`.
+		client: "client echo of reasoning_content (continuation of a saved session)",
+		body: `{
+			"model":"dummy",
+			"messages":[
+				{"role":"user","content":"Сколько будет 17*23?"},
+				{"role":"assistant","content":"391","reasoning_content":"17*23 = 340 + 51 = 391"},
+				{"role":"user","content":"а 18*23?"}
+			],
+			"stream":true,
+			"max_tokens":2048
+		}`,
 	},
 }
 

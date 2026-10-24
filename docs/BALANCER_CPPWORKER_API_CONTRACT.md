@@ -390,6 +390,25 @@ Unknown fields MUST be rejected by `json.Decoder.DisallowUnknownFields()` (Round
 
 `message.content` MUST be the concatenation of all streamed `content` deltas. `message.thinking` MUST be the concatenation of all streamed `thinking` deltas. `tool_calls` MUST be the merged final tool calls array.
 
+**R113 (2026-10-13) — `arguments` вызова.** `tool_calls[].function.arguments`
+обязан быть JSON-**ОБЪЕКТОМ** по схеме инструмента из запроса (Ollama-форма) или
+JSON-строкой такого объекта (OpenAI-форма). Иначе клиент (Cline, OpenAI SDK,
+ollama-python) не может выполнить вызов, считает сообщение финальным ответом и
+завершает агентский цикл. Живые формы, которые приходили на стенд и приводились
+к объекту по схеме: массив (`["dir"]` → `{"commands":["dir"]}`), голая строка
+(`"c:\\path"` → `{"path":"c:\\path"}`), объект-обёртка (`{"args":{…}}`), двойное
+кодирование. Разметка вызова (`<|tool_call>…`, `[TOOL_CALLS]`, JSON-форма) НЕ
+должна попадать в `content` ни в одном чанке, включая случай, когда модель
+повторяет вызов, присланный историей. Подробности и порядок проверки:
+[`cline-agent-loop.md`](cline-agent-loop.md).
+
+**R113 — запрос к загружаемой модели.** Пока модель грузится/перезагружается,
+запрос ДОЛЖЕН ждать готовности (предел ожидания — `CPPWORKER_LOAD_WAIT_SEC`,
+по умолчанию 900 с, или отмена/дедлайн клиента). Ответ
+`{"done": true, "done_reason": "error"}` на transient-состояние запрещён: клиент
+трактует его как завершённый ход. Если готовности не дождались — 503 +
+`Retry-After`.
+
 ### 3.3 `/v1/chat/completions` (OpenAI) — request (MUST)
 
 ```json
@@ -504,6 +523,8 @@ All JSON requests MUST be parsed with `json.NewDecoder(r.Body).DisallowUnknownFi
 
 This is currently implemented for `handlers_cppworker_profiles.go:155-163` and MUST be extended to all handlers in `cmd/cppworker/`.
 
+**Exception — history-echo reasoning fields (0.7.67).** Fields that the server itself emits and the client sends back inside the conversation history MUST be accepted (not 400), even though they are not used for prompt assembly: `thinking` and `reasoning_content` on message objects of `/api/chat`, and `reasoning_content` / `thinking` on `/v1/chat/completions`. Rejecting them makes continuation of a saved session impossible, because the client cannot strip what it received (live defect 2026-10-11: Cline → balancer `:18080`, `invalid JSON: json: unknown field "thinking"`). See `cmd/cppworker/history_reasoning_echo_test.go`.
+
 ---
 
 ## 4. Reasoning content
@@ -519,6 +540,17 @@ This is currently implemented for `handlers_cppworker_profiles.go:155-163` and M
 | OpenAI `/v1/chat/completions` (non-streaming message) | `message.reasoning_content` | `message.content` |
 
 OpenWebUI uses Ollama paths; Cline/Aider/Continue use OpenAI paths. The balancer MUST translate both directions correctly. (Round 29 fixed this — was the original "OpenWebUI doesn't get reasoning" bug.)
+
+**R108 (2026-10-13) — поле и разбор.** cppworker emits the canonical name above and, in addition
+only, the legacy alias `message.reasoning` on native `/api/chat` (stream deltas and final chunk).
+Clients that read either name get the reasoning; nothing else may depend on the alias.
+
+The split into reasoning/content is **unconditional and driven by the tag pairs of §4.2 only** — never
+by the model name. `IsReasoningModel` / `IsReasoningEnabledForRequest` answer "does this model emit
+reasoning at all" (prompt policy, `n_predict` defaults) and MUST NOT gate emission: the live defect was
+a model outside that whitelist (Qwen3.8-27B) whose ` thinking…` block reached Cline inside
+`message.content`. A source-level guard (`TestR108_ResponsePathsDoNotGateReasoningByModelName`) fails
+the build if such a gate returns to `handlers_chat.go`, `handlers_generate.go` or `handlers_openai.go`.
 
 ### 4.2 Tag detection in raw model output (cppworker responsibility)
 

@@ -2,7 +2,7 @@
 # Запускать ТОЛЬКО из PowerShell от имени Администратора!
 # (ПКМ на PowerShell → Запуск от имени администратора)
 
-$logPath = "C:\Users\knaga\runner-setup.log"
+$logPath = "$env:USERPROFILE\runner-setup.log"
 $runnerDir = "C:\actions-runner"
 $regToken = $env:GITHUB_REGISTRATION_TOKEN
 if (-not $regToken) { Write-Host "ERROR: GITHUB_REGISTRATION_TOKEN env var is required (obtain from https://github.com/BarsSky/ollamalegion/settings/actions/runners/new)"; exit 1 }

@@ -74,3 +74,55 @@ const rtx50vram = P.presets['rtx50-32gb'].vramMaxUsage;
 assert.ok(rtx50vram >= rtx30vram, 'rtx50-32gb should have higher vramMaxUsage than rtx30-8gb');
 
 console.log('OK: all', Object.keys(P.presets).length, 'presets pass validation');
+
+// ============================================================
+// R106 (S5 плана 2026-10-07): пресеты РАСКЛАДКИ
+// ============================================================
+//
+// Уточнение к плану: этот файл — про ЖЕЛЕЗО, пресетов режимов в нём не было.
+// Набор раскладки добавлен как самостоятельный, и проверяем мы его отдельно:
+// стратегии обязаны совпадать с теми, что исполняет балансер, а ключи i18n —
+// существовать в ОБОИХ языках (иначе мастер покажет сырой ключ).
+
+require('../i18n/ru.js');
+require('../i18n/en.js');
+const RU = global.I18N_RU;
+const EN = global.I18N_EN;
+
+assert.ok(P.placementPresets, 'placementPresets map should exist');
+assert.ok(Array.isArray(P.placementOrder), 'placementOrder should exist');
+assert.strictEqual(P.placementOrder.length, 5, 'раскладок должно быть пять');
+
+const VALID_STRATEGIES = ['single', 'replicated', 'sharded', 'pool'];
+const VALID_GROUP_STRATEGIES = ['', 'layer', 'row'];
+
+P.placementOrder.forEach(function (key) {
+    const p = P.placementPresets[key];
+    assert.ok(p, `раскладка ${key} должна существовать`);
+    assert.ok(p.label, `${key}: нужен label`);
+    assert.ok(VALID_STRATEGIES.indexOf(p.strategy) >= 0,
+        `${key}: стратегия ${p.strategy} не исполняется балансером`);
+    const gs = p.groupStrategy || '';
+    assert.ok(VALID_GROUP_STRATEGIES.indexOf(gs) >= 0, `${key}: неизвестная стратегия группы ${gs}`);
+    assert.ok(p.labelKey && RU[p.labelKey] && EN[p.labelKey],
+        `${key}: labelKey ${p.labelKey} должен быть переведён на оба языка`);
+    assert.ok(p.hintKey && RU[p.hintKey] && EN[p.hintKey],
+        `${key}: hintKey ${p.hintKey} должен быть переведён на оба языка`);
+});
+
+// listPlacements: match-ключи различают layer и row у sharded (иначе две разные
+// раскладки выглядели бы одной).
+const placements = P.listPlacements();
+assert.strictEqual(placements.length, 5);
+const matches = placements.map(function (p) { return p.match; }).sort();
+assert.deepStrictEqual(matches, ['pool', 'replicated', 'sharded:layer', 'sharded:row', 'single']);
+
+assert.strictEqual(P.matchKey('sharded', 'row'), 'sharded:row');
+assert.strictEqual(P.matchKey('sharded'), 'sharded');
+assert.strictEqual(P.matchKey('single', ''), 'single');
+
+assert.ok(P.getPlacement('sharded-layer'), 'getPlacement должен находить набор');
+assert.strictEqual(P.getPlacement('unknown'), null);
+assert.strictEqual(P.getPlacement(''), null);
+
+console.log('OK:', P.listPlacements().length, 'пресетов раскладки проверено');

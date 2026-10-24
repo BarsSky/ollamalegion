@@ -38,5 +38,7 @@
   "enableReasoning": true,
   "reasoningBudget": 0,
   "enableBatchedParallel": false,
-  "idleUnloadMinutes": 0
+  "idleUnloadMinutes": 0,
+  "rpcServerDebug": false,
+  "rpcServerRestart": true
 }

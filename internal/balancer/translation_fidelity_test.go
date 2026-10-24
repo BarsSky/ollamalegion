@@ -614,11 +614,14 @@ func TestR6052_TranslateOllamaChatToOpenAI_RoundTripFields(t *testing.T) {
 	// to OpenAI equivalents. Document them so we know what's lost.
 	// (cppworker may have its own support via custom fields, but standard
 	// OpenAI format drops them.)
+	//
+	// R118.19 (2026-10-15): из этого списка УБРАНЫ frequency_penalty и
+	// presence_penalty — cppworker их принимает (PresencePenalty/FrequencyPenalty
+	// в handlers_openai.go), и трансляция теперь их пробрасывает (аудит C2).
+	// Список ниже — то, что действительно теряется.
 	silentlyDropped := []string{
 		"options.seed",
 		"options.repeat_penalty",
-		"options.frequency_penalty",
-		"options.presence_penalty",
 	}
 	for _, dropped := range silentlyDropped {
 		pathParts := strings.Split(dropped, ".")

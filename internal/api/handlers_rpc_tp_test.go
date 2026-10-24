@@ -21,7 +21,7 @@ type mockRankTransport struct {
 }
 
 func (m *mockRankTransport) WorkerID() string { return "mock-w" }
-func (m *mockRankTransport) Rank() int       { return m.rank }
+func (m *mockRankTransport) Rank() int        { return m.rank }
 func (m *mockRankTransport) InferShard(ctx context.Context, req rptensor.TPShardInferRequest) (*rptensor.TPShardInferResponse, error) {
 	if m.failMode.Load() {
 		return nil, errSimulated

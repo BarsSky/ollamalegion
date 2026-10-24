@@ -56,7 +56,7 @@
                 if (cachedConfig && cachedConfig.backendEngine) {
                     var bt2 = this._engineToType(cachedConfig.backendEngine);
                     // Сохраняем в localStorage для будущих вызовов
-                    localStorage.setItem(STORAGE_KEY, bt2);
+                    this._storeType(bt2);
                     return bt2;
                 }
             } catch (e) { /* ignore */ }
@@ -93,7 +93,7 @@
                             window.__lastServerConfig = serverConfig;
                             if (serverConfig && serverConfig.backendEngine) {
                                 var type = this._engineToType(serverConfig.backendEngine);
-                                localStorage.setItem(STORAGE_KEY, type);
+                                this._storeType(type);
                                 this.updateUI(type);
                                 return type;
                             }
@@ -129,9 +129,11 @@
                     var type = self._engineToType(serverConfig.backendEngine);
                     // Не перезаписываем если уже есть валидное значение в localStorage
                     // (R-Image Phase 5: 'image_cpp' — тоже валидный UI-фильтр).
+                    // R112: '' (пользователь выбрал «Все») — тоже валидный выбор,
+                    // раньше он молча перезаписывался серверным движком.
                     var existing = localStorage.getItem(STORAGE_KEY);
-                    if (existing !== 'llama_cpp' && existing !== 'ollama' && existing !== 'image_cpp') {
-                        localStorage.setItem(STORAGE_KEY, type);
+                    if (existing !== 'llama_cpp' && existing !== 'ollama' && existing !== 'image_cpp' && existing !== '') {
+                        self._storeType(type);
                         self.updateUI(type);
                     }
                 }
@@ -149,7 +151,24 @@
             // кластер с backendEngine=image_cpp показывался бы как Ollama.
             if (engine === 'image_cpp') return 'image_cpp';
             if (engine === 'ollama_api') return 'ollama';
-            return 'ollama';
+            // R112 (2026-10-11): auto = «тип не навязан, движок определяется
+            // составом кластера». В UI это ровно фильтр «Все» (localStorage ''),
+            // поэтому смешанный стенд llama.cpp + Ollama больше не схлопывается
+            // в один тип при первой же загрузке страницы.
+            if (engine === 'auto') return 'all';
+            return 'all';
+        },
+
+        /**
+         * _storeType — записать UI-тип в localStorage в каноническом виде.
+         *
+         * Round 18g: «Все» хранится ПУСТОЙ строкой; 'all' — только внутреннее
+         * представление (getCurrentType возвращает 'all' для ''). Без этой
+         * нормализации в хранилище попадало бы 'all', и следующий вызов
+         * getCurrentType() не узнавал бы собственное значение.
+         */
+        _storeType: function (type) {
+            localStorage.setItem(STORAGE_KEY, type === 'all' ? '' : type);
         },
 
         /**
@@ -199,7 +218,10 @@
             self._savingInProgress = true;
             self._lastSavedType = type;
             var payload = {
-                backendEngine: type === 'llama_cpp' ? 'llama_cpp' : 'ollama_api'
+                // R112: 'all' («Все») означает «тип не навязан» — на сервер уходит
+                // auto, чтобы движок определялся составом кластера. Раньше сюда
+                // уезжал ollama_api, и смешанный стенд оставался без llama.cpp.
+                backendEngine: type === 'all' ? 'auto' : (type === 'llama_cpp' ? 'llama_cpp' : 'ollama_api')
             };
             // Включаем текущий operatingMode — при смене типа бэкенда
             // toggleModeCards мог переключить режим на standard.
@@ -210,7 +232,7 @@
             window.Api.updateConfig(payload).then(function () {
                 // Обновляем кэш серверного конфига
                 if (window.__lastServerConfig) {
-                    window.__lastServerConfig.backendEngine = type === 'llama_cpp' ? 'llama_cpp' : 'ollama_api';
+                    window.__lastServerConfig.backendEngine = type === 'all' ? 'auto' : (type === 'llama_cpp' ? 'llama_cpp' : 'ollama_api');
                     if (modeRadio) {
                         window.__lastServerConfig.operatingMode = modeRadio.value;
                     }
@@ -284,6 +306,24 @@
                 return localStorageType === '' ? 'all' : 'image_cpp';
             }
 
+            // R112 (2026-10-11): сервер ЯВНО сообщает «доминирующего типа нет»
+            // (backendEngine=auto) — это смешанный кластер llama.cpp + Ollama.
+            // Раньше такая комбинация считалась «сервер не знает тип», и код уходил
+            // в ветку ниже, где _engineToType('auto') возвращал 'all' — то есть
+            // пользовательский фильтр «llama.cpp»/«Ollama» сбрасывался на «Все»
+            // каждые 2 секунды (cluster update). Теперь фильтр сохраняется, а если
+            // его не было — показываем все бэкенды.
+            if ((serverEngine === 'auto' || serverEngine === '') && !effectiveType) {
+                window.__lastClusterState = state;
+                try { this.applyChrome(); } catch (e) { /* chrome не критичен */ }
+                if (!localStorageType || localStorageType === 'all') {
+                    this._storeType('all');
+                    this.updateUI('all');
+                    return 'all';
+                }
+                return localStorageType;
+            }
+
             // Определяем целевой тип из серверных данных
             // Приоритет: effectiveBackendType > backendEngine
             var targetType = null;
@@ -329,7 +369,7 @@
                     window.__lastServerConfig = serverConfig;
                     if (serverConfig && serverConfig.backendEngine) {
                         var configType = self._engineToType(serverConfig.backendEngine);
-                        localStorage.setItem(STORAGE_KEY, configType);
+                        self._storeType(configType);
                         self.updateUI(configType);
                     }
                 }).catch(function () {
@@ -340,6 +380,9 @@
 
         /**
          * Обновить UI: показать/скрыть вкладку GGUF и режимы.
+         *
+         * fromFilter = true: type пришёл от пользовательского фильтра («Все» /
+         * «Ollama» / «llama.cpp» / «image.cpp») — маркер обязан подтвердить выбор.
          */
         updateUI: function (type) {
             this.toggleGgufTab(type);
@@ -348,13 +391,44 @@
             this.toggleModeCards(type);
             this.toggleBackendFormFields(type);
             this.updateSettingSections(type);
-            this.updateEngineBadge(type);
+            this.updateEngineBadge(type, true);
+        },
+
+        /**
+         * clusterComposition — ФАКТИЧЕСКИЙ состав кластера по типам бэкендов.
+         *
+         * R112 (2026-10-11): маркер в главном меню обязан показывать, какие типы
+         * бэкендов реально обслуживают запросы. Раньше при кластере
+         * «llama.cpp + Ollama» бейдж называл ОДИН тип (llama.cpp) — вторая
+         * половина стенда была невидима, и оператор считал, что она не
+         * подключилась. Теперь состав берётся из backendTypeCounts балансера.
+         *
+         * Возвращает null, если данных о составе нет.
+         */
+        clusterComposition: function () {
+            var counts = this._clusterTypeCounts;
+            if (!counts) return null;
+            var items = [];
+            if (counts.llama_cpp) items.push({ label: 'llama.cpp', icon: '🦒' });
+            if (counts.ollama) items.push({ label: 'Ollama', icon: '🦙' });
+            if (counts.image_cpp) items.push({ label: 'image.cpp', icon: '🎨' });
+            if (items.length === 0) return null;
+            return {
+                items: items,
+                text: items.map(function (i) { return i.label; }).join(' + '),
+                icon: items.map(function (i) { return i.icon; }).join(''),
+            };
         },
 
         /**
          * Обновить маркер типа движка в сайдбаре.
+         *
+         * fromFilter = true — значение пришло от пользовательского фильтра,
+         * поэтому называем выбранный тип (подтверждение выбора). Иначе маркер
+         * описывает СОСТАВ кластера: при нескольких типах — «llama.cpp + Ollama»
+         * (R112), при одном — как раньше.
          */
-        updateEngineBadge: function (type) {
+        updateEngineBadge: function (type, fromFilter) {
             var badge = document.getElementById('backendEngineBadge');
             var label = document.getElementById('backendEngineLabel');
             if (!badge || !label) return;
@@ -397,6 +471,20 @@
                 title = 'В кластере есть и текстовые (llama.cpp), и image-бэкенды';
             }
 
+            // R112: состав кластера важнее «доминирующего» типа. Показываем его,
+            // когда тип не выбран пользователем вручную и в кластере больше одного
+            // типа бэкендов (llama.cpp + Ollama — штатный смешанный стенд).
+            var composition = this.clusterComposition();
+            if (!fromFilter && composition && composition.items.length > 1) {
+                icon = composition.icon;
+                text = composition.text;
+                cssClass = 'engine-mixed';
+                title = 'Бэкенды в кластере: ' + composition.text;
+                if (typeof badge.setAttribute === 'function') {
+                    badge.setAttribute('data-cluster-composition', composition.text);
+                }
+            }
+
             var iconEl = badge.querySelector('.engine-icon');
             if (iconEl) iconEl.textContent = icon;
             label.textContent = text;
@@ -405,30 +493,30 @@
 
             // Синхронизируем карточки в настройках если они есть
             if (window.SettingsUI && window.SettingsUI.syncBackendEngineCards) {
-                window.SettingsUI.syncBackendEngineCards(type);
+                window.SettingsUI.syncBackendEngineCards(composition && composition.items.length > 1 ? 'mixed' : type);
             }
         },
 
         /**
-         * Показать/скрыть вкладку Agents в сайдбаре.
-         * llama.cpp → скрыта (агенты не используются), Ollama → видна.
+        /**
+         * Вкладка Agents в сайдбаре — ВСЕГДА видна (R134, 2026-10-16).
+         *
+         * БЫЛО: при типе движка llama_cpp пункт получал display:none. На стенде,
+         * где единственный живой текстовый бэкенд — llama.cpp, это скрывало
+         * вкладку при ЛЮБОЙ ширине окна, и оператор видел «в панели нет вкладки
+         * агенты», хотя она есть в разметке (data-page="agents").
+         *
+         * Тот же урок, что у toggleGgufTab (R94): видимость пункта меню не должна
+         * зависеть от ФИЛЬТРА по типу движка — иначе пункт исчезает, а вернуть его
+         * оператор может только чисткой localStorage. Раз агентов нет — это
+         * показывает сама страница (пустое состояние, agents.no_agents), а не
+         * пропажа пункта меню.
          */
         toggleAgentsTab: function (type) {
             var agentsNav = document.querySelector('.nav-item[data-page="agents"]');
             if (!agentsNav) return;
-
-            if (type === 'llama_cpp') {
-                agentsNav.style.display = 'none';
-                // Если текущая страница Agents — переключаем на dashboard
-                if (window.ui && window.ui.currentPage === 'agents') {
-                    if (typeof window.ui.switchPage === 'function') {
-                        window.ui.switchPage('dashboard');
-                    }
-                }
-            } else {
-                agentsNav.style.display = '';
-                agentsNav.title = '';
-            }
+            agentsNav.style.display = '';
+            agentsNav.title = '';
         },
 
         /**
@@ -527,57 +615,40 @@
          * пользовательский фильтр «Все»/«image.cpp» не даёт звать updateUI).
          */
         applyChrome: function () {
+            // Пользовательский фильтр (если он конкретный) имеет приоритет над
+            // составом кластера: иначе после клика по «llama.cpp» маркер через
+            // 2 секунды (следующий cluster update) снова показывал бы весь
+            // состав, и выбор выглядел бы сброшенным.
+            var filterType = null;
+            try { filterType = this.getCurrentType(); } catch (e) { /* не критично */ }
+            var explicit = (filterType === 'llama_cpp' || filterType === 'ollama' || filterType === 'image_cpp')
+                ? filterType
+                : null;
+
             this.toggleGgufTab(this.resolvedEngineType(null));
             this.toggleImageTab();
-            this.updateEngineBadge(this.resolvedEngineType(null));
+            // fromFilter = true только когда тип выбран пользователем; иначе
+            // маркер описывает состав кластера («llama.cpp + Ollama + image.cpp»).
+            this.updateEngineBadge(explicit || this.resolvedEngineType(null), !!explicit);
         },
 
         /**
          * Показать/скрыть карточки режимов в настройках.
-         * Для Ollama: standard, replication, rpc_coordinator
-         * Для llama.cpp: standard, virtual_router, distributed_inference
+         *
+         * R112 (2026-10-11): режим и тип бэкенда развязаны, поэтому режимные
+         * карточки БОЛЬШЕ НЕ СКРЫВАЮТСЯ по типу: любой режим работает с любым
+         * типом. Раньше при фильтре «llama.cpp» прятались replication /
+         * rpc_coordinator (а при «Ollama» — virtual_router /
+         * distributed_inference), и выбранный режим молча сбрасывался на
+         * standard — то есть смена типа бэкенда меняла режим работы кластера.
+         * Теперь карточки всегда видимы; скрывать их может только серверная
+         * совместимость (types.ModeBackendTypes, с R112 — все режимы для всех).
          */
         toggleModeCards: function (type) {
             var modeCards = document.querySelectorAll('.mode-card');
             modeCards.forEach(function (card) {
-                var mode = card.getAttribute('data-mode');
-                if (!mode) return;
-
-                var isOllamaOnly = (mode === 'replication' || mode === 'rpc_coordinator');
-                var isLlamaCppOnly = (mode === 'virtual_router' || mode === 'distributed_inference');
-
-                if (type === 'ollama' && isLlamaCppOnly) {
-                    card.style.display = 'none';
-                    // Если выбран скрытый режим — переключаем на standard
-                    var radio = card.querySelector('input[type="radio"]');
-                    if (radio && radio.checked) {
-                        radio.checked = false;
-                        var standardRadio = document.querySelector('input[name="operatingMode"][value="standard"]');
-                        if (standardRadio) {
-                            standardRadio.checked = true;
-                            if (window.SettingsUI) {
-                                window.SettingsUI.updateModeCards('standard');
-                                window.SettingsUI.showModeFields('standard');
-                            }
-                        }
-                    }
-                } else if (type === 'llama_cpp' && isOllamaOnly) {
-                    card.style.display = 'none';
-                    var radio = card.querySelector('input[type="radio"]');
-                    if (radio && radio.checked) {
-                        radio.checked = false;
-                        var standardRadio = document.querySelector('input[name="operatingMode"][value="standard"]');
-                        if (standardRadio) {
-                            standardRadio.checked = true;
-                            if (window.SettingsUI) {
-                                window.SettingsUI.updateModeCards('standard');
-                                window.SettingsUI.showModeFields('standard');
-                            }
-                        }
-                    }
-                } else {
-                    card.style.display = '';
-                }
+                if (!card.getAttribute('data-mode')) return;
+                card.style.display = '';
             });
         },
 
@@ -622,22 +693,14 @@
 
         /**
          * Возвращает список режимов, доступных для данного типа бэкенда.
+         *
+         * R112 (2026-10-11): режим и тип бэкенда больше не связаны — любой режим
+         * работает с любым типом (llama.cpp и Ollama обслуживают одну и ту же
+         * Ollama-поверхность /api/*). Серверная модель — types.ModeBackendTypes,
+         * где у всех режимов один и тот же набор типов.
          */
         getAvailableModes: function (type) {
-            if (type === 'ollama') {
-                return ['standard', 'replication', 'rpc_coordinator'];
-            }
-            if (type === 'llama_cpp') {
-                return ['standard', 'virtual_router', 'distributed_inference'];
-            }
-            // R-Image Phase 5: image_cpp поддерживается только в standard /
-            // replication / rpc_coordinator (virtual_router и distributed_inference
-            // ломали резолв /api/*, см. plan §7 Phase 1) — поэтому как у ollama,
-            // но без ollama-специфичных описаний в UI.
-            if (type === 'image_cpp') {
-                return ['standard', 'replication', 'rpc_coordinator'];
-            }
-            return ['standard'];
+            return ['standard', 'replication', 'rpc_coordinator', 'virtual_router', 'distributed_inference'];
         },
 
         /**

@@ -206,18 +206,16 @@ func TestHealthCheck_LlamaCpp(t *testing.T) {
 		t.Errorf("Expected EngineLlamaCPP, got %s", engine)
 	}
 
-	// Проверяем IsModeLlamaCpp
-	if !types.IsModeLlamaCpp("virtual_router") {
-		t.Error("virtual_router should be llama_cpp mode")
-	}
-	if !types.IsModeLlamaCpp("distributed_inference") {
-		t.Error("distributed_inference should be llama_cpp mode")
-	}
-	if types.IsModeLlamaCpp("standard") {
-		t.Error("standard should not be exclusively llama_cpp mode")
-	}
-	if types.IsModeLlamaCpp("replication") {
-		t.Error("replication should not be exclusively llama_cpp mode")
+	// R112 (2026-10-11): режим НЕ назначает движок инференса. У всех штатных
+	// режимов ModeEngines = EngineAuto, поэтому IsModeLlamaCpp для них false, а
+	// движок выводится из фактического состава кластера (getBackendEngine в
+	// балансере: только llama.cpp → EngineLlamaCPP, только Ollama → EngineOllamaAPI,
+	// оба типа → EngineAuto). Раньше virtual_router/distributed_inference были
+	// жёстко llama.cpp, и второй тип бэкендов не получал запросов вовсе.
+	for _, mode := range []string{"standard", "replication", "rpc_coordinator", "virtual_router", "distributed_inference"} {
+		if types.IsModeLlamaCpp(mode) {
+			t.Errorf("R112: режим %s не должен быть жёстко llama.cpp — движок определяет состав кластера", mode)
+		}
 	}
 }
 

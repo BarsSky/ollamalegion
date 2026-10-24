@@ -85,10 +85,10 @@ type eventsHub struct {
 	// клиента (handleEvents), поэтому без подключённого клиента буфер не
 	// наполнялся: GET /api/v1/events при переподключении не отдавал пропущенные
 	// нотификации, а секция recent-errors в /api/v1/health была всегда пуста.
-	mu        sync.Mutex
-	subID     string
-	stopCh    chan struct{}
-	started   bool
+	mu      sync.Mutex
+	subID   string
+	stopCh  chan struct{}
+	started bool
 	// pushed — счётчик событий, положенных в буфер (для диагностики/тестов).
 	pushed int64
 }

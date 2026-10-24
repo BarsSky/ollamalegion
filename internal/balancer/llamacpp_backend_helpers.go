@@ -118,10 +118,18 @@ func (lr *LlamaCppRouter) findModelOnLlamaCppBackend(model string) string {
 			continue
 		}
 		for _, m := range lm.LoadedModels {
-			// Точное совпадение имени ИЛИ совпадение без расширения .gguf:
-			// клиенты (и /api/tags) отдают имя без расширения, а cppworker в
-			// некоторых путях — с ним.
-			if m.Name == model || strings.TrimSuffix(m.Name, ".gguf") == model {
+			// H8 (2026-10-09): нормализующее сравнение имён — как в
+			// IsLlamaCppModelLoaded (num_ctx_resolver.go). Учитывает .gguf,
+			// путь, регистр и Ollama-тег.
+			//
+			// БЫЛО: `m.Name == model || strings.TrimSuffix(m.Name, ".gguf") == model`.
+			// Сырое сравнение не находило ТЁПЛЫЙ узел для клиента, зовущего
+			// модель тегом/в другом регистре: запрос "gemma-4-e4b-it-q4_k_m:latest"
+			// при загруженной "Gemma-4-E4B-it-Q4_K_M.gguf" не совпадал ни по
+			// одной из двух веток, функция возвращала "" — и запрос уходил в
+			// selectAnyLlamaCppHealthy (произвольный узел) вместо узла с моделью
+			// в VRAM, что давало лишний unload+load (минуты на модель).
+			if modelNameMatches(m.Name, model) {
 				return id
 			}
 		}
@@ -905,9 +913,27 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 			backendID, modelName, until.Format(time.RFC3339))
 	}
 
+	// R128 (2026-10-16, пункт 7): в логе показываем ФАКТИЧЕСКОЕ окно, а не только
+	// ctxSize.
+	//
+	// ЖИВОЙ ДЕФЕКТ НАБЛЮДАЕМОСТИ. Строка печатала ctxSize под ключом «numCtx», а
+	// ctxSize на пути автозагрузки ВСЕГДА nil: клиентское окно уезжает в
+	// contextPerSeq (cppworker сам умножает его на слоты). В итоге любой холодный
+	// запрос выглядел как «numCtx=null» — то есть «окно не передано», хотя оно
+	// передавалось. На этом выводе я сам построил неверную гипотезу о дефекте
+	// пункта 7; оператор попал бы в ту же ловушку.
+	//
+	// Теперь видно раздельно: requestedNumCtx (что пришло от резолвера),
+	// contextPerSeq (что реально уехало воркеру) и contextSize (суммарное —
+	// здесь всегда nil, его считает воркер).
+	requestedNumCtx := 0
+	if len(extraOpts) > 0 {
+		requestedNumCtx = extraOpts[0].NumCtx
+	}
 	ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: auto-loading model",
 		"backend", backendID, "model", modelName, "step", "execute_op=load",
-		"numCtx", ctxSize, "gpuLayers", gpuLayers)
+		"requestedNumCtx", requestedNumCtx,
+		"contextPerSeq", ctxPerSeq, "contextSize", ctxSize, "gpuLayers", gpuLayers)
 
 	// R60.33 (2026-09-10): async auto-load. По умолчанию auto-load
 	// запускается в goroutine и balancer сразу возвращает 503+Retry-After

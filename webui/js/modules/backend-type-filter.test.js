@@ -9,9 +9,9 @@
 //      страницы «Бэкенды» при backendEngine=llama_cpp (а он там нужен: его
 //      видно, редактируют, удаляют).
 //   2. filterBackends('image_cpp'): остаются только image-бэкенды.
-//   3. getAvailableModes('image_cpp') = standard/replication/rpc_coordinator
-//      (virtual_router/distributed_inference сознательно НЕ поддержаны - они
-//      ломали резолв /api/*, см. план §7 Phase 1).
+//   3. getAvailableModes() — R112: все режимы доступны для любого типа
+//      (режим и тип бэкенда развязаны; до R112 image_cpp ограничивался
+//      standard/replication/rpc_coordinator).
 //   4. setCurrentType('image_cpp') — валидный UI-фильтр (localStorage + updateUI),
 //      setCurrentType('мусор') игнорируется.
 //   5. getCurrentType() читает 'image_cpp' из localStorage.
@@ -94,9 +94,18 @@ check('filterBackends(image_cpp) при отсутствии image-бэкенд�
     assert.deepStrictEqual(out, ['llama-1'], 'пустой список хуже, чем неверный фильтр');
 });
 
-check('getAvailableModes(image_cpp) = standard/replication/rpc_coordinator', function () {
-    assert.deepStrictEqual(F.getAvailableModes('image_cpp'), ['standard', 'replication', 'rpc_coordinator']);
-    assert.strictEqual(F.isModeAvailable('virtual_router', 'image_cpp'), false);
+check('getAvailableModes: R112 — все режимы доступны для любого типа', function () {
+    // R112 (2026-10-11): режим и тип бэкенда развязаны. Раньше image_cpp
+    // ограничивался standard/replication/rpc_coordinator, а llama.cpp —
+    // standard/virtual_router/distributed_inference; смена фильтра типа молча
+    // меняла режим работы кластера. Теперь список один для всех типов и
+    // совпадает с серверным types.ModeBackendTypes.
+    const ALL = ['standard', 'replication', 'rpc_coordinator', 'virtual_router', 'distributed_inference'];
+    ['image_cpp', 'llama_cpp', 'ollama', 'all', ''].forEach(function (t) {
+        assert.deepStrictEqual(F.getAvailableModes(t), ALL, 'тип ' + t);
+    });
+    assert.strictEqual(F.isModeAvailable('virtual_router', 'image_cpp'), true);
+    assert.strictEqual(F.isModeAvailable('replication', 'llama_cpp'), true);
 });
 
 check('setCurrentType(image_cpp) — валидный фильтр (localStorage + updateUI)', function () {

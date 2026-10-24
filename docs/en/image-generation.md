@@ -684,8 +684,41 @@ so they never bypass resource policy.
 | `LB_IMAGE_TOOL_MAX_CALLS` | `2` | images per request (cap 8) |
 | `LB_IMAGE_TOOL_TIMEOUT_SEC` | `600` | per-generation timeout |
 | `LB_IMAGE_TOOL_BASE_URL` | client Host | public balancer address for links |
+| `LB_IMAGE_TOOL_INJECT` | `always` | `auto` announces the tool only to clients that sent their own `tools[]` |
+
+`LB_IMAGE_TOOL_INJECT=auto` (R141) exists because announcing the tool is not free:
+the worker sees a non-empty `tools[]` and prepends a ~200-token preamble about tool
+calling to the prompt. Measured on the stand: `prompt_tokens` 19 direct against 220
+through the balancer (+201 tokens on *every* request), `has_tools` false against
+true, and the model switched from a plain answer to a reasoning stream about calling
+a tool the client never declared. A client that sent no `tools[]` at all reports
+this as an unrealistic tokens/s. `auto` leaves such requests byte-identical on the
+wire; tool-capable clients (Open WebUI with its own tools) still get image
+generation. The default stays `always` so no stand changes behaviour silently.
 
 R85 added two more flags (model catalog and auto-load) - see 16.3.
+
+### 14.6b Which surface actually announces the tool (measured)
+
+The announcement happens in the llama.cpp router, which serves the prefixed surfaces
+(`/ollama/*`, `/openai/*`) plus the OpenAI paths. Measured on the stand, one request
+carrying the client's own `tools[]`:
+
+| Path | Prompt seen by the worker | Tool announced |
+| --- | --- | --- |
+| `/v1/chat/completions` | 93 -> 237 tokens | yes |
+| `/ollama/api/chat` | 357 -> 1068 chars | yes |
+| `/api/chat` (unprefixed) | 357 chars, unchanged | **no** |
+
+The unprefixed `/api/chat` goes through the generic Ollama-compatible proxy and is
+passed through byte for byte: a pure-chat native client (Cline, Open WebUI, the
+deepseek harness) gets exactly the prompt it sent - no tool preamble, no extra
+tokens - and for the same reason no image generation. A native client that should be
+able to generate images has to talk to `/ollama/api/chat`.
+
+`scripts/webui-e2e/client-matrix.js` checks this for seven client profiles on both
+surfaces (prompt parity, response shape, token accounting), so a future change to
+either routing or announcement shows up as a failing check instead of a surprise.
 
 ### 14.6 Limitations (honestly)
 

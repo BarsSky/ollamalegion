@@ -123,6 +123,17 @@ type BalancingSettings struct {
 	// для моделей, не попавших ни в одно правило. При `enabled=false`
 	// (default) поведение полностью прежнее.
 	Placement PlacementSettings `json:"placement"`
+
+	// BackendGroups — логические бэкенды (R92, S2 плана
+	// plans/2026-10-07-model-distribution-multi-gpu-next-session.md §5):
+	// группы физических узлов, между которыми разрезана ОДНА модель.
+	//
+	// Мастер группы держит первую часть слоёв и открывает RPC-канал к воркерам;
+	// для балансера группа — один бэкенд (один слот, один health, один
+	// X-Backend-ID). Исполнитель стратегии `sharded` ищет группу именно здесь:
+	// без зарегистрированной группы `sharded` даёт честную деградацию с числами,
+	// а не тихий откат на single.
+	BackendGroups []BackendGroupConfig `json:"backendGroups,omitempty"`
 }
 
 // NCtxReloadSettings — фич-флаги и лимиты для n_ctx auto-reload (см.

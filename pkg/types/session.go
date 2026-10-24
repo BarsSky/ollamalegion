@@ -18,6 +18,13 @@ type Session struct {
 	NumCtx            int       `json:"numCtx"`          // Размер контекста запроса (токенов)
 	SessionWeight     float64   `json:"sessionWeight"`   // Вес сессии для адаптивного переключения
 	HasActiveStream   bool      `json:"hasActiveStream"` // Активен ли streaming-запрос (не удалять)
+
+	// Protocol — R229 (2026-10-22): каким API-стилем клиент говорил в последний раз.
+	// Клиенты ходят двумя путями: /v1/... (OpenAI-совместимый: Cline, Continue) и
+	// /api/... (родной Ollama: Open WebUI, ollama CLI). Оператору это нужно видеть в
+	// сессиях/очереди/мониторе: жалоба «не работают инструменты» — про OpenAI-путь,
+	// «n_ctx превышен» — чаще про Ollama. Пусто = протокол не определён.
+	Protocol string `json:"protocol,omitempty"`
 }
 
 // QueuedRequest - запрос в очереди

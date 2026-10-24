@@ -13,6 +13,10 @@
   var panning = false;
   var panStartX = 0, panStartY = 0;
   var panViewportStart = { offsetX: 0, offsetY: 0 };
+  // R198 (2026-10-20): последняя позиция курсора при перетаскивании. Нужна, чтобы
+  // смещение применялось В КАЖДОМ КАДРЕ отрисовки (см. drawTopo): если какой-то код
+  // сбрасывает MA.viewport.offsetX/Y, панорамирование «не едет», хотя panning=true.
+  var panLastX = 0, panLastY = 0;
 
   // layoutCanvas — «поле расширяется под данные».
   //
@@ -129,7 +133,7 @@
   // --- Pan: drag on empty canvas area ---
 
   function hitTestNodes(worldX, worldY) {
-    var w = MA.topo.w, cX = w / 2;
+    var w = MA.topo.w, cX = w / 2, cY = (MA.topo.h || 0) / 2;   // R199: cY был не объявлен (ReferenceError при mousedown)
     // R91: только РИСУЕМЫЕ узлы — у не поместившихся нет координат на картинке
     // (их нет и в подсказке), иначе клик в пустом месте считался бы попаданием.
     for (var i = visLimit('session', MA.topo.sessions.length) - 1; i >= 0; i--) {
@@ -146,20 +150,39 @@
     return false;
   }
 
-  cv.addEventListener('mousedown', function(e) {
+  // R197 (2026-10-20): ПЕРЕТАСКИВАНИЕ ПОЛЯ МЫШЬЮ.
+  //
+  // ЖАЛОБА: «перемещение по полю зажатой кнопкой мыши не работает, только зум».
+  // Причина: mousedown висел на самом канвасе, а событие перехватывали элементы
+  // над ним (слой конвейера/обёртка вьюпорта) — panning не включался. Зум работал,
+  // потому что wheel всплывает до канваса.
+  //
+  // Теперь слушаем ОБЁРТКУ (.topo-viewport) с фолбэком на канвас; на время
+  // перетаскивания выключаем выделение текста, иначе браузер начинает drag-select.
+  var panHost = cv.closest('.topo-viewport') || cv;
+  panHost.style.cursor = 'grab';
+  panHost.addEventListener('mousedown', function(e) {
+    if (e.button !== 0) return;
+    if (e.target && e.target.closest && e.target.closest('button, a, input, select, summary')) return;
     var rect = cv.getBoundingClientRect();
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
     var wPos = MA.toWorld(mx, my);
     // If user clicked on a node, don't pan — let tooltip handle it
-    if (hitTestNodes(wPos.x, wPos.y)) return;
+    // R199 (2026-10-20): НЕ ОТКАЗЫВАЕМСЯ ОТ ПАНОРАМИРОВАНИЯ НАД УЗЛАМИ.
+    // Раньше клик по узлу/линии молча съедался (return), и создавалось впечатление,
+    // что «поле не тянется». Подсказка узла живёт на mousemove, ей mousedown не нужен.
+    // Отлажено в браузере (scripts/webui-e2e/debug-pan.js): offsets не менялись,
+    // потому что обработчик выходил здесь.
     e.preventDefault();
     panning = true;
     panStartX = e.clientX;
     panStartY = e.clientY;
     panViewportStart.offsetX = MA.viewport.offsetX;
     panViewportStart.offsetY = MA.viewport.offsetY;
-    cv.style.cursor = 'grabbing';
+    panHost.style.cursor = 'grabbing';
+    document.body.style.userSelect = 'none';
+    document.body.style.webkitUserSelect = 'none';
   });
 
   window.addEventListener('mousemove', function(e) {
@@ -173,7 +196,9 @@
   window.addEventListener('mouseup', function(e) {
     if (panning) {
       panning = false;
-      cv.style.cursor = '';
+      panHost.style.cursor = 'grab';
+      document.body.style.userSelect = '';
+      document.body.style.webkitUserSelect = '';
     }
   });
 
@@ -327,6 +352,36 @@
     var balInX = cX - bw / 2, balOutX = cX + bw / 2;
     var byTop = cY - bh / 2, byBot = cY + bh / 2;
 
+    // R200c (2026-10-20): частицы рождаются ЗДЕСЬ и считают цифры сами.
+    // Блок попал в helper-функцию без activeReq/rpsSum в области видимости — отсюда
+    // ReferenceError и отсутствие кадров. Теперь значения считаются локально.
+    if (typeof spawnParticle === 'function' && MA.topo.sessions.length > 0) {
+      var _a = 0, _r = 0;
+      for (var _i = 0; _i < MA.topo.backends.length; _i++) {
+        var _b = MA.topo.backends[_i];
+        if (!_b) continue;
+        _a += (_b.activeRequests || 0);
+        var _rr = (_b.ollama && _b.ollama.requestsPerSecond) || _b.requestsPerSecond || 0;
+        if (typeof _rr === 'number') _r += _rr;
+      }
+      var _rate = _r > 0 ? Math.min(_r, 6) : (_a > 0 ? Math.min(_a, 6) : 1);
+      var _want = Math.min(8, Math.max(1, Math.round(_rate)));
+      var _have = 0;
+      for (var _p = 0; _p < MA.particles.length; _p++) { if (MA.particles[_p].type === 'request') _have++; }
+      MA._r200budget = (MA._r200budget || 0) + (_r > 0 ? _r / 60 : 0.03);
+      var _spawn = Math.floor(MA._r200budget);
+      MA._r200budget -= _spawn;
+      if (_have < _want && _spawn < 1) _spawn = 1;
+      for (var _k = 0; _k < _spawn && _have < _want; _k++) {
+        var _s = MA.topo.sessions[0];
+        if (!_s) break;
+        var _sy = MA.nY('session', 0);
+        var _cx2 = (MA.topo.w || 0) / 2, _cy2 = (MA.topo.h || 0) / 2;
+        var _tx = MA.GEOM.clientX + (_cx2 - MA.GEOM.bw / 2 - MA.GEOM.clientX) * 0.55;
+        spawnParticle([{ x: MA.GEOM.clientX, y: _sy }, { x: _tx, y: _sy }, { x: _tx, y: _cy2 }, { x: _cx2 - MA.GEOM.bw / 2, y: _cy2 }], 'request', _s.model || '');
+        _have++;
+      }
+    }
     // --- Request particles: client -> balancer (L-path via elbow)
     //
     // R92 (2026-10-09): вероятность подъёма зависит от числа «живых» сессий.
@@ -416,8 +471,17 @@
     var lt = pal.isLight;
 
     cx.save();
+    // R192 (2026-10-20): ОЧИСТКА В ЭКРАННЫХ КООРДИНАТАХ.
+    //
+    // ЖАЛОБА: «при перезагрузке подвисает, смазывая картинку». Причина: clearRect
+    // вызывался ПОСЛЕ setTransform(scale, offset) и в мировых координатах, поэтому
+    // при любом пане/зуме часть прошлого кадра оставалась — кадры накладывались
+    // друг на друга (шлейф). Рисовать надо так: сбросить трансформацию, стереть
+    // весь bitmap, вернуть трансформацию.
+    cx.setTransform(1, 0, 0, 1, 0, 0);
+    cx.clearRect(0, 0, cv.width, cv.height);
     cx.setTransform(vp.scale, 0, 0, vp.scale, vp.offsetX, vp.offsetY);
-    cx.clearRect(-vp.offsetX / vp.scale, -vp.offsetY / vp.scale, w / vp.scale, h / vp.scale);
+    // (очистка перенесена выше, в экранные координаты — R192)
 
     // Draw grid in world coordinates
     var gCell = 40;
@@ -486,7 +550,22 @@
     cx.shadowColor = bc; cx.shadowBlur = 20; cx.fillStyle = bc + '18'; MA.rr(cx, bx - 4, by - 4, bw + 8, bh + 8, 12); cx.fill(); cx.shadowBlur = 0;
     cx.fillStyle = bc + '22'; MA.rr(cx, bx, by, bw, bh, 10); cx.fill(); cx.strokeStyle = 'rgba(148,163,184,0.4)'; cx.lineWidth = 2; cx.stroke();
     cx.fillStyle = pal.text; cx.font = 'bold 13px ' + MA.vF(); cx.textAlign = 'center'; cx.fillText(MA.T('monitor.canvas.balancer'), cX, cY - 16);
-    cx.fillStyle = textMuted; cx.font = '11px ' + MA.vF(); cx.fillText(MA.T('monitor.canvas.queue') + pend, cX, cY + 4);
+    // R200 (2026-10-20): в блоке балансера — ЖИВЫЕ цифры, не только очередь.
+    // Блок показывал лишь pending_count, а на этом стенде очередь почти всегда
+    // пуста, поэтому выглядел мёртвым. Считаем то, что приходит с каждым опросом:
+    // активные запросы по бэкендам и их суммарный RPS.
+    var activeReq = 0, rpsSum = 0;
+    for (var ai = 0; ai < backVis; ai++) {
+      var ab = MA.topo.backends[ai];
+      if (!ab) continue;
+      activeReq += (ab.activeRequests || 0);
+      var ar = (ab.ollama && ab.ollama.requestsPerSecond) || ab.requestsPerSecond || 0;
+      if (typeof ar === 'number') rpsSum += ar;
+    }
+    cx.fillStyle = textMuted; cx.font = '11px ' + MA.vF(); cx.fillText(MA.T('monitor.canvas.queue') + pend, cX, cY + 2);
+    cx.fillText('active ' + activeReq + ' · rps ' + (Math.round(rpsSum * 10) / 10), cX, cY + 16);
+    // R200b: объявление полосы очереди (было затёрто правкой R200 — qbX/qbY/qbW/qbH, из-за
+    // этого drawTopo падал с ReferenceError, и НИ ОДИН кадр не дорисовывался, включая частицы).
     var qbX = bx + 20, qbY = by + bh / 2 + 14, qbW = bw - 40, qbH = 8;
     cx.fillStyle = pal.barBg; MA.rr(cx, qbX, qbY, qbW, qbH, 4); cx.fill();
     cx.fillStyle = qr > 0.75 ? '#ef4444' : '#60a5fa'; MA.rr(cx, qbX, qbY, qbW * qr, qbH, 4); cx.fill();

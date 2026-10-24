@@ -35,6 +35,16 @@ type mockEngine struct {
 	// generatingForever — джобы никогда не завершаются (для теста cancel 409).
 	generatingForever bool
 	jobs              map[string]string
+	// imageB64 — payload картинки в результате джобы. Пусто → tinyPNG.
+	// Нужен для проверки размера ответа воркера (R120).
+	imageB64 string
+}
+
+// setImagePayload — отдавать в результате заданный base64 (R120).
+func (m *mockEngine) setImagePayload(b64 string) {
+	m.mu.Lock()
+	m.imageB64 = b64
+	m.mu.Unlock()
 }
 
 // failWith — завершать джобы ошибкой с заданным текстом (OOM-подобной и т.п.).
@@ -135,8 +145,14 @@ func newMockEngine() *mockEngine {
 			}
 			m.mu.Unlock()
 			images := make([]map[string]any, 0, count)
+			m.mu.Lock()
+			payload := m.imageB64
+			m.mu.Unlock()
+			if payload == "" {
+				payload = tinyPNG
+			}
 			for i := 0; i < count; i++ {
-				images = append(images, map[string]any{"index": i, "b64_json": tinyPNG})
+				images = append(images, map[string]any{"index": i, "b64_json": payload})
 			}
 			resp["result"] = map[string]any{"output_format": "png", "images": images}
 		}

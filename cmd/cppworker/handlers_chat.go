@@ -52,6 +52,35 @@ type chatMessage struct {
 	// ? Ollama ? `reasoning`. ???????????? ??? non-streaming ??????, ????? ???????
 	// ????? ?????????? think-???? ? ??????? ????? ?????????.
 	Reasoning string `json:"reasoning,omitempty"`
+
+	// R106 (2026-10-11): `thinking` — reasoning-ТЕКСТ ПРЕДЫДУЩЕГО ответа
+	// ассистента, который клиент присылает ОБРАТНО в истории сообщений.
+	//
+	// `message.thinking` — каноническое имя reasoning-поля в Ollama API
+	// (docs/BALANCER_CPPWORKER_API_CONTRACT.md §4.1). Наши поверхности отдают
+	// рассуждения под обоими именами: нативный /api/chat — `reasoning`
+	// (handlers_chat.go:1070,1209), трансляция SSE→NDJSON балансера — `thinking`
+	// (internal/balancer/llamacpp_translate_resp.go:970), /api/generate —
+	// `thinking`. Cline нормализует ответ в своё поле `thinking` и при
+	// ПРОДОЛЖЕНИИ СТАРОЙ СЕССИИ отправляет историю назад вместе с ним.
+	// Строгий декодер (types.DecodeJSONRequest → DisallowUnknownFields,
+	// pkg/types/contract_validation.go:71) отвечал на это
+	//
+	//	400 {"error":"invalid JSON: json: unknown field \"thinking\""}
+	//
+	// то есть продолжить сессию было нельзя вообще (живая жалоба 2026-10-11:
+	// Cline → балансер :18080, модель qwen3.8-27b).
+	//
+	// Поле ПРИНИМАЕТСЯ и в промпт НЕ попадает — как и `reasoning` выше: промпт
+	// собирается из role+content. Прокинуть thinking в chat template нельзя без
+	// расширения bridge.ChatMessage (c/bridge/bridge.go:1272 — только Role и
+	// Content), а предыдущие рассуждения большинство шаблонов и не рендерят.
+	Thinking string `json:"thinking,omitempty"`
+
+	// ReasoningContent — то же history-echo поле в OpenAI-написании. Клиенты с
+	// одним кодом на оба API (и балансер в mixed-режиме) присылают историю в
+	// OpenAI-форме и на /api/chat тоже; принимаем, чтобы не ловить тот же 400.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type chatRequest struct {
@@ -142,8 +171,7 @@ type chatRequest struct {
 	_keepAliveDuration time.Duration `json:"-"`
 }
 
-// toolsDisabledByChoice — true, если клиент явно запретил инструменты
-// (`tool_choice:"none"`). Все прочие значения ("auto", "required", объект
+// toolsDisabledByChoice — true, если клиент явно запретил инструменты// (`tool_choice:"none"`). Все прочие значения ("auto", "required", объект
 // конкретной функции, отсутствие поля, невалидный JSON) означают «инструменты
 // разрешены» — так же ведёт себя upstream llama.cpp.
 func toolsDisabledByChoice(raw json.RawMessage) bool {
@@ -164,6 +192,23 @@ type chatResponse struct {
 	Message       chatMessage `json:"message"`
 	Done          bool        `json:"done"`
 	TotalDuration int64       `json:"total_duration,omitempty"`
+	// R176 (2026-10-19): СОСТАВ ОТВЕТА нативной поверхности.
+	//
+	// ЧЕГО НЕ ХВАТАЛО. Не-стрим `/api/chat` отдавал model/created_at/message/done/
+	// total_duration — и ни одного счётчика токенов, хотя в стриме финальный чанк
+	// их отдаёт (см. ниже по файлу), а `/api/generate` отдаёт. Клиенты (OpenWebUI,
+	// Cline, localai-совместимые) считают по ним цену и скорость ответа: без полей
+	// «tokens/s» в UI не из чего построить, и это ровно та жалоба, из-за которой
+	// разбирались с «нереальной скоростью».
+	//
+	// ЧЕСТНО О ГРАНИЦАХ. Счётчики здесь — результат токенизации текста (тем же
+	// токенизатором модели), а не внутренние счётчики llama.cpp: мост в не-стрим
+	// пути их не возвращает. Длительностей (eval_duration/prompt_eval_duration) не
+	// выдумываем: в не-стриме мы их не измеряем, а подставить total_duration значило
+	// бы соврать (клиент получил бы «tokens/s», посчитанный непонятно от чего).
+	PromptEvalCount int    `json:"prompt_eval_count,omitempty"`
+	EvalCount       int    `json:"eval_count,omitempty"`
+	DoneReason      string `json:"done_reason,omitempty"`
 }
 
 // effectiveToolName — имя инструмента в tool-сообщении: `name` (OpenAI) или
@@ -186,10 +231,15 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req chatRequest
-	// Round 36 Phase 2 (2026-08-17): strict JSON decoder. Rejects unknown
-	// fields per the contract. Use MaxStreamingBodyBytes because chat
-	// messages can be large (long history, system prompts with examples).
-	if err := types.DecodeJSONRequest(r.Body, types.MaxStreamingBodyBytes, &req); err != nil {
+	// R106c (2026-10-12): КЛИЕНТСКОЕ декодирование — терпимое.
+	//
+	// Раньше здесь стоял строгий декодер (DisallowUnknownFields), и любой
+	// незнакомый ключ давал 400 «invalid JSON: json: unknown field "…"»: у
+	// OpenWebUI — options.use_mmap / num_gpu / num_thread из advanced params, у
+	// Cline — tool_choice/tool_name/max_output_tokens, у истории сессии —
+	// thinking/reasoning_content. Настоящая Ollama такие поля игнорирует;
+	// теперь так делаем и мы (имена полей пишем в Debug-лог).
+	if err := decodeClientJSON(r, types.MaxStreamingBodyBytes, &req, "handleChat"); err != nil {
 		switch {
 		case errors.Is(err, types.ErrBodyEmpty):
 			writeError(w, http.StatusBadRequest, "empty request body")
@@ -246,11 +296,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	// модель с чужим окном, после чего шли «перезагрузки под клиента».
 	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.Options.NumCtx)
 	if err != nil {
-		if isModelLoadingError(err) {
-			writeLoadingResponse(w, req.Model, err)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "model load failed: "+err.Error())
+		// R119 (2026-10-15): 503 «грузится» / 404 «нет файла» / 500 «поломка» —
+		// одна точка перевода, см. writeModelLoadError. До этого ЛЮБАЯ причина
+		// уходила как 500 с пустым телом.
+		writeModelLoadError(w, req.Model, err)
 		return
 	}
 
@@ -350,10 +399,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		// чанками (content + done) — это валидный Ollama NDJSON, клиенты
 		// (OpenWebUI, ollama-python, Cline) его принимают.
 		if toolsEnabled || promptOpts.JSONMode {
-			writeChatStreamResponseWithTools(w, r, actualModel, prompt, params, promptOpts.JSONMode)
+			writeChatStreamResponseWithTools(w, r, actualModel, prompt, params, promptOpts.JSONMode, promptOpts.ReasoningOverride, req.Tools)
 			return
 		}
-		writeChatStreamResponse(w, r, actualModel, prompt, params)
+		writeChatStreamResponse(w, r, actualModel, prompt, params, promptOpts.ReasoningOverride)
 		return
 	}
 
@@ -395,21 +444,49 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		},
 		Done:          true,
 		TotalDuration: duration.Nanoseconds(),
+		// R176: счётчики токенов и причина завершения - состав, по которому клиент
+		// считает цену и скорость. Считаем токенизатором модели; длительности не
+		// выдумываем (в не-стриме не измеряем).
+		PromptEvalCount: countTokensSafe(req.Model, prompt),
+		EvalCount:       countTokensSafe(req.Model, result.Output),
+		DoneReason:      "stop",
+	}
+	// R106c (2026-10-12): reasoning отделяем ВСЕГДА, в том числе при tools.
+	//
+	// ЖИВОЙ ДЕФЕКТ: с включёнными размышлениями gemma-4 отвечает
+	//	<|channel>thought … <channel|>[{"name":"read_files", …}]
+	// Раньше развилка была «toolsEnabled → parse tool_calls, иначе → split
+	// reasoning», поэтому при tools thinking вообще не отделялся: он оставался в
+	// message.content, а parseToolCallsFromOutput получал строку с
+	// thinking-префиксом и часто не находил вызов. Cline показывал «команду
+	// инструмента в квадратных скобках» и инструмент не вызывался.
+	output := result.Output
+	if rsn, cnt, has := SplitReasoningContentFromPrompt(prompt, output); has {
+		resp.Message.Reasoning = rsn
+		// R108 (2026-10-13): каноническое имя поля в Ollama — `thinking`
+		// (docs/BALANCER_CPPWORKER_API_CONTRACT.md §4.1). Отдаём оба имени:
+		// `thinking` понимают Ollama-клиенты (Cline/OpenWebUI), `reasoning`
+		// остаётся для обратной совместимости с прежними сборками.
+		resp.Message.Thinking = rsn
+		output = cnt
 	}
 	if toolsEnabled {
-		if calls := parseToolCallsFromOutput(result.Output); len(calls) > 0 {
+		// R113: схема инструментов запроса — для приведения arguments к объекту.
+		if calls := parseToolCallsForRequest(output, req.Tools); len(calls) > 0 {
 			resp.Message.ToolCalls = ollamaToolCallsFromOpenAI(calls)
 			resp.Message.Content = ""
+		} else {
+			// R106c (2026-10-12): чистим хвостовые служебные токены шаблона и в
+			// NON-STREAM пути. Живой ответ на простой вопрос выглядел как
+			// «ок<end_of_turn>»: cleanFinalContent вызывался только в
+			// streaming-ветке, поэтому токен gemma-шаблона оставался в content.
+			//
+			// R113: плюс вырезаем разметку нераспознанного вызова — она не ответ
+			// (в content клиента ей места нет).
+			resp.Message.Content = stripToolCallMarkup(cleanFinalContent(output))
 		}
-	} else if IsReasoningModel(req.Model) {
-		// 2026-07-01: ??? reasoning-??????? (qwen3.5/qwen3.6/deepseek-r1/gemma-4)
-		// ????????? output ?? (reasoning, content) ? ?????? ? ????????? ????
-		// (Ollama API ?????????? `reasoning`, OpenAI ? `reasoning_content`).
-		r, c, has := SplitReasoningContent(result.Output)
-		if has {
-			resp.Message.Content = c
-			resp.Message.Reasoning = r
-		}
+	} else {
+		resp.Message.Content = cleanFinalContent(output)
 	}
 
 	// R66b: format:"json" — снимаем markdown-обёртку ```json ... ```, иначе
@@ -426,6 +503,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		if r, c, has := SplitReasoningContent(resp.Message.Content); has {
 			resp.Message.Content = c
 			resp.Message.Reasoning = ""
+			resp.Message.Thinking = ""
 			_ = r
 		}
 	}
@@ -928,7 +1006,13 @@ func buildChatPromptFromMessages(msgs []chatMessage, modelName string) string {
 }
 
 // writeChatStreamResponse ? streaming ????? ? ??????? NDJSON ??? /api/chat.
-func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
+//
+// thinkOverride — R108 (2026-10-13): явный think клиента (nil = не задавал).
+// Разбор ответа теперь БЕЗУСЛОВНЫЙ и тего-зависимый (см. блок «Политика отдачи
+// reasoning» в reasoning_content.go), поэтому имя модели здесь не участвует:
+// при think=false размышления не отдаются вовсе (ни в content, ни в отдельном
+// поле) — та же семантика, что у non-stream /api/chat.
+func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, thinkOverride *bool) {
 	// R83 (2026-09-26): ВСЕ записи в ответ — через safeStreamWriter.
 	//
 	// Почему это критично именно здесь. В этой функции пишут ДВЕ горутины: колбэк
@@ -993,9 +1077,26 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		recordLastPromptFromErrorWithContext(modelName, "/api/chat", prompt, &params, false, streamErr, r)
 	}()
 
-	// 2026-07-01: reasoning-?????? (??? reasoning-???????).
+	// 2026-07-01: reasoning-??????.
+	//
+	// R108 (2026-10-13): разбор идёт ВСЕГДА и только по тегам формата. Раньше
+	// здесь стоял гейт IsReasoningModel(modelName) (whitelist префиксов), из-за
+	// чего модель вне списка (например Qwen3.8-27B) отдавала ответ целиком в
+	// content: клиент (Cline) видел служебные маркеры размышлений как обычный
+	// текст. Имя модели/флаг влияют только на промпт, не на разбор — см.
+	// «Политика отдачи reasoning» в reasoning_content.go.
 	rcParser := NewReasoningStreamState()
-	rcIsReasoning := IsReasoningModel(modelName)
+	// R216: если шаблон открыл блок размышлений в ПРОМПТЕ, вывод начинается внутри него.
+	rcParser.SetImpliedOpen(PromptOpensReasoning(prompt))
+	rcSendReasoning := ReasoningWantedByClient(thinkOverride)
+	// emittedContentRawLen — сколько байт content (ДО замены `\\n`) уже отдано
+	// дельтами. Нужен в think=false-ветке ниже, чтобы дослать остаток без
+	// R91-фолбэка «незакрытый reasoning → content».
+	emittedContentRawLen := 0
+	// contentSeen — ровно тот ВИДИМЫЙ текст, который ушёл клиенту (после
+	// разделения reasoning/content и замены `\\n`). Из него собирается финальный
+	// done-чанк: в нём не должно быть размышлений (R108).
+	var contentSeen strings.Builder
 
 	callback := func(token string) bool {
 		select {
@@ -1020,67 +1121,69 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 			atomic.CompareAndSwapInt64(&firstTokenAt, 0, time.Now().UnixNano())
 		}
 
-		// 2026-07-01: ??? reasoning-??????? ????? ????? ?? (reasoning, content) ?
+		// 2026-07-01: ????? reasoning-??????? ????? ????? ?? (reasoning, content) ?
 		// ?????? ??????????? NDJSON-????? ? message.reasoning / message.content.
-		if rcIsReasoning {
-			reasoningDelta, contentDelta := rcParser.Feed(token)
-			// Round 32 #18 (2026-08-11): workaround для gemma-4 Q4_K_M detokenizer.
-			// C-bridge detokenize'ит токены line break (`\n`) как literal `\\n`
-			// (2 chars: backslash + n) вместо LF (1 char). Без этой замены
-			// content приходит в JSON output как escaped `\\\\n` (4 source chars),
-			// что после parsing даёт literal backslash + n (НЕ real newline).
-			// В UI это видно как "весь markdown идёт сплошной линией".
-			// Post-process: заменяем literal `\\n` на real `\n` ДО json.Marshal.
-			// Безопасно — real newlines остаются нетронутыми (только 2-char
-			// backslash+n конвертируются).
-			reasoningDelta = strings.ReplaceAll(reasoningDelta, `\\n`, "\n")
-			contentDelta = strings.ReplaceAll(contentDelta, `\\n`, "\n")
-			if reasoningDelta != "" {
-				rcChunk := map[string]interface{}{
-					"model":      modelName,
-					"created_at": createdAt,
-					"message": map[string]interface{}{
-						"role":      "assistant",
-						"reasoning": reasoningDelta,
-					},
-					"done": false,
-				}
-				rcJSON, _ := json.Marshal(rcChunk)
-				sw.Writef("%s\n", rcJSON)
-				sw.Flush()
-			}
-			if contentDelta != "" {
-				ccChunk := map[string]interface{}{
-					"model":      modelName,
-					"created_at": createdAt,
-					"message": map[string]string{
-						"role":    "assistant",
-						"content": contentDelta,
-					},
-					"done": false,
-				}
-				ccJSON, _ := json.Marshal(ccChunk)
-				sw.Writef("%s\n", ccJSON)
-				sw.Flush()
-			}
-			return true
-		}
-
+		//
+		// R108 (2026-10-13): безусловно (разбор — по тегам, не по имени модели).
+		reasoningDelta, contentDelta := rcParser.Feed(token)
+		// Счётчик ведём по СЫРЫМ дельтам: Finalize/повторный разбор работает по
+		// сырому накопленному тексту, а замена `\\n` ниже меняет длину.
+		emittedContentRawLen += len(contentDelta)
 		// Round 32 #18 (2026-08-11): workaround для gemma-4 Q4_K_M detokenizer.
-		// Заменяем literal `\\n` на real `\n` для content чанков.
-		token = strings.ReplaceAll(token, `\\n`, "\n")
-		chunk := map[string]interface{}{
-			"model":      modelName,
-			"created_at": createdAt,
-			"message": map[string]string{
-				"role":    "assistant",
-				"content": token,
-			},
-			"done": false,
+		// C-bridge detokenize'ит токены line break (`\n`) как literal `\\n`
+		// (2 chars: backslash + n) вместо LF (1 char). Без этой замены
+		// content приходит в JSON output как escaped `\\\\n` (4 source chars),
+		// что после parsing даёт literal backslash + n (НЕ real newline).
+		// В UI это видно как "весь markdown идёт сплошной линией".
+		// Post-process: заменяем literal `\\n` на real `\n` ДО json.Marshal.
+		// Безопасно — real newlines остаются нетронутыми (только 2-char
+		// backslash+n конвертируются).
+		reasoningDelta = strings.ReplaceAll(reasoningDelta, `\\n`, "\n")
+		contentDelta = strings.ReplaceAll(contentDelta, `\\n`, "\n")
+		// Правило 3 политики: think=false → размышления не отдаются вовсе.
+		if !rcSendReasoning {
+			reasoningDelta = ""
 		}
-		jsonData, _ := json.Marshal(chunk)
-		sw.Writef("%s\n", jsonData)
-		sw.Flush()
+		// R114b (2026-10-13): та же чистка, что в OpenAI-пути — одиночный
+		// `</think>` (prefill-канал шаблона) не должен уезжать в message.content.
+		// Здесь чистка тем более обязательна: из contentSeen собирается финальный
+		// done-чанк, и без неё дельты расходились бы с ним, а балансер вырезал бы
+		// расхождение как «дубль».
+		if contentDelta != "" {
+			contentDelta = stripReasoningTagsInStreamDelta(contentDelta)
+		}
+		if reasoningDelta != "" {
+			rcChunk := map[string]interface{}{
+				"model":      modelName,
+				"created_at": createdAt,
+				"message": map[string]interface{}{
+					"role": "assistant",
+					// R108: `thinking` — каноническое имя по контракту §4.1;
+					// `reasoning` оставляем как legacy-алиас.
+					"thinking":  reasoningDelta,
+					"reasoning": reasoningDelta,
+				},
+				"done": false,
+			}
+			rcJSON, _ := json.Marshal(rcChunk)
+			sw.Writef("%s\n", rcJSON)
+			sw.Flush()
+		}
+		if contentDelta != "" {
+			contentSeen.WriteString(contentDelta)
+			ccChunk := map[string]interface{}{
+				"model":      modelName,
+				"created_at": createdAt,
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": contentDelta,
+				},
+				"done": false,
+			}
+			ccJSON, _ := json.Marshal(ccChunk)
+			sw.Writef("%s\n", ccJSON)
+			sw.Flush()
+		}
 		return true
 	}
 
@@ -1151,57 +1254,86 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	// взведённом abort-флаге и в логе появится пугающее «повторная генерация не
 	// удалась: BRIDGE_ERR_ABORTED» (живой лог A10, запрос 5 минут в prefill).
 	// В этом случае честнее сразу закрыть стрим/отдать ошибку с причиной.
-	if len(fullOutput) == 0 && emptyOutputRetryEnabled() && ctx.Err() == nil {
-		logger.Get().Warnw("writeChatStreamResponse: пустой вывод модели (raw_len=0) — повторная генерация",
-			"model", modelName, "prompt_tokens", countTokensSafe(modelName, prompt))
+	//
+	// R110 (2026-10-13): повторяем не только при raw_len=0, но и когда модель
+	// выдала ОДНИ служебные токены шаблона (`<end_of_turn>` и подобные): после
+	// чистки видимого текста нет, а клиенту при этом ничего не отправлено.
+	// Живой случай: gemma-4 через Cline в ~1 прогоне из 3 отвечала одним
+	// `<end_of_turn>`, и клиент получал «model produced an empty response».
+	for attempt := 1; attempt <= maxEmptyOutputRetries; attempt++ {
+		if !shouldRetryEmptyStreamingOutput(fullOutput, contentSeen.Len(), ctx) {
+			break
+		}
+		logger.Get().Warnw("writeChatStreamResponse: пустой вывод модели — повторная генерация",
+			"model", modelName, "attempt", attempt, "raw_len", len(fullOutput),
+			"raw_head", truncateForLog(fullOutput, 80),
+			"prompt_tokens", countTokensSafe(modelName, prompt))
 		outputBuf.Reset()
+		contentSeen.Reset()
+		emittedContentRawLen = 0
 		atomic.StoreInt64(&firstTokenAt, 0)
 		if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr != nil {
 			logger.Get().Warnw("writeChatStreamResponse: повторная генерация не удалась",
-				"model", modelName, "error", retryErr)
-		} else {
-			fullOutput = outputBuf.String()
-			duration = time.Since(start)
-			logger.Get().Infow("writeChatStreamResponse: повторная генерация завершена",
-				"model", modelName, "raw_len", len(fullOutput))
+				"model", modelName, "attempt", attempt, "error", retryErr)
+			break
 		}
+		fullOutput = outputBuf.String()
+		duration = time.Since(start)
+		logger.Get().Infow("writeChatStreamResponse: повторная генерация завершена",
+			"model", modelName, "attempt", attempt, "raw_len", len(fullOutput),
+			"visible_len", contentSeen.Len())
 	}
 
 	// R83/v67 (2026-10-02): финальный сброс reasoning-парсера — выпускаем
 	// удержанный хвост (возможный неполный маркер), иначе последние символы
 	// ответа потеряются (см. ReasoningStreamState.Finalize).
-	if rcIsReasoning {
-		rTail, cTail := rcParser.Finalize()
-		rTail = strings.ReplaceAll(rTail, `\\n`, "\n")
-		cTail = strings.ReplaceAll(cTail, `\\n`, "\n")
-		if rTail != "" {
-			rcChunk := map[string]interface{}{
-				"model":      modelName,
-				"created_at": createdAt,
-				"message": map[string]interface{}{
-					"role":      "assistant",
-					"reasoning": sanitizeStreamText(rTail),
-				},
-				"done": false,
-			}
-			rcJSON, _ := json.Marshal(rcChunk)
-			sw.Writef("%s\n", rcJSON)
-			sw.Flush()
+	//
+	// R108 (2026-10-13): при think=false разбираем накопленный текст заново, но
+	// БЕЗ R91-фолбэка «незакрытый reasoning → content» — иначе текст размышлений
+	// всё равно уехал бы клиенту как ответ (в non-stream /api/chat в этом случае
+	// content пуст: см. handleChat).
+	var rTail, cTail string
+	if rcSendReasoning {
+		rTail, cTail = rcParser.FinalizeForStream()
+	} else {
+		_, contentOnly, _ := SplitReasoningContent(outputBuf.String())
+		if len(contentOnly) > emittedContentRawLen {
+			cTail = contentOnly[emittedContentRawLen:]
 		}
-		if cTail != "" {
-			ccChunk := map[string]interface{}{
-				"model":      modelName,
-				"created_at": createdAt,
-				"message": map[string]string{
-					"role":    "assistant",
-					"content": sanitizeStreamText(cTail),
-				},
-				"done": false,
-			}
-			ccJSON, _ := json.Marshal(ccChunk)
-			sw.Writef("%s\n", ccJSON)
-			sw.Flush()
+	}
+	rTail = strings.ReplaceAll(rTail, `\\n`, "\n")
+	cTail = strings.ReplaceAll(cTail, `\\n`, "\n")
+	// R114b: хвост — тот же видимый канал, что и дельты (см. чистку выше).
+	cTail = stripReasoningTagsInStreamDelta(cTail)
+	if rTail != "" {
+		rcChunk := map[string]interface{}{
+			"model":      modelName,
+			"created_at": createdAt,
+			"message": map[string]interface{}{
+				"role":      "assistant",
+				"thinking":  sanitizeStreamText(rTail),
+				"reasoning": sanitizeStreamText(rTail),
+			},
+			"done": false,
 		}
+		rcJSON, _ := json.Marshal(rcChunk)
+		sw.Writef("%s\n", rcJSON)
+		sw.Flush()
+	}
+	if cTail != "" {
+		contentSeen.WriteString(cTail)
+		ccChunk := map[string]interface{}{
+			"model":      modelName,
+			"created_at": createdAt,
+			"message": map[string]string{
+				"role":    "assistant",
+				"content": sanitizeStreamText(cTail),
+			},
+			"done": false,
+		}
+		ccJSON, _ := json.Marshal(ccChunk)
+		sw.Writef("%s\n", ccJSON)
+		sw.Flush()
 	}
 
 	// 2026-06-24: ???????? ?? ?????? ????? ????? cleanFinalContent (gemma antiprompt).
@@ -1243,12 +1375,27 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 			promptEvalNs = ttft
 		}
 	}
+	// R108 (2026-10-13): в финальный чанк кладём ТОЛЬКО видимый ответ, собранный
+	// из отданных дельт (contentSeen), а не сырой fullOutput.
+	//
+	// Раньше здесь был cleanFinalContent(fullOutput) — весь текст модели вместе с
+	// think-блоком. Настоящая Ollama в done-чанке отдаёт сам ответ без
+	// размышлений; из-за расхождения балансер вынужден был вырезать этот текст
+	// как «дубль» и писать WARN о несовпадении с дельтами (см.
+	// internal/balancer/llamacpp_transport.go: stripNativeDoneContent).
+	doneContent := cleanFinalContent(contentSeen.String())
+	// R231: незакрытый блок размышлений = ответ не дописан (см.
+	// FinalizeForStream). Честная причина остановки — length.
+	doneReason := "stop"
+	if rcParser.Snapshot().Unclosed {
+		doneReason = "length"
+	}
 	doneChunk := map[string]interface{}{
 		"model":                modelName,
 		"created_at":           createdAt,
-		"message":              map[string]string{"role": "assistant", "content": cleanedOutput},
+		"message":              map[string]string{"role": "assistant", "content": doneContent},
 		"done":                 true,
-		"done_reason":          "stop",
+		"done_reason":          doneReason,
 		"total_duration":       evalNs,
 		"prompt_eval_count":    promptTokens,
 		"prompt_eval_duration": promptEvalNs,
@@ -1276,7 +1423,31 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 // функция вызывается даже БЕЗ tools — потому что снять markdown-обёртку
 // ```json ... ``` можно только имея весь ответ целиком (буферизация). Финал:
 // один content-чанк (без обёртки) + done-чанк.
-func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, jsonMode bool) {
+// thinkOverride (R108, 2026-10-13): явный think клиента (nil = не задавал).
+// Разбор ответа безусловный и тего-зависимый, поэтому при think=false
+// размышления не отдаются вовсе (см. «Политика отдачи reasoning» в
+// reasoning_content.go).
+// startsWithReasoningMarker — R106c (2026-10-12): начинается ли вывод с
+// reasoning-блока. Теги распознаёт общий SplitReasoningContent (поддерживает
+// <think>, <thinking>, <reasoning>, <analysis>, <|channel>thought — gemma-4),
+// включая НЕзакрытый блок: для потоковой отдачи этого достаточно, чтобы решить
+// «дельты клиенту не отдаём, это размышления, а не ответ».
+func startsWithReasoningMarker(s string) bool {
+	trimmed := strings.TrimLeft(s, " \t\r\n")
+	if trimmed == "" {
+		return false
+	}
+	if _, _, has := SplitReasoningContent(trimmed); has {
+		return true
+	}
+	return false
+}
+
+// R113 (2026-10-13): tools — определения инструментов из ЗАПРОСА. Нужны, чтобы
+// привести arguments вызова к объекту по их схеме (см. tool_args_schema_r113.go):
+// без этого клиент получает arguments-массив/голую строку, не может выполнить
+// вызов и считает задачу завершённой после первой итерации.
+func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, jsonMode bool, thinkOverride *bool, tools []openAITool) {
 	// R83 (2026-09-26): тот же safeStreamWriter, что и в writeChatStreamResponse —
 	// здесь тоже пишут две горутины (heartbeat + финальные чанки), и на длинной
 	// генерации без мьютекса фреймы могли перемешаться.
@@ -1325,6 +1496,18 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// SSE handler) — 100ms × N seconds of generation = thousands of
 	// useless chunks. 15s × N still keeps TCP alive (typical proxy
 	// idle-timeout is 30-60s).
+	// R189 (2026-10-20): НЕМЕДЛЕННЫЙ кадр «запрос принят».
+	//
+	// ЖИВОЙ РАЗБОР. На tools-пути текст ответа уходит только по мере генерации
+	// (а при размышлениях удерживается окном), поэтому клиент до первого токена
+	// не получает НИЧЕГО. На 27B-модели с CPU-оффлоадом префилл + размышления
+	// занимают десятки секунд-минуты, и Cline показывал «зависание», хотя
+	// запрос обслуживался. Пустой NDJSON-кадр с done:false — валидный ответ
+	// Ollama API: клиент видит, что стрим начался, и не рвёт соединение.
+	if sw.Writef("{\"model\":%q,\"created_at\":%q,\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":false}\n", modelName, createdAt) {
+		sw.Flush()
+	}
+
 	keepaliveInterval := getHeartbeatInterval(15 * time.Second)
 	heartbeatStop := make(chan struct{})
 	heartbeatDone := make(chan struct{})
@@ -1369,9 +1552,18 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// Теперь prose уходит по мере генерации, а маркер tool call удерживается
 	// окном toolsStreamHoldback (см. tools_stream_r83.go).
 	streamContent := toolsStreamContentEnabled()
+	// R190 (2026-10-20): удержание из-за блока размышлений снимается, когда блок ЗАКРЫТ.
+	// Раньше 	oolsHold после reasoning-маркера больше не снимался, и видимый ответ
+	// (content_len=378 в живом логе) уходил клиенту одним кадром в конце хода.
+	reasoningHold := false
 	var emittedLen int
 	var toolsHold bool
 	emitContentDelta := func(delta string) {
+		// R114b (2026-10-13): служебные токены шаблона — не текст ответа. Живой
+		// случай: дельта «other coding task.\n<end_of_turn>» уехала клиенту
+		// (маркер заканчивался в самом хвосте потока, а прежняя чистка
+		// (cleanFinalContent) срабатывает только на финальном чанке).
+		delta = stripServiceTokensKeepSpaces(delta)
 		if delta == "" {
 			return
 		}
@@ -1406,14 +1598,55 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		if token != "" {
 			atomic.CompareAndSwapInt64(&firstTokenAt, 0, time.Now().UnixNano())
 		}
+		// R190: пока открыт блок размышлений — держим; как только закрыт — отдаём дельты.
+		if reasoningHold {
+			if end := reasoningBlockEnd(outputBuf.String()); end > 0 {
+				reasoningHold = false
+				toolsHold = false
+				emittedLen = end
+				logger.Get().Debugw("writeChatStreamResponseWithTools: блок размышлений закрыт — дельты ответа отдаём",
+					"model", modelName, "reasoning_end", end)
+			} else {
+				return true
+			}
+		}
 		if !streamContent || toolsHold || token == "" {
 			return true
 		}
 		buf := outputBuf.String()
 		// Предохранитель 1: ответ начинается с JSON — парсер может счесть его
 		// tool_calls целиком (стратегия 4), поэтому дельтами не отдаём.
-		if emittedLen == 0 && toolsStreamStartsWithJSON(buf) {
+		//
+		// R106d (2026-10-12): то же для markdown-фенса (```json) — модели кладут
+		if emittedLen == 0 && (toolsStreamStartsWithJSON(buf) || toolsStreamStartsWithFence(buf)) {
 			toolsHold = true
+			return true
+		}
+		// R106d (2026-10-12): то же для markdown-фенса (```json) — вызывать после JSON-проверки.
+		// Раньше здесь стояла вторая ветка guard-а; после R190 она объединена выше.
+		// Предохранитель 1b (R106c, 2026-10-12): ответ начинается с reasoning-блока
+		// (<think>, <thinking>, <reasoning>, <analysis>, <|channel>thought).
+		// Размышления — НЕ ответ, и клиенту в content их отдавать нельзя: Cline
+		// показывал thinking как ответ («команда инструмента в квадратных
+		// скобках»), а сам tool call терялся. Держим дельты и отдаём reasoning
+		// отдельным полем в финальном чанке (см. reasoningOut ниже).
+		if emittedLen == 0 && startsWithReasoningMarker(buf) {
+			reasoningHold = true
+			toolsHold = true
+			logger.Get().Debugw("writeChatStreamResponseWithTools: вывод начинается с reasoning-блока — дельты не отдаём",
+				"model", modelName)
+			return true
+		}
+		// Предохранитель 1c (R110, 2026-10-13): ответ начинается со СЛУЖЕБНОГО
+		// токена шаблона (`<end_of_turn>`, `<|end|>`, `<start_of_turn>model`).
+		// Такие дельты тоже не отдаём: служебный токен — не текст ответа, а когда
+		// буфер перерастал окно удержания, `cut` попадал уже ПОСЛЕ токена и клиент
+		// получал его как обычный текст (живой случай: «ERROR: EMPTY
+		// CONTENT<end_of_turn>» в записи сессии Cline).
+		if emittedLen == 0 && toolsStreamStartsWithServiceToken(buf) {
+			toolsHold = true
+			logger.Get().Debugw("writeChatStreamResponseWithTools: вывод начинается со служебного токена — дельты не отдаём",
+				"model", modelName)
 			return true
 		}
 		// Предохранитель 2: в хвосте появился маркер tool call. Prose ПЕРЕД
@@ -1427,6 +1660,45 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			toolsHold = true
 			logger.Get().Debugw("writeChatStreamResponseWithTools: маркер tool call — content больше не отдаём дельтами",
 				"model", modelName, "emitted", emittedLen, "buffered", len(buf))
+			return true
+		}
+		// Предохранитель 2b (R113, 2026-10-13): JSON-форма вызова ВНУТРИ прозы.
+		// Прежние проверки держали только вывод, НАЧИНАЮЩИЙСЯ с JSON; живой прогон
+		// Cline-запроса дал прозу с последующим JSON вызова — и он уехал клиенту
+		// дельтами (в сессии это «инструмент в теле ответа»).
+		if pos, ok := toolsStreamJSONCallPos(buf, toolsStreamHoldback+len(token)); ok {
+			if pos > emittedLen {
+				emitContentDelta(buf[emittedLen:pos])
+				emittedLen = pos
+			}
+			toolsHold = true
+			logger.Get().Debugw("writeChatStreamResponseWithTools: JSON вызова внутри прозы — content больше не отдаём дельтами",
+				"model", modelName, "emitted", emittedLen, "buffered", len(buf))
+			return true
+		}
+		// Предохранитель 2c (R114b, 2026-10-13): в НЕПЕРЕДАННОМ хвосте началась
+		// JSON-структура. Дельты прекращаем на её первой скобке: иначе начало
+		// вызова уходит клиенту обрывком («…task complete. [{"id":
+		// "call_submit_and_exit","type":"function",…» — живая сессия Cline:
+		// объект начинался раньше, чем в окне удержания появлялся ключ, на
+		// который смотрел прежний предохранитель).
+		if pos, ok := toolsStreamJSONStructPos(buf, len(buf)-emittedLen); ok {
+			if pos > emittedLen {
+				emitContentDelta(buf[emittedLen:pos])
+				emittedLen = pos
+			}
+			toolsHold = true
+			logger.Get().Debugw("writeChatStreamResponseWithTools: в хвосте началась JSON-структура — content больше не отдаём дельтами",
+				"model", modelName, "emitted", emittedLen, "buffered", len(buf))
+			return true
+		}
+		// Предохранитель 2d (R114b): открывающий маркер размышлений в хвосте —
+		// блок начался после отданной прозы, и его тело не является ответом.
+		if reason, hold := toolsStreamHoldsTailStart(buf[emittedLen:]); hold {
+			toolsHold = true
+			logger.Get().Debugw("writeChatStreamResponseWithTools: хвост удержан — content больше не отдаём дельтами",
+				"model", modelName, "reason", reason,
+				"emitted", emittedLen, "buffered", len(buf))
 			return true
 		}
 		cut := len(buf) - toolsStreamHoldback
@@ -1490,54 +1762,163 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	fullOutput := outputBuf.String()
 	duration := time.Since(start)
 
-	// R83/v59 (2026-10-01): повтор генерации при ПУСТОМ выводе модели.
+	// ?????????? ?????????? tool_calls ?? ?????????? ??????.
+	//
+	// R106c (2026-10-12): СНАЧАЛА отделяем reasoning. С включёнными
+	// размышлениями модель отдаёт
+	//	<|channel>thought … <channel|>[{"name":"read_files", …}]
+	// и раньше весь этот текст уходил в message.content: размышления не
+	// отделялись, parseToolCallsFromOutput получал строку с thinking-префиксом и
+	// часто не находил вызов → клиент (Cline) видел «команду инструмента в
+	// квадратных скобках» вместо вызова инструмента.
+	//
+	// R108 (2026-10-13): разбор безусловный (по тегам, не по имени модели), а при
+	// явном think=false размышления не отдаются вовсе — см. «Политика отдачи
+	// reasoning» в reasoning_content.go.
+	reasoningOut, outputForParse, toolCalls, hasReasoning := splitToolsOutput(fullOutput, thinkOverride, tools)
+	if hasReasoning {
+		logger.Get().Infow("writeChatStreamResponseWithTools: reasoning отделён от ответа",
+			"model", modelName, "reasoning_len", len(reasoningOut), "content_len", len(outputForParse),
+			"reasoning_sent", reasoningOut != "")
+	}
+
+	// R83/v59 (2026-10-01) + R110 (2026-10-13): повтор генерации, когда видимого
+	// ответа не получилось.
 	//
 	// Живой факт (пробник debug/streamprobe, gemma-4-E4B-it-Q4_K_M, запрос Cline
 	// с 18 tools): модель иногда завершает ход ПЕРВЫМ же токеном EOG — в
 	// /debug-логе видно raw_len=0, то есть не сгенерировано ни байта. Клиенту
 	// уходил чанк "model produced an empty response", и ни повторить, ни понять
-	// причину он не мог (ровно это показал первый сбой Cline из журнала сессии).
+	// причину он не мог.
+	//
+	// R110: тот же симптом даёт вывод из ОДНИХ служебных токенов шаблона
+	// (`<end_of_turn>`) — после чистки видимого текста нет. Повтор безопасен
+	// ровно тем же условием, что и раньше: клиенту не отправлено ни байта
+	// (emittedLen == 0), иначе он получил бы два ответа подряд.
 	//
 	// Сэмплирование стохастично, поэтому повторный проход обычно даёт ответ.
-	// Терять нечего: при raw_len=0 клиенту ещё не отправлено ни одного чанка
-	// (в том числе дельт — их неоткуда взять).
-	// R83/v62 (2026-10-02): автоповтор ТОЛЬКО если клиент ещё ждёт.
-	// Если контекст запроса уже отменён (клиент ушёл — по своему таймауту, кнопке
-	// Stop или обрыву), повторный проход бессмысленен: он мгновенно упадёт на
-	// взведённом abort-флаге и в логе появится пугающее «повторная генерация не
-	// удалась: BRIDGE_ERR_ABORTED» (живой лог A10, запрос 5 минут в prefill).
-	// В этом случае честнее сразу закрыть стрим/отдать ошибку с причиной.
-	if len(fullOutput) == 0 && emptyOutputRetryEnabled() && ctx.Err() == nil {
-		logger.Get().Warnw("writeChatStreamResponseWithTools: пустой вывод модели (raw_len=0) — повторная генерация",
-			"model", modelName, "prompt_tokens", countTokensSafe(modelName, prompt))
-		outputBuf.Reset()
-		emittedLen = 0
-		toolsHold = false
-		atomic.StoreInt64(&firstTokenAt, 0)
-		if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr != nil {
-			logger.Get().Warnw("writeChatStreamResponseWithTools: повторная генерация не удалась",
-				"model", modelName, "error", retryErr)
-		} else {
+	if len(toolCalls) == 0 {
+		// R188 (2026-10-20): клиентский лимит длины ответа делает повтор бессмысленным —
+		// тот же лимит отрежет тот же вывод. При ограниченном выводе разрешён максимум
+		// один повтор (см. handlers_chat_retry_r188.go).
+		retryBudget := emptyOutputRetryBudget(params.NPredict > 0)
+		if params.NPredict > 0 {
+			logger.Get().Infow("writeChatStreamResponseWithTools: R188 повтор ограничен — клиент задал длину ответа",
+				"model", modelName, "n_predict", params.NPredict, "retries_allowed", retryBudget)
+		}
+		for attempt := 1; attempt <= retryBudget; attempt++ {
+			emptyOutput := shouldRetryEmptyStreamingOutput(fullOutput, emittedLen, ctx)
+			// R113 (2026-10-13): повторяем и тогда, когда модель ВЫДАЛА разметку
+			// вызова, но распознать её не удалось. Повтор безопасен по тому же
+			// условию: клиенту не отправлено ни байта (emittedLen == 0) — в
+			// tools-пути разметка удерживается окном, поэтому обычно так и есть.
+			unparsedMarkup := shouldRetryUnparsedToolMarkup(fullOutput, emittedLen, ctx)
+			if !emptyOutput && !unparsedMarkup {
+				break
+			}
+			logger.Get().Warnw("writeChatStreamResponseWithTools: повторная генерация",
+				"model", modelName, "attempt", attempt, "reason", retryReasonLabel(emptyOutput, unparsedMarkup),
+				"raw_len", len(fullOutput),
+				"raw_head", truncateForLog(fullOutput, 80),
+				"prompt_tokens", countTokensSafe(modelName, prompt))
+			outputBuf.Reset()
+			emittedLen = 0
+			toolsHold = false
+			atomic.StoreInt64(&firstTokenAt, 0)
+			if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr != nil {
+				logger.Get().Warnw("writeChatStreamResponseWithTools: повторная генерация не удалась",
+					"model", modelName, "attempt", attempt, "error", retryErr)
+				break
+			}
 			fullOutput = outputBuf.String()
 			duration = time.Since(start)
+			reasoningOut, outputForParse, toolCalls, hasReasoning = splitToolsOutput(fullOutput, thinkOverride, tools)
 			logger.Get().Infow("writeChatStreamResponseWithTools: повторная генерация завершена",
-				"model", modelName, "raw_len", len(fullOutput))
+				"model", modelName, "attempt", attempt, "raw_len", len(fullOutput),
+				"tool_calls", len(toolCalls), "visible_len", len(cleanFinalContent(outputForParse)),
+				"has_reasoning", hasReasoning)
+			if len(toolCalls) > 0 {
+				break
+			}
 		}
 	}
 
-	// ???????? ?????????? tool_calls ?? ?????????? ??????.
-	toolCalls := parseToolCallsFromOutput(fullOutput)
+	// R113 (2026-10-13): РАЗМЕТКА ВЫЗОВА НЕ ЯВЛЯЕТСЯ ОТВЕТОМ.
+	//
+	// Проверка стоит ЗДЕСЬ, до ветки «сырой вывод как content»: cleanFinalContent
+	// разметку вызова не знает и НЕ делает вывод пустым, поэтому прежняя ветка не
+	// срабатывала и разметка уезжала клиенту через финальный чанк (живой прогон:
+	// content 2456 символов с сырым JSON вызова). Агентский клиент видит тогда
+	// финальный ответ вместо вызова и помечает задачу выполненной — жалоба
+	// «инструмент опять оказался в теле ответа».
+	if len(toolCalls) == 0 && looksLikeToolCallMarkup(outputForParse) {
+		visibleAfterStrip := strings.TrimSpace(stripToolCallMarkup(cleanFinalContent(outputForParse)))
+		if visibleAfterStrip == "" {
+			logger.Get().Warnw("writeChatStreamResponseWithTools: разметка вызова в выводе, но вызов не распознан — отдаём error-чанк (в content разметку не кладём)",
+				"model", modelName,
+				"raw_len", len(fullOutput),
+				"emitted_len", emittedLen,
+				"preview", truncateForLog(outputForParse, 300))
+			errChunk := map[string]interface{}{
+				"model":       modelName,
+				"created_at":  createdAt,
+				"message":     map[string]string{"role": "assistant", "content": ""},
+				"done":        true,
+				"done_reason": "error",
+				"error":       "model returned a tool call that could not be parsed into tool_calls; retry the request",
+				"raw_len":     len(fullOutput),
+			}
+			errJSON, _ := json.Marshal(errChunk)
+			sw.Writef("%s\n", errJSON)
+			sw.Flush()
+			return
+		}
+		logger.Get().Warnw("writeChatStreamResponseWithTools: разметка вызова вырезана из видимого ответа",
+			"model", modelName,
+			"visible_len", len(visibleAfterStrip),
+			"raw_len", len(fullOutput))
+	}
 
 	// 2026-06-24: ???????? ?? ?????? ????? ????? cleanFinalContent (gemma antiprompt).
-	if len(toolCalls) == 0 && strings.TrimSpace(cleanFinalContent(fullOutput)) == "" {
+	if len(toolCalls) == 0 && reasoningOut == "" && strings.TrimSpace(cleanFinalContent(outputForParse)) == "" {
 		// R83/v51 (2026-10-12): не врём клиенту "empty response", если модель
 		// реально что-то сгенерировала — просто наша очистка/парсер не смогли
 		// распознать вывод (например, незакрытый tool-call блок, который срезал
 		// antiprompt, или служебные токены, оставшиеся без полезного текста).
 		// Отдаём сырой (но безопасный для клиента) вывод как content, чтобы
 		// пользователь видел, что именно ответила модель.
-		rawPreview := strings.TrimSpace(sanitizeStreamText(fullOutput))
+		rawPreview := strings.TrimSpace(sanitizeStreamText(outputForParse))
 		meaningful := stripKnownServiceTokens(rawPreview)
+		// R113 (2026-10-13): РАЗМЕТКА ВЫЗОВА НЕ ЯВЛЯЕТСЯ ОТВЕТОМ.
+		//
+		// Раньше здесь сырой вывод отдавался как content — и клиент получал в теле
+		// ответа текст вызова инструмента (живая жалоба: «инструмент опять оказался
+		// в теле ответа»). Для агентского клиента это худший исход: вызова он не
+		// видит (tool_calls пуст), считает сообщение финальным ответом и помечает
+		// задачу выполненной после первой итерации (COMPLETE).
+		//
+		// Правильное поведение: если в выводе есть обёртка вызова, а вызов не
+		// распознан — сообщить об ошибке, а не отдавать разметку текстом.
+		if looksLikeToolCallMarkup(outputForParse) && stripToolCallMarkup(meaningful) == "" {
+			logger.Get().Warnw("writeChatStreamResponseWithTools: разметка вызова в выводе, но вызов не распознан — отдаём error-чанк (в content разметку не кладём)",
+				"model", modelName,
+				"raw_len", len(fullOutput),
+				"emitted_len", emittedLen,
+				"preview", truncateForLog(outputForParse, 300))
+			errChunk := map[string]interface{}{
+				"model":       modelName,
+				"created_at":  createdAt,
+				"message":     map[string]string{"role": "assistant", "content": ""},
+				"done":        true,
+				"done_reason": "error",
+				"error":       "model returned a tool call that could not be parsed into tool_calls; retry the request",
+				"raw_len":     len(fullOutput),
+			}
+			errJSON, _ := json.Marshal(errChunk)
+			sw.Writef("%s\n", errJSON)
+			sw.Flush()
+			return
+		}
 		if rawPreview != "" && meaningful != "" {
 			// R83/v56: если часть ответа уже ушла дельтами, повторно её не
 			// отправляем — иначе клиент, складывающий чанки, увидит текст дважды.
@@ -1545,10 +1926,12 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			if emittedLen > 0 && emittedLen <= len(fullOutput) {
 				tail = strings.TrimSpace(sanitizeStreamText(fullOutput[emittedLen:]))
 			}
+			// R113: даже в «сыром» тексте вырезаем разметку вызова — она не ответ.
+			tail = stripToolCallMarkup(tail)
 			logger.Get().Warnw("writeChatStreamResponseWithTools: tool call не распознан — отдаём сырой вывод как content",
 				"model", modelName,
 				"raw_len", len(fullOutput),
-				"clean_len", len(cleanFinalContent(fullOutput)),
+				"clean_len", len(cleanFinalContent(outputForParse)),
 				"emitted_len", emittedLen,
 				"preview", truncateForLog(tail, 300))
 			emitContentDelta(tail)
@@ -1640,6 +2023,13 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// читают именно объект; со строкой клиент повторно сериализовал аргументы
 		// и tool call приезжал «пустым» → "Model returned empty response".
 		msg["tool_calls"] = ollamaToolCallsFromOpenAI(toolCalls)
+		// R106c: размышления — отдельным полем (Ollama: message.thinking), а не
+		// в content: клиент показывает их как «thinking», а не как ответ.
+		// R108: отдаём оба имени (`thinking` — канон §4.1, `reasoning` — legacy).
+		if reasoningOut != "" {
+			msg["thinking"] = reasoningOut
+			msg["reasoning"] = reasoningOut
+		}
 		finalChunk["done_reason"] = "tool_calls"
 		logger.Get().Infow("writeChatStreamResponseWithTools: detected tool_calls in streamed output",
 			"model", modelName, "tool_calls_count", len(toolCalls))
@@ -1656,7 +2046,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// ?????? ??????????? ???????: ??????? ????????? ????????? ??????,
 		// ??????? ?????? ????? ??????? (</tool_call>, [TOOL_CALLS], ? ?.?.).
 		msg := finalChunk["message"].(map[string]interface{})
-		content := cleanFinalContent(fullOutput)
+		// R113: разметка вызова не является ответом — вырезаем её из видимого
+		// текста, даже если рядом с ней есть проза (иначе клиент получает JSON
+		// вызова в теле ответа; живой прогон: 2456 символов такого текста).
+		content := stripToolCallMarkup(cleanFinalContent(outputForParse))
 		// R66b: format:"json" — снимаем markdown-обёртку ```json ... ```.
 		// Отдельного поля в ответе не добавляем: схема Ollama /api/chat его не
 		// содержит, а лишние поля ломают строгих клиентов (см. историю с
@@ -1664,7 +2057,17 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		if jsonMode {
 			content = stripJSONFence(content)
 		}
-		if streamContent && emittedLen > 0 {
+		if reasoningOut != "" {
+			// R106c: размышления отделены — их место в message.thinking, а в
+			// content только ответ. Дельты в этом случае не отдавались
+			// (holdback по маркеру reasoning), поэтому ответ кладём целиком.
+			// R108: `thinking` — канон (контракт §4.1), `reasoning` — legacy-алиас.
+			msg["thinking"] = reasoningOut
+			msg["reasoning"] = reasoningOut
+			msg["content"] = content
+			logger.Get().Debugw("writeChatStreamResponseWithTools: reasoning отдельно, ответ в финальном чанке",
+				"model", modelName, "reasoning_len", len(reasoningOut), "content_len", len(content))
+		} else if streamContent && emittedLen > 0 {
 			// R83/v56: префикс ответа уже ушёл дельтами. В финальный чанк кладём
 			// только остаток (клиент, складывающий чанки, не должен получить
 			// текст дважды), а сам остаток отдаём отдельной дельтой.
@@ -1682,6 +2085,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				if jsonMode {
 					tail = stripJSONFence(tail)
 				}
+				// R113: хвост тоже чистим от разметки вызова.
+				tail = stripToolCallMarkup(tail)
 			}
 			emitContentDelta(tail)
 			msg["content"] = ""
@@ -1695,6 +2100,31 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		}
 		finalChunk["done_reason"] = "stop"
 	}
+
+	// R113 (2026-10-13): ЯВНОЕ ОТСЛЕЖИВАНИЕ ОТВЕТА. Одна строка на запрос, по
+	// которой видно, ЧТО именно уехало клиенту: сколько content отдано дельтами,
+	// сколько ушло в финальном чанке, какие вызовы и какого типа аргументы,
+	// с каким done_reason. Раньше вопрос «инструмент в теле ответа?» приходилось
+	// выяснять по логам клиента.
+	toolNames := make([]string, 0, len(toolCalls))
+	argKinds := make([]string, 0, len(toolCalls))
+	for _, tc := range toolCalls {
+		toolNames = append(toolNames, tc.Function.Name)
+		argKinds = append(argKinds, toolArgShape(tc.Function.Arguments))
+	}
+	logger.Get().Infow("/api/chat stream response summary",
+		"model", modelName,
+		"path", "/api/chat",
+		"streamed_content_bytes", emittedLen,
+		"final_content_len", len(fmt.Sprint(finalChunk["message"].(map[string]interface{})["content"])),
+		"thinking_len", len(reasoningOut),
+		"tool_calls", len(toolCalls),
+		"tool_names", strings.Join(toolNames, ","),
+		"tool_arg_shapes", strings.Join(argKinds, ","),
+		"done_reason", finalChunk["done_reason"],
+		"raw_len", len(fullOutput),
+		"elapsed_ms", duration.Milliseconds(),
+	)
 
 	doneJSON, _ := json.Marshal(finalChunk)
 	sw.Writef("%s\n", doneJSON)

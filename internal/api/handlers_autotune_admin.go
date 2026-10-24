@@ -42,8 +42,9 @@ type adminAutotuneApplyResponse struct {
 // handleAdminAutotuneApply — POST /api/v1/admin/autotune/{backendID}/apply
 //
 // Body (опционально):
-//   {"modelName": "Qwen3-..."}   — построить plan из текущего AutoTune report
-//   {"plan": {...}, "forceApply": true}   — explicit plan + bypass circuit
+//
+//	{"modelName": "Qwen3-..."}   — построить plan из текущего AutoTune report
+//	{"plan": {...}, "forceApply": true}   — explicit plan + bypass circuit
 //
 // Response 200/202 (async apply returns 202).
 // Response 400 если plan пустой.
@@ -305,8 +306,9 @@ func (s *Server) handleAdminAutotune(w http.ResponseWriter, r *http.Request) {
 // routeAdminAutotuneByID — R54.6 (2026-08-24): диспетчер для /api/v1/admin/autotune/{backendID}/...
 //
 // Маршруты:
-//   GET  /{backendID}           → handleAdminAutotuneByID
-//   POST /{backendID}/apply     → handleAdminAutotuneApply
+//
+//	GET  /{backendID}           → handleAdminAutotuneByID
+//	POST /{backendID}/apply     → handleAdminAutotuneApply
 func (s *Server) routeAdminAutotuneByID(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/autotune/")
 	parts := strings.Split(path, "/")
@@ -460,10 +462,11 @@ func (s *Server) handleAdminAutotuneConfig(w http.ResponseWriter, r *http.Reques
 // handleAdminAutotuneConfigUpdate — R54.7 (2026-08-24): PUT /api/v1/admin/autotune/config
 //
 // Body:
-//   {
-//     "globalEnabled": true|false,
-//     "perModel": { "model-name": true|false|null }
-//   }
+//
+//	{
+//	  "globalEnabled": true|false,
+//	  "perModel": { "model-name": true|false|null }
+//	}
 //
 // null для per-model удаляет override (наследование global).
 // Persists через s.configSaver (если установлен).

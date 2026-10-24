@@ -24,8 +24,26 @@
     const M = (window.GgufModule = window.GgufModule || {});
 
     // I18N helper (используется во всех GgufRenderer модулях)
+    //
+    // R134 (2026-10-16): ЕСЛИ ПЕРЕВОДА НЕТ — ПОКАЗЫВАЕМ ПОДПИСЬ ИЗ КОДА, А НЕ КЛЮЧ.
+    //
+    // ЖИВАЯ ЖАЛОБА ОПЕРАТОРА: в карточке параметров модели вместо подписей были
+    // видны строки «gguf.parallel» и «gguf.reasoning». Причина: I18N.t при
+    // отсутствующем ключе возвращает САМ КЛЮЧ (и пишет warning в консоль), а
+    // второй аргумент этого helper'а — человеческая подпись — трактовался как
+    // {vars} для подстановки и молча терялся. То есть fallback не работал нигде:
+    // каждый вызов helper'а с ключом и подписью показывал КЛЮЧ, если перевода не было.
+    //
+    // Теперь: строковый второй аргумент = fallback, объект = подстановка {vars}.
+    // Ключ в интерфейс больше не попадает, даже если языковой пакет отстал.
     M._ = function(key, vars) {
-        return window.I18N ? I18N.t(key, vars) : key;
+        var fallback = (typeof vars === 'string') ? vars : null;
+        var params = (vars && typeof vars === 'object') ? vars : undefined;
+        if (window.I18N && typeof I18N.t === 'function') {
+            var out = I18N.t(key, params);
+            if (out && out !== key) return out;
+        }
+        return fallback || key;
     };
 
     // ---- State ----

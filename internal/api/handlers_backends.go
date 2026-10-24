@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +15,442 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
+
+// rpcLink — R118 (2026-10-14): замер пропускной способности канала до узлов
+// раскладки слоёв.
+//
+// ПОЧЕМУ ИЗ ОКРУЖЕНИЯ. Канал нельзя измерить «на глаз» из процесса: цифру даёт
+// отдельный прогон scripts/measure-network.ps1 (iperf3 на этом стенде падает —
+// Cygwin-сборка). Поэтому оператор кладёт результат замера в .env, балансер отдаёт
+// его в записи бэкенда, а WebUI показывает в пометках раскладки вместе с датой и
+// источником замера — чтобы число не выглядело «выдуманным».
+type rpcLink struct {
+	MeasuredAt string `json:"measured_at,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Mbps       int    `json:"mbps,omitempty"`
+}
+
+// rpcLinkAuto — R118.15 (2026-10-14): АВТОзамер канала, сделанный самим балансером.
+//
+// ПОЧЕМУ ОТДЕЛЬНОЕ ПОЛЕ, А НЕ ПОДМЕНА rpcLink. Живой замер на стенде показал, что
+// числа РАЗНЫЕ и означают разное:
+//
+//	хост↔хост (оператор, scripts/measure-network.ps1) : 889 Мбит/с
+//	напрямую curl с хоста мастера в узел (64 МиБ)      : 748 Мбит/с
+//	балансер (контейнер) → cppworker узла (8 МиБ)      : 99..143 Мбит/с
+//
+// Разница — в ПУТИ: замер балансера идёт через контейнерные сети Docker Desktop на
+// обеих машинах (NAT/WSL2), а операторский — между хостами напрямую. Слои раскладки
+// передаёт cppworker (тоже контейнер), то есть его путь ближе к автозамеру, чем к
+// хост-замеру. Поэтому оба числа показываются РАЗДЕЛЬНО и с источниками, а не
+// подменяют друг друга: «одно правильное число» здесь было бы обманом.
+type rpcLinkAuto struct {
+	MeasuredAt string `json:"measured_at,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Node       string `json:"node,omitempty"`
+	Mbps       int    `json:"mbps,omitempty"`
+}
+
+// rpcLinkAutoInfo — автозамер для конкретного бэкенда (пусто, если замера нет).
+func (s *Server) rpcLinkAutoInfo(backendID string) rpcLinkAuto {
+	if s == nil || s.proxy == nil || backendID == "" {
+		return rpcLinkAuto{}
+	}
+	mbps, at, ok := s.proxy.RPCLinkMeasured(backendID)
+	if !ok {
+		return rpcLinkAuto{}
+	}
+	node := ""
+	if b := s.proxy.GetBackend(backendID); b != nil {
+		node = fmt.Sprintf("%s:%d", b.Host, b.CppWorkerPort)
+	}
+	return rpcLinkAuto{
+		Mbps:       mbps,
+		MeasuredAt: at.UTC().Format(time.RFC3339),
+		Node:       node,
+		Source:     "lb-rpc-link-probe (балансер → cppworker узла, через контейнерную сеть)",
+	}
+}
+func rpcLinkInfo() rpcLink {
+	out := rpcLink{
+		MeasuredAt: strings.TrimSpace(os.Getenv("LB_RPC_LINK_MEASURED_AT")),
+		Source:     strings.TrimSpace(os.Getenv("LB_RPC_LINK_SOURCE")),
+	}
+	if out.Source == "" {
+		out.Source = "scripts/measure-network.ps1"
+	}
+	if v := strings.TrimSpace(os.Getenv("LB_RPC_LINK_MBPS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			out.Mbps = n
+		}
+	}
+	return out
+}
+
+// restoreBackendRoles — R118: поднять сохранённые роли бэкендов с диска.
+//
+// Роли — операторское решение, и оно обязано переживать перезапуск балансера.
+// В bundled-развёртывании config.json смонтирован read-only (штатное сохранение
+// состояния молча падает), поэтому роли живут в том же persistent-override, что и
+// llamaCpp: /app/data/runtime-overrides/backend-roles.json (том balancer_data).
+func (s *Server) restoreBackendRoles() {
+	store, ok := s.overridesStore.(BackendRolesStore)
+	if !ok || store == nil {
+		return
+	}
+	roles, exists, err := store.LoadBackendRoles()
+	if err != nil {
+		logger.Get().Warnw("restoreBackendRoles: не удалось прочитать роли", "error", err)
+		return
+	}
+	if !exists || len(roles) == 0 {
+		return
+	}
+	s.backendRolesMu.Lock()
+	s.backendRoles = roles
+	s.backendRolesMu.Unlock()
+	logger.Get().Infow("restoreBackendRoles: роли бэкендов восстановлены", "roles", len(roles))
+	// Бэкенды к этому моменту могут быть ещё не зарегистрированы (агенты
+	// регистрируются позже) — тогда роль подставится в roleForBackend.
+	if donors, applied, aerr := s.applyBackendRoles(); aerr != nil {
+		logger.Get().Warnw("restoreBackendRoles: раскладка не применена", "error", aerr)
+	} else if len(applied) > 0 {
+		logger.Get().Infow("restoreBackendRoles: раскладка применена",
+			"donors", donors, "applied", applied)
+	}
+	// Страховка: записи бэкендов пересобираются НЕСКОЛЬКИМИ путями (создание,
+	// правка, регистрация и heartbeat агента). Ловить их все — хрупко, поэтому
+	// балансер сам поддерживает роли в записях: раз в 15 с возвращает роль тому
+	// бэкенду, у которого она потерялась. Операция идемпотентна (пишем только
+	// когда роль пуста), поэтому стоит копейки.
+	if s.stopCh != nil {
+		go s.reapplyBackendRolesLoop()
+	}
+	// R118.2: сразу привести раскладку главного к фактически живым узлам — чтобы
+	// рестарт балансера не оставлял cppworker с мёртвым списком доноров.
+	s.proxy.EnsureRPCLayoutForAll()
+}
+
+// reapplyBackendRolesLoop — R118: вернуть сохранённые роли в записи бэкендов.
+//
+// Зачем цикл, а не разовая подстановка: запись бэкенда пересобирается из payload
+// агента (создание, правка из WebUI, регистрация, heartbeat), и агент о роли не
+// знает. Живая проверка: после перезапуска балансера роли читались из файла
+// (в логе «роли бэкендов восстановлены, roles:2»), но в записях оставались
+// пустыми — значит запись собрал путь, который роль не переносит. Вместо охоты
+// за всеми путями балансер приводит записи в соответствие сам.
+func (s *Server) reapplyBackendRolesLoop() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.reapplyBackendRolesOnce()
+		}
+	}
+}
+
+// reapplyBackendRolesOnce — один проход: вернуть роли, потерянные в записях.
+// Возвращает число восстановленных ролей (для тестов и логов).
+func (s *Server) reapplyBackendRolesOnce() int {
+	s.backendRolesMu.Lock()
+	saved := make(map[string]string, len(s.backendRoles))
+	for id, r := range s.backendRoles {
+		saved[id] = r
+	}
+	s.backendRolesMu.Unlock()
+	if len(saved) == 0 {
+		return 0
+	}
+	restored := 0
+	all := s.proxy.GetAllBackends()
+	for i := range all {
+		b := &all[i]
+		want := saved[b.ID]
+		if want == "" || strings.TrimSpace(b.Role) == want {
+			continue
+		}
+		if s.proxy.SetBackendRole(b.ID, want) {
+			restored++
+			logger.Get().Infow("reapplyBackendRoles: роль возвращена в запись бэкенда",
+				"backend", b.ID, "role", want)
+		}
+	}
+	// Если что-то вернули — раскладку главного тоже приводим в соответствие.
+	if restored > 0 {
+		if _, _, err := s.applyBackendRoles(); err != nil {
+			logger.Get().Warnw("reapplyBackendRoles: раскладка не применена", "error", err)
+		}
+	}
+	// R118.2 (2026-10-14): КАЖДЫЙ тик (не только когда роль восстановлена)
+	// проверяем доступность узлов раскладки. Узел-донор мог вернуться — тогда
+	// раскладка включается обратно без действий оператора; мог пропасть — тогда
+	// главный переводится на локальную загрузку ДО того, как упадёт загрузка
+	// модели («Remote RPC server crashed or returned malformed response»).
+	// Операция идемпотентна: конфиг cppworker'а пишется только при изменении.
+	s.proxy.EnsureRPCLayoutForAll()
+	return restored
+}
+
+// roleForBackend — R118: роль для записи бэкенда при её (пере)сборке.
+//
+// Приоритет: уже стоящая в записи роль → сохранённая на диске (операторская) →
+// пусто. Нужно потому, что саморегистрация агента и heartbeat пересобирают запись
+// и без этого стирали роль (живая проверка: после перезапуска балансера главный
+// оставался без доноров, rpcEnabled=false).
+func (s *Server) roleForBackend(backendID, existingRole string) string {
+	if strings.TrimSpace(existingRole) != "" {
+		return existingRole
+	}
+	s.backendRolesMu.Lock()
+	defer s.backendRolesMu.Unlock()
+	if s.backendRoles == nil {
+		return ""
+	}
+	return s.backendRoles[backendID]
+}
+
+// persistBackendRoles — R118: сохранить текущие роли на диск (best-effort).
+func (s *Server) persistBackendRoles() error {
+	store, ok := s.overridesStore.(BackendRolesStore)
+	if !ok || store == nil {
+		return nil
+	}
+	roles := map[string]string{}
+	all := s.proxy.GetAllBackends()
+	for i := range all {
+		b := &all[i]
+		if r := strings.TrimSpace(b.Role); r != "" {
+			roles[b.ID] = r
+		}
+	}
+	// Держим в памяти то же, что сохранили: так роль переживёт и пересборку
+	// записи, и рестарт в пределах процесса.
+	s.backendRolesMu.Lock()
+	s.backendRoles = roles
+	s.backendRolesMu.Unlock()
+	if err := store.SaveBackendRoles(roles); err != nil {
+		logger.Get().Warnw("persistBackendRoles: не удалось сохранить роли", "error", err)
+		return err
+	}
+	return nil
+}
+
+// updateBackendRole — R118 (2026-10-14): PUT /api/v1/backends/{id}/role.
+//
+// ЯВНОЕ УПРАВЛЕНИЕ РАСКЛАДКОЙ ИЗ WEBUI. Роль хранит балансер (Backend.Role), а
+// исполняет её главный cppworker: ему уходит rpcEnabled + rpcServers, собранный из
+// бэкендов с ролью «донор». Так оператор в панели говорит, кто главный, кто донор,
+// а кто самодостаточный, не правя .env и не заходя на машины.
+//
+// Доноры остаются в списке, даже если сейчас молчат: «может происходить настройка»
+// — авто-уборка «молчащих» узлов такие записи не трогает (ghost_backend_reaper).
+func (s *Server) updateBackendRole(w http.ResponseWriter, r *http.Request, backendID string) {
+	var req struct {
+		Role string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	role := strings.ToLower(strings.TrimSpace(req.Role))
+	switch role {
+	case "", types.BackendRoleStandalone, types.BackendRoleMain, types.BackendRoleDonor:
+	default:
+		http.Error(w, `{"error":"unknown role (use standalone|main|donor)"}`, http.StatusBadRequest)
+		return
+	}
+	backend := s.proxy.GetBackend(backendID)
+	if backend == nil {
+		http.Error(w, `{"error":"backend not found"}`, http.StatusNotFound)
+		return
+	}
+	// Роль сохраняем методом балансера: он пишет состояние на диск, иначе роль
+	// не переживёт рестарт (UpdateBackend состояние не сохраняет).
+	if !s.proxy.SetBackendRole(backendID, role) {
+		http.Error(w, `{"error":"failed to set role"}`, http.StatusInternalServerError)
+		return
+	}
+
+	donors, applied, err := s.applyBackendRoles()
+	// R118.2 (2026-10-14): смену роли применяет гард балансера — он же гасит
+	// раскладку у того, кто перестал быть главным (standalone/донор), и проверяет
+	// доступность узлов. Раньше «самодостаточный» гасился отдельной веткой, а
+	// бывший главный, ставший донором, продолжал держать прежний список.
+	if _, greason := s.proxy.EnsureRPCLayout(backendID); greason != "" {
+		if err == nil {
+			err = fmt.Errorf("%s", greason)
+		}
+	}
+	// R133 (2026-10-16): роль donor — приказ ЭТОМУ бэкенду поднять свой узел
+	// раскладки. Без этого роль в панели была командой в пустоту: rpc-server на
+	// донорской машине приходилось поднимать руками (env или тумблер на месте).
+	// Делаем сразу при смене роли, а не ждём периодического прохода.
+	nodeReason := ""
+	if _, nreason := s.proxy.EnsureRPCNodeServing(backendID); nreason != "" {
+		nodeReason = nreason
+		if err == nil {
+			err = fmt.Errorf("%s", nreason)
+		}
+	}
+	if len(applied) == 0 && role != "" {
+		applied = []string{backendID}
+	}
+	resp := map[string]interface{}{
+		"status":  "updated",
+		"backend": backendID,
+		"role":    role,
+		"donors":  donors,
+		"applied": applied,
+		// R133: состояние СОБСТВЕННОГО узла раскладки этого бэкенда после смены
+		// роли (для донора — поднят ли rpc-server и доступен ли он с балансера).
+		// Оператору нужно видеть результат нажатия, а не догадываться.
+		"rpcNode": s.proxy.RPCNodeReport(backendID),
+	}
+	if nodeReason != "" {
+		resp["rpcNodeReason"] = nodeReason
+	}
+	// R118: роль — операторское решение, сохраняем её в persistent-override
+	// (config.json в bundled-развёртывании readonly, поэтому sidecar в томе
+	// balancer_data). Без этого роль терялась после перезапуска балансера.
+	if perr := s.persistBackendRoles(); perr != nil {
+		resp["persist_warning"] = perr.Error()
+	}
+	if err != nil {
+		resp["warning"] = err.Error()
+	}
+	logger.Get().Infow("updateBackendRole: роль бэкенда изменена",
+		"backend", backendID, "role", role, "donors", len(donors), "applied", applied)
+	writeJSONResponse(w, http.StatusOK, resp)
+}
+
+// backendRPCLayout — GET/PUT /api/v1/backends/{id}/rpc-layout (R229, 2026-10-22).
+//
+// Тумблер раскладки, который принадлежит ОПЕРАТОРУ: режим on/off/auto хранится в
+// записи бэкенда (persistent) и побеждает роль. Зачем: гард EnsureRPCLayout
+// каждые 15 с (и перед каждой загрузкой) выводил состав из ролей, поэтому
+// выключенная вручную раскладка возвращалась обратно, и следующая загрузка снова
+// уходила на донора. Здесь оператор нажимает «Применить» и получает свой выбор,
+// пока сам не вернёт «авто».
+func (s *Server) backendRPCLayout(w http.ResponseWriter, r *http.Request, backendID string) {
+	if s.proxy.GetBackend(backendID) == nil {
+		http.Error(w, `{"error":"backend not found"}`, http.StatusNotFound)
+		return
+	}
+	var reason string
+	mutated := false
+	if r.Method == http.MethodPut || r.Method == http.MethodPost {
+		var req struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		var enabled *bool
+		switch strings.ToLower(strings.TrimSpace(req.Mode)) {
+		case "", "auto":
+			enabled = nil
+		case "on", "true", "enabled":
+			v := true
+			enabled = &v
+		case "off", "false", "disabled":
+			v := false
+			enabled = &v
+		default:
+			http.Error(w, `{"error":"unknown mode (use auto|on|off)"}`, http.StatusBadRequest)
+			return
+		}
+		if !s.proxy.SetRPCEnabledOverride(backendID, enabled) {
+			http.Error(w, `{"error":"failed to store rpc layout choice"}`, http.StatusInternalServerError)
+			return
+		}
+		// Применяем сразу, не ожидая тика ролей: оператор нажал «Применить» и должен
+		// увидеть результат в этом же ответе (или warning, если воркер не ответил).
+		_, reason = s.proxy.EnsureRPCLayout(backendID)
+		mutated = true
+		logger.Get().Infow("backendRPCLayout: выбор оператора сохранён",
+			"backend", backendID, "mode", s.proxy.RPCEnabledOverrideMode(backendID), "reason", reason)
+	} else if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	enabled, servers, known := s.proxy.ReportedRPCLayout(backendID)
+	st := s.proxy.LayoutGuardStatus(backendID)
+	status := "ok"
+	if mutated {
+		status = "updated"
+	}
+	resp := map[string]interface{}{
+		"status":  status,
+		"backend": backendID,
+		"mode":    s.proxy.RPCEnabledOverrideMode(backendID),
+		// reported — что РЕАЛЬНО на воркере сейчас (rpcEnabled + активные узлы);
+		// known=false значит «воркер ещё не присылал метрик», а не «не применилось».
+		"reported": map[string]interface{}{
+			"enabled": enabled,
+			"servers": servers,
+			"known":   known,
+		},
+		"degraded": st.Degraded,
+		"reason":   st.Reason,
+	}
+	if reason != "" {
+		resp["warning"] = reason
+	}
+	writeJSONResponse(w, http.StatusOK, resp)
+}
+
+
+// applyBackendRoles — R118: привести раскладку главного бэкенда к списку доноров.
+//
+// Возвращает список адресов доноров (host:port rpc-server), кого применили, и
+// ошибку доставки (её отдаём как warning: роль уже сохранена, оператор должен
+// видеть, что cppworker не подтвердил).
+func (s *Server) applyBackendRoles() (donors []string, applied []string, err error) {
+	port := 50052
+	if v := strings.TrimSpace(os.Getenv("LB_RPC_NODE_PORT")); v != "" {
+		if n, e := strconv.Atoi(v); e == nil && n > 0 {
+			port = n
+		}
+	}
+	var main *types.Backend
+	backends := s.proxy.GetAllBackends()
+	for i := range backends {
+		b := &backends[i]
+		switch b.Role {
+		case types.BackendRoleDonor:
+			host := strings.TrimSpace(b.Host)
+			if host == "" {
+				continue
+			}
+			donors = append(donors, fmt.Sprintf("%s:%d", host, port))
+		case types.BackendRoleMain:
+			main = b
+		}
+	}
+	sort.Strings(donors)
+	if main == nil {
+		// Главный не назначен — применять некуда; доноры просто помечены.
+		return donors, nil, nil
+	}
+	if main.CppWorkerPort <= 0 {
+		return donors, nil, fmt.Errorf("backend %s: неизвестен порт cppworker", main.ID)
+	}
+	// R118.2 (2026-10-14): раскладку применяет гард балансера, а не прямой push:
+	// он проверяет TCP-доступность узлов и отправляет ТОЛЬКО живой состав (а если
+	// живых нет — выключает раскладку и грузит локально). Иначе недоступный узел
+	// ронял загрузку модели: «ggml-rpc.cpp:345 Remote RPC server crashed or
+	// returned malformed response» + SIGABRT.
+	degraded, reason := s.proxy.EnsureRPCLayout(main.ID)
+	if degraded {
+		return donors, []string{main.ID}, fmt.Errorf("раскладка деградировала: %s", reason)
+	}
+	return donors, []string{main.ID}, nil
+}
 
 // ============================================================
 // Backends API handlers
@@ -73,6 +511,44 @@ func (s *Server) backendHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Подпуть /role — R118 (2026-10-14): явное управление ролью бэкенда в
+	// раскладке слоёв: кто главный (мастер), кто донор (узел), кто самодостаточный.
+	// Требование оператора: настраивать это из WebUI, а не правкой .env, и узел
+	// оставлять в списке даже если он сейчас молчит (его могут настраивать).
+	if len(parts) > 1 && parts[1] == "role" {
+		if r.Method == http.MethodPut || r.Method == http.MethodPost {
+			s.updateBackendRole(w, r, backendID)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Подпуть /rpc-layout — R229 (2026-10-22): тумблер раскладки «вкл/выкл/авто»
+	// с кнопкой «Применить» в WebUI. Решение оператора переживает тик гарда (раньше
+	// выключенная раскладка возвращалась ролью главного через ~15 с — живой дефект).
+	if len(parts) > 1 && parts[1] == "rpc-layout" {
+		switch r.Method {
+		case http.MethodGet, http.MethodPut, http.MethodPost:
+			s.backendRPCLayout(w, r, backendID)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Подпуть /measure-link — R118.15 (2026-10-14): измерить канал до узла
+	// раскладки СЕЙЧАС (кнопка «Проверить канал» в панели). Балансер качает
+	// известный объём с cppworker'а узла и считает Мбит/с; результат попадает в
+	// запись бэкенда (rpcLink) и живёт до следующего замера.
+	if len(parts) > 1 && parts[1] == "measure-link" {
+		if r.Method == http.MethodPost || r.Method == http.MethodPut {
+			s.measureBackendLink(w, r, backendID)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	// Подпуть /evacuate — плавная эвакуация бэкенда
 	if len(parts) > 1 && parts[1] == "evacuate" {
 		if r.Method == http.MethodPost {
@@ -174,13 +650,20 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 	// Формирование ответа для каждого бэкенда
 	for _, backend := range allBackends {
 		// Фильтруем нерабочие бэкенды, если не запрошено явное включение.
-		if !includeUnhealthy && unhealthyStatuses[backend.Status] {
+		//
+		// R118.10 (2026-10-14): узел с ЯВНОЙ ролью в раскладке показываем ВСЕГДА,
+		// даже offline/unhealthy. Требование оператора — «оставлять узел в списке,
+		// так как может происходить настройка»: остановленный узел (или узел,
+		// который настраивают) должен быть виден в панели вместе со своей ролью,
+		// иначе настраивать нечего. Обычные нерабочие записи фильтруются как раньше.
+		if !includeUnhealthy && unhealthyStatuses[backend.Status] && strings.TrimSpace(backend.Role) == "" {
 			continue
 		}
 		// R71: вместимость по единому правилу (нода-саморегистрация → n_parallel,
 		// иначе операторский runtime-лимит, иначе статический max). Отчёт должен
 		// совпадать с тем, на что реально встаёт admission-очередь.
-		maxConcurrent := backend.EffectiveMaxConcurrentRequests()
+		// R117: вместе с числом отдаём источник (ResolveCapacity) — см. ниже.
+		maxConcurrent, capacitySource := backend.ResolveCapacity()
 		// Приоритет: RuntimeMaxModels > MaxModels
 		maxModels := backend.MaxModels
 		if backend.RuntimeMaxModels != 0 {
@@ -204,10 +687,49 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			"maxModels":                    maxModels,
 			"runtimeMaxModels":             backend.RuntimeMaxModels,
 			"runtimeMaxConcurrentRequests": backend.RuntimeMaxConcurrentRequests,
-			"labels":                       backend.Labels,
-			"status":                       backend.Status,
-			"type":                         backend.Type,
-			"engine":                       backend.Engine,
+			// R117 (2026-10-14): ПОЧЕМУ вместимость такая. До этого отчёт давал
+			// только число, и «2» одинаково выглядело как «у модели два слота», как
+			// «нода заявила n_parallel=2» и как «модели нет вовсе». Живой случай:
+			// count=0 на узле, а отчёт показывал 2 — разобраться без чтения кода
+			// было нельзя. Источник считает types.ResolveCapacity.
+			"maxConcurrentRequestsSource": capacitySource,
+			"runtimeModelSlots":           backend.RuntimeModelSlots,
+			// R118: роль бэкенда в раскладке слоёв (standalone|main|donor) —
+			// её выставляет оператор из WebUI (PUT .../role).
+			"role": backend.Role,
+			// R229 (2026-10-22): тумблер раскладки оператора: auto|on|off. В панели это
+			// состояние тумблера, а не догадка по роли — иначе после «выкл» он выглядел
+			// бы включённым, потому что роль главного осталась прежней.
+			"rpcEnabledOverride": s.proxy.RPCEnabledOverrideMode(backend.ID),
+			// R118 (2026-10-14): замер пропускной способности канала до узлов
+			// раскладки — из окружения балансера (LB_RPC_LINK_*), потому что
+			// измерить его из процесса нельзя: число даёт оператор scripts/
+			// measure-network.ps1. WebUI показывает его в пометках раскладки.
+			// R118.15: rpcLink — замер ОПЕРАТОРА (LB_RPC_LINK_*, как было; смысл
+			// не подменяем), rpcLinkAuto — автозамер балансера до узла (см. тип
+			// rpcLinkAuto: почему это ДВА разных числа, а не одно).
+			"rpcLink":     rpcLinkInfo(),
+			"rpcLinkAuto": s.rpcLinkAutoInfo(backend.ID),
+			// R118.2 (2026-10-14): состояние раскладки у ЭТОГО бэкенда: включена
+			// ли она сейчас и не работает ли в неполном составе. Оператор видит
+			// причину («узлы раскладки недоступны (…): раскладка выключена,
+			// загрузка идёт локально») прямо в панели, а не только в логе.
+			"rpcLayout": s.proxy.LayoutGuardStatus(backend.ID),
+			// R133 (2026-10-16): состояние СОБСТВЕННОГО узла раскладки бэкенда —
+			// то, что раньше было не видно вообще. Донор поднимает rpc-server по
+			// приказу балансера (роль donor) и отчитывается из /api/models:
+			// enabled (желание), running (процесс), listening (порт), reachable
+			// (проверка с балансера). Без этого роль в панели выглядела как
+			// команда без ответа, а «поднят» путалось с «доступен».
+			"rpcNode": s.proxy.RPCNodeReport(backend.ID),
+			// R132: откуда вклад узлов в бюджет у справочных путей
+			// (none|cache|probed) — «0 МБ узлов» и «узлы не измерялись» в панели
+			// выглядели одинаково.
+			"vramRemoteSource": s.proxy.VramRemoteSourceFor(backend.ID),
+			"labels":           backend.Labels,
+			"status":           backend.Status,
+			"type":             backend.Type,
+			"engine":           backend.Engine,
 			// Round 51.2 (2026-08-20): явный API-стиль бэкенда. Если пусто — клиент
 			// (WebUI) видит только effective-значение из Type. Возвращаем ОБА:
 			// apiStyle (raw, оператор-установленный) + effectiveApiStyle (resolved).
@@ -217,6 +739,11 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			"hasAgent":         backend.HasAgent,
 			"agentId":          backend.AgentID,
 			"lastAgentContact": backend.LastAgentContact,
+			// R101 (S1 плана 2026-10-07): версия сборки llama.cpp, которую
+			// сообщил узел. Оператор видит, из чего собраны узлы раскладки:
+			// расхождение — причина таймаута загрузки, а не «медленная сеть».
+			// Поле отдаётся всегда (пустая строка = узел версию не сообщает).
+			"buildInfo": backend.BuildInfo,
 		}
 
 		// R-Image follow-up (2026-10-02): gpuIndex — ЧИСЛО, когда индекс задан
@@ -278,7 +805,11 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			// модели — информация не обновляется даже через 30s polling".
 			// Реальная причина: loadedModels в response отсутствовало.
 			if backend.Type == types.BackendTypeLlamaCpp {
-				if lm := s.proxy.GetMetricsManager().GetLlamaCppMetrics(backend.ID); lm != nil {
+				// R119 (пункт 4): берём КОПИЮ метрик с приписанным происхождением
+				// параметров загрузки — WebUI показывает источник рядом со
+				// значением (запрос / профиль / настройки по умолчанию / cppworker).
+				// GetLlamaCppMetrics отдаёт живой указатель, дописывать в него нельзя.
+				if lm := s.proxy.LlamaCppMetricsWithProvenance(backend.ID); lm != nil {
 					loading := lm.LoadingModels
 					if loading == nil {
 						loading = []types.LlamaCppModel{}
@@ -296,20 +827,22 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 					// Round 54.1 (2026-08-24): AutoTune report — рекомендации
 					// по оптимизации загруженных моделей (KV cache, num_ctx, layers).
 					// WebUI может показать badge "sub-optimal" и предложить fix.
+					// R230: метрики GPU/System приходят в МБ, AnalyzeBackend ждёт
+					// байты — конвертируем (иначе freeVRAM=20000 → 0.0 GB).
 					var freeVRAM, freeRAM, totalVRAM uint64
 					if m := metricsMap[backend.ID]; m != nil {
-						totalVRAM = m.GPU.MemoryTotal
+						totalVRAM = balancer.MBToBytes(m.GPU.MemoryTotal)
 						if m.GPU.MemoryFree > 0 {
-							freeVRAM = m.GPU.MemoryFree
+							freeVRAM = balancer.MBToBytes(m.GPU.MemoryFree)
 						} else if m.GPU.MemoryTotal > 0 {
 							// estimate: total - used
-							freeVRAM = m.GPU.MemoryTotal
-							if used := m.GPU.MemoryUsed; used < freeVRAM {
+							freeVRAM = balancer.MBToBytes(m.GPU.MemoryTotal)
+							if used := balancer.MBToBytes(m.GPU.MemoryUsed); used < freeVRAM {
 								freeVRAM -= used
 							}
 						}
 						if m.System.MemoryFree > 0 {
-							freeRAM = m.System.MemoryFree
+							freeRAM = balancer.MBToBytes(m.System.MemoryFree)
 						}
 					}
 					autoTuneReport := balancer.AnalyzeBackend(
@@ -350,10 +883,18 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 		backends = append(backends, backendData)
 	}
 
-	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"backends": backends,
 		"total":    len(backends),
-	})
+	}
+	// R92 (S2 плана 2026-10-07): логические бэкенды отдаются отдельным списком.
+	// Без него оператор видит два физических узла и не понимает, что они
+	// обслуживают ОДНУ модель как один бэкенд (слоты, health и VRAM — общие).
+	// Состояние считает internal/backendgroup, см. /api/v1/placement → groups.
+	if groups := s.proxy.BackendGroupStatuses(); len(groups) > 0 {
+		resp["groups"] = groups
+	}
+	s.writeJSON(w, http.StatusOK, resp)
 }
 
 // getBackend - получение информации о бэкенде
@@ -529,6 +1070,11 @@ func (s *Server) refreshRegisteredBackend(w http.ResponseWriter, req backendRequ
 	if req.CppWorkerApiToken != "" {
 		updated.CppWorkerApiToken = req.CppWorkerApiToken
 	}
+	// R101: версия сборки — только если узел её сообщил; пустое значение не стирает
+	// уже известную (сборки, которые поля не знают, не должны обнулять проверку).
+	if req.BuildInfo != "" {
+		updated.BuildInfo = req.BuildInfo
+	}
 	// GPUIndex: нода сообщила индекс (в т.ч. 0 — явная первая карта) → принимаем;
 	// ключа в payload нет → сохраняем операторское значение. Сборки, которые поля
 	// не знают, не должны стирать настройку, иначе лок сосуществования молча
@@ -551,6 +1097,18 @@ func (s *Server) refreshRegisteredBackend(w http.ResponseWriter, req backendRequ
 		"updated": true,
 		"backend": updated,
 	})
+}
+
+// buildInfoOrKeepR101 — версия сборки из запроса, иначе уже известная.
+//
+// Отдельная функция, потому что путь heartbeat пересобирает Backend целиком: без
+// этого правила версия, полученная при регистрации, исчезала бы на первом же
+// обновлении статуса — а вместе с ней и проверка совместимости сторон RPC.
+func buildInfoOrKeepR101(fromRequest, existing string) string {
+	if strings.TrimSpace(fromRequest) != "" {
+		return fromRequest
+	}
+	return existing
 }
 
 // backendRequest — тело POST /api/v1/backends (создание/саморегистрация бэкенда).
@@ -584,6 +1142,10 @@ type backendRequest struct {
 	// Round 51.2 (2026-08-20): явный API-стиль бэкенда (ollama-native/openai-compatible).
 	// Если пусто — Backend.EffectiveAPIStyle() выводит из Type.
 	ApiStyle string `json:"apiStyle"`
+	// BuildInfo — R101 (S1 плана 2026-10-07): версия/коммит сборки llama.cpp,
+	// которую узел сообщает при регистрации. Балансер сравнивает её у узлов одной
+	// раскладки (протокол RPC версионно-чувствителен) — см. types.Backend.BuildInfo.
+	BuildInfo string `json:"buildInfo"`
 	// Round 7 (2026-07-09): cppworker пробрасывает свой API_TOKEN при
 	// регистрации, чтобы balancer мог авторизоваться на /api/models/reload
 	// (authMiddleware). В bundled-режиме устраняет необходимость ручной
@@ -757,7 +1319,14 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		Engine:            types.ResolveEngine(types.BackendEngine(req.BackendEngine), backendType),
 		// Round 51.2 (2026-08-20): если req.ApiStyle непусто и валидно — используем как есть.
 		// Иначе Backend.EffectiveAPIStyle() выведет из Type автоматически.
-		ApiStyle: types.APIStyle(req.ApiStyle),
+		ApiStyle:  types.APIStyle(req.ApiStyle),
+		BuildInfo: req.BuildInfo,
+		// R118 (2026-10-14): роль бэкенда в раскладке слоёв — операторское
+		// решение, оно живёт в persistent-override (backend-roles.json). Именно
+		// ЭТОТ путь создаёт запись для bundled-агента (POST /api/v1/backends),
+		// поэтому роль надо подставлять здесь, иначе после перезапуска балансера
+		// (записи пересоздаются) главный оставался без доноров — проверено живьём.
+		Role: s.roleForBackend(req.ID, ""),
 	}
 
 	// GPUIndex: копируем ЗНАЧЕНИЕ из запроса, а не переиспользуем его указатель
@@ -927,6 +1496,10 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		// принимать CppWorkerApiToken, иначе при re-registration (PUT update)
 		// после первого запуска cppworker теряет свой токен в backend state.
 		CppWorkerApiToken string `json:"cppWorkerApiToken,omitempty"`
+		// R101 (S1 плана 2026-10-07): версия сборки llama.cpp — приходит и при
+		// регистрации, и при heartbeat; без неё в этом запросе проверка
+		// совместимости сторон RPC стиралась бы на первом обновлении статуса.
+		BuildInfo string `json:"buildInfo,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1107,20 +1680,24 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 	}
 
 	updated := types.Backend{
-		ID:                           backendID,
-		Name:                         name,
-		Host:                         host,
-		OllamaPort:                   ollamaPort,
-		AgentPort:                    agentPort,
-		CppWorkerPort:                cppWorkerPort,
-		ImagePort:                    imagePort,
-		GPUIndex:                     gpuIndex,
-		Weight:                       weight,
-		MaxConcurrentReqs:            maxConcurrent,
-		MaxModels:                    maxModels,
-		Labels:                       labels,
-		Status:                       existing.Status,
-		CppWorkerApiToken:            cppWorkerAPIToken,
+		ID:                backendID,
+		Name:              name,
+		Host:              host,
+		OllamaPort:        ollamaPort,
+		AgentPort:         agentPort,
+		CppWorkerPort:     cppWorkerPort,
+		ImagePort:         imagePort,
+		GPUIndex:          gpuIndex,
+		Weight:            weight,
+		MaxConcurrentReqs: maxConcurrent,
+		MaxModels:         maxModels,
+		Labels:            labels,
+		Status:            existing.Status,
+		CppWorkerApiToken: cppWorkerAPIToken,
+		// R101: версия сборки llama.cpp едет вместе с бэкендом — иначе heartbeat
+		// (этот путь пересобирает структуру целиком) стирал бы её, и проверка
+		// совместимости сторон RPC снова стала бы «неизвестно».
+		BuildInfo:                    buildInfoOrKeepR101(req.BuildInfo, existing.BuildInfo),
 		HasAgent:                     existing.HasAgent,
 		LastAgentContact:             existing.LastAgentContact,
 		LastHealthCheck:              existing.LastHealthCheck,
@@ -1142,6 +1719,10 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		// оператор задаёт в WebUI. Реконструкция по полям его затирала, и
 		// сохранение бэкенда из WebUI снимало защиту от захвата чужой машиной.
 		NodeAddr: existing.NodeAddr,
+		// R118 (2026-10-14): роль в раскладке слоёв — операторское решение; этот
+		// путь (PUT/правка бэкенда) пересобирает запись целиком, поэтому роль
+		// переносим (как Runtime*-поля и Engine выше).
+		Role: s.roleForBackend(backendID, existing.Role),
 	}
 
 	// Обновление бэкенда в прокси
@@ -1171,6 +1752,39 @@ func (s *Server) deleteBackend(w http.ResponseWriter, r *http.Request, backendID
 		return
 	}
 
+	// R118.10 (2026-10-14): УЗЕЛ С ЯВНОЙ РОЛЬЮ НЕ УДАЛЯЕМ — ОСТАВЛЯЕМ В СПИСКЕ.
+	//
+	// Требование оператора: «оставлять узел в списке, так как может происходить
+	// настройка». Штатную остановку узла сопровождает best-effort
+	// `DELETE /api/v1/backends/{id}` от самого cppworker'а
+	// (cmd/cppworker/balancer_register.go) — и раньше это стирало запись вместе с
+	// ролью в раскладке: остановил узел, чтобы настроить, — потерял и роль, и
+	// раскладку (живая проверка: запись донора исчезала из /api/v1/backends через
+	// ~30 с после docker stop).
+	//
+	// Теперь запись с ролью не удаляется, а «отцепляется» от агента: статус
+	// offline, роль и раскладка целы, панель продолжает показывать узел и
+	// позволяет его настраивать. Вернувшийся агент прикрепится к той же записи.
+	// Явное удаление оператором по-прежнему возможно — сначала снимите роль
+	// (PUT .../role с пустым значением), затем DELETE.
+	if backend := s.proxy.GetBackend(backendID); backend != nil && strings.TrimSpace(backend.Role) != "" {
+		role := strings.TrimSpace(backend.Role)
+		detached := s.proxy.DetachAgentFromBackend(backendID)
+		logger.Get().Warnw("deleteBackend: узел с ролью оставлен в списке (откреплён агент, не удалён)",
+			"backend", backendID, "role", role, "detached", detached,
+			"hint", "чтобы удалить запись — сначала снимите роль (PUT /role с пустым значением)")
+		s.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"success":  true,
+			"id":       backendID,
+			"kept":     true,
+			"detached": detached,
+			"role":     role,
+			"message": "Узел с явной ролью оставлен в списке: агент откреплён, роль и раскладка сохранены. " +
+				"Чтобы удалить запись, сначала снимите роль.",
+		})
+		return
+	}
+
 	// Удаление бэкенда из прокси
 	if err := s.proxy.RemoveBackend(backendID); err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -1184,6 +1798,32 @@ func (s *Server) deleteBackend(w http.ResponseWriter, r *http.Request, backendID
 		"success": true,
 		"id":      backendID,
 		"message": "Backend removed successfully",
+	})
+}
+
+// measureBackendLink — R118.15: POST /api/v1/backends/{id}/measure-link.
+func (s *Server) measureBackendLink(w http.ResponseWriter, r *http.Request, backendID string) {
+	if s.proxy == nil {
+		http.Error(w, `{"error":"proxy not available"}`, http.StatusInternalServerError)
+		return
+	}
+	mbps, err := s.proxy.MeasureRPCLinkForBackend(backendID)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadGateway, map[string]interface{}{
+			"success": false,
+			"backend": backendID,
+			"error":   err.Error(),
+		})
+		return
+	}
+	link := s.rpcLinkAutoInfo(backendID)
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":  true,
+		"backend":  backendID,
+		"mbps":     mbps,
+		"measured": link.MeasuredAt,
+		"node":     link.Node,
+		"source":   link.Source,
 	})
 }
 

@@ -2,11 +2,11 @@
 // clusterConfigHandler (Session 17, 2026-07-27).
 //
 // Проверяет:
-//   1. PUT /api/v1/cluster/config с "llamaCpp" применяет partial-поля
-//   2. Передаваемые bool-поля (false = сброс) реально сбрасываются
-//   3. Передаваемые строковые поля ("" = сброс) реально сбрасываются
-//   4. LlamaCpp возвращается в response
-//   5. Не-LlamaCpp-поля не затираются (partial update не ломает остальные)
+//  1. PUT /api/v1/cluster/config с "llamaCpp" применяет partial-поля
+//  2. Передаваемые bool-поля (false = сброс) реально сбрасываются
+//  3. Передаваемые строковые поля ("" = сброс) реально сбрасываются
+//  4. LlamaCpp возвращается в response
+//  5. Не-LlamaCpp-поля не затираются (partial update не ломает остальные)
 package api
 
 import (
@@ -155,7 +155,7 @@ func TestClusterConfigHandler_Put_BoolReset(t *testing.T) {
 	// bool-поля должны сбрасываться в false, если явно прислано false.
 	s := testClusterConfigServer(t)
 	r := &s.config.LlamaCpp
-	r.FlashAttention = true   // ставим true
+	r.FlashAttention = true // ставим true
 	r.AutoGpuDistribution = true
 
 	body := `{"llamaCpp":{"flashAttention":false,"autoGpuDistribution":false}}`

@@ -28,11 +28,11 @@ func createTestServerWithRPC(t *testing.T, enableRPC bool) (*Server, *balancer.P
 			{
 				ID:                "backend1",
 				Name:              "Test Backend 1",
-				Host:               "localhost",
-				OllamaPort:         11434,
-				Weight:             1,
+				Host:              "localhost",
+				OllamaPort:        11434,
+				Weight:            1,
 				MaxConcurrentReqs: 10,
-				Status:             types.StatusHealthy,
+				Status:            types.StatusHealthy,
 			},
 		},
 		Balancing: types.BalancingSettings{

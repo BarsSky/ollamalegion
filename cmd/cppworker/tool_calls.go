@@ -250,12 +250,58 @@ func trimDescription(desc string, maxChars int) string {
 //
 //  8. JSON-объект с полем "function" (Llama-3 style single)
 func parseToolCallsFromOutput(output string) []openAIToolCall {
+	return parseToolCallsFromOutputRaw(output)
+}
+
+// parseToolCallsFromOutputWithTools — R113 (2026-10-13): разбор вывода с
+// приведением arguments к JSON-ОБЪЕКТУ по схеме инструментов из ЗАПРОСА.
+//
+// Зачем отдельная функция, а не изменение прежней: схема инструментов доступна
+// только там, где есть сам запрос (req.Tools). Все клиентские пути (Ollama
+// /api/chat, OpenAI /v1/chat/completions, /api/generate) обязаны использовать
+// именно её — иначе клиент получает arguments-МАССИВ или ГОЛУЮ СТРОКУ и не
+// может выполнить вызов (живой случай: run_commands → ["ls -A"],
+// list_files → "c:\\Ollama\\ollamalegion"; Cline в этом случае показывает
+// вызов текстом и считает задачу выполненной).
+func parseToolCallsFromOutputWithTools(output string, tools []openAITool) []openAIToolCall {
+	calls := parseToolCallsFromOutputRaw(output)
+	if len(calls) == 0 {
+		return nil
+	}
+	return coerceToolCallsToSchema(calls, tools)
+}
+
+func parseToolCallsFromOutputRaw(output string) []openAIToolCall {
 	if output == "" {
 		return nil
 	}
 
+	// R106d (2026-10-12): вызов может лежать внутри markdown-фенса
+	// (```json … ```) или фенс может быть незакрыт — живой прогон Cline отдал
+	// "```json\n[\n  {\"id\":…" и стратегия 5 (строгий regex с закрывающим ```)
+	// его не распознала: вызов ушёл клиенту как текст, message.tool_calls не
+	// пришёл вовсе. Снимаем обёртку ДО стратегий (stripJSONFence умеет и
+	// незакрытый фенс, и короткое пояснение перед ним).
+	if stripped := stripJSONFence(output); stripped != output && strings.TrimSpace(stripped) != "" {
+		if calls := parseToolCallsFromOutputRaw(stripped); len(calls) > 0 {
+			return calls
+		}
+	}
+
 	// Стратегия 1: Hermes / Qwen 2.5 формат <tool_call>...</tool_call>
 	if calls := extractHermesToolCalls(output); len(calls) > 0 {
+		return calls
+	}
+
+	// Стратегия 1a (R119 2026-10-15): angle-форма Hermes/Qwen3-Coder —
+	// `<tool_call> <function=bash> <parameter=command> pwd && ls -la </parameter>`.
+	//
+	// ЖИВОЙ ДЕФЕКТ (скриншот оператора, DSH через балансер): JSON в блоке нет
+	// вовсе, имя и аргументы несёт разметка `<function=…>`/`<parameter=…>`.
+	// Ни один парсер её не знал → вызов уезжал клиенту ТЕКСТОМ, инструмент не
+	// исполнялся. Стоит ДО gemma-native: тот ждёт `name{args}` и на
+	// `<function=bash>` может распарсить имя как часть разметки.
+	if calls := extractHermesAngleToolCalls(output); len(calls) > 0 {
 		return calls
 	}
 
@@ -274,6 +320,20 @@ func parseToolCallsFromOutput(output string) []openAIToolCall {
 
 	// Стратегия 3: Mistral Nemo [TOOL_CALLS][...]
 	if calls := extractMistralToolCalls(output); len(calls) > 0 {
+		return calls
+	}
+
+	// Стратегия 3b (R109, 2026-10-13): JSON-форма gemma-4 «tool_call + args».
+	//
+	// Живой случай (Cline CLI 3.0.70 + gemma-4-E4B-it-Q4_K_M, stream=true,
+	// 18 инструментов): модель отдала
+	//
+	//	[ { "tool_call": "read_files", "args": { "path": "." } } ]
+	//
+	// Парсер знал пары `name`+`arguments` и `name`+`parameters`, но эту — нет:
+	// вызов уехал клиенту как content с done_reason:"stop", Cline показал JSON
+	// текстом (hadToolCalls=false), инструмент не вызвался.
+	if calls := extractToolCallArgsShapeCalls(output); len(calls) > 0 {
 		return calls
 	}
 
@@ -817,7 +877,176 @@ func parseRawArrayAsToolCalls(jsonStr string) []openAIToolCall {
 // чтобы превратить relaxed JSON в валидный.
 //
 // Поддерживает как пустые аргументы `name{}`, так и с аргументами `name{json}`.
+// normalizeGemmaNativeToolCallSyntax — R109 (2026-10-13): привести НАТИВНЫЙ
+// синтаксис tool call от gemma-4 к форме, которую понимает extractGemmaToolCalls
+// (`<tool_call>имя{аргументы}</tool_call>`).
+//
+// Живой формат (Cline CLI 3.0.70 + gemma-4-E4B-it-Q4_K_M, stream=true):
+//
+//	<|tool_call>call:run_commands{commands:[<|"|>dir<|"|>]}<tool_call|>
+//
+// Что нормализуется:
+//   - теги с пайпами: `<|tool_call>` → `<tool_call>`, `<tool_call|>` → `</tool_call>`
+//     (в т.ч. вариант `<|tool_call|>`);
+//   - служебные токены кавычек: `<|"|>` → `"`, `<|'|>` → `'`;
+//   - префикс роли вызова перед именем функции: `call:`, `tool:`, `function:`.
+//
+// Аргументы остаются «расслабленным» JS-подобным объектом — их приводит к JSON
+// fixGemmaArgs (он для этого и написан).
+func normalizeGemmaNativeToolCallSyntax(s string) string {
+	if s == "" || !strings.Contains(s, "tool_call") {
+		return s
+	}
+	replacer := strings.NewReplacer(
+		"<|tool_call|>", "<tool_call>",
+		"<|tool_call>", "<tool_call>",
+		"<tool_call|>", "</tool_call>",
+		"<|/tool_call|>", "</tool_call>",
+		"<|/tool_call>", "</tool_call>",
+		`<|"|>`, `"`,
+		"<|'|>", "'",
+	)
+	out := replacer.Replace(s)
+	// Префикс вызова идёт сразу после открывающего тега.
+	for _, prefix := range []string{"call:", "tool:", "function:"} {
+		out = strings.ReplaceAll(out, "<tool_call>"+prefix, "<tool_call>")
+	}
+	return out
+}
+
+// jsonObjectCandidates — все JSON-объекты верхнего уровня в произвольном тексте.
+//
+// Сканер учитывает строки и экранирование, поэтому `{`/`}` внутри значений не
+// сбивают подсчёт вложенности. Нужен там, где формат вызова неизвестен заранее
+// (модель кладёт вызов в массив, в текст или в фенс).
+func jsonObjectCandidates(s string) []string {
+	var out []string
+	for i := 0; i < len(s); i++ {
+		if s[i] != '{' {
+			continue
+		}
+		depth := 0
+		inString := false
+		escaped := false
+		closed := false
+		for j := i; j < len(s); j++ {
+			c := s[j]
+			if inString {
+				switch {
+				case escaped:
+					escaped = false
+				case c == '\\':
+					escaped = true
+				case c == '"':
+					inString = false
+				}
+				continue
+			}
+			switch c {
+			case '"':
+				inString = true
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					out = append(out, s[i:j+1])
+					i = j
+					closed = true
+				}
+			}
+			if closed {
+				break
+			}
+		}
+	}
+	return out
+}
+
+// extractToolCallArgsShapeCalls — R109 (2026-10-13): распознать вызов в форме
+// «явный ключ вызова + аргументы», которую использует gemma-4:
+//
+//	{"tool_call": "read_files", "args": {"path": "."}}
+//	[{"tool_call": "run_commands", "args": {"commands": ["dir"]}}]
+//
+// Пары `name`+`arguments` и `name`+`parameters` парсер знал, эту — нет.
+//
+// Требование к объекту намеренно узкое: должен быть И явный ключ вызова
+// (`tool_call` / `tool_name` / `tool`), И ключ аргументов. Иначе легко принять за
+// вызов обычный JSON из прозы модели или эхо схемы инструмента.
+func extractToolCallArgsShapeCalls(output string) []openAIToolCall {
+	if output == "" || !strings.Contains(output, "{") {
+		return nil
+	}
+	var result []openAIToolCall
+	for _, obj := range jsonObjectCandidates(output) {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(obj), &fields); err != nil {
+			continue
+		}
+		name := ""
+		for _, key := range []string{"tool_call", "tool_name", "tool"} {
+			if raw, ok := fields[key]; ok {
+				var s string
+				if err := json.Unmarshal(raw, &s); err == nil && strings.TrimSpace(s) != "" {
+					name = strings.TrimSpace(s)
+					break
+				}
+			}
+		}
+		if name == "" {
+			continue
+		}
+		var argsRaw json.RawMessage
+		for _, key := range []string{"args", "arguments", "parameters", "input"} {
+			if raw, ok := fields[key]; ok {
+				argsRaw = raw
+				break
+			}
+		}
+		if argsRaw == nil {
+			continue
+		}
+		args := strings.TrimSpace(string(argsRaw))
+		if args == "" || args == "null" {
+			args = "{}"
+		}
+		// arguments в OpenAI-форме — JSON-СТРОКА, поэтому объект сериализуем.
+		if !json.Valid([]byte(args)) || !strings.HasPrefix(args, "{") {
+			quoted, err := json.Marshal(args)
+			if err != nil {
+				continue
+			}
+			args = string(quoted)
+		}
+		result = append(result, openAIToolCall{
+			Type: "function",
+			Function: openAIFunctionCall{
+				Name:      name,
+				Arguments: args,
+			},
+		})
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	if !normalizeToolCalls(result) {
+		return nil
+	}
+	return result
+}
+
 func extractGemmaToolCalls(output string) []openAIToolCall {
+	// R109 (2026-10-13): сначала приводим НАТИВНЫЙ синтаксис gemma-4 к тому, что
+	// понимает регекс ниже. Живой формат (Cline CLI + gemma-4, stream=true):
+	//
+	//	<|tool_call>call:run_commands{commands:[<|"|>dir<|"|>]}<tool_call|>
+	//
+	// Отличия от того, что парсер знал раньше: теги с пайпами, префикс `call:`
+	// перед именем функции и служебный токен кавычки `<|"|>`. Без нормализации
+	// вызов не распознавался и уходил клиенту текстом (Cline: toolCallCount=0).
+	output = normalizeGemmaNativeToolCallSyntax(output)
+
 	// Регекс: <tool_call>имя{json}</tool_call>
 	// Имя функции: [a-zA-Z_][a-zA-Z0-9_]* (допускаем подчёркивания и цифры)
 	// JSON-объект аргументов: {...} (включая пустой {})
@@ -1505,8 +1734,15 @@ func cleanFinalContent(output string) string {
 	s := output
 	// Удаляем хвостовые служебные токены (могут быть артефактом из prompt с tools).
 	// Идём в цикле, потому что их может быть несколько подряд.
+	//
+	// R108 (2026-10-13): перед проверкой суффикса срезаем ПРОБЕЛЬНЫЕ символы.
+	// Живой дефект: gemma-4 отдала «ок<end_of_turn> » (токен, за которым остался
+	// пробел/перевод строки) — HasSuffix не срабатывал ни на «<end_of_turn>», ни
+	// на «<end_of_turn>\n», и клиент (через балансер :18080) увидел в content
+	// «ок<end_of_turn>» — тот же класс дефекта, что «ок<end_of_turn>» в R106c.
 	for {
 		trimmed := false
+		s = strings.TrimRight(s, " \t\r\n")
 		// Прямое вхождение + пробельные символы вокруг.
 		for _, tok := range trailingToolTokens {
 			if strings.HasSuffix(s, tok) {
@@ -1518,6 +1754,12 @@ func cleanFinalContent(output string) string {
 			break
 		}
 	}
+	// R114b (2026-10-13): вырезаем одиночные маркеры размышлений, оставшиеся в
+	// ВИДИМОМ тексте. Парный разбор (SplitReasoningContent) снимает блоки
+	// open…close; тег без пары (начало блока было в промпте шаблона, обрыв по
+	// max_tokens, чужой шаблон) оставался в content — живая жалоба оператора:
+	// «в ответе перемешка с ответом и маркером </think>».
+	s = stripOrphanReasoningTags(s)
 	// Trim whitespace и trailing newlines.
 	return strings.TrimSpace(s)
 }
@@ -1541,6 +1783,13 @@ var trailingToolTokens = []string{
 	"<start_of_turn>model",
 	"<end_of_turn>",
 	"<end_of_turn>\n",
+	// R110 (2026-10-13): обёртки НАТИВНОГО вызова gemma-4. Сам вызов парсер уже
+	// распознаёт (normalizeGemmaNativeToolCallSyntax), но если модель оставила в
+	// хвосте только обёртку (частичный вызов, обрезка по max_tokens), без этих
+	// токенов она уезжала клиенту как видимый текст.
+	"<tool_call|>",
+	"<|tool_call>",
+	"<|tool_call|>",
 }
 
 // recoverToolCallsByPrefixTrimming — Round 16 (2026-07-30) multi-tool recovery.

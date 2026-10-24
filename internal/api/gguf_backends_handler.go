@@ -27,9 +27,47 @@ type ggufBgInfo struct {
 }
 
 type ggufBgModelInfo struct {
-	Name        string `json:"name"`
-	Status      string `json:"status"` // "loaded", "loading", "error"
+	Name string `json:"name"`
+	// Status — нормализованный state модели (R119): "loaded" | "loading" | "error".
+	// До R119 поле всегда было "loaded" (см. buildGgufBgInfo).
+	Status      string `json:"status"`
 	ContextSize int    `json:"contextSize,omitempty"`
+	// Parameters — R119 (пункт 4): происхождение каждого параметра загрузки,
+	// {"contextLength":{"value":8192,"source":"profile"},…}.
+	//
+	// ЗАЧЕМ. Оператор видел только значения и не мог понять, какой слой их поставил
+	// (явный запрос клиента / per-model профиль / «настройки по умолчанию» / env
+	// cppworker), поэтому вопрос «настройки вообще применяются?» оставался
+	// догадкой. Источник считает балансер при загрузке (load_provenance_r119.go) —
+	// UI рисует его рядом со значением. Пусто = модель грузили не через этот путь
+	// либо балансер перезапускался; тогда UI не показывает домыслов.
+	Parameters map[string]interface{} `json:"parameters,omitempty"`
+	// === R213 (2026-10-21): РЕАЛЬНЫЕ runtime-параметры загруженного инстанса ===
+	//
+	// ЗАЧЕМ. До R213 в этом ответе для загруженной модели были только
+	// name/status/contextSize. WebUI рисует блок «действующие параметры»
+	// (gguf-renderer-detail-render.js, loadedParamsFor/paramFact) из ЭТОГО
+	// ответа, и по отсутствующим ключам печатал догадку: kv → «f16», gpu_layers
+	// → 0. Живая жалоба оператора: «в настройках стоит q4_0, а в отображении
+	// загруженных параметров f16» — при том что воркер отдаёт в /api/models
+	// честный kv_cache_type=q4_0, а балансер его уже принял. Ключи ниже — это
+	// ФАКТЫ инстанса (не запрос и не профиль), те же имена, что в /api/models.
+	//
+	// Пустое/нулевое значение означает «воркер не сообщил» и НЕ даёт UI права
+	// подставлять значение по умолчанию (см. рендер kv-чипа).
+	KvCacheType       string                   `json:"kv_cache_type,omitempty"`
+	GPULayers         int                      `json:"gpu_layers,omitempty"`
+	BatchSize         int                      `json:"batch_size,omitempty"`
+	Parallel          int                      `json:"parallel,omitempty"`
+	MaxSlots          int                      `json:"max_slots,omitempty"`
+	ContextPerSeq     int                      `json:"context_per_seq,omitempty"`
+	ReasoningEnabled  *bool                    `json:"reasoning_enabled,omitempty"`
+	DeviceLayersExact []types.DeviceLayerRange `json:"device_layers_exact,omitempty"`
+	Quantization      string                   `json:"quantization,omitempty"`
+	SizeBytes         uint64                   `json:"size_bytes,omitempty"`
+	NLayers           int                      `json:"n_layers,omitempty"`
+	Architecture      string                   `json:"architecture,omitempty"`
+	GGUFMaxContext    int                      `json:"gguf_max_context,omitempty"`
 }
 
 type ggufBgGpuMemInfo struct {
@@ -116,7 +154,16 @@ func (s *Server) handleGgufBackends(w http.ResponseWriter, r *http.Request) {
 		if bt == "" {
 			bt = types.BackendTypeLlamaCpp
 		}
-		result = append(result, buildGgufBgInfo(bm, bt))
+		info := buildGgufBgInfo(bm, bt)
+		// R119 (пункт 4): приписываем каждому загруженному на этом бэкенде модели
+		// происхождение её параметров загрузки — оператор видит источник рядом со
+		// значением, а не догадывается, «применился ли профиль».
+		for i := range info.Models {
+			if prov := s.proxy.LoadProvenanceJSON(bm.ID, info.Models[i].Name); len(prov) > 0 {
+				info.Models[i].Parameters = prov
+			}
+		}
+		result = append(result, info)
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -133,9 +180,30 @@ func buildGgufBgInfo(bm types.BackendMetrics, bt types.BackendType) ggufBgInfo {
 	models := make([]ggufBgModelInfo, 0, len(bm.LlamaCpp.LoadedModels))
 	for _, m := range bm.LlamaCpp.LoadedModels {
 		models = append(models, ggufBgModelInfo{
-			Name:        m.Name,
-			Status:      "loaded",
+			Name: m.Name,
+			// R119: было жёстко "loaded" — независимо от m.State. Живой дефект
+			// (2026-10-15): cppworker отдавал state="loading", context_size=0,
+			// а страница GGUF показывала «загружено». Оператор не видел ни
+			// идущей загрузки, ни провала. Теперь статус — нормализованный
+			// state модели; тип поля тот же ("loaded"/"loading"/"error"),
+			// поэтому WebUI-потребители не меняются.
+			Status:      types.NormalizeModelState(m.State),
 			ContextSize: m.ContextLength,
+			// R213: факты инстанса (источник — /api/models воркера через
+			// llamacpp_metrics_poller). Без них UI подставлял «f16» и «0 слоёв».
+			KvCacheType:       m.KvCacheType,
+			GPULayers:         m.NumGPULayers,
+			BatchSize:         m.BatchSize,
+			Parallel:          m.Parallel,
+			MaxSlots:          m.MaxSlots,
+			ContextPerSeq:     m.ContextPerSeq,
+			ReasoningEnabled:  m.ReasoningEnabled,
+			DeviceLayersExact: m.DeviceLayersExact,
+			Quantization:      m.Quantization,
+			SizeBytes:         m.Size,
+			NLayers:           m.NLayers,
+			Architecture:      m.Architecture,
+			GGUFMaxContext:    m.GGUFMaxContext,
 		})
 	}
 	for _, wm := range bm.WarmingUpModels {
@@ -147,7 +215,7 @@ func buildGgufBgInfo(bm types.BackendMetrics, bt types.BackendType) ggufBgInfo {
 			}
 		}
 		if !found {
-			models = append(models, ggufBgModelInfo{Name: wm, Status: "loading"})
+			models = append(models, ggufBgModelInfo{Name: wm, Status: types.WireStateLoading})
 		}
 	}
 

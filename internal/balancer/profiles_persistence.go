@@ -94,13 +94,27 @@ func (p *Proxy) LoadProfilesFromFile() (int, error) {
 
 	loaded := 0
 	for name, profile := range file.Profiles {
+		// R136 (2026-10-16): ключ нормализуем — карточка модели на диске писала
+		// профиль под именем файла (`m.gguf`), а загрузка читает его по имени
+		// модели (`m`), поэтому в хранилище жили ДВЕ записи одной модели, и
+		// настройки оператора «не применялись». Суффикс убираем здесь же, чтобы
+		// старые файлы вылечились сами.
+		key := NormalizeModelProfileKey(name)
+		if key == "" {
+			key = name
+		}
+		if key != name {
+			logger.Get().Infow("R136: ключ профиля нормализован при загрузке",
+				"was", name, "now", key,
+				"hint", "карточка диска и карточка загруженной модели теперь пишут одну запись")
+		}
 		// Skip if config.json already has this profile (config wins — bundled defaults)
-		if _, exists := p.config.LlamaCppModelProfiles[name]; exists {
+		if _, exists := p.config.LlamaCppModelProfiles[key]; exists {
 			logger.Get().Debugw("LoadProfilesFromFile: config has higher priority, skipping",
-				"model", name)
+				"model", key)
 			continue
 		}
-		p.config.LlamaCppModelProfiles[name] = profile
+		p.config.LlamaCppModelProfiles[key] = profile
 		loaded++
 	}
 	logger.Get().Infow("LoadProfilesFromFile: loaded profiles from disk",

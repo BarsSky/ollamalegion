@@ -94,6 +94,7 @@
 |---|---|---|---|
 | **v1.0: заметки о релизе** | [RU](releases/v1.0-release-notes.ru.md) | [EN](releases/v1.0-release-notes.md) | Что входит в v1.0: работает / частично / заглушка. |
 | **v1.0-rc2: заметки о релизе** | [RU](releases/v1.0-rc2-release-notes.ru.md) | [EN](releases/v1.0-rc2-release-notes.md) | Изменения с rc1 и как они проверялись. |
+| **v0.7.217: заметки о релизе** | [RU](releases/v0.7.217-release-notes.ru.md) | [EN](releases/v0.7.217-release-notes.md) | Гигиена репозитория, починка тестов и последние правки переводов; новых возможностей нет. |
 | **v0.7.216: заметки о релизе** | [RU](releases/v0.7.216-release-notes.ru.md) | [EN](releases/v0.7.216-release-notes.md) | v0.7.216: demo-режим, рефакторинг и локализация документации, язык логов, ворота в CI. |
 | **v1.0: чек-лист smoke** | [RU](releases/v1.0-smoke-checklist.ru.md) | [EN](releases/v1.0-smoke-checklist.md) | Чек-лист ручного smoke на A10 24 GB перед финальным тегом. |
 

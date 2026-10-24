@@ -94,6 +94,7 @@ What shipped and how it was checked.
 |---|---|---|---|
 | **v1.0 release notes** | [EN](releases/v1.0-release-notes.md) | [RU](releases/v1.0-release-notes.ru.md) | What v1.0 contains: working / partial / stubbed. |
 | **v1.0-rc2 release notes** | [EN](releases/v1.0-rc2-release-notes.md) | [RU](releases/v1.0-rc2-release-notes.ru.md) | Changes since rc1 and how they were verified. |
+| **v0.7.217 release notes** | [EN](releases/v0.7.217-release-notes.md) | [RU](releases/v0.7.217-release-notes.ru.md) | Hygiene, test flake fixes and the last translation leftovers; no new features. |
 | **v0.7.216 release notes** | [EN](releases/v0.7.216-release-notes.md) | [RU](releases/v0.7.216-release-notes.ru.md) | What v0.7.216 contains: demo mode, docs refactor and localisation, log language, CI gates. |
 | **v1.0 smoke checklist** | [EN](releases/v1.0-smoke-checklist.md) | [RU](releases/v1.0-smoke-checklist.ru.md) | Manual smoke checklist on A10 24 GB before the final tag. |
 

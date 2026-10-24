@@ -1,7 +1,7 @@
 # Развёртывание OllamaLegion
 
 > **Версия:** 3.0 (2026-07-31, обновлено под v0.5.2)
-> **Связанные документы:** [`installation.md`](installation.md), [`agent-deployment.md`](../operations/agent-deployment.ru.md), [`backend-type-isolation.md`](../architecture/backend-type-isolation.md), [`../../CHANGELOG.md`](../../CHANGELOG.md)
+> **Связанные документы:** [`installation.md`](installation.md), [`agent-deployment.md`](../operations/agent-deployment.md), [`backend-type-isolation.md`](../architecture/backend-type-isolation.md), [`../../CHANGELOG.md`](../../CHANGELOG.md)
 
 ## Что нового в v0.5.x (по сравнению с v0.2.0)
 
@@ -79,7 +79,7 @@ cd deployments
 docker compose -f docker-compose.agent.yml --env-file .env up -d --build
 ```
 
-Подробнее: [`agent-deployment.md`](../operations/agent-deployment.ru.md).
+Подробнее: [`agent-deployment.md`](../operations/agent-deployment.md).
 
 ### 1.5 Смешанный кластер
 
@@ -259,7 +259,7 @@ healthcheck:
 }
 ```
 
-Подробнее: [`configuration.md`](configuration.ru.md) — скоро будет переписан.
+Подробнее: [`configuration.md`](configuration.md) — скоро будет переписан.
 
 ### 3.2 ENV-переменные
 
@@ -432,7 +432,7 @@ curl -H 'X-API-Token: <token>' http://localhost:18081/api/v1/metrics
 ## 7. Связанные документы
 
 - [`installation.md`](installation.md) — установка и сборка.
-- [`agent-deployment.md`](../operations/agent-deployment.ru.md) — развёртывание агента.
+- [`agent-deployment.md`](../operations/agent-deployment.md) — развёртывание агента.
 - [`backend-type-isolation.md`](../architecture/backend-type-isolation.md) — варианты развёртывания с разными типами бэкендов.
 - [`cppworker-model-params.md`](../features/cppworker-model-params.md) — n_ctx + Per-Model Profiles.
 - [`audit-2026-06.md`](../../.cline/audit-2026-06.md) — статус реализации.

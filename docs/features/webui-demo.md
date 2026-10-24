@@ -113,5 +113,5 @@ The live check confirms the main property of the mode: on `index.html` and `moni
 **not a single** request to `/api/` goes to the server (including `ws`/SSE), so the demo can be
 enabled even on a production stand — the guest will neither see nor load the real cluster.
 
-See also: [configuration.md](../getting-started/configuration.ru.md), [deployment-stack.md](../operations/deployment-stack.ru.md),
-[ENV_VARS.md](../api/env-vars.ru.md).
+See also: [configuration.md](../getting-started/configuration.md), [deployment-stack.md](../operations/deployment-stack.md),
+[ENV_VARS.md](../api/env-vars.md).

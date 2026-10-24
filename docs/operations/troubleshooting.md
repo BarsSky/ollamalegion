@@ -69,7 +69,7 @@ ping <ollama-host>
 telnet <ollama-host> 11434
 ```
 
-**See also:** [`agent-deployment.md`](agent-deployment.ru.md), Troubleshooting section.
+**See also:** [`agent-deployment.md`](agent-deployment.md), Troubleshooting section.
 
 ### 1.3 503 "model is loading"
 
@@ -79,7 +79,7 @@ telnet <ollama-host> 11434
 
 **Solution:**
 - Wait for the model to finish loading (cppworker will return `loading: true, retryAfterMs: 3000`).
-- Or increase `Balancing.RequestTimeout` to 300-600 sec (see [`configuration.md`](../getting-started/configuration.ru.md)).
+- Or increase `Balancing.RequestTimeout` to 300-600 sec (see [`configuration.md`](../getting-started/configuration.md)).
 
 ---
 
@@ -369,7 +369,7 @@ If the second command fails → NVIDIA Container Toolkit is not installed.
 2. Resources → WSL Integration → ✅ Enable integration.
 3. Install the NVIDIA Driver for WSL2: https://developer.nvidia.com/cuda/wsl.
 
-See also: [`agent-deployment.md` §Windows](agent-deployment.ru.md).
+See also: [`agent-deployment.md` §Windows](agent-deployment.md).
 
 ---
 
@@ -485,7 +485,7 @@ CPPWORKER_VERBOSE=true
 - [`runbook-tools.md`](runbook-tools.md) — **detailed step-by-step runbook for tools/tool_calls** (scenarios A-E).
 - [`cppworker-model-params.md`](../features/cppworker-model-params.md) — n_ctx + Per-Model Profiles.
 - [`cppworker-metrics-collection.md`](../api/cppworker-metrics-collection.md) — **architecture of cppworker metrics collection: poller vs agent**.
-- [`agent-deployment.md`](agent-deployment.ru.md) — agent deployment.
+- [`agent-deployment.md`](agent-deployment.md) — agent deployment.
 - [`installation.md`](../getting-started/installation.md) — installation.
 - [`audit-2026-06.md`](../../.cline/audit-2026-06.md) — implementation status.
 - [`../.clinerules`](../../.clinerules) §14 — common pitfalls.

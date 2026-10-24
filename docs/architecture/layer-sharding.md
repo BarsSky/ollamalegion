@@ -3,7 +3,7 @@
 > **Version:** 1.0 (2026-10-13)
 > **Applies to:** cppworker + C bridge `c/bridge`, image `ollama-legion/cppworker:gpu-*`
 > **Related documents:** [`rpc-coordinator.md`](rpc-coordinator.md) (history and live probes),
-> [`deployment-stack.md`](../operations/deployment-stack.ru.md), [`ENV_VARS.md`](../api/env-vars.md),
+> [`deployment-stack.md`](../operations/deployment-stack.md), [`ENV_VARS.md`](../api/env-vars.md),
 > [`cppworker-model-params.md`](../features/cppworker-model-params.md)
 
 This document answers four questions:

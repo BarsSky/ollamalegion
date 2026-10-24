@@ -954,7 +954,7 @@ python scripts/apply-hardware-preset.py rtx40-24gb
 # → автозаполнение vramMaxUsage/gpuMaxUsage + hint с CPPWORKER_* env
 ```
 
-Подробнее: [docs/getting-started/hardware-presets.ru.md](hardware-presets.md).
+Подробнее: [docs/getting-started/hardware-presets.ru.md](hardware-presets.ru.md).
 
 ### Parallel LlamaCollector (R58)
 

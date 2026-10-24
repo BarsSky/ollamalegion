@@ -80,6 +80,6 @@ is aborted by the watchdog (`model load cancelled`), and the measurement "does n
   moved (donor VRAM, `n_ctx`, KV type). The script prints the layout and tok/s,
   so on other hardware the comparison stays just as reproducible.
 
-See also: [rpc-layout-rules.md](../architecture/rpc-layout-rules.ru.md) (layout rules),
+See also: [rpc-layout-rules.md](../architecture/rpc-layout-rules.md) (layout rules),
 [rpc-coordinator.md](../architecture/rpc-coordinator.md) (RPC internals),
-[rpc-donor-vram-lifecycle.md](../operations/rpc-donor-vram-lifecycle.ru.md) (donor VRAM lifecycle).
+[rpc-donor-vram-lifecycle.md](../operations/rpc-donor-vram-lifecycle.md) (donor VRAM lifecycle).

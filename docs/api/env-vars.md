@@ -140,7 +140,7 @@
 
 | Env var | Type | Default | Notes |
 |---------|------|---------|-------|
-| `WEBUI_DEMO_MODE` | bool | `0` | **R232 (2026-10-24)**: panel demo mode. `1` — the WebUI shows a synthetic scenario (clients → balancer → queue → RPC donor → AutoTune), no login is required (guest `viewer`), all `/api/` requests are intercepted in the browser (the real balancer is not polled), mutations are forbidden (`403 read-only`). It is enabled **only** by this variable at container start; there is no toggle in the UI. Details: [webui-demo.md](../features/webui-demo.ru.md). |
+| `WEBUI_DEMO_MODE` | bool | `0` | **R232 (2026-10-24)**: panel demo mode. `1` — the WebUI shows a synthetic scenario (clients → balancer → queue → RPC donor → AutoTune), no login is required (guest `viewer`), all `/api/` requests are intercepted in the browser (the real balancer is not polled), mutations are forbidden (`403 read-only`). It is enabled **only** by this variable at container start; there is no toggle in the UI. Details: [webui-demo.md](../features/webui-demo.md). |
 | `API_HOST` / `API_PORT` | string/int | `loadbalancer` / `18081` | Where the panel's nginx proxies `/api/` (the balancer admin plane). |
 | `LB_PORT` | int | `18080` | The proxy surface of the balancer for `/v1/`. |
 | `CPPWORKER_HOST` / `CPPWORKER_PORT` | string/int | `cppworker-gpu` / `18092` | The worker surface for `/api/worker`. |

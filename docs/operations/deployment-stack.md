@@ -1507,3 +1507,224 @@ docker exec ol-stack-cppworker-gpu sh -c 'env | grep -E "CPPWORKER_(WRITE|READ|L
 # 3. live check: a pull/load of a large model goes all the way through
 docker logs -f ol-stack-balancer 2>&1 | grep -E 'auto-pull|ensureModelLoadedOnBackend'
 ```
+
+---
+
+## 7.7 "Model returned empty response": a breakdown from the logs (R83, 2026-10-01)
+
+The symptom: Cline on gemma-4-E4B-it-Q4_K_M answers `Model returned empty response`
+(the first breakdown is in §7.4). On the live stand it was analyzed TO THE END: the
+Cline session journal (`~/.cline/data/sessions/<id>/*.messages.json`) holds two
+DIFFERENT failures.
+
+**Failure 1 — empty model output.** The error text Cline showed is verbatim our
+chunk: `model produced an empty response (inference succeeded but output is empty)`.
+In the cppworker log it corresponds to a WARN with `raw_len=0`: the model finished
+its turn with the very first EOG token and generated not a single byte. Reproduced
+by the probe (`debug/streamprobe`) on a Cline request with 18 tools — roughly every
+second or third run. The cure: one repeated generation pass
+(`CPPWORKER_EMPTY_OUTPUT_RETRY`, default true) + a diagnostic WARN with `raw_len`;
+confirmation from the log:
+
+```
+WARN  writeChatStreamResponseWithTools: пустой вывод модели (raw_len=0) — повторная генерация  prompt_tokens=2513
+INFO  writeChatStreamResponseWithTools: повторная генерация завершена  raw_len=311
+```
+
+**Failure 2 — the client dropped before the response.** `Model returned empty
+response` is already the text of Cline ITSELF. `/api/v1/cppworker/debug/last-stream`
+for a 5-minute attempt: `tokens_sent=0, bytes_written=380, reason=ctx_done_on_write,
+duration_ms=306047`. 380 bytes over 306 s is exactly 20 keepalives
+(`{"keepalive":true}` every 15 s); the client received not a single response token.
+The cause was that the tools branch of `/api/chat` buffered the whole response and
+returned it as one final chunk.
+
+**Why the response did not make it in time anyway.** The model ran on 35 layers out
+of 42 (7 layers on the CPU) — 5.3–9.4 tok/s. The check showed that memfit overstated
+the KV cache 4–6×: in gemma-4 the cache is held by 24 layers out of 42
+(`attention.shared_kv_layers=18`), of which only 4 are global (layers 5/11/17/23,
+the window pattern `111110×7`), while the remaining 20 live in a 512-token window
+with a separate head (`key_length_swa=256`). The estimate "all layers × n_ctx" gave
+3.17 GB instead of 294 MiB at n_ctx=65536.
+
+Four layers of one defect were fixed: the KV layout (`KVPlan`,
+`internal/cppbackend/kv_layers.go`), carrying the layout into the memfit verdict,
+looking up the metadata by the client name (`GetModelMetaResolved`) and applying the
+profile on cppworker's lazy load. The live result:
+
+| Metric | Before | After |
+|---|---|---|
+| Layers on GPU | 35/42 (the lazy path 19/42) | **42/42** |
+| `tokenLatencyMs` | 125–1035 | **32** |
+| Generation | 5.3–9.4 tok/s | **31.6 tok/s** |
+| A Cline-like request (18 tools) through the balancer | 31 s | **4.9 s**, `done_reason=tool_calls` |
+
+Additionally: the tools branch now returns prose in deltas, holding a 32-byte window
+around the tool call marker (`CPPWORKER_TOOLS_STREAM_CONTENT`, default true), and in
+`c/bridge/bridge.c` the repeat of the whole accumulated output when the antiprompt
+fires (duplication of the tail up to ~1 KB) has been removed — instead the tail is
+held and every token goes to the client exactly once.
+
+Check (the probe shows the arrival time of every chunk and looks for tail
+duplication, tool call marker leakage and broken UTF-8):
+
+```bash
+go run ./debug/streamprobe http://127.0.0.1:18080/api/chat debug/probe_tools.json
+# expect: DONE reason=tool_calls, no content (the call JSON does not leak into content)
+go run ./debug/streamprobe http://127.0.0.1:18080/api/chat debug/probe_prose_tools.json
+# expect: hundreds of content chunks, "UTF-8 в ответе корректен", "дублирования хвоста не обнаружено"
+```
+
+---
+
+## 7.7.1 Reasoning: the contract and the check (R83/v67, 2026-10-02)
+
+**Where the flag lives.** The "Enable reasoning" checkbox on the GGUF Models page is
+written into the model profile (`enableReasoning`) and reaches cppworker in the load
+body (`POST /api/models/load`), after which it is visible as `reasoning_enabled` in
+`GET /api/models` and as `reasoningEnabled` in the balancer's `loadedModels`.
+
+**Priority** (from senior to junior): the client's explicit `think` in the request →
+the per-model flag from the profile (WebUI) → the global `config.EnableReasoning`.
+
+**What the client sees.** The reasoning goes out in a separate field
+(`reasoning_content` in the OpenAI-compatible response, `reasoning` / `thinking` in
+the native Ollama paths), while the visible answer is in `content`. The markers
+(`<|channel>thought`, `<channel|>`, `<think>` and others) do not get into the
+response: the streaming parser holds an incomplete tag until it becomes clear whether
+it is a tag or ordinary text.
+
+There were two live complaints, both closed in v67/v69:
+
+1. "The flag to enable reasoning was active, yet the reasoning was not applied in the
+   response" — prompt assembly looked only at the GLOBAL `config.EnableReasoning` and
+   did not read the per-model state (what the checkbox sets) at all. The diagnostic
+   that catches this: `GET /api/v1/cppworker/debug/last-prompt` — if there is no
+   thinking instruction in `prompt_head` while `reasoning_enabled=true`, that is
+   exactly this case.
+2. "The response is truncated / the response is garbage" — in the stream the first
+   characters of the marker (`<|c`, `h`, `a`, `nn`) went into the VISIBLE content,
+   while the rest went into reasoning. Check (the SSE deltas must not contain `<|`
+   and `channel`):
+
+```bash
+# 1. is the mode enabled for the LOADED model
+curl -s http://127.0.0.1:18092/api/models | jq '.models[] | {name, reasoning_enabled}'
+#   expect: reasoning_enabled = true
+
+# 2. did the policy reach the prompt (a thinking instruction in system)
+TOKEN=$(grep '^CPPWORKER_API_TOKEN=' deployments/.env | cut -d= -f2)
+curl -s -H "X-API-Token: $TOKEN" \
+  "http://127.0.0.1:18092/api/v1/cppworker/debug/last-prompt" | jq '{model, prompt_head}'
+#   expect: prompt_head contains the requirement to reason (<reasoning>...</reasoning>)
+
+# 3. separation in the stream: not a single marker fragment in content
+curl -sN -H 'Content-Type: application/json' \
+  -d '{"model":"gemma-4-E4B-it-Q4_K_M","messages":[{"role":"user","content":"Think step by step: what is 17*23?"}],"stream":true,"max_tokens":300}' \
+  http://127.0.0.1:18080/v1/chat/completions \
+  | grep '^data: {' | sed 's/^data: //' \
+  | jq -r 'select(.choices[0].delta.content) | .choices[0].delta.content' \
+  | grep -E '<\||channel' && echo 'УТЕЧКА МАРКЕРА' || echo 'чисто'
+```
+
+**Generation bounds.** `max_output_tokens` (which Cline sends) is the upper bound of
+"how much response the client will accept", not the requested length: it can only
+reduce `num_predict`, not set it. Otherwise "I will accept up to 64000" turns into
+"generate 64000" (tens of minutes on a weak card, a cut by the client timeout, an
+"empty response").
+
+---
+
+## 8. Diagnostics: what to look at when problems appear
+
+```bash
+# 1. Have all the containers come up
+docker ps --format '{{.Names}}\t{{.Status}}' | grep ol-stack
+
+# 2. Has the agent registered (the main check of the wiring)
+docker logs ol-stack-agent 2>&1 | grep -E 'Register|regist|error|refus'
+#   expect: "Registering llama_cpp backend at <host>:18092" + "... registered successfully"
+
+# 3. Does the balancer see the backend and the correct capacity
+TOKEN=$(grep '^CPPWORKER_API_TOKEN=' .env | cut -d= -f2)
+curl -s -H "X-API-Token: $TOKEN" http://127.0.0.1:18081/api/v1/backends | jq '.backends[] | {id,status,maxConcurrentRequests}'
+
+# 4. Is cppworker reachable directly
+curl -s http://127.0.0.1:18092/health
+curl -s http://127.0.0.1:18092/api/models | jq '{count, models: [.models[].name]}'
+
+# 5. Why the request did not go through (balancer logs)
+docker logs --since 5m ol-stack-balancer 2>&1 | grep -E 'preflight|auto-load|error|503|reject'
+
+# 6. Which backend served the request
+curl -s -D - -o /dev/null ... http://127.0.0.1:18080/api/chat | grep -i x-backend-id
+```
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| `X-Backend-Id` is missing, an immediate 503 | the model is not loaded and the load did not start | see items 2 and 5; check `CPPWORKER_MODELS_DIR` and that the GGUF is present |
+| 503 "model load started, retry" | a load is in progress (minutes for 27B) | repeat the request; raise `LB_AUTO_LOAD_WAIT_SEC` if needed |
+| A second simultaneous client gets 503 "model is not loaded" / "model load aborted by user" | the load was initiated by the first client and its context was tied to it; or the model came up with `max_slots=1` | R83: the load context is detached (`loadContextForSharedLoad`), `parallel` from the profile reaches cppworker; for 2 slots — `CPPWORKER_N_PARALLEL=2`, see §7.2 |
+| The client (Cline) "does not work", the request hangs and breaks | the client timeout is shorter than the 27B load time | see item 2.1: load the model in advance, raise the client timeout |
+| `400 unknown field "options"` on `/v1/chat/completions` | the client sends an Ollama field into the OpenAI format | `options` is only for `/api/chat`; in the OpenAI format use `max_tokens`/`temperature` |
+| `400 invalid JSON: json: unknown field "thinking"` when **continuing an old session** in Cline | the client returned `message.thinking` in the history — reasoning that it itself received from us (an Ollama field, the balancer returns it normally); before 0.7.67 cppworker rejected the field with a strict decoder | update the cppworker image (≥ 0.7.67): `thinking` and `reasoning_content` are accepted and do not go into the prompt. The same class — `400 unknown field "reasoning_content"` on `/v1/chat/completions` |
+| Editing model parameters from the WebUI: 401 "invalid or missing API token" | the balancer does not know the cppworker token (or the backend has an empty `cppWorkerApiToken`) | see item 5.1; check the agent banner (`API token`) and the balancer's |
+| The token was changed in `config/config.json`, but the 401 remains | the token list is overridden by `LB_API_TOKEN` | see item 5.1: you must change `deployments/.env` |
+| The backend is `unhealthy` | the balancer cannot reach `host:18092` | check `BACKEND_HOST`/the network/the firewall (scenario 2) |
+| The backend is registered, but `type=ollama` | `AGENT_BACKEND_TYPE` was set instead of `BACKEND_TYPE` | see item 5 |
+| `maxConcurrentRequests=10` with `AGENT_MAX_CONCURRENT_REQUESTS=1` | an inherited value in `state.json` + an old balancer image | see item 7.1 |
+| Doubt "was the fix applied / which build is in the container" | the image version is unknown | see item 5.2: the version is printed in the log banner |
+| Two backends on one endpoint | the Go registration of cppworker and the agent are both enabled | `CPPWORKER_REGISTER_DISABLE=true` |
+| `400 invalid JSON: json: unknown field "thinking"` when **continuing an old session** in Cline | the client returned `message.thinking` in the history — reasoning that it itself received from us (an Ollama field, the balancer returns it normally); before 0.7.67 cppworker rejected the field with a strict decoder | update the cppworker image (≥ 0.7.67): `thinking` and `reasoning_content` are accepted and do not go into the prompt. The same class — `400 unknown field "reasoning_content"` on `/v1/chat/completions` |
+| "I saved the backend settings, but the model loads with different parameters" | the form values are the **container env** layer, which is weaker than the model profile and the "default settings for new models"; for a model with `ignoreDefaults` the default layer is not applied at all | look in the backend settings tab at the "What NEW models will get" and "Models in folder" blocks (the SOURCE of every value is shown there) and at the "Make these the priority for new models" button; for a specific model — its profile + "Apply (reload)" |
+| The "reasoning" checkbox has no effect on a new load | reasoning has two fields: `enableReasoning` (the prompt policy) and `defaultEnableReasoning` (what the load inherits); the form wrote only the first | since 0.7.68 the form writes both, and `config/update` accepts them. For a specific model — the "Reasoning" field in its profile |
+
+**Where the edits of WebUI settings are stored.** The long-lived layers:
+`defaultModelProfile` and the model profiles — in the balancer's `config/config.json`
+(they survive everything). The `CPPWORKER_*` env variables in `deployments/.env` are
+the source of truth for the container and take **priority** over the file
+`config/cppworker-defaults.json` (`cppbackend.LoadConfigFromEnv`: env > file). At the
+same time `docker-compose.stack.yml` passes some variables **always**, with a
+default: `CPPWORKER_ENABLE_REASONING=${CPPWORKER_ENABLE_REASONING:-false}` and the
+same for `CPPWORKER_DEFAULT_ENABLE_REASONING`. So editing such a setting in the
+backend form works until the first container restart, and after that the value from
+`.env` wins again. If you want it long-lived, set the variable in
+`deployments/.env` (or edit the model profile / "default settings"). The
+`cppworker-defaults.json` file itself is written into the container's writable
+layer: it survives `docker restart`, but not a container recreation. If the form
+edits must survive an image update as well, mount the directory as a volume:
+
+```yaml
+  cppworker-gpu:
+    volumes:
+      - ./cppworker-config:/app/config   # cppworker-defaults.json will survive up -d --build
+```
+
+---
+
+## 9. The other compose files in the folder
+
+**There is one canonical file — `docker-compose.stack.yml`.** Everything below is
+either historical or highly specialized; always start with stack.
+
+| File | Purpose | Status |
+|---|---|---|
+| `docker-compose.yml` | the earliest minimal variant (balancer + volume only) | historical |
+| `docker-compose.full.yml` | the full stack with Ollama backends | historical |
+| `docker-compose.bundled-full.yml` | bundled + Ollama + webui | historical |
+| `docker-compose.cppworker-bundled.yml` | cppworker + balancer + webui (without an agent) | working, but without GPU metrics |
+| `docker-compose.cppworker-bundled-with-agent.yml` | the same + an agent | **has variable-name defects**; superseded by stack |
+| `docker-compose.cppworker-with-agent.yml`, `…standalone.yml` | variants of the cppworker+agent pair | historical |
+| `docker-compose.cppworker-remote.yml` | cppworker+agent to an external balancer | working (see §3), but stack covers this too |
+| `docker-compose.cppworker.yml` | three cppworker variants by profiles: `cpu` (default), `gpu`, `stub` | working; `stub` had an empty `networks:` until 0.7.39 and the file did not parse |
+| `docker-compose.llama.cpp.yml`, `…llama.cpu.yml` | running the llama.cpp server without our worker | historical (used by `scripts/deploy-llama-remote.*`) |
+| `docker-compose.agent.yml` | starting only the agent (for Ollama backends) | working; in stack the same thing is `--profile legacy-agent` |
+| `docker-compose.agent.gpu.yml` | an **overlay** on `agent.yml` (host network, GPU limits) | not a standalone file: `-f docker-compose.agent.yml -f docker-compose.agent.gpu.yml` |
+| `docker-compose.rpc.yml` | the RPC coordinator (stage P2) | not running, see /api/v1/placement |
+| `docker-compose.cocoindex.yml` | the external cocoindex service | not part of the core |
+| `docker-compose.test-stub.yml` | a stub stand for tests (used by `playwright.config.js`) | test |
+| `docker-compose.fanout-test.yml` | a stand for checking request distribution | test (see `scripts/test-backend-fanout.ps1`) |
+
+Removed in 0.7.39 as dead (not referenced in a single repository file):
+`docker-compose.test-stub-fast.yml` and `docker-compose.test-stub.override.yml`
+(the latter also configured `CPPWORKER_REGISTER_NAME`, which the code does not read).

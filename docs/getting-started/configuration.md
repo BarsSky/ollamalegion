@@ -808,7 +808,7 @@ Virtual models as a pipeline of several physical models.
 
 ## Next steps
 
-- [Deployment](deployment.ru.md) — Docker Compose and production deployment
+- [Deployment](deployment.md) — Docker Compose and production deployment
 - [API documentation](../api/api.md) — Using the REST API and WebSocket
 - [Troubleshooting](../operations/troubleshooting.md) — Solving problems
 

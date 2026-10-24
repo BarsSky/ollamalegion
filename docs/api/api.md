@@ -1956,5 +1956,5 @@ docker run -p 8080:8080 -v $(pwd)/docs/openapi.yaml:/openapi.yaml \
 ## Next steps
 
 - [Troubleshooting](../operations/troubleshooting.md) — Troubleshooting
-- [Configuration](../getting-started/configuration.ru.md) — Authentication and TLS configuration
-- [Deployment](../getting-started/deployment.ru.md) — Production deployment
+- [Configuration](../getting-started/configuration.md) — Authentication and TLS configuration
+- [Deployment](../getting-started/deployment.md) — Production deployment

@@ -5,7 +5,7 @@ postmortems of live incidents that used to sit as comments right in
 `docker-compose.stack.yml`. The compose file itself is deliberately trimmed and
 translated to English: it should be readable in a minute, while the details live here.
 
-Short "what to run" instructions are in [deployment-stack.md](deployment-stack.ru.md).
+Short "what to run" instructions are in [deployment-stack.md](deployment-stack.md).
 The detailed multi-machine deployment scenario is there too, §4.4.
 
 ---

@@ -243,7 +243,7 @@ CATEGORY_INTRO_RU = {
     'development': 'Соглашения и CI для участников.',
 }
 
-PLAN_INDEX = ('docs/plans/README.md', 'Roadmap and session reports', 'Roadmap и отчёты сессий',
+PLAN_INDEX = ('plans/README.md', 'Roadmap and session reports', 'Roadmap и отчёты сессий',
               'Plans, ADR and working session reports (Russian, historical).',
               'Планы, ADR и рабочие отчёты сессий (русский, исторические).')
 
@@ -374,15 +374,15 @@ def write_index(lang):
     lines.append(PLAN_INDEX[4] if ru else PLAN_INDEX[3])
     lines.append('')
     if ru:
-        lines.append('- [Roadmap и индекс планов](docs/plans/README.md)')
+        lines.append('- [Roadmap и индекс планов](plans/README.md)')
         for rel, name in plans:
-            if rel == 'docs/plans/README.md':
+            if rel == 'plans/README.md':
                 continue
             lines.append('- [%s](%s)' % (name, rel))
     else:
-        lines.append('- [Roadmap and plan index](docs/plans/README.md) (RU)')
+        lines.append('- [Roadmap and plan index](plans/README.md) (RU)')
         for rel, name in plans:
-            if rel == 'docs/plans/README.md':
+            if rel == 'plans/README.md':
                 continue
             lines.append('- [%s](%s) (RU)' % (name, rel))
     lines.append('')

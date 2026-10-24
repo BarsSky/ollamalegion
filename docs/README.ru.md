@@ -26,8 +26,8 @@
 | Документ | Русский | English | О чём |
 |---|---|---|---|
 | **Установка и сборка** | [RU](getting-started/installation.ru.md) | [EN](getting-started/installation.md) | Требования, сборка в Docker, локальная сборка, stub-режим. |
-| **Развёртывание** | [RU](getting-started/deployment.ru.md) | — | Развёртывание стека: профили, воркеры, окружения, порты. |
-| **Конфигурация** | [RU](getting-started/configuration.ru.md) | — | config.json балансера, env-переопределения, nginx и настройки WebUI. |
+| **Развёртывание** | [RU](getting-started/deployment.ru.md) | [EN](getting-started/deployment.md) | Развёртывание стека: профили, воркеры, окружения, порты. |
+| **Конфигурация** | [RU](getting-started/configuration.ru.md) | [EN](getting-started/configuration.md) | config.json балансера, env-переопределения, nginx и настройки WebUI. |
 | **Пресеты под железо** | [RU](getting-started/hardware-presets.ru.md) | [EN](getting-started/hardware-presets.md) | Готовые .env-пресеты для RTX 30xx/40xx/50xx и A10. |
 
 ## Архитектура
@@ -39,11 +39,11 @@
 | **Балансировка и сессии** | [RU](architecture/balancing-guide.ru.md) | [EN](architecture/balancing-guide.md) | Скоринг, выбор бэкенда, привязка сессий и моделей. |
 | **Изоляция типов бэкендов** | [RU](architecture/backend-type-isolation.ru.md) | [EN](architecture/backend-type-isolation.md) | Как бэкенды llama.cpp и Ollama живут в одном кластере. |
 | **RPC-координатор** | [RU](architecture/rpc-coordinator.ru.md) | [EN](architecture/rpc-coordinator.md) | Распределённый вывод через llama.cpp RPC: роли, состояние, лимиты. |
-| **Виртуальные модели** | — | [EN](architecture/virtual-router.md) | Виртуальные модели alias-on-pool и правила маршрутизации. |
+| **Виртуальные модели** | [RU](architecture/virtual-router.ru.md) | [EN](architecture/virtual-router.md) | Виртуальные модели alias-on-pool и правила маршрутизации. |
 | **Раскладка слоёв** | [RU](architecture/layer-sharding.ru.md) | — | Раскладка слоёв по бэкендам, контейнеры, параметры. |
 | **Правила RPC-раскладки** | [RU](architecture/rpc-layout-rules.ru.md) | — | Правила, добытые живыми падениями: один коммит, архитектура, флаг. |
 | **Канал между узлами** | [RU](architecture/rpc-link-bandwidth.ru.md) | — | Как измеряется скорость канала между узлами и где хранится. |
-| **C-bridge API** | — | [EN](architecture/bridge-api.md) | Мост Go <-> C к llama.cpp: функции, структуры, контракт. |
+| **C-bridge API** | [RU](architecture/bridge-api.ru.md) | [EN](architecture/bridge-api.md) | Мост Go <-> C к llama.cpp: функции, структуры, контракт. |
 | **Контракт балансер <-> cppworker** | — | [EN](architecture/balancer-cppworker-contract.md) | Сетевой контракт балансера и воркера, поле за полем. |
 
 ## Эксплуатация
@@ -56,8 +56,8 @@
 | **Воркер за удалённым балансером** | [RU](operations/deployment-remote-balancer.ru.md) | — | cppworker + agent на одной машине, балансер на другой. |
 | **Руководство по compose-файлам** | [RU](operations/docker-compose-guide.ru.md) | — | Какой compose-файл канонический и что делают исторические. |
 | **Развёртывание агента** | [RU](operations/agent-deployment.ru.md) | — | Агент метрик: режимы GPU и CPU, systemd, Windows, WSL2. |
-| **Обновление донора** | [RU](operations/donor-update.ru.md) | — | Обновление и откат образа узла-донора. |
-| **VRAM на узлах раскладки** | [RU](operations/rpc-donor-vram-lifecycle.ru.md) | — | Когда освобождается VRAM на узлах раскладки и что остаётся занятым. |
+| **Обновление донора** | [RU](operations/donor-update.ru.md) | [EN](operations/donor-update.md) | Обновление и откат образа узла-донора. |
+| **VRAM на узлах раскладки** | [RU](operations/rpc-donor-vram-lifecycle.ru.md) | [EN](operations/rpc-donor-vram-lifecycle.md) | Когда освобождается VRAM на узлах раскладки и что остаётся занятым. |
 | **Troubleshooting** | [RU](operations/troubleshooting.ru.md) | [EN](operations/troubleshooting.md) | Симптомы, причины и исправления из живых инцидентов. |
 | **Инциденты развёртывания** | [RU](operations/deployment-troubleshooting.ru.md) | — | Ловушки развёртывания и разборы инцидентов. |
 | **Runbook tools/tool_calls** | [RU](operations/runbook-tools.ru.md) | [EN](operations/runbook-tools.md) | Пошаговый дебаг сбросов tool_calls (сценарии A-G). |
@@ -69,7 +69,7 @@
 | Документ | Русский | English | О чём |
 |---|---|---|---|
 | **Справочник REST API** | [RU](api/api.ru.md) | [EN](api/api.md) | Все эндпоинты балансера, авторизация, WebSocket, совместимость Ollama/OpenAI. |
-| **Переменные окружения** | [RU](api/env-vars.ru.md) | — | Единый справочник переменных: значение по умолчанию и эффект. |
+| **Переменные окружения** | [RU](api/env-vars.ru.md) | [EN](api/env-vars.md) | Единый справочник переменных: значение по умолчанию и эффект. |
 | **Справочник метрик** | [RU](api/metrics.ru.md) | [EN](api/metrics.md) | Метрики GPU, системы, Ollama и прокси: единицы и смысл. |
 | **Сбор метрик воркера** | [RU](api/cppworker-metrics-collection.ru.md) | [EN](api/cppworker-metrics-collection.md) | Встроенный агент против внешнего поллера: кто что собирает. |
 
@@ -81,9 +81,9 @@
 |---|---|---|---|
 | **Генерация изображений** | [RU](features/image-generation.ru.md) | [EN](features/image-generation.md) | Image-бэкенд sd.cpp, модели, клиенты, профили VRAM. |
 | **Параметры моделей** | [RU](features/cppworker-model-params.ru.md) | [EN](features/cppworker-model-params.md) | n_ctx resolver, профили моделей, RAM fallback, поверхности прокси. |
-| **Замер RPC (27B)** | [RU](features/rpc-benchmark-qwen38.ru.md) | — | Измеренный выигрыш раскладки на qwen3.8 27B: методика и результаты. |
-| **Вход и роли WebUI** | [RU](features/webui-auth.ru.md) | — | Сессии, роли, CSRF, аварийный токен, nginx-прокси. |
-| **Демо-режим WebUI** | [RU](features/webui-demo.ru.md) | — | Гостевая витрина сценария, включается только WEBUI_DEMO_MODE. |
+| **Замер RPC (27B)** | [RU](features/rpc-benchmark-qwen38.ru.md) | [EN](features/rpc-benchmark-qwen38.md) | Измеренный выигрыш раскладки на qwen3.8 27B: методика и результаты. |
+| **Вход и роли WebUI** | [RU](features/webui-auth.ru.md) | [EN](features/webui-auth.md) | Сессии, роли, CSRF, аварийный токен, nginx-прокси. |
+| **Демо-режим WebUI** | [RU](features/webui-demo.ru.md) | [EN](features/webui-demo.md) | Гостевая витрина сценария, включается только WEBUI_DEMO_MODE. |
 | **Агентский цикл Cline** | [RU](features/cline-agent-loop.ru.md) | — | Контракт tool_calls, ожидание готовности, трассировка, проверка. |
 
 ## Релизы
@@ -92,9 +92,9 @@
 
 | Документ | Русский | English | О чём |
 |---|---|---|---|
-| **v1.0: заметки о релизе** | [RU](releases/v1.0-release-notes.ru.md) | — | Что входит в v1.0: работает / частично / заглушка. |
-| **v1.0-rc2: заметки о релизе** | [RU](releases/v1.0-rc2-release-notes.ru.md) | — | Изменения с rc1 и как они проверялись. |
-| **v1.0: чек-лист smoke** | [RU](releases/v1.0-smoke-checklist.ru.md) | — | Чек-лист ручного smoke на A10 24 GB перед финальным тегом. |
+| **v1.0: заметки о релизе** | [RU](releases/v1.0-release-notes.ru.md) | [EN](releases/v1.0-release-notes.md) | Что входит в v1.0: работает / частично / заглушка. |
+| **v1.0-rc2: заметки о релизе** | [RU](releases/v1.0-rc2-release-notes.ru.md) | [EN](releases/v1.0-rc2-release-notes.md) | Изменения с rc1 и как они проверялись. |
+| **v1.0: чек-лист smoke** | [RU](releases/v1.0-smoke-checklist.ru.md) | [EN](releases/v1.0-smoke-checklist.md) | Чек-лист ручного smoke на A10 24 GB перед финальным тегом. |
 
 ## Разработка
 
@@ -138,7 +138,6 @@
 - [2026-q3-production-ready-plan](plans/2026-q3-production-ready-plan.md)
 - [2026-q3-roadmap](plans/2026-q3-roadmap.md)
 - [2026-q3-session-f-quick-wins](plans/2026-q3-session-f-quick-wins.md)
-- [README](plans/README.md)
 - [b8-tensor-parallelism-plan](plans/b8-tensor-parallelism-plan.md)
 - [bug-2026-07-31-reasoning-not-routed](plans/bug-2026-07-31-reasoning-not-routed.md)
 - [pre-existing-test-failures](plans/pre-existing-test-failures.md)

@@ -26,8 +26,8 @@ Install, configure and bring the stack up.
 | Document | English | Russian | What it covers |
 |---|---|---|---|
 | **Installation and build** | [EN](getting-started/installation.md) | [RU](getting-started/installation.ru.md) | Requirements, Docker build, local build, stub mode. |
-| **Deployment** | — | [RU](getting-started/deployment.ru.md) | Deploying the stack: profiles, workers, environments, ports. |
-| **Configuration** | — | [RU](getting-started/configuration.ru.md) | Balancer config.json, env overrides, nginx and WebUI settings. |
+| **Deployment** | [EN](getting-started/deployment.md) | [RU](getting-started/deployment.ru.md) | Deploying the stack: profiles, workers, environments, ports. |
+| **Configuration** | [EN](getting-started/configuration.md) | [RU](getting-started/configuration.ru.md) | Balancer config.json, env overrides, nginx and WebUI settings. |
 | **Hardware presets** | [EN](getting-started/hardware-presets.md) | [RU](getting-started/hardware-presets.ru.md) | Ready .env presets for RTX 30xx/40xx/50xx and A10. |
 
 ## Architecture
@@ -39,11 +39,11 @@ How routing, sharding and inference work inside.
 | **Balancing guide** | [EN](architecture/balancing-guide.md) | [RU](architecture/balancing-guide.ru.md) | Scoring, backend selection, session and model affinity. |
 | **Backend type isolation** | [EN](architecture/backend-type-isolation.md) | [RU](architecture/backend-type-isolation.ru.md) | How llama.cpp and Ollama backends coexist in one cluster. |
 | **RPC coordinator** | [EN](architecture/rpc-coordinator.md) | [RU](architecture/rpc-coordinator.ru.md) | Distributed inference over llama.cpp RPC: roles, state, limits. |
-| **Virtual models** | [EN](architecture/virtual-router.md) | — | Alias-on-pool virtual models and routing rules. |
+| **Virtual models** | [EN](architecture/virtual-router.md) | [RU](architecture/virtual-router.ru.md) | Alias-on-pool virtual models and routing rules. |
 | **Layer sharding** | — | [RU](architecture/layer-sharding.ru.md) | Splitting layers across backends, containers, parameters. |
 | **RPC layout rules** | — | [RU](architecture/rpc-layout-rules.ru.md) | Rules learned from real crashes: same commit, arch, kill switch. |
 | **RPC link bandwidth** | — | [RU](architecture/rpc-link-bandwidth.ru.md) | How link speed between nodes is measured and where it is stored. |
-| **C-bridge API** | [EN](architecture/bridge-api.md) | — | Go <-> C bridge to llama.cpp: functions, structures, contract. |
+| **C-bridge API** | [EN](architecture/bridge-api.md) | [RU](architecture/bridge-api.ru.md) | Go <-> C bridge to llama.cpp: functions, structures, contract. |
 | **Balancer <-> cppworker contract** | [EN](architecture/balancer-cppworker-contract.md) | — | Wire contract between the balancer and the worker, field by field. |
 
 ## Operations
@@ -56,8 +56,8 @@ Run, update and debug a live cluster.
 | **Worker behind a remote balancer** | — | [RU](operations/deployment-remote-balancer.ru.md) | cppworker + agent on one machine, balancer on another. |
 | **Compose files guide** | — | [RU](operations/docker-compose-guide.ru.md) | Which compose file is canonical and what the historical ones do. |
 | **Agent deployment** | — | [RU](operations/agent-deployment.ru.md) | Metrics agent: GPU and CPU modes, systemd, Windows, WSL2. |
-| **Donor node update** | — | [RU](operations/donor-update.ru.md) | Updating and rolling back the donor node image. |
-| **Donor VRAM lifecycle** | — | [RU](operations/rpc-donor-vram-lifecycle.ru.md) | When VRAM is released on layout nodes and what stays occupied. |
+| **Donor node update** | [EN](operations/donor-update.md) | [RU](operations/donor-update.ru.md) | Updating and rolling back the donor node image. |
+| **Donor VRAM lifecycle** | [EN](operations/rpc-donor-vram-lifecycle.md) | [RU](operations/rpc-donor-vram-lifecycle.ru.md) | When VRAM is released on layout nodes and what stays occupied. |
 | **Troubleshooting** | [EN](operations/troubleshooting.md) | [RU](operations/troubleshooting.ru.md) | Symptoms, causes and fixes collected from live incidents. |
 | **Deployment incidents** | — | [RU](operations/deployment-troubleshooting.ru.md) | Deployment traps and incident write-ups. |
 | **Tools/tool_calls runbook** | [EN](operations/runbook-tools.md) | [RU](operations/runbook-tools.ru.md) | Step-by-step debugging of tool-call resets (scenarios A-G). |
@@ -69,7 +69,7 @@ Endpoint, env and metrics references.
 | Document | English | Russian | What it covers |
 |---|---|---|---|
 | **REST API reference** | [EN](api/api.md) | [RU](api/api.ru.md) | All balancer endpoints, auth, WebSocket, Ollama/OpenAI compatibility. |
-| **Environment variables** | — | [RU](api/env-vars.ru.md) | Single source of truth for every env var, default and effect. |
+| **Environment variables** | [EN](api/env-vars.md) | [RU](api/env-vars.ru.md) | Single source of truth for every env var, default and effect. |
 | **Metrics reference** | [EN](api/metrics.md) | [RU](api/metrics.ru.md) | GPU, system, Ollama and proxy metrics with units and meaning. |
 | **Worker metrics collection** | [EN](api/cppworker-metrics-collection.md) | [RU](api/cppworker-metrics-collection.ru.md) | Embedded agent vs external poller: what collects what. |
 
@@ -81,9 +81,9 @@ What the cluster can do for clients.
 |---|---|---|---|
 | **Image generation** | [EN](features/image-generation.md) | [RU](features/image-generation.ru.md) | sd.cpp image backend, models, clients, VRAM profiles. |
 | **Model parameters** | [EN](features/cppworker-model-params.md) | [RU](features/cppworker-model-params.ru.md) | n_ctx resolver, per-model profiles, RAM fallback, proxy surfaces. |
-| **RPC benchmark (27B)** | — | [RU](features/rpc-benchmark-qwen38.ru.md) | Measured layer sharding win on qwen3.8 27B: method and results. |
-| **WebUI auth and roles** | — | [RU](features/webui-auth.ru.md) | Sessions, roles, CSRF, break-glass token, nginx proxy. |
-| **WebUI demo mode** | — | [RU](features/webui-demo.ru.md) | Guest showcase of the whole scenario, enabled by WEBUI_DEMO_MODE only. |
+| **RPC benchmark (27B)** | [EN](features/rpc-benchmark-qwen38.md) | [RU](features/rpc-benchmark-qwen38.ru.md) | Measured layer sharding win on qwen3.8 27B: method and results. |
+| **WebUI auth and roles** | [EN](features/webui-auth.md) | [RU](features/webui-auth.ru.md) | Sessions, roles, CSRF, break-glass token, nginx proxy. |
+| **WebUI demo mode** | [EN](features/webui-demo.md) | [RU](features/webui-demo.ru.md) | Guest showcase of the whole scenario, enabled by WEBUI_DEMO_MODE only. |
 | **Cline agent loop** | — | [RU](features/cline-agent-loop.ru.md) | Tool-call contract, readiness, tracing and verification. |
 
 ## Releases
@@ -92,9 +92,9 @@ What shipped and how it was checked.
 
 | Document | English | Russian | What it covers |
 |---|---|---|---|
-| **v1.0 release notes** | — | [RU](releases/v1.0-release-notes.ru.md) | What v1.0 contains: working / partial / stubbed. |
-| **v1.0-rc2 release notes** | — | [RU](releases/v1.0-rc2-release-notes.ru.md) | Changes since rc1 and how they were verified. |
-| **v1.0 smoke checklist** | — | [RU](releases/v1.0-smoke-checklist.ru.md) | Manual smoke checklist on A10 24 GB before the final tag. |
+| **v1.0 release notes** | [EN](releases/v1.0-release-notes.md) | [RU](releases/v1.0-release-notes.ru.md) | What v1.0 contains: working / partial / stubbed. |
+| **v1.0-rc2 release notes** | [EN](releases/v1.0-rc2-release-notes.md) | [RU](releases/v1.0-rc2-release-notes.ru.md) | Changes since rc1 and how they were verified. |
+| **v1.0 smoke checklist** | [EN](releases/v1.0-smoke-checklist.md) | [RU](releases/v1.0-smoke-checklist.ru.md) | Manual smoke checklist on A10 24 GB before the final tag. |
 
 ## Development
 
@@ -138,7 +138,6 @@ Plans, ADR and working session reports (Russian, historical).
 - [2026-q3-production-ready-plan](plans/2026-q3-production-ready-plan.md) (RU)
 - [2026-q3-roadmap](plans/2026-q3-roadmap.md) (RU)
 - [2026-q3-session-f-quick-wins](plans/2026-q3-session-f-quick-wins.md) (RU)
-- [README](plans/README.md) (RU)
 - [b8-tensor-parallelism-plan](plans/b8-tensor-parallelism-plan.md) (RU)
 - [bug-2026-07-31-reasoning-not-routed](plans/bug-2026-07-31-reasoning-not-routed.md) (RU)
 - [pre-existing-test-failures](plans/pre-existing-test-failures.md) (RU)

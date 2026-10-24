@@ -17,10 +17,28 @@ package main
 
 import (
 	"net/http"
+	"os"
 	"testing"
 
 	"ollama-loadbalancer/internal/cppbackend"
 )
+
+// rpcConfigFromEnv — конфиг + решение по RPC из окружения, как в main().
+//
+// ЗАЧЕМ. `cppbackend.LoadConfigFromEnv()` RPC-переменные НЕ читает: решение
+// принимает resolveRPCMode в main(). Тесты ниже раньше вызывали только
+// LoadConfigFromEnv и «проходили» лишь потому, что в рабочем каталоге пакета
+// лежал локальный артефакт `cmd/cppworker/config/cppworker-defaults.json`
+// (он в .gitignore и в репозиторий не входит). На чистом клоне три теста R133
+// падали: env выставлен, а в конфиге RPC пустой. Теперь тест повторяет путь
+// main(): env -> resolveRPCMode -> поля конфига, и от файла в cwd не зависит.
+func rpcConfigFromEnv() *cppbackend.Config {
+	cfg := cppbackend.LoadConfigFromEnv()
+	decision := resolveRPCMode(os.Getenv("CPPWORKER_RPC_ENABLE"), os.Getenv("CPPWORKER_RPC_SERVERS"))
+	cfg.RPCEnabled = decision.Enabled
+	cfg.RPCServers = decision.Servers
+	return &cfg
+}
 
 // TestR133_ConfigUpdatePersistsLayoutState — PUT раскладки сохраняется в файл и
 // после «пересоздания» (перечитывания env) берётся из файла, а не из env.
@@ -35,8 +53,8 @@ func TestR133_ConfigUpdatePersistsLayoutState(t *testing.T) {
 	t.Setenv("CPPWORKER_RPC_ENABLE", "false")
 	t.Setenv("CPPWORKER_RPC_SERVERS", "198.51.100.9:50052")
 
-	cfg := cppbackend.LoadConfigFromEnv()
-	applied := applyRuntimeOverrides(&cfg)
+	cfg := rpcConfigFromEnv()
+	applied := applyRuntimeOverrides(cfg)
 
 	if !appliedListContains(applied, "rpcEnabled") || !appliedListContains(applied, "rpcServers") {
 		t.Fatalf("состояние раскладки не применено из файла (applied=%v)", applied)
@@ -60,12 +78,12 @@ func TestR133_DisabledLayoutStaysDisabledAfterRecreate(t *testing.T) {
 	t.Setenv("CPPWORKER_RPC_ENABLE", "true")
 	t.Setenv("CPPWORKER_RPC_SERVERS", "192.0.2.10:50052")
 
-	cfg := cppbackend.LoadConfigFromEnv()
+	cfg := rpcConfigFromEnv()
 	if !cfg.RPCEnabled || len(cfg.RPCServers) == 0 {
 		t.Fatal("подготовка теста: env обязан включить раскладку с донором")
 	}
 
-	applied := applyRuntimeOverrides(&cfg)
+	applied := applyRuntimeOverrides(cfg)
 	if !appliedListContains(applied, "rpcEnabled") {
 		t.Errorf("rpcEnabled не применён из файла (applied=%v)", applied)
 	}
@@ -87,8 +105,8 @@ func TestR133_BrokenDonorListInFileIsIgnored(t *testing.T) {
 	t.Setenv("CPPWORKER_RPC_ENABLE", "true")
 	t.Setenv("CPPWORKER_RPC_SERVERS", "192.0.2.10:50052")
 
-	cfg := cppbackend.LoadConfigFromEnv()
-	applied := applyRuntimeOverrides(&cfg)
+	cfg := rpcConfigFromEnv()
+	applied := applyRuntimeOverrides(cfg)
 
 	if appliedListContains(applied, "rpcServers") {
 		t.Errorf("битый список из файла принят за рабочий (applied=%v)", applied)
@@ -105,8 +123,8 @@ func TestR133_NoOverrideLeavesEnvAlone(t *testing.T) {
 	t.Setenv("CPPWORKER_RPC_ENABLE", "true")
 	t.Setenv("CPPWORKER_RPC_SERVERS", "192.0.2.10:50052")
 
-	cfg := cppbackend.LoadConfigFromEnv()
-	applied := applyRuntimeOverrides(&cfg)
+	cfg := rpcConfigFromEnv()
+	applied := applyRuntimeOverrides(cfg)
 
 	if appliedListContains(applied, "rpcEnabled") || appliedListContains(applied, "rpcServers") {
 		t.Errorf("без файла переопределений раскладка не должна переопределяться (applied=%v)", applied)

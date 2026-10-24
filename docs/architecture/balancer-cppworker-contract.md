@@ -390,24 +390,23 @@ Unknown fields MUST be rejected by `json.Decoder.DisallowUnknownFields()` (Round
 
 `message.content` MUST be the concatenation of all streamed `content` deltas. `message.thinking` MUST be the concatenation of all streamed `thinking` deltas. `tool_calls` MUST be the merged final tool calls array.
 
-**R113 (2026-10-13) — `arguments` вызова.** `tool_calls[].function.arguments`
-обязан быть JSON-**ОБЪЕКТОМ** по схеме инструмента из запроса (Ollama-форма) или
-JSON-строкой такого объекта (OpenAI-форма). Иначе клиент (Cline, OpenAI SDK,
-ollama-python) не может выполнить вызов, считает сообщение финальным ответом и
-завершает агентский цикл. Живые формы, которые приходили на стенд и приводились
-к объекту по схеме: массив (`["dir"]` → `{"commands":["dir"]}`), голая строка
-(`"c:\\path"` → `{"path":"c:\\path"}`), объект-обёртка (`{"args":{…}}`), двойное
-кодирование. Разметка вызова (`<|tool_call>…`, `[TOOL_CALLS]`, JSON-форма) НЕ
-должна попадать в `content` ни в одном чанке, включая случай, когда модель
-повторяет вызов, присланный историей. Подробности и порядок проверки:
+**R113 (2026-10-13) - `arguments` of the call.** `tool_calls[].function.arguments`
+must be a JSON **OBJECT** matching the tool schema from the request (Ollama form) or
+a JSON string of such an object (OpenAI form). Otherwise the client (Cline, OpenAI SDK,
+ollama-python) cannot execute the call, treats the message as the final answer and
+finishes the agent loop. Live shapes that arrived at the stand and were normalised to
+an object by the schema: an array (`["dir"]` -> `{"commands":["dir"]}`), a bare string
+(`"c:\\path"` -> `{"path":"c:\\path"}`), a wrapper object (`{"args":{...}}`), double
+encoding. The call markup (`<|tool_call>...`, `[TOOL_CALLS]`, JSON form) MUST NOT
+appear in `content` in any chunk, including the case where the model repeats a call
+that came from the history. Details and the verification order:
 [`cline-agent-loop.md`](../features/cline-agent-loop.md).
 
-**R113 — запрос к загружаемой модели.** Пока модель грузится/перезагружается,
-запрос ДОЛЖЕН ждать готовности (предел ожидания — `CPPWORKER_LOAD_WAIT_SEC`,
-по умолчанию 900 с, или отмена/дедлайн клиента). Ответ
-`{"done": true, "done_reason": "error"}` на transient-состояние запрещён: клиент
-трактует его как завершённый ход. Если готовности не дождались — 503 +
-`Retry-After`.
+**R113 - request to a loading model.** While a model is loading/reloading, the
+request MUST wait for readiness (the wait limit is `CPPWORKER_LOAD_WAIT_SEC`,
+900 s by default, or the client cancel/deadline). Answering
+`{"done": true, "done_reason": "error"}` for a transient state is forbidden: the client
+treats it as a finished turn. If readiness was not reached - 503 + `Retry-After`.
 
 ### 3.3 `/v1/chat/completions` (OpenAI) — request (MUST)
 
@@ -541,7 +540,7 @@ This is currently implemented for `handlers_cppworker_profiles.go:155-163` and M
 
 OpenWebUI uses Ollama paths; Cline/Aider/Continue use OpenAI paths. The balancer MUST translate both directions correctly. (Round 29 fixed this — was the original "OpenWebUI doesn't get reasoning" bug.)
 
-**R108 (2026-10-13) — поле и разбор.** cppworker emits the canonical name above and, in addition
+**R108 (2026-10-13) - the field and its parsing.** cppworker emits the canonical name above and, in addition
 only, the legacy alias `message.reasoning` on native `/api/chat` (stream deltas and final chunk).
 Clients that read either name get the reasoning; nothing else may depend on the alias.
 

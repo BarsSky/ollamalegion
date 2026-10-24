@@ -22,10 +22,38 @@ import (
 //  3. прогресс ОДНОГО файла bundle отдаётся в форме HFDownloadProgress
 //     (её читает UI: status/totalBytes/downloaded/progressPct/speedBps).
 
+// tempDirTolerant — каталог для теста с УСТОЙЧИВОЙ уборкой.
+//
+// ЗАЧЕМ НЕ tempDirTolerant(t). На Windows уборка t.TempDir падает с
+// "directory is not empty", если фоновые писатели (goroutine загрузки, антивирус,
+// ещё держащий handle файл) успевают создать файл между RemoveAll и проверкой.
+// Симптом в прогоне: `TestHFBundle_FileProgressShape ... TempDir RemoveAll
+// cleanup: directory is not empty` — падает не продукт, а уборка теста.
+//
+// Здесь уборка повторяется несколько раз с паузой, а если каталог так и остался —
+// тест НЕ валится: каталог лежит в %TEMP% и будет убран системой.
+func tempDirTolerant(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ol-sdbackend-test-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 10; i++ {
+			if err := os.RemoveAll(dir); err == nil {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Logf("temp dir %s is still busy (Windows handle); left for the OS to clean", dir)
+	})
+	return dir
+}
+
 // newHFTestManager — HFManager на мок-сервере + реестр на temp-каталоге.
 func newHFTestManager(t *testing.T, mock *HFMockServer) (*HFManager, *Registry, string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := tempDirTolerant(t)
 	modelsDir := filepath.Join(dir, "models")
 	downloadsDir := filepath.Join(dir, "downloads")
 
@@ -326,7 +354,7 @@ func TestHFManager_EmptyTokenKeepsConfiguredToken(t *testing.T) {
 	mock := NewHFMockServer(t)
 	mock.AddFile("acme/z-image-turbo", "diffusion.gguf", 32*1024)
 
-	dir := t.TempDir()
+	dir := tempDirTolerant(t)
 	reg := NewRegistry(filepath.Join(dir, "models"))
 	if err := reg.Load(); err != nil {
 		t.Fatalf("registry: %v", err)
@@ -470,7 +498,7 @@ func TestHFManager_DeleteRejectsTraversal(t *testing.T) {
 
 // BuildImageModelProfile — чистая сборка профиля (без диска и сети).
 func TestBuildImageModelProfile_FillsLocalPathAndDefaults(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDirTolerant(t)
 	if err := os.WriteFile(filepath.Join(dir, "diffusion.gguf"), []byte("1234"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -817,7 +845,7 @@ func TestHFManager_DeleteActiveBundleFile(t *testing.T) {
 // Load идемпотентен и обновляет снимок: модель, появившаяся на диске после
 // старта, видна без рестарта (сценарий Phase 4).
 func TestRegistry_ReloadPicksUpNewModel(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDirTolerant(t)
 	reg := NewRegistry(dir)
 	if err := reg.Load(); err != nil {
 		t.Fatalf("load: %v", err)
@@ -845,7 +873,7 @@ func TestRegistry_ReloadPicksUpNewModel(t *testing.T) {
 // write»: именно этот сценарий возникает при HF-загрузке во время опроса
 // /api/image/models.
 func TestRegistry_ConcurrentLoadAndRead(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDirTolerant(t)
 	for _, name := range []string{"a", "b", "c"} {
 		sub := filepath.Join(dir, name)
 		if err := os.MkdirAll(sub, 0o755); err != nil {

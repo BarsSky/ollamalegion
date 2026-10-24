@@ -1,11 +1,11 @@
 # C-bridge API Reference
 
-Полный reference C API для `c/bridge/`. Используется cppworker через cgo.
+Complete C API reference for `c/bridge/`. Used by cppworker through cgo.
 
-> **Source of truth**: см. [c/bridge/bridge.h](../../c/bridge/bridge.h) — этот
-> документ может отставать. Если нашли несоответствие — bridge.h правильный.
+> **Source of truth**: see [c/bridge/bridge.h](../../c/bridge/bridge.h) - this
+> document may lag behind. On any mismatch, bridge.h is correct.
 
-## Оглавление
+## Contents
 
 1. [Lifecycle](#lifecycle)
 2. [Model loading](#model-loading)
@@ -154,14 +154,14 @@ Convert single token to UTF-8 bytes. Returns bytes written, or -1/-2 on error.
 Apply `tokenizer.chat_template` from GGUF metadata. Returns bytes written
 to `out_buf`, -1 on error, **-2 if template not present in GGUF**.
 
-(Детали параметров см. в [bridge.h](../../c/bridge/bridge.h))
+(Parameter details: see [bridge.h](../../c/bridge/bridge.h))
 
 ---
 
 ## Abort API *(Round 31 #6)*
 
 > Added 2026-08-09. See [docs/plans/cppworker-abort-api/PLAN.md](../plans/cppworker-abort-api/PLAN.md)
-> для полного design rationale.
+> for the full design rationale.
 
 ### `int bridge_request_abort(ModelHandle model)`
 
@@ -295,7 +295,7 @@ compute capability). Returns 0 on success, -1 on error.
 
 ## `ModelConfig` (load params)
 
-> See [c/bridge/bridge.h](../../c/bridge/bridge.h) для full struct. Ключевые поля:
+> See [c/bridge/bridge.h](../../c/bridge/bridge.h) for the full struct. Key fields:
 
 | Field | Description | Default |
 |-------|-------------|---------|
@@ -358,4 +358,4 @@ compute capability). Returns 0 on success, -1 on error.
   chat template enhancements.
 - **Round 13** — multi-slot via `seq_id` and `bridge_batched_decode`.
 
-См. [CHANGELOG.md](../../CHANGELOG.md) для полной истории.
+See [CHANGELOG.md](../../CHANGELOG.md) for the full history.

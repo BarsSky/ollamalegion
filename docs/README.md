@@ -44,7 +44,7 @@ How routing, sharding and inference work inside.
 | **RPC layout rules** | [EN](architecture/rpc-layout-rules.md) | [RU](architecture/rpc-layout-rules.ru.md) | Rules learned from real crashes: same commit, arch, kill switch. |
 | **RPC link bandwidth** | [EN](architecture/rpc-link-bandwidth.md) | [RU](architecture/rpc-link-bandwidth.ru.md) | How link speed between nodes is measured and where it is stored. |
 | **C-bridge API** | [EN](architecture/bridge-api.md) | [RU](architecture/bridge-api.ru.md) | Go <-> C bridge to llama.cpp: functions, structures, contract. |
-| **Balancer <-> cppworker contract** | [EN](architecture/balancer-cppworker-contract.md) | — | Wire contract between the balancer and the worker, field by field. |
+| **Balancer <-> cppworker contract** | [EN](architecture/balancer-cppworker-contract.md) | [RU](architecture/balancer-cppworker-contract.ru.md) | Wire contract between the balancer and the worker, field by field. |
 
 ## Operations
 

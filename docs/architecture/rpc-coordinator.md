@@ -243,7 +243,7 @@ whose CB is `Open`, and updates the CB from the response status afterwards.
 4. Model is registered with the coordinator
 5. **At least one** worker's CB is not `Open`
 
-Which one gives:
+On a request, `ShouldRoute` decides:
 
 - If the model is not registered → 404 `model_not_distributed`
 - If all workers are Open → 503 `all_workers_unhealthy`
@@ -402,8 +402,8 @@ with `CPPWORKER_RPC_ENABLE=true`, `CPPWORKER_RPC_SERVERS=192.0.2.10:50052`,
 `CPPWORKER_SPLIT_MODE=1`; the model — `Qwen3.8-27B-UD-Q4_K_M.gguf` (15.33 GB, 64
 layers, `qwen35` architecture, an attention/SSM hybrid), which does not fit into 8 GB.
 
-**What was confirmed — the transport is alive, the node is visible to llama.cpp:**
-(the binary prints its diagnostics in Russian, so the log lines are quoted verbatim):
+**What was confirmed — the transport is alive, the node is visible to llama.cpp** (the
+binary prints its diagnostics in Russian, so the log lines are quoted verbatim):
 
 ```
 [bridge] RPC: узел 192.0.2.10:50052 подключён, его устройств: 1
@@ -457,7 +457,7 @@ by TTFT and tok/s. The probe is automated: `scripts/rpc-shard-load.ps1`.
 
 ### A live fact about node failure (2026-10-13)
 
-Recreating the node (the `rpc-server` container) **under a live connection of the master**
+Recreating the node (the `rpc-server` container) **while the master holds a live connection**
 crashes the master: in the log `SIGABRT: abort` + `signal arrived during cgo execution` during
 `bridge_load_model`, after which the cppworker restarts (policy
 `restart: unless-stopped`) and the model ends up not loaded. This is llama.cpp RPC

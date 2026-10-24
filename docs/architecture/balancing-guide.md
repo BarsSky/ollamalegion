@@ -53,7 +53,6 @@ Client                    Balancer                    Backend
   │                          │                           │
   │── POST /api/generate ───▶│                           │
   │                          │── 1. Get/create session   │
-  │                          │                           │
   │                          │── 2. Select backend       │
   │                          │    (model affinity →      │
   │                          │    resource-aware)        │
@@ -491,6 +490,379 @@ Result:
 
 ---
 
-<!--CHUNK4-->
+## 4. Session Management
 
+### 4.1 Session Structure
 
+```go
+type Session struct {
+    ID            string      // Session UUID
+    BackendID     string      // Binding to a backend (sticky)
+    Model         string      // Model requested by the client
+    ClientIP      string      // Client IP address
+    RequestCount  int         // Number of requests in the session
+    LastActivity  time.Time   // Time of the last request
+    CreatedAt     time.Time   // Creation time
+}
+```
+
+### 4.2 Session Lifecycle
+
+```text
+Creation
+   │
+   ▼
+┌───────────────────────────────────────────┐
+│ 1. On the client's first request          │
+│    (IP + model → SessionManager)          │
+│    A new entry is created in the map      │
+└───────────────┬───────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────┐
+│ 2. On subsequent requests                 │
+│    If the session exists → return         │
+│    the same backendID (sticky)            │
+└───────────────┬───────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────┐
+│ 3. Metadata update                        │
+│    RequestCount++, LastActivity = now     │
+└───────────────┬───────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────┐
+│ 4. Timeout / cleanup                      │
+│    If LastActivity > idleTimeout          │
+│    → the session is deleted               │
+└───────────────┬───────────────────────────┘
+                │
+                ▼
+            Destruction
+```
+
+### 4.3 Session Stickiness
+
+The `session_stickiness` parameter (enabled by default):
+
+- **When it works:** on repeated requests from the same client for the same model — routes to the same backend
+- **When it does NOT work:** if the backend became unhealthy or `maxConcurrent` is exceeded — the balancer selects a new one
+- **Trade-off:**
+  - ✅ Pro: the model is already in VRAM, fast response
+  - ❌ Con: one backend gets overloaded while others stay idle
+
+---
+
+## 5. Model Lifecycle on a Backend
+
+### 5.1 Model States
+
+```text
+┌─────────────┐     ┌──────────────┐     ┌──────────────┐
+│ Not Loaded  │────▶│ Loading      │────▶│ In Memory    │
+│             │     │ (progress %) │     │ (available)  │
+└─────────────┘     └──────────────┘     └──────┬───────┘
+                                                  │
+                                           ┌──────┴──────┐
+                                           │ Active Use  │
+                                           │ (inferring) │
+                                           └──────┬──────┘
+                                                  │
+                                           ┌──────┴──────┐
+                                           │ Idle        │
+                                           │ (no reqs)   │
+                                           └──────┬──────┘
+                                                  │
+                                           ┌──────┴──────┐
+                                           │ Unload      │
+                                           │ (optional)  │
+                                           └──────┬──────┘
+                                                  ▼
+                                           ┌─────────────┐
+                                           │ Not Loaded  │
+                                           └─────────────┘
+```
+
+### 5.2 How the Balancer Tracks Models
+
+1. The agent sends a heartbeat every 3 seconds
+2. The heartbeat contains a `models: [...]` field — the list of loaded models
+3. The balancer updates `Backend.Models` in its own state
+4. When selecting a backend, `findBackendWithModel()` looks for a match
+
+### 5.3 Model Unloading
+
+The `unload_idle_models` parameter (optional):
+
+- If enabled: the model is unloaded from VRAM after `idle_timeout` without requests
+- If disabled: the model stays in VRAM until Ollama restarts
+
+⚠️ **Current limitation:** there is no active model unloading to free room for another model. Unloading happens only on the inactivity timeout.
+
+---
+
+## 6. Queue Management
+
+### 6.1 Queue Structure
+
+```go
+type QueueManager struct {
+    items          []QueueItem     // All items
+    pending        []QueueItem     // Waiting
+    processing     []QueueItem     // In flight
+    maxSize        int             // Maximum size (default 100)
+    workers        int             // Number of workers
+    processedTotal int64           // Total processed
+}
+```
+
+### 6.2 Queue Item States
+
+| Status | Description |
+|--------|----------|
+| `pending` | Waiting for a free backend, no target assigned |
+| `processing` | A backend is assigned, the request is in progress |
+| `completed` | Completed successfully |
+| `failed` | Completed with an error (retry count exceeded) |
+| `cancelled` | Cancelled by the client |
+
+### 6.3 Dispatch Mechanism
+
+```text
+Request arrives ──▶ Backend capacity check
+                          │
+              ┌───────────┴───────────┐
+              │ Room available        │ No room
+              ▼                       ▼
+        ┌──────────┐            ┌──────────────┐
+        │ Send to  │            │ Add to the   │
+        │ the      │            │ queue        │
+        │ backend  │            │ status:      │
+        │          │            │ pending      │
+        └──────────┘            └──────────────┘
+                                          │
+                              ◀──────────┘
+                              Request finishes
+                              on the backend
+                              │
+                              ▼
+                        ┌──────────────┐
+                        │ Check the    │
+                        │ queue for a  │
+                        │ suitable     │
+                        │ item         │
+                        └──────┬───────┘
+                               │
+                    ┌──────────┴──────────┐
+                    │ Found               │ Not found
+                    ▼                      ▼
+              ┌──────────┐         ┌──────────┐
+              │ Dispatch │         │ Wait for │
+              │ the next │         │ the next │
+              │ request  │         │ complete │
+              └──────────┘         └──────────┘
+```
+
+### 6.4 Fair Queuing (planned improvement)
+
+Current implementation: **FIFO** (first in — first served).
+
+Recommended improvement:
+
+```
+Priority = enqueueTime + (modelSize * weight) + (sessionAge * factor)
+
+Where:
+- modelSize: the larger the model, the longer the wait
+- sessionAge: new sessions may receive a bonus
+- VIP flag: for critical requests
+```
+
+---
+
+## 7. Monitor State
+
+### 7.1 Current Structure of the Monitor Page
+
+The monitor (`webui/monitor.html`) consists of:
+
+1. **Canvas topology** — a visual diagram of sessions → balancer → backends
+2. **Stats bar** — Backends, Active, Pending, Processing, Sessions, Req/s, Cluster RPS
+3. **Backends table** — ID, status, GPU%, VRAM%, CPU%, RAM%, active/max, RPS, score, models, uptime
+4. **Queue table** — #, model, target, status, wait, session
+5. **Sessions table** — ID, backend, model, requests, idle, IP
+6. **Diagnostic alerts** — automatic problem analysis
+
+### 7.2 Monitor Problems
+
+| # | Problem | Impact |
+|---|----------|---------|
+| 1 | `API_BASE = ''` — does not work without nginx/CORS | No data when the file is opened directly |
+| 2 | No "Models in memory" section | Model distribution is not visible |
+| 3 | No free VRAM indicator | It is unclear how many more models will fit |
+| 4 | Demo mode has to be enabled manually | It is unclear that the API is not working |
+| 5 | No model loading indication | The loading process is not visible |
+| 6 | CORS errors are not handled explicitly | The user does not understand the cause |
+
+---
+
+## 8. RPC Model Distribution (Three Variants)
+
+The balancer supports three model distribution variants for higher throughput and fault tolerance.
+
+### 8.1 Variant A — Model Replication
+
+Automatic model replication across several backends.
+
+**How it works:**
+- For the selected model a replication group (`ModelGroup`) is created with a `minInstances`/`maxInstances` configuration
+- `GroupController` (background, 10s interval) checks the state of the groups
+- When `loaded_count < minInstances` — scale-up: find free backends, warm up the model
+- When `loaded_count > maxInstances` — scale-down: unload the least used ones (LRU)
+- When idle > `idleUnloadAfter` (default 15m) — mark for unloading (if > minInstances)
+- `GroupAwareSelector` balances requests inside the replica group
+
+**When to use:**
+- High-load models (RPS > the capability of a single backend)
+- Fault tolerance is required (the model must survive the failure of one backend)
+
+Configuration: `balancing.model_replication.enabled`, `idle_unload_after`, `min/max_instances`.
+
+### 8.2 Variant B — RPC Coordinator
+
+Distributed inference through external RPC workers.
+
+**How it works:**
+- `ModelCoordinator` manages a pool of RPC workers
+- `HasDistributedModel(modelName)` determines which worker serves the model
+- `InferDistributed(ctx, modelName, prompt, params)` sends the request to the required worker
+- The **KV cache** speeds up repeated requests with identical prompt prefixes
+- **Split/Merge** splits long prompts into chunks and merges the results
+
+Configuration: `balancing.rpc_coordinator.enabled`, `coordinator_url`, `worker_port`, `protocol`.
+
+### 8.3 Variant C — Virtual Model Router
+
+Virtual models as a pipeline of several physical models.
+
+**How it works:**
+- `VirtualModel` describes a chain of transformations applied to the request
+- The model can be split into slices, each on its own backend
+- The `Router` sends the request through the processing pipeline
+
+Configuration: `balancing.virtual_models.enabled`.
+
+### 8.4 Comparison of the Variants
+
+| Criterion | Variant A (Replication) | Variant B (RPC) | Variant C (Virtual) |
+|----------|------------------------|-----------------|---------------------|
+| **Goal** | Horizontal scaling | Distributed inference | Pipeline composition |
+| **Balancing** | Round-robin / least-loaded inside the group | Direct routing to the owner | Sequential/parallel pipeline |
+| **Caching** | No | KV cache | No |
+| **Complexity** | Low | Medium | High |
+
+---
+
+## 9. Current Limitations and Recommendations
+
+### 8.1 Differences: Current Implementation vs Ideal Scenario
+
+| Aspect | Current implementation | Ideal scenario |
+|--------|-------------------|-------------------|
+| **Model Affinity** | Sends everyone to a single backend | Loads duplicates when load > threshold |
+| **Model unloading** | Idle timeout only | Active unloading under contention |
+| **Queue** | FIFO | Fair queuing with priorities |
+| **Session Migration** | No | Rebalancing under overload |
+| **Monitoring** | 3 polling endpoints | WebSocket real-time |
+
+### 8.2 Improvement Recommendations
+
+**Priority: High**
+1. Add `threshold_load` — when a backend's load is exceeded, look for an alternative for new sessions
+2. Fix the monitor (API_BASE, models section, CORS diagnostics)
+
+**Priority: Medium**
+3. Active model unloading when VRAM is scarce (LRU eviction)
+4. Fair queuing with priorities
+
+**Priority: Low**
+5. WebSocket for real-time updates
+6. Session migration between backends
+
+### 8.3 Configuration Parameters
+
+| Parameter | Description | Default |
+|----------|----------|---------|
+| `balancingAlgorithm` | Algorithm: resource-aware, least-connections, round-robin | resource-aware |
+| `modelAffinity` | Prefer a backend with the model already loaded | true |
+| `sessionStickiness` | Bind a session to a backend | true |
+| `useEnhancedScoring` | Use the extended scoring formula v2 | true |
+| `predictionFiltering` | Use the load predictor | true |
+| `gpuMaxUsage` | Max GPU usage (%) | 90 |
+| `vramMaxUsage` | Max VRAM usage (%) | 85 |
+| `cpuMaxUsage` | Max CPU usage (%) | 80 |
+| `ramMaxUsage` | Max RAM usage (%) | 85 |
+| `minFreeDisk` | Min free disk (MB) | 10240 |
+| `queueMaxSize` | Maximum queue size | 100 |
+| `sessionIdleTimeout` | Idle session timeout | 30 min |
+
+---
+
+## 10. Balancer Decision Algorithm
+
+### 10.1 Full Request Flow (`proxyRequest`)
+
+```
+0. Session Stickiness (resolveSessionBackend, BEFORE selectBackend)
+   → Check for an existing session in sessionMgr
+   → If the backend is healthy and the load is not critical → return it directly
+   → If loadRatio > threshold → rebalance (findLessLoadedBackendWithModel/Any)
+   → selectBackend is NOT called when stickiness succeeds
+
+1. selectBackend(model) — called if stickiness did not work or there is no session
+   └── Pre-step: Model Replication
+       → If the model is in a replication group → select via replicationSelector
+
+   └── Stage 1: Model Affinity (P1 — LOADED)
+       → expandCandidates → P1 group
+       → Check loadRatio < triggerLoadThreshold (default 80%)
+       → Pick the BEST backend by score (not the first one found)
+
+   └── Stage 2: Model Warming (P2 — WARMING)
+       → expandCandidates → P2 group
+       → Check ETA < syncTimeout (default 120s)
+       → Wait for readiness via polling (500ms interval)
+
+   └── Stage 3: Sync Model Load (P3 — FREE)
+       → If SyncModelLoad.Enabled
+       → Start warmupModel() on a free backend
+       → Wait for readiness with a timeout (polling 500ms)
+
+   └── Stage 4: Resource-Aware Scoring (P4 — FALLBACK)
+       → selectByResources() — includes:
+         - Filtering by limits (checkResourceLimits)
+         - Prediction-based filtering (secondsToCritical < 300 → excluded)
+         - calculateScore() / calculateScoreSimple()
+         - Weight multiplier
+```
+
+---
+
+## 11. Glossary
+
+| Term | Definition |
+|--------|-------------|
+| **Backend** | An Ollama instance with a GPU that serves requests |
+| **Balancer** | The component that distributes requests across backends |
+| **Sticky Session** | Binding a client to a specific backend |
+| **Model Affinity** | Preference for a backend that already holds the model in VRAM |
+| **Capacity** | The maximum number of concurrent requests (maxConcurrent) |
+| **Score** | A numeric estimate of how suitable a backend is for a request |
+| **Queue** | A FIFO queue of requests waiting for a free backend |
+| **Dispatch** | The process of sending a request from the queue to a backend |
+| **Eviction** | Unloading a model from VRAM to free room |
+
+---
+
+*Document version 1.3 | OllamaLegion Load Balancer | Updated 2026-05-13*

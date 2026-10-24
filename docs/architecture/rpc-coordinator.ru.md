@@ -166,6 +166,18 @@ data: [DONE]
 OpenAI endpoint'ы используют `{"error":{"message","type"}}` format; Ollama —
 `{"error":"<message>"}`.
 
+Статус бэкенда → ответ диспетчера:
+
+- 2xx → 200 + проброс тела (успех).
+- 4xx (кроме 408, 429) → проброс: ошибка клиента, не повторять.
+- 408, 429 → 502 (повторяемо).
+- 5xx → 502 `upstream_error` (повторяемо — пробуем следующего кандидата).
+- Сетевая ошибка → 502 (connection refused, timeout).
+- Таймаут → 504 `request_timeout` (по `requestTimeout` / `streamTimeout`).
+- У всех воркеров CB открыт → 503 `all_workers_unhealthy` (деградация).
+- Модель не зарегистрирована → 404 `model_not_distributed` (ошибка конфига).
+- Клиент отключился → 499 `client_disconnected` (пользователь закрыл соединение).
+
 ## Auth
 
 Если `auth.enabled=true` в config, dispatcher проверяет token перед
@@ -202,6 +214,18 @@ ShouldRoute при request:
 - Если модель не зарегистрирована → 404 `model_not_distributed`
 - Если все workers Open → 503 `all_workers_unhealthy`
 - Иначе → request проходит
+
+Failover-поведение диспетчера:
+
+- Worker A вернул 500 по slice 1 → пробуем следующего кандидата для slice 1.
+- Worker A отвалился по таймауту (нет ответа) → пробуем следующего кандидата, 502 если все упали.
+- Worker A отключился посреди стрима → клиент получает частичный ответ, без повтора (стрим уже начался).
+- Slice 1 упал на ВСЕХ workers → 502 `all_slices_failed`.
+- Worker B вернул 200 по slice 2 → агрегируем с результатом slice 1.
+
+Endpoint здоровья координатора `/rpc/health` (по каждому worker) возвращает `200 OK` — здоров, или
+`503 Service Unavailable` — нездоров. Диспетчер опрашивает здоровье каждого worker перед
+маршрутизацией; если все workers нездоровы, возвращается `503 all_workers_unhealthy`.
 
 ## Мониторинг
 

@@ -6,7 +6,7 @@
 > **Инструменты проверки:** [`scripts/trace-cline-turn.js`](../../scripts/trace-cline-turn.js),
 > [`scripts/cline-agent-loop.js`](../../scripts/cline-agent-loop.js),
 > [`scripts/extract-cline-request.js`](../../scripts/extract-cline-request.js)
-> **Связанные документы:** [`BALANCER_CPPWORKER_API_CONTRACT.md`](../architecture/balancer-cppworker-contract.md),
+> **Связанные документы:** [`BALANCER_CPPWORKER_API_CONTRACT.md`](../architecture/balancer-cppworker-contract.ru.md),
 > [`runbook-tools.md`](../operations/runbook-tools.ru.md), [`cppworker-model-params.md`](cppworker-model-params.ru.md)
 
 Документ отвечает на три вопроса:

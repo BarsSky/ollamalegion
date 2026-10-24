@@ -687,41 +687,8 @@ so they do not interfere with direct client requests.
 | `LB_IMAGE_TOOL_MAX_CALLS` | `2` | images per request (cap 8) |
 | `LB_IMAGE_TOOL_TIMEOUT_SEC` | `600` | per-generation timeout |
 | `LB_IMAGE_TOOL_BASE_URL` | client Host | public balancer address for links |
-| `LB_IMAGE_TOOL_INJECT` | `always` | `auto` announces the tool only to clients that sent their own `tools[]` |
-
-`LB_IMAGE_TOOL_INJECT=auto` (R141) exists because announcing the tool is not free:
-the worker sees a non-empty `tools[]` and prepends a ~200-token preamble about tool
-calling to the prompt. Measured on the stand: `prompt_tokens` 19 direct against 220
-through the balancer (+201 tokens on *every* request), `has_tools` false against
-true, and the model switched from a plain answer to a reasoning stream about calling
-a tool the client never declared. A client that sent no `tools[]` at all reports
-this as an unrealistic tokens/s. `auto` leaves such requests byte-identical on the
-wire; tool-capable clients (Open WebUI with its own tools) still get image
-generation. The default stays `always` so no stand changes behaviour silently.
 
 R85 added two more flags (model catalog and auto-load) - see 16.3.
-
-### 14.6b Which surface actually announces the tool (measured)
-
-The announcement happens in the llama.cpp router, which serves the prefixed surfaces
-(`/ollama/*`, `/openai/*`) plus the OpenAI paths. Measured on the stand, one request
-carrying the client's own `tools[]`:
-
-| Path | Prompt seen by the worker | Tool announced |
-| --- | --- | --- |
-| `/v1/chat/completions` | 93 -> 237 tokens | yes |
-| `/ollama/api/chat` | 357 -> 1068 chars | yes |
-| `/api/chat` (unprefixed) | 357 chars, unchanged | **no** |
-
-The unprefixed `/api/chat` goes through the generic Ollama-compatible proxy and is
-passed through byte for byte: a pure-chat native client (Cline, Open WebUI, the
-deepseek harness) gets exactly the prompt it sent - no tool preamble, no extra
-tokens - and for the same reason no image generation. A native client that should be
-able to generate images has to talk to `/ollama/api/chat`.
-
-`scripts/webui-e2e/client-matrix.js` checks this for seven client profiles on both
-surfaces (prompt parity, response shape, token accounting), so a future change to
-either routing or announcement shows up as a failing check instead of a surprise.
 
 ### 14.6 Limitations (honestly)
 
@@ -788,6 +755,29 @@ curl -sS -H "X-API-Token: $LB_API_TOKEN" \
   http://localhost:28081/api/v1/image/models/catalog | jq .
 ```
 
+```json
+{
+  "generatedAt": "2026-10-06T11:20:00Z",
+  "cached": false, "cacheTtlSeconds": 5,
+  "backends": [{ "id": "imageworker", "host": "127.0.0.1", "port": 18093,
+                 "status": "healthy", "state": "loaded", "currentModel": "sd15-q8-0",
+                 "contractOk": true, "models": ["sd15-q8-0", "flux-schnell-q3-k"] }],
+  "models": [{
+    "name": "sd15-q8-0", "backendId": "imageworker", "family": "sd15",
+    "state": "loaded",            // loaded | loading | not_loaded | error
+    "sizeBytes": 1760000000, "vramEstimateMb": 2100, "vramSource": "profile",
+    "loaded": true,
+    "defaults": { "steps": 25, "cfgScale": 7, "sampler": "euler_a",
+                  "width": 512, "height": 512, "batchCount": 1, "seed": -1 },
+    "strengths": "SD1.5 quality benchmark at low VRAM (2.1 GB): the best default choice for 4-6 GB",
+    "notes": "SD1.5 quality benchmark (1.76 GB) at a 2.1 GB peak @512 according to sd.cpp measurements...",
+    "source": "profile"           // profile | catalog | worker
+  }],
+  "limits": { "minSide": 64, "maxSide": 4096, "sizeMultiple": 64, "minSteps": 1, "maxSteps": 100 },
+  "hasLoadedModel": true
+}
+```
+
 Field sources:
 
 | Field | Source | Meaning |
@@ -805,7 +795,7 @@ profile (WebUI -> Image models -> profile, `PUT /api/v1/image/model-profiles/{na
 
 ```bash
 curl -sS -X PUT -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"strengths":"fast and cheap: 512x512 in seconds"}' \
+  -d '{"strengths":"fast and cheap: 512x512 in seconds","notes":"our internal choice"}' \
   http://localhost:28081/api/v1/image/model-profiles/sd15-q8-0
 ```
 
@@ -841,11 +831,14 @@ curl -sS -H "X-API-Token: $LB_API_TOKEN" http://localhost:28081/api/v1/image/res
   | jq '{allow: .allowToolLoad, loadTimeout: .toolLoadTimeout, limits: .limits}'
 ```
 
+```json
+{ "allow": {"effective": true, "overridden": false, "env": "LB_IMAGE_TOOL_ALLOW_LOAD"},
+  "loadTimeout": {"effectiveSec": 600, "overridden": false, "env": "LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC"},
+  "limits": {"minToolLoadTimeoutSec": 1, "maxToolLoadTimeoutSec": 86400} }
+```
+
 `overridden: false` means "the environment variable / default is in effect"; after
 saving from the WebUI it becomes `true` and `effectiveSec` is your value.
-
-`LB_IMAGE_TOOL_ALLOW_LOAD` can also be toggled from the WebUI (the checkbox in the
-coexistence policy card); priority is config -> environment -> default `on`.
 
 ### 16.4 Scenario: "user asks for a picture"
 
@@ -949,6 +942,10 @@ curl -sS -X POST -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/j
   http://localhost:28081/api/v1/image/backends/imageworker/models/load
 ```
 
+Common reasons for an empty catalog: the backend is unhealthy (the reason is in
+`warnings`), the worker did not answer with the contract (`contractOk=false`), or no
+model is downloaded on the worker.
+
 ### 16.8 Repository passport: what to download, in which mode, and what to do
 
 R86-follow-up (2026-10-06). Model search lists files, but did not answer the main
@@ -976,11 +973,16 @@ Field meanings:
 | `steps[]` | the order of actions in the WebUI |
 | `modelHint` | **what to pass to the text model** |
 
-Operator steps (same as `steps[]`): tick the files the passport proposes, check their
-roles, pick the family from the passport (mandatory for DiT, otherwise the engine gets
-`--model` and answers "get sd version from file failed"), download the bundle, press
-"Load" on the model, and if the load fails read the engine error - it lists the missing
-tensors (VAE/conditioner), meaning a role is absent from the set.
+Operator steps (the same as `steps[]`):
+
+1. tick the files the passport proposes in the file list (diffusion + vae + llm);
+2. check the roles of the files (they are filled in from the names and can be changed);
+3. pick the **family** from the passport — for DiT this is mandatory, otherwise the
+   engine gets `--model` and answers "get sd version from file failed";
+4. "Download bundle" → the files land in one model directory;
+5. on the "Models on disk" tab press "Load";
+6. if the load fails, read the error text: the engine lists the missing tensors
+   (VAE/conditioner), which means a role is absent from the set.
 
 **What matters for the model that loads models by itself**: `modelHint` (and the tool
 description, see 16.1) says to pass the **bundle directory name** to `generate_image`
@@ -988,6 +990,7 @@ description, see 16.1) says to pass the **bundle directory name** to `generate_i
 id; `list_image_models` returns the valid names. A wrong name makes the balancer
 substitute the already loaded model and report it (`requestedModel`/`modelNote`), which
 costs a whole turn.
+
 ### 16.9 "The model downloaded but will not load" - how to diagnose
 
 The load error is shown in the WebUI (and in the worker log). Live cases from the stand:
@@ -1010,9 +1013,76 @@ The load error is shown in the WebUI (and in the worker log). Live cases from th
   the tensor is repacked and the engine rejects it - use another quant source;
 - the reference working configuration on the stand is `sd15-q4` (all-in-one GGUF):
   if it loads, the problem is the specific file, not the worker.
-Common reasons for an empty catalog: the backend is unhealthy (the reason is in
-`warnings`), the worker did not answer with the contract (`contractOk=false`), or no
-model is downloaded on the worker.
+
+### 16.10 A working set for Qwen-Image 2.1: which files are actually needed
+
+This section is written from a LIVE run (2026-10-07): the set was assembled, loaded and
+produced an image. Here is the exact composition and the places where it is easy to go
+wrong.
+
+**Set composition (three roles, all mandatory).** Qwen-Image 2.1 is a DiT family, so a
+single file is not enough: the engine is loaded with `--diffusion-model` + `--vae` +
+`--llm`.
+
+| role | file (an example that works) | flag | note |
+| --- | --- | --- | --- |
+| `diffusion` | `qwen-image-2.1-UC-Q4_K_M.gguf` (4.29 GB) | `--diffusion-model` | **GGUF** only; the engine does not read safetensors variants of this family |
+| `vae` | `vae/qwen_image_2.1_vae_bf16.safetensors` (0.63 GB) | `--vae` | a regular safetensors file, read out of the box |
+| `llm` | `text_encoders/qwen3vl_8b_int8_convrot.safetensors` (8.71 GB) | `--llm` | specifically the Qwen3-VL text encoder; the format is int8 quantization (I8 + scale) |
+
+**Why exactly this encoder format works.** The engine loads the file from `--llm` like
+this (`src/pipeline/diffusion_engine.cpp`:
+
+```cpp
+model_loader.init_from_file(sd_ctx_params->llm_path, "text_encoders.llm.");
+```
+
+that is, the prefix `text_encoders.llm.` is prepended to the tensor names, after which
+the engine looks for `text_encoders.llm.model.embed_tokens.weight`. A file whose tensors
+are already named `model.embed_tokens.weight*` works; the MLX files of the same
+repository do not, because of the weight type (`U32`).
+
+**TRAP: files with identical header names but a different origin.** If the set has no
+`llm` role, the engine does not fail with "no file" but with a metadata check:
+
+```
+Conditioner model tensor 'text_encoders.llm.model.embed_tokens.weight' not in model metadata
+Conditioner model tensor 'text_encoders.llm.model.norm.weight' not in model metadata
+diffusion_engine.cpp: model metadata validation failed
+```
+
+This message means EXACTLY ONE thing: the `llm` role is not attached (or the attached
+file has tensors that did not match). Not "the model is broken" and not "the format is
+wrong" — first check that the worker `argv` contains `--llm`.
+
+**How to check that the set is complete — before loading.** In the WebUI: the HuggingFace
+tab → "Passport" for the repository (`GET /api/hf/plan`) shows `engineMode` and the
+roles. On the stand, for `abenzerps/Qwen-Image-2.1-Uncensored-GGUF` the passport answers:
+`engineMode=diffusion-model`, mandatory roles `diffusion`, `vae`, `llm`.
+
+**Size and disk space.** The full set is ~13.6 GB. Keep the models directory on a disk
+where that volume really exists (`MODELS_DIR` in `deployments/.env`): on the stand's C:
+the free space was less than 5 GB, and the very first attempt to download the encoder hit
+"no space left on device".
+
+**Checking "the whole set" with one command.** After a model load the worker prints
+`spawning sd-server` with the full `argv`. All three flags must be present:
+
+```bash
+docker logs ol-stack-imageworker 2>&1 | grep -o '\-\-\(diffusion-model\|vae\|llm\) [^ ]*'
+```
+
+**Working run (to calibrate expectations).** RTX 3070 8 GB, the set above,
+`--offload-to-cpu --max-vram -1 --diffusion-fa --vae-tiling`:
+
+- model load — a few seconds (the model loads lazily, `sd-server` starts and reports
+  readiness immediately);
+- generation 512x512, 8 steps, cfg 2.5 — **159 s** (no GPU competitor);
+- the result is a valid 512x512 PNG (verified visually).
+
+The speed is exactly this because part of the weights goes through CPU offload: the whole
+set (13.6 GB) does not fit into 8 GB of VRAM under any diffusion quantization. If you need
+speed, take a smaller encoder quant or more VRAM.
 
 ---
 
@@ -1029,7 +1099,8 @@ Measured on the reference stand (RTX 3070 8 GB, Qwen-Image-2.1 Q4_K_M,
 `--offload-to-cpu --max-vram -1 --diffusion-fa --vae-tiling`, 2048x2048, 40 steps):
 
 ```
-sdbackend/jobs.go   image generation completed  size=2048x2048 steps=40 duration_ms=1304815
+sdbackend/jobs.go   image generation completed  model=qwen-image-2.1-uncensored-gguf
+                    images=1 seed=73172649 size=2048x2048 steps=40 duration_ms=1304815
 sdworker/utils.go   POST /v1/images/generations status=200 duration=21m44.846s
 ```
 
@@ -1057,12 +1128,16 @@ was cut at exactly second 600 (504).
 | worker, sd-server readiness | **none** (`0`) | `SDWORKER_STARTUP_TIMEOUT_SEC` | we wait for ready OR process death (a clear error in the log) |
 | engine, `sd-server` | no cap | - | computes until it is done |
 
-> R88 disarmed every cap in this table by default (0 = no cap); a cap can only be
-> armed explicitly and announces itself with a WARN in the log. See 17.6.
+The diagnostic order for a 504: look at `docker logs <imageworker>` first — if it says
+`image generation completed`, the culprit is a CLIENT-SIDE link timeout (the panel,
+nginx, a balancer cap, the lock), not the engine.
 
-When you see a 504, check `docker logs <imageworker>` first: if it contains
-`image generation completed`, the culprit is a client-side link (nginx, balancer cap,
-lock), not the engine.
+```bash
+# what the worker actually answered and how long it took
+docker logs ol-stack-imageworker 2>&1 | grep -E 'image generation completed|/v1/images/generations'
+# whether the lock fuse fired on the balancer
+docker logs ol-stack-balancer 2>&1 | grep -E 'image GPU lock (acquired|released)'
+```
 
 ### 17.3 RAM: how the engine uses it (and why it is already engaged)
 
@@ -1072,18 +1147,31 @@ lock), not the engine.
 segment as the graph executes (the engine's automatic graph-cut). That is exactly why a
 14.6 GB bundle runs on an 8 GB card.
 
+What is important to know:
+
 - **Unsloth's rule (hard):** available **RAM + VRAM** must exceed the GGUF file size,
   otherwise the model will not load even with offload. For the Qwen-Image bundle that is
   14.6 GB against 24.5 GB of RAM on the stand - there is headroom.
+- **RAM is not spent on the weights alone:** the `sd-server` OS process itself, output
+  buffers and (with `--params-backend disk`) the filesystem cache. Look at the actual
+  peak, not at an estimate.
 - **Offload is not a "slow mode":** sd.cpp officially calls it "without loss of speed";
   the cost is PCIe traffic for segment streaming. Measured: 512x512/8 steps = 159 s,
   2048x2048/40 steps = 21m45s on the same stand.
-- Memory knobs live in the profile `runtime` (`profile.json`, editable from the WebUI):
-  `offloadToCpu` (`--offload-to-cpu`), `paramsBackend: "diffusion=disk"`
-  (`--params-backend`, minimum VRAM *and* RAM but slow), `maxVram` (`--max-vram` budget
-  for graph-cut), `vaeTiling`/`vaeTileSize` (`--vae-tiling`, the main lever against VAE
-  decode OOM), `vaeConvDirect`, `backend: "te=cpu"` (`--backend te=cpu`, moves the
-  ~8 GB int8 text encoder out of VRAM), `threads`, `taesd` (TAEHV for Qwen).
+
+Memory levers in the profile `runtime` (edited in the model's `profile.json` and in the
+WebUI, image models section):
+
+| Field | Engine flag | When to apply it |
+|---|---|---|
+| `offloadToCpu: true` | `--offload-to-cpu` (= `--params-backend '*=cpu'`) | the baseline mode for 8 GB: weights in RAM |
+| `paramsBackend: "diffusion=disk"` | `--params-backend` | RAM is running out too: weights are read from disk (minimum both VRAM and RAM, but slow) |
+| `maxVram: "-1"` / `"6"` | `--max-vram` | VRAM budget: `-1` = reserve ~1 GB of the free memory; `6` = a hard budget for graph-cut |
+| `vaeTiling: true`, `vaeTileSize` | `--vae-tiling`, `--vae-tile-size` | the main lever against OOM on VAE decode (mandatory at large sizes) |
+| `vaeConvDirect: true` | `--vae-conv-direct` | lowers VRAM during decode (sometimes slower) |
+| `backend: "te=cpu"` | `--backend te=cpu` | move the text encoder out of VRAM (for Qwen that is an int8 encoder of ~8 GB) |
+| `threads` | `--threads` | how many cores to give the CPU part (speeds up the offload branch) |
+| `taesd` | `--taesd` | tiny-VAE instead of the full one (TAEHV, `--tae`, for Qwen): fast decode at the cost of quality |
 
 Verify the flags actually reached the engine (rather than "should have"):
 
@@ -1224,6 +1312,7 @@ is reading files and writing into the models directory, not public generation tr
 **Balancer API** (management plane, `X-API-Token` required):
 
 ```bash
+# Start a transfer (async): 202 + a job; progress is read from {id}
 curl -sS -X POST http://<balancer>:18081/api/v1/models/share \
   -H "X-API-Token: $LB_API_TOKEN" -H 'Content-Type: application/json' \
   -d '{"source":"imageworker","model":"qwen-image-2.1-uncensored-gguf","targets":["IMAGEWORKER-34"]}'

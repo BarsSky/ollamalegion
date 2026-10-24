@@ -1,3 +1,57 @@
+## [0.7.214 - R233: документация полностью двуязычна - 37 пар EN/RU, индексы без пробелов, автопроверки паритета, 2026-10-24]
+
+**Задача.** После структурного рефакторинга (0.7.213) актуальная документация оставалась
+частично одноязычной: 22 документа были только на русском, три - только на английском, а
+несколько английских версий (`api.md`, `balancing-guide.md`, `rpc-coordinator.md`,
+`image-generation.md`, `installation.md`, `backend-type-isolation.md`) заметно отставали от
+русского источника. Требовалась полная локализация: каждый актуальный документ в двух версиях.
+
+**Результат.** 37 документов в каталогах `api/`, `architecture/`, `development/`, `features/`,
+`getting-started/`, `operations/`, `releases/` существуют как пары `<имя>.md` (English) и
+`<имя>.ru.md` (Русский). В `docs/README.md` и `docs/README.ru.md` не осталось ни одного прочерка
+«перевода нет». Архив (`docs/archive/`, `docs/plans/`) по решению остаётся на языке оригинала.
+
+**Что было сделано по документам (выборочно, объём):**
+- созданы с нуля: `operations/deployment-stack` (1697 строк), `architecture/layer-sharding`
+  (453), `architecture/rpc-layout-rules` (251), `architecture/rpc-link-bandwidth` (128),
+  `operations/deployment-remote-balancer` (209), `operations/docker-compose-guide` (496),
+  `operations/deployment-troubleshooting` (431), `operations/agent-deployment` (823),
+  `features/cline-agent-loop` (237), `development/ci-self-hosted-runner` (340),
+  `getting-started/deployment` (439), `getting-started/configuration` (971),
+  `api/env-vars` (291), `features/webui-auth` (179), `features/webui-demo` (118),
+  `features/rpc-benchmark-qwen38` (86), `operations/donor-update`, `operations/rpc-donor-vram-lifecycle`,
+  три файла релизов;
+- доведены до паритета с актуальным источником: `api/api` (1960 → 2877 строк, 54 новых раздела:
+  CppWorker Admin/Diagnostics, Tool Calling, GGUF proxy, Backend Groups, AutoDistribute, AutoTune,
+  WebSocket), `architecture/balancing-guide` (296 → 868), `architecture/rpc-coordinator`
+  (378 → 646), `features/image-generation` (1261 → 1353), `getting-started/installation`
+  (287 → 368), `architecture/backend-type-isolation` (+82 строки), `operations/troubleshooting`
+  (обе стороны: русский §12 R230/R231 добавлен в английский, шесть английских разделов
+  переведены в русский — объединение контента без потерь);
+- созданы русские версии: `architecture/virtual-router`, `architecture/bridge-api`,
+  `architecture/balancer-cppworker-contract`; заодно переписана на английский `virtual-router.md`,
+  который был «английским» только по заголовку (29 % кириллицы в прозе) и исправлены 15 битых
+  якорей оглавления в `bridge-api`.
+
+**Автопроверки вместо ручной сверки.** Добавлены три скрипта и прогоняются как ворота:
+- `scripts/verify-doc-pairs.py` — по каждой паре сверяет структуру (`##`/`###`, строки таблиц,
+  блоки кода), числовые токены в обе стороны (ни одно число не потеряно ни в EN, ни в RU), язык
+  файла (по прозе, без кода) и битые ссылки;
+- `scripts/verify-docs-complete.py` — воротный тест завершённости: у каждого актуального
+  документа есть обе версии, файлы не пустые, язык верный, в индексах нет прочерков, все
+  относительные ссылки в `docs/` резолвятся;
+- `scripts/normalize-doc-links.py` — ссылки приводятся к языку документа (RU-док → RU-файл,
+  EN-док → EN-файл), только если целевой файл существует.
+
+**Проверено.** `verify-docs-complete`: 37 пар, 558 относительных ссылок, 0 битых, прочерков в
+индексах нет. `verify-doc-pairs`: все пары OK (структура, числа в обе стороны). `run-checks.ps1`:
+Go + 70 JS-тестов, всё зелёное. `node webui/js/modules/demo-mode-wiring-r232.test.js`: PASS.
+
+**Ограничения, зафиксированные явно.** Строки, которые печатает сам код (русские WARN/ERROR и
+логи), в английских документах оставлены дословно — иначе оператор не найдёт их grep'ом;
+комментарии внутри код-блоков переведены. В архивных материалах (`docs/archive/`, `docs/plans/`)
+язык оригинала сохранён, мёртвые ссылки заменены inline-кодом.
+
 ## [0.7.213 - R233: рефакторинг документации - одна структура, категории, единый индекс, архив истории, 2026-10-24]
 
 **Задача.** `docs/` разросся в свалку: 99 файлов, из них 46 лежали прямо в корне каталога

@@ -18,10 +18,23 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 CURRENT = ['api', 'architecture', 'features', 'getting-started', 'operations', 'releases',
            'development']
-NUM = re.compile(r'(?<![\w.])\d+(?:[.,]\d+)?(?![\w.])')
+NUM = re.compile(r'\d+(?:[.,]\d+)?')
 LINK = re.compile(r'!?\[[^\]]*\]\((?P<t>[^)\s]+)\)')
 CYR = re.compile(r'[А-Яа-яЁё]')
 LAT = re.compile(r'[A-Za-z]')
+
+def prose_only(txt):
+    """Drop fenced code blocks and inline code spans before language detection."""
+    out = []
+    in_fence = False
+    for line in txt.split('\n'):
+        if line.lstrip().startswith('```'):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        out.append(re.sub(r'`[^`]*`', '', line))
+    return '\n'.join(out)
 
 
 def read(p):
@@ -29,9 +42,10 @@ def read(p):
 
 
 def is_ru(txt):
+    txt = prose_only(txt)
     cyr = len(CYR.findall(txt))
     lat = len(LAT.findall(txt))
-    return cyr > lat * 0.35
+    return cyr > lat * 0.25
 
 
 def stats(txt):
@@ -81,6 +95,7 @@ def main():
             rs, es = stats(ru), stats(en)
             en_ru_lang = is_ru(en)
             missing_nums = [n for n in rs['nums'] if n not in es['nums']]
+            extra_nums = [n for n in es['nums'] if n not in rs['nums']]
             diffs = []
             for key in ('h2', 'h3', 'rows', 'fences'):
                 if rs[key] != es[key]:
@@ -89,12 +104,14 @@ def main():
                 problems.append('%s: English file looks Russian' % rel)
             if missing_nums:
                 problems.append('%s: numbers missing in EN: %s' % (rel, ', '.join(missing_nums[:8])))
+            if extra_nums:
+                problems.append('%s: numbers only in EN (missing in RU): %s' % (rel, ', '.join(extra_nums[:8])))
             bl = bad_links(en_path, rel, en) + bad_links(ru_path, rel, ru)
             if bl:
                 problems.append('%s: broken links: %s' % (rel, ', '.join(bl[:5])))
             rows.append((rel[:-6], 'ok' if not diffs else '; '.join(diffs),
                          '%d/%d' % (rs['lines'], es['lines']),
-                         '%d' % len(missing_nums), 'ru' if en_ru_lang else 'en'))
+                         '%d/%d' % (len(missing_nums), len(extra_nums)), 'ru' if en_ru_lang else 'en'))
     print('%-46s %-26s %-11s %-6s %s' % ('document', 'structure diffs', 'lines ru/en', 'nums', 'lang'))
     for r in rows:
         print('%-46s %-26s %-11s %-6s %s' % r)

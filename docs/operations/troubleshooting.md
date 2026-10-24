@@ -16,7 +16,8 @@
 9. [Agent → Ollama: Limitations](#9-agent--ollama-limitations)
 10. [Live metrics = 0 for cppworker backend](#10-live-metrics--0-for-cppworker-backend)
 11. [Logging and Debugging](#11-logging-and-debugging)
-12. [Related Documents](#12-related-documents)
+12. [AutoTune, Streaming and Large Loads (R230–R231)](#12-autotune-streaming-and-large-loads-r230r231)
+13. [Related Documents](#13-related-documents)
 
 ---
 
@@ -480,11 +481,86 @@ CPPWORKER_VERBOSE=true
 
 ---
 
-## 12. Related Documents
+## 12. AutoTune, Streaming and Large Loads (R230–R231)
+
+Three live symptoms that look like "a bug in the model", but each one has a concrete
+cause in the stack. All three are closed and are checked by scripts.
+
+### 12.1 AutoTune reports "0 GB free" and suggests `num_gpu_layers=-2` / `q4_0`
+
+**Symptom (A10 24 GB, ctx 131072, KV q8_0, 16 layers):** the recommendations show
+`free=0.0GB`, `-2` in the layers and `q4_0`; after the reload it became worse than on
+the first load.
+
+**Why it happened:** GPU/System metrics arrive in **MB**, while the analysis expected
+**bytes** (20000 MB turned into 0.0 GB); besides, the budget was computed from what is
+left with the model already loaded instead of the reload budget (`free + occupancy` of
+that model); `n_kv_heads`/`head_dim` are absent from `/api/models`, and without them KV
+cannot be computed.
+
+**What to do:**
+1. Update the images to R230+ (`balancer:r230+`, `cppworker:gpu-r231+`).
+2. Check the report: `GET /api/v1/backends` → `autoTune.models[].recommendations`.
+   Signs of correctness: there is a "budget N GB" with numbers, there is no `-2`, no `0.0GB`.
+3. Live check: `pwsh -File scripts/verify-autotune-r230.ps1`
+   (PASS — the budget is computed, the recommendations are explained, `-2` is absent).
+4. If there are no recommendations at all while a model is loaded — check that
+   `autoTuneEnabled=true` and that `/api/models` returns `n_layers` (otherwise the
+   analysis conservatively leaves the layout alone — this is expected).
+
+**Important:** in streaming, autotune is applied AFTER the response (the model is idle),
+and the actual configuration is verified against the plan. Under continuous traffic a
+reload may be declined as "busy" — that is an honest refusal with cool-down, not a
+silent success.
+
+### 12.2 Cline: `</think>` in the response body, duplicated text, session aborted
+
+**Symptom:** the response shows `</think>` (or `<end_of_turn>`), the reasoning text is
+repeated in the main answer, the stream ends without `[DONE]` — Cline waits for the end
+and aborts the session.
+
+**Causes (R231):**
+- the R91 fallback "unclosed reasoning → content" was applied to the stream: reasoning
+  went out through a second channel and then as a copy into `content`;
+- extra closing markers stayed in the visible text;
+- the balancer's SSE filter received bare JSON instead of `data: {...}` and in fact
+  cleaned nothing; the "modified" bool was treated as "drop the chunk";
+- the trailing `[DONE]` was emitted only with auto-continue enabled.
+
+**What to do:**
+1. Update the balancer and the worker to R231+; the client does not need a restart.
+2. Check: `node scripts/verify-stream-r231.js` — 3 runs, criteria:
+   content does not duplicate reasoning, no markers, `[DONE]` exactly once and last,
+   empty content only with `finish_reason=length`.
+3. Client contract (OpenAI+Ollama, including tools): `node scripts/clients/contract-suite.js`.
+4. If the symptom remains after the update — look in the worker log for the line
+   `блок размышлений не закрыт` (it shows why `length`) and check that the client does
+   not switch on its own "stream parser" that expects a different format.
+
+### 12.3 Loading a 15+ GB model is aborted ("model load cancelled")
+
+**Symptom:** `runAsyncLoad: background load failed ... stopped at 0% of weights`,
+and earlier in the log — `загрузка модели не завершилась за отведённое время` and a
+goroutine stack.
+
+**Cause:** the load watchdog (`CPPWORKER_LOAD_STALL_SEC`, default 300 s) considers the
+load stalled if the progress callback does not move for a long time. On a slow disk a
+15 GB GGUF takes 280–480 s to read, and the default kills it — even though the load was
+going normally.
+
+**Solution:** in `deployments/.env` set
+`CPPWORKER_LOAD_STALL_SEC=1200` and recreate the worker
+(`docker compose ... up -d --force-recreate cppworker-gpu`). Check:
+`/api/models` → `state=loaded`, and in the log `model loaded successfully`.
+
+---
+
+## 13. Related Documents
 
 - [`runbook-tools.md`](runbook-tools.md) — **detailed step-by-step runbook for tools/tool_calls** (scenarios A-E).
 - [`cppworker-model-params.md`](../features/cppworker-model-params.md) — n_ctx + Per-Model Profiles.
 - [`cppworker-metrics-collection.md`](../api/cppworker-metrics-collection.md) — **architecture of cppworker metrics collection: poller vs agent**.
+- [`rpc-benchmark-qwen38.md`](../features/rpc-benchmark-qwen38.md) — RPC gain measurement (methodology and numbers).
 - [`agent-deployment.md`](agent-deployment.md) — agent deployment.
 - [`installation.md`](../getting-started/installation.md) — installation.
 - [`audit-2026-06.md`](../../.cline/audit-2026-06.md) — implementation status.

@@ -7,7 +7,7 @@
 
 1. [Частые ошибки балансировщика](#1-частые-ошибки-балансировщика)
 2. [n_ctx overflow: диагностика и решение](#2-n_ctx-overflow-диагностика-и-решение)
-3. [ReloadLoopLimitError (HTTP 413)](#3-reloadlooplimit-error-http-413)
+3. [ReloadLoopLimitError (HTTP 413)](#3-reloadlooplimiterror-http-413)
 4. [Бэкенд помечается как unhealthy](#4-бэкенд-помечается-как-unhealthy)
 5. [HTTP 5xx / "Server disconnected" на тяжёлых моделях](#5-http-5xx--server-disconnected-на-тяжёлых-моделях)
 6. [Tools/tool_calls — сброс или пустой ответ](#6-toolstool_calls--сброс-или-пустой-ответ)
@@ -562,3 +562,237 @@ CPPWORKER_VERBOSE=true
 - [`installation.md`](../getting-started/installation.ru.md) — установка.
 - [`audit-2026-06.md`](../../.cline/audit-2026-06.md) — статус реализации.
 - [`../.clinerules`](../../.clinerules) §14 — частые ловушки.
+
+---
+
+## Проблемы с подключением
+
+### Не удаётся подключиться к балансировщику
+
+**Симптомы:** `curl http://localhost:18081/api/v1/health` не проходит
+
+**Решение:**
+1. Убедиться, что балансировщик запущен:
+   ```bash
+   docker ps | grep loadbalancer
+   # или
+   ps aux | grep ollama-balancer
+   ```
+2. Проверить логи:
+   ```bash
+   docker logs ollamalegion_loadbalancer_1
+   ```
+3. Убедиться, что порт не занят:
+   ```bash
+   netstat -tuln | grep -E '18080|18081'
+   ```
+4. Проверить правила firewall:
+   ```bash
+   sudo ufw status  # Ubuntu
+   sudo firewall-cmd --list-all  # CentOS/RHEL
+   ```
+
+### CORS-ошибки в WebUI
+
+**Симптомы:** в консоли браузера видны CORS-ошибки
+
+**Решение:**
+1. Заходить через nginx-прокси (не напрямую как `file://`)
+2. Использовать Docker Compose, в котором nginx reverse proxy уже включён
+3. При прямом доступе добавить API base:
+   ```
+   http://localhost:18080/?api_base=http://localhost:18081
+   ```
+
+---
+
+## Проблемы с бэкендами
+
+### Бэкенд показывается как unhealthy
+
+**Симптомы:** в WebUI статус бэкенда — "unhealthy"
+
+**Решение:**
+1. Убедиться, что Ollama запущен на бэкенде:
+   ```bash
+   curl http://backend-ip:11434/api/tags
+   ```
+2. Проверить, запущен ли агент:
+   ```bash
+   curl http://backend-ip:18032/metrics
+   ```
+3. Проверить сетевую доступность:
+   ```bash
+   ping backend-ip
+   telnet backend-ip 11434
+   ```
+4. Проверить логи бэкенда:
+   ```bash
+   docker logs ollama-agent-1
+   ```
+
+### Модели не появляются в списке
+
+**Симптомы:** на вкладке Models нет моделей или список неполный
+
+**Решение:**
+1. Убедиться, что модели загружены на бэкендах:
+   ```bash
+   curl http://backend-ip:11434/api/tags
+   ```
+2. Перерегистрировать бэкенд:
+   ```bash
+   # Удалить бэкенд и добавить заново
+   curl -X DELETE http://localhost:18081/api/v1/backends/backend-id
+   curl -X POST http://localhost:18081/api/v1/backends -d '{"id":"...","host":"..."}'
+   ```
+
+---
+
+## Проблемы с производительностью
+
+### Большая глубина очереди
+
+**Симптомы:** много запросов ждут в очереди
+
+**Решение:**
+1. Проверить, не перегружены ли бэкенды:
+   ```bash
+   curl http://localhost:18081/api/v1/cluster | jq '.backends[].activeRequests'
+   ```
+2. Форсировать ребаланс:
+   ```bash
+   curl -X POST http://localhost:18081/api/v1/queue/rebalance
+   ```
+3. Добавить бэкенды
+4. Увеличить `maxConcurrentRequests` на бэкендах:
+   ```bash
+   curl -X PUT http://localhost:18081/api/v1/backends/backend-id \
+     -d '{"maxConcurrentRequests": 16}'
+   ```
+
+### Медленные ответы
+
+**Симптомы:** запросы идут необычно долго
+
+**Решение:**
+1. Проверить метрики GPU:
+   ```bash
+   curl http://localhost:18081/api/v1/cluster | jq '.backends[].gpu'
+   ```
+2. Убедиться, что модель загружена (а не свопится):
+   ```bash
+   curl http://backend-ip:11434/api/ps
+   ```
+3. Проверить disk I/O на бэкендах
+4. Уменьшить `maxConcurrentRequests`, если GPU перегружены
+
+---
+
+## Проблемы с Docker
+
+### Контейнер не стартует
+
+**Симптомы:** `docker compose up` завершается ошибкой
+
+**Решение:**
+1. Проверить конфликты портов:
+   ```bash
+   netstat -tuln | grep -E '18080|18081|6379|5432'
+   ```
+2. Проверить версию Docker Compose (2.0+):
+   ```bash
+   docker compose version
+   ```
+3. Забрать свежие образы:
+   ```bash
+   docker compose pull
+   ```
+4. Пересобрать образы:
+   ```bash
+   docker compose build --no-cache
+   ```
+
+### GPU недоступен в контейнере
+
+**Симптомы:** агент не показывает метрики GPU
+
+**Решение:**
+1. Проверить NVIDIA Container Toolkit:
+   ```bash
+   nvidia-ctk --version
+   ```
+2. Проверить доступ к GPU:
+   ```bash
+   docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
+   ```
+3. Проверить Docker GPU runtime:
+   ```bash
+   docker info | grep -i runtime
+   ```
+4. Добавить `--gpus all` или использовать `docker-compose.agent.gpu.yml`
+
+---
+
+## Проблемы с WebUI
+
+### Пустая страница или неполная отрисовка
+
+**Симптомы:** страница WebUI пустая или загрузилась частично
+
+**Решение:**
+1. Очистить кэш браузера (Ctrl+Shift+R)
+2. Посмотреть ошибки в консоли JavaScript (F12)
+3. Проверить доступность API:
+   ```bash
+   curl http://localhost:18081/api/v1/health
+   ```
+4. Форсировать обновление: добавить `?v=2` к URL
+
+### Страница Monitor показывает "No data"
+
+**Симптомы:** на вкладке Monitor нет информации
+
+**Решение:**
+1. Дождаться первого получения данных (2-5 секунд)
+2. Нажать кнопку "Retry"
+3. Включить demo mode, чтобы проверить работу UI:
+   - Открыть консоль браузера: `enterDemoMode()`
+4. Проверить настройки CORS
+5. Проверить API base URL:
+   - Открыть консоль: `API_BASE`
+   - Задать вручную: `localStorage.setItem('monitorApiBase', 'http://localhost:18081')`
+
+### Тема применяется неправильно
+
+**Симптомы:** тёмная/светлая тема не переключается
+
+**Решение:**
+1. Очистить `localStorage`:
+   ```javascript
+   localStorage.removeItem('ollamalegion_theme')
+   ```
+2. Жёстко обновить страницу (Ctrl+Shift+R)
+3. Проверить, что `localStorage` включён в браузере
+
+---
+
+## Как получить помощь
+
+1. **Сначала посмотреть логи:**
+   ```bash
+   docker compose logs loadbalancer
+   docker compose logs agent
+   ```
+
+2. **Проверить health API:**
+   ```bash
+   curl -v http://localhost:18081/api/v1/health
+   ```
+
+3. **Включить debug-логирование:**
+   ```bash
+   LOG_LEVEL=debug docker compose up
+   ```
+
+4. **Сообщить о проблеме:** [GitHub Issues](https://github.com/BarsSky/ollamalegion/issues)

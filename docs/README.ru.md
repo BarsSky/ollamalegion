@@ -44,7 +44,7 @@
 | **Правила RPC-раскладки** | [RU](architecture/rpc-layout-rules.ru.md) | [EN](architecture/rpc-layout-rules.md) | Правила, добытые живыми падениями: один коммит, архитектура, флаг. |
 | **Канал между узлами** | [RU](architecture/rpc-link-bandwidth.ru.md) | [EN](architecture/rpc-link-bandwidth.md) | Как измеряется скорость канала между узлами и где хранится. |
 | **C-bridge API** | [RU](architecture/bridge-api.ru.md) | [EN](architecture/bridge-api.md) | Мост Go <-> C к llama.cpp: функции, структуры, контракт. |
-| **Контракт балансер <-> cppworker** | — | [EN](architecture/balancer-cppworker-contract.md) | Сетевой контракт балансера и воркера, поле за полем. |
+| **Контракт балансер <-> cppworker** | [RU](architecture/balancer-cppworker-contract.ru.md) | [EN](architecture/balancer-cppworker-contract.md) | Сетевой контракт балансера и воркера, поле за полем. |
 
 ## Эксплуатация
 

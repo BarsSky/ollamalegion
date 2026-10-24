@@ -141,6 +141,9 @@
 | Env var | Type | Default | Notes |
 |---------|------|---------|-------|
 | `WEBUI_DEMO_MODE` | bool | `0` | **R232 (2026-10-24)**: panel demo mode. `1` — the WebUI shows a synthetic scenario (clients → balancer → queue → RPC donor → AutoTune), no login is required (guest `viewer`), all `/api/` requests are intercepted in the browser (the real balancer is not polled), mutations are forbidden (`403 read-only`). It is enabled **only** by this variable at container start; there is no toggle in the UI. Details: [webui-demo.md](../features/webui-demo.md). |
+| `OLLAMALEGION_LOG_LANG` | string | `ru` | **R234 (2026-10-24)**: language of logs and error messages of every Go process: `ru` / `en` / `auto` (from `LANG`/`LC_ALL`). Takes priority over `logging.language` in the config; switching it in the WebUI writes that config field. See [docs/development/i18n-logs.md](../development/i18n-logs.md). |
+| `OLLAMALEGION_LOG_LANG_SYNC_SEC` | int | `60` | **R234**: how often workers (`cppworker`, `agent`) ask the balancer for the language (`GET /api/v1/i18n`); minimum 5. |
+| `LB_LOG_LANG` / `CPPWORKER_LOG_LANG` / `AGENT_LOG_LANG` | string | - | **R234**: per-container overrides of the log language. |
 | `API_HOST` / `API_PORT` | string/int | `loadbalancer` / `18081` | Where the panel's nginx proxies `/api/` (the balancer admin plane). |
 | `LB_PORT` | int | `18080` | The proxy surface of the balancer for `/v1/`. |
 | `CPPWORKER_HOST` / `CPPWORKER_PORT` | string/int | `cppworker-gpu` / `18092` | The worker surface for `/api/worker`. |

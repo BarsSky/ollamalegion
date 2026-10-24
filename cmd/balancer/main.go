@@ -17,6 +17,7 @@ import (
 	"ollama-loadbalancer/internal/api"
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/config"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/rpccoordinator"
 	"ollama-loadbalancer/internal/runtimeoverrides"
 	"ollama-loadbalancer/pkg/logger"
@@ -29,6 +30,7 @@ var (
 	port       = flag.Int("port", 0, "Override config port")
 	apiPort    = flag.Int("api-port", 0, "Override config API port")
 	logLevel   = flag.String("log-level", "", "Override config log level")
+	logLang    = flag.String("log-lang", "", "Override log/error language (ru|en|auto)")
 )
 
 func main() {
@@ -41,15 +43,36 @@ func main() {
 	// Теперь:
 	//   - file not found → log WARN, fallback на env (если LB_ALLOW_ENV_FALLBACK=true)
 	//   - file exists but parse error → FATAL exit (без silent fallback)
+	// R234 (2026-10-24): язык логов и ошибок. Приоритет:
+	//   flag -log-lang > env (OLLAMALEGION_LOG_LANG / LB_LOG_LANG)
+	//   > config.logging.language > LANG/LC_ALL > ru
+	//
+	// Решаем ДО первой лог-строки: сообщение о фатальной ошибке конфига тоже
+	// должно быть на выбранном языке. Конфиг читается ниже, поэтому его
+	// значение применяется отдельным шагом (applyConfigLogLanguage).
+	langFromFlagOrEnv, langSource := resolveStartupLanguage(*logLang)
+	i18n.Set(langFromFlagOrEnv)
+
 	cfg, err := config.LoadOrFail(*configPath)
 	if err != nil {
 		// CONFIG_INVALID: file exists but unparseable — fail loud.
 		// CONFIG_REQUIRED: file not found AND LB_ALLOW_ENV_FALLBACK=false — fail loud.
 		// CONFIG_BOTH_FAILED: both file and env failed — fail loud.
-		log.Fatalf("[CONFIG] FATAL: cannot start balancer: %v", err)
+		log.Fatalf("%s", i18n.T("balancer.config.fatal", err))
 	}
 
 	conf := cfg.Get()
+
+	// Если ни flag, ни env язык не задали — берём logging.language из конфига,
+	// а при пустом значении — локаль. Это позволяет менять язык в config.json
+	// (и через WebUI, который пишет туда же) без правки env контейнера.
+	if langSource == "" {
+		langFromFlagOrEnv, langSource = applyConfigLogLanguage(conf.Logging.Language)
+		i18n.Set(langFromFlagOrEnv)
+	}
+	// Переменная нужна и дальше: /api/v1/i18n отдаёт источник, а WebUI
+	// показывает, чем язык задан (env/config/locale).
+	_ = langSource
 
 	// Применение переопределений из командной строки
 	if *port > 0 {
@@ -67,7 +90,7 @@ func main() {
 	// Позволяет включить debug через docker-compose environment без правки config.json.
 	if envLevel := os.Getenv("LOG_LEVEL"); envLevel != "" && *logLevel == "" {
 		conf.Logging.Level = envLevel
-		log.Printf("[ENV]  LOG_LEVEL=%s overrides config level", envLevel)
+		log.Print(i18n.T("balancer.env.log_level", envLevel))
 	}
 
 	// Round 52 (2026-08-24): LB_API_TOKEN env override.
@@ -774,4 +797,42 @@ func enableTCPKeepAlive(ctx context.Context, c net.Conn) context.Context {
 		_ = tcp.SetKeepAlivePeriod(5 * time.Second)
 	}
 	return ctx
+}
+
+// resolveStartupLanguage — R234: язык из flag или env до чтения конфига.
+// Возвращает язык и источник ("flag", имя env-переменной) либо пустой источник,
+// если ни flag, ни env ничего не задали (тогда решает конфиг/локаль).
+func resolveStartupLanguage(flagValue string) (i18n.Lang, string) {
+	if v := strings.TrimSpace(flagValue); v != "" {
+		if lang, auto, ok := i18n.Parse(v); ok {
+			if auto {
+				return i18n.FromLocale(), "flag"
+			}
+			return lang, "flag"
+		}
+		log.Printf("%s", i18n.T("config.log_language.invalid", v, i18n.Get()))
+	}
+	if lang, _, src := i18n.FromEnv("OLLAMALEGION_LOG_LANG", "LB_LOG_LANG"); src != "" {
+		return lang, src
+	}
+	return "", ""
+}
+
+// applyConfigLogLanguage — R234: язык из config.logging.language, иначе локаль.
+// Пустое значение в конфиге означает "ru" (поведение до R234), но если локаль
+// явно английская — уважаем её: оператор уже сказал, какой язык ему нужен.
+func applyConfigLogLanguage(configValue string) (i18n.Lang, string) {
+	v := strings.TrimSpace(configValue)
+	if v == "" {
+		return i18n.FromLocale(), "locale"
+	}
+	lang, auto, ok := i18n.Parse(v)
+	if !ok {
+		log.Printf("%s", i18n.T("config.log_language.invalid", v, i18n.Get()))
+		return i18n.FromLocale(), "locale"
+	}
+	if auto {
+		return i18n.FromLocale(), "locale"
+	}
+	return lang, "config"
 }

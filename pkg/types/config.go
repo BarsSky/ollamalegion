@@ -81,6 +81,16 @@ type APISettings struct {
 type LoggingSettings struct {
 	Level  string `json:"level"`
 	Format string `json:"format"`
+	// Language — R234 (2026-10-24): язык логов и сообщений об ошибках.
+	//
+	// "ru" (по умолчанию) | "en" | "auto" (взять из LANG/LC_ALL).
+	// Пустое значение = "ru": до R234 все сообщения были русскими, и менять
+	// поведение у существующих конфигов без строки language нельзя.
+	//
+	// Источник истины — балансер: он отдаёт язык через GET /api/v1/i18n,
+	// меняет через PUT (WebUI) и сохраняет в эту секцию; воркеры подтягивают
+	// его с балансера, поэтому env воркеров нужен только для автономного старта.
+	Language string `json:"language,omitempty"`
 }
 
 // ResourceLimits - лимиты ресурсов для принятия решений

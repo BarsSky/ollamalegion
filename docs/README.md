@@ -103,6 +103,7 @@ Conventions and CI for contributors.
 | Document | English | Russian | What it covers |
 |---|---|---|---|
 | **Style compliance** | [EN](development/style-compliance.md) | [RU](development/style-compliance.ru.md) | Em-dash lint, i18n parity, docs sync rules. |
+| **Log and error language (R234)** | [EN](development/i18n-logs.md) | [RU](development/i18n-logs.ru.md) | How the log/error language is chosen, switched in the WebUI and synced to workers. |
 | **Self-hosted CI runner** | [EN](development/ci-self-hosted-runner.md) | [RU](development/ci-self-hosted-runner.ru.md) | Runner setup, labels, operations and troubleshooting. |
 
 ## Roadmap and session reports

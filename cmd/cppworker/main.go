@@ -24,6 +24,7 @@ import (
 
 	"ollama-loadbalancer/internal/agent"
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 	"ollama-loadbalancer/pkg/version"
@@ -141,6 +142,11 @@ func packageLogger() *zap.SugaredLogger {
 
 func main() {
 	flag.Parse()
+
+	// R234 (2026-10-24): язык логов и ошибок. Локальная настройка (env/локаль)
+	// применяется до первого сообщения; дальше StartFromBalancer подтягивает
+	// язык с балансера, поэтому переключение в WebUI действует на весь стенд.
+	i18n.BootstrapFromEnv("CPPWORKER")
 
 	// R173 (2026-10-18): SIGPIPE НЕ ДОЛЖЕН УБИВАТЬ ВОРКЕР.
 	//
@@ -581,6 +587,19 @@ func main() {
 	balancerRegCtx, balancerRegCancel := context.WithCancel(context.Background())
 	defer balancerRegCancel()
 	balancerReg = newBalancerRegistration(&cfg)
+
+	// R234 (2026-10-24): язык логов и ошибок с балансера. Синхронизация не
+	// зависит от Go-регистрации (в bundled-стеке она выключена): нужен только
+	// адрес management-порта, токен и интервал (OLLAMALEGION_LOG_LANG_SYNC_SEC).
+	if cancelLang, langErr := i18n.StartFromBalancer(context.Background(),
+		strings.TrimRight(os.Getenv("CPPWORKER_BALANCER_URL"), "/"),
+		resolveAPIToken()); langErr == nil {
+		defer cancelLang()
+	} else {
+		// В main() локальная переменная log — это *zap.SugaredLogger, поэтому
+		// ошибку синхронизации печатаем через стандартный вывод ошибок.
+		fmt.Fprintf(os.Stderr, "[i18n] language sync: %v\n", langErr)
+	}
 	if balancerReg != nil {
 		balancerReg.start(balancerRegCtx, log)
 	} else {

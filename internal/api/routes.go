@@ -49,6 +49,13 @@ func (s *Server) setupRoutes() {
 	// Backend types info (публичный, без аутентификации)
 	s.mux.HandleFunc("/api/v1/backends/types", s.handleBackendTypeInfo)
 
+	// R234 (2026-10-24): язык логов и ошибок. GET отдаёт действующий язык
+	// (его читают воркеры: cppworker/agent синхронизируются с балансером),
+	// PUT переключает язык на лету и сохраняет в config.logging.language.
+	// Источник истины — балансер; тонкость: эндпоинт дешёвый и его опрашивают
+	// воркеры, поэтому rate-limit применяется как к остальным.
+	s.mux.Handle("/api/v1/i18n", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleI18n), s.rateLimiter), s.authenticator))
+
 	// Operating Mode switch (с аутентификацией и rate limiting)
 	s.mux.Handle("/api/v1/config/mode", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleModeSwitch), s.rateLimiter), s.authenticator))
 

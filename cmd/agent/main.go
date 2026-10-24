@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 
 	"ollama-loadbalancer/internal/agent"
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/env"
 	"ollama-loadbalancer/pkg/types"
 	"ollama-loadbalancer/pkg/version"
@@ -36,6 +38,11 @@ var (
 
 func main() {
 	flag.Parse()
+
+	// R234 (2026-10-24): язык логов и ошибок агента. Локальная настройка —
+	// AGENT_LOG_LANG / OLLAMALEGION_LOG_LANG / локаль; ниже (после чтения
+	// конфигурации) язык синхронизируется с балансером.
+	i18n.BootstrapFromEnv("AGENT")
 
 	// Режим healthcheck — проверка /health endpoint и выход
 	if *healthcheckFlag {
@@ -70,6 +77,15 @@ func main() {
 		// Fallback на CppWorkerURL (если задан) иначе localhost:18092.
 		CppWorkerHost: env.Get("AGENT_CPPWORKER_HOST", ""),
 		CppWorkerPort: env.GetInt("AGENT_CPPWORKER_PORT", 0),
+	}
+
+	// R234: язык логов и ошибок с балансера (источник истины — балансер,
+	// переключение из WebUI действует на агент без перезапуска контейнера).
+	if cancelLang, langErr := i18n.StartFromBalancer(context.Background(),
+		cfg.BalancerURL, cfg.BalancerToken); langErr == nil {
+		defer cancelLang()
+	} else {
+		log.Printf("%v", langErr)
 	}
 
 	// Если передан файл конфигурации — загружаем из него

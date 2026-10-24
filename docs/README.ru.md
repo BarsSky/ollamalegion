@@ -103,6 +103,7 @@
 | Документ | Русский | English | О чём |
 |---|---|---|---|
 | **Стиль и синхронизация документации** | [RU](development/style-compliance.ru.md) | [EN](development/style-compliance.md) | Линт em-dash, паритет i18n, правила синхронизации документации. |
+| **Язык логов и ошибок (R234)** | [RU](development/i18n-logs.ru.md) | [EN](development/i18n-logs.md) | Как выбирается язык логов и ошибок, как переключается в WebUI и синхронизируется с воркерами. |
 | **Self-hosted CI runner** | [RU](development/ci-self-hosted-runner.ru.md) | [EN](development/ci-self-hosted-runner.md) | Настройка runner-а, лейблы, эксплуатация и диагностика. |
 
 ## Roadmap и отчёты сессий

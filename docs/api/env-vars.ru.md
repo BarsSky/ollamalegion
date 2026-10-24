@@ -141,6 +141,9 @@
 | Env var | Type | Default | Notes |
 |---------|------|---------|-------|
 | `WEBUI_DEMO_MODE` | bool | `0` | **R232 (2026-10-24)**: демо-режим панели. `1` — WebUI показывает синтетический сценарий (клиенты → балансер → очередь → донор RPC → AutoTune), вход не требуется (гость `viewer`), все `/api/`-запросы перехватываются в браузере (реальный балансер не опрашивается), мутации запрещены (`403 read-only`). Включается **только** этой переменной при старте контейнера; переключателя в UI нет. Подробности: [webui-demo.md](../features/webui-demo.ru.md). |
+| `OLLAMALEGION_LOG_LANG` | string | `ru` | **R234**: язык логов и ошибок всех Go-процессов: `ru` / `en` / `auto` (из `LANG`/`LC_ALL`). Приоритет выше `logging.language` в конфиге; переключение через WebUI пишет в конфиг. См. [docs/development/i18n-logs.ru.md](../development/i18n-logs.ru.md). |
+| `OLLAMALEGION_LOG_LANG_SYNC_SEC` | int | `60` | **R234**: как часто воркеры (`cppworker`, `agent`) спрашивают язык у балансера (`GET /api/v1/i18n`); минимум 5. |
+| `LB_LOG_LANG` / `CPPWORKER_LOG_LANG` / `AGENT_LOG_LANG` | string | — | **R234**: точечные переопределения языка для отдельного контейнера. |
 | `API_HOST` / `API_PORT` | string/int | `loadbalancer` / `18081` | Куда nginx панели проксирует `/api/` (admin-плоскость балансера). |
 | `LB_PORT` | int | `18080` | Прокси-поверхность балансера для `/v1/`. |
 | `CPPWORKER_HOST` / `CPPWORKER_PORT` | string/int | `cppworker-gpu` / `18092` | Поверхность воркера для `/api/worker`. |

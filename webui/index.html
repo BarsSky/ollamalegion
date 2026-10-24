@@ -1192,6 +1192,32 @@
                     </div>
                     <div class="settings-form" id="settingsForm">
 
+                         <!-- ==================== Section: Log language (R234) ==================== -->
+                         <div class="settings-section" id="section-log-language">
+                             <div class="settings-section-header" data-section="log-language">
+                                 <span class="section-toggle">▼</span>
+                                 <i class="fas fa-language"></i>
+                                 <span data-i18n="settings.section.log_language">Язык логов и ошибок</span>
+                             </div>
+                             <div class="settings-section-body open">
+                                 <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px"
+                                    data-i18n="settings.log_language.desc">Язык логов и сообщений об ошибках у балансера, cppworker и агента. Английский интерфейс не влияет на логи: это отдельная настройка стенда. Переключение действует без перезапуска контейнеров — воркеры подтягивают язык с балансера.</p>
+                                 <div class="form-row" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+                                     <label for="logLanguageSelect" style="font-weight:600" data-i18n="settings.log_language.label">Язык</label>
+                                     <select id="logLanguageSelect" data-admin-only style="min-width:220px;padding:6px 10px">
+                                         <option value="auto" data-i18n="settings.log_language.auto">Авто (из локали контейнера)</option>
+                                         <option value="ru" data-i18n="settings.log_language.ru">Русский</option>
+                                         <option value="en" data-i18n="settings.log_language.en">English</option>
+                                     </select>
+                                     <button type="button" class="btn btn-primary" id="logLanguageApply" data-admin-only
+                                             data-i18n="settings.log_language.apply">Применить</button>
+                                     <span id="logLanguageStatus" style="font-size:12px;color:var(--text-muted)"></span>
+                                 </div>
+                                 <p style="color:var(--text-muted);font-size:12px;margin-top:8px"
+                                    data-i18n="settings.log_language.hint">Уровень логов задаётся переменной LOG_LEVEL, язык — этой настройкой (env OLLAMALEGION_LOG_LANG имеет приоритет при старте).</p>
+                             </div>
+                         </div>
+
                          <!-- ==================== Section: Operating Mode ==================== -->
                          <div class="settings-section" id="section-mode">
                              <div class="settings-section-header" data-section="mode">
@@ -2487,6 +2513,8 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          вызывают window.ClientAccess.render(backend). -->
     <script defer src="js/modules/client-access.js?v=R83"></script>
     <script defer src="js/modules/api.js?v=R83"></script>
+    <!-- R234: язык логов и ошибок (GET/PUT /api/v1/i18n). Нужен admin-доступ. -->
+    <script defer src="js/modules/i18n-logs.js?v=R234"></script>
     <script defer src="js/modules/gguf-api.js?v=R83"></script>
     <!-- R84 (2026-10-03): единая точка обновления данных WebUI — реестр
          провайдеров страниц, индикатор свежести в шапке (#dataFreshness) и

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
+	"strings"
 
+	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -231,6 +234,11 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			"ramMaxUsage":         s.config.Resources.Memory.MaxUsagePercent,
 			"minFreeDisk":         s.config.Resources.Disk.MinFreeMB,
 			"operatingMode":       s.config.Balancing.OperatingMode,
+			// R234: язык логов и ошибок. Рантайм-значение (после PUT) может
+			// отличаться от сохранённого "auto", поэтому отдаём и то, и другое:
+			// WebUI показывает действующий, а в select подставляет настройку.
+			"logLanguage":         s.config.Logging.Language,
+			"logLanguageResolved": string(i18n.Get()),
 			"initialized":         s.config.Initialized,
 			"backendEngine":       string(s.config.BackendEngine),
 			// RPC-режимы: детальные настройки для RESET с сервера
@@ -273,6 +281,7 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			OperatingMode       string   `json:"operatingMode"`
 			Initialized         *bool    `json:"initialized"`
 			BackendEngine       string   `json:"backendEngine"`
+			LogLanguage         string   `json:"logLanguage"`
 			// Session 17 (2026-07-27): глобальные настройки llama.cpp (per-model
 			// profile и per-backend CppWorkerConfig имеют приоритет). Pointer
 			// чтобы отличить "не прислано" от "прислано как zero value".
@@ -336,6 +345,29 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Track which fields were updated (for response)
 		updatedFields := make([]string, 0, 10)
+
+		// R234: язык логов и ошибок. Меняется на лету (i18n.Set), чтобы
+		// переключение в WebUI действовало без перезапуска контейнера, и
+		// сохраняется в config.logging.language для следующего старта.
+		if raw := strings.TrimSpace(req.LogLanguage); raw != "" {
+			lang, auto, ok := i18n.Parse(raw)
+			if !ok {
+				s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"success": false,
+					"error":   i18n.T("api.i18n.unsupported", raw, strings.Join(i18n.Supported(), ", ")),
+				})
+				return
+			}
+			if auto {
+				lang = i18n.FromLocale()
+			}
+			if lang != i18n.Get() {
+				i18n.Set(lang)
+				log.Print(i18n.T("i18n.changed", lang))
+			}
+			s.config.Logging.Language = raw
+			updatedFields = append(updatedFields, "logLanguage")
+		}
 
 		// Валидация алгоритма
 		if req.Algorithm != "" {

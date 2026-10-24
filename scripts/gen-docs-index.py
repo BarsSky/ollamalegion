@@ -206,6 +206,12 @@ DOCS = [
      'ru=Стиль и синхронизация документации',
      'Em-dash lint, i18n parity, docs sync rules.',
      'Линт em-dash, паритет i18n, правила синхронизации документации.'),
+    ('development', 'i18n-logs',
+     'development/i18n-logs', 'Log and error language (R234)',
+     'ru=Язык логов и ошибок (R234)',
+     'How the log/error language is chosen, switched in the WebUI and synced to workers.',
+     'Как выбирается язык логов и ошибок, как '
+     'переключается в WebUI и синхронизируется с воркерами.'),
     ('development', 'ci-self-hosted-runner',
      'development/ci-self-hosted-runner', 'Self-hosted CI runner',
      'ru=Self-hosted CI runner',

@@ -100,3 +100,21 @@
 
 /* ===== Card header icons ===== */
 .card-icon-svg    { width: 22px; height: 22px; vertical-align: middle; margin-right: 8px; }
+
+/* ===== R238c: HuggingFace =====
+   Font Awesome 6 Free НЕ содержит брендового глифа HuggingFace: класса
+   `.fa-huggingface` нет в font-awesome.min.css, поэтому у ::before
+   content: none и иконка пустая на ЛЮБОЙ машине (на офлайн-хосте это заметнее
+   всего: кажется, что «не все иконки доехали»). Рисуем её локальной SVG-маской:
+   файл лежит в webui/img и попадает в образ, цвет наследуется от текста
+   (currentColor), внешних запросов нет. */
+.fa-huggingface::before {
+    content: "";
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.125em;
+    background-color: currentColor;
+    -webkit-mask: url(../img/huggingface.svg) center / contain no-repeat;
+    mask: url(../img/huggingface.svg) center / contain no-repeat;
+}

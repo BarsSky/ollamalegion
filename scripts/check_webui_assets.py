@@ -41,6 +41,49 @@ ALLOWED_NAV_HOSTS = ("github.com", "fontawesome.com", "ollama.com")
 ATTR_RE = re.compile(r'(\w[\w-]*)\s*=\s*"([^"]+)"')
 CSS_URL_RE = re.compile(r'url\(\s*[\'"]?([^\'")]+)[\'"]?\s*\)')
 
+# R238c: иконки Font Awesome, которых нет в вендоренном бандле, рисуются пустым
+# местом (content: none) — визуально это «пропавшая иконка» на странице. Именно
+# так выглядел .fa-huggingface на офлайн-хосте. Собираем все fa-* токены из HTML
+# и JS и сверяем с классами, объявленными в CSS (включая наши локальные
+# переопределения в icons.css).
+FA_CLASS_RE = re.compile(r'\.fa-([a-z0-9-]+)')
+FA_TOKEN_RE = re.compile(r'\bfa-([a-z0-9-]+)\b')
+FA_MODIFIERS = set('''fw lg sm xs 1x 2x 3x 4x 5x 6x 7x 8x 9x 10x spin spin-pulse pulse beat fade
+rotate-05 rotate-90 rotate-180 rotate-270 flip-horizontal flip-vertical flip-both flip-inverse border
+list ul-inline li stack stack-1x stack-2x inverse sr-only sr-only-focusable pull-left pull-right swap-opacity
+swap-opacity-alt pull-none solid regular brands sharp light thin duotone classic'''.split())
+
+
+def check_fa_icon_classes(root: Path, errors: list[str]) -> int:
+    """Возвращает число проверенных fa-* токенов; ошибки — в errors."""
+    css_dir = root / "css"
+    if not css_dir.is_dir():
+        return 0
+    defined: set[str] = set()
+    for css in sorted(css_dir.glob("*.css")):
+        text = css.read_text(encoding="utf-8", errors="replace")
+        defined.update(FA_CLASS_RE.findall(text))
+
+    used: dict[str, set[str]] = {}
+    files = list(sorted(root.glob("*.html")))
+    js_dir = root / "js"
+    if js_dir.is_dir():
+        files += [p for p in sorted(js_dir.rglob("*.js")) if ".test." not in p.name]
+    for f in files:
+        text = f.read_text(encoding="utf-8", errors="replace")
+        for name in FA_TOKEN_RE.findall(text):
+            if name in FA_MODIFIERS:
+                continue
+            used.setdefault(name, set()).add(str(f.relative_to(root)))
+
+    for name in sorted(used):
+        if name not in defined:
+            where = ", ".join(sorted(used[name])[:3])
+            errors.append(
+                f"Font Awesome: класса fa-{name} нет ни в одном CSS WebUI — "
+                f"иконка отрисуется пустой (используется в {where})")
+    return len(used)
+
 
 def is_external(url: str) -> bool:
     return url.startswith("//") or url.startswith("http://") or url.startswith("https://")
@@ -186,6 +229,7 @@ def main() -> int:
         css_checked += check_css(css, root, errors)
 
     panel_checked = check_balancer_panel_copy(Path(args.balancer_dockerfile), root, errors)
+    fa_checked = check_fa_icon_classes(root, errors)
 
     # Шрифты Font Awesome должны быть локальными.
     fa = root / "css" / "font-awesome.min.css"
@@ -212,6 +256,7 @@ def main() -> int:
 
     print(f"[assets] OK: {html_checked} локальных ассетов в HTML + "
           f"{css_checked} url() в CSS; внешних CDN нет, шрифты на месте; "
+          f"иконок fa-*: {fa_checked} (все есть в CSS); "
           f"панель балансера: {panel_checked} групп(ы) статики (страницы/css/js/img/webfonts)")
     return 0
 

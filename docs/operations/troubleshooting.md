@@ -778,6 +778,29 @@ going normally.
 2. Hard refresh (Ctrl+Shift+R)
 3. Check whether `localStorage` is enabled in the browser
 
+### Icons missing after copying the WebUI to an offline host
+
+**Symptoms:** Some or all Font Awesome icons are blank; text and layout are fine.
+
+**Causes and checks:**
+1. **All icons are blank** — the `webfonts/` directory was not copied. The fonts
+   live in `webui/webfonts/fa-*.woff2` and are requested by
+   `css/font-awesome.min.css`. Copy `webui/css`, `webui/js`, `webui/img` and
+   `webui/webfonts` next to the pages (the Docker images copy them by directory
+   mask). Check:
+   ```bash
+   curl -I http://<host>/webfonts/fa-solid-900.woff2   # must be 200
+   ```
+2. **One specific icon is blank** (for example HuggingFace) — Font Awesome 6 Free
+   has no brand glyph for it. Since R238c it is drawn by a local SVG mask
+   `webui/img/huggingface.svg`; make sure `webui/img/` was copied too.
+3. Run the static check:
+   ```bash
+   python scripts/check_webui_assets.py
+   ```
+   It fails on external CDNs, missing local assets and unknown `fa-*` classes
+   (an unknown class renders as an empty icon).
+
 ---
 
 ## Getting Help

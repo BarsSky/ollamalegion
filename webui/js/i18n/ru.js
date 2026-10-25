@@ -2357,6 +2357,12 @@ window.I18N_RU = {
   "merge.col.type": "Тип",
   "merge.col.master": "Мастер",
   "merge.model": "Модель",
+  // R240: выбор модели из кластера (datalist) и подсказка покрытия по узлам.
+  "merge.modelPlaceholder": "Начните вводить или выберите из списка",
+  "merge.modelOnNodes": "узлов: {count}",
+  "merge.modelCoverageAll": "Модель есть на всех выбранных узлах ({total})",
+  "merge.modelCoverageSome": "Модель есть на {have} из {total} выбранных узлов",
+  "merge.modelCoverageNone": "Такой модели нет ни на одном выбранном узле",
   "merge.strategy": "Стратегия раскладки",
   "merge.strategy.layer": "layer (слоями, дёшево по сети)",
   "merge.strategy.row": "row (тензорами, дорого на префилле)",

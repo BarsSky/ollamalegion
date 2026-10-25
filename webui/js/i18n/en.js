@@ -2339,6 +2339,12 @@ window.I18N_EN = {
   "merge.col.type": "Type",
   "merge.col.master": "Master",
   "merge.model": "Model",
+  // R240: model picker from the cluster (datalist) and coverage hint.
+  "merge.modelPlaceholder": "Start typing or pick from the list",
+  "merge.modelOnNodes": "nodes: {count}",
+  "merge.modelCoverageAll": "The model is present on all selected nodes ({total})",
+  "merge.modelCoverageSome": "The model is present on {have} of {total} selected nodes",
+  "merge.modelCoverageNone": "The model is not present on any selected node",
   "merge.strategy": "Split strategy",
   "merge.strategy.layer": "layer (by layers, cheap on the network)",
   "merge.strategy.row": "row (by tensors, expensive on prefill)",

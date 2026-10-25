@@ -325,6 +325,24 @@ select.form-control {
     margin-bottom: var(--space-4);
 }
 
+/* R240: подпись стоит НАД полем, а не вплотную слева от него.
+   Причина прежнего вида: .form-control - inline-block, поэтому текст подписи и
+   поле оказывались в одной строке, а margin-bottom подписи не работал. */
+#backendMergePanel .bm-field-label {
+    display: block;
+    margin-bottom: var(--space-2);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+    line-height: var(--line-height-tight);
+    color: var(--text-secondary);
+}
+
+#backendMergePanel .bm-field > .form-control,
+#backendMergePanel .bm-field > .bm-link-row {
+    display: block;
+    margin-top: 0;
+}
+
 #backendMergePanel .bm-field .form-control {
     max-width: 520px;
     height: var(--control-height-sm);
@@ -333,10 +351,26 @@ select.form-control {
     font-size: var(--font-size-sm);
 }
 
+/* Подсказка «модель есть на X из Y узлов»: цвет несёт смысл, размер - как у
+   остальных подсказок панели. */
+#backendMergePanel .bm-model-hint {
+    margin-top: var(--space-2);
+    font-size: var(--font-size-xs);
+    line-height: var(--line-height-normal);
+    color: var(--text-muted);
+}
+
+#backendMergePanel .bm-model-hint.ok { color: var(--success); }
+#backendMergePanel .bm-model-hint.warn { color: var(--warning); }
+#backendMergePanel .bm-model-hint.bad { color: var(--danger); }
+
 /* Строка «канал между узлами»: поле, единица и кнопка одной высоты. */
 #backendMergePanel .bm-link-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
     gap: var(--space-2);
-    margin-top: var(--space-2);
+    margin-top: 0;
 }
 
 #backendMergePanel .bm-link-row input[type="number"] {
@@ -357,6 +391,45 @@ select.form-control {
     font-size: var(--font-size-xs);
     line-height: var(--line-height-normal);
     margin-top: var(--space-2);
+}
+
+/* Таблица узлов: колонки по содержимому, а не 44% на имя узла.
+   Раньше «ХОСТ» и «ТИП» уезжали на пол-экрана, а чекбокс и радио висели
+   по краям с разным выравниванием. */
+#backendMergePanel .bm-list {
+    margin-top: var(--space-2);
+}
+
+#backendMergePanel .bm-backends {
+    border-radius: var(--radius-sm);
+}
+
+#backendMergePanel .bm-col-pick {
+    width: 44px;
+    text-align: center;
+}
+
+#backendMergePanel .bm-col-master {
+    width: 96px;
+    text-align: center;
+}
+
+#backendMergePanel .bm-backends th:nth-child(2) { width: 40%; }
+#backendMergePanel .bm-backends th:nth-child(3) { width: 30%; }
+#backendMergePanel .bm-backends th:nth-child(4) { width: 160px; }
+
+#backendMergePanel .bm-backends th,
+#backendMergePanel .bm-backends td {
+    padding: var(--space-2) var(--space-3);
+}
+
+#backendMergePanel .bm-backends td:first-child,
+#backendMergePanel .bm-backends td:last-child {
+    text-align: center;
+}
+
+#backendMergePanel .bm-actions {
+    margin-top: var(--space-5);
 }
 
 /* ===== 9. Sidebar nav: consistent icon column ===== */

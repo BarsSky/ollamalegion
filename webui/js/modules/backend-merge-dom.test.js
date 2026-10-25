@@ -197,6 +197,91 @@ check('список узлов — таблица С ЗАГОЛОВКАМИ', fu
     });
 });
 
+// --- 1c. R240: выбор модели из кластера и подпись над полем ----------------
+
+const POLISH_CSS = fs.readFileSync(path.join(__dirname, '..', '..', 'css', 'polish.css'), 'utf8');
+
+check('R240: модели узла читаются из llamaCpp.loadedModels и ollama.availableModels', function () {
+    const cpp = BM.modelsOfBackend({
+        llamaCpp: { loadedModels: [{ name: 'qwen3:14b' }, { name: 'gemma3:4b' }, { name: 'qwen3:14b' }] },
+    });
+    assert.deepStrictEqual(cpp, ['qwen3:14b', 'gemma3:4b'], 'дубликаты не нужны, порядок сохраняем');
+    const avail = BM.modelsOfBackend({
+        llamaCpp: {
+            loadedModels: [{ name: 'loaded:1' }],
+            availableModels: [{ name: 'on-disk:2' }],
+        },
+    });
+    assert.deepStrictEqual(avail, ['loaded:1', 'on-disk:2'],
+        'инвентарь узла тоже должен попадать в подсказку');
+    const ollama = BM.modelsOfBackend({
+        ollama: { backendCapacity: { availableModels: [{ name: 'llama3:8b' }] } },
+    });
+    assert.deepStrictEqual(ollama, ['llama3:8b']);
+    assert.deepStrictEqual(BM.modelsOfBackend(null), []);
+});
+
+check('R240: collectModels сортирует по числу узлов, затем по имени', function () {
+    const models = BM.collectModels([
+        { id: 'a', models: ['only-a', 'shared'] },
+        { id: 'b', models: ['shared', 'second-b'] },
+        { id: 'c', models: ['shared'] },
+    ]);
+    assert.deepStrictEqual(models.map(function (m) { return m.name; }), ['shared', 'only-a', 'second-b']);
+    assert.strictEqual(models[0].backends.length, 3, 'у shared должно быть 3 узла');
+});
+
+check('R240: modelCoverage считает узлы, где модель реально есть', function () {
+    const st = {
+        backends: [{ id: 'a', models: ['m1'] }, { id: 'b', models: ['m2'] }],
+        selected: { a: true, b: true },
+    };
+    const cov = BM.modelCoverage(st, 'm1');
+    assert.deepStrictEqual(cov.have, ['a']);
+    assert.deepStrictEqual(cov.missing, ['b']);
+    assert.strictEqual(cov.total, 2);
+    // Ничего не выбрано - считаем по всем узлам панели.
+    const all = BM.modelCoverage({ backends: st.backends, selected: {} }, 'm1');
+    assert.deepStrictEqual(all.have, ['a']);
+    assert.strictEqual(all.total, 2);
+});
+
+check('R240: подсказка покрытия различает все/часть/ни одного узла', function () {
+    const st = {
+        backends: [{ id: 'a', models: ['m1'] }, { id: 'b', models: ['m1'] }],
+        selected: { a: true, b: true },
+    };
+    assert.ok(RU['merge.modelCoverageAll'] && EN['merge.modelCoverageAll']);
+    assert.ok(BM.modelCoverageText(st, 'm1').indexOf('2') >= 0, 'полное покрытие содержит число узлов');
+    st.selected = { a: true };
+    assert.strictEqual(BM.modelCoverageText(st, 'm1'), RU['merge.modelCoverageAll'].replace('{total}', '1'));
+    st.selected = { a: true, b: true };
+    assert.strictEqual(BM.modelCoverageText(st, 'm9'), RU['merge.modelCoverageNone']);
+    assert.strictEqual(BM.modelCoverageText(st, ''), '', 'без модели подсказки нет');
+});
+
+check('R240: панель содержит datalist с моделями и подсказку покрытия', function () {
+    const st = {
+        backends: [{ id: 'a', models: ['qwen3:14b'] }, { id: 'b', models: ['qwen3:14b'] }],
+        selected: { a: true, b: true },
+        masterId: '', strategy: 'layer', model: 'qwen3:14b',
+        errorKey: '', result: null, plan: null, report: null,
+    };
+    const html = BM.panelHtml(st);
+    assert.ok(html.indexOf('list="bmModelList"') >= 0, 'у поля модели должен быть datalist');
+    assert.ok(html.indexOf('<datalist id="bmModelList"') >= 0, 'datalist не отрисован');
+    assert.ok(html.indexOf('value="qwen3:14b"') >= 0, 'модель кластера должна попасть в варианты');
+    assert.ok(html.indexOf('bm-model-hint ok') >= 0, 'на полном покрытии подсказка должна быть зелёной');
+});
+
+check('R240: подпись поля - отдельный label над контролом (CSS)', function () {
+    assert.ok(MODULE_SRC.indexOf('bm-field-label') >= 0, 'в разметке нужен .bm-field-label');
+    assert.ok(/#backendMergePanel \.bm-field-label\s*\{[^}]*display:\s*block/.test(POLISH_CSS),
+        'label должен быть блочным, иначе он стоит в одной строке с полем');
+    assert.ok(/#backendMergePanel \.bm-field > \.form-control[^{]*\{[^}]*display:\s*block/.test(POLISH_CSS),
+        'поле должно быть блочным: label сверху, а не впритык слева');
+});
+
 // --- 2. i18n-ключи модуля -------------------------------------------------
 
 check('все i18n-ключи модуля есть в ru.js и en.js', function () {
@@ -235,17 +320,38 @@ const backendList = {
 };
 
 (async function run() {
-    routes = { 'GET /api/v1/backends': backendList };
+    routes = {
+        'GET /api/v1/backends': backendList,
+        // R240: инвентарь моделей по каждому узлу (для datalist).
+        'GET /api/v1/backends/node-a/models': { status: 200, body: { models: [{ name: 'qwen3:14b' }, { name: 'gemma3:4b' }] } },
+        'GET /api/v1/backends/node-b/models': { status: 200, body: { models: [{ name: 'qwen3:14b' }] } },
+    };
     calls.length = 0;
     BM.reset();
 
     await checkAsync('mount(): GET /api/v1/backends и отрисовка узлов', async function () {
         const ok = await BM.mount('backendMergePanel');
         assert.strictEqual(ok, true, 'mount должен найти контейнер');
-        assert.strictEqual(calls.length, 1, 'ожидался один запрос списка бэкендов');
+        assert.strictEqual(calls.length, 3, 'список бэкендов + инвентарь моделей по двум llama_cpp-узлам');
         assert.ok(panel.innerHTML.indexOf('node-a') >= 0, 'узел node-a должен быть в панели');
         assert.ok(panel.innerHTML.indexOf('node-b') >= 0, 'узел node-b должен быть в панели');
         assert.ok(panel.innerHTML.indexOf('img-1') < 0, 'image-бэкенд в раскладку не предлагается');
+        // R240: инвентарь узлов догружается асинхронно (рендер не ждёт медленный
+        // узел), поэтому дожидаемся его и перерисовываем панель. В живом DOM
+        // варианты обновляются точечно в #bmModelList; мок-DOM умеет только
+        // полный render().
+        await BM.state.modelsReady;
+        const names = BM.state.backends.reduce(function (acc, b) {
+            return acc.concat(b.models || []);
+        }, []);
+        assert.ok(names.indexOf('qwen3:14b') >= 0, 'модель node-a должна попасть в состояние');
+        assert.ok(names.indexOf('gemma3:4b') >= 0, 'модель node-a (вторая) должна попасть в состояние');
+        BM.render('backendMergePanel');
+        const html = panel.innerHTML;
+        assert.ok(html.indexOf('value="qwen3:14b"') >= 0,
+            'модели с диска узла должны предлагаться в поле «Модель»');
+        assert.ok(html.indexOf('value="gemma3:4b"') >= 0,
+            'модель, которая есть только на одном узле, тоже должна быть в списке');
         // R181: заголовок живёт в ШАПКЕ карточки (index.html), а не в панели.
         // Проверяем и наличие в шапке, и ОТСУТСТВИЕ дубля внутри панели: именно
         // двойной заголовок выглядел как ошибка вёрстки на живом скриншоте.

@@ -331,17 +331,107 @@
         return text;
     }
 
+    // --- выбор модели из кластера (R240) ---------------------------------
+    //
+    // ЖАЛОБА. Поле «Модель» было свободным текстом: имя надо было помнить и
+    // вводить символ в символ, иначе группа не собиралась (модель «не найдена»).
+    // При этом имена уже приходят в cluster state: у llama.cpp это
+    // llamaCpp.loadedModels, у Ollama - ollama.backendCapacity.availableModels.
+    // Берём их и подсказываем: datalist в поле + сколько выбранных узлов модель
+    // реально видят. Свободный ввод остаётся - можно указать имя, которого в
+    // кластере ещё нет (подготовка к загрузке).
+
+    function modelNamesOf(backend) {
+        if (!backend || !Array.isArray(backend.models)) { return []; }
+        var seen = {};
+        var out = [];
+        backend.models.forEach(function (name) {
+            var n = String(name || '').trim();
+            if (!n || seen[n]) { return; }
+            seen[n] = true;
+            out.push(n);
+        });
+        return out;
+    }
+
+    // collectModels — модели кластера с покрытием по узлам.
+    // Сортировка: сначала те, что есть на большем числе узлов (для объединения
+    // это главный критерий), внутри - по имени.
+    function collectModels(backends) {
+        var map = {};
+        (backends || []).forEach(function (b) {
+            modelNamesOf(b).forEach(function (name) {
+                if (!map[name]) { map[name] = { name: name, backends: [] }; }
+                if (map[name].backends.indexOf(b.id) < 0) { map[name].backends.push(b.id); }
+            });
+        });
+        return Object.keys(map).map(function (k) { return map[k]; }).sort(function (a, b) {
+            return (b.backends.length - a.backends.length) || a.name.localeCompare(b.name);
+        });
+    }
+
+    // modelCoverage — на скольких из выбранных узлов есть эта модель.
+    // Если ничего не выбрано, считаем по всем узлам панели: так подсказка
+    // помогает ещё до выбора чекбоксов.
+    function modelCoverage(st, name) {
+        var ids = selectedIDs(st);
+        if (!ids.length) { ids = st.backends.map(function (b) { return b.id; }); }
+        var have = [];
+        var missing = [];
+        ids.forEach(function (id) {
+            var b = backendByID(st, id);
+            if (modelNamesOf(b).indexOf(name) >= 0) { have.push(id); } else { missing.push(id); }
+        });
+        return { have: have, missing: missing, total: ids.length };
+    }
+
+    function modelCoverageText(st, name) {
+        if (!name) { return ''; }
+        var cov = modelCoverage(st, name);
+        if (!cov.total) { return ''; }
+        if (!cov.have.length) { return T('merge.modelCoverageNone'); }
+        if (cov.have.length === cov.total) { return T('merge.modelCoverageAll', { total: cov.total }); }
+        return T('merge.modelCoverageSome', { have: cov.have.length, total: cov.total });
+    }
+
+    function modelCoverageHtml(st) {
+        var text = modelCoverageText(st, st.model);
+        var cov = st.model ? modelCoverage(st, st.model) : null;
+        var cls = !cov ? 'bm-model-hint'
+            : (cov.have.length === cov.total ? 'bm-model-hint ok'
+                : (cov.have.length ? 'bm-model-hint warn' : 'bm-model-hint bad'));
+        // Контейнер рендерится всегда (пустой = hidden): иначе updateModelHint()
+        // некуда писать, когда оператор начинает вводить имя после отрисовки.
+        return '<div class="' + cls + '" id="bmModelHint"' + (text ? '' : ' hidden') + '>' +
+            escapeHtml(text) + '</div>';
+    }
+
+    function modelOptionsHtml(st) {
+        var models = collectModels(st.backends);
+        if (!models.length) { return ''; }
+        return models.map(function (m) {
+            return '<option value="' + escapeHtml(m.name) + '" label="' +
+                escapeHtml(T('merge.modelOnNodes', { count: m.backends.length })) + '"></option>';
+        }).join('');
+    }
+
     function panelHtml(st) {
         return '' +
             // R181: своего заголовка НЕ рисуем - он уже в шапке карточки;
             // дубль «Объединение бэкендов» дважды подряд выглядел ошибкой вёрстки.
             '<div class="bm-header">' +
             '<div class="bm-hint">' + escapeHtml(T('merge.hint')) + '</div></div>' +
-            '<label class="bm-field form-group">' + escapeHtml(T('merge.model')) +
-            '<input type="text" class="form-control" id="bmModel" value="' + escapeHtml(st.model) + '"></label>' +
-            '<div class="bm-field bm-link"><label for="bmLinkMbps">' + escapeHtml(T('merge.link')) +
+            '<div class="bm-field bm-model-field form-group">' +
+            '<label class="bm-field-label" for="bmModel">' + escapeHtml(T('merge.model')) + '</label>' +
+            '<input type="text" class="form-control" id="bmModel" list="bmModelList" autocomplete="off" ' +
+            'placeholder="' + escapeHtml(T('merge.modelPlaceholder')) + '" ' +
+            'value="' + escapeHtml(st.model) + '">' +
+            '<datalist id="bmModelList">' + modelOptionsHtml(st) + '</datalist>' +
+            modelCoverageHtml(st) +
+            '</div>' +
+            '<div class="bm-field bm-link form-group"><label class="bm-field-label" for="bmLinkMbps">' + escapeHtml(T('merge.link')) +
             '<span class="bm-hint-inline">' + escapeHtml(T('merge.linkHint')) + '</span></label>' +
-            '<div class="bm-link-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;">' +
+            '<div class="bm-link-row">' +
             '<input type="number" class="form-control" id="bmLinkMbps" min="0" step="100" value="' +
             (st.bandwidthMbps > 0 ? st.bandwidthMbps : '') + '" placeholder="' + escapeHtml(T('merge.linkAuto')) + '">' +
             '<span class="bm-link-unit">' + escapeHtml(T('merge.mbps')) + '</span>' +
@@ -349,11 +439,12 @@
             '</div>' +
             (st.linkHint ? '<div class="bm-hint">' + escapeHtml(st.linkHint) + '</div>' : '') +
             '</div>' +
-            '<label class="bm-field form-group">' + escapeHtml(T('merge.strategy')) +
+            '<div class="bm-field bm-strategy-field form-group">' +
+            '<label class="bm-field-label" for="bmStrategy">' + escapeHtml(T('merge.strategy')) + '</label>' +
             '<select class="form-control" id="bmStrategy">' +
             '<option value="layer"' + (st.strategy === 'layer' ? ' selected' : '') + '>' + escapeHtml(T('merge.strategy.layer')) + '</option>' +
             '<option value="row"' + (st.strategy === 'row' ? ' selected' : '') + '>' + escapeHtml(T('merge.strategy.row')) + '</option>' +
-            '</select></label>' +
+            '</select></div>' +
             '<div class="bm-list">' + backendsHtml(st) + '</div>' +
             '<div class="bm-actions form-actions">' +
             '<button type="button" class="btn btn-secondary" id="bmCheck"' + (st.busy ? ' disabled' : '') + '>' + escapeHtml(T('merge.check')) + '</button>' +
@@ -396,14 +487,125 @@
         });
     }
 
+    // modelsOfBackend — имена моделей узла из разных источников.
+    //
+    // /api/v1/backends отдаёт конфигурацию и статусы, но не список моделей;
+    // модели лежат в cluster state (его держит app.js): llama_cpp - в
+    // llamaCpp.loadedModels, Ollama - в ollama.backendCapacity.availableModels.
+    // Читаем через window.App.context.data, чтобы панель не делала лишних
+    // запросов и показывала то же, что страница «Модели».
+    function modelsOfBackend(backend) {
+        var out = [];
+        function add(name) {
+            var n = String(name || '').trim();
+            if (n && out.indexOf(n) < 0) { out.push(n); }
+        }
+        if (backend && Array.isArray(backend.models)) {
+            backend.models.forEach(add);
+        }
+        var cpp = backend && backend.llamaCpp && Array.isArray(backend.llamaCpp.loadedModels)
+            ? backend.llamaCpp.loadedModels : [];
+        cpp.forEach(function (m) { if (m && m.name) { add(m.name); } });
+        // AvailableModels - GGUF-инвентарь узла (cppworker /api/models), а не
+        // только загруженное сейчас: для объединения нужна именно модель, которая
+        // есть на узлах, а загружать её будет мастер после применения.
+        var cppAvailable = backend && backend.llamaCpp && Array.isArray(backend.llamaCpp.availableModels)
+            ? backend.llamaCpp.availableModels : [];
+        cppAvailable.forEach(function (m) { if (m && m.name) { add(m.name); } });
+        var ollama = backend && backend.ollama && backend.ollama.backendCapacity
+            && Array.isArray(backend.ollama.backendCapacity.availableModels)
+            ? backend.ollama.backendCapacity.availableModels : [];
+        ollama.forEach(function (m) { if (m && m.name) { add(m.name); } });
+        return out;
+    }
+
+    function clusterBackends() {
+        try {
+            var data = globalThis.App && globalThis.App.context && globalThis.App.context.data;
+            return (data && Array.isArray(data.backends)) ? data.backends : [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    function clusterBackendByID(id) {
+        var list = clusterBackends();
+        for (var i = 0; i < list.length; i++) {
+            if (list[i] && list[i].id === id) { return list[i]; }
+        }
+        return null;
+    }
+
+    function addModelName(backend, name) {
+        var n = String(name || '').trim();
+        if (!n || !backend) { return; }
+        if (!Array.isArray(backend.models)) { backend.models = []; }
+        if (backend.models.indexOf(n) < 0) { backend.models.push(n); }
+    }
+
+    // enrichModels — догрузить инвентарь моделей по узлам.
+    //
+    // ВАЖНО: не блокирует первую отрисовку. Живой случай: cppworker одного из
+    // узлов не отвечает, /api/v1/backends/{id}/models висит, и Promise.all
+    // оставлял панель ПУСТОЙ (рендер ждал мёртвый узел). Теперь панель рисуется
+    // сразу, а список моделей дополняется, когда узлы ответили (или отвалились
+    // по таймауту).
+    var MODEL_TIMEOUT_MS = 5000;
+
+    function withTimeout(promise, ms) {
+        return new Promise(function (resolve, reject) {
+            var timer = setTimeout(function () { reject(new Error('timeout')); }, ms);
+            promise.then(function (v) { clearTimeout(timer); resolve(v); },
+                function (e) { clearTimeout(timer); reject(e); });
+        });
+    }
+
+    // refreshModelOptionsUI — точечное обновление вариантов и подсказки.
+    // Полная перерисовка сбросила бы фокус, если оператор уже начал вводить имя.
+    function refreshModelOptionsUI() {
+        var doc = globalThis.document;
+        if (!doc || !doc.getElementById) { return; }
+        var dl = doc.getElementById('bmModelList');
+        if (dl) { dl.innerHTML = modelOptionsHtml(state); }
+        updateModelHint();
+    }
+
+    function enrichModels() {
+        var jobs = state.backends.map(function (b) {
+            return withTimeout(
+                getJSON('/api/v1/backends/' + encodeURIComponent(b.id) + '/models'),
+                MODEL_TIMEOUT_MS
+            ).then(function (res) {
+                var models = (res && (res.models || res.data)) || [];
+                models.forEach(function (m) { addModelName(b, m && (m.name || m.model)); });
+                // Каждый ответ обновляет список сразу: один медленный узел не
+                // должен задерживать варианты моделей с уже ответивших.
+                refreshModelOptionsUI();
+            }).catch(function () { /* узел не ответил - подсказка неполная, но панель жива */ });
+        });
+        return Promise.all(jobs).then(refreshModelOptionsUI);
+    }
+
     function loadBackends() {
         return getJSON('/api/v1/backends').then(function (resp) {
             var list = (resp && resp.backends) || [];
             state.backends = list.filter(function (b) {
                 return b && b.type === 'image_cpp' ? false : (b.type === 'llama_cpp' || b.type === '');
             }).map(function (b) {
-                return { id: b.id, host: b.host, type: b.type, status: b.status };
+                var fromCluster = clusterBackendByID(b.id);
+                return {
+                    id: b.id,
+                    host: b.host,
+                    type: b.type,
+                    status: b.status,
+                    // R240: имена моделей для подсказки в поле «Модель».
+                    models: modelsOfBackend(fromCluster || b)
+                };
             });
+            // Инвентарь узла: GET /api/v1/backends/{id}/models отдаёт модели,
+            // которые лежат на диске (включая незагруженные). Именно они нужны
+            // для объединения; cluster state знает только загруженное сейчас.
+            state.modelsReady = enrichModels();
             return state.backends;
         });
     }
@@ -651,7 +853,13 @@
     function handleInput(ev) {
         var t = ev && ev.target;
         if (!t) { return; }
-        if (t.id === 'bmModel') { state.model = String(t.value || '').trim(); return; }
+        if (t.id === 'bmModel') {
+            state.model = String(t.value || '').trim();
+            // Подсказку обновляем точечно: полная перерисовка потеряла бы фокус
+            // и позицию каретки прямо во время ввода.
+            updateModelHint();
+            return;
+        }
         if (t.id === 'bmStrategy') { state.strategy = String(t.value || 'layer'); return; }
         if (t.id === 'bmLinkMbps') {
             // R166: явный override канала. Пустое = «авто» (автозамер балансера).
@@ -666,12 +874,29 @@
         if (t.id === 'bmBackend' && backendId) {
             state.selected[backendId] = !!t.checked;
             if (!state.selected[backendId] && state.masterId === backendId) { state.masterId = ''; }
+            updateModelHint();
             return;
         }
         if (t.id === 'bmMaster' && backendId) {
             state.masterId = backendId;
             state.selected[backendId] = true;
+            updateModelHint();
         }
+    }
+
+    // updateModelHint — пересчитать «модель есть на X из Y узлов» без re-render.
+    function updateModelHint() {
+        var doc = globalThis.document;
+        if (!doc || !doc.getElementById) { return; }
+        var host = doc.getElementById('bmModelHint');
+        if (!host) { return; }
+        var text = modelCoverageText(state, state.model);
+        host.textContent = text;
+        var cov = state.model ? modelCoverage(state, state.model) : null;
+        host.className = !cov ? 'bm-model-hint'
+            : (cov.have.length === cov.total ? 'bm-model-hint ok'
+                : (cov.have.length ? 'bm-model-hint warn' : 'bm-model-hint bad'));
+        host.hidden = !text;
     }
 
     function handleClick(ev) {
@@ -723,7 +948,13 @@
         rpcEndpointFor: rpcEndpointFor,
         ruleForModel: ruleForModel,
         selectedIDs: selectedIDs,
-        loadBackends: loadBackends
+        loadBackends: loadBackends,
+        enrichModels: enrichModels,
+        // R240: подсказка моделей
+        collectModels: collectModels,
+        modelCoverage: modelCoverage,
+        modelCoverageText: modelCoverageText,
+        modelsOfBackend: modelsOfBackend
     };
 
     // autoMount — подключение без правок app.js: если контейнер есть, панель

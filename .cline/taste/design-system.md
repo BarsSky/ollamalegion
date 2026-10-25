@@ -1,4 +1,4 @@
-﻿# OllamaLegion Design System (TASTE-compliant)
+# OllamaLegion Design System (TASTE-compliant)
 
 Версия: 2026-06-29 (дополнение: data-dense variant). Основано на [taste-skill v2 (design-taste-frontend)](https://github.com/leonxlnx/taste-skill).
 
@@ -282,6 +282,7 @@ Toggle в WebUI: кнопка в header (рядом с theme toggle). Состо
 | Высота контролов | `--control-height-sm/base/lg` (допуск 1px) | WARN |
 | Кегль | только значения из шкалы `--font-size-*` | WARN |
 | Радиус карточек | `--card-radius` / `--radius-md` / `--radius-lg` | WARN |
+| Подпись и поле | подпись стоит НАД полем, а не в одной строке слева | WARN |
 | Паддинги карточек | распределение (справочно, для ритма) | INFO |
 
 Запуск:

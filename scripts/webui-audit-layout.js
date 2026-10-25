@@ -231,6 +231,25 @@ function measurePage(tokens) {
     });
   }
 
+  // --- подпись и поле в одной строке (текст «впритык» к контролу) ---
+  // Классический дефект вёрстки: label обнимает input, input inline-block, и
+  // текст подписи оказывается слева от поля без зазора. Поле должно быть
+  // блочным, чтобы подпись стояла над ним.
+  const inlineLabels = [];
+  document.querySelectorAll('.form-control, select.form-control, input.form-control').forEach((el) => {
+    if (!visible(el) || inlineLabels.length >= 6) return;
+    const cs = getComputedStyle(el);
+    if (cs.display.indexOf('inline') !== 0) return;
+    let prev = el.previousSibling;
+    let hasLabelText = false;
+    while (prev) {
+      if (prev.nodeType === 3 && /[A-Za-zА-Яа-яЁё]/.test(prev.textContent)) { hasLabelText = true; break; }
+      if (prev.nodeType === 1) { break; }
+      prev = prev.previousSibling;
+    }
+    if (hasLabelText) { inlineLabels.push({ sel: describe(el) }); }
+  });
+
   // --- заголовок страницы ---
   const title = document.querySelector('.header h1');
   let headerTitle = null;
@@ -250,7 +269,7 @@ function measurePage(tokens) {
     vw, docW, overflowOffenders,
     sansFirst, monoFirst, fams, sizes, weights, foreignFonts, oddSizes,
     controlHeights: heights, heightOutliers,
-    radii, pads, cardOutliers, whiteControls,
+    radii, pads, cardOutliers, whiteControls, inlineLabels,
     headerTitle
   };
 }
@@ -302,6 +321,13 @@ function checkPage(report, label, m, tokens) {
       m.whiteControls.map((o) => o.sel).join(', '));
   } else if (tokens.theme === 'dark') {
     pass('контролы не белые в тёмной теме', 'ok');
+  }
+
+  if (m.inlineLabels && m.inlineLabels.length) {
+    warn('подпись стоит над полем, а не в одной строке',
+      m.inlineLabels.map((o) => o.sel).join(', '));
+  } else {
+    pass('подпись стоит над полем', 'ok');
   }
 
   if (m.headerTitle && m.headerTitle.wrapped) {

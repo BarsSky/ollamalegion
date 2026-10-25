@@ -245,6 +245,15 @@
     return MA._darkPalette ? MA._darkPalette() : { isLight: false, grid: 'rgba(255,255,255,0.07)', gridStrong: 'rgba(255,255,255,0.14)', text: '#e2e8f0', textMuted: '#b0b7c4', tileText: '#fff', barBg: 'rgba(255,255,255,0.12)' };
   }
 
+  // R238d: статус бэкенда приходит кодом (healthy/offline/...); в тултипе
+  // показываем перевод, неизвестный код — как есть.
+  function statusLabel(s) {
+    if (!s) { return ''; }
+    var k = 'monitor.backendStatus.' + s;
+    var v = MA.T(k);
+    return (v && v !== k) ? v : s;
+  }
+
   // Tooltip
   cv.addEventListener('mousemove', function(e) {
     var rect = cv.getBoundingClientRect();
@@ -305,10 +314,10 @@
         var cu = (b.system && b.system.cpuUsagePercent != null) ? b.system.cpuUsagePercent : 0;
         var ru = (b.memoryUsagePercent != null) ? b.memoryUsagePercent : ((b.system && b.system.memoryUsagePercent != null) ? b.system.memoryUsagePercent : 0);
         var sc = (b.score || 0).toFixed(2);
-        html = '<div><strong>' + MA.esc(b.id) + '</strong> <span style="font-size:10px;color:' + (b.status === 'active' || b.status === 'ready' ? 'var(--success)' : 'var(--danger)') + '">' + b.status + '</span></div>'
+        html = '<div><strong>' + MA.esc(b.id) + '</strong> <span style="font-size:10px;color:' + (b.status === 'active' || b.status === 'ready' ? 'var(--success)' : 'var(--danger)') + '">' + MA.esc(statusLabel(b.status)) + '</span></div>'
           + '<div style="color:var(--text-secondary)">GPU: ' + gu.toFixed(0) + '% | VRAM: ' + vu.toFixed(0) + '% (' + vus.toFixed(1) + '/' + vtu.toFixed(0) + 'G)</div>'
           + '<div style="color:var(--text-secondary)">CPU: ' + cu.toFixed(0) + '% | RAM: ' + ru.toFixed(0) + '%</div>'
-          + '<div style="color:var(--text-secondary)">Active: ' + a + '/' + mr + ' | Score: ' + sc + '</div>'
+          + '<div style="color:var(--text-secondary)">' + MA.T('monitor.table.active') + ': ' + a + '/' + mr + ' | ' + MA.T('monitor.table.score') + ': ' + sc + '</div>'
           + '<div style="color:var(--text-secondary)">' + MA.T('monitor.table.models') + ': ' + ((b.models || []).length ? (b.models || []).slice(0, 5).join(', ') : '—') + '</div>'
           + '<div style="color:var(--text-secondary)">RPS: ' + ((b.ollama && b.ollama.requestsPerSecond != null) ? b.ollama.requestsPerSecond.toFixed(1) : '-') + '</div>';
       } else if (found.type === 'balancer') {
@@ -590,7 +599,7 @@
       if (typeof ar === 'number') rpsSum += ar;
     }
     cx.fillStyle = textMuted; cx.font = '11px ' + MA.vF(); cx.fillText(MA.T('monitor.canvas.queue') + pend, cX, cY + 2);
-    cx.fillText('active ' + activeReq + ' · rps ' + (Math.round(rpsSum * 10) / 10), cX, cY + 16);
+    cx.fillText(MA.T('monitor.canvas.liveShort', { active: activeReq, rps: (Math.round(rpsSum * 10) / 10) }), cX, cY + 16);
     // R200b: объявление полосы очереди (было затёрто правкой R200 — qbX/qbY/qbW/qbH, из-за
     // этого drawTopo падал с ReferenceError, и НИ ОДИН кадр не дорисовывался, включая частицы).
     var qbX = bx + 20, qbY = by + bh / 2 + 14, qbW = bw - 40, qbH = 8;
@@ -622,7 +631,7 @@
       cx.fillStyle = backendIdleTxt; cx.font = 'bold 11px ' + MA.vF(); cx.textAlign = 'left'; cx.fillText(MA.trunc(b.id, 12), backTileX + 8, y - 10);
       var mr = b.maxConcurrentRequests || 10, a = b.activeRequests || 0, l = a / mr;
       cx.fillStyle = l >= 0.8 ? '#ef4444' : l >= 0.5 ? '#f59e0b' : '#22c55e'; cx.font = '10px ' + MA.vF();
-      cx.fillText(a > 0 ? '⏳ ' + a + '/' + mr : '✅ Idle', backTileX + 8, y + 6);
+      cx.fillText(a > 0 ? '⏳ ' + a + '/' + mr : '✅ ' + MA.T('monitor.canvas.idle'), backTileX + 8, y + 6);
       var mc = (b.models || []).length;
       var wmCount = (b.warmingUpModels || []).length;
       if (isWarming) {

@@ -70,26 +70,45 @@
 
   function round(n) { return Math.round(n); }
 
+  // tr — перевод строки демо-UI через общий каталог WebUI. Фолбэк — русская
+  // строка: демо должно работать и на странице без i18n (тесты/урезанный образ).
+  function tr(key, params, fallback) {
+    try {
+      if (typeof window !== 'undefined' && window.I18N && window.I18N.t) {
+        var v = window.I18N.t(key, params);
+        if (v && v !== key) { return v; }
+      }
+    } catch (e) { /* ignore */ }
+    return fallback;
+  }
+
   function phaseAt(t) {
     if (t < 8) {
-      return { id: 'boot', title: 'Загрузка модели на мастер', note: 'qwen3.8 · 15.3 GB · ctx 16384 · KV q8_0' };
+      return { id: 'boot', titleKey: 'demo.phase.boot.title', noteKey: 'demo.phase.boot.note',
+        title: 'Загрузка модели на мастер', note: 'qwen3.8 · 15.3 GB · ctx 16384 · KV q8_0' };
     }
     if (t < 14) {
-      return { id: 'clients', title: 'Клиенты подключаются', note: 'один адрес балансера — клиенты не знают, где модель' };
+      return { id: 'clients', titleKey: 'demo.phase.clients.title', noteKey: 'demo.phase.clients.note',
+        title: 'Клиенты подключаются', note: 'один адрес балансера — клиенты не знают, где модель' };
     }
     if (t < DONOR_AT) {
-      return { id: 'queue', title: 'Очередь и распределение', note: 'слот один: запросы ждут, балансер ведёт очередь' };
+      return { id: 'queue', titleKey: 'demo.phase.queue.title', noteKey: 'demo.phase.queue.note',
+        title: 'Очередь и распределение', note: 'слот один: запросы ждут, балансер ведёт очередь' };
     }
     if (t < TUNE_REC_AT) {
-      return { id: 'donor', title: 'Назначение донора (RPC)', note: '22 слоя уходят на донора; CPU-слоёв 46 → 18' };
+      return { id: 'donor', titleKey: 'demo.phase.donor.title', noteKey: 'demo.phase.donor.note',
+        title: 'Назначение донора (RPC)', note: '22 слоя уходят на донора; CPU-слоёв 46 → 18' };
     }
     if (t < TUNE_DONE_AT) {
-      return { id: 'autotune', title: 'AutoTune: анализ и применение', note: 'KV q4_0 → f16; проверка бюджета 8.0 GB' };
+      return { id: 'autotune', titleKey: 'demo.phase.autotune.title', noteKey: 'demo.phase.autotune.note',
+        title: 'AutoTune: анализ и применение', note: 'KV q4_0 → f16; проверка бюджета 8.0 GB' };
     }
     if (t < 128) {
-      return { id: 'steady', title: 'Стабильная работа', note: 'AutoTune: optimal · очередь пуста · донор в раскладке' };
+      return { id: 'steady', titleKey: 'demo.phase.steady.title', noteKey: 'demo.phase.steady.note',
+        title: 'Стабильная работа', note: 'AutoTune: optimal · очередь пуста · донор в раскладке' };
     }
-    return { id: 'cooldown', title: 'Завершение демо-цикла', note: 'через несколько секунд сценарий повторится' };
+    return { id: 'cooldown', titleKey: 'demo.phase.cooldown.title', noteKey: 'demo.phase.cooldown.note',
+      title: 'Завершение демо-цикла', note: 'через несколько секунд сценарий повторится' };
   }
 
   // arrivalTimes — детерминированные моменты прихода запросов (ускоренно).
@@ -405,34 +424,52 @@
       // «Сводка по клиентам» держит категорию client в ленте даже тогда, когда
       // подключения остались далеко в прошлом (иначе панель в steady-фазе
       // показывает только последние queue/assign-события).
-      list.push({ at: t, icon: '👥', kind: 'client', text: 'клиентов в работе: ' + activeClients(t).length });
+      list.push({ at: t, icon: '👥', kind: 'client',
+        text: tr('demo.ev.clientsActive', { count: activeClients(t).length }, 'клиентов в работе: ' + activeClients(t).length) });
     }
     CLIENTS.forEach(function (c) {
-      if (t >= c.join) { list.push({ at: c.join, icon: '👤', kind: 'client', text: 'клиент ' + c.name + ' подключился (' + c.ip + ')' }); }
-      if (t >= c.leave) { list.push({ at: c.leave, icon: '👋', kind: 'client', text: 'клиент ' + c.name + ' отключился' }); }
+      if (t >= c.join) {
+        list.push({ at: c.join, icon: '👤', kind: 'client',
+          text: tr('demo.ev.clientJoin', { name: c.name, ip: c.ip }, 'клиент ' + c.name + ' подключился (' + c.ip + ')') });
+      }
+      if (t >= c.leave) {
+        list.push({ at: c.leave, icon: '👋', kind: 'client',
+          text: tr('demo.ev.clientLeave', { name: c.name }, 'клиент ' + c.name + ' отключился') });
+      }
     });
     requests.forEach(function (r) {
       if (r.arrival > t) { return; }
       if (r.start > r.arrival + 0.01) {
-        list.push({ at: r.arrival, icon: '⏳', kind: 'queue', text: 'запрос ' + r.id + ' встал в очередь (' + r.model + ')' });
+        list.push({ at: r.arrival, icon: '⏳', kind: 'queue',
+          text: tr('demo.ev.queued', { id: r.id, model: r.model }, 'запрос ' + r.id + ' встал в очередь (' + r.model + ')') });
       }
       if (r.start <= t) {
+        var layerKey = r.backend === 'donor' ? 'demo.layers.donor' : (t >= DONOR_AT ? 'demo.layers.localDonor' : 'demo.layers.local');
+        var layerFallback = r.backend === 'donor' ? '22 слоя на доноре' : (t >= DONOR_AT ? '26 слоёв локально' : '20 слоёв локально');
         list.push({
           at: r.start, icon: r.backend === 'donor' ? '🔗' : '⚖️', kind: 'assign',
-          text: 'балансер → ' + r.backendName + ' · ' + r.model + ' · ' + (r.backend === 'donor' ? '22 слоя на доноре' : (t >= DONOR_AT ? '26 слоёв локально' : '20 слоёв локально'))
+          text: tr('demo.ev.assigned', { backend: r.backendName, model: r.model, layers: tr(layerKey, null, layerFallback) },
+            'балансер → ' + r.backendName + ' · ' + r.model + ' · ' + layerFallback)
         });
       }
     });
-    if (t >= DONOR_AT) { list.push({ at: DONOR_AT, icon: '🔗', kind: 'donor', text: 'донор подключён: RPC0 · 22 слоя (донабор VRAM ~5.6 GB)' }); }
+    if (t >= DONOR_AT) {
+      list.push({ at: DONOR_AT, icon: '🔗', kind: 'donor',
+        text: tr('demo.ev.donor', null, 'донор подключён: RPC0 · 22 слоя (донабор VRAM ~5.6 GB)') });
+    }
     if (t >= TUNE_REC_AT) {
-      list.push({ at: TUNE_REC_AT, icon: '🛠', kind: 'autotune', text: 'AutoTune: рекомендация — KV q4_0 → f16 + все слои (бюджет 8.0 GB)' });
+      list.push({ at: TUNE_REC_AT, icon: '🛠', kind: 'autotune',
+        text: tr('demo.ev.autotuneRec', null, 'AutoTune: рекомендация — KV q4_0 → f16 + все слои (бюджет 8.0 GB)') });
     }
     if (t >= TUNE_RELOAD_AT) {
-      list.push({ at: TUNE_RELOAD_AT, icon: '🔄', kind: 'autotune', text: 'AutoTune: reload модели (' + MODEL + ')' });
+      list.push({ at: TUNE_RELOAD_AT, icon: '🔄', kind: 'autotune',
+        text: tr('demo.ev.autotuneReload', { model: MODEL }, 'AutoTune: reload модели (' + MODEL + ')') });
     }
     if (t >= TUNE_DONE_AT) {
-      list.push({ at: TUNE_DONE_AT, icon: '✅', kind: 'autotune', text: 'AutoTune: конфигурация применена и подтверждена (f16, 48/66 слоёв)' });
-      list.push({ at: TUNE_OK_AT, icon: '🟢', kind: 'autotune', text: 'AutoTune: анализ — optimal, рекомендаций нет' });
+      list.push({ at: TUNE_DONE_AT, icon: '✅', kind: 'autotune',
+        text: tr('demo.ev.autotuneApplied', null, 'AutoTune: конфигурация применена и подтверждена (f16, 48/66 слоёв)') });
+      list.push({ at: TUNE_OK_AT, icon: '🟢', kind: 'autotune',
+        text: tr('demo.ev.autotuneOptimal', null, 'AutoTune: анализ — optimal, рекомендаций нет') });
     }
     list.sort(function (a, b) { return b.at - a.at; });
     return list.slice(0, 12);
@@ -834,10 +871,12 @@
       var banner = document.createElement('div');
       banner.id = 'demoModeBanner';
       banner.className = 'demo-banner';
-      banner.innerHTML = '<b>🔶 ДЕМО-РЕЖИМ</b> · имитация кластера для гостевого просмотра · ' +
-        '<span>данные синтетические, только чтение, время ускорено</span>';
+      banner.innerHTML = '<b data-i18n="demo.bannerTitle">🔶 ДЕМО-РЕЖИМ</b> · ' +
+        '<span data-i18n="demo.bannerSubtitle">имитация кластера для гостевого просмотра</span> · ' +
+        '<span data-i18n="demo.bannerNote">данные синтетические, только чтение, время ускорено</span>';
       if (document.body.insertBefore) { document.body.insertBefore(banner, document.body.firstChild); }
       else { document.body.appendChild(banner); }
+      if (window.I18N && I18N.apply) { I18N.apply(banner); }
       syncBannerHeight();
     }
     if (!document.getElementById('demoScenario')) {
@@ -846,21 +885,22 @@
       panel.className = 'demo-scenario';
       panel.innerHTML =
         '<div class="demo-scenario-head">' +
-          '<span class="demo-scenario-title">Демо-сценарий</span>' +
-          '<button type="button" id="demoScenarioToggle" class="demo-scenario-toggle" title="Свернуть">–</button>' +
+          '<span class="demo-scenario-title" data-i18n="demo.panelTitle">Демо-сценарий</span>' +
+          '<button type="button" id="demoScenarioToggle" class="demo-scenario-toggle" data-i18n-title="demo.collapse" title="Свернуть">–</button>' +
         '</div>' +
         '<div class="demo-scenario-phase"><b id="demoPhase">…</b><span id="demoPhaseNote"></span></div>' +
         '<div class="demo-scenario-counters">' +
-          '<span>клиенты <b id="demoClients">0</b></span>' +
-          '<span>очередь <b id="demoQueue">0</b></span>' +
-          '<span>GPU <b id="demoGpu">0/0</b></span>' +
-          '<span>донор <b id="demoRpc">0</b></span>' +
-          '<span>tok/s <b id="demoTps">0</b></span>' +
-          '<span>AutoTune <b id="demoTune">ok</b></span>' +
+          '<span><span data-i18n="demo.clients">клиенты</span> <b id="demoClients">0</b></span>' +
+          '<span><span data-i18n="demo.queue">очередь</span> <b id="demoQueue">0</b></span>' +
+          '<span><span data-i18n="demo.gpu">GPU</span> <b id="demoGpu">0/0</b></span>' +
+          '<span><span data-i18n="demo.donor">донор</span> <b id="demoRpc">0</b></span>' +
+          '<span><span data-i18n="demo.tps">tok/s</span> <b id="demoTps">0</b></span>' +
+          '<span><span data-i18n="demo.autotune">AutoTune</span> <b id="demoTune">ok</b></span>' +
         '</div>' +
         '<ol class="demo-scenario-feed" id="demoFeed"></ol>' +
-        '<div class="demo-scenario-foot">Демо включается только через env <code>WEBUI_DEMO_MODE=1</code>.</div>';
+        '<div class="demo-scenario-foot" data-i18n-html="demo.foot">Демо включается только через env <code>WEBUI_DEMO_MODE=1</code>.</div>';
       document.body.appendChild(panel);
+      if (window.I18N && I18N.apply) { I18N.apply(panel); }
       var toggle = document.getElementById('demoScenarioToggle');
       if (toggle && toggle.addEventListener) {
         toggle.addEventListener('click', function () {
@@ -902,14 +942,18 @@
   function renderUI(st) {
     if (typeof document === 'undefined') { return; }
     ensureUI();
-    setText('demoPhase', st.phase.title);
-    setText('demoPhaseNote', st.phase.note);
+    setText('demoPhase', tr(st.phase.titleKey, null, st.phase.title));
+    setText('demoPhaseNote', tr(st.phase.noteKey, null, st.phase.note));
     setText('demoClients', st.clientCount);
     setText('demoQueue', st.queueStats.current_size);
     setText('demoGpu', st.gpuLayers + '/' + st.model.nLayers);
     setText('demoRpc', st.rpcLayers);
     setText('demoTps', st.tokS.toFixed(2));
-    setText('demoTune', st.autoTune.overallSeverity === 'ok' ? 'optimal' : (st.autoTune.overallSeverity === 'warning' ? 'рекомендация' : 'анализ'));
+    setText('demoTune', st.autoTune.overallSeverity === 'ok'
+      ? tr('demo.tune.optimal', null, 'optimal')
+      : (st.autoTune.overallSeverity === 'warning'
+        ? tr('demo.tune.recommendation', null, 'рекомендация')
+        : tr('demo.tune.analysis', null, 'анализ')));
     var feed = document.getElementById('demoFeed');
     if (feed) {
       feed.innerHTML = st.events.slice(0, 8).map(function (e) {
@@ -1001,6 +1045,15 @@
   installFetch();
   installWebSocket();
   installEventSource();
+  // R238d: язык переключили в WebUI — переводим баннер/панель и перерисовываем
+  // ленту событий (иначе демо-UI оставался на прежнем языке).
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('i18n:changed', function () {
+      if (typeof document === 'undefined') { return; }
+      if (window.I18N && I18N.apply) { I18N.apply(document); }
+      renderUI(computeState(simNow().t));
+    });
+  }
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading' && typeof document.addEventListener === 'function') {
       document.addEventListener('DOMContentLoaded', startLoop);

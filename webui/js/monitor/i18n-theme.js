@@ -133,11 +133,8 @@
       if (lm[tx]) el.textContent = lm[tx];
     });
 
-    // Help modal — use innerHTML because translations contain HTML tags (<strong>, <br>, <code>, <span>)
-    document.querySelectorAll('#helpModal [data-i18n]').forEach(function(el) {
-      var key = el.getAttribute('data-i18n');
-      if (key) el.innerHTML = t(key);
-    });
+    // Help modal — переводится через [data-i18n-html] (в текстах есть <strong>,
+    // <br>, <code>); отдельный innerHTML-хак больше не нужен.
 
     // Dispatch card titles
     var dcm = {
@@ -160,6 +157,10 @@
   window.applyMT = applyMT;
   window.addEventListener('i18n:changed', function(e) {
     document.documentElement.setAttribute('lang', e.detail.lang);
+    // R238d: переводим всю разметку (data-i18n/-html/-title), а не только карту
+    // динамических текстов — иначе заголовки панелей и кнопки оставались на
+    // языке разметки.
+    if (window.I18N && I18N.apply) { I18N.apply(document); }
     updateMonitorTexts();
   });
   window.addEventListener('storage', function(e) {
@@ -168,4 +169,8 @@
   });
 
   syncTheme();
+  // Начальное применение переводов (до i18n:changed из syncTheme, если язык
+  // совпал с уже сохранённым).
+  if (window.I18N && I18N.apply) { I18N.apply(document); }
+  updateMonitorTexts();
 })();

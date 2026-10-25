@@ -68,6 +68,11 @@ header::after {
   pointer-events: none;
 }
 header h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+/* R238d: monitor в iframe WebUI - язык и вход управляются внешней страницей.
+   Свой селектор языка и своя плашка пользователя здесь только дублировали UI. */
+html.monitor-embedded #langSelect,
+html.monitor-embedded #authUserChip,
+html.monitor-embedded #authBanner { display: none !important; }
 header h1 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); display: inline-block; animation: pulse 2s infinite; }
 header h1 .dot.offline { background: var(--danger); animation: none; }
 header h1 .dot.error { background: var(--warning); animation: none; }

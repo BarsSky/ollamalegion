@@ -156,33 +156,12 @@
     // ---- i18n ----
 
     App._updateUITranslations = function() {
-        document.querySelectorAll('[data-i18n]').forEach(function (el) {
-            var key = el.getAttribute('data-i18n');
-            if (key && window.I18N) {
-                // R59.6 (2026-09-03): support combined "[title]key" syntax so
-                // index.html can declare a single attribute that drives BOTH
-                // the visible text (key) and the hover title (key). Used by
-                // appVersion / page-footer-version. Without this, [i18n]
-                // logs "Missing translation key: [title]footer.version" and
-                // leaves the literal text "[title]footer.version" in the DOM.
-                if (key.indexOf('[title]') === 0) {
-                    var titleKey = key.slice('[title]'.length);
-                    el.title = I18N.t(titleKey);
-                    // textContent is set by the version-display script later
-                    // (it carries the build tag, not an i18n key).
-                } else if (el.tagName === 'INPUT' && el.hasAttribute('data-i18n-placeholder')) {
-                    el.placeholder = I18N.t(el.getAttribute('data-i18n-placeholder'));
-                } else {
-                    el.textContent = I18N.t(key);
-                }
-            }
-        });
-        document.querySelectorAll('[data-i18n-title]').forEach(function (el) {
-            var key = el.getAttribute('data-i18n-title');
-            if (key && window.I18N) {
-                el.title = I18N.t(key);
-            }
-        });
+        // R238d: вся логика перевода атрибутов живёт в I18N.apply (её же
+        // использует monitor.html — раньше он вообще не применял data-i18n при
+        // загрузке, поэтому часть полей оставалась на языке разметки).
+        if (window.I18N && I18N.apply) {
+            I18N.apply(document);
+        }
         if (App.state.currentPage && window.I18N) {
             var titleKey = 'header.' + App.state.currentPage;
             var h1 = document.getElementById('pageTitle');
@@ -202,16 +181,36 @@
                 App.showToast(window.I18N ? I18N.t('app.lang_changed') : 'Language changed', 'success');
             });
         }
+
+        // R238d: ЕДИНЫЙ переключатель языка. Монитор открывается в iframe и
+        // больше не показывает свой селектор: язык приходит из WebUI через
+        // postMessage (и через localStorage — storage-событие для других вкладок).
+        function pushLangToMonitor() {
+            try {
+                var frame = document.getElementById('monitorFrame');
+                if (frame && frame.contentWindow) {
+                    frame.contentWindow.postMessage({ type: 'ollamalegion-config', lang: I18N.getLang() }, location.origin);
+                }
+            } catch (e) { /* iframe ещё не загружен — не критично */ }
+        }
+
         window.addEventListener('i18n:changed', function () {
+            var sel = document.getElementById('langSelect');
+            if (sel && window.I18N) { sel.value = I18N.getLang(); }
             App._updateUITranslations();
             App._updateThemeToggleIcon(document.documentElement.getAttribute('data-theme') || 'dark');
+            pushLangToMonitor();
         });
-        document.querySelectorAll('[data-i18n-placeholder]').forEach(function (el) {
-            var key = el.getAttribute('data-i18n-placeholder');
-            if (key && window.I18N) {
-                el.placeholder = I18N.t(key);
-            }
+        // Язык поменяли в другой вкладке/окне — подхватываем и обновляем UI.
+        window.addEventListener('storage', function (e) {
+            if (!e || e.key !== 'ollamalegion_lang' || !e.newValue || !window.I18N) { return; }
+            if (I18N.getLang() !== e.newValue) { I18N.setLang(e.newValue); }
         });
+        var frameOnLoad = document.getElementById('monitorFrame');
+        if (frameOnLoad && frameOnLoad.addEventListener) {
+            frameOnLoad.addEventListener('load', pushLangToMonitor);
+        }
+
         App._updateUITranslations();
     };
 

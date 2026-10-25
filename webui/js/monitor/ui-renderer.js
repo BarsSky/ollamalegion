@@ -6,6 +6,22 @@
   var MA = window.MonitorApp;
   var T = MA.T;
 
+  // R238d: служебные статусы/операции приходят от балансера английскими кодами
+  // (healthy/offline/load...). Показываем их переведёнными, а неизвестные —
+  // как есть, чтобы поле не превратилось в сырой translation key.
+  function backendStatusLabel(s) {
+    if (!s) { return ''; }
+    var k = 'monitor.backendStatus.' + s;
+    var v = T(k);
+    return (v && v !== k) ? v : s;
+  }
+  function opLabel(s) {
+    if (!s) { return ''; }
+    var k = 'monitor.op.' + s;
+    var v = T(k);
+    return (v && v !== k) ? v : s;
+  }
+
   // --- Фильтр по типу бэкенда (R92, 2026-10-09) -------------------------------
   //
   // ЖИВАЯ ЖАЛОБА: «кнопки смены типа бэкенда не отрабатывают и не рисуются
@@ -704,7 +720,7 @@
       ss = ss.concat(bk.filter(function(b) { return b.activeRequests > 0; }).map(function(b) {
         return {
           id: 'active-' + b.id,
-          clientName: 'Active Request',
+          clientName: T('monitor.synthetic.activeRequest'),
           clientIP: '—',
           model: (b.models && b.models[0]) || '?',
           backendId: b.id,
@@ -914,7 +930,7 @@
           clusterSl = '<div class="sl-cluster-cell" style="margin-top:4px">' + window.Sparkline.renderCluster(slKey, avgVal, maxVal, m.color) + '</div>';
         } catch (e) { clusterSl = ''; }
       }
-      return '<div class="capacity-card"><h4>' + MA.esc(m.label) + '</h4><div class="capacity-bar"><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + avg + '%;background:' + m.color + '"></div></div><span class="capacity-val">avg ' + avg.toFixed(0) + m.unit + '</span></div><div class="capacity-bar"><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + max + '%;background:' + m.color + ';opacity:0.5"></div></div><span class="capacity-val">max ' + max.toFixed(0) + m.unit + '</span></div>' + clusterSl + '</div>';
+      return '<div class="capacity-card"><h4>' + MA.esc(m.label) + '</h4><div class="capacity-bar"><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + avg + '%;background:' + m.color + '"></div></div><span class="capacity-val">' + MA.esc(T('monitor.capacity.avg')) + ' ' + avg.toFixed(0) + m.unit + '</span></div><div class="capacity-bar"><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + max + '%;background:' + m.color + ';opacity:0.5"></div></div><span class="capacity-val">' + MA.esc(T('monitor.capacity.max')) + ' ' + max.toFixed(0) + m.unit + '</span></div>' + clusterSl + '</div>';
     }).join('') +
       '<div class="capacity-card"><h4>' + T('monitor.capacity.freeSlots') + '</h4>' +
       bk.map(function(b) {
@@ -1137,7 +1153,8 @@
       var cores = cpu.coreCount || '-';
       var cpuModel = cpu.model ? cpu.model.split(' ').slice(0, 2).join(' ') : '';
       var throttled = cpu.throttled != null ? (cpu.throttled ? '⚠️' : T('common.ok')) : '-';
-      var cpuHint = 'Load: ' + loadAvg + ' | Cores: ' + cores + (cpuModel ? ' (' + cpuModel + ')' : '') + ' | Throttle: ' + throttled;
+      var cpuHint = T('monitor.hardware.load') + ': ' + loadAvg + ' | ' + T('monitor.hardware.cores') + ': ' + cores +
+        (cpuModel ? ' (' + cpuModel + ')' : '') + ' | ' + T('monitor.hardware.throttle') + ': ' + throttled;
       // Loading indicator — show operations running on this backend
       var loadingCell = '';
       var backendOps = opsByBackend[b.id];
@@ -1145,7 +1162,7 @@
         var loadingIcons = backendOps.map(function(op) {
           var opType = op.operation || 'op';
           var modelName = op.modelName || '';
-          return '<span class="badge badge-yellow" style="font-size:10px;animation:pulse 1.5s infinite" title="' + MA.esc(opType) + ': ' + MA.esc(modelName) + '">⏳ ' + MA.esc(opType) + '</span>';
+          return '<span class="badge badge-yellow" style="font-size:10px;animation:pulse 1.5s infinite" title="' + MA.esc(opLabel(opType)) + ': ' + MA.esc(modelName) + '">⏳ ' + MA.esc(opLabel(opType)) + '</span>';
         }).join(' ');
         loadingCell = loadingIcons;
       } else {
@@ -1254,7 +1271,7 @@
       // управление раскладкой было только в API/.env — в панели его не было.
       var layoutCell = (window.MonitorLayout && typeof window.MonitorLayout.rowLayoutCell === 'function')
         ? window.MonitorLayout.rowLayoutCell(b) : '<td></td>';
-      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + imageBadges + typeBadge + '</td>' + layoutCell + '<td><span class="badge ' + scs + '">' + b.status + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + modelsCell + '</td>' + imgReqCells + '<td class="col-right">' + up + '</td></tr>';
+      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + imageBadges + typeBadge + '</td>' + layoutCell + '<td><span class="badge ' + scs + '">' + MA.esc(backendStatusLabel(b.status)) + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + modelsCell + '</td>' + imgReqCells + '<td class="col-right">' + up + '</td></tr>';
     }).join('');
     // R118.4: селекторы роли в свежеотрисованных строках + обновление панели
     // раскладки (роли/состояние приходят из /api/v1/backends, а не из cluster/state).

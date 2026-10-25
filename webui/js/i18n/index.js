@@ -170,12 +170,64 @@
     }
   });
 
+  /**
+   * Apply translations to DOM attributes.
+   *
+   * R238d: monitor.html исторически вообще не применял data-i18n при загрузке —
+   * он переводил лишь небольшую карту текстов (updateMonitorTexts), поэтому
+   * «переведёнными» выглядели не все поля: заголовки панели раскладки, кнопки,
+   * подсказка и т.п. оставались на языке разметки. Общий apply() переводит:
+   *   [data-i18n]            -> textContent (со спец-синтаксисом [title]key)
+   *   [data-i18n-html]       -> innerHTML (тексты со <strong>/<br>/<code>)
+   *   [data-i18n-title]      -> title
+   *   [data-i18n-placeholder]-> placeholder
+   * @param {Document|Element} [root] - корень (по умолчанию document)
+   * @returns {number} сколько элементов обновлено
+   */
+  function apply(root) {
+    var scope = root || (typeof document !== 'undefined' ? document : null);
+    if (!scope || !scope.querySelectorAll) { return 0; }
+    var n = 0;
+    scope.querySelectorAll('[data-i18n]').forEach(function (el) {
+      var key = el.getAttribute('data-i18n');
+      if (!key) { return; }
+      if (key.indexOf('[title]') === 0) {
+        el.title = t(key.slice('[title]'.length));
+      } else if (el.tagName === 'INPUT' && el.hasAttribute('data-i18n-placeholder')) {
+        el.placeholder = t(el.getAttribute('data-i18n-placeholder'));
+      } else {
+        el.textContent = t(key);
+      }
+      n++;
+    });
+    scope.querySelectorAll('[data-i18n-html]').forEach(function (el) {
+      var key = el.getAttribute('data-i18n-html');
+      if (!key) { return; }
+      el.innerHTML = t(key);
+      n++;
+    });
+    scope.querySelectorAll('[data-i18n-title]').forEach(function (el) {
+      var key = el.getAttribute('data-i18n-title');
+      if (!key) { return; }
+      el.title = t(key);
+      n++;
+    });
+    scope.querySelectorAll('[data-i18n-placeholder]').forEach(function (el) {
+      var key = el.getAttribute('data-i18n-placeholder');
+      if (!key) { return; }
+      el.placeholder = t(key);
+      n++;
+    });
+    return n;
+  }
+
   // Expose API
   window.I18N = {
     register: register,
     t: t,
     getLang: getLang,
     setLang: setLang,
+    apply: apply,
     getAvailableLanguages: getAvailableLanguages,
     detectLanguage: detectLanguage,
   };

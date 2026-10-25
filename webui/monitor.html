@@ -79,15 +79,15 @@
   <div id="helpModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,0.6);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);align-items:center;justify-content:center" onclick="toggleHelp()">
     <div style="background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:14px;padding:24px 28px;max-width:560px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:var(--glass-shadow);color:var(--text-primary);font-size:13px;line-height:1.7;position:relative" onclick="event.stopPropagation()">
       <button onclick="toggleHelp()" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:var(--text-secondary)">✕</button>
-      <h3 data-i18n="monitor.help.title" style="margin-bottom:14px;font-size:16px">📖 Routing Modes Help</h3>
-      <p data-i18n="monitor.help.p1"><strong>P1 — Model Affinity (LOADED)</strong><br>Backend with model already in VRAM. Highest priority — instant response.</p>
-      <p data-i18n="monitor.help.p2" style="margin-top:8px"><strong>P2 — Model Warming (WARMING_UP)</strong><br>Backend loading model. Balancer waits for readiness until timeout.</p>
-      <p data-i18n="monitor.help.p3" style="margin-top:8px"><strong>P3 — Free Backend (FREE)</strong><br>Free healthy backend with slots. Model loads synchronously (if <code>syncModelLoad.enabled</code>).</p>
-      <p data-i18n="monitor.help.p4" style="margin-top:8px"><strong>P4 — Fallback (FALLBACK)</strong><br>All healthy backends undergo resource scoring (GPU/VRAM/CPU/RAM). Best score wins.</p>
+      <h3 data-i18n-html="monitor.help.title" style="margin-bottom:14px;font-size:16px">📖 Routing Modes Help</h3>
+      <p data-i18n-html="monitor.help.p1"><strong>P1 — Model Affinity (LOADED)</strong><br>Backend with model already in VRAM. Highest priority — instant response.</p>
+      <p data-i18n-html="monitor.help.p2" style="margin-top:8px"><strong>P2 — Model Warming (WARMING_UP)</strong><br>Backend loading model. Balancer waits for readiness until timeout.</p>
+      <p data-i18n-html="monitor.help.p3" style="margin-top:8px"><strong>P3 — Free Backend (FREE)</strong><br>Free healthy backend with slots. Model loads synchronously (if <code>syncModelLoad.enabled</code>).</p>
+      <p data-i18n-html="monitor.help.p4" style="margin-top:8px"><strong>P4 — Fallback (FALLBACK)</strong><br>All healthy backends undergo resource scoring (GPU/VRAM/CPU/RAM). Best score wins.</p>
       <hr style="margin:14px 0;border-color:var(--border-color)">
-      <p data-i18n="monitor.help.legendTitle"><strong>🎨 Canvas Color Legend:</strong></p>
-      <p data-i18n="monitor.help.legendColors">🟢 <span style="color:var(--success)">Green</span> — Idle | 🟡 <span style="color:var(--warning)">Yellow</span> — Active | 🔴 <span style="color:var(--danger)">Red</span> — Full/Error</p>
-      <p data-i18n="monitor.help.conveyor" style="margin-top:8px"><strong>📊 Conveyor Belt:</strong> Animated particles show request flow: blue — in transit, yellow — queued, purple — processing, green — completed.</p>
+      <p data-i18n-html="monitor.help.legendTitle"><strong>🎨 Canvas Color Legend:</strong></p>
+      <p data-i18n-html="monitor.help.legendColors">🟢 <span style="color:var(--success)">Green</span> — Idle | 🟡 <span style="color:var(--warning)">Yellow</span> — Active | 🔴 <span style="color:var(--danger)">Red</span> — Full/Error</p>
+      <p data-i18n-html="monitor.help.conveyor" style="margin-top:8px"><strong>📊 Conveyor Belt:</strong> Animated particles show request flow: blue — in transit, yellow — queued, purple — processing, green — completed.</p>
     </div>
   </div>
 </header>
@@ -691,6 +691,13 @@
   <!-- Fallback API base + theme + lang sync (when opened directly, not via iframe) -->
   <script>
   (function() {
+    // R238d: монитор внутри WebUI (iframe) не показывает свой селектор языка и
+    // свою плашку входа — это делает внешняя страница, а язык приходит от неё
+    // postMessage'ом. Отдельная страница /monitor.html по-прежнему со своим
+    // селектором (общее состояние — localStorage ollamalegion_lang).
+    if (window.parent && window.parent !== window) {
+      document.documentElement.classList.add('monitor-embedded');
+    }
     // API base fallback
     if (!window.WEBUI_CONFIG) window.WEBUI_CONFIG = {};
     if (!window.WEBUI_CONFIG.API_BASE) {
@@ -704,6 +711,9 @@
     // Lang sync from localStorage
     var savedLang = localStorage.getItem('ollamalegion_lang');
     if (savedLang && window.I18N) I18N.setLang(savedLang);
+    // R238d: применяем переводы разметки сразу (раньше data-i18n в мониторе не
+    // применялись вообще — переводилась только небольшая карта текстов).
+    if (window.I18N && I18N.apply) I18N.apply(document);
 
     // R60.14 (2026-09-07): wire up #langSelect picker. index.html uses
     // app-core.js setupI18n() for the same — that's auto-invoked on
@@ -719,19 +729,9 @@
         if (l !== 'ru' && l !== 'en') return;
         try { localStorage.setItem('ollamalegion_lang', l); } catch (e) {}
         if (window.I18N.setLang) window.I18N.setLang(l);
-        // Re-apply all data-i18n attributes on the page.
-        document.querySelectorAll('[data-i18n]').forEach(function(el) {
-          var key = el.getAttribute('data-i18n');
-          if (key && window.I18N.t) {
-            var idx = key.indexOf('[title]');
-            if (idx === 0) el.title = window.I18N.t(key.slice(7));
-            else el.textContent = window.I18N.t(key);
-          }
-        });
-        document.querySelectorAll('[data-i18n-title]').forEach(function(el) {
-          var key = el.getAttribute('data-i18n-title');
-          if (key && window.I18N.t) el.title = window.I18N.t(key);
-        });
+        // R238d: единая точка — I18N.apply + динамические тексты монитора.
+        if (window.I18N.apply) window.I18N.apply(document);
+        if (typeof window.updateMonitorTexts === 'function') window.updateMonitorTexts();
       });
     })();
   })();

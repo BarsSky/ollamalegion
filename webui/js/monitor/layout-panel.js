@@ -269,7 +269,12 @@
       parts.push('<span class="badge badge-yellow">' + esc(T('monitor.layout.statusOff', 'раскладка выключена')) + '</span>');
     }
     if (guard && guard.degraded && guard.reason) {
-      parts.push('<span class="badge badge-orange">⚠ ' + esc(guard.reason) + '</span>');
+      // R238d: reason приходит от балансера уже строкой и на языке ЛОГОВ (это
+      // отдельная настройка). В видимом поле показываем переведённый короткий
+      // статус, а точную причину оставляем в title (тултип) — иначе в EN-UI
+      // висел русский текст сервера.
+      parts.push('<span class="badge badge-orange" title="' + esc(guard.reason) + '">⚠ ' +
+        esc(T('monitor.layout.degradedShort', 'раскладка не в полном составе')) + '</span>');
     }
     // R204 (2026-10-21): НАГЛЯДНОЕ РАСПРЕДЕЛЕНИЕ СЛОЁВ.
   //

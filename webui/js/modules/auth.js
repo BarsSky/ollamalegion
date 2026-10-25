@@ -20,6 +20,18 @@
   var pendingInit = null;
   var state = { loading: true, authenticated: false, usersConfigured: false, user: null, csrf: '', tokenAuth: false };
 
+  // R238d: строки auth-плашки/чипа — через общий каталог i18n (раньше были
+  // жёстко русскими и при EN-интерфейсе оставались на русском).
+  function tr(key, fallback) {
+    try {
+      if (window.I18N && window.I18N.t) {
+        var v = window.I18N.t(key);
+        if (v && v !== key) { return v; }
+      }
+    } catch (e) { /* нет i18n — fallback */ }
+    return fallback;
+  }
+
   // --- R222: аварийный вход по API-токену --------------------------------
   //
   // ЖИВОЙ ДЕФЕКТ, который это закрывает. R201/R202 дали балансеру сессии, роли и
@@ -317,7 +329,7 @@
   // нельзя: при выключенной серверной аутентификации она действительно открыта.
   // Но и молчать нельзя — токен больше не вшит в страницу, поэтому показываем
   // полосу с честным объяснением и входом по токену.
-  function showBanner(text) {
+  function showBanner(key, fallback) {
     if (document.getElementById('authBanner')) { return; }
     var bar = document.createElement('div');
     bar.id = 'authBanner';
@@ -328,16 +340,19 @@
       'background:rgba(120,53,15,0.95)', 'border-top:1px solid rgba(253,230,138,0.4)'
     ].join(';');
     var span = document.createElement('span');
-    span.textContent = text;
+    span.setAttribute('data-i18n', key);
+    span.textContent = tr(key, fallback);
     var btn = document.createElement('button');
     btn.type = 'button';
-    btn.textContent = 'Войти по паролю или токену';
+    btn.setAttribute('data-i18n', 'auth.banner.login');
+    btn.textContent = tr('auth.banner.login', 'Войти по паролю или токену');
     btn.style.cssText = 'padding:5px 10px;border-radius:6px;border:1px solid rgba(253,230,138,0.5);' +
       'background:transparent;color:inherit;cursor:pointer';
     btn.addEventListener('click', function () { showOverlay(); });
     bar.appendChild(span);
     bar.appendChild(btn);
     document.body.appendChild(bar);
+    if (window.I18N && I18N.apply) { I18N.apply(bar); }
   }
 
   // --- видимость админских действий -------------------------------------
@@ -400,12 +415,15 @@
     var chip = document.createElement('div');
     chip.id = 'authUserChip';
     chip.style.cssText = 'display:inline-flex;align-items:center;gap:8px;font-size:12px;margin-left:8px';
-    var role = state.user.role === 'admin' ? 'администратор' : 'только чтение';
+    var roleKey = state.user.role === 'admin' ? 'auth.role.admin' : 'auth.role.viewer';
+    var roleFallback = state.user.role === 'admin' ? 'администратор' : 'только чтение';
     chip.innerHTML = '<span title="' + (state.user.name || '') + '">👤 ' +
-      String(state.user.name || '').replace(/[<>&"]/g, '') + ' <span style="opacity:.7">(' + role + ')</span></span>' +
-      '<button id="authLogoutBtn" type="button" style="padding:3px 8px;border-radius:6px;border:1px solid var(--border,#334155);' +
-      'background:transparent;color:inherit;cursor:pointer">Выйти</button>';
+      String(state.user.name || '').replace(/[<>&"]/g, '') +
+      ' <span style="opacity:.7">(<span data-i18n="' + roleKey + '">' + tr(roleKey, roleFallback) + '</span>)</span></span>' +
+      '<button id="authLogoutBtn" data-i18n="auth.logout" type="button" style="padding:3px 8px;border-radius:6px;border:1px solid var(--border,#334155);' +
+      'background:transparent;color:inherit;cursor:pointer">' + tr('auth.logout', 'Выйти') + '</button>';
     host.appendChild(chip);
+    if (window.I18N && I18N.apply) { I18N.apply(chip); }
     var logoutBtn = document.getElementById('authLogoutBtn');
     if (logoutBtn && logoutBtn.addEventListener) {
       logoutBtn.addEventListener('click', function () {
@@ -448,7 +466,7 @@
         } else {
           // R222: пользователи не настроены. Панель не блокируем (при выключенной
           // серверной auth она открыта), но объясняем состояние и даём вход.
-          showBanner('Вход в WebUI не настроен: пользователей нет. ' +
+          showBanner('auth.banner.notConfigured', 'Вход в WebUI не настроен: пользователей нет. ' +
             'Задайте LB_ADMIN_USER/LB_ADMIN_PASSWORD на балансере или войдите по аварийному API-токену.');
         }
         return state;

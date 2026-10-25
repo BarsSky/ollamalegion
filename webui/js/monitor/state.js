@@ -196,6 +196,26 @@
     return G;
   };
 
+  // lifecyclePayload — какие события конвейера отдаёт payload /api/v1/cluster.
+  //
+  // R238b: «фактовый» режим (точные recentRequests/recentResponses) — это
+  // свойство ДЕМО-ответа (cluster.demo === true). Живой балансер этих полей не
+  // отдаёт, и если брать `cluster.recentRequests || []`, пустой массив (truthy)
+  // включал demoLifecycle в живом мониторе: тот терял случайные частицы
+  // топологии/discovery и не получал частиц ответа (событий-то нет).
+  MonitorApp.lifecyclePayload = function(cluster) {
+    // Событийный режим включаем, если payload помечен demo ИЛИ реально отдаёт
+    // массивы событий. Живой ответ без этих полей — обычные null, и конвейер
+    // работает по эвристике.
+    var hasEvents = !!(cluster && (Array.isArray(cluster.recentRequests) || Array.isArray(cluster.recentResponses)));
+    var demo = !!(cluster && cluster.demo) || hasEvents;
+    return {
+      demo: demo,
+      recentRequests: demo ? (cluster.recentRequests || []) : null,
+      recentResponses: demo ? (cluster.recentResponses || []) : null
+    };
+  };
+
   // nodeCount — сколько узлов этого типа сейчас в состоянии (0 = пусто).
   MonitorApp.nodeCount = function(type) {
     return type === 'session'

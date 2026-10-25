@@ -768,7 +768,7 @@ window.I18N_RU = {
   "monitor.help.p4": "<strong>P4 — Fallback (FALLBACK)</strong><br>Все healthy бэкенды проходят ресурсный скоринг (GPU/VRAM/CPU/RAM). Выбирается лучший по score.",
   "monitor.help.legendTitle": "<strong>🎨 Легенда цветов в канвасе:</strong>",
   "monitor.help.legendColors": "🟢 <span style=\"color:var(--success)\">Зелёный</span> — свободен (Idle) | 🟡 <span style=\"color:var(--warning)\">Жёлтый</span> — загружен (Active) | 🔴 <span style=\"color:var(--danger)\">Красный</span> — перегружен (Full/Error)",
-  "monitor.help.conveyor": "<strong>📊 Conveyor-лента:</strong> Анимированные частицы показывают поток запросов: синие — в пути, жёлтые — ожидают в очереди у балансера, фиолетовые — обрабатываются, зелёные — завершены.",
+  "monitor.help.conveyor": "<strong>📊 Conveyor-лента:</strong> Анимированные частицы показывают поток запросов: синие — в пути, жёлтые — ожидают в очереди у балансера, фиолетовые — обрабатываются, зелёные — завершены, жёлтая с зелёным хвостом — ответ идёт от бэкенда через балансер к клиенту (подпись ↩), голубые — discovery-запросы, оранжевые — загрузка модели.",
 
   // Saved indicator
   "monitor.autoPull.saved": "✓ Сохранено",

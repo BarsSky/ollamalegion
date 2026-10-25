@@ -462,17 +462,26 @@
     // т.к. они дублировали request+processing частицы и визуально создавали
     // впечатление прямого соединения минуя балансер.
 
-    // --- Pending particles orbiting inside balancer box
+    // --- Pending particles: запросы, которые ждут в очереди.
+    //
+    // R238b: раньше это были жёлтые точки, которые крутились ВНУТРИ блока
+    // балансера по двум случайным координатам. На живом экране они выглядели
+    // как «частицы ответа», которые никуда не едут, и путали оператора. Теперь
+    // ожидающий запрос идёт по своей нарисованной линии клиент -> балансер
+    // (как request/discovery), только жёлтым и гаснет у входа в балансер.
     var pendCount = MA.topo.queue.pending_count || 0;
-    for (var p = 0; p < pendCount; p++) {
-      if (Math.random() < 0.22) {
-        var angle = Math.random() * Math.PI * 2;
-        var radius = 20 + Math.random() * 30;
-        var sx = cX + Math.cos(angle) * radius;
-        var sy = cY + Math.sin(angle) * radius * 0.4;
+    if (pendCount > 0 && Math.random() < Math.min(0.35, pendCount * 0.05)) {
+      var pendVis = Math.min(MA.topo.sessions.length, MA.nVisible ? MA.nVisible('session') : MA.topo.sessions.length);
+      if (pendVis > 0) {
+        var psIdx = Math.floor(Math.random() * pendVis);
+        var psY = MA.nY('session', psIdx);
+        var psX = MA.GEOM.clientX;
+        var ptX = psX + (balInX - psX) * 0.55;
         spawnParticle([
-          {x: sx, y: sy},
-          {x: cX + (Math.random()-0.5)*10, y: cY + (Math.random()-0.5)*10}
+          {x: psX, y: psY},
+          {x: ptX, y: psY},
+          {x: ptX, y: cY},
+          {x: balInX, y: cY}
         ], 'pending', 'queued');
       }
     }

@@ -82,6 +82,14 @@ balancer does, so the guest sees a coherent flow.
 - The topology's random particles are disabled in the demo (`recentRequests` is
   present), so there is one stream instead of two competing animations.
 
+**The same conveyor also runs in live mode** (`monitor.html` against a real
+balancer). The response leg and its label are spawned from
+`queue.processing_count` activity (the label is the backend model, since the
+balancer does not expose per-request client names in `/api/v1/queue/history`);
+`req-NNN` labels and exact completion timing remain demo-only. The yellow
+"waiting" particles in live mode now travel along the client → balancer line
+instead of orbiting inside the balancer block.
+
 ### Phone screens (R238)
 
 The WebUI adapts to small screens:

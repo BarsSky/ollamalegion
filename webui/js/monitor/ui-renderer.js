@@ -685,11 +685,17 @@
     var rawSs = (data.sessions && data.sessions.sessions) || [];
     var recentClients = data.cluster.recentClients || [];
     var warmingUpModels = data.cluster.warmingUpModels || [];
-    // R238: точные события сценария для конвейера (запрос/ответ). В живом
-    // мониторе балансер их не отдаёт — тогда массивы пустые, и конвейер
-    // работает по эвристике (как раньше).
-    var recentRequests = data.cluster.recentRequests || [];
-    var recentResponses = data.cluster.recentResponses || [];
+    // R238b: «фактовый» режим конвейера включаем ТОЛЬКО для демо-ответа
+    // (cluster.demo === true). В живом балансере этих массивов нет, и раньше
+    // `data.cluster.recentRequests || []` давал пустой [], который всё равно
+    // включал demoLifecycle: живой монитор терял случайные частицы топологии и
+    // discovery, а частиц ответа не получал (событий-то нет).
+    var lcPayload = (MA && typeof MA.lifecyclePayload === 'function')
+      ? MA.lifecyclePayload(data.cluster)
+      : { recentRequests: data.cluster.demo ? (data.cluster.recentRequests || []) : null,
+          recentResponses: data.cluster.demo ? (data.cluster.recentResponses || []) : null };
+    var recentRequests = lcPayload.recentRequests;
+    var recentResponses = lcPayload.recentResponses;
     var act = bk.reduce(function(s, b) { return s + (b.activeRequests || 0); }, 0);
     // Защита от пустого блока клиентов: если есть активные запросы, но сессии пусты,
     // создаём синтетические сессии для отображения на топологии

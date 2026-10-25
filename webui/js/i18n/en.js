@@ -624,7 +624,7 @@ window.I18N_EN = {
   "monitor.help.p4": "<strong>P4 — Fallback (FALLBACK)</strong><br>All healthy backends go through resource scoring (GPU/VRAM/CPU/RAM). Best score wins.",
   "monitor.help.legendTitle": "<strong>🎨 Canvas color legend:</strong>",
   "monitor.help.legendColors": "🟢 <span style=\"color:var(--success)\">Green</span> — idle | 🟡 <span style=\"color:var(--warning)\">Yellow</span> — active | 🔴 <span style=\"color:var(--danger)\">Red</span> — full/error",
-  "monitor.help.conveyor": "<strong>📊 Conveyor belt:</strong> Animated particles show request flow: blue — in transit, yellow — waiting in balancer queue, purple — processing, green — completed, cyan — discovery requests, orange — model warming.",
+  "monitor.help.conveyor": "<strong>📊 Conveyor belt:</strong> Animated particles show request flow: blue — in transit, yellow — waiting in balancer queue, purple — processing, green — completed, yellow with a green tail — a response travelling from the backend through the balancer back to the client (label ↩), cyan — discovery requests, orange — model warming.",
 
   // Saved indicator
   "monitor.autoPull.saved": "✓ Saved",

@@ -317,7 +317,12 @@
     // 2. ПОЛНЫЙ МАРШРУТ: клиент → балансер → бэкенд → завершено
     // Бэкенд-сторона идёт через эльбоу на 50%
     // ============================================================
-    if (!demoLifecycle && activeTotal > 0 && Math.random() < spawnIntensity) {
+    // R238b: живой режим рождает частицы по эвристике каждый кадр. Без потолка
+    // при utilization=1 полотно забивалось десятками одинаковых «full» частиц
+    // (живой замер: 118 за 2.5 с). Держим одновременно не больше шести.
+    var aliveFull = 0;
+    for (var af = 0; af < MA.convQueue.length; af++) { if (MA.convQueue[af].type === 'full') aliveFull++; }
+    if (!demoLifecycle && activeTotal > 0 && aliveFull < 6 && Math.random() < spawnIntensity) {
       var clientIdx, sessionY;
       // R91: частицы летят только к НАРИСОВАННЫМ узлам (nVisible).
       var sessVisFull = MA.nVisible ? MA.nVisible('session') : sessions.length;
@@ -374,7 +379,9 @@
     // и запрос, и ответа клиенту на картинке не было вообще.
     if (!demoLifecycle) {
       var procCount = MA.topo.queue.processing_count || 0;
-      if (procCount > 0 && Math.random() < Math.min(0.25, procCount * 0.05)) {
+      var aliveResp = 0;
+      for (var ar = 0; ar < MA.convQueue.length; ar++) { if (MA.convQueue[ar].type === 'response') aliveResp++; }
+      if (procCount > 0 && aliveResp < 5 && Math.random() < Math.min(0.25, procCount * 0.05)) {
         var backVisResp = Math.min(backends.length, MA.nVisible ? MA.nVisible('backend') : backends.length);
         if (backVisResp > 0) {
           var busyB = [];
@@ -386,6 +393,11 @@
           var rSessIdx = sessions.length > 0 ? Math.floor(Math.random() * Math.min(sessions.length, MA.nVisible ? MA.nVisible('session') : sessions.length)) : -1;
           var rSessY = rSessIdx >= 0 ? MA.nY('session', rSessIdx) : balCenterY;
           var tXr = G.clientX + (balInX - G.clientX) * 0.55;
+          // R238b: в живом режиме номер запроса недоступен (балансер не отдаёт
+          // recentResponses), поэтому ответ подписываем моделью бэкенда — подпись
+          // есть у КАЖДОЙ частицы и здесь, а не только в демо.
+          var rbModel = (backends[rbIdx] && backends[rbIdx].models && backends[rbIdx].models[0]) ||
+            (rSessIdx >= 0 && sessions[rSessIdx] && sessions[rSessIdx].model) || '';
           MA.convQueue.push({
             path: [
               {x: backendX, y: rbY}, {x: rightElbowX, y: rbY}, {x: rightElbowX, y: balCenterY},
@@ -395,7 +407,8 @@
             spawnTime: now,
             duration: 1800 + Math.random() * 700,
             type: 'response',
-            size: 2.6
+            size: 2.6,
+            label: rbModel ? '↩ ' + MA.trunc(rbModel, 12) : '↩'
           });
         }
       }

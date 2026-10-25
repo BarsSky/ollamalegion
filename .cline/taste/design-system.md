@@ -1,4 +1,4 @@
-# OllamaLegion Design System (TASTE-compliant)
+﻿# OllamaLegion Design System (TASTE-compliant)
 
 Версия: 2026-06-29 (дополнение: data-dense variant). Основано на [taste-skill v2 (design-taste-frontend)](https://github.com/leonxlnx/taste-skill).
 
@@ -55,11 +55,17 @@ Multiples of 4. Использовать вместо голых px:
 ### 2.4 Typography
 
 ```
---font-family-sans: -apple-system, BlinkMacSystemFont, "Segoe UI",
-                     "Helvetica Neue", "Inter", "Geist", system-ui, sans-serif;
+--font-family-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+                     "Segoe UI Variable", "Segoe UI", "Inter",
+                     "Helvetica Neue", system-ui, sans-serif;
 --font-family-mono: "SF Mono", "JetBrains Mono", "Geist Mono",
                      ui-monospace, "Consolas", monospace;
 ```
+
+Формы (`button`, `input`, `select`, `textarea`) НЕ наследуют шрифт от
+UA-стилей браузера: без явного `font-family: inherit` они рисуются Arial и
+выглядят «угловато» рядом с системным sans. Наследование объявлено один раз в
+`webui/css/base.css`, дублировать его в компонентах не нужно.
 
 Font-size scale:
 
@@ -77,6 +83,42 @@ Font-size scale:
 
 Line-height / font-weight / letter-spacing — токены в `--line-height-*`,
 `--font-weight-*`, `--letter-spacing-*`.
+
+### 2.6 Component geometry (R239)
+
+Высота контролов и геометрия карточек — тоже токены, а не числа по месту.
+Определены в `themes.css` (`:root`), переопределяются в `[data-density="dense"]`.
+
+| Token | Normal | Dense | Назначение |
+|---|---|---|---|
+| `--control-height-sm` | 30px | 26px | компактный ряд: шапка страницы, шапка карточки, поля панели объединения |
+| `--control-height` | 38px | 32px | обычные кнопки и поля форм |
+| `--control-height-lg` | 44px | 38px | главное действие (wizard, крупные CTA) |
+| `--card-radius` | `--radius-lg` | `--radius-md` | все `.card` |
+| `--card-padding` | `--space-5` | `--space-4` | `.card-body` |
+| `--card-header-padding` | `--space-4 --space-5` | `--space-3 --space-4` | `.card-header` |
+
+Правило: новый контрол получает высоту из шкалы, а не из `padding`. Фиксировать
+`height` в px в компоненте нельзя - сломается dense-режим.
+
+### 2.7 Polish layer (`webui/css/polish.css`)
+
+Подключается последним в `index.html`. Задача - выровнять то, что исторически
+рисовалось по месту (карточки, таблицы, бейджи, шапка, панель объединения
+бэкендов). Слой:
+
+- не вводит новых цветов и теней, только токены;
+- держит один вертикальный ритм: `.card` / `.card-header` / `.card-body`;
+- выравнивает высоты контролов в шапке страницы и шапке карточки
+  (`--control-height-sm`), чтобы ряд читался как ряд;
+- переносит действия шапки на вторую строку на узком десктопе (≤1200px)
+  вместо сжатия заголовка страницы до «Доступ...»;
+- убирает «хвост» уехавшего сайдбара и не даёт гостевой полосе `#authBanner`
+  перекрывать карточки на телефоне.
+
+Новое правило сначала проверяется живым аудитом (раздел 8): если аудит
+показывает нарушение - правило должно быть в `polish.css` (или в токенах), а не
+точечным `style="..."` в разметке.
 
 ### 2.5 Colors (theme-controlled)
 
@@ -172,7 +214,7 @@ Select-String -Path webui\css\*.css -Pattern 'rgba\(' | Where-Object { $_.Line -
 <body>                        <!-- default (normal) -->
 ```
 
-Toggle в WebUI: кнопка в header (рядом с theme toggle). Состояние сохраняется в `localStorage["density"]` (`"normal"` или `"dense"`). По умолчанию — `"normal"`.
+Toggle в WebUI: кнопка в header (рядом с theme toggle). Состояние сохраняется в `localStorage["ollamalegion_density"]` (`"normal"` или `"dense"`), на `<body>` ставится атрибут `data-density`. По умолчанию — `"normal"`.
 
 ### 7.2 Отличия от default
 
@@ -223,3 +265,50 @@ Toggle в WebUI: кнопка в header (рядом с theme toggle). Состо
 5. Visual regression: скриншот `normal` ≠ скриншот `dense` (Playwright)
 6. Build OK: `go build -tags llama_stub ./cmd/balancer/`, `node -c webui/js/...`
 7. Tests OK: `go test -tags llama_stub ./...` — 0 regressions
+
+## 8. Live layout audit (R239)
+
+Статический линт (`check_taste_compliance.ps1`) видит только исходники и не
+отвечает на вопрос «а как это нарисовалось». Для верстки есть живой аудит:
+`scripts/webui-audit-layout.js` (Playwright, Edge/Chromium).
+
+Что измеряет на каждой странице (и в `monitor.html`, если включён):
+
+| Проверка | Как читается | Уровень |
+|---|---|---|
+| Горизонтальный оверфлоу | `document.scrollWidth` vs `innerWidth` + виновники | FAIL |
+| Шрифт текста | первый шрифт элемента из стека `--font-family-sans` (mono разрешён) | FAIL |
+| Заголовок страницы | `.header h1` не переносится на вторую строку | FAIL |
+| Высота контролов | `--control-height-sm/base/lg` (допуск 1px) | WARN |
+| Кегль | только значения из шкалы `--font-size-*` | WARN |
+| Радиус карточек | `--card-radius` / `--radius-md` / `--radius-lg` | WARN |
+| Паддинги карточек | распределение (справочно, для ритма) | INFO |
+
+Запуск:
+
+```powershell
+# локальный живой стенд (логин из deployments/.env, LB_ADMIN_USER/LB_ADMIN_PASSWORD)
+node scripts/webui-audit-layout.js
+
+# демо-стенд без входа
+$env:WEBUI='http://100.64.0.9/'; node scripts/webui-audit-layout.js
+
+# компактный режим, светлая тема, телефон, скриншоты, монитор
+$env:DENSITY='dense'; $env:AUDIT_THEME='light'; node scripts/webui-audit-layout.js
+$env:WIDTH='390'; $env:HEIGHT='844'; $env:SHOTS='1'; node scripts/webui-audit-layout.js
+$env:SHOTS='1'; $env:AUDIT_MONITOR='1'; node scripts/webui-audit-layout.js
+```
+
+Результат: отчёт `dist/audit-layout/report.json` (+ PNG при `SHOTS=1`).
+`FAIL` даёт код возврата 1, `WARN` - только запись в отчёт.
+
+Порядок работы:
+
+1. аудит до правки (фиксируем реальные нарушения, а не «на глаз»);
+2. правка в токенах/`polish.css`, без инлайновых `font-size`/`height`;
+3. аудит после правки в 2-3 режимах: 1440 normal, 390 mobile, 1024 light или dense;
+4. скриншоты проблемных страниц просматриваются глазами - аудит не заменяет
+   взгляд, он ловит то, что глазом легко пропустить.
+
+Аудит не заменяет `tests/visual/*.spec.js` (Playwright-эталоны): эталоны
+защищают от регрессий по пикселям, аудит объясняет, **что именно** поехало.

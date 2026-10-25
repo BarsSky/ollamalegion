@@ -1,4 +1,4 @@
-/**
+﻿/**
  * mode-wizard.js — Мастер переформирования режима работы балансера
  * OllamaLegion WebUI
  *
@@ -212,7 +212,7 @@
         var jsonExampleHtml = '';
         if (info.jsonExample) {
             jsonExampleHtml = '<div class="wizard-json-example"><h4>' + (t('wizard.json_example_title') || 'Пример конфигурации (JSON)') + '</h4>';
-            jsonExampleHtml += '<pre style="background:#1e1e2e;color:#cdd6f4;padding:12px;border-radius:8px;font-size:12px;overflow-x:auto;">' + escapeHtml(info.jsonExample) + '</pre></div>';
+            jsonExampleHtml += '<pre style="background:#1e1e2e;color:#cdd6f4;padding:12px;border-radius:8px;font-size:var(--font-size-xs);overflow-x:auto;">' + escapeHtml(info.jsonExample) + '</pre></div>';
         }
 
         // Шаг 5: Превью изменений

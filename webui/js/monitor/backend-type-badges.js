@@ -1,4 +1,4 @@
-/**
+﻿/**
  * backend-type-badges.js — Backend Type Badges for Monitor
  * OllamaLegion WebUI
  *
@@ -63,7 +63,7 @@
             'style="display:inline-block;background:' + style.bgColor + ';' +
             'border:1px solid ' + style.borderColor + ';' +
             'color:' + style.textColor + ';' +
-            'border-radius:4px;padding:1px 6px;font-size:11px;' +
+            'border-radius:4px;padding:1px 6px;font-size:var(--font-size-xs);' +
             'font-weight:600;white-space:nowrap;margin-left:4px;"' +
             'title="' + style.label + ' backend">' +
             style.emoji + ' ' + style.label +

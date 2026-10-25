@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Monitor Backends Module
  * Backend table rendering with sorting and filtering
  * Used by: monitor.html
@@ -91,7 +91,7 @@ const MonitorBackends = (() => {
                 'title="' + esc(detail) + '" style="display:flex;gap:8px;align-items:flex-start;' +
                 'margin:0 0 10px;padding:10px 12px;border-radius:6px;' +
                 'background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.45);' +
-                'color:#f87171;font-size:13px;line-height:1.45">' +
+                'color:#f87171;font-size:var(--font-size-sm);line-height:1.45">' +
                 '<span aria-hidden="true">⛔</span><span>' + text + '</span></div>';
         }).join('');
     }
@@ -206,7 +206,7 @@ const MonitorBackends = (() => {
                 MA.esc(applyTitle) + '">' + MA.esc(t('monitor.rpc.apply', 'Применить')) + '</button>' +
             '<button class="backend-rpc-auto" data-backend="' + MA.esc(b.id) + '" title="' +
                 MA.esc(autoTitle) + '">' + MA.esc(t('monitor.rpc.auto', 'авто')) + '</button>' +
-            '<span class="backend-rpc-state" style="font-size:10px;color:var(--text-secondary)">' +
+            '<span class="backend-rpc-state" style="font-size:var(--font-size-xs);color:var(--text-secondary)">' +
                 MA.esc(state) + '</span>' +
         '</div>';
     }
@@ -311,7 +311,7 @@ const MonitorBackends = (() => {
         };
         const port = node.port ? (':' + node.port) : '';
         const reason = node.reason ? MA.esc(node.reason) : '';
-        const style = 'display:inline-block;margin-top:2px;font-size:10px;padding:0 4px;border-radius:3px;border:1px solid ';
+        const style = 'display:inline-block;margin-top:2px;font-size:var(--font-size-xs);padding:0 4px;border-radius:3px;border:1px solid ';
         // Порт показываем РЯДОМ с подписью, а не внутри неё: подпись переводится,
         // а номер порта — это факт, который оператор сверяет с compose/фаерволом.
         const withPort = function (text) { return port ? (text + ' ' + port) : text; };
@@ -354,7 +354,7 @@ const MonitorBackends = (() => {
         };
         const text = map[src];
         if (!text) return '';
-        return '<div style="font-size:10px;color:var(--text-muted)">' + MA.esc(text) + '</div>';
+        return '<div style="font-size:var(--font-size-xs);color:var(--text-muted)">' + MA.esc(text) + '</div>';
     }
 
     // ===== Sorting =====
@@ -458,11 +458,11 @@ const MonitorBackends = (() => {
         if (window.Utils && typeof window.Utils.getBackendTypeBadge === 'function') {
             typeBadge = ' ' + window.Utils.getBackendTypeBadge(b);
         } else if (isImage) {
-            typeBadge = ' <span class="badge" style="background:#4ade8020;border:1px solid #4ade80;color:#4ade80;font-size:10px;padding:0 4px;border-radius:3px">🎨 image.cpp</span>';
+            typeBadge = ' <span class="badge" style="background:#4ade8020;border:1px solid #4ade80;color:#4ade80;font-size:var(--font-size-xs);padding:0 4px;border-radius:3px">🎨 image.cpp</span>';
         } else if (btType === 'llama_cpp') {
-            typeBadge = ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:10px;padding:0 4px;border-radius:3px">🦒 llama.cpp</span>';
+            typeBadge = ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:var(--font-size-xs);padding:0 4px;border-radius:3px">🦒 llama.cpp</span>';
         } else if (btType === 'ollama' || !btType) {
-            typeBadge = ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:10px;padding:0 4px;border-radius:3px">🦙 Ollama</span>';
+            typeBadge = ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:var(--font-size-xs);padding:0 4px;border-radius:3px">🦙 Ollama</span>';
         }
         const imageBadges = isImage
             ? ' <span class="badge" style="background:rgba(74,222,128,0.12);color:#4ade80" title="' +
@@ -547,7 +547,7 @@ const MonitorBackends = (() => {
                 // Compact unload button: ✕ (8px шрифт, hover-effect через CSS)
                 ' <button class="monitor-unload-btn" data-backend="' + MA.esc(b.id) + '" data-model="' + MA.esc(m) + '" ' +
                 'title="' + MA.esc((window.I18N ? I18N.t('gguf.unload_model', 'Unload') : 'Unload')) + ' ' + MA.esc(m) + '" ' +
-                'style="background:transparent;border:none;color:inherit;cursor:pointer;padding:0 2px;font-size:11px;line-height:1;opacity:0.7;">' +
+                'style="background:transparent;border:none;color:inherit;cursor:pointer;padding:0 2px;font-size:var(--font-size-xs);line-height:1;opacity:0.7;">' +
                 '<i class="fas fa-times"></i></button>' +
             '</span>';
         }).join(' ');

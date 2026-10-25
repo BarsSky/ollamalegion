@@ -1,4 +1,4 @@
-/**
+﻿/**
  * gguf-renderer-detail-render.js — Right panel render functions for gguf-renderer.
  *
  * R57.5f (2026-09-03): extracted from webui/js/modules/gguf-renderer.js.
@@ -221,7 +221,7 @@
                     '<i class="fas fa-exclamation-triangle" style="color:var(--danger);"></i>' +
                     '<strong>' + Utils.escapeHtml(_('gguf.detail_load_failed')) + '</strong>' +
                 '</div>' +
-                '<div style="font-family:monospace;font-size:11px;background:rgba(0,0,0,0.2);' +
+                '<div style="font-family:monospace;font-size:var(--font-size-xs);background:rgba(0,0,0,0.2);' +
                     'padding:8px;border-radius:4px;margin-bottom:8px;word-break:break-all;">' +
                     Utils.escapeHtml(state.detailError) +
                 '</div>' +
@@ -431,7 +431,7 @@
                 })) + '</span>');
             }
         }
-        return '<div class="gguf-inventory-note" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px;margin:0 0 10px 0;">' +
+        return '<div class="gguf-inventory-note" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:var(--font-size-xs);margin:0 0 10px 0;">' +
             parts.join(' <span style="color:var(--border)">|</span> ') +
             '<button class="btn btn-secondary btn-sm" id="ggufRescanModels" title="' +
                 Utils.escapeHtml(_('gguf.inventory_rescan_hint')) + '">' +
@@ -477,9 +477,9 @@
             // R93: пустой список обязан объяснять причину. «Каталог недоступен»
             // (удалённый bind-mount, отвалившийся том) — это не «моделей нет».
             const hint = (inv && inv.dirError)
-                ? '<p style="font-size:12px;margin-top:8px;color:var(--danger);">' +
+                ? '<p style="font-size:var(--font-size-xs);margin-top:8px;color:var(--danger);">' +
                     Utils.escapeHtml(_('gguf.inventory_dir_error', { error: inv.dirError })) + '</p>'
-                : '<p style="font-size:12px;margin-top:8px;">' + _('gguf.no_models_on_disk_hint') + '</p>';
+                : '<p style="font-size:var(--font-size-xs);margin-top:8px;">' + _('gguf.no_models_on_disk_hint') + '</p>';
             return '<div class="gguf-empty-state">' +
                 '<div class="empty-icon"><i class="fas fa-folder-open"></i></div>' +
                 '<div>' + _('gguf.no_local_models') + '</div>' +
@@ -533,7 +533,7 @@
                             // Идёт выгрузка: вместо кнопки — состояние с таймером,
                             // иначе клик по «Выгрузить» снова уходил бы в API и
                             // возвращал «model not found».
-                            ? '<span class="gguf-local-unloading" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--warning, #e0a030);">' +
+                            ? '<span class="gguf-local-unloading" style="display:flex;align-items:center;gap:6px;font-size:var(--font-size-xs);color:var(--warning, #e0a030);">' +
                                 '<i class="fas fa-spinner fa-spin"></i>' +
                                 Utils.escapeHtml(_('gguf.unloading', 'Выгружается…')) + ' ' +
                                 formatElapsedShort(unloadingElapsedMs(unloadingItemFor(name))) +
@@ -913,7 +913,7 @@
             '</span>';
         }).join('');
         return '<div class="gguf-loaded-model-info" style="margin-top:4px;display:flex;gap:10px;' +
-            'flex-wrap:wrap;font-family:monospace;font-size:10px;color:var(--text-secondary);">' +
+            'flex-wrap:wrap;font-family:monospace;font-size:var(--font-size-xs);color:var(--text-secondary);">' +
             '<span style="color:var(--text-muted);">' +
             Utils.escapeHtml(_('gguf.param_sources') || 'источники') + ':</span>' + parts +
         '</div>';
@@ -1281,7 +1281,7 @@
                 '<span style="color:var(--warning, #e0a030);">' + Utils.escapeHtml(_('gguf.unloading', 'Выгружается…')) + '</span>' +
                 '<span style="margin-left:12px;">' + Utils.escapeHtml(_('gguf.elapsed', 'Прошло')) + ': ' + elapsed + '</span>' +
             '</div>' +
-            '<div class="gguf-loaded-model-info" style="font-size:11px;color:var(--text-muted);">' +
+            '<div class="gguf-loaded-model-info" style="font-size:var(--font-size-xs);color:var(--text-muted);">' +
                 Utils.escapeHtml(_('gguf.unloading_hint', 'Освобождаю память (VRAM). На больших моделях это занимает десятки секунд.')) +
             '</div>' +
         '</div>';
@@ -1323,7 +1323,7 @@
         }
         if (!rows.length) return '';
         return '<div class="gguf-donor-card" style="margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:6px;">' +
-            '<div style="font-size:12px;font-weight:600;">' + Utils.escapeHtml(_('gguf.donor_title', 'Вклад доноров')) +
+            '<div style="font-size:var(--font-size-xs);font-weight:600;">' + Utils.escapeHtml(_('gguf.donor_title', 'Вклад доноров')) +
                 (modelName ? '<span style="font-weight:400;color:var(--text-secondary);"> — ' +
                     Utils.escapeHtml(modelName) + '</span>' : '') + '</div>' +
             '<table class="gguf-mp-table" style="margin-top:4px;"><thead><tr>' +
@@ -1331,7 +1331,7 @@
                 '<th>' + Utils.escapeHtml(_('gguf.donor_layers', 'Слои')) + '</th>' +
                 '<th>' + Utils.escapeHtml(_('gguf.donor_mem', 'Память (оценка)')) + '</th>' +
             '</tr></thead><tbody>' + rows.join('') + '</tbody></table>' +
-            '<div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">' +
+            '<div style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-top:4px;">' +
                 Utils.escapeHtml(_('gguf.donor_hint',
                     'Оценка памяти — по доле слоёв модели; точную память узла воркер по-узлово не отдаёт.')) +
             '</div></div>';
@@ -1386,7 +1386,7 @@
                     '<span style="color:' + stateColor + ';">' + stateText + '</span>' +
                     '<span style="margin-left:12px;">' + (_('gguf.elapsed') || 'Elapsed') + ': ' + elapsedLabel + '</span>' +
                 '</div>' +
-                (lm.error ? '<div class="gguf-loaded-model-info" style="color:var(--danger,#d9534f);font-size:11px;">' +
+                (lm.error ? '<div class="gguf-loaded-model-info" style="color:var(--danger,#d9534f);font-size:var(--font-size-xs);">' +
                     '<i class="fas fa-exclamation-triangle"></i> ' + Utils.escapeHtml(lm.error) +
                 '</div>' : '') +
             '</div>';
@@ -1420,7 +1420,7 @@
                 const rtState = rt.state || 'loaded';
                 const rtCtxBadge = (rtCtx && rtCtx !== ctx) ? '<span class="badge" style="background:var(--accent);margin-left:6px;">runtime: ' + Utils.escapeHtml(String(rtCtx)) + '</span>' : '';
                 const rtGpuBadge = (rtGpu !== null && rtGpu !== undefined && rtGpu !== m.gpuLayers) ?
-                    '<span class="badge" style="background:var(--bg-tertiary);margin-left:6px;padding:2px 6px;font-size:10px;">gpu: ' + Utils.escapeHtml(String(rtGpu)) + '</span>' : '';
+                    '<span class="badge" style="background:var(--bg-tertiary);margin-left:6px;padding:2px 6px;font-size:var(--font-size-xs);">gpu: ' + Utils.escapeHtml(String(rtGpu)) + '</span>' : '';
                 const meta = [];
                 // R83/v67 (2026-10-02): ctx/gpu_layers/batch/flash_attn/layers/mmap
                 // переехали в строку флагов (buildLoadedFlags) — раньше они были
@@ -1449,7 +1449,7 @@
                     }
                 }
                 if (meta.length > 0 || offloadBadge) {
-                    rtHtml = '<div class="gguf-loaded-model-info" style="margin-top:4px;display:flex;gap:12px;flex-wrap:wrap;font-family:monospace;font-size:11px;">' +
+                    rtHtml = '<div class="gguf-loaded-model-info" style="margin-top:4px;display:flex;gap:12px;flex-wrap:wrap;font-family:monospace;font-size:var(--font-size-xs);">' +
                         meta.join('') + offloadBadge +
                         '</div>';
                 }
@@ -1468,14 +1468,14 @@
             // увидел TCP close.
             const activeCount = (state.activeQueries && state.activeQueries[name]) || 0;
             const busyBadge = activeCount > 0
-                ? '<span class="gguf-loaded-busy-badge" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;padding:2px 8px;background:rgba(217,83,79,0.15);color:#ff7b76;border-radius:10px;font-size:11px;font-weight:600;" title="' + (_('gguf.busy_badge_title') || 'Active generations') + '">' +
+                ? '<span class="gguf-loaded-busy-badge" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;padding:2px 8px;background:rgba(217,83,79,0.15);color:#ff7b76;border-radius:10px;font-size:var(--font-size-xs);font-weight:600;" title="' + (_('gguf.busy_badge_title') || 'Active generations') + '">' +
                     '<span style="display:inline-block;width:6px;height:6px;background:#ff7b76;border-radius:50%;animation:gguf-pulse 1.2s infinite;"></span>' +
                     (_('gguf.busy_badge') || 'Generating') + ' (' + activeCount + ' ' + (_('gguf.active_short') || 'active') + ')' +
                     // Round 32 #2: cancel button внутри busy badge.
                     // data-model-name используется в event handler для определения
                     // какую модель отменять.
                     '<button class="btn btn-xs gguf-cancel-gen-btn" data-model-name="' + Utils.escapeHtml(name) + '" ' +
-                            'style="margin-left:4px;padding:1px 8px;font-size:10px;line-height:1.4;background:#d9534f;color:#fff;border:none;border-radius:8px;cursor:pointer;" ' +
+                            'style="margin-left:4px;padding:1px 8px;font-size:var(--font-size-xs);line-height:1.4;background:#d9534f;color:#fff;border:none;border-radius:8px;cursor:pointer;" ' +
                             'title="' + (_('gguf.cancel_generation') || 'Cancel active generation') + '">' +
                         '<i class="fas fa-times"></i> ' + (_('common.cancel') || 'Cancel') +
                     '</button>' +
@@ -1489,7 +1489,7 @@
             // применились к загруженной модели.
             const flags = buildLoadedFlags(m, rt);
             const flagsHtml = flags.length > 0
-                ? '<div class="gguf-loaded-model-flags" style="margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;font-family:monospace;font-size:11px;">' +
+                ? '<div class="gguf-loaded-model-flags" style="margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;font-family:monospace;font-size:var(--font-size-xs);">' +
                     flags.map(function (f) {
                         const color = f.tone === 'ok' ? '#5cb85c'
                             : (f.tone === 'warn' ? '#f0ad4e'
@@ -1522,7 +1522,7 @@
                 // идёт, а не нажимает кнопку повторно (второй unload вернул бы
                 // «model not found»).
                 (unloading
-                    ? '<div class="gguf-loaded-model-unloading-inline" style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px;color:var(--warning, #e0a030);">' +
+                    ? '<div class="gguf-loaded-model-unloading-inline" style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:var(--font-size-xs);color:var(--warning, #e0a030);">' +
                         '<i class="fas fa-spinner fa-spin"></i>' +
                         '<span>' + Utils.escapeHtml(_('gguf.unloading', 'Выгружается…')) + '</span>' +
                         '<span style="color:var(--text-muted);">' + Utils.escapeHtml(_('gguf.elapsed', 'Прошло')) + ': ' +
@@ -1560,7 +1560,7 @@
                 '<div>' + _('gguf.no_active_downloads') + '</div>' +
                '</div>')
             : ('<div class="gguf-downloads-section">' +
-                '<h5 style="margin:0 0 8px 0;font-size:13px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">' +
+                '<h5 style="margin:0 0 8px 0;font-size:var(--font-size-sm);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">' +
                     _('gguf.active_downloads_for_backend') + '</h5>' +
                 dls.map(renderDownloadItem).join('') +
                '</div>');
@@ -1572,7 +1572,7 @@
         const historyHtml = historyItems.length === 0
             ? ''
             : ('<div class="gguf-downloads-section" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border-color);">' +
-                '<h5 style="margin:0 0 8px 0;font-size:13px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">' +
+                '<h5 style="margin:0 0 8px 0;font-size:var(--font-size-sm);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">' +
                     (_('gguf.download_history') || 'Recent downloads') + '</h5>' +
                 historyItems.map(renderDownloadItem).join('') +
                '</div>');
@@ -1583,11 +1583,11 @@
         const orphanHtml = orphans.length === 0
             ? ''
             : ('<div class="gguf-downloads-section gguf-orphans-section" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--warning);">' +
-                '<h5 style="margin:0 0 8px 0;font-size:13px;color:var(--warning);text-transform:uppercase;letter-spacing:0.5px;">' +
+                '<h5 style="margin:0 0 8px 0;font-size:var(--font-size-sm);color:var(--warning);text-transform:uppercase;letter-spacing:0.5px;">' +
                     '<i class="fas fa-exclamation-triangle"></i> ' +
                     (_('gguf.residual_downloads') || 'Residual files (orphans)') +
                 '</h5>' +
-                '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">' +
+                '<div style="font-size:var(--font-size-xs);color:var(--text-muted);margin-bottom:8px;">' +
                     Utils.escapeHtml(_('gguf.orphans_hint') || 'Partial .download files left from interrupted downloads. They take disk space but are not associated with any active download.') +
                 '</div>' +
                 orphans.map(renderOrphanItem).join('') +
@@ -1613,10 +1613,10 @@
         return '<div class="gguf-orphan-item" style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">' +
             '<i class="fas fa-file-archive" style="color:var(--warning);"></i>' +
             '<div style="flex:1;min-width:0;">' +
-                '<div style="font-family:monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + Utils.escapeHtml(o.path || o.filename) + '">' +
+                '<div style="font-family:monospace;font-size:var(--font-size-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + Utils.escapeHtml(o.path || o.filename) + '">' +
                     Utils.escapeHtml(o.filename) +
                 '</div>' +
-                '<div style="font-size:10px;color:var(--text-muted);">' +
+                '<div style="font-size:var(--font-size-xs);color:var(--text-muted);">' +
                     Utils.escapeHtml(sizeLabel) + ' · ' + Utils.escapeHtml(ageLabel) +
                 '</div>' +
             '</div>' +
@@ -1654,11 +1654,11 @@
                 '<div class="gguf-download-model">' + Utils.escapeHtml(dl.modelId) + '</div>' +
                 '<div class="gguf-download-file">' + Utils.escapeHtml(dl.filename) + '</div>' +
                 // Round 17.3: показываем пути маленьким серым текстом.
-                (finalPath ? '<div class="gguf-download-paths" style="font-size:10px;color:var(--text-muted);margin-top:2px;line-height:1.4;">' +
+                (finalPath ? '<div class="gguf-download-paths" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:2px;line-height:1.4;">' +
                     '<i class="fas fa-folder-open" style="margin-right:3px;"></i>' + Utils.escapeHtml(finalPath) +
                     (tempPath ? '<br><i class="fas fa-file-download" style="margin-right:3px;"></i><span style="opacity:0.8;">temp: </span>' + Utils.escapeHtml(tempPath) : '') +
                   '</div>' : '') +
-                (resumable ? '<div style="font-size:10px;color:var(--warning);margin-top:2px;"><i class="fas fa-pause-circle"></i> ' +
+                (resumable ? '<div style="font-size:var(--font-size-xs);color:var(--warning);margin-top:2px;"><i class="fas fa-pause-circle"></i> ' +
                     (_('gguf.partial_download_resumable') || 'Partial download — can be resumed') +
                     (resumedFrom > 0 ? ' (' + formatFileSize(resumedFrom) + ' ' + (_('gguf.already_downloaded') || 'already downloaded') + ')' : '') +
                   '</div>' : '') +
@@ -1740,30 +1740,30 @@
         ];
         var suggHtml = suggestions.map(function (s) {
             return '<button class="gguf-suggestion-chip" data-suggestion="' + Utils.escapeHtml(s.q) + '" ' +
-                'style="margin:4px 4px 0 0;padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-secondary);cursor:pointer;font-size:12px;">' +
+                'style="margin:4px 4px 0 0;padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-secondary);cursor:pointer;font-size:var(--font-size-xs);">' +
                 Utils.escapeHtml(s.label) + '</button>';
         }).join('');
         var directHtml = direct.map(function (d) {
             return '<button class="gguf-direct-chip" data-direct="' + Utils.escapeHtml(d.q) + '" ' +
-                'style="display:block;width:100%;text-align:left;margin:4px 0;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);cursor:pointer;font-family:monospace;font-size:12px;">' +
+                'style="display:block;width:100%;text-align:left;margin:4px 0;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);cursor:pointer;font-family:monospace;font-size:var(--font-size-xs);">' +
                 Utils.escapeHtml(d.label) + '</button>';
         }).join('');
         return '<div class="gguf-empty-state gguf-search-empty" style="padding:12px 4px;">' +
             '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">' +
-                '<i class="fab fa-huggingface" style="font-size:18px;color:#ff9a00;"></i>' +
+                '<i class="fab fa-huggingface" style="font-size:var(--font-size-lg);color:#ff9a00;"></i>' +
                 '<span style="font-weight:500;">' + Utils.escapeHtml(_('gguf.search_title') || 'HuggingFace Hub') + '</span>' +
             '</div>' +
-            '<div style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">' +
+            '<div style="color:var(--text-muted);font-size:var(--font-size-xs);margin-bottom:8px;">' +
                 Utils.escapeHtml(_('gguf.search_hint') || 'Type 2+ chars to search, or paste an org/model id (with "/") to jump straight to its files.') +
             '</div>' +
             '<div style="margin-top:10px;">' +
-                '<div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">' +
+                '<div style="font-size:var(--font-size-xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">' +
                     Utils.escapeHtml(_('gguf.popular') || 'Popular') +
                 '</div>' +
                 '<div>' + suggHtml + '</div>' +
             '</div>' +
             '<div style="margin-top:12px;">' +
-                '<div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">' +
+                '<div style="font-size:var(--font-size-xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">' +
                     Utils.escapeHtml(_('gguf.direct_link') || 'Or paste org/model id') +
                 '</div>' +
                 '<div>' + directHtml + '</div>' +
@@ -1821,9 +1821,9 @@
         // Show structured error if the last search failed
         if (state.hfLastError) {
             return '<div class="gguf-empty-state gguf-search-error">' +
-                '<i class="fas fa-exclamation-triangle" style="color:var(--warning,#e0a030);font-size:18px;"></i>' +
+                '<i class="fas fa-exclamation-triangle" style="color:var(--warning,#e0a030);font-size:var(--font-size-lg);"></i>' +
                 '<div style="margin-top:6px;font-weight:500;">' + Utils.escapeHtml(state.hfLastError.title) + '</div>' +
-                '<div style="margin-top:4px;color:var(--text-muted);font-size:12px;">' + Utils.escapeHtml(state.hfLastError.hint) + '</div>' +
+                '<div style="margin-top:4px;color:var(--text-muted);font-size:var(--font-size-xs);">' + Utils.escapeHtml(state.hfLastError.hint) + '</div>' +
             '</div>';
         }
         // R66.2 (2026-09-16): на случай если state.hfSearchResults стал не-массивом
@@ -1838,7 +1838,7 @@
             return '<div class="gguf-empty-state">' +
                 '<i class="fas fa-search" style="opacity:0.4;"></i> ' +
                 '<div style="margin-top:6px;">' + Utils.escapeHtml(_('gguf.no_results_for', { q: state.hfSearchQuery }) || ('No results for "' + state.hfSearchQuery + '"')) + '</div>' +
-                '<div style="margin-top:4px;color:var(--text-muted);font-size:12px;">' + Utils.escapeHtml(_('gguf.try_short_query') || 'Try a shorter query, e.g. "Qwen", "Llama-3", "gemma-2-9b"') + '</div>' +
+                '<div style="margin-top:4px;color:var(--text-muted);font-size:var(--font-size-xs);">' + Utils.escapeHtml(_('gguf.try_short_query') || 'Try a shorter query, e.g. "Qwen", "Llama-3", "gemma-2-9b"') + '</div>' +
             '</div>';
         }
         var filtered = resultsArr.filter(function (m) {
@@ -1848,14 +1848,14 @@
             return '<div class="gguf-empty-state">' +
                 '<i class="fas fa-box-open" style="opacity:0.4;"></i> ' +
                 '<div style="margin-top:6px;">' + Utils.escapeHtml(_('gguf.no_gguf_files_found')) + '</div>' +
-                '<div style="margin-top:4px;color:var(--text-muted);font-size:12px;">' +
+                '<div style="margin-top:4px;color:var(--text-muted);font-size:var(--font-size-xs);">' +
                 Utils.escapeHtml(_('gguf.no_gguf_files_hint') || 'Repository exists but contains no .gguf files (maybe GGUF is in a different repo or branch).') +
                 '</div>' +
             '</div>';
         }
         var toolbar = filtered.length > 1
             ? '<div class="gguf-results-toolbar" style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">' +
-                '<span class="gguf-results-count" style="font-size:12px;color:var(--text-muted);">' +
+                '<span class="gguf-results-count" style="font-size:var(--font-size-xs);color:var(--text-muted);">' +
                     Utils.escapeHtml(_('gguf.results_count', { n: filtered.length }) || (filtered.length + ' models')) +
                 '</span>' +
                 '<button class="btn btn-sm btn-secondary gguf-collapse-all-btn" title="' + (_('gguf.collapse_all') || 'Collapse all') + '">' +
@@ -1863,7 +1863,7 @@
                 '</button>' +
               '</div>'
             : '<div class="gguf-results-toolbar" style="display:flex;justify-content:flex-end;margin-bottom:8px;">' +
-                '<span class="gguf-results-count" style="font-size:12px;color:var(--text-muted);margin-right:auto;">' +
+                '<span class="gguf-results-count" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-right:auto;">' +
                     Utils.escapeHtml(_('gguf.results_count', { n: filtered.length }) || (filtered.length + ' model')) +
                 '</span>' +
               '</div>';
@@ -1903,18 +1903,18 @@
                     var isRecommended = recommended && fname === recommended;
                     return '<div class="gguf-file-row" data-model-idx="' + idx + '" data-filename="' + Utils.escapeHtml(fname) + '" style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border-subtle,#eee);">' +
                         '<i class="fas fa-cube" style="color:var(--text-muted);"></i>' +
-                        '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:12px;" title="' + Utils.escapeHtml(fname) + '">' + Utils.escapeHtml(fname) + '</span>' +
-                        '<span class="badge" style="background:var(--accent);font-size:10px;">' + Utils.escapeHtml(fquant) + '</span>' +
-                        '<span style="font-size:11px;color:var(--text-muted);min-width:60px;text-align:right;">' + fsize + '</span>' +
-                        (isRecommended ? '<span class="badge" style="background:var(--success);font-size:9px;" title="' + (_('gguf.recommended') || 'Recommended') + '">' + (_('gguf.recommended') || '★') + '</span>' : '') +
-                        '<button class="btn btn-sm btn-primary gguf-download-file-btn" data-model-idx="' + idx + '" data-filename="' + Utils.escapeHtml(fname) + '" title="' + (_('gguf.download') || 'Download') + ': ' + Utils.escapeHtml(fname) + '" style="padding:2px 8px;font-size:12px;">' +
+                        '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:var(--font-size-xs);" title="' + Utils.escapeHtml(fname) + '">' + Utils.escapeHtml(fname) + '</span>' +
+                        '<span class="badge" style="background:var(--accent);font-size:var(--font-size-xs);">' + Utils.escapeHtml(fquant) + '</span>' +
+                        '<span style="font-size:var(--font-size-xs);color:var(--text-muted);min-width:60px;text-align:right;">' + fsize + '</span>' +
+                        (isRecommended ? '<span class="badge" style="background:var(--success);font-size:var(--font-size-xs);" title="' + (_('gguf.recommended') || 'Recommended') + '">' + (_('gguf.recommended') || '★') + '</span>' : '') +
+                        '<button class="btn btn-sm btn-primary gguf-download-file-btn" data-model-idx="' + idx + '" data-filename="' + Utils.escapeHtml(fname) + '" title="' + (_('gguf.download') || 'Download') + ': ' + Utils.escapeHtml(fname) + '" style="padding:2px 8px;font-size:var(--font-size-xs);">' +
                             '<i class="fas fa-download"></i>' +
                         '</button>' +
                         '<div class="gguf-file-progress" data-model-idx="' + idx + '" data-filename="' + Utils.escapeHtml(fname) + '" style="display:none;flex-basis:100%;margin-top:4px;">' +
                             '<div class="gguf-progress-bar" style="height:4px;background:var(--bg-tertiary,#333);border-radius:2px;overflow:hidden;">' +
                                 '<div class="gguf-progress-fill" style="height:100%;width:0%;background:var(--success);transition:width 0.2s;"></div>' +
                             '</div>' +
-                            '<div class="gguf-progress-text" style="font-size:10px;color:var(--text-muted);margin-top:2px;">0%</div>' +
+                            '<div class="gguf-progress-text" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:2px;">0%</div>' +
                         '</div>' +
                     '</div>';
                 };
@@ -1930,7 +1930,7 @@
                             restFiles.map(fileRowHtml).join('') +
                         '</div>';
                         html += '<button type="button" class="gguf-files-more-btn" ' +
-                            'style="display:block;width:100%;padding:6px;margin-top:4px;background:transparent;border:1px dashed var(--border);border-radius:4px;text-align:center;font-size:11px;color:var(--accent);cursor:pointer;">' +
+                            'style="display:block;width:100%;padding:6px;margin-top:4px;background:transparent;border:1px dashed var(--border);border-radius:4px;text-align:center;font-size:var(--font-size-xs);color:var(--accent);cursor:pointer;">' +
                             '<span class="gguf-files-more-label">+' + restCount + ' ' + (_('gguf.more_files') || 'more files') + ' — ' + (_('gguf.show_more_files') || 'Show all') + '</span>' +
                         '</button>';
                     }
@@ -1977,7 +1977,7 @@
         }
         return '' +
             '<div class="gguf-files-header" style="display:flex;justify-content:space-between;align-items:center;">' +
-                '<h4 style="margin:0;font-size:14px;"><i class="fas fa-file"></i> ' + Utils.escapeHtml(modelId) + '</h4>' +
+                '<h4 style="margin:0;font-size:var(--font-size-base);"><i class="fas fa-file"></i> ' + Utils.escapeHtml(modelId) + '</h4>' +
                 '<button class="btn btn-sm btn-secondary" id="ggufCloseHfFiles"><i class="fas fa-times"></i> ' + _('common.close') + '</button>' +
             '</div>' +
             '<div class="gguf-files-grid">' +
@@ -2037,11 +2037,11 @@
 
             // ---------- (1) Backend load options ----------
             '<div class="settings-subsection" id="gguf-backend-options-section">' +
-                '<h4 style="margin:0 0 6px 0;font-size:14px;display:flex;align-items:center;gap:8px;">' +
+                '<h4 style="margin:0 0 6px 0;font-size:var(--font-size-base);display:flex;align-items:center;gap:8px;">' +
                     '<i class="fas fa-sliders-h"></i> ' +
                     '<span>' + _('gguf.backend_options_title') + '</span>' +
                 '</h4>' +
-                '<p style="color:var(--text-muted);margin:0 0 6px 0;font-size:12px;">' +
+                '<p style="color:var(--text-muted);margin:0 0 6px 0;font-size:var(--font-size-xs);">' +
                     _('gguf.backend_options_desc') +
                 '</p>' +
                 // Round 32 #6 (2026-08-10): disclaimer что это ГЛОБАЛЬНЫЕ дефолты,
@@ -2049,7 +2049,7 @@
                 // Per-model overrides — в Per-Model Profiles ниже. Без этого
                 // disclaimer'а пользователи думали что settings «привязаны к
                 // модели» или «не работают без загруженной модели».
-                '<p style="color:var(--text-muted);margin:0 0 12px 0;font-size:11px;font-style:italic;">' +
+                '<p style="color:var(--text-muted);margin:0 0 12px 0;font-size:var(--font-size-xs);font-style:italic;">' +
                     '<i class="fas fa-info-circle"></i> ' +
                     Utils.escapeHtml(_('gguf.backend_options_global_hint', 'Эти параметры — глобальные дефолты для всех моделей на бэкенде. Per-model overrides — в секции «Per-Model Profiles» ниже. Доступны даже без загруженной модели.')) +
                 '</p>' +
@@ -2060,11 +2060,11 @@
 
             // ---------- (2) Per-Model Profiles ----------
             '<div class="settings-subsection" id="gguf-profiles-section" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border-color, #2a3441);">' +
-                '<h4 style="margin:0 0 6px 0;font-size:14px;display:flex;align-items:center;gap:8px;">' +
+                '<h4 style="margin:0 0 6px 0;font-size:var(--font-size-base);display:flex;align-items:center;gap:8px;">' +
                     '<i class="fas fa-layer-group"></i> ' +
                     '<span>' + _('gguf.profiles_section_title') + '</span>' +
                 '</h4>' +
-                '<p style="color:var(--text-muted);margin:0 0 12px 0;font-size:12px;">' +
+                '<p style="color:var(--text-muted);margin:0 0 12px 0;font-size:var(--font-size-xs);">' +
                     _('gguf.profiles_section_desc') +
                 '</p>' +
                 (isRegistered
@@ -2087,22 +2087,22 @@
             // профиль модели и «настройки по умолчанию» — отсюда жалоба «модель
             // грузится не с теми параметрами, что указаны в настройках».
             '<div class="settings-subsection" id="gguf-load-defaults-section" style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border-color, #2a3441);">' +
-                '<h4 style="margin:0 0 6px 0;font-size:14px;display:flex;align-items:center;gap:8px;">' +
+                '<h4 style="margin:0 0 6px 0;font-size:var(--font-size-base);display:flex;align-items:center;gap:8px;">' +
                     '<i class="fas fa-crown"></i> ' +
                     '<span>' + Utils.escapeHtml(_('gguf.load_defaults_title', 'Что получат НОВЫЕ модели (приоритетнее настроек контейнера)')) + '</span>' +
                 '</h4>' +
-                '<p style="color:var(--text-muted);margin:0 0 10px 0;font-size:12px;">' +
+                '<p style="color:var(--text-muted);margin:0 0 10px 0;font-size:var(--font-size-xs);">' +
                     Utils.escapeHtml(_('gguf.load_defaults_desc',
                         'Порядок применения при загрузке: настройки этого слоя (и профиль конкретной модели) важнее значений из формы выше. Кнопка «Сделать приоритетом для новых моделей» переносит значения формы сюда.')) +
                 '</p>' +
                 '<div data-role="cpp-load-defaults">' +
                     '<div class="loading">' + Utils.escapeHtml(_('common.loading', 'Загрузка…')) + '</div>' +
                 '</div>' +
-                '<h4 style="margin:20px 0 6px 0;font-size:14px;display:flex;align-items:center;gap:8px;">' +
+                '<h4 style="margin:20px 0 6px 0;font-size:var(--font-size-base);display:flex;align-items:center;gap:8px;">' +
                     '<i class="fas fa-hard-drive"></i> ' +
                     '<span>' + Utils.escapeHtml(_('gguf.model_catalog_title', 'Модели в папке — что применится к каждой')) + '</span>' +
                 '</h4>' +
-                '<p style="color:var(--text-muted);margin:0 0 10px 0;font-size:12px;">' +
+                '<p style="color:var(--text-muted);margin:0 0 10px 0;font-size:var(--font-size-xs);">' +
                     Utils.escapeHtml(_('gguf.model_catalog_desc',
                         'Включая ещё не загруженные. «Свой профиль» = у модели есть собственные настройки — они важнее и настроек по умолчанию, и настроек контейнера. Кнопка с ползунками открывает профиль этой модели (там же «Применить (reload)» для уже загруженной).')) +
                 '</p>' +
@@ -2152,7 +2152,7 @@
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
             container.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> ' +
                 Utils.escapeHtml(_('common.loading', 'Loading…')) + ' (' + elapsed + 's)' +
-                '<div style="margin-top:4px;font-size:11px;color:var(--text-muted);">' +
+                '<div style="margin-top:4px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
                 Utils.escapeHtml(backend.id) +
                 '</div></div>';
         }
@@ -2171,14 +2171,14 @@
                         '<i class="fas fa-exclamation-triangle"></i>' +
                         '<strong>' + Utils.escapeHtml(_('gguf.config_load_failed', 'Не удалось загрузить параметры бэкенда')) + '</strong>' +
                     '</div>' +
-                    '<div style="font-family:monospace;font-size:11px;background:rgba(0,0,0,0.2);padding:8px;border-radius:4px;margin-bottom:8px;word-break:break-all;">' +
+                    '<div style="font-family:monospace;font-size:var(--font-size-xs);background:rgba(0,0,0,0.2);padding:8px;border-radius:4px;margin-bottom:8px;word-break:break-all;">' +
                         'R60.5 hard timeout 15s — fetch завис, проверьте balancer proxy' +
                     '</div>' +
                     '<div style="display:flex;gap:6px;">' +
                         '<button class="btn btn-secondary btn-sm" id="ggufBackendOptionsReload">' +
                             '<i class="fas fa-sync"></i> ' + Utils.escapeHtml(_('gguf.reload_backend_options')) +
                         '</button>' +
-                        '<span style="font-size:11px;color:var(--text-muted);align-self:center;">' +
+                        '<span style="font-size:var(--font-size-xs);color:var(--text-muted);align-self:center;">' +
                             '(' + elapsedSec + 's)' +
                         '</span>' +
                     '</div>' +
@@ -2225,10 +2225,10 @@
                             '<i class="fas fa-exclamation-triangle"></i>' +
                             '<strong>Ошибка рендера формы (R60.5)</strong>' +
                         '</div>' +
-                        '<div style="font-family:monospace;font-size:11px;background:rgba(0,0,0,0.2);padding:8px;border-radius:4px;margin-bottom:8px;word-break:break-all;">' +
+                        '<div style="font-family:monospace;font-size:var(--font-size-xs);background:rgba(0,0,0,0.2);padding:8px;border-radius:4px;margin-bottom:8px;word-break:break-all;">' +
                             Utils.escapeHtml(renderMsg) +
                         '</div>' +
-                        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">' +
+                        '<div style="font-size:var(--font-size-xs);color:var(--text-muted);margin-bottom:8px;">' +
                             'Config получен: ' + Object.keys(cfg).length + ' полей. См. console.error для stack trace.' +
                         '</div>' +
                         '<button class="btn btn-secondary btn-sm" id="ggufBackendOptionsReload">' +
@@ -2271,10 +2271,10 @@
                         '<i class="fas fa-exclamation-triangle"></i>' +
                         '<strong>' + Utils.escapeHtml(_('gguf.config_load_failed', 'Не удалось загрузить параметры бэкенда')) + '</strong>' +
                     '</div>' +
-                    '<div style="font-family:monospace;font-size:11px;background:rgba(0,0,0,0.2);padding:8px;border-radius:4px;margin-bottom:8px;word-break:break-all;">' +
+                    '<div style="font-family:monospace;font-size:var(--font-size-xs);background:rgba(0,0,0,0.2);padding:8px;border-radius:4px;margin-bottom:8px;word-break:break-all;">' +
                         Utils.escapeHtml(errMsg) +
                     '</div>' +
-                    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">' +
+                    '<div style="font-size:var(--font-size-xs);color:var(--text-muted);margin-bottom:8px;">' +
                         Utils.escapeHtml(_('gguf.config_unavailable')) + '<br>' +
                         Utils.escapeHtml(_('gguf.config_check_cppworker', 'Проверьте: docker ps (cppworker запущен?), CppWorker endpoint доступен через balancer proxy.')) +
                     '</div>' +
@@ -2282,7 +2282,7 @@
                         '<button class="btn btn-secondary btn-sm" id="ggufBackendOptionsReload">' +
                             '<i class="fas fa-sync"></i> ' + Utils.escapeHtml(_('gguf.reload_backend_options')) +
                         '</button>' +
-                        '<span style="font-size:11px;color:var(--text-muted);align-self:center;">' +
+                        '<span style="font-size:var(--font-size-xs);color:var(--text-muted);align-self:center;">' +
                             '(' + elapsedSec + 's)' +
                         '</span>' +
                     '</div>' +
@@ -3424,7 +3424,7 @@
                 '</div>' +
             '</div>' +
             // ====== Diagnostics ======
-            '<div class="form-group" style="color:var(--text-muted);font-size:12px;margin-top:8px;">' +
+            '<div class="form-group" style="color:var(--text-muted);font-size:var(--font-size-xs);margin-top:8px;">' +
                 (nodeName ? ('<div><b>node:</b> ' + Utils.escapeHtml(nodeName) + '</div>') : '') +
                 (balancerUrl ? ('<div><b>balancer:</b> ' + Utils.escapeHtml(balancerUrl) + '</div>') : '') +
                 (uptime ? ('<div><b>uptime:</b> ' + Utils.escapeHtml(uptime) + '</div>') : '') +

@@ -1,4 +1,4 @@
-// js/monitor/canvas-topology.js — Topology canvas (vizCanvas)
+﻿// js/monitor/canvas-topology.js — Topology canvas (vizCanvas)
 
 (function() {
   'use strict';
@@ -314,7 +314,7 @@
         var cu = (b.system && b.system.cpuUsagePercent != null) ? b.system.cpuUsagePercent : 0;
         var ru = (b.memoryUsagePercent != null) ? b.memoryUsagePercent : ((b.system && b.system.memoryUsagePercent != null) ? b.system.memoryUsagePercent : 0);
         var sc = (b.score || 0).toFixed(2);
-        html = '<div><strong>' + MA.esc(b.id) + '</strong> <span style="font-size:10px;color:' + (b.status === 'active' || b.status === 'ready' ? 'var(--success)' : 'var(--danger)') + '">' + MA.esc(statusLabel(b.status)) + '</span></div>'
+        html = '<div><strong>' + MA.esc(b.id) + '</strong> <span style="font-size:var(--font-size-xs);color:' + (b.status === 'active' || b.status === 'ready' ? 'var(--success)' : 'var(--danger)') + '">' + MA.esc(statusLabel(b.status)) + '</span></div>'
           + '<div style="color:var(--text-secondary)">GPU: ' + gu.toFixed(0) + '% | VRAM: ' + vu.toFixed(0) + '% (' + vus.toFixed(1) + '/' + vtu.toFixed(0) + 'G)</div>'
           + '<div style="color:var(--text-secondary)">CPU: ' + cu.toFixed(0) + '% | RAM: ' + ru.toFixed(0) + '%</div>'
           + '<div style="color:var(--text-secondary)">' + MA.T('monitor.table.active') + ': ' + a + '/' + mr + ' | ' + MA.T('monitor.table.score') + ': ' + sc + '</div>'

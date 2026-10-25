@@ -1,4 +1,4 @@
-// auth.js — R202 (2026-10-21): ВХОД В WEBUI (сессии, роли, CSRF).
+﻿// auth.js — R202 (2026-10-21): ВХОД В WEBUI (сессии, роли, CSRF).
 //
 // ЗАЧЕМ. Сервер уже умеет сессии и роли (R201), но панель продолжала работать
 // «без входа»: любой запрос проходил, потому что X-API-Token в страницу больше не
@@ -201,33 +201,33 @@
     ].join(';');
     el.innerHTML = [
       '<form id="authForm" style="width:340px;background:var(--bg-panel,#111827);border:1px solid var(--border,#334155);',
-      'border-radius:12px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,0.45);color:var(--text,#e5e7eb);font-size:14px">',
-      '  <div style="font-size:16px;font-weight:600;margin-bottom:4px">🔐 Вход в OllamaLegion</div>',
-      '  <div id="authHint" style="font-size:12px;color:var(--text-secondary,#94a3b8);margin-bottom:14px">',
+      'border-radius:12px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,0.45);color:var(--text,#e5e7eb);font-size:var(--font-size-base)">',
+      '  <div style="font-size:var(--font-size-md);font-weight:600;margin-bottom:4px">🔐 Вход в OllamaLegion</div>',
+      '  <div id="authHint" style="font-size:var(--font-size-xs);color:var(--text-secondary,#94a3b8);margin-bottom:14px">',
       '    Требуются учётные данные администратора.</div>',
-      '  <label style="display:block;font-size:12px;margin-bottom:4px">Пользователь</label>',
+      '  <label style="display:block;font-size:var(--font-size-xs);margin-bottom:4px">Пользователь</label>',
       '  <input id="authName" name="name" autocomplete="username" required',
       '    style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid var(--border,#334155);',
       '    background:transparent;color:inherit;margin-bottom:10px">',
-      '  <label style="display:block;font-size:12px;margin-bottom:4px">Пароль</label>',
+      '  <label style="display:block;font-size:var(--font-size-xs);margin-bottom:4px">Пароль</label>',
       '  <input id="authPassword" name="password" type="password" autocomplete="current-password" required',
       '    style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid var(--border,#334155);',
       '    background:transparent;color:inherit;margin-bottom:14px">',
-      '  <div id="authError" style="display:none;font-size:12px;color:#f87171;margin-bottom:10px"></div>',
+      '  <div id="authError" style="display:none;font-size:var(--font-size-xs);color:#f87171;margin-bottom:10px"></div>',
       '  <button type="submit" id="authSubmit"',
       '    style="width:100%;padding:9px;border-radius:8px;border:0;background:#2563eb;color:#fff;font-weight:600;cursor:pointer">',
       '    Войти</button>',
-      '  <div style="font-size:11px;color:var(--text-secondary,#94a3b8);margin-top:12px">',
+      '  <div style="font-size:var(--font-size-xs);color:var(--text-secondary,#94a3b8);margin-top:12px">',
       '    Потеряли пароль? Задайте LB_ADMIN_USER/LB_ADMIN_PASSWORD и перезапустите балансер.</div>',
       '  <div style="border-top:1px solid var(--border,#334155);margin-top:12px;padding-top:10px">',
-      '    <label style="display:block;font-size:12px;margin-bottom:4px" for="authToken">',
+      '    <label style="display:block;font-size:var(--font-size-xs);margin-bottom:4px" for="authToken">',
       '      Аварийный вход по API-токену</label>',
       '    <input id="authToken" name="token" type="password" autocomplete="off" placeholder="X-API-Token (необязательно)"',
       '      style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid var(--border,#334155);',
       '      background:transparent;color:inherit;margin-bottom:8px">',
       '    <button type="button" id="authTokenSubmit"',
       '      style="width:100%;padding:7px;border-radius:8px;border:1px solid var(--border,#334155);',
-      '      background:transparent;color:inherit;cursor:pointer;font-size:12px">Войти с токеном</button>',
+      '      background:transparent;color:inherit;cursor:pointer;font-size:var(--font-size-xs)">Войти с токеном</button>',
       '  </div>',
       '</form>'
     ].join('');
@@ -336,7 +336,7 @@
     bar.style.cssText = [
       'position:fixed', 'left:0', 'right:0', 'bottom:0', 'z-index:99998',
       'display:flex', 'align-items:center', 'gap:12px', 'justify-content:center',
-      'padding:10px 14px', 'font-size:13px', 'color:#fde68a',
+      'padding:10px 14px', 'font-size:var(--font-size-sm)', 'color:#fde68a',
       'background:rgba(120,53,15,0.95)', 'border-top:1px solid rgba(253,230,138,0.4)'
     ].join(';');
     var span = document.createElement('span');
@@ -414,14 +414,16 @@
     var host = document.querySelector('.header-actions') || document.querySelector('header') || document.body;
     var chip = document.createElement('div');
     chip.id = 'authUserChip';
-    chip.style.cssText = 'display:inline-flex;align-items:center;gap:8px;font-size:12px;margin-left:8px';
+    chip.className = 'auth-user-chip';
     var roleKey = state.user.role === 'admin' ? 'auth.role.admin' : 'auth.role.viewer';
     var roleFallback = state.user.role === 'admin' ? 'администратор' : 'только чтение';
-    chip.innerHTML = '<span title="' + (state.user.name || '') + '">👤 ' +
+    // R239: вместо эмодзи «человечек» - иконка Font Awesome, как у остальных
+    // действий в шапке (эмодзи в user-facing тексте запрещены правилами TASTE).
+    chip.innerHTML = '<span class="auth-user" title="' + (state.user.name || '') + '">' +
+      '<i class="fas fa-user" aria-hidden="true"></i> ' +
       String(state.user.name || '').replace(/[<>&"]/g, '') +
-      ' <span style="opacity:.7">(<span data-i18n="' + roleKey + '">' + tr(roleKey, roleFallback) + '</span>)</span></span>' +
-      '<button id="authLogoutBtn" data-i18n="auth.logout" type="button" style="padding:3px 8px;border-radius:6px;border:1px solid var(--border,#334155);' +
-      'background:transparent;color:inherit;cursor:pointer">' + tr('auth.logout', 'Выйти') + '</button>';
+      ' <span class="auth-role" style="opacity:.7">(<span data-i18n="' + roleKey + '">' + tr(roleKey, roleFallback) + '</span>)</span></span>' +
+      '<button id="authLogoutBtn" class="auth-logout-btn" data-i18n="auth.logout" type="button">' + tr('auth.logout', 'Выйти') + '</button>';
     host.appendChild(chip);
     if (window.I18N && I18N.apply) { I18N.apply(chip); }
     var logoutBtn = document.getElementById('authLogoutBtn');

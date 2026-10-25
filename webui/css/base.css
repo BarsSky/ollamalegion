@@ -36,6 +36,30 @@ body {
     position: relative;
 }
 
+/* R239: form controls do NOT inherit typography from the UA stylesheet.
+ * Without this the selects / toggle buttons fall back to Arial, which is the
+ * "angular font" mismatch visible next to system-sans body copy. */
+button,
+input,
+optgroup,
+select,
+textarea {
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+}
+
+button {
+    cursor: pointer;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-family-sans);
+    letter-spacing: var(--letter-spacing-tight);
+}
+
 /* Liquid Glass depth background: three soft glows.
  * Tokenised so themes can mute / intensify independently. */
 body::before {

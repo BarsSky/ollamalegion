@@ -1,4 +1,4 @@
-/* R134 (2026-10-16): доступ к сайдбару на узком окне.
+﻿/* R134 (2026-10-16): доступ к сайдбару на узком окне.
    На ширине <=768px сайдбар уезжает за край (правило ниже), а открыть его было
    НЕЧЕМ - оператор терял навигацию целиком (вкладка «Агенты» и остальные пункты
    становились недоступны). Кнопка показывается только на узком окне, открытый
@@ -61,12 +61,12 @@
         -webkit-overflow-scrolling: touch;
         padding-bottom: 4px;
     }
-    .wizard-step-label { font-size: 11px; }
+    .wizard-step-label { font-size: var(--font-size-xs); }
     .wizard-header { padding: 14px 16px; }
     .wizard-body { padding: 16px 14px; }
     .wizard-footer { padding: 12px 14px; }
     .modal-content > .modal-footer { padding: 12px 14px; }
-    .wizard-param-table { font-size: 11px; }
+    .wizard-param-table { font-size: var(--font-size-xs); }
     .wizard-param-table th,
     .wizard-param-table td { padding: 4px 6px; }
 }
@@ -88,7 +88,7 @@
         padding: 10px 12px 10px 56px; /* слева место под бургер (fixed, 38 px) */
         min-height: 0;
     }
-    .header h1 { font-size: 18px; }
+    .header h1 { font-size: var(--font-size-lg); }
     .header-actions {
         width: 100%;
         flex-wrap: wrap;
@@ -108,7 +108,7 @@
 }
 
 @media (max-width: 480px) {
-    .header h1 { font-size: 16px; }
+    .header h1 { font-size: var(--font-size-md); }
     .lang-select { padding: 2px 4px; }
     .nav-item { padding: 8px 12px; }
 }

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * TASTE SKILL / layout.css
  *   - DESIGN_VARIANCE = 5: structured dashboard, sidebar+main
  *   - Single-line nav cap 80px desktop (per taste 4.7)
@@ -229,7 +229,7 @@
 }
 
 .version {
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
 }
 

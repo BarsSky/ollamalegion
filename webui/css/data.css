@@ -1,4 +1,4 @@
-/*
+﻿/*
  * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
  *   DESIGN_VARIANCE = 5, MOTION_INTENSITY = 3, VISUAL_DENSITY = 5
  * Anti-slop rules applied:
@@ -745,7 +745,7 @@
     flex: 0 0 auto;
     min-width: 36px;
     padding: 6px 10px;
-    font-size: 14px;
+    font-size: var(--font-size-base);
     line-height: 1;
 }
 .model-card-actions .btn-info:hover {
@@ -818,7 +818,7 @@
   max-width: 104px;
   gap: 2px 4px;
   font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   color: var(--text-secondary);
   cursor: default;
 }
@@ -873,7 +873,7 @@
 .sparkline-caption {
   flex: 1 0 100%;
   max-width: 104px;
-  font-size: 9px;
+  font-size: var(--font-size-xs);
   line-height: 1.2;
   color: var(--text-secondary);
   opacity: 0.85;
@@ -1088,7 +1088,7 @@
     padding-top: 2px;
 }
 .autotune-history-icon {
-    font-size: 18px;
+    font-size: var(--font-size-lg);
     padding-top: 0;
 }
 .autotune-history-body {

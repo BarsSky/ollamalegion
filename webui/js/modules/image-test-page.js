@@ -1,4 +1,4 @@
-/**
+﻿/**
  * image-test-page.js — «Image-тест»: страница-инструмент для проверки настроек
  * модели генерации изображений (2026-10-03).
  *
@@ -590,8 +590,8 @@
             var hint = errorHint(state.error);
             host.innerHTML = '<div class="gguf-empty-state" style="color:var(--danger);align-items:flex-start;text-align:left;">' +
                 '<div><i class="fas fa-exclamation-triangle"></i> <strong>' + escapeHtml(t('imageTest.failed', 'Генерация не удалась')) + '</strong></div>' +
-                '<pre style="white-space:pre-wrap;font-size:11px;max-height:240px;overflow:auto;margin:8px 0 0;">' + escapeHtml(state.error) + '</pre>' +
-                (hint ? '<div style="margin-top:8px;font-size:12px;color:var(--text-muted);">💡 ' + escapeHtml(hint) + '</div>' : '') +
+                '<pre style="white-space:pre-wrap;font-size:var(--font-size-xs);max-height:240px;overflow:auto;margin:8px 0 0;">' + escapeHtml(state.error) + '</pre>' +
+                (hint ? '<div style="margin-top:8px;font-size:var(--font-size-xs);color:var(--text-muted);">💡 ' + escapeHtml(hint) + '</div>' : '') +
             '</div>';
             if (meta) meta.textContent = '';
             return;
@@ -600,7 +600,7 @@
             host.innerHTML = '<div class="gguf-empty-state">' +
                 '<i class="fas fa-image" style="opacity:0.4;"></i>' +
                 '<div style="margin-top:6px;">' + escapeHtml(t('imageTest.no_result', 'Результата ещё нет — нажмите «Сгенерировать».')) + '</div>' +
-                '<div style="margin-top:4px;color:var(--text-muted);font-size:12px;">' +
+                '<div style="margin-top:4px;color:var(--text-muted);font-size:var(--font-size-xs);">' +
                 escapeHtml(t('imageTest.only_here', 'Это единственная страница WebUI, где показывается сгенерированное изображение: она для проверки настроек, а не для работы с картинками.')) +
                 '</div></div>';
             if (meta) meta.textContent = '';
@@ -645,13 +645,13 @@
             return '<div class="gguf-download-item" style="display:flex;gap:10px;align-items:flex-start;">' +
                 (src ? '<img src="' + escapeHtml(src) + '" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);" />' : '') +
                 '<div style="flex:1;min-width:0;">' +
-                    '<div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(p.prompt || '') + '">' +
+                    '<div style="font-size:var(--font-size-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(p.prompt || '') + '">' +
                         escapeHtml(String(p.prompt || '').slice(0, 80)) + '</div>' +
-                    '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' +
+                    '<div style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:2px;">' +
                         escapeHtml([h.surface, (p.width + 'x' + p.height), ('steps ' + p.steps), ('cfg ' + (p.cfg_scale !== undefined ? p.cfg_scale : '-')),
                             (p.sampler_name || ''), (p.seed !== undefined ? ('seed ' + p.seed) : '')].filter(Boolean).join(' · ')) +
                     '</div>' +
-                    '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' +
+                    '<div style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:2px;">' +
                         escapeHtml(new Date(h.ts).toLocaleTimeString()) + (h.durationMs ? ' · ' + h.durationMs + ' ' + t('imageModels.ms', 'мс') : '') +
                     '</div>' +
                 '</div>' +

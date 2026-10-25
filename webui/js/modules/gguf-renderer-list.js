@@ -1,4 +1,4 @@
-/**
+﻿/**
  * gguf-renderer-list.js — Left panel: registered backends list.
  *
  * R57.5c (2026-09-03): extracted from webui/js/modules/gguf-renderer.js.
@@ -34,7 +34,7 @@
                     M.renderBackendsList() +
                 '</div>' +
                 '<div style="margin-top:auto;padding-top:8px;border-top:1px solid var(--border);">' +
-                    '<label style="display:flex;align-items:center;gap:6px;padding:6px 4px;font-size:12px;cursor:pointer;margin-bottom:8px;">' +
+                    '<label style="display:flex;align-items:center;gap:6px;padding:6px 4px;font-size:var(--font-size-xs);cursor:pointer;margin-bottom:8px;">' +
                         '<input type="checkbox" id="ggufShowUnhealthy" ' + (state.showUnhealthy ? 'checked' : '') + '>' +
                         '<span>' + (M._('gguf.show_unhealthy') || 'Показать недоступные') + '</span>' +
                     '</label>' +
@@ -77,12 +77,12 @@
                         ? elapsedSec + 's'
                         : Math.floor(elapsedSec / 60) + 'm ' + (elapsedSec % 60) + 's';
                     const stateLabel = M._('gguf.unloading', 'Выгружается…');
-                    return '<div class="gguf-backend-unloading-row" style="display:flex;align-items:center;gap:6px;margin-top:4px;padding:3px 6px;background:rgba(224,160,48,0.10);border-radius:4px;font-size:11px;color:var(--warning,#e0a030);" title="' + window.Utils.escapeHtml(um.name) + '">' +
-                        '<i class="fas fa-spinner fa-spin" style="font-size:10px;flex-shrink:0;"></i>' +
+                    return '<div class="gguf-backend-unloading-row" style="display:flex;align-items:center;gap:6px;margin-top:4px;padding:3px 6px;background:rgba(224,160,48,0.10);border-radius:4px;font-size:var(--font-size-xs);color:var(--warning,#e0a030);" title="' + window.Utils.escapeHtml(um.name) + '">' +
+                        '<i class="fas fa-spinner fa-spin" style="font-size:var(--font-size-xs);flex-shrink:0;"></i>' +
                         '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
                             window.Utils.escapeHtml(stateLabel) + ': ' + window.Utils.escapeHtml(um.name) +
                         '</span>' +
-                        '<span style="font-family:monospace;font-size:10px;opacity:0.85;">' + elapsedLabel + '</span>' +
+                        '<span style="font-family:monospace;font-size:var(--font-size-xs);opacity:0.85;">' + elapsedLabel + '</span>' +
                     '</div>';
                 }).join('');
             }
@@ -106,12 +106,12 @@
                         stateColor = 'var(--accent, #4a9eff)';
                         stateLabel = M._('gguf.loading_indicator') || 'Loading';
                     }
-                    return '<div class="gguf-backend-loading-row" style="display:flex;align-items:center;gap:6px;margin-top:4px;padding:3px 6px;background:rgba(74,158,255,0.08);border-radius:4px;font-size:11px;color:' + stateColor + ';" title="' + window.Utils.escapeHtml(lm.name) + '">' +
-                        '<i class="fas ' + stateIcon + '" style="font-size:10px;flex-shrink:0;"></i>' +
+                    return '<div class="gguf-backend-loading-row" style="display:flex;align-items:center;gap:6px;margin-top:4px;padding:3px 6px;background:rgba(74,158,255,0.08);border-radius:4px;font-size:var(--font-size-xs);color:' + stateColor + ';" title="' + window.Utils.escapeHtml(lm.name) + '">' +
+                        '<i class="fas ' + stateIcon + '" style="font-size:var(--font-size-xs);flex-shrink:0;"></i>' +
                         '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
                             stateLabel + ': ' + window.Utils.escapeHtml(lm.name) +
                         '</span>' +
-                        '<span style="font-family:monospace;font-size:10px;opacity:0.85;">' + elapsedLabel + '</span>' +
+                        '<span style="font-family:monospace;font-size:var(--font-size-xs);opacity:0.85;">' + elapsedLabel + '</span>' +
                     '</div>';
                 }).join('');
             }
@@ -120,7 +120,7 @@
                     '<div class="gguf-backend-item-header">' +
                         '<span class="gguf-status-dot ' + statusClass + '"></span>' +
                         '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + window.Utils.escapeHtml(b.id) + '</span>' +
-                        '<span class="badge" style="background:var(--llamacpp-badge);font-size:10px;padding:2px 6px;">cpp</span>' +
+                        '<span class="badge" style="background:var(--llamacpp-badge);font-size:var(--font-size-xs);padding:2px 6px;">cpp</span>' +
                     '</div>' +
                     '<div class="gguf-backend-item-meta">' +
                         '<span class="gguf-backend-item-status">' + statusLabel + '</span>' +

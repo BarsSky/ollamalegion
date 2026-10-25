@@ -1,4 +1,4 @@
-/**
+﻿/**
  * client-access.js — «Подключение клиентов» рядом с бэкендом (2026-10-03).
  *
  * ЗАЧЕМ. Клиенты (SillyTavern, Open WebUI, LibreChat, n8n, OpenAI SDK) обычно
@@ -247,7 +247,7 @@
                 rows +
                 internalRow +
             '</div>' +
-            '<div style="margin-top:8px;font-size:11px;color:var(--text-muted);">' + esc(ep.keyNote) + '</div>' +
+            '<div style="margin-top:8px;font-size:var(--font-size-xs);color:var(--text-muted);">' + esc(ep.keyNote) + '</div>' +
             '<div style="margin-top:8px;">' +
                 '<button class="btn btn-secondary btn-sm" data-client-access="copy-curl">' +
                     esc(t('clientAccess.copy_curl', 'Копировать curl')) + '</button>' +

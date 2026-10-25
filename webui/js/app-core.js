@@ -1,4 +1,4 @@
-/**
+﻿/**
  * app-core.js — Theme / Density / i18n / AutoTune toast helpers.
  *
  * R57.2 (2026-09-03): extracted from webui/js/app.js.
@@ -111,7 +111,7 @@
             } else {
                 icon.className = '';
                 icon.textContent = (THEME_LETTERS[theme] || '?');
-                icon.style.cssText = 'font-weight:700;font-size:14px;font-style:normal;';
+                icon.style.cssText = 'font-weight:700;font-size:var(--font-size-base);font-style:normal;';
             }
             icon.setAttribute('aria-hidden', 'true');
         }

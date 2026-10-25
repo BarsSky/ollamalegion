@@ -1,0 +1,525 @@
+/*
+ * ================================================
+ *   OllamaLegion WebUI - R239 visual polish layer
+ *
+ *   Loaded LAST so it can normalise the older rules that grew
+ *   page by page (components.css / pages.css / data.css).
+ *
+ *   Scope is deliberately narrow: rhythm, typography scale and
+ *   control geometry. No new colours, no new shadows, no new
+ *   radii values - everything is expressed with the tokens from
+ *   themes.css so themes and the dense mode keep working.
+ *
+ *   Rules:
+ *     - no em-dash characters (lint: TestLintCSSAndI18nNoEmDash)
+ *     - no raw rgba() / hex colours, use theme tokens
+ *     - no raw px for spacing / radii, use --space-* / --radius-*
+ * ================================================
+ */
+
+/* ===== 1. Page frame: one vertical rhythm for every page ===== */
+.page > .card:last-child,
+.page > section:last-child {
+    margin-bottom: 0;
+}
+
+/* Section headings outside cards (page-level groups) */
+.page > h2,
+.page > h3 {
+    font-size: var(--font-size-lg);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: var(--letter-spacing-tight);
+    line-height: var(--line-height-tight);
+    margin: 0 0 var(--space-4);
+}
+
+/* ===== 2. Header: single line title, compact control cluster ===== */
+.header {
+    gap: var(--space-4);
+}
+
+.header h1 {
+    min-width: 0;
+    flex: 0 1 auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.header-actions {
+    flex: 0 0 auto;
+    gap: var(--space-2);
+}
+
+/* Header controls share one height so the cluster reads as a row,
+   not as a pile of independently sized widgets. */
+.header .btn {
+    height: var(--control-height-sm);
+    padding: 0 var(--space-4);
+    font-size: var(--font-size-sm);
+    border-radius: var(--radius-md);
+    white-space: nowrap;
+}
+
+.header .btn-theme-toggle,
+.header .data-freshness-toggle {
+    width: var(--control-height-sm);
+    height: var(--control-height-sm);
+}
+
+.header .btn-theme-toggle > * {
+    font-size: var(--font-size-base);
+    line-height: 1;
+}
+
+.header .lang-select {
+    height: var(--control-height-sm);
+    padding: 0 var(--space-3);
+    font-size: var(--font-size-sm);
+    border-radius: var(--radius-md);
+}
+
+.header .data-freshness {
+    height: var(--control-height-sm);
+    padding: 0 var(--space-3);
+    font-size: var(--font-size-xs);
+    letter-spacing: var(--letter-spacing-normal);
+}
+
+/* ===== 3. Buttons: one geometry for the whole app ===== */
+.btn {
+    height: var(--control-height);
+    padding: 0 var(--space-5);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-medium);
+    letter-spacing: var(--letter-spacing-normal);
+    line-height: var(--line-height-tight);
+    justify-content: center;
+    white-space: nowrap;
+}
+
+.btn-sm {
+    height: var(--control-height-sm);
+    padding: 0 var(--space-4);
+    font-size: var(--font-size-sm);
+}
+
+.btn-lg {
+    height: var(--control-height-lg);
+    padding: 0 var(--space-6);
+    font-size: var(--font-size-md);
+}
+
+/* Icon-only buttons: perfect square, icon optically centred. */
+.btn > i,
+.btn > .fas,
+.btn > .far {
+    line-height: 1;
+    font-size: var(--font-size-base);
+}
+
+/* ===== 4. Cards: single radius / padding pair ===== */
+.card {
+    border-radius: var(--card-radius);
+    margin-bottom: var(--space-5);
+}
+
+.card-header {
+    padding: var(--card-header-padding);
+    flex-wrap: wrap;
+    gap: var(--space-3) var(--space-4);
+    row-gap: var(--space-3);
+}
+
+.card-header h3 {
+    font-size: var(--font-size-md);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: var(--letter-spacing-tight);
+    line-height: var(--line-height-tight);
+    min-width: 0;
+}
+
+/* Панель действий в шапке карточки: элементы не сжимаются до обрезки
+   подписи, а переносятся целой группой на вторую строку. */
+.card-actions {
+    gap: var(--space-2) var(--space-3);
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-left: auto;
+}
+
+.card-actions > * {
+    flex: 0 0 auto;
+}
+
+/* Все контролы в шапке карточки - один компактный ряд. */
+.card-actions .btn,
+.card-actions .search-input,
+.card-actions .sort-select,
+.card-actions .lang-select {
+    height: var(--control-height-sm);
+    padding: 0 var(--space-4);
+    font-size: var(--font-size-sm);
+    border-radius: var(--radius-md);
+}
+
+.card-actions .search-input {
+    flex: 0 1 240px;
+    min-width: 150px;
+    padding: 0 var(--space-3);
+}
+
+.card-actions .filter-group {
+    height: var(--control-height-sm);
+}
+
+.filter-btn {
+    height: var(--control-height-sm);
+    padding: 0 var(--space-3);
+    font-size: var(--font-size-sm);
+}
+
+.sort-label {
+    margin-left: 0;
+    white-space: nowrap;
+    font-size: var(--font-size-xs);
+}
+
+.card-body {
+    padding: var(--card-padding);
+}
+
+/* Контролы массовых операций живут по внутреннему паддингу карточки. */
+.models-bulk-controls {
+    margin: 0 var(--card-padding) var(--space-4);
+}
+
+/* Tables inside cards carry their own padding; avoid double inset. */
+.card-body > .table-wrapper:only-child,
+.card-body > .data-table-wrapper:only-child {
+    margin: calc(var(--card-padding) * -1);
+}
+
+/* ===== 5. Form controls: unified height and label hierarchy ===== */
+.form-group {
+    margin-bottom: var(--space-5);
+}
+
+.form-group:last-child {
+    margin-bottom: 0;
+}
+
+.form-group label {
+    display: block;
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: var(--letter-spacing-normal);
+    line-height: var(--line-height-tight);
+    color: var(--text-secondary);
+    margin-bottom: var(--space-2);
+}
+
+.form-control {
+    padding: 0 var(--space-4);
+    height: var(--control-height);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-base);
+    line-height: var(--line-height-normal);
+}
+
+textarea.form-control {
+    height: auto;
+    min-height: calc(var(--control-height) * 2);
+    padding: var(--space-3) var(--space-4);
+    line-height: var(--line-height-normal);
+    resize: vertical;
+}
+
+select.form-control {
+    padding-right: var(--space-3);
+    cursor: pointer;
+}
+
+/* Sort/backend selects were one pixel shorter than the inputs next to them. */
+.sort-select {
+    height: var(--control-height);
+    padding: 0 var(--space-3);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+}
+
+/* Density toggle is an icon button: same square as the theme toggle. */
+.density-toggle {
+    width: var(--control-height-sm);
+    height: var(--control-height-sm);
+    border-radius: var(--radius-md);
+}
+
+.search-input {
+    height: var(--control-height);
+    padding: 0 var(--space-4);
+    font-size: var(--font-size-base);
+    border-radius: var(--radius-md);
+}
+
+.form-row {
+    gap: var(--space-4);
+}
+
+.form-hint,
+.form-help {
+    font-size: var(--font-size-xs);
+    line-height: var(--line-height-normal);
+    color: var(--text-muted);
+    margin-top: var(--space-2);
+}
+
+.form-actions {
+    gap: var(--space-3);
+    margin-top: var(--space-6);
+    padding-top: var(--space-5);
+}
+
+/* ===== 6. Tables: tighter header, calmer body rhythm ===== */
+.data-table th,
+.data-table td {
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--font-size-sm);
+    vertical-align: middle;
+}
+
+.data-table th {
+    font-size: var(--font-size-xs);
+    letter-spacing: var(--letter-spacing-wide);
+    font-weight: var(--font-weight-semibold);
+}
+
+.data-table td {
+    line-height: var(--line-height-normal);
+}
+
+/* ===== 7. Badges: same vertical rhythm as small controls ===== */
+.badge {
+    padding: 0 var(--space-3);
+    min-height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-1);
+    border-radius: var(--radius-full, 9999px);
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: var(--letter-spacing-normal);
+    line-height: 1;
+    white-space: nowrap;
+}
+
+[data-density="dense"] .badge {
+    min-height: 18px;
+    padding: 0 var(--space-2);
+}
+
+/* ===== 8. Merge panel: fields line up with the rest of the app ===== */
+#backendMergePanel .bm-field.form-group {
+    margin-bottom: var(--space-4);
+}
+
+#backendMergePanel .bm-field .form-control {
+    max-width: 520px;
+    height: var(--control-height-sm);
+    padding: 0 var(--space-3);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-sm);
+}
+
+/* Строка «канал между узлами»: поле, единица и кнопка одной высоты. */
+#backendMergePanel .bm-link-row {
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+}
+
+#backendMergePanel .bm-link-row input[type="number"] {
+    width: 120px;
+    height: var(--control-height-sm);
+    padding: 0 var(--space-3);
+    font-size: var(--font-size-sm);
+    border-radius: var(--radius-sm);
+}
+
+#backendMergePanel .bm-link-row .btn {
+    height: var(--control-height-sm);
+    padding: 0 var(--space-4);
+    font-size: var(--font-size-sm);
+}
+
+#backendMergePanel .bm-hint {
+    font-size: var(--font-size-xs);
+    line-height: var(--line-height-normal);
+    margin-top: var(--space-2);
+}
+
+/* ===== 9. Sidebar nav: consistent icon column ===== */
+.nav-item {
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--font-size-base);
+    letter-spacing: var(--letter-spacing-normal);
+}
+
+.nav-item .nav-icon-wrap {
+    flex: 0 0 auto;
+}
+
+.nav-item:hover {
+    padding-left: var(--space-4);
+}
+
+.nav-item.active {
+    padding-left: var(--space-4);
+    transform: none;
+}
+
+/* ===== 10. Dense mode: keep proportions, not only sizes ===== */
+[data-density="dense"] .card-header h3 {
+    font-size: var(--font-size-base);
+}
+
+[data-density="dense"] .data-table th,
+[data-density="dense"] .data-table td {
+    padding: var(--space-2) var(--space-3);
+}
+
+[data-density="dense"] .form-group {
+    margin-bottom: var(--space-3);
+}
+
+/* ===== 11. Narrow desktop: actions move to their own row ===== */
+/* Иначе кластер действий (язык, плотность, тема, уведомления, свежесть данных,
+   обновление, «Добавить бэкенд») сжимал заголовок до «Доступ...». Заголовок
+   важнее: он остаётся целым, а действия переносятся на вторую строку. */
+@media (max-width: 1200px) {
+    .header {
+        flex-wrap: wrap;
+        row-gap: var(--space-2);
+    }
+
+    .header h1 {
+        flex: 1 1 auto;
+    }
+
+    .header-actions {
+        width: 100%;
+        justify-content: flex-end;
+    }
+}
+
+/* Пока подпись свежести данных длинная («Обновлено только что - авто»),
+   на 1440px кластер действий вместе с админским чипом занимал 904px и
+   заголовок «GGUF модели» обрезался до «GGUF мод...». Оставляем иконку:
+   полный смысл живёт в title, клик и соседняя пауза не меняются. */
+@media (max-width: 1500px) {
+    .header .data-freshness {
+        width: var(--control-height-sm);
+        padding: 0;
+        justify-content: center;
+        border-color: transparent;
+    }
+
+    .header .data-freshness > #dataFreshnessText {
+        display: none;
+    }
+}
+
+/* ===== 12. Auth user chip in the header ===== */
+.auth-user-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-left: 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.auth-user-chip .auth-user {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+}
+
+.auth-user-chip .auth-user > i {
+    font-size: var(--font-size-xs);
+    opacity: 0.8;
+}
+
+.auth-user-chip .auth-logout-btn {
+    height: var(--control-height-sm);
+    padding: 0 var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    transition: var(--transition-base);
+}
+
+.auth-user-chip .auth-logout-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+
+/* ===== 13. Guest banner (auth.js #authBanner) does not cover content ===== */
+/* Полоса «вход не настроен» прибита к низу окна инлайновым position:fixed,
+   поэтому на узком экране она ложилась прямо на карточки. На телефоне
+   возвращаем её в поток - тогда она читается после контента и ничего не
+   перекрывает; на десктопе оставляем внизу, но освобождаем место. */
+@media (max-width: 768px) {
+    #authBanner {
+        position: static !important;
+        flex-wrap: wrap;
+        justify-content: flex-start !important;
+        row-gap: var(--space-2);
+    }
+
+    /* Уехавший сайдбар не должен оставлять в кадре хвост логотипа: на 200px
+       ширины подпись «OllamaLegion» выходила за край на десяток пикселей. */
+    .sidebar {
+        overflow-x: hidden;
+    }
+}
+
+/* На 200-пиксельном сайдбаре подпись «Image-модели» переносилась на вторую
+   строку и ломала ритм колонки: ужимаем иконку и боковые отступы. */
+@media (max-width: 1024px) {
+    .nav {
+        padding: var(--space-3) var(--space-2);
+    }
+
+    .nav-item {
+        gap: var(--space-2);
+        padding: var(--space-2) var(--space-3);
+    }
+
+    .nav-item:hover,
+    .nav-item.active {
+        padding-left: var(--space-3);
+    }
+
+    .nav-item .nav-icon-wrap {
+        width: 32px;
+        height: 32px;
+        border-radius: var(--radius-sm);
+    }
+
+    .nav-item .nav-icon-wrap i {
+        font-size: var(--font-size-base);
+    }
+}
+
+/* На десктопе полоса остаётся внизу окна, но контент получает запас снизу,
+   чтобы последняя карточка и футер не прятались за ней. */
+body:has(#authBanner) .main {
+    padding-bottom: calc(var(--space-8) + var(--space-2));
+}

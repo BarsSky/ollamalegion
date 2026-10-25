@@ -1,4 +1,4 @@
-/**
+﻿/**
  * image-backends-page.js - страница «Image-бэкенды» (R-Image: управление
  * бэкендами генерации изображений, тип backendType=image_cpp).
  *
@@ -834,7 +834,7 @@
         // повторять его подписью «сосуществование с текстом» нельзя: политика
         // сосуществования задаётся глобально и показывается на самой странице
         // (см. loadPolicy): литерал выглядел как значение настройки.
-        return (isNew ? '' : '<p style="margin:0 0 8px;font-size:12px;color:var(--text-muted);">ID: <code>' + escapeHtml(b.id) + '</code></p>') +
+        return (isNew ? '' : '<p style="margin:0 0 8px;font-size:var(--font-size-xs);color:var(--text-muted);">ID: <code>' + escapeHtml(b.id) + '</code></p>') +
             '<div class="form-row">' +
             // ID - ключ бэкенда: при редактировании он не меняется (смена id это
             // создание другого бэкенда + удаление старого, а не PUT).
@@ -848,7 +848,7 @@
             '<select class="form-control" id="ibGpu">' + gpuOptions.join('') + '</select>' +
             '</div>' +
             '</div>' +
-            '<div id="ibErrors" style="display:none;color:var(--danger);font-size:12px;margin-top:8px;"></div>';
+            '<div id="ibErrors" style="display:none;color:var(--danger);font-size:var(--font-size-xs);margin-top:8px;"></div>';
     }
 
     /** Создать оверлей один раз (идемпотентно). */

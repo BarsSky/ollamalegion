@@ -1,4 +1,4 @@
-/**
+﻿/**
  * UI Renderers — all HTML generation in one place
  */
 const Renderers = (function () {
@@ -94,6 +94,23 @@ const Renderers = (function () {
 
     function badge(status, type) {
         return `<span class="badge badge-${type}">${escapeHtml(status)}</span>`;
+    }
+
+    // R239: статусы бэкенда приходят с сервера по-английски ("healthy",
+    // "warming_up"), и бейдж печатал их как есть рядом с локализованным UI.
+    // Переводим через тот же словарь, что и в monitor (monitor.backendStatus.*),
+    // иначе показываем исходную строку - неизвестный статус лучше не скрывать.
+    function statusLabel(status) {
+        if (!status) return '';
+        const key = 'monitor.backendStatus.' + String(status).toLowerCase();
+        const translated = _t(key);
+        return translated && translated !== key ? translated : status;
+    }
+
+    function statusBadge(status) {
+        const type = String(status || '').toLowerCase() === 'healthy' ? 'success'
+            : (String(status || '').toLowerCase() === 'unhealthy' ? 'danger' : 'warning');
+        return badge(statusLabel(status), type);
     }
 
     function loading(text) {
@@ -258,7 +275,7 @@ const Renderers = (function () {
                 <div class="runtime-card">
                     <div class="runtime-header">
                         <strong>${escapeHtml(backend.id)}</strong>
-                        ${badge(backend.status, backend.status === 'healthy' ? 'success' : 'danger')}
+                        ${statusBadge(backend.status)}
                     </div>
                     <div class="runtime-host">${escapeHtml(backend.host || '-')}</div>
                     <div class="runtime-flags">
@@ -445,7 +462,7 @@ const Renderers = (function () {
                     </div>
                     <div class="capacity-cloud-info">
                         <div class="capacity-cloud-row"><span>${_t('renderers.host')}</span><span>${escapeHtml(backend.host || '-')}</span></div>
-                        <div class="capacity-cloud-row"><span>${_t('metrics.status')}</span><span>${badge(backend.status, backend.status === 'healthy' ? 'success' : 'danger')}</span></div>
+                        <div class="capacity-cloud-row"><span>${_t('metrics.status')}</span><span>${statusBadge(backend.status)}</span></div>
                         <div class="capacity-cloud-row"><span>${_t('renderers.active_req')}</span><span>${backend.activeRequests || 0}</span></div>
                         <div class="capacity-cloud-row"><span>${_t('renderers.models_loaded')}</span><span>${(Utils.getBackendType(backend) === 'llama_cpp'
                             ? (backend.llamaCpp?.loadedModels || [])
@@ -747,7 +764,7 @@ const Renderers = (function () {
             return `
                 <tr>
                     <td><div class="backend-id-cell"><span class="backend-id-name">${escapeHtml(b.id)}</span><div class="backend-id-badges">${getBackendTypeBadge(b)} ${getBackendModeBadge(b)}</div></div></td>
-                    <td>${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}</td>
+                    <td>${statusBadge(b.status)}</td>
                     <td>${escapeHtml(gpuUsage)}${gpuHidden}</td>
                     <td>${escapeHtml(vramPercent)}</td>
                     <td>${escapeHtml(cpuUsage)}</td>
@@ -845,7 +862,7 @@ const Renderers = (function () {
         if (lastError) {
             // Данные могли протухнуть: воркер ответил ошибкой, поэтому метрики
             // ниже - последний успешный снимок, а не текущее состояние.
-            html += '<div style="margin-top:8px;padding:6px 8px;border-radius:4px;font-size:12px;' +
+            html += '<div style="margin-top:8px;padding:6px 8px;border-radius:4px;font-size:var(--font-size-xs);' +
                 'background:rgba(240,173,78,0.12);border:1px solid var(--warning);color:var(--warning)">⚠️ ' +
                 escapeHtml(t('image.last_error', 'Worker error')) + ': ' + escapeHtml(lastError) + '. ' +
                 escapeHtml(t('image.last_error_stale', 'The values below may be stale: the worker reported an error instead of fresh data.')) +
@@ -872,9 +889,9 @@ const Renderers = (function () {
                 html += '<div class="be-param-item" style="grid-column:1/-1;">' +
                     '<span class="be-param-label">' + escapeHtml(m.name) +
                     (isCurrentModel ? ' <span class="badge badge-success">' + escapeHtml(t('image.active_badge', 'active')) + '</span>' : '') +
-                    (m.family ? ' <span style="color:var(--text-secondary);font-size:11px">' + escapeHtml(String(m.family)) + '</span>' : '') +
+                    (m.family ? ' <span style="color:var(--text-secondary);font-size:var(--font-size-xs)">' + escapeHtml(String(m.family)) + '</span>' : '') +
                     '</span><span class="be-param-value">' + Utils.imageStateBadge(m.state) +
-                    (bits.length ? ' <span style="color:var(--text-secondary);font-size:11px">' + escapeHtml(bits.join(' | ')) + '</span>' : '') +
+                    (bits.length ? ' <span style="color:var(--text-secondary);font-size:var(--font-size-xs)">' + escapeHtml(bits.join(' | ')) + '</span>' : '') +
                     '</span></div>';
             });
             html += '</div>';
@@ -1057,8 +1074,8 @@ const Renderers = (function () {
                     <span class="be-param-label">${escapeHtml(m.name)}</span>
                     <span class="be-param-value">${sizeGB.toFixed(1)} GB | ${escapeHtml(m.family || '-')} | ${escapeHtml(m.parameterSize || '-')} | ${escapeHtml(m.quantization || '-')}` +
                     (digestShort ? ` <code title="${_t('renderers.digest')}: ${escapeHtml(digestShort)}">${escapeHtml(digestShort)}</code>` : '') +
-                    (expDate ? ` <span title="${_t('renderers.expires')}: ${escapeHtml(expDate)}" style="font-size:10px;color:var(--warning)">⌛${escapeHtml(expDate.substring(0, 10))}</span>` : '') +
-                    (ramGB > 0.5 ? ` <span style="font-size:10px;color:var(--text-secondary)">RAM: ${ramGB.toFixed(2)} GB</span>` : '') +
+                    (expDate ? ` <span title="${_t('renderers.expires')}: ${escapeHtml(expDate)}" style="font-size:var(--font-size-xs);color:var(--warning)">⌛${escapeHtml(expDate.substring(0, 10))}</span>` : '') +
+                    (ramGB > 0.5 ? ` <span style="font-size:var(--font-size-xs);color:var(--text-secondary)">RAM: ${ramGB.toFixed(2)} GB</span>` : '') +
                 `</div>`;
             });
             modelsHtml += '</div></div>';
@@ -1175,7 +1192,7 @@ const Renderers = (function () {
                     <td>${badge(b.hasAgent ? _t('common.yes') : _t('common.no'), b.hasAgent ? 'success' : 'warning')}</td>
                     <td>${escapeHtml(labels)}</td>
                     <td>${escapeHtml(lastContact)}</td>
-                    <td>${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}</td>
+                    <td>${statusBadge(b.status)}</td>
                     <td class="col-right" style="min-width:140px;max-width:240px;">${loadingCell}</td>
                     <td>
                         <button class="action-btn edit" data-admin-only onclick="event.stopPropagation(); ui.editBackend('${safeId}')">${_t('common.edit')}</button>
@@ -1478,7 +1495,7 @@ const Renderers = (function () {
                 <div class="backend-load-item">
                     <div class="backend-load-header">
                         <span class="backend-load-name"><strong>${escapeHtml(b.id)}</strong></span>
-                        ${badge(b.status, b.status === 'healthy' ? 'success' : 'danger')}
+                        ${statusBadge(b.status)}
                     </div>
                     <div class="backend-load-stats">
                         <span class="backend-load-stat">${_t('renderers.models_label')} <strong>${displayModels.length}</strong></span>
@@ -1722,9 +1739,9 @@ const Renderers = (function () {
                         ${modelDetail('VRAM', fmtMB(vramMB), m.vramEstimated ? 'Estimated from model size + GPU layer split' : '')}
                         ${modelDetail('RAM', fmtMB(ramMB), m.ramEstimated ? 'Estimated from model size + GPU layer split' : '')}
                         ${backendTypeDetails(m, backend)}
-                        ${digestShort ? '<div class="model-detail"><div class="model-detail-label">' + _t('renderers.digest') + '</div><div class="model-detail-value"><code style="font-size:10px;background:var(--bg-secondary);padding:1px 4px;border-radius:3px">' + escapeHtml(digestShort) + '</code></div></div>' : ''}
-                        ${expShort ? '<div class="model-detail"><div class="model-detail-label">' + _t('renderers.expires') + '</div><div class="model-detail-value" title="' + escapeHtml(expDate) + '" style="color:var(--warning);font-size:11px">' + expShort + '</div></div>' : ''}
-                        ${(ramGB !== null && ramGB > 0.5) ? '<div class="model-detail"><div class="model-detail-label">RAM</div><div class="model-detail-value" style="font-size:11px;color:var(--text-secondary)">' + ramGB.toFixed(2) + ' GB</div></div>' : ''}
+                        ${digestShort ? '<div class="model-detail"><div class="model-detail-label">' + _t('renderers.digest') + '</div><div class="model-detail-value"><code style="font-size:var(--font-size-xs);background:var(--bg-secondary);padding:1px 4px;border-radius:3px">' + escapeHtml(digestShort) + '</code></div></div>' : ''}
+                        ${expShort ? '<div class="model-detail"><div class="model-detail-label">' + _t('renderers.expires') + '</div><div class="model-detail-value" title="' + escapeHtml(expDate) + '" style="color:var(--warning);font-size:var(--font-size-xs)">' + expShort + '</div></div>' : ''}
+                        ${(ramGB !== null && ramGB > 0.5) ? '<div class="model-detail"><div class="model-detail-label">RAM</div><div class="model-detail-value" style="font-size:var(--font-size-xs);color:var(--text-secondary)">' + ramGB.toFixed(2) + ' GB</div></div>' : ''}
                     </div>
                     <div class="model-memory-section">
                         <div class="model-memory-title">${_t('models.memory_title')}</div>
@@ -1815,11 +1832,11 @@ const Renderers = (function () {
                 ? '<div class="model-detail">' +
                       '<div class="model-detail-label">' + escapeHtml('Имя для клиента') + '</div>' +
                       '<div class="model-detail-value">' +
-                          '<code style="font-size:11px">' + escapeHtml(clientId) + '</code> ' +
+                          '<code style="font-size:var(--font-size-xs)">' + escapeHtml(clientId) + '</code> ' +
                           '<button type="button" data-copy-model-id="' + escapeHtml(clientId) + '" ' +
                               'title="Скопировать ID модели для настройки клиента (Cline/OpenWebUI)" ' +
                               'style="background:transparent;border:1px solid var(--border-color);' +
-                              'border-radius:3px;cursor:pointer;font-size:11px;padding:0 5px;' +
+                              'border-radius:3px;cursor:pointer;font-size:var(--font-size-xs);padding:0 5px;' +
                               'color:var(--text-primary)">⧉</button>' +
                       '</div>' +
                   '</div>'
@@ -1925,11 +1942,11 @@ const Renderers = (function () {
         const p = String(protocol || '').toLowerCase();
         if (p === 'openai') {
             return ' <span class="badge protocol-badge protocol-openai" title="OpenAI API (/v1/...)" ' +
-                'style="background:#10a37f;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;">OpenAI</span>';
+                'style="background:#10a37f;color:#fff;font-size:var(--font-size-xs);padding:1px 5px;border-radius:3px;">OpenAI</span>';
         }
         if (p === 'ollama') {
             return ' <span class="badge protocol-badge protocol-ollama" title="Ollama API (/api/...)" ' +
-                'style="background:#64748b;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;">Ollama</span>';
+                'style="background:#64748b;color:#fff;font-size:var(--font-size-xs);padding:1px 5px;border-radius:3px;">Ollama</span>';
         }
         // Пусто/неизвестно — бейджа нет: выдуманный протокол вводил бы в заблуждение.
         return '';
@@ -2411,7 +2428,7 @@ const Renderers = (function () {
                 '<td><strong>' + escapeHtml(a.id || '-') + '</strong></td>' +
                 '<td>' + escapeHtml(a.host || '-') + '</td>' +
                 '<td>' + escapeHtml(String(a.agentPort || a.port || '-')) + '</td>' +
-                '<td>' + badge(status, statusClass) + '</td>' +
+                '<td>' + badge(statusLabel(status), statusClass) + '</td>' +
                 '<td>' + escapeHtml(a.platform || '-') + '</td>' +
                 '<td>' + escapeHtml(uptime) + '</td>' +
                 '<td>' + escapeHtml(lastHb) + '</td>' +
@@ -2530,8 +2547,8 @@ const Renderers = (function () {
                     '<span class="be-param-label">' + escapeHtml(m.name) + '</span>' +
                     '<span class="be-param-value">' + sizeGB.toFixed(1) + ' GB | ' + escapeHtml(m.family || '-') + ' | ' + escapeHtml(m.parameterSize || '-') + ' | ' + escapeHtml(m.quantization || '-') +
                     (digestShort ? ' <code title="' + _t('renderers.digest') + ': ' + escapeHtml(digestShort) + '">' + escapeHtml(digestShort) + '</code>' : '') +
-                    (expDate ? ' <span title="' + _t('renderers.expires') + ': ' + escapeHtml(expDate) + '" style="font-size:10px;color:var(--warning)">⌛' + escapeHtml(expDate.substring(0, 10)) + '</span>' : '') +
-                    (ramGB > 0.5 ? ' <span style="font-size:10px;color:var(--text-secondary)">RAM: ' + ramGB.toFixed(2) + ' GB</span>' : '') +
+                    (expDate ? ' <span title="' + _t('renderers.expires') + ': ' + escapeHtml(expDate) + '" style="font-size:var(--font-size-xs);color:var(--warning)">⌛' + escapeHtml(expDate.substring(0, 10)) + '</span>' : '') +
+                    (ramGB > 0.5 ? ' <span style="font-size:var(--font-size-xs);color:var(--text-secondary)">RAM: ' + ramGB.toFixed(2) + ' GB</span>' : '') +
                     '</span>' +
                 '</div>';
             });
@@ -2632,7 +2649,7 @@ const Renderers = (function () {
             return '<div class="gguf-backend-card" style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:1rem;">' +
                 '<div class="gguf-backend-header" style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">' +
                     '<span class="gguf-backend-name" style="font-weight:600;font-size:1.1rem;">' + escapeHtml(b.id) + '</span>' +
-                    badge(b.status, b.status === 'healthy' ? 'success' : 'danger') +
+                    statusBadge(b.status) +
                     typeBadge +
                 '</div>' +
                 '<div class="gguf-backend-url" style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.5rem;">' + escapeHtml(b.url || (b.host + ':' + (b.cppWorkerPort || b.ollamaPort))) + '</div>' +

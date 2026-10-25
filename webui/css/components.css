@@ -1,4 +1,4 @@
-/*
+﻿/*
  * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
  *   DESIGN_VARIANCE = 5, MOTION_INTENSITY = 3, VISUAL_DENSITY = 5
  * Anti-slop rules applied:
@@ -389,7 +389,7 @@
     align-items: center;
     border-bottom: 1px solid var(--border);
 }
-.card-header h3 { font-size: 18px; font-weight: 600; }
+.card-header h3 { font-size: var(--font-size-lg); font-weight: 600; }
 .card-actions { display: flex; gap: 12px; align-items: center; }
 .card-body { padding: 24px; }
 
@@ -417,7 +417,7 @@
     display: inline-block;
     padding: 2px 8px;
     border-radius: 4px;
-    font-size: 10px;
+    font-size: var(--font-size-xs);
     font-weight: 700;
     margin-left: 6px;
     vertical-align: middle;
@@ -439,7 +439,7 @@
 }
 .gpu-layers-quick-row .btn {
     padding: 3px 9px !important;
-    font-size: 11px !important;
+    font-size: var(--font-size-xs) !important;
     font-weight: 600;
     line-height: 1.4;
     border-radius: 4px;
@@ -642,7 +642,7 @@
     align-items: center;
     border-bottom: 1px solid var(--border);
 }
-.modal-header h3 { font-size: 18px; }
+.modal-header h3 { font-size: var(--font-size-lg); }
 .modal-close {
     background: none;
     border: none;
@@ -713,7 +713,7 @@
     background: var(--bg-hover);
 }
 .be-expand-icon {
-    font-size: 10px;
+    font-size: var(--font-size-xs);
     margin-left: 4px;
     color: var(--text-muted);
     transition: transform 0.2s;
@@ -821,7 +821,7 @@
     border-left: 3px solid var(--danger);
 }
 .settings-section-header .section-toggle {
-    font-size: 10px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
     width: 16px;
     text-align: center;
@@ -972,7 +972,7 @@
     transition: all 0.2s;
 }
 .wizard-step-label {
-    font-size: 10px;
+    font-size: var(--font-size-xs);
     /* Round 15 (2026-07-29): --text-muted (#6e6e8a) слишком тусклый на фоне
        --bg-card (#16213e), подписи шагов "сливаются". Повышаем до
        --text-secondary (#a8a8c0) - заметно, но не агрессивно. */
@@ -1522,7 +1522,7 @@
 .cpp-defaults-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
 }
 .cpp-defaults-table td {
     padding: 6px 10px;
@@ -1541,7 +1541,7 @@
     display: inline-block;
     padding: 2px 8px;
     border-radius: 10px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     line-height: 16px;
     white-space: nowrap;
 }
@@ -1573,7 +1573,7 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
 }
 .cpp-defaults-actions {
@@ -1599,7 +1599,7 @@
 }
 /* cpp-profile-name badge - тема-управляемый warning (Q3 W3-4) */
 .cpp-profile-name .badge {
-    font-size: 10px;
+    font-size: var(--font-size-xs);
     padding: 1px 6px;
     background: var(--warning-soft-4);
     color: var(--warning);
@@ -1913,7 +1913,7 @@
     background: transparent;
     border: none;
     color: var(--text-muted, #94a3b8);
-    font-size: 22px;
+    font-size: var(--font-size-xl);
     line-height: 1;
     cursor: pointer;
     padding: 0 6px;
@@ -2094,7 +2094,7 @@
     margin: 18px 0 8px 0;
     padding: 8px 0 4px 0;
     border-bottom: 1px solid var(--border);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
@@ -2130,7 +2130,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
@@ -2144,7 +2144,7 @@
 }
 .gguf-acc .gguf-acc-caret {
     transition: transform 0.15s ease;
-    font-size: 10px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
 }
 .gguf-acc[open] .gguf-acc-caret {
@@ -2170,7 +2170,7 @@
 .gguf-mp-block { margin-bottom: 14px; }
 .gguf-mp-title {
     font-weight: 600;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     margin-bottom: 6px;
     display: flex;
     flex-wrap: wrap;
@@ -2179,19 +2179,19 @@
 }
 .gguf-mp-sub {
     font-weight: 400;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
 }
 .gguf-mp-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     table-layout: fixed;
 }
 .gguf-mp-table th {
     text-align: left;
     font-weight: 600;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-secondary);
     border-bottom: 1px solid var(--border);
     padding: 4px 6px;
@@ -2206,7 +2206,7 @@
 .gguf-mp-table th:nth-child(3), .gguf-mp-table td:nth-child(3) { width: 34%; }
 .gguf-mp-hint {
     display: block;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     line-height: 1.35;
     color: var(--text-muted);
     margin-top: 2px;
@@ -2214,16 +2214,16 @@
 .gguf-mp-val { font-variant-numeric: tabular-nums; }
 /* R136: под контролом формы - что действует СЕЙЧАС (форма редактирует профиль). */
 .gguf-mp-fact {
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
     margin-top: 2px;
 }
-.gguf-mp-src { color: var(--text-secondary); font-size: 11px; }
+.gguf-mp-src { color: var(--text-secondary); font-size: var(--font-size-xs); }
 .gguf-mp-none { color: var(--text-muted); }
 .gguf-mp-input .form-control { width: 100%; }
 .gguf-mp-input input[type="checkbox"] { margin-top: 4px; }
 .gguf-mp-adv-head td {
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     color: var(--text-secondary);
     background: var(--bg-tertiary, transparent);
@@ -2238,14 +2238,14 @@
 }
 .gguf-mp-warn { color: var(--text-muted); }
 .gguf-mp-acc { margin-top: 6px; }
-.gguf-mp-summary { cursor: pointer; font-size: 12px; }
+.gguf-mp-summary { cursor: pointer; font-size: var(--font-size-xs); }
 /* R124: состояние узла раскладки (донор/приёмник) - факт, а не галочка. */
 .gguf-rpc-state-row {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
 }
 .gguf-rpc-state-dot {
     width: 8px;
@@ -2258,17 +2258,17 @@
 .gguf-rpc-state-dot.is-off { background: var(--text-muted, #6b7280); }
 .gguf-rpc-state-error {
     margin-top: 4px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--danger, #ef4444);
     word-break: break-word;
 }
 .gguf-rpc-state-note {
     margin-top: 4px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
 }
 .gguf-rpc-state-unknown {
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
     font-style: italic;
 }
@@ -2277,13 +2277,13 @@
    false»: клиент раскладки в обоих случаях пишет одно и то же сообщение. */
 .gguf-rpc-state-exit {
     margin-top: 4px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--warning, #f59e0b);
     word-break: break-word;
 }
 .gguf-rpc-state-log {
     margin-top: 6px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
 }
 .gguf-rpc-state-log summary {
     cursor: pointer;
@@ -2294,9 +2294,9 @@
     padding: 6px 8px;
     max-height: 220px;
     overflow: auto;
-    background: var(--surface-2, rgba(0, 0, 0, 0.15));
+    background: var(--bg-tertiary);
     border-radius: 4px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     line-height: 1.35;
     white-space: pre-wrap;
     word-break: break-word;
@@ -2305,7 +2305,7 @@
 /* R125 (2026-10-16, пункт 3): какие узлы раскладки реально отвечают. */
 .gguf-rpc-peers {
     margin-top: 8px;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
 }
 .gguf-rpc-peers-summary {
     color: var(--text-secondary);
@@ -2374,7 +2374,7 @@
     display: block;
     margin-top: 2px;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     line-height: 1.45;
 }
 .wizard-section { margin: 20px 0; }
@@ -2398,7 +2398,7 @@
 .wizard-param-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
 }
 .wizard-param-table th,
 .wizard-param-table td {
@@ -2442,7 +2442,7 @@
 }
 
 .imgp-notes {
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
     margin-top: 2px;
     max-width: 340px;
@@ -2456,7 +2456,7 @@
     background: var(--bg-secondary, #1a1f2e);
     border: 1px solid var(--error, #f85149);
     color: var(--text-primary, #e2e8f0);
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     word-break: break-word;
 }
 
@@ -2464,7 +2464,7 @@
     display: inline-block;
     padding: 2px 8px;
     border-radius: 10px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     line-height: 16px;
     white-space: nowrap;
     background: rgba(248, 81, 73, 0.18);
@@ -2483,7 +2483,7 @@
     border: 1px solid var(--error, #f85149);
     background: var(--bg-tertiary, #151a26);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--font-size-sm);
 }
 
 .imgp-errors ul {
@@ -2531,7 +2531,7 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
 }
 
@@ -2575,7 +2575,7 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
 }
 
@@ -2587,7 +2587,7 @@
 
 .imgp-file-local {
     flex: 1 0 100%;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
     word-break: break-all;
 }
@@ -2603,7 +2603,7 @@
 .imgp-hint {
     display: block;
     margin-top: 8px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
 }
 
@@ -2612,7 +2612,7 @@
     padding: 8px 10px;
     background: var(--bg-primary, #0f0f23);
     border-radius: var(--radius-sm);
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     color: var(--text-secondary);
     white-space: pre-wrap;
     word-break: break-word;
@@ -2646,13 +2646,13 @@
 #backendMergePanel .bm-header strong { display: none; }
 #backendMergePanel .bm-hint {
     margin-top: 4px;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     color: var(--text-muted);
     line-height: 1.4;
 }
 #backendMergePanel .bm-hint-inline {
     margin-left: 8px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     font-weight: normal;
     color: var(--text-muted);
 }
@@ -2671,7 +2671,7 @@
     max-width: 520px;
     padding: 8px 12px;
     font-size: var(--font-size-sm);
-    background: var(--surface, #fff);
+    background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
 }
@@ -2680,7 +2680,7 @@
     width: 132px;
     padding: 8px 10px;
     font-size: var(--font-size-sm);
-    background: var(--surface, #fff);
+    background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
 }
@@ -2722,23 +2722,23 @@
     border-top: 1px solid var(--border-subtle, var(--border));
 }
 #backendMergePanel .bm-actions .btn { min-width: 132px; }
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     color: var(--text-muted);
     background: var(--glass-bg);
     border: 1px dashed var(--glass-border);
     border-radius: var(--radius-md);
 }
-#backendMergePanel .bm-groups { margin-top: 12px; font-size: 13px; }
+#backendMergePanel .bm-groups { margin-top: 12px; font-size: var(--font-size-sm); }
 #backendMergePanel .bm-groups ul { margin: 6px 0 0; padding-left: 20px; }
-#backendMergePanel .bm-applied { margin-top: 10px; font-size: 13px; }
-#backendMergePanel .bm-ok { margin-top: 6px; font-size: 12px; color: var(--success, #22c55e); }
-#backendMergePanel .bm-warn { margin-top: 6px; font-size: 12px; color: var(--warning, #f59e0b); }
-#backendMergePanel .bm-error { margin-top: 6px; font-size: 12px; color: var(--danger, #ef4444); }
+#backendMergePanel .bm-applied { margin-top: 10px; font-size: var(--font-size-sm); }
+#backendMergePanel .bm-ok { margin-top: 6px; font-size: var(--font-size-xs); color: var(--success, #22c55e); }
+#backendMergePanel .bm-warn { margin-top: 6px; font-size: var(--font-size-xs); color: var(--warning, #f59e0b); }
+#backendMergePanel .bm-error { margin-top: 6px; font-size: var(--font-size-xs); color: var(--danger, #ef4444); }
 #backendMergePanel .bm-plan,
 #backendMergePanel .bm-report {
     margin-top: 10px;
     padding: 10px 12px;
-    font-size: 12px;
+    font-size: var(--font-size-xs);
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);

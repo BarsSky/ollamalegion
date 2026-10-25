@@ -1,4 +1,4 @@
-/**
+﻿/**
  * image-page.js — R-Image Phase 9 (2026-10-03): страница «Image-модели».
  *
  * Что делает (табы «Модели на диске», «Загруженные», «Настройки»):
@@ -634,7 +634,7 @@
             var isBusy = m.state === 'loading';
             var actions = '';
             if (isBusy) {
-                actions = '<span style="font-size:12px;color:var(--text-muted);"><i class="fas fa-circle-notch fa-spin"></i> ' +
+                actions = '<span style="font-size:var(--font-size-xs);color:var(--text-muted);"><i class="fas fa-circle-notch fa-spin"></i> ' +
                     escapeHtml(t('gguf.loading_indicator', 'Loading')) + '</span>';
             } else if (isLoaded) {
                 actions = '<button class="btn btn-secondary btn-sm" data-img-action="unload-model" data-model="' + escapeHtml(m.name) + '">' +
@@ -661,7 +661,7 @@
                 '<td>' + escapeHtml(t(stateLabelKey(m.state), m.state)) + '</td>' +
                 '<td>' + escapeHtml(formatBytes(m.size_bytes)) + '</td>' +
                 '<td>' + escapeHtml(m.family || '-') + '</td>' +
-                '<td style="font-size:12px;">' + roles + '</td>' +
+                '<td style="font-size:var(--font-size-xs);">' + roles + '</td>' +
                 '<td>' + escapeHtml(String(m.active_queries || 0)) + '</td>' +
                 '<td>' + (m.vram_estimate_mb ? escapeHtml(formatBytes(m.vram_estimate_mb * 1024 * 1024)) : '-') + '</td>' +
                 '<td>' + actions + '</td>' +

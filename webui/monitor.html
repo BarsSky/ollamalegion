@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
@@ -38,7 +38,7 @@
     <img src="logo.svg" alt="OllamaLegion" style="height:28px;width:auto;vertical-align:middle;margin-right:4px">
     <span id="statusDot" class="dot"></span>
     <span data-i18n="header.monitor">Monitor</span>
-    <span id="demoIndicator" style="display:none;background:var(--danger);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;margin-left:8px;text-transform:uppercase;letter-spacing:0.5px" data-i18n="monitor.header.demoIndicator">DEMO</span>
+    <span id="demoIndicator" style="display:none;background:var(--danger);color:#fff;font-size:var(--font-size-xs);font-weight:700;padding:2px 8px;border-radius:4px;margin-left:8px;text-transform:uppercase;letter-spacing:0.5px" data-i18n="monitor.header.demoIndicator">DEMO</span>
     <span id="monitorBackendTypeSwitcher" style="margin-left:12px"></span>
   </h1>
   <div class="header-right">
@@ -65,8 +65,8 @@
       <span data-i18n="monitor.header.demo">Demo</span>
     </button>
     <span id="connBadge" class="badge badge-yellow" data-i18n="monitor.header.connecting">Connecting…</span>
-    <button id="resetZoomBtn" onclick="MonitorApp.resetViewport()" title="Reset Zoom" style="font-size:12px;padding:2px 8px;border-radius:4px;cursor:pointer;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-color);margin-left:2px">🔍 1:1</button>
-    <button id="helpBtn" onclick="event.stopPropagation(); toggleHelp();" title="Help" style="font-weight:bold;font-size:14px;padding:2px 10px;border-radius:50%;width:30px;height:30px;line-height:1;cursor:pointer">?</button>
+    <button id="resetZoomBtn" onclick="MonitorApp.resetViewport()" title="Reset Zoom" style="font-size:var(--font-size-xs);padding:2px 8px;border-radius:4px;cursor:pointer;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-color);margin-left:2px">🔍 1:1</button>
+    <button id="helpBtn" onclick="event.stopPropagation(); toggleHelp();" title="Help" style="font-weight:bold;font-size:var(--font-size-base);padding:2px 10px;border-radius:50%;width:30px;height:30px;line-height:1;cursor:pointer">?</button>
     <!-- R60.14 (2026-09-07): language picker. Same component as index.html
          (app-core.js:194-204 listens for #langSelect change and calls I18N.setLang()).
          localStorage key: ollamalegion_lang, synced across pages. -->
@@ -77,9 +77,9 @@
   </div>
   <!-- Help Modal -->
   <div id="helpModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,0.6);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);align-items:center;justify-content:center" onclick="toggleHelp()">
-    <div style="background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:14px;padding:24px 28px;max-width:560px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:var(--glass-shadow);color:var(--text-primary);font-size:13px;line-height:1.7;position:relative" onclick="event.stopPropagation()">
-      <button onclick="toggleHelp()" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:18px;cursor:pointer;color:var(--text-secondary)">✕</button>
-      <h3 data-i18n-html="monitor.help.title" style="margin-bottom:14px;font-size:16px">📖 Routing Modes Help</h3>
+    <div style="background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:14px;padding:24px 28px;max-width:560px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:var(--glass-shadow);color:var(--text-primary);font-size:var(--font-size-sm);line-height:1.7;position:relative" onclick="event.stopPropagation()">
+      <button onclick="toggleHelp()" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:var(--font-size-lg);cursor:pointer;color:var(--text-secondary)">✕</button>
+      <h3 data-i18n-html="monitor.help.title" style="margin-bottom:14px;font-size:var(--font-size-md)">📖 Routing Modes Help</h3>
       <p data-i18n-html="monitor.help.p1"><strong>P1 — Model Affinity (LOADED)</strong><br>Backend with model already in VRAM. Highest priority — instant response.</p>
       <p data-i18n-html="monitor.help.p2" style="margin-top:8px"><strong>P2 — Model Warming (WARMING_UP)</strong><br>Backend loading model. Balancer waits for readiness until timeout.</p>
       <p data-i18n-html="monitor.help.p3" style="margin-top:8px"><strong>P3 — Free Backend (FREE)</strong><br>Free healthy backend with slots. Model loads synchronously (if <code>syncModelLoad.enabled</code>).</p>
@@ -91,7 +91,7 @@
     </div>
   </div>
 </header>
-<div id="topoTooltip" style="display:none;position:fixed;pointer-events:none;z-index:1000;background:var(--glass-bg);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid var(--glass-border);border-radius:10px;padding:10px 14px;font-size:12px;line-height:1.6;max-width:300px;box-shadow:var(--glass-shadow);color:var(--text-primary);white-space:nowrap"></div>
+<div id="topoTooltip" style="display:none;position:fixed;pointer-events:none;z-index:1000;background:var(--glass-bg);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid var(--glass-border);border-radius:10px;padding:10px 14px;font-size:var(--font-size-xs);line-height:1.6;max-width:300px;box-shadow:var(--glass-shadow);color:var(--text-primary);white-space:nowrap"></div>
 <main>
   <div class="topo-section">
     <div class="topo-viewport" id="topoViewport">
@@ -101,12 +101,12 @@
       <div class="spinner"></div>
       <h2 data-i18n="monitor.overlay.connecting">Connecting to API…</h2>
       <p data-i18n="monitor.overlay.waitingDesc">Waiting for balancer response. If running under Docker, ensure the <code>loadbalancer</code> service is up.</p>
-      <p style="font-size:11px;color:var(--text-secondary);margin-top:4px"><span data-i18n="monitor.common.apiBase">API Base:</span> <code id="apiBaseDisplay">—</code></p>
+      <p style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-top:4px"><span data-i18n="monitor.common.apiBase">API Base:</span> <code id="apiBaseDisplay">—</code></p>
     </div>
     <div id="errorOverlay" class="overlay hidden">
       <h2 data-i18n="monitor.overlay.noConnection">⚠ No connection to balancer</h2>
       <p id="errorText" data-i18n="monitor.overlay.checkConnection">Failed to fetch data. Check that the API is available and CORS is configured correctly.</p>
-      <div id="errorDetails" style="font-size:11px;color:var(--text-secondary);max-width:480px;text-align:left;background:rgba(255,255,255,0.03);padding:8px 12px;border-radius:6px;margin-top:4px;line-height:1.6"></div>
+      <div id="errorDetails" style="font-size:var(--font-size-xs);color:var(--text-secondary);max-width:480px;text-align:left;background:rgba(255,255,255,0.03);padding:8px 12px;border-radius:6px;margin-top:4px;line-height:1.6"></div>
       <div style="margin-top:8px">
         <button onclick="retryNow()" data-i18n="monitor.overlay.retry">🔄 Retry</button>
         <button onclick="enterDemoMode()" style="margin-left:8px" data-i18n="monitor.overlay.demoMode">▶ Demo Mode</button>
@@ -156,7 +156,7 @@
                 <th class="col-right" data-i18n="monitor.table.sessionsCount">Sessions</th>
                 <th class="col-right" data-i18n="monitor.table.vram">VRAM</th>
                 <th class="col-right" data-i18n="monitor.table.load">Load</th>
-                <th class="col-right" style="font-size:11px" data-i18n="renderers.expires">Expires</th>
+                <th class="col-right" style="font-size:var(--font-size-xs)" data-i18n="renderers.expires">Expires</th>
               </tr>
             </thead>
             <tbody>
@@ -183,11 +183,11 @@
       <div class="panel-body">
         <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end">
           <div>
-            <div style="font-size:11px;color:var(--text-secondary)" data-i18n="monitor.layout.main">Главный (мастер раскладки)</div>
+            <div style="font-size:var(--font-size-xs);color:var(--text-secondary)" data-i18n="monitor.layout.main">Главный (мастер раскладки)</div>
             <select id="layoutMainSelect" style="min-width:240px"></select>
           </div>
           <div>
-            <div style="font-size:11px;color:var(--text-secondary)" data-i18n="monitor.layout.donors">Доноры (узлы раскладки)</div>
+            <div style="font-size:var(--font-size-xs);color:var(--text-secondary)" data-i18n="monitor.layout.donors">Доноры (узлы раскладки)</div>
             <div id="layoutDonorList" style="display:flex;gap:12px;flex-wrap:wrap;padding-top:4px"></div>
           </div>
           <button id="layoutApplyBtn" data-admin-only data-i18n="monitor.layout.apply"
@@ -195,8 +195,8 @@
           <button id="layoutLocalBtn" data-admin-only data-i18n="monitor.layout.localOnly"
                   style="padding:6px 14px;cursor:pointer">Только локально</button>
         </div>
-        <div id="layoutStatus" style="margin-top:10px;font-size:12px;color:var(--text-secondary)"></div>
-        <div id="layoutHint" style="margin-top:6px;font-size:11px;color:var(--text-secondary)"
+        <div id="layoutStatus" style="margin-top:10px;font-size:var(--font-size-xs);color:var(--text-secondary)"></div>
+        <div id="layoutHint" style="margin-top:6px;font-size:var(--font-size-xs);color:var(--text-secondary)"
              data-i18n="monitor.layout.hint">Главному балансер сам присылает список живых узлов (rpcEnabled + адреса rpc-server'ов). Недоступные узлы отключаются автоматически, загрузка идёт локально; вернувшийся узел включается сам. Роль можно задать и селектором в строке бэкенда ниже.</div>
       </div>
     </div>
@@ -281,7 +281,7 @@
           <div class="stat-item"><div id="admAvgWait" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.admission.avgWait">Avg wait</div></div>
           <div class="stat-item"><div id="admWaitMax" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.admission.waitMax">Wait limit</div></div>
         </div>
-        <div id="admSessions" style="font-size:11px;color:var(--text-secondary);margin-bottom:8px;word-break:break-all"></div>
+        <div id="admSessions" style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-bottom:8px;word-break:break-all"></div>
         <div style="overflow-x:auto">
           <table id="queueTable">
             <thead>
@@ -335,7 +335,7 @@
           <div class="stat-item"><div id="imgReqAvg" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.imageRequests.avg">Avg</div></div>
           <div class="stat-item"><div id="imgReqP95" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.imageRequests.p95">p95</div></div>
         </div>
-        <div style="padding:0 4px 8px;font-size:11px;color:var(--text-secondary);line-height:1.6" data-i18n="monitor.imageRequests.hint">Counters and feed of image generation requests (type image_cpp). Management calls (model list, load and unload) are not counted.</div>
+        <div style="padding:0 4px 8px;font-size:var(--font-size-xs);color:var(--text-secondary);line-height:1.6" data-i18n="monitor.imageRequests.hint">Counters and feed of image generation requests (type image_cpp). Management calls (model list, load and unload) are not counted.</div>
         <div style="overflow-x:auto">
           <table id="imageRequestsTable">
             <thead>
@@ -410,8 +410,8 @@
           <div class="stat-item"><div id="plWarnings" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.placement.warningsCount">Config warnings</div></div>
           <div class="stat-item"><div id="plManager" class="stat-val">—</div><div class="stat-label" data-i18n="monitor.placement.replication">Replication</div></div>
         </div>
-        <div id="plGroups" style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;word-break:break-all"></div>
-        <div id="plWarnList" style="font-size:11px;color:var(--warning);margin-bottom:8px;word-break:break-all"></div>
+        <div id="plGroups" style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-bottom:6px;word-break:break-all"></div>
+        <div id="plWarnList" style="font-size:var(--font-size-xs);color:var(--warning);margin-bottom:8px;word-break:break-all"></div>
         <!-- R104 (S6 плана 2026-10-07): карточка логических бэкендов — узлы, роли,
              VRAM, слоты, загруженные модели, измеренная скорость и трафик раскладки.
              Рисует js/modules/monitor-groups.js; карточка только читает состояние. -->
@@ -430,7 +430,7 @@
             <tbody></tbody>
           </table>
         </div>
-        <div style="padding:8px 4px;font-size:11px;color:var(--text-secondary);line-height:1.6">
+        <div style="padding:8px 4px;font-size:var(--font-size-xs);color:var(--text-secondary);line-height:1.6">
           <strong data-i18n="monitor.placement.howItWorks">💡 How placement works:</strong><br>
           <span data-i18n="monitor.placement.howItWorksDesc">strategy is resolved per model (request → model → class → global default); pool/replicated/single are executed, sharded/rpc require stage P2, auto picks by VRAM fit; with fallback=error an unservable strategy returns 503 instead of silently switching.</span>
         </div>
@@ -444,27 +444,27 @@
       <div class="panel-body">
         <div id="dispatchStats" style="display:flex;flex-wrap:wrap;gap:12px;padding:8px 0">
           <div class="dispatch-card" style="flex:1;min-width:160px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:12px 16px">
-            <div data-i18n="monitor.dispatch.modelAffinity" style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Model Affinity</div>
-            <div id="dispatchAffinity" style="font-size:22px;font-weight:700;color:var(--success);margin-top:4px">—</div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px" id="dispatchAffinityPct">—</div>
+            <div data-i18n="monitor.dispatch.modelAffinity" style="font-size:var(--font-size-xs);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Model Affinity</div>
+            <div id="dispatchAffinity" style="font-size:var(--font-size-xl);font-weight:700;color:var(--success);margin-top:4px">—</div>
+            <div style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-top:2px" id="dispatchAffinityPct">—</div>
           </div>
           <div class="dispatch-card" style="flex:1;min-width:160px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:12px 16px">
-            <div data-i18n="monitor.dispatch.resourceAware" style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Resource-Aware</div>
-            <div id="dispatchLoad" style="font-size:22px;font-weight:700;color:var(--accent);margin-top:4px">—</div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px" id="dispatchLoadPct">—</div>
+            <div data-i18n="monitor.dispatch.resourceAware" style="font-size:var(--font-size-xs);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Resource-Aware</div>
+            <div id="dispatchLoad" style="font-size:var(--font-size-xl);font-weight:700;color:var(--accent);margin-top:4px">—</div>
+            <div style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-top:2px" id="dispatchLoadPct">—</div>
           </div>
           <div class="dispatch-card" style="flex:1;min-width:160px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:12px 16px">
-            <div data-i18n="monitor.dispatch.weightConfig" style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Weight/Config</div>
-            <div id="dispatchConfig" style="font-size:22px;font-weight:700;color:var(--warning);margin-top:4px">—</div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px" id="dispatchConfigPct">—</div>
+            <div data-i18n="monitor.dispatch.weightConfig" style="font-size:var(--font-size-xs);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Weight/Config</div>
+            <div id="dispatchConfig" style="font-size:var(--font-size-xl);font-weight:700;color:var(--warning);margin-top:4px">—</div>
+            <div style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-top:2px" id="dispatchConfigPct">—</div>
           </div>
           <div class="dispatch-card" style="flex:1;min-width:160px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:12px 16px">
-            <div data-i18n="monitor.dispatch.processedTotal" style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Processed Total</div>
-            <div id="dispatchTotal" style="font-size:22px;font-weight:700;color:var(--purple-accent);margin-top:4px">—</div>
-            <div data-i18n="monitor.dispatch.total" style="font-size:11px;color:var(--text-secondary);margin-top:2px">Total processed</div>
+            <div data-i18n="monitor.dispatch.processedTotal" style="font-size:var(--font-size-xs);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">Processed Total</div>
+            <div id="dispatchTotal" style="font-size:var(--font-size-xl);font-weight:700;color:var(--purple-accent);margin-top:4px">—</div>
+            <div data-i18n="monitor.dispatch.total" style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-top:2px">Total processed</div>
           </div>
         </div>
-        <div style="padding:8px 4px;font-size:11px;color:var(--text-secondary);line-height:1.6">
+        <div style="padding:8px 4px;font-size:var(--font-size-xs);color:var(--text-secondary);line-height:1.6">
           <strong data-i18n="monitor.dispatch.howItWorks">💡 How dispatch works:</strong><br>
           ① <strong>Model Affinity</strong> — <span data-i18n="monitor.dispatch.affinityDesc">model already loaded on backend (P1–P3)</span><br>
           ② <strong>Resource-Aware</strong> — <span data-i18n="monitor.dispatch.loadDesc">choose by free resources + prediction bonus (P4)</span><br>
@@ -517,33 +517,33 @@
           <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start">
             <div style="flex:1;min-width:220px">
               <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-                <label style="font-size:13px;font-weight:600;cursor:pointer" data-i18n="monitor.autoPull.enabled">🔌 Auto-Pull</label>
+                <label style="font-size:var(--font-size-sm);font-weight:600;cursor:pointer" data-i18n="monitor.autoPull.enabled">🔌 Auto-Pull</label>
                 <label class="switch">
                   <input type="checkbox" id="autoPullEnabled">
                   <span class="slider round"></span>
                 </label>
-                <span id="autoPullEnabledLabel" style="font-size:12px;color:var(--text-secondary);font-weight:500" data-i18n="monitor.autoPull.off">Off</span>
+                <span id="autoPullEnabledLabel" style="font-size:var(--font-size-xs);color:var(--text-secondary);font-weight:500" data-i18n="monitor.autoPull.off">Off</span>
               </div>
               <div id="autoPullSettings" style="display:flex;flex-wrap:wrap;gap:8px 14px;padding:6px 0 8px 0;border-top:1px solid var(--border-color);margin-bottom:6px">
                 <div style="display:flex;align-items:center;gap:6px">
-                  <label style="font-size:11px;color:var(--text-secondary);white-space:nowrap" data-i18n="monitor.autoPull.maxConcurrent">Max Concurrent:</label>
-                  <input type="number" id="autoPullMaxConcurrent" value="2" min="1" max="10" style="width:52px;padding:3px 5px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:12px">
+                  <label style="font-size:var(--font-size-xs);color:var(--text-secondary);white-space:nowrap" data-i18n="monitor.autoPull.maxConcurrent">Max Concurrent:</label>
+                  <input type="number" id="autoPullMaxConcurrent" value="2" min="1" max="10" style="width:52px;padding:3px 5px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:var(--font-size-xs)">
                 </div>
                 <div style="display:flex;align-items:center;gap:6px">
-                  <label style="font-size:11px;color:var(--text-secondary);white-space:nowrap" data-i18n="monitor.autoPull.retryCount">Retry Count:</label>
-                  <input type="number" id="autoPullRetryCount" value="1" min="0" max="5" style="width:48px;padding:3px 5px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:12px">
+                  <label style="font-size:var(--font-size-xs);color:var(--text-secondary);white-space:nowrap" data-i18n="monitor.autoPull.retryCount">Retry Count:</label>
+                  <input type="number" id="autoPullRetryCount" value="1" min="0" max="5" style="width:48px;padding:3px 5px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:var(--font-size-xs)">
                 </div>
                 <!-- R106c (2026-10-12): поле «Pull Timeout» убрано. Ожидание идёт
                      ПО СОСТОЯНИЮ закачки (прогресс/готово/ошибка), а не по
                      таймеру: таймаут обрывал долгую загрузку большого GGUF. -->
-                <button id="autoPullSaveBtn" data-admin-only onclick="saveAutoPullConfig()" style="padding:4px 12px;font-size:11px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600" data-i18n="monitor.autoPull.save">💾 Save</button>
-                <span id="autoPullSaveStatus" style="font-size:11px;color:var(--success);display:none" data-i18n="monitor.autoPull.saved">✓ Saved</span>
+                <button id="autoPullSaveBtn" data-admin-only onclick="saveAutoPullConfig()" style="padding:4px 12px;font-size:var(--font-size-xs);background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600" data-i18n="monitor.autoPull.save">💾 Save</button>
+                <span id="autoPullSaveStatus" style="font-size:var(--font-size-xs);color:var(--success);display:none" data-i18n="monitor.autoPull.saved">✓ Saved</span>
               </div>
             </div>
             <div style="flex:1;min-width:200px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:10px 14px">
-              <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px" data-i18n="monitor.autoPull.activePulls">Active Pulls</div>
-              <div style="font-size:26px;font-weight:700;color:var(--purple-accent)" id="autoPullActiveCount">0</div>
-              <div style="font-size:11px;color:var(--text-secondary);margin-top:1px" data-i18n="monitor.autoPull.totalPulls">Total Auto-Pulls</div>
+              <div style="font-size:var(--font-size-xs);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px" data-i18n="monitor.autoPull.activePulls">Active Pulls</div>
+              <div style="font-size:var(--font-size-2xl);font-weight:700;color:var(--purple-accent)" id="autoPullActiveCount">0</div>
+              <div style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-top:1px" data-i18n="monitor.autoPull.totalPulls">Total Auto-Pulls</div>
             </div>
           </div>
           <div style="overflow-x:auto;margin-top:6px">
@@ -598,9 +598,9 @@
         </div>
         <!-- Active VirtualModel jobs -->
         <div id="vmJobDetails" style="margin-top:8px;display:none">
-          <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-secondary)" data-i18n="vm.activeJobs">Active Pipeline Jobs</div>
+          <div style="font-size:var(--font-size-xs);font-weight:600;margin-bottom:6px;color:var(--text-secondary)" data-i18n="vm.activeJobs">Active Pipeline Jobs</div>
           <div style="overflow-x:auto">
-            <table id="vmJobsTable" style="font-size:11px">
+            <table id="vmJobsTable" style="font-size:var(--font-size-xs)">
               <thead>
                 <tr>
                   <th data-i18n="vm.name">Model</th>

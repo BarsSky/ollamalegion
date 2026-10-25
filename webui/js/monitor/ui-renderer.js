@@ -1,4 +1,4 @@
-// js/monitor/ui-renderer.js — UI update and table rendering
+﻿// js/monitor/ui-renderer.js — UI update and table rendering
 
 (function() {
   'use strict';
@@ -290,13 +290,13 @@
       return window.Utils.getBackendTypeBadge(b);
     }
     if (isImageBackendType(bt)) {
-      return ' <span class="badge" style="background:#4ade8020;border:1px solid #4ade80;color:#4ade80;font-size:10px;padding:0 4px;border-radius:3px">🎨 image.cpp</span>';
+      return ' <span class="badge" style="background:#4ade8020;border:1px solid #4ade80;color:#4ade80;font-size:var(--font-size-xs);padding:0 4px;border-radius:3px">🎨 image.cpp</span>';
     }
     if (bt === 'llama_cpp') {
-      return ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:10px;padding:0 4px;border-radius:3px">🦒 llama.cpp</span>';
+      return ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:var(--font-size-xs);padding:0 4px;border-radius:3px">🦒 llama.cpp</span>';
     }
     if (bt === 'ollama' || !bt) {
-      return ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:10px;padding:0 4px;border-radius:3px">🦙 Ollama</span>';
+      return ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:var(--font-size-xs);padding:0 4px;border-radius:3px">🦙 Ollama</span>';
     }
     return '';
   }
@@ -359,7 +359,7 @@
       var active = (t === '' && currentType === '') || t === currentType;
       // Подсветка активной кнопки через класс (mtype-btn.active в monitor-app.css)
       // + инлайн как fallback, чтобы состояние было видно даже без CSS.
-      return 'font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' +
+      return 'font-size:var(--font-size-xs);padding:3px 8px;border-radius:4px;border:1px solid var(--border-color);background:' +
         (active ? 'var(--accent)' : 'var(--bg-secondary)') + ';color:' +
         (active ? '#fff' : 'var(--text-primary)') + ';cursor:pointer;font-weight:600';
     }
@@ -374,12 +374,12 @@
     // Кнопки вместо <select> — нагляднее и не зависит от native dropdown.
     container.innerHTML =
       '<div class="monitor-type-switcher" style="display:flex;align-items:center;gap:4px">' +
-        '<span style="font-size:11px;color:var(--text-secondary);font-weight:600;margin-right:4px">' + T('monitor.common.backendType') + '</span>' +
+        '<span style="font-size:var(--font-size-xs);color:var(--text-secondary);font-weight:600;margin-right:4px">' + T('monitor.common.backendType') + '</span>' +
         btn('', T('monitor.common.allBackends'), 'Все бэкенды') +
         btn('ollama', '🦙 Ollama', 'Ollama API') +
         btn('llama_cpp', '🦒 llama.cpp', 'llama.cpp / GGUF') +
         btn('image_cpp', '🎨 image.cpp', 'image.cpp / stable-diffusion.cpp') +
-        '<span data-type="counter" class="mtype-counter" style="font-size:10px;color:var(--text-secondary);margin-left:4px"></span>' +
+        '<span data-type="counter" class="mtype-counter" style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-left:4px"></span>' +
       '</div>';
     updateSwitcherCounts();
   }
@@ -463,19 +463,19 @@
         // Loaded models: каждый показываем как «✅ loaded»
         var loadableModelsHtml = '';
         if (loadedModels.length > 0) {
-          loadableModelsHtml += '<div style="margin-top:6px;font-size:10px;color:var(--text-secondary)">✅ ' + T('monitor.feasibility.canLoad') + ' (' + loadedModels.length + ')</div>' +
+          loadableModelsHtml += '<div style="margin-top:6px;font-size:var(--font-size-xs);color:var(--text-secondary)">✅ ' + T('monitor.feasibility.canLoad') + ' (' + loadedModels.length + ')</div>' +
             loadedModels.slice(0, 8).map(function(m) {
               var nm = m.name || m.Name || m;
               var ctx = m.contextLength ? ' C:' + m.contextLength : '';
-              return '<span class="badge badge-green" style="font-size:10px;margin:1px 2px" title="loaded">' + MA.esc(nm) + ctx + '</span>';
-            }).join('') + (loadedModels.length > 8 ? ' <span style="font-size:10px;color:var(--text-secondary)">+' + (loadedModels.length - 8) + '</span>' : '');
+              return '<span class="badge badge-green" style="font-size:var(--font-size-xs);margin:1px 2px" title="loaded">' + MA.esc(nm) + ctx + '</span>';
+            }).join('') + (loadedModels.length > 8 ? ' <span style="font-size:var(--font-size-xs);color:var(--text-secondary)">+' + (loadedModels.length - 8) + '</span>' : '');
         }
 
         return '<div class="capacity-card" style="min-width:280px;flex:1">' +
           '<h4>' + MA.esc(b.id) + ' 🦒 ' + T('monitor.feasibility.modeLlamaCpp') + '</h4>' +
           // VRAM bar
           '<div style="margin-bottom:6px">' +
-            '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-secondary);margin-bottom:2px">' +
+            '<div style="display:flex;justify-content:space-between;font-size:var(--font-size-xs);color:var(--text-secondary);margin-bottom:2px">' +
               '<span>' + T('monitor.feasibility.vram') + ' (' + (totalVRAM > 0 ? usedVRAM.toFixed(1) + '/' + totalVRAM.toFixed(0) + 'GB' : '—') + ')</span>' +
               '<span>' + fillPct.toFixed(0) + '%</span>' +
             '</div>' +
@@ -484,16 +484,16 @@
           // Free VRAM + Loadable count
           '<div style="display:flex;gap:12px;margin-top:6px">' +
             '<div style="flex:1;background:var(--bg-secondary);border-radius:6px;padding:6px 8px;text-align:center">' +
-              '<div style="font-size:9px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.freeVram') + '</div>' +
-              '<div style="font-size:16px;font-weight:700;color:' + (freeVRAM > 4096 ? 'var(--success)' : freeVRAM > 1024 ? 'var(--warning)' : 'var(--danger)') + '">' + (freeVRAM > 1024 ? (freeVRAM / 1024).toFixed(1) + 'G' : freeVRAM.toFixed(0) + 'M') + '</div>' +
+              '<div style="font-size:var(--font-size-xs);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.freeVram') + '</div>' +
+              '<div style="font-size:var(--font-size-md);font-weight:700;color:' + (freeVRAM > 4096 ? 'var(--success)' : freeVRAM > 1024 ? 'var(--warning)' : 'var(--danger)') + '">' + (freeVRAM > 1024 ? (freeVRAM / 1024).toFixed(1) + 'G' : freeVRAM.toFixed(0) + 'M') + '</div>' +
             '</div>' +
             '<div style="flex:1;background:var(--bg-secondary);border-radius:6px;padding:6px 8px;text-align:center">' +
-              '<div style="font-size:9px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.loadable') + '</div>' +
-              '<div style="font-size:16px;font-weight:700;color:' + fillColor + '">' + loadableCount + '</div>' +
+              '<div style="font-size:var(--font-size-xs);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.loadable') + '</div>' +
+              '<div style="font-size:var(--font-size-md);font-weight:700;color:' + fillColor + '">' + loadableCount + '</div>' +
             '</div>' +
             '<div style="flex:1;background:var(--bg-secondary);border-radius:6px;padding:6px 8px;text-align:center">' +
-              '<div style="font-size:9px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.loaded') + '</div>' +
-              '<div style="font-size:16px;font-weight:700;color:var(--accent)">' + loadedModels.length + '</div>' +
+              '<div style="font-size:var(--font-size-xs);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.loaded') + '</div>' +
+              '<div style="font-size:var(--font-size-md);font-weight:700;color:var(--accent)">' + loadedModels.length + '</div>' +
             '</div>' +
           '</div>' +
           (loadableModelsHtml ? '<div style="margin-top:4px">' + loadableModelsHtml + '</div>' : '') +
@@ -525,18 +525,18 @@
         var cannotLoad = availableModels.filter(function(m) { return !m.canLoad; });
 
         if (canLoad.length > 0) {
-          loadableModelsHtml += '<div style="margin-top:6px;font-size:10px;color:var(--text-secondary)">✅ ' + T('monitor.feasibility.canLoad') + '</div>' +
+          loadableModelsHtml += '<div style="margin-top:6px;font-size:var(--font-size-xs);color:var(--text-secondary)">✅ ' + T('monitor.feasibility.canLoad') + '</div>' +
             canLoad.slice(0, 8).map(function(m) {
               var vramMB = m.estimatedVram || m.vramUsage || 0;
-              return '<span class="badge badge-green" style="font-size:10px;margin:1px 2px" title="~' + vramMB + 'MB VRAM">' + MA.esc(m.name) + '</span>';
-            }).join('') + (canLoad.length > 8 ? ' <span style="font-size:10px;color:var(--text-secondary)">+' + (canLoad.length - 8) + '</span>' : '');
+              return '<span class="badge badge-green" style="font-size:var(--font-size-xs);margin:1px 2px" title="~' + vramMB + 'MB VRAM">' + MA.esc(m.name) + '</span>';
+            }).join('') + (canLoad.length > 8 ? ' <span style="font-size:var(--font-size-xs);color:var(--text-secondary)">+' + (canLoad.length - 8) + '</span>' : '');
         }
         if (cannotLoad.length > 0) {
-          loadableModelsHtml += '<div style="margin-top:4px;font-size:10px;color:var(--text-secondary)">❌ ' + T('monitor.feasibility.cannotLoad') + '</div>' +
+          loadableModelsHtml += '<div style="margin-top:4px;font-size:var(--font-size-xs);color:var(--text-secondary)">❌ ' + T('monitor.feasibility.cannotLoad') + '</div>' +
             cannotLoad.slice(0, 5).map(function(m) {
               var vramMB = m.estimatedVram || m.vramUsage || 0;
-              return '<span class="badge badge-red" style="font-size:10px;margin:1px 2px" title="~' + vramMB + 'MB VRAM">' + MA.esc(m.name) + '</span>';
-            }).join('') + (cannotLoad.length > 5 ? ' <span style="font-size:10px;color:var(--text-secondary)">+' + (cannotLoad.length - 5) + '</span>' : '');
+              return '<span class="badge badge-red" style="font-size:var(--font-size-xs);margin:1px 2px" title="~' + vramMB + 'MB VRAM">' + MA.esc(m.name) + '</span>';
+            }).join('') + (cannotLoad.length > 5 ? ' <span style="font-size:var(--font-size-xs);color:var(--text-secondary)">+' + (cannotLoad.length - 5) + '</span>' : '');
         }
       }
 
@@ -544,7 +544,7 @@
         '<h4>' + MA.esc(b.id) + (mode === 'cpu' ? ' 🖥️ ' + T('monitor.feasibility.modeCpu') : ' 🎮 ' + T('monitor.feasibility.modeGpu')) + '</h4>' +
         // VRAM bar
         '<div style="margin-bottom:6px">' +
-          '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-secondary);margin-bottom:2px">' +
+          '<div style="display:flex;justify-content:space-between;font-size:var(--font-size-xs);color:var(--text-secondary);margin-bottom:2px">' +
             '<span>' + T('monitor.feasibility.vram') + ' (' + (totalVRAM > 0 ? usedVRAM.toFixed(1) + '/' + totalVRAM.toFixed(0) + 'GB' : '—') + ')</span>' +
             '<span>' + fillPct.toFixed(0) + '%</span>' +
           '</div>' +
@@ -553,16 +553,16 @@
         // Free VRAM + Loadable count
         '<div style="display:flex;gap:12px;margin-top:6px">' +
           '<div style="flex:1;background:var(--bg-secondary);border-radius:6px;padding:6px 8px;text-align:center">' +
-            '<div style="font-size:9px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.freeVram') + '</div>' +
-            '<div style="font-size:16px;font-weight:700;color:' + (freeVRAM > 4096 ? 'var(--success)' : freeVRAM > 1024 ? 'var(--warning)' : 'var(--danger)') + '">' + (freeVRAM > 1024 ? (freeVRAM / 1024).toFixed(1) + 'G' : freeVRAM + 'M') + '</div>' +
+            '<div style="font-size:var(--font-size-xs);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.freeVram') + '</div>' +
+            '<div style="font-size:var(--font-size-md);font-weight:700;color:' + (freeVRAM > 4096 ? 'var(--success)' : freeVRAM > 1024 ? 'var(--warning)' : 'var(--danger)') + '">' + (freeVRAM > 1024 ? (freeVRAM / 1024).toFixed(1) + 'G' : freeVRAM + 'M') + '</div>' +
           '</div>' +
           '<div style="flex:1;background:var(--bg-secondary);border-radius:6px;padding:6px 8px;text-align:center">' +
-            '<div style="font-size:9px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.loadable') + '</div>' +
-            '<div style="font-size:16px;font-weight:700;color:' + fillColor + '">' + loadableCount + '</div>' +
+            '<div style="font-size:var(--font-size-xs);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.loadable') + '</div>' +
+            '<div style="font-size:var(--font-size-md);font-weight:700;color:' + fillColor + '">' + loadableCount + '</div>' +
           '</div>' +
           '<div style="flex:1;background:var(--bg-secondary);border-radius:6px;padding:6px 8px;text-align:center">' +
-            '<div style="font-size:9px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.available') + '</div>' +
-            '<div style="font-size:16px;font-weight:700;color:var(--accent)">' + availableModels.length + '</div>' +
+            '<div style="font-size:var(--font-size-xs);color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px">' + T('monitor.feasibility.available') + '</div>' +
+            '<div style="font-size:var(--font-size-md);font-weight:700;color:var(--accent)">' + availableModels.length + '</div>' +
           '</div>' +
         '</div>' +
         // Loadable / Non-loadable models
@@ -900,7 +900,7 @@
 
     document.getElementById('alertContainer').innerHTML = alerts.map(function(a) {
       return '<div class="alert-banner alert-' + a.level + '"><span>' + (a.level === 'red' ? '❌' : '⚠️') + '</span><span>' + MA.esc(a.text) + '</span>' +
-        (a.action === 'rebalance' ? '<button onclick="forceRebalance()" style="margin-left:8px;padding:2px 8px;font-size:11px;background:var(--danger);color:#fff;border:none;border-radius:4px;cursor:pointer">' + T('monitor.alert.rebalance') + '</button>' : '') +
+        (a.action === 'rebalance' ? '<button onclick="forceRebalance()" style="margin-left:8px;padding:2px 8px;font-size:var(--font-size-xs);background:var(--danger);color:#fff;border:none;border-radius:4px;cursor:pointer">' + T('monitor.alert.rebalance') + '</button>' : '') +
         '</div>';
     }).join('');
   }
@@ -936,13 +936,13 @@
       bk.map(function(b) {
         var m = b.maxConcurrentRequests || 10, a = b.activeRequests || 0, f = m - a, p = a / m * 100;
         var c = p >= 80 ? 'var(--danger)' : p >= 50 ? 'var(--warning)' : 'var(--success)';
-        return '<div class="capacity-bar"><span style="font-size:11px;min-width:80px">' + MA.esc(b.id) + '</span><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + p + '%;background:' + c + '"></div></div><span class="capacity-val">' + f + '/' + m + '</span></div>';
+        return '<div class="capacity-bar"><span style="font-size:var(--font-size-xs);min-width:80px">' + MA.esc(b.id) + '</span><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + p + '%;background:' + c + '"></div></div><span class="capacity-val">' + f + '/' + m + '</span></div>';
       }).join('') + '</div>' +
       '<div class="capacity-card"><h4>' + T('monitor.capacity.vramPerBackend') + '</h4>' +
       bk.map(function(b) {
         var t = b.vram ? b.vram.totalGB : 0, u = b.vram ? b.vram.usedGB : 0, p = t > 0 ? u / t * 100 : 0;
         var c = p >= 85 ? 'var(--danger)' : p >= 60 ? 'var(--warning)' : 'var(--success)';
-        return '<div class="capacity-bar"><span style="font-size:11px;min-width:80px">' + MA.esc(b.id) + '</span><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + p + '%;background:' + c + '"></div></div><span class="capacity-val">' + u.toFixed(1) + '/' + t.toFixed(0) + 'G</span></div>';
+        return '<div class="capacity-bar"><span style="font-size:var(--font-size-xs);min-width:80px">' + MA.esc(b.id) + '</span><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + p + '%;background:' + c + '"></div></div><span class="capacity-val">' + u.toFixed(1) + '/' + t.toFixed(0) + 'G</span></div>';
       }).join('') + '</div>';
   }
 
@@ -1019,16 +1019,16 @@
         var expObj = new Date(expDate);
         var diff = expObj.getTime() - Date.now();
         var label = diff < 0 ? '⌛' + T('monitor.models.expired') : (diff < 60000 ? '⌛' + Math.round(diff/1000) + 's' : (diff < 3600000 ? '⌛' + Math.round(diff/60000) + T('renderers.minutes') : '⌛' + expDate.substring(0, 10)));
-        expHTML = '<span title="' + MA.esc(expDate) + '" style="font-size:10px;color:var(--warning);margin-left:4px">' + label + '</span>';
+        expHTML = '<span title="' + MA.esc(expDate) + '" style="font-size:var(--font-size-xs);color:var(--warning);margin-left:4px">' + label + '</span>';
       }
-      var digHTML = digestShort ? ' <code style="font-size:9px;background:var(--bg-secondary);padding:1px 3px;border-radius:3px" title="' + MA.esc('Digest: ' + digestShort) + '">' + MA.esc(digestShort) + '</code>' : '';
+      var digHTML = digestShort ? ' <code style="font-size:var(--font-size-xs);background:var(--bg-secondary);padding:1px 3px;border-radius:3px" title="' + MA.esc('Digest: ' + digestShort) + '">' + MA.esc(digestShort) + '</code>' : '';
       // R-Image Phase 5: состояние image-модели видно в колонке Model - иначе
       // загруженная и незагруженная SD-модель выглядели одинаково.
       var imgStateHTML = (imgMeta && imgMeta.state)
-        ? ' <span class="badge" style="background:rgba(74,222,128,0.12);color:#4ade80;font-size:9px;padding:0 4px;border-radius:2px" title="' +
+        ? ' <span class="badge" style="background:rgba(74,222,128,0.12);color:#4ade80;font-size:var(--font-size-xs);padding:0 4px;border-radius:2px" title="' +
           MA.esc(T('image.worker_state')) + '">🎨 ' + MA.esc(imageStateText(imgMeta.state)) + '</span>'
         : '';
-      var nameCell = '<strong>' + MA.esc(m.name) + '</strong>' + digHTML + imgStateHTML + (m.info.cloud ? ' <span style="font-size:10px;color:var(--accent);background:rgba(59,130,246,0.12);padding:1px 5px;border-radius:4px">☁️ ' + T('renderers.cloud') + '</span>' : '');
+      var nameCell = '<strong>' + MA.esc(m.name) + '</strong>' + digHTML + imgStateHTML + (m.info.cloud ? ' <span style="font-size:var(--font-size-xs);color:var(--accent);background:rgba(59,130,246,0.12);padding:1px 5px;border-radius:4px">☁️ ' + T('renderers.cloud') + '</span>' : '');
       // B-11: Добавляем бейдж backend-типа для каждого бэкенда
       var bkCell = m.info.cloud && m.info.bks.length === 0
         ? '<span class="badge badge-blue">☁️ cloud</span>'
@@ -1040,18 +1040,18 @@
             } else if (fbBk) {
               var btType = fbBk.backendType || fbBk.type || '';
               if (btType === 'llama_cpp') {
-                btBadge = ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:9px;padding:0 3px;border-radius:2px">🦒</span>';
+                btBadge = ' <span class="badge" style="background:#ff6d0020;border:1px solid #ff6d00;color:#ff6d00;font-size:var(--font-size-xs);padding:0 3px;border-radius:2px">🦒</span>';
               } else if (isImageBackendType(btType)) {
                 // R-Image Phase 5: image_cpp раньше не имел ветки - у image-модели
                 // в колонке Backends не было бейджа типа вообще.
-                btBadge = ' <span class="badge" style="background:#4ade8020;border:1px solid #4ade80;color:#4ade80;font-size:9px;padding:0 3px;border-radius:2px">🎨</span>';
+                btBadge = ' <span class="badge" style="background:#4ade8020;border:1px solid #4ade80;color:#4ade80;font-size:var(--font-size-xs);padding:0 3px;border-radius:2px">🎨</span>';
               } else if (btType === 'ollama' || !btType) {
-                btBadge = ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:9px;padding:0 3px;border-radius:2px">🦙</span>';
+                btBadge = ' <span class="badge" style="background:#1a73e820;border:1px solid #1a73e8;color:#1a73e8;font-size:var(--font-size-xs);padding:0 3px;border-radius:2px">🦙</span>';
               }
             }
             return '<span class="badge badge-purple">' + MA.esc(bid) + btBadge + '</span>';
           }).join(' ');
-      return '<tr><td>' + nameCell + '</td><td>' + bkCell + '</td><td class="col-right">' + m.info.sc + '</td><td class="col-right">' + vramCell + '</td><td class="col-right">' + (m.info.sc > 0 ? (m.info.cloud ? '☁️ ' + m.info.sc : '🔥 ' + m.info.sc) : '—') + '</td><td class="col-right" style="font-size:11px">' + expHTML + '</td></tr>';
+      return '<tr><td>' + nameCell + '</td><td>' + bkCell + '</td><td class="col-right">' + m.info.sc + '</td><td class="col-right">' + vramCell + '</td><td class="col-right">' + (m.info.sc > 0 ? (m.info.cloud ? '☁️ ' + m.info.sc : '🔥 ' + m.info.sc) : '—') + '</td><td class="col-right" style="font-size:var(--font-size-xs)">' + expHTML + '</td></tr>';
     }).join('');
     // Update colspan for no-data row (was 5, now 6 with expiresAt column)
     if (!models.length) { 
@@ -1162,11 +1162,11 @@
         var loadingIcons = backendOps.map(function(op) {
           var opType = op.operation || 'op';
           var modelName = op.modelName || '';
-          return '<span class="badge badge-yellow" style="font-size:10px;animation:pulse 1.5s infinite" title="' + MA.esc(opLabel(opType)) + ': ' + MA.esc(modelName) + '">⏳ ' + MA.esc(opLabel(opType)) + '</span>';
+          return '<span class="badge badge-yellow" style="font-size:var(--font-size-xs);animation:pulse 1.5s infinite" title="' + MA.esc(opLabel(opType)) + ': ' + MA.esc(modelName) + '">⏳ ' + MA.esc(opLabel(opType)) + '</span>';
         }).join(' ');
         loadingCell = loadingIcons;
       } else {
-        loadingCell = '<span style="font-size:11px;color:var(--text-secondary)">—</span>';
+        loadingCell = '<span style="font-size:var(--font-size-xs);color:var(--text-secondary)">—</span>';
       }
       // Per-backend type badge (🦙 Ollama / 🦒 llama.cpp / 🎨 image.cpp).
       // R-Image Phase 5: image_cpp раньше не попадал ни в одну ветку, поэтому
@@ -1225,7 +1225,7 @@
       if (isImg) {
         var imgModelsList = imageModelsOf(b);
         if (!imgModelsList.length) {
-          modelsCell = '<span style="font-size:11px;color:var(--text-secondary)">—</span>';
+          modelsCell = '<span style="font-size:var(--font-size-xs);color:var(--text-secondary)">—</span>';
         } else {
           modelsCell = imgModelsList.slice(0, 3).map(function (m) {
             var st = String(m.state || '').toLowerCase();
@@ -1251,7 +1251,7 @@
             MA.esc(m) +
             ' <button class="monitor-unload-btn" data-backend="' + MA.esc(b.id) + '" data-model="' + MA.esc(m) + '" ' +
             'title="Unload ' + MA.esc(m) + '" ' +
-            'style="background:transparent;border:none;color:inherit;cursor:pointer;padding:0 2px;font-size:11px;line-height:1;opacity:0.7;">' +
+            'style="background:transparent;border:none;color:inherit;cursor:pointer;padding:0 2px;font-size:var(--font-size-xs);line-height:1;opacity:0.7;">' +
             '<i class="fas fa-times"></i></button>' +
           '</span>';
         }).join(' ');
@@ -1271,7 +1271,7 @@
       // управление раскладкой было только в API/.env — в панели его не было.
       var layoutCell = (window.MonitorLayout && typeof window.MonitorLayout.rowLayoutCell === 'function')
         ? window.MonitorLayout.rowLayoutCell(b) : '<td></td>';
-      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + imageBadges + typeBadge + '</td>' + layoutCell + '<td><span class="badge ' + scs + '">' + MA.esc(backendStatusLabel(b.status)) + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:11px">' + loadingCell + '</td><td>' + modelsCell + '</td>' + imgReqCells + '<td class="col-right">' + up + '</td></tr>';
+      return '<tr data-backend-type="' + MA.esc(btType) + '"><td><strong>' + MA.esc(b.id) + '</strong>' + imageBadges + typeBadge + '</td>' + layoutCell + '<td><span class="badge ' + scs + '">' + MA.esc(backendStatusLabel(b.status)) + '</span></td><td>' + MA.bar(gu) + ' ' + gu.toFixed(0) + '%' + gpuHidden + '<div class="sl-cell">' + sl(b.id, 'gpu', 'var(--accent)') + '</div></td><td>' + MA.bar(vu) + ' ' + vu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'vram', 'var(--purple-accent)') + '</div></td><td title="' + cpuHint + '">' + MA.bar(cu) + ' ' + cu.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'cpu', 'var(--success)') + '</div></td><td>' + MA.bar(ru) + ' ' + ru.toFixed(0) + '%<div class="sl-cell">' + sl(b.id, 'ram', 'var(--warning)') + '</div></td><td class="col-right">' + a + '/' + mr + '</td><td class="col-right">' + (rps > 0 ? rps.toFixed(1) : '-') + '<div class="sl-cell">' + sl(b.id, 'rps', 'var(--info)') + '</div></td><td class="col-right">' + avgRT + '<div class="sl-cell">' + sl(b.id, 'avgRt', 'var(--text-secondary)') + '</div></td><td class="col-right">' + reqCap + '</td><td class="col-right">' + sc + '</td><td style="font-size:var(--font-size-xs)">' + loadingCell + '</td><td>' + modelsCell + '</td>' + imgReqCells + '<td class="col-right">' + up + '</td></tr>';
     }).join('');
     // R118.4: селекторы роли в свежеотрисованных строках + обновление панели
     // раскладки (роли/состояние приходят из /api/v1/backends, а не из cluster/state).
@@ -1363,10 +1363,10 @@
       }
       return '<tr><td><strong>' + MA.esc((d && d.model) || '*') + '</strong></td>' +
         '<td><span class="badge ' + badge + '">' + MA.esc(strat) + '</span>' +
-        (flags.length ? '<div style="font-size:10px;color:var(--text-secondary);margin-top:2px">' + flags.join(', ') + '</div>' : '') + '</td>' +
+        (flags.length ? '<div style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-top:2px">' + flags.join(', ') + '</div>' : '') + '</td>' +
         '<td>' + MA.esc((d && d.source) || '-') + '</td>' +
         '<td>' + MA.esc((d && d.fallback) || '-') + '</td>' +
-        '<td style="font-size:11px">' + reason + '</td></tr>';
+        '<td style="font-size:var(--font-size-xs)">' + reason + '</td></tr>';
     }).join('');
 
     // R104 (S6 плана 2026-10-07): карточка логических бэкендов (объединённых
@@ -1477,11 +1477,11 @@
       var images = Number(r.images) || 0;
       var steps = Number(r.steps) || 0;
       return '<tr' + titleAttr + '>' +
-        '<td style="font-size:11px;white-space:nowrap">' + escHtml(fmtImageTime(r.at)) + '</td>' +
+        '<td style="font-size:var(--font-size-xs);white-space:nowrap">' + escHtml(fmtImageTime(r.at)) + '</td>' +
         '<td>' + escHtml(r.backendId || '—') + '</td>' +
-        '<td><code style="font-size:11px">' + escHtml(r.path || '—') + '</code></td>' +
+        '<td><code style="font-size:var(--font-size-xs)">' + escHtml(r.path || '—') + '</code></td>' +
         '<td>' + escHtml(r.model || '—') +
-          (images > 0 ? ' <span style="font-size:10px;color:var(--text-secondary)">×' + images + '</span>' : '') + '</td>' +
+          (images > 0 ? ' <span style="font-size:var(--font-size-xs);color:var(--text-secondary)">×' + images + '</span>' : '') + '</td>' +
         '<td class="col-right">' + escHtml(sizeTxt) + '</td>' +
         '<td class="col-right">' + (steps > 0 ? steps : '—') + '</td>' +
         '<td class="col-right">' + escHtml(fmtImageDuration(r.durationMs)) + '</td>' +
@@ -1630,7 +1630,7 @@
       var statusText = p.done ? '✅ ' + T('monitor.autoPull.statusDone') : (p.error ? '❌ ' + T('monitor.autoPull.statusError') : '⏳ ' + T('monitor.autoPull.statusPulling'));
       var statusClass = p.done ? 'badge-green' : (p.error ? 'badge-red' : 'badge-yellow');
       var errorText = p.error ? MA.esc(p.error) : (p.httpStatus ? 'HTTP ' + p.httpStatus : '-');
-      return '<tr><td><strong>' + model + '</strong></td><td>' + backend + '</td><td>' + started + '</td><td>' + duration + '</td><td><span class="badge ' + statusClass + '">' + statusText + '</span></td><td style="font-size:11px;color:var(--text-secondary);max-width:200px;overflow:hidden;text-overflow:ellipsis">' + errorText + '</td></tr>';
+      return '<tr><td><strong>' + model + '</strong></td><td>' + backend + '</td><td>' + started + '</td><td>' + duration + '</td><td><span class="badge ' + statusClass + '">' + statusText + '</span></td><td style="font-size:var(--font-size-xs);color:var(--text-secondary);max-width:200px;overflow:hidden;text-overflow:ellipsis">' + errorText + '</td></tr>';
     }).join('');
   }
 
@@ -1662,7 +1662,7 @@
         ? '<span class="badge badge-green">' + T('vm.enabled') + '</span>'
         : '<span class="badge badge-yellow">' + T('vm.disabled') + '</span>';
       return '<tr>' +
-        '<td><strong>' + MA.esc(m.name || '-') + '</strong>' + (m.description ? '<br><span style="font-size:10px;color:var(--text-secondary)">' + MA.esc(m.description) + '</span>' : '') + '</td>' +
+        '<td><strong>' + MA.esc(m.name || '-') + '</strong>' + (m.description ? '<br><span style="font-size:var(--font-size-xs);color:var(--text-secondary)">' + MA.esc(m.description) + '</span>' : '') + '</td>' +
         '<td>' + slicesCount + '</td>' +
         '<td><code>' + MA.esc(m.mode || '-') + '</code></td>' +
         '<td class="col-right">' + activeJobs + '</td>' +
@@ -1748,14 +1748,14 @@
           '<h4>' + MA.esc(b.id) + '</h4>' +
           // Disk
           '<div style="margin-bottom:8px">' +
-            '<div style="font-size:11px;color:var(--text-secondary);margin-bottom:2px">💾 ' + T('monitor.diskNetwork.disk') + '</div>' +
+            '<div style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-bottom:2px">💾 ' + T('monitor.diskNetwork.disk') + '</div>' +
             '<div class="capacity-bar"><div class="bar-track-wide"><div class="bar-fill-wide" style="width:' + dPct + '%;background:' + dColor + '"></div></div>' +
             '<span class="capacity-val" title="' + T('monitor.diskNetwork.used') + ': ' + fmtBytes(dUsed) + ' | ' + T('monitor.diskNetwork.free') + ': ' + fmtBytes(dFree) + '">' +
             fmtBytes(dUsed) + ' / ' + fmtBytes(dTotal) + '</span></div>' +
           '</div>' +
           // Network
-          '<div style="font-size:11px;color:var(--text-secondary);margin-bottom:2px">🌐 ' + T('monitor.diskNetwork.network') + '</div>' +
-          '<div style="display:flex;gap:16px;font-size:12px">' +
+          '<div style="font-size:var(--font-size-xs);color:var(--text-secondary);margin-bottom:2px">🌐 ' + T('monitor.diskNetwork.network') + '</div>' +
+          '<div style="display:flex;gap:16px;font-size:var(--font-size-xs)">' +
             '<div><span style="color:var(--accent)">▼ ' + T('monitor.diskNetwork.rx') + ':</span> <strong>' + fmtNet(nRX) + '</strong></div>' +
             '<div><span style="color:var(--warning)">▲ ' + T('monitor.diskNetwork.tx') + ':</span> <strong>' + fmtNet(nTX) + '</strong></div>' +
           '</div>' +
@@ -1792,8 +1792,8 @@
           return '<span class="badge badge-purple">' + MA.esc(bid) + '</span>';
         }).join(' ');
         return '<div style="display:flex;align-items:center;gap:6px;margin:2px 0">' +
-          '<span class="badge" style="background:' + color + '20;color:' + color + ';border:1px solid ' + color + '40;font-size:10px;font-weight:700;min-width:60px;text-align:center">P' + g.priority + ' ' + MA.esc(label) + '</span>' +
-          '<span style="font-size:11px">' + (bks || '<span style="color:var(--text-secondary)">—</span>') + '</span>' +
+          '<span class="badge" style="background:' + color + '20;color:' + color + ';border:1px solid ' + color + '40;font-size:var(--font-size-xs);font-weight:700;min-width:60px;text-align:center">P' + g.priority + ' ' + MA.esc(label) + '</span>' +
+          '<span style="font-size:var(--font-size-xs)">' + (bks || '<span style="color:var(--text-secondary)">—</span>') + '</span>' +
           '</div>';
       }).join('');
 
@@ -1801,7 +1801,7 @@
         '<td><strong>' + MA.esc(c.model) + '</strong></td>' +
         '<td>' + readyBadge + '</td>' +
         '<td class="col-right">' + c.total + '</td>' +
-        '<td style="font-size:11px">' + groupsHtml + '</td>' +
+        '<td style="font-size:var(--font-size-xs)">' + groupsHtml + '</td>' +
         '</tr>';
     }).join('');
   }
@@ -1862,8 +1862,8 @@
         '<td><span class="badge badge-purple">' + MA.esc(opType) + '</span></td>' +
         '<td><strong>' + MA.esc(modelName) + '</strong></td>' +
         '<td>' + MA.esc(backendId) + '</td>' +
-        '<td class="col-right" style="font-size:11px">' + startedAt + '</td>' +
-        '<td class="col-right" style="font-size:11px">' + duration + '</td>' +
+        '<td class="col-right" style="font-size:var(--font-size-xs)">' + startedAt + '</td>' +
+        '<td class="col-right" style="font-size:var(--font-size-xs)">' + duration + '</td>' +
         '<td><span class="badge ' + badgeClass + '">' + MA.esc(status) + '</span></td>' +
         '</tr>';
     }).join('');

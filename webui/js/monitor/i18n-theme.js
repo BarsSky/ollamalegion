@@ -60,7 +60,14 @@
       '📋 Queue': t('monitor.panel.queue'),
       '👤 Sessions': t('monitor.panel.sessions')
     };
-    document.querySelectorAll('.panel-header span:first-child').forEach(function(el) {
+    // R239: у заголовков панелей два источника перевода - data-i18n в самой
+    // разметке и эта карта. Селектор `.panel-header span:first-child` задевал и
+    // группу, и вложенный [data-i18n]-span: первый проход I18N.apply уже
+    // перевёл span, а карта дописывала перевод ещё раз - в шапке появлялся
+    // дубль "📊 РЕСУРСЫ КЛАСТЕРА 📊 Ресурсы кластера". Теперь карта работает
+    // только там, где data-i18n нет: узел с data-i18n принадлежит i18n.
+    document.querySelectorAll('.panel-header .panel-title-group').forEach(function(el) {
+      if (el.querySelector('[data-i18n]')) return;
       var tx = el.textContent.replace(/\s*\(\d+\)\s*$/, '').trim();
       var b = hm[tx];
       if (b) {

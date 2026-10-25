@@ -1,4 +1,4 @@
-/**
+﻿/**
  * image-resources-policy.js — R84 (2026-10-03): настройка политики
  * сосуществования image-генерации с текстовым инференсом из WebUI.
  *
@@ -252,12 +252,12 @@
         }
 
         if (state.loading && !state.data) {
-            host.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">' +
+            host.innerHTML = '<div style="color:var(--text-muted);font-size:var(--font-size-sm);">' +
                 escapeHtml(t('common.loading', 'Loading...')) + '</div>';
             return true;
         }
         if (state.error && !state.data) {
-            host.innerHTML = '<div style="color:var(--danger);font-size:13px;">' + escapeHtml(state.error) + '</div>';
+            host.innerHTML = '<div style="color:var(--danger);font-size:var(--font-size-sm);">' + escapeHtml(state.error) + '</div>';
             return true;
         }
 
@@ -271,24 +271,24 @@
         var loadTimeoutEnv = (state.data && state.data.toolLoadTimeout && state.data.toolLoadTimeout.env) || '';
 
         host.innerHTML =
-            '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">' +
+            '<div style="font-size:var(--font-size-xs);color:var(--text-muted);margin-bottom:10px;">' +
                 escapeHtml(t('imagePolicy.current', 'Действует сейчас')) + ': <b>' + escapeHtml(summaryText(state.data)) + '</b>' +
                 (state.data && state.data.path ? ' · ' + escapeHtml(t('imagePolicy.file', 'файл')) + ': <span style="font-family:monospace;">' + escapeHtml(state.data.path) + '</span>' : '') +
             '</div>' +
             '<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;">' +
-                '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted);">' +
+                '<label style="display:flex;flex-direction:column;gap:4px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
                     escapeHtml(t('imagePolicy.coexistence', 'Сосуществование с текстом')) +
                     '<select class="sort-select" id="imPolicyCoexistence" style="min-width:200px;">' + selectOptions(state.data, f.coexistence) + '</select>' +
                 '</label>' +
-                '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted);">' +
+                '<label style="display:flex;flex-direction:column;gap:4px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
                     escapeHtml(t('imagePolicy.headroom', 'Резерв VRAM, МБ')) +
                     '<input type="number" class="form-control" id="imPolicyHeadroom" min="0" step="64" style="width:130px;" value="' + f.vramHeadroomMb + '">' +
                 '</label>' +
-                '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted);">' +
+                '<label style="display:flex;flex-direction:column;gap:4px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
                     escapeHtml(t('imagePolicy.wait', 'Ожидание GPU, с')) +
                     '<input type="number" class="form-control" id="imPolicyWait" min="0" step="1" style="width:130px;" value="' + f.queueWaitTimeoutSec + '">' +
                 '</label>' +
-                '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted);">' +
+                '<label style="display:flex;flex-direction:column;gap:4px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
                     escapeHtml(t('imagePolicy.fuse', 'Предохранитель лока, с')) +
                     '<input type="number" class="form-control" id="imPolicyFuse" min="0" step="1" style="width:150px;" value="' + f.exclusiveLockTimeoutSec + '">' +
                 '</label>' +
@@ -299,7 +299,7 @@
                 // значение из GET (state.data.toolLoadTimeout.effectiveSec), то
                 // есть сохранение формы ничего не сбрасывает.
             '</div>' +
-            '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--text-muted);">' +
+            '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
                 '<label style="display:flex;gap:6px;align-items:center;cursor:pointer;">' +
                     '<input type="checkbox" id="imPolicyBlockUnknown"' + (f.blockOnUnknownVramEstimate ? ' checked' : '') + '>' +
                     escapeHtml(t('imagePolicy.block_unknown', 'Блокировать, если оценка VRAM неизвестна')) +
@@ -313,27 +313,27 @@
                     escapeHtml(t('imagePolicy.allow_load', 'Разрешить инструменту загружать image-модель')) +
                 '</label>' +
             '</div>' +
-            '<div style="margin-top:6px;font-size:12px;color:var(--text-muted);">' +
+            '<div style="margin-top:6px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
                 escapeHtml(t('imagePolicy.allow_load_hint',
                     'При включённой галочке текстовая модель видит каталог моделей (list_image_models) и может сама поднять нужную; при выключенной инструмент объявляется только для уже загруженной модели.')) +
                 (allowEnv ? ' ' + escapeHtml(t('imagePolicy.allow_load_env', 'Флаг окружения: {flag}', { flag: allowEnv })) : '') +
             '</div>' +
-            '<div style="margin-top:6px;font-size:12px;color:var(--text-muted);">' +
+            '<div style="margin-top:6px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
                 escapeHtml(t('imagePolicy.load_timeout_hint',
                     'Ожидание загрузки: сколько секунд ждать, пока поднимется выбранная модель (большие модели на медленном диске грузятся дольше). По истечении в ответ инструменту уходит причина, и модель объяснит задержку пользователю.')) +
                 (loadTimeoutEnv ? ' ' + escapeHtml(t('imagePolicy.load_timeout_env', 'Переменная окружения: {flag}', { flag: loadTimeoutEnv })) : '') +
             '</div>' +
-            '<div id="imPolicyHint" style="margin-top:10px;font-size:12px;color:var(--text-muted);"' + (hint ? '' : ' hidden') + '>' +
+            '<div id="imPolicyHint" style="margin-top:10px;font-size:var(--font-size-xs);color:var(--text-muted);"' + (hint ? '' : ' hidden') + '>' +
                 '<i class="fas fa-circle-info"></i> <span>' + escapeHtml(hint) + '</span></div>' +
-            '<div id="imPolicyWarn" style="margin-top:10px;padding:8px 10px;border-left:3px solid var(--warning, #e0a030);background:var(--bg-secondary);border-radius:6px;font-size:12px;"' + (warn ? '' : ' hidden') + '>' +
+            '<div id="imPolicyWarn" style="margin-top:10px;padding:8px 10px;border-left:3px solid var(--warning, #e0a030);background:var(--bg-secondary);border-radius:6px;font-size:var(--font-size-xs);"' + (warn ? '' : ' hidden') + '>' +
                 '<i class="fas fa-triangle-exclamation"></i> <span>' + escapeHtml(warn) + '</span></div>' +
             // Маркер «есть несохранённые правки». Живёт здесь, чтобы его можно было
             // просто показать, НЕ перерисовывая форму (см. state.dirty).
-            '<div id="imPolicyDirty" style="margin-top:10px;font-size:12px;color:var(--text-muted);" hidden>' +
+            '<div id="imPolicyDirty" style="margin-top:10px;font-size:var(--font-size-xs);color:var(--text-muted);" hidden>' +
                 '<i class="fas fa-pen"></i> <span>' +
                 escapeHtml(t('imagePolicy.unsaved', 'Есть несохранённые изменения — нажмите «Сохранить». Автообновление формы приостановлено, чтобы не стереть ввод.')) +
                 '</span></div>' +
-            (state.error ? '<div style="margin-top:10px;color:var(--danger);font-size:12px;">' + escapeHtml(state.error) + '</div>' : '');
+            (state.error ? '<div style="margin-top:10px;color:var(--danger);font-size:var(--font-size-xs);">' + escapeHtml(state.error) + '</div>' : '');
         return true;
     }
 

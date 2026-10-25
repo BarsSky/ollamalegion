@@ -1,4 +1,4 @@
-/**
+﻿/**
  * image-models-hf.js — R-Image Phase 9: табы «HuggingFace» и «Загрузки»
  * страницы «Image-модели» (window.ImageModelsHf).
  *
@@ -446,9 +446,9 @@
         }
         if (state.searchError) {
             host.innerHTML = '<div class="gguf-empty-state gguf-search-error">' +
-                '<i class="fas fa-exclamation-triangle" style="color:var(--warning,#e0a030);font-size:18px;"></i>' +
+                '<i class="fas fa-exclamation-triangle" style="color:var(--warning,#e0a030);font-size:var(--font-size-lg);"></i>' +
                 '<div style="margin-top:6px;font-weight:500;">' + escapeHtml(t('gguf.search_error', 'Search failed')) + '</div>' +
-                '<div style="margin-top:4px;color:var(--text-muted);font-size:12px;">' + escapeHtml(state.searchError) + '</div>' +
+                '<div style="margin-top:4px;color:var(--text-muted);font-size:var(--font-size-xs);">' + escapeHtml(state.searchError) + '</div>' +
                 '</div>';
             return;
         }
@@ -456,9 +456,9 @@
         if (!list.length) {
             if (!state.query || state.query.trim().length < 2) {
                 host.innerHTML = '<div class="gguf-empty-state gguf-search-empty" style="padding:12px 4px;">' +
-                    '<i class="fab fa-huggingface" style="font-size:18px;color:#ff9a00;"></i> ' +
+                    '<i class="fab fa-huggingface" style="font-size:var(--font-size-lg);color:#ff9a00;"></i> ' +
                     '<span style="font-weight:500;">' + escapeHtml(t('gguf.search_title', 'HuggingFace Hub')) + '</span>' +
-                    '<div style="color:var(--text-muted);font-size:12px;margin-top:6px;">' +
+                    '<div style="color:var(--text-muted);font-size:var(--font-size-xs);margin-top:6px;">' +
                     escapeHtml(t('imageModels.hf_search_hint', 'Введите 2+ символа или org/model (со слешем) — сразу попадёте к файлам.')) +
                     '</div></div>';
                 return;
@@ -491,7 +491,7 @@
             '</div>';
         }).join('');
         host.innerHTML = '<div class="gguf-results-toolbar" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
-            '<span class="gguf-results-count" style="font-size:12px;color:var(--text-muted);">' +
+            '<span class="gguf-results-count" style="font-size:var(--font-size-xs);color:var(--text-muted);">' +
                 escapeHtml(t('gguf.results_count', 'Found: {n}', { n: list.length })) + '</span>' +
             '</div><div class="gguf-results-list">' + rows + '</div>';
     }
@@ -638,7 +638,7 @@
         var icon = badge.level === 'ok' ? 'fa-circle-check'
             : (badge.level === 'error' ? 'fa-circle-xmark'
                 : (badge.level === 'warn' ? 'fa-triangle-exclamation' : 'fa-circle-question'));
-        var html = '<span class="imh-compat" title="' + escapeHtml(badge.hint || '') + '" style="color:' + color + ';font-size:11px;white-space:nowrap;">' +
+        var html = '<span class="imh-compat" title="' + escapeHtml(badge.hint || '') + '" style="color:' + color + ';font-size:var(--font-size-xs);white-space:nowrap;">' +
             '<i class="fas ' + icon + '"></i> ' + escapeHtml(badge.label || '') + '</span>';
         if (probePath) {
             html += ' <button class="btn btn-secondary btn-sm" data-imh-probe="' + escapeHtml(probePath) + '" ' +
@@ -690,14 +690,14 @@
                 '<div class="gguf-local-info"><div class="gguf-local-meta" style="white-space:normal;">' +
                 '<i class="fas fa-triangle-exclamation"></i> ' + escapeHtml(hint) + '</div></div></div>';
         }
-        header += '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted);">' +
+        header += '<div style="margin-bottom:8px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
             escapeHtml(t('imageModels.repo_verdict', 'Оценка репозитория')) + ': ' + compatBadgeHtml(repoBadge, '') + '</div>';
         // ПАСПОРТ НАБОРА: что обязательно, чего нет, режим движка и порядок
         // действий. Заменяет собой прежнюю догадку по автору репозитория: вердикт
         // теперь считается по факту (заголовок главного файла + состав файлов).
         header += planHtml(state.plan);
         if (mainProbe && mainProbe.verdict === 'supported') {
-            header += '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted);">' +
+            header += '<div style="margin-bottom:8px;font-size:var(--font-size-xs);color:var(--text-muted);">' +
                 escapeHtml(t('imageModels.main_file_verdict', 'Главный файл')) + ': ' + compatBadgeHtml(probeBadge(mainProbe), '') + '</div>';
         }
         if (state.familyNotice) {
@@ -714,7 +714,7 @@
             // Расхождение роли и подсказки сервера показываем как есть: это
             // сигнал «оператор выбрал другое», а не ошибка.
             var roleHint = suggested && suggested !== role
-                ? ' <span style="font-size:11px;color:var(--text-muted);">(' + escapeHtml(t('imageModels.hf_suggested', 'предложено')) + ': ' + escapeHtml(suggested) + ')</span>'
+                ? ' <span style="font-size:var(--font-size-xs);color:var(--text-muted);">(' + escapeHtml(t('imageModels.hf_suggested', 'предложено')) + ': ' + escapeHtml(suggested) + ')</span>'
                 : '';
             // Метка совместимости: результат пред-проверки, если он есть; иначе —
             // «не проверено» + кнопка «Проверить» (для файлов весов).
@@ -724,7 +724,7 @@
             if (probe) {
                 compat = compatBadgeHtml(probeBadge(probe), isWeight ? path : '');
             } else if (state.probing[path]) {
-                compat = '<span style="font-size:11px;color:var(--text-muted);"><i class="fas fa-spinner fa-spin"></i> ' +
+                compat = '<span style="font-size:var(--font-size-xs);color:var(--text-muted);"><i class="fas fa-spinner fa-spin"></i> ' +
                     escapeHtml(t('imageModels.probe_running', 'проверяю заголовок…')) + '</span>';
             } else if (isWeight) {
                 compat = compatBadgeHtml({ level: 'unknown', label: t('imageModels.probe_not_checked', 'не проверено'), hint: '' }, path);
@@ -732,9 +732,9 @@
             return '<div class="gguf-file-item" data-imh-file="' + escapeHtml(path) + '">' +
                 '<label class="gguf-file-name" style="display:flex;align-items:center;gap:8px;cursor:pointer;">' +
                     '<input type="checkbox" data-imh-check="' + escapeHtml(path) + '"' + (sel.checked ? ' checked' : '') + '>' +
-                    '<span style="font-family:monospace;font-size:12px;word-break:break-all;">' + escapeHtml(path) + '</span>' +
+                    '<span style="font-family:monospace;font-size:var(--font-size-xs);word-break:break-all;">' + escapeHtml(path) + '</span>' +
                 '</label>' +
-                '<select class="form-control" data-imh-role="' + escapeHtml(path) + '" style="max-width:200px;font-size:12px;">' +
+                '<select class="form-control" data-imh-role="' + escapeHtml(path) + '" style="max-width:200px;font-size:var(--font-size-xs);">' +
                     roleOptions(role) +
                 '</select>' + roleHint +
                 compat +
@@ -817,14 +817,14 @@
                 '<span class="dl-name"><i class="fas fa-layer-group"></i> ' + escapeHtml(String(b.bundleId || '')) + '</span>' +
                 '<span class="badge">' + escapeHtml(t(bundleStatusKey(b.status), b.status || '')) + '</span>' +
             '</div>' +
-            '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">' +
+            '<div style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:4px;">' +
                 pct + '% · ' + escapeHtml(formatBytes(b.downloaded)) + (b.totalBytes ? ' / ' + escapeHtml(formatBytes(b.totalBytes)) : '') +
                 (b.speedBps ? ' · ' + escapeHtml(formatBytes(b.speedBps)) + '/s' : '') +
                 (b.currentFile ? ' · ' + escapeHtml(String(b.currentFile)) : '') +
                 (b.errorMessage ? ' · <span style="color:var(--danger);">' + escapeHtml(String(b.errorMessage)) + '</span>' : '') +
             '</div>' +
             renderProgressBar(pct) +
-            (filesLine ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">' + filesLine + '</div>' : '') +
+            (filesLine ? '<div style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:6px;">' + filesLine + '</div>' : '') +
             '<div class="dl-actions" style="display:flex;gap:6px;margin-top:8px;">' +
                 (isActive
                     ? '<button class="btn btn-sm btn-secondary" data-imh-cancel="' + escapeHtml(String(b.bundleId || '')) + '">' +
@@ -845,7 +845,7 @@
                 '<span class="dl-name"><i class="fas fa-file"></i> ' + escapeHtml(String(p.filename || '')) + '</span>' +
                 '<span class="badge">' + escapeHtml(t(bundleStatusKey(p.status), p.status || '')) + '</span>' +
             '</div>' +
-            '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">' +
+            '<div style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:4px;">' +
                 escapeHtml(String(p.modelId || '')) + ' · ' + pct + '% · ' + escapeHtml(formatBytes(p.downloaded)) +
                 (p.totalBytes ? ' / ' + escapeHtml(formatBytes(p.totalBytes)) : '') +
                 (p.speedBps ? ' · ' + escapeHtml(formatBytes(p.speedBps)) + '/s' : '') +
@@ -879,7 +879,7 @@
             host.innerHTML = '<div class="gguf-empty-state">' +
                 '<i class="fas fa-cloud-arrow-down" style="opacity:0.4;"></i>' +
                 '<div style="margin-top:6px;">' + escapeHtml(t('imageModels.no_downloads', 'Загрузок нет')) + '</div>' +
-                '<div style="margin-top:4px;color:var(--text-muted);font-size:12px;">' +
+                '<div style="margin-top:4px;color:var(--text-muted);font-size:var(--font-size-xs);">' +
                 escapeHtml(t('imageModels.no_downloads_hint', 'Запустите загрузку на табе HuggingFace — прогресс появится здесь.')) +
                 '</div></div>';
             return;
@@ -899,9 +899,9 @@
                 return '<div class="gguf-download-item">' +
                     '<div class="dl-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
                         '<span class="dl-name"><i class="fas fa-trash-can"></i> ' + escapeHtml(String(o.filename || o.path || '')) + '</span>' +
-                        '<span style="font-size:12px;color:var(--text-muted);">' + escapeHtml(formatBytes(o.size)) + '</span>' +
+                        '<span style="font-size:var(--font-size-xs);color:var(--text-muted);">' + escapeHtml(formatBytes(o.size)) + '</span>' +
                     '</div>' +
-                    '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;word-break:break-all;">' + escapeHtml(String(o.path || '')) + '</div>' +
+                    '<div style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:4px;word-break:break-all;">' + escapeHtml(String(o.path || '')) + '</div>' +
                     '<div class="dl-actions" style="margin-top:8px;">' +
                         '<button class="btn btn-sm btn-danger" data-imh-orphan="' + escapeHtml(String(o.filename || '')) + '">' +
                             '<i class="fas fa-trash"></i> ' + escapeHtml(t('gguf.delete', 'Delete')) + '</button>' +
@@ -909,7 +909,7 @@
                 '</div>';
             }).join('');
             html += section('imageModels.orphans_title', 'Остаточные файлы',
-                '<small style="display:block;margin-bottom:8px;color:var(--text-muted);font-size:11px;">' +
+                '<small style="display:block;margin-bottom:8px;color:var(--text-muted);font-size:var(--font-size-xs);">' +
                     escapeHtml(t('gguf.orphans_hint', 'Partial .download files from interrupted downloads.')) + '</small>' +
                 orphans, snap.orphans.length);
         }
@@ -1066,7 +1066,7 @@
     function planHtml(plan) {
         if (!plan) {
             return state.planLoading
-                ? '<div style="margin:10px 0;font-size:12px;color:var(--text-muted);"><i class="fas fa-spinner fa-spin"></i> ' +
+                ? '<div style="margin:10px 0;font-size:var(--font-size-xs);color:var(--text-muted);"><i class="fas fa-spinner fa-spin"></i> ' +
                     escapeHtml(t('imageModels.plan_loading', 'собираю паспорт набора…')) + '</div>'
                 : '';
         }
@@ -1077,7 +1077,7 @@
             : (plan.verdict === 'incomplete' ? 'fa-triangle-exclamation'
                 : (plan.verdict === 'unsupported' ? 'fa-circle-xmark' : 'fa-circle-question'));
         var html = '<div style="margin:12px 0;padding:10px 12px;border-left:3px solid ' + verdictColor +
-            ';background:var(--bg-secondary);border-radius:6px;font-size:12px;">' +
+            ';background:var(--bg-secondary);border-radius:6px;font-size:var(--font-size-xs);">' +
             '<div style="color:' + verdictColor + ';font-weight:600;"><i class="fas ' + verdictIcon + '"></i> ' +
             escapeHtml(plan.summary || '') + '</div>';
         if (plan.engineMode && plan.engineMode !== 'unknown') {

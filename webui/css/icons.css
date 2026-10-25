@@ -1,4 +1,4 @@
-/* ================================================
+﻿/* ================================================
    OllamaLegion Icons - Font Awesome 6 styling
    ================================================ */
 
@@ -33,7 +33,7 @@
     transition: background 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease;
 }
 .nav-icon-wrap i {
-    font-size: 18px;
+    font-size: var(--font-size-lg);
     color: var(--text-secondary);
     transition: color 0.25s ease, transform 0.25s ease, text-shadow 0.25s ease;
 }
@@ -64,7 +64,7 @@
 
 /* ===== Metric card icons ===== */
 .metric-icon-i {
-    font-size: 22px;
+    font-size: var(--font-size-xl);
     width: 22px;
     height: 22px;
     flex-shrink: 0;
@@ -78,7 +78,7 @@
 
 /* ===== Section header icons ===== */
 .section-icon-i {
-    font-size: 20px;
+    font-size: var(--font-size-xl);
     vertical-align: middle;
     margin-right: 10px;
     color: var(--text-secondary);

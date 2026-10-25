@@ -1,4 +1,4 @@
-/**
+﻿/**
  * setup-wizard.js — Initial Server Setup Wizard (6 steps + import)
  * OllamaLegion WebUI
  *
@@ -308,7 +308,7 @@
 
         return '<div class="wizard-step-content backend-type-step">' +
             '<h3>' + (t('wizard.step_backend_type') || 'Backend Type') + '</h3>' +
-            '<p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">' +
+            '<p style="color:var(--text-muted);font-size:var(--font-size-sm);margin-bottom:16px;">' +
                 (t('wizard.backend_type_desc') || 'Select which inference engine your backends will use.') +
             '</p>' +
             '<div class="mode-cards">' +

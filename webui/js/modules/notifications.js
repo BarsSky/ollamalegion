@@ -1,4 +1,4 @@
-// webui/js/modules/notifications.js — singleton для SSE notifications (F.α).
+﻿// webui/js/modules/notifications.js — singleton для SSE notifications (F.α).
 //
 // Архитектура:
 //   - EventSource подключается к GET /api/v1/events?token=<X-API-Token>.
@@ -265,7 +265,7 @@
             const add = (label, value) => {
                 if (value === undefined || value === null || value === '') return;
                 rows.push(
-                    '<div style="display:flex;gap:6px;font-size:11px;color:var(--text-secondary)">' +
+                    '<div style="display:flex;gap:6px;font-size:var(--font-size-xs);color:var(--text-secondary)">' +
                     (label ? `<span style="min-width:96px">${escapeHtml(label)}</span>` : '<span></span>') +
                     `<span>${escapeHtml(String(value))}</span></div>`
                 );

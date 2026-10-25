@@ -286,8 +286,8 @@
 .help-link:hover { border-color: var(--accent); background: var(--bg-card); }
 .help-link-icon { font-size: 24px; flex-shrink: 0; }
 .help-link-text { flex: 1; }
-.help-link-title { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
-.help-link-desc  { font-size: 12px; color: var(--text-muted); }
+.help-link-title { font-weight: 600; font-size: var(--font-size-base); margin-bottom: 2px; }
+.help-link-desc  { font-size: var(--font-size-xs); color: var(--text-muted); }
 
 /* ===== Context Info Tooltip ===== */
 /* context-info - тема-управляемый info bg (Session 17) */
@@ -674,7 +674,7 @@
     background: rgba(217, 83, 79, 0.15);
     color: #ff7b76;
     border-radius: 10px;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     vertical-align: middle;
 }
@@ -773,7 +773,7 @@
 }
 .settings-subheader i {
     color: var(--accent, #3b82f6);
-    font-size: 14px;
+    font-size: var(--font-size-base);
 }
 .settings-subheader:first-of-type {
     margin-top: 16px;
@@ -855,7 +855,7 @@
 }
 .gguf-local-icon {
     flex-shrink: 0;
-    font-size: 20px;
+    font-size: var(--font-size-xl);
     color: var(--accent);
 }
 .gguf-local-actions {
@@ -1006,7 +1006,7 @@
 
 /* Loaded Models Section */
 .gguf-section-title {
-    font-size: 15px;
+    font-size: var(--font-size-md);
     font-weight: 600;
     color: var(--text-primary);
     margin: 0 0 12px 0;

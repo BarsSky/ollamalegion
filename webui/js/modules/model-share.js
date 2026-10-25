@@ -1,4 +1,4 @@
-// model-share.js — R89 (2026-10-08): «Поделиться моделью» — перенос модели с
+﻿// model-share.js — R89 (2026-10-08): «Поделиться моделью» — перенос модели с
 // одного бэкенда на другие.
 //
 // ЗАЧЕМ. В кластере несколько машин, и модель обычно лежит только на одной.
@@ -230,10 +230,10 @@
     function renderShell(box, opts) {
         box.innerHTML =
             '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">' +
-                '<h3 style="margin:0;font-size:16px;">' + esc(t('share.title', 'Поделиться моделью')) + '</h3>' +
+                '<h3 style="margin:0;font-size:var(--font-size-md);">' + esc(t('share.title', 'Поделиться моделью')) + '</h3>' +
                 '<button class="btn btn-sm btn-secondary" id="shareClose">' + esc(t('common.close', 'Закрыть')) + '</button>' +
             '</div>' +
-            '<div style="margin-top:10px;font-size:13px;color:var(--text-muted,#666);">' +
+            '<div style="margin-top:10px;font-size:var(--font-size-sm);color:var(--text-muted,#666);">' +
                 esc(t('share.source_hint', 'Источник')) + ': <strong>' + esc(opts.backendId) + '</strong> · ' +
                 '<strong>' + esc(opts.model) + '</strong>' +
             '</div>' +
@@ -246,27 +246,27 @@
         var body = byId('shareBody');
         if (!body) return;
         if (!candidates.length) {
-            body.innerHTML = '<div style="font-size:13px;">' +
+            body.innerHTML = '<div style="font-size:var(--font-size-sm);">' +
                 esc(t('share.no_targets', 'Других бэкендов того же типа в кластере нет — переносить некуда.')) +
                 '</div>';
             return;
         }
         var rows = candidates.map(function (b) {
             var checked = candidates.length === 1 ? ' checked' : '';
-            return '<label style="display:flex;gap:8px;align-items:center;padding:6px 0;font-size:13px;">' +
+            return '<label style="display:flex;gap:8px;align-items:center;padding:6px 0;font-size:var(--font-size-sm);">' +
                 '<input type="checkbox" class="share-target-cb" value="' + esc(b.id) + '"' + checked + '>' +
                 '<span><strong>' + esc(b.id) + '</strong>' +
                 (b.host ? ' <span style="color:var(--text-muted,#666);">(' + esc(b.host) + ')</span>' : '') +
                 '</span></label>';
         }).join('');
         body.innerHTML =
-            '<div style="font-size:13px;margin-bottom:6px;">' + esc(t('share.pick_targets', 'Куда перенести:')) + '</div>' +
+            '<div style="font-size:var(--font-size-sm);margin-bottom:6px;">' + esc(t('share.pick_targets', 'Куда перенести:')) + '</div>' +
             rows +
-            '<label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px;">' +
+            '<label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:var(--font-size-sm);">' +
                 '<input type="checkbox" id="shareOverwrite">' +
                 '<span>' + esc(t('share.overwrite', 'Перезаписать, если модель уже есть на приёмнике')) + '</span>' +
             '</label>' +
-            '<div id="shareError" style="color:var(--danger,#c33);font-size:13px;margin-top:8px;"></div>' +
+            '<div id="shareError" style="color:var(--danger,#c33);font-size:var(--font-size-sm);margin-top:8px;"></div>' +
             '<div style="display:flex;gap:8px;margin-top:14px;">' +
                 '<button class="btn btn-primary" id="shareStart">' + esc(t('share.start', 'Начать перенос')) + '</button>' +
             '</div>';
@@ -298,7 +298,7 @@
         var overwrite = !!(byId('shareOverwrite') && byId('shareOverwrite').checked);
         renderError('');
         var body = byId('shareBody');
-        if (body) body.innerHTML = '<div style="font-size:13px;"><i class="fas fa-circle-notch fa-spin"></i> ' +
+        if (body) body.innerHTML = '<div style="font-size:var(--font-size-sm);"><i class="fas fa-circle-notch fa-spin"></i> ' +
             esc(t('share.starting', 'Запускаю перенос…')) + '</div>';
         request(apiBase() + '/api/v1/models/share', {
             method: 'POST',
@@ -320,7 +320,7 @@
         var rows = targets.map(function (tg) {
             var v = targetView(tg);
             return '<div style="padding:8px 0;border-top:1px solid var(--border,#eee);">' +
-                '<div style="display:flex;justify-content:space-between;font-size:13px;gap:8px;">' +
+                '<div style="display:flex;justify-content:space-between;font-size:var(--font-size-sm);gap:8px;">' +
                     '<span><strong>' + esc(tg.backendId) + '</strong> — ' + esc(v.label) + '</span>' +
                     '<span style="color:var(--text-muted,#666);">' + esc(v.detail || '') + '</span>' +
                 '</div>' +
@@ -330,12 +330,12 @@
             '</div>';
         }).join('');
         var finished = jobFinished(job);
-        var head = '<div style="font-size:13px;">' +
+        var head = '<div style="font-size:var(--font-size-sm);">' +
             esc(t('share.job_state', 'Состояние задания')) + ': <strong>' + esc(stateLabel(job.state)) + '</strong>' +
             (job.error ? '<div style="color:var(--danger,#c33);margin-top:6px;">' + esc(job.error) + '</div>' : '') +
             '</div>';
         var footer = finished
-            ? '<div style="margin-top:12px;font-size:13px;color:var(--text-muted,#666);">' +
+            ? '<div style="margin-top:12px;font-size:var(--font-size-sm);color:var(--text-muted,#666);">' +
                 esc(t('share.finished_hint', 'Готово. Обновите страницу бэкендов, чтобы увидеть модель на приёмнике.')) +
               '</div>'
             : '<div style="margin-top:12px;"><button class="btn btn-sm btn-secondary" id="shareCancel">' +
@@ -385,7 +385,7 @@
         var box = ensureModal();
         renderShell(box, opts);
         var body = byId('shareBody');
-        if (body) body.innerHTML = '<div style="font-size:13px;"><i class="fas fa-circle-notch fa-spin"></i> ' +
+        if (body) body.innerHTML = '<div style="font-size:var(--font-size-sm);"><i class="fas fa-circle-notch fa-spin"></i> ' +
             esc(t('share.loading_backends', 'Смотрю бэкенды кластера…')) + '</div>';
         return request(apiBase() + '/api/v1/backends')
             .then(function (data) {
@@ -399,7 +399,7 @@
             })
             .catch(function (err) {
                 var b = byId('shareBody');
-                if (b) b.innerHTML = '<div style="font-size:13px;color:var(--danger,#c33);">' +
+                if (b) b.innerHTML = '<div style="font-size:var(--font-size-sm);color:var(--danger,#c33);">' +
                     esc((err && err.message) || String(err)) + '</div>';
                 return false;
             });

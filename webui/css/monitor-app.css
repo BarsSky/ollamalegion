@@ -1,4 +1,4 @@
-/* ==============================
+﻿/* ==============================
    Monitor Application Styles
    Extracted from monitor.html
    ============================== */
@@ -19,7 +19,7 @@ html, body {
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font);
-  font-size: 14px;
+  font-size: var(--font-size-base);
   line-height: 1.5;
   height: 100%;
   overflow: hidden;
@@ -67,7 +67,7 @@ header::after {
   background: var(--glass-highlight);
   pointer-events: none;
 }
-header h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+header h1 { font-size: var(--font-size-md); font-weight: 600; display: flex; align-items: center; gap: 8px; }
 /* R238d: monitor в iframe WebUI - язык и вход управляются внешней страницей.
    Свой селектор языка и своя плашка пользователя здесь только дублировали UI. */
 html.monitor-embedded #langSelect,
@@ -84,20 +84,20 @@ header h1 .dot.demo { background: var(--info); animation: none; }
 .legend-dot.green { background: var(--success); }
 .legend-dot.yellow { background: var(--warning); }
 .legend-dot.red { background: var(--danger); }
-.legend-text { font-size: 11px; color: var(--text-secondary); white-space: nowrap; margin-right: 4px; }
+.legend-text { font-size: var(--font-size-xs); color: var(--text-secondary); white-space: nowrap; margin-right: 4px; }
 /* Badges - тема-управляемые полупрозрачные фоны (Session 17) */
-.badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; font-family: var(--font-mono); background: var(--glass-soft-2); color: var(--text-secondary); border: 1px solid var(--border-color); }
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; font-size: var(--font-size-xs); font-weight: 600; font-family: var(--font-mono); background: var(--glass-soft-2); color: var(--text-secondary); border: 1px solid var(--border-color); }
 .badge-green { background: var(--success-bg-soft-2); color: var(--success); border-color: var(--success-bg-soft-2); }
 .badge-yellow { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-soft); }
 .badge-red { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-soft); }
 .badge-blue { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-soft); }
 .badge-purple { background: rgba(168, 85, 247, 0.12); color: var(--purple-accent); border-color: rgba(168, 85, 247, 0.2); }
-select, button { background: var(--bg-hover); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+select, button { background: var(--bg-hover); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 10px; font-size: var(--font-size-xs); cursor: pointer; }
 button:hover { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(11,17,32,0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); z-index: 10; text-align: center; padding: 24px; }
 .overlay.hidden { display: none; }
-.overlay h2 { font-size: 18px; color: var(--text-primary); }
+.overlay h2 { font-size: var(--font-size-lg); color: var(--text-primary); }
 .overlay p { color: var(--text-secondary); max-width: 480px; }
 .overlay .spinner { width: 32px; height: 32px; border: 3px solid var(--border-color); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -116,18 +116,18 @@ main { display: flex; flex-direction: column; flex: 1 1 auto; height: auto; min-
 .stats-bar { position: relative; flex: 0 0 auto; display: flex; justify-content: center; gap: 12px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 0; padding: 8px 16px; backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); box-shadow: var(--glass-shadow); z-index: 4; border-top: 2px solid var(--glass-border); }
 .stats-bar::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: var(--glass-highlight); pointer-events: none; }
 .stat-item { display: flex; flex-direction: column; align-items: center; min-width: 56px; padding: 2px 6px; }
-.stat-val { font-size: 15px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono); }
-.stat-label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
+.stat-val { font-size: var(--font-size-md); font-weight: 700; color: var(--text-primary); font-family: var(--font-mono); }
+.stat-label { font-size: var(--font-size-xs); color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
 .tables-area { flex: 0 0 auto; max-height: 45vh; overflow-y: auto; border-top: 1px solid var(--glass-border); background: var(--glass-bg); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); box-shadow: var(--glass-shadow); position: relative; z-index: 2; }
 .tables-area::after { content: ''; position: sticky; top: 0; left: 0; right: 0; height: 1px; background: var(--glass-highlight); pointer-events: none; z-index: 10; }
 .panel { border-bottom: 1px solid var(--border-color); }
-.panel-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; cursor: pointer; user-select: none; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); transition: background 0.2s, color 0.2s; }
+.panel-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; cursor: pointer; user-select: none; font-weight: 600; font-size: var(--font-size-xs); text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); transition: background 0.2s, color 0.2s; }
 .panel-header:hover { color: var(--text-primary); background: var(--bg-hover); }
 .panel-body { display: none; padding: 0 14px 10px; }
 .panel.open .panel-body { display: block; }
 .panel.open .panel-header .chevron { transform: rotate(180deg); }
 .chevron { transition: transform 0.2s; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+table { width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); }
 thead th { text-align: left; padding: 7px 10px; color: var(--text-secondary); font-weight: 600; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; background: var(--bg-secondary); z-index: 2; }
 tbody td { padding: 7px 10px; border-bottom: 1px solid var(--row-border); vertical-align: middle; }
 tbody tr:nth-child(even) { background: var(--row-stripe); }
@@ -154,7 +154,7 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
   border-radius: 9px;
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   font-weight: 700;
   font-family: var(--font-mono);
   margin-left: 6px;
@@ -170,17 +170,17 @@ tbody tr:hover { background: rgba(255,255,255,0.04); }
   background: var(--bg-primary);
 }
 /* Alert banner - тема-управляемые полупрозрачные фоны (Session 17) */
-.alert-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 6px; margin: 6px 14px 0; font-size: 12px; }
+.alert-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 6px; margin: 6px 14px 0; font-size: var(--font-size-xs); }
 .alert-red { background: var(--danger-bg-soft); border: 1px solid var(--danger-bg-soft); color: var(--danger); }
 .alert-yellow { background: var(--warning-bg-soft); border: 1px solid var(--warning-bg-soft); color: var(--warning); }
 .capacity-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; padding: 10px 14px; }
 .capacity-card { background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 12px; padding: 10px 12px; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); box-shadow: var(--glass-shadow); position: relative; }
 .capacity-card::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: var(--glass-highlight); pointer-events: none; border-radius: 12px 12px 0 0; }
-.capacity-card h4 { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.capacity-card h4 { font-size: var(--font-size-xs); color: var(--text-secondary); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
 .capacity-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .bar-track-wide { flex: 1; height: 8px; background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden; }
 .bar-fill-wide { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
-.capacity-val { font-size: 11px; font-family: var(--font-mono); color: var(--text-secondary); min-width: 60px; text-align: right; }
+.capacity-val { font-size: var(--font-size-xs); font-family: var(--font-mono); color: var(--text-secondary); min-width: 60px; text-align: right; }
 /* R55.6 (2026-08-24): monitor-app scrollbar удален - теперь глобальный
    theme-aware scrollbar в themes.css (skygate pattern, 8px, theme borders).
    Pre-R55.6 был 6px + --border-color (устарело). */

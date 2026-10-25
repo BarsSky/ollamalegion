@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -62,6 +62,9 @@
     <link rel="stylesheet" href="css/responsive.css?v=R83">
     <!-- R232: стили демо-режима (активны только при body.demo-mode) -->
     <link rel="stylesheet" href="css/demo.css?v=R232">
+    <!-- R239: финальный слой полировки. Грузится последним, чтобы выровнять
+         ритм/типографику/геометрию контролов поверх старых правил. -->
+    <link rel="stylesheet" href="css/polish.css?v=R239">
 </head>
 <body>
     <div class="app">
@@ -283,7 +286,7 @@
                          только когда раскладка активна; данные device_layers_exact. -->
                     <div id="layoutLayersInfo" style="display:none;margin:0 0 10px;padding:8px 10px;
                          border-radius:6px;background:rgba(59,130,246,0.10);border:1px solid rgba(59,130,246,0.35);
-                         font-size:12px;color:#60a5fa;"></div>
+                         font-size:var(--font-size-xs);color:#60a5fa;"></div>
                     <div class="table-responsive">
                         <table class="data-table" id="backendsTable">
                             <thead>
@@ -437,7 +440,7 @@
                         <button class="btn-bulk-select-all" onclick="window.bulkModels.selectAll()" data-i18n="models.bulk.select_all">Select All</button>
                         <button class="btn-bulk-select-loaded" onclick="window.bulkModels.selectLoaded()" data-i18n="models.bulk.select_loaded">Select Loaded</button>
                         <button class="btn-bulk-select-none" onclick="window.bulkModels.selectNone()" data-i18n="models.bulk.select_none">Clear Selection</button>
-                        <span class="models-count" id="modelsCount" style="display:none;margin-left:auto;align-self:center;font-size:13px;color:var(--text-muted)"></span>
+                        <span class="models-count" id="modelsCount" style="display:none;margin-left:auto;align-self:center;font-size:var(--font-size-sm);color:var(--text-muted)"></span>
                     </div>
                     <div class="models-bulk-toolbar" id="modelsBulkToolbar" style="display:none;">
                         <!-- динамически заполняется bulk-models.js renderToolbar() -->
@@ -649,15 +652,15 @@
                     <div class="card-header">
                         <h3><i class="fas fa-wand-magic-sparkles section-icon-i"></i> <span data-i18n="image.title">Генерация изображений</span></h3>
                         <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                            <span style="font-size:12px;color:var(--text-muted);" data-i18n="image.backend">Image-бэкенд</span>
+                            <span style="font-size:var(--font-size-xs);color:var(--text-muted);" data-i18n="image.backend">Image-бэкенд</span>
                             <select class="sort-select" id="imgBackendSelect"></select>
-                            <span style="font-size:12px;color:var(--text-muted);" data-i18n="image.model">Модель</span>
+                            <span style="font-size:var(--font-size-xs);color:var(--text-muted);" data-i18n="image.model">Модель</span>
                             <select class="sort-select" id="imgModelSelect"></select>
                         </div>
                     </div>
                     <div class="card-body">
                         <!-- Notice: нет image-бэкендов / API воркера ещё не отдаёт данные -->
-                        <div id="imgNotice" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
+                        <div id="imgNotice" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:var(--font-size-sm);color:var(--text-muted);"></div>
 
                     </div>
                 </div>
@@ -689,8 +692,8 @@
                         </div>
                     </div>
                     <div class="card-body">
-                        <p style="margin:0 0 6px;font-size:12px;color:var(--text-muted);" data-i18n="imageBackends.hint">Бэкенды генерации изображений (тип image_cpp): порт воркера, GPU, состояние, модели и поток запросов.</p>
-                        <p style="margin:0 0 12px;font-size:12px;color:var(--text-muted);">
+                        <p style="margin:0 0 6px;font-size:var(--font-size-xs);color:var(--text-muted);" data-i18n="imageBackends.hint">Бэкенды генерации изображений (тип image_cpp): порт воркера, GPU, состояние, модели и поток запросов.</p>
+                        <p style="margin:0 0 12px;font-size:var(--font-size-xs);color:var(--text-muted);">
                             <i class="fas fa-circle-info" aria-hidden="true"></i>
                             <span data-i18n="imageBackends.policy">Сосуществование с текстом</span>:
                             <!-- Фактическое значение подгружает модуль страницы из
@@ -699,7 +702,7 @@
                                  бэкенда, а не значение политики (выглядело как настройка). -->
                             <span id="imageBackendsPolicy">—</span>
                         </p>
-                        <div id="imageBackendsNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
+                        <div id="imageBackendsNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:var(--font-size-sm);color:var(--text-muted);"></div>
                         <div class="table-responsive">
                             <table class="data-table" id="imageBackendsTable">
                                 <thead>
@@ -752,7 +755,7 @@
                         <div class="card-header">
                             <h3><i class="fas fa-scale-balanced section-icon-i"></i> <span data-i18n="imagePolicy.title">Политика сосуществования с текстом</span></h3>
                             <div class="card-actions">
-                                <span id="imPolicyBadge" style="display:none;font-size:11px;color:var(--warning, #e0a030);" data-i18n="imagePolicy.badge_override">переопределено из WebUI</span>
+                                <span id="imPolicyBadge" style="display:none;font-size:var(--font-size-xs);color:var(--warning, #e0a030);" data-i18n="imagePolicy.badge_override">переопределено из WebUI</span>
                                 <button class="btn btn-secondary" id="imPolicyResetBtn" data-admin-only data-i18n="imagePolicy.reset">Сбросить к встроенным</button>
                                 <button class="btn btn-primary" id="imPolicySaveBtn" data-admin-only data-i18n="common.save">Сохранить</button>
                             </div>
@@ -773,8 +776,8 @@
                             <!-- Проверка НЕ показывает картинку: 1 шаг 64x64, в UI едет
                                  только результат (OK/ошибка) и время — это диагностика
                                  «система жива», а не витрина генерации. -->
-                            <small style="display:block;color:var(--text-muted);font-size:11px;" data-i18n="imageModels.selftest_hint">1 шаг 64x64, показывается только результат и время — сгенерированное изображение в WebUI не отображается.</small>
-                            <div id="imSelfTestResult" style="margin-top:10px;font-size:13px;color:var(--text-muted);"></div>
+                            <small style="display:block;color:var(--text-muted);font-size:var(--font-size-xs);" data-i18n="imageModels.selftest_hint">1 шаг 64x64, показывается только результат и время — сгенерированное изображение в WebUI не отображается.</small>
+                            <div id="imSelfTestResult" style="margin-top:10px;font-size:var(--font-size-sm);color:var(--text-muted);"></div>
                         </div>
                     </div>
                 </div>
@@ -792,7 +795,7 @@
                         </div>
                     </div>
                     <div class="card-body">
-                        <div id="imgModelsNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
+                        <div id="imgModelsNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:var(--font-size-sm);color:var(--text-muted);"></div>
                         <div class="table-responsive">
                             <table class="data-table" id="imgModelsTable">
                                 <thead>
@@ -830,7 +833,7 @@
                         <h3><i class="fab fa-huggingface section-icon-i"></i> <span data-i18n="imageModels.hf_search_title">Поиск модели на HuggingFace</span></h3>
                     </div>
                     <div class="card-body">
-                        <small style="display:block;margin-bottom:10px;color:var(--text-muted);font-size:11px;" data-i18n="imageModels.hf_search_hint">Введите 2 и более символа или org/model (со слешем) — сразу попадёте к списку файлов репозитория.</small>
+                        <small style="display:block;margin-bottom:10px;color:var(--text-muted);font-size:var(--font-size-xs);" data-i18n="imageModels.hf_search_hint">Введите 2 и более символа или org/model (со слешем) — сразу попадёте к списку файлов репозитория.</small>
                         <div class="gguf-search-form">
                             <div class="gguf-search-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
                                 <div class="form-group" style="flex:2;min-width:220px;margin:0;">
@@ -858,15 +861,15 @@
                 <div class="card" id="imHfFilesCard" style="display:none;">
                     <div class="card-header">
                         <h3><i class="fas fa-file section-icon-i"></i> <span data-i18n="imageModels.hf_files_title">Файлы репозитория</span>:
-                            <span id="imHfRepoName" style="font-family:monospace;font-size:13px;"></span></h3>
+                            <span id="imHfRepoName" style="font-family:var(--font-family-mono);font-size:var(--font-size-sm);"></span></h3>
                         <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                            <span id="imHfSelectionSummary" style="font-size:12px;color:var(--text-muted);"></span>
+                            <span id="imHfSelectionSummary" style="font-size:var(--font-size-xs);color:var(--text-muted);"></span>
                             <button class="btn btn-secondary" data-imh-action="suggested" data-i18n="imageModels.hf_select_suggested">Отметить по ролям</button>
                             <button class="btn btn-secondary" data-imh-action="clear" data-i18n="imageModels.hf_clear_selection">Снять отметки</button>
                         </div>
                     </div>
                     <div class="card-body">
-                        <small style="display:block;margin-bottom:10px;color:var(--text-muted);font-size:11px;" data-i18n="imageModels.hf_files_hint">Роли предложены по именам файлов на сервере: проверьте их перед загрузкой. Крупные text encoder'ы (t5xxl/llm) по умолчанию не отмечены — их нужно выбирать осознанно.</small>
+                        <small style="display:block;margin-bottom:10px;color:var(--text-muted);font-size:var(--font-size-xs);" data-i18n="imageModels.hf_files_hint">Роли предложены по именам файлов на сервере: проверьте их перед загрузкой. Крупные text encoder'ы (t5xxl/llm) по умолчанию не отмечены — их нужно выбирать осознанно.</small>
                         <div id="imHfFilesBody" class="gguf-files-list"></div>
                     </div>
                 </div>
@@ -877,7 +880,7 @@
                         <h3><i class="fas fa-download section-icon-i"></i> <span data-i18n="image.bundle_title">Скачать модель с HuggingFace</span></h3>
                     </div>
                     <div class="card-body">
-                        <small style="display:block;margin-bottom:12px;color:var(--text-muted);font-size:11px;" data-i18n="image.bundle_hint">Image-модель - это набор файлов: diffusion + VAE + text encoder. Для sd.cpp рабочие репозитории обычно leejet/* (city96/* для FLUX в sd.cpp не грузятся).</small>
+                        <small style="display:block;margin-bottom:12px;color:var(--text-muted);font-size:var(--font-size-xs);" data-i18n="image.bundle_hint">Image-модель - это набор файлов: diffusion + VAE + text encoder. Для sd.cpp рабочие репозитории обычно leejet/* (city96/* для FLUX в sd.cpp не грузятся).</small>
                         <div class="form-row">
                             <div class="form-group">
                                 <label data-i18n="image.bundle_name">Имя bundle</label>
@@ -896,10 +899,10 @@
                             <button class="btn btn-primary" id="imgBundleStart" data-admin-only data-imh-action="download" data-i18n="image.bundle_download">Скачать bundle</button>
                         </div>
                         <div id="imgBundleProgress" style="display:none;margin-top:12px;">
-                            <div id="imgBundleProgressLabel" style="font-size:12px;color:var(--text-muted);margin-bottom:4px;"></div>
+                            <div id="imgBundleProgressLabel" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-bottom:4px;"></div>
                             <div class="metric-mini-bar"><div class="metric-mini-fill" id="imgBundleProgressFill" style="width:0%"></div></div>
                         </div>
-                        <div id="imgBundleStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;"></div>
+                        <div id="imgBundleStatus" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:8px;"></div>
                     </div>
                 </div>
 
@@ -914,9 +917,9 @@
                             <h3><i class="fas fa-microchip section-icon-i"></i> <span data-i18n="imageModels.loaded_title">Загруженная модель</span></h3>
                         </div>
                         <div class="card-body">
-                            <div id="imLoadedState" style="font-size:13px;color:var(--text-muted);"></div>
+                            <div id="imLoadedState" style="font-size:var(--font-size-sm);color:var(--text-muted);"></div>
                         <div id="imgLoadProgress" style="display:none;margin-bottom:12px;">
-                            <div id="imgLoadProgressLabel" style="font-size:12px;color:var(--text-muted);margin-bottom:4px;"></div>
+                            <div id="imgLoadProgressLabel" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-bottom:4px;"></div>
                             <div class="metric-mini-bar" id="imgLoadProgressBar" style="display:none;"><div class="metric-mini-fill" id="imgLoadProgressFill" style="width:0%"></div></div>
                         </div>
                         </div>
@@ -953,8 +956,8 @@
                         </div>
                     </div>
                     <div class="card-body">
-                        <small style="display:block;margin-bottom:8px;color:var(--text-muted);font-size:11px;" data-i18n="imageModels.backend_params_hint">Порт воркера, GPU-индекс, вес, лимит параллельных запросов и idle-выгрузка задаются в карточке бэкенда (таб «Обзор»): эти поля влияют на балансер, а не на профиль модели.</small>
-                        <div id="imBackendParamsState" style="font-size:12px;color:var(--text-muted);"></div>
+                        <small style="display:block;margin-bottom:8px;color:var(--text-muted);font-size:var(--font-size-xs);" data-i18n="imageModels.backend_params_hint">Порт воркера, GPU-индекс, вес, лимит параллельных запросов и idle-выгрузка задаются в карточке бэкенда (таб «Обзор»): эти поля влияют на балансер, а не на профиль модели.</small>
+                        <div id="imBackendParamsState" style="font-size:var(--font-size-xs);color:var(--text-muted);"></div>
                     </div>
                 </div>
                 <!-- Image model profiles (R-Image Phase 6, webui/js/modules/image-profiles.js).
@@ -966,12 +969,12 @@
                     <div class="card-header">
                         <h3><i class="fas fa-sliders section-icon-i"></i> <span data-i18n="image.profiles.title">Профили image-моделей</span></h3>
                         <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                            <span id="imageProfilesCount" style="font-size:12px;color:var(--text-muted);"></span>
+                            <span id="imageProfilesCount" style="font-size:var(--font-size-xs);color:var(--text-muted);"></span>
                                 <button class="btn btn-primary" id="imageProfilesNewBtn" data-admin-only data-i18n="image.profiles.new">Новый профиль</button>
                         </div>
                     </div>
                     <div class="card-body">
-                        <small style="display:block;margin-bottom:12px;color:var(--text-muted);font-size:11px;" data-i18n="image.profiles.hint">Профиль (bundle) описывает состав файлов модели, дефолты генерации и флаги sd-server. Сохранение меняет только файл профилей: работающий воркер подхватит его при следующей загрузке модели или сразу по кнопке «Применить».</small>
+                        <small style="display:block;margin-bottom:12px;color:var(--text-muted);font-size:var(--font-size-xs);" data-i18n="image.profiles.hint">Профиль (bundle) описывает состав файлов модели, дефолты генерации и флаги sd-server. Сохранение меняет только файл профилей: работающий воркер подхватит его при следующей загрузке модели или сразу по кнопке «Применить».</small>
                         <div id="imageProfilesNotice" style="display:none;margin-bottom:12px;"></div>
                         <div class="table-responsive">
                             <table class="data-table" id="imageProfilesTable">
@@ -1005,19 +1008,19 @@
                         <div class="card-header">
                             <h3><i class="fas fa-flask-vial section-icon-i"></i> <span data-i18n="imageTest.title">Тест генерации изображений</span></h3>
                             <div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                                <span style="font-size:12px;color:var(--text-muted);" data-i18n="imageTest.backend">Бэкенд</span>
+                                <span style="font-size:var(--font-size-xs);color:var(--text-muted);" data-i18n="imageTest.backend">Бэкенд</span>
                                 <select class="sort-select" id="imgTestBackendSelect"></select>
-                                <span style="font-size:12px;color:var(--text-muted);" data-i18n="imageTest.model">Модель</span>
+                                <span style="font-size:var(--font-size-xs);color:var(--text-muted);" data-i18n="imageTest.model">Модель</span>
                                 <select class="sort-select" id="imgTestModelSelect"></select>
-                                <span style="font-size:12px;color:var(--text-muted);" data-i18n="imageTest.model_state">Состояние</span>
-                                <span id="imgTestModelState" style="font-size:12px;">—</span>
+                                <span style="font-size:var(--font-size-xs);color:var(--text-muted);" data-i18n="imageTest.model_state">Состояние</span>
+                                <span id="imgTestModelState" style="font-size:var(--font-size-xs);">—</span>
                                 <button class="btn btn-secondary" data-imt-action="defaults" data-i18n="imageTest.apply_defaults">Из профиля</button>
                                 <button class="btn btn-secondary" data-imt-action="load-model" data-i18n="gguf.load_model">Загрузить модель</button>
                                 <button class="btn btn-secondary" data-imt-action="unload-model" data-i18n="gguf.unload_model">Выгрузить</button>
                                         </div>
                         </div>
                         <div class="card-body">
-                            <div id="imgTestNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:13px;color:var(--text-muted);"></div>
+                            <div id="imgTestNotice" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--border-color);font-size:var(--font-size-sm);color:var(--text-muted);"></div>
                             <div class="form-row">
                                 <div class="form-group" style="flex:2;">
                                     <label data-i18n="image.prompt">Промпт</label>
@@ -1078,7 +1081,7 @@
                                 <button class="btn btn-primary" data-imt-action="generate" data-i18n="imageTest.generate">Сгенерировать</button>
                                 <button class="btn btn-secondary" data-imt-action="copy-curl" data-i18n="clientAccess.copy_curl">Копировать curl</button>
                             </div>
-                            <small id="imgTestCapsNote" style="display:block;margin-top:8px;color:var(--text-muted);font-size:11px;"></small>
+                            <small id="imgTestCapsNote" style="display:block;margin-top:8px;color:var(--text-muted);font-size:var(--font-size-xs);"></small>
                         </div>
                     </div>
     
@@ -1087,15 +1090,15 @@
                             <h3><i class="fas fa-code section-icon-i"></i> <span data-i18n="imageTest.request_title">Что уйдёт в запрос</span></h3>
                         </div>
                         <div class="card-body">
-                            <small style="display:block;margin-bottom:8px;color:var(--text-muted);font-size:11px;" data-i18n="imageTest.request_hint">Показывается ровно то, что уходит клиентским путём балансера (гейт VRAM и счётчики Monitor работают как у реальных клиентов).</small>
-                            <pre id="imgTestRequestPreview" style="white-space:pre-wrap;font-size:11px;margin:0;max-height:220px;overflow:auto;"></pre>
+                            <small style="display:block;margin-bottom:8px;color:var(--text-muted);font-size:var(--font-size-xs);" data-i18n="imageTest.request_hint">Показывается ровно то, что уходит клиентским путём балансера (гейт VRAM и счётчики Monitor работают как у реальных клиентов).</small>
+                            <pre id="imgTestRequestPreview" style="white-space:pre-wrap;font-size:var(--font-size-xs);margin:0;max-height:220px;overflow:auto;"></pre>
                         </div>
                     </div>
     
                     <div class="card">
                         <div class="card-header">
                             <h3><i class="fas fa-image section-icon-i"></i> <span data-i18n="imageTest.result_title">Результат</span></h3>
-                            <div class="card-actions"><span id="imgTestResultMeta" style="font-size:12px;color:var(--text-muted);"></span></div>
+                            <div class="card-actions"><span id="imgTestResultMeta" style="font-size:var(--font-size-xs);color:var(--text-muted);"></span></div>
                         </div>
                         <div class="card-body">
                             <div id="imgTestResultHost">
@@ -1200,20 +1203,20 @@
                                  <span data-i18n="settings.section.log_language">Язык логов и ошибок</span>
                              </div>
                              <div class="settings-section-body open">
-                                 <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px"
+                                 <p style="color:var(--text-muted);font-size:var(--font-size-sm);margin-bottom:12px"
                                     data-i18n="settings.log_language.desc">Язык логов и сообщений об ошибках у балансера, cppworker и агента. Английский интерфейс не влияет на логи: это отдельная настройка стенда. Переключение действует без перезапуска контейнеров — воркеры подтягивают язык с балансера.</p>
                                  <div class="form-row" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
                                      <label for="logLanguageSelect" style="font-weight:600" data-i18n="settings.log_language.label">Язык</label>
-                                     <select id="logLanguageSelect" data-admin-only style="min-width:220px;padding:6px 10px">
+                                     <select id="logLanguageSelect" class="form-control" data-admin-only style="width:auto;min-width:220px;max-width:340px">
                                          <option value="auto" data-i18n="settings.log_language.auto">Авто (из локали контейнера)</option>
                                          <option value="ru" data-i18n="settings.log_language.ru">Русский</option>
                                          <option value="en" data-i18n="settings.log_language.en">English</option>
                                      </select>
                                      <button type="button" class="btn btn-primary" id="logLanguageApply" data-admin-only
                                              data-i18n="settings.log_language.apply">Применить</button>
-                                     <span id="logLanguageStatus" style="font-size:12px;color:var(--text-muted)"></span>
+                                     <span id="logLanguageStatus" style="font-size:var(--font-size-xs);color:var(--text-muted)"></span>
                                  </div>
-                                 <p style="color:var(--text-muted);font-size:12px;margin-top:8px"
+                                 <p style="color:var(--text-muted);font-size:var(--font-size-xs);margin-top:8px"
                                     data-i18n="settings.log_language.hint">Уровень логов задаётся переменной LOG_LEVEL, язык — этой настройкой (env OLLAMALEGION_LOG_LANG имеет приоритет при старте).</p>
                              </div>
                          </div>
@@ -1255,10 +1258,10 @@
                                              <div class="mode-card-desc" data-i18n="wizard.backend_type_llama_desc">llama.cpp через CppWorker</div>
                                          </label>
                                      </div>
-                                     <div id="backendEngineStatusMsg" style="margin-top: 8px; font-size: 12px; color: var(--text-muted); display: none;"></div>
+                                     <div id="backendEngineStatusMsg" style="margin-top: 8px; font-size:var(--font-size-xs); color: var(--text-muted); display: none;"></div>
                                  </div>
-                                 <div style="margin-bottom:10px;padding:8px 10px;border-radius:6px;background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.35);font-size:12px;color:#f59e0b;">⚠ <strong>Устарело.</strong> Режимы B/C/D больше не настраиваются здесь: раскладка слоёв задаётся <strong>ролями бэкендов на странице «Монитор»</strong> (панель «Раскладка слоёв (RPC)»), а маршрутизация — политикой размещения (балансер / панель объединения бэкендов). Этот блок оставлен для совместимости: выбор режима конвертируется в политику размещения миграцией.</div>
-<p style="color:var(--text-muted);margin-bottom:16px;font-size:13px;" data-i18n="settings.rpc_distribution_title">Выберите режим работы балансировщика</p>
+                                 <div style="margin-bottom:10px;padding:8px 10px;border-radius:6px;background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.35);font-size:var(--font-size-xs);color:#f59e0b;">⚠ <strong>Устарело.</strong> Режимы B/C/D больше не настраиваются здесь: раскладка слоёв задаётся <strong>ролями бэкендов на странице «Монитор»</strong> (панель «Раскладка слоёв (RPC)»), а маршрутизация — политикой размещения (балансер / панель объединения бэкендов). Этот блок оставлен для совместимости: выбор режима конвертируется в политику размещения миграцией.</div>
+<p style="color:var(--text-muted);margin-bottom:16px;font-size:var(--font-size-sm);" data-i18n="settings.rpc_distribution_title">Выберите режим работы балансировщика</p>
                                  <!-- Mode cards (radio-based) -->
                                  <div class="mode-cards">
                                     <label class="mode-card" data-mode="standard">
@@ -1315,14 +1318,14 @@
                                      скрыты как непроверенные. -->
                                 <div style="margin:12px 0 16px;padding:12px 14px;border:1px solid var(--border-color,#3a3f4b);border-radius:8px;background:rgba(120,150,255,0.06)">
                                     <div style="font-weight:600;margin-bottom:4px" data-i18n="settings.layout_hint_title">🧩 Раскладка слоёв (RPC) настраивается на странице «Мониторинг»</div>
-                                    <div style="font-size:12px;color:var(--text-muted)" data-i18n="settings.layout_hint_desc">В панели «Раскладка слоёв (RPC)» укажите главный бэкенд (мастер) и отметьте доноров (узлы), затем «Применить раскладку». Главному балансер сам пришлёт адреса живых rpc-server'ов: недоступный узел отключается автоматически и модель грузится локально, а вернувшийся включается сам. Ту же роль можно задать селектором в строке бэкенда.</div>
+                                    <div style="font-size:var(--font-size-xs);color:var(--text-muted)" data-i18n="settings.layout_hint_desc">В панели «Раскладка слоёв (RPC)» укажите главный бэкенд (мастер) и отметьте доноров (узлы), затем «Применить раскладку». Главному балансер сам пришлёт адреса живых rpc-server'ов: недоступный узел отключается автоматически и модель грузится локально, а вернувшийся включается сам. Ту же роль можно задать селектором в строке бэкенда.</div>
                                     <button type="button" onclick="var n=document.querySelector('.nav-item[data-page=monitor]'); if(n){n.click();}"
                                             style="margin-top:8px;padding:6px 12px;cursor:pointer" data-i18n="settings.layout_hint_open">Открыть «Мониторинг»</button>
                                 </div>
                                 <!-- Mode-specific fields -->
                                 <div class="mode-fields-container">
                                     <div id="modeFields-standard" class="mode-fields active">
-                                        <p style="color:var(--text-muted);font-size:13px;" data-i18n="wizard.summary_empty">Стандартный режим - дополнительные параметры не требуются</p>
+                                        <p style="color:var(--text-muted);font-size:var(--font-size-sm);" data-i18n="wizard.summary_empty">Стандартный режим - дополнительные параметры не требуются</p>
                                     </div>
                                     <div id="modeFields-replication" class="mode-fields">
                                         <div class="form-row">
@@ -1582,7 +1585,7 @@
                                 <span data-i18n="settings.section.backend_limits">Лимиты бэкендов</span>
                             </div>
                             <div class="settings-section-body open">
-                                <p style="color:var(--text-muted);margin-bottom:12px;font-size:13px;" data-i18n="settings.backend_limits_desc">
+                                <p style="color:var(--text-muted);margin-bottom:12px;font-size:var(--font-size-sm);" data-i18n="settings.backend_limits_desc">
                                     Настройте лимиты Max Concurrent Requests и Max Models для каждого бэкенда. Для бэкендов без агента лимиты применяются только на уровне балансировщика.
                                 </p>
                                 <div class="table-responsive">
@@ -1616,13 +1619,13 @@
                                 <span data-i18n="settings.section.llama_cpp">Настройки llama.cpp / GGUF</span>
                             </div>
                             <div class="settings-section-body open">
-                                <p style="color:var(--text-muted);margin-bottom:16px;font-size:13px;" data-i18n="settings.llama_cpp_desc">
+                                <p style="color:var(--text-muted);margin-bottom:16px;font-size:var(--font-size-sm);" data-i18n="settings.llama_cpp_desc">
                                     Глобальные параметры загрузки GGUF-моделей. Применяются ко всем llama.cpp бэкендам. Могут быть переопределены на странице GGUF для конкретной модели.
                                 </p>
 
                                 <!-- ==================== Quick Presets (Session 18, рефакторинг) ==================== -->
                                 <div class="gguf-presets-bar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;padding:12px;background:var(--bg-hover);border-radius:8px;">
-                                    <span style="font-size:12px;color:var(--text-muted);align-self:center;margin-right:4px;" data-i18n="gguf.presets_label">Пресеты:</span>
+                                    <span style="font-size:var(--font-size-xs);color:var(--text-muted);align-self:center;margin-right:4px;" data-i18n="gguf.presets_label">Пресеты:</span>
                                     <button type="button" class="btn btn-sm btn-secondary" id="ggufPresetSpeed" data-admin-only data-preset="speed">
                                         <i class="fas fa-bolt"></i> <span data-i18n="gguf.preset_speed">Макс. скорость</span>
                                     </button>
@@ -1994,7 +1997,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                             </button>
                                         </div>
                                     </div>
-                                    <p style="color:var(--text-muted);margin:8px 0 0 0;font-size:12px;" data-i18n="gguf.overrides_desc">
+                                    <p style="color:var(--text-muted);margin:8px 0 0 0;font-size:var(--font-size-xs);" data-i18n="gguf.overrides_desc">
                                         Текущие значения отличаются от config.json (host = source of truth).
                                         Изменения сохранены в sidecar-файле и переживают restart контейнера.
                                         "Reset" стирает override и возвращает значения из config.json.
@@ -2042,7 +2045,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                 <span data-i18n="settings.section.users">Пользователи</span>
                             </div>
                             <div class="settings-section-body open">
-                                <p style="color:var(--text-muted);margin-bottom:12px;font-size:13px;">
+                                <p style="color:var(--text-muted);margin-bottom:12px;font-size:var(--font-size-sm);">
                                     Роли: <strong>администратор</strong> — полный доступ,
                                     <strong>гость</strong> (viewer) — только чтение и генерация, мутации отклоняются сервером (403).
                                 </p>
@@ -2080,12 +2083,12 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                         <button class="btn btn-primary" id="userAddBtn" data-admin-only style="width:100%;">Добавить / обновить</button>
                                     </div>
                                 </div>
-                                <div id="usersHint" style="display:none;font-size:12px;margin-top:10px;"></div>
+                                <div id="usersHint" style="display:none;font-size:var(--font-size-xs);margin-top:10px;"></div>
 
                                 <!-- R225: активные сессии. Раньше погасить чужой вход
                                      можно было только сменой пароля, и оператор не видел,
                                      кто и откуда вошёл. -->
-                                <h4 style="margin:18px 0 8px;font-size:14px;">Активные сессии</h4>
+                                <h4 style="margin:18px 0 8px;font-size:var(--font-size-base);">Активные сессии</h4>
                                 <div class="table-responsive">
                                     <table class="table">
                                         <thead>
@@ -2103,7 +2106,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                         </tbody>
                                     </table>
                                 </div>
-                                <div id="sessionsHint" style="display:none;font-size:12px;margin-top:8px;"></div>
+                                <div id="sessionsHint" style="display:none;font-size:var(--font-size-xs);margin-top:8px;"></div>
                             </div>
                         </div>
 
@@ -2115,7 +2118,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                 <span data-i18n="settings.section.io">Импорт / Экспорт</span>
                             </div>
                             <div class="settings-section-body open">
-                                <p style="color:var(--text-muted);margin-bottom:16px;font-size:13px;">
+                                <p style="color:var(--text-muted);margin-bottom:16px;font-size:var(--font-size-sm);">
                                     Экспортируйте текущую конфигурацию в JSON-файл или импортируйте ранее сохранённую.
                                 </p>
                                 <div class="form-row" style="grid-template-columns:1fr 1fr;max-width:400px;">
@@ -2272,7 +2275,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                  (sd-server) в отдельном процессе, порт воркера 18093. -->
                             <option value="image_cpp">🎨 image.cpp</option>
                         </select>
-                        <small style="color: var(--text-muted); font-size: 11px;">Выберите тип инференс-движка</small>
+                        <small style="color: var(--text-muted); font-size:var(--font-size-xs);">Выберите тип инференс-движка</small>
                     </div>
                     <!-- Ollama-specific fields -->
                     <div class="form-row backend-field-ollama">
@@ -2293,7 +2296,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                 <input type="number" id="formBackendCppWorkerPort" class="form-control" value="18092" style="flex:1;">
                                 <button type="button" id="formBackendCppWorkerPortDetect" class="btn btn-secondary" style="white-space:nowrap;" title="Автоматически определить порт CppWorker (probe 18092/18091/18093/18090 на /info)"><i class="fas fa-magnifying-glass" aria-hidden="true"></i> Auto-detect</button>
                             </div>
-                            <small style="color: var(--text-muted); font-size: 11px;">Дефолт: 18092. Если пусто - auto-detect при сохранении.</small>
+                            <small style="color: var(--text-muted); font-size:var(--font-size-xs);">Дефолт: 18092. Если пусто - auto-detect при сохранении.</small>
                         </div>
                         <div class="form-group">
                             <label>gRPC порт</label>
@@ -2305,7 +2308,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                         <div class="form-group">
                             <label>Порт image-воркера</label>
                             <input type="number" id="formBackendImagePort" class="form-control" value="18093">
-                            <small style="color: var(--text-muted); font-size: 11px;">Дефолт: 18093 (image-воркер / sd-server, стабильная диффузия). Поле imagePort в API.</small>
+                            <small style="color: var(--text-muted); font-size:var(--font-size-xs);">Дефолт: 18093 (image-воркер / sd-server, стабильная диффузия). Поле imagePort в API.</small>
                         </div>
                     </div>
                     <div class="form-row">
@@ -2322,7 +2325,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                         <div class="form-group">
                             <label>Max Models</label>
                             <input type="number" id="formBackendMaxModels" class="form-control" value="0" min="0" placeholder="0=авто">
-                            <small style="color: var(--text-muted); font-size: 11px;">Максимум одновременно загруженных моделей (0 = автоопределение)</small>
+                            <small style="color: var(--text-muted); font-size:var(--font-size-xs);">Максимум одновременно загруженных моделей (0 = автоопределение)</small>
                         </div>
                         <div class="form-group">
                             <label>GPU Mode</label>
@@ -2331,7 +2334,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                 <option value="gpu">GPU (только GPU-метрики)</option>
                                 <option value="cpu">CPU (только CPU-метрики)</option>
                             </select>
-                            <small style="color: var(--text-muted); font-size: 11px;">Режим сбора метрик агентом</small>
+                            <small style="color: var(--text-muted); font-size:var(--font-size-xs);">Режим сбора метрик агентом</small>
                         </div>
                     </div>
                     <div class="form-group">

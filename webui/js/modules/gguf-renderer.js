@@ -1,4 +1,4 @@
-/**
+﻿/**
  * GGUF Renderer — master-detail layout
  *
  * Left panel:  list of registered llama.cpp backends
@@ -143,7 +143,7 @@ const GgufRenderer = (window.GgufRenderer = (function () {
         return '' +
             // Page-level header with HF token (small bar, applies to all backends)
             '<div class="gguf-hf-token-bar" id="ggufHfTokenBar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-secondary);border-radius:8px;margin-bottom:8px;border:1px solid var(--border);">' +
-                '<span style="font-size:13px;white-space:nowrap;"><i class="fas fa-key"></i> HF Token:</span>' +
+                '<span style="font-size:var(--font-size-sm);white-space:nowrap;"><i class="fas fa-key"></i> HF Token:</span>' +
                 '<input type="password" id="ggufHfToken" class="form-control" style="flex:1;max-width:360px;" placeholder="hf_..." value="' + Utils.escapeHtml(GgufApi.getHFToken() || '') + '">' +
                 '<button class="btn btn-sm btn-secondary" id="ggufSaveHfToken" title="' + _('gguf.copy_url') + '">' + (window.I18N ? I18N.t('common.save') : 'Save') + '</button>' +
                 '<button class="btn btn-sm btn-secondary" id="ggufClearHfToken" title="' + (window.I18N ? I18N.t('models.close') : 'Clear') + '"><i class="fas fa-times"></i></button>' +

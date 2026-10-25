@@ -1,4 +1,4 @@
-// js/monitor/api.js — API fetching, error handling, demo mode
+﻿// js/monitor/api.js — API fetching, error handling, demo mode
 
 (function() {
   'use strict';
@@ -354,7 +354,7 @@
     if (!demoBanner) {
       demoBanner = document.createElement('div');
       demoBanner.id = 'demoModeBanner';
-      demoBanner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(255,165,0,0.15);border-bottom:2px solid #ff8c00;text-align:center;padding:6px 12px;font-size:13px;font-weight:600;color:#ff8c00;backdrop-filter:blur(4px);pointer-events:none';
+      demoBanner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(255,165,0,0.15);border-bottom:2px solid #ff8c00;text-align:center;padding:6px 12px;font-size:var(--font-size-sm);font-weight:600;color:#ff8c00;backdrop-filter:blur(4px);pointer-events:none';
       demoBanner.textContent = '🔶 DEMO MODE — отображаются тестовые данные. Подключитесь к балансировщику для реальных метрик.';
       document.body.prepend(demoBanner);
     }

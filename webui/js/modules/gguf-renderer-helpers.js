@@ -1,4 +1,4 @@
-/**
+﻿/**
  * gguf-renderer-helpers.js — Pure helper functions for gguf-renderer.
  *
  * R57.5a (2026-09-03): extracted from webui/js/modules/gguf-renderer.js.
@@ -132,7 +132,7 @@
                 document.body.appendChild(host);
             }
             var el = document.createElement('div');
-            el.style.cssText = 'pointer-events:auto;padding:8px 12px;border-radius:6px;color:#fff;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.2);max-width:480px;word-break:break-word;';
+            el.style.cssText = 'pointer-events:auto;padding:8px 12px;border-radius:6px;color:#fff;font-size:var(--font-size-sm);box-shadow:0 2px 8px rgba(0,0,0,.2);max-width:480px;word-break:break-word;';
             var bg = type === 'error' ? '#d9534f' : type === 'success' ? '#5cb85c' : type === 'info' ? '#5bc0de' : '#777';
             el.style.background = bg;
             el.textContent = '[' + (type || 'log') + '] ' + message;

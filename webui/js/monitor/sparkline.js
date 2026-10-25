@@ -1,4 +1,4 @@
-// OllamaLegion — live sparkline renderer для Monitor.
+﻿// OllamaLegion — live sparkline renderer для Monitor.
 //
 // Ring buffer `window.metricsHistory[backendId]` хранит до 200 точек (≈16 мин
 // при 5-секундном интервале). Каждая точка: { t, gpu, vram, cpu, ram, rps, avgRt }.
@@ -248,7 +248,7 @@
                     '<rect class="sparkline-area" x="0" y="' + yTop + '" width="60" height="' + hBar + '" fill="' + esc(color) + '" opacity="0.25"/>' +
                     (x > a ? '<line class="sparkline-max" x1="0" y1="' + yMax + '" x2="60" y2="' + yMax + '" stroke="' + esc(color) + '"></line>' : '') +
                 '</svg>' +
-                '<span class="sparkline-label" style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:600;color:' + esc(color) + '">' + a.toFixed(0) + '%</span>' +
+                '<span class="sparkline-label" style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:var(--font-size-xs);font-weight:600;color:' + esc(color) + '">' + a.toFixed(0) + '%</span>' +
             '</div>';
     }
 

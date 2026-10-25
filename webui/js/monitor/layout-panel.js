@@ -1,4 +1,4 @@
-// js/monitor/layout-panel.js — R118.4 (2026-10-14).
+﻿// js/monitor/layout-panel.js — R118.4 (2026-10-14).
 //
 // ЯВНОЕ УПРАВЛЕНИЕ РАСКЛАДКОЙ СЛОЁВ (RPC) ИЗ ВЕБ-ПАНЕЛИ.
 //
@@ -77,7 +77,7 @@
     ];
     return '<select class="backend-role-select" data-backend="' + esc(b.id) + '" ' +
       'title="' + esc(T('monitor.role.title', 'Роль бэкенда в раскладке слоёв')) + '" ' +
-      'style="margin-top:4px;font-size:11px;max-width:190px">' +
+      'style="margin-top:4px;font-size:var(--font-size-xs);max-width:190px">' +
       opts.map(function (o) {
         return '<option value="' + o.v + '"' + (o.v === role ? ' selected' : '') + '>' + esc(o.t) + '</option>';
       }).join('') +
@@ -121,7 +121,7 @@
   // rowLayoutCell — ячейка «Раскладка (RPC)» для строки таблицы бэкендов.
   function rowLayoutCell(b) {
     if (!isLlamaBackend(b)) {
-      return '<td><span style="font-size:11px;color:var(--text-secondary)">—</span></td>';
+      return '<td><span style="font-size:var(--font-size-xs);color:var(--text-secondary)">—</span></td>';
     }
     return '<td>' + roleSelectHtml(b) + layoutChipHtml(b) + '</td>';
   }
@@ -231,10 +231,10 @@
       var mainID2 = currentMainID();
       donorList.innerHTML = list.filter(function (b) { return b.id !== mainID2; }).map(function (b) {
         var id = 'layoutDonor_' + b.id;
-        return '<label style="font-size:12px;display:flex;gap:4px;align-items:center" for="' + esc(id) + '">' +
+        return '<label style="font-size:var(--font-size-xs);display:flex;gap:4px;align-items:center" for="' + esc(id) + '">' +
           '<input type="checkbox" id="' + esc(id) + '" data-backend="' + esc(b.id) + '"' +
           (donors.indexOf(b.id) >= 0 ? ' checked' : '') + '> ' + esc(b.id) + '</label>';
-      }).join('') || '<span style="font-size:11px;color:var(--text-secondary)">' +
+      }).join('') || '<span style="font-size:var(--font-size-xs);color:var(--text-secondary)">' +
         esc(T('monitor.layout.noLlama', 'нет llama.cpp-бэкендов')) + '</span>';
     }
 

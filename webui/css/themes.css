@@ -1,4 +1,4 @@
-/*
+﻿/*
  * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
  *   DESIGN_VARIANCE = 5  (mixed: structured dashboard grid + gentle metric asymmetry)
  *   MOTION_INTENSITY = 3  (hover + small transitions only; no parallax, no perpetual loops)
@@ -41,6 +41,15 @@
     --radius-xl: 16px;    /* hero panels */
     --radius-full: 9999px;
 
+    /* R239: component sizing tokens. Один набор высот контролов и
+       карточек, чтобы разрозненные inline-стили не давали 23..52px. */
+    --control-height-sm: 30px;
+    --control-height: 38px;
+    --control-height-lg: 44px;
+    --card-radius: var(--radius-lg);
+    --card-padding: var(--space-5);
+    --card-header-padding: var(--space-4) var(--space-5);
+
     /* ===== Elevation / Shadows (semantic) ===== */
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.10);
@@ -49,8 +58,9 @@
 
     /* ===== Typography ===== */
     --font-family-sans:
-        -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
-        "Inter", "Geist", system-ui, sans-serif;
+        -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+        "Segoe UI Variable", "Segoe UI", "Inter", "Helvetica Neue",
+        system-ui, sans-serif;
     --font-family-mono:
         "SF Mono", "JetBrains Mono", "Geist Mono", ui-monospace,
         "Consolas", monospace;
@@ -66,7 +76,7 @@
     --font-size-4xl:  44px;
 
     --line-height-tight:  1.2;
-    --line-height-normal: 1.5;
+    --line-height-normal: 1.55;
     --line-height-loose:  1.7;
 
     --font-weight-normal: 400;
@@ -309,6 +319,14 @@ body *::after {
 
     /* Monospace font for numeric values */
     --font-family-numeric: var(--font-family-mono);
+
+    /* R239: плотный режим сжимает и контролы, и карточки. */
+    --control-height-sm: 26px;
+    --control-height: 32px;
+    --control-height-lg: 38px;
+    --card-padding: var(--space-4);
+    --card-radius: var(--radius-md);
+    --card-header-padding: var(--space-3) var(--space-4);
 }
 
 /* ============================================================
@@ -596,7 +614,7 @@ body *::after {
 }
 .theme-swatch-label {
     text-align: center;
-    font-size: 11px;
+    font-size: var(--font-size-xs);
     margin-top: 4px;
     color: var(--text-secondary);
     line-height: 1.2;

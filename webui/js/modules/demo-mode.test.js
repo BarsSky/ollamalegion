@@ -261,7 +261,43 @@ check('router понимает абсолютный URL своего origin', fu
   assert.ok(dm.route('GET', '/healthz', s50) === null, 'не-/api/ пути не перехватываются');
 });
 
-// --- 4. Парсинг флага -----------------------------------------------------
+// --- 5. R238: монитор видит «живые» цифры (active/RPS) и события конвейера ---
+check('активные запросы бэкендов совпадают с processing (поле Active не 0)', function () {
+  const s35 = dm.state(35);
+  assert.ok(s35.processing.length > 0, 'в фазе очереди должен быть хотя бы один processing');
+  const sum = s35.backends.reduce((n, b) => n + (b.activeRequests || 0), 0);
+  assert.strictEqual(sum, s35.processing.length,
+    'сумма activeRequests (' + sum + ') должна равняться processing (' + s35.processing.length + ')');
+  assert.ok(s35.backends.every(b => b.maxConcurrentRequests === 1),
+    'по сценарию у каждого бэкенда один слот (maxConcurrentRequests=1)');
+  const busy = s35.sessions.filter(s => s.hasActiveStream);
+  assert.ok(busy.length > 0, 'у сессии с обработкой должен быть hasActiveStream=true');
+});
+
+check('RPS считается по завершениям, а не берётся из воздуха', function () {
+  const s35 = dm.state(35);
+  assert.ok(s35.rps > 0, 'RPS в фазе очереди должен быть > 0 (запросы уже завершаются)');
+  assert.ok(s35.backends.some(b => (b.requestsPerSecond || 0) > 0), 'у бэкенда есть requestsPerSecond');
+  const empty = dm.state(1);
+  assert.strictEqual(empty.rps, 0, 'в самом начале сценария завершений ещё нет — RPS 0');
+});
+
+check('recentRequests/recentResponses: события конвейера для запроса и ОТВЕТА', function () {
+  const s35 = dm.state(35);
+  assert.ok(s35.recentRequests.length > 0, 'должны быть недавние назначения (частица запроса)');
+  assert.ok(s35.recentResponses.length > 0, 'должны быть недавние завершения (частица ответа)');
+  const rq = s35.recentRequests[0];
+  assert.ok(rq.requestId && rq.clientName && rq.backendName, 'у события запроса есть id/клиент/бэкенд');
+  const rs = s35.recentResponses[0];
+  assert.ok(rs.requestId && rs.clientName && rs.durationMs > 0, 'у ответа есть id/клиент/длительность');
+  const api = dm.responseBody('/api/v1/cluster', 'GET', s35);
+  ['recentClients', 'recentRequests', 'recentResponses', 'warmingUpModels'].forEach(k => {
+    assert.ok(Array.isArray(api.body[k]), '/cluster должен отдавать массив ' + k);
+  });
+  assert.ok(api.body.totalRequests > 0, '/cluster должен отдавать totalRequests (statRate)');
+});
+
+// --- 6. Парсинг флага -----------------------------------------------------
 check('DEMO_MODE понимает 1/true/on и НЕ включает на 0/false', function () {
   [1, true, '1', 'true', 'TRUE', 'yes', 'on'].forEach(function (v) {
     const d = loadDemo(v, { noDocument: true });

@@ -166,8 +166,138 @@ function check(ok, what, detail) {
       check(!m.errorOverlay, 'monitor.html: нет оверлея ошибки');
       check(m.backends >= 2, 'monitor.html: бэкенды отрисованы из демо-данных', 'rows=' + m.backends);
       check(monitorRealApi.length === 0, 'monitor.html: /api/-запросы не уходят на сервер', JSON.stringify(monitorRealApi.slice(0, 5)));
+
+      // ---- R238: «живые» цифры в мониторе --------------------------------
+      // До R238 у синтетических бэкендов не было activeRequests, поэтому Active
+      // всегда был 0 (жалоба оператора). Сценарий начинает обработку на ~14 с,
+      // поэтому ждём появления активного запроса.
+      const sawActive = await monitor.waitForFunction(() => {
+        const el = document.getElementById('statActive');
+        return el && Number(el.textContent) > 0;
+      }, { timeout: 60000 }).then(() => true).catch(() => false);
+      const activeNow = await monitor.evaluate(() => ({
+        active: (document.getElementById('statActive') || {}).textContent,
+        rps: (document.getElementById('statRPSCluster') || {}).textContent,
+        backends: (window.MonitorApp && window.MonitorApp.topo.backends || []).map(b => ({ id: b.id, a: b.activeRequests, m: b.maxConcurrentRequests }))
+      }));
+      check(sawActive, 'monitor: поле Active перестало быть всегда 0', JSON.stringify(activeNow));
+      check(activeNow.backends.some(b => b.a > 0), 'monitor: у бэкенда есть activeRequests > 0');
+
+      // ---- R238: конвейер рисует ОТВЕТ и все частицы подписаны -----------
+      const sawResponse = await monitor.waitForFunction(() => {
+        const MA = window.MonitorApp;
+        if (!MA || !MA.convQueue) return false;
+        return MA.convQueue.some(p => p.type === 'response' && p.label);
+      }, { timeout: 90000 }).then(() => true).catch(() => false);
+      const particles = await monitor.evaluate(() => {
+        const MA = window.MonitorApp || {};
+        const q = MA.convQueue || [];
+        const resp = q.filter(p => p.type === 'response');
+        return {
+          demoLifecycle: !!MA.topo.demoLifecycle,
+          total: q.length,
+          responses: resp.length,
+          labels: q.filter(p => !!p.label).length,
+          sample: (resp[0] && resp[0].label) || (q[0] && q[0].label) || null,
+          recentResponses: (MA.topo.recentResponses || []).length
+        };
+      });
+      check(sawResponse, 'monitor: конвейер рисует частицу ОТВЕТА backend → клиент', JSON.stringify(particles));
+      check(particles.demoLifecycle, 'monitor: включён «фактовый» режим конвейера (demoLifecycle)');
+      check(particles.total > 0 && particles.labels === particles.total,
+        'monitor: у ВСЕХ частиц конвейера есть подпись', JSON.stringify(particles));
     } finally {
       await monitor.close();
+    }
+
+    // ---- R238: мобильная вёрстка ----------------------------------------
+    // Жалоба: «на смартфоне все элементы накладываются кучей». Проверяем
+    // измеримые свойства: документ не шире экрана, шапка не выпирает, бургер
+    // не под баннером, панель сценария свёрнута, а топология не наезжает на
+    // балансер.
+    const MOBILE = { width: 390, height: 844 };
+    const mob = await browser.newPage({ viewport: MOBILE });
+    try {
+      await mob.goto(WEBUI + '/index.html', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await mob.waitForFunction(() => !!document.getElementById('demoModeBanner'), { timeout: 15000 }).catch(() => {});
+      const dash = await mob.evaluate(() => {
+        const burger = document.querySelector('.nav-burger');
+        const br = burger ? burger.getBoundingClientRect() : null;
+        const panel = document.getElementById('demoScenario');
+        const actions = document.querySelector('.header-actions');
+        const ar = actions ? actions.getBoundingClientRect() : null;
+        const banner = document.getElementById('demoModeBanner');
+        return {
+          vw: window.innerWidth,
+          docScrollWidth: document.documentElement.scrollWidth,
+          bannerH: banner ? Math.round(banner.getBoundingClientRect().height) : 0,
+          burgerTop: br ? Math.round(br.top) : null,
+          burgerShown: burger ? getComputedStyle(burger).display !== 'none' : false,
+          actionsRight: ar ? Math.round(ar.right) : null,
+          collapsed: !!(panel && panel.classList.contains('collapsed'))
+        };
+      });
+      check(dash.docScrollWidth <= MOBILE.width + 1, 'телефон: страница не шире экрана',
+        'scrollWidth=' + dash.docScrollWidth + ' vw=' + dash.vw);
+      check(dash.actionsRight !== null && dash.actionsRight <= MOBILE.width + 1,
+        'телефон: кнопки шапки не выпирают за экран', 'right=' + dash.actionsRight);
+      check(dash.burgerShown && dash.burgerTop !== null && dash.burgerTop > dash.bannerH,
+        'телефон: бургер под демо-баннером, а не под ним', JSON.stringify(dash));
+      check(dash.collapsed, 'телефон: панель «Демо-сценарий» свёрнута по умолчанию');
+
+      // Монитор внутри iframe не должен рисовать ВТОРОЙ баннер/панель/чип гостя.
+      await mob.evaluate(() => { const n = document.querySelector('.nav-item[data-page=monitor]'); if (n) n.click(); });
+      await mob.waitForTimeout(2500);
+      const iframe = await mob.evaluate(() => {
+        const f = document.getElementById('monitorFrame');
+        try {
+          const d = f.contentDocument;
+          return {
+            outer: document.querySelectorAll('#demoModeBanner').length,
+            innerBanner: !!d.getElementById('demoModeBanner'),
+            innerPanel: !!d.getElementById('demoScenario'),
+            innerChip: (() => { const c = d.getElementById('authUserChip'); return !!(c && getComputedStyle(c).display !== 'none'); })()
+          };
+        } catch (e) { return { err: e.message }; }
+      });
+      check(iframe.outer === 1 && iframe.innerBanner === false && iframe.innerPanel === false,
+        'телефон: в iframe монитора нет дубля баннера/панели демо', JSON.stringify(iframe));
+      check(iframe.innerChip === false, 'телефон: в iframe монитора нет дубля чипа гостя');
+
+      // Сама топология: колонки не наезжают на блок балансера.
+      await mob.goto(WEBUI + '/monitor.html', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await mob.waitForFunction(() => {
+        const MA = window.MonitorApp;
+        return MA && MA.topo && MA.topo.w > 0;
+      }, { timeout: 20000 }).catch(() => {});
+      const mon = await mob.evaluate(() => {
+        const MA = window.MonitorApp || {};
+        const G = MA.GEOM || {};
+        const w = (MA.topo || {}).w || 0;
+        const bar = document.querySelector('.stats-bar');
+        const r = bar ? bar.getBoundingClientRect() : null;
+        return {
+          vw: window.innerWidth,
+          docScrollWidth: document.documentElement.scrollWidth,
+          stats: bar ? { sw: bar.scrollWidth, cw: bar.clientWidth, h: r ? Math.round(r.height) : 0 } : null,
+          w: w,
+          clientX: G.clientX,
+          balInX: G.balInX ? G.balInX(w) : null,
+          balOutX: G.balOutX ? G.balOutX(w) : null,
+          backendX: G.backendX ? G.backendX(w) : null,
+          bw: G.bw
+        };
+      });
+      check(mon.docScrollWidth <= MOBILE.width + 1, 'телефон/монитор: страница не шире экрана',
+        'scrollWidth=' + mon.docScrollWidth);
+      check(!!mon.stats && mon.stats.sw <= mon.stats.cw + 1, 'телефон/монитор: полоса статистики не обрезается',
+        JSON.stringify(mon.stats));
+      check(mon.clientX <= mon.balInX - 8, 'телефон/монитор: клиентская ветка левее балансера',
+        'clientX=' + mon.clientX + ' balInX=' + mon.balInX);
+      check(mon.backendX >= mon.balOutX + 8, 'телефон/монитор: плитки бэкендов правее балансера',
+        'backendX=' + mon.backendX + ' balOutX=' + mon.balOutX);
+    } finally {
+      await mob.close();
     }
     await browser.close();
   }

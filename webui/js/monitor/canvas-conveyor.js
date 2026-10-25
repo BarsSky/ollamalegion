@@ -19,6 +19,59 @@
     return { isLight: false, lane: 'rgba(255,255,255,0.10)', laneLabel: 'rgba(255,255,255,0.35)' };
   }
 
+  // findSessionIndex / findBackendIndex — координаты узлов для частиц. Частицу
+  // нельзя пускать «в пустоту»: у не поместившихся в колонку узлов нет Y (R91),
+  // поэтому ищем только среди нарисованных (nVisible).
+  function findSessionIndex(name) {
+    var sessions = MA.topo.sessions || [];
+    var vis = MA.nVisible ? MA.nVisible('session') : sessions.length;
+    for (var i = 0; i < Math.min(sessions.length, vis); i++) {
+      if (sessions[i].clientName === name) return i;
+    }
+    return -1;
+  }
+
+  function findBackendIndex(id) {
+    var backs = MA.topo.backends || [];
+    var vis = MA.nVisible ? MA.nVisible('backend') : backs.length;
+    for (var i = 0; i < Math.min(backs.length, vis); i++) {
+      if (backs[i].id === id) return i;
+    }
+    return -1;
+  }
+
+  // seenOnce — «это событие уже нарисовано». Ключи requestId:время, чтобы новый
+  // цикл демо (те же id, другое время) снова дал частицу. Старые ключи чистим,
+  // иначе за долгую сессию объект растёт.
+  function seenOnce(store, key, now) {
+    if (store[key]) return true;
+    store[key] = now;
+    if (!store.__lastPrune || now - store.__lastPrune > 30000) {
+      store.__lastPrune = now;
+      for (var k in store) {
+        if (k === '__lastPrune') continue;
+        if (now - store[k] > 60000) delete store[k];
+      }
+    }
+    return false;
+  }
+
+  // drawParticleLabel — единая подпись у ВСЕХ частиц (раньше discovery/warming
+  // были с подписью, а «полный путь"/"завершение» — без; оператор спрашивал,
+  // почему у одних точек подпись есть, а у других нет).
+  function drawParticleLabel(text, x, y, color, alpha) {
+    if (!text || alpha <= 0.02) return;
+    ccx.save();
+    ccx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ccx.font = 'bold 8px ' + MA.vF();
+    ccx.textAlign = 'center';
+    ccx.shadowColor = 'rgba(0,0,0,0.9)';
+    ccx.shadowBlur = 3;
+    ccx.fillStyle = color;
+    ccx.fillText(text, x, y);
+    ccx.restore();
+  }
+
   // ---- Интерполяция по waypoints ----
   function interpolatePath(path, t) {
     if (!path || path.length < 2) return { x: 0, y: 0 };
@@ -55,6 +108,9 @@
     }
 
     var now = Date.now();
+    // R238: демо отдаёт точные события (recentRequests/recentResponses) — тогда
+    // конвейер рисует по ним, а не случайными частицами.
+    var demoLifecycle = !!MA.topo.demoLifecycle;
 
     // ---- Общая геометрия из state.js ----
     var G = MA.GEOM;
@@ -115,13 +171,80 @@
     ccx.fillText(MA.T('monitor.canvas.rpsLabel', { rps: rps.toFixed(1), active: activeTotal, max: maxTotal }), w / 2, 10);
 
     // ============================================================
+    // D. DEMO: точные события запроса и ОТВЕТА (R238)
+    // ============================================================
+    //
+    // Сценарий знает каждый запрос: recentRequests — назначения
+    // (клиент → балансер → бэкенд), recentResponses — завершения
+    // (бэкенд → балансер → КЛИЕНТ). Поэтому жёлтая частица ответа идёт по той же
+    // линии конвейера в обратную сторону и подписана номером запроса, а не летит
+    // безымянной точкой. Раньше обратной ветки не было вовсе — оператор видел
+    // «жёлтые частицы», которые никуда не двигались.
+    if (demoLifecycle) {
+      var reqSeen = MA._convSeenReq || (MA._convSeenReq = {});
+      var respSeen = MA._convSeenResp || (MA._convSeenResp = {});
+      var recentReq = MA.topo.recentRequests || [];
+      var recentResp = MA.topo.recentResponses || [];
+      var tXD = G.clientX + (balInX - G.clientX) * 0.55;
+
+      var reqLimit = Math.min(recentReq.length, 4);
+      for (var ri = 0; ri < reqLimit; ri++) {
+        var rq = recentReq[ri];
+        var rqKey = 'req:' + rq.requestId + ':' + Math.round(new Date(rq.at).getTime() / 1000);
+        if (seenOnce(reqSeen, rqKey, now)) continue;
+        var siR = findSessionIndex(rq.clientName);
+        var biR = findBackendIndex(rq.backendId || rq.backendName || rq.backend);
+        if (siR < 0 || biR < 0) continue;
+        var syR = MA.nY('session', siR), byR = MA.nY('backend', biR);
+        MA.convQueue.push({
+          path: [
+            {x: G.clientX, y: syR}, {x: tXD, y: syR}, {x: tXD, y: balCenterY},
+            {x: balInX, y: balCenterY}, {x: balOutX, y: balCenterY},
+            {x: rightElbowX, y: balCenterY}, {x: rightElbowX, y: byR}, {x: backendX, y: byR}
+          ],
+          spawnTime: now,
+          duration: 2400 + Math.random() * 600,
+          type: 'full',
+          size: 3,
+          label: rq.requestId + ' · ' + MA.trunc(rq.model || '', 12)
+        });
+      }
+
+      var respLimit = Math.min(recentResp.length, 4);
+      for (var rsi = 0; rsi < respLimit; rsi++) {
+        var rs = recentResp[rsi];
+        var rsKey = 'resp:' + rs.requestId + ':' + Math.round(new Date(rs.at).getTime() / 1000);
+        if (seenOnce(respSeen, rsKey, now)) continue;
+        var siS = findSessionIndex(rs.clientName);
+        var biS = findBackendIndex(rs.backendId || rs.backendName || rs.backend);
+        if (siS < 0 || biS < 0) continue;
+        var syS = MA.nY('session', siS), byS = MA.nY('backend', biS);
+        MA.convQueue.push({
+          path: [
+            {x: backendX, y: byS}, {x: rightElbowX, y: byS}, {x: rightElbowX, y: balCenterY},
+            {x: balOutX, y: balCenterY}, {x: balInX, y: balCenterY},
+            {x: tXD, y: balCenterY}, {x: tXD, y: syS}, {x: G.clientX, y: syS}
+          ],
+          spawnTime: now,
+          duration: 2000 + Math.random() * 600,
+          type: 'response',
+          size: 3.2,
+          label: '↩ ' + rs.requestId + ' · ' + MA.trunc(rs.model || '', 12)
+        });
+      }
+    }
+
+    // ============================================================
     // 0. DISCOVERY частицы — все HTTP-запросы (RecentClients)
     // Показывают момент формирования запроса, включая /api/tags
     // Only spawn if the client has a matching session in topology (has visible line)
     // ============================================================
     var recentClients = MA.topo.recentClients || [];
     var rcCount = recentClients.length;
-    if (rcCount > 0 && Math.random() < Math.min(0.4, rcCount * 0.05)) {
+    // В демо discovery не нужен: точные частицы запроса/ответа уже показывают
+    // этот путь, а «случайные HTTP-запросы» лишь забивали полотно десятками
+    // одинаковых синих точек.
+    if (!demoLifecycle && rcCount > 0 && Math.random() < Math.min(0.4, rcCount * 0.05)) {
       var rc = recentClients[Math.floor(Math.random() * rcCount)];
       // Находим Y для этого клиента — только если есть сессия с таким именем
       // R91: и только если эта сессия РИСУЕТСЯ (не поместившиеся не имеют
@@ -144,7 +267,8 @@
             duration: 1200 + Math.random() * 800,
             type: 'discovery',
             size: 2.5 + Math.random() * 1,
-            clientName: rc.clientName
+            clientName: rc.clientName,
+            label: rc.clientName
           });
           break;
         }
@@ -184,7 +308,8 @@
         duration: 2500 + Math.random() * 1500,
         type: 'warming',
         size: 3 + Math.random() * 1.5,
-        modelName: wm
+        modelName: wm,
+        label: '⏳ ' + MA.trunc(wm, 14)
       });
     }
 
@@ -192,7 +317,7 @@
     // 2. ПОЛНЫЙ МАРШРУТ: клиент → балансер → бэкенд → завершено
     // Бэкенд-сторона идёт через эльбоу на 50%
     // ============================================================
-    if (activeTotal > 0 && Math.random() < spawnIntensity) {
+    if (!demoLifecycle && activeTotal > 0 && Math.random() < spawnIntensity) {
       var clientIdx, sessionY;
       // R91: частицы летят только к НАРИСОВАННЫМ узлам (nVisible).
       var sessVisFull = MA.nVisible ? MA.nVisible('session') : sessions.length;
@@ -238,43 +363,42 @@
         spawnTime: now,
         duration: 3000 + Math.random() * 2000,
         type: 'full',
-        size: 3 + Math.random() * 1.5
+        size: 3 + Math.random() * 1.5,
+        label: MA.trunc((sessions[clientIdx] && sessions[clientIdx].model) || '', 14)
       });
     }
 
-    // ============================================================
-    // 3. ЗАВЕРШАЮЩИЕ ЧАСТИЦЫ — от эльбоу к бэкенду (финальный сегмент)
-    // ============================================================
-    var procCount = MA.topo.queue.processing_count || 0;
-    if (procCount > 0 && Math.random() < Math.min(0.25, procCount * 0.05)) {
-      var bIdx;
-      // R91: только нарисованные бэкенды — у остальных нет координат.
-      var backVisProc = Math.min(backends.length, MA.nVisible ? MA.nVisible('backend') : backends.length);
-      if (backVisProc > 0) {
-        var busyBackends = [];
-        for (var ci = 0; ci < backVisProc; ci++) {
-          if (backends[ci].activeRequests > 0) busyBackends.push(ci);
+    // Живой режим: когда частица полного маршрута доходит до бэкенда, рождаем
+    // ОТВЕТ по тому же пути в обратную сторону (бэкенд → балансер → клиент).
+    // Раньше «завершающие» частицы шли к бэкенду — то есть в ту же сторону, что
+    // и запрос, и ответа клиенту на картинке не было вообще.
+    if (!demoLifecycle) {
+      var procCount = MA.topo.queue.processing_count || 0;
+      if (procCount > 0 && Math.random() < Math.min(0.25, procCount * 0.05)) {
+        var backVisResp = Math.min(backends.length, MA.nVisible ? MA.nVisible('backend') : backends.length);
+        if (backVisResp > 0) {
+          var busyB = [];
+          for (var ci = 0; ci < backVisResp; ci++) {
+            if (backends[ci].activeRequests > 0) busyB.push(ci);
+          }
+          var rbIdx = busyB.length > 0 ? busyB[Math.floor(Math.random() * busyB.length)] : Math.floor(Math.random() * backVisResp);
+          var rbY = MA.nY('backend', rbIdx);
+          var rSessIdx = sessions.length > 0 ? Math.floor(Math.random() * Math.min(sessions.length, MA.nVisible ? MA.nVisible('session') : sessions.length)) : -1;
+          var rSessY = rSessIdx >= 0 ? MA.nY('session', rSessIdx) : balCenterY;
+          var tXr = G.clientX + (balInX - G.clientX) * 0.55;
+          MA.convQueue.push({
+            path: [
+              {x: backendX, y: rbY}, {x: rightElbowX, y: rbY}, {x: rightElbowX, y: balCenterY},
+              {x: balOutX, y: balCenterY}, {x: balInX, y: balCenterY},
+              {x: tXr, y: balCenterY}, {x: tXr, y: rSessY}, {x: G.clientX, y: rSessY}
+            ],
+            spawnTime: now,
+            duration: 1800 + Math.random() * 700,
+            type: 'response',
+            size: 2.6
+          });
         }
-        bIdx = busyBackends.length > 0
-          ? busyBackends[Math.floor(Math.random() * busyBackends.length)]
-          : Math.floor(Math.random() * backVisProc);
-      } else {
-        bIdx = 0;
       }
-      var bY = MA.nY('backend', bIdx);
-
-      // Complete particles go from right elbow to backend — follows the visible line
-      var path = [
-        {x: rightElbowX, y: bY},
-        {x: backendX, y: bY}
-      ];
-      MA.convQueue.push({
-        path: path,
-        spawnTime: now,
-        duration: 800 + Math.random() * 700,
-        type: 'complete',
-        size: 2 + Math.random() * 1
-      });
     }
 
     // ---- Рендеринг частиц ----
@@ -283,139 +407,84 @@
       var elapsed = now - p.spawnTime;
       var t = Math.min(elapsed / p.duration, 1.0);
       var path = p.path || [{x: p.x || 0, y: p.y || 0}, {x: p.tx || 0, y: p.ty || 0}];
+      var pos = interpolatePath(path, t);
+      var size = (p.size || 2.5) * (1 + 0.25 * Math.sin(elapsed * 0.012));
+      var alpha = 0.65 + 0.35 * Math.min(1, t * 3);
+      if (t > 0.8) alpha *= Math.max(0, (1 - t) / 0.2);
 
+      var color;
       if (p.type === 'discovery') {
-        // ---- DISCOVERY: голубая частица, быстрое движение к балансеру ----
-        var pos = interpolatePath(path, t);
-        var size = (p.size || 2.5) * (1 + 0.3 * Math.sin(elapsed * 0.015));
-        var alpha = 0.5 + 0.5 * Math.min(1, t * 4);
-        if (t > 0.8) alpha *= Math.max(0, (1 - t) / 0.2);
-
-        var color = '#38bdf8'; // голубой для discovery
-
-        ccx.globalAlpha = alpha * 0.5;
-        ccx.fillStyle = color;
-        ccx.shadowColor = color;
-        ccx.shadowBlur = 10;
-        ccx.beginPath();
-        ccx.arc(pos.x, pos.y, size * 1.6, 0, Math.PI * 2);
-        ccx.fill();
-
-        ccx.globalAlpha = alpha;
-        ccx.shadowBlur = 6;
-        ccx.beginPath();
-        ccx.arc(pos.x, pos.y, size, 0, Math.PI * 2);
-        ccx.fill();
-
-        // Подпись клиента
-        if (t < 0.25 && p.clientName) {
-          ccx.fillStyle = color;
-          ccx.font = 'bold 7px ' + MA.vF();
-          ccx.textAlign = 'center';
-          ccx.globalAlpha = alpha * 0.8;
-          ccx.fillText(MA.trunc(p.clientName, 10), pos.x, pos.y - size - 6);
-        }
-
-        ccx.globalAlpha = 1;
-        ccx.shadowBlur = 0;
-
+        color = '#38bdf8';
+        size = (p.size || 2.5) * (1 + 0.3 * Math.sin(elapsed * 0.015));
       } else if (p.type === 'warming') {
-        // ---- WARMING: оранжевая частица, движение к бэкенду ----
-        var pos = interpolatePath(path, t);
-        var size = (p.size || 3) * (1 + 0.4 * Math.sin(elapsed * 0.012));
-        var alpha = 0.6 + 0.4 * Math.min(1, t * 2);
-        if (t > 0.8) alpha *= Math.max(0, (1 - t) / 0.2);
-
-        var color = '#f97316'; // оранжевый для warming
-
-        ccx.globalAlpha = alpha * 0.5;
-        ccx.fillStyle = color;
-        ccx.shadowColor = color;
-        ccx.shadowBlur = 12;
-        ccx.beginPath();
-        ccx.arc(pos.x, pos.y, size * 1.7, 0, Math.PI * 2);
-        ccx.fill();
-
-        ccx.globalAlpha = alpha;
-        ccx.shadowBlur = 8;
-        ccx.beginPath();
-        ccx.arc(pos.x, pos.y, size, 0, Math.PI * 2);
-        ccx.fill();
-
-        // Подпись модели
-        if (t < 0.3 && p.modelName) {
-          ccx.fillStyle = color;
-          ccx.font = 'bold 7px ' + MA.vF();
-          ccx.textAlign = 'center';
-          ccx.globalAlpha = alpha * 0.8;
-          ccx.fillText('⏳ ' + MA.trunc(p.modelName, 12), pos.x, pos.y - size - 6);
-        }
-
-        ccx.globalAlpha = 1;
-        ccx.shadowBlur = 0;
-
+        color = '#f97316';
+      } else if (p.type === 'response') {
+        // ОТВЕТ: бэкенд → балансер → клиент. Жёлтый → зелёный — так его не
+        // спутать с «ожиданием в очереди»: это обратная ветка конвейера,
+        // которой раньше на картинке не было вообще.
+        color = t < 0.55 ? '#f59e0b' : '#22c55e';
       } else {
-        // ---- Полный путь или завершение ----
-        var pos = interpolatePath(path, t);
-        var color;
-        if (p.type === 'complete') {
-          color = '#22c55e';
-        } else {
-          // pathColor для full
-          var colors = [
-            { stop: 0.00, color: '#3b82f6' },
-            { stop: 0.30, color: '#f59e0b' },
-            { stop: 0.55, color: '#a855f7' },
-            { stop: 0.85, color: '#22c55e' },
-          ];
-          var pt = t;
-          if (pt <= colors[0].stop) color = colors[0].color;
-          else if (pt >= colors[colors.length-1].stop) color = colors[colors.length-1].color;
-          else {
-            for (var ci = 0; ci < colors.length - 1; ci++) {
-              if (pt >= colors[ci].stop && pt < colors[ci+1].stop) {
-                var local = (pt - colors[ci].stop) / (colors[ci+1].stop - colors[ci].stop);
-                color = colors[ci].color; // упрощённо, без lerp для скорости
-                break;
-              }
-            }
+        // Полный маршрут запроса: синий → жёлтый → фиолетовый → зелёный.
+        var colors = [
+          { stop: 0.00, color: '#3b82f6' },
+          { stop: 0.30, color: '#f59e0b' },
+          { stop: 0.55, color: '#a855f7' },
+          { stop: 0.85, color: '#22c55e' },
+        ];
+        var pt = t;
+        if (pt <= colors[0].stop) color = colors[0].color;
+        else if (pt >= colors[colors.length - 1].stop) color = colors[colors.length - 1].color;
+        else {
+          for (var ci = 0; ci < colors.length - 1; ci++) {
+            if (pt >= colors[ci].stop && pt < colors[ci + 1].stop) { color = colors[ci].color; break; }
           }
-          if (!color) color = '#22c55e';
         }
-
-        var size = (p.size || 2.5) * (1 + 0.2 * Math.sin(elapsed * 0.01));
-        var alpha = 0.6 + 0.4 * Math.min(1, t * 3);
-        if (t > 0.7) alpha = alpha * Math.max(0, (1 - t) / 0.3);
-
-        ccx.globalAlpha = alpha;
-        ccx.fillStyle = color;
-        ccx.shadowColor = color;
-        ccx.shadowBlur = 6;
-        ccx.beginPath();
-        ccx.arc(pos.x, pos.y, size, 0, Math.PI * 2);
-        ccx.fill();
-
-        // Хвостовой след
-        if (path.length >= 2) {
-          var segCount2 = path.length - 1;
-          var segLen2 = 1.0 / segCount2;
-          var tBack = Math.max(0, t - segLen2 * 0.25);
-          var segIdxBack = Math.min(Math.floor(tBack / segLen2), segCount2 - 1);
-          var segTBack = (tBack - segIdxBack * segLen2) / segLen2;
-          var p0Back = path[segIdxBack], p1Back = path[segIdxBack + 1];
-          var posBack = {
-            x: p0Back.x + (p1Back.x - p0Back.x) * segTBack,
-            y: p0Back.y + (p1Back.y - p0Back.y) * segTBack
-          };
-          ccx.globalAlpha = alpha * 0.3;
-          ccx.beginPath();
-          ccx.arc(posBack.x, posBack.y, size * 0.6, 0, Math.PI * 2);
-          ccx.fill();
-        }
-
-        ccx.globalAlpha = 1;
-        ccx.shadowBlur = 0;
+        if (!color) color = '#22c55e';
       }
+
+      // Свечение + ядро частицы — одинаково для всех типов.
+      ccx.globalAlpha = alpha * 0.5;
+      ccx.fillStyle = color;
+      ccx.shadowColor = color;
+      ccx.shadowBlur = 8;
+      ccx.beginPath();
+      ccx.arc(pos.x, pos.y, size * 1.5, 0, Math.PI * 2);
+      ccx.fill();
+
+      ccx.globalAlpha = alpha;
+      ccx.shadowBlur = 5;
+      ccx.beginPath();
+      ccx.arc(pos.x, pos.y, size, 0, Math.PI * 2);
+      ccx.fill();
+
+      // Хвостовой след — по линии конвейера, чтобы было видно направление.
+      if (path.length >= 2) {
+        var segCount2 = path.length - 1;
+        var segLen2 = 1.0 / segCount2;
+        var tBack = Math.max(0, t - segLen2 * 0.25);
+        var segIdxBack = Math.min(Math.floor(tBack / segLen2), segCount2 - 1);
+        var segTBack = (tBack - segIdxBack * segLen2) / segLen2;
+        var p0Back = path[segIdxBack], p1Back = path[segIdxBack + 1];
+        var posBack = {
+          x: p0Back.x + (p1Back.x - p0Back.x) * segTBack,
+          y: p0Back.y + (p1Back.y - p0Back.y) * segTBack
+        };
+        ccx.globalAlpha = alpha * 0.3;
+        ccx.beginPath();
+        ccx.arc(posBack.x, posBack.y, size * 0.6, 0, Math.PI * 2);
+        ccx.fill();
+      }
+
+      // Подпись — у ВСЕХ частиц (единый стиль и место). R238: жалоба «у одних
+      // частиц подпись есть, у других нет» — раньше подписывались только
+      // discovery/warming, а запрос/ответ шли безымянными точками.
+      if (p.label && t > 0.04 && t < 0.92) {
+        var labelAlpha = alpha * Math.min(1, (t - 0.04) * 10) * Math.min(1, (0.92 - t) * 8);
+        drawParticleLabel(p.label, pos.x, pos.y - size - 7, color, labelAlpha);
+      }
+
+      ccx.globalAlpha = 1;
+      ccx.shadowBlur = 0;
 
       if (t >= 1.0) {
         MA.convQueue.splice(i, 1);

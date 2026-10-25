@@ -61,6 +61,43 @@ or in the container log: `DEMO_MODE=true (WEBUI_DEMO_MODE=1)`.
   `virtual-models.html`) are not part of the scenario — links to them are hidden in the demo
   so that the guest does not land on pages without synthetic data.
 
+### Monitor: live numbers and the request/response conveyor (R238)
+
+The monitor is not a static picture: the demo supplies the same fields the real
+balancer does, so the guest sees a coherent flow.
+
+- `activeRequests` / `maxConcurrentRequests` — the busy backend tile and the
+  balancer's "active N" show requests in flight. Before R238 the synthetic
+  backends had no active counters and the field was always 0.
+- `requestsPerSecond` and the cluster `rps` are computed from completions in the
+  scenario, not invented; `totalRequests` grows too, so the "Req/s" stat is alive.
+- `recentRequests` / `recentResponses` drive the conveyor: each assignment draws a
+  labelled particle from the client to a backend, and each completion draws a
+  **response particle (yellow → green, `↩ req-NNN`)** from the backend back through
+  the balancer to the client. Every particle follows exactly the drawn conveyor
+  lines and has a label (before R238 some particles were labelled and some were
+  anonymous dots).
+- `warmingUpModels` — while the model loads, orange particles walk from the
+  balancer to the backend.
+- The topology's random particles are disabled in the demo (`recentRequests` is
+  present), so there is one stream instead of two competing animations.
+
+### Phone screens (R238)
+
+The WebUI adapts to small screens:
+
+- the header wraps its action buttons instead of stretching the page (before,
+  `.header-actions` was 521 px wide on a 390 px screen, so the document was 659 px
+  wide and controls overlapped);
+- the demo banner height is measured and exposed as `--demo-banner-h`: the sidebar,
+  the nav burger and the content sit below it instead of under it;
+- the demo scenario panel is collapsed by default below 720 px and opens with "+";
+- in the monitor the stats bar wraps instead of being clipped, and the topology
+  geometry shrinks the client/backend columns and the balancer block
+  (`MonitorApp.GEOM.applyResponsive`) so tiles never overlap the balancer;
+- inside the `index.html` iframe the monitor does not draw a second banner/panel
+  or a second guest chip — only the outer page does.
+
 ## Scenario (150 s cycle)
 
 | Time | Phase | What happens |
@@ -92,11 +129,14 @@ The numbers are consistent with the live R231 measurement on qwen3.8 27B Q4 (mas
 ## Checking the mode
 
 ```bash
-# unit: scenario logic and the API router (21 checks)
+# unit: scenario logic and the API router (24 checks)
 node webui/js/modules/demo-mode.test.js
 
 # unit: wiring (HTML and script order, entrypoint, compose, documentation) — 8 checks
 node webui/js/modules/demo-mode-wiring-r232.test.js
+
+# unit: phone geometry of the monitor (no browser needed) — 5 checks
+node webui/js/modules/monitor-mobile-layout.test.js
 
 # live check: a temporary container with WEBUI_DEMO_MODE=1 + Playwright (the stand is not touched)
 pwsh -File scripts/verify-demo-r232.ps1

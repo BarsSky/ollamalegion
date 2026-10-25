@@ -1,9 +1,21 @@
-﻿/* demo.css - R232 (2026-10-24): оформление демо-режима WebUI.
+/* demo.css - R232 (2026-10-24): оформление демо-режима WebUI.
  * Стили применяются только когда demo-mode.js добавил body.demo-mode.
  * Никаких внешних ресурсов: цвета из переменных темы, fallback-значения рядом. */
 
 body.demo-mode {
-    padding-top: 34px;
+    /* R238: высоту баннера измеряет demo-mode.js - на телефоне он переносится
+       на две строки, и фиксированные 34 px накрывали шапку/бургер. */
+    padding-top: var(--demo-banner-h, 34px);
+}
+
+/* Сайдбар и кнопка-бургер живут под баннером, а не под ним. */
+body.demo-mode .sidebar {
+    top: var(--demo-banner-h, 34px);
+    height: calc(100vh - var(--demo-banner-h, 34px));
+}
+
+body.demo-mode .nav-burger {
+    top: calc(var(--demo-banner-h, 34px) + 10px);
 }
 
 .demo-banner {
@@ -145,10 +157,22 @@ body.demo-mode {
 }
 
 @media (max-width: 720px) {
-    .demo-scenario {
-        left: 10px;
-        right: 10px;
-        width: auto;
-        max-height: 40vh;
+    .demo-banner {
+        /* Компактнее: на телефоне вторая часть текста не нужна, иначе баннер
+           занимает треть экрана и перекрывает шапку. */
+        font-size: 11.5px;
+        padding: 6px 10px;
+        gap: 4px;
     }
+    .demo-banner span { display: none; }
+    .demo-scenario {
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+        width: auto;
+        max-height: 34vh;
+    }
+    .demo-scenario.collapsed { max-height: none; }
+    .demo-scenario-counters { font-size: 11px; }
+    .demo-ev { font-size: 11px; }
 }

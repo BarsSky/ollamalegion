@@ -24,6 +24,16 @@ html, body {
   height: 100%;
   overflow: hidden;
 }
+/* R238: колонка «header + main». Раньше main имел height: calc(100vh - 45px),
+   но на телефоне шапка переносится в несколько строк (и добавляется демо-баннер
+   сверху), поэтому нижняя часть - stats-bar - уезжала за экран. С flex-колонкой
+   main забирает ровно оставшуюся высоту, а полотно топологии - остаток после
+   статистики. */
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
 body::before {
   content: '';
   position: fixed;
@@ -86,7 +96,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .overlay p { color: var(--text-secondary); max-width: 480px; }
 .overlay .spinner { width: 32px; height: 32px; border: 3px solid var(--border-color); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-main { display: flex; flex-direction: column; height: calc(100vh - 45px); overflow: hidden; }
+main { display: flex; flex-direction: column; flex: 1 1 auto; height: auto; min-height: 0; overflow: hidden; }
 /* R92 (2026-10-09): полоса топологии - прокручиваемое поле.
    Раньше .topo-section сам держал канвас и статистику (padding-bottom:52px +
    .stats-bar{position:absolute;bottom:0}), поэтому полотно не могло быть выше

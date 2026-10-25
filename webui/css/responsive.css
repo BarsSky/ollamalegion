@@ -70,3 +70,45 @@
     .wizard-param-table th,
     .wizard-param-table td { padding: 4px 6px; }
 }
+
+/* ============================================================================
+   R238 (2026-10-25): телефон - шапка, таблицы и демо-баннер.
+   Жалоба: «если открыть на смартфоне, все элементы накладываются кучей».
+   Причины были конкретные:
+     * .header - flex в одну строку, а .header-actions шире экрана (521 px при
+       390 px): кнопки уезжали вправо и растягивали документ до 659 px;
+     * бургер (position:fixed; top:10px) рисовался ПОД баннером демо и наезжал
+       на логотип;
+     * широкие таблицы не имели горизонтального скролла в .table-responsive.
+   ============================================================================ */
+@media (max-width: 768px) {
+    .header {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 12px 10px 56px; /* слева место под бургер (fixed, 38 px) */
+        min-height: 0;
+    }
+    .header h1 { font-size: 18px; }
+    .header-actions {
+        width: 100%;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 6px;
+    }
+    .header-actions > * { flex-shrink: 0; }
+    /* «Обновить» дублирует авто-обновление (data-freshness-toggle остаётся). */
+    #refreshBtn { display: none; }
+    .main { padding: 12px; }
+    /* Таблицы прокручиваются внутри карточки и не растягивают страницу. */
+    .table-responsive {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        max-width: 100%;
+    }
+}
+
+@media (max-width: 480px) {
+    .header h1 { font-size: 16px; }
+    .lang-select { padding: 2px 4px; }
+    .nav-item { padding: 8px 12px; }
+}

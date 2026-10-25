@@ -148,6 +148,24 @@
     var processing = requests.filter(function (r) { return r.start <= t + 0.0001 && r.end > t; });
     var done = requests.filter(function (r) { return r.end <= t + 0.0001; });
 
+    // R238: монитор показывает «живые» цифры, а не только раскладку слоёв.
+    // Считаем те же величины, что отдаёт настоящий балансер:
+    //   activeRequests    — сколько запросов бэкенд держит прямо сейчас;
+    //   requestsPerSecond — сколько ответов он отдал за последние RATE_WIN с;
+    //   recentRequests/recentResponses — последние назначения и завершения,
+    //     из них canvas-conveyor рисует частицы запроса и ОТВЕТА (с подписями),
+    //     поэтому конвейер отражает реальный путь backend -> балансер -> клиент.
+    //
+    // Окно 10 с, а не 6: до донора один слот выдаёт ответ раз в ~9 с, и в окне
+    // 6 с событие часто не попадало вовсе — конвейер выглядел пустым, а RPS
+    // показывал 0 между завершениями.
+    var RATE_WIN = 10;
+    var startedRecent = requests.filter(function (r) {
+      return r.start <= t + 0.0001 && r.start > t - RATE_WIN;
+    });
+    var doneRecent = done.filter(function (r) { return r.end > t - RATE_WIN; });
+    function ratePerSec(list) { return Number((list.length / RATE_WIN).toFixed(2)); }
+
     var loaded = t >= 8 && !(t >= TUNE_RELOAD_AT && t < TUNE_DONE_AT);
     var loading = (t >= 0 && t < 8) || (t >= TUNE_RELOAD_AT && t < TUNE_DONE_AT);
     var loadProgress = t < 8 ? round((t / 8) * 100) : (t >= TUNE_RELOAD_AT && t < TUNE_DONE_AT ? round(((t - TUNE_RELOAD_AT) / (TUNE_DONE_AT - TUNE_RELOAD_AT)) * 100) : 100);
@@ -192,7 +210,11 @@
     var vramUsedMaster = donorOn ? 7420 : 7560;
     var vramFreeMaster = 8191 - vramUsedMaster;
     var tokS = donorOn ? (tuned ? 2.15 : 2.08) : 0.71;
-    var rps = (processing.length + pending.length * 0.25 + 0.4).toFixed(2);
+    // RPS — не «красивое число», а реальная скорость завершений в сценарии:
+    // сколько запросов доработало до ответа за последние RATE_WIN секунд.
+    var masterRps = ratePerSec(doneRecent.filter(function (r) { return r.backend === 'master'; }));
+    var donorRps = donorOn ? ratePerSec(doneRecent.filter(function (r) { return r.backend === 'donor'; })) : 0;
+    var rps = Number((masterRps + donorRps).toFixed(2));
 
     var modelOps = [];
     if (t < 8) {
@@ -206,9 +228,14 @@
       return {
         id: id, name: name, host: host, type: type, backendType: type, status: status,
         role: role, weight: 1, labels: role === 'donor' ? ['rpc:donor', 'gpu:sm_120'] : ['gpu:sm_86'],
+        // R238: монитор читает activeRequests/maxConcurrentRequests (стат-бар,
+        // блок балансера, плитки бэкендов и конвейер). Без них поле Active было
+        // всегда 0, а частицы «запрос/ответ» не рождались вовсе.
+        activeRequests: 0, maxConcurrentRequests: 1, freeSlots: 1,
+        requestsPerSecond: 0,
         maxConcurrentReqs: 1, maxModels: 1, apiStyle: 'openai', gpuMode: 'auto',
         score: role === 'donor' ? 0.78 : 0.91,
-        ollama: { requestsPerSecond: Number(rps), backendCapacity: { freeVram: 1024, loadableModelCount: 1, guaranteedVram: 512, mode: 'gpu', availableModels: [] } }
+        ollama: { requestsPerSecond: 0, backendCapacity: { freeVram: 1024, loadableModelCount: 1, guaranteedVram: 512, mode: 'gpu', availableModels: [] } }
       };
     }
 
@@ -228,6 +255,10 @@
     master.loadingModelCount = loading ? 1 : 0;
     master.loadedModelCount = loaded ? 1 : 0;
     master.autoTune = autoTuneAt(t);
+    master.activeRequests = activeMaster;
+    master.freeSlots = Math.max(0, 1 - activeMaster);
+    master.requestsPerSecond = masterRps;
+    master.ollama.requestsPerSecond = masterRps;
 
     var donor = backendBase('rpc-donor', 'donor (узел RPC)', 'donor.local', 'llama_cpp', donorOn ? 'healthy' : 'offline', 'donor');
     donor.gpu = { usagePercent: gpuUsageDonor, memoryTotal: 8123, memoryUsed: donorOn ? 6200 : 1090, memoryFree: donorOn ? 1923 : 7033, temperature: 58, powerUsage: donorOn ? 95 : 18, powerLimit: 140, gpuClock: 2100, memClock: 7000 };
@@ -238,6 +269,10 @@
     donor.rpcEnabled = false;
     donor.rpcServersActive = [];
     donor.autoTune = { autoTuneEnabled: true, overallSeverity: 'ok', overallSummary: 'no models loaded', models: [] };
+    donor.activeRequests = activeDonor;
+    donor.freeSlots = donorOn ? Math.max(0, 1 - activeDonor) : 0;
+    donor.requestsPerSecond = donorRps;
+    donor.ollama.requestsPerSecond = donorRps;
 
     var image = backendBase('imageworker', 'imageworker', '127.0.0.1', 'image_cpp', 'healthy', 'standalone');
     image.gpu = { usagePercent: 0, memoryTotal: 8191, memoryUsed: 1200, memoryFree: 6991 };
@@ -249,16 +284,19 @@
     var backends = [master, donor, image];
 
     var sessions = CLIENTS.filter(function (c) { return t >= c.join; }).map(function (c) {
-      var count = requests.filter(function (r) { return r.client.key === c.key; }).length;
-      var last = requests.filter(function (r) { return r.client.key === c.key; }).slice(-1)[0];
+      var mine = requests.filter(function (r) { return r.client.key === c.key; });
+      var last = mine[mine.length - 1];
+      var busy = processing.filter(function (r) { return r.client.key === c.key; }).length;
       return {
         id: c.ip + '::' + c.name + '::' + c.model,
         backendId: last ? (last.backend === 'donor' ? 'rpc-donor' : 'cppworker-gpu-bundled-agent') : '',
         model: c.model,
         clientIP: c.ip,
         clientName: c.name,
-        requestCount: count,
-        lastRequestAt: iso(last ? last.arrival : c.join),
+        requestCount: mine.length,
+        activeRequests: busy,
+        hasActiveStream: busy > 0,
+        lastRequestAt: iso(last ? last.start : c.join),
         protocol: c.name === 'Open WebUI' ? 'ollama' : 'openai',
         active: t < c.leave
       };
@@ -305,11 +343,55 @@
 
     var events = buildEvents(t, requests, pending, processing, done);
 
+    // recentClients — кто недавно слал запросы (canvas-conveyor: discovery-частицы
+    // с подписью клиента, как «HTTP-запросы вообще» в живом мониторе).
+    var recentByClient = {};
+    requests.forEach(function (r) {
+      if (r.arrival <= t - 12 || r.arrival > t) { return; }
+      var k = r.client.key;
+      var e = recentByClient[k];
+      if (!e) {
+        e = recentByClient[k] = {
+          clientName: r.client.name, clientIP: r.client.ip, model: r.model,
+          requestCount: 0, lastRequestAt: iso(r.arrival)
+        };
+      }
+      e.requestCount += 1;
+      e.lastRequestAt = iso(r.arrival);
+    });
+    var recentClients = Object.keys(recentByClient).map(function (k) { return recentByClient[k]; });
+
+    // recentRequests / recentResponses — точные события сценария для конвейера:
+    // первая даёт частицу «клиент → балансер → бэкенд», вторая — ОТВЕТ
+    // «бэкенд → балансер → клиент» (та самая обратная ветка, которой раньше не было).
+    var recentRequests = startedRecent.map(function (r) {
+      return {
+        requestId: r.id, sessionId: r.sessionId, clientName: r.client.name, clientIP: r.client.ip,
+        model: r.model, backend: r.backend, backendName: r.backendName,
+        // backendId — id бэкенда, как его знает /api/v1/backends. Конвейер ищет
+        // узел по id и не может промахнуться из-за «человеческого» backendName.
+        backendId: r.backend === 'donor' ? 'rpc-donor' : 'cppworker-gpu-bundled-agent',
+        at: iso(r.start), waitMs: r.waitMs
+      };
+    });
+    var recentResponses = doneRecent.map(function (r) {
+      return {
+        requestId: r.id, sessionId: r.sessionId, clientName: r.client.name, clientIP: r.client.ip,
+        model: r.model, backend: r.backend, backendName: r.backendName,
+        backendId: r.backend === 'donor' ? 'rpc-donor' : 'cppworker-gpu-bundled-agent',
+        at: iso(r.end), durationMs: round((r.end - r.start) * 1000), waitMs: r.waitMs
+      };
+    });
+
     return {
       t: t, cycle: simNow().cycle, phase: phaseAt(t),
       donorOn: donorOn, tuned: tuned, loaded: loaded, loading: loading, loadProgress: loadProgress,
       model: modelInfo, layers: layers, gpuLayers: gpuLayers, rpcLayers: rpcLayers,
       tokS: tokS, rps: rps, requests: requests, pending: pending, processing: processing, done: done,
+      totalRequests: queueStats.processed_total,
+      recentClients: recentClients, recentRequests: recentRequests, recentResponses: recentResponses,
+      // Модель в warming-состоянии — конвейер рисует оранжевые частицы загрузки.
+      warmingUpModels: loading ? [MODEL] : [],
       backends: backends, sessions: sessions, queueAll: queueAll, history: history,
       queueStats: queueStats, avgWait: avgWait,
       autoTune: autoTuneAt(t), events: events, modelOps: modelOps,
@@ -433,7 +515,13 @@
     }
     if (p === '/api/v1/auth/logout') { return { status: 200, body: { success: true, demo: true } }; }
     if (p === '/api/v1/cluster') {
-      return { status: 200, body: { backends: st.backends, rps: Number(st.rps), backendEngine: 'llama_cpp', effectiveBackendType: 'llama_cpp', queue: { max_size: 100 }, timestamp: iso(st.t), demo: true } };
+      return { status: 200, body: {
+        backends: st.backends, rps: Number(st.rps), totalRequests: st.totalRequests,
+        // R238: монитор берёт отсюда recentClients/recentRequests/recentResponses
+        // (частицы конвейера с подписями) и warmingUpModels (загрузка модели).
+        recentClients: st.recentClients, recentRequests: st.recentRequests,
+        recentResponses: st.recentResponses, warmingUpModels: st.warmingUpModels,
+        backendEngine: 'llama_cpp', effectiveBackendType: 'llama_cpp', queue: { max_size: 100 }, timestamp: iso(st.t), demo: true } };
     }
     if (p === '/api/v1/backends') {
       return { status: 200, body: { backends: st.backends, totalBackends: st.backends.length, healthyBackends: st.backends.filter(function (b) { return b.status === 'healthy'; }).length, timestamp: iso(st.t), demo: true } };
@@ -707,8 +795,40 @@
     });
   }
 
+  // syncBannerHeight — отдать CSS реальную высоту баннера.
+  //
+  // Зачем: на телефоне текст «ДЕМО-РЕЖИМ · имитация… · данные синтетические…»
+  // переносится на две-три строки, а body.demo-mode имел фиксированный
+  // padding-top:34px. В итоге баннер накрывал шапку и кнопку-бургер, а бургер
+  // оказывался под баннером (z-index баннера выше). Измеряем фактическую высоту
+  // и через --demo-banner-h двигаем padding, сайдбар и бургер.
+  function syncBannerHeight() {
+    if (typeof document === 'undefined' || !document.body) { return; }
+    var b = document.getElementById('demoModeBanner');
+    if (!b) { return; }
+    var h = 0;
+    try {
+      h = Math.round(b.getBoundingClientRect ? b.getBoundingClientRect().height : 0);
+    } catch (e) { h = 0; }
+    if (!h && b.offsetHeight) { h = b.offsetHeight; }
+    if (h > 0 && document.body.style && document.body.style.setProperty) {
+      document.body.style.setProperty('--demo-banner-h', h + 'px');
+    }
+  }
+
+  // isIframe — monitor.html открывается и как отдельная страница, и внутри
+  // index.html через iframe. В iframe баннер/панель демо уже нарисованы внешней
+  // страницей: дублировать их нельзя, иначе в области монитора оказываются две
+  // плашки и сдвинутый контент.
+  function isIframe() {
+    try {
+      return typeof window !== 'undefined' && window.top && window.self && window.top !== window.self;
+    } catch (e) { return true; }
+  }
+
   function ensureUI() {
     if (typeof document === 'undefined' || !document.body) { return; }
+    if (isIframe()) { return; }
     if (document.body.classList) { document.body.classList.add('demo-mode'); }
     if (!document.getElementById('demoModeBanner')) {
       var banner = document.createElement('div');
@@ -718,6 +838,7 @@
         '<span>данные синтетические, только чтение, время ускорено</span>';
       if (document.body.insertBefore) { document.body.insertBefore(banner, document.body.firstChild); }
       else { document.body.appendChild(banner); }
+      syncBannerHeight();
     }
     if (!document.getElementById('demoScenario')) {
       var panel = document.createElement('div');
@@ -746,6 +867,13 @@
           if (panel.classList.toggle) { panel.classList.toggle('collapsed'); }
           toggle.textContent = (panel.classList && panel.classList.contains('collapsed')) ? '+' : '–';
         });
+      }
+      // R238: на телефоне панель по умолчанию свёрнута — развёрнутая она
+      // занимала половину экрана и перекрывала счётчики/топологию. Гость
+      // раскрывает её сам кнопкой «+».
+      if (typeof window !== 'undefined' && window.innerWidth && window.innerWidth < 720) {
+        if (panel.classList) { panel.classList.add('collapsed'); }
+        if (toggle) { toggle.textContent = '+'; }
       }
     }
   }
@@ -810,14 +938,40 @@
     } catch (e) { /* демо не должно ломать страницу */ }
   }
 
+  // hideIframeChrome — в iframe (monitor внутри index.html) не дублируем
+  // служебные плашки внешней страницы: пользователь уже видит «гостя» и кнопку
+  // «Выйти» в шапке WebUI, второй такой же блок в области монитора только
+  // засоряет картинку.
+  function hideIframeChrome() {
+    if (typeof document === 'undefined') { return; }
+    ['authUserChip', 'authBanner'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el && el.style) { el.style.display = 'none'; }
+    });
+  }
+
   function startLoop() {
     if (typeof window === 'undefined') { return; }
     var st = computeState(simNow().t);
     ensureUI();
+    if (isIframe()) {
+      // auth.js создаёт чип асинхронно — прячем и сразу, и после первого ответа.
+      hideIframeChrome();
+      setTimeout(hideIframeChrome, 600);
+      setTimeout(hideIframeChrome, 1500);
+    }
     hideNonDemoPages();
     renderUI(st);
     announceWs();
     setTimeout(announceWs, 400);
+    // Баннер меряем ещё раз после загрузки шрифтов/переносов, и следим за
+    // поворотом экрана/ресайзом: от его высоты зависят отступ контента,
+    // позиция сайдбара и бургера (см. syncBannerHeight).
+    setTimeout(syncBannerHeight, 0);
+    setTimeout(syncBannerHeight, 300);
+    if (typeof window.addEventListener === 'function') {
+      window.addEventListener('resize', syncBannerHeight);
+    }
     setInterval(function () {
       var s = computeState(simNow().t);
       refreshAppOnPhaseChange(s);

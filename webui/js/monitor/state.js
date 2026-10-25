@@ -95,7 +95,13 @@
   };
 
   // Canvas state
-  MonitorApp.topo = { backends: [], sessions: [], queue: {}, w: 0, h: 0, recentClients: [], warmingUpModels: [] };
+  MonitorApp.topo = {
+    backends: [], sessions: [], queue: {}, w: 0, h: 0,
+    recentClients: [], warmingUpModels: [],
+    // R238: точные события запросов/ответов (демо-сценарий). Когда они есть,
+    // картинку рисует canvas-conveyor по фактам, а не по случайной эвристике.
+    recentRequests: [], recentResponses: [], demoLifecycle: false
+  };
   MonitorApp.particles = [];
   MonitorApp.convQueue = [];
 
@@ -167,6 +173,28 @@
   MonitorApp.GEOM.balOutX = function(w) { return w / 2 + MonitorApp.GEOM.bw / 2; };
   MonitorApp.GEOM.balCenterX = function(w) { return w / 2; };
   MonitorApp.GEOM.balCenterY = function(h) { return h / 2; };
+
+  // applyResponsive — геометрия полотна под ширину окна.
+  //
+  // ЖАЛОБА (R238): «на маленьком экране смартфона все элементы накладываются
+  // кучей». Причина: clientX=140, backendMargin=140 и bw=180 фиксированы, а на
+  // 390 px клиентская плитка (12..132) и плитки бэкендов (w-140..w-12) наезжают
+  // на блок балансера (w/2 ± 90). Сжимаем колонки и сам блок, сохраняя зазор:
+  // линия клиента заканчивается ЛЕВЕЕ блока, плитки бэкендов начинаются ПРАВЕЕ.
+  //
+  // Функция чистая (принимает ширину полотна) — её проверяет
+  // webui/js/modules/monitor-mobile-layout.test.js без браузера.
+  MonitorApp.GEOM.applyResponsive = function(w) {
+    var G = MonitorApp.GEOM;
+    if (!w || w >= 720) { G.clientX = 140; G.backendMargin = 140; G.bw = 180; return G; }
+    var cw = Math.max(84, Math.min(104, Math.round(w * 0.24)));
+    var bm = Math.max(88, Math.min(120, Math.round(w * 0.26)));
+    var bw = Math.max(96, Math.min(180, w - cw - bm - 24));
+    G.clientX = cw;
+    G.backendMargin = bm;
+    G.bw = bw;
+    return G;
+  };
 
   // nodeCount — сколько узлов этого типа сейчас в состоянии (0 = пусто).
   MonitorApp.nodeCount = function(type) {

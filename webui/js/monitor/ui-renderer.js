@@ -685,6 +685,11 @@
     var rawSs = (data.sessions && data.sessions.sessions) || [];
     var recentClients = data.cluster.recentClients || [];
     var warmingUpModels = data.cluster.warmingUpModels || [];
+    // R238: точные события сценария для конвейера (запрос/ответ). В живом
+    // мониторе балансер их не отдаёт — тогда массивы пустые, и конвейер
+    // работает по эвристике (как раньше).
+    var recentRequests = data.cluster.recentRequests || [];
+    var recentResponses = data.cluster.recentResponses || [];
     var act = bk.reduce(function(s, b) { return s + (b.activeRequests || 0); }, 0);
     // Защита от пустого блока клиентов: если есть активные запросы, но сессии пусты,
     // создаём синтетические сессии для отображения на топологии
@@ -795,7 +800,7 @@
     safeRender('queue', function() { renderQueue(q); });
     safeRender('sessions', function() { renderSessions(ss); });
     safeRender('topology', function() {
-      if (typeof window.updateTopology === 'function') window.updateTopology(bk, ss, q, recentClients, warmingUpModels);
+      if (typeof window.updateTopology === 'function') window.updateTopology(bk, ss, q, recentClients, warmingUpModels, recentRequests, recentResponses);
     });
   }
 

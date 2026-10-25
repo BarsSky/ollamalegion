@@ -206,7 +206,21 @@
         align-items: stretch;
         gap: 8px;
         padding: 8px 12px;
+        /* R238: на телефоне шапка переносится; overflow:hidden обрезал
+           последний ряд кнопок. */
+        overflow: visible;
     }
+    /* R238: 9 ячеек статистики не влезали в 390 px - полоса обрезалась справа
+       (в живом мониторе не было видно Sessions/RPS/VRAM). Теперь переносится. */
+    .stats-bar {
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 4px 8px;
+        padding: 6px 8px;
+    }
+    .stat-item { min-width: 46px; padding: 1px 3px; }
+    .stat-val { font-size: 13px; }
+    .stat-label { font-size: 9px; }
     header h1 {
         font-size: 14px;
         justify-content: center;

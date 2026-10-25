@@ -48,6 +48,9 @@
     var r = host.getBoundingClientRect();
     var visH = Math.max(120, Math.round(r.height));
     var visW = Math.max(160, Math.round(r.width));
+    // R238: на узком экране колонки и блок балансера сжимаются, иначе плитки
+    // клиентов/бэкендов наезжают на балансер (см. GEOM.applyResponsive).
+    MA.GEOM.applyResponsive(visW);
     var needH = Math.max(MA.columnNeedH('session'), MA.columnNeedH('backend'));
     var h = Math.max(visH, Math.min(needH, MA.GEOM.maxCanvasH));
 
@@ -81,7 +84,7 @@
   window.addEventListener('resize', rsz);
   rsz();
 
-  function updateTopology(bk, ss, q, recentClients, warmingUpModels) {
+  function updateTopology(bk, ss, q, recentClients, warmingUpModels, recentRequests, recentResponses) {
     var prevSess = MA.topo.sessions ? MA.topo.sessions.length : 0;
     var prevBack = MA.topo.backends ? MA.topo.backends.length : 0;
     MA.topo.backends = bk;
@@ -97,6 +100,13 @@
     MA.topo.queue = q;
     MA.topo.recentClients = recentClients || [];
     MA.topo.warmingUpModels = warmingUpModels || [];
+    // R238: демо отдаёт точные recentRequests/recentResponses — по ним конвейер
+    // рисует запрос и ОТВЕТ (backend → балансер → клиент). Наличие этих массивов
+    // (даже пустых) включает «фактовый» режим и отключает случайные частицы
+    // топологии, чтобы на картинке не было двух конкурирующих потоков.
+    MA.topo.recentRequests = recentRequests || [];
+    MA.topo.recentResponses = recentResponses || [];
+    MA.topo.demoLifecycle = !!(recentRequests || recentResponses);
     // Сменился «состав» кластера — снова держим хаб по центру (оператор не
     // пострадал: его собственная прокрутка сбрасывается только на смене состава).
     if (prevSess !== MA.topo.sessions.length || prevBack !== MA.topo.backends.length) {
@@ -138,11 +148,11 @@
     // (их нет и в подсказке), иначе клик в пустом месте считался бы попаданием.
     for (var i = visLimit('session', MA.topo.sessions.length) - 1; i >= 0; i--) {
       var y = MA.nY('session', i);
-      if (worldX >= 12 && worldX <= 132 && worldY >= y - 22 && worldY <= y + 22) return true;
+      if (worldX >= 12 && worldX <= MA.GEOM.clientX - 8 && worldY >= y - 22 && worldY <= y + 22) return true;
     }
     for (var i = visLimit('backend', MA.topo.backends.length) - 1; i >= 0; i--) {
       var y = MA.nY('backend', i);
-      if (worldX >= w - 140 && worldX <= w - 12 && worldY >= y - 26 && worldY <= y + 26) return true;
+      if (worldX >= w - MA.GEOM.backendMargin && worldX <= w - 12 && worldY >= y - 26 && worldY <= y + 26) return true;
     }
     // Check balancer box
     var bw = MA.GEOM.bw, bh = MA.GEOM.bh, bx = cX - bw / 2, by = cY - bh / 2;
@@ -249,7 +259,7 @@
     for (var i = visLimit('session', MA.topo.sessions.length) - 1; i >= 0; i--) {
       var s = MA.topo.sessions[i];
       var y = MA.nY('session', i);
-      if (wx >= 12 && wx <= 132 && wy >= y - 22 && wy <= y + 22) {
+      if (wx >= 12 && wx <= MA.GEOM.clientX - 8 && wy >= y - 22 && wy <= y + 22) {
         found = { type: 'client', session: s };
         break;
       }
@@ -259,7 +269,7 @@
       for (var i = visLimit('backend', MA.topo.backends.length) - 1; i >= 0; i--) {
         var b = MA.topo.backends[i];
         var y = MA.nY('backend', i);
-        if (wx >= w - 140 && wx <= w - 12 && wy >= y - 26 && wy <= y + 26) {
+        if (wx >= w - MA.GEOM.backendMargin && wx <= w - 12 && wy >= y - 26 && wy <= y + 26) {
           found = { type: 'backend', backend: b };
           break;
         }
@@ -341,6 +351,11 @@
   var SPAWN_INTERVAL_MS = 200;
 
   function sp() {
+    // R238: в демо поток рисует canvas-conveyor по точным событиям
+    // (recentRequests/recentResponses), а случайные частицы топологии дублировали
+    // бы его: жёлтые точки «ожидания» выглядели как ответы, которых на самом деле
+    // не было. В живом режиме (массивов нет) поведение прежнее.
+    if (MA.topo.demoLifecycle) return;
     var cX = MA.topo.w / 2, cY = MA.topo.h / 2;
     var now = Date.now();
 
@@ -528,6 +543,9 @@
 
     cx.setLineDash([]);
     var textLight = pal.text, textMuted = pal.textMuted;
+    // R238: ширина плиток выводится из GEOM (на телефоне колонки уже), а не из
+    // констант 120/128 — иначе плитки вылезают/наезжают на блок балансера.
+    var sessTileW = Math.max(64, MA.GEOM.clientX - 20);
     for (var si2 = 0; si2 < sessVis; si2++) {
       var s = MA.topo.sessions[si2];
       var y = MA.nY('session', si2), ia = s.backendId != null, isCloud = MA.isCloudModel(s.model);
@@ -535,11 +553,11 @@
       if (isCloud) { bc = 'rgba(59,130,246,0.15)'; br = 'rgba(59,130,246,0.45)'; }
       else if (ia) { bc = 'rgba(59,130,246,0.18)'; br = 'rgba(59,130,246,0.5)'; }
       else { bc = 'rgba(148,163,184,0.12)'; br = 'rgba(148,163,184,0.25)'; }
-      cx.fillStyle = bc; MA.rr(cx, 12, y - 22, 120, 44, 8); cx.fill(); cx.strokeStyle = br; cx.lineWidth = 1; cx.stroke();
+      cx.fillStyle = bc; MA.rr(cx, 12, y - 22, sessTileW, 44, 8); cx.fill(); cx.strokeStyle = br; cx.lineWidth = 1; cx.stroke();
       cx.fillStyle = textLight; cx.font = 'bold 11px ' + MA.vF(); cx.textAlign = 'left';
-      cx.save(); cx.beginPath(); cx.rect(16, y - 18, 108, 14); cx.clip(); cx.fillText(MA.getCI(s.clientName) + ' ' + MA.trunc(s.clientName, 8), 20, y - 6); cx.restore();
+      cx.save(); cx.beginPath(); cx.rect(16, y - 18, sessTileW - 12, 14); cx.clip(); cx.fillText(MA.getCI(s.clientName) + ' ' + MA.trunc(s.clientName, 8), 20, y - 6); cx.restore();
       cx.fillStyle = isCloud ? '#60a5fa' : textMuted; cx.font = '10px ' + MA.vF();
-      cx.save(); cx.beginPath(); cx.rect(16, y + 1, 108, 14); cx.clip(); cx.fillText((isCloud ? '☁️ ' : '') + (s.model || '—') + ' • ' + (s.requestCount || 0) + ' req', 20, y + 8); cx.restore();
+      cx.save(); cx.beginPath(); cx.rect(16, y + 1, sessTileW - 12, 14); cx.clip(); cx.fillText((isCloud ? '☁️ ' : '') + (s.model || '—') + ' • ' + (s.requestCount || 0) + ' req', 20, y + 8); cx.restore();
     }
     // R91: клиентов больше, чем влезло — показываем счётчик, а не молчим.
     drawOverflowChip('session', 12, sLayout.chipY, sLayout.hidden, lt);
@@ -589,24 +607,30 @@
         bc = 'rgba(239,68,68,0.12)';
         br = 'rgba(239,68,68,0.4)';
       }
-      cx.fillStyle = bc; MA.rr(cx, w - 140, y - 26, 128, 52, 8); cx.fill(); cx.strokeStyle = br; cx.lineWidth = isWarming ? 2.5 : 1.5; cx.stroke();
-      cx.fillStyle = backendIdleTxt; cx.font = 'bold 11px ' + MA.vF(); cx.textAlign = 'left'; cx.fillText(MA.trunc(b.id, 12), w - 132, y - 10);
+      var backTileX = w - MA.GEOM.backendMargin;
+      var backTileW = Math.max(72, MA.GEOM.backendMargin - 12);
+      cx.fillStyle = bc; MA.rr(cx, backTileX, y - 26, backTileW, 52, 8); cx.fill(); cx.strokeStyle = br; cx.lineWidth = isWarming ? 2.5 : 1.5; cx.stroke();
+      cx.fillStyle = backendIdleTxt; cx.font = 'bold 11px ' + MA.vF(); cx.textAlign = 'left'; cx.fillText(MA.trunc(b.id, 12), backTileX + 8, y - 10);
       var mr = b.maxConcurrentRequests || 10, a = b.activeRequests || 0, l = a / mr;
       cx.fillStyle = l >= 0.8 ? '#ef4444' : l >= 0.5 ? '#f59e0b' : '#22c55e'; cx.font = '10px ' + MA.vF();
-      cx.fillText(a > 0 ? '⏳ ' + a + '/' + mr : '✅ Idle', w - 132, y + 6);
+      cx.fillText(a > 0 ? '⏳ ' + a + '/' + mr : '✅ Idle', backTileX + 8, y + 6);
       var mc = (b.models || []).length;
       var wmCount = (b.warmingUpModels || []).length;
       if (isWarming) {
         cx.fillStyle = '#f97316'; cx.font = 'bold 9px ' + MA.vF();
         var wmLabel = wmCount > 1 ? wmCount + ' ' + MA.T('monitor.canvas.warmingModels') : MA.T('monitor.canvas.warming');
-        cx.fillText('⏳ ' + wmLabel, w - 132, y + 20);
-      } else if (mc > 0) { cx.fillStyle = '#a855f7'; cx.font = '9px ' + MA.vF(); cx.fillText('🧠 ' + mc + MA.T('models_lower'), w - 132, y + 20); }
-      else if (ih && a > 0) { cx.fillStyle = '#f97316'; cx.font = '9px ' + MA.vF(); cx.fillText(MA.T('loading'), w - 132, y + 20); }
+        cx.fillText('⏳ ' + wmLabel, backTileX + 8, y + 20);
+      } else if (mc > 0) { cx.fillStyle = '#a855f7'; cx.font = '9px ' + MA.vF(); cx.fillText('🧠 ' + mc + MA.T('models_lower'), backTileX + 8, y + 20); }
+      else if (ih && a > 0) { cx.fillStyle = '#f97316'; cx.font = '9px ' + MA.vF(); cx.fillText(MA.T('loading'), backTileX + 8, y + 20); }
       var vp = b.vram ? b.vram.usagePercent : 0;
-      if (vp > 0) { cx.fillStyle = pal.barBg; MA.rr(cx, w - 132, y + 26, 100, 3, 2); cx.fill(); cx.fillStyle = vp > 85 ? '#ef4444' : vp > 60 ? '#f59e0b' : '#22c55e'; MA.rr(cx, w - 132, y + 26, 100 * (vp / 100), 3, 2); cx.fill(); }
+      if (vp > 0) {
+        var vbW = Math.max(40, Math.min(100, backTileW - 16));
+        cx.fillStyle = pal.barBg; MA.rr(cx, backTileX + 8, y + 26, vbW, 3, 2); cx.fill();
+        cx.fillStyle = vp > 85 ? '#ef4444' : vp > 60 ? '#f59e0b' : '#22c55e'; MA.rr(cx, backTileX + 8, y + 26, vbW * (vp / 100), 3, 2); cx.fill();
+      }
     }
     // R91: бэкендов больше, чем влезло — счётчик вместо молчания.
-    drawOverflowChip('backend', w - 140, bLayout.chipY, bLayout.hidden, lt);
+    drawOverflowChip('backend', w - MA.GEOM.backendMargin, bLayout.chipY, bLayout.hidden, lt);
 
     sp();
     var now = Date.now();

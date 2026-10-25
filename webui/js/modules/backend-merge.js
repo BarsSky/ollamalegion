@@ -368,7 +368,7 @@
         if (!groups.length) { return ''; }
         return '<strong>' + escapeHtml(T('merge.groups')) + '</strong><ul>' + groups.map(function (g) {
             return '<li>' + escapeHtml(g.id) + ' — ' + escapeHtml(g.strategy || '') +
-                ' (' + escapeHtml(T('merge.ready')) + ': ' + (g.usable ? 'yes' : 'no') + ')' +
+                ' (' + escapeHtml(T('merge.ready')) + ': ' + escapeHtml(g.usable ? T('common.yes') : T('common.no')) + ')' +
                 ' <button type="button" id="bmSplit" data-group="' + escapeHtml(g.id) + '">' +
                 escapeHtml(T('merge.split')) + '</button></li>';
         }).join('') + '</ul>';
@@ -755,6 +755,26 @@
         });
         root.addEventListener('input', handleInput);
         root.addEventListener('change', handleInput);
+    }
+
+    // onLanguageChanged — перерисовать панель при смене языка интерфейса.
+    //
+    // ЖИВОЙ ДЕФЕКТ (R238e). Панель рисуется JS-ом один раз (mount) с T() на
+    // момент отрисовки. Переключатель языка в шапке переводит только data-i18n
+    // разметку, поэтому «Объединение бэкендов» оставалось на прежнем языке до
+    // перезагрузки страницы. Теперь на i18n:changed панель перерисовывается из
+    // того же state (выбор узлов/мастера/стратегия сохраняются).
+    function onLanguageChanged() {
+        state.lang = (globalThis.I18N && globalThis.I18N.getLang) ? globalThis.I18N.getLang() : state.lang;
+        if (!globalThis.document || !globalThis.document.getElementById) { return; }
+        var root = globalThis.document.getElementById(MOUNT_ID);
+        // Панель ещё не смонтирована (или mount в процессе) — перерисовывать нечего.
+        if (!root || !root.innerHTML) { return; }
+        render(MOUNT_ID);
+    }
+
+    if (globalThis.window && globalThis.window.addEventListener) {
+        globalThis.window.addEventListener('i18n:changed', onLanguageChanged);
     }
 
     function autoMount() {

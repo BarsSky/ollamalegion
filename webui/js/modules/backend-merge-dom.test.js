@@ -77,10 +77,12 @@ const EN = global.I18N_EN;
 assert.ok(RU && EN, 'ru.js и en.js должны быть загружены');
 
 const missingKeys = [];
+let currentLang = 'ru';
 global.I18N = {
-    getLang: function () { return 'ru'; },
+    getLang: function () { return currentLang; },
     t: function (key, vars) {
-        let s = RU[key];
+        const pack = currentLang === 'ru' ? RU : EN;
+        let s = pack[key];
         if (s === undefined) {
             if (missingKeys.indexOf(key) === -1) { missingKeys.push(key); }
             s = key;
@@ -126,6 +128,11 @@ global.fetch = mockFetch;
 
 const MODULE_SRC = fs.readFileSync(path.join(__dirname, 'backend-merge.js'), 'utf8');
 const INDEX_HTML = fs.readFileSync(path.join(__dirname, '..', '..', 'index.html'), 'utf8');
+
+// R238e: модуль подписывается на i18n:changed, чтобы перерисовываться при смене
+// языка. Перехватываем window.addEventListener до require модуля.
+const winListeners = {};
+global.addEventListener = function (name, fn) { winListeners[name] = fn; };
 
 require('./backend-merge.js');
 const BM = global.BackendMerge;
@@ -569,6 +576,35 @@ const backendList = {
         assert.strictEqual(puts.length, 0, 'без подтверждения записывать нельзя');
         assert.strictEqual(calls.length, 1, 'чтение состояния до подтверждения — единственный запрос');
         confirmAnswer = true;
+    });
+
+    await checkAsync('смена языка перерисовывает панель без перезагрузки', async function () {
+        BM.reset();
+        routes = {
+            'GET /api/v1/backends': {
+                status: 200,
+                body: { backends: [
+                    { id: 'node-a', host: 'h1', type: 'llama_cpp' },
+                    { id: 'node-b', host: 'h2', type: 'llama_cpp' },
+                ] },
+            },
+        };
+        currentLang = 'ru';
+        await BM.mount('backendMergePanel');
+        assert.ok(panel.innerHTML.indexOf('Выберите два и более') >= 0,
+            'до переключения панель должна быть на RU: ' + panel.innerHTML.slice(0, 120));
+
+        currentLang = 'en';
+        assert.strictEqual(typeof winListeners['i18n:changed'], 'function',
+            'модуль обязан подписаться на i18n:changed (иначе блок живёт до reload)');
+        winListeners['i18n:changed']();
+
+        assert.ok(panel.innerHTML.indexOf('Pick two or more') >= 0,
+            'после смены языка должна быть EN-подсказка: ' + panel.innerHTML.slice(0, 160));
+        assert.ok(panel.innerHTML.indexOf('Выберите два и более') < 0,
+            'RU-текст не должен остаться после переключения');
+        assert.ok(panel.innerHTML.indexOf('Node') >= 0, 'заголовки таблицы тоже переводим');
+        currentLang = 'ru';
     });
 
     // --- итог -------------------------------------------------------------

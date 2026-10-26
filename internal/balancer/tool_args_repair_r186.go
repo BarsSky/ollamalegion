@@ -266,6 +266,25 @@ func repairObjectToSchema(obj map[string]interface{}, schema *toolParamSchema) (
 		}
 	}
 
+	// R246 (2026-10-26): null у НЕобязательного поля — это «поле не задано», а
+	// не значение объявленного типа. Валидатор клиента (typebox/zod) отвечает на
+	// null ошибкой «expected number, received null», и агент тратит ход на
+	// ошибку инструмента. Живой случай (gemma-4 через балансер, набор DSH):
+	// ralph с {"objective":"…","maxRounds":null} при схеме `maxRounds: number`.
+	//
+	// Обязательные поля не трогаем: null там — честная ошибка клиента, и
+	// подставлять выдуманное значение нельзя.
+	for name, val := range obj {
+		if val != nil {
+			continue
+		}
+		if _, declared := schema.Properties[name]; declared && schemaFieldRequired(schema, name) {
+			continue
+		}
+		delete(obj, name)
+		changed = true
+	}
+
 	// Обязательное поле отсутствует, но есть «его же» в единственном числе
 	// (commands ← command): модель часто отдаёт singular для plural-схемы.
 	if len(schema.Required) > 0 {
@@ -291,8 +310,48 @@ func repairObjectToSchema(obj map[string]interface{}, schema *toolParamSchema) (
 				}
 			}
 		}
+		// R246 (2026-10-26): и наоборот — обязательное поле пришло в
+		// МНОЖЕСТВЕННОМ написании (схема `query`, модель отдала `queries`).
+		// Живой случай: OpenWebUI-набор через балансер, gemma-4.
+		for _, req := range schema.Required {
+			if _, present := obj[req]; present {
+				continue
+			}
+			sub, declared := schema.Properties[req]
+			if !declared {
+				continue
+			}
+			for _, alias := range pluralAliases(req) {
+				if _, isField := schema.Properties[alias]; isField {
+					continue
+				}
+				aliasVal, exists := obj[alias]
+				if !exists {
+					continue
+				}
+				fixed, _ := coerceValueToSchema(aliasVal, sub)
+				obj[req] = fixed
+				delete(obj, alias)
+				changed = true
+				break
+			}
+		}
 	}
 	return obj, changed
+}
+
+// schemaFieldRequired — поле объявлено обязательным (сравнение без учёта
+// регистра: имена в схемах клиентов бывают в разном регистре).
+func schemaFieldRequired(schema *toolParamSchema, name string) bool {
+	if schema == nil {
+		return false
+	}
+	for _, req := range schema.Required {
+		if req == name || strings.EqualFold(req, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // singularAliases — вероятные «единственные» имена для обязательного поля.
@@ -306,6 +365,26 @@ func singularAliases(field string) []string {
 		return []string{strings.TrimSuffix(field, "s")}
 	}
 	return nil
+}
+
+// pluralAliases — вероятные МНОЖЕСТВЕННЫЕ написания имени обязательного поля.
+//
+// R246 (2026-10-26): схема объявляет `query: string`, модель отдала
+// {"queries":["ollama"]} — клиент (typebox) отвечает «обязательного поля нет»,
+// инструмент не применяется. Живой прогон OpenWebUI-набора через балансер.
+func pluralAliases(field string) []string {
+	if field == "" {
+		return nil
+	}
+	lower := strings.ToLower(field)
+	switch {
+	case strings.HasSuffix(lower, "y"):
+		return []string{field[:len(field)-1] + "ies"}
+	case strings.HasSuffix(lower, "s"), strings.HasSuffix(lower, "x"),
+		strings.HasSuffix(lower, "ch"), strings.HasSuffix(lower, "sh"):
+		return []string{field + "es"}
+	}
+	return []string{field + "s"}
 }
 
 // coerceValueToSchema — привести значение к объявленному типу, если это
@@ -351,6 +430,13 @@ func coerceValueToSchema(val interface{}, schema *toolParamSchema) (interface{},
 			}
 		}
 	case "string":
+		// R246 (2026-10-26): массив из ОДНОГО элемента при объявленной строке —
+		// это та же строка (модель зовёт `query` значением ["ollama"]).
+		if arr, isArr := val.([]interface{}); isArr && len(arr) == 1 {
+			if s, ok := arr[0].(string); ok {
+				return s, true
+			}
+		}
 		if _, ok := val.(string); !ok {
 			if num, isNum := val.(float64); isNum {
 				out, _ := json.Marshal(num)

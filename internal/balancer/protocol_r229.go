@@ -22,6 +22,11 @@ const (
 	ProtocolOpenAI = "openai"
 	// ProtocolOllama — родной Ollama путь: /api/chat, /api/generate, /api/tags, ...
 	ProtocolOllama = "ollama"
+	// ProtocolAnthropic — R247 (2026-10-26): Anthropic-native путь /v1/messages.
+	// Отдельное значение нужно, потому что трансляция в OpenAI идёт внутри
+	// балансера: по бейджу «openai» не было бы видно, что клиент пришёл с
+	// Anthropic SDK (Claude Code) — а это другой набор событий и ошибок.
+	ProtocolAnthropic = "anthropic"
 )
 
 // RequestProtocol — протокол по пути запроса. Пусто — путь не про инференс
@@ -30,6 +35,8 @@ const (
 func RequestProtocol(path string) string {
 	p := strings.ToLower(strings.TrimSpace(path))
 	switch {
+	case p == "/v1/messages" || strings.HasPrefix(p, "/v1/messages/"):
+		return ProtocolAnthropic
 	case p == "/v1" || strings.HasPrefix(p, "/v1/"):
 		return ProtocolOpenAI
 	case p == "/api" || strings.HasPrefix(p, "/api/"):

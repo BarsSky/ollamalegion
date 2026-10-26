@@ -50,6 +50,16 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	}
 	model, _ := req["model"].(string)
 
+	// R247 (2026-10-26), этап D: изображения не отбрасываем молча.
+	// Модель сейчас обслуживается текстовым мостом (mmproj не подключён):
+	// честный 415 с объяснением лучше 200, где модель «не видела» картинку.
+	if images := countImagePartsInBody(bodyBuf); images > 0 {
+		logger.Get().Warnw("vision parts rejected: backend is text-only",
+			"model", model, "image_parts", images, "path", r.URL.Path)
+		writeVisionUnsupported(w, model, images)
+		return
+	}
+
 	if normalized := normalizeOpenAIBody(bodyBuf); len(normalized) > 0 {
 		bodyBuf = normalized
 	}

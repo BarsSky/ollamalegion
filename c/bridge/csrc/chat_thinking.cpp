@@ -105,6 +105,42 @@ int32_t bridge_chat_templates_apply_with_thinking(
         if (messages[i].content != NULL) {
             m.content = messages[i].content;
         }
+        // R246: structured tool history. Templates that render tool calls or tool
+        // results only from these fields (gemma-4) see nothing without them.
+        if (messages[i].tool_call_id != NULL) {
+            m.tool_call_id = messages[i].tool_call_id;
+        }
+        if (messages[i].tool_calls_json != NULL && messages[i].tool_calls_json[0] != '\0') {
+            common_json arr = common_json::parse_no_throw(messages[i].tool_calls_json);
+            if (arr.is_array()) {
+                for (const auto & item : arr) {
+                    if (!item.is_object()) {
+                        continue;
+                    }
+                    common_chat_tool_call tc;
+                    if (item.contains("id") && item.at("id").is_string()) {
+                        tc.id = item.at("id").get<std::string>();
+                    }
+                    if (item.contains("function") && item.at("function").is_object()) {
+                        const common_json & fn = item.at("function");
+                        if (fn.contains("name") && fn.at("name").is_string()) {
+                            tc.name = fn.at("name").get<std::string>();
+                        }
+                        if (fn.contains("arguments")) {
+                            const common_json & args = fn.at("arguments");
+                            if (args.is_string()) {
+                                tc.arguments = args.get<std::string>();
+                            } else if (!args.is_null()) {
+                                tc.arguments = args.dump();
+                            }
+                        }
+                    }
+                    if (!tc.name.empty()) {
+                        m.tool_calls.push_back(tc);
+                    }
+                }
+            }
+        }
         msgs.push_back(std::move(m));
     }
 
@@ -153,3 +189,4 @@ int32_t bridge_chat_templates_apply_with_thinking(
 }
 
 } // extern "C"
+

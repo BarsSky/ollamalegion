@@ -309,7 +309,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	toolsEnabled := len(req.Tools) > 0 && !toolsDisabledByChoice(req.ToolChoice)
 	msgs := req.Messages
 	if toolsEnabled {
-		msgs = augmentSystemWithTools(msgs, req.Tools)
+		msgs = augmentSystemWithToolsForChoice(msgs, req.Tools, req.ToolChoice)
 	}
 
 	// ???????? prompt ????? GGUF chat template (???? ????????)
@@ -754,14 +754,31 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 		// safeApplyChatTemplateWithThinking — там же, где помечается «сломанная»
 		// модель, чтобы ВСЕ точки входа в C имели одну защиту (см.
 		// chat_template_guard.go).
+		//
+		// R246 (2026-10-26): форма tool-истории выбирается по шаблону модели
+		// (см. tool_history_r246.go). Структурные вызовы + role="tool" с
+		// tool_call_id — единственный вид, из которого шаблон gemma-4 рисует и
+		// вызов, и результат инструмента; на паре role+content результат
+		// терялся целиком и модель просила «подождать вывод».
+		caps := templateToolCapsForModel(modelName)
 		nativePrompt, supportsThinking, err = safeApplyChatTemplateWithThinking(
-			modelName, "" /* chatTemplateOverride */, msgsToBridge(msgs),
+			modelName, "" /* chatTemplateOverride */, buildNativeToolHistory(msgs, caps),
 			true /* enableThinking */, true, /* addGenerationPrompt */
 		)
+		if err != nil && err != bridge.ErrNoChatTemplate && usesStructuredToolHistory(caps) {
+			// Шаблон заявил структурные tool_calls, но отрендерить их отказался
+			// (например, требует arguments объектом, как Qwen3.8). Один повтор
+			// текстовой формой — модель обязана увидеть результат инструмента.
+			logger.Get().Warnw("buildChatPrompt: structured tool history rejected by template, retrying as text",
+				"model", modelName, "error", err)
+			nativePrompt, supportsThinking, err = safeApplyChatTemplateWithThinking(
+				modelName, "", buildLegacyToolHistory(msgs), true, true,
+			)
+		}
 		if err == nil && nativePrompt != "" {
 			if supportsThinking {
 				logger.Get().Debugw("buildChatPrompt: used native enable_thinking path",
-					"model", modelName, "prompt_len", len(nativePrompt))
+					"model", modelName, "prompt_len", len(nativePrompt), "tool_caps", caps)
 				return nativePrompt, nil
 			}
 			// Native API works but template doesn't support enable_thinking.
@@ -771,7 +788,7 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 			logger.Get().Debugw("buildChatPrompt: native enable_thinking not supported by template, using soft prompt",
 				"model", modelName, "prompt_len", len(nativePrompt), "lang", lang.String())
 			injectThinking()
-			prompt2, err2 := safeApplyChatTemplate(modelName, system, msgsToBridge(msgs), true)
+			prompt2, err2 := safeApplyChatTemplate(modelName, system, buildLegacyToolHistory(msgs), true)
 			if err2 == nil && prompt2 != "" {
 				return prompt2, nil
 			}
@@ -797,7 +814,7 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 	// вызов, на котором cppworker падал с SIGSEGV (bridge_apply_chat_template →
 	// SIGSEGV) и терял все запросы узла: recover() тогда стоял только вокруг
 	// native-пути выше, а этот остался без защиты.
-	prompt, err := safeApplyChatTemplate(modelName, system, msgsToBridge(msgs), true)
+	prompt, err := safeApplyChatTemplate(modelName, system, buildLegacyToolHistory(msgs), true)
 	if err == nil && prompt != "" {
 		logger.Get().Debugw("buildChatPrompt: used GGUF chat template",
 			"model", modelName, "prompt_len", len(prompt))
@@ -1844,6 +1861,42 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		}
 	}
 
+	// R247 (2026-10-26), этап A+F плана: STRICT-аргументы.
+	//
+	// Клиент объявил tools[].function.strict=true — значит аргументы обязаны
+	// соответствовать схеме (structured outputs). Ремонт R246 покрывает типовые
+	// расхождения, но не все; раньше невалидный вызов уходил клиенту, тот отвечал
+	// ошибкой инструмента, и агент тратил ход.
+	//
+	// Здесь: проверить по схеме и, если клиенту ещё ничего не отправлено, один
+	// раз повторить генерацию (тот же промпт — сэмплирование стохастично).
+	// Выключатель: CPPWORKER_STRICT_ARGS_RETRY=0.
+	if len(toolCalls) > 0 && emittedLen == 0 && strictArgsRetryEnabled() {
+		if violations := strictToolCallViolations(toolCalls, tools); len(violations) > 0 {
+			logger.Get().Warnw("strict tool args invalid, retrying generation once",
+				"model", modelName, "tool", toolCalls[0].Function.Name,
+				"violations", truncateForLog(strings.Join(violations, "; "), 300))
+			outputBuf.Reset()
+			toolsHold = false
+			atomic.StoreInt64(&firstTokenAt, 0)
+			if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr == nil {
+				fullOutput = outputBuf.String()
+				duration = time.Since(start)
+				reasoningOut, outputForParse, toolCalls, hasReasoning = splitToolsOutput(fullOutput, thinkOverride, tools)
+				if stillInvalid := strictToolCallViolations(toolCalls, tools); len(stillInvalid) > 0 {
+					logger.Get().Warnw("strict tool args still invalid after retry",
+						"model", modelName, "violations", truncateForLog(strings.Join(stillInvalid, "; "), 300))
+				} else if len(toolCalls) > 0 {
+					logger.Get().Infow("strict tool args valid after retry",
+						"model", modelName, "tool", toolCalls[0].Function.Name)
+				}
+			} else {
+				logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_retry_failed"),
+					"model", modelName, "error", retryErr)
+			}
+		}
+	}
+
 	// R113 (2026-10-13): РАЗМЕТКА ВЫЗОВА НЕ ЯВЛЯЕТСЯ ОТВЕТОМ.
 	//
 	// Проверка стоит ЗДЕСЬ, до ветки «сырой вывод как content»: cleanFinalContent
@@ -2131,3 +2184,6 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	sw.Writef("%s\n", doneJSON)
 	sw.Flush()
 }
+
+
+

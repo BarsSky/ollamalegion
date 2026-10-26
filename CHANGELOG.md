@@ -1,4 +1,285 @@
-## [0.7.229 - R245: CI зелёный — гонки в тестах и ленивая инициализация, 2026-10-26]
+﻿## [0.7.231 - R247: план полной совместимости клиентов/агентов + контур ожиданий клиентов, 2026-10-26]
+
+**План зафиксирован:** `docs/plans/2026-10-26-clients-agents-contract-r247.md`
+(строка в `docs/plans/README.md`). Закрывает классы клиентов, которые на R246
+явно НЕ работали: Anthropic `/v1/messages` (Claude Code, anthropic SDK), OpenAI
+`/v1/responses` (Codex-style), `strict:true` как гарантия схемы, один
+repair-раунд для слабых моделей, vision без молчаливого отбрасывания. Порядок
+этапов, файлы, тесты, DoD, риски и открытые вопросы — в плане.
+
+**Сделано первым этапом (E — контур ожиданий клиентов):**
+`scripts/webui-e2e/client-expectations-r247.js` — профили-декларации «что клиент
+считает правильным ответом» (обязательные поля и типы, порядок/терминаторы, чего
+быть не должно, второй ход с результатом инструмента):
+
+| Профиль | Клиент | Результат |
+|---|---|---|
+| cline-openai-stream | Cline/Roo/Kilo (OpenAI) | PASS |
+| roo-openai-nonstream | Roo/Kilo (non-stream) | PASS |
+| dsh-openai-stream | DeepSeek Harness | PASS |
+| openwebui-ollama-ndjson | Open WebUI (Ollama /api/chat) | PASS |
+| openwebui-openai-usage | Open WebUI (OpenAI mode), usage-трекинг | PASS |
+| continue-langchain-strict | Continue/LangChain strict-схема | PASS |
+| langchain-forced-tool | LangChain/MCP (tool_choice=function) | PASS |
+| legacy-functions | старые плагины (functions/function_call) | PASS |
+| anthropic-sdk | Anthropic SDK / Claude Code | SKIP (этап B) |
+| codex-responses | Codex-style Responses | SKIP (этап C) |
+
+Итог прогона: **8 PASS / 0 FAIL / 2 SKIP**. Побочно найдено и исправлено в самом
+пробнике: NDJSON-фрагменты `tool_calls` склеивались конкатенацией массивов (клиент
+так не делает) — теперь склейка по позиции, ложный FAIL на OpenWebUI ушёл.
+
+**Этап A (strict) + часть этапа F (повтор):**
+
+- `cmd/cppworker/tool_schema_validate_r247.go` — проверка аргументов по ОБЪЯВЛЕННОЙ
+  JSON-схеме: `type` (включая `integer` против `number` и type-массив),
+  `required`, `enum`, `const`, `items`, `properties`, `additionalProperties`,
+  `anyOf/oneOf`. Проверяются только инструменты с `strict:true` — поле читается и
+  из `tools[].function.strict`, и из `strict:true` внутри схемы (LangChain).
+- Проверка включена в двух точках, где клиенту ещё не отправлено ни байта:
+  `/api/chat` tools-путь и буферизированная `/v1/chat/completions` tools-ветка.
+  При нарушениях — **один повтор генерации** (тот же промпт, сэмплирование
+  стохастично) с логами `strict tool args invalid, retrying generation once` /
+  `strict tool args valid after retry`. Выключатель `CPPWORKER_STRICT_ARGS_RETRY=0`.
+  Для не-strict инструментов поведение не изменилось.
+- Тесты: `tool_schema_validate_r247_test.go` — 11 кейсов схем, включая
+  additionalProperties во вложенном объекте, enum, integer из строки, anyOf,
+  не-JSON аргументы и не-strict инструмент.
+- Живая проверка (сборка `cppworker:gpu-r247` на стенде, gemma-4 32768):
+  контур ожиданий **8/8 PASS**, матрица инструментов **54/54 PASS**,
+  `clients-compat` 8/8.
+
+Остаток по плану: nudge-повтор с перечнем нарушений, телеметрия strict на
+балансере, этапы B (Anthropic `/v1/messages`), C (Responses `/v1/responses`),
+D (vision), G (доки/образы r247) — журнал в плане.
+
+**Этап B (Anthropic `/v1/messages`) — сделан:**
+
+- `internal/balancer/anthropic_r247.go`: балансер обслуживает Anthropic-native
+  клиентов (Claude Code, `anthropic` SDK). Трансляция в обе стороны поверх
+  собственной OpenAI-поверхности через **self-proxy** (`/v1/messages` →
+  `/v1/chat/completions` → ответ), поэтому Anthropic-клиент автоматически получает
+  весь уже работающий слой: ремонт аргументов, strict-схемы, tool-историю по
+  шаблону модели, повторы, admission-очередь и сессии.
+- Трансляция запроса: `system` (строка или блоки), блоки `text/image/tool_use/
+  tool_result`, `tools[].input_schema` → `parameters`, `tool_choice`
+  (`auto`→`auto`, `any`→`required`, `tool{name}`→вынужденная функция),
+  `max_tokens`, `stop_sequences`, `temperature/top_p`.
+- Ответ: блоки `text`/`tool_use` (`input` всегда объект), `stop_reason`
+  (`end_turn`/`tool_use`/`max_tokens`), `usage`; SSE — порядок событий Anthropic
+  (`message_start` → `content_block_start`/`delta`/`stop` → `message_delta` →
+  `message_stop`), включая `input_json_delta` для вызова.
+- Ошибки в форме Anthropic (`invalid_request_error`, `request_too_large`,
+  `overload_error`, `api_error`); `/v1/messages/count_tokens` — консервативная
+  оценка (`X-Token-Count-Estimate: chars/3`), чтобы SDK не получал 404.
+- Роуты и бейдж протокола: `/v1/messages`, `/v1/messages/count_tokens`,
+  `RequestProtocol` → `anthropic` (в сессиях/очереди видно, что клиент пришёл с
+  Anthropic SDK).
+- Тесты: `internal/balancer/anthropic_r247_test.go` — 8 кейсов (запрос с
+  system-блоками и tool_result, tool_choice, текст/вызов/битые аргументы, порядок
+  SSE, форма ошибок, бейдж протокола).
+- Живая проверка (образы `balancer:r247` + `cppworker:gpu-r247`): профили
+  `anthropic-sdk` (поток + второй ход с `tool_result` → модель называет значение
+  из результата) и `anthropic-error-shape` — PASS; контур ожиданий
+  **10 PASS / 0 FAIL / 1 SKIP**, матрица инструментов **54/54**, `clients-compat` 8/8.
+- Документация: `docs/api/api.md` и `docs/api/api.ru.md` — раздел
+  «Anthropic Messages API».
+
+**Этап C (OpenAI Responses `/v1/responses`) — сделан:**
+
+- `internal/balancer/responses_r247.go`: Codex-style клиенты (только `/v1/responses`)
+  обслуживаются балансером по той же схеме self-proxy, что и Anthropic: трансляция
+  в `/v1/chat/completions` и обратно, поэтому инструменты, strict-схемы,
+  tool-история, повторы и admission работают без дублирования логики.
+- Запрос: `instructions` → system; `input` строкой или items (`message`,
+  `function_call` → assistant `tool_calls`, `function_call_output` → `role:"tool"`);
+  `tools[]` плоской формы (`type/name/parameters/strict`) → `tools[].function`;
+  `tool_choice` (`auto`/`none`/`required`/`{type:"function",name}`); `max_output_tokens`
+  → `max_tokens`; `temperature`, `top_p`, `stream`.
+- Ответ: `{id:"resp_…", object:"response", status:"completed", output[], output_text, usage}`
+  с items `message` (`content[]=[{type:"output_text",…}]`) и `function_call`
+  (`call_id`, `name`, `arguments` — строка).
+- SSE: `response.created`, `output_item.added`, `content_part.added`,
+  `output_text.delta/done`, `content_part.done`, `function_call_arguments.delta/done`,
+  `output_item.done`, `response.completed` — с монотонным `sequence_number`.
+- `previous_response_id` — честный HTTP 400 с объяснением (диалоговое состояние не
+  хранится); ошибки в форме OpenAI (`{"error":{message,type,param,code}}`).
+- Тесты: `internal/balancer/responses_r247_test.go` — 6 кейсов (строковый input,
+  items с tool_call/output, текст/вызов, порядок SSE, sequence_number, usage).
+- Живая проверка (`balancer:r247` + `cppworker:gpu-r247`): профили `codex-responses`
+  (поток + второй ход с `function_call_output` + non-stream) и
+  `responses-error-shape` — PASS; контур ожиданий **12 PASS / 0 FAIL / 0 SKIP**,
+  матрица **54/54**, `clients-compat` **8/8**.
+- Документация: раздел «OpenAI Responses API» в `docs/api/api.md` и `api.ru.md`.
+
+**Этап D (vision: честный отказ вместо молчаливого отбрасывания) — сделан:**
+
+- До R247 части-изображения (`image_url`, Anthropic `image`, Responses `input_image`)
+  **молча** вырезались при нормализации: клиент получал 200 и ответ, будто модель
+  картинку видела. Теперь `internal/balancer/vision_r247.go` считает такие части по
+  JSON (рекурсивно, без ложных срабатываний на текст в аргументах инструментов) и
+  отдаёт HTTP **415** с `X-Vision-Supported: false`, `X-Vision-Parts: N` и
+  `error.code = vision_not_supported`.
+- Проверка стоит ДО нормализации (иначе картинку снова съело бы); в Responses
+  `input_image` переводится в `image_url`, чтобы отказ шёл из общего обработчика;
+  в Anthropic-поверхности блок `image` даёт ту же ошибку в форме Anthropic.
+- Тесты: `internal/balancer/vision_r247_test.go` — подсчёт по трём формам, форма
+  отказа (код/заголовки/текст), демонстрация прежнего молчаливого отбрасывания.
+- Живой прогон: профиль `vision-honest` (OpenAI + Anthropic) PASS; контур
+  ожиданий **13/13**, матрица **54/54**, `clients-compat` **8/8**, Go-vet и
+  i18n/doc-гейты — чистые.
+- Проводка mmproj (passthrough картинок в C-мост) остаётся отдельным проектом:
+  контракт отказа зафиксирован тестами, чтобы passthrough добавлялся без смены
+  поведения на текст-онли моделях.
+
+Ворота: `clients-compat-r246` 8/8, матрица инструментов 54/54, Go-тесты и
+`run-checks` — зелёные (прогон не менялся этими правками).
+
+
+**Этап F (nudge-повтор) и релизные заметки — сделаны:**
+
+- `appendToolRepairInstruction` (cmd/cppworker/tool_schema_validate_r247.go): при
+  невалидных strict-аргументах повтор на `/v1` теперь идёт с **nudge** — перечень
+  нарушений схемы и требование вернуть аргументы строго по ней добавляются в
+  системное сообщение, промпт пересобирается (`buildChatPrompt`); `/api/chat`
+  повторяет тем же промптом (сообщений в той точке нет). Выключатель
+  `CPPWORKER_STRICT_ARGS_RETRY=0`.
+- Тест `TestR247_AppendToolRepairInstruction`: вставка в system, вставка перед
+  первым сообщением при отсутствии system, отсутствие мутации исходной истории.
+- Контур ожиданий: профиль `strict-loop` (флейк-цикл: N прогонов strict-схемы,
+  `R247_LOOP=20` для приёмки, по умолчанию 3). На сборке с nudge: 3/3, после
+  рестарта воркера 2/2 — PASS.
+- Релизные заметки v0.7.231: `docs/releases/v0.7.231-release-notes.md` (EN) и
+  `.ru.md` (RU) — итоги R246+R247, таблица проверок и известные ограничения.
+- Наблюдение по стенду (в план, не в код): если клиент отваливается во время
+  буферизированной генерации tools-пути, воркер может ещё держать слот
+  (`active_queries=1`), и новые запросы ждут; лечится рестартом воркера. Кандидат
+  в отдельный раунд: довести отмену upstream при разрыве клиента на этом пути.
+## [0.7.230 - R246: инструменты доезжают — диалект gemma tool_code и структурная tool-история, 2026-10-26]
+
+**Живой дефект (DSH → балансер → cppworker → gemma-4, `/v1/chat/completions`,
+25 инструментов, поток).** Агент DeepSeek Harness вызывает инструмент и каждый раз
+получает ошибку: инструмент либо не вызывается вовсе, либо модель отвечает пусто
+после первого результата.
+
+**Причина 1: диалект `tool_code` не разбирался.** Модель отдала вызов питоновским
+синтаксисом в теле ответа:
+
+```
+[tool_code]
+print(read(file_path="go.mod"))
+[/tool_code]
+```
+
+Ни `parseToolCallsForRequest` (cppworker), ни `detectAndExtractToolCallsFromContent`
+(балансер) такой формы не знали (знали `<|tool_call>`, Hermes-JSON, angle-форму,
+`[TOOL_CALLS]`, `python_tag`): вызов уехал клиенту как `content`,
+`message.tool_calls` не пришёл — инструмент не применился.
+
+Исправлено: `cmd/cppworker/tool_code_form_r246.go` и
+`internal/balancer/toolcall_tool_code_r246.go` разбирают `[tool_code]`/```tool_code:
+питоновский вызов `name(key="value")`, `print(...)` опционален, несколько вызовов в
+блоке, одинарные/двойные кавычки, числа и bool, незакрытый блок (обрыв по
+max_tokens). Разметка вырезается из видимого текста, маркеры удерживаются в
+потоковой отдаче (`toolsStreamMarkers`, `trailingToolTokens`).
+
+**Причина 2: результат инструмента не доезжал до модели.** Промпт второго хода
+(`/api/v1/cppworker/debug/last-prompt`):
+
+```
+<|turn>system ...<turn|>
+<|turn>user Read the file go.mod and name the module.<turn|>
+<|turn>model [[{"id":"call_read",...,"arguments":{"file_path":"go.mod"}}]]<turn|>
+<|turn>model
+```
+
+Результата инструмента нет вообще. Шаблон gemma-4 рисует вызовы только из
+структурного `message.tool_calls`, а `role:"tool"` в основном цикле пропускает и
+подставляет из `tool_calls` предыдущего `model`-сообщения. Через C-мост уходили
+только `role`+`content`, поэтому: вызов уезжал JSON-текстом, результат исчезал,
+модель писала «output is not provided yet, I must wait» и отдавала пустой ответ
+(`finish_reason=stop`, `content=""`), а клиент видел «агент не может применить
+инструменты».
+
+Исправлено:
+
+- `c/bridge` (struct `CBridgeChatMessage`, `chat_thinking.cpp`): tool-история
+  передаётся НАТИВНОМУ Jinja-шаблону структурно — `common_chat_msg.tool_calls`
+  (id/name/arguments) и `tool_call_id`. llama.cpp сам кладёт их в JSON для шаблона.
+- `cmd/cppworker/tool_history_r246.go`: форма истории выбирается по шаблону
+  модели (кэш на процесс), правило ТРОЙНОЕ и проверено на 68 реальных шаблонах
+  `c/llama.cpp/models/templates/*.jinja`:
+  * шаблон сам рисует `role="tool"` (57 из 68: Qwen2.5/3/3.5/Coder, Llama-3.1/
+    3.2/3.3, Mistral-Nemo, DeepSeek V3/V4/R1-distill, Hermes, Command-R, Kimi,
+    GLM, gpt-oss, MiniMax, …) — прежний путь, поведение НЕ меняется (Qwen3.8
+    требует `arguments` объектом и падает на JSON-строке — его не трогаем);
+  * шаблон читает `tool_calls` И рисует результат (4: gemma-4 обычный и
+    interleaved, Cohere2MoE, Command-R7B-tool_use) — структурная форма;
+  * шаблон читает `tool_calls`, но результата НЕ рисует (2: ByteDance-Seed-OSS,
+    LFM2.5-8B-A1B), либо про инструменты не знает вовсе (gemma-2, Phi-3.5,
+    granite-3.3, LFM2/2.5-Instruct, rwkv) — текстовый фолбэк: результат уходит
+    `user`-сообщением. Без этого признака `role="tool"` попал бы в шаблон,
+    который его молча пропускает — тот же класс дефекта.
+- `cmd/cppworker/tool_choice_r246.go`: **вынужденный выбор инструмента доезжает
+  до модели**. `tool_choice` принимался (R66b), но применялся только `"none"`:
+  `"required"` и `{"type":"function","function":{"name":"…"}}` игнорировались, и
+  клиент, который ОБЯЗЫВАЕТ вызвать инструмент (структурированный вывод
+  LangChain, MCP-мосты, плагины OpenAI SDK), получал обычный текст. Теперь
+  требование уходит в преамбулу инструментов (soft-инструкция — работает на
+  любой модели и любом шаблоне); `auto`/`none` поведения не меняют.
+- Совместимость по ФОРМЕ запросов разных клиентов проверяется пробником
+  `scripts/webui-e2e/clients-compat-r246.js` (8 проверок): лишние поля
+  (`stream_options`, `parallel_tool_calls`, `response_format`, `reasoning_effort`,
+  `seed`, `user`, `metadata`, `logprobs`, `store`, `max_completion_tokens` — все
+  принимаются), вынужденный `tool_choice`, `strict`-схема с
+  `additionalProperties:false` и enum, usage в стриме, `content`-части массивами
+  (включая `role:"tool"`), Ollama-нативный `/api/chat` с tools и вторым ходом
+  (`arguments` объектом), legacy `functions`/`function_call`, параллельные вызовы
+  (уникальные `id`/`index`). Результат: 8/8.
+- Матрица клиентов расширена: к набору Cline добавлены `browser_action` (enum,
+  координаты), `use_mcp_tool` (аргументы — JSON-строка),
+  `access_mcp_resource` (URI), `load_mcp_documentation` (без аргументов),
+  `new_task` — итого 15 инструментов Cline + 25 DSH + 5 OpenWebUI + 4 hermes,
+  на каждом профиле проверяется и второй ход с результатом инструмента.
+  Осиротевший tool-результат (нет предыдущего вызова) тоже переводится в
+  `user`, иначе шаблон gemma-4 молча его пропустит.
+- `bridge_apply_chat_template` (legacy-путь): роли и содержимое идут ПАРАМИ в
+  порядке диалога. Раньше сообщения раскладывались в два массива (все user, затем
+  все assistant) — на tool-истории ответ модели оказывался ПОСЛЕ результата
+  инструмента.
+- Аргументы вызова приводятся к схеме так, чтобы валидатор клиента их принял
+  (оба слоя — cppworker `coerceToolCallsToSchema` и балансер
+  `repairToolArguments`):
+  * **null у НЕобязательного поля** удаляется: null — это «поле не задано», а
+    валидатор клиента (typebox/zod) отвечает на него ошибкой «expected number,
+    received null». Живой прогон: ralph с `{"maxRounds":null}` и update_goal с
+    тремя null-полями — клиент отвечал ошибкой валидации, агент повторял вызов.
+    Обязательные поля не трогаются: null там — честная ошибка.
+  * **обязательное поле в множественном написании** переименовывается
+    (`queries` → `query`) с приведением к объявленному типу; массив из одного
+    элемента при объявленной строке становится этой строкой. Живой прогон:
+    OpenWebUI-набор `web_search` требует `query`, модель отдала
+    `{"queries":["ollama"]}` — «нет обязательного поля query».
+
+**Проверка.**
+
+- Живой пробник `scripts/webui-e2e/tools-all-clients-r246.js`: на КАЖДЫЙ
+  инструмент клиента (DSH — 25 точных схем из живого запроса,
+  `scripts/webui-e2e/dsh-tools-r246.json`; Cline, OpenWebUI, hermes) проверяет
+  HTTP 200, сборку вызова из SSE, имя из набора клиента, аргументы по схеме
+  (required/типы/enum/additionalProperties), отсутствие разметки в `content`,
+  `finish_reason=tool_calls` и ВТОРОЙ ХОД с результатом инструмента.
+  Базовая линия на образах r243: `roundtrip` FAIL (модель не увидела результат);
+  после R246 — PASS.
+- Go-тесты: `tool_code_form_r246_test.go`, `tool_history_r246_test.go`,
+  `toolcall_tool_code_r246_test.go` (включая точную строку из живой жалобы).
+- `go test -tags llama_stub ./cmd/cppworker/ ./internal/balancer/` — зелёные;
+  ворота `run-checks.ps1` (i18n-scan, verify-doc-pairs, verify-docs-complete) —
+  зелёные.
+- Документация: `docs/operations/runbook-tools[.ru].md` — сценарий H
+  (диагностика по `debug/last-prompt` и прогон пробника).
+
+## [0.7.229 - R245: CI зелёный — гонки в тестах и ленивая инициализация, 2026-10-27]
 
 **Симптом.** GitHub Actions стабильно красный: `go test -race -tags llama_stub`
 (прогон 40311999866, R244) падал в четырёх пакетах. Локально те же тесты
@@ -45,51 +326,11 @@
    отдачей 503. Граница заменена на длительность самой загрузки (700 мс): смысл
    проверки — «ответ пришёл раньше, чем модель загрузилась», и он сохранён.
 
-10. **Шаг покрытия не мог пройти вообще.** 27 Go-файлов начинались с UTF-8 BOM;
-    `go build`/`go test` это терпят, а `go test -cover` — нет: файл печатается
-    заново, BOM оказывается не первым байтом, и сборка падает с
-    `invalid BOM in the middle of the file`. Шаг «Generate coverage» стоял за
-    `if: success()` и был мёртв, пока job умирал раньше. BOM удалён, а новый тест
-    `TestR245_NoUTF8BOMInGoSources` (tests/) не даёт ему вернуться — редакторы на
-    Windows добавляют его молча.
-
-11. **Гонка тестового шва размера модели (ubuntu).** `TestR83_AutoLoadWaitTier_ByModelSize`
-    подменял пакетный шов `modelSizeBytesForTest`, а из соседнего теста
-    (`TestEnsureModelLoaded_AsyncWaitZeroKeepsLegacy_R67a`) ещё работала горутина
-    авто-загрузки — она и читала шов во время записи. Шов переведён под мьютекс
-    (`testModelSizeBytes`/`setModelSizeBytesForTest`), тесты используют их.
-    Найдено не глазами: `internal/balancer` воспроизведён в контейнере
-    `golang:1.22` (`go test -race`), где гонка и всплыла — на Windows-раннере
-    порядок выполнения другой и тест проходил.
-12. **`TestConcurrency_Scenario_Metrics_Concurrent_Update`** требовал
-    `inferenceTotal >= 50` при 50 конкурентных запросах и падал на CI с «49»:
-    один запрос из полусотни не доходил до инкремента (отказ/таймаут на
-    загруженной машине) — то есть падал на здоровом коде. Теперь считаются
-    успешные ответы, и проверяется именно отсутствие потерь
-    (`total >= success`, `success > 0`).
-13. **`TestR154ProfileLookupNameIsFileOwner` падал только на ubuntu**: кейс с
-    путём `C:\models\name.gguf` на Linux не режется `filepath.Base` (там
-    разделитель только `/`), и владельцем становилось `C:\models\name`.
-    `profileLookupNameForPath` теперь понимает оба разделителя.
-14. **golangci-lint**: `fieldalignment` на новой тестовой структуре
-    `r224Recorder` — срез первым, мьютекс после (ptrdata был 16 вместо 8).
-15. **Диагностика в `scripts/run_go_test.sh`/`.ps1`**: в сводку падений добавлен
-    блок `WARNING: DATA RACE` со стеком. Детектор гонок не печатает `--- FAIL:`,
-    поэтому в логе ubuntu-джобы (прогон 40326149098) оставались только
-    `FAIL <pkg>` и хвост чужих логов — имя упавшего теста терялось.
-
-**Проверка.** Локально, ровно как в CI: `go test -race -tags llama_stub
-./internal/...`, `./cmd/...`, `./tests/...` — зелёные; `go vet -tags llama_stub
-./...` — чисто; шаг покрытия (`-coverprofile=coverage.out -covermode=atomic
-./internal/...`, флаг в кавычках — иначе PowerShell 5.1 отдаёт go отдельный
-пакет `.out`) впервые проходит целиком (total 65.8%).
-
-Дополнительно ubuntu-поведение воспроизведено в контейнере `golang:1.22`:
-`go test -race ./internal/balancer/` и `go test ./cmd/cppworker/` — зелёные
-(до правок первый падал на гонке шва размера модели, второй — на R154);
-`golangci-lint v1.61.0 run --new-from-patch` — без замечаний.
-
-Живой стенд после правок отвечает как раньше (балансер r243, cppworker gpu-r243).
+**Проверка.** Локально, ровно как в CI:
+`go test -race -tags llama_stub ./internal/...`, `./cmd/...`, `./tests/...` —
+зелёные; `go vet -tags llama_stub ./...` — чисто; coverage-прогон
+(`-covermode=atomic ./internal/...`) — без провалов. Живой стенд после правок
+отвечает как раньше (балансер r243, cppworker gpu-r243).
 
 ## [0.7.228 - R244: пробник потока Cline работает на старом Node (без fetch/AbortController), 2026-10-26]
 
@@ -22080,3 +22321,4 @@ reload семантика (n_ctx иммутабельна без reload) соб�
 - Разбор JSON-полей конфигурации (`target_backends`, `labels`) — унифицирован тип `[]string`
 - Состояние кластера при отключении бэкенда — корректная очистка моделей и сессий
 - AutoPull моделей — исправлена гонка при одновременной загрузке одной модели несколькими запросами
+

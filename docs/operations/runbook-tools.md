@@ -419,6 +419,89 @@ polling loop (model state=loading, but polling also failed).
 
 ---
 
+## 4.8 Scenario H: "the model cannot use the tools" (R246, 2026-10-26)
+
+**Symptom (live report).** DeepSeek Harness (DSH) through the balancer on gemma-4:
+the agent calls a tool and every time receives an error or an empty answer.
+
+**Two independent causes, both on our side.**
+
+1. **The `tool_code` dialect was not parsed.** The model emitted the call inside the
+   answer body in Python syntax:
+
+   ```
+   [tool_code]
+   print(read(file_path="go.mod"))
+   [/tool_code]
+   ```
+
+   Neither `parseToolCallsForRequest` (cppworker) nor
+   `detectAndExtractToolCallsFromContent` (balancer) knew this shape: the call went
+   to the client as `content`, `message.tool_calls` never arrived, the tool was not
+   applied.
+
+2. **The tool result never reached the model.** The second-turn prompt (taken from
+   `/api/v1/cppworker/debug/last-prompt`) contained `system`, `user` and a `model`
+   message with a JSON dump of the call `[[{...}]]`, but no `role:"tool"` message at
+   all. The gemma-4 template renders calls only from structured
+   `message.tool_calls`, and skips `role:"tool"` messages in its main loop, folding
+   them in from the previous `model` message's `tool_calls`. The C bridge carried
+   only `role`+`content`, so the model wrote "output is not provided yet, wait" and
+   returned an empty answer (`finish_reason=stop`, `content=""`).
+
+**Diagnostics.**
+
+1. `/api/v1/cppworker/debug/last-prompt` on cppworker: does the prompt contain the
+   tool result (`<|tool_response>` for gemma, `<tool_response>` for Qwen)?
+2. In the client answer: `message.content` contains `[tool_code]`/`<tool_call>` —
+   the call was not recognized.
+3. Second turn: empty `content` plus `finish_reason=stop` with non-empty reasoning
+   is the typical "result did not arrive" signature.
+
+**Fix (R246).**
+
+- `cmd/cppworker/tool_code_form_r246.go` + `internal/balancer/toolcall_tool_code_r246.go`:
+  parse `[tool_code]`/```tool_code (Python call, optional `print(...)`, several
+  calls per block), strip the markup from visible text, hold the markers back in
+  the streamed output.
+- Arguments are repaired in BOTH layers (`coerceToolCallsToSchema`,
+  `repairToolArguments`): null on an optional field is dropped (it means "field
+  not set", and client validators reject null), a required field sent in plural
+  is renamed (`queries` -> `query`), and a one-element array for a declared
+  string becomes that string.
+- `cmd/cppworker/tool_history_r246.go` + `c/bridge`: tool history reaches the
+  template STRUCTURALLY (`tool_calls`, `tool_call_id`). The shape is chosen per
+  model template; the three-way rule is covered by
+  `TestR246_RealTemplatesChooseSafePath` over the 68 real templates in
+  `c/llama.cpp/models/templates/*.jinja`:
+  * the template renders `role="tool"` itself (57 of 68: Qwen, Llama-3.x,
+    Mistral-Nemo, DeepSeek, Hermes, Command-R, Kimi, GLM, gpt-oss ...) - the old
+    path, behavior unchanged;
+  * the template reads `tool_calls` AND renders the result (gemma-4, Cohere2MoE,
+    Command-R7B) - structured form;
+  * the template reads `tool_calls` but never renders the result (Seed-OSS,
+    LFM2.5-8B-A1B) or knows nothing about tools (gemma-2, Phi-3.5, granite-3.3,
+    rwkv) - the result goes out as a `user` message (otherwise the template
+    silently drops it).
+
+**Verification (live probe, every client tool):**
+
+```bash
+node scripts/webui-e2e/tools-all-clients-r246.js            # all profiles
+PROFILE=dsh ONLY=read,grep,edit node scripts/webui-e2e/tools-all-clients-r246.js
+# request SHAPE of different clients (strict, forced tool_choice, usage, content
+# parts, Ollama-native path, legacy functions, parallel calls):
+node scripts/webui-e2e/clients-compat-r246.js
+```
+
+For every tool the probe checks: HTTP 200, assembly of the call from SSE, `name`
+from the client set, arguments against the schema (required/types/enum/
+`additionalProperties`), no markup leaked into `content`,
+`finish_reason=tool_calls`, and a SECOND TURN with the tool result (the model must
+name a value taken from it).
+
+---
+
 ## 5. Diagnostician's checklist
 
 1. ☐ `--verbose` enabled (`CPPWORKER_VERBOSE=true`) on cppworker.

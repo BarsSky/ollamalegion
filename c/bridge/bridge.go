@@ -1389,12 +1389,53 @@ func (m *ModelHandle) GetEmbeddings(text string) ([]float32, error) {
 }
 
 // ChatMessage — одно сообщение чата для применения chat template.
+//
+// R246: ToolCallID/ToolCalls — структурная tool-история. Без них шаблон gemma-4
+// не видит ни вызова, ни результата инструмента (см. комментарий у
+// CBridgeChatMessage в bridge.h).
 type ChatMessage struct {
 	Role    string
 	Content string
+	// ToolCallID — id вызова, к которому относится сообщение role="tool".
+	ToolCallID string
+	// ToolCalls — вызовы инструментов ассистента. Аргументы — JSON-СТРОКА
+	// (форма OpenAI), как их и присылает клиент.
+	ToolCalls []ChatToolCall
+}
+
+// ChatToolCall — один вызов инструмента в структурной истории.
+type ChatToolCall struct {
+	ID        string
+	Name      string
+	Arguments string
+}
+
+// toolCallsJSONShape — форма OpenAI для передачи вызовов в C: [{"id","function"}].
+// Аргументы остаются JSON-строкой, как их прислал клиент: шаблон gemma-4 умеет
+// и строку, и объект, а переупаковка здесь только потеряла бы их.
+func toolCallsJSONShape(calls []ChatToolCall) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(calls))
+	for _, call := range calls {
+		out = append(out, map[string]interface{}{
+			"id":   call.ID,
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":      call.Name,
+				"arguments": call.Arguments,
+			},
+		})
+	}
+	return out
 }
 
 // ApplyChatTemplate применяет chat template из GGUF к списку сообщений.
+//
+// R246: роли и содержимое передаются ПАРАМИ в порядке диалога. Прежний код
+// раскладывал сообщения в два массива (user[], assistant[]) и терял порядок;
+// на tool-истории это ставило ответ модели ПОСЛЕ результата инструмента.
+// role="tool" уходит в шаблон как "user": низкоуровневый
+// llama_chat_apply_template не умеет tool-результаты, но текст результата
+// обязан быть виден модели (иначе она его не получила вовсе).
 func (m *ModelHandle) ApplyChatTemplate(system string, messages []ChatMessage, addAss bool) (string, error) {
 	if m == nil || m.ptr == nil {
 		return "", fmt.Errorf("model not loaded")
@@ -1403,39 +1444,35 @@ func (m *ModelHandle) ApplyChatTemplate(system string, messages []ChatMessage, a
 		return "", fmt.Errorf("no messages provided")
 	}
 
-	var userContents []string
-	var assistantContents []string
+	roles := make([]string, 0, len(messages))
+	contents := make([]string, 0, len(messages))
+	haveUser := false
 	for _, msg := range messages {
-		switch msg.Role {
-		case "user":
-			userContents = append(userContents, msg.Content)
-		case "assistant":
-			assistantContents = append(assistantContents, msg.Content)
+		role := msg.Role
+		switch role {
 		case "system":
+			// system передаётся отдельным аргументом, не сообщением.
 			continue
-		case "tool":
-			userContents = append(userContents, msg.Content)
-		default:
-			userContents = append(userContents, msg.Content)
+		case "", "tool":
+			role = "user"
 		}
+		if role == "user" {
+			haveUser = true
+		}
+		roles = append(roles, role)
+		contents = append(contents, msg.Content)
 	}
-	if len(userContents) == 0 {
+	if !haveUser {
 		return "", fmt.Errorf("no user messages provided")
 	}
 
-	cUserPtrs := make([]*C.char, len(userContents))
-	for i, s := range userContents {
-		cUserPtrs[i] = C.CString(s)
-		defer C.free(unsafe.Pointer(cUserPtrs[i]))
-	}
-
-	var cAssPtrs []*C.char
-	if len(assistantContents) > 0 {
-		cAssPtrs = make([]*C.char, len(assistantContents))
-		for i, s := range assistantContents {
-			cAssPtrs[i] = C.CString(s)
-			defer C.free(unsafe.Pointer(cAssPtrs[i]))
-		}
+	cRolePtrs := make([]*C.char, len(roles))
+	cContentPtrs := make([]*C.char, len(contents))
+	for i := range roles {
+		cRolePtrs[i] = C.CString(roles[i])
+		cContentPtrs[i] = C.CString(contents[i])
+		defer C.free(unsafe.Pointer(cRolePtrs[i]))
+		defer C.free(unsafe.Pointer(cContentPtrs[i]))
 	}
 
 	var cSystem *C.char
@@ -1448,22 +1485,12 @@ func (m *ModelHandle) ApplyChatTemplate(system string, messages []ChatMessage, a
 	outBuf := (*C.char)(C.malloc(C.size_t(outBufSize)))
 	defer C.free(unsafe.Pointer(outBuf))
 
-	var cUserArg **C.char
-	if len(cUserPtrs) > 0 {
-		cUserArg = &cUserPtrs[0]
-	}
-	var cAssArg **C.char
-	if len(cAssPtrs) > 0 {
-		cAssArg = &cAssPtrs[0]
-	}
-
 	ret := C.bridge_apply_chat_template(
 		m.ptr,
 		cSystem,
-		cUserArg,
-		C.int32_t(len(cUserPtrs)),
-		cAssArg,
-		C.int32_t(len(cAssPtrs)),
+		&cRolePtrs[0],
+		&cContentPtrs[0],
+		C.int32_t(len(cRolePtrs)),
 		C.bool(addAss),
 		outBuf,
 		C.int32_t(outBufSize),
@@ -1552,6 +1579,8 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 	cMsgs := make([]C.CBridgeChatMessage, len(messages))
 	cRoleStrs := make([]*C.char, len(messages))
 	cContentStrs := make([]*C.char, len(messages))
+	cToolCallIDStrs := make([]*C.char, len(messages))
+	cToolCallsStrs := make([]*C.char, len(messages))
 	defer func() {
 		for _, p := range cRoleStrs {
 			if p != nil {
@@ -1563,6 +1592,16 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 				C.free(unsafe.Pointer(p))
 			}
 		}
+		for _, p := range cToolCallIDStrs {
+			if p != nil {
+				C.free(unsafe.Pointer(p))
+			}
+		}
+		for _, p := range cToolCallsStrs {
+			if p != nil {
+				C.free(unsafe.Pointer(p))
+			}
+		}
 	}()
 
 	for i, msg := range messages {
@@ -1570,6 +1609,16 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 		cContentStrs[i] = C.CString(msg.Content)
 		cMsgs[i].role = cRoleStrs[i]
 		cMsgs[i].content = cContentStrs[i]
+		if msg.ToolCallID != "" {
+			cToolCallIDStrs[i] = C.CString(msg.ToolCallID)
+			cMsgs[i].tool_call_id = cToolCallIDStrs[i]
+		}
+		if len(msg.ToolCalls) > 0 {
+			if encoded, err := json.Marshal(toolCallsJSONShape(msg.ToolCalls)); err == nil {
+				cToolCallsStrs[i] = C.CString(string(encoded))
+				cMsgs[i].tool_calls_json = cToolCallsStrs[i]
+			}
+		}
 	}
 
 	// Output buffer: 64KB начальный, retry при -4 (buffer too small).
@@ -2055,3 +2104,4 @@ func goBridgeLogLine(line *C.char, length C.int) {
 	}
 	recordLayerAssignment(C.GoStringN(line, length))
 }
+

@@ -305,6 +305,17 @@ func parseToolCallsFromOutputRaw(output string) []openAIToolCall {
 		return calls
 	}
 
+	// Стратегия 1c (R246 2026-10-26): диалект gemma `[tool_code]` /
+	// ```tool_code — вызов питоновским синтаксисом `print(read(file_path="go.mod"))`.
+	//
+	// ЖИВОЙ ДЕФЕКТ (DeepSeek Harness → балансер → gemma-4, 25 инструментов):
+	// вызов уехал в content, message.tool_calls не пришёл, агент остановился.
+	// Стоит ДО gemma-native: тот ищет `name{...}` и на `name(k=v)` вернёт nil,
+	// зато JSON-стратегии ниже могли бы принять блок за обычный текст.
+	if calls := extractToolCodeCalls(output); len(calls) > 0 {
+		return calls
+	}
+
 	// Стратегия 1b (Round 25 2026-08-06): gemma-4 native формат <tool_call>name{args}</tool_call>.
 	// gemma-4 обучена выдавать Hermes-style XML, но с сокращённым JSON:
 	// имя функции идёт ПЕРЕД объектом аргументов, а не внутри.
@@ -1790,6 +1801,11 @@ var trailingToolTokens = []string{
 	"<tool_call|>",
 	"<|tool_call>",
 	"<|tool_call|>",
+	// R246: хвост диалекта gemma tool_code (обрыв генерации по max_tokens —
+	// иначе обёртка уезжает клиенту видимым текстом).
+	"[tool_code]",
+	"[/tool_code]",
+	"```tool_code",
 }
 
 // recoverToolCallsByPrefixTrimming — Round 16 (2026-07-30) multi-tool recovery.
@@ -1900,3 +1916,4 @@ func fixTrailingBraceMisorder(s string) string {
 	}
 	return s
 }
+

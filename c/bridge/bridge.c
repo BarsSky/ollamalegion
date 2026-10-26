@@ -2014,20 +2014,26 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
 
 // bridge_apply_chat_template — применяет chat template к списку сообщений.
 // Достаёт tokenizer.chat_template из метаданных GGUF и вызывает llama_chat_apply_template.
+//
+// R246: раньше сообщения разбивались на два массива (user[], assistant[]) и
+// теряли порядок ходов: два user подряд и все assistant в конце. На tool-истории
+// (tool call -> результат -> продолжение) это давало промпт, где ответ модели
+// стоит ПОСЛЕ ответа инструмента. Теперь роли и содержимое идут парами в
+// исходном порядке; role="tool" caller маппит в "user" сам (низкоуровневый
+// llama_chat_apply_template не знает про tool-результаты).
 // Возвращает количество записанных байт (без \0), или -1 при ошибке.
 // Если template в GGUF отсутствует, возвращает -2.
 int32_t bridge_apply_chat_template(
     ModelHandle model,
     const char* system,            // может быть NULL
-    const char** user_contents,    // массив content-ов user-сообщений
-    int32_t n_user,
-    const char** assistant_contents, // массив content-ов assistant (для multi-turn), NULL если нет
-    int32_t n_assistant,
+    const char** roles,            // роли сообщений в порядке диалога
+    const char** contents,         // содержимое тех же сообщений
+    int32_t n_messages,
     bool add_ass,                  // добавить токены начала assistant turn в конец
     char* out_buf,
     int32_t out_buf_size
 ) {
-    if (model == NULL || user_contents == NULL || n_user <= 0 || out_buf == NULL || out_buf_size <= 0) {
+    if (model == NULL || roles == NULL || contents == NULL || n_messages <= 0 || out_buf == NULL || out_buf_size <= 0) {
         return -1;
     }
     InternalModel *im = (InternalModel *)model;
@@ -2054,26 +2060,21 @@ int32_t bridge_apply_chat_template(
     }
     tmpl_buf[tmpl_len] = '\0';
 
-    // Собираем массив llama_chat_message
-    int32_t total = n_user + (system != NULL ? 1 : 0) + n_assistant;
-    if (total > 32) {
+    // Собираем массив llama_chat_message в ИСХОДНОМ порядке диалога.
+    int32_t total = n_messages + (system != NULL ? 1 : 0);
+    if (total > 64) {
         return -1; // слишком много сообщений
     }
-    struct llama_chat_message msgs[32];
+    struct llama_chat_message msgs[64];
     int32_t idx = 0;
     if (system != NULL) {
         msgs[idx].role = "system";
         msgs[idx].content = system;
         idx++;
     }
-    for (int32_t i = 0; i < n_user; i++) {
-        msgs[idx].role = "user";
-        msgs[idx].content = user_contents[i];
-        idx++;
-    }
-    for (int32_t i = 0; i < n_assistant; i++) {
-        msgs[idx].role = "assistant";
-        msgs[idx].content = assistant_contents[i];
+    for (int32_t i = 0; i < n_messages; i++) {
+        msgs[idx].role = roles[i] != NULL ? roles[i] : "user";
+        msgs[idx].content = contents[i] != NULL ? contents[i] : "";
         idx++;
     }
 
@@ -3229,3 +3230,4 @@ void bridge_clear_load_progress(const char * path) {
 }
 
 #endif // GO_BRIDGE_LLAMA_STUB guard
+

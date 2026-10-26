@@ -291,10 +291,22 @@ func buildNaiveChatPrompt(msgs []openAIChatMessage, modelName string) string {
 // augmentSystemWithTools injects tool definitions into the system message.
 // Если system-сообщения нет — создаёт новое.
 func augmentSystemWithTools(msgs []chatMessage, tools []openAITool) []chatMessage {
+	return augmentSystemWithToolsForChoice(msgs, tools, nil)
+}
+
+// augmentSystemWithToolsForChoice — то же, но с учётом tool_choice клиента.
+//
+// R246 (2026-10-26): вынужденный выбор инструмента (`"required"` или
+// {"type":"function","function":{"name":"…"}}) уходит в промпт требованием.
+// Без этого клиент, который ОБЯЗЫВАЕТ модель вызвать инструмент
+// (структурированный вывод LangChain, MCP-мосты, плагины), получал обычный
+// текст: поле принималось, но применялось только `"none"`.
+func augmentSystemWithToolsForChoice(msgs []chatMessage, tools []openAITool, choice json.RawMessage) []chatMessage {
 	if len(tools) == 0 {
 		return msgs
 	}
 	toolsPrompt := buildToolsSystemPrompt(tools)
+	toolsPrompt = withToolChoiceInstruction(toolsPrompt, choice)
 	if toolsPrompt == "" {
 		return msgs
 	}
@@ -398,7 +410,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Конвертируем openAIChatMessage → chatMessage и инжектим определения tools
 	chatMsgs := openAIToChatMessage(req.Messages)
 	if len(req.Tools) > 0 {
-		chatMsgs = augmentSystemWithTools(chatMsgs, req.Tools)
+		chatMsgs = augmentSystemWithToolsForChoice(chatMsgs, req.Tools, req.ToolChoice)
 	}
 
 	// Собираем промпт из сообщений с применением chat template из GGUF.
@@ -581,7 +593,53 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			if !hasReasoning {
 				visibleOut = result.Output
 			}
-			if calls := parseToolCallsForRequest(result.Output, req.Tools); len(calls) > 0 {
+			calls := parseToolCallsForRequest(result.Output, req.Tools)
+
+			// R247 (2026-10-26), этап A+F: STRICT-аргументы на /v1.
+			//
+			// Здесь ответ уже сгенерирован целиком и клиенту не отправлено ни
+			// байта (буферизированная tools-ветка) — повтор безопасен. Клиент
+			// объявил strict:true, значит аргументы обязаны соответствовать схеме;
+			// иначе он ответит ошибкой инструмента и агент потратит ход.
+			//
+			// Повтор — с NUDGE: перечень нарушений уходит в системное сообщение,
+			// иначе модель с высокой вероятностью повторит ту же форму аргументов.
+			// Выключатель: CPPWORKER_STRICT_ARGS_RETRY=0.
+			if len(calls) > 0 && strictArgsRetryEnabled() {
+				if violations := strictToolCallViolations(calls, req.Tools); len(violations) > 0 {
+					logger.Get().Warnw("strict tool args invalid (/v1), retrying generation once",
+						"model", actualModel, "tool", calls[0].Function.Name,
+						"violations", truncateForLog(strings.Join(violations, "; "), 300))
+					retryPrompt := prompt
+					if nudged, nerr := buildChatPrompt(appendToolRepairInstruction(chatMsgs, violations), actualModel); nerr == nil && nudged != "" {
+						retryPrompt = nudged
+					}
+					if retried, retryErr := generateWithRamFallback(actualModel, retryPrompt, params, hasTools); retryErr == nil {
+						retryCalls := parseToolCallsForRequest(retried.Output, req.Tools)
+						if len(retryCalls) > 0 {
+							if still := strictToolCallViolations(retryCalls, req.Tools); len(still) == 0 {
+								result = retried
+								calls = retryCalls
+								reasoningOut, visibleOut, hasReasoning = SplitReasoningContentFromPrompt(prompt, result.Output)
+								if !hasReasoning {
+									visibleOut = result.Output
+								}
+								logger.Get().Infow("strict tool args valid after retry",
+									"model", actualModel, "tool", calls[0].Function.Name)
+							} else {
+								logger.Get().Warnw("strict tool args still invalid after retry (/v1)",
+									"model", actualModel,
+									"violations", truncateForLog(strings.Join(still, "; "), 300))
+							}
+						}
+					} else {
+						logger.Get().Warnw("strict args retry failed (/v1)",
+							"model", actualModel, "error", retryErr)
+					}
+				}
+			}
+
+			if len(calls) > 0 {
 				// Round 15 (2026-07-29): default includeUsage=true (кроме явного
 				// include_usage=false в stream_options). OpenAI/стандарт говорит
 				// "по умолчанию false", но Cline/Roo/Aider/Continue и другие IDE-агенты

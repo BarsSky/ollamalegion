@@ -213,10 +213,22 @@ type ModelMetadata struct {
 // StreamCallback — функция обратного вызова для стриминга
 type StreamCallback func(token string) bool
 
-// ChatMessage — stub-совместимая структура
+// ChatMessage — stub-совместимая структура.
+//
+// R246: поля tool-истории обязаны существовать и здесь, иначе cppworker не
+// соберётся с -tags llama_stub (а тесты гоняются именно так).
 type ChatMessage struct {
-	Role    string
-	Content string
+	Role       string
+	Content    string
+	ToolCallID string
+	ToolCalls  []ChatToolCall
+}
+
+// ChatToolCall — stub-совместимая структура вызова инструмента.
+type ChatToolCall struct {
+	ID        string
+	Name      string
+	Arguments string
 }
 
 // ErrNoChatTemplate — в stub режиме template недоступен
@@ -891,3 +903,4 @@ func min(a, b int) int {
 	}
 	return b
 }
+

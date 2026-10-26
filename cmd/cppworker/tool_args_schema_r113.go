@@ -188,8 +188,94 @@ func (t toolSchemaInfo) paramType(name string) string {
 	return ""
 }
 
-// coerceValueToDeclaredType — привести значение к ОБЪЯВЛЕННОМУ типу параметра.
+// isRequired — поле объявлено обязательным (сравнение без учёта регистра).
+func (t toolSchemaInfo) isRequired(name string) bool {
+	if t.required == nil {
+		return false
+	}
+	if t.required[name] {
+		return true
+	}
+	for req := range t.required {
+		if strings.EqualFold(req, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// dropNullOptionalArgs — убрать null у НЕобязательных полей аргументов.
 //
+// R246 (2026-10-26): null — это «поле не задано», а не значение объявленного
+// типа. Валидаторы клиентов (typebox/zod) на null отвечают ошибкой
+// «expected number, received null»; агент тратит ход на ошибку инструмента.
+// Живой случай (gemma-4 через балансер, набор DSH): вызов ralph с
+// {"objective":"…","maxRounds":null} при схеме `maxRounds: number`.
+//
+// Обязательные поля НЕ трогаем: null в обязательном поле — честная ошибка
+// клиента, и подставлять выдуманное значение нельзя.
+func dropNullOptionalArgs(obj map[string]interface{}, schema toolSchemaInfo) {
+	for key, val := range obj {
+		if val != nil {
+			continue
+		}
+		if schema.isRequired(key) {
+			continue
+		}
+		delete(obj, key)
+	}
+}
+
+// applyPluralAliases — обязательное поле пришло в МНОЖЕСТВЕННОМ написании.
+//
+// R246 (2026-10-26). Живой прогон OpenWebUI-набора инструментов через балансер
+// (gemma-4): схема объявляет `query: string` (required), модель отдала
+// {"queries":["ollama"]}. Клиент (typebox) отвечает «expected string, received
+// undefined» — обязательного поля нет, инструмент не применяется. Это то же
+// слово в другом числе, значение переносится как есть (с приведением к
+// объявленному типу), а не выдумывается.
+func applyPluralAliases(obj map[string]interface{}, schema toolSchemaInfo) {
+	for _, p := range schema.properties {
+		if !schema.isRequired(p.name) {
+			continue
+		}
+		if _, present := obj[p.name]; present {
+			continue
+		}
+		for _, alias := range pluralAliases(p.name) {
+			// Ключ-алиас не должен быть ОТДЕЛЬНЫМ объявленным полем схемы:
+			// иначе переименование съест соседний параметр.
+			if schema.paramType(alias) != "" {
+				continue
+			}
+			val, exists := obj[alias]
+			if !exists {
+				continue
+			}
+			obj[p.name] = coerceValueToDeclaredType(val, p.typ)
+			delete(obj, alias)
+			break
+		}
+	}
+}
+
+// pluralAliases — вероятные МНОЖЕСТВЕННЫЕ написания имени поля.
+func pluralAliases(field string) []string {
+	if field == "" {
+		return nil
+	}
+	lower := strings.ToLower(field)
+	switch {
+	case strings.HasSuffix(lower, "y"):
+		return []string{field[:len(field)-1] + "ies"}
+	case strings.HasSuffix(lower, "s"), strings.HasSuffix(lower, "x"),
+		strings.HasSuffix(lower, "ch"), strings.HasSuffix(lower, "sh"):
+		return []string{field + "es"}
+	}
+	return []string{field + "s"}
+}
+
+// coerceValueToDeclaredType — привести значение к ОБЪЯВЛЕННОМУ типу параметра.//
 // R114d (2026-10-13). Живой случай (Cline + gemma-4, схема `run_commands`:
 // `commands: array`): модель отдала СКАЛЯР, приведение положило его в объявленный
 // параметр, и клиент получил `{"commands":"dir"}` — объект, но тип не тот.
@@ -314,7 +400,7 @@ func coerceArgumentsValue(raw string, schema toolSchemaInfo, haveSchema bool) (s
 		return encodeArgsObject(map[string]interface{}{param: raw})
 	}
 
-	switch v := value.(type) {
+		switch v := value.(type) {
 	case map[string]interface{}:
 		if haveSchema {
 			if unwrapped, ok := unwrapArgsWrapper(v, schema); ok {
@@ -329,6 +415,14 @@ func coerceArgumentsValue(raw string, schema toolSchemaInfo, haveSchema bool) (s
 					v[key] = coerceValueToDeclaredType(val, typ)
 				}
 			}
+			// R246 (2026-10-26): null у НЕобязательного поля — не значение, а
+			// «поле не задано». Валидатор клиента (typebox/zod) отвергает null
+			// там, где объявлен тип: живой прогон gemma-4 звал ralph с
+			// {"maxRounds": null} при схеме `maxRounds: number` — клиент отвечал
+			// ошибкой валидации, агент повторял вызов.
+			dropNullOptionalArgs(v, schema)
+			// R246: обязательное поле в множественном написании (queries ← query).
+			applyPluralAliases(v, schema)
 		}
 		return encodeArgsObject(v)
 
@@ -598,6 +692,10 @@ var toolCallMarkupMarkers = []string{
 	// JSON в ней нет, поэтому раньше НИ ОДИН маркер не срабатывал и разметка
 	// уезжала клиенту телом ответа.
 	"<function=", "</function>", "<parameter=", "</parameter>",
+	// R246 (2026-10-26): диалект gemma `[tool_code]` / ```tool_code —
+	// вызов питоновским синтаксисом. Живой дефект: разметка уехала клиенту
+	// телом ответа, инструмент не вызвался.
+	"[tool_code]", "[/tool_code]", "```tool_code",
 }
 
 // looksLikeToolCallMarkup — вывод содержит обёртку вызова инструмента ЛИБО
@@ -679,6 +777,9 @@ func stripToolCallMarkup(text string) string {
 			}
 		}
 	}
+	// R246: блоки tool_code снимаются отдельно: у них своя пара маркеров
+	// ([tool_code]/[/tool_code] и ```tool_code/```), внутри — питоновский вызов.
+	cleaned = stripToolCodeMarkup(cleaned)
 	// R113: JSON-формы вызова без тегов (модель повторяет присланный историей
 	// вызов). Такой JSON — не текст ответа: вырезаем сам объект и, если он был
 	// обёрнут в массив (`[{…}]`), пустые скобки массива тоже.
@@ -716,3 +817,4 @@ func stripToolCallJSONObjects(text string) string {
 	}
 	return text
 }
+

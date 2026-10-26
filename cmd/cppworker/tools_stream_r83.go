@@ -52,6 +52,11 @@ var toolsStreamMarkers = []string{
 	"<|python_tag|>",
 	"[TOOL_CALLS]",
 	"[TOOL_CALL]",
+	// R246 (2026-10-26): диалект gemma tool_code. Без этих маркеров блок
+	// уезжал клиенту дельтами как обычный текст (живой дефект: DeepSeek
+	// Harness + gemma-4, 25 инструментов — «инструмент не вызван»).
+	"[tool_code]",
+	"```tool_code",
 }
 
 // toolsStreamContentEnabled — включена ли потоковая отдача content на tools-пути.
@@ -309,3 +314,4 @@ func toolsStreamRuneSafeCut(s string, from, to int) int {
 	}
 	return to
 }
+

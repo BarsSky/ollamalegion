@@ -557,10 +557,9 @@ int32_t bridge_token_to_piece(
 // Достаёт tokenizer.chat_template из метаданных GGUF и применяет
 // его к переданным сообщениям через llama_chat_apply_template().
 //   system               — системный промпт (или NULL)
-//   user_contents        — массив указателей на user-сообщения
-//   n_user               — количество user-сообщений
-//   assistant_contents   — массив указателей на assistant-сообщения (для multi-turn), или NULL
-//   n_assistant          — количество assistant-сообщений
+//   roles                — роли сообщений в порядке диалога (R246)
+//   contents             — содержимое тех же сообщений
+//   n_messages           — количество сообщений
 //   add_ass              — добавить ли токены начала assistant turn в конец
 //   out_buf              — выходной буфер (заполняется null-terminated строкой)
 //   out_buf_size         — размер выходного буфера
@@ -569,10 +568,9 @@ int32_t bridge_token_to_piece(
 int32_t bridge_apply_chat_template(
     ModelHandle model,
     const char* system,
-    const char** user_contents,
-    int32_t n_user,
-    const char** assistant_contents,
-    int32_t n_assistant,
+    const char** roles,
+    const char** contents,
+    int32_t n_messages,
     bool add_ass,
     char* out_buf,
     int32_t out_buf_size
@@ -601,9 +599,22 @@ int32_t bridge_get_chat_template(
 // (Qwen3-thinking, DeepSeek-R1, GLM-Z1 и др.).
 //
 // C-структура для одного сообщения. Caller владеет массивом.
+//
+// R246: одной пары role+content НЕ хватает для tool-истории. Шаблон gemma-4
+// рисует вызовы инструментов ТОЛЬКО из структурных полей
+// (message.get('tool_calls')), а сообщения role="tool" пропускает в основном
+// цикле и подставляет их лишь из tool_calls предыдущего model-сообщения.
+// На паре role+content вызов уезжал JSON-текстом в content, а результат
+// инструмента терялся целиком: модель его не видела и просила "подождать".
+//
+// tool_call_id / tool_calls_json относятся только к tool-истории и могут быть
+// NULL. tool_calls_json - JSON-массив формы OpenAI:
+//   [{"id":"call_1","function":{"name":"read","arguments":"{\"file_path\":\"x\"}"}}]
 struct CBridgeChatMessage {
     const char* role;
     const char* content;
+    const char* tool_call_id;
+    const char* tool_calls_json;
 };
 // CGo требует typedef для прямого доступа как `C.CBridgeChatMessage` в Go.
 // Без typedef пришлось бы использовать `C.struct_CBridgeChatMessage` (verbose).
@@ -862,3 +873,4 @@ int32_t bridge_token_is_eog(ModelHandle model, int32_t token);
 #endif
 
 #endif // OLLAMALEGION_BRIDGE_H
+

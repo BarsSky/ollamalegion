@@ -90,6 +90,14 @@ func detectAndExtractToolCallsFromContent(content string) (toolCalls []interface
 		return calls, remaining, true
 	}
 
+	// 2a (R246 2026-10-26): диалект gemma `[tool_code]` / ```tool_code —
+	// вызов питоновским синтаксисом `print(read(file_path="go.mod"))`.
+	// Живой дефект (DeepSeek Harness → балансер → gemma-4, 25 инструментов):
+	// вызов уехал клиенту как content, message.tool_calls не пришёл.
+	if calls, remaining, ok := detectToolCodeCallsInContent(trimmed); ok {
+		return calls, remaining, true
+	}
+
 	// 3. Llama-3 python_tag формат.
 	if calls, remaining, ok := detectLlamaPythonTagInContent(trimmed); ok {
 		return calls, remaining, true
@@ -1016,3 +1024,4 @@ func rewriteSSEDataPayload(line, newPayload []byte) []byte {
 	out = append(out, lineTerminator...)
 	return out
 }
+

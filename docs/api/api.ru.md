@@ -297,6 +297,68 @@ WebUI-страницей GGUF или админскими скриптами, н
 
 См. `cmd/cppworker/router.go` для регистрации всех маршрутов.
 
+## Anthropic Messages API (через балансер)
+
+R247 (2026-10-26): Anthropic-native клиенты (Claude Code, `anthropic` SDK) обслуживает балансер. Обработчик транслирует запрос во внутреннюю OpenAI-поверхность и ответ обратно, поэтому инструменты, strict-схемы, tool-история, повторы и правила admission работают так же, как на `/v1/chat/completions`.
+
+| Эндпоинт | Метод | Описание |
+|---|---|---|
+| `/v1/messages` | `POST` | Anthropic Messages API (поток и не-поток) |
+| `/v1/messages/count_tokens` | `POST` | Консервативная оценка токенов (`X-Token-Count-Estimate: chars/3`) |
+
+**Что транслируется:** `system` (строка или текстовые блоки), блоки `messages[].content`
+(`text`, `image`, `tool_use`, `tool_result`), `tools[].input_schema` → `parameters`,
+`tool_choice` (`auto` → `auto`, `any` → `required`, `tool{name}` → вынужденная функция),
+`max_tokens`, `stop_sequences`, `temperature`, `top_p`.
+
+**Ответ:** блоки `content[]` — `text` / `tool_use` (`input` всегда объект),
+`stop_reason` (`end_turn` / `tool_use` / `max_tokens`), `usage`
+(`input_tokens` / `output_tokens`).
+
+**События потока (порядок Anthropic):** `message_start`, `content_block_start`
+(`text` или `tool_use`), `content_block_delta` (`text_delta` / `input_json_delta`),
+`content_block_stop`, `message_delta` (`stop_reason` + `output_tokens`), `message_stop`.
+
+**Ошибки:** `{"type":"error","error":{"type":...,"message":...}}` с типами
+`invalid_request_error`, `request_too_large`, `overload_error`, `api_error`.
+
+**Не транслируется (осознанно):** `thinking`-блоки с `signature`, `cache_control`;
+`input_tokens` в `message_start` отправляется как `0` (usage приезжает позже в
+`message_delta`). Живой контракт: `scripts/webui-e2e/client-expectations-r247.js`,
+профили `anthropic-sdk` и `anthropic-error-shape`.
+
+## OpenAI Responses API (через балансер)
+
+R247 (2026-10-26): Codex-style клиенты, которые ходят только в `/v1/responses`, обслуживает балансер. Подход тот же, что у Anthropic-поверхности: трансляция во внутреннюю `/v1/chat/completions` и обратно, поэтому инструменты, strict-схемы, tool-история, повторы и admission работают так же, как на chat-поверхности.
+
+| Эндпоинт | Метод | Описание |
+|---|---|---|
+| `/v1/responses` | `POST` | OpenAI Responses API (поток и не-поток) |
+
+**Отображение запроса:** `instructions` → системное сообщение; `input` строкой или
+items (`message`, `function_call` → assistant `tool_calls`, `function_call_output` →
+`role:"tool"`); `tools[]` плоской формы (`{type:"function", name, description, parameters, strict}`)
+→ `tools[].function`; `tool_choice` (`auto`/`none`/`required` или
+`{type:"function", name}` → вынужденная функция); `max_output_tokens` → `max_tokens`;
+`temperature`, `top_p`, `stream`.
+
+**Ответ:** `{id: "resp_…", object: "response", status: "completed", output[], output_text, usage}`,
+где `output[]` — items `message` с `content[] = [{type:"output_text", text, annotations}]`
+и items `function_call` (`call_id`, `name`, `arguments` — **строка**).
+
+**События потока:** `response.created`, `response.output_item.added`,
+`response.content_part.added`, `response.output_text.delta` / `.done`,
+`response.content_part.done`, `response.function_call_arguments.delta` / `.done`,
+`response.output_item.done`, `response.completed` — с монотонным `sequence_number`.
+
+**Ошибки:** `{"error":{"message","type","param","code"}}` с `type = invalid_request_error`
+или `api_error`.
+
+**Не поддерживается (честный отказ):** `previous_response_id` возвращает HTTP 400 с
+объяснением — состояние диалога не хранится, присылайте полную историю в `input`.
+Живой контракт: `scripts/webui-e2e/client-expectations-r247.js`, профили
+`codex-responses` и `responses-error-shape`.
+
 ## GGUF Backend Proxy API (через балансер)
 
 Белансировщик предоставляет **универсальный proxy** для всех эндпоинтов CppWorker, чтобы WebUI и внешние клиенты могли общаться с CppWorker **через балансер**, не делая прямые HTTP-запросы (которые ломаются в Docker-окружении из-за CORS и недоступности `host.docker.internal` в браузере).

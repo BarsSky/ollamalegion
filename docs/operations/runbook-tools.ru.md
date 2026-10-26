@@ -419,6 +419,87 @@ polling loop (модель state=loading, но polling тоже падал).
 
 ---
 
+## 4.8 Сценарий H: «модель не может применить инструменты» (R246, 2026-10-26)
+
+**Симптом (живая жалоба).** DeepSeek Harness (DSH) через балансер на gemma-4:
+агент вызывает инструмент и каждый раз получает ошибку/пустой ответ.
+
+**Две независимые причины, обе на нашей стороне.**
+
+1. **Диалект `tool_code` не разбирался.** Модель отдала вызов в теле ответа
+   питоновским синтаксисом:
+
+   ```
+   [tool_code]
+   print(read(file_path="go.mod"))
+   [/tool_code]
+   ```
+
+   Ни `parseToolCallsForRequest` (cppworker), ни `detectAndExtractToolCallsFromContent`
+   (балансер) такой формы не знали: вызов уехал клиенту как `content`,
+   `message.tool_calls` не пришёл — инструмент не применился.
+
+2. **Результат инструмента не доезжал до модели.** Промпт второго хода
+   (снят с `/api/v1/cppworker/debug/last-prompt`) содержал `system`, `user` и
+   `model` с JSON-дампом вызова `[[{...}]]`, но НЕ содержал `role:"tool"`.
+   Шаблон gemma-4 рисует вызовы только из структурного `message.tool_calls`, а
+   сообщения `role:"tool"` пропускает в основном цикле и подставляет их из
+   `tool_calls` предыдущего `model`-сообщения. Через C-мост уходили только
+   `role`+`content`, поэтому модель писала «output is not provided yet, wait» и
+   отдавала пустой ответ (`finish_reason=stop`, `content=""`).
+
+**Диагностика.**
+
+1. `/api/v1/cppworker/debug/last-prompt` на cppworker: есть ли в промпте
+   результат инструмента (`<|tool_response>` у gemma, `<tool_response>` у Qwen)?
+2. В ответе клиенту: `message.content` содержит `[tool_code]`/`<tool_call>` —
+   значит вызов не распознан.
+3. Второй ход: пустой `content` + `finish_reason=stop` при непустом reasoning —
+   типичный признак «результат не дошёл».
+
+**Решение (R246).**
+
+- `cmd/cppworker/tool_code_form_r246.go` + `internal/balancer/toolcall_tool_code_r246.go`:
+  разбор `[tool_code]`/```tool_code (питоновский вызов, `print(…)` опционален,
+  несколько вызовов в блоке), вырезание разметки из видимого текста, удержание
+  маркеров в потоковом выводе.
+- Аргументы приводятся к схеме в ОБОИХ слоях (`coerceToolCallsToSchema`,
+  `repairToolArguments`): null у необязательного поля удаляется (это «поле не
+  задано», а валидатор клиента на null отвечает ошибкой), обязательное поле в
+  множественном написании переименовывается (`queries` → `query`), массив из
+  одного элемента при объявленной строке становится строкой.
+- `cmd/cppworker/tool_history_r246.go` + `c/bridge`: tool-история уходит в шаблон
+  СТРУКТУРНО (`tool_calls`, `tool_call_id`). Форма выбирается по шаблону модели;
+  правило тройное и покрыто тестом `TestR246_RealTemplatesChooseSafePath` на
+  68 реальных шаблонах `c/llama.cpp/models/templates/*.jinja`:
+  * шаблон сам рисует `role="tool"` (57 из 68: Qwen, Llama-3.x, Mistral-Nemo,
+    DeepSeek, Hermes, Command-R, Kimi, GLM, gpt-oss …) — прежний путь, поведение
+    не меняется;
+  * шаблон читает `tool_calls` И рисует результат (gemma-4, Cohere2MoE,
+    Command-R7B) — структурная форма;
+  * шаблон читает `tool_calls`, но результат не рисует (Seed-OSS, LFM2.5-8B-A1B)
+    или про инструменты не знает (gemma-2, Phi-3.5, granite-3.3, rwkv) —
+    результат уходит `user`-сообщением (иначе шаблон его молча пропустит).
+
+**Проверка (живой пробник, все инструменты клиентов):**
+
+```bash
+node scripts/webui-e2e/tools-all-clients-r246.js            # все профили
+PROFILE=dsh ONLY=read,grep,edit node scripts/webui-e2e/tools-all-clients-r246.js
+# форма запросов РАЗНЫХ клиентов (strict, forced tool_choice, usage, content-части,
+# Ollama-нативный путь, legacy functions, параллельные вызовы):
+node scripts/webui-e2e/clients-compat-r246.js
+```
+
+Пробник на каждый инструмент проверяет: HTTP 200, сборку вызова из SSE,
+`name` из набора клиента, аргументы по схеме (required/типы/enum/
+`additionalProperties`), отсутствие разметки в `content`, `finish_reason=tool_calls`,
+и ВТОРОЙ ХОД с результатом инструмента (модель обязана назвать значение из него).
+
+---
+
+
+
 ## 5. Чек-лист диагноста
 
 1. ☐ Включён `--verbose` (`CPPWORKER_VERBOSE=true`) на cppworker.

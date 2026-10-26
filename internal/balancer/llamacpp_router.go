@@ -165,6 +165,19 @@ func (lr *LlamaCppRouter) Route(w http.ResponseWriter, r *http.Request) bool {
 		// в queue_manager с 503 (slot blocked из-за headroom 15%).
 		lr.handleOpenAIEmbeddings(w, r)
 		return true
+	// R247 (2026-10-26), этап B плана: Anthropic-native клиенты (Claude Code,
+	// anthropic SDK) ходят только в /v1/messages. Трансляция в OpenAI-поверхность
+	// через self-proxy — см. internal/balancer/anthropic_r247.go.
+	case "/v1/messages":
+		lr.handleAnthropicMessages(w, r)
+		return true
+	case "/v1/messages/count_tokens":
+		lr.handleAnthropicCountTokens(w, r)
+		return true
+	// R247 (2026-10-26), этап C: OpenAI Responses API (Codex-style клиенты).
+	case "/v1/responses":
+		lr.handleOpenAIResponses(w, r)
+		return true
 	}
 	return false
 }

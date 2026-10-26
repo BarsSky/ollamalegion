@@ -297,8 +297,68 @@ WebUI page or admin scripts, not by public clients.
 
 See `cmd/cppworker/router.go` for the registration of all routes.
 
-## GGUF Backend Proxy API (via the balancer)
+## Anthropic Messages API (via the balancer)
 
+R247 (2026-10-26): Anthropic-native clients (Claude Code, `anthropic` SDK) are served by the balancer. The handler translates to the OpenAI surface internally and back, so tools, strict schemas, tool history, retries and admission rules work exactly as on `/v1/chat/completions`.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/v1/messages` | `POST` | Anthropic Messages API (stream and non-stream) |
+| `/v1/messages/count_tokens` | `POST` | Conservative token estimate (`X-Token-Count-Estimate: chars/3`) |
+
+**Translated fields:** `system` (string or text blocks), `messages[].content` blocks
+(`text`, `image`, `tool_use`, `tool_result`), `tools[].input_schema` -> `parameters`,
+`tool_choice` (`auto` -> `auto`, `any` -> `required`, `tool{name}` -> forced function),
+`max_tokens`, `stop_sequences`, `temperature`, `top_p`.
+
+**Response:** `content[]` blocks `text` / `tool_use` (`input` is always an object),
+`stop_reason` (`end_turn` / `tool_use` / `max_tokens`), `usage`
+(`input_tokens` / `output_tokens`).
+
+**Stream events (Anthropic order):** `message_start`, `content_block_start`
+(`text` or `tool_use`), `content_block_delta` (`text_delta` / `input_json_delta`),
+`content_block_stop`, `message_delta` (`stop_reason` + `output_tokens`), `message_stop`.
+
+**Errors:** `{"type":"error","error":{"type":...,"message":...}}` with types
+`invalid_request_error`, `request_too_large`, `overload_error`, `api_error`.
+
+**Not translated (by design):** `thinking` blocks with `signature`, `cache_control`,
+and `input_tokens` in `message_start` is sent as `0` (upstream usage arrives later in
+`message_delta`). Live contract: `scripts/webui-e2e/client-expectations-r247.js`
+profiles `anthropic-sdk` and `anthropic-error-shape`.
+
+## OpenAI Responses API (via the balancer)
+
+R247 (2026-10-26): Codex-style clients that call only `/v1/responses` are served by the balancer. Same approach as the Anthropic surface: translated to `/v1/chat/completions` internally and back, so tools, strict schemas, tool history, retries and admission behave exactly as on the chat surface.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/v1/responses` | `POST` | OpenAI Responses API (stream and non-stream) |
+
+**Request mapping:** `instructions` -> system message; `input` as a string or as items
+(`message`, `function_call` -> assistant `tool_calls`, `function_call_output` -> `role:"tool"`);
+`tools[]` flat form (`{type:"function", name, description, parameters, strict}`) ->
+`tools[].function`; `tool_choice` (`auto`/`none`/`required` or `{type:"function", name}`
+-> forced function); `max_output_tokens` -> `max_tokens`; `temperature`, `top_p`, `stream`.
+
+**Response:** `{id: "resp_…", object: "response", status: "completed", output[], output_text, usage}`
+where `output[]` holds `message` items with `content[] = [{type:"output_text", text, annotations}]`
+and `function_call` items (`call_id`, `name`, `arguments` as a **string**).
+
+**Stream events:** `response.created`, `response.output_item.added`,
+`response.content_part.added`, `response.output_text.delta` / `.done`,
+`response.content_part.done`, `response.function_call_arguments.delta` / `.done`,
+`response.output_item.done`, `response.completed`, each with a monotonic `sequence_number`.
+
+**Errors:** `{"error":{"message","type","param","code"}}` with `type = invalid_request_error`
+or `api_error`.
+
+**Not supported (honest refusal):** `previous_response_id` returns HTTP 400 with an
+explanation — dialog state is not stored, send the full `input` history instead.
+Live contract: `scripts/webui-e2e/client-expectations-r247.js` profiles
+`codex-responses` and `responses-error-shape`.
+
+## GGUF Backend Proxy API (via the balancer)
 The balancer provides a **universal proxy** for all CppWorker endpoints, so WebUI and external clients can talk to CppWorker **through the balancer** instead of making direct HTTP requests (which break in Docker environments due to CORS and the inaccessibility of `host.docker.internal` from a browser).
 
 **URL format:**

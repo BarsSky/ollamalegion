@@ -16,10 +16,11 @@ import (
 // setModelSize подменяет источник размера модели для теста (пакетный шов).
 // Возвращает функцию восстановления — вызывающий обязан её вызвать (defer),
 // потому что вложенные t.Cleanup выполняются только после всех сабтестов.
+//
+// R245: установка/снятие идут через setModelSizeBytesForTest (под мьютексом):
+// горутина авто-загрузки из другого теста может ещё работать и читать шов.
 func setModelSize(size int64) func() {
-	prev := modelSizeBytesForTest
-	modelSizeBytesForTest = func(string) int64 { return size }
-	return func() { modelSizeBytesForTest = prev }
+	return setModelSizeBytesForTest(func(string) int64 { return size })
 }
 
 // TestR83_AutoLoadWaitTier_ByModelSize — бюджет растёт с размером модели.

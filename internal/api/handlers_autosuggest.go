@@ -42,8 +42,8 @@ func (s *Server) handleAdminAutosuggest(w http.ResponseWriter, r *http.Request) 
 	for _, b := range backends {
 		loaded := []string{}
 		if metrics != nil {
-			lm := metrics.GetLlamaCppMetrics(b.ID)
-			if lm != nil {
+			// R245: снапшот под RLock — поллер переписывает поля под Lock.
+			if lm, ok := metrics.SnapshotLlamaCppMetrics(b.ID); ok && lm != nil {
 				for _, m := range lm.LoadedModels {
 					loaded = append(loaded, m.Name)
 				}
@@ -147,8 +147,8 @@ func (s *Server) handleAdminAutosuggestApply(w http.ResponseWriter, r *http.Requ
 	for _, b := range backends {
 		loaded := []string{}
 		if metrics != nil {
-			lm := metrics.GetLlamaCppMetrics(b.ID)
-			if lm != nil {
+			// R245: снапшот под RLock — поллер переписывает поля под Lock.
+			if lm, ok := metrics.SnapshotLlamaCppMetrics(b.ID); ok && lm != nil {
 				for _, m := range lm.LoadedModels {
 					loaded = append(loaded, m.Name)
 				}

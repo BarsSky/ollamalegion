@@ -483,10 +483,11 @@ func (lr *LlamaCppRouter) rpcLayoutInfo() rpcLayout {
 	for _, b := range lr.getLlamaCppBackends() {
 		// Раскладка живёт в llamaMetrics (её наполняет poller из /api/models),
 		// а не в BackendMetrics.
-		lr.proxy.metricsMgr.mu.RLock()
-		m := lr.proxy.metricsMgr.llamaMetrics[b.id]
-		lr.proxy.metricsMgr.mu.RUnlock()
-		if m == nil || !m.RPCEnabled {
+		//
+		// R245: читаем СНАПШОТ. Раньше поля читались после RUnlock по живому
+		// указателю, пока поллер переписывал их под Lock — data race (-race в CI).
+		m, ok := lr.proxy.metricsMgr.SnapshotLlamaCppMetrics(b.id)
+		if !ok || m == nil || !m.RPCEnabled {
 			continue
 		}
 		out.Active = true

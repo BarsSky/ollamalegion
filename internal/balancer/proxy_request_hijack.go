@@ -1,4 +1,4 @@
-﻿// proxy_request_hijack.go — Round 31 #6 real fix (2026-08-09):
+// proxy_request_hijack.go — Round 31 #6 real fix (2026-08-09):
 // hijack-based client disconnect detection for streaming responses.
 //
 // Проблема (sub-bug): Go's net/http **не** detect'ит FIN-only client TCP close

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ollama-loadbalancer/pkg/types"
@@ -471,7 +472,41 @@ func (p *Proxy) getGlobalFirstByteTimeout() time.Duration {
 
 // modelSizeBytesForTest — тестовый шов для getModelSizeBytes (nil в проде).
 // Нужен, чтобы проверять тиры таймаутов по размеру модели без реальных профилей.
-var modelSizeBytesForTest func(modelName string) int64
+//
+// R245: под мьютексом. Причина — живая гонка на ubuntu-раннере CI: путь
+// авто-загрузки уходит в ГОРУТИНУ (LB_AUTO_LOAD_WAIT_SEC=0 отдаёт 503 сразу),
+// и такая горутина из одного теста продолжала работать, когда следующий тест
+// уже подменял этот шов, — -race честно падал
+// (TestR83_AutoLoadWaitTier_ByModelSize). Читатели берут указатель под замком,
+// поэтому вызов чужого шва гонки не создаёт.
+var (
+	modelSizeBytesForTestMu sync.Mutex
+	modelSizeBytesForTest   func(modelName string) int64
+)
+
+// testModelSizeBytes — прочитать тестовый шов (nil-safe, под мьютексом).
+func testModelSizeBytes(modelName string) (int64, bool) {
+	modelSizeBytesForTestMu.Lock()
+	fn := modelSizeBytesForTest
+	modelSizeBytesForTestMu.Unlock()
+	if fn == nil {
+		return 0, false
+	}
+	return fn(modelName), true
+}
+
+// setModelSizeBytesForTest — установить шов, вернуть функцию восстановления.
+func setModelSizeBytesForTest(fn func(modelName string) int64) func() {
+	modelSizeBytesForTestMu.Lock()
+	prev := modelSizeBytesForTest
+	modelSizeBytesForTest = fn
+	modelSizeBytesForTestMu.Unlock()
+	return func() {
+		modelSizeBytesForTestMu.Lock()
+		modelSizeBytesForTest = prev
+		modelSizeBytesForTestMu.Unlock()
+	}
+}
 
 // getModelSizeBytes возвращает размер модели в байтах из per-model профиля
 // или из метрик загруженных моделей на бэкендах.
@@ -485,8 +520,8 @@ func (p *Proxy) getModelSizeBytes(modelName string) int64 {
 	// (реальные профили/метрики в юнит-тесте недоступны). Пакетная переменная, а
 	// не поле Proxy: структура остаётся в своём allocator size class
 	// (govet fieldalignment).
-	if modelSizeBytesForTest != nil {
-		return modelSizeBytesForTest(modelName)
+	if size, ok := testModelSizeBytes(modelName); ok {
+		return size
 	}
 	if modelName == "" {
 		return 0

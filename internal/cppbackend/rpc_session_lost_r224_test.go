@@ -28,17 +28,49 @@ import (
 	"ollama-loadbalancer/c/bridge"
 )
 
+// r224Recorder — потокобезопасный сборщик имён выгруженных моделей.
+//
+// R245: авто-выгрузка в production идёт ГОРУТИНОЙ (unloadAfterSessionLoss),
+// поэтому писать в общий []string из неё и читать в тесте нельзя: -race в CI
+// падал «data race» (TestR224_DeadNodeBecomesSessionLostAndUnloads,
+// TestR224_AutoUnloadCooldown).
+type r224Recorder struct {
+	// R245: срез идёт ПЕРВЫМ, мьютекс после. Иначе fieldalignment (golangci-lint)
+	// ругается «struct with 16 pointer bytes could be 8»: ptrdata тянется до
+	// последнего указателя, а sync.Mutex указателей не содержит.
+	items []string
+	mu    sync.Mutex
+}
+
+func (r *r224Recorder) add(name string) {
+	r.mu.Lock()
+	r.items = append(r.items, name)
+	r.mu.Unlock()
+}
+
+func (r *r224Recorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.items...)
+}
+
+func (r *r224Recorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.items)
+}
+
 // r224Backend — бэкенд без загрузки модели: диагностика работает с конфигом и TCP.
-func r224Backend(servers []string) (*Backend, *[]string) {
-	var unloaded []string
+func r224Backend(servers []string) (*Backend, *r224Recorder) {
+	unloaded := &r224Recorder{}
 	b := &Backend{
 		cfg: Config{RPCEnabled: true, RPCServers: servers},
 		unloadForRecovery: func(name string) error {
-			unloaded = append(unloaded, name)
+			unloaded.add(name)
 			return nil
 		},
 	}
-	return b, &unloaded
+	return b, unloaded
 }
 
 func r224DeadEndpoint(t *testing.T) string {
@@ -93,8 +125,8 @@ func TestR224_LiveNodesKeepOriginalError(t *testing.T) {
 	if got != orig {
 		t.Fatalf("при живом узле ошибка подменена: %v", got)
 	}
-	if len(*unloaded) != 0 {
-		t.Fatalf("при живом узле запущена авто-выгрузка: %v", *unloaded)
+	if unloaded.count() != 0 {
+		t.Fatalf("при живом узле запущена авто-выгрузка: %v", unloaded.snapshot())
 	}
 }
 
@@ -123,11 +155,12 @@ func TestR224_DeadNodeBecomesSessionLostAndUnloads(t *testing.T) {
 
 	// Выгрузка асинхронная — ждём её появления.
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(*unloaded) == 0 {
+	for time.Now().Before(deadline) && unloaded.count() == 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(*unloaded) != 1 || (*unloaded)[0] != "gemma" {
-		t.Fatalf("авто-выгрузка не запущена: %v", *unloaded)
+	names := unloaded.snapshot()
+	if len(names) != 1 || names[0] != "gemma" {
+		t.Fatalf("авто-выгрузка не запущена: %v", unloaded.snapshot())
 	}
 }
 
@@ -153,8 +186,8 @@ func TestR224_ClassifiedErrorsNotOverridden(t *testing.T) {
 		}
 	}
 	time.Sleep(50 * time.Millisecond)
-	if len(*unloaded) != 0 {
-		t.Errorf("на классифицированных ошибках запущена авто-выгрузка: %v", *unloaded)
+	if unloaded.count() != 0 {
+		t.Errorf("на классифицированных ошибках запущена авто-выгрузка: %v", unloaded.snapshot())
 	}
 }
 
@@ -178,10 +211,10 @@ func TestR224_AutoUnloadCooldown(t *testing.T) {
 	b2, unloaded2 := r224Backend(nil)
 	b2.unloadAfterSessionLoss(nil, "m")
 	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && len(*unloaded2) == 0 {
+	for time.Now().Before(deadline) && unloaded2.count() == 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(*unloaded2) == 0 {
+	if unloaded2.count() == 0 {
 		t.Fatal("unloadAfterSessionLoss не вызвал выгрузку")
 	}
 	select {
@@ -215,8 +248,8 @@ func TestR224_AutoUnloadCanBeDisabled(t *testing.T) {
 	b, unloaded := r224Backend(nil)
 	b.unloadAfterSessionLoss(nil, "m")
 	time.Sleep(100 * time.Millisecond)
-	if len(*unloaded) != 0 {
-		t.Fatalf("авто-выгрузка сработала при отключении: %v", *unloaded)
+	if unloaded.count() != 0 {
+		t.Fatalf("авто-выгрузка сработала при отключении: %v", unloaded.snapshot())
 	}
 	if !rpcSessionAutoUnloadDisabled() {
 		t.Error("переменная отключения не распознана")

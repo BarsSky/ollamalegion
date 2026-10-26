@@ -105,8 +105,11 @@ func TestCppWorker_LazyLoad_LegacyImmediate503_R67a(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("legacy-режим: ожидался 503, получено %d: %s", resp.StatusCode, bodyStr)
 	}
-	if elapsed > 400*time.Millisecond {
-		t.Errorf("legacy-режим должен отвечать сразу, заняло %v", elapsed)
+	// R245: граница — длительность самой загрузки (700ms), а не 400ms.
+	// Транспорт штатно тратит до 500ms в awaitModelMissing перед 503
+	// (llamacpp_transport.go) — под -race такая граница давала ложные падения.
+	if elapsed >= 700*time.Millisecond {
+		t.Errorf("legacy-режим должен отвечать до окончания загрузки, заняло %v", elapsed)
 	}
 	if resp.Header.Get("Retry-After") == "" {
 		t.Error("ожидался заголовок Retry-After")

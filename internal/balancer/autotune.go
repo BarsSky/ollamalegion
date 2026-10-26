@@ -678,10 +678,14 @@ func (p *Proxy) AutoTuneTracker() *AutoTuneTracker {
 
 // WorkloadTracker accessor для API handlers (R54.9).
 // Lazy init с default config — same pattern as AutoTuneTracker.
+// R245: инициализация под autoTuneLazyMu — getter вызывается конкурентно
+// из proxyRequestLlamaCpp (без блокировки это data race, ловится -race в CI).
 func (p *Proxy) WorkloadTracker() *WorkloadTracker {
 	if p == nil {
 		return nil
 	}
+	p.autoTuneLazyMu.Lock()
+	defer p.autoTuneLazyMu.Unlock()
 	if p.workloadTracker == nil {
 		p.workloadTracker = NewWorkloadTracker(DefaultWorkloadTrackerConfig())
 	}
@@ -691,10 +695,14 @@ func (p *Proxy) WorkloadTracker() *WorkloadTracker {
 // AutoTuneHistory accessor для API handlers (R55.2).
 // Lazy init с default config (500 entries max).
 // Используется для ring buffer последних AutoTune events.
+// R245: та же защита, что и в WorkloadTracker() — вызовы идут одновременно
+// из goroutine публикации событий и из HTTP handlers.
 func (p *Proxy) AutoTuneHistory() *AutoTuneHistory {
 	if p == nil {
 		return nil
 	}
+	p.autoTuneLazyMu.Lock()
+	defer p.autoTuneLazyMu.Unlock()
 	if p.autoTuneHistory == nil {
 		p.autoTuneHistory = NewAutoTuneHistory(500) // R55.2 default
 	}
@@ -842,8 +850,9 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 		res.SkippedReason = "no metrics manager"
 		return res
 	}
-	lm := p.metricsMgr.GetLlamaCppMetrics(backendID)
-	if lm == nil {
+	// R245: снапшот под RLock — живой указатель поллер переписывает под Lock.
+	lm, ok := p.metricsMgr.SnapshotLlamaCppMetrics(backendID)
+	if !ok || lm == nil {
 		res.SkippedReason = "no llamaCpp metrics for backend"
 		return res
 	}
@@ -1265,8 +1274,8 @@ func (p *Proxy) freshLoadedModel(backendID, host string, port int, modelName str
 	if poller := p.llamaCppMetricsPoller; poller != nil {
 		poller.pollBackend(backendInfo{id: backendID, host: host, port: port})
 	}
-	lm := p.metricsMgr.GetLlamaCppMetrics(backendID)
-	if lm == nil {
+	lm, ok := p.metricsMgr.SnapshotLlamaCppMetrics(backendID)
+	if !ok || lm == nil {
 		return types.LlamaCppModel{}, false
 	}
 	for _, m := range lm.LoadedModels {

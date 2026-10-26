@@ -33,6 +33,13 @@ func profileLookupNameForPath(requested, modelPath string) string {
 	if strings.HasSuffix(p, "/") || strings.HasSuffix(p, `\`) {
 		return requested
 	}
+	// R245: Windows-разделители разбираем и на Linux. cppworker на Windows получает
+	// пути вида `C:\models\name.gguf`, а тот же тест гоняется и на ubuntu-раннере:
+	// там filepath.Base такой путь НЕ режет (разделитель только `/`), владельцем
+	// становилось `C:\models\name` — ubuntu-джоба CI падала, локально (Windows) нет.
+	if strings.Contains(p, `\`) {
+		p = strings.ReplaceAll(p, `\`, "/")
+	}
 	base := filepath.Base(p)
 	base = strings.TrimSuffix(base, filepath.Ext(base)) // .gguf и прочее
 	base = strings.TrimSpace(base)

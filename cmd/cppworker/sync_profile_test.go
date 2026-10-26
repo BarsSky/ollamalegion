@@ -1,4 +1,4 @@
-﻿// sync_profile_test.go — Unit tests for pull-based profile sync.
+// sync_profile_test.go — Unit tests for pull-based profile sync.
 //
 // Round 26 (2026-08-06): verifies the merge function handles all edge cases
 // without making real HTTP calls. HTTP-based tests live in handlers_model_*_test.go

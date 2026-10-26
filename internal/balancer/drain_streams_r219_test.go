@@ -27,11 +27,20 @@ type slowSSEReader struct {
 	chunks []string
 	delay  time.Duration
 	i      int
+	// started закрывается на ПЕРВОМ Read. Тест ждёт его вместо time.Sleep:
+	// activeStreams.Add(1) в прокси выполняется ДО первого Read, поэтому
+	// после получения из канала WaitGroup.Wait уже не может гоняться с Add
+	// (на -race это давало data race и флейк CI).
+	started chan struct{}
 }
 
 func (r *slowSSEReader) Read(p []byte) (int, error) {
 	if r.i >= len(r.chunks) {
 		return 0, io.EOF
+	}
+	if r.i == 0 && r.started != nil {
+		close(r.started)
+		r.started = nil
 	}
 	time.Sleep(r.delay)
 	n := copy(p, r.chunks[r.i])
@@ -57,10 +66,11 @@ func TestR219_LegacySSERegistersActiveStream(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n" +
 		"data: [DONE]\n\n"
 	chunks := []string{body[:len(body)/3], body[len(body)/3 : 2*len(body)/3], body[2*len(body)/3:]}
+	streamStarted := make(chan struct{})
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       io.NopCloser(&slowSSEReader{chunks: chunks, delay: 120 * time.Millisecond}),
+		Body:       io.NopCloser(&slowSSEReader{chunks: chunks, delay: 120 * time.Millisecond, started: streamStarted}),
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -71,8 +81,12 @@ func TestR219_LegacySSERegistersActiveStream(t *testing.T) {
 		_ = p.proxyRequestOpenAIStreamingLegacy(rec, req, resp, "b1")
 	}()
 
-	// Даём стриму начаться (первый Read уже в полёте).
-	time.Sleep(60 * time.Millisecond)
+	// Даём стриму начаться: ждём первый Read (Add(1) уже случился до него).
+	select {
+	case <-streamStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("стрим не начался за 2с")
+	}
 
 	waited := make(chan struct{})
 	go func() {

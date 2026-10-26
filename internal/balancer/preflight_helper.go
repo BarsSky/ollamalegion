@@ -266,7 +266,10 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 	// Сначала заглядываем в LoadedModels, чтобы достать per-model feasible.
 	var perModelFeasible int
 	if mm := lr.proxy.GetMetricsManager(); mm != nil {
-		if lm := mm.GetLlamaCppMetrics(backendID); lm != nil {
+		// R245: СНАПШОТ, а не живой указатель. GetLlamaCppMetrics отдаёт его
+		// без блокировки, а поллер в это же время переписывает поля под Lock —
+		// -race в CI (tests/llamacpp_proxy).
+		if lm, ok := mm.SnapshotLlamaCppMetrics(backendID); ok && lm != nil {
 			for _, m := range lm.LoadedModels {
 				if m.Name == model || containsFold(m.Name, model) || containsFold(model, m.Name) {
 					perModelFeasible = m.FeasibleMaxContext
@@ -292,7 +295,8 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 	}
 	// Round 37 (2026-08-18): заполняем feasible + GGUF из metrics (cppworker Round 37).
 	if mm := lr.proxy.GetMetricsManager(); mm != nil {
-		if lm := mm.GetLlamaCppMetrics(backendID); lm != nil {
+		// R245: снапшот под RLock (см. комментарий выше).
+		if lm, ok := mm.SnapshotLlamaCppMetrics(backendID); ok && lm != nil {
 			state.MaxFeasibleContext = lm.MaxFeasibleContext
 			state.GGUFMaxContext = lm.GGUFMaxContext
 			// R83 §9.2: различать «VRAM неизвестна» и «веса не влезают».

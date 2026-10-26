@@ -1,4 +1,4 @@
-﻿// llamacpp_translate_req.go — Translation of Ollama API requests to OpenAI-compatible format
+// llamacpp_translate_req.go — Translation of Ollama API requests to OpenAI-compatible format
 // for llama.cpp/cppworker backends.
 package balancer
 

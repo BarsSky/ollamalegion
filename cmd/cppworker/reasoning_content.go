@@ -1,4 +1,4 @@
-﻿// reasoning_content.go — извлечение reasoning_content (think-блоков) из
+// reasoning_content.go — извлечение reasoning_content (think-блоков) из
 // выхода reasoning-моделей (qwen3.5, qwen3.6 MoE, deepseek-r1, kimi-k2,
 // gemma-4-thinking и т.п.).
 //

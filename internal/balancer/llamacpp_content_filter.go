@@ -1,4 +1,4 @@
-﻿// llamacpp_content_filter.go — Content filtering for streaming responses from llama.cpp/cppworker.
+// llamacpp_content_filter.go — Content filtering for streaming responses from llama.cpp/cppworker.
 // Удаляет служебные токены модели (Gemma <end_of_turn>, Llama3 <|eot_id|>, ChatML <|im_end|> и т.д.)
 // из streaming-ответа, чтобы OpenAI-клиенты (Cline, OpenWebUI) не падали с "Invalid API Response".
 package balancer

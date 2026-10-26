@@ -1,4 +1,4 @@
-﻿// tool_args_repair_r186_test.go — R186 (2026-10-20).
+// tool_args_repair_r186_test.go — R186 (2026-10-20).
 //
 // ЖИВОЙ РАЗБОР (Cline). Клиент показывал `Error: {"error":"✖ Invalid input"}` и
 // повторял один и тот же вызов, пока не останавливался по «6 identical calls».

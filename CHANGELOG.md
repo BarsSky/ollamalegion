@@ -1,4 +1,97 @@
-﻿## [0.7.228 - R244: пробник потока Cline работает на старом Node (без fetch/AbortController), 2026-10-26]
+## [0.7.229 - R245: CI зелёный — гонки в тестах и ленивая инициализация, 2026-10-26]
+
+**Симптом.** GitHub Actions стабильно красный: `go test -race -tags llama_stub`
+(прогон 40311999866, R244) падал в четырёх пакетах. Локально те же тесты
+проходили — то есть дефект был не в продукте, а в гонках, которые `-race`
+проявляет по-разному на разных машинах.
+
+**Причины и исправления.**
+
+1. `internal/balancer`, `TestPlacementPlanR96_*` — поллер метрик запускал
+   обновление каталога моделей (`refreshStaleModelCatalogs`) отдельной горутиной,
+   не учитывая её в `WaitStopped`. Тест после остановки поллера подменял
+   `p.modelCatalog`, а горутина всё ещё его читала. Теперь горутина учтена в
+   `catalogWg`, и `WaitStopped` ждёт её (с дедлайном).
+2. `TestR219_LegacySSERegistersActiveStream` — `time.Sleep(60ms)` не гарантировал,
+   что стрим уже зарегистрирован: `activeStreams.Add(1)` мог случиться позже
+   `Wait()`. Тест ждёт первый `Read` (он идёт строго после `Add`).
+3. `TestR118_GhostReaperKeepsRoleBackends` — запись в `p.backends` шла без `p.mu`,
+   хотя фоновый поллер в это же время читал карту. Запись под блокировкой, как в
+   production-коде.
+4. `internal/cppbackend`, `TestR224_*` — асинхронная горутина дописывала имена в
+   общий `[]string`, тест читал его без синхронизации. Коллектор заменён на
+   `r224Recorder` с мьютексом.
+5. `TestR221_PatchLineEndingsMatchSource` — тест требовал файлы сабмодуля
+   `c/llama.cpp`, а CI чекаутит его с `submodules: false`. Теперь отсутствие
+   сабмодуля — `t.Skip`, а не падение.
+6. `internal/i18n`, `TestRemoteSyncAppliesBalancerLanguage` — `lastErr` писали
+   одновременно горутина `Start` и тест. `applyOnce` сериализован мьютексом.
+7. Ленивая инициализация `WorkloadTracker()`/`AutoTuneHistory()` — проверка на
+   `nil` и присваивание без блокировки. `WorkloadTracker()` вызывается из
+   `proxyRequestLlamaCpp` на каждый запрос, то есть конкурентно: два запроса
+   видели `nil`, оба писали указатель (data race) и второй экземпляр терял
+   накопленные samples. Теперь инициализация под отдельным `autoTuneLazyMu`.
+8. **Живой указатель вместо снапшота.** `GetLlamaCppMetrics` отдаёт указатель на
+   запись кэша, а поллер метрик переписывает её поля под `Lock`. Читатели
+   (`preflight_helper.collectPreflightState`, `proxy_helpers`, `autotune`,
+   `model_presence_r229`, `llamacpp_transport_nonstream`,
+   `llamacpp_runtime_config`, обработчики `/api/v1/autotune/*`,
+   `/autosuggest`, `/backends`) разыменовывали его уже после `RUnlock` — это
+   ловил `-race` в `tests/llamacpp_proxy`. Все они переведены на
+   `SnapshotLlamaCppMetrics`, который копирует и остальные срезы
+   (`LoadingModels`, `AvailableModels`, `RPCServersActive`).
+9. Тайминговые проверки в `tests/cppworker_lazy_load` требовали ответа быстрее
+   400 мс, хотя транспорт штатно тратит до 500 мс в `awaitModelMissing` перед
+   отдачей 503. Граница заменена на длительность самой загрузки (700 мс): смысл
+   проверки — «ответ пришёл раньше, чем модель загрузилась», и он сохранён.
+
+10. **Шаг покрытия не мог пройти вообще.** 27 Go-файлов начинались с UTF-8 BOM;
+    `go build`/`go test` это терпят, а `go test -cover` — нет: файл печатается
+    заново, BOM оказывается не первым байтом, и сборка падает с
+    `invalid BOM in the middle of the file`. Шаг «Generate coverage» стоял за
+    `if: success()` и был мёртв, пока job умирал раньше. BOM удалён, а новый тест
+    `TestR245_NoUTF8BOMInGoSources` (tests/) не даёт ему вернуться — редакторы на
+    Windows добавляют его молча.
+
+11. **Гонка тестового шва размера модели (ubuntu).** `TestR83_AutoLoadWaitTier_ByModelSize`
+    подменял пакетный шов `modelSizeBytesForTest`, а из соседнего теста
+    (`TestEnsureModelLoaded_AsyncWaitZeroKeepsLegacy_R67a`) ещё работала горутина
+    авто-загрузки — она и читала шов во время записи. Шов переведён под мьютекс
+    (`testModelSizeBytes`/`setModelSizeBytesForTest`), тесты используют их.
+    Найдено не глазами: `internal/balancer` воспроизведён в контейнере
+    `golang:1.22` (`go test -race`), где гонка и всплыла — на Windows-раннере
+    порядок выполнения другой и тест проходил.
+12. **`TestConcurrency_Scenario_Metrics_Concurrent_Update`** требовал
+    `inferenceTotal >= 50` при 50 конкурентных запросах и падал на CI с «49»:
+    один запрос из полусотни не доходил до инкремента (отказ/таймаут на
+    загруженной машине) — то есть падал на здоровом коде. Теперь считаются
+    успешные ответы, и проверяется именно отсутствие потерь
+    (`total >= success`, `success > 0`).
+13. **`TestR154ProfileLookupNameIsFileOwner` падал только на ubuntu**: кейс с
+    путём `C:\models\name.gguf` на Linux не режется `filepath.Base` (там
+    разделитель только `/`), и владельцем становилось `C:\models\name`.
+    `profileLookupNameForPath` теперь понимает оба разделителя.
+14. **golangci-lint**: `fieldalignment` на новой тестовой структуре
+    `r224Recorder` — срез первым, мьютекс после (ptrdata был 16 вместо 8).
+15. **Диагностика в `scripts/run_go_test.sh`/`.ps1`**: в сводку падений добавлен
+    блок `WARNING: DATA RACE` со стеком. Детектор гонок не печатает `--- FAIL:`,
+    поэтому в логе ubuntu-джобы (прогон 40326149098) оставались только
+    `FAIL <pkg>` и хвост чужих логов — имя упавшего теста терялось.
+
+**Проверка.** Локально, ровно как в CI: `go test -race -tags llama_stub
+./internal/...`, `./cmd/...`, `./tests/...` — зелёные; `go vet -tags llama_stub
+./...` — чисто; шаг покрытия (`-coverprofile=coverage.out -covermode=atomic
+./internal/...`, флаг в кавычках — иначе PowerShell 5.1 отдаёт go отдельный
+пакет `.out`) впервые проходит целиком (total 65.8%).
+
+Дополнительно ubuntu-поведение воспроизведено в контейнере `golang:1.22`:
+`go test -race ./internal/balancer/` и `go test ./cmd/cppworker/` — зелёные
+(до правок первый падал на гонке шва размера модели, второй — на R154);
+`golangci-lint v1.61.0 run --new-from-patch` — без замечаний.
+
+Живой стенд после правок отвечает как раньше (балансер r243, cppworker gpu-r243).
+
+## [0.7.228 - R244: пробник потока Cline работает на старом Node (без fetch/AbortController), 2026-10-26]
 
 **Живая ошибка (стенд оператора).** Запуск `node scripts/webui-e2e/probe-cline-stream.js`
 на машине со старым Node:

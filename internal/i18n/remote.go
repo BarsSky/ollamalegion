@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,6 +25,11 @@ type RemoteSync struct {
 	interval time.Duration
 	client   *http.Client
 	lastErr  string
+
+	// R245: applyOnce вызывается и из фоновой горутины Start, и напрямую
+	// (тесты/диагностика). Без мьютекса два вызова гоняли за lastErr, что
+	// ловил -race в CI (TestRemoteSyncAppliesBalancerLanguage).
+	mu sync.Mutex
 }
 
 // NewRemoteSync собирает синхронизатор. baseURL — адрес management-порта
@@ -66,6 +72,11 @@ func (r *RemoteSync) Start(parent context.Context) (context.CancelFunc, error) {
 
 // applyOnce делает один запрос и применяет язык, если он изменился.
 func (r *RemoteSync) applyOnce(ctx context.Context) {
+	// Сериализуем вызовы: запросы короткие (таймаут 5 c), зато lastErr и
+	// применение языка не гоняются между горутиной Start и внешним вызовом.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+"/api/v1/i18n", nil)
 	if err != nil {
 		r.noteError(err)

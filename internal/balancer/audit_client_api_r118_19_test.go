@@ -1,4 +1,4 @@
-﻿// audit_client_api_r118_19_test.go — R118.19 (2026-10-15): закрытие остатка
+// audit_client_api_r118_19_test.go — R118.19 (2026-10-15): закрытие остатка
 // долга по клиентскому API (docs/archive/audits/AUDIT-client-api-fidelity-2026.md, пункты C2-C5).
 //
 // Что именно фиксируется:

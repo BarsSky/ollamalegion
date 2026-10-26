@@ -68,11 +68,17 @@ func (p *Proxy) modelPresence(model string) (present, definitive bool) {
 }
 
 // llamaMetricsForPresence — загруженные модели бэкенда (nil-safe).
+// R245: снапшот под RLock; живой указатель читатели разыменовывали после
+// разблокировки, пока поллер переписывал поля (data race, ловится -race в CI).
 func (p *Proxy) llamaMetricsForPresence(backendID string) *types.LlamaCppMetrics {
 	if p == nil || p.metricsMgr == nil || backendID == "" {
 		return nil
 	}
-	return p.metricsMgr.GetLlamaCppMetrics(backendID)
+	lm, ok := p.metricsMgr.SnapshotLlamaCppMetrics(backendID)
+	if !ok {
+		return nil
+	}
+	return lm
 }
 
 // catalogModelNames — объединение файлов моделей по всем бэкендам (для

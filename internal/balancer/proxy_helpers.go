@@ -370,7 +370,8 @@ func buildAutoLoadDiagnosticWithProxy(
 	diag.FeasibleMaxContext = p.getMaxVRAMNCtxFromMetrics(backendID)
 	// GGUFMaxContext — из llamaMetrics[backendID].GGUFMaxContext.
 	if mm := p.GetMetricsManager(); mm != nil {
-		if lm := mm.GetLlamaCppMetrics(backendID); lm != nil {
+		// R245: снапшот, а не живой указатель (поллер пишет поля под Lock).
+		if lm, ok := mm.SnapshotLlamaCppMetrics(backendID); ok && lm != nil {
 			diag.GGUFMaxContext = lm.GGUFMaxContext
 		}
 	}

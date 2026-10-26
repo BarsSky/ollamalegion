@@ -106,6 +106,12 @@ func (mm *MetricsManager) SnapshotBackendMetrics(backendID string) (*types.Backe
 // SnapshotLlamaCppMetrics — КОПИЯ llama.cpp-метрик бэкенда (под RLock).
 // См. комментарий к SnapshotBackendMetrics: LoadedModels дописывается
 // писателями на месте, поэтому отдавать наружу живой указатель нельзя.
+//
+// R245 (2026-08-27): копируем и остальные срезы (LoadingModels, AvailableModels,
+// RPCServersActive). Живой указатель, полученный из GetLlamaCppMetrics, читатели
+// разыменовывали уже ПОСЛЕ RUnlock, а поллер в это время переписывал поля под
+// Lock — -race в CI падал на preflight_helper.collectPreflightState
+// (tests/llamacpp_proxy). Копия снимает вопрос: снапшот дальше не меняется.
 func (mm *MetricsManager) SnapshotLlamaCppMetrics(backendID string) (*types.LlamaCppMetrics, bool) {
 	mm.mu.RLock()
 	defer mm.mu.RUnlock()
@@ -116,6 +122,15 @@ func (mm *MetricsManager) SnapshotLlamaCppMetrics(backendID string) (*types.Llam
 	cp := *lm
 	if len(lm.LoadedModels) > 0 {
 		cp.LoadedModels = append([]types.LlamaCppModel(nil), lm.LoadedModels...)
+	}
+	if len(lm.LoadingModels) > 0 {
+		cp.LoadingModels = append([]types.LlamaCppModel(nil), lm.LoadingModels...)
+	}
+	if len(lm.AvailableModels) > 0 {
+		cp.AvailableModels = append([]types.LlamaCppModel(nil), lm.AvailableModels...)
+	}
+	if len(lm.RPCServersActive) > 0 {
+		cp.RPCServersActive = append([]string(nil), lm.RPCServersActive...)
 	}
 	return &cp, true
 }

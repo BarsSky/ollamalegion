@@ -77,8 +77,15 @@ func TestCppWorker_LazyLoad_Async_Returns503WithRetryAfter(t *testing.T) {
 	}
 	// Ответ должен быть БЫСТРЫМ — клиент не ждёт загрузку (иначе OpenWebUI/Cline
 	// ловят свой 60-120s timeout, ради чего R60.33 и делался).
-	if elapsed > 400*time.Millisecond {
-		t.Errorf("async cold start должен отвечать сразу, заняло %v", elapsed)
+	//
+	// R245 (2026-08-27): граница — loadDelay, а не фиксированные 400ms.
+	// Транспорт перед отдачей 503 делает awaitModelMissing с окном 500ms
+	// (llamacpp_transport.go, защита от гонки с обновлением каталога моделей),
+	// поэтому быстрый 503 штатно занимает ~500ms и под -race легко переваливал
+	// за 400ms — тест падал на здоровом коде (CI, 40311999866). Смысл проверки —
+	// «ответ пришёл РАНЬШЕ, чем закончилась загрузка», и его ровно и надо мерить.
+	if elapsed >= loadDelay {
+		t.Errorf("async cold start должен отвечать до окончания загрузки (%v), заняло %v", loadDelay, elapsed)
 	}
 	if ra := resp.Header.Get("Retry-After"); ra == "" {
 		t.Errorf("ожидался заголовок Retry-After, получены заголовки: %v", resp.Header)

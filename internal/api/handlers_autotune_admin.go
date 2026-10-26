@@ -158,8 +158,8 @@ func (s *Server) buildPlanFromReport(proxy *balancer.Proxy, backendID, modelName
 	if metrics == nil {
 		return nil
 	}
-	lm := metrics.GetLlamaCppMetrics(backendID)
-	if lm == nil {
+	lm, ok := metrics.SnapshotLlamaCppMetrics(backendID)
+	if !ok || lm == nil {
 		return nil
 	}
 
@@ -262,7 +262,7 @@ func (s *Server) handleAdminAutotune(w http.ResponseWriter, r *http.Request) {
 			// For each loaded model on this backend
 			metrics := proxy.GetMetricsManager()
 			if metrics != nil {
-				if lm := metrics.GetLlamaCppMetrics(b.ID); lm != nil {
+				if lm, ok := metrics.SnapshotLlamaCppMetrics(b.ID); ok && lm != nil {
 					for _, m := range lm.LoadedModels {
 						circuits[m.Name] = proxy.AutoTuneTracker().GetCircuitSnapshot(b.ID, m.Name)
 					}
@@ -276,7 +276,7 @@ func (s *Server) handleAdminAutotune(w http.ResponseWriter, r *http.Request) {
 			workloads := map[string]balancer.WorkloadStats{}
 			metrics := proxy.GetMetricsManager()
 			if metrics != nil {
-				if lm := metrics.GetLlamaCppMetrics(b.ID); lm != nil {
+				if lm, ok := metrics.SnapshotLlamaCppMetrics(b.ID); ok && lm != nil {
 					for _, m := range lm.LoadedModels {
 						workloads[m.Name] = proxy.WorkloadTracker().Stats(b.ID, m.Name)
 					}
@@ -567,8 +567,8 @@ func (s *Server) handleAdminAutotuneByID(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "metrics not available", http.StatusInternalServerError)
 		return
 	}
-	lm := metrics.GetLlamaCppMetrics(backendID)
-	if lm == nil {
+	lm, ok := metrics.SnapshotLlamaCppMetrics(backendID)
+	if !ok || lm == nil {
 		http.Error(w, "backend not found", http.StatusNotFound)
 		return
 	}

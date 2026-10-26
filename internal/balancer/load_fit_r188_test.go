@@ -51,8 +51,7 @@ func TestR188_FitRefusalWhenModelTooBig(t *testing.T) {
 	host, port := hostPortOf(t, srv.URL)
 
 	p := &Proxy{}
-	modelSizeBytesForTest = func(name string) int64 { return 16 * 1024 * 1024 * 1024 } // 16 ГБ
-	defer func() { modelSizeBytesForTest = nil }()
+	defer setModelSizeBytesForTest(func(string) int64 { return 16 * 1024 * 1024 * 1024 })() // 16 ГБ
 
 	refuse, reason := p.loadFitRefusal("be1", "Qwen3.8-27B-UD-Q4_K_M", host, port, "")
 	if !refuse {
@@ -71,8 +70,7 @@ func TestR188_NoRefusalWhenModelFits(t *testing.T) {
 	host, port := hostPortOf(t, srv.URL)
 
 	p := &Proxy{}
-	modelSizeBytesForTest = func(name string) int64 { return 4 * 1024 * 1024 * 1024 } // 4 ГБ
-	defer func() { modelSizeBytesForTest = nil }()
+	defer setModelSizeBytesForTest(func(string) int64 { return 4 * 1024 * 1024 * 1024 })() // 4 ГБ
 
 	if refuse, reason := p.loadFitRefusal("be1", "gemma", host, port, ""); refuse {
 		t.Fatalf("ложный отказ при достаточной памяти: %s", reason)
@@ -86,8 +84,7 @@ func TestR188_NoRefusalWhenCapacityUnknown(t *testing.T) {
 	host, port := hostPortOf(t, srv.URL)
 
 	p := &Proxy{}
-	modelSizeBytesForTest = func(name string) int64 { return 16 * 1024 * 1024 * 1024 }
-	defer func() { modelSizeBytesForTest = nil }()
+	defer setModelSizeBytesForTest(func(string) int64 { return 16 * 1024 * 1024 * 1024 })()
 
 	if refuse, reason := p.loadFitRefusal("be1", "m", host, port, ""); refuse {
 		t.Fatalf("отказ без данных о памяти недопустим: %s", reason)
@@ -100,8 +97,7 @@ func TestR188_NoRefusalWhenSizeUnknown(t *testing.T) {
 	host, port := hostPortOf(t, srv.URL)
 
 	p := &Proxy{}
-	modelSizeBytesForTest = func(name string) int64 { return 0 } // размер неизвестен
-	defer func() { modelSizeBytesForTest = nil }()
+	defer setModelSizeBytesForTest(func(string) int64 { return 0 })() // размер неизвестен
 
 	if refuse, reason := p.loadFitRefusal("be1", "m", host, port, ""); refuse {
 		t.Fatalf("отказ при неизвестном размере модели недопустим: %s", reason)

@@ -115,8 +115,18 @@ func TestR221_PatchLineEndingsMatchSource(t *testing.T) {
 		}
 		return raw
 	}
+	// R245: в CI сабмодуль llama.cpp НЕ вычекан (workflow: submodules:false,
+	// поэтому файла просто нет). Проверка осмысленна только когда сабмодуль на
+	// месте; вместо красного CI — SKIP с объяснением.
+	srcRaw, srcErr := os.ReadFile(srcPath)
+	if srcErr != nil {
+		if os.IsNotExist(srcErr) {
+			t.Skipf("сабмодуль c/llama.cpp не вычекан (CI: submodules:false) — сравнивать переводы строк не с чем: %v", srcErr)
+		}
+		t.Fatalf("не читается %s: %v", srcPath, srcErr)
+	}
 	srcEOL := "\n"
-	if strings.Contains(string(read(srcPath)), "\r\n") {
+	if strings.Contains(string(srcRaw), "\r\n") {
 		srcEOL = "\r\n"
 	}
 	patch := string(read(r221PatchPath))

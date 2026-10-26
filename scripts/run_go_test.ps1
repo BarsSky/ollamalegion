@@ -32,6 +32,18 @@ try {
     $lines = Get-Content $out
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
+        # R245 (2026-10-26): гонка НЕ печатает `--- FAIL:` — детектор выводит
+        # `WARNING: DATA RACE` и стек, а тест падает позже строкой
+        # `race detected during execution of test`. Без этого блока в логе CI
+        # оставались только `FAIL <pkg>` и хвост чужих логов, и по прогону
+        # 40326149098 нельзя было понять, ЧТО именно упало.
+        if ($line -match '^WARNING: DATA RACE') {
+            Write-Host $line
+            $end = [Math]::Min($i + 45, $lines.Count - 1)
+            for ($k = $i + 1; $k -le $end; $k++) { Write-Host $lines[$k] }
+            $i = $end
+            continue
+        }
         if ($line -match '^(FAIL|--- FAIL:|panic:|# )') {
             Write-Host $line
             $j = $i + 1

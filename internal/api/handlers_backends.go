@@ -764,7 +764,9 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			// agent metrics.GPU пуст (MemoryTotal=0, MemoryUsed=0). Если есть
 			// данные от cppworker poller (LlamaCppMetrics.GPUInfo) — используем их.
 			if backend.Type == types.BackendTypeLlamaCpp && metrics.GPU.MemoryTotal == 0 {
-				if lm := s.proxy.GetMetricsManager().GetLlamaCppMetrics(backend.ID); lm != nil && lm.GPUInfo != nil {
+				// R245: снапшот под RLock — поллер переписывает поля под Lock.
+				lm, _ := s.proxy.GetMetricsManager().SnapshotLlamaCppMetrics(backend.ID)
+				if lm != nil && lm.GPUInfo != nil {
 					devMemTotal := uint64(0)
 					devMemFree := uint64(0)
 					devUtil := 0.0

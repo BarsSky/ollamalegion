@@ -47,8 +47,13 @@ func TestR118_GhostReaperKeepsRoleBackends(t *testing.T) {
 			AgentSilentSince: &silent,
 		}}
 	}
+	// R245: запись в реестр — под p.mu, как в production-коде. Без блокировки
+	// фоновый llamaCppMetricsPoller читал карту через GetAllBackends
+	// одновременно с этой записью, и -race в CI падал (data race на map).
+	p.mu.Lock()
 	p.backends["donor-node"] = mk("donor-node", types.BackendRoleDonor)
 	p.backends["orphan"] = mk("orphan", "")
+	p.mu.Unlock()
 
 	removed := p.reapGhostBackends(now, 30*time.Minute)
 

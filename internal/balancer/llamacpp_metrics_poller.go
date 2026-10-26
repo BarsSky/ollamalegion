@@ -65,6 +65,13 @@ type llamaCppMetricsPoller struct {
 	// посчитать KV cache (см. arch_enrich_r230.go).
 	archMu    sync.Mutex
 	archCache map[string]archParams
+
+	// R245: фоновое обновление каталога моделей (refreshStaleModelCatalogs)
+	// запускается отдельной горутиной из pollAll. Без учёта в WaitGroup
+	// Stop()+WaitStopped() не гарантировали, что чтение p.modelCatalog уже
+	// закончилось: тест, который после остановки поллера подменял
+	// p.modelCatalog, ловил data race на -race (CI: TestPlacementPlanR96_*).
+	catalogWg sync.WaitGroup
 }
 
 // newLlamaCppMetricsPoller создаёт poller с интервалом по умолчанию 30 секунд.
@@ -114,16 +121,25 @@ func (p *llamaCppMetricsPoller) Stop() {
 // гейта инжектируют снимок соседа, и поздний тик не должен его переписать
 // (см. комментарий у doneCh — это и был флейк R161).
 func (p *llamaCppMetricsPoller) WaitStopped(d time.Duration) bool {
+	deadline := time.Now().Add(d)
 	p.mu.Lock()
 	done := p.doneCh
 	p.mu.Unlock()
-	if done == nil {
-		return true
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(time.Until(deadline)):
+			return false
+		}
 	}
+	// R245: дождаться и фонового обновления каталога (см. catalogWg): иначе
+	// возврат из WaitStopped не означает, что p.modelCatalog больше не читают.
+	waitCh := make(chan struct{})
+	go func() { p.catalogWg.Wait(); close(waitCh) }()
 	select {
-	case <-done:
+	case <-waitCh:
 		return true
-	case <-time.After(d):
+	case <-time.After(time.Until(deadline)):
 		return false
 	}
 }
@@ -191,7 +207,11 @@ func (p *llamaCppMetricsPoller) pollAll() {
 	// R91 (2026-10-09): тот же цикл обновляет каталог моделей НА ДИСКЕ
 	// (LB_MODEL_CATALOG_REFRESH_SEC, default 300 с; 0 = выключить). В отдельной
 	// горутине: опрос /api/models/files не должен удлинять цикл метрик.
-	go p.proxy.refreshStaleModelCatalogs()
+	p.catalogWg.Add(1)
+	go func() {
+		defer p.catalogWg.Done()
+		p.proxy.refreshStaleModelCatalogs()
+	}()
 }
 
 // pollBackend опрашивает /api/models у одного бэкенда и обновляет кэш.

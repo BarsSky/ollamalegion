@@ -196,6 +196,15 @@ type Proxy struct {
 	// Инициализируется lazily в WorkloadTracker() getter.
 	workloadTracker *WorkloadTracker
 
+	// R245 (2026-08-27): защита ленивой инициализации workloadTracker/autoTuneHistory.
+	//
+	// WorkloadTracker() вызывается из proxyRequestLlamaCpp на каждый запрос, то есть
+	// конкурентно из нескольких goroutine. Без мьютекса два запроса одновременно
+	// видели nil, оба писали указатель (data race, ловится -race в CI), а второй
+	// экземпляр терял накопленные samples. Отдельный мьютекс (не p.mu) — чтобы не
+	// втягивать реестр бэкендов в этот путь и не ломать порядок блокировок.
+	autoTuneLazyMu sync.Mutex
+
 	// R54.6 (2026-08-24): ModelManager reference для AutoTune apply (load+unload).
 	// Использует existing p.modelManager (set в NewProxy). SetModelManager() — alias
 	// для совместимости с R54.6 handler'ами.

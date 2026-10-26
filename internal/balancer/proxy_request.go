@@ -1,4 +1,4 @@
-package balancer
+﻿package balancer
 
 import (
 	"bufio"
@@ -785,6 +785,10 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 		line []byte
 		err  error
 	}
+	// R243: состояние фильтра на весь стрим — маркер размышлений может быть
+	// разрезан между чанками; хвост-возможный-префикс удерживается до
+	// следующего чанка (см. reasoningStreamState).
+	concatFilter := &reasoningStreamState{}
 	dataCh := make(chan readResult, 1)
 	go func() {
 		reader := bufio.NewReader(resp.Body)
@@ -845,7 +849,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 			// returns nil if no tool calls detected (passthrough).
 			//
 			// Filter line BEFORE normalization so we see exactly what client would see.
-			lineToWrite, _ := filterOpenAIStreamingLine(res.line)
+			lineToWrite, _ := filterOpenAIStreamingLineWithState(res.line, concatFilter)
 			if isOpenAISSEDataLine(lineToWrite) {
 				if payload := extractSSEDataPayload(lineToWrite); payload != nil {
 					// R186 (2026-10-20): извлечение вызова из текста + приведение

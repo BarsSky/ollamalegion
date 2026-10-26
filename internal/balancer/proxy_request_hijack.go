@@ -1,4 +1,4 @@
-// proxy_request_hijack.go — Round 31 #6 real fix (2026-08-09):
+﻿// proxy_request_hijack.go — Round 31 #6 real fix (2026-08-09):
 // hijack-based client disconnect detection for streaming responses.
 //
 // Проблема (sub-bug): Go's net/http **не** detect'ит FIN-only client TCP close
@@ -358,6 +358,10 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 		line []byte
 		err  error
 	}
+	// R243: состояние фильтра на весь стрим — маркер размышлений может быть
+	// разрезан между чанками; хвост-возможный-префикс удерживается до
+	// следующего чанка (см. reasoningStreamState).
+	concatFilter := &reasoningStreamState{}
 	dataCh := make(chan readResult, 1)
 	go func() {
 		reader := bufio.NewReader(resp.Body)
@@ -401,7 +405,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				return nil
 			}
 
-			lineToWrite, _ := filterOpenAIStreamingLine(res.line)
+			lineToWrite, _ := filterOpenAIStreamingLineWithState(res.line, concatFilter)
 			// Round 35e (2026-08-13): skip empty SSE lines.
 			//
 			// cppworker (и другие SSE backends) разделяют data: events парой \n\n.

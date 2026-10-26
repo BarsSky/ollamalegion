@@ -423,3 +423,54 @@ func TestReloadLoopLimitError_Fields(t *testing.T) {
 		t.Error("isReloadLoopLimitError must recognize *ReloadLoopLimitError")
 	}
 }
+// =============================================================================
+// B3b (R243). clampNPredictToFitContext: клиент НЕ прислал num_ctx, но история
+// переросла ЗАГРУЖЕННОЕ окно — проверка обязана сработать по loaded n_ctx.
+//
+// Живой дефект (Cline, длинная сессия): окно 12288, история 38620 токенов,
+// num_ctx в запросе 0 → clamp выходил по «return nil», bridge падал уже ПОСЛЕ
+// старта SSE, клиент получал HTTP 200 + finish_reason=error + [DONE] с пустым
+// ответом. Теперь такой запрос отбивается ДО SSE (HTTP 413), а балансер по
+// коду prompt_too_long умеет перезагрузить окно и повторить.
+// =============================================================================
+
+func TestClampNPredictToFitContext_UsesLoadedWindowWhenClientSilent(t *testing.T) {
+	old := loadedModelNCtxFn
+	defer func() { loadedModelNCtxFn = old }()
+
+	// Загруженное окно маленькое, клиент num_ctx не прислал, prompt больше окна.
+	loadedModelNCtxFn = func(string) int { return 4096 }
+	params := bridge.DefaultGenerationParams()
+	params.NCtxOverride = 0
+	params.NPredict = 512
+
+	err := clampNPredictToFitContext("test-model", makePromptOfLen(20000), &params)
+	var perr *PromptExceedsNCtxError
+	if !errors.As(err, &perr) {
+		t.Fatalf("ожидался *PromptExceedsNCtxError (prompt > loaded n_ctx), получено %v", err)
+	}
+	if perr.NCtx != 4096 {
+		t.Errorf("n_ctx в ошибке = %d, want 4096 (загруженное окно)", perr.NCtx)
+	}
+	if perr.NCtxOverride != 0 {
+		t.Errorf("NCtxOverride в ошибке = %d, want 0 (клиент не присылал)", perr.NCtxOverride)
+	}
+
+	// Тот же prompt, но окно модели достаточно большое — ошибки быть не должно.
+	loadedModelNCtxFn = func(string) int { return 32768 }
+	params2 := bridge.DefaultGenerationParams()
+	params2.NCtxOverride = 0
+	params2.NPredict = 256
+	if err := clampNPredictToFitContext("test-model", makePromptOfLen(200), &params2); err != nil {
+		t.Fatalf("prompt 100 токенов при окне 32768 не должен давать ошибку, получено %v", err)
+	}
+
+	// Окно неизвестно (модель не загружена) — прежнее поведение: не гадаем.
+	loadedModelNCtxFn = func(string) int { return 0 }
+	params3 := bridge.DefaultGenerationParams()
+	params3.NCtxOverride = 0
+	params3.NPredict = 512
+	if err := clampNPredictToFitContext("test-model", makePromptOfLen(20000), &params3); err != nil {
+		t.Fatalf("без loaded info ошибки быть не должно (прежнее поведение), получено %v", err)
+	}
+}

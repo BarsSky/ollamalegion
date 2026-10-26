@@ -1,4 +1,4 @@
-// llamacpp_content_filter.go — Content filtering for streaming responses from llama.cpp/cppworker.
+﻿// llamacpp_content_filter.go — Content filtering for streaming responses from llama.cpp/cppworker.
 // Удаляет служебные токены модели (Gemma <end_of_turn>, Llama3 <|eot_id|>, ChatML <|im_end|> и т.д.)
 // из streaming-ответа, чтобы OpenAI-клиенты (Cline, OpenWebUI) не падали с "Invalid API Response".
 package balancer
@@ -156,6 +156,13 @@ var llamaCppServiceTokens = []string{
 // stripReasoningMarkersFromVisible). cppworker чистит их сам, но клиент не
 // должен зависеть от версии воркера.
 var llamaCppReasoningMarkers = []string{
+	// R243: варианты "thought"-маркеров (DeepSeek/производные шаблоны). Раньше
+	// список знал только think/reasoning/analysis/channel, и `</thought>` уезжал
+	// в видимый ответ как обычный текст.
+	"<|begin_of_thought|>", "<|end_of_thought|>",
+	"<|begin_of_solution|>", "<|end_of_solution|>",
+	"<|/thought|>", "<|thought|>",
+	"</thought>", "<thought>",
 	"<|channel>thought\n", "<|channel>thought",
 	"<|channel>analysis\n", "<|channel>analysis",
 	"<|channel>", "<channel|>",
@@ -245,7 +252,69 @@ func shouldFilterLlamaCppContent(content string) bool {
 //   - wasFiltered: true, если хотя бы один content-чанк был отфильтрован
 //
 // Работает на строке формата `data: {...}\n\n` или `data:{...}\n\n`.
+// reasoningStreamState — состояние построчной фильтрации SSE.
+//
+// ЗАЧЕМ (R243). Маркер размышлений может прийти РАЗРЕЗАННЫМ между чанками
+// (`</thi` + `nk>`). Построчный ReplaceAll такой маркер не видит, и он утекает
+// в видимый content (жалоба Cline: «в ответе остаётся </think>»). Состояние
+// удерживает хвост, который может оказаться началом маркера, и отдаёт его в
+// следующем чанке (или выбрасывает, если поток закончился: недособранный
+// служебный маркер не является текстом ответа).
+type reasoningStreamState struct {
+	pending string
+}
+
+// filterContent — вырезать маркеры и удержать хвост-возможный-префикс.
+func (st *reasoningStreamState) filterContent(s string) string {
+	if st == nil {
+		out, _ := stripReasoningMarkersFromVisible(s)
+		return out
+	}
+	s = st.pending + s
+	st.pending = ""
+	s, _ = stripReasoningMarkersFromVisible(s)
+	if n := trailingReasoningMarkerPrefix(s); n > 0 {
+		st.pending = s[len(s)-n:]
+		s = s[:len(s)-n]
+	}
+	return s
+}
+
+// trailingReasoningMarkerPrefix — длина хвоста s, который является началом
+// какого-либо маркера размышлений, но короче его.
+func trailingReasoningMarkerPrefix(s string) int {
+	if s == "" {
+		return 0
+	}
+	maxLen := 0
+	for _, m := range llamaCppReasoningMarkers {
+		if len(m) > maxLen {
+			maxLen = len(m)
+		}
+	}
+	if maxLen > len(s) {
+		maxLen = len(s)
+	}
+	lower := strings.ToLower(s)
+	for n := maxLen - 1; n >= 1; n-- {
+		suffix := lower[len(lower)-n:]
+		for _, m := range llamaCppReasoningMarkers {
+			lm := strings.ToLower(m)
+			if len(suffix) < len(lm) && strings.HasPrefix(lm, suffix) {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
 func filterOpenAIStreamingLine(line []byte) ([]byte, bool) {
+	return filterOpenAIStreamingLineWithState(line, nil)
+}
+
+// filterOpenAIStreamingLineWithState — то же, но с состоянием между чанками
+// (см. reasoningStreamState). st == nil — прежнее построчное поведение.
+func filterOpenAIStreamingLineWithState(line []byte, st *reasoningStreamState) ([]byte, bool) {
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) == 0 {
 		return line, false
@@ -287,7 +356,18 @@ func filterOpenAIStreamingLine(line []byte) ([]byte, bool) {
 	// путь без reasoning-парсера) может прислать `</think>`/`<|channel>thought`
 	// в delta.content — живая жалоба Cline: «в основном теле ответа </think>».
 	// Здесь вторая линия обороны на границе балансера (Cline/OpenWebUI).
-	if s, n := stripReasoningMarkersFromVisible(stripped); n > 0 {
+	//
+	// R243: со состоянием (st != nil) маркер вырезается даже если он разрезан
+	// между чанками: хвост-возможный-префикс удерживается до следующего чанка.
+	if st != nil {
+		prevPending := st.pending
+		stripped = st.filterContent(stripped)
+		if stripped != content || st.pending != prevPending {
+			// Пересборка нужна и когда текст только удержан: клиент не должен
+			// получить начало маркера.
+			removed++
+		}
+	} else if s, n := stripReasoningMarkersFromVisible(stripped); n > 0 {
 		stripped = s
 		removed += n
 	}

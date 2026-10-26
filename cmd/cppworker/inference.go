@@ -46,6 +46,26 @@ func countModelTokensByLoadedInfo(modelName, text string) int {
 	return backend.CountTokens(modelName, text)
 }
 
+// loadedModelNCtxFn — фактическое окно загруженной модели (0 = неизвестно).
+//
+// Переменная, а не прямой вызов: unit-тесты подменяют её, чтобы проверить
+// решение clamp без поднятого llama.cpp (см. inference_internal_test.go, B3b).
+var loadedModelNCtxFn = loadedModelNCtx
+
+func loadedModelNCtx(modelName string) int {
+	if backend == nil {
+		return 0
+	}
+	info, err := backend.GetModel(modelName)
+	if err != nil {
+		return 0
+	}
+	if info.ContextSize > 0 {
+		return info.ContextSize
+	}
+	return 0
+}
+
 // ============================================================
 // Load options comparison
 // ============================================================
@@ -359,12 +379,27 @@ func clampNPredictToFitContext(modelName, prompt string, params *bridge.Generati
 	}
 	nCtx := params.NCtxOverride
 	if nCtx <= 0 {
-		// ??? NCtxOverride ? ?? ????? ???????. ?????????? ????????.
+		// R243 (2026-10-26): клиент НЕ прислал num_ctx - сравниваем с ФАКТИЧЕСКИ
+		// загруженным окном модели.
+		//
+		// ЖИВОЙ ДЕФЕКТ (Cline -> балансер -> cppworker, длинная сессия): история
+		// переросла загруженное окно (например 12288), клиент num_ctx не передаёт,
+		// clamp выходил по `return nil`, и запрос уходил в bridge. Тот падал уже
+		// ПОСЛЕ старта SSE: клиент получал HTTP 200, чанк finish_reason="error" и
+		// [DONE] с ПУСТЫМ ответом ("поток завершён, а ответа нет").
+		//
+		// Теперь такой запрос отбивается ДО первого байта SSE: HTTP 413 с
+		// объяснением (writePromptExceedsNCtxResponse), а балансер по коду
+		// prompt_too_long умеет перезагрузить окно и повторить запрос.
+		nCtx = loadedModelNCtxFn(modelName)
+	}
+	if nCtx <= 0 {
+		// Окно неизвестно (модель не загружена / backend недоступен): оценивать
+		// нечем, оставляем прежнее поведение.
 		return nil
 	}
 	if params.NPredict <= 0 {
-		// ?????? ?? ????? n_predict ? ????????? ??? ???? (default 2048 ??? ?????
-		// ? applyCppCtxHeader ??? n_ctx >= 2048).
+		// Клиент не задал n_predict - ограничивает дефолт загрузки.
 		return nil
 	}
 

@@ -1,4 +1,4 @@
-// reasoning_content.go — извлечение reasoning_content (think-блоков) из
+﻿// reasoning_content.go — извлечение reasoning_content (think-блоков) из
 // выхода reasoning-моделей (qwen3.5, qwen3.6 MoE, deepseek-r1, kimi-k2,
 // gemma-4-thinking и т.п.).
 //
@@ -276,6 +276,12 @@ var thinkTagPairs = []struct {
 	close string
 }{
 	{"<think>", "</think>"},
+	// R243: "thought"-варианты (DeepSeek и производные шаблоны). Без них
+	// `<thought>…</thought>` считался видимым ответом, и клиент (Cline) видел
+	// служебные маркеры в content.
+	{"<thought>", "</thought>"},
+	{"<|begin_of_thought|>", "<|end_of_thought|>"},
+	{"<|thought|>", "<|/thought|>"},
 	{"<thinking>", "</thinking>"},
 	{"<reasoning>", "</reasoning>"},
 	{"<analysis>", "</analysis>"},
@@ -904,6 +910,12 @@ func hasOpenThink(full string) bool {
 	// `<think>a<think>b</think>` — блок не закрыт, R83-семантика).
 	for _, p := range []struct{ open, close string }{
 		{"<think>", "</think>"},
+	// R243: "thought"-варианты (DeepSeek и производные шаблоны). Без них
+	// `<thought>…</thought>` считался видимым ответом, и клиент (Cline) видел
+	// служебные маркеры в content.
+	{"<thought>", "</thought>"},
+	{"<|begin_of_thought|>", "<|end_of_thought|>"},
+	{"<|thought|>", "<|/thought|>"},
 		{"<thinking>", "</thinking>"},
 		{"<reasoning>", "</reasoning>"},
 		{"<analysis>", "</analysis>"},

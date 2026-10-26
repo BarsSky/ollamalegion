@@ -375,7 +375,10 @@ func (lr *LlamaCppRouter) fetchLlamaCppModels(host string, port int) ([]OllamaTa
 
 	var result struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID           string `json:"id"`
+			Capabilities struct {
+				Vision bool `json:"vision"`
+			} `json:"capabilities"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -385,9 +388,10 @@ func (lr *LlamaCppRouter) fetchLlamaCppModels(host string, port int) ([]OllamaTa
 	tags := make([]OllamaTag, 0, len(result.Data))
 	for _, d := range result.Data {
 		tags = append(tags, OllamaTag{
-			Name:  d.ID,
-			Model: d.ID,
-			Size:  0,
+			Name:   d.ID,
+			Model:  d.ID,
+			Size:   0,
+			Vision: d.Capabilities.Vision,
 		})
 	}
 	return tags, nil
@@ -904,6 +908,9 @@ func (lr *LlamaCppRouter) handleOpenAIModels(w http.ResponseWriter, r *http.Requ
 				entry["max_context_length"] = maxCtx
 			}
 		}
+		// R248/B1: клиент видит, умеет ли модель изображения. Без этого он не
+		// может выбрать маршрут, а балансер — решить passthrough/415.
+		entry["capabilities"] = map[string]bool{"vision": lr.modelVisionCapable(name)}
 		data = append(data, entry)
 	}
 	sort.Slice(data, func(i, j int) bool {
@@ -1040,3 +1047,4 @@ func (lr *LlamaCppRouter) handleOpenAIModelByID(w http.ResponseWriter, r *http.R
 		"owned_by": "ollamalegion",
 	})
 }
+

@@ -1,4 +1,4 @@
-﻿// handlers_openai.go — OpenAI-compatible /v1/ endpoints (/v1/chat/completions,
+// handlers_openai.go — OpenAI-compatible /v1/ endpoints (/v1/chat/completions,
 // /v1/completions, /v1/embeddings, /v1/models).
 package main
 
@@ -2089,6 +2089,10 @@ func handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleV1Models — OpenAI-совместимый /v1/models endpoint.
+//
+// R248/B1: в каждой записи отдаётся `capabilities.vision`. Без этого клиент не
+// может отличить модель, которая умеет картинки, от текстовой, и балансер не
+// может решить: пропустить изображения (passthrough) или честно ответить 415.
 func handleV1Models(w http.ResponseWriter, r *http.Request) {
 	models := backend.ListModels()
 	openaiModels := make([]map[string]interface{}, 0, len(models))
@@ -2098,6 +2102,9 @@ func handleV1Models(w http.ResponseWriter, r *http.Request) {
 			"object":   "model",
 			"created":  m.LoadedAt.Unix(),
 			"owned_by": "ollamalegion",
+			"capabilities": map[string]bool{
+				"vision": modelVisionCapable(m.Name),
+			},
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{

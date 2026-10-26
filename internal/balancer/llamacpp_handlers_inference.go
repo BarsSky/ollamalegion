@@ -50,17 +50,21 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	}
 	model, _ := req["model"].(string)
 
-	// R247 (2026-10-26), этап D: изображения не отбрасываем молча.
-	// Модель сейчас обслуживается текстовым мостом (mmproj не подключён):
-	// честный 415 с объяснением лучше 200, где модель «не видела» картинку.
+	// R247 (2026-10-26), этап D + R248/B1: изображения не отбрасываем молча.
+	// Если модель объявила `capabilities.vision`, картинки идут passthrough;
+	// иначе — честный 415 с объяснением (модель текстовая, mmproj не загружен).
 	if images := countImagePartsInBody(bodyBuf); images > 0 {
-		logger.Get().Warnw("vision parts rejected: backend is text-only",
-			"model", model, "image_parts", images, "path", r.URL.Path)
-		writeVisionUnsupported(w, model, images)
-		return
-	}
-
-	if normalized := normalizeOpenAIBody(bodyBuf); len(normalized) > 0 {
+		capable := lr.modelVisionCapable(model)
+		if visionShouldReject(capable, images) {
+			logger.Get().Warnw("vision parts rejected: backend is text-only",
+				"model", model, "image_parts", images, "path", r.URL.Path)
+			writeVisionUnsupported(w, model, images)
+			return
+		}
+		// Vision-capable: нормализация вырезала бы картинки — пропускаем её,
+		// тело уходит к воркеру как есть (B3 добавит image-эмбеддинги).
+		logger.Get().Infow("vision parts passed through", "model", model, "image_parts", images)
+	} else if normalized := normalizeOpenAIBody(bodyBuf); len(normalized) > 0 {
 		bodyBuf = normalized
 	}
 

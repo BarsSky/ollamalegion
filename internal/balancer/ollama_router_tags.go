@@ -17,6 +17,8 @@ type OllamaTag struct {
 	Size       int64                  `json:"size"`
 	Digest     string                 `json:"digest"`
 	Details    map[string]interface{} `json:"details"`
+	// Vision — R248/B1: модель умеет изображения (capabilities.vision от воркера).
+	Vision bool `json:"vision,omitempty"`
 }
 
 // OllamaTagsResponse — ответ /api/tags

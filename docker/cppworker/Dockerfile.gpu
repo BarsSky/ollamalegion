@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # CppBackend Worker GPU — реальный llama.cpp + CUDA
 # =============================================================================
 # Сборка:
@@ -396,7 +396,7 @@ ENV HF_MIRROR=""
 ENTRYPOINT ["/entrypoint.sh"]
 
 LABEL org.opencontainers.image.title="Ollama Legion CppBackend Worker (GPU)"
-LABEL org.opencontainers.image.description="GGUF model inference server with real llama.cpp and CUDA sm_86"
+LABEL org.opencontainers.image.description="GGUF model inference server with real llama.cpp (CUDA_ARCH=${CUDA_ARCH})"
 LABEL org.opencontainers.image.vendor="OllamaLegion"
 LABEL org.opencontainers.image.version="0.1.0"
 LABEL org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion"

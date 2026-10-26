@@ -553,7 +553,8 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			diag.FeasibleMaxContext = p.getMaxVRAMNCtxFromMetrics(backendID)
 		}
 		if mm := p.GetMetricsManager(); mm != nil {
-			if lm := mm.GetLlamaCppMetrics(backendID); lm != nil {
+			// R245: снапшот, а не живой указатель (см. metrics_manager.go).
+			if lm, ok := mm.SnapshotLlamaCppMetrics(backendID); ok && lm != nil {
 				diag.GGUFMaxContext = lm.GGUFMaxContext
 			}
 		}

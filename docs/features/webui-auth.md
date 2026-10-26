@@ -94,10 +94,35 @@ docker logs <balancer> 2>&1 | grep -i 'auth:'
    Check: recreate the balancer WITHOUT touching webui and repeat `/api/v1/auth/me`
    through the panel — it should become 200 within ~30 s.
 
-Diagnostics in one command: `pwsh -File scripts/diagnose-webui-auth.ps1`
-(checks the balancer's env, the path and the presence of the file, `/api/v1/auth/me`, the logs).
-The expected answer of `/api/v1/auth/me`: `{"authenticated":false,"usersConfigured":true}`.
+Diagnostics in one command: `pwsh -File scripts/diagnose-webui-auth.ps1` (Windows) or
+`sh scripts/diagnose-webui-auth.sh` (Linux/offline). Both scripts are read-only: they
+check the balancer env, the path and presence of `users.json`, `/api/v1/auth/me`, the
+length and fingerprint of the password in `.env` and inside the container (the password
+itself is never printed), and perform a real `POST /api/v1/auth/login`. The expected
+answer of `/api/v1/auth/me` is `{"authenticated":false,"usersConfigured":true}`.
 `usersConfigured:false` = there are no users (see items 1–2).
+
+## THE .env PASSWORD IS NOT ACCEPTED (401 invalid credentials)
+
+Symptom: users are configured in env, the login form is shown, but the password is
+rejected while the break-glass token works. Check in this order:
+
+- compare fingerprints: the doctor prints the length and `sha256[:8]` of the value in
+  `.env` and inside the balancer container; a mismatch means the value was altered in
+  transit;
+- special characters in `.env`: `$` is expanded by compose as a variable (escape it as
+  `$$`), a `#` after a space starts a comment, quotes and trailing spaces are kept
+  literally - each of these changes the password the container receives;
+- after any `.env` edit run `docker compose up -d --force-recreate <balancer>`:
+  `restart` does not re-read env, so the container keeps the old value;
+- fingerprints match but login is 401: `users.json` holds a different hash - recreate
+  the balancer (R203+ syncs the env password on start), an image older than R203 does not;
+- 503 `no users configured` = env is not on the balancer or the image is older than
+  R201; if direct login is 200 but the panel answers 503, the webui image is older than
+  R229 (nginx pinned the balancer IP).
+
+Practical outcome: if the doctor reports matching fingerprints and HTTP 200 at step 4,
+the password is fine and the problem is the cookie or stored token of that host.
 
 ## Verification checklist (curl)
 

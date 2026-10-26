@@ -19,7 +19,8 @@ param(
     [string]$BalancerContainer = 'ol-stack-balancer',
     [string]$WebUIContainer = 'ol-stack-webui',
     [string]$BalancerUrl = 'http://127.0.0.1:18080',
-    [string]$WebUIUrl = 'http://127.0.0.1:18083'
+    [string]$WebUIUrl = 'http://127.0.0.1:18083',
+    [string]$EnvFile = 'deployments/.env'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -32,6 +33,22 @@ function Docker([string]$ArgsText) { return (& cmd /c "docker $ArgsText" 2>&1 | 
 function TryJson([string]$Url) {
     try { return ((Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 10).Content | ConvertFrom-Json) }
     catch { return $null }
+}
+# Fingerprint - первые 8 hex sha256 значения. Сам пароль нигде не печатается:
+# по отпечатку можно сверить .env <-> контейнер и увидеть искажение ($/#/кавычки).
+function Fingerprint([string]$Value) {
+    if ([string]::IsNullOrEmpty($Value)) { return 'n/a' }
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Value))
+        return (($hash[0..3] | ForEach-Object { $_.ToString('x2') }) -join '')
+    } catch { return 'n/a' }
+}
+function ReadEnvValue([string]$Path, [string]$Key) {
+    if (-not (Test-Path $Path)) { return $null }
+    $line = Get-Content $Path | Where-Object { $_ -match ('^' + [regex]::Escape($Key) + '=') } | Select-Object -First 1
+    if (-not $line) { return $null }
+    return ($line.Substring($Key.Length + 1))
 }
 
 $fails = 0
@@ -73,9 +90,41 @@ if ($balancerRunning) {
 }
 Verdict ($adminUser -and $adminPassSet) 'на балансере задана пара LB_ADMIN_USER/LB_ADMIN_PASSWORD' 'пароль пустой игнорируется: пользователя не создадут'
 
+# 1b. Сверка пароля: .env <-> контейнер (значение не печатается, только длина и sha256[:8])
+Say "`n1b. Пароль: .env <-> контейнер балансера (сравнение отпечатков)" 'Info'
+$envPath = $EnvFile
+if (-not [System.IO.Path]::IsPathRooted($envPath)) { $envPath = Join-Path (Split-Path -Parent $PSScriptRoot) $envPath }
+$envUser = ReadEnvValue $envPath 'LB_ADMIN_USER'
+$envPass = ReadEnvValue $envPath 'LB_ADMIN_PASSWORD'
+if ($null -eq $envPass) {
+    Say ("  .env не найден или в нём нет LB_ADMIN_PASSWORD: " + $envPath) 'Warn'
+} else {
+    Say ("  .env      : user='" + $envUser + "' len=" + $envPass.Length + " fp=" + (Fingerprint $envPass)) 'Info'
+    if ($balancerRunning) {
+        # Значение берём из уже прочитанного env контейнера ($envRaw): не нужен
+        # docker exec с кавычками (в PowerShell 5.1 они ломаются). Пароль
+        # по-прежнему нигде не печатается - только длина и отпечаток.
+        $cUser = ''
+        $cPass = ''
+        foreach ($line in ($envRaw -split "`n")) {
+            $l = $line.Trim()
+            if ($l -match '^LB_ADMIN_USER=(.*)$') { $cUser = $Matches[1] }
+            elseif ($l -match '^LB_ADMIN_PASSWORD=(.*)$') { $cPass = $Matches[1] }
+        }
+        Say ("  контейнер : user='" + $cUser + "' len=" + $cPass.Length + " fp=" + (Fingerprint $cPass)) 'Info'
+        if ($cPass -eq '') {
+            Verdict $false 'в контейнере LB_ADMIN_PASSWORD пуст' 'compose мог раскрыть $ как переменную (экранируйте $$), # начал комментарий, или контейнер не пересоздан'
+        } else {
+            Verdict ($cPass -ceq $envPass) 'значение пароля в контейнере совпадает с .env' 'расхождение обычно из-за $, #, кавычек или пробелов в .env; после правки нужен --force-recreate балансера'
+        }
+    }
+}
+
 # image tag (старый образ = нет обработчиков входа)
 $img = Docker "inspect $BalancerContainer --format `"{{.Config.Image}}`""
 Say ("  образ балансера: " + $img.Trim()) 'Info'
+$created = Docker "inspect $BalancerContainer --format `"{{.Created}}`""
+Say ("  контейнер создан: " + $created.Trim()) 'Info'
 
 # 2. Файл пользователей внутри контейнера
 Say "`n2. Где реально лежит users.json (внутри контейнера)" 'Info'
@@ -103,6 +152,42 @@ foreach ($pair in @(@('напрямую (балансер)', $meBalancer), @('ч
 }
 $usersConfigured = ($meBalancer -and $meBalancer.usersConfigured) -or ($meWebui -and $meWebui.usersConfigured)
 Verdict $usersConfigured 'пользователи сконфигурированы (usersConfigured=true)' 'usersConfigured=false: env не применился (restart вместо пересоздания / не тот контейнер) или старый образ'
+
+# 3b. РЕАЛЬНЫЙ вход по паролю из .env (значение не печатается)
+Say "`n3b. POST /api/v1/auth/login с паролем из .env" 'Info'
+if ($null -ne $envPass -and $envPass -ne '') {
+    $payload = @{ name = $(if ($envUser) { $envUser } else { $adminUser }); password = $envPass } | ConvertTo-Json -Compress
+    function TryLogin([string]$BaseUrl, [string]$Label) {
+        try {
+            $resp = Invoke-WebRequest -Uri ($BaseUrl.TrimEnd('/') + '/api/v1/auth/login') -Method Post `
+                -ContentType 'application/json' -Body $payload -UseBasicParsing -TimeoutSec 15
+            Say ("  " + $Label + ": HTTP " + $resp.StatusCode + " — вход по паролю РАБОТАЕТ") 'Ok'
+            return 200
+        } catch {
+            $code = 0
+            if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+            $body = $_.ErrorDetails.Message
+            Say ("  " + $Label + ": HTTP " + $code + " " + $body) 'Bad'
+            $script:fails++
+            if ($code -eq 401) {
+                Say '   401 invalid credentials: в users.json другой хеш. Пересоздайте балансер (R203+ синхронизирует пароль из env).' 'Warn'
+            } elseif ($code -eq 503) {
+                Say '   503 no users configured: env не на балансере / контейнер не пересоздан / образ старше R201.' 'Warn'
+            } elseif ($code -eq 0) {
+                Say '   нет ответа: балансер недоступен по указанному URL (проверьте -BalancerUrl/-WebUIUrl).' 'Warn'
+            }
+            return $code
+        }
+    }
+    $loginDirect = TryLogin $BalancerUrl 'напрямую'
+    if ($loginDirect -eq 200) { $script:login_ok = $true }
+    $loginWeb = TryLogin $WebUIUrl 'через webui'
+    if ($loginDirect -eq 200 -and $loginWeb -ne 200) {
+        Say '   напрямую 200, через webui нет: образ webui старше R229 (nginx держал старый IP балансера).' 'Warn'
+    }
+} else {
+    Say '  пароль в .env не найден — проверка входа пропущена' 'Warn'
+}
 
 # 4. Логи балансера про auth
 Say "`n4. Логи балансера (auth)" 'Info'

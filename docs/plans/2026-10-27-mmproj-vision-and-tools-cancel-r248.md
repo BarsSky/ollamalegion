@@ -6,7 +6,9 @@
 > буферизированном tools-пути оставляет занятый слот (`active_queries=1`), и новые
 > запросы ждут до рестарта воркера.
 >
-> **Статус:** 🔴 PLAN. Правило: каждый под-этап закрывается тестами и зелёными
+> **Статус:** 🟡 В РАБОТЕ. Часть **A** (отмена upstream) сделана и проверена живьём;
+> **B0** (инвентаризация multimodal API) сделана; **B1-B4** впереди.
+> Правило: каждый под-этап закрывается тестами и зелёными
 > регрессионными воротами R247 (см. §5).
 
 ---
@@ -163,8 +165,8 @@ A делается первой: она снимает простой стенд
 
 | Под-этап | Статус | Подтверждение |
 |---|---|---|
-| A — отмена upstream в tools-пути | ⬜ не начат | |
-| B0 — инвентаризация multimodal API | ⬜ не начат | |
+| A — отмена upstream в tools-пути | ✅ сделано | `generateBufferedWithCancel` (потоковый путь с abort по ctx) на всех буферизированных точках: `/v1` stream+tools, strict-повтор, `/v1` non-stream tools, `/api/chat` non-stream tools, `/v1/completions`; Go-тесты `TestR248_*`; живой `tools-cancel-r248.js`: слот освобождён через **323 мс**, следующий запрос **400 мс**, `active_queries=0`; профили cline/dsh/strict-loop — PASS. Образ `cppworker:gpu-r248` на стенде |
+| B0 — инвентаризация multimodal API | ✅ сделано | В сабмодуле есть `tools/mtmd` (`clip.h/cpp`, `clip-model.h`, `clip-impl.h`, `clip-graph.h`); `common.h` знает `common_params_model mmproj`, `mmproj_use_gpu`, `mtmd_batch_max_tokens`. Dockerfile: `LLAMA_BUILD_COMMON=ON`, examples OFF. **В runtime-образе `libmtmd` и `clip.h` НЕТ** (`find` по контейнеру пуст, в `/app` только cppworker/rpc-server) → B2 включает: собрать `libmtmd` в стадии llama-builder, скопировать в bridge-builder, слинковать с `c/bridge`; проверить API `llama_batch` с `embd` для вставки image-эмбеддингов |
 | B1 — capability + роутинг | ⬜ не начат | |
 | B2 — C-мост mmproj | ⬜ не начат | |
 | B3 — cppworker/балансер passthrough | ⬜ не начат | |

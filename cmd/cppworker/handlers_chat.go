@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"encoding/json"
@@ -409,7 +409,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	hasTools := toolsEnabled
-	result, err := generateWithRamFallback(req.Model, prompt, params, hasTools)
+	result, err := generateBufferedWithCancel(r.Context(), req.Model, prompt, params, hasTools)
 	// 2026-06-25: ?????????? snapshot ?????????? inference ??? endpoint /debug/last-prompt.
 	// ??? ???????? ??????????????? ?????? "prompt_exceeds_context" ? Cline/OpenWebUI.
 	// Round 16 P2 fix (2026-07-30): closure form (consistent со всеми другими endpoints).
@@ -2184,6 +2184,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	sw.Writef("%s\n", doneJSON)
 	sw.Flush()
 }
+
 
 
 

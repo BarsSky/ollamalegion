@@ -1,4 +1,4 @@
-// handlers_openai.go — OpenAI-compatible /v1/ endpoints (/v1/chat/completions,
+﻿// handlers_openai.go — OpenAI-compatible /v1/ endpoints (/v1/chat/completions,
 // /v1/completions, /v1/embeddings, /v1/models).
 package main
 
@@ -546,7 +546,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// перед отправкой SSE. Это trade-off: теряем real-time streaming,
 			// но получаем корректные tool_calls + finish_reason.
 			hasTools := len(req.Tools) > 0
-			result, err := generateWithRamFallback(actualModel, prompt, params, hasTools)
+			result, err := generateBufferedWithCancel(r.Context(), actualModel, prompt, params, hasTools)
 			// 2026-06-25: snapshot для /v1/chat/completions (tools path).
 			// Round 16 P2 fix (2026-07-30): closure pattern (consistent с streaming
 			// path line 686). Раньше `defer recordLastPromptFromError(... err)`
@@ -614,7 +614,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 					if nudged, nerr := buildChatPrompt(appendToolRepairInstruction(chatMsgs, violations), actualModel); nerr == nil && nudged != "" {
 						retryPrompt = nudged
 					}
-					if retried, retryErr := generateWithRamFallback(actualModel, retryPrompt, params, hasTools); retryErr == nil {
+					if retried, retryErr := generateBufferedWithCancel(r.Context(), actualModel, retryPrompt, params, hasTools); retryErr == nil {
 						retryCalls := parseToolCallsForRequest(retried.Output, req.Tools)
 						if len(retryCalls) > 0 {
 							if still := strictToolCallViolations(retryCalls, req.Tools); len(still) == 0 {
@@ -673,7 +673,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	created := time.Now().Unix()
 
 	hasTools := len(req.Tools) > 0
-	result, err := generateWithRamFallback(actualModel, prompt, params, hasTools)
+	result, err := generateBufferedWithCancel(r.Context(), actualModel, prompt, params, hasTools)
 	// 2026-06-25: snapshot для /v1/chat/completions (non-stream path).
 	// Round 16 P2 fix (2026-07-30): closure form (см. tools path выше).
 	defer func() {
@@ -1686,7 +1686,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	// /v1/completions (legacy text completions) — tools не поддерживаются,
 	// reload разрешён при n_ctx overflow.
-	result, err := generateWithRamFallback(actualModel, req.Prompt, params, false)
+	result, err := generateBufferedWithCancel(r.Context(), actualModel, req.Prompt, params, false)
 	// 2026-06-25: snapshot для /v1/completions.
 	// Round 16 P2 fix (2026-07-30): closure form (consistent со всеми другими).
 	defer func() {
@@ -2393,3 +2393,5 @@ func countTokensSafe(modelName, text string) int {
 	}
 	return backend.CountTokens(modelName, text)
 }
+
+

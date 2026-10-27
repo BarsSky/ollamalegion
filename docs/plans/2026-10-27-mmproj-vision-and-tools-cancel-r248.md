@@ -7,10 +7,10 @@
 > запросы ждут до рестарта воркера.
 >
 > **Статус:** 🟡 В РАБОТЕ. **A** (отмена upstream) сделана и проверена живьём;
-> **B0** (инвентаризация multimodal API) и **B1** (признак `capabilities.vision` +
-> роутинг passthrough/415) сделаны. Осталось: **B2** (линковка `libmtmd` в C-мост,
-> mmproj), **B3** (декод и вставка image-эмбеддингов), **B4** (живая VLM-проверка,
-> нужна малая VLM-модель на стенде).
+> **B0** (инвентаризация multimodal API), **B1** (признак `capabilities.vision` +
+> роутинг passthrough/415) и **B2** (линковка `libmtmd` в C-мост + API загрузки
+> mmproj) сделаны. Осталось: **B3** (декод и вставка image-эмбеддингов),
+> **B4** (живая VLM-проверка, нужна малая VLM-модель на стенде).
 > Правило: каждый под-этап закрывается тестами и зелёными
 > регрессионными воротами R247 (см. §5).
 
@@ -171,6 +171,6 @@ A делается первой: она снимает простой стенд
 | A — отмена upstream в tools-пути | ✅ сделано | `generateBufferedWithCancel` (потоковый путь с abort по ctx) на всех буферизированных точках: `/v1` stream+tools, strict-повтор, `/v1` non-stream tools, `/api/chat` non-stream tools, `/v1/completions`; Go-тесты `TestR248_*`; живой `tools-cancel-r248.js`: слот освобождён через **323 мс**, следующий запрос **400 мс**, `active_queries=0`; отдельно подтверждено: убитый форграунд-прогон матрицы оставил `active_queries=0` (до правки было 1). Ворота после A: матрица **54/54**, `clients-compat` **8/8**, контур ожиданий 13/14 (единственный провал `openwebui-ollama-ndjson` — стохастика модели: одиночный повтор PASS), `run-checks` — 4 шага, 0 провалов. Образ `cppworker:gpu-r248` на стенде |
 | B0 — инвентаризация multimodal API | ✅ сделано | В сабмодуле есть `tools/mtmd` (`clip.h/cpp`, `clip-model.h`, `clip-impl.h`, `clip-graph.h`); `common.h` знает `common_params_model mmproj`, `mmproj_use_gpu`, `mtmd_batch_max_tokens`. Dockerfile: `LLAMA_BUILD_COMMON=ON`, examples OFF. **В runtime-образе `libmtmd` и `clip.h` НЕТ** (`find` по контейнеру пуст, в `/app` только cppworker/rpc-server) → B2 включает: собрать `libmtmd` в стадии llama-builder, скопировать в bridge-builder, слинковать с `c/bridge`; проверить API `llama_batch` с `embd` для вставки image-эмбеддингов |
 | B1 — capability + роутинг | ✅ сделано | `cppworker`: `vision_capability_r248.go` + `capabilities.vision` в `/v1/models`; `balancer`: `vision_r248.go` (кэш 30 с, опрос `/v1/models` бэкендов, `visionShouldReject`), `capabilities.vision` в своём `/v1/models`, 415 только для моделей без vision (passthrough не нормализует картинки). Тесты `vision_r248_test.go` (логика решения, парсинг capability, дефолт false). Живьём на `balancer:r248` + `cppworker:gpu-r248`: `/v1/models` отдаёт `capabilities.vision=false`, запрос с картинкой — **415 + X-Vision-Supported=false**; профили `vision-honest` и `cline-openai-stream` — PASS |
-| B2 — C-мост mmproj | ⬜ не начат | |
+| B2 — C-мост mmproj | ✅ сделано | `libmtmd.a` слинкована в C-мост и в Go-бинарь: `Dockerfile.gpu` (`-DLLAMA_BUILD_MTMD=ON`, COPY `tools/mtmd` + `build/tools/mtmd` в bridge-builder и go-builder, `-lmtmd` в `CGO_LDFLAGS`), `Dockerfile.cpu` (`-DLLAMA_BUILD_MTMD=ON`, `-lmtmd`), `Dockerfile.gpu.86` (MTMD ON, `-lmtmd`, `-DMTMD_LIB` для bridge-tests), CI job `test-c-bridge` (собирает `mtmd`, передаёт `-DMTMD_LIB`). `c/bridge/CMakeLists.txt` находит libmtmd (без неё — `FATAL_ERROR`), добавлен include `tools/mtmd`; новый `csrc/vision_mtmd.{h,cpp}` (`bridge_mtmd_load/free/vision_supported`, C++17, только extern "C" граница) + C API `bridge_load_mmproj`/`bridge_mmproj_loaded` и Go `LoadMMProj`/`MMProjLoaded` (stub-версии возвращают явную ошибку). `bridge_free_model` освобождает проектор ДО модели. `c/bridge/tests` компилируют `vision_mtmd.cpp` и линкуют mtmd. Проверено: образ `cppworker:gpu-r248` собран, `grep -a -c mtmd_init_from_file /app/cppworker` = **2**, стенд поднят на нём: `/v1/models` → `capabilities.vision=false`, запрос с картинкой → **415 + X-Vision-Supported=false**, `clients-compat` **8/8**, Go-тесты `internal/balancer`/`cmd/cppworker`/`c/bridge` + `go vet` зелёные, новые `TestR248_Stub*` (3). CPU-образ: bridge-стадия с mtmd собралась, финальная alpine-стадия блокируется сетью стенда (`apk add` exit 255) — ограничение окружения, не правки |
 | B3 — cppworker/балансер passthrough | ⬜ не начат | |
 | B4 — живая VLM-проверка | ⬜ не начат | |

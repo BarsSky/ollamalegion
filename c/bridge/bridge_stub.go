@@ -425,6 +425,21 @@ func (m *ModelHandle) SetEmbeddingsMode(mode BridgeMode) error {
 	return nil
 }
 
+// LoadMMProj — R248/B2: в stub-сборке (llama_stub) реального llama.cpp нет,
+// поэтому mmproj загрузить нельзя: возвращаем явную ошибку, чтобы cppworker
+// не публиковал capability.vision без проектора.
+func (m *ModelHandle) LoadMMProj(path string) error {
+	if path == "" {
+		return fmt.Errorf("LoadMMProj: empty projector path")
+	}
+	return fmt.Errorf("LoadMMProj: llama_stub build has no mtmd support")
+}
+
+// MMProjLoaded — R248/B2: в stub-сборке проектора нет никогда.
+func (m *ModelHandle) MMProjLoaded() bool {
+	return false
+}
+
 // ============================================================
 // Round 31 #6 (2026-08-09): Abort API — stub-реализации
 // ============================================================
@@ -903,4 +918,3 @@ func min(a, b int) int {
 	}
 	return b
 }
-

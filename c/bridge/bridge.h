@@ -258,6 +258,21 @@ int bridge_collect_devices(const ModelConfig* config, BridgeDeviceInfo* out, int
 // Выгрузка модели
 void bridge_free_model(ModelHandle model);
 
+// R248/B2 (2026-10-27): mmproj passthrough — загрузка vision-проектора
+// (mmproj GGUF) рядом с уже загруженной текстовой моделью.
+//
+// Контракт:
+//   - вызывается ПОСЛЕ bridge_load_model (проектор привязывается к llama_model);
+//   - 0 = проектор загружен и mtmd_support_vision() подтвердил vision;
+//   - -1 = ошибка, текст — bridge_get_last_error();
+//   - повторная загрузка перезаписывает предыдущий проектор (старый освобождается).
+// Наличие mmproj НЕ означает, что все запросы модели — vision: capability
+// публикуется отдельно (bridge_mmproj_loaded → cppworker /v1/models).
+int bridge_load_mmproj(ModelHandle model, const char* mmproj_path);
+
+// R248/B2: 1 — для модели загружен mmproj с vision, 0 — иначе.
+int bridge_mmproj_loaded(ModelHandle model);
+
 // Инференс (синхронный)
 //
 // R63 (2026-09-15): параметр out_abort_flag (optional) — указатель на

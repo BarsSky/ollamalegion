@@ -42,6 +42,9 @@ RUN mkdir -p build && cd build && \
       -DLLAMA_CURL=OFF \
       -DLLAMA_BUILD_TESTS=OFF \
       -DLLAMA_BUILD_EXAMPLES=OFF \
+      # R248/B2: libmtmd.a для mmproj passthrough (vision). tools/ и так
+      # собирается при standalone-сборке; флаг фиксирует намерение.
+      -DLLAMA_BUILD_MTMD=ON \
       -DBUILD_SHARED_LIBS=OFF && \
     cmake --build . --config Release -j$(nproc)
 
@@ -91,7 +94,7 @@ COPY --from=bridge-builder /build/bridge/build /build/c/bridge/build
 
 ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-DGGML_USE_CPU -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -fopenmp"
-ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cpu -L/build/c/llama.cpp/build/common -L/build/c/bridge/build -lllama -lggml -lggml-cpu -lggml-base -lllama-common -lllama-common-base -lollamalegion_bridge -lstdc++ -lm -lpthread -fopenmp"
+ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cpu -L/build/c/llama.cpp/build/common -L/build/c/llama.cpp/build/tools/mtmd -L/build/c/bridge/build -Wl,--start-group -lmtmd -lllama -lggml -lggml-cpu -lggml-base -lllama-common -lllama-common-base -lollamalegion_bridge -Wl,--end-group -lstdc++ -lm -lpthread -fopenmp"
 
 # Собираем Go-бинарник с CGo (реальный bridge.c, без тега llama_stub)
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \

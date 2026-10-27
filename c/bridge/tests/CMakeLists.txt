@@ -15,7 +15,10 @@
 #   make && ctest --output-on-failure
 
 cmake_minimum_required(VERSION 3.14)
-project(bridge_tests C)
+# R248/B2: CXX нужен, потому что тесты, компилирующие ../bridge.c, должны
+# компилировать и csrc/vision_mtmd.cpp — bridge.c вызывает bridge_mtmd_*,
+# и без этой пары линковка падает на undefined reference.
+project(bridge_tests C CXX)
 
 enable_testing()
 
@@ -29,6 +32,8 @@ enable_testing()
 set(LLAMA_CPP_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/ggml/include
+    # R248/B2: mtmd.h (mmproj passthrough) — нужен csrc/vision_mtmd.cpp.
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/tools/mtmd
 )
 
 # bridge_link_llama — линковка теста, который дергает llama.cpp.
@@ -45,13 +50,28 @@ set(LLAMA_CPP_INCLUDE_DIRS
 # тестов) это дало бы тот же класс ошибок, что раньше у test_batch_n_tokens:
 # undefined reference to `llama_batch_free', `ggml_*', `GOMP_*'.
 function(bridge_link_llama target)
+    # R248/B2: libmtmd.a — её требуют символы bridge_mtmd_* из
+    # csrc/vision_mtmd.cpp, который тесты компилируют вместе с ../bridge.c.
+    # MTMD_LIB приходит извне (CI/Docker); иначе ищем в build-дереве llama.cpp.
+    if(DEFINED MTMD_LIB)
+        set(_bridge_mtmd_lib "${MTMD_LIB}")
+    else()
+        find_library(_bridge_mtmd_lib mtmd
+            PATHS ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/build/tools/mtmd
+            NO_DEFAULT_PATH
+        )
+    endif()
+    if(NOT _bridge_mtmd_lib)
+        message(FATAL_ERROR "libmtmd.a not found: pass -DMTMD_LIB=/path/to/libmtmd.a (R248/B2)")
+    endif()
+
     if(DEFINED COMMON_LIB)
         if(DEFINED LLAMA_LIB)
             target_link_libraries(${target} PRIVATE
-                -Wl,--start-group ${COMMON_LIB} ${LLAMA_LIB} ${GGML_LIBS} -Wl,--end-group
+                -Wl,--start-group ${_bridge_mtmd_lib} ${COMMON_LIB} ${LLAMA_LIB} ${GGML_LIBS} -Wl,--end-group
                 stdc++ m pthread gomp)
         else()
-            target_link_libraries(${target} PRIVATE ${COMMON_LIB})
+            target_link_libraries(${target} PRIVATE ${_bridge_mtmd_lib} ${COMMON_LIB})
         endif()
         return()
     endif()
@@ -64,7 +84,7 @@ function(bridge_link_llama target)
         NO_DEFAULT_PATH
     )
     if(COMMON_LIB_AUTO)
-        target_link_libraries(${target} PRIVATE ${COMMON_LIB_AUTO})
+        target_link_libraries(${target} PRIVATE ${_bridge_mtmd_lib} ${COMMON_LIB_AUTO})
         message(STATUS "${target}: auto-detected libllama-common.a at ${COMMON_LIB_AUTO}")
     else()
         message(WARNING "${target}: libllama-common.a not found, link may fail")
@@ -82,6 +102,8 @@ endfunction()
 add_executable(test_batch_n_tokens
     test_batch_n_tokens.c
     ../bridge.c
+    # R248/B2: bridge.c вызывает bridge_mtmd_* (mmproj) — компилируем обёртку.
+    ../csrc/vision_mtmd.cpp
 )
 target_include_directories(test_batch_n_tokens PRIVATE
     ${CMAKE_SOURCE_DIR}/..
@@ -89,7 +111,7 @@ target_include_directories(test_batch_n_tokens PRIVATE
     ${LLAMA_CPP_INCLUDE_DIRS}
 )
 bridge_link_llama(test_batch_n_tokens)
-target_compile_features(test_batch_n_tokens PRIVATE c_std_99)
+target_compile_features(test_batch_n_tokens PRIVATE c_std_99 cxx_std_17)
 
 # ============================================================
 # test_batched_batch — Round 15.1 regression test для build_batched_batch
@@ -98,6 +120,8 @@ target_compile_features(test_batch_n_tokens PRIVATE c_std_99)
 add_executable(test_batched_batch
     test_batched_batch.c
     ../bridge.c
+    # R248/B2: см. test_batch_n_tokens.
+    ../csrc/vision_mtmd.cpp
 )
 target_include_directories(test_batched_batch PRIVATE
     ${CMAKE_SOURCE_DIR}/..
@@ -105,7 +129,7 @@ target_include_directories(test_batched_batch PRIVATE
     ${LLAMA_CPP_INCLUDE_DIRS}
 )
 bridge_link_llama(test_batched_batch)
-target_compile_features(test_batched_batch PRIVATE c_std_99)
+target_compile_features(test_batched_batch PRIVATE c_std_99 cxx_std_17)
 
 # ============================================================
 # test_abort_api — Round 31 #6: standalone unit tests для abort API.

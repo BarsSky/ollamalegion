@@ -625,13 +625,16 @@ jobs:
             -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_TOOLS=OFF \
+            -DLLAMA_BUILD_MTMD=ON \
             -DBUILD_SHARED_LIBS=OFF
           # R66c (2026-09-22): собираем и `llama` (ядро), а не только
           # llama-common — линковка теста требует llama_batch_init/
           # llama_batch_free/llama_get_memory/... из libllama.a.
-          make -j$(nproc) llama-common llama
+          # R248/B2 (2026-10-27): + mtmd — тесты компилируют csrc/vision_mtmd.cpp
+          # вместе с bridge.c и линкуются с libmtmd.a.
+          make -j$(nproc) llama-common llama mtmd
           echo "--- libraries ---"
-          ls -la common/libllama-common.a src/libllama.a
+          ls -la common/libllama-common.a src/libllama.a tools/mtmd/libmtmd.a
           find ggml -name 'libggml*.a' | sort
 
       - name: Build c/bridge regression test
@@ -646,12 +649,14 @@ jobs:
           # ../../../llama.cpp/... (= <repo>/c/llama.cpp/...).
           COMMON_LIB_PATH=$(find ../../../llama.cpp/build/common -name 'libllama-common.a' | head -1)
           LLAMA_LIB_PATH=$(find ../../../llama.cpp/build/src -name 'libllama.a' | head -1)
+          MTMD_LIB_PATH=$(find ../../../llama.cpp/build/tools/mtmd -name 'libmtmd.a' | head -1)
           GGML_LIBS_PATHS=$(find ../../../llama.cpp/build/ggml -name 'libggml*.a' | sort | tr '\n' ';' | sed 's/;$//')
           echo "COMMON_LIB=$COMMON_LIB_PATH"
           echo "LLAMA_LIB=$LLAMA_LIB_PATH"
           echo "GGML_LIBS=$GGML_LIBS_PATHS"
           cmake -DCOMMON_LIB="$(realpath "$COMMON_LIB_PATH")" \
                 -DLLAMA_LIB="$(realpath "$LLAMA_LIB_PATH")" \
+                -DMTMD_LIB="$(realpath "$MTMD_LIB_PATH")" \
                 -DGGML_LIBS="$(echo "$GGML_LIBS_PATHS" | tr ';' '\n' | xargs -r realpath | tr '\n' ';' | sed 's/;$//')" ..
           make -j"$(nproc)"
 

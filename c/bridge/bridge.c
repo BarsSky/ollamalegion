@@ -16,6 +16,8 @@
 
 #include "bridge.h"
 #include "bridge_internal.h"
+// R248/B2: extern "C" граница к libmtmd (mmproj passthrough).
+#include "csrc/vision_mtmd.h"
 #include "llama.h"
 #include <stdlib.h>
 #include <string.h>
@@ -144,6 +146,11 @@ typedef struct {
     // Initialized to 1 in bridge_load_model (matches ctx_params.embeddings=true at load).
     // Setter: bridge_set_embeddings_mode(). Cheap (single bool write in cparams).
     int embeddings_mode;
+    // R248/B2 (2026-10-27): mmproj-проектор (opaque mtmd_context*), привязанный
+    // к model. NULL = модель текстовая. Загружается bridge_load_mmproj,
+    // освобождается в bridge_free_model ПОСЛЕ llama_free контекста и ДО
+    // llama_model_free (mtmd ссылается на модель, но не владеет ею).
+    void* mmproj_ctx;
 } InternalModel;
 
 // ============================================================
@@ -2118,6 +2125,11 @@ void bridge_free_model(ModelHandle model) {
     if (model == NULL) return;
     InternalModel *im = (InternalModel *)model;
 
+    // R248/B2: проектор освобождаем ДО модели (mtmd лишь ссылается на неё).
+    if (im->mmproj_ctx) {
+        bridge_mtmd_free(im->mmproj_ctx);
+        im->mmproj_ctx = NULL;
+    }
     // Sampler больше не хранится в InternalModel (per-request с Round 15.2d).
     if (im->context) {
         llama_free(im->context);
@@ -2130,6 +2142,44 @@ void bridge_free_model(ModelHandle model) {
 
     free(im);
     printf("[bridge] model freed\n");
+}
+
+// R248/B2: mmproj passthrough. Подробности контракта — bridge.h.
+// Ошибка не роняет модель: текстовая часть остаётся рабочей, vision
+// остаётся выключенным (честная деградация, а не частичный загрузчик).
+int bridge_load_mmproj(ModelHandle model, const char* mmproj_path) {
+    if (model == NULL) {
+        set_error("mmproj: model handle is null");
+        return -1;
+    }
+    InternalModel *im = (InternalModel *)model;
+    if (im->model == NULL) {
+        set_error("mmproj: text model is not loaded");
+        return -1;
+    }
+
+    char err[512] = {0};
+    void *ctx = NULL;
+    if (bridge_mtmd_load(im->model, mmproj_path, &ctx, err, (int) sizeof(err)) != 0) {
+        set_error(err[0] ? err : "mmproj: load failed");
+        printf("[bridge] mmproj load failed: %s\n", last_error);
+        return -1;
+    }
+
+    // Повторная загрузка: старый проектор освобождаем (не утечка).
+    if (im->mmproj_ctx) {
+        bridge_mtmd_free(im->mmproj_ctx);
+    }
+    im->mmproj_ctx = ctx;
+    printf("[bridge] mmproj loaded: vision=%d\n", bridge_mtmd_vision_supported(ctx));
+    return 0;
+}
+
+int bridge_mmproj_loaded(ModelHandle model) {
+    if (model == NULL) return 0;
+    InternalModel *im = (InternalModel *)model;
+    if (im->mmproj_ctx == NULL) return 0;
+    return bridge_mtmd_vision_supported(im->mmproj_ctx);
 }
 
 // ============================================================

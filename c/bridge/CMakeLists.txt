@@ -32,6 +32,10 @@ find_library(GGML_BASE_LIB ggml-base PATHS "${LLAMA_BUILD_DIR}" "${LLAMA_BUILD_D
 # ВНИМАНИЕ: имя файла libllama-common.a (CMake target `llama-common`),
 # find_library берёт basename без префикса "lib" и расширения.
 find_library(COMMON_LIB llama-common PATHS "${LLAMA_BUILD_DIR}/common" "${LLAMA_BUILD_DIR}" NO_DEFAULT_PATH)
+# R248/B2: libmtmd.a — mmproj passthrough (vision). Собирается в llama-builder
+# (cmake --build собирает все targets, включая tools/mtmd) и копируется в
+# bridge-builder Dockerfile-стадией.
+find_library(MTMD_LIB mtmd PATHS "${LLAMA_BUILD_DIR}/tools/mtmd" NO_DEFAULT_PATH)
 
 # Если библиотеки не найдены, пробуем без NO_DEFAULT_PATH
 if(NOT LLAMA_LIB)
@@ -49,12 +53,19 @@ endif()
 if(NOT COMMON_LIB)
     find_library(COMMON_LIB llama-common PATHS "${LLAMA_BUILD_DIR}/common" "${LLAMA_BUILD_DIR}")
 endif()
+if(NOT MTMD_LIB)
+    find_library(MTMD_LIB mtmd PATHS "${LLAMA_BUILD_DIR}/tools/mtmd")
+endif()
 
 message(STATUS "LLAMA_LIB: ${LLAMA_LIB}")
 message(STATUS "GGML_LIB: ${GGML_LIB}")
 message(STATUS "GGML_CPU_LIB: ${GGML_CPU_LIB}")
 message(STATUS "GGML_BASE_LIB: ${GGML_BASE_LIB}")
 message(STATUS "COMMON_LIB (Round 14a): ${COMMON_LIB}")
+message(STATUS "MTMD_LIB (R248/B2): ${MTMD_LIB}")
+if(NOT MTMD_LIB)
+    message(FATAL_ERROR "libmtmd.a not found — R248/B2 требует mtmd; соберите llama.cpp с tools/mtmd")
+endif()
 
 # Проверка наличия CUDA
 find_package(CUDAToolkit QUIET)
@@ -76,6 +87,7 @@ endif()
 set(BRIDGE_SOURCES
     bridge.c
     csrc/chat_thinking.cpp
+    csrc/vision_mtmd.cpp
 )
 
 # Заголовки
@@ -93,10 +105,16 @@ target_include_directories(ollamalegion_bridge PUBLIC
     "${LLAMA_CPP_ROOT}/include"
     "${LLAMA_CPP_ROOT}/ggml/include"
     "${LLAMA_CPP_ROOT}/common"
+    "${LLAMA_CPP_ROOT}/tools/mtmd"
 )
 
 # Линковка
 set(LINK_LIBS "")
+# R248/B2: mtmd идёт ПЕРВОЙ — bridge.a ссылается на неё, mtmd ссылается
+# на llama/ggml. Для статических библиотек порядок в командной строке важен.
+if(MTMD_LIB)
+    list(APPEND LINK_LIBS ${MTMD_LIB})
+endif()
 if(LLAMA_LIB)
     list(APPEND LINK_LIBS ${LLAMA_LIB})
 endif()

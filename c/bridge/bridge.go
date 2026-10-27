@@ -854,6 +854,41 @@ func (m *ModelHandle) SetEmbeddingsMode(mode BridgeMode) error {
 	return nil
 }
 
+// LoadMMProj — R248/B2 (2026-10-27): загрузка mmproj-проектора (vision)
+// рядом с уже загруженной текстовой моделью.
+//
+// Вызывается cppworker'ом после успешного Load, если для модели указан
+// mmproj-файл. Успех означает: проектор загружен И mtmd подтвердил vision.
+// Ошибка не инвалидирует текстовую модель (честная деградация).
+func (m *ModelHandle) LoadMMProj(path string) error {
+	if m == nil || m.ptr == nil {
+		return fmt.Errorf("LoadMMProj: model not loaded")
+	}
+	if path == "" {
+		return fmt.Errorf("LoadMMProj: empty projector path")
+	}
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+	if rc := C.bridge_load_mmproj(m.ptr, cPath); rc != 0 {
+		msg := "unknown error"
+		if errInfo := C.bridge_get_last_error_info(); errInfo != nil {
+			msg = C.GoString(&errInfo.message[0])
+		}
+		return fmt.Errorf("bridge_load_mmproj failed: %s", msg)
+	}
+	return nil
+}
+
+// MMProjLoaded — R248/B2: загружен ли для модели vision-проектор.
+// Наличие проектора — единственный источник правды для capabilities.vision;
+// по имени модели capability не выводится.
+func (m *ModelHandle) MMProjLoaded() bool {
+	if m == nil || m.ptr == nil {
+		return false
+	}
+	return C.bridge_mmproj_loaded(m.ptr) != 0
+}
+
 // ============================================================
 // Round 31 #6 (2026-08-09): Abort API — Go-side bindings
 // ============================================================
@@ -2104,4 +2139,3 @@ func goBridgeLogLine(line *C.char, length C.int) {
 	}
 	recordLayerAssignment(C.GoStringN(line, length))
 }
-

@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # CppBackend Worker GPU — реальный llama.cpp + CUDA
 # =============================================================================
 # Сборка:
@@ -139,6 +139,11 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
       # Default is OFF (только при LLAMA_STANDALONE=ON), но нам нужна libcommon.a
       # для нашего C++ wrapper chat_thinking.cpp.
       -DLLAMA_BUILD_COMMON=ON \
+      # R248/B2: libmtmd.a для mmproj passthrough. tools/ собирается и так
+      # (LLAMA_STANDALONE=ON → LLAMA_BUILD_TOOLS=ON по умолчанию), флаг
+      # LLAMA_BUILD_MTMD фиксирует намерение и оставит mtmd доступным, если
+      # tools/ когда-нибудь выключат: standalone-хук сработает только тогда.
+      -DLLAMA_BUILD_MTMD=ON \
       # v0.5.16: gemma-4 workaround — её compute-graph с Gated Delta Net hybrid
       # attention даёт split с n_inputs > 30, что триггерит GGML_ASSERT в
       # ggml-backend.cpp:1367 (SIGABRT). Upstream PR #6137 сделал эту константу
@@ -182,6 +187,10 @@ COPY --from=llama-builder /build/llama.cpp/build/ggml/src /build/llama.cpp/build
 # Round 14a: libcommon.a содержит реализацию common_chat_templates_apply и других
 # C++ API. Без неё линковка chat_thinking.cpp упадёт (undefined reference).
 COPY --from=llama-builder /build/llama.cpp/build/common /build/llama.cpp/build/common
+# R248/B2: mmproj passthrough — заголовки tools/mtmd (clip.h/mtmd.h) для
+# csrc/vision_mtmd.cpp и сама libmtmd.a для линковки bridge.
+COPY --from=llama-builder /build/llama.cpp/tools/mtmd /build/llama.cpp/tools/mtmd
+COPY --from=llama-builder /build/llama.cpp/build/tools/mtmd /build/llama.cpp/build/tools/mtmd
 
 RUN mkdir -p build && cd build && \
     cmake .. \
@@ -240,6 +249,8 @@ COPY --from=llama-builder /build/llama.cpp/build/ggml/src /build/c/llama.cpp/bui
 # хотя CGO_LDFLAGS на них ссылается. В bridge-builder COPY уже есть
 # (line ~99), но это другой stage — каждый stage изолирован.
 COPY --from=llama-builder /build/llama.cpp/build/common /build/c/llama.cpp/build/common
+# R248/B2: libmtmd.a для финальной Go-линковки (bridge.a вызывает mtmd_*).
+COPY --from=llama-builder /build/llama.cpp/build/tools/mtmd /build/c/llama.cpp/build/tools/mtmd
 COPY --from=llama-builder /build/llama.cpp/include /build/c/llama.cpp/include
 COPY --from=llama-builder /build/llama.cpp/ggml/include /build/c/llama.cpp/ggml/include
 COPY --from=llama-builder /build/llama.cpp/ggml/src/ggml-cpu /build/c/llama.cpp/ggml/src/ggml-cpu
@@ -247,7 +258,7 @@ COPY --from=bridge-builder /build/bridge/build /build/c/bridge/build
 
 ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-DGGML_USE_CUDA -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include -fopenmp"
-ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-rpc -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/llama.cpp/build/common -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -Wl,--start-group -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lggml-rpc -lllama-common -lllama-common-base -lollamalegion_bridge -Wl,--end-group -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
+ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-rpc -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/llama.cpp/build/common -L/build/c/llama.cpp/build/tools/mtmd -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -Wl,--start-group -lmtmd -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lggml-rpc -lllama-common -lllama-common-base -lollamalegion_bridge -Wl,--end-group -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
 # -lggml-rpc обязателен при GGML_RPC=ON: реестр бэкендов в libggml.a ссылается
 # на ggml_backend_rpc_reg, и без этой библиотеки линковка падает на
 # "undefined reference to `ggml_backend_rpc_reg'".

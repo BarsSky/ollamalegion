@@ -183,6 +183,10 @@ type openAIChatMessage struct {
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 	Name       string           `json:"name,omitempty"`
+	// R248/B3 (2026-10-27): картинки сообщения. Балансер поднимает image-части
+	// из content[] (image_url / Anthropic image) в это поле, чтобы cppworker
+	// получил их как нативные images — иначе картинка терялась по дороге.
+	Images []string `json:"images,omitempty"`
 
 	// ReasoningContent — R106 (2026-10-11): reasoning ПРЕДЫДУЩЕГО ответа
 	// ассистента, который клиент присылает ОБРАТНО в истории.
@@ -217,6 +221,10 @@ func openAIToChatMessage(msgs []openAIChatMessage) []chatMessage {
 			Content:    m.Content,
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
+		}
+		// R248/B3: картинки едут дальше в общий image-инференс.
+		if len(m.Images) > 0 {
+			cm.Images = m.Images
 		}
 		if len(m.ToolCalls) > 0 {
 			cm.ToolCalls = ollamaToolCallsFromOpenAI(m.ToolCalls)
@@ -413,13 +421,48 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		chatMsgs = augmentSystemWithToolsForChoice(chatMsgs, req.Tools, req.ToolChoice)
 	}
 
+	// R248/B3 (2026-10-27): картинки на OpenAI-пути.
+	//
+	// ВАЖНО: балансер (а значит и все OpenAI-клиенты) ходит именно сюда, а не в
+	// /api/chat, поэтому проводка vision обязана быть здесь. Payload'ы
+	// валидируются до сборки промпта, маркер проектора вставляется в сообщение
+	// (перед текстом — так эти модели обучались), а иначе запрос ушёл бы в
+	// текстовую генерацию и вернул правдоподобный, но не основанный на
+	// изображении ответ.
+	var visionImages [][]byte
+	if payloads := chatImages(chatMsgs); len(payloads) > 0 {
+		decoded, verr := decodeVisionImages(payloads)
+		if verr != nil {
+			writeVisionError(w, req.Model, verr)
+			return
+		}
+		if !backend.VisionCapable(actualModel) {
+			writeVisionError(w, req.Model,
+				fmt.Errorf("vision_not_supported: model %s is loaded without mmproj", actualModel))
+			return
+		}
+		if req.Stream {
+			writeVisionError(w, req.Model,
+				fmt.Errorf("vision_stream_not_supported: use stream=false for image requests"))
+			return
+		}
+		marker := backend.MMProjMarker(actualModel)
+		if marker == "" {
+			writeVisionError(w, req.Model,
+				fmt.Errorf("vision_not_supported: model %s has no media marker", actualModel))
+			return
+		}
+		visionImages = decoded
+		chatMsgs = injectMediaMarkers(chatMsgs, marker)
+	}
+
 	// Собираем промпт из сообщений с применением chat template из GGUF.
 	prompt, err := buildChatPrompt(chatMsgs, actualModel)
 	var usedNaive bool
 	if err != nil {
 		logger.Get().Warnw("chat template bridge failed, falling back to naive prompt",
 			"model", modelName, "error", err)
-		prompt = buildNaiveChatPrompt(req.Messages, actualModel)
+		prompt = buildNaiveChatPromptFromMsgs(chatMsgs, actualModel)
 		if prompt == "" {
 			writeError(w, http.StatusInternalServerError, "build prompt failed: "+err.Error())
 			return
@@ -546,7 +589,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// перед отправкой SSE. Это trade-off: теряем real-time streaming,
 			// но получаем корректные tool_calls + finish_reason.
 			hasTools := len(req.Tools) > 0
-			result, err := generateBufferedWithCancel(r.Context(), actualModel, prompt, params, hasTools)
+			result, err := generateBufferedOrImages(r.Context(), actualModel, prompt, params, hasTools, visionImages)
 			// 2026-06-25: snapshot для /v1/chat/completions (tools path).
 			// Round 16 P2 fix (2026-07-30): closure pattern (consistent с streaming
 			// path line 686). Раньше `defer recordLastPromptFromError(... err)`
@@ -673,7 +716,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	created := time.Now().Unix()
 
 	hasTools := len(req.Tools) > 0
-	result, err := generateBufferedWithCancel(r.Context(), actualModel, prompt, params, hasTools)
+	result, err := generateBufferedOrImages(r.Context(), actualModel, prompt, params, hasTools, visionImages)
 	// 2026-06-25: snapshot для /v1/chat/completions (non-stream path).
 	// Round 16 P2 fix (2026-07-30): closure form (см. tools path выше).
 	defer func() {

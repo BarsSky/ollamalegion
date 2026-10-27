@@ -169,3 +169,41 @@ func generateBufferedOrImages(ctx context.Context, modelName, prompt string, par
 	}
 	return backend.GenerateWithImages(ctx, modelName, prompt, images, params)
 }
+
+// buildNaiveChatPromptFromMsgs — R248/B3: naive-fallback (GGUF без chat
+// template) по уже собранным chatMessage. Нужен, чтобы маркеры картинок,
+// вставленные в сообщения, не терялись при падении на fallback-путь:
+// старый buildNaiveChatPrompt работал с openAIChatMessage, то есть с ДРУГИМ
+// срезом, и картинка бы пропала ровно в этом сценарии.
+func buildNaiveChatPromptFromMsgs(msgs []chatMessage, modelName string) string {
+	isGemma := strings.Contains(strings.ToLower(modelName), "gemma")
+	var sb strings.Builder
+	for _, m := range msgs {
+		switch m.Role {
+		case "system":
+			if isGemma {
+				fmt.Fprintf(&sb, "<start_of_turn>system\n%s<end_of_turn>\n", m.Content)
+			} else {
+				fmt.Fprintf(&sb, "<|system|>\n%s\n", m.Content)
+			}
+		case "assistant":
+			if isGemma {
+				fmt.Fprintf(&sb, "<start_of_turn>model\n%s<end_of_turn>\n", m.Content)
+			} else {
+				fmt.Fprintf(&sb, "<|assistant|>\n%s\n", m.Content)
+			}
+		default: // user / tool
+			if isGemma {
+				fmt.Fprintf(&sb, "<start_of_turn>user\n%s<end_of_turn>\n", m.Content)
+			} else {
+				fmt.Fprintf(&sb, "<|user|>\n%s\n", m.Content)
+			}
+		}
+	}
+	if isGemma {
+		sb.WriteString("<start_of_turn>model\n")
+	} else {
+		sb.WriteString("<|assistant|>\n")
+	}
+	return sb.String()
+}

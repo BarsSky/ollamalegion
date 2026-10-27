@@ -42,10 +42,88 @@ func normalizeOpenAIMessages(req map[string]interface{}) {
 		if !ok {
 			continue
 		}
+		// R248/B3: картинки НЕ выбрасываем. Раньше image_url молча удалялся
+		// (llama.cpp text-only), и vision-модель получала запрос без картинки —
+		// внешне успешный, но не основанный на изображении ответ. Теперь
+		// image-части поднимаются в нативное для cppworker поле `images`
+		// (base64 без data:-префикса), а text-части остаются в content.
+		// Отбивать картинки по-прежнему решает visionShouldReject ДО этого
+		// шага: для модели без mmproj запрос уходит клиенту как 415.
+		if images := collectImageParts(msgMap["content"]); len(images) > 0 {
+			msgMap["images"] = images
+		}
 		msgMap["content"] = normalizeContentField(msgMap["content"])
 		rawMsgs[i] = msgMap
 	}
 	req["messages"] = rawMsgs
+}
+
+// collectImageParts — R248/B3: base64-полезные нагрузки картинок из
+// multi-modal content-массива. Поддерживаются формы, которые реально шлют
+// клиенты:
+//
+//	{"type":"image_url","image_url":{"url":"data:image/png;base64,AAA"}}
+//	{"type":"image_url","image_url":{"url":"https://..."}}   → http(s) НЕ качаем
+//	{"type":"image","source":{"data":"AAA","media_type":"image/png"}} (Anthropic)
+//
+// Возвращает только inline-base64: ссылки требуют сетевого доступа из
+// балансера и политики кэша, поэтому остаются неподдержанными — такой запрос
+// должен получить честный отказ, а не «пустую картинку».
+func collectImageParts(content interface{}) []string {
+	parts, ok := content.([]interface{})
+	if !ok {
+		return nil
+	}
+	var images []string
+	for _, raw := range parts {
+		part, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		ptype, _ := part["type"].(string)
+		switch ptype {
+		case "image_url":
+			if iu, ok := part["image_url"].(map[string]interface{}); ok {
+				if url, ok := iu["url"].(string); ok {
+					if payload, ok := base64ImagePayload(url); ok {
+						images = append(images, payload)
+					}
+				}
+			}
+		case "image":
+			if src, ok := part["source"].(map[string]interface{}); ok {
+				if data, ok := src["data"].(string); ok && data != "" {
+					images = append(images, data)
+				}
+			}
+		}
+	}
+	return images
+}
+
+// base64ImagePayload — вытаскивает base64 из data-URL:
+// `data:image/png;base64,AAA` → `AAA`. Строка base64 без префикса тоже
+// принимается (часть клиентов шлёт её так). http(s)-ссылки не поддержаны.
+func base64ImagePayload(url string) (string, bool) {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return "", false
+	}
+	if strings.HasPrefix(url, "data:") {
+		comma := strings.Index(url, ",")
+		if comma < 0 || comma == len(url)-1 {
+			return "", false
+		}
+		header := url[len("data:"):comma]
+		if !strings.Contains(header, "base64") {
+			return "", false
+		}
+		return url[comma+1:], true
+	}
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		return "", false
+	}
+	return url, true
 }
 
 // normalizeContentField возвращает строковое представление content:

@@ -298,7 +298,10 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 			if group.Priority != 3 {
 				continue
 			}
-			for _, backendID := range group.BackendIDs {
+			// R248: порядок по пригодности VRAM. Живой дефект: Qwen3.8-27B
+			// (≈15 ГБ) уходил на узел с 8 ГБ, хотя рядом был свободный 20 ГБ —
+			// P3 брал первый попавшийся кандидат со свободным слотом.
+			for _, backendID := range p.orderCandidatesByVramFit(group.BackendIDs, model) {
 				if !p.canAcceptRequest(backendID) {
 					continue
 				}

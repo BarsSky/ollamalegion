@@ -465,6 +465,25 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		usedNaive = true
 	}
 
+	// R248 (2026-10-27): отпечаток запроса. DSH-цикл «запрос таймаутит → повтор»
+	// снаружи неотличим от «результат инструмента не доехал до модели»: в обоих
+	// случаях приходят новые запросы и модель снова генерирует. В логе теперь
+	// видно hash промпта, распределение ролей и объём tool-результатов —
+	// одинаковый hash подряд = ретрай клиента; tool_results=0 при истории с
+	// вызовом = потерянный результат.
+	{
+		roles, toolResults, toolBytes := promptSummary(chatMsgs)
+		logger.Get().Infow("prompt fingerprint",
+			"surface", "/v1/chat/completions", "model", actualModel,
+			"hash", promptFingerprint(prompt), "prompt_len", len(prompt),
+			"roles", roles, "tool_results", toolResults, "tool_result_bytes", toolBytes,
+			"stream", req.Stream, "tools", len(req.Tools), "naive_prompt", usedNaive)
+		if dbg := toolPromptDebugTail(prompt); dbg != "" {
+			logger.Get().Warnw("tool prompt debug tail", "surface", "/v1/chat/completions",
+				"model", actualModel, "tool_results", toolResults, "tail", dbg)
+		}
+	}
+
 	params := bridge.DefaultGenerationParams()
 	// Round 16 follow-up fix (2026-07-30): *float64 — nil = use default, *0.0 = greedy/no-top_p.
 	// Раньше `if req.Temperature > 0` ИГНОРИРОВАЛО temperature=0 (Cline tool calls) → использовался
@@ -474,6 +493,14 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.TopP != nil {
 		params.TopP = float32(*req.TopP)
+	}
+
+	// R248: ход с результатом инструмента — детерминированный (greedy). Живой
+	// дефект: при дефолтной температуре модель периодически повторяет тот же
+	// tool_call вместо ответа по результату, и клиент (DSH/Cline) уходит в цикл.
+	if applyToolFollowupDeterminism(chatMsgs, &params, req.Temperature != nil) {
+		logger.Get().Infow("tool follow-up: greedy for determinism",
+			"model", actualModel, "surface", "/v1/chat/completions")
 	}
 	// R69 (2026-09-23): max_output_tokens (Cline) читается.
 	//
@@ -2459,5 +2486,3 @@ func countTokensSafe(modelName, text string) int {
 	}
 	return backend.CountTokens(modelName, text)
 }
-
-

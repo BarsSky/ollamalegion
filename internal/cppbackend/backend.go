@@ -2903,6 +2903,72 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 // cancel watcher через NewAbortWatcher. Per-infer flag решает R60.58
 // per-model race (любая отмена одной горутины сбрасывала все infers для
 // той же модели).
+// R248/B3 (2026-10-27): GenerateWithImages — синхронный инференс с картинками.
+//
+// Зачем отдельный метод, а не флаг в Generate: префилл с изображениями идёт
+// через libmtmd (bridge_infer_images) и не поддерживает streaming, поэтому у
+// него своя механика слота/блокировки. Метрики RecordRequest здесь не пишутся:
+// врать в статистике (записывать vision-запрос как текстовый) хуже, чем не
+// записывать.
+//
+// Ошибки моста (ErrVisionUnsupported и image_*) возвращаются как есть —
+// вызывающая сторона переводит их в 415/400, а не в 500.
+func (b *Backend) GenerateWithImages(ctx context.Context, modelName string, prompt string, images [][]byte, params bridge.GenerationParams) (*bridge.InferenceResult, error) {
+	inst, err := b.getModelInstance(modelName)
+	if err != nil {
+		return nil, err
+	}
+	// R114: мёртвый RPC-узел — не начинаем (llama.cpp уронил бы процесс).
+	if err := b.checkRPCNodesForInference(); err != nil {
+		return nil, err
+	}
+	if inst.slots == nil {
+		inst.slots = NewSlotManager(parallelSlotsFor(resolveNParallel(0, b.cfg.DefaultNParallel)))
+	}
+	slot, release, err := inst.slots.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	params.SeqId = slot
+
+	// Тот же порядок, что в Generate: слот → (lock, ++ActiveQueries) → infer →
+	// (--ActiveQueries, unlock) → release. Держим mu на всё время инференса:
+	// llama.cpp context не переживает параллельный вызов.
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	inst.incQueries()
+	defer inst.decQueries()
+	inst.lastUsedAt.Store(time.Now())
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return inst.handle.InferWithImages(prompt, images, params)
+}
+
+// R248/B3: VisionCapable — опубликованная возможность модели (факт загрузки
+// mmproj), а не догадка по имени. Хендлеры используют это, чтобы честно
+// ответить 415, если картинку прислали модели без проектора.
+func (b *Backend) VisionCapable(modelName string) bool {
+	inst, err := b.getModelInstance(modelName)
+	if err != nil {
+		return false
+	}
+	return inst.info.Vision
+}
+
+// R248/B3: MMProjMarker — медиа-маркер загруженного проектора (например
+// "<__media__>"). Пустая строка = картинки обслуживать нечем.
+func (b *Backend) MMProjMarker(modelName string) string {
+	inst, err := b.getModelInstance(modelName)
+	if err != nil {
+		return ""
+	}
+	return inst.handle.MMProjMarker()
+}
+
 func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) (unsafe.Pointer, error) {
 	return b.GenerateStreamWithAbort(modelName, prompt, params, callback, nil)
 }

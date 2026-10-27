@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"encoding/json"
@@ -326,6 +326,37 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	if thinkOn, thinkExplicit := thinkEnabledFromRaw(req.Think); thinkExplicit {
 		promptOpts.ReasoningOverride = &thinkOn
 	}
+	// R248/B3: картинки. Payload'ы валидируются ДО сборки промпта, а маркер
+	// проектора вставляется в сообщения — тогда chat template увидит текст с
+	// маркером на месте каждой картинки, и тот же порядок уйдёт в мост.
+	var visionImages [][]byte
+	if payloads := chatImages(msgs); len(payloads) > 0 {
+		decoded, verr := decodeVisionImages(payloads)
+		if verr != nil {
+			writeVisionError(w, req.Model, verr)
+			return
+		}
+		if !backend.VisionCapable(actualModel) {
+			writeVisionError(w, req.Model,
+				fmt.Errorf("vision_not_supported: model %s is loaded without mmproj", actualModel))
+			return
+		}
+		if req.Stream {
+			// Префилл с изображениями синхронный: честнее отказать, чем отдать
+			// «пустой поток» или ответ, не основанный на картинке.
+			writeVisionError(w, req.Model,
+				fmt.Errorf("vision_stream_not_supported: use stream=false for image requests"))
+			return
+		}
+		marker := backend.MMProjMarker(actualModel)
+		if marker == "" {
+			writeVisionError(w, req.Model,
+				fmt.Errorf("vision_not_supported: model %s has no media marker", actualModel))
+			return
+		}
+		visionImages = decoded
+		msgs = injectMediaMarkers(msgs, marker)
+	}
 	prompt, err := buildChatPromptWithOptions(msgs, actualModel, promptOpts)
 	if err != nil {
 		logger.Get().Errorw("handleChat: failed to build prompt", "model", req.Model, "error", err)
@@ -409,7 +440,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	hasTools := toolsEnabled
-	result, err := generateBufferedWithCancel(r.Context(), req.Model, prompt, params, hasTools)
+	result, err := generateBufferedOrImages(r.Context(), req.Model, prompt, params, hasTools, visionImages)
 	// 2026-06-25: ?????????? snapshot ?????????? inference ??? endpoint /debug/last-prompt.
 	// ??? ???????? ??????????????? ?????? "prompt_exceeds_context" ? Cline/OpenWebUI.
 	// Round 16 P2 fix (2026-07-30): closure form (consistent со всеми другими endpoints).

@@ -2494,7 +2494,10 @@ InferenceResult bridge_infer_images(
     // получили image-эмбеддинги. Если n_past ≈ числу ТЕКСТОВЫХ токенов, значит
     // медиа-маркер не распознан (mtmd не увидел его в промпте), и модель
     // отвечает по тексту, а не по изображению.
-    printf("[bridge] image prefill: n_past=%d images=%d\n", (int)n_past, n_images);
+    // ВАЖНО: stderr + fflush — stdout в контейнере буферизуется блоками, и
+    // одиночная строка могла не долетать до `docker logs` (проверено живьём).
+    fprintf(stderr, "[bridge] image prefill: n_past=%d images=%d\n", (int)n_past, n_images);
+    fflush(stderr);
     if (bridge_check_ctx_capacity(im, params, (int)n_past, n_predict) != 0) {
         err_mutex_lock();
         int code = g_last_error_info.code;

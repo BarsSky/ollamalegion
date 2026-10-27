@@ -285,7 +285,14 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	// Workaround: шлём upstream как stream=true, накапливаем чанки, формируем non-stream JSON.
 	// Клиент получает 200 ОК сразу (chunked transfer) → нет блокировки.
 	// Default disabled (LB_OPENAI_AUTO_STREAM=false) для backward compat.
-	if !isStreamingFromBody(r.URL.Path, bodyBuf) && IsOpenAIAutoStreamEnabled() {
+	// R248/B3 (2026-10-27): запросы с картинками НЕЛЬЗЯ превращать в upstream
+	// stream: префилл с изображениями идёт через libmtmd и синхронный. Если
+	// балансер подменит stream=false на stream=true (auto-stream workaround),
+	// cppworker честно ответит 400 vision_stream_not_supported — живой симптом:
+	// клиент прислал картинку и получил «use stream=false for image requests»
+	// при stream=false в своём же запросе.
+	if !isStreamingFromBody(r.URL.Path, bodyBuf) && IsOpenAIAutoStreamEnabled() &&
+		countImagePartsInBody(bodyBuf) == 0 {
 		logger.Get().Infow("handleOpenAIChatCompletions: using Round 31 #1 auto-stream workaround",
 			"backend", backendID, "model", model)
 		if err := lr.proxy.proxyRequestOpenAIStreamAsNonStream(w, r, bodyBuf, targetURL, backendID); err != nil {

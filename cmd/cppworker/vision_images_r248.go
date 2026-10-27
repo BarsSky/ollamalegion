@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -168,6 +169,111 @@ func generateBufferedOrImages(ctx context.Context, modelName, prompt string, par
 		return generateBufferedWithCancel(ctx, modelName, prompt, params, hasTools)
 	}
 	return backend.GenerateWithImages(ctx, modelName, prompt, images, params)
+}
+
+// UnmarshalJSON — R248/B3 (2026-10-27): content принимается и строкой, и
+// массивом частей (стандартный OpenAI/Anthropic multi-modal формат).
+//
+// ЖИВОЙ ДЕФЕКТ: `content` был объявлен как string, поэтому любой запрос с
+// картинкой от реального клиента падал на строгом декодере:
+//
+//	400 invalid JSON: json: cannot unmarshal array into Go struct field
+//	    openAIChatMessage.messages.content of type string
+//
+// Теперь text-части собираются в Content, а inline-base64 картинки
+// (image_url / Anthropic image) — в Images, то есть ровно туда, откуда их
+// берёт image-инференс. Порядок картинок сохраняется.
+func (m *openAIChatMessage) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Role             string           `json:"role"`
+		Content          json.RawMessage  `json:"content"`
+		ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
+		ToolCallID       string           `json:"tool_call_id,omitempty"`
+		Name             string           `json:"name,omitempty"`
+		Images           []string         `json:"images,omitempty"`
+		ReasoningContent string           `json:"reasoning_content,omitempty"`
+		Thinking         string           `json:"thinking,omitempty"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	m.Role = wire.Role
+	m.ToolCalls = wire.ToolCalls
+	m.ToolCallID = wire.ToolCallID
+	m.Name = wire.Name
+	m.Images = wire.Images
+	m.ReasoningContent = wire.ReasoningContent
+	m.Thinking = wire.Thinking
+
+	if len(wire.Content) == 0 {
+		return nil
+	}
+	// Строка — самый частый случай.
+	var s string
+	if err := json.Unmarshal(wire.Content, &s); err == nil {
+		m.Content = s
+		return nil
+	}
+	var parts []map[string]interface{}
+	if err := json.Unmarshal(wire.Content, &parts); err != nil {
+		// Не строка и не массив: оставляем пустой content, а не 400 —
+		// спецификация допускает null/объект, и падать на этом хуже.
+		return nil
+	}
+	m.Content, m.Images = partitionContentParts(parts, m.Images)
+	return nil
+}
+
+// partitionContentParts делит multi-modal части на текст и inline-base64
+// картинки. Внешние http(s)-ссылки пропускаются: балансер их не качает, и
+// притворяться, что картинка есть, нельзя.
+func partitionContentParts(parts []map[string]interface{}, existing []string) (string, []string) {
+	var text strings.Builder
+	images := append([]string{}, existing...)
+	for _, part := range parts {
+		ptype, _ := part["type"].(string)
+		switch ptype {
+		case "", "text":
+			if t, ok := part["text"].(string); ok && t != "" {
+				if text.Len() > 0 {
+					text.WriteString("\n")
+				}
+				text.WriteString(t)
+			}
+		case "image_url":
+			iu, _ := part["image_url"].(map[string]interface{})
+			url, _ := iu["url"].(string)
+			if payload, ok := base64ImagePayloadLoose(url); ok {
+				images = append(images, payload)
+			}
+		case "image":
+			src, _ := part["source"].(map[string]interface{})
+			if data, ok := src["data"].(string); ok && data != "" {
+				images = append(images, data)
+			}
+		}
+	}
+	return text.String(), images
+}
+
+// base64ImagePayloadLoose снимает data:-префикс с inline-base64 (полная
+// валидация — в decodeVisionImages, здесь только отделение от ссылок).
+func base64ImagePayloadLoose(url string) (string, bool) {
+	raw := strings.TrimSpace(url)
+	if raw == "" {
+		return "", false
+	}
+	if strings.HasPrefix(raw, "data:") {
+		comma := strings.Index(raw, ",")
+		if comma < 0 || comma == len(raw)-1 {
+			return "", false
+		}
+		return raw[comma+1:], true
+	}
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		return "", false
+	}
+	return raw, true
 }
 
 // buildNaiveChatPromptFromMsgs — R248/B3: naive-fallback (GGUF без chat

@@ -1,4 +1,16 @@
-﻿## [0.7.231 - R247: план полной совместимости клиентов/агентов + контур ожиданий клиентов, 2026-10-26]
+## [0.7.232 - R248: vision включён по умолчанию — mmproj passthrough, стриминг картинок, отмена upstream в tools-пути, 2026-10-27]
+
+**Картинки доходят до модели и ответ основан на изображении.** Живая проверка: SmolVLM-256M-Instruct-Q8_0 + его mmproj, PNG со словом OK → ответ OK, в логе моста [bridge] image prefill: n_past=161 images=1.
+
+- libmtmd слинкована в C-мост (c/bridge/csrc/vision_mtmd.cpp): загрузка mmproj после текстовой модели, префилл с изображениями (mtmd_tokenize + mtmd_helper_eval_chunks), различимые ошибки (image_decode_failed, 	oo_many_images, image_unsupported_type, image_tokenize_failed, image_eval_failed).
+- ridge_infer_images — синхронный инференс с картинками; endor-hash в линковке (libmtmd ссылается на hash_sha256_hex).
+- Приём картинок: OpenAI content[] (image_url, data-URL base64) и Ollama images[]; openAIChatMessage.UnmarshalJSON принимает content и строкой, и массивом частей; Anthropic-форма поднимается балансером в images.
+- Стриминг image-запросов: ответ считается целиком (префилл синхронный) и отдаётся валидным потоком — OpenAI SSE и Ollama NDJSON; прежний 400 ision_stream_not_supported убран.
+- Балансер больше не выбрасывает картинки при нормализации и не подменяет stream=false → stream=true для запросов с картинками (LB_OPENAI_AUTO_STREAM).
+- capabilities.vision публикуется по факту загрузки mmproj; операторский «стоп» — CPPWORKER_VISION_MMPROJ=0. Модель без проектора по-прежнему отдаёт 415 + X-Vision-Supported: false.
+- Отмена upstream при разрыве клиента в буферизированном tools-пути: слот освобождается (живой пробник: 323 мс, следующий запрос 400 мс, ctive_queries=0).
+- Ограничения (явные): http(s)-ссылки на картинки не скачиваются; картинки обслуживаются синхронно (один чанк в stream); 8 картинок / 8 МиБ на запрос.
+## [0.7.231 - R247: план полной совместимости клиентов/агентов + контур ожиданий клиентов, 2026-10-26]
 
 **План зафиксирован:** `docs/plans/2026-10-26-clients-agents-contract-r247.md`
 (строка в `docs/plans/README.md`). Закрывает классы клиентов, которые на R246

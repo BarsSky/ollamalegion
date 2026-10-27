@@ -108,14 +108,20 @@ func injectMediaMarkers(msgs []chatMessage, marker string) []chatMessage {
 		if len(out[i].Images) == 0 {
 			continue
 		}
+		// R248/B3 (живая проба 2026-10-27): маркер ставится ПЕРЕД текстом.
+		//
+		// Живой результат с маркером ПОСЛЕ текста («…вопрос?\n<__media__>»):
+		// SmolVLM ответил «There is no word written in the image» на картинку
+		// со словом OK. Для SmolVLM (и большинства VLM-процессоров) изображение
+		// идёт в промпте ДО вопроса: маркер — это место картинки, а не
+		// приложение к тексту. Порядок «сначала media, затем текст» совпадает с
+		// тем, как эти модели обучались.
 		var b strings.Builder
-		b.WriteString(out[i].Content)
 		for range out[i].Images {
-			if b.Len() > 0 {
-				b.WriteString("\n")
-			}
 			b.WriteString(marker)
+			b.WriteString("\n")
 		}
+		b.WriteString(out[i].Content)
 		out[i].Content = b.String()
 	}
 	return out

@@ -2490,6 +2490,11 @@ InferenceResult bridge_infer_images(
     }
 
     int n_predict = params->n_predict > 0 ? params->n_predict : 512;
+    // R248/B3 диагностика: сколько позиций занял префилл и сколько картинок
+    // получили image-эмбеддинги. Если n_past ≈ числу ТЕКСТОВЫХ токенов, значит
+    // медиа-маркер не распознан (mtmd не увидел его в промпте), и модель
+    // отвечает по тексту, а не по изображению.
+    printf("[bridge] image prefill: n_past=%d images=%d\n", (int)n_past, n_images);
     if (bridge_check_ctx_capacity(im, params, (int)n_past, n_predict) != 0) {
         err_mutex_lock();
         int code = g_last_error_info.code;

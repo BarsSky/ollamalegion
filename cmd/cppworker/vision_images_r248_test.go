@@ -64,7 +64,7 @@ func TestR248_InjectMediaMarkers(t *testing.T) {
 		{Role: "assistant", Content: "вижу"},
 	}
 	out := injectMediaMarkers(msgs, "<__media__>")
-	if out[0].Content != "что на картинке?\n<__media__>\n<__media__>" {
+	if out[0].Content != "<__media__>\n<__media__>\nчто на картинке?" {
 		t.Fatalf("content = %q", out[0].Content)
 	}
 	if out[1].Content != "вижу" {

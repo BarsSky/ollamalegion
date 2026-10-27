@@ -441,11 +441,6 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				fmt.Errorf("vision_not_supported: model %s is loaded without mmproj", actualModel))
 			return
 		}
-		if req.Stream {
-			writeVisionError(w, req.Model,
-				fmt.Errorf("vision_stream_not_supported: use stream=false for image requests"))
-			return
-		}
 		marker := backend.MMProjMarker(actualModel)
 		if marker == "" {
 			writeVisionError(w, req.Model,
@@ -583,6 +578,22 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// ============================================================
 	// Streaming
 	// ============================================================
+	// R248/B3: image-запросы стримингуются буферизованно (префилл libmtmd
+	// синхронный): считаем ответ целиком и отдаём валидным SSE — один delta-чанк
+	// + finish + [DONE]. Клиент (OpenWebUI/OpenAI SDK) получает обычный stream,
+	// просто с одним чанком, вместо прежнего 400.
+	if len(visionImages) > 0 && req.Stream {
+		result, verr := generateBufferedOrImages(r.Context(), actualModel, prompt, params, len(req.Tools) > 0, visionImages)
+		if verr != nil {
+			if handleInferenceError(w, verr) {
+				return
+			}
+			writeCppWorkerErrorWithBridgeInfo(w, http.StatusInternalServerError, "vision generate failed", verr)
+			return
+		}
+		writeOpenAISSEFromResult(w, actualModel, result)
+		return
+	}
 	if req.Stream {
 		if len(req.Tools) > 0 {
 			// Если есть tools — буферизируем полный ответ, чтобы распарсить tool_calls

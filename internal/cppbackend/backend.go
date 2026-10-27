@@ -834,22 +834,21 @@ func resolveNParallel(perModel int, cfgDefault int) int {
 	return 0
 }
 
-// visionInferenceEnabled — R248/B3: можно ли ПУБЛИКОВАТЬ capabilities.vision.
+// visionInferenceEnabled — R248/B3: публиковать ли capabilities.vision.
 //
-// Проектор (mmproj) к этому моменту уже загружен и mtmd подтвердил vision;
-// флаг отвечает на другой вопрос — подключён ли приём картинок в запросах.
-// Пока приём не подключён, capability обязана оставаться false, иначе
-// балансер пропустит картинки, а cppworker ответит по одному тексту:
-// клиент получит правдоподобный, но не основанный на изображении ответ.
+// Проектор (mmproj) уже загружен и mtmd подтвердил vision; флаг отвечает на
+// другой вопрос — подключён ли приём картинок в запросах. С R248 он подключён
+// на обеих поверхностях (/api/chat и /v1/chat/completions), включая
+// буферизованный streaming, поэтому по умолчанию ВКЛЮЧЕН.
 //
-// CPPWORKER_VISION_MMPROJ=1 включает capability досрочно (стенд, приёмка
-// B4). Значение по умолчанию — выключено.
+// CPPWORKER_VISION_MMPROJ=0/false/off — операторский «стоп»: модель остаётся
+// текстовой снаружи (картинки → честный 415), даже если проектор загружен.
 func visionInferenceEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("CPPWORKER_VISION_MMPROJ"))) {
-	case "1", "true", "yes", "on":
-		return true
+	case "0", "false", "no", "off":
+		return false
 	}
-	return false
+	return true
 }
 
 // parallelSlotsFor — минимальное число слотов SlotManager (никогда < 1):

@@ -341,13 +341,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 				fmt.Errorf("vision_not_supported: model %s is loaded without mmproj", actualModel))
 			return
 		}
-		if req.Stream {
-			// Префилл с изображениями синхронный: честнее отказать, чем отдать
-			// «пустой поток» или ответ, не основанный на картинке.
-			writeVisionError(w, req.Model,
-				fmt.Errorf("vision_stream_not_supported: use stream=false for image requests"))
-			return
-		}
+
 		marker := backend.MMProjMarker(actualModel)
 		if marker == "" {
 			writeVisionError(w, req.Model,
@@ -417,6 +411,22 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		applyKeepAlive(actualModel, genReq._keepAliveDuration)
 	}()
+
+	// R248/B3: image-запросы стримингуются буферизованно (префилл libmtmd
+	// синхронный): считаем ответ и отдаём валидным NDJSON из двух чанков —
+	// content + done. Вместо прежнего отказа 400 на stream+картинку.
+	if len(visionImages) > 0 && req.Stream {
+		result, verr := generateBufferedOrImages(r.Context(), req.Model, prompt, params, toolsEnabled, visionImages)
+		if verr != nil {
+			if handleInferenceError(w, verr) {
+				return
+			}
+			writeCppWorkerErrorWithBridgeInfo(w, http.StatusInternalServerError, "vision generate failed", verr)
+			return
+		}
+		writeChatNDJSONFromResult(w, req.Model, result)
+		return
+	}
 
 	if req.Stream {
 		// ??? stream=true && tools!=[] ??????? ?????? ??? ??????, ?? ???????????

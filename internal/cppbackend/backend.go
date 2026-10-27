@@ -89,11 +89,21 @@ type ModelInfo struct {
 	// и mtmd подтвердил vision (см. Bridge LoadMMProj). По этому полю
 	// cppworker отдаёт capabilities.vision, а балансер решает: passthrough
 	// картинок или честный 415.
-	Vision        bool   `json:"vision"`
-	MmprojPath    string `json:"mmprojPath,omitempty"`
-	VisionError   string `json:"visionError,omitempty"`
-	ActiveQueries int    `json:"activeQueries"`
-	TotalQueries  int64  `json:"totalQueries"`
+	Vision      bool   `json:"vision"`
+	MmprojPath  string `json:"mmprojPath,omitempty"`
+	VisionError string `json:"visionError,omitempty"`
+	// R248 (2026-10-27): честная деградация offload.
+	//
+	// Живой случай: Qwen3.8-27B (15,3 ГБ) на узле с 8 ГБ VRAM загрузилась как
+	// «offloaded 20/66 layers to GPU» + 10184 MiB CPU_Mapped, но /api/models
+	// показывал только запрошенное gpuLayers (-1) и НИЧЕГО о том, что большая
+	// часть модели осталась в RAM. Оператор видел «загружено» и не понимал,
+	// почему модель медленная. Теперь наружу уходит фактический offload и
+	// признак деградации.
+	OffloadDegraded bool   `json:"offloadDegraded,omitempty"`
+	OffloadNote     string `json:"offloadNote,omitempty"`
+	ActiveQueries   int    `json:"activeQueries"`
+	TotalQueries    int64  `json:"totalQueries"`
 	// Дополнительные параметры загрузки (Шаг 4 — /api/models/reload).
 	// Хранятся вместе с моделью, чтобы при reload можно было
 	// переиспользовать их как дефолты, если клиент не указал override.
@@ -1559,6 +1569,21 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	inst.info.State = StateLoaded
 	inst.info.Architecture = meta.Architecture
 	inst.info.NLayers = meta.NLayers
+	// R248: фактический offload вместо запрошенного. C-bridge клампит
+	// gpu_layers под свободную VRAM (R83 §3.2), и до этой правки наружу уходило
+	// ЗАПРОШЕННОЕ значение (-1 = «все слои»), хотя в логе могло быть 20/66.
+	// Деградация больше не молчит: offloadDegraded + offloadNote видны в
+	// /api/models, а не только в логе воркера.
+	if applied := bridge.GetLastGPULayers(); applied >= 0 {
+		inst.info.GPULayers = applied
+		if meta.NLayers > 0 && applied < meta.NLayers {
+			inst.info.OffloadDegraded = true
+			inst.info.OffloadNote = fmt.Sprintf("%d/%d слоёв на GPU, остальное в RAM/CPU", applied, meta.NLayers)
+			logger.Get().Warnw("partial GPU offload: model does not fit VRAM",
+				"name", name, "applied_gpu_layers", applied, "n_layers", meta.NLayers,
+				"note", inst.info.OffloadNote)
+		}
+	}
 	inst.info.NHeads = meta.NHeads
 	inst.info.NKvHeads = meta.NKvHeads // BUG 13
 	inst.info.HeadDimK = meta.HeadDimK // Phase 3 (2026-07-06): expose to /api/show

@@ -88,14 +88,19 @@ func handleCppWorkerRuntimeConfig(w http.ResponseWriter, r *http.Request) {
 			"loaded_at":           m.LoadedAt,
 			"gpu_count":           m.GPUCount,
 			"gpu_layers":          m.GPULayers,
-			"tensor_split":        m.TensorSplit,
-			"batch_size":          m.BatchSize,
-			"flash_attn_type":     m.FlashAttnType,
-			"numa":                m.NUMA,
-			"use_mmap":            m.UseMmap,
-			"active_queries":      m.ActiveQueries,
-			"total_queries":       m.TotalQueries,
-			"last_used_at":        m.LastUsedAt,
+			// R248: фактический offload и признак деградации — наружу, а не
+			// только в лог. Иначе оператор видит «loaded» и не понимает, почему
+			// модель медленная (живой случай: 20/66 слоёв на GPU, остальное в RAM).
+			"offload_degraded": m.OffloadDegraded,
+			"offload_note":     m.OffloadNote,
+			"tensor_split":     m.TensorSplit,
+			"batch_size":       m.BatchSize,
+			"flash_attn_type":  m.FlashAttnType,
+			"numa":             m.NUMA,
+			"use_mmap":         m.UseMmap,
+			"active_queries":   m.ActiveQueries,
+			"total_queries":    m.TotalQueries,
+			"last_used_at":     m.LastUsedAt,
 			// R83/v67 (2026-10-02): флаги, с которыми модель РЕАЛЬНО работает.
 			//
 			// Жалоба оператора: «не выводится информация о всех флагах в строке

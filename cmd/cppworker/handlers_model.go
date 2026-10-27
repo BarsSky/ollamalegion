@@ -1321,11 +1321,19 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		entry := map[string]interface{}{
-			"name":                m.Name,
-			"path":                m.Path,
-			"state":               m.State,
-			"architecture":        m.Architecture,
-			"n_layers":            m.NLayers,
+			"name":         m.Name,
+			"path":         m.Path,
+			"state":        m.State,
+			"architecture": m.Architecture,
+			"n_layers":     m.NLayers,
+			// R248 (2026-10-27): фактический offload и признак деградации.
+			// Раньше /api/models показывал только запрошенное gpu_layers, и
+			// тяжёлая модель на узле с малой VRAM выглядела «нормально
+			// загруженной», хотя в логе было «offloaded 20/66 layers to GPU» и
+			// ~10 ГБ в CPU_Mapped. Оператор не видел причину медленности.
+			"gpu_layers_actual":   m.GPULayers,
+			"offload_degraded":    m.OffloadDegraded,
+			"offload_note":        m.OffloadNote,
 			"n_embd":              m.NEmbd,
 			"n_vocab":             m.NVocab,
 			"context_size":        m.ContextSize,

@@ -57,3 +57,22 @@ func resetVisionCaps() {
 	visionCaps = map[string]bool{}
 	visionCapsMu.Unlock()
 }
+
+// mmprojPathFromRequest — R248/B3: путь проектора из запроса на загрузку.
+// Пустая строка = vision не запрашивался.
+func mmprojPathFromRequest(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(*p)
+}
+
+// mmprojPathOrCurrent — R248/B3: при reload явный путь из запроса выигрывает,
+// иначе сохраняется уже загруженный проектор. Без этого preflight-reload
+// (смена окна контекста) молча выключал бы vision.
+func mmprojPathOrCurrent(req *string, current string) string {
+	if req != nil {
+		return strings.TrimSpace(*req)
+	}
+	return current
+}

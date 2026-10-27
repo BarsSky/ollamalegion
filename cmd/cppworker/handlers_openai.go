@@ -2097,13 +2097,18 @@ func handleV1Models(w http.ResponseWriter, r *http.Request) {
 	models := backend.ListModels()
 	openaiModels := make([]map[string]interface{}, 0, len(models))
 	for _, m := range models {
+		// R248/B3: авторитетный источник — факт загрузки mmproj в бэкенде
+		// (ModelInfo.Vision); карта visionCaps остаётся для операторских
+		// переопределений. Ни при каких условиях capability не выводится
+		// из имени модели.
+		vision := m.Vision || modelVisionCapable(m.Name)
 		openaiModels = append(openaiModels, map[string]interface{}{
 			"id":       m.Name,
 			"object":   "model",
 			"created":  m.LoadedAt.Unix(),
 			"owned_by": "ollamalegion",
 			"capabilities": map[string]bool{
-				"vision": modelVisionCapable(m.Name),
+				"vision": vision,
 			},
 		})
 	}

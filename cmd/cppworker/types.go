@@ -163,6 +163,10 @@ type loadModelRequest struct {
 	//
 	// nil = inherit (cppbackend.LoadModelOpts.EnableReasoning → cfg.DefaultEnableReasoning).
 	EnableReasoning *bool `json:"enableReasoning,omitempty"`
+	// R248/B3 (2026-10-27): путь к mmproj-проектору (vision). Явный путь,
+	// никогда не угадывается рядом с моделью — иначе «нашёлся похожий файл»
+	// даёт ложный capabilities.vision и молчаливые неверные ответы по картинкам.
+	MmprojPath *string `json:"mmprojPath,omitempty"`
 }
 
 type embeddingsRequest struct {
@@ -207,6 +211,9 @@ type reloadModelRequest struct {
 	// opts.EnableReasoning оставался nil → cppbackend падал на
 	// cfg.DefaultEnableReasoning (false), и флаг «включить размышления» терялся.
 	EnableReasoning *bool `json:"enableReasoning,omitempty"`
+	// R248/B3: mmproj при reload сохраняется (перезагрузка окна контекста не
+	// должна выключать vision). Пустое значение = проектор не задан.
+	MmprojPath *string `json:"mmprojPath,omitempty"`
 }
 
 // loadWithParamsRequest — расширенный набор параметров для
@@ -267,4 +274,6 @@ type loadWithParamsRequest struct {
 	// Хранится в modelInstance.reasoningEnabled после LoadModel, читается
 	// парсерами (SplitReasoningContent, ReasoningStreamState) для routing.
 	EnableReasoning *bool `json:"enableReasoning,omitempty"`
+	// R248/B3: явный путь к mmproj-проектору (vision). См. loadModelRequest.
+	MmprojPath *string `json:"mmprojPath,omitempty"`
 }

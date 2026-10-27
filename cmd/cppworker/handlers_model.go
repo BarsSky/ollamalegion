@@ -165,6 +165,8 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		UseMmap:       defaultBoolPtr(req.UseMmap, defUseMmap),
 		TensorSplit:   defTensorSplit,
 		SplitMode:     defSplitMode,
+		// R248/B3: vision-проектор (mmproj) — только явный путь из запроса.
+		MmprojPath: mmprojPathFromRequest(req.MmprojPath),
 	}
 	// Round 44 (2026-08-19) R43 regression fix: apply extended runtime params
 	// (kvCacheType, parallel, override-tensors) the same way handleLoadWithParams
@@ -580,6 +582,8 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		// nil = inherit global cfg.DefaultEnableReasoning. non-nil = explicit choice.
 		// Решает bug docs/plans/bug-2026-07-31-reasoning-not-routed.md.
 		EnableReasoning: req.EnableReasoning,
+		// R248/B3: vision-проектор (mmproj) — только явный путь из запроса.
+		MmprojPath: mmprojPathFromRequest(req.MmprojPath),
 	}
 	if req.NThreads != nil && *req.NThreads > 0 {
 		opts.NThreads = *req.NThreads
@@ -2047,6 +2051,9 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		// выключал уже включённые размышления. Явный req.EnableReasoning ниже
 		// имеет приоритет над текущим состоянием.
 		EnableReasoning: currentReasoningPtr(current),
+		// R248/B3: reload НЕ должен выключать vision. Источник — явный
+		// req.MmprojPath, иначе уже загруженный проектор текущей модели.
+		MmprojPath: mmprojPathOrCurrent(req.MmprojPath, current.MmprojPath),
 	}
 	// Round 7: forward MoE override-tensors (parallel arrays) from request
 	// body to LoadModelOpts so the bridge applies them to llama_model_params.

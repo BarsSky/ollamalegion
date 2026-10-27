@@ -84,8 +84,16 @@ type ModelInfo struct {
 	GPUCount          int       `json:"gpuCount,omitempty"`
 	GPULayers         int       `json:"gpuLayers"`
 	TensorSplit       []float32 `json:"tensorSplit,omitempty"`
-	ActiveQueries     int       `json:"activeQueries"`
-	TotalQueries      int64     `json:"totalQueries"`
+	// R248/B3: vision-возможность — ЯВНЫЙ факт, а не догадка по имени.
+	// Vision=true только если после загрузки модели удалось загрузить mmproj
+	// и mtmd подтвердил vision (см. Bridge LoadMMProj). По этому полю
+	// cppworker отдаёт capabilities.vision, а балансер решает: passthrough
+	// картинок или честный 415.
+	Vision        bool   `json:"vision"`
+	MmprojPath    string `json:"mmprojPath,omitempty"`
+	VisionError   string `json:"visionError,omitempty"`
+	ActiveQueries int    `json:"activeQueries"`
+	TotalQueries  int64  `json:"totalQueries"`
 	// Дополнительные параметры загрузки (Шаг 4 — /api/models/reload).
 	// Хранятся вместе с моделью, чтобы при reload можно было
 	// переиспользовать их как дефолты, если клиент не указал override.
@@ -469,6 +477,11 @@ type LoadModelOpts struct {
 	//   *true / *false → explicit per-model choice (override default)
 	// После LoadModel этот флаг резолвится в modelInstance.reasoningEnabled.
 	EnableReasoning *bool
+
+	// R248/B3 (2026-10-27): путь к mmproj-проектору (vision). Пусто = модель
+	// текстовая. Путь НЕ угадывается рядом с моделью: только явный запрос
+	// оператора/профиля, иначе «нашёлся похожий файл» даёт ложную capability.
+	MmprojPath string
 }
 
 // modelInstance — экземпляр загруженной модели
@@ -819,6 +832,24 @@ func resolveNParallel(perModel int, cfgDefault int) int {
 		return cfgDefault
 	}
 	return 0
+}
+
+// visionInferenceEnabled — R248/B3: можно ли ПУБЛИКОВАТЬ capabilities.vision.
+//
+// Проектор (mmproj) к этому моменту уже загружен и mtmd подтвердил vision;
+// флаг отвечает на другой вопрос — подключён ли приём картинок в запросах.
+// Пока приём не подключён, capability обязана оставаться false, иначе
+// балансер пропустит картинки, а cppworker ответит по одному тексту:
+// клиент получит правдоподобный, но не основанный на изображении ответ.
+//
+// CPPWORKER_VISION_MMPROJ=1 включает capability досрочно (стенд, приёмка
+// B4). Значение по умолчанию — выключено.
+func visionInferenceEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CPPWORKER_VISION_MMPROJ"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // parallelSlotsFor — минимальное число слотов SlotManager (никогда < 1):
@@ -1444,6 +1475,34 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 			b.metrics.RecordRequest(name, 0, 0, false)
 		}
 		return fmt.Errorf("load model %s: %w", name, err)
+	}
+
+	// R248/B3 (2026-10-27): mmproj passthrough — проектор грузится ПОСЛЕ
+	// текстовой модели (mtmd привязывается к llama_model). Ошибка проектора
+	// НЕ отменяет загрузку: текстовая модель работоспособна, vision честно
+	// остаётся выключенным (415 на картинки), а причина видна в
+	// /api/models.visionError и в логе — вместо тихой «модель без глаз».
+	if opts.MmprojPath != "" {
+		inst.info.MmprojPath = opts.MmprojPath
+		if verr := handle.LoadMMProj(opts.MmprojPath); verr != nil {
+			inst.info.Vision = false
+			inst.info.VisionError = verr.Error()
+			logger.Get().Warnw("mmproj load failed: images stay unsupported (415)",
+				"name", name, "mmproj", opts.MmprojPath, "error", verr.Error())
+		} else {
+			// ВАЖНО: проектор загружен ≠ картинки уже обслуживаются. Пока
+			// приём image_url/images и вставка медиа-маркеров в промпт не
+			// подключены (R248/B3 часть 2), публиковать capabilities.vision
+			// нельзя: балансер начал бы пропускать картинки, а cppworker
+			// ответил бы текстом — молчаливый неверный ответ вместо 415.
+			// Флаг CPPWORKER_VISION_MMPROJ=1 включает capability заранее
+			// (стенд/приёмка), по умолчанию vision остаётся false.
+			inst.info.Vision = handle.MMProjLoaded() && visionInferenceEnabled()
+			inst.info.VisionError = ""
+			logger.Get().Infow("mmproj loaded",
+				"name", name, "mmproj", opts.MmprojPath,
+				"vision", inst.info.Vision, "marker", handle.MMProjMarker())
+		}
 	}
 
 	// R83 §3.2 (2026-09-26): C-bridge клампит gpu_layers, если запрошенный

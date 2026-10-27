@@ -789,6 +789,18 @@ static int check_antiprompts(const char* output, size_t output_len, const Genera
         size_t ap_len = strlen(ap);
         if (ap_len == 0 || ap_len > output_len) continue;
         if (strncmp(output + output_len - ap_len, ap, ap_len) == 0) {
+            // R248 (2026-10-27): совпадение antiprompt больше не молчит.
+            //
+            // Живой симптом: у клиента ответ обрывается посреди фразы, а модель
+            // «как будто продолжала работать» — снаружи не видно, что генерацию
+            // остановила стоп-строка, встретившаяся ВНУТРИ текста (модель
+            // цитирует стоп-токен, обсуждая код). Ровно этот класс дефекта был
+            // у gemma-4 с "<end_of_turn>" (Round 32 #27). Теперь в лог уходит
+            // какой именно литерал совпал, на какой длине и под каким индексом.
+            fprintf(stderr,
+                    "[bridge] antiprompt matched: ap[%d]=\"%.64s\" output_len=%zu\n",
+                    i, ap, output_len);
+            fflush(stderr);
             return i;
         }
     }

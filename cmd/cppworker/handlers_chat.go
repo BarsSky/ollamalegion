@@ -2095,6 +2095,25 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		}
 	}
 
+	// R248 (2026-10-27): доехать хвост удержания.
+	//
+	// Живой симптом у Cline: текст ответа заканчивается посреди фразы, а следом
+	// сразу идёт блок завершения — «ответ оборван». Причина: в tools-стриме
+	// последние байты держатся в окне toolsStreamHoldback (чтобы не отдать
+	// половину маркера вызова), и если ход закончился, пока они в удержании,
+	// они НЕ отправлялись клиенту: финальный чанк закрывал стрим, а видимый
+	// текст оставался обрезанным. Флашим остаток прозы (разметку вызова
+	// вырезаем — она не часть ответа).
+	if len(toolCalls) > 0 && emittedLen > 0 && emittedLen < len(fullOutput) {
+		tail := strings.TrimSpace(stripToolCallMarkup(sanitizeStreamText(fullOutput[emittedLen:])))
+		if tail != "" {
+			emitContentDelta(tail)
+			logger.Get().Infow("writeChatStreamResponseWithTools: flushed held tail before done",
+				"model", modelName, "tail_len", len(tail), "emitted_len", emittedLen,
+				"raw_len", len(fullOutput))
+		}
+	}
+
 	finalChunk := map[string]interface{}{
 		"model":                modelName,
 		"created_at":           createdAt,
@@ -2225,7 +2244,3 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	sw.Writef("%s\n", doneJSON)
 	sw.Flush()
 }
-
-
-
-

@@ -27,6 +27,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -154,6 +155,13 @@ func repairToolArguments(argsJSON string, schema *toolParamSchema) (string, bool
 		}
 		return argsJSON, false
 	}
+	// R248: сначала пытаемся вытащить аргументы из вложенного JSON-мусора
+	// (search_files: "path" содержал весь объект, regex терялся).
+	if salvaged, ok := salvageGarbledArgs(obj, schema); ok {
+		if out, err := json.Marshal(salvaged); err == nil {
+			return string(out), true
+		}
+	}
 	fixed, changed := repairObjectToSchema(obj, schema)
 	if !changed {
 		return argsJSON, false
@@ -163,6 +171,116 @@ func repairToolArguments(argsJSON string, schema *toolParamSchema) (string, bool
 		return argsJSON, false
 	}
 	return string(out), true
+}
+
+// salvageGarbledArgs — R248 (2026-10-27): вытащить корректные аргументы из
+// «вложенного мусора», который слабые модели периодически выдают.
+//
+// ЖИВОЙ СЛУЧАЙ (матрица инструментов, gemma-4, search_files):
+//
+//	{"path":"{\"path\":\"{\".\"\",\"regex\":\"package main\"}"}
+//
+// Модель вложила весь объект аргументов в строковое поле path, экранировав
+// кавычки; обязательное поле regex отсутствует, и вызов уходил клиенту битым
+// («search_files: нет обязательного поля regex»). Обычный ремонт (null-drop,
+// алиасы, массив→строка) такое не лечит.
+//
+// Правило узкое: если в строковом значении лежит JSON-объект/обломок,
+// содержащий обязательные поля схемы, — поднимаем их на верхний уровень;
+// значения, оставшиеся JSON-мусором, для пути заменяются на ".".
+func salvageGarbledArgs(obj map[string]interface{}, schema *toolParamSchema) (map[string]interface{}, bool) {
+	if schema == nil || len(schema.Required) == 0 {
+		return obj, false
+	}
+	missing := func(m map[string]interface{}) bool {
+		for _, f := range schema.Required {
+			if _, ok := m[f]; !ok {
+				return true
+			}
+		}
+		return false
+	}
+	if !missing(obj) {
+		return obj, false
+	}
+
+	// 1. Вложенный JSON-объект внутри строкового значения.
+	for _, val := range obj {
+		s, ok := val.(string)
+		if !ok {
+			continue
+		}
+		start := strings.Index(s, "{")
+		end := strings.LastIndex(s, "}")
+		if start < 0 || end <= start {
+			continue
+		}
+		var nested map[string]interface{}
+		if json.Unmarshal([]byte(s[start:end+1]), &nested) != nil {
+			continue
+		}
+		merged := map[string]interface{}{}
+		for k, v := range nested {
+			merged[k] = v
+		}
+		for k, v := range obj {
+			if sv, isStr := v.(string); isStr && sv == s {
+				continue // это контейнер мусора
+			}
+			merged[k] = v
+		}
+		if !missing(merged) {
+			return scrubGarbledValues(merged, schema), true
+		}
+	}
+
+	// 2. Фолбэк: обязательные поля регуляркой из сырых строк.
+	merged := map[string]interface{}{}
+	for k, v := range obj {
+		merged[k] = v
+	}
+	for _, field := range schema.Required {
+		if _, ok := merged[field]; ok {
+			continue
+		}
+		pat := regexp.MustCompile(`\\?"` + regexp.QuoteMeta(field) + `\\?"\s*:\s*\\?"((?:[^"\\]|\\.)*)\\?"`)
+		for _, val := range obj {
+			s, ok := val.(string)
+			if !ok {
+				continue
+			}
+			if m := pat.FindStringSubmatch(s); len(m) == 2 {
+				merged[field] = strings.ReplaceAll(m[1], `\"`, `"`)
+				break
+			}
+		}
+	}
+	if missing(merged) {
+		return obj, false
+	}
+	return scrubGarbledValues(merged, schema), true
+}
+
+// scrubGarbledValues — значения, в которых остались фрагменты JSON, заменяются
+// безопасными: путь → ".", остальные обязательные строки → "".
+func scrubGarbledValues(m map[string]interface{}, schema *toolParamSchema) map[string]interface{} {
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		s, isStr := v.(string)
+		if !isStr || (!strings.Contains(s, `\"`) && !strings.Contains(s, "{")) {
+			out[k] = v
+			continue
+		}
+		switch k {
+		case "path", "file_path", "filepath", "directory", "dir":
+			out[k] = "."
+		default:
+			if schema != nil && schemaFieldRequired(schema, k) {
+				out[k] = ""
+			}
+		}
+	}
+	return out
 }
 
 // singleRequiredField — единственное обязательное поле инструмента и его схема.

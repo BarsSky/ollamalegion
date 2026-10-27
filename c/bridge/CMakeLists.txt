@@ -36,6 +36,10 @@ find_library(COMMON_LIB llama-common PATHS "${LLAMA_BUILD_DIR}/common" "${LLAMA_
 # (cmake --build собирает все targets, включая tools/mtmd) и копируется в
 # bridge-builder Dockerfile-стадией.
 find_library(MTMD_LIB mtmd PATHS "${LLAMA_BUILD_DIR}/tools/mtmd" NO_DEFAULT_PATH)
+# R248/B3: libmtmd.a сама ссылается на vendor-hash (sha256 для id bitmap'ов),
+# поэтому линковать надо оба архива — иначе undefined reference на
+# hash_sha256_hex при финальной Go-линковке.
+find_library(VENDOR_HASH_LIB vendor-hash PATHS "${LLAMA_BUILD_DIR}/vendor/hash" NO_DEFAULT_PATH)
 
 # Если библиотеки не найдены, пробуем без NO_DEFAULT_PATH
 if(NOT LLAMA_LIB)
@@ -56,6 +60,9 @@ endif()
 if(NOT MTMD_LIB)
     find_library(MTMD_LIB mtmd PATHS "${LLAMA_BUILD_DIR}/tools/mtmd")
 endif()
+if(NOT VENDOR_HASH_LIB)
+    find_library(VENDOR_HASH_LIB vendor-hash PATHS "${LLAMA_BUILD_DIR}/vendor/hash")
+endif()
 
 message(STATUS "LLAMA_LIB: ${LLAMA_LIB}")
 message(STATUS "GGML_LIB: ${GGML_LIB}")
@@ -63,8 +70,12 @@ message(STATUS "GGML_CPU_LIB: ${GGML_CPU_LIB}")
 message(STATUS "GGML_BASE_LIB: ${GGML_BASE_LIB}")
 message(STATUS "COMMON_LIB (Round 14a): ${COMMON_LIB}")
 message(STATUS "MTMD_LIB (R248/B2): ${MTMD_LIB}")
+message(STATUS "VENDOR_HASH_LIB (R248/B3): ${VENDOR_HASH_LIB}")
 if(NOT MTMD_LIB)
     message(FATAL_ERROR "libmtmd.a not found — R248/B2 требует mtmd; соберите llama.cpp с tools/mtmd")
+endif()
+if(NOT VENDOR_HASH_LIB)
+    message(FATAL_ERROR "libvendor-hash.a not found — libmtmd ссылается на hash_sha256_hex (R248/B3)")
 endif()
 
 # Проверка наличия CUDA
@@ -111,7 +122,10 @@ target_include_directories(ollamalegion_bridge PUBLIC
 # Линковка
 set(LINK_LIBS "")
 # R248/B2: mtmd идёт ПЕРВОЙ — bridge.a ссылается на неё, mtmd ссылается
-# на llama/ggml. Для статических библиотек порядок в командной строке важен.
+# на llama/ggml и vendor-hash. Для статических библиотек порядок важен.
+if(VENDOR_HASH_LIB)
+    list(APPEND LINK_LIBS ${VENDOR_HASH_LIB})
+endif()
 if(MTMD_LIB)
     list(APPEND LINK_LIBS ${MTMD_LIB})
 endif()

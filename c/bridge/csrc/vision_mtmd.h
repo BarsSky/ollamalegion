@@ -9,6 +9,9 @@
 #ifndef OLLAMALEGION_BRIDGE_VISION_MTMD_H
 #define OLLAMALEGION_BRIDGE_VISION_MTMD_H
 
+#include <stddef.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,6 +28,27 @@ void bridge_mtmd_free(void* ctx);
 
 // 1 — проектор загружен и умеет vision, 0 — иначе.
 int bridge_mtmd_vision_supported(void* ctx);
+
+// R248/B3: медиа-маркер проектора (например, "<__media__>"). NULL без проекта.
+// Строка принадлежит mtmd_context — не освобождать.
+const char* bridge_mtmd_marker(void* ctx);
+
+// R248/B3: префилл промпта с изображениями. Промпт должен содержать
+// медиа-маркер (mtmd_get_marker()) на месте каждой картинки, порядок
+// bufs/lens совпадает с порядком маркеров.
+//
+// buf — БАЙТЫ ФАЙЛА (png/jpg), декодирование делает libmtmd (stb_image):
+// Go-стороне не нужно разбирать форматы картинок.
+//
+// out_n_past — сколько позиций занял префилл (для генерации с этих позиций).
+// Возвращает 0 при успехе; -1 с текстом в err:
+//   vision_not_supported | image_invalid_request | too_many_images
+//   image_decode_failed | unsupported_media | image_tokenize_failed
+//   image_eval_failed | image_out_of_memory
+int bridge_mtmd_prefill(void* mtmd_ctx, void* llama_ctx, const char* prompt,
+                        const unsigned char* const* bufs, const size_t* lens,
+                        int n_images, int n_batch, int seq_id,
+                        char* err, int err_cap, int32_t* out_n_past);
 
 #ifdef __cplusplus
 }

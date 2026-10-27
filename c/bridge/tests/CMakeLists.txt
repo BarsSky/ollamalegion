@@ -65,13 +65,26 @@ function(bridge_link_llama target)
         message(FATAL_ERROR "libmtmd.a not found: pass -DMTMD_LIB=/path/to/libmtmd.a (R248/B2)")
     endif()
 
+    # R248/B3: libmtmd ссылается на vendor-hash (sha256 id bitmap'ов).
+    if(DEFINED VENDOR_HASH_LIB)
+        set(_bridge_vendor_hash_lib "${VENDOR_HASH_LIB}")
+    else()
+        find_library(_bridge_vendor_hash_lib vendor-hash
+            PATHS ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/build/vendor/hash
+            NO_DEFAULT_PATH
+        )
+    endif()
+    if(NOT _bridge_vendor_hash_lib)
+        message(FATAL_ERROR "libvendor-hash.a not found: pass -DVENDOR_HASH_LIB=/path/to/libvendor-hash.a (R248/B3)")
+    endif()
+
     if(DEFINED COMMON_LIB)
         if(DEFINED LLAMA_LIB)
             target_link_libraries(${target} PRIVATE
-                -Wl,--start-group ${_bridge_mtmd_lib} ${COMMON_LIB} ${LLAMA_LIB} ${GGML_LIBS} -Wl,--end-group
+                -Wl,--start-group ${_bridge_vendor_hash_lib} ${_bridge_mtmd_lib} ${COMMON_LIB} ${LLAMA_LIB} ${GGML_LIBS} -Wl,--end-group
                 stdc++ m pthread gomp)
         else()
-            target_link_libraries(${target} PRIVATE ${_bridge_mtmd_lib} ${COMMON_LIB})
+            target_link_libraries(${target} PRIVATE ${_bridge_vendor_hash_lib} ${_bridge_mtmd_lib} ${COMMON_LIB})
         endif()
         return()
     endif()
@@ -84,7 +97,7 @@ function(bridge_link_llama target)
         NO_DEFAULT_PATH
     )
     if(COMMON_LIB_AUTO)
-        target_link_libraries(${target} PRIVATE ${_bridge_mtmd_lib} ${COMMON_LIB_AUTO})
+        target_link_libraries(${target} PRIVATE ${_bridge_vendor_hash_lib} ${_bridge_mtmd_lib} ${COMMON_LIB_AUTO})
         message(STATUS "${target}: auto-detected libllama-common.a at ${COMMON_LIB_AUTO}")
     else()
         message(WARNING "${target}: libllama-common.a not found, link may fail")

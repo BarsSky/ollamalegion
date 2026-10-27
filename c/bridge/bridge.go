@@ -47,6 +47,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/cgo"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -320,6 +321,14 @@ const (
 // файл без CGO dependency, чтобы тестироваться в stub mode). Не считается
 // ошибкой для retry-логики (cancel ≠ failure).
 var ErrAborted = fmt.Errorf("bridge: inference aborted by user (BRIDGE_ERR_ABORTED)")
+
+// R248/B3: vision-запрос, который мост не может обслужить — модель без mmproj,
+// нечитаемая картинка, несогласованные медиа-маркеры. cppworker отвечает
+// 415 (или 400 для битой картинки), а не 500: это ограничение возможностей,
+// а не сбой сервера.
+const ErrCodeVisionUnsupported = 7 // == BRIDGE_ERR_VISION_UNSUPPORTED (c/bridge/bridge.h)
+
+var ErrVisionUnsupported = fmt.Errorf("bridge: model cannot process images (BRIDGE_ERR_VISION_UNSUPPORTED)")
 
 // BridgeErrorInfo — Go-представление C BridgeErrorInfo (см. bridge.h).
 // Заполняется C-кодом при любом не-OK-возврате из bridge_infer/bridge_infer_stream.
@@ -1222,6 +1231,123 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 			return nil, fmt.Errorf("%w: %w", base, ErrNCtxNeedsReload)
 		case ErrCodePromptTooLong:
 			return nil, fmt.Errorf("%w: %w", base, ErrPromptTooLong)
+		}
+		return nil, base
+	}
+
+	return &InferenceResult{
+		Output:   C.GoStringN(result.output, result.output_len),
+		Status:   int(result.status),
+		ErrorMsg: "",
+	}, nil
+}
+
+// MMProjMarker — R248/B3: медиа-маркер загруженного проектора (например,
+// "<__media__>" у SmolVLM). Пустая строка, если проектор не загружен.
+//
+// Вызывающая сторона ставит маркер в промпт на место каждой картинки;
+// порядок маркеров обязан совпадать с порядком images в InferWithImages.
+func (m *ModelHandle) MMProjMarker() string {
+	if m == nil || m.ptr == nil {
+		return ""
+	}
+	marker := C.bridge_mmproj_marker(m.ptr)
+	if marker == nil {
+		return ""
+	}
+	return C.GoString(marker)
+}
+
+// InferWithImages — R248/B3: синхронный инференс с изображениями.
+//
+// images — БАЙТЫ ФАЙЛОВ (png/jpg/webp), не base64: декодирование делает
+// libmtmd (stb_image) внутри моста. prompt уже содержит MMProjMarker() на
+// месте каждой картинки, в том же порядке.
+//
+// ErrVisionUnsupported — модель загружена без проектора (или картинка не
+// декодируется/маркеры не сошлись): cppworker обязан ответить 415/400 с
+// причиной, а не 500.
+func (m *ModelHandle) InferWithImages(prompt string, images [][]byte, params GenerationParams) (*InferenceResult, error) {
+	if m == nil || m.ptr == nil {
+		return nil, fmt.Errorf("model not loaded")
+	}
+	if len(images) == 0 {
+		return m.Infer(prompt, params)
+	}
+	if m.MMProjMarker() == "" {
+		return nil, fmt.Errorf("model has no mmproj loaded: %w", ErrVisionUnsupported)
+	}
+
+	// cgo не умеет передавать Go-срезы: собираем C-массивы указателей и длин.
+	cBufs := make([]*C.uchar, len(images))
+	cLens := make([]C.size_t, len(images))
+	cAllocs := make([]unsafe.Pointer, 0, len(images))
+	defer func() {
+		for _, p := range cAllocs {
+			C.free(p)
+		}
+	}()
+	for i, img := range images {
+		if len(img) == 0 {
+			return nil, fmt.Errorf("image %d is empty: %w", i, ErrVisionUnsupported)
+		}
+		p := C.CBytes(img)
+		cAllocs = append(cAllocs, p)
+		cBufs[i] = (*C.uchar)(p)
+		cLens[i] = C.size_t(len(img))
+	}
+
+	cPrompt := C.CString(prompt)
+	defer C.free(unsafe.Pointer(cPrompt))
+
+	cApArr, cApN := fillAntiprompts(params.Antiprompts)
+	defer freeAntiprompts(cApArr, cApN)
+
+	if params.NPredict <= 0 {
+		params.NPredict = DefaultGenerationParams().NPredict
+	}
+
+	cParams := C.GenerationParams{
+		n_predict:         C.int(params.NPredict),
+		n_keep:            C.int(params.NKeep),
+		n_batch:           C.int(params.NBatch),
+		temperature:       C.float(params.Temperature),
+		top_p:             C.float(params.TopP),
+		top_k:             C.float(params.TopK),
+		repeat_penalty:    C.float(params.RepeatPenalty),
+		frequency_penalty: C.float(params.FrequencyPenalty),
+		presence_penalty:  C.float(params.PresencePenalty),
+		seed:              C.int(params.Seed),
+		antiprompts:       cApArr,
+		n_antiprompts:     cApN,
+		n_ctx_override:    C.int(params.NCtxOverride),
+		seq_id:            C.int(params.SeqId),
+	}
+
+	var abortFlag unsafe.Pointer
+	var cBufPtr *(*C.uchar)
+	if len(cBufs) > 0 {
+		cBufPtr = &cBufs[0]
+	}
+	result := C.bridge_infer_images(
+		m.ptr, cPrompt, cBufPtr, &cLens[0], C.int(len(cBufs)), &cParams, &abortFlag,
+	)
+	defer C.bridge_free_inference_result(&result)
+
+	if result.status == ErrCodeAborted {
+		return nil, fmt.Errorf("inference cancelled (code %d): %w", result.status, ErrAborted)
+	}
+	if result.status != 0 {
+		detail := ""
+		if result.error_msg != nil {
+			detail = C.GoString(result.error_msg)
+		}
+		if detail == "" {
+			detail = "(no detail from bridge)"
+		}
+		base := fmt.Errorf("image inference failed: code=%d %s", result.status, detail)
+		if result.status == ErrCodeVisionUnsupported || strings.HasPrefix(detail, "image_") {
+			return nil, fmt.Errorf("%w: %w", base, ErrVisionUnsupported)
 		}
 		return nil, base
 	}

@@ -2427,6 +2427,175 @@ InferenceResult bridge_infer(
 }
 
 // ============================================================
+// R248/B3 (2026-10-27): bridge_infer_images — инференс с изображениями.
+//
+// Префилл делает libmtmd (mtmd_tokenize + mtmd_helper_eval_chunks через
+// csrc/vision_mtmd.cpp): текст и image-эмбеддинги едут в llama_decode как
+// один поток чанков, промпт приходит с медиа-маркером от
+// bridge_mmproj_marker(). Генерация после префилла — ТОТ ЖЕ алгоритм, что в
+// bridge_infer (sampler chain из params, antiprompts, abort), поэтому здесь
+// он повторён локально: рефакторинг проверенного текстового цикла ради
+// переиспользования дал бы риск регрессии во ВСЕХ текстовых запросах.
+//
+// Границы:
+//   - синхронный (не streaming) путь — vision-запросы буферизуются;
+//   - abort_flag — per-infer, как в bridge_infer (R63);
+//   - ошибки префилла отдаются как есть (image_decode_failed и т.д.).
+// ============================================================
+InferenceResult bridge_infer_images(
+    ModelHandle model,
+    const char* prompt,
+    const unsigned char* const* images,
+    const size_t* image_lens,
+    int n_images,
+    const GenerationParams* params,
+    void** out_abort_flag
+) {
+    InferenceResult result = {0};
+
+    if (model == NULL || prompt == NULL || params == NULL) {
+        result.status = 1;
+        result.error_msg = strdup("model, prompt or params is NULL");
+        return result;
+    }
+
+    InternalModel *im = (InternalModel *)model;
+    if (im->mmproj_ctx == NULL) {
+        // Модель загружена без проектора: картинки обработать нечем.
+        // Это не «внутренняя ошибка», а честный отказ по возможностям.
+        result.status = BRIDGE_ERR_VISION_UNSUPPORTED;
+        result.error_msg = strdup("vision_not_supported");
+        return result;
+    }
+
+    atomic_int local_abort;
+    atomic_init(&local_abort, 0);
+    if (out_abort_flag) *out_abort_flag = (void*)&local_abort;
+
+    llama_seq_id seq_id = (llama_seq_id)(params->seq_id > 0 ? params->seq_id : 0);
+    reset_inference_state(im, seq_id);
+
+    int n_batch = params->n_batch > 0 ? params->n_batch : 64;
+
+    // Префилл: текст + картинки. n_past — сколько позиций занято.
+    char prefill_err[512] = {0};
+    int32_t n_past = 0;
+    if (bridge_mtmd_prefill(im->mmproj_ctx, im->context, prompt,
+                            images, image_lens, n_images,
+                            n_batch, (int)seq_id,
+                            prefill_err, (int)sizeof(prefill_err), &n_past) != 0) {
+        result.status = BRIDGE_ERR_VISION_UNSUPPORTED;
+        result.error_msg = strdup(prefill_err[0] ? prefill_err : "image_prefill_failed");
+        return result;
+    }
+
+    int n_predict = params->n_predict > 0 ? params->n_predict : 512;
+    if (bridge_check_ctx_capacity(im, params, (int)n_past, n_predict) != 0) {
+        err_mutex_lock();
+        int code = g_last_error_info.code;
+        err_mutex_unlock();
+        result.status = (code != BRIDGE_OK) ? code : 1;
+        result.error_msg = strdup(last_error);
+        return result;
+    }
+
+    size_t output_capacity = 8192 * 16;
+    char *output = (char *)malloc(output_capacity);
+    if (output == NULL) {
+        result.status = 1;
+        result.error_msg = strdup("out of memory");
+        return result;
+    }
+    output[0] = '\0';
+    size_t output_len = 0;
+
+    struct llama_sampler* sampler = build_sampler_chain_from_params(
+        params, bridge_get_n_vocab(model));
+    if (sampler == NULL) {
+        free(output);
+        result.status = 1;
+        result.error_msg = strdup("failed to build sampler chain");
+        return result;
+    }
+
+    for (int i = 0; i < n_predict; i++) {
+        llama_token new_token = llama_sampler_sample(sampler, im->context, -1);
+        if (llama_vocab_is_eog(im->vocab, new_token)) {
+            break;
+        }
+
+        char token_text[256];
+        int token_len = llama_token_to_piece(im->vocab, new_token, token_text,
+                                             (int)sizeof(token_text) - 1, 0, true);
+        if (token_len < 0) {
+            continue;
+        }
+        token_text[token_len] = '\0';
+
+        size_t needed = output_len + (size_t)token_len + 1;
+        if (needed > output_capacity) {
+            output_capacity = needed * 2;
+            char *new_output = (char *)realloc(output, output_capacity);
+            if (new_output == NULL) {
+                free(output);
+                result.status = 1;
+                result.error_msg = strdup("out of memory");
+                llama_sampler_free(sampler);
+                return result;
+            }
+            output = new_output;
+        }
+        strcpy(output + output_len, token_text);
+        output_len += (size_t)token_len;
+
+        int ap_idx = check_antiprompts(output, output_len, params);
+        if (ap_idx >= 0) {
+            output_len = trim_antiprompt_suffix(output, output_len, ap_idx, params);
+            break;
+        }
+
+        struct llama_batch gen_batch = build_batch_with_seq(
+            &new_token, 1, seq_id, (llama_pos)(n_past + i));
+
+        if (atomic_load(&local_abort)) {
+            free(output);
+            result.status = BRIDGE_ERR_ABORTED;
+            result.error_msg = strdup("generation aborted by user (bridge_infer_images, gen phase)");
+            llama_batch_free(gen_batch);
+            llama_sampler_free(sampler);
+            return result;
+        }
+        llama_set_embeddings(im->context, false);
+        im->embeddings_mode = BRIDGE_MODE_CHAT;
+        if (llama_decode(im->context, gen_batch) != 0) {
+            free(output);
+            result.status = 1;
+            result.error_msg = strdup("llama_decode failed during generation (images)");
+            llama_batch_free(gen_batch);
+            llama_sampler_free(sampler);
+            return result;
+        }
+        llama_batch_free(gen_batch);
+    }
+
+    llama_sampler_free(sampler);
+
+    result.output = output;
+    result.output_len = (int)output_len;
+    result.status = 0;
+    return result;
+}
+
+// R248/B3: медиа-маркер проектора (что вставлять в промпт на месте картинки).
+// NULL, если проектор не загружен.
+const char* bridge_mmproj_marker(ModelHandle model) {
+    if (model == NULL) return NULL;
+    InternalModel *im = (InternalModel *)model;
+    if (im->mmproj_ctx == NULL) return NULL;
+    return bridge_mtmd_marker(im->mmproj_ctx);
+}
+
+// ============================================================
 // build_sampler_chain_from_params — Round 15.2d (2026-07-30):
 // Per-request sampler chain на основе GenerationParams.
 //

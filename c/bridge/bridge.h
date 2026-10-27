@@ -273,6 +273,32 @@ int bridge_load_mmproj(ModelHandle model, const char* mmproj_path);
 // R248/B2: 1 — для модели загружен mmproj с vision, 0 — иначе.
 int bridge_mmproj_loaded(ModelHandle model);
 
+// R248/B3: медиа-маркер загруженного проектора — строка, которую Go-сторона
+// ставит в промпт на место каждой картинки (порядок маркеров = порядок images).
+// NULL, если проектор не загружен (тогда vision-запрос отбивается заранее).
+const char* bridge_mmproj_marker(ModelHandle model);
+
+// R248/B3: синхронный инференс с изображениями.
+//
+// images/image_lens — БАЙТЫ ФАЙЛОВ (png/jpg), декодирование делает libmtmd
+// (stb_image): Go-стороне не нужно разбирать картинки. prompt обязан содержать
+// bridge_mmproj_marker() на месте каждой картинки, в том же порядке.
+//
+// Возвращает InferenceResult как bridge_infer. status:
+//   0                            — успех
+//   BRIDGE_ERR_VISION_UNSUPPORTED — нет проектора/битая картинка/маркер не совпал
+//   BRIDGE_ERR_PROMPT_TOO_LONG и др. — как в текстовом пути
+// error_msg при ошибке описывает причину (image_decode_failed, image_tokenize_failed, ...).
+InferenceResult bridge_infer_images(
+    ModelHandle model,
+    const char* prompt,
+    const unsigned char* const* images,
+    const size_t* image_lens,
+    int n_images,
+    const GenerationParams* params,
+    void** out_abort_flag
+);
+
 // Инференс (синхронный)
 //
 // R63 (2026-09-15): параметр out_abort_flag (optional) — указатель на
@@ -463,6 +489,13 @@ const char* bridge_last_error(void);
 #define BRIDGE_ERR_PROMPT_TOO_LONG      3  // prompt_tokens + n_predict > n_ctx, и n_ctx_override не помогает (hard error)
 #define BRIDGE_ERR_GPU_OOM              4  // нехватка VRAM при попытке аллокации слоёв модели
 #define BRIDGE_ERR_BAD_REQUEST          5  // некорректные параметры (например, n_ctx <= 0 в override)
+// R248/B3 (2026-10-27): запрос с изображениями, а модель/проектор их не
+// обрабатывает (mmproj не загружен, битая картинка, маркер не совпал и т.п.).
+// Текст причины — в result.error_msg / bridge_get_last_error(); отдельный код,
+// чтобы cppworker отдавал 415/400, а не общий 500.
+// ВАЖНО: 6 занят на Go-стороне (ErrCodeInsufficientResources, cppworker),
+// поэтому vision-код = 7.
+#define BRIDGE_ERR_VISION_UNSUPPORTED   7
 // Round 31 #6 (2026-08-09): soft cancel от Go-стороны (ctx.Done, user Stop,
 // RequestAbort от balancer). ОТРИЦАТЕЛЬНОЕ значение специально — чтобы легко
 // отличить от positive int (token count) и от других BRIDGE_ERR_* (1..5).

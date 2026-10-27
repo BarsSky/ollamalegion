@@ -128,7 +128,7 @@ COPY --from=bridge-builder /build/bridge/build /build/c/bridge/build
 
 ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-DGGML_USE_CUDA -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include -fopenmp"
-ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-rpc -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/llama.cpp/build/common -L/build/c/llama.cpp/build/tools/mtmd -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -Wl,--start-group -lmtmd -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lggml-rpc -lllama-common -lllama-common-base -lollamalegion_bridge -Wl,--end-group -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
+ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-rpc -L/build/c/llama.cpp/build/ggml/src/ggml-cuda -L/build/c/llama.cpp/build/common -L/build/c/llama.cpp/build/tools/mtmd -L/build/c/llama.cpp/build/vendor/hash -L/build/c/bridge/build -L/usr/local/cuda/lib64 -L/usr/local/cuda/lib64/stubs -Wl,--start-group -lvendor-hash -lmtmd -lllama -lggml -lggml-cpu -lggml-base -lggml-cuda -lggml-rpc -lllama-common -lllama-common-base -lollamalegion_bridge -Wl,--end-group -lcublas -lcublasLt -lcudart -lcuda -lstdc++ -lm -lpthread -fopenmp"
 # -lggml-rpc нужен при GGML_RPC=ON (libggml.a ссылается на ggml_backend_rpc_reg);
 # библиотека лежит в подкаталоге build/ggml/src/ggml-rpc, поэтому нужен свой -L.
 
@@ -158,7 +158,7 @@ COPY --from=llama-builder /build/llama.cpp /build/llama.cpp
 WORKDIR /build/c/bridge/tests
 RUN mkdir -p build && cd build && \
     cmake -DCOMMON_LIB=/build/llama.cpp/build/common/libllama-common.a \
-          -DMTMD_LIB=/build/llama.cpp/build/tools/mtmd/libmtmd.a .. && \
+          -DMTMD_LIB=/build/llama.cpp/build/tools/mtmd/libmtmd.a -DVENDOR_HASH_LIB=/build/llama.cpp/build/vendor/hash/libvendor-hash.a .. && \
     make test_batch_n_tokens test_batched_batch && \
     ./test_batch_n_tokens && \
     ./test_batched_batch

@@ -259,6 +259,12 @@ const (
 // ErrAborted — stub-sentinel для errors.Is() consistency с bridge.go.
 var ErrAborted = fmt.Errorf("bridge: inference aborted by user (BRIDGE_ERR_ABORTED) [stub]")
 
+// R248/B3: stub не умеет изображения — те же константа и sentinel, что в
+// bridge.go, чтобы вызывающий код компилировался в обоих режимах.
+const ErrCodeVisionUnsupported = 7
+
+var ErrVisionUnsupported = fmt.Errorf("bridge: model cannot process images (BRIDGE_ERR_VISION_UNSUPPORTED) [stub]")
+
 // ErrNCtxNeedsReload — stub-sentinel. В stub-режиме не выбрасывается,
 
 // BridgeErrorInfo — заглушка. В stub-режиме всегда возвращается OK.
@@ -438,6 +444,21 @@ func (m *ModelHandle) LoadMMProj(path string) error {
 // MMProjLoaded — R248/B2: в stub-сборке проектора нет никогда.
 func (m *ModelHandle) MMProjLoaded() bool {
 	return false
+}
+
+// MMProjMarker — R248/B3: в stub-сборке медиа-маркера нет.
+func (m *ModelHandle) MMProjMarker() string {
+	return ""
+}
+
+// InferWithImages — R248/B3: stub-сборка не умеет изображения (нет ни mtmd,
+// ни проектора). Возвращаем ErrVisionUnsupported, чтобы вызывающий код
+// отвечал 415, а не падал на nil-указателе.
+func (m *ModelHandle) InferWithImages(prompt string, images [][]byte, params GenerationParams) (*InferenceResult, error) {
+	if len(images) == 0 {
+		return m.Infer(prompt, params)
+	}
+	return nil, fmt.Errorf("InferWithImages: llama_stub build has no mtmd support: %w", ErrVisionUnsupported)
 }
 
 // ============================================================

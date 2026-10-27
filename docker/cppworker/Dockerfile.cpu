@@ -94,7 +94,7 @@ COPY --from=bridge-builder /build/bridge/build /build/c/bridge/build
 
 ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-DGGML_USE_CPU -I/build/c/llama.cpp/include -I/build/c/llama.cpp/ggml/include -I/build/c/llama.cpp/ggml/src/ggml-cpu -I/build/c/bridge -fopenmp"
-ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cpu -L/build/c/llama.cpp/build/common -L/build/c/llama.cpp/build/tools/mtmd -L/build/c/bridge/build -Wl,--start-group -lmtmd -lllama -lggml -lggml-cpu -lggml-base -lllama-common -lllama-common-base -lollamalegion_bridge -Wl,--end-group -lstdc++ -lm -lpthread -fopenmp"
+ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/src -L/build/c/llama.cpp/build/ggml/src/ggml-cpu -L/build/c/llama.cpp/build/common -L/build/c/llama.cpp/build/tools/mtmd -L/build/c/llama.cpp/build/vendor/hash -L/build/c/bridge/build -Wl,--start-group -lvendor-hash -lmtmd -lllama -lggml -lggml-cpu -lggml-base -lllama-common -lllama-common-base -lollamalegion_bridge -Wl,--end-group -lstdc++ -lm -lpthread -fopenmp"
 
 # Собираем Go-бинарник с CGo (реальный bridge.c, без тега llama_stub)
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \

@@ -427,6 +427,7 @@ services:
 
       # --- Model and memory ---------------------------------------------------
       - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-32768}
+      - CPPWORKER_VISION_MMPROJ=${CPPWORKER_VISION_MMPROJ:-0}
       - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
       # AUTO-UNLOAD OF IDLE MODELS. cppworker keeps EVERY loaded model in VRAM:
       # idleUnloadMinutes=0 means "never unload". On an 8 GB card that is a trap —

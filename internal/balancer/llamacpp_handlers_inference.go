@@ -338,7 +338,22 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	if err != nil {
 		errType := determineErrorType(err, r.Context())
 		logger.Get().Errorw("handleOpenAIChatCompletions: upstream request failed",
-			"backend", backendID, "error", err, "error_type", errType)
+			"backend", backendID, "error", err, "error_type", errType,
+			"first_byte_timeout_sec", firstByte.Seconds())
+		// R249 (2026-10-28): молчаливый обрыв по таймеру — отдельная строка.
+		//
+		// Живой симптом: «клиент давно пропал в мониторе, а бэкенд продолжает
+		// работать». Одна из причин — граница «нет заголовков/данных» (по
+		// умолчанию 180 с, first_byte_default_r189.go): балансер закрывает
+		// upstream, abort доезжает до воркера не мгновенно, и воркер какое-то
+		// время ещё генерирует. Раньше это было видно только как общий
+		// "upstream request failed" без указания, что именно сработал таймер.
+		if errType == "timeout" && firstByte > 0 {
+			logger.Get().Warnw("upstream first-byte timeout: worker will keep generating until abort arrives",
+				"backend", backendID, "model", model,
+				"first_byte_timeout_sec", firstByte.Seconds(),
+				"hint", "increase LB_FIRST_BYTE_TIMEOUT or reduce model size/ctx for slow nodes")
+		}
 		if errType == "timeout" || errType == "unexpected_eof" || errType == "connection_reset_by_peer" || errType == "broken_pipe" {
 			logger.Get().Infow("handleOpenAIChatCompletions: retrying once after network/header error",
 				"backend", backendID, "model", model, "error_type", errType)

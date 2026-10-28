@@ -268,7 +268,38 @@
         return '<div class="bm-traffic"><strong>' + escapeHtml(T('merge.traffic')) + '</strong><ul>' + rows + '</ul></div>';
     }
 
+    // assignedBackendIDs — узлы, уже входящие в ДРУГИЕ группы раскладки.
+    //
+    // R249 (2026-10-28): живая жалоба — в таблице оставались узлы, уже
+    // назначенные в группу, и повторное добавление донора второму мастеру
+    // проходило в UI и падало на сервере при «Применить». Возвращаем карту
+    // backendId -> id группы, ЧТОБЫ отфильтровать такие строки (участники
+    // текущей группы остаются видимыми — иначе нельзя снять выбор).
+    function assignedElsewhere(st) {
+        var out = {};
+        var current = st && st.current;
+        if (!current || !Array.isArray(current.backendGroups)) { return out; }
+        var own = groupIdFor(st.model);
+        current.backendGroups.forEach(function (g) {
+            if (!g || !g.id || g.id === own) { return; }
+            (g.members || []).forEach(function (m) {
+                var id = m && (m.backendId || m.id || m.backend);
+                if (id) { out[id] = g.id; }
+            });
+        });
+        return out;
+    }
+
     function backendsHtml(st) {
+        // Уже назначенные в другие группы узлы не показываем: их нельзя выбрать
+        // повторно (сервер отклонит), а путаница в таблице — прямая причина
+        // ошибок оператора. Выбранные в текущей группе остаются видимыми.
+        var taken = assignedElsewhere(st);
+        st = Object.assign({}, st, {
+            backends: (st.backends || []).filter(function (b) {
+                return !taken[b.id] || st.selected[b.id];
+            })
+        });
         if (!st.backends.length) {
             return '<div class="bm-empty">' + escapeHtml(T('merge.noBackends')) + '</div>';
         }
@@ -587,7 +618,20 @@
     }
 
     function loadBackends() {
-        return getJSON('/api/v1/backends').then(function (resp) {
+        // R249 (2026-10-28): тянем и текущую раскладку. Без неё таблица не знала,
+        // какие узлы уже заняты ДРУГОЙ группой, и оператор мог добавить того же
+        // донора второму мастеру — сервер это отвергал, но уже на «Применить».
+        // Ошибку получения раскладки намеренно глотаем: фильтрация — удобство,
+        // панель обязана открываться и без неё.
+        var placementPromise = getJSON('/api/v1/placement').then(function (resp) {
+            state.current = resp || null;
+            return resp;
+        }).catch(function () {
+            state.current = null;
+            return null;
+        });
+        return Promise.all([getJSON('/api/v1/backends'), placementPromise]).then(function (results) {
+            var resp = results[0];
             var list = (resp && resp.backends) || [];
             state.backends = list.filter(function (b) {
                 return b && b.type === 'image_cpp' ? false : (b.type === 'llama_cpp' || b.type === '');

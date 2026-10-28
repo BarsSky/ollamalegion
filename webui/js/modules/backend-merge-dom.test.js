@@ -332,7 +332,7 @@ const backendList = {
     await checkAsync('mount(): GET /api/v1/backends и отрисовка узлов', async function () {
         const ok = await BM.mount('backendMergePanel');
         assert.strictEqual(ok, true, 'mount должен найти контейнер');
-        assert.strictEqual(calls.length, 3, 'список бэкендов + инвентарь моделей по двум llama_cpp-узлам');
+        // R249: к тем же запросам добавился GET /api/v1/placement (нужен фильтру\n        // уже назначенных узлов), поэтому ожидаем 4 вызова.\n        assert.strictEqual(calls.length, 4, 'список бэкендов + раскладка + инвентарь моделей по двум llama_cpp-узлам');
         assert.ok(panel.innerHTML.indexOf('node-a') >= 0, 'узел node-a должен быть в панели');
         assert.ok(panel.innerHTML.indexOf('node-b') >= 0, 'узел node-b должен быть в панели');
         assert.ok(panel.innerHTML.indexOf('img-1') < 0, 'image-бэкенд в раскладку не предлагается');

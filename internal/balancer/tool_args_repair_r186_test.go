@@ -165,7 +165,7 @@ func TestR186_SSEChunkHasIndexAndRepairedArgs(t *testing.T) {
 	schemas := schemaForTest(t, toolsRunCommands)
 	// Так выглядит чанк cppworker, когда модель написала вызов ТЕКСТОМ.
 	chunk := []byte(`{"choices":[{"delta":{"content":"{\"name\":\"run_commands\",\"arguments\":{\"commands\":\"git status\"}}"},"index":0}],"model":"m"}`)
-	out := extractToolCallsFromSSEContentWithSchema(chunk, schemas)
+	out := extractToolCallsFromSSEContentWithSchema(chunk, schemas, nil)
 	if out == nil {
 		t.Fatal("tool call из content не извлечён")
 	}
@@ -229,7 +229,7 @@ func TestR186_ParallelCallsGetOwnIndexes(t *testing.T) {
 func TestR186_NativeChunkWithoutIndexGetsIndex(t *testing.T) {
 	schemas := schemaForTest(t, toolsRunCommands)
 	chunk := []byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"function":{"arguments":"{\"commands\":\"git status\"}","name":"run_commands"},"id":"call_run_commands","type":"function"}],"finish_reason":null}}]}`)
-	out := normalizeOpenAISSEPayload(chunk, schemas)
+	out := normalizeOpenAISSEPayload(chunk, schemas, nil)
 	if out == nil {
 		t.Fatal("нативный чанк без index не нормализован")
 	}
@@ -256,7 +256,7 @@ func TestR186_NativeChunkWithoutIndexGetsIndex(t *testing.T) {
 // TestR186_PlainContentChunkUntouched — обычный текстовый чанк не переписываем.
 func TestR186_PlainContentChunkUntouched(t *testing.T) {
 	chunk := []byte(`{"choices":[{"index":0,"delta":{"content":"привет"}}]}`)
-	if out := normalizeOpenAISSEPayload(chunk, nil); out != nil {
+	if out := normalizeOpenAISSEPayload(chunk, nil, nil); out != nil {
 		t.Fatalf("изменён чанк без tool_calls: %s", string(out))
 	}
 }

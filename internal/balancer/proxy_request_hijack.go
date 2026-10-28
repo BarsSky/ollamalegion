@@ -396,6 +396,8 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	done := false
 	// R252: последний отданный клиенту SSE-кадр (для гарантии [DONE]).
 	var lastSSELine []byte
+	// R254: состояние ремонта аргументов на этот стрим (диагностика — один раз).
+	toolRepair := &toolRepairState{}
 	for !done {
 		select {
 		case <-clientCtx.Done():
@@ -449,7 +451,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				if payload := extractSSEDataPayload(lineToWrite); payload != nil {
 					// R186: извлечение из текста + форма OpenAI (id/type/INDEX) и
 					// приведение аргументов к схеме инструмента из запроса.
-					if modified := normalizeOpenAISSEPayload(payload, p.toolSchemasForRequest(r)); modified != nil {
+					if modified := normalizeOpenAISSEPayload(payload, p.toolSchemasForRequest(r), toolRepair); modified != nil {
 						lineToWrite = rewriteSSEDataPayload(lineToWrite, modified)
 					}
 				}

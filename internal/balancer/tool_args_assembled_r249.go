@@ -59,6 +59,11 @@ func repairAssembledToolCalls(respBody []byte, clientReqBody []byte) []byte {
 			if !ok || args == "" {
 				continue
 			}
+			// R254: это собранный non-stream ответ — значение пришло целиком, ремонт
+			// допустим (в т.ч. для «голой команды» без JSON).
+			if !repairableToolArgsFragment(args, true) {
+				continue
+			}
 			if fixed, did := repairToolArguments(args, schema); did {
 				fn["arguments"] = fixed
 				changed = true

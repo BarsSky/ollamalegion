@@ -917,7 +917,7 @@ func findMatchingClosingBracket(s string, openPos int) int {
 // extractToolCallsFromSSEContent — без схем: приведение к схеме не выполняется
 // (старое поведение, для тестов и путей без tools).
 func extractToolCallsFromSSEContent(sseData []byte) []byte {
-	return extractToolCallsFromSSEContentWithSchema(sseData, nil)
+	return extractToolCallsFromSSEContentWithSchema(sseData, nil, nil)
 }
 
 // extractToolCallsFromSSEContentWithSchema — R186: то же, но с приведением
@@ -928,7 +928,7 @@ func extractToolCallsFromSSEContent(sseData []byte) []byte {
 // уходили без него; при параллельных вызовах (Cline прямо просит модель делать
 // их) клиент склеивал все фрагменты в один и получал битый JSON →
 // «✖ Invalid input» и повтор того же вызова до остановки по циклу.
-func extractToolCallsFromSSEContentWithSchema(sseData []byte, schemas map[string]*toolParamSchema) []byte {
+func extractToolCallsFromSSEContentWithSchema(sseData []byte, schemas map[string]*toolParamSchema, state *toolRepairState) []byte {
 	var chunk map[string]interface{}
 	if err := json.Unmarshal(sseData, &chunk); err != nil {
 		return nil
@@ -961,7 +961,7 @@ func extractToolCallsFromSSEContentWithSchema(sseData []byte, schemas map[string
 	}
 
 	// R186: форма OpenAI (id/type/index) + аргументы по объявленной схеме.
-	toolCalls, _ = repairToolCallsForSchema(toolCalls, schemas)
+	toolCalls, _ = repairToolCallsForSchemaStreaming(toolCalls, schemas, state)
 
 	// Модифицируем delta: удаляем content, добавляем tool_calls
 	// remaining (сервисные токены) не возвращаем — они будут отфильтрованы
@@ -1024,4 +1024,3 @@ func rewriteSSEDataPayload(line, newPayload []byte) []byte {
 	out = append(out, lineTerminator...)
 	return out
 }
-

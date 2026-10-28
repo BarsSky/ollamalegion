@@ -815,6 +815,8 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 	done := false
 	// R252: последний отданный клиенту SSE-кадр (для гарантии [DONE]).
 	var lastSSELine []byte
+	// R254: состояние ремонта аргументов на этот стрим (диагностика — один раз).
+	toolRepair := &toolRepairState{}
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
 	for !done {
@@ -867,7 +869,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 					// вызывался только extract: нативные чанки без `index` уходили
 					// клиенту как есть, и Cline не мог склеить фрагменты/параллельные
 					// вызовы → «✖ Invalid input» и повтор до остановки по циклу.
-					if modified := normalizeOpenAISSEPayload(payload, p.toolSchemasForRequest(r)); modified != nil {
+					if modified := normalizeOpenAISSEPayload(payload, p.toolSchemasForRequest(r), toolRepair); modified != nil {
 						lineToWrite = rewriteSSEDataPayload(lineToWrite, modified)
 					}
 				}

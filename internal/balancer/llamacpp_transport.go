@@ -610,6 +610,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	var accumulatedPlainContent string
 	// R118.20: накопитель фрагментов tool-call'ов на время стрима (аудит C5).
 	toolAcc := newToolCallAccumulator()
+	// R254: состояние ремонта аргументов на этот стрим (диагностика — один раз).
+	toolRepair := &toolRepairState{}
 	// ==== Content, извлечённый из done-чанка upstream (если cppworker
 	// уже сформировал content в финальном NDJSON; используем его приоритетно). ====
 	var upstreamDoneContent string
@@ -1113,7 +1115,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					}
 				}
 			}
-			if modified := extractToolCallsFromSSEContentWithSchema([]byte(data), toolSchemas); modified != nil {
+			if modified := extractToolCallsFromSSEContentWithSchema([]byte(data), toolSchemas, toolRepair); modified != nil {
 				n, errFwd := fmt.Fprintf(w, "data: %s\n\n", string(modified))
 				bytesForwarded += int64(n)
 				if errFwd != nil {
@@ -1123,7 +1125,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					}
 					return fmt.Errorf("write modified SSE (tool calls): %v", errFwd)
 				}
-			} else if normalized := normalizeSSEToolCallChunks([]byte(data), toolSchemas); normalized != nil {
+			} else if normalized := normalizeSSEToolCallChunks([]byte(data), toolSchemas, toolRepair); normalized != nil {
 				// R186: нативные вызовы от воркера тоже приводим к форме OpenAI и к
 				// объявленной схеме — валидатор клиента проверяет схему независимо
 				// от того, кто собрал вызов.

@@ -622,11 +622,11 @@ func normalizeToolCallForOpenAI(call map[string]interface{}, index int) map[stri
 // (llamacpp_transport.go, proxy_request.go, proxy_request_hijack.go), и правка,
 // сделанная только в одном из них, оставляет дефект живым на остальных — ровно
 // так и вышло в R186: `index` пропадал на пути, который обслуживал Cline.
-func normalizeOpenAISSEPayload(payload []byte, schemas map[string]*toolParamSchema) []byte {
-	if modified := extractToolCallsFromSSEContentWithSchema(payload, schemas); modified != nil {
+func normalizeOpenAISSEPayload(payload []byte, schemas map[string]*toolParamSchema, state *toolRepairState) []byte {
+	if modified := extractToolCallsFromSSEContentWithSchema(payload, schemas, state); modified != nil {
 		return modified
 	}
-	return normalizeSSEToolCallChunks(payload, schemas)
+	return normalizeSSEToolCallChunks(payload, schemas, state)
 }
 
 // normalizeSSEToolCallChunks — привести НАТИВНЫЕ (пришедшие от cppworker) чанки
@@ -635,7 +635,7 @@ func normalizeOpenAISSEPayload(payload []byte, schemas map[string]*toolParamSche
 // Возвращает изменённый JSON чанка или nil, если менять нечего. Нужно, потому что
 // валидатор клиента проверяет схему независимо от того, кто собрал вызов —
 // воркер или балансер.
-func normalizeSSEToolCallChunks(sseData []byte, schemas map[string]*toolParamSchema) []byte {
+func normalizeSSEToolCallChunks(sseData []byte, schemas map[string]*toolParamSchema, state *toolRepairState) []byte {
 	var chunk map[string]interface{}
 	if err := json.Unmarshal(sseData, &chunk); err != nil {
 		return nil
@@ -670,7 +670,7 @@ func normalizeSSEToolCallChunks(sseData []byte, schemas map[string]*toolParamSch
 			needsRewrite = true
 		}
 	}
-	fixed, repaired := repairToolCallsForSchema(rawCalls, schemas)
+	fixed, repaired := repairToolCallsForSchemaStreaming(rawCalls, schemas, state)
 	if !needsRewrite && repaired == 0 {
 		return nil
 	}
@@ -685,9 +685,22 @@ func normalizeSSEToolCallChunks(sseData []byte, schemas map[string]*toolParamSch
 	return out
 }
 
+// repairToolCallsForSchemaStreaming — приведение вызовов на СТРИМИНГОВОМ пути
+// (R254): ремонт аргументов применяется только к законченным значениям, а
+// незакрытый фрагмент уходит клиенту как есть (форма id/type/index при этом
+// нормализуется — это не аргументы).
+func repairToolCallsForSchemaStreaming(toolCalls []interface{}, schemas map[string]*toolParamSchema, state *toolRepairState) ([]interface{}, int) {
+	return repairToolCallsForSchemaMode(toolCalls, schemas, false, state)
+}
+
 // repairToolCallsForSchema — приведение набора вызовов к схемам запроса и к форме
-// OpenAI. Возвращает (вызовы, сколько исправлено).
+// OpenAI для НЕстриминговых/собранных ответов (значение пришло целиком).
+// Возвращает (вызовы, сколько исправлено).
 func repairToolCallsForSchema(toolCalls []interface{}, schemas map[string]*toolParamSchema) ([]interface{}, int) {
+	return repairToolCallsForSchemaMode(toolCalls, schemas, true, nil)
+}
+
+func repairToolCallsForSchemaMode(toolCalls []interface{}, schemas map[string]*toolParamSchema, complete bool, state *toolRepairState) ([]interface{}, int) {
 	if len(toolCalls) == 0 {
 		return toolCalls, 0
 	}
@@ -706,6 +719,13 @@ func repairToolCallsForSchema(toolCalls []interface{}, schemas map[string]*toolP
 		args, _ := fn["arguments"].(string)
 		schema := schemas[name]
 		if schema == nil {
+			continue
+		}
+		// R254: незакрытый фрагмент НЕ ремонтируем — иначе обёртка единственного
+		// обязательного поля склеится у клиента с последующими дельтами и получится
+		// битый JSON («✖ Invalid input»).
+		if !repairableToolArgsFragment(args, complete) {
+			state.noteSkipped(name, "arguments value is not complete JSON")
 			continue
 		}
 		if fixed, changed := repairToolArguments(args, schema); changed {

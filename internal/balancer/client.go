@@ -362,16 +362,23 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 		// admission-очереди (ключ = sessionID) обнулялся посреди задачи. Снаружи
 		// это выглядело как «балансер потерял клиента / начал другой».
 		//
-		// Правило переиспользования: тот же клиент (IP+имя), та же модель и тот же
-		// тип эндпоинта, и при этом ЛИБО начало разговора совпадает (обычный
-		// следующий запрос), ЛИБО сессия активна (сжатие пришло посреди хода —
-		// с R251/R252 HasActiveStream выставляется на всех стриминговых путях).
+		// Правило переиспользования (R252.1): тот же клиент (IP+имя), та же модель и
+		// тип эндпоинта, и при этом РАЗГОВОР ЯВЛЯЕТСЯ ПРОДОЛЖЕНИЕМ — совпал первый
+		// system-промпт (он переживает сжатие истории) ИЛИ новое первое
+		// user-сообщение содержит/начинается с сохранённого хвоста прежнего
+		// (Cline переносит содержимое задачи в сводку дословно).
+		//
+		// ЧЕГО ЗДЕСЬ БОЛЬШЕ НЕТ: признака «активный стрим» как условия. Cline
+		// сжимает историю МЕЖДУ ходами, когда стрима уже нет, — на этом условии
+		// реальный сценарий не покрывался вовсе.
+		//
 		// Явные идентификаторы клиента (X-Client-ID / X-Session-ID / cookie /
 		// user / chat_id) сюда не попадают: у них ветки выше, и там своя семантика.
-		if sid := p.resolveConversationSessionID(candidate, realIP, clientName, model, endpointType, conv); sid != "" {
+		parts := conversationPartsFromRequest(r)
+		if sid := p.resolveConversationSessionID(candidate, realIP, clientName, model, endpointType, conv, parts); sid != "" {
 			candidate = sid
 		}
-		p.recordSessionIdentity(candidate, realIP, clientName, model, endpointType, conv)
+		p.recordSessionIdentity(candidate, realIP, clientName, model, endpointType, conv, parts)
 		return candidate
 	}
 
@@ -381,31 +388,45 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 // resolveConversationSessionID — R252: переиспользовать id существующей сессии,
 // если это тот же клиент/модель и продолжение того же разговора.
 //
-// Возвращает "" (нет переиспользования) или id существующей сессии. Вынесено из
-// getSessionIDWithModel отдельной функцией: правило сравнения должно быть в
-// ОДНОМ месте, иначе «устойчивость к сжатию» будет реализована по-разному на
-// разных путях — ровно та болезнь, что лечится в R252.
-func (p *Proxy) resolveConversationSessionID(candidate, realIP, clientName, model, endpointType, conv string) string {
-	if p == nil || p.sessionMgr == nil || conv == "" {
+// Возвращает "" (нет переиспользования) или id существующей сессии. Правило
+// сравнения живёт в ОДНОМ месте: иначе «устойчивость к сжатию» будет реализована
+// по-разному на разных путях — ровно та болезнь, что лечится в R252.
+//
+// МАТЧЕР НЕ ЗОВЁТ МЕТОДЫ МЕНЕДЖЕРА: он выполняется под его RLock (R252.1 — без
+// копирования карты сессий в срез). Идентичность приходит вторым аргументом.
+func (p *Proxy) resolveConversationSessionID(candidate, realIP, clientName, model, endpointType, conv string, parts conversationParts) string {
+	if p == nil || p.sessionMgr == nil {
 		return ""
 	}
-	return p.sessionMgr.ResolveID(candidate, func(s *types.Session) bool {
-		ident := p.sessionMgr.IdentityOf(s.ID)
+	return p.sessionMgr.ResolveID(candidate, func(s *types.Session, ident SessionIdentity) bool {
 		if ident.IP != realIP || ident.Client != clientName ||
 			ident.Model != model || ident.EndpointType != endpointType {
 			return false
 		}
-		// (а) начало разговора не изменилось — обычный следующий ход;
-		if ident.ConvKey != "" && ident.ConvKey == conv {
+		// «Сильное» продолжение: начало разговора не изменилось вообще.
+		strong := conv != "" && conv == ident.ConvKey
+		// Хвост прежнего первого user-сообщения встречается в новом — сводка
+		// содержит прежний текст дословно.
+		tailContinuation := ident.UserTail != "" && parts.UserHead != "" &&
+			strings.Contains(parts.UserHead, ident.UserTail)
+		if strong || tailContinuation {
 			return true
 		}
-		// (б) история сжата клиентом, но ход ещё идёт — сессия активна.
-		return s.HasActiveStream
+		// Слабое продолжение — совпал system-промпт (workspace/режим/инструкции).
+		systemSame := ident.SystemHead != "" && ident.SystemHead == parts.SystemHead
+		if !systemSame {
+			return false
+		}
+		// R252.1 / БЛОКЕР 2: если у сессии ИДЁТ стрим и разговор не подтверждён
+		// сильным признаком, это ДРУГАЯ параллельная задача того же клиента (второе
+		// окно Cline, переключение Plan/Act): не прилипаем. Иначе вернулся бы
+		// регресс R118.9 («два экземпляра слились в одну сессию»).
+		return !s.HasActiveStream
 	})
 }
 
 // recordSessionIdentity — R252: запомнить «кто/какой разговор» по id сессии.
-func (p *Proxy) recordSessionIdentity(sessionID, realIP, clientName, model, endpointType, conv string) {
+func (p *Proxy) recordSessionIdentity(sessionID, realIP, clientName, model, endpointType, conv string, parts conversationParts) {
 	if p == nil || p.sessionMgr == nil || sessionID == "" {
 		return
 	}
@@ -414,6 +435,9 @@ func (p *Proxy) recordSessionIdentity(sessionID, realIP, clientName, model, endp
 		Client:       clientName,
 		Model:        model,
 		EndpointType: endpointType,
+		SystemHead:   parts.SystemHead,
+		UserHead:     parts.UserHead,
+		UserTail:     parts.UserTail,
 		ConvKey:      conv,
 	})
 }

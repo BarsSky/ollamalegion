@@ -184,3 +184,63 @@ func TestR252_SSEDoneLineRecognition(t *testing.T) {
 		}
 	}
 }
+
+// TestR252_UpstreamErrorGetsDone — ПРАВКА 4 (ревью): после error-кадра клиент
+// обязан получить РОВНО ОДИН `data: [DONE]`, иначе поток выглядит оборванным.
+func TestR252_UpstreamErrorGetsDone(t *testing.T) {
+	// hijack-путь (chunked framing)
+	var buf bytes.Buffer
+	bufrw := bufio.NewReadWriter(bufio.NewReader(&buf), bufio.NewWriter(&buf))
+	if !writeChunkedStreamError(bufrw, "upstream read error") {
+		t.Fatal("writeChunkedStreamError не записал кадр")
+	}
+	got := buf.String()
+	if !strings.Contains(got, "upstream read error") {
+		t.Fatalf("error-кадр не записан: %q", got)
+	}
+	if n := strings.Count(got, "data: [DONE]"); n != 1 {
+		t.Fatalf("[DONE] после error-кадра: %d, want 1 (%q)", n, got)
+	}
+
+	// legacy-путь (обычный writer)
+	w := httptest.NewRecorder()
+	if !writePlainStreamError(w, "upstream read error") {
+		t.Fatal("writePlainStreamError не записал кадр")
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "upstream read error") {
+		t.Fatalf("error-кадр не записан (legacy): %q", body)
+	}
+	if n := strings.Count(body, "data: [DONE]"); n != 1 {
+		t.Fatalf("[DONE] после error-кадра (legacy): %d, want 1 (%q)", n, body)
+	}
+}
+
+// TestR252_StreamSessionNilSafe — ПРАВКА 5 (ревью): помощник обязан быть
+// nil-безопасным. Раньше тикер звал p.getHeartbeatInterval(), который читает
+// p.config.Balancing без проверки: у прокси без конфига это паника в горутине, а
+// она роняет весь процесс (recover обработчика её не ловит).
+func TestR252_StreamSessionNilSafe(t *testing.T) {
+	req := r252StreamRequest(t)
+
+	// (а) nil-прокси
+	var nilProxy *Proxy
+	s := startStreamSession(nilProxy, req, "m1")
+	if s == nil {
+		t.Fatal("startStreamSession(nil) вернул nil — вызывающий код получит панику на Stop")
+	}
+	s.Stop()
+
+	// (б) прокси без конфига и без менеджера сессий
+	bare := &Proxy{}
+	s2 := startStreamSession(bare, req, "m1")
+	s2.Stop()
+
+	// (в) интервал не паникует при nil-конфиге
+	if d := bare.streamHeartbeatIntervalSafe(); d <= 0 {
+		t.Fatalf("streamHeartbeatIntervalSafe() = %v, want дефолт", d)
+	}
+	if d := nilProxy.streamHeartbeatIntervalSafe(); d != defaultStreamHeartbeatInterval {
+		t.Fatalf("nil-прокси: %v, want %v", d, defaultStreamHeartbeatInterval)
+	}
+}

@@ -846,12 +846,9 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 				}
 				logger.Get().Warnw("proxyRequestOpenAIStreaming: read from backend error",
 					"backend", backendID, "error", res.err)
-				// Отправляем клиенту финальный SSE done-маркер, чтобы клиент
-				// корректно завершил поток (иначе Roo/Cline зависнут).
-				_, _ = w.Write([]byte("data: {\"error\":\"upstream read error\"}\n\n"))
-				if canFlush {
-					flusher.Flush()
-				}
+				// R252.1: error-кадр + ровно один `data: [DONE]` — иначе клиент
+				// получает причину, но поток остаётся незавершённым.
+				writePlainStreamError(w, "upstream read error")
 				return nil
 			}
 

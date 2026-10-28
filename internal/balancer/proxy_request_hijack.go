@@ -421,8 +421,10 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				}
 				logger.Get().Warnw("hijack streaming: read from backend error",
 					"backend", backendID, "error", res.err)
-				// Send final SSE done marker to client.
-				_ = writeChunkedString(bufrw, "data: {\"error\":\"upstream read error\"}\n\n")
+				// R252.1: error-кадр + РОВНО ОДИН `data: [DONE]`. Раньше здесь
+				// писался только error-кадр, и клиент видел поток без завершения —
+				// ответ считался оборванным, хотя причина уже была отправлена.
+				writeChunkedStreamError(bufrw, "upstream read error")
 				return nil
 			}
 

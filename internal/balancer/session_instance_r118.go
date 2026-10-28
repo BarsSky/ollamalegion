@@ -153,3 +153,117 @@ func conversationFingerprintFromRequest(r *http.Request) string {
 	}
 	return conversationFingerprint(body)
 }
+
+// ============================================================================
+// R252.1 (2026-10-28): признаки «это продолжение того же разговора».
+// ============================================================================
+//
+// ЖИВОЙ ДЕФЕКТ, который это лечит. Cline сжимает историю МЕЖДУ ходами: когда
+// запрос приходит, стрима уже нет, HasActiveStream = false, а начало разговора
+// переписано сводкой. Признак «активный стрим» как условие переиспользования
+// сессии такой случай НЕ покрывает — сессия рождалась заново посреди задачи.
+//
+// Что переживает сжатие и потому служит признаком продолжения:
+//   - первый SYSTEM-промпт (у Cline в нём workspace, режим, инструкции) —
+//     остаётся прежним, сводка его не заменяет;
+//   - ХВОСТ первого user-сообщения — Cline переносит содержимое прежней задачи в
+//     сводку дословно, поэтому новый текст обычно начинается с этого хвоста или
+//     содержит его.
+//
+// Тексты храним УСЕЧЁННЫМИ: полные простыни (файлы, логи) в карте сессий копить
+// нельзя.
+
+// conversationPartChars — сколько символов начала/хвоста сообщения запоминаем.
+const conversationPartChars = 256
+
+// conversationParts — усечённые признаки разговора.
+type conversationParts struct {
+	SystemHead string // начало первого system-сообщения
+	UserHead   string // начало первого user-сообщения
+	UserTail   string // конец первого user-сообщения
+}
+
+// clipHead — нормализованное начало строки (не более conversationPartChars рун).
+func clipHead(s string) string {
+	r := []rune(normalizeConversationText(s))
+	if len(r) > conversationPartChars {
+		r = r[:conversationPartChars]
+	}
+	return string(r)
+}
+
+// clipTail — нормализованный конец строки (не более conversationPartChars рун).
+func clipTail(s string) string {
+	r := []rune(normalizeConversationText(s))
+	if len(r) > conversationPartChars {
+		r = r[len(r)-conversationPartChars:]
+	}
+	return string(r)
+}
+
+// conversationPartsFromBody — признаки из уже прочитанного тела запроса.
+func conversationPartsFromBody(body []byte) conversationParts {
+	if len(body) == 0 || len(body) > 1<<20 {
+		return conversationParts{}
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return conversationParts{}
+	}
+	var out conversationParts
+	firstSystem := ""
+	firstUser := ""
+	if msgs, ok := req["messages"].([]interface{}); ok {
+		for _, raw := range msgs {
+			m, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			role, _ := m["role"].(string)
+			text := contentText(m["content"])
+			if text == "" {
+				continue
+			}
+			switch {
+			case firstSystem == "" && strings.EqualFold(role, "system"):
+				firstSystem = text
+			case firstUser == "" && strings.EqualFold(role, "user"):
+				firstUser = text
+			}
+			if firstSystem != "" && firstUser != "" {
+				break
+			}
+		}
+	}
+	// Ollama-поверхность: system/prompt на верхнем уровне.
+	if firstSystem == "" {
+		if s, _ := req["system"].(string); strings.TrimSpace(s) != "" {
+			firstSystem = s
+		}
+	}
+	if firstUser == "" {
+		if p, _ := req["prompt"].(string); strings.TrimSpace(p) != "" {
+			firstUser = p
+		}
+	}
+	out.SystemHead = clipHead(firstSystem)
+	if firstUser != "" {
+		out.UserHead = clipHead(firstUser)
+		out.UserTail = clipTail(firstUser)
+	}
+	return out
+}
+
+// conversationPartsFromRequest — признаки из запроса (тело читается и
+// ВОССТАНАВЛИВАЕТСЯ, как conversationFingerprintFromRequest).
+func conversationPartsFromRequest(r *http.Request) conversationParts {
+	if r == nil || r.Body == nil || r.Method != http.MethodPost {
+		return conversationParts{}
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return conversationParts{}
+	}
+	r.Body = io.NopCloser(strings.NewReader(string(body)))
+	return conversationPartsFromBody(body)
+}

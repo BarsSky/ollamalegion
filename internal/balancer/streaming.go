@@ -46,17 +46,12 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 		modelFromCtx = m
 	}
 
-	// Получаем sessionID для heartbeat и stream-active флага
-	clientName := p.getClientName(r)
-	sessionID := p.getSessionIDWithModel(r, clientName, modelFromCtx)
-
-	// Помечаем сессию как имеющую активный streaming (защита от cleanup)
-	if sessionID != "" && p.config.Balancing.SessionStickiness {
-		p.sessionMgr.SetStreamActive(sessionID, true)
-	}
-
-	// Помечаем клиента в recentClients как имеющего активный стриминг для монитора
-	p.markRecentClientStreamActive(r, true)
+	// R252.1 (2026-10-28): «клиент виден как живой» — через ОДИН помощник пакета
+	// (stream_session_r252.go), как на hijack/legacy/transport-путях. Раньше здесь
+	// жила третья копия (SetStreamActive + markRecentClientStreamActive +
+	// HeartbeatStream), и пути расходились в поведении.
+	streamSess := startStreamSession(p, r, modelFromCtx)
+	defer streamSess.Stop()
 
 	// Регистрируем активный стрим для graceful shutdown
 	p.activeStreams.Add(1)
@@ -134,10 +129,8 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 						"bytes_streamed", bytesStreamed,
 						"chunks", chunkCount,
 						"is_sse", isSSE, "is_ndjson", isNDJSON)
-					// Обновляем LastRequestAt в сессии чтобы предотвратить idle cleanup
-					if sessionID != "" && p.config.Balancing.SessionStickiness {
-						p.sessionMgr.HeartbeatStream(sessionID)
-					}
+					// Heartbeat сессии и запись монитора обновляет startStreamSession
+					// (R252.1) — здесь остаётся только запись самого SSE/NDJSON-пинга.
 					var heartbeatBytes []byte
 					if isSSE {
 						heartbeatBytes = []byte(":heartbeat\n\n")
@@ -172,13 +165,7 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 		// Уведомляем Shutdown о завершении стрима
 		defer p.activeStreams.Done()
 
-		// Снимаем флаг активного streaming в recentClients для монитора
-		p.markRecentClientStreamActive(r, false)
-
-		// Снимаем флаг активного streaming в сессии (разрешаем cleanup)
-		if sessionID != "" && p.config.Balancing.SessionStickiness {
-			p.sessionMgr.SetStreamActive(sessionID, false)
-		}
+		// R252.1: флаги сессии/монитора снимает streamSess.Stop() (defer выше).
 
 		if heartbeatStop != nil {
 			close(heartbeatStop)

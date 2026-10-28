@@ -166,6 +166,16 @@ services:
       - LB_NCTX_PREFLIGHT_MAX_WAIT_SEC=${LB_NCTX_PREFLIGHT_MAX_WAIT_SEC:-1800}
       - LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER=${LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER:-3}
       - LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC=${LB_NCTX_PREFLIGHT_WAIT_BUFFER_SEC:-300}
+      # R253 (2026-10-28): окно контекста растёт под АГЕНТСКИЙ ход — клиент (Cline)
+      # присылает историю целиком и num_ctx не сообщает, поэтому preflight раньше
+      # всегда решал NoOp, а cppworker резал вывод по окну (n_predict=0 → пустой
+      # ответ, «срыв на пороге»). GROW_FOR_AGENTS=0 одной переменной возвращает
+      # прежнее поведение; RESERVE — бюджет вывода, из которого считается нужное окно.
+      # Заведено после живой проверки R254: без этих строк переменные из
+      # deployments/.env не доходили до контейнера (docker inspect их не показывал)
+      # и переключатель молча не работал.
+      - LB_NCTX_GROW_FOR_AGENTS=${LB_NCTX_GROW_FOR_AGENTS:-1}
+      - LB_AGENT_OUTPUT_RESERVE_TOKENS=${LB_AGENT_OUTPUT_RESERVE_TOKENS:-4096}
       # Where the balancer stores image-model profiles. Must be explicit: the
       # default is config/image-model-profiles.json under /app/config, which is
       # mounted READ-ONLY below, so saving a profile from the WebUI would fail.

@@ -131,7 +131,13 @@ func TestPollLoadCompletionUntilLoaded_AlreadyLoaded(t *testing.T) {
 	}
 }
 
-// TestPollLoadCompletionUntilLoaded_NeverLoads returns nil when model never loads.
+// TestPollLoadCompletionUntilLoaded_NeverLoads — модель так и осталась
+// state=loading к концу окна ожидания.
+//
+// R262 (2026-10-28): БЫЛО — функция возвращала nil, а вызывающие ветки
+// превращали это в ошибку («not ready»/«request failed»), и HTTP-слой отдавал
+// 500 при живой загрузке. СТАЛО — «ещё грузится»: StillLoading=true, Error пуст.
+// nil остаётся только для случая «судьба модели неизвестна» (её нет у воркера).
 func TestPollLoadCompletionUntilLoaded_NeverLoads(t *testing.T) {
 	server := startMockCppworkerWithStates(t, map[string]string{
 		"test-model": "loading",
@@ -140,10 +146,15 @@ func TestPollLoadCompletionUntilLoaded_NeverLoads(t *testing.T) {
 	host, port := parseTestHostPort(t, server.URL)
 	mm := NewModelManager(nil)
 
-	// Short timeout (3s) — model stays "loading" → returns nil.
 	result := mm.pollLoadCompletionUntilLoaded(host, port, "test-backend", "test-model", 3*time.Second)
-	if result != nil {
-		t.Errorf("expected nil result for model that never loads, got %+v", result)
+	if result == nil {
+		t.Fatal("nil: живая загрузка снова означает «не знаем» — клиент получит 5xx")
+	}
+	if !result.StillLoading {
+		t.Fatalf("StillLoading=false (error=%q): таймаут ожидания снова выглядит провалом", result.Error)
+	}
+	if result.Error != "" {
+		t.Errorf("у «ещё грузится» не должно быть текста ошибки, got %q", result.Error)
 	}
 }
 
@@ -371,8 +382,19 @@ func TestExecuteLlamaCppLoad_202NeverLoads(t *testing.T) {
 	if result.Success {
 		t.Errorf("expected Success=false (model never loaded), got true")
 	}
-	if !strings.Contains(result.Error, "not ready") {
-		t.Errorf("expected error to mention 'not ready', got: %s", result.Error)
+	// R262 (2026-10-28): БЫЛО — «model not ready after …» с Error, и HTTP-слой
+	// отдавал на это 500: оператор видел «ошибка загрузки» при том, что воркер
+	// модель догрузил (живой факт: Qwen3.8-27B, 500 через ~380 с, state=loaded
+	// через десятки секунд). СТАЛО — модель у воркера есть, но ещё грузится:
+	// StillLoading=true, Error пуст, HTTP 202 Accepted и «опроси позже».
+	if !result.StillLoading {
+		t.Fatalf("StillLoading=false: живая загрузка снова выглядит провалом (error=%q)", result.Error)
+	}
+	if result.Error != "" {
+		t.Errorf("still-loading не должен нести текст ошибки, got: %s", result.Error)
+	}
+	if result.Message == "" {
+		t.Error("нет объяснения клиенту: панель покажет пустоту вместо «загружается»")
 	}
 }
 

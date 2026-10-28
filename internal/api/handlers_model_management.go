@@ -232,6 +232,16 @@ func modelOpStatusCode(result *balancer.ModelOpResult) int {
 	if result == nil || result.Success {
 		return http.StatusOK
 	}
+	// R262 (2026-10-28): «загрузка ещё идёт» — это НЕ ошибка.
+	//
+	// Живой факт: загрузка Qwen3.8-27B вернула 500 «poll timeout» через ~380 с, а
+	// воркер догрузил модель через несколько десятков секунд. 5xx для клиента —
+	// «повтори, станет лучше» и одновременно «что-то сломалось»; WebUI показывал
+	// «ошибка загрузки» при работающей модели, и оператор жал «загрузить» снова.
+	// 202 Accepted говорит правду: работа принята и продолжается, статус — позже.
+	if result.StillLoading {
+		return http.StatusAccepted
+	}
 	// «Модель занята» — 409: клиенту нужно отличить «повтори с force=true».
 	if result.Busy {
 		return http.StatusConflict

@@ -42,6 +42,16 @@ func TestR185_ModelOpStatus_PreservesExistingRules(t *testing.T) {
 		// Текст «архитектура карты» БЕЗ машинного кода не должен менять статус:
 		// иначе любая чужая ошибка с этим словом станет 400.
 		{"похожий текст без кода", &balancer.ModelOpResult{Error: "архитектура не поддерживается"}, http.StatusInternalServerError},
+		// R262 (2026-10-28): «загрузка ещё идёт» — не ошибка.
+		//
+		// Живой факт: загрузка Qwen3.8-27B вернула 500 «poll timeout» через
+		// ~380 с, а воркер догрузил модель через десятки секунд — панель
+		// показывала «ошибка загрузки» при работающей модели. 202 говорит
+		// правду: работа принята и продолжается, статус спросим позже.
+		{"ещё грузится", &balancer.ModelOpResult{StillLoading: true, PollAfterSec: 30}, http.StatusAccepted},
+		// А вот настоящий провал по-прежнему 5xx (см. «обычная ошибка» выше):
+		// StillLoading и Error одновременно не должны «спасать» провал.
+		{"провал, не still-loading", &balancer.ModelOpResult{Error: "auto-load failed: no such file"}, http.StatusInternalServerError},
 	}
 	for _, c := range cases {
 		if got := modelOpStatusCode(c.in); got != c.want {

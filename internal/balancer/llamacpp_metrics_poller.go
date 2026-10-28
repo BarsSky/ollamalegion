@@ -586,8 +586,15 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 	// пропускает параллельно; остальные ждут в очереди, как и раньше.
 	p.adoptCapacityFromLoadedModels(b.id, loadedModels)
 
+	// R262 (2026-10-28): «loaded_models» считался как len(списка), то есть с
+	// моделями в ЛЮБОМ состоянии (loading/error). Живой факт: в логе стояло
+	// «loaded_models:2», когда одна модель ещё грузилась, — диагностика врала и
+	// расходилась с API (R257 считает строго state=="loaded"). Теперь поле
+	// означает ровно то, что написано, а число пришедших записей — рядом.
 	logger.Get().Infow("llamaCppMetricsPoller: updated llama.cpp metrics",
-		"backend", b.id, "url", url, "loaded_models", len(loadedModels))
+		"backend", b.id, "url", url,
+		"loaded_models", loadedModelsCountR262(loadedModels),
+		"models_reported", len(loadedModels))
 
 	// Опрос loading-прогресса (если есть активные загрузки — обновим
 	// LoadingModels и переключим poller на быстрый режим).

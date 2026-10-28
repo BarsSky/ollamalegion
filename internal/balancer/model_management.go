@@ -155,6 +155,17 @@ type ModelOpResult struct {
 	// подтверждение и повторяет запрос.
 	Busy           bool `json:"busy,omitempty"`
 	RetryWithForce bool `json:"retryWithForce,omitempty"`
+
+	// StillLoading — R262 (2026-10-28): загрузка НЕ провалилась, а ещё идёт.
+	//
+	// Живой факт: оператор получал HTTP 500 «poll timeout» при том, что воркер
+	// модель догрузил. «Мы не дождались» и «загрузка провалилась» были одним
+	// ответом, и отличить одно от другого было нельзя. При StillLoading Error
+	// пуст, а HTTP-слой отвечает 202 Accepted: работа идёт, спроси позже.
+	StillLoading bool `json:"stillLoading,omitempty"`
+	// PollAfterSec — через сколько секунд имеет смысл опросить статус
+	// (при StillLoading). Ноль = опрос не предлагается.
+	PollAfterSec int `json:"pollAfterSec,omitempty"`
 }
 
 // ModelInfo — информация о модели на бэкенде
@@ -1084,6 +1095,36 @@ func (mm *ModelManager) pollLoadCompletionUntilLoaded(
 
 	logger.Get().Warnw("executeLlamaCppLoad: poll for load completion exceeded max_wait",
 		"backend", backendID, "model", modelName, "max_wait", maxWait)
+
+	// R262 (2026-10-28): таймаут ожидания — НЕ вердикт «провал».
+	//
+	// Живой факт: загрузка Qwen3.8-27B вернула HTTP 500 «poll timeout» через
+	// ~380 с, а воркер догрузил модель через несколько десятков секунд. Оператор
+	// видел ошибку при фактически загруженной модели. Поэтому перед вердиктом —
+	// ФИНАЛЬНАЯ сверка с воркером: после таймаута модель часто уже `loaded`.
+	if state, known := mm.loadStateOnWorkerR262(host, port, modelName); known {
+		if state == "loaded" {
+			logger.Get().Infow("executeLlamaCppLoad: модель загружена к моменту таймаута ожидания — это успех",
+				"backend", backendID, "model", modelName, "max_wait", maxWait)
+			return &ModelOpResult{
+				Success:   true,
+				Operation: "load",
+				ModelName: modelName,
+				BackendID: backendID,
+				Message:   "model loaded (wait window expired, but the worker reports state=loaded)",
+			}
+		}
+		if state == "loading" || state == "" {
+			// Загрузка идёт: отдаём «ещё грузится», а не ошибку. Пустой state у
+			// известной воркеру модели означает «запись есть, состояние не
+			// сообщено» — трактовать это как провал ещё хуже, чем как «идёт».
+			return stillLoadingResultR262(ModelOpRequest{
+				Operation: "load", ModelName: modelName,
+			}, backendID, maxWait)
+		}
+		// Прочие известные состояния (failed) остаются провалом: их обрабатывает
+		// ветка progress выше; здесь возвращаем nil, сохраняя прежнее поведение.
+	}
 	return nil
 }
 
@@ -1464,7 +1505,10 @@ func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID
 					loadTimeout); pollResult != nil {
 					return pollResult
 				}
-				// poll тоже не дождался — возвращаем ошибку таймаута клиенту
+				// R262: poll вернул nil только когда судьба модели НЕИЗВЕСТНА
+				// (её нет в списке воркера или воркер недоступен). Если она ещё
+				// грузится, poll уже вернул StillLoading (HTTP 202), а не nil —
+				// поэтому «мы не дождались» больше не превращается в 5xx.
 			}
 			logger.Get().Debugw("executeLlamaCppLoad: HTTP error (no retry)",
 				"backend", backendID, "model", req.ModelName,
@@ -1584,14 +1628,17 @@ func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID
 						host, port, backendID, req.ModelName, maxWait); pollResult != nil {
 						return pollResult
 					}
-					// Polling exhausted — return error so caller can retry.
+					// R262: nil здесь означает «модель не появилась у воркера или
+					// воркер недоступен» — вот это и есть провал. Случай «ещё
+					// грузится» poll отдаёт как StillLoading (HTTP 202 Accepted),
+					// чтобы клиент не считал живую загрузку ошибкой.
 					return &ModelOpResult{
 						Success:   false,
 						Operation: req.Operation,
 						ModelName: req.ModelName,
 						BackendID: backendID,
-						Error: fmt.Sprintf("async load (202) on cppworker: model not ready after %v",
-							maxWait),
+						Error: fmt.Sprintf("async load (202) on cppworker: model not found at the worker after %v "+
+							"(it never appeared in /api/models — the load did not start)", maxWait),
 					}
 				}
 				// status=already_loaded / loaded / loaded_by_other / unknown → fall through to success.

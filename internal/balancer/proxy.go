@@ -415,6 +415,14 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	if sessionIdleTTL <= 0 {
 		sessionIdleTTL = 5 * time.Minute
 	}
+	// R251 (2026-10-28): порог зомби-сессий из AdvancedTiming (default 120 с).
+	// До этого SessionManager держал ХАРДКОД 120 с и не знал о конфиге, а
+	// slot_manager.go вообще считал зомби по 60 с — пауза префилла длиннее минуты
+	// на живом запросе освобождала слот дважды.
+	zombieThreshold := time.Duration(config.Balancing.AdvancedTiming.ZombieSessionThresholdSec) * time.Second
+	if zombieThreshold <= 0 {
+		zombieThreshold = defaultZombieSessionThreshold
+	}
 
 	p := &Proxy{
 		config:        config,
@@ -480,6 +488,13 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 
 	// QueueManager создаём после инициализации p, чтобы передать корректный proxy
 	p.queueMgr = NewQueueManager(p, config.Balancing.QueueMaxSize, config.Balancing.QueueWorkers, time.Duration(config.Balancing.QueueTimeout)*time.Second)
+
+	// R251 (2026-10-28): порог зомби-сессий — из конфига и в ОДНОМ месте (раньше
+	// SessionManager держал хардкод 120 с, а preemption слота — 60 с, и оба
+	// расходились с AdvancedTiming).
+	if p.sessionMgr != nil {
+		p.sessionMgr.SetZombieThreshold(zombieThreshold)
+	}
 
 	// Прокси-логгер использует тот же EventBus для WebSocket-трансляции
 	p.proxyLogger = NewProxyLogger(1000, p.eventBus)

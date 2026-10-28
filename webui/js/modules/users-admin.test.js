@@ -75,7 +75,7 @@ function loadModule() {
   makeEl('userNewName');
   makeEl('userNewRole');
   makeEl('userNewPassword');
-  makeEl('sessionsTableBody');
+  makeEl('authSessionsTableBody');
   makeEl('sessionsHint');
   calls = [];
   const fs = require('fs');
@@ -187,7 +187,7 @@ const USERS = [
       }
     }];
     await window.UsersAdmin.reloadSessions();
-    const tbody = elements['sessionsTableBody'];
+    const tbody = elements['authSessionsTableBody'];
     assert.strictEqual(tbody.children.length, 2, 'ожидались две сессии');
     const first = tbody.children[0];
     assert.ok(String(first.children[4].textContent).indexOf('192.0.2.20') >= 0, 'не показан адрес входа');

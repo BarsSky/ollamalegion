@@ -300,6 +300,48 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	p.activeStreams.Add(1)
 	defer p.activeStreams.Done()
 
+	// R251 (2026-10-28): сессия и запись монитора ОБЯЗАНЫ оставаться живыми весь
+	// стрим — здесь, а не только на нативном Ollama-пути.
+	//
+	// ЖИВОЙ ДЕФЕКТ (Cline, длинная серия tool-call'ов). Это основной путь
+	// /v1/chat/completions (hijack), и до R251 он не трогал sessionMgr вообще:
+	// LastRequestAt ставился один раз на входе запроса. Следствия ровно те, что
+	// описал оператор: сессию удалял абсолютный TTL (линия «балансер потерял
+	// клиента»), а запись клиента в мониторе вычищалась через 60 с простоя
+	// (recentClients), хотя ответ всё это время шёл. Heartbeat и флаг «идёт
+	// стрим» снимаются на любом выходе.
+	streamSessionID := ""
+	if p.config != nil && p.config.Balancing.SessionStickiness && p.sessionMgr != nil {
+		hijackModel := ""
+		if m, ok := r.Context().Value(modelContextKey).(string); ok {
+			hijackModel = m
+		}
+		streamSessionID = p.getSessionIDWithModel(r, p.getClientName(r), hijackModel)
+		if streamSessionID != "" {
+			p.sessionMgr.SetStreamActive(streamSessionID, true)
+			defer p.sessionMgr.SetStreamActive(streamSessionID, false)
+		}
+	}
+	p.markRecentClientStreamActive(r, true)
+	defer p.markRecentClientStreamActive(r, false)
+	streamHbStop := make(chan struct{})
+	defer close(streamHbStop)
+	go func() {
+		ticker := time.NewTicker(p.getHeartbeatInterval())
+		defer ticker.Stop()
+		for {
+			select {
+			case <-streamHbStop:
+				return
+			case <-ticker.C:
+				if streamSessionID != "" && p.sessionMgr != nil {
+					p.sessionMgr.HeartbeatStream(streamSessionID)
+				}
+				p.markRecentClientStreamActive(r, true)
+			}
+		}
+	}()
+
 	// 4. Polling goroutine — periodic SetReadDeadline(time.Unix(0,0)) для detect close.
 	// time.Unix(0, 0) = epoch — deadline в прошлом, read returns **немедленно**
 	// с timeout (i/o timeout). Если client closed — read returns EOF/RST (real error).

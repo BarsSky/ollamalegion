@@ -140,7 +140,7 @@
   }
 
   function renderSessions(list) {
-    var tbody = document.getElementById('sessionsTableBody');
+    var tbody = document.getElementById('authSessionsTableBody');
     if (!tbody) { return; }
     tbody.innerHTML = '';
     if (!list || !list.length) {
@@ -184,7 +184,7 @@
   }
 
   function loadSessions() {
-    var tbody = document.getElementById('sessionsTableBody');
+    var tbody = document.getElementById('authSessionsTableBody');
     if (tbody) { tbody.innerHTML = '<tr><td colspan="6" class="loading-cell">Загрузка...</td></tr>'; }
     return request('GET', '/api/v1/auth/sessions').then(function (r) {
       if (r.status !== 200) {

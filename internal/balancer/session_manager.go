@@ -11,9 +11,15 @@ import (
 type SessionManager struct {
 	sessions map[string]*types.Session
 	mu       sync.RWMutex
-	ttl      time.Duration // абсолютный TTL сессии (создания)
+	ttl      time.Duration // абсолютный TTL сессии (создания) — страховка, см. cleanup
 	idleTTL  time.Duration // TTL простоя (после последнего запроса)
-	stopCh   chan struct{}
+	// zombieThreshold — сколько может «молчать» сессия с активным стримом, прежде
+	// чем её сочтут зомби. R251: вынесено в поле и задаётся из конфига
+	// (Proxy.getZombieSessionThreshold), а не хардкодом 120 с: у длинного
+	// префилла 27B-модели пауза между чанками легально доходит до минут, и
+	// жёсткие 120 с удаляли живую сессию.
+	zombieThreshold time.Duration
+	stopCh          chan struct{}
 }
 
 // NewSessionManager - создание менеджера сессий с дефолтным TTL
@@ -32,13 +38,32 @@ func NewSessionManagerWithTTL(sessionTTL, idleTTL time.Duration) *SessionManager
 		idleTTL = 5 * time.Minute
 	}
 	sm := &SessionManager{
-		sessions: make(map[string]*types.Session),
-		ttl:      sessionTTL,
-		idleTTL:  idleTTL,
-		stopCh:   make(chan struct{}),
+		sessions:        make(map[string]*types.Session),
+		ttl:             sessionTTL,
+		idleTTL:         idleTTL,
+		zombieThreshold: defaultZombieSessionThreshold,
+		stopCh:          make(chan struct{}),
 	}
 	go sm.cleanupLoop()
 	return sm
+}
+
+// defaultZombieSessionThreshold — совместимый с прежним хардкодом дефолт.
+const defaultZombieSessionThreshold = 120 * time.Second
+
+// SetZombieThreshold — R251: задать порог «молчащей» стрим-сессии из конфига.
+//
+// Зачем сеттер, а не параметр конструктора: SessionManager создаётся в
+// NewProxy до применения конфига в тестах и в лёгких сценариях, а значения
+// AdvancedTiming читаются из p.config позже. Значение <= 0 игнорируется
+// (остаётся дефолт), чтобы «ноль в конфиге» не означал «удалять сразу».
+func (sm *SessionManager) SetZombieThreshold(d time.Duration) {
+	if sm == nil || d <= 0 {
+		return
+	}
+	sm.mu.Lock()
+	sm.zombieThreshold = d
+	sm.mu.Unlock()
 }
 
 // Stop - остановка cleanup loop
@@ -82,21 +107,36 @@ func (sm *SessionManager) cleanup() {
 	sm.mu.RLock()
 	toDelete := make([]string, 0, 16)
 	for id, session := range sm.sessions {
+		// R251 (2026-10-28): АБСОЛЮТНЫЙ TTL БОЛЬШЕ НЕ УБИВАЕТ ЖИВУЮ СЕССИЮ.
+		//
+		// ЖИВОЙ ДЕФЕКТ (Cline, длинная серия tool-call'ов). Правило
+		// `now - CreatedAt > ttl` удаляло запись через 15 минут ОТ СОЗДАНИЯ, даже
+		// если клиент работал всё это время: LastRequestAt обновлялся каждым
+		// запросом, а CreatedAt — нет. В панели это выглядело как «балансер
+		// потерял клиента»: строка сессии исчезала посреди задачи, а вместе с ней
+		// терялась привязка к бэкенду. Задача агента (создать файл, прочитать,
+		// поправить) идёт десятками минут — это штатный сценарий, а не аномалия.
+		//
+		// Теперь единственный критерий удаления — ПРОСТОЙ (idleTTL от последнего
+		// запроса). Абсолютный TTL остаётся только страховкой от сессий, которые
+		// «никогда не простаивают» из-за фонового пинга: он применяется, лишь
+		// когда простой уже превысил половину idleTTL, то есть сессия всё равно
+		// не живая.
+		idle := now.Sub(session.LastRequestAt)
 		if session.HasActiveStream {
 			// Порог зомби-сессий использует тот же параметр что и в Proxy.cleanupZombieSessions.
 			// Для session_manager нет прямого доступа к p.config, используем поле zombieThreshold
-			// которое устанавливается при создании (сейчас хардкод 120s — совместимо с дефолтом).
-			// В будущем можно прокинуть через NewSessionManagerWithTTL параметр zombieThreshold.
-			if now.Sub(session.LastRequestAt) > 120*time.Second {
+			// которое задаётся при создании (дефолт 120s — совместимо с дефолтом конфига).
+			if idle > sm.zombieThreshold {
 				toDelete = append(toDelete, id)
 			}
 			continue
 		}
-		if now.Sub(session.CreatedAt) > sm.ttl {
+		if idle > sm.idleTTL {
 			toDelete = append(toDelete, id)
 			continue
 		}
-		if now.Sub(session.LastRequestAt) > sm.idleTTL {
+		if now.Sub(session.CreatedAt) > sm.ttl && idle > sm.idleTTL/2 {
 			toDelete = append(toDelete, id)
 		}
 	}

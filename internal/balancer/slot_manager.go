@@ -34,9 +34,19 @@ func (p *Proxy) tryAcquireSlot(backendID string) bool {
 
 	if maxReqs > 0 && state.ActiveReqs >= maxReqs {
 		// Все слоты заняты — проверяем, не заняты ли они зомби-сессиями.
-		// Если на бэкенде есть зомби-сессия (HasActiveStream=true, но LastRequestAt > 60s),
-		// принудительно освобождаем слот для нового запроса.
-		zombies := p.sessionMgr.DetectZombieSessions(60 * time.Second)
+		// Если на бэкенде есть зомби-сессия (HasActiveStream=true, но LastRequestAt
+		// старше порога), принудительно освобождаем слот для нового запроса.
+		//
+		// R251 (2026-10-28): порог берём из конфига (AdvancedTiming), а не
+		// хардкодом 60 с.
+		//
+		// ЗАЧЕМ. С R251 флаг «идёт стрим» выставляется и на llama.cpp-путях (до
+		// этого он жил только на нативном Ollama-пути), а префилл большой модели с
+		// CPU-оффлоадом легко даёт паузу больше минуты ДО первого токена. С порогом
+		// 60 с живой запрос помечался зомби, его сессия удалялась, а ActiveReqs
+		// уменьшался — слот «освобождался» дважды: живой запрос продолжал занимать
+		// движок, а admission пускал на узел лишний запрос.
+		zombies := p.sessionMgr.DetectZombieSessions(p.getZombieSessionThreshold())
 		for _, zombie := range zombies {
 			if zombie.BackendID == backendID {
 				logger.Get().Warnw("preempting zombie session slot for new request",

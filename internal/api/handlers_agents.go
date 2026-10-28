@@ -306,7 +306,15 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			// Берём из записи, а если её там нет (запись пересобрана после
 			// рестарта балансера) — из persistent-override: без этого главный
 			// оставался без доноров (rpcEnabled=false), проверено живьём.
-			Role:              s.roleForBackend(req.AgentID, existing.Role),
+			Role: s.roleForBackend(req.AgentID, existing.Role),
+			// R250 (2026-10-28): «не использовать бэкенд» — тоже операторское
+			// решение, а этот путь пересобирает запись ЦЕЛИКОМ (heartbeat каждые
+			// ~30 с). Без переноса флаг снимался бы сам через полминуты после
+			// того, как оператор его поставил, — и выглядело бы как «тумблер не
+			// держится» (ровно так уже было с ролью в R118).
+			Disabled:          existing.Disabled,
+			DisabledReason:    existing.DisabledReason,
+			DisabledAt:        cloneDisabledSince(existing.DisabledAt),
 			CppWorkerApiToken: cppToken,
 			BuildInfo:         buildInfoOrKeepR101(req.BuildInfo, existing.BuildInfo),
 			Engine:            existing.Engine,

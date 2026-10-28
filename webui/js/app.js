@@ -2434,6 +2434,49 @@ const ui = (function () {
         });
     }
 
+    // R250 (2026-10-28): «не использовать бэкенд» из списка бэкендов.
+    //
+    // ЖИВАЯ ЖАЛОБА ОПЕРАТОРА: чтобы исключить узел из работы, приходилось
+    // останавливать контейнер — узел пропадал из панели (а его надо настраивать), а
+    // возврат требовал `docker start` и нового цикла регистрации. Здесь флаг
+    // ставится на ЖИВОМ узле: контейнер работает, текущие запросы доигрываются,
+    // новые не выбираются балансером.
+    //
+    // Панель обновляем ПОСЛЕ ответа сервера (перечитываем состав кластера), а не
+    // оптимистично: иначе при отказе бейдж «исключён» показывал бы неправду.
+    function toggleBackendEnabled(backendId, disabledNow) {
+        var willEnable = !!disabledNow; // кнопка в строке выключенного узла — «Включить»
+        Api.setBackendEnabled(backendId, willEnable).then(function(resp) {
+            var isOff = !!(resp && resp.enabled === false);
+            var loaded = (resp && resp.loadedModels) || [];
+            var text = backendId + ': ' + (window.I18N
+                ? I18N.t(isOff ? 'backends.excluded' : 'backends.use_on')
+                : (isOff ? 'excluded' : 'enabled'));
+            // Модель на исключённом узле остаётся загруженной: выгрузка — отдельное
+            // действие (страница моделей), и молчать об этом нельзя — «выключил, а
+            // GPU занята» выглядит поломкой.
+            if (isOff && loaded.length) {
+                text += ' · ' + (window.I18N ? I18N.t('merge.useStillLoaded') : 'model stays loaded') +
+                    ': ' + loaded.join(', ');
+            }
+            showToast(text, isOff ? 'info' : 'success');
+            addLog('backend ' + backendId + (isOff
+                ? ' excluded from balancer selection'
+                : ' returned to balancer selection'), 'info');
+            if (resp && resp.persisted === false && resp.warning) {
+                showToast(String(resp.warning), 'warning');
+            }
+            return fetchClusterState();
+        }).then(function() {
+            if (currentPage === 'backends') {
+                backendsPage(filterBackendsForUI(data.backends));
+            }
+        }).catch(function(err) {
+            showToast((window.I18N ? I18N.t('merge.useFailed') : 'Failed to toggle usage') +
+                ': ' + ((err && err.message) || err), 'error');
+        });
+    }
+
     function viewAgentLogs(backendId) {
         showToast((window.I18N ? I18N.t('agents.loading_logs') : 'Loading logs...'), 'info');
         Api.agentLogs(backendId, 200).then(function(data) {
@@ -3128,6 +3171,8 @@ const ui = (function () {
         showAgentDetails,
         fetchAgents,
         restartAgent,
+        // R250: «не использовать бэкенд» из списка бэкендов (кнопка в строке)
+        toggleBackendEnabled,
         viewAgentLogs,
         // Models tab UI helpers (Roadmap Q3 W3-4: Filter/Search)
         filterModels,

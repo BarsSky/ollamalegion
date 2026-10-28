@@ -101,6 +101,18 @@ type BackendMetrics struct {
 	RuntimeRequestTimeout int      `json:"runtimeRequestTimeout"` // Runtime-значение (адаптивное)
 	EffectiveTimeout      int      `json:"effectiveTimeout"`      // Эффективный таймаут (макс. приоритет)
 	WarmingUpModels       []string `json:"warmingUpModels"`       // Модели в превентивной загрузке
+
+	// Disabled — R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
+	//
+	// ЗАЧЕМ В МЕТРИКАХ КЛАСТЕРА, а не только в записи бэкенда. Панель (Dashboard,
+	// карточка бэкенда, Monitor) читает состав кластера, а не /api/v1/backends:
+	// без этих полей выключенный узел выглядел бы в ней обычным рабочим, и
+	// оператор не понимал бы, почему на него не идут запросы. Флаг здесь — это
+	// КОПИЯ поля Backend.Disabled на момент снятия снапшота, а не второе состояние.
+	Disabled       bool   `json:"disabled,omitempty"`
+	DisabledReason string `json:"disabledReason,omitempty"`
+	// DisabledSince — момент выключения (UTC, RFC3339). Пусто = не выключен.
+	DisabledSince string `json:"disabledSince,omitempty"`
 }
 
 // GPUMetrics - метрики GPU

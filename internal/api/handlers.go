@@ -11,6 +11,7 @@ import (
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/config"
 	"ollama-loadbalancer/internal/i18n"
+	"ollama-loadbalancer/internal/runtimeoverrides"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 
@@ -56,6 +57,13 @@ type Server struct {
 	// записи её ещё нет.
 	backendRolesMu sync.Mutex
 	backendRoles   map[string]string
+	// R250 (2026-10-28): решения оператора «не использовать бэкенд», снятые с
+	// диска (runtime-overrides/backend-disabled.json). Запись бэкенда
+	// пересобирается саморегистрацией агента и heartbeat'ом, поэтому флаг
+	// подставляется из этой карты, а не только живёт в записи (та же причина,
+	// что у ролей выше).
+	backendDisabledMu sync.Mutex
+	backendDisabled   map[string]runtimeoverrides.BackendDisabledRecord
 	// baseLlamaCpp — snapshot LlamaCppConfig из config.json ПРИ СТАРТЕ (до
 	// применения override). Используется для "Reset to bundled defaults":
 	// после DELETE override мы восстанавливаем s.config.LlamaCpp из этого
@@ -126,6 +134,9 @@ func (s *Server) SetOverridesStore(store OverridesStore, baseSnapshot *types.Lla
 	// R118: сразу поднимаем сохранённые роли бэкендов — иначе после перезапуска
 	// балансера они терялись (config.json readonly, запись пересобирается агентом).
 	s.restoreBackendRoles()
+	// R250: то же для решения «не использовать бэкенд» — флаг принадлежит
+	// оператору и обязан пережить и рестарт, и перерегистрацию агента.
+	s.restoreBackendDisabled()
 }
 
 // GetConfig — возвращает текущую конфигурацию (для тестов и отладки)

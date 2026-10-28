@@ -200,7 +200,11 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 	}
 	// RPC Module: Model Replication — если модель в группе репликации, выбираем из реплик
 	if p.replicationSelector != nil {
-		if selected := p.replicationSelector.Select(model); selected != "" {
+		// R250: репликатор живёт отдельно от селектора и о флаге «не использовать»
+		// не знает. Проверяем результат — иначе выключенный узел продолжал бы
+		// получать запросы в обход всех фильтров ниже (это был бы тот же живой
+		// дефект, только в другом месте).
+		if selected := p.replicationSelector.Select(model); selected != "" && !p.backendDisabled(selected) {
 			logger.Get().Infow("routed through model replication",
 				"model", model, "backend", selected)
 			return selected
@@ -211,13 +215,21 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 	// и маршрутизируется только его мастер. Если группа не готова, функция
 	// возвращает "" и запрос идёт обычным путём (честная деградация уже решена
 	// политикой в ServeHTTP: 503 либо fallback=single).
-	if master := p.shardedMasterForRequestR92(model, bt); master != "" {
+	//
+	// R250: мастер, исключённый оператором, запросов не получает (см. выше про
+	// репликацию — та же причина).
+	if master := p.shardedMasterForRequestR92(model, bt); master != "" && !p.backendDisabled(master) {
 		return master
 	}
 
 	allowedTypes := p.getAllowedTypesList(bt)
 
 	candidates := p.expandCandidates(model, allowedTypes)
+	if len(candidates) == 0 {
+		// R250: различить «нет здоровых» и «все выключены оператором». Без этого
+		// 503 в логе не объясняет, что причину создал сам оператор галочкой.
+		p.warnIfAllCandidatesDisabled(model, allowedTypes)
+	}
 
 	// 1. Model Affinity (LOADED) — P1
 	// Выбираем лучший бэкенд по score среди loaded-кандидатов с loadRatio < threshold
@@ -364,6 +376,12 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 		if p.isGroupWorkerR92(id) {
 			continue
 		}
+		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
+		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
+		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		if isDisabledBackendState(state) {
+			continue
+		}
 		if exclude[id] {
 			continue
 		}
@@ -443,6 +461,12 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool, allowedTypes
 		if p.isGroupWorkerR92(id) {
 			continue
 		}
+		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
+		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
+		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		if isDisabledBackendState(state) {
+			continue
+		}
 		if exclude[id] {
 			continue
 		}
@@ -515,6 +539,12 @@ func (p *Proxy) findLeastLoadedBackendWithModel(modelName string, allowedTypes [
 		if p.isGroupWorkerR92(id) {
 			continue
 		}
+		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
+		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
+		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		if isDisabledBackendState(state) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
@@ -563,6 +593,12 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
 		if p.isGroupWorkerR92(id) {
+			continue
+		}
+		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
+		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
+		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		if isDisabledBackendState(state) {
 			continue
 		}
 		if id == excludeBackendID {
@@ -622,6 +658,12 @@ func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string, all
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
 		if p.isGroupWorkerR92(id) {
+			continue
+		}
+		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
+		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
+		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		if isDisabledBackendState(state) {
 			continue
 		}
 		if id == excludeBackendID {
@@ -725,6 +767,12 @@ func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.Back
 		if p.isGroupWorkerR92(id) {
 			continue
 		}
+		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
+		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
+		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		if isDisabledBackendState(state) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
@@ -784,6 +832,12 @@ func (p *Proxy) findWarmingBackendForModelUnsafe(model string) string {
 		if p.isGroupWorkerR92(id) {
 			continue
 		}
+		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
+		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
+		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		if isDisabledBackendState(state) {
+			continue
+		}
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
@@ -806,6 +860,12 @@ func (p *Proxy) findFreeBackendForModelUnsafe(model string, allowedTypes []types
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
 		if p.isGroupWorkerR92(id) {
+			continue
+		}
+		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
+		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
+		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		if isDisabledBackendState(state) {
 			continue
 		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
@@ -865,6 +925,12 @@ func (p *Proxy) selectFreeBackendAny(allowedTypes []types.BackendType) string {
 		if p.isGroupWorkerR92(id) {
 			continue
 		}
+		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
+		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
+		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		if isDisabledBackendState(state) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}
@@ -922,6 +988,12 @@ func (p *Proxy) selectByResources(allowedTypes []types.BackendType) string {
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
 		if p.isGroupWorkerR92(id) {
+			continue
+		}
+		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
+		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
+		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
+		if isDisabledBackendState(state) {
 			continue
 		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {

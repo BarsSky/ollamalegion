@@ -354,6 +354,20 @@ const Api = (function () {
             return getJson(`/api/v1/agents/${encodeURIComponent(backendId)}/logs?limit=${limit}`);
         },
 
+        // R250 (2026-10-28): «не использовать бэкенд» из списка бэкендов.
+        //
+        // ЗАЧЕМ ОТДЕЛЬНЫЙ МЕТОД, А НЕ updateBackend: PUT /api/v1/backends/{id}
+        // пересобирает запись и требует остальных полей; здесь же меняется РОВНО
+        // один флаг (enabled), а балансер отвечает сразу и без обращений к узлу.
+        // Именно поэтому выключить можно и недоступный узел.
+        async setBackendEnabled(backendId, enabled, reason) {
+            const response = await request(`${API_BASE}/api/v1/backends/${encodeURIComponent(backendId)}/enabled`, {
+                method: 'POST',
+                body: JSON.stringify({ enabled: !!enabled, reason: reason || '' })
+            });
+            return response.json();
+        },
+
         // Config reset to defaults
         async resetConfig() {
             const response = await request(`${API_BASE}/api/v1/config/reset`, {

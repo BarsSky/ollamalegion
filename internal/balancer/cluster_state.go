@@ -101,6 +101,12 @@ func (p *Proxy) GetClusterState() *types.ClusterState {
 			RequestTimeout:                 backendConfig.RequestTimeout,
 			RuntimeRequestTimeout:          runtimeTimeout,
 			EffectiveTimeout:               effectiveTimeout,
+			// R250 (2026-10-28): «не использовать бэкенд» — копия операторского
+			// решения в снапшоте кластера. Панель рисует состояние из него, и без
+			// этих полей выключенный узел выглядел бы рабочим.
+			Disabled:       backendConfig.Disabled,
+			DisabledReason: backendConfig.DisabledReason,
+			DisabledSince:  disabledSinceRFC3339(backendConfig.DisabledAt),
 		}
 
 		// R-Image (2026-10-02): image-бэкенд обязан быть виден в Monitor/WebUI

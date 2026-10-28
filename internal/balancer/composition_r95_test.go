@@ -136,17 +136,51 @@ func TestValidateCompositionR95_ProbesRPCPort(t *testing.T) {
 	}
 }
 
+// TestValidateCompositionR95_UsesLiveVRAMAndRAM — живые метрики узлов реально
+// участвуют в оценке группы.
+//
+// R249 (2026-10-28) ИЗМЕНИЛ КОНТРАКТ, и этот тест обязан его догонять: раньше
+// «суммарной VRAM не хватает» было ОШИБКОЙ (vram_sum_insufficient). Но веса,
+// которые не влезают в VRAM, влезают в VRAM+RAM (mmap / частичный offload), и
+// модель реально запускается — медленнее, но запускается. Поэтому теперь два
+// разных исхода:
+//   - VRAM не хватает, а VRAM+RAM хватает → warning weights_need_ram_offload
+//     (деградация, оператор видит, что будет медленно);
+//   - не хватает и VRAM+RAM → error vram_sum_insufficient (жёсткий отказ).
+//
+// Тест держит ОБА исхода: иначе легко вернуться к «отказ там, где всё работает»
+// (живая жалоба, из-за которой R249 и делался) или потерять сам отказ.
 func TestValidateCompositionR95_UsesLiveVRAMAndRAM(t *testing.T) {
-	// Узлы по 4 ГиБ VRAM: суммы (8 ГиБ) не хватает на модель 8 ГиБ (need 10 ГиБ).
+	// Узлы по 4 ГиБ VRAM и 16 ГиБ RAM: VRAM (8 ГиБ) не хватает на модель 8 ГиБ
+	// (need 10 ГиБ), а VRAM+RAM (40 ГиБ) хватает.
 	p := compositionProxyR95(t, 4096, 16384)
 	report := p.ValidateCompositionR95(compositionRequestR95(listenR95(t), 8<<30))
 
-	issue, found := issueForR95(report, composition.CheckVRAMSumInsufficient)
+	issue, found := issueForR95(report, composition.CheckWeightsNeedRAMOffload)
 	if !found {
-		t.Fatalf("VRAM узлов учитывается: %s", report.String())
+		t.Fatalf("VRAM+RAM узлов учитывается: %s", report.String())
+	}
+	if issue.Level != composition.LevelWarning {
+		t.Errorf("уровень = %q, ожидалось warning: с RAM модель запускается, это деградация, а не отказ",
+			issue.Level)
 	}
 	if !strings.Contains(issue.Text, "8.0") || !strings.Contains(issue.Text, "10.0") {
 		t.Errorf("в тексте должны быть числа из живых метрик (сумма 8.0, нужно 10.0): %s", issue.Text)
+	}
+
+	// Жёсткий отказ остаётся там, где он уместен: RAM неизвестна (узел не
+	// сообщает системные метрики), значит гарантировать offload нечем.
+	unknown := compositionProxyR95(t, 4096, 0)
+	report = unknown.ValidateCompositionR95(compositionRequestR95(listenR95(t), 8<<30))
+	if _, found := issueForR95(report, composition.CheckWeightsNeedRAMOffload); found {
+		t.Errorf("при неизвестной RAM обещать offload нельзя: %s", report.String())
+	}
+	hard, found := issueForR95(report, composition.CheckVRAMSumInsufficient)
+	if !found {
+		t.Fatalf("без RAM нехватка VRAM — это Error: %s", report.String())
+	}
+	if hard.Level != composition.LevelError {
+		t.Errorf("уровень = %q, ожидалось error", hard.Level)
 	}
 
 	// Та же пара узлов, но модель 2 ГиБ — влезает (need 2.5 ГиБ < 4 ГиБ),

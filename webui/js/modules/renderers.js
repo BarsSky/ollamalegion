@@ -1,4 +1,4 @@
-﻿/**
+/**
  * UI Renderers — all HTML generation in one place
  */
 const Renderers = (function () {
@@ -1192,12 +1192,17 @@ const Renderers = (function () {
                     <td>${badge(b.hasAgent ? _t('common.yes') : _t('common.no'), b.hasAgent ? 'success' : 'warning')}</td>
                     <td>${escapeHtml(labels)}</td>
                     <td>${escapeHtml(lastContact)}</td>
-                    <td>${statusBadge(b.status)}</td>
+                    <td>${statusBadge(b.status)}${b.disabled
+                        ? ' <span class="badge badge-warning" title="' +
+                          escapeHtml(b.disabledReason || _t('backends.excluded_hint')) + '">' +
+                          escapeHtml(_t('backends.excluded')) + '</span>'
+                        : ''}</td>
                     <td class="col-right" style="min-width:140px;max-width:240px;">${loadingCell}</td>
                     <td>
                         <button class="action-btn edit" data-admin-only onclick="event.stopPropagation(); ui.editBackend('${safeId}')">${_t('common.edit')}</button>
                         <button class="action-btn delete" data-admin-only onclick="event.stopPropagation(); ui.confirmDeleteBackend('${safeId}')">${_t('common.delete')}</button>
                         <button class="action-btn model" data-admin-only onclick="event.stopPropagation(); ui.openModelManageModal('${safeId}')" title="${_t('models.manage_title')}">${_t('models.manage_action')}</button>
+                        <button class="action-btn" data-admin-only onclick="event.stopPropagation(); ui.toggleBackendEnabled('${safeId}', ${b.disabled ? 'true' : 'false'})" title="${b.disabled ? _t('backends.use_on_hint') : _t('backends.use_off_hint')}">${b.disabled ? _t('backends.use_on') : _t('backends.use_off')}</button>
                     </td>
                 </tr>
                 <tr class="be-detail-row" id="${rowId}" style="display:none;">

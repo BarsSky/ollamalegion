@@ -713,6 +713,100 @@ const backendList = {
         currentLang = 'ru';
     });
 
+    // --- R250: «не использовать бэкенд» ----------------------------------
+
+    check('R250: в таблице узлов есть колонка «В работе» и тумблер', function () {
+        assert.ok(MODULE_SRC.indexOf('merge.col.use') >= 0,
+            'без заголовка колонка тумблера выглядит набором безымянных квадратиков');
+        assert.ok(/id="bmDisabled"/.test(MODULE_SRC), 'тумблер должен иметь id bmDisabled (по нему ловим событие)');
+        assert.ok(MODULE_SRC.indexOf('/enabled') >= 0, 'модуль обязан звать POST /api/v1/backends/{id}/enabled');
+        assert.ok(RU['merge.useOff'] && EN['merge.useOff'], 'merge.useOff должен быть переведён');
+        assert.ok(RU['merge.useStillLoaded'] && EN['merge.useStillLoaded'],
+            'о том, что модель осталась загруженной, надо предупреждать на обоих языках');
+    });
+
+    check('R250: выключенный узел приглушён и не выбирается', function () {
+        const html = BM.panelHtml({
+            lang: 'ru', backends: [
+                { id: 'node-a', host: 'h1', type: 'llama_cpp', role: '', disabled: false },
+                { id: 'node-b', host: 'h2', type: 'llama_cpp', role: '', disabled: true, disabledReason: 'греется' },
+            ], selected: {}, masterId: '', strategy: 'layer', model: '', sizeBytes: 0,
+            hiddenSize: 0, layers: 0, nCtx: 0, plan: null, report: null, result: null,
+            errorKey: '', busy: false, roleBusy: '', roleHint: '', flagBusy: '', flagHint: '',
+        });
+        assert.ok(html.indexOf('bm-row-off') >= 0, 'выключенная строка должна быть помечена (приглушена)');
+        // У выключенного узла контролы набора и мастера выключены: сервер его не
+        // выберет, поэтому активные контролы обещали бы оператору лишнее.
+        const disabledInputs = (html.match(/ disabled>/g) || []).length;
+        assert.ok(disabledInputs >= 2, 'чекбокс набора и радио мастера выключенного узла должны быть disabled: ' + disabledInputs);
+        assert.ok(html.indexOf('греется') >= 0, 'оператор должен видеть причину выключения');
+        assert.ok(html.indexOf('merge.useReason') < 0, 'сырой ключ перевода в панели недопустим');
+    });
+
+    check('R250: подсказка результата переключения реально рисуется', function () {
+        // R249 записывал подсказку в state.roleHint, но нигде её не показывал:
+        // оператор менял роль и не видел ни результата, ни причины отказа.
+        BM.state.roleHint = 'role=donor';
+        BM.state.flagHint = '';
+        BM.render();
+        assert.ok(panel.innerHTML.indexOf('role=donor') >= 0,
+            'подсказка о смене роли обязана попадать в панель: ' + panel.innerHTML.slice(0, 200));
+        BM.state.roleHint = '';
+    });
+
+    await checkAsync('R250: тумблер шлёт POST /enabled и отражает ответ', async function () {
+        BM.reset();
+        routes = {
+            'GET /api/v1/backends': backendList,
+            'GET /api/v1/placement': currentState,
+            'POST /api/v1/backends/node-a/enabled': {
+                status: 200,
+                body: {
+                    status: 'updated', backend: 'node-a', enabled: false, disabled: true,
+                    reason: 'исключён оператором в панели раскладки',
+                    loadedModels: ['qwen3:14b'], loadedModelCnt: 1, persisted: true,
+                },
+            },
+        };
+        calls.length = 0;
+        await BM.mount('backendMergePanel');
+        calls.length = 0;
+
+        BM.state.selected['node-a'] = true;
+        BM.state.masterId = 'node-a';
+        await BM.setBackendDisabled('node-a', true);
+
+        const posts = calls.filter(function (c) { return c.method === 'POST'; });
+        assert.strictEqual(posts.length, 1, 'ровно один POST за переключение');
+        assert.ok(/\/api\/v1\/backends\/node-a\/enabled$/.test(posts[0].url), 'путь: ' + posts[0].url);
+        assert.strictEqual(posts[0].body.enabled, false, 'в теле «не использовать» = enabled:false');
+        assert.ok(posts[0].body.reason, 'решение оператора должно уходить с причиной (аудит)');
+
+        const nodeA = BM.state.backends.filter(function (b) { return b.id === 'node-a'; })[0];
+        assert.strictEqual(nodeA.disabled, true, 'состояние панели должно отражать ответ сервера');
+        assert.strictEqual(BM.state.selected['node-a'], undefined,
+            'выключенный узел не может остаться в наборе группы');
+        assert.strictEqual(BM.state.masterId, '', 'выключенный узел не может остаться мастером');
+        assert.ok(panel.innerHTML.indexOf('bm-row-off') >= 0, 'строка должна стать приглушённой');
+        assert.ok(panel.innerHTML.indexOf('qwen3:14b') >= 0,
+            'если модель осталась на узле, оператор должен об этом узнать: ' + panel.innerHTML.slice(0, 300));
+    });
+
+    await checkAsync('R250: отказ сервера не проглатывается', async function () {
+        BM.reset();
+        routes = {
+            'GET /api/v1/backends': backendList,
+            'POST /api/v1/backends/node-a/enabled': { status: 500, body: { error: 'boom' } },
+        };
+        await BM.mount('backendMergePanel');
+        await BM.setBackendDisabled('node-a', true);
+        assert.strictEqual(BM.state.errorKey, 'merge.useFailed', 'отказ должен попадать в состояние панели');
+        assert.ok(panel.innerHTML.indexOf('Не удалось переключить') >= 0,
+            'оператор обязан увидеть отказ, а не «ничего не произошло»');
+        const nodeA = BM.state.backends.filter(function (b) { return b.id === 'node-a'; })[0];
+        assert.ok(!nodeA || nodeA.disabled !== true, 'при отказе сервера флаг в панели менять нельзя');
+    });
+
     // --- итог -------------------------------------------------------------
 
     console.log('\n' + passed + ' passed, ' + failures.length + ' failed');

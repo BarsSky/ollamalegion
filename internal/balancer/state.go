@@ -121,6 +121,15 @@ func (p *Proxy) LoadState() error {
 				p.config.Backends[i].NodeAddr = saved.NodeAddr
 			}
 
+			// R250 (2026-10-28): флаг «не использовать бэкенд» — решение оператора.
+			// LoadState переносит поля ПО СПИСКУ, поэтому без этих строк флаг
+			// терялся бы при каждом рестарте балансера (config.json в bundled-
+			// развёртывании read-only и флага не содержит). Причина и момент — часть
+			// решения: в панели должно остаться «выключен тогда-то, потому что…».
+			p.config.Backends[i].Disabled = saved.Disabled
+			p.config.Backends[i].DisabledReason = saved.DisabledReason
+			p.config.Backends[i].DisabledAt = cloneTimePtr(saved.DisabledAt)
+
 			if bs, exists := p.backends[p.config.Backends[i].ID]; exists {
 				bs.Backend = &p.config.Backends[i]
 			}

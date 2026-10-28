@@ -432,6 +432,35 @@ select.form-control {
     margin-top: var(--space-5);
 }
 
+/* R250 (2026-10-28): узел, исключённый из выбора балансером.
+   Строка остаётся в таблице (иначе узел не включить обратно), но приглушена, а
+   контролы набора и мастера у неё выключены: панель не должна обещать того, чего
+   балансер не сделает. */
+#backendMergePanel .bm-row-off {
+    opacity: 0.55;
+}
+
+#backendMergePanel .bm-col-use {
+    width: 120px;
+    white-space: nowrap;
+}
+
+#backendMergePanel .bm-use {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    cursor: pointer;
+}
+
+#backendMergePanel .bm-use-reason {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+}
+
+#backendMergePanel .bm-action-hint {
+    margin-top: var(--space-2);
+}
+
 /* ===== 9. Sidebar nav: consistent icon column ===== */
 .nav-item {
     gap: var(--space-3);

@@ -114,6 +114,7 @@ Section 5 described manual configuration of the node list. Starting with R133 th
 | the composition of the node list on the main backend | the balancer (assembles it from the roles, checks liveness, turns the layout off if there are none alive) | `rpcLayout` in `/api/v1/backends` |
 | whether `rpc-server` is up ON THE DONOR ITSELF | the balancer sends the donor an order (`rpcServerEnabled=true`) | `rpcNode` in `/api/v1/backends` |
 | whether the decision will survive container recreation | the worker's operator overrides file (takes priority over env) | `/api/v1/cppworker/config` |
+| whether the balancer uses the node at all (R250) | the operator in the panel (`POST /api/v1/backends/{id}/enabled` with `{"enabled":false,"reason":"..."}`) | `disabled` / `disabledReason` / `disabledSince` in `/api/v1/backends`, the "In use" toggle in the node table and the "Excluded" badge in the backends list |
 
 Why so. Before R133 the `donor` role worked one-way: the node list
 was sent to the main backend, but the donor itself received nothing — its `rpc-server` was brought up
@@ -140,6 +141,36 @@ The rules that follow from this:
   collected snapshot, and the `vram_remote_source` field distinguishes `none` ("on this
   endpoint the nodes were not measured"), `cache` and `probed`. Dialing remains only on the
   decision path — there the donor's capacity is needed as the basis.
+
+## 6b. "Do not use this backend" without stopping the node (R250, 2026-10-28)
+
+Live complaint. To take a node out of service the operator had to `docker stop` it or drop
+its role. Both are crude: a stopped node disappears from the panel (and it has to be tuned
+while it is out), while dropping the role breaks the layout the node belongs to.
+
+What it is now. `POST /api/v1/backends/{id}/enabled` with `{"enabled":false,"reason":"..."}`
+sets a flag in the backend record (`Disabled` + `DisabledReason` + `DisabledAt`). The flag is
+read by the **selector only**:
+
+* a disabled backend is not a candidate (`expandCandidates`, `selectBackend`,
+  `selectByResources`, `selectBackendExcluding` and the "manual" searches for a node under a
+  model or for a relocation), it does not become the layout master and is not handed out by
+  replication;
+* it **stays** in `GET /api/v1/backends`, in the cluster snapshot (the `disabled` /
+  `disabledSince` fields of `BackendMetrics`), in metrics and in the layout — the operator
+  must see the node to switch it back on;
+* requests already running on it are **not interrupted**: the flag affects selection only,
+  and cutting a live generation because of a checkbox is worse than finishing it;
+* the response also reports `loadedModels`: a model that is running on the node stays loaded,
+  and the panel says so instead of leaving the operator with "I disabled it, why is the GPU
+  busy".
+
+Persistence is the same as for roles: the record is rebuilt by agent self-registration and
+heartbeat, so the decision also lives in the sidecar
+`runtime-overrides/backend-disabled.json`, and the balancer periodically returns the flag into
+records that lost it. "Enabled" is a decision too, and it overrides stale "disabled" in
+`state.json`. The cause of "no candidates" is now distinguishable in the log: all matching
+backends excluded by the operator is a separate message, not silence.
 
 ## 7. The live cause of the crashes is a SECOND connection to the node (not versions)
 

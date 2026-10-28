@@ -570,6 +570,21 @@ func (s *Server) backendHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Подпуть /enabled — R250 (2026-10-28): «не использовать бэкенд».
+	// Тумблер, который исключает узел из выбора балансером, НЕ останавливая его:
+	// узел остаётся в списке, в метриках и в раскладке, но перестаёт получать
+	// новые запросы. Ответ приходит сразу — здесь нет ни одного вызова к узлу,
+	// а именно недоступный узел чаще всего и выключают.
+	if len(parts) > 1 && parts[1] == "enabled" {
+		switch r.Method {
+		case http.MethodGet, http.MethodPost, http.MethodPut:
+			s.backendEnabled(w, r, backendID)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	// Подпуть /measure-link — R118.15 (2026-10-14): измерить канал до узла
 	// раскладки СЕЙЧАС (кнопка «Проверить канал» в панели). Балансер качает
 	// известный объём с cppworker'а узла и считает Мбит/с; результат попадает в
@@ -734,6 +749,13 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			// состояние тумблера, а не догадка по роли — иначе после «выкл» он выглядел
 			// бы включённым, потому что роль главного осталась прежней.
 			"rpcEnabledOverride": s.proxy.RPCEnabledOverrideMode(backend.ID),
+			// R250 (2026-10-28): «не использовать бэкенд». Флаг отдаётся в СПИСКЕ,
+			// а не только в ответе тумблера: панель рисует состояние из списка, и
+			// без этих полей выключенный узел выглядел бы рабочим. disabledSince —
+			// как давно выключен; пусто = включён.
+			"disabled":       backend.Disabled,
+			"disabledReason": backend.DisabledReason,
+			"disabledSince":  disabledSinceRFC3339(backend.DisabledAt),
 			// R118 (2026-10-14): замер пропускной способности канала до узлов
 			// раскладки — из окружения балансера (LB_RPC_LINK_*), потому что
 			// измерить его из процесса нельзя: число даёт оператор scripts/
@@ -1758,6 +1780,13 @@ func (s *Server) updateBackend(w http.ResponseWriter, r *http.Request, backendID
 		// путь (PUT/правка бэкенда) пересобирает запись целиком, поэтому роль
 		// переносим (как Runtime*-поля и Engine выше).
 		Role: s.roleForBackend(backendID, existing.Role),
+		// R250 (2026-10-28): «не использовать бэкенд» — тоже операторское решение,
+		// и этот путь пересобирает запись ЦЕЛИКОМ. Без переноса обычное
+		// сохранение бэкенда из WebUI (например «Auto-detect cppworker port»)
+		// молча возвращало выключенный узел в работу.
+		Disabled:       existing.Disabled,
+		DisabledReason: existing.DisabledReason,
+		DisabledAt:     cloneDisabledSince(existing.DisabledAt),
 	}
 
 	// Обновление бэкенда в прокси

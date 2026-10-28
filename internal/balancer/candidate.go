@@ -53,6 +53,15 @@ func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendT
 			continue
 		}
 
+		// R250 (2026-10-28): «не использовать бэкенд» — узел выключен оператором.
+		// Здесь фильтр важнее всех прочих: expandCandidates — это ОБЩИЙ вход
+		// селектора (P1..P4), через него же выбирается узел для загрузки модели
+		// (dispatchWithModelLoad). Без этой проверки выключенный узел мог получить
+		// загрузку модели, то есть занять VRAM, которая оператору не нужна.
+		if isDisabledBackendState(state) {
+			continue
+		}
+
 		// Фильтрация по типу бэкенда
 		if len(allowedTypes) > 0 {
 			bt := normalizeBackendType(state.Backend.Type)

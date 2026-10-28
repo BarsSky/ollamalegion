@@ -64,7 +64,7 @@
     <link rel="stylesheet" href="css/demo.css?v=R232">
     <!-- R239: финальный слой полировки. Грузится последним, чтобы выровнять
          ритм/типографику/геометрию контролов поверх старых правил. -->
-    <link rel="stylesheet" href="css/polish.css?v=R239">
+    <link rel="stylesheet" href="css/polish.css?v=R250">
 </head>
 <body>
     <div class="app">
@@ -2459,8 +2459,8 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <div class="toast-container" id="toastContainer"></div>
 
     <!-- i18n Language Packs -->
-    <script defer src="js/i18n/ru.js?v=R83"></script>
-    <script defer src="js/i18n/en.js?v=R83"></script>
+    <script defer src="js/i18n/ru.js?v=R250"></script>
+    <script defer src="js/i18n/en.js?v=R250"></script>
     <script defer src="js/i18n/index.js?v=R83"></script>
     <!-- Runtime config injected by entrypoint for Docker / local nginx -->
     <script defer>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
@@ -2515,7 +2515,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          Загружается ДО renderers.js: его renderOllamaParams/renderImageParams
          вызывают window.ClientAccess.render(backend). -->
     <script defer src="js/modules/client-access.js?v=R83"></script>
-    <script defer src="js/modules/api.js?v=R83"></script>
+    <script defer src="js/modules/api.js?v=R250"></script>
     <!-- R234: язык логов и ошибок (GET/PUT /api/v1/i18n). Нужен admin-доступ. -->
     <script defer src="js/modules/i18n-logs.js?v=R234"></script>
     <script defer src="js/modules/gguf-api.js?v=R83"></script>
@@ -2548,10 +2548,10 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          — форма на табе «Обзор» страницы «Image-модели». -->
     <script defer src="js/modules/image-resources-policy.js?v=R83"></script>
     <script defer src="js/modules/websocket.js?v=R83"></script>
-    <script defer src="js/modules/renderers.js?v=R83"></script>
+    <script defer src="js/modules/renderers.js?v=R250"></script>
     <!-- R102 (2026-10-10, S6 плана 2026-10-07): окно «Объединение бэкендов».
          Модуль сам монтируется в #backendMergePanel на странице «Бэкенды». -->
-    <script defer src="js/modules/backend-merge.js?v=R102"></script>
+    <script defer src="js/modules/backend-merge.js?v=R250"></script>
     <!-- R103 (S5 плана 2026-10-07): шаг мастера «состав кластера» — план с числами
          и запись balancing.placement. Монтируется мастером в #setupPlanPanel. -->
     <script defer src="js/modules/setup-plan.js?v=R103"></script>
@@ -2600,6 +2600,6 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
          confirmDeleteBackend) via window.BackendCRUD. Loaded BEFORE app.js
          so window.ui public API can reference these at IIFE return time. -->
     <script defer src="js/app-modals.js?v=R83"></script>
-    <script defer src="js/app.js?v=R83"></script>
+    <script defer src="js/app.js?v=R250"></script>
 </body>
 </html>

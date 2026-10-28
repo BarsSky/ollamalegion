@@ -45,7 +45,13 @@
         report: null,
         result: null,
         errorKey: '',
-        busy: false
+        busy: false,
+        // R249/R250: результат последнего переключения настройки узла (роль /
+        // «не использовать») и узел, по которому сейчас идёт запрос.
+        roleBusy: '',
+        roleHint: '',
+        flagBusy: '',
+        flagHint: ''
     };
 
     // --- i18n и сеть ------------------------------------------------------
@@ -312,15 +318,27 @@
             '<th>' + escapeHtml(T('merge.col.type')) + '</th>' +
             '<th class="bm-col-master">' + escapeHtml(T('merge.col.master')) + '</th>' +
             '<th>' + escapeHtml(T('merge.col.role')) + '</th>' +
+            // R250 (2026-10-28): «не использовать бэкенд». Колонка рядом с ролью,
+            // потому что это та же категория решения: участвует ли узел в работе.
+            '<th class="bm-col-use">' + escapeHtml(T('merge.col.use')) + '</th>' +
             '</tr></thead><tbody>' + st.backends.map(function (b) {
             var checked = st.selected[b.id] ? ' checked' : '';
             var isMaster = st.masterId === b.id || (!st.masterId && selectedIDs(st)[0] === b.id);
-            return '<tr><td><input type="checkbox" id="bmBackend" data-backend="' + escapeHtml(b.id) + '"' + checked + '></td>' +
+            // R250: выключенный узел виден, но НЕ выбирается: ни чекбоксом набора,
+            // ни мастером. Сервер такого узла всё равно не выберет, поэтому
+            // оставлять активные контролы значило бы обещать оператору больше,
+            // чем балансер сделает.
+            var off = !!b.disabled;
+            var rowCls = off ? ' class="bm-row-off"' : '';
+            var offAttr = off ? ' disabled' : '';
+            var toggleBusy = st.flagBusy === b.id ? ' disabled' : '';
+            var useTitle = off ? T('merge.useOffHint') : T('merge.useOnHint');
+            return '<tr' + rowCls + '><td><input type="checkbox" id="bmBackend" data-backend="' + escapeHtml(b.id) + '"' + checked + offAttr + '></td>' +
                 '<td>' + escapeHtml(b.id) + '</td>' +
                 '<td>' + escapeHtml(b.host || '') + '</td>' +
                 '<td>' + escapeHtml(b.type || '') + '</td>' +
                 '<td><input type="radio" name="bmMaster" id="bmMaster" data-backend="' + escapeHtml(b.id) + '"' +
-                (isMaster ? ' checked' : '') + '></td>' +
+                (isMaster ? ' checked' : '') + offAttr + '></td>' +
                 // R249 (2026-10-28): роль узла в раскладке. Раньше контрола не было
                 // вовсе, и оператор не мог «поставить галочку донор» — серверный API
                 // при этом существовал. Смена роли не блокирует панель: узел
@@ -338,8 +356,31 @@
                     };
                     var label = labelMap[r] || r;
                     return '<option value="' + r + '"' + sel + '>' + escapeHtml(label) + '</option>';
-                }).join('') + '</select></td></tr>';
+                }).join('') + '</select></td>' +
+                '<td class="bm-col-use"><label class="bm-use" title="' + escapeHtml(useTitle) + '">' +
+                '<input type="checkbox" id="bmDisabled" data-backend="' + escapeHtml(b.id) + '"' +
+                (off ? ' checked' : '') + toggleBusy + '> ' +
+                '<span>' + escapeHtml(off ? T('merge.useOff') : T('merge.useOn')) + '</span></label>' +
+                (off && b.disabledReason
+                    ? '<div class="bm-use-reason">' + escapeHtml(T('merge.useReason', { reason: b.disabledReason })) + '</div>'
+                    : '') +
+                '</td></tr>';
         }).join('') + '</tbody></table>';
+    }
+
+    // actionHintHtml — строка результата последнего переключения (роль / «не
+    // использовать», R250).
+    //
+    // ЖИВОЙ ПРОБЕЛ R249: подсказка о смене роли записывалась в state.roleHint, но
+    // НИГДЕ не рисовалась — оператор нажимал «донор» и не видел ни результата, ни
+    // причины отказа. Теперь у обеих настроек одно место вывода.
+    function actionHintHtml(st) {
+        var bits = [];
+        if (st.roleHint) { bits.push(st.roleHint); }
+        if (st.flagHint) { bits.push(st.flagHint); }
+        if (!bits.length) { return ''; }
+        return '<div class="bm-hint bm-action-hint" id="bmActionHint">' +
+            escapeHtml(bits.join(' · ')) + '</div>';
     }
 
     function resultHtml(st) {
@@ -496,6 +537,7 @@
             '<option value="row"' + (st.strategy === 'row' ? ' selected' : '') + '>' + escapeHtml(T('merge.strategy.row')) + '</option>' +
             '</select></div>' +
             '<div class="bm-list">' + backendsHtml(st) + '</div>' +
+            actionHintHtml(st) +
             '<div class="bm-actions form-actions">' +
             '<button type="button" class="btn btn-secondary" id="bmCheck"' + (st.busy ? ' disabled' : '') + '>' + escapeHtml(T('merge.check')) + '</button>' +
             '<button type="button" class="btn btn-primary" id="bmApply"' + (st.busy ? ' disabled' : '') + '>' + escapeHtml(T('merge.apply')) + '</button>' +
@@ -661,6 +703,12 @@
                     host: b.host,
                     type: b.type,
                     status: b.status,
+                    // R250 (2026-10-28): «не использовать бэкенд» — состояние
+                    // тумблера. Читаем из /api/v1/backends: сервер обязан отдавать
+                    // флаг в списке, иначе панель показывала бы выключенный узел
+                    // рабочим (и повторное нажатие «включить» было бы вслепую).
+                    disabled: !!b.disabled,
+                    disabledReason: String(b.disabledReason || ''),
                     // R240: имена моделей для подсказки в поле «Модель».
                     models: modelsOfBackend(fromCluster || b)
                 };
@@ -955,7 +1003,66 @@
         // поднимается в фоне), а причину/состояние показываем оператору.
         if (t.id === 'bmRole' && backendId) {
             setBackendRole(backendId, String(t.value || ''));
+            return;
         }
+        // R250 (2026-10-28): «не использовать бэкенд» — тумблер в таблице узлов.
+        // Флаг проверяет СЕЛЕКТОР балансера, поэтому уже идущие запросы не рвутся:
+        // узел доигрывает их и перестаёт получать новые. Именно это оператор и
+        // просил вместо `docker stop` (узел пропадал из панели) и снятия роли.
+        if (t.id === 'bmDisabled' && backendId) {
+            setBackendDisabled(backendId, !!t.checked);
+        }
+    }
+
+    // setBackendDisabled — R250: POST /api/v1/backends/{id}/enabled.
+    //
+    // Ответ приходит сразу (на сервере нет вызовов к узлу), и в нём есть
+    // loadedModels: если на узле сейчас работает модель, она ОСТАНЕТСЯ
+    // загруженной. Молчать об этом нельзя — «выключил, а GPU занята» выглядит
+    // поломкой, хотя это ожидаемое поведение.
+    function setBackendDisabled(backendId, disabled) {
+        state.flagBusy = backendId;
+        state.flagHint = '';
+        state.errorKey = '';
+        render();
+        return postJSON('/api/v1/backends/' + encodeURIComponent(backendId) + '/enabled', {
+            enabled: !disabled,
+            // Причина нужна для аудита в записи бэкенда: через неделю оператор
+            // должен видеть, почему узел был исключён, а не пустой флажок.
+            reason: disabled ? T('merge.useReasonDefault') : ''
+        }).then(function (resp) {
+            state.flagBusy = '';
+            var isOff = !!(resp && resp.enabled === false);
+            var bits = [isOff ? T('merge.useOffDone') : T('merge.useOnDone')];
+            if (resp && resp.reason && isOff) {
+                bits.push(T('merge.useReason', { reason: resp.reason }));
+            }
+            var loaded = (resp && resp.loadedModels) || [];
+            if (isOff && loaded.length) {
+                bits.push(T('merge.useStillLoaded') + ': ' + loaded.join(', '));
+            }
+            if (resp && resp.persisted === false) {
+                bits.push(String(resp.warning || 'not persisted'));
+            }
+            state.flagHint = bits.join(' · ');
+            for (var i = 0; i < state.backends.length; i++) {
+                if (state.backends[i].id === backendId) {
+                    state.backends[i].disabled = isOff;
+                    state.backends[i].disabledReason = isOff ? String((resp && resp.reason) || '') : '';
+                }
+            }
+            if (isOff) {
+                // Выключенный узел не может остаться в наборе группы: сервер его
+                // всё равно не выберет, а подсвеченный набор выглядел бы рабочим.
+                delete state.selected[backendId];
+                if (state.masterId === backendId) { state.masterId = ''; }
+            }
+            render();
+        }).catch(function () {
+            state.flagBusy = '';
+            state.errorKey = 'merge.useFailed';
+            render();
+        });
     }
 
     // setBackendRole — POST роли и показ результата без перезагрузки страницы.
@@ -1056,6 +1163,8 @@
         selectedIDs: selectedIDs,
         loadBackends: loadBackends,
         enrichModels: enrichModels,
+        // R250: тумблер «не использовать бэкенд» (тест дергает его напрямую)
+        setBackendDisabled: setBackendDisabled,
         // R240: подсказка моделей
         collectModels: collectModels,
         modelCoverage: modelCoverage,

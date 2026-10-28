@@ -75,6 +75,14 @@ window.I18N_EN = {
   "backends.add": "Add Backend",
   "backends.edit": "Edit",
   "backends.delete": "Delete",
+  // R250 (2026-10-28): "do not use this backend" on the backends list. The node
+  // stays in the list (with a badge) but the balancer stops sending requests to it.
+  "backends.excluded": "excluded",
+  "backends.excluded_hint": "excluded from balancer selection: the node stays visible but gets no new requests",
+  "backends.use_on": "Enable",
+  "backends.use_off": "Do not use",
+  "backends.use_on_hint": "return the node to balancer selection (the model stays loaded)",
+  "backends.use_off_hint": "exclude the node from balancer selection: the container keeps running and in-flight requests finish",
   "backends.export": "Export",
   "backends.import": "Import",
   "backends.name": "Name",
@@ -2344,6 +2352,20 @@ window.I18N_EN = {
                 "merge.role.donor": "donor",
                 "merge.role.standalone": "standalone",
                 "merge.roleFailed": "Failed to save backend role — see balancer log",
+  // R250 (2026-10-28): the "do not use this backend" toggle in the node table.
+  // A disabled node stays in the list (otherwise it cannot be re-enabled) but gets
+  // no requests and cannot join a merge group.
+  "merge.col.use": "In use",
+  "merge.useOn": "used",
+  "merge.useOff": "excluded",
+  "merge.useOnHint": "receives balancer requests",
+  "merge.useOffHint": "excluded from balancer selection: the node stays visible but gets no new requests",
+  "merge.useOffDone": "The node is excluded from balancer selection",
+  "merge.useOnDone": "The node receives requests again",
+  "merge.useStillLoaded": "the model stays loaded on the node",
+  "merge.useReason": "reason: {reason}",
+  "merge.useReasonDefault": "excluded by the operator in the placement panel",
+  "merge.useFailed": "Failed to toggle \"do not use\" — see balancer log",
   "merge.model": "Model",
   // R240: model picker from the cluster (datalist) and coverage hint.
   "merge.modelPlaceholder": "Start typing or pick from the list",

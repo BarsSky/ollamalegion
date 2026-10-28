@@ -110,11 +110,25 @@ func (s *Server) listBackendModels(w http.ResponseWriter, r *http.Request, backe
 		return
 	}
 
+	// R257 (2026-10-28): сколько моделей РЕАЛЬНО загружено — отдельным полем.
+	//
+	// `total` — это модели на диске (в списке есть и незагруженные), поэтому
+	// панель не могла отличить «10 моделей на диске» от «2 загружены». После
+	// исправления флага Loaded (источник истины — снапшот поллера) в ответе нужен
+	// и счётчик загруженных: по нему оператор видит, что память занята одной
+	// моделью, а не двумя.
+	loadedCount := 0
+	for i := range models {
+		if models[i].Loaded {
+			loadedCount++
+		}
+	}
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"backend": backendID,
-		"models":  models,
-		"total":   len(models),
+		"success":          true,
+		"backend":          backendID,
+		"models":           models,
+		"total":            len(models),
+		"loadedModelCount": loadedCount,
 	})
 }
 

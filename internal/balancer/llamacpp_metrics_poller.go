@@ -389,11 +389,16 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 	for _, m := range data.Models {
 		// Показываем модели в любом состоянии (loaded/loading/error).
 		// Фильтрация по "loaded" делается в WebUI при необходимости.
-		// Но если state пустое — считаем loaded (cppworker не всегда его отдаёт).
-		state := m.State
-		if state == "" {
-			state = "loaded"
-		}
+		//
+		// R257 (2026-10-28): ПУСТОЕ состояние больше не превращается в "loaded"
+		// по умолчанию. Живой дефект (стенд 8 ГБ VRAM): после вытеснения
+		// Qwen3.8-27B моделью gemma-4-E4B в снапшот попадали ОБЕ модели как
+		// загруженные, и панель предлагала «загруженную» модель, которой нет в
+		// памяти (оператор грузил её повторно, получая лишнюю перезагрузку).
+		// Пустое состояние = «воркер не сказал»: считаем загруженной только при
+		// положительных признаках (время загрузки, окно, занятая память), иначе
+		// честно "unknown" — см. resolveModelStateR257.
+		state := resolveModelStateR257(m.State, m.LoadedAt, m.ContextSize, m.VRAMUsage, m.RAMUsage)
 		// Round 18: cppworker reports sizeBytes=0 для загруженных моделей.
 		// loadingSizeBytes содержит реальный file size — fallback на него.
 		size := uint64(m.SizeBytes)

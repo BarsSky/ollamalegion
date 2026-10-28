@@ -429,6 +429,11 @@ func (mm *ModelManager) listLlamaCppModels(backend *types.Backend) ([]ModelInfo,
 		GGUFContextLength int `json:"ggufContextLength,omitempty"`
 	}
 	loadedSet := make(map[string]bool)
+	// R257: признак «список загруженного взят из снапшота поллера» — по нему ниже
+	// поправляется и поле State у записи, которая «загружена» только по мнению
+	// воркера. Иначе панель читала бы State и снова показывала вытесненную модель
+	// загруженной (флаг Loaded уже исправлен, State — нет).
+	authoritativeLoaded := false
 	// runtimeMap: ключ — basename (с .gguf и без), значение — runtime данные.
 	// Используется для обогащения ModelInfo из /api/models/files.
 	runtimeMap := make(map[string]runtimeModel)
@@ -452,6 +457,26 @@ func (mm *ModelManager) listLlamaCppModels(backend *types.Backend) ([]ModelInfo,
 			}
 		}
 	}
+
+	// R257 (2026-10-28): «загружено» — из СНАПШОТА поллера, а не из ответа воркера.
+	//
+	// ЖИВОЙ ДЕФЕКТ. После вытеснения Qwen3.8-27B моделью gemma-4-E4B этот путь
+	// продолжал отдавать loaded=true у ОБЕИХ моделей (панель предлагала «загруженную»
+	// модель, которой нет в памяти, и оператор грузил её повторно). Причина —
+	// два независимых мнения об одном факте: здесь флаг собирался из ответа
+	// /api/models НА МОМЕНТ запроса, а метрики/preflight/селектор читают снапшот
+	// поллера. Снапшот первичен: он же решает, куда ставить запросы.
+	//
+	// Рантайм-поля (размер, слои, контекст) по-прежнему берём из ответа воркера —
+	// там они свежее и подробнее.
+	if snapshotLoaded, snapshotKnown := mm.proxy.loadedSetFromSnapshotR257(backend.ID); snapshotKnown {
+		logLoadedDivergenceR257(backend.ID, loadedSet, snapshotLoaded, true)
+		loadedSet = snapshotLoaded
+		authoritativeLoaded = true
+	}
+
+	// R257: признак «список загруженного взят из снапшота» объявлен выше
+	// (authoritativeLoaded) — здесь больше не дублируется.
 
 	models := make([]ModelInfo, 0, len(filesData.Files))
 	for _, f := range filesData.Files {
@@ -504,6 +529,12 @@ func (mm *ModelManager) listLlamaCppModels(backend *types.Backend) ([]ModelInfo,
 			mi.HeadDimK = rt.HeadDimK
 			mi.HeadDimV = rt.HeadDimV
 			mi.MaxContext = rt.GGUFContextLength
+		}
+		// R257: если список загруженного авторитетен (есть снапшот поллера), State
+		// «загруженной» только по мнению воркера модели не сохраняем: панель читает
+		// и State, и на нём тоже показывала вытесненную модель загруженной.
+		if authoritativeLoaded && !mi.Loaded {
+			mi.State = ""
 		}
 		// Round 18b (2026-07-10): cppworker reports quantization="" (баг в cppworker).
 		// GGUF quantization всегда в имени файла (Q4_K_M, Q5_K_S, Q8_0, F16, IQ4_XS, ...).

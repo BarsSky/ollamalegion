@@ -260,6 +260,11 @@ type clusterReloadModelResponse struct {
 	Model     string                            `json:"model"`
 	Operation string                            `json:"operation"`
 	Results   []clusterReloadModelBackendResult `json:"results"`
+	// Skipped — R263: llama_cpp-узлы, которые НЕ тронуты, и причина по каждому
+	// (offline/unhealthy/draining/starting/исключён оператором). Без этого списка
+	// «операция прошла» читалось бы как «прошла на всех», хотя часть узлов
+	// пропущена — оператор должен видеть, кого не тронули и почему.
+	Skipped []reloadTargetRejection `json:"skipped,omitempty"`
 }
 
 // clusterReloadModelBackendResult — результат операции на одном бэкенде.
@@ -395,12 +400,62 @@ func (s *Server) clusterReloadModelHandler(w http.ResponseWriter, r *http.Reques
 		req.Operation = "reload"
 	}
 
-	// Собираем список целевых бэкендов.
-	targets := s.selectReloadTargets(req.BackendID)
-	if len(targets) == 0 {
-		s.writeJSON(w, http.StatusNotFound, map[string]string{
-			"error":   "no llama_cpp backends available",
-			"message": "request a model reload requires at least one llama_cpp backend",
+	// R263 (2026-10-28): собираем цели загрузки С ПРОВЕРКОЙ СОСТОЯНИЯ узла.
+	//
+	// ЖИВОЙ ФАКТ (стенд r262): без явного backendId операция уходила на
+	// offline/unhealthy узел `cppworker-cyborg-bundled-agent` — «нажал загрузить,
+	// ответа нет». Выбор состояния не проверял вовсе (см. reload_targets_r263.go).
+	sel := s.selectReloadTargetsChecked(req.BackendID)
+
+	// Явно указанный узел непригоден → отвечаем СРАЗУ и по адресу, а не через
+	// многоминутный таймаут: оператор выбрал конкретный узел и должен знать, что
+	// именно с ним не так.
+	if sel.Explicit && len(sel.Targets) == 0 {
+		code := http.StatusServiceUnavailable
+		if sel.ExplicitReason == "backend not found in cluster state" {
+			code = http.StatusNotFound
+		}
+		msg := map[string]interface{}{
+			"error":     "backend is not usable for model load",
+			"message":   sel.ExplicitReason,
+			"backendId": req.BackendID,
+			"model":     name,
+			"operation": req.Operation,
+		}
+		address := ""
+		if len(sel.Skipped) > 0 {
+			address = sel.Skipped[0].Address
+			msg["skipped"] = sel.Skipped
+			if address != "" {
+				msg["address"] = address
+			}
+		}
+		logger.Get().Warnw("cluster model operation refused: backend is not usable",
+			"model", name, "operation", req.Operation,
+			"backend", req.BackendID, "reason", sel.ExplicitReason,
+			"address", address)
+		s.writeJSON(w, code, msg)
+		return
+	}
+
+	if len(sel.Targets) == 0 {
+		// Различаем «узлов нет вовсе» (прежние 404) и «есть, но все непригодны»
+		// (503 + причины): во втором случае оператору нужно чинить узлы, а не искать
+		// несуществующие бэкенды.
+		if sel.LlamaCppTotal == 0 {
+			s.writeJSON(w, http.StatusNotFound, map[string]string{
+				"error":   "no llama_cpp backends available",
+				"message": "request a model reload requires at least one llama_cpp backend",
+			})
+			return
+		}
+		logger.Get().Warnw("cluster model operation refused: no usable backends",
+			"model", name, "operation", req.Operation, "skipped", len(sel.Skipped))
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"error":   "no usable llama_cpp backend",
+			"message": "every llama_cpp backend is offline, unhealthy or excluded by the operator",
+			"model":   name,
+			"skipped": sel.Skipped,
 		})
 		return
 	}
@@ -409,18 +464,28 @@ func (s *Server) clusterReloadModelHandler(w http.ResponseWriter, r *http.Reques
 		"model", name,
 		"operation", req.Operation,
 		"backend_id", req.BackendID,
+		"targets", len(sel.Targets),
+		"skipped", len(sel.Skipped),
 		"context_size", ctxSizeForLog(req.ContextSize),
 		"gpu_layers", gpuLayersForLog(req.GPULayers),
 		"reason", req.Reason,
 	)
+	for _, sk := range sel.Skipped {
+		// Одна строка на пропущенный узел: оператор должен видеть, что узел не
+		// тронут и почему (а не искать его в результатах).
+		logger.Get().Infow("model load target skipped",
+			"model", name, "backend", sk.BackendID,
+			"address", sk.Address, "reason", sk.Reason)
+	}
 
 	resp := clusterReloadModelResponse{
 		Model:     name,
 		Operation: req.Operation,
-		Results:   make([]clusterReloadModelBackendResult, 0, len(targets)),
+		Results:   make([]clusterReloadModelBackendResult, 0, len(sel.Targets)),
+		Skipped:   sel.Skipped,
 	}
 
-	for _, backendID := range targets {
+	for _, backendID := range sel.Targets {
 		result := s.executeReloadOnBackend(backendID, name, &req)
 		resp.Results = append(resp.Results, result)
 	}
@@ -449,49 +514,12 @@ func splitClusterModelPath(path string) (string, bool) {
 	return parts[0], true
 }
 
-// selectReloadTargets — выбирает ID бэкендов для reload-операции.
-// Если backendId задан — возвращает только его (если llama_cpp).
-// Если не задан — возвращает все llama_cpp бэкенды (де-дуплицированные по host:port,
-// см. Bug #11 2026-06-30).
+// selectReloadTargets — R263: перенесён в reload_targets_r263.go вместе с
+// проверкой состояния узла. Здесь оставлен только комментарий-указатель, чтобы
+// поиск по старому имени приводил к актуальной реализации, а не к копии правил.
 //
-// Возвращает []string (backend IDs) — мы потом резолвим через ModelManager,
-// который сам вызовет proxy.GetBackend().
-func (s *Server) selectReloadTargets(backendID string) []string {
-	cs := s.getClusterState()
-	if cs == nil {
-		return nil
-	}
-
-	if backendID != "" {
-		for _, b := range cs.Backends {
-			if b.ID == backendID && b.BackendType == types.BackendTypeLlamaCpp {
-				return []string{backendID}
-			}
-		}
-		return nil
-	}
-
-	// Bug #11 (2026-06-30): де-дупликация бэкендов по (host, port). Иначе
-	// cluster reload шлёт N HTTP-запросов на один физический cppworker,
-	// вызывая race в tryAcquireOp и параллельные попытки загрузить/выгрузить
-	// одну и ту же модель. Оставляем один backendId на физический эндпоинт.
-	deduped := dedupBackendsByEndpoint(
-		cs.Backends,
-		func(b types.BackendMetrics) endpointKey {
-			return endpointKey{Host: b.Host, Port: b.CppWorkerPort, NodeAddr: b.NodeAddr}
-		},
-		func(b types.BackendMetrics) bool { return b.HasAgent },
-		true,
-	)
-
-	targets := make([]string, 0, len(deduped))
-	for _, b := range deduped {
-		if b.BackendType == types.BackendTypeLlamaCpp {
-			targets = append(targets, b.ID)
-		}
-	}
-	return targets
-}
+// Было (до R263): возвращались ВСЕ llama_cpp-бэкенды (или ровно указанный), без
+// проверки offline/unhealthy/disabled — отсюда «загрузка на мёртвый узел».
 
 // executeReloadOnBackend — выполняет операцию load/unload/reload на одном бэкенде
 // через ModelManager.ExecuteOperation.
@@ -846,15 +874,28 @@ func (s *Server) clusterBulkModelsHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Проверяем что есть llama_cpp бэкенды для выполнения операции.
-	targets := s.selectReloadTargets(req.BackendID)
-	if len(targets) == 0 {
-		s.writeJSON(w, http.StatusNotFound, map[string]string{
-			"error":   "no llama_cpp backends available",
-			"message": "bulk operation requires at least one llama_cpp backend",
+	// Проверяем что есть ПРИГОДНЫЕ llama_cpp бэкенды для выполнения операции
+	// (R263: offline/unhealthy/disabled узлы в цели не берём — иначе операция
+	// уходит на мёртвый узел и «висит» до таймаута).
+	bulkSel := s.selectReloadTargetsChecked(req.BackendID)
+	if len(bulkSel.Targets) == 0 {
+		if bulkSel.LlamaCppTotal == 0 {
+			s.writeJSON(w, http.StatusNotFound, map[string]string{
+				"error":   "no llama_cpp backends available",
+				"message": "bulk operation requires at least one llama_cpp backend",
+			})
+			return
+		}
+		logger.Get().Warnw("cluster bulk operation refused: no usable backends",
+			"operation", req.Operation, "skipped", len(bulkSel.Skipped))
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"error":   "no usable llama_cpp backend",
+			"message": "every llama_cpp backend is offline, unhealthy or excluded by the operator",
+			"skipped": bulkSel.Skipped,
 		})
 		return
 	}
+	targets := bulkSel.Targets
 
 	startedAt := time.Now().UTC()
 	startedAtRFC := startedAt.Format(time.RFC3339Nano)
@@ -953,10 +994,17 @@ func (s *Server) executeBulkModelItem(targets []string, item *bulkModelItem, req
 		Force: forceForItem(item, req),
 	}
 
-	// Резолвим фактические targets для этой модели.
-	modelTargets := s.selectReloadTargets(backendID)
+	// Резолвим фактические targets для этой модели (R263: только пригодные узлы).
+	perSel := s.selectReloadTargetsChecked(backendID)
+	modelTargets := perSel.Targets
 	if len(modelTargets) == 0 {
-		// Нет доступных бэкендов для этой модели → результат с ошибкой.
+		// Нет подходящих бэкендов для этой модели → результат с ошибкой и ПРИЧИНОЙ
+		// (R263: раньше писалась «no llama_cpp backends», хотя узел есть — просто
+		// offline/unhealthy/исключён; оператор шёл искать несуществующий бэкенд).
+		reason := perSel.ExplicitReason
+		if reason == "" {
+			reason = "no usable llama_cpp backend"
+		}
 		return clusterBulkModelResult{
 			Model:     item.Model,
 			Operation: op,
@@ -964,8 +1012,8 @@ func (s *Server) executeBulkModelItem(targets []string, item *bulkModelItem, req
 			Results: []clusterReloadModelBackendResult{{
 				BackendID:  backendID,
 				Status:     "error",
-				Error:      "no llama_cpp backends available for backendId='" + backendID + "'",
-				HTTPStatus: http.StatusNotFound,
+				Error:      "backend is not usable for model load (" + reason + ")",
+				HTTPStatus: http.StatusServiceUnavailable,
 			}},
 		}
 	}

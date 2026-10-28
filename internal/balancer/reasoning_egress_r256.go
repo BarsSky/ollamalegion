@@ -257,9 +257,37 @@ func filterAssistantEgressForClient(line []byte, st *reasoningEgressState) ([]by
 	}
 	content, ok := extractSSEDeltaContent(line)
 	if !ok {
-		// Кадра без delta.content не трогаем: reasoning_content — чужой канал,
-		// чистить его должен воркер (R231), а finish_reason/tool_calls не текст.
+		// R261.1 (2026-10-28): кадр без delta.content — не «пустой», а часто
+		// кадр, целиком состоящий из delta.reasoning_content. Раньше здесь был
+		// ранний return ДО счётчиков, и у стрима, весь видимый текст которого
+		// ушёл в размышления, reasoningChars оставался 0. Следствие — живой
+		// провал: gemma отдавала 446 символов reasoning, content был пуст, а
+		// условие empty_answer_r261.go (visibleChars==0 && reasoningChars>0) не
+		// срабатывало → кадра-объяснения НЕТ, клиент снова видел пустоту. Лог
+		// это и показывал: `visible_chars:0, reasoning_chars:0, notice_sent:false`
+		// при 446/572 символах reasoning.
+		//
+		// Считаем reasoning_content ЗДЕСЬ и сам кадр не трогаем: reasoning —
+		// чужой канал, чистить его должен воркер (R231), а finish_reason и
+		// tool_calls не текст. Двойного счёта нет: эта ветка срабатывает только
+		// когда delta.content ОТСУТСТВУЕТ, то есть кадр ниже (где считаются оба
+		// канала) для него не выполняется.
+		if st != nil {
+			if rc, okRC := extractSSEDeltaReasoning(line); okRC {
+				st.reasoningChars += len(rc)
+			}
+		}
 		return line, false
+	}
+
+	// R261.1 (2026-10-28): объём размышлений из САМОГО кадра (delta.reasoning_content).
+	// Считаем один раз здесь: ниже он прибавляется и в ветке «кадр не меняем», и в
+	// ветке перезаписи. Двойного счёта нет — это отдельный от content канал.
+	frameReasoningLen := 0
+	if st != nil {
+		if rc, okRC := extractSSEDeltaReasoning(line); okRC {
+			frameReasoningLen = len(rc)
+		}
 	}
 
 	// Шаг 1 (R256): сначала РАЗДЕЛЕНИЕ по каналу, потом вырезание токенов.
@@ -295,7 +323,10 @@ func filterAssistantEgressForClient(line []byte, st *reasoningEgressState) ([]by
 		// отдавать ли сообщение о пустом видимом ответе (R261).
 		if st != nil {
 			st.visibleChars += len(cleaned)
-			st.reasoningChars += len(reasoning)
+			// R261.1: воркер может положить размышления РЯДОМ с content тем же
+			// кадром (delta.reasoning_content) — этот объём тоже учитываем, иначе
+			// счётчик размышлений занижен и объяснение пустого ответа не сработает.
+			st.reasoningChars += len(reasoning) + frameReasoningLen
 		}
 		return line, false
 	}
@@ -306,7 +337,7 @@ func filterAssistantEgressForClient(line []byte, st *reasoningEgressState) ([]by
 	if st != nil {
 		st.cut++
 		st.visibleChars += len(cleaned)
-		st.reasoningChars += len(reasoning)
+		st.reasoningChars += len(reasoning) + frameReasoningLen
 		st.diag.Do(st.logReasoningCutOnce)
 	}
 	return out, true
@@ -384,6 +415,36 @@ func rewriteDeltaContentAndReasoning(line []byte, visible, reasoning string) ([]
 }
 
 // extractSSEDeltaContent — delta.content из SSE-строки ("" и false, если нет).
+// extractSSEDeltaReasoning — текст delta.reasoning_content из SSE-кадра.
+//
+// Нужен ТОЛЬКО для счётчика (R261.1): решение «отдавать ли объяснение пустого
+// ответа» принимается по объёму размышлений, а кадры reasoning_content
+// балансер не переписывает — этот канал принадлежит воркеру (R231).
+func extractSSEDeltaReasoning(line []byte) (string, bool) {
+	payload := extractSSEDataPayload(bytes.TrimSpace(line))
+	if payload == nil {
+		return "", false
+	}
+	var chunk struct {
+		Choices []struct {
+			Delta map[string]interface{} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(payload, &chunk); err != nil || len(chunk.Choices) == 0 {
+		return "", false
+	}
+	delta := chunk.Choices[0].Delta
+	if delta == nil {
+		return "", false
+	}
+	reasoning, ok := delta["reasoning_content"].(string)
+	if !ok {
+		return "", false
+	}
+	return reasoning, true
+}
+
+// extractSSEDeltaContent — текст delta.content из SSE-кадра ("" если поля нет).
 func extractSSEDeltaContent(line []byte) (string, bool) {
 	payload := extractSSEDataPayload(bytes.TrimSpace(line))
 	if payload == nil {

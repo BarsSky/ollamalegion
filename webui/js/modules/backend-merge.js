@@ -311,6 +311,7 @@
             '<th>' + escapeHtml(T('merge.col.host')) + '</th>' +
             '<th>' + escapeHtml(T('merge.col.type')) + '</th>' +
             '<th class="bm-col-master">' + escapeHtml(T('merge.col.master')) + '</th>' +
+            '<th>' + escapeHtml(T('merge.col.role')) + '</th>' +
             '</tr></thead><tbody>' + st.backends.map(function (b) {
             var checked = st.selected[b.id] ? ' checked' : '';
             var isMaster = st.masterId === b.id || (!st.masterId && selectedIDs(st)[0] === b.id);
@@ -319,7 +320,25 @@
                 '<td>' + escapeHtml(b.host || '') + '</td>' +
                 '<td>' + escapeHtml(b.type || '') + '</td>' +
                 '<td><input type="radio" name="bmMaster" id="bmMaster" data-backend="' + escapeHtml(b.id) + '"' +
-                (isMaster ? ' checked' : '') + '></td></tr>';
+                (isMaster ? ' checked' : '') + '></td>' +
+                // R249 (2026-10-28): роль узла в раскладке. Раньше контрола не было
+                // вовсе, и оператор не мог «поставить галочку донор» — серверный API
+                // при этом существовал. Смена роли не блокирует панель: узел
+                // поднимается в фоне, результат показываем строкой подсказки.
+                '<td><select id="bmRole" data-backend="' + escapeHtml(b.id) + '">' +
+                ['', 'main', 'donor', 'standalone'].map(function (r) {
+                    var sel = String(b.role || '') === r ? ' selected' : '';
+                    // Явная карта, а не 'merge.role.'+r: для пустого значения это дало
+                    // несуществующий ключ 'merge.role.' (ловилось тестом полноты i18n).
+                    var labelMap = {
+                        '': T('merge.roleAuto'),
+                        main: T('merge.role.main'),
+                        donor: T('merge.role.donor'),
+                        standalone: T('merge.role.standalone')
+                    };
+                    var label = labelMap[r] || r;
+                    return '<option value="' + r + '"' + sel + '>' + escapeHtml(label) + '</option>';
+                }).join('') + '</select></td></tr>';
         }).join('') + '</tbody></table>';
     }
 
@@ -925,7 +944,50 @@
             state.masterId = backendId;
             state.selected[backendId] = true;
             updateModelHint();
+            return;
         }
+        // R249 (2026-10-28): смена РОЛИ узла (главный / донор / самодостаточный).
+        //
+        // Серверный API был готов давно (POST /api/v1/backends/{id}/role, персист
+        // в backend-roles.json), но в UI контрола не существовало — оператор не
+        // мог «поставить галочку донор» и думал, что флаг из env перестал
+        // работать. Роль не блокирует панель: ответ приходит быстро (узел
+        // поднимается в фоне), а причину/состояние показываем оператору.
+        if (t.id === 'bmRole' && backendId) {
+            setBackendRole(backendId, String(t.value || ''));
+        }
+    }
+
+    // setBackendRole — POST роли и показ результата без перезагрузки страницы.
+    function setBackendRole(backendId, role) {
+        state.roleBusy = backendId;
+        state.roleHint = '';
+        state.errorKey = '';
+        render();
+        postJSON('/api/v1/backends/' + encodeURIComponent(backendId) + '/role', { role: role })
+            .then(function (resp) {
+                state.roleBusy = '';
+                var node = (resp && resp.rpcNode) || {};
+                var bits = [];
+                if (resp && resp.role) { bits.push('role=' + resp.role); }
+                if (node && node.addr) {
+                    bits.push('node=' + node.addr + (node.reachable ? ' reachable' : ' unreachable'));
+                }
+                if (resp && resp.warning) { bits.push(String(resp.warning)); }
+                if (resp && resp.persist_warning) { bits.push(String(resp.persist_warning)); }
+                state.roleHint = bits.join(' · ');
+                if (state.backends && state.backends.length) {
+                    for (var i = 0; i < state.backends.length; i++) {
+                        if (state.backends[i].id === backendId) { state.backends[i].role = role; }
+                    }
+                }
+                render();
+            })
+            .catch(function () {
+                state.roleBusy = '';
+                state.errorKey = 'merge.roleFailed';
+                render();
+            });
     }
 
     // updateModelHint — пересчитать «модель есть на X из Y узлов» без re-render.

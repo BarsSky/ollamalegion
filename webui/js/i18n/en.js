@@ -2338,6 +2338,12 @@ window.I18N_EN = {
   "merge.col.host": "Host",
   "merge.col.type": "Type",
   "merge.col.master": "Master",
+                "merge.col.role": "Role",
+                "merge.roleAuto": "auto",
+                "merge.role.main": "main",
+                "merge.role.donor": "donor",
+                "merge.role.standalone": "standalone",
+                "merge.roleFailed": "Failed to save backend role — see balancer log",
   "merge.model": "Model",
   // R240: model picker from the cluster (datalist) and coverage hint.
   "merge.modelPlaceholder": "Start typing or pick from the list",

@@ -2356,6 +2356,12 @@ window.I18N_RU = {
   "merge.col.host": "Хост",
   "merge.col.type": "Тип",
   "merge.col.master": "Мастер",
+                "merge.col.role": "Роль",
+                "merge.roleAuto": "авто",
+                "merge.role.main": "главный",
+                "merge.role.donor": "донор",
+                "merge.role.standalone": "самодостаточный",
+                "merge.roleFailed": "Не удалось сохранить роль бэкенда — смотрите журнал балансера",
   "merge.model": "Модель",
   // R240: выбор модели из кластера (datalist) и подсказка покрытия по узлам.
   "merge.modelPlaceholder": "Начните вводить или выберите из списка",

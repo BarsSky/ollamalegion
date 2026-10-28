@@ -270,8 +270,13 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 			profileContextLengthAuto = mp.ContextLengthAuto
 			// R43 (2026-08-19): contextLengthMax теперь пробрасывается в resolver.
 			// Pre-R43: schema field был, но resolver его ИГНОРИРОВАЛ → silent bug.
-			profileContextLengthMax = mp.ContextLengthMax
+			//
+			// R265: само поле больше не читается здесь — единая точка чтения
+			// profileCapCtx (fold=false: точный ключ, как было в preflight).
 		}
+	}
+	if lr.proxy != nil {
+		profileContextLengthMax = lr.proxy.profileCapCtx(model, false)
 	}
 	// Round 37: per-model feasible (приоритетнее top-level metrics).
 	// Сначала заглядываем в LoadedModels, чтобы достать per-model feasible.
@@ -393,6 +398,12 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 // resolvePhysicalMaxContext — R68: потолок n_ctx, выше которого запрос клиента
 // удовлетворить нельзя (min из GGUF training context и operator cap'ов).
 // 0 = неизвестно (preflight fallback'ится на ModelMaxContext).
+//
+// R265 (2026-10-28): ЭТО ЕДИНСТВЕННОЕ место, где считается физический потолок.
+// Обе прежние «реализации» (physicalNumCtxCeiling в num_ctx_resolver.go и
+// state.PhysicalMaxContext в этом файле) сводятся сюда; различались они только
+// сборкой входов, не формулой. См. profileCapCtx рядом — тоже единственная
+// точка чтения operator-cap'а из профиля.
 func resolvePhysicalMaxContext(ggufMax, contextLengthMax, autoReloadMaxNCtx int) int {
 	cap := contextLengthMax
 	if cap <= 0 {
@@ -409,6 +420,41 @@ func resolvePhysicalMaxContext(ggufMax, contextLengthMax, autoReloadMaxNCtx int)
 	default:
 		return cap
 	}
+}
+
+// profileCapCtx — R265: operator cap на окно из per-model профиля
+// (contextLengthMax). Единственная точка этого чтения: до R265 оно было
+// скопировано в двух местах.
+//
+// ПОЧЕМУ ПАРАМЕТР fold, А НЕ ОДНО ПРАВИЛО. Два потребителя исторически
+// сопоставляют имя профиля по-разному, и это НЕ случайность:
+//   - физический потолок КЛИЕНТСКИХ запросов (physicalNumCtxCeiling) обязан
+//     находить профиль и тогда, когда он заведён под коротким именем
+//     («gemma-4» против «gemma-4-E4B-it-Q4_K_M»), иначе клиент получал 413 на
+//     модели, у которой оператор как раз поднял потолок (живой дефект R68);
+//   - preflight читает профиль по ТОЧНОМУ ключу и на этом построены его
+//     решения о reload (смена сопоставления сдвинула бы пороги и могла бы
+//     запустить перезагрузку там, где её не было).
+//
+// Сводить эти правила в одно в R265 было бы изменением поведения, а не
+// устранением дублирования, поэтому различие вынесено в ЯВНЫЙ параметр и
+// закреплено характеризационными тестами (nctx_ceiling_r265_test.go).
+func (p *Proxy) profileCapCtx(modelName string, fold bool) int {
+	if p == nil || p.config == nil {
+		return 0
+	}
+	if mp, ok := p.config.LlamaCppModelProfiles[modelName]; ok {
+		return mp.ContextLengthMax
+	}
+	if !fold {
+		return 0
+	}
+	for name, mp := range p.config.LlamaCppModelProfiles {
+		if containsFold(name, modelName) || containsFold(modelName, name) {
+			return mp.ContextLengthMax
+		}
+	}
+	return 0
 }
 
 // reloadHintsFor — R70 (2026-09-24): хинты для reload'а модели.

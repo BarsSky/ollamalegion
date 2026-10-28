@@ -1750,6 +1750,20 @@ func (p *Proxy) getMaxVRAMNCtxFromMetrics(backendID string) int {
 // Параметр contextLengthAuto — true если profile разрешает auto-adapt.
 // Параметр contextLengthMax — operator soft cap (0 = unlimited up to ggufMax).
 // Параметр perModelFeasible — per-model feasible (из LoadedModels), HINT в auto mode.
+//
+// R265 (2026-10-28): ПОЧЕМУ ЭТО НЕ СВЕДЕНО С resolvePhysicalMaxContext.
+// Вопрос здесь другой: «какой предел окна отдать решению о reload», а не
+// «что физически возможно». Различия содержательные, а не косметические:
+//   - в hard-режиме contextLength (профиль) — CAP, то есть значение МОЖЕТ быть
+//     НИЖЕ физики (оператор сознательно ограничил модель), а физический потолок
+//     по определению ниже не опускается;
+//   - в auto-режиме наоборот: профиль — HINT, а cap = min(ggufMax, contextLengthMax);
+//   - здесь же живут диагностические предупреждения оператору (профиль
+//     консервативнее физики, потолок >4x текущей достижимости), которых в
+//     физическом потолке нет по смыслу.
+//
+// Сведение изменило бы поведение preflight, поэтому в R265 оставлено обёрткой-
+// комментарием и закреплено характеризационными тестами.
 func (p *Proxy) resolveModelMaxContext(backendID, model string, profileMaxContext int, contextLengthAuto bool, contextLengthMax int, perModelFeasible int) int {
 	// Tier 1+2: profile present, decide based on auto flag
 	if profileMaxContext > 0 {

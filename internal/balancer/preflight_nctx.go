@@ -507,6 +507,13 @@ func (s *NCtxBackendState) effectiveSlots() int {
 // нельзя (R68). Если PhysicalMaxContext не заполнен (старые вызовы, юнит-тесты
 // с одним ModelMaxContext) — используется ModelMaxContext: прежнее поведение
 // сохраняется.
+//
+// R265 (2026-10-28): это НЕ четвёртая реализация потолка, а геттер уже
+// посчитанного значения. Сам расчёт один — resolvePhysicalMaxContext, а входы
+// собирает collectPreflightState (profileCapCtx + GGUF + операторский потолок).
+// Свести геттер с расчётом нельзя: он вызывается на глубоких путях решения, где
+// повторный поход в конфиг/метрики менял бы картину посреди решения о reload
+// (значения зафиксированы на момент сборки состояния).
 func (s *NCtxBackendState) physicalCeiling() int {
 	if s == nil {
 		return 0

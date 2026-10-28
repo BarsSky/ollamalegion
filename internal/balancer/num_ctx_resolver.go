@@ -312,28 +312,22 @@ func (p *Proxy) profileHintCtx(modelName string) (int, bool) {
 // min(GGUF max из метаданных модели, operator cap). Operator cap —
 // contextLengthMax модели из профиля, иначе глобальный LB_NCTX_RELOAD_MAX_N_CTX.
 // 0 = неизвестен (clamping не производится).
+//
+// R265 (2026-10-28): формула и сборка входов больше НЕ дублируются — здесь
+// только три источника (GGUF, cap профиля с терпимым сопоставлением имени,
+// операторский потолок) и общий resolvePhysicalMaxContext. Прежний вариант
+// подменял «profile cap пуст» на AutoReloadMaxNCtx вручную и передавал третьим
+// аргументом 0 — resolvePhysicalMaxContext делает то же самое, поэтому
+// поведение не изменилось (закреплено характеризационными тестами).
 func (p *Proxy) physicalNumCtxCeiling(modelName, backendID string) int {
 	if p == nil || backendID == "" {
 		return 0
 	}
-	ggufMax := p.getGGUFMaxContext(backendID)
-	ctxMax := 0
-	if p.config != nil {
-		if mp, ok := p.config.LlamaCppModelProfiles[modelName]; ok {
-			ctxMax = mp.ContextLengthMax
-		} else {
-			for name, mp := range p.config.LlamaCppModelProfiles {
-				if containsFold(name, modelName) || containsFold(modelName, name) {
-					ctxMax = mp.ContextLengthMax
-					break
-				}
-			}
-		}
-	}
-	if ctxMax <= 0 && p.nctxReload != nil {
-		ctxMax = p.nctxReload.Config().AutoReloadMaxNCtx
-	}
-	return resolvePhysicalMaxContext(ggufMax, ctxMax, 0)
+	return resolvePhysicalMaxContext(
+		p.getGGUFMaxContext(backendID),
+		p.profileCapCtx(modelName, true), // fold: «gemma-4» должен находить «gemma-4-E4B-…»
+		preflightAutoReloadMaxNCtx(p),
+	)
 }
 
 // loadedWindowNCtx — R83-fix (2026-09-30): окно, с которым модель РЕАЛЬНО

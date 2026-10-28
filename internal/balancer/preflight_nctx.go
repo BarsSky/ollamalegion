@@ -361,6 +361,9 @@ type PreflightResult struct {
 	// Для PreflightAsyncReload: derived from cppworker estimatedLoadTimeMs
 	// (или fallback на heuristic если model size неизвестен).
 	EstimatedRetryAfter int
+	// R253 (2026-10-28): окно выведено балансером из оценки промпта (клиент
+	// num_ctx не присылал) — для отдельной записи в логе.
+	AgentDerivedWindow bool
 }
 
 // maxReserveSlackTokens — R83-fix (2026-09-30): верхняя граница «запаса» в
@@ -656,14 +659,44 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 
 	reqWindow := meta.RequestedNCtxOverride
 
-	// (2) Клиент не сообщил окно — не гадаем и не перезагружаем.
+	// (2) Клиент не сообщил окно.
+	//
+	// R253 (2026-10-28): АГЕНТСКИЙ ХОД РАСТИТ ОКНО САМ.
+	//
+	// Раньше здесь был безусловный NoOp («клиент не сообщил окно — не гадаем»).
+	// Cline num_ctx не присылает никогда, поэтому окно не росло, а cppworker резал
+	// вывод по фактическому промпту: prompt ≥ n_ctx → пустой ответ, иначе clamp до
+	// n_ctx-prompt-64. Снаружи — «сначала быстро, а как упёрлось — срыв сессии».
+	//
+	// Теперь при известном размере промпта выводим необходимое окно (промпт +
+	// бюджет вывода + slack) и прогоняем его через ТЕ ЖЕ проверки (3)-(5), что и
+	// клиентское: физический потолок модели и AutoReloadMaxNCtx. Если выведенное
+	// окно не больше загруженного на слот, ветка (4) всё равно даст NoOp — никаких
+	// перезагрузок «на всякий случай».
+	agentDerived := false
 	if reqWindow <= 0 {
-		logger.Get().Infow(i18n.T("balancer.preflight_nctx.client_silent_no_reload_info"),
+		derived := 0
+		if nctxGrowForAgentsEnabled() {
+			derived = agentRequiredWindow(meta)
+		}
+		if derived <= 0 {
+			logger.Get().Infow(i18n.T("balancer.preflight_nctx.client_silent_no_reload_info"),
+				"backend_id", state.BackendID,
+				"model", meta.ModelName,
+				"loaded_n_ctx", state.CurrentNCtx,
+				"estimated_prompt_tokens", meta.EstimatedPromptTokens,
+				"grow_for_agents", nctxGrowForAgentsEnabled())
+			return &PreflightResult{Decision: PreflightNoOp}
+		}
+		reqWindow = derived
+		agentDerived = true
+		logger.Get().Infow("preflight: agent window derived from prompt estimate",
 			"backend_id", state.BackendID,
 			"model", meta.ModelName,
-			"loaded_n_ctx", state.CurrentNCtx,
-			"estimated_prompt_tokens", meta.EstimatedPromptTokens)
-		return &PreflightResult{Decision: PreflightNoOp}
+			"estimated_prompt_tokens", meta.EstimatedPromptTokens,
+			"output_budget", meta.RequestedNPredict,
+			"derived_window_per_client", derived,
+			"loaded_per_seq_n_ctx", state.effectivePerSeqNCtx())
 	}
 
 	// (3) Модель не загружена — грузим её окном клиента. Решение о загрузке
@@ -706,8 +739,12 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 			"requested_total", targetTotal,
 			"slots", slots,
 			"physical_ceiling", ceil)
-		return makeWindowTooBigReject(state, meta, reqWindow, targetTotal, ceil,
+		tooBig := makeWindowTooBigReject(state, meta, reqWindow, targetTotal, ceil,
 			i18n.T("balancer.preflight_nctx.model_supports_max_context", ceil))
+		// R253: пометка нужна и на отказе — оператор должен видеть, что окно
+		// выведено из промпта, а не запрошено клиентом.
+		tooBig.AgentDerivedWindow = agentDerived
+		return tooBig
 	}
 	if cfg.AutoReloadMaxNCtx > 0 && targetTotal > cfg.AutoReloadMaxNCtx {
 		logger.Get().Warnw(i18n.T("balancer.preflight_nctx.requested_window_above_operator_ceiling_warn"),
@@ -715,8 +752,10 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 			"model", meta.ModelName,
 			"requested_total", targetTotal,
 			"auto_reload_max_n_ctx", cfg.AutoReloadMaxNCtx)
-		return makeWindowTooBigReject(state, meta, reqWindow, targetTotal, cfg.AutoReloadMaxNCtx,
+		tooBig := makeWindowTooBigReject(state, meta, reqWindow, targetTotal, cfg.AutoReloadMaxNCtx,
 			i18n.T("balancer.preflight_nctx.auto_reload_ceiling_reason", cfg.AutoReloadMaxNCtx))
+		tooBig.AgentDerivedWindow = agentDerived
+		return tooBig
 	}
 
 	logger.Get().Infow(i18n.T("balancer.preflight_nctx.reload_for_client_window_info"),
@@ -732,6 +771,10 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	return &PreflightResult{
 		Decision:   PreflightReload,
 		TargetNCtx: reqWindow,
+		// R253: окно выведено из оценки промпта (клиент num_ctx не присылал) —
+		// вызывающий код пишет это в лог отдельной строкой, чтобы оператор видел
+		// причину перезагрузки, а не «модель вдруг перезагрузилась».
+		AgentDerivedWindow: agentDerived,
 	}
 }
 

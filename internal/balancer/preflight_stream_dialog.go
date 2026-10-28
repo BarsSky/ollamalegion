@@ -25,9 +25,11 @@ package balancer
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -155,6 +157,15 @@ func (lr *LlamaCppRouter) runInferencePreflightStreamDialog(
 	}
 
 	// Spawn keepalive goroutine.
+	// R253 (2026-10-28): повторный заход в диалог запрещён — после reload запрос
+	// дообслуживается self-proxy'ем через собственную поверхность, и тот запрос
+	// обязан идти обычным путём (иначе бесконечный цикл «диалог → диалог»).
+	if args.r.Header.Get(preflightDialogServedHeader) != "" {
+		logger.Get().Debugw("preflight stream dialog: served-маркер уже стоит, пропускаем",
+			"backend", args.backendID)
+		return false
+	}
+
 	keepaliveCtx, cancelKeepalive := context.WithCancel(ctx)
 	defer cancelKeepalive()
 	var keepaliveWG sync.WaitGroup
@@ -181,13 +192,146 @@ func (lr *LlamaCppRouter) runInferencePreflightStreamDialog(
 	cancelKeepalive()
 	keepaliveWG.Wait()
 
-	logger.Get().Infow("preflight stream dialog: reload done, signaling client to retry",
+	logger.Get().Infow("preflight stream dialog: reload done, serving the same request",
 		"backend", args.backendID, "model", modelName, "target_n_ctx", res.TargetNCtx)
 
-	// Write [DONE] marker — client knows to retry. On retry, state fits (NoOp preflight).
-	writeStreamDialogReloadDone(bufrw, res.TargetNCtx)
-	_ = bufrw.Flush()
+	// R253 (2026-10-28): НЕ закрываем поток пустым [DONE].
+	//
+	// ЖИВОЙ ДЕФЕКТ. Раньше диалог писал keepalive-JSON-чанки, затем `data: [DONE]`
+	// и закрывал соединение — БЕЗ ответа модели. Клиент (Cline) считал ход
+	// завершённым пустым сообщением и останавливал задачу: «после порога сессия
+	// закрывается». Теперь после reload тот же запрос дообслуживается через
+	// собственную поверхность (self-proxy), кадры ответа уходят клиенту в то же
+	// соединение, и ровно один [DONE] закрывает поток.
+	streamSelfProxyChunked(ctx, args.r, bufrw, args.body, res.TargetNCtx)
 	return true
+}
+
+// preflightDialogServedHeader — маркер «запрос уже прошёл диалог».
+//
+// Внутренний (self-proxy) запрос несёт его, чтобы не запускать диалог второй раз
+// (после reload preflight и так должен дать NoOp, но полагаться на это нельзя:
+// метрики поллера обновляются позже, и тогда получился бы цикл перезагрузок).
+const preflightDialogServedHeader = "X-LB-Preflight-Dialog-Served"
+
+// streamSelfProxyChunked — дообслуживание запроса после reload для hijack-пути.
+//
+// ПОЧЕМУ self-proxy, а не «продолжить обработчик». Диалог уже hijack'нул
+// соединение, поэтому вернуть управление обычному пути нельзя (он писал бы
+// заголовки в занятый conn). Единственный хирургический вариант — прогнать ТОТ ЖЕ
+// запрос через собственную OpenAI-поверхность (тот же pipeline: выбор бэкенда,
+// очередь, нормализация) и перелить кадры в уже открытое соединение. Риск
+// минимален: на время reload окно уже выросло, поэтому внутренний запрос идёт
+// обычным путём без повторного диалога (плюс маркер-заглушка выше).
+func streamSelfProxyChunked(ctx context.Context, incoming *http.Request, bufrw *bufio.ReadWriter, body []byte, targetNCtx int) {
+	if incoming == nil || bufrw == nil {
+		return
+	}
+	resp, err := selfProxyPostWithMarker(ctx, incoming, incoming.URL.RequestURI(), body)
+	if err != nil {
+		logger.Get().Warnw("preflight stream dialog: self-proxy after reload failed",
+			"path", incoming.URL.Path, "target_n_ctx", targetNCtx, "error", err)
+		writeChunkedStreamError(bufrw, "reload done, but serving the request failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := fmt.Sprintf("reload done, but upstream answered HTTP %d", resp.StatusCode)
+		logger.Get().Warnw("preflight stream dialog: self-proxy non-2xx after reload",
+			"path", incoming.URL.Path, "status", resp.StatusCode)
+		writeChunkedStreamError(bufrw, msg)
+		return
+	}
+
+	last, copyErr := copySSELines(resp.Body, func(line []byte) error {
+		if len(line) == 0 || (len(line) == 1 && line[0] == '\n') {
+			return nil
+		}
+		if isOpenAISSEDataLine(line) {
+			line = append(line, '\n')
+		}
+		return writeChunkedFrame(bufrw, line)
+	})
+	if copyErr != nil {
+		logger.Get().Warnw("preflight stream dialog: copy after reload failed",
+			"path", incoming.URL.Path, "error", copyErr)
+		writeChunkedStreamError(bufrw, "stream copy failed: "+copyErr.Error())
+		return
+	}
+	ensureChunkedSSEDone(bufrw, last)
+}
+
+// streamSelfProxyPlain — то же для пути без hijack (обычный ResponseWriter).
+func streamSelfProxyPlain(ctx context.Context, incoming *http.Request, w http.ResponseWriter, body []byte, targetNCtx int) {
+	if incoming == nil || w == nil {
+		return
+	}
+	resp, err := selfProxyPostWithMarker(ctx, incoming, incoming.URL.RequestURI(), body)
+	if err != nil {
+		logger.Get().Warnw("preflight stream dialog (plain): self-proxy after reload failed",
+			"path", incoming.URL.Path, "target_n_ctx", targetNCtx, "error", err)
+		writePlainStreamError(w, "reload done, but serving the request failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writePlainStreamError(w, fmt.Sprintf("reload done, but upstream answered HTTP %d", resp.StatusCode))
+		return
+	}
+	last, copyErr := copySSELines(resp.Body, func(line []byte) error {
+		if len(line) == 0 || (len(line) == 1 && line[0] == '\n') {
+			return nil
+		}
+		if _, werr := w.Write(line); werr != nil {
+			return werr
+		}
+		Flush(w)
+		return nil
+	})
+	if copyErr != nil {
+		writePlainStreamError(w, "stream copy failed: "+copyErr.Error())
+		return
+	}
+	ensurePlainSSEDone(w, last)
+}
+
+// copySSELines — построчное копирование SSE-потока через write.
+//
+// Возвращает последнюю УСПЕШНО записанную строку: по ней вызывающий решает, нужен
+// ли синтетический [DONE] (ensure*SSEDone).
+func copySSELines(src io.Reader, write func([]byte) error) ([]byte, error) {
+	if src == nil || write == nil {
+		return nil, nil
+	}
+	var last []byte
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 0), 4*1024*1024)
+	for scanner.Scan() {
+		line := append([]byte(nil), scanner.Bytes()...)
+		line = append(line, '\n')
+		if err := write(line); err != nil {
+			return last, err
+		}
+		last = line
+	}
+	return last, scanner.Err()
+}
+
+// selfProxyPostWithMarker — self-proxy с маркером «диалог уже был».
+func selfProxyPostWithMarker(ctx context.Context, incoming *http.Request, requestURI string, body []byte) (*http.Response, error) {
+	url := selfProxyBaseURL(incoming) + requestURI
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(preflightDialogServedHeader, "1")
+	for _, header := range []string{"X-API-Token", "Authorization", "X-Request-ID", "User-Agent"} {
+		if v := incoming.Header.Get(header); v != "" {
+			req.Header.Set(header, v)
+		}
+	}
+	return selfProxyClient.Do(req)
 }
 
 // runInferencePreflightStreamDialogPlain — fallback когда hijack недоступен.
@@ -230,17 +374,21 @@ func (lr *LlamaCppRouter) runInferencePreflightStreamDialogPlain(
 	for {
 		select {
 		case <-reloadDone:
-			// Write final SSE comment to signal client to retry.
-			fmt.Fprintf(w, ": reload_done\n\n")
-			flusher.Flush()
+			// R253 (2026-10-28): после reload дообслуживаем тот же запрос, а не
+			// закрываем поток пустым маркером (клиент считал ход завершённым без
+			// ответа модели).
+			logger.Get().Infow("preflight stream dialog (plain): reload done, serving the same request",
+				"backend", args.backendID, "model", modelName, "target_n_ctx", res.TargetNCtx)
+			streamSelfProxyPlain(ctx, args.r, w, args.body, res.TargetNCtx)
 			return true
 		case <-ctx.Done():
 			fmt.Fprintf(w, ": client_canceled\n\n")
 			flusher.Flush()
 			return true
 		case <-ticker.C:
-			keepalive := streamDialogKeepaliveChunk(modelName, res.TargetNCtx)
-			fmt.Fprintf(w, "%s\n", keepalive)
+			// R253: SSE-КОММЕНТАРИЙ, а не JSON-чанк. JSON-чанк с пустыми choices
+			// строгие OpenAI-клиенты считают мусором, а комментарий игнорируют.
+			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		}
 	}
@@ -303,20 +451,8 @@ func streamDialogKeepaliveLoop(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			chunk := map[string]interface{}{
-				"id":      fmt.Sprintf("chatcmpl-keepalive-%d", time.Now().UnixMilli()),
-				"object":  "chat.completion.chunk",
-				"created": time.Now().Unix(),
-				"model":   modelName,
-				"choices": []interface{}{},
-				"x_round_34_keepalive": map[string]interface{}{
-					"target_n_ctx": targetNCtx,
-					"elapsed_ms":   time.Since(start).Milliseconds(),
-					"phase":        "preload",
-				},
-			}
-			b, _ := json.Marshal(chunk)
-			if _, err := bufrw.WriteString(fmt.Sprintf("data: %s\n\n", b)); err != nil {
+			// R253: SSE-комментарий вместо JSON-чанка (см. выше).
+			if _, err := bufrw.WriteString(": keepalive\n\n"); err != nil {
 				return
 			}
 			if err := bufrw.Flush(); err != nil {

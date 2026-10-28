@@ -405,9 +405,16 @@ func TestDecidePreflight_DefaultNPredictWhenZero(t *testing.T) {
 	}
 	cfg := DefaultNCtxReloadConfig()
 	res := DecidePreflight(meta, state, cfg)
-	if res.Decision != PreflightNoOp {
-		t.Errorf("клиент не указал окно — ожидался NoOp, получено %v (target=%d)",
+	// R253 (2026-10-28): клиент не указал ни окна, ни n_predict — окно выводится из
+	// оценки промпта с дефолтным бюджетом вывода: 8000 + 4096 + 64 = 12160 >
+	// загруженных 4096 → перезагрузка. Раньше здесь ожидался NoOp, и именно из-за
+	// этого Cline жил с неизменным окном.
+	if res.Decision != PreflightReload {
+		t.Fatalf("ожидался PreflightReload (12160 > загруженных 4096), получено %v (target=%d)",
 			res.Decision, res.TargetNCtx)
+	}
+	if res.TargetNCtx != 12160 {
+		t.Errorf("TargetNCtx=%d, ожидалось 12160 (8000 + дефолтные 4096 + 64)", res.TargetNCtx)
 	}
 }
 

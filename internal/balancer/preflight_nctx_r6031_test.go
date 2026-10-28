@@ -118,9 +118,26 @@ func TestPreflight_R6031_NoExplicitClientOverride(t *testing.T) {
 		AutoReloadMaxNCtx: 131072,
 	}
 	res := DecidePreflight(meta, state, cfg)
-	if res.Decision != PreflightNoOp {
-		t.Errorf("R83-политика (2026-10-01): клиент не указал окно — ожидался NoOp "+
-			"(без принудительной перезагрузки по оценке промпта), получено %v", res.Decision)
+	// R253 (2026-10-28): КОНТРАКТ ИЗМЕНЁН. Раньше здесь ожидался NoOp («клиент не
+	// указал окно — не гадаем»), из-за чего Cline (он num_ctx не шлёт никогда) жил
+	// с неизменным окном и получал обрезанный вывод от cppworker. Теперь окно
+	// выводится из оценки промпта: 5000 + 3000 + 64 = 8064 > загруженных 2048 →
+	// перезагрузка (видно и таргет).
+	if res.Decision != PreflightReload {
+		t.Fatalf("промпт по оценке не влезает в загруженное окно 2048 — ожидался "+
+			"PreflightReload, получено %v", res.Decision)
+	}
+	if res.TargetNCtx != 8064 {
+		t.Errorf("TargetNCtx=%d, ожидалось 8064 (промпт 5000 + вывод 3000 + 64)", res.TargetNCtx)
+	}
+	if !res.AgentDerivedWindow {
+		t.Error("ожидалась пометка AgentDerivedWindow (окно выведено из промпта)")
+	}
+
+	// Обратная совместимость: одной переменной возвращается прежнее поведение.
+	t.Setenv("LB_NCTX_GROW_FOR_AGENTS", "0")
+	if legacy := DecidePreflight(meta, state, cfg); legacy.Decision != PreflightNoOp {
+		t.Errorf("LB_NCTX_GROW_FOR_AGENTS=0 → ожидался NoOp, получено %v", legacy.Decision)
 	}
 }
 

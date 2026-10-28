@@ -128,22 +128,45 @@ func TestR83Policy_ClientWindowBeyondPerClientCeiling_RejectedWithClearReason(t 
 	}
 }
 
-// TestR83Policy_SilentClient_NeverForcesReload — ГЛАВНОЕ изменение подхода:
-// если клиент НЕ указал num_ctx, мы не гадаем по оценке промпта и не перезагружаем
-// модель. Раньше здесь был принудительный reload (оценка 44230 > окна слота).
-func TestR83Policy_SilentClient_NeverForcesReload(t *testing.T) {
+// TestR83Policy_SilentClient_ContractAfterR253 — КОНТРАКТ ИЗМЕНЁН в R253
+// (2026-10-28), и тест фиксирует новый.
+//
+// БЫЛО (R83, 2026-10-01): клиент не указал num_ctx → NoOp, никаких перезагрузок
+// «по оценке промпта». На стенде это обернулось живым дефектом: Cline num_ctx не
+// присылает вовсе, окно не росло никогда, cppworker резал вывод по фактическому
+// промпту (prompt ≥ n_ctx → n_predict=0), и агентская задача срывалась на пороге.
+//
+// СТАЛО: промпт по оценке не влезает в окно слота → окно растёт (до потолков).
+// Если он не влезает даже в физический потолок на клиента — отказ 413 с цифрами
+// и советом, что делать (это честнее пустого ответа).
+//
+// Прежнее поведение возвращается одной переменной LB_NCTX_GROW_FOR_AGENTS=0 —
+// второй кейс ниже.
+func TestR83Policy_SilentClient_ContractAfterR253(t *testing.T) {
 	meta := &RequestMeta{
 		// Клиент молчит про окно, но промпт по оценке огромный.
 		EstimatedPromptTokens: 100000,
 		RequestedNPredict:     8192,
 		HasTools:              true,
 	}
-	state := stateForLongHistory(65536, 32768, 2)
+	state := stateForLongHistory(65536, 32768, 2) // на клиента 32768, потолок 65536
 
 	res := DecidePreflight(meta, state, DefaultNCtxReloadConfig())
-	if res.Decision != PreflightNoOp {
-		t.Fatalf("клиент не указывал окно — ожидался NoOp, получено %v: %s",
-			res.Decision, res.RejectBody)
+	// required = 100000 + 8192 + 64 = 108256 > потолка на клиента (65536) → отказ.
+	if res.Decision != PreflightReject {
+		t.Fatalf("промпт не влезает даже в потолок на клиента — ожидался объяснённый "+
+			"отказ 413, получено %v: %s", res.Decision, res.RejectBody)
+	}
+	if !res.AgentDerivedWindow {
+		t.Error("окно выведено из промпта, но AgentDerivedWindow=false")
+	}
+
+	// Поведение R83 возвращается одной переменной (обратная совместимость).
+	t.Setenv("LB_NCTX_GROW_FOR_AGENTS", "0")
+	resLegacy := DecidePreflight(meta, state, DefaultNCtxReloadConfig())
+	if resLegacy.Decision != PreflightNoOp {
+		t.Fatalf("LB_NCTX_GROW_FOR_AGENTS=0 должен возвращать прежнее NoOp, получено %v: %s",
+			resLegacy.Decision, resLegacy.RejectBody)
 	}
 }
 

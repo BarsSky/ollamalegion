@@ -143,6 +143,17 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		logger.Get().Infow("preflight: model reloaded before proxy (round-trip one)",
 			"backend", args.backendID, "model", meta.ModelName,
 			"new_n_ctx", res.TargetNCtx, "has_tools", meta.HasTools)
+		// R253 (2026-10-28): отдельная строка для агентского роста окна — оператор
+		// должен видеть ПРИЧИНУ («промпт перестал влезать в загруженное окно»), а не
+		// только факт перезагрузки модели.
+		if res.AgentDerivedWindow {
+			logger.Get().Infow("n_ctx grown for agent turn",
+				"backend", args.backendID, "model", meta.ModelName,
+				"before_n_ctx", state.effectivePerSeqNCtx(),
+				"after_n_ctx", res.TargetNCtx,
+				"estimated_prompt_tokens", meta.EstimatedPromptTokens,
+				"reason", "client sent no num_ctx and prompt no longer fits the loaded window")
+		}
 		// R68 (2026-09-23): обновляем кэш n_ctx загруженной модели СРАЗУ, иначе
 		// следующий (transport-level) preflight-чек до обновления metrics poller
 		// (~30 c) увидит старый n_ctx и запустит ВТОРОЙ reload — клиент получит

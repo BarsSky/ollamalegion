@@ -82,9 +82,19 @@ func TestR83Policy_VRAMKnownZero_SilentClientServed(t *testing.T) {
 	meta := &RequestMeta{EstimatedPromptTokens: 40000, RequestedNPredict: 8000}
 
 	res := DecidePreflight(meta, state, NCtxReloadConfig{AutoReloadMaxNCtx: 131072})
-	if res.Decision != PreflightNoOp {
-		t.Fatalf("Decision = %v, want PreflightNoOp (клиент не указал окно): %s",
+	// R253 (2026-10-28): клиент окно не указывал, но окно выводится из оценки
+	// промпта: 40000 + 8000 + 64 = 48064 > загруженных 32768 → перезагрузка. Отказа
+	// быть не должно (VRAM unknown → fail-open), но и NoOp больше не верен: именно
+	// на NoOp Cline получал обрезанный вывод.
+	if res.Decision == PreflightReject {
+		t.Fatalf("VRAM неизвестна — отказ недопустим (fail-open): %s", res.RejectBody)
+	}
+	if res.Decision != PreflightReload {
+		t.Fatalf("Decision = %v, want PreflightReload (окно выведено из промпта): %s",
 			res.Decision, res.RejectBody)
+	}
+	if !res.AgentDerivedWindow {
+		t.Error("ожидалась пометка AgentDerivedWindow")
 	}
 }
 

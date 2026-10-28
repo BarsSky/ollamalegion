@@ -675,7 +675,13 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		var finishReason = "stop"
 		toolAccum := make(map[int]*accumulatedToolCall)
 		scanner := bufio.NewScanner(bytes.NewReader(respBody))
-		scanner.Buffer(make([]byte, 0), 1024*1024)
+		// R264: тот же лимит строки, что и на стриминговых путях (R259).
+		//
+		// Здесь оставался хардкод 1 МиБ — то есть не-стрим путь сохранил ровно тот
+		// дефект, который R259 убрал в стриме: один большой SSE-чанк (крупный
+		// аргумент tool-call, длинная строка) ронял сканер, и ответ молча
+		// обрывался на середине — без ошибки клиенту и без следа в логе.
+		scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data:") {
@@ -764,6 +770,16 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			if m, ok := chunk["model"].(string); ok && m != "" {
 				modelName = m
 			}
+		}
+		// R264: превышение НАШЕГО лимита строки — не вина воркера и не повод
+		// молча отдать обрезанный ответ. Логируем причину с числами и отдаём то,
+		// что успели собрать (клиент получит корректный JSON, а не «пустоту»).
+		if serr := scanner.Err(); serr != nil && errors.Is(serr, bufio.ErrTooLong) {
+			logger.Get().Warnw(i18n.T("balancer.nonstream_stream_limit.line_too_long"),
+				"model", modelName,
+				"limit_bytes", streamMaxLineBytes(),
+				"reason", "our_limit",
+				"content_len", len(fullContent))
 		}
 		var ollamaBody []byte
 		if originalPath == "/api/generate" {

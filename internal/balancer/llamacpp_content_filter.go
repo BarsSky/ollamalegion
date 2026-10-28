@@ -247,6 +247,12 @@ func shouldFilterLlamaCppContent(content string) bool {
 // filterOpenAIStreamingLine — фильтрует SSE-строку с OpenAI chunk, удаляя
 // content-токены, которые являются служебными (см. shouldFilterLlamaCppContent).
 //
+// R264: TEST-ONLY. В production этот обёрточный вызов не используется —
+// единственная точка выхода для клиента теперь filterAssistantEgressForClient
+// (R256), а она опирается на filterOpenAIStreamingLineWithState. Обёртка без
+// состояния осталась ради старых тестов R231/R243: удалять её вместе с ними
+// стоит отдельной уборкой, а не в коммите про пути выхода.
+//
 // Возвращает (filtered, wasFiltered):
 //   - filtered: новая строка для записи клиенту (или nil, если нужно пропустить чанк)
 //   - wasFiltered: true, если хотя бы один content-чанк был отфильтрован

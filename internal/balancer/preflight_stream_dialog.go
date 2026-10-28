@@ -29,7 +29,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -336,20 +335,21 @@ func streamSelfProxyChunked(ctx context.Context, incoming *http.Request, bufrw *
 	// R256: кадры внутреннего ответа проходят через ТОТ ЖЕ фильтр reasoning, что и
 	// обычный путь. Раньше они переливались как есть — размышления и маркеры
 	// уезжали клиенту мимо фильтра (живая жалоба «мешаются размышления»).
+	//
+	// R264: здесь же ЗАКРЫВАЕМ выход фильтра (finalize). Без этого на этом пути не
+	// срабатывало объяснение пустого ответа (R261) и мог теряться удержанный хвост,
+	// хотя на трёх остальных путях R261 уже работал: стрим, целиком ушедший в
+	// reasoning, отдавался клиенту как молчаливая пустота.
 	egress := &reasoningEgressState{}
 	last, copyErr := copySSELines(resp.Body, func(raw []byte) error {
 		onFirstByte()
 		line := raw
-		if len(line) == 0 || (len(line) == 1 && line[0] == '\n') {
-			return nil
-		}
 		if isOpenAISSEDataLine(line) {
 			line = append(line, '\n')
 		}
-		if filtered, _ := filterAssistantEgressForClient(line, egress); filtered != nil {
-			line = filtered
-		}
-		return writeChunkedFrame(bufrw, line)
+		return selfProxyEgressLine(line, egress, func(fr []byte) error {
+			return writeChunkedFrame(bufrw, fr)
+		})
 	})
 	if copyErr != nil {
 		logger.Get().Warnw("preflight stream dialog: copy after reload failed",
@@ -358,6 +358,15 @@ func streamSelfProxyChunked(ctx context.Context, incoming *http.Request, bufrw *
 		return
 	}
 	onFirstByte()
+	// R264: закрываем выход фильтра и здесь — на случай потока, кончившегося без
+	// [DONE] (обрыв/край finish_reason): хвост и объяснение не должны потеряться.
+	if err := writeEgressFinalizeFrames(egress, &last, func(fr []byte) error {
+		return writeChunkedFrame(bufrw, fr)
+	}); err != nil {
+		logger.Get().Warnw("preflight stream dialog: finalize frame write failed",
+			"path", incoming.URL.Path, "error", err)
+		return
+	}
 	ensureChunkedSSEDone(bufrw, last)
 }
 
@@ -387,28 +396,92 @@ func streamSelfProxyPlain(ctx context.Context, incoming *http.Request, w http.Re
 		return
 	}
 	// R256: тот же фильтр reasoning, что и на остальных путях.
+	// R264: и то же закрытие выхода фильтра (finalize) — см. комментарий в
+	// streamSelfProxyChunked: без него объяснение пустого ответа (R261) терялось.
 	egress := &reasoningEgressState{}
 	last, copyErr := copySSELines(resp.Body, func(raw []byte) error {
 		onFirstByte()
-		line := raw
-		if len(line) == 0 || (len(line) == 1 && line[0] == '\n') {
+		return selfProxyEgressLine(raw, egress, func(fr []byte) error {
+			if _, werr := w.Write(fr); werr != nil {
+				return werr
+			}
+			Flush(w)
 			return nil
-		}
-		if filtered, _ := filterAssistantEgressForClient(line, egress); filtered != nil {
-			line = filtered
-		}
-		if _, werr := w.Write(line); werr != nil {
-			return werr
-		}
-		Flush(w)
-		return nil
+		})
 	})
 	if copyErr != nil {
 		writePlainStreamError(w, "stream copy failed: "+copyErr.Error())
 		return
 	}
 	onFirstByte()
+	if err := writeEgressFinalizeFrames(egress, &last, func(fr []byte) error {
+		if _, werr := w.Write(fr); werr != nil {
+			return werr
+		}
+		Flush(w)
+		return nil
+	}); err != nil {
+		logger.Get().Warnw("preflight stream dialog (plain): finalize frame write failed",
+			"path", incoming.URL.Path, "error", err)
+		return
+	}
 	ensurePlainSSEDone(w, last)
+}
+
+// selfProxyEgressLine — R264: обработка ОДНОЙ строки внутреннего ответа на путях
+// self-proxy (chunked и plain).
+//
+// Одна функция, потому что раньше эти два пути дублировали друг друга копипастой,
+// и оба забыли закрытие выхода фильтра: объяснение пустого ответа (R261) не
+// срабатывало, а удержанный хвост мог потеряться. Правило порядка то же, что и на
+// основном пути: объяснение → придержанный finish → [DONE].
+func selfProxyEgressLine(line []byte, egress *reasoningEgressState, write func([]byte) error) error {
+	if write == nil {
+		return nil
+	}
+	if len(line) == 0 || (len(line) == 1 && line[0] == '\n') {
+		return nil
+	}
+	if filtered, _ := filterAssistantEgressForClient(line, egress); filtered != nil {
+		line = filtered
+	}
+	// R261: finish-кадр придерживаем — объяснение обязано идти ПЕРЕД ним.
+	if egress.tryHoldFinishFrame(line) {
+		return nil
+	}
+	// R261: [DONE] — последняя точка, где ещё можно отдать придержанное. Иначе
+	// объяснение и finish окажутся после [DONE], и клиент увидит два конца потока.
+	if isSSEDoneLine(line) {
+		if err := writeEgressFinalizeFrames(egress, nil, write); err != nil {
+			return err
+		}
+	}
+	return write(line)
+}
+
+// writeEgressFinalizeFrames — R264: общий способ отдать кадры закрытия выхода
+// фильтра размышлений (сброс удержанного хвоста → объяснение пустого ответа →
+// придержанный finish).
+//
+// Зачем отдельная функция: пути, которые переливают поток «как есть» (self-proxy
+// диалога preflight'а), обязаны закрывать выход фильтра так же, как основной
+// путь. Пока это делалось копиями кода, один из путей забыл вызов — и R261 на нём
+// не работал (живой провал на стенде r261: кадр-объяснение не приходил).
+// last обновляется, чтобы вызывающий корректно решил, нужен ли синтетический
+// [DONE].
+func writeEgressFinalizeFrames(egress *reasoningEgressState, last *[]byte, write func([]byte) error) error {
+	if egress == nil || write == nil {
+		return nil
+	}
+	for _, fr := range egress.finalizeFrames() {
+		if err := write(fr); err != nil {
+			return err
+		}
+		if last != nil {
+			*last = append((*last)[:0], fr...)
+		}
+	}
+	return nil
 }
 
 // copySSELines — построчное копирование SSE-потока через write.
@@ -421,7 +494,9 @@ func copySSELines(src io.Reader, write func([]byte) error) ([]byte, error) {
 	}
 	var last []byte
 	scanner := bufio.NewScanner(src)
-	scanner.Buffer(make([]byte, 0), 4*1024*1024)
+	// R264: лимит строки берём общий (R259) — в этом файле оставался свой,
+	// жёсткий 4 МиБ, и большой кадр обрывал копирование молча.
+	scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...)
 		line = append(line, '\n')
@@ -584,23 +659,6 @@ func writeStreamDialogHeaders(bufrw *bufio.ReadWriter, r *http.Request) error {
 	return bufrw.Flush()
 }
 
-// streamDialogKeepaliveChunk — format keepalive JSON.
-func streamDialogKeepaliveChunk(modelName string, targetNCtx int) string {
-	keepalive := map[string]interface{}{
-		"id":      fmt.Sprintf("chatcmpl-keepalive-%d", time.Now().UnixMilli()),
-		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
-		"model":   modelName,
-		"choices": []interface{}{},
-		"x_round_34_keepalive": map[string]interface{}{
-			"target_n_ctx": targetNCtx,
-			"phase":        "preload",
-		},
-	}
-	b, _ := json.Marshal(keepalive)
-	return fmt.Sprintf("data: %s\n\n", b)
-}
-
 // streamDialogKeepaliveLoop — пишет keepalive каждые keepalivePeriod до cancel.
 func streamDialogKeepaliveLoop(
 	bufrw *bufio.ReadWriter,
@@ -628,41 +686,6 @@ func streamDialogKeepaliveLoop(
 				"backend", backendID, "elapsed_ms", time.Since(start).Milliseconds())
 		}
 	}
-}
-
-// writeStreamDialogReloadDone — пишет SSE marker что reload завершён.
-// Клиент получает [DONE] и понимает что нужно retry. На retry state fits → NoOp.
-func writeStreamDialogReloadDone(bufrw *bufio.ReadWriter, targetNCtx int) {
-	// Специальный event с marker'ом и [DONE] terminator.
-	marker := map[string]interface{}{
-		"id":      fmt.Sprintf("chatcmpl-reload-done-%d", time.Now().UnixMilli()),
-		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
-		"choices": []interface{}{},
-		"x_round_34_reload_done": map[string]interface{}{
-			"target_n_ctx":  targetNCtx,
-			"phase":         "ready",
-			"client_action": "retry",
-		},
-	}
-	b, _ := json.Marshal(marker)
-	bufrw.WriteString(fmt.Sprintf("data: %s\n\n", b))
-	// [DONE] signals end of stream. Client should retry.
-	bufrw.WriteString("data: [DONE]\n\n")
-	_ = bufrw.Flush()
-}
-
-// writeStreamDialogFinalError — write SSE error event + [DONE].
-func writeStreamDialogFinalError(bufrw *bufio.ReadWriter, msg string) {
-	errObj, _ := json.Marshal(map[string]interface{}{
-		"error": map[string]interface{}{
-			"message": msg,
-			"type":    "preflight_stream_dialog_timeout",
-		},
-	})
-	bufrw.WriteString(fmt.Sprintf("data: %s\n\n", errObj))
-	bufrw.WriteString("data: [DONE]\n\n")
-	_ = bufrw.Flush()
 }
 
 // suppress unused import warnings if conn is referenced in future refactor.

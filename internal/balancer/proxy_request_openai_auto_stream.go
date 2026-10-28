@@ -173,7 +173,7 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 	accum.startedAt = upstreamStartedAt
 	scanner := bufio.NewScanner(upstreamResp.Body)
 	// SSE строки могут быть длинными (reasoning chunks)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // до 4MB на строку
+	scanner.Buffer(make([]byte, 0, 64*1024), streamMaxLineBytes()) // R264: один лимит строки на все пути (R259) // до 4MB на строку
 
 	for scanner.Scan() {
 		// Context cancellation check

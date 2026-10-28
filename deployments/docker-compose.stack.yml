@@ -176,6 +176,19 @@ services:
       # и переключатель молча не работал.
       - LB_NCTX_GROW_FOR_AGENTS=${LB_NCTX_GROW_FOR_AGENTS:-1}
       - LB_AGENT_OUTPUT_RESERVE_TOKENS=${LB_AGENT_OUTPUT_RESERVE_TOKENS:-4096}
+      # R264 (2026-10-28): лимит строки SSE и пределы буферизации не-стрим
+      # агентских запросов. Заведено ровно потому, что история с
+      # LB_NCTX_GROW_FOR_AGENTS повторилась бы: переменная читается в коде, но
+      # без проброса в контейнер она молча не работает, и «настраиваемость»
+      # остаётся только на бумаге.
+      #   LB_STREAM_MAX_LINE_BYTES          — один лимит сканера на ВСЕ пути
+      #                                       (R259/R264); превышение = наш лимит,
+      #                                       а не обрыв воркера.
+      #   LB_OPENAI_AUTO_STREAM_MAX_SEC     — сколько можно копить ответ
+      #   LB_OPENAI_AUTO_STREAM_MAX_BYTES     не-стрим запросу (R258).
+      - LB_STREAM_MAX_LINE_BYTES=${LB_STREAM_MAX_LINE_BYTES:-8388608}
+      - LB_OPENAI_AUTO_STREAM_MAX_SEC=${LB_OPENAI_AUTO_STREAM_MAX_SEC:-300}
+      - LB_OPENAI_AUTO_STREAM_MAX_BYTES=${LB_OPENAI_AUTO_STREAM_MAX_BYTES:-16777216}
       # Where the balancer stores image-model profiles. Must be explicit: the
       # default is config/image-model-profiles.json under /app/config, which is
       # mounted READ-ONLY below, so saving a profile from the WebUI would fail.

@@ -498,7 +498,7 @@ type anthropicStreamForwarder struct {
 func forwardOpenAISSEToAnthropic(r io.Reader, w io.Writer, flush func(), model string) error {
 	f := &anthropicStreamForwarder{w: w, flush: flush, model: model, callIdx: map[string]int{}}
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), streamMaxLineBytes()) // R264: один лимит строки на все пути (R259)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {

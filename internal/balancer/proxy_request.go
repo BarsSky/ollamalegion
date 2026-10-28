@@ -773,6 +773,17 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 	defer p.activeStreams.Done()
 	flusher, canFlush := w.(http.Flusher)
 
+	// R252 (2026-10-28): тот же единый вход стрима, что и на hijack-пути
+	// (stream_session_r252.go). До этого «клиент виден как живой» ставилось
+	// только здесь и только на нативном пути — новые пути оставались невидимыми
+	// в сессиях и мониторе.
+	legacyModel := ""
+	if m, ok := r.Context().Value(modelContextKey).(string); ok {
+		legacyModel = m
+	}
+	streamSess := startStreamSession(p, r, legacyModel)
+	defer streamSess.Stop()
+
 	heartbeatInterval := p.getHeartbeatInterval()
 
 	// Контекст клиента — если клиент отвалился, прерываем чтение из upstream
@@ -802,6 +813,8 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 	}()
 
 	done := false
+	// R252: последний отданный клиенту SSE-кадр (для гарантии [DONE]).
+	var lastSSELine []byte
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
 	for !done {
@@ -868,11 +881,18 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 					"backend", backendID, "error", werr)
 				return nil
 			}
+			// R252: запоминаем последний кадр для гарантии завершения потока.
+			lastSSELine = append(lastSSELine[:0], lineToWrite...)
 			if canFlush {
 				flusher.Flush()
 			}
 		}
 	}
+
+	// R252 (2026-10-28): гарантия `data: [DONE]`. Раньше поток мог закрыться без
+	// него (upstream закрыл соединение после финального чанка без маркера), и
+	// OpenAI-совместимые клиенты считали ответ оборванным.
+	ensurePlainSSEDone(w, lastSSELine)
 
 	// Финальный flush на всякий случай.
 	if canFlush {

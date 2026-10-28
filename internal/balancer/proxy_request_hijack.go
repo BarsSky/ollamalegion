@@ -300,47 +300,24 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	p.activeStreams.Add(1)
 	defer p.activeStreams.Done()
 
-	// R251 (2026-10-28): сессия и запись монитора ОБЯЗАНЫ оставаться живыми весь
-	// стрим — здесь, а не только на нативном Ollama-пути.
+	// R251/R252 (2026-10-28): сессия и запись монитора ОБЯЗАНЫ оставаться живыми
+	// весь стрим — здесь, а не только на нативном Ollama-пути.
 	//
 	// ЖИВОЙ ДЕФЕКТ (Cline, длинная серия tool-call'ов). Это основной путь
 	// /v1/chat/completions (hijack), и до R251 он не трогал sessionMgr вообще:
 	// LastRequestAt ставился один раз на входе запроса. Следствия ровно те, что
 	// описал оператор: сессию удалял абсолютный TTL (линия «балансер потерял
 	// клиента»), а запись клиента в мониторе вычищалась через 60 с простоя
-	// (recentClients), хотя ответ всё это время шёл. Heartbeat и флаг «идёт
-	// стрим» снимаются на любом выходе.
-	streamSessionID := ""
-	if p.config != nil && p.config.Balancing.SessionStickiness && p.sessionMgr != nil {
-		hijackModel := ""
-		if m, ok := r.Context().Value(modelContextKey).(string); ok {
-			hijackModel = m
-		}
-		streamSessionID = p.getSessionIDWithModel(r, p.getClientName(r), hijackModel)
-		if streamSessionID != "" {
-			p.sessionMgr.SetStreamActive(streamSessionID, true)
-			defer p.sessionMgr.SetStreamActive(streamSessionID, false)
-		}
+	// (recentClients), хотя ответ всё это время шёл.
+	//
+	// R252: логика вынесена в общий startStreamSession (stream_session_r252.go),
+	// чтобы этот и остальные SSE-пути не расходились.
+	hijackModel := ""
+	if m, ok := r.Context().Value(modelContextKey).(string); ok {
+		hijackModel = m
 	}
-	p.markRecentClientStreamActive(r, true)
-	defer p.markRecentClientStreamActive(r, false)
-	streamHbStop := make(chan struct{})
-	defer close(streamHbStop)
-	go func() {
-		ticker := time.NewTicker(p.getHeartbeatInterval())
-		defer ticker.Stop()
-		for {
-			select {
-			case <-streamHbStop:
-				return
-			case <-ticker.C:
-				if streamSessionID != "" && p.sessionMgr != nil {
-					p.sessionMgr.HeartbeatStream(streamSessionID)
-				}
-				p.markRecentClientStreamActive(r, true)
-			}
-		}
-	}()
+	streamSess := startStreamSession(p, r, hijackModel)
+	defer streamSess.Stop()
 
 	// 4. Polling goroutine — periodic SetReadDeadline(time.Unix(0,0)) для detect close.
 	// time.Unix(0, 0) = epoch — deadline в прошлом, read returns **немедленно**
@@ -417,6 +394,8 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	}()
 
 	done := false
+	// R252: последний отданный клиенту SSE-кадр (для гарантии [DONE]).
+	var lastSSELine []byte
 	for !done {
 		select {
 		case <-clientCtx.Done():
@@ -501,7 +480,27 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 					"backend", backendID, "error", werr)
 				return nil
 			}
+			// R252: помним последний отданный кадр — по нему решаем, нужен ли
+			// синтетический [DONE] перед закрытием потока.
+			lastSSELine = append(lastSSELine[:0], lineToWrite...)
 		}
+	}
+
+	// R252 (2026-10-28): ГАРАНТИЯ завершения SSE.
+	//
+	// ЖИВОЙ ДЕФЕКТ. Этот путь (основной для Cline) не писал синтетический
+	// `data: [DONE]`: при нормальном конце его присылал upstream, но если
+	// cppworker закрывал поток без [DONE] (обрыв, ошибка чтения, край
+	// finish_reason), клиент видел «поток просто закрылся» и трактовал ответ как
+	// оборванный — отсюда «сессия закрылась» без видимой причины. Legacy-путь
+	// вёл себя иначе (там [DONE] был) — расхождение ровно этого класса R252 и
+	// убирает.
+	//
+	// ensureChunkedSSEDone идемпотентен: если последний кадр уже [DONE], второго
+	// не будет.
+	if ensureChunkedSSEDone(bufrw, lastSSELine) {
+		logger.Get().Debugw("hijack streaming: synthetic [DONE] written (upstream ended without it)",
+			"backend", backendID)
 	}
 
 	// Round 32 #16 (2026-08-11): chunked terminator ("0\r\n\r\n") — ОБЯЗАТЕЛЕН

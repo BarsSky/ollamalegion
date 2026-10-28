@@ -19,7 +19,11 @@ type SessionManager struct {
 	// префилла 27B-модели пауза между чанками легально доходит до минут, и
 	// жёсткие 120 с удаляли живую сессию.
 	zombieThreshold time.Duration
-	stopCh          chan struct{}
+	// identity — R252: «кто это и какой разговор» по каждому id (см.
+	// SessionIdentity). Отдельная карта, а не поля types.Session: наружу
+	// (/api/v1/sessions) эти данные не отдаются, и публичный контракт не меняется.
+	identity map[string]SessionIdentity
+	stopCh   chan struct{}
 }
 
 // NewSessionManager - создание менеджера сессий с дефолтным TTL
@@ -39,6 +43,7 @@ func NewSessionManagerWithTTL(sessionTTL, idleTTL time.Duration) *SessionManager
 	}
 	sm := &SessionManager{
 		sessions:        make(map[string]*types.Session),
+		identity:        make(map[string]SessionIdentity, 8),
 		ttl:             sessionTTL,
 		idleTTL:         idleTTL,
 		zombieThreshold: defaultZombieSessionThreshold,
@@ -64,6 +69,112 @@ func (sm *SessionManager) SetZombieThreshold(d time.Duration) {
 	sm.mu.Lock()
 	sm.zombieThreshold = d
 	sm.mu.Unlock()
+}
+
+// SessionIdentity — R252 (2026-10-28): «кто это и какой разговор» для сессии.
+//
+// ХРАНИТСЯ ОТДЕЛЬНО ОТ types.Session, а не полями сессии:
+//   - types.Session уходит клиенту в /api/v1/sessions, и добавлять туда поля
+//     ради внутренней эвристики — менять публичный контракт без нужды;
+//   - данные нужны ровно одному месту (резолвер id) и живут столько же, сколько
+//     запись сессии (чистятся вместе с ней в cleanup).
+//
+// ConvKey — отпечаток НАЧАЛА разговора (session_instance_r118.go). Именно он
+// меняется, когда клиент сжимает историю (Cline переписывает начало), из-за чего
+// id сессии «переезжал» и работа продолжалась под новой строкой в панели.
+type SessionIdentity struct {
+	IP           string
+	Client       string
+	Model        string
+	EndpointType string
+	ConvKey      string
+	At           time.Time
+}
+
+// RecordIdentity — запомнить идентичность сессии.
+//
+// No-op, если записи ещё нет: вызывающий код считает id ДО создания сессии
+// (getSessionIDWithModel → SetWithProtocol), поэтому первая запись получит
+// идентичность со второго запроса. Это осознанно: до второго запроса
+// переиспользовать нечего, а «подвешенные» идентичности без сессии только
+// копились бы.
+func (sm *SessionManager) RecordIdentity(sessionID string, ident SessionIdentity) {
+	if sm == nil || sessionID == "" {
+		return
+	}
+	if ident.At.IsZero() {
+		ident.At = time.Now()
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if _, ok := sm.sessions[sessionID]; !ok {
+		return
+	}
+	if sm.identity == nil {
+		sm.identity = make(map[string]SessionIdentity, 8)
+	}
+	sm.identity[sessionID] = ident
+}
+
+// IdentityOf — идентичность сессии (пустая, если не записана).
+func (sm *SessionManager) IdentityOf(sessionID string) SessionIdentity {
+	if sm == nil || sessionID == "" {
+		return SessionIdentity{}
+	}
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.identity[sessionID]
+}
+
+// ResolveID — R252: переиспользовать существующую сессию вместо создания новой.
+//
+// ЗАЧЕМ. Без явных идентификаторов (Cline их не шлёт) id выводится из отпечатка
+// начала разговора (client.go:366-370). Сжатие истории меняет начало → новый id:
+// старая строка висит в панели до idle TTL, а «кошелёк» admission-очереди (его
+// ключ — sessionID) обнуляется посреди задачи. Для оператора это выглядит как
+// «клиент пропал, началась другая сессия».
+//
+// Правило: если candidateID ещё не существует, отдаём id уже известной сессии,
+// которую признал подходящей matcher. Сравнение клиента/модели/разговора делает
+// вызывающий код — он один знает, какие признаки у него есть в запросе.
+//
+// Матчер получает КОПИЮ сессии и вызывается ВНЕ блокировки: внутри него можно
+// звать IdentityOf (рекурсивный RLock под ожидающим писателем — риск дедлока).
+func (sm *SessionManager) ResolveID(candidateID string, matcher func(*types.Session) bool) string {
+	if sm == nil || candidateID == "" || matcher == nil {
+		return candidateID
+	}
+
+	sm.mu.RLock()
+	if _, ok := sm.sessions[candidateID]; ok {
+		sm.mu.RUnlock()
+		return candidateID
+	}
+	candidates := make([]types.Session, 0, len(sm.sessions))
+	for _, s := range sm.sessions {
+		if s == nil {
+			continue
+		}
+		candidates = append(candidates, *s)
+	}
+	sm.mu.RUnlock()
+
+	bestID := ""
+	var bestAt time.Time
+	for i := range candidates {
+		c := candidates[i]
+		if c.ID == candidateID || !matcher(&c) {
+			continue
+		}
+		// Детерминированно: самая свежая подходящая сессия.
+		if bestID == "" || c.LastRequestAt.After(bestAt) {
+			bestID, bestAt = c.ID, c.LastRequestAt
+		}
+	}
+	if bestID != "" {
+		return bestID
+	}
+	return candidateID
 }
 
 // Stop - остановка cleanup loop
@@ -147,6 +258,9 @@ func (sm *SessionManager) cleanup() {
 		sm.mu.Lock()
 		for _, id := range toDelete {
 			delete(sm.sessions, id)
+			// R252: идентичность живёт ровно столько же, сколько запись —
+			// иначе карта росла бы вместе с числом завершённых задач.
+			delete(sm.identity, id)
 		}
 		sm.mu.Unlock()
 	}
@@ -177,6 +291,7 @@ func (sm *SessionManager) ForceRemove(id string) bool {
 
 	if _, exists := sm.sessions[id]; exists {
 		delete(sm.sessions, id)
+		delete(sm.identity, id)
 		return true
 	}
 	return false
@@ -263,6 +378,7 @@ func (sm *SessionManager) Delete(id string) bool {
 
 	if _, exists := sm.sessions[id]; exists {
 		delete(sm.sessions, id)
+		delete(sm.identity, id)
 		return true
 	}
 	return false
@@ -274,6 +390,9 @@ func (sm *SessionManager) Clear() {
 	defer sm.mu.Unlock()
 
 	sm.sessions = make(map[string]*types.Session)
+	if sm.identity != nil {
+		sm.identity = make(map[string]SessionIdentity, 8)
+	}
 }
 
 // Set - установка сессии (с clientName, clientIP и userAgent)

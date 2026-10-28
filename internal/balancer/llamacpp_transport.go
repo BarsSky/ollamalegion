@@ -13,7 +13,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
@@ -679,62 +678,20 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// usage-чанке, и оба могут присутствовать в одном стриме.
 	tokenUsageRecorded := false
 
-	// ==== R251 (2026-10-28): живой стрим должен быть ВИДЕН в сессиях и мониторе ====
+	// ==== R251/R252 (2026-10-28): живой стрим должен быть ВИДЕН в сессиях и мониторе ====
 	//
 	// ЖИВОЙ ДЕФЕКТ (Cline, длинная серия tool-call'ов). Heartbeat сессии и флаг
 	// «идёт стрим» исторически ставились ТОЛЬКО на нативном Ollama-пути
-	// (handleStreamingResponse, streaming.go:55/139/180). Для llama.cpp
-	// (/v1/chat/completions, /api/chat, /api/generate) транспорт писал сессию
-	// ОДИН раз на входе и больше не трогал её:
-	//   - sessionMgr: LastRequestAt не обновлялся → сессия жила только по
-	//     абсолютному TTL (15 мин от создания) и исчезала посреди задачи;
-	//   - recentClients (его показывает монитор): запись чистится через 60 с без
-	//     IsStreamActive, а флаг на этом пути не выставлялся вовсе → клиент
-	//     «пропадал» из монитора уже через минуту генерации.
-	// Снаружи это оператор и описал: «балансер теряет клиента, его нет в
-	// отображении монитора», хотя запрос всё это время жив.
+	// (handleStreamingResponse, streaming.go). Для llama.cpp (/v1/chat/completions,
+	// /api/chat, /api/generate) транспорт писал сессию ОДИН раз на входе и больше
+	// не трогал её: сессию удалял абсолютный TTL, а запись клиента в мониторе
+	// вычищалась через 60 с простоя — хотя ответ всё это время шёл.
 	//
-	// Теперь на время стрима: сессия помечается активной, обновляется heartbeat'ом
-	// (тот же интервал, что у нативного пути), клиент помечается как streaming —
-	// и всё это снимается на любом выходе (defer), чтобы не оставлять «вечно
-	// активных» зомби.
-	streamSessionID := ""
-	if p.config != nil && p.config.Balancing.SessionStickiness && p.sessionMgr != nil {
-		streamSessionID = p.getSessionIDWithModel(r, p.getClientName(r), modelFromCtx)
-		if streamSessionID != "" {
-			p.sessionMgr.SetStreamActive(streamSessionID, true)
-		}
-	}
-	p.markRecentClientStreamActive(r, true)
-	streamHeartbeatStop := make(chan struct{})
-	var streamHeartbeatWG sync.WaitGroup
-	streamHeartbeatWG.Add(1)
-	go func() {
-		defer streamHeartbeatWG.Done()
-		ticker := time.NewTicker(p.getHeartbeatInterval())
-		defer ticker.Stop()
-		for {
-			select {
-			case <-streamHeartbeatStop:
-				return
-			case <-ticker.C:
-				// Обновляем активность и сессии, и записи монитора: обе живут по
-				// «простою», и обе раньше умирали во время одной длинной генерации.
-				if streamSessionID != "" && p.sessionMgr != nil {
-					p.sessionMgr.HeartbeatStream(streamSessionID)
-				}
-				p.markRecentClientStreamActive(r, true)
-			}
-		}
-	}()
-	defer func() {
-		close(streamHeartbeatStop)
-		streamHeartbeatWG.Wait()
-		if streamSessionID != "" && p.sessionMgr != nil {
-			p.sessionMgr.SetStreamActive(streamSessionID, false)
-		}
-		p.markRecentClientStreamActive(r, false)
-	}()
+	// R252: логика вынесена в общий startStreamSession (stream_session_r252.go),
+	// чтобы пути не расходились. Stop() снимает флаги на любом выходе и
+	// идемпотентен.
+	streamSess := startStreamSession(p, r, modelFromCtx)
+	defer streamSess.Stop()
 
 	// ==== Основной цикл SSE → NDJSON / SSE → SSE ==========
 	scanner := bufio.NewScanner(resp.Body)

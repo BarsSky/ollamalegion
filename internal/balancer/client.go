@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 // requestUserIdentity — R67b (2026-09-23): идентификатор пользователя из
@@ -268,28 +269,13 @@ func (p *Proxy) getClientFingerprint(r *http.Request) string {
 	return "fp:" + hex.EncodeToString(h[:8])
 }
 
-// getSessionID - получение ID сессии из запроса (стабильный, без эфемерного порта)
-// ВАЖНО: X-Client-ID комбинируется с IP и clientName, т.к. разные Cline-клиенты
-// отправляют одинаковый X-Client-ID, что приводило к слипанию сессий.
-func (p *Proxy) getSessionID(r *http.Request, clientName string) string {
-	realIP := p.getClientRealIP(r)
-
-	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
-		// Комбинируем X-Client-ID с реальным IP — гарантирует уникальность сессий
-		// для разных клиентов за разными IP, даже с одинаковым X-Client-ID
-		h := sha256.Sum256([]byte(clientID + "::" + realIP))
-		return "cid:" + hex.EncodeToString(h[:16])
-	}
-	if sessionID := r.Header.Get("X-Session-ID"); sessionID != "" {
-		return sessionID
-	}
-	if cookie, err := r.Cookie("session_id"); err == nil {
-		return cookie.Value
-	}
-
-	fp := p.getClientFingerprint(r)
-	return fp + "::" + clientName
-}
+// getSessionID — УДАЛЁН в R252 (2026-10-28).
+//
+// Он был мёртв в production (ни одного вызова вне этого файла) и при этом
+// ДУБЛИРОВАЛ начало getSessionIDWithModel другим составом ключа: без модели, без
+// типа эндпоинта и без разговора. Два похожих резолвера в одном файле — это
+// приглашение выбрать «не тот» (именно так уже терялась привязка к бэкенду).
+// Оставлен один: getSessionIDWithModel ниже.
 
 // getSessionIDWithModel - версия с учётом модели (используется при создании сессии)
 // ВАЖНО: X-Client-ID комбинируется с IP и моделью, т.к. разные Cline-клиенты
@@ -366,10 +352,70 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 	if conv := conversationFingerprintFromRequest(r); conv != "" {
 		composite := fp + "::" + clientName + "::" + model + "::" + endpointType + "::conv:" + conv
 		h := sha256.Sum256([]byte(composite))
-		return "conv:" + hex.EncodeToString(h[:16]) + "::" + model
+		candidate := "conv:" + hex.EncodeToString(h[:16]) + "::" + model
+		// R252 (2026-10-28): СЖАТИЕ ИСТОРИИ НЕ ДОЛЖНО НАЧИНАТЬ НОВУЮ СЕССИЮ.
+		//
+		// ЖИВОЙ ДЕФЕКТ (Cline, длинная задача). Cline при переполнении окна
+		// переписывает начало разговора (урезает/суммирует историю). Отпечаток
+		// начала (`conv`) меняется → получался НОВЫЙ sessionID: старая строка
+		// висела в панели до idle TTL, работа продолжалась в новой, а «кошелёк»
+		// admission-очереди (ключ = sessionID) обнулялся посреди задачи. Снаружи
+		// это выглядело как «балансер потерял клиента / начал другой».
+		//
+		// Правило переиспользования: тот же клиент (IP+имя), та же модель и тот же
+		// тип эндпоинта, и при этом ЛИБО начало разговора совпадает (обычный
+		// следующий запрос), ЛИБО сессия активна (сжатие пришло посреди хода —
+		// с R251/R252 HasActiveStream выставляется на всех стриминговых путях).
+		// Явные идентификаторы клиента (X-Client-ID / X-Session-ID / cookie /
+		// user / chat_id) сюда не попадают: у них ветки выше, и там своя семантика.
+		if sid := p.resolveConversationSessionID(candidate, realIP, clientName, model, endpointType, conv); sid != "" {
+			candidate = sid
+		}
+		p.recordSessionIdentity(candidate, realIP, clientName, model, endpointType, conv)
+		return candidate
 	}
 
 	return fp + "::" + clientName + "::" + model + "::" + endpointType
+}
+
+// resolveConversationSessionID — R252: переиспользовать id существующей сессии,
+// если это тот же клиент/модель и продолжение того же разговора.
+//
+// Возвращает "" (нет переиспользования) или id существующей сессии. Вынесено из
+// getSessionIDWithModel отдельной функцией: правило сравнения должно быть в
+// ОДНОМ месте, иначе «устойчивость к сжатию» будет реализована по-разному на
+// разных путях — ровно та болезнь, что лечится в R252.
+func (p *Proxy) resolveConversationSessionID(candidate, realIP, clientName, model, endpointType, conv string) string {
+	if p == nil || p.sessionMgr == nil || conv == "" {
+		return ""
+	}
+	return p.sessionMgr.ResolveID(candidate, func(s *types.Session) bool {
+		ident := p.sessionMgr.IdentityOf(s.ID)
+		if ident.IP != realIP || ident.Client != clientName ||
+			ident.Model != model || ident.EndpointType != endpointType {
+			return false
+		}
+		// (а) начало разговора не изменилось — обычный следующий ход;
+		if ident.ConvKey != "" && ident.ConvKey == conv {
+			return true
+		}
+		// (б) история сжата клиентом, но ход ещё идёт — сессия активна.
+		return s.HasActiveStream
+	})
+}
+
+// recordSessionIdentity — R252: запомнить «кто/какой разговор» по id сессии.
+func (p *Proxy) recordSessionIdentity(sessionID, realIP, clientName, model, endpointType, conv string) {
+	if p == nil || p.sessionMgr == nil || sessionID == "" {
+		return
+	}
+	p.sessionMgr.RecordIdentity(sessionID, SessionIdentity{
+		IP:           realIP,
+		Client:       clientName,
+		Model:        model,
+		EndpointType: endpointType,
+		ConvKey:      conv,
+	})
 }
 
 // getOllamaEndpointType — определяет тип Ollama эндпоинта для разделения сессий.

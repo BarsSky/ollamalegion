@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -181,6 +182,103 @@ type conversationParts struct {
 	SystemHead string // начало первого system-сообщения
 	UserHead   string // начало первого user-сообщения
 	UserTail   string // конец первого user-сообщения
+	// R252.2: дополнительные признаки продолжения — без них «тот же system»
+	// сливал бы ДВЕ РАЗНЫЕ последовательные задачи в одном workspace.
+	// UserHasSummaryMarker — в новом тексте есть маркер сводки (Cline пишет
+	// «[Summary of earlier conversation]» / «по причине переполнения» и т.п.).
+	UserHasSummaryMarker bool
+	// TaskID — идентификатор задачи из environment_details, если Cline его положил
+	// в текст («Current Task ID: …»). Стабилен внутри задачи и меняется между ними.
+	TaskID string
+}
+
+// conversationOverlapMinRunes — минимальное ПЕРЕСЕЧЕНИЕ текстов (в рунах), которое
+// считается признаком продолжения разговора (R252.2).
+//
+// 32 руны — это примерно фраза в 3-4 слова: достаточно, чтобы случайное совпадение
+// («поправь импорты») не склеило две разные задачи, и достаточно мало, чтобы
+// поймать перенесённый в сводку хвост прежнего запроса.
+const conversationOverlapMinRunes = 32
+
+// summaryMarkerSubstrings — маркеры сжатия истории (регистр не важен).
+//
+// Список намеренно короткий и предметный: это ровно те формулировки, которыми
+// клиенты помечают «история урезана», а не любые слова про контекст.
+var summaryMarkerSubstrings = []string{
+	"summary of earlier conversation",
+	"summary of the earlier conversation",
+	"previous conversation",
+	"context truncated",
+	"context window",
+	"conversation was summarized",
+	"summarized to save",
+	"сводка предыдущ",
+	"сводка предыд",
+	"по причине переполнения",
+	"из-за переполнения",
+	"переполнения контекста",
+	"история сокращена",
+	"предыдущего разговора",
+}
+
+// hasSummaryMarker — есть ли в тексте маркер сжатия истории (R252.2).
+func hasSummaryMarker(text string) bool {
+	if text == "" {
+		return false
+	}
+	lower := strings.ToLower(text)
+	for _, m := range summaryMarkerSubstrings {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// overlapRunes — есть ли у двух текстов общий кусок длиной не меньше n рун.
+//
+// Окна скользят по тексту a с шагом n/4: полный перебор по каждой руне не нужен
+// (тексты усечены до conversationPartChars), а шаг даёт перекрытие окон в 4 раза,
+// поэтому реальное совпадение короче n не «просочится».
+func overlapRunes(a, b string, n int) bool {
+	if n <= 0 || a == "" || b == "" {
+		return false
+	}
+	ra, rb := []rune(a), []rune(b)
+	if len(ra) < n || len(rb) < n {
+		return false
+	}
+	step := n / 4
+	if step < 1 {
+		step = 1
+	}
+	for i := 0; i+n <= len(ra); i += step {
+		if strings.Contains(b, string(ra[i:i+n])) {
+			return true
+		}
+	}
+	return false
+}
+
+// conversationOverlap — признак продолжения по пересечению сохранённых частей
+// разговора (R252.2): сравниваем начало/хвост нового первого user-сообщения с
+// началом/хвостом прежнего.
+func conversationOverlap(now, saved conversationParts, n int) bool {
+	if saved.UserHead == "" && saved.UserTail == "" {
+		return false
+	}
+	pairs := [][2]string{
+		{now.UserHead, saved.UserHead},
+		{now.UserHead, saved.UserTail},
+		{now.UserTail, saved.UserHead},
+		{now.UserTail, saved.UserTail},
+	}
+	for _, pr := range pairs {
+		if overlapRunes(pr[0], pr[1], n) {
+			return true
+		}
+	}
+	return false
 }
 
 // clipHead — нормализованное начало строки (не более conversationPartChars рун).
@@ -250,8 +348,29 @@ func conversationPartsFromBody(body []byte) conversationParts {
 	if firstUser != "" {
 		out.UserHead = clipHead(firstUser)
 		out.UserTail = clipTail(firstUser)
+		out.UserHasSummaryMarker = hasSummaryMarker(firstUser)
+		out.TaskID = extractTaskID(firstUser)
+	}
+	if out.TaskID == "" {
+		out.TaskID = extractTaskID(firstSystem)
 	}
 	return out
+}
+
+// taskIDRe — идентификатор задачи из environment_details, который Cline кладёт в
+// текст сообщения («Current Task ID: 175934…», «task_id: abc-123»).
+var taskIDRe = regexp.MustCompile(`(?i)(?:current\s+)?task[\s_-]*id\s*[:=]\s*([A-Za-z0-9][A-Za-z0-9._-]{3,63})`)
+
+// extractTaskID — идентификатор задачи из текста ("" — нет).
+func extractTaskID(text string) string {
+	if text == "" {
+		return ""
+	}
+	m := taskIDRe.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
 }
 
 // conversationPartsFromRequest — признаки из запроса (тело читается и

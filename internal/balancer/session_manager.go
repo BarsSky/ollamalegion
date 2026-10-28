@@ -92,6 +92,12 @@ type SessionIdentity struct {
 	// обычно остаётся в сводке дословно.
 	UserHead string
 	UserTail string
+	// R252.2: дополнительные признаки продолжения (без них «тот же system»
+	// сливал две разные последовательные задачи в одном workspace).
+	// UserHasSummaryMarker — в прежнем тексте был маркер сжатия истории.
+	UserHasSummaryMarker bool
+	// TaskID — идентификатор задачи из environment_details («Current Task ID: …»).
+	TaskID string
 	// ConvKey — отпечаток начала разговора целиком (session_instance_r118.go):
 	// точный признак «начало не изменилось вообще». Пусто — отпечаток не строился
 	// (короткий промпт), тогда работают только текстовые признаки.

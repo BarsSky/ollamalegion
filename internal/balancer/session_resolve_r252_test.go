@@ -220,3 +220,68 @@ func TestR252_ExplicitSessionHeaderUnaffected(t *testing.T) {
 		t.Fatalf("X-Session-ID второго клиента проигнорирован: %q", id2)
 	}
 }
+
+// r252HistoryTailContinuation — продолжение той же задачи БЕЗ маркера сводки:
+// новый текст содержит прежнюю формулировку (пересечение > conversationOverlapMinRunes).
+const r252HistoryTailContinuation = `{"model":"m1","messages":[` +
+	`{"role":"system","content":"` + r252SystemAlpha + `"},` +
+	`{"role":"user","content":"Продолжаем. Создай файл internal/r252/demo.go, наполни его реализацией парсера, прочитай и поправь импорты, затем добавь тесты"}]}`
+
+// r252HistoryTaskIDBefore — история с task-id из environment_details (Cline кладёт
+// его текстом в первое сообщение пользователя).
+const r252HistoryTaskIDBefore = `{"model":"m1","messages":[` +
+	`{"role":"system","content":"` + r252SystemAlpha + `"},` +
+	`{"role":"user","content":"<environment_details>Current Task ID: 1759345678901</environment_details>\nПроверь, что сервер поднялся, и покажи статус"}]}`
+
+// r252HistoryTaskIDContinuation — та же задача, другой текст, тот же task-id.
+const r252HistoryTaskIDContinuation = `{"model":"m1","messages":[` +
+	`{"role":"system","content":"` + r252SystemAlpha + `"},` +
+	`{"role":"user","content":"<environment_details>Current Task ID: 1759345678901</environment_details>\nТеперь запусти тесты и приложи вывод"}]}`
+
+// TestR252_NewTaskSameWorkspaceInIdleGetsNewID — R252.2: ДВЕ РАЗНЫЕ задачи в одном
+// workspace при простое не сливаются. Раньше weak-правило (только SystemHead)
+// отдавало новой задаче чужой id: она наследовала кошелёк admission и строку в
+// панели прежней задачи.
+func TestR252_NewTaskSameWorkspaceInIdleGetsNewID(t *testing.T) {
+	p := r252ResolveProxy(t)
+	clientName := "Cline/3.3.0"
+
+	reqBefore := r252ChatRequest(r252HistoryBefore)
+	idBefore := p.getSessionIDWithModel(reqBefore, clientName, "m1")
+	p.sessionMgr.SetWithProtocol(idBefore, "b1", "m1", clientName, "192.0.2.70", reqBefore.UserAgent(), "openai")
+	p.sessionMgr.SetStreamActive(idBefore, false)
+
+	// Тот же system (workspace), НО другой текст без маркеров и пересечений.
+	idOther := p.getSessionIDWithModel(r252ChatRequest(r252HistorySameSystemOtherUser), clientName, "m1")
+	if idOther == idBefore {
+		t.Fatalf("новая задача в том же workspace унаследовала id прежней: %q (R252.2)", idOther)
+	}
+}
+
+// TestR252_CompressionContinuationByExtraSignals — R252.2: weak-ветка (совпал
+// только system) переиспользует сессию при ДОПОЛНИТЕЛЬНОМ признаке продолжения.
+func TestR252_CompressionContinuationByExtraSignals(t *testing.T) {
+	// (1) Пересечение текста: новый запрос содержит прежнюю формулировку, маркера
+	// сводки нет.
+	p := r252ResolveProxy(t)
+	clientName := "Cline/3.3.0"
+	reqBefore := r252ChatRequest(r252HistoryBefore)
+	idBefore := p.getSessionIDWithModel(reqBefore, clientName, "m1")
+	p.sessionMgr.SetWithProtocol(idBefore, "b1", "m1", clientName, "192.0.2.70", reqBefore.UserAgent(), "openai")
+	p.sessionMgr.SetStreamActive(idBefore, false)
+
+	if got := p.getSessionIDWithModel(r252ChatRequest(r252HistoryTailContinuation), clientName, "m1"); got != idBefore {
+		t.Fatalf("продолжение по пересечению текста не узнано: %q -> %q", idBefore, got)
+	}
+
+	// (2) Task-id из environment_details: тексты разные, id задачи тот же.
+	p2 := r252ResolveProxy(t)
+	reqTask := r252ChatRequest(r252HistoryTaskIDBefore)
+	idTask := p2.getSessionIDWithModel(reqTask, clientName, "m1")
+	p2.sessionMgr.SetWithProtocol(idTask, "b1", "m1", clientName, "192.0.2.70", reqTask.UserAgent(), "openai")
+	p2.sessionMgr.SetStreamActive(idTask, false)
+
+	if got := p2.getSessionIDWithModel(r252ChatRequest(r252HistoryTaskIDContinuation), clientName, "m1"); got != idTask {
+		t.Fatalf("продолжение по task-id не узнано: %q -> %q", idTask, got)
+	}
+}

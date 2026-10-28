@@ -421,8 +421,35 @@ func (p *Proxy) resolveConversationSessionID(candidate, realIP, clientName, mode
 		// сильным признаком, это ДРУГАЯ параллельная задача того же клиента (второе
 		// окно Cline, переключение Plan/Act): не прилипаем. Иначе вернулся бы
 		// регресс R118.9 («два экземпляра слились в одну сессию»).
-		return !s.HasActiveStream
+		if s.HasActiveStream {
+			return false
+		}
+		// R252.2: одного system-промпта НЕДОСТАТОЧНО. В одном workspace две РАЗНЫЕ
+		// последовательные задачи (закончил одну — начал другую) имеют одинаковый
+		// system, и weak-правило склеивало их: новая задача наследовала чужой
+		// кошелёк admission и чужую строку в панели.
+		//
+		// Продолжением считаем только при ДОПОЛНИТЕЛЬНОМ признаке:
+		//   - явный маркер сжатия истории в новом тексте (сводка);
+		//   - существенное пересечение сохранённых частей разговора;
+		//   - тот же task-id из environment_details.
+		if parts.UserHasSummaryMarker {
+			return true
+		}
+		if ident.TaskID != "" && parts.TaskID != "" && ident.TaskID == parts.TaskID {
+			return true
+		}
+		return conversationOverlap(parts, identConversationParts(ident), conversationOverlapMinRunes)
 	})
+}
+
+// identConversationParts — сохранённые признаки разговора из SessionIdentity.
+func identConversationParts(ident SessionIdentity) conversationParts {
+	return conversationParts{
+		SystemHead: ident.SystemHead,
+		UserHead:   ident.UserHead,
+		UserTail:   ident.UserTail,
+	}
 }
 
 // recordSessionIdentity — R252: запомнить «кто/какой разговор» по id сессии.
@@ -431,14 +458,16 @@ func (p *Proxy) recordSessionIdentity(sessionID, realIP, clientName, model, endp
 		return
 	}
 	p.sessionMgr.RecordIdentity(sessionID, SessionIdentity{
-		IP:           realIP,
-		Client:       clientName,
-		Model:        model,
-		EndpointType: endpointType,
-		SystemHead:   parts.SystemHead,
-		UserHead:     parts.UserHead,
-		UserTail:     parts.UserTail,
-		ConvKey:      conv,
+		IP:                   realIP,
+		Client:               clientName,
+		Model:                model,
+		EndpointType:         endpointType,
+		SystemHead:           parts.SystemHead,
+		UserHead:             parts.UserHead,
+		UserTail:             parts.UserTail,
+		UserHasSummaryMarker: parts.UserHasSummaryMarker,
+		TaskID:               parts.TaskID,
+		ConvKey:              conv,
 	})
 }
 

@@ -280,11 +280,25 @@ func (s *Server) updateBackendRole(w http.ResponseWriter, r *http.Request, backe
 	// раскладку у того, кто перестал быть главным (standalone/донор), и проверяет
 	// доступность узлов. Раньше «самодостаточный» гасился отдельной веткой, а
 	// бывший главный, ставший донором, продолжал держать прежний список.
-	if _, greason := s.proxy.EnsureRPCLayout(backendID); greason != "" {
-		if err == nil {
-			err = fmt.Errorf("%s", greason)
+	// R249 (2026-10-28): применение раскладки к недоступному узлу НЕ держит ответ.
+	//
+	// Живой замер: POST /api/v1/backends/{id}/role для донора без сети отвечал
+	// 15 секунд (PUT конфига раскладки с таймаутом) — в UI это «нажал галочку,
+	// реакции нет». Роль уже изменена и сохранена; раскладку применяем в фоне,
+	// результат оператор увидит в ответе следующего GET /api/v1/backends.
+	layoutReason := ""
+	go func(id string) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				logger.Get().Errorw("EnsureRPCLayout panic (background)",
+					"backend", id, "panic", fmt.Sprint(rec))
+			}
+		}()
+		if _, r := s.proxy.EnsureRPCLayout(id); r != "" {
+			logger.Get().Warnw("EnsureRPCLayout (background) не применил раскладку",
+				"backend", id, "reason", r)
 		}
-	}
+	}(backendID)
 	// R133 (2026-10-16): роль donor — приказ ЭТОМУ бэкенду поднять свой узел
 	// раскладки. Без этого роль в панели была командой в пустоту: rpc-server на
 	// донорской машине приходилось поднимать руками (env или тумблер на месте).
@@ -299,6 +313,7 @@ func (s *Server) updateBackendRole(w http.ResponseWriter, r *http.Request, backe
 	// фоне; результат виден в следующем GET /api/v1/backends (rpcNode).
 	nodeReason := ""
 	nodeReport := s.proxy.RPCNodeReport(backendID)
+	_ = layoutReason
 	_ = nodeReport
 	go func(id string) {
 		defer func() {

@@ -778,9 +778,11 @@ func applyProfileLoadParams(req *ModelOpRequest, prof types.LlamaCppModelProfile
 			"profile_context_length", prof.ContextLength,
 			"profile_num_gpu_layers", prof.NumGPULayers)
 	}
+	totalFromProfile := false
 	if req.ContextSize == nil && prof.ContextLength > 0 {
 		cs := prof.ContextLength
 		req.ContextSize = &cs
+		totalFromProfile = true
 	}
 	if req.BatchSize == nil && prof.BatchSize > 0 {
 		bs := prof.BatchSize
@@ -826,9 +828,57 @@ func applyProfileLoadParams(req *ModelOpRequest, prof types.LlamaCppModelProfile
 	}
 	// R83 (2026-09-30): окно на клиента из профиля — как и parallel, работает и
 	// при обычной загрузке (раньше такие поля терялись вне пути .../apply).
+	perSeqFromProfile := false
 	if req.ContextPerSeq == nil && prof.ContextPerSeq > 0 {
 		per := prof.ContextPerSeq
 		req.ContextPerSeq = &per
+		perSeqFromProfile = true
+	}
+
+	// R255 (2026-10-28): ДВА поля профиля про одно и то же окно — согласовать
+	// ПЕРЕД отправкой воркеру.
+	//
+	// ЖИВОЙ ДЕФЕКТ: оператор выставил в карточке модели суммарное окно 256000
+	// (`contextLength`), но в профиле осталось старое «окно на клиента»
+	// (`contextPerSeq`, R83). Балансер отправлял оба поля, а cppworker при
+	// непустом contextPerSeq считает суммарное САМ: total = PAD256(perSeq) × слоты.
+	// Итог — модель грузилась с 16384 × 2 = 32768, а настройка оператора
+	// выглядела проигнорированной (живая жалоба).
+	if prof.ContextLength > 0 || prof.ContextPerSeq > 0 {
+		if totalFromProfile || perSeqFromProfile {
+			slots := 1
+			if req.Parallel != nil && *req.Parallel > 0 {
+				slots = *req.Parallel
+			} else if prof.Parallel > 0 {
+				slots = prof.Parallel
+			}
+			total, perSeq := 0, 0
+			if req.ContextSize != nil {
+				total = *req.ContextSize
+			}
+			if req.ContextPerSeq != nil {
+				perSeq = *req.ContextPerSeq
+			}
+			resolvedTotal, resolvedPerSeq, note := resolveDeclaredWindow(total, perSeq, slots)
+			if resolvedTotal > 0 {
+				rt := resolvedTotal
+				req.ContextSize = &rt
+			}
+			if resolvedPerSeq > 0 {
+				rp := resolvedPerSeq
+				req.ContextPerSeq = &rp
+			} else {
+				// Противоречие в пользу суммарного окна: per-seq НЕ отправляем,
+				// иначе воркер снова пересчитает окно сам и заявленное значение
+				// будет потеряно.
+				req.ContextPerSeq = nil
+			}
+			// Одна строка с числами: заявлено → уйдёт в загрузку. Печатаем только
+			// когда в профиле заданы ОБА поля (иначе это шум на каждой загрузке).
+			if prof.ContextLength > 0 && prof.ContextPerSeq > 0 {
+				logDeclaredWindow(req.ModelName, prof, slots, resolvedTotal, resolvedPerSeq, note)
+			}
+		}
 	}
 }
 

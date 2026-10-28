@@ -847,7 +847,19 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// Теперь запрос, требующий контекст выше потолка, отклоняется с понятным
 	// объяснением вместо тихой перезагрузки. Сам потолок НЕ ограничивает
 	// явную загрузку модели (WebUI/load-with-params) — он про авто-reload.
-	if cfg := p.nctxReload.Config(); cfg.AutoReloadMaxNCtx > 0 && requestedNCtx > cfg.AutoReloadMaxNCtx {
+	// R255 (2026-10-28): потолок авто-роста учитывает ЗАЯВЛЕННОЕ оператором окно.
+	//
+	// Живая жалоба: оператор выставил в карточке модели 256000 (и модель обучена
+	// на 262144, VRAM хватает), а запрос агента на окно больше 131072 упирался в
+	// env-потолок LB_NCTX_RELOAD_MAX_N_CTX. Потолок — защита от АВТО-роста по
+	// клиентскому запросу; если политику задал сам оператор (профиль модели), его
+	// окно и есть потолок. Физический предел (VRAM/GGUF) проверяется отдельно
+	// ниже, поэтому «в никуда» окно не вырастет.
+	effCeil := 0
+	if cfg := p.nctxReload.Config(); cfg.AutoReloadMaxNCtx > 0 {
+		effCeil = p.effectiveAutoReloadCeiling(modelName, cfg.AutoReloadMaxNCtx)
+	}
+	if effCeil > 0 && requestedNCtx > effCeil {
 		// R140 (2026-10-16): называем СВЯЗЫВАЮЩИЙ предел, а не только
 		// операторский.
 		//
@@ -859,19 +871,19 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		// опросил бэкенд) — не выдумываем число и говорим только про
 		// операторский лимит, как раньше.
 		physicalMax := p.getMaxVRAMNCtxFromMetrics(backendID)
-		binding := cfg.AutoReloadMaxNCtx
+		binding := effCeil
 		if physicalMax > 0 && physicalMax < binding {
 			binding = physicalMax
 		}
 		logger.Get().Warnw(i18n.T("balancer.nctx_reload_handlers.requested_above_limit_no_reload_warn"),
 			"backend", backendID, "model", modelName,
 			"requested_n_ctx", requestedNCtx,
-			"auto_reload_max_n_ctx", cfg.AutoReloadMaxNCtx,
+			"auto_reload_max_n_ctx", effCeil,
 			"max_vram_n_ctx", physicalMax,
 			"binding_limit", binding,
 			"hint", i18n.T("balancer.nctx_reload_handlers.requested_above_limit_hint"))
 		return bodyBuf, false,
-			formatNCtxCeilingRefusal(requestedNCtx, cfg.AutoReloadMaxNCtx, physicalMax, modelName),
+			formatNCtxCeilingRefusal(requestedNCtx, effCeil, physicalMax, modelName),
 			http.StatusRequestEntityTooLarge
 	}
 

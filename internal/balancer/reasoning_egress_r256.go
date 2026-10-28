@@ -45,6 +45,26 @@ type reasoningEgressState struct {
 	diag  sync.Once
 	// cut — сколько кадров фильтр реально изменил (для тестов/диагностики).
 	cut int
+
+	// --- R261 (2026-10-28): «пустой ответ» не должен быть молчаливым ---
+	//
+	// ЖИВАЯ ЖАЛОБА (DSH): «генерация в бэкенде идёт, но клиенту ничего не
+	// приходит даже после окончания». Замер на стенде: gemma-4 отдаёт ВЕСЬ
+	// ответ внутри канала размышлений, R256 перекладывает его в
+	// reasoning_content, а delta.content остаётся пустым на всю длину стрима
+	// (content_len=0, reasoning_len=359, finish=length). Клиент, который не
+	// рисует reasoning_content, видит пустоту — при том что модель ответила.
+	//
+	// Здесь считаем, что РЕАЛЬНО ушло клиенту по каждому каналу, и в конце
+	// стрима принимаем решение (см. finalizeReasoningStream): не отдавать
+	// молчаливую пустоту.
+	visibleChars   int
+	reasoningChars int
+	// heldFinish — finish-кадр, удержанный до конца стрима. Нужен, чтобы
+	// сообщение о пустом ответе пришло ДО finish_reason (строгие клиенты не
+	// читают контент после finish).
+	heldFinish []byte
+	finalized  bool
 }
 
 // logReasoningCutOnce — диагностика «фильтр сработал» один раз на стрим.
@@ -271,6 +291,12 @@ func filterAssistantEgressForClient(line []byte, st *reasoningEgressState) ([]by
 	}
 
 	if reasoning == "" && cleaned == content {
+		// Кадр не меняем, но счётчики ведём: по ним в конце стрима решается,
+		// отдавать ли сообщение о пустом видимом ответе (R261).
+		if st != nil {
+			st.visibleChars += len(cleaned)
+			st.reasoningChars += len(reasoning)
+		}
 		return line, false
 	}
 	out, ok := rewriteDeltaContentAndReasoning(line, cleaned, reasoning)
@@ -279,6 +305,8 @@ func filterAssistantEgressForClient(line []byte, st *reasoningEgressState) ([]by
 	}
 	if st != nil {
 		st.cut++
+		st.visibleChars += len(cleaned)
+		st.reasoningChars += len(reasoning)
 		st.diag.Do(st.logReasoningCutOnce)
 	}
 	return out, true

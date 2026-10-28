@@ -202,6 +202,27 @@ func (p *Proxy) streamUpstreamSSEToClient(
 			continue
 		}
 		out, _ := filterAssistantEgressForClient([]byte(line), egress)
+		// R261: finish придерживаем и отдаём последним — объяснение пустого
+		// ответа должно идти перед finish_reason.
+		if egress.tryHoldFinishFrame(out) {
+			continue
+		}
+		// R261: [DONE] от воркера — придержанный finish и объяснение пустого
+		// ответа отдаём ДО него (иначе клиент увидит кадры после конца потока).
+		if isSSEDoneLine(out) {
+			for _, fr := range egress.finalizeFrames() {
+				if _, werr := w.Write(fr); werr != nil {
+					logger.Get().Infow("R258: finalize before [DONE] failed",
+						"backend", backendID, "error", werr)
+					return nil
+				}
+				lastForwarded = fr
+				frames++
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
 		if _, err := w.Write(append(out, '\n', '\n')); err != nil {
 			logger.Get().Infow("R258: client write failed while streaming",
 				"backend", backendID, "error", err, "frames", frames)
@@ -219,6 +240,20 @@ func (p *Proxy) streamUpstreamSSEToClient(
 		// валидный конец потока, а не молча закрытое соединение.
 		logger.Get().Warnw("R258: upstream stream ended with error",
 			"backend", backendID, "model", modelName, "error", err, "frames", frames)
+	}
+	// R261: закрываем фильтр — хвост, объяснение пустого ответа, придержанный
+	// finish. Иначе клиент, не рисующий reasoning_content, видит пустоту.
+	for _, fr := range egress.finalizeFrames() {
+		if _, err := w.Write(fr); err != nil {
+			logger.Get().Infow("R258: finalize frame write failed",
+				"backend", backendID, "error", err)
+			return nil
+		}
+		lastForwarded = fr
+		frames++
+		if flusher != nil {
+			flusher.Flush()
+		}
 	}
 	// Ровно один [DONE]: если воркер успел прислать свой — второй не пишем.
 	if ensurePlainSSEDone(w, lastForwarded) && flusher != nil {

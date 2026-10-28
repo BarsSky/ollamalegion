@@ -873,6 +873,26 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 				}
 			}
 
+			// R261 (2026-10-28): finish-кадр придерживаем — объяснение пустого
+			// ответа обязано идти ПЕРЕД finish_reason.
+			if egressFilter.tryHoldFinishFrame(lineToWrite) {
+				continue
+			}
+			// R261: [DONE] от воркера — отдаём придержанный finish и объяснение
+			// ДО него, иначе они окажутся после конца потока.
+			if isSSEDoneLine(lineToWrite) {
+				for _, fr := range egressFilter.finalizeFrames() {
+					if _, werr := w.Write(fr); werr != nil {
+						logger.Get().Warnw("proxyRequestOpenAIStreaming: finalize before [DONE] failed",
+							"backend", backendID, "error", werr)
+						return nil
+					}
+					lastSSELine = append(lastSSELine[:0], fr...)
+					if canFlush {
+						flusher.Flush()
+					}
+				}
+			}
 			if _, werr := w.Write(lineToWrite); werr != nil {
 				logger.Get().Warnw("proxyRequestOpenAIStreaming: write to client failed",
 					"backend", backendID, "error", werr)
@@ -883,6 +903,21 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 			if canFlush {
 				flusher.Flush()
 			}
+		}
+	}
+
+	// R261 (2026-10-28): закрываем выход фильтра размышлений (хвост, объяснение
+	// пустого ответа, придержанный finish) — иначе клиент без поддержки
+	// reasoning_content видит пустой ответ.
+	for _, fr := range egressFilter.finalizeFrames() {
+		if _, werr := w.Write(fr); werr != nil {
+			logger.Get().Warnw("proxyRequestOpenAIStreaming: finalize frame write failed",
+				"backend", backendID, "error", werr)
+			return nil
+		}
+		lastSSELine = append(lastSSELine[:0], fr...)
+		if canFlush {
+			flusher.Flush()
 		}
 	}
 

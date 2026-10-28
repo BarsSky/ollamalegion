@@ -475,6 +475,25 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			// восстанавливая SSE event boundary `data: {...}\n\n`.
 			// Heartbeat `:` lines не трогаем — это SSE-комментарии без
 			// content, не нуждаются в \n\n boundary.
+			// R261 (2026-10-28): finish-кадр придерживаем до конца стрима —
+			// объяснение пустого ответа обязано прийти ПЕРЕД finish_reason
+			// (строгие клиенты не читают контент после finish).
+			if egressFilter.tryHoldFinishFrame(lineToWrite) {
+				continue
+			}
+			// R261: маркер [DONE] от воркера — последняя точка, где ещё можно
+			// отдать придержанный finish и объяснение. Иначе они окажутся ПОСЛЕ
+			// [DONE], и клиент увидит два конца потока (поймано тестом R258).
+			if isSSEDoneLine(lineToWrite) {
+				for _, fr := range egressFilter.finalizeFrames() {
+					if werr := writeChunkedFrame(bufrw, fr); werr != nil {
+						logger.Get().Warnw("hijack streaming: finalize before [DONE] failed",
+							"backend", backendID, "error", werr)
+						return nil
+					}
+					lastSSELine = append(lastSSELine[:0], fr...)
+				}
+			}
 			if isOpenAISSEDataLine(lineToWrite) {
 				lineToWrite = append(lineToWrite, '\n')
 			}
@@ -488,6 +507,19 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			// синтетический [DONE] перед закрытием потока.
 			lastSSELine = append(lastSSELine[:0], lineToWrite...)
 		}
+	}
+
+	// R261 (2026-10-28): закрываем выход фильтра размышлений — сброс удержанного
+	// хвоста, объяснение «пустого ответа» (если весь текст ушёл в размышления) и
+	// придержанный finish-кадр. До этого клиент без поддержки reasoning_content
+	// получал молчаливую пустоту, хотя модель ответила.
+	for _, fr := range egressFilter.finalizeFrames() {
+		if werr := writeChunkedFrame(bufrw, fr); werr != nil {
+			logger.Get().Warnw("hijack streaming: finalize frame write failed",
+				"backend", backendID, "error", werr)
+			return nil
+		}
+		lastSSELine = append(lastSSELine[:0], fr...)
 	}
 
 	// R252 (2026-10-28): ГАРАНТИЯ завершения SSE.

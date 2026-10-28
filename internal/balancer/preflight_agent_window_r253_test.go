@@ -131,7 +131,7 @@ func TestR253_AfterReloadClientGetsRealFrames(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	streamSelfProxyChunked(ctx, incoming, bufrw, []byte(`{"model":"m1","stream":true}`), 32768)
+	streamSelfProxyChunked(ctx, incoming, bufrw, []byte(`{"model":"m1","stream":true}`), 32768, nil)
 
 	got := buf.String()
 	if !strings.Contains(got, "hel") || !strings.Contains(got, "lo") {
@@ -160,7 +160,7 @@ func TestR253_SelfProxyFailureGetsErrorAndDone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	streamSelfProxyChunked(ctx, incoming, bufrw, []byte(`{"model":"m1"}`), 32768)
+	streamSelfProxyChunked(ctx, incoming, bufrw, []byte(`{"model":"m1"}`), 32768, nil)
 
 	got := buf.String()
 	if !strings.Contains(got, "error") {
@@ -196,5 +196,167 @@ func TestR253_DialogKeepaliveIsComment(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "chat.completion.chunk") {
 		t.Fatalf("keepalive всё ещё JSON-чанк: %q", buf.String())
+	}
+}
+
+// ============================================================================
+// R253.1 (2026-10-28) — правки по ревью 61dd8b01.
+// ============================================================================
+
+// TestR253_1_ChunkedTerminatorOnEveryExit — БЛОКЕР 1: поток, объявленный chunked,
+// обязан заканчиваться `0\r\n\r\n` на ЛЮБОМ исходе дообслуживания. Без терминатора
+// strict-клиенты (Cline/undici/aiohttp) получают «Not enough data to satisfy
+// transfer length header» — ровно класс обрыва, который R253 лечит.
+func TestR253_1_ChunkedTerminatorOnEveryExit(t *testing.T) {
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{
+			name: "успех",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+			},
+		},
+		{
+			name: "non-2xx",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("boom"))
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
+			defer srv.Close()
+			t.Setenv("LB_SELF_BASE_URL", srv.URL)
+
+			incoming := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m1"}`))
+			var buf bytes.Buffer
+			bufrw := bufio.NewReadWriter(bufio.NewReader(&buf), bufio.NewWriter(&buf))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			streamSelfProxyChunked(ctx, incoming, bufrw, []byte(`{"model":"m1"}`), 32768, nil)
+
+			if got := buf.String(); !strings.HasSuffix(got, "0\r\n\r\n") {
+				t.Fatalf("поток не закрыт chunked-терминатором: %q", got)
+			}
+		})
+	}
+
+	// Ошибка соединения (сервер уже закрыт) — тоже терминатор.
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+	t.Setenv("LB_SELF_BASE_URL", deadURL)
+	incoming := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	var buf bytes.Buffer
+	bufrw := bufio.NewReadWriter(bufio.NewReader(&buf), bufio.NewWriter(&buf))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	streamSelfProxyChunked(ctx, incoming, bufrw, []byte(`{}`), 32768, nil)
+	got := buf.String()
+	if !strings.HasSuffix(got, "0\r\n\r\n") {
+		t.Fatalf("при ошибке соединения поток не закрыт терминатором: %q", got)
+	}
+	if n := strings.Count(got, "data: [DONE]"); n != 1 {
+		t.Fatalf("[DONE] после error-кадра: %d, want 1 (%q)", n, got)
+	}
+}
+
+// TestR253_1_SelfProxyKeepsSessionIdentity — БЛОКЕР 2: внутренний запрос обязан
+// нести идентичность клиента, иначе он получает ДРУГОЙ sessionID (127.0.0.1),
+// заводит вторую строку в панели и делит кошелёк admission-очереди.
+func TestR253_1_SelfProxyKeepsSessionIdentity(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[]}\n\n"))
+	}))
+	defer srv.Close()
+	t.Setenv("LB_SELF_BASE_URL", srv.URL)
+
+	incoming := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m1"}`))
+	incoming.RemoteAddr = "203.0.113.7:4000"
+	incoming.Header.Set("X-Session-ID", "sess-abc")
+	incoming.Header.Set("X-Client-ID", "cline-42")
+	incoming.Header.Set("X-Forwarded-For", "203.0.113.7")
+	incoming.Header.Set("X-Real-IP", "203.0.113.7")
+	incoming.Header.Set("X-API-Token", "tok")
+
+	var buf bytes.Buffer
+	bufrw := bufio.NewReadWriter(bufio.NewReader(&buf), bufio.NewWriter(&buf))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	streamSelfProxyChunked(ctx, incoming, bufrw, []byte(`{"model":"m1"}`), 32768, nil)
+
+	for header, want := range map[string]string{
+		"X-Session-Id":    "sess-abc",
+		"X-Client-Id":     "cline-42",
+		"X-Forwarded-For": "203.0.113.7",
+		"X-Real-Ip":       "203.0.113.7",
+		"X-Api-Token":     "tok",
+	} {
+		if v := got.Get(header); v != want {
+			t.Errorf("self-proxy потерял %s: %q want %q (внутренний запрос = чужая сессия)", header, v, want)
+		}
+	}
+}
+
+// TestR253_1_ExternalSpoofedMarkerIgnored — ПРАВКА 3: клиент с поддельным
+// маркером не отключает рост окна и не притворяется внутренним запросом.
+func TestR253_1_ExternalSpoofedMarkerIgnored(t *testing.T) {
+	// Подделка константой/произвольной строкой — вырезается.
+	spoof := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	spoof.RemoteAddr = "203.0.113.7:4000"
+	spoof.Header.Set(preflightDialogServedHeader, "1")
+	stripExternalDialogMarker(spoof)
+	if spoof.Header.Get(preflightDialogServedHeader) != "" {
+		t.Fatal("поддельный маркер не вырезан — клиент может отключить рост окна")
+	}
+	if isInternalPreflightDialogRequest(spoof) {
+		t.Fatal("внешний запрос признан внутренним")
+	}
+
+	// Даже правильный токен с ВНЕШНЕГО адреса — не внутренний запрос.
+	external := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	external.RemoteAddr = "203.0.113.7:4000"
+	external.Header.Set(preflightDialogServedHeader, preflightDialogToken)
+	stripExternalDialogMarker(external)
+	if external.Header.Get(preflightDialogServedHeader) != "" {
+		t.Fatal("токен с внешнего адреса принят — нужен loopback-источник")
+	}
+
+	// Наш self-proxy (loopback + токен) — остаётся внутренним.
+	internal := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	internal.RemoteAddr = "127.0.0.1:5555"
+	internal.Header.Set(preflightDialogServedHeader, preflightDialogToken)
+	stripExternalDialogMarker(internal)
+	if !isInternalPreflightDialogRequest(internal) {
+		t.Fatal("собственный self-proxy не признан внутренним — будет цикл диалога")
+	}
+}
+
+// TestR253_1_PlainDialogDoesNotReenter — ПРАВКА 4: plain-ветка тоже проверяет
+// маркер (self-proxy → plain-диалог → self-proxy дал бы цикл).
+func TestR253_1_PlainDialogDoesNotReenter(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m1"}`))
+	req.RemoteAddr = "127.0.0.1:5555"
+	req.Header.Set(preflightDialogServedHeader, preflightDialogToken)
+
+	rec := httptest.NewRecorder()
+	lr := &LlamaCppRouter{}
+	handled := lr.runInferencePreflightStreamDialogPlain(
+		runInferencePreflightArgs{w: rec, r: req, backendID: "b1", model: "m1", body: []byte(`{"model":"m1"}`)},
+		&PreflightResult{Decision: PreflightAsyncReload, TargetNCtx: 32768},
+		"m1",
+		getStreamDialogCfg(),
+	)
+	if handled {
+		t.Fatal("plain-диалог вошёл повторно по собственному self-proxy")
 	}
 }

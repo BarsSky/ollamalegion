@@ -27,12 +27,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -105,6 +108,13 @@ func (lr *LlamaCppRouter) runInferencePreflightStreamDialog(
 	if !cfg.enabled {
 		return false
 	}
+	// R253.1: запрос уже прошёл диалог (наш же self-proxy) — второй раз не входим.
+	// Без этого self-proxy попадал бы в собственный диалог и получался бы цикл.
+	if isInternalPreflightDialogRequest(args.r) {
+		logger.Get().Debugw("preflight stream dialog: served-маркер уже стоит, пропускаем",
+			"backend", args.backendID)
+		return false
+	}
 	if decision != PreflightAsyncReload {
 		return false
 	}
@@ -156,16 +166,9 @@ func (lr *LlamaCppRouter) runInferencePreflightStreamDialog(
 		return false
 	}
 
-	// Spawn keepalive goroutine.
-	// R253 (2026-10-28): повторный заход в диалог запрещён — после reload запрос
-	// дообслуживается self-proxy'ем через собственную поверхность, и тот запрос
-	// обязан идти обычным путём (иначе бесконечный цикл «диалог → диалог»).
-	if args.r.Header.Get(preflightDialogServedHeader) != "" {
-		logger.Get().Debugw("preflight stream dialog: served-маркер уже стоит, пропускаем",
-			"backend", args.backendID)
-		return false
-	}
-
+	// Keepalive-горутина: живёт до ПЕРВОГО БАЙТА ответа модели (R253.1), а не до
+	// конца reload. Между reload и первым токеном клиент тоже не должен молчать:
+	// первый байт может прийти через минуты ожидания слота в admission-очереди.
 	keepaliveCtx, cancelKeepalive := context.WithCancel(ctx)
 	defer cancelKeepalive()
 	var keepaliveWG sync.WaitGroup
@@ -181,16 +184,13 @@ func (lr *LlamaCppRouter) runInferencePreflightStreamDialog(
 		logger.Get().Warnw("preflight stream dialog: reload wait failed/timed out",
 			"backend", args.backendID, "model", modelName, "error", reloadErr,
 			"wait_timeout", waitTimeout)
-		// Send error final message and close.
-		writeStreamDialogFinalError(bufrw, fmt.Sprintf(
+		// R253.1: error-кадр + ровно один [DONE] + chunked-терминатор. Раньше здесь
+		// оставался только error-кадр, и strict-клиенты получали оборванный поток.
+		writeChunkedStreamError(bufrw, fmt.Sprintf(
 			"reload timed out after %s, please retry", waitTimeout))
-		_ = bufrw.Flush()
+		_ = writeChunkedFrame(bufrw, nil)
 		return true
 	}
-
-	// Reload done — stop keepalives.
-	cancelKeepalive()
-	keepaliveWG.Wait()
 
 	logger.Get().Infow("preflight stream dialog: reload done, serving the same request",
 		"backend", args.backendID, "model", modelName, "target_n_ctx", res.TargetNCtx)
@@ -203,7 +203,14 @@ func (lr *LlamaCppRouter) runInferencePreflightStreamDialog(
 	// закрывается». Теперь после reload тот же запрос дообслуживается через
 	// собственную поверхность (self-proxy), кадры ответа уходят клиенту в то же
 	// соединение, и ровно один [DONE] закрывает поток.
-	streamSelfProxyChunked(ctx, args.r, bufrw, args.body, res.TargetNCtx)
+	// Keepalive гасим на первом байте ответа (stopKeepalive), а после возврата —
+	// добиваем гарантированно, чтобы горутина не пережила соединение.
+	streamSelfProxyChunked(ctx, args.r, bufrw, args.body, res.TargetNCtx, func() {
+		cancelKeepalive()
+		keepaliveWG.Wait()
+	})
+	cancelKeepalive()
+	keepaliveWG.Wait()
 	return true
 }
 
@@ -212,7 +219,67 @@ func (lr *LlamaCppRouter) runInferencePreflightStreamDialog(
 // Внутренний (self-proxy) запрос несёт его, чтобы не запускать диалог второй раз
 // (после reload preflight и так должен дать NoOp, но полагаться на это нельзя:
 // метрики поллера обновляются позже, и тогда получился бы цикл перезагрузок).
+//
+// R253.1: значение — ПЕР-ПРОЦЕССНЫЙ случайный токен, а не константа. С константой
+// клиент мог прислать её сам и отключить рост окна (и любой служебный механизм
+// диалога). Заголовок снаружи вырезается в ServeHTTP (stripExternalDialogMarker),
+// поэтому подделать его нельзя даже угадав имя.
 const preflightDialogServedHeader = "X-LB-Preflight-Dialog-Served"
+
+// preflightDialogToken — случайный токен процесса (генерируется один раз).
+var preflightDialogToken = newPreflightDialogToken()
+
+func newPreflightDialogToken() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand недоступен — берём время+адрес как минимум энтропии.
+		return fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+	}
+	return hex.EncodeToString(buf)
+}
+
+// isLoopbackRemote — запрос пришёл с этой же машины (наш self-proxy).
+func isLoopbackRemote(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(r.RemoteAddr)
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// isInternalPreflightDialogRequest — это наш собственный self-proxy-запрос?
+//
+// Требуется И правильный токен, И loopback-источник: одно лишь совпадение
+// заголовка не должно открывать служебную ветку.
+func isInternalPreflightDialogRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	got := r.Header.Get(preflightDialogServedHeader)
+	if got == "" || got != preflightDialogToken {
+		return false
+	}
+	return isLoopbackRemote(r)
+}
+
+// stripExternalDialogMarker — убрать маркер из ВНЕШНЕГО запроса.
+//
+// Вызывается в ServeHTTP до любой обработки: клиент не должен уметь ни отключить
+// рост окна, ни притвориться внутренним запросом. Наш self-proxy приходит с
+// loopback и правильным токеном — его не трогаем.
+func stripExternalDialogMarker(r *http.Request) {
+	if r == nil || r.Header.Get(preflightDialogServedHeader) == "" {
+		return
+	}
+	if isInternalPreflightDialogRequest(r) {
+		return
+	}
+	r.Header.Del(preflightDialogServedHeader)
+}
 
 // streamSelfProxyChunked — дообслуживание запроса после reload для hijack-пути.
 //
@@ -220,13 +287,36 @@ const preflightDialogServedHeader = "X-LB-Preflight-Dialog-Served"
 // соединение, поэтому вернуть управление обычному пути нельзя (он писал бы
 // заголовки в занятый conn). Единственный хирургический вариант — прогнать ТОТ ЖЕ
 // запрос через собственную OpenAI-поверхность (тот же pipeline: выбор бэкенда,
-// очередь, нормализация) и перелить кадры в уже открытое соединение. Риск
-// минимален: на время reload окно уже выросло, поэтому внутренний запрос идёт
-// обычным путём без повторного диалога (плюс маркер-заглушка выше).
-func streamSelfProxyChunked(ctx context.Context, incoming *http.Request, bufrw *bufio.ReadWriter, body []byte, targetNCtx int) {
+// очередь, нормализация) и перелить кадры в уже открытое соединение.
+//
+// stopKeepalive вызывается на ПЕРВОМ записанном кадре (R253.1): до этого клиент
+// видит `: keepalive`, после — настоящие кадры ответа.
+func streamSelfProxyChunked(ctx context.Context, incoming *http.Request, bufrw *bufio.ReadWriter, body []byte, targetNCtx int, stopKeepalive func()) {
 	if incoming == nil || bufrw == nil {
 		return
 	}
+	// R253.1 / БЛОКЕР 1: chunked-ТЕРМИНАТОР обязателен на ЛЮБОМ исходе.
+	//
+	// Заголовки объявляют Transfer-Encoding: chunked (writeStreamDialogHeaders), а
+	// `0\r\n\r\n` писала только штатная SSE-петля. Без терминатора strict-клиенты
+	// (Cline/undici/aiohttp) получают «Not enough data to satisfy transfer length
+	// header» — ровно класс обрыва, который R253 и лечит.
+	defer func() {
+		if err := writeChunkedFrame(bufrw, nil); err != nil {
+			logger.Get().Debugw("preflight stream dialog: chunked terminator write failed",
+				"path", incoming.URL.Path, "error", err)
+		}
+	}()
+
+	var firstByte sync.Once
+	onFirstByte := func() {
+		firstByte.Do(func() {
+			if stopKeepalive != nil {
+				stopKeepalive()
+			}
+		})
+	}
+
 	resp, err := selfProxyPostWithMarker(ctx, incoming, incoming.URL.RequestURI(), body)
 	if err != nil {
 		logger.Get().Warnw("preflight stream dialog: self-proxy after reload failed",
@@ -244,6 +334,7 @@ func streamSelfProxyChunked(ctx context.Context, incoming *http.Request, bufrw *
 	}
 
 	last, copyErr := copySSELines(resp.Body, func(line []byte) error {
+		onFirstByte()
 		if len(line) == 0 || (len(line) == 1 && line[0] == '\n') {
 			return nil
 		}
@@ -258,13 +349,22 @@ func streamSelfProxyChunked(ctx context.Context, incoming *http.Request, bufrw *
 		writeChunkedStreamError(bufrw, "stream copy failed: "+copyErr.Error())
 		return
 	}
+	onFirstByte()
 	ensureChunkedSSEDone(bufrw, last)
 }
 
 // streamSelfProxyPlain — то же для пути без hijack (обычный ResponseWriter).
-func streamSelfProxyPlain(ctx context.Context, incoming *http.Request, w http.ResponseWriter, body []byte, targetNCtx int) {
+func streamSelfProxyPlain(ctx context.Context, incoming *http.Request, w http.ResponseWriter, body []byte, targetNCtx int, stopKeepalive func()) {
 	if incoming == nil || w == nil {
 		return
+	}
+	var firstByte sync.Once
+	onFirstByte := func() {
+		firstByte.Do(func() {
+			if stopKeepalive != nil {
+				stopKeepalive()
+			}
+		})
 	}
 	resp, err := selfProxyPostWithMarker(ctx, incoming, incoming.URL.RequestURI(), body)
 	if err != nil {
@@ -279,6 +379,7 @@ func streamSelfProxyPlain(ctx context.Context, incoming *http.Request, w http.Re
 		return
 	}
 	last, copyErr := copySSELines(resp.Body, func(line []byte) error {
+		onFirstByte()
 		if len(line) == 0 || (len(line) == 1 && line[0] == '\n') {
 			return nil
 		}
@@ -292,6 +393,7 @@ func streamSelfProxyPlain(ctx context.Context, incoming *http.Request, w http.Re
 		writePlainStreamError(w, "stream copy failed: "+copyErr.Error())
 		return
 	}
+	onFirstByte()
 	ensurePlainSSEDone(w, last)
 }
 
@@ -319,17 +421,42 @@ func copySSELines(src io.Reader, write func([]byte) error) ([]byte, error) {
 
 // selfProxyPostWithMarker — self-proxy с маркером «диалог уже был».
 func selfProxyPostWithMarker(ctx context.Context, incoming *http.Request, requestURI string, body []byte) (*http.Response, error) {
+	return selfProxyPostRequest(ctx, incoming, requestURI, body, preflightDialogToken)
+}
+
+// selfProxyForwardHeaders — заголовки, которые ОБЯЗАНЫ доехать до внутреннего
+// запроса.
+//
+// R253.1 / БЛОКЕР 2: раньше пробрасывались только токен и User-Agent, поэтому
+// внутренний запрос получал sessionID от 127.0.0.1: в панели появлялась ВТОРАЯ
+// сессия, кошелёк admission-очереди делился, монитор показывал loopback, а
+// X-Session-ID/X-Client-ID клиента терялись (регресс R252/R118.9). Cookie нужен
+// для клиентов, которые идентифицируют сессию печенькой.
+var selfProxyForwardHeaders = []string{
+	"X-API-Token", "Authorization",
+	"X-Client-ID", "X-Session-ID", "X-Tab-ID", "X-Request-ID",
+	"X-User-Id", "X-OpenWebUI-User-Id",
+	"Cookie",
+	"X-Forwarded-For", "X-Real-IP",
+	"User-Agent", "Accept",
+}
+
+// selfProxyPostRequest — общий self-proxy: проброс заголовков + опциональный
+// служебный маркер ("" = без маркера).
+func selfProxyPostRequest(ctx context.Context, incoming *http.Request, requestURI string, body []byte, marker string) (*http.Response, error) {
 	url := selfProxyBaseURL(incoming) + requestURI
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(preflightDialogServedHeader, "1")
-	for _, header := range []string{"X-API-Token", "Authorization", "X-Request-ID", "User-Agent"} {
+	for _, header := range selfProxyForwardHeaders {
 		if v := incoming.Header.Get(header); v != "" {
 			req.Header.Set(header, v)
 		}
+	}
+	if marker != "" {
+		req.Header.Set(preflightDialogServedHeader, marker)
 	}
 	return selfProxyClient.Do(req)
 }
@@ -345,6 +472,14 @@ func (lr *LlamaCppRouter) runInferencePreflightStreamDialogPlain(
 	w := args.w
 	ctx := args.r.Context()
 
+	// R253.1 / ПРАВКА 4: тот же маркер, что в hijack-ветке — иначе self-proxy мог
+	// повторно войти в plain-диалог (self-proxy → plain-диалог → self-proxy).
+	if isInternalPreflightDialogRequest(args.r) {
+		logger.Get().Debugw("preflight stream dialog (plain): served-маркер уже стоит, пропускаем",
+			"backend", args.backendID)
+		return false
+	}
+
 	// Set headers for SSE.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -356,12 +491,32 @@ func (lr *LlamaCppRouter) runInferencePreflightStreamDialogPlain(
 		return false
 	}
 
-	// Wait for reload in goroutine; keepalive ticker.
-	_, cancelKeepalive := context.WithCancel(ctx)
+	// Keepalive-тикер живёт до ПЕРВОГО БАЙТА ответа модели (R253.1): между reload и
+	// первым токеном клиент тоже не должен молчать.
+	keepaliveCtx, cancelKeepalive := context.WithCancel(ctx)
 	defer cancelKeepalive()
-
-	ticker := time.NewTicker(cfg.keepalivePeriod)
-	defer ticker.Stop()
+	var keepaliveWG sync.WaitGroup
+	keepaliveWG.Add(1)
+	go func() {
+		defer keepaliveWG.Done()
+		ticker := time.NewTicker(cfg.keepalivePeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-keepaliveCtx.Done():
+				return
+			case <-ticker.C:
+				if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	}()
+	stopKeepalive := func() {
+		cancelKeepalive()
+		keepaliveWG.Wait()
+	}
 
 	// Wait for reload OR keepalive fires.
 	reloadDone := make(chan struct{})
@@ -379,17 +534,14 @@ func (lr *LlamaCppRouter) runInferencePreflightStreamDialogPlain(
 			// ответа модели).
 			logger.Get().Infow("preflight stream dialog (plain): reload done, serving the same request",
 				"backend", args.backendID, "model", modelName, "target_n_ctx", res.TargetNCtx)
-			streamSelfProxyPlain(ctx, args.r, w, args.body, res.TargetNCtx)
+			streamSelfProxyPlain(ctx, args.r, w, args.body, res.TargetNCtx, stopKeepalive)
+			stopKeepalive()
 			return true
 		case <-ctx.Done():
+			stopKeepalive()
 			fmt.Fprintf(w, ": client_canceled\n\n")
 			flusher.Flush()
 			return true
-		case <-ticker.C:
-			// R253: SSE-КОММЕНТАРИЙ, а не JSON-чанк. JSON-чанк с пустыми choices
-			// строгие OpenAI-клиенты считают мусором, а комментарий игнорируют.
-			fmt.Fprint(w, ": keepalive\n\n")
-			flusher.Flush()
 		}
 	}
 }

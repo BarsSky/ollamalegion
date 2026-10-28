@@ -827,6 +827,11 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 
 // ServeHTTP - обработка HTTP запросов
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// R253.1: служебный маркер preflight-диалога принимается ТОЛЬКО от нашего
+	// self-proxy (loopback + пер-процессный токен). Внешний клиент, приславший
+	// такой заголовок, не должен ни отключать рост окна, ни притворяться
+	// внутренним запросом — вырезаем до любой обработки.
+	stripExternalDialogMarker(r)
 	startTime := time.Now()
 
 	// ==== Correlation ID ====

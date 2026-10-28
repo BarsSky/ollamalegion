@@ -1,4 +1,4 @@
-﻿// anthropic_r247.go — R247, этап B плана
+// anthropic_r247.go — R247, этап B плана
 // (docs/plans/2026-10-26-clients-agents-contract-r247.md).
 //
 // ЗАЧЕМ. Anthropic-native клиенты (Claude Code, `anthropic` SDK, часть IDE-плагинов)
@@ -681,10 +681,13 @@ func (f *anthropicStreamForwarder) finishStream() {
 // selfProxyClient — клиент для внутренних вызовов. Без общего таймаута: поток
 // генерации ограничен дедлайнами самого балансера и отменой клиента.
 var selfProxyClient = &http.Client{
+	// R253.1: Timeout НЕ ставим — self-proxy обслуживает SSE-стримы (таймаут
+	// оборвал бы длинный ответ). Ограничиваем только число соединений и простой.
 	Transport: &http.Transport{
 		Proxy:               nil,
-		MaxIdleConns:        16,
-		MaxIdleConnsPerHost: 16,
+		MaxIdleConns:        32,
+		MaxIdleConnsPerHost: 32,
+		MaxConnsPerHost:     32,
 		IdleConnTimeout:     60 * time.Second,
 	},
 }
@@ -707,20 +710,14 @@ func selfProxyBaseURL(r *http.Request) string {
 	return scheme + "://127.0.0.1:" + port
 }
 
-// selfProxyPost — POST в собственную OpenAI-поверхность с пробросом токена.
+// selfProxyPost — POST в собственную OpenAI-поверхность.
+//
+// R253.1: пробрасываются те же заголовки, что у preflight-диалога (общий помощник
+// selfProxyPostRequest). Раньше уходили только токен/Authorization/X-Request-ID,
+// поэтому внутренний запрос выглядел пришедшим с 127.0.0.1: другой sessionID,
+// вторая строка в панели, разделённый кошелёк admission-очереди — регресс R252.
 func selfProxyPost(ctx context.Context, incoming *http.Request, path string, body []byte) (*http.Response, error) {
-	url := selfProxyBaseURL(incoming) + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for _, header := range []string{"X-API-Token", "Authorization", "X-Request-ID"} {
-		if v := incoming.Header.Get(header); v != "" {
-			req.Header.Set(header, v)
-		}
-	}
-	return selfProxyClient.Do(req)
+	return selfProxyPostRequest(ctx, incoming, path, body, "")
 }
 
 // ============================================================
@@ -865,4 +862,3 @@ func (lr *LlamaCppRouter) handleAnthropicCountTokens(w http.ResponseWriter, r *h
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]int{"input_tokens": tokens})
 }
-

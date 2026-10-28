@@ -89,7 +89,11 @@ func TestValidate_VRAMUsesSumAcrossNodes_R95(t *testing.T) {
 	// Уменьшаем узлы до 2 ГиБ каждый (сумма 4 < 10) — теперь ошибка с числами.
 	req := validRequestR95()
 	for i := range req.Group.Nodes {
+		// R249: RAM в этом сценарии считаем НЕИЗВЕСТНОЙ, иначе веса помещаются в
+		// VRAM+RAM и это уже предупреждение (см. отдельный тест ниже).
 		req.Group.Nodes[i].VRAMFreeMB = 2048
+		req.Group.Nodes[i].RAMFreeMB = 0
+		req.Group.Nodes[i].RAMKnown = false
 	}
 	report = Validate(req)
 	issue, found := findIssue(report, CheckVRAMSumInsufficient)
@@ -424,5 +428,40 @@ func TestReport_Helpers_R95(t *testing.T) {
 	}
 	if !strings.Contains(report.String(), "composition g1") {
 		t.Errorf("String() должен быть читаемым: %s", report.String())
+	}
+}
+
+// R249 (2026-10-28): живая жалоба оператора — «объединение бэкендов судит только
+// по свободной видеопамяти». Если веса не влезают в VRAM, но влезают в VRAM+RAM
+// (mmap/частичный offload), это НЕ ошибка конфигурации, а предупреждение о
+// скорости: группа работоспособна.
+func TestR249_WeightsFitWithRAMIsWarningNotError(t *testing.T) {
+	req := validRequestR95()
+	for i := range req.Group.Nodes {
+		req.Group.Nodes[i].VRAMFreeMB = 2048 // сумма 4 ГиБ < 10 ГиБ (need)
+		req.Group.Nodes[i].RAMFreeMB = 16384 // RAM 16 ГиБ на узел
+		req.Group.Nodes[i].RAMKnown = true
+	}
+	report := Validate(req)
+	if report.HasErrors() {
+		t.Fatalf("при достаточной RAM ошибок быть не должно: %s", report.String())
+	}
+	issue, found := findIssue(report, CheckWeightsNeedRAMOffload)
+	if !found {
+		t.Fatalf("ожидалось предупреждение weights_need_ram_offload: %s", report.String())
+	}
+	if issue.Level != LevelWarning {
+		t.Errorf("частичный offload — предупреждение, получено %q", issue.Level)
+	}
+	for _, want := range []string{"VRAM", "RAM", "offload"} {
+		if !strings.Contains(issue.Text, want) {
+			t.Errorf("в тексте нет %q: %s", want, issue.Text)
+		}
+	}
+	if got, _ := issue.Params["combinedMB"].(int); got < 2048*2 {
+		t.Errorf("combinedMB = %v, ожидалась сумма VRAM+RAM", issue.Params["combinedMB"])
+	}
+	if _, stillError := findIssue(report, CheckVRAMSumInsufficient); stillError {
+		t.Fatalf("одновременно ошибка и предупреждение о весах — противоречие: %s", report.String())
 	}
 }

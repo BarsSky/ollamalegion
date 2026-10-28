@@ -99,6 +99,23 @@ func renderText(check CheckID, lang string, p map[string]any) string {
 			"(максимум на одном узле %s)", need, weights, (numF(p["safety"])-1)*100, available,
 			num(p["nodeCount"]), maxNode)
 
+	case CheckWeightsNeedRAMOffload:
+		// R249: группа жизнеспособна, но часть весов уйдёт в RAM (mmap/частичный
+		// offload) — предупреждение о скорости, а не ошибка конфигурации.
+		need := humanBytes(lang, int64(num(p["needBytes"])))
+		weights := humanBytes(lang, int64(num(p["weightsMB"]))*1024*1024)
+		vram := humanBytes(lang, int64(num(p["availableMB"]))*1024*1024)
+		ram := humanBytes(lang, int64(num(p["ramFreeMB"]))*1024*1024)
+		combined := humanBytes(lang, int64(num(p["combinedMB"]))*1024*1024)
+		if lang == LangEN {
+			return fmt.Sprintf("weights %s (~%s with %.0f%% headroom) do not fit VRAM %s, "+
+				"but fit VRAM+RAM %s (RAM %s) — partial offload, slower generation",
+				weights, need, (numF(p["safety"])-1)*100, vram, combined, ram)
+		}
+		return fmt.Sprintf("веса %s (≈%s с запасом %.0f%%) не влезают в VRAM %s, "+
+			"но влезают в VRAM+RAM %s (RAM %s) — частичный offload, генерация медленнее",
+			weights, need, (numF(p["safety"])-1)*100, vram, combined, ram)
+
 	case CheckKVRAMInsufficient:
 		ctx := num(p["nCtx"])
 		kv := humanBytes(lang, int64(num(p["kvBytes"])))

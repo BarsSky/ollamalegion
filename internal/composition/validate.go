@@ -56,6 +56,15 @@ const (
 	CheckVRAMSumInsufficient CheckID = "vram_sum_insufficient"
 	// CheckKVRAMInsufficient — KV для запрошенного n_ctx не помещается.
 	CheckKVRAMInsufficient CheckID = "kv_ram_insufficient"
+	// CheckWeightsNeedRAMOffload — веса НЕ влезают в суммарную VRAM группы, но
+	// влезают с учётом свободной RAM узлов (mmap / частичный offload).
+	//
+	// R249 (2026-10-28): живая жалоба оператора — «объединение бэкендов судит
+	// только по свободной видеопамяти, а не по видеопамяти И оперативной»:
+	// группа отвергалась как ошибка там, где модель реально запускается
+	// (медленнее, но запускается). Теперь это Warning с явным текстом о
+	// деградации, а не Error.
+	CheckWeightsNeedRAMOffload CheckID = "weights_need_ram_offload"
 	// CheckKVUnknown — KV проверить нечем (нет n_kv_heads/head_dim).
 	CheckKVUnknown CheckID = "kv_unknown"
 	// CheckTrafficRowHigh — row split дороже 10 % времени токена.
@@ -216,6 +225,7 @@ var allCheckIDs = []CheckID{
 	CheckVersionMismatch,
 	CheckVersionUnknown,
 	CheckVRAMSumInsufficient,
+	CheckWeightsNeedRAMOffload,
 	CheckKVRAMInsufficient,
 	CheckKVUnknown,
 	CheckTrafficRowHigh,
@@ -387,8 +397,17 @@ func checkVRAMSum(req Request) []Issue {
 	sumFree := 0
 	maxFree := 0
 	known := 0
+	ramFree := 0
+	ramKnown := false
 	for _, node := range req.Group.Nodes {
-		if !node.Registered || !node.Healthy || !node.VRAMKnown {
+		if !node.Registered || !node.Healthy {
+			continue
+		}
+		if node.RAMKnown {
+			ramFree += node.RAMFreeMB
+			ramKnown = true
+		}
+		if !node.VRAMKnown {
 			continue
 		}
 		known++
@@ -404,6 +423,23 @@ func checkVRAMSum(req Request) []Issue {
 	if sumFree >= needMB {
 		return nil
 	}
+	// R249 (2026-10-28): раньше сравнивалось ТОЛЬКО с суммарной VRAM, и группа
+	// признавалась нерабочей там, где веса помещаются в VRAM+RAM (mmap/частичный
+	// offload) и модель реально запускается — медленнее, но запускается.
+	// Теперь это разные исходы: с RAM — Warning (деградация), без RAM — Error.
+	if ramKnown && sumFree+ramFree >= needMB {
+		return []Issue{newIssue(req, CheckWeightsNeedRAMOffload, LevelWarning, req.Group.ID, map[string]any{
+			"needMB":      needMB,
+			"needBytes":   int64(float64(req.Model.SizeBytes) * req.VRAMSafetyFactor),
+			"weightsMB":   int(req.Model.SizeBytes / (1024 * 1024)),
+			"availableMB": sumFree,
+			"ramFreeMB":   ramFree,
+			"combinedMB":  sumFree + ramFree,
+			"maxNodeMB":   maxFree,
+			"nodeCount":   known,
+			"safety":      req.VRAMSafetyFactor,
+		})}
+	}
 	return []Issue{newIssue(req, CheckVRAMSumInsufficient, LevelError, req.Group.ID, map[string]any{
 		"needMB":      needMB,
 		"needBytes":   int64(float64(req.Model.SizeBytes) * req.VRAMSafetyFactor),
@@ -412,6 +448,8 @@ func checkVRAMSum(req Request) []Issue {
 		"maxNodeMB":   maxFree,
 		"nodeCount":   known,
 		"safety":      req.VRAMSafetyFactor,
+		"ramFreeMB":   ramFree,
+		"ramKnown":    ramKnown,
 	})}
 }
 

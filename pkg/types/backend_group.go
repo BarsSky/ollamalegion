@@ -165,6 +165,13 @@ func ValidateBackendGroups(groups []BackendGroupConfig) []string {
 	}
 	var errs []string
 	seenIDs := make(map[string]bool, len(groups))
+	// R249 (2026-10-28): бэкенд не может быть участником ДВУХ групп.
+	//
+	// Живая жалоба: в блоке раскладки уже назначенные доноры/мастера оставались
+	// доступными в таблице, оператор добавлял того же донора второму мастеру и
+	// получал непонятную ошибку при применении. Проверка в одной группе это не
+	// ловила — нужен cluster-wide учёт.
+	ownerOf := make(map[string]string, len(groups)*2)
 	for i, g := range groups {
 		prefix := fmt.Sprintf("backendGroups[%d]", i)
 		id := strings.TrimSpace(g.ID)
@@ -193,6 +200,14 @@ func ValidateBackendGroups(groups []BackendGroupConfig) []string {
 				errs = append(errs, fmt.Sprintf("%s: backendId %q указан дважды в одной группе", mPrefix, backendID))
 			} else {
 				seenBackends[backendID] = true
+				// R249: cluster-wide уникальность участника.
+				if otherGroup, taken := ownerOf[backendID]; taken {
+					errs = append(errs, fmt.Sprintf(
+						"%s: backendId %q уже входит в группу %q — один бэкенд не может быть участником двух групп "+
+							"(сначала разъедините его в прежней группе)", mPrefix, backendID, otherGroup))
+				} else if id != "" {
+					ownerOf[backendID] = id
+				}
 			}
 			switch ParseBackendGroupRole(m.Role) {
 			case BackendGroupRoleMaster:

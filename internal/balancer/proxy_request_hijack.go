@@ -377,10 +377,10 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 		line []byte
 		err  error
 	}
-	// R243: состояние фильтра на весь стрим — маркер размышлений может быть
-	// разрезан между чанками; хвост-возможный-префикс удерживается до
-	// следующего чанка (см. reasoningStreamState).
-	concatFilter := &reasoningStreamState{}
+	// R243/R256: состояние фильтра на весь стрим — маркер размышлений может быть
+	// разрезан между чанками, а размышления обязаны уходить в reasoning_content,
+	// а не в видимый ответ (R256).
+	egressFilter := &reasoningEgressState{}
 	dataCh := make(chan readResult, 1)
 	go func() {
 		reader := bufio.NewReader(resp.Body)
@@ -430,7 +430,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				return nil
 			}
 
-			lineToWrite, _ := filterOpenAIStreamingLineWithState(res.line, concatFilter)
+			lineToWrite, _ := filterAssistantEgressForClient(res.line, egressFilter)
 			// Round 35e (2026-08-13): skip empty SSE lines.
 			//
 			// cppworker (и другие SSE backends) разделяют data: events парой \n\n.

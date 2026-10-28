@@ -333,13 +333,21 @@ func streamSelfProxyChunked(ctx context.Context, incoming *http.Request, bufrw *
 		return
 	}
 
-	last, copyErr := copySSELines(resp.Body, func(line []byte) error {
+	// R256: кадры внутреннего ответа проходят через ТОТ ЖЕ фильтр reasoning, что и
+	// обычный путь. Раньше они переливались как есть — размышления и маркеры
+	// уезжали клиенту мимо фильтра (живая жалоба «мешаются размышления»).
+	egress := &reasoningEgressState{}
+	last, copyErr := copySSELines(resp.Body, func(raw []byte) error {
 		onFirstByte()
+		line := raw
 		if len(line) == 0 || (len(line) == 1 && line[0] == '\n') {
 			return nil
 		}
 		if isOpenAISSEDataLine(line) {
 			line = append(line, '\n')
+		}
+		if filtered, _ := filterAssistantEgressForClient(line, egress); filtered != nil {
+			line = filtered
 		}
 		return writeChunkedFrame(bufrw, line)
 	})
@@ -378,10 +386,16 @@ func streamSelfProxyPlain(ctx context.Context, incoming *http.Request, w http.Re
 		writePlainStreamError(w, fmt.Sprintf("reload done, but upstream answered HTTP %d", resp.StatusCode))
 		return
 	}
-	last, copyErr := copySSELines(resp.Body, func(line []byte) error {
+	// R256: тот же фильтр reasoning, что и на остальных путях.
+	egress := &reasoningEgressState{}
+	last, copyErr := copySSELines(resp.Body, func(raw []byte) error {
 		onFirstByte()
+		line := raw
 		if len(line) == 0 || (len(line) == 1 && line[0] == '\n') {
 			return nil
+		}
+		if filtered, _ := filterAssistantEgressForClient(line, egress); filtered != nil {
+			line = filtered
 		}
 		if _, werr := w.Write(line); werr != nil {
 			return werr

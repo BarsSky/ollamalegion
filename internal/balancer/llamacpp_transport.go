@@ -612,6 +612,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	toolAcc := newToolCallAccumulator()
 	// R254: состояние ремонта аргументов на этот стрим (диагностика — один раз).
 	toolRepair := &toolRepairState{}
+	// R256: состояние фильтра reasoning/content на этот стрим.
+	egressFilter := &reasoningEgressState{}
 	// ==== Content, извлечённый из done-чанка upstream (если cppworker
 	// уже сформировал content в финальном NDJSON; используем его приоритетно). ====
 	var upstreamDoneContent string
@@ -1102,7 +1104,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// выбрасывался (терялся текст ответа).
 			// Теперь: собираем SSE-строку, фильтруем, и если контент почищен —
 			// продолжаем обработку уже с очищенным JSON.
-			if filteredLine, modified := filterOpenAIStreamingLine([]byte("data: " + data)); modified {
+			if filteredLine, modified := filterAssistantEgressForClient([]byte("data: "+data), egressFilter); modified {
 				cleaned := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(filteredLine)), "data:"))
 				if cleaned != "" {
 					data = cleaned

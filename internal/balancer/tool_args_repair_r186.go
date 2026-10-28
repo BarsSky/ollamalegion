@@ -157,6 +157,13 @@ func repairToolArguments(argsJSON string, schema *toolParamSchema) (string, bool
 	}
 	// R248: сначала пытаемся вытащить аргументы из вложенного JSON-мусора
 	// (search_files: "path" содержал весь объект, regex терялся).
+	// R249: сначала «жёсткая разборка» — модель завернула весь объект в
+	// строковое поле (живой случай write: обязательный path «пропал»).
+	if unwrapped, ok := unwrapFieldWrappedArgs(obj, schema); ok {
+		if out, err := json.Marshal(unwrapped); err == nil {
+			return string(out), true
+		}
+	}
 	if salvaged, ok := salvageGarbledArgs(obj, schema); ok {
 		if out, err := json.Marshal(salvaged); err == nil {
 			return string(out), true
@@ -267,7 +274,11 @@ func scrubGarbledValues(m map[string]interface{}, schema *toolParamSchema) map[s
 	out := make(map[string]interface{}, len(m))
 	for k, v := range m {
 		s, isStr := v.(string)
-		if !isStr || (!strings.Contains(s, `\"`) && !strings.Contains(s, "{")) {
+		trimmed := strings.TrimSpace(s)
+		// «Мусор» — значение, которое НАЧИНАЕТСЯ как JSON-объект/массив или
+		// содержит экранированные кавычки. Обычный текст с фигурными скобками
+		// (C++-код) мусором не считается — иначе content обнулялся.
+		if !isStr || (!strings.Contains(s, `\"`) && !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[")) {
 			out[k] = v
 			continue
 		}

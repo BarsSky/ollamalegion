@@ -216,6 +216,14 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 		return nil
 	}
 	finalResp := accum.toNonStreamResponse(false)
+	// R249 (2026-10-28): ремонт аргументов инструмента на СОБРАННОМ ответе.
+	//
+	// Живой дефект: стриминговый путь аргументы чинит (это видно по
+	// delta.tool_calls), а auto-stream workaround собирал ответ здесь и раньше
+	// отдавал аргументы как есть. Клиент получал
+	// {"content":"{\"content\":...}"} без обязательного path и не мог применить
+	// инструмент — «модель не редактирует файлы».
+	finalResp = repairAssembledToolCalls(finalResp, clientReqBody)
 	if _, err := w.Write(finalResp); err != nil {
 		logger.Get().Errorw("Round 31 #1: failed to write final response",
 			"backend", backendID, "error", err)

@@ -289,13 +289,30 @@ func (s *Server) updateBackendRole(w http.ResponseWriter, r *http.Request, backe
 	// раскладки. Без этого роль в панели была командой в пустоту: rpc-server на
 	// донорской машине приходилось поднимать руками (env или тумблер на месте).
 	// Делаем сразу при смене роли, а не ждём периодического прохода.
+	// R249 (2026-10-28): подъём rpc-узла у ДОНОРА не держит ответ.
+	//
+	// Живой дефект: при смене роли на недоступном узле обработчик синхронно
+	// пробовал достучаться до его RPC-порта (и при необходимости поднять
+	// контейнер), из-за чего ответ приходил через десятки секунд или не приходил
+	// вовсе — в UI это выглядело как «нажал галочку, реакции нет», хотя роль уже
+	// изменена и сохранена. Теперь ответ отдаём сразу, а подъём узла выполняем в
+	// фоне; результат виден в следующем GET /api/v1/backends (rpcNode).
 	nodeReason := ""
-	if _, nreason := s.proxy.EnsureRPCNodeServing(backendID); nreason != "" {
-		nodeReason = nreason
-		if err == nil {
-			err = fmt.Errorf("%s", nreason)
+	nodeReport := s.proxy.RPCNodeReport(backendID)
+	_ = nodeReport
+	go func(id string) {
+		defer func() {
+			// Фон не должен ронять процесс: паника в горутине это SIGSEGV.
+			if rec := recover(); rec != nil {
+				logger.Get().Errorw("EnsureRPCNodeServing panic (background)",
+					"backend", id, "panic", fmt.Sprint(rec))
+			}
+		}()
+		if _, nreason := s.proxy.EnsureRPCNodeServing(id); nreason != "" {
+			logger.Get().Warnw("EnsureRPCNodeServing (background) не применил узел",
+				"backend", id, "reason", nreason)
 		}
-	}
+	}(backendID)
 	if len(applied) == 0 && role != "" {
 		applied = []string{backendID}
 	}
@@ -308,7 +325,8 @@ func (s *Server) updateBackendRole(w http.ResponseWriter, r *http.Request, backe
 		// R133: состояние СОБСТВЕННОГО узла раскладки этого бэкенда после смены
 		// роли (для донора — поднят ли rpc-server и доступен ли он с балансера).
 		// Оператору нужно видеть результат нажатия, а не догадываться.
-		"rpcNode": s.proxy.RPCNodeReport(backendID),
+		"rpcNode": nodeReport,
+		"rpcNodeCheck": "scheduled",
 	}
 	if nodeReason != "" {
 		resp["rpcNodeReason"] = nodeReason

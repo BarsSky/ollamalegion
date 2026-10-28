@@ -142,6 +142,19 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 	}
 
 	// === Headers получены → сразу отдаём 200 клиенту (chunked transfer) ===
+	//
+	// R258 (2026-10-28): если клиент готов принимать SSE, копить не нужно —
+	// отдаём поток кадрами. Это снимает ровно ту жалобу, из-за которой клиент
+	// агента упирался в свой таймаут: «замер, потом всё сразу».
+	if clientAcceptsSSE(r) {
+		return p.streamUpstreamSSEToClient(w, r, upstreamResp, backendID, modelName, upstreamStartedAt)
+	}
+
+	// R258: буферизация остаётся (клиент ждёт цельный JSON), но честная:
+	// один warn с параметрами + пределы по времени и размеру.
+	maxWait, maxBytes := autoStreamLimits()
+	warnAutoStreamBuffering(backendID, modelName, clientReqBody, hasClientTools(clientReqBody))
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Round-31-1-Workaround", "non-stream-to-upstream-stream")
 	p.addModelCapabilitiesHeaders(w, modelName)
@@ -172,6 +185,35 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 				"chunks_processed", accum.chunksProcessed)
 			return nil
 		default:
+		}
+
+		// R258: пределы буферизации. Проверяем на каждом кадре, потому что и
+		// время, и объём растут монотонно, а «зависший» воркер вообще не пришлёт
+		// кадров — от этого случая защищает таймаут ниже по циклу.
+		if maxWait > 0 && time.Since(accum.startedAt) > maxWait {
+			logger.Get().Errorw("R258: non-stream buffering exceeded time limit — отдаём понятную ошибку",
+				"backend", backendID, "model", accum.model,
+				"elapsed_sec", time.Since(accum.startedAt).Seconds(),
+				"max_sec", maxWait.Seconds(),
+				"chunks_processed", accum.chunksProcessed)
+			_, _ = w.Write(autoStreamErrorBody("auto_stream_timeout",
+				fmt.Sprintf("exceeded %s while buffering", maxWait)))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			return nil
+		}
+		if maxBytes > 0 && accum.sizeBytes() > maxBytes {
+			logger.Get().Errorw("R258: non-stream buffering exceeded size limit — отдаём понятную ошибку",
+				"backend", backendID, "model", accum.model,
+				"bytes", accum.sizeBytes(), "max_bytes", maxBytes,
+				"chunks_processed", accum.chunksProcessed)
+			_, _ = w.Write(autoStreamErrorBody("auto_stream_too_large",
+				fmt.Sprintf("response exceeded %d bytes while buffering", maxBytes)))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			return nil
 		}
 
 		line := scanner.Text()

@@ -32,11 +32,11 @@ func TestR248_ToolFollowupRespectsExplicitTemperature(t *testing.T) {
 		{Role: "tool", ToolCallID: "c1", Content: "ok"},
 	}
 	params := bridge.GenerationParams{Temperature: 0.3, TopP: 0.8}
-	if applyToolFollowupDeterminism(msgs, &params, true) {
-		t.Fatal("при явной температуре политика не должна применяться")
+	if !applyToolFollowupDeterminism(msgs, &params, true) {
+		t.Fatal("на ходе с результатом инструмента политика применяется даже при явной температуре")
 	}
-	if params.Temperature != 0.3 {
-		t.Fatalf("температура клиента изменена: %v", params.Temperature)
+	if params.Temperature != 0 {
+		t.Fatalf("ожидался greedy и при явной температуре клиента, получено %v", params.Temperature)
 	}
 }
 

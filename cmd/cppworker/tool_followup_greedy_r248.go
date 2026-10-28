@@ -69,10 +69,13 @@ func applyToolFollowupDeterminism(msgs []chatMessage, params *bridge.GenerationP
 	if !hasToolResultForLastCall(msgs) {
 		return false
 	}
-	// Клиент явно управляет температурой — не вмешиваемся.
-	if clientSetTemperature {
-		return false
-	}
+	// R249 (2026-10-28): явная температура клиента на этом ходе НЕ спасает от
+	// дефекта — измерено на Qwen3.8 (10 прогонов, temp=0.7): 1 прогон вернул
+	// пустой content при finish=stop (всё ушло в reasoning) — клиент такой ответ
+	// считает неудачным и повторяет запрос, то есть цикл возвращается. Поэтому
+	// детерминизм на ходе с результатом инструмента приоритетнее «творчества»:
+	// greedy применяется всегда, а факт фиксируется в логе вызывающим кодом.
+	_ = clientSetTemperature
 	params.Temperature = 0
 	params.TopP = 1
 	params.TopK = 1

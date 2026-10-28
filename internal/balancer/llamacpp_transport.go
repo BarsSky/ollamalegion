@@ -699,7 +699,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 
 	// ==== Основной цикл SSE → NDJSON / SSE → SSE ==========
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0), 1024*1024)
+	scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
 
 	lastData := ""
 
@@ -1855,17 +1855,42 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// финальный маркер и закрыть соединение, чтобы клиент не висел.
 	if !streamCompleted {
 		scannerErr := scanner.Err()
-		logger.Get().Warnw("proxyRequestLlamaCpp: SSE stream truncated before [DONE] marker",
+		// R259: КТО завершил стрим. Наш лимит строки и наши отмены — НЕ
+		// «upstream truncated»; клиенту и в лог уходит правдивая причина.
+		abortReason := streamAbortReasonR259(scannerErr, r.Context().Err())
+		logFields := []interface{}{
+			"reason", abortReason,
 			"backend", backendID, "model", modelFromCtx,
 			"original_path", originalPath,
 			"bytes_forwarded", bytesForwarded,
+			"elapsed_sec", time.Since(llamaStartTime).Seconds(),
 			"scanner_err", errString(scannerErr),
 			"first_forward_err", errString(firstForwardErr),
-			"last_forward_err", errString(lastForwardErr))
+			"last_forward_err", errString(lastForwardErr),
+		}
+		if abortReason == streamAbortOurLimit {
+			logFields = append(logFields, "line_limit_bytes", streamMaxLineBytes())
+			logger.Get().Warnw("proxyRequestLlamaCpp: SSE line exceeded balancer buffer (our_limit, not upstream)",
+				logFields...)
+		} else if abortReason == streamAbortClientCancel {
+			// Клиент ушёл: писать в его соединение бессмысленно.
+			logger.Get().Infow("proxyRequestLlamaCpp: stream ended by client (client_cancel)", logFields...)
+			return lastForwardErr
+		} else {
+			logger.Get().Warnw("proxyRequestLlamaCpp: stream ended before [DONE] marker",
+				logFields...)
+		}
 
-		// Эмитим финальный чанк с error, чтобы клиент точно завершил стрим.
+		// Эмитим финальный чанк, чтобы клиент точно завершил стрим.
 		// Пробуем дописать; если клиент уже отвалился (broken pipe) — игнорируем ошибку.
 		if originalPath == "/v1/chat/completions" {
+			// R259: наш лимит — это НЕ обрыв upstream. Клиенту отдаём валидный
+			// терминальный чанк (finish_reason=length) без обвинения upstream;
+			// для наших отмен и реального обрыва — понятная причина.
+			finishReason := "truncated"
+			if abortReason == streamAbortOurLimit {
+				finishReason = "length"
+			}
 			truncatedChunk := map[string]interface{}{
 				"id":      fmt.Sprintf("trunc-%d", time.Now().UnixNano()),
 				"object":  "chat.completion.chunk",
@@ -1875,26 +1900,36 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					map[string]interface{}{
 						"index":         0,
 						"delta":         map[string]interface{}{},
-						"finish_reason": "truncated",
+						"finish_reason": finishReason,
 					},
 				},
-				"error": map[string]interface{}{
-					"message": "stream truncated by upstream before completion",
+			}
+			if abortReason != streamAbortOurLimit {
+				truncatedChunk["error"] = map[string]interface{}{
+					"message": streamAbortClientMessage(abortReason),
 					"type":    "stream_truncated",
-				},
+					"reason":  abortReason,
+				}
 			}
 			out, _ := json.Marshal(truncatedChunk)
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(out))
 			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 			Flush(w)
 		} else {
-			// Для /api/chat и /api/generate (NDJSON): финальный done-чанк с error.
+			// Для /api/chat и /api/generate (NDJSON): финальный done-чанк.
+			// R259: наш лимит — done_reason=length без обвинения upstream.
+			doneReason := "truncated"
+			if abortReason == streamAbortOurLimit {
+				doneReason = "length"
+			}
 			truncatedChunk := map[string]interface{}{
 				"model":       modelFromCtx,
 				"created_at":  time.Now().UTC().Format(time.RFC3339),
 				"done":        true,
-				"done_reason": "truncated",
-				"error":       "stream truncated by upstream before completion",
+				"done_reason": doneReason,
+			}
+			if abortReason != streamAbortOurLimit {
+				truncatedChunk["error"] = streamAbortClientMessage(abortReason)
 			}
 			out, _ := json.Marshal(truncatedChunk)
 			_, _ = fmt.Fprintf(w, "%s\n", string(out))

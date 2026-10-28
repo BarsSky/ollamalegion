@@ -273,8 +273,10 @@ func TestProxyRequestLlamaCpp_StreamTruncation_NDJSON(t *testing.T) {
 		t.Fatalf("expected final NDJSON chunk with done_reason=truncated; got chunks=%d; body=%s", len(chunks), string(recorderBody))
 	}
 
-	if gotErr, _ := truncChunk["error"].(string); gotErr != "stream truncated by upstream before completion" {
-		t.Errorf("truncation chunk error=%q, want %q", gotErr, "stream truncated by upstream before completion")
+	if gotErr, _ := truncChunk["error"].(string); gotErr != streamAbortClientMessage(streamAbortUpstreamEOF) {
+		// R259: текст больше не приписывает обрыв «до [DONE]» безусловно — причина
+		// приходит из классификатора (здесь реальный EOF без маркеров).
+		t.Errorf("truncation chunk error=%q, want %q", gotErr, streamAbortClientMessage(streamAbortUpstreamEOF))
 	}
 	if got, _ := truncChunk["done"].(bool); !got {
 		t.Errorf("truncation chunk done=%v, want true", got)
@@ -386,7 +388,7 @@ func TestProxyRequestLlamaCpp_StreamTruncation_SSEPassthrough(t *testing.T) {
 	if errObj, ok := truncChunk["error"].(map[string]interface{}); !ok {
 		t.Errorf("truncation chunk missing error object; got=%v", truncChunk)
 	} else {
-		if msg, _ := errObj["message"].(string); msg != "stream truncated by upstream before completion" {
+		if msg, _ := errObj["message"].(string); msg != streamAbortClientMessage(streamAbortUpstreamEOF) {
 			t.Errorf("truncation chunk error.message=%q, want %q", msg, "stream truncated by upstream before completion")
 		}
 		if typ, _ := errObj["type"].(string); typ != "stream_truncated" {

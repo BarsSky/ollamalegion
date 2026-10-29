@@ -122,8 +122,10 @@
 второй узел раскладки `cppworker-cyborg-bundled-agent` — роль donor, но недоступен
 (192.168.13.34, D1/D2 из отчёта R303 не исправлены).
 
-Образы: `balancer:ad5c979b`, `webui:f834332d`, развёрнуты через
-`docker compose --profile "*" up -d --force-recreate`.
+Образы (все три пересобраны из этой ветки и развёрнуты):
+`balancer:551c7bb1`, `webui:f834332d`, `cppworker:gpu-1d6cd83c` — через
+`docker compose --profile "*" up -d --force-recreate`. Сборка cppworker заняла
+~55 минут: CUDA-компиляция llama.cpp шла с нуля (кэш builder-стадии отсутствовал).
 
 | # | Что проверялось | Как | Результат |
 | --- | --- | --- | --- |
@@ -136,6 +138,12 @@
 | G | unload донору не блокируется | тот же эндпоинт, `operation:"unload"` | отказ НЕ по роли (ушёл в сеть и упал на недоступном узле) — **PASS** (выгрузить нарушающую копию можно) |
 | H | Панель: разбор полей | живой JSON `GET /api/v1/backends` прогнан через `Utils.donorMark()` в node | `{donor:true, master:"cppworker-gpu-bundled-agent", canLoad:false, ownCopies:[...]}` — **PASS** (серверный контракт и UI-хелпер сходятся) |
 | I | Панель: отдача кода | `GET :18083/js/modules/utils.js`, `renderers.js`, `i18n/ru.js`, `js/monitor/layout-panel.js` | `donorMark`, `donorBadgeHtml`, ключи `backends.donor_badge`/`donor_violation`, `donorMaster` на месте — **PASS** |
+| J | Воркер узнаёт роль | роль donor приказом балансера, затем `GET :18092/api/models` | `role:"donor"`, `donor:true`, `can_load_own_models:false`, `donor_reason:"role=donor"`, `rpc_server.enabled:true` — **PASS** |
+| K | Воркер отказывает в загрузке | `POST :18092/api/models/load` напрямую (в обход балансера) | `HTTP 409`, `error:"donor_cannot_host_models"`, `role:"donor"`, `reason:"role=donor"`, message+hint по-русски — **PASS** |
+| L | Воркер отказывает в reload | `POST :18092/api/models/reload` с `X-API-Token` | тот же `409 donor_cannot_host_models` — **PASS** (reload = unload+load, копию поднимать нельзя) |
+| M | unload на воркере не блокируется | `POST :18092/api/models/unload?name=...` | не 409: ответ `404 model not found` (модели не было) — **PASS** (гард не мешает убрать копию) |
+| N | Роль переживает пересоздание контейнера | `docker exec ... cat /app/config/cppworker-runtime-overrides.json`; роль `main` пришла ещё прежнему процессу и осталась после рестартов балансера | `{"backendRole":"main", "rpcEnabled":false, "rpcServerEnabled":false, ...}`, и воркер после рестарта балансера сам отдаёт `role:"main"` — **PASS** |
+| O | Восстановление стенда | роль → `main`, `load` gemma с `contextSize=32768` | `success:true`, `/api/models` → `gemma=loaded ctx=32768`, `role:"main"`, `can_load_own_models:true`; чат `200` за 1 c — **PASS** |
 
 Косвенный живой факт (нашёлся по ходу): смена роли применяет раскладку, а это
 перезагружает модель у мастера — после переключения donor→main gemma грузилась
@@ -143,22 +151,20 @@
 раскладки, не R304; важно для оператора: смена роли на узле с загруженной моделью
 стоит перезагрузки.
 
+Отдельное наблюдение (не R304, но рядом): загрузка модели на воркере
+(`POST :18092/api/models/load`) прошла БЕЗ `X-API-Token`, тогда как `reload` и
+`unload` его требуют. То есть ручка загрузки открыта шире остальных — стоит
+проверить отдельно.
+
 ### Что НЕ проверено живьём (честно)
 
-1. **cppworker-сторона на новом образе.** Код и юнит-тесты готовы (409
-   `donor_cannot_host_models`, `role/donor/can_load_own_models/donor_reason/
-   own_copies` в `/api/models`), но образ `cppworker:gpu-<sha>` на момент прогона
-   собирался (>60 мин: CUDA-компиляция llama.cpp с нуля). На стенде оставался
-   `gpu-r248`, поэтому живьём проверена ТОЛЬКО балансерная половина (отказ на
-   стороне балансера, F). Пометка воркера — по коду и тестам, статус: **не
-   проверено на железе**.
-2. **Двухузловой сценарий «у донора живая копия, второй узел свободен».**
-   Второй узел недоступен (D1/D2), поэтому переезд сессии с донора на мастера и
-   выбор свободного узла живьём не воспроизводились — покрыты юнит-тестами.
+1. **Двухузловой сценарий «у донора живая копия, второй узел свободен».**
+   Второй узел недоступен (D1/D2 из отчёта R303), поэтому переезд сессии с донора
+   на мастера и выбор свободного узла живьём не воспроизводились — покрыты
+   юнит-тестами.
 3. **Визуальная проверка панели в браузере.** Пометка и блокировки проверены
    рендером в node (тест + живой JSON) и отдачей файлов стендом; кликов в браузере
    не делал.
-
 
 ## Что НЕ делается намеренно
 

@@ -514,6 +514,28 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			// R252: помним последний отданный кадр — по нему решаем, нужен ли
 			// синтетический [DONE] перед закрытием потока.
 			lastSSELine = append(lastSSELine[:0], lineToWrite...)
+
+			// R294 (2026-10-29): КАДР ОШИБКИ ОТ ВОРКЕРА ЗАКРЫВАЕТ СТРИМ.
+			//
+			// Живой дефект: воркер присылал `data: {"error":…bridge_code 2:
+			// requested n_ctx=16384 exceeds…}` и НЕ присылал терминатор. Балансер
+			// честно пересылал кадр и продолжал ждать, клиент (/v1) висел до
+			// своего таймаута (curl HTTP 000 через 40 с), хотя ответ уже был.
+			// Теперь после кадра с ошибкой отдаём терминатор и закрываем поток —
+			// дальше ждать нечего.
+			if isOpenAISSEDataLine(lineToWrite) {
+				if payload := extractSSEDataPayload(lineToWrite); payload != nil {
+					if isUpstreamErrorPayload(payload) {
+						for _, fr := range egressFilter.finalizeFrames() {
+							_ = writeChunkedFrame(bufrw, withSSEEventBoundary(fr))
+						}
+						ensureChunkedSSEDone(bufrw, lastSSELine)
+						logger.Get().Infow("hijack streaming: upstream error frame — stream closed (R294)",
+							"backend", backendID)
+						return nil
+					}
+				}
+			}
 		}
 	}
 

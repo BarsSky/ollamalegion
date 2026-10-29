@@ -73,17 +73,60 @@ func agentOutputReserveTokens() int {
 	return n
 }
 
-// agentRequiredWindow — необходимое окно НА КЛИЕНТА для агентского хода.
+// agentOutputBudget — сколько токенов вывода закладывать в окно.
 //
-// Budget: клиентский n_predict, если он его назвал (агентские клиенты ставят
-// max_tokens на длинные правки файлов), иначе дефолт оператора.
-func agentRequiredWindow(meta *RequestMeta) int {
-	if meta == nil || meta.EstimatedPromptTokens <= 0 {
-		return 0
+// R294 (2026-10-29): ЖИВОЙ ДЕФЕКТ. Бюджет брался как сырое значение
+// meta.RequestedNPredict, и если клиент прислал маленький num_predict (например
+// 8) — им же и ограничивался расчёт окна. Хуже: при нулевом/неразобранном
+// значении в лог уходил output_budget=0, то есть окно считалось «промпт + 0»,
+// и балансер мог перезагрузить модель в окно МЕНЬШЕ загруженного. Здесь бюджет
+// всегда осмысленный: клиентский n_predict, но не меньше минимального (ход
+// агента не бывает из 8 токенов) — иначе окно сжимается.
+func agentOutputBudget(meta *RequestMeta) int {
+	budget := 0
+	if meta != nil {
+		budget = meta.RequestedNPredict
 	}
-	budget := meta.RequestedNPredict
 	if budget <= 0 {
-		budget = agentOutputReserveTokens()
+		// Клиент бюджета не назвал (Cline живёт на max_output_tokens) — берём
+		// дефолт оператора: ход агента без бюджета вывода бессмыслен.
+		return agentOutputReserveTokens()
 	}
-	return meta.EstimatedPromptTokens + budget + agentWindowSlackTokens
+	if budget < agentOutputReserveMinTokens {
+		// Названный, но игрушечный бюджет (num_predict=8) поднимаем до
+		// минимума, а не до дефолта: клиент явно ограничил ответ, и раздувать
+		// окно на 4096 из-за этого нельзя (иначе лишний reload на короткий вопрос).
+		budget = agentOutputReserveMinTokens
+	}
+	if budget > agentOutputReserveMaxTokens {
+		budget = agentOutputReserveMaxTokens
+	}
+	return budget
+}
+
+// agentRequiredWindow — необходимое окно НА КЛИЕНТА для агентского хода.
+func agentRequiredWindow(meta *RequestMeta) int {
+	return agentRequiredWindowAtLeast(meta, 0)
+}
+
+// agentRequiredWindowAtLeast — то же, но выведенное окно НИКОГДА не меньше
+// запрошенного клиентом и не меньше переданного «пола» (floor).
+//
+// R294: нижняя граница — прямое требование корректности. Клиент, попросивший
+// num_ctx=16384, не должен получить перезагрузку в 4165 только потому, что
+// оценка промпта оказалась маленькой. Так же и загруженное окно: рост не может
+// быть «ростом в меньшую сторону» — уменьшение окна под живым клиентом рвёт его
+// ход (cppworker делает unload+load).
+func agentRequiredWindowAtLeast(meta *RequestMeta, floor int) int {
+	if meta == nil || meta.EstimatedPromptTokens <= 0 {
+		return floor
+	}
+	need := meta.EstimatedPromptTokens + agentOutputBudget(meta) + agentWindowSlackTokens
+	if meta.RequestedNCtxOverride > need {
+		need = meta.RequestedNCtxOverride
+	}
+	if floor > need {
+		need = floor
+	}
+	return need
 }

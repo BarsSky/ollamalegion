@@ -684,7 +684,11 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 	if reqWindow <= 0 {
 		derived := 0
 		if nctxGrowForAgentsEnabled() {
-			derived = agentRequiredWindow(meta)
+			// R294 (2026-10-29): «пол» — загруженное окно слота. Раньше выведенное
+			// окно могло оказаться МЕНЬШЕ загруженного (промпт короткий, бюджет 0),
+			// и reload уходил в меньшую сторону: cppworker выгружал модель с 8192
+			// и грузил 4165, обрывая чужой ход. Рост не может быть уменьшением.
+			derived = agentRequiredWindowAtLeast(meta, state.effectivePerSeqNCtx())
 		}
 		if derived <= 0 {
 			logger.Get().Infow(i18n.T("balancer.preflight_nctx.client_silent_no_reload_info"),
@@ -701,7 +705,8 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 			"backend_id", state.BackendID,
 			"model", meta.ModelName,
 			"estimated_prompt_tokens", meta.EstimatedPromptTokens,
-			"output_budget", meta.RequestedNPredict,
+			"output_budget", agentOutputBudget(meta),
+			"requested_by_client", meta.RequestedNCtxOverride,
 			"derived_window_per_client", derived,
 			"loaded_per_seq_n_ctx", state.effectivePerSeqNCtx())
 	}
@@ -783,6 +788,21 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		// причину перезагрузки, а не «модель вдруг перезагрузилась».
 		AgentDerivedWindow: agentDerived,
 	}
+}
+
+// gateModelNameOr / requestedWindowOr — безопасные чтения meta для логов.
+func gateModelNameOr(meta *RequestMeta) string {
+	if meta == nil {
+		return ""
+	}
+	return meta.ModelName
+}
+
+func requestedWindowOr(meta *RequestMeta) int {
+	if meta == nil {
+		return 0
+	}
+	return meta.RequestedNCtxOverride
 }
 
 // perClientToTotal — пересчёт «окно на клиента» → «суммарное окно модели».
@@ -1094,6 +1114,24 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 				reloadTargetForState(decision.TargetNCtx, state),
 				state.CurrentNCtx, state.CurrentContextPerSeq, state.effectiveSlots(),
 				state.MaxVRAMNCtx, state.ModelMaxContext),
+		}
+		// R294 (2026-10-29): НИКОГДА НЕ УМЕНЬШАТЬ ОКНО.
+		//
+		// Живой дефект: клиент просил num_ctx=16384 при загруженных 8192, а
+		// выведенное окно посчиталось как «промпт + бюджет(0) = 4165», и
+		// балансер перезагрузил модель в МЕНЬШЕЕ окно — под живым стримом.
+		// Уменьшение окна не может быть следствием запроса «дайте больше»:
+		// это либо ошибка расчёта, либо чужая политика, и в обоих случаях
+		// перезагрузка бессмысленна — она только рвёт текущие ходы.
+		if plan.NewNCtx > 0 && state.CurrentNCtx > 0 && plan.NewNCtx < state.CurrentNCtx {
+			logger.Get().Warnw("preflight: refusing to shrink n_ctx window",
+				"backend_id", backendID,
+				"model", gateModelNameOr(meta),
+				"target_n_ctx", plan.NewNCtx,
+				"current_n_ctx", state.CurrentNCtx,
+				"requested_per_client", requestedWindowOr(meta),
+				"action", "no_op: a request never justifies a smaller window")
+			return &PreflightResult{Decision: PreflightNoOp}, nil
 		}
 
 		// R83-fix (2026-09-30): ПРОВЕРКА ДОСТИЖИМОСТИ. Не перезагружаем модель,

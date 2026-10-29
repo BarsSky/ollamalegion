@@ -87,32 +87,46 @@ func (p *Proxy) contextGrowthBlocker(backendID, model string, meta *RequestMeta)
 	if p == nil || meta == nil || backendID == "" {
 		return false, 0, 0
 	}
-	estimated := meta.EstimatedPromptTokens
-	if estimated <= 0 {
-		return false, 0, 0
-	}
 	loaded := p.loadedPerSeqNCtx(backendID, model)
 	if loaded <= 0 {
 		return false, 0, 0
 	}
-	budget := meta.RequestedNPredict
-	if budget <= 0 {
-		budget = defaultOutputBudgetForGrowth
+	budget := agentOutputBudget(meta)
+	estimated := meta.EstimatedPromptTokens
+	needed := 0
+	// R294 (2026-10-29): ЯВНО ЗАПРОШЕННОЕ ОКНО — тоже причина «нужно больше».
+	//
+	// Живой дефект: клиент прислал num_ctx=16384 при загруженных 8192, но промпт
+	// был коротким, поэтому проверка «промпт + бюджет не влезает» не срабатывала:
+	// запрос уходил в воркер, тот отвечал кадром ошибки внутри стрима
+	// (`requested n_ctx=16384 exceeds model's effective n_ctx=8192`), а на /v1
+	// поток после такого кадра вообще не завершался. Сравнение с явным запросом
+	// закрывает оба случая до старта стрима.
+	requested := meta.RequestedNCtxOverride
+	if requested > loaded {
+		needed = requested
+	} else if estimated > 0 && promptNeedsMoreContext(estimated, budget, loaded) {
+		needed = estimated + budget
 	}
-	needed := estimated + budget
-	if !promptNeedsMoreContext(estimated, budget, loaded) {
+	if needed == 0 {
 		return false, 0, 0
+	}
+	if needed < requested {
+		needed = requested
 	}
 	// Рост возможен только без активных стримов (guard R271): если стримы есть,
 	// перезагрузку отложат, а запрос в очереди простоял бы впустую.
-	if p.ActiveStreamsOnBackend(backendID) == 0 {
+	active := p.ActiveStreamsOnBackend(backendID)
+	if active == 0 {
 		return false, needed, loaded
 	}
 	logger.Get().Infow("context growth deferred instead of admission queue (R288)",
 		"backend", backendID, "model", model,
-		"estimated_prompt_tokens", estimated, "output_budget", budget,
+		"estimated_prompt_tokens", estimated,
+		"requested_by_client", requested,
+		"output_budget", budget,
 		"needed_tokens", needed, "loaded_window_tokens", loaded,
-		"active_streams", p.ActiveStreamsOnBackend(backendID),
+		"active_streams", active,
 		"retry_after_sec", 60)
 	return true, needed, loaded
 }

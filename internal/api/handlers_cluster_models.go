@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -280,6 +282,17 @@ type clusterReloadModelBackendResult struct {
 	// этим полям подтверждение вместо тупикового "model is busy".
 	Busy           bool `json:"busy,omitempty"`
 	RetryWithForce bool `json:"retryWithForce,omitempty"`
+
+	// R281 (2026-10-29): оператор просил ДРУГОЕ окно контекста, а модель уже
+	// была загружена — значит это перезагрузка, а не «уже загружено».
+	//
+	// ЖИВОЙ ДЕФЕКТ (воспроизведён дважды): POST reload {contextSize: 8192} на
+	// уже загруженной модели отвечал «ok: already loaded» и НЕ перезагружал её,
+	// поэтому окно оставалось прежним. Снаружи это выглядело как «выставил окно
+	// в WebUI, а загрузилось старое» — и оператор шёл выгружать модель руками.
+	Reloaded        bool `json:"reloaded"`                  // была ли реальная перезагрузка
+	PreviousContext int  `json:"previousContext,omitempty"` // какое окно было загружено
+	NewContext      int  `json:"newContext,omitempty"`      // какое окно запрошено
 }
 
 // clusterModelItemDispatcher — единый dispatcher для /api/v1/cluster/models/{name}/*.
@@ -486,7 +499,7 @@ func (s *Server) clusterReloadModelHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	for _, backendID := range sel.Targets {
-		result := s.executeReloadOnBackend(backendID, name, &req)
+		result := s.executeReloadOnBackend(r.Context(), backendID, name, &req)
 		resp.Results = append(resp.Results, result)
 	}
 
@@ -529,7 +542,7 @@ func splitClusterModelPath(path string) (string, bool) {
 //     (не запрошенная) — автоматически выгружает её перед load.
 //   - "unload" → одна операция unload.
 //   - "reload" → сначала unload (если модель загружена), затем load.
-func (s *Server) executeReloadOnBackend(backendID, modelName string, req *clusterReloadModelRequest) clusterReloadModelBackendResult {
+func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelName string, req *clusterReloadModelRequest) clusterReloadModelBackendResult {
 	result := clusterReloadModelBackendResult{BackendID: backendID}
 
 	mm := s.proxy.GetModelManager()
@@ -541,22 +554,64 @@ func (s *Server) executeReloadOnBackend(backendID, modelName string, req *cluste
 	}
 
 	// Для reload сначала unload, если модель загружена.
+	needUnload := req.Operation == "reload"
 	if req.Operation == "reload" {
 		loaded := s.isModelLoaded(backendID, modelName)
-		if loaded {
-			unloadOp := balancer.ModelOpRequest{
-				Operation: "unload",
-				ModelName: modelName,
+		needUnload = loaded
+	}
+	if req.Operation == "load" && s.isModelLoaded(backendID, modelName) {
+		// R281: модель уже загружена — но с КАКИМ окном? Если оператор просит
+		// другое окно, «already loaded» было бы ложью: он получил бы ответ «ok»,
+		// а окно осталось прежним (живой дефект, воспроизведён дважды).
+		loadedCtx, ctxKnown := s.loadedModelContextOnBackend(backendID, modelName)
+		if needContextReload(loadedCtx, ctxKnown, req.ContextSize) {
+			result.Reloaded = true
+			result.NewContext = *req.ContextSize
+			if ctxKnown {
+				result.PreviousContext = loadedCtx
 			}
-			unloadResult := mm.ExecuteOperation(backendID, unloadOp)
-			if !unloadResult.Success {
-				result.Status = "error"
-				result.Error = "unload failed: " + unloadResult.Error
-				result.HTTPStatus = http.StatusInternalServerError
-				return result
-			}
+			needUnload = true
+			logger.Get().Infow("cluster reload: загружено другое окно — перезагружаем модель (R281)",
+				"backend", backendID, "model", modelName,
+				"loaded_context", loadedCtx, "loaded_context_known", ctxKnown,
+				"requested_context", *req.ContextSize)
+		} else {
+			result.Status = "ok"
+			result.Message = "already loaded"
+			result.HTTPStatus = http.StatusOK
+			return result
 		}
-		// После успешного unload (или если модель не была загружена) — выполняем load.
+	}
+
+	if needUnload {
+		// R271/R280: не выгружаем модель под ЖИВЫМ стримом. Операторский reload
+		// — такая же разрушительная операция: cppworker закрывает поток клиента
+		// без терминального маркера, и тот получает «stream ended by upstream»,
+		// хотя upstream был жив. Ждём до LB_RELOAD_DEFER_MAX_SEC; не дождались —
+		// честно говорим, сколько стримов мешает, вместо тихой перезагрузки.
+		if s.proxy != nil && !s.proxy.WaitStreamsIdleBeforeDestructive(ctx, backendID, modelName) {
+			n := s.proxy.ActiveStreamsOnBackend(backendID)
+			result.Status = "skipped"
+			result.HTTPStatus = http.StatusServiceUnavailable
+			result.Message = fmt.Sprintf("model reload deferred: %d active stream(s) on backend; retry shortly", n)
+			logger.Get().Warnw("cluster reload postponed — active streams on backend (R281)",
+				"backend", backendID, "model", modelName, "active_streams", n)
+			return result
+		}
+		if s.proxy != nil {
+			s.proxy.NoteDestructiveReload(backendID, modelName)
+		}
+		unloadOp := balancer.ModelOpRequest{
+			Operation: "unload",
+			ModelName: modelName,
+		}
+		unloadResult := mm.ExecuteOperation(backendID, unloadOp)
+		if !unloadResult.Success {
+			result.Status = "error"
+			result.Error = "unload failed: " + unloadResult.Error
+			result.HTTPStatus = http.StatusInternalServerError
+			return result
+		}
 		req.Operation = "load"
 	}
 
@@ -579,13 +634,10 @@ func (s *Server) executeReloadOnBackend(backendID, modelName string, req *cluste
 	var loadedOther string
 	otherLoaded := false
 	if req.Operation == "load" {
-		// Если модель уже загружена на этом бэкенде — идемпотентный skip.
-		if s.isModelLoaded(backendID, modelName) {
-			result.Status = "ok"
-			result.Message = "already loaded"
-			result.HTTPStatus = http.StatusOK
-			return result
-		}
+		// R281: ветка «уже загружено» переехала ВЫШЕ и там сравнивает окна.
+		// Второй такой же проверки здесь быть не должно: два мнения об одном
+		// факте — ровно тот класс дефекта, из-за которого «правка в одном месте
+		// не помогает» (в серии ловили четыре раза).
 		loadedOther, otherLoaded = s.getLoadedModelOnBackend(backendID)
 		if loadedOther == modelName {
 			otherLoaded = false
@@ -645,6 +697,57 @@ func (s *Server) isModelLoaded(backendID, modelName string) bool {
 		}
 	}
 	return false
+}
+
+// needContextReload — R281: нужно ли перезагружать уже загруженную модель,
+// потому что оператор просит ДРУГОЕ окно контекста.
+//
+// Вынесено в чистую функцию, чтобы правило было одно и проверялось таблицей:
+//
+//	requested nil/<=0            → false (оператор окно не задавал: прежнее поведение)
+//	requested совпадает с фактом  → false («already loaded» — правда)
+//	requested отличается          → true  (перезагружаем и говорим об этом)
+//	факт неизвестен (ctx=0)       → true, если requested>0: старые сборки
+//	                                 cppworker не сообщают contextLength, и
+//	                                 «уже загружено» было бы догадкой
+func needContextReload(loadedCtx int, ctxKnown bool, requested *int) bool {
+	if requested == nil || *requested <= 0 {
+		return false
+	}
+	if !ctxKnown {
+		return true
+	}
+	return loadedCtx != *requested
+}
+
+// loadedModelContextOnBackend — R281: какое окно контекста РЕАЛЬНО загружено
+// для модели на этом бэкенде.
+//
+// Зачем отдельная функция, а не «isModelLoaded + удача»: чтобы ответить
+// оператору на вопрос «почему загрузилось старое окно», нужно сравнить
+// запрошенное окно с ФАКТИЧЕСКИМ. Второе возвращаемое значение — известен ли
+// факт: у старых сборок cppworker contextLength в /api/models может быть 0, и
+// тогда мы не имеем права утверждать «другое окно» (иначе каждый reload с
+// contextSize превращался бы в перезагрузку).
+func (s *Server) loadedModelContextOnBackend(backendID, modelName string) (int, bool) {
+	cs := s.getClusterState()
+	if cs == nil {
+		return 0, false
+	}
+	for _, b := range cs.Backends {
+		if b.ID != backendID {
+			continue
+		}
+		for _, m := range b.LlamaCpp.LoadedModels {
+			if m.Name == modelName {
+				if m.ContextLength > 0 {
+					return m.ContextLength, true
+				}
+				return 0, false
+			}
+		}
+	}
+	return 0, false
 }
 
 // getLoadedModelOnBackend — возвращает имя загруженной модели на бэкенде (если есть).
@@ -919,7 +1022,7 @@ func (s *Server) clusterBulkModelsHandler(w http.ResponseWriter, r *http.Request
 	// для больших (>50) — параллельно с ограничением concurrency.
 	if len(models) <= bulkOperationConcurrency*2 {
 		for i := range models {
-			result := s.executeBulkModelItem(targets, &models[i], &req)
+			result := s.executeBulkModelItem(r.Context(), targets, &models[i], &req)
 			resp.Results = append(resp.Results, result)
 			if result.Succeeded {
 				resp.Succeeded++
@@ -928,7 +1031,7 @@ func (s *Server) clusterBulkModelsHandler(w http.ResponseWriter, r *http.Request
 			}
 		}
 	} else {
-		resp.Results = s.executeBulkModelItemsParallel(targets, models, &req, &resp)
+		resp.Results = s.executeBulkModelItemsParallel(r.Context(), targets, models, &req, &resp)
 	}
 
 	resp.DurationMs = time.Since(startedAt).Milliseconds()
@@ -947,7 +1050,7 @@ func (s *Server) clusterBulkModelsHandler(w http.ResponseWriter, r *http.Request
 
 // executeBulkModelItem — выполняет одну модель из bulk-запроса на всех целевых бэкендах.
 // Переиспользует executeReloadOnBackend (Session 17), собирая результаты в clusterBulkModelResult.
-func (s *Server) executeBulkModelItem(targets []string, item *bulkModelItem, req *clusterBulkModelsRequest) clusterBulkModelResult {
+func (s *Server) executeBulkModelItem(ctx context.Context, targets []string, item *bulkModelItem, req *clusterBulkModelsRequest) clusterBulkModelResult {
 	// Резолвим per-item операцию: приоритет item.Operation > req.Operation.
 	op := req.Operation
 	if item.Operation != "" {
@@ -1021,11 +1124,11 @@ func (s *Server) executeBulkModelItem(targets []string, item *bulkModelItem, req
 	results := make([]clusterReloadModelBackendResult, 0, len(modelTargets))
 	allOK := true
 	for _, bid := range modelTargets {
-		r := s.executeReloadOnBackend(bid, item.Model, perBackendReq)
-		if r.Status != "ok" {
+		res := s.executeReloadOnBackend(ctx, bid, item.Model, perBackendReq)
+		if res.Status != "ok" {
 			allOK = false
 		}
-		results = append(results, r)
+		results = append(results, res)
 	}
 
 	return clusterBulkModelResult{
@@ -1038,7 +1141,7 @@ func (s *Server) executeBulkModelItem(targets []string, item *bulkModelItem, req
 
 // executeBulkModelItemsParallel — параллельное выполнение bulk-операций с лимитом concurrency.
 // Используется только для больших списков (>10 моделей), чтобы не блокировать UI.
-func (s *Server) executeBulkModelItemsParallel(targets []string, models []bulkModelItem, req *clusterBulkModelsRequest, resp *clusterBulkModelsResponse) []clusterBulkModelResult {
+func (s *Server) executeBulkModelItemsParallel(ctx context.Context, targets []string, models []bulkModelItem, req *clusterBulkModelsRequest, resp *clusterBulkModelsResponse) []clusterBulkModelResult {
 	results := make([]clusterBulkModelResult, len(models))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -1050,7 +1153,7 @@ func (s *Server) executeBulkModelItemsParallel(targets []string, models []bulkMo
 		go func(idx int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			result := s.executeBulkModelItem(targets, &models[idx], req)
+			result := s.executeBulkModelItem(ctx, targets, &models[idx], req)
 			results[idx] = result
 			mu.Lock()
 			if result.Succeeded {

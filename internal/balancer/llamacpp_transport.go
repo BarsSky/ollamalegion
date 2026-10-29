@@ -623,6 +623,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// Чтобы клиент (Cline) не получил пустой `content`, аккумулируем content
 	// из streaming чанков и используем его в финальном done-чанке.
 	var accumulatedPlainContent string
+	// upstreamErrorText — R289: текст ошибки, которую воркер прислал ВНУТРИ потока
+	// (done-чанк с error). Нужен, чтобы отличить «контекст мал» от обрыва и не
+	// запускать auto-continue по заведомо обречённому запросу.
+	var upstreamErrorText string
 	// R266.1 (2026-10-28): придержанный хвост служебных меток для пути SSE→NDJSON.
 	// Живой дефект: `<|assistant|>` приходил четырьмя чанками, а `</think>` вообще
 	// не был в списке меток — оба уезжали клиенту в message.content. Удержание
@@ -958,6 +962,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					}
 					upstreamHadFinishReason = true
 					if c, ok := nativeChunk["error"].(string); ok && c != "" {
+						// R289: запоминаем текст ошибки — по нему отличим «контекст
+						// мал» от обрыва до того, как сработает auto-continue.
+						upstreamErrorText = c
 						logger.Get().Warnw("proxyRequestLlamaCpp[native]: upstream done-chunk carries error",
 							"backend", backendID, "model", modelFromCtx, "error", c)
 
@@ -1861,6 +1868,22 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					"backend", backendID, "model", modelFromCtx,
 					"api_path", originalPath, "cap_field", capField,
 					"content_chars", len(finalContent))
+			} else if blockedCtx, ctxErrText := autoContinueBlockedByContext(upstreamErrorText, upstreamDoneContent, finalContent); blockedCtx {
+				// R289 (2026-10-29): это НЕ обрыв, а отказ по размеру контекста.
+				// Живой дефект: при окне 4096 и промпте 3791 апстрим отвечал 413
+				// `prompt too long`, эвристика видела «незакрытую строку» и
+				// запускала продолжение — второй запрос тоже получал 413, а клиент
+				// так и не узнал настоящую причину.
+				recordAutoContinueSuppressed()
+				windowTokens := p.loadedPerSeqNCtx(backendID, modelFromCtx)
+				writeContextTooSmallNotice(w, originalPath, modelFromCtx,
+					estimatePromptTokensFromBody(bodyBuf, originalPath), windowTokens)
+				logger.Get().Infow("auto-continue suppressed: context overflow is not a truncation (R289)",
+					"backend", backendID, "model", modelFromCtx,
+					"api_path", originalPath, "upstream_error", ctxErrText)
+				if deferredDoneChunk {
+					emitTerminalDoneOnly()
+				}
 			} else if reason := TruncateReason(finalContent); reason != "" {
 				logger.Get().Infow("proxyRequestLlamaCpp: R60.21 detected truncation, auto-continuing",
 					"backend", backendID, "model", modelFromCtx,

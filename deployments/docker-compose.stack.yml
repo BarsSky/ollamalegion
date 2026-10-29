@@ -207,6 +207,145 @@ services:
       - LB_LLAMA_UPSTREAM_TTL_SEC=${LB_LLAMA_UPSTREAM_TTL_SEC:-21600}
       - LB_LLAMA_UPSTREAM_REPO=${LB_LLAMA_UPSTREAM_REPO:-ggml-org/llama.cpp}
       - LB_LLAMA_UPSTREAM_TIMEOUT_SEC=${LB_LLAMA_UPSTREAM_TIMEOUT_SEC:-10}
+      # ── R274 (2026-10-29): ПОЛНЫЙ проброс LB_* в контейнер ────────────────
+      #
+      # ПОЧЕМУ ЭТОТ БЛОК СУЩЕСТВУЕТ. Три раза за серию R250–R272 повторялась одна
+      # и та же поломка: переменная читается кодом (os.Getenv), есть в
+      # deployments/.env, но НЕ проброшена в контейнер — и переключатель молча не
+      # работает («настраиваемость» только на бумаге). Живые случаи:
+      # LB_NCTX_GROW_FOR_AGENTS (переключатель роста окна не доходил),
+      # LB_OPENAI_AUTO_STREAM_KEEPALIVE_SEC, LB_RELOAD_DEFER_MAX_SEC.
+      #
+      # ПРАВИЛО, которое теперь проверяется тестом
+      # (internal/balancer/env_passthrough_r274_test.go): КАЖДАЯ переменная LB_*,
+      # которую читает код балансера, обязана быть либо здесь, либо в
+      # deployments/.env.example, либо в явном allowlist теста с обоснованием.
+      # Иначе тест падает со списком «читается кодом, но не проброшено».
+      #
+      # `:-` без значения = «пустая строка», и это семантика «не задано» для
+      # кода: пустое значение разбирается как отсутствие (см. обработчики).
+      #
+      # Маршрутизация и очередь
+      - LB_ALGORITHM=${LB_ALGORITHM:-resource-aware}
+      - LB_MODEL_AFFINITY=${LB_MODEL_AFFINITY:-true}
+      - LB_SESSION_STICKINESS=${LB_SESSION_STICKINESS:-true}
+      - LB_ADMISSION_WAIT_SEC=${LB_ADMISSION_WAIT_SEC:-300}
+      - LB_ADMISSION_KEEPALIVE_SEC=${LB_ADMISSION_KEEPALIVE_SEC:-5}
+      # Таймауты: по умолчанию инференс НЕ ограничен по длительности
+      # (доктрина «таймаут — рубильник оператора, а не догадка»). Opt-in:
+      # LB_REQUEST_TIMEOUT_SEC, LB_ALLOW_*. LB_STREAMING_NEVER_TIMEOUT=1 гасит все.
+      - LB_REQUEST_TIMEOUT_SEC=${LB_REQUEST_TIMEOUT_SEC:-0}
+      - LB_STREAMING_IDLE_TIMEOUT_SEC=${LB_STREAMING_IDLE_TIMEOUT_SEC:-}
+      - LB_STREAMING_NEVER_TIMEOUT=${LB_STREAMING_NEVER_TIMEOUT:-0}
+      - LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC=${LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC:-180}
+      - LB_ALLOW_PROFILE_TIMEOUTS=${LB_ALLOW_PROFILE_TIMEOUTS:-0}
+      - LB_ALLOW_REQUEST_TIMEOUTS=${LB_ALLOW_REQUEST_TIMEOUTS:-0}
+      - LB_ALLOW_LOAD_WAIT_CAP_SEC=${LB_ALLOW_LOAD_WAIT_CAP_SEC:-0}
+      - LB_ALLOW_NCTX_RELOAD_TIMEOUT=${LB_ALLOW_NCTX_RELOAD_TIMEOUT:-0}
+      # Перезагрузка контекста (R271): сколько ждать завершения чужих стримов
+      # перед разрушительной операцией; 0 = не ждать (пропустить перезагрузку).
+      - LB_RELOAD_DEFER_MAX_SEC=${LB_RELOAD_DEFER_MAX_SEC:-120}
+      - LB_NCTX_RELOAD_ASYNC=${LB_NCTX_RELOAD_ASYNC:-1}
+      # Пусто = ждать терминального состояния перезагрузки (без капа).
+      - LB_NCTX_PREFLIGHT_WAIT_SEC=${LB_NCTX_PREFLIGHT_WAIT_SEC:-}
+      # Стриминг: буфер tool-вызова (R266) и предел тела запроса.
+      - LB_TOOL_CALL_BUFFER_BYTES=${LB_TOOL_CALL_BUFFER_BYTES:-65536}
+      - LB_MAX_REQUEST_BODY_MB=${LB_MAX_REQUEST_BODY_MB:-64}
+      # Нативный Ollama-путь и очистка текста в done-чанке (R231/R240).
+      - LB_OLLAMA_NATIVE_PATH=${LB_OLLAMA_NATIVE_PATH:-1}
+      - LB_OLLAMA_DONE_CONTENT=${LB_OLLAMA_DONE_CONTENT:-strip}
+      # Диалог ожидания перезагрузки (R253): keepalive-комментарии в SSE.
+      - LB_PREFLIGHT_STREAM_DIALOG=${LB_PREFLIGHT_STREAM_DIALOG:-1}
+      - LB_PREFLIGHT_STREAM_DIALOG_KEEPALIVE_SEC=${LB_PREFLIGHT_STREAM_DIALOG_KEEPALIVE_SEC:-5}
+      # Авто-продолжение обрезанного ответа (по умолчанию ВЫКЛ).
+      - LB_AUTO_CONTINUE_ON_TRUNCATION=${LB_AUTO_CONTINUE_ON_TRUNCATION:-0}
+      - LB_AUTO_CONTINUE_CHAT_POLICY=${LB_AUTO_CONTINUE_CHAT_POLICY:-smart}
+      - LB_AUTO_CONTINUE_MAX_TOKENS=${LB_AUTO_CONTINUE_MAX_TOKENS:-1024}
+      - LB_AUTO_CONTINUE_TIMEOUT_SEC=${LB_AUTO_CONTINUE_TIMEOUT_SEC:-0}
+      # Прочее: AutoTune (пусто = как в config.json), каталог данных (том),
+      # жёсткая блокировка по ресурсам, порт rpc-узла, период замера канала,
+      # явный self-URL для внутренних self-proxy вызовов (пусто = из LB_PORT).
+      - LB_AUTO_TUNE=${LB_AUTO_TUNE:-}
+      - LB_DATA_DIR=${LB_DATA_DIR:-/app/data}
+      - LB_RESOURCE_LIMITS_HARD_BLOCK=${LB_RESOURCE_LIMITS_HARD_BLOCK:-0}
+      - LB_RPC_NODE_PORT=${LB_RPC_NODE_PORT:-50052}
+      - LB_RPC_LINK_MEASURE_SEC=${LB_RPC_LINK_MEASURE_SEC:-900}
+      - LB_SELF_BASE_URL=${LB_SELF_BASE_URL:-}
+      # Второй токен-список (CSV). Имеет смысл только если LB_API_TOKEN не задан:
+      # LB_API_TOKEN выше приоритетом и ПОЛНОСТЬЮ заменяет config.json.
+      - LB_AUTH_TOKENS=${LB_AUTH_TOKENS:-}
+      # ── R274: сквозной проброс всего остального, что читает код ────────────
+      #
+      # Здесь намеренно форма `- LB_X` БЕЗ значения. Docker Compose передаёт
+      # такую переменную в контейнер ТОЛЬКО если она задана в окружении compose
+      # (deployments/.env); если не задана — в контейнере её нет, и работает
+      # дефолт из config.json/кода. Это ровно нужная семантика для настроек,
+      # которые дублируют config.json: «задал в .env — доехало», без подмены
+      # дефолтов пустыми значениями.
+      #
+      # Почему списком, а не по одной: это те переменные, которые читает код,
+      # но которые раньше НЕ доходили до контейнера вообще (R274). Тест
+      # internal/balancer/env_passthrough_r274_test.go следит, чтобы список не
+      # разошёлся с кодом.
+      # Адрес, порты, путь состояния, режим
+      - LB_HOST
+      - LB_API_PORT
+      - LB_TLS_HOST
+      - LB_TLS_PORT
+      - LB_STATE_PATH
+      - LB_OPERATING_MODE
+      - LB_FAIL_ON_EMPTY_CONFIG
+      - LB_ALLOW_ENV_FALLBACK
+      - LB_INITIALIZED
+      # Интервалы и legacy-очередь
+      - LB_HEALTH_CHECK_INTERVAL
+      - LB_METRICS_INTERVAL
+      - LB_QUEUE_TIMEOUT
+      - LB_QUEUE_MAX_SIZE
+      - LB_QUEUE_WORKERS
+      # Лимиты ресурсов (мягкие по умолчанию)
+      - LB_GPU_MAX_USAGE
+      - LB_GPU_MAX_VRAM
+      - LB_GPU_MAX_TEMP
+      - LB_CPU_MAX_USAGE
+      - LB_MEMORY_MAX_USAGE
+      - LB_DISK_MIN_FREE_MB
+      - LB_RAM_HEADROOM_PERCENT
+      # Логи
+      - LB_LOG_FORMAT
+      - LB_LOG_LANG
+      # Таймауты (только явный opt-in оператора)
+      - LB_STREAMING_TIMEOUT_SEC
+      - LB_FIRST_BYTE_TIMEOUT_SEC
+      - LB_ALLOW_GGUF_PROXY_TIMEOUT_SEC
+      - LB_ALLOW_IMAGE_TIMEOUT_SEC
+      - LB_ALLOW_RPC_INFER_TIMEOUT_SEC
+      - LB_ALLOW_RPC_TP_INFER_TIMEOUT_SEC
+      # Image-инструмент и каталог пресетов
+      - LB_IMAGE_MODEL_CATALOG_PATH
+      - LB_IMAGE_TOOL_BASE_URL
+      - LB_IMAGE_TOOL_TIMEOUT_SEC
+      - LB_IMAGE_TOOL_LOAD_TIMEOUT_SEC
+      - LB_IMAGE_TOOL_MAX_CALLS
+      - LB_IMAGE_TOOL_ALLOW_LOAD
+      # Репликация моделей
+      - LB_MODEL_REPLICATION_ENABLED
+      - LB_MODEL_REPLICATION_MIN_INSTANCES
+      - LB_MODEL_REPLICATION_MAX_INSTANCES
+      - LB_MODEL_REPLICATION_IDLE_UNLOAD
+      # Виртуальные модели
+      - LB_VIRTUAL_MODELS_ENABLED
+      - LB_VIRTUAL_MODELS_TIMEOUT
+      - LB_VIRTUAL_MODELS_COORD_MODE
+      # RPC-координатор
+      - LB_RPC_COORDINATOR_ENABLED
+      - LB_RPC_COORDINATOR_URL
+      - LB_RPC_COORDINATOR_PORT
+      - LB_RPC_COORDINATOR_PROTOCOL
+      - LB_RPC_COORDINATOR_TIMEOUT
+      # Распределённый инференс
+      - LB_DIST_INFERENCE_ENABLED
+      - LB_DIST_INFERENCE_GRPC_PORT
       # Where the balancer stores image-model profiles. Must be explicit: the
       # default is config/image-model-profiles.json under /app/config, which is
       # mounted READ-ONLY below, so saving a profile from the WebUI would fail.

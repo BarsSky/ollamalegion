@@ -301,3 +301,42 @@ curl -s localhost:18092/api/models | jq '.feasible_max_context, .gguf_max_contex
 
 > `gguf_max_context` (262144) is the TRAINING context of the model, not a
 > recommendation. What you should rely on is `feasible_max_context`.
+
+## R274 — pass-through: every variable the code reads must reach the container
+
+**Live defect (repeated three times in R250–R272).** A variable was read by the
+code (`os.Getenv`), present in `deployments/.env` — and still silently inactive,
+because it was never forwarded in `deployments/docker-compose.stack.yml`. Every
+time this was diagnosed as "the switch does not work" and time was spent looking
+for a bug in code that had none. Cases: `LB_NCTX_GROW_FOR_AGENTS`,
+`LB_OPENAI_AUTO_STREAM_KEEPALIVE_SEC`, `LB_RELOAD_DEFER_MAX_SEC`.
+
+**Rule now enforced by a test** (`internal/balancer/env_passthrough_r274_test.go`):
+
+1. Every `LB_*` name that appears in the balancer's Go code must be either
+   - in the `loadbalancer` service `environment:` block of `docker-compose.stack.yml`, or
+   - documented in `deployments/.env.example`, or
+   - listed in the test's allowlist **with a written reason**.
+2. A variable declared in the balancer's `environment:` block but never read by
+   the code is reported as a dead switch / typo.
+
+**Two forms of forwarding, on purpose:**
+
+| Form | Meaning | Where used |
+|------|---------|-----------|
+| `- LB_X=${LB_X:-value}` | operator value, else the *code default* is written into the container | behaviour switches where the default must be explicit and visible in `docker inspect` |
+| `- LB_X` (bare) | forwarded **only if** set in the compose environment (`deployments/.env`); otherwise absent, so `config.json` / code default wins | settings that mirror `config.json` (host, ports, queue, resource limits, timeouts, replication, virtual models, RPC coordinator) |
+
+> **Setting a value.** Put it in `deployments/.env` (that is the file compose
+> interpolates). `.env.bundled-with-agent` is the `env_file` of the service: it also
+> reaches the container, but the `environment:` block has priority over it — see the
+> header of the compose file.
+
+**Visibility.** `docker inspect ol-stack-balancer --format '{{json .Config.Env}}'`
+shows exactly what the container got; if a variable you set is missing there, the
+problem is the pass-through, not the feature.
+
+**Adding a new variable.** Read it in code → add it to the compose block (form
+per the table above) or to `.env.example` → the test stays green. If you add it
+only to the code, the test fails with the list of variables that will never reach
+the container.

@@ -176,7 +176,16 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		// Живой факт: клиент получал тело, которого нет ни у одного другого
 		// отказа, и в тексте «active streams=0» без указания, что перезагрузка
 		// идёт. X-NCtx-Reload-Decision оставлен для совместимости.
-		w.Header().Set("X-NCtx-Reload-Decision", "async-reload")
+		//
+		// R301.2: заголовок обязан говорить правду. Этот же выход используется
+		// стриминговым вердиктом R301 (окно не растёт — перезагрузка НЕ
+		// запускалась); живая проверка показала «async-reload» рядом с
+		// reloadPending=false. Различаем по факту: идёт ли перезагрузка.
+		decision := "async-reload"
+		if p.nctxReload == nil || !p.nctxReload.IsReloadPending(backendID, modelFromCtx) {
+			decision = "context-growth"
+		}
+		w.Header().Set("X-NCtx-Reload-Decision", decision)
 		writePreflightDeferredR299(w, p, backendID, modelFromCtx, bodyBuf, originalPath, preflightMsg, 30)
 		return nil
 	}

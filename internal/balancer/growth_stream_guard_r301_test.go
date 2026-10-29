@@ -15,11 +15,17 @@ package balancer
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+
+	"ollama-loadbalancer/pkg/types"
 )
 
 // r301StreamBody — живое тело клиента: стриминг, окно «на всякий случай»
@@ -147,7 +153,12 @@ func TestR301_NonStreamingPathUnchanged(t *testing.T) {
 }
 
 // TestR301_BackendWithLoadedModel — проверка ДО очереди не имеет sticky-бэкенда,
-// поэтому окно берётся у того, где модель реально загружена (только чтение).
+// поэтому окно берётся у того, где модель реально загружена (только чтение), и
+// при нескольких копиях — у копии с САМЫМ ШИРОКИМ окном.
+//
+// Живой факт (стенд 146307dd): отказ посчитался по устаревшей меньшей копии и
+// назвал loaded=32768, хотя живая копия держала 8192/4096. Отказ не должен
+// зависеть от того, какая копия случайно попалась первой.
 func TestR301_BackendWithLoadedModel(t *testing.T) {
 	p := newGrowthGuardProxyR299()
 	if got := p.backendWithLoadedModelR301("m"); got != "bk-1" {
@@ -156,14 +167,26 @@ func TestR301_BackendWithLoadedModel(t *testing.T) {
 	if got := p.backendWithLoadedModelR301("не-загружена"); got != "" {
 		t.Fatalf("для незагруженной модели ожидалось пусто, получили %q", got)
 	}
+
+	// Вторая копия с более широким окном: выбирается она.
+	p.mu.Lock()
+	p.backends["bk-wide"] = &BackendState{Backend: &types.Backend{ID: "bk-wide", Host: "127.0.0.1", Status: types.StatusHealthy}}
+	p.mu.Unlock()
+	p.metricsMgr.mu.Lock()
+	p.metricsMgr.llamaMetrics["bk-wide"] = &types.LlamaCppMetrics{
+		LoadedModels: []types.LlamaCppModel{{Name: "m", ContextLength: 65536, State: "loaded"}},
+	}
+	p.metricsMgr.mu.Unlock()
+	if got := p.backendWithLoadedModelR301("m"); got != "bk-wide" {
+		t.Fatalf("backendWithLoadedModelR301 = %q, want bk-wide (самое широкое окно)", got)
+	}
 }
 
 // TestR301_StewardNoStreamingBypass — сторож: обход не должен вернуться.
 //
 // Проверяет ровно то, что было дефектом:
-//   - в preflightNCtxReloadIfNeeded стриминговый пропуск стоит ПОСЛЕ вердикта
-//     R301 и после проверки "координатор выключен" он уже не срабатывает
-//     (вердикт считается первым);
+//   - в preflightNCtxReloadIfNeeded стриминговый вердикт считается ДО выхода
+//     «координатор выключен», то есть его не обходит ни один путь;
 //   - на поверхности :18080 проверка стоит ДО admission-очереди.
 func TestR301_StewardNoStreamingBypass(t *testing.T) {
 	src, err := os.ReadFile("nctx_reload_handlers.go")
@@ -177,12 +200,12 @@ func TestR301_StewardNoStreamingBypass(t *testing.T) {
 	if fn < 0 {
 		t.Fatal("не найдена функция preflightNCtxReloadIfNeeded: разбор сторожевого теста устарел")
 	}
-	body := text[fn:]
-	verdictAt := strings.Index(body, "growthVerdictR301(backendID, modelName, bodyBuf, requestPath, true)")
+	fnBody := text[fn:]
+	verdictAt := strings.Index(fnBody, "growthVerdictR301(backendID, modelName, bodyBuf, requestPath, true)")
 	if verdictAt < 0 {
 		t.Fatal("в preflightNCtxReloadIfNeeded нет стримингового вердикта R301 — обход вернулся")
 	}
-	nilCoordAt := strings.Index(body, "if p.nctxReload == nil {")
+	nilCoordAt := strings.Index(fnBody, "if p.nctxReload == nil {")
 	if nilCoordAt < 0 {
 		t.Fatal("не найден выход «координатор выключен»: разбор сторожевого теста устарел")
 	}
@@ -199,5 +222,83 @@ func TestR301_StewardNoStreamingBypass(t *testing.T) {
 	}
 	if strings.Index(string(proxySrc), "servehttp-before-admission") > strings.Index(string(proxySrc), "waitForInferenceBackend(") {
 		t.Fatal("проверка стоит ПОСЛЕ ожидания слота: клиент снова простоит в очереди впустую")
+	}
+}
+
+// TestR301_UpstreamBodyCarriesLoadedWindow — сквозная проверка: подменённое
+// вердиктом тело обязано ДОЙТИ до воркера.
+//
+// ЖИВОЙ ДЕФЕКТ (стенд fcef935c, первая сборка R301): вердикт отработал и был
+// залогирован (served_with_loaded_window=true, required=16384, loaded=8192), а
+// воркер всё равно получил num_ctx=16384 и ответил кодом 2. Причина — ВТОРОЙ
+// источник тела в транспорте: нативный путь отправляет translatedBody
+// (исходные байты), а preflight правил bodyBuf. Тест смотрит на то, что
+// реально ушло на upstream, поэтому ловит именно это.
+func TestR301_UpstreamBodyCarriesLoadedWindow(t *testing.T) {
+	var mu sync.Mutex
+	var upstreamBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/chat") {
+			b, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			upstreamBody = b
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			_, _ = fmt.Fprint(w, `{"model":"gemma","done":false,"message":{"role":"assistant","content":"привет"}}`+"\n")
+			_, _ = fmt.Fprint(w, `{"model":"gemma","done":true,"done_reason":"stop","message":{"role":"assistant","content":""}}`+"\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"count":1,"models":[{"name":"gemma","state":"loaded","context_size":8192}]}`)
+	}))
+	defer upstream.Close()
+
+	p, _, _ := makeTestLlamaProxy(t, upstream.URL)
+	// Загруженное окно — из кэша метрик (там же, где его видит живой стенд).
+	p.metricsMgr.mu.Lock()
+	p.metricsMgr.llamaMetrics["llama_test"] = &types.LlamaCppMetrics{
+		LoadedModels: []types.LlamaCppModel{{Name: "gemma", ContextLength: 8192, State: "loaded"}},
+	}
+	p.metricsMgr.mu.Unlock()
+	if p.nctxReload != nil {
+		p.nctxReload.SetLastKnownNCtx("llama_test", 8192)
+	}
+
+	body := []byte(`{"model":"gemma","stream":true,"messages":[{"role":"user","content":"hi"}],"options":{"num_ctx":16384,"num_predict":8}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	// Маршрутизатор (:18080 ServeHTTP) кладёт имя модели в контекст — без него
+	// транспорт не знает, чьё окно проверять (ровно этот путь и тестируем).
+	req = req.WithContext(context.WithValue(req.Context(), modelContextKey, "gemma"))
+	rec := httptest.NewRecorder()
+
+	if err := p.proxyRequestLlamaCpp(rec, req, "llama_test", body); err != nil {
+		t.Fatalf("proxyRequestLlamaCpp вернул ошибку: %v", err)
+	}
+
+	mu.Lock()
+	got := string(upstreamBody)
+	mu.Unlock()
+	if got == "" {
+		t.Fatal("воркер вообще не получил запрос")
+	}
+	if strings.Contains(got, `"num_ctx":16384`) {
+		t.Fatalf("в воркер ушло запрошенное клиентом окно, а не загруженное: %s", got)
+	}
+	if !strings.Contains(got, `"num_ctx":8192`) {
+		t.Fatalf("в теле для воркера нет окна слота: %s", got)
+	}
+
+	out := rec.Body.String()
+	if strings.Contains(out, "bridge_code") {
+		t.Fatalf("клиенту ушёл кадр ошибки воркера: %s", out)
+	}
+	if !strings.Contains(out, `"done":true`) {
+		t.Fatalf("нет терминального done:true — клиент увидит обрыв: %s", out)
 	}
 }

@@ -1368,9 +1368,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// (growthVerdictR301). Тело отказа — стандартное «отложено» (R291/R299), без
 	// нового формата: клиент обрабатывает его тем же правилом, что и остальные.
 	if !readOnlyOrMgmt && acquiredBackend == "" && model != "" && parsed != nil && len(parsed.RawBody) > 0 {
-		guardBackend := targetBackend
+		// Бэкенд для чисел — тот, где у модели САМОЕ ШИРОКОЕ загруженное окно.
+		//
+		// Живой факт (стенд 146307dd): при двух копиях (одна из них — мёртвый
+		// донор со старыми метриками) отказ показывал loaded=32768, тогда как
+		// реально загруженное окно живой копии было 8192/4096. Отказ,
+		// посчитанный по меньшей копии, запретил бы запрос, который другая
+		// копия обслуживает; поэтому берём максимум из наблюдений, а числа в
+		// теле называют этот максимум (в логе — какой именно бэкенд).
+		guardBackend := p.backendWithLoadedModelR301(model)
 		if guardBackend == "" {
-			guardBackend = p.backendWithLoadedModelR301(model)
+			guardBackend = targetBackend
 		}
 		if guardBackend != "" {
 			if v := p.growthVerdictR301(guardBackend, model, parsed.RawBody, path, parsed.Stream); v.Defer {

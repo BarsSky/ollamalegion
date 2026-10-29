@@ -35,6 +35,39 @@ import (
 type modelProfileResponse struct {
 	Models map[string]types.LlamaCppModelProfile `json:"models"`
 	Total  int                                   `json:"total"`
+	// Effective — R267: для каждой модели «что реально применится к окну и
+	// почему». Ключ — то же имя, что в Models. Отдельной картой, а не полями
+	// внутри профиля: контракт Models остаётся прежним (его читает WebUI и
+	// config-export), а причина ограничения добавляется рядом.
+	Effective map[string]profileEffectiveWindow `json:"effectiveContext,omitempty"`
+}
+
+// profileEffectiveWindow — R267: вычисленное окно и причина ограничения.
+type profileEffectiveWindow struct {
+	// EffectiveContextLength — потолок авто-роста для этой модели (0 = без
+	// ограничения). Это НЕ загруженное окно: физический предел (VRAM/GGUF)
+	// проверяется на загрузке.
+	EffectiveContextLength int    `json:"effectiveContextLength"`
+	LimitedBy              string `json:"limitedBy,omitempty"` // env | profile | physical
+	LimitReason            string `json:"limitReason,omitempty"`
+	EnvCeiling             int    `json:"envCeiling,omitempty"`
+}
+
+// effectiveWindowFor — R267: обёртка над единственным расчётом в балансере.
+//
+// Nil-safe: если proxy нет или метод не отвечает, возвращаем нулевые поля, а не
+// падаем — карточка модели не должна ломаться из-за диагностического поля.
+func effectiveWindowFor(p *balancer.Proxy, modelName string) profileEffectiveWindow {
+	if p == nil || modelName == "" {
+		return profileEffectiveWindow{}
+	}
+	effective, limitedBy, reason, envCeil := p.ProfileEffectiveWindow(modelName)
+	return profileEffectiveWindow{
+		EffectiveContextLength: effective,
+		LimitedBy:              limitedBy,
+		LimitReason:            reason,
+		EnvCeiling:             envCeil,
+	}
 }
 
 // modelProfileApplyResponse — результат apply (reload на бэкендах).
@@ -65,9 +98,15 @@ func (s *Server) handleListModelProfiles(w http.ResponseWriter, r *http.Request)
 		models = make(map[string]types.LlamaCppModelProfile)
 	}
 
+	effective := make(map[string]profileEffectiveWindow, len(models))
+	for name := range models {
+		effective[name] = effectiveWindowFor(s.proxy, name)
+	}
+
 	s.writeJSON(w, http.StatusOK, modelProfileResponse{
-		Models: models,
-		Total:  len(models),
+		Models:    models,
+		Total:     len(models),
+		Effective: effective,
 	})
 }
 
@@ -166,6 +205,11 @@ func (s *Server) getModelProfile(w http.ResponseWriter, _ *http.Request, modelNa
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"model":   modelName,
 		"profile": profile,
+		// R267 (2026-10-29): «заявлено X, ограничено Y, причина Z» прямо в
+		// ответе API. Без этих полей оператор видел только своё значение и не
+		// понимал, почему модель загрузилась с меньшим окном (живая жалоба:
+		// 256000 в карточке против 32768 после загрузки из-за env-потолка).
+		"effectiveContextLength": effectiveWindowFor(s.proxy, modelName),
 	})
 }
 

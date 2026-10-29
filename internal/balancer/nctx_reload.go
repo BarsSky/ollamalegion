@@ -318,6 +318,14 @@ type ReloadPlan struct {
 	NewNCtx   int
 	Reason    string
 	RejectMsg string
+	// EffectiveCeiling — R267: потолок авто-роста, с которым ПРИНЯТО решение
+	// (0 = ограничения нет). Отдаётся наружу, чтобы причина отказа/клампа была
+	// видна в ответе API, а не только в логе.
+	EffectiveCeiling int
+	// LimitedBy — R267: что именно связало окно: "env" (LB_NCTX_RELOAD_MAX_N_CTX),
+	// "profile" (заявленное оператором окно подняло потолок), "physical"
+	// (VRAM/GGUF). Пусто = ограничение не участвовало.
+	LimitedBy string
 }
 
 // ============================================================
@@ -626,10 +634,46 @@ func (c *NCtxReloadCoordinator) ResetCycleCounter(backendID string) {
 
 //
 
+// DecideReloadBackend — решение о перезагрузке с потолком из КОНФИГА.
+//
+// R267 (2026-10-29): оставлен для обратной совместимости (тесты, внешние
+// вызовы). Поток запроса идёт через DecideReloadBackendWithCeiling: потолок —
+// не «сырое» значение env, а вычисленный операторский потолок
+// (Proxy.effectiveAutoReloadCeiling), иначе решение координатора обходило
+// выбор оператора в WebUI и молча резало окно до env-значения.
 func (c *NCtxReloadCoordinator) DecideReloadBackend(
 	backendID string,
 	bridgeErr *NCtxBridgeError,
 	requestedNCtxOverride int,
+) *ReloadPlan {
+	cfg := c.Config()
+	return c.decideReloadBackend(backendID, bridgeErr, requestedNCtxOverride,
+		ReloadCeiling{Effective: cfg.AutoReloadMaxNCtx, Env: cfg.AutoReloadMaxNCtx})
+}
+
+// DecideReloadBackendWithCeiling — R267: то же решение, но потолок авто-роста
+// задаёт ВЫЗЫВАЮЩИЙ (одна формула — Proxy.effectiveAutoReloadCeiling).
+//
+// ЗАЧЕМ. Живая жалоба оператора: в WebUI выставлено окно 256000, модель обучена
+// на 262144, VRAM хватает — а запрос агента на окно больше env-потолка получал
+// отказ. Причина: обработчик потолок поднимал, а РЕШАТЕЛЬ о перезагрузке брал
+// cfg.AutoReloadMaxNCtx напрямую, и типовой агентский путь (prompt_too_long)
+// идёт именно через него. Теперь решатель не имеет собственного мнения о
+// потолке: ему передают то же число, что и обработчику.
+func (c *NCtxReloadCoordinator) DecideReloadBackendWithCeiling(
+	backendID string,
+	bridgeErr *NCtxBridgeError,
+	requestedNCtxOverride int,
+	ceiling ReloadCeiling,
+) *ReloadPlan {
+	return c.decideReloadBackend(backendID, bridgeErr, requestedNCtxOverride, ceiling)
+}
+
+func (c *NCtxReloadCoordinator) decideReloadBackend(
+	backendID string,
+	bridgeErr *NCtxBridgeError,
+	requestedNCtxOverride int,
+	ceiling ReloadCeiling,
 ) *ReloadPlan {
 	cfg := c.Config()
 
@@ -672,27 +716,36 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 				"prompt_exceeds_context")
 		}
 
-		// Check configured max limit
-		if cfg.AutoReloadMaxNCtx > 0 && required > cfg.AutoReloadMaxNCtx {
+		// Check configured max limit. R267: ceiling — эффективный потолок
+		// (env, поднятый до заявленного окна оператора), а не сырое env-значение.
+		if ceiling.Effective > 0 && required > ceiling.Effective {
 			return c.makeRejectPlan(backendID, bridgeErr, required,
-				nCtxLimitReason(required, cfg.AutoReloadMaxNCtx, bridgeErr.MaxVRAMNCtx),
-				"prompt_exceeds_context")
+				ceiling.limitReason(required, bridgeErr.MaxVRAMNCtx),
+				"prompt_exceeds_context", ceiling)
 		}
 
 		// Allow reload even if required > max_vram_n_ctx (with current gpuLayers).
 		// The adaptive strategy (queryAdaptiveStrategy in DoReload) will reduce
 		// gpuLayers to free VRAM for the larger KV-cache.
 		newNCtx := roundUpPow2(required)
-		if cfg.AutoReloadMaxNCtx > 0 && newNCtx > cfg.AutoReloadMaxNCtx {
-			newNCtx = cfg.AutoReloadMaxNCtx
+		clampedBy := ""
+		if ceiling.Effective > 0 && newNCtx > ceiling.Effective {
+			newNCtx = ceiling.Effective
+			clampedBy = ceiling.source(bridgeErr.MaxVRAMNCtx)
 		}
 
-		return &ReloadPlan{
-			Decision: DecisionReload,
-			NewNCtx:  newNCtx,
+		plan := &ReloadPlan{
+			Decision:         DecisionReload,
+			NewNCtx:          newNCtx,
+			EffectiveCeiling: ceiling.Effective,
 			Reason: fmt.Sprintf("prompt_too_long: actual_tokens=%d n_predict=%d required=%d target=%d max_vram=%d",
 				bridgeErr.ActualTokens, bridgeErr.NPredict, required, newNCtx, bridgeErr.MaxVRAMNCtx),
 		}
+		if clampedBy != "" {
+			plan.LimitedBy = clampedBy
+			plan.Reason += fmt.Sprintf(" limited_by=%s effective_ceiling=%d", clampedBy, ceiling.Effective)
+		}
+		return plan
 	}
 
 	if bridgeErr.Code != NCtxErrCodeNCtxNeedsReload {
@@ -729,18 +782,19 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 	//
 	// Проверка выше (required <= CurrentNCtx → NoOp) уже реализует инвариант;
 	// здесь — громкое предупреждение о конфигурации, из-за которой он нарушается.
-	if cfg.AutoReloadMaxNCtx > 0 && required > cfg.AutoReloadMaxNCtx {
-		if bridgeErr.CurrentNCtx > 0 && cfg.AutoReloadMaxNCtx < bridgeErr.CurrentNCtx {
+	if ceiling.Effective > 0 && required > ceiling.Effective {
+		if bridgeErr.CurrentNCtx > 0 && ceiling.Env > 0 && ceiling.Env < bridgeErr.CurrentNCtx {
 			logger.Get().Errorw(i18n.T("balancer.nctx_reload.auto_reload_ceiling_below_loaded_error"),
 				"backend", backendID,
 				"loaded_n_ctx", bridgeErr.CurrentNCtx,
-				"auto_reload_max_n_ctx", cfg.AutoReloadMaxNCtx,
+				"auto_reload_max_n_ctx", ceiling.Env,
+				"effective_ceiling", ceiling.Effective,
 				"required_n_ctx", required,
 				"hint", i18n.T("balancer.nctx_reload.auto_reload_ceiling_below_loaded_hint"))
 		}
 		return c.makeRejectPlan(backendID, bridgeErr, required,
-			nCtxLimitReason(required, cfg.AutoReloadMaxNCtx, bridgeErr.MaxVRAMNCtx),
-			"n_ctx_too_large_for_backend")
+			ceiling.limitReason(required, bridgeErr.MaxVRAMNCtx),
+			"n_ctx_too_large_for_backend", ceiling)
 	}
 
 	//
@@ -762,7 +816,7 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 
 		return c.makeRejectPlan(backendID, bridgeErr, required,
 			"backend did not report max_vram_n_ctx (CPU-only, unknown GPU, or CUDA-query failed); cannot safely auto-reload",
-			"n_ctx_too_large_for_backend")
+			"n_ctx_too_large_for_backend", ceiling)
 	}
 	safety := cfg.effectiveSafetyFactor()
 	safeMax := int(float64(maxVRAMNCtx) * safety)
@@ -794,7 +848,7 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 		return c.makeRejectPlan(backendID, bridgeErr, required,
 			fmt.Sprintf("required n_ctx=%d exceeds safe VRAM limit=%d (max_vram_n_ctx=%d, safety=%.2f)",
 				required, safeMax, maxVRAMNCtx, safety),
-			"n_ctx_too_large_for_backend")
+			"n_ctx_too_large_for_backend", ceiling)
 	}
 
 	// 4096 ? 4096, 5000 ? 8192, 8000 ? 8192, 12000 ? 16384
@@ -808,13 +862,25 @@ func (c *NCtxReloadCoordinator) DecideReloadBackend(
 		newNCtx = safeMax
 	}
 
-	if cfg.AutoReloadMaxNCtx > 0 && newNCtx > cfg.AutoReloadMaxNCtx {
-		newNCtx = cfg.AutoReloadMaxNCtx
+	// R267: тот же эффективный потолок, что и в ветке prompt_too_long —
+	// иначе два выхода одного решателя принимали разные решения об одном окне.
+	if ceiling.Effective > 0 && newNCtx > ceiling.Effective {
+		newNCtx = ceiling.Effective
+		limitedBy := ceiling.source(maxVRAMNCtx)
+		return &ReloadPlan{
+			Decision:         DecisionReload,
+			NewNCtx:          newNCtx,
+			EffectiveCeiling: ceiling.Effective,
+			LimitedBy:        limitedBy,
+			Reason: fmt.Sprintf("required=%d, current=%d, max_vram=%d, safe_max=%d, target=%d limited_by=%s effective_ceiling=%d",
+				required, bridgeErr.CurrentNCtx, maxVRAMNCtx, safeMax, newNCtx, limitedBy, ceiling.Effective),
+		}
 	}
 
 	return &ReloadPlan{
-		Decision: DecisionReload,
-		NewNCtx:  newNCtx,
+		Decision:         DecisionReload,
+		NewNCtx:          newNCtx,
+		EffectiveCeiling: ceiling.Effective,
 		Reason: fmt.Sprintf("required=%d, current=%d, max_vram=%d, safe_max=%d, target=%d",
 			required, bridgeErr.CurrentNCtx, maxVRAMNCtx, safeMax, newNCtx),
 	}
@@ -830,6 +896,7 @@ func (c *NCtxReloadCoordinator) makeRejectPlan(
 	required int,
 	reason string,
 	errorCode string,
+	ceilings ...ReloadCeiling,
 ) *ReloadPlan {
 	if errorCode == "" {
 		errorCode = "n_ctx_too_large_for_backend"
@@ -840,30 +907,43 @@ func (c *NCtxReloadCoordinator) makeRejectPlan(
 		safe = int(float64(bridgeErr.MaxVRAMNCtx) * cfg.effectiveSafetyFactor())
 	}
 
+	// R267: в тело отказа кладём эффективный потолок и его источник — оператор
+	// должен видеть «заявлено X, ограничено Y, причина Z» в ответе, а не только
+	// в логе балансера.
+	ceiling := ReloadCeiling{Effective: cfg.AutoReloadMaxNCtx, Env: cfg.AutoReloadMaxNCtx}
+	if len(ceilings) > 0 {
+		ceiling = ceilings[0]
+	}
+	limitedBy := ceiling.source(bridgeErr.MaxVRAMNCtx)
+
 	suggestion := "save a model profile with a larger n_ctx and reload manually, or send a smaller options.num_ctx in the request"
 	if errorCode == "prompt_exceeds_context" {
 		suggestion = "reduce conversation history / tools[] / system prompt, or use a smaller model. " +
 			"Reload with the same or larger n_ctx will NOT help ? the model is already loaded at maximum."
 	}
 	rej := map[string]interface{}{
-		"error":            errorCode,
-		"backend_id":       backendID,
-		"reason":           reason,
-		"requested_n_ctx":  required,
-		"current_n_ctx":    bridgeErr.CurrentNCtx,
-		"max_vram_n_ctx":   bridgeErr.MaxVRAMNCtx,
-		"safe_max_n_ctx":   safe,
-		"suggestion":       suggestion,
-		"profile_endpoint": "/api/profiles",
-		"reload_endpoint":  "/api/models/reload",
-		"bridge_code":      bridgeErr.Code,
-		"bridge_message":   bridgeErr.Message,
+		"error":             errorCode,
+		"backend_id":        backendID,
+		"reason":            reason,
+		"requested_n_ctx":   required,
+		"current_n_ctx":     bridgeErr.CurrentNCtx,
+		"max_vram_n_ctx":    bridgeErr.MaxVRAMNCtx,
+		"safe_max_n_ctx":    safe,
+		"suggestion":        suggestion,
+		"profile_endpoint":  "/api/profiles",
+		"reload_endpoint":   "/api/models/reload",
+		"bridge_code":       bridgeErr.Code,
+		"bridge_message":    bridgeErr.Message,
+		"effective_ceiling": ceiling.Effective,
+		"limited_by":        limitedBy,
 	}
 	b, _ := json.Marshal(rej)
 	return &ReloadPlan{
-		Decision:  DecisionReject,
-		Reason:    reason,
-		RejectMsg: string(b),
+		Decision:         DecisionReject,
+		Reason:           reason,
+		RejectMsg:        string(b),
+		EffectiveCeiling: ceiling.Effective,
+		LimitedBy:        limitedBy,
 	}
 }
 

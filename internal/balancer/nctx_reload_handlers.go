@@ -70,11 +70,26 @@ func (p *Proxy) handleNCtxReload(
 	}
 
 	// 3. Решение координатора.
-	plan := p.nctxReload.DecideReloadBackend(backendID, bridgeErr, requestedOverride)
+	//
+	// R267 (2026-10-29): решателю передаётся ТОТ ЖЕ эффективный потолок, что и
+	// обработчику ниже (effectiveAutoReloadCeiling). Раньше он брал сырое
+	// cfg.AutoReloadMaxNCtx, поэтому решение оператора из WebUI (окно 256000 в
+	// карточке модели) обходилось на типовом агентском пути prompt_too_long —
+	// живая жалоба «модель поддерживает больше, а на деле ограничена».
+	effectiveCeiling := ReloadCeiling{}
+	if cfg := p.nctxReload.Config(); cfg.AutoReloadMaxNCtx > 0 {
+		effectiveCeiling = ReloadCeiling{
+			Effective: p.effectiveAutoReloadCeiling(modelName, cfg.AutoReloadMaxNCtx),
+			Env:       cfg.AutoReloadMaxNCtx,
+		}
+	}
+	plan := p.nctxReload.DecideReloadBackendWithCeiling(backendID, bridgeErr, requestedOverride, effectiveCeiling)
 	logger.Get().Debugw("nctx_reload: DecideReloadBackend result",
 		"backend", backendID, "model", modelName,
 		"decision", plan.Decision.String(),
 		"new_n_ctx", plan.NewNCtx,
+		"effective_ceiling", plan.EffectiveCeiling,
+		"limited_by", plan.LimitedBy,
 		"reason", plan.Reason)
 
 	switch plan.Decision {
@@ -855,6 +870,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// клиентскому запросу; если политику задал сам оператор (профиль модели), его
 	// окно и есть потолок. Физический предел (VRAM/GGUF) проверяется отдельно
 	// ниже, поэтому «в никуда» окно не вырастет.
+	// R267: та же ЕДИНАЯ формула потолка, что у решателя (второй не существует).
 	effCeil := 0
 	if cfg := p.nctxReload.Config(); cfg.AutoReloadMaxNCtx > 0 {
 		effCeil = p.effectiveAutoReloadCeiling(modelName, cfg.AutoReloadMaxNCtx)

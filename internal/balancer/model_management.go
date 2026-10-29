@@ -168,6 +168,15 @@ type ModelOpResult struct {
 	Deferred      bool `json:"deferred,omitempty"`
 	RetryAfterSec int  `json:"retryAfterSec,omitempty"`
 
+	// RoleRefused — R304 (2026-10-30): загрузку запретила РОЛЬ бэкенда (донор
+	// раскладки), а не транспорт, память или занятость.
+	//
+	// ПОЧЕМУ ОТДЕЛЬНОЕ ПОЛЕ. «Это донор, копии ему нельзя» и «что-то сломалось» —
+	// разные сообщения оператору: первое лечится сменой роли, второе — нет. Без
+	// признака API отдавал 500 «internal», и панель показывала поломку балансера
+	// вместо объяснения роли. По этому полю ответ становится 409 с причиной.
+	RoleRefused bool `json:"roleRefused,omitempty"`
+
 	// StillLoading — R262 (2026-10-28): загрузка НЕ провалилась, а ещё идёт.
 	//
 	// Живой факт: оператор получал HTTP 500 «poll timeout» при том, что воркер
@@ -304,11 +313,12 @@ func (mm *ModelManager) ExecuteOperation(backendID string, req ModelOpRequest) *
 	// законное и нужное действие (именно к нему призывает предупреждение в панели).
 	if isLlamaCpp && op == "load" && mm.proxy.cannotHostModelR304(backendID) {
 		return &ModelOpResult{
-			Success:   false,
-			Operation: req.Operation,
-			ModelName: req.ModelName,
-			BackendID: backendID,
-			Error:     i18n.T("balancer.donor.load_refused", backendID),
+			Success:     false,
+			Operation:   req.Operation,
+			ModelName:   req.ModelName,
+			BackendID:   backendID,
+			RoleRefused: true,
+			Error:       i18n.T("balancer.donor.load_refused", backendID),
 		}
 	}
 

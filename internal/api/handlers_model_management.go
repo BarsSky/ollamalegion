@@ -246,6 +246,12 @@ func modelOpStatusCode(result *balancer.ModelOpResult) int {
 	if result.Busy {
 		return http.StatusConflict
 	}
+	// R304: загрузку запретила роль (донор раскладки) — это 409 Conflict с
+	// причиной, а не 500. 5xx значит «повтори, станет лучше», а роль сама не
+	// изменится: оператор должен увидеть объяснение, а не поломку балансера.
+	if result.RoleRefused {
+		return http.StatusConflict
+	}
 	if balancer.IsCUDAArchRefusalText(result.Error) {
 		if balancer.IsLoadFitRefusalText(result.Error) {
 			// R188: «модель не влезает в память бэкенда» — терминально, 4xx останавливает повторы.

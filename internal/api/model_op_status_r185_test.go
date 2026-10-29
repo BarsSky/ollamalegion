@@ -52,6 +52,13 @@ func TestR185_ModelOpStatus_PreservesExistingRules(t *testing.T) {
 		// А вот настоящий провал по-прежнему 5xx (см. «обычная ошибка» выше):
 		// StillLoading и Error одновременно не должны «спасать» провал.
 		{"провал, не still-loading", &balancer.ModelOpResult{Error: "auto-load failed: no such file"}, http.StatusInternalServerError},
+		// R304 (2026-10-30): загрузку запретила РОЛЬ (донор раскладки).
+		//
+		// Живой факт на стенде: API отвечал 500 «internal» на попытку загрузить
+		// модель на донора, хотя тело несло причину «донор раскладки...». 500 для
+		// клиента значит «повтори, станет лучше», а роль сама не изменится —
+		// оператор видел поломку балансера вместо объяснения.
+		{"роль запрещает копию", &balancer.ModelOpResult{RoleRefused: true, Error: "донор раскладки"}, http.StatusConflict},
 	}
 	for _, c := range cases {
 		if got := modelOpStatusCode(c.in); got != c.want {

@@ -2002,7 +2002,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		// жив. Теперь причина называется своим именем.
 		if streamAbortBlamesUpstream(abortReason) {
 			if kind, ok := p.recentDestructiveOpR271(backendID, modelFromCtx, 3*time.Minute); ok {
-				abortReason = streamAbortBalancerReload
+				// R280: причина зависит от ВИДА операции (reload по чужому окну /
+				// AutoTune / unload) — таблица одна, в active_streams_r271.go.
+				abortReason = abortReasonForDestructiveOpR271(kind)
 				logger.Get().Warnw("proxyRequestLlamaCpp: stream ended because the balancer reloaded the model",
 					"reason", abortReason, "cause", kind,
 					"backend", backendID, "model", modelFromCtx,

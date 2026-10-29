@@ -39,7 +39,31 @@ import (
 const (
 	destructiveReloadR271 = "reload"
 	destructiveUnloadR271 = "unload"
+	// R280 (2026-10-29): AutoTune перезагружает модель тем же путём (unload +
+	// load с новыми параметрами: kv-cache/контекст/слои) и обязан подчиняться
+	// тому же правилу, что и reload по чужому окну n_ctx. Живой факт со стенда:
+	// AutoTune сработал дважды за 10 минут и перезагрузил модель — под живым
+	// стримом это ровно тот же обрыв, только повод другой.
+	destructiveAutotuneR271 = "autotune"
 )
+
+// abortReasonForDestructiveOpR271 — как назвать клиенту причину обрыва,
+// вызванного нашей разрушительной операцией.
+//
+// Одна таблица вместо if-ов в месте классификации: видов операций уже три, и
+// каждый новый путь перезагрузки обязан добавить СВОЮ причину, а не молча
+// свалиться в «upstream_eof» (именно это и произошло в R271: клиент получил
+// «stream ended by upstream», хотя модель выгрузили мы).
+func abortReasonForDestructiveOpR271(kind string) string {
+	switch kind {
+	case destructiveAutotuneR271:
+		return streamAbortBalancerAutotune
+	case destructiveReloadR271, destructiveUnloadR271:
+		return streamAbortBalancerReload
+	default:
+		return streamAbortBalancerReload
+	}
+}
 
 // streamRefKeyR271 — ключ «бэкенд + модель» для учёта стримов.
 func streamRefKeyR271(backendID, model string) string {

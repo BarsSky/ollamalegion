@@ -58,6 +58,10 @@ const (
 	// (перезагрузка по запросу другого клиента с другим окном n_ctx). Это не
 	// «upstream оборвался» — воркер жив, модель выгрузил балансер.
 	streamAbortBalancerReload = "balancer_reload"
+	// R280 (2026-10-29): то же, но поводом была авто-перезагрузка AutoTune
+	// (kv-cache / контекст / слои). Отдельная причина, чтобы оператор видел
+	// РЕАЛЬНЫЙ повод, а не «reload for another request».
+	streamAbortBalancerAutotune = "balancer_autotune"
 )
 
 // isLineTooLongErr — ошибка «строка не влезла в наш буфер»?
@@ -108,6 +112,10 @@ func streamAbortClientMessage(reason string) string {
 		// R271: честная причина — модель под этим стримом выгрузил балансер,
 		// потому что другой клиент запросил другое окно контекста.
 		return "stream stopped because the balancer reloaded the model for another request; please retry"
+	case streamAbortBalancerAutotune:
+		// R280: тот же обрыв, но повод — авто-перезагрузка AutoTune с новыми
+		// параметрами. Клиент не должен думать, что виноват upstream/модель.
+		return "stream stopped because the balancer reloaded the model (autotune); please retry"
 	case streamAbortClientCancel:
 		return "stream cancelled by the client"
 	default:

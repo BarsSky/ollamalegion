@@ -302,6 +302,18 @@ func (mic *ModelInstanceController) checkIdleUnload(model string, instanceIDs []
 
 // unloadModel — выгрузка модели с бэкенда через Ollama API
 func (mic *ModelInstanceController) unloadModel(backendID string, state *BackendState, model string) {
+	// R280 (2026-10-29): не выгружаем модель под живым стримом.
+	//
+	// Тот же класс, что R271 для reload: выгрузка закрывает поток клиента без
+	// терминального маркера, и он получает «stream ended by upstream», хотя
+	// upstream был жив. Здесь операция фоновая (управление экземплярами), поэтому
+	// не ждём, а просто пропускаем проход — следующий тик повторит попытку.
+	if mic.proxy != nil && mic.proxy.activeStreamsOnBackend(backendID) > 0 {
+		logger.Get().Infow("unload skipped: active streams on backend (R280)",
+			"backend", backendID, "model", model,
+			"active_streams", mic.proxy.activeStreamsOnBackend(backendID))
+		return
+	}
 	key := fmt.Sprintf("%s:%s", model, backendID)
 	mic.pendingUnloads[key] = time.Now()
 

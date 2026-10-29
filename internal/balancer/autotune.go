@@ -19,6 +19,8 @@
 package balancer
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -28,6 +30,15 @@ import (
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
+
+// errAutoTuneReloadDeferred — R280 (2026-10-29): перезагрузка ОТЛОЖЕНА, потому
+// что на бэкенде идут чужие стримы.
+//
+// Почему отдельная ошибка, а не nil: нужно отличить «применили» от «не
+// применяли» — вызывающий не должен записывать success в circuit breaker за
+// операцию, которой не было. И почему не обычная ошибка: в circuit breaker
+// попадать тоже нельзя, отложение не является сбоем AutoTune.
+var errAutoTuneReloadDeferred = errors.New("autotune reload deferred: active streams on backend")
 
 // AutoTuneRecommendation — рекомендация по оптимизации загруженной модели.
 // Поле Severity: "ok" | "info" | "warning" | "critical".
@@ -1009,7 +1020,14 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 		// видела бы собственный маркер и план не запускался бы никогда (R230).
 
 		err := p.executeAutoTuneReload(backendID, modelName, plan, circuit)
-		if err != nil {
+		if errors.Is(err, errAutoTuneReloadDeferred) {
+			// R280: отложили, потому что на бэкенде идут чужие стримы. Это НЕ
+			// сбой: ни circuit breaker, ни событие «failed» трогать нельзя,
+			// иначе оператор увидит «AutoTune reload failed» и растущий
+			// cool-down там, где мы просто не стали рвать чужую генерацию.
+			logger.Get().Infow("autotune: reload postponed while streams are active",
+				"backend", backendID, "model", modelName, "reason", plan.Reason)
+		} else if err != nil {
 			circuit.RecordError(err.Error())
 			logger.Get().Warnw("autotune: async reload failed",
 				"backend", backendID, "model", modelName, "error", err)
@@ -1101,6 +1119,27 @@ func (p *Proxy) executeAutoTuneReload(backendID, modelName string, plan *AutoTun
 	if plan.externalFinish != nil {
 		defer plan.externalFinish()
 	}
+	// R280 (2026-10-29): AutoTune-перезагрузка — ТАКАЯ ЖЕ разрушительная
+	// операция, как reload по чужому окну n_ctx, и подчиняется тому же правилу
+	// R271: не выгружать модель под живым стримом.
+	//
+	// ЖИВОЙ ФАКТ (стенд r279): AutoTune сработал дважды за ~10 минут
+	// («kv_cache q4_0 → f16») и каждый раз делал unload + load. Путь
+	// triggerAutoTuneReload → executeAutoTuneReload → ApplyAutoTunePlan не имел
+	// guard'а, который уже стоял в трёх местах nctx_reload_handlers.go, поэтому
+	// авто-перезагрузка могла оборвать чужую генерацию — и клиент получал
+	// «stream ended by upstream before completion», хотя upstream был жив.
+	if !p.waitStreamsIdleR271(context.Background(), backendID, modelName, reloadDeferMaxWaitR271()) {
+		logger.Get().Infow("autotune reload deferred: active streams on backend",
+			"backend", backendID, "model", modelName,
+			"active_streams", p.activeStreamsOnBackend(backendID),
+			"max_wait_sec", reloadDeferMaxWaitR271().Seconds(),
+			"reason", plan.Reason, "context_size", plan.ContextSize,
+			"kv_cache_type", plan.KVCacheType)
+		return errAutoTuneReloadDeferred
+	}
+	p.noteDestructiveOpR271(backendID, modelName, destructiveAutotuneR271)
+
 	applyRes := p.ApplyAutoTunePlan(backendID, plan)
 	if applyRes == nil {
 		return fmt.Errorf("autotune: apply plan returned nil result")

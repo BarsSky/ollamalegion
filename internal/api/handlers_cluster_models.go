@@ -311,6 +311,19 @@ type clusterReloadModelBackendResult struct {
 	Deferred       bool   `json:"deferred,omitempty"`
 	DeferredReason string `json:"deferredReason,omitempty"`
 	RetryAfterSec  int    `json:"retryAfterSec,omitempty"`
+
+	// R300 (2026-10-29): «ещё грузится» — это 202 Accepted, а НЕ ошибка.
+	//
+	// ЖИВОЙ ФАКТ (стенд b5b45c74, загрузка Qwen3.8-27B 16.4 ГБ). Балансер ждал
+	// 6m26s, получил от себя же готовый формат «модель ещё загружается … это не
+	// ошибка» (R262/R299, StillLoading=true), но HTTP-слой кластерного reload
+	// смотрел только на Success и превращал его в `status:"error"` +
+	// `httpStatus:500`. То есть текст ответа говорил «это не ошибка», а код —
+	// «сломалось, повторяй»: ровно тот дефект, который R299 закрывал в балансере,
+	// остался живым этажом выше (правка в одном месте не помогла — четвёртый
+	// раз в серии). Здесь он закрывается в HTTP-слое.
+	StillLoading bool `json:"stillLoading,omitempty"`
+	PollAfterSec int  `json:"pollAfterSec,omitempty"`
 }
 
 // clusterModelItemDispatcher — единый dispatcher для /api/v1/cluster/models/{name}/*.
@@ -544,13 +557,27 @@ func overallReloadStatus(results []clusterReloadModelBackendResult) int {
 		return http.StatusNotFound
 	}
 	allDeferred := true
+	anyAccepted := false
 	for _, r := range results {
 		if r.HTTPStatus == http.StatusOK || r.HTTPStatus == http.StatusCreated {
 			return http.StatusOK
 		}
+		// R300 (2026-10-29): «ещё грузится» на ВСЕХ узлах — общий код 202.
+		//
+		// Живой факт: загрузка шла 6m26s, per-backend результат был «ещё
+		// загружается», а общий код — 200 с status:"error" внутри. Клиент,
+		// который смотрит на HTTP-код (Cline/скрипты/WebUI), читал это как
+		// «всё ок» и «всё сломалось» одновременно. Если ни один узел не
+		// применил операцию, но хотя бы один ещё работает — это 202.
+		if r.HTTPStatus == http.StatusAccepted {
+			anyAccepted = true
+		}
 		if !(r.Deferred || r.HTTPStatus == http.StatusServiceUnavailable) {
 			allDeferred = false
 		}
+	}
+	if anyAccepted {
+		return http.StatusAccepted
 	}
 	if allDeferred {
 		return http.StatusServiceUnavailable
@@ -625,6 +652,29 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 			result.HTTPStatus = http.StatusBadRequest
 			return result
 		}
+	}
+
+	// R300 (2026-10-29): модель ЕЩЁ загружается — «already loaded» было бы ложью.
+	//
+	// ЖИВОЙ ФАКТ (стенд b5b45c74): пока Qwen3.8-27B грузился (16.4 ГБ, ~6 мин),
+	// повторный `{"operation":"load"}` отвечал за 0.22 с `200 {"status":"ok",
+	// "message":"already loaded","reloaded":false}` — при том что в тот же момент
+	// `GET /api/v1/cluster/models/loaded` показывал у этой модели `"state":
+	// "loading"`, а первая загрузка продолжалась. Причина: isModelLoaded()
+	// смотрит только на наличие записи в LoadedModels, а State не различает.
+	// Оператор по такому ответу считает, что модель готова, и идёт работать с
+	// ней — получает ошибку от воркера.
+	//
+	// Правило: состояние «loading» — уже известный факт, значит ответ обязан быть
+	// 202 + stillLoading + совет опросить статус (тот же контракт R262/R299), а не
+	// «ok» и не «error».
+	if st := s.modelLoadStateOnBackend(backendID, modelName); st == modelStateLoadingR300 {
+		logger.Get().Infow("cluster reload: модель ещё загружается — 202 вместо «already loaded» (R300)",
+			"backend", backendID, "model", modelName, "operation", req.Operation)
+		return stillLoadingReloadResultR300(backendID, modelName, fmt.Sprintf(
+			"модель «%s» ещё загружается на бэкенде «%s»: операция %q не выполнена, "+
+				"это не ошибка — опрос через %ds покажет итог",
+			modelName, backendID, req.Operation, reloadPollAfterSecR300))
 	}
 
 	// R297: параметры ТЕКУЩЕЙ загрузки — чтобы вернуть модель, если новая
@@ -782,6 +832,17 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 			return deferredReloadResult(backendID,
 				"model reload deferred: "+reason+"; retry shortly", reason)
 		}
+		// R300 (2026-10-29): «ещё грузится» — 202, а НЕ error/500.
+		//
+		// Формат R262/R299 (StillLoading=true, Error пуст, Message «это не
+		// ошибка») уже приходил из балансера, но эта ветка смотрела только на
+		// Success и писала status:"error" + httpStatus:500. Живой прогон видел
+		// ровно это: 6m26s ожидания, текст «это не ошибка» и код 500 рядом.
+		// Ветка обязана стоять ДО restore из R297: новая загрузка ещё идёт,
+		// возвращать на её место прежнюю модель нельзя.
+		if opResult.StillLoading {
+			return stillLoadingReloadResultR300(backendID, modelName, opResult.Message)
+		}
 		result.HTTPStatus = http.StatusInternalServerError
 		result.Status = "error"
 		result.Error = opResult.Error
@@ -826,6 +887,105 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 		result.Message = strings.TrimSpace(result.Message + " (" + evictionNote + ")")
 	}
 	return result
+}
+
+// reloadPollAfterSecR300 — через сколько секунд советуем опросить статус.
+//
+// То же число, что в R262 (30 с): к этому моменту воркер либо догрузил модель,
+// либо ещё нет — второго опроса клиенту хватает, чтобы не превращать ожидание в
+// поток запросов.
+const reloadPollAfterSecR300 = 30
+
+// modelStateLoadingR300 — состояние модели в cppworker, означающее «ещё грузится».
+const modelStateLoadingR300 = "loading"
+
+// modelLoadStateOnBackend — R300: РЕАЛЬНОЕ состояние модели на бэкенде
+// ("loaded"/"loading"/"error"/""), а не только факт её наличия в списке.
+//
+// Зачем отдельно от isModelLoaded: isModelLoaded отвечает на вопрос «есть ли
+// запись», и этим отличал загруженную модель от загружающейся. Живой дефект:
+// во время загрузки Qwen3.8-27B повторный load отвечал «already loaded».
+//
+// Смотрим оба списка cppworker — LoadedModels и LoadingModels: поллер кладёт
+// грузящуюся модель в LoadingModels, а API /cluster/models/loaded может показать
+// её же с state="loading" (это разные представления одного факта).
+func (s *Server) modelLoadStateOnBackend(backendID, modelName string) string {
+	return modelLoadStateR300(s.getClusterState(), backendID, modelName)
+}
+
+// modelLoadStateR300 — чистая функция: состояние модели в cluster state.
+//
+// Вынесено из метода, чтобы правило проверялось без поднятия сервера.
+// Приоритет: "loaded" > "loading" > "error": если запись есть в обоих списках
+// (поллер мог не успеть перенести), модель считается загруженной только когда
+// состояние это подтверждает.
+func modelLoadStateR300(cs *types.ClusterState, backendID, modelName string) string {
+	if cs == nil {
+		return ""
+	}
+	best := ""
+	for _, b := range cs.Backends {
+		if b.ID != backendID {
+			continue
+		}
+		for _, m := range append(append([]types.LlamaCppModel{}, b.LlamaCpp.LoadedModels...), b.LlamaCpp.LoadingModels...) {
+			if !modelNameEqualR300(m.Name, modelName) {
+				continue
+			}
+			st := strings.ToLower(strings.TrimSpace(m.State))
+			switch st {
+			case "loaded":
+				return "loaded"
+			case "loading":
+				best = "loading"
+			case "error":
+				if best == "" {
+					best = "error"
+				}
+			}
+		}
+	}
+	return best
+}
+
+// modelNameEqualR300 — сравнение имён моделей без учёта регистра и ":tag".
+func modelNameEqualR300(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if strings.EqualFold(a, b) {
+		return true
+	}
+	base := func(s string) string {
+		if i := strings.Index(s, ":"); i > 0 {
+			return s[:i]
+		}
+		return s
+	}
+	return strings.EqualFold(base(a), base(b))
+}
+
+// stillLoadingReloadResultR300 — единый вид «операция ещё идёт» для HTTP-слоя.
+//
+// Status="started" (значение уже описано контрактом этого поля), HTTP 202,
+// stillLoading:true, pollAfterSec — и НИ ОДНОГО поля ошибки: клиент по 202+
+// stillLoading показывает «загружается», а не «ошибка загрузки».
+func stillLoadingReloadResultR300(backendID, modelName, message string) clusterReloadModelBackendResult {
+	if strings.TrimSpace(message) == "" {
+		message = fmt.Sprintf(
+			"модель «%s» ещё загружается на бэкенде «%s»: это не ошибка — опрос через %ds покажет итог",
+			modelName, backendID, reloadPollAfterSecR300)
+	}
+	return clusterReloadModelBackendResult{
+		BackendID:    backendID,
+		Status:       "started",
+		Message:      message,
+		HTTPStatus:   http.StatusAccepted,
+		StillLoading: true,
+		PollAfterSec: reloadPollAfterSecR300,
+	}
 }
 
 // deferredReloadResult — R287: единый вид «операция отложена».

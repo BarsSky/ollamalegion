@@ -1293,6 +1293,36 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// R303 (D4): залипшая сессия НЕ должна держать запрос на узле, где модели нет,
+	// пока она жива на другом узле.
+	//
+	// ЖИВОЙ ДЕФЕКТ (двухузловой отчёт, D4): донор держал gemma, кэш метрик этого
+	// ещё не видел (поллер раз в ~30 c), запрос попадал на пустой мастер, preflight
+	// планировал загрузку с нуля и держал клиента 300 c, после чего отдавал 503
+	// «being reloaded to n_ctx=32768 (loaded=0)» — при живой модели рядом.
+	//
+	// Здесь проверка стоит ДО слотов и до выбора транспорта, поэтому она работает
+	// и для залипшей сессии (ветка выше выставила targetBackend из sessionMgr и
+	// selectBackendPreferWindow уже не вызывался). Цена: живой опрос только когда
+	// кэш о модели на этом узле молчит И модель там действительно отсутствует;
+	// результат опроса кэшируется на несколько секунд (live_copy_probe_r303.go).
+	if targetBackend != "" && model != "" && !isReadOnlyOrMgmtEndpoint(path) &&
+		p.modelAbsentOnBackendR303(targetBackend, model) {
+		if alt, altPerSeq, ok := p.findLiveLoadedCopyR303(model, parsed.NumCtx,
+			map[string]bool{targetBackend: true}); ok {
+			logger.Get().Warnw("R303: сессия залипла на узле без модели — переезжаем туда, где она загружена",
+				"model", model, "from", targetBackend, "to", alt,
+				"alt_loaded_per_seq", altPerSeq, "requested_n_ctx", parsed.NumCtx)
+			targetBackend = alt
+			// Привязку сессии перевешиваем на новый узел: иначе следующий запрос
+			// той же сессии снова вернётся на узел без модели (пинг-понг 503).
+			if sessionID != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
+				p.sessionMgr.SetWithProtocol(sessionID, targetBackend, model, clientName,
+					p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
+			}
+		}
+	}
+
 	// Переменная для отслеживания захваченного бэкенда.
 	// Используем указатель на строку чтобы корректно обрабатывать
 	// освобождение слота в defer без двойного освобождения.

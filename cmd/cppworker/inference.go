@@ -843,14 +843,17 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 		}
 	}
 
-	lockOk, lockErr := backend.TryLockLoad(modelName)
+	reclaimStaleClaimR303(modelName, "ram-fallback")
+	lockOk, lockErr := backend.TryLockLoadR303(modelName, "ram-fallback")
 	if lockErr != nil {
 		// ?????? ??? ????????? ? RAM fallback ?????????? ???????
 		return true, nil
 	}
 	if !lockOk {
 		// ?????? ???????? ?????? ??? ?????? ? ????
-		if backend.WaitForLoad(modelName) {
+		// R303: ожидание ограничено — иначе мёртвая заявка на загрузку вешает
+		// RAM-fallback навсегда (см. load_progress_r303.go).
+		if loaded, _ := backend.WaitForLoadTimeoutR303(modelName, loadWaitMaxR303()); loaded {
 			return true, nil
 		}
 		return false, fmt.Errorf("RAM fallback: model is being loaded by another request, but wait failed")

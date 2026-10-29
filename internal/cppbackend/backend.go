@@ -253,7 +253,11 @@ type Backend struct {
 	// try to load the same model simultaneously.
 	// Key: model name, Value: chan struct{} (closed when loading completes).
 	loading map[string]chan struct{}
-	loadMu  sync.Mutex
+	// R303: метаданные заявок на загрузку (кто взял, когда). Позволяют отличить
+	// «грузится» от «заявка осталась от умершей горутины» и дать оператору
+	// возраст заявки вместо бесконечного ожидания. См. load_claims_r303.go.
+	loadClaims map[string]*loadClaimMetaR303
+	loadMu     sync.Mutex
 
 	// loadSingleFlight — R83 (шаг 3, инцидент 2026-09-25): сериализация загрузок.
 	//
@@ -620,6 +624,7 @@ func NewBackend(cfg Config) *Backend {
 		metrics:      metrics,
 		gpuManager:   NewGPUManager(cfg.TensorSplitStrategy),
 		loading:      make(map[string]chan struct{}),
+		loadClaims:   make(map[string]*loadClaimMetaR303),
 		inFlight:     NewInFlightCounter(),
 	}
 
@@ -2692,6 +2697,11 @@ func (b *Backend) AbortLoad(name string) bool {
 // После завершения загрузки (успех/ошибка) вызывающий ОБЯЗАН вызвать UnlockLoad.
 // ИСПОЛЬЗУЕТСЯ ТОЛЬКО ДЛЯ ПЕРВИЧНОЙ ЗАГРУЗКИ. Для reload используйте TryLockReload.
 func (b *Backend) TryLockLoad(name string) (bool, error) {
+	return b.tryLockLoad(name, "load")
+}
+
+// tryLockLoad — тело TryLockLoad с указанием владельца заявки (R303).
+func (b *Backend) tryLockLoad(name, requester string) (bool, error) {
 	b.loadMu.Lock()
 	defer b.loadMu.Unlock()
 
@@ -2725,6 +2735,9 @@ func (b *Backend) TryLockLoad(name string) (bool, error) {
 
 	// Создаём канал, который будет закрыт после завершения загрузки
 	b.loading[name] = make(chan struct{})
+	// R303: фиксируем владельца и время — по ним отличаем «грузится» от
+	// «заявка осталась от умершей горутины» (load_claims_r303.go).
+	b.claimMetaLockedR303(name, requester)
 	return true, nil
 }
 
@@ -2735,6 +2748,11 @@ func (b *Backend) TryLockLoad(name string) (bool, error) {
 // Гарантирует, что для одной модели может быть только один активный reload.
 // После завершения reload (успех/ошибка) вызывающий ОБЯЗАН вызвать UnlockLoad.
 func (b *Backend) TryLockReload(name string) (bool, error) {
+	return b.tryLockReload(name, "reload")
+}
+
+// tryLockReload — тело TryLockReload с указанием владельца заявки (R303).
+func (b *Backend) tryLockReload(name, requester string) (bool, error) {
 	b.loadMu.Lock()
 	defer b.loadMu.Unlock()
 
@@ -2745,6 +2763,7 @@ func (b *Backend) TryLockReload(name string) (bool, error) {
 
 	// Создаём канал, который будет закрыт после завершения reload
 	b.loading[name] = make(chan struct{})
+	b.claimMetaLockedR303(name, requester)
 	return true, nil
 }
 
@@ -2757,6 +2776,8 @@ func (b *Backend) UnlockLoad(name string) {
 		close(ch) // оповещаем всех ожидающих
 		delete(b.loading, name)
 	}
+	// R303: метаданные заявки живут ровно столько же, сколько сама заявка.
+	delete(b.loadClaims, name)
 }
 
 // waitForLoad блокируется до завершения загрузки модели другой горутиной.

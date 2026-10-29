@@ -220,6 +220,17 @@ func (p *Proxy) selectBackendPreferWindow(model string, bt types.BackendType, re
 				"model", model, "backend", id, "requested_n_ctx", requestedNCtx, "reason", why)
 			return id
 		}
+		// R303 (D4): кэш метрик не знает НИ ОДНОЙ копии — это не значит, что
+		// модели нигде нет: свежая загрузка на другом узле видна поллеру через
+		// ~30 c. Спрашиваем живой кластер, иначе запрос уходит на пустой узел,
+		// preflight планирует загрузку с нуля и клиент ждёт минуты, получая
+		// 503 «being reloaded … (loaded=0)» при живой модели рядом.
+		if alt, perSeq, ok := p.findLiveLoadedCopyR303(model, requestedNCtx, nil); ok {
+			logger.Get().Infow("R303: выбран узел с уже загруженной копией (живой опрос)",
+				"model", model, "backend", alt,
+				"loaded_per_seq", perSeq, "requested_n_ctx", requestedNCtx)
+			return alt
+		}
 	}
 	return p.selectBackend(model, bt, false)
 }
@@ -257,6 +268,17 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendForModelWithNCtx(model string, re
 		logger.Get().Infow(i18n.T("balancer.model_copy_window.llamacpp_info"),
 			"model", model, "backend", id, "requested_n_ctx", requestedNCtx, "reason", why)
 		return id
+	}
+	// R303 (D4): копий в кэше нет — спрашиваем живой кластер, где модель уже
+	// загружена. Иначе выбор падает на пустой узел, и preflight грузит модель
+	// с нуля вместо того, чтобы обслужить её там, где она живая (двухузловой
+	// стенд: донор держал gemma, мастер получил 5 минут ожидания и ложное
+	// «(loaded=0)»).
+	if alt, perSeq, ok := lr.proxy.findLiveLoadedCopyR303(model, requestedNCtx, nil); ok {
+		logger.Get().Infow("R303: выбран узел с уже загруженной копией (живой опрос)",
+			"model", model, "backend", alt,
+			"loaded_per_seq", perSeq, "requested_n_ctx", requestedNCtx)
+		return alt
 	}
 	return lr.selectLlamaCppBackendForModel(model)
 }

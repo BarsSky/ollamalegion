@@ -1058,6 +1058,33 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		return bodyBuf, true, "", http.StatusOK
 	}
 
+	// R303 (D4): модель НЕ загружена на этом узле, но жива на другом.
+	//
+	// ЖИВОЙ ДЕФЕКТ (двухузловой отчёт, D4): запрос пришёл на пустой мастер,
+	// донор держал gemma (loaded=1). Балансер запланировал загрузку с нуля на
+	// мастере, мастер не получил ни одного /api/models/load, клиент отвисел
+	// 300 c и получил 503 «being reloaded to n_ctx=32768 (loaded=0)» — то есть
+	// числа, которых нет, при живой модели рядом.
+	//
+	// ПРАВИЛО: «перезагружать» нечего, если модели здесь нет; грузить её с нуля
+	// на пустом узле, когда она уже загружена на здоровом узле, — трата VRAM и
+	// минут ожидания. Отказываем СРАЗУ и называем узел и его окно, где модель
+	// живая. Клиент повторит и будет обслужен там (выбор узла это уже умеет —
+	// R303 в model_copy_window_r118.go спрашивает живой кластер).
+	if loadedState == loadedWindowAbsent {
+		if alt, altPerSeq, ok := p.modelNotLoadedHereButAliveElsewhereR303(backendID, modelName, requestedNCtx); ok {
+			logger.Get().Warnw("R303: модель не загружена на этом узле, но жива на другом — загрузку с нуля не планируем",
+				"backend", backendID, "model", modelName,
+				"alt_backend", alt, "alt_loaded_per_seq", altPerSeq,
+				"requested_n_ctx", requestedNCtx)
+			return bodyBuf, false,
+				fmt.Sprintf("model %q is not loaded on backend %s, but it is already loaded on backend %s "+
+					"(n_ctx=%d per slot); no new load was started on %s — retry and the request will be routed to %s",
+					modelName, backendID, alt, altPerSeq, backendID, alt),
+				http.StatusServiceUnavailable
+		}
+	}
+
 	// R83-fix (2026-09-30): сравниваем с ОКНОМ СЛОТА, а не с суммарным.
 	//
 	// `loadedNCtx` — СУММАРНОЕ окно модели (его же кладём в кэш метрик и
@@ -1405,9 +1432,22 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// повторять 10-12 раз за время reload'а, накапливая 503 в логах и путая
 	// retry-логику. С 30с клиент делает 1-2 retry и попадает в окно
 	// завершения reload'а.
+	// R303 (D4): числа в отказе должны быть правдой.
+	//
+	// Было: `(loaded=%d)` с loadedNCtx=0 в ЛЮБОМ случае — в том числе когда
+	// модель жива на другом узле. Оператор читал «being reloaded to n_ctx=32768
+	// (loaded=0)» и не мог понять, что модели здесь вообще нет, а перезагрузки
+	// не будет. Теперь формулировка зависит от состояния, которое мы ЗНАЕМ.
+	loadedWords := fmt.Sprintf("(loaded=%d per slot)", loadedNCtx)
+	switch loadedState {
+	case loadedWindowAbsent:
+		loadedWords = "(not loaded on this backend — a load was requested)"
+	case loadedWindowUnknown:
+		loadedWords = "(loaded state unknown — probe failed)"
+	}
 	return bodyBuf, false,
-		fmt.Sprintf("model %q is being reloaded to n_ctx=%d (loaded=%d); retry in 30s",
-			modelName, requestedNCtx, loadedNCtx),
+		fmt.Sprintf("model %q is being reloaded to n_ctx=%d %s; retry in 30s",
+			modelName, requestedNCtx, loadedWords),
 		http.StatusServiceUnavailable
 }
 

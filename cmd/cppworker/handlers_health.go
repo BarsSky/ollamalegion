@@ -42,8 +42,27 @@ func handleInfo(w http.ResponseWriter, r *http.Request) {
 		snap := inflight.Snapshot()
 		if len(snap) > 0 {
 			status["in_flight_requests"] = snap
+			// R303: возраст самого старого активного запроса. Без него «зависший»
+			// in-flight не отличить от нормальной длинной генерации — именно эту
+			// неотличимость оператор описал как «в мониторе мусор, лечится
+			// перезапуском» (D3). Возраст делает состояние наблюдаемым.
+			if model, ageSec := inflight.OldestAgeR303(); ageSec > 0 {
+				status["in_flight_oldest_model"] = model
+				status["in_flight_oldest_sec"] = ageSec
+			}
+			status["in_flight_age_sec"] = inflight.AgesR303()
 		}
 	}
+	// R303: заявки на загрузку/перезагрузку с возрастом и владельцем. Пока
+	// заявка жива, IsLoading=true, unload отвечает 409, а новые load-запросы
+	// ждут. Возраст и наличие живого инстанса — единственный способ отличить
+	// «реально грузится» от «заявка осталась от умершей горутины».
+	if claims := backend.LoadClaimsR303(); len(claims) > 0 {
+		status["load_claims"] = claims
+		status["loading"] = true
+	}
+	status["load_wait_limit_sec"] = loadWaitMaxR303().Seconds()
+	status["load_stale_after_sec"] = loadStaleAfterR303().Seconds()
 	// R135 (2026-10-16): несовпадение CUDA-арок образа и карт. Причина видна
 	// ЗАРАНЕЕ и одним полем, а не выясняется по стеку SIGABRT: на карте, чьей
 	// архитектуры нет в образе, первое же ядро убивает процесс вместе с

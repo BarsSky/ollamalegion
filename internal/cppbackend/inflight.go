@@ -29,12 +29,18 @@ import (
 type InFlightCounter struct {
 	mu       sync.RWMutex
 	counters map[string]*int64
+	// R303: когда счётчик модели стал ненулевым. Нужен, чтобы отличить
+	// «долгая генерация» от «запрос, который никто не снял»: в отчёте по стенду
+	// (D3) in_flight_requests={"gemma":3} висел минутами без единого признака
+	// возраста, и состояние лечилось только перезапуском контейнера.
+	ages map[string]time.Time
 }
 
 // NewInFlightCounter создаёт новый счётчик.
 func NewInFlightCounter() *InFlightCounter {
 	return &InFlightCounter{
 		counters: make(map[string]*int64),
+		ages:     make(map[string]time.Time),
 	}
 }
 
@@ -64,7 +70,15 @@ func (c *InFlightCounter) Inc(modelName string) {
 	if c == nil || modelName == "" {
 		return
 	}
-	atomic.AddInt64(c.counterFor(modelName), 1)
+	if atomic.AddInt64(c.counterFor(modelName), 1) == 1 {
+		// R303: первый активный запрос по модели — запоминаем начало.
+		c.mu.Lock()
+		if c.ages == nil {
+			c.ages = make(map[string]time.Time)
+		}
+		c.ages[modelName] = time.Now()
+		c.mu.Unlock()
+	}
 }
 
 // Dec уменьшает счётчик активных запросов для модели.
@@ -74,7 +88,48 @@ func (c *InFlightCounter) Dec(modelName string) {
 		return
 	}
 	ctr := c.counterFor(modelName)
-	atomic.AddInt64(ctr, -1)
+	if atomic.AddInt64(ctr, -1) <= 0 {
+		// R303: все запросы по модели закончились — снимаем отметку времени,
+		// чтобы возраст не переезжал на следующую генерацию.
+		c.mu.Lock()
+		delete(c.ages, modelName)
+		c.mu.Unlock()
+	}
+}
+
+// AgesR303 — возраст (в секундах) по каждой модели с ненулевым счётчиком.
+// Ключ — имя модели. Пустая мапа, если активных запросов нет.
+func (c *InFlightCounter) AgesR303() map[string]float64 {
+	if c == nil {
+		return map[string]float64{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make(map[string]float64, len(c.ages))
+	now := time.Now()
+	for name, at := range c.ages {
+		out[name] = now.Sub(at).Seconds()
+	}
+	return out
+}
+
+// OldestAgeR303 — (модель, возраст в секундах) самого старого активного запроса.
+func (c *InFlightCounter) OldestAgeR303() (string, float64) {
+	if c == nil {
+		return "", 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	now := time.Now()
+	bestModel := ""
+	bestAge := 0.0
+	for name, at := range c.ages {
+		age := now.Sub(at).Seconds()
+		if age > bestAge {
+			bestModel, bestAge = name, age
+		}
+	}
+	return bestModel, bestAge
 }
 
 // Get возвращает текущее значение счётчика для модели (0 если модель не отслеживается).
@@ -155,4 +210,8 @@ func (c *InFlightCounter) Reset(modelName string) {
 		return
 	}
 	atomic.StoreInt64(ctr, 0)
+	// R303: аварийный сброс снимает и отметку возраста.
+	c.mu.Lock()
+	delete(c.ages, modelName)
+	c.mu.Unlock()
 }

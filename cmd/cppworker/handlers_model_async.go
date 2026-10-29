@@ -231,9 +231,21 @@ func respondWhileAnotherLoadInProgress(w http.ResponseWriter, r *http.Request,
 	}
 
 	// Sync (?wait=true): клиент сознательно ждёт — ждём и мы.
+	//
+	// R303: ожидание ОГРАНИЧЕНО (CPPWORKER_LOAD_WAIT_MAX_SEC, default 90 c).
+	// Было WaitForLoad без таймаута: если заявка на загрузку осталась от умершей
+	// горутины (C-мост завис на узле раскладки), запрос висел МИНУТАМИ без
+	// ответа (живой стенд: 260 c, в логе ни строки — писатель лога ждёт
+	// завершения запроса). Теперь по истечении предела клиент получает
+	// типизированный ответ с возрастом заявки.
 	logger.Get().Infow("model is already being loaded by another request; waiting (wait=true)",
-		"name", modelName)
-	if backend.WaitForLoad(modelName) {
+		"name", modelName, "wait_limit_sec", loadWaitMaxR303().Seconds())
+	loaded, timedOut := waitLoadBoundedR303(modelName)
+	if timedOut {
+		writeLoadInProgressR303(w, modelName, time.Since(loadStart))
+		return
+	}
+	if loaded {
 		if info, getErr := backend.GetModel(modelName); getErr == nil {
 			logger.Get().Infow("load finished while we waited (concurrent request)",
 				"name", modelName, "duration_ms", time.Since(loadStart).Milliseconds())

@@ -248,7 +248,13 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	estimatedMs := estimateLoadTimeMs(modelPath, opts.ContextSize)
 
 	// Per-model blocking load
-	lockOk, lockErr := backend.TryLockLoad(modelName)
+	//
+	// R303: сначала снимаем МЁРТВУЮ заявку на загрузку (висит давно, живого
+	// инстанса в состоянии loading нет). Без этого один умерший владелец заявки
+	// блокировал все последующие загрузки модели до перезапуска контейнера
+	// (живой стенд, D3: «load висел 260 c, unload отвечал 409 model is loading»).
+	reclaimStaleClaimR303(modelName, "load")
+	lockOk, lockErr := backend.TryLockLoadR303(modelName, "load")
 	if lockErr != nil {
 		// ?????? ??? ????????? ? ?????????, ????????? ?? ?????????.
 		if info, getErr := backend.GetModel(modelName); getErr == nil {
@@ -268,7 +274,7 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "unload before reload failed: "+unloadErr.Error())
 				return
 			}
-			lockOk, lockErr = backend.TryLockLoad(modelName)
+			lockOk, lockErr = backend.TryLockLoadR303(modelName, "load")
 			if lockErr != nil {
 				logger.Get().Errorw("race: model appeared after unload", "name", modelName)
 				writeError(w, http.StatusInternalServerError, "concurrent load race after unload")
@@ -746,7 +752,9 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	waitSync, waitTimeoutMs := parseLoadWaitParams(r)
 	estimatedMs := estimateLoadTimeMs(modelPath, opts.ContextSize)
 
-	lockOk, lockErr := backend.TryLockLoad(modelName)
+	// R303: мёртвую заявку на загрузку снимаем сами (см. load_progress_r303.go).
+	reclaimStaleClaimR303(modelName, "load-with-params")
+	lockOk, lockErr := backend.TryLockLoadR303(modelName, "load-with-params")
 	if lockErr != nil {
 		if info, getErr := backend.GetModel(modelName); getErr == nil {
 			if info.Path == modelPath && sameLoadOptions(*info, opts) {
@@ -764,7 +772,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "unload before reload failed: "+unloadErr.Error())
 				return
 			}
-			lockOk, lockErr = backend.TryLockLoad(modelName)
+			lockOk, lockErr = backend.TryLockLoadR303(modelName, "load")
 			if lockErr != nil {
 				logger.Get().Errorw("race: model appeared after unload", "name", modelName)
 				writeError(w, http.StatusInternalServerError, "concurrent load race after unload")
@@ -1101,16 +1109,33 @@ func handleUnloadModel(w http.ResponseWriter, r *http.Request) {
 	// продавливает: загрузка не отменяется мгновенно (у неё свои checkpoints),
 	// но после неё модель будет выгружена — последовательность команд
 	// «unload --force» + «load» даёт предсказуемый результат.
+	// R303: мёртвая заявка на загрузку не должна держать unload в 409 «model is
+	// currently loading» вечно (живой стенд, D3: «лечится только перезапуском»).
+	// Снимаем её, если она провably мёртвая (нет инстанса в состоянии loading).
 	if backend.IsLoading(name) {
+		reclaimStaleClaimR303(name, "unload")
+	}
+	if backend.IsLoading(name) {
+		claim, haveClaim := claimForModelR303(name)
 		if !force {
 			logger.Get().Warnw("unload refused: model is loading",
-				"name", name)
-			writeJSON(w, http.StatusConflict, map[string]interface{}{
+				"name", name,
+				"claim_age_sec", claim.AgeSec,
+				"claim_requester", claim.Requester,
+				"loading_instance", claim.LoadingInstance)
+			body := map[string]interface{}{
 				"error": "model is currently loading",
 				"name":  name,
 				"hint": "wait for the load to finish (poll /api/models until state=loaded), " +
 					"or retry with ?force=true to CANCEL the load and free VRAM immediately",
-			})
+			}
+			if haveClaim {
+				body["claimAgeSec"] = claim.AgeSec
+				body["claimRequester"] = claim.Requester
+				body["loadingInstance"] = claim.LoadingInstance
+				body["staleAfterSec"] = loadStaleAfterR303().Seconds()
+			}
+			writeJSON(w, http.StatusConflict, body)
 			return
 		}
 		// R215 (2026-10-21): force-выгрузка грузящейся модели = ОТМЕНА загрузки.
@@ -1146,6 +1171,16 @@ func handleUnloadModel(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
+		}
+		if backend.IsLoading(name) {
+			// R303: force не помог — загрузка не отпустила за 15 c. Раньше такой
+			// запрос молча шёл дальше и получал 404/200 «как будто выгрузили».
+			// Теперь отвечаем честно: загрузка зависла, называем её возраст и
+			// что делать (её держит C-мост; снять заявку нельзя, пока жив
+			// инстанс в состоянии loading — иначе второй LoadModel на тот же
+			// файл даёт двойную VRAM/SIGABRT).
+			writeLoadInProgressR303(w, name, 15*time.Second)
+			return
 		}
 	}
 
@@ -1455,6 +1490,22 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		// 409 если active_queries > 0, см. handleUnloadModel).
 		if inflight := backend.InFlight(); inflight != nil {
 			entry["active_queries"] = inflight.Get(m.Name)
+			// R303: возраст самого долгого активного запроса по модели. Нужен,
+			// чтобы «мусор в in_flat» был виден как возраст, а не как вечный 1
+			// (см. load_claims_r303.go / inflight.go).
+			if ages := inflight.AgesR303(); len(ages) > 0 {
+				if age, ok := ages[m.Name]; ok {
+					entry["active_query_age_sec"] = age
+				}
+			}
+		}
+		// R303: заявка на загрузку/перезагрузку — возраст и владелец. Пока она
+		// жива, unload отвечает 409, а load-запросы ждут; оператор должен видеть,
+		// СКОЛЬКО она висит, а не только «model is loading».
+		if claim, ok := backend.LoadClaimR303(m.Name); ok {
+			entry["load_claim_age_sec"] = claim.AgeSec
+			entry["load_claim_requester"] = claim.Requester
+			entry["load_claim_stale"] = !claim.LoadingInstance && claim.AgeSec >= loadStaleAfterR303().Seconds()
 		}
 		// R83 (2026-09-27): показываем РЕЖИМ загрузки, а не только факт загрузки.
 		// context_size — фактический n_ctx, с которым работает модель;
@@ -2510,7 +2561,7 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lockOk, lockErr := backend.TryLockReload(req.Name)
+	lockOk, lockErr := backend.TryLockReloadR303(req.Name, "reload")
 	if lockErr != nil {
 		logger.Get().Errorw("reload: TryLockReload returned unexpected error",
 			"name", req.Name, "error", lockErr)
@@ -2519,9 +2570,16 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !lockOk {
+		// R303: ожидание ограничено — вместо бесконечного WaitForLoad клиент
+		// получает типизированный отказ с возрастом заявки (см. load_progress_r303.go).
 		logger.Get().Infow("reload: another goroutine is already loading this model, waiting",
-			"name", req.Name)
-		if backend.WaitForLoad(req.Name) {
+			"name", req.Name, "wait_limit_sec", loadWaitMaxR303().Seconds())
+		loaded, timedOut := waitLoadBoundedR303(req.Name)
+		if timedOut {
+			writeLoadInProgressR303(w, req.Name, loadWaitMaxR303())
+			return
+		}
+		if loaded {
 			if model, getErr := backend.GetModel(req.Name); getErr == nil {
 				writeJSON(w, http.StatusOK, map[string]interface{}{
 					"status": "reloaded_by_other", "model": model,

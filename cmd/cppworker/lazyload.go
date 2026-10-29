@@ -335,7 +335,9 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 	}
 
 	// 1) Используем TryLockLoad для постановки в очередь загрузки.
-	lockOk, lockErr := backend.TryLockLoad(modelName)
+	// R303: сначала снимаем мёртвую заявку (висела бы до перезапуска процесса).
+	reclaimStaleClaimR303(modelName, "lazyload")
+	lockOk, lockErr := backend.TryLockLoadR303(modelName, "lazyload")
 	if lockErr != nil {
 		// R113: НЕ считаем это успехом «на глаз». TryLockLoad отвечает ошибкой и
 		// тогда, когда модель есть в b.models, но перезагружается (состояние
@@ -364,7 +366,9 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 		// Другая горутина уже грузит эту модель — ждём завершения.
 		// R113: WaitForLoad смотрит на b.models (тоже без состояния), поэтому
 		// решающим считаем waitForModelReady.
-		if backend.WaitForLoad(modelName) {
+		// R303: ожидание ОГРАНИЧЕНО (loadWaitMaxR303) — мёртвая заявка на
+		// загрузку не держит клиентский запрос бесконечно.
+		if loaded, _ := backend.WaitForLoadTimeoutR303(modelName, loadWaitMaxR303()); loaded {
 			if info, err := backend.GetModel(modelName); err == nil && info.State == cppbackend.StateLoaded {
 				return modelName, nil
 			}
@@ -911,7 +915,8 @@ func autoLoadModels(cfg cppbackend.Config) {
 			"path", modelPath,
 			"gpuLayers", opts.GPULayers)
 
-		lockOk, lockErr := backend.TryLockLoad(modelName)
+		reclaimStaleClaimR303(modelName, "auto-load")
+		lockOk, lockErr := backend.TryLockLoadR303(modelName, "auto-load")
 		if lockErr != nil {
 			log.Infow("auto-load: model already loaded", "name", modelName)
 			loaded++
@@ -920,10 +925,15 @@ func autoLoadModels(cfg cppbackend.Config) {
 
 		if !lockOk {
 			log.Infow("auto-load: another goroutine is loading this model, waiting",
-				"name", modelName)
-			if backend.WaitForLoad(modelName) {
+				"name", modelName, "wait_limit_sec", loadWaitMaxR303().Seconds())
+			// R303: ограниченное ожидание — мёртвая заявка не блокирует старт.
+			okWait, timedOut := backend.WaitForLoadTimeoutR303(modelName, loadWaitMaxR303())
+			if okWait {
 				loaded++
 				log.Infow("auto-load: model loaded by another goroutine", "name", modelName)
+			} else if timedOut {
+				log.Warnw("auto-load: still loading after limit, skipping",
+					"name", modelName, "wait_limit_sec", loadWaitMaxR303().Seconds())
 			} else {
 				log.Warnw("auto-load: wait for model failed, skipping", "name", modelName)
 			}

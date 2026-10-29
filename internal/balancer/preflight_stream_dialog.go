@@ -474,6 +474,8 @@ func writeEgressFinalizeFrames(egress *reasoningEgressState, last *[]byte, write
 		return nil
 	}
 	for _, fr := range egress.finalizeFrames() {
+		// R277: та же граница SSE-события, что и на остальных путях.
+		fr = withSSEEventBoundary(fr)
 		if err := write(fr); err != nil {
 			return err
 		}

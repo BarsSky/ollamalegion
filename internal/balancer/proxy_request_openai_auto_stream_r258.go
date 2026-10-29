@@ -211,6 +211,8 @@ func (p *Proxy) streamUpstreamSSEToClient(
 		// ответа отдаём ДО него (иначе клиент увидит кадры после конца потока).
 		if isSSEDoneLine(out) {
 			for _, fr := range egress.finalizeFrames() {
+				// R277: граница SSE-события для кадров из фильтра.
+				fr = withSSEEventBoundary(fr)
 				if _, werr := w.Write(fr); werr != nil {
 					logger.Get().Infow("R258: finalize before [DONE] failed",
 						"backend", backendID, "error", werr)
@@ -244,6 +246,8 @@ func (p *Proxy) streamUpstreamSSEToClient(
 	// R261: закрываем фильтр — хвост, объяснение пустого ответа, придержанный
 	// finish. Иначе клиент, не рисующий reasoning_content, видит пустоту.
 	for _, fr := range egress.finalizeFrames() {
+		// R277: граница SSE-события (см. withSSEEventBoundary).
+		fr = withSSEEventBoundary(fr)
 		if _, err := w.Write(fr); err != nil {
 			logger.Get().Infow("R258: finalize frame write failed",
 				"backend", backendID, "error", err)

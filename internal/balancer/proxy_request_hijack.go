@@ -490,6 +490,10 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			// [DONE], и клиент увидит два конца потока (поймано тестом R258).
 			if isSSEDoneLine(lineToWrite) {
 				for _, fr := range egressFilter.finalizeFrames() {
+					// R277: кадр из фильтра приходит без второго перевода строки —
+					// восстанавливаем границу SSE-события, иначе строгий клиент
+					// склеивает его с [DONE] и падает на разборе JSON.
+					fr = withSSEEventBoundary(fr)
 					if werr := writeChunkedFrame(bufrw, fr); werr != nil {
 						logger.Get().Warnw("hijack streaming: finalize before [DONE] failed",
 							"backend", backendID, "error", werr)
@@ -518,6 +522,8 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	// придержанный finish-кадр. До этого клиент без поддержки reasoning_content
 	// получал молчаливую пустоту, хотя модель ответила.
 	for _, fr := range egressFilter.finalizeFrames() {
+		// R277: граница SSE-события (см. withSSEEventBoundary).
+		fr = withSSEEventBoundary(fr)
 		if werr := writeChunkedFrame(bufrw, fr); werr != nil {
 			logger.Get().Warnw("hijack streaming: finalize frame write failed",
 				"backend", backendID, "error", werr)

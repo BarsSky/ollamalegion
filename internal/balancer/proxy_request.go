@@ -885,6 +885,8 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 			// ДО него, иначе они окажутся после конца потока.
 			if isSSEDoneLine(lineToWrite) {
 				for _, fr := range egressFilter.finalizeFrames() {
+					// R277: граница SSE-события для кадров из фильтра.
+					fr = withSSEEventBoundary(fr)
 					if _, werr := w.Write(fr); werr != nil {
 						logger.Get().Warnw("proxyRequestOpenAIStreaming: finalize before [DONE] failed",
 							"backend", backendID, "error", werr)
@@ -913,6 +915,8 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 	// пустого ответа, придержанный finish) — иначе клиент без поддержки
 	// reasoning_content видит пустой ответ.
 	for _, fr := range egressFilter.finalizeFrames() {
+		// R277: граница SSE-события (см. withSSEEventBoundary).
+		fr = withSSEEventBoundary(fr)
 		if _, werr := w.Write(fr); werr != nil {
 			logger.Get().Warnw("proxyRequestOpenAIStreaming: finalize frame write failed",
 				"backend", backendID, "error", werr)

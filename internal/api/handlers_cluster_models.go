@@ -293,6 +293,24 @@ type clusterReloadModelBackendResult struct {
 	Reloaded        bool `json:"reloaded"`                  // была ли реальная перезагрузка
 	PreviousContext int  `json:"previousContext,omitempty"` // какое окно было загружено
 	NewContext      int  `json:"newContext,omitempty"`      // какое окно запрошено
+
+	// R286 (2026-10-29): КАКИЕ параметры загрузки отличались от фактических.
+	//
+	// ЖИВОЙ ДЕФЕКТ. Оператор менял `kvCacheType` в WebUI, жал «перезагрузить» и
+	// получал `already loaded`: проверка сравнивала только окно, поэтому смена
+	// kv-cache/flash/mmap/batch была no-op — «балансер игнорирует настройки».
+	// Теперь перезагрузка идёт по любому ЗНАЧИМОМУ отличию, а список отличий
+	// уходит в ответ: иначе «перезагрузили» неотличимо от «ничего не делали».
+	ChangedParams []loadParamDiff `json:"changedParams,omitempty"`
+
+	// R287 (2026-10-29): операция ОТЛОЖЕНА (модель занята / идёт стрим), а не
+	// провалена. Отдельные поля нужны потому, что живой прогон показал ответ,
+	// в котором одновременно были 500 «busy» и `reloaded:true`: клиент не мог
+	// понять, применилось ли что-то. Теперь «отложено» — это 503 + deferred +
+	// reason и НИ ОДНОГО поля успеха в том же ответе.
+	Deferred       bool   `json:"deferred,omitempty"`
+	DeferredReason string `json:"deferredReason,omitempty"`
+	RetryAfterSec  int    `json:"retryAfterSec,omitempty"`
 }
 
 // clusterModelItemDispatcher — единый dispatcher для /api/v1/cluster/models/{name}/*.
@@ -503,7 +521,47 @@ func (s *Server) clusterReloadModelHandler(w http.ResponseWriter, r *http.Reques
 		resp.Results = append(resp.Results, result)
 	}
 
-	s.writeJSON(w, http.StatusOK, resp)
+	// R287: общий HTTP-код должен отражать исход, а не всегда быть 200.
+	//
+	// Живой дефект: ручной reload при занятой модели отвечал HTTP 200 с
+	// `success:false`, а рядом — `reloaded:true`. Клиент (и WebUI, и оператор)
+	// не мог понять, применилось ли что-то. Теперь:
+	//   - хотя бы один бэкенд применил → 200 (частичный успех виден по results);
+	//   - все отложены → 503 + per-backend deferred;
+	//   - иначе — реальная ошибка (5xx по первому такому результату).
+	s.writeJSON(w, overallReloadStatus(resp.Results), resp)
+}
+
+// overallReloadStatus — R287: один код на весь ответ из per-backend исходов.
+//
+// Правило: успех хотя бы одного узла — это 200 (иначе успешная часть работы
+// выглядела бы как отказ); все отложены — 503 (ничего не сломано, стоит
+// повторить); иначе — код первой реальной ошибки.
+func overallReloadStatus(results []clusterReloadModelBackendResult) int {
+	if len(results) == 0 {
+		return http.StatusNotFound
+	}
+	deferred := 0
+	firstErr := 0
+	for _, r := range results {
+		switch {
+		case r.HTTPStatus == http.StatusOK || r.HTTPStatus == http.StatusCreated:
+			return http.StatusOK
+		case r.Deferred || r.HTTPStatus == http.StatusServiceUnavailable:
+			deferred++
+		default:
+			if firstErr == 0 {
+				firstErr = r.HTTPStatus
+			}
+		}
+	}
+	if deferred == len(results) {
+		return http.StatusServiceUnavailable
+	}
+	if firstErr != 0 {
+		return firstErr
+	}
+	return http.StatusOK
 }
 
 // splitClusterModelPath — извлекает имя модели из URL вида
@@ -560,21 +618,33 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 		needUnload = loaded
 	}
 	if req.Operation == "load" && s.isModelLoaded(backendID, modelName) {
-		// R281: модель уже загружена — но с КАКИМ окном? Если оператор просит
-		// другое окно, «already loaded» было бы ложью: он получил бы ответ «ok»,
-		// а окно осталось прежним (живой дефект, воспроизведён дважды).
-		loadedCtx, ctxKnown := s.loadedModelContextOnBackend(backendID, modelName)
-		if needContextReload(loadedCtx, ctxKnown, req.ContextSize) {
+		// R281: модель уже загружена — но с КАКИМИ параметрами? Если оператор
+		// просит другое окно, «already loaded» было бы ложью: он получил бы
+		// ответ «ok», а окно осталось прежним (живой дефект, воспроизведён
+		// дважды).
+		//
+		// R286: сравниваем не только окно, но и остальные ЗНАЧИМЫЕ параметры
+		// загрузки (kv-cache, flash-attn, mmap, batch, gpu-layers). Живой
+		// дефект: смена kvCacheType в WebUI давала no-op с ответом
+		// «already loaded» — снаружи это «балансер игнорирует настройки».
+		loadedParams, _ := s.loadedModelParamsOnBackend(backendID, modelName)
+		diffs := loadParamsDiff(loadedParams, *req)
+		if len(diffs) > 0 {
 			result.Reloaded = true
-			result.NewContext = *req.ContextSize
-			if ctxKnown {
-				result.PreviousContext = loadedCtx
+			result.ChangedParams = diffs
+			if loadedParams.ContextKnown {
+				result.PreviousContext = loadedParams.ContextSize
+			}
+			if req.ContextSize != nil && *req.ContextSize > 0 {
+				result.NewContext = *req.ContextSize
 			}
 			needUnload = true
-			logger.Get().Infow("cluster reload: загружено другое окно — перезагружаем модель (R281)",
+			logger.Get().Infow("cluster reload: загруженные параметры отличаются — перезагружаем модель (R286)",
 				"backend", backendID, "model", modelName,
-				"loaded_context", loadedCtx, "loaded_context_known", ctxKnown,
-				"requested_context", *req.ContextSize)
+				"loaded_context", loadedParamsContextLabel(loadedParams),
+				"requested_context", ctxSizeForLog(req.ContextSize),
+				"changed_params", loadParamDiffNames(diffs),
+				"diffs", diffs)
 		} else {
 			result.Status = "ok"
 			result.Message = "already loaded"
@@ -591,12 +661,11 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 		// честно говорим, сколько стримов мешает, вместо тихой перезагрузки.
 		if s.proxy != nil && !s.proxy.WaitStreamsIdleBeforeDestructive(ctx, backendID, modelName) {
 			n := s.proxy.ActiveStreamsOnBackend(backendID)
-			result.Status = "skipped"
-			result.HTTPStatus = http.StatusServiceUnavailable
-			result.Message = fmt.Sprintf("model reload deferred: %d active stream(s) on backend; retry shortly", n)
-			logger.Get().Warnw("cluster reload postponed — active streams on backend (R281)",
-				"backend", backendID, "model", modelName, "active_streams", n)
-			return result
+			// R287: «отложено» — это НЕ ошибка и НЕ успех. Отдельные поля и 503,
+			// без reloaded/status=ok: иначе клиент получает противоречивый ответ
+			// (в живом прогоне было 500 «busy» вместе с reloaded:true).
+			return deferredReloadResult(backendID, fmt.Sprintf(
+				"model reload deferred: %d active stream(s) on backend; retry shortly", n), "active streams")
 		}
 		if s.proxy != nil {
 			s.proxy.NoteDestructiveReload(backendID, modelName)
@@ -607,9 +676,24 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 		}
 		unloadResult := mm.ExecuteOperation(backendID, unloadOp)
 		if !unloadResult.Success {
+			// R287: «модель занята» — это deferred, а не 500. Живой прогон: во
+			// время AutoTune-reload ручной reload вернул 500 «busy» И
+			// reloaded:true одновременно — оператор не мог понять, применилось ли.
+			if reason := reloadBusyReason(unloadResult.Error); reason != "" || unloadResult.Busy {
+				if reason == "" {
+					reason = "model busy"
+				}
+				logger.Get().Infow("cluster reload deferred: model busy (R287)",
+					"backend", backendID, "model", modelName, "reason", reason)
+				return deferredReloadResult(backendID,
+					"model reload deferred: "+reason+"; retry shortly", reason)
+			}
 			result.Status = "error"
 			result.Error = "unload failed: " + unloadResult.Error
 			result.HTTPStatus = http.StatusInternalServerError
+			// Успеха не было — и полей успеха в ответе быть не должно.
+			result.Reloaded = false
+			result.ChangedParams = nil
 			return result
 		}
 		req.Operation = "load"
@@ -656,9 +740,23 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 
 	result.HTTPStatus = http.StatusOK
 	if !opResult.Success {
+		// R287: «занято» — отложено, а не провал. Один исход на ответ: либо
+		// deferred (503 + reason + retryAfter), либо error (5xx) — но никогда
+		// «ошибка вместе с reloaded:true» (живой дефект r284).
+		if reason := reloadBusyReason(opResult.Error); reason != "" || opResult.Busy {
+			if reason == "" {
+				reason = "model busy"
+			}
+			logger.Get().Infow("cluster reload deferred: model busy (R287)",
+				"backend", backendID, "model", modelName, "reason", reason)
+			return deferredReloadResult(backendID,
+				"model reload deferred: "+reason+"; retry shortly", reason)
+		}
 		result.HTTPStatus = http.StatusInternalServerError
 		result.Status = "error"
 		result.Error = opResult.Error
+		result.Reloaded = false
+		result.ChangedParams = nil
 		if opResult.Message != "" {
 			result.Message = opResult.Message
 		}
@@ -678,6 +776,33 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 		result.Message = strings.TrimSpace(result.Message + " (" + evictionNote + ")")
 	}
 	return result
+}
+
+// deferredReloadResult — R287: единый вид «операция отложена».
+//
+// Отложенность — это НЕ провал и НЕ успех: ничего не применено, но и ломать
+// нечего. Поэтому 503 + deferred + reason + retryAfter и ни одного поля успеха —
+// иначе клиент получает противоречивый ответ (живой дефект: 500 «busy» вместе с
+// reloaded:true в одном теле).
+func deferredReloadResult(backendID, message, reason string) clusterReloadModelBackendResult {
+	return clusterReloadModelBackendResult{
+		BackendID:      backendID,
+		Status:         "deferred",
+		Message:        message,
+		HTTPStatus:     http.StatusServiceUnavailable,
+		Deferred:       true,
+		DeferredReason: reason,
+		RetryAfterSec:  30,
+	}
+}
+
+// loadedParamsContextLabel — как показать загруженное окно в логе («unknown»,
+// если cppworker его не сообщил).
+func loadedParamsContextLabel(p loadedModelParams) string {
+	if !p.ContextKnown {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d", p.ContextSize)
 }
 
 // isModelLoaded — проверяет, загружена ли модель на бэкенде (через cluster state).

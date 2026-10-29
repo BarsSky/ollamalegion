@@ -243,6 +243,17 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendForModelWithNCtx(model string, re
 	}
 	allowed := lr.proxy.getAllowedTypesList(types.BackendTypeLlamaCpp)
 	if id, why := lr.proxy.selectModelCopyForWindow(model, requestedNCtx, nil, allowed); id != "" {
+		// R293 (2026-10-29): если выбранная копия НЕ покрывает окно клиента, то
+		// прежний путь означал «перезагрузить модель ЗДЕСЬ» — в том числе когда
+		// на этом узле идёт чужой стрим, и он обрывался с «upstream completion».
+		// Сначала пробуем разместить модель на другом свободном узле, где файл
+		// есть и ресурсов хватает; перезагрузка здесь — только если такого нет.
+		if !lr.proxy.modelCopyCoversWindow(id, model, requestedNCtx) {
+			if alt, reason := lr.proxy.findPlacementOverReloadR293(model, requestedNCtx, id); alt != "" {
+				logPlacementOverReloadR293(model, id, alt, reason, requestedNCtx)
+				return alt
+			}
+		}
 		logger.Get().Infow(i18n.T("balancer.model_copy_window.llamacpp_info"),
 			"model", model, "backend", id, "requested_n_ctx", requestedNCtx, "reason", why)
 		return id

@@ -253,6 +253,10 @@ services:
       # R291: сколько максимум ждать стримы в HTTP-ответе; больше — отвечаем
       # «отложено» сразу (иначе кнопка reload «думает две минуты»). 0 = сразу.
       - LB_RELOAD_DEFER_FAST_FAIL_SEC=${LB_RELOAD_DEFER_FAST_FAIL_SEC:-5}
+      # R293: при несовпадении окна/параметров сначала пробовать ДРУГОЙ
+      # свободный узел с файлом модели, а не перезагружать тот, где идёт чужой
+      # стрим. 1 = разрешено (дефолт), 0 = прежнее поведение (reload на месте).
+      - LB_PLACE_OVER_RELOAD=${LB_PLACE_OVER_RELOAD:-1}
       - LB_NCTX_RELOAD_ASYNC=${LB_NCTX_RELOAD_ASYNC:-1}
       # Пусто = ждать терминального состояния перезагрузки (без капа).
       - LB_NCTX_PREFLIGHT_WAIT_SEC=${LB_NCTX_PREFLIGHT_WAIT_SEC:-}

@@ -30,8 +30,35 @@ import (
 
 // Proxy - HTTP прокси для балансировки запросов
 type Proxy struct {
-	config     *types.LoadBalancerConfig
-	backends   map[string]*BackendState
+	config   *types.LoadBalancerConfig
+	backends map[string]*BackendState
+
+	// mu — КОРНЕВОЙ лок реестра бэкендов.
+	//
+	// LOCK ORDER (R284, 2026-10-29). Порядок захвата СТРОГО:
+	//
+	//	p.mu  ->  state.mu  ->  (чужие локи: metricsMgr.mu, sessionMgr, ...)
+	//
+	// Обратный порядок запрещён: если кто-то держит state.mu и берёт p.mu,
+	// получается инверсия и вечный дедлок (R91 описал это для metricsMgr.mu).
+	//
+	// ПОД p.mu НЕЛЬЗЯ: сеть, диск, HTTP-вызовы, ожидание каналов, time.Sleep и
+	// вызовы методов, которые сами берут p.mu. sync.RWMutex НЕ рекурсивен: если
+	// горутина, держащая RLock, возьмёт RLock ещё раз, а между ними встанет
+	// писатель (Lock), второй RLock не выдадут НИКОГДА — писатель ждёт первого
+	// читателя, читатель ждёт писателя. Ровно это положило балансер под
+	// нагрузкой агентских метрик (R284): selectByResourcesExcluding держал RLock
+	// и вызывал checkResourceLimits, который брал RLock повторно, а писатель
+	// (UpdateBackendAgentStatus на каждый POST метрик) уже ждал.
+	//
+	// Правила для новых мест:
+	//  1. под p.mu — только работа с памятью;
+	//  2. методы с суффиксом ...Locked НЕ берут p.mu и требуют, чтобы вызывающий
+	//     уже держал его (checkResourceLimitsLocked, findBackendWithModelExcludingLocked);
+	//  3. публичный метод, который может быть вызван из-под лока, обязан иметь
+	//     ...Locked-вариант, а не «предполагать, что лок свободен»;
+	//  4. сторож — lockorder_r284_test.go: он статически ищет в пакете пары
+	//     «держит p.mu -> вызывает метод, берущий p.mu» и падает на них.
 	mu         sync.RWMutex
 	roundRobin int
 	sessionMgr *SessionManager

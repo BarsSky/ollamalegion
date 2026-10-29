@@ -24,6 +24,19 @@ import (
 // Не зависит от состояния бэкендов. Используется в Docker healthcheck
 // (`/api/v1/health` может вернуть 503 в режиме degraded, что вызывает
 // restart loop до того, как бэкенды успели зарегистрироваться).
+//
+// R284 (2026-10-29): но «HTTP-сервер жив» ≠ «балансер работает». Живой дефект:
+// балансер вставал в дедлок на p.mu, /api/v1/health не отвечал вовсе (000), а
+// контейнер оставался healthy — healthcheck ходил сюда, а этот обработчик лок не
+// трогал. Теперь пинг ДОПОЛНИТЕЛЬНО проверяет, что p.mu берётся за
+// lockProbeBudget: если нет — 503 reason=lock_stuck, и Docker перезапустит
+// контейнер вместо того, чтобы показывать оператору зелёный статус мёртвого API.
+const pingLockProbeBudget = 2 * time.Second
+
+// healthLockProbeBudget — бюджет пробы лока для «глубокого» health. Дольше ping,
+// потому что сюда ходят люди и мониторинг, а не Docker с интервалом 10 с.
+const healthLockProbeBudget = 3 * time.Second
+
 func (s *Server) pingHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -31,15 +44,51 @@ func (s *Server) pingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+
+	if s.proxy != nil {
+		if ok, waited := s.proxy.ProbeLocksHealthy(pingLockProbeBudget); !ok {
+			// Не «healthy»: лок не берётся, значит кластерное состояние отдать
+			// невозможно и все запросы, которым нужен p.mu, уже стоят.
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"stuck","reason":"lock_stuck","lock_wait_ms":` +
+				itoa(int(waited/time.Millisecond)) + `}`))
+			return
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
 // healthHandler - глубокая проверка здоровья API (Docker healthcheck)
+//
+// R284 (2026-10-29): СНАЧАЛА проба лока. Раньше первым делом вызывался
+// GetClusterState, который берёт p.mu.RLock: при дедлоке обработчик вставал
+// навсегда, клиент получал 000 (таймаут), и «глубокий health» не мог сказать
+// причину. Теперь причина называется прямо: reason=lock_stuck.
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	if s.proxy != nil {
+		if ok, waited := s.proxy.ProbeLocksHealthy(healthLockProbeBudget); !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			encoder := json.NewEncoder(w)
+			encoder.SetIndent("", "  ")
+			_ = encoder.Encode(map[string]interface{}{
+				"status":        "unhealthy",
+				"reason":        "lock_stuck",
+				"lockWaitMs":    int(waited / time.Millisecond),
+				"timestamp":     time.Now().UTC(),
+				"detail":        "балансер держит p.mu дольше бюджета пробы: HTTP-сервер жив, кластерное состояние недоступно",
+				"lockBudgetSec": int(healthLockProbeBudget / time.Second),
+			})
+			return
+		}
 	}
 
 	state := s.proxy.GetClusterState()

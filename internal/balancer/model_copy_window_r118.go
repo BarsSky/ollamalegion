@@ -114,7 +114,7 @@ func (p *Proxy) collectModelCopyCandidates(modelName string, exclude map[string]
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 		state.mu.Lock()

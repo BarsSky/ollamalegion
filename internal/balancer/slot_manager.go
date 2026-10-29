@@ -95,16 +95,41 @@ func (p *Proxy) releaseSlot(backendID string) {
 	p.admission.broadcast()
 }
 
-// checkResourceLimits - проверка лимитов ресурсов (SOFT-режим)
+// checkResourceLimits - проверка лимитов ресурсов (SOFT-режим).
+//
+// R284 (2026-10-29): ВНЕШНЯЯ обёртка. Внутри — checkResourceLimitsLocked, которая
+// НЕ берёт p.mu и требует, чтобы вызывающий уже держал p.mu (RLock).
+//
+// ЗАЧЕМ РАЗДЕЛЕНИЕ. Раньше эта функция брала p.mu.RLock сама, а её вызывали
+// селекторы, которые УЖЕ держат p.mu.RLock (expandCandidates, selectByResources,
+// selectBackendExcluding и ещё 9 мест). Получался рекурсивный RLock — а он не
+// рекурсивен по контракту sync.RWMutex: если между первым и вторым RLock встаёт
+// писатель, второй RLock не выдаётся НИКОГДА (писатель ждёт первого читателя,
+// новые читатели ждут писателя). Живое следствие: под нагрузкой агентских метрик
+// (каждый POST -> UpdateBackendAgentStatus -> p.mu.Lock) балансер вставал
+// навсегда, при этом контейнер оставался «healthy», потому что healthcheck ходит
+// на /api/v1/ping, который p.mu не трогает. Подробности и регрессионный тест —
+// lock_deadlock_r284_test.go.
 func (p *Proxy) checkResourceLimits(backendID string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.checkResourceLimitsLocked(backendID)
+}
+
+// checkResourceLimitsLocked — та же проверка без захвата p.mu.
+//
+// ИНВАРИАНТ: вызывающий обязан держать p.mu (RLock или Lock). Внутри берутся
+// только ЧУЖИЕ локи (metricsMgr.mu, state.mu) в порядке p.mu -> они, как и во
+// всём пакете.
+func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 	p.metricsMgr.mu.RLock()
 	metrics, ok := p.metricsMgr.metrics[backendID]
 	p.metricsMgr.mu.RUnlock()
 
 	if !ok {
-		p.mu.RLock()
+		// p.mu уже держит вызывающий — читаем карту напрямую, БЕЗ повторного
+		// RLock (именно это повторение и вешало балансер).
 		state, exists := p.backends[backendID]
-		p.mu.RUnlock()
 		if !exists {
 			return false
 		}

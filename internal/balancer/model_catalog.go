@@ -574,7 +574,7 @@ func (p *Proxy) findLeastLoadedOnDisk(modelName string, allowedTypes []types.Bac
 		if interval > 0 && time.Since(fetchedAt) > interval {
 			stale = true
 		}
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 		state.mu.Lock()

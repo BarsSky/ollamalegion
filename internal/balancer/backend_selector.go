@@ -341,13 +341,18 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 }
 
 // selectBackendExcluding - выбор бэкенда, исключая указанные
+//
+// R284 (2026-10-29): вызываем findBackendWithModelExcludingLocked, а НЕ публичную
+// версию. Раньше здесь держался p.mu.RLock и вызывалась функция, которая берёт
+// p.mu.RLock повторно — рекурсивный RLock, из-за которого под нагрузкой агентских
+// метрик весь балансер вставал навсегда (см. lock_deadlock_r284_test.go).
 func (p *Proxy) selectBackendExcluding(model string, exclude map[string]bool, bt types.BackendType) string {
 	allowedTypes := p.getAllowedTypesList(bt)
 
 	p.mu.RLock()
 
 	if p.config.Balancing.ModelAffinity && model != "" {
-		if backend := p.findBackendWithModelExcluding(model, exclude, allowedTypes); backend != "" {
+		if backend := p.findBackendWithModelExcludingLocked(model, exclude, allowedTypes); backend != "" {
 			p.mu.RUnlock()
 			return backend
 		}
@@ -361,11 +366,17 @@ func (p *Proxy) selectBackendExcluding(model string, exclude map[string]bool, bt
 	return backend
 }
 
-// findBackendWithModelExcluding - поиск бэкенда с моделью, исключая указанные
+// findBackendWithModelExcluding - поиск бэкенда с моделью, исключая указанные.
+// Берёт p.mu.RLock сам: вызывать только когда лок НЕ удерживается.
 func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[string]bool, allowedTypes []types.BackendType) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	return p.findBackendWithModelExcludingLocked(modelName, exclude, allowedTypes)
+}
 
+// findBackendWithModelExcludingLocked — тело поиска без захвата p.mu.
+// ИНВАРИАНТ: вызывающий держит p.mu (RLock).
+func (p *Proxy) findBackendWithModelExcludingLocked(modelName string, exclude map[string]bool, allowedTypes []types.BackendType) string {
 	var bestBackendID string
 	var bestScore float64 = -1
 
@@ -392,7 +403,7 @@ func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[stri
 			continue
 		}
 
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 
@@ -482,7 +493,7 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool, allowedTypes
 			continue
 		}
 
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 
@@ -551,7 +562,7 @@ func (p *Proxy) findLeastLoadedBackendWithModel(modelName string, allowedTypes [
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 		state.mu.Lock()
@@ -610,7 +621,7 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 
@@ -675,7 +686,7 @@ func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string, all
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 
@@ -780,7 +791,7 @@ func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.Back
 			continue
 		}
 
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 
@@ -874,7 +885,7 @@ func (p *Proxy) findFreeBackendForModelUnsafe(model string, allowedTypes []types
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 		state.mu.Lock()
@@ -937,7 +948,7 @@ func (p *Proxy) selectFreeBackendAny(allowedTypes []types.BackendType) string {
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 
@@ -1003,7 +1014,7 @@ func (p *Proxy) selectByResources(allowedTypes []types.BackendType) string {
 			continue
 		}
 
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 

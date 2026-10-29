@@ -82,7 +82,7 @@ func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendT
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
-		if !p.checkResourceLimits(id) {
+		if !p.checkResourceLimitsLocked(id) {
 			continue
 		}
 

@@ -354,3 +354,31 @@ problem is the pass-through, not the feature.
 per the table above) or to `.env.example` → the test stays green. If you add it
 only to the code, the test fails with the list of variables that will never reach
 the container.
+
+---
+
+## Hot settings: registry and no-restart changes (R278)
+
+Some variables are read on EVERY request/stream, so they can be changed without
+restarting the container — through the balancer settings registry.
+
+**Source priority** (highest first): value written from WebUI/API → `env` value
+→ code default. `env` stays the DEFAULT; the operator's choice wins.
+
+**Where the written value lives.** `settings-overrides.json` next to
+`state.json` (writable volume `/app/data`). It survives restarts; `env` is
+never overwritten.
+
+**API.** `GET /api/v1/settings`, `PUT /api/v1/settings` with
+`{"name":"LB_...","value":123}`, `POST /api/v1/settings/reset` with
+`{"name":"LB_..."}` or `{}` (all).
+
+**Hot variables (stage 2):** `LB_STREAM_MAX_LINE_BYTES`,
+`LB_OPENAI_AUTO_STREAM_MAX_SEC`, `LB_OPENAI_AUTO_STREAM_MAX_BYTES`,
+`LB_OPENAI_AUTO_STREAM_KEEPALIVE_SEC`, `LB_TOOL_CALL_BUFFER_BYTES`,
+`LB_RELOAD_DEFER_MAX_SEC`, `LB_ADMISSION_WAIT_SEC`,
+`LB_LLAMA_UPSTREAM_TTL_SEC`.
+
+**Not hot.** Ports, http.Server timeouts, paths and anything used while
+constructing the server are not in the registry: PUT returns 400 "requires
+restart" instead of pretending it applied.

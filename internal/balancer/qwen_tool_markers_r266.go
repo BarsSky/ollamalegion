@@ -27,10 +27,10 @@
 package balancer
 
 import (
-	"os"
 	"sort"
-	"strconv"
 	"strings"
+
+	"ollama-loadbalancer/internal/settings"
 )
 
 // qwenServiceMarkers — ОДИН список служебных меток для всех путей: ядро
@@ -159,15 +159,14 @@ func splitMarkerSuffixLen(s string) int {
 // сотни строк, и буфер ВЫБРАСЫВАЛСЯ. Теперь предел настраивается
 // (LB_TOOL_CALL_BUFFER_BYTES, дефолт 64 КиБ), а при превышении текст не
 // теряется — см. flushBufferedContentAsChunk.
+//
+// R278: значение из реестра настроек (override из WebUI → env → дефолт), то есть
+// меняется без рестарта. Лояльность к мусору (<4 КиБ → дефолт) живёт в
+// settings.NormalizeEnv.
 func toolCallBufferLimit() int {
 	const def = 64 * 1024
-	raw := strings.TrimSpace(os.Getenv("LB_TOOL_CALL_BUFFER_BYTES"))
-	if raw == "" {
-		return def
+	if v, ok := settings.HotInt("LB_TOOL_CALL_BUFFER_BYTES"); ok {
+		return int(v)
 	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 4096 {
-		return def
-	}
-	return n
+	return def
 }

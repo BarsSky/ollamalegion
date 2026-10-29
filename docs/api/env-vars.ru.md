@@ -353,3 +353,36 @@ curl -s localhost:18092/api/models | jq '.feasible_max_context, .gguf_max_contex
 **Добавляете новую переменную.** Прочитали в коде → добавили в compose (форма по
 таблице выше) или в `.env.example` → тест зелёный. Если добавили только в код,
 тест упадёт со списком переменных, которые никогда не доедут до контейнера.
+
+---
+
+## Горячие настройки: реестр и изменение без рестарта (R278)
+
+Часть переменных читается НА КАЖДЫЙ запрос/стрим, поэтому их можно менять без
+перезапуска контейнера — через реестр настроек балансера.
+
+**Приоритет источников** (сверху вниз): значение, записанное из WebUI/API →
+значение из env → дефолт из кода. То есть env остаётся ДЕФОЛТОМ, а решение
+оператора из интерфейса побеждает.
+
+**Где хранится записанное значение.** `settings-overrides.json` рядом со
+`state.json` (writable-том `/app/data`). Файл переживает рестарт; `env`
+при этом не перезаписывается.
+
+**API.**
+
+    GET  /api/v1/settings        — список: name, type, group, description,
+                                   hotReload, default, effective, source
+    PUT  /api/v1/settings        — {"name":"LB_...","value":123}
+    POST /api/v1/settings/reset  — {"name":"LB_..."} или {} (все)
+
+**Горячие переменные этапа 2:** `LB_STREAM_MAX_LINE_BYTES`,
+`LB_OPENAI_AUTO_STREAM_MAX_SEC`, `LB_OPENAI_AUTO_STREAM_MAX_BYTES`,
+`LB_OPENAI_AUTO_STREAM_KEEPALIVE_SEC`, `LB_TOOL_CALL_BUFFER_BYTES`,
+`LB_RELOAD_DEFER_MAX_SEC`, `LB_ADMISSION_WAIT_SEC`,
+`LB_LLAMA_UPSTREAM_TTL_SEC`.
+
+**Что НЕ горячее.** Порты, таймауты http.Server, пути и всё, что участвует в
+конструировании сервера, в реестр не входит: PUT по такому имени отвечает
+400 с текстом «требует рестарта», чтобы WebUI не показывал кнопку, которая
+ничего не меняет.

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,6 +21,7 @@ import (
 	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/internal/rpccoordinator"
 	"ollama-loadbalancer/internal/runtimeoverrides"
+	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 	"ollama-loadbalancer/pkg/version"
@@ -211,6 +213,19 @@ func main() {
 		fmt.Printf("  image policy: %s (coexistence=%s)\n",
 			imageResourcesStore.Path(), conf.Balancing.Image.EffectiveCoexistencePolicy())
 	}
+
+	// R278 (2026-10-29): реестр «горячих» настроек.
+	//
+	// Инициализируется ДО прокси и хендлеров: геттеры в коде спрашивают реестр на
+	// каждом запросе (см. internal/settings), а API `/api/v1/settings` — прямо
+	// из обработчиков. Override-файл кладём рядом со state.json: тот же
+	// writable-том, поэтому решения оператора переживают рестарт контейнера.
+	// Пустой/битый файл не фатален — реестр продолжает работать на env/дефолтах.
+	settingsPath := ""
+	if conf.LoadBalancer.StatePath != "" {
+		settingsPath = filepath.Join(filepath.Dir(conf.LoadBalancer.StatePath), settings.FileName)
+	}
+	settings.Init(settingsPath)
 
 	// Создание прокси
 	proxy := balancer.NewProxy(conf)

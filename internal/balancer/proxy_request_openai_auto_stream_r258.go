@@ -27,11 +27,10 @@ import (
 	"bufio"
 	"fmt"
 	"net/http"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -49,18 +48,17 @@ const (
 //
 // env: LB_OPENAI_AUTO_STREAM_MAX_SEC / LB_OPENAI_AUTO_STREAM_MAX_BYTES.
 // Значение <= 0 отключает соответствующий предел (осознанный выбор оператора).
+//
+// R278: оба предела берутся из реестра настроек (override из WebUI → env →
+// дефолт) и применяются без рестарта.
 func autoStreamLimits() (time.Duration, int64) {
-	maxSec := defaultAutoStreamMaxSec
-	if v := strings.TrimSpace(os.Getenv("LB_OPENAI_AUTO_STREAM_MAX_SEC")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			maxSec = n
-		}
+	maxSec := int64(defaultAutoStreamMaxSec)
+	if v, ok := settings.HotInt("LB_OPENAI_AUTO_STREAM_MAX_SEC"); ok {
+		maxSec = v
 	}
 	maxBytes := int64(defaultAutoStreamMaxBytes)
-	if v := strings.TrimSpace(os.Getenv("LB_OPENAI_AUTO_STREAM_MAX_BYTES")); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			maxBytes = n
-		}
+	if v, ok := settings.HotInt("LB_OPENAI_AUTO_STREAM_MAX_BYTES"); ok {
+		maxBytes = v
 	}
 	return time.Duration(maxSec) * time.Second, maxBytes
 }

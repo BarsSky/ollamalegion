@@ -28,12 +28,10 @@ package balancer
 
 import (
 	"context"
-	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -187,16 +185,19 @@ func (p *Proxy) recentDestructiveOpR271(backendID, model string, window time.Dur
 //
 // 0 означает «не ждать»: при активных стримах разрушительная операция
 // пропускается сразу (полезно для тестов и для стендов, где ждать нельзя).
+//
+// R278: значение из реестра настроек (override из WebUI → env → дефолт). Это
+// тот случай, где hot-apply особенно полезен: оператор может временно увеличить
+// ожидание, не перезапуская контейнер и не теряя активные стримы.
 func reloadDeferMaxWaitR271() time.Duration {
-	raw := strings.TrimSpace(os.Getenv("LB_RELOAD_DEFER_MAX_SEC"))
-	if raw == "" {
+	v, ok := settings.HotInt("LB_RELOAD_DEFER_MAX_SEC")
+	if !ok {
 		return 120 * time.Second
 	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 {
+	if v < 0 {
 		return 120 * time.Second
 	}
-	return time.Duration(n) * time.Second
+	return time.Duration(v) * time.Second
 }
 
 // waitStreamsIdleR271 — дождаться, пока на бэкенде не останется активных

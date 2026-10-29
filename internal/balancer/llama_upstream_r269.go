@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -80,8 +81,11 @@ func llamaUpstreamConfigFromEnv() llamaUpstreamConfig {
 			cfg.Enabled = false
 		}
 	}
-	if n, ok := intFromEnv("LB_LLAMA_UPSTREAM_TTL_SEC"); ok && n > 0 {
-		cfg.TTLSec = n
+	// R278: TTL — «горячая» настройка (реестр: override из WebUI → env →
+	// дефолт), поэтому её можно менять без пересборки и без рестарта: конфиг
+	// перечитывается на каждом тике трекера.
+	if n, ok := settings.HotInt("LB_LLAMA_UPSTREAM_TTL_SEC"); ok && n > 0 {
+		cfg.TTLSec = int(n)
 	}
 	if n, ok := intFromEnv("LB_LLAMA_UPSTREAM_TIMEOUT_SEC"); ok && n > 0 {
 		cfg.TimeoutSec = n

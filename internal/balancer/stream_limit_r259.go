@@ -22,9 +22,9 @@ package balancer
 import (
 	"context"
 	"errors"
-	"os"
-	"strconv"
 	"strings"
+
+	"ollama-loadbalancer/internal/settings"
 )
 
 // streamMaxLineBytesDefault — дефолтный лимит одной строки SSE.
@@ -33,20 +33,16 @@ import (
 // (правка файла, base64), а прежний 1 МиБ рвался на них.
 const streamMaxLineBytesDefault = 8 << 20
 
-// streamMaxLineBytes — лимит одной строки SSE из env.
+// streamMaxLineBytes — лимит одной строки SSE.
 //
-// LB_STREAM_MAX_LINE_BYTES: меньше 64 КиБ игнорируется (иначе стенд сломается на
-// первом же большом чанке), нечисловое — дефолт.
+// R278: значение берётся из реестра настроек (override из WebUI → env →
+// дефолт), поэтому меняется без рестарта. Лояльность к мусору осталась в
+// settings.NormalizeEnv: меньше 64 КиБ и нечисловое значение → дефолт.
 func streamMaxLineBytes() int {
-	raw := strings.TrimSpace(os.Getenv("LB_STREAM_MAX_LINE_BYTES"))
-	if raw == "" {
-		return streamMaxLineBytesDefault
+	if v, ok := settings.HotInt("LB_STREAM_MAX_LINE_BYTES"); ok {
+		return int(v)
 	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 64*1024 {
-		return streamMaxLineBytesDefault
-	}
-	return n
+	return streamMaxLineBytesDefault
 }
 
 // Причины завершения стрима (R259). Значения идут в лог и в текст клиенту,

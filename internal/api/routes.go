@@ -55,6 +55,15 @@ func (s *Server) setupRoutes() {
 	// списка бэкендов). С аутентификацией: это состояние инфраструктуры.
 	s.mux.Handle("/api/v1/llama-version", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.llamaVersionHandler), s.rateLimiter), s.authenticator))
 
+	// R278 (2026-10-29): реестр «горячих» настроек (этап 2 аудита настроек WebUI).
+	//
+	// Отдельный API, а не PUT /api/v1/cluster/config: настройки реестра
+	// применяются НА ЛЕТУ и хранятся в собственном override-файле, а не в
+	// config.json. Смешивать их с полным конфигом — снова получить «сохранил
+	// конфиг, а применилось не то».
+	s.mux.Handle("/api/v1/settings", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.settingsHandler), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/settings/reset", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.settingsResetHandler), s.rateLimiter), s.authenticator))
+
 	// R234 (2026-10-24): язык логов и ошибок. GET отдаёт действующий язык
 	// (его читают воркеры: cppworker/agent синхронизируются с балансером),
 	// PUT переключает язык на лету и сохраняет в config.logging.language.

@@ -31,12 +31,10 @@ package balancer
 
 import (
 	"net/http"
-	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -54,22 +52,22 @@ const autoStreamKeepaliveMinSec = 2
 //
 // Мусор в переменной не выключает защиту: неизвестное значение трактуем как
 // дефолт, иначе опечатка в .env тихо вернула бы дефект «клиент отваливается».
+//
+// R278: значение из реестра настроек (override → env → дефолт), поэтому
+// меняется без рестарта; нормализация (мусор → дефолт, <2 с → 2 с) живёт в
+// settings.NormalizeEnv, а не здесь.
 func autoStreamKeepaliveInterval() time.Duration {
-	raw := strings.TrimSpace(os.Getenv("LB_OPENAI_AUTO_STREAM_KEEPALIVE_SEC"))
-	if raw == "" {
+	v, ok := settings.HotInt("LB_OPENAI_AUTO_STREAM_KEEPALIVE_SEC")
+	if !ok {
 		return autoStreamKeepaliveDefaultSec * time.Second
 	}
-	n, err := strconv.Atoi(raw)
-	if err != nil {
-		return autoStreamKeepaliveDefaultSec * time.Second
-	}
-	if n <= 0 {
+	if v <= 0 {
 		return 0
 	}
-	if n < autoStreamKeepaliveMinSec {
-		n = autoStreamKeepaliveMinSec
+	if v < autoStreamKeepaliveMinSec {
+		v = autoStreamKeepaliveMinSec
 	}
-	return time.Duration(n) * time.Second
+	return time.Duration(v) * time.Second
 }
 
 // bodyKeepalive — периодическая запись пробельного байта в тело ответа.

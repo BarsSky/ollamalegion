@@ -48,6 +48,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -79,22 +80,22 @@ const (
 //	LB_ADMISSION_WAIT_SEC=N — N секунд; 0 = не ждать (прежнее поведение);
 //	отрицательное = ждать до отмены клиентом (ограничено разумным максимумом).
 //	По умолчанию 300s.
+//
+// R278: значение из реестра настроек (override из WebUI → env → дефолт), то есть
+// меняется без рестарта. Трактовка «отрицательное = до отмены, но не дольше
+// 30 минут» оставлена здесь, а не в реестре: это смысл флага, а не валидация.
 func AdmissionWaitTimeout() time.Duration {
-	v := strings.TrimSpace(os.Getenv("LB_ADMISSION_WAIT_SEC"))
-	if v == "" {
-		return admissionWaitDefaultSec * time.Second
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
+	v, ok := settings.HotInt("LB_ADMISSION_WAIT_SEC")
+	if !ok {
 		return admissionWaitDefaultSec * time.Second
 	}
 	switch {
-	case n == 0:
+	case v == 0:
 		return 0
-	case n < 0:
+	case v < 0:
 		return 30 * time.Minute
 	default:
-		return time.Duration(n) * time.Second
+		return time.Duration(v) * time.Second
 	}
 }
 

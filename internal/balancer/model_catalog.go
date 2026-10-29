@@ -561,6 +561,12 @@ func (p *Proxy) findLeastLoadedOnDisk(modelName string, allowedTypes []types.Bac
 		if exclude[id] {
 			continue
 		}
+		// R304: «на этом узле есть файл модели» — ещё не «здесь можно загрузить».
+		// Файл лежит и на доноре, но его VRAM занята слоями модели мастера:
+		// загрузка туда падает по памяти либо вытесняет мастера.
+		if p.cannotHostModelR304(id) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}

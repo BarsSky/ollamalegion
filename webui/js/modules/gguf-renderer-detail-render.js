@@ -1,4 +1,4 @@
-﻿/**
+/**
  * gguf-renderer-detail-render.js — Right panel render functions for gguf-renderer.
  *
  * R57.5f (2026-09-03): extracted from webui/js/modules/gguf-renderer.js.
@@ -486,6 +486,12 @@
                 hint +
             '</div>' + note;
         }
+        // R304: донор не поднимает свои копии — состояние берём ОДИН раз на
+        // отрисовку списка (не внутри map и без нового запроса: см.
+        // M.donorMarkFor, источник — уже загруженный список бэкендов).
+        const donorBlocked = (typeof M.loadBlockedByDonor === 'function')
+            ? M.loadBlockedByDonor(state.selectedBackendId)
+            : false;
         return note + models.map(function (m, idx) {
             const name = m.name || m.filename || m.path || '-';
             const size = m.size ? formatFileSize(m.size) : '-';
@@ -541,9 +547,18 @@
                             : '<button class="btn btn-sm btn-danger gguf-unload-btn" data-admin-only data-handle="' + Utils.escapeHtml(loadedHandleFor(name)) + '">' +
                                 '<i class="fas fa-stop"></i> ' + _('gguf.unload_model') +
                               '</button>')
-                        : '<button class="btn btn-sm btn-primary gguf-load-btn" data-admin-only data-idx="' + idx + '">' +
-                            '<i class="fas fa-play"></i> ' + _('gguf.load_model') +
-                          '</button>') +
+                        : (donorBlocked
+                            // R304: у донора вместо кнопки — причина. Кнопку не
+                            // гасим «молча»: оператор должен прочитать, ПОЧЕМУ
+                            // здесь нельзя грузить (VRAM отдана мастеру), и что
+                            // делать (снять роль донора).
+                            ? '<span class="gguf-donor-note" style="display:inline-flex;align-items:center;gap:6px;font-size:var(--font-size-xs);color:var(--warning, #e0a030);max-width:320px;">' +
+                                '<i class="fas fa-shield-halved"></i>' +
+                                Utils.escapeHtml(_('models.donor_load_blocked', 'Донор не поднимает свои копии моделей: его VRAM отдана мастеру через rpc-server.')) +
+                              '</span>'
+                            : '<button class="btn btn-sm btn-primary gguf-load-btn" data-admin-only data-idx="' + idx + '">' +
+                                '<i class="fas fa-play"></i> ' + _('gguf.load_model') +
+                              '</button>')) +
                     '<button class="btn btn-sm btn-secondary gguf-delete-btn" data-admin-only data-idx="' + idx + '" title="' + _('gguf.delete_model') + '">' +
                         '<i class="fas fa-trash"></i>' +
                     '</button>' +

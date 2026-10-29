@@ -35,6 +35,10 @@ func (p *Proxy) initBackendGroupsR92(cfg types.BalancingSettings) {
 	}
 	groups := cfg.BackendGroups
 	p.backendGroups = backendgroup.NewWithModelInfo(groups, p.groupMemberInfoR92, p.groupModelInfoR104)
+	// R304: тот же момент (старт и перезагрузка конфига) — правильное место для
+	// снимка ролей: роли приходят из state.json и persistent-оверрайдов, и
+	// горячий путь не должен успеть увидеть пустой снимок.
+	p.rebuildDonorIndexR304()
 	if len(groups) == 0 {
 		return
 	}

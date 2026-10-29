@@ -113,6 +113,63 @@ const Renderers = (function () {
         return badge(statusLabel(status), type);
     }
 
+    // ==== R304 (2026-10-30): донор держит ТОЛЬКО память ====
+    //
+    // ЗАЧЕМ. Доктрина оператора: «если бэкенд становится донором, он уже не
+    // может подымать свои копии моделей — он становится именно донором мастера
+    // и может только делить память с мастером». Панель обязана называть роль и
+    // мастера ТАМ ЖЕ, где стоит статус узла: иначе «донор» на странице
+    // «Мониторинг» и кнопка «Загрузить» на странице «Модели» — противоречие,
+    // которое читается как ошибка интерфейса, а не как нарушение роли.
+    //
+    // ЧТО БЫЛО НЕ ТАК. Пометки донора в списке не было вообще: роль жила только
+    // в панели раскладки (js/monitor/layout-panel.js), а «Бэкенды»/«Дашборд»
+    // показывали донора обычным здоровым узлом. Разбор роли — в Utils.donorMark
+    // (один разбор на всю панель; там же fallback для старого балансера).
+    function donorMarkOf(backend, backends) {
+        return (typeof Utils.donorMark === 'function') ? Utils.donorMark(backend, backends) : null;
+    }
+
+    // donorBadgeHtml — бейджи роли донора рядом со статусом.
+    //   badge-info    — «⛓ донор (мастер: X)»;
+    //   badge-warning — «своя копия: N», если донор вопреки роли держит копию
+    //                   (title перечисляет имена: N без имён — загадка).
+    function donorBadgeHtml(backend, backends) {
+        const dm = donorMarkOf(backend, backends);
+        if (!dm) return '';
+        const label = dm.master
+            ? _t('backends.donor_badge', { master: dm.master })
+            : _t('backends.donor_badge_no_master');
+        let html = ' <span class="badge badge-info">⛓ ' + escapeHtml(label) + '</span>';
+        if (dm.ownCopies.length > 0) {
+            html += ' <span class="badge badge-warning" title="' +
+                escapeHtml(dm.ownCopies.join(', ')) + '">' +
+                escapeHtml(_t('backends.donor_own_copies', { count: dm.ownCopies.length })) + '</span>';
+        }
+        return html;
+    }
+
+    // donorDetailHtml — секция в раскрытой строке бэкенда: чей это донор и что
+    // делать, если он держит свою копию (выгрузить или снять роль — решение
+    // оператора, поэтому это предупреждение, а не автоматическая уборка).
+    function donorDetailHtml(backend, backends) {
+        const dm = donorMarkOf(backend, backends);
+        if (!dm) return '';
+        const mainLine = dm.master
+            ? _t('backends.donor_detail', { master: dm.master })
+            : _t('backends.donor_detail_no_master');
+        let inner = '<div class="be-param-item" style="grid-column:1/-1;">' +
+            '<span class="be-param-value">' + escapeHtml(mainLine) + '</span></div>';
+        if (dm.ownCopies.length > 0) {
+            inner += '<div class="be-param-item" style="grid-column:1/-1;">' +
+                '<span class="be-param-value" style="color:var(--warning);">⚠ ' +
+                escapeHtml(_t('backends.donor_violation', { names: dm.ownCopies.join(', ') })) +
+                '</span></div>';
+        }
+        return '<div class="be-detail-section"><div class="be-detail-title">' +
+            _t('backends.donor_section') + '</div><div class="be-params-grid">' + inner + '</div></div>';
+    }
+
     function loading(text) {
         if (!text) text = _t('renderers.loading_data');
         return `<div class="loading">${escapeHtml(text)}</div>`;
@@ -764,7 +821,7 @@ const Renderers = (function () {
             return `
                 <tr>
                     <td><div class="backend-id-cell"><span class="backend-id-name">${escapeHtml(b.id)}</span><div class="backend-id-badges">${getBackendTypeBadge(b)} ${getBackendModeBadge(b)}</div></div></td>
-                    <td>${statusBadge(b.status)}</td>
+                    <td>${statusBadge(b.status)}${donorBadgeHtml(b, backends)}</td>
                     <td>${escapeHtml(gpuUsage)}${gpuHidden}</td>
                     <td>${escapeHtml(vramPercent)}</td>
                     <td>${escapeHtml(cpuUsage)}</td>
@@ -1118,7 +1175,7 @@ const Renderers = (function () {
             // (без агента) в этой колонке стояло «01.01.1, 02:30:17».
             const lastContact = Utils.formatDate(b.lastAgentContact);
             const maxModels = b.runtimeMaxModels || b.maxModels || b.ollama?.maxModels || '-';
-            const detailsHtml = renderOllamaParams(b);
+            const detailsHtml = renderOllamaParams(b) + donorDetailHtml(b, backends);
             const rowId = 'be-row-' + idx;
             const safeId = escapeHtml(b.id);
             // R-Image (2026-10-02): у image-бэкенда порт воркера - imagePort.
@@ -1196,7 +1253,7 @@ const Renderers = (function () {
                         ? ' <span class="badge badge-warning" title="' +
                           escapeHtml(b.disabledReason || _t('backends.excluded_hint')) + '">' +
                           escapeHtml(_t('backends.excluded')) + '</span>'
-                        : ''}</td>
+                        : ''}${donorBadgeHtml(b, backends)}</td>
                     <td class="col-right" style="min-width:140px;max-width:240px;">${loadingCell}</td>
                     <td>
                         <button class="action-btn edit" data-admin-only onclick="event.stopPropagation(); ui.editBackend('${safeId}')">${_t('common.edit')}</button>
@@ -1661,6 +1718,11 @@ const Renderers = (function () {
     function modelsGrid(allModels, backendMap) {
         if (!allModels.length) return loading(_t('models.no_models'));
 
+        // R304: список бэкендов для поиска мастера — из уже собранного backendMap
+        // (тот же набор записей, что пришёл в modelsPage). Второй источник не
+        // заводим: master-по-роли — fallback внутри Utils.donorMark.
+        const _backendList = Object.keys(backendMap || {}).map(function (k) { return backendMap[k]; });
+
         return allModels.map(m => {
             // Round 18 (2026-07-10): cppworker does NOT track per-model VRAM/RAM,
             // reports 0. Show "—" instead of "0 MB" to avoid misleading operators.
@@ -1705,6 +1767,18 @@ const Renderers = (function () {
             // Для image-моделей checkbox НЕ рисуем: bulk load/unload идёт
             // ollama-путём бэкенда и image-воркер его не понимает.
             const safeNameAttr = escapeHtml(m.name);
+            // R304: у донора «Загрузить» недоступна — его VRAM отдана мастеру
+            // через rpc-server, и своя копия отнимает ровно те гигабайты, ради
+            // которых донора назначили. Кнопка остаётся на месте (не прячем:
+            // оператор должен видеть, ЧТО здесь запрещено), но гаснет и
+            // объясняет причину в title. «Выгрузить» НЕ блокируем: снять
+            // нарушающую копию — законное действие, ради него сюда и приходят.
+            const _donorMark = donorMarkOf(backend, _backendList);
+            const _donorLoadBlocked = !!(_donorMark && !_donorMark.canLoad);
+            const loadDisabledAttr = (m.backendStatus !== 'healthy' || _donorLoadBlocked) ? ' disabled' : '';
+            const loadBlockedTitleAttr = _donorLoadBlocked
+                ? ' title="' + escapeHtml(_t('models.donor_load_blocked')) + '"'
+                : '';
             // R-Image (2026-10-02): действия карточки.
             // image-модель грузит image-воркер (POST /api/v1/image/models/...), а
             // /api/v1/cluster/models/info про неё не знает - ⓘ открыл бы модал с
@@ -1720,7 +1794,7 @@ const Renderers = (function () {
                     // backend, где есть полноценное управление (load options,
                     // profiles, file management, delete).
                     ? ''
-                    : `<button class="btn btn-load" data-admin-only onclick="window.modelCardAction('load', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.load')}</button>` +
+                    : `<button class="btn btn-load" data-admin-only onclick="window.modelCardAction('load', '${safeBackend}', '${safeName}')"${loadDisabledAttr}${loadBlockedTitleAttr}>${_t('models.load')}</button>` +
                       `<button class="btn btn-unload" data-admin-only onclick="window.modelCardAction('unload', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.unload')}</button>` +
                       `<button class="btn btn-delete" data-admin-only onclick="window.modelCardAction('delete', '${safeBackend}', '${safeName}')" ${m.backendStatus !== 'healthy' ? 'disabled' : ''}>${_t('models.delete')}</button>`);
 

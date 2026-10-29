@@ -119,7 +119,8 @@ func (p *Proxy) collectPlacementCandidatesR293(model string, requiredPerSeq int,
 			continue
 		}
 		// Воркер раскладки не самостоятелен (R92) — грузить туда копию нельзя.
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		if normalizeBackendType(state.Backend.Type) != types.BackendTypeLlamaCpp {

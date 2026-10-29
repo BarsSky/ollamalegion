@@ -1,4 +1,4 @@
-﻿// js/monitor/layout-panel.js — R118.4 (2026-10-14).
+// js/monitor/layout-panel.js — R118.4 (2026-10-14).
 //
 // ЯВНОЕ УПРАВЛЕНИЕ РАСКЛАДКОЙ СЛОЁВ (RPC) ИЗ ВЕБ-ПАНЕЛИ.
 //
@@ -109,13 +109,36 @@
         (on ? '🧩 ' : '💻 ') + esc(txt) + '</span></div>';
     }
     if (role === ROLE_DONOR) {
+      // R304 (2026-10-30): чип называет МАСТЕРА, а не просто «узел раскладки».
+      // ЗАЧЕМ: донор существует только как память конкретного мастера («донор
+      // мастера X»), и без имени мастера чип не отвечал на единственный вопрос,
+      // который у оператора возникает у донора. Источник мастера — не новый
+      // поиск и не второй fetch: donorFor из API (если сервер его отдал) либо
+      // currentMainID() по уже загруженному списку — тот же расчёт, что и в
+      // остальной панели.
+      var masterID = donorMasterID(b);
+      var chipText = T('monitor.layout.donorShort', 'узел раскладки');
+      chipText += ' (' + (masterID
+        ? T('monitor.layout.donorMaster', 'мастер') + ': ' + masterID
+        : T('monitor.layout.donorNoMaster', 'мастер не назначен')) + ')';
       return '<div><span class="badge badge-blue" title="' +
         esc(T('monitor.layout.donorTitle', 'Этот узел отдаёт свои слои главному по RPC')) + '">' +
-        '🔗 ' + esc(T('monitor.layout.donorShort', 'узел раскладки')) + '</span></div>';
+        '🔗 ' + esc(chipText) + '</span></div>';
     }
     return '<div><span class="badge" style="opacity:0.75" title="' +
       esc(T('monitor.layout.localTitle', 'Раскладка не используется — считает только эта машина')) + '">' +
       '💻 ' + esc(T('monitor.layout.localShort', 'локально')) + '</span></div>';
+  }
+
+  // donorMasterID — чей это донор ('' — мастер не назначен).
+  // Порядок источников: donorFor из /api/v1/backends (новый балансер отвечает
+  // на вопрос прямо) → currentMainID() по загруженному списку (старый балансер
+  // этих полей не отдаёт). Второго источника ролей не заводим: роль по-прежнему
+  // читается только из backendRole().
+  function donorMasterID(b) {
+    var df = (b && b.donorFor) || null;
+    var id = df ? String(df.backendId || df.host || '') : '';
+    return id || currentMainID();
   }
 
   // rowLayoutCell — ячейка «Раскладка (RPC)» для строки таблицы бэкендов.

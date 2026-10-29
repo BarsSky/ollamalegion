@@ -171,6 +171,32 @@ func applyRuntimeOverrides(cfg *cppbackend.Config) []string {
 		}
 	}
 
+	// R304 (2026-10-30): РОЛЬ БЭКЕНДА — тот же контракт, что у узла выше.
+	//
+	// ЗАЧЕМ. Роль объявляет балансер, но контейнер пересоздаётся независимо от
+	// него: без файла переопределений машина после recreate снова считала бы себя
+	// «ролью без объявления» и начала бы поднимать свои копии моделей — при том
+	// что мастер уже спланировал раскладку по её памяти. Источник значения —
+	// только приказ (backendRole в PUT /config/update), env здесь принципиально
+	// не читается.
+	if raw, ok := overrides["backendRole"]; ok {
+		var role string
+		if err := json.Unmarshal(raw, &role); err != nil {
+			logger.Get().Warnw(i18n.T("cppworker.donor.role_override_unparsed"), "value", string(raw))
+		} else if norm, known := cppbackend.NormalizeBackendRole(role); !known {
+			// Неизвестное значение НЕ применяем: «donor» с опечаткой не должен
+			// ни запрещать загрузку, ни тихо превращаться в другую роль.
+			logger.Get().Warnw(i18n.T("cppworker.donor.role_unknown_value"), "value", role)
+		} else {
+			if cfg.BackendRole != norm {
+				logger.Get().Infow(i18n.T("cppworker.donor.role_applied"),
+					"config_value", cfg.BackendRole, "applied_value", norm)
+			}
+			cfg.BackendRole = norm
+			applied = append(applied, "backendRole")
+		}
+	}
+
 	// R133 (2026-10-16): САМА раскладка — кто донор — тоже приоритет над env.
 	//
 	// ЖИВОЙ ДЕФЕКТ. CPPWORKER_RPC_ENABLE=true и CPPWORKER_RPC_SERVERS=<донор> в

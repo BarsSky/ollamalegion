@@ -337,10 +337,16 @@ func (s *Server) updateBackendRole(w http.ResponseWriter, r *http.Request, backe
 		"role":    role,
 		"donors":  donors,
 		"applied": applied,
+		// R304: пометка донора сразу в ответе на смену роли. Оператор нажал
+		// «донор» — и обязан тут же узнать, что у узла осталась своя загруженная
+		// копия модели (она отнимает VRAM у мастера). Иначе это выясняется только
+		// в следующем списке бэкендов, а загрузка мастера к тому времени уже
+		// падает по памяти.
+		"donor": s.proxy.DonorMarkR304(backendID),
 		// R133: состояние СОБСТВЕННОГО узла раскладки этого бэкенда после смены
 		// роли (для донора — поднят ли rpc-server и доступен ли он с балансера).
 		// Оператору нужно видеть результат нажатия, а не догадываться.
-		"rpcNode": nodeReport,
+		"rpcNode":      nodeReport,
 		"rpcNodeCheck": "scheduled",
 	}
 	if nodeReason != "" {
@@ -707,6 +713,9 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 		if !includeUnhealthy && unhealthyStatuses[backend.Status] && strings.TrimSpace(backend.Role) == "" {
 			continue
 		}
+		// R304: пометка донора считается один раз на запись списка. Источник —
+		// снимок ролей в балансере и снапшот поллера, без походов в сеть.
+		donorMark := s.proxy.DonorMarkR304(backend.ID)
 		// R71: вместимость по единому правилу (нода-саморегистрация → n_parallel,
 		// иначе операторский runtime-лимит, иначе статический max). Отчёт должен
 		// совпадать с тем, на что реально встаёт admission-очередь.
@@ -745,6 +754,16 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			// R118: роль бэкенда в раскладке слоёв (standalone|main|donor) —
 			// её выставляет оператор из WebUI (PUT .../role).
 			"role": backend.Role,
+			// R304 (2026-10-30): донор держит ТОЛЬКО память мастера и своих
+			// копий моделей не поднимает. Панель не должна выводить это из строки
+			// роли: нужно ещё ответить «чей это донор», «можно ли ему грузить» и
+			// «держит ли он копию сейчас вопреки роли». Последнее — нарушение
+			// инварианта, и оно обязано быть видно числами, а не догадкой по
+			// соседним полям.
+			"donor":            donorMark.Donor,
+			"canLoadOwnModels": donorMark.CanHostOwnModels,
+			"ownCopies":        donorMark.OwnCopies,
+			"donorNote":        donorMark.Note,
 			// R229 (2026-10-22): тумблер раскладки оператора: auto|on|off. В панели это
 			// состояние тумблера, а не догадка по роли — иначе после «выкл» он выглядел
 			// бы включённым, потому что роль главного осталась прежней.
@@ -812,6 +831,18 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 		// сосуществования image/text (см. types.Backend.GPUIndex).
 		if backend.GPUIndex != nil {
 			backendData["gpuIndex"] = *backend.GPUIndex
+		}
+
+		// R304: у донора всегда называем мастера — и когда он назначен, и когда
+		// нет (тогда поля пустые). Панель не должна выводить это поиском по
+		// списку: список уже отфильтрован (offline-узлы с ролью показываются, а
+		// обычные — нет), и «мастер не в списке» и «мастера нет» стали бы
+		// неотличимы.
+		if donorMark.Donor {
+			backendData["donorFor"] = map[string]interface{}{
+				"backendId": donorMark.MasterBackendID,
+				"host":      donorMark.MasterHost,
+			}
 		}
 
 		// Добавление метрик если они доступны

@@ -82,6 +82,51 @@
         return state.registeredBackends.find(function (b) { return b.id === state.selectedBackendId; }) || null;
     };
 
+    // ---- R304 (2026-10-30): донор держит ТОЛЬКО память мастера ----
+    //
+    // ДОКТРИНА ОПЕРАТОРА: «если бэкенд становится донором, он уже не может
+    // подымать свои копии моделей — он становится именно донором мастера и
+    // может только делить память с мастером».
+    //
+    // ЗАЧЕМ ЗДЕСЬ, А НЕ ТОЛЬКО В РАЗМЕТКЕ. Кнопку «Загрузить» на GGUF-странице
+    // можно нажать и обойти (delegated click, восстановленная вкладка, вызов из
+    // консоли) — блокировка в разметке это удобство, а ОТКАЗ обязан жить в самом
+    // действии (loadOnSelectedBackend ниже). Оба места спрашивают один разбор —
+    // этот.
+    //
+    // Источник роли — УЖЕ загруженный список бэкендов: App.context.data (тот же
+    // /api/v1/backends, что рисует панель), запасной — state.registeredBackends
+    // (GET /api/v1/gguf/backends, там полей роли может не быть). Новый fetch не
+    // заводим: пометка не стоит лишнего запроса.
+    M.donorMarkFor = function(backendId) {
+        const state = M.state || {};
+        const id = backendId || state.selectedBackendId || '';
+        if (!id) return null;
+        const ctx = (typeof window !== 'undefined' && window.App && window.App.context &&
+            window.App.context.data && Array.isArray(window.App.context.data.backends))
+            ? window.App.context.data.backends : null;
+        const list = ctx || [];
+        let backend = null;
+        for (let i = 0; i < list.length; i++) {
+            if (list[i] && list[i].id === id) { backend = list[i]; break; }
+        }
+        if (!backend) {
+            const reg = Array.isArray(state.registeredBackends) ? state.registeredBackends : [];
+            for (let j = 0; j < reg.length; j++) {
+                if (reg[j] && reg[j].id === id) { backend = reg[j]; break; }
+            }
+        }
+        if (!backend) return null;
+        const U = (typeof window !== 'undefined' && window.Utils) ? window.Utils : null;
+        return (U && typeof U.donorMark === 'function') ? U.donorMark(backend, list) : null;
+    };
+
+    // loadBlockedByDonor — донору нельзя поднимать свои копии (R304).
+    M.loadBlockedByDonor = function(backendId) {
+        const mark = M.donorMarkFor(backendId);
+        return !!(mark && !mark.canLoad);
+    };
+
     /**
      * R66d (2026-09-23): параметры загрузки для balancer API из формы Settings.
      *
@@ -150,6 +195,15 @@
         }
         if (!modelName) {
             M.showToast('loadOnSelectedBackend: model name is empty', 'error');
+            return;
+        }
+        // R304: донор своих копий не поднимает. Это ПОСЛЕДНИЙ уровень перед API:
+        // блокировку кнопки в разметке легко обойти (delegated click, вызов из
+        // консоли), поэтому отказывает само действие — до markLoadingModel и до
+        // любого запроса, иначе строка «модель грузится» висела бы на доноре,
+        // которому грузить нечего.
+        if (M.loadBlockedByDonor(backend.id)) {
+            M.showToast(M._('models.donor_load_blocked') || 'Donor does not load its own model copies', 'error');
             return;
         }
         var handle = backend.id;

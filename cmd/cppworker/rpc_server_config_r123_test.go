@@ -46,12 +46,25 @@ func rpcTestSetup(t *testing.T, bin string) *cppbackend.Config {
 
 	prevChild := rpcServerChild
 	prevConfig := currentConfig
+	// R304 (2026-10-29): приказ об узле доносится и до ЖИВОГО бэкенда — иначе
+	// правило «поднятый узел = донор» не действовало бы до пересоздания
+	// контейнера (см. backend.SetRPCServerEnabled).
+	//
+	// ЗАЧЕМ ЗДЕСЬ ГАСИТЬ backend. Соседние тесты этого пакета оставляют пакетный
+	// backend поднятым и не восстанавливают его (это их приём, а не недосмотр:
+	// большинству обработчиков хватает «какой-то» бэкенд). Приказ, отправленный
+	// этим тестом, начал бы менять СОСТОЯНИЕ чужого бэкенда — и следующие тесты
+	// получали бы 409 «донор» на загрузке вместо своих кодов. Тест обязан
+	// изолировать всё, что его обработчик меняет.
+	prevBackend := backend
+	backend = nil
 	t.Cleanup(func() {
 		if rpcServerChild != nil {
 			_ = rpcServerChild.Stop()
 		}
 		rpcServerChild = prevChild
 		currentConfig = prevConfig
+		backend = prevBackend
 	})
 
 	cfg := &cppbackend.Config{

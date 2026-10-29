@@ -83,6 +83,16 @@ window.I18N_EN = {
   "backends.use_off": "Do not use",
   "backends.use_on_hint": "return the node to balancer selection (the model stays loaded)",
   "backends.use_off_hint": "exclude the node from balancer selection: the container keeps running and in-flight requests finish",
+  // R304 (2026-10-30): a donor holds ONLY the master's memory. The mark sits next
+  // to the node status (Backends and Dashboard pages) — otherwise "donor" on one
+  // page and a "Load" button on another read as a UI bug.
+  "backends.donor_badge": "donor (master: {master})",
+  "backends.donor_badge_no_master": "donor (master not assigned)",
+  "backends.donor_own_copies": "own copy: {count}",
+  "backends.donor_section": "Donor: only the master's memory",
+  "backends.donor_detail": "Donor: lends VRAM to master {master} over rpc-server; does not load its own models",
+  "backends.donor_detail_no_master": "Donor: master not assigned — lends VRAM over rpc-server; does not load its own models",
+  "backends.donor_violation": "the donor holds its own copy: {names} — role violation, unload it or clear the role",
   // R269 (2026-10-29): llama.cpp build freshness against stable upstream.
   // Visibility is decided by computeNotice: only relation=behind and an enabled
   // check (see webui/js/modules/llama-upstream-notice.js).
@@ -458,8 +468,13 @@ window.I18N_EN = {
   "monitor.layout.link": "link",
   "monitor.layout.mbps": "Mbps",
   "monitor.layout.degradedShort": "sharding incomplete",
-  "monitor.layout.donorShort": "sharding node",
+  "monitor.layout.donorShort": "donor",
   "monitor.layout.donorTitle": "This node lends its layers to the master over RPC",
+  // R304 (2026-10-30): the donor chip names the MASTER — a donor exists only as
+  // the memory of a concrete master, and without the name the chip answered none
+  // of the operator's questions about a donor.
+  "monitor.layout.donorMaster": "master",
+  "monitor.layout.donorNoMaster": "master not assigned",
   // R133 (2026-10-16): sharding-node state on the backend itself, plus where the
   // node contribution to the budget came from (R132). Both languages required.
   "monitor.rpcnode.up": "sharding node is up",
@@ -730,6 +745,10 @@ window.I18N_EN = {
   "models.confirm_delete": "Delete model",
   "models.load_hint": "Load model into memory",
   "models.unload_hint": "Unload model from memory",
+  // R304 (2026-10-30): a donor does not raise its own copies — its VRAM is lent
+  // to the master over rpc-server. One text for every blocking layer (model card,
+  // modal, GGUF page, action refusal) so the operator sees the same reason.
+  "models.donor_load_blocked": "A donor does not raise its own model copies: its VRAM is lent to the master over rpc-server. Clear the donor role if this node needs the model.",
   "models.no_models_backend": "No models on this backend",
   "models.no_backends": "No backends available",
   "models.operations_active": "Active Operations",

@@ -334,6 +334,18 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 		}
 	}
 
+	// R304 (2026-10-30): донор не поднимает своих копий — и по запросу чата тоже.
+	//
+	// ЗАЧЕМ ЗДЕСЬ, А НЕ В ОБРАБОТЧИКАХ ЧАТА. Ленивая загрузка — самая незаметная
+	// дверь к локальной копии: /api/chat и /v1/* поднимают модель без всякой
+	// «загрузки» в запросе, и на доноре это выглядело бы как обычная работа.
+	// Проверка стоит ПОСЛЕ ветки «модель уже загружена и готова»: обслужить
+	// собственную копию, оставшуюся с прошлой роли, — не преступление (генерация
+	// не занимает новую память), а вот ПОДНЯТЬ ещё одну нельзя.
+	if refused, mark := donorOwnCopyRefusedR304("lazy-load"); refused {
+		return "", donorRefusalErrorR304(mark)
+	}
+
 	// 1) Используем TryLockLoad для постановки в очередь загрузки.
 	// R303: сначала снимаем мёртвую заявку (висела бы до перезапуска процесса).
 	reclaimStaleClaimR303(modelName, "lazyload")
@@ -876,6 +888,22 @@ func writeLoadingResponse(w http.ResponseWriter, modelName string, loadErr error
 func autoLoadModels(cfg cppbackend.Config) {
 	log := logger.Get()
 	modelsDir := cfg.ModelsDir
+
+	// R304 (2026-10-30): «загрузить всё при старте» — самый широкий способ
+	// создать копии, и на доноре он запрещён целиком, а не по одной модели: у
+	// донора нет своих моделей ВООБЩЕ.
+	//
+	// ПОЧЕМУ ПРОВЕРКА РАБОТАЕТ НА СТАРТЕ. Роль приезжает приказом позже, но
+	// применённое состояние (backendRole и rpcServerEnabled) лежит в файле
+	// операторских переопределений и читается ДО этой горутины (main.go:
+	// applyRuntimeOverrides → NewBackend). То есть машина, перезапущенная как
+	// донор, не начнёт с загрузки всех .gguf в каталоге — именно этого требовала
+	// доктрина.
+	if refused, mark := donorOwnCopyRefusedR304("auto-load"); refused {
+		log.Warnw(i18n.T("cppworker.donor.autoload_skipped"),
+			"dir", modelsDir, "role", mark.Role, "reason", mark.Reason)
+		return
+	}
 
 	entries, err := os.ReadDir(modelsDir)
 	if err != nil {

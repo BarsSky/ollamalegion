@@ -104,6 +104,48 @@ Live check: `scripts/probe-rpc-session-recovery-r224.js` - kills the node in the
 middle of generation and requires: the master is alive, the diagnosis is honest, the
 model is unloaded, and after the node returns the next request works.
 
+## A donor does not keep its own model copies (R304)
+
+The `donor` role is not "a node that also helps the master". It is a node whose VRAM
+is **handed over** to the layers of the master's model through `rpc-server`. A donor
+therefore cannot hold a model of its own: it takes exactly the gigabytes the donor
+was assigned for and the master's load fails on memory.
+
+**What was wrong before R304.** The role lived only in the balancer and no backend
+selection path checked it: the only filter for "this node does not hold the model
+whole" was the logical-backend worker (`balancing.backendGroups[]`), which is not
+configured in a normal deployment. Observed live: a load went to a node that had just
+been made a donor; a donor with a leftover copy served requests while the master was
+loading layers into its memory ("the second agent tore the model away from the
+first"); an n_ctx reload picked the donor as the target and wasted its VRAM; session
+evacuation from a failed node landed on the donor.
+
+**What now.** The invariant is expressed in one predicate on the whole hot path
+(`cannotHostModelR304`: layout worker **or** donor) and is enforced at three
+independent levels:
+
+| Level | What it does | Where it is visible |
+| --- | --- | --- |
+| Balancer (selection) | the donor is excluded from every executor-selection path: serving a request, placement over reload, loading from scratch by the file on disk, window reload, session evacuation, replication | steward test `TestR304_SelectionSitesAskSharedPredicate` - a selection path that forgets the predicate breaks the test build |
+| cppworker (refusal) | the worker knows its role (the balancer sends it together with the order about its own node) and answers **409 `donor_cannot_host_models`** to a load/import | `role`, `donor`, `can_load_own_models`, `donor_reason`, `own_copies` in `GET /api/models` |
+| WebUI (mark) | a "donor (master: X)" badge, load buttons disabled with an explanation, the action itself refuses | `GET /api/v1/backends`: `donor`, `donorFor`, `canLoadOwnModels`, `ownCopies`, `donorNote` |
+
+If the donor does end up with a copy (left over from a previous role, loaded before
+this fix, or the operator enabled the exception), it is not "silently fixed": the
+balancer logs a warning with the copy name (at most once per 5 minutes per node) and
+reports it in `ownCopies`. Unloading someone else's work in the background is not
+allowed - it would break a running stream; the decision belongs to the operator.
+
+**Exception.** `LB_DONOR_ALLOW_OWN_COPIES=1` (hot setting) restores the old behaviour
+wholly, through the same predicate: needed when a node is made a donor while streams
+are still running on it. Default is `0`.
+
+**How to check.** `GET /api/v1/backends` -> the donor has `donor: true`,
+`donorFor.backendId` = master, `canLoadOwnModels: false`, `ownCopies: []`; a load
+request to that node is refused with `donor_cannot_host_models`. On the worker
+itself: `GET /api/models` -> `role: "donor"`, `can_load_own_models: false`;
+`POST /api/models/load` -> 409.
+
 ## Limitations you should know about
 
 1. **Model initialisation is not interrupted and shows no progress.** Measured on

@@ -153,6 +153,17 @@ func handleImportModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "use POST")
 		return
 	}
+	// R304 (2026-10-30): импорт — это создание ЛОКАЛЬНОЙ КОПИИ модели (файл на
+	// диске донора), поэтому запрет тот же, что у загрузки в память.
+	//
+	// ЗАЧЕМ. Балансер при переносе модели сам выбирает приёмник, и приёмником
+	// может оказаться донор: файл лёг бы на диск машины, у которой по роли нет
+	// своих моделей вообще. Дальше это заканчивалось бы ровно тем, от чего
+	// защищает R304 — попыткой поднять копию на доноре (или загадкой «откуда на
+	// доноре файл»). Отказ виден сразу и с причиной, а не после 20 ГБ трафика.
+	if donorLoadGuard(w) {
+		return
+	}
 	mm := backend.ModelManager()
 	if mm == nil {
 		writeError(w, http.StatusServiceUnavailable, "model manager is not available")

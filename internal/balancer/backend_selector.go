@@ -396,7 +396,8 @@ func (p *Proxy) findBackendWithModelExcludingLocked(modelName string, exclude ma
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
@@ -481,7 +482,8 @@ func (p *Proxy) selectByResourcesExcluding(exclude map[string]bool, allowedTypes
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
@@ -559,7 +561,8 @@ func (p *Proxy) findLeastLoadedBackendWithModel(modelName string, allowedTypes [
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
@@ -615,7 +618,8 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
@@ -680,7 +684,8 @@ func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string, all
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
@@ -787,7 +792,8 @@ func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.Back
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
@@ -852,7 +858,8 @@ func (p *Proxy) findWarmingBackendForModelUnsafe(model string) string {
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
@@ -882,7 +889,8 @@ func (p *Proxy) findFreeBackendForModelUnsafe(model string, allowedTypes []types
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
@@ -945,7 +953,8 @@ func (p *Proxy) selectFreeBackendAny(allowedTypes []types.BackendType) string {
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
@@ -1010,7 +1019,8 @@ func (p *Proxy) selectByResources(allowedTypes []types.BackendType) string {
 		// R92 (S2): воркер логического бэкенда держит только часть слоёв
 		// раскладки — как самостоятельная цель запроса он не годится. Его
 		// обслуживает мастер группы (см. sharded_master_r92.go).
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).

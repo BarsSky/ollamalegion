@@ -697,6 +697,18 @@ func tryRamFallbackReload(modelName string, requestedNCtx int, hasTools bool) (b
 	if !*ramFallbackNCtx {
 		return false, nil
 	}
+	// R304 (2026-10-30): RAM-fallback — это unload + load, то есть ПОДНЯТИЕ копии
+	// под новое окно. Донору он запрещён так же, как явная загрузка.
+	//
+	// ЗАЧЕМ ОТДЕЛЬНАЯ ПРОВЕРКА, ЕСЛИ ДОНОР «И ТАК НЕ ГРУЗИТ». Копия могла
+	// остаться в памяти с прошлой роли (роль объявили позже), и первая же
+	// генерация с большим prompt запустила бы RAM-fallback: донор выгрузил бы
+	// модель и поднял её заново, то есть сделал ровно то, что доктрина запрещает.
+	// Отказ возвращаем ошибкой — обработчик ответит 409 с причиной
+	// (handleInferenceError), а не «внутренней ошибкой».
+	if refused, mark := donorOwnCopyRefusedR304("ram-fallback"); refused {
+		return false, donorRefusalErrorR304(mark)
+	}
 	if requestedNCtx <= 0 {
 		return false, fmt.Errorf("requested n_ctx must be > 0 for RAM fallback")
 	}

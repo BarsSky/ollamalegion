@@ -115,6 +115,11 @@ func (lr *LlamaCppRouter) findModelOnLlamaCppBackend(model string) string {
 		if !ok || (state.Backend.Status != types.StatusHealthy && string(state.Backend.Status) != "degraded") {
 			continue
 		}
+		// R304: донор своей копии держать не может, значит «найденная у него
+		// модель» — нарушение, а не кандидат на обслуживание запроса.
+		if lr.proxy.cannotHostModelR304(id) {
+			continue
+		}
 		if normalizeBackendType(state.Backend.Type) != types.BackendTypeLlamaCpp {
 			continue
 		}
@@ -180,9 +185,15 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendExcluding(model string, exclude m
 	}
 	if model != "" && lr.proxy.replicationSelector != nil {
 		for _, id := range lr.proxy.replicationSelector.GetGroupCandidates(model) {
-			if !exclude[id] && !lr.backendUnavailable(id) {
-				return id
+			if exclude[id] || lr.backendUnavailable(id) {
+				continue
 			}
+			// R304: группа репликации задана оператором и могла включить донора —
+			// роль важнее состава группы, иначе запрос уходит в занятую память.
+			if lr.proxy.cannotHostModelR304(id) {
+				continue
+			}
+			return id
 		}
 	}
 	if id := lr.proxy.findBackendWithModelExcluding(model, exclude, lr.proxy.getAllowedTypesList(types.BackendTypeLlamaCpp)); id != "" {
@@ -199,6 +210,11 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendExcluding(model string, exclude m
 			continue
 		}
 		if normalizeBackendType(b.Type) != types.BackendTypeLlamaCpp {
+			continue
+		}
+		// R304: последний fallback не должен отдавать донора «просто потому, что
+		// он healthy»: память узла занята слоями модели мастера.
+		if lr.proxy.cannotHostModelR304(b.ID) {
 			continue
 		}
 		if b.Status == types.StatusHealthy {
@@ -468,6 +484,11 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendForModel(model string) string {
 func (lr *LlamaCppRouter) selectAnyLlamaCppHealthy() string {
 	backends := lr.proxy.GetAllBackends()
 	for _, b := range backends {
+		// R304: «любой healthy» — самый слабый фильтр в проекте, и донор проходил
+		// его насквозь: узел здоров, порт отвечает, а память отдана мастеру.
+		if lr.proxy.cannotHostModelR304(b.ID) {
+			continue
+		}
 		if b.Status == types.StatusHealthy && normalizeBackendType(b.Type) == types.BackendTypeLlamaCpp {
 			return b.ID
 		}

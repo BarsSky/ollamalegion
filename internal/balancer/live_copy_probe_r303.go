@@ -186,7 +186,8 @@ func (p *Proxy) liveCopyCandidateIDsR303(exclude map[string]bool) []string {
 		if state.Backend.Disabled {
 			continue
 		}
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		ids = append(ids, id)

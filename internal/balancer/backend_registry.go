@@ -226,6 +226,12 @@ func (p *Proxy) findHealthyBackendForModel(model, excludeID string) string {
 		if id == excludeID || state.Backend.Status != types.StatusHealthy {
 			continue
 		}
+		// R304: переезд сессии — это тоже «держать модель на узле». Донор свою
+		// VRAM отдал мастеру (слои чужой модели), поэтому увезти работу на него
+		// значит вернуть ровно тот конфликт, из-за которого вводятся роли.
+		if p.cannotHostModelR304(id) {
+			continue
+		}
 
 		// Проверяем, есть ли модель на бэкенде.
 		// R66d (2026-09-22): читаем через снапшот — раньше указатель брался
@@ -823,6 +829,11 @@ func (p *Proxy) SetBackendRole(backendID, role string) bool {
 	}
 	state.Backend.Role = role
 	p.mu.Unlock()
+	// R304: снимок ролей обновляем ЗДЕСЬ, сразу после записи роли. Иначе
+	// предикат «донор не держит своих копий» отставал бы на тик гарда (15 с), и
+	// в этом окне селектор мог выбрать новый донор исполнителем — ровно тот
+	// живой дефект, ради которого правка.
+	p.rebuildDonorIndexR304()
 	p.scheduleSave()
 	return true
 }

@@ -2566,6 +2566,51 @@ const ui = (function () {
 
     // ---- Model Management ----
 
+    // donorMarkForBackend — R304 (2026-10-30): пометка донора для проверок в
+    // модалке и в отказе операций.
+    //
+    // ЗАЧЕМ. Доктрина оператора: «если бэкенд становится донором, он уже не
+    // может подымать свои копии моделей — он становится именно донором мастера
+    // и может только делить память с мастером». UI обязан отказывать ДО
+    // запроса: иначе кнопка «Загрузить» у донора уходила в балансер, тот
+    // отказывал (или, что хуже, грузил копию в VRAM, которую донор отдал
+    // мастеру), а оператор видел ошибку без объяснения роли.
+    //
+    // Источник — уже загруженный список бэкендов (App.context.data — тот же
+    // объект, что data ниже), новый запрос для проверки не нужен. Разбор полей
+    // (включая fallback для старого балансера) — Utils.donorMark, один на всю
+    // панель.
+    function donorMarkForBackend(backendId) {
+        var own = Array.isArray(data.backends) ? data.backends : [];
+        var ctx = (typeof App !== 'undefined' && App && App.context &&
+            App.context.data && Array.isArray(App.context.data.backends)) ? App.context.data.backends : null;
+        var list = (ctx && ctx.length) ? ctx : own;
+        var backend = null;
+        for (var i = 0; i < list.length; i++) {
+            if (list[i] && list[i].id === backendId) { backend = list[i]; break; }
+        }
+        if (!backend && list !== own) {
+            for (var j = 0; j < own.length; j++) {
+                if (own[j] && own[j].id === backendId) { backend = own[j]; break; }
+            }
+        }
+        if (!backend) return null;
+        return (typeof Utils.donorMark === 'function') ? Utils.donorMark(backend, list) : null;
+    }
+
+    // donorLoadBlocked — донору нельзя поднимать свои копии (canLoadOwnModels).
+    function donorLoadBlocked(backendId) {
+        var dm = donorMarkForBackend(backendId);
+        return !!(dm && !dm.canLoad);
+    }
+
+    // donorBlockedText — одна и та же причина на всех уровнях блокировки
+    // (карточка модели, модалка, GGUF, отказ в действии).
+    function donorBlockedText() {
+        return window.I18N ? I18N.t('models.donor_load_blocked')
+            : 'A donor does not raise its own model copies: its VRAM is lent to the master over rpc-server.';
+    }
+
     function openModelManageModal(backendId) {
         const backend = data.backends.find(b => b.id === backendId);
         if (!backend) {
@@ -2590,6 +2635,25 @@ const ui = (function () {
             pullSection.style.display = (bt === 'llama_cpp') ? 'none' : '';
         }
 
+        // R304 (2026-10-30): у донора Pull недоступен — он не поднимает свои
+        // копии, его VRAM отдана мастеру через rpc-server. Строку ввода ПРЯЧЕМ
+        // (не оставляем поле, которое гарантированно откажет), а на её месте
+        // пишем причину: «почему нельзя» оператор должен прочитать здесь, а не
+        // догадываться по тосту после нажатия.
+        var pullRow = modal.querySelector('.model-pull-row');
+        var pullDonorNote = document.getElementById('modelPullDonorNote');
+        if (donorLoadBlocked(backendId)) {
+            if (pullSection) pullSection.style.display = '';
+            if (pullRow) pullRow.style.display = 'none';
+            if (pullDonorNote) {
+                pullDonorNote.style.display = '';
+                pullDonorNote.textContent = donorBlockedText();
+            }
+        } else {
+            if (pullRow) pullRow.style.display = '';
+            if (pullDonorNote) pullDonorNote.style.display = 'none';
+        }
+
         // Show operations list with loading
         const modelsBody = document.getElementById('modelManageModelsBody');
         if (modelsBody) {
@@ -2608,6 +2672,14 @@ const ui = (function () {
     function loadBackendModels(backendId) {
         const modelsBody = document.getElementById('modelManageModelsBody');
         if (!modelsBody) return;
+
+        // R304 (2026-10-30): у донора «Загрузить» гаснет и объясняет причину, а
+        // «Выгрузить» остаётся рабочей — снять нарушающую копию это законное
+        // действие (сервер её не выгружает сам: решение за оператором).
+        const _donorBlocked = donorLoadBlocked(backendId);
+        const loadBtnAttrs = _donorBlocked
+            ? ' disabled title="' + Utils.escapeHtml(donorBlockedText()) + '"'
+            : ' title="' + (window.I18N ? I18N.t('models.load_hint') : 'Load') + '"';
 
         Api.backendModels(backendId).then(function(data) {
             const models = data.models || [];
@@ -2628,7 +2700,7 @@ const ui = (function () {
                     '<td>' + modified + '</td>' +
                     '<td>' + loadedBadge + '</td>' +
                     '<td>' +
-                        '<button class="action-btn edit" onclick="ui.executeModelOperation(\'' + Utils.escapeHtml(backendId) + '\', \'load\', \'' + Utils.escapeHtml(m.name) + '\')" title="' + (window.I18N ? I18N.t('models.load_hint') : 'Load') + '">' + (window.I18N ? I18N.t('models.load') : 'Load') + '</button>' +
+                        '<button class="action-btn edit" onclick="ui.executeModelOperation(\'' + Utils.escapeHtml(backendId) + '\', \'load\', \'' + Utils.escapeHtml(m.name) + '\')"' + loadBtnAttrs + '>' + (window.I18N ? I18N.t('models.load') : 'Load') + '</button>' +
                         '<button class="action-btn delete" onclick="ui.executeModelOperation(\'' + Utils.escapeHtml(backendId) + '\', \'unload\', \'' + Utils.escapeHtml(m.name) + '\')" title="' + (window.I18N ? I18N.t('models.unload_hint') : 'Unload') + '">' + (window.I18N ? I18N.t('models.unload') : 'Unload') + '</button>' +
                     '</td>' +
                 '</tr>';
@@ -2639,6 +2711,22 @@ const ui = (function () {
     }
 
     function executeModelOperation(backendId, operation, modelName, options = {}) {
+        // R304 (2026-10-30): донор своих копий не поднимает. Отказ ДО запроса:
+        // load и pull у донора запрещены доктриной («донор только делит память с
+        // мастером»), и отправлять их в балансер бессмысленно — сервер обязан
+        // отказать, а оператор получил бы техническую ошибку вместо объяснения.
+        // UI-блокировка (карточка/модалка/GGUF) — удобство; ОТКАЗ ЖИВЁТ ЗДЕСЬ,
+        // потому что inline-onclick в разметке легко обойти, а это последний
+        // уровень перед API.
+        if (operation === 'load' || operation === 'pull') {
+            if (donorLoadBlocked(backendId)) {
+                showToast(donorBlockedText(), 'error');
+                addLog('Model op refused (R304: donor holds only the master memory): ' + operation +
+                    ' ' + modelName + ' on ' + backendId, 'warn');
+                return;
+            }
+        }
+
         showToast((window.I18N ? I18N.t('models.operation_running') : 'Operation in progress...') + ' ' + operation + ' ' + modelName, 'info');
 
         Api.backendModelOperation(backendId, operation, modelName, options).then(function(result) {

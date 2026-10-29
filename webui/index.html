@@ -2382,6 +2382,10 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                         <i class="fas fa-download"></i>
                         <span data-i18n="models.pull">Pull</span>
                     </div>
+                    <!-- R304: донор не поднимает свои копии моделей — вместо строки
+                         ввода показываем причину (текст ставит openModelManageModal).
+                         Стиль inline: отдельный CSS-класс тут не нужен. -->
+                    <div id="modelPullDonorNote" style="display:none;font-size:var(--font-size-sm);color:var(--warning);margin-bottom:8px;"></div>
                     <div class="model-pull-row">
                         <input type="text" id="modelPullName" class="form-control" placeholder="llama3.2:latest" data-i18n-placeholder="models.model_name_placeholder">
                         <div class="model-pull-options">

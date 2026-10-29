@@ -416,6 +416,22 @@ var messagesBalancer = map[string]map[Lang]string{
 		RU: "EnsureRPCNodeServing: донору отправлен приказ поднять узел раскладки",
 		EN: "EnsureRPCNodeServing: the donor was ordered to start the layout node",
 	},
+
+	// === R304: донор держит только память мастера ========================
+	// Пояснение уходит в GET /api/v1/backends (donorNote) и показывается в панели
+	// рядом с бейджем донора: «донор» без причины оператору ничего не говорит.
+	"balancer.donor.note_with_master": {
+		RU: "донор мастера %s: отдаёт VRAM через rpc-server и не держит своих копий моделей",
+		EN: "donor of master %s: hands VRAM to it via rpc-server and keeps no model copies of its own",
+	},
+	"balancer.donor.note_no_master": {
+		RU: "донор (мастер не назначен): отдаёт VRAM через rpc-server и не держит своих копий моделей",
+		EN: "donor (no master assigned): hands VRAM via rpc-server and keeps no model copies of its own",
+	},
+	"balancer.donor.note_layout_worker": {
+		RU: "узел — воркер логического бэкенда: модель разрезана между узлами",
+		EN: "the node is a worker of a logical backend: the model is split between nodes",
+	},
 }
 
 func init() { Register(messagesBalancer) }

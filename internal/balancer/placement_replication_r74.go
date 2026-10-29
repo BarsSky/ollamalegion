@@ -62,6 +62,12 @@ func (p *Proxy) setupReplicationManager() {
 			if state.Backend.Status != types.StatusHealthy {
 				continue
 			}
+			// R304: репликация грузит КОПИЮ модели на свободный узел, то есть
+			// ровно то, что донору запрещено. Свободный по запросам донор —
+			// не свободный по памяти: его VRAM держит мастер.
+			if p.cannotHostModelR304(id) {
+				continue
+			}
 			if len(targets) > 0 {
 				found := false
 				for _, t := range targets {

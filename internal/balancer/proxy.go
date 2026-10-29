@@ -295,6 +295,14 @@ type Proxy struct {
 	// groupMemberInfoR92. См. backend_group_r92.go.
 	backendGroups *backendgroup.Registry
 
+	// R304 (2026-10-30): снимок ролей раскладки для горячего пути — кто донор и
+	// чей он. Неизменяемый объект под atomic.Pointer: читается без p.mu, поэтому
+	// предикат «донор не держит своих копий» безопасен и там, где блокировка уже
+	// взята (вложенный RLock при ожидающем писателе — дедлок R284).
+	// Пересобирается при смене роли, на старте и на каждом тике гарда раскладки.
+	// См. donor_exclusive_r304.go.
+	donorIdxR304 atomic.Pointer[donorIndexR304]
+
 	// Phase 8 (2026-07-10): P.1 — rpc_coordinator production mode.
 	// RpcCoordinatorDispatcher routes inference через coordinator при
 	// OperatingMode=rpc_coordinator. Phase 8.5: добавлено поле + scaffold в

@@ -26,14 +26,16 @@ import (
 	"time"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/internal/i18n"
 )
 
 // runAutoLoad auto-detects feasible n_ctx и загружает модель через HTTP API.
 //
 // Exit codes:
-//   0 — успех (load accepted, polling shows loaded)
-//   1 — backend not initialized, ComputeFeasible failed, HTTP error
-//   2 — usage error (modelName == "")
+//
+//	0 — успех (load accepted, polling shows loaded)
+//	1 — backend not initialized, ComputeFeasible failed, HTTP error
+//	2 — usage error (modelName == "")
 func runAutoLoad(modelName string, out io.Writer) int {
 	if modelName == "" {
 		fmt.Fprintln(out, "usage: cppworker -auto-load <model>")
@@ -43,6 +45,17 @@ func runAutoLoad(modelName string, out io.Writer) int {
 	b := cppbackend.GetBackend()
 	if b == nil {
 		fmt.Fprintln(out, "error: backend not initialized")
+		return 1
+	}
+
+	// R304 (2026-10-30): CLI -auto-load — такая же локальная копия, как загрузка
+	// по HTTP, и донору она запрещена.
+	//
+	// ЗАЧЕМ ПРОВЕРЯТЬ ЗДЕСЬ. Эту команду запускают руками в контейнере донора
+	// (например «прогреть модель»), и она обошла бы HTTP-гард полностью: копия
+	// поднялась бы на машине, чью память мастер уже занял раскладкой.
+	if refused, mark := donorOwnCopyRefusedR304("cli-auto-load"); refused {
+		fmt.Fprintf(out, "error: %s (%s)\n", i18n.T("cppbackend.donor.load_refused"), mark.Reason)
 		return 1
 	}
 

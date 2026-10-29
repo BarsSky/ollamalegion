@@ -49,7 +49,8 @@ func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendT
 		// Воркеров обслуживает мастер группы (см. sharded_master_r92.go), а из
 		// общего пула кандидатов они исключены. Реестр неизменяем, поэтому
 		// проверка безопасна под уже взятым p.mu.RLock.
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 

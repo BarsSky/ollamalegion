@@ -487,6 +487,11 @@ func (p *Proxy) EnsureRPCLayoutForAll() int {
 	if p == nil {
 		return 0
 	}
+	// R304: снимок ролей обновляется на каждом тике. Роль донора приходит из
+	// persistent-оверрайдов после старта и меняется оператором; если попадётся
+	// точка записи, забывшая rebuildDonorIndexR304, предикат «донор не держит
+	// своих копий» молча устареет — а это дороже одного прохода по карте.
+	p.rebuildDonorIndexR304()
 	changed := 0
 	for _, b := range p.GetAllBackends() {
 		if strings.TrimSpace(b.Role) == "" {
@@ -494,6 +499,14 @@ func (p *Proxy) EnsureRPCLayoutForAll() int {
 		}
 		if b.Type != "" && b.Type != types.BackendTypeLlamaCpp {
 			continue
+		}
+		// R304: донор обязан держать ТОЛЬКО память мастера. Если у него всё же
+		// есть своя копия (осталась с прежней роли, загружена в обход или
+		// оператор включил исключение), это состояние называется в логе числами
+		// и именами. Выгружать чужую работу фоном нельзя: выгрузка оборвала бы
+		// идущий стрим — решение остаётся за оператором.
+		if mark := p.DonorMarkR304(b.ID); mark.Donor {
+			p.noteDonorOwnCopiesR304(b.ID, mark.OwnCopies)
 		}
 		before := p.LayoutGuardStatus(b.ID)
 		p.EnsureRPCLayout(b.ID)

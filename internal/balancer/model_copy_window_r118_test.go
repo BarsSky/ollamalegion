@@ -6,7 +6,13 @@
 // загружена на двух бэкендах:
 //
 //	мастер cppworker-gpu-bundled-agent : total 32768, 16K на слот, роль main
-//	донор  cppworker-cyborg-bundled-agent: total 8192,  4K на слот, роль donor
+//	свободный cppworker-cyborg-bundled-agent: total 8192,  4K на слот, роль standalone
+//
+// R304 (2026-10-30): второй узел здесь — самодостаточный, а НЕ донор. Правило
+// R118.5 («покрывающая окно копия важнее свободной») проверяется на двух узлах,
+// которые имеют право держать копию; донор исключён из выбора исполнителем
+// отдельно (donor_exclusive_r304_test.go), и держать его в этой фикстуре значило
+// бы проверять правило на состоянии, которого по доктрине больше не бывает.
 //
 // Клиент прислал num_ctx=8192. Балансер выбирал копию «наименее загруженную» —
 // донор простаивал, и запрос ушёл на НЕГО:
@@ -33,14 +39,14 @@ import (
 
 const (
 	winMain  = "cppworker-gpu-bundled-agent"
-	winDonor = "cppworker-cyborg-bundled-agent"
+	winFree = "cppworker-cyborg-bundled-agent"
 	winModel = "gemma-4-E4B-it-Q4_K_M"
 )
 
 // newCopyWindowProxy — прокси с двумя ЗАГРУЖЕННЫМИ копиями модели.
 //
-// mainPerSeq/donorPerSeq — окно НА СЛОТ (то, что сравнивается с num_ctx клиента).
-func newCopyWindowProxy(t *testing.T, mainPerSeq, donorPerSeq int, mainActive, donorActive int) *Proxy {
+// mainPerSeq/freePerSeq — окно НА СЛОТ (то, что сравнивается с num_ctx клиента).
+func newCopyWindowProxy(t *testing.T, mainPerSeq, freePerSeq int, mainActive, freeActive int) *Proxy {
 	t.Helper()
 
 	mk := func(id string, role string, perSeq int, active int) (*BackendState, *types.BackendMetrics, *types.LlamaCppMetrics) {
@@ -61,17 +67,17 @@ func newCopyWindowProxy(t *testing.T, mainPerSeq, donorPerSeq int, mainActive, d
 	}
 
 	mainState, mainMetrics, mainLlama := mk(winMain, types.BackendRoleMain, mainPerSeq, mainActive)
-	donorState, donorMetrics, donorLlama := mk(winDonor, types.BackendRoleDonor, donorPerSeq, donorActive)
+	freeState, freeMetrics, freeLlama := mk(winFree, types.BackendRoleStandalone, freePerSeq, freeActive)
 
 	p := &Proxy{
 		config:     &types.LoadBalancerConfig{},
-		backends:   map[string]*BackendState{winMain: mainState, winDonor: donorState},
+		backends:   map[string]*BackendState{winMain: mainState, winFree: freeState},
 		metricsMgr: NewMetricsManager(),
 	}
 	p.metricsMgr.metrics[winMain] = mainMetrics
-	p.metricsMgr.metrics[winDonor] = donorMetrics
+	p.metricsMgr.metrics[winFree] = freeMetrics
 	p.metricsMgr.llamaMetrics[winMain] = mainLlama
-	p.metricsMgr.llamaMetrics[winDonor] = donorLlama
+	p.metricsMgr.llamaMetrics[winFree] = freeLlama
 	return p
 }
 
@@ -87,8 +93,8 @@ func TestR118_5_CoveringCopyWinsOverIdleCopy(t *testing.T) {
 
 	// Предпосылка теста: ПРЕЖНИЙ выбор (наименее загруженная копия) — донор с
 	// окном 4096. Именно это и было живым дефектом.
-	if oldID := p.findLeastLoadedBackendWithModel(winModel, allowedLlama()); oldID != winDonor {
-		t.Fatalf("предпосылка неверна: прежний выбор = %q, ожидался свободный донор %q", oldID, winDonor)
+	if oldID := p.findLeastLoadedBackendWithModel(winModel, allowedLlama()); oldID != winFree {
+		t.Fatalf("предпосылка неверна: прежний выбор = %q, ожидался свободный узел %q", oldID, winFree)
 	}
 
 	id, why := p.selectModelCopyForWindow(winModel, 8192, nil, allowedLlama())
@@ -160,14 +166,14 @@ func TestR118_5_ModelCopyCoversWindow(t *testing.T) {
 	if !p.modelCopyCoversWindow(winMain, winModel, 8192) {
 		t.Error("копия с 16384 на слот обязана покрывать 8192")
 	}
-	if p.modelCopyCoversWindow(winDonor, winModel, 8192) {
+	if p.modelCopyCoversWindow(winFree, winModel, 8192) {
 		t.Error("копия с 4096 на слот НЕ покрывает 8192")
 	}
-	if !p.modelCopyCoversWindow(winDonor, winModel, 4096) {
+	if !p.modelCopyCoversWindow(winFree, winModel, 4096) {
 		t.Error("копия с 4096 на слот покрывает ровно 4096")
 	}
 	// Клиент окно не задавал — покрытие не ограничивает.
-	if !p.modelCopyCoversWindow(winDonor, winModel, 0) {
+	if !p.modelCopyCoversWindow(winFree, winModel, 0) {
 		t.Error("без запрошенного окна ограничений быть не должно")
 	}
 }
@@ -177,7 +183,7 @@ func TestR118_5_ModelCopyCoversWindow(t *testing.T) {
 func TestR118_5_SelectBackendPreferWindow_FallsBackWithoutCopies(t *testing.T) {
 	p := newCopyWindowProxy(t, 16384, 4096, 0, 0)
 	p.metricsMgr.metrics[winMain] = &types.BackendMetrics{}
-	p.metricsMgr.metrics[winDonor] = &types.BackendMetrics{}
+	p.metricsMgr.metrics[winFree] = &types.BackendMetrics{}
 
 	// Модель нигде не загружена: window-путь не должен ничего выбирать сам.
 	if id, why := p.selectModelCopyForWindow(winModel, 8192, nil, allowedLlama()); id != "" || why != "" {
@@ -190,7 +196,7 @@ func TestR118_5_SelectBackendPreferWindow_FallsBackWithoutCopies(t *testing.T) {
 func TestR118_5_NoModel_NoCandidates(t *testing.T) {
 	p := newCopyWindowProxy(t, 16384, 4096, 0, 0)
 	p.metricsMgr.metrics[winMain] = &types.BackendMetrics{}
-	p.metricsMgr.metrics[winDonor] = &types.BackendMetrics{}
+	p.metricsMgr.metrics[winFree] = &types.BackendMetrics{}
 	if cands := p.collectModelCopyCandidates(winModel, nil, allowedLlama()); len(cands) != 0 {
 		t.Fatalf("кандидаты без загруженной модели: %+v", cands)
 	}

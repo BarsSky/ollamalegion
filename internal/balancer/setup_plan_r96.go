@@ -322,7 +322,8 @@ func (p *Proxy) planCandidatesR96() []planCandidateR96 {
 
 	out := make([]planCandidateR96, 0, len(ids))
 	for _, id := range ids {
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue // GPU уже отдан существующей раскладке
 		}
 		info := p.groupMemberInfoR92(id)

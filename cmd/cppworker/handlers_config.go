@@ -528,6 +528,30 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	applyBool("rpcServerEnabled", &currentConfig.RPCServerEnabled)
 	applyInt("rpcServerPort", &currentConfig.RPCServerPort, 0, 65535)
 
+	// === РОЛЬ БЭКЕНДА — R304 (2026-10-30) ===
+	//
+	// ЗАЧЕМ ОТДЕЛЬНЫЙ КЛЮЧ. До R304 роль не доезжала до воркера: приказ нёс только
+	// раскладку-потребитель (rpcEnabled/rpcServers) и свой узел (rpcServerEnabled),
+	// а «эта машина — донор» приходилось выводить догадкой. Догадка ломается там,
+	// где узел включают руками, — и донор одновременно отдаёт память мастеру и
+	// грузит своё.
+	//
+	// ЗНАЧЕНИЕ НОРМАЛИЗУЕТСЯ ДО ВАЛИДАЦИИ: приказ может прийти как "Donor" или с
+	// пробелом, и отказ «не одно из допустимых» на ровном месте означал бы для
+	// оператора «настройка не применилась» — тот самый класс жалоб.
+	//
+	// ОТКУДА РОЛЬ НЕ ПРИХОДИТ: из окружения. Единственный источник — балансер
+	// (см. комментарий у cppbackend.Config.BackendRole): env позволил бы включить
+	// донора на машине, где им быть не должны.
+	if raw, ok := updates["backendRole"]; ok && raw != nil {
+		if s, isStr := raw.(string); isStr {
+			if norm, known := cppbackend.NormalizeBackendRole(s); known {
+				updates["backendRole"] = norm
+			}
+		}
+	}
+	applyString("backendRole", &currentConfig.BackendRole, cppbackend.BackendRoles())
+
 	// Session 18 (2026-07-28): Reasoning/Thinking — для моделей gemma-4,
 	// deepseek-r1, qwen3-thinking и др. Включает thinking-режим в chat
 	// template (если GGUF содержит tokenizer.chat_template с поддержкой).
@@ -577,6 +601,8 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		"defaultYarnBetaFast": true, "defaultYarnBetaSlow": true,
 		// Метрики и lifecycle
 		"enableMetrics": true, "metricsRetentionSeconds": true, "idleUnloadMinutes": true,
+		// R304: роль бэкенда (донор не поднимает своих копий моделей).
+		"backendRole": true,
 		// Session 18 (Round 11/14): Reasoning/Thinking.
 		// enableReasoning/reasoningBudget — runtime-политика (промпт);
 		// defaultEnableReasoning/defaultReasoningBudget — то, что наследует
@@ -651,6 +677,19 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if appliedListContains(applied, "rpcServerEnabled") || appliedListContains(applied, "rpcServerPort") {
 		recordRuntimeOverride("rpcServerEnabled", currentConfig.RPCServerEnabled)
 		recordRuntimeOverride("rpcServerPort", currentConfig.RPCServerPort)
+		// R304 (2026-10-30): ФАКТ «свой узел включён» обязан доехать и до живого
+		// конфига бэкенда.
+		//
+		// ЗАЧЕМ. По правилу cppbackend.DonorOnly поднятый узел — признак донора
+		// (машина отдаёт память мастеру). Пока состояние узла жило только в
+		// currentConfig и в супервизоре, решение о донорстве принималось бы по
+		// `b.cfg`, где узел выключен, — то есть приказ балансера включал бы узел,
+		// а загрузка своих копий на этой машине продолжала бы разрешаться до
+		// пересоздания контейнера. Это ровно дефект «настройка применена, эффекта
+		// нет», уже разобранный на rpcEnabled (см. SetRPCConfig).
+		if backend != nil {
+			backend.SetRPCServerEnabled(currentConfig.RPCServerEnabled)
+		}
 		recreated := false
 		if rpcServerChild == nil {
 			rpcServerChild = cppbackend.NewRPCServerChild(*currentConfig)
@@ -706,6 +745,35 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		recordRuntimeOverride("rpcServers", currentConfig.RPCServers)
 	}
 
+	// R304 (2026-10-30): РОЛЬ БЭКЕНДА — действует НА ХОДУ и переживает
+	// пересоздание контейнера.
+	//
+	// ПОЧЕМУ ПЕРЕОПРЕДЕЛЕНИЕ, А НЕ ТОЛЬКО ПАМЯТЬ ПРОЦЕССА. Роль объявляет балансер
+	// при каждом согласовании состояния, но контейнер пересоздаётся независимо от
+	// него — и без файла операторских переопределений роль после recreate
+	// вернулась бы к «неизвестно». Донор снова начал бы грузить свои копии, хотя
+	// мастер уже спланировал раскладку по его памяти. Тот же контракт, что у
+	// idleUnloadMinutes, rpcServerEnabled и rpcEnabled.
+	//
+	// ПОЧЕМУ ДОНОСИТЬ ДО БЭКЕНДА ОТДЕЛЬНО. `currentConfig` и `b.cfg` — РАЗНЫЕ
+	// объекты: без SetBackendRole строка «роль = donor» осталась бы в ответе API и
+	// в файле, а решения о загрузке бэкенд принимал бы по старому состоянию.
+	if appliedListContains(applied, "backendRole") {
+		recordRuntimeOverride("backendRole", currentConfig.BackendRole)
+		donor, reason := false, ""
+		if backend != nil {
+			backend.SetBackendRole(currentConfig.BackendRole)
+			// Читаем ФАКТ после переноса: в логе должно быть решение воркера
+			// («донор ли машина и почему»), а не отправленное значение — иначе
+			// при role=main с поднятым узлом лог утверждал бы «не донор».
+			donor, reason = backend.DonorOnly()
+		}
+		logger.Get().Infow(i18n.T("cppworker.donor.role_applied"),
+			"role", currentConfig.BackendRole,
+			"donor", donor,
+			"reason", reason)
+	}
+
 	// Шаг 1: auto-reload загруженных моделей с новыми defaults, если изменены
 	// параметры нагрузки. При изменении только метрик/lifecycle — reload не нужен.
 	reloadStarted := []string{}
@@ -752,6 +820,17 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// «применено» как «уже работает».
 	if rpcChanged {
 		resp["rpc_reload_required"] = true
+	}
+	// R304 (2026-10-30): пометка донора в ответе на приказ — ФАКТ решения воркера,
+	// а не отправленное значение.
+	//
+	// ЗАЧЕМ. Балансер объявляет роль именно этим запросом; без поля он узнавал бы
+	// о последствиях только следующим опросом /api/models, а оператор в панели —
+	// вообще никогда. Здесь же сразу видно и «стала ли машина донором», и почему,
+	// и какие копии у неё уже загружены вопреки роли (их придётся выгрузить).
+	if backend != nil &&
+		(appliedListContains(applied, "backendRole") || appliedListContains(applied, "rpcServerEnabled")) {
+		resp["donor"] = backend.DonorMark()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -814,6 +893,17 @@ func hasReloadedDefaults(applied []string) bool {
 func reloadAllLoadedWithDefaults() ([]string, []string) {
 	if backend == nil || currentConfig == nil {
 		return nil, []string{"backend or config not initialized"}
+	}
+	// R304 (2026-10-30): «reload всех загруженных под новые дефолты» — это тоже
+	// ПОДНЯТИЕ копий (unload + load), поэтому донору он запрещён.
+	//
+	// ЗАЧЕМ ОТДЕЛЬНАЯ ПРОВЕРКА. Смена любого load-affecting параметра в настройках
+	// (n_ctx, kv-cache, mmap) запускает этот путь автоматически. Без запрета
+	// достаточно было бы одного «Сохранить» в панели, чтобы донор снова собрал
+	// себе копии — причём молча, как служебную операцию, без запроса от клиента.
+	// Отказ виден в ответе на приказ (reload_failed) и в логе.
+	if refused, mark := donorOwnCopyRefusedR304("reload-defaults"); refused {
+		return nil, []string{i18n.T("cppworker.donor.reload_defaults_skipped") + " (" + mark.Reason + ")"}
 	}
 	loaded := backend.ListModels()
 	started := make([]string, 0, len(loaded))
@@ -958,6 +1048,15 @@ func handleCppWorkerReloadConfig(w http.ResponseWriter, r *http.Request) {
 	// на /config/reload.
 	applyRAMFallbackFromEnvWithSkip(ramFallbackNCtx, ramFallbackGpuLayers, ramFallbackMaxNCtx,
 		isFlagSet("ram-fallback-n-ctx"), isFlagSet("ram-fallback-gpu-layers"), isFlagSet("ram-fallback-max-n-ctx"))
+	// R304 (2026-10-30): роль НЕ приходит из окружения, а этот путь перечитывает
+	// ТОЛЬКО env — без переноса роль молча стала бы «неизвестно».
+	//
+	// ПОЧЕМУ ЭТО ОПАСНЕЕ, ЧЕМ КАЖЕТСЯ. Живой бэкенд остался бы донором (его конфиг
+	// здесь не трогается), а currentConfig — нет: получились бы две правды об
+	// одном состоянии, и следующий приказ балансера с полем backendRole
+	// сравнивался бы с «неизвестно». Роль — приказ балансера, reload из .env её не
+	// отменяет.
+	newCfg.BackendRole = currentConfig.BackendRole
 	*currentConfig = newCfg
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "reloaded", "config": currentConfig})
 }

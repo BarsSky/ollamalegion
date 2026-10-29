@@ -33,6 +33,14 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "use POST")
 		return
 	}
+	// R304 (2026-10-30): донор НЕ поднимает своих копий моделей — только делит
+	// память с мастером. Проверка стоит первой содержательной (после формальной
+	// проверки метода, чтобы 405 не превратился в 409): иначе обработчик успел бы
+	// разобрать тело, занять заявку на загрузку и ответить 202 «принято», а копию
+	// поднимать нельзя.
+	if donorLoadGuard(w) {
+		return
+	}
 	var req loadModelRequest
 	// Round 36 Phase 2: strict JSON decoder.
 	if err := types.DecodeJSONRequest(r.Body, types.MaxRequestBodyBytes, &req); err != nil {
@@ -454,6 +462,12 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "use POST")
+		return
+	}
+	// R304 (2026-10-30): вторая дверь к той же копии — загрузка с явными
+	// параметрами. Гард тот же, что в handleLoadModel: это ОДНА операция «поднять
+	// локальную копию», просто с другим набором полей в теле.
+	if donorLoadGuard(w) {
 		return
 	}
 	var req loadWithParamsRequest
@@ -1614,6 +1628,29 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		"stuck_suspected":      backend.RPCLayoutStuckSuspected(),
 	}
 
+	// R304 (2026-10-30): пометка ДОНОРА — тем же ответом, который поллер и так
+	// опрашивает.
+	//
+	// ЗАЧЕМ ЗДЕСЬ. Панель показывала «узел раскладки поднят» и по этому признаку
+	// ДОГАДЫВАЛАСЬ о роли, блокируя (или не блокируя) кнопки загрузки. Догадка
+	// расходится с решением воркера ровно в тех случаях, из-за которых появилась
+	// R304: узел включён руками, роль объявлена без узла, роль снята у машины с
+	// уже загруженной копией. Теперь панель читает ФАКТ решения (role, donor,
+	// can_load_own_models, donor_reason) и видит список уже загруженных вопреки
+	// роли копий (own_copies) — их придётся выгрузить, запрет их не убирает.
+	donorMark := backend.DonorMark()
+	ownCopies := donorMark.OwnCopies
+	if ownCopies == nil {
+		// Пустой срез, а не null: панель и агент читают поле как список, и
+		// отсутствие значения не должно требовать отдельной ветки.
+		ownCopies = []string{}
+	}
+	resp["role"] = donorMark.Role
+	resp["donor"] = donorMark.Donor
+	resp["can_load_own_models"] = donorMark.CanHostOwnModels
+	resp["donor_reason"] = donorMark.Reason
+	resp["own_copies"] = ownCopies
+
 	// R83 (2026-09-25): причина последнего провала загрузки — машиночитаемо.
 	//
 	// Это ключевое звено связки cppworker → agent → webui: agent и так опрашивает
@@ -2014,6 +2051,13 @@ func handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "use POST")
+		return
+	}
+	// R304 (2026-10-30): reload — это unload + load, то есть ТО ЖЕ поднятие
+	// локальной копии. Донор, у которого копия всё-таки оказалась в памяти
+	// (роль объявили после загрузки), не имеет права перезагрузить её «с другими
+	// параметрами»: копии ему держать нельзя вовсе, а не «нельзя только новые».
+	if donorLoadGuard(w) {
 		return
 	}
 	var req reloadModelRequest

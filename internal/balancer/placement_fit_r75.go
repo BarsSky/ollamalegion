@@ -80,7 +80,8 @@ func (p *Proxy) placementFitForModel(model string) placementFit {
 		// «влезает целиком» — на нём лежит только часть слоёв раскладки. Посчитав
 		// его, auto решила бы, что модель помещается на бэкенд, и выбрала
 		// single/replicated там, где нужна именно раскладка.
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		backends = append(backends, id)

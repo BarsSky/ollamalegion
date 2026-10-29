@@ -116,6 +116,11 @@ func (or *OllamaRouter) findBackendWithModel(model string) string {
 		if !ok || (state.Backend.Status != types.StatusHealthy && string(state.Backend.Status) != "degraded") {
 			continue
 		}
+		// R304: донор держит только память мастера. Найденная у него копия — это
+		// нарушение роли, а не узел, куда можно отправить запрос.
+		if or.proxy.cannotHostModelR304(id) {
+			continue
+		}
 		// Ищем в Ollama running models
 		for _, m := range metrics.Ollama.RunningModels {
 			if m.Name == model {
@@ -180,6 +185,11 @@ func (or *OllamaRouter) findBackendsWithModel(model string) []string {
 func (or *OllamaRouter) selectAnyHealthy() string {
 	backends := or.proxy.GetAllBackends()
 	for _, b := range backends {
+		// R304: донор healthy, но его VRAM отдана мастеру — «любой healthy»
+		// перестало быть безопасным ответом.
+		if or.proxy.cannotHostModelR304(b.ID) {
+			continue
+		}
 		if b.Status == "healthy" {
 			return b.ID
 		}

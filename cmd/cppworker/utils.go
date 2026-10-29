@@ -257,6 +257,12 @@ func writeModelLoadError(w http.ResponseWriter, modelName string, err error) boo
 	switch {
 	case isModelLoadingError(err):
 		writeLoadingResponse(w, modelName, err)
+	case errors.Is(err, errDonorCannotHostModelsR304):
+		// R304 (2026-10-30): отказ донора. Без отдельной ветки он ушёл бы в
+		// default как 500 «model load failed», то есть как ПОЛОМКА воркера, хотя
+		// это осознанный запрет по роли. 409 + машинный код: панель и балансер
+		// показывают «донор», а не «внутренняя ошибка».
+		writeDonorRefusalR304(w, donorMarkR304())
 	case errors.Is(err, ErrModelFileNotFound):
 		// Тело намеренно совместимо с Ollama: `error` — человекочитаемое
 		// сообщение (его показывают OpenWebUI/Cline), `code` — машинный код для
@@ -439,6 +445,15 @@ func handleInferenceError(w http.ResponseWriter, err error) bool {
 	var irErr *InsufficientResourcesError
 	if errors.As(err, &irErr) {
 		writeInsufficientResourcesResponse(w, irErr)
+		return true
+	}
+	// R304 (2026-10-30): отказ донора, всплывший во время генерации.
+	//
+	// Отдельной веткой — потому что 500 здесь был бы ложью: запрос не сломался,
+	// воркер отказал по роли (RAM-fallback пытался поднять копию на доноре).
+	// Клиент и балансер обязаны увидеть причину, а не «внутреннюю ошибку».
+	if errors.Is(err, errDonorCannotHostModelsR304) {
+		writeDonorRefusalR304(w, donorMarkR304())
 		return true
 	}
 	return false

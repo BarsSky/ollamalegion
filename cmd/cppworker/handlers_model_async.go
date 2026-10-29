@@ -313,6 +313,25 @@ func writeLoadWaitTimeout(w http.ResponseWriter, r *http.Request,
 // Снимок берётся в вызывающем (в его же горутине) и дальше используется только он.
 func runAsyncLoad(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	balancerReg balancerRegNotifier, be *cppbackend.Backend) {
+	// R304 (2026-10-30): ВТОРОЙ ЭШЕЛОН запрета «донор не поднимает копий».
+	//
+	// Обработчики уже проверили роль (donorLoadGuard), поэтому сюда нормальный
+	// путь не доходит. Защита нужна от гонки и от будущих вызывающих: роль
+	// объявляют МЕЖДУ приёмом запроса и стартом фоновой горутины, а новая ручка
+	// загрузки обязана упереться в тот же запрет, даже если её автор забыл про
+	// гард. Цена ошибки несимметрична: лишняя проверка — наносекунды, а копия на
+	// доноре отнимает память у мастера, который по ней уже спланировал раскладку.
+	if refused, mark := donorOwnCopyRefusedR304("async-load"); refused {
+		// Провал записываем в реестр причин: клиент уже получил 202 и поллит
+		// прогресс — без записи он видел бы вечное «грузится» (см. load_failures.go).
+		loadFailures.record(modelName, donorRefusalErrorR304(mark))
+		// Заявку на загрузку освобождаем сами: её занял вызывающий, а освободить
+		// должен именно фон (runAsyncLoad отвечает за UnlockLoad целиком).
+		if be != nil {
+			be.UnlockLoad(modelName)
+		}
+		return
+	}
 	start := time.Now()
 	logger.Get().Infow("runAsyncLoad: starting background load",
 		"name", modelName, "path", modelPath,
@@ -411,6 +430,15 @@ func runAsyncReload(modelName, modelPath string, opts cppbackend.LoadModelOpts,
 	if be == nil {
 		logger.Get().Errorw(i18n.T("cppworker.handlers_model_async.backend_nil"),
 			"name", modelName)
+		return
+	}
+
+	// R304 (2026-10-30): второй эшелон (см. runAsyncLoad) — reload тоже поднимает
+	// копию. Порядок важен: выгрузку старых весов НЕ начинаем, иначе донор
+	// потерял бы работающую модель, не получив права поднять новую.
+	if refused, mark := donorOwnCopyRefusedR304("async-reload"); refused {
+		loadFailures.record(modelName, donorRefusalErrorR304(mark))
+		be.UnlockLoad(modelName)
 		return
 	}
 

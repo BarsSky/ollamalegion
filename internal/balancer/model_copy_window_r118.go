@@ -102,7 +102,8 @@ func (p *Proxy) collectModelCopyCandidates(modelName string, exclude map[string]
 
 	out := make([]modelCopyCandidate, 0, len(p.backends))
 	for id, state := range p.backends {
-		if p.isGroupWorkerR92(id) {
+		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
+		if p.cannotHostModelR304(id) {
 			continue
 		}
 		if exclude != nil && exclude[id] {

@@ -457,6 +457,77 @@ const Utils = {
             });
         }
     },
+    /**
+     * R304 (2026-10-30): донор держит ТОЛЬКО память — ОДИН разбор ответа для
+     * всей панели (страницы «Бэкенды», «Дашборд», «Модели», GGUF, модалка).
+     *
+     * ДОКТРИНА ОПЕРАТОРА: «Если бэкенд становится донором, он уже не может
+     * подымать свои копии моделей — он становится именно донором мастера и
+     * может только делить память с мастером». Панель обязана показывать роль и
+     * запрет одинаково во всех местах, иначе оператор видит «донор» на одной
+     * странице и кнопку «Загрузить» — на другой.
+     *
+     * ПОЧЕМУ ОДНА ФУНКЦИЯ, А НЕ ПОЛЕ. GET /api/v1/backends отдаёт готовую
+     * пометку (donor/donorFor/canLoadOwnModels/ownCopies), но старый балансер
+     * этих полей НЕ отдаёт: тогда роль берётся из role==='donor', а мастер —
+     * поиском role==='main' по списку. Без этого fallback панель против старого
+     * сервера молча показывала бы донора обычным узлом.
+     *
+     * @param {object} backend запись бэкенда из /api/v1/backends
+     * @param {Array} [backends] список, в котором искать мастера (для fallback)
+     * @returns {?{donor:boolean, master:string, ownCopies:string[], canLoad:boolean, note:string}}
+     *          null — бэкенд не донор (поведение остальных не меняется)
+     */
+    donorMark(backend, backends) {
+        if (!backend) return null;
+        const role = String(backend.role || '').toLowerCase();
+        // Поле donor — истина от сервера; role — fallback для старого балансера.
+        const isDonor = (backend.donor === true) || role === 'donor';
+        if (!isDonor) return null;
+
+        const df = backend.donorFor || {};
+        let master = String(df.backendId || df.host || '');
+        if (!master) {
+            // Старый балансер (или мастер выпал из отфильтрованного списка):
+            // ищем главного по роли — это ЕДИНСТВЕННЫЙ источник для fallback.
+            const pool = Array.isArray(backends) ? backends : [];
+            for (let i = 0; i < pool.length; i++) {
+                const b = pool[i];
+                if (!b || b === backend) continue;
+                if (String(b.role || '').toLowerCase() === 'main') { master = String(b.id || ''); break; }
+            }
+        }
+        // Мастер может быть скрыт фильтром страницы (offline/другой тип) — тогда
+        // смотрим полный список, который уже лежит в App.context.data (новый
+        // запрос для подписи не нужен).
+        if (!master && typeof window !== 'undefined' && window.App && window.App.context &&
+            window.App.context.data && Array.isArray(window.App.context.data.backends)) {
+            const pool2 = window.App.context.data.backends;
+            for (let i = 0; i < pool2.length; i++) {
+                const b = pool2[i];
+                if (!b || b === backend) continue;
+                if (String(b.role || '').toLowerCase() === 'main') { master = String(b.id || ''); break; }
+            }
+        }
+
+        const ownCopies = (Array.isArray(backend.ownCopies) ? backend.ownCopies : [])
+            .map(function (n) { return String(n == null ? '' : n); })
+            .filter(function (n) { return n !== ''; });
+
+        // canLoadOwnModels отсутствует у старого балансера — по доктрине донор
+        // своих копий не поднимает, значит запрещено (а не «разрешено»).
+        const canLoad = (typeof backend.canLoadOwnModels === 'boolean')
+            ? backend.canLoadOwnModels
+            : false;
+
+        return {
+            donor: true,
+            master: master,
+            ownCopies: ownCopies,
+            canLoad: canLoad,
+            note: String(backend.donorNote || '')
+        };
+    },
     setGpuLayers(value, inputId, badgeId) {
         const input = document.getElementById(inputId);
         if (!input) return;

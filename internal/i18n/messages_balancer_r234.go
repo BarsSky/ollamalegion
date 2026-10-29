@@ -428,6 +428,10 @@ var messagesBalancer = map[string]map[Lang]string{
 		RU: "донор (мастер не назначен): отдаёт VRAM через rpc-server и не держит своих копий моделей",
 		EN: "donor (no master assigned): hands VRAM via rpc-server and keeps no model copies of its own",
 	},
+	"balancer.donor.reload_refused": {
+		RU: "узел %s — донор раскладки: он отдаёт VRAM мастеру и не держит своих копий моделей, поэтому перезагрузка окна на нём невозможна",
+		EN: "node %s is a layout donor: it hands its VRAM to the master and keeps no model copies of its own, so a window reload on it is impossible",
+	},
 	"balancer.donor.note_layout_worker": {
 		RU: "узел — воркер логического бэкенда: модель разрезана между узлами",
 		EN: "the node is a worker of a logical backend: the model is split between nodes",

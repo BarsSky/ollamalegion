@@ -14,9 +14,11 @@
 package balancer
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -392,4 +394,31 @@ func parseBalancerFuncsR304(t *testing.T, dir string) map[string]r304FuncInfo {
 		}
 	}
 	return out
+}
+
+// TestR304_ReloadTargetRefusedOnDonor — перезагрузка окна на доноре.
+//
+// Селектор донора больше не выбирает, но сессия могла быть привязана к узлу ДО
+// смены роли. Без этой проверки балансер отправил бы донору POST /api/models/load
+// — то есть попросил бы поднять копию на узле, чья VRAM отдана мастеру. Отказ
+// называет роль, а не «загрузка не удалась».
+func TestR304_ReloadTargetRefusedOnDonor(t *testing.T) {
+	p := newDonorProxyR304(t)
+	body := []byte(`{"model":"gemma-4-E4B-it-Q4_K_M","num_ctx":8192,"stream":false}`)
+
+	_, needsProxy, msg, code := p.preflightNCtxReloadIfNeeded(context.Background(), r304Donor, r304Model, body, "/api/chat")
+	if code != http.StatusConflict || needsProxy || msg == "" {
+		t.Fatalf("донор как цель перезагрузки: code=%d needsProxy=%v msg=%q, ожидался 409 с причиной",
+			code, needsProxy, msg)
+	}
+
+	// Контроль: мастер идёт обычной логикой (в тесте координатор выключен, значит
+	// запрос проходит как есть) — отказ донора не должен распространяться на него.
+	_, needsProxyMain, _, codeMain := p.preflightNCtxReloadIfNeeded(context.Background(), r304Main, r304Model, body, "/api/chat")
+	if codeMain == http.StatusConflict {
+		t.Fatalf("мастер получил отказ донора: code=%d", codeMain)
+	}
+	if !needsProxyMain {
+		t.Error("мастер: запрос не ушёл к воркеру (needsProxy=false) — сломали обычный путь")
+	}
 }

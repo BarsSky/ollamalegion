@@ -118,9 +118,20 @@ var reasoningEndMarkers = []string{
 }
 
 // reasoningNeutralTokens — не меняют канал, но не должны попадать в видимый текст.
+//
+// R266 (2026-10-28): добавлены метки чат-шаблона qwen3.8/llama-3 и роли
+// (`<|tool|>`, `<|assistant|>`, `<|tool_call|>`, …). Живая жалоба оператора
+// (Cline): в ответе приходило «… <|tool|> tool_call_result(…) <|assistant|> …».
+// Метка `<|tool_call|>`/`<|tool|>` перед JSON вызова вычищается здесь только
+// как токен — сам JSON остаётся и распознаётся штатным детектором вызовов.
 var reasoningNeutralTokens = []string{
 	"<|message|>",
 	"<|constrain|>",
+	"<|tool_call|>", "<|/tool_call|>", "<|tool_call_end|>",
+	"<|tool|>", "<|/tool|>", "<|tool_end|>",
+	"<|assistant|>", "<|/assistant|>", "<|end|>",
+	"<|user|>", "<|system|>", "<|developer|>",
+	"<|start_header_id|>", "<|end_header_id|>",
 }
 
 // reasoningMarkerMatch — ближайший маркер в s (позиция, длина, эффект).

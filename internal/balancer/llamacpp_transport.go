@@ -1197,12 +1197,28 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				//   - "{name" — начало одиночного JSON-объекта tool_call
 				//   - contentBuffer не пуст — продолжаем накапливать уже начатый tool call
 				if deltaContent != "" && !contentToolCallsProcessed {
+					// R266 (2026-10-28): служебные метки qwen3.8 (`<|tool|>`,
+					// `<|assistant|>`, `<|tool_call|>`, …) в видимом тексте.
+					//
+					// ЖИВОЙ ФАКТ (Cline, /api/chat, qwen3.8): в ответе приходило
+					// «… </think> <|tool|> tool_call_result(run_commands): [...] <|assistant|>
+					// The file has ~348 lines …». Триггеры накопления ниже знали только
+					// `[`, `<tool_call>`, `<|python_tag|>`, `[TOOL_CALLS]`, `{name`, поэтому
+					// чанк с меткой уходил в message.content как обычный текст.
+					//
+					// Метки вычищаем ДО разбора: после этого остаётся либо чистый текст,
+					// либо JSON вызова, который распознаётся штатным детектором.
+					deltaContent = stripQwenServiceMarkers(deltaContent)
 					trimmed := strings.TrimSpace(deltaContent)
 					startToolCallAccum := strings.HasPrefix(trimmed, "[") ||
 						strings.HasPrefix(trimmed, "<tool_call>") ||
 						strings.HasPrefix(trimmed, "<|python_tag|>") ||
 						strings.HasPrefix(trimmed, "[TOOL_CALLS]") ||
-						strings.HasPrefix(trimmed, "{name")
+						strings.HasPrefix(trimmed, "{name") ||
+						hasQwenServiceMarker(trimmed) ||
+						// Метка разрезана между чанками: `<|tool_` + `call|>`. Хвост
+						// придерживаем, иначе первая половина уедет клиенту текстом.
+						splitMarkerSuffixLen(trimmed) > 0
 
 					// R114c (2026-10-13): JSON-структура НАЧАЛАСЬ ПОСРЕДИ чанка
 					// (проза + вызов в одном чанке). Раньше такой чанк уходил
@@ -1294,9 +1310,44 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 						// Сбрасываем буфер и даём чанку пройти через нормальный translate.
 						if endPos := findMatchingClosingBracket(contentBuffer, 0); endPos >= 0 {
 							contentBuffer = ""
-						} else if len(contentBuffer) > 4096 {
-							// Слишком большой буфер без закрывающей ']' — не tool call.
+						} else if len(contentBuffer) > toolCallBufferLimit() {
+							// R266: раньше здесь буфер ВЫБРАСЫВАЛСЯ (жёсткие 4096 байт),
+							// и вызов инструмента, который пишет файл на сотни строк,
+							// терялся, а его обрывок с метками уезжал клиенту как текст.
+							// Теперь текст не теряем: отдаём очищенным от служебных меток
+							// как обычный content и продолжаем стрим.
+							overflow := stripQwenServiceMarkers(contentBuffer)
 							contentBuffer = ""
+							if overflow = strings.TrimSpace(overflow); overflow != "" {
+								logger.Get().Warnw("proxyRequestLlamaCpp: tool-call buffer limit reached, text flushed",
+									"backend", backendID, "model", modelFromCtx,
+									"limit_bytes", toolCallBufferLimit(), "flushed_chars", len(overflow))
+								flushChunk := map[string]interface{}{
+									"model":      modelFromCtx,
+									"created_at": time.Now().UTC().Format(time.RFC3339),
+									"done":       false,
+									"message": map[string]interface{}{
+										"role":    "assistant",
+										"content": overflow,
+									},
+								}
+								if outFlush, errMarshal := json.Marshal(flushChunk); errMarshal == nil {
+									nFlush, errFlush := fmt.Fprintf(w, "%s\n", string(outFlush))
+									bytesForwarded += int64(nFlush)
+									if errFlush != nil {
+										lastForwardErr = errFlush
+										if firstForwardErr == nil {
+											firstForwardErr = errFlush
+										}
+										return fmt.Errorf("write NDJSON (tool-call buffer overflow): %v", errFlush)
+									}
+									if flusher, ok := w.(http.Flusher); ok {
+										flusher.Flush()
+									}
+									accumulatedPlainContent += overflow
+								}
+							}
+							continue
 						} else {
 							// Всё ещё накапливаем — пропускаем этот чанк
 							continue

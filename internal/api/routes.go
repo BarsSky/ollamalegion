@@ -49,6 +49,12 @@ func (s *Server) setupRoutes() {
 	// Backend types info (публичный, без аутентификации)
 	s.mux.HandleFunc("/api/v1/backends/types", s.handleBackendTypeInfo)
 
+	// R269 (2026-10-29): стабильная версия llama.cpp в upstream + свежесть
+	// сборок узлов. Отдельный эндпоинт, потому что уведомление в WebUI — про
+	// кластер, а не про конкретный узел (и не должно зависеть от фильтрации
+	// списка бэкендов). С аутентификацией: это состояние инфраструктуры.
+	s.mux.Handle("/api/v1/llama-version", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.llamaVersionHandler), s.rateLimiter), s.authenticator))
+
 	// R234 (2026-10-24): язык логов и ошибок. GET отдаёт действующий язык
 	// (его читают воркеры: cppworker/agent синхронизируются с балансером),
 	// PUT переключает язык на лету и сохраняет в config.logging.language.

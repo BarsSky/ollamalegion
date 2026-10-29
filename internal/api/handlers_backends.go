@@ -799,6 +799,11 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			// расхождение — причина таймаута загрузки, а не «медленная сеть».
 			// Поле отдаётся всегда (пустая строка = узел версию не сообщает).
 			"buildInfo": backend.BuildInfo,
+			// R269 (2026-10-29): свежесть сборки относительно стабильного
+			// upstream llama.cpp. Раньше оператор видел только строку версии и
+			// не знал, есть ли новее; relation=unknown — это ЧЕСТНОЕ «сравнить
+			// не с чем», а не «устарело».
+			"llamaBuild": s.proxy.LlamaBuildStatusFor(backend.ID),
 		}
 
 		// R-Image follow-up (2026-10-02): gpuIndex — ЧИСЛО, когда индекс задан

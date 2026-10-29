@@ -83,6 +83,13 @@ window.I18N_EN = {
   "backends.use_off": "Do not use",
   "backends.use_on_hint": "return the node to balancer selection (the model stays loaded)",
   "backends.use_off_hint": "exclude the node from balancer selection: the container keeps running and in-flight requests finish",
+  // R269 (2026-10-29): llama.cpp build freshness against stable upstream.
+  // Visibility is decided by computeNotice: only relation=behind and an enabled
+  // check (see webui/js/modules/llama-upstream-notice.js).
+  "llamaUpstream.title": "A newer stable llama.cpp build is available",
+  "llamaUpstream.message": "{latest} is available; nodes on an outdated build: {nodes}",
+  "llamaUpstream.open": "Open release",
+  "llamaUpstream.unknownNodes": "unknown",
   "backends.export": "Export",
   "backends.import": "Import",
   "backends.name": "Name",

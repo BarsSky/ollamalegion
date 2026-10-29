@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -2552,6 +2552,10 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <!-- R102 (2026-10-10, S6 плана 2026-10-07): окно «Объединение бэкендов».
          Модуль сам монтируется в #backendMergePanel на странице «Бэкенды». -->
     <script defer src="js/modules/backend-merge.js?v=R250"></script>
+    <!-- R269 (2026-10-29): уведомление «есть более свежая стабильная версия
+         llama.cpp». Спрашивает /api/v1/llama-version и вставляет строку в начало
+         страницы бэкендов; при relation!=behind или выключенной проверке — молчит. -->
+    <script defer src="js/modules/llama-upstream-notice.js?v=R269"></script>
     <!-- R103 (S5 плана 2026-10-07): шаг мастера «состав кластера» — план с числами
          и запись balancing.placement. Монтируется мастером в #setupPlanPanel. -->
     <script defer src="js/modules/setup-plan.js?v=R103"></script>

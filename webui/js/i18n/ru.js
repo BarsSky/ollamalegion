@@ -85,6 +85,13 @@ window.I18N_RU = {
   "backends.use_off": "Не использовать",
   "backends.use_on_hint": "вернуть узел в выбор балансера (модель останется загруженной)",
   "backends.use_off_hint": "исключить узел из выбора балансера: контейнер не останавливается, текущие запросы доигрываются",
+  // R269 (2026-10-29): свежесть сборки llama.cpp относительно стабильного upstream.
+  // Показ уведомления управляется computeNotice: только relation=behind и при
+  // включённой проверке (см. webui/js/modules/llama-upstream-notice.js).
+  "llamaUpstream.title": "Доступна более свежая стабильная версия llama.cpp",
+  "llamaUpstream.message": "доступна {latest}; узлы на устаревшей сборке: {nodes}",
+  "llamaUpstream.open": "Открыть релиз",
+  "llamaUpstream.unknownNodes": "неизвестно",
   "backends.export": "Экспорт",
   "backends.import": "Импорт",
   "backends.name": "Имя",

@@ -248,6 +248,11 @@ services:
       # 15:01:20, дальше тишина навсегда»). До первого кадра не работает:
       # молчание в начале — это prefill. 0 = выключить сторож.
       - LB_STREAM_STALL_ABORT_SEC=${LB_STREAM_STALL_ABORT_SEC:-300}
+      # R298: отдельный порог для тишины ДО первого кадра. По умолчанию 0
+      # (выключен): молчание в начале — это префилл, и на CPU-модели он законно
+      # идёт минутами (ровно поэтому существует LB_STREAMING_NEVER_TIMEOUT).
+      # Ставить 10–20 на время живой проверки «воркер подвис и не отвечает».
+      - LB_STREAM_FIRST_FRAME_ABORT_SEC=${LB_STREAM_FIRST_FRAME_ABORT_SEC:-0}
       - LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC=${LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC:-180}
       - LB_ALLOW_PROFILE_TIMEOUTS=${LB_ALLOW_PROFILE_TIMEOUTS:-0}
       - LB_ALLOW_REQUEST_TIMEOUTS=${LB_ALLOW_REQUEST_TIMEOUTS:-0}

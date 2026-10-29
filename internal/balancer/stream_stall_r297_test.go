@@ -156,8 +156,11 @@ func TestR297_StallWatchdogEmitsTerminator(t *testing.T) {
 	if c := strings.Count(text, "data: [DONE]"); c != 1 {
 		t.Errorf("ожидался РОВНО один data: [DONE], получено %d; body=%s", c, text)
 	}
-	if !strings.Contains(text, `"reason":"`+streamAbortUpstreamError+`"`) {
-		t.Errorf("в кадре-причине нет reason=%s; body=%s", streamAbortUpstreamError, text)
+	// R298: причина срабатывания сторожа теперь называется своим именем —
+	// `upstream_stall` (модель перестала присылать данные), а не generic
+	// `upstream_error` (ошибка ЧТЕНИЯ, которой тут не было: соединение живое).
+	if !strings.Contains(text, `"reason":"`+streamAbortUpstreamStall+`"`) {
+		t.Errorf("в кадре-причине нет reason=%s; body=%s", streamAbortUpstreamStall, text)
 	}
 	// Порог 2 с + тик 1 с: больше 10 с — значит сторож не работает, а поток
 	// закрылся по чему-то другому (например, по клиентскому таймауту).

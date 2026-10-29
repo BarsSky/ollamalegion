@@ -436,9 +436,23 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	//
 	// R297: порог задаётся настройкой LB_STREAM_STALL_ABORT_SEC (0 = выключить).
 	// Одно «место правды» — реестр настроек, а не константа в этом файле.
-	upstreamStallAbortTimeout := streamStallAbortTimeout()
-	lastUpstreamAt := time.Now()
-	sawUpstreamData := false
+	//
+	// R298: проверка тишины вынесена в общий тип streamStallWatch (отдельная
+	// горутина). Раньше сторож жил внутри тика heartbeat, то есть зависел от
+	// того, крутится ли main-loop: если data-канал пуст, тик приходил — но при
+	// этом тик heartbeat писал keepalive, и на мёртвом сокете запись «успешно»
+	// буферизовалась, поэтому проверка не срабатывала вовсе. Теперь сторож
+	// независим: он либо присылает событие в канал (этот путь), либо закрывает
+	// тело ответа (блокирующий NDJSON-путь).
+	stallWatch := newStreamStallWatch(streamStallAbortTimeout(), streamFirstFrameAbortTimeout(), nil)
+	stallWatch.Start()
+	defer stallWatch.Stop()
+	// Выключенный сторож = nil-канал: case ниже никогда не срабатывает, нулевая
+	// цена на путях без сторожа.
+	var stallCh <-chan stallEvent
+	if stallWatch.Enabled() {
+		stallCh = stallWatch.Events()
+	}
 	// R252: последний отданный клиенту SSE-кадр (для гарантии [DONE]).
 	var lastSSELine []byte
 	// R254: состояние ремонта аргументов на этот стрим (диагностика — один раз).
@@ -459,30 +473,30 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 					"backend", backendID, "error", werr)
 				return nil
 			}
-			// R297: тот же тик, что heartbeat, — сторож зависания. Отдельный
-			// time.After на каждый тик только плодил таймеры, а «часы» должны
-			// быть одни.
-			if upstreamStallAbortTimeout > 0 && sawUpstreamData && len(dataCh) == 0 {
-				if stalled := time.Since(lastUpstreamAt); stalled >= upstreamStallAbortTimeout {
-					logger.Get().Warnw("hijack streaming: upstream stalled — closing stream with terminator (R297)",
-						"backend", backendID, "model", hijackStreamModel,
-						"stalled_sec", int(stalled.Seconds()))
-					for _, fr := range abortFramesR296("/v1/chat/completions", hijackStreamModel, streamAbortUpstreamError) {
-						if werr := writeChunkedString(bufrw, string(fr)); werr != nil {
-							logger.Get().Warnw("hijack streaming: stall terminator write failed",
-								"backend", backendID, "error", werr)
-							return nil
-						}
-					}
-					ensureChunkedSSEDone(bufrw, lastSSELine)
+			// R298: сторож зависания здесь больше не проверяется — он живёт в
+			// своей горутине и приходит в case ev := <-stallCh выше.
+		case ev := <-stallCh:
+			// R298: сработал сторож тишины (см. комментарий выше и
+			// stream_stall_r297.go). Отдаём кадр-причину и РОВНО ОДИН
+			// терминатор, иначе клиент видит оборванный поток.
+			logger.Get().Warnw("hijack streaming: upstream stalled — closing stream with terminator (R298)",
+				"backend", backendID, "model", hijackStreamModel,
+				"prefill", ev.prefill, "stalled_sec", int(ev.stalled.Seconds()))
+			for _, fr := range abortFramesR296("/v1/chat/completions", hijackStreamModel, streamAbortUpstreamStall) {
+				if werr := writeChunkedString(bufrw, string(fr)); werr != nil {
+					logger.Get().Warnw("hijack streaming: stall terminator write failed",
+						"backend", backendID, "error", werr)
 					return nil
 				}
 			}
-
+			ensureChunkedSSEDone(bufrw, lastSSELine)
+			// R184/R298: молчащий воркер продолжает генерировать и держит слот —
+			// одного закрытия нашего чтения для этого мало, отмену надо ПРИСЛАТЬ.
+			p.cancelUpstreamGeneration(backendID, hijackStreamModel, "upstream_stall")
+			return nil
 		case res := <-dataCh:
-			// R297: данные пришли — сторож зависания сбрасывается.
-			lastUpstreamAt = time.Now()
-			sawUpstreamData = true
+			// R297/R298: данные пришли — сторож зависания сбрасывается.
+			stallWatch.Touch()
 			if res.err != nil {
 				if res.err == io.EOF {
 					done = true

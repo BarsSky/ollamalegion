@@ -833,7 +833,43 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		}
 	}()
 
+	// R298 (2026-10-29): СТОРОЖ ТИШИНЫ на блокирующем пути.
+	//
+	// ЖИВОЙ ДЕФЕКТ. Здесь сторож не существовал ВООБЩЕ: `scanner.Scan()` —
+	// блокирующий вызов, а на стенде стоит `LB_STREAMING_NEVER_TIMEOUT=1`, то
+	// есть ни deadline, ни idle-таймаута нет. Мёртвый-но-не-закрытый upstream
+	// (docker pause, зависший llama_decode) оставлял и балансер, и клиента ждать
+	// вечно; при этом hijack-путь (/v1) сторож имел — то есть два протокола вели
+	// себя по-разному, и Cline через /api/chat не получал ни кадра-причины, ни
+	// терминатора.
+	//
+	// Разблокировать `Scan()` можно только закрытием тела ответа, поэтому здесь
+	// сторож работает НЕ через канал, а через onStall: он закрывает resp.Body,
+	// чтение возвращается, и штатный post-loop ниже отдаёт кадры через
+	// abortFramesR296 — ровно тот же контракт терминатора, что и на других путях.
+	stallWatch := newStreamStallWatch(streamStallAbortTimeout(), streamFirstFrameAbortTimeout(), func(ev stallEvent) {
+		// Сначала разблокируем ЧТЕНИЕ (Close), и только потом отменяем генерацию:
+		// отмена — сетевой round-trip к воркеру, и если он завис (docker pause),
+		// ставить её перед Close означало бы держать клиента ещё дольше.
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		logger.Get().Warnw("proxyRequestLlamaCpp: upstream stalled — body closed to unblock scan (R298)",
+			"backend", backendID, "model", modelFromCtx,
+			"prefill", ev.prefill,
+			"stalled_sec", int(ev.stalled.Seconds()),
+			"original_path", originalPath,
+			"bytes_forwarded", bytesForwarded)
+		// R184: молчащий воркер всё равно держит слот — отменяем генерацию,
+		// иначе следующий клиент получит «busy».
+		p.cancelUpstreamGeneration(backendID, modelFromCtx, "upstream_stall")
+	})
+	stallWatch.Start()
+	defer stallWatch.Stop()
+
 	for scanner.Scan() {
+		// R298: данные пришли — отсчёт тишины сбрасывается.
+		stallWatch.Touch()
 		// Round 23 (2026-08-04): проверяем отмену клиента ПЕРЕД чтением следующего чанка.
 		// Без этого streaming-прокси ждёт [DONE] от upstream (cppworker генерирует
 		// токены пока cancel не дойдёт через отдельный канал), что приводит к
@@ -2067,6 +2103,20 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		// R259: КТО завершил стрим. Наш лимит строки и наши отмены — НЕ
 		// «upstream truncated»; клиенту и в лог уходит правдивая причина.
 		abortReason := streamAbortReasonR259(scannerErr, r.Context().Err())
+		// R298: если поток разорвал СТОРОЖ тишины, причина — не «ошибка чтения»
+		// (её мы сами и создали, закрыв тело), а именно зависание upstream.
+		// Проверяем ДО эвристики R271: сторож — наш факт, а не догадка.
+		stallEventR298, stalledR298 := stallWatch.Fired()
+		if stalledR298 {
+			abortReason = streamAbortUpstreamStall
+			logger.Get().Warnw("proxyRequestLlamaCpp: stream aborted by the stall watchdog (R298)",
+				"backend", backendID, "model", modelFromCtx,
+				"prefill", stallEventR298.prefill,
+				"stalled_sec", int(stallEventR298.stalled.Seconds()),
+				"original_path", originalPath,
+				"bytes_forwarded", bytesForwarded,
+				"elapsed_sec", time.Since(llamaStartTime).Seconds())
+		}
 		// R271 (2026-10-29): если незадолго до обрыва МЫ выгружали/перезагружали
 		// эту модель на этом бэкенде — виноват не upstream.
 		//

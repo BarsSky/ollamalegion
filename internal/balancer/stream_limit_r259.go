@@ -62,6 +62,12 @@ const (
 	// (kv-cache / контекст / слои). Отдельная причина, чтобы оператор видел
 	// РЕАЛЬНЫЙ повод, а не «reload for another request».
 	streamAbortBalancerAutotune = "balancer_autotune"
+	// R298 (2026-10-29): upstream перестал присылать данные и не закрыл
+	// соединение (зависший llama_decode / pause контейнера). Это НЕ «upstream
+	// закрыл поток без маркера» (upstream_eof) и НЕ ошибка чтения на нашей
+	// стороне: поток стоял живым N секунд молча, и его снял сторож тишины
+	// (LB_STREAM_STALL_ABORT_SEC / LB_STREAM_FIRST_FRAME_ABORT_SEC).
+	streamAbortUpstreamStall = "upstream_stall"
 )
 
 // isLineTooLongErr — ошибка «строка не влезла в наш буфер»?
@@ -118,6 +124,10 @@ func streamAbortClientMessage(reason string) string {
 		return "stream stopped because the balancer reloaded the model (autotune); please retry"
 	case streamAbortClientCancel:
 		return "stream cancelled by the client"
+	case streamAbortUpstreamStall:
+		// R298: честно и по делу. Клиент должен знать, что поток не закончился
+		// сам: он стоял молча и был снят сторожем тишины.
+		return "the upstream model stopped sending data (stalled); the balancer closed the stream — the answer above is incomplete, please retry"
 	default:
 		return "stream ended by upstream before completion"
 	}

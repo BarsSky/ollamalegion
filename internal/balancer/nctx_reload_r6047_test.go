@@ -166,8 +166,27 @@ func TestR6047_AsyncReloadReturnsImmediately(t *testing.T) {
 	if errMsg, ok := bodyMap["error"].(string); !ok || !strings.Contains(errMsg, "n_ctx auto-reload") {
 		t.Errorf("body.error missing 'n_ctx auto-reload': %v", bodyMap["error"])
 	}
-	if retry, ok := bodyMap["retry_after"].(float64); !ok || retry < 5 || retry > 600 {
-		t.Errorf("body.retry_after invalid: %v", retry)
+	// R296: БЫЛО — поле `retry_after` (snake_case, свой формат у этого пути).
+	// СТАЛО — единый формат отложенного ответа (deferredBodyR291): `retryAfterSec`
+	// плюс `deferredReason`/`requiredTokens`/`loadedWindowTokens`/`activeStreams`,
+	// чтобы клиент не разбирал текст и видел числа.
+	if reason, ok := bodyMap["deferredReason"].(string); !ok || reason != "context_growth_pending" {
+		t.Errorf("body.deferredReason = %v, want context_growth_pending", bodyMap["deferredReason"])
+	}
+	if retry, ok := bodyMap["retryAfterSec"].(float64); !ok || retry < 5 || retry > 600 {
+		t.Errorf("body.retryAfterSec invalid: %v", bodyMap["retryAfterSec"])
+	}
+	// requiredTokens = max(запрошенное окно, промпт+бюджет): живой дефект был в
+	// том, что клиент видел только оценку промпта (4098) при своём запросе 32768.
+	required, ok := bodyMap["requiredTokens"].(float64)
+	if !ok || required < 8500 {
+		t.Errorf("body.requiredTokens = %v, want >= 8500 (max of requested window and prompt estimate)", bodyMap["requiredTokens"])
+	}
+	if loaded, ok := bodyMap["loadedWindowTokens"].(float64); !ok || loaded != 2048 {
+		t.Errorf("body.loadedWindowTokens = %v, want 2048", bodyMap["loadedWindowTokens"])
+	}
+	if _, ok := bodyMap["activeStreams"]; !ok {
+		t.Errorf("body.activeStreams missing (должен быть живой счётчик R271): %v", bodyMap)
 	}
 
 	// Проверяем что reload goroutine всё-таки запустилась.

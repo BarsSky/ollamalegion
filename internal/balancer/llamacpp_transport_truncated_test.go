@@ -256,40 +256,65 @@ func TestProxyRequestLlamaCpp_StreamTruncation_NDJSON(t *testing.T) {
 		t.Fatalf("recorder body is empty or unparseable; body=%q", string(recorderBody))
 	}
 
-	var truncChunk map[string]interface{}
+	// R296 (2026-10-29): БЫЛО — ОДИН кадр, который и сообщал причину, и закрывал
+	// ход (`{"done":true,"done_reason":"truncated","error":"..."}`): клиент
+	// закрывал приём раньше, чем разбирал причину, и видел «успешный пустой
+	// конец». СТАЛО — кадр-ПРИЧИНА (`done:false`) и ровно ОДИН терминатор.
+	var reasonChunk, truncChunk map[string]interface{}
+	var terminators int
 	var contentChunks int
 	for _, c := range chunks {
 		if done, _ := c["done"].(bool); done {
+			terminators++
 			if reason, _ := c["done_reason"].(string); reason == "truncated" {
 				truncChunk = c
-				break
 			}
-		} else {
-			contentChunks++
+			continue
 		}
+		if _, hasErr := c["error"]; hasErr {
+			reasonChunk = c
+			continue
+		}
+		contentChunks++
+	}
+
+	if reasonChunk == nil {
+		t.Fatalf("expected NDJSON reason chunk (done:false + error) before terminal; got chunks=%d; body=%s", len(chunks), string(recorderBody))
+	}
+	if gotErr, _ := reasonChunk["error"].(string); gotErr != streamAbortClientMessage(streamAbortUpstreamEOF) {
+		// R259: текст больше не приписывает обрыв «до [DONE]» безусловно — причина
+		// приходит из классификатора (здесь реальный EOF без маркеров).
+		t.Errorf("reason chunk error=%q, want %q", gotErr, streamAbortClientMessage(streamAbortUpstreamEOF))
+	}
+	// R296: инвариант — причина обязана быть «upstream…», а НЕ нашей
+	// (`balancer_reload`/`balancer_autotune`/`our_limit`). Конкретный код
+	// (upstream_eof vs upstream_error) выбирает классификатор R259: обрыв TCP —
+	// это ошибка чтения, поэтому здесь ожидаем upstream_error.
+	if got, _ := reasonChunk["error_type"].(string); got != streamAbortUpstreamError {
+		t.Errorf("reason chunk error_type=%q, want %q", got, streamAbortUpstreamError)
+	}
+	if got, _ := reasonChunk["done"].(bool); got {
+		t.Errorf("reason chunk done=%v, want false (причина не закрывает ход)", got)
 	}
 
 	if truncChunk == nil {
-		t.Fatalf("expected final NDJSON chunk with done_reason=truncated; got chunks=%d; body=%s", len(chunks), string(recorderBody))
-	}
-
-	if gotErr, _ := truncChunk["error"].(string); gotErr != streamAbortClientMessage(streamAbortUpstreamEOF) {
-		// R259: текст больше не приписывает обрыв «до [DONE]» безусловно — причина
-		// приходит из классификатора (здесь реальный EOF без маркеров).
-		t.Errorf("truncation chunk error=%q, want %q", gotErr, streamAbortClientMessage(streamAbortUpstreamEOF))
+		t.Fatalf("expected NDJSON terminal chunk with done_reason=truncated; got chunks=%d; body=%s", len(chunks), string(recorderBody))
 	}
 	if got, _ := truncChunk["done"].(bool); !got {
-		t.Errorf("truncation chunk done=%v, want true", got)
+		t.Errorf("terminal chunk done=%v, want true", got)
 	}
-	if got, _ := truncChunk["done_reason"].(string); got != "truncated" {
-		t.Errorf("truncation chunk done_reason=%q, want %q", got, "truncated")
+	if _, hasErr := truncChunk["error"]; hasErr {
+		t.Errorf("terminal chunk must not carry the reason (R296): %v", truncChunk)
+	}
+	if terminators != 1 {
+		t.Errorf("expected exactly 1 terminal NDJSON chunk, got %d; body=%s", terminators, string(recorderBody))
 	}
 
-	if contentChunks == 0 && len(chunks) <= 1 {
-		t.Errorf("expected at least 1 forwarded content chunk + 1 truncation chunk; got %d chunks total", len(chunks))
+	if contentChunks == 0 && len(chunks) <= 2 {
+		t.Errorf("expected at least 1 forwarded content chunk + reason + terminal; got %d chunks total", len(chunks))
 	}
 
-	t.Logf("OK: NDJSON truncation handled correctly; chunks=%d content_chunks=%d", len(chunks), contentChunks)
+	t.Logf("OK: NDJSON truncation handled correctly; chunks=%d content_chunks=%d terminators=%d", len(chunks), contentChunks, terminators)
 }
 
 // TestProxyRequestLlamaCpp_StreamTruncation_SSEPassthrough is the regression test
@@ -306,9 +331,10 @@ func TestProxyRequestLlamaCpp_StreamTruncation_NDJSON(t *testing.T) {
 //  2. Content-Type: text/event-stream.
 //  3. Client body contains:
 //     - 3 forwarded SSE chunks from upstream.
-//     - Final data: chunk with choices:[{finish_reason:truncated}],
-//     error:{message:stream truncated by upstream before completion,
-//     type:stream_truncated}.
+//     - Кадр-ПРИЧИНА с error:{message:…, type:stream_truncated, reason:…} и
+//     ОТСУТСТВУЮЩИМ finish_reason (ход не закрыт) — R296.
+//     - РОВНО ОДИН терминатор data: chunk с choices
+//     [{finish_reason:truncated}] и без error.
 //     - Final data: [DONE] marker.
 func TestProxyRequestLlamaCpp_StreamTruncation_SSEPassthrough(t *testing.T) {
 	upstream := makeTruncatingUpstream(t, 3)
@@ -357,7 +383,8 @@ func TestProxyRequestLlamaCpp_StreamTruncation_SSEPassthrough(t *testing.T) {
 	}
 
 	var hasDone bool
-	var truncChunk map[string]interface{}
+	var termCount int
+	var reasonChunk, truncChunk map[string]interface{}
 	for _, raw := range sseChunks {
 		if raw == "[DONE]" {
 			hasDone = true
@@ -368,12 +395,26 @@ func TestProxyRequestLlamaCpp_StreamTruncation_SSEPassthrough(t *testing.T) {
 			t.Errorf("invalid SSE JSON chunk: %q (err=%v)", raw, err)
 			continue
 		}
-		if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+		choices, _ := chunk["choices"].([]interface{})
+		var finish *string
+		if len(choices) > 0 {
 			if choice, ok := choices[0].(map[string]interface{}); ok {
-				if reason, _ := choice["finish_reason"].(string); reason == "truncated" {
-					truncChunk = chunk
+				if reason, ok := choice["finish_reason"].(string); ok {
+					finish = &reason
 				}
 			}
+		}
+		if finish != nil {
+			// R296: причина и терминатор — РАЗНЫЕ кадры. Терминатор несёт
+			// finish_reason и НЕ несёт error.
+			termCount++
+			if *finish == "truncated" {
+				truncChunk = chunk
+			}
+			continue
+		}
+		if _, hasErr := chunk["error"]; hasErr {
+			reasonChunk = chunk
 		}
 	}
 
@@ -381,22 +422,34 @@ func TestProxyRequestLlamaCpp_StreamTruncation_SSEPassthrough(t *testing.T) {
 		t.Errorf("expected [DONE] SSE marker at end of stream; chunks=%v", sseChunks)
 	}
 
-	if truncChunk == nil {
-		t.Fatalf("expected SSE truncation chunk with finish_reason=truncated; body=%s", string(recorderBody))
+	if reasonChunk == nil {
+		t.Fatalf("expected SSE reason chunk (error + finish_reason отсутствует) before terminal; body=%s", string(recorderBody))
 	}
-
-	if errObj, ok := truncChunk["error"].(map[string]interface{}); !ok {
-		t.Errorf("truncation chunk missing error object; got=%v", truncChunk)
+	if errObj, ok := reasonChunk["error"].(map[string]interface{}); !ok {
+		t.Errorf("reason chunk missing error object; got=%v", reasonChunk)
 	} else {
 		if msg, _ := errObj["message"].(string); msg != streamAbortClientMessage(streamAbortUpstreamEOF) {
-			t.Errorf("truncation chunk error.message=%q, want %q", msg, "stream truncated by upstream before completion")
+			t.Errorf("reason chunk error.message=%q, want %q", msg, streamAbortClientMessage(streamAbortUpstreamEOF))
 		}
 		if typ, _ := errObj["type"].(string); typ != "stream_truncated" {
-			t.Errorf("truncation chunk error.type=%q, want %q", typ, "stream_truncated")
+			t.Errorf("reason chunk error.type=%q, want %q", typ, "stream_truncated")
+		}
+		if reason, _ := errObj["reason"].(string); reason != streamAbortUpstreamError {
+			t.Errorf("reason chunk error.reason=%q, want %q", reason, streamAbortUpstreamError)
 		}
 	}
 
-	t.Logf("OK: SSE passthrough truncation handled correctly; chunks=%d has_done_marker=%v", len(sseChunks), hasDone)
+	if truncChunk == nil {
+		t.Fatalf("expected SSE terminal chunk with finish_reason=truncated; body=%s", string(recorderBody))
+	}
+	if _, hasErr := truncChunk["error"]; hasErr {
+		t.Errorf("terminal chunk must not carry the reason (R296): %v", truncChunk)
+	}
+	if termCount != 1 {
+		t.Errorf("expected exactly 1 terminal SSE chunk (finish_reason задан), got %d; body=%s", termCount, string(recorderBody))
+	}
+
+	t.Logf("OK: SSE passthrough truncation handled correctly; chunks=%d has_done_marker=%v terminators=%d", len(sseChunks), hasDone, termCount)
 }
 
 // TestProxyRequestLlamaCpp_StreamTruncation_NoTruncationWhenDoneSent is a

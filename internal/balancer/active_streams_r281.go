@@ -35,6 +35,16 @@ func (p *Proxy) NoteDestructiveReload(backendID, model string) {
 	p.noteDestructiveOpR271(backendID, model, destructiveReloadR271)
 }
 
+// ConfirmDestructiveUnloaded — R296: модель РЕАЛЬНО снята с памяти.
+//
+// Публичная обёртка для слоя API по той же причине, что и NoteDestructiveReload:
+// api не может звать неэкспортированный confirmDestructiveOpUnloadedR271.
+// До этого вызова обрыв стрима НЕ объясняется нашей перезагрузкой — иначе
+// `docker kill` воркера получал ложную причину «balancer reloaded the model».
+func (p *Proxy) ConfirmDestructiveUnloaded(backendID, model string) {
+	p.confirmDestructiveOpUnloadedR271(backendID, model)
+}
+
 // ActiveStreamsOnBackend — для API-слоя: сколько стримов идёт на бэкенде
 // (в тексте отказа оператору нужно число, а не «deferred»).
 func (p *Proxy) ActiveStreamsOnBackend(backendID string) int {

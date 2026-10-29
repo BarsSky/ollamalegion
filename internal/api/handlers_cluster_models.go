@@ -692,6 +692,12 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 		}
 		req.Operation = "load"
 	}
+	// R296: unload выше прошёл успешно — модель РЕАЛЬНО снята, только теперь
+	// обрыв чужого стрима можно объяснять нашей перезагрузкой (а не самой
+	// пометкой «перезагрузка началась»).
+	if s.proxy != nil {
+		s.proxy.ConfirmDestructiveUnloaded(backendID, modelName)
+	}
 
 	// ============================================================
 	// R119 (2026-10-15): auto-unload чужой модели — ТОЛЬКО по факту нехватки памяти

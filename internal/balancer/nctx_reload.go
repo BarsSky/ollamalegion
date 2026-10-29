@@ -710,6 +710,15 @@ func (c *NCtxReloadCoordinator) decideReloadBackend(
 		if required <= 0 {
 			required = bridgeErr.RequiredNCtx
 		}
+		// R296 (2026-10-29): ЯВНО ЗАПРОШЕННОЕ клиентом окно — тоже нижняя
+		// граница. Живой факт: клиент просил num_ctx=32768 при загруженных 16384,
+		// но в ответе 503 стоял required=4098 (оценка ПРОМПТА), и по этому числу
+		// нельзя было понять, сколько на самом деле нужно. Перезагружать модель
+		// в окно МЕНЬШЕ запрошенного нельзя в принципе (R294), а сообщать клиенту
+		// число меньше его запроса — значит врать о причине.
+		if requestedNCtxOverride > required {
+			required = requestedNCtxOverride
+		}
 		if required <= 0 {
 			return c.makeRejectPlan(backendID, bridgeErr, required,
 				"prompt_too_long: cannot determine required n_ctx from error info",

@@ -265,6 +265,9 @@ func (p *Proxy) handleNCtxReloadActual(
 	duration := time.Since(start)
 	p.nctxReload.RecordReloadDuration(backendID, duration, reloadErr)
 	if reloadErr != nil {
+		// R296: перезагрузка не состоялась — снимаем пометку, иначе следующий
+		// оборванный стрим будет объяснён нашей перезагрузкой, которой не было.
+		p.clearDestructiveOpR271(backendID, modelName)
 		logger.Get().Errorw("nctx_reload: DoReload failed",
 			"backend", backendID, "model", modelName, "error", reloadErr)
 		p.nctxReload.RecordError(backendID, reloadErr.Error())
@@ -273,6 +276,9 @@ func (p *Proxy) handleNCtxReloadActual(
 			"reload-failed")
 		return
 	}
+	// R296: модель действительно выгружена и перезагружена — только теперь
+	// обрыв чужого стрима в пределах окна атрибуции считается НАШИМ.
+	p.confirmDestructiveOpUnloadedR271(backendID, modelName)
 
 	// 3. Reload успешен — проверяем, не цикл ли это (reload успешен, но retry
 	// снова возвращает n_ctx ошибку). Если cycle detected — reject вместо retry.
@@ -429,6 +435,9 @@ func (p *Proxy) handleNCtxReloadActualAsync(
 		duration := time.Since(start)
 		p.nctxReload.RecordReloadDuration(backendID, duration, reloadErr)
 		if reloadErr != nil {
+			// R296: перезагрузка не состоялась — снимаем пометку, чтобы чужой
+			// обрыв не был объяснён нашей перезагрузкой, которой не было.
+			p.clearDestructiveOpR271(backendID, modelName)
 			logger.Get().Errorw("nctx_reload: async reload failed",
 				"backend", backendID, "model", modelName,
 				"target_n_ctx", plan.NewNCtx,
@@ -436,6 +445,9 @@ func (p *Proxy) handleNCtxReloadActualAsync(
 				"error", reloadErr)
 			p.nctxReload.RecordError(backendID, reloadErr.Error())
 		} else {
+			// R296: модель действительно выгружена/перезагружена — теперь обрыв
+			// чужого стрима в пределах окна атрибуции честно считается нашим.
+			p.confirmDestructiveOpUnloadedR271(backendID, modelName)
 			logger.Get().Infow("nctx_reload: async reload complete",
 				"backend", backendID, "model", modelName,
 				"new_n_ctx", plan.NewNCtx,
@@ -458,7 +470,37 @@ func (p *Proxy) handleNCtxReloadActualAsync(
 
 	// Write 503+Retry-After immediately. Это главное отличие R60.47:
 	// handler завершается за <50ms с actionable JSON.
-	writeServiceUnavailableWithDiagnostics(w, diag)
+	//
+	// R296 (2026-10-29): формат ОДИН на все отложенные случаи (R291), и в нём
+	// ЧИСЛА: сколько токенов нужно (max из запроса клиента и оценки промпта),
+	// сколько загружено и СКОЛЬКО СТРИМОВ сейчас идёт по живому счётчику R271.
+	// Живой факт до правки: клиент видел `required=4098` (это оценка ПРОМПТА,
+	// а не его запрос 32768) и `activeStreams=0` при живом стриме — по таким
+	// числам причину не понять.
+	neededTokens := diag.RequiredNCtx
+	if plan.NewNCtx > neededTokens {
+		neededTokens = plan.NewNCtx
+	}
+	activeNow := p.ActiveStreamsOnBackend(backendID)
+	logger.Get().Infow("nctx_reload: reload deferred, answering immediately (R291/R296)",
+		"backend", backendID, "model", modelName,
+		"required_tokens", neededTokens, "loaded_window_tokens", diag.CurrentNCtx,
+		"active_streams", activeNow, "retry_after_sec", retryAfter)
+	writeDeferredJSON(w, deferredBodyR291{
+		DeferredReason: "context_growth_pending",
+		Model:          modelName,
+		Operation:      "nctx-reload-async",
+		RetryAfterSec:  retryAfter,
+		ActiveStreams:  activeNow,
+		Extra: map[string]interface{}{
+			"error":              diag.Error,
+			"requiredTokens":     neededTokens,
+			"loadedWindowTokens": diag.CurrentNCtx,
+			"targetNCtx":         plan.NewNCtx,
+			"activeStreams":      activeNow,
+			"hint":               "raise the model context window (WebUI → model card) or shorten the history; retry after the reload finishes",
+		},
+	})
 }
 
 // newNCtxReloadHTTPClient — factory для HTTP-клиента reload-а (используется в DoReload).
@@ -1677,6 +1719,9 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 
 	req, reqErr := http.NewRequestWithContext(reloadCtx, "POST", targetURL, bytes.NewReader(reloadPayload))
 	if reqErr != nil {
+		// R296: запрос даже не собран — перезагрузки не было, пометка не должна
+		// объяснять чужие обрывы.
+		p.clearDestructiveOpR271(backendID, modelName)
 		logger.Get().Errorw("preflightNCtxReload(async): failed to create reload request",
 			"backend", backendID, "model", modelName, "error", reqErr)
 		return
@@ -1711,6 +1756,9 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 
 	resp, err := p.client.Do(req)
 	if err != nil {
+		// R296: запрос не дошёл (воркер убит / сеть) — модель НЕ выгружали по
+		// нашей команде, значит причина обрыва не наша.
+		p.clearDestructiveOpR271(backendID, modelName)
 		logger.Get().Errorw("preflightNCtxReload(async): reload HTTP request failed",
 			"backend", backendID, "model", modelName,
 			"target_n_ctx", requestedNCtx, "duration_ms", time.Since(start).Milliseconds(),
@@ -1723,6 +1771,9 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 	duration := time.Since(start)
 
 	if resp.StatusCode != http.StatusOK {
+		// R296: перезагрузка не состоялась — снимаем пометку, иначе следующий
+		// оборванный стрим будет объяснён нашей перезагрузкой, которой не было.
+		p.clearDestructiveOpR271(backendID, modelName)
 		logger.Get().Warnw("preflightNCtxReload(async): reload returned non-OK status",
 			"backend", backendID, "model", modelName,
 			"target_n_ctx", requestedNCtx,
@@ -1751,10 +1802,44 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 		"backend", backendID, "model", modelName,
 		"target_n_ctx", requestedNCtx,
 		"duration_ms", duration.Milliseconds())
+	// R296: перезагрузка ПОДТВЕРЖДЕНА воркером — только теперь обрыв чужого
+	// стрима в пределах окна атрибуции честно называется нашим.
+	//
+	// Исключение — dedup-ответ `status=already_loaded`: cppworker ничего не
+	// выгружал (модель уже стояла с тем же n_ctx), снимать её было не за что.
+	// Подтверждать unload в этом случае значило бы снова врать о причине.
+	if reloadDedupNoUnloadR296(body) {
+		p.clearDestructiveOpR271(backendID, modelName)
+		logger.Get().Infow("preflightNCtxReload(async): worker reported already_loaded — model was not unloaded, marker cleared (R296)",
+			"backend", backendID, "model", modelName, "target_n_ctx", requestedNCtx)
+	} else {
+		p.confirmDestructiveOpUnloadedR271(backendID, modelName)
+	}
 	// Перезагрузка удалась — прежний отказ больше не актуален.
 	p.clearNCtxInfeasible(backendID, modelName)
 	// R119: модель загрузилась — значит она ЕСТЬ, и запись «модели нет» устарела.
 	p.clearModelMissing(backendID, modelName)
+}
+
+// reloadDedupNoUnloadR296 — воркер ответил dedup'ом, то есть НЕ выгружал модель.
+//
+// ЗАЧЕМ (R296). Причина обрыва стрима обязана определяться фактом («модель
+// реально снимали»), а не фактом «мы попросили её снять». `/api/models/load`
+// отвечает `{"status":"already_loaded"}`, когда параметры совпали: cppworker
+// пропускает unload+load, ни один стрим от этой команды оборваться не мог.
+// Засчитывать такой ответ за подтверждённую выгрузку — значит сохранить живой
+// дефект: `docker kill` воркера подписывался как «балансер перезагрузил модель».
+func reloadDedupNoUnloadR296(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var probe struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(probe.Status), "already_loaded")
 }
 
 // getLoadedNCtxFromMetrics — возвращает загруженный n_ctx модели из метрик.

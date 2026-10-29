@@ -2112,58 +2112,20 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 
 		// Эмитим финальный чанк, чтобы клиент точно завершил стрим.
 		// Пробуем дописать; если клиент уже отвалился (broken pipe) — игнорируем ошибку.
-		if originalPath == "/v1/chat/completions" {
-			// R259: наш лимит — это НЕ обрыв upstream. Клиенту отдаём валидный
-			// терминальный чанк (finish_reason=length) без обвинения upstream;
-			// для наших отмен и реального обрыва — понятная причина.
-			finishReason := "truncated"
-			if abortReason == streamAbortOurLimit {
-				finishReason = "length"
-			}
-			truncatedChunk := map[string]interface{}{
-				"id":      fmt.Sprintf("trunc-%d", time.Now().UnixNano()),
-				"object":  "chat.completion.chunk",
-				"created": time.Now().Unix(),
-				"model":   modelFromCtx,
-				"choices": []interface{}{
-					map[string]interface{}{
-						"index":         0,
-						"delta":         map[string]interface{}{},
-						"finish_reason": finishReason,
-					},
-				},
-			}
-			if abortReason != streamAbortOurLimit {
-				truncatedChunk["error"] = map[string]interface{}{
-					"message": streamAbortClientMessage(abortReason),
-					"type":    "stream_truncated",
-					"reason":  abortReason,
-				}
-			}
-			out, _ := json.Marshal(truncatedChunk)
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(out))
-			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-			Flush(w)
-		} else {
-			// Для /api/chat и /api/generate (NDJSON): финальный done-чанк.
-			// R259: наш лимит — done_reason=length без обвинения upstream.
-			doneReason := "truncated"
-			if abortReason == streamAbortOurLimit {
-				doneReason = "length"
-			}
-			truncatedChunk := map[string]interface{}{
-				"model":       modelFromCtx,
-				"created_at":  time.Now().UTC().Format(time.RFC3339),
-				"done":        true,
-				"done_reason": doneReason,
-			}
-			if abortReason != streamAbortOurLimit {
-				truncatedChunk["error"] = streamAbortClientMessage(abortReason)
-			}
-			out, _ := json.Marshal(truncatedChunk)
-			_, _ = fmt.Fprintf(w, "%s\n", string(out))
-			Flush(w)
+		// R296 (2026-10-29): КОНТРАКТ ТЕРМИНАТОРА. Раньше причина обрыва и
+		// терминатор ехали ОДНИМ кадром (`finish_reason:"truncated"` + `error`).
+		// Клиент (Cline) видел `finish_reason` — то есть «ответ завершён» — и не
+		// успевал прочитать причину: выглядело как успешный, но пустой финал.
+		// Теперь сначала кадр-ПРИЧИНА (без finish_reason, то есть поток жив),
+		// затем ровно один терминатор. Кадры собирает abortFramesR296 (там же
+		// тестируются по отдельности).
+		for _, frame := range abortFramesR296(originalPath, modelFromCtx, abortReason) {
+			_, _ = w.Write(frame)
 		}
+		if originalPath == "/v1/chat/completions" {
+			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		}
+		Flush(w)
 	}
 
 	if err := scanner.Err(); err != nil {

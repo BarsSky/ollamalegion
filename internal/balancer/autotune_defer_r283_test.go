@@ -181,7 +181,7 @@ func TestR283_SuccessClearsBackoffAndRealErrorRecorded(t *testing.T) {
 }
 
 // TestR283_DestructiveMarkerKeptOnlyIfUnloaded — пометка «разрушительная
-// операция» остаётся только если модель РЕАЛЬНО выгружена.
+// операция» обвиняет балансер только если модель РЕАЛЬНО выгружена.
 //
 // Иначе клиенту сообщают неправду о причине обрыва: пометка ставится перед
 // apply, apply падает на «busy», модель никто не выгружал — а следующий
@@ -193,11 +193,20 @@ func TestR283_DestructiveMarkerKeptOnlyIfUnloaded(t *testing.T) {
 
 	p := &Proxy{autoTuneTracker: NewAutoTuneTracker(DefaultAutoTuneCircuitConfig())}
 
-	// Применение не состоялось: выгрузки не было → пометки нет.
+	// R296: БЫЛО — `noteDestructiveOpR271` сама по себе уже давала причину
+	// обрыва («пометка должна ставиться перед apply»). СТАЛО — начало операции
+	// причиной не является: нужен подтверждённый unload.
 	p.noteDestructiveOpR271("bk-1", "m", destructiveAutotuneR271)
-	if _, ok := p.recentDestructiveOpR271("bk-1", "m", time.Minute); !ok {
-		t.Fatal("пометка должна ставиться перед apply")
+	if kind, ok := p.recentDestructiveOpR271("bk-1", "m", time.Minute); ok {
+		t.Fatalf("начало операции не должно обвинять балансер (kind=%q)", kind)
 	}
+	// Модель подтверждённо сняли — вот теперь причина наша.
+	p.confirmDestructiveOpUnloadedR271("bk-1", "m")
+	if kind, ok := p.recentDestructiveOpR271("bk-1", "m", time.Minute); !ok || kind != destructiveAutotuneR271 {
+		t.Fatalf("после подтверждённой выгрузки пометка должна объяснять обрыв (kind=%q ok=%v)", kind, ok)
+	}
+
+	// Применение не состоялось: выгрузки не было → пометки нет.
 	p.clearDestructiveOpR271("bk-1", "m")
 	if _, ok := p.recentDestructiveOpR271("bk-1", "m", time.Minute); ok {
 		t.Fatal("после неудавшейся выгрузки пометка обязана сниматься")
@@ -205,6 +214,7 @@ func TestR283_DestructiveMarkerKeptOnlyIfUnloaded(t *testing.T) {
 
 	// Применение состоялось (выгрузка была) → пометку не снимаем.
 	p.noteDestructiveOpR271("bk-2", "m", destructiveAutotuneR271)
+	p.confirmDestructiveOpUnloadedR271("bk-2", "m")
 	if kind, ok := p.recentDestructiveOpR271("bk-2", "m", time.Minute); !ok || kind != destructiveAutotuneR271 {
 		t.Fatalf("после реальной выгрузки пометка должна оставаться (kind=%q ok=%v)", kind, ok)
 	}

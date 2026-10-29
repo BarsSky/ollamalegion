@@ -262,6 +262,11 @@ func (p *Proxy) ApplyAutoTunePlanGuarded(backendID string, plan *AutoTuneReloadP
 	}
 	p.noteDestructiveOpR271(backendID, plan.ModelName, destructiveAutotuneR271)
 	res = p.ApplyAutoTunePlan(backendID, plan)
+	if res != nil && res.Unloaded {
+		// R296: модель РЕАЛЬНО сняли — только теперь обрыв чужого стрима можно
+		// объяснять нашей автоперезагрузкой (а не самой пометкой «начали»).
+		p.confirmDestructiveOpUnloadedR271(backendID, plan.ModelName)
+	}
 	if res == nil || (!res.Success && !res.Unloaded) {
 		// Ничего разрушительного не произошло — пометку снимаем, иначе
 		// следующий оборванный стрим объявят «нашей» автоперезагрузкой.

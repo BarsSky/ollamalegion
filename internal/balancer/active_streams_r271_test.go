@@ -183,17 +183,34 @@ func TestR271_BalancerReloadAbortIsNotUpstream(t *testing.T) {
 		t.Fatalf("наш обрыв не должен выглядеть как обрыв upstream: %q", msg)
 	}
 
-	// Отметка действует ограниченное время: старая перезагрузка не объясняет
-	// сегодняшний обрыв.
+	// R296: БЫЛО — «свежая отметка должна находиться» сразу после note.
+	// СТАЛО — начало операции ничего не объясняет; причиной становится только
+	// ПОДТВЕРЖДЁННЫЙ unload (иначе `docker kill` воркера подписывался как наша
+	// перезагрузка). Окно атрибуции отсчитывается от момента подтверждения.
 	p := &Proxy{}
 	p.noteDestructiveOpR271("b1", "m1", destructiveReloadR271)
-	if _, ok := p.recentDestructiveOpR271("b1", "m1", time.Minute); !ok {
-		t.Fatal("свежая отметка должна находиться")
+	if kind, ok := p.recentDestructiveOpR271("b1", "m1", time.Minute); ok {
+		t.Fatalf("начало перезагрузки не должно обвинять балансер (kind=%q)", kind)
 	}
-	if _, ok := p.recentDestructiveOpR271("b1", "m1", -time.Second); ok {
-		t.Fatal("старая отметка не должна применяться к новому обрыву")
+	p.confirmDestructiveOpUnloadedR271("b1", "m1")
+	if _, ok := p.recentDestructiveOpR271("b1", "m1", time.Minute); !ok {
+		t.Fatal("подтверждённая выгрузка должна объяснять обрыв")
 	}
 	if _, ok := p.recentDestructiveOpR271("b2", "m1", time.Minute); ok {
 		t.Fatal("отметка не должна протекать на другой бэкенд")
+	}
+
+	// Старая выгрузка не объясняет сегодняшний обрыв: сдвигаем момент
+	// подтверждения на две минуты назад и проверяем окно в обе стороны.
+	p.streamsR271.mu.Lock()
+	op := p.streamsR271.destructive[streamRefKeyR271("b1", "m1")]
+	op.at = op.at.Add(-2 * time.Minute)
+	p.streamsR271.destructive[streamRefKeyR271("b1", "m1")] = op
+	p.streamsR271.mu.Unlock()
+	if _, ok := p.recentDestructiveOpR271("b1", "m1", time.Minute); ok {
+		t.Fatal("старая отметка не должна применяться к новому обрыву")
+	}
+	if _, ok := p.recentDestructiveOpR271("b1", "m1", 3*time.Minute); !ok {
+		t.Fatal("в пределах окна отметка должна находиться")
 	}
 }

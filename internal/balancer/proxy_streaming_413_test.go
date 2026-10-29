@@ -213,11 +213,21 @@ func TestProxyRequestLlamaCpp_Streaming413_TriggersReload(t *testing.T) {
 	if !strings.Contains(respBody, `"error":"model '' n_ctx auto-reload in progress`) {
 		t.Errorf("expected 503 body with 'n_ctx auto-reload in progress' message; got: %s", respBody)
 	}
-	if !strings.Contains(respBody, `"target_n_ctx":16384`) {
-		t.Errorf("expected 503 body with target_n_ctx=16384; got: %s", respBody)
+	// R296: БЫЛО — свой формат у этого пути (`target_n_ctx`, `retry_after`).
+	// СТАЛО — единый формат отложенного ответа (deferredBodyR291): camelCase
+	// `targetNCtx`/`retryAfterSec` плюс числа контекста, чтобы клиент и WebUI
+	// читали статус и причину, а не разбирали текст.
+	if !strings.Contains(respBody, `"targetNCtx":16384`) {
+		t.Errorf("expected 503 body with targetNCtx=16384; got: %s", respBody)
 	}
-	if !strings.Contains(respBody, `"retry_after":`) {
-		t.Errorf("expected 503 body with retry_after field; got: %s", respBody)
+	if !strings.Contains(respBody, `"retryAfterSec":`) {
+		t.Errorf("expected 503 body with retryAfterSec field; got: %s", respBody)
+	}
+	if !strings.Contains(respBody, `"deferredReason":"context_growth_pending"`) {
+		t.Errorf("expected 503 body with deferredReason=context_growth_pending; got: %s", respBody)
+	}
+	if !strings.Contains(respBody, `"requiredTokens":`) {
+		t.Errorf("expected 503 body with requiredTokens (числа вместо «reload in progress»); got: %s", respBody)
 	}
 
 	// Главная проверка: balancer НЕ должен пробрасывать SSE error chunk с "upstream returned HTTP 413".

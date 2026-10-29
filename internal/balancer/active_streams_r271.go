@@ -91,6 +91,13 @@ type activeStreamsR271 struct {
 type destructiveOpR271 struct {
 	kind string
 	at   time.Time
+	// unloaded — модель на этом бэкенде ДЕЙСТВИТЕЛЬНО снималась с памяти
+	// (unload/load прошли, а не только начались). R296: пометка сама по себе
+	// больше НЕ обвиняет балансер в обрыве — иначе любой более поздний обрыв
+	// (например `docker kill` воркера) подписывался как «balancer reloaded the
+	// model», и клиент получал ложную причину и совет «retry» при мёртвом
+	// бэкенде.
+	unloaded bool
 }
 
 // beginClientStreamR271 — учесть начало клиентского стрима.
@@ -181,12 +188,46 @@ func (p *Proxy) noteDestructiveOpR271(backendID, model, kind string) {
 	if s.destructive == nil {
 		s.destructive = make(map[string]destructiveOpR271, 4)
 	}
+	// unloaded=false: операция только НАЧИНАЕТСЯ. Обвинить балансер в обрыве
+	// можно будет лишь после confirmDestructiveOpUnloadedR271 (R296).
 	s.destructive[streamRefKeyR271(backendID, model)] = destructiveOpR271{kind: kind, at: time.Now()}
 	s.mu.Unlock()
 }
 
-// recentDestructiveOpR271 — была ли по этой модели разрушительная операция за
-// последние window (и какая).
+// confirmDestructiveOpUnloadedR271 — R296: модель действительно сняли/перезапустили.
+//
+// Вызывается ПОСЛЕ того, как разрушительная операция реально прошла (или в тот
+// момент, когда воркер подтвердил unload). Только после этого обрыв стрима в
+// пределах окна атрибуции помечается как `balancer_reload`/`balancer_autotune`.
+//
+// ЗАЧЕМ ОТДЕЛЬНЫЙ ШАГ. Живой дефект: пометка ставилась перед операцией и жила
+// 3 минуты. Оператор убил cppworker (`docker kill`) — стрим оборвался по EOF,
+// а клиент получил «stream stopped because the balancer reloaded the model for
+// another request; please retry»: ложная причина, да ещё с советом повторить
+// при мёртвом бэкенде. Причина обязана определяться ФАКТОМ (модель снимали),
+// а не последней пометкой.
+func (p *Proxy) confirmDestructiveOpUnloadedR271(backendID, model string) {
+	if p == nil || backendID == "" {
+		return
+	}
+	s := &p.streamsR271
+	s.mu.Lock()
+	key := streamRefKeyR271(backendID, model)
+	if op, ok := s.destructive[key]; ok {
+		op.unloaded = true
+		op.at = time.Now() // окно атрибуции считаем от момента выгрузки
+		s.destructive[key] = op
+	}
+	s.mu.Unlock()
+}
+
+// recentDestructiveOpR271 — была ли по этой модели разрушительная операция,
+// которая РЕАЛЬНО сняла модель, за последние window (и какая).
+//
+// R296: пометка «операция началась» (unloaded=false) причиной обрыва не
+// считается. Иначе любая неудавшаяся/отложенная перезагрузка в течение окна
+// подписывала бы чужой обрыв нашей причиной — ровно то, что случилось на живом
+// стенде при `docker kill` воркера.
 func (p *Proxy) recentDestructiveOpR271(backendID, model string, window time.Duration) (string, bool) {
 	if p == nil || backendID == "" {
 		return "", false
@@ -195,7 +236,7 @@ func (p *Proxy) recentDestructiveOpR271(backendID, model string, window time.Dur
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	op, ok := s.destructive[streamRefKeyR271(backendID, model)]
-	if !ok {
+	if !ok || !op.unloaded {
 		return "", false
 	}
 	if time.Since(op.at) > window {

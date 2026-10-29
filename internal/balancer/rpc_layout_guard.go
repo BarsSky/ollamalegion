@@ -206,6 +206,15 @@ func pushRPCLayoutConfig(b *types.Backend, enabled bool, servers []string) error
 	body, err := json.Marshal(map[string]interface{}{
 		"rpcEnabled": enabled,
 		"rpcServers": servers,
+		// R304 (2026-10-30): роль едет и с приказом о раскладке, а не только с
+		// приказом о собственном узле.
+		//
+		// ЗАЧЕМ. У главного приказа «подними свой узел» не бывает (узел ему не
+		// нужен), поэтому роль main до воркера не доезжала вовсе: в его
+		// /api/models стояло `role: ""`, то есть «неизвестно». Для запрета копий
+		// это безвредно, но пометка в бэкенде — часть требования оператора, и
+		// «неизвестно» на главном узле читается как «роль потерялась».
+		"backendRole": strings.TrimSpace(b.Role),
 	})
 	if err != nil {
 		return err

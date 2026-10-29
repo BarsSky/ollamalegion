@@ -209,7 +209,8 @@ func (s *Server) getModelProfile(w http.ResponseWriter, _ *http.Request, modelNa
 		// ответе API. Без этих полей оператор видел только своё значение и не
 		// понимал, почему модель загрузилась с меньшим окном (живая жалоба:
 		// 256000 в карточке против 32768 после загрузки из-за env-потолка).
-		"effectiveContextLength": effectiveWindowFor(s.proxy, modelName),
+		// Вложенный объект — та же форма, что в списке профилей (effectiveContext).
+		"effective": effectiveWindowFor(s.proxy, modelName),
 	})
 }
 

@@ -161,6 +161,20 @@
 
 ---
 
+## Auth / WebUI login (R270, R275)
+
+| Env var | Type | Default | Notes |
+|---------|------|---------|-------|
+| `LB_ADMIN_USER` / `LB_ADMIN_PASSWORD` | string | - | **R270**: WebUI administrator. Read **only** by the balancer container. If the entry does not exist yet, it is created; if it exists with a different password, the password is updated (R203). **R275**: when the entry already exists with the *same* password, this counts as "env applied" too (`bootstrap.source=env+file`, `envApplied=true`) — previously that case reported `source=file`, which made the operator hunt for a cause that did not exist. |
+| `LB_ADMIN_ENV_SYNC` | bool | `1` | **R275**: whether the env credentials may be applied to an **already existing** users file (password update / extra administrator). `0` = do not touch existing users; creating the first administrator on an empty store still happens, otherwise an isolated stand would have nobody to log in. |
+| `LB_USERS_FILE` | path | `/app/data/users.json` | Users file; must be on a **writable** volume, otherwise the administrator lives in memory only (`bootstrap.persisted=false`). |
+| `LB_SESSIONS_FILE` | path | next to `users.json` | Login sessions; survive a container restart. |
+
+Diagnostics (no secrets): `GET /api/v1/auth/me` → `bootstrap{source, envApplied, persisted, writable, path, users, reason}`.
+Offline login guide: [webui-login-offline.md](webui-login-offline.md).
+
+---
+
 ## Configuration files (dead field, removed in R60.18)
 
 | Field | File | Removal reason |

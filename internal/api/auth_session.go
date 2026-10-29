@@ -299,13 +299,52 @@ func NewUserStore(path string) *UserStore {
 // Path — путь файла пользователей.
 func (u *UserStore) Path() string { return u.path }
 
+// adminEnvSyncEnabled — R275: применять ли env-учётку к уже существующим
+// пользователям.
+//
+// ЗАЧЕМ ПЕРЕКЛЮЧАТЕЛЬ. Синк из env — это запись в файл пользователей: он может
+// создать второго администратора или сменить пароль тому, кого оператор завёл
+// руками. Для стенда это ровно то, что нужно («я задал пароль в .env — он должен
+// работать»), но на общем/разделяемом стенде такое поведение может быть
+// нежелательным, поэтому его можно выключить явно: LB_ADMIN_ENV_SYNC=0.
+//
+// ВАЖНО: выключение НЕ мешает первому запуску — создание администратора при
+// пустом файле остаётся (иначе на изолированной машине войти было бы некому).
+func adminEnvSyncEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LB_ADMIN_ENV_SYNC"))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
 // syncAdminFromEnv — применить LB_ADMIN_USER/LB_ADMIN_PASSWORD к существующему
 // администратору, если пароль в окружении изменился. Явное действие оператора
 // (смена пароля в .env) должно применяться, иначе панель «не пускает новым паролем».
+//
+// R275 (2026-10-29). ЖИВОЙ ФАКТ со стенда r273: env задан (`LB_ADMIN_USER=skyadmin`
+// и пароль — проверено `docker exec … env`), файл пользователей содержит того же
+// админа с тем же паролем, вход РАБОТАЕТ, а `/api/v1/auth/me` отдаёт
+// `bootstrap{source:"file", envApplied:false}`. Причина: ветка «пароль совпал»
+// выходила из функции ДО того, как выставить EnvApplied, и оператор получал
+// ответ «твой env не применён» ровно в самом благополучном случае. На оффлайн-
+// стенде это прямая дорога к раскопкам: человек ищет, почему .env «не работает»,
+// хотя учётка из .env действует.
+//
+// Теперь «совпало» — это тоже применение env, и оно так и называется.
 func (u *UserStore) syncAdminFromEnv() {
 	user := strings.TrimSpace(os.Getenv("LB_ADMIN_USER"))
 	pass := os.Getenv("LB_ADMIN_PASSWORD")
 	if user == "" || strings.TrimSpace(pass) == "" {
+		return
+	}
+	if !adminEnvSyncEnabled() && len(u.list) > 0 {
+		// Файл уже кем-то наполнен, а синк выключен оператором: не трогаем записи,
+		// но говорим причину, иначе «env задан, а изменений нет» снова выглядит багом.
+		u.mu.Lock()
+		u.boot.Reason = "LB_ADMIN_ENV_SYNC=0 — env-учётка не применяется к существующему файлу пользователей"
+		u.mu.Unlock()
 		return
 	}
 	u.mu.Lock()
@@ -317,6 +356,14 @@ func (u *UserStore) syncAdminFromEnv() {
 			continue
 		}
 		if VerifyPassword(u.list[i].PasswordHash, pass) {
+			// R275: пароль из env УЖЕ действует — это применение env, а не «файл».
+			// Persisted=true: запись существует на диске (мы её только что прочли),
+			// перезапись не нужна и не делается — лишних записей в файл нет.
+			u.boot.EnvApplied = true
+			u.boot.Persisted = true
+			if u.boot.Reason == "" {
+				u.boot.Reason = "env-учётка совпала с записью в файле — пароль из .env действует"
+			}
 			return
 		}
 		hash, err := HashPassword(pass)

@@ -121,7 +121,27 @@ func (s *Server) handleAdminAutotuneApply(w http.ResponseWriter, r *http.Request
 		"context_size", plan.ContextSize, "kv_cache", plan.KVCacheType,
 		"gpu_layers", plan.NumGPULayers, "force", req.ForceApply)
 
-	result := proxy.ApplyAutoTunePlan(backendID, plan)
+	// R283 (2026-10-29): операторская кнопка «применить план» — ТАКАЯ ЖЕ
+	// разрушительная операция, как авто-применение AutoTune, и подчиняется тому
+	// же правилу R271: не выгружать модель под живым стримом.
+	//
+	// ЖИВОЙ ФАКТ. Раньше обработчик вызывал proxy.ApplyAutoTunePlan напрямую,
+	// мимо guard'а: кнопка могла выгрузить модель посреди чужой генерации, и
+	// клиент получал обрыв без причины («upstream ended», хотя upstream жив).
+	// Плюс ответ воркера «model is busy with active inference requests»
+	// записывался в circuit breaker как ошибка, хотя это «сейчас занято».
+	result, deferred := proxy.ApplyAutoTunePlanGuarded(backendID, plan)
+	if deferred {
+		if proxy.AutoTuneTracker() != nil {
+			// Не ошибка: backoff, а не breaker. Тот же исход, что у авто-пути.
+			proxy.AutoTuneTracker().DeferAutoTune(backendID, plan.ModelName)
+		}
+		s.writeJSON(w, http.StatusServiceUnavailable, adminAutotuneApplyResponse{
+			Success: false,
+			Error:   "model reload deferred: active streams on backend; retry later",
+		})
+		return
+	}
 
 	// Update circuit based on result
 	if proxy.AutoTuneTracker() != nil {
@@ -130,6 +150,13 @@ func (s *Server) handleAdminAutotuneApply(w http.ResponseWriter, r *http.Request
 			if result.Success {
 				circuit.RecordSuccess()
 				proxy.AutoTuneTracker().ResetCircuit(backendID, plan.ModelName)
+			} else if balancer.IsAutoTuneBusyError(result.Error) {
+				// R283: «модель занята» — это не сбой. Раньше busy попадал в
+				// RecordError, и оператор видел растущий cool-down там, где
+				// перезагрузку просто нельзя было делать сейчас.
+				logger.Get().Infow("admin: autotune apply deferred (model busy)",
+					"backend", backendID, "model", plan.ModelName, "error", result.Error)
+				proxy.AutoTuneTracker().DeferAutoTune(backendID, plan.ModelName)
 			} else {
 				circuit.RecordError(result.Error)
 			}

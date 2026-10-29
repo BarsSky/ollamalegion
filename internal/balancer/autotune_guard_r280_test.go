@@ -77,8 +77,15 @@ func TestR280_AutoTuneReloadProceedsWithoutStreams(t *testing.T) {
 	if errors.Is(err, errAutoTuneReloadDeferred) {
 		t.Fatalf("без активных стримов перезагрузка не должна откладываться: %v", err)
 	}
-	if kind, ok := p.recentDestructiveOpR271("bk-1", "qwen3.8", time.Minute); !ok || kind != destructiveAutotuneR271 {
-		t.Fatalf("перед перезагрузкой должен ставиться маркер autotune, получили kind=%q ok=%v", kind, ok)
+	// БЫЛО (R280): здесь требовался выставленный маркер autotune — он ставится
+	// перед apply и оставался навсегда, даже если выгрузка не состоялась.
+	// СТАЛО (R283): маркер снимается, если модель НЕ была выгружена (воркер
+	// недоступен / занят). Иначе следующий оборванный стрим получил бы причину
+	// `balancer_autotune` без всякой перезагрузки — клиенту сообщали бы
+	// неправду о причине обрыва. Положительный случай (выгрузка состоялась →
+	// маркер есть) проверяется в TestR283_DestructiveMarkerKeptOnlyIfUnloaded.
+	if kind, ok := p.recentDestructiveOpR271("bk-1", "qwen3.8", time.Minute); ok {
+		t.Fatalf("при неудавшейся выгрузке маркер autotune не должен оставаться (kind=%q)", kind)
 	}
 }
 

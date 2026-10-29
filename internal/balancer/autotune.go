@@ -748,6 +748,10 @@ type AutoTuneTracker struct {
 	mu       sync.RWMutex
 	circuits map[string]*AutoTuneCircuit // key: "backendID|modelName"
 	config   AutoTuneCircuitConfig
+	// defers — R283: backoff после исхода «занято» (модель занята живым
+	// инференсом). key тот же. Живёт здесь, а не в Proxy: трекер уже владеет
+	// per-(backend,model) состоянием и мьютексом.
+	defers map[string]*autoTuneDeferState
 }
 
 // NewAutoTuneTracker — Round 54.4 (2026-08-24): constructor.
@@ -854,6 +858,20 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 	if !IsAutoTuneEnabled(p, modelName) {
 		res.SkippedReason = "AutoTune disabled (global or per-model)"
 		return res
+	}
+
+	// 1b) R283: пауза после «занято».
+	//
+	// Проверяем ДО анализа и ДО circuit breaker: пока модель занята, повторный
+	// анализ всё равно вернёт тот же план, а попытка apply снова упрётся в
+	// «busy» — именно так на стенде r282 получилась петля «каждые ~70 секунд
+	// reload failed». Пауза растёт (2→5→10→30→60 мин) и сбрасывается успехом.
+	if p.autoTuneTracker != nil {
+		if wait, attempts, deferred := p.autoTuneTracker.AutoTuneDeferredUntil(backendID, modelName); deferred {
+			res.SkippedReason = fmt.Sprintf(
+				"autotune deferred (busy): retry in %s (attempt %d)", wait.Round(time.Second), attempts)
+			return res
+		}
 	}
 
 	// 2) Get loaded model from metrics
@@ -1020,53 +1038,12 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 		// видела бы собственный маркер и план не запускался бы никогда (R230).
 
 		err := p.executeAutoTuneReload(backendID, modelName, plan, circuit)
-		if errors.Is(err, errAutoTuneReloadDeferred) {
-			// R280: отложили, потому что на бэкенде идут чужие стримы. Это НЕ
-			// сбой: ни circuit breaker, ни событие «failed» трогать нельзя,
-			// иначе оператор увидит «AutoTune reload failed» и растущий
-			// cool-down там, где мы просто не стали рвать чужую генерацию.
-			logger.Get().Infow("autotune: reload postponed while streams are active",
-				"backend", backendID, "model", modelName, "reason", plan.Reason)
-		} else if err != nil {
-			circuit.RecordError(err.Error())
-			logger.Get().Warnw("autotune: async reload failed",
-				"backend", backendID, "model", modelName, "error", err)
-			// R54.8: publish failure event (R55.2: also record to history)
-			p.publishAutoTuneEvent(types.Event{
-				Type:      types.EventAutoTuneReloadFailed,
-				Timestamp: time.Now(),
-				BackendID: backendID,
-				Model:     modelName,
-				Severity:  types.SeverityWarning,
-				Source:    "autotune",
-				Message:   "AutoTune reload failed: " + err.Error(),
-				Data: map[string]interface{}{
-					"error":         err.Error(),
-					"circuitErrors": circuit.LastError,
-				},
-			})
-		} else {
-			circuit.RecordSuccess()
-			p.autoTuneTracker.ResetCircuit(backendID, modelName)
-			logger.Get().Infow("autotune: async reload succeeded",
-				"backend", backendID, "model", modelName, "reason", plan.Reason)
-			// R54.8: publish success event (R55.2: also record to history)
-			p.publishAutoTuneEvent(types.Event{
-				Type:      types.EventAutoTuneReloadSucceeded,
-				Timestamp: time.Now(),
-				BackendID: backendID,
-				Model:     modelName,
-				Severity:  types.SeverityInfo,
-				Source:    "autotune",
-				Message:   "AutoTune reload succeeded: " + plan.Reason,
-				Data: map[string]interface{}{
-					"contextSize":  plan.ContextSize,
-					"kvCacheType":  plan.KVCacheType,
-					"numGpuLayers": plan.NumGPULayers,
-					"reason":       plan.Reason,
-				},
-			})
-		}
+		// R283: три исхода вместо двух — applied / deferred (занято) / failed.
+		// Решения (breaker, событие, backoff, лог) принимает один обработчик:
+		// раньше «воркер занят» попадал в ветку «failed» и писал ERROR с
+		// растущим cool-down'ом, хотя перезагрузку просто нельзя было делать
+		// сейчас. См. autotune_defer_r283.go.
+		p.finalizeAutoTuneReload(backendID, modelName, plan, circuit, err)
 	}()
 
 	res.Triggered = true
@@ -1141,11 +1118,20 @@ func (p *Proxy) executeAutoTuneReload(backendID, modelName string, plan *AutoTun
 	p.noteDestructiveOpR271(backendID, modelName, destructiveAutotuneR271)
 
 	applyRes := p.ApplyAutoTunePlan(backendID, plan)
-	if applyRes == nil {
-		return fmt.Errorf("autotune: apply plan returned nil result")
-	}
-	if !applyRes.Success {
-		return fmt.Errorf("autotune: apply plan failed: %s", applyRes.Error)
+	// R283: «воркер занят» — это НЕ сбой. Разница живёт в одной функции
+	// (autoTuneErrorFromApply), чтобы третье место не стало четвёртым, где
+	// busy снова превращается в «failed».
+	if err := autoTuneErrorFromApply(applyRes); err != nil {
+		// Пометка разрушительной операции ставится ПЕРЕД apply, а apply мог не
+		// состояться (модель не выгружали). Снимаем её, иначе следующий
+		// оборванный стрим получит причину `balancer_autotune` без всякой
+		// автоперезагрузки — клиенту сообщат неправду о причине (класс R271).
+		// Если выгрузка УЖЕ произошла, пометка остаётся: обрыв в этом окне
+		// действительно наш.
+		if applyRes == nil || !applyRes.Unloaded {
+			p.clearDestructiveOpR271(backendID, modelName)
+		}
+		return err
 	}
 	logger.Get().Infow("autotune: plan applied (unload+load)",
 		"backend", backendID, "model", modelName, "reason", plan.Reason,
@@ -1244,6 +1230,7 @@ func (p *Proxy) ApplyAutoTunePlan(backendID string, plan *AutoTuneReloadPlan) *A
 	}
 	logger.Get().Infow("autotune: unloaded model for AutoTune apply",
 		"backend", backendID, "model", plan.ModelName)
+	result.Unloaded = true
 
 	// 3) Build load request
 	req := ModelOpRequest{
@@ -1362,6 +1349,16 @@ type AutoTuneApplyResult struct {
 	Message    string    `json:"message,omitempty"`
 	StartedAt  time.Time `json:"startedAt"`
 	FinishedAt time.Time `json:"finishedAt,omitempty"`
+	// Unloaded — R283: модель РЕАЛЬНО выгружена в ходе apply.
+	//
+	// Зачем отдельное поле: пометка разрушительной операции (noteDestructiveOpR271)
+	// ставится до apply, но apply может упасть ДО выгрузки — например воркер
+	// ответил «model is busy with active inference requests». Тогда пометку надо
+	// снять, иначе следующий оборванный стрим получит причину
+	// `balancer_autotune` без всякой перезагрузки, и клиенту сообщат неправду о
+	// причине обрыва. Если же выгрузка состоялась, пометка обязана остаться —
+	// обрыв в этом окне действительно наш.
+	Unloaded bool `json:"unloaded,omitempty"`
 }
 
 // autotuneModelManager — R54.6: accessor для ModelManager (используем existing p.modelManager).

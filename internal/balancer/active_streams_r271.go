@@ -204,6 +204,25 @@ func (p *Proxy) recentDestructiveOpR271(backendID, model string, window time.Dur
 	return op.kind, true
 }
 
+// clearDestructiveOpR271 — снять пометку разрушительной операции.
+//
+// ЗАЧЕМ (R283, найдено при разборе живой петли AutoTune). Пометка ставится
+// ПЕРЕД apply, а apply может не состояться вовсе — например воркер ответил
+// «model is busy with active inference requests», и модель никто не выгружал.
+// Без снятия пометка живёт `window` и подписывает СЛЕДУЮЩИЙ оборванный стрим
+// причиной `balancer_autotune`, хотя автоперезагрузка не начиналась: клиенту
+// сообщают неправду о причине обрыва — ровно тот класс, который мы убирали в
+// R271/R280 (обвинять не того).
+func (p *Proxy) clearDestructiveOpR271(backendID, model string) {
+	if p == nil || backendID == "" {
+		return
+	}
+	s := &p.streamsR271
+	s.mu.Lock()
+	delete(s.destructive, streamRefKeyR271(backendID, model))
+	s.mu.Unlock()
+}
+
 // reloadDeferMaxWaitR271 — сколько ждать завершения чужих стримов перед
 // перезагрузкой (LB_RELOAD_DEFER_MAX_SEC, дефолт 120 с).
 //

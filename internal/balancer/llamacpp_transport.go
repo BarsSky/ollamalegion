@@ -623,6 +623,12 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// Чтобы клиент (Cline) не получил пустой `content`, аккумулируем content
 	// из streaming чанков и используем его в финальном done-чанке.
 	var accumulatedPlainContent string
+	// R266.1 (2026-10-28): придержанный хвост служебных меток для пути SSE→NDJSON.
+	// Живой дефект: `<|assistant|>` приходил четырьмя чанками, а `</think>` вообще
+	// не был в списке меток — оба уезжали клиенту в message.content. Удержание
+	// живёт на ВЕСЬ стрим, а не только в ветке накопления tool-вызова: после
+	// распознанного вызова текст шёл мимо вычищения (см. marker_hold_ndjson_r266_1.go).
+	var ndjsonHold markerHold
 	// R118.20: накопитель фрагментов tool-call'ов на время стрима (аудит C5).
 	toolAcc := newToolCallAccumulator()
 	// R254: состояние ремонта аргументов на этот стрим (диагностика — один раз).
@@ -1013,6 +1019,14 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			outLine := trimmed
 			if nativeDoneContentStrippingEnabled() {
 				outLine = stripNativeDoneContent(trimmed, streamedBeforeThisLine)
+			}
+			// R266.1 (2026-10-28): на нативном пути cppworker уже отдаёт NDJSON,
+			// и балансер писал строку клиенту как есть — поэтому служебные метки
+			// шаблона (`<|assistant|>`, `</think>`) утекали в message.content
+			// ровно здесь. Чистим строку перед отправкой, придерживая хвост
+			// разрезанной метки (см. marker_hold_ndjson_r266_1.go).
+			if originalPath == "/api/chat" || originalPath == "/api/generate" {
+				outLine = filterNDJSONLineMarkers(outLine, &ndjsonHold)
 			}
 			n, errFwd := fmt.Fprintf(w, "%s\n", outLine)
 			bytesForwarded += int64(n)
@@ -1556,6 +1570,16 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// done:false (см. translateOpenAISSEDataToOllamaWithFlags).
 			// R118.20 (2026-10-15): фрагменты tool-call'ов копим и отдаём ОДИН раз
 			// целиком — в Ollama-форме частичных аргументов не бывает (аудит C5).
+			// R266.1 (2026-10-28): вычищаем служебные метки шаблона из ВИДИМОГО
+			// content ДО перевода в NDJSON и до любых веток (обычный текст, чанк с
+			// finish_reason, чанк после распознанного tool call). Клиенту уходит
+			// результат перевода из этих данных, поэтому чистить надо данные, а не
+			// локальную переменную: иначе часть веток остаётся без фильтра — именно
+			// так `<|assistant|>` утёк после того, как tool call уже был распознан.
+			if originalPath == "/api/chat" {
+				data = filterSSEDeltaContentMarkers(data, &ndjsonHold)
+			}
+
 			if filtered, ok := toolAcc.filterToolCallDelta(data); !ok {
 				continue
 			} else {
@@ -1611,6 +1635,17 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
+		}
+	}
+
+	// R266.1 (2026-10-28): отдаём придержанный хвост, если он оказался обычным
+	// текстом. Без этого ответ, закончившийся на `<` (начало метки, которая так и
+	// не пришла), терял бы последние байты — тот же класс дефекта, что чинили в
+	// R261 на другом пути. Если хвост был обрывком метки, strip вернёт пустую
+	// строку, и клиент ничего лишнего не увидит.
+	if originalPath == "/api/chat" {
+		if held := ndjsonHold.Flush(); held != "" {
+			accumulatedPlainContent += held
 		}
 	}
 

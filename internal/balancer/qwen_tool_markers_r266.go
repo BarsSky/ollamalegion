@@ -33,28 +33,63 @@ import (
 	"strings"
 )
 
-// qwenServiceMarkers — метки чат-шаблона qwen3.8/harmonica и родственных
-// диалектов, которые модель может эмитить в тексте.
+// qwenServiceMarkers — ОДИН список служебных меток для всех путей: ядро
+// qwen/harmonica (qwenCoreServiceMarkers) плюс нейтральные токены и маркеры
+// рассуждений из egress-фильтра R256.
 //
-// ПОРЯДОК НЕ ВАЖЕН для вычищения: строки удаляются целиком и независимо.
-// Длинные варианты перечислены раньше, чтобы обрезка не оставила хвост вида
-// `tool_call|>` после удаления более короткого совпадения — поэтому список
-// сортируется по убыванию длины в initServedMarkers.
-var qwenServiceMarkers = []string{
+// ЗАЧЕМ СВОДИТЬ (R266.1, 2026-10-28). До этой правки списки жили отдельно:
+// egress-фильтр `/v1` резал `</think>` и каналы, а NDJSON-ветка `/api/chat`
+// знала только `<|tool|>`-токены и не знала `</think>`. Правка в одном месте
+// не спасала другой путь — ровно та беда, на которую жаловался оператор.
+// Теперь источник один, сортировка по длине применяется здесь же.
+var qwenServiceMarkers = buildQwenServiceMarkers()
+
+// qwenCoreServiceMarkers — метки чат-шаблона qwen3.8/harmonica, которые модель
+// может эмитить в тексте.
+var qwenCoreServiceMarkers = []string{
 	"<|tool_call|>", "<|/tool_call|>", "<|tool_call_end|>",
 	"<|tool|>", "<|/tool|>", "<|tool_end|>",
 	"<|assistant|>", "<|/assistant|>", "<|end|>",
 	"<|user|>", "<|system|>", "<|developer|>",
 	"<|message|>", "<|constrain|>", "<|channel|>",
 	"<|start_header_id|>", "<|end_header_id|>",
+	// R266.1 (2026-10-28): маркеры размышлений. Живой факт: `</think>`
+	// уезжал клиенту в message.content на пути /api/chat — его не было ни в
+	// этом списке, ни в проверке (см. ниже про ранний выход по "<|").
+	// Варианты с `|` и без перечислены оба: qwen отдаёт `</think>`, harmonica —
+	// `<|/think|>`; встречались оба в живых логах.
+	"</think>", "<think>", "<|/think|>", "<|think|>",
+	"<|/analysis|>", "<|analysis|>",
 }
 
-// qwenSortedServiceMarkers — те же метки, отсортированные от длинных к коротким.
-var qwenSortedServiceMarkers = func() []string {
-	out := append([]string(nil), qwenServiceMarkers...)
+// buildQwenServiceMarkers — объединение всех известных маркеров без дублей,
+// отсортированное от длинных к коротким (иначе после удаления короткого
+// совпадения остаётся хвост вида `tool_call|>`).
+func buildQwenServiceMarkers() []string {
+	seen := make(map[string]bool, 64)
+	out := make([]string, 0, 64)
+	add := func(m string) {
+		if m == "" || seen[m] {
+			return
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	for _, m := range qwenCoreServiceMarkers {
+		add(m)
+	}
+	for _, m := range reasoningNeutralTokens {
+		add(m)
+	}
+	for _, m := range reasoningStartMarkers {
+		add(m)
+	}
+	for _, m := range reasoningEndMarkers {
+		add(m)
+	}
 	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
 	return out
-}()
+}
 
 // stripQwenServiceMarkers удаляет служебные метки шаблона из текста.
 //
@@ -64,11 +99,15 @@ var qwenSortedServiceMarkers = func() []string {
 // Пробелы по краям схлопываются, чтобы после удаления метки не оставалось
 // «висячих» двойных пробелов в начале строки.
 func stripQwenServiceMarkers(s string) string {
-	if s == "" || !strings.Contains(s, "<|") {
+	// R266.1: раньше здесь стоял ранний выход по `!strings.Contains(s, "<|")`.
+	// Из-за него метки БЕЗ `|` (`</think>`, `<think>`) не вычищались никогда —
+	// ровно та утечка, которую поймали живьём на /api/chat. Проверяем оба
+	// варианта начала метки, чтобы не гонять ReplaceAll на обычном тексте.
+	if s == "" || (!strings.Contains(s, "<|") && !strings.Contains(s, "<think") && !strings.Contains(s, "</think")) {
 		return s
 	}
 	out := s
-	for _, m := range qwenSortedServiceMarkers {
+	for _, m := range qwenServiceMarkers {
 		out = strings.ReplaceAll(out, m, "")
 	}
 	return strings.TrimLeft(out, " \t")

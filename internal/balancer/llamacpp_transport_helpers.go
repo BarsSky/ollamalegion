@@ -105,7 +105,12 @@ func accumulateToolCallsFromDelta(delta map[string]interface{}, toolAccum map[in
 // в финальном done-чанке. Удаляет служебные токены (“, `</s>`),
 // ведущие/завершающие пробелы, и нормализует переносы строк.
 func cleanFinalContent(s string) string {
-	return stripServiceTokens(s)
+	// R266.1 (2026-10-28): финальный content — последний шанс утечки служебных
+	// меток шаблона (upstream-до-чанк cppworker отдаёт ПОЛНЫЙ ответ, и в нём
+	// вполне может оказаться `<|assistant|>`/`</think>`). Чистим здесь, а не в
+	// вызывающих: это единственная точка, через которую проходит финальный текст
+	// на всех путях (/api/chat, /api/generate).
+	return stripQwenServiceMarkers(stripServiceTokens(s))
 }
 
 // writeStreamingSSEDone — пишет финальный [DONE] / done-маркер для streaming-потока.

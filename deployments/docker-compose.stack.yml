@@ -250,6 +250,9 @@ services:
       # Перезагрузка контекста (R271): сколько ждать завершения чужих стримов
       # перед разрушительной операцией; 0 = не ждать (пропустить перезагрузку).
       - LB_RELOAD_DEFER_MAX_SEC=${LB_RELOAD_DEFER_MAX_SEC:-120}
+      # R291: сколько максимум ждать стримы в HTTP-ответе; больше — отвечаем
+      # «отложено» сразу (иначе кнопка reload «думает две минуты»). 0 = сразу.
+      - LB_RELOAD_DEFER_FAST_FAIL_SEC=${LB_RELOAD_DEFER_FAST_FAIL_SEC:-5}
       - LB_NCTX_RELOAD_ASYNC=${LB_NCTX_RELOAD_ASYNC:-1}
       # Пусто = ждать терминального состояния перезагрузки (без капа).
       - LB_NCTX_PREFLIGHT_WAIT_SEC=${LB_NCTX_PREFLIGHT_WAIT_SEC:-}

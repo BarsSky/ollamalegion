@@ -379,8 +379,10 @@ curl -s localhost:18092/api/models | jq '.feasible_max_context, .gguf_max_contex
 **Горячие переменные этапа 2:** `LB_STREAM_MAX_LINE_BYTES`,
 `LB_OPENAI_AUTO_STREAM_MAX_SEC`, `LB_OPENAI_AUTO_STREAM_MAX_BYTES`,
 `LB_OPENAI_AUTO_STREAM_KEEPALIVE_SEC`, `LB_TOOL_CALL_BUFFER_BYTES`,
-`LB_RELOAD_DEFER_MAX_SEC`, `LB_ADMISSION_WAIT_SEC`,
+`LB_RELOAD_DEFER_MAX_SEC`, `LB_RELOAD_DEFER_FAST_FAIL_SEC`, `LB_ADMISSION_WAIT_SEC`,
 `LB_LLAMA_UPSTREAM_TTL_SEC`.
+
+**`LB_RELOAD_DEFER_FAST_FAIL_SEC` (R291).** Верхняя граница того, сколько разрушительная операция может ждать чужие стримы ВНУТРИ HTTP-ответа. Если бюджет ожидания больше, балансер отвечает `503 deferred` сразу (кнопка reload не должна «думать» две минуты); короткое ожидание сохраняется — стрим может закончиться, и операция выполнится в том же запросе. Дефолт 5 с, `0` = не ждать вовсе.
 
 **Что НЕ горячее.** Порты, таймауты http.Server, пути и всё, что участвует в
 конструировании сервера, в реестр не входит: PUT по такому имени отвечает

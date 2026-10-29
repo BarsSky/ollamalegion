@@ -376,8 +376,10 @@ never overwritten.
 **Hot variables (stage 2):** `LB_STREAM_MAX_LINE_BYTES`,
 `LB_OPENAI_AUTO_STREAM_MAX_SEC`, `LB_OPENAI_AUTO_STREAM_MAX_BYTES`,
 `LB_OPENAI_AUTO_STREAM_KEEPALIVE_SEC`, `LB_TOOL_CALL_BUFFER_BYTES`,
-`LB_RELOAD_DEFER_MAX_SEC`, `LB_ADMISSION_WAIT_SEC`,
+`LB_RELOAD_DEFER_MAX_SEC`, `LB_RELOAD_DEFER_FAST_FAIL_SEC`, `LB_ADMISSION_WAIT_SEC`,
 `LB_LLAMA_UPSTREAM_TTL_SEC`.
+
+**`LB_RELOAD_DEFER_FAST_FAIL_SEC` (R291).** Upper bound of how long a destructive operation may wait for someone else's streams *inside the HTTP response*. If the wait budget is larger, the balancer answers `503 deferred` immediately (the reload button must not "think" for two minutes); a short wait is kept, because the stream may end and the operation still runs in the same request. Default 5 s, `0` = never wait.
 
 **Not hot.** Ports, http.Server timeouts, paths and anything used while
 constructing the server are not in the registry: PUT returns 400 "requires

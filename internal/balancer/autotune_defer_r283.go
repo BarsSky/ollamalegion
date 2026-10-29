@@ -255,7 +255,9 @@ func (p *Proxy) ApplyAutoTunePlanGuarded(backendID string, plan *AutoTuneReloadP
 	if p == nil || plan == nil {
 		return &AutoTuneApplyResult{Error: "nil plan"}, false
 	}
-	if !p.waitStreamsIdleR271(context.Background(), backendID, plan.ModelName, reloadDeferMaxWaitR271()) {
+	// R291: ручной «Применить план» из WebUI не должен думать две минуты:
+	// при активных стримах отвечаем deferred сразу (решение уже известно).
+	if ok, _ := p.deferDestructiveOpR291(context.Background(), backendID, plan.ModelName, "autotune-apply"); !ok {
 		return nil, true
 	}
 	p.noteDestructiveOpR271(backendID, plan.ModelName, destructiveAutotuneR271)

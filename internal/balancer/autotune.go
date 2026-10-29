@@ -1106,11 +1106,13 @@ func (p *Proxy) executeAutoTuneReload(backendID, modelName string, plan *AutoTun
 	// guard'а, который уже стоял в трёх местах nctx_reload_handlers.go, поэтому
 	// авто-перезагрузка могла оборвать чужую генерацию — и клиент получал
 	// «stream ended by upstream before completion», хотя upstream был жив.
-	if !p.waitStreamsIdleR271(context.Background(), backendID, modelName, reloadDeferMaxWaitR271()) {
+	// R291: решение «ждать или отложить» принимает ОДНА функция. Дольше
+	// LB_RELOAD_DEFER_FAST_FAIL_SEC в ответе не ждём: оператор/клиент видит
+	// зависание там, где ответ уже известен.
+	if ok, active := p.deferDestructiveOpR291(context.Background(), backendID, modelName, "autotune-reload"); !ok {
 		logger.Get().Infow("autotune reload deferred: active streams on backend",
 			"backend", backendID, "model", modelName,
-			"active_streams", p.activeStreamsOnBackend(backendID),
-			"max_wait_sec", reloadDeferMaxWaitR271().Seconds(),
+			"active_streams", active,
 			"reason", plan.Reason, "context_size", plan.ContextSize,
 			"kv_cache_type", plan.KVCacheType)
 		return errAutoTuneReloadDeferred

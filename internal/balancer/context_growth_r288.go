@@ -18,9 +18,7 @@
 package balancer
 
 import (
-	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -57,19 +55,22 @@ func promptNeedsMoreContext(estimatedPromptTokens, outputBudget, loadedPerSeq in
 // — оператор или следующий запрос после reload'а его обслужит. Retry-After
 // говорит, через сколько повторять, поля actual/limit — сколько именно не
 // хватает (иначе «увеличьте окно» — совет без числа).
+//
+// R291 (2026-10-29): формат приведён к ОДНОМУ виду «отложено» (status/deferred/
+// deferredReason), общему с ручным reload и n_ctx-preflight. Живой факт: те же
+// сценарии отвечали тремя разными телами, и клиент не мог их обработать одним
+// правилом.
 func writeContextGrowthDeferred(w http.ResponseWriter, model string, needed, loadedPerSeq int) {
-	retry := 60
-	body := fmt.Sprintf(
-		`{"error":"context window is smaller than the request needs",`+
-			`"reason":"context_growth_pending",`+
-			`"model":%q,"requiredTokens":%d,"loadedWindowTokens":%d,`+
-			`"retryAfterSec":%d,`+
-			`"hint":"raise the model context window (WebUI → model card) or shorten the history"}`,
-		model, needed, loadedPerSeq, retry)
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Retry-After", strconv.Itoa(retry))
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = w.Write([]byte(body))
+	writeDeferredJSON(w, deferredBodyR291{
+		DeferredReason: "context_growth_pending",
+		Model:          model,
+		Extra: map[string]interface{}{
+			"error":              "context window is smaller than the request needs",
+			"requiredTokens":     needed,
+			"loadedWindowTokens": loadedPerSeq,
+			"hint":               "raise the model context window (WebUI → model card) or shorten the history",
+		},
+	})
 }
 
 // contextGrowthBlocker — решает, надо ли отказать ДО ожидания слота.

@@ -22,7 +22,10 @@ import "context"
 // нельзя — это ровно тот «второй путь», из-за которого мы уже ловили
 // расхождения (учёт стримов, фильтр меток, границы SSE).
 func (p *Proxy) WaitStreamsIdleBeforeDestructive(ctx context.Context, backendID, model string) bool {
-	return p.waitStreamsIdleR271(ctx, backendID, model, reloadDeferMaxWaitR271())
+	// R291: операторская кнопка реагирует сразу. Решение «ждать/отложить»
+	// принимает общая функция, чтобы ручной reload не расходился с авто-путями.
+	ok, _ := p.deferDestructiveOpR291(ctx, backendID, model, "operator-reload")
+	return ok
 }
 
 // NoteDestructiveReload — отметить, что мы перезагружаем модель операторским

@@ -250,14 +250,14 @@ func (p *Proxy) handleNCtxReloadActual(
 	start := time.Now()
 	p.nctxReload.RecordDecision(backendID, "reload-start", plan.Reason)
 	// R271: в синхронном режиме тоже не выгружаем модель под чужим стримом.
-	if !p.waitStreamsIdleR271(ctx, backendID, modelName, reloadDeferMaxWaitR271()) {
+	// R291: одно решение «ждать или отложить» (deferDecisionR291) и один формат
+	// ответа (writeReloadDeferredR291). Раньше ждали 120 с и потом отвечали
+	// текстом без чисел — «кнопка думает две минуты».
+	if ok, active := p.deferDestructiveOpR291(ctx, backendID, modelName, "nctx-reload-sync"); !ok {
 		logger.Get().Warnw("nctx_reload: sync reload postponed — active streams on backend (R271)",
 			"backend", backendID, "model", modelName,
-			"target_n_ctx", plan.NewNCtx,
-			"active_streams", p.activeStreamsOnBackend(backendID))
-		writeNCtxJSONError(w, http.StatusServiceUnavailable,
-			fmt.Sprintf("model reload deferred: %d active stream(s) on backend; retry shortly",
-				p.activeStreamsOnBackend(backendID)), "reload-deferred")
+			"target_n_ctx", plan.NewNCtx, "active_streams", active)
+		writeReloadDeferredR291(w, modelName, "nctx-reload-sync", active)
 		return
 	}
 	p.noteDestructiveOpR271(backendID, modelName, destructiveReloadR271)
@@ -415,11 +415,12 @@ func (p *Proxy) handleNCtxReloadActualAsync(
 	doReload := func(start time.Time) {
 		// R271: не выгружать модель под чужим активным стримом (живой дефект:
 		// второй агент оборвал стрим первого). Ждём до LB_RELOAD_DEFER_MAX_SEC.
-		if !p.waitStreamsIdleR271(context.Background(), backendID, modelName, reloadDeferMaxWaitR271()) {
+		// R291: отложенное решение принимается сразу — в фоне ждать 120 с
+		// незачем, следующий запрос сам повторит попытку.
+		if ok, active := p.deferDestructiveOpR291(context.Background(), backendID, modelName, "nctx-reload-async"); !ok {
 			logger.Get().Warnw("nctx_reload: async reload postponed — active streams on backend (R271)",
 				"backend", backendID, "model", modelName,
-				"target_n_ctx", plan.NewNCtx,
-				"active_streams", p.activeStreamsOnBackend(backendID))
+				"target_n_ctx", plan.NewNCtx, "active_streams", active)
 			return
 		}
 		p.noteDestructiveOpR271(backendID, modelName, destructiveReloadR271)
@@ -783,8 +784,21 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// reload goroutines, каждая из которых отменяется http.Client.Timeout
 	// на 90s. Client видит 503 → retry → 503 → retry → 5 reloads в логе.
 	if p.nctxReload.IsReloadPending(backendID, modelName) {
+		// R291: в тексте отказа обязаны быть ЧИСЛА. Живой факт: клиент получал
+		// «reload already in progress, retry later» без указания, сколько нужно
+		// и сколько есть, — оператор не мог понять, вырастет ли окно вообще.
+		estimated, loaded, needed := p.contextGrowthNumbers(backendID, modelName, bodyBuf, requestPath)
 		logger.Get().Infow("preflightNCtxReloadIfNeeded: reload already pending (R60.6 dedup)",
-			"backend", backendID, "model", modelName, "request_path", requestPath)
+			"backend", backendID, "model", modelName, "request_path", requestPath,
+			"estimated_prompt_tokens", estimated, "loaded_window_tokens", loaded,
+			"required_tokens", needed,
+			"active_streams", p.activeStreamsOnBackend(backendID))
+		if estimated > 0 && loaded > 0 {
+			return bodyBuf, false,
+				fmt.Sprintf("model %q reload already in progress (required=%d tokens, loaded window=%d tokens, active streams=%d), retry later",
+					modelName, needed, loaded, p.activeStreamsOnBackend(backendID)),
+				http.StatusServiceUnavailable
+		}
 		return bodyBuf, false,
 			fmt.Sprintf("model %q reload already in progress, retry later", modelName),
 			http.StatusServiceUnavailable
@@ -1619,12 +1633,16 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 	// LB_RELOAD_DEFER_MAX_SEC, дефолт 120 с); не дождались — перезагрузку
 	// пропускаем: следующий запрос снова упрётся в n_ctx и повторит попытку,
 	// это дешевле, чем оборвать чужую генерацию.
-	if !p.waitStreamsIdleR271(context.Background(), backendID, modelName, reloadDeferMaxWaitR271()) {
+	// R291: этот вызов идёт СИНХРОННО из preflight, то есть держит HTTP-ответ
+	// клиента. Живой факт: /api/chat ждал 122 с и только потом получал 503 без
+	// чисел — ровно это ожидание и называлось «балансер молчит». Теперь при
+	// активных стримах отвечаем/пропускаем сразу, а клиенту числа объяснит
+	// context-growth-отказ (R288/R291).
+	if ok, active := p.deferDestructiveOpR291(context.Background(), backendID, modelName, "nctx-preflight-reload"); !ok {
 		logger.Get().Warnw("executeAsyncReload: postponed — active streams on backend (R271)",
 			"backend", backendID, "model", modelName,
-			"target_n_ctx", requestedNCtx,
-			"active_streams", p.activeStreamsOnBackend(backendID),
-			"defer_max_sec", reloadDeferMaxWaitR271().Seconds())
+			"target_n_ctx", requestedNCtx, "active_streams", active,
+			"defer_budget_sec", reloadDeferMaxWaitR271().Seconds())
 		return
 	}
 	p.noteDestructiveOpR271(backendID, modelName, destructiveReloadR271)

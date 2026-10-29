@@ -186,6 +186,36 @@ func builtinListR278() []Setting {
 			Validate: func(int64) error { return nil },
 		},
 		{
+			// R291 (2026-10-29): «кнопка думает две минуты».
+			//
+			// Живой факт: ручной reload при активном стриме отвечал ВЕРНО, но
+			// только через LB_RELOAD_DEFER_MAX_SEC (120 с) — клиент воспринимал
+			// это как зависание, хотя решение было известно сразу.
+			//
+			// Правило: если ждать пришлось бы дольше этого окна — отвечаем
+			// «отложено» НЕМЕДЛЕННО; короткое ожидание оставляем, потому что
+			// стрим может закончиться, и операция выполнится в том же запросе.
+			// 0 = отвечать сразу всегда.
+			Name:        "LB_RELOAD_DEFER_FAST_FAIL_SEC",
+			Type:        TypeDurationSec,
+			Default:     5,
+			Group:       "nctx",
+			HotReload:   true,
+			Description: "Сколько максимум ждать чужие стримы в HTTP-ответе перед отказом «отложено». Больше — отвечаем сразу. 0 = отвечать сразу всегда.",
+			Validate: func(v int64) error {
+				if v < 0 {
+					return fmt.Errorf("must be >= 0, got %d", v)
+				}
+				return nil
+			},
+			NormalizeEnv: func(v int64) int64 {
+				if v < 0 {
+					return 5
+				}
+				return v
+			},
+		},
+		{
 			Name:        "LB_LLAMA_UPSTREAM_TTL_SEC",
 			Type:        TypeDurationSec,
 			Default:     21600, // 6 часов

@@ -207,7 +207,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 				return
 			}
 			writeServiceUnavailable(w,
-				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+				autoLoadFailureTextR292(model, loadErr),
 				writeAutoLoadRetryAfter(loadErr))
 			return
 		} else if newBackend != backendID {
@@ -542,7 +542,7 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 				return
 			}
 			writeServiceUnavailable(w,
-				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+				autoLoadFailureTextR292(model, loadErr),
 				0)
 			return
 		} else if newBackend != backendID {
@@ -730,7 +730,7 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 				return
 			}
 			writeServiceUnavailable(w,
-				fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+				autoLoadFailureTextR292(model, loadErr),
 				0)
 			return
 		} else if newBackend != backendID {
@@ -1085,7 +1085,7 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		writeServiceUnavailable(w,
-			fmt.Sprintf("model '%s' is not loaded and auto-load failed: %v", model, loadErr),
+			autoLoadFailureTextR292(model, loadErr),
 			0)
 		return
 	} else if newBackend != backendID {

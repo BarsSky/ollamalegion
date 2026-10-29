@@ -733,6 +733,54 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
 
+	// R292: состояние «подозрительного на tool-вызов» текста.
+	//   contentBufferSince — когда буфер начали копить (для grace-порога);
+	//   contentBufferGaveUp — мы уже решили, что это проза: больше не копим.
+	// Без второго флага следующая порция текста снова ушла бы в буфер, и клиент
+	// опять увидел бы «замер» — то есть лечение было бы одноразовым.
+	var contentBufferSince time.Time
+	contentBufferGaveUp := false
+
+	// flushBufferedTextR292 — отдать накопленный текст клиенту как обычный content.
+	// Один помощник на все причины (предел буфера и «это проза»), чтобы ветки не
+	// разошлись в том, что клиент видит.
+	flushBufferedTextR292 := func(text, reason string) error {
+		clean := strings.TrimSpace(stripQwenServiceMarkers(text))
+		if clean == "" {
+			return nil
+		}
+		chunk := map[string]interface{}{
+			"model":      modelFromCtx,
+			"created_at": time.Now().UTC().Format(time.RFC3339),
+			"done":       false,
+			"message": map[string]interface{}{
+				"role":    "assistant",
+				"content": clean,
+			},
+		}
+		out, errMarshal := json.Marshal(chunk)
+		if errMarshal != nil {
+			return nil
+		}
+		n, errWrite := fmt.Fprintf(w, "%s\n", string(out))
+		bytesForwarded += int64(n)
+		if errWrite != nil {
+			lastForwardErr = errWrite
+			if firstForwardErr == nil {
+				firstForwardErr = errWrite
+			}
+			return fmt.Errorf("write NDJSON (buffered text flush/%s): %v", reason, errWrite)
+		}
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		accumulatedPlainContent += clean
+		logger.Get().Infow("proxyRequestLlamaCpp: buffered text flushed to client",
+			"backend", backendID, "model", modelFromCtx,
+			"reason", reason, "chars", len(clean))
+		return nil
+	}
+
 	lastData := ""
 
 	// R66c (2026-09-22): режим ответа определяется по первой содержательной
@@ -1302,8 +1350,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 						}
 					}
 
-					if startToolCallAccum || contentBuffer != "" {
+					if !contentBufferGaveUp && (startToolCallAccum || contentBuffer != "") {
 						contentBuffer += deltaContent
+						if contentBufferSince.IsZero() {
+							contentBufferSince = time.Now()
+						}
 
 						// Кросс-чанковая склейка может оставить "лишний" символ '}' перед
 						// закрывающим </tool_call> (когда JSON закрывается в одном чанке, а
@@ -1353,42 +1404,42 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 						// Сбрасываем буфер и даём чанку пройти через нормальный translate.
 						if endPos := findMatchingClosingBracket(contentBuffer, 0); endPos >= 0 {
 							contentBuffer = ""
+							contentBufferSince = time.Time{}
 						} else if len(contentBuffer) > toolCallBufferLimit() {
 							// R266: раньше здесь буфер ВЫБРАСЫВАЛСЯ (жёсткие 4096 байт),
 							// и вызов инструмента, который пишет файл на сотни строк,
 							// терялся, а его обрывок с метками уезжал клиенту как текст.
 							// Теперь текст не теряем: отдаём очищенным от служебных меток
 							// как обычный content и продолжаем стрим.
-							overflow := stripQwenServiceMarkers(contentBuffer)
+							overflow := contentBuffer
 							contentBuffer = ""
-							if overflow = strings.TrimSpace(overflow); overflow != "" {
-								logger.Get().Warnw("proxyRequestLlamaCpp: tool-call buffer limit reached, text flushed",
-									"backend", backendID, "model", modelFromCtx,
-									"limit_bytes", toolCallBufferLimit(), "flushed_chars", len(overflow))
-								flushChunk := map[string]interface{}{
-									"model":      modelFromCtx,
-									"created_at": time.Now().UTC().Format(time.RFC3339),
-									"done":       false,
-									"message": map[string]interface{}{
-										"role":    "assistant",
-										"content": overflow,
-									},
-								}
-								if outFlush, errMarshal := json.Marshal(flushChunk); errMarshal == nil {
-									nFlush, errFlush := fmt.Fprintf(w, "%s\n", string(outFlush))
-									bytesForwarded += int64(nFlush)
-									if errFlush != nil {
-										lastForwardErr = errFlush
-										if firstForwardErr == nil {
-											firstForwardErr = errFlush
-										}
-										return fmt.Errorf("write NDJSON (tool-call buffer overflow): %v", errFlush)
-									}
-									if flusher, ok := w.(http.Flusher); ok {
-										flusher.Flush()
-									}
-									accumulatedPlainContent += overflow
-								}
+							contentBufferSince = time.Time{}
+							logger.Get().Warnw("proxyRequestLlamaCpp: tool-call buffer limit reached, text flushed",
+								"backend", backendID, "model", modelFromCtx,
+								"limit_bytes", toolCallBufferLimit(), "flushed_chars", len(overflow))
+							if errFlush := flushBufferedTextR292(overflow, "buffer_limit"); errFlush != nil {
+								return errFlush
+							}
+							continue
+						} else if shouldFlushToolBufferAsProseR292(contentBuffer, contentBufferSince) {
+							// R292: текст лишь НАЧАЛСЯ как JSON/маркер, но признаков
+							// вызова в нём нет (ни "name":, ни <|tool|>, …) и он уже
+							// пересидел grace/объём. Это проза — отдаём клиенту и
+							// прекращаем накопление до конца стрима.
+							//
+							// ЖИВОЙ СИМПТОМ, который это лечит: ответ начинался на `[`
+							// (маркдаун-список/массив в тексте), детектор держал его в
+							// буфере до 64 КиБ, и клиент видел «план вместе с
+							// размышлениями» одним куском в конце, а не потоком.
+							prose := contentBuffer
+							contentBuffer = ""
+							contentBufferSince = time.Time{}
+							contentBufferGaveUp = true
+							logger.Get().Infow("proxyRequestLlamaCpp: buffered text is prose, streaming it",
+								"backend", backendID, "model", modelFromCtx,
+								"chars", len(prose), "grace_ms", toolCallProseGrace().Milliseconds())
+							if errFlush := flushBufferedTextR292(prose, "prose_not_toolcall"); errFlush != nil {
+								return errFlush
 							}
 							continue
 						} else {

@@ -356,6 +356,12 @@ func (lr *LlamaCppRouter) waitForModelLoad(
 			return fmt.Errorf("client canceled while waiting for model load: %w", ctx.Err())
 		case err := <-loadDoneChan:
 			if err != nil {
+				// R292: «отложено из-за живых стримов» — не провал загрузки:
+				// отдаём без префикса «model load failed», чтобы верхний слой
+				// ответил 503 + короткий Retry-After и не считал это сбоем.
+				if IsDestructiveDeferredR292(err) {
+					return err
+				}
 				// R83-fix (2026-10-09): ошибку async-загрузки надо отдавать в той
 				// же форме, что и drainLoadFailure — с префиксом "model load
 				// failed". Иначе вызывающий (ensureModelLoadedOnBackend) её не
@@ -379,6 +385,12 @@ func drainLoadFailure(ch <-chan error) error {
 	select {
 	case err := <-ch:
 		if err != nil {
+			// R292: «отложено из-за живых стримов» — не провал загрузки.
+			// Отдаём как есть, иначе вызывающий увидит «model load failed» и
+			// запишет это в circuit breaker, хотя грузить было нечего.
+			if IsDestructiveDeferredR292(err) {
+				return err
+			}
 			return fmt.Errorf("model load failed: %w", err)
 		}
 		return nil

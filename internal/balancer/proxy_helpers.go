@@ -294,6 +294,12 @@ func writeAutoLoadRetryAfter(loadErr error) int {
 	if loadErr == nil {
 		return 90
 	}
+	// R292: операция отложена из-за живых стримов — короткий retry (модель
+	// занята, а не грузится минутами). Иначе клиент ждал бы 90 секунд там, где
+	// достаточно нескольких секунд.
+	if retry, ok := RetryAfterOfDestructiveDeferredR292(loadErr); ok {
+		return retry
+	}
 	errStr := loadErr.Error()
 	// R60.33 async mode: модель в процессе загрузки. Клиент retry
 	// через 90s (realistic для 2-3GB моделей).

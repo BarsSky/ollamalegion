@@ -156,6 +156,18 @@ type ModelOpResult struct {
 	Busy           bool `json:"busy,omitempty"`
 	RetryWithForce bool `json:"retryWithForce,omitempty"`
 
+	// Deferred — R292 (2026-10-29): операция ОТЛОЖЕНА, потому что на бэкенде идёт
+	// живой клиентский стрим, а load с другими параметрами для cppworker означает
+	// unload+load — то есть выгрузку модели под чужой генерацией.
+	//
+	// ПОЧЕМУ ОТДЕЛЬНОЕ ПОЛЕ, А НЕ Busy. Busy ставится по ответу ВОРКЕРА (409 «model
+	// is busy»), то есть когда мы уже попросили его выгрузить модель. Здесь мы не
+	// просили вовсе: воркер ни при чём, и в circuit breaker это попадать не должно —
+	// иначе серия отложений выглядела бы как серия сбоев загрузки и закрывала
+	// breaker на здоровом стенде.
+	Deferred      bool `json:"deferred,omitempty"`
+	RetryAfterSec int  `json:"retryAfterSec,omitempty"`
+
 	// StillLoading — R262 (2026-10-28): загрузка НЕ провалилась, а ещё идёт.
 	//
 	// Живой факт: оператор получал HTTP 500 «poll timeout» при том, что воркер
@@ -266,6 +278,36 @@ func (mm *ModelManager) ExecuteOperation(backendID string, req ModelOpRequest) *
 	var result *ModelOpResult
 	op := strings.ToLower(req.Operation)
 
+	// R292 (2026-10-29): ЕДИНЫЙ guard перед разрушительной операцией с моделью.
+	//
+	// Живой дефект (второй стенд, два агента, одна модель): второй агент вырвал
+	// модель у первого — первый получил «stream ended by upstream before
+	// completion». Guard R271 стоял только на путях ПЕРЕЗАГРУЗКИ (n_ctx-preflight,
+	// AutoTune, операторский reload), а этот путь — «рядовой» load/unload через
+	// ModelManager, которым ходят автозагрузка по запросу клиента и API — его не
+	// проверял. Для cppworker `load` с другими параметрами = unload+load, то есть
+	// выгрузка модели под живым стримом.
+	//
+	// Порядок важен: guard ДО tryAcquireOp не нужен (dedup дешёвый), но guard
+	// ОБЯЗАН стоять до фактического запроса в воркер — иначе воркер начнёт
+	// выгружать модель, а мы уже ничего не отменим.
+	markedDestructiveR292 := false
+	if isLlamaCpp && (op == "load" || op == "unload") {
+		if derr := mm.proxy.guardModelOpR292(backendID, req.ModelName, op); derr != nil {
+			return &ModelOpResult{
+				Success:       false,
+				Operation:     req.Operation,
+				ModelName:     req.ModelName,
+				BackendID:     backendID,
+				Deferred:      true,
+				RetryAfterSec: derr.RetrySec,
+				Error:         derr.Error(),
+			}
+		}
+		mm.proxy.noteDestructiveOpR271(backendID, req.ModelName, destructiveKindForModelOpR292(op))
+		markedDestructiveR292 = true
+	}
+
 	// pull/push — только для ollama-бэкендов
 	if op == "pull" || op == "push" {
 		if isLlamaCpp {
@@ -310,6 +352,13 @@ func (mm *ModelManager) ExecuteOperation(backendID string, req ModelOpRequest) *
 			BackendID: backendID,
 			Error:     fmt.Sprintf("unsupported operation: %s", req.Operation),
 		}
+	}
+
+	// R292: пометку «модель выгружают» снимаем, если операция НЕ применилась.
+	// Иначе она «залипала» бы и следующий оборванный стрим обвинялся бы в том,
+	// чего не было (ровно этот класс разбирали в R283).
+	if markedDestructiveR292 && (result == nil || !result.Success) {
+		mm.proxy.clearDestructiveOpR271(backendID, req.ModelName)
 	}
 
 	return result

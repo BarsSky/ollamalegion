@@ -257,11 +257,20 @@ services:
       # свободный узел с файлом модели, а не перезагружать тот, где идёт чужой
       # стрим. 1 = разрешено (дефолт), 0 = прежнее поведение (reload на месте).
       - LB_PLACE_OVER_RELOAD=${LB_PLACE_OVER_RELOAD:-1}
+      # R292: сколько ждать чужих стримов перед загрузкой/выгрузкой модели по
+      # запросу другого клиента (load с другими параметрами = unload+load).
+      # 0 = не ждать: операция откладывается, клиент получает 503 + Retry-After.
+      - LB_DESTRUCTIVE_OP_WAIT_SEC=${LB_DESTRUCTIVE_OP_WAIT_SEC:-5}
       - LB_NCTX_RELOAD_ASYNC=${LB_NCTX_RELOAD_ASYNC:-1}
       # Пусто = ждать терминального состояния перезагрузки (без капа).
       - LB_NCTX_PREFLIGHT_WAIT_SEC=${LB_NCTX_PREFLIGHT_WAIT_SEC:-}
       # Стриминг: буфер tool-вызова (R266) и предел тела запроса.
       - LB_TOOL_CALL_BUFFER_BYTES=${LB_TOOL_CALL_BUFFER_BYTES:-65536}
+      # R292: текст, который лишь начался как JSON/метка tool-вызова, отдаётся
+      # клиенту как обычный поток, если признаков вызова нет дольше grace или
+      # объём превышен (иначе стрим «замирал» до заполнения буфера).
+      - LB_TOOLCALL_PROSE_MAX_BYTES=${LB_TOOLCALL_PROSE_MAX_BYTES:-512}
+      - LB_TOOLCALL_PROSE_GRACE_MS=${LB_TOOLCALL_PROSE_GRACE_MS:-300}
       - LB_MAX_REQUEST_BODY_MB=${LB_MAX_REQUEST_BODY_MB:-64}
       # Нативный Ollama-путь и очистка текста в done-чанке (R231/R240).
       - LB_OLLAMA_NATIVE_PATH=${LB_OLLAMA_NATIVE_PATH:-1}

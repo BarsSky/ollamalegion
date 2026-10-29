@@ -377,11 +377,27 @@ never overwritten.
 `LB_OPENAI_AUTO_STREAM_MAX_SEC`, `LB_OPENAI_AUTO_STREAM_MAX_BYTES`,
 `LB_OPENAI_AUTO_STREAM_KEEPALIVE_SEC`, `LB_TOOL_CALL_BUFFER_BYTES`,
 `LB_RELOAD_DEFER_MAX_SEC`, `LB_RELOAD_DEFER_FAST_FAIL_SEC`, `LB_ADMISSION_WAIT_SEC`,
-`LB_LLAMA_UPSTREAM_TTL_SEC`, `LB_PLACE_OVER_RELOAD`.
+`LB_LLAMA_UPSTREAM_TTL_SEC`, `LB_PLACE_OVER_RELOAD`, `LB_DESTRUCTIVE_OP_WAIT_SEC`,
+`LB_TOOLCALL_PROSE_MAX_BYTES`, `LB_TOOLCALL_PROSE_GRACE_MS`.
 
 **`LB_RELOAD_DEFER_FAST_FAIL_SEC` (R291).** Upper bound of how long a destructive operation may wait for someone else's streams *inside the HTTP response*. If the wait budget is larger, the balancer answers `503 deferred` immediately (the reload button must not "think" for two minutes); a short wait is kept, because the stream may end and the operation still runs in the same request. Default 5 s, `0` = never wait.
 
 **`LB_PLACE_OVER_RELOAD` (R293).** `1` (default) — when the requested window or load parameters do not match the loaded copy, the balancer FIRST looks for another free node that has the model file (enough VRAM, no foreign streams) and loads the model there; `0` — previous behaviour (reload on the node where the model is already loaded). Why: on a two-node stand the second node was idle, yet the balancer reloaded the model on the first one and cut the first agent's stream. Moving happens only when there is a reason: the current node has active streams, or its ceiling is below the requested window (an idle node is cheaper to reload in place).
+
+**Destructive model operations (R292).** `LB_DESTRUCTIVE_OP_WAIT_SEC`
+(default 5) is how long a load/unload requested by ANOTHER client waits for
+active streams. For cppworker a load with different parameters means
+unload+load, so without this guard a second agent unloaded the model under the
+first one's live stream and the first saw `stream ended by upstream before
+completion`. `0` = do not wait at all: the operation is deferred and the client
+gets 503 + Retry-After immediately.
+
+**Prose that looks like a tool call (R292).** `LB_TOOLCALL_PROSE_MAX_BYTES`
+(default 512) and `LB_TOOLCALL_PROSE_GRACE_MS` (default 300) bound how long text
+that merely STARTS like a tool call stays in the cross-chunk buffer. When no
+tool-call markers appear, the text is streamed to the client instead of waiting
+for the buffer to fill (live complaint: the answer arrived as one blob at the
+end, "not streamed").
 
 **Not hot.** Ports, http.Server timeouts, paths and anything used while
 constructing the server are not in the registry: PUT returns 400 "requires

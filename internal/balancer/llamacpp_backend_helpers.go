@@ -226,6 +226,20 @@ func (lr *LlamaCppRouter) ensureModelLoadedWithFailover(
 		return backendID, nil
 	}
 
+	// R292: операция отложена из-за живых стримов — НЕ переезжаем на другой узел
+	// и НЕ считаем это провалом загрузки.
+	//
+	// Почему без failover: причина — не «этот бэкенд плохой», а «сейчас он занят
+	// чужим стримом». Переезд на другую копию означал бы загрузку модели на
+	// другом узле (минуты) ради запроса, который через пару секунд обслужится
+	// здесь же, и заодно занял бы VRAM на втором узле. Клиенту честнее сказать
+	// «занято, повтори».
+	if IsDestructiveDeferredR292(err) {
+		ridLog(lr_recentCtx()).Infow("ensureModelLoadedWithFailover: destructive op deferred, not failing over",
+			"backend", backendID, "model", modelName, "error", err)
+		return backendID, err
+	}
+
 	exclude := map[string]bool{backendID: true}
 
 	// (1) Бэкенд выпал: статус не healthy, узел не отвечает или ошибка
@@ -957,6 +971,20 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		loadDone := make(chan error, 1)
 		go func() {
 			result := mm.ExecuteOperation(backendID, opReq)
+			// R292: отложено из-за живых стримов — ждущий запрос должен получить
+			// «занято, повтори», а не «load failed» (и не открывать breaker).
+			if result.Deferred {
+				ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: async load deferred — active client streams",
+					"backend", backendID, "model", modelName,
+					"retry_after_sec", result.RetryAfterSec)
+				loadDone <- &destructiveDeferredErrorR292{
+					BackendID: backendID,
+					Model:     modelName,
+					Streams:   lr.proxy.activeStreamsOnBackend(backendID),
+					RetrySec:  result.RetryAfterSec,
+				}
+				return
+			}
 			if !result.Success {
 				// R66d (2026-09-22): провал async-загрузки теперь попадает в тот
 				// же circuit breaker, что и sync-путь (см. ниже recordFailure).
@@ -1090,6 +1118,23 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 		return false, fmt.Errorf("model %q load started, waiting for cppworker to finish (~30-180s depending on n_ctx)", modelName)
 	}
 	result := mm.ExecuteOperation(backendID, opReq)
+
+	// R292: операция отложена (на бэкенде живые стримы) — это НЕ провал загрузки.
+	// Возвращаем типизированную ошибку, чтобы верхний слой ответил 503+Retry-After
+	// («занято, повтори»), а не «model load failed», и чтобы она не попала ни в
+	// circuit breaker, ни в failover на другой узел.
+	if result.Deferred {
+		ridLog(lr_recentCtx()).Infow("ensureModelLoadedOnBackend: load deferred — active client streams",
+			"backend", backendID, "model", modelName,
+			"active_streams", lr.proxy.activeStreamsOnBackend(backendID),
+			"retry_after_sec", result.RetryAfterSec)
+		return false, &destructiveDeferredErrorR292{
+			BackendID: backendID,
+			Model:     modelName,
+			Streams:   lr.proxy.activeStreamsOnBackend(backendID),
+			RetrySec:  result.RetryAfterSec,
+		}
+	}
 
 	if !result.Success {
 		errStr := strings.ToLower(result.Error)

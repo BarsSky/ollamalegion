@@ -264,5 +264,67 @@ func builtinListR278() []Setting {
 				return 0
 			},
 		},
+		{
+			// R292 (2026-10-30): второй клиент больше не вырывает модель у
+			// первого. См. destructive_guard_r292.go.
+			Name:        "LB_DESTRUCTIVE_OP_WAIT_SEC",
+			Type:        TypeDurationSec,
+			Default:     5,
+			Group:       "nctx",
+			HotReload:   true,
+			Description: "Сколько ждать завершения чужих стримов, прежде чем выгружать/перезагружать модель по новому запросу. 0 = не ждать (сразу отложить и ответить 503).",
+			Validate: func(v int64) error {
+				if v < 0 {
+					return fmt.Errorf("must be >= 0, got %d", v)
+				}
+				return nil
+			},
+			NormalizeEnv: func(v int64) int64 {
+				if v < 0 {
+					return 5
+				}
+				return v
+			},
+		},
+		{
+			Name:        "LB_TOOLCALL_PROSE_MAX_BYTES",
+			Type:        TypeBytes,
+			Default:     512,
+			Group:       "streaming",
+			HotReload:   true,
+			Description: "Предел «подозрительного на tool-вызов» текста, после которого он отдаётся клиенту как обычный текст. Меньше 64 байт игнорируется.",
+			Validate: func(v int64) error {
+				if v < 64 {
+					return fmt.Errorf("too small: %d < 64", v)
+				}
+				return nil
+			},
+			NormalizeEnv: func(v int64) int64 {
+				if v < 64 {
+					return 512
+				}
+				return v
+			},
+		},
+		{
+			Name:        "LB_TOOLCALL_PROSE_GRACE_MS",
+			Type:        TypeInt,
+			Default:     300,
+			Group:       "streaming",
+			HotReload:   true,
+			Description: "Сколько миллисекунд держать текст, похожий на начало tool-вызова, прежде чем отдать его клиенту как обычный текст.",
+			Validate: func(v int64) error {
+				if v < 0 {
+					return fmt.Errorf("must be >= 0, got %d", v)
+				}
+				return nil
+			},
+			NormalizeEnv: func(v int64) int64 {
+				if v < 0 {
+					return 300
+				}
+				return v
+			},
+		},
 	}
 }

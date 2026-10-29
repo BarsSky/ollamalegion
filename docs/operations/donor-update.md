@@ -80,6 +80,20 @@ not used.
    (`POST /api/models/unload?name=...`) and make sure
    `docker exec cppworker-node2 nvidia-smi` returns to the baseline level.
 
+### Only the master loads the model (R304)
+
+On the donor itself a model load is now **refused**: `POST /api/models/load`
+answers `409 donor_cannot_host_models`, and `/api/models` reports `role=donor`,
+`can_load_own_models=false`. This is not a failure but the role: the donor's VRAM is
+handed to the master's model layers, and its own copy would take exactly the
+gigabytes the donor was assigned for.
+
+In practice: load/unload the model **from the master** (and through the balancer -
+`POST /api/v1/backends/<master>/models`), not on the donor. If the donor's
+`/api/models` shows `own_copies`, those are copies left over from a previous role:
+unload them (`POST /api/models/unload?name=...` on the donor is allowed) or clear
+the role in the panel. Details: `docs/operations/rpc-donor-vram-lifecycle.md`,
+section "A donor does not keep its own model copies (R304)".
 ## Rollback
 
 The old container stays stopped under the name `cppworker-node2-old`:

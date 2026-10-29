@@ -117,8 +117,48 @@
 
 ## Проверка живьём
 
-Заполняется после прогона на стенде (обязательный раздел: «не проверено» —
-честная запись, а не пропуск).
+Стенд: этот же Windows-хост, `ol-stack-*` в Docker Desktop, единственный живой
+воркер `cppworker-gpu-bundled-agent` (RTX 3070, gemma-4-E4B-it-Q4_K_M, ctx 32768),
+второй узел раскладки `cppworker-cyborg-bundled-agent` — роль donor, но недоступен
+(192.168.13.34, D1/D2 из отчёта R303 не исправлены).
+
+Образы: `balancer:ad5c979b`, `webui:f834332d`, развёрнуты через
+`docker compose --profile "*" up -d --force-recreate`.
+
+| # | Что проверялось | Как | Результат |
+| --- | --- | --- | --- |
+| A | Поля API | `GET /api/v1/backends` | у донора `donor:true`, `canLoadOwnModels:false`, `donorFor.backendId=cppworker-gpu-bundled-agent`, `donorNote` с мастером (UTF-8, без BOM); у мастера `donor:false`, `canLoadOwnModels:true` — **PASS** |
+| B | Пометка в ответе на смену роли | `POST /api/v1/backends/cppworker-gpu-bundled-agent/role {"role":"donor"}` | `donor.donor:true`, `ownCopies:["gemma-4-E4B-it-Q4_K_M","llama-3-8b (loading)"]`, `donorFor` пуст (мастер не назначен) — **PASS** (нарушение видно сразу) |
+| C | Предупреждение в логе | `docker logs` после тика гарда | одна строка `donor holds its own model copies (R304 ...)` с `own_copies` по именам, повтора нет (ограничитель) — **PASS** |
+| D | Донор не обслуживает запрос | чат на 18079 при единственном воркере в роли donor | `503 {"error":"no llama.cpp backend available"}` за 0 c; до правки запрос уходил бы на донора — **PASS** |
+| E | Контроль (A/B) | та же роль → `main`, тот же запрос | `200`, ответ за 1 c — **PASS** (поведение не сломано, отказ был именно по роли) |
+| F | Заказ загрузки донору через балансер | `POST /api/v1/backends/<donor>/models {"operation":"load"}` | `HTTP 409`, `roleRefused:true`, текст «донор раскладки ... не поднимает своих копий» — **PASS** (до R304.3 было 500) |
+| G | unload донору не блокируется | тот же эндпоинт, `operation:"unload"` | отказ НЕ по роли (ушёл в сеть и упал на недоступном узле) — **PASS** (выгрузить нарушающую копию можно) |
+| H | Панель: разбор полей | живой JSON `GET /api/v1/backends` прогнан через `Utils.donorMark()` в node | `{donor:true, master:"cppworker-gpu-bundled-agent", canLoad:false, ownCopies:[...]}` — **PASS** (серверный контракт и UI-хелпер сходятся) |
+| I | Панель: отдача кода | `GET :18083/js/modules/utils.js`, `renderers.js`, `i18n/ru.js`, `js/monitor/layout-panel.js` | `donorMark`, `donorBadgeHtml`, ключи `backends.donor_badge`/`donor_violation`, `donorMaster` на месте — **PASS** |
+
+Косвенный живой факт (нашёлся по ходу): смена роли применяет раскладку, а это
+перезагружает модель у мастера — после переключения donor→main gemma грузилась
+~50 c (`state=loading` → `loaded`, ctx 32768). Это прежнее поведение применения
+раскладки, не R304; важно для оператора: смена роли на узле с загруженной моделью
+стоит перезагрузки.
+
+### Что НЕ проверено живьём (честно)
+
+1. **cppworker-сторона на новом образе.** Код и юнит-тесты готовы (409
+   `donor_cannot_host_models`, `role/donor/can_load_own_models/donor_reason/
+   own_copies` в `/api/models`), но образ `cppworker:gpu-<sha>` на момент прогона
+   собирался (>60 мин: CUDA-компиляция llama.cpp с нуля). На стенде оставался
+   `gpu-r248`, поэтому живьём проверена ТОЛЬКО балансерная половина (отказ на
+   стороне балансера, F). Пометка воркера — по коду и тестам, статус: **не
+   проверено на железе**.
+2. **Двухузловой сценарий «у донора живая копия, второй узел свободен».**
+   Второй узел недоступен (D1/D2), поэтому переезд сессии с донора на мастера и
+   выбор свободного узла живьём не воспроизводились — покрыты юнит-тестами.
+3. **Визуальная проверка панели в браузере.** Пометка и блокировки проверены
+   рендером в node (тест + живой JSON) и отдачей файлов стендом; кликов в браузере
+   не делал.
+
 
 ## Что НЕ делается намеренно
 

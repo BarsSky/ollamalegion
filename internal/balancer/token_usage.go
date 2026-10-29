@@ -70,6 +70,16 @@ func (p *Proxy) recordTokenUsage(model string, promptTokens, completionTokens in
 	atomic.AddInt64(&u.RequestCount, 1)
 	// R66c: метку времени пишем атомарно (см. комментарий в ModelTokenUsage).
 	atomic.StoreInt64(&u.lastUpdatedUnixNano, time.Now().UnixNano())
+
+	// R302 (2026-10-29): фактическое число токенов промпта — единственный
+	// источник правды об оценке. Здесь же оно становится обучающим примером
+	// для калибровки (prompt_calibration_r302.go): если для этой модели есть
+	// свежая сырая оценка, считается отношение actual/estimated. Модели без
+	// ожидающей оценки (например, запрос не проходил через preflight) просто
+	// ничего не меняют.
+	if p.promptCalib != nil && promptTokens > 0 {
+		p.promptCalib.observe(model, int(promptTokens), time.Now())
+	}
 }
 
 // GetTokenUsageSnapshot — возвращает snapshot всех моделей.

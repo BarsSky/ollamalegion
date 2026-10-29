@@ -167,6 +167,11 @@ func (s *Server) setupRoutes() {
 	// Атомарно обновляется в proxyRequestLlamaCppNonStream при каждом успешном response.
 	s.mux.Handle("/api/v1/stats/tokens", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.HandleStatsTokens), s.rateLimiter), s.authenticator))
 
+	// R302 (2026-10-29): калибровка оценки промпта по фактическим токенам
+	// воркера. GET — снимок (ratio/samples/max_ratio/max_actual), POST — сброс
+	// (после смены модели или токенизатора старые отношения не применимы).
+	s.mux.Handle("/api/v1/stats/prompt-calibration", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.HandleStatsPromptCalibration), s.rateLimiter), s.authenticator))
+
 	// Cluster config (runtime-смена алгоритма)
 	s.mux.Handle("/api/v1/cluster/config", AuthMiddleware(RateLimitMiddleware(s.clusterConfigHandler, s.rateLimiter), s.authenticator))
 

@@ -213,7 +213,7 @@ func (p *Proxy) contextGrowthNumbers(backendID, model string, body []byte, path 
 	if p == nil || backendID == "" || len(body) == 0 {
 		return 0, 0, 0
 	}
-	meta := ExtractRequestMeta(body, path)
+	meta := p.extractRequestMeta(body, path)
 	if meta == nil {
 		return 0, 0, 0
 	}

@@ -64,8 +64,28 @@ func requiredNCtxForMeta(meta *RequestMeta) int {
 
 // RequestMeta — извлечённые из HTTP-запроса метаданные для preflight-проверки.
 type RequestMeta struct {
-	// EstimatedPromptTokens — оценка числа токенов в prompt (chars/4).
+	// EstimatedPromptTokens — оценка числа токенов в prompt.
+	//
+	// R302 (2026-10-29): на путях, прошедших через p.extractRequestMeta, это
+	// КАЛИБРОВАННАЯ оценка: сырой heuristic pkg/tokencount, умноженный на
+	// фактическое отношение actual/estimated для модели (см.
+	// prompt_calibration_r302.go). Сырое значение остаётся в
+	// EstimatedPromptTokensRaw.
 	EstimatedPromptTokens int
+	// EstimatedPromptTokensRaw — сырая эвристическая оценка ДО калибровки.
+	//
+	// Живой дефект, ради которого появилось поле: на русском тексте сырая
+	// оценка была 66001 токена при фактических 17616 (3.7x), и по ней
+	// балансер отказывал запросу, который помещался в загруженное окно 32768.
+	EstimatedPromptTokensRaw int
+	// PromptBytes — длина текста промпта в байтах (только диагностика R302:
+	// «prompt estimate: bytes=... nonascii=... estimated=... calibrated=...»).
+	PromptBytes int
+	// PromptNonASCIIShare — доля не-ASCII рун в тексте промпта (0..1).
+	//
+	// Нужна, чтобы отличить «завышение из-за кириллицы» от «завышения из-за
+	// шаблона» и применить запасной коэффициент, пока калибровки нет.
+	PromptNonASCIIShare float64
 	// RequestedNPredict — max_tokens / num_predict из тела (0 = default).
 	//
 	// R83/v67 (2026-10-02): сюда попадает ТОЛЬКО явное намерение клиента
@@ -283,6 +303,7 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 			sb.WriteString("\n")
 		}
 		meta.EstimatedPromptTokens = EstimatePromptTokens(sb.String())
+		meta.PromptBytes, meta.PromptNonASCIIShare = promptTextStats(sb.String())
 
 	case strings.HasSuffix(path, "/api/generate"):
 		var req ollamaGenerateRequestRaw
@@ -300,6 +321,7 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		meta.MaxOutputTokensUpperBound = req.MaxOutputTokens
 		meta.HasTools = len(req.Tools) > 0
 		meta.EstimatedPromptTokens = EstimatePromptTokens(req.Prompt + req.System)
+		meta.PromptBytes, meta.PromptNonASCIIShare = promptTextStats(req.Prompt + req.System)
 
 	case strings.HasSuffix(path, "/v1/chat/completions"):
 		var req openAIChatRequestRaw
@@ -322,6 +344,7 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 			sb.WriteString("\n")
 		}
 		meta.EstimatedPromptTokens = EstimatePromptTokens(sb.String())
+		meta.PromptBytes, meta.PromptNonASCIIShare = promptTextStats(sb.String())
 		meta.RequestedThink = parseThinkRequirement(req.Think)
 	}
 

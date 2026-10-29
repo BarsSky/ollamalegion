@@ -1992,7 +1992,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				recordAutoContinueSuppressed()
 				windowTokens := p.loadedPerSeqNCtx(backendID, modelFromCtx)
 				writeContextTooSmallNotice(w, originalPath, modelFromCtx,
-					estimatePromptTokensFromBody(bodyBuf, originalPath), windowTokens)
+					p.calibratedEstimateOnly(bodyBuf, originalPath), windowTokens)
 				logger.Get().Infow("auto-continue suppressed: context overflow is not a truncation (R289)",
 					"backend", backendID, "model", modelFromCtx,
 					"api_path", originalPath, "upstream_error", ctxErrText)

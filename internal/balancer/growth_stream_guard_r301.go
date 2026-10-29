@@ -99,7 +99,7 @@ func (p *Proxy) growthVerdictR301(backendID, model string, body []byte, path str
 	if p == nil || backendID == "" || len(body) == 0 {
 		return v
 	}
-	meta := ExtractRequestMeta(body, path)
+	meta := p.extractRequestMeta(body, path)
 	if meta == nil {
 		return v
 	}

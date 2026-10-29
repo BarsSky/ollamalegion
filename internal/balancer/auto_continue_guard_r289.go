@@ -75,10 +75,15 @@ func autoContinueBlockedByContext(errorTexts ...string) (bool, string) {
 	return false, ""
 }
 
-// estimatePromptTokensFromBody — оценка промпта тем же способом, что и preflight
-// (ExtractRequestMeta), чтобы числа в ответе и в решении о росте окна совпадали.
-func estimatePromptTokensFromBody(body []byte, path string) int {
-	if meta := ExtractRequestMeta(body, path); meta != nil {
+// estimatePromptTokensFromBody — оценка промпта тем же способом, что и preflight,
+// чтобы числа в ответе и в решении о росте окна совпадали.
+//
+// R302 (2026-10-29): метод на Proxy, а не свободная функция. Оценка, которую
+// видит клиент в сообщении, обязана проходить через ТУ ЖЕ калибровку, что и
+// решение (p.extractRequestMeta): иначе в сообщении «промпт 66001» рядом с
+// решением, принятым по 17616, — снова две правды об одном числе.
+func (p *Proxy) estimatePromptTokensFromBody(body []byte, path string) int {
+	if meta := p.extractRequestMeta(body, path); meta != nil {
 		return meta.EstimatedPromptTokens
 	}
 	return 0

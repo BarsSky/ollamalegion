@@ -254,7 +254,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	// admission-очередь, если рост окна сейчас невозможен (модель занята чужим
 	// стримом). Живой дефект: клиент с num_ctx=32768 при загруженном 8192 стоял
 	// в очереди 900 секунд и получал пустоту, хотя решение уже было известно.
-	if meta := ExtractRequestMeta(bodyBuf, r.URL.Path); meta != nil {
+	if meta := lr.proxy.extractRequestMeta(bodyBuf, r.URL.Path); meta != nil {
 		if blocked, needed, loaded := lr.proxy.contextGrowthBlocker(backendID, model, meta); blocked {
 			// R299: в теле отказа — живые activeStreams и reloadPending (см.
 			// growth_guard_r299.go): «active streams=0» без reloadPending
@@ -938,7 +938,7 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	} // R288 (2026-10-29): запрос, которому нужно БОЛЬШЕ окна, не ставим в
 	// admission-очередь, если рост окна сейчас невозможен (модель занята):
 	// иначе клиент ждёт пустоту до 900 с вместо понятного «повторите».
-	if meta := ExtractRequestMeta(bodyBuf, r.URL.Path); meta != nil {
+	if meta := lr.proxy.extractRequestMeta(bodyBuf, r.URL.Path); meta != nil {
 		if blocked, needed, loaded := lr.proxy.contextGrowthBlocker(backendID, model, meta); blocked {
 			// R299: в теле отказа — живые activeStreams и reloadPending (см.
 			// growth_guard_r299.go): «active streams=0» без reloadPending
@@ -1119,7 +1119,7 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	} // R288 (2026-10-29): запрос, которому нужно БОЛЬШЕ окна, не ставим в
 	// admission-очередь, если рост окна сейчас невозможен (модель занята):
 	// иначе клиент ждёт пустоту до 900 с вместо понятного «повторите».
-	if meta := ExtractRequestMeta(bodyBuf, r.URL.Path); meta != nil {
+	if meta := lr.proxy.extractRequestMeta(bodyBuf, r.URL.Path); meta != nil {
 		if blocked, needed, loaded := lr.proxy.contextGrowthBlocker(backendID, model, meta); blocked {
 			// R299: в теле отказа — живые activeStreams и reloadPending (см.
 			// growth_guard_r299.go): «active streams=0» без reloadPending

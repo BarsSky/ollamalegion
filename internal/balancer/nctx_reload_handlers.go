@@ -1143,7 +1143,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		// R60.46: только check required если user ЯВНО указал n_predict > 0.
 		// Иначе (n_predict=0 = default) — НЕ reload, пусть cppworker сам
 		// отдаст 400 если overflow.
-		meta := ExtractRequestMeta(bodyBuf, requestPath)
+		meta := p.extractRequestMeta(bodyBuf, requestPath)
 		if meta == nil {
 			return bodyBuf, true, "", http.StatusOK
 		}
@@ -1236,7 +1236,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// к reload path (line 692+). Preflight запустит async reload, user
 	// получит 503 + Retry-After, через retry получит успех с новым n_ctx.
 	if requestedNCtx > 0 && loadedNCtx > 0 && requestedNCtx <= loadedNCtx {
-		meta := ExtractRequestMeta(bodyBuf, requestPath)
+		meta := p.extractRequestMeta(bodyBuf, requestPath)
 		if meta != nil {
 			required := requiredNCtxForMeta(meta)
 			if required <= loadedNCtx {

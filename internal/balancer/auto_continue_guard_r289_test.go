@@ -84,8 +84,10 @@ func TestR289_NoticeCarriesNumbers(t *testing.T) {
 func TestR289_EstimateMatchesPreflight(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"` +
 		strings.Repeat("x", 4000) + `"}]}`)
-	got := estimatePromptTokensFromBody(body, "/v1/chat/completions")
-	meta := ExtractRequestMeta(body, "/v1/chat/completions")
+	// R302: и сообщение, и решение идут через один вход — p.extractRequestMeta.
+	p := newGrowthGuardProxyR299()
+	got := p.estimatePromptTokensFromBody(body, "/v1/chat/completions")
+	meta := p.extractRequestMeta(body, "/v1/chat/completions")
 	if meta == nil {
 		t.Fatal("ExtractRequestMeta не разобрал тело")
 	}

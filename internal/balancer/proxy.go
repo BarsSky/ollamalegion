@@ -94,6 +94,12 @@ type Proxy struct {
 	tokensByModelMu sync.RWMutex
 	tokensByModel   map[string]*ModelTokenUsage
 
+	// R302 (2026-10-29): калибровка оценки промпта по фактическим токенам
+	// воркера (см. prompt_calibration_r302.go). nil — калибровка выключена
+	// (Proxy собран литералом в тесте); все потребители обязаны это переносить
+	// и работать по сырому heuristic.
+	promptCalib *promptCalibration
+
 	// llamaCppMetricsPoller синхронизирует metricsMgr.llamaMetrics[].LoadedModels
 	// с фактическим состоянием cppworker через периодический poll /api/models.
 	// Нужен для отображения загруженных моделей в WebUI (страница GGUF) и
@@ -473,6 +479,9 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 		metricsMgr:    NewMetricsManager(),
 		predictor:     NewPredictor(),
 		statePath:     config.LoadBalancer.StatePath,
+		// R302 (2026-10-29): калибровка оценки промпта живёт рядом со state.json
+		// и переживает перезапуск. Пустой StatePath = только в памяти.
+		promptCalib:   newPromptCalibration(promptCalibrationPath(config.LoadBalancer.StatePath)),
 		eventBus:      NewEventBus(),
 		modelCatalog:  newModelCatalog(),
 		recentClients: make(map[string]*types.RecentClient),

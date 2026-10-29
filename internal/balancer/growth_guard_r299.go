@@ -66,7 +66,7 @@ func (p *Proxy) growthDeferR299(backendID, model string, body []byte, path strin
 	if p == nil || backendID == "" || len(body) == 0 {
 		return false, 0, 0, 0, 0, false
 	}
-	meta := ExtractRequestMeta(body, path)
+	meta := p.extractRequestMeta(body, path)
 	if meta == nil {
 		return false, 0, 0, 0, 0, false
 	}

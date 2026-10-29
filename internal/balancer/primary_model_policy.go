@@ -80,7 +80,7 @@ func (p *Proxy) applyPrimaryModelPolicy(backendID, modelName string, bodyBuf []b
 		return bodyBuf, true, "", http.StatusOK
 	}
 
-	meta := ExtractRequestMeta(bodyBuf, requestPath)
+	meta := p.extractRequestMeta(bodyBuf, requestPath)
 	if meta == nil {
 		// Тело не разобрали — пропускаем как есть (cppworker сам разберётся).
 		return bodyBuf, true, "", http.StatusOK

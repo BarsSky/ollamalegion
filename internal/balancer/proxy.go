@@ -243,6 +243,11 @@ type Proxy struct {
 	// узле, где она лежит.
 	modelCatalog *modelCatalog
 
+	// R269: отслеживание актуальной стабильной версии llama.cpp (кэш на диске
+	// + фоновая петля по TTL). nil = не запущено (тесты/урезанный прокси) —
+	// все геттеры обязаны это переживать.
+	llamaUpstream *llamaUpstreamTracker
+
 	// RPC model distribution modules
 	modelReplication    *modelreplication.ModelGroupManager
 	replicationSelector *modelreplication.GroupAwareSelector
@@ -498,6 +503,11 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 
 	// Прокси-логгер использует тот же EventBus для WebSocket-трансляции
 	p.proxyLogger = NewProxyLogger(1000, p.eventBus)
+
+	// R269: слежение за стабильной версией llama.cpp (GitHub releases по TTL).
+	// Стартуем здесь, а не в main: тогда и тесты NewProxy получают кэш, а сам
+	// опрос идёт фоновой петлёй и не участвует в hot path запросов.
+	p.startLlamaUpstreamTracking()
 
 	// R229 (2026-10-22): очередь знает протокол сессии (openai/ollama) — бейджи
 	// в waiting_detail. Резолвер — менеджер сессий этого же прокси.
@@ -779,6 +789,10 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 		logger.Get().Infow("stopping llama.cpp metrics poller...")
 		p.llamaCppMetricsPoller.Stop()
 	}
+	// R269: останавливаем петлю опроса версии llama.cpp (иначе goroutine-leak
+	// при перезапуске/в тестах).
+	logger.Get().Infow("stopping llama upstream version tracker...")
+	p.stopLlamaUpstreamTracking()
 	// R52.5 (2026-08-24): per-component Stop for graceful shutdown.
 	// Pre-R52.5 эти контроллеры НЕ останавливались → goroutine-leak при shutdown.
 	// Покрытие: replicationCtrl (modelreplication.GroupController),

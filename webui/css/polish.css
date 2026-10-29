@@ -461,6 +461,23 @@ select.form-control {
     margin-top: var(--space-2);
 }
 
+/* R269 (2026-10-29): уведомление о более свежей стабильной сборке llama.cpp.
+   Это подсказка, а не ошибка: спокойная рамка слева, без красного и без
+   перекрытия работы страницы. */
+.llama-upstream-warn {
+    margin: 0 0 var(--space-3) 0;
+    padding: var(--space-2) var(--space-3);
+    border-left: 3px solid var(--warning, #d9a21b);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--warning, #d9a21b) 10%, transparent);
+    font-size: var(--font-size-sm);
+}
+
+.llama-upstream-warn .llama-upstream-link {
+    margin-left: var(--space-2);
+    white-space: nowrap;
+}
+
 /* ===== 9. Sidebar nav: consistent icon column ===== */
 .nav-item {
     gap: var(--space-3);

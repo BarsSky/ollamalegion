@@ -189,6 +189,19 @@ services:
       - LB_STREAM_MAX_LINE_BYTES=${LB_STREAM_MAX_LINE_BYTES:-8388608}
       - LB_OPENAI_AUTO_STREAM_MAX_SEC=${LB_OPENAI_AUTO_STREAM_MAX_SEC:-300}
       - LB_OPENAI_AUTO_STREAM_MAX_BYTES=${LB_OPENAI_AUTO_STREAM_MAX_BYTES:-16777216}
+      # R269 (2026-10-29): отслеживание актуальной стабильной версии llama.cpp.
+      # Опрос идёт фоновой петлёй по TTL, результат кэшируется в writable-томе.
+      # Без проброса оператор не смог бы ни продлить TTL, ни отключить проверку
+      # на закрытом стенде без сети — то есть «настраиваемость» осталась бы на
+      # бумаге (ровно та ошибка, что была с LB_NCTX_GROW_FOR_AGENTS).
+      #   LB_LLAMA_UPSTREAM_CHECK_ENABLED — 0 выключает опрос (нет сети/не нужно)
+      #   LB_LLAMA_UPSTREAM_TTL_SEC       — как часто спрашивать GitHub (default 6 ч)
+      #   LB_LLAMA_UPSTREAM_REPO          — чей релиз считать стабильным
+      #   LB_LLAMA_UPSTREAM_TIMEOUT_SEC   — таймаут одного запроса
+      - LB_LLAMA_UPSTREAM_CHECK_ENABLED=${LB_LLAMA_UPSTREAM_CHECK_ENABLED:-1}
+      - LB_LLAMA_UPSTREAM_TTL_SEC=${LB_LLAMA_UPSTREAM_TTL_SEC:-21600}
+      - LB_LLAMA_UPSTREAM_REPO=${LB_LLAMA_UPSTREAM_REPO:-ggml-org/llama.cpp}
+      - LB_LLAMA_UPSTREAM_TIMEOUT_SEC=${LB_LLAMA_UPSTREAM_TIMEOUT_SEC:-10}
       # Where the balancer stores image-model profiles. Must be explicit: the
       # default is config/image-model-profiles.json under /app/config, which is
       # mounted READ-ONLY below, so saving a profile from the WebUI would fail.

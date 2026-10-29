@@ -422,3 +422,60 @@ func TestR304_ReloadTargetRefusedOnDonor(t *testing.T) {
 		t.Error("мастер: запрос не ушёл к воркеру (needsProxy=false) — сломали обычный путь")
 	}
 }
+
+// TestR304_OwnCopiesIgnoresStaleLoadingRecord — «грузится» из кэша поллера.
+//
+// Поллер не очищает LoadingModels, когда у воркера нет загрузок, поэтому в кэше
+// живут записи о давно закончившихся загрузках (на стенде у донора висела
+// «llama-3-8b (loading)» при пустом /api/models). Показывать это как нарушение
+// роли — ложная тревога, требующая действий оператора; свежую загрузку — наоборот,
+// скрывать нельзя: она прямо сейчас отнимает VRAM у мастера.
+func TestR304_OwnCopiesIgnoresStaleLoadingRecord(t *testing.T) {
+	p := newDonorProxyR304(t)
+	fresh := time.Now().Add(-time.Minute).Format(time.RFC3339Nano)
+	stale := time.Now().Add(-5 * time.Hour).Format(time.RFC3339Nano)
+
+	p.metricsMgr.llamaMetrics[r304Donor].LoadingModels = []types.LlamaCppModel{
+		{Name: "fresh-model", State: "loading", LoadingStartedAt: &fresh},
+		{Name: "stale-model", State: "loading", LoadingStartedAt: &stale},
+		{Name: "unknown-age-model", State: "loading"},
+	}
+
+	got := p.ownCopiesOnBackendR304(r304Donor)
+	want := []string{"fresh-model (loading)", r304Model}
+	if len(got) != len(want) {
+		t.Fatalf("ownCopies = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ownCopies = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestR304_ModelLoadRefusedOnDonor — дверь, через которую балансер заказывает
+// загрузку у воркера (ModelManager.ExecuteOperation).
+//
+// ЗАЧЕМ ТЕСТ, ЕСЛИ ВОРКЕР И САМ ОТКАЖЕТ. Старый образ воркера приказ примет и
+// поднимет копию рядом с раскладкой мастера — то есть в окне между обновлением
+// балансера и воркера вернулся бы ровно тот дефект, ради которого писалась
+// правка. Отказ обязан быть на обеих сторонах.
+func TestR304_ModelLoadRefusedOnDonor(t *testing.T) {
+	p := newDonorProxyR304(t)
+	mm := NewModelManager(p)
+
+	res := mm.ExecuteOperation(r304Donor, ModelOpRequest{Operation: "load", ModelName: r304Model})
+	if res == nil || res.Success {
+		t.Fatalf("загрузка на донора принята: %+v", res)
+	}
+	if res.Error == "" {
+		t.Error("отказ без причины: оператор не узнает, почему модель не поднялась")
+	}
+
+	// Контроль: на мастере отказ донора не действует (дальше путь идёт в сеть и
+	// падает уже по другой причине — здесь важно лишь, что это не отказ донора).
+	main := mm.ExecuteOperation(r304Main, ModelOpRequest{Operation: "load", ModelName: r304Model})
+	if main != nil && main.Error == res.Error {
+		t.Fatalf("мастер получил тот же отказ, что и донор: %q", main.Error)
+	}
+}

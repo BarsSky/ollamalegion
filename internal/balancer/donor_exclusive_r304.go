@@ -245,6 +245,15 @@ func (p *Proxy) DonorMarkR304(backendID string) DonorMarkR304 {
 // Источник — снапшот поллера (тот же, по которому принимается решение о копиях):
 // ходить в сеть из отчёта панели нельзя, а «есть ли копия» обязано совпадать с
 // тем, что видит селектор.
+//
+// ПОЧЕМУ У «ГРУЗЯЩИХСЯ» ЕСТЬ СРОК ГОДНОСТИ. Поллер, не увидев у воркера ни одной
+// загрузки, НЕ очищает LoadingModels — оставляет прежнее значение «до следующего
+// успешного опроса» (llamacpp_metrics_poller.go, pollLoadingProgress). Поэтому в
+// кэше могут жить записи о загрузках, которых давно нет: на стенде у донора
+// висела «llama-3-8b (loading)» при пустом /api/models у самого воркера. Для
+// нарушения роли это важная разница: настоящая загрузка — это копия, которая
+// сейчас отнимает VRAM у мастера, а протухшая запись — ложная тревога. Свежие
+// (по LoadingStartedAt) показываем честно, протухшие — нет.
 func (p *Proxy) ownCopiesOnBackendR304(backendID string) []string {
 	if p == nil || p.metricsMgr == nil || backendID == "" {
 		return nil
@@ -260,12 +269,36 @@ func (p *Proxy) ownCopiesOnBackendR304(backendID string) []string {
 		}
 	}
 	for _, m := range lm.LoadingModels {
-		if name := strings.TrimSpace(m.Name); name != "" {
-			out = append(out, name+" (loading)")
+		name := strings.TrimSpace(m.Name)
+		if name == "" || loadingRecordStaleR304(m) {
+			continue
 		}
+		out = append(out, name+" (loading)")
 	}
 	sort.Strings(out)
 	return out
+}
+
+// donorLoadingStaleAfterR304 — с какого возраста запись «грузится» считается
+// протухшей. Загрузка модели на CPU-стенде идёт десятки секунд, на GPU — минуты;
+// два часа не бывает ни у одной реальной загрузки, но кэш поллера столько живёт
+// спокойно.
+const donorLoadingStaleAfterR304 = 2 * time.Hour
+
+// loadingRecordStaleR304 — запись о загрузке протухла (или возраст неизвестен).
+//
+// Неизвестный возраст трактуем как протухший: показать оператору копию, которая
+// «может быть, грузится», значит поднять ложную тревогу о нарушении роли — а у
+// нас есть точный список загруженных (LoadedModels), которого достаточно.
+func loadingRecordStaleR304(m types.LlamaCppModel) bool {
+	if m.LoadingStartedAt == nil {
+		return true
+	}
+	started, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*m.LoadingStartedAt))
+	if err != nil {
+		return true
+	}
+	return time.Since(started) > donorLoadingStaleAfterR304
 }
 
 // noteDonorOwnCopiesR304 — записать в лог, что донор вопреки роли держит копию.

@@ -291,6 +291,27 @@ func (mm *ModelManager) ExecuteOperation(backendID string, req ModelOpRequest) *
 	// Порядок важен: guard ДО tryAcquireOp не нужен (dedup дешёвый), но guard
 	// ОБЯЗАН стоять до фактического запроса в воркер — иначе воркер начнёт
 	// выгружать модель, а мы уже ничего не отменим.
+	// R304 (2026-10-30): донор не поднимает СВОИХ копий моделей.
+	//
+	// ЗАЧЕМ ЗДЕСЬ, А НЕ ТОЛЬКО В cppworker. Это единственная дверь, через которую
+	// балансер заказывает загрузку у воркера: рядовой load через API, bulk-операции,
+	// прогрев, восстановление предыдущей модели. Новый воркер ответит 409, но
+	// СТАРЫЙ образ приказ примет и поднимет копию рядом с раскладкой мастера — то
+	// есть в окне между обновлением балансера и воркера вернулся бы ровно тот
+	// дефект, ради которого писалась правка. Отказ обязан быть и на нашей стороне.
+	//
+	// unload/delete осознанно НЕ блокируются: убрать нарушающую копию с донора —
+	// законное и нужное действие (именно к нему призывает предупреждение в панели).
+	if isLlamaCpp && op == "load" && mm.proxy.cannotHostModelR304(backendID) {
+		return &ModelOpResult{
+			Success:   false,
+			Operation: req.Operation,
+			ModelName: req.ModelName,
+			BackendID: backendID,
+			Error:     i18n.T("balancer.donor.load_refused", backendID),
+		}
+	}
+
 	markedDestructiveR292 := false
 	if isLlamaCpp && (op == "load" || op == "unload") {
 		if derr := mm.proxy.guardModelOpR292(backendID, req.ModelName, op); derr != nil {

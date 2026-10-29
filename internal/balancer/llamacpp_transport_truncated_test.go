@@ -266,7 +266,12 @@ func TestProxyRequestLlamaCpp_StreamTruncation_NDJSON(t *testing.T) {
 	for _, c := range chunks {
 		if done, _ := c["done"].(bool); done {
 			terminators++
-			if reason, _ := c["done_reason"].(string); reason == "truncated" {
+			// R297 (2026-10-29): терминатор реального обрыва воркера помечается
+			// "error", а не "truncated". Живой факт: при `docker kill` cppworker
+			// клиент получал done_reason="truncated" — то есть «ответ закончился
+			// естественно», хотя соединение умерло. "length" остаётся только за
+			// нашим собственным лимитом строки (our_limit).
+			if reason, _ := c["done_reason"].(string); reason == "error" {
 				truncChunk = c
 			}
 			continue
@@ -298,7 +303,7 @@ func TestProxyRequestLlamaCpp_StreamTruncation_NDJSON(t *testing.T) {
 	}
 
 	if truncChunk == nil {
-		t.Fatalf("expected NDJSON terminal chunk with done_reason=truncated; got chunks=%d; body=%s", len(chunks), string(recorderBody))
+		t.Fatalf("expected NDJSON terminal chunk with done_reason=error (R297); got chunks=%d; body=%s", len(chunks), string(recorderBody))
 	}
 	if got, _ := truncChunk["done"].(bool); !got {
 		t.Errorf("terminal chunk done=%v, want true", got)
@@ -408,7 +413,9 @@ func TestProxyRequestLlamaCpp_StreamTruncation_SSEPassthrough(t *testing.T) {
 			// R296: причина и терминатор — РАЗНЫЕ кадры. Терминатор несёт
 			// finish_reason и НЕ несёт error.
 			termCount++
-			if *finish == "truncated" {
+			// R297 (2026-10-29): обрыв воркера = finish_reason "error";
+			// "truncated" больше не выдаётся за естественное завершение.
+			if *finish == "error" {
 				truncChunk = chunk
 			}
 			continue
@@ -440,7 +447,7 @@ func TestProxyRequestLlamaCpp_StreamTruncation_SSEPassthrough(t *testing.T) {
 	}
 
 	if truncChunk == nil {
-		t.Fatalf("expected SSE terminal chunk with finish_reason=truncated; body=%s", string(recorderBody))
+		t.Fatalf("expected SSE terminal chunk with finish_reason=error (R297); body=%s", string(recorderBody))
 	}
 	if _, hasErr := truncChunk["error"]; hasErr {
 		t.Errorf("terminal chunk must not carry the reason (R296): %v", truncChunk)

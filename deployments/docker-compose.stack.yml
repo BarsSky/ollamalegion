@@ -242,6 +242,12 @@ services:
       - LB_REQUEST_TIMEOUT_SEC=${LB_REQUEST_TIMEOUT_SEC:-0}
       - LB_STREAMING_IDLE_TIMEOUT_SEC=${LB_STREAMING_IDLE_TIMEOUT_SEC:-}
       - LB_STREAMING_NEVER_TIMEOUT=${LB_STREAMING_NEVER_TIMEOUT:-0}
+      # R297: сторож зависшего стрима. НЕ таймаут запроса: он не ограничивает
+      # длину генерации, а закрывает поток, который УЖЕ начался и замолчал
+      # (воркер жив, но не присылает кадров — живой дефект «последний кадр
+      # 15:01:20, дальше тишина навсегда»). До первого кадра не работает:
+      # молчание в начале — это prefill. 0 = выключить сторож.
+      - LB_STREAM_STALL_ABORT_SEC=${LB_STREAM_STALL_ABORT_SEC:-300}
       - LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC=${LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC:-180}
       - LB_ALLOW_PROFILE_TIMEOUTS=${LB_ALLOW_PROFILE_TIMEOUTS:-0}
       - LB_ALLOW_REQUEST_TIMEOUTS=${LB_ALLOW_REQUEST_TIMEOUTS:-0}

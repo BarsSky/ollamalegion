@@ -204,21 +204,40 @@ func writeReloadDeferredR291(w http.ResponseWriter, model, operation string, act
 // in progress» и не понимает, вырастет ли окно вообще. Возвращает нули, если
 // оценка или загруженное окно неизвестны — тогда текст остаётся прежним, а не
 // показывает выдуманные числа.
+//
+// R297 (2026-10-29): ЯВНО ЗАПРОШЕННОЕ КЛИЕНТОМ окно — часть ответа. Живой факт:
+// клиент просил `num_ctx=32768`, а в теле отказа стояло `required=4098` (оценка
+// промпта) при загруженном 16384 — оператор видел «нужно 4k» и не понимал, чего
+// ему не хватает. Теперь `needed = max(оценка+бюджет, requested)`.
 func (p *Proxy) contextGrowthNumbers(backendID, model string, body []byte, path string) (estimated, loaded, needed int) {
 	if p == nil || backendID == "" || len(body) == 0 {
 		return 0, 0, 0
 	}
 	meta := ExtractRequestMeta(body, path)
-	if meta == nil || meta.EstimatedPromptTokens <= 0 {
+	if meta == nil {
 		return 0, 0, 0
 	}
+	requested := meta.RequestedNCtxOverride
+	estimated = meta.EstimatedPromptTokens
 	loaded = p.loadedPerSeqNCtx(backendID, model)
+
 	if loaded <= 0 {
-		return meta.EstimatedPromptTokens, 0, 0
+		// Загруженное окно неизвестно — числа «сколько нужно» были бы выдумкой
+		// (не с чем сравнивать). Контракт прежний: возвращаем нули.
+		return estimated, 0, 0
 	}
-	budget := meta.RequestedNPredict
-	if budget <= 0 {
-		budget = defaultOutputBudgetForGrowth
+
+	byPrompt := 0
+	if estimated > 0 {
+		byPrompt = estimated + agentOutputBudget(meta)
 	}
-	return meta.EstimatedPromptTokens, loaded, meta.EstimatedPromptTokens + budget
+	needed = byPrompt
+	if requested > needed {
+		needed = requested
+	}
+	if needed == 0 {
+		// Ни оценки, ни явного окна — чисел нет, текст остаётся прежним.
+		return estimated, loaded, 0
+	}
+	return estimated, loaded, needed
 }

@@ -116,8 +116,19 @@ func (p *Proxy) contextGrowthBlocker(backendID, model string, meta *RequestMeta)
 	}
 	// Рост возможен только без активных стримов (guard R271): если стримы есть,
 	// перезагрузку отложат, а запрос в очереди простоял бы впустую.
+	//
+	// R297 (2026-10-29): ТАКЖЕ блокируем, если перезагрузка уже идёт. Живой факт:
+	// при активном стриме второй запрос ждал 40.9 с и получал 503 с
+	// `active streams=0` — счётчик стримов на момент проверки уже обнулился
+	// (стрим завершился/не был учтён под этим ключом), а reload был в процессе,
+	// поэтому окно вырасти не могло. «Активных стримов нет» ≠ «рост возможен»:
+	// возможен он только когда нет ни стримов, ни идущей перезагрузки.
 	active := p.ActiveStreamsOnBackend(backendID)
-	if active == 0 {
+	reloadPending := false
+	if p.nctxReload != nil {
+		reloadPending = p.nctxReload.IsReloadPending(backendID, model)
+	}
+	if active == 0 && !reloadPending {
 		return false, needed, loaded
 	}
 	logger.Get().Infow("context growth deferred instead of admission queue (R288)",
@@ -127,6 +138,7 @@ func (p *Proxy) contextGrowthBlocker(backendID, model string, meta *RequestMeta)
 		"output_budget", budget,
 		"needed_tokens", needed, "loaded_window_tokens", loaded,
 		"active_streams", active,
+		"reload_pending", reloadPending,
 		"retry_after_sec", 60)
 	return true, needed, loaded
 }

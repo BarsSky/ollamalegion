@@ -605,6 +605,36 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 		return result
 	}
 
+	// R297 (2026-10-29): СНАЧАЛА проверяем, что запрошенное окно ВООБЩЕ возможно,
+	// и только потом трогаем загруженную модель.
+	//
+	// ЖИВОЙ ДЕФЕКТ: reload с `contextSize=200000` (физически невозможно) выгрузил
+	// модель, затем упал с 500 — стенд остался без модели (`loaded_models:0`), на
+	// восстановление ушло 72 секунды. Отказ в перезагрузке не имеет права
+	// оставлять систему без работающей модели, поэтому проверка физики стоит
+	// ДО unload, а не после.
+	if req.ContextSize != nil && *req.ContextSize > 0 && s.proxy != nil {
+		if ok, ceiling, why := s.proxy.WindowFeasibility(backendID, modelName, *req.ContextSize); !ok {
+			logger.Get().Warnw("cluster reload rejected before unload: requested window is infeasible (R297)",
+				"backend", backendID, "model", modelName,
+				"requested_context", *req.ContextSize, "ceiling", ceiling, "reason", why)
+			result.Status = "error"
+			result.Error = fmt.Sprintf(
+				"contextSize=%d exceeds model/backend ceiling=%d (%s); the model was left loaded",
+				*req.ContextSize, ceiling, why)
+			result.HTTPStatus = http.StatusBadRequest
+			return result
+		}
+	}
+
+	// R297: параметры ТЕКУЩЕЙ загрузки — чтобы вернуть модель, если новая
+	// конфигурация не поднимется. Снимаем ДО unload: после него факта уже нет.
+	var prevParams loadedModelParams
+	prevParamsKnown := false
+	if s.isModelLoaded(backendID, modelName) {
+		prevParams, prevParamsKnown = s.loadedModelParamsOnBackend(backendID, modelName)
+	}
+
 	// Для reload сначала unload, если модель загружена.
 	needUnload := req.Operation == "reload"
 	if req.Operation == "reload" {
@@ -766,6 +796,26 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 		result.RetryWithForce = opResult.RetryWithForce
 		if evictionNote != "" {
 			result.Message = strings.TrimSpace(result.Message + " (" + evictionNote + ")")
+		}
+		// R297: не оставляем стенд без модели. Если новая конфигурация не
+		// поднялась, а прежняя была снята нами — возвращаем прежнюю и говорим об
+		// этом прямо в ответе. Иначе оператор видит «ошибка» и пустой бэкенд.
+		if needUnload && prevParamsKnown {
+			if restored := s.restorePreviousModelOnBackend(backendID, modelName, prevParams); restored {
+				result.Message = strings.TrimSpace(result.Message + " (previous model restored)")
+				// Не начинаем текст с «; » — склейка должна читаться и когда
+				// воркер не дал своего текста ошибки.
+				if result.Error != "" {
+					result.Error += "; previous configuration restored"
+				} else {
+					result.Error = "previous configuration restored"
+				}
+			} else if s.isModelLoaded(backendID, modelName) {
+				// Модель всё-таки на месте (воркер успел поднять) — не пугаем.
+				result.Message = strings.TrimSpace(result.Message + " (model is loaded)")
+			} else {
+				result.Message = strings.TrimSpace(result.Message + " (previous model could NOT be restored)")
+			}
 		}
 		return result
 	}
@@ -1354,4 +1404,59 @@ func intToString(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// restorePreviousModelOnBackend — R297 (2026-10-29): вернуть модель в прежней
+// конфигурации, если новая не поднялась.
+//
+// ЗАЧЕМ. Живой дефект: reload с невозможным окном выгружал модель и падал, а
+// стенд оставался без модели вообще (`loaded_models:0`) — «ошибка настройки»
+// превращалась в «сервиса нет», и на восстановление уходила минута с лишним.
+// Отказ обязан быть обратимым: сняли — вернули то, что было.
+//
+// Возвращает true, только если модель реально снова загружена.
+func (s *Server) restorePreviousModelOnBackend(backendID, modelName string, prev loadedModelParams) bool {
+	mm := s.proxy.GetModelManager()
+	if mm == nil {
+		return false
+	}
+	op := balancer.ModelOpRequest{Operation: "load", ModelName: modelName}
+	if prev.ContextKnown && prev.ContextSize > 0 {
+		ctx := prev.ContextSize
+		op.ContextSize = &ctx
+	}
+	if prev.KVCacheType != "" {
+		kv := prev.KVCacheType
+		op.KVCacheType = &kv
+	}
+	if prev.FlashAttn != nil {
+		fa := *prev.FlashAttn
+		op.FlashAttn = &fa
+	}
+	if prev.Mmap != nil {
+		mmv := *prev.Mmap
+		op.UseMmap = &mmv
+	}
+	if prev.BatchSize > 0 {
+		bs := prev.BatchSize
+		op.BatchSize = &bs
+	}
+	res := mm.ExecuteOperation(backendID, op)
+	if res == nil || !res.Success {
+		logger.Get().Warnw("R297: previous model configuration was NOT restored",
+			"backend", backendID, "model", modelName,
+			"previous_context", prev.ContextSize, "error", opErrText(res))
+		return false
+	}
+	logger.Get().Warnw("R297: reload failed — previous model configuration restored",
+		"backend", backendID, "model", modelName, "restored_context", prev.ContextSize)
+	return true
+}
+
+// opErrText — nil-safe текст ошибки операции (для лога восстановления).
+func opErrText(res *balancer.ModelOpResult) string {
+	if res == nil {
+		return "no result"
+	}
+	return res.Error
 }

@@ -2170,6 +2170,15 @@ func errString(err error) string {
 //   - /v1/chat/completions: SSE event with finish_reason="truncated" + data: [DONE]
 //   - /api/chat | /api/generate: NDJSON {"done":true, "done_reason":"truncated", ...}
 //
+// R297 (2026-10-29): здесь "truncated" ОСТАВЛЕН НАМЕРЕННО и это единственное
+// место, где он ещё выдаётся. Причина обрыва со стороны воркера
+// (upstream_eof/upstream_error etc.) идёт через abortFramesR296 и помечается
+// "error" — там клиент жив и обязан прочитать причину. Здесь же два случая:
+// client_cancel (клиента уже нет, кадр никому не нужен — он для лога/теста) и
+// собственный таймаут стрима, то есть решение НАШЕ, а не воркера. Путать эти
+// две ветки нельзя: смена "truncated" на "error" здесь означала бы, что мы
+// приписываем воркеру наш собственный таймаут.
+//
 // После этой записи Go HTTP server должен автоматически отправить
 // chunked terminator (`0\r\n\r\n`) при return handler.
 func emitTruncatedChunk(w http.ResponseWriter, originalPath, modelName string, duration time.Duration, reason string) {

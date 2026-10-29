@@ -291,6 +291,26 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	bufrw.WriteString("\r\n")
 	bufrw.Flush()
 
+	// R297 (2026-10-29): chunked-ТЕРМИНАТОР ОБЯЗАТЕЛЕН НА ЛЮБОМ ИСХОДЕ.
+	//
+	// Заголовки выше объявляют Transfer-Encoding: chunked, а `0\r\n\r\n` писала
+	// только штатная концовка этой функции. Любой ранний выход (сторож зависания,
+	// кадр-ошибка от воркера, ошибка чтения) закрывал соединение БЕЗ терминатора —
+	// strict-клиенты (Cline/undici/aiohttp) видели «unexpected EOF» / «Not enough
+	// data to satisfy transfer length header», то есть ровно тот обрыв, который
+	// R253.1 уже вылечил на диалоговом пути (streamSelfProxyChunked пишет
+	// терминатор через defer).
+	//
+	// Нашёл это поведенческий тест сторожа (TestR297_StallWatchdogEmitsTerminator):
+	// кадры-причина и `[DONE]` доезжали, а тело всё равно рвалось. Раньше никто не
+	// проверял ранние выходы — только штатный конец.
+	defer func() {
+		if err := writeChunkedFrame(bufrw, nil); err != nil {
+			logger.Get().Debugw("hijack streaming: chunked terminator write failed (client may have closed)",
+				"backend", backendID, "error", err)
+		}
+	}()
+
 	// R217 (2026-10-21): регистрируем активный SSE-стрим для graceful shutdown.
 	//
 	// Живой дефект: рестарт балансера рвал активный ответ клиенту, а в логе
@@ -398,6 +418,27 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	}()
 
 	done := false
+	// R297 (2026-10-29): СТОРОЖ ЗАВИСШЕГО СТРИМА.
+	//
+	// ЖИВОЙ ДЕФЕКТ: поток «повис» — последний кадр в 15:01:20, соединение не
+	// закрыто, терминатор не пришёл. Причина: при мёртвом, но НЕ закрытом
+	// upstream мы продолжали слать keepalive и ждать данные вечно — read-горутина
+	// не получает ни EOF, ни данных, а клиент не видит ни ответа, ни конца.
+	// Общие idle-таймауты стрима на стенде отключены (LB_STREAMING_NEVER_TIMEOUT),
+	// поэтому нужен именно сторож: нет данных N секунд → кадр-причина + ровно
+	// один терминатор + закрытие, чтобы клиент не ждал бесконечно.
+	//
+	// Сторож включается ТОЛЬКО после первого кадра от upstream. До первого кадра
+	// молчание — это честный prefill (модель на CPU может считать промпт
+	// минутами), и обрывать его нельзя: `LB_STREAMING_NEVER_TIMEOUT=1` оператор
+	// ставил именно для того, чтобы такие ответы не убивались. Дефект же был
+	// другим: поток уже шёл и замолчал на середине.
+	//
+	// R297: порог задаётся настройкой LB_STREAM_STALL_ABORT_SEC (0 = выключить).
+	// Одно «место правды» — реестр настроек, а не константа в этом файле.
+	upstreamStallAbortTimeout := streamStallAbortTimeout()
+	lastUpstreamAt := time.Now()
+	sawUpstreamData := false
 	// R252: последний отданный клиенту SSE-кадр (для гарантии [DONE]).
 	var lastSSELine []byte
 	// R254: состояние ремонта аргументов на этот стрим (диагностика — один раз).
@@ -418,8 +459,30 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 					"backend", backendID, "error", werr)
 				return nil
 			}
+			// R297: тот же тик, что heartbeat, — сторож зависания. Отдельный
+			// time.After на каждый тик только плодил таймеры, а «часы» должны
+			// быть одни.
+			if upstreamStallAbortTimeout > 0 && sawUpstreamData && len(dataCh) == 0 {
+				if stalled := time.Since(lastUpstreamAt); stalled >= upstreamStallAbortTimeout {
+					logger.Get().Warnw("hijack streaming: upstream stalled — closing stream with terminator (R297)",
+						"backend", backendID, "model", hijackStreamModel,
+						"stalled_sec", int(stalled.Seconds()))
+					for _, fr := range abortFramesR296("/v1/chat/completions", hijackStreamModel, streamAbortUpstreamError) {
+						if werr := writeChunkedString(bufrw, string(fr)); werr != nil {
+							logger.Get().Warnw("hijack streaming: stall terminator write failed",
+								"backend", backendID, "error", werr)
+							return nil
+						}
+					}
+					ensureChunkedSSEDone(bufrw, lastSSELine)
+					return nil
+				}
+			}
 
 		case res := <-dataCh:
+			// R297: данные пришли — сторож зависания сбрасывается.
+			lastUpstreamAt = time.Now()
+			sawUpstreamData = true
 			if res.err != nil {
 				if res.err == io.EOF {
 					done = true
@@ -574,10 +637,8 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	// Round 32 #16 (2026-08-11): chunked terminator ("0\r\n\r\n") — ОБЯЗАТЕЛЕН
 	// для strict clients (OpenWebUI aiohttp). Без него aiohttp ругается
 	// "Not enough data to satisfy transfer length header" при чтении после EOF.
-	// writeChunkedFrame с пустым data пишет "0\r\n\r\n" согласно HTTP/1.1 spec.
-	if err := writeChunkedFrame(bufrw, nil); err != nil {
-		logger.Get().Debugw("hijack streaming: chunked terminator write failed (client may have closed)",
-			"backend", backendID, "error", err)
-	}
+	//
+	// R297: терминатор больше НЕ пишется здесь — он в defer в начале функции
+	// (один механизм на любой исход, включая ранние выходы).
 	return nil
 }

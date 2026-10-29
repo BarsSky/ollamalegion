@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -81,13 +82,34 @@ func TestProxyNonStreamingRequest_HeaderTimeoutIsReportedAsTimeout(t *testing.T)
 	addr := listener.Addr().String()
 
 	// Accept connections but never respond.
+	//
+	// R297 (2026-10-29): соединения НАДО ДЕРЖАТЬ. Раньше `_ = conn` выбрасывал
+	// ссылку, и Go-финализатор net.Conn закрывал сокет при ближайшей сборке
+	// мусора — под нагрузкой полного прогона это случалось раньше 2-секундного
+	// таймаута, и клиент вместо `timeout awaiting response headers` получал
+	// `wsarecv: An existing connection was forcibly closed by the remote host`
+	// (тест падал по причине, которой нет в проверяемом коде). Теперь ссылки
+	// живут до конца теста, а закрываются централизованно.
+	var (
+		connsMu sync.Mutex
+		conns   []net.Conn
+	)
+	defer func() {
+		connsMu.Lock()
+		defer connsMu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			_ = conn // hold open
+			connsMu.Lock()
+			conns = append(conns, conn)
+			connsMu.Unlock()
 		}
 	}()
 

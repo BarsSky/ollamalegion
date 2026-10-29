@@ -41,7 +41,12 @@ func abortFramesR296(originalPath, model, abortReason string) [][]byte {
 	message := streamAbortClientMessage(abortReason)
 
 	if originalPath == "/v1/chat/completions" {
-		finishReason := "truncated"
+		// R297 (2026-10-29): реальный обрыв воркера — это ERROR, а не «обрезание
+		// по лимиту». Живой факт: при `docker kill` воркера клиент получал
+		// finish_reason="truncated", то есть «ответ закончился естественно», хотя
+		// соединение умерло. `truncated`/`length` остаются только для нашего
+		// собственного лимита строки (our_limit) — там данные реально обрезаны.
+		finishReason := "error"
 		if abortReason == streamAbortOurLimit {
 			finishReason = "length"
 		}
@@ -93,7 +98,9 @@ func abortFramesR296(originalPath, model, abortReason string) [][]byte {
 	}
 
 	// NDJSON (/api/chat, /api/generate).
-	doneReason := "truncated"
+	//
+	// R297: обрыв воркера = done_reason "error" (см. комментарий выше про SSE).
+	doneReason := "error"
 	if abortReason == streamAbortOurLimit {
 		doneReason = "length"
 	}

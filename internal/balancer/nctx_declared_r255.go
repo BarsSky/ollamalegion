@@ -137,20 +137,7 @@ func logDeclaredWindow(model string, prof types.LlamaCppModelProfile, slots, tot
 // configured <= 0 означает «потолок не задан» — тогда заявленное окно и есть
 // потолок (0 = без ограничения, как раньше).
 func (p *Proxy) effectiveAutoReloadCeiling(modelName string, configured int) int {
-	declared := 0
-	if p != nil {
-		if prof, ok := p.GetModelProfile(modelName); ok {
-			// R255: то же правило, что и при загрузке — суммарное окно
-			// оператора авторитетно; per-seq участвует только если суммарного нет.
-			slots := prof.Parallel
-			if slots < 1 {
-				slots = 1
-			}
-			if total, _, _ := resolveDeclaredWindow(prof.ContextLength, prof.ContextPerSeq, slots); total > 0 {
-				declared = total
-			}
-		}
-	}
+	declared := p.declaredWindowTotal(modelName)
 	if configured <= 0 {
 		return 0 // ограничения нет
 	}
@@ -165,4 +152,34 @@ func (p *Proxy) effectiveAutoReloadCeiling(modelName string, configured int) int
 			"why", "профиль модели задан оператором: это его политика, а пас-тру потолок защищает от АВТО-роста по клиентскому запросу")
 	}
 	return declared
+}
+
+// declaredWindowTotal — суммарное окно, ЗАЯВЛЕННОЕ оператором в профиле модели.
+//
+// R297 (2026-10-29): вынесено из effectiveAutoReloadCeiling, потому что это же
+// число понадобилось проверке выполнимости ручной перезагрузки
+// (WindowFeasibility). Двух мнений о «заявленном окне» быть не должно: раньше
+// копия этой логики уже приводила к тому, что ручной запрос отвергался по
+// env-потолку при заявленном окне больше него (класс дефекта R267).
+//
+// 0 = оператор окно не заявлял.
+func (p *Proxy) declaredWindowTotal(modelName string) int {
+	if p == nil {
+		return 0
+	}
+	prof, ok := p.GetModelProfile(modelName)
+	if !ok {
+		return 0
+	}
+	// R255: то же правило, что и при загрузке — суммарное окно оператора
+	// авторитетно; per-seq участвует только если суммарного нет.
+	slots := prof.Parallel
+	if slots < 1 {
+		slots = 1
+	}
+	total, _, _ := resolveDeclaredWindow(prof.ContextLength, prof.ContextPerSeq, slots)
+	if total < 0 {
+		return 0
+	}
+	return total
 }

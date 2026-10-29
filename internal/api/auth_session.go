@@ -133,6 +133,66 @@ type UserStore struct {
 	path string
 	mu   sync.RWMutex
 	list []AuthUser
+	// R270 (2026-10-29): ПРОИСХОЖДЕНИЕ УЧЁТНОЙ ЗАПИСИ — явно и проверяемо.
+	//
+	// ЖИВАЯ ЖАЛОБА (оффлайн-стенд): оператор задал LB_ADMIN_USER/LB_ADMIN_PASSWORD
+	// в env, но войти не смог, и причину неоткуда было узнать: ни в логе, ни в
+	// /auth/me не было сказано, применён ли env-админ, лежит ли он на диске и
+	// вообще доступен ли файл пользователей на запись. На изолированной машине
+	// это критично: там нет UI-мастера, нет сети, и единственный вход — env.
+	// Теперь происхождение и «переживёт ли рестарт» отдаются в /auth/me и в лог.
+	boot bootstrapInfo
+}
+
+// bootstrapInfo — что стало источником входа при старте.
+//
+// Source: "env" (создан из env при пустом/отсутствующем файле), "file" (взят из
+// файла), "env+file" (файл был, env-пароль применён/обновлён), "none".
+// Persisted: удалось ли записать файл (ложь = запись не удалась, учётка живёт
+// только в памяти и пропадёт при рестарте — типовой симптом «сегодня пускает,
+// завтра нет»). Writable: можно ли вообще писать в файл/каталог.
+type bootstrapInfo struct {
+	Source     string `json:"source"`
+	EnvApplied bool   `json:"envApplied"`
+	Persisted  bool   `json:"persisted"`
+	Writable   bool   `json:"writable"`
+	Path       string `json:"path"`
+	Users      int    `json:"users"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// BootstrapInfo — снимок для /auth/me (секретов здесь нет и быть не должно).
+func (u *UserStore) BootstrapInfo() bootstrapInfo {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	info := u.boot
+	info.Users = len(u.list)
+	return info
+}
+
+// pathWritable — можно ли писать файл пользователей (R270).
+//
+// Проверяем ДЕЛОМ, а не правами на бумаге: на оффлайн-стенде типовой дефект —
+// файл смонтирован read-only (или каталог принадлежит другому пользователю), и
+// тогда env-админ создаётся только в памяти. Без этой проверки оператор видел
+// «вход работает» до пересоздания контейнера.
+func pathWritable(path string) bool {
+	if path == "" {
+		return false
+	}
+	if f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+		_ = f.Close()
+		return true
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".wtest-*")
+	if err != nil {
+		return false
+	}
+	name := tmp.Name()
+	_ = tmp.Close()
+	_ = os.Remove(name)
+	return true
 }
 
 // NewUserStore — загрузить пользователей.
@@ -146,6 +206,16 @@ func NewUserStore(path string) *UserStore {
 	}
 	us := &UserStore{path: path}
 	us.load()
+	// R270: фиксируем, можно ли вообще писать файл — до любых попыток сохранить.
+	// На оффлайн-стенде именно это отличает «админ применён» от «админ живёт до
+	// первого рестарта».
+	writable := pathWritable(path)
+	us.boot = bootstrapInfo{
+		Source:   "none",
+		Path:     path,
+		Writable: writable,
+	}
+	hadFromFile := len(us.list) > 0
 	// R203 (2026-10-21): ЯВНО ЗАДАННЫЙ В .env ПАРОЛЬ АДМИНИСТРАТОРА ПОБЕЖДАЕТ.
 	//
 	// ЖИВОЙ СЛУЧАЙ: оператор сменил LB_ADMIN_PASSWORD в deployments/.env, но users.json
@@ -164,16 +234,64 @@ func NewUserStore(path string) *UserStore {
 				// R229: ошибка записи РАНЬШЕ глоталась. Живой симптом: оператор задал
 				// LB_ADMIN_* и ждёт users.json — файла нет, в логе тишина, вход «работает»
 				// до пересоздания контейнера и пропадает после. Теперь причина видна.
-				if saveErr := us.saveLocked(); saveErr != nil && logger.Get() != nil {
-					logger.Get().Warnw(i18n.T("api.auth_session.admin_memory_only"),
-						"path", us.path, "error", saveErr,
-						"hint", i18n.T("api.auth_session.admin_hint_mount_volume"))
+				if saveErr := us.saveLocked(); saveErr != nil {
+					us.boot.Persisted = false
+					us.boot.Reason = saveErr.Error()
+					if logger.Get() != nil {
+						logger.Get().Warnw(i18n.T("api.auth_session.admin_memory_only"),
+							"path", us.path, "error", saveErr,
+							"hint", i18n.T("api.auth_session.admin_hint_mount_volume"))
+					}
+				} else {
+					us.boot.Persisted = true
 				}
+				us.boot.Source = "env"
+				us.boot.EnvApplied = true
 				if logger := logger.Get(); logger != nil {
 					logger.Warnw(i18n.T("api.auth_session.admin_created_from_env"), "user", user)
 				}
 			}
+		} else if user != "" || strings.TrimSpace(pass) != "" {
+			// R270: половина пары — почти всегда опечатка в .env (забыли пароль или
+			// имя). Молчать нельзя: оператор ждёт вход, а его нет.
+			us.boot.Reason = "LB_ADMIN_USER/LB_ADMIN_PASSWORD заданы не полностью"
 		}
+	} else {
+		// R270: источник различаем по ФАКТУ, а не по порядку веток. Сначала
+		// выполняется syncAdminFromEnv, поэтому админ, созданный из env при
+		// отсутствующем файле, попадает сюда же — но источник у него «env», а не
+		// «file»: иначе оператор на оффлайн-стенде не отличит «взято из файла»
+		// от «взято из моего .env», и правка .env снова станет загадкой.
+		switch {
+		case us.boot.EnvApplied && !hadFromFile:
+			us.boot.Source = "env"
+		case us.boot.EnvApplied:
+			us.boot.Source = "env+file"
+		default:
+			us.boot.Source = "file"
+		}
+		if !hadFromFile && us.boot.Reason == "" {
+			us.boot.Reason = "файл пользователей создан при старте"
+		}
+	}
+	if us.boot.Persisted == false && us.boot.Source != "none" && us.boot.Reason == "" {
+		us.boot.Persisted = us.boot.Writable
+	}
+	// R270: одна строка при старте — чтобы «почему не пускает» отвечал лог, а не
+	// догадки. Пароль не печатается никогда.
+	if logger := logger.Get(); logger != nil {
+		logger.Infow("auth bootstrap",
+			"source", us.boot.Source,
+			"env_applied", us.boot.EnvApplied,
+			"users", len(us.list),
+			"path", us.path,
+			"writable", us.boot.Writable,
+			"persisted", us.boot.Persisted,
+			"reason", us.boot.Reason)
+	}
+	if len(us.list) > 0 && !us.boot.Persisted {
+		logger.Get().Warnw("auth: admin применяется только в памяти — файл пользователей не записан (вход пропадёт после рестарта контейнера)",
+			"path", us.path, "writable", us.boot.Writable, "reason", us.boot.Reason)
 	}
 	return us
 }
@@ -207,12 +325,19 @@ func (u *UserStore) syncAdminFromEnv() {
 		}
 		u.list[i].PasswordHash = hash
 		u.list[i].Role = "admin"
+		// R270: фиксируем, что env реально применён, и удалось ли это сохранить —
+		// иначе оператор на оффлайн-стенде не знает, действует его новый пароль
+		// из .env или нет.
+		u.boot.EnvApplied = true
 		if err := u.saveLocked(); err != nil {
+			u.boot.Persisted = false
+			u.boot.Reason = err.Error()
 			if logger.Get() != nil {
 				logger.Get().Errorw(i18n.T("api.auth_session.admin_password_apply_failed"), "error", err)
 			}
 			return
 		}
+		u.boot.Persisted = true
 		if logger.Get() != nil {
 			logger.Get().Warnw(i18n.T("api.auth_session.admin_password_updated"), "user", u.list[i].Name)
 		}
@@ -225,12 +350,16 @@ func (u *UserStore) syncAdminFromEnv() {
 		return
 	}
 	u.list = append(u.list, AuthUser{Name: user, Role: "admin", PasswordHash: hash})
+	u.boot.EnvApplied = true
 	if err := u.saveLocked(); err != nil {
+		u.boot.Persisted = false
+		u.boot.Reason = err.Error()
 		if logger.Get() != nil {
 			logger.Get().Errorw(i18n.T("api.auth_session.admin_create_failed"), "error", err)
 		}
 		return
 	}
+	u.boot.Persisted = true
 	if logger.Get() != nil {
 		logger.Get().Warnw(i18n.T("api.auth_session.admin_created_from_env_note"), "user", user,
 			"note", i18n.T("api.auth_session.admin_created_others_hint"))
@@ -892,6 +1021,12 @@ func AuthMeHandler(users *UserStore, sessions *SessionStore, auth *TokenAuthenti
 		body := map[string]interface{}{
 			"authenticated":   false,
 			"usersConfigured": users != nil && users.Enabled(),
+		}
+		// R270: на изолированном стенде «почему не пускает» должно отвечать API, а
+		// не догадки. Отдаём происхождение учётки, путь файла, доступность записи и
+		// причину. Пароль и хэш сюда не попадают никогда.
+		if users != nil {
+			body["bootstrap"] = users.BootstrapInfo()
 		}
 		if c, err := r.Cookie(sessionCookieName); err == nil {
 			if sess, ok := sessions.Get(c.Value); ok {

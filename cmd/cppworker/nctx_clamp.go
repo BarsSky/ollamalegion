@@ -12,9 +12,9 @@ package main
 import (
 	"net/http"
 	"strconv"
-	"strings"
 
 	"ollama-loadbalancer/c/bridge"
+	"ollama-loadbalancer/internal/modelfamily"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -149,65 +149,38 @@ func ApplyCppCtxHeaderWithOptions(r *http.Request, params *bridge.GenerationPara
 	}
 }
 
-// defaultAntipromptsForModel — возвращает дефолтный набор стоп-последовательностей
-// для указанной модели, чтобы модель корректно останавливалась в конце своего хода.
+// defaultAntipromptsForModel — стоп-последовательности модели.
 //
-// Round 6 #5: для Qwen3-семейства (qwen3 / qwen3.5 / qwen3.6 / qwen3moe / qwen35moe)
-// эмитим ChatML-stop-токены “ + <|im_end|> + <|im_start|>, иначе модель не
-// останавливается на EOS-токене и генерирует мусор до n_predict. Gemma использует
-// <end_of_turn> + <start_of_turn>*, остальные — <|end|> / <|user|> / <|assistant|>.
+// R268 (2026-10-28): ОТКУДА БЕРУТСЯ ЗНАЧЕНИЯ. Раньше здесь был switch с
+// семействами (gemma-4 / gemma / qwen / прочее) — то есть знание о семействе
+// жило в файле про n_ctx, а обновление семейства требовало помнить про это
+// место. Теперь набор приходит из реестра семейств (`internal/modelfamily`):
+// у gemma/qwen он свой (с теми же строками и теми же объяснениями, включая
+// R248-правку про "<|im_end|>"), у остальных — общий набор «по умолчанию».
+//
+// ПОВЕДЕНИЕ НЕ ИЗМЕНИЛОСЬ: строки перенесены дословно, это подтверждено
+// тестами antiprompt_r248_test.go (характеризационными) и table-тестом
+// modelfamily.
 //
 // Защита от race: если модель не имеет training-своего stop-token в списке,
 // llama.cpp сам остановит на n_predict. Поэтому добавляем несколько запасных.
 func defaultAntipromptsForModel(modelName string) []string {
-	ml := strings.ToLower(modelName)
-	switch {
-	case strings.Contains(ml, "gemma-4") || strings.Contains(ml, "gemma4"):
-		// Round 32 #27 (2026-08-11): gemma-4 в reasoning mode может emit'ить
-		// литерал "<end_of_turn>" как часть reasoning (например, когда
-		// модель обсуждает stop-токены в своих мыслях). Это вызывало
-		// преждевременную остановку gen на ~85 токенах (вместо ожидаемых
-		// 4K), finish_reason="stop" + пустой content. User видел обрыв
-		// ответа посередине code block.
-		//
-		// Решение: убрать "<end_of_turn>" из antiprompts для gemma-4.
-		// Оставляем только "<start_of_turn>user/model" — это **точно**
-		// означает что ход ассистента завершён и пошёл следующий turn.
-		// На "<end_of_turn>" модель остановится через n_predict лимит
-		// или явный EOG token в C-bridge.
-		return []string{"<start_of_turn>user", "<start_of_turn>model"}
-	case strings.Contains(ml, "gemma"):
-		// gemma-2 и более старые (без reasoning) — оставляем "<end_of_turn>"
-		// для нормальной остановки хода ассистента.
-		return []string{"<end_of_turn>", "<start_of_turn>user", "<start_of_turn>model"}
-	case strings.Contains(ml, "qwen3"), strings.Contains(ml, "qwen35"),
-		strings.Contains(ml, "qwen2"):
-		// Qwen3 / Qwen3.5 / Qwen3.6 / Qwen3-MoE / Qwen35-MoE / Qwen2 используют
-		// ChatML: "<|im_end|>" (ChatML-EOS) + "<|im_start|>" маркеры ходов.
-		//
-		// R248 (2026-10-27): УБРАНЫ "<|im_end|>" и "<|end|>".
-		//
-		// Живой симптом у Cline: ответ обрывается посреди фразы, а модель «как
-		// будто продолжала» — генерацию останавливала стоп-строка, встретившаяся
-		// ВНУТРИ текста: отвечая про код/стоп-токены, модель цитирует
-		// "<|im_end|>"/"<|end|>", а проверка суффиксная и не отличает «маркер
-		// хода» от «цитаты в тексте». Ровно этот дефект был у gemma-4 с
-		// "<end_of_turn>" (Round 32 #27) и лечился так же — удалением литерала.
-		//
-		// Остановку не теряем: "<|im_end|>" — EOS-токен этой модели, llama.cpp
-		// завершает ход по EOG без antiprompt'а. Оставлены только маркеры НАЧАЛА
-		// следующего хода: их модель в своём ответе не воспроизводит.
-		//
-		// Не используем пустую строку — в llama.cpp она матчит любой токен.
-		return []string{"<|im_start|>system", "<|im_start|>user"}
-	default:
-		return []string{"<|end|>", "<|user|>", "<|assistant|>"}
+	if stops := modelfamily.StopStringsFor(modelName); len(stops) > 0 {
+		return stops
 	}
+	// Реестр не дал набора (не должно случаться: generic всегда совпадает) —
+	// не оставляем модель без антипромптов вовсе.
+	return []string{"<|end|>", "<|user|>", "<|assistant|>"}
 }
 
-// isGemmaModel — true, если имя модели содержит "gemma" (gemma, gemma-2, gemma-4, и т.п.).
+// isGemmaModel — true, если модель относится к семейству gemma.
+//
+// R268: спрашиваем реестр семейств, а не строку имени. Разница содержательная:
+// раньше "gemma" в имени решало за нас всё (например, попадание в ветку
+// antiprompts), теперь семейство — единственный источник, и его id виден в логах.
 func isGemmaModel(modelName string) bool {
-	return strings.Contains(strings.ToLower(modelName), "gemma")
+	f := modelfamily.Of(modelName)
+	return f != nil && f.ID() == "gemma"
 }
 
 // ============================================================

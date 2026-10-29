@@ -60,6 +60,21 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	//     цикла ниже отдаёт строки клиенту как есть — без SSE→NDJSON перевода.
 	nativePath := shouldRouteOllamaNative(originalPath)
 
+	// R268 (2026-10-28): семейство модели решает, умеем ли мы вообще ПРЕВРАТИТЬ
+	// ответ в Ollama API. На passthrough-путях (нативный Ollama-путь, /v1/*)
+	// преобразования нет — ответ идёт как есть, и отказ там запрещён.
+	//
+	// Отказ ставится ДО запроса к модели: незачем занимать слот и минуты
+	// генерации ради ответа, который мы не сможем собрать. Текст отказа называет
+	// семейство, версию, поддержанный диапазон и порт OpenAI-passthrough —
+	// оператор должен понять причину и что делать, а не увидеть «ошибка».
+	hasTools := len(toolSchemas) > 0
+	if p.refuseUnsupportedModelFamily(w, originalPath, modelFromCtx, hasTools,
+		isOllamaConversionPath(originalPath) && !nativePath) {
+		return nil
+	}
+	p.logModelFamily(originalPath, modelFromCtx, hasTools)
+
 	llamacppPath := originalPath
 	if !nativePath {
 		llamacppPath = translatePathForLlamaCpp(originalPath)

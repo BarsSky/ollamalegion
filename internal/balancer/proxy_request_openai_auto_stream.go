@@ -157,12 +157,33 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Round-31-1-Workaround", "non-stream-to-upstream-stream")
+	// R272: клиент (и оператор через "curl -D") должны видеть, что тело будет
+	// "дышать" — иначе непонятно, почему при не-стриме ответ приходит не сразу.
+	if kaPeriod := autoStreamKeepaliveInterval(); kaPeriod > 0 {
+		w.Header().Set("X-LB-Auto-Stream-Keepalive-Sec", fmt.Sprintf("%d", int(kaPeriod.Seconds())))
+	}
 	p.addModelCapabilitiesHeaders(w, modelName)
 	w.WriteHeader(http.StatusOK)
 
 	flusher, _ := w.(http.Flusher)
 	if flusher != nil {
 		flusher.Flush()
+	}
+
+	// R272 (2026-10-29): пока копим ответ, тело обязано «дышать».
+	//
+	// Живой дефект: клиент на OpenAI-порту (18079) не получал НИ ОДНОГО байта
+	// до конца генерации и отваливался по своему таймауту, хотя модель писала
+	// ответ минутами. Заголовки уходили сразу (chunked), а тело молчало — этого
+	// достаточно, чтобы aiohttp/httpx/undici и большинство самописных клиентов
+	// закрыли соединение. Пишем пробельный байт раз в период: JSON после
+	// ведущих пробелов остаётся валидным (RFC 8259: ws value ws).
+	keepalive := startBodyKeepalive(w, autoStreamKeepaliveInterval(), backendID, modelName)
+	defer keepalive.Stop()
+	if keepalive != nil {
+		logger.Get().Debugw("auto-stream buffered: body keepalive enabled",
+			"backend", backendID, "model", modelName,
+			"period_sec", autoStreamKeepaliveInterval().Seconds())
 	}
 
 	// === Аккумулируем SSE чанки ===
@@ -196,6 +217,7 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 				"elapsed_sec", time.Since(accum.startedAt).Seconds(),
 				"max_sec", maxWait.Seconds(),
 				"chunks_processed", accum.chunksProcessed)
+			keepalive.Stop()
 			_, _ = w.Write(autoStreamErrorBody("auto_stream_timeout",
 				fmt.Sprintf("exceeded %s while buffering", maxWait)))
 			if flusher != nil {
@@ -208,6 +230,7 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 				"backend", backendID, "model", accum.model,
 				"bytes", accum.sizeBytes(), "max_bytes", maxBytes,
 				"chunks_processed", accum.chunksProcessed)
+			keepalive.Stop()
 			_, _ = w.Write(autoStreamErrorBody("auto_stream_too_large",
 				fmt.Sprintf("response exceeded %d bytes while buffering", maxBytes)))
 			if flusher != nil {
@@ -237,6 +260,7 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 		// писали accum.toNonStreamResponse(false), и клиент получал HTTP 200 с
 		// пустым content, пустым finish_reason и пустым id: ошибка выглядела как
 		// успешный пустой ответ. Теперь отдаём явную ошибку.
+		keepalive.Stop()
 		body := accum.orEmptyUpstreamError(err)
 		_, _ = w.Write(body)
 		if flusher != nil {
@@ -251,6 +275,7 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 		logger.Get().Errorw("Round 31 #1: upstream stream ended with no data — "+
 			"отдаём ошибку вместо пустого 200",
 			"backend", backendID, "model", accum.model)
+		keepalive.Stop()
 		_, _ = w.Write(accum.orEmptyUpstreamError(nil))
 		if flusher != nil {
 			flusher.Flush()
@@ -271,6 +296,7 @@ func (p *Proxy) proxyRequestOpenAIStreamAsNonStream(
 	// {"content":"{\"content\":...}"} без обязательного path и не мог применить
 	// инструмент — «модель не редактирует файлы».
 	finalResp = repairAssembledToolCalls(finalResp, clientReqBody)
+	keepalive.Stop()
 	if _, err := w.Write(finalResp); err != nil {
 		logger.Get().Errorw("Round 31 #1: failed to write final response",
 			"backend", backendID, "error", err)

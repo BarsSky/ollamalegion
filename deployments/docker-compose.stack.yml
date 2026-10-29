@@ -189,6 +189,11 @@ services:
       - LB_STREAM_MAX_LINE_BYTES=${LB_STREAM_MAX_LINE_BYTES:-8388608}
       - LB_OPENAI_AUTO_STREAM_MAX_SEC=${LB_OPENAI_AUTO_STREAM_MAX_SEC:-300}
       - LB_OPENAI_AUTO_STREAM_MAX_BYTES=${LB_OPENAI_AUTO_STREAM_MAX_BYTES:-16777216}
+      # R272: пока копим не-стрим ответ, тело должно "дышать" — иначе клиент с
+      # таймаутом на чтение закрывает соединение раньше, чем модель закончит
+      # (живой дефект на OpenAI-порту 18079: «модель генерирует, клиент отвалился»).
+      # Пробельный байт раз в N секунд; 0 — выключить.
+      - LB_OPENAI_AUTO_STREAM_KEEPALIVE_SEC=${LB_OPENAI_AUTO_STREAM_KEEPALIVE_SEC:-10}
       # R269 (2026-10-29): отслеживание актуальной стабильной версии llama.cpp.
       # Опрос идёт фоновой петлёй по TTL, результат кэшируется в writable-томе.
       # Без проброса оператор не смог бы ни продлить TTL, ни отключить проверку

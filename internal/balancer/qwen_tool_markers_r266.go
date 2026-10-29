@@ -110,7 +110,17 @@ func stripQwenServiceMarkers(s string) string {
 	for _, m := range qwenServiceMarkers {
 		out = strings.ReplaceAll(out, m, "")
 	}
-	return strings.TrimLeft(out, " \t")
+	// R279 (2026-10-28): НЕ съедаем пробелы видимого текста.
+	//
+	// ЖИВОЙ ДЕФЕКТ (нашёл тест R279): склейка «итог<|as» + «sistant|> plan» давала
+	// «итог<|assistant|> plan» → после удаления метки «итог plan», а безусловный
+	// TrimLeft отрезал пробел и получалось «итогplan» — текст склеивался.
+	// Теперь whitespace схлопывается только если после удаления меток не осталось
+	// ничего, кроме пробелов (метка пришла отдельным чанком — «висячие» пробелы).
+	if strings.TrimSpace(out) == "" {
+		return ""
+	}
+	return out
 }
 
 // hasQwenServiceMarker — есть ли в строке хоть одна служебная метка.

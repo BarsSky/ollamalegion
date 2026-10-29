@@ -150,7 +150,12 @@ func filterNDJSONLineMarkers(line string, hold *markerHold) string {
 	if msg, ok := obj["message"].(map[string]interface{}); ok {
 		if c, ok := msg["content"].(string); ok && c != "" {
 			if done {
-				msg["content"] = hold.Flush() + hold.Apply(c)
+				// R279: финальная строка НЕ придерживает хвост заново.
+				// Было `hold.Flush() + hold.Apply(c)`: Apply мог снова придержать
+				// суффикс, похожий на начало метки, — и этот новый хвост уже
+				// никто не отдавал, потому что стрим кончился (терялись последние
+				// байты финального блока).
+				msg["content"] = hold.ApplyFinal(c)
 			} else {
 				msg["content"] = hold.Apply(c)
 			}
@@ -162,7 +167,7 @@ func filterNDJSONLineMarkers(line string, hold *markerHold) string {
 	}
 	if r, ok := obj["response"].(string); ok && r != "" {
 		if done {
-			obj["response"] = hold.Flush() + hold.Apply(r)
+			obj["response"] = hold.ApplyFinal(r)
 		} else {
 			obj["response"] = hold.Apply(r)
 		}

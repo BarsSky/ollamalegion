@@ -1648,10 +1648,37 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// R266.1 (2026-10-28): отдаём придержанный хвост, если он оказался обычным
 	// текстом. Без этого ответ, закончившийся на `<` (начало метки, которая так и
 	// не пришла), терял бы последние байты — тот же класс дефекта, что чинили в
-	// R261 на другом пути. Если хвост был обрывком метки, strip вернёт пустую
-	// строку, и клиент ничего лишнего не увидит.
-	if originalPath == "/api/chat" {
+	// R261 на другом пути.
+	//
+	// R279 (2026-10-28): ЭТОТ ХВОСТ ОБЯЗАН УЙТИ КЛИЕНТУ, А НЕ В НАКОПИТЕЛЬ.
+	//
+	// ЖИВОЙ ДЕФЕКТ: здесь стояло `accumulatedPlainContent += held` — то есть
+	// придержанные байты попадали в статистику и в детектор автопродолжения, а в
+	// поток НЕ уходили вовсе. Если хвостом оказывался обычный текст финального
+	// блока (а удержание держит любой суффикс, похожий на начало метки, включая
+	// просто «<» или «[» из кода), клиент этот текст не получал никогда.
+	// Теперь хвост пишется отдельным NDJSON-чанком (done:false) до терминального
+	// чанка: порядок «content → done» сохраняется, второй done клиент не получает.
+	if originalPath == "/api/chat" || originalPath == "/api/generate" {
 		if held := ndjsonHold.Flush(); held != "" {
+			if tail := heldTailChunk(originalPath, modelFromCtx, held); tail != nil {
+				n, errTail := fmt.Fprintf(w, "%s\n", tail)
+				bytesForwarded += int64(n)
+				if errTail != nil {
+					if firstForwardErr == nil {
+						firstForwardErr = errTail
+					}
+					lastForwardErr = errTail
+				} else {
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
+					logger.Get().Infow("proxyRequestLlamaCpp[native]: emitted held tail to client (R279)",
+						"backend", backendID, "path", originalPath, "held_len", len(held))
+				}
+			}
+			// В накопитель тоже добавляем: он отражает то, что клиент уже видел,
+			// и по нему работают детектор обрыва и автопродолжение.
 			accumulatedPlainContent += held
 		}
 	}
@@ -2347,14 +2374,35 @@ func stripNativeDoneContent(line, streamedContent string) string {
 	if strings.TrimSpace(streamedContent) == "" {
 		return line
 	}
-	// Страховка от потери: если текст done-чанка НЕ совпадает с уже отданным,
-	// апстрим поменял семантику, и мы, возможно, режем не дубль, а новый текст.
-	// Тогда это видно в логе (WARN), а не только в жалобе клиента.
-	if !strings.Contains(streamedContent, strings.TrimSpace(content)) {
+	// R279 (2026-10-28): СНИМАЕМ ТОЛЬКО ДУБЛЬ, А НЕ ВЕСЬ ТЕКСТ.
+	//
+	// ЖИВОЙ ДЕФЕКТ (Cline): модель сгенерировала финальный блок ответа, клиент
+	// получил вместо него размышления и маркер конца, а блок исчез. Причина —
+	// здесь: content done-чанка вычищался БЕЗУСЛОВНО, как только дельтами ушла
+	// хоть одна строка. Если последний блок модели пришёл только в done-чанке
+	// (cppworker так умеет: дельты — рассуждения/проза, а полный текст — в done),
+	// вычищался не дубль, а единственная копия блока. Страховка ниже только
+	// ПИСАЛА WARN о несовпадении и всё равно выбрасывала текст — то есть о
+	// потере знали и теряли.
+	remainder := dedupeDoneContent(content, streamedContent)
+	switch {
+	case remainder == "":
+		// Полный дубль — прежнее поведение (клиент уже видел этот текст).
+		msg["content"] = ""
+	case remainder != content:
+		// Часть текста уже ушла дельтами, остаток — новый. Отдаём остаток:
+		// клиент не должен видеть дубль, но и терять финальный блок не должен.
+		msg["content"] = remainder
+		logger.Get().Infow("proxyRequestLlamaCpp[native]: done-chunk kept new content tail (R279)",
+			"kept_len", len(remainder), "done_len", len(content), "streamed_len", len(streamedContent))
+	default:
+		// Общего с отданным нет — апстрим отдал в done-чанке ДРУГОЙ текст.
+		// Отдаём его целиком: потеря реального текста хуже, чем возможный дубль,
+		// а факт несовпадения виден в логе.
 		logger.Get().Warnw(i18n.T("balancer.llamacpp_transport.strip_done_content_mismatch_warn"),
 			"done_content_len", len(content), "streamed_len", len(streamedContent))
+		msg["content"] = content
 	}
-	msg["content"] = ""
 	out, err := json.Marshal(chunk)
 	if err != nil {
 		return line

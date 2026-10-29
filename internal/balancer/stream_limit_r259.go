@@ -58,6 +58,10 @@ const (
 	streamAbortBalancerCancel = "balancer_cancel" // наша отмена/таймаут
 	streamAbortUpstreamEOF    = "upstream_eof"    // upstream закрыл поток без маркера
 	streamAbortUpstreamError  = "upstream_error"  // ошибка чтения upstream
+	// R271 (2026-10-29): поток оборвался потому, что МЫ выгрузили модель под ним
+	// (перезагрузка по запросу другого клиента с другим окном n_ctx). Это не
+	// «upstream оборвался» — воркер жив, модель выгрузил балансер.
+	streamAbortBalancerReload = "balancer_reload"
 )
 
 // isLineTooLongErr — ошибка «строка не влезла в наш буфер»?
@@ -104,6 +108,10 @@ func streamAbortClientMessage(reason string) string {
 		return "stream line exceeded the balancer buffer limit; the response was cut here"
 	case streamAbortBalancerCancel:
 		return "stream cancelled by the balancer (reload/timeout); please retry"
+	case streamAbortBalancerReload:
+		// R271: честная причина — модель под этим стримом выгрузил балансер,
+		// потому что другой клиент запросил другое окно контекста.
+		return "stream stopped because the balancer reloaded the model for another request; please retry"
 	case streamAbortClientCancel:
 		return "stream cancelled by the client"
 	default:

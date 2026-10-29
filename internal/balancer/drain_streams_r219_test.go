@@ -115,6 +115,13 @@ func TestR219_LegacySSERegistersActiveStream(t *testing.T) {
 
 // TestR219_StreamAccountingWiredInBothPaths — структурная страховка: оба
 // /v1-пути (hijack и legacy) обязаны регистрировать стрим ДО цикла записи.
+//
+// R271 (2026-10-29): учёт стрима переехал в общий помощник
+// beginClientStreamR271 (active_streams_r271.go) — он же ведёт счётчики по
+// бэкенду/модели, чтобы перезагрузка модели по чужому запросу не рвала этот
+// стрим. Тест проверяет не имя переменной в файле, а то, что путь вызывает
+// помощник, а помощник реально ведёт глобальный счётчик (иначе Shutdown снова
+// перестанет ждать стрим).
 func TestR219_StreamAccountingWiredInBothPaths(t *testing.T) {
 	check := func(path, anchor string) {
 		raw, err := os.ReadFile(path)
@@ -122,13 +129,9 @@ func TestR219_StreamAccountingWiredInBothPaths(t *testing.T) {
 			t.Fatalf("не читается %s: %v", path, err)
 		}
 		src := string(raw)
-		addIdx := strings.Index(src, "p.activeStreams.Add(1)")
+		addIdx := strings.Index(src, "beginClientStreamR271(")
 		if addIdx < 0 {
-			t.Fatalf("%s: нет регистрации activeStreams — рестарт снова оборвёт стрим", path)
-		}
-		doneIdx := strings.Index(src, "p.activeStreams.Done()")
-		if doneIdx < 0 || doneIdx < addIdx {
-			t.Fatalf("%s: нет defer Done() после Add(1)", path)
+			t.Fatalf("%s: нет регистрации стрима (beginClientStreamR271) — рестарт снова оборвёт стрим", path)
 		}
 		if !strings.Contains(src, anchor) {
 			t.Fatalf("%s: не найден ожидаемый контекст %q", path, anchor)
@@ -136,4 +139,19 @@ func TestR219_StreamAccountingWiredInBothPaths(t *testing.T) {
 	}
 	check("proxy_request_hijack.go", "hijack path active")
 	check("proxy_request.go", "proxyRequestOpenAIStreamingLegacy")
+
+	// Сам учёт для graceful shutdown обязан остаться внутри помощника.
+	helperRaw, err := os.ReadFile("active_streams_r271.go")
+	if err != nil {
+		t.Fatalf("не читается active_streams_r271.go: %v", err)
+	}
+	helper := string(helperRaw)
+	addIdx := strings.Index(helper, "p.activeStreams.Add(1)")
+	if addIdx < 0 {
+		t.Fatal("active_streams_r271.go: потерян p.activeStreams.Add(1) — Shutdown перестанет ждать стримы")
+	}
+	doneIdx := strings.Index(helper, "p.activeStreams.Done")
+	if doneIdx < 0 || doneIdx < addIdx {
+		t.Fatal("active_streams_r271.go: нет снятия счётчика (Done) после Add(1)")
+	}
 }

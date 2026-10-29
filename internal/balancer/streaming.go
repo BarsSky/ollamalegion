@@ -53,8 +53,12 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 	streamSess := startStreamSession(p, r, modelFromCtx)
 	defer streamSess.Stop()
 
-	// Регистрируем активный стрим для graceful shutdown
-	p.activeStreams.Add(1)
+	// R271 (2026-10-29): учитываем стрим и по бэкенду/модели — иначе
+	// перезагрузка модели по чужому запросу выгружала её под этим стримом
+	// (живой дефект: второй агент оборвал стрим первого). Помощник снимает и
+	// глобальный учёт для graceful shutdown.
+	endClientStream := beginClientStreamR271(p, backendID, modelFromCtx)
+	defer endClientStream()
 
 	startTime := time.Now()
 
@@ -162,8 +166,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 
 	// Гарантируем остановку heartbeat и освобождение ресурсов при любом выходе
 	defer func() {
-		// Уведомляем Shutdown о завершении стрима
-		defer p.activeStreams.Done()
+		// R271: глобальный учёт (для Shutdown) снимает endClientStream —
+		// отдельный Done() здесь был бы двойным и ронял бы WaitGroup.
+		_ = endClientStream
 
 		// R252.1: флаги сессии/монитора снимает streamSess.Stop() (defer выше).
 

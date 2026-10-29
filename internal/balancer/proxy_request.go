@@ -769,10 +769,6 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 	w.WriteHeader(resp.StatusCode)
 	// R217: тот же учёт активных стримов, что и в hijack-пути: без него
 	// graceful shutdown не ждёт этот ответ и рвёт его при рестарте.
-	p.activeStreams.Add(1)
-	defer p.activeStreams.Done()
-	flusher, canFlush := w.(http.Flusher)
-
 	// R252 (2026-10-28): тот же единый вход стрима, что и на hijack-пути
 	// (stream_session_r252.go). До этого «клиент виден как живой» ставилось
 	// только здесь и только на нативном пути — новые пути оставались невидимыми
@@ -781,6 +777,13 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 	if m, ok := r.Context().Value(modelContextKey).(string); ok {
 		legacyModel = m
 	}
+	// R271: считаем стрим и по бэкенду/модели, чтобы перезагрузка модели по
+	// чужому запросу не выгружала её под этим стримом (active_streams_r271.go).
+	endClientStream := beginClientStreamR271(p, backendID, legacyModel)
+	defer endClientStream()
+
+	flusher, canFlush := w.(http.Flusher)
+
 	streamSess := startStreamSession(p, r, legacyModel)
 	defer streamSess.Stop()
 

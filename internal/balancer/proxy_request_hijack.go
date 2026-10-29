@@ -297,8 +297,15 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	// было «all active streams completed» мгновенно — Shutdown не видел стрим,
 	// потому что учёт жил только в handleStreamingResponse (путь Ollama), а /v1
 	// стримит через hijack. Теперь рестарт ждёт активные стримы (дренаж).
-	p.activeStreams.Add(1)
-	defer p.activeStreams.Done()
+	//
+	// R271 (2026-10-29): тот же учёт отвечает и за «чужой запрос не рвёт чужой
+	// стрим» — считаем стримы по бэкенду и модели (active_streams_r271.go).
+	hijackStreamModel := ""
+	if m, ok := r.Context().Value(modelContextKey).(string); ok {
+		hijackStreamModel = m
+	}
+	endClientStream := beginClientStreamR271(p, backendID, hijackStreamModel)
+	defer endClientStream()
 
 	// R251/R252 (2026-10-28): сессия и запись монитора ОБЯЗАНЫ оставаться живыми
 	// весь стрим — здесь, а не только на нативном Ollama-пути.
@@ -312,10 +319,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	//
 	// R252: логика вынесена в общий startStreamSession (stream_session_r252.go),
 	// чтобы этот и остальные SSE-пути не расходились.
-	hijackModel := ""
-	if m, ok := r.Context().Value(modelContextKey).(string); ok {
-		hijackModel = m
-	}
+	hijackModel := hijackStreamModel
 	streamSess := startStreamSession(p, r, hijackModel)
 	defer streamSess.Stop()
 

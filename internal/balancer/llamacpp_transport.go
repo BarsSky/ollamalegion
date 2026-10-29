@@ -718,6 +718,13 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	streamSess := startStreamSession(p, r, modelFromCtx)
 	defer streamSess.Stop()
 
+	// R271 (2026-10-29): учитываем стрим по бэкенду и модели. Именно этого учёта
+	// не хватало, когда перезагрузка модели по запросу ВТОРОГО клиента выгружала
+	// модель под активным стримом первого — тот получал EOF без терминального
+	// маркера и «stream ended by upstream before completion» (active_streams_r271.go).
+	endClientStream := beginClientStreamR271(p, backendID, modelFromCtx)
+	defer endClientStream()
+
 	// ==== Основной цикл SSE → NDJSON / SSE → SSE ==========
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
@@ -1959,6 +1966,24 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		// R259: КТО завершил стрим. Наш лимит строки и наши отмены — НЕ
 		// «upstream truncated»; клиенту и в лог уходит правдивая причина.
 		abortReason := streamAbortReasonR259(scannerErr, r.Context().Err())
+		// R271 (2026-10-29): если незадолго до обрыва МЫ выгружали/перезагружали
+		// эту модель на этом бэкенде — виноват не upstream.
+		//
+		// Живой дефект: второй клиент запросил другое окно n_ctx, балансер
+		// перезагрузил модель, поток первого закрылся без маркера — и клиент
+		// получил «stream ended by upstream before completion», хотя воркер был
+		// жив. Теперь причина называется своим именем.
+		if streamAbortBlamesUpstream(abortReason) {
+			if kind, ok := p.recentDestructiveOpR271(backendID, modelFromCtx, 3*time.Minute); ok {
+				abortReason = streamAbortBalancerReload
+				logger.Get().Warnw("proxyRequestLlamaCpp: stream ended because the balancer reloaded the model",
+					"reason", abortReason, "cause", kind,
+					"backend", backendID, "model", modelFromCtx,
+					"original_path", originalPath,
+					"bytes_forwarded", bytesForwarded,
+					"elapsed_sec", time.Since(llamaStartTime).Seconds())
+			}
+		}
 		logFields := []interface{}{
 			"reason", abortReason,
 			"backend", backendID, "model", modelFromCtx,

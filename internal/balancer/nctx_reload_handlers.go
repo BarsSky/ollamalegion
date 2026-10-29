@@ -249,6 +249,18 @@ func (p *Proxy) handleNCtxReloadActual(
 	// клиентов. Single round-trip: balancer reload+retry синхронно.
 	start := time.Now()
 	p.nctxReload.RecordDecision(backendID, "reload-start", plan.Reason)
+	// R271: в синхронном режиме тоже не выгружаем модель под чужим стримом.
+	if !p.waitStreamsIdleR271(ctx, backendID, modelName, reloadDeferMaxWaitR271()) {
+		logger.Get().Warnw("nctx_reload: sync reload postponed — active streams on backend (R271)",
+			"backend", backendID, "model", modelName,
+			"target_n_ctx", plan.NewNCtx,
+			"active_streams", p.activeStreamsOnBackend(backendID))
+		writeNCtxJSONError(w, http.StatusServiceUnavailable,
+			fmt.Sprintf("model reload deferred: %d active stream(s) on backend; retry shortly",
+				p.activeStreamsOnBackend(backendID)), "reload-deferred")
+		return
+	}
+	p.noteDestructiveOpR271(backendID, modelName, destructiveReloadR271)
 	reloadErr := p.nctxReload.DoReload(ctx, backendID, backendAddr, modelName, plan, p.newNCtxReloadHTTPClient())
 	duration := time.Since(start)
 	p.nctxReload.RecordReloadDuration(backendID, duration, reloadErr)
@@ -401,6 +413,16 @@ func (p *Proxy) handleNCtxReloadActualAsync(
 	// timeout не должен отменять многоминутный reload).
 	p.nctxReload.RecordDecision(backendID, "reload-async-start", plan.Reason)
 	doReload := func(start time.Time) {
+		// R271: не выгружать модель под чужим активным стримом (живой дефект:
+		// второй агент оборвал стрим первого). Ждём до LB_RELOAD_DEFER_MAX_SEC.
+		if !p.waitStreamsIdleR271(context.Background(), backendID, modelName, reloadDeferMaxWaitR271()) {
+			logger.Get().Warnw("nctx_reload: async reload postponed — active streams on backend (R271)",
+				"backend", backendID, "model", modelName,
+				"target_n_ctx", plan.NewNCtx,
+				"active_streams", p.activeStreamsOnBackend(backendID))
+			return
+		}
+		p.noteDestructiveOpR271(backendID, modelName, destructiveReloadR271)
 		// detached context — НЕ cancel-ится при client disconnect
 		reloadErr := p.nctxReload.DoReload(context.Background(), backendID, backendAddr, modelName, plan, p.newNCtxReloadHTTPClient())
 		duration := time.Since(start)
@@ -1586,6 +1608,26 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 			"backend", backendID, "target_n_ctx", requestedNCtx)
 		return
 	}
+
+	// R271 (2026-10-29): НЕ выгружать модель под чужим активным стримом.
+	//
+	// ЖИВОЙ ДЕФЕКТ (второй стенд): пока Cline стримил ответ, второй агент (DSH)
+	// запросил другое окно n_ctx → preflight решил перезагрузить модель →
+	// cppworker для смены n_ctx делает unload+load → у первого клиента поток
+	// закрылся без терминального маркера («stream ended by upstream before
+	// completion»). Теперь ждём завершения стримов на этом бэкенде (до
+	// LB_RELOAD_DEFER_MAX_SEC, дефолт 120 с); не дождались — перезагрузку
+	// пропускаем: следующий запрос снова упрётся в n_ctx и повторит попытку,
+	// это дешевле, чем оборвать чужую генерацию.
+	if !p.waitStreamsIdleR271(context.Background(), backendID, modelName, reloadDeferMaxWaitR271()) {
+		logger.Get().Warnw("executeAsyncReload: postponed — active streams on backend (R271)",
+			"backend", backendID, "model", modelName,
+			"target_n_ctx", requestedNCtx,
+			"active_streams", p.activeStreamsOnBackend(backendID),
+			"defer_max_sec", reloadDeferMaxWaitR271().Seconds())
+		return
+	}
+	p.noteDestructiveOpR271(backendID, modelName, destructiveReloadR271)
 
 	// Round 35 (2026-08-12) bugfix: prefer /api/models/load over /api/models/reload.
 	//

@@ -38,19 +38,32 @@ func TestR219_HijackDoesNotAdvertiseKeepAlive(t *testing.T) {
 }
 
 // Shutdown обязан дождаться стримов, зарегистрированных в hijack-пути:
-// структурная страховка от потери учёта при рефакторинге.
+//
+// R271 (2026-10-29): регистрация переехала в общий помощник
+// beginClientStreamR271 (active_streams_r271.go) — он ведёт и глобальный
+// счётчик для Shutdown, и счётчики по бэкенду/модели. Поэтому проверяем две
+// вещи: вызов помощника стоит ДО старта цикла чтения, и сам помощник реально
+// инкрементирует activeStreams.
 func TestR219_HijackRegistersStreamBeforeDrain(t *testing.T) {
 	raw, err := os.ReadFile("proxy_request_hijack.go")
 	if err != nil {
 		t.Fatalf("не читается proxy_request_hijack.go: %v", err)
 	}
 	src := string(raw)
-	addIdx := strings.Index(src, "p.activeStreams.Add(1)")
+	addIdx := strings.Index(src, "beginClientStreamR271(")
 	loopIdx := strings.Index(src, "clientCtx, cancel := context.WithCancel")
 	if addIdx < 0 || loopIdx < 0 {
-		t.Fatal("не найдены регистрация стрима или старт цикла")
+		t.Fatal("не найдены регистрация стрима (beginClientStreamR271) или старт цикла")
 	}
 	if addIdx > loopIdx {
-		t.Error("activeStreams регистрируется ПОСЛЕ старта цикла — Shutdown может не успеть увидеть стрим")
+		t.Error("стрим регистрируется ПОСЛЕ старта цикла — Shutdown может не успеть увидеть стрим")
+	}
+
+	helperRaw, err := os.ReadFile("active_streams_r271.go")
+	if err != nil {
+		t.Fatalf("не читается active_streams_r271.go: %v", err)
+	}
+	if !strings.Contains(string(helperRaw), "p.activeStreams.Add(1)") {
+		t.Error("помощник не инкрементирует activeStreams — Shutdown не увидит стрим")
 	}
 }

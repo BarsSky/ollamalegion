@@ -534,32 +534,26 @@ func (s *Server) clusterReloadModelHandler(w http.ResponseWriter, r *http.Reques
 
 // overallReloadStatus — R287: один код на весь ответ из per-backend исходов.
 //
-// Правило: успех хотя бы одного узла — это 200 (иначе успешная часть работы
-// выглядела бы как отказ); все отложены — 503 (ничего не сломано, стоит
-// повторить); иначе — код первой реальной ошибки.
+// Правило сознательно УЗКОЕ: 503 отдаём только когда ВСЕ узлы отложили операцию
+// (именно этот случай оператор и видел: «200 + success:false», по которому нельзя
+// понять, применилось ли что-то). Остальное сохраняет прежний контракт — 200 с
+// per-backend `status`/`httpStatus`/`error`: на него опираются существующие тесты
+// и WebUI, и «частичный успех» на нескольких узлах тоже должен читаться как 200.
 func overallReloadStatus(results []clusterReloadModelBackendResult) int {
 	if len(results) == 0 {
 		return http.StatusNotFound
 	}
-	deferred := 0
-	firstErr := 0
+	allDeferred := true
 	for _, r := range results {
-		switch {
-		case r.HTTPStatus == http.StatusOK || r.HTTPStatus == http.StatusCreated:
+		if r.HTTPStatus == http.StatusOK || r.HTTPStatus == http.StatusCreated {
 			return http.StatusOK
-		case r.Deferred || r.HTTPStatus == http.StatusServiceUnavailable:
-			deferred++
-		default:
-			if firstErr == 0 {
-				firstErr = r.HTTPStatus
-			}
+		}
+		if !(r.Deferred || r.HTTPStatus == http.StatusServiceUnavailable) {
+			allDeferred = false
 		}
 	}
-	if deferred == len(results) {
+	if allDeferred {
 		return http.StatusServiceUnavailable
-	}
-	if firstErr != 0 {
-		return firstErr
 	}
 	return http.StatusOK
 }

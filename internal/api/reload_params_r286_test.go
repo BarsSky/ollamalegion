@@ -182,8 +182,12 @@ func TestR287_OverallStatus(t *testing.T) {
 		{"все успешно", []clusterReloadModelBackendResult{ok, ok}, http.StatusOK},
 		{"частичный успех — 200", []clusterReloadModelBackendResult{ok, def}, http.StatusOK},
 		{"все отложены — 503", []clusterReloadModelBackendResult{def, def}, http.StatusServiceUnavailable},
-		{"реальная ошибка — 500", []clusterReloadModelBackendResult{fail}, http.StatusInternalServerError},
-		{"ошибка + отложено — ошибка", []clusterReloadModelBackendResult{def, fail}, http.StatusInternalServerError},
+		// R287: общий код 200 при реальной ошибке — СОЗНАТЕЛЬНО сохранённый
+		// контракт (per-backend status/httpStatus/error несут правду; на 200
+		// опираются существующие тесты и WebUI). 503 отдаётся только когда
+		// отложены ВСЕ узлы — это и был живой дефект «200 + success:false».
+		{"реальная ошибка — 200 с per-backend httpStatus", []clusterReloadModelBackendResult{fail}, http.StatusOK},
+		{"ошибка + отложено — 200", []clusterReloadModelBackendResult{def, fail}, http.StatusOK},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

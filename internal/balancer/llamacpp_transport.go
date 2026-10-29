@@ -109,8 +109,27 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		r.Context(), backendID, modelFromCtx, bodyBuf, originalPath)
 	if preflightOK {
 		bodyBuf = preflightBody // preflight удалил num_ctx из body (cppworker возьмёт new n_ctx)
+		// R301 (2026-10-29): подменённое preflight'ом тело обязано ДОЙТИ до воркера.
+		//
+		// ЖИВОЙ ДЕФЕКТ (стенд fcef935c): вердикт R301 отработал верно
+		// (log: served_with_loaded_window=true, required=16384, loaded=8192),
+		// но воркер всё равно получил num_ctx=16384 и ответил кодом 2:
+		// «requested n_ctx=16384 exceeds model's effective n_ctx=8192».
+		// Причина — ВТОРОЙ источник тела: нативный путь кладёт исходные байты в
+		// translatedBody (см. :84) и именно их отправляет (:259). Патч bodyBuf
+		// никуда не попадал, то есть решение принималось, логировалось — и
+		// терялось. На нативном пути перевода нет, поэтому достаточно взять
+		// ровно то тело, что вернул preflight.
+		if nativePath {
+			translatedBody = bodyBuf
+		} else if patched := patchNumCtxInBody(translatedBody, ExtractNumCtxFromBody(bodyBuf)); patched != nil {
+			// Переведённое (OpenAI) тело — другой формат: правим num_ctx тем же
+			// значением, что preflight поставил в Ollama-теле (если оно там есть).
+			translatedBody = patched
+		}
 		logger.Get().Debugw("proxyRequestLlamaCpp: preflight n_ctx reload applied",
-			"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyBuf))
+			"backend", backendID, "model", modelFromCtx, "new_body_len", len(bodyBuf),
+			"native_path", nativePath, "upstream_body_len", len(translatedBody))
 	} else if preflightMsg != "" || preflightStatus != http.StatusOK {
 		// R118.7 (2026-10-14): окно физически недостижимо (cppworker отвечал 422
 		// n_ctx_infeasible) — клиенту понятный 413, а не «async-reload» 503,

@@ -459,8 +459,15 @@ func TestTranslateSSEChatToOllama_FinalReasoningChunk(t *testing.T) {
 
 	var c map[string]interface{}
 	json.Unmarshal(result, &c)
-	if c["done_reason"] != "stop" {
-		t.Errorf("expected done_reason=stop, got %v", c["done_reason"])
+	// R295 БЫЛО: reasoning+finish_reason в одном чанке помечался done_reason=stop
+	// (и safety-net ставил done:true). СТАЛО: reasoning-чанк non-terminal —
+	// терминатор пишет транспорт после usage/[DONE], иначе клиент закрывает ход
+	// раньше статистики и возможного tool_calls.
+	if done, ok := c["done"].(bool); ok && done {
+		t.Errorf("R295: reasoning+finish_reason chunk must not be terminal: %v", c)
+	}
+	if c["done_reason"] != nil {
+		t.Errorf("R295: done_reason must be absent on non-terminal chunk, got %v", c["done_reason"])
 	}
 	m := c["message"].(map[string]interface{})
 	if m["thinking"] != "Final thought" {

@@ -425,7 +425,9 @@ func translateOpenAIChatToOllama(body []byte, modelName string) ([]byte, error) 
 			}
 			// Handle tool_calls in the response message
 			if tc, ok := message["tool_calls"].([]interface{}); ok && len(tc) > 0 {
-				msgMap["tool_calls"] = tc
+				// R295: на Ollama-поверхности arguments — ОБЪЕКТ (контракт
+				// Ollama), тогда как воркер отдаёт их строкой (форма OpenAI).
+				msgMap["tool_calls"] = toOllamaToolCallsObject(tc)
 				// Ollama клиенты ожидают content:"" если есть tool_calls
 				if msgMap["content"] == nil {
 					msgMap["content"] = ""
@@ -437,7 +439,7 @@ func translateOpenAIChatToOllama(body []byte, modelName string) ([]byte, error) 
 						"model", modelName, "tool_calls_count", len(detectedTC),
 						"original_content_len", len(contentStr),
 						"remaining_content_len", len(remainingTC))
-					msgMap["tool_calls"] = detectedTC
+					msgMap["tool_calls"] = toOllamaToolCallsObject(detectedTC)
 					// Clean remaining content: remove service tokens, duplicate tool calls, role markers
 					cleaned := stripServiceTokens(remainingTC)
 					cleaned = cleanContentAfterToolCallExtraction(cleaned)
@@ -906,15 +908,43 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 	if errStr, ok := chunk["error"].(string); ok && errStr != "" {
 		logger.Get().Errorw("translateSSEChatToOllama: upstream SSE chunk with error",
 			"model", modelName, "error", errStr)
-		ollamaChunk["done"] = true
-		ollamaChunk["done_reason"] = "error"
-		ollamaChunk["error"] = errStr
-		ollamaChunk["message"] = map[string]interface{}{
-			"role":    "assistant",
-			"content": "",
+		// R295 (2026-10-29): ошибка больше не ПОДМЕНЯЕТ ход ответа «флагом
+		// завершения» на месте. Живая жалоба Cline: cppworker присылает
+		// error-чанк ПОСРЕДИ генерации (например n_ctx/context overflow), и
+		// клиент, получив done:true, закрывал ход — дальше модель «генерировала
+		// в пустоту». Теперь отдаём ДВА кадра: сначала error с done:false (клиент
+		// видит причину и продолжает принимать), затем терминатор done:true с
+		// done_reason:"error" — поток всё равно обязан закрыться ровно один раз,
+		// иначе клиент зависнет.
+		errChunk := map[string]interface{}{
+			"model":      modelName,
+			"created_at": time.Now().UTC().Format(time.RFC3339Nano),
+			"done":       false,
+			"error":      errStr,
+			"message": map[string]interface{}{
+				"role":    "assistant",
+				"content": "",
+			},
 		}
-		result, _ := json.Marshal(ollamaChunk)
-		return append(result, '\n')
+		errLine, _ := json.Marshal(errChunk)
+		terminal := map[string]interface{}{
+			"model":       modelName,
+			"created_at":  time.Now().UTC().Format(time.RFC3339Nano),
+			"done":        true,
+			"done_reason": "error",
+			"error":       errStr,
+			"message": map[string]interface{}{
+				"role":    "assistant",
+				"content": "",
+			},
+		}
+		terminalLine, _ := json.Marshal(terminal)
+		out := make([]byte, 0, len(errLine)+len(terminalLine)+2)
+		out = append(out, errLine...)
+		out = append(out, '\n')
+		out = append(out, terminalLine...)
+		out = append(out, '\n')
+		return out
 	}
 
 	if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
@@ -988,17 +1018,16 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 			// Этот чанк ПРЕДШЕСТВУЕТ usage-чанку — не помечаем done:true, чтобы
 			// не было double-done.
 			//
-			// Не-wrapper сценарии когда помечаем done:true:
-			//   1. content + finish_reason (последний токен + finish в одном чанке)
-			//   2. tool_calls + finish_reason
-			//   3. reasoning_content + finish_reason (gemma-4 final reasoning chunk —
-			//      последний reasoning + finish в одном чанке, БЕЗ последующего
-			//      usage-чанка, иначе бы R51.3 R53.1 ошибочно подавил)
-			isWrapper := !hasContent && !hasToolCalls && !hasReasoning
-			if !isWrapper {
-				ollamaChunk["done"] = true
-				ollamaChunk["done_reason"] = finishReason
-			}
+			// R295 (2026-10-29): и НЕ-wrapper чанки здесь done:true больше НЕ
+			// получают. Живая жалоба Cline «получаю флаг о завершении»: чанк с
+			// content+finish_reason НЕ последний — после него приходит usage-чанк
+			// со статистикой, и клиент, увидев done:true, переставал принимать
+			// кадры (а если вызов инструмента шёл следом — «инструмент не
+			// применился»). Семантика Ollama: done:true РОВНО один и он
+			// ПОСЛЕДНИЙ; терминатор пишут transport-guard'ы, которые видят конец
+			// потока (translateUsageChunkToOllama / writeStreamingSSEDone).
+			// Содержимое этого чанка отдаётся как обычный чанк с done:false.
+			_ = finishReason
 		}
 	}
 
@@ -1025,7 +1054,7 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 		if hasToolCalls && len(toolCallsJSON) > 0 {
 			var toolCallsArr []interface{}
 			if err := json.Unmarshal(toolCallsJSON, &toolCallsArr); err == nil {
-				msg["tool_calls"] = toolCallsArr
+				msg["tool_calls"] = toOllamaToolCallsObject(toolCallsArr)
 			}
 		}
 		ollamaChunk["message"] = msg
@@ -1099,7 +1128,7 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 			} else {
 				msg["role"] = "assistant"
 			}
-			msg["tool_calls"] = detectedTC
+			msg["tool_calls"] = toOllamaToolCallsObject(detectedTC)
 			ollamaChunk["message"] = msg
 			result, _ := json.Marshal(ollamaChunk)
 			return append(result, '\n')
@@ -1132,7 +1161,7 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 		// Парсим toolCallsJSON обратно в []interface{} для корректной сериализации
 		var toolCallsArr []interface{}
 		if err := json.Unmarshal(toolCallsJSON, &toolCallsArr); err == nil {
-			msgMap["tool_calls"] = toolCallsArr
+			msgMap["tool_calls"] = toOllamaToolCallsObject(toolCallsArr)
 		}
 		ollamaChunk["message"] = msgMap
 		result, _ := json.Marshal(ollamaChunk)
@@ -1149,7 +1178,7 @@ func translateSSEChatToOllama(chunk map[string]interface{}, modelName string, se
 		}
 		var toolCallsArr []interface{}
 		if err := json.Unmarshal(toolCallsJSON, &toolCallsArr); err == nil {
-			msgMap["tool_calls"] = toolCallsArr
+			msgMap["tool_calls"] = toOllamaToolCallsObject(toolCallsArr)
 		}
 		ollamaChunk["message"] = msgMap
 		result, _ := json.Marshal(ollamaChunk)

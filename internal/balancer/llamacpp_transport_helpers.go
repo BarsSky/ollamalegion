@@ -231,7 +231,9 @@ func writeStreamingSSEDone(
 				}
 				toolCallsArr = append(toolCallsArr, tcMap)
 			}
-			msgMap["tool_calls"] = toolCallsArr
+			// R295: Ollama ждёт function.arguments ОБЪЕКТОМ, а аккумулятор
+			// держит его строкой (OpenAI-форма, контракт cppworker→балансер).
+			msgMap["tool_calls"] = toOllamaToolCallsObject(toInterfaceSlice(toolCallsArr))
 		}
 
 		modelName := modelFromCtx

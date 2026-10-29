@@ -86,8 +86,13 @@ func TestR6055_TranslateSSEData_SuppressUsageWhenPriorDoneEmitted(t *testing.T) 
 		t.Fatalf("H2 regression: statistics must reach the client exactly once, got %d stats chunks", statsChunks)
 	}
 	stats := statsFields[0]
-	if done, _ := stats["done"].(bool); done {
-		t.Errorf("H2 regression: stats line must NOT carry a second done:true (got done=true): %v", stats)
+	// R295 БЫЛО: content+finish_reason чанк сам был done:true (safety-net), а
+	// usage-чанк со статистикой обязан был идти с done:false — иначе «два done».
+	// СТАЛО: content+finish_reason НЕ терминальный (уходит done:false), а
+	// единственный done:true несёт именно usage-чанк — вместе со статистикой.
+	// Инвариант «ровно один done:true в стриме» сохранён (проверен выше).
+	if done, _ := stats["done"].(bool); !done {
+		t.Errorf("R295: usage/stats line must be the single terminal done:true (got done=false): %v", stats)
 	}
 	if got := stats["eval_count"]; got != float64(2500) {
 		t.Errorf("H2 regression: eval_count must survive, got %v (want 2500)", got)
@@ -129,8 +134,14 @@ func TestR6055_TranslateSSEData_NonUsageChunkNeverSuppressed(t *testing.T) {
 	if got == nil {
 		t.Fatal("content+finish_reason chunk must NOT be suppressed by priorDoneEmitted (only usage chunks are)")
 	}
-	if !strings.Contains(string(got), `"done":true`) {
-		t.Errorf("content+finish_reason chunk must contain done:true (R51.3 safety-net): %s", got)
+	// R295 БЫЛО: content+finish_reason обязан был содержать done:true (safety-net).
+	// СТАЛО: чанк отдаётся non-terminal (done:false), содержимое сохраняется —
+	// терминатор придёт отдельным кадром от transport-guard'а.
+	if strings.Contains(string(got), `"done":true`) {
+		t.Errorf("R295: content+finish_reason chunk must not be terminal: %s", got)
+	}
+	if !strings.Contains(string(got), "last bit of code") {
+		t.Errorf("R295: content must survive on non-terminal chunk: %s", got)
 	}
 }
 
@@ -306,8 +317,13 @@ func TestR6055_H2_UsageAfterSafetyNetDone_EndToEnd(t *testing.T) {
 			if ns, ok := c["total_duration"].(float64); !ok || ns <= 0 {
 				t.Errorf("H2 e2e: total_duration должен быть положительным, got %v", c["total_duration"])
 			}
-			if done, _ := c["done"].(bool); done {
-				t.Error("H2 e2e: статистика пришла в чанке с done:true — ожидалась отдельная строка (done:false)")
+			// R295 БЫЛО: safety-net делал content+finish_reason терминальным,
+			// поэтому статистика обязана была идти отдельной строкой done:false.
+			// СТАЛО: терминальный (и единственный) done:true несёт именно
+			// статистика — это соответствует семантике Ollama «done со статами
+			// последним кадром». Инвариант «ровно один done:true» проверяется ниже.
+			if done, _ := c["done"].(bool); !done {
+				t.Error("R295 e2e: статистика должна приходить в единственном терминальном чанке (done:true)")
 			}
 		}
 	}

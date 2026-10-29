@@ -340,12 +340,22 @@ func TestTranslateSSEChatToOllama_FinishReasonLengthWithContent(t *testing.T) {
 	}
 	var ollamaChunk map[string]interface{}
 	json.Unmarshal(result, &ollamaChunk)
-	if done, ok := ollamaChunk["done"].(bool); !ok || !done {
-		t.Errorf("Round 53.1 safety net: expected done=true for content+finish_reason=length, got done=%v — client would hang",
-			ollamaChunk["done"])
+	// R295 (2026-10-29) БЫЛО: «safety net» ставил done:true прямо на чанке с
+	// content+finish_reason. Живая жалоба Cline («получаю флаг о завершении»):
+	// после такого чанка приходит usage-чанк со статистикой, клиент уже закрыл
+	// ход и кадры игнорирует; если вызов инструмента шёл следом — «инструмент
+	// не применился».
+	// СТАЛО: done:true ставит ТОЛЬКО терминатор (translateUsageChunkToOllama на
+	// usage-чанке либо writeStreamingSSEDone на [DONE]/EOF), а этот чанк отдаёт
+	// содержимое с done:false — оно не теряется.
+	if done, ok := ollamaChunk["done"].(bool); ok && done {
+		t.Errorf("R295: content+finish_reason chunk must NOT be terminal (done=true), got done=true — client would close the turn before stats/tool_calls")
 	}
-	if ollamaChunk["done_reason"] != "length" {
-		t.Errorf("expected done_reason='length', got '%v'", ollamaChunk["done_reason"])
+	if got, _ := ollamaChunk["message"].(map[string]interface{})["content"].(string); got != "final truncated..." {
+		t.Errorf("R295: content must survive on a non-terminal chunk, got %q", got)
+	}
+	if ollamaChunk["done_reason"] != nil {
+		t.Errorf("R295: done_reason on a non-terminal chunk must be absent, got %v", ollamaChunk["done_reason"])
 	}
 }
 

@@ -142,14 +142,11 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			logger.Get().Infow("proxyRequestLlamaCppNonStream: preflight n_ctx reload, returning 503",
 				"backend", backendID, "model", modelFromCtx,
 				"msg", preflightMsg, "status", preflightStatus, "retry_after", retryAfter)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			// R299 (2026-10-29): единое тело отказа (см. growth_guard_r299.go) вместо
+			// самописного `{"decision":"async_reload",...}`. Причина та же: клиент
+			// должен разбирать один формат, а не угадывать по строке.
 			w.Header().Set("X-NCtx-Reload-Decision", "async-reload")
-			body := []byte(fmt.Sprintf(`{"error":%q,"decision":"async_reload","retry_after_seconds":%d}`,
-				preflightMsg, retryAfter))
-			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write(body)
+			writePreflightDeferredR299(w, p, backendID, modelFromCtx, bodyBuf, originalPath, preflightMsg, retryAfter)
 			return nil
 		}
 	}

@@ -100,6 +100,24 @@ func stillLoadingResultR262(req ModelOpRequest, backendID string, maxWait time.D
 	}
 }
 
+// stillLoadingAfterLoadRetriesR299 — «воркер всё ещё грузит модель после всех
+// попыток» (R299).
+//
+// ЖИВОЙ ДЕФЕКТ (стенд 793db393, 148 с): эта ситуация возвращалась как
+// ModelOpResult{Success:false, Error:"cppworker still loading model ..."}, то
+// есть как ОШИБКА, а HTTP-слой по правилу отдавал 500. Текст при этом был
+// «модель ещё загружается» — балансер сам себе противоречил: 5xx значит
+// «сломалось, повтори», и оператор нажимал «загрузить» поверх живой загрузки.
+//
+// Правило уже существует (R262): «ещё идёт» — это StillLoading + 202 + совет
+// опросить статус, а не Error. Здесь оно просто применяется к последней попытке
+// цикла загрузки; ждать заново те же 30 с смысла нет, потому что следующий
+// опрос состояния делает клиент.
+func stillLoadingAfterLoadRetriesR299(req ModelOpRequest, backendID string) *ModelOpResult {
+	return stillLoadingResultR262(req, backendID,
+		time.Duration(llamaCppLoadMaxRetries)*llamaCppLoadRetryInterval)
+}
+
 // loadedModelsCountR262 — сколько моделей РЕАЛЬНО загружено в переданном списке.
 //
 // ЖИВОЙ ФАКТ (диагностика врала): поллер писал

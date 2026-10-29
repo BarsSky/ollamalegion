@@ -167,7 +167,8 @@ func TestR291_DeferredBodyIsUnified(t *testing.T) {
 		{
 			name: "нужно больше окна",
 			write: func(w http.ResponseWriter) {
-				writeContextGrowthDeferred(w, "gemma", 24096, 8192)
+				// R299: те же два «мешающих» факта, что и на живом пути.
+				writeContextGrowthDeferred(w, "gemma", 24096, 8192, 1, true)
 			},
 			wantReason:  "context_growth_pending",
 			wantNumbers: true,

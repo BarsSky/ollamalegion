@@ -830,19 +830,46 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		// «reload already in progress, retry later» без указания, сколько нужно
 		// и сколько есть, — оператор не мог понять, вырастет ли окно вообще.
 		estimated, loaded, needed := p.contextGrowthNumbers(backendID, modelName, bodyBuf, requestPath)
+		// R299: числа берём из общего источника (growth_guard_r299.go), поэтому
+		// activeStreams здесь — максимум из учёта по бэкенду и по модели, а не
+		// одно наблюдение, которое могло не увидеть стрим под расходящимся именем.
+		active, pending := growthBlockersR288(p, backendID, modelName)
 		logger.Get().Infow("preflightNCtxReloadIfNeeded: reload already pending (R60.6 dedup)",
 			"backend", backendID, "model", modelName, "request_path", requestPath,
 			"estimated_prompt_tokens", estimated, "loaded_window_tokens", loaded,
 			"required_tokens", needed,
-			"active_streams", p.activeStreamsOnBackend(backendID))
+			"active_streams", active, "reload_pending", pending)
 		if estimated > 0 && loaded > 0 {
+			// R299: «active streams=0» при идущей перезагрузке — не ложь счётчика,
+			// а разные факты: запрос, ждущий в preflight, стримом ещё не учтён
+			// (beginClientStreamR271 — после admission). Пишем оба факта явно.
 			return bodyBuf, false,
-				fmt.Sprintf("model %q reload already in progress (required=%d tokens, loaded window=%d tokens, active streams=%d), retry later",
-					modelName, needed, loaded, p.activeStreamsOnBackend(backendID)),
+				fmt.Sprintf("model %q reload already in progress (required=%d tokens, loaded window=%d tokens, active streams=%d, reload pending=%t), retry later",
+					modelName, needed, loaded, active, pending),
 				http.StatusServiceUnavailable
 		}
 		return bodyBuf, false,
 			fmt.Sprintf("model %q reload already in progress, retry later", modelName),
+			http.StatusServiceUnavailable
+	}
+
+	// R299 (2026-10-29): ТРАНСПОРТНЫЙ путь проверяет то же самое ДО reload'а.
+	//
+	// Живой факт: это ВТОРОЙ вход в preflight (после раунтера), и на нём запрос
+	// точно так же проводил десятки секунд в RunPreflight, хотя окно вырасти не
+	// могло. Проверка одна на оба входа (growthDeferR299): если бы правило жило
+	// только в раунтере, транспортный путь остался бы прежним — ровно так в этой
+	// серии уже случалось с другими механизмами (второй путь обходит общий).
+	if deferNow, estimated, loaded, needed, active, pending := p.growthDeferR299(
+		backendID, modelName, bodyBuf, requestPath); deferNow {
+		logger.Get().Infow("preflightNCtxReloadIfNeeded: context growth deferred before reload (R299)",
+			"backend", backendID, "model", modelName, "request_path", requestPath,
+			"estimated_prompt_tokens", estimated, "required_tokens", needed,
+			"loaded_window_tokens", loaded, "active_streams", active,
+			"reload_pending", pending)
+		return bodyBuf, false,
+			fmt.Sprintf("model %q needs %d tokens of context, the loaded window is %d and cannot grow right now (active streams=%d, reload pending=%t), retry later",
+				modelName, needed, loaded, active, pending),
 			http.StatusServiceUnavailable
 	}
 

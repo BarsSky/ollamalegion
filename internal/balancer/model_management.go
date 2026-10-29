@@ -1723,15 +1723,18 @@ func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID
 				time.Sleep(llamaCppLoadRetryInterval)
 				continue
 			}
-			// Последняя попытка исчерпана — возвращаем ошибку.
-			return &ModelOpResult{
-				Success:   false,
-				Operation: req.Operation,
-				ModelName: req.ModelName,
-				BackendID: backendID,
-				Error: fmt.Sprintf("cppworker still loading model '%s' after %d attempts (%v)",
-					req.ModelName, llamaCppLoadMaxRetries, llamaCppLoadMaxRetries*int(llamaCppLoadRetryInterval.Seconds())),
-			}
+			// R299 (2026-10-29): «ещё грузится» — НЕ ошибка.
+			//
+			// Живой факт (стенд 793db393, 148 с): оператор получал HTTP 500 с
+			// текстом «модель ещё загружается», то есть собственный текст
+			// балансера противоречил коду ответа: 5xx для клиента значит «сломалось,
+			// повтори», и оператор нажимал «загрузить» заново поверх живой
+			// загрузки. Формат «ещё грузится» уже существует (R262) и отвечает
+			// 202 — второй формат для той же ситуации заводить нельзя.
+			logger.Get().Infow("executeLlamaCppLoad: cppworker still loading model, answering 202 (not an error)",
+				"backend", backendID, "model", req.ModelName,
+				"attempts", llamaCppLoadMaxRetries)
+			return stillLoadingAfterLoadRetriesR299(req, backendID)
 		}
 
 		// Другая ошибка — не повторяем.

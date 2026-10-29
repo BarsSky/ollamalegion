@@ -60,7 +60,14 @@ func promptNeedsMoreContext(estimatedPromptTokens, outputBudget, loadedPerSeq in
 // deferredReason), общему с ручным reload и n_ctx-preflight. Живой факт: те же
 // сценарии отвечали тремя разными телами, и клиент не мог их обработать одним
 // правилом.
-func writeContextGrowthDeferred(w http.ResponseWriter, model string, needed, loadedPerSeq int) {
+//
+// R299 (2026-10-29): в тело добавлены activeStreams и reloadPending. Живой факт:
+// отказ сообщал «active streams=0», хотя перезагрузка шла и запрос ждал именно
+// из-за неё. Число стримов и факт перезагрузки — РАЗНЫЕ факты: учёт стримов
+// пуст и тогда, когда мешает сама перезагрузка (запрос, ждущий в preflight,
+// стримом ещё не зарегистрирован — beginClientStreamR271 вызывается после
+// admission). Ноль стримов при reloadPending=true — честная картина.
+func writeContextGrowthDeferred(w http.ResponseWriter, model string, needed, loadedPerSeq, activeStreams int, reloadPending bool) {
 	writeDeferredJSON(w, deferredBodyR291{
 		DeferredReason: "context_growth_pending",
 		Model:          model,
@@ -68,6 +75,8 @@ func writeContextGrowthDeferred(w http.ResponseWriter, model string, needed, loa
 			"error":              "context window is smaller than the request needs",
 			"requiredTokens":     needed,
 			"loadedWindowTokens": loadedPerSeq,
+			"activeStreams":      activeStreams,
+			"reloadPending":      reloadPending,
 			"hint":               "raise the model context window (WebUI → model card) or shorten the history",
 		},
 	})
@@ -123,11 +132,10 @@ func (p *Proxy) contextGrowthBlocker(backendID, model string, meta *RequestMeta)
 	// (стрим завершился/не был учтён под этим ключом), а reload был в процессе,
 	// поэтому окно вырасти не могло. «Активных стримов нет» ≠ «рост возможен»:
 	// возможен он только когда нет ни стримов, ни идущей перезагрузки.
-	active := p.ActiveStreamsOnBackend(backendID)
-	reloadPending := false
-	if p.nctxReload != nil {
-		reloadPending = p.nctxReload.IsReloadPending(backendID, model)
-	}
+	//
+	// R299: сами факты считает growthBlockersR288 — один источник и для этого
+	// решения, и для чисел в теле отказа (иначе решение и текст расходились).
+	active, reloadPending := growthBlockersR288(p, backendID, model)
 	if active == 0 && !reloadPending {
 		return false, needed, loaded
 	}

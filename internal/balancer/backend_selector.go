@@ -361,7 +361,19 @@ func (p *Proxy) selectBackendExcluding(model string, exclude map[string]bool, bt
 
 	backend := p.selectByResourcesExcluding(exclude, allowedTypes)
 	if backend == "" {
-		logger.Get().Warnw("no available backends with exclusions")
+		// R299 (2026-10-29): не спамить этим предупреждением.
+		//
+		// Живой факт (стенд 793db393): ОДИН прогон дал 299 таких строк —
+		// retry-цикл запроса зовёт селектор многократно, и каждая попытка писала
+		// строку. Оператор прокручивал страницы одинаковых предупреждений и не
+		// видел события, ради которого лог открывают. Первая строка проходит
+		// всегда, подавленные считаются и показываются в следующей.
+		if ok, dropped := noBackendLogR299.allow(model); ok {
+			logger.Get().Warnw("no available backends with exclusions",
+				"model", model, "excluded", len(exclude),
+				"suppressed_since_last", dropped,
+				"suppress_window_sec", int(noBackendLogR299.every.Seconds()))
+		}
 	}
 	return backend
 }

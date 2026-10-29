@@ -314,11 +314,26 @@ func (p *Proxy) EnsureRPCLayout(backendID string) (degraded bool, reason string)
 	}
 
 	if err := pushRPCLayoutConfig(b, enabled, alive); err != nil {
-		logger.Get().Warnw(i18n.T("balancer.rpc_layout.apply_failed_warn"),
-			"backend", backendID, "role", role, "enabled", enabled,
-			"servers", alive, "error", err)
+		// R299 (2026-10-29): не спамить одним и тем же предупреждением каждые 20 с.
+		//
+		// Живой факт (стенд 793db393): недостижимый донор давал эту строку на
+		// КАЖДОМ тике гарда (20 с) — лог перестал читаться. Первое сообщение
+		// проходит всегда; подавленные считаются, чтобы в следующем было видно,
+		// сколько их было; успешное применение снимает отметку, чтобы повторный
+		// сбой после восстановления снова был виден оператору.
+		if ok, dropped := layoutFailLogR299.allow(backendID); ok {
+			logger.Get().Warnw(i18n.T("balancer.rpc_layout.apply_failed_warn"),
+				"backend", backendID, "role", role, "enabled", enabled,
+				"servers", alive, "error", err,
+				"suppressed_since_last", dropped,
+				"suppress_window_sec", int(layoutFailLogR299.every.Seconds()))
+		}
 		return true, i18n.T("balancer.rpc_layout.not_applied", err)
 	}
+
+	// Применение удалось — снимаем отметку подавления: следующий сбой должен
+	// быть напечатан сразу, а не ждать истечения окна.
+	layoutFailLogR299.reset(backendID)
 
 	p.mu.Lock()
 	p.rpcLayoutApplied[backendID] = key

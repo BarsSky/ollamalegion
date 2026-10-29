@@ -151,14 +151,14 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		logger.Get().Infow("proxyRequestLlamaCpp: preflight triggered async n_ctx reload, returning 503 to client",
 			"backend", backendID, "model", modelFromCtx,
 			"msg", preflightMsg, "status", preflightStatus)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Retry-After", "30")
+		// R299 (2026-10-29): тело отказа — ОДИН формат (deferredReason +
+		// requiredTokens/loadedWindowTokens/activeStreams/reloadPending) вместо
+		// самописного `{"decision":"async_reload","retry_after_seconds":30}`.
+		// Живой факт: клиент получал тело, которого нет ни у одного другого
+		// отказа, и в тексте «active streams=0» без указания, что перезагрузка
+		// идёт. X-NCtx-Reload-Decision оставлен для совместимости.
 		w.Header().Set("X-NCtx-Reload-Decision", "async-reload")
-		body := []byte(fmt.Sprintf(`{"error":%q,"decision":"async_reload","retry_after_seconds":30}`,
-			preflightMsg))
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write(body)
+		writePreflightDeferredR299(w, p, backendID, modelFromCtx, bodyBuf, originalPath, preflightMsg, 30)
 		return nil
 	}
 

@@ -114,6 +114,30 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		return false, nil
 	}
 
+	// R299 (2026-10-29): ОКНО МАЛО И РОСТ НЕВОЗМОЖЕН — отвечаем ДО RunPreflight.
+	//
+	// Живой факт (стенд 793db393): при чужом активном стриме запрос с num_ctx
+	// больше загруженного окна простоял 88.2 с ВНУТРИ RunPreflight и только потом
+	// получил 503 телом старого формата и с `active streams=0` в тексте. Решение
+	// было известно сразу: окно меньше нужного, а guard R271 всё равно отложит
+	// перезагрузку. Поэтому проверка R288 стоит здесь — до сетевого reload'а,
+	// а не после того, как он потратил полторы минуты.
+	//
+	// Проверка НЕ мешает обычному росту: если стримов нет и перезагрузка не идёт,
+	// growthDeferR299 возвращает false, и preflight работает как раньше.
+	if args.w != nil {
+		if deferNow, estimated, loaded, needed, active, pending := lr.proxy.growthDeferR299(
+			args.backendID, meta.ModelName, args.body, path); deferNow {
+			logger.Get().Infow("preflight helper: context growth deferred before RunPreflight (R299)",
+				"backend", args.backendID, "model", meta.ModelName,
+				"estimated_prompt_tokens", estimated, "required_tokens", needed,
+				"loaded_window_tokens", loaded, "active_streams", active,
+				"reload_pending", pending)
+			writeContextGrowthDeferred(args.w, meta.ModelName, needed, loaded, active, pending)
+			return true, &PreflightResult{Decision: PreflightAsyncReload}
+		}
+	}
+
 	res, err := coord.RunPreflight(
 		args.r.Context(),
 		args.backendID,

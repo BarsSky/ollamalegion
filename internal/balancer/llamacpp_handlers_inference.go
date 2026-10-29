@@ -256,7 +256,11 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	// в очереди 900 секунд и получал пустоту, хотя решение уже было известно.
 	if meta := ExtractRequestMeta(bodyBuf, r.URL.Path); meta != nil {
 		if blocked, needed, loaded := lr.proxy.contextGrowthBlocker(backendID, model, meta); blocked {
-			writeContextGrowthDeferred(w, model, needed, loaded)
+			// R299: в теле отказа — живые activeStreams и reloadPending (см.
+			// growth_guard_r299.go): «active streams=0» без reloadPending
+			// читалось оператором как «никто не мешает».
+			active, pending := growthBlockersR288(lr.proxy, backendID, model)
+			writeContextGrowthDeferred(w, model, needed, loaded, active, pending)
 			return
 		}
 	}
@@ -936,7 +940,11 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	// иначе клиент ждёт пустоту до 900 с вместо понятного «повторите».
 	if meta := ExtractRequestMeta(bodyBuf, r.URL.Path); meta != nil {
 		if blocked, needed, loaded := lr.proxy.contextGrowthBlocker(backendID, model, meta); blocked {
-			writeContextGrowthDeferred(w, model, needed, loaded)
+			// R299: в теле отказа — живые activeStreams и reloadPending (см.
+			// growth_guard_r299.go): «active streams=0» без reloadPending
+			// читалось оператором как «никто не мешает».
+			active, pending := growthBlockersR288(lr.proxy, backendID, model)
+			writeContextGrowthDeferred(w, model, needed, loaded, active, pending)
 			return
 		}
 	}
@@ -1113,7 +1121,11 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	// иначе клиент ждёт пустоту до 900 с вместо понятного «повторите».
 	if meta := ExtractRequestMeta(bodyBuf, r.URL.Path); meta != nil {
 		if blocked, needed, loaded := lr.proxy.contextGrowthBlocker(backendID, model, meta); blocked {
-			writeContextGrowthDeferred(w, model, needed, loaded)
+			// R299: в теле отказа — живые activeStreams и reloadPending (см.
+			// growth_guard_r299.go): «active streams=0» без reloadPending
+			// читалось оператором как «никто не мешает».
+			active, pending := growthBlockersR288(lr.proxy, backendID, model)
+			writeContextGrowthDeferred(w, model, needed, loaded, active, pending)
 			return
 		}
 	}

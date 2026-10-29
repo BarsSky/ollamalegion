@@ -48,7 +48,7 @@ func TestR288_PromptNeedsMoreContext(t *testing.T) {
 // TestR288_DeferredResponseIsHonest — ответ несёт причину, числа и Retry-After.
 func TestR288_DeferredResponseIsHonest(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeContextGrowthDeferred(rec, "gemma-4-E4B-it-Q4_K_M", 24096, 8192)
+	writeContextGrowthDeferred(rec, "gemma-4-E4B-it-Q4_K_M", 24096, 8192, 1, true)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("код = %d, want 503 (запрос корректный, окно мало)", rec.Code)
@@ -71,6 +71,17 @@ func TestR288_DeferredResponseIsHonest(t *testing.T) {
 	}
 	if hint, _ := body["hint"].(string); hint == "" {
 		t.Fatal("нет подсказки, что делать")
+	}
+	// R299: два РАЗНЫХ факта в теле. «active streams=0» при идущей перезагрузке —
+	// не противоречие, а честная картина; клиенту нужны оба поля.
+	if body["activeStreams"] != float64(1) {
+		t.Fatalf("activeStreams = %v, want 1 (живой счётчик, не «по умолчанию 0»)", body["activeStreams"])
+	}
+	if body["reloadPending"] != true {
+		t.Fatalf("reloadPending = %v, want true (перезагрузка идёт — причина ожидания)", body["reloadPending"])
+	}
+	if body["deferredReason"] != "context_growth_pending" || body["deferred"] != true {
+		t.Fatalf("нет единого формата «отложено» (R291): %v", body)
 	}
 }
 

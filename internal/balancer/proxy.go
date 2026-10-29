@@ -1351,6 +1351,38 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// R301 (2026-10-29): «окно не вырастет» решается ДО admission-очереди.
+	//
+	// ЖИВОЙ ДЕФЕКТ (стенд 573a03a3, нативная поверхность Ollama :18080).
+	// Второй запрос с options.num_ctx=16384 при загруженных 8192 встал в
+	// unified queue (wait_max_sec=900) рядом с активным стримом и был отменён
+	// клиентом через 120 с: «клиент отменил запрос, пока ждал слот». Ответ
+	// «окно сейчас не вырастет» был известен в ту же миллисекунду.
+	//
+	// Почему guard'ы не спасали: R288/R299 стоят на пути LlamaCppRouter
+	// (handleChat/handleGenerate) и на входе preflight'а в транспорте — оба
+	// ПОСЛЕ этой очереди. Это ровно тот класс дефекта, который в серии уже
+	// повторялся: новый путь не проходит через общий механизм.
+	//
+	// Проверка ничего не занимает и ничего не перезагружает: только кэш метрик
+	// (growthVerdictR301). Тело отказа — стандартное «отложено» (R291/R299), без
+	// нового формата: клиент обрабатывает его тем же правилом, что и остальные.
+	if !readOnlyOrMgmt && acquiredBackend == "" && model != "" && parsed != nil && len(parsed.RawBody) > 0 {
+		guardBackend := targetBackend
+		if guardBackend == "" {
+			guardBackend = p.backendWithLoadedModelR301(model)
+		}
+		if guardBackend != "" {
+			if v := p.growthVerdictR301(guardBackend, model, parsed.RawBody, path, parsed.Stream); v.Defer {
+				logGrowthVerdictR301("servehttp-before-admission", guardBackend, model, path, v)
+				w.Header().Set("X-NCtx-Reload-Decision", "context-growth")
+				writePreflightDeferredR299(w, p, guardBackend, model, parsed.RawBody, path,
+					growthDeferMessageR301(model, v), 30)
+				return
+			}
+		}
+	}
+
 	if acquiredBackend == "" {
 		// Round 22 (2026-08-03): read/mgmt endpoints не идут в очередь —
 		// они короткие операции, queueing тратит время впустую.

@@ -747,7 +747,30 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	bodyBuf []byte,
 	requestPath string,
 ) (modifiedBody []byte, needsProxy bool, errMsg string, statusCode int) {
-	if p.nctxReload == nil || len(bodyBuf) == 0 {
+	// R301 (2026-10-29): streaming-вердикт считается ДО проверки координатора.
+	//
+	// Почему здесь, а не ниже (где раньше стоял безусловный пропуск стриминга):
+	//   - координатор (p.nctxReload) может быть выключен конфигом, и тогда
+	//     прежний выход `p.nctxReload == nil` возвращал запрос как есть — то есть
+	//     «окно меньше нужного» снова уезжало в воркер;
+	//   - вердикт не перезагружает модель (это делает не-стриминговый путь), он
+	//     только приводит num_ctx к загруженному окну либо отказывает с числами.
+	// См. growth_stream_guard_r301.go — там же живой дефект и обоснование.
+	if len(bodyBuf) == 0 {
+		return bodyBuf, true, "", http.StatusOK
+	}
+	if modelName != "" && isStreamingFromBody("", bodyBuf) {
+		v := p.growthVerdictR301(backendID, modelName, bodyBuf, requestPath, true)
+		logGrowthVerdictR301("transport-preflight", backendID, modelName, requestPath, v)
+		if v.Served {
+			return v.Body, true, "", http.StatusOK
+		}
+		if v.Defer {
+			return bodyBuf, false, growthDeferMessageR301(modelName, v), http.StatusServiceUnavailable
+		}
+		return bodyBuf, true, "", http.StatusOK
+	}
+	if p.nctxReload == nil {
 		return bodyBuf, true, "", http.StatusOK
 	}
 
@@ -873,17 +896,10 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 			http.StatusServiceUnavailable
 	}
 
-	// Не делаем preflight-reload для streaming-запросов.
-	// Причина: если запустить reload посреди стрима (или прямо перед ним),
-	// текущий стрим оборвётся с "handle is nil", а следующий вызов preflight
-	// зависнет в ожидании reload. Клиент получит обрыв ответа.
-	//
-	// Для streaming-клиентов n_ctx reload обрабатывается в handleNCtxReload
-	// ПОСЛЕ получения ошибки ErrNCtxNeedsReload от cppworker (там уже есть
-	// streaming-aware retry-логика).
-	if isStreamingFromBody("", bodyBuf) {
-		return bodyBuf, true, "", http.StatusOK
-	}
+	// R301 (2026-10-29): streaming-запросы сюда уже не доходят — вердикт по ним
+	// считается в самом начале функции (см. блок сразу после проверки пустого
+	// тела), потому что он нужен и при выключенном координаторе. Здесь остаётся
+	// только НЕ-стриминговый путь, где рост окна возможен и выполняется ниже.
 
 	// 1. Извлекаем requested n_ctx: body > profile > backend.
 	//

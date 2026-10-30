@@ -253,13 +253,30 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 					backendID, model,
 					warmupOptions{NumCtx: resolved.Value, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)},
 				); loadErr != nil {
-					logger.Get().Errorw("proxyRequest: auto-load failed on generic llama.cpp path (R325)",
-						"backend", backendID, "model", model, "error", loadErr)
-					writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
-						"error": fmt.Sprintf("model %q is not loaded and auto-load failed: %v", model, loadErr),
-						"model": model,
-					})
-					return nil
+					// R325.1 (2026-10-30, найдено живой матрицей API): ТАЙМАУТ
+					// ЗАГРУЗКИ — НЕ ОТКАЗ. Загрузка воркера идёт 140-260 с, а
+					// executeLlamaCppLoad ждёт загрузку своим бюджетом (180 с) и
+					// возвращает ошибку вида "model load failed: " — пустую по
+					// смыслу. Живой прогон матрицы: /api/chat получал 503 через
+					// 180.6 с, хотя модель успешно загрузилась за 143 с (в логе
+					// "model loaded successfully"). Клиент видел «нет модели».
+					//
+					// Поэтому при ошибке загрузки сначала СПРАШИВАЕМ ГОТОВНОСТЬ в
+					// пределах штатного бюджета ожидания (LB_AUTO_LOAD_WAIT_SEC,
+					// тот же, что у handler-путей). Отказ отдаём только если модель
+					// так и не поднялась.
+					if p.waitModelReadyForAutoLoad(r.Context(), backendID, model) {
+						logger.Get().Infow("proxyRequest: auto-load reported error but model became ready (R325.1)",
+							"backend", backendID, "model", model, "load_error", loadErr)
+					} else {
+						logger.Get().Errorw("proxyRequest: auto-load failed on generic llama.cpp path (R325)",
+							"backend", backendID, "model", model, "error", loadErr)
+						writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+							"error": fmt.Sprintf("model %q is not loaded and auto-load failed: %v", model, loadErr),
+							"model": model,
+						})
+						return nil
+					}
 				}
 			}
 		}

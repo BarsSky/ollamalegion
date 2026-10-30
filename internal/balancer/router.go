@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"encoding/json"
 	"net/http"
 	"reflect"
 	"strings"
@@ -129,7 +130,58 @@ func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
 	if p.dispatchRouters(routers, w, r) {
 		return true
 	}
+	// R332 (2026-10-30): НЕИЗВЕСТНЫЙ ПУТЬ — это 404 в форме СВОЕЙ поверхности,
+	// а не «проксируем куда-нибудь».
+	//
+	// Живой факт (тесты api_contract, полная матрица): запрос на несуществующий
+	// путь уходил в общий прокси-путь, воркер отвечал своим `http.NotFound` —
+	// текстом "404 page not found" с Content-Type: text/plain, и балансер
+	// пересылал это как есть. Клиенты (Cline/OpenWebUI) разбирают тело ошибки как
+	// JSON, поэтому пользователь видел невнятную ошибку, а оператор — неверный код.
+	//
+	// Правило: если путь не обработан ни одним роутером, не является
+	// инференс-путём (chat/generate идут дальше в selectBackend) и не относится к
+	// read-only/mgmt (их проксируем как есть по контракту), то это 404 — и его
+	// тело обязано быть JSON своей поверхности.
+	if !isReadOnlyOrMgmtEndpoint(r.URL.Path) && !isChatOrGenerateRequest(r.URL.Path) {
+		writeUnknownPathJSONR332(w, r)
+		return true
+	}
 	return false
+}
+
+// writeUnknownPathJSONR332 — JSON-404 в форме поверхности запроса.
+//
+// Ollama: {"error": "<строка>"} — так его читают Cline/OpenWebUI.
+// OpenAI: {"error": {"message","type","code"}} — контракт OpenAI.
+func writeUnknownPathJSONR332(w http.ResponseWriter, r *http.Request) {
+	path := ""
+	prefix := ""
+	if r != nil && r.URL != nil {
+		path = r.URL.Path
+	}
+	if strings.HasPrefix(path, "/v1/") {
+		prefix = "openai"
+	}
+	body := map[string]interface{}{
+		"error": "unknown endpoint: " + path,
+		"code":  http.StatusNotFound,
+		"path":  path,
+	}
+	if prefix == "openai" {
+		body = map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": "unknown endpoint: " + path,
+				"type":    "invalid_request_error",
+				"code":    http.StatusNotFound,
+			},
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	if encoded, err := json.Marshal(body); err == nil {
+		_, _ = w.Write(append(encoded, '\n'))
+	}
 }
 
 // buildRoutersForDispatch — R59.15b: returns the priority-ordered list of

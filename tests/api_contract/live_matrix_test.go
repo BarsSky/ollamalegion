@@ -258,8 +258,11 @@ func TestLiveOllamaGenerate(t *testing.T) {
 	if done, _ := m["done"].(bool); !done {
 		t.Errorf("done != true в не-потоковом ответе: %s", string(raw))
 	}
+	// R335.2: при расхождении печатаем СЫРОЕ тело — иначе не понять, какая ветка
+	// ответа его сформировала (у /api/generate их несколько: обычная, пустой вывод,
+	// размышления без ответа).
 	if reason, _ := m["done_reason"].(string); !allowedOllamaDoneReason(reason) {
-		t.Errorf("done_reason = %q вне контракта", reason)
+		t.Errorf("done_reason = %q вне контракта; сырое тело: %s", reason, raw)
 	}
 }
 

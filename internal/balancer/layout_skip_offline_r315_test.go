@@ -47,7 +47,9 @@ func r315Proxy(t *testing.T, status types.BackendStatus, role string) (*Proxy, *
 }
 
 func TestR315_OfflineBackendGetsNoOrder(t *testing.T) {
-	for _, status := range []types.BackendStatus{types.StatusOffline, types.StatusOllamaUnavailable} {
+	// R315.1: unhealthy добавлен по живому прогону (донор висит именно в нём).
+	// degraded НЕ входит: узел работает частично и приказ ему нужен.
+	for _, status := range []types.BackendStatus{types.StatusOffline, types.StatusOllamaUnavailable, types.StatusUnhealthy} {
 		p, probes := r315Proxy(t, status, types.BackendRoleDonor)
 		degraded, reason := p.EnsureRPCLayout("node-1")
 		if !degraded {

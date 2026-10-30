@@ -29,6 +29,8 @@ package balancer
 import (
 	"encoding/json"
 	"strings"
+
+	"ollama-loadbalancer/pkg/logger"
 )
 
 // nativeDoneHygieneR321 — нормализовать завершающий NDJSON-чанк.
@@ -55,6 +57,20 @@ func nativeDoneHygieneR321(line string, reasoningChars, visibleStreamedChars int
 	if !done {
 		return line, false
 	}
+	// R328 (2026-10-30): причина обязана быть контрактным значением для Ollama.
+	// Наш внутренний "truncated" (обрыв по НАШЕМУ таймауту/лимиту, R297) для
+	// клиента означает «ответ не дописан» — это "length"; пустое значение — "stop".
+	// Реестр — done_reason_registry_r328.go; здесь единственная точка, где кадр
+	// воркера уходит клиенту без изменений, поэтому нормализация живёт тут.
+	rawReason, _ := chunk["done_reason"].(string)
+	reason, reasonChanged := normalizeDoneReasonForSurface("ollama", rawReason)
+	if reasonChanged {
+		chunk["done_reason"] = reason
+		if logger.Get() != nil {
+			logger.Get().Infow("proxyRequestLlamaCpp[native]: done_reason нормализован (R328)",
+				"was", rawReason, "now", reason)
+		}
+	}
 	// R321.2 (2026-10-30): ОТВЕТ УЖЕ УЕХАЛ ДЕЛЬТАМИ — трогать нельзя.
 	//
 	// ЖИВОЙ РЕГРЕСС (нашёл оператор сразу после выката R321): в конце КАЖДОГО
@@ -68,15 +84,28 @@ func nativeDoneHygieneR321(line string, reasoningChars, visibleStreamedChars int
 	// Если был — это штатное завершение (R108: в done-чанке Ollama content
 	// пустой), и подменять его нельзя ни причиной, ни пояснением.
 	if visibleStreamedChars > 0 {
-		return line, false
+		if !reasonChanged {
+			return line, false
+		}
+		out, err := json.Marshal(chunk)
+		if err != nil {
+			return line, false
+		}
+		return string(out), true
 	}
 	// Причина от воркера — факт, её не подменяем, КРОМЕ одного случая: "stop"
 	// при пустом ответе после размышлений. Здесь "stop" означает «модель
 	// закончила», хотя бюджет кончился, и клиент по этому значению закрывает ход.
-	// Остальные значения ("length", "tool_calls", "error", "cancelled") честные.
-	reason, _ := chunk["done_reason"].(string)
+	// Остальные значения ("tool_calls", "error", "cancelled") честные.
 	if reason != "" && reason != "stop" && reason != "length" {
-		return line, false
+		if !reasonChanged {
+			return line, false
+		}
+		out, err := json.Marshal(chunk)
+		if err != nil {
+			return line, false
+		}
+		return string(out), true
 	}
 	msg, _ := chunk["message"].(map[string]interface{})
 	if msg == nil {

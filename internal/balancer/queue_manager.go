@@ -176,6 +176,57 @@ func (qm *QueueManager) getProcessingDTOs() []map[string]interface{} {
 	return result
 }
 
+// noteAdmissionPendingR329 — R329 (2026-10-30): строка «запрос ждёт свободный
+// слот» для монитора.
+//
+// ЖИВАЯ ЖАЛОБА: «запрос крутится, а на мониторе его нет». С R78 в qm.pending
+// никто не писал, и панель очереди показывала только агрегат CurrentSize: оператор
+// не мог отличить «запрос в очереди» от «запрос потерялся».
+//
+// Строка живёт от постановки до выдачи слота или отказа; удаляется по указателю,
+// поэтому параллельные запросы с одинаковым именем модели не мешают друг другу.
+func (qm *QueueManager) noteAdmissionPendingR329(model, target string) *QueuedRequest {
+	if qm == nil {
+		return nil
+	}
+	row := &QueuedRequest{Model: model, Target: target, Enqueued: time.Now()}
+	qm.pendingMu.Lock()
+	qm.pending = append(qm.pending, row)
+	qm.pendingMu.Unlock()
+	return row
+}
+
+// clearAdmissionPendingR329 — снять строку ожидания (nil-safe).
+func (qm *QueueManager) clearAdmissionPendingR329(row *QueuedRequest) {
+	if qm == nil || row == nil {
+		return
+	}
+	qm.pendingMu.Lock()
+	for i := range qm.pending {
+		if qm.pending[i] == row {
+			qm.pending = append(qm.pending[:i], qm.pending[i+1:]...)
+			break
+		}
+	}
+	qm.pendingMu.Unlock()
+}
+
+// noteAdmissionPendingR329 / clearAdmissionPendingR329 — обёртки на Proxy:
+// admission-путь работает с прокси, а не с менеджером очереди напрямую.
+func (p *Proxy) noteAdmissionPendingR329(model, target string) *QueuedRequest {
+	if p == nil {
+		return nil
+	}
+	return p.queueMgr.noteAdmissionPendingR329(model, target)
+}
+
+func (p *Proxy) clearAdmissionPendingR329(row *QueuedRequest) {
+	if p == nil {
+		return
+	}
+	p.queueMgr.clearAdmissionPendingR329(row)
+}
+
 // getPendingDTOs - получение DTO pending запросов для API (см. выше).
 func (qm *QueueManager) getPendingDTOs() []map[string]interface{} {
 	qm.pendingMu.RLock()

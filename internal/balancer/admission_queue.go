@@ -792,6 +792,15 @@ func (lr *LlamaCppRouter) acquireInferenceAdmission(
 	// keepalive'ы до выдачи слота (см. комментарий к функции) — иначе 200 уходит
 	// клиенту раньше, чем он получил слот, и ни X-Queue-*, ни 503 при таймауте
 	// до него уже не доедут.
+	//
+	// R329 (2026-10-30): ждущий запрос ОБЯЗАН быть виден в мониторе.
+	//
+	// ЖИВАЯ ЖАЛОБА: «запрос крутится, а на мониторе его нет». Строки ожидания в
+	// панели очереди никто не писал с R78: qm.pending оставался мёртвым срезом, и
+	// оператор видел только агрегат. Регистрируем строку «ждёт слот» ЗДЕСЬ — до
+	// того, как запрос получит или не получит слот, и снимаем её при выходе.
+	pendingRow := lr.proxy.noteAdmissionPendingR329(model, backendID)
+	defer lr.proxy.clearAdmissionPendingR329(pendingRow)
 	lease, position, err := lr.proxy.acquireInferenceSlot(r.Context(), backendID, session)
 	switch {
 	case err == nil:

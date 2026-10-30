@@ -1505,6 +1505,67 @@ func (p *Proxy) cacheLoadedContextLength(backendID, modelName string, nCtx int) 
 	})
 }
 
+// cacheLoadedWindowActualR327 — R327 (2026-10-30): записать ПОДТВЕРЖДЁННОЕ окно
+// во ВСЕ поля кэша, а не только в суммарное.
+//
+// ЖИВАЯ ЖАЛОБА («старый кэш от прошлой сессии — новый клиент, новая сессия, а
+// места не хватило»). После перезагрузки модели кэш метрик получал только
+// ContextLength. ContextPerSeq и MaxSlots оставались от ПРЕДЫДУЩЕЙ загрузки, а
+// резолвер окна (num_ctx_resolver.go: loadedPerSeqNCtx) отдаёт приоритет именно
+// ContextPerSeq — то есть до следующего тика поллера клиент видел устаревшее окно
+// слота и мог получить отказ «не помещается» при фактически большем окне.
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ ПРАВКА cacheLoadedContextLength. Та функция
+// пишет ЦЕЛЕВОЕ окно в момент, когда async-reload только запущен (R68: чтобы
+// второй запрос не запустил второй reload), и по контракту R83 она не должна
+// трогать окно слота — иначе резолвер начнёт выдавать ещё не достигнутое окно
+// (это ловят TestR83_StaleCache_ResolverUsesLiveWindow). Здесь наоборот: функция
+// вызывается ТОЛЬКО после подтверждения готовности (waitForBackendNCtx вернул
+// true), поэтому значения — факт, а не намерение.
+//
+// perSeq — окно НА КЛИЕНТА (то, что проверял waitForBackendNCtx); суммарное
+// считается по числу слотов из кэша (cppworker отдаёт `max_slots`, при неизвестном
+// считаем 1 — окно целиком одному клиенту, как это делает сам воркер).
+func (p *Proxy) cacheLoadedWindowActualR327(backendID, modelName string, perSeq int) {
+	if p == nil || p.metricsMgr == nil || perSeq <= 0 || modelName == "" {
+		return
+	}
+	p.metricsMgr.mu.Lock()
+	defer p.metricsMgr.mu.Unlock()
+	lm, ok := p.metricsMgr.llamaMetrics[backendID]
+	if !ok || lm == nil {
+		lm = &types.LlamaCppMetrics{}
+		p.metricsMgr.llamaMetrics[backendID] = lm
+	}
+	for i := range lm.LoadedModels {
+		if lm.LoadedModels[i].Name == modelName || containsFold(lm.LoadedModels[i].Name, modelName) {
+			applyConfirmedWindowR327(&lm.LoadedModels[i], perSeq)
+			return
+		}
+	}
+	appended := types.LlamaCppModel{Name: modelName, State: "loaded"}
+	applyConfirmedWindowR327(&appended, perSeq)
+	lm.LoadedModels = append(lm.LoadedModels, appended)
+}
+
+// applyConfirmedWindowR327 — выставить три поля окна из подтверждённого значения.
+//
+// ContextPerSeq — окно слота (факт), MaxSlots — число слотов (из кэша воркера),
+// ContextLength — суммарное окно = окно слота × слоты. Именно так их и читают
+// collectPreflightState и резолвер.
+func applyConfirmedWindowR327(m *types.LlamaCppModel, perSeq int) {
+	if m == nil || perSeq <= 0 {
+		return
+	}
+	slots := m.MaxSlots
+	if slots <= 0 {
+		slots = 1
+	}
+	m.MaxSlots = slots
+	m.ContextPerSeq = perSeq
+	m.ContextLength = perSeq * slots
+}
+
 // patchNumCtxInBody — патчит options.num_ctx (Ollama) или top-level num_ctx
 // (OpenAI/generic) в JSON body к заданному значению.
 //

@@ -228,7 +228,13 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 				// Кэш обновляем СРАЗУ: иначе следующий (transport-level) чек до
 				// обновления metrics poller увидит старый n_ctx и запустит второй
 				// reload уже после того, как клиент дождался первого.
-				lr.proxy.cacheLoadedContextLength(args.backendID, meta.ModelName, res.TargetNCtx)
+				//
+				// R327 (2026-10-30): здесь окно ПОДТВЕРЖДЕНО (waitForBackendNCtx
+				// только что вернул true), поэтому пишем ВСЕ три поля — включая
+				// окно слота, которое резолвер читает первым. До этого правки
+				// ContextPerSeq оставался от прошлой загрузки, и клиент до
+				// следующего тика поллера видел устаревшее окно.
+				lr.proxy.cacheLoadedWindowActualR327(args.backendID, meta.ModelName, res.TargetNCtx)
 				logger.Get().Infow(i18n.T("balancer.preflight_helper.model_ready_after_reload_info"),
 					"backend", args.backendID, "model", meta.ModelName,
 					"target_n_ctx", res.TargetNCtx, "waited_sec", int(wait.Seconds()))

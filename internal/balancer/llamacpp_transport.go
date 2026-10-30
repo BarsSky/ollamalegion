@@ -1994,7 +1994,22 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		Flush(w)
 	}
 
-	if streamCompleted && IsAutoContinueOnTruncationEnabled() && accumulatedPlainContent != "" {
+	// R322 (2026-10-30, найдено аудитом маршрутов): после уже отданного клиенту
+	// терминатора писать в поток НЕЛЬЗЯ.
+	//
+	// ЖИВОЙ ДЕФЕКТ. На нативном пути терминальный кадр воркера (`done:true`)
+	// уходит клиенту как есть (passthrough), а блок авто-продолжения ниже всё
+	// равно дорабатывал ответ: `EmitContinuationNDJSON` печатает ещё один
+	// content-кадр и СВОЙ `done:true` — то есть после завершения хода в потоке
+	// появлялся второй терминатор. Клиенты (Cline, OpenWebUI) такой поток
+	// считают битым: часть закрывает ход на первом `done`, часть — на втором, и
+	// «ответ не завершён» выглядит как незавершённая задача (жалоба про
+	// COMPLETE), а часть сообщений теряется.
+	//
+	// Авто-продолжение имеет смысл только там, где терминальный кадр УДЕРЖАН
+	// (deferredDoneChunk): тогда клиент ещё не получил завершения и продолжение
+	// чинит обрыв. Если терминатор уже ушёл — доработка запрещена.
+	if streamCompleted && IsAutoContinueOnTruncationEnabled() && accumulatedPlainContent != "" && !priorDoneEmitted {
 		finalContent := accumulatedPlainContent
 		if upstreamDoneContent != "" {
 			// If cppworker sent full content in the done chunk (not chunked),

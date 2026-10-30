@@ -1563,16 +1563,24 @@ func startsWithReasoningMarker(s string) bool {
 }
 
 // toolsReasoningUnclosedR320 — R320 (2026-10-30): закончился ли вывод ВНУТРИ
-// незакрытого блока размышлений (то есть ответ не начат, а бюджет исчерпан).
+// незакрытого блока размышлений, НЕ дав видимого ответа.
 //
-// Два независимых признака, и оба нужны:
-//   - открывающий маркер был В ВЫВОДЕ и не закрыт (hasOpenThink);
-//   - маркер открыл ШАБЛОН в промпте (gemma-4: канал `thought`), тогда в выводе
-//     открывающего тега нет вовсе и «закрыто» только приходом закрывающего.
+// R320.1 (2026-10-30, найдено аудитом маршрутов): первый вариант правила
+// проверял только «в промпте был открыт канал размышлений, а закрывающего тега в
+// выводе нет» — и объявлял `length` ЛЮБОМУ нормальному ответу, если шаблон
+// открывает канал в промпте (gemma-4). Клиент получал ложное «ответ усечён» на
+// каждом ходе: отсюда жалоба «Cline не ловит COMPLETE».
 //
-// Пустой вывод размышлением не считается: там нечего объяснять.
-func toolsReasoningUnclosedR320(fullOutput, prompt string) bool {
+// Ключевое условие, которого не хватало: размышления «съели ход» только тогда,
+// когда ВИДИМОГО ответа не появилось вовсе. Если ответ есть, блок размышлений
+// фактически закрылся (маркер мог не совпасть с тем, что ждёт парсер), и причина
+// остановки — обычная.
+func toolsReasoningUnclosedR320(fullOutput, visibleOutput, prompt string) bool {
 	if strings.TrimSpace(fullOutput) == "" {
+		return false
+	}
+	// Появился видимый ответ — ход не «ушёл в размышления».
+	if strings.TrimSpace(visibleOutput) != "" {
 		return false
 	}
 	if hasOpenThink(fullOutput) {
@@ -1596,11 +1604,11 @@ func toolsReasoningUnclosedR320(fullOutput, prompt string) bool {
 // Контракт: Ollama для усечения по бюджету отдаёт done_reason:"length"; для
 // вызова инструмента — "tool_calls". Оба значения клиенты понимают, и оба
 // отличимы от «модель закончила».
-func toolsStopReasonR320(fullOutput, prompt string, toolCalls int) string {
+func toolsStopReasonR320(fullOutput, visibleOutput, prompt string, toolCalls int) string {
 	if toolCalls > 0 {
 		return "tool_calls"
 	}
-	if toolsReasoningUnclosedR320(fullOutput, prompt) {
+	if toolsReasoningUnclosedR320(fullOutput, visibleOutput, prompt) {
 		return "length"
 	}
 	return "stop"
@@ -2140,7 +2148,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"message":    map[string]string{"role": "assistant", "content": ""},
 				"done":       true,
 				// R320: причина — та же честная, что и в основной ветке.
-				"done_reason": toolsStopReasonR320(fullOutput, prompt, len(toolCalls)),
+				"done_reason": toolsStopReasonR320(fullOutput, outputForParse, prompt, len(toolCalls)),
 			}
 			doneJSON, _ := json.Marshal(doneChunk)
 			sw.Writef("%s\n", doneJSON)
@@ -2157,7 +2165,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"created_at":  createdAt,
 				"message":     map[string]string{"role": "assistant", "content": ""},
 				"done":        true,
-				"done_reason": toolsStopReasonR320(fullOutput, prompt, len(toolCalls)),
+				"done_reason": toolsStopReasonR320(fullOutput, outputForParse, prompt, len(toolCalls)),
 			}
 			doneJSON, _ := json.Marshal(doneChunk)
 			sw.Writef("%s\n", doneJSON)
@@ -2330,7 +2338,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// Клиент (Cline) читает это как «модель закончила» и закрывает ход —
 		// отсюда жалоба «завершение посреди рассуждений». Честная причина —
 		// через toolsStopReasonR320 (length при обрезанном reasoning).
-		finalChunk["done_reason"] = toolsStopReasonR320(fullOutput, prompt, len(toolCalls))
+		finalChunk["done_reason"] = toolsStopReasonR320(fullOutput, outputForParse, prompt, len(toolCalls))
 	}
 
 	// R113 (2026-10-13): ЯВНОЕ ОТСЛЕЖИВАНИЕ ОТВЕТА. Одна строка на запрос, по

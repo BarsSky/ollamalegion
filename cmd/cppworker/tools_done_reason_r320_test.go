@@ -31,6 +31,7 @@ func TestR320_ToolsStopReasonContract(t *testing.T) {
 	cases := []struct {
 		name      string
 		output    string
+		visible   string
 		prompt    string
 		toolCalls int
 		want      string
@@ -42,32 +43,35 @@ func TestR320_ToolsStopReasonContract(t *testing.T) {
 			want:      "tool_calls",
 		},
 		{
-			name:   "обычный завершённый ответ — stop",
-			output: "Всего 15 яблок. Ответ: 15.",
-			prompt: "Сколько яблок?",
-			want:   "stop",
+			name:    "обычный завершённый ответ — stop",
+			output:  "Всего 15 яблок. Ответ: 15.",
+			visible: "Всего 15 яблок. Ответ: 15.",
+			prompt:  "Сколько яблок?",
+			want:    "stop",
 		},
 		{
-			name:   "открывающий маркер в выводе не закрыт — length",
+			name:   "открывающий маркер в выводе не закрыт и ответа нет — length",
 			output: "<think>Сначала посчитаем: 3 * 4 = 12, потом",
 			want:   "length",
 		},
 		{
-			name:   "маркер закрыт — stop",
-			output: "<think>посчитаем</think>Всего 15 яблок.",
-			want:   "stop",
+			name:    "маркер закрыт — stop",
+			output:  "<think>посчитаем</think>Всего 15 яблок.",
+			visible: "Всего 15 яблок.",
+			want:    "stop",
 		},
 		{
-			name:   "блок открыт ШАБЛОНОМ в промпте и не закрыт — length",
+			name:   "блок открыт ШАБЛОНОМ в промпте, ответа нет — length",
 			output: "Сначала посчитаем: 3 * 4 = 12, потом",
 			prompt: "user: задача<|channel>thought\n",
 			want:   "length",
 		},
 		{
-			name:   "блок открыт шаблоном и закрыт моделью — stop",
-			output: "посчитаем<channel|>Всего 15 яблок.",
-			prompt: "user: задача<|channel>thought\n",
-			want:   "stop",
+			name:    "блок открыт шаблоном и модель дала ответ — stop",
+			output:  "посчитаем<channel|>Всего 15 яблок.",
+			visible: "Всего 15 яблок.",
+			prompt:  "user: задача<|channel>thought\n",
+			want:    "stop",
 		},
 		{
 			name:   "пустой вывод — не размышления, stop",
@@ -75,10 +79,21 @@ func TestR320_ToolsStopReasonContract(t *testing.T) {
 			prompt: "user: задача<|channel>thought\n",
 			want:   "stop",
 		},
+		{
+			// R320.1: ровно та регрессия, на которую указал аудит. Шаблон открыл
+			// канал размышлений в промпте (gemma-4), модель ответила нормально и
+			// закрывающего тега не эмитила — прежнее правило объявляло length
+			// ЛЮБОМУ такому ответу, и клиент (Cline) не мог закрыть ход.
+			name:    "ответ есть, но закрывающего тега нет — stop, а не length",
+			output:  "Думаю так: 12*12=144. Ответ: 144.",
+			visible: "Думаю так: 12*12=144. Ответ: 144.",
+			prompt:  "user: задача<|channel>thought\n",
+			want:    "stop",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := toolsStopReasonR320(tc.output, tc.prompt, tc.toolCalls); got != tc.want {
+			if got := toolsStopReasonR320(tc.output, tc.visible, tc.prompt, tc.toolCalls); got != tc.want {
 				t.Errorf("toolsStopReasonR320 = %q, want %q (контракт Ollama: stop|length|tool_calls)", got, tc.want)
 			}
 		})
@@ -87,13 +102,13 @@ func TestR320_ToolsStopReasonContract(t *testing.T) {
 
 // TestR320_ToolsReasoningUnclosed — разбор «вывод кончился внутри размышлений».
 func TestR320_ToolsReasoningUnclosed(t *testing.T) {
-	if !toolsReasoningUnclosedR320("<think>начало", "") {
+	if !toolsReasoningUnclosedR320("<think>начало", "", "") {
 		t.Error("открытый <think> без закрытия должен считаться незакрытым reasoning")
 	}
-	if toolsReasoningUnclosedR320("<think>начало</think>ответ", "") {
+	if toolsReasoningUnclosedR320("<think>начало</think>ответ", "ответ", "") {
 		t.Error("закрытый блок — не незакрытый reasoning")
 	}
-	if toolsReasoningUnclosedR320("", "prompt<|channel>thought\n") {
+	if toolsReasoningUnclosedR320("", "", "prompt<|channel>thought\n") {
 		t.Error("пустой вывод нельзя называть незакрытым reasoning: размышлений не было вовсе")
 	}
 }

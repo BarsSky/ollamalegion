@@ -1314,6 +1314,8 @@ func (p *Proxy) warmupLlamaCppModel(backendID, host string, port int, model stri
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
+		// R307: /load у воркера закрыт authMiddleware — предъявляем его токен.
+		applyWorkerAdminTokenR307(req.Header, "/load", p.workerAdminToken(backendID))
 		resp, err := p.client.Do(req)
 		if err != nil {
 			logger.Get().Errorw("warmupLlamaCppModel: load request failed", "backend", backendID, "model", model, "error", err)

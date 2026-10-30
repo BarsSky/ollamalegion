@@ -25,12 +25,12 @@ func setupRouter() http.Handler {
 	// R118.15 (2026-10-14): замер канала до узла раскладки средствами продукта —
 	// отдаём N байт известного объёма, время скачивания засекает балансер.
 	mux.HandleFunc("/api/rpc-link-probe", handleLinkProbe)
-	mux.HandleFunc("/api/models/load", handleLoadModel)
-	mux.HandleFunc("/api/models/load-with-params", handleLoadWithParams)         // ??????????? ????????? (Session 4 P-1)
-	mux.HandleFunc("/load", handleLoadModel)                                     // alias for balancer warmup
+	mux.HandleFunc("/api/models/load", authMiddleware(handleLoadModel))
+	mux.HandleFunc("/api/models/load-with-params", authMiddleware(handleLoadWithParams))         // ??????????? ????????? (Session 4 P-1)
+	mux.HandleFunc("/load", authMiddleware(handleLoadModel))                                     // alias for balancer warmup
 	mux.HandleFunc("/api/models/load/progress", handleLoadProgress)              // loading state polling
 	mux.HandleFunc("/api/models/load/progress/stream", handleLoadProgressStream) // Round 25: SSE stream
-	mux.HandleFunc("/api/models/unload", handleUnloadModel)
+	mux.HandleFunc("/api/models/unload", authMiddleware(handleUnloadModel))
 	mux.HandleFunc("/api/models/reload", authMiddleware(handleReloadModel))
 	mux.HandleFunc("/api/models/active-queries", handleGetActiveQueries) // Round 26 v0.5.13: WebUI busy badge
 	mux.HandleFunc("/api/models", handleListModels)
@@ -42,8 +42,8 @@ func setupRouter() http.Handler {
 	// R93 (2026-10-09): принудительная проверка каталога моделей на диске
 	// (кнопка «Обновить» в WebUI и force-refresh каталога балансером).
 	mux.HandleFunc("/api/models/refresh", handleRefreshModelsDir)
-	mux.HandleFunc("/api/models/delete", handleDeleteModel)
-	mux.HandleFunc("/api/delete", handleDeleteModel) // Ollama-compatible alias
+	mux.HandleFunc("/api/models/delete", authMiddleware(handleDeleteModel))
+	mux.HandleFunc("/api/delete", authMiddleware(handleDeleteModel)) // Ollama-compatible alias
 	// R89: перенос модели между бэкендами (источник отдаёт файл, приёмник
 	// сохраняет). Под authMiddleware — как /api/models/reload: это чтение файлов
 	// и запись в каталог моделей, а не публичный трафик генерации. Если токен в

@@ -300,6 +300,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			req.Header.Add(key, value)
 		}
 	}
+	// R307: административные ручки воркера закрыты токеном. Клиентский токен
+	// (для балансера) воркеру не годится — подставляем токен ЭТОГО воркера.
+	applyWorkerAdminTokenR307(req.Header, llamacppPath, p.workerAdminToken(backendID))
 
 	clientRealIP := p.getClientRealIP(r)
 	if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
@@ -492,6 +495,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				}
 				req2.Header.Set("X-Forwarded-For", clientRealIP)
 				req2.Header.Set("X-Real-IP", clientRealIP)
+				// R307: административная ручка воркера закрыта токеном — ретрай тоже.
+				applyWorkerAdminTokenR307(req2.Header, llamacppPath, p.workerAdminToken(backendID))
 				resp, err = clientForReq.Do(req2)
 				if err != nil {
 					durationMs := time.Since(llamaStartTime).Milliseconds()

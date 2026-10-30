@@ -1559,6 +1559,8 @@ func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID
 			}
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
+		// R307: административная ручка воркера закрыта токеном — предъявляем.
+		applyWorkerAdminTokenR307(httpReq.Header, "/api/models/load", mm.workerAdminToken(backendID))
 		if rid := RequestIDFromContext(httpReq.Context()); rid != "" {
 			httpReq.Header.Set(requestIDHeader, rid)
 		}
@@ -1810,7 +1812,7 @@ func (mm *ModelManager) executeLlamaCppUnload(host string, port int, backendID s
 		unloadURL += "&force=true"
 	}
 
-	resp, err := mm.sendRawRequest("POST", unloadURL, nil)
+	resp, err := mm.sendRawRequestWithTokenR307("POST", unloadURL, nil, mm.workerAdminToken(backendID))
 	if err != nil {
 		return &ModelOpResult{
 			Success:   false,
@@ -2027,6 +2029,15 @@ func (mm *ModelManager) sendOllamaRequest(method, url, backendID string, req Mod
 // установлен в ServeHTTP) — чтобы cppworker мог логировать тот же
 // request_id и можно было проследить всю цепочку по одному grep'у.
 func (mm *ModelManager) sendRawRequest(method, url string, body interface{}) (*http.Response, error) {
+	return mm.sendRawRequestWithTokenR307(method, url, body, "")
+}
+
+// sendRawRequestWithTokenR307 — тот же вызов с токеном административной ручки.
+//
+// R307: unload/delete у воркера закрыты authMiddleware. Пустой token означает
+// «у бэкенда токена нет»: заголовок не ставится, воркер без токена пропустит,
+// воркер с токеном ответит 401 — и это будет видно, а не проглочено.
+func (mm *ModelManager) sendRawRequestWithTokenR307(method, url string, body interface{}, token string) (*http.Response, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request body: %w", err)
@@ -2037,6 +2048,9 @@ func (mm *ModelManager) sendRawRequest(method, url string, body interface{}) (*h
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(token) != "" {
+		req.Header.Set("X-API-Token", token)
+	}
 
 	// Пробрасываем request_id из ctx, если он есть.
 	if rid := RequestIDFromContext(req.Context()); rid != "" {

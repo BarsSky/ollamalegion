@@ -229,6 +229,9 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			req.Header.Add(key, value)
 		}
 	}
+	// R307: административные ручки воркера закрыты токеном. Клиентский токен
+	// (для балансера) воркеру не годится — подставляем токен ЭТОГО воркера.
+	applyWorkerAdminTokenR307(req.Header, llamacppPath, p.workerAdminToken(backendID))
 
 	// F.0.4 (2026-06-28): session F — error context + EOF retry для non-streaming.
 	//
@@ -279,6 +282,8 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			}
 			req2.Header.Set("Content-Type", "application/json")
 			req2.Header.Set("Accept", "application/json")
+			// R307: административная ручка воркера закрыта токеном — ретрай тоже.
+			applyWorkerAdminTokenR307(req2.Header, llamacppPath, p.workerAdminToken(backendID))
 			resp, err = client.Do(req2)
 			if err == nil {
 				break // success
@@ -360,6 +365,8 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 						req2.Header.Add(key, value)
 					}
 				}
+				// R307: административная ручка воркера закрыта токеном — ретрай тоже.
+				applyWorkerAdminTokenR307(req2.Header, llamacppPath, p.workerAdminToken(backendID))
 				resp, err = client.Do(req2)
 				if err != nil {
 					durationMs := time.Since(nonStreamStart).Milliseconds()

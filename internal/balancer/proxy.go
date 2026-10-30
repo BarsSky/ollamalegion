@@ -1458,6 +1458,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			sessionKey = RequestSessionKey(r, nil)
 		}
 		waited, position := time.Duration(0), 0
+		// R329 (2026-10-30): ждущий запрос виден в мониторе и на ЭТОМ пути.
+		//
+		// Строка «ждёт слот» сначала появилась только в per-backend admission
+		// (acquireInferenceAdmission), но Ollama-поверхность ждёт в ЕДИНОЙ очереди
+		// (waitForInferenceBackend) — то есть живой запрос Cline/OpenWebUI снова
+		// был невидим на мониторе (current_size рос, pending пуст). Регистрируем
+		// строку здесь, до ожидания, и снимаем при выходе.
+		pendingRow := p.noteAdmissionPendingR329(model, "unified")
+		defer p.clearAdmissionPendingR329(pendingRow)
 		unifiedBackend, unifiedRelease, unifiedWaited, unifiedPosition, waitErr :=
 			p.waitForInferenceBackend(ctxWithRID, model, bt, sessionKey)
 		if waitErr == nil {

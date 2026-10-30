@@ -2191,12 +2191,33 @@ func (b *Backend) calculateResourceLimits(name string, budget memfit.Budget) Res
 
 	// Тип KV-cache: у загруженной модели — фактический, иначе дефолт конфига.
 	loadedKV := ""
+	var loadedInfo *ModelInfo
 	if info, err := b.GetModel(name); err == nil && info != nil {
 		loadedKV = info.KVCacheType
+		loadedInfo = info
 	}
 	kvType := MemfitKVType(b.EffectiveKVCacheType(loadedKV))
 
-	exact, hard := memfit.Ceilings(spec, kvType, budget, MemfitPolicy())
+	// R306 (2026-10-30): веса ЗАГРУЖЕННОЙ модели возвращаются в бюджет.
+	//
+	// ЗАЧЕМ. memfit.Ceilings считает потолок как (свободная VRAM − размер весов) /
+	// KV на токен — то есть предполагает, что модель ещё не загружена. Для
+	// загруженной модели веса УЖЕ вычтены из свободной VRAM, и Ceilings вычитает
+	// их второй раз.
+	//
+	// ЖИВОЙ ФАКТ (стенд, gemma-4-E4B, ctx 32768, модель работает и отвечает):
+	// /api/models отдавал max_vram_n_ctx=0 при vram_known=true и
+	// gguf_max_context=131072. По контракту поля это «веса не влезают ни при каком
+	// gpu_layers» — ложь: модель загружена и обслуживает запросы. Следствия были
+	// ровно те, из-за которых появился этот разбор: отказ по окну не мог сослаться
+	// на физический предел (он «0»), а оператор не понимал, поможет ли поднять
+	// LB_NCTX_RELOAD_MAX_N_CTX — то есть какие числа реально связывают.
+	budgetForCeilings := budget
+	if restored := restoredWeightsBytesR306(spec, loadedInfo); restored.Positive() {
+		budgetForCeilings.VRAMFree += restored
+	}
+
+	exact, hard := memfit.Ceilings(spec, kvType, budgetForCeilings, MemfitPolicy())
 	limits.MaxVRAMNCtx = exact
 	limits.MaxRAMNCtx = hard
 	limits.ModelMaxContext = spec.TrainCtx
@@ -4229,4 +4250,29 @@ func (b *Backend) IdleUnloadStatus() (time.Duration, bool) {
 		return 0, false
 	}
 	return u.IdleTimeout(), u.Running()
+}
+
+// restoredWeightsBytesR306 — сколько ВЕСОВ модели уже занято в VRAM.
+//
+// Возвращаем ТОЛЬКО веса (GGUF), а не весь VRAMUsage: KV-кэш текущего окна при
+// перезагрузке освободится, но в расчёте потолка он и не вычитается — Ceilings
+// считает окно с нуля. Смешивать эти две вещи значило бы завысить потолок на
+// размер текущего KV.
+//
+// Доля — по числу слоёв на GPU: при частичной выгрузке в RAM ушли не все веса, и
+// вернуть в бюджет полный размер файла значило бы пообещать окно, которого не
+// будет. Если на GPU не ушло ни одного слоя — возвращать нечего.
+func restoredWeightsBytesR306(spec memfit.ModelSpec, loaded *ModelInfo) memfit.Bytes {
+	if loaded == nil || loaded.State != StateLoaded || !spec.SizeBytes.Positive() {
+		return 0
+	}
+	layers := loaded.NLayers
+	gpuLayers := loaded.GPULayers
+	if layers > 0 && gpuLayers > 0 && gpuLayers < layers {
+		return spec.SizeBytes.Scale(int64(gpuLayers), int64(layers))
+	}
+	if gpuLayers == 0 && layers > 0 {
+		return 0
+	}
+	return spec.SizeBytes
 }

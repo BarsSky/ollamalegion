@@ -222,6 +222,33 @@ cppworker сериализует tool-сообщения в prompt модели 
 | `/api/v1/cppworker/model-profiles/{name}` | `DELETE` | Удалить профиль | ✅ |
 | `/api/v1/cppworker/model-profiles/{name}/apply` | `POST` | Save + reload модели на всех llama_cpp бэкендах | ✅ |
 
+**Почему окно меньше, чем модель умеет (R267 + R319).** Оба `GET`-ответа несут рядом с
+профилем вычисленную причину ограничения окна — чтобы не искать её в compose-файле:
+
+```json
+{
+  "models": { "gemma-4-E4B-it-Q4_K_M": { "contextLength": 32768, ... } },
+  "effectiveContext": {
+    "gemma-4-E4B-it-Q4_K_M": {
+      "effectiveContextLength": 32768,
+      "limitedBy": "env",
+      "limitReason": "окно модели задано 16384, но LB_NCTX_RELOAD_MAX_N_CTX=32768 разрешает авто-рост только до него",
+      "envCeiling": 32768
+    }
+  },
+  "nctxCeiling": {
+    "envCeiling": 32768,
+    "limitedBy": "env",
+    "reason": "потолок авто-роста окна LB_NCTX_RELOAD_MAX_N_CTX=32768; заявленное в профиле модели окно может быть выше — тогда режет профиль, а не env"
+  }
+}
+```
+
+`effectiveContext` строится только по СУЩЕСТВУЮЩИМ профилям; `nctxCeiling` — кластерное
+значение и присутствует всегда (в том числе когда профилей нет). `envCeiling: 0` означает
+«потолок авто-роста не задан»: окно режет только физика (`feasible_max_context` / `gguf_max_context`),
+проверяемая на загрузке.
+
 **3-tier resolver (приоритет при прокидывании n_ctx в cppworker):**
 
 1. `body.options.num_ctx` (Ollama) / `body.num_ctx` (OpenAI) — **всегда побеждает** (Tier 1)

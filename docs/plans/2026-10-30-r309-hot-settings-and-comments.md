@@ -337,3 +337,19 @@ nil-прокси), `internal/api/profile_nctx_ceiling_r319_test.go` (списо�
 список БЕЗ профилей — главный случай, одиночный профиль),
 `webui/js/modules/gguf-window-limit-r319.test.js` (7 проверок: тон, числа, поиск по
 имени файла и пути, одна вставка блока, отсутствие блока без данных).
+**Проверка живьём** (балансер и webui cdf1fe01, стенд пересобран 2026-10-30):
+
+| шаг | результат |
+| --- | --- |
+| `GET /api/v1/cppworker/model-profiles` | `nctxCeiling {envCeiling:32768, limitedBy:"env", reason:"потолок авто-роста окна LB_NCTX_RELOAD_MAX_N_CTX=32768; …"}` |
+| там же `effectiveContext["gemma-4-E4B-it-Q4_K_M"]` | `effectiveContextLength:32768`, `envCeiling:32768`, причина про профиль (ограничивает профиль, не env) |
+| `GET …/model-profiles/gemma-4-E4B-it-Q4_K_M` | тот же блок `nctxCeiling` (карточка читает именно этот ответ) |
+| отдаваемые webui ассеты | `/js/modules/gguf-renderer-detail-render.js` содержит `windowLimitNote`/`paintWindowLimit`/`modelEffectiveEntry` (12 вхождений), `/css/components.css` — `.gguf-mp-limit` (3) |
+| чат после пересборки | `200`, `content:"Париж"` — балансер на новом образе работает |
+
+**Чего НЕ проверено.** Браузерный спек `tests/visual/window-limit-note-r319.spec.js` (живая
+проверка, что блок дорисовывается в раскрытой форме) в этой среде запустить не удалось:
+Chromium не стартует — `browserContext.newPage` висит до таймаута и на 30, и на 90
+секундах, прямой `chromium.launch()` тоже не поднимается. То есть синтаксис и селекторы
+спека не подтверждены прогоном; проверены юнит-тест (7 проверок) и то, что новые ассеты
+реально лежат в образе. Спек оставлен для среды с рабочим Chromium.

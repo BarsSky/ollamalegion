@@ -222,6 +222,34 @@ These endpoints let you set `n_ctx` and other inference parameters for a specifi
 | `/api/v1/cppworker/model-profiles/{name}` | `DELETE` | Delete profile | ✅ |
 | `/api/v1/cppworker/model-profiles/{name}/apply` | `POST` | Save + reload model on all llama_cpp backends | ✅ |
 
+**Why the window is smaller than the model can do (R267 + R319).** Both `GET` responses
+carry the computed reason next to the profile, so nobody has to look for it in the
+compose file:
+
+```json
+{
+  "models": { "gemma-4-E4B-it-Q4_K_M": { "contextLength": 32768, ... } },
+  "effectiveContext": {
+    "gemma-4-E4B-it-Q4_K_M": {
+      "effectiveContextLength": 32768,
+      "limitedBy": "env",
+      "limitReason": "model window is 16384, but LB_NCTX_RELOAD_MAX_N_CTX=32768 allows auto-growth only up to it",
+      "envCeiling": 32768
+    }
+  },
+  "nctxCeiling": {
+    "envCeiling": 32768,
+    "limitedBy": "env",
+    "reason": "auto-growth ceiling LB_NCTX_RELOAD_MAX_N_CTX=32768; a window declared in the model profile may be higher — then the profile limits it, not env"
+  }
+}
+```
+
+`effectiveContext` is built only from EXISTING profiles; `nctxCeiling` is a cluster-wide
+value and is always present (even with no profiles). `envCeiling: 0` means "no auto-growth
+ceiling": only physical limits (`feasible_max_context` / `gguf_max_context`) apply, checked
+at load time.
+
 **3-tier resolver (priority when forwarding n_ctx to cppworker):**
 
 1. `body.options.num_ctx` (Ollama) / `body.num_ctx` (OpenAI) — **always wins** (Tier 1)

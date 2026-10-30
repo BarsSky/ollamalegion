@@ -93,3 +93,19 @@ func normalizeUpstreamErrorBodyR332(path string, resp *http.Response) *http.Resp
 	return resp
 }
 
+
+// jsonBodyLooksLikeJSON — R335.1: быстрая проверка, похоже ли тело ошибки на
+// JSON-объект. Нужна, чтобы не гонять нормализацию зря и не трогать JSON воркера.
+func jsonBodyLooksLikeJSON(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	return len(trimmed) > 0 && trimmed[0] == '{'
+}
+
+// originalPathOrPath — путь клиентского запроса для выбора формы ошибки.
+// Берём r.URL.Path; nil-safe (в транспорте r всегда есть, но функция чистая).
+func originalPathOrPath(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return ""
+	}
+	return r.URL.Path
+}

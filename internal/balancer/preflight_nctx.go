@@ -1419,10 +1419,35 @@ func (c *NCtxReloadCoordinator) RunPreflight(
 		if err := c.DoReload(reloadCtx, backendID, backendAddr, modelName, plan, loader); err != nil {
 			logger.Get().Errorw("preflight: reload failed",
 				"backend_id", backendID, "error", err)
-			// Возвращаем reject с осмысленным сообщением.
-			reject := makePreflightReject(state, decision.TargetNCtx,
-				fmt.Sprintf("preflight reload failed: %v", err))
-			return reject, nil
+			// R337 (2026-10-30, найдено стаб-матрицей): ПРОВАЛ ПЕРЕЗАГРУЗКИ —
+			// ЭТО 503, А НЕ 413.
+			//
+			// 413 «prompt + n_predict exceeds n_ctx» обвиняет КЛИЕНТА: «твой запрос
+			// не влезает». Но если перезагрузка упала технически (воркер не ответил,
+			// ручка недоступна, таймаут), запрос клиента тут ни при чём — он может
+			// влезать сколько угодно. Клиент должен ПОВТОРИТЬ (503 + Retry-After), а
+			// не уменьшать окно и не искать «слишком большую историю».
+			//
+			// Живой факт из тестов контракта: при недоступной ручке reload клиент
+			// получал 413 с reason "preflight reload failed: reload returned HTTP 404".
+			body := map[string]interface{}{
+				"error":             "preflight reload failed: the balancer could not grow the context window",
+				"reason":            fmt.Sprintf("preflight reload failed: %v", err),
+				"decision":          "reload_failed",
+				"backend_id":        state.BackendID,
+				"required_n_ctx":    decision.TargetNCtx,
+				"current_n_ctx":     state.CurrentNCtx,
+				"model_max_context": state.ModelMaxContext,
+				"retryable":         true,
+			}
+			encoded, _ := json.Marshal(body)
+			return &PreflightResult{
+				Decision:            PreflightReject,
+				TargetNCtx:          decision.TargetNCtx,
+				RejectStatus:        http.StatusServiceUnavailable,
+				RejectBody:          string(encoded),
+				EstimatedRetryAfter: 30,
+			}, nil
 		}
 		// Reload успешен — обновляем lastKnownNCtx.
 		c.SetLastKnownNCtx(backendID, decision.TargetNCtx)

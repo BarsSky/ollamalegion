@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +23,35 @@ import (
 type mockCppWorker struct {
 	server   *httptest.Server
 	requests int64
+
+	// R335: какие модели «загружены» — /api/models обязан их показывать, иначе
+	// гейт автозагрузки ждёт готовности, которой заглушка никогда не объявит.
+	mu     sync.Mutex
+	loaded []string
+}
+
+// markLoaded — запомнить имя для /api/models.
+func (m *mockCppWorker) markLoaded(name string) {
+	if name == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, existing := range m.loaded {
+		if existing == name {
+			return
+		}
+	}
+	m.loaded = append(m.loaded, name)
+}
+
+// loadedNames — имена загруженных моделей (снимок под мьютексом).
+func (m *mockCppWorker) loadedNames() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.loaded))
+	copy(out, m.loaded)
+	return out
 }
 
 func newMockCppWorker() *mockCppWorker {
@@ -33,6 +63,40 @@ func newMockCppWorker() *mockCppWorker {
 		switch {
 		case path == "/health":
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+		// R325.3/R335: живой cppworker отвечает на эти пробы, и балансер на них
+		// опирается (доступность узла и состояние модели). Заглушка их не умела —
+		// и гейт автозагрузки справедливо считал узел недоступным (тест ждал 180 с
+		// и получал 503). Заглушка обязана повторять контракт воркера.
+		case path == "/api/version":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":"0.0.0-legacy-mock"}`))
+
+		// R335: ленивая заглушка умеет «загрузить» любую модель, как воркер с
+		// профилем по умолчанию; иначе R325-гейт справедливо отвечает 404.
+		case path == "/api/models/load":
+			var loadReq map[string]interface{}
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &loadReq)
+			name, _ := loadReq["name"].(string)
+			if name == "" {
+				name = r.URL.Query().Get("name")
+			}
+			m.markLoaded(name)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"success":true,"status":"loaded"}`))
+
+		case path == "/api/models":
+			names := append([]string{"test-model"}, m.loadedNames()...)
+			now := time.Now().UTC().Format(time.RFC3339)
+			parts := make([]string, 0, len(names))
+			for _, name := range names {
+				parts = append(parts, fmt.Sprintf(`{"name":%q,"state":"loaded",`+
+					`"context_size":32768,"context_per_seq":32768,"max_slots":1,"loaded_at":%q}`,
+					name, now))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"count":%d,"models":[%s]}`, len(parts), strings.Join(parts, ","))
 
 		case path == "/api/tags":
 			json.NewEncoder(w).Encode(map[string]interface{}{

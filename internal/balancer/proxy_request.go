@@ -282,6 +282,16 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 						})
 						return nil
 					}
+					// R325.3: воркер недоступен — ждать нечего (см. helper).
+					if isBackendUnreachableLoadError(loadErr) {
+						logger.Get().Errorw("proxyRequest: воркер недоступен при автозагрузке — 503 без ожидания (R325.3)",
+							"backend", backendID, "model", model, "error", loadErr)
+						writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+							"error": fmt.Sprintf("backend %q is unreachable: %v", backendID, loadErr),
+							"model": model,
+						})
+						return nil
+					}
 					if p.waitModelReadyForAutoLoad(r.Context(), backendID, model) {
 						logger.Get().Infow("proxyRequest: auto-load reported error but model became ready (R325.1)",
 							"backend", backendID, "model", model, "load_error", loadErr)

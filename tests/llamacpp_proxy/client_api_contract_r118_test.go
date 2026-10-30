@@ -136,18 +136,64 @@ func newContractStub(t *testing.T, modelName string) *contractStub {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"models":[{"name":%q,"size":4215695776,"size_vram":4215695776}]}`, modelName)
 
+		// R336: реестровые ручки Ollama. Заглушка отвечает JSON, как воркер:
+		// pull/create/copy/delete — успех (для теста достаточно формы), push — 501
+		// (воркер его не поддерживает и обязан сказать это JSON-ом, а не текстом).
+		case "/api/pull", "/api/create", "/api/copy", "/api/delete":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"success"}`))
+
+		case "/api/push":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotImplemented)
+			_, _ = w.Write([]byte(`{"error":"push is not supported by this backend"}`))
+
 		case "/api/models/files":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"files":[{"name":%q,"path":"/app/models/%s.gguf"}]}`, modelName, modelName)
 
-		case "/api/models/load", "/api/models/unload":
+		// R335: reload окна — реальная ручка воркера (preflight её вызывает).
+		// Заглушка её не умела, preflight получал "reload failed" и отдавал 413
+		// на нормальный запрос. Заглушка повторяет контракт воркера.
+		case "/api/models/reload", "/api/models/load-with-params":
 			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"success":true,"status":"loaded"}`))
+
+		case "/api/models/load", "/api/models/unload":
+			// R335: заглушка повторяет поведение воркера для НЕИЗВЕСТНОЙ модели —
+			// терминальный 404 в JSON. Раньше она отвечала success на любую модель,
+			// и балансер ждал готовности, которой не будет (живой воркер так себя не
+			// ведёт: он сразу говорит model not found).
+			name := r.URL.Query().Get("name")
+			if name == "" {
+				body, _ := io.ReadAll(r.Body)
+				var req map[string]interface{}
+				_ = json.Unmarshal(body, &req)
+				name, _ = req["name"].(string)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if name != "" && name != modelName {
+				w.WriteHeader(http.StatusNotFound)
+				msg, _ := json.Marshal(map[string]string{
+					"error": fmt.Sprintf("model %q not found on this backend", name),
+				})
+				_, _ = w.Write(msg)
+				return
+			}
 			_, _ = w.Write([]byte(`{"success":true,"status":"loaded"}`))
 
 		case "/api/chat":
 			body, _ := io.ReadAll(r.Body)
 			var req map[string]interface{}
-			_ = json.Unmarshal(body, &req)
+			// R335: битый JSON — 400, как у живого воркера (handleChat разбирает тело
+			// и отвечает invalid request body). Раньше заглушка молча считала модель
+			// пустой и отвечала 404 "model not found", то есть подменяла причину.
+			if err := json.Unmarshal(body, &req); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"invalid request body"}`))
+				return
+			}
 			// Контракт «неизвестная модель»: cppworker отвечает ошибкой в JSON —
 			// балансер обязан донести её до клиента, а не подменить HTML-страницей.
 			if gotModel, _ := req["model"].(string); gotModel != modelName {
@@ -163,8 +209,12 @@ func newContractStub(t *testing.T, modelName string) *contractStub {
 			w.Header().Set("Content-Type", "application/x-ndjson")
 			w.WriteHeader(http.StatusOK)
 			if stream {
-				fmt.Fprintf(w, "%s\n", `{"done":false}`)
-				fmt.Fprintf(w, `{"model":%q,"created_at":%q,"done":true,`+
+				// R335: заглушка повторяет ТЕКУЩИЙ контракт воркера (R334):
+				// prefill-heartbeat — кадр с model/created_at/message.content:"" (без
+				// role, который сбивал OpenWebUI), финал — с done_reason.
+				fmt.Fprintf(w, `{"model":%q,"created_at":%q,"message":{"content":""},"done":false}`+"\n",
+					modelName, now)
+				fmt.Fprintf(w, `{"model":%q,"created_at":%q,"done":true,"done_reason":"stop",`+
 					`"message":{"role":"assistant","content":"контракт-ответ"}}`+"\n", modelName, now)
 				return
 			}
@@ -180,21 +230,38 @@ func newContractStub(t *testing.T, modelName string) *contractStub {
 			w.Header().Set("Content-Type", "application/x-ndjson")
 			w.WriteHeader(http.StatusOK)
 			if stream {
-				fmt.Fprintf(w, "%s\n", `{"done":false}`)
-				fmt.Fprintf(w, `{"model":%q,"created_at":%q,"response":"контракт","done":true}`+"\n",
+				// R335: см. комментарий у /api/chat — форма кадров как у текущего воркера.
+				fmt.Fprintf(w, `{"model":%q,"created_at":%q,"message":{"content":""},"done":false}`+"\n",
+					modelName, now)
+				fmt.Fprintf(w, `{"model":%q,"created_at":%q,"response":"контракт","done":true,"done_reason":"stop"}`+"\n",
 					modelName, now)
 				return
 			}
 			fmt.Fprintf(w, `{"model":%q,"created_at":%q,"response":"контракт","done":true}`,
 				modelName, now)
 
-		case "/api/embed", "/api/embeddings":
+		case "/api/embed":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"model":"m","embeddings":[[0.1,0.2,0.3]],"prompt_eval_count":1}`))
+
+		// R335: legacy /api/embeddings отвечает ЕДИНСТВЕННЫМ полем embedding
+		// (контракт Ollama). Заглушка раньше отвечала одинаково на оба пути, и
+		// матрица справедливо ругалась: клиент legacy-пути ищет "embedding".
+		case "/api/embeddings":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"model":"m","embedding":[0.1,0.2,0.3],"prompt_eval_count":1}`))
 
 		case "/v1/models":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"object":"list","data":[{"id":%q,"object":"model","created":1}]}`, modelName)
+
+		// R335: /v1/completions — legacy-контракт completions (choices[].text).
+		// Заглушка его не умела, и матрица получала от неё текстовый 404.
+		case "/v1/completions":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"id":"cmpl-stub","object":"text_completion","created":1,"model":%q,`+
+				`"choices":[{"index":0,"text":"контракт","finish_reason":"stop"}],`+
+				`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, modelName)
 
 		case "/v1/chat/completions":
 			body, _ := io.ReadAll(r.Body)
@@ -240,7 +307,15 @@ func newContractStub(t *testing.T, modelName string) *contractStub {
 func newContractProxy(t *testing.T, stub *contractStub, modelName string) *balancer.Proxy {
 	t.Helper()
 	proxy := createTestProxyForLLamaCpp(t, stub.server.URL)
-	registerLlamaCppModel(proxy, "llamacpp-1", modelName)
+	// R337: СВОЙ id бэкенда на каждый тест.
+	//
+	// Живой факт (флакующая матрица): все контрактные тесты регистрировали
+	// бэкенд под одним id "llamacpp-1", а кэш метрик и координатор перезагрузки
+	// ключуются именно id — фоновый поллер предыдущего теста продолжал писать в
+	// ту же запись, и preflight следующего теста видел ЧУЖОЕ окно. Результат
+	// зависел от порядка запуска (тест проходил отдельно и падал в пакете).
+	id := "contract-" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-"))
+	registerLlamaCppModel(proxy, id, modelName)
 	return proxy
 }
 

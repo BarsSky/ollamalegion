@@ -422,6 +422,29 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		"body_len", len(respBody),
 		"body", string(respBody)[:min(500, len(respBody))])
 
+	// R335.1 (2026-10-30, поймано стаб-матрицей): форма ошибки нормализуется и на
+	// НЕ-потоковых handler-путях.
+	//
+	// Живой класс: воркер отвечает на неизвестный путь своим http.NotFound —
+	// текстом "404 page not found". R332 нормализовал такие ответы только в
+	// generic-прокси, и на путях вида /v1/completions (их обслуживает handler и
+	// этот транспорт) текстовый 404 уходил клиенту как есть: клиент, разбирающий
+	// тело ошибки как JSON, снова не мог её показать.
+	if resp.StatusCode >= 400 && !jsonBodyLooksLikeJSON(respBody) {
+		resp2 := normalizeUpstreamErrorBodyR332(originalPathOrPath(r), resp)
+		if resp2 != nil && resp2.Body != nil {
+			if raw, err := io.ReadAll(resp2.Body); err == nil {
+				respBody = raw
+				resp.StatusCode = resp2.StatusCode
+				for key, values := range resp2.Header {
+					for _, v := range values {
+						resp.Header.Set(key, v)
+					}
+				}
+			}
+		}
+	}
+
 	// ==== Сброс cycle counter при успешном ответе ====
 	// Если upstream вернул 200 OK — это инференс без n_ctx ошибки.
 	// Сбрасываем счётчик cycle detection, чтобы stale failures не накапливались.

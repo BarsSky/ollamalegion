@@ -76,3 +76,18 @@ func isModelMissingLoadError(err error) bool {
 	}
 	return false
 }
+// isBackendUnreachableLoadError — R325.3: ошибка загрузки из-за недоступности
+// воркера. Ждать в этом случае бессмысленно: воркер не «грузится», его нет.
+//
+// ЖИВОЙ ФАКТ (тесты контракта): гейт ждал 180 с, чтобы вернуть
+// "model is not loaded and auto-load failed: backend unreachable: … (cppworker
+// did not answer /api/version within 4s)". Клиент всё это время висел на
+// запросе, который был обречён с первой секунды.
+func isBackendUnreachableLoadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "backend unreachable") ||
+		strings.Contains(msg, "did not answer /api/version")
+}

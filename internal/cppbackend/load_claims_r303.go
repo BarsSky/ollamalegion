@@ -163,8 +163,11 @@ func (b *Backend) WaitForLoadTimeoutR303(name string, d time.Duration) (bool, bo
 		return false, false
 	}
 	if d < 0 {
-		_, err := b.GetModel(name)
-		return err == nil, err != nil
+		// «Не ждать вовсе»: спрашиваем ФАКТ готовности, а не наличие записи.
+		if b.loadFinishedR303(name) {
+			return true, false
+		}
+		return false, true
 	}
 	b.loadMu.Lock()
 	ch, ok := b.loading[name]
@@ -178,17 +181,40 @@ func (b *Backend) WaitForLoadTimeoutR303(name string, d time.Duration) (bool, bo
 			select {
 			case <-ch:
 			case <-timer.C:
-				if _, err := b.GetModel(name); err == nil {
+				// R303.1: истёк срок — успехом это быть НЕ МОЖЕТ, даже если
+				// запись модели уже появилась (см. loadFinishedR303).
+				if b.loadFinishedR303(name) {
 					return true, false
 				}
 				return false, true
 			}
 		}
 	}
-	if _, err := b.GetModel(name); err == nil {
-		return true, false
+	return b.loadFinishedR303(name), false
+}
+
+// loadFinishedR303 — загрузка ЗАВЕРШИЛАСЬ успешно, а не «запись о модели есть».
+//
+// ЖИВОЙ ДЕФЕКТ, найденный проверкой на стенде после обновления образа (R303.1).
+// Здесь стояло `if _, err := b.GetModel(name); err == nil` — а GetModel отдаёт
+// запись модели в ЛЮБОМ состоянии, в том числе loading. Поэтому sync-загрузка
+// (?wait=true), чей предел ожидания истекал, отвечала
+//
+//	200 {"status":"loaded_by_other", "model":{"state":"loading"}}
+//
+// то есть «готово» при незавершённой загрузке: клиент начинал слать запросы на
+// модель, которой ещё нет в памяти. Это тот же класс, что R300 («already loaded»
+// по факту существования записи) и R262 (200 при фактически непройденной
+// загрузке): успех судили по отсутствию ошибки на одной ветке, а не по факту.
+//
+// Правильный признак — состояние StateLoaded: модель уже в реестре, веса
+// прочитаны, handle есть.
+func (b *Backend) loadFinishedR303(name string) bool {
+	info, err := b.GetModel(name)
+	if err != nil || info == nil {
+		return false
 	}
-	return false, false
+	return info.State == StateLoaded
 }
 
 // ReclaimStaleLoadClaimR303 — снять МЁРТВУЮ заявку на загрузку.

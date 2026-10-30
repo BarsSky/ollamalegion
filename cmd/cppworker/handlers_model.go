@@ -2624,7 +2624,10 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if loaded {
-			if model, getErr := backend.GetModel(req.Name); getErr == nil {
+			// R303.1: та же проверка, что в async-ветке: «reloaded_by_other» — это
+			// ТОЛЬКО StateLoaded, иначе клиент получает 200 при незавершённой
+			// загрузке (живой дефект, найденный на стенде).
+			if model, getErr := backend.GetModel(req.Name); getErr == nil && model != nil && model.State == cppbackend.StateLoaded {
 				writeJSON(w, http.StatusOK, map[string]interface{}{
 					"status": "reloaded_by_other", "model": model,
 				})

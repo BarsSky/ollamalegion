@@ -228,3 +228,73 @@ func TestR303_InFlight_NilSafe(t *testing.T) {
 		t.Error("nil-backend снял заявку")
 	}
 }
+
+// TestR303_WaitForLoadTimeout_LoadingRecordIsNotSuccess — R303.1: запись модели в
+// состоянии loading — это НЕ завершённая загрузка.
+//
+// ЖИВОЙ ДЕФЕКТ (проверка на стенде после обновления образа). Проверка успеха
+// была «GetModel вернул запись», а GetModel отдаёт запись и для loading. Поэтому
+// sync-загрузка (`?wait=true`) с истёкшим пределом ожидания отвечала
+//
+//	200 {"status":"loaded_by_other","model":{"state":"loading"}}
+//
+// Клиент считал модель готовой и начинал слать запросы в ещё не поднятую модель.
+// Здесь фиксируется контракт: при истечении срока и незавершённой загрузке
+// результат обязан быть (loaded=false, timedOut=true) — вызывающий ответит
+// типизированным 503, а не 200.
+func TestR303_WaitForLoadTimeout_LoadingRecordIsNotSuccess(t *testing.T) {
+	b := r303TestBackend(t)
+	name := "r303-loading-record"
+	if ok, err := b.TryLockLoadR303(name, "test"); !ok || err != nil {
+		t.Fatalf("TryLockLoadR303 = (%v, %v)", ok, err)
+	}
+	defer b.UnlockLoad(name)
+
+	// Запись есть, но веса ещё читаются.
+	b.mu.Lock()
+	b.models[name] = &modelInstance{info: ModelInfo{Name: name, State: StateLoading}}
+	b.mu.Unlock()
+
+	loaded, timedOut := b.WaitForLoadTimeoutR303(name, 80*time.Millisecond)
+	if loaded {
+		t.Fatal("loaded=true при state=loading: клиент получит 200 на незавершённую загрузку")
+	}
+	if !timedOut {
+		t.Fatal("timedOut=false: ожидание обязано сообщить, что предел истёк")
+	}
+}
+
+// TestR303_WaitForLoadTimeout_LoadedRecordIsSuccess — обратный случай: модель
+// ДЕЙСТВИТЕЛЬНО загружена — ожидание возвращает успех даже без таймаута.
+func TestR303_WaitForLoadTimeout_LoadedRecordIsSuccess(t *testing.T) {
+	b := r303TestBackend(t)
+	name := "r303-loaded-record"
+
+	b.mu.Lock()
+	b.models[name] = &modelInstance{info: ModelInfo{Name: name, State: StateLoaded}}
+	b.mu.Unlock()
+
+	loaded, timedOut := b.WaitForLoadTimeoutR303(name, 50*time.Millisecond)
+	if !loaded || timedOut {
+		t.Fatalf("loaded=%v timedOut=%v, ожидалось (true,false) при загруженной модели", loaded, timedOut)
+	}
+}
+
+// TestR303_WaitForLoadTimeout_NoWaitAsksFact — режим «не ждать вовсе» (d<0)
+// обязан отвечать фактом готовности, а не наличием записи.
+func TestR303_WaitForLoadTimeout_NoWaitAsksFact(t *testing.T) {
+	b := r303TestBackend(t)
+	loading := "r303-nowait-loading"
+	loaded := "r303-nowait-loaded"
+	b.mu.Lock()
+	b.models[loading] = &modelInstance{info: ModelInfo{Name: loading, State: StateLoading}}
+	b.models[loaded] = &modelInstance{info: ModelInfo{Name: loaded, State: StateLoaded}}
+	b.mu.Unlock()
+
+	if ok, timedOut := b.WaitForLoadTimeoutR303(loading, -1); ok || !timedOut {
+		t.Errorf("loading: ok=%v timedOut=%v, ожидалось (false,true)", ok, timedOut)
+	}
+	if ok, timedOut := b.WaitForLoadTimeoutR303(loaded, -1); !ok || timedOut {
+		t.Errorf("loaded: ok=%v timedOut=%v, ожидалось (true,false)", ok, timedOut)
+	}
+}

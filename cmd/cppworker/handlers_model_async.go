@@ -246,7 +246,12 @@ func respondWhileAnotherLoadInProgress(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if loaded {
-		if info, getErr := backend.GetModel(modelName); getErr == nil {
+		// R303.1: «loaded» приходит из waitLoadBoundedR303, где успех теперь значит
+		// именно StateLoaded. Проверяем состояние ЕЩЁ раз здесь: между ожиданием и
+		// ответом модель могла начать выгружаться, а клиенту нельзя отдавать
+		// `loaded_by_other` с `state:loading` (живой дефект: клиент начинал слать
+		// запросы на модель, которой ещё нет в памяти).
+		if info, getErr := backend.GetModel(modelName); getErr == nil && info != nil && info.State == cppbackend.StateLoaded {
 			logger.Get().Infow("load finished while we waited (concurrent request)",
 				"name", modelName, "duration_ms", time.Since(loadStart).Milliseconds())
 			writeJSON(w, http.StatusOK, map[string]interface{}{

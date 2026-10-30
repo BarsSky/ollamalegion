@@ -928,7 +928,7 @@ func (c *NCtxReloadCoordinator) makeRejectPlan(
 	suggestion := "save a model profile with a larger n_ctx and reload manually, or send a smaller options.num_ctx in the request"
 	if errorCode == "prompt_exceeds_context" {
 		suggestion = "reduce conversation history / tools[] / system prompt, or use a smaller model. " +
-			"Reload with the same or larger n_ctx will NOT help ? the model is already loaded at maximum."
+			"Reload with the same or larger n_ctx will NOT help — the model is already loaded at maximum."
 	}
 	rej := map[string]interface{}{
 		"error":             errorCode,

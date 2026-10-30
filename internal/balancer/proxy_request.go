@@ -455,7 +455,11 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		return fmt.Errorf("backend error [%s]: %v", errType, err)
 	}
 retrySucceeded:
-
+	// R332 (2026-10-30): ошибки воркера в НЕ-JSON форме приводим к форме своей
+	// поверхности. Живой факт (тесты api_contract): неизвестный путь уходил в
+	// generic-прокси, воркер отвечал текстом "404 page not found", и клиент
+	// получал text/plain вместо JSON-ошибки.
+	resp = normalizeUpstreamErrorBodyR332(r.URL.Path, resp)
 	logger.Get().Debugw("proxyRequest: backend responded",
 		"backend", backendID, "status", resp.StatusCode,
 		"model", modelFromCtx, "content_type", resp.Header.Get("Content-Type"),

@@ -92,6 +92,11 @@ func handleInfo(w http.ResponseWriter, r *http.Request) {
 		status["llama_build"] = facts.Binary
 		status["llama_build_env"] = facts.Env
 		status["llama_build_mismatch"] = !facts.Compatible
+		// R305 (2026-10-30): дата коммита llama.cpp. Пустая строка = образ её не
+		// запекал (старая сборка) — это честное «неизвестно», а не сегодняшняя дата.
+		if facts.Date != "" {
+			status["llama_build_date"] = facts.Date
+		}
 	}
 	writeJSON(w, http.StatusOK, status)
 }

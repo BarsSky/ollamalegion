@@ -54,6 +54,14 @@ type llamaBuildFacts struct {
 	Env string
 	// Compatible — можно ли на этом узле участвовать в раскладке с другими.
 	Compatible bool
+	// Date — дата коммита llama.cpp (R305), запечённая в образ (YYYY-MM-DD).
+	//
+	// ЗАЧЕМ. Балансер сравнивает сборку узла с последним стабильным релизом. Пока
+	// известен только коммит, сравнение с релизом (у которого есть тег и дата)
+	// заканчивается «не с чем сравнивать», хотя ответ существует: сборка от
+	// 2026-09-01 старше релиза от 2026-10-20. Пусто = старый образ, дата не
+	// запечена (честное «неизвестно», а не выдуманная дата).
+	Date string
 }
 
 // currentLlamaBuildFacts — снять факты текущего процесса.
@@ -75,6 +83,7 @@ func currentLlamaBuildFacts() llamaBuildFacts {
 		Binary:     baked,
 		Env:        env,
 		Compatible: llamaBuildCompatible(env, baked),
+		Date:       strings.TrimSpace(os.Getenv(envLlamaBuildDateBaked)),
 	}
 }
 
@@ -90,3 +99,9 @@ var envLlamaBuildValue string
 // envLlamaBuildBaked — R167: переменная, которую печёт Dockerfile из build-arg
 // (env не переопределяет compose). Именно она — ФАКТ того, что собрано.
 const envLlamaBuildBaked = "CPPWORKER_LLAMA_BUILD_BAKED"
+
+// envLlamaBuildDateBaked — R305: дата того же коммита, запечённая в образ.
+// Отдельная переменная, а не суффикс к коммиту: сверка «намерение vs собранное»
+// (llamaBuildCompatible) сравнивает префиксы коммита, и суффикс с датой в той же
+// строке сделал бы сравнение неоднозначным.
+const envLlamaBuildDateBaked = "CPPWORKER_LLAMA_BUILD_DATE_BAKED"

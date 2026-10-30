@@ -544,6 +544,10 @@ services:
         # одного коммита. Обновлять в deployments/.env при апдейте сабмодуля:
         #   git -C c/llama.cpp rev-parse --short HEAD
         LLAMA_BUILD: ${CPPWORKER_LLAMA_BUILD:-unknown}
+        # R305 (2026-10-30): дата того же коммита (git -C c/llama.cpp log -1
+        # --format=%cs). Без неё сравнение «сборка узла vs последний стабильный
+        # релиз» честно упирается в «не с чем сравнивать», хотя ответ есть.
+        LLAMA_BUILD_DATE: ${CPPWORKER_LLAMA_BUILD_DATE:-unknown}
     container_name: ol-stack-cppworker-gpu
     restart: unless-stopped
     # R217: генерация на большом контексте может идти минуты; дефолтные 10 с

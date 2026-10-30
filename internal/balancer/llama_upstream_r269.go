@@ -461,7 +461,14 @@ func CompareLlamaBuilds(current, latest string) (relation, reason string) {
 	if strings.TrimSpace(current) == "" || strings.TrimSpace(latest) == "" {
 		return llamaRelationUnknown, "version missing on one side"
 	}
-	if cur.Commit != "" && lat.Commit != "" && cur.Commit == lat.Commit {
+	// R305 (2026-10-30): коммиты сравниваем по ПРЕФИКСУ.
+	//
+	// ЖИВАЯ ЖАЛОБА. Узел сообщает короткий коммит (`0eadefebd`), GitHub — полный
+	// (`8642541b255bfb5d…`). Строгое равенство строк объявляло одинаковые сборки
+	// разными — а разным быть не могут, это один и тот же git-объект в двух
+	// формах записи. Сравниваем 7-символьный префикс: этого достаточно, чтобы
+	// различить коммиты (git сам так делает), и не нужно гадать длину.
+	if cur.Commit != "" && lat.Commit != "" && sameCommitPrefix(cur.Commit, lat.Commit) {
 		return llamaRelationUpToDate, "same commit"
 	}
 	if cur.Tag != "" && lat.Tag != "" && cur.Tag == lat.Tag {
@@ -495,6 +502,28 @@ func CompareLlamaBuilds(current, latest string) (relation, reason string) {
 		return llamaRelationUnknown, "different commits, no comparable version"
 	}
 	return llamaRelationUnknown, "no comparable version"
+}
+
+// sameCommitPrefix — один ли это коммит (сравнение по короткому префиксу).
+//
+// 7 символов — минимальная длина, которую git считает однозначной в репозитории
+// llama.cpp; более короткие строки не считаем коммитами вовсе (иначе `b4321` и
+// `0abc` давали бы ложные совпадения).
+func sameCommitPrefix(a, b string) bool {
+	a = strings.ToLower(strings.TrimSpace(a))
+	b = strings.ToLower(strings.TrimSpace(b))
+	const minLen = 7
+	if len(a) < minLen || len(b) < minLen {
+		return a == b
+	}
+	n := minLen
+	if len(a) < n {
+		n = len(a)
+	}
+	if len(b) < n {
+		n = len(b)
+	}
+	return a[:n] == b[:n]
 }
 
 // tagToInt — номер из тега `bNNNN`.
@@ -532,7 +561,7 @@ func (p *Proxy) LlamaBuildStatusFor(backendID string) LlamaBuildStatus {
 		status.Reason = "upstream check disabled"
 		return status
 	}
-	latest, fetchedAt, errText, ok := p.llamaUpstreamLatest()
+	latest, fetchedAt, published, errText, ok := p.llamaUpstreamSnapshot()
 	status.LatestStable = latest
 	if l := parseLlamaBuild(latest); l.Tag != "" {
 		status.LatestTag = l.Tag
@@ -543,6 +572,16 @@ func (p *Proxy) LlamaBuildStatusFor(backendID string) LlamaBuildStatus {
 	if !fetchedAt.IsZero() {
 		status.CheckedAt = fetchedAt.UTC().Format(time.RFC3339)
 	}
+	// R305 (2026-10-30): дата публикации релиза теперь ДОХОДИТ до ответа.
+	//
+	// Поле publishedAt в статусе было объявлено с R269 и всегда оставалось
+	// пустым: дата лежала в кэше, но наружу не отдавалась. Оператор видел
+	// «последний стабильный: v0.8.0 (коммит)» и не мог понять, свежий ли это
+	// релиз относительно его сборки — а без даты и сравнение не считалось.
+	// Заполняем ДО сравнения: дата нужна и для вердикта, и для отчёта.
+	if !published.IsZero() {
+		status.PublishedAt = published.UTC().Format(time.RFC3339)
+	}
 	if errText != "" {
 		status.Reason = "last check failed: " + errText
 	}
@@ -552,7 +591,19 @@ func (p *Proxy) LlamaBuildStatusFor(backendID string) LlamaBuildStatus {
 		}
 		return status
 	}
-	rel, why := CompareLlamaBuilds(status.Current, latest)
+	// R305: к строке релиза добавляем дату публикации (только для сравнения).
+	//
+	// ЗАЧЕМ. У сборки узла теперь есть дата коммита, у релиза — дата публикации;
+	// без передачи даты сравнение не могло дойти до шага «по дате» и честно
+	// заканчивалось unknown. Отображаемое поле LatestStable остаётся прежним:
+	// дата показывается отдельно (publishedAt), а не внутри строки версии.
+	latestForCompare := latest
+	if l := parseLlamaBuild(latest); l.Date.IsZero() {
+		if pub := parseLlamaBuild(status.PublishedAt); !pub.Date.IsZero() {
+			latestForCompare = latest + " " + pub.Date.Format("2006-01-02")
+		}
+	}
+	rel, why := CompareLlamaBuilds(status.Current, latestForCompare)
 	status.Relation = rel
 	if why != "" {
 		if status.Reason != "" {
@@ -566,20 +617,30 @@ func (p *Proxy) LlamaBuildStatusFor(backendID string) LlamaBuildStatus {
 
 // llamaUpstreamLatest — снимок кэша.
 func (p *Proxy) llamaUpstreamLatest() (latest string, fetchedAt time.Time, errText string, ok bool) {
+	latest, fetchedAt, _, errText, ok = p.llamaUpstreamSnapshot()
+	return latest, fetchedAt, errText, ok
+}
+
+// llamaUpstreamSnapshot — тот же снимок, но с датой публикации релиза.
+//
+// Отдельная функция, а не ещё один возвращаемый параметр в llamaUpstreamLatest:
+// у того уже четыре значения, и пятое сделало бы каждый вызов нечитаемым
+// (`_, _, _, _, _ =`). Здесь вызывающих два — статус узла и агрегат.
+func (p *Proxy) llamaUpstreamSnapshot() (latest string, fetchedAt, published time.Time, errText string, ok bool) {
 	if p == nil || p.llamaUpstream == nil {
-		return "", time.Time{}, "", false
+		return "", time.Time{}, time.Time{}, "", false
 	}
 	t := p.llamaUpstream
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	if t.cache.LatestTag == "" || t.cache.FetchedAt.IsZero() {
-		return "", t.cache.FetchedAt, t.cache.LastError, false
+		return "", t.cache.FetchedAt, t.cache.PublishedAt, t.cache.LastError, false
 	}
 	latest = t.cache.LatestTag
 	if t.cache.LatestCommit != "" {
 		latest += " (" + t.cache.LatestCommit + ")"
 	}
-	return latest, t.cache.FetchedAt, t.cache.LastError, true
+	return latest, t.cache.FetchedAt, t.cache.PublishedAt, t.cache.LastError, true
 }
 
 // LlamaUpstreamSnapshot — агрегат по кластеру.
@@ -604,6 +665,11 @@ func (p *Proxy) LlamaUpstreamSnapshot() LlamaUpstreamSnapshot {
 				snap.LatestCommit = l.Commit
 			}
 			snap.CheckedAt = fetchedAt.UTC().Format(time.RFC3339)
+			// R305: дата публикации релиза — в агрегат, тем же правилом, что и в
+			// статусе узла: поле объявлено, но не заполнялось.
+			if _, _, published, _, okPub := p.llamaUpstreamSnapshot(); okPub && !published.IsZero() {
+				snap.PublishedAt = published.UTC().Format(time.RFC3339)
+			}
 		}
 		// Ошибку показываем отдельным полем, а не вместо версии: прежнее
 		// успешное значение остаётся валидным «последним известным», и

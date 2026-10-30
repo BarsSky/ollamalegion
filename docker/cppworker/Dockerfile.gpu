@@ -327,6 +327,19 @@ ENV CPPWORKER_LLAMA_BUILD=${LLAMA_BUILD}
 # не переопределяется — её значение и есть то, что реально в образе.
 ENV CPPWORKER_LLAMA_BUILD_BAKED=${LLAMA_BUILD}
 
+# R305 (2026-10-30): ДАТА коммита llama.cpp — чтобы «свежесть сборки» можно было
+# посчитать, а не объявить неизвестной.
+#
+# ЗАЧЕМ. Балансер сравнивает сборку узла с последним стабильным релизом. Пока у
+# узла известен только коммит, а у релиза — тег и дата, сравнение честно
+# заканчивалось `relation=unknown: different commits, no comparable version`:
+# оператор видел «неизвестно» там, где ответ существует (сборка от 2026-09-01
+# старше релиза от 2026-10-2x). Дата берётся у того же сабмодуля, что и коммит:
+#   git -C c/llama.cpp log -1 --format=%cs
+ARG LLAMA_BUILD_DATE=unknown
+ENV CPPWORKER_LLAMA_BUILD_DATE=${LLAMA_BUILD_DATE}
+ENV CPPWORKER_LLAMA_BUILD_DATE_BAKED=${LLAMA_BUILD_DATE}
+
 # R135 (2026-10-16): под какие архитектуры CUDA собран образ.
 #
 # ЗАЧЕМ В ОБРАЗЕ, А НЕ ТОЛЬКО В ОКРУЖЕНИИ. Образ переносят на другую машину

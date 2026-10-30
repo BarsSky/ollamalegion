@@ -321,6 +321,7 @@ func checkNodes(req Request) []Issue {
 // таймаут загрузки вместо понятной ошибки.
 func checkVersions(req Request) []Issue {
 	byVersion := map[string][]string{}
+	displayByKey := map[string][]string{}
 	var unknown []string
 	for _, node := range req.Group.Nodes {
 		if !node.Registered || !node.Healthy {
@@ -331,7 +332,23 @@ func checkVersions(req Request) []Issue {
 			unknown = append(unknown, node.BackendID)
 			continue
 		}
-		byVersion[version] = append(byVersion[version], node.BackendID)
+		// R305 (2026-10-30): группируем по КОММИТУ, а не по всей строке версии.
+		//
+		// ЗАЧЕМ. Строка версии — отображаемая: с R305 узел сообщает коммит вместе с
+		// датой (`0eadefebd 2026-09-01`), чтобы балансер мог сравнить сборку с
+		// релизом. Сравнение целых строк сделало бы РАЗНЫМИ коммиты, которые
+		// совпадают: старый образ без даты рядом с новым с датой, или узлы с
+		// разной датой при одном коммите. Уровень этого замечания — error, то есть
+		// ложное «нельзя соединять узлы» заблокировало бы раскладку.
+		//
+		// В отчёте по-прежнему показываем полные строки (parts ниже): оператору
+		// нужны и коммит, и дата, — а сравниваем то, что определяет совместимость.
+		key := versionCommitKeyR305(version)
+		byVersion[key] = append(byVersion[key], node.BackendID)
+		// Отображаемую строку запоминаем отдельно: группируем по коммиту, а в
+		// отчёт обязан попасть текст, который прислал узел (тест R95 требует обе
+		// версии в тексте — это то, по чему оператор ищет расхождение).
+		displayByKey[key] = appendUniqueStringR305(displayByKey[key], version)
 	}
 
 	var issues []Issue
@@ -342,10 +359,12 @@ func checkVersions(req Request) []Issue {
 		}
 		sortStrings(versions)
 		parts := make([]string, 0, len(versions))
-		for _, version := range versions {
-			ids := byVersion[version]
+		for _, key := range versions {
+			ids := byVersion[key]
 			sortStrings(ids)
-			parts = append(parts, version+"="+strings.Join(ids, ","))
+			displays := displayByKey[key]
+			sortStrings(displays)
+			parts = append(parts, strings.Join(displays, " | ")+"="+strings.Join(ids, ","))
 		}
 		issues = append(issues, newIssue(req, CheckVersionMismatch, LevelError, req.Group.ID, map[string]any{
 			"versions": parts,
@@ -662,4 +681,47 @@ func (r Report) String() string {
 		fmt.Fprintf(&b, "\n  [%s] %s: %s", issue.Level, issue.Check, issue.Text)
 	}
 	return b.String()
+}
+
+// versionCommitKeyR305 — ключ совместимости из строки версии узла.
+//
+// Совместимость сторон RPC определяется КОММИТОМ llama.cpp. Всё остальное в
+// строке (дата, номер сборки, префикс дистрибутива) — для человека. Поэтому:
+//   - находим первый токен, похожий на git-коммит (7..40 hex), и берём его
+//     префикс в 7 символов — так `0eadefebd` и `0eadefebd255...` считаются одним
+//     коммитом;
+//   - если коммита в строке нет (старый узел пишет `gguf-v0.19.0-1369-g...`) —
+//     оставляем строку целиком: «не смог разобрать» не должно склеивать разные
+//     сборки в одну.
+func versionCommitKeyR305(version string) string {
+	for _, field := range strings.FieldsFunc(version, func(r rune) bool {
+		return r == ' ' || r == '(' || r == ')' || r == ',' || r == '-' || r == '_' || r == '/' || r == '\t'
+	}) {
+		token := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(field), "g"))
+		if len(token) < 7 || len(token) > 40 {
+			continue
+		}
+		hexOnly := true
+		for _, r := range token {
+			if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+				hexOnly = false
+				break
+			}
+		}
+		if !hexOnly {
+			continue
+		}
+		return token[:7]
+	}
+	return strings.TrimSpace(version)
+}
+
+// appendUniqueStringR305 — добавить строку, если её ещё нет.
+func appendUniqueStringR305(list []string, v string) []string {
+	for _, existing := range list {
+		if existing == v {
+			return list
+		}
+	}
+	return append(list, v)
 }

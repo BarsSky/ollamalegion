@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -218,4 +219,60 @@ func TestR269_NilSafety(t *testing.T) {
 		t.Errorf("пустой прокси: relation = %q", st.Relation)
 	}
 	_ = p2.LlamaUpstreamSnapshot()
+}
+
+// TestR305_CompareBuildsByDateAndPrefix — R305 (2026-10-30).
+//
+// ЖИВЫЕ ФАКТЫ, из-за которых тест появился:
+//   - узел сообщает короткий коммит, GitHub — полный; строгое равенство строк
+//     объявляло один и тот же коммит разным («same commit» не срабатывал);
+//   - у сборки узла не было ДАТЫ, поэтому сравнение с релизом заканчивалось
+//     `unknown: different commits, no comparable version`, хотя ответ был:
+//     сборка от 2026-09-01 старше релиза от 2026-10-20.
+func TestR305_CompareBuildsByDateAndPrefix(t *testing.T) {
+	cases := []struct {
+		name          string
+		current       string
+		latest        string
+		wantRelation  string
+		wantReasonHas string
+	}{
+		{
+			name:          "короткий коммит узла и полный коммит релиза — один коммит",
+			current:       "0eadefebd",
+			latest:        "v0.8.0 (0eadefebd255bfb5d)",
+			wantRelation:  llamaRelationUpToDate,
+			wantReasonHas: "same commit",
+		},
+		{
+			name:          "дата сборки старше даты релиза — behind, а не unknown",
+			current:       "9be874c3 2026-09-01",
+			latest:        "v0.8.0 (8642541b255bfb5d) 2026-10-20",
+			wantRelation:  llamaRelationBehind,
+			wantReasonHas: "build date earlier",
+		},
+		{
+			name:          "дата сборки позже релиза — ahead (сборка из master)",
+			current:       "9be874c3 2026-10-25",
+			latest:        "v0.8.0 (8642541b255bfb5d) 2026-10-20",
+			wantRelation:  llamaRelationAhead,
+			wantReasonHas: "build date later",
+		},
+		{
+			name:          "разные коммиты без дат — честное unknown",
+			current:       "0eadefebd",
+			latest:        "v0.8.0 (8642541b255bfb5d)",
+			wantRelation:  llamaRelationUnknown,
+			wantReasonHas: "no comparable version",
+		},
+	}
+	for _, c := range cases {
+		rel, why := CompareLlamaBuilds(c.current, c.latest)
+		if rel != c.wantRelation {
+			t.Errorf("%s: relation=%q (%s), want %q", c.name, rel, why, c.wantRelation)
+		}
+		if !strings.Contains(why, c.wantReasonHas) {
+			t.Errorf("%s: reason=%q, ожидалось вхождение %q", c.name, why, c.wantReasonHas)
+		}
+	}
 }

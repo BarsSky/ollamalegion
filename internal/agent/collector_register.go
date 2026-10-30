@@ -276,5 +276,24 @@ func (a *Agent) healthCheckOllama() error {
 // иначе версия не доедет, и проверка совместимости сторон RPC в валидаторе
 // композиции останется неподтверждённой (version_unknown).
 func llamaBuildInfoR101Agent() string {
-	return strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD"))
+	commit := strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD"))
+	if commit == "" {
+		return ""
+	}
+	// R305 (2026-10-30): ДАТА рядом с коммитом.
+	//
+	// ЗАЧЕМ. Балансер сравнивает сборку узла с последним стабильным релизом
+	// llama.cpp. Пока у узла только коммит, а у релиза тег и дата, сравнение
+	// честно упирается в «different commits, no comparable version» — оператор
+	// видит «неизвестно» там, где ответ есть (сборка от 2026-09-01 старше релиза
+	// от 2026-10-2x).
+	//
+	// ФОРМАТ `коммит ГГГГ-ММ-ДД` разбирает балансер (parseLlamaBuild): он берёт
+	// коммит и дату из одной строки. Совместимость узлов раскладки при этом
+	// сравнивается по коммиту (internal/composition/validate.go), поэтому дата в
+	// строке не может дать ложное «узлы собраны из разного».
+	if date := strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD_DATE")); date != "" {
+		return commit + " " + date
+	}
+	return commit
 }

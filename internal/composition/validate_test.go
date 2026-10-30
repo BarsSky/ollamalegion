@@ -174,6 +174,30 @@ func TestValidate_VersionMismatch_R95(t *testing.T) {
 	}
 }
 
+// TestR305_VersionComparedByCommitNotByDisplay — R305 (2026-10-30).
+//
+// С R305 узел сообщает коммит ВМЕСТЕ с датой (`0eadefebd 2026-09-01`), чтобы
+// балансер мог сравнить сборку с релизом. Сравнение целых строк сделало бы
+// «разными» узлы с ОДНИМ коммитом, если у одного дата есть, а у другого нет
+// (старый образ рядом с новым) — а уровень этого замечания error, то есть
+// ложное «узлы нельзя соединять» заблокировало бы раскладку.
+func TestR305_VersionComparedByCommitNotByDisplay(t *testing.T) {
+	req := validRequestR95()
+	req.Group.Nodes[0].LlamaCppVersion = "0eadefebd"
+	req.Group.Nodes[1].LlamaCppVersion = "0eadefebd 2026-09-01"
+
+	if issue, found := findIssue(Validate(req), CheckVersionMismatch); found {
+		t.Fatalf("один и тот же коммит в разных формах объявлен разными сборками: %s", issue.Text)
+	}
+
+	// Обратный контроль: РАЗНЫЕ коммиты обязаны остаться ошибкой — иначе правка
+	// просто выключила бы проверку совместимости сторон RPC.
+	req.Group.Nodes[1].LlamaCppVersion = "deadbeef 2026-09-01"
+	if _, found := findIssue(Validate(req), CheckVersionMismatch); !found {
+		t.Fatal("разные коммиты больше не различаются — проверка совместимости выключена")
+	}
+}
+
 func TestValidate_VersionUnknown_IsWarning_R95(t *testing.T) {
 	// Сегодня узел версию не сообщает вовсе (её нет в метриках балансера).
 	// Это НЕ ошибка: иначе любой существующий стенд блокировался бы валидатором.

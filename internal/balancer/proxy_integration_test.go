@@ -390,7 +390,27 @@ func TestLoadBalancing_SameClientQueueFIFO(t *testing.T) {
 
 	var inflight atomic.Int64
 	var maxInflight atomic.Int64
+	// R308 (2026-10-30): считаем и «тормозим» ТОЛЬКО инференс.
+	//
+	// БЫЛО: счётчик inflight и sleep висели на любом запросе к моку, включая
+	// служебные GET /api/models и /api/models/load/progress — ими балансер
+	// проверяет наличие модели у бэкенда. Пока один POST спал, остальные клиенты
+	// успевали прислать свои GET-проверки, те тоже спали по 100 мс и попадали в
+	// inflight: «максимум одновременных» доходил до 6 при maxConcurrent=1, и тест
+	// падал с «semaphore breach!» — в том же прогоне печатая «✅ PASS: strict
+	// serial queue». Противоречие было в измерении, а не в балансере: латентности
+	// 300…800 мс при работе 100 мс доказывают сериализацию.
+	//
+	// ТЕПЕРЬ: служебные GET отвечают мгновенно и в счётчик не входят, инференс
+	// считается и тормозит. Проверка осталась прежней (maxConcurrent=1 строго), но
+	// мерит то, что заявляет.
 	mockBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !(r.Method == http.MethodPost && r.URL.Path == "/api/generate") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			io.WriteString(w, `{"models":[]}`)
+			return
+		}
 		cur := inflight.Add(1)
 		defer inflight.Add(-1)
 		for {

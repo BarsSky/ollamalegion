@@ -1,3 +1,5 @@
+Реализовано в тесте: `tests/llamacpp_proxy/abort_mid_sse_r340_test.go` (коммит 52293c29). Текст ниже приведён в соответствие с этим тестом.
+
 # R340: детерминированный тест «клиент оборвал SSE-поток посреди ответа»
 
 Дата: 2026-10-30.
@@ -230,9 +232,15 @@ import (
 )
 
 const (
-	// r340BackendID — id бэкенда из createTestProxyForLLamaCpp
-	// (tests/llamacpp_proxy/llamacpp_proxy_test.go:344).
-	r340BackendID = "llamacpp-1"
+	// r340BackendID — СВОЙ id бэкенда на этот тест.
+	//
+	// Почему не "llamacpp-1" из createTestProxyForLLamaCpp
+	// (tests/llamacpp_proxy/llamacpp_proxy_test.go:344): кэш метрик, снапшот
+	// кластера и координатор перезагрузки ключуются ИМЕННО id, поэтому общий id
+	// на весь пакет даёт зависимость от порядка запуска — это уже ловили и
+	// лечили в R337 (tests/llamacpp_proxy/client_api_contract_r118_test.go:305-320:
+	// «preflight следующего теста видел ЧУЖОЕ окно»).
+	r340BackendID = "r340-abort"
 	// r340Model — модель, «загруженная» в заглушке.
 	r340Model = "test-model"
 	// r340Frames — сколько кадров воркер вообще готов отдать в одном стриме
@@ -401,13 +409,75 @@ func (w *r340Worker) streamChatCompletions(rw http.ResponseWriter, r *http.Reque
 	}
 }
 
+// r340TestProxy — прокси с ОДНИМ llama.cpp-бэкендом под своим id.
+//
+// Копия createTestProxyForLLamaCpp (llamacpp_proxy_test.go:309-363) с единственным
+// отличием: ID = r340BackendID. Общий helper не переиспользуем, чтобы не менять
+// чужой тест-код и не делить с пакетом один id (см. комментарий к r340BackendID).
+// Остальные поля конфига повторены как есть — иначе тест проверял бы другой режим
+// (stickiness/TTL/таймауты участвуют в пути стрима).
+func r340TestProxy(t *testing.T, cppWorkerURL string) *balancer.Proxy {
+	t.Helper()
+
+	hostPort := strings.TrimPrefix(cppWorkerURL, "http://")
+	parts := strings.Split(hostPort, ":")
+	host := parts[0]
+	port := 8080
+	if len(parts) > 1 {
+		fmt.Sscanf(parts[1], "%d", &port)
+	}
+
+	cfg := &types.LoadBalancerConfig{
+		Balancing: types.BalancingSettings{
+			OperatingMode:     "standard",
+			SessionStickiness: true,
+			SessionTTL:        60,
+			SessionIdleTTL:    60,
+			RequestTimeout:    30,
+			QueueMaxSize:      100,
+			ModelAffinity:     true,
+			SyncModelLoad: types.SyncModelLoadConfig{
+				Enabled: false,
+			},
+			Prewarm: types.PrewarmConfig{
+				TriggerLoadThreshold: 0.80,
+			},
+			AdvancedTiming: types.AdvancedTimingConfig{
+				ZombieSessionThresholdSec: 120,
+				StreamingRetryDelayMs:     500,
+				MaxConcurrentWarmups:      3,
+				WarmupSemaphoreTimeoutSec: 30,
+			},
+		},
+		Backends: []types.Backend{
+			{
+				ID:                r340BackendID,
+				Name:              "R340 abort backend",
+				Host:              host,
+				OllamaPort:        port,
+				CppWorkerPort:     port,
+				Type:              types.BackendTypeLlamaCpp,
+				Status:            types.StatusHealthy,
+				MaxConcurrentReqs: 10,
+				Weight:            100,
+			},
+		},
+		BackendEngine: types.EngineAuto,
+		LoadBalancer: types.LoadBalancerSettings{
+			StatePath: "",
+		},
+	}
+
+	return balancer.NewProxy(cfg)
+}
+
 // r340RegisterModel — модель «загружена» с окном 32768.
 //
 // Отдельно от registerLlamaCppModel (llamacpp_proxy_test.go:365) намеренно: тот
 // объявляет ContextLength=2048, а заглушка отдаёт context_per_seq=32768. Два
 // источника окна расходятся, preflight решает «надо растить окно», уходит в
-// асинхронный reload и отвечает 503 — то есть тест проверял бы preflight, а не
-// обрыв. Источники окна обязаны согласовываться.
+// асинхронный reload и отвечает 503 (nctx_reload.go:1168-1187). Тест тогда
+// проверял бы не обрыв, а preflight. Источники окна обязаны согласовываться.
 func r340RegisterModel(proxy *balancer.Proxy, backendID, modelName string) {
 	proxy.UpdateMetrics(backendID, &types.BackendMetrics{
 		ID:          backendID,
@@ -542,7 +612,7 @@ func TestR340_ClientAbortMidSSE(t *testing.T) {
 
 	worker := newR340Worker(t, r340Frames)
 
-	proxy := createTestProxyForLLamaCpp(t, worker.server.URL)
+	proxy := r340TestProxy(t, worker.server.URL)
 	r340RegisterModel(proxy, r340BackendID, r340Model)
 	t.Cleanup(func() {
 		// Гасим фоновые петли: иначе они переживут тест и продолжат опрашивать

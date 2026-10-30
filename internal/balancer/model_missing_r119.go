@@ -99,6 +99,10 @@ func isModelMissingResponse(status int, body []byte) bool {
 		"model_file_not_found",
 		"model_not_found",
 		"model not found",
+		// available_models — СТРУКТУРНЫЙ ключ: он есть только в ответе со списком
+		// моделей (404 на load). В отличие от слова «модели» в тексте, он не
+		// совпадает с отказом про окно, поэтому оставлен (R119).
+		"available_models",
 		"not found in",
 		"not found:",
 		"no such file",

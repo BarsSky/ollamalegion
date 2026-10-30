@@ -735,6 +735,83 @@ going normally.
    ```
 4. Add `--gpus all` or use `docker-compose.agent.gpu.yml`
 
+### Build fails with `short read: expected N bytes ... unexpected EOF`
+
+**Symptoms:** any `docker build` of an image based on the CUDA base
+(`cppworker:gpu-*`, `imageworker:cuda-*`) fails while resolving layers:
+
+```
+#14 ERROR: short read: expected 2343401679 bytes but got 580885939: unexpected EOF
+ERROR: failed to build: failed to solve: failed to compute cache key: short read ...
+```
+
+Identical failures on several stages at once mean neither code nor free space: this
+is a **truncated base-image layer** in the local store. `docker pull` reports
+`Already exists` and fails with the same `short read` — the local blob is shorter
+than the manifest declares.
+
+**Confirm it is the base layer, not the project:**
+
+```powershell
+docker pull dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04
+# short read ... → the layer really is broken locally
+```
+
+**Fix — fetch the same digest from another mirror:**
+
+```powershell
+docker pull mirror.gcr.io/nvidia/cuda:12.2.0-devel-ubuntu22.04
+# Pull complete, Digest: sha256:c4e81887e4aa...  (exactly what the build asks for)
+docker build -t ollama-legion/cppworker:gpu-<sha> -f docker/cppworker/Dockerfile.gpu .
+```
+
+The build then uses the local layer and does not touch the network for the base. If
+`mirror.gcr.io` is unreachable, any other registry with the same digest works too
+(`--build-arg CUDA_BASE=<registry>/nvidia/cuda`).
+
+### C: drive is almost full — move the Docker disk (Windows)
+
+**Symptoms:** `docker system df` shows tens of GB while the system disk has a few GB
+left, and builds start failing with `no space left on device`.
+
+**What matters (verified on Docker Desktop 4.4x / engine 29.6.2):**
+
+- Engine data lives in one file, `%LOCALAPPDATA%\Docker\wsl\disk\docker_data.vhdx`
+  (44.6 GB in our case).
+- The "Disk image location" setting in `settings-store.json` (`"DataFolder"`) is
+  **ignored by this version**: the key is stored, but the disk is still mounted from
+  the old path. Verify by fact: the file at the new location must be locked by the
+  running engine while the old copy is free.
+- The working approach is a **junction for the data directory** on another disk.
+
+**Procedure (data preserved, stack returns by itself — `restart: unless-stopped`):**
+
+```powershell
+docker desktop stop                 # both WSL distros must report Stopped
+robocopy "$env:LOCALAPPDATA\Docker\wsl" "D:\Docker" /E /COPY:DAT /R:2 /W:2 /NFL /NDL /NP
+Rename-Item "$env:LOCALAPPDATA\Docker\wsl\disk" "disk.old"
+cmd /c mklink /J "$env:LOCALAPPDATA\Docker\wsl\disk" "D:\Docker\disk"
+docker desktop start
+```
+
+Verify the move actually happened:
+
+```powershell
+docker info --format '{{.DockerRootDir}}'
+docker images --format '{{.Repository}}:{{.Tag}}' | Measure-Object   # images survived
+```
+
+Only then delete `disk.old` (otherwise C: does not gain any space). `docker desktop
+start` restarts the containers that were running according to their restart policy;
+profile-only services (`agent`, `rpc-node`) that are not part of the usual set must be
+stopped: `docker stop ol-stack-agent ol-stack-rpc-node`.
+
+**Caveats.** The junction survives Docker Desktop restarts but not a reinstall; after
+an upgrade, re-check that the disk is still on D: (`LinkType: Junction` on the
+directory, and the D: file locked by the engine). Move the whole `wsl\disk` directory,
+not just the `.vhdx`: the engine looks the file up by the relative path
+`disk\docker_data.vhdx`.
+
 ---
 
 ## WebUI Issues

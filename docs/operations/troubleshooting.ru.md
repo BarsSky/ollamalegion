@@ -732,6 +732,84 @@ CPPWORKER_VERBOSE=true
    ```
 4. Добавить `--gpus all` или использовать `docker-compose.agent.gpu.yml`
 
+### Сборка падает с `short read: expected N bytes ... unexpected EOF`
+
+**Симптомы:** любой `docker build` образа, который начинается с CUDA-базы
+(`cppworker:gpu-*`, `imageworker:cuda-*`), падает на этапе разрешения слоёв:
+
+```
+#14 ERROR: short read: expected 2343401679 bytes but got 580885939: unexpected EOF
+ERROR: failed to build: failed to solve: failed to compute cache key: short read ...
+```
+
+Одинаковая ошибка на нескольких стадиях сразу — это не код и не место на диске:
+так выглядит **неполный (обрезанный) слой базового образа** в локальном хранилище.
+`docker pull` при этом пишет `Already exists` и падает тем же `short read` —
+локальный blob короче, чем заявлено в манифесте.
+
+**Проверка, что дело в базовом слое, а не в проекте:**
+
+```powershell
+docker pull dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04
+# short read ... → слой действительно битый локально
+```
+
+**Решение — добрать слой с другого зеркала (дайджест тот же):**
+
+```powershell
+docker pull mirror.gcr.io/nvidia/cuda:12.2.0-devel-ubuntu22.04
+# Pull complete, Digest: sha256:c4e81887e4aa...  (тот же, что просит сборка)
+docker build -t ollama-legion/cppworker:gpu-<sha> -f docker/cppworker/Dockerfile.gpu .
+```
+
+После этого сборка идёт с локального слоя и в сеть за базой не ходит. Если
+`mirror.gcr.io` недоступен, помогает любой другой реестр с тем же дайджестом
+(`--build-arg CUDA_BASE=<реестр>/nvidia/cuda`).
+
+### Мало места на C: — перенос диска Docker на другой диск (Windows)
+
+**Симптомы:** `docker system df` показывает десятки ГБ, на системном диске
+осталось несколько ГБ, сборки начали падать с `no space left on device`.
+
+**Что важно знать (проверено на Docker Desktop 4.4x / engine 29.6.2):**
+
+- Данные движка лежат в одном файле
+  `%LOCALAPPDATA%\Docker\wsl\disk\docker_data.vhdx` (у нас было 44.6 ГБ).
+- Настройка «Disk image location» в `settings-store.json` (`"DataFolder"`)
+  **этой версией игнорируется**: ключ сохраняется, но диск монтируется по
+  старому пути. Проверять надо фактом: файл на новом месте должен быть
+  заблокирован запущенным Docker, а старая копия — свободна.
+- Рабочий способ — **junction каталога данных** на другой диск.
+
+**Порядок (данные сохраняются, стек возвращается сам — `restart: unless-stopped`):**
+
+```powershell
+docker desktop stop                 # оба WSL-дистрибутива должны стать Stopped
+robocopy "$env:LOCALAPPDATA\Docker\wsl" "D:\Docker" /E /COPY:DAT /R:2 /W:2 /NFL /NDL /NP
+Rename-Item "$env:LOCALAPPDATA\Docker\wsl\disk" "disk.old"
+cmd /c mklink /J "$env:LOCALAPPDATA\Docker\wsl\disk" "D:\Docker\disk"
+docker desktop start
+```
+
+Проверка, что переехало (а не осталось на C:):
+
+```powershell
+# занят должен быть файл на D:, а старая копия — свободна
+docker info --format '{{.DockerRootDir}}'
+docker images --format '{{.Repository}}:{{.Tag}}' | Measure-Object   # образы на месте
+```
+
+Только после этого удалять `disk.old` (иначе места на C: не прибавится).
+`docker desktop start` поднимает ранее запущенные контейнеры по их политике
+перезапуска; профильные сервисы (`agent`, `rpc-node`), которых в обычном
+наборе нет, надо погасить: `docker stop ol-stack-agent ol-stack-rpc-node`.
+
+**Подводные камни.** Junction переживает перезапуск Docker Desktop, но не
+переустановку; после апгрейда Docker Desktop проверьте, что диск всё ещё на D:
+(в свойствах каталога `LinkType: Junction`, и файл на D: заблокирован движком).
+Переносить надо именно каталог `wsl\disk`, а не только `.vhdx`: Docker ищет
+файл по относительному пути `disk\docker_data.vhdx`.
+
 ---
 
 ## Проблемы с WebUI

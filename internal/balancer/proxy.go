@@ -1595,17 +1595,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				logger.Get().Errorw("auto-pull: request retry failed",
 					"model", model, "backend", newBackendID, "error", err)
-				http.Error(w, fmt.Sprintf("Model '%s' pulled but request failed: %v", model, err), http.StatusInternalServerError)
+				// R340: JSON-форма вместо plain-text http.Error (см. autopull_errors_r340.go).
+				writeAutoPullErrorR340(w, autoPullErrorFormR340(r.URL.Path), model,
+					http.StatusBadGateway, "model pulled but the retried request failed", err)
 			} else {
 				logger.Get().Warnw("auto-pull: no free slot on new backend",
 					"model", model, "backend", newBackendID)
-				http.Error(w, fmt.Sprintf("Model '%s' pulled but no free slot on backend '%s'", model, newBackendID), http.StatusServiceUnavailable)
+				writeAutoPullErrorR340(w, autoPullErrorFormR340(r.URL.Path), model,
+					http.StatusServiceUnavailable,
+					fmt.Sprintf("model pulled but no free slot on backend %q", newBackendID), nil)
 			}
 		} else {
 			// Auto-pull не удался — сообщаем клиенту понятную ошибку
 			logger.Get().Errorw("auto-pull failed for model",
 				"model", model, "error", pullErr)
-			http.Error(w, fmt.Sprintf("Model '%s' not found on any backend and auto-pull failed: %v", model, pullErr), http.StatusNotFound)
+			writeAutoPullErrorR340(w, autoPullErrorFormR340(r.URL.Path), model,
+				http.StatusNotFound, "model not found on any backend and auto-pull failed", pullErr)
 		}
 		return
 	}

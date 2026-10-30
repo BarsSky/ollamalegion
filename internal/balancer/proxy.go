@@ -1628,6 +1628,26 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R341 (2026-10-30, найдено аудитом авто-pull F1): «МОДЕЛИ НЕТ» — НЕ «УЗЕЛ
+	// СЛОМАН».
+	//
+	// Живой факт: при выключенном auto-pull (это дефолт, config.bundled.json
+	// "enabled": false) ответ воркера «model not found» попадал в общую ветку
+	// ошибки — бэкенд помечался unhealthy, recovery-check для него пустой, и
+	// клиент получал 503 «all backends failed» вместо честного 404 «модели нет».
+	// Один запрос к несуществующей модели выключал здоровый узел из балансировки.
+	var missingModel *ModelNotFoundError
+	if errors.As(err, &missingModel) {
+		logger.Get().Infow("backend is healthy, but the model is missing — not marking unhealthy (R341)",
+			"backend", acquiredBackend, "model", model)
+		releaseAcquired()
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{
+			"error": fmt.Sprintf("model %q not found on backend %q", model, acquiredBackend),
+			"model": model,
+			"code":  "model_not_found",
+		})
+		return
+	}
 	p.UpdateBackendStatus(acquiredBackend, types.StatusUnhealthy)
 	p.scheduleRecoveryCheck(acquiredBackend)
 

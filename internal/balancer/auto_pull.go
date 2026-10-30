@@ -124,6 +124,23 @@ func (apm *AutoPullManager) IsPullInProgress(model string) bool {
 // 2. Если есть — возвращает backendID
 // 3. Если нет — запускает pull на лучшем бэкенде, ждёт завершения, возвращает backendID
 func (apm *AutoPullManager) EnsureModel(model string) (string, error) {
+	// R341 (F4 аудита авто-pull): ПЕРЕД постановкой pull'а убираем зависшие
+	// записи.
+	//
+	// Живой риск: таймаут ожидания НЕ снимает запись из activePulls («pull
+	// продолжается в фоне»), а CleanupStalePulls в проде не вызывался вовсе —
+	// значит модель, чья закачка зависла, блокировала бы dedup навсегда: любой
+	// следующий запрос видел «pull уже идёт» и никогда не начинал новый.
+	// Возраст для очистки — двойной бюджет ожидания (медленная закачка 15 ГБ
+	// легитимна, но не бесконечна).
+	staleAge := apm.getPullTimeout() * 2
+	if staleAge <= 0 {
+		// Бюджет ожидания не задан (ждём терминального состояния) — берём
+		// разумный возраст: закачка 15 ГБ на медленном канале укладывается и в
+		// меньший срок, а вечных записей быть не должно.
+		staleAge = 2 * time.Hour
+	}
+	apm.CleanupStalePulls(staleAge)
 	if !apm.IsEnabled() {
 		return "", fmt.Errorf("auto-pull disabled")
 	}
@@ -308,6 +325,13 @@ func (apm *AutoPullManager) findBackendWithModelReady(model string) string {
 		if state.Backend.Status != types.StatusHealthy {
 			continue
 		}
+		// R341 (F5 аудита авто-pull): pull ходит на backend.OllamaPort напрямую
+		// (auto_pull.go:executePull). У llama.cpp-узлов этого порта нет (0), и POST
+		// уходил бы на http://host:0/api/pull — то есть в никуда. Выбираем только
+		// узлы, у которых порт есть.
+		if state.Backend.OllamaPort <= 0 {
+			continue
+		}
 		metrics, ok := apm.proxy.metricsMgr.SnapshotBackendMetrics(id)
 		if !ok {
 			continue
@@ -346,6 +370,13 @@ func (apm *AutoPullManager) findBestBackendForPull(model string) string {
 
 	for id, state := range apm.proxy.backends {
 		if state.Backend.Status != types.StatusHealthy {
+			continue
+		}
+		// R341 (F5 аудита авто-pull): pull ходит на backend.OllamaPort напрямую
+		// (auto_pull.go:executePull). У llama.cpp-узлов этого порта нет (0), и POST
+		// уходил бы на http://host:0/api/pull — то есть в никуда. Выбираем только
+		// узлы, у которых порт есть.
+		if state.Backend.OllamaPort <= 0 {
 			continue
 		}
 

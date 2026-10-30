@@ -1166,31 +1166,33 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// ВАЖНО: accumulatedPlainContent/upstreamDoneContent выше уже
 			// накопили полный текст (для R60.21 auto-continue) — здесь правится
 			// только то, что уходит по проводу.
-			outLine := trimmed
-			if nativeDoneContentStrippingEnabled() {
-				outLine = stripNativeDoneContent(trimmed, streamedBeforeThisLine)
-			}
-			// R321 (2026-10-30): завершение, в котором модель израсходовала бюджет
-			// на размышления, обязано называть честную причину ("length") и не
-			// оставлять клиента с пустым ответом без объяснения.
+			// R331 (2026-10-30): ОДИН владелец content завершающего кадра.
 			//
-			// ЖИВАЯ ЖАЛОБА (Cline): поток заканчивался посреди рассуждений с
-			// done:true + done_reason:"stop" + content:""; клиент закрывал ход, и
-			// всё, что модель собиралась сказать, терялось. Воркер исправлен в
-			// R320, но контракт клиента не должен зависеть от версии образа
-			// воркера в кластере — поэтому нормализация есть и здесь (идемпотентно).
+			// Раньше по проводу кадр правили ДВА независимых слоя подряд:
+			// stripNativeDoneContent (R91: снять дубль уже отданного текста) и
+			// nativeDoneHygieneR321 (R321: причина + пояснение, когда клиент не
+			// видел ничего). Каждый из них не знал о другом: strip мог очистить
+			// content, и тогда hygiene видела «пустой ответ» и вставляла пояснение
+			// поверх нормального завершения (регрессия R321, ловил оператор).
+			//
+			// Теперь решение одно: finalizeNativeDoneFrameR331. Внутри — тот же
+			// порядок (сначала снять дубль, потом решить про причину/пояснение), но
+			// состояние считается ОДИН раз, поэтому слои не могут разойтись.
+			outLine := trimmed
 			if originalPath == "/api/chat" || originalPath == "/api/generate" {
-				// R321.2: visibleStreamedChars — текста, уже отданного дельтами,
-				// достаточно, чтобы понять: это нормальное завершение (в Ollama
-				// done-чанк приходит с пустым content), а не обрыв по бюджету.
-				if fixed, changed := nativeDoneHygieneR321(outLine, nativeReasoningChars,
-					len(strings.TrimSpace(streamedBeforeThisLine))); changed {
-					logger.Get().Infow("proxyRequestLlamaCpp[native]: done-чанк нормализован (R321)",
+				fixed, changed := finalizeNativeDoneFrameR331(trimmed, streamedBeforeThisLine,
+					nativeReasoningChars, nativeDoneContentStrippingEnabled())
+				if changed {
+					logger.Get().Infow("proxyRequestLlamaCpp[native]: done-кадр нормализован (R331)",
 						"backend", backendID, "model", modelFromCtx,
 						"reasoning_chars", nativeReasoningChars,
-						"done_reason", "length")
+						"visible_streamed_chars", len(strings.TrimSpace(streamedBeforeThisLine)))
 					outLine = fixed
+				} else {
+					outLine = trimmed
 				}
+			} else {
+				outLine = trimmed
 			}
 			// R266.1 (2026-10-28): на нативном пути cppworker уже отдаёт NDJSON,
 			// и балансер писал строку клиенту как есть — поэтому служебные метки

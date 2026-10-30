@@ -102,26 +102,17 @@ func (p *Proxy) contextGrowthBlocker(backendID, model string, meta *RequestMeta)
 	}
 	budget := agentOutputBudget(meta)
 	estimated := meta.EstimatedPromptTokens
-	needed := 0
-	// R294 (2026-10-29): ЯВНО ЗАПРОШЕННОЕ ОКНО — тоже причина «нужно больше».
+	// R330 (2026-10-30): ТА ЖЕ формула, что у вердикта R299/R301 и у текста
+	// отказа — neededWindowTokensR330 (max(оценка+бюджет, явно запрошенное окно)).
 	//
-	// Живой дефект: клиент прислал num_ctx=16384 при загруженных 8192, но промпт
-	// был коротким, поэтому проверка «промпт + бюджет не влезает» не срабатывала:
-	// запрос уходил в воркер, тот отвечал кадром ошибки внутри стрима
-	// (`requested n_ctx=16384 exceeds model's effective n_ctx=8192`), а на /v1
-	// поток после такого кадра вообще не завершался. Сравнение с явным запросом
-	// закрывает оба случая до старта стрима.
-	requested := meta.RequestedNCtxOverride
-	if requested > loaded {
-		needed = requested
-	} else if estimated > 0 && promptNeedsMoreContext(estimated, budget, loaded) {
-		needed = estimated + budget
-	}
-	if needed == 0 {
+	// Раньше здесь стояла отдельная запись правила (через promptNeedsMoreContext)
+	// с другим порядком проверок: результат совпадал, но правка одного места
+	// разводила вердикт с числами в теле отказа — класс дефекта R267.
+	// R294 (2026-10-29) по-прежнему в силе: явно запрошенное окно — причина
+	// «нужно больше», даже если промпт короткий.
+	needed := neededWindowTokensR330(meta)
+	if needed == 0 || needed <= loaded {
 		return false, 0, 0
-	}
-	if needed < requested {
-		needed = requested
 	}
 	// Рост возможен только без активных стримов (guard R271): если стримы есть,
 	// перезагрузку отложат, а запрос в очереди простоял бы впустую.
@@ -142,7 +133,7 @@ func (p *Proxy) contextGrowthBlocker(backendID, model string, meta *RequestMeta)
 	logger.Get().Infow("context growth deferred instead of admission queue (R288)",
 		"backend", backendID, "model", model,
 		"estimated_prompt_tokens", estimated,
-		"requested_by_client", requested,
+		"requested_by_client", meta.RequestedNCtxOverride,
 		"output_budget", budget,
 		"needed_tokens", needed, "loaded_window_tokens", loaded,
 		"active_streams", active,

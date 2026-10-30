@@ -217,7 +217,6 @@ func (p *Proxy) contextGrowthNumbers(backendID, model string, body []byte, path 
 	if meta == nil {
 		return 0, 0, 0
 	}
-	requested := meta.RequestedNCtxOverride
 	estimated = meta.EstimatedPromptTokens
 	loaded = p.loadedPerSeqNCtx(backendID, model)
 
@@ -227,14 +226,10 @@ func (p *Proxy) contextGrowthNumbers(backendID, model string, body []byte, path 
 		return estimated, 0, 0
 	}
 
-	byPrompt := 0
-	if estimated > 0 {
-		byPrompt = estimated + agentOutputBudget(meta)
-	}
-	needed = byPrompt
-	if requested > needed {
-		needed = requested
-	}
+	// R330 (2026-10-30): формула ОДНА на все guard'ы — neededWindowTokensR330.
+	// Раньше здесь и в contextGrowthBlocker она была записана дважды, и любая
+	// правка одной разводила вердикт с текстом отказа.
+	needed = neededWindowTokensR330(meta)
 	if needed == 0 {
 		// Ни оценки, ни явного окна — чисел нет, текст остаётся прежним.
 		return estimated, loaded, 0

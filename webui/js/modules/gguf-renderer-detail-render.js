@@ -2801,15 +2801,118 @@
             // карточки загруженной модели. Без него R155 («окно ПОДНЯТО по
             // запросу клиента») не срабатывал вообще: сравнивать фактическое окно
             // инстанса было не с чем, и стрелка не появлялась никогда.
-            if (M.state && typeof M.state === 'object') M.state.modelProfiles = profiles;
+            if (M.state && typeof M.state === 'object') {
+                M.state.modelProfiles = profiles;
+                // R319 (2026-10-30): причина ограничения окна. Бэкендер УЖЕ
+                // считал её (R267) и клал в этот же ответ, но фронт забирал
+                // только models — `effectiveContext` уходил в корзину, а
+                // `nctxCeiling` (потолок без привязки к профилю) не запрашивался
+                // вовсе. Оператор видел в форме своё число и не видел ни одного
+                // места, где сказано, что окно режет env.
+                M.state.modelEffectiveWindow = (res && res.effectiveContext) || {};
+                M.state.nctxCeiling = (res && res.nctxCeiling) || null;
+            }
             Array.prototype.forEach.call(editors, function (el) {
                 fillModelParamEditor(el, profiles[el.getAttribute('data-model')] || null);
+                paintWindowLimit(el);
             });
             // R229 (2026-10-22): подписать «наследуется» РЕАЛЬНЫМ значением.
             applyInheritedDefaults(editors);
         }).catch(function () {
             // Профили не получены: формы остаются с тем, что уже известно.
         });
+    }
+
+    // windowLimitNote — R319 (2026-10-30): ОДНО место, которое объясняет, ЧЕМ
+    // ограничено окно модели, и делает это ТОЛЬКО из того, что сказал балансер.
+    //
+    // ЗАЧЕМ. Живая жалоба повторялась: «модель обучена на 131072, VRAM даёт
+    // 131072 — почему окно 32768?». В интерфейсе были два первых числа
+    // (feasible/GGUF, R83) и ни одного упоминания третьего — потолка авто-роста
+    // LB_NCTX_RELOAD_MAX_N_CTX. Бэкендер отдаёт причину в GET model-profiles
+    // (`effectiveContext[<модель>].limitReason` + `nctxCeiling`), поэтому текст
+    // берём из ответа, а не сочиняем: если причина не пришла — это видно по
+    // тексту, а не подменяется догадкой.
+    //
+    // Параметры:
+    //   entry    — effectiveContext[<модель>] или null/undefined;
+    //   ceiling  — nctxCeiling из того же ответа или null.
+    // Возвращает { tone: 'normal'|'warn', text }.
+    function windowLimitNote(entry, ceiling) {
+        var envCeil = ceiling && typeof ceiling.envCeiling === 'number' ? ceiling.envCeiling : 0;
+        if (entry && typeof entry === 'object' && entry.effectiveContextLength !== undefined) {
+            var reason = entry.limitReason ? String(entry.limitReason) : '';
+            var byEnv = entry.limitedBy === 'env';
+            var title = byEnv
+                ? 'Ограничивает env (LB_NCTX_RELOAD_MAX_N_CTX=' + (envCeil > 0 ? envCeil : '?') + ')'
+                : 'Ограничивает профиль модели';
+            var text = 'Предел окна: ' + String(entry.effectiveContextLength) + '. ' + title;
+            if (reason) text += '. ' + reason;
+            return { tone: byEnv ? 'warn' : 'normal', text: text };
+        }
+        if (envCeil > 0) {
+            return {
+                tone: 'normal',
+                text: 'Предел окна: ' + envCeil + ' (env LB_NCTX_RELOAD_MAX_N_CTX). ' +
+                    ((ceiling && ceiling.reason) || 'Профиля у модели нет — действует потолок авто-роста.')
+            };
+        }
+        return {
+            tone: 'normal',
+            text: (ceiling && ceiling.reason) ||
+                'Предел окна не задан: профиля нет и LB_NCTX_RELOAD_MAX_N_CTX пуст — ' +
+                'предел проверит загрузка (VRAM/GGUF).'
+        };
+    }
+
+    // modelEffectiveEntry — найти запись effectiveContext для модели.
+    //
+    // Ключ карты — имя модели балансера, а карточка может держать имя файла
+    // (`X.gguf`) или путь: перебираем те же варианты, что intentOf (R162), иначе
+    // причина ограничения молча не находилась бы ровно у загруженной модели.
+    function modelEffectiveEntry(modelName, effectiveMap) {
+        if (!effectiveMap || typeof effectiveMap !== 'object') return null;
+        // Расширение снимаем локально, а не через stripGGUF из соседнего модуля:
+        // функция должна работать и там, где helpers ещё не загружен (и в тестах),
+        // иначе причина «не нашлась» ровно у имени файла — самого частого написания.
+        const noExt = function (v) { return String(v || '').replace(/\.gguf$/i, ''); };
+        const full = String(modelName || '');
+        const base = full ? full.split(/[\\/]/).pop() : '';
+        const keys = [full, base, noExt(full), noExt(base)];
+        for (let i = 0; i < keys.length; i++) {
+            const k = keys[i];
+            if (k && Object.prototype.hasOwnProperty.call(effectiveMap, k)) return effectiveMap[k];
+        }
+        return null;
+    }
+
+    // paintWindowLimit — R319: подписать форму «чем ограничено окно».
+    //
+    // Данные приходят асинхронно ПОСЛЕ отрисовки формы (hydrateModelParamEditors),
+    // поэтому элемент создаётся здесь, а не в шаблоне. Несколько форм на странице
+    // — у каждой свой data-model, поэтому ищем строго внутри своей формы.
+    function paintWindowLimit(editorEl) {
+        if (!editorEl || typeof document === 'undefined') return;
+        var state = (M.state && typeof M.state === 'object') ? M.state : null;
+        if (!state || (!state.modelEffectiveWindow && !state.nctxCeiling)) return;
+        var modelName = editorEl.getAttribute('data-model') || '';
+        var entry = modelEffectiveEntry(modelName, state.modelEffectiveWindow);
+        var note = windowLimitNote(entry, state.nctxCeiling || null);
+        var box = editorEl.querySelector('.gguf-mp-limit');
+        if (!box) {
+            box = document.createElement('div');
+            box.className = 'gguf-mp-limit';
+            var actions = editorEl.querySelector('.gguf-mp-actions');
+            if (actions && actions.parentNode === editorEl) {
+                editorEl.insertBefore(box, actions);
+            } else {
+                editorEl.appendChild(box);
+            }
+        }
+        box.className = 'gguf-mp-limit' + (note.tone === 'warn' ? ' gguf-mp-limit-warn' : '');
+        box.setAttribute('data-nctx-limit', modelName);
+        box.setAttribute('title', note.text);
+        box.textContent = note.text;
     }
 
     // applyInheritedDefaults — R229: значения по умолчанию (что именно унаследует
@@ -3822,6 +3925,10 @@
     M.formatParamValue = formatParamValue;
     M.fillModelParamEditor = fillModelParamEditor;
     M.hydrateModelParamEditors = hydrateModelParamEditors;
+    // R319 (2026-10-30): «чем ограничено окно» — чистая функция + отрисовка.
+    M.windowLimitNote = windowLimitNote;
+    M.modelEffectiveEntry = modelEffectiveEntry;
+    M.paintWindowLimit = paintWindowLimit;
     M.hydrateOnOpen = hydrateOnOpen;
     M.PARAM_SOURCE_LABELS = PARAM_SOURCE_LABELS;
     M.buildLayoutFlags = buildLayoutFlags;

@@ -2381,6 +2381,20 @@
     flex-wrap: wrap;
 }
 .gguf-mp-warn { color: var(--text-muted); }
+/* R319 (2026-10-30): «чем ограничено окно» в самой форме, где окно задают.
+   До этого оператор видел в форме только своё значение, а причину (env-потолок
+   LB_NCTX_RELOAD_MAX_N_CTX / профиль) не видел нигде в интерфейсе. */
+.gguf-mp-limit {
+    margin: 6px 0 0 0;
+    padding: 6px 8px;
+    border-left: 3px solid var(--border-color, var(--border));
+    font-size: var(--font-size-xs);
+    line-height: 1.4;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary, transparent);
+}
+.gguf-mp-limit-warn { border-left-color: var(--warning, #f0ad4e); }
+.gguf-mp-limit-title { font-weight: 600; color: var(--text-primary); }
 .gguf-mp-acc { margin-top: 6px; }
 .gguf-mp-summary { cursor: pointer; font-size: var(--font-size-xs); }
 /* R124: состояние узла раскладки (донор/приёмник) - факт, а не галочка. */

@@ -40,6 +40,29 @@ type modelProfileResponse struct {
 	// внутри профиля: контракт Models остаётся прежним (его читает WebUI и
 	// config-export), а причина ограничения добавляется рядом.
 	Effective map[string]profileEffectiveWindow `json:"effectiveContext,omitempty"`
+	// NCtxCeiling — R319: КЛАСТЕРНЫЙ потолок авто-роста окна, без привязки к
+	// профилю. effectiveContext строится только по существующим профилям, поэтому
+	// у модели без профиля причины ограничения не было видно вовсе — а оператор
+	// спрашивает именно про неё: «обучение 131072, VRAM 131072, почему 32768?».
+	NCtxCeiling nctxCeilingResponse `json:"nctxCeiling"`
+}
+
+// nctxCeilingResponse — R319: действующий потолок авто-роста и его причина.
+//
+// EnvCeiling == 0 = потолок не задан (окно режет только физика VRAM/GGUF).
+type nctxCeilingResponse struct {
+	EnvCeiling int    `json:"envCeiling"`
+	LimitedBy  string `json:"limitedBy,omitempty"` // env | ""
+	Reason     string `json:"reason,omitempty"`
+}
+
+// nctxCeilingFor — R319: обёртка над балансером (nil-safe, как effectiveWindowFor).
+func nctxCeilingFor(p *balancer.Proxy) nctxCeilingResponse {
+	if p == nil {
+		return nctxCeilingResponse{}
+	}
+	envCeiling, limitedBy, reason := p.ClusterNCtxCeiling()
+	return nctxCeilingResponse{EnvCeiling: envCeiling, LimitedBy: limitedBy, Reason: reason}
 }
 
 // profileEffectiveWindow — R267: вычисленное окно и причина ограничения.
@@ -104,9 +127,10 @@ func (s *Server) handleListModelProfiles(w http.ResponseWriter, r *http.Request)
 	}
 
 	s.writeJSON(w, http.StatusOK, modelProfileResponse{
-		Models:    models,
-		Total:     len(models),
-		Effective: effective,
+		Models:      models,
+		Total:       len(models),
+		Effective:   effective,
+		NCtxCeiling: nctxCeilingFor(s.proxy),
 	})
 }
 
@@ -211,6 +235,10 @@ func (s *Server) getModelProfile(w http.ResponseWriter, _ *http.Request, modelNa
 		// 256000 в карточке против 32768 после загрузки из-за env-потолка).
 		// Вложенный объект — та же форма, что в списке профилей (effectiveContext).
 		"effective": effectiveWindowFor(s.proxy, modelName),
+		// R319 (2026-10-30): кластерный потолок авто-роста рядом с профилем —
+		// чтобы карточка объясняла ВСЕ три числа (профиль, потолок, физика), а не
+		// заставляла искать env в compose-файле.
+		"nctxCeiling": nctxCeilingFor(s.proxy),
 	})
 }
 

@@ -168,6 +168,15 @@ type ModelOpResult struct {
 	Deferred      bool `json:"deferred,omitempty"`
 	RetryAfterSec int  `json:"retryAfterSec,omitempty"`
 
+	// WorkerStatus — R312 (2026-10-30): HTTP-статус, которым ответил ВОРКЕР.
+	//
+	// ЗАЧЕМ. Раньше он склеивался в текст ошибки («cppworker error (HTTP 404): …»),
+	// и API-слой не мог отличить «модели нет — повтор не поможет» от «воркер
+	// сломался — повтори». Живой факт: загрузка несуществующей модели отдавала
+	// HTTP 500 при 404 от воркера, то есть клиенту (Cline, DSH, hermes) говорили
+	// «повтори, станет лучше» про модель, которой нет на диске.
+	WorkerStatus int `json:"workerStatus,omitempty"`
+
 	// RoleRefused — R304 (2026-10-30): загрузку запретила РОЛЬ бэкенда (донор
 	// раскладки), а не транспорт, память или занятость.
 	//
@@ -1772,11 +1781,12 @@ func (mm *ModelManager) executeLlamaCppLoadOnce(host string, port int, backendID
 
 		// Другая ошибка — не повторяем.
 		return &ModelOpResult{
-			Success:   false,
-			Operation: req.Operation,
-			ModelName: req.ModelName,
-			BackendID: backendID,
-			Error:     fmt.Sprintf("cppworker error (HTTP %d): %s", resp.StatusCode, errMsg),
+			Success:      false,
+			Operation:    req.Operation,
+			ModelName:    req.ModelName,
+			BackendID:    backendID,
+			WorkerStatus: resp.StatusCode,
+			Error:        fmt.Sprintf("cppworker error (HTTP %d): %s", resp.StatusCode, errMsg),
 		}
 	}
 
@@ -1861,11 +1871,12 @@ func (mm *ModelManager) executeLlamaCppUnload(host string, port int, backendID s
 		}
 	}
 	return &ModelOpResult{
-		Success:   false,
-		Operation: req.Operation,
-		ModelName: req.ModelName,
-		BackendID: backendID,
-		Error:     fmt.Sprintf("cppworker error (HTTP %d): %s", resp.StatusCode, string(respBody)),
+		Success:      false,
+		Operation:    req.Operation,
+		ModelName:    req.ModelName,
+		BackendID:    backendID,
+		WorkerStatus: resp.StatusCode,
+		Error:        fmt.Sprintf("cppworker error (HTTP %d): %s", resp.StatusCode, string(respBody)),
 	}
 }
 
@@ -1913,11 +1924,12 @@ func (mm *ModelManager) sendCppWorkerRequest(method, url, backendID string, req 
 		errMsg = cwErr.Error
 	}
 	return &ModelOpResult{
-		Success:   false,
-		Operation: req.Operation,
-		ModelName: req.ModelName,
-		BackendID: backendID,
-		Error:     fmt.Sprintf("cppworker error (HTTP %d): %s", resp.StatusCode, errMsg),
+		Success:      false,
+		Operation:    req.Operation,
+		ModelName:    req.ModelName,
+		BackendID:    backendID,
+		WorkerStatus: resp.StatusCode,
+		Error:        fmt.Sprintf("cppworker error (HTTP %d): %s", resp.StatusCode, errMsg),
 	}
 }
 

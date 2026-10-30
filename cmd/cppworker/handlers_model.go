@@ -1388,9 +1388,9 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			"context_size":        m.ContextSize,
 			"gguf_context_length": m.GGUFContextLength,
 			"size_bytes":          effectiveSize,
-			"size":                effectiveSize,                                           // R60.4: alias (webui gguf-renderer-detail.js:232)
-			"size_vram":           estimateVRAMSize(m.NLayers, m.GPULayers, effectiveSize), // R66.5: VRAM estimate для balancer poller
-			"quantization":        parseQuantization(m.Path),                               // R60.4
+			"size":                effectiveSize,                              // R60.4: alias (webui gguf-renderer-detail.js:232)
+			"size_vram":           estimateVRAMSizeForModel(&m, effectiveSize), // R66.5: VRAM estimate для balancer poller
+			"quantization":        parseQuantization(m.Path),                  // R60.4
 			"loaded_at":           m.LoadedAt,
 			"gpu_count":           m.GPUCount,
 			"kv_cache_type":       m.KVCacheType,
@@ -2891,67 +2891,52 @@ func modelParameterSize(nLayers, nEmbd int) string {
 	return fmt.Sprintf("%.1fB", billions)
 }
 
-// estimateVRAMSize — оценка VRAM usage для loaded модели в байтах.
+// estimateVRAMSizeForModel — сколько модель занимает VRAM (байты): веса на GPU + KV.
 //
-// До этого фикса (R66 и ранее) /api/ps всегда возвращал size_vram:0
-// с комментарием "cppworker не отслеживает per-model VRAM пока".
-// Это потому, что llama.cpp НЕ экспонирует per-model VRAM usage через C-API
-// (только общий nvmlMemGetInfo через ggml_nvml), и интеграция NVML из
-// cgo-bridge потребовала бы отдельной работы.
+// ЧТО БЫЛО НЕ ТАК (R313, 2026-10-30). Прежняя версия считала `size × 3.0 ×
+// (gpuLayers/nLayers)` по допущению «квантованные веса в VRAM разворачиваются в
+// fp16». Допущение устарело: llama.cpp держит Q4_K_M на GPU квантованным, поэтому
+// множитель завышал число втрое, а KV не учитывался вовсе. Живой факт со стенда:
+// gemma-4-E4B (файл 4.2 ГБ, ctx 32768, 42/42 слоя на GPU) отдавала
+// size_vram = 12.6 ГБ на 8-гиговой карте — физически невозможное значение.
 //
-// Здесь — практичная оценка на основе того, что у нас ЕСТЬ:
-//   - sizeBytes        — file size на диске (сжатый GGUF)
-//   - gpuLayers        — сколько слоёв в GPU (из loaded_at)
-//   - nLayers          — общее число слоёв
+// ЧЕМ ЭТО ВРЕДИЛО. Значение уезжает в балансер (poller → LlamaCppMetrics.
+// VRAMUsage), а оттуда в autotune-бюджет `min(free + usage, total)`. Клип по
+// total не давал решениям сломаться, но бюджет становился оптимистичнее правды
+// (8 ГБ вместо реальных ~7.7), а оператор видел в /api/ps невозможное число.
 //
-// Логика:
-//  1. GGUF Q4_K_M на диске ≈ 0.55 байт/параметр, а в VRAM те же веса
-//     занимают ≈ 1.8 байт/параметр (fp16) → file→VRAM ≈ 1.8/0.55 ≈ 3.27.
-//     В коде взят консервативный множитель 3.0.
-//  2. Если только часть слоёв в GPU — пропорционально (gpuLayers/nLayers).
-//  3. KV cache здесь НЕ учитывается (в реальном VRAM он добавляет ещё
-//     ~10-30% на больших n_ctx).
+// КАК СЧИТАЕМ ТЕПЕРЬ:
+//   - веса: доля файла по числу слоёв на GPU (квантование не «разворачивается»);
+//   - KV: той же формулой, что и остальной продукт (cppbackend.EstimateKVCacheMB),
+//     тоже с долей по слоям — второй формулы KV в проекте не заводится;
+//   - отрицательный gpuLayers (-1 = все слои, -2 = AUTO) по-прежнему значит «все
+//     слои на GPU»: для AUTO точное число здесь недоступно, а верхняя граница
+//     согласуется с CalculateOptimalGPULayers.
 //
-// Это ГРУБАЯ ВЕРХНЯЯ ОЦЕНКА, а не измерение: NVML не даёт per-model VRAM.
-// Погрешность на практике до +50-60% (пример ниже), поэтому значение годится
-// только для UI/индикации, но НЕ для решений о влезаемости модели.
-//
-// Примеры:
-//
-//	Qwen3-Instruct-2507-q4km (2.5 GB файл, 36/36 слоёв в GPU):
-//	  estimate = 2497281120 * 3.0 * (36/36) ≈ 7.5 GB
-//	  (реально ≈ 4.2 GB весов + 0.5 GB KV ≈ 4.7 GB — т.е. переоценка ~1.6x)
-func estimateVRAMSize(nLayers, gpuLayers int, sizeBytes uint64) uint64 {
-	if sizeBytes == 0 || nLayers == 0 {
+// ЧЕСТНАЯ ГРАНИЦА: это оценка, а не измерение (llama.cpp не отдаёт per-model VRAM
+// через C-API). Но теперь она складывается из двух величин с физическим смыслом,
+// а не из множителя «на глаз».
+func estimateVRAMSizeForModel(m *cppbackend.ModelInfo, sizeBytes uint64) uint64 {
+	if m == nil || sizeBytes == 0 || m.NLayers == 0 {
 		return 0
 	}
-	// R66b (2026-09-22): отрицательный gpuLayers — это НЕ "ноль слоёв на GPU".
-	// Соглашение llama.cpp/cppworker: -1 = все слои на GPU (дефолт
-	// cppbackend.DefaultLlamaCppConfig().DefaultGPULayers = -1), -2 = AUTO
-	// (сколько влезет, считает CalculateOptimalGPULayers). До этого фикса
-	// любой из этих вариантов превращался в 0 → estimateVRAMSize возвращал 0,
-	// и /api/models + /api/ps отдавали size_vram:0 для реально загруженной
-	// на GPU модели (то есть ровно тот баг, который объявили исправленным
-	// в R66.5). Для AUTO точное число слоёв здесь недоступно (inst.info.GPULayers
-	// хранит запрошенное значение, а не резолвед), поэтому берём верхнюю
-	// границу — все слои; это согласуется с CalculateOptimalGPULayers, который
-	// для -1/-2/overflow тоже стартует с totalLayers.
+	gpuLayers := m.GPULayers
 	if gpuLayers < 0 {
-		gpuLayers = nLayers
+		gpuLayers = m.NLayers
 	}
 	if gpuLayers == 0 {
-		// CPU-only — нет VRAM
+		// CPU-only — VRAM не занята.
 		return 0
 	}
-	if gpuLayers > nLayers {
-		gpuLayers = nLayers
+	if gpuLayers > m.NLayers {
+		gpuLayers = m.NLayers
 	}
-	// Q4_K_M: file ≈ 0.55 байт/парам → VRAM ≈ 1.8 байт/парам
-	// Соотношение file→VRAM ≈ 0.55/1.8 ≈ 0.306 → multiplier = 1.0/0.306 ≈ 3.27
-	// Эмпирически для fp16 это ~1.8x, для Q4_K_M точнее ~3.0x
-	const fileToVRAMMultiplier = 3.0
-	fraction := float64(gpuLayers) / float64(nLayers)
-	return uint64(float64(sizeBytes) * fraction * fileToVRAMMultiplier)
+	fraction := float64(gpuLayers) / float64(m.NLayers)
+
+	weights := uint64(float64(sizeBytes) * fraction)
+	kvMB := cppbackend.EstimateKVCacheMB(m.NLayers, m.NHeads, m.NKvHeads, m.NEmbd, m.ContextSize, m.KVCacheType)
+	kv := uint64(float64(kvMB) * 1024 * 1024 * fraction)
+	return weights + kv
 }
 
 // quantizationOrUnknown — Ollama отдаёт "unknown" вместо пустой строки.
@@ -2989,7 +2974,7 @@ func handleOllamaPS(w http.ResponseWriter, r *http.Request) {
 			"name":       m.Name,
 			"model":      m.Name,
 			"size":       sizeBytes,
-			"size_vram":  estimateVRAMSize(m.NLayers, m.GPULayers, sizeBytes),
+			"size_vram":  estimateVRAMSizeForModel(&m, sizeBytes),
 			"digest":     digest,
 			"expires_at": time.Now().Add(5 * time.Minute).Format(time.RFC3339),
 			"details": map[string]interface{}{

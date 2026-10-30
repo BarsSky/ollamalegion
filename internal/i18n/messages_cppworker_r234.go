@@ -18,6 +18,14 @@ var messagesCppworker = map[string]map[Lang]string{
 		RU: "buildGenerateRequestFromChat: max_output_tokens учтён как ВЕРХНЯЯ ГРАНИЦА",
 		EN: "buildGenerateRequestFromChat: max_output_tokens treated as an UPPER BOUND",
 	},
+	// R314 (2026-10-30): нативная поверхность (/api/chat) больше не отдаёт пустой
+	// content молча, когда весь бюджет ответа ушёл в размышления. Живой факт:
+	// content:"" при 592 символах thinking и done_reason=length — клиент (Cline)
+	// показывал «Model returned empty response», оператор шёл искать поломку.
+	"cppworker.handlers_chat.empty_answer_reasoning_only": {
+		RU: "Модель сгенерировала только размышления (%d симв.), видимого ответа нет (бюджет ответа исчерпан). Увеличьте num_predict/max_tokens или отключите reasoning.",
+		EN: "The model produced reasoning only (%d chars), no visible answer (the output budget was used up). Raise num_predict/max_tokens or turn reasoning off.",
+	},
 	"cppworker.handlers_chat.empty_output_retry": {
 		RU: "writeChatStreamResponse: пустой вывод модели — повторная генерация",
 		EN: "writeChatStreamResponse: model output is empty — regenerating",

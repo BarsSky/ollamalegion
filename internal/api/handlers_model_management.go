@@ -246,6 +246,35 @@ func modelOpStatusCode(result *balancer.ModelOpResult) int {
 	if result.Busy {
 		return http.StatusConflict
 	}
+	// R312 (2026-10-30): статус ВОРКЕРА важнее нашего общего 500.
+	//
+	// Живой факт: загрузка несуществующей модели через балансер отдавала HTTP 500
+	// при 404 от воркера («model "no-such-model" not found in ./models»). 5xx для
+	// клиента значит «повтори, станет лучше», а файла на диске не появится:
+	// Cline/DSH/hermes уходят в цикл повторов.
+	//
+	// Правило: терминальные ответы воркера (4xx) отдаём как есть — 404 остаётся
+	// 404, остальные 4xx становятся 400 (это «так нельзя», а не «сломалось»).
+	// 5xx воркера и его отсутствие — по-прежнему 500.
+	if result.WorkerStatus == http.StatusNotFound || result.WorkerStatus == http.StatusGone {
+		return result.WorkerStatus
+	}
+	// 401/403 воркера — это НЕ ошибка клиента: балансер не предъявил токен (R307)
+	// или предъявил не тот. Отдать 400 значило бы сказать оператору «твой запрос
+	// плохой», спрятав настоящую причину («у балансера нет токена воркера»).
+	// 502 называет виновника верно — шлюз.
+	if result.WorkerStatus == http.StatusUnauthorized || result.WorkerStatus == http.StatusForbidden {
+		return http.StatusBadGateway
+	}
+	// 409 воркера («модель занята», «уже грузится») — конфликт, а не «нельзя
+	// в принципе»: клиент должен попробовать с force=true или позже.
+	if result.WorkerStatus == http.StatusConflict {
+		return http.StatusConflict
+	}
+	if result.WorkerStatus >= http.StatusBadRequest && result.WorkerStatus < http.StatusInternalServerError {
+		return http.StatusBadRequest
+	}
+
 	// R304: загрузку запретила роль (донор раскладки) — это 409 Conflict с
 	// причиной, а не 500. 5xx значит «повтори, станет лучше», а роль сама не
 	// изменится: оператор должен увидеть объяснение, а не поломку балансера.

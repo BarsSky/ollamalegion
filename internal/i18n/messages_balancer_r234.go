@@ -356,6 +356,11 @@ var messagesBalancer = map[string]map[Lang]string{
 	},
 
 	// === rpc_layout_node_r133.go: узел раскладки (rpc-server) ===========
+	// R315 (2026-10-30): приказ о раскладке недоступному бэкенду не отправляется.
+	"balancer.rpc_layout.backend_offline": {
+		RU: "бэкенд не в сети: приказ о раскладке не отправляется (узел вернётся — гард применит состав сам)",
+		EN: "backend is offline: the layout order is not sent (the guard will apply the layout once the node returns)",
+	},
 	"balancer.rpc_layout_node.unknown_port": {
 		RU: "backend %s: неизвестен порт cppworker",
 		EN: "backend %s: cppworker port is unknown",

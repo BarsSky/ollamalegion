@@ -1829,6 +1829,21 @@ func (b *Backend) refreshGPUDeviceVRAM() {
 // Для GQA моделей n_kv_heads < n_heads, для MHA n_kv_heads = n_heads.
 //
 // Добавляет 10% буфера безопасности для избежания граничных OOM.
+// EstimateKVCacheMB — экспорт расчёта KV-кэша для потребителей вне пакета.
+//
+// ЗАЧЕМ (R313). cppworker отдаёт `size_vram` в /api/models и /api/ps — «сколько
+// модель занимает в VRAM». Раньше это была ГРУБАЯ оценка `size × 3.0` (допущение
+// «квантованные веса разворачиваются в fp16»), без KV и без учёта частичной
+// выгрузки: на стенде gemma (4.2 ГБ, ctx 32768) показывала 12.6 ГБ VRAM на
+// 8-гиговой карте. Число уезжало в балансер (poller → VRAMUsage), а оттуда в
+// autotune-бюджет: `min(free + usage, total)` клипуется размером карты, поэтому
+// решения не ломались, но оператор видел физически невозможное значение.
+//
+// Считать KV здесь, а в воркере — только вызывать: второй формулы быть не должно
+// (иначе «в логе одно, в решении другое», ровно как в R83).
+func EstimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int, kvType string) int {
+	return int(estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx, kvType))
+}
 func estimateKVCacheMB(nLayers, nHeads, nKvHeads, nEmbd, nCtx int, kvCacheType string) uint64 {
 	if nLayers <= 0 || nCtx <= 0 {
 		return 0

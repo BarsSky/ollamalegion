@@ -538,9 +538,18 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		resp.Message.Content = stripJSONFence(resp.Message.Content)
 	}
 
+
 	// R66b: think=false — клиент явно не хочет видеть рассуждения. Модель может
 	// всё равно вернуть <think>/<reasoning> блок (native template), поэтому
 	// вырезаем его из content и НЕ отдаём в message.reasoning.
+	// R314: сколько символов размышлений пришло — считаем ДО того, как их скроют
+	// (think=false). Нужно для пояснения ниже: клиент должен узнать, что видимого
+	// текста нет именно потому, что бюджет ушёл в размышления.
+	reasoningCharsForNotice := len([]rune(strings.TrimSpace(resp.Message.Thinking)))
+	if reasoningCharsForNotice == 0 {
+		reasoningCharsForNotice = len([]rune(strings.TrimSpace(resp.Message.Reasoning)))
+	}
+
 	if promptOpts.ReasoningOverride != nil && !*promptOpts.ReasoningOverride {
 		if r, c, has := SplitReasoningContent(resp.Message.Content); has {
 			resp.Message.Content = c
@@ -550,9 +559,39 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// R314 (2026-10-30): пустой ответ, когда весь бюджет ушёл в размышления.
+	//
+	// ЖИВОЙ ФАКТ. /api/chat (gemma-4, reasoning включён, num_predict=160) вернул
+	// content:"" и 592 символа в message.thinking при done_reason:"length". Для
+	// клиента это «пустой ответ»: Cline показывает «Model returned empty
+	// response», оператор идёт искать поломку. У OpenAI-поверхности такое
+	// пояснение есть с R261, но нативная поверхность идёт passthrough'ом и его
+	// не получала.
+	//
+	// ПОЧЕМУ ПОСЛЕ think=false: при явном «не показывай размышления» ответ тоже
+	// остаётся пустым, и объяснить это надо тем же текстом — иначе клиент с
+	// think=false получает ровно то же молчание. Признак «размышления были»
+	// считаем ДО того, как их скрыли.
+	if notice := emptyAnswerNoticeForNativeR314(resp.Message.Content, reasoningCharsForNotice); notice != "" {
+		resp.Message.Content = notice
+	}
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// emptyAnswerNoticeForNativeR314 — пояснение вместо пустого content на нативной
+// поверхности (/api/chat, /api/generate).
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. Правило простое, но его надо ПРОВЕРЯТЬ без поднятого
+// бэкенда: «видимого ответа нет, а размышления были» — единственный случай, когда
+// подменяем пустоту. Всё остальное (пусто и размышлений нет; непустой content)
+// остаётся как есть, иначе мы начнём дописывать текст в чужие ответы.
+func emptyAnswerNoticeForNativeR314(content string, reasoningChars int) string {
+	if strings.TrimSpace(content) != "" || reasoningChars <= 0 {
+		return ""
+	}
+	return i18n.T("cppworker.handlers_chat.empty_answer_reasoning_only", reasoningChars)
+}
 // buildGenerateRequestFromChat — R65d (2026-09-20): переносит ПОЛНЫЙ набор
 // Ollama-параметров из /api/chat запроса в generateRequest, чтобы
 // buildGenerationParams (handlers_generate.go:130-189) применил их так же, как

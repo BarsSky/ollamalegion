@@ -59,6 +59,20 @@ func TestR185_ModelOpStatus_PreservesExistingRules(t *testing.T) {
 		// клиента значит «повтори, станет лучше», а роль сама не изменится —
 		// оператор видел поломку балансера вместо объяснения.
 		{"роль запрещает копию", &balancer.ModelOpResult{RoleRefused: true, Error: "донор раскладки"}, http.StatusConflict},
+		// R312 (2026-10-30): статус ВОРКЕРА не склеиваем в 500.
+		//
+		// Живой факт: загрузка несуществующей модели через балансер отдавала 500
+		// при 404 от воркера. Клиент (Cline/DSH/hermes) на 5xx повторяет, а файла
+		// на диске от повтора не появится.
+		{"воркер: модели нет (404) — терминально", &balancer.ModelOpResult{WorkerStatus: 404, Error: "model not found"}, http.StatusNotFound},
+		{"воркер: удалена (410) — терминально", &balancer.ModelOpResult{WorkerStatus: 410, Error: "gone"}, http.StatusGone},
+		{"воркер: некорректный запрос (400)", &balancer.ModelOpResult{WorkerStatus: 400, Error: "invalid json"}, http.StatusBadRequest},
+		{"воркер: занято (409) — конфликт, не 400", &balancer.ModelOpResult{WorkerStatus: 409, Error: "busy"}, http.StatusConflict},
+		{"воркер: 5xx остаётся 500", &balancer.ModelOpResult{WorkerStatus: 502, Error: "upstream"}, http.StatusInternalServerError},
+		{"воркер: 401 — это наша проблема (токен), не клиента", &balancer.ModelOpResult{WorkerStatus: 401, Error: "unauthorized"}, http.StatusBadGateway},
+		// Приоритет: «ещё грузится» и «занято» важнее статуса воркера.
+		{"still-loading важнее статуса воркера", &balancer.ModelOpResult{StillLoading: true, WorkerStatus: 404}, http.StatusAccepted},
+		{"busy важнее статуса воркера", &balancer.ModelOpResult{Busy: true, WorkerStatus: 404}, http.StatusConflict},
 	}
 	for _, c := range cases {
 		if got := modelOpStatusCode(c.in); got != c.want {

@@ -290,6 +290,29 @@ func (p *Proxy) EnsureRPCLayout(backendID string) (degraded bool, reason string)
 		}
 	}
 
+	// R315 (2026-10-30): бэкенду, о котором достоверно известно, что он не в сети,
+	// приказ не отправляем вовсе.
+	//
+	// ЖИВОЙ ФАКТ (стенд, донор выключен): балансер каждые 5 минут (окно
+	// ограничителя R299) писал «EnsureRPCLayout: не удалось применить раскладку»
+	// и каждый раз ждал сетевой таймаут. Смысла в попытке нет: статус бэкенда
+	// уже говорит «не в сети», а сам приказ — это PUT на его же адрес.
+	//
+	// ВАЖНО: пропускаем ТОЛЬКО когда недоступен сам адресат приказа. Главному
+	// (healthy) приказ отправляется всегда, даже если все доноры мертвы: он
+	// обязан узнать, что раскладка выключена. Отметка подавления сбрасывается на
+	// каждом успешном применении, поэтому возвращение узла снова видно в логе.
+	if p.layoutPushHopelessR315(b) {
+		key := backendID + "|" + string(b.Status)
+		if ok, dropped := layoutSkipLogR315.allow(key); ok {
+			logger.Get().Infow("EnsureRPCLayout: приказ не отправляется — бэкенд не в сети",
+				"backend", backendID, "role", role, "status", b.Status,
+				"suppressed_before", dropped)
+		}
+		p.setLayoutReason(backendID, i18n.T("balancer.rpc_layout.backend_offline"))
+		return true, i18n.T("balancer.rpc_layout.backend_offline")
+	}
+
 	alive, dead := probeRPCNodes(p.rpcProbeFunc(), wanted)
 	if len(wanted) > 0 && len(alive) == 0 {
 		reason = i18n.T("balancer.rpc_layout.nodes_unreachable",

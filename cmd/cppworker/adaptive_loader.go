@@ -1042,7 +1042,7 @@ func reloadReclaimableVRAM(models []cppbackend.ModelInfo, name string) uint64 {
 				size = uint64(fi.Size())
 			}
 		}
-		return estimateVRAMSize(m.NLayers, m.GPULayers, size)
+		return estimateVRAMSizeForModel(&m, size)
 	}
 	return 0
 }

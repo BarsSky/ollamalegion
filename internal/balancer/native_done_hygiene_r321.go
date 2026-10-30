@@ -42,7 +42,7 @@ import (
 // момента не видел НИЧЕГО. Пустой content в done-чанке читается как «модель
 // ответила пустотой» — оператор идёт искать поломку. Пояснение называет факт и
 // число символов.
-func nativeDoneHygieneR321(line string, reasoningChars int) (string, bool) {
+func nativeDoneHygieneR321(line string, reasoningChars, visibleStreamedChars int) (string, bool) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" || !strings.HasPrefix(trimmed, "{") {
 		return line, false
@@ -53,6 +53,21 @@ func nativeDoneHygieneR321(line string, reasoningChars int) (string, bool) {
 	}
 	done, _ := chunk["done"].(bool)
 	if !done {
+		return line, false
+	}
+	// R321.2 (2026-10-30): ОТВЕТ УЖЕ УЕХАЛ ДЕЛЬТАМИ — трогать нельзя.
+	//
+	// ЖИВОЙ РЕГРЕСС (нашёл оператор сразу после выката R321): в конце КАЖДОГО
+	// нормального ответа OpenWebUI появлялось «Модель сгенерировала только
+	// размышления (1142 симв.)», хотя ответ приходил целиком.
+	//
+	// Причина ровно в этом пропущенном условии. Воркер отдаёт на tools-пути
+	// финальный чанк с ПУСТЫМ content (текст ушёл дельтами) и с `thinking` —
+	// то есть «пустой content + размышления» выглядит так же, как настоящий
+	// обрыв по бюджету. Разница только одна: был ли видимый текст в дельтах.
+	// Если был — это штатное завершение (R108: в done-чанке Ollama content
+	// пустой), и подменять его нельзя ни причиной, ни пояснением.
+	if visibleStreamedChars > 0 {
 		return line, false
 	}
 	// Причина от воркера — факт, её не подменяем, КРОМЕ одного случая: "stop"

@@ -26,12 +26,47 @@ func decodeR321(t *testing.T, line string) map[string]interface{} {
 	return m
 }
 
+// TestR321_2_AnswerStreamedInDeltasIsNotTouched — РЕГРЕССИЯ, найденная
+// оператором сразу после выката R321.
+//
+// В конце КАЖДОГО нормального ответа OpenWebUI появлялось пояснение «Модель
+// сгенерировала только размышления (1142 симв.)», хотя ответ приходил целиком:
+// на tools-пути финальный чанк приходит с ПУСТЫМ content (текст ушёл дельтами) и
+// с полем `thinking`. Без проверки «был ли видимый текст в дельтах» это
+// неотличимо от настоящего обрыва по бюджету.
+func TestR321_2_AnswerStreamedInDeltasIsNotTouched(t *testing.T) {
+	line := `{"model":"gemma","done":true,"done_reason":"stop",` +
+		`"message":{"role":"assistant","content":"","thinking":"…1142 символа размышлений…"}}`
+	out, changed := nativeDoneHygieneR321(line, 1142, 1043) // 1043 символа ушло дельтами
+	if changed {
+		t.Fatalf("штатное завершение после отданного дельтами ответа переписано: %q", out)
+	}
+	if out != line {
+		t.Errorf("строка изменилась без причины:\n got %q\nwant %q", out, line)
+	}
+}
+
+// TestR321_2_NoDeltasStillGetsNotice — обратная сторона: дельт не было вовсе,
+// значит клиент до сих пор не видел ничего и пояснение нужно.
+func TestR321_2_NoDeltasStillGetsNotice(t *testing.T) {
+	line := `{"model":"gemma","done":true,"done_reason":"stop",` +
+		`"message":{"role":"assistant","content":"","thinking":"…1142 символа…"}}`
+	out, changed := nativeDoneHygieneR321(line, 1142, 0)
+	if !changed {
+		t.Fatal("без видимых дельт и с размышлениями пустой ответ обязан получить причину")
+	}
+	m := decodeR321(t, out)
+	if m["done_reason"] != "length" {
+		t.Errorf("done_reason = %v, want length", m["done_reason"])
+	}
+}
+
 // TestR321_DoneReasonStopWithReasoningBecomesLength — главный живой случай.
 func TestR321_DoneReasonStopWithReasoningBecomesLength(t *testing.T) {
 	line := `{"model":"gemma","created_at":"2026-10-30T10:00:00Z","done":true,` +
 		`"done_reason":"stop","message":{"role":"assistant","content":""}}`
 
-	out, changed := nativeDoneHygieneR321(line, 459)
+	out, changed := nativeDoneHygieneR321(line, 459, 0)
 	if !changed {
 		t.Fatal("пустое завершение после размышлений обязано быть исправлено: клиент иначе считает ход законченным")
 	}
@@ -60,7 +95,7 @@ func TestR321_DoneReasonStopWithReasoningBecomesLength(t *testing.T) {
 func TestR321_IdempotentWhenWorkerAlreadyFixed(t *testing.T) {
 	line := `{"model":"gemma","done":true,"done_reason":"length",` +
 		`"message":{"role":"assistant","content":""}}`
-	out, changed := nativeDoneHygieneR321(line, 459)
+	out, changed := nativeDoneHygieneR321(line, 459, 0)
 	if !changed {
 		t.Fatal("length + пустой content после размышлений: пояснения нет, клиент снова увидит пустоту")
 	}
@@ -80,11 +115,11 @@ func TestR321_IdempotentWhenWorkerAlreadyFixed(t *testing.T) {
 func TestR321_IdempotentSecondPass(t *testing.T) {
 	line := `{"model":"gemma","done":true,"done_reason":"stop",` +
 		`"message":{"role":"assistant","content":""}}`
-	once, changed := nativeDoneHygieneR321(line, 459)
+	once, changed := nativeDoneHygieneR321(line, 459, 0)
 	if !changed {
 		t.Fatal("первый проход не сработал")
 	}
-	twice, changed2 := nativeDoneHygieneR321(once, 459)
+	twice, changed2 := nativeDoneHygieneR321(once, 459, 0)
 	if changed2 || twice != once {
 		t.Errorf("второй проход изменил уже исправленный чанк:\n once %q\n twice %q", once, twice)
 	}
@@ -94,7 +129,7 @@ func TestR321_IdempotentSecondPass(t *testing.T) {
 func TestR321_LeavesRealAnswersAlone(t *testing.T) {
 	line := `{"model":"gemma","done":true,"done_reason":"stop",` +
 		`"message":{"role":"assistant","content":"Всего 15 яблок."}}`
-	if out, changed := nativeDoneHygieneR321(line, 459); changed {
+	if out, changed := nativeDoneHygieneR321(line, 459, 0); changed {
 		t.Errorf("непустой ответ переписан: %q", out)
 	}
 }
@@ -103,7 +138,7 @@ func TestR321_LeavesRealAnswersAlone(t *testing.T) {
 // другая история (R261/R314), и здесь её решать нельзя.
 func TestR321_IgnoresStreamsWithoutReasoning(t *testing.T) {
 	line := `{"model":"gemma","done":true,"done_reason":"stop","message":{"role":"assistant","content":""}}`
-	if _, changed := nativeDoneHygieneR321(line, 0); changed {
+	if _, changed := nativeDoneHygieneR321(line, 0, 0); changed {
 		t.Error("без размышлений подменять причину нельзя: это не «бюджет ушёл в reasoning»")
 	}
 }
@@ -111,7 +146,7 @@ func TestR321_IgnoresStreamsWithoutReasoning(t *testing.T) {
 // TestR321_HandlesGenerateResponseField — /api/generate держит текст в "response".
 func TestR321_HandlesGenerateResponseField(t *testing.T) {
 	line := `{"model":"gemma","done":true,"done_reason":"stop","response":""}`
-	out, changed := nativeDoneHygieneR321(line, 120)
+	out, changed := nativeDoneHygieneR321(line, 120, 0)
 	if !changed {
 		t.Fatal("/api/generate: пустой response после размышлений обязан получить причину")
 	}
@@ -130,7 +165,7 @@ func TestR321_PreservesOtherDoneReasons(t *testing.T) {
 	for _, reason := range []string{"tool_calls", "error", "cancelled"} {
 		line := `{"model":"gemma","done":true,"done_reason":"` + reason + `",` +
 			`"message":{"role":"assistant","content":""}}`
-		if out, changed := nativeDoneHygieneR321(line, 300); changed {
+		if out, changed := nativeDoneHygieneR321(line, 300, 0); changed {
 			t.Errorf("done_reason=%q переписан на %q: причина воркера — факт, её нельзя подменять", reason, out)
 		}
 	}
@@ -145,7 +180,7 @@ func TestR321_NonDoneAndBrokenLinesUntouched(t *testing.T) {
 		``,
 	}
 	for _, line := range cases {
-		if out, changed := nativeDoneHygieneR321(line, 500); changed {
+		if out, changed := nativeDoneHygieneR321(line, 500, 0); changed {
 			t.Errorf("строка %q изменена, хотя это не пустое завершение: %q", line, out)
 		}
 	}

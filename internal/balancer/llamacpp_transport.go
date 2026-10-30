@@ -1180,7 +1180,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// R320, но контракт клиента не должен зависеть от версии образа
 			// воркера в кластере — поэтому нормализация есть и здесь (идемпотентно).
 			if originalPath == "/api/chat" || originalPath == "/api/generate" {
-				if fixed, changed := nativeDoneHygieneR321(outLine, nativeReasoningChars); changed {
+				// R321.2: visibleStreamedChars — текста, уже отданного дельтами,
+				// достаточно, чтобы понять: это нормальное завершение (в Ollama
+				// done-чанк приходит с пустым content), а не обрыв по бюджету.
+				if fixed, changed := nativeDoneHygieneR321(outLine, nativeReasoningChars,
+					len(strings.TrimSpace(streamedBeforeThisLine))); changed {
 					logger.Get().Infow("proxyRequestLlamaCpp[native]: done-чанк нормализован (R321)",
 						"backend", backendID, "model", modelFromCtx,
 						"reasoning_chars", nativeReasoningChars,

@@ -250,6 +250,14 @@ type admissionQueue struct {
 	// в Proxy: так структура Proxy не растёт (allocator size class, см. govet
 	// fieldalignment) — очередь и её настройка живут одним указателем.
 	wait time.Duration
+	// waitOverridden — R326 (2026-10-30): явный override (тесты, Shutdown).
+	//
+	// Пока он не выставлен, предел ожидания читается из реестра настроек НА
+	// КАЖДОМ вызове. LB_ADMISSION_WAIT_SEC — «горячая» настройка (override из
+	// WebUI → env → дефолт), но до R326 значение снималось один раз при создании
+	// Proxy: правка в WebUI писалась в реестр, показывалась как применённая и не
+	// влияла на поведение до перезапуска балансера.
+	waitOverridden bool
 	// R229: как узнать протокол сессии для waiting_detail (nil = неизвестен).
 	protocolOf func(string) string
 	// стата
@@ -553,7 +561,15 @@ func (p *Proxy) admissionWaitTimeout() time.Duration {
 	if p == nil || p.admission == nil {
 		return 0
 	}
-	return p.admission.wait
+	// R326 (2026-10-30): явный override (тесты, Shutdown) важнее настройки,
+	// иначе берём АКТУАЛЬНОЕ значение из реестра: LB_ADMISSION_WAIT_SEC меняется
+	// без рестарта (override из WebUI → env → дефолт), и «горячесть» иначе
+	// оставалась бы только на бумаге — правка в WebUI применялась к копии,
+	// снятой при создании Proxy.
+	if p.admission.waitOverridden {
+		return p.admission.wait
+	}
+	return AdmissionWaitTimeout()
 }
 
 // setAdmissionWait — изменить предел ожидания (используется тестами и Shutdown).
@@ -563,6 +579,7 @@ func (p *Proxy) setAdmissionWait(wait time.Duration) {
 	}
 	p.admission.mu.Lock()
 	p.admission.wait = wait
+	p.admission.waitOverridden = true
 	p.admission.mu.Unlock()
 }
 

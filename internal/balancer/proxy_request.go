@@ -226,6 +226,44 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 			return p.proxyReadOnlyRequest(w, r, backendID)
 		}
 
+		// R325 (2026-10-30): НЕ ОТПРАВЛЯТЬ inference на незагруженную модель.
+		//
+		// ЖИВОЙ ДЕФЕКТ (жалоба оператора «запрос потерялся: крутится, на мониторе
+		// его нет»). Гейт автозагрузки (ensureModelLoadedWithFailover) стоит в
+		// роутерных обработчиках (handleChat/handleGenerate), а ЭТОТ, generic-путь
+		// отправлял запрос как есть. Последствия на холодном старте: воркер начинал
+		// грузить модель ВНУТРИ запроса и не отдавал заголовки ~250 с, балансер
+		// рвал соединение по first-byte (180 с) и клиент получал 503 «all backends
+		// failed» — при том что загрузка шла нормально и через минуту модель была
+		// готова. Повтор запроса «работал», поэтому дефект выглядел как случайная
+		// потеря.
+		//
+		// Теперь ждём загрузку ЗДЕСЬ, до обращения к воркеру: тот же гейт, то же
+		// правило «клиент ждёт», что и на обработчиках. Если модель уже загружена —
+		// isModelReadyOnBackend внутри гейта выходит сразу (проверка по живому
+		// /api/models), то есть на горячем пути цена — один HTTP-опрос воркера.
+		if p.llamaCppRouter != nil {
+			model := ""
+			if m, ok := r.Context().Value(modelContextKey).(string); ok {
+				model = m
+			}
+			if model != "" {
+				resolved := p.ResolveNumCtx(model, bodyBuf, backendID)
+				if _, loadErr := p.llamaCppRouter.ensureModelLoadedOnBackend(
+					backendID, model,
+					warmupOptions{NumCtx: resolved.Value, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)},
+				); loadErr != nil {
+					logger.Get().Errorw("proxyRequest: auto-load failed on generic llama.cpp path (R325)",
+						"backend", backendID, "model", model, "error", loadErr)
+					writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+						"error": fmt.Sprintf("model %q is not loaded and auto-load failed: %v", model, loadErr),
+						"model": model,
+					})
+					return nil
+				}
+			}
+		}
+
 		// Выбираем прокси по режиму streaming.
 		// Для streaming — proxyRequestLlamaCpp (SSE→NDJSON).
 		// Для non-streaming — proxyRequestLlamaCppNonStream (JSON→JSON с Content-Type: application/json).

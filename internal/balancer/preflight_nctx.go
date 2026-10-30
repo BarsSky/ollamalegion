@@ -106,6 +106,17 @@ type RequestMeta struct {
 	MaxOutputTokensUpperBound *int
 	// RequestedNCtxOverride — num_ctx из тела (0 = не задан).
 	RequestedNCtxOverride int
+	// EffectiveCeiling — R323: действующий потолок авто-роста окна для этой
+	// модели, посчитанный Proxy.effectiveAutoReloadCeiling = max(env, заявленное
+	// в профиле). Заполняется тем, у кого есть Proxy (runInferencePreflight);
+	// 0 = не заполнено — тогда preflight падает на сырое cfg.AutoReloadMaxNCtx.
+	//
+	// ЗАЧЕМ НА ЭТОЙ СТРУКТУРЕ. DecidePreflight — чистая функция без Proxy, и до
+	// R323 она сравнивала запрошенное окно с СЫРЫМ env-потолком, хотя решатель
+	// перезагрузки уже жил по правилу max(env, declared). Из-за этого запрос с
+	// окном больше env получал 413 «auto_reload_ceiling_reason» даже когда
+	// профиль заявлял большее окно (живая жалоба оператора про 131072).
+	EffectiveCeiling int
 	// ModelName — имя модели из body (для логов).
 	ModelName string
 	// HasTools — true, если запрос содержит tool definitions.
@@ -781,14 +792,32 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		tooBig.AgentDerivedWindow = agentDerived
 		return tooBig
 	}
-	if cfg.AutoReloadMaxNCtx > 0 && targetTotal > cfg.AutoReloadMaxNCtx {
+	// R323 (2026-10-30): потолок оператора — НЕ сырое env-значение.
+	//
+	// R255/R267 ввели одно правило: действующий потолок авто-роста =
+	// max(env, заявленное в профиле модели окно), потому что решение оператора
+	// (окно в карточке модели) не должен перебивать защитный env. Решатель
+	// перезагрузки это правило получил, а preflight — нет: он сравнивал с СЫРЫМ
+	// cfg.AutoReloadMaxNCtx и отдавал 413 «auto_reload_ceiling_reason», даже
+	// когда профиль заявлял окно БОЛЬШЕ env (живая жалоба: модель 131072,
+	// профиль 131072, а запрос на 65536 получал отказ по env=32768).
+	// Класс дефекта — ровно R267 («правка одного слоя не лечила другой»),
+	// поэтому здесь используется то же значение, что и в решателе:
+	// meta.EffectiveCeiling, посчитанный Proxy.effectiveAutoReloadCeiling.
+	// Если поле не заполнено (юнит-тесты без Proxy) — падаем на сырое env,
+	// как раньше.
+	operatorCeiling := cfg.AutoReloadMaxNCtx
+	if meta != nil && meta.EffectiveCeiling > 0 {
+		operatorCeiling = meta.EffectiveCeiling
+	}
+	if operatorCeiling > 0 && targetTotal > operatorCeiling {
 		logger.Get().Warnw(i18n.T("balancer.preflight_nctx.requested_window_above_operator_ceiling_warn"),
 			"backend_id", state.BackendID,
 			"model", meta.ModelName,
 			"requested_total", targetTotal,
-			"auto_reload_max_n_ctx", cfg.AutoReloadMaxNCtx)
-		tooBig := makeWindowTooBigReject(state, meta, reqWindow, targetTotal, cfg.AutoReloadMaxNCtx,
-			i18n.T("balancer.preflight_nctx.auto_reload_ceiling_reason", cfg.AutoReloadMaxNCtx))
+			"auto_reload_max_n_ctx", operatorCeiling)
+		tooBig := makeWindowTooBigReject(state, meta, reqWindow, targetTotal, operatorCeiling,
+			i18n.T("balancer.preflight_nctx.auto_reload_ceiling_reason", operatorCeiling))
 		tooBig.AgentDerivedWindow = agentDerived
 		return tooBig
 	}

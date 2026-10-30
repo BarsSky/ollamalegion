@@ -138,6 +138,13 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 		}
 	}
 
+	// R323 (2026-10-30): preflight судит о потолке окна ТЕМ ЖЕ значением, что и
+	// решатель перезагрузки (max(env, заявленное в профиле)). Proxy здесь есть,
+	// поэтому считаем один раз и кладём в meta — DecidePreflight остаётся чистой
+	// функцией без Proxy (см. RequestMeta.EffectiveCeiling).
+	if meta != nil && lr.proxy != nil {
+		meta.EffectiveCeiling = lr.proxy.effectiveAutoReloadCeiling(meta.ModelName, coord.Config().AutoReloadMaxNCtx)
+	}
 	res, err := coord.RunPreflight(
 		args.r.Context(),
 		args.backendID,
@@ -429,8 +436,14 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 // сборкой входов, не формулой. См. profileCapCtx рядом — тоже единственная
 // точка чтения operator-cap'а из профиля.
 func resolvePhysicalMaxContext(ggufMax, contextLengthMax, autoReloadMaxNCtx int) int {
+	// R323 (2026-10-30): env-потолок больше НЕ может опустить предел ниже
+	// заявленного оператором окна. R255/R267 установили правило
+	// max(env, declared) для решателя перезагрузки, но физический потолок
+	// продолжал брать min(profile, gguf) и тем самым возвращал 413 «модель
+	// поддерживает N» на окно, которое профиль разрешает (живая жалоба: профиль
+	// 131072, env 32768, запрос 65536 отвергнут по 32768).
 	cap := contextLengthMax
-	if cap <= 0 {
+	if autoReloadMaxNCtx > cap {
 		cap = autoReloadMaxNCtx
 	}
 	switch {

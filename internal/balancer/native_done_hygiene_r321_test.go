@@ -52,17 +52,41 @@ func TestR321_DoneReasonStopWithReasoningBecomesLength(t *testing.T) {
 	}
 }
 
-// TestR321_IdempotentWhenWorkerAlreadyFixed — исправленный воркер (R320) ничего
-// не требует: слой не должен переписывать честное "length".
+// TestR321_IdempotentWhenWorkerAlreadyFixed — исправленный воркер (R320) уже
+// ставит "length", но пояснения не даёт, если сам его не добавил (на потоковом
+// не-tools пути это делал только обновлённый образ). Причину НЕ меняем — она
+// честная, — а пояснение добавляем: пустой content без причины клиент читает как
+// «модель ответила пустотой».
 func TestR321_IdempotentWhenWorkerAlreadyFixed(t *testing.T) {
 	line := `{"model":"gemma","done":true,"done_reason":"length",` +
-		`"message":{"role":"assistant","content":"⚠️ Модель сгенерировала только размышления (459 симв.)"}}`
+		`"message":{"role":"assistant","content":""}}`
 	out, changed := nativeDoneHygieneR321(line, 459)
-	if changed {
-		t.Fatalf("честный done_reason=length переписан: %q", out)
+	if !changed {
+		t.Fatal("length + пустой content после размышлений: пояснения нет, клиент снова увидит пустоту")
 	}
-	if out != line {
-		t.Errorf("строка изменилась без причины:\n got %q\nwant %q", out, line)
+	m := decodeR321(t, out)
+	if m["done_reason"] != "length" {
+		t.Errorf("done_reason = %v, want length (значение воркера не подменяем)", m["done_reason"])
+	}
+	msg := m["message"].(map[string]interface{})
+	content, _ := msg["content"].(string)
+	if !strings.Contains(content, "459") {
+		t.Errorf("в content нет пояснения с числом символов: %q", content)
+	}
+}
+
+// TestR321_IdempotentSecondPass — повторная обработка уже исправленного чанка
+// ничего не меняет (иначе повторные проходы плодили бы текст).
+func TestR321_IdempotentSecondPass(t *testing.T) {
+	line := `{"model":"gemma","done":true,"done_reason":"stop",` +
+		`"message":{"role":"assistant","content":""}}`
+	once, changed := nativeDoneHygieneR321(line, 459)
+	if !changed {
+		t.Fatal("первый проход не сработал")
+	}
+	twice, changed2 := nativeDoneHygieneR321(once, 459)
+	if changed2 || twice != once {
+		t.Errorf("второй проход изменил уже исправленный чанк:\n once %q\n twice %q", once, twice)
 	}
 }
 

@@ -55,9 +55,12 @@ func nativeDoneHygieneR321(line string, reasoningChars int) (string, bool) {
 	if !done {
 		return line, false
 	}
-	// Уже честная причина — это не «stop». Ничего не подменяем: воркер знает
-	// лучше, а подмена сделала бы диагностику лживой.
-	if reason, ok := chunk["done_reason"].(string); ok && reason != "" && reason != "stop" {
+	// Причина от воркера — факт, её не подменяем, КРОМЕ одного случая: "stop"
+	// при пустом ответе после размышлений. Здесь "stop" означает «модель
+	// закончила», хотя бюджет кончился, и клиент по этому значению закрывает ход.
+	// Остальные значения ("length", "tool_calls", "error", "cancelled") честные.
+	reason, _ := chunk["done_reason"].(string)
+	if reason != "" && reason != "stop" && reason != "length" {
 		return line, false
 	}
 	msg, _ := chunk["message"].(map[string]interface{})
@@ -96,7 +99,8 @@ func nativeDoneHygieneR321(line string, reasoningChars int) (string, bool) {
 		}
 		chunk["message"] = msg
 	}
-	// Контракт Ollama: остановка по бюджету — "length", а не "stop".
+	// Контракт Ollama: остановка по бюджету — "length", а не "stop". Если воркер
+	// уже сказал "length" — значение остаётся прежним, меняем только пояснение.
 	chunk["done_reason"] = "length"
 
 	out, err := json.Marshal(chunk)

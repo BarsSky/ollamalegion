@@ -129,12 +129,20 @@ type LlamaCppMetrics struct {
 	// State=error — остаётся здесь до следующего poll с error-полем.
 	LoadingModels     []LlamaCppModel  `json:"loadingModels,omitempty"`
 	AvailableModels   []LlamaCppModel  `json:"availableModels,omitempty"`
-	ActiveRequests    int              `json:"activeRequests"`
+	// R342 (2026-10-30): omitempty у ПОКАЗЫВАЕМЫХ полей.
+	//
+	// Живой дефект (аудит docs/plans/2026-10-30-abort-and-metrics-audit.md):
+	// блок llamaCpp отдаётся в /api/v1/cluster для каждого бэкенда, и нули этих
+	// полей в JSON всегда присутствовали. WebUI проверяет `!== undefined` — то есть
+	// ноль считался НАСТОЯЩИМ значением и перекрывал правильные данные из ollama.*:
+	// Monitor во время генерации показывал «0 активных запросов» и RPS=0.
+	// С omitempty нулевое значение не сериализуется, и фолбэк WebUI работает.
+	ActiveRequests    int              `json:"activeRequests,omitempty"`
 	TotalRequests     int64            `json:"totalRequests"`
-	AvgResponseTime   float64          `json:"avgResponseTime"` // ms
-	RequestsPerSecond float64          `json:"requestsPerSecond"`
-	FreeSlots         int              `json:"freeSlots"`
-	AvailableSlots    int              `json:"availableSlots"`
+	AvgResponseTime   float64          `json:"avgResponseTime,omitempty"` // ms
+	RequestsPerSecond float64          `json:"requestsPerSecond,omitempty"`
+	FreeSlots         int              `json:"freeSlots,omitempty"`
+	AvailableSlots    int              `json:"availableSlots,omitempty"`
 	MaxModels         int              `json:"maxModels"`
 	MaxConcurrentReqs int              `json:"maxConcurrentReqs"`
 	GPUInfo           *LlamaCppGPUInfo `json:"gpuInfo,omitempty"`

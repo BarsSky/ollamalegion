@@ -413,6 +413,25 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isEmptyInferenceResult(result) {
+		// R333 (2026-10-30, поймано живой матрицей API): ПУСТОЙ ВИДИМЫЙ ОТВЕТ
+		// ПРИ НЕПУСТЫХ РАЗМЫШЛЕНИЯХ — НЕ ОШИВКА 500.
+		//
+		// Живой факт: /api/generate с num_predict=16 получал от балансера 502 с
+		// телом "upstream returned HTTP 500: {model produced an empty response}",
+		// хотя модель честно ответила — просто весь бюджет ушёл в размышления.
+		// Для клиента это выглядит поломкой сервера, хотя ответ есть (размышления),
+		// и он должен видеть то же пояснение, что на /api/chat (R314).
+		reasoning, _, _ := SplitReasoningContent(result.Output)
+		if notice := emptyAnswerNoticeForNativeR314("", len(reasoning)); notice != "" {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"model":       modelName,
+				"created_at":  time.Now().UTC().Format(time.RFC3339),
+				"response":    notice,
+				"done":        true,
+				"done_reason": "length",
+			})
+			return
+		}
 		logger.Get().Warnw("generate returned empty output", "model", modelName)
 		writeError(w, http.StatusInternalServerError, "model produced an empty response")
 		return
@@ -666,6 +685,18 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isEmptyInferenceResult(result) {
+		// R333: см. комментарий у первой ветки — размышления есть, ответа нет.
+		reasoning, _, _ := SplitReasoningContent(result.Output)
+		if notice := emptyAnswerNoticeForNativeR314("", len(reasoning)); notice != "" {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"model":       modelName,
+				"created_at":  time.Now().UTC().Format(time.RFC3339),
+				"response":    notice,
+				"done":        true,
+				"done_reason": "length",
+			})
+			return
+		}
 		logger.Get().Warnw("ollama generate returned empty output", "model", modelName)
 		writeError(w, http.StatusInternalServerError, "model produced an empty response")
 		return

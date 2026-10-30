@@ -139,15 +139,19 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 					if isSSE {
 						heartbeatBytes = []byte(":heartbeat\n\n")
 					} else {
-						// Round 31 (2026-08-09): минимальный NDJSON heartbeat — только {"done":false}.
-						// Без полей "model" и "message" (раньше они были) — OpenWebUI мог
-						// интерпретировать "message":{"role":"assistant"} как начало нового
-						// сообщения и сбрасывать ассемблирование reasoning секции.
-						// {"done":false} — JSON-line валидный для Ollama-parser'а,
-						// который игнорирует строки без "message" поля.
-						hb := map[string]interface{}{"done": false}
-						hbJSON, _ := json.Marshal(hb)
-						heartbeatBytes = append(hbJSON, '\n')
+						// R333 (2026-10-30, поймано живой матрицей API): heartbeat
+						// для /api/* — ПУСТАЯ СТРОКА, а не {"done":false}.
+						//
+						// Round 31 (2026-08-09) убрал из этого кадра model/message,
+						// потому что OpenWebUI принимал "message":{"role":"assistant"}
+						// за начало нового сообщения и сбрасывал сборку reasoning.
+						// Но кадр БЕЗ model/message — не NDJSON-объект контракта Ollama:
+						// живая матрица видит его как нарушение формы кадра, а строгий
+						// клиент — как неизвестный объект. Пустая строка решает обе
+						// задачи: соединение не остывает (это и есть цель heartbeat), а
+						// разбирать в ней нечего — ровно так же делает admission-очередь
+						// (admissionStreamKind для /api/* отдаёт "\n").
+						heartbeatBytes = []byte("\n")
 					}
 					_, err := w.Write(heartbeatBytes)
 					if err != nil {

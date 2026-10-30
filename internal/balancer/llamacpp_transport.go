@@ -633,6 +633,17 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// короткий ответ без объяснения причины. Заголовки обязаны быть выставлены
 	// строго до WriteHeader — после него они уже не уйдут.
 	forwardUpstreamWarningHeaders(w, resp)
+	// R332.3 (2026-10-30, поймано живой матрицей): нативный стрим обязан
+	// объявлять, КТО обслужил запрос.
+	//
+	// generic-путь выставляет X-Backend-ID/X-Session-ID (proxy_request.go), а этот
+	// нативный passthrough — нет: клиент и монитор не узнавали бэкенд, и по
+	// ответу /api/chat нельзя было понять, кто отвечал. Заголовки ставим строго
+	// ДО WriteHeader (после него они уже не уйдут).
+	w.Header().Set("X-Backend-ID", backendID)
+	if sid := p.getSessionIDWithModel(r, p.getClientName(r), modelFromCtx); sid != "" {
+		w.Header().Set("X-Session-ID", sid)
+	}
 	if originalPath == "/v1/chat/completions" {
 		w.Header().Set("Content-Type", "text/event-stream")
 	} else {

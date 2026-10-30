@@ -1485,8 +1485,29 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	// R231: незакрытый блок размышлений = ответ не дописан (см.
 	// FinalizeForStream). Честная причина остановки — length.
 	doneReason := "stop"
-	if rcParser.Snapshot().Unclosed {
+	snapR320 := rcParser.Snapshot()
+	if snapR320.Unclosed {
 		doneReason = "length"
+	}
+	// R320 (2026-10-30): пустая «видимая» часть при непустых размышлениях НЕ
+	// должна уезжать клиенту молча.
+	//
+	// ЖИВАЯ ЖАЛОБА (Cline через балансер): «приходит завершение прямо посреди
+	// рассуждений, обрубая всё, что приходит после». Механика: модель ушла в
+	// размышления и уперлась в бюджет вывода — дельты thinking отданы, content
+	// пуст, и клиент получает done:true. У Cline это выглядит как ЗАКОНЧЕННЫЙ
+	// ответ без текста, поэтому он закрывает ход, а следующий запрос «продолжи»
+	// модель воспринимает как новый ход.
+	//
+	// R314 ввёл пояснение для НЕпотокового пути (handleChat); на потоковом его не
+	// было вовсе — а Cline ходит именно потоком. Теперь правило одно на обе
+	// поверхности: emptyAnswerNoticeForNativeR314.
+	//
+	// ВАЖНО: текст кладём в done-чанк только когда content-дельт НЕ было, поэтому
+	// клиент, складывающий чанки, не получит дубль (у балансера тот же инвариант —
+	// stripNativeDoneContent чистит done только при уже отданных дельтах).
+	if notice := emptyAnswerNoticeForNativeR314(doneContent, snapR320.ReasoningChars); notice != "" {
+		doneContent = notice
 	}
 	doneChunk := map[string]interface{}{
 		"model":                modelName,
@@ -1539,6 +1560,50 @@ func startsWithReasoningMarker(s string) bool {
 		return true
 	}
 	return false
+}
+
+// toolsReasoningUnclosedR320 — R320 (2026-10-30): закончился ли вывод ВНУТРИ
+// незакрытого блока размышлений (то есть ответ не начат, а бюджет исчерпан).
+//
+// Два независимых признака, и оба нужны:
+//   - открывающий маркер был В ВЫВОДЕ и не закрыт (hasOpenThink);
+//   - маркер открыл ШАБЛОН в промпте (gemma-4: канал `thought`), тогда в выводе
+//     открывающего тега нет вовсе и «закрыто» только приходом закрывающего.
+//
+// Пустой вывод размышлением не считается: там нечего объяснять.
+func toolsReasoningUnclosedR320(fullOutput, prompt string) bool {
+	if strings.TrimSpace(fullOutput) == "" {
+		return false
+	}
+	if hasOpenThink(fullOutput) {
+		return true
+	}
+	return PromptOpensReasoning(prompt) && !hasReasoningCloseTag(fullOutput)
+}
+
+// toolsStopReasonR320 — R320: ЧЕСТНАЯ причина остановки на tools-пути.
+//
+// ЖИВОЙ ДЕФЕКТ (Cline через балансер, 2026-10-30). На tools-пути
+// (writeChatStreamResponseWithTools) `done_reason` выставлялся ЖЁСТКО в "stop" —
+// и в ветке tool_calls, и в ветке обычного текста. Пока ответ доходил до конца,
+// это было незаметно; но когда модель упиралась в бюджет вывода ВНУТРИ
+// размышлений, клиент получал done:true + done_reason:"stop" при пустом content.
+// По контракту Ollama «stop» означает «модель закончила», а не «обрезано»:
+// Cline закрывал ход как полноценный ответ, и всё, что модель собиралась сказать,
+// терялось. Именно это оператор описал как «завершение прямо посреди
+// рассуждений» и «следующий запрос считается ответом».
+//
+// Контракт: Ollama для усечения по бюджету отдаёт done_reason:"length"; для
+// вызова инструмента — "tool_calls". Оба значения клиенты понимают, и оба
+// отличимы от «модель закончила».
+func toolsStopReasonR320(fullOutput, prompt string, toolCalls int) string {
+	if toolCalls > 0 {
+		return "tool_calls"
+	}
+	if toolsReasoningUnclosedR320(fullOutput, prompt) {
+		return "length"
+	}
+	return "stop"
 }
 
 // R113 (2026-10-13): tools — определения инструментов из ЗАПРОСА. Нужны, чтобы
@@ -2070,11 +2135,12 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"preview", truncateForLog(tail, 300))
 			emitContentDelta(tail)
 			doneChunk := map[string]interface{}{
-				"model":       modelName,
-				"created_at":  createdAt,
-				"message":     map[string]string{"role": "assistant", "content": ""},
-				"done":        true,
-				"done_reason": "stop",
+				"model":      modelName,
+				"created_at": createdAt,
+				"message":    map[string]string{"role": "assistant", "content": ""},
+				"done":       true,
+				// R320: причина — та же честная, что и в основной ветке.
+				"done_reason": toolsStopReasonR320(fullOutput, prompt, len(toolCalls)),
 			}
 			doneJSON, _ := json.Marshal(doneChunk)
 			sw.Writef("%s\n", doneJSON)
@@ -2091,7 +2157,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"created_at":  createdAt,
 				"message":     map[string]string{"role": "assistant", "content": ""},
 				"done":        true,
-				"done_reason": "stop",
+				"done_reason": toolsStopReasonR320(fullOutput, prompt, len(toolCalls)),
 			}
 			doneJSON, _ := json.Marshal(doneChunk)
 			sw.Writef("%s\n", doneJSON)
@@ -2217,6 +2283,14 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			// R108: `thinking` — канон (контракт §4.1), `reasoning` — legacy-алиас.
 			msg["thinking"] = reasoningOut
 			msg["reasoning"] = reasoningOut
+			// R320 (2026-10-30): на этом пути размышления удерживаются и уходят
+			// ОДНИМ финальным чанком — значит клиент до сих пор не видел вообще
+			// ничего. Если видимого ответа нет, пустой content здесь читается как
+			// «модель ответила пустотой», а не «бюджет ушёл в размышления».
+			// Пояснение то же, что на потоковом и не-потоковом путях (R314/R320).
+			if notice := emptyAnswerNoticeForNativeR314(content, len(reasoningOut)); notice != "" {
+				content = notice
+			}
 			msg["content"] = content
 			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_reasoning_separate_final_chunk"),
 				"model", modelName, "reasoning_len", len(reasoningOut), "content_len", len(content))
@@ -2251,7 +2325,12 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			logger.Get().Debugw("writeChatStreamResponseWithTools: text response (no tool_calls)",
 				"model", modelName, "content_len", len(content), "json_mode", jsonMode)
 		}
-		finalChunk["done_reason"] = "stop"
+		// R320 (2026-10-30): «stop» ставился здесь ЖЁСТКО, в том числе когда
+		// модель упиралась в бюджет вывода внутри незакрытого блока размышлений.
+		// Клиент (Cline) читает это как «модель закончила» и закрывает ход —
+		// отсюда жалоба «завершение посреди рассуждений». Честная причина —
+		// через toolsStopReasonR320 (length при обрезанном reasoning).
+		finalChunk["done_reason"] = toolsStopReasonR320(fullOutput, prompt, len(toolCalls))
 	}
 
 	// R113 (2026-10-13): ЯВНОЕ ОТСЛЕЖИВАНИЕ ОТВЕТА. Одна строка на запрос, по

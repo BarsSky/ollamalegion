@@ -143,7 +143,15 @@ func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
 	// инференс-путём (chat/generate идут дальше в selectBackend) и не относится к
 	// read-only/mgmt (их проксируем как есть по контракту), то это 404 — и его
 	// тело обязано быть JSON своей поверхности.
-	if !isReadOnlyOrMgmtEndpoint(r.URL.Path) && !isChatOrGenerateRequest(r.URL.Path) {
+	// R332.2 (2026-10-30, поймано живой матрицей): НЕ 404-им инференс-пути.
+	// Первая версия правила отдавала 404 на /api/embed и /api/embeddings: они не
+	// обрабатываются роутерами и не входят в read-only/mgmt — их обслуживает
+	// нативный путь generic-прокси. Список «что обязано идти дальше» берём из
+	// существующих предикатов, а не перечислением руками.
+	if !isReadOnlyOrMgmtEndpoint(r.URL.Path) &&
+		!isChatOrGenerateRequest(r.URL.Path) &&
+		!isOllamaNativePath(r.URL.Path) &&
+		!isEmbeddingsRequest(r.URL.Path) {
 		writeUnknownPathJSONR332(w, r)
 		return true
 	}

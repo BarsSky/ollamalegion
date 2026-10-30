@@ -265,6 +265,23 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 					// пределах штатного бюджета ожидания (LB_AUTO_LOAD_WAIT_SEC,
 					// тот же, что у handler-путей). Отказ отдаём только если модель
 					// так и не поднялась.
+					// R325.2 (2026-10-30, поймано живой матрицей): ОТСУТСТВУЮЩАЯ
+					// МОДЕЛЬ — ТЕРМИНАЛЬНЫЙ 404, А НЕ ОЖИДАНИЕ.
+					// Живой факт: запрос к "no-such-model-xyz" висел 900 с (полный
+					// бюджет автозагрузки) прежде чем получить 503, хотя воркер
+					// сразу ответил «model not found». Модели не появится от
+					// ожидания, поэтому отдаём 404 немедленно — как это делают
+					// handler-пути (model_missing_r119).
+					if isModelMissingLoadError(loadErr) {
+						logger.Get().Infow("proxyRequest: модель отсутствует — 404 без ожидания (R325.2)",
+							"backend", backendID, "model", model, "error", loadErr)
+						writeJSON(w, http.StatusNotFound, map[string]interface{}{
+							"error": fmt.Sprintf("model %q not found on backend: %v", model, loadErr),
+							"model": model,
+							"code":  "model_not_found",
+						})
+						return nil
+					}
 					if p.waitModelReadyForAutoLoad(r.Context(), backendID, model) {
 						logger.Get().Infow("proxyRequest: auto-load reported error but model became ready (R325.1)",
 							"backend", backendID, "model", model, "load_error", loadErr)

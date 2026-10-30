@@ -20,6 +20,7 @@ package balancer
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -55,4 +56,23 @@ func (p *Proxy) waitModelReadyForAutoLoad(ctx context.Context, backendID, model 
 		case <-time.After(modelReadyPollIntervalR325_1):
 		}
 	}
+}
+
+// isModelMissingLoadError — R325.2: ошибка загрузки означает «модели нет», а не
+// «подожди». Воркер отвечает 404 и текстом model not found; ждать такую модель
+// бессмысленно (живой факт: 900 с ожидания перед 503 при мгновенном 404 воркера).
+func isModelMissingLoadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"404", "model not found", "not found", "model file not found",
+		"no such file", "не найдена", "не найден",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }

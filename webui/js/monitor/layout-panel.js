@@ -444,6 +444,232 @@
     if (apply) apply.addEventListener('click', function () { applySelection(); });
     var local = document.getElementById('layoutLocalBtn');
     if (local) local.addEventListener('click', function () { setAllLocal(); });
+    bindDonorOwnCopies();
+  }
+
+  // ---- исключение R304: «донор может держать свои копии моделей» -----------
+  //
+  // ЧТО БЫЛО НЕ ТАК. Флаг LB_DONOR_ALLOW_OWN_COPIES (исключение из доктрины
+  // «донор держит только память мастера») жил ТОЛЬКО в общем списке горячих
+  // настроек на странице «Настройки» — среди 17 строк и вдали от ролей
+  // раскладки. Оператор искал его там, где назначает главного и доноров, не
+  // находил, правил env и перезапускал стенд — при том что флаг горячий и
+  // применяется сразу.
+  //
+  // ПОЧЕМУ ЗНАЧЕНИЕ ЗДЕСЬ НЕ ХРАНИТСЯ. Владелец реестра — единственный модуль
+  // js/modules/settings-registry.js (он же владеет состоянием и запросами
+  // GET/PUT/POST /api/v1/settings). Панель зовёт его get()/set()/reset() и
+  // перерисовывается по его состоянию: вторая копия «что действует» разошлась
+  // бы после первого же сброса (это ровно тот дефект, который убирал этап 3).
+  var DONOR_OWN_COPIES = 'LB_DONOR_ALLOW_OWN_COPIES';
+  var donorOwnCopiesBusy = false;
+  var donorOwnCopiesRequested = false;
+
+  function settingsRegistry() {
+    var SR = window.SettingsRegistry;
+    if (!SR || typeof SR.get !== 'function' || typeof SR.set !== 'function') return null;
+    return SR;
+  }
+
+  // adminNow — тот же признак роли, что у auth.js (R203/R222). Нет auth.js
+  // (демо-режим, старый образ) — ролей в клиенте нет, ведём себя как раньше:
+  // сервер всё равно проверит права.
+  function adminNow() {
+    var A = window.Auth;
+    if (A && typeof A.isAdmin === 'function') {
+      try { return !!A.isAdmin(); } catch (e) { /* auth сломан — не блокируем */ }
+    }
+    return true;
+  }
+
+  function byId(id) {
+    if (typeof document === 'undefined' || typeof document.getElementById !== 'function') return null;
+    return document.getElementById(id);
+  }
+
+  function setDonorOwnCopiesMsg(text, kind) {
+    var el = byId('layoutDonorOwnCopiesMsg');
+    if (!el) return;
+    if (el.textContent !== undefined) el.textContent = text || '';
+    if (el.style) el.style.color = kind === 'error' ? 'var(--danger)' : 'var(--text-secondary)';
+  }
+
+  // renderDonorOwnCopies — нарисовать состояние ИЗ реестра (своего снимка нет).
+  function renderDonorOwnCopies() {
+    var SR = settingsRegistry();
+    var item = SR ? SR.get(DONOR_OWN_COPIES) : null;
+    var admin = adminNow();
+    var badge = byId('layoutDonorOwnCopiesState');
+    var cb = byId('layoutDonorOwnCopies');
+    var resetBtn = byId('layoutDonorOwnCopiesReset');
+
+    if (badge) {
+      var cls = 'badge';
+      var text = T('monitor.layout.donorOwnCopies.missing', 'нет строки в реестре');
+      if (item && typeof SR.sourceLabel === 'function' && typeof SR.badgeClass === 'function') {
+        // Подписи источника и классы бейджей — те же, что на странице настроек:
+        // один реестр, одна терминология («по умолчанию» / «из env» / «задано в панели»).
+        cls = SR.badgeClass(item.source);
+        text = SR.sourceLabel(item.source) + ': ' +
+          (item.effective ? T('settings.hot.bool_on', 'вкл') : T('settings.hot.bool_off', 'выкл'));
+      }
+      badge.className = cls;
+      var desc = item && item.description ? String(item.description) : T('monitor.layout.donorOwnCopies.hint',
+        'По умолчанию донор держит только память мастера.');
+      badge.title = desc;
+      if (badge.textContent !== undefined) badge.textContent = text;
+    }
+    if (cb) {
+      cb.checked = !!(item && item.effective === 1);
+      cb.disabled = !admin || donorOwnCopiesBusy || !item;
+      cb.title = !admin
+        ? T('monitor.layout.donorOwnCopies.adminOnly', 'Изменять может только администратор')
+        : (item && item.description ? String(item.description) : '');
+    }
+    if (resetBtn) {
+      // Сброс доступен только когда значение ЗАДАНО В ПАНЕЛИ (source=override):
+      // иначе снимать нечего и оператор получил бы 400/403 вместо объяснения.
+      var canReset = !!(item && item.source === 'override');
+      resetBtn.disabled = !admin || donorOwnCopiesBusy || !canReset;
+      resetBtn.title = !admin
+        ? T('monitor.layout.donorOwnCopies.adminOnly', 'Изменять может только администратор')
+        : (canReset ? T('settings.hot.reset_hint', 'Снять значение, заданное в панели')
+          : T('settings.hot.reset_disabled', 'Сбрасывать нечего'));
+    }
+    return item;
+  }
+
+  // loadDonorOwnCopies — прочитать реестр тем же модулем, что и страница настроек.
+  function loadDonorOwnCopies(force) {
+    if (donorOwnCopiesRequested && !force) { return Promise.resolve(renderDonorOwnCopies()); }
+    donorOwnCopiesRequested = true;
+    var SR = settingsRegistry();
+    if (!SR) {
+      // Модуль реестра не подключён — честное «недоступно», а не живой на вид
+      // тумблер, который ничего не меняет.
+      setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.unavailable',
+        'Реестр горячих настроек недоступен (старый балансер): значение меняется только через env и перезапуск'));
+      return Promise.resolve(renderDonorOwnCopies());
+    }
+    return SR.load().then(function () {
+      if (SR.state && (SR.state.unavailable || SR.state.error)) {
+        setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.unavailable',
+          'Реестр горячих настроек недоступен (старый балансер): значение меняется только через env и перезапуск'));
+      } else {
+        setDonorOwnCopiesMsg('');
+      }
+      return renderDonorOwnCopies();
+    }).catch(function () {
+      setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.unavailable',
+        'Реестр горячих настроек недоступен (старый балансер): значение меняется только через env и перезапуск'));
+      return renderDonorOwnCopies();
+    });
+  }
+
+  /**
+   * setDonorOwnCopies(enabled) — записать исключение (тот же PUT, что у страницы
+   * «Настройки»: value = 1/0 числом, тип bool знает только реестр).
+   */
+  function setDonorOwnCopies(enabled) {
+    var SR = settingsRegistry();
+    if (!SR) {
+      setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.unavailable',
+        'Реестр горячих настроек недоступен'), 'error');
+      return Promise.resolve(false);
+    }
+    if (!adminNow()) {
+      setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.adminOnly',
+        'Изменять может только администратор'), 'error');
+      renderDonorOwnCopies();
+      return Promise.resolve(false);
+    }
+    donorOwnCopiesBusy = true;
+    renderDonorOwnCopies();
+    return SR.set(DONOR_OWN_COPIES, enabled ? 1 : 0).then(function (res) {
+      donorOwnCopiesBusy = false;
+      var ok = !!(res && res.ok);
+      if (ok) {
+        setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.saved', 'Применено без рестарта'));
+        if (window.Utils && window.Utils.showToast) {
+          window.Utils.showToast(T('monitor.layout.donorOwnCopies.saved', 'Применено без рестарта'), 'success');
+        }
+      } else {
+        var reason = (res && res.error && (res.error.message || res.error)) || (res && res.reason) || '';
+        setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.failed', 'Не применено') +
+          (reason ? ': ' + reason : ''), 'error');
+      }
+      renderDonorOwnCopies();
+      return ok;
+    }).catch(function (err) {
+      donorOwnCopiesBusy = false;
+      setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.failed', 'Не применено') + ': ' +
+        ((err && err.message) || err), 'error');
+      renderDonorOwnCopies();
+      return false;
+    });
+  }
+
+  // resetDonorOwnCopies — снять override (POST /api/v1/settings/reset тем же модулем).
+  function resetDonorOwnCopies() {
+    var SR = settingsRegistry();
+    if (!SR) {
+      setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.unavailable',
+        'Реестр горячих настроек недоступен'), 'error');
+      return Promise.resolve(false);
+    }
+    if (!adminNow()) {
+      setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.adminOnly',
+        'Изменять может только администратор'), 'error');
+      renderDonorOwnCopies();
+      return Promise.resolve(false);
+    }
+    donorOwnCopiesBusy = true;
+    renderDonorOwnCopies();
+    return SR.reset(DONOR_OWN_COPIES).then(function (res) {
+      donorOwnCopiesBusy = false;
+      if (res && res.ok) {
+        setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.resetDone',
+          'Сброшено: снова действует env или значение по умолчанию'));
+      } else if (res && res.reason === 'not-override') {
+        setDonorOwnCopiesMsg(T('settings.hot.reset_disabled', 'Сбрасывать нечего'));
+      } else {
+        setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.failed', 'Не применено'), 'error');
+      }
+      renderDonorOwnCopies();
+      return !!(res && res.ok);
+    }).catch(function (err) {
+      donorOwnCopiesBusy = false;
+      setDonorOwnCopiesMsg(T('monitor.layout.donorOwnCopies.failed', 'Не применено') + ': ' +
+        ((err && err.message) || err), 'error');
+      renderDonorOwnCopies();
+      return false;
+    });
+  }
+
+  function bindDonorOwnCopies() {
+    var cb = byId('layoutDonorOwnCopies');
+    if (cb && !cb.__donorOwnCopiesBound) {
+      cb.__donorOwnCopiesBound = true;
+      if (typeof cb.addEventListener === 'function') {
+        cb.addEventListener('change', function () { setDonorOwnCopies(!!cb.checked); });
+      }
+    }
+    var resetBtn = byId('layoutDonorOwnCopiesReset');
+    if (resetBtn && !resetBtn.__donorOwnCopiesBound) {
+      resetBtn.__donorOwnCopiesBound = true;
+      if (typeof resetBtn.addEventListener === 'function') {
+        resetBtn.addEventListener('click', function () { resetDonorOwnCopies(); });
+      }
+    }
+    // Роль известна только после /auth/me: до этого adminNow() = «нет auth.js».
+    // Перерисовываем по готовности входа, иначе viewer видел бы живой тумблер.
+    var ready = window.__authReady;
+    if (typeof ready === 'function') {
+      var p = null;
+      try { p = ready(); } catch (e) { p = null; }
+      if (p && typeof p.then === 'function') { p.then(renderDonorOwnCopies).catch(renderDonorOwnCopies); }
+    }
+    return loadDonorOwnCopies();
   }
 
   window.MonitorLayout = {
@@ -455,6 +681,13 @@
     applySelection: applySelection,
     setAllLocal: setAllLocal,
     bindPanel: bindPanel,
+    // R317: исключение R304 в панели ролей (значение живёт в settings-registry.js).
+    bindDonorOwnCopies: bindDonorOwnCopies,
+    loadDonorOwnCopies: loadDonorOwnCopies,
+    renderDonorOwnCopies: renderDonorOwnCopies,
+    setDonorOwnCopies: setDonorOwnCopies,
+    resetDonorOwnCopies: resetDonorOwnCopies,
+    donorOwnCopiesName: DONOR_OWN_COPIES,
     rolesForSelection: rolesForSelection,
     isLlamaBackend: isLlamaBackend,
     roleLabel: roleLabel,

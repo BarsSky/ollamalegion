@@ -505,6 +505,17 @@ window.I18N_EN = {
   "monitor.layout.applyFailed": "Not all roles were applied — see the balancer log",
   "monitor.layout.localApplied": "Sharding disabled on all backends",
 
+  // ===== R317 (stage 5): the R304 exception in the layout roles panel =====
+  "monitor.layout.donorOwnCopies.label": "donor may keep its own model copies (exception)",
+  "monitor.layout.donorOwnCopies.hint": "By default (R304) a donor keeps ONLY the master's memory: its VRAM goes to the master through rpc-server, and it does not load model copies of its own. The exception exists for one case — the node just became a donor and is still serving running streams. This is a hot setting: it applies immediately, without restarting containers.",
+  "monitor.layout.donorOwnCopies.adminOnly": "Only an administrator can change this (read-only role)",
+  "monitor.layout.donorOwnCopies.unavailable": "The hot settings registry is unavailable (old balancer): change the value via env and a restart",
+  "monitor.layout.donorOwnCopies.missing": "no row in the registry",
+  "monitor.layout.donorOwnCopies.saved": "Applied without a restart",
+  "monitor.layout.donorOwnCopies.resetDone": "Reset: env or the default value is in effect again",
+  "monitor.layout.donorOwnCopies.failed": "Not applied",
+  "monitor.layout.donorOwnCopies.reset": "Reset",
+
   "monitor.capacity.freeSlots": "Free Slots",
   "monitor.capacity.vramPerBackend": "VRAM by Backend",
 
@@ -1264,6 +1275,17 @@ window.I18N_EN = {
   "settings.hot.source.default": "default",
   "settings.hot.source.env": "from env",
   "settings.hot.source.override": "set in the panel",
+
+  // ===== R317 (stage 5): boundary between the two mechanisms, "overridden by registry" =====
+  "settings.old.title": "Below are config.json fields: changes require a container restart",
+  "settings.old.desc": "These fields are saved into config.json by the Save button and take effect only after the balancer and worker containers are restarted. Some values are overridden by the hot registry above: when such a setting exists in the registry, the registry wins, and the config.json value remains the base for the next start. Fields marked \"overridden by a hot setting\" show exactly which registry row controls them.",
+  "settings.old.save_note": "Save writes config.json — a container restart is required. Settings that have a row in the hot registry above apply immediately and override these fields.",
+  "settings.old.overlap_badge": "overridden by a hot setting",
+  "settings.old.overlap.ctx_size": "Context window: the value here is only the loading base. What happens when the window does not match (wait for other streams, place the model on a free node instead of reloading, probe the live cluster for a loaded copy) is decided by registry rows: LB_PLACE_OVER_RELOAD, LB_LIVE_COPY_PROBE, LB_RELOAD_DEFER_MAX_SEC, LB_RELOAD_DEFER_FAST_FAIL_SEC. They apply immediately — edit the registry row, not this field.",
+  "settings.old.overlap.idle_unload": "Idle unload is a destructive operation. How long to wait for other streams before unloading/reloading the model is set by the hot setting LB_DESTRUCTIVE_OP_WAIT_SEC: it applies immediately and overrides this field.",
+  "settings.hot.managed_in_roles": "managed in the roles panel",
+  "settings.hot.open_monitor": "Open Monitor",
+  "settings.hot.reset_viewer": "Reset is available to administrators only: the server rejects the request (403) for the read-only role",
 
   // Backend Limits Settings
   "settings.backend_limits_desc": "Configure Max Concurrent Requests and Max Models limits for each backend. For backends without an agent, limits apply only at the balancer level.",

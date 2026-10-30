@@ -38,6 +38,13 @@
 // балансер)» и объясняет, что делать. Пустой список выглядел бы как «здесь
 // нечего настраивать», и оператор снова искал бы эти ключи в config.json.
 //
+// R317 (этап 5 рефакторинга настроек): этот же модуль стал ЕДИНСТВЕННЫМ
+// владельцем значений реестра для ВСЕЙ панели, а не только для страницы
+// «Настройки». Панель ролей раскладки (страница «Монитор», layout-panel.js)
+// показывает и переключает LB_DONOR_ALLOW_OWN_COPIES — ту же строку реестра, —
+// и не держит своей копии: она зовёт get()/set()/reset() отсюда. Две копии
+// «что действует» разошлись бы на первом же сбросе.
+//
 // Тесты: webui/js/modules/settings-registry.test.js (mock DOM + mock fetch).
 
 (function () {
@@ -51,6 +58,17 @@
     // окно контекста), затем очередь и внешний llama.cpp. Незнакомую группу
     // (новый ключ из будущей версии балансера) не выбрасываем — рисуем в конце.
     var GROUP_ORDER = ['streaming', 'nctx', 'queue', 'upstream'];
+
+    // Строки реестра, у которых есть ВТОРОЙ орган управления в панели.
+    //
+    // ЗАЧЕМ ПОМЕТКА. LB_DONOR_ALLOW_OWN_COPIES — исключение к доктрине R304
+    // («донор держит только память мастера»), и оператор ищет его рядом с
+    // ролями раскладки, а не в общем списке из 17 строк. По требованию этапа 5
+    // строка ОСТАЁТСЯ здесь (страница «Настройки» — полный список реестра),
+    // но с пометкой «управляется в панели ролей» и ссылкой на «Монитор».
+    // Состояние при этом одно: его хранит этот модуль, панель ролей зовёт
+    // get()/set()/reset().
+    var MANAGED_IN_ROLES = { LB_DONOR_ALLOW_OWN_COPIES: true };
 
     // state — единственная копия состояния реестра в панели (см. шапку модуля).
     var state = {
@@ -178,6 +196,30 @@
         return normalizeType(type) === 'duration_sec' ? t('settings.hot.sec') : '';
     }
 
+    // --- роль оператора -----------------------------------------------------
+    //
+    // ЗАЧЕМ. «Сбросить» у строки реестра доступен только для source=override, и
+    // сервер требует админских прав на POST /api/v1/settings/reset. Viewer
+    // (роль «только чтение») мог нажать кнопку и получить честный, но лишний 403:
+    // клик — сетевая ошибка вместо «тебе это недоступно». auth.js уже отдаёт
+    // признак (window.Auth.isAdmin(), R222/R203) — второго способа узнавать роль
+    // не заводим.
+    //
+    // ПОЧЕМУ НЕ data-admin-only. auth.js у администратора снимает disabled со
+    // ВСЕХ помеченных узлов, и кнопка сброса стала бы активной там, где сбрасывать
+    // нечего (источник не override). Право здесь решают ДВА условия: роль и
+    // источник значения, поэтому кнопку гасим сами.
+    function adminNow() {
+        var g = (typeof window !== 'undefined') ? window : ((typeof globalThis !== 'undefined') ? globalThis : {});
+        var A = g.Auth;
+        if (A && typeof A.isAdmin === 'function') {
+            try { return !!A.isAdmin(); } catch (e) { /* auth сломан — см. ниже */ }
+        }
+        // auth.js не подключён (демо-режим, старый образ, юнит-тест) — ролей в
+        // клиенте нет, ведём себя как до этой правки: сервер всё равно проверит.
+        return true;
+    }
+
     function effectiveText(item) {
         if (normalizeType(item.type) === 'bool') {
             return String(item.effective) + ' (' + (item.effective ? t('settings.hot.bool_on') : t('settings.hot.bool_off')) + ')';
@@ -226,6 +268,23 @@
             'data-admin-only aria-label="' + name + '" title="' + name + '" value="' + escapeHtml(value) + '">';
     }
 
+    // managedInRolesHtml — пометка «эту строку удобнее менять в панели ролей».
+    //
+    // ЗАЧЕМ ССЫЛКА, А НЕ КОПИЯ ТУМБЛЕРА. Владелец значения — этот модуль; панель
+    // ролей на «Мониторе» зовёт get()/set()/reset() отсюда же. Вторая копия
+    // переключателя на странице настроек означала бы две «правды» о том, что
+    // действует, ровно тот дефект, который этап 3 и убирал.
+    function managedInRolesHtml(item) {
+        if (!MANAGED_IN_ROLES[item.name]) { return ''; }
+        return '<p class="hot-setting-managed" data-hot-managed="' + escapeHtml(item.name) + '">' +
+            '<i class="fas fa-users-gear" aria-hidden="true"></i> ' +
+            escapeHtml(t('settings.hot.managed_in_roles')) + ' · ' +
+            '<button type="button" data-open-monitor="1" style="background:none;border:0;padding:0;' +
+            'color:var(--accent,#3b82f6);cursor:pointer;text-decoration:underline;font-size:inherit">' +
+            escapeHtml(t('settings.hot.open_monitor')) + '</button>' +
+            '</p>';
+    }
+
     function renderRow(item) {
         var name = escapeHtml(item.name);
         var msg = state.messages[item.name];
@@ -237,15 +296,25 @@
               escapeHtml(msg.text) + '</span>'
             : '<span class="hot-setting-msg"></span>';
         var canReset = item.source === 'override';
+        var admin = adminNow();
         // «Сбросить» намеренно БЕЗ data-admin-only: auth.js у администратора
         // снимает disabled со всех data-admin-only, и кнопка сброса стала бы
-        // активной там, где сбрасывать нечего. Право решает источник значения.
+        // активной там, где сбрасывать нечего. Право решают ДВА условия:
+        // источник значения (override) и роль оператора (admin) — R317.
+        var canResetNow = canReset && !busy && admin;
+        // Причина в title разная: «сбрасывать нечего» ≠ «тебе нельзя».
+        var resetTitle = !admin
+            ? t('settings.hot.reset_viewer')
+            : (canReset ? t('settings.hot.reset_hint') : t('settings.hot.reset_disabled'));
         var resetBtn = '<button type="button" class="btn btn-secondary" data-hot-action="reset" ' +
-            'data-hot-name="' + name + '"' + ((canReset && !busy) ? '' : ' disabled') +
-            ' title="' + escapeHtml(canReset ? t('settings.hot.reset_hint') : t('settings.hot.reset_disabled')) + '">' +
+            'data-hot-name="' + name + '" data-hot-admin="' + (admin ? '1' : '0') + '"' +
+            (canResetNow ? '' : ' disabled') +
+            ' title="' + escapeHtml(resetTitle) + '">' +
             escapeHtml(t('settings.hot.reset')) + '</button>';
         var hint = hintFor(item);
-        return '<div class="hot-setting-row" data-hot-row="' + name + '" data-hot-source="' + escapeHtml(item.source) + '">' +
+        // id строки — цель якоря из старых полей config.json («перекрыто горячей
+        // настройкой» → эта строка), см. index.html и focusRow().
+        return '<div class="hot-setting-row" id="hot-setting-' + name + '" data-hot-row="' + name + '" data-hot-source="' + escapeHtml(item.source) + '">' +
             '<div class="hot-setting-head">' +
                 '<code class="hot-setting-name">' + name + '</code>' +
                 '<span class="' + badgeClass(item.source) + '" data-hot-badge="' + name + '">' +
@@ -264,6 +333,7 @@
                 msgHtml +
             '</div>' +
             (hint ? '<p class="hot-setting-hint">' + escapeHtml(hint) + '</p>' : '') +
+            managedInRolesHtml(item) +
             '</div>';
     }
 
@@ -485,6 +555,104 @@
         });
     }
 
+    // --- маленькие хелперы для ДРУГИХ панелей (R317) -------------------------
+    //
+    // ЗАЧЕМ. Панель ролей раскладки (страница «Монитор») управляет одной строкой
+    // этого реестра — LB_DONOR_ALLOW_OWN_COPIES. Ей нужны ровно три операции, и
+    // НЕ нужна своя копия состояния: иначе «что действует» пришлось бы сводить
+    // из двух источников, а после сброса одна из копий осталась бы старой.
+
+    /**
+     * get(name) — текущая запись реестра (effective/source/default/description)
+     * или null, если реестр ещё не прочитан либо строки в нём нет.
+     */
+    function get(name) {
+        return itemByName(String(name || ''));
+    }
+
+    /**
+     * set(name, value) — записать override по имени (значение приводится по типу
+     * строки, источник — тот же apply(), что и у кнопки «Применить»).
+     *
+     * Отличие от apply(): реестр может быть ещё не прочитан (панель ролей
+     * открывается раньше страницы настроек) — тогда сначала load(), потом запись.
+     */
+    function set(name, value) {
+        var n = String(name || '');
+        if (itemByName(n)) { return apply(n, value); }
+        return load().then(function () { return apply(n, value); });
+    }
+
+    // --- якорь «перекрыто горячей настройкой» → строка реестра ---------------
+    //
+    // ЗАЧЕМ НЕ ПРОСТО href. Секция реестра — аккордеон: при свёрнутой секции
+    // браузер проскроллит к пустому заголовку, и оператор решит, что ссылка
+    // не работает. Поэтому секцию раскрываем сами, а строку подсвечиваем.
+    function openHotSection() {
+        if (typeof document === 'undefined' || !document.getElementById) { return null; }
+        var sec = document.getElementById('section-hot-settings');
+        if (!sec || typeof sec.querySelector !== 'function') { return null; }
+        var body = sec.querySelector('.settings-section-body');
+        var toggle = sec.querySelector('.section-toggle');
+        if (body && body.classList && typeof body.classList.add === 'function') {
+            // Тот же приём, что в settings-ui.js: класс open + снятый inline
+            // max-height, иначе содержимое осталось бы обрезанным до пересчёта.
+            body.classList.add('open');
+            if (body.style) { body.style.maxHeight = 'none'; body.style.opacity = '1'; }
+        }
+        if (toggle) { toggle.textContent = '▼'; }
+        return body;
+    }
+
+    /**
+     * focusRow(name) — раскрыть секцию реестра и показать строку настройки.
+     * @returns {boolean} — нашлась ли строка (у старого балансера её нет).
+     */
+    function focusRow(name) {
+        openHotSection();
+        if (typeof document === 'undefined' || !document.getElementById) { return false; }
+        var row = document.getElementById('hot-setting-' + String(name || ''));
+        if (!row) { return false; }
+        if (row.style) { row.style.outline = '2px solid var(--accent,#3b82f6)'; row.style.outlineOffset = '2px'; }
+        if (typeof row.scrollIntoView === 'function') {
+            try { row.scrollIntoView({ block: 'center' }); } catch (e) { /* старый браузер — не повод падать */ }
+        }
+        return true;
+    }
+
+    // openMonitorPage — перейти на страницу «Монитор» (панель ролей раскладки).
+    // Клик по .nav-item, а не location.hash: страницы переключает app.js (switchPage),
+    // и только он обновляет данные/аккордеоны.
+    function openMonitorPage() {
+        if (typeof document === 'undefined' || typeof document.querySelector !== 'function') { return false; }
+        var nav = document.querySelector('.nav-item[data-page="monitor"]');
+        if (!nav || typeof nav.click !== 'function') { return false; }
+        nav.click();
+        return true;
+    }
+
+    // Делегированный обработчик якорей: ссылки живут в СТАТИЧЕСКОЙ разметке
+    // index.html (рядом со старыми полями), поэтому слушаем документ, а не строки.
+    function onDocumentClick(ev) {
+        var target = ev && ev.target;
+        if (!target || typeof target.closest !== 'function') { return; }
+        var goto = null;
+        var monitor = null;
+        try {
+            goto = target.closest('[data-hot-goto]');
+            monitor = target.closest('[data-open-monitor]');
+        } catch (e) { return; }
+        if (goto) {
+            if (typeof ev.preventDefault === 'function') { ev.preventDefault(); }
+            focusRow(goto.getAttribute('data-hot-goto'));
+            return;
+        }
+        if (monitor) {
+            if (typeof ev.preventDefault === 'function') { ev.preventDefault(); }
+            openMonitorPage();
+        }
+    }
+
     // --- загрузка -----------------------------------------------------------
 
     function normalizeEntry(e) {
@@ -615,6 +783,11 @@
     }
 
     if (typeof document !== 'undefined' && typeof document.getElementById === 'function') {
+        // Якоря «перекрыто горячей настройкой» и «управляется в панели ролей»
+        // живут в статической разметке — слушаем документ ОДИН раз на страницу.
+        if (typeof document.addEventListener === 'function') {
+            document.addEventListener('click', onDocumentClick);
+        }
         // Ждём DOMContentLoaded и при readyState 'interactive': deferred-скрипты
         // выполняются ДО этого события, то есть раньше, чем auth.js успевает
         // обернуть fetch и определить состояние входа.
@@ -637,7 +810,15 @@
         mount: mount,
         load: load,
         apply: apply,
+        // R317: общие хелперы для второй панели (роли раскладки на «Мониторе»).
+        // Состояние остаётся здесь и только здесь.
+        get: get,
+        set: set,
         reset: reset,
+        // Переходы по якорям «перекрыто горячей настройкой» / «в панели ролей».
+        focusRow: focusRow,
+        openHotSection: openHotSection,
+        openMonitorPage: openMonitorPage,
         render: render,
         renderPanel: renderPanel,
         coerceValue: coerceValue,

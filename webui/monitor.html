@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
@@ -12,7 +12,7 @@
   <link rel="shortcut icon" href="favicon.ico">
   <link rel="stylesheet" href="css/themes.css?v=R83">
   <link rel="stylesheet" href="css/base.css?v=R83">
-  <link rel="stylesheet" href="css/monitor-app.css?v=R83">
+  <link rel="stylesheet" href="css/monitor-app.css?v=R317">
   <link rel="stylesheet" href="css/monitor.css?v=R83">
   <!-- R232: стили демо-режима (активны только при body.demo-mode) -->
   <link rel="stylesheet" href="css/demo.css?v=R232">
@@ -194,6 +194,34 @@
                   style="padding:6px 14px;cursor:pointer">Применить раскладку</button>
           <button id="layoutLocalBtn" data-admin-only data-i18n="monitor.layout.localOnly"
                   style="padding:6px 14px;cursor:pointer">Только локально</button>
+        </div>
+        <!-- R317 (этап 5 рефакторинга настроек): ИСКЛЮЧЕНИЕ К ДОКТРИНЕ R304.
+             ЧТО БЫЛО НЕ ТАК. LB_DONOR_ALLOW_OWN_COPIES жила только в общем списке
+             горячих настроек на странице «Настройки» — среди 17 строк, вдали от
+             ролей раскладки. Оператор искал её рядом с «кто главный, а кто донор»
+             (именно там она нужна: «донор может держать свои копии»), не находил и
+             либо правил env/перезапускал стенд, либо считал, что исключения нет.
+             ЗДЕСЬ ТОЛЬКО ОРГАН УПРАВЛЕНИЯ: значение читает и пишет тот же модуль
+             js/modules/settings-registry.js (get/set/reset) — своей копии состояния
+             панель не держит, иначе после сброса одна из копий осталась бы старой. -->
+        <div id="layoutDonorOwnCopiesBox"
+             style="margin-top:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover, rgba(120,150,255,0.06))">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:8px;font-size:var(--font-size-sm);cursor:pointer"
+                   for="layoutDonorOwnCopies" id="layoutDonorOwnCopiesLabelWrap">
+              <input type="checkbox" id="layoutDonorOwnCopies">
+              <span data-i18n="monitor.layout.donorOwnCopies.label">донор может держать свои копии моделей (исключение)</span>
+            </label>
+            <span class="badge" id="layoutDonorOwnCopiesState" data-i18n-title="monitor.layout.donorOwnCopies.hint">—</span>
+            <button type="button" id="layoutDonorOwnCopiesReset" class="btn-sm"
+                    style="padding:4px 10px;cursor:pointer"
+                    data-i18n="monitor.layout.donorOwnCopies.reset">Сбросить</button>
+            <span id="layoutDonorOwnCopiesMsg" role="status" aria-live="polite"
+                  style="font-size:var(--font-size-xs);color:var(--text-secondary)"></span>
+          </div>
+          <p id="layoutDonorOwnCopiesHint"
+             style="margin:6px 0 0;font-size:var(--font-size-xs);color:var(--text-secondary)"
+             data-i18n="monitor.layout.donorOwnCopies.hint">По умолчанию (R304) донор держит ТОЛЬКО память мастера: его VRAM уходит мастеру через rpc-server, а свои копии моделей он не поднимает. Исключение нужно в одном случае — узел только что стал донором и ещё обслуживает идущие стримы. Настройка горячая: применяется сразу, без перезапуска контейнеров.</p>
         </div>
         <div id="layoutStatus" style="margin-top:10px;font-size:var(--font-size-xs);color:var(--text-secondary)"></div>
         <div id="layoutHint" style="margin-top:6px;font-size:var(--font-size-xs);color:var(--text-secondary)"
@@ -677,10 +705,20 @@
   <script defer src="js/modules/monitor-backends.js?v=R83"></script>
   <script defer src="js/monitor/state.js?v=R83"></script>
   <script defer src="js/monitor/api.js?v=R83"></script>
+  <!-- R317 (этап 5 рефакторинга настроек): панель ролей управляет ОДНОЙ строкой
+       горячего реестра — LB_DONOR_ALLOW_OWN_COPIES. Владелец значений реестра —
+       js/modules/settings-registry.js (get/set/reset, GET/PUT/POST
+       /api/v1/settings); его запросы идут через Api.hotSettings из
+       js/modules/api.js, поэтому оба файла грузятся ДО layout-panel.js.
+       Своего состояния «что действует» панель не заводит: две копии разошлись бы
+       на первом же сбросе. mount() внутри registry на этой странице не находит
+       #hotSettingsPanel и ничего не рисует — только отдаёт хелперы. -->
+  <script defer src="js/modules/api.js?v=R317"></script>
+  <script defer src="js/modules/settings-registry.js?v=R317"></script>
   <!-- R118.4 (2026-10-14): панель раскладки слоёв (RPC). Загружается после api.js
        (использует window.MonitorApiXhr) и до ui-renderer.js (тот зовёт
        MonitorLayout.rowLayoutCell/bindRowSelectors при отрисовке таблицы). -->
-  <script defer src="js/monitor/layout-panel.js?v=R118"></script>
+  <script defer src="js/monitor/layout-panel.js?v=R317"></script>
   <script defer src="js/monitor/ui-renderer.js?v=R83"></script>
   <script defer src="js/monitor/sparkline.js?v=R83"></script>
   <script defer src="js/monitor/canvas-topology.js?v=R83"></script>

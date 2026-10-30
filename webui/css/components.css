@@ -957,6 +957,40 @@
 }
 
 /* ================================================
+   R317 (этап 5 рефакторинга настроек): разведение двух механизмов.
+   ЗАЧЕМ. До этой правки горячий реестр (применяется сразу) и старые поля
+   config.json (нужен перезапуск контейнеров) выглядели на одной странице
+   одинаково, а поля, перекрытые реестром, ничем не отличались от остальных.
+   Здесь только оформление: подпись на границе секций, бейдж "перекрыто
+   горячей настройкой" рядом с полем и пометка строки реестра, которая
+   управляется из панели ролей.
+   (linter Phase 7: em-dash в CSS-комментариях запрещён, только ASCII).
+   ================================================ */
+.settings-restart-notice {
+    line-height: 1.5;
+}
+.settings-overlap-badge {
+    margin-left: 8px;
+    vertical-align: middle;
+}
+.settings-overlap-link {
+    color: var(--accent, #3b82f6);
+    text-decoration: none;
+    border-bottom: 1px dashed currentColor;
+    vertical-align: middle;
+    word-break: break-all;
+}
+.settings-overlap-link:hover {
+    text-decoration: underline;
+}
+.hot-setting-managed {
+    margin: 6px 0 0 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+
+/* ================================================
    Mode Cards (radio-based selection)
    ================================================ */
 .mode-cards {

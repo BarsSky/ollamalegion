@@ -520,6 +520,132 @@ const INDEX_HTML = fs.readFileSync(path.join(__dirname, '..', '..', 'index.html'
         SR.render();
     });
 
+    // --- 9. R317: пометка «управляется в панели ролей» и якоря --------------
+    await check('R317: строка донора помечена «управляется в панели ролей» и ведёт на «Монитор»', async function () {
+        routes = { 'GET /api/v1/settings': { status: 200, body: fixture() } };
+        await SR.load();
+        const h = html();
+        // Строка ОСТАЛАСЬ в общем списке (страница настроек — полный реестр):
+        // перенос органа управления не должен прятать саму настройку.
+        assert.ok(h.indexOf('id="hot-setting-LB_DONOR_ALLOW_OWN_COPIES"') >= 0,
+            'строка донора исчезла из общего списка реестра');
+        const row = rowHtml(h, 'LB_DONOR_ALLOW_OWN_COPIES');
+        assert.ok(row.indexOf('data-hot-managed="LB_DONOR_ALLOW_OWN_COPIES"') >= 0,
+            'нет пометки «управляется в панели ролей»: ' + row.slice(-300));
+        assert.ok(row.indexOf('управляется в панели ролей') >= 0, 'пометка без текста');
+        assert.ok(row.indexOf('data-open-monitor="1"') >= 0, 'пометка без ссылки на «Монитор»');
+        assert.ok(row.indexOf('Открыть «Монитор»') >= 0, 'ссылка без подписи: ' + row.slice(-300));
+        // У остальных строк такой пометки быть не должно: она значит «есть второй
+        // орган управления», а не «эта строка важная».
+        assert.strictEqual(rowHtml(h, 'LB_ADMISSION_WAIT_SEC').indexOf('data-hot-managed'), -1,
+            'пометка «в панели ролей» появилась у посторонней настройки');
+    });
+
+    await check('R317: get()/set() — те же операции реестра для панели ролей', async function () {
+        const before = SR.get('LB_DONOR_ALLOW_OWN_COPIES');
+        assert.ok(before && typeof before.effective === 'number', 'get() не отдаёт запись реестра');
+        assert.strictEqual(SR.get('LB_NO_SUCH_SETTING'), null, 'get() незнакомого имени обязан вернуть null');
+        calls.length = 0;
+        routes['PUT /api/v1/settings'] = function (body) {
+            return {
+                status: 200,
+                body: { status: 'updated', name: body.name, value: body.value, effective: body.value, source: 'override' },
+            };
+        };
+        const res = await SR.set('LB_DONOR_ALLOW_OWN_COPIES', 1);
+        assert.strictEqual(res.ok, true, 'set() не подтвердил успех');
+        assert.deepStrictEqual(puts()[0].body, { name: 'LB_DONOR_ALLOW_OWN_COPIES', value: 1 },
+            'set() ушёл не тем же PUT, что «Применить»: ' + JSON.stringify(puts()[0].body));
+        // Состояние одно: панель ролей читает ровно эту запись, копии не заводит.
+        assert.strictEqual(SR.get('LB_DONOR_ALLOW_OWN_COPIES').source, 'override');
+        assert.strictEqual(SR.get('LB_DONOR_ALLOW_OWN_COPIES').effective, 1);
+    });
+
+    await check('R317: viewer видит «Сбросить» погашенной с причиной про роль', async function () {
+        // ЗАЧЕМ: клик по кнопке давал честный, но лишний 403 — сеть вместо
+        // объяснения. Признак роли берём у auth.js (window.Auth.isAdmin()).
+        global.Auth = { isAdmin: function () { return false; } };
+        routes = { 'GET /api/v1/settings': { status: 200, body: fixture() } };
+        await SR.load();
+        let row = rowHtml(html(), 'LB_ADMISSION_WAIT_SEC');
+        let i = row.indexOf('data-hot-action="reset"');
+        let btn = row.slice(i, row.indexOf('</button>', i));
+        assert.ok(btn.indexOf('disabled') >= 0, 'viewer видит активный сброс: ' + btn);
+        assert.ok(btn.indexOf('только администратору') >= 0,
+            'viewer не видит, ПОЧЕМУ кнопка погашена (роль, а не источник): ' + btn);
+        assert.ok(row.indexOf('data-hot-admin="0"') >= 0, 'признак роли не отражён в разметке строки');
+
+        global.Auth = { isAdmin: function () { return true; } };
+        SR.render();
+        row = rowHtml(html(), 'LB_ADMISSION_WAIT_SEC');
+        i = row.indexOf('data-hot-action="reset"');
+        btn = row.slice(i, row.indexOf('</button>', i));
+        assert.ok(btn.indexOf('disabled') === -1, 'администратор не может сбросить override: ' + btn);
+        delete global.Auth;
+    });
+
+    await check('R317: якорь из старого поля раскрывает секцию реестра и находит строку', function () {
+        // Ссылка «перекрыто горячей настройкой» ведёт на #hot-setting-<имя>.
+        // Секция — аккордеон: при свёрнутой ссылка вела бы в пустой заголовок.
+        const added = [];
+        const bodyEl = { style: {}, classList: { add: function (c) { added.push(c); } } };
+        const toggleEl = { textContent: '▶' };
+        DOM['section-hot-settings'] = {
+            querySelector: function (sel) {
+                if (sel === '.settings-section-body') { return bodyEl; }
+                if (sel === '.section-toggle') { return toggleEl; }
+                return null;
+            },
+        };
+        let scrolled = 0;
+        DOM['hot-setting-LB_PLACE_OVER_RELOAD'] = {
+            style: {},
+            scrollIntoView: function () { scrolled++; },
+        };
+        assert.strictEqual(SR.focusRow('LB_PLACE_OVER_RELOAD'), true, 'строка якоря не найдена');
+        assert.ok(added.indexOf('open') >= 0, 'секция реестра не раскрыта по якорю');
+        assert.strictEqual(toggleEl.textContent, '▼', 'стрелка секции не обновлена');
+        assert.strictEqual(scrolled, 1, 'к строке не прокрутили');
+        // У старого балансера строки нет — честный false вместо исключения.
+        assert.strictEqual(SR.focusRow('LB_UNKNOWN_ROW'), false);
+    });
+
+    await check('R317: делегированный клик — якорь раскрывает строку, «Монитор» переключает страницу', function () {
+        // Ссылки стоят в СТАТИЧЕСКОЙ разметке (рядом со старыми полями), поэтому
+        // обработчик живёт на документе. Без него href="#" прыгал бы к пустому id.
+        const click = domListeners['click'];
+        assert.ok(typeof click === 'function', 'клик по якорям реестра не делегирован документу');
+        let prevented = 0;
+        click({
+            preventDefault: function () { prevented++; },
+            target: {
+                closest: function (sel) {
+                    return sel === '[data-hot-goto]'
+                        ? { getAttribute: function () { return 'LB_PLACE_OVER_RELOAD'; } }
+                        : null;
+                },
+            },
+        });
+        assert.strictEqual(prevented, 1, 'переход по hash не отменён — браузер прыгнет к пустому месту');
+
+        const savedQS = global.document.querySelector;
+        let navClicks = 0;
+        global.document.querySelector = function () { return { click: function () { navClicks++; } }; };
+        let prevented2 = 0;
+        try {
+            click({
+                preventDefault: function () { prevented2++; },
+                target: {
+                    closest: function (sel) { return sel === '[data-open-monitor]' ? {} : null; },
+                },
+            });
+        } finally {
+            global.document.querySelector = savedQS;
+        }
+        assert.strictEqual(navClicks, 1, 'кнопка «Открыть «Монитор»» не переключает страницу');
+        assert.strictEqual(prevented2, 1, 'клик по кнопке «Монитор» не гасит default-поведение');
+    });
+
     console.log('\nsettings-registry: ' + passed + ' проверок пройдено' +
         (failures.length ? ', ПРОВАЛОВ: ' + failures.length : ''));
     if (failures.length) { process.exit(1); }

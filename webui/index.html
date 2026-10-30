@@ -52,7 +52,7 @@
     <link rel="stylesheet" href="css/themes.css?v=R83">
     <link rel="stylesheet" href="css/base.css?v=R83">
     <link rel="stylesheet" href="css/icons.css?v=R83">
-    <link rel="stylesheet" href="css/components.css?v=R83">
+    <link rel="stylesheet" href="css/components.css?v=R317">
     <!-- R58.3 (2026-09-03): Hardware preset selector CSS for setup-wizard. -->
     <link rel="stylesheet" href="css/components-presets.css?v=R83">
     <link rel="stylesheet" href="css/metrics.css?v=R83">
@@ -1242,6 +1242,29 @@
                              </div>
                          </div>
 
+                         <!-- ==================== Граница двух механизмов (R317) ==================== -->
+                         <!-- ЗАЧЕМ. До этой правки на одной странице жили ДВА разных механизма, и
+                              оператор не понимал разницы: реестр выше применяется сразу, а всё, что
+                              ниже, — это config.json, который пишется кнопкой «Сохранить» и вступает
+                              в силу только после перезапуска контейнеров. Плюс часть нижних полей
+                              сервер уже не читает так, как раньше: значения живут в env/реестре, и
+                              правка поля не давала эффекта («поменял — ничего не произошло»).
+                              Подпись стоит РОВНО на границе: всё, что выше — без рестарта, всё, что
+                              ниже — с рестартом. Ссылки на строки реестра у отдельных полей помечены
+                              бейджем badge-warning и ведут якорем #hot-setting-<имя>. -->
+                         <div class="settings-restart-notice" id="settingsRestartNotice" role="note"
+                              style="margin:4px 0 16px;padding:12px 14px;border-radius:8px;background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.45)">
+                             <div style="display:flex;gap:10px;align-items:flex-start">
+                                 <i class="fas fa-triangle-exclamation" aria-hidden="true" style="color:#f59e0b;margin-top:2px"></i>
+                                 <div>
+                                     <div style="font-weight:600;color:#f59e0b;margin-bottom:4px"
+                                          data-i18n="settings.old.title">Ниже — поля config.json: изменения требуют перезапуска контейнеров</div>
+                                     <p style="margin:0;color:var(--text-muted);font-size:var(--font-size-sm)"
+                                        data-i18n="settings.old.desc">Эти поля сохраняются кнопкой «Сохранить» в config.json и начинают действовать только после перезапуска контейнеров балансера и воркеров. Часть значений перекрывается горячим реестром выше: если такая настройка задана в реестре, действует реестр, а значение из config.json остаётся базой для следующего запуска. Поля с бейджем «перекрыто горячей настройкой» прямо показывают, какая строка реестра ими управляет.</p>
+                                 </div>
+                             </div>
+                         </div>
+
                          <!-- ==================== Section: Operating Mode ==================== -->
                          <div class="settings-section" id="section-mode">
                              <div class="settings-section-header" data-section="mode">
@@ -1361,6 +1384,17 @@
                                         </div>
                                         <div class="form-group">
                                             <label data-i18n="settings.model_replication_idle_unload">Idle Unload After</label>
+                                            <!-- R317 (этап 5): выгрузка по простою в режиме репликации — та же
+                                                 разрушающая операция, что и idleUnloadMinutes выше, поэтому её
+                                                 ожидание задаёт тот же ключ горячего реестра. Поле не удалено. -->
+                                            <span class="badge badge-warning settings-overlap-badge"
+                                                  data-hot-overlap="LB_DESTRUCTIVE_OP_WAIT_SEC"
+                                                  data-i18n="settings.old.overlap_badge"
+                                                  data-i18n-title="settings.old.overlap.idle_unload"
+                                                  title="Влияет: LB_DESTRUCTIVE_OP_WAIT_SEC">перекрыто горячей настройкой</span>
+                                            <a class="settings-overlap-link" href="#hot-setting-LB_DESTRUCTIVE_OP_WAIT_SEC"
+                                               data-hot-goto="LB_DESTRUCTIVE_OP_WAIT_SEC"
+                                               style="font-size:var(--font-size-xs);font-family:var(--font-mono,monospace);margin-left:6px">LB_DESTRUCTIVE_OP_WAIT_SEC</a>
                                             <input type="text" id="modelReplicationIdleUnload" class="form-control" value="10m" placeholder="10m, 30m, 1h">
                                         </div>
                                     </div>
@@ -1685,6 +1719,29 @@
                                         <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.ctx_size_desc">
 Размер контекстного окна в токенах. Больше = длиннее диалоги, но больше потребление VRAM/RAM. gemma-4 поддерживает до 256K.
                                         </span></span>
+                                        <!-- R317 (этап 5): поле перекрыто строками горячего реестра группы nctx.
+                                             ЗАЧЕМ БЕЙДЖ. ctxSize — это БАЗА окна. Что произойдёт, когда запрос
+                                             требует другое окно (ждать чужие стримы / переехать на свободный узел /
+                                             спросить живой кластер), решают настройки реестра, а они применяются
+                                             сразу и здесь не правятся: оператор менял ctxSize и не видел эффекта.
+                                             Ничего не удалено и не переименовано (это сломало бы сохранение). -->
+                                        <span class="badge badge-warning settings-overlap-badge"
+                                              data-hot-overlap="LB_PLACE_OVER_RELOAD LB_LIVE_COPY_PROBE LB_RELOAD_DEFER_MAX_SEC LB_RELOAD_DEFER_FAST_FAIL_SEC"
+                                              data-i18n="settings.old.overlap_badge"
+                                              data-i18n-title="settings.old.overlap.ctx_size"
+                                              title="Влияет: LB_PLACE_OVER_RELOAD, LB_LIVE_COPY_PROBE, LB_RELOAD_DEFER_MAX_SEC, LB_RELOAD_DEFER_FAST_FAIL_SEC">перекрыто горячей настройкой</span>
+                                        <a class="settings-overlap-link" href="#hot-setting-LB_PLACE_OVER_RELOAD"
+                                           data-hot-goto="LB_PLACE_OVER_RELOAD"
+                                           style="font-size:var(--font-size-xs);font-family:var(--font-mono,monospace);margin-left:6px">LB_PLACE_OVER_RELOAD</a>
+                                        <a class="settings-overlap-link" href="#hot-setting-LB_LIVE_COPY_PROBE"
+                                           data-hot-goto="LB_LIVE_COPY_PROBE"
+                                           style="font-size:var(--font-size-xs);font-family:var(--font-mono,monospace);margin-left:6px">LB_LIVE_COPY_PROBE</a>
+                                        <a class="settings-overlap-link" href="#hot-setting-LB_RELOAD_DEFER_MAX_SEC"
+                                           data-hot-goto="LB_RELOAD_DEFER_MAX_SEC"
+                                           style="font-size:var(--font-size-xs);font-family:var(--font-mono,monospace);margin-left:6px">LB_RELOAD_DEFER_MAX_SEC</a>
+                                        <a class="settings-overlap-link" href="#hot-setting-LB_RELOAD_DEFER_FAST_FAIL_SEC"
+                                           data-hot-goto="LB_RELOAD_DEFER_FAST_FAIL_SEC"
+                                           style="font-size:var(--font-size-xs);font-family:var(--font-mono,monospace);margin-left:6px">LB_RELOAD_DEFER_FAST_FAIL_SEC</a>
                                         <input type="number" id="ctxSize" class="form-control" value="2048" min="256" max="262144" step="256">
                                     </div>
                                 </div>
@@ -1977,6 +2034,18 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                         <span class="tooltip-trigger">?<span class="tooltip-content" data-i18n="gguf.idle_unload_desc">
 Автовыгрузка модели из VRAM после N минут простоя. 0 = выключено (по умолчанию).
                                         </span></span>
+                                        <!-- R317 (этап 5): выгрузка по простою — разрушающая операция, и сколько
+                                             ждать завершения чужих стримов перед ней, решает горячая настройка
+                                             LB_DESTRUCTIVE_OP_WAIT_SEC (группа «Окно контекста»). Поле оставлено
+                                             как было: удаление — отдельная работа, риск сломать сохранение. -->
+                                        <span class="badge badge-warning settings-overlap-badge"
+                                              data-hot-overlap="LB_DESTRUCTIVE_OP_WAIT_SEC"
+                                              data-i18n="settings.old.overlap_badge"
+                                              data-i18n-title="settings.old.overlap.idle_unload"
+                                              title="Влияет: LB_DESTRUCTIVE_OP_WAIT_SEC">перекрыто горячей настройкой</span>
+                                        <a class="settings-overlap-link" href="#hot-setting-LB_DESTRUCTIVE_OP_WAIT_SEC"
+                                           data-hot-goto="LB_DESTRUCTIVE_OP_WAIT_SEC"
+                                           style="font-size:var(--font-size-xs);font-family:var(--font-mono,monospace);margin-left:6px">LB_DESTRUCTIVE_OP_WAIT_SEC</a>
                                         <input type="number" id="idleUnloadMinutes" class="form-control" value="0" min="0" max="10080">
                                     </div>
                                 </div>
@@ -2243,6 +2312,12 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                 </div>
                             </div>
                         </div>
+
+                        <!-- R317 (этап 5): напоминание у самой кнопки. Оператор докручивает форму
+                             до конца и жмёт «Сохранить», не поднимаясь к подписи на границе секций. -->
+                        <p id="settingsSaveNote"
+                           style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin:8px 0 0;font-size:var(--font-size-xs);color:var(--text-muted)"
+                           data-i18n="settings.old.save_note">«Сохранить» пишет config.json — нужен перезапуск контейнеров. Настройки, у которых есть строка в горячем реестре выше, применяются сразу и перекрывают эти поля.</p>
 
                         <div class="form-actions">
                             <button class="btn btn-primary" id="saveSettings" data-admin-only data-i18n="settings.save">Сохранить</button>
@@ -2612,8 +2687,10 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <!-- R305 (этап 3 рефакторинга настроек): реестр «горячих» настроек балансера
          (GET/PUT /api/v1/settings, POST /api/v1/settings/reset). Грузится ПОСЛЕ
          api.js — все запросы идут через Api.hotSettings с общими auth-заголовками,
-         и ДО app.js — app.js при переходе на «Настройки» просит модуль обновиться. -->
-    <script defer src="js/modules/settings-registry.js?v=R305"></script>
+         и ДО app.js — app.js при переходе на «Настройки» просит модуль обновиться.
+         R317 (этап 5): тот же модуль — владелец значений для панели ролей на
+         «Мониторе» и приёмник якорей «перекрыто горячей настройкой» из разметки. -->
+    <script defer src="js/modules/settings-registry.js?v=R317"></script>
     <script defer src="js/modules/config-io.js?v=R83"></script>
     <script defer src="js/modules/mode-wizard.js?v=R83"></script>
     <script defer src="js/modules/setup-wizard-presets.js?v=R83"></script>

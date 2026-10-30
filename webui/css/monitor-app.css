@@ -1,4 +1,4 @@
-﻿/* ==============================
+/* ==============================
    Monitor Application Styles
    Extracted from monitor.html
    ============================== */
@@ -92,6 +92,17 @@ header h1 .dot.demo { background: var(--info); animation: none; }
 .badge-red { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-soft); }
 .badge-blue { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-soft); }
 .badge-purple { background: rgba(168, 85, 247, 0.12); color: var(--purple-accent); border-color: rgba(168, 85, 247, 0.2); }
+/* R317 (этап 5 рефакторинга настроек): алиасы классов бейджей страницы настроек.
+   ЗАЧЕМ. Панель ролей показывает источник значения той же строки реестра, что и
+   страница "Настройки", через тот же модуль (settings-registry.badgeClass()):
+   override -> badge-success, env -> badge-warning, default -> badge-info,
+   деградация раскладки -> badge-orange. В monitor-app.css таких классов не было,
+   и бейдж на "Мониторе" терял цвет: смысл ("задано в панели" / "из env") пропадал.
+   (linter Phase 7: em-dash в CSS-комментариях запрещён, только ASCII). */
+.badge-success { background: var(--success-bg-soft-2); color: var(--success); border-color: var(--success-bg-soft-2); }
+.badge-warning { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-soft); }
+.badge-info { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-soft); }
+.badge-orange { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-soft); }
 select, button { background: var(--bg-hover); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 10px; font-size: var(--font-size-xs); cursor: pointer; }
 button:hover { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }

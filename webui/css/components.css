@@ -1,4 +1,4 @@
-﻿/*
+/*
  * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
  *   DESIGN_VARIANCE = 5, MOTION_INTENSITY = 3, VISUAL_DENSITY = 5
  * Anti-slop rules applied:
@@ -844,6 +844,116 @@
     max-height: 200000px;
     opacity: 1;
     padding: 16px 24px;
+}
+
+/* ================================================
+   R305: реестр «горячих» настроек балансера
+   (страница «Настройки», модуль settings-registry.js)
+
+   ЗАЧЕМ СВОЙ БЛОК. Строка реестра - это не пара «label + input», как в обычных
+   формах: у неё четыре независимых куска (имя, применённое значение, бейдж
+   источника и контрол с двумя кнопками) и подсказка под ними. Без правил они
+   схлопывались в одну нечитаемую строку, а длинное имя LB_* переносилось
+   посреди слова (linter Phase 7: em-dash в CSS-комментариях запрещён, только ASCII).
+   ================================================ */
+.hot-settings-panel {
+    margin-top: 4px;
+}
+.hot-settings-priority {
+    margin: 0 0 12px 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+.hot-settings-state {
+    padding: 12px 14px;
+    border-radius: var(--radius-md, 8px);
+    border: 1px dashed var(--border-color);
+    background: var(--bg-hover);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+}
+.hot-settings-state p {
+    margin: 6px 0 0 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+.hot-settings-state-warn {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+.hot-settings-state-error {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+.hot-settings-group + .hot-settings-group {
+    margin-top: 8px;
+}
+.hot-setting-row {
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md, 8px);
+    background: var(--glass-bg);
+}
+.hot-setting-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+}
+.hot-setting-name {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    word-break: break-all;
+}
+.hot-setting-effective {
+    margin-left: auto;
+    font-size: var(--font-size-sm);
+    font-weight: 700;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+.hot-setting-desc {
+    margin: 6px 0 8px 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+.hot-setting-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+}
+.hot-setting-controls .form-control {
+    width: auto;
+    min-width: 110px;
+    max-width: 180px;
+}
+.hot-setting-controls .btn {
+    padding: 6px 12px;
+    white-space: nowrap;
+}
+.hot-setting-unit {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+.hot-setting-msg {
+    font-size: var(--font-size-xs);
+}
+.hot-setting-msg.is-ok {
+    color: var(--success);
+}
+.hot-setting-msg.is-error {
+    color: var(--danger);
+}
+.hot-setting-hint {
+    margin: 6px 0 0 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    line-height: 1.5;
 }
 
 /* ================================================

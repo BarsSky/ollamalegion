@@ -376,6 +376,78 @@ const Api = (function () {
             return response.json();
         },
 
+        // ===== R305 (этап 3 рефакторинга настроек): реестр «горячих» настроек =====
+        //
+        // ЗАЧЕМ ОТДЕЛЬНАЯ ГРУППА, А НЕ config(). Балансер (R278) держит реестр
+        // настроек, которые применяются БЕЗ рестарта: значение берётся из
+        // override-файла → env → дефолта, и это НЕ config.json. Команда
+        // `GET /api/v1/cluster/config` их не отдаёт вовсе, поэтому до этой правки
+        // 17 настроек (LB_STREAM_STALL_ABORT_SEC, LB_DONOR_ALLOW_OWN_COPIES,
+        // LB_ADMISSION_WAIT_SEC, …) в панели были невидимы: оператор менял env,
+        // перезапускал стенд и не понимал, почему «значение из env ни на что не
+        // влияет» (его перекрывал override) — либо наоборот.
+        //
+        // ПОЧЕМУ ЗДЕСЬ, А НЕ В МОДУЛЕ СТРАНИЦЫ. Оба меняющих запроса — админские
+        // (auth middleware на /api/v1/settings), поэтому идём тем же
+        // `request()`/`getJson()`, что и остальные PUT: X-API-Token (break-glass)
+        // добавляет getOptions(), а X-CSRF-Token для сессионных мутаций —
+        // единая обёртка window.fetch в auth.js (R209). Собирать заголовки в
+        // модуле вручную не нужно и опасно: так уже получали 401 (R66d).
+        //
+        // КОНТРАКТ (internal/api/handlers_settings_r278.go):
+        //   GET  /api/v1/settings        -> {settings:[{name,type,group,description,
+        //                                   hotReload,default,effective,source}],
+        //                                   count,overrides,sourcePriority}
+        //   PUT  /api/v1/settings        <- {name, value}   (value — ЦЕЛОЕ: bool=0/1,
+        //                                   duration_sec=секунды) → {status,effective,source,...}
+        //   POST /api/v1/settings/reset  <- {name} или {} (все) → {status,effective,source}
+        hotSettings: {
+            /**
+             * GET /api/v1/settings — весь реестр с действующими значениями.
+             * @returns {Promise<{settings: Array, count: number, overrides: number,
+             *   sourcePriority: string[]}>}
+             */
+            async list() {
+                return getJson('/api/v1/settings');
+            },
+
+            /**
+             * PUT /api/v1/settings — записать override (применяется на лету).
+             *
+             * Значение НЕ приводится здесь: тип настройки знает только реестр,
+             * поэтому приведение (bool → 0/1, duration_sec → секунды) делает
+             * вызывающая страница до вызова, а сервер валидирует по своему типу.
+             * @param {string} name — имя вида LB_...
+             * @param {number} value — целое.
+             * @returns {Promise<Object>} — обновлённая запись: {status,name,value,
+             *   effective,source,applied,hotReload}.
+             */
+            async set(name, value) {
+                const response = await request(`${API_BASE}/api/v1/settings`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ name: name, value: value })
+                });
+                return response.json();
+            },
+
+            /**
+             * POST /api/v1/settings/reset — снять override по имени ({} — все).
+             *
+             * ПОЧЕМУ ОТДЕЛЬНЫЙ ПУТЬ: reset не «пишет ноль», а удаляет запись, после
+             * чего действует env, а если и его нет — дефолт. Поэтому в UI это
+             * единственный способ вернуть скрытое env-значение.
+             * @param {string} [name] — без имени сбрасываются ВСЕ override.
+             * @returns {Promise<Object>} — {status:'reset', name?, effective, source}.
+             */
+            async reset(name) {
+                const response = await request(`${API_BASE}/api/v1/settings/reset`, {
+                    method: 'POST',
+                    body: JSON.stringify(name ? { name: name } : {})
+                });
+                return response.json();
+            }
+        },
+
         // GGUF backends info
         async fetchGgufBackends() {
             return getJson('/api/v1/gguf/backends');

@@ -1224,6 +1224,47 @@ window.I18N_EN = {
   "settings.section.help": "Help",
   "settings.section.backend_limits": "Backend Limits",
 
+  // ===== R305 (stage 3): balancer hot-settings registry =====
+  // These settings apply WITHOUT a restart and live outside config.json
+  // (override → env → default). Before R305 the WebUI did not show them, so an
+  // operator could not tell why an env value "had no effect" — it was overridden
+  // by a value set in the panel. The texts name the value source explicitly.
+  "settings.hot.title": "Hot settings (applied without a restart)",
+  "settings.hot.section_desc": "Balancer registry settings: they apply immediately, without restarting containers, and live outside config.json. Value source priority: set in the panel → env → default. Each row shows the effective value and where it came from.",
+  "settings.hot.summary": "Set in the panel: {overrides} of {total}. The rest come from env or the default.",
+  "settings.hot.priority": "Source priority: {path}.",
+  "settings.hot.loading": "Loading the settings registry…",
+  "settings.hot.empty": "The settings registry is empty: the balancer registered no hot settings.",
+  "settings.hot.unavailable": "registry unavailable (old balancer)",
+  "settings.hot.unavailable_hint": "The balancer does not serve GET /api/v1/settings. Update the balancer image: hot settings appeared in R278. Until then these keys change only via env and a restart.",
+  "settings.hot.error_load": "Failed to read the settings registry: {error}",
+  "settings.hot.error_apply": "Not applied: {error}",
+  "settings.hot.applied": "applied",
+  "settings.hot.applying": "applying…",
+  "settings.hot.reset_done": "reset to env/default",
+  "settings.hot.effective": "Effective value",
+  "settings.hot.apply": "Apply",
+  "settings.hot.reset": "Reset",
+  "settings.hot.reset_hint": "Clear the value set in the panel: env or the default takes effect again",
+  "settings.hot.reset_disabled": "Nothing to reset: the value is not set in the panel (env or the default is in effect)",
+  "settings.hot.env_hint": "it can be changed in the panel, but env stays as a fallback: after a reset it takes effect again",
+  "settings.hot.override_hint": "The value is set in the panel and overrides env.",
+  "settings.hot.default_line": "default: {value}",
+  "settings.hot.sec": "s",
+  "settings.hot.bool_on": "on",
+  "settings.hot.bool_off": "off",
+  "settings.hot.error_empty": "value is empty: whole seconds are required (for bool — 0 or 1)",
+  "settings.hot.error_not_int": "an integer is required: seconds for duration_sec, 0 or 1 for bool (e.g. 30)",
+  "settings.hot.error_bool": "only 0 or 1 is allowed for bool",
+  "settings.hot.group.streaming": "Streaming",
+  "settings.hot.group.nctx": "Context window",
+  "settings.hot.group.queue": "Queue",
+  "settings.hot.group.upstream": "Upstream (llama.cpp)",
+  "settings.hot.group.other": "Other",
+  "settings.hot.source.default": "default",
+  "settings.hot.source.env": "from env",
+  "settings.hot.source.override": "set in the panel",
+
   // Backend Limits Settings
   "settings.backend_limits_desc": "Configure Max Concurrent Requests and Max Models limits for each backend. For backends without an agent, limits apply only at the balancer level.",
   "settings.backend_limits_max_concurrent": "Max Concurrent",

@@ -371,6 +371,15 @@ const ui = (function () {
                 break;
             case 'settings':
                 loadSettings();
+                // R305 (этап 3 рефакторинга настроек): реестр «горячих» настроек
+                // балансера — ОТДЕЛЬНЫЙ эндпоинт (GET /api/v1/settings), в
+                // /api/v1/cluster/config его нет. Перечитываем при каждом входе на
+                // страницу: значение могли поменять из другого браузера или через
+                // API, и показывать вчерашнее effective было бы враньём.
+                // Рисует и меняет значения только модуль — здесь один вызов.
+                if (window.SettingsRegistry && typeof window.SettingsRegistry.load === 'function') {
+                    window.SettingsRegistry.load();
+                }
                 setTimeout(function() { loadBackendLimits(); }, 100);
                 // R66b (2026-09-22): пересчитать высоты секций аккордеона ПОСЛЕ
                 // того как страница стала видимой. restoreAccordionState()

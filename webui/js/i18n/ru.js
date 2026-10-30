@@ -516,6 +516,47 @@ window.I18N_RU = {
   "settings.section.agent": "Настройки агентов",
   "settings.section.backend_limits": "Лимиты бэкендов",
 
+  // ===== R305 (этап 3): реестр «горячих» настроек балансера =====
+  // ЗАЧЕМ ОТДЕЛЬНАЯ СЕКЦИЯ. Эти настройки применяются БЕЗ рестарта и живут вне
+  // config.json (override → env → дефолт). До R305 WebUI их не показывал, и
+  // оператор не понимал, почему значение из env «ни на что не влияет» — его
+  // перекрывал override. Тексты описывают именно источник значения.
+  "settings.hot.title": "Горячие настройки (применяются без рестарта)",
+  "settings.hot.section_desc": "Настройки реестра балансера: они применяются сразу, без перезапуска контейнеров, и живут отдельно от config.json. Источник значения — по приоритету: задано в панели → env → по умолчанию. У каждой строки видно действующее значение и откуда оно взялось.",
+  "settings.hot.summary": "Задано в панели: {overrides} из {total}. Остальные действуют из env или по умолчанию.",
+  "settings.hot.priority": "Приоритет источников: {path}.",
+  "settings.hot.loading": "Загрузка реестра настроек…",
+  "settings.hot.empty": "Реестр настроек пуст: балансер не зарегистрировал ни одной горячей настройки.",
+  "settings.hot.unavailable": "реестр недоступен (старый балансер)",
+  "settings.hot.unavailable_hint": "Балансер не отдаёт GET /api/v1/settings. Обновите образ балансера: горячие настройки появились в R278. До обновления эти ключи меняются только через env и перезапуск.",
+  "settings.hot.error_load": "Не удалось прочитать реестр настроек: {error}",
+  "settings.hot.error_apply": "Не применено: {error}",
+  "settings.hot.applied": "применено",
+  "settings.hot.applying": "применяю…",
+  "settings.hot.reset_done": "сброшено к env/значению по умолчанию",
+  "settings.hot.effective": "Применённое значение",
+  "settings.hot.apply": "Применить",
+  "settings.hot.reset": "Сбросить",
+  "settings.hot.reset_hint": "Снять значение, заданное в панели: снова начнёт действовать env или значение по умолчанию",
+  "settings.hot.reset_disabled": "Сбрасывать нечего: значение не задано в панели (действует env или значение по умолчанию)",
+  "settings.hot.env_hint": "меняется в панели, но env остаётся как запасное значение: после сброса вернётся оно",
+  "settings.hot.override_hint": "Значение задано в панели и перекрывает env.",
+  "settings.hot.default_line": "по умолчанию: {value}",
+  "settings.hot.sec": "сек",
+  "settings.hot.bool_on": "вкл",
+  "settings.hot.bool_off": "выкл",
+  "settings.hot.error_empty": "значение не введено: нужны целые секунды (для bool — 0 или 1)",
+  "settings.hot.error_not_int": "нужно целое число: секунды для duration_sec, 0 или 1 для bool (например 30)",
+  "settings.hot.error_bool": "для bool допустимо только 0 или 1",
+  "settings.hot.group.streaming": "Стриминг",
+  "settings.hot.group.nctx": "Окно контекста",
+  "settings.hot.group.queue": "Очередь",
+  "settings.hot.group.upstream": "Внешний источник (llama.cpp)",
+  "settings.hot.group.other": "Прочее",
+  "settings.hot.source.default": "по умолчанию",
+  "settings.hot.source.env": "из env",
+  "settings.hot.source.override": "задано в панели",
+
   // Backend Limits Settings
   "settings.backend_limits_desc": "Настройка максимального числа параллельных запросов и моделей для каждого бэкенда. Для бэкендов без агента лимиты применяются только на уровне балансировщика.",
   "settings.backend_limits_max_concurrent": "Макс. параллельно",

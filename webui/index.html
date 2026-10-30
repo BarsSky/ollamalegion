@@ -1221,6 +1221,27 @@
                              </div>
                          </div>
 
+                         <!-- ==================== Section: Hot settings registry (R305) ==================== -->
+                         <!-- ЗАЧЕМ: реестр балансера (R278) — настройки, которые применяются БЕЗ
+                              рестарта и НЕ входят в config.json (override → env → дефолт).
+                              До R305 WebUI их не показывал и не менял вовсе: оператор правил env,
+                              перезапускал стенд и не понимал, почему значение не действует (его
+                              перекрывал override, записанный раньше). Содержимое блока рисует
+                              modules/settings-registry.js; здесь только пустой контейнер — чтобы
+                              состояние реестра не раздваивалось между разметкой и модулем. -->
+                         <div class="settings-section" id="section-hot-settings">
+                             <div class="settings-section-header" data-section="hot-settings">
+                                 <span class="section-toggle">▼</span>
+                                 <i class="fas fa-bolt"></i>
+                                 <span data-i18n="settings.hot.title">Горячие настройки (применяются без рестарта)</span>
+                             </div>
+                             <div class="settings-section-body open">
+                                 <p style="color:var(--text-muted);font-size:var(--font-size-sm);margin-bottom:12px"
+                                    data-i18n="settings.hot.section_desc">Настройки реестра балансера: они применяются сразу, без перезапуска контейнеров, и живут отдельно от config.json. Источник значения — по приоритету: задано в панели → env → по умолчанию. У каждой строки видно действующее значение и откуда оно взялось.</p>
+                                 <div id="hotSettingsPanel" class="hot-settings-panel"></div>
+                             </div>
+                         </div>
+
                          <!-- ==================== Section: Operating Mode ==================== -->
                          <div class="settings-section" id="section-mode">
                              <div class="settings-section-header" data-section="mode">
@@ -2588,6 +2609,11 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script defer src="js/modules/gguf-renderer-detail-render.js?v=R83"></script>
     <script defer src="js/modules/gguf-renderer.js?v=R83"></script>
     <script defer src="js/modules/settings-ui.js?v=R83"></script>
+    <!-- R305 (этап 3 рефакторинга настроек): реестр «горячих» настроек балансера
+         (GET/PUT /api/v1/settings, POST /api/v1/settings/reset). Грузится ПОСЛЕ
+         api.js — все запросы идут через Api.hotSettings с общими auth-заголовками,
+         и ДО app.js — app.js при переходе на «Настройки» просит модуль обновиться. -->
+    <script defer src="js/modules/settings-registry.js?v=R305"></script>
     <script defer src="js/modules/config-io.js?v=R83"></script>
     <script defer src="js/modules/mode-wizard.js?v=R83"></script>
     <script defer src="js/modules/setup-wizard-presets.js?v=R83"></script>

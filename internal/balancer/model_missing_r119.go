@@ -78,14 +78,32 @@ func isModelMissingResponse(status int, body []byte) bool {
 	if status < 400 {
 		return false
 	}
+	// R316 (2026-10-30): отказ про ОКНО — это НЕ «модели нет».
+	//
+	// ЖИВАЯ АВАРИЯ. Потолок оператора подняли выше GGUF-максимума модели, пришёл
+	// запрос на окно сверх него — воркер честно отказал «requested n_ctx=262144
+	// exceeds the physically feasible maximum 131072 … (обучающий контекст
+	// МОДЕЛИ)», — и ЭТОТ отказ записался в реестр «модели нет». После него любая
+	// следующая просьба к живой загруженной модели получала терминальный 404
+	// `model_not_found` весь TTL записи: агент считает «модели нет» и уходит на
+	// другую модель.
+	//
+	// ПРИЧИНА: маркер `"модели"` (и `"available_models"`) совпадает с ЛЮБЫМ
+	// русским текстом, где упомянута модель, — включая отказ про окно. Маркеры
+	// обязаны быть точными: «файла нет», а не «в тексте есть слово про модель».
+	if isNCtxInfeasibleResponse(status, body) {
+		return false
+	}
 	low := strings.ToLower(string(body))
 	for _, marker := range []string{
 		"model_file_not_found",
-		"available_models",
+		"model_not_found",
+		"model not found",
 		"not found in",
 		"not found:",
 		"no such file",
-		"модели",
+		"не найдена",
+		"не найден",
 	} {
 		if strings.Contains(low, marker) {
 			return true

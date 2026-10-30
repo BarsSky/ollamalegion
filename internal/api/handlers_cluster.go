@@ -3,12 +3,15 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 
+	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/i18n"
+	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -227,7 +230,10 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			"queueTimeout":        s.config.Balancing.QueueTimeout,
 			"requestTimeout":      s.config.Balancing.RequestTimeout,
 			"useEnhancedScoring":  s.config.Balancing.UseEnhancedScoring,
-			"predictionFiltering": true, // совместимость: всегда true
+			// R318 (2026-10-30): действующее значение фильтра по прогнозу, а не
+			// константа. Раньше здесь всегда стояло true, а PUT молча игнорировал
+			// поле — тумблер в панели был декоративным.
+			"predictionFiltering": balancer.PredictionFilterEnabled(),
 			"gpuMaxUsage":         s.config.Resources.GPU.MaxUsagePercent,
 			"vramMaxUsage":        s.config.Resources.GPU.MaxVRAMUsagePercent,
 			"cpuMaxUsage":         s.config.Resources.CPU.MaxUsagePercent,
@@ -400,6 +406,32 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 		if req.UseEnhancedScoring != nil {
 			s.config.Balancing.UseEnhancedScoring = *req.UseEnhancedScoring
 			updatedFields = append(updatedFields, "useEnhancedScoring")
+		}
+		// R318 (2026-10-30): тумблер «Prediction filtering» теперь ДЕЙСТВУЕТ.
+		//
+		// Раньше поле принималось структурой и нигде не читалось: сервер отвечал
+		// «saved», GET отдавал константу true, а фильтр продолжал исключать узлы
+		// с близким критическим ресурсом. Живой оператор менял тумблер и не видел
+		// эффекта.
+		//
+		// Источник значения — реестр горячих настроек (LB_PREDICTION_FILTER): у
+		// него уже есть приоритет override→env→default и запись на диск, поэтому
+		// второй копии состояния не заводим. Валидацию делает реестр.
+		if req.PredictionFiltering != nil {
+			want := int64(0)
+			if *req.PredictionFiltering {
+				want = 1
+			}
+			if reg := settings.Default(); reg != nil {
+				if _, err := reg.Set("LB_PREDICTION_FILTER", want); err != nil {
+					s.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+						"success": false,
+						"error":   fmt.Sprintf("predictionFiltering: %v", err),
+					})
+					return
+				}
+				updatedFields = append(updatedFields, "predictionFiltering")
+			}
 		}
 		if req.GPUUsage != nil {
 			s.config.Resources.GPU.MaxUsagePercent = *req.GPUUsage

@@ -439,8 +439,9 @@ func (p *Proxy) findBackendWithModelExcludingLocked(modelName string, exclude ma
 			continue
 		}
 
-		pred := state.Prediction
-		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
+		// R318: фильтр по прогнозу — настройка (LB_PREDICTION_FILTER), а не
+		// константа: тумблер в панели раньше принимался и молча не применялся.
+		if predictedCriticalR318(state.Prediction.SecondsToCritical) {
 			continue
 		}
 
@@ -827,8 +828,9 @@ func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.Back
 			continue
 		}
 
-		pred := state.Prediction
-		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
+		// R318: фильтр по прогнозу — настройка (LB_PREDICTION_FILTER), а не
+		// константа: тумблер в панели раньше принимался и молча не применялся.
+		if predictedCriticalR318(state.Prediction.SecondsToCritical) {
 			continue
 		}
 
@@ -1054,8 +1056,9 @@ func (p *Proxy) selectByResources(allowedTypes []types.BackendType) string {
 		// Не отсеиваем бэкенд если слоты заняты — пусть tryAcquireSlot в dispatchRequest
 		// решает можно ли захватить. Если слот занят — dispatch вернёт ErrNoBackendAvailable
 		// и queue requeue'ит запрос, дожидаясь освобождения.
-		pred := state.Prediction
-		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
+		// R318: фильтр по прогнозу — настройка (LB_PREDICTION_FILTER), а не
+		// константа: тумблер в панели раньше принимался и молча не применялся.
+		if predictedCriticalR318(state.Prediction.SecondsToCritical) {
 			continue
 		}
 

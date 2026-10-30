@@ -87,8 +87,9 @@ func (p *Proxy) expandCandidates(modelName string, allowedTypes []types.BackendT
 			continue
 		}
 
-		pred := state.Prediction
-		if pred.SecondsToCritical > 0 && pred.SecondsToCritical < 300 {
+		// R318: фильтр по прогнозу — настройка (LB_PREDICTION_FILTER), а не
+		// константа: тумблер в панели раньше принимался и молча не применялся.
+		if predictedCriticalR318(state.Prediction.SecondsToCritical) {
 			continue
 		}
 

@@ -656,6 +656,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// Чтобы клиент (Cline) не получил пустой `content`, аккумулируем content
 	// из streaming чанков и используем его в финальном done-чанке.
 	var accumulatedPlainContent string
+	// R321 (2026-10-30): сколько символов РАЗМЫШЛЕНИЙ уже уехало клиенту в этом
+	// стриме. Нужно, чтобы отличить «пустой ответ без размышлений» (это другая
+	// история, R261/R314) от «модель израсходовала бюджет на размышления»: во
+	// втором случае завершать ход как «stop» нельзя (см. native_done_hygiene_r321.go).
+	var nativeReasoningChars int
 	// upstreamErrorText — R289: текст ошибки, которую воркер прислал ВНУТРИ потока
 	// (done-чанк с error). Нужен, чтобы отличить «контекст мал» от обрыва и не
 	// запускать auto-continue по заведомо обречённому запросу.
@@ -1050,6 +1055,20 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				// done-чанке = 294 на входе детектора, truncate_reason="".
 				chunkIsDone, _ := nativeChunk["done"].(bool)
 				if msg, ok := nativeChunk["message"].(map[string]interface{}); ok {
+					// R321: считаем размышления по НАИБОЛЬШЕМУ из двух имён —
+					// cppworker отдаёт `thinking` (канон) и `reasoning` (legacy)
+					// ОДНИМ И ТЕМ ЖЕ текстом, и суммирование дало бы вдвое больше
+					// символов в пояснении клиенту.
+					thinkChars := 0
+					if t, ok := msg["thinking"].(string); ok {
+						thinkChars = len(t)
+					}
+					if r, ok := msg["reasoning"].(string); ok && len(r) > thinkChars {
+						thinkChars = len(r)
+					}
+					if thinkChars > 0 {
+						nativeReasoningChars += thinkChars
+					}
 					if c, ok := msg["content"].(string); ok && c != "" {
 						accumulatedPlainContent = appendNativeContent(accumulatedPlainContent, chunkIsDone, c)
 						if firstContentTime.IsZero() {
@@ -1150,6 +1169,24 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			outLine := trimmed
 			if nativeDoneContentStrippingEnabled() {
 				outLine = stripNativeDoneContent(trimmed, streamedBeforeThisLine)
+			}
+			// R321 (2026-10-30): завершение, в котором модель израсходовала бюджет
+			// на размышления, обязано называть честную причину ("length") и не
+			// оставлять клиента с пустым ответом без объяснения.
+			//
+			// ЖИВАЯ ЖАЛОБА (Cline): поток заканчивался посреди рассуждений с
+			// done:true + done_reason:"stop" + content:""; клиент закрывал ход, и
+			// всё, что модель собиралась сказать, терялось. Воркер исправлен в
+			// R320, но контракт клиента не должен зависеть от версии образа
+			// воркера в кластере — поэтому нормализация есть и здесь (идемпотентно).
+			if originalPath == "/api/chat" || originalPath == "/api/generate" {
+				if fixed, changed := nativeDoneHygieneR321(outLine, nativeReasoningChars); changed {
+					logger.Get().Infow("proxyRequestLlamaCpp[native]: done-чанк нормализован (R321)",
+						"backend", backendID, "model", modelFromCtx,
+						"reasoning_chars", nativeReasoningChars,
+						"done_reason", "length")
+					outLine = fixed
+				}
 			}
 			// R266.1 (2026-10-28): на нативном пути cppworker уже отдаёт NDJSON,
 			// и балансер писал строку клиенту как есть — поэтому служебные метки

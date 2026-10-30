@@ -1147,7 +1147,22 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	// что запрос "пошёл". Heartbeat совместим с OpenWebUI (игнорирует строки
 	// без "message" поля) и aiohttp/Cline (NDJSON парсер tolerates done:false).
 	prefillStartTime := time.Now()
-	prefillHB := map[string]interface{}{"done": false}
+	// R334 (2026-10-30, поймано живой матрицей API): prefill-heartbeat обязан
+	// быть кадром КОНТРАКТА Ollama, а не {"done":false}.
+	//
+	// Round 32 писал минимальный кадр без model/created_at/message, чтобы
+	// OpenWebUI не принял "message":{"role":"assistant"} за начало нового
+	// сообщения. Но кадр без message — не объект контракта: строгий разборщик
+	// видит нарушение формы (матрица это и показала), а клиент не может связать
+	// кадр с моделью. Компромисс, который устраивает оба случая: кадр контракта,
+	// но с ПУСТЫМ content и без role (role клиенту для heartbeat не нужен, а
+	// именно он сбивал OpenWebUI).
+	prefillHB := map[string]interface{}{
+		"model":      modelName,
+		"created_at": time.Now().UTC().Format(time.RFC3339),
+		"message":    map[string]interface{}{"content": ""},
+		"done":       false,
+	}
 	prefillHBJSON, _ := json.Marshal(prefillHB)
 	sw.Writef("%s\n", prefillHBJSON)
 	sw.Flush()

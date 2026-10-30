@@ -432,8 +432,21 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		logger.Get().Warnw("generate returned empty output", "model", modelName)
-		writeError(w, http.StatusInternalServerError, "model produced an empty response")
+		// R334 (2026-10-30, поймано живой матрицей API): ПУСТОЙ ВЫВОД — НЕ 500.
+		//
+		// Контракт Ollama: /api/generate отвечает 200 даже когда модель ничего не
+		// сгенерировала (response:"", done:true). HTTP 500 здесь — наша выдумка, и
+		// клиент читает её как поломку сервера (живой факт: балансер отдавал 502
+		// "upstream returned HTTP 500: model produced an empty response").
+		logger.Get().Warnw("generate returned empty output (R334: отвечаем 200 с пустым response)",
+			"model", modelName)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"model":       modelName,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+			"response":    "",
+			"done":        true,
+			"done_reason": "stop",
+		})
 		return
 	}
 	duration := time.Since(start)
@@ -697,8 +710,16 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		logger.Get().Warnw("ollama generate returned empty output", "model", modelName)
-		writeError(w, http.StatusInternalServerError, "model produced an empty response")
+		// R334: см. комментарий у первой ветки — пустой вывод это не 5xx.
+		logger.Get().Warnw("ollama generate returned empty output (R334: отвечаем 200)",
+			"model", modelName)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"model":       modelName,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+			"response":    "",
+			"done":        true,
+			"done_reason": "stop",
+		})
 		return
 	}
 	promptEvalCount := countTokens(modelName, prompt)

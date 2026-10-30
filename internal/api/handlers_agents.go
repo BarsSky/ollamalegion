@@ -582,6 +582,8 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 		// комментарий в agentBackendHeartbeatHandler: отдельное поле существует
 		// именно потому, что maxConcurrentRequests — «эхо» ответа балансера).
 		NodeMaxConcurrentRequests int `json:"nodeMaxConcurrentRequests"`
+		// R311 (2026-10-30): версия сборки llama.cpp в heartbeat.
+		BuildInfo string `json:"buildInfo"`
 	}
 	_ = json.Unmarshal(body, &hbPayload)
 
@@ -646,6 +648,13 @@ func (s *Server) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) {
 		// чтобы его локальное значение сходилось к реальному n_parallel.
 		if hbPayload.MaxModels > 0 && updated.RuntimeMaxModels != hbPayload.MaxModels {
 			updated.RuntimeMaxModels = hbPayload.MaxModels
+			needUpdate = true
+		}
+		// R311 (2026-10-30): версия сборки llama.cpp — тем же правилом, что в
+		// per-backend обработчике (подробный комментарий там). Пустое значение не
+		// затирает известное: старый агент поля не шлёт вовсе.
+		if hb := strings.TrimSpace(hbPayload.BuildInfo); hb != "" && strings.TrimSpace(updated.BuildInfo) != hb {
+			updated.BuildInfo = hb
 			needUpdate = true
 		}
 
@@ -1091,6 +1100,11 @@ func (s *Server) agentBackendHeartbeatHandler(w http.ResponseWriter, r *http.Req
 		// Раньше AttachAgentToBackend использовал backend.AgentPort=0, что было
 		// бесполезно для UI/API.
 		AgentPort int `json:"agentPort"`
+		// R311 (2026-10-30): версия сборки llama.cpp в heartbeat — самолечение
+		// записи после перезапуска балансера (см. комментарий у агента в
+		// collector.go). Пустое значение НЕ затирает известное: старый агент поля
+		// не шлёт вовсе.
+		BuildInfo string `json:"buildInfo"`
 	}
 	_ = json.Unmarshal(body, &hbPayload)
 
@@ -1144,6 +1158,22 @@ func (s *Server) agentBackendHeartbeatHandler(w http.ResponseWriter, r *http.Req
 	// балансера и держало порог очереди на устаревшем 4 при n_parallel=1).
 	if hbPayload.MaxModels > 0 && updated.RuntimeMaxModels != hbPayload.MaxModels {
 		updated.RuntimeMaxModels = hbPayload.MaxModels
+		needUpdate = true
+	}
+	// R311 (2026-10-30): версия сборки llama.cpp из heartbeat.
+	//
+	// ЗАЧЕМ. Регистрация агента — один раз на его старт, а балансер
+	// перезапускается независимо и берёт запись из state.json. Живой факт:
+	// после рестарта балансера у главного узла снова оказалось
+	// buildInfo="0eadefebd" без даты (и relation снова unknown), хотя образ и env
+	// уже несли дату, — и так до перезапуска ВОРКЕРА. Через heartbeat значение
+	// восстанавливается за один интервал, как это уже сделано для заявки о
+	// вместимости (R121).
+	//
+	// Пустое значение НЕ затирает известное: старый агент поля не шлёт вовсе, и
+	// стирание вернуло бы «версия неизвестна» на ровном месте.
+	if hb := strings.TrimSpace(hbPayload.BuildInfo); hb != "" && strings.TrimSpace(updated.BuildInfo) != hb {
+		updated.BuildInfo = hb
 		needUpdate = true
 	}
 	if needUpdate {

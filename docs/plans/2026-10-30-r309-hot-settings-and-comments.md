@@ -616,8 +616,24 @@ llama.cpp-бэкенда невидимой всегда: она читалас�
 `internal/api`, `cmd/cppworker`, `internal/cppbackend`, `tests/llamacpp_proxy` —
 зелёные; `scripts/run-webui-sweep.ps1` — 86 прогонов, 0 провалов.
 
+**Живая проверка на стенде** (`balancer:r346` = f0440d4d, `webui:f0440d4d`,
+cppworker gpu-584ba305). Загрузил gemma-4-E4B-it-Q4_K_M через
+`POST /api/v1/backends/{id}/models`, снял факты, выгрузил обратно (стенд в исходном
+состоянии «ничего не загружено», свободная VRAM вернулась 3561 → 7067 МБ):
+
+| что | факт со стенда |
+| --- | --- |
+| `/api/models` балансера ДО загрузки | `{"count":0,"models":[]}` — это НЕ пустой инвентарь: воркер печатает только ЗАГРУЖЕННЫЕ модели (`backend.ListModels()`) |
+| `/api/models` балансера ПОСЛЕ загрузки | `sizeBytes=4215695776, nLayers=42, nEmbd=2560, nVocab=262144, contextSize=32768, gpuLayers=42, loadedAt=2026-10-31T07:36:45…` — до правки здесь были только `name/path/state` |
+| `gpuLayers` | 42 из `gpu_layers_actual`; `gpu_layers` в ответе воркера не было вовсе |
+| мёртвые поля в `/api/v1/cluster` | ключей `maxRamNCtx` и `gpuInfo` больше нет (проверено отсутствие в JSON) |
+| VRAM для UI | `llamaCpp.totalVramMb=8191, availableVramMb=3561` (после загрузки), `loadedAt`, `loadingSizeBytes=4215695776` в строке загрузки |
+| живая матрица API | `LB_MATRIX_SKIP_INFERENCE=1 go test -tags live ./tests/api_contract/` — ok (1.8 s) |
+| отданные WebUI ассеты | `webui:f0440d4d` отдаёт `renderers.js` с секцией VRAM/`formatLoadedAtR346`; обращений к `b.llamaCppMetrics` в собранном файле нет (осталась только строка комментария) |
+
 **Не проверено:** живой браузерный снимок (Chromium в этой среде не стартует,
-R319). Отдельно зафиксирован флак `TestLlamaModelLoadedConfirmsReplica_R81`
+R319) — нажатия и вид секций проверены только тестом рендерера, не глазами.
+Отдельно зафиксирован флак `TestLlamaModelLoadedConfirmsReplica_R81`
 (полный прогон `internal/api` иногда падает, повторный и `-run`-прогон зелёные) — к
 R346 отношения не имеет.
 

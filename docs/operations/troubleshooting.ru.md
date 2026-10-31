@@ -898,3 +898,45 @@ docker images --format '{{.Repository}}:{{.Tag}}' | Measure-Object   # обра�
    ```
 
 4. **Сообщить о проблеме:** [GitHub Issues](https://github.com/BarsSky/ollamalegion/issues)
+
+## Docker Desktop не стартует: кончилось место на диске данных (2026-10-31)
+
+Живой случай на этом стенде, случился дважды за день (второй раз — во время сборки
+cppworker, `failed to receive status: rpc error ... EOF`, затем
+`Docker Desktop is unable to start`).
+
+**Симптомы.** `docker ps` отвечает `request returned 500 Internal Server Error` или
+`Error response from daemon: Docker Desktop is unable to start`; контейнеры стоят;
+`wsl -l -v` показывает дистрибутивы `Stopped`; в
+`%LOCALAPPDATA%\Docker\log\host\com.docker.backend.exe.log` идёт бесконечное
+`still waiting for the engine to respond to _ping ... HTTP 503`. Перезапуск Docker
+Desktop помогает НЕ всегда, `wsl --update` может упасть с `HTTP_E_STATUS_FORBIDDEN`
+(нет сети/прокси).
+
+**Причина (проверять ПЕРВОЙ).** Диск данных Docker переполнен: в этом стенде он вынесен
+на `D:` через junction `%LOCALAPPDATA%\Docker\wsl\disk` → `D:\Docker\disk`, а сам диск
+забит образом данных `docker_data.vhdx` (у нас 107 ГБ при 400 ГБ занятых на `D:`).
+При нуле свободного места WSL-дистрибутив не может ни вырасти, ни запуститься, и движок
+не поднимается — при этом сообщение «Docker Desktop is unable to start» не называет
+причину.
+
+```
+Get-PSDrive C,D | Select-Object Name,@{n='freeGB';e={[math]::Round($_.Free/1GB,1)}}
+Get-ChildItem D:\Docker\disk | Select-Object Name,@{n='GB';e={[math]::Round($_.Length/1GB,1)}}
+```
+
+**Что делать.**
+
+1. Освободить место на том диске, где лежит `.vhdx` (переместить крупные файлы на другой
+   том — обратимо), затем запустить Docker Desktop заново. Перезапуск БЕЗ свободного места
+   не поможет: движку некуда писать.
+2. Когда движок поднимется — освободить место ВНУТРИ него:
+   `docker system df`, `docker builder prune -f`, `docker image prune -a -f`
+   (у нас каждая сборка cppworker под CUDA добавляет несколько ГБ).
+3. Сборку cppworker после освобождения места запускать с `--build-arg CUDA_ARCH=86`
+   (для RTX 3070): полный набор арок собирается часами и съедает десятки ГБ.
+
+**Побочный эффект, который стоит знать.** Если сборка образа не удалась, а
+`deployments/.env` уже переключён на новый тег, `docker compose up` не найдёт образ и
+воркер останется лежать. Правило: сначала успешный `docker build`, только потом правка
+тега в `.env`. В этом инциденте тег вернули на последний собранный образ (`bfd4b753`).

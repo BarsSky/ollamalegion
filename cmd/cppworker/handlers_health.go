@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
 )
 
@@ -61,6 +62,13 @@ func handleInfo(w http.ResponseWriter, r *http.Request) {
 		status["load_claims"] = claims
 		status["loading"] = true
 	}
+	// R362 (2026-10-31, аудит abort A6): возможность отмены генерации этой сборки.
+	//
+	// В stub-сборке abort-флаг всегда nil, отмена физически невозможна, но
+	// POST /api/cancel отвечал «cancelled: N». Теперь потребитель (балансер, WebUI,
+	// оператор) видит это ДО нажатия Stop, а не догадывается по поведению.
+	status["cancel_supported"] = bridge.InferAbortSupported()
+
 	status["load_wait_limit_sec"] = loadWaitMaxR303().Seconds()
 	status["load_stale_after_sec"] = loadStaleAfterR303().Seconds()
 	// R135 (2026-10-16): несовпадение CUDA-арок образа и карт. Причина видна

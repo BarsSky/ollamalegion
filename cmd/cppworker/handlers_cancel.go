@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -76,6 +77,19 @@ func handleCancel(w http.ResponseWriter, r *http.Request) {
 		"cancelled": cancelled,
 		"by":        by,
 		"status":    "cancelled",
+		// R362 (2026-10-31, аудит abort A6): ЧЕСТНАЯ возможность сборки.
+		//
+		// В stub-сборке (-tags llama_stub) per-inference abort-флаг всегда nil: отмена
+		// физически невозможна, generation идёт до n_predict. Но обработчик отвечал
+		// «cancelled: N», и клиент (а вслед за ним балансер и тесты) считал, что Stop
+		// сработал. Теперь supported=false и статус cancel_not_supported — вызывающий
+		// видит разницу между «отменили» и «отменять нечем».
+		"supported": bridge.InferAbortSupported(),
+	}
+	if !bridge.InferAbortSupported() {
+		resp["status"] = "cancel_not_supported"
+		resp["notice"] = "эта сборка воркера без C-bridge (stub): отмена генерации не поддерживается, " +
+			"модель остановится сама по исчерпанию n_predict"
 	}
 	if cancelled == 0 {
 		resp["status"] = "no_active_generation"

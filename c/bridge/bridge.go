@@ -1383,6 +1383,14 @@ func (m *ModelHandle) InferStream(prompt string, params GenerationParams, callba
 // мог ни на что повлиять: клиентский Cancel (Cline/WebUI) не останавливал модель —
 // она продолжала считать токены до n_predict. Теперь флаг создаётся заранее,
 // передаётся в C и вооружается ДО генерации.
+// InferAbortSupported — поддерживает ли ЭТА сборка отмену генерации (R362).
+//
+// Нужен, чтобы не врать снаружи. В stub-сборке (bridge_stub.go) NewInferAbortFlag
+// возвращает nil, то есть отмена физически невозможна — а POST /api/cancel при этом
+// отвечал «cancelled: N» и клиент считал, что нажатие Stop сработало (аудит abort, A6).
+// Теперь обработчик отмены спрашивает эту функцию и честно сообщает supported=false.
+func InferAbortSupported() bool { return true }
+
 func NewInferAbortFlag() unsafe.Pointer {
 	flag := C.bridge_infer_abort_create()
 	if flag == nil {

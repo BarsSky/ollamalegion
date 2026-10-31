@@ -844,6 +844,9 @@ func SetStubEmptyFirstCall(enabled bool) bool { return stubEmptyFirstCall.Swap(e
 // NewInferAbortFlag — R83 (2026-09-29): в stub-режиме отмена не эмулируется,
 // но сигнатура обязана совпадать с non-stub реализацией (bridge.go), иначе
 // cmd/cppworker не соберётся под тегом llama_stub.
+// InferAbortSupported — в stub-сборке отмены НЕТ (флаг всегда nil), см. R362/A6.
+func InferAbortSupported() bool { return false }
+
 func NewInferAbortFlag() unsafe.Pointer { return nil }
 
 // ResetInferAbortFlag — R83 (2026-09-29): сброс делает Go (atomic.StoreInt32), а не

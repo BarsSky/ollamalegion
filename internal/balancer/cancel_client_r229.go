@@ -138,6 +138,21 @@ func cancelStatusR343(results []map[string]interface{}, accepted []string, targe
 			totalCancelled += v
 		}
 	}
+	// R362 (2026-10-31, аудит A6): сборка воркера БЕЗ C-bridge (stub) физически не умеет
+	// отменять генерацию, но раньше отвечала «cancelled: N» — и балансер с клиентом
+	// считали, что Stop сработал. Такой воркер честно сообщает supported=false; верхний
+	// статус обязан это отразить, иначе мы просто перекладываем ложь на другой уровень.
+	notSupported := 0
+	for _, row := range results {
+		if v, ok := row["supported"].(bool); ok && !v {
+			notSupported++
+		}
+	}
+	if notSupported > 0 && totalCancelled == 0 {
+		return "not_supported", "воркер собран без C-bridge (stub): отмена генерации не поддерживается, " +
+			"модель остановится сама по исчерпанию n_predict; сообщение supported=false в results"
+	}
+
 	switch {
 	case totalCancelled > 0:
 		return "cancelled", ""

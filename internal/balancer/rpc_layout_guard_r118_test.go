@@ -229,6 +229,13 @@ func TestR118_2_LayoutPartial_OnlyAliveNodes(t *testing.T) {
 
 // TestR118_2_LayoutRestoredWhenNodeReturns — узел вернулся: следующий проход
 // включает раскладку обратно сам, без действий оператора.
+//
+// R349 (2026-10-31): «следующий проход» теперь ЯВНАЯ граница. Пробы узлов кэшируются
+// на тик (чтобы один проход не открывал донору 3 TCP-подключения), и тик начинается
+// со сброса кэша в EnsureRPCLayoutForAll. Тест зовёт EnsureRPCLayout напрямую, поэтому
+// границу прохода он обозначает сам — p.forgetRPCProbeCache(). Гарантия для оператора
+// не изменилась: узел, вернувшийся между тиками, подхватывается на следующем тике
+// (≤15 с), как и до кэша.
 func TestR118_2_LayoutRestoredWhenNodeReturns(t *testing.T) {
 	p, rec := newLayoutGuardTestProxy(t, types.BackendRoleMain, types.BackendRoleDonor)
 	setReachability(p)
@@ -239,8 +246,9 @@ func TestR118_2_LayoutRestoredWhenNodeReturns(t *testing.T) {
 		t.Fatal("раскладка не выключена при мёртвом узле")
 	}
 
-	// Узел вернулся.
+	// Узел вернулся + начался следующий тик (сброс кэша проб, R349).
 	setReachability(p, testDonorAddr)
+	p.forgetRPCProbeCache()
 	degraded, reason := p.EnsureRPCLayout("main-1")
 	if degraded {
 		t.Fatalf("узел вернулся, но осталась деградация: %s", reason)

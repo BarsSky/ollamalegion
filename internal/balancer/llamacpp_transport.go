@@ -721,6 +721,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// уже ушёл (R51.3/R53.1 safety-net на finish_reason+content или путь
 	// tool_calls), поздний usage-чанк НЕ должен эмитить ВТОРОЙ done:true.
 	priorDoneEmitted := false
+	// R354 (2026-10-31): текущий done-кадр пришёл как ОТМЕНА ПОЛЬЗОВАТЕЛЕМ (кнопка
+	// Stop). Нужен, чтобы не пустить такой кадр через R331-hygiene (та вставила бы
+	// пояснение «ответа нет») и отдать клиенту done_reason=cancelled без error.
+	userCancelledDoneChunkR354 := false
 	// H2 (2026-10-16): флаг «статистика (eval_count/prompt_eval_count/
 	// total_duration) уже ушла клиенту». Ведётся РАЗДЕЛЬНО с priorDoneEmitted:
 	// пока статистика не отправлена, usage-чанк нельзя гасить — иначе
@@ -1109,42 +1113,52 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					}
 					upstreamHadFinishReason = true
 					if c, ok := nativeChunk["error"].(string); ok && c != "" {
-						// R289: запоминаем текст ошибки — по нему отличим «контекст
-						// мал» от обрыва до того, как сработает auto-continue.
-						upstreamErrorText = c
-						logger.Get().Warnw("proxyRequestLlamaCpp[native]: upstream done-chunk carries error",
-							"backend", backendID, "model", modelFromCtx, "error", c)
+						// R354 (2026-10-31): отмена ПОЛЬЗОВАТЕЛЕМ (кнопка Stop) — не сбой
+						// воркера. Такой кадр не идёт в upstreamErrorText (по нему
+						// работают auto-continue и распознавание n_ctx) и не пишется как
+						// Warn: клиенту уйдёт нормальный терминатор с done_reason=cancelled.
+						if isUserCancelDoneChunkR354(c) {
+							userCancelledDoneChunkR354 = true
+							logger.Get().Infow("proxyRequestLlamaCpp[native]: генерация отменена клиентом (R354)",
+								"backend", backendID, "model", modelFromCtx)
+						} else {
+							// R289: запоминаем текст ошибки — по нему отличим «контекст
+							// мал» от обрыва до того, как сработает auto-continue.
+							upstreamErrorText = c
+							logger.Get().Warnw("proxyRequestLlamaCpp[native]: upstream done-chunk carries error",
+								"backend", backendID, "model", modelFromCtx, "error", c)
 
-						// R83 (2026-09-29): n_ctx-ошибка в done-чанке = устаревший кэш
-						// n_ctx в балансере. Запускаем тот же auto-reload, что и для
-						// HTTP 4xx ниже — иначе получается ДЕДЛОК.
-						//
-						// Живой сценарий (лог 2026-09-29): балансер держал в
-						// LastKnownNCtx 128000, а cppworker после рестарта поднял
-						// модель с 32768. Preflight видел «128000 >= required» и
-						// возвращал NoOp (reload не запускался), а cppworker на каждый
-						// запрос отвечал done-чанком «code 2: requested n_ctx=128000
-						// exceeds model's effective n_ctx=32768». Клиент (Cline)
-						// получал ошибку на каждом запросе, и так до следующего
-						// удачного reload.
-						//
-						// cppworker отдаёт это как HTTP 200 + error в финальном чанке,
-						// поэтому ветка `resp.StatusCode >= 400` ниже не срабатывала.
-						//
-						// ВАЖНО: ParseCppWorkerError намеренно возвращает nil для
-						// status < 400, поэтому распознаём n_ctx-ошибку по тексту
-						// самого сообщения («code 2» / «code 3» — те же коды, что
-						// bridge.ErrCodeNCtxNeedsReload / ErrCodePromptTooLong).
-						if p.nctxReload != nil && isNCtxDoneChunkError(c) {
-							reloadModel := modelFromCtx
-							if reloadModel == "" {
-								reloadModel = backendID
+							// R83 (2026-09-29): n_ctx-ошибка в done-чанке = устаревший кэш
+							// n_ctx в балансере. Запускаем тот же auto-reload, что и для
+							// HTTP 4xx ниже — иначе получается ДЕДЛОК.
+							//
+							// Живой сценарий (лог 2026-09-29): балансер держал в
+							// LastKnownNCtx 128000, а cppworker после рестарта поднял
+							// модель с 32768. Preflight видел «128000 >= required» и
+							// возвращал NoOp (reload не запускался), а cppworker на каждый
+							// запрос отвечал done-чанком «code 2: requested n_ctx=128000
+							// exceeds model's effective n_ctx=32768». Клиент (Cline)
+							// получал ошибку на каждом запросе, и так до следующего
+							// удачного reload.
+							//
+							// cppworker отдаёт это как HTTP 200 + error в финальном чанке,
+							// поэтому ветка `resp.StatusCode >= 400` ниже не срабатывала.
+							//
+							// ВАЖНО: ParseCppWorkerError намеренно возвращает nil для
+							// status < 400, поэтому распознаём n_ctx-ошибку по тексту
+							// самого сообщения («code 2» / «code 3» — те же коды, что
+							// bridge.ErrCodeNCtxNeedsReload / ErrCodePromptTooLong).
+							if p.nctxReload != nil && isNCtxDoneChunkError(c) {
+								reloadModel := modelFromCtx
+								if reloadModel == "" {
+									reloadModel = backendID
+								}
+								logger.Get().Infow(i18n.T("balancer.llamacpp_transport.done_chunk_nctx_error_reload_info"),
+									"backend", backendID, "model", reloadModel, "error", c)
+								nctxErr := newNCtxErrorFromDoneChunk(c, backendID)
+								p.handleNCtxReload(r.Context(), w, r, backendID, reloadModel, nctxErr, bodyBuf)
+								return nil
 							}
-							logger.Get().Infow(i18n.T("balancer.llamacpp_transport.done_chunk_nctx_error_reload_info"),
-								"backend", backendID, "model", reloadModel, "error", c)
-							nctxErr := newNCtxErrorFromDoneChunk(c, backendID)
-							p.handleNCtxReload(r.Context(), w, r, backendID, reloadModel, nctxErr, bodyBuf)
-							return nil
 						}
 					}
 					// R65d: агрегируем статистику токенов для /api/v1/stats/tokens.
@@ -1190,7 +1204,18 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// порядок (сначала снять дубль, потом решить про причину/пояснение), но
 			// состояние считается ОДИН раз, поэтому слои не могут разойтись.
 			outLine := trimmed
-			if originalPath == "/api/chat" || originalPath == "/api/generate" {
+			if userCancelledDoneChunkR354 {
+				// R354 (2026-10-31): ОДИН владелец кадра отмены. Правим ТОЛЬКО причину
+				// (done_reason=cancelled из реестра R328, без error): model/created_at/
+				// статистика остаются, клиент по ним закрывает ход и считает токены.
+				//
+				// Через finalizeNativeDoneFrameR331 такой кадр НЕ пускаем: тот видит
+				// пустой response и вставил бы пояснение «ответа нет» (регрессия R321),
+				// хотя клиент сам остановил генерацию.
+				if fixed, changed := normalizeCancelDoneChunkR354(trimmed); changed {
+					outLine = fixed
+				}
+			} else if originalPath == "/api/chat" || originalPath == "/api/generate" {
 				fixed, changed := finalizeNativeDoneFrameR331(trimmed, streamedBeforeThisLine,
 					nativeReasoningChars, nativeDoneContentStrippingEnabled())
 				if changed {

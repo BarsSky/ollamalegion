@@ -391,6 +391,14 @@ var messagesBalancer = map[string]map[Lang]string{
 		RU: "EnsureRPCNodeServing: узел донора недоступен с балансера",
 		EN: "EnsureRPCNodeServing: the donor node is unreachable from the balancer",
 	},
+	// R350: воркер донора сообщил адрес, который не отвечает, а host записи бэкенда
+	// отвечает. Живой случай: донор переехал (100.64.0.7), а CPPWORKER_RPC_EXTERNAL_ADDR
+	// на нём остался старый (192.168.13.34) — мастер получал мёртвый адрес и грузил
+	// модель локально, хотя раскладка была включена.
+	"balancer.rpc_layout_node.reported_addr_dead_using_host": {
+		RU: "адрес узла из отчёта воркера не отвечает — использую host записи бэкенда",
+		EN: "the node address reported by the worker does not answer — using the backend host",
+	},
 	"balancer.rpc_layout_node.offline_reason": {
 		RU: "узел %s не в сети (балансер помечает запись недоступной): " +
 			"приказ поднять узел будет отправлен, когда узел вернётся",

@@ -382,15 +382,20 @@ func (p *Proxy) EnsureRPCNodeServing(backendID string) (bool, string) {
 		return false, ""
 	}
 	role := strings.TrimSpace(b.Role)
-	addr := p.rpcNodeAddr(b)
 	wantPort := p.rpcNodePort()
 	// R171 (2026-10-17): если воркер сообщил свой адрес узла (внешний контейнер
 	// с CPPWORKER_RPC_EXTERNAL_ADDR), решение и проверка идут по НЕМУ. Иначе
 	// балансер проверял host:50052, где узла нет, и писал reachable=false при
 	// работающем узле, а мастер получал неверный список rpcServers.
-	if repAddr := p.reportedRPCNodeAddr(b.ID); repAddr != "" {
-		addr = repAddr
-	}
+	//
+	// R350 (2026-10-31): сообщённый адрес теперь ПРОВЕРЯЕТСЯ. Живой случай: донор
+	// переехал (host записи исправлен на 100.64.0.7), а на нём остался старый
+	// CPPWORKER_RPC_EXTERNAL_ADDR=192.168.13.34. По R171 отчёт воркера главнее
+	// догадки балансера, поэтому мастер получал мёртвый адрес, guard писал
+	// «раскладка работает не в полном составе», и модель грузилась локально при
+	// rpc_enabled=true. Теперь мёртвый сообщённый адрес заменяется host'ом записи
+	// бэкенда — с предупреждением в лог (молча подменять нельзя).
+	addr, _ := p.rpcNodeAddrResolved(b, rpcNodeServeDialTimeout)
 	if repPort := p.reportedRPCNodePort(b.ID); repPort > 0 {
 		wantPort = repPort
 	}

@@ -129,7 +129,9 @@ func (p *Proxy) layoutDonorServers() []string {
 		// R171 (2026-10-17): у ВНЕШНЕГО узла порт не rpcNodePort, а тот, что
 		// сообщил воркер (CPPWORKER_RPC_EXTERNAL_ADDR). Раньше мастер получал
 		// host:50052 и стучался в пустоту (или в Docker-прокси без процесса).
-		if addr := p.reportedRPCNodeAddr(b.ID); addr != "" {
+		// R350 (2026-10-31): но сообщённый адрес ПРОВЕРЯЕТСЯ — если он мёртв, а
+		// host записи бэкенда отвечает, берём host (см. rpcNodeAddrResolved).
+		if addr, _ := p.rpcNodeAddrResolved(&b, rpcNodeServeDialTimeout); addr != "" {
 			out = append(out, addr)
 			continue
 		}
@@ -169,6 +171,58 @@ func (p *Proxy) reportedRPCNodePort(backendID string) int {
 		return lm.RPCNode.Port
 	}
 	return 0
+}
+
+// rpcNodeAddrResolved — адрес узла раскладки ЭТОГО бэкенда с проверкой, что он
+// реально отвечает, и признаком источника (R350).
+//
+// ЖИВОЙ ДЕФЕКТ (2026-10-31, двухузловой стенд). Донор переехал: запись бэкенда
+// исправлена (`host: 100.64.0.7`), но САМ воркер донора продолжал сообщать
+// `rpc_server.addr = 192.168.13.34:50052` (внешний адрес задан
+// CPPWORKER_RPC_EXTERNAL_ADDR). По R171 отчёт воркера главнее догадки балансера,
+// поэтому мастер получал МЁРТВЫЙ адрес, guard писал «раскладка работает не в
+// полном составе», и загрузка шла локально (42/42 на CUDA0) при rpc_enabled=true.
+// Снаружи это выглядело как «донор доступен, а раскладка не поднимается».
+//
+// ПРАВИЛО. Сообщённый адрес по-прежнему приоритетен (только он знает про
+// нестандартный порт внешнего узла), но если он НЕ отвечает, а host:port записи
+// бэкенда отвечает — берём host:port. Молча не подменяем: расхождение пишется в
+// лог, иначе оператор не узнает, что воркер донора врёт про свой адрес.
+//
+// Возвращает addr ("" = адреса нет) и source: "reported" | "host" |
+// "reported_dead_host_ok".
+func (p *Proxy) rpcNodeAddrResolved(b *types.Backend, timeout time.Duration) (addr, source string) {
+	if p == nil || b == nil {
+		return "", ""
+	}
+	host := strings.TrimSpace(b.Host)
+	hostAddr := ""
+	if host != "" {
+		hostAddr = fmt.Sprintf("%s:%d", host, p.rpcNodePort())
+	}
+	reported := p.reportedRPCNodeAddr(b.ID)
+
+	switch {
+	case reported == "" && hostAddr == "":
+		return "", ""
+	case reported == "":
+		return hostAddr, "host"
+	case hostAddr == "" || reported == hostAddr:
+		return reported, "reported"
+	}
+
+	probe := p.rpcProbeFunc()
+	if probe(reported, timeout) {
+		return reported, "reported"
+	}
+	if probe(hostAddr, timeout) {
+		logger.Get().Warnw(i18n.T("balancer.rpc_layout_node.reported_addr_dead_using_host"),
+			"backend", b.ID, "reported", reported, "used", hostAddr)
+		return hostAddr, "reported_dead_host_ok"
+	}
+	// Ни тот, ни другой не отвечает: остаёмся на сообщённом адресе (его нельзя
+	// молча терять — именно он называет внешний порт), пусть guard деградирует.
+	return reported, "reported"
 }
 
 // cppworkerRPCLayout — что cppworker главного сообщает о раскладке (метрики

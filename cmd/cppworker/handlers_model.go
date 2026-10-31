@@ -409,6 +409,27 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// через C-bridge (полная cancellable load требует C-side fix — см. PLAN.md §3.1).
 	loadDone := make(chan error, 1)
 	go func() {
+		// R365 (2026-10-31): ЗАЯВКА ОСВОБОЖДАЕТСЯ ЗДЕСЬ, а не в select.
+		//
+		// ЖИВОЙ ДЕФЕКТ (этот же раунд, сразу после R364). Select ниже может
+		// уйти по таймауту (waitTimeoutMs по умолчанию 60 с, а холодная
+		// загрузка gemma-4 — 60–100 с), и тогда `backend.UnlockLoad` в ветке
+		// успеха не выполнялся НИКОГДА: заявка оставалась в b.loading, хотя
+		// модель уже загружена. Следующая загрузка того же имени получала
+		// «model is already being loaded by another request; waiting», ждала
+		// предел ожидания (90 с) и возвращала 200 с ПАРАМЕТРАМИ ПРЕДЫДУЩЕЙ
+		// загрузки — то есть просьба «перезагрузи с другими параметрами»
+		// молча не выполнялась.
+		//
+		// Замер: `POST /api/models/load?wait=true` (таймаут 60 с) → 202 на 61-й
+		// секунде, «model loaded» в логе на 8-й секунде после этого, а
+		// следующая загрузка через 12 с всё ещё видела заявку и ждала 90001 мс.
+		//
+		// Ровно это уже было исправлено в handleLoadWithParams (Round 52), но
+		// legacy-путь остался с прежним поведением. Теперь одинаково: defer в
+		// горутине гарантирует освобождение, когда LoadModelWithOpts вернётся
+		// (успех или ошибка), а ветка успеха ниже UnlockLoad не зовёт.
+		defer backend.UnlockLoad(modelName)
 		// R83-fix (2026-09-29): контекст загрузки отвязан от HTTP-запроса.
 		// См. loadContextForSharedLoad (lazyload.go) и комментарий в
 		// handleLoadWithParams — уход клиента не должен убивать общую загрузку.
@@ -420,7 +441,7 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	defer timeout.Stop()
 	select {
 	case loadErr := <-loadDone:
-		backend.UnlockLoad(modelName)
+		// Заявку уже снял defer в горутине (R365) — здесь не повторяем.
 		if loadErr != nil {
 			// Round 32 #8 (2026-08-10): dedicated dedup-by-path error → success
 			// с status=already_loaded. Без этого dedup handler возвращал 500

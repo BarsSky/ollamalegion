@@ -139,7 +139,7 @@ func readProfileForLoadR364(modelName, modelPath string) *profileForLoadR364 {
 // (её легко увидеть): он заполняет только пустые поля, а «0 = выключено» для
 // него неотличимо от «не задано», поэтому профильный flashAttn=false там не
 // применяется вовсе. Это отдельный дефект старых путей
-// (load-with-params/reload/lazy), записанный как R365 — R364 его не трогает,
+// (load-with-params/reload/lazy), записанный как R366 — R364 его не трогает,
 // чтобы не менять поведение трёх путей этим же коммитом.
 func profileFlashAttnToIntR364(p *bool) *int {
 	if p == nil {

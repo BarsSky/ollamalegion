@@ -633,6 +633,10 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// короткий ответ без объяснения причины. Заголовки обязаны быть выставлены
 	// строго до WriteHeader — после него они уже не уйдут.
 	forwardUpstreamWarningHeaders(w, resp)
+	// R360 (2026-10-31): id генерации на воркере. По нему адресная отмена
+	// (cancelUpstreamGeneration): без него отмена по модели гасит ВСЕ генерации этой
+	// модели на узле, включая чужие (аудит abort, A5).
+	upstreamRequestIDR360 := resp.Header.Get("X-Request-Id")
 	// R332.3 (2026-10-30, поймано живой матрицей): нативный стрим обязан
 	// объявлять, КТО обслужил запрос.
 	//
@@ -867,12 +871,12 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// R184: закрытие СВОЕГО чтения не останавливает воркер - он продолжает
 			// генерировать и держит единственный слот (живой замер: следующий клиент
 			// ждал 100 429 мс). Отмену надо ПРИСЛАТЬ: POST /api/cancel.
-			p.cancelUpstreamGeneration(backendID, modelFromCtx, "client_cancel")
+			p.cancelUpstreamGeneration(backendID, modelFromCtx, upstreamRequestIDR360, "client_cancel")
 		case <-reqCtx.Done():
 			// R60.58: streamTimeout сработал ИЛИ cancel — в обоих случаях
 			// закрываем upstream чтобы разблокировать scanner.Scan().
 			// R184: таймаут тоже обязан освободить слот на воркере.
-			p.cancelUpstreamGeneration(backendID, modelFromCtx, "stream_timeout")
+			p.cancelUpstreamGeneration(backendID, modelFromCtx, upstreamRequestIDR360, "stream_timeout")
 			logger.Get().Warnw("proxyRequestLlamaCpp: streamTimeout fired, aborting stream",
 				"backend", backendID, "model", modelFromCtx,
 				"context_error", reqCtx.Err(),
@@ -915,7 +919,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			"bytes_forwarded", bytesForwarded)
 		// R184: молчащий воркер всё равно держит слот — отменяем генерацию,
 		// иначе следующий клиент получит «busy».
-		p.cancelUpstreamGeneration(backendID, modelFromCtx, "upstream_stall")
+		p.cancelUpstreamGeneration(backendID, modelFromCtx, upstreamRequestIDR360, "upstream_stall")
 	})
 	stallWatch.Start()
 	defer stallWatch.Stop()

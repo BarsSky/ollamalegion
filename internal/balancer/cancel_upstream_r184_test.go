@@ -65,7 +65,7 @@ func TestR184_CancelUpstream_SendsModelAndToken(t *testing.T) {
 
 	p := &Proxy{}
 	fakeBackendR184(t, p, "llama_test", srv.URL, "tok-184")
-	p.cancelUpstreamGeneration("llama_test", "gemma-4-E4B-it-Q4_K_M", "client_cancel")
+	p.cancelUpstreamGeneration("llama_test", "gemma-4-E4B-it-Q4_K_M", "", "client_cancel")
 
 	select {
 	case c := <-got:
@@ -94,7 +94,7 @@ func TestR184_CancelUpstream_DoesNotBlockOnDeadBackend(t *testing.T) {
 	fakeBackendR184(t, p, "dead", addr, "tok")
 
 	start := time.Now()
-	p.cancelUpstreamGeneration("dead", "m", "client_cancel")
+	p.cancelUpstreamGeneration("dead", "m", "", "client_cancel")
 	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
 		t.Errorf("отмена задержала вызывающий код на %v — вызов обязан быть асинхронным", elapsed)
 	}
@@ -104,7 +104,7 @@ func TestR184_CancelUpstream_DoesNotBlockOnDeadBackend(t *testing.T) {
 // TestR184_CancelUpstream_NilSafe — nil-получатель и пустой ID не паникуют.
 func TestR184_CancelUpstream_NilSafe(t *testing.T) {
 	var p *Proxy
-	p.cancelUpstreamGeneration("x", "m", "test")
-	(&Proxy{}).cancelUpstreamGeneration("", "m", "test")
-	(&Proxy{}).cancelUpstreamGeneration("unknown", "m", "test")
+	p.cancelUpstreamGeneration("x", "m", "", "test")
+	(&Proxy{}).cancelUpstreamGeneration("", "m", "", "test")
+	(&Proxy{}).cancelUpstreamGeneration("unknown", "m", "", "test")
 }

@@ -29,11 +29,38 @@ import (
 // вызов: если воркер занят, ответа может не быть, но сам приказ уже в сокете.
 const cancelUpstreamTimeout = 3 * time.Second
 
-// cancelUpstreamGeneration — попросить воркер прекратить генерацию модели.
+// cancelUpstreamPayloadR360 — тело приказа об отмене.
 //
-// Причина (reason) попадает в лог: «client_cancel» и «timeout» — разные события,
+// R360 (2026-10-31, аудит abort A5). ДО ЭТОГО уходило только {"model": ...}, а воркер
+// на такой приказ вызывает CancelByModel("", model) — то есть гасит ВСЕ генерации этой
+// модели на узле, включая ЧУЖИЕ. Живой сценарий: два клиента работают с одной моделью,
+// у одного отвалился браузер — и второму обрывает ответ. Клиент видит «сервер сам
+// закрыл поток» и повторяет запрос, нагрузка растёт.
+//
+// Теперь, когда балансер знает upstream request_id (воркер возвращает его заголовком
+// X-Request-Id), отмена адресная: {"request_id": ...}, гасится ровно одна генерация.
+// Если id не известен (старый воркер, нестандартный путь) — поведение прежнее, но это
+// видно в логе по полю precise=false, а не молчаливая «тихая» отмена всех.
+func cancelUpstreamPayloadR360(model, requestID string) (map[string]interface{}, bool) {
+	payload := map[string]interface{}{}
+	if requestID != "" {
+		payload["request_id"] = requestID
+		return payload, true
+	}
+	if model != "" {
+		payload["model"] = model
+	}
+	return payload, false
+}
+
+// cancelUpstreamGeneration — попросить воркер прекратить генерацию.
+//
+// requestID — id, под которым генерация зарегистрирована на воркере (из заголовка
+// X-Request-Id ответа). Пусто = точной отмены не будет, гасим по модели (R184-прежнее).
+//
+// Причина (reason) попадает в лог: «client_cancel» и «stream_timeout» — разные события,
 // и по журналу должно быть видно, почему генерация прервана.
-func (p *Proxy) cancelUpstreamGeneration(backendID, model, reason string) {
+func (p *Proxy) cancelUpstreamGeneration(backendID, model, requestID, reason string) {
 	if p == nil || backendID == "" {
 		return
 	}
@@ -45,9 +72,14 @@ func (p *Proxy) cancelUpstreamGeneration(backendID, model, reason string) {
 	if b := p.GetBackend(backendID); b != nil {
 		token = b.CppWorkerApiToken
 	}
-	payload := map[string]interface{}{}
-	if model != "" {
-		payload["model"] = model
+	payload, precise := cancelUpstreamPayloadR360(model, requestID)
+	if !precise && logger.Get() != nil {
+		// Не глушим молча: «отменили все генерации модели» — это побочный эффект,
+		// который оператор обязан видеть, а не догадываться о нём по поведению клиентов.
+		logger.Get().Warnw("cancel upstream: request_id неизвестен — отмена по модели",
+			"backend", backendID, "model", model, "reason", reason,
+			"hint", "точная отмена невозможна: воркер не вернул X-Request-Id; "+
+				"будут отменены ВСЕ генерации этой модели на узле")
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -77,7 +109,8 @@ func (p *Proxy) cancelUpstreamGeneration(backendID, model, reason string) {
 		defer func() { _ = resp.Body.Close() }()
 		if logger.Get() != nil {
 			logger.Get().Infow(i18n.T("balancer.cancel_upstream.cancelled_info"),
-				"backend", backendID, "model", model, "reason", reason, "status", resp.StatusCode)
+				"backend", backendID, "model", model, "request_id", requestID,
+				"precise", precise, "reason", reason, "status", resp.StatusCode)
 		}
 	}()
 }

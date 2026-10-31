@@ -141,6 +141,12 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 ) error {
 	defer resp.Body.Close()
 
+	// R360 (2026-10-31, аудит abort A5): id генерации на воркере. Без него отмена уходила
+	// как {"model": ...}, и воркер гасил ВСЕ генерации этой модели на узле — включая
+	// чужие. На /v1 путь особенно заметен: два клиента на одной модели, у одного упал
+	// браузер — второму обрывает ответ.
+	hijackUpstreamRequestIDR360 := resp.Header.Get("X-Request-Id")
+
 	// 0. Non-2xx handling — same as original (no streaming, just return error).
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, readErr := io.ReadAll(resp.Body)
@@ -469,7 +475,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			// Воркер, игнорирующий закрытие сокета (долгий prefill, класс R184),
 			// продолжает генерацию после ухода клиента и жжёт GPU впустую.
 			// Шлём тот же приказ, что и NDJSON-путь, с причиной client_cancel.
-			p.cancelUpstreamGeneration(backendID, hijackStreamModel, "client_cancel")
+			p.cancelUpstreamGeneration(backendID, hijackStreamModel, hijackUpstreamRequestIDR360, "client_cancel")
 			return nil
 
 		case <-time.After(heartbeatInterval):
@@ -483,7 +489,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				// (живой замер в тесте: 2.5 мс против десятков секунд при опоре
 				// только на чтение), поэтому отмену шлём здесь же, иначе воркер
 				// продолжает генерацию после ухода клиента.
-				p.cancelUpstreamGeneration(backendID, hijackStreamModel, "client_cancel")
+				p.cancelUpstreamGeneration(backendID, hijackStreamModel, hijackUpstreamRequestIDR360, "client_cancel")
 				return nil
 			}
 			// R298: сторож зависания здесь больше не проверяется — он живёт в
@@ -505,7 +511,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			ensureChunkedSSEDone(bufrw, lastSSELine)
 			// R184/R298: молчащий воркер продолжает генерировать и держит слот —
 			// одного закрытия нашего чтения для этого мало, отмену надо ПРИСЛАТЬ.
-			p.cancelUpstreamGeneration(backendID, hijackStreamModel, "upstream_stall")
+			p.cancelUpstreamGeneration(backendID, hijackStreamModel, hijackUpstreamRequestIDR360, "upstream_stall")
 			return nil
 		case res := <-dataCh:
 			// R297/R298: данные пришли — сторож зависания сбрасывается.
@@ -602,7 +608,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				// R344: клиент ушёл — это ГЛАВНЫЙ путь обнаружения на /v1 (ошибка
 				// записи кадра, а не чтение сокета). Без явного приказа воркер
 				// продолжает генерацию (класс R184) и жжёт GPU после ухода клиента.
-				p.cancelUpstreamGeneration(backendID, hijackStreamModel, "client_cancel")
+				p.cancelUpstreamGeneration(backendID, hijackStreamModel, hijackUpstreamRequestIDR360, "client_cancel")
 				return nil
 			}
 			// R252: помним последний отданный кадр — по нему решаем, нужен ли

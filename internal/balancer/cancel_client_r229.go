@@ -88,24 +88,72 @@ func (p *Proxy) handleClientCancel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	status := "cancelled"
-	if len(accepted) == 0 {
-		status = "no_active_generation"
-	}
+	// R343 (2026-10-30, аудит docs/plans/2026-10-30-abort-and-metrics-audit.md):
+	// СТАТУС СЧИТАЕТСЯ ПО ФАКТУ ОТМЕНЫ, А НЕ ПО HTTP-КОДУ.
+	//
+	// Живой дефект: успехом считался любой 2xx, а воркер на пустом трекере
+	// отвечает 200 + cancelled:0. Верхний status печатал "cancelled" и тогда,
+	// когда генерация продолжалась. Плюс имя модели сверялось на двух концах
+	// по-разному (балансер — мягко, воркер — точно), поэтому "доставлено" не
+	// означало "отменено".
+	status, hint := cancelStatusR343(results, accepted, len(targets))
 	if logger.Get() != nil {
 		logger.Get().Infow(i18n.T("balancer.cancel_client.broadcast_info"),
 			"model", req.Model, "request_id", req.RequestID, "user_id", req.UserID,
 			"targets", targets, "accepted", accepted, "status", status)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	responseBody := map[string]interface{}{
 		"status":   status,
 		"model":    req.Model,
 		"backends": accepted,
 		// results — детали по каждому воркеру: сколько отменено и статус. Клиенту
 		// достаточно "cancelled", оператору нужен ответ «почему не остановилось».
 		"results": results,
-	})
+	}
+	if hint != "" {
+		responseBody["hint"] = hint
+	}
+	writeJSON(w, http.StatusOK, responseBody)
+}
+
+// cancelStatusR343 — честный статус отмены по фактическим результатам воркеров.
+//
+// Возвращает (status, hint):
+//   - "cancelled"          — хотя бы одна генерация реально отменена;
+//   - "not_cancelled"      — воркеры ответили, но не отменили ничего (нет активной
+//     генерации либо имя модели не совпало точно) — с подсказкой, что проверить;
+//   - "no_targets"         — отменять было некому (нет healthy llama.cpp-бэкендов);
+//   - "unreachable"        — цели были, но ни один воркер не принял приказ.
+//
+// Считаем по сумме cancelled в ответах воркеров: HTTP 200 + cancelled:0 — это
+// НЕ отмена (живой дефект, ради которого функция появилась).
+func cancelStatusR343(results []map[string]interface{}, accepted []string, targetCount int) (status, hint string) {
+	totalCancelled := 0
+	for _, row := range results {
+		switch v := row["cancelled"].(type) {
+		case float64:
+			totalCancelled += int(v)
+		case int:
+			totalCancelled += v
+		}
+	}
+	switch {
+	case totalCancelled > 0:
+		return "cancelled", ""
+	case targetCount == 0:
+		// ВАЖНО: значение "no_active_generation" оставлено прежним — его уже
+		// проверяет TestR229_ClientCancelNoBackendsIsNotTimeout и на него могут
+		// смотреть клиенты. Менялось только то, что раньше ВРАЛО ("cancelled"
+		// при cancelled:0), а не словарь статусов.
+		return "no_active_generation", "на кластере нет доступных llama.cpp-бэкендов — отменять некому"
+	case len(accepted) == 0:
+		return "unreachable", "ни один воркер не принял приказ об отмене (сеть/токен/адрес); смотрите results[].ok"
+	default:
+		return "not_cancelled", "воркеры приняли приказ, но не отменили ни одной генерации: " +
+			"либо активных генераций нет, либо имя модели не совпало с именем загруженной модели " +
+			"(балансер сверяет мягко, воркер — точно)"
+	}
 }
 
 // cancelTargets — кого просить прекратить генерацию.

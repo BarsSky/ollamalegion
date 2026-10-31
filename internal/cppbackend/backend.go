@@ -2953,7 +2953,7 @@ func (b *Backend) Generate(modelName string, prompt string, params bridge.Genera
 		inst.mu.Unlock()
 		if b.metrics != nil {
 			duration := time.Since(start)
-			b.metrics.RecordRequest(modelName, tokens, duration, !isBackendFailure(inferErr))
+			b.metrics.RecordRequestOutcome(modelName, tokens, duration, metricsOutcomeR358(inferErr))
 		}
 		inst.lastUsedAt.Store(time.Now())
 	}()
@@ -3120,7 +3120,7 @@ func (b *Backend) GenerateStreamWithAbort(modelName string, prompt string, param
 		inst.syncQueryCountersLocked()
 		inst.mu.Unlock()
 		if b.metrics != nil {
-			b.metrics.RecordRequest(modelName, generated, time.Since(start), !isBackendFailure(streamErr))
+			b.metrics.RecordRequestOutcome(modelName, generated, time.Since(start), metricsOutcomeR358(streamErr))
 		}
 		inst.lastUsedAt.Store(time.Now())
 	}()
@@ -3244,7 +3244,7 @@ func (b *Backend) batchedInferStream(inst *modelInstance, modelName string, prom
 	defer func() {
 		inst.decQueries()
 		if b.metrics != nil {
-			b.metrics.RecordRequest(modelName, generated, time.Since(start), !isBackendFailure(opErr))
+			b.metrics.RecordRequestOutcome(modelName, generated, time.Since(start), metricsOutcomeR358(opErr))
 		}
 		inst.lastUsedAt.Store(time.Now())
 	}()
@@ -3659,6 +3659,27 @@ func isBackendFailure(err error) bool {
 		return false
 	}
 	return !errors.Is(err, bridge.ErrAborted)
+}
+
+// metricsOutcomeR358 — исход генерации для метрик: успех / отказ / отмена.
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. До R358 у метрики было два значения (success/error), и
+// отмена приклеивалась к успеху: isBackendFailure() исключает bridge.ErrAborted из
+// ОШИБОК, но никуда не записывает саму отмену. В итоге /metrics и
+// /api/infer/metrics не показывали отмен вообще (аудит abort, A8), хотя кнопка Stop
+// и обрыв клиента — самые частые причины незавершённой генерации.
+//
+// Три исхода важны оператору по-разному: успех — «всё работает»; ошибка — «бэкенд
+// отказывает» (нужен разбор); отмена — «клиент не дождался» (вопрос к скорости или
+// к поведению клиента, а не к доступности модели).
+func metricsOutcomeR358(err error) Outcome {
+	if err == nil {
+		return OutcomeSuccess
+	}
+	if errors.Is(err, bridge.ErrAborted) {
+		return OutcomeCancelled
+	}
+	return OutcomeError
 }
 
 // approximateTokens — оценка количества токенов для текста.

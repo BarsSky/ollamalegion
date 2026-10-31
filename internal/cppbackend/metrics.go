@@ -16,6 +16,17 @@ type Metrics struct {
 	TotalErrors        atomic.Int64 `json:"totalErrors"`
 	ActiveRequests     atomic.Int64 `json:"activeRequests"`
 
+	// R358 (2026-10-31): ОТМЕНЁННЫЕ генерации — отдельный счётчик.
+	//
+	// ЗАЧЕМ. До этого отмена не считалась нигде: isBackendFailure() исключает
+	// bridge.ErrAborted, поэтому генерация, остановленная клиентом (кнопка Stop,
+	// обрыв, отмена балансером), попадала в метрики как УСПЕХ — TotalRequests +1,
+	// TotalErrors +0. В итоге /api/infer/metrics и /metrics показывали «всё хорошо»
+	// даже когда половина запросов обрывалась клиентом, и оператор не мог отличить
+	// «модель медленная, клиент не дождался» от «модель отвечает нормально»
+	// (аудит abort, пункт A8).
+	TotalCancelled atomic.Int64 `json:"totalCancelled"`
+
 	// Счётчики по моделям
 	ModelRequests      sync.Map `json:"-"` // map[string]*ModelMetrics
 
@@ -61,6 +72,11 @@ type ModelMetrics struct {
 	FirstLoadedAt time.Time    `json:"firstLoadedAt"`
 	LastUsedAt    atomic.Value `json:"-"` // time.Time
 
+	// R358: отмены по этой модели (клиент нажал Stop / отвалился / балансер отменил).
+	// Отдельно от Errors: отмена — не отказ бэкенда, и смешивать их значило бы
+	// показывать оператору «ошибки модели» там, где модель отработала штатно.
+	Cancelled atomic.Int64 `json:"cancelled"`
+
 	// Round 18 P1.4 (2026-08-04): per-model ring buffer последних 256 duration_ms.
 	// Нужен для p50/p95/p99 latency percentiles (нужно в /api/infer/metrics).
 	// Сэмплов сортируются под lock при ComputePercentiles — O(N log N) на сэмпл
@@ -80,12 +96,58 @@ func NewMetrics() *Metrics {
 	}
 }
 
-// RecordRequest фиксирует запрос
+// Outcome — исход генерации для метрик (R358).
+//
+// Зачем отдельный тип, а не bool success: до R358 у исхода было два значения, и отмена
+// (bridge.ErrAborted) приклеивалась к успеху, потому что isBackendFailure() исключает её
+// из ОШИБОК. Из-за этого /metrics и /api/infer/metrics не показывали отмен вообще, хотя
+// клиентская кнопка Stop — самая частая причина незавершённой генерации.
+type Outcome int
+
+const (
+	// OutcomeSuccess — генерация дошла до конца и ответ отдан.
+	OutcomeSuccess Outcome = iota
+	// OutcomeError — отказ бэкенда (нода недоступна, n_ctx, внутренняя ошибка).
+	OutcomeError
+	// OutcomeCancelled — генерацию прервал клиент (Stop, обрыв, отмена балансером).
+	OutcomeCancelled
+)
+
+// String — для JSON и логов.
+func (o Outcome) String() string {
+	switch o {
+	case OutcomeError:
+		return "error"
+	case OutcomeCancelled:
+		return "cancelled"
+	default:
+		return "success"
+	}
+}
+
+// RecordRequest фиксирует запрос (совместимый вход: success=true → OutcomeSuccess).
 func (m *Metrics) RecordRequest(modelName string, tokens int, duration time.Duration, success bool) {
+	if success {
+		m.RecordRequestOutcome(modelName, tokens, duration, OutcomeSuccess)
+		return
+	}
+	m.RecordRequestOutcome(modelName, tokens, duration, OutcomeError)
+}
+
+// RecordRequestOutcome фиксирует запрос с ЯВНЫМ исходом (R358).
+//
+// Отмена считается отдельным счётчиком (TotalCancelled/Cancelled) и не попадает ни в
+// успехи, ни в ошибки: это не отказ бэкенда, но и не нормальный ответ. В percentiles
+// отмена участвует (duration > 0): оператору важно видеть, за сколько клиент успел
+// получить то, что получил, прежде чем нажать Stop.
+func (m *Metrics) RecordRequestOutcome(modelName string, tokens int, duration time.Duration, outcome Outcome) {
 	m.TotalRequests.Add(1)
 	m.TotalTokens.Add(int64(tokens))
-	if !success {
+	switch outcome {
+	case OutcomeError:
 		m.TotalErrors.Add(1)
+	case OutcomeCancelled:
+		m.TotalCancelled.Add(1)
 	}
 
 	// Обновляем метрики модели
@@ -93,8 +155,11 @@ func (m *Metrics) RecordRequest(modelName string, tokens int, duration time.Dura
 	modelMetrics.Requests.Add(1)
 	modelMetrics.Tokens.Add(int64(tokens))
 	modelMetrics.TotalDuration.Add(duration.Milliseconds())
-	if !success {
+	switch outcome {
+	case OutcomeError:
 		modelMetrics.Errors.Add(1)
+	case OutcomeCancelled:
+		modelMetrics.Cancelled.Add(1)
 	}
 	modelMetrics.LastUsedAt.Store(time.Now())
 
@@ -247,6 +312,7 @@ func (m *Metrics) GetModelMetricsSnapshot() map[string]ModelMetricsSnapshotJSON 
 			Name:        name,
 			Requests:    requests,
 			Errors:      errors,
+			Cancelled:   mm.Cancelled.Load(),
 			ErrorRate:   errorRate,
 			Tokens:      mm.Tokens.Load(),
 			AvgMs:       avgMs,
@@ -265,6 +331,8 @@ type ModelMetricsSnapshotJSON struct {
 	Name       string  `json:"name"`
 	Requests   int64   `json:"requests"`
 	Errors     int64   `json:"errors"`
+	// R358: отмены по модели — отдельно от ошибок (см. Outcome).
+	Cancelled  int64   `json:"cancelled"`
 	ErrorRate  float64 `json:"error_rate"`
 	Tokens     int64   `json:"tokens"`
 	AvgMs      int64   `json:"avg_ms"`

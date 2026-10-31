@@ -58,16 +58,21 @@ func handleInferMetrics(w http.ResponseWriter, r *http.Request) {
 	totalRequests := m.TotalRequests.Load()
 	totalErrors := m.TotalErrors.Load()
 	totalTokens := m.TotalTokens.Load()
-	var errorRate float64
+	// R358: отмены — отдельный счётчик, не приклеенный ни к успехам, ни к ошибкам.
+	totalCancelled := m.TotalCancelled.Load()
+	var errorRate, cancelRate float64
 	if totalRequests > 0 {
 		errorRate = float64(totalErrors) / float64(totalRequests)
+		cancelRate = float64(totalCancelled) / float64(totalRequests)
 	}
 
 	totals := map[string]interface{}{
 		"requests":              totalRequests,
 		"errors":                totalErrors,
 		"tokens":                totalTokens,
+		"cancelled":             totalCancelled,
 		"error_rate":            errorRate,
+		"cancel_rate":           cancelRate,
 		"active_requests":       m.ActiveRequests.Load(),
 		"active_models":         m.ActiveModels.Load(),
 		"models_loaded_total":   m.TotalModelsLoaded.Load(),
@@ -175,6 +180,8 @@ func handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {
 	// Counters
 	requestsSamples := make([]promSample, 0, len(modelNames))
 	errorsSamples := make([]promSample, 0, len(modelNames))
+	// R358: отмены по моделям — отдельная серия, иначе Stop клиента невидим в Grafana.
+	cancelledSamples := make([]promSample, 0, len(modelNames))
 	tokensSamples := make([]promSample, 0, len(modelNames))
 	durationSummarySamples := make([]promSample, 0, len(modelNames)*3)
 	durationSumSamples := make([]promSample, 0, len(modelNames))
@@ -185,6 +192,7 @@ func handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {
 		label := fmt.Sprintf(`{model="%s"}`, name)
 		requestsSamples = append(requestsSamples, promSample{Labels: label, Value: m.Requests})
 		errorsSamples = append(errorsSamples, promSample{Labels: label, Value: m.Errors})
+		cancelledSamples = append(cancelledSamples, promSample{Labels: label, Value: m.Cancelled})
 		tokensSamples = append(tokensSamples, promSample{Labels: label, Value: m.Tokens})
 		durationSummarySamples = append(durationSummarySamples,
 			promSample{Labels: fmt.Sprintf(`{model="%s",quantile="0.5"}`, name), Value: m.P50Ms},
@@ -201,6 +209,7 @@ func handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	writeProm("cppworker_requests_total", "Total inference requests", "counter", requestsSamples)
 	writeProm("cppworker_errors_total", "Total inference errors", "counter", errorsSamples)
+	writeProm("cppworker_generation_cancelled_total", "Total generations cancelled by client (Stop/abort), not counted as errors", "counter", cancelledSamples)
 	writeProm("cppworker_tokens_total", "Total tokens generated", "counter", tokensSamples)
 	writeProm("cppworker_request_duration_ms", "Request duration in ms (p50/p95/p99 over last 256 samples)", "summary", durationSummarySamples)
 	writeProm("cppworker_request_duration_ms_sum", "Request duration sum in ms", "counter", durationSumSamples)
@@ -221,6 +230,9 @@ func handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {
 		{"cppworker_gpu_memory_used_mb", "GPU memory used in MB", m.GPUMemoryUsedMB.Load()},
 		{"cppworker_gpu_memory_total_mb", "GPU memory total in MB", m.GPUMemoryTotalMB.Load()},
 		{"cppworker_token_latency_ms", "Average per-token latency in ms", m.TokenLatencyMs.Load()},
+		// R358: общий счётчик отмен (по всем моделям) — чтобы «клиент не дождался»
+		// было видно на дашборде без суммирования по моделям.
+		{"cppworker_cancelled_total", "Total generations cancelled by client (all models)", m.TotalCancelled.Load()},
 	}
 	for _, g := range gauges {
 		fmt.Fprintf(&b, "# HELP %s %s\n", g.name, g.help)

@@ -2,6 +2,7 @@ package cppbackend
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -114,16 +115,46 @@ func (a *ActiveGenerations) CancelByUser(userID string) int {
 	return cancelled
 }
 
+// normalizeCancelModelName — форма имени модели для СРАВНЕНИЯ при отмене (R353).
+//
+// ЗАЧЕМ. Балансер выбирает адресата отмены «мягко» (регистр, путь, расширение
+// .gguf, тег Ollama, частичное совпадение), а здесь сравнение было ТОЧНЫМ. Живой
+// дефект: клиент жмёт Stop с "Qwen3-Instruct-2507-q4km.gguf", адресат выбран верно,
+// приказ доставлен, а воркер отвечает cancelled:0 — стрим продолжается. Снаружи
+// «кнопка Stop не работает».
+//
+// Нормализация сознательно МИНИМАЛЬНАЯ: basename (у пути своя пунктуация), нижний
+// регистр и срезание .gguf. Тег Ollama здесь НЕ срезается: если на узле крутятся две
+// генерации разных вариантов одной семьи, тег — единственное, что их различает, и
+// срезав его можно погасить чужую работу. Балансер компенсирует тег тем, что
+// подставляет загруженное имя (cancelModelNameForBackend).
+func normalizeCancelModelName(name string) string {
+	n := strings.TrimSpace(name)
+	if i := strings.LastIndexAny(n, `/\`); i >= 0 {
+		n = n[i+1:]
+	}
+	n = strings.ToLower(n)
+	for _, ext := range []string{".gguf", ".GGUF"} {
+		n = strings.TrimSuffix(n, strings.ToLower(ext))
+	}
+	return n
+}
+
 // CancelByModel отменяет ВСЕ активные генерации для model+userID.
 // Возвращает количество отменённых.
+//
+// R353: имена сравниваются в нормализованной форме (см. normalizeCancelModelName) —
+// точное сравнение оставляло отмену «доставленной, но не сработавшей», если клиент
+// назвал модель с расширением/в другом регистре.
 func (a *ActiveGenerations) CancelByModel(userID, model string) int {
 	if a == nil || model == "" {
 		return 0
 	}
+	want := normalizeCancelModelName(model)
 	a.mu.RLock()
 	var matches []*generationEntry
 	for _, entry := range a.entries {
-		if entry.model == model && (userID == "" || entry.userID == userID) {
+		if normalizeCancelModelName(entry.model) == want && (userID == "" || entry.userID == userID) {
 			matches = append(matches, entry)
 		}
 	}

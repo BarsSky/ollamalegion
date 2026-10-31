@@ -211,6 +211,32 @@ func (p *Proxy) cancelTargets(model string) []string {
 	return out
 }
 
+// cancelModelNameForBackend — имя модели для приказа об отмене этому бэкенду.
+//
+// R353 (2026-10-31, аудит abort §1.4 L1). См. вызов в sendCancelToBackend: балансер
+// выбирает адресатов мягким сравнением, а воркер сравнивает имена ТОЧНО. Возвращаем
+// каноническое имя загруженной у бэкенда модели, если она мягко совпала с клиентским
+// именем; иначе — клиентское имя как есть (воркер мог не отчитаться о загрузке).
+func (p *Proxy) cancelModelNameForBackend(backendID, model string) string {
+	if p == nil || model == "" {
+		return model
+	}
+	lm := p.llamaMetricsForPresence(backendID)
+	if lm == nil {
+		return model
+	}
+	for _, m := range lm.LoadedModels {
+		if m.Name != "" && modelNameMatches(m.Name, model) {
+			if m.Name != model && logger.Get() != nil {
+				logger.Get().Debugw("cancel: клиентское имя модели заменено на загруженное",
+					"backend", backendID, "client_model", model, "loaded_model", m.Name)
+			}
+			return m.Name
+		}
+	}
+	return model
+}
+
 // sendCancelToBackend — один воркер: POST /api/cancel с тела клиента.
 func (p *Proxy) sendCancelToBackend(backendID string, req clientCancelBody) (bool, map[string]interface{}) {
 	addr := p.backendHTTPAddrByID(backendID)
@@ -219,7 +245,22 @@ func (p *Proxy) sendCancelToBackend(backendID string, req clientCancelBody) (boo
 	}
 	payload := map[string]interface{}{}
 	if req.Model != "" {
-		payload["model"] = req.Model
+		// R353 (2026-10-31, аудит abort §1.4 L1): ВОРКЕРУ УХОДИТ ТО ИМЯ, ПОД КОТОРЫМ
+		// МОДЕЛЬ ЗАГРУЖЕНА У НЕГО, а не клиентский псевдоним.
+		//
+		// Живой дефект. Балансер выбирает адресатов «мягко» (modelNameMatches:
+		// регистр, путь, .gguf, тег Ollama, частичное совпадение), а воркер
+		// сравнивает ИМЕНА ТОЧНО (CancelByModel: entry.model == model), где
+		// entry.model — каноническое имя файла. Клиент жмёт Stop с "gemma4:latest"
+		// или "Qwen3-Instruct-2507-q4km.gguf" → адресат выбран верно, приказ
+		// доставлен, воркер отвечает cancelled:0, стрим продолжается. Снаружи это
+		// «кнопка Stop не работает», и R343 честно печатал not_cancelled, но
+		// причины не называл.
+		//
+		// Поэтому: если в кэше поллера у этого бэкенда есть загруженная модель,
+		// которая «мягко» совпала с клиентским именем, отправляем ЕЁ имя. Клиентское
+		// имя остаётся фолбэком: воркер мог не отчитаться о загрузке.
+		payload["model"] = p.cancelModelNameForBackend(backendID, req.Model)
 	}
 	if req.RequestID != "" {
 		payload["request_id"] = req.RequestID

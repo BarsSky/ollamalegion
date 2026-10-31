@@ -776,3 +776,11 @@ docker logs ol-stack-cppworker-gpu --since 30m 2>&1 \
 # Проверка «что было активно в момент отмены» (без логов)
 curl -s http://127.0.0.1:18092/api/infer/active | jq
 ```
+
+## Исправлено после аудита
+
+- **M1 (loadingError ↔ error) — исправлено в R345.** Причина провала загрузки
+  модели пишется в JSON как `error` (`pkg/types/llama_cpp_metrics.go` и DTO
+  `internal/api/handlers_cluster_models.go`), то есть под тем именем, которое
+  читает WebUI. Прежнее `loadingError` убрано, чтобы не было двух источников
+  правды. Тесты: `pkg/types/llama_cpp_metrics_loading_error_r345_test.go`.

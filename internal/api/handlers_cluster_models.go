@@ -41,7 +41,7 @@ type aggregateLoadingModel struct {
 	BatchSize        int    `json:"batchSize,omitempty"`
 	NumGPULayers     int    `json:"numGpuLayers,omitempty"`
 	Quantization     string `json:"quantization,omitempty"`
-	LoadingError     string `json:"loadingError,omitempty"`
+	LoadingError     string `json:"error,omitempty"`
 	LoadingSizeBytes int64  `json:"loadingSizeBytes,omitempty"`
 }
 

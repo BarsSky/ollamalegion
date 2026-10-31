@@ -258,7 +258,7 @@ type LlamaCppModel struct {
 	// загрузки поля обнуляются (omitempty).
 	LoadingStartedAt *string `json:"loadingStartedAt,omitempty"` // RFC3339Nano
 	LoadingSizeBytes int64   `json:"loadingSizeBytes,omitempty"` // ожидаемый размер модели
-	LoadingError     string  `json:"loadingError,omitempty"`     // причина сбоя (если State="error")
+	LoadingError     string  `json:"error,omitempty"`     // причина сбоя (если State="error")
 }
 
 // DeviceLayerRange — R118.16 (2026-10-14): непрерывный диапазон слоёв на одном

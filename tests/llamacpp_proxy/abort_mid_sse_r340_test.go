@@ -80,6 +80,9 @@ type r340Worker struct {
 	// closedSeen закрывается РОВНО ОДИН раз, когда заглушка увидела отмену:
 	// ошибку записи в сокет или отмену контекста запроса.
 	closedSeen chan struct{}
+	// R344: явный POST /api/cancel от балансера (а не только закрытие сокета).
+	cancelSeen chan struct{}
+	cancelOnce sync.Once
 	closedOnce sync.Once
 	// freeze размораживает зависшие обработчики на выходе из теста.
 	freeze chan struct{}
@@ -94,6 +97,7 @@ func newR340Worker(t *testing.T, frames int) *r340Worker {
 		frames:     frames,
 		step:       make(chan struct{}, 32),
 		closedSeen: make(chan struct{}),
+		cancelSeen: make(chan struct{}),
 		freeze:     make(chan struct{}),
 	}
 	w.server = httptest.NewServer(http.HandlerFunc(w.handle))
@@ -147,6 +151,13 @@ func (w *r340Worker) handle(rw http.ResponseWriter, r *http.Request) {
 	case "/api/models/load":
 		rw.Header().Set("Content-Type", "application/json")
 		_, _ = rw.Write([]byte(`{"success":true,"status":"loaded"}`))
+
+	case "/api/cancel":
+		// R344: балансер обязан присылать явный приказ об отмене при уходе
+		// клиента (а не только закрывать сокет). Заглушка это фиксирует.
+		w.cancelOnce.Do(func() { close(w.cancelSeen) })
+		rw.Header().Set("Content-Type", "application/json")
+		_, _ = rw.Write([]byte(`{"status":"ok","cancelled":1}`))
 
 	case "/v1/chat/completions":
 		w.streamChatCompletions(rw, r)
@@ -543,4 +554,42 @@ func TestR340_ClientAbortMidSSE(t *testing.T) {
 	if frames2 := r340ReadDataFrames(t, resp2.Body, 1); !strings.Contains(frames2[0], "chat.completion.chunk") {
 		t.Errorf("повторный стрим отдал не тот кадр: %s", frames2[0])
 	}
+}
+
+// TestR344_AbortSendsExplicitCancel — R344: при уходе клиента балансер обязан
+// прислать воркеру ЯВНЫЙ приказ об отмене (POST /api/cancel), а не только
+// закрыть сокет. NDJSON-путь делает это с R184 (cancelUpstreamGeneration);
+// hijack-путь /v1 — не делал: воркер, игнорирующий закрытие сокета (долгий
+// prefill, тот самый класс R184), продолжал генерацию и жёг GPU после ухода
+// клиента.
+func TestR344_AbortSendsExplicitCancel(t *testing.T) {
+	worker := newR340Worker(t, r340Frames)
+	proxy := r340TestProxy(t, worker.server.URL)
+	r340RegisterModel(proxy, r340BackendID, r340Model)
+	server := httptest.NewServer(proxy)
+	t.Cleanup(server.Close)
+
+	// 1. Открываем SSE-поток и убеждаемся, что он живой (первый кадр доехал).
+	resp := r340OpenStream(t, &http.Client{Timeout: 10 * time.Second}, server.URL)
+	if resp == nil {
+		t.Fatal("поток не открылся")
+	}
+	worker.push(1)
+	_ = r340ReadDataFrames(t, resp.Body, 1)
+
+	// 2. Обрыв клиента и кадры от воркера — на них балансер замечает уход.
+	_ = resp.Body.Close()
+	worker.push(r340StepsAfterAbort)
+
+	// 3. Клиент ещё читает? Нет — тело закрыто; балансер обнаруживает уход на
+	// ближайшей записи (heartbeat) и обязан прислать отмену воркеру.
+	// 3. Воркер обязан получить явный приказ об отмене.
+	r340WaitFor(t, 5*time.Second, "воркер получил POST /api/cancel", func() bool {
+		select {
+		case <-worker.cancelSeen:
+			return true
+		default:
+			return false
+		}
+	})
 }

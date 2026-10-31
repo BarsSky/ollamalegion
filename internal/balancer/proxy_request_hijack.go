@@ -463,6 +463,13 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			// Polling goroutine detected client close (или ctx cancelled)
 			logger.Get().Infow("hijack streaming: client disconnected, closing upstream",
 				"backend", backendID)
+			// R344 (2026-10-30, аудит docs/plans/2026-10-30-abort-and-metrics-audit.md,
+			// A7): на /v1 воркеру НЕ приходит явная отмена — только закрытие сокета,
+			// в отличие от NDJSON-пути (llamacpp_transport.go: cancelUpstreamGeneration).
+			// Воркер, игнорирующий закрытие сокета (долгий prefill, класс R184),
+			// продолжает генерацию после ухода клиента и жжёт GPU впустую.
+			// Шлём тот же приказ, что и NDJSON-путь, с причиной client_cancel.
+			p.cancelUpstreamGeneration(backendID, hijackStreamModel, "client_cancel")
 			return nil
 
 		case <-time.After(heartbeatInterval):
@@ -471,6 +478,12 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			if werr := writeChunkedString(bufrw, ": keepalive\r\n"); werr != nil {
 				logger.Get().Warnw("hijack streaming: heartbeat write failed",
 					"backend", backendID, "error", werr)
+				// R344: ошибка записи клиенту — его больше нет (broken pipe).
+				// На этом пути уход обнаруживается РАНО и БЕЗ записи от воркера
+				// (живой замер в тесте: 2.5 мс против десятков секунд при опоре
+				// только на чтение), поэтому отмену шлём здесь же, иначе воркер
+				// продолжает генерацию после ухода клиента.
+				p.cancelUpstreamGeneration(backendID, hijackStreamModel, "client_cancel")
 				return nil
 			}
 			// R298: сторож зависания здесь больше не проверяется — он живёт в
@@ -586,6 +599,10 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			if werr := writeChunkedFrame(bufrw, lineToWrite); werr != nil {
 				logger.Get().Warnw("hijack streaming: write to client failed",
 					"backend", backendID, "error", werr)
+				// R344: клиент ушёл — это ГЛАВНЫЙ путь обнаружения на /v1 (ошибка
+				// записи кадра, а не чтение сокета). Без явного приказа воркер
+				// продолжает генерацию (класс R184) и жжёт GPU после ухода клиента.
+				p.cancelUpstreamGeneration(backendID, hijackStreamModel, "client_cancel")
 				return nil
 			}
 			// R252: помним последний отданный кадр — по нему решаем, нужен ли

@@ -41,6 +41,17 @@ type clientCancelBody struct {
 	RequestID string `json:"request_id"`
 	UserID    string `json:"user_id"`
 	Model     string `json:"model"`
+	// R363 (2026-10-31, аудит abort A4): прервать и ИДУЩУЮ ЗАГРУЗКУ модели.
+	//
+	// Ставится балансером ТОЛЬКО на явную клиентскую отмену (этот обработчик —
+	// клиентский POST /api/cancel). Сторожевые обрывы (таймаут стрима, тишина upstream)
+	// идут другим путём (cancelUpstreamGeneration) и загрузку НЕ трогают: таймаут одного
+	// клиента не должен обрывать загрузку, которую ждут другие.
+	// УКАЗАТЕЛЬ, а не bool: «поле не прислано» и «прислано false» — разные вещи.
+	// Не прислано → для клиентской отмены считаем true (Stop должен прерывать и загрузку).
+	// Прислано false → клиент явно не хочет трогать загрузку (например, отменяет только
+	// свою генерацию, пока модель грузится для другого клиента).
+	CancelLoad *bool `json:"cancel_load"`
 }
 
 // isClientCancelPath — путь явной отмены на Ollama-поверхности. OpenAI-клиенты
@@ -68,6 +79,12 @@ func (p *Proxy) handleClientCancel(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(body, &req)
 	}
 	req.Model = trimSpaceOnly(req.Model)
+	// R363: это КЛИЕНТСКАЯ отмена (кнопка Stop) — по умолчанию разрешаем прерывать и
+	// загрузку модели; явный cancel_load=false уважаем.
+	if req.CancelLoad == nil {
+		allowLoadCancel := true
+		req.CancelLoad = &allowLoadCancel
+	}
 
 	targets := p.cancelTargets(req.Model)
 	accepted := make([]string, 0, len(targets))
@@ -138,6 +155,30 @@ func cancelStatusR343(results []map[string]interface{}, accepted []string, targe
 			totalCancelled += v
 		}
 	}
+	// R363 (2026-10-31, аудит abort A4): отмена ЗАГРУЗКИ модели — это тоже успех.
+	// Оператор решил: «загрузку прерывать при отмене». Воркер отвечает
+	// load_cancelled (остановлена) или load_abort_requested (флаг выставлен, ещё
+	// останавливается); второй случай честно не выдаём за «готово», но и не считаем
+	// провалом — флаг проверяется раз в тензор.
+	loadCancelled := false
+	loadAbortPending := false
+	for _, row := range results {
+		switch s, _ := row["status"].(string); s {
+		case "load_cancelled":
+			loadCancelled = true
+		case "load_abort_requested":
+			loadAbortPending = true
+		}
+	}
+	if loadCancelled {
+		return "load_cancelled", "загрузка модели прервана по отмене клиента; " +
+			"частично прочитанные веса освобождены"
+	}
+	if loadAbortPending && totalCancelled == 0 {
+		return "load_abort_requested", "флаг отмены загрузки выставлен, но C-мост ещё не " +
+			"остановил чтение весов (проверка идёт на каждом тензоре); повторите через несколько секунд"
+	}
+
 	// R362 (2026-10-31, аудит A6): сборка воркера БЕЗ C-bridge (stub) физически не умеет
 	// отменять генерацию, но раньше отвечала «cancelled: N» — и балансер с клиентом
 	// считали, что Stop сработал. Такой воркер честно сообщает supported=false; верхний
@@ -204,11 +245,26 @@ func (p *Proxy) cancelTargets(model string) []string {
 			continue
 		}
 		if lm := p.llamaMetricsForPresence(b.ID); lm != nil {
+			matched := false
 			for _, m := range lm.LoadedModels {
 				if modelNameMatches(m.Name, model) {
-					add(b.ID)
+					matched = true
 					break
 				}
+			}
+			// R363 (аудит A4): загрузка модели — тоже адресат отмены. Раньше смотрели
+			// только LoadedModels, поэтому Stop во время загрузки не доходил до узла,
+			// который эту загрузку и выполняет (модели в loadedModels ещё нет).
+			if !matched {
+				for _, m := range lm.LoadingModels {
+					if modelNameMatches(m.Name, model) {
+						matched = true
+						break
+					}
+				}
+			}
+			if matched {
+				add(b.ID)
 			}
 		}
 	}
@@ -273,6 +329,11 @@ func (p *Proxy) sendCancelToBackend(backendID string, req clientCancelBody) (boo
 		return false, nil
 	}
 	payload := map[string]interface{}{}
+	if req.CancelLoad != nil {
+		// R363: явная клиентская отмена — по умолчанию загрузку тоже прерываем (значение
+		// пришло из обработчика: nil уже развёрнут выше).
+		payload["cancel_load"] = *req.CancelLoad
+	}
 	if req.Model != "" {
 		// R353 (2026-10-31, аудит abort §1.4 L1): ВОРКЕРУ УХОДИТ ТО ИМЯ, ПОД КОТОРЫМ
 		// МОДЕЛЬ ЗАГРУЖЕНА У НЕГО, а не клиентский псевдоним.

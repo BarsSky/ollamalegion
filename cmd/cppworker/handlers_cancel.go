@@ -30,11 +30,7 @@ func handleCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		RequestID string `json:"request_id"`
-		UserID    string `json:"user_id"`
-		Model     string `json:"model"`
-	}
+	var req cancelRequestR363
 	// R106c (2026-10-12): терпимое декодирование клиентского тела (/api/cancel
 	// вызывают OpenWebUI/Cline — их расширения не должны давать 400).
 	if err := decodeClientJSON(r, types.MaxRequestBodyBytes, &req, "handleCancel"); err != nil {
@@ -59,6 +55,39 @@ func handleCancel(w http.ResponseWriter, r *http.Request) {
 	if idMissing {
 		writeError(w, http.StatusNotFound, "request_id not found: "+req.RequestID)
 		return
+	}
+
+	// R363 (2026-10-31, аудит abort A4): ЗАГРУЗКА ТОЖЕ ОТМЕНЯЕМА.
+	//
+	// До этого отмена во время загрузки модели не работала ПО ЗАМЫСЛУ: загрузка отвязана
+	// от клиентского ctx, флаг отмены выставлялся только для генерации. Клиент нажимал
+	// Stop, получал 200 «no_active_generation», а модель продолжала читаться минутами и
+	// держать VRAM (на крупных моделях — до нескольких минут и без возможности отменить).
+	//
+	// Теперь при cancel_load=true и отсутствии активных генераций отменяем загрузку тем
+	// же путём, что force-выгрузка (R215): bridge.RequestLoadAbort останавливает чтение
+	// весов в progress-callback, llama.cpp сам освобождает частично загруженную модель,
+	// включая буферы на узлах раскладки.
+	if cancelled == 0 && req.CancelLoad && req.Model != "" {
+		outcome, aborted := abortLoadingModelR363(req.Model)
+		if outcome != "" {
+			logger.Get().Infow("handleCancel: отмена загрузки модели",
+				"model", req.Model, "outcome", outcome, "abort_requested", aborted)
+			resp := map[string]interface{}{
+				"cancelled": 0,
+				"by":        "load",
+				"status":    outcome,
+				"model":     req.Model,
+				"aborted":   aborted,
+				"supported": bridge.InferAbortSupported(),
+			}
+			if outcome == cancelLoadOutcomeStillLoadingR363 {
+				resp["hint"] = "флаг отмены выставлен, но загрузка ещё не остановилась: " +
+					"C-мост проверяет флаг на каждом тензоре, повторите через несколько секунд"
+			}
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
 	}
 
 	logger.Get().Infow("handleCancel: completed",
@@ -114,11 +143,20 @@ func handleCancel(w http.ResponseWriter, r *http.Request) {
 // и попадал в default «отменить ВСЕ»: Stop на модели A гасил и генерацию модели B
 // на том же воркере. Теперь модель — отдельный случай; user_id остаётся фильтром
 // внутри модели (CancelByModel с пустым userID отменяет всех пользователей модели).
-func applyCancelScope(tracker *cppbackend.ActiveGenerations, req struct {
+// cancelRequestR363 — тело приказа об отмене. Именованный тип, а не анонимная структура:
+// иначе тесты не могут передать её в applyCancelScope без копирования полей, а добавление
+// нового поля молча ломает вызовы (живой случай при введении cancel_load).
+type cancelRequestR363 struct {
 	RequestID string `json:"request_id"`
 	UserID    string `json:"user_id"`
 	Model     string `json:"model"`
-}) (cancelled int, by string, idMissing bool) {
+	// CancelLoad — R363 (2026-10-31, аудит abort A4): прервать не только генерацию, но и
+	// ИДУЩУЮ ЗАГРУЗКУ модели. Ставит его балансер ТОЛЬКО для явной клиентской отмены
+	// (кнопка Stop): таймаут чужого стрима не должен обрывать загрузку, которую ждут другие.
+	CancelLoad bool `json:"cancel_load"`
+}
+
+func applyCancelScope(tracker *cppbackend.ActiveGenerations, req cancelRequestR363) (cancelled int, by string, idMissing bool) {
 	switch {
 	case req.RequestID != "":
 		if !tracker.CancelByID(req.RequestID) {

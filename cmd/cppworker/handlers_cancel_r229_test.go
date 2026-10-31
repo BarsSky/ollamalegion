@@ -19,11 +19,9 @@ import (
 	"ollama-loadbalancer/internal/cppbackend"
 )
 
-type cancelReq = struct {
-	RequestID string `json:"request_id"`
-	UserID    string `json:"user_id"`
-	Model     string `json:"model"`
-}
+// cancelReq — алиас на общий тип приказа (R363): раньше это была анонимная структура, и
+// добавление поля cancel_load сломало сборку тестов.
+type cancelReq = cancelRequestR363
 
 func TestR229_CancelScopeModelOnlyDoesNotCancelOtherModel(t *testing.T) {
 	tracker := cppbackend.NewActiveGenerations()

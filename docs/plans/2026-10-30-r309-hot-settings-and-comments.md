@@ -547,3 +547,80 @@ X-Backend-ID/X-Session-ID, негативные кейсы.
 **Что осталось (этапы 2–4):** стаб-матрица для CI без стенда (сейчас матрица
 требует живой стенд), стюард «маршрут зарегистрирован, но отсутствует в матрице»,
 14 непокрытых областей из карты маршрутов, P2 из аудита.
+## R346: поля, которые балансер писал, а UI не показывал
+
+Основание — `docs/plans/2026-10-30-metrics-visibility-decisions.md` (решения по
+каждому полю аудита M1–M6). Перед правкой утверждения аудита сверены с кодом
+отдельной read-only проверкой; два оказались неверны, и это изменило решения
+(подробно в документе решений, раздел «Поправки к части 2 аудита»).
+
+**Что показывается теперь (данные уже были в JSON, читать их было некому):**
+
+| поле | где видно |
+| --- | --- |
+| `availableVramMb` / `totalVramMb` | раскрытая строка llama.cpp-бэкенда, секция «VRAM» |
+| `vramRemoteFreeMb` / `vramRemoteNodes` | там же, ТОЛЬКО при `rpcEnabled` (иначе нули — шум) |
+| `loadedAt` | рядом с загруженной моделью (⏱ 12:34; для старых — дата) |
+| `loadingSizeBytes` | в подсказке бейджа загрузки: «Загрузка: модель · 5.0 GB» |
+
+Отдельно исправлен дефект, который делал секцию «Загруженные модели» у
+llama.cpp-бэкенда невидимой всегда: она читалась из `backend.ollama.runningModels`,
+а у cpp-бэкенда `ollama == nil` (метрики лежат в `llamaCpp`). Теперь источник —
+`llamaCpp.loadedModels`, фолбэк — `backend.loadedModels` (REST `/api/v1/backends`).
+
+**Что удалено как мёртвое:**
+
+- `LlamaCppMetrics.GPUInfo` + типы `LlamaCppGPUInfo`/`LlamaCppGPUDevice`. Поле не
+  заполнял НИ ОДИН путь. Его единственный читатель — фолбэк «нет NVML у агента →
+  берём VRAM из поллера» в `handlers_backends.go` — из-за этого не работал: в
+  bundled-режиме `gpu.memoryTotal` оставался нулём, и монитор показывал 0 VRAM при
+  живых `total_vram_mb`/`available_vram_mb` в поллере. Фолбэк переведён на них.
+- `LlamaCppMetrics.MaxRAMNCtx` — поллер `max_ram_n_ctx` не декодирует вообще.
+  (Сам факт у воркера остаётся и тестируется — `handlers_model_round37_test.go`.)
+- Поллер: `NHeads`, `NVocab`, `ActiveQueries`, `TotalQueries` — декодировались и
+  выбрасывались.
+- WebUI: путь `b.llamaCppMetrics.loadingModels` (такого ключа не отдаёт ни один
+  эндпоинт) — в `renderers.js` и `monitor-backends.js`.
+
+**Что оказалось не «мёртвым», а сломанным, и починено:**
+
+- `cppWorkerModelsNative` (декодирование нативного `/api/models`) держал camelCase
+  теги (`sizeBytes`, `contextSize`, `nLayers`, `gpuLayers`, `loadedAt`), а воркер
+  печатает snake_case. Поэтому публичный `/api/models` балансера — «нативный формат
+  cppworker'а» — отдавал только `name/path/state`: размер, число слоёв, окно и время
+  загрузки молча выпадали. Ту же ошибку раньше поймали в поллере (R45) и описали
+  как F-15 в `docs/archive/audits/AUDIT-balancer-cppworker-wire.md`, но этот путь
+  остался непоправленным.
+- `gpu_layers_actual` (R248) не читался нигде: поллер и `handleModels` брали
+  `gpu_layers`, которого в `/api/models` нет. Теперь на первом месте ФАКТ
+  (`gpu_layers_actual`), затем `gpu_layers` (старые воркеры), затем восстановление
+  из `device_layers` (R213).
+- При удалении полей из DTO наверх ушли только реально существующие поля: `n_heads`
+  и `total_queries` воркер в `/api/models` не печатает вовсе (только `/api/show` и
+  `/config/runtime`), поэтому они убраны, а `n_vocab`/`active_queries` оставлены —
+  после починки тегов они несут настоящие числа.
+
+**Тесты (новые):**
+
+- `internal/api/handlers_backends_vram_r346_test.go` — VRAM из поллера при пустых
+  agent-метриках, зажим `free > total` (не отрицательный `used`), и «молчание
+  поллера не превращается в выдуманную карту».
+- `tests/llamacpp_proxy/models_native_passthrough_r346_test.go` — публичный
+  `/api/models` отдаёт snake_case-поля, `gpu_layers_actual` приоритетнее `-1`,
+  `nHeads`/`totalQueries` отсутствуют.
+- `webui/js/modules/llamacpp-vram-loaded-r346.test.js` — VRAM/RPC/loadedAt/размер
+  загрузки в панели + сторож «мёртвого пути `llamaCppMetrics` нет» (комментарии
+  вырезаются, чтобы правку можно было документировать).
+
+**Проверено:** `go test -tags llama_stub` по `pkg/types`, `internal/balancer`,
+`internal/api`, `cmd/cppworker`, `internal/cppbackend`, `tests/llamacpp_proxy` —
+зелёные; `scripts/run-webui-sweep.ps1` — 86 прогонов, 0 провалов.
+
+**Не проверено:** живой браузерный снимок (Chromium в этой среде не стартует,
+R319). Отдельно зафиксирован флак `TestLlamaModelLoadedConfirmsReplica_R81`
+(полный прогон `internal/api` иногда падает, повторный и `-run`-прогон зелёные) — к
+R346 отношения не имеет.
+
+**Найдено попутно, не исправлено:** `renderers.js` рисует `networkRX`/`networkTX`
+через `formatMB`, хотя это байты (см. `pkg/types/metrics.go`); числа завышены —
+отдельная правка с тестом.

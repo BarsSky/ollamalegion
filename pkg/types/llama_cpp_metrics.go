@@ -89,7 +89,6 @@ type LlamaCppMetrics struct {
 	// модели не помещаются в VRAM ни при каком gpu_layers»: reload бессмыслен, и
 	// preflight обязан отказать с причиной, а не гнать клиента в reload.
 	VramKnown       bool   `json:"vramKnown"`
-	MaxRAMNCtx      int    `json:"maxRamNCtx"`
 	AvailableVRAMMB uint64 `json:"availableVramMb"`
 	TotalVRAMMB     uint64 `json:"totalVramMb"`
 	// R115: состав ёмкости. AvailableVRAMMB — ИТОГ (локальная карта + узлы
@@ -137,15 +136,14 @@ type LlamaCppMetrics struct {
 	// ноль считался НАСТОЯЩИМ значением и перекрывал правильные данные из ollama.*:
 	// Monitor во время генерации показывал «0 активных запросов» и RPS=0.
 	// С omitempty нулевое значение не сериализуется, и фолбэк WebUI работает.
-	ActiveRequests    int              `json:"activeRequests,omitempty"`
-	TotalRequests     int64            `json:"totalRequests"`
-	AvgResponseTime   float64          `json:"avgResponseTime,omitempty"` // ms
-	RequestsPerSecond float64          `json:"requestsPerSecond,omitempty"`
-	FreeSlots         int              `json:"freeSlots,omitempty"`
-	AvailableSlots    int              `json:"availableSlots,omitempty"`
-	MaxModels         int              `json:"maxModels"`
-	MaxConcurrentReqs int              `json:"maxConcurrentReqs"`
-	GPUInfo           *LlamaCppGPUInfo `json:"gpuInfo,omitempty"`
+	ActiveRequests    int     `json:"activeRequests,omitempty"`
+	TotalRequests     int64   `json:"totalRequests"`
+	AvgResponseTime   float64 `json:"avgResponseTime,omitempty"` // ms
+	RequestsPerSecond float64 `json:"requestsPerSecond,omitempty"`
+	FreeSlots         int     `json:"freeSlots,omitempty"`
+	AvailableSlots    int     `json:"availableSlots,omitempty"`
+	MaxModels         int     `json:"maxModels"`
+	MaxConcurrentReqs int     `json:"maxConcurrentReqs"`
 }
 
 // LlamaCppModel - информация о модели llama.cpp
@@ -275,18 +273,10 @@ type DeviceLayerRange struct {
 	Node   string `json:"node,omitempty"`
 }
 
-// LlamaCppGPUInfo - информация о GPU для llama.cpp
-type LlamaCppGPUInfo struct {
-	Count     int                 `json:"count"`
-	Devices   []LlamaCppGPUDevice `json:"devices"`
-	TotalVRAM uint64              `json:"totalVram"` // MB
-	FreeVRAM  uint64              `json:"freeVram"`  // MB
-}
-
-// LlamaCppGPUDevice - одно GPU-устройство
-type LlamaCppGPUDevice struct {
-	Name        string  `json:"name"`
-	MemoryTotal uint64  `json:"memoryTotal"` // MB
-	MemoryFree  uint64  `json:"memoryFree"`  // MB
-	Utilization float64 `json:"utilization"` // %
-}
+// R346 (2026-10-30): типы LlamaCppGPUInfo/LlamaCppGPUDevice удалены вместе с
+// полем LlamaCppMetrics.GPUInfo. Поле не заполнял НИ ОДИН путь балансера (поллер
+// пишет AvailableVRAMMB/TotalVRAMMB, агент — metrics.GPU), поэтому `gpuInfo` в
+// JSON не появлялся никогда, а единственный читатель — фолбэк «нет NVML у агента
+// → берём VRAM из поллера» в internal/api/handlers_backends.go — был мёртвым кодом
+// и потому не спасал bundled-режим от нулевого VRAM в мониторе. Фолбэк переведён
+// на AvailableVRAMMB/TotalVRAMMB (см. R346-комментарий там).

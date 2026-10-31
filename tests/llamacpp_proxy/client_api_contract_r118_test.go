@@ -110,8 +110,13 @@ func newContractStub(t *testing.T, modelName string) *contractStub {
 
 		case "/api/models":
 			w.Header().Set("Content-Type", "application/json")
+			// R346: заглушка печатает ПОЛНЫЙ набор snake_case-полей, как реальный
+			// cppworker (/api/models). Раньше здесь было 6 полей, и порча
+			// декодирования (camelCase-теги в cppWorkerModelsNative) оставалась
+			// незамеченной: «лишние» поля просто выпадали из ответа балансера.
 			fmt.Fprintf(w, `{"count":1,"models":[{"name":%q,"state":"loaded","context_size":32768,`+
-				`"context_per_seq":16384,"max_slots":2,"parallel":2,"n_layers":42,"gpu_layers":-1,`+
+				`"context_per_seq":16384,"max_slots":2,"parallel":2,"n_layers":42,"n_embd":2560,`+
+				`"n_vocab":262144,"active_queries":2,"gpu_layers":-1,"gpu_layers_actual":42,`+
 				`"size_bytes":4215695776,"loaded_at":%q}]}`, modelName, now)
 
 		case "/api/info":

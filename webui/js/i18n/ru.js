@@ -1071,6 +1071,13 @@ window.I18N_RU = {
   "renderers.loadable_models_count": "Можно загрузить моделей",
   "renderers.platform_mode": "Режим платформы",
 
+  // R346: подписи VRAM/загрузки llama.cpp (данные пишет поллер cppworker)
+  "renderers.section_vram": "🎛️ VRAM",
+  "renderers.vram_total": "Всего VRAM",
+  "renderers.vram_remote_free": "Свободно VRAM (RPC-узлы)",
+  "renderers.vram_remote_nodes": "узлов",
+  "renderers.loaded_at": "Загружена в",
+
   // renderOllamaParams - context labels
   "renderers.context": "Контекст",
   "renderers.effective": "Эффективный",

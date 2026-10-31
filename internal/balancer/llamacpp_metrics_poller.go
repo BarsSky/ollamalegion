@@ -306,12 +306,10 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 			SizeBytes        int64  `json:"size_bytes,sizeBytes,omitempty"`
 			LoadingSizeBytes int64  `json:"loading_size_bytes,loadingSizeBytes,omitempty"`
 			NLayers          int    `json:"n_layers,nLayers,omitempty"`
-			NHeads           int    `json:"n_heads,nHeads,omitempty"`
 			NKvHeads         int    `json:"n_kv_heads,nKvHeads,omitempty"`
 			HeadDimK         int    `json:"head_dim_k,headDimK,omitempty"`
 			HeadDimV         int    `json:"head_dim_v,headDimV,omitempty"`
 			NEmbd            int    `json:"n_embd,nEmbd,omitempty"`
-			NVocab           int    `json:"n_vocab,nVocab,omitempty"`
 			// R45: ContextSize was the smoking gun. cppworker returns
 			// "context_size" but the previous tag was "contextSize", so
 			// LoadedModels[].ContextLength was always 0, breaking
@@ -326,18 +324,24 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 			// R83-fix (2026-09-30): окно одного слота (n_ctx_seq у llama.cpp).
 			// Суммарный ContextSize выше слоты делят между собой, поэтому
 			// ограничивать клиентский запрос надо именно этим значением.
-			ContextPerSeq     int    `json:"context_per_seq,contextPerSeq,omitempty"`
-			BatchSize         int    `json:"batch_size,batchSize,omitempty"`
-			GGUFContextLength int    `json:"gguf_context_length,ggufContextLength,omitempty"`
-			GPULayers         int    `json:"gpu_layers,gpuLayers,omitempty"`
-			ActiveQueries     int    `json:"active_queries,activeQueries,omitempty"`
-			TotalQueries      int    `json:"total_queries,totalQueries,omitempty"`
-			Architecture      string `json:"architecture,omitempty"`
-			Quantization      string `json:"quantization,omitempty"`
-			VRAMUsage         uint64 `json:"vram_usage,vramUsage,omitempty"`
-			SizeVRAM          uint64 `json:"size_vram,sizeVram,omitempty"`
-			RAMUsage          uint64 `json:"ram_usage,ramUsage,omitempty"`
-			LoadedAt          string `json:"loaded_at,loadedAt,omitempty"`
+			ContextPerSeq     int `json:"context_per_seq,contextPerSeq,omitempty"`
+			BatchSize         int `json:"batch_size,batchSize,omitempty"`
+			GGUFContextLength int `json:"gguf_context_length,ggufContextLength,omitempty"`
+			// R346 (2026-10-30): фактический offload. R248 добавил его в ответ
+			// воркера (`gpu_layers_actual`), но поллер декодировал только
+			// `gpu_layers` — поля, которого в /api/models НЕТ. Из-за этого
+			// NumGPULayers приходилось восстанавливать из раскладки слоёв (R213);
+			// теперь есть первоисточник, раскладка осталась фолбэком.
+			GPULayersActual int `json:"gpu_layers_actual,omitempty"`
+			// ActiveQueries/TotalQueries/n_vocab/n_heads здесь НЕ объявляются (R346):
+			// поллер их декодировал и выбрасывал — LlamaCppModel таких полей не имеет.
+			GPULayers    int    `json:"gpu_layers,gpuLayers,omitempty"`
+			Architecture string `json:"architecture,omitempty"`
+			Quantization string `json:"quantization,omitempty"`
+			VRAMUsage    uint64 `json:"vram_usage,vramUsage,omitempty"`
+			SizeVRAM     uint64 `json:"size_vram,sizeVram,omitempty"`
+			RAMUsage     uint64 `json:"ram_usage,ramUsage,omitempty"`
+			LoadedAt     string `json:"loaded_at,loadedAt,omitempty"`
 			// Round 34 (2026-08-12) Phase 2: runtime params (kvCacheType, flashAttnType,
 			// useMmap) для profile mismatch detection в preflight_nctx.go.
 			KvCacheType   string `json:"kv_cache_type,kvCacheType,omitempty"`
@@ -439,7 +443,15 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 		// АВТОРИТЕТНА: если llama.cpp сказал, что N слоёв ушли на GPU, то их N.
 		// Считаем только когда сам воркер число не сообщил (>0), чтобы не спорить
 		// с явным значением.
-		gpuLayers := m.GPULayers
+		// R346 (2026-10-30): сначала ФАКТ из R248 (`gpu_layers_actual`), затем
+		// запрошенное значение (`gpu_layers`, старые воркеры), и только потом
+		// восстановление из раскладки (R213). Раньше первого шага не было, и при
+		// пустом `gpu_layers` число приходило лишь из device_layers — а если
+		// раскладку воркер не перехватил, UI показывал «0 слоёв на GPU».
+		gpuLayers := m.GPULayersActual
+		if gpuLayers <= 0 {
+			gpuLayers = m.GPULayers
+		}
 		if gpuLayers <= 0 && len(devLayers) > 0 {
 			sum := 0
 			for _, d := range devLayers {

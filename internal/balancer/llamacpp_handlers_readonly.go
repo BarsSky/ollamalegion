@@ -602,19 +602,20 @@ func (lr *LlamaCppRouter) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R346 (2026-10-30): nHeads и totalQueries убраны — воркер их в /api/models
+	// не печатает (см. cppWorkerModelsNative), т.е. в ответе балансера они были
+	// вечным нулём и только выглядели частью нативного контракта.
 	type cppModel struct {
 		Name          string `json:"name"`
 		Path          string `json:"path,omitempty"`
 		State         string `json:"state,omitempty"`
 		SizeBytes     int64  `json:"sizeBytes,omitempty"`
 		NLayers       int    `json:"nLayers,omitempty"`
-		NHeads        int    `json:"nHeads,omitempty"`
 		NEmbd         int    `json:"nEmbd,omitempty"`
 		NVocab        int    `json:"nVocab,omitempty"`
 		ContextSize   int    `json:"contextSize,omitempty"`
 		GPULayers     int    `json:"gpuLayers,omitempty"`
 		ActiveQueries int    `json:"activeQueries,omitempty"`
-		TotalQueries  int    `json:"totalQueries,omitempty"`
 		LoadedAt      string `json:"loadedAt,omitempty"`
 		Backend       string `json:"backend,omitempty"`
 	}
@@ -642,19 +643,24 @@ func (lr *LlamaCppRouter) handleModels(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			seen[key] = true
+			// R248: воркер печатает фактический offload как gpu_layers_actual,
+			// запрошенное значение (gpu_layers) — только в ответе load. Берём
+			// фактическое, иначе наружу уходил бы ноль.
+			gpuLayers := m.GPULayersActual
+			if gpuLayers == 0 {
+				gpuLayers = m.GPULayers
+			}
 			merged.Models = append(merged.Models, cppModel{
 				Name:          m.Name,
 				Path:          m.Path,
 				State:         m.State,
 				SizeBytes:     m.SizeBytes,
 				NLayers:       m.NLayers,
-				NHeads:        m.NHeads,
 				NEmbd:         m.NEmbd,
 				NVocab:        m.NVocab,
 				ContextSize:   m.ContextSize,
-				GPULayers:     m.GPULayers,
+				GPULayers:     gpuLayers,
 				ActiveQueries: m.ActiveQueries,
-				TotalQueries:  m.TotalQueries,
 				LoadedAt:      m.LoadedAt,
 				Backend:       b.id,
 			})

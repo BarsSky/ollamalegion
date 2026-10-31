@@ -12,22 +12,41 @@ type cppWorkerModelState struct {
 }
 
 // cppWorkerModelsNative — нативный ответ cppworker /api/models.
+//
+// R346 (2026-10-30): теги — snake_case, как их реально печатает воркер.
+//
+// ЗАЧЕМ ПРАВКА. Раньше здесь стояли camelCase-теги (`sizeBytes`, `contextSize`,
+// `nLayers`, `gpuLayers`, `loadedAt`), а `cmd/cppworker/handlers_model.go` печатает
+// snake_case (`size_bytes`, `context_size`, `n_layers`, `gpu_layers_actual`,
+// `loaded_at`). Из-за этого handleModels — «список моделей в НАТИВНОМ формате
+// cppworker'а» — декодировал нули: в ответе оставались только name/path/state, а
+// размер, окно, слои и время загрузки молча выпадали (omitempty). Ту же ошибку
+// раньше поймали в поллере (llamacpp_metrics_poller.go, комментарий R45) и
+// задокументировали как F-15 в docs/archive/audits/AUDIT-balancer-cppworker-wire.md,
+// но структура этого пути осталась непоправленной.
+//
+// n_heads и total_queries из этого ответа УБРАНЫ: воркер их в /api/models не
+// печатает вовсе (n_heads — только /api/show и /config/runtime, total_queries —
+// только /config/runtime, см. docs/archive/audits/AUDIT-balancer-cppworker-wire.md
+// F-05), поэтому поля были вечным нулём и только выглядели частью контракта.
 type cppWorkerModelsNative struct {
 	Count  int `json:"count"`
 	Models []struct {
-		Name          string `json:"name"`
-		Path          string `json:"path,omitempty"`
-		State         string `json:"state,omitempty"`
-		SizeBytes     int64  `json:"sizeBytes,omitempty"`
-		NLayers       int    `json:"nLayers,omitempty"`
-		NHeads        int    `json:"nHeads,omitempty"`
-		NEmbd         int    `json:"nEmbd,omitempty"`
-		NVocab        int    `json:"nVocab,omitempty"`
-		ContextSize   int    `json:"contextSize,omitempty"`
-		GPULayers     int    `json:"gpuLayers,omitempty"`
-		ActiveQueries int    `json:"activeQueries,omitempty"`
-		TotalQueries  int    `json:"totalQueries,omitempty"`
-		LoadedAt      string `json:"loadedAt,omitempty"`
+		Name        string `json:"name"`
+		Path        string `json:"path,omitempty"`
+		State       string `json:"state,omitempty"`
+		SizeBytes   int64  `json:"size_bytes,omitempty"`
+		NLayers     int    `json:"n_layers,omitempty"`
+		NEmbd       int    `json:"n_embd,omitempty"`
+		NVocab      int    `json:"n_vocab,omitempty"`
+		ContextSize int    `json:"context_size,omitempty"`
+		// GPULayersActual — фактический offload (R248). Старое имя `gpu_layers`
+		// поддерживаем ради заглушек и воркеров до R248: в /api/models воркер
+		// печатает именно gpu_layers_actual.
+		GPULayersActual int    `json:"gpu_layers_actual,omitempty"`
+		GPULayers       int    `json:"gpu_layers,omitempty"`
+		ActiveQueries   int    `json:"active_queries,omitempty"`
+		LoadedAt        string `json:"loaded_at,omitempty"`
 	} `json:"models"`
 }
 

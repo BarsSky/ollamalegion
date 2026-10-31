@@ -977,6 +977,24 @@ const Renderers = (function () {
         return html;
     }
 
+    // R346: время загрузки модели в читаемом виде.
+    //
+    // Почему не просто iso-строка: cppworker отдаёт RFC3339Nano с наносекундами,
+    // а оператор сравнивает «модель поднялась в 12:04» с логами и часами. Для
+    // сегодняшней загрузки достаточно времени, для старой — дата и время.
+    // Пустая/битая строка → '' (вызывающий не рисует блок), а не «Invalid Date».
+    function formatLoadedAtR346(iso) {
+        if (!iso) return '';
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return '';
+        var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+        var time = pad(d.getHours()) + ':' + pad(d.getMinutes());
+        var now = new Date();
+        var sameDay = d.getFullYear() === now.getFullYear() &&
+            d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+        return sameDay ? time : (pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + ' ' + time);
+    }
+
     function renderOllamaParams(backend) {
         // Определяем тип бэкенда (используем унифицированную утилиту)
         var bt = Utils.getBackendType(backend);
@@ -1010,6 +1028,32 @@ const Renderers = (function () {
             if (cppParams.quantization) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.quantization') || 'Quantization') + '</span><span class="be-param-value">' + escapeHtml(cppParams.quantization) + '</span></div>';
             cppHtml += '</div></div>';
 
+            // R346 (2026-10-30): VRAM из поллера cppworker.
+            //
+            // ЗАЧЕМ. Вопрос «почему не поднялась вторая копия модели» оператор задаёт
+            // раньше всех остальных, а ответ (сколько VRAM свободно на узле) уже лежал
+            // в метриках — availableVramMb/totalVramMb писал поллер, и их не читал
+            // никто: числа были видны только в сыром JSON /api/v1/cluster.
+            //
+            // Почему берём ИМЕННО эти поля, а не gpu.memoryTotal: у llama.cpp-бэкенда
+            // без агентской NVML (типовой bundled-режим) gpu пустой — см. фолбэк по
+            // disponible VRAM в internal/api/handlers_backends.go.
+            var vramFreeMb = Number(cppParams.availableVramMb || 0);
+            var vramTotalMb = Number(cppParams.totalVramMb || 0);
+            // RPC-раскладка: свободная VRAM удалённых узлов осмысленна только при
+            // включённом RPC — иначе это нули и лишний шум в карточке.
+            var vramRemoteFreeMb = Number(cppParams.vramRemoteFreeMb || 0);
+            var vramRemoteNodes = Number(cppParams.vramRemoteNodes || 0);
+            if (vramFreeMb > 0 || vramTotalMb > 0 || (cppParams.rpcEnabled && vramRemoteFreeMb > 0)) {
+                cppHtml += '<div class="be-detail-section"><div class="be-detail-title">' + escapeHtml(_t('renderers.section_vram') || 'VRAM') + '</div><div class="be-params-grid">';
+                if (vramTotalMb > 0) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.vram_total') || 'Total VRAM') + '</span><span class="be-param-value">' + formatMB(vramTotalMb) + '</span></div>';
+                if (vramFreeMb > 0) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.free_vram')) + '</span><span class="be-param-value">' + formatMB(vramFreeMb) + '</span></div>';
+                if (cppParams.rpcEnabled && vramRemoteFreeMb > 0) {
+                    cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.vram_remote_free') || 'Free VRAM (RPC nodes)') + '</span><span class="be-param-value">' + formatMB(vramRemoteFreeMb) + (vramRemoteNodes > 0 ? ' / ' + vramRemoteNodes + ' ' + escapeHtml(_t('renderers.vram_remote_nodes') || 'nodes') : '') + '</span></div>';
+                }
+                cppHtml += '</div></div>';
+            }
+
             // Добавляем Disk/Network как обычно
             const sys = backend.system || {};
             if (sys.diskTotal !== undefined || sys.diskUsed !== undefined || sys.networkRX !== undefined) {
@@ -1022,14 +1066,29 @@ const Renderers = (function () {
                 cppHtml += '</div></div>';
             }
 
-            // Показываем loaded models если есть
-            if (runningModels.length > 0) {
+            // Показываем loaded models если есть.
+            //
+            // R346 (2026-10-30): раньше здесь читался backend.ollama.runningModels,
+            // а у llama.cpp-бэкенда ollama == nil (все метрики лежат в llamaCpp,
+            // см. types.BackendMetrics). Поэтому секция «Loaded Models» в раскрытой
+            // строке cpp-бэкенда не появлялась НИКОГДА, хотя список моделей есть в
+            // llamaCpp.loadedModels (cluster state) и в backend.loadedModels (/backends).
+            //
+            // loadedAt показываем рядом с моделью: «когда это загрузилось» — первое,
+            // что нужно при «модель вдруг стала медленной» (перезагрузка/вытеснение).
+            var cppLoadedModels = (Array.isArray(cppParams.loadedModels) && cppParams.loadedModels.length > 0)
+                ? cppParams.loadedModels
+                : (Array.isArray(backend.loadedModels) ? backend.loadedModels : []);
+            if (cppLoadedModels.length > 0) {
                 cppHtml += '<div class="be-detail-section"><div class="be-detail-title">' + escapeHtml(_t('renderers.section_loaded_models')) + '</div><div class="be-params-grid">';
-                runningModels.forEach(function(m) {
+                cppLoadedModels.forEach(function(m) {
                     var sizeGB = (m.size || 0) / 1024 / 1024 / 1024;
+                    var loadedAt = formatLoadedAtR346(m.loadedAt);
                     cppHtml += '<div class="be-param-item" style="grid-column: 1/-1;">' +
                         '<span class="be-param-label">' + escapeHtml(m.name) + '</span>' +
-                        '<span class="be-param-value">' + sizeGB.toFixed(1) + ' GB</span>' +
+                        '<span class="be-param-value">' + sizeGB.toFixed(1) + ' GB' +
+                        (loadedAt ? ' <span title="' + escapeHtml(_t('renderers.loaded_at') || 'Loaded at') + ': ' + escapeHtml(m.loadedAt) + '" style="font-size:var(--font-size-xs);color:var(--text-secondary)">⏱ ' + escapeHtml(loadedAt) + '</span>' : '') +
+                        '</span>' +
                     '</div>';
                 });
                 cppHtml += '</div></div>';
@@ -1191,13 +1250,16 @@ const Renderers = (function () {
                 : String(Utils.getBackendType(b) === 'llama_cpp' ? (b.cppWorkerPort || b.port || 8080) : (b.ollamaPort || 11434));
 
             // ==== Loading column («вкладка бэкендов» — Issue: «отображение загрузки») ====
-            // Поддерживаются источники:
-            //   1) b.loadingModels: [{name, state, loadingStartedAt, loadingSizeBytes, error}] — массив
-            //   2) b.loadingModelCount: число (если API отдаёт только счётчик)
-            //   3) b.llamaCppMetrics.loadingModels: альтернативный путь (через metrics-broker)
+            // R346 (2026-10-30): удалён третий путь `b.llamaCppMetrics.loadingModels`.
+            // Такого ключа не отдаёт НИ ОДИН эндпоинт (ни /api/v1/cluster, ни
+            // /api/v1/backends: метрики llama.cpp приходят как `llamaCpp`), поэтому
+            // ветка была мёртвой и лишь маскировала отсутствие данных: пустой массив
+            // выглядел как «источник есть, но моделей нет».
+            // Источники: 1) b.loadingModels (из /api/v1/backends),
+            //            2) b.loadingModelCount (только счётчик).
             const loadingArr = (b.loadingModels && Array.isArray(b.loadingModels) && b.loadingModels.length > 0)
                 ? b.loadingModels
-                : ((b.llamaCppMetrics && Array.isArray(b.llamaCppMetrics.loadingModels)) ? b.llamaCppMetrics.loadingModels : []);
+                : [];
             const loadingCount = (b.loadingModelCount != null) ? b.loadingModelCount : loadingArr.length;
             let loadingCell;
             if (loadingCount > 0 && loadingArr.length === 0) {
@@ -1217,8 +1279,17 @@ const Renderers = (function () {
                             '<i class="fas fa-times-circle"></i> ' + escapeHtml(lm.name) +
                         '</span>';
                     }
+                    // R346: размер загружаемого файла — в подсказке бейджа.
+                    // ЗАЧЕМ. «Загрузка 3 минуты» без размера не отличает нормальную
+                    // загрузку 8-гигабайтной модели от зависшей на 300 МБ; размер
+                    // уже приходит от воркера (loadingSizeBytes), читать его было некому.
+                    var loadSizeMb = Number(lm.loadingSizeBytes || 0) / (1024 * 1024);
+                    var loadSizeLabel = loadSizeMb > 0
+                        ? (loadSizeMb >= 1024 ? (loadSizeMb / 1024).toFixed(1) + ' GB' : Math.round(loadSizeMb) + ' MB')
+                        : '';
                     return '<span class="badge" style="background:rgba(74,158,255,0.12);color:#4a9eff;border-color:rgba(74,158,255,0.3);margin-right:4px;" title="' +
-                        _t('gguf.loading_indicator') + ': ' + escapeHtml(lm.name) + '">' +
+                        _t('gguf.loading_indicator') + ': ' + escapeHtml(lm.name) +
+                        (loadSizeLabel ? ' · ' + escapeHtml(loadSizeLabel) : '') + '">' +
                         '<i class="fas fa-spinner fa-spin"></i> ' + escapeHtml(lm.name) + ' ' + elapsedLabel +
                     '</span>';
                 }).join('');

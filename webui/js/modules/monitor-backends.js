@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Monitor Backends Module
  * Backend table rendering with sorting and filtering
  * Used by: monitor.html
@@ -471,13 +471,13 @@ const MonitorBackends = (() => {
             : '';
 
         // ==== Loading column (Issue: «отображение загрузки в мониторе») ====
-        // Поддерживается два источника:
-        //   1) b.loadingModels: [{name, state, loadingStartedAt, loadingSizeBytes, error}] — массив объектов
-        //   2) b.loadingModelCount: число (если API отдаёт только счётчик)
-        //   3) b.llamaCppMetrics.loadingModels: альтернативный путь (через metrics-broker)
+        // R346 (2026-10-30): путь `b.llamaCppMetrics.loadingModels` удалён —
+        // такого ключа не отдаёт ни один эндпоинт (метрики llama.cpp приходят
+        // как `llamaCpp`), ветка была мёртвой. Источники: b.loadingModels
+        // (массив объектов) и b.loadingModelCount (только счётчик).
         const loadingArr = (b.loadingModels && Array.isArray(b.loadingModels) && b.loadingModels.length > 0)
             ? b.loadingModels
-            : ((b.llamaCppMetrics && Array.isArray(b.llamaCppMetrics.loadingModels)) ? b.llamaCppMetrics.loadingModels : []);
+            : [];
         const loadingCount = (b.loadingModelCount != null)
             ? b.loadingModelCount
             : loadingArr.length;

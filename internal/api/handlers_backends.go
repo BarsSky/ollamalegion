@@ -852,29 +852,33 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			backendData["system"] = metrics.System
 			backendData["prediction"] = metrics.Prediction
 			// Phase 2 (2026-07-06): fallback для llama_cpp бэкендов. Без NVML в
-			// agent metrics.GPU пуст (MemoryTotal=0, MemoryUsed=0). Если есть
-			// данные от cppworker poller (LlamaCppMetrics.GPUInfo) — используем их.
+			// agent metrics.GPU пуст (MemoryTotal=0, MemoryUsed=0).
+			//
+			// R346 (2026-10-30): источник — TotalVRAMMB/AvailableVRAMMB поллера.
+			// Раньше здесь читался LlamaCppMetrics.GPUInfo, а его НЕ ЗАПОЛНЯЕТ ни один
+			// путь балансера: поле `gpuInfo` в JSON не появлялось никогда, поэтому
+			// фолбэк был мёртвым кодом. Симптом: в bundled-режиме (воркер без агентской
+			// NVML) монитор показывал 0 VRAM, хотя поллер каждый тик писал
+			// total_vram_mb/available_vram_mb — числа были видны только в сыром JSON.
+			//
+			// Semantics: available_vram_mb у воркера = свободная VRAM (VRAMFreeMB),
+			// total_vram_mb = вся VRAM карты (VRAMTotalMB), обе в мегабайтах — как и
+			// GPUMetrics.MemoryTotal/MemoryUsed/MemoryFree (см. mapLlamaGPUMetrics).
 			if backend.Type == types.BackendTypeLlamaCpp && metrics.GPU.MemoryTotal == 0 {
 				// R245: снапшот под RLock — поллер переписывает поля под Lock.
 				lm, _ := s.proxy.GetMetricsManager().SnapshotLlamaCppMetrics(backend.ID)
-				if lm != nil && lm.GPUInfo != nil {
-					devMemTotal := uint64(0)
-					devMemFree := uint64(0)
-					devUtil := 0.0
-					if len(lm.GPUInfo.Devices) > 0 {
-						d := lm.GPUInfo.Devices[0]
-						devMemTotal = d.MemoryTotal
-						devMemFree = d.MemoryFree
-						devUtil = d.Utilization
-					} else {
-						devMemTotal = lm.GPUInfo.TotalVRAM
-						devMemFree = lm.GPUInfo.FreeVRAM
+				if lm != nil && lm.TotalVRAMMB > 0 {
+					freeMB := lm.AvailableVRAMMB
+					if freeMB > lm.TotalVRAMMB {
+						freeMB = lm.TotalVRAMMB
 					}
+					usedMB := lm.TotalVRAMMB - freeMB
+					util := float64(usedMB) * 100.0 / float64(lm.TotalVRAMMB)
 					backendData["gpu"] = map[string]interface{}{
-						"usagePercent": devUtil,
-						"memoryTotal":  devMemTotal,
-						"memoryUsed":   devMemTotal - devMemFree,
-						"memoryFree":   devMemFree,
+						"usagePercent": util,
+						"memoryTotal":  lm.TotalVRAMMB,
+						"memoryUsed":   usedMB,
+						"memoryFree":   freeMB,
 						"temperature":  0,
 						"powerUsage":   0,
 						"powerLimit":   0,

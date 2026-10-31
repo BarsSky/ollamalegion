@@ -317,6 +317,11 @@ services:
       - LB_RESOURCE_LIMITS_HARD_BLOCK=${LB_RESOURCE_LIMITS_HARD_BLOCK:-0}
       - LB_RPC_NODE_PORT=${LB_RPC_NODE_PORT:-50052}
       - LB_RPC_LINK_MEASURE_SEC=${LB_RPC_LINK_MEASURE_SEC:-900}
+      # R349: TTL кэша TCP-проб узлов раскладки. Один проход guard'а проверяет узел
+      # несколько раз (список для мастера + решение о приказе + разрешение адреса
+      # R350); без кэша донор видел 10-11 подключений в минуту на простое.
+      # 0 = кэш выключен (всегда честный dial). Гейт перед генерацией не кэшируется.
+      - LB_RPC_PROBE_CACHE_SEC=${LB_RPC_PROBE_CACHE_SEC:-10}
       - LB_SELF_BASE_URL=${LB_SELF_BASE_URL:-}
       # Второй токен-список (CSV). Имеет смысл только если LB_API_TOKEN не задан:
       # LB_API_TOKEN выше приоритетом и ПОЛНОСТЬЮ заменяет config.json.

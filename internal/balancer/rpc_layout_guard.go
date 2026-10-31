@@ -211,7 +211,9 @@ func (p *Proxy) rpcNodeAddrResolved(b *types.Backend, timeout time.Duration) (ad
 		return reported, "reported"
 	}
 
-	probe := p.rpcProbeFunc()
+	// R349: пробы — через короткий кэш, иначе один проход guard'а делает несколько
+	// TCP-подключений к донору (и это видно в логе rpc-server как шум).
+	probe := p.rpcProbeCached
 	if probe(reported, timeout) {
 		return reported, "reported"
 	}
@@ -310,6 +312,16 @@ func (p *Proxy) EnsureRPCLayout(backendID string) (degraded bool, reason string)
 		return false, ""
 	}
 
+	// R349 (2026-10-31): один проход guard'а = один замер на узел.
+	//
+	// ЗАЧЕМ СБРОС ЗДЕСЬ. Внутри прохода узел проверяется несколько раз (список для
+	// мастера, решение о приказе, разрешение адреса R350), и без кэша донор видел
+	// 10-11 TCP-подключений в минуту на простаивающем стенде. Но между проходами
+	// кэш обязан начинаться заново: иначе вернувшийся узел считался бы мёртвым до
+	// истечения TTL, и раскладка восстанавливалась бы не на следующем проходе, а
+	// через TTL (R118.2: «узел вернулся — следующий проход включает раскладку сам»).
+	p.forgetRPCProbeCache()
+
 	role := strings.TrimSpace(b.Role)
 	// R229 (2026-10-22): решение оператора (WebUI-тумблер «RPC» + «Применить»)
 	// важнее роли. Живой дефект: выключенная оператором раскладка возвращалась
@@ -367,7 +379,11 @@ func (p *Proxy) EnsureRPCLayout(backendID string) (degraded bool, reason string)
 		return true, i18n.T("balancer.rpc_layout.backend_offline")
 	}
 
-	alive, dead := probeRPCNodes(p.rpcProbeFunc(), wanted)
+	// R349 (2026-10-31): тот же короткий кэш проб, что и у решения о приказе.
+	// Иначе проход дёргает каждый узел по нескольку раз (см. rpc_probe_cache_r349.go).
+	// ВАЖНО: гейт перед генерацией (checkRPCNodesForInference) кэш НЕ использует —
+	// там нужна правда сейчас, и это закреплено тестом-сторожем.
+	alive, dead := probeRPCNodes(p.rpcProbeCachedFn(), wanted)
 	if len(wanted) > 0 && len(alive) == 0 {
 		reason = i18n.T("balancer.rpc_layout.nodes_unreachable",
 			strings.Join(dead, ", "))

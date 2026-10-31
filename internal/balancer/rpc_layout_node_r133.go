@@ -457,7 +457,9 @@ func (p *Proxy) EnsureRPCNodeServing(backendID string) (bool, string) {
 		reachable := true
 		reason := ""
 		if addr != "" {
-			reachable = p.rpcProbeFunc()(addr, rpcNodeServeDialTimeout)
+			// R349: проба через короткий кэш — проход guard'а не должен открывать
+			// отдельное TCP-подключение к тому же узлу, который уже проверялся.
+			reachable = p.rpcProbeCached(addr, rpcNodeServeDialTimeout)
 			if !reachable {
 				reason = i18n.T("balancer.rpc_layout_node.not_reachable_reason", addr)
 			}

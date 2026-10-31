@@ -284,10 +284,22 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			cppWorkerPort = existing.CppWorkerPort
 		}
 
+		// R357 (2026-10-31): АДРЕС. Регистрация собирает запись заново, и раньше host
+		// брался из payload агента — то есть каждое переподключение агента откатывало
+		// операторскую правку адреса (живой случай: донор переехал, оператор исправил
+		// host на 100.64.0.7, а агент снова присылал мёртвый 192.168.13.34 — раскладка
+		// уходила в пустоту, health давал провал). Теперь живой прежний адрес
+		// сохраняется, а не отвечающий — заменяется присланным.
+		hostPort := cppWorkerPort
+		if hostPort <= 0 {
+			hostPort = ollamaPort
+		}
+		regHost, _ := resolveRegisteredHostR357(existing.Host, host, hostPort)
+
 		updated := types.Backend{
 			ID:                           req.AgentID,
 			Name:                         req.Name,
-			Host:                         host,
+			Host:                         regHost,
 			OllamaPort:                   ollamaPort,
 			AgentPort:                    agentPort,
 			ImagePort:                    imagePort,

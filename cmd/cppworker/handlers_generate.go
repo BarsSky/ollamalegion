@@ -330,6 +330,11 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	modelName := req.Model
+	// R347: время жизни модели считаем ЗДЕСЬ, до runGenerateCore. Тот принимает req
+	// по значению и нормализует копию; при разборе внутри него `req._keepAliveDuration`
+	// здесь оставался нулём, а applyKeepAlive(0) выгружает модель — то есть модель
+	// выгружалась после каждого ответа (см. keepAliveOfRequest).
+	req._keepAliveDuration = keepAliveOfRequest(req)
 	// InFlight counter: защищает активные запросы от reload-обрыва.
 	// handleReloadModel ждёт WaitZero перед UnloadModel.
 	if modelName != "" && backend.InFlight() != nil {
@@ -653,6 +658,10 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	modelName := req.Model
+	// R347: то же, что в handleGenerate — считаем до runGenerateCore, иначе
+	// _keepAliveDuration в этом req остаётся нулём и модель выгружается сразу
+	// после ответа (keepAliveOfRequest).
+	req._keepAliveDuration = keepAliveOfRequest(req)
 	// InFlight counter: защищает активные запросы от reload-обрыва.
 	if modelName != "" && backend.InFlight() != nil {
 		backend.InFlight().Inc(modelName)
@@ -947,4 +956,25 @@ func parseKeepAlive(s string) time.Duration {
 		return defaultKeepAliveDuration
 	}
 	return d
+}
+
+// keepAliveOfRequest — время жизни модели ПОСЛЕ ответа для этого запроса (R347).
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ ПАРСИНГ ВНУТРИ runGenerateCore.
+//
+// Живой дефект (поймано при проверке донора на стенде). runGenerateCore принимает
+// req ПО ЗНАЧЕНИЮ и нормализует СВОЮ копию — поэтому `req._keepAliveDuration` в
+// самом обработчике оставался нулевым. А applyKeepAlive(0) означает «клиент
+// попросил выгрузить»: модель выгружалась после КАЖДОГО ответа /api/generate,
+// независимо от keep_alive клиента (в том числе при "30m").
+//
+// Цена: следующий запрос платил полную загрузку. Замер на стенде (gemma-4-E4B-it,
+// ctx 32768): загрузка 58.7 с; запрос «из тёплого» 2.7 с и 27.6 tok/s, следующий
+// (уже после выгрузки) — 78-80 с и 3.2 tok/s; в RPC-раскладке из двух узлов —
+// ~100 с на запрос. Клиент видел «модель стала в 30 раз медленнее».
+//
+// Вызывается в обработчике СРАЗУ после декодирования тела, до runGenerateCore:
+// тогда значение живёт в том req, чей defer вызывает applyKeepAlive.
+func keepAliveOfRequest(req generateRequest) time.Duration {
+	return parseKeepAlive(req.KeepAlive)
 }

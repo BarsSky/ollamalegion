@@ -716,7 +716,7 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 		// R83/v52 (2026-10-01): ленивая загрузка обязана уважать профиль модели —
 		// тот же, что применяет балансер при auto-load.
 		//
-		// ДЕФЕКТ (замер стенда). handleLoadModel/handleReloadModel вызывают
+		// ДЕФЕКТ (замер стенда). handleReloadModel вызывает
 		// applyProfileToLoadRequest, а этот путь — нет. Прямой запрос к cppworker
 		// (WebUI, диагностика, клиент мимо балансера) поднимал модель на
 		// env-дефолтах контейнера: kvCacheType=f16 вместо профильного q4_0. KV
@@ -725,6 +725,13 @@ func ensureModelLoadedWithNCtx(ctx context.Context, modelName string, requestedN
 		// загруженного балансером. Гейт n_ctx при этом уже считал KV по профилю
 		// (memfit_gate.effectiveKVCacheTypeForLoad) — то есть решение принималось
 		// по одному типу KV, а загрузка шла с другим.
+		//
+		// ИСПРАВЛЕНО В ДВУХ МЕСТАХ. Здесь — с R83/v52. И в handleLoadModel —
+		// с R364: этот комментарий долго утверждал, что legacy-путь
+		// (/api/models/load) профиль применяет, но тот его не применял, и прямой
+		// вызов поднимал модель с чужим окном и чужим KV (замер: ctx 65536 вместо
+		// 32768, q8_0 вместо q4_0, 2.9 tok/s против 25.9; см.
+		// load_profile_seed_r364.go).
 		//
 		// Профиль только ДОПОЛНЯЕТ: applyProfileToLoadRequest заполняет поля,
 		// которые остались пустыми/нулевыми, поэтому окно от клиента

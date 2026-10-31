@@ -164,33 +164,69 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// R364 (2026-10-31): профиль модели — и на legacy /api/models/load.
+	//
+	// До этой правки профиль применяли только handleLoadWithParams и
+	// handleReloadModel (плюс ленивая загрузка через applySyncedProfileToLazyLoadOpts),
+	// а здесь его не было вовсе. Замер на стенде: прямой
+	// `POST /api/models/load {"name":"gemma-4-E4B-it-Q4_K_M"}` поднял модель на
+	// конфиге контейнера — ctx 65536 вместо 32768, KV q8_0 вместо q4_0,
+	// reasoning выключен — и выдал 2.9 tok/s против 25.9 у инстанса, поднятого
+	// балансером. Приоритет тот же, что у балансера:
+	// явный запрос > профиль модели > конфиг/env (см. load_profile_seed_r364.go).
+	profile := readProfileForLoadR364(modelName, modelPath)
+	if profile != nil && profile.Profile.Disabled {
+		// Профиль помечает модель сломанной (например, upstream GGML_ASSERT):
+		// грузить её нельзя, иначе клиент уходит в crash-loop (Round 27).
+		logger.Get().Warnw("handleLoadModel: profile is disabled, refusing load",
+			"name", modelName, "profile_key", profile.Key)
+		writeError(w, http.StatusForbidden, "model "+modelName+" is disabled by profile")
+		return
+	}
+	defs := loadDefaultsR364{
+		GPULayers:     defGPULayers,
+		ContextSize:   defCtxSize,
+		BatchSize:     defBatchSize,
+		FlashAttnType: defFlashAttn,
+	}
+	seed := loadProfileSeedR364{}
+	if profile != nil {
+		seed = profile.Seed
+	}
+	params := resolveLoadParamsR364(req, seed, defs)
+	if params.KVCacheInvalid {
+		logger.Get().Warnw("handleLoadModel: ignoring invalid kvCacheType",
+			"name", modelName, "kvCacheType", params.KVCacheRaw,
+			"validValues", []string{"f16", "q8_0", "q4_0"})
+	}
 	opts := cppbackend.LoadModelOpts{
-		GPULayers:     defaultIntPtr(req.GPULayers, defGPULayers),
-		ContextSize:   defaultIntPtr(req.ContextSize, defCtxSize),
-		BatchSize:     defaultIntPtr(req.BatchSize, defBatchSize),
-		FlashAttnType: defaultIntPtr(req.FlashAttnType, defFlashAttn),
+		GPULayers:     params.GPULayers,
+		ContextSize:   params.ContextSize,
+		BatchSize:     params.BatchSize,
+		FlashAttnType: params.FlashAttnType,
 		NUMA:          defaultBoolPtr(req.NUMA, defNUMA),
 		UseMmap:       defaultBoolPtr(req.UseMmap, defUseMmap),
 		TensorSplit:   defTensorSplit,
 		SplitMode:     defSplitMode,
+		// Round 44 (2026-08-19): kvCacheType/parallel — та же обработка, что в
+		// handleLoadWithParams; значения приходят из resolveLoadParamsR364,
+		// то есть с учётом профиля модели (R364).
+		Parallel:    params.Parallel,
+		KVCacheType: params.KVCacheType,
 		// R248/B3: vision-проектор (mmproj) — только явный путь из запроса.
 		MmprojPath: mmprojPathFromRequest(req.MmprojPath),
 	}
-	// Round 44 (2026-08-19) R43 regression fix: apply extended runtime params
-	// (kvCacheType, parallel, override-tensors) the same way handleLoadWithParams
-	// does. Without this, the legacy /api/models/load endpoint silently drops
-	// kvCacheType in the auto-reload path triggered by the balancer.
-	if req.KVCacheType != nil && *req.KVCacheType != "" {
-		if isValidKVCacheType(*req.KVCacheType) {
-			opts.KVCacheType = *req.KVCacheType
-		} else {
-			logger.Get().Warnw("handleLoadModel: ignoring invalid kvCacheType",
-				"name", modelName, "kvCacheType", *req.KVCacheType,
-				"validValues", []string{"f16", "q8_0", "q4_0"})
-		}
-	}
-	if req.Parallel != nil && *req.Parallel > 0 {
-		opts.Parallel = *req.Parallel
+	if profile != nil {
+		// Печатаем РАЗРЕШЁННЫЕ значения, а не поля профиля: оператору нужно
+		// видеть, что реально уедет в llama.cpp (явный запрос мог перебить
+		// профиль, а какое-то поле могло остаться на конфиге).
+		logger.Get().Infow("handleLoadModel: applied model profile (R364)",
+			"name", modelName, "profile_key", profile.Key,
+			"profile_ctx", profile.Profile.ContextLength,
+			"ctxSize", opts.ContextSize,
+			"gpuLayers", opts.GPULayers,
+			"kvCacheType", opts.KVCacheType,
+			"parallel", opts.Parallel)
 	}
 	// R83 (2026-09-30): окно НА КЛИЕНТА (пересчёт в суммарное — в
 	// LoadModelWithOpts, там известны и слоты, и конфиг).
@@ -202,10 +238,20 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// (а не только на /load-with-params), поэтому поле обязано приниматься и
 	// здесь: без него строгий декодер отвечал 400 «unknown field
 	// "enableReasoning"» и модель не поднималась вообще.
-	if req.EnableReasoning != nil {
+	//
+	// R364: если запрос молчит — берём значение профиля, а не только глобальный
+	// конфиг. Иначе прямой вызов поднимал модель с reasoning=false при профиле
+	// «включить» (живой замер, см. шапку load_profile_seed_r364.go).
+	switch {
+	case req.EnableReasoning != nil:
 		opts.EnableReasoning = req.EnableReasoning
 		logger.Get().Infow("handleLoadModel: per-model reasoning applied",
 			"name", modelName, "enableReasoning", *req.EnableReasoning)
+	case profile != nil && seed.Reasoning != nil:
+		opts.EnableReasoning = seed.Reasoning
+		logger.Get().Infow("handleLoadModel: reasoning from model profile (R364)",
+			"name", modelName, "profile_key", profile.Key,
+			"enableReasoning", *seed.Reasoning)
 	}
 	if req.OverrideTensor != nil && *req.OverrideTensor != "" {
 		opts.OverrideTensor = *req.OverrideTensor

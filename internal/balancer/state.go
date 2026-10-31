@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"ollama-loadbalancer/internal/i18n"
@@ -119,6 +120,40 @@ func (p *Proxy) LoadState() error {
 			// могла быть создана сборкой без этого поля.
 			if saved.NodeAddr != "" {
 				p.config.Backends[i].NodeAddr = saved.NodeAddr
+			}
+
+			// R351 (2026-10-31): АДРЕС, ПОРТЫ и ИМЯ — операторские правки, и они
+			// обязаны переживать рестарт балансера.
+			//
+			// ЖИВОЙ ДЕФЕКТ (двухузловой стенд). Оператор исправил host донора через
+			// PUT /api/v1/backends/{id} (192.168.13.34 → 100.64.0.7). В памяти запись
+			// обновилась и попала в state.json, но config.json (в bundled-развёртывании
+			// read-only, со старым адресом) при старте остаётся источником истины, а
+			// LoadState переносит поля ПО СПИСКУ — host и портов в нём не было. После
+			// пересоздания контейнера балансер поднял мёртвый адрес: health дал провал,
+			// раскладка ушла в пустоту, загрузка молча шла локально. Снаружи это
+			// «донор доступен, а раскладка не поднимается».
+			//
+			// Переносим ровно то, что оператор задаёт руками и что НЕ приходит от узла
+			// при heartbeat: имя, адрес, порты. Пустое/нулевое значение в state.json не
+			// затирает config (запись могла быть создана старой сборкой без этих полей).
+			if v := strings.TrimSpace(saved.Name); v != "" {
+				p.config.Backends[i].Name = v
+			}
+			if v := strings.TrimSpace(saved.Host); v != "" {
+				p.config.Backends[i].Host = v
+			}
+			if saved.OllamaPort > 0 {
+				p.config.Backends[i].OllamaPort = saved.OllamaPort
+			}
+			if saved.CppWorkerPort > 0 {
+				p.config.Backends[i].CppWorkerPort = saved.CppWorkerPort
+			}
+			if saved.AgentPort > 0 {
+				p.config.Backends[i].AgentPort = saved.AgentPort
+			}
+			if saved.ImagePort > 0 {
+				p.config.Backends[i].ImagePort = saved.ImagePort
 			}
 
 			// R250 (2026-10-28): флаг «не использовать бэкенд» — решение оператора.

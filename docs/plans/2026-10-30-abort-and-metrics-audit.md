@@ -849,3 +849,47 @@ R331-hygiene: та увидела бы пустой response и вставила
 `POST /api/cancel` с `"gemma-4-E4B-it-Q4_K_M.gguf"` и с `"…:latest"` → `cancelled`,
 воркер отчитался `cancelled:1` по модели. До правки оба имени давали `cancelled:0`:
 воркер сравнивает точно, а клиент называет модель по-своему.
+---
+
+## Закрытие A3 и A8 (R359 / R358, 2026-10-31)
+
+### A3 — адресаты отмены зависели от 30-секундного кэша и статуса healthy
+
+`cancelTargets` выбирал адресатов по кэшу поллера (`LoadedModels`, до 30 с устаревания) и
+требовал `Status == healthy`. Два сценария «Stop не сработал»: лаг кэша (модель только что
+поднялась на B, в кэше ещё на A — приказ уходит на A) и фильтр здоровья (у работающего
+llama.cpp-бэкенда статус `ollama_unavailable`, потому что у него нет Ollama-порта).
+
+Правка (`7c5ef0ee`): адресаты = (кэш ∧ healthy) ∪ (есть активный стрим по этой модели).
+Второй источник — собственный учёт стримов балансера (`active_streams_r271.go`): если
+стрим идёт, бэкенд обслуживает модель прямо сейчас, независимо от кэша и статуса. Имена
+сравниваются мягко (клиент с `.gguf`/тегом находит живой стрим), ответ детерминирован,
+дублей нет. Тесты: 5 сценариев в `cancel_targets_streams_r359_test.go`.
+
+### A8 — отмены не считались нигде
+
+`isBackendFailure()` исключает `bridge.ErrAborted` из ошибок, а другого места для отмены
+не было — поэтому генерация, остановленная клиентом, попадала в метрики как УСПЕХ
+(`TotalRequests +1`, `TotalErrors +0`), и `/metrics` с `/api/infer/metrics` показывали
+«всё хорошо», даже когда половина запросов обрывалась клиентом.
+
+Правка (`bda6becf`): третий исход `OutcomeCancelled` + `RecordRequestOutcome()`; счётчики
+`TotalCancelled` и per-model `Cancelled`; `metricsOutcomeR358()` переводит `ErrAborted`
+в отмену; три точки записи в `backend.go` переведены на него. Отдача: `totals.cancelled`,
+`totals.cancel_rate`, `models[].cancelled` в `/api/infer/metrics` и серии
+`cppworker_generation_cancelled_total{model}` + `cppworker_cancelled_total` в `/metrics`.
+
+Живая проверка (`balancer:r359`, `cppworker:gpu-bda6becf`): после стрима и Stop —
+
+```
+totals: requests=1 errors=0 cancelled=1
+model gemma-4-E4B-it-Q4_K_M: requests=1 errors=0 cancelled=1
+cppworker_generation_cancelled_total{model="gemma-4-E4B-it-Q4_K_M"} 1
+cppworker_cancelled_total 1
+```
+
+То есть отмена перестала выглядеть успехом и стала видимой на дашборде.
+
+Осталось непроверенным живьём по A3: сценарий с двумя одноимёнными копиями на разных узлах
+(донор по роли не поднимает копий, а второй мастер на стенде не развёрнут) — логика покрыта
+юнит-тестами, но «Stop гасит только нужную копию» на живом стенде не воспроизводилось.

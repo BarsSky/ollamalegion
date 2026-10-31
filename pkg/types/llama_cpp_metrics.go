@@ -106,6 +106,19 @@ type LlamaCppMetrics struct {
 	// снимок) | probed (узлы спрошены). Без этого «0 МБ узлов» и «узлы не
 	// измерялись» в панели выглядят одинаково.
 	VramRemoteSource string `json:"vramRemoteSource,omitempty"`
+	// R348 (2026-10-31): ПОСЛЕДНИЙ ИЗМЕРЕННЫЙ вклад узлов раскладки — отдельно от
+	// текущего (VramRemoteFreeMB/VramRemoteNodes).
+	//
+	// ЗАЧЕМ. Снимок узлов живёт 30 с (rpcDeviceTTL), после чего справочный путь
+	// честно отдаёт 0 — протухшее нельзя выдавать за текущую ёмкость (R132). Но в
+	// панели «0 МБ узлов» и «7 ГБ донора, измеренные 10 минут назад» тогда
+	// неотличимы, и вопрос «влезет ли модель в две карты» остаётся без ответа.
+	//
+	// Эти поля только для показа: в решениях о загрузке не участвуют.
+	VramRemoteLastKnownFreeMB  uint64 `json:"vramRemoteLastKnownFreeMb,omitempty"`
+	VramRemoteLastKnownTotalMB uint64 `json:"vramRemoteLastKnownTotalMb,omitempty"`
+	VramRemoteLastKnownNodes   int    `json:"vramRemoteLastKnownNodes,omitempty"`
+	VramRemoteLastKnownAgeSec  int64  `json:"vramRemoteLastKnownAgeSec,omitempty"`
 	// RPCNode — состояние СОБСТВЕННОГО узла раскладки ЭТОГО бэкенда (R133).
 	// Донор поднимает rpc-server по приказу балансера (роль donor) и обязан
 	// отчитываться: поднят ли процесс, слушается ли порт, какая ошибка. Иначе

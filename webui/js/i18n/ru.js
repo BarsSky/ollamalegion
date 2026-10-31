@@ -1078,6 +1078,15 @@ window.I18N_RU = {
   "renderers.vram_remote_nodes": "узлов",
   "renderers.loaded_at": "Загружена в",
 
+  // R348: история последнего замера VRAM узлов раскладки
+  "renderers.vram_remote_last_known": "Свободно VRAM (RPC-узлы, последний замер)",
+  "renderers.vram_remote_last_hint": "Снимок узлов обновляется при загрузке/раскладке; текущий вклад сейчас считается устаревшим",
+  "renderers.ago": "назад",
+  "renderers.age_just_now": "только что",
+  "renderers.age_sec": "с",
+  "renderers.age_min": "мин",
+  "renderers.age_hour": "ч",
+
   // renderOllamaParams - context labels
   "renderers.context": "Контекст",
   "renderers.effective": "Эффективный",

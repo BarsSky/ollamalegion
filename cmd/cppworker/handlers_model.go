@@ -1604,6 +1604,20 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 	resp["vram_layout_total_mb"] = layout.LayoutTotal >> 20
 	resp["vram_remote_nodes"] = layout.Nodes
 	resp["vram_remote_source"] = layout.RemoteSource
+	// R348 (2026-10-31): ПОСЛЕДНИЙ измеренный вклад узлов — отдельно от текущего.
+	//
+	// ЗАЧЕМ. Через rpcDeviceTTL (30 с) снимок узлов протухает, и справочный путь
+	// честно отдаёт vram_remote_* = 0 (R132: протухшее не выдаём за текущую
+	// ёмкость). Но тогда «донор 7 ГБ, измеренный 10 минут назад» и «узлов в
+	// раскладке нет» выглядят одинаково, и вопрос «влезет ли модель в два узла»
+	// остаётся без ответа, хотя замер был.
+	//
+	// Эти поля — ТОЛЬКО для показа: в решениях о загрузке они не участвуют,
+	// поэтому отдельные ключи, а не подмена vram_remote_*.
+	resp["vram_remote_last_known_free_mb"] = layout.RemoteLastKnownFree >> 20
+	resp["vram_remote_last_known_total_mb"] = layout.RemoteLastKnownTotal >> 20
+	resp["vram_remote_last_known_nodes"] = layout.RemoteLastKnownNodes
+	resp["vram_remote_last_known_age_sec"] = int64(layout.RemoteLastKnownAge.Seconds())
 
 	// R133 (2026-10-16): состояние СОБСТВЕННОГО узла раскладки этой машины.
 	//

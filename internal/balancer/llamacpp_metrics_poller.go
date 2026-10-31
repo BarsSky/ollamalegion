@@ -285,6 +285,14 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 		// none | cache | probed. Нужен панели: «0 МБ узлов» и «узлы не
 		// измерялись» снаружи выглядели одинаково.
 		VramRemoteSource string `json:"vram_remote_source"`
+		// R348 (2026-10-31): ПОСЛЕДНИЙ измеренный вклад узлов — отдельно от текущего.
+		// Через 30 с снимок протухает, и vram_remote_* честно обнуляются (R132), из-за
+		// чего «0 МБ узлов» и «7 ГБ донора, измеренные 10 минут назад» в панели
+		// выглядели одинаково. Эти поля — только для показа, в решениях не участвуют.
+		VramRemoteLastKnownFreeMB  uint64 `json:"vram_remote_last_known_free_mb"`
+		VramRemoteLastKnownTotalMB uint64 `json:"vram_remote_last_known_total_mb"`
+		VramRemoteLastKnownNodes   int    `json:"vram_remote_last_known_nodes"`
+		VramRemoteLastKnownAgeSec  int64  `json:"vram_remote_last_known_age_sec"`
 		// R133 (2026-10-16): состояние СОБСТВЕННОГО узла раскладки этой машины
 		// (cppworker отдаёт его в /api/models, поле rpc_server). Донор поднимает
 		// узел по приказу балансера и обязан отчитаться: enabled (желание),
@@ -565,6 +573,12 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 	// R132/R133: источник вклада узлов у справочных путей и состояние
 	// СОБСТВЕННОГО узла раскладки этого бэкенда (донор отчитывается сам).
 	lm.VramRemoteSource = data.VramRemoteSource
+	// R348: последний измеренный вклад узлов — для панели, когда текущий снимок
+	// протух (иначе «0 МБ узлов» неотличимо от «узлов нет в раскладке»).
+	lm.VramRemoteLastKnownFreeMB = data.VramRemoteLastKnownFreeMB
+	lm.VramRemoteLastKnownTotalMB = data.VramRemoteLastKnownTotalMB
+	lm.VramRemoteLastKnownNodes = data.VramRemoteLastKnownNodes
+	lm.VramRemoteLastKnownAgeSec = data.VramRemoteLastKnownAgeSec
 	if data.RPCServer != nil {
 		// R159: диагностика «что именно воркер сказал про СВОЙ узел». Без неё
 		// расхождение «воркер: listening=true / балансер: listening=false»

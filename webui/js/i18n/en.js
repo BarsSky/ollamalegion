@@ -923,6 +923,15 @@ window.I18N_EN = {
   "renderers.vram_remote_nodes": "nodes",
   "renderers.loaded_at": "Loaded at",
 
+  // R348: история последнего замера VRAM узлов раскладки
+  "renderers.vram_remote_last_known": "Free VRAM (RPC nodes, last measured)",
+  "renderers.vram_remote_last_hint": "The node snapshot is refreshed on load/layout; the fresh contribution is currently considered stale",
+  "renderers.ago": "ago",
+  "renderers.age_just_now": "just now",
+  "renderers.age_sec": "sec",
+  "renderers.age_min": "min",
+  "renderers.age_hour": "h",
+
   // renderOllamaParams - context labels
   "renderers.context": "Context",
   "renderers.effective": "Effective",

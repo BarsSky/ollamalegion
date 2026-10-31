@@ -182,7 +182,22 @@ type LayoutBreakdown struct {
 	// RemoteFree/RemoteTotal/Nodes — вклад узлов раскладки.
 	RemoteFree, RemoteTotal uint64
 	Nodes                   int
-	Known                   bool
+	// R348 (2026-10-31): ПОСЛЕДНИЙ ИЗМЕРЕННЫЙ вклад узлов — отдельно от текущего.
+	//
+	// ЗАЧЕМ ОТДЕЛЬНЫЕ ПОЛЯ, А НЕ «пусть RemoteFree показывает старое». R132 уже
+	// решил: протухший снимок нельзя выдавать за сегодняшнюю ёмкость (иначе
+	// оператор видит гигабайты донора, которого уже нет), и это закреплено тестом
+	// TestR132_StaleSnapshotIsNotPresentedAsCurrent. Но обратная крайность не
+	// лучше: после TTL справочная ручка отдаёт 0/0, и «донор 7 ГБ был измерен
+	// 10 минут назад» неотличимо от «узлов в раскладке нет».
+	//
+	// Поэтому ёмкость (RemoteFree/Nodes) остаётся строго текущей, а история живёт
+	// в LastKnown*: UI показывает её словами «последний замер N назад», и она не
+	// участвует ни в одном решении о загрузке.
+	RemoteLastKnownFree, RemoteLastKnownTotal uint64
+	RemoteLastKnownNodes                      int
+	RemoteLastKnownAge                        time.Duration
+	Known                                     bool
 	// RemoteSource — откуда взялся вклад узлов: none / cache / probed.
 	RemoteSource string
 }
@@ -260,5 +275,10 @@ func (b *Backend) LayoutBreakdownCached() LayoutBreakdown {
 
 	out.LayoutFree = out.LocalFree + out.RemoteFree
 	out.LayoutTotal = out.LocalTotal + out.RemoteTotal
+
+	// R348: история отдельно от ёмкости. Берётся из уже собранных снимков, узлы НЕ
+	// опрашиваются (это справочный путь).
+	out.RemoteLastKnownFree, out.RemoteLastKnownTotal,
+		out.RemoteLastKnownNodes, out.RemoteLastKnownAge = b.lastKnownRemoteVRAM(out.Servers)
 	return out
 }

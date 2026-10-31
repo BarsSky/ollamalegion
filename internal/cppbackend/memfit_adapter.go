@@ -163,6 +163,58 @@ func (b *Backend) cachedRemoteVRAM() (free, total uint64, devices int, fresh boo
 	return free, total, devices, devices > 0
 }
 
+// lastKnownRemoteVRAM — ПОСЛЕДНИЙ известный вклад узлов раскладки: (свободно,
+// всего, сколько устройств, возраст). Ничего не опрашивает (R348).
+//
+// Отличие от cachedRemoteVRAM: тот отдаёт данные только пока снимок свежий
+// (rpcDeviceTTL), и это правильно для ЁМКОСТИ. Здесь — история для показа
+// оператору: после TTL `vram_remote_*` обнуляются (R132: протухшее не выдаём за
+// текущее), и без этой истории «7 ГБ донора, измеренные 10 минут назад»
+// неотличимы от «узлов в раскладке нет».
+//
+// Порядок источников: снимок текущей раскладки (rpcDevices, свежий или нет), затем
+// последний УСПЕШНЫЙ замер для ТОГО ЖЕ списка узлов (rpcDevGood, R174). Снимок для
+// другого списка не годится: это была бы память машины, которой в раскладке нет.
+func (b *Backend) lastKnownRemoteVRAM(servers []string) (free, total uint64, nodes int, age time.Duration) {
+	if b == nil {
+		return 0, 0, 0, 0
+	}
+	b.rpcDevMu.Lock()
+	defer b.rpcDevMu.Unlock()
+
+	sumRemote := func(devs []bridge.DeviceInfo) (f, t uint64, n int) {
+		for _, dev := range devs {
+			if !dev.IsRemote {
+				continue
+			}
+			f += dev.MemoryFree
+			t += dev.MemoryTotal
+			n++
+		}
+		return f, t, n
+	}
+
+	if f, t, n := sumRemote(b.rpcDevices); n > 0 {
+		snapshotAge := time.Duration(0)
+		if !b.rpcDevAt.IsZero() {
+			snapshotAge = time.Since(b.rpcDevAt)
+			if snapshotAge < 0 {
+				snapshotAge = 0
+			}
+		}
+		return f, t, n, snapshotAge
+	}
+
+	good, goodAge, ok := b.lastGoodRPCSnapshotLocked(servers)
+	if !ok {
+		return 0, 0, 0, 0
+	}
+	if f, t, n := sumRemote(good); n > 0 {
+		return f, t, n, goodAge
+	}
+	return 0, 0, 0, 0
+}
+
 // memfitBudget — общий расчёт; withRPC решает, спрашивать ли удалённые узлы.
 func (b *Backend) memfitBudget(withRPC bool) memfit.Budget {
 	budget := memfit.Budget{

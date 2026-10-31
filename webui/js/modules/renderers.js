@@ -983,6 +983,19 @@ const Renderers = (function () {
     // а оператор сравнивает «модель поднялась в 12:04» с логами и часами. Для
     // сегодняшней загрузки достаточно времени, для старой — дата и время.
     // Пустая/битая строка → '' (вызывающий не рисует блок), а не «Invalid Date».
+    // R348: «сколько назад» для последнего замера VRAM узлов.
+    //
+    // Почему человеческие единицы, а не секунды: строка «последний замер 37 мин
+    // назад» читается сразу, а «2220 с» требует пересчёта в голове. Ноль и
+    // отрицательные значения — «только что»: снимок сделан прямо сейчас.
+    function formatAgeR348(sec) {
+        var s = Number(sec || 0);
+        if (!isFinite(s) || s <= 0) return _t('renderers.age_just_now') || 'just now';
+        if (s < 60) return Math.round(s) + ' ' + (_t('renderers.age_sec') || 'sec');
+        if (s < 3600) return Math.round(s / 60) + ' ' + (_t('renderers.age_min') || 'min');
+        return Math.round(s / 3600) + ' ' + (_t('renderers.age_hour') || 'h');
+    }
+
     function formatLoadedAtR346(iso) {
         if (!iso) return '';
         var d = new Date(iso);
@@ -1044,12 +1057,26 @@ const Renderers = (function () {
             // включённом RPC — иначе это нули и лишний шум в карточке.
             var vramRemoteFreeMb = Number(cppParams.vramRemoteFreeMb || 0);
             var vramRemoteNodes = Number(cppParams.vramRemoteNodes || 0);
-            if (vramFreeMb > 0 || vramTotalMb > 0 || (cppParams.rpcEnabled && vramRemoteFreeMb > 0)) {
+            // R348 (2026-10-31): снимок узлов живёт 30 с, после чего текущий вклад
+            // честно обнуляется (R132: протухшее не выдаём за текущую ёмкость). Но
+            // «0 МБ узлов» и «7 ГБ донора, измеренные 10 минут назад» в панели
+            // выглядели одинаково, и вопрос «влезет ли модель в две карты» оставался
+            // без ответа. Показываем историю ОТДЕЛЬНОЙ строкой и всегда с возрастом:
+            // она не участвует в решениях о загрузке.
+            var vramRemoteLastFreeMb = Number(cppParams.vramRemoteLastKnownFreeMb || 0);
+            var vramRemoteLastNodes = Number(cppParams.vramRemoteLastKnownNodes || 0);
+            var vramRemoteLastAgeSec = Number(cppParams.vramRemoteLastKnownAgeSec || 0);
+            var showRemoteCurrent = cppParams.rpcEnabled && vramRemoteFreeMb > 0;
+            var showRemoteLast = cppParams.rpcEnabled && !showRemoteCurrent && vramRemoteLastFreeMb > 0;
+            if (vramFreeMb > 0 || vramTotalMb > 0 || showRemoteCurrent || showRemoteLast) {
                 cppHtml += '<div class="be-detail-section"><div class="be-detail-title">' + escapeHtml(_t('renderers.section_vram') || 'VRAM') + '</div><div class="be-params-grid">';
                 if (vramTotalMb > 0) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.vram_total') || 'Total VRAM') + '</span><span class="be-param-value">' + formatMB(vramTotalMb) + '</span></div>';
                 if (vramFreeMb > 0) cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.free_vram')) + '</span><span class="be-param-value">' + formatMB(vramFreeMb) + '</span></div>';
-                if (cppParams.rpcEnabled && vramRemoteFreeMb > 0) {
+                if (showRemoteCurrent) {
                     cppHtml += '<div class="be-param-item"><span class="be-param-label">' + escapeHtml(_t('renderers.vram_remote_free') || 'Free VRAM (RPC nodes)') + '</span><span class="be-param-value">' + formatMB(vramRemoteFreeMb) + (vramRemoteNodes > 0 ? ' / ' + vramRemoteNodes + ' ' + escapeHtml(_t('renderers.vram_remote_nodes') || 'nodes') : '') + '</span></div>';
+                } else if (showRemoteLast) {
+                    var ageLabel = formatAgeR348(vramRemoteLastAgeSec);
+                    cppHtml += '<div class="be-param-item" title="' + escapeHtml(_t('renderers.vram_remote_last_hint') || 'Снимок узлов раскладки обновляется при загрузке/раскладке; текущий вклад считается устаревшим') + '"><span class="be-param-label">' + escapeHtml(_t('renderers.vram_remote_last_known') || 'Free VRAM (RPC nodes, last measured)') + '</span><span class="be-param-value">' + formatMB(vramRemoteLastFreeMb) + (vramRemoteLastNodes > 0 ? ' / ' + vramRemoteLastNodes + ' ' + escapeHtml(_t('renderers.vram_remote_nodes') || 'nodes') : '') + ' <span style="font-size:var(--font-size-xs);color:var(--text-secondary)">' + escapeHtml(_t('renderers.ago') || 'ago') + ' ' + escapeHtml(ageLabel) + '</span></span></div>';
                 }
                 cppHtml += '</div></div>';
             }

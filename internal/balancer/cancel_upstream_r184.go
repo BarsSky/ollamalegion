@@ -18,6 +18,7 @@ package balancer
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 
@@ -107,10 +108,35 @@ func (p *Proxy) cancelUpstreamGeneration(backendID, model, requestID, reason str
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
-		if logger.Get() != nil {
-			logger.Get().Infow(i18n.T("balancer.cancel_upstream.cancelled_info"),
-				"backend", backendID, "model", model, "request_id", requestID,
-				"precise", precise, "reason", reason, "status", resp.StatusCode)
+
+		// R361 (2026-10-31, живой факт): воркер может ответить 404 — генерации с таким
+		// request_id уже нет, потому что он сам увидел закрытие соединения, выставил
+		// abort-флаг и снял запись с учёта. Прежний код писал в этом случае Info
+		// «генерация отменена на воркере», то есть утверждал успех там, где отменять было
+		// нечего. Теперь вердикт различается явно (cancelVerdictFromResponseR361):
+		//   cancelled    — воркер подтвердил отмену (Info);
+		//   already_done — отменять было нечего (Debug: это НЕ ошибка, работа уже стоит);
+		//   failed       — приказ не дошёл/отвергнут (Warn: воркер мог продолжить работу).
+		var respBody map[string]interface{}
+		if raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 8192)); readErr == nil && len(raw) > 0 {
+			_ = json.Unmarshal(raw, &respBody)
+		}
+		verdict := cancelVerdictFromResponseR361(resp.StatusCode, respBody)
+		if logger.Get() == nil {
+			return
+		}
+		fields := []interface{}{
+			"backend", backendID, "model", model, "request_id", requestID,
+			"precise", precise, "reason", reason, "status", resp.StatusCode,
+			"verdict", string(verdict),
+		}
+		switch verdict {
+		case cancelVerdictCancelled:
+			logger.Get().Infow(i18n.T("balancer.cancel_upstream.cancelled_info"), fields...)
+		case cancelVerdictAlreadyDone:
+			logger.Get().Debugw("cancel upstream: отменять было нечего (генерация уже завершена)", fields...)
+		default:
+			logger.Get().Warnw("cancel upstream: приказ не принят воркером", fields...)
 		}
 	}()
 }

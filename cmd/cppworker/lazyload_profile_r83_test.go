@@ -34,7 +34,9 @@ func TestR83v52_LazyLoadTakesKVCacheTypeFromProfile(t *testing.T) {
 
 	// Как в плане ленивой загрузки: окно от клиента, kvCacheType не задан
 	// (до фикса так и уходило в llama.cpp → env-дефолт f16).
-	opts := cppbackend.LoadModelOpts{ContextSize: 32768}
+	// R367: реальный план несёт значение флага/env (дефолт -1 = auto). Ноль в этом
+	// поле значит «flash attention выключен» — и с профильным q4_0 это противоречие.
+	opts := cppbackend.LoadModelOpts{ContextSize: 32768, FlashAttnType: -1}
 	if err := applySyncedProfileToLazyLoadOpts("gemma-4-E4B-it-Q4_K_M", &opts); err != nil {
 		t.Fatalf("applySyncedProfileToLazyLoadOpts: %v", err)
 	}
@@ -70,6 +72,12 @@ func TestR83v52_LazyLoadKeepsExplicitPlan(t *testing.T) {
 		BatchSize:   512,
 		GPULayers:   35,
 		KVCacheType: "q4_0",
+		// R367: в реальном плане это поле всегда заполнено значением флага/env
+		// (дефолт -1 = auto). Ноль здесь означает «flash attention выключен», и
+		// вместе с квантованным KV это противоречие, которое теперь отвергается
+		// ДО загрузки (flash_attn_kv_guard_r367.go). Тест — про приоритет
+		// профиля, а не про flash attention, поэтому ставим реальный дефолт.
+		FlashAttnType: -1,
 	}
 	if err := applySyncedProfileToLazyLoadOpts("gemma-4-E4B-it-Q4_K_M", &opts); err != nil {
 		t.Fatalf("applySyncedProfileToLazyLoadOpts: %v", err)
@@ -89,7 +97,9 @@ func TestR83v52_LazyLoadDisabledProfileIsRefusal(t *testing.T) {
 	ps.cache["broken-model"] = types.LlamaCppModelProfile{Disabled: true}
 	profileSyncer = ps
 
-	opts := cppbackend.LoadModelOpts{ContextSize: 32768}
+	// R367: реальный план несёт значение флага/env (дефолт -1 = auto). Ноль в этом
+	// поле значит «flash attention выключен» — и с профильным q4_0 это противоречие.
+	opts := cppbackend.LoadModelOpts{ContextSize: 32768, FlashAttnType: -1}
 	err := applySyncedProfileToLazyLoadOpts("broken-model", &opts)
 	if err == nil {
 		t.Fatal("ожидался отказ для disabled-профиля")
@@ -105,7 +115,9 @@ func TestR83v52_LazyLoadNoProfileIsNoop(t *testing.T) {
 	defer func() { profileSyncer = old }()
 	profileSyncer = &profileSyncerT{cache: map[string]types.LlamaCppModelProfile{}}
 
-	opts := cppbackend.LoadModelOpts{ContextSize: 32768}
+	// R367: реальный план несёт значение флага/env (дефолт -1 = auto). Ноль в этом
+	// поле значит «flash attention выключен» — и с профильным q4_0 это противоречие.
+	opts := cppbackend.LoadModelOpts{ContextSize: 32768, FlashAttnType: -1}
 	if err := applySyncedProfileToLazyLoadOpts("unknown-model", &opts); err != nil {
 		t.Fatalf("без профиля ошибки быть не должно: %v", err)
 	}

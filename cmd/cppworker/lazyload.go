@@ -883,6 +883,12 @@ func applySyncedProfileToLazyLoadOpts(modelName string, opts *cppbackend.LoadMod
 		logger.Get().Infow(i18n.T("cppworker.lazyload.enable_reasoning_from_profile"),
 			"model", modelName, "enable_reasoning", *prof.EnableReasoning)
 	}
+	// R367 (2026-10-31): та же проверка, что в HTTP-обработчиках. Ленивая
+	// загрузка идёт по запросу чата; без этой проверки клиент получал 503 с
+	// «failed to create context» вместо причины (flash off + квантованный KV).
+	if err := flashAttnKVCacheConflictR367(opts.FlashAttnType, opts.KVCacheType); err != nil {
+		return fmt.Errorf("lazy-load: %w", err)
+	}
 	return nil
 }
 

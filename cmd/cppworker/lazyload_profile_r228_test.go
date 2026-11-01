@@ -60,7 +60,9 @@ func TestR228_LazyLoadFetchesProfilesWhenCacheEmpty(t *testing.T) {
 	profileSyncer = ps
 
 	// План без окна: как в живом случае «загрузка с env-дефолтом» (32768).
-	opts := cppbackend.LoadModelOpts{}
+	// R367: реальный план несёт значение флага/env (дефолт -1 = auto); ноль в поле
+	// flash attention значит «выключен» и с профильным q4_0 даёт противоречие.
+	opts := cppbackend.LoadModelOpts{FlashAttnType: -1}
 	if err := applySyncedProfileToLazyLoadOpts("gemma-4-E4B-it-Q4_K_M", &opts); err != nil {
 		t.Fatalf("applySyncedProfileToLazyLoadOpts: %v", err)
 	}

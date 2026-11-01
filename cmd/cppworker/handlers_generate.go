@@ -93,37 +93,12 @@ func normalizeGenerateRequest(req *generateRequest) {
 		req.NumCtx = req.Options.NumCtx
 	}
 
-	// Ollama /api/generate: system prompt prepend
-	if !req.Raw && req.System != "" {
-		req.Prompt = req.System + "\n" + req.Prompt
-	}
-
-	// Round 11 (2026-07-28) SOFT Prompt Injection для EnableReasoning:
-	// Prepend thinking instruction к prompt (Ollama /api/generate не
-	// имеет system role, поэтому подмешиваем в prompt). Работает для
-	// любой instruction-tuned модели (gemma-4-it, llama-3-it, и т.д.).
-	//
-	// Round 14b (2026-07-28): native enable_thinking НЕ применяется здесь,
-	// потому что /api/generate использует single prompt (без messages[]).
-	// Native path через common_chat_templates_apply требует structured
-	// chat messages — это /api/chat endpoint (см. handlers_chat.go).
-	// Для моделей с native thinking (Qwen3-thinking) рекомендуется
-	// использовать /api/chat вместо /api/generate.
-	//
-	// Round 17.1 fix (2026-07-31): добавлена инструкция "Wrap your reasoning
-	// in <reasoning>...</reasoning> tags". Без этого модели без нативного thinking
-	// эмитят reasoning как обычный текст — парсер не split'ит. С тегами
-	// парсер SplitReasoningContent корректно разделяет reasoning vs content.
-	// См. handlers_chat.go:injectThinkingInstruction — подробное обоснование.
-	if currentConfig != nil && currentConfig.EnableReasoning && !req.Raw {
-		const thinkingInstruction = "Before answering, use detailed step-by-step thinking. " +
-			"Reason about the problem carefully, consider different angles, " +
-			"show your work, then provide a clear final answer. " +
-			"Structure your response: first explain your reasoning, then give the answer. " +
-			"IMPORTANT: Wrap your step-by-step reasoning inside <reasoning>...</reasoning> tags. " +
-			"Your final answer (the user-facing response) should be OUTSIDE the </reasoning> tag."
-		req.Prompt = thinkingInstruction + "\n\n" + req.Prompt
-	}
+	// R368 (2026-10-31): подмешивание system и текстовой инструкции рассуждений
+	// ПЕРЕЕХАЛО в promptForGenerateR368. Причина: у модели с чат-шаблоном prompt
+	// теперь собирается шаблоном (как в Ollama), и подмешивать текст заранее —
+	// значит подмешать его дважды (в шаблон и в user-сообщение). Прежнее
+	// поведение сохранено там же как fallback для моделей без шаблона.
+	// См. generate_chat_template_r368.go.
 
 	// keep_alive: парсим и сохраняем в LastUsedAt (если != 0).
 	// Формат Ollama:
@@ -274,9 +249,26 @@ func runGenerateCore(w http.ResponseWriter, r *http.Request, req generateRequest
 	}
 	_ = actualModel
 
+	// R368 (2026-10-31): prompt собираем ПОСЛЕ загрузки — шаблон модели доступен
+	// только у загруженного инстанса. Модели с шаблоном получают prompt, как в
+	// Ollama (system → user + служебные токены начала реплики); без шаблона —
+	// прежнее подмешивание system/инструкции в текст.
+	promptModel := actualModel
+	if promptModel == "" {
+		promptModel = req.Model
+	}
+	thinking := currentConfig != nil && currentConfig.EnableReasoning
+	prompt, promptSource := promptForGenerateR368(promptModel, req, thinking)
+	if logger.Get() != nil {
+		logger.Get().Debugw("generate prompt assembled (R368)",
+			"model", promptModel, "source", promptSource,
+			"raw", req.Raw, "thinking", thinking,
+			"prompt_len", len(prompt))
+	}
+
 	params := buildGenerationParams(req)
 	ApplyCppCtxHeader(r, &params)
-	return params, req.Prompt, true
+	return params, prompt, true
 }
 
 // applyKeepAlive — применяет результат парсинга req.KeepAlive после инференса.

@@ -498,9 +498,30 @@ func nodeHostOf(server string) string {
 
 // nodeMarkedUnavailable — знает ли балансер, что узел раскладки недоступен.
 //
-// Признак — запись бэкенда с тем же host, помеченная как нездоровая или как
-// «агент молчит» (AgentSilentSince). Если записи нет, возвращаем false: решает
-// TCP-проба, как раньше (узел может быть зарегистрирован вручную, без агента).
+// Признак — запись бэкенда с тем же host, помеченная как нездоровая. Второй
+// признак — «агент молчит» (AgentSilentSince), но ТОЛЬКО у записи, где агент
+// объявлен (HasAgent): у вручную добавленного узла контракта с агентом нет,
+// и метка молчания ничего не говорит о доступности.
+//
+// ЖИВОЙ ДЕФЕКТ (R372, 2026-11-01, двухузловой стенд). Донор зарегистрирован
+// вручную (`POST /api/v1/backends`, у его агента CPPWORKER_REGISTER_DISABLE=true,
+// то есть агент к балансеру не ходит). Запись при этом осталась с
+// `hasAgent=false` и непустым `agentSilentSince` (его ставит
+// DetachAgentFromBackend), статус — healthy. Что видел оператор:
+//
+//	GET /api/v1/backends: node{running=true, listening=true, reachable=false}
+//	лог каждые 15 с:      EnsureRPCNodeServing: узел донора недоступен с балансера
+//	                      addr=100.64.0.7:50052
+//	мастер:               rpc_enabled=false — раскладка не включалась вовсе
+//
+// При этом TCP-подключение из контейнера балансера к донору проходило
+// (curl: "Established connection to 100.64.0.7 port 50052"). То есть проба не
+// выполнялась вообще: узел отбрасывался по метке молчания, которую для такой
+// записи никто и никогда не снимет (агент не ходит), — раскладка «залипала»
+// выключенной навсегда.
+//
+// Поэтому метка молчания учитывается только вместе с HasAgent: если агента нет,
+// решает TCP-проба (и это ровно тот случай, который описан в комментарии ниже).
 func (p *Proxy) nodeMarkedUnavailable(server string) bool {
 	host := nodeHostOf(server)
 	if host == "" {
@@ -513,7 +534,7 @@ func (p *Proxy) nodeMarkedUnavailable(server string) bool {
 		if b.Status != types.StatusHealthy && b.Status != "" {
 			return true
 		}
-		if b.AgentSilentSince != nil && !b.AgentSilentSince.IsZero() {
+		if b.HasAgent && b.AgentSilentSince != nil && !b.AgentSilentSince.IsZero() {
 			return true
 		}
 	}

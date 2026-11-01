@@ -3,10 +3,10 @@
 //
 // ЖИВОЙ ДЕФЕКТ (тест DSH как клиента, стенд, мастер):
 //
-//	1) ensureModelLoadedOnBackend: async auto-load → загрузка ПОШЛА с мёртвым
-//	   узлом 192.0.2.10:50052 → клиент получил 503
-//	2) …+9 c: EnsureRPCLayout: «узлы раскладки недоступны … загрузка идёт локально»
-//	3) …+9 c: executeLlamaCppLoad: «раскладка деградировала — грузим без мёртвых узлов»
+//  1. ensureModelLoadedOnBackend: async auto-load → загрузка ПОШЛА с мёртвым
+//     узлом 192.0.2.10:50052 → клиент получил 503
+//  2. …+9 c: EnsureRPCLayout: «узлы раскладки недоступны … загрузка идёт локально»
+//  3. …+9 c: executeLlamaCppLoad: «раскладка деградировала — грузим без мёртвых узлов»
 //
 // То есть первый запрос клиента после потери узла падал, а повторный проходил.
 // Причина: проба узла — TCP, а на хосте с docker-proxy TCP-соединение к
@@ -32,7 +32,8 @@ func TestR118_21_NodeMarkedUnhealthyDegradesBeforeLoad(t *testing.T) {
 
 	donor := p.backends["donor-1"].Backend
 	donor.Status = types.StatusUnhealthy
-	silent := time.Now().Add(-2 * time.Minute); donor.AgentSilentSince = &silent
+	silent := time.Now().Add(-2 * time.Minute)
+	donor.AgentSilentSince = &silent
 
 	degraded, reason := p.EnsureRPCLayout("main-1")
 	if !degraded {
@@ -75,10 +76,18 @@ func TestR118_21_UnknownNodeFallsBackToTCP(t *testing.T) {
 
 // TestR118_21_AgentSilentAloneIsEnough — «агент молчит» (AgentSilentSince) сам по
 // себе признак недоступности, даже если статус ещё healthy.
+//
+// R372 (2026-11-01): признак действует только у записи, где агент ОБЪЯВЛЕН
+// (HasAgent). У вручную добавленного узла контракта с агентом нет, и метка
+// молчания не должна блокировать TCP-пробу — иначе раскладка залипает
+// выключенной навсегда (живой случай: донор, добавленный через
+// POST /api/v1/backends при CPPWORKER_REGISTER_DISABLE=true на его агенте).
 func TestR118_21_AgentSilentAloneIsEnough(t *testing.T) {
 	p, _ := newLayoutGuardTestProxy(t, types.BackendRoleMain, types.BackendRoleDonor)
 	donor := p.backends["donor-1"].Backend
-	silent := time.Now().Add(-time.Minute); donor.AgentSilentSince = &silent
+	donor.HasAgent = true // агент объявлен — метка молчания имеет смысл
+	silent := time.Now().Add(-time.Minute)
+	donor.AgentSilentSince = &silent
 
 	if !p.nodeMarkedUnavailable(testDonorAddr) {
 		t.Error("молчащий агент обязан считаться недоступностью узла")

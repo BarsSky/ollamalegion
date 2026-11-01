@@ -581,37 +581,16 @@ func handleCppWorkerUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	applyInt("defaultReasoningBudget", &currentConfig.DefaultReasoningBudget, 0, 100000)
 
 	// === Логируем нераспознанные ключи (помогает WebUI отлаживать) ===
-	knownKeys := map[string]bool{
-		// Базовые
-		"defaultCtxSize": true, "defaultBatchSize": true,
-		"defaultGpuLayers": true, "defaultFlashAttnType": true,
-		"defaultNuma": true, "defaultUseMmap": true, "defaultUseMlock": true,
-		"defaultNThreads": true, "defaultNParallel": true, "defaultRmsNormEps": true,
-		// Multi-GPU
-		"autoGpuDistribution": true, "tensorSplitStrategy": true,
-		"defaultMainGpu": true, "defaultRpcBackend": true,
-		"defaultNoMemoryMap": true, "defaultTensorSplit": true, "defaultSplitMode": true,
-		// KV cache
-		"defaultKvCacheType": true, "defaultNoKvOffload": true,
-		// RoPE
-		"defaultRopeFreqBase": true, "defaultRopeFreqScale": true,
-		"defaultRopeScalingType": true, "defaultRopeScalingFactor": true,
-		// YaRN
-		"defaultYarnExtFactor": true, "defaultYarnAttnFactor": true,
-		"defaultYarnBetaFast": true, "defaultYarnBetaSlow": true,
-		// Метрики и lifecycle
-		"enableMetrics": true, "metricsRetentionSeconds": true, "idleUnloadMinutes": true,
-		// R304: роль бэкенда (донор не поднимает своих копий моделей).
-		"backendRole": true,
-		// Session 18 (Round 11/14): Reasoning/Thinking.
-		// enableReasoning/reasoningBudget — runtime-политика (промпт);
-		// defaultEnableReasoning/defaultReasoningBudget — то, что наследует
-		// НОВАЯ загрузка (R106b, 2026-10-12). Оба набора — не load-affecting.
-		"enableReasoning": true, "reasoningBudget": true,
-		"defaultEnableReasoning": true, "defaultReasoningBudget": true,
-	}
+	//
+	// R374 (2026-11-01): карта вынесена в update_config_keys_r374.go. Раньше она
+	// жила здесь и отставала от того, что обработчик применяет: rpcServerEnabled/
+	// rpcServerPort применялись (см. applyBool/applyInt выше), но в карту их не
+	// добавили — и на КАЖДОЙ смене роли донора воркер писал «unknown field» ровно
+	// про то, что только что успешно применил. Стюард-тест
+	// (update_config_keys_r374_test.go) теперь требует, чтобы каждый
+	// применяемый ключ был в карте.
 	for k := range updates {
-		if !knownKeys[k] {
+		if !updateConfigKnownKeysR374[k] {
 			logger.Get().Warnw("handleCppWorkerUpdateConfig: unknown field",
 				"field", k, "value", updates[k])
 		}

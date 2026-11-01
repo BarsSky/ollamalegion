@@ -312,6 +312,11 @@ type clusterReloadModelBackendResult struct {
 	DeferredReason string `json:"deferredReason,omitempty"`
 	RetryAfterSec  int    `json:"retryAfterSec,omitempty"`
 
+	// R371 (2026-11-01): загрузку запретила РОЛЬ узла (донор раскладки не держит
+	// своих копий). Отдельное поле, чтобы UI показал «выбран донор» без разбора
+	// текста ошибки, и чтобы HTTP-код можно было честно поставить 409, а не 500.
+	RoleRefused bool `json:"roleRefused,omitempty"`
+
 	// R300 (2026-10-29): «ещё грузится» — это 202 Accepted, а НЕ ошибка.
 	//
 	// ЖИВОЙ ФАКТ (стенд b5b45c74, загрузка Qwen3.8-27B 16.4 ГБ). Балансер ждал
@@ -843,9 +848,10 @@ func (s *Server) executeReloadOnBackend(ctx context.Context, backendID, modelNam
 		if opResult.StillLoading {
 			return stillLoadingReloadResultR300(backendID, modelName, opResult.Message)
 		}
-		result.HTTPStatus = http.StatusInternalServerError
+		result.HTTPStatus = opFailureStatusR371(opResult)
 		result.Status = "error"
 		result.Error = opResult.Error
+		result.RoleRefused = opResult.RoleRefused
 		result.Reloaded = false
 		result.ChangedParams = nil
 		if opResult.Message != "" {

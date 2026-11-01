@@ -1,3 +1,4 @@
+.gitattributes text eol=lf
 * text=auto
 
 # Shell scripts, .env files, YAML, and Dockerfiles must use LF

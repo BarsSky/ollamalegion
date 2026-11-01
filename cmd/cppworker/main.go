@@ -191,13 +191,33 @@ func main() {
 	}
 
 	cfg := cppbackend.LoadConfigFromEnv()
-	// R119 (2026-10-15): операторские переопределения читаются ПОСЛЕ окружения и
-	// побеждают его. Иначе правка из WebUI (например idleUnloadMinutes) жила
-	// только до пересоздания контейнера: env CPPWORKER_IDLE_UNLOAD_MINUTES=10
-	// затирал сохранённое значение. См. runtime_overrides_r119.go.
-	if appliedOverrides := applyRuntimeOverrides(&cfg); len(appliedOverrides) > 0 {
+	// R370 (2026-11-01): ПОРЯДОК НАСТРОЙКИ РАСКЛАДКИ.
+	//
+	// Сначала решение по окружению (CPPWORKER_RPC_ENABLE / CPPWORKER_RPC_SERVERS)
+	// — это НАМЕРЕНИЕ. Затем операторские переопределения (файл, который пишет
+	// балансер и WebUI) — это ФАКТ, и он побеждает env (R119/R133).
+	//
+	// ЖИВОЙ ДЕФЕКТ: раньше переопределения применялись здесь, а решение по env
+	// считалось ПОЗЖЕ и перезаписывало их. В compose RPC-переменные пустые,
+	// поэтому после каждого пересоздания контейнера раскладка, назначенная
+	// балансером, молча отключалась (rpc_enabled=false, ни одной RPC-строки в
+	// логе загрузки) — двухузловой стенд деградировал в однопузловой без единого
+	// сообщения. См. startup_config_r370.go.
+	rpcDecision, appliedOverrides := applyStartupLayoutConfigR370(&cfg, os.Getenv)
+	for _, note := range rpcDecision.Notes {
+		log.Infow(i18n.T("cppworker.main.rpc_mode", note),
+			"rpc_enabled", rpcDecision.Enabled,
+			"servers", rpcDecision.Servers)
+	}
+	for _, warn := range rpcDecision.Warnings {
+		log.Warnw(i18n.T("cppworker.main.rpc_mode", warn),
+			"rpc_enabled", rpcDecision.Enabled,
+			"servers", rpcDecision.Servers)
+	}
+	if len(appliedOverrides) > 0 {
 		log.Infow("applied runtime overrides (operator values win over env)",
-			"keys", appliedOverrides, "idleUnloadMinutes", cfg.IdleUnloadMinutes)
+			"keys", appliedOverrides, "idleUnloadMinutes", cfg.IdleUnloadMinutes,
+			"rpc_enabled", cfg.RPCEnabled, "rpc_servers", cfg.RPCServers)
 	}
 	// Если --port не передан явно (равен default 18092), а CPPWORKER_PORT
 	// задан в env с отличным значением — применяем env.
@@ -338,22 +358,13 @@ func main() {
 	// ТЕПЕРЬ. Явный флаг — решающий: `false` выключает раскладку и очищает список
 	// узлов (чтобы он не всплыл при следующем включении). Если флаг не задан,
 	// поведение прежнее: непустой список узлов включает раскладку.
-	rpcDecision := resolveRPCMode(
-		os.Getenv("CPPWORKER_RPC_ENABLE"),
-		os.Getenv("CPPWORKER_RPC_SERVERS"),
-	)
-	cfg.RPCEnabled = rpcDecision.Enabled
-	cfg.RPCServers = rpcDecision.Servers
-	for _, note := range rpcDecision.Notes {
-		log.Infow(i18n.T("cppworker.main.rpc_mode", note),
-			"rpc_enabled", rpcDecision.Enabled,
-			"servers", rpcDecision.Servers)
-	}
-	for _, warn := range rpcDecision.Warnings {
-		log.Warnw(i18n.T("cppworker.main.rpc_mode", warn),
-			"rpc_enabled", rpcDecision.Enabled,
-			"servers", rpcDecision.Servers)
-	}
+	//
+	// R370 (2026-11-01): ЗДЕСЬ БОЛЬШЕ НЕ СЧИТАЕТСЯ. Решение по env принимается в
+	// самом начале (applyStartupLayoutConfigR370), ДО операторских переопределений.
+	// Раньше именно этот блок, стоящий ПОСЛЕ них, затирал раскладку, назначенную
+	// балансером: в compose RPC-переменные пустые → «выключено, узлов нет» → после
+	// каждого пересоздания контейнера двухузловой стенд молча становился
+	// однопузловым (см. startup_config_r370.go).
 	if envVal := strings.TrimSpace(os.Getenv("CPPWORKER_MAIN_GPU")); envVal != "" {
 		if v, err := strconv.Atoi(envVal); err == nil && v >= 0 {
 			cfg.DefaultMainGPU = v

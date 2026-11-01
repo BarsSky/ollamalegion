@@ -813,3 +813,14 @@ deployments/donor/donor-install-keepalive.cmd лежат, но по умолча
   18.5 tok/s (на фоне рабочего стола);
 - для повторного двухузлового прогона: PUT …/role {"role":"donor"} — и
   раскладка поднимется сама (проверено в §17.4).
+### 17.8. Убрана устаревшая запись старого адреса
+
+В реестре балансера висела запись cppworker-cyborg-bundled-agent с host
+192.168.13.34 (мёртвый адрес) и статусом ollama_unavailable — именно она
+объясняла расхождение «	otalBackends=4 при трёх бэкендах в списке». Удалена
+через DELETE /api/v1/backends/cppworker-cyborg-bundled-agent; health теперь
+	otalBackends=3, healthyBackends=3.
+
+Для протокола: её pcNode-метки не были причиной §17.4 — там виноват
+gentSilentSince у записи cppworker-donor (другой host), но удаление
+мусорной записи всё равно правильное: у неё мёртвый адрес и она искажала счётчики.

@@ -340,6 +340,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	}
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Accept", "application/json, text/event-stream")
+	stampUpstreamRequestIDFromRequestR376(upstreamReq, r)
 
 	clientRealIP := lr.proxy.getClientRealIP(r)
 	if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
@@ -378,6 +379,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 			if retryErr == nil {
 				retryReq.Header.Set("Content-Type", "application/json")
 				retryReq.Header.Set("Accept", "application/json, text/event-stream")
+	stampUpstreamRequestIDFromRequestR376(retryReq, r)
 				if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
 					retryReq.Header.Set("X-Forwarded-For", existingXFF)
 				} else {
@@ -590,6 +592,7 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	}
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Accept", "application/json, text/event-stream")
+	stampUpstreamRequestIDFromRequestR376(upstreamReq, r)
 
 	clientRealIP := lr.proxy.getClientRealIP(r)
 	if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
@@ -613,6 +616,7 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 			if retryErr == nil {
 				retryReq.Header.Set("Content-Type", "application/json")
 				retryReq.Header.Set("Accept", "application/json, text/event-stream")
+	stampUpstreamRequestIDFromRequestR376(retryReq, r)
 				if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
 					retryReq.Header.Set("X-Forwarded-For", existingXFF)
 				} else {
@@ -763,6 +767,7 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 	}
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Accept", "application/json")
+	stampUpstreamRequestIDFromRequestR376(upstreamReq, r)
 
 	upstreamResp, err := lr.proxy.client.Do(upstreamReq)
 	if err != nil {

@@ -300,6 +300,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			req.Header.Add(key, value)
 		}
 	}
+	// R376: id клиента — в воркер (отмена по request_id, см. upstream_request_id_r376.go).
+	stampUpstreamRequestIDFromRequestR376(req, r)
 	// R307: административные ручки воркера закрыты токеном. Клиентский токен
 	// (для балансера) воркеру не годится — подставляем токен ЭТОГО воркера.
 	applyWorkerAdminTokenR307(req.Header, llamacppPath, p.workerAdminToken(backendID))
@@ -495,6 +497,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				}
 				req2.Header.Set("X-Forwarded-For", clientRealIP)
 				req2.Header.Set("X-Real-IP", clientRealIP)
+				stampUpstreamRequestIDFromRequestR376(req2, r)
 				// R307: административная ручка воркера закрыта токеном — ретрай тоже.
 				applyWorkerAdminTokenR307(req2.Header, llamacppPath, p.workerAdminToken(backendID))
 				resp, err = clientForReq.Do(req2)

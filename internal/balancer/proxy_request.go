@@ -419,6 +419,10 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		}
 	}
 
+	// R376: correlation-id клиента обязан доехать до воркера — иначе отмена по нему
+	// (POST /api/cancel {""request_id"": ...}) не находит генерацию (см. upstream_request_id_r376.go).
+	stampUpstreamRequestIDFromRequestR376(req, r)
+
 	// Пробрасываем реальный IP клиента, а не адрес контейнера Docker
 	clientRealIP := p.getClientRealIP(r)
 	if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
@@ -477,6 +481,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 						retryReq.Header.Add(key, value)
 					}
 				}
+				stampUpstreamRequestIDFromRequestR376(retryReq, r)
 				retryReq.Host = target.Host
 
 				retryResp, retryDoErr := client.Do(retryReq)

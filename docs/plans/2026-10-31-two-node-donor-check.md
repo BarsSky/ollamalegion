@@ -982,3 +982,71 @@ cuda:12.8.0-devel ~1 МБ/с, а повторная попытка оборва�
 - модель gemma-4 загружена на мастере локально: ctx=32768, kv=q4_0,
   42/42 слоя, pc_enabled=false;
 - старые образы вычищены (освобождено ~8 ГБ), на D: 68.7 ГБ.
+## 19. Мультиархитектурный образ cppworker: 75;86;120 (2026-11-01)
+
+Задача: один образ, годный и мастеру (RTX 3070, sm_86), и донору (RTX 5060
+Laptop, sm_120), и старым картам (sm_75).
+
+### 19.1. Команда (зелёная, 30 минут)
+
+```
+docker build -f docker/cppworker/Dockerfile.gpu --target runtime \
+  --build-arg CUDA_BASE=docker.io/nvidia/cuda \
+  --build-arg CUDA_VERSION=12.8.0 \
+  --build-arg CUDA_ARCH="75;86;120" \
+  --build-arg PIP_INDEX_URL="https://mirrors.aliyun.com/pypi/simple/" \
+  --build-arg GIT_COMMIT=<commit> \
+  -t ollama-legion/cppworker:gpu-75-86-120-d502c69d .
+```
+
+Проверка на карте мастера (одноразовый контейнер):
+
+```
+NVIDIA GeForce RTX 3070, 8192 MiB
+"CppBackend Worker starting", commit 7476d6cb
+"GPU detected","name":"NVIDIA GeForce RTX 3070","computeCap":"8.6"
+"CUDA-архитектуры: образ и карты совместимы","image_sm":"120;75;86"
+```
+
+### 19.2. Две сети, которые мешали, и что с ними делать
+
+**1. dockerhub.timeweb.cloud рвёт крупные слои.** Три попытки подряд:
+
+```
+failed to copy: httpReadSeeker: failed open: failed to discard to offset:
+unexpected EOF   (слой cuda:12.8.0-devel ~3 GB)
+```
+
+Лечение: --build-arg CUDA_BASE=docker.io/nvidia/cuda. С Docker Hub база
+(14.6 GB devel) скачалась за 240 с, и сборка пошла.
+
+**2. pypi.org обрывает крупные загрузки из сборочного контейнера.** Первая
+попытка упала на первом шаге runtime-стадии:
+
+```
+Read timed out. (read timeout=15) → No matching distribution found for huggingface_hub
+```
+
+Повтор с --network=host не помог (SSL UNEXPECTED_EOF), зато сбросил кэш всех
+RUN-шагов и запустил 3-арховую компиляцию заново: режим сети входит в ключ
+кэша. Рабочее решение — зеркало:
+--build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/.
+
+Поэтому шаг pip в Dockerfile сделан настраиваемым (PIP_TIMEOUT=120,
+PIP_RETRIES=5, PIP_INDEX_URL): дефолтные 15 с без повторов делали образ
+невоспроизводимым при нестабильной сети.
+
+### 19.3. Образ и его размер
+
+cppworker:gpu-75-86-120-d502c69d, 6.8 GB (три архитектуры против 4.43 GB у
+одноархитектурного). В образе CPPWORKER_CUDA_ARCH_BUILT=75;86;120 — гард
+cuda_arch_guard.go на любой из трёх карт скажет «совместимы».
+
+### 19.4. Попутно: .gitattributes не покрывал Dockerfile.gpu
+
+Правило было записано как Dockerfile text eol=lf — точное имя. У проекта
+четыре файла (Dockerfile.gpu, Dockerfile.cpu, Dockerfile.stub,
+Dockerfile.gpu.86), и они под правило НЕ попадали: на машине с
+core.autocrlf=true они получили бы CRLF, что ломает продолжение строк \ в
+Dockerfile. Заменено на Dockerfile* text eol=lf (проверено
+git check-attr eol для .gpu/.stub — везде lf).

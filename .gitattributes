@@ -5,7 +5,12 @@
 *.env text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
-Dockerfile text eol=lf
+# ВАЖНО: маска с `*`, а не точное имя. У проекта несколько файлов:
+# Dockerfile.gpu, Dockerfile.cpu, Dockerfile.stub, Dockerfile.gpu.86 — правило
+# `Dockerfile` их НЕ покрывало, и на машине с core.autocrlf=true они получили бы
+# CRLF. В Dockerfile это ломает продолжение строк `\` (классический сбой
+# Windows-сборок), поэтому фиксируем LF для всех.
+Dockerfile* text eol=lf
 
 # Go source
 *.go text eol=lf

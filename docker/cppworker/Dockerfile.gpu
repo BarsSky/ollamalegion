@@ -355,11 +355,29 @@ ENV CPPWORKER_LLAMA_BUILD_DATE_BAKED=${LLAMA_BUILD_DATE}
 ARG CUDA_ARCH=unknown
 ENV CPPWORKER_CUDA_ARCH_BUILT=${CUDA_ARCH}
 
+# R375 (2026-11-01): устойчивость шага pip к медленному/нестабильному pypi.
+#
+# ЖИВОЙ ФАКТ (сборка мультиархитектурного образа 75;86;120). Компиляция
+# llama.cpp под три архитектуры заняла десятки минут и УСПЕШНО закэшировалась,
+# а сборка упала на первом же шаге runtime-стадии:
+#
+#	#10 179.3 ERROR: No matching distribution found for huggingface_hub
+#	ReadTimeoutError: HTTPSConnectionPool(host='pypi.org', port=443):
+#	                  Read timed out. (read timeout=15)
+#
+# То есть дефолтные 15 с и отсутствие повторов делают образ невоспроизводимым
+# при нестабильной сети. Теперь таймаут и число повторов задаются build-arg'ами,
+# а индекс можно подменить зеркалом (PIP_INDEX_URL) без правки Dockerfile.
+ARG PIP_TIMEOUT=120
+ARG PIP_RETRIES=5
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
 WORKDIR /app
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl python3 python3-pip libgomp1 && \
-    pip3 install --no-cache-dir huggingface_hub && \
+    pip3 install --no-cache-dir --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
+        --index-url "${PIP_INDEX_URL}" huggingface_hub && \
     rm -rf /var/lib/apt/lists/*
 
 COPY docker/cppworker/entrypoint.sh /entrypoint.sh

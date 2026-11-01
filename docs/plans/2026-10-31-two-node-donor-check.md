@@ -653,3 +653,36 @@ o reply, SSH timeout по LAN, /api/models HTTP 000) — ноутбук засы
    (docker save → scp ~2.5 GB → update.cmd → docker load/run).
 3. Почему ноутбук засыпает: на доноре лежат deployments/donor/legion-keepalive.ps1
    и donor-install-keepalive.cmd; судя по поведению, keepalive не активен.
+### 16.6. Подготовлено к обновлению донора (когда он проснётся)
+
+Донор — ноутбук и засыпает; Wake-on-LAN по MAC c-9d-05-48-34-07 его не
+разбудил (Tailscale показывает offline, LAN-порт 22 не отвечает). Пока он
+спит, подготовлено всё, чтобы обновление заняло минуты:
+
+1. SSH-алиас добавлен в ~/.ssh/config:
+   Host donor → knagaenko@mail.ru@192.168.13.12, ключ id_ed25519_legion2.
+2. deployments/donor/update.cmd сгенерирован из сохранённого docker inspect
+   (70 env, 2 bind'а) под образ gpu-09b9b41d; **исправлен мёртвый адрес**:
+   CPPWORKER_ADVERTISE_HOST=192.168.13.12 (было .34).
+3. Образ сохранён: C:\Ollama\artifacts\cppworker-09b9b41d.tar (1.41 GB).
+
+Порядок, когда донор в сети:
+
+```
+scp C:\Ollama\artifacts\cppworker-09b9b41d.tar donor:C:/ollama/cppworker-09b9b41d.tar
+scp deployments/donor/update.cmd donor:C:/ollama/update-donor.cmd
+ssh donor 'docker load -i C:/ollama/cppworker-09b9b41d.tar'
+ssh donor 'cmd /c C:\ollama\update-donor.cmd'      # переименует старый контейнер в -old
+# затем в балансере: роль donor, health проверить, /api/info донора = новая сборка
+```
+
+Что это даст: на доноре появятся ole/donor/canLoadOwnModels (R304) — их
+сейчас нет, потому что образ gpu-r248 старее правки; сборки llama.cpp на
+узлах станут одинаковыми (сейчас у мастера в логе предупреждение о расхождении);
+плюс отпадут догадки про адрес из §16.2.
+
+Ещё одно наблюдение на будущее: у донора
+CPPWORKER_REGISTER_DISABLE=true, поэтому после очистки состояния балансера
+его приходится регистрировать вручную (POST /api/v1/backends). Включение
+саморегистрации убрало бы этот шаг, но это отдельное решение (ID бэкенда,
+адрес балансера в env донора).

@@ -107,8 +107,13 @@ func pushRPCNodeConfig(b *types.Backend, enabled bool, port int) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if b.CppWorkerApiToken != "" {
-		req.Header.Set("X-API-Token", b.CppWorkerApiToken)
+	// R373 (2026-11-01): токен берём и из записи, и из стекового окружения.
+	// Живой случай: донор добавлен вручную без cppWorkerApiToken — приказ
+	// «погаси свой rpc-server» уходил без заголовка, воркер отвечал 401; роль на
+	// балансере менялась, а узел продолжал считать себя донором
+	// (rpc_server_enabled=true → 409 на загрузку моделей).
+	if token := workerAPITokenForBackendR373(b); token != "" {
+		req.Header.Set("X-API-Token", token)
 	}
 	client := &http.Client{Timeout: rpcNodeOrderHTTPTimeout}
 	resp, err := client.Do(req)

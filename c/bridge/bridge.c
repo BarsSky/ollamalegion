@@ -1235,6 +1235,45 @@ static ggml_backend_dev_t * bridge_collect_device_list(
         }
         ++connected;
         fprintf(stderr, "[bridge] RPC: узел %s подключён, его устройств: %zu\n", endpoint, dev_count);
+        // R369 (2026-11-01): ЧТО ИМЕННО отдал удалённый узел.
+        //
+        // ЖИВОЙ ВОПРОС (двухузловой стенд). Раскладка «легла» — в логе
+        // `layer N assigned to device RPC0` и `RPC0[...] model buffer size =
+        // 1251 MiB`, — но VRAM донора не менялась (1090 MiB и до, и во время
+        // генерации), а скорость падала с 31–36 до 3.2 tok/s. Причина не в
+        // балансере и не в раскладке, а в ТИПЕ удалённого устройства: если
+        // rpc-server поднят без CUDA, он регистрирует CPU-устройство, и «слои на
+        // RPC0» считаются на процессоре донора, хотя со стороны это выглядит как
+        // GPU (`using device RPC0 ... 7033 MiB free` — это свободная RAM, а не
+        // VRAM).
+        //
+        // Раньше в логе был только счётчик устройств, поэтому отличить «донор
+        // отдал GPU» от «донор отдал CPU» было нельзя — и выводы о причине
+        // медленности делались по догадкам. Печатаем имя, тип и память каждого
+        // удалённого устройства: строка type=CPU/GPU и есть ответ.
+        for (size_t d = 0; d < dev_count; ++d) {
+            ggml_backend_dev_t dv = ggml_backend_reg_dev_get(reg, d);
+            if (dv == NULL) {
+                continue;
+            }
+            struct ggml_backend_dev_props props;
+            memset(&props, 0, sizeof(props));
+            ggml_backend_dev_get_props(dv, &props);
+            const char * kind = "unknown";
+            switch (props.type) {
+                case GGML_BACKEND_DEVICE_TYPE_CPU:   kind = "CPU";   break;
+                case GGML_BACKEND_DEVICE_TYPE_GPU:   kind = "GPU";   break;
+                case GGML_BACKEND_DEVICE_TYPE_IGPU:  kind = "IGPU";  break;
+                case GGML_BACKEND_DEVICE_TYPE_ACCEL: kind = "ACCEL"; break;
+                case GGML_BACKEND_DEVICE_TYPE_META:  kind = "META";  break;
+            }
+            const char * dev_name = (props.name != NULL && props.name[0] != '\0') ? props.name : "?";
+            fprintf(stderr,
+                    "[bridge] RPC: %s устройство %zu: name='%s' type=%s free=%zu MiB total=%zu MiB\n",
+                    endpoint, d, dev_name, kind,
+                    props.memory_free / (1024 * 1024),
+                    props.memory_total / (1024 * 1024));
+        }
     }
 
     if (connected == 0) {

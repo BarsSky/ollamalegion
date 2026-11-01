@@ -51,12 +51,12 @@ type loadProfileSeedR364 struct {
 	ContextSize int
 	BatchSize   int
 	GPULayers   int
-	// FlashAttnType — nil = профиль молчит; иначе -1 (auto) / 0 (выключено) /
-	// 1 (включено). Указатель, а не int: 0 здесь содержательное значение, и
-	// отдельный флаг «задано» иначе пришлось бы носить рядом.
-	FlashAttnType *int
-	KVCacheType   string
-	Parallel      int
+	// FlashAttn — сырое значение профиля (nil = профиль молчит). Именно *bool, а
+	// не int: перевод в -1/0/1 делает общее правило profileFlashAttnToLoad
+	// (R366), чтобы legacy-путь и остальные три считали одинаково.
+	FlashAttn   *bool
+	KVCacheType string
+	Parallel    int
 	// Reasoning — три состояния: nil (профиль молчит), &true / &false.
 	Reasoning *bool
 }
@@ -115,41 +115,15 @@ func readProfileForLoadR364(modelName, modelPath string) *profileForLoadR364 {
 		Key:     key,
 		Profile: prof,
 		Seed: loadProfileSeedR364{
-			ContextSize:   prof.ContextLength,
-			BatchSize:     prof.BatchSize,
-			GPULayers:     prof.NumGPULayers,
-			FlashAttnType: profileFlashAttnToIntR364(prof.FlashAttn),
-			KVCacheType:   prof.KVCacheType,
-			Parallel:      prof.Parallel,
-			Reasoning:     prof.EnableReasoning,
+			ContextSize: prof.ContextLength,
+			BatchSize:   prof.BatchSize,
+			GPULayers:   prof.NumGPULayers,
+			FlashAttn:   prof.FlashAttn,
+			KVCacheType: prof.KVCacheType,
+			Parallel:    prof.Parallel,
+			Reasoning:   prof.EnableReasoning,
 		},
 	}
-}
-
-// profileFlashAttnToIntR364 — bool из профиля в то, что понимает cppbackend.
-//
-// Семантика поля на стороне моста (c/bridge/bridge.go:176):
-//
-//	-1 = auto, 0 = disabled, 1 = enabled
-//
-// поэтому profileFlashAttn(false) — это 0 (ВЫКЛЮЧЕНО), а не -1 (auto). Здесь
-// намеренно НЕ повторяется конверсия applyProfileToLoadRequest, которая отдаёт
-// false → -1: «выключить flash attention» в авто-режиме может быть включено
-// llama.cpp заново. У этой конверсии в общем помощнике есть и вторая проблема
-// (её легко увидеть): он заполняет только пустые поля, а «0 = выключено» для
-// него неотличимо от «не задано», поэтому профильный flashAttn=false там не
-// применяется вовсе. Это отдельный дефект старых путей
-// (load-with-params/reload/lazy), записанный как R366 — R364 его не трогает,
-// чтобы не менять поведение трёх путей этим же коммитом.
-func profileFlashAttnToIntR364(p *bool) *int {
-	if p == nil {
-		return nil
-	}
-	v := 0
-	if *p {
-		v = 1
-	}
-	return &v
 }
 
 // resolveLoadIntR364 — приоритет «явное значение клиента > профиль > дефолт».
@@ -163,25 +137,16 @@ func resolveLoadIntR364(explicit *int, profileVal, def int) int {
 	return def
 }
 
-// resolveLoadIntPtrR364 — то же для полей, где 0 — содержательное значение
-// (flash attention: 0 = выключено). nil у профиля = «профиль молчит».
-func resolveLoadIntPtrR364(explicit, profileVal *int, def int) int {
-	if explicit != nil {
-		return *explicit
-	}
-	if profileVal != nil {
-		return *profileVal
-	}
-	return def
-}
-
 // resolveLoadParamsR364 — собирает параметры загрузки по контракту приоритета.
 func resolveLoadParamsR364(req loadModelRequest, seed loadProfileSeedR364, defs loadDefaultsR364) loadParamsR364 {
 	out := loadParamsR364{
-		GPULayers:     resolveLoadIntR364(req.GPULayers, seed.GPULayers, defs.GPULayers),
-		ContextSize:   resolveLoadIntR364(req.ContextSize, seed.ContextSize, defs.ContextSize),
-		BatchSize:     resolveLoadIntR364(req.BatchSize, seed.BatchSize, defs.BatchSize),
-		FlashAttnType: resolveLoadIntPtrR364(req.FlashAttnType, seed.FlashAttnType, defs.FlashAttnType),
+		GPULayers:   resolveLoadIntR364(req.GPULayers, seed.GPULayers, defs.GPULayers),
+		ContextSize: resolveLoadIntR364(req.ContextSize, seed.ContextSize, defs.ContextSize),
+		BatchSize:   resolveLoadIntR364(req.BatchSize, seed.BatchSize, defs.BatchSize),
+		// R366: flash attention решается ОДНИМ правилом на всех путях, потому что
+		// у поля три содержательных значения (-1 auto / 0 off / 1 on), и «0 =
+		// не задано» здесь не работает.
+		FlashAttnType: profileFlashAttnToLoad(req.FlashAttnType, seed.FlashAttn, defs.FlashAttnType),
 	}
 
 	// Parallel: 0 и отрицательные значения по-прежнему означают «наследовать»

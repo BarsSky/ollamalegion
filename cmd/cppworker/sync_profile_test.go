@@ -12,20 +12,20 @@ import (
 )
 
 func TestApplyProfileToLoadRequest_NoProfile(t *testing.T) {
-	var ctxSize, batch, gpu, flash int
+	var ctxSize, batch, gpu int
 	kv := ""
-	allowed := applyProfileToLoadRequest(nil, &ctxSize, &batch, &gpu, &flash, &kv, nil)
+	allowed := applyProfileToLoadRequest(nil, &ctxSize, &batch, &gpu, &kv, nil)
 	if !allowed {
 		t.Error("expected allowed=true when no profile")
 	}
-	if ctxSize != 0 || batch != 0 || gpu != 0 || flash != 0 || kv != "" {
-		t.Errorf("expected all values to stay zero, got ctxSize=%d batch=%d gpu=%d flash=%d kv=%s", ctxSize, batch, gpu, flash, kv)
+	if ctxSize != 0 || batch != 0 || gpu != 0 || kv != "" {
+		t.Errorf("expected all values to stay zero, got ctxSize=%d batch=%d gpu=%d kv=%s", ctxSize, batch, gpu, kv)
 	}
 }
 
 func TestApplyProfileToLoadRequest_Disabled(t *testing.T) {
 	prof := &types.LlamaCppModelProfile{Disabled: true}
-	allowed := applyProfileToLoadRequest(prof, newInt(0), nil, nil, nil, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, newInt(0), nil, nil, nil, nil)
 	if allowed {
 		t.Error("expected allowed=false for disabled profile")
 	}
@@ -39,7 +39,7 @@ func TestApplyProfileToLoadRequest_FillsZeroes(t *testing.T) {
 		NumGPULayers:  38,
 		KVCacheType:   "f16",
 	}
-	allowed := applyProfileToLoadRequest(prof, nil, nil, nil, nil, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, nil, nil, nil, nil, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
@@ -57,7 +57,7 @@ func TestApplyProfileToLoadRequest_RespectsExisting(t *testing.T) {
 		BatchSize:     512,
 	}
 	ctxSize := 8192
-	allowed := applyProfileToLoadRequest(prof, &ctxSize, nil, nil, nil, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, &ctxSize, nil, nil, nil, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
@@ -79,7 +79,7 @@ func TestApplyProfileToLoadRequest_OverridesWhenCallerZero(t *testing.T) {
 	// Test that with a non-nil zero pointer, profile applies.
 	zero := 0
 	prof := &types.LlamaCppModelProfile{ContextLength: 65536}
-	allowed := applyProfileToLoadRequest(prof, &zero, nil, nil, nil, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, &zero, nil, nil, nil, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
@@ -88,27 +88,9 @@ func TestApplyProfileToLoadRequest_OverridesWhenCallerZero(t *testing.T) {
 	}
 }
 
-func TestApplyProfileToLoadRequest_FlashAttnBoolToInt(t *testing.T) {
-	// Profile.FlashAttn = *bool → into int (1 = on, -1 = off)
-	t.Run("flashAttn on", func(t *testing.T) {
-		b := true
-		prof := &types.LlamaCppModelProfile{FlashAttn: &b}
-		flash := 0
-		allowed := applyProfileToLoadRequest(prof, nil, nil, nil, &flash, nil, nil)
-		if !allowed || flash != 1 {
-			t.Errorf("expected flash=1, got %d (allowed=%v)", flash, allowed)
-		}
-	})
-	t.Run("flashAttn off", func(t *testing.T) {
-		b := false
-		prof := &types.LlamaCppModelProfile{FlashAttn: &b}
-		flash := 0
-		allowed := applyProfileToLoadRequest(prof, nil, nil, nil, &flash, nil, nil)
-		if !allowed || flash != -1 {
-			t.Errorf("expected flash=-1, got %d (allowed=%v)", flash, allowed)
-		}
-	})
-}
+// flash attention из этой функции УБРАН в R366: у поля три содержательных
+// значения (-1 auto / 0 off / 1 on), и «0 = не задано» для него не работает.
+// Проверки нового правила — profile_flash_attn_r366_test.go.
 
 func TestApplyProfileToLoadRequest_OnlyFillMissingFields(t *testing.T) {
 	// caller задал batchSize=256, профиль говорит 512 → 256 сохраняется.
@@ -119,7 +101,7 @@ func TestApplyProfileToLoadRequest_OnlyFillMissingFields(t *testing.T) {
 	}
 	ctxSize := 0
 	batch := 256
-	allowed := applyProfileToLoadRequest(prof, &ctxSize, &batch, nil, nil, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, &ctxSize, &batch, nil, nil, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
@@ -134,7 +116,7 @@ func TestApplyProfileToLoadRequest_OnlyFillMissingFields(t *testing.T) {
 func TestApplyProfileToLoadRequest_KVCacheType(t *testing.T) {
 	prof := &types.LlamaCppModelProfile{KVCacheType: "q8_0"}
 	kv := ""
-	allowed := applyProfileToLoadRequest(prof, nil, nil, nil, nil, &kv, nil)
+	allowed := applyProfileToLoadRequest(prof, nil, nil, nil, &kv, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
@@ -168,7 +150,7 @@ func TestApplyProfileToLoadRequest_NumGPULayersNegativeOne(t *testing.T) {
 	// profile.NumGPULayers = -1 (all GPU) → caller должен это интерпретировать.
 	prof := &types.LlamaCppModelProfile{NumGPULayers: -1}
 	gpu := 0
-	allowed := applyProfileToLoadRequest(prof, nil, nil, &gpu, nil, nil, nil)
+	allowed := applyProfileToLoadRequest(prof, nil, nil, &gpu, nil, nil)
 	if !allowed {
 		t.Fatal("expected allowed=true")
 	}
@@ -193,7 +175,7 @@ func TestR135_ProfileParallelReachesLoad(t *testing.T) {
 	// 1. Профиль задаёт слоты, запрос — нет: профиль заполняет.
 	prof := &types.LlamaCppModelProfile{Parallel: 2}
 	parallel := 0
-	if !applyProfileToLoadRequest(prof, nil, nil, nil, nil, nil, &parallel) {
+	if !applyProfileToLoadRequest(prof, nil, nil, nil, nil, &parallel) {
 		t.Fatal("allowed=false при обычном профиле")
 	}
 	if parallel != 2 {
@@ -204,7 +186,7 @@ func TestR135_ProfileParallelReachesLoad(t *testing.T) {
 	// 2. Явный запрос клиента побеждает профиль (тот же приоритет, что у ctx/batch/kv).
 	prof3 := &types.LlamaCppModelProfile{Parallel: 3}
 	explicit := 1
-	applyProfileToLoadRequest(prof3, nil, nil, nil, nil, nil, &explicit)
+	applyProfileToLoadRequest(prof3, nil, nil, nil, nil, &explicit)
 	if explicit != 1 {
 		t.Errorf("parallel = %d, want 1: профиль перебил явный запрос клиента", explicit)
 	}
@@ -212,7 +194,7 @@ func TestR135_ProfileParallelReachesLoad(t *testing.T) {
 	// 3. Профиль без слотов ничего не выдумывает.
 	prof0 := &types.LlamaCppModelProfile{}
 	untouched := 0
-	applyProfileToLoadRequest(prof0, nil, nil, nil, nil, nil, &untouched)
+	applyProfileToLoadRequest(prof0, nil, nil, nil, nil, &untouched)
 	if untouched != 0 {
 		t.Errorf("parallel = %d, want 0: профиль без parallel не должен ничего менять", untouched)
 	}

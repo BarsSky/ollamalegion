@@ -724,11 +724,20 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 				"requested", modelName, "profile_key", profileName, "path", modelPath)
 		}
 		if prof := profileSyncer.applyProfileOnLoad(profileName); prof != nil {
-			if !applyProfileToLoadRequest(prof, &opts.ContextSize, &opts.BatchSize, &opts.GPULayers, &opts.FlashAttnType, &opts.KVCacheType, &opts.Parallel) {
+			if !applyProfileToLoadRequest(prof, &opts.ContextSize, &opts.BatchSize, &opts.GPULayers, &opts.KVCacheType, &opts.Parallel) {
 				logger.Get().Warnw("handleLoadWithParams: profile is disabled, refusing load",
 					"name", modelName, "profile", prof)
 				writeError(w, http.StatusForbidden, "model "+modelName+" is disabled by profile")
 				return
+			}
+			// R366 (2026-10-31): flash attention из профиля — отдельным правилом.
+			// Прежняя строка внутри помощника отдавала false → -1 (auto, то есть
+			// «включить по усмотрению llama.cpp») и при дефолте контейнера -1 не
+			// применялась вовсе. Подробности — profile_flash_attn_r366.go.
+			if fa := profileFlashAttnToLoad(req.FlashAttnType, prof.FlashAttn, opts.FlashAttnType); fa != opts.FlashAttnType {
+				logger.Get().Infow("handleLoadWithParams: flashAttnType from model profile (R366)",
+					"name", modelName, "flashAttnType", fa, "was", opts.FlashAttnType)
+				opts.FlashAttnType = fa
 			}
 			logger.Get().Infow("handleLoadWithParams: applied profile (pull-based sync from balancer)",
 				"name", modelName,
@@ -2302,11 +2311,19 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 		if prof := profileSyncer.applyProfileOnLoad(profileName); prof != nil {
 			// For reload: apply profile to fields that are still zero-value
 			// (i.e. user didn't override them via body).
-			if !applyProfileToLoadRequest(prof, &opts.ContextSize, &opts.BatchSize, &opts.GPULayers, &opts.FlashAttnType, &opts.KVCacheType, &opts.Parallel) {
+			if !applyProfileToLoadRequest(prof, &opts.ContextSize, &opts.BatchSize, &opts.GPULayers, &opts.KVCacheType, &opts.Parallel) {
 				logger.Get().Warnw("handleReloadModel: profile is disabled, refusing reload",
 					"name", req.Name, "profile", prof)
 				writeError(w, http.StatusForbidden, "model "+req.Name+" is disabled by profile")
 				return
+			}
+			// R366 (2026-10-31): flash attention из профиля. Дефолт здесь —
+			// значение ТЕКУЩЕЙ загрузки (reload без параметров наследует её),
+			// профиль перебивает только унаследованное, явный запрос главнее.
+			if fa := profileFlashAttnToLoad(req.FlashAttn, prof.FlashAttn, opts.FlashAttnType); fa != opts.FlashAttnType {
+				logger.Get().Infow("handleReloadModel: flashAttnType from model profile (R366)",
+					"name", req.Name, "flashAttnType", fa, "was", opts.FlashAttnType)
+				opts.FlashAttnType = fa
 			}
 			logger.Get().Infow("handleReloadModel: applied profile (pull-based sync from balancer)",
 				"name", req.Name,

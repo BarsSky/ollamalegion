@@ -380,10 +380,15 @@ func resolveBalancerToken() string {
 //
 // Параметры — указатели на поля request struct (см. types.go).
 // Возвращает false если profile.Disabled=true (caller должен отказать load).
+//
+// R366 (2026-10-31): flash attention из ЭТОЙ функции УБРАН. Здесь «0 = не
+// задано», а у поля три содержательных значения (-1 auto / 0 disabled / 1
+// enabled), поэтому профильное «выключить» было неотличимо от «клиент молчит» и
+// молча не применялось. Теперь это отдельная profileFlashAttnToLoad с явным
+// приоритетом; caller обязан позвать её сам (это проверяет стюард-тест).
 func applyProfileToLoadRequest(
 	profile *types.LlamaCppModelProfile,
 	contextSize, batchSize, gpuLayers *int,
-	flashAttnType *int,
 	kvCacheType *string,
 	parallel *int,
 ) (allowed bool) {
@@ -392,21 +397,6 @@ func applyProfileToLoadRequest(
 	}
 	if profile.Disabled {
 		return false
-	}
-	// profile.FlashAttn (*bool) → caller passes *int (0 = unset, 1 = on, -1 = off).
-	if profile.FlashAttn != nil {
-		// Конвертим bool → int: true=1, false=-1.
-		var want int
-		if *profile.FlashAttn {
-			want = 1
-		} else {
-			want = -1
-		}
-		if flashAttnType == nil {
-			flashAttnType = &want
-		} else if *flashAttnType == 0 {
-			*flashAttnType = want
-		}
 	}
 	// Для остальных полей: profile.X > 0 → заполняем если caller пустой.
 	if profile.ContextLength > 0 {

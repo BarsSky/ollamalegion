@@ -842,13 +842,24 @@ func applySyncedProfileToLazyLoadOpts(modelName string, opts *cppbackend.LoadMod
 		"contextLength", prof.ContextLength, "numGpuLayers", prof.NumGPULayers,
 		"kvCacheType", prof.KVCacheType, "parallel", prof.Parallel)
 	ctxSize, batch, gpuLayers := opts.ContextSize, opts.BatchSize, opts.GPULayers
-	flashAttn, kvCacheType := opts.FlashAttnType, opts.KVCacheType
+	kvCacheType := opts.KVCacheType
 	// R135 (2026-10-16): parallel из профиля — иначе ленивая загрузка поднимала
 	// модель с одним слотом, хотя оператор выставил два (живой замер инструмента
 	// scripts/e2e/02-model-params.js: профиль parallel=2 → maxSlots=1).
 	parallel := opts.Parallel
-	if !applyProfileToLoadRequest(prof, &ctxSize, &batch, &gpuLayers, &flashAttn, &kvCacheType, &parallel) {
+	if !applyProfileToLoadRequest(prof, &ctxSize, &batch, &gpuLayers, &kvCacheType, &parallel) {
 		return fmt.Errorf("model %s is marked as disabled in profile", modelName)
+	}
+	// R366 (2026-10-31): flash attention из профиля. На этом пути «явного
+	// значения клиента» нет вовсе: opts.FlashAttnType сложился из флага/env
+	// (CPPWORKER_FLASH_ATTN_TYPE) выше по коду, поэтому request=nil, а дефолтом
+	// остаётся то, что пришло из env. Профиль обязан перебивать env — иначе
+	// галочка «выключить flash attention» в WebUI не действует на ленивую
+	// загрузку (см. profile_flash_attn_r366.go).
+	if fa := profileFlashAttnToLoad(nil, prof.FlashAttn, opts.FlashAttnType); fa != opts.FlashAttnType {
+		logger.Get().Infow("lazyload: flashAttnType from model profile (R366)",
+			"model", modelName, "flashAttnType", fa, "was", opts.FlashAttnType)
+		opts.FlashAttnType = fa
 	}
 	if parallel != opts.Parallel {
 		logger.Get().Infow(i18n.T("cppworker.lazyload.parallel_from_profile"),
@@ -861,7 +872,7 @@ func applySyncedProfileToLazyLoadOpts(modelName string, opts *cppbackend.LoadMod
 			"was", opts.KVCacheType)
 	}
 	opts.ContextSize, opts.BatchSize, opts.GPULayers = ctxSize, batch, gpuLayers
-	opts.FlashAttnType, opts.KVCacheType = flashAttn, kvCacheType
+	opts.KVCacheType = kvCacheType
 	opts.Parallel = parallel
 	// R83/v67 (2026-10-02): per-model reasoning из профиля при lazy-load.
 	// Иначе LoadModelOpts.EnableReasoning оставался nil → cppbackend брал

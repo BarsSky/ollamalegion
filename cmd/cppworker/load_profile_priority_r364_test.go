@@ -29,7 +29,7 @@ func TestR364_PrecedenceRequestOverProfileOverDefault(t *testing.T) {
 	defs := loadDefaultsR364{GPULayers: 20, ContextSize: 65536, BatchSize: 256, FlashAttnType: -1}
 	seed := loadProfileSeedR364{
 		ContextSize: 32768, BatchSize: 512, GPULayers: -1,
-		FlashAttnType: intPtrR364(1), KVCacheType: "q4_0", Parallel: 2,
+		FlashAttn: boolPtrR364(true), KVCacheType: "q4_0", Parallel: 2,
 	}
 
 	t.Run("явный запрос побеждает профиль и конфиг", func(t *testing.T) {
@@ -142,51 +142,9 @@ func TestR364_ParallelNonPositiveMeansInherit(t *testing.T) {
 	}
 }
 
-// TestR364_ProfileFlashAttnOffIsOff — профильное «выключить flash attention»
-// обязано доехать как 0 (disabled), а не как -1 (auto) и не потеряться за
-// дефолтом контейнера -1.
-//
-// Семантика моста (c/bridge/bridge.go:176): -1 = auto, 0 = disabled, 1 = enabled.
-// Именно здесь ошибается общий помощник старых путей (false → -1), см. R365.
-func TestR364_ProfileFlashAttnOffIsOff(t *testing.T) {
-	defs := loadDefaultsR364{FlashAttnType: -1}
-
-	off := loadProfileSeedR364{FlashAttnType: intPtrR364(0)}
-	if got := resolveLoadParamsR364(loadModelRequest{}, off, defs); got.FlashAttnType != 0 {
-		t.Errorf("flashAttnType = %d, want 0 (выключено) при профиле flashAttn=false", got.FlashAttnType)
-	}
-
-	on := loadProfileSeedR364{FlashAttnType: intPtrR364(1)}
-	if got := resolveLoadParamsR364(loadModelRequest{}, on, defs); got.FlashAttnType != 1 {
-		t.Errorf("flashAttnType = %d, want 1 (включено)", got.FlashAttnType)
-	}
-
-	// Профиль молчит — действует конфиг/env.
-	if got := resolveLoadParamsR364(loadModelRequest{}, loadProfileSeedR364{}, defs); got.FlashAttnType != -1 {
-		t.Errorf("flashAttnType = %d, want -1 из конфига (профиль поле не задаёт)", got.FlashAttnType)
-	}
-
-	// Явный запрос главнее профиля.
-	explicit := resolveLoadParamsR364(loadModelRequest{FlashAttnType: intPtrR364(1)}, off, defs)
-	if explicit.FlashAttnType != 1 {
-		t.Errorf("flashAttnType = %d, want 1 (явный запрос главнее профиля)", explicit.FlashAttnType)
-	}
-}
-
-// TestR364_ProfileFlashAttnNilStaysNil — nil в профиле не создаёт «значение 0»:
-// seed обязан остаться пустым, иначе профиль без галочки молча выключил бы
-// flash attention на всех загрузках.
-func TestR364_ProfileFlashAttnNilStaysNil(t *testing.T) {
-	if got := profileFlashAttnToIntR364(nil); got != nil {
-		t.Fatalf("profileFlashAttnToIntR364(nil) = %v, want nil", got)
-	}
-	if got := profileFlashAttnToIntR364(boolPtrR364(false)); got == nil || *got != 0 {
-		t.Fatalf("profileFlashAttnToIntR364(false) = %v, want 0 (disabled)", got)
-	}
-	if got := profileFlashAttnToIntR364(boolPtrR364(true)); got == nil || *got != 1 {
-		t.Fatalf("profileFlashAttnToIntR364(true) = %v, want 1 (enabled)", got)
-	}
-}
+// flash attention на legacy-пути проверяется в profile_flash_attn_r366_test.go:
+// с R366 правило одно на все пути (profileFlashAttnToLoad), и дублировать его
+// здесь означало бы держать две копии контракта.
 
 // TestR364_ProfileGPULayersZeroMeansInherit — 0 в профиле это «наследовать»,
 // поэтому -1 (все слои) и -2 (авто) обязаны проходить как есть.
@@ -232,8 +190,8 @@ func TestR364_ReadProfileSeedsAllFields(t *testing.T) {
 		got.Seed.KVCacheType != "q4_0" || got.Seed.Parallel != 2 {
 		t.Fatalf("seed профиля неполный: %+v", got.Seed)
 	}
-	if got.Seed.FlashAttnType == nil || *got.Seed.FlashAttnType != 1 {
-		t.Errorf("flashAttnType из профиля = %v, want 1 (включено)", got.Seed.FlashAttnType)
+	if got.Seed.FlashAttn == nil || !*got.Seed.FlashAttn {
+		t.Errorf("flashAttn из профиля = %v, want true (seed хранит сырое значение, перевод — R366)", got.Seed.FlashAttn)
 	}
 	if got.Seed.Reasoning == nil || !*got.Seed.Reasoning {
 		t.Error("reasoning из профиля потерян — legacy-путь грузил модель с размышлениями выключенными")

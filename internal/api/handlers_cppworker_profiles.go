@@ -994,6 +994,14 @@ type profilePresence struct {
 	// reasoning_enabled=false (живая проверка на стенде: PUT 200, в GET профиля
 	// ключа нет, инстанс — reasoning_enabled=False).
 	EnableReasoning *bool `json:"enableReasoning"`
+	// NumGPULayers — R399 (2026-11-04): указатель, чтобы ЯВНЫЙ 0 доезжал.
+	//
+	// ЖИВОЙ ФАКТ (аудит настроек WebUI): в карточке модели выбор «0 — только CPU»
+	// молча не сохранялся. mergeModelProfile трактует 0 как «поле не передано», а
+	// для numGpuLayers 0 — валидное ЗНАЧЕНИЕ (CPU-only, как у cppworker:
+	// -2=AUTO, -1=все слои, 0=CPU, N>0=N слоёв). PUT 200, в GET профиля
+	// оставалось -1 — то есть настройка «не применялась».
+	NumGPULayers *int `json:"numGpuLayers"`
 	// Parallel — R119 (2026-10-15): указатель, чтобы число слотов можно было
 	// СНЯТЬ (`"parallel": 0` = «наследовать CPPWORKER_N_PARALLEL»).
 	//
@@ -1062,6 +1070,9 @@ func mergeProfileUpdate(existing, values types.LlamaCppModelProfile, presence pr
 	// Явно переданный 0 теперь означает «снять» (наследовать значение cppworker).
 	// Живое подтверждение необходимости: восстановление профиля после теста
 	// потребовало DELETE + PUT — иначе contextPerSeq/parallel оставались в файле.
+	if presence.NumGPULayers != nil {
+		out.NumGPULayers = *presence.NumGPULayers
+	}
 	if presence.Parallel != nil {
 		out.Parallel = *presence.Parallel
 	}

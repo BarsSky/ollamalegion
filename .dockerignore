@@ -21,6 +21,16 @@ CHANGELOG.md
 LICENSE.md
 DEPLOYMENT.md
 
+# R402 (2026-11-05): схема жизненного цикла запроса нужна ВНУТРИ образа WebUI,
+# чтобы оператор открывал её для текущей сборки офлайн (Настройки -> Справка ->
+# Схема работы, файлы /docs/architecture/*.md). Точечно возвращаем в контекст
+# только эти два файла; остальные docs/ и *.md остаются исключёнными.
+!docs
+docs/*
+!docs/architecture
+!docs/architecture/request-lifecycle.md
+!docs/architecture/request-lifecycle.ru.md
+
 # Конфигурация IDE и редакторов
 .vscode/
 .idea/

@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -37,6 +38,10 @@ import (
 // Проверяет env var LB_OPENAI_AUTO_STREAM=true.
 // Default false — backward compat (старое blocking поведение).
 func IsOpenAIAutoStreamEnabled() bool {
+	// R388: реестр горячих настроек — переключатель виден и меняется в WebUI.
+	if v, ok := settings.HotInt("LB_OPENAI_AUTO_STREAM"); ok {
+		return v > 0
+	}
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("LB_OPENAI_AUTO_STREAM")))
 	return v == "true" || v == "1" || v == "yes"
 }

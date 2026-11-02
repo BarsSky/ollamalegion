@@ -38,6 +38,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -71,6 +72,11 @@ var layoutHealStateR383 = struct {
 
 // layoutHealEnabledR383 — включено ли автолечение (LB_LAYOUT_HEAL, по умолчанию да).
 func layoutHealEnabledR383() bool {
+	// R388: реестр горячих настроек (переопределение → env → умолчание), чтобы
+	// выключатель был виден в панели WebUI, а не только в .env.
+	if v, ok := settings.HotInt("LB_LAYOUT_HEAL"); ok {
+		return v > 0
+	}
 	raw := strings.ToLower(strings.TrimSpace(os.Getenv("LB_LAYOUT_HEAL")))
 	switch raw {
 	case "0", "false", "no", "off":

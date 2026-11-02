@@ -47,6 +47,7 @@ import (
 	"unicode/utf8"
 
 	"ollama-loadbalancer/internal/i18n"
+	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 )
 
@@ -351,6 +352,11 @@ func lastRune(s string) rune {
 //
 // Default: false (off). Set to "1", "true", "yes" to enable.
 func IsAutoContinueOnTruncationEnabled() bool {
+	// R388: реестр горячих настроек — опция видна в WebUI (по умолчанию
+	// выключена), а не только в .env.
+	if v, ok := settings.HotInt("LB_AUTO_CONTINUE_ON_TRUNCATION"); ok {
+		return v > 0
+	}
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("LB_AUTO_CONTINUE_ON_TRUNCATION")))
 	return v == "1" || v == "true" || v == "yes"
 }

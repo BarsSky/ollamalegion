@@ -37,12 +37,19 @@ import (
 	"os"
 	"strings"
 
+	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 )
 
 // streamGrowthEnabledR385 — выключатель роста окна на стриминге (по умолчанию
 // включён: именно это и просил оператор).
 func streamGrowthEnabledR385() bool {
+	// R388: значение живёт в реестре горячих настроек (панель WebUI):
+	// переопределение → env → умолчание. Так выключатель виден оператору, а не
+	// только в .env.
+	if v, ok := settings.HotInt("LB_NCTX_GROW_FOR_STREAM"); ok {
+		return v > 0
+	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("LB_NCTX_GROW_FOR_STREAM"))) {
 	case "0", "false", "no", "off":
 		return false

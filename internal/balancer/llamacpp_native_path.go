@@ -41,6 +41,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"ollama-loadbalancer/internal/settings"
 )
 
 // IsOllamaNativePathEnabled — true (default) если Ollama-пути должны идти на
@@ -52,6 +54,12 @@ import (
 //
 // Явные выключатели: "0", "false", "no", "off".
 func IsOllamaNativePathEnabled() bool {
+	// R388: значение и источник видны в панели WebUI. Менять его можно только
+	// с перезапуском (HotReload=false): переключение формы ответа на живой
+	// сессии путает уже начатый разговор.
+	if v, ok := settings.HotInt("LB_OLLAMA_NATIVE_PATH"); ok {
+		return v > 0
+	}
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("LB_OLLAMA_NATIVE_PATH")))
 	switch v {
 	case "0", "false", "no", "off":

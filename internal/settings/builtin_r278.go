@@ -490,5 +490,65 @@ func builtinListR278() []Setting {
 				return v
 			},
 		},
+		// R388 (2026-11-02): поведенческие выключатели, которые раньше менялись
+		// ТОЛЬКО через env и пересоздание контейнера. Теперь их видно и можно
+		// менять в панели «Горячие настройки» (WebUI рисует реестр целиком:
+		// значение, источник, применение без рестарта).
+		{
+			Name:        "LB_LAYOUT_HEAL",
+			Type:        TypeBool,
+			Default:     1,
+			Group:       "layout",
+			HotReload:   true,
+			Description: "Автолечение вырожденной раскладки: перезапуск rpc-server донора + перезагрузка простаивающей модели (R383). 0 — выключить.",
+			Validate:    bool01R388,
+		},
+		{
+			Name:        "LB_NCTX_GROW_FOR_STREAM",
+			Type:        TypeBool,
+			Default:     1,
+			Group:       "nctx",
+			HotReload:   true,
+			Description: "Запрос с большим окном поднимает модель и на стриме (R385): перезагрузка + 503/Retry-After. 0 — прежнее поведение.",
+			Validate:    bool01R388,
+		},
+		{
+			Name:        "LB_OPENAI_AUTO_STREAM",
+			Type:        TypeBool,
+			Default:     0,
+			Group:       "streaming",
+			HotReload:   true,
+			Description: "Non-stream запрос /v1 выполняется внутренним стримом к воркеру, клиенту — один JSON. По умолчанию выключено.",
+			Validate:    bool01R388,
+		},
+		{
+			Name:        "LB_AUTO_CONTINUE_ON_TRUNCATION",
+			Type:        TypeBool,
+			Default:     0,
+			Group:       "auto_continue",
+			HotReload:   true,
+			Description: "Авто-продолжение обрезанного ответа (опция). Агентский ход не продолжается никогда (R187).",
+			Validate:    bool01R388,
+		},
+		{
+			Name:    "LB_OLLAMA_NATIVE_PATH",
+			Type:    TypeBool,
+			Default: 1,
+			Group:   "surface",
+			// HotReload=false ОСОЗНАННО: переключение формы ответа на живой
+			// сессии путает начатый разговор. Панель показывает значение и
+			// источник; менять — через env и рестарт (Set ответит ErrNotHot).
+			HotReload:   false,
+			Description: "Нативная поверхность Ollama: ответ воркера как есть (1) или перевод OpenAI→Ollama (0). Только с перезапуском.",
+			Validate:    bool01R388,
+		},
 	}
+}
+
+// bool01R388 — общий валидатор булевых выключателей (0/1).
+func bool01R388(v int64) error {
+	if v != 0 && v != 1 {
+		return fmt.Errorf("expected 0 or 1, got %d", v)
+	}
+	return nil
 }

@@ -209,9 +209,6 @@ func handleModelEffective(w http.ResponseWriter, r *http.Request) {
 	case profMmapSet:
 		effMmap, mmapSource = profMmap, "profile"
 	}
-	if info, err := backend.GetModel(name); err == nil && info != nil {
-		effMmap, mmapSource = info.UseMmap, "loaded"
-	}
 
 	resp := map[string]interface{}{
 		"model":   name,
@@ -235,6 +232,7 @@ func handleModelEffective(w http.ResponseWriter, r *http.Request) {
 			"gpu_layers":             info.GPULayers,
 			"kv_cache_type":          info.KVCacheType,
 			"reasoning":              info.ReasoningEnabled,
+			"use_mmap":               info.UseMmap,
 			"differs_from_effective": info.ContextSize > 0 && effCtx > 0 && info.ContextSize != effCtx,
 		}
 		resp["loaded"] = loaded

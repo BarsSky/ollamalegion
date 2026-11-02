@@ -909,8 +909,19 @@ func applyProfileLoadParams(req *ModelOpRequest, prof types.LlamaCppModelProfile
 			"profile_context_length", prof.ContextLength,
 			"profile_num_gpu_layers", prof.NumGPULayers)
 	}
+	// R397 (2026-11-04): профиль — HINT ПЕРВИЧНОЙ загрузки, а не предел запроса
+	// (R68). Пока окно подставлялось из профиля и при явном запросе, суммарное
+	// contextLength перебивало клиентское окно, пришедшее как contextPerSeq:
+	//
+	//	живой прогон: клиент num_ctx=131072 → автозагрузка просит contextPerSeq=65536
+	//	→ applyProfileLoadParams подставляет ContextSize=32768 из профиля →
+	//	resolveDeclaredWindow выбирает суммарное (32768), per-seq выбрасывает →
+	//	воркер грузит 32768, а запрос клиента на 131072 получает отказ.
+	//
+	// Теперь профиль заполняет окно ТОЛЬКО когда запрос не задал ни одного из
+	// полей. Явный запрос (total и/или per-seq) идёт как есть.
 	totalFromProfile := false
-	if req.ContextSize == nil && prof.ContextLength > 0 {
+	if req.ContextSize == nil && req.ContextPerSeq == nil && prof.ContextLength > 0 {
 		cs := prof.ContextLength
 		req.ContextSize = &cs
 		totalFromProfile = true
@@ -975,8 +986,13 @@ func applyProfileLoadParams(req *ModelOpRequest, prof types.LlamaCppModelProfile
 	// непустом contextPerSeq считает суммарное САМ: total = PAD256(perSeq) × слоты.
 	// Итог — модель грузилась с 16384 × 2 = 32768, а настройка оператора
 	// выглядела проигнорированной (живая жалоба).
+	// R397: противоречие total vs per-seq разрешаем, только когда оба поля
+	// реально пришли (или одно из них подставил профиль). Если запрос задал
+	// ТОЛЬКО per-seq, суммарного окна для сравнения нет — не выдумываем его из
+	// профиля, иначе клиентское окно снова будет урезано.
+	reqHasBothWindows := req.ContextSize != nil && req.ContextPerSeq != nil
 	if prof.ContextLength > 0 || prof.ContextPerSeq > 0 {
-		if totalFromProfile || perSeqFromProfile {
+		if reqHasBothWindows || totalFromProfile || perSeqFromProfile {
 			slots := 1
 			if req.Parallel != nil && *req.Parallel > 0 {
 				slots = *req.Parallel

@@ -181,5 +181,17 @@ func (p *Proxy) declaredWindowTotal(modelName string) int {
 	if total < 0 {
 		return 0
 	}
+	// R397 (2026-11-04): contextLengthAuto/contextLengthMax — это ЗАЯВЛЕННЫЙ
+	// оператором потолок авто-роста, и он тоже «заявленное окно».
+	//
+	// ЖИВОЙ СЛУЧАЙ. Профиль Qwen3.8-27B: contextLength=32768,
+	// contextLengthAuto=true, contextLengthMax=131072. Клиент просил num_ctx=131072
+	// — получал 413 «exceeds operator limit auto_reload_max_n_ctx=32768» и модель
+	// поднималась на 32768. Режим «auto» был мёртв: пока потолок считался только по
+	// contextLength, значение contextLengthMax не участвовало НИГДЕ, и автоподъём
+	// до заявленного максимума был невозможен по построению.
+	if prof.ContextLengthAuto && prof.ContextLengthMax > total {
+		return prof.ContextLengthMax
+	}
 	return total
 }

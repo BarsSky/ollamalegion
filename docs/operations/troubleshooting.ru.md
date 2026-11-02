@@ -279,6 +279,19 @@ curl -s -X POST -H 'X-API-Token: <token>' -H 'Content-Type: application/json' -d
 `primary: true` — политика оператора: клиентский `num_ctx` не меняет окно
 модели. Если нужно, чтобы клиент мог поднимать окно, снимите флаг в карточке
 модели.
+**Быстрый полный обход настроек:** `scripts/audit-webui-settings.ps1` (R399).
+Прогоняет ТЕ ЖЕ HTTP-вызовы, что делает WebUI: все горячие настройки
+(сохранить → прочитать → вернуть), все поля профиля модели (на реальном профиле
+и на временном со всеми полями), load-defaults, метки/роль бэкенда, конфиг
+кластера, кнопку «Загрузить» и «Применить и перезагрузить» (с `-Apply`).
+Разрушающие операции (config import, terminate сессий, image apply) пропускаются
+осознанно и печатаются как SKIP.
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/audit-webui-settings.ps1 `
+  -Token <CPPWORKER_API_TOKEN> -Model gemma-4-E4B-it-Q4_K_M -Apply
+# ИТОГ: PASS=96 FAIL=0 SKIP=11
+```
 
 ---
 

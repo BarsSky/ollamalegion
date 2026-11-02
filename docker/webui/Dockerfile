@@ -58,6 +58,17 @@ COPY webui/favicon-16x16.png .
 COPY webui/favicon-32x32.png .
 COPY webui/favicon.ico .
 
+# R402 (2026-11-05): схема жизненного цикла запроса.
+#
+# ЗАЧЕМ ИМЕННО В ОБРАЗЕ. Оператор должен открыть схему для ТОЙ сборки, которая
+# сейчас работает, и пройти по цепочке без GitHub и без сети: страница
+# /scheme.html читает docs/scheme.json, а ссылки на техдокумент ведут на
+# docs/architecture/*.md внутри того же образа. Поэтому копируем и структуру
+# канваса (webui/docs), и сами документы (docs/architecture).
+COPY webui/docs/ ./docs/
+COPY docs/architecture/request-lifecycle.md ./docs/architecture/
+COPY docs/architecture/request-lifecycle.ru.md ./docs/architecture/
+
 # === R83 (2026-09-25): единый токен cache-busting на образ ===
 #
 # ЗАЧЕМ. В репозитории ?v= проставлен литералом (это нужно, чтобы страницу можно

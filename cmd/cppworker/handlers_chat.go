@@ -1478,16 +1478,17 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		return
 	}
 
-	cleanedOutput := cleanFinalContent(fullOutput)
-	// R65d (2026-09-20): реальные token counts вместо eval_count:0.
+	// R402 (2026-11-05): eval_count — ВСЕ сгенерированные токены, включая
+	// размышления.
 	//
-	// До R65d финальный чанк нативного /api/chat отдавал eval_count=0 и
-	// eval_duration == total_duration (включая prefill). Клиенты (OpenWebUI)
-	// считали tokens/sec от этих полей, поэтому показывали N/A или заниженное
-	// значение. Считаем так же, как OpenAI-путь cppworker
-	// (writeOpenAIUsageChunk → countTokensSafe, handlers_openai.go:2058-2075),
-	// чтобы метрики не расходились между нативным и OpenAI маршрутами.
-	evalTokens := countTokensSafe(modelName, cleanedOutput)
+	// ЖИВОЙ ДЕФЕКТ. Здесь считался countTokensSafe(cleanedOutput), то есть
+	// только видимый текст без think-блока. Клиенты (Cline/OpenWebUI) считают
+	// заполненность контекста как prompt_eval_count + eval_count: занижение на
+	// объём размышлений убеждало клиента, что место ещё есть, — он набивал
+	// историю до мнимого предела, получал реальное переполнение окна и показывал
+	// «увеличьте контекст вручную». Считаем по СЫРОМУ выводу, как eval_count в
+	// Ollama (туда входят все сгенерированные токены).
+	generatedTokens := countTokensSafe(modelName, fullOutput)
 	promptTokens := countTokensSafe(modelName, prompt)
 	evalNs := duration.Nanoseconds()
 	promptEvalNs := int64(0)
@@ -1528,8 +1529,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	//
 	// Считаем по СЫРОМУ выводу: бюджет тратится и на размышления, а
 	// cleanFinalContent их вырезает — по видимому тексту лимит выглядел бы
-	// неизрасходованным.
-	generatedTokens := countTokensSafe(modelName, fullOutput)
+	// неизрасходованным. generatedTokens посчитан выше (R402) и уходит в
+	// eval_count, чтобы usage и решение о причине завершения были об одном числе.
 	if doneReason == "stop" && toolsBudgetExhaustedR394(params.NPredict, generatedTokens) {
 		doneReason = "length"
 	}
@@ -1562,7 +1563,7 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		"total_duration":       evalNs,
 		"prompt_eval_count":    promptTokens,
 		"prompt_eval_duration": promptEvalNs,
-		"eval_count":           evalTokens,
+		"eval_count":           generatedTokens,
 		"eval_duration":        evalNs - promptEvalNs,
 	}
 	doneJSON, _ := json.Marshal(doneChunk)

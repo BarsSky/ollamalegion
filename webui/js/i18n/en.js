@@ -359,6 +359,8 @@ window.I18N_EN = {
 
   // Help
   "help.title": "Help",
+  "help.scheme": "Request lifecycle: request, window, response",
+  "help.scheme_desc": "Interactive map of every stage: where the context window is decided, why the answer finished, where the client gets the context size. Linked to the code.",
   "help.documentation": "Full Documentation",
   "help.documentation_desc": "Installation, configuration, and operation guide for OllamaLegion",
   "help.api_reference": "API Reference",

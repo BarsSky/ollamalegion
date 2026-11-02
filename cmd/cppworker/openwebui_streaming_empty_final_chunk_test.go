@@ -251,7 +251,10 @@ func TestOpenAIChatStream_AccumulatesFullText(t *testing.T) {
 		if isStreamingRoleOnly && i != 0 {
 			t.Errorf("chunk[%d] is role-only but not the first chunk", i)
 		}
-		if finishReason != "" && finishReason != "stop" && finishReason != "tool_calls" {
+		// R402 (2026-11-05): length — законная причина, если сырой вывод упёрся в
+		// max_tokens=10, заданный этим запросом. До R402 бюджет считался по числу
+		// callback'ов и длина капа не замечалась.
+		if finishReason != "" && finishReason != "stop" && finishReason != "length" && finishReason != "tool_calls" {
 			t.Errorf("chunk[%d] unexpected finish_reason=%q", i, finishReason)
 		}
 	}

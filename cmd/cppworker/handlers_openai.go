@@ -1568,7 +1568,19 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	// finish_reason="stop" — клиент считает ответ полным, хотя модель оборвалась
 	// на середине фразы, а авто-продолжение балансера
 	// (LB_AUTO_CONTINUE_ON_TRUNCATION=1) ждёт именно "length".
-	truncated := params.NPredict > 0 && sw.TokensSent() >= int64(params.NPredict)
+	// R402 (2026-11-05): бюджет считаем ТОКЕНИЗАТОРОМ по сырому выводу, а не
+	// числом callback'ов.
+	//
+	// ЖИВОЙ ДЕФЕКТ. Здесь стояло `sw.TokensSent() >= NPredict`, но TokensSent —
+	// счётчик ВЫЗОВОВ callback'а, а не токенов. R394 на живом прогоне показал:
+	// num_predict=16 → eval_count=17 при 14 callback'ах. Когда callback'ов меньше
+	// капа, обрезанный ответ уходил с finish_reason="stop": Cline закрывал ход и
+	// не продолжал, хотя модель оборвалась на середине фразы. Тот же класс, что
+	// R394 на native /api/chat; просто OpenAI-путь тогда остался непочиненным.
+	//
+	// fullOutput — сырой вывод, включая размышления: бюджет тратится и на них.
+	generatedTokens := countTokensSafe(modelName, fullOutput)
+	truncated := toolsBudgetExhaustedR394(params.NPredict, generatedTokens)
 	// R231: незакрытый блок размышлений — ответ НЕ дописан, даже если кап
 	// формально не достигнут (модель открыла <think>/<|channel> и оборвалась).
 	// Честный finish_reason=length: клиент (Cline) продолжит, а не сочтёт
@@ -1576,7 +1588,7 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	if !truncated && rsParser.Snapshot().Unclosed {
 		truncated = true
 		logger.Get().Warnw(i18n.T("cppworker.handlers_openai.stream_reasoning_unclosed_length"),
-			"model", modelName, "tokens_sent", sw.TokensSent(),
+			"model", modelName, "generated_tokens", generatedTokens, "tokens_sent", sw.TokensSent(),
 			"reasoning_chars", rsParser.Snapshot().ReasoningChars)
 	}
 
@@ -1602,7 +1614,8 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	if truncated && len(toolCalls) == 0 {
 		finishReason = "length"
 		logger.Get().Warnw(i18n.T("cppworker.handlers_openai.stream_truncated_by_max_tokens"),
-			"model", modelName, "max_tokens", params.NPredict, "tokens_sent", sw.TokensSent())
+			"model", modelName, "max_tokens", params.NPredict,
+			"generated_tokens", generatedTokens, "tokens_sent", sw.TokensSent())
 	}
 
 	stopChunk := map[string]interface{}{

@@ -271,8 +271,12 @@ func (p *Proxy) handleNCtxReloadActual(
 		logger.Get().Errorw("nctx_reload: DoReload failed",
 			"backend", backendID, "model", modelName, "error", reloadErr)
 		p.nctxReload.RecordError(backendID, reloadErr.Error())
+		// R402: отказ перезагрузки — это техническая причина, а не повод
+		// отправлять клиента «сохранить профиль и перезагрузить вручную».
+		// Перезагрузку уже пытался сделать сам балансер; сообщаем, что именно
+		// упало, и оставляем числа/код для клиента и оператора.
 		writeNCtxJSONError(w, http.StatusServiceUnavailable,
-			fmt.Sprintf("n_ctx auto-reload failed: %v (saved model profile with larger n_ctx and reload manually via /api/profiles)", reloadErr),
+			fmt.Sprintf("n_ctx auto-reload failed: %v (the balancer attempted the reload itself; see balancer log for the backend error and memory verdict)", reloadErr),
 			"reload-failed")
 		return
 	}

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Схема работы — Ollama Legion</title>
+    <script>
+        // Тема применяется до CSS, как в index.html (без мигания).
+        (function () {
+            try {
+                var stored = localStorage.getItem('ollamalegion_theme');
+                var valid = ['dark', 'light', 'linear', 'nvidia', 'vercel', 'sentry', 'mint'];
+                if (stored && valid.indexOf(stored) >= 0) {
+                    document.documentElement.setAttribute('data-theme', stored);
+                } else {
+                    var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+                    document.documentElement.setAttribute('data-theme', prefersLight ? 'light' : 'dark');
+                }
+            } catch (e) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
+        })();
+    </script>
+    <link rel="stylesheet" href="css/themes.css?v=R402">
+    <link rel="stylesheet" href="css/scheme.css?v=R402">
+</head>
+<body class="scheme-page">
+    <header class="scheme-top">
+        <h1 id="schemeTitle">Схема работы: запрос → окно контекста → ответ</h1>
+        <span class="scheme-version" id="schemeVersion">R402</span>
+        <span class="spacer"></span>
+        <a class="scheme-link" id="schemeDocTech" href="docs/architecture/request-lifecycle.md" target="_blank" rel="noopener">Техдокумент (для агента)</a>
+        <a class="scheme-link" id="schemeDocHuman" href="docs/architecture/request-lifecycle.ru.md" target="_blank" rel="noopener">Схема с диаграммами</a>
+        <a class="scheme-link" href="index.html#settings">← В настройки</a>
+    </header>
+
+    <div class="scheme-toolbar">
+        <input type="search" id="schemeSearch" placeholder="Поиск по шагам: окно, usage, finish_reason, отказ…" autocomplete="off">
+        <button type="button" id="schemeZoomOut" title="Уменьшить">−</button>
+        <span class="scheme-zoom-label" id="schemeZoomLabel">100%</span>
+        <button type="button" id="schemeZoomIn" title="Увеличить">+</button>
+        <button type="button" id="schemeZoomFit" title="Показать целиком">Вписать</button>
+        <span class="scheme-legend">Клик по блоку — детали и код. Перетаскивание — панорама. Ctrl+колесо — масштаб.</span>
+    </div>
+
+    <div class="scheme-body">
+        <div class="scheme-stage" id="schemeStage">
+            <div class="scheme-stages" id="schemeStages"></div>
+            <svg class="scheme-edges" id="schemeEdges" xmlns="http://www.w3.org/2000/svg"></svg>
+            <div class="scheme-board" id="schemeBoard"></div>
+        </div>
+        <aside class="scheme-inspector" id="schemeInspector" aria-live="polite"></aside>
+    </div>
+
+    <script src="js/modules/scheme-canvas.js?v=R402"></script>
+</body>
+</html>

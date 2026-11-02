@@ -3222,11 +3222,24 @@ func writeOllamaShowLoadedResponse(w http.ResponseWriter, info *cppbackend.Model
 	// of the broken n_layers × n_embd / 1e9 formula, which gave "0.0B" for 7B models
 	// (e.g. Qwen3-Instruct: 36 × 2560 = 92160 → 9.2e-5B → "0.0B").
 	paramSize := modelParameterSize(info.NLayers, info.NEmbd)
+	// R402 (2026-11-05): context_size — окно, доступное ОДНОМУ клиенту (на слот).
+	//
+	// ЖИВОЙ ДЕФЕКТ. Здесь отдавалось СУММАРНОЕ окно модели (contextSize), а слоты
+	// его делят: при parallel=2 и total 131072 один клиент получает 65536.
+	// Клиент (Cline/Roo) читает context_size как «свой» размер окна, заполняет
+	// историю до мнимого предела, упирается в реальный и показывает ошибку
+	// «увеличьте контекст вручную». Отдаём окно на слот, а суммарное и parallel
+	// кладём отдельными полями — пусть клиент и оператор видят оба числа.
+	perSlotNCtx := info.ContextSize
+	if info.ContextSize > 0 {
+		perSlotNCtx = cppbackend.ContextPerSlot(info.ContextSize, info.Parallel)
+	}
 	modelInfo := map[string]interface{}{
 		"architecture": info.Architecture, "n_layers": info.NLayers,
 		"n_heads": info.NHeads, "n_embd": info.NEmbd,
 		"n_kv_heads": info.NKvHeads, "head_dim_k": info.HeadDimK, "head_dim_v": info.HeadDimV,
-		"n_vocab": info.NVocab, "context_size": info.ContextSize,
+		"n_vocab": info.NVocab, "context_size": perSlotNCtx,
+		"context_size_total": info.ContextSize, "parallel": info.Parallel,
 		"gpu_layers": info.GPULayers, "kv_cache_type": info.KVCacheType, "state": info.State,
 	}
 	// H3 (аудит): на загруженной модели тоже отдаём "<arch>.context_length" —

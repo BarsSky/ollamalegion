@@ -36,6 +36,7 @@ How routing, sharding and inference work inside.
 
 | Document | English | Russian | What it covers |
 |---|---|---|---|
+| **Request lifecycle (R402)** | [EN](architecture/request-lifecycle.md) | [RU](architecture/request-lifecycle.ru.md) | Normative scheme: context window (per slot and total), terminal reasons, usage, refusal registry, code map. |
 | **Balancing guide** | [EN](architecture/balancing-guide.md) | [RU](architecture/balancing-guide.ru.md) | Scoring, backend selection, session and model affinity. |
 | **Backend type isolation** | [EN](architecture/backend-type-isolation.md) | [RU](architecture/backend-type-isolation.ru.md) | How llama.cpp and Ollama backends coexist in one cluster. |
 | **RPC coordinator** | [EN](architecture/rpc-coordinator.md) | [RU](architecture/rpc-coordinator.ru.md) | Distributed inference over llama.cpp RPC: roles, state, limits. |

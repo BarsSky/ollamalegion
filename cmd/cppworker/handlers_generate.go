@@ -569,6 +569,16 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		return
 	}
 	fullOutput := outputBuf.String()
+	// R402 (2026-11-05): токены считаем ТОКЕНИЗАТОРОМ по сырому выводу, а не
+	// инкрементом в callback'е.
+	//
+	// ЖИВОЙ ДЕФЕКТ (класс R394). `tokens++` в callback'е — это число ВЫЗОВОВ
+	// callback'а: один вызов может принести несколько токенов, поэтому
+	// eval_count занижался, а решение «упёрлись в бюджет» не срабатывало —
+	// обрезанный ответ уходил с done_reason="stop". Клиент считал ход
+	// законченным и не продолжал. Здесь же число уходит в eval_count и в
+	// tokens_per_second, чтобы usage и причина завершения были об одном числе.
+	generatedTokens := countTokensSafe(modelName, fullOutput)
 	// R108 (2026-10-13): выпускаем удержанный хвост парсера (возможный неполный
 	// маркер) — иначе последние символы ответа потеряются.
 	if thinkingTail, responseTail := genParser.FinalizeForStream(); thinkingTail != "" || responseTail != "" {
@@ -611,12 +621,16 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 	duration := time.Since(start)
 	tps := float64(0)
 	if duration.Seconds() > 0 {
-		tps = float64(tokens) / duration.Seconds()
+		tps = float64(generatedTokens) / duration.Seconds()
 	}
 	// R231: незакрытый блок размышлений = ответ не дописан (см.
 	// FinalizeForStream) — честный done_reason=length.
 	doneReason := "stop"
 	if genParser.Snapshot().Unclosed {
+		doneReason = "length"
+	}
+	// R402: исчерпанный клиентский бюджет тоже даёт length (как R394 в /api/chat).
+	if doneReason == "stop" && toolsBudgetExhaustedR394(params.NPredict, generatedTokens) {
 		doneReason = "length"
 	}
 	doneChunk := map[string]interface{}{
@@ -626,7 +640,7 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		"done":              true,
 		"done_reason":       doneReason,
 		"total_duration":    duration.Microseconds() * 1000,
-		"eval_count":        tokens,
+		"eval_count":        generatedTokens,
 		"eval_duration":     duration.Microseconds() * 1000,
 		"tokens_per_second": tps,
 		// R119 (H1): `context` + prompt_eval_count в ФИНАЛЬНОМ чанке стрима —
@@ -853,6 +867,11 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		return
 	}
 	fullOutput := outputBuf.String()
+	// R402 (2026-11-05): как и в writeStreamResponse — токены считаем
+	// токенизатором по сырому выводу, а не инкрементом callback'а. Иначе
+	// eval_count занижается, а обрыв по бюджету не распознаётся (уходил
+	// done_reason=stop на обрезанном ответе).
+	generatedTokens := countTokensSafe(modelName, fullOutput)
 	// R83/v67 (2026-10-02): финальный сброс reasoning-парсера — выпускаем
 	// удержанный хвост (возможный неполный think-тег), иначе последние символы
 	// ответа потеряются (см. ReasoningStreamState.Finalize).
@@ -889,7 +908,7 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	duration := time.Since(start)
 	tps := float64(0)
 	if duration.Seconds() > 0 {
-		tps = float64(tokens) / duration.Seconds()
+		tps = float64(generatedTokens) / duration.Seconds()
 	}
 	// R231: незакрытый блок размышлений = ответ не дописан — done_reason=length
 	// (см. FinalizeForStream; дубль размышлений в response больше не отдаём).
@@ -897,11 +916,15 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 	if ogParser.Snapshot().Unclosed {
 		doneReason = "length"
 	}
+	// R402: исчерпанный клиентский бюджет тоже даёт length (как R394 в /api/chat).
+	if doneReason == "stop" && toolsBudgetExhaustedR394(params.NPredict, generatedTokens) {
+		doneReason = "length"
+	}
 	doneJSON, _ := json.Marshal(map[string]interface{}{
 		"model": modelName, "done": true, "done_reason": doneReason,
 		"created_at":        createdAt,
 		"total_duration":    duration.Microseconds() * 1000,
-		"eval_count":        tokens,
+		"eval_count":        generatedTokens,
 		"eval_duration":     duration.Microseconds() * 1000,
 		"tokens_per_second": tps,
 		// R119 (H1): та же конвенция, что и в негстрим-ответе

@@ -36,6 +36,7 @@
 
 | Документ | Русский | English | О чём |
 |---|---|---|---|
+| **Жизненный цикл запроса (R402)** | [RU](architecture/request-lifecycle.ru.md) | [EN](architecture/request-lifecycle.md) | Обязательная схема: окно контекста (на слот и суммарное), причины завершения, usage, реестр отказов, карта кода. |
 | **Балансировка и сессии** | [RU](architecture/balancing-guide.ru.md) | [EN](architecture/balancing-guide.md) | Скоринг, выбор бэкенда, привязка сессий и моделей. |
 | **Изоляция типов бэкендов** | [RU](architecture/backend-type-isolation.ru.md) | [EN](architecture/backend-type-isolation.md) | Как бэкенды llama.cpp и Ollama живут в одном кластере. |
 | **RPC-координатор** | [RU](architecture/rpc-coordinator.ru.md) | [EN](architecture/rpc-coordinator.md) | Распределённый вывод через llama.cpp RPC: роли, состояние, лимиты. |

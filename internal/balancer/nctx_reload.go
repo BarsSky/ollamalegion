@@ -925,7 +925,17 @@ func (c *NCtxReloadCoordinator) makeRejectPlan(
 	}
 	limitedBy := ceiling.source(bridgeErr.MaxVRAMNCtx)
 
-	suggestion := "save a model profile with a larger n_ctx and reload manually, or send a smaller options.num_ctx in the request"
+	// R402 (2026-11-05): текст подсказки больше не отправляет оператора
+	// «сохранить профиль и перезагрузить вручную» — балансер растит окно сам
+	// (R400), поэтому отказ здесь означает, что вырасти НЕКУДА: упёрлись в
+	// training context модели или в память. Объясняем единицы и реальные рычаги.
+	//
+	// Отдельно про parallel: при parallel=2 окно модели делится между слотами, и
+	// одна сессия получает половину. Это частая причина «не даёт поднять окно».
+	suggestion := "the balancer already tried to grow the window automatically: requested total n_ctx " +
+		"exceeds the model/backend ceiling (training context or available VRAM/RAM). " +
+		"Reduce conversation history, tools[] and the system prompt, or reload the model with a smaller " +
+		"parallel value: slots divide the window, so parallel=1 gives a single session the whole training context."
 	if errorCode == "prompt_exceeds_context" {
 		suggestion = "reduce conversation history / tools[] / system prompt, or use a smaller model. " +
 			"Reload with the same or larger n_ctx will NOT help — the model is already loaded at maximum."

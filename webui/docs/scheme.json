@@ -1,0 +1,314 @@
+{
+  "version": "R402",
+  "title": "Схема работы: запрос → окно контекста → ответ",
+  "subtitle": "Каждый блок — шаг конвейера. Нажмите на блок, чтобы увидеть, что происходит, что уходит клиенту и где это в коде.",
+  "docs": {
+    "tech": "../docs/architecture/request-lifecycle.md",
+    "human": "../docs/architecture/request-lifecycle.ru.md"
+  },
+  "stages": [
+    { "id": "client",   "title": "1. Клиент",              "hint": "какой маршрут выбрал клиент" },
+    { "id": "ingress",  "title": "2. Вход балансера",       "hint": "разбор запроса и допуск" },
+    { "id": "window",   "title": "3. Решение об окне",      "hint": "холодный / растёт / отказ" },
+    { "id": "load",     "title": "4. Загрузка и память",    "hint": "load / reload / memfit" },
+    { "id": "generate", "title": "5. Генерация",            "hint": "cppworker и llama.cpp" },
+    { "id": "terminal", "title": "6. Причина завершения",   "hint": "stop / length / tool_calls" },
+    { "id": "egress",   "title": "7. Ответ и usage",        "hint": "что видит клиент" }
+  ],
+  "nodes": [
+    {
+      "id": "req-native",
+      "stage": "client",
+      "title": "POST /api/chat",
+      "detail": [
+        "Ollama-совместимый маршрут: NDJSON-стрим, message.content и message.thinking.",
+        "Клиент присылает num_ctx (окно одной последовательности) и num_predict.",
+        "Cline по умолчанию ходит сюда (провайдер Ollama)."
+      ],
+      "outputs": ["NDJSON: message.delta", "done:true + done_reason", "prompt_eval_count / eval_count"],
+      "code": ["internal/balancer/llamacpp_transport.go: proxyRequestLlamaCpp", "cmd/cppworker/handlers_chat.go: handleChat"],
+      "doc": "§2, §8",
+      "errors": []
+    },
+    {
+      "id": "req-openai",
+      "stage": "client",
+      "title": "POST /v1/chat/completions",
+      "detail": [
+        "OpenAI-совместимый маршрут: SSE data: {...} и терминатор data: [DONE].",
+        "finish_reason: stop | length | tool_calls | error.",
+        "usage приходит отдельным чанком перед [DONE] (stream_options.include_usage)."
+      ],
+      "outputs": ["SSE delta.content / reasoning_content", "finish_reason", "[DONE]", "usage"],
+      "code": ["cmd/cppworker/handlers_openai.go: writeOpenAIChatStream", "internal/balancer/llamacpp_transport.go"],
+      "doc": "§2, §8, §9",
+      "errors": []
+    },
+    {
+      "id": "req-generate",
+      "stage": "client",
+      "title": "POST /api/generate",
+      "detail": [
+        "Ollama generate: поле response и context[] в финальном чанке.",
+        "Тот же терминальный контракт, что у /api/chat."
+      ],
+      "outputs": ["NDJSON: response", "done:true + context[]", "prompt_eval_count / eval_count"],
+      "code": ["cmd/cppworker/handlers_generate.go: handleGenerate"],
+      "doc": "§2, §8",
+      "errors": []
+    },
+    {
+      "id": "meta",
+      "stage": "ingress",
+      "title": "extractRequestMeta",
+      "detail": [
+        "Из тела достаются: модель, num_ctx/contextPerSeq, num_predict/max_tokens, tools, картинки, оценка промпта.",
+        "Оценка промпта — консервативная (по токенайзеру/эвристике), от неё зависит решение о росте окна."
+      ],
+      "outputs": ["RequestMeta: ModelName, RequestedNCtx, EstimatedPromptTokens, Tools"],
+      "code": ["internal/balancer/preflight_helper.go: extractRequestMeta"],
+      "doc": "§3",
+      "errors": []
+    },
+    {
+      "id": "admission",
+      "stage": "ingress",
+      "title": "Выбор бэкенда и допуск",
+      "detail": [
+        "Фильтры: тип (llama_cpp), метки, роль донора, наличие модели, свободные слоты.",
+        "При нехватке слотов — очередь допуска (heartbeat) или 503 с X-Queue-*.",
+        "Результат: backendID и слот."
+      ],
+      "outputs": ["200 (допущен)", "503 no_free_slots + Retry-After", "X-Queue-Wait-Ms"],
+      "code": ["internal/balancer/admission_queue.go", "internal/balancer/unified_queue_r73.go"],
+      "doc": "§3, §10",
+      "errors": ["no_free_slots", "queue_timeout"]
+    },
+    {
+      "id": "w-missing",
+      "stage": "window",
+      "title": "Модели нет на бэкенде?",
+      "detail": [
+        "404 с available_models: повтор запроса модель не создаст (R119).",
+        "Это дефект конфигурации (модель не в каталоге/на другом узле), а не окна."
+      ],
+      "outputs": ["404 model_missing + available_models"],
+      "code": ["internal/balancer/nctx_reload_handlers.go: modelMissingFor"],
+      "doc": "§5, §10",
+      "errors": ["404 model_missing"]
+    },
+    {
+      "id": "w-cold",
+      "stage": "window",
+      "title": "Модель не загружена",
+      "detail": [
+        "Холодный запрос: грузим модель под окно запроса (contextPerSeq), профиль заполняет только недостающие поля (R397).",
+        "Суммарное окно = окно запроса × parallel."
+      ],
+      "outputs": ["ожидание загрузки → 200", "202 loading + progressUrl (async)"],
+      "code": ["internal/balancer/model_management.go: ensureModelLoadedOnBackend, applyProfileLoadParams"],
+      "doc": "§5, §6",
+      "errors": []
+    },
+    {
+      "id": "w-covers",
+      "stage": "window",
+      "title": "Окно слота ≥ запроса",
+      "detail": [
+        "Без перезагрузки: запрос обслуживается текущим окном (вниз окно не растёт).",
+        "Даже если загруженная копия имеет БОЛЬШЕЕ окно/лучшие параметры — не перезагружаем ради меньшего запроса."
+      ],
+      "outputs": ["200, ответ приходит с текущим окном"],
+      "code": ["internal/balancer/preflight_nctx.go: RunPreflight ветка (4)"],
+      "doc": "§5, §0 I4",
+      "errors": []
+    },
+    {
+      "id": "w-grow",
+      "stage": "window",
+      "title": "Нужен рост окна",
+      "detail": [
+        "target_total = запрос × slots.",
+        "Свободная копия и физика позволяют → async reload до окна запроса.",
+        "Активный стрим → рост отложен, клиент ждёт или получает 503 с числами."
+      ],
+      "outputs": ["503 reload_pending + Retry-After", "повтор → 200"],
+      "code": ["internal/balancer/nctx_reload_handlers.go: preflightNCtxReloadIfNeeded", "internal/balancer/stream_growth_r385.go"],
+      "doc": "§5, §6",
+      "errors": ["reload_pending", "growth_blocked"]
+    },
+    {
+      "id": "w-ceil",
+      "stage": "window",
+      "title": "Потолок окна",
+      "detail": [
+        "physical_ceiling = min(GGUF_max, max(contextLengthMax, contextLength), LB_NCTX_RELOAD_MAX_N_CTX).",
+        "R400: заявленное окно не режется устаревшим максимумом; максимум 0 = профиль не ограничивает.",
+        "Отказ обязан содержать requested / loaded / ceiling / limited_by."
+      ],
+      "outputs": ["413 n_ctx_infeasible", "413 prompt_exceeds_context", "413 auto_reload_ceiling_reason"],
+      "code": ["internal/balancer/preflight_helper.go: resolvePhysicalMaxContext, profileCapCtx", "internal/balancer/nctx_reload.go: makeRejectPlan"],
+      "doc": "§5, §10, §0 I3",
+      "errors": ["n_ctx_infeasible", "prompt_exceeds_context", "auto_reload_ceiling"]
+    },
+    {
+      "id": "load",
+      "stage": "load",
+      "title": "Загрузка модели",
+      "detail": [
+        "Тело загрузки: contextPerSeq, parallel, kvCacheType, gpuLayers, flashAttn, reasoning, override-тензоры.",
+        "cppworker считает суммарное окно = contextPerSeq × parallel и проверяет память (memfit).",
+        "Отказ по памяти не должен оставлять стенд без модели (R297: проверка до unload)."
+      ],
+      "outputs": ["model loaded (context_size, context_per_seq)", "202 loading + progressUrl"],
+      "code": ["internal/balancer/model_management.go", "internal/cppbackend/backend.go: LoadModelWithParams", "internal/memfit"],
+      "doc": "§6, §12",
+      "errors": ["memfit_infeasible", "load_timeout"]
+    },
+    {
+      "id": "wait",
+      "stage": "load",
+      "title": "Ожидание перезагрузки",
+      "detail": [
+        "Клиент может ждать внутри балансера (LB_AUTO_LOAD_WAIT_SEC) или повторять по Retry-After.",
+        "reloadDedup запрещает второй параллельный reload той же модели."
+      ],
+      "outputs": ["200 после завершения", "503 с числами"],
+      "code": ["internal/balancer/nctx_reload.go: RunPreflight", "internal/balancer/nctx_reload_dedup.go"],
+      "doc": "§6",
+      "errors": []
+    },
+    {
+      "id": "gen",
+      "stage": "generate",
+      "title": "Инференс",
+      "detail": [
+        "cppworker вызывает llama.cpp, собирает thinking и content, удерживает маркеры tool-call.",
+        "Пустой видимый ответ при непустых размышлениях получает пояснение, а не молчаливый done."
+      ],
+      "outputs": ["дельты thinking/content", "tool_calls"],
+      "code": ["cmd/cppworker/handlers_chat.go: writeChatStreamResponse", "cmd/cppworker/handlers_openai.go: writeOpenAIChatStream"],
+      "doc": "§7",
+      "errors": []
+    },
+    {
+      "id": "term-budget",
+      "stage": "terminal",
+      "title": "Бюджет вывода",
+      "detail": [
+        "Считается токенизатором по СЫРОМУ выводу (включая размышления), не числом callback'ов.",
+        "Исчерпан → done_reason/finish_reason = length (R394 / R402)."
+      ],
+      "outputs": ["length", "auto-continue балансера получает повод"],
+      "code": ["cmd/cppworker/tools_terminal_reason_r394.go: toolsBudgetExhaustedR394", "cmd/cppworker/handlers_openai.go: R402"],
+      "doc": "§8, §0 I6",
+      "errors": []
+    },
+    {
+      "id": "term-unclosed",
+      "stage": "terminal",
+      "title": "Незакрытый think",
+      "detail": [
+        "Блок размышлений не закрыт — ответ заведомо не дописан, даже если бюджет формально не достигнут.",
+        "Честная причина length."
+      ],
+      "outputs": ["length"],
+      "code": ["cmd/cppworker/handlers_chat.go: rcParser.Snapshot().Unclosed", "cmd/cppworker/handlers_openai.go"],
+      "doc": "§8",
+      "errors": []
+    },
+    {
+      "id": "term-tools",
+      "stage": "terminal",
+      "title": "Tool calls",
+      "detail": [
+        "Вызовы инструментов отдаются финальным чанком с finish_reason=tool_calls (индекс на каждый call).",
+        "Текст перед маркером обязан уйти клиенту, а не быть съеденным удержанием."
+      ],
+      "outputs": ["tool_calls + finish_reason=tool_calls"],
+      "code": ["cmd/cppworker/handlers_openai.go: indexedToolCalls", "cmd/cppworker/handlers_chat.go"],
+      "doc": "§8",
+      "errors": []
+    },
+    {
+      "id": "term-error",
+      "stage": "terminal",
+      "title": "Пустой вывод / обрыв",
+      "detail": [
+        "Инференс прошёл, но видимого текста нет → error-терминатор с пояснением, а не stop.",
+        "Обрыв клиента → cancelled (OpenAI: finish_reason=stop + cancelled:true)."
+      ],
+      "outputs": ["error", "cancelled"],
+      "code": ["cmd/cppworker/handlers_chat.go", "cmd/cppworker/handlers_openai.go"],
+      "doc": "§8, §10",
+      "errors": ["empty_response", "cancelled"]
+    },
+    {
+      "id": "usage",
+      "stage": "egress",
+      "title": "usage и «объём контекста»",
+      "detail": [
+        "prompt_eval_count/prompt_tokens — весь промпт; eval_count/completion_tokens — все сгенерированные токены, ВКЛЮЧАЯ размышления (R402).",
+        "Клиенты считают заполненность контекста из этих полей; занижение ведёт к переполнению и ошибке «увеличьте контекст»."
+      ],
+      "outputs": ["prompt_eval_count / eval_count", "usage.prompt_tokens / completion_tokens / total_tokens"],
+      "code": ["cmd/cppworker/handlers_chat.go", "cmd/cppworker/handlers_openai.go: emitOpenAIUsageChunkSafe"],
+      "doc": "§9, §0 I5",
+      "errors": []
+    },
+    {
+      "id": "show",
+      "stage": "egress",
+      "title": "/api/show: окно для клиента",
+      "detail": [
+        "context_size = окно НА СЛОТ (total/parallel) — исправлено в R402.",
+        "context_size_total + parallel — чтобы клиент и оператор видели оба числа.",
+        "model_info.<arch>.context_length остаётся training context (физический максимум)."
+      ],
+      "outputs": ["context_size (на слот)", "context_size_total", "parallel"],
+      "code": ["cmd/cppworker/handlers_model.go: writeOllamaShowLoadedResponse"],
+      "doc": "§9.2, §13",
+      "errors": []
+    },
+    {
+      "id": "primary",
+      "stage": "window",
+      "title": "primary (отключён)",
+      "detail": [
+        "Флаг primary больше не влияет: ни рост окна, ни подмена num_ctx, ни AutoTune (R401).",
+        "В старом профиле значение может остаться; WebUI снимает его при сохранении."
+      ],
+      "outputs": ["изменений в ответе нет"],
+      "code": ["internal/balancer/primary_model_policy.go: isPrimaryModel"],
+      "doc": "§0 I8, §5",
+      "errors": []
+    }
+  ],
+  "edges": [
+    { "from": "req-native", "to": "meta", "label": "" },
+    { "from": "req-openai", "to": "meta", "label": "" },
+    { "from": "req-generate", "to": "meta", "label": "" },
+    { "from": "meta", "to": "admission", "label": "" },
+    { "from": "admission", "to": "w-missing", "label": "нет модели" },
+    { "from": "admission", "to": "w-cold", "label": "не загружена" },
+    { "from": "admission", "to": "w-covers", "label": "окно хватает" },
+    { "from": "admission", "to": "w-grow", "label": "нужно больше" },
+    { "from": "w-grow", "to": "w-ceil", "label": "проверка потолка" },
+    { "from": "w-ceil", "to": "w-grow", "label": "в пределах" },
+    { "from": "w-cold", "to": "load", "label": "" },
+    { "from": "w-grow", "to": "load", "label": "reload" },
+    { "from": "load", "to": "wait", "label": "" },
+    { "from": "wait", "to": "gen", "label": "" },
+    { "from": "w-covers", "to": "gen", "label": "" },
+    { "from": "gen", "to": "term-budget", "label": "" },
+    { "from": "gen", "to": "term-unclosed", "label": "" },
+    { "from": "gen", "to": "term-tools", "label": "" },
+    { "from": "gen", "to": "term-error", "label": "" },
+    { "from": "term-budget", "to": "usage", "label": "" },
+    { "from": "term-unclosed", "to": "usage", "label": "" },
+    { "from": "term-tools", "to": "usage", "label": "" },
+    { "from": "term-error", "to": "usage", "label": "" },
+    { "from": "usage", "to": "show", "label": "следующий запрос" },
+    { "from": "w-ceil", "to": "show", "label": "отказ: клиент корректирует окно" }
+  ]
+}

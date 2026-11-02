@@ -200,8 +200,13 @@ func TestR265_ResolveModelMaxContext_Characterization(t *testing.T) {
 			profileMaxCtx: 32768, contextLengthMax: 131072, want: 32768,
 		},
 		{
-			name:          "hard-режим: профиль выше операторского cap → cap",
-			profileMaxCtx: 200000, contextLengthMax: 131072, want: 131072,
+			// R400 (2026-11-05): поведение ИЗМЕНЕНО намеренно. Раньше жёсткий
+			// режим клампил заявленное окно оператора вниз по contextLengthMax, и
+			// клиент получал 413 «модель поддерживает 131072» на окно 200000 из
+			// той же карточки. Заявленное окно — политика оператора, максимум
+			// ограничивает только авто-рост (см. nctx_declared_above_max_r400_test.go).
+			name:          "hard-режим: профиль выше операторского cap → профиль (R400)",
+			profileMaxCtx: 200000, contextLengthMax: 131072, want: 200000,
 		},
 		{
 			name:          "auto-режим: профиль — подсказка, cap = min(GGUF, contextLengthMax)",

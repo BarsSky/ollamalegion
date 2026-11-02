@@ -54,19 +54,24 @@ func TestResolveModelMaxContext_Tier1_ProfileHardCap(t *testing.T) {
 	}
 }
 
-// TestResolveModelMaxContext_Tier1_ContextLengthMax_ClampsHardCap — R43 fix:
-// contextLengthMax operator cap is respected EVEN in hard-cap mode.
-// Pre-R43: contextLengthMax field was in schema but ignored by resolver.
-func TestResolveModelMaxContext_Tier1_ContextLengthMax_ClampsHardCap(t *testing.T) {
+// TestResolveModelMaxContext_Tier1_DeclaredWindowWinsOverStaleMax — R400
+// (2026-11-05): в жёстком режиме окно задаёт contextLength; contextLengthMax
+// больше не урезает его вниз.
+//
+// Раньше (R43) максимум считался «operator cap» и клампил заявленное окно: окно
+// 32768 при максимуме 16384 превращалось в 16384. На живом стенде это выглядело
+// как «зашитый блок 131072» после того, как оператор поднял окно в карточке, а
+// максимум остался прежним. Максимум ограничивает АВТО-рост (Tier 2), а не окно,
+// которое оператор явно заявил.
+func TestResolveModelMaxContext_Tier1_DeclaredWindowWinsOverStaleMax(t *testing.T) {
 	p := setupProxyWithMetrics("b1", &types.LlamaCppMetrics{
 		GGUFMaxContext: 262144,
 	})
 
-	// profile=32768, auto=false, contextLengthMax=16384 (operator says "no more than 16K")
-	// → 16384 (contextLengthMax wins over profile)
+	// profile=32768, auto=false, contextLengthMax=16384 (устарел) → 32768.
 	got := p.resolveModelMaxContext("b1", "model", 32768, false, 16384, 0)
-	if got != 16384 {
-		t.Errorf("Tier 1 + contextLengthMax: got %d, want 16384 (operator cap clamps hard cap)", got)
+	if got != 32768 {
+		t.Errorf("Tier 1 + contextLengthMax: got %d, want 32768 (заявленное окно не урезается устаревшим максимумом)", got)
 	}
 }
 

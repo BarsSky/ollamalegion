@@ -101,13 +101,12 @@ func TestR385_GrowthCheckReasons(t *testing.T) {
 		}
 	})
 
-	t.Run("primary: окно фиксировано администратором", func(t *testing.T) {
+	t.Run("primary: флаг отключён и рост не запрещает", func(t *testing.T) {
 		p := newGrowthGuardProxyR299()
 		p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{"m": {Primary: true}}
-		if ok, why := p.streamGrowthCheckR385("bk-1", "m", 16384); ok {
-			t.Fatal("primary-модель клиентским запросом не перезагружается")
-		} else if !strings.Contains(why, "primary") {
-			t.Fatalf("причина = %q", why)
+		ok, why := p.streamGrowthCheckR385("bk-1", "m", 16384)
+		if !ok && strings.Contains(why, "primary") {
+			t.Fatalf("primary-флаг больше не запрещает рост (R401), причина = %q", why)
 		}
 	})
 

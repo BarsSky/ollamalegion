@@ -82,6 +82,10 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 	// R83 (2026-09-29): PRIMARY — политика администратора решает судьбу запроса
 	// РАНЬШЕ координатора reload.
 	//
+	// R401 (2026-11-05): ветка НЕДОСТИЖИМА — isPrimaryModel всегда false, флаг
+	// primary отключён (см. primary_model_policy.go). Оставлена как место, где
+	// раньше стояла фиксация окна, и чтобы откат политики был одной строкой.
+	//
 	// Почему здесь, а не в preflightNCtxReloadIfNeeded: координатор успевает
 	// сработать первым и, если запрос превышает потолок auto-reload, отдаёт
 	// ОБЕЗЛИЧЕННЫЙ отказ вида «requested n_ctx=32768 exceeds configured
@@ -482,22 +486,49 @@ func resolvePhysicalMaxContext(ggufMax, contextLengthMax, autoReloadMaxNCtx int)
 // Сводить эти правила в одно в R265 было бы изменением поведения, а не
 // устранением дублирования, поэтому различие вынесено в ЯВНЫЙ параметр и
 // закреплено характеризационными тестами (nctx_ceiling_r265_test.go).
+//
+// R400 (2026-11-05): ЗАЯВЛЕННОЕ ОКНО — ТОЖЕ ПОЛИТИКА ОПЕРАТОРА.
+//
+// ЖИВАЯ ЖАЛОБА. Оператор поднял окно в карточке модели (contextLength=262144),
+// но поле «максимальный контекст» (contextLengthMax) осталось 131072 — и
+// балансер отвечал отказом «модель поддерживает 131072» на окно, которое
+// заявил сам профиль. Потолок брался ТОЛЬКО из максимума, хотя максимум по
+// смыслу ограничивает АВТО-рост, а не урезает явно заявленное окно. Формула
+// теперь: max(contextLengthMax, contextLength) — заявленное окно нельзя
+// опустить ниже него самого. Максимум при этом продолжает поднимать потолок
+// для авто-роста, как и раньше.
 func (p *Proxy) profileCapCtx(modelName string, fold bool) int {
 	if p == nil || p.config == nil {
 		return 0
 	}
 	if mp, ok := p.config.LlamaCppModelProfiles[modelName]; ok {
-		return mp.ContextLengthMax
+		return profileWindowCapCtx(mp)
 	}
 	if !fold {
 		return 0
 	}
 	for name, mp := range p.config.LlamaCppModelProfiles {
 		if containsFold(name, modelName) || containsFold(modelName, name) {
-			return mp.ContextLengthMax
+			return profileWindowCapCtx(mp)
 		}
 	}
 	return 0
+}
+
+// profileWindowCapCtx — R400: потолок окна из профиля.
+//
+// Правило: contextLengthMax, если он задан (0 = потолка нет; тогда решают
+// env и GGUF, и заявленное окно НЕ становится пределом клиентских запросов —
+// это контракт R68: profile.contextLength — подсказка загрузки, а не предел).
+// Если максимум задан, но НИЖЕ заявленного окна — он устарел (окно поднимали,
+// максимум забыли), и потолок поднимается до окна: иначе балансер отвечал бы
+// «модель поддерживает 131072» на окно 262144 из той же карточки.
+func profileWindowCapCtx(mp types.LlamaCppModelProfile) int {
+	cap := mp.ContextLengthMax
+	if cap > 0 && mp.ContextLength > cap {
+		cap = mp.ContextLength
+	}
+	return cap
 }
 
 // reloadHintsFor — R70 (2026-09-24): хинты для reload'а модели.

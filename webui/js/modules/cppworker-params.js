@@ -593,6 +593,32 @@
         return String(n);
     }
 
+    // R400 (2026-11-05): окно и «максимальный контекст» — разные поля, и максимум
+    // не может быть НИЖЕ окна.
+    //
+    // ЖИВАЯ ЖАЛОБА: оператор поднял окно в карточке до 262144, а поле «максимум»
+    // осталось 131072 (это верхняя граница АВТО-роста, а не окно). Балансер брал
+    // потолок только из максимума и отвечал «модель поддерживает 131072» — со
+    // стороны оператора это «зашитый блок 131072». Теперь при сохранении максимум
+    // поднимается до окна, и в форме это видно до нажатия «Сохранить».
+    function ctxMaxEffective(windowCtx, maxCtx) {
+        const w = parseInt(windowCtx, 10) || 0;
+        const m = parseInt(maxCtx, 10) || 0;
+        if (m > 0 && w > m) return w;
+        return m;
+    }
+
+    function ctxMaxHintText(windowCtx, maxCtx) {
+        const w = parseInt(windowCtx, 10) || 0;
+        const m = parseInt(maxCtx, 10) || 0;
+        if (m > 0 && w > m) {
+            return I18N.t('settings.profiles.ctx_max_raised',
+                'Окно больше максимума: максимум будет поднят до окна. Максимум ограничивает только авто-рост и не должен быть ниже самого окна.');
+        }
+        return I18N.t('settings.profiles.ctx_max_help',
+            'Работает вместе с авто-адаптацией: верхняя граница (политика оператора). 0 = без ограничения, вплоть до максимума GGUF. Не может быть ниже окна.');
+    }
+
     async function onProfileAction(e) {
         const btn = e.currentTarget;
         const action = btn.dataset.action;
@@ -665,11 +691,9 @@
             // отправлялись — сохранение профиля из UI теряло авто-режим, и
             // профиль превращался в жёсткий потолок contextLength (32768).
             contextLengthAuto: !!profile.contextLengthAuto,
-            contextLengthMax: profile.contextLengthMax || 0,
-            // R83 (2026-09-29): primary — «настройки модели зафиксированы
-            // администратором, клиентский запрос их не меняет». См.
-            // internal/balancer/primary_model_policy.go.
-            primary: !!profile.primary
+            contextLengthMax: profile.contextLengthMax || 0
+            // R401 (2026-11-05): primary из профиля больше не читается — флаг
+            // отключён на сервере и снимается при сохранении (см. readWizardState).
         };
     }
 
@@ -702,10 +726,13 @@
         // по факту передачи, поэтому явное «выключить авто» и «снять потолок»
         // работают, а частичные обновления больше не обнуляют остальные поля.
         body.contextLengthAuto = !!state.contextLengthAuto;
-        body.contextLengthMax = parseInt(state.contextLengthMax, 10) || 0;
-        // R83 (2026-09-29): primary отправляем ВСЕГДА (true/false) — иначе снять
-        // фиксацию из UI было бы нельзя (мерж-семантика: отсутствие поля = «не менять»).
-        body.primary = !!state.primary;
+        // R400: максимум не может быть ниже окна — иначе балансер возьмёт
+        // потолок из максимума и урежет окно, которое оператор только что задал.
+        body.contextLengthMax = ctxMaxEffective(state.contextLength, state.contextLengthMax);
+        // R401 (2026-11-05): primary отключён и не показывается в форме.
+        // Отправляем false, чтобы старый флаг снимался при сохранении
+        // (мерж-семантика: отсутствие поля = «не менять»).
+        body.primary = false;
         return body;
     }
 
@@ -758,7 +785,7 @@
                     <div class="wizard-field">
                         <label>${escapeHtml(I18N.t('settings.profiles.ctx_max', 'Максимальный контекст, токенов (0 = до предела GGUF)'))}</label>
                         <input type="number" id="wizCtxMax" value="${state.contextLengthMax || 0}" min="0" max="${CTX_MAX}" step="1024" placeholder="0 = unlimited (до GGUF max)">
-                        <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.ctx_max_help', 'Работает вместе с авто-адаптацией: верхняя граница (политика оператора). 0 = без ограничения, вплоть до максимума GGUF.'))}</div>
+                        <div class="ctx-help" id="wizCtxMaxHint">${escapeHtml(ctxMaxHintText(state.contextLength, state.contextLengthMax))}</div>
                     </div>
                     <div class="wizard-field">
                         <label>${escapeHtml(I18N.t('settings.profiles.batch_size', 'Batch Size (опционально)'))}</label>
@@ -823,13 +850,6 @@
                             <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.use_mmap_help', 'Memory-map файла модели. false = полностью читать в RAM. nil = наследовать.'))}</div>
                         </div>
                         <div class="wizard-field">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="wizPrimary" ${state.primary ? 'checked' : ''}>
-                                <span>${escapeHtml(I18N.t('settings.profiles.primary', 'Зафиксировать настройки (клиентские запросы их не меняют)'))}</span>
-                            </label>
-                            <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.primary_help', 'Включено: клиентский запрос НЕ может изменить параметры модели. Если запросу хватает зафиксированного контекста — он обслуживается (num_ctx подменяется на загруженный); если нужно больше — клиент получает отказ с указанием, что настройки зафиксированы администратором. Также отключает авто-оптимизацию (AutoTune) для этой модели. Параметры по-прежнему меняются здесь, через администратора.'))}</div>
-                        </div>
-                        <div class="wizard-field">
                             <label>${escapeHtml(I18N.t('settings.profiles.parallel', 'Параллельные sequences'))}</label>
                             <input type="number" id="wizParallel" value="${state.parallel}" min="0" max="8" placeholder="0 = default (1)">
                             <div class="ctx-help">${escapeHtml(I18N.t('settings.profiles.parallel_help', 'Число параллельных sequences (batched generation). > 1 требует больше VRAM (KV-cache × parallel). 0 = оставить дефолт cppworker (1).'))}</div>
@@ -885,8 +905,24 @@
         const slider = overlay.querySelector('#wizCtxSlider');
         const valueEl = overlay.querySelector('#wizCtxValue');
         const presets = overlay.querySelectorAll('.ctx-preset');
+        const maxInput = overlay.querySelector('#wizCtxMax');
+        const maxHint = overlay.querySelector('#wizCtxMaxHint');
         const advancedToggle = overlay.querySelector('#wizAdvancedToggle');
         const advancedSection = overlay.querySelector('#wizAdvancedSection');
+
+        // R400: держим максимум не ниже окна прямо в форме, чтобы оператор видел
+        // результат до сохранения (а не получал потом отказ по 131072).
+        function syncCtxMax() {
+            if (!maxInput) return;
+            const w = parseInt(slider.value, 10) || 0;
+            const m = parseInt(maxInput.value, 10) || 0;
+            if (m > 0 && w > m) {
+                maxInput.value = String(w);
+            }
+            if (maxHint) {
+                maxHint.textContent = ctxMaxHintText(w, maxInput.value);
+            }
+        }
 
         function updatePresets() {
             const v = parseInt(slider.value, 10);
@@ -895,8 +931,10 @@
                 btn.classList.toggle('active', pv === v);
             });
             valueEl.textContent = formatCtx(v);
+            syncCtxMax();
         }
         slider.addEventListener('input', updatePresets);
+        if (maxInput) maxInput.addEventListener('input', syncCtxMax);
         presets.forEach(btn => {
             btn.addEventListener('click', () => {
                 const v = parseInt(btn.dataset.value, 10);
@@ -969,9 +1007,14 @@
             notes: (overlay.querySelector('#wizNotes').value || '').trim(),
             // R67a: потолок n_ctx (авто-режим + максимум).
             contextLengthAuto: !!(overlay.querySelector('#wizCtxAuto') && overlay.querySelector('#wizCtxAuto').checked),
-            contextLengthMax: parseInt((overlay.querySelector('#wizCtxMax') || {}).value, 10) || 0,
-            // R83 (2026-09-29): primary — фиксация настроек администратором.
-            primary: !!(overlay.querySelector('#wizPrimary') && overlay.querySelector('#wizPrimary').checked)
+            // R400: максимум не может быть ниже окна (см. ctxMaxEffective).
+            contextLengthMax: ctxMaxEffective(
+                overlay.querySelector('#wizCtxSlider').value,
+                (overlay.querySelector('#wizCtxMax') || {}).value),
+            // R401 (2026-11-05): primary отключён. Галочки в форме больше нет,
+            // поэтому при сохранении флаг всегда снимается — старые профили
+            // очищаются при первом же редактировании.
+            primary: false
         };
     }
 

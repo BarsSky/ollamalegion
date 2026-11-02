@@ -2093,16 +2093,21 @@ func (p *Proxy) resolveModelMaxContext(backendID, model string, profileMaxContex
 	// Tier 1+2: profile present, decide based on auto flag
 	if profileMaxContext > 0 {
 		if !contextLengthAuto {
-			// Tier 1: hard cap (backward compat). R43 fix: respect contextLengthMax
-			// as operator cap EVEN в hard mode (schema field was previously ignored).
+			// Tier 1: hard cap (backward compat).
+			//
+			// R400 (2026-11-05): contextLengthMax больше НЕ урезает заявленное
+			// окно. Живая жалоба: окно в карточке поднято до 262144, максимум
+			// остался 131072 — и клиент получал отказ «модель поддерживает
+			// 131072». Максимум ограничивает АВТО-рост (Tier 2), а в жёстком
+			// режиме окно задаёт contextLength; противоречие фиксируем
+			// предупреждением, но политику оператора не переписываем молча.
 			cap := profileMaxContext
 			if contextLengthMax > 0 && cap > contextLengthMax {
-				logger.Get().Warnw("resolveModelMaxContext: profile exceeds contextLengthMax operator cap, clamping",
+				logger.Get().Warnw("resolveModelMaxContext: declared window exceeds contextLengthMax, honouring declared window",
 					"backend", backendID, "model", model,
 					"profile_n_ctx", profileMaxContext,
 					"context_length_max", contextLengthMax,
 				)
-				cap = contextLengthMax
 			}
 			// Diagnostic: warn если feasible >> profile (явно conservative profile).
 			feasible := perModelFeasible
@@ -2120,10 +2125,18 @@ func (p *Proxy) resolveModelMaxContext(backendID, model string, profileMaxContex
 			}
 			return cap
 		}
-		// Tier 2: auto-adapt. profile — HINT. Real cap = MIN(ggufMax, contextLengthMax).
+		// Tier 2: auto-adapt. profile — HINT. Real cap = MIN(ggufMax, потолок),
+		// где потолок = max(contextLengthMax, заявленное окно) (R400: заявленное
+		// окно не может быть урезано устаревшим максимумом).
 		// CRITICAL R43 CHANGE: perModelFeasible is HINT, not cap. After cppworker
 		// auto-tunes gpu_layers, feasible grows. Using it as cap blocks legit requests.
 		cap := contextLengthMax // operator policy (soft cap, default 0 = unlimited)
+		if cap > 0 && profileMaxContext > cap {
+			// R400: максимум не может урезать заявленное окно (см. Tier 1).
+			// 0 (не задан) по-прежнему означает «не ограничивать» — доверяем
+			// GGUF и воркеру, как и раньше.
+			cap = profileMaxContext
+		}
 		ggufMax := p.getGGUFMaxContext(backendID)
 		if ggufMax > 0 && (cap == 0 || ggufMax < cap) {
 			cap = ggufMax

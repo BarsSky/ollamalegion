@@ -1,4 +1,4 @@
-﻿/**
+/**
  * gguf-renderer-list.js — Left panel: registered backends list.
  *
  * R57.5c (2026-09-03): extracted from webui/js/modules/gguf-renderer.js.
@@ -88,6 +88,10 @@
             }
             if (loadingArr.length > 0) {
                 loadingHtml = loadingArr.map(function (lm) {
+                    // R395: у ошибки счётчик времени замораживаем (не показываем):
+                    // растущее «Загрузка… 47s» после падения выглядело как вечная
+                    // загрузка, хотя работа уже кончилась.
+                    const isError = lm.state === 'error';
                     const startedAt = lm.loadingStartedAt ? new Date(lm.loadingStartedAt).getTime() : Date.now();
                     const elapsedMs = (lm.elapsedMs && lm.elapsedMs > 0)
                         ? lm.elapsedMs
@@ -97,7 +101,7 @@
                     if (elapsedSec < 60) elapsedLabel = elapsedSec + 's';
                     else elapsedLabel = Math.floor(elapsedSec / 60) + 'm ' + (elapsedSec % 60) + 's';
                     let stateIcon, stateColor, stateLabel;
-                    if (lm.state === 'error') {
+                    if (isError) {
                         stateIcon = 'fa-times-circle';
                         stateColor = 'var(--danger, #d9534f)';
                         stateLabel = M._('gguf.load_error_short') || 'Load error';
@@ -111,7 +115,7 @@
                         '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
                             stateLabel + ': ' + window.Utils.escapeHtml(lm.name) +
                         '</span>' +
-                        '<span style="font-family:monospace;font-size:var(--font-size-xs);opacity:0.85;">' + elapsedLabel + '</span>' +
+                        (isError ? '' : '<span style="font-family:monospace;font-size:var(--font-size-xs);opacity:0.85;">' + elapsedLabel + '</span>') +
                     '</div>';
                 }).join('');
             }

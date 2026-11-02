@@ -1376,6 +1376,9 @@
         // Рисуется ПЕРЕД списком загруженных моделей, чтобы пользователь видел,
         // что идёт загрузка. Каждая модель — карточка с индикатором прогресса и elapsed.
         const loadingHtml = loadingArr.map(function (lm) {
+            // R395: у ошибки время уже не идёт — растущий счётчик выглядел как
+            // бесконечная загрузка (жалоба: счётчик висит после загрузки модели).
+            const isError = lm.state === 'error';
             const startedAt = lm.loadingStartedAt ? new Date(lm.loadingStartedAt).getTime() : Date.now();
             const elapsedMs = (lm.elapsedMs && lm.elapsedMs > 0) ? lm.elapsedMs : (Date.now() - startedAt);
             const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000));
@@ -1383,7 +1386,7 @@
                 ? elapsedSec + 's'
                 : Math.floor(elapsedSec / 60) + 'm ' + (elapsedSec % 60) + 's';
             let stateIcon, stateColor, stateText;
-            if (lm.state === 'error') {
+            if (isError) {
                 stateIcon = 'fa-times-circle';
                 stateColor = 'var(--danger, #d9534f)';
                 stateText = (_('gguf.load_error_short') || 'Load error');
@@ -1399,7 +1402,7 @@
                 '</div>' +
                 '<div class="gguf-loaded-model-info">' +
                     '<span style="color:' + stateColor + ';">' + stateText + '</span>' +
-                    '<span style="margin-left:12px;">' + (_('gguf.elapsed') || 'Elapsed') + ': ' + elapsedLabel + '</span>' +
+                    (isError ? '' : '<span style="margin-left:12px;">' + (_('gguf.elapsed') || 'Elapsed') + ': ' + elapsedLabel + '</span>') +
                 '</div>' +
                 (lm.error ? '<div class="gguf-loaded-model-info" style="color:var(--danger,#d9534f);font-size:var(--font-size-xs);">' +
                     '<i class="fas fa-exclamation-triangle"></i> ' + Utils.escapeHtml(lm.error) +

@@ -1434,6 +1434,7 @@ window.I18N_EN = {
   "gguf.file_name": "File",
   "gguf.loading_model": "Loading model...",
   "gguf.model_loaded": "Model loaded successfully",
+  "gguf.load_still_loading": "The model is still loading on the worker - the status will update automatically",
   "gguf.model_unloaded": "Model unloaded",
   "gguf.model_load_error": "Failed to load model",
   "gguf.model_unload_error": "Failed to unload model",

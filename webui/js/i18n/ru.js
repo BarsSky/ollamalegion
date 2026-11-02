@@ -1324,6 +1324,7 @@ window.I18N_RU = {
   "gguf.file_name": "Файл",
   "gguf.loading_model": "Загрузка модели...",
   "gguf.model_loaded": "Модель успешно загружена",
+  "gguf.load_still_loading": "Модель ещё загружается на воркере — статус обновится автоматически",
   "gguf.model_unloaded": "Модель выгружена",
   "gguf.model_load_error": "Не удалось загрузить модель",
   "gguf.model_unload_error": "Не удалось выгрузить модель",

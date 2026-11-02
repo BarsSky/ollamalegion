@@ -307,6 +307,26 @@
                 var backends = (resp && resp.backends) || resp || [];
                 state.registeredBackends = Array.isArray(backends) ? backends : [];
                 state.backendDataLoaded = true;
+                // R395 (2026-11-04): СЕРВЕР — источник правды о загруженном.
+                // Локальная запись «модель грузится» (state.loadingModels) раньше
+                // не удалялась никогда: после успешной загрузки панель продолжала
+                // рисовать «Загрузка… Прошло: Ns» рядом с уже загруженной моделью,
+                // и счётчик рос при каждой перерисовке. Убираем записи тех
+                // моделей, которые сервер уже отдаёт загруженными (status=loaded).
+                if (typeof M.pruneLoadingModels === 'function') {
+                    for (var bi = 0; bi < state.registeredBackends.length; bi++) {
+                        var bg = state.registeredBackends[bi];
+                        if (!bg || !bg.id) continue;
+                        var bgModels = Array.isArray(bg.models) ? bg.models : [];
+                        var loadedOnly = [];
+                        for (var mi = 0; mi < bgModels.length; mi++) {
+                            var mm = bgModels[mi];
+                            if (!mm) continue;
+                            if (mm.status === 'loaded' || mm.state === 'loaded') loadedOnly.push(mm);
+                        }
+                        if (loadedOnly.length > 0) M.pruneLoadingModels(bg.id, loadedOnly);
+                    }
+                }
                 if (typeof M.updateBackendsList === 'function') M.updateBackendsList();
             })
             .catch(function (err) {
@@ -523,6 +543,12 @@
                     state.loadedModels = data.ollama.runningModels;
                 } else {
                     state.loadedModels = [];
+                }
+                // R395: модель здесь — уже загружена по факту от сервера, поэтому
+                // локальная запись «грузится» для неё устарела. Единственное
+                // место, где список загруженных приходит для выбранного бэкенда.
+                if (typeof M.pruneLoadingModels === 'function') {
+                    M.pruneLoadingModels(state.selectedBackendId || (backend && backend.id), state.loadedModels);
                 }
                 // runtimeModels: R66d (2026-09-23) — ИСПРАВЛЕНО.
                 //

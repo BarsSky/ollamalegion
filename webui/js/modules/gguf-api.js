@@ -528,6 +528,12 @@ const GgufApi = (function () {
                 });
                 clearTimeout(timer);
                 const data = await response.json();
+                // R395 (2026-11-04): «ещё грузится» — это 202 + stillLoading, а не
+                // ошибка. Раньше HTTP-слой WebUI выбрасывал это поле, и вызывающий
+                // код видел только success:false → показывал «Load failed:
+                // unknown error», хотя загрузка продолжалась (см. разбор в
+                // gguf-renderer-actions.js, markLoadingModel).
+                const stillLoading = data.stillLoading === true;
                 if (!response.ok) {
                     // R66c (2026-09-22): сохраняем структурные признаки ошибки.
                     // Раньше здесь оставалось только {success:false, error}, и
@@ -538,6 +544,9 @@ const GgufApi = (function () {
                         error: data.error || 'HTTP ' + response.status,
                         busy: data.busy === true,
                         retryWithForce: data.retryWithForce === true,
+                        stillLoading: stillLoading,
+                        pollAfterSec: data.pollAfterSec,
+                        message: data.message,
                         status: response.status
                     };
                 }

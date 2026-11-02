@@ -239,9 +239,28 @@
             api.manageModel(handle, 'load', apiModelName, opts)
                 .then(function (result) {
                     if (result && result.success === false) {
+                        // R395: 202 «ещё грузится» — не ошибка. Балансер честно
+                        // сказал, что загрузка продолжается в воркере и статус
+                        // надо спросить позже. Раньше этот ответ превращался в
+                        // «Load failed: unknown error», а запись «грузится»
+                        // оставалась в UI навсегда (жалоба оператора).
+                        if (result.stillLoading === true) {
+                            M.showToast(M._('gguf.load_still_loading',
+                                'Model is still loading on the worker — the status will update automatically'), 'info');
+                            M.watchLoadCompletionR395(handle, modelName, result.pollAfterSec);
+                            // Статус спросим и сразу: воркер мог уже догрузить.
+                            if (typeof M.refreshBackends === 'function') M.refreshBackends();
+                            if (typeof M.refreshDetail === 'function') M.refreshDetail();
+                            return;
+                        }
                         onFail(result.error || 'unknown error');
                         return;
                     }
+                    // R395: модель загружена — локальная запись «грузится»
+                    // больше не нужна (она и была той строкой со счётчиком,
+                    // которая висела рядом с загруженной моделью).
+                    M.clearLoadingModel(handle, modelName);
+                    M.clearLoadingModel(handle, apiModelName);
                     var detail = (result && (result.message || result.status)) ? ' (' + (result.message || result.status) + ')' : '';
                     M.showToast((M._('gguf.model_loaded') || 'Model loaded: ' + modelName) + detail, 'success');
                     if (typeof M.refreshDetail === 'function') M.refreshDetail();
@@ -271,6 +290,10 @@
             useMmap: opts.useMmap
         })
             .then(function () {
+                // R395: тот же инвариант на резервном пути — загрузили, значит
+                // локальная запись «грузится» больше не отражает реальность.
+                M.clearLoadingModel(handle, modelName);
+                M.clearLoadingModel(handle, apiModelName);
                 M.showToast(M._('gguf.model_loaded') || 'Model loaded: ' + modelName, 'success');
                 if (typeof M.refreshDetail === 'function') M.refreshDetail();
             })
@@ -279,11 +302,161 @@
             });
     };
 
-    M.markLoadingModel = function(backendId, name, path) {
+    // =====================================================================
+    // R395 (2026-11-04): локальная запись «модель грузится» обязана исчезать.
+    //
+    // ЖИВАЯ ЖАЛОБА ОПЕРАТОРА: «если загружать модель в gguf models WebUI, то
+    // повисает состояние загрузки модели со счётчиком и остаётся, даже если
+    // модель уже загружена».
+    //
+    // ПРИЧИНА 1. markLoadingModel() кладёт запись в state.loadingModels, и её
+    // НИКТО не удалял: ни успешная загрузка, ни обновление данных с сервера.
+    // Панель деталей и сайдбар рисуют такую запись строкой
+    // «Загрузка… Прошло: Ns», где N пересчитывается при каждой перерисовке
+    // (её вызывает поллинг загрузок раз в 2 с) — поэтому счётчик рос вечно
+    // рядом с уже загруженной моделью.
+    //
+    // ПРИЧИНА 2. Балансер на «ещё грузится» отвечает 202 +
+    // {success:false, stillLoading:true, pollAfterSec:30} (R262) — это НЕ
+    // ошибка. WebUI видел success:false, звал markLoadFailed (state='error') и
+    // показывал тост «Load failed: unknown error», хотя воркер продолжал
+    // грузить модель. Записи в состоянии «error» тоже никто не убирал.
+    //
+    // ПРАВИЛО ТЕПЕРЬ ОДНО: источник правды о загруженном — сервер. Как только
+    // модель появляется в списке загруженных (refreshDetail / refreshBackends),
+    // локальная запись удаляется (pruneLoadingModels); успешный ответ
+    // manageModel удаляет её сразу (clearLoadingModel), а 202 оставляет запись
+    // «грузится» и включает наблюдение (watchLoadCompletionR395).
+    // =====================================================================
+
+    /**
+     * normModelNameL395 — одно имя для сравнения: basename, без ".gguf", нижний
+     * регистр. Модель на диске зовут `Qwen3.8-27B-UD-Q4_K_M.gguf`, а загруженный
+     * инстанс — `Qwen3.8-27B-UD-Q4_K_M`, путь может быть `/app/models/…`.
+     */
+    function normModelNameL395(name) {
+        var s = String(name || '').trim();
+        if (!s) return '';
+        var cut = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+        if (cut >= 0) s = s.slice(cut + 1);
+        s = s.replace(/\.gguf$/i, '');
+        return s.toLowerCase();
+    }
+
+    /** loadingListFor — локальные записи «грузится» бэкенда (создаёт массив при необходимости). */
+    function loadingListFor(backendId) {
         const state = M.state;
         if (!state.loadingModels) state.loadingModels = {};
         if (!state.loadingModels[backendId]) state.loadingModels[backendId] = [];
-        state.loadingModels[backendId].push({
+        return state.loadingModels[backendId];
+    }
+
+    /**
+     * clearLoadingModel — убрать локальную запись «грузится» конкретной модели.
+     * Возвращает число удалённых записей. Рендер не вызывает: вызывающий сам
+     * обновляет панель (иначе получился бы цикл refresh → clear → refresh).
+     */
+    M.clearLoadingModel = function(backendId, name) {
+        const state = M.state;
+        const arr = state.loadingModels && state.loadingModels[backendId];
+        const want = normModelNameL395(name);
+        if (!arr || arr.length === 0 || !want) return 0;
+        var next = [];
+        var removed = 0;
+        for (var i = 0; i < arr.length; i++) {
+            if (normModelNameL395(arr[i] && arr[i].name) === want) removed++;
+            else next.push(arr[i]);
+        }
+        if (removed > 0) state.loadingModels[backendId] = next;
+        return removed;
+    };
+
+    /**
+     * pruneLoadingModels — убрать записи, которые СЕРВЕР уже считает
+     * загруженными. loadedList — массив имён или объектов с полями
+     * model/name/path/handle (формы: llamaCpp.loadedModels, gguf/backends.models,
+     * ollama.runningModels).
+     */
+    M.pruneLoadingModels = function(backendId, loadedList) {
+        const state = M.state;
+        const arr = state.loadingModels && state.loadingModels[backendId];
+        if (!arr || arr.length === 0) return 0;
+        const list = Array.isArray(loadedList) ? loadedList : [];
+        var loaded = Object.create(null);
+        for (var i = 0; i < list.length; i++) {
+            var it = list[i];
+            var raw = (typeof it === 'string')
+                ? it
+                : (it && (it.model || it.name || it.path || it.handle));
+            var k = normModelNameL395(raw);
+            if (k) loaded[k] = true;
+        }
+        var next = [];
+        var removed = 0;
+        for (var j = 0; j < arr.length; j++) {
+            var km = normModelNameL395(arr[j] && arr[j].name);
+            if (km && loaded[km]) removed++;
+            else next.push(arr[j]);
+        }
+        if (removed > 0) state.loadingModels[backendId] = next;
+        return removed;
+    };
+
+    /**
+     * watchLoadCompletionR395 — «ещё грузится» (202 от балансера): не ошибка,
+     * а долгая работа. Держим запись «грузится» и периодически спрашиваем
+     * сервер; как только модель появится в загруженных, pruneLoadingModels
+     * уберёт запись, а наблюдение остановится само (записи больше нет).
+     */
+    M.watchLoadCompletionR395 = function(backendId, modelName, pollAfterSec) {
+        const state = M.state;
+        if (!state._loadWatchR395) state._loadWatchR395 = Object.create(null);
+        const want = normModelNameL395(modelName);
+        const key = String(backendId) + '|' + want;
+        if (state._loadWatchR395[key]) return; // уже наблюдаем за этой моделью
+        const delay = Math.max(5, Number(pollAfterSec) || 30) * 1000;
+        var attempts = 0;
+        function isPending() {
+            const arr = state.loadingModels && state.loadingModels[backendId];
+            if (!arr || arr.length === 0) return false;
+            for (var i = 0; i < arr.length; i++) {
+                if (normModelNameL395(arr[i] && arr[i].name) === want) return true;
+            }
+            return false;
+        }
+        function tick() {
+            delete state._loadWatchR395[key];
+            if (!isPending()) return; // модель уже признана загруженной
+            if (typeof M.refreshBackends === 'function') M.refreshBackends();
+            if (typeof M.refreshDetail === 'function') M.refreshDetail();
+            attempts++;
+            // Час наблюдения: дальше это уже не «долгая загрузка», а что-то
+            // другое (воркер пропал) — не крутим таймер вечно.
+            if (attempts < 120) {
+                state._loadWatchR395[key] = setTimeout(tick, delay);
+            }
+        }
+        state._loadWatchR395[key] = setTimeout(tick, delay);
+    };
+
+    M.markLoadingModel = function(backendId, name, path) {
+        const state = M.state;
+        const arr = loadingListFor(backendId);
+        const want = normModelNameL395(name);
+        // R395: повторный клик по той же модели перезапускает отсчёт, а не
+        // добавляет вторую строку — иначе в списке копились дубли «грузится».
+        for (var i = 0; i < arr.length; i++) {
+            if (normModelNameL395(arr[i] && arr[i].name) === want) {
+                arr[i].state = 'loading';
+                arr[i].error = '';
+                arr[i].loadingStartedAt = new Date().toISOString();
+                arr[i].elapsedMs = 0;
+                if (typeof M.refreshBackends === 'function') M.refreshBackends();
+                if (typeof M.refreshDetail === 'function') M.refreshDetail();
+                return;
+            }
+        }
+        arr.push({
             name: name,
             path: path,
             state: 'loading',
@@ -297,8 +470,19 @@
     M.markLoadFailed = function(backendId, name, errMsg) {
         const state = M.state;
         if (state.loadingModels && state.loadingModels[backendId]) {
-            const item = state.loadingModels[backendId].find(function (lm) { return lm.name === name; });
-            if (item) item.state = 'error';
+            // R395: сравнение каноническое (без пути/расширения/регистра) — иначе
+            // запись, созданная по имени файла, не находилась по имени без .gguf,
+            // и строка «Загрузка… Ns» продолжала тикать уже после ошибки.
+            const want = normModelNameL395(name);
+            const item = state.loadingModels[backendId].find(function (lm) {
+                return normModelNameL395(lm && lm.name) === want;
+            });
+            if (item) {
+                item.state = 'error';
+                // R395: фиксируем момент неудачи — по нему рендер больше не
+                // показывает растущий счётчик «прошло N s» у ошибки.
+                item.finishedAt = new Date().toISOString();
+            }
         }
         if (errMsg && typeof M.addLog === 'function') M.addLog('Load failed: ' + name + ' — ' + errMsg, 'error');
         if (typeof M.refreshBackends === 'function') M.refreshBackends();

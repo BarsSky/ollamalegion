@@ -1436,7 +1436,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			guardBackend = targetBackend
 		}
 		if guardBackend != "" {
-			if v := p.growthVerdictR301(guardBackend, model, parsed.RawBody, path, parsed.Stream); v.Defer {
+			v := p.growthVerdictR301(guardBackend, model, parsed.RawBody, path, parsed.Stream)
+			switch {
+			case v.Grow:
+				// R385: окно можно поднять — запускаем перезагрузку и просим
+				// повторить. Клиент получает те же числа, что и при отказе, но
+				// с причиной «рост начат», а не «нельзя».
+				logGrowthVerdictR301("servehttp-before-admission", guardBackend, model, path, v)
+				p.triggerStreamGrowthR385(guardBackend, model, v.Needed)
+				w.Header().Set("X-NCtx-Reload-Decision", "context-growth-starting")
+				writePreflightDeferredR299(w, p, guardBackend, model, parsed.RawBody, path,
+					growthStartsMessageR385(model, v), streamGrowthRetryAfterSecR385)
+				return
+			case v.Defer:
 				logGrowthVerdictR301("servehttp-before-admission", guardBackend, model, path, v)
 				w.Header().Set("X-NCtx-Reload-Decision", "context-growth")
 				writePreflightDeferredR299(w, p, guardBackend, model, parsed.RawBody, path,

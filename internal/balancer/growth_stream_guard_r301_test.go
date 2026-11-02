@@ -43,6 +43,11 @@ func r301LongStreamBody() string {
 // влезает, клиент просто попросил больше. Обслуживаем, приведя num_ctx к окну
 // слота (та же логика, что у политики primary, R83).
 func TestR301_StreamingServedWithLoadedWindow(t *testing.T) {
+	// R385 (2026-11-01): рост окна на стриминге теперь РАЗРЕШЁН, если модели
+	// ничто не мешает. Этот тест проверяет ПРЕЖНЮЮ семантику как fallback —
+	// ровно тот путь, который остаётся при выключенном росте
+	// (LB_NCTX_GROW_FOR_STREAM=0) или при физической невозможности.
+	t.Setenv("LB_NCTX_GROW_FOR_STREAM", "0")
 	p := newGrowthGuardProxyR299()
 
 	v := p.growthVerdictR301("bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
@@ -64,6 +69,9 @@ func TestR301_StreamingServedWithLoadedWindow(t *testing.T) {
 // настоящий вход транспорта: preflight обязан вернуть подменённое тело и НЕ
 // пропустить запрос дальше с num_ctx больше загруженного.
 func TestR301_TransportServesStreamingInsteadOfWorkerError(t *testing.T) {
+	// R385: см. комментарий в TestR301_StreamingServedWithLoadedWindow — здесь
+	// проверяется fallback при выключенном росте окна.
+	t.Setenv("LB_NCTX_GROW_FOR_STREAM", "0")
 	p := newGrowthGuardProxyR299()
 
 	body, needsProxy, msg, status := p.preflightNCtxReloadIfNeeded(
@@ -80,6 +88,9 @@ func TestR301_TransportServesStreamingInsteadOfWorkerError(t *testing.T) {
 // TestR301_StreamingGrowthIsRefusedBeforeNetwork — промпт не влезает: отказ с
 // числами (нужно/загружено), а не кадр ошибки воркера внутри 200.
 func TestR301_StreamingGrowthIsRefusedBeforeNetwork(t *testing.T) {
+	// R385: отказ «расти некуда» остаётся ровно для случая, когда рост запрещён
+	// или невозможен. Разрешённый рост проверяется в stream_growth_r385_test.go.
+	t.Setenv("LB_NCTX_GROW_FOR_STREAM", "0")
 	p := newGrowthGuardProxyR299()
 
 	body, needsProxy, msg, status := p.preflightNCtxReloadIfNeeded(
@@ -103,6 +114,8 @@ func TestR301_StreamingGrowthIsRefusedBeforeNetwork(t *testing.T) {
 // «отложено» (R291/R299): новый формат не выдумываем, иначе клиент не сможет
 // обработать отказ одним правилом.
 func TestR301_RefusalBodyKeepsR299Format(t *testing.T) {
+	// R385: тело отказа проверяется на fallback-пути (рост выключен).
+	t.Setenv("LB_NCTX_GROW_FOR_STREAM", "0")
 	p := newGrowthGuardProxyR299()
 	body := []byte(r301LongStreamBody())
 
@@ -235,6 +248,9 @@ func TestR301_StewardNoStreamingBypass(t *testing.T) {
 // (исходные байты), а preflight правил bodyBuf. Тест смотрит на то, что
 // реально ушло на upstream, поэтому ловит именно это.
 func TestR301_UpstreamBodyCarriesLoadedWindow(t *testing.T) {
+	// R385: сценарий «обслужили загруженным окном» — это fallback; при
+	// разрешённом росте окно поднимается перезагрузкой (stream_growth_r385_test.go).
+	t.Setenv("LB_NCTX_GROW_FOR_STREAM", "0")
 	var mu sync.Mutex
 	var upstreamBody []byte
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

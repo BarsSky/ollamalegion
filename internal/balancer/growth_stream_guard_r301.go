@@ -75,6 +75,10 @@ type growthVerdictR301 struct {
 	Served bool
 	// Body — тело запроса с num_ctx, приведённым к загруженному окну.
 	Body []byte
+	// Grow — R385: нужно и МОЖНО поднять модель под большее окно. Стриминговый
+	// запрос больше не «довольствуется» загруженным окном, если модель можно
+	// перезагрузить: это требование оператора (см. stream_growth_r385.go).
+	Grow bool
 
 	Estimated     int // оценка промпта
 	Loaded        int // окно ОДНОГО слота загруженной модели
@@ -121,6 +125,26 @@ func (p *Proxy) growthVerdictR301(backendID, model string, body []byte, path str
 		return v
 	}
 
+	// R385 (2026-11-01): СНАЧАЛА пробуем ПОДНЯТЬ модель под нужное окно.
+	//
+	// Прежнее правило «стриминг окно не растит» отменено: оператор потребовал,
+	// чтобы запрос с большим окном перезагружал модель, если она это
+	// поддерживает и нет ограничений в железе/параллельности. Здесь решается
+	// только «можно ли» (нет активных стримов, не primary, не донор, физика
+	// позволяет) — саму перезагрузку запускает вызывающий (triggerStreamGrowthR385).
+	//
+	// Гейт по занятости: рост разрешён только когда ему ничто не мешает —
+	// идущий стрим или уже начатая перезагрузка по-прежнему означают «ждать»,
+	// а не «перезагрузить поверх живого ответа» (R271).
+	if v.Active == 0 && !v.ReloadPending {
+		if ok, why := p.streamGrowthCheckR385(backendID, model, v.Needed); ok {
+			v.Grow = true
+			return v
+		} else if why != "" {
+			logger.Get().Debugw("R385: окно на стриминге не растим", "backend", backendID,
+				"model", model, "needed_tokens", v.Needed, "loaded_tokens", v.Loaded, "reason", why)
+		}
+	}
 	// Стриминг: роста не будет. Решение принимается по ПРОМПТУ, а не по
 	// «промпт + бюджет вывода»: бюджет генерации воркер урезает сам (клампит
 	// num_predict по свободному месту), и отказ по нему был бы отказом запросу,
@@ -178,7 +202,7 @@ func logGrowthVerdictR301(where, backendID, model, path string, v growthVerdictR
 		"where", where,
 		"backend", backendID, "model", model, "path", path,
 		"streaming", v.Streaming,
-		"defer", v.Defer, "served_with_loaded_window", v.Served,
+		"defer", v.Defer, "grow", v.Grow, "served_with_loaded_window", v.Served,
 		"estimated_prompt_tokens", v.Estimated,
 		"required_tokens", v.Needed,
 		"loaded_window_tokens", v.Loaded,

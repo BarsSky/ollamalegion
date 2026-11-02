@@ -775,6 +775,13 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	if modelName != "" && isStreamingFromBody("", bodyBuf) {
 		v := p.growthVerdictR301(backendID, modelName, bodyBuf, requestPath, true)
 		logGrowthVerdictR301("transport-preflight", backendID, modelName, requestPath, v)
+		if v.Grow {
+			// R385: окно можно поднять — перезагрузка запущена, клиенту нужно
+			// повторить. Тело при этом не меняем: следующий запрос получит уже
+			// новое окно (тот же контракт, что у не-стримингового роста).
+			p.triggerStreamGrowthR385(backendID, modelName, v.Needed)
+			return bodyBuf, false, growthStartsMessageR385(modelName, v), http.StatusServiceUnavailable
+		}
 		if v.Served {
 			return v.Body, true, "", http.StatusOK
 		}

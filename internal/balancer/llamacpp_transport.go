@@ -2201,6 +2201,15 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// В обоих случаях клиент уже получил HTTP 200 + Content-Type, поэтому
 	// поменять HTTP-статус нельзя. Лучшее, что мы можем — дописать в стрим
 	// финальный маркер и закрыть соединение, чтобы клиент не висел.
+	// R384 (2026-11-01): признак «терминатор уже отправлен кадрами-причиной».
+	//
+	// ЖИВОЙ ДЕФЕКТ (стенд, сторож тишины): апстрим прислал заголовки и замолчал;
+	// сторож закрыл тело, abortFramesR296 отдал кадр-причину (upstream_stall) и
+	// терминатор `{"done":true,"done_reason":"error"}`, а затем исполнение
+	// доходило до блока «lastData == ""» в конце функции и писало ВТОРОЙ
+	// терминатор — `{"done":true,"done_reason":"stop"}`. Клиент видел два `done`:
+	// один с ошибкой, второй как успешное завершение.
+	terminalAlreadySent := false
 	if !streamCompleted {
 		scannerErr := scanner.Err()
 		// R259: КТО завершил стрим. Наш лимит строки и наши отмены — НЕ
@@ -2275,6 +2284,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		for _, frame := range abortFramesR296(originalPath, modelFromCtx, abortReason) {
 			_, _ = w.Write(frame)
 		}
+		// R384: терминатор уже в этих кадрах — второй писать нельзя.
+		terminalAlreadySent = true
 		if originalPath == "/v1/chat/completions" {
 			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		}
@@ -2289,7 +2300,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		p.nctxReload.ResetCycleCounter(backendID)
 	}
 
-	if lastData == "" && originalPath != "/v1/chat/completions" {
+	if lastData == "" && originalPath != "/v1/chat/completions" && !terminalAlreadySent {
 		done := buildDoneResponse(originalPath, modelFromCtx, 0)
 		_, errFwd := fmt.Fprintf(w, "%s\n", string(done))
 		if errFwd != nil {

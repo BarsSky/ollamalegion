@@ -13,7 +13,39 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"ollama-loadbalancer/pkg/types"
 )
+
+// TestR403_DisabledBackendIsNotSelected — тумблер «не использовать бэкенд»
+// обязан действовать и на llama.cpp-пути.
+//
+// Живой дефект: селекторы llama.cpp (selectAnyLlamaCppHealthy и др.) не
+// проверяли operator-disabled, поэтому выключенный узел продолжал обслуживать
+// запросы, а очередь ожидания бэкенда не могла включиться.
+func TestR403_DisabledBackendIsNotSelected(t *testing.T) {
+	p := newProxyWithCleanup(t, createTestConfig())
+	b := types.Backend{
+		ID: "llm-1", Name: "llm", Host: "127.0.0.1", CppWorkerPort: 18092,
+		Weight: 1, MaxConcurrentReqs: 1,
+		Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp,
+	}
+	if err := p.AddBackend(b); err != nil {
+		t.Fatalf("AddBackend: %v", err)
+	}
+	lr := &LlamaCppRouter{proxy: p}
+	if got := lr.selectForInferenceR403("m", 100); got == "" {
+		t.Fatal("включённый бэкенд обязан выбираться")
+	}
+	p.SetBackendDisabled("llm-1", true, "тест: оператор выключил")
+	if got := lr.selectForInferenceR403("m", 100); got != "" {
+		t.Fatalf("выключенный бэкенд выбран (%q) — тумблер не действует на llama.cpp-пути", got)
+	}
+	p.SetBackendDisabled("llm-1", false, "")
+	if got := lr.selectForInferenceR403("m", 100); got == "" {
+		t.Fatal("после включения бэкенд обязан снова выбираться")
+	}
+}
 
 // TestR403_QueueFIFO — первый ожидающий держит очередь модели; после его ухода
 // первым становится следующий.

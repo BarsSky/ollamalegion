@@ -114,7 +114,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	}
 
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
-	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
+	backendID := lr.selectForInferenceR403(model, ExtractNumCtxFromBody(bodyBuf))
 	// R193 (2026-10-20): НЕИЗВЕСТНУЮ МОДЕЛЬ НЕ ПОДМЕНЯЕМ ЗАГРУЖЕННОЙ.
 	// Живой дефект: напрямую воркер отвечает 404 model_file_not_found, а через
 	// балансер клиент получал 200 и ответ ДРУГОЙ (загруженной) модели. Для агента
@@ -472,7 +472,7 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	model, _ := req["model"].(string)
 
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
-	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
+	backendID := lr.selectForInferenceR403(model, ExtractNumCtxFromBody(bodyBuf))
 	// R193 (2026-10-20): неизвестное имя модели не подменяем загруженной — 404.
 	if ok, available := lr.proxy.modelAnswerable(backendID, model); !ok {
 		logger.Get().Warnw(i18n.T("balancer.llamacpp_handlers_inference.model_missing_catalog_llamacpp_warn"),
@@ -720,7 +720,7 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 	model, _ := req["model"].(string)
 
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
-	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
+	backendID := lr.selectForInferenceR403(model, ExtractNumCtxFromBody(bodyBuf))
 	// R193 (2026-10-20): неизвестное имя модели не подменяем загруженной — 404.
 	if ok, available := lr.proxy.modelAnswerable(backendID, model); !ok {
 		logger.Get().Warnw(i18n.T("balancer.llamacpp_handlers_inference.model_missing_catalog_llamacpp_warn"),
@@ -890,7 +890,7 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
-	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
+	backendID := lr.selectForInferenceR403(model, ExtractNumCtxFromBody(bodyBuf))
 	if backendID == "" {
 		// R403: ждём появления свободного бэкенда (см. backend_wait_queue_r403.go).
 		backendID = lr.waitForLlamaCppBackendR403(r.Context(), w, model, ExtractNumCtxFromBody(bodyBuf))
@@ -1074,7 +1074,7 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	}
 
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
-	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
+	backendID := lr.selectForInferenceR403(model, ExtractNumCtxFromBody(bodyBuf))
 	// R193 (2026-10-20): неизвестное имя модели не подменяем загруженной — 404.
 	if ok, available := lr.proxy.modelAnswerable(backendID, model); !ok {
 		logger.Get().Warnw(i18n.T("balancer.llamacpp_handlers_inference.model_missing_catalog_llamacpp_warn"),

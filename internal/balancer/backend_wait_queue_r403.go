@@ -154,6 +154,27 @@ func waitBackendR403(ctx context.Context, q *backendWaitQueue, model string,
 	}
 }
 
+// selectForInferenceR403 — выбор бэкенда для inference с учётом тумблера
+// «не использовать бэкенд» (R250).
+//
+// ЖИВОЙ ДЕФЕКТ (нашёлся при живой проверке очереди R403). Llama.cpp-путь
+// выбирает бэкенд своими хелперами (selectLlamaCppBackendForModelWithNCtx →
+// findLeastLoadedBackendWithModel / selectAnyLlamaCppHealthy), и они НЕ
+// проверяли operator-disabled: выключенный узел продолжал обслуживать запросы,
+// хотя общий selectBackend (backend_selector.go) его уже пропускал. Из-за этого
+// «не использовать бэкенд» на llama.cpp-пути не работал, а очередь ожидания
+// бэкенда физически не могла включиться: селектор всегда что-то возвращал.
+func (lr *LlamaCppRouter) selectForInferenceR403(model string, requestedNCtx int) string {
+	if lr == nil || lr.proxy == nil {
+		return ""
+	}
+	id := lr.selectLlamaCppBackendForModelWithNCtx(model, requestedNCtx)
+	if id != "" && lr.proxy.backendDisabled(id) {
+		return ""
+	}
+	return id
+}
+
 // waitForLlamaCppBackendR403 — обёртка для inference-обработчиков: ждёт
 // свободный бэкенд и, если не дождались, сама пишет 503 с числами.
 //
@@ -164,7 +185,7 @@ func (lr *LlamaCppRouter) waitForLlamaCppBackendR403(ctx context.Context, w http
 
 	timeout := backendWaitTimeoutR403()
 	probe := func() string {
-		return lr.selectLlamaCppBackendForModelWithNCtx(model, requestedNCtx)
+		return lr.selectForInferenceR403(model, requestedNCtx)
 	}
 	if timeout <= 0 {
 		if id := probe(); id != "" {

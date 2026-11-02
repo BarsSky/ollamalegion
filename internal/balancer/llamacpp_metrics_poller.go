@@ -377,6 +377,11 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 			// балансер решает, расходится ли требование клиента (think=true)
 			// с загруженной моделью.
 			ReasoningEnabled *bool `json:"reasoning_enabled,reasoningEnabled"`
+			// R383 (2026-11-01): раскладка не применилась при загрузке. Воркер
+			// отдаёт эти поля с R176, но поллер их не декодировал — балансер не
+			// мог ни показать оператору причину, ни лечить (layout_heal_r383.go).
+			LayoutDegraded       bool   `json:"layout_degraded,layoutDegraded,omitempty"`
+			LayoutDegradedReason string `json:"layout_degraded_reason,layoutDegradedReason,omitempty"`
 			// R118.16 (2026-10-14): точная раскладка слоёв из лога llama.cpp
 			// (cppworker перехватывает строки `load_tensors: layer N assigned to
 			// device X`). Пусто = cppworker не сообщил — потребитель обязан
@@ -526,6 +531,10 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 			// R118.16 (2026-10-14): точная раскладка слоёв — как её напечатал
 			// llama.cpp. Копируем как есть: это факт, а не оценка.
 			DeviceLayers: deviceLayersFromWire(m.DeviceLayers),
+			// R383: факт «раскладка не применена» + слова воркера. Без переноса
+			// сюда автолечение и панель видели бы только «загружена».
+			LayoutDegraded:       m.LayoutDegraded,
+			LayoutDegradedReason: m.LayoutDegradedReason,
 		})
 	}
 
@@ -611,6 +620,14 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 	// сколько слотов завёл cppworker (max_slots), столько запросов балансер и
 	// пропускает параллельно; остальные ждут в очереди, как и раньше.
 	p.adoptCapacityFromLoadedModels(b.id, loadedModels)
+
+	// R383 (2026-11-01): автолечение вырожденной раскладки. Воркер сообщает
+	// layout_degraded, когда узлы переданы, но ни один не стал устройством
+	// модели. До этой правки балансер эти поля не читал вовсе, и единственным
+	// лечением был ручной перезапуск узла + перезагрузка. Решение «лечить или
+	// нет» принимает shouldHealLayoutR383 (только простаивающая модель,
+	// раскладка включена, есть узлы, не исчерпаны попытки).
+	p.proxy.maybeHealDegradedLayoutR383(b.id, loadedModels)
 
 	// R262 (2026-10-28): «loaded_models» считался как len(списка), то есть с
 	// моделями в ЛЮБОМ состоянии (loading/error). Живой факт: в логе стояло

@@ -123,8 +123,8 @@ type LlamaCppMetrics struct {
 	// Донор поднимает rpc-server по приказу балансера (роль donor) и обязан
 	// отчитываться: поднят ли процесс, слушается ли порт, какая ошибка. Иначе
 	// роль в панели — это команда в пустоту, а «поднят» путается с «доступен».
-	RPCNode *RPCNodeStatus `json:"rpcNode,omitempty"`
-	ModelMaxContext  int      `json:"modelMaxContext"`
+	RPCNode         *RPCNodeStatus `json:"rpcNode,omitempty"`
+	ModelMaxContext int            `json:"modelMaxContext"`
 	// === Round 37 (2026-08-18): auto-adapt n_ctx 3-tier fields ===
 	// Populated from /api/models → feasible_max_context / gguf_max_context.
 	// 0 = unknown (cppworker didn't report — pre-Round 37 build).
@@ -139,8 +139,8 @@ type LlamaCppMetrics struct {
 	// спиннера и elapsed-time «Загружается model-name 25s».
 	// При переходе State=loaded элемент перемещается в LoadedModels, при
 	// State=error — остаётся здесь до следующего poll с error-полем.
-	LoadingModels     []LlamaCppModel  `json:"loadingModels,omitempty"`
-	AvailableModels   []LlamaCppModel  `json:"availableModels,omitempty"`
+	LoadingModels   []LlamaCppModel `json:"loadingModels,omitempty"`
+	AvailableModels []LlamaCppModel `json:"availableModels,omitempty"`
 	// R342 (2026-10-30): omitempty у ПОКАЗЫВАЕМЫХ полей.
 	//
 	// Живой дефект (аудит docs/plans/2026-10-30-abort-and-metrics-audit.md):
@@ -253,6 +253,17 @@ type LlamaCppModel struct {
 	// Пусто = неизвестно (старая сборка cppworker или stub) — и это НЕ то же
 	// самое, что «все слои на CPU»: пустой список нельзя показывать как раскладку.
 	DeviceLayers []DeviceLayerRange `json:"deviceLayers,omitempty"`
+	// LayoutDegraded — R383 (2026-11-01): воркер передал узлы раскладки в мост,
+	// но ни один не стал устройством модели (все слои ушли на локальные
+	// устройства). Это НЕ ошибка загрузки: модель работает, просто медленнее.
+	//
+	// ЗАЧЕМ НА ЭТОЙ СТРУКТУРЕ. До R383 балансер эти поля вообще не читал —
+	// в /api/models они были (`layout_degraded`, `layout_degraded_reason`), а в
+	// types.LlamaCppModel их не было. Балансер видел «загружена» и не мог ни
+	// показать оператору причину, ни лечить автоматически (R383).
+	LayoutDegraded bool `json:"layoutDegraded,omitempty"`
+	// LayoutDegradedReason — словами воркера: что именно не применилось.
+	LayoutDegradedReason string `json:"layoutDegradedReason,omitempty"`
 	// Parameters — R119 (2026-10-15, пункт 4): происхождение КАЖДОГО параметра
 	// загрузки — {"contextLength":{"value":8192,"source":"profile"},…}, где source
 	// это request | profile | default_profile | backend.
@@ -269,7 +280,7 @@ type LlamaCppModel struct {
 	// загрузки поля обнуляются (omitempty).
 	LoadingStartedAt *string `json:"loadingStartedAt,omitempty"` // RFC3339Nano
 	LoadingSizeBytes int64   `json:"loadingSizeBytes,omitempty"` // ожидаемый размер модели
-	LoadingError     string  `json:"error,omitempty"`     // причина сбоя (если State="error")
+	LoadingError     string  `json:"error,omitempty"`            // причина сбоя (если State="error")
 }
 
 // DeviceLayerRange — R118.16 (2026-10-14): непрерывный диапазон слоёв на одном

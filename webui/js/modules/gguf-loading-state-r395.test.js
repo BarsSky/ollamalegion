@@ -56,6 +56,13 @@ M.showToast = function (msg, kind) { calls.toasts.push({ msg: msg, kind: kind })
 function lastToast() { return calls.toasts[calls.toasts.length - 1]; }
 function records() { return (M.state.loadingModels && M.state.loadingModels[BACKEND]) || []; }
 function tick() { return new Promise(function (resolve) { setTimeout(resolve, 0); }); }
+// backdate — «запись висит уже давно»: именно этот случай обязан сниматься
+// по факту с сервера (свежие записи не трогаем, см. PRUNE_FRESH_MS_L395).
+function backdate(seconds) {
+    records().forEach(function (r) {
+        r.loadingStartedAt = new Date(Date.now() - (seconds || 30) * 1000).toISOString();
+    });
+}
 
 async function main() {
     // --- 1. Повторный клик не плодит вторую запись ------------------------
@@ -73,11 +80,25 @@ async function main() {
 
     // --- 3. pruneLoadingModels: сервер сказал «загружено» -----------------
     M.markLoadingModel(BACKEND, 'NotLoadedYet.gguf');
+    backdate(30);
     const pruned = M.pruneLoadingModels(BACKEND, [{ model: 'Qwen3.8-27B-UD-Q4_K_M', state: 'loaded' }]);
     assert.strictEqual(pruned, 1, 'pruneLoadingModels не убрал модель, которую сервер отдаёт загруженной');
     const left = records().map(function (r) { return r.name; });
     assert.deepStrictEqual(left, ['NotLoadedYet.gguf'],
         'prune не должен трогать модели, которые ещё грузятся: ' + JSON.stringify(left));
+
+    // --- 3b. Свежую запись prune не снимает (перезагрузка модели) ---------
+    // ПРИЧИНА: при перезагрузке с другими параметрами воркер сначала выгружает
+    // старый инстанс, а refreshBackends вызывается прямо из markLoadingModel —
+    // без предела бейдж исчезал бы сразу после нажатия на загруженную модель.
+    M.markLoadingModel(BACKEND, 'Reloading.gguf');
+    const freshPrune = M.pruneLoadingModels(BACKEND, [{ name: 'Reloading' }]);
+    assert.strictEqual(freshPrune, 0, 'свежую запись снимать нельзя: сервер ещё может отдавать старый инстанс');
+    backdate(30);
+    assert.strictEqual(M.pruneLoadingModels(BACKEND, [{ name: 'Reloading' }]), 1,
+        'повзрослевшую запись prune обязан снять');
+    M.clearLoadingModel(BACKEND, 'NotLoadedYet.gguf');
+    assert.strictEqual(records().length, 0, 'тестовое состояние должно быть пустым перед шагом 4');
 
     // --- 4. Успех manageModel убирает запись (главный симптом) -----------
     M.markLoadingModel(BACKEND, 'ModelA.gguf');
@@ -121,7 +142,10 @@ async function main() {
     // --- 7. Наблюдение за «ещё грузится» останавливается само -------------
     // Сервер догрузил модель: prune убирает запись, таймер на следующем тике
     // видит, что записи нет, и не перепланируется.
+    backdate(30);
     M.pruneLoadingModels(BACKEND, [{ name: 'SlowModel' }]);
+    const slowLeft = records().filter(function (r) { return r.name === 'SlowModel.gguf'; });
+    assert.strictEqual(slowLeft.length, 0, 'запись догруженной модели должна быть снята серверным фактом');
     const watchKeys = Object.keys(M.state._loadWatchR395 || {});
     assert.strictEqual(watchKeys.length, 1, 'ожидался один активный наблюдатель');
     const pendingTimer = M.state._loadWatchR395[watchKeys[0]];

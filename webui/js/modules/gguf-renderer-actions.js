@@ -376,7 +376,17 @@
      * загруженными. loadedList — массив имён или объектов с полями
      * model/name/path/handle (формы: llamaCpp.loadedModels, gguf/backends.models,
      * ollama.runningModels).
+     *
+     * СВЕЖУЮ запись (< PRUNE_FRESH_MS_L395) не трогаем сознательно. При
+     * перезагрузке модели с ДРУГИМИ параметрами воркер сначала выгружает старый
+     * инстанс, и в это короткое окно сервер ещё отдаёт её как loaded. А
+     * refreshBackends/refreshDetail вызываются прямо из markLoadingModel — без
+     * этого предела бейдж «грузится» исчезал бы сразу после нажатия на уже
+     * загруженную модель. Явную очистку по успешному ответу делает
+     * clearLoadingModel (там предела нет: сервер уже сказал «загружено»).
      */
+    const PRUNE_FRESH_MS_L395 = 10000;
+
     M.pruneLoadingModels = function(backendId, loadedList) {
         const state = M.state;
         const arr = state.loadingModels && state.loadingModels[backendId];
@@ -393,10 +403,14 @@
         }
         var next = [];
         var removed = 0;
+        const now = Date.now();
         for (var j = 0; j < arr.length; j++) {
             var km = normModelNameL395(arr[j] && arr[j].name);
-            if (km && loaded[km]) removed++;
-            else next.push(arr[j]);
+            if (!km || !loaded[km]) { next.push(arr[j]); continue; }
+            // Свежая запись — ещё не факт, что сервер говорит про неё (см. выше).
+            var startedMs = arr[j] && arr[j].loadingStartedAt ? Date.parse(arr[j].loadingStartedAt) : 0;
+            if (startedMs && (now - startedMs) < PRUNE_FRESH_MS_L395) { next.push(arr[j]); continue; }
+            removed++;
         }
         if (removed > 0) state.loadingModels[backendId] = next;
         return removed;

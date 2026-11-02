@@ -35,8 +35,12 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		GPUCount      int      `json:"gpuCount"`
 		Name          string   `json:"name"`
 		Labels        []string `json:"labels"`
-		Weight        int      `json:"weight"`
-		BackendType   string   `json:"backendType"`
+		// R393 (2026-11-02): метки узла строкой ("gpu,ollama"). Агент присылает
+		// их отдельным полем nodeLabels; до R393 поле игнорировалось, и
+		// NODE_LABELS из compose не доезжал до записи бэкенда.
+		NodeLabels  string `json:"nodeLabels"`
+		Weight      int    `json:"weight"`
+		BackendType string `json:"backendType"`
 		// R83 (2026-09-28): реальная вместимость воркера (n_parallel).
 		// <= 0 = «не задано явно» → AddBackend применит дефолт по типу
 		// (llama_cpp = 1). Раньше поле не принималось, а MaxConcurrentReqs
@@ -306,7 +310,7 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			CppWorkerPort:                cppWorkerPort,
 			Weight:                       weight,
 			MaxConcurrentReqs:            maxReqs,
-			Labels:                       req.Labels,
+			Labels:                       mergeNodeLabelsR393(req.Labels, req.NodeLabels),
 			Status:                       types.StatusHealthy,
 			Type:                         backendType,
 			RuntimeMaxModels:             existing.RuntimeMaxModels,
@@ -442,7 +446,7 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		// в структуре запроса выше).
 		CppWorkerApiToken: req.CppWorkerApiToken,
 		BuildInfo:         req.BuildInfo,
-		Labels:            req.Labels,
+		Labels:            mergeNodeLabelsR393(req.Labels, req.NodeLabels),
 		Status:            types.StatusStarting,
 		Type:              backendType,
 		// R118 (2026-10-14): роль бэкенда в раскладке слоёв — операторское
@@ -898,6 +902,10 @@ func (s *Server) agentV2RegisterHandler(w http.ResponseWriter, r *http.Request) 
 		AgentPort     int      `json:"agentPort"`     // порт агента
 		Name          string   `json:"name"`
 		Labels        []string `json:"labels"`
+		// R393 (2026-11-02): метки узла строкой ("gpu,ollama"). Агент присылает
+		// их отдельным полем nodeLabels; до R393 поле игнорировалось, и
+		// NODE_LABELS из compose не доезжал до записи бэкенда.
+		NodeLabels string `json:"nodeLabels"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

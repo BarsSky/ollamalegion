@@ -491,7 +491,9 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		// выдумываем (в не-стриме не измеряем).
 		PromptEvalCount: countTokensSafe(req.Model, prompt),
 		EvalCount:       countTokensSafe(req.Model, result.Output),
-		DoneReason:      "stop",
+		// R394: пересчитывается ниже по факту бюджета — «stop» здесь только
+		// значение по умолчанию, а не утверждение о причине.
+		DoneReason: "stop",
 	}
 	// R106c (2026-10-12): reasoning отделяем ВСЕГДА, в том числе при tools.
 	//
@@ -538,7 +540,6 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		resp.Message.Content = stripJSONFence(resp.Message.Content)
 	}
 
-
 	// R66b: think=false — клиент явно не хочет видеть рассуждения. Модель может
 	// всё равно вернуть <think>/<reasoning> блок (native template), поэтому
 	// вырезаем его из content и НЕ отдаём в message.reasoning.
@@ -572,9 +573,20 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	// остаётся пустым, и объяснить это надо тем же текстом — иначе клиент с
 	// think=false получает ровно то же молчание. Признак «размышления были»
 	// считаем ДО того, как их скрыли.
-	if notice := emptyAnswerNoticeForNativeR314(resp.Message.Content, reasoningCharsForNotice); notice != "" {
+	// R394 (2026-11-04): причина остановки в НЕ-стриме тоже обязана быть честной.
+	//
+	// Видимый ответ для правила берём ДО подстановки пояснения (R314 ниже):
+	// пояснение — наш текст, а не ответ модели, и по нему нельзя судить об обрыве.
+	visibleForReason := resp.Message.Content
+	if notice := emptyAnswerNoticeForNativeR314(visibleForReason, reasoningCharsForNotice); notice != "" {
 		resp.Message.Content = notice
 	}
+	// До R394 здесь было жёстко DoneReason:"stop" — даже когда модель упиралась
+	// в клиентский n_predict (ровно тот случай, который описывает комментарий
+	// R314: num_predict=160, 592 символа размышлений, видимого ответа нет).
+	// Агентский клиент по «stop» закрывает ход и продолжения не просит.
+	resp.DoneReason = toolsTerminalReasonR394(result.Output, visibleForReason, prompt,
+		len(resp.Message.ToolCalls), params.NPredict, resp.EvalCount)
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -592,6 +604,7 @@ func emptyAnswerNoticeForNativeR314(content string, reasoningChars int) string {
 	}
 	return i18n.T("cppworker.handlers_chat.empty_answer_reasoning_only", reasoningChars)
 }
+
 // buildGenerateRequestFromChat — R65d (2026-09-20): переносит ПОЛНЫЙ набор
 // Ollama-параметров из /api/chat запроса в generateRequest, чтобы
 // buildGenerationParams (handlers_generate.go:130-189) применил их так же, как
@@ -1744,6 +1757,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	reasoningHold := false
 	var emittedLen int
 	var toolsHold bool
+	// R394 (2026-11-04): сколько токенов реально сгенерировала модель. Нужен,
+	// чтобы отличить «модель закончила» (done_reason=stop) от «вывод упёрся в
+	// клиентский лимит» (done_reason=length): по счётчику токенов это видно
+	// точно, по длине текста — нет.
+	var generatedTokens int
 	emitContentDelta := func(delta string) {
 		// R114b (2026-10-13): служебные токены шаблона — не текст ответа. Живой
 		// случай: дельта «other coding task.\n<end_of_turn>» уехала клиенту
@@ -1776,6 +1794,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// R83: writer broken (клиент ушёл) → прекращаем генерацию немедленно.
 		if sw.IsBroken() {
 			return false
+		}
+		// R394: один вызов callback'а = один токен модели. Считаем ДО очистки:
+		// служебный токен тоже израсходовал бюджет вывода.
+		if token != "" {
+			generatedTokens++
 		}
 		// R83: чистим управляющие символы (см. stream_sanitize.go).
 		token = sanitizeStreamText(token)
@@ -2010,6 +2033,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			outputBuf.Reset()
 			emittedLen = 0
 			toolsHold = false
+			// R394: бюджет новой попытки считается заново — иначе счётчик первой
+			// попытки объявит length там, где повтор реально не упёрся в лимит.
+			generatedTokens = 0
 			atomic.StoreInt64(&firstTokenAt, 0)
 			if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr != nil {
 				logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_retry_failed"),
@@ -2046,6 +2072,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"violations", truncateForLog(strings.Join(violations, "; "), 300))
 			outputBuf.Reset()
 			toolsHold = false
+			// R394: повторная генерация — бюджет считается заново.
+			generatedTokens = 0
 			atomic.StoreInt64(&firstTokenAt, 0)
 			if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr == nil {
 				fullOutput = outputBuf.String()
@@ -2141,6 +2169,34 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			sw.Flush()
 			return
 		}
+		// R394.2 (2026-11-04): бюджет ушёл в размышления, а клиент их не видит
+		// (think=false) — видимого вывода нет вообще. Раньше такой ход закрывался
+		// ошибкой «model produced an empty response» (или пустым stop), и агентский
+		// клиент терял ход: модель на самом деле рассуждала и упёрлась в лимит.
+		// Отдаём пояснение и честную причину — клиент продолжит ход вместо
+		// «пустого ответа». Разметку вызова по-прежнему считаем ошибкой (выше).
+		if emittedLen == 0 {
+			if notice := toolsTerminalContentR394("", fullOutput); notice != "" {
+				reason := toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
+					len(toolCalls), params.NPredict, generatedTokens)
+				logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_reasoning_only_notice"),
+					"model", modelName, "raw_len", len(fullOutput),
+					"reasoning_chars", reasoningCharsRawR394(fullOutput),
+					"n_predict", params.NPredict, "generated_tokens", generatedTokens,
+					"done_reason", reason)
+				noticeChunk := map[string]interface{}{
+					"model":       modelName,
+					"created_at":  createdAt,
+					"message":     map[string]string{"role": "assistant", "content": notice},
+					"done":        true,
+					"done_reason": reason,
+				}
+				noticeJSON, _ := json.Marshal(noticeChunk)
+				sw.Writef("%s\n", noticeJSON)
+				sw.Flush()
+				return
+			}
+		}
 		if rawPreview != "" && meaningful != "" {
 			// R83/v56: если часть ответа уже ушла дельтами, повторно её не
 			// отправляем — иначе клиент, складывающий чанки, увидит текст дважды.
@@ -2162,8 +2218,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"created_at": createdAt,
 				"message":    map[string]string{"role": "assistant", "content": ""},
 				"done":       true,
-				// R320: причина — та же честная, что и в основной ветке.
-				"done_reason": toolsStopReasonR320(fullOutput, outputForParse, prompt, len(toolCalls)),
+				// R394: причина считается с учётом исчерпанного клиентского лимита
+				// (R320 знал только про незакрытый reasoning и давал stop при обрыве).
+				"done_reason": toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
+					len(toolCalls), params.NPredict, generatedTokens),
 			}
 			doneJSON, _ := json.Marshal(doneChunk)
 			sw.Writef("%s\n", doneJSON)
@@ -2171,16 +2229,23 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			return
 		}
 		// R83/v56: если что-то уже отдано дельтами, «пустым» ответ назвать
-		// нельзя — закрываем стрим обычным stop, без ложной ошибки.
+		// нельзя — закрываем стрим без ложной ошибки. Причина при этом честная:
+		// при исчерпанном бюджете это length, а не stop (R394).
 		if emittedLen > 0 {
+			reason := toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
+				len(toolCalls), params.NPredict, generatedTokens)
 			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_empty_after_prefix"),
-				"model", modelName, "emitted_len", emittedLen, "raw_len", len(fullOutput))
+				"model", modelName, "emitted_len", emittedLen, "raw_len", len(fullOutput),
+				"n_predict", params.NPredict, "generated_tokens", generatedTokens,
+				"visible_len", len(strings.TrimSpace(cleanFinalContent(outputForParse))),
+				"reasoning_chars", reasoningCharsRawR394(fullOutput),
+				"done_reason", reason)
 			doneChunk := map[string]interface{}{
 				"model":       modelName,
 				"created_at":  createdAt,
 				"message":     map[string]string{"role": "assistant", "content": ""},
 				"done":        true,
-				"done_reason": toolsStopReasonR320(fullOutput, outputForParse, prompt, len(toolCalls)),
+				"done_reason": reason,
 			}
 			doneJSON, _ := json.Marshal(doneChunk)
 			sw.Writef("%s\n", doneJSON)
@@ -2299,6 +2364,13 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		if jsonMode {
 			content = stripJSONFence(content)
 		}
+		// R394.1 (2026-11-04): пояснение вместо пустого content — ОДНО место на
+		// все ветки ниже. R320 ставил его только при `reasoningOut != ""`, и при
+		// явном think=false (размышления клиенту не отдаются, reasoningOut пуст)
+		// клиент получал content:"" + done_reason:stop — то же молчание, от
+		// которого R314 защищает остальные поверхности. Признак «размышления
+		// были» берём из СЫРОГО вывода (reasoningCharsRawR394), до политики.
+		content = toolsTerminalContentR394(content, fullOutput)
 		if reasoningOut != "" {
 			// R106c: размышления отделены — их место в message.thinking, а в
 			// content только ответ. Дельты в этом случае не отдавались
@@ -2306,14 +2378,6 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			// R108: `thinking` — канон (контракт §4.1), `reasoning` — legacy-алиас.
 			msg["thinking"] = reasoningOut
 			msg["reasoning"] = reasoningOut
-			// R320 (2026-10-30): на этом пути размышления удерживаются и уходят
-			// ОДНИМ финальным чанком — значит клиент до сих пор не видел вообще
-			// ничего. Если видимого ответа нет, пустой content здесь читается как
-			// «модель ответила пустотой», а не «бюджет ушёл в размышления».
-			// Пояснение то же, что на потоковом и не-потоковом путях (R314/R320).
-			if notice := emptyAnswerNoticeForNativeR314(content, len(reasoningOut)); notice != "" {
-				content = notice
-			}
 			msg["content"] = content
 			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_reasoning_separate_final_chunk"),
 				"model", modelName, "reasoning_len", len(reasoningOut), "content_len", len(content))
@@ -2348,12 +2412,13 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			logger.Get().Debugw("writeChatStreamResponseWithTools: text response (no tool_calls)",
 				"model", modelName, "content_len", len(content), "json_mode", jsonMode)
 		}
-		// R320 (2026-10-30): «stop» ставился здесь ЖЁСТКО, в том числе когда
-		// модель упиралась в бюджет вывода внутри незакрытого блока размышлений.
-		// Клиент (Cline) читает это как «модель закончила» и закрывает ход —
-		// отсюда жалоба «завершение посреди рассуждений». Честная причина —
-		// через toolsStopReasonR320 (length при обрезанном reasoning).
-		finalChunk["done_reason"] = toolsStopReasonR320(fullOutput, outputForParse, prompt, len(toolCalls))
+		// R394 (2026-11-04): причина остановки — с учётом исчерпанного
+		// клиентского лимита. R320 ставил "length" только при незакрытом блоке
+		// размышлений; если блок закрыт, а видимый ответ оборван на n_predict,
+		// он давал "stop" — по контракту Ollama это «модель закончила», и Cline
+		// закрывал ход, не получив продолжения («флаг завершения раньше ответа»).
+		finalChunk["done_reason"] = toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
+			len(toolCalls), params.NPredict, generatedTokens)
 	}
 
 	// R113 (2026-10-13): ЯВНОЕ ОТСЛЕЖИВАНИЕ ОТВЕТА. Одна строка на запрос, по
@@ -2378,6 +2443,14 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		"tool_arg_shapes", strings.Join(argKinds, ","),
 		"done_reason", finalChunk["done_reason"],
 		"raw_len", len(fullOutput),
+		// R394: по этим полям следующий разбор «почему ход закрылся» решается
+		// без догадок: видно клиентский лимит, сколько токенов реально
+		// сгенерировано (упёрлись ли в лимит) и сколько символов размышлений
+		// было в СЫРОМ выводе (в том числе скрытых через think=false).
+		"n_predict", params.NPredict,
+		"generated_tokens", generatedTokens,
+		"budget_exhausted", toolsBudgetExhaustedR394(params.NPredict, generatedTokens),
+		"reasoning_chars_raw", reasoningCharsRawR394(fullOutput),
 		"elapsed_ms", duration.Milliseconds(),
 	)
 

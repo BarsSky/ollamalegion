@@ -99,8 +99,12 @@ var messagesCppworker = map[string]map[Lang]string{
 		EN: "writeChatStreamResponseWithTools: tool call not recognised — sending the raw output as content",
 	},
 	"cppworker.handlers_chat.tools_empty_after_prefix": {
-		RU: "writeChatStreamResponseWithTools: вывод пуст после отданного префикса — закрываем стрим stop",
-		EN: "writeChatStreamResponseWithTools: output is empty after the emitted prefix — closing the stream with stop",
+		RU: "writeChatStreamResponseWithTools: вывод пуст после отданного префикса — закрываем стрим с честной причиной (R394: length, если исчерпан n_predict)",
+		EN: "writeChatStreamResponseWithTools: output is empty after the emitted prefix — closing the stream with an honest reason (R394: length when n_predict is exhausted)",
+	},
+	"cppworker.handlers_chat.tools_reasoning_only_notice": {
+		RU: "writeChatStreamResponseWithTools: видимого ответа нет, размышления скрыты (think=false) — отдаём пояснение вместо пустого хода (R394)",
+		EN: "writeChatStreamResponseWithTools: no visible answer, reasoning hidden by think=false — sending an explanation instead of an empty turn (R394)",
 	},
 	"cppworker.handlers_chat.tools_empty_inference": {
 		RU: "writeChatStreamResponseWithTools: inference вернула пустой вывод — отдаём error-чанк",

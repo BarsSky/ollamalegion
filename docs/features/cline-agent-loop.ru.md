@@ -184,11 +184,20 @@ JSON-форма вызова появляется ВНУТРИ прозы (`tool
 /api/chat stream response summary  model=… streamed_content_bytes=… 
 final_content_len=… thinking_len=… tool_calls=1 tool_names=run_commands 
 tool_arg_shapes=object done_reason=tool_calls raw_len=… elapsed_ms=…
+n_predict=… generated_tokens=… budget_exhausted=false reasoning_chars_raw=…
 ```
 
 `tool_arg_shapes=object` — клиент сможет выполнить вызов; `array`/`string` —
 дефект приведения. `streamed_content_bytes=0` при длинной генерации означает, что
 сервер держал вывод до конца (клиент не видел стрима).
+
+**Поля R394** (`n_predict`, `generated_tokens`, `budget_exhausted`,
+`reasoning_chars_raw`) добавлены после живого случая на A10: `done_reason=stop`
+при `streamed_content_bytes=456` и `raw_len=15812`, то есть ответ был обрезан
+клиентским `num_predict=4096`, а клиенту сообщили «модель закончила». Теперь по
+этим полям причина видна без догадок: `budget_exhausted=true` означает, что
+`done_reason` обязан быть `length`, а `reasoning_chars_raw>0` при `thinking_len=0`
+означает, что размышления были, но клиент их скрыл (`think=false`).
 
 ---
 
@@ -211,6 +220,18 @@ Cline читает OpenAI SSE и склеивает `delta.content`; всё, ч�
 3. `[DONE]` приходит **ровно один раз** и **последним** событием; после него нет
    ни одного data-события. `finish_reason` — до `[DONE]`.
 4. Ошибки приходят ошибками: `finish_reason:"error"` + `error`, а не пустой 200.
+5. **Причина остановки не врёт (R394).** `done_reason:"stop"` означает, что модель
+   закончила ответ. Если вывод упёрся в клиентский лимит (`options.num_predict` /
+   `max_tokens`), причина обязана быть `length` — даже когда блок размышлений
+   закрыт, а видимый ответ успел начаться. Иначе агентский клиент помечает ход
+   завершённым и продолжения не просит: живой случай A10 —
+   `done_reason=stop` при 456 байтах видимого ответа и 15 КБ израсходованного
+   бюджета, жалоба «флаг завершения раньше, чем приходит настоящий ответ».
+6. **Пустой ход объясняется, а не молчит (R394).** Если видимого ответа нет, а
+   размышления были, клиент получает пояснение — в том числе при явном
+   `think=false`, когда `thinking` не отдаётся вовсе. Раньше пояснение ставилось
+   только в ветке «размышления отданы», и клиент с `think=false` получал
+   `content:""` + `stop`.
 
 **Проверка (живая, стенд):**
 

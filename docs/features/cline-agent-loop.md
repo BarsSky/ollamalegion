@@ -184,11 +184,20 @@ One request = one line in the cppworker log:
 /api/chat stream response summary  model=… streamed_content_bytes=… 
 final_content_len=… thinking_len=… tool_calls=1 tool_names=run_commands 
 tool_arg_shapes=object done_reason=tool_calls raw_len=… elapsed_ms=…
+n_predict=… generated_tokens=… budget_exhausted=false reasoning_chars_raw=…
 ```
 
 `tool_arg_shapes=object` — the client will be able to execute the call; `array`/`string` —
 a coercion defect. `streamed_content_bytes=0` during a long generation means that the
 server held the output until the end (the client saw no stream).
+
+**R394 fields** (`n_predict`, `generated_tokens`, `budget_exhausted`,
+`reasoning_chars_raw`) were added after a live A10 case: `done_reason=stop` with
+`streamed_content_bytes=456` and `raw_len=15812`, i.e. the answer was cut by the
+client's `num_predict=4096` while the client was told "the model finished". With
+these fields the reason is decidable without guessing: `budget_exhausted=true`
+means `done_reason` must be `length`, and `reasoning_chars_raw>0` together with
+`thinking_len=0` means the reasoning existed but the client hid it (`think=false`).
 
 ---
 
@@ -211,6 +220,18 @@ After R231 the contract is fixed and verified automatically.
 3. `[DONE]` arrives **exactly once** and as the **last** event; after it there is not
    a single data event. `finish_reason` comes before `[DONE]`.
 4. Errors arrive as errors: `finish_reason:"error"` + `error`, not an empty 200.
+5. **The stop reason does not lie (R394).** `done_reason:"stop"` means the model
+   finished its answer. If the output hit the client limit (`options.num_predict` /
+   `max_tokens`), the reason must be `length` — even when the reasoning block is
+   closed and the visible answer had already started. Otherwise an agent client
+   marks the turn complete and never asks for a continuation: live A10 case —
+   `done_reason=stop` with 456 bytes of visible answer and 15 KB of spent budget,
+   reported as "the completion flag arrives before the real answer".
+6. **An empty turn is explained, not silent (R394).** If there is no visible answer
+   but reasoning happened, the client gets an explanation — including under an
+   explicit `think=false`, when `thinking` is not sent at all. Previously the notice
+   was only applied in the "reasoning delivered" branch, so a `think=false` client
+   received `content:""` + `stop`.
 
 **Verification (live, bench):**
 

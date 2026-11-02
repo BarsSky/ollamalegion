@@ -192,6 +192,56 @@ LB_NCTX_RELOAD_MAX_N_CTX=131072
 LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=0.85
 ```
 
+### 2.5 «Клиент просит 131072, а модель грузится с 32768» (R397)
+
+**Симптом.** На пустом бэкенде запрос с `options.num_ctx=131072` поднимает
+модель с окном 32768, а сам запрос получает `413 n_ctx_infeasible`:
+`requested num_ctx=131072 exceeds operator limit auto_reload_max_n_ctx=32768`.
+
+**Цепочка решений (её видно в логах балансера, одна строка каждого звена):**
+
+```
+ResolveNumCtx / maxNumCtxForModel: profile is a load hint, clamping to physical ceiling
+  profile_hint_n_ctx=32768  physical_ceiling=131072
+ensureModelLoadedOnBackend: auto-loading model
+  requestedNumCtx=131072  contextPerSeq=...      ← окно, с которым пойдёт загрузка
+preflightNCtxReload: num_ctx decision
+  body_num_ctx=131072  profile_num_ctx=32768  chosen_source=body
+```
+
+Где окно может «съесться» (все четыре места проверяются по очереди):
+
+1. **Потолок авто-роста.** `LB_NCTX_RELOAD_MAX_N_CTX` (env) — защита от того, чтобы
+   клиентский запрос сам поднимал окно. Потолок поднимается заявленным окном
+   оператора: `contextLength` в профиле модели. R397 добавил второй источник —
+   `contextLengthMax` при `contextLengthAuto: true` (режим «auto» до этого был
+   мёртв: максимум не участвовал нигде, и запрос на 131072 всегда упирался в env).
+2. **Ключ профиля.** R397.1: профиль `Qwen3.8-27B` теперь находится и для модели
+   `Qwen3.8-27B-UD-Q4_K_M` (раньше `GetModelProfile` требовал точного ключа, и
+   потолок профиля просто не видел — загрузка профиль находила, а потолок нет).
+3. **Подстановка окна профиля в загрузку.** R397: профиль заполняет окно, ТОЛЬКО
+   если запрос не задал ни одного поля. Раньше `contextLength` из профиля
+   подставлялся и при явном `contextPerSeq`, а затем правило R255 выбирало
+   суммарное (32768) и выбрасывало per-seq — модель грузилась меньше запрошенного.
+4. **`primary: true` в профиле** — «настройки модели зафиксированы оператором,
+   клиентский запрос их не меняет». С ним окно не вырастет по запросу клиента:
+   это осознанная политика, а не дефект. Убрать — в карточке модели.
+
+**Что проверить:**
+
+```bash
+# 1. Есть ли профиль именно у вашей модели (ключ может быть короче имени файла)
+curl -s -H 'X-API-Token: <token>' http://localhost:18081/api/v1/cppworker/model-profiles | jq '.models["Qwen3.8-27B"]'
+
+# 2. Какое окно уйдёт в загрузку и что связывает потолок
+curl -s 'http://<host>:18092/api/models/effective?model=<model>&ctx=131072&kvCacheType=q4_0' \
+  -H 'Authorization: Bearer <token>' | jq '.effective, .memory'
+```
+
+В логе после исправления загрузка выглядит так: `contextPerSeq=131072`,
+`physical_ceiling=131072`, а воркер пишет `n_ctx=262144, n_ctx_seq=131072`
+(при `parallel=2` суммарное окно = окно клиента × слоты).
+
 ---
 
 ## 3. ReloadLoopLimitError (HTTP 413)

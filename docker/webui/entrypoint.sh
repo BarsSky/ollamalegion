@@ -11,6 +11,27 @@ NGINX_CONF="/etc/nginx/conf.d/default.conf"
 
 # Параметры по умолчанию
 : "${NGINX_PORT:=80}"
+
+# R391 (2026-11-02): LB_API_URL — ЕДИНЫЙ адрес балансера из compose.
+#
+# ЖИВОЙ ДЕФЕКТ. compose передавал контейнеру `LB_API_URL=http://loadbalancer:18081`,
+# но НИКТО его не читал: entrypoint брал API_HOST/API_PORT (дефолт
+# `loadbalancer:18081`). На «родном» compose это совпадало случайно; при переносе
+# образа на другую машину и запуске `docker run` имени `loadbalancer` в сети нет,
+# nginx проксировал в никуда — вход в WebUI «не воспринимал» ни новые имя, ни
+# пароль (запрос логина просто не доходил до балансера).
+#
+# Теперь: если LB_API_URL задан и API_HOST не задан явно — берём host:port из него.
+if [ -n "${LB_API_URL:-}" ] && [ -z "${API_HOST:-}" ]; then
+    _api_url="${LB_API_URL#*://}"
+    _api_url="${_api_url%%/*}"
+    case "$_api_url" in
+        *:*) API_HOST="${_api_url%%:*}"; API_PORT="${_api_url##*:}" ;;
+        "")  : ;;
+        *)   API_HOST="$_api_url" ;;
+    esac
+fi
+
 : "${API_HOST:=loadbalancer}"
 : "${API_PORT:=18081}"
 : "${LB_PORT:=18080}"
@@ -172,6 +193,42 @@ fi
 # диагностика `wget: server returned error: HTTP/1.1 401 ...`; чтобы взять код из
 # заголовка, а не из текста ошибки, сравниваем именно первое поле ($1 ~ /^HTTP/).
 # Без этой проверки разбор давал "server" вместо "401" и 401 не распознавался.
+# R391 (2026-11-02): ВСЕГДА проверяем, что балансер вообще виден.
+#
+# WebUI — только прокси и статика: учётные данные (логин/пароль) живут в
+# БАЛАНСЕРЕ (LB_ADMIN_USER/LB_ADMIN_PASSWORD → /app/data/users.json на томе
+# ol-balancer-data), а не в этом контейнере. Если адрес недоступен, вход
+# невозможен ни с каким паролем — и раньше это выяснялось только по «немому»
+# экрану входа.
+if command -v wget >/dev/null 2>&1; then
+    ping_code=$(wget -S -O /dev/null -T 5 "http://${API_HOST}:${API_PORT}/api/v1/ping" 2>&1 \
+        | awk '$1 ~ /^HTTP\//{c=$2} END{print c}')
+    case "$ping_code" in
+        200)
+            echo "[entrypoint] balancer reachable at http://${API_HOST}:${API_PORT} (auth and API go there)"
+            ;;
+        "")
+            echo ""
+            echo "============================================================"
+            echo "  WARNING: WebUI не видит балансер http://${API_HOST}:${API_PORT}"
+            echo "  WebUI — только статика и прокси: вход, пароль и все /api"
+            echo "  обслуживает БАЛАНСЕР. Причина обычно одна из двух:"
+            echo "    1) контейнер запущен вне compose-сети, а имя"
+            echo "       'loadbalancer' в ней не резолвится;"
+            echo "    2) балансер не запущен / другой порт."
+            echo "  Решение: -e LB_API_URL=http://<host-балансера>:18081"
+            echo "  (или -e API_HOST=<host> -e API_PORT=18081)."
+            echo "  Учётка администратора задаётся НА БАЛАНСЕРЕ:"
+            echo "    -e LB_ADMIN_USER=... -e LB_ADMIN_PASSWORD=..."
+            echo "  (в этом контейнере они не читаются)."
+            echo "============================================================"
+            ;;
+        *)
+            echo "[entrypoint] balancer probe: HTTP $ping_code at http://${API_HOST}:${API_PORT}"
+            ;;
+    esac
+fi
+
 if [ -n "$API_TOKEN" ]; then
     probe_host="${API_HOST:-loadbalancer}"
     probe_port="${API_PORT:-18081}"

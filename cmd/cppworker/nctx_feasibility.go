@@ -268,7 +268,12 @@ func writeNCtxInfeasibleResponse(w http.ResponseWriter, f NCtxFeasibility) {
 // дефолт конфига). Гейт обязан считать KV тем же типом, что и раскладка слоёв
 // (R83 §3.4): иначе для модели, у которой профиль задаёт q8_0, а дефолт q4_0,
 // потолок VRAM расходится в 1.88 раза.
-func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx int, kvCacheType string) bool {
+//
+// useMmap — пойдёт ли эта загрузка с mmap (R396, 2026-11-04). С mmap веса на CPU
+// читаются из файла, поэтому в RAM обязаны поместиться только KV и буферы; без
+// этого флага гейт отказывал в окне, которое загрузка физически выполняет
+// (живой случай A10: 27B Q4_K_M, n_ctx=131072, kv=q4_0, RAM 20 GB).
+func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx int, kvCacheType string, useMmap bool) bool {
 	// R83, шаг 3: решение принимает internal/memfit (memfit_gate.go). Прежний
 	// расчёт здесь удалён — он расходился с решением о загрузке.
 	if backend == nil {
@@ -287,7 +292,7 @@ func checkNCtxBeforeLoad(w http.ResponseWriter, modelName string, requestedNCtx 
 	}
 	resolvedKV := effectiveKVCacheTypeForLoad(modelName, kvCacheType)
 	logResolvedKVCacheType(modelName, resolvedKV)
-	f, verdict, ok := feasibilityFromMemfit(spec, backend.MemfitBudget(), resolvedKV, requestedNCtx)
+	f, verdict, ok := feasibilityFromMemfit(spec, backend.MemfitBudget(), resolvedKV, requestedNCtx, useMmap)
 	if !ok {
 		return true
 	}

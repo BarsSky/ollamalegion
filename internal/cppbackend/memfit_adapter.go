@@ -37,6 +37,41 @@ func MemfitPolicy() memfit.Policy {
 	return memfit.Policy{VRAMUtil: 1.0, RAMUtil: 1.0, UnknownIsFatal: false}
 }
 
+// MemfitPolicyForMmap — та же политика, но с учётом того, пойдут ли веса через
+// mmap (R396, 2026-11-04).
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ ПОЛЕ В MemfitPolicy. Режим mmap — свойство
+// КОНКРЕТНОЙ загрузки, а не глобальная настройка: гейт n_ctx, раскладка слоёв и
+// справочные потолки обязаны считать его одинаково с той загрузкой, которую они
+// оценивают. Одна общая политика означала бы, что решение «влезает» зависит от
+// порядка вызовов, а не от запроса.
+func MemfitPolicyForMmap(mmapWeights bool) memfit.Policy {
+	p := MemfitPolicy()
+	p.WeightsMmap = mmapWeights
+	return p
+}
+
+// EffectiveUseMmapForMemfit — пойдёт ли загрузка этой модели с mmap: у
+// загруженной модели — фактический режим, иначе дефолт конфига с учётом
+// defaultNoMemoryMap.
+//
+// Нужен справочным потолкам (/api/models, карточка модели): они обещают окно,
+// которое физически достижимо ИМЕННО в том режиме, в котором модель загрузится.
+// Если считать потолки «как без mmap», WebUI продолжит показывать 82k и отказывать
+// в 131k на модели, которую mmap поднимает (живой случай R396).
+func (b *Backend) EffectiveUseMmapForMemfit(name string) bool {
+	if b == nil {
+		return false
+	}
+	if info, err := b.GetModel(name); err == nil && info != nil {
+		return info.UseMmap
+	}
+	if b.cfg.DefaultNoMemoryMap {
+		return false
+	}
+	return b.cfg.DefaultUseMmap
+}
+
 // EffectiveKVCacheType — какой тип KV-cache реально пойдёт в расчёт (per-request,
 // иначе дефолт конфига). Экспортирован, чтобы решения принимались на тех же
 // входных данных, что и прежний код: иначе f16 против q4_0 даёт разницу вчетверо.

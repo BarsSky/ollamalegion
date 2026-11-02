@@ -78,6 +78,10 @@ type Verdict struct {
 	UsableVRAM Bytes
 	UsableRAM  Bytes
 
+	// Mmap — веса считались как файловый кэш (см. Policy.WeightsMmap). В логе и
+	// в диагностике это объясняет, почему cpuWeights не вошли в проверку RAM.
+	Mmap bool
+
 	// MaxExactFitCtx — потолок n_ctx для загрузки ЦЕЛИКОМ в VRAM.
 	// MaxHardCtx — наибольший n_ctx, который реально помещается на этом железе.
 	// Оба посчитаны тем же предикатом, что и сам вердикт (см. Ceilings).
@@ -125,6 +129,7 @@ func (v Verdict) ReasonDetail(code ReasonCode) string {
 func (v Verdict) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "stage=%s kv=%s weights=%s kv_total=%s", v.Stage, v.KVType, v.Weights, v.KVTotal)
+	fmt.Fprintf(&b, " mmap_weights=%v", v.Mmap)
 	fmt.Fprintf(&b, " gpu_layers=%d/%d", v.GPULayers, v.TotalLayers)
 	fmt.Fprintf(&b, " vram_used=%s/%s ram_used=%s/%s",
 		v.GPUWeights+v.GPUKV, v.UsableVRAM, v.CPUWeights+v.CPUKV, v.UsableRAM)
@@ -196,7 +201,18 @@ func computeSplit(m ModelSpec, ctx int, kv KVType, b Budget, p Policy) split {
 	s.cpuWeights = m.SizeBytes - s.gpuWeights
 	s.gpuKV = s.kvTotal.Scale(int64(gMax), int64(m.NLayers))
 	s.cpuKV = s.kvTotal - s.gpuKV
-	s.fits = s.cpuWeights+s.cpuKV <= ur
+	// R396 (2026-11-04): предикат по RAM.
+	//
+	// cpuWeights считаются РЕЗИДЕНТНЫМИ только без mmap. С mmap веса на CPU —
+	// файловый кэш: страницы вытесняются, обязательны только KV и буферы. Без
+	// этого условия отказ получала загрузка, которую llama.cpp выполняет: живой
+	// случай A10 — 27B Q4_K_M (16.4 GB) при RAM 20 GB и n_ctx=131072 с q4_0
+	// упирался в «max_ram_n_ctx=82824» и 422, хотя веса читаются с диска.
+	residentCPUWeights := s.cpuWeights
+	if p.WeightsMmap {
+		residentCPUWeights = 0
+	}
+	s.fits = residentCPUWeights+s.cpuKV <= ur
 	return s
 }
 
@@ -275,6 +291,7 @@ func Evaluate(m ModelSpec, req Request, b Budget, p Policy) Verdict {
 		Weights:     m.SizeBytes,
 		UsableVRAM:  b.UsableVRAM(p),
 		UsableRAM:   b.UsableRAM(p),
+		Mmap:        p.WeightsMmap,
 	}
 
 	if !m.Complete() {

@@ -136,6 +136,16 @@ func strFromMap(m map[string]interface{}, keys ...string) string {
 	return ""
 }
 
+// boolFromMap — булево поле из карты профиля (useMmap и т.п.).
+func boolFromMap(m map[string]interface{}, keys ...string) (bool, bool) {
+	for _, k := range keys {
+		if v, ok := m[k].(bool); ok {
+			return v, true
+		}
+	}
+	return false, false
+}
+
 // handleModelEffective — GET /api/models/effective?model=<name>.
 func handleModelEffective(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -179,6 +189,30 @@ func handleModelEffective(w http.ResponseWriter, r *http.Request) {
 	effCtx, ctxSource := resolveEffectiveInt(reqCtx, profCtx, defCtx)
 	effKV, kvSource := resolveEffectiveStr(reqKV, profKV, defKV)
 
+	// R396 (2026-11-04): режим mmap — часть «эффективной конфигурации». Потолок
+	// окна зависит от него: с mmap веса читаются с диска и в RAM обязаны
+	// поместиться только KV и буферы. Запрос → профиль → дефолт конфига; у
+	// загруженной модели — фактический режим (он и определяет, что сейчас верно).
+	reqMmap, reqMmapSet := false, false
+	if v := strings.TrimSpace(q.Get("useMmap")); v != "" {
+		reqMmap, reqMmapSet = (v == "1" || strings.EqualFold(v, "true")), true
+	}
+	profMmap, profMmapSet := boolFromMap(profile, "useMmap")
+	defMmap := true
+	if currentConfig != nil {
+		defMmap = currentConfig.DefaultUseMmap && !currentConfig.DefaultNoMemoryMap
+	}
+	effMmap, mmapSource := defMmap, "default"
+	switch {
+	case reqMmapSet:
+		effMmap, mmapSource = reqMmap, "request"
+	case profMmapSet:
+		effMmap, mmapSource = profMmap, "profile"
+	}
+	if info, err := backend.GetModel(name); err == nil && info != nil {
+		effMmap, mmapSource = info.UseMmap, "loaded"
+	}
+
 	resp := map[string]interface{}{
 		"model":   name,
 		"request": map[string]interface{}{"ctx": reqCtx, "kv_cache_type": reqKV},
@@ -187,8 +221,8 @@ func handleModelEffective(w http.ResponseWriter, r *http.Request) {
 			"ctx": defCtx, "gpu_layers": defGPU, "kv_cache_type": defKV,
 		},
 		"effective": map[string]interface{}{
-			"ctx": effCtx, "kv_cache_type": effKV,
-			"sources": map[string]string{"ctx": ctxSource, "kv_cache_type": kvSource},
+			"ctx": effCtx, "kv_cache_type": effKV, "use_mmap": effMmap,
+			"sources": map[string]string{"ctx": ctxSource, "kv_cache_type": kvSource, "use_mmap": mmapSource},
 		},
 	}
 
@@ -225,7 +259,7 @@ func handleModelEffective(w http.ResponseWriter, r *http.Request) {
 			kvType = backend.EffectiveKVCacheType("")
 		}
 		if effCtx > 0 {
-			if f, verdict, ok2 := feasibilityFromMemfitCached(spec, backend.MemfitBudgetCached(), kvType, effCtx); ok2 {
+			if f, verdict, ok2 := feasibilityFromMemfitCached(spec, backend.MemfitBudgetCached(), kvType, effCtx, effMmap); ok2 {
 				mem := map[string]interface{}{
 					"stage":                f.Stage,
 					"feasible":             f.Stage != nctxStageInfeasible,

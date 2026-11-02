@@ -283,7 +283,7 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	if !checkFlashAttnKVCacheR367(w, modelName, opts.FlashAttnType, opts.KVCacheType) {
 		return
 	}
-	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize, opts.KVCacheType) {
+	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize, opts.KVCacheType, opts.UseMmap) {
 		return
 	}
 
@@ -831,7 +831,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	if !checkFlashAttnKVCacheR367(w, modelName, opts.FlashAttnType, opts.KVCacheType) {
 		return
 	}
-	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize, opts.KVCacheType) {
+	if !checkNCtxBeforeLoad(w, modelName, opts.ContextSize, opts.KVCacheType, opts.UseMmap) {
 		return
 	}
 
@@ -1474,9 +1474,9 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 			"context_size":        m.ContextSize,
 			"gguf_context_length": m.GGUFContextLength,
 			"size_bytes":          effectiveSize,
-			"size":                effectiveSize,                              // R60.4: alias (webui gguf-renderer-detail.js:232)
+			"size":                effectiveSize,                               // R60.4: alias (webui gguf-renderer-detail.js:232)
 			"size_vram":           estimateVRAMSizeForModel(&m, effectiveSize), // R66.5: VRAM estimate для balancer poller
-			"quantization":        parseQuantization(m.Path),                  // R60.4
+			"quantization":        parseQuantization(m.Path),                   // R60.4
 			"loaded_at":           m.LoadedAt,
 			"gpu_count":           m.GPUCount,
 			"kv_cache_type":       m.KVCacheType,
@@ -2366,7 +2366,7 @@ func handleReloadModel(w http.ResponseWriter, r *http.Request) {
 	if !checkFlashAttnKVCacheR367(w, req.Name, opts.FlashAttnType, opts.KVCacheType) {
 		return
 	}
-	if !checkNCtxBeforeLoad(w, req.Name, opts.ContextSize, opts.KVCacheType) {
+	if !checkNCtxBeforeLoad(w, req.Name, opts.ContextSize, opts.KVCacheType, opts.UseMmap) {
 		return
 	}
 

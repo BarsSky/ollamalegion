@@ -71,12 +71,18 @@ func effectiveKVCacheTypeForLoad(modelName, explicit string) string {
 // обязателен: без него гейт считал бы KV по одному типу, а раскладка — по
 // другому (R83 §3.4).
 //
+// useMmap — пойдёт ли ЭТА загрузка с mmap. R396 (2026-11-04): с mmap веса на CPU
+// читаются из файла (page cache) и в RAM обязаны поместиться только KV и буферы.
+// Без этого параметра гейт отказывал в окне, которое загрузка физически
+// выполняет: живой случай A10 — 27B Q4_K_M, n_ctx=131072, kv=q4_0, RAM 20 GB →
+// 422 «max_ram_n_ctx=82824» при включённом в WebUI mmap.
+//
 // ВНИМАНИЕ: этот вариант МОЖЕТ дозвониться до узлов раскладки (счётчик узлов для
 // раскладки решения берётся у моста). Он для путей РЕШЕНИЯ (гейт n_ctx перед
 // загрузкой). Справочные ручки обязаны звать feasibilityFromMemfitCached.
 func feasibilityFromMemfit(spec memfit.ModelSpec, budget memfit.Budget,
-	kvType string, requested int) (NCtxFeasibility, memfit.Verdict, bool) {
-	return feasibilityFromMemfitMode(spec, budget, kvType, requested, true)
+	kvType string, requested int, useMmap bool) (NCtxFeasibility, memfit.Verdict, bool) {
+	return feasibilityFromMemfitMode(spec, budget, kvType, requested, true, useMmap)
 }
 
 // feasibilityFromMemfitCached — то же, но узлы раскладки НЕ опрашиваются: их
@@ -88,13 +94,13 @@ func feasibilityFromMemfit(spec memfit.ModelSpec, budget memfit.Budget,
 // отвечать (замер: 30 с без ответа, дублёр узла принял соединение). Правка
 // вызывающего (MemfitBudgetCached) этого не лечила: дозвон был внутри помощника.
 func feasibilityFromMemfitCached(spec memfit.ModelSpec, budget memfit.Budget,
-	kvType string, requested int) (NCtxFeasibility, memfit.Verdict, bool) {
-	return feasibilityFromMemfitMode(spec, budget, kvType, requested, false)
+	kvType string, requested int, useMmap bool) (NCtxFeasibility, memfit.Verdict, bool) {
+	return feasibilityFromMemfitMode(spec, budget, kvType, requested, false, useMmap)
 }
 
 // feasibilityFromMemfitMode — общий расчёт; withRPC решает, спрашивать ли узлы.
 func feasibilityFromMemfitMode(spec memfit.ModelSpec, budget memfit.Budget,
-	kvType string, requested int, withRPC bool) (NCtxFeasibility, memfit.Verdict, bool) {
+	kvType string, requested int, withRPC bool, useMmap bool) (NCtxFeasibility, memfit.Verdict, bool) {
 	var zero memfit.Verdict
 	if requested <= 0 {
 		return NCtxFeasibility{}, zero, false
@@ -105,7 +111,7 @@ func feasibilityFromMemfitMode(spec memfit.ModelSpec, budget memfit.Budget,
 	v := memfit.Evaluate(spec, memfit.Request{
 		Ctx:    requested,
 		KVType: cppbackend.MemfitKVType(kvType),
-	}, budget, cppbackend.MemfitPolicy())
+	}, budget, cppbackend.MemfitPolicyForMmap(useMmap))
 
 	minPositive := func(vals ...int) int {
 		out := 0

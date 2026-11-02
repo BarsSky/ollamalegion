@@ -129,7 +129,9 @@ func memfitPlanForModel(m cppbackend.ModelInfo, kvCacheType string) (memfit.Verd
 	return memfit.Evaluate(spec, memfit.Request{
 		Ctx:    nCtx,
 		KVType: cppbackend.MemfitKVType(kvCacheType),
-	}, backend.MemfitBudget(), cppbackend.MemfitPolicy()), true
+		// R396: раскладка для УЖЕ загруженной модели считается в её фактическом
+		// режиме mmap — иначе решение о слоях расходится с тем, как модель живёт.
+	}, backend.MemfitBudget(), cppbackend.MemfitPolicyForMmap(m.UseMmap)), true
 }
 
 // memfitGPULayersForModel — число GPU-слоёв по вердикту memfit (обёртка над

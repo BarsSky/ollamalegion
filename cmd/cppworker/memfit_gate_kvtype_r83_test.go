@@ -58,8 +58,8 @@ func TestR83_Gate_KVTypeChangesCeiling(t *testing.T) {
 	budget := rtx3070BudgetTightRAMR83()
 	const requested = 131072
 
-	fQ4, vQ4, okQ4 := feasibilityFromMemfit(spec, budget, "q4_0", requested)
-	fQ8, vQ8, okQ8 := feasibilityFromMemfit(spec, budget, "q8_0", requested)
+	fQ4, vQ4, okQ4 := feasibilityFromMemfit(spec, budget, "q4_0", requested, false)
+	fQ8, vQ8, okQ8 := feasibilityFromMemfit(spec, budget, "q8_0", requested, false)
 	if !okQ4 || !okQ8 {
 		t.Fatalf("вердикт не построен: okQ4=%v okQ8=%v", okQ4, okQ8)
 	}
@@ -110,16 +110,16 @@ func TestR83_Gate_KVTypeFlipsVerdict(t *testing.T) {
 	spec := qwen38SpecR83()
 	budget := rtx3070BudgetTightRAMR83()
 
-	_, vQ4, _ := feasibilityFromMemfit(spec, budget, "q4_0", 1)
-	_, vQ8, _ := feasibilityFromMemfit(spec, budget, "q8_0", 1)
+	_, vQ4, _ := feasibilityFromMemfit(spec, budget, "q4_0", 1, false)
+	_, vQ8, _ := feasibilityFromMemfit(spec, budget, "q8_0", 1, false)
 	if vQ4.MaxHardCtx <= vQ8.MaxHardCtx {
 		t.Fatalf("предусловие: потолок q4_0 (%d) должен быть выше q8_0 (%d)",
 			vQ4.MaxHardCtx, vQ8.MaxHardCtx)
 	}
 	ctx := vQ8.MaxHardCtx + 1 // выше потолка q8_0, но ниже потолка q4_0
 
-	fQ4, _, _ := feasibilityFromMemfit(spec, budget, "q4_0", ctx)
-	fQ8, _, _ := feasibilityFromMemfit(spec, budget, "q8_0", ctx)
+	fQ4, _, _ := feasibilityFromMemfit(spec, budget, "q4_0", ctx, false)
+	fQ8, _, _ := feasibilityFromMemfit(spec, budget, "q8_0", ctx, false)
 
 	if fQ4.Stage == nctxStageInfeasible {
 		t.Errorf("q4_0: stage = %q при n_ctx=%d (потолок %d) — должен проходить",

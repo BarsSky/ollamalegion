@@ -52,6 +52,12 @@ type memoryBreakdown struct {
 	TotalLayers int
 	KVPerToken  int
 	Stage       string
+
+	// Mmap — веса считались файловым кэшем (R396). Раньше правило в шапке файла
+	// («при use_mmap веса CPU вытесняемы, KV — нет») было только текстом: расчёт
+	// всё равно требовал резидентности весов и отказывал в окне, которое загрузка
+	// с mmap физически выполняет.
+	Mmap bool
 }
 
 // buildMemoryBreakdown переносит числа вердикта в отчёт. Ничего не вычисляет
@@ -79,6 +85,7 @@ func buildMemoryBreakdown(budget memfit.Budget, v memfit.Verdict, rpcDevices int
 		TotalLayers:   v.TotalLayers,
 		KVPerToken:    int(v.KVPerToken),
 		Stage:         string(v.Stage),
+		Mmap:          v.Mmap,
 	}
 }
 
@@ -107,6 +114,7 @@ func (m memoryBreakdown) Fields() map[string]interface{} {
 		"total_layers":    m.TotalLayers,
 		"kv_per_token":    m.KVPerToken,
 		"stage":           m.Stage,
+		"mmap_weights":    m.Mmap,
 	}
 }
 
@@ -149,5 +157,8 @@ func (m memoryBreakdown) Text() string {
 		m.GPUKVMB+m.CPUKVMB, m.GPUKVMB, m.CPUKVMB, m.KVPerToken, float64(m.KVPerToken)/1024.0)
 	fmt.Fprintf(&b, "; usable for KV: VRAM %d MB, RAM %d MB; plan gpu_layers %d/%d, stage %s",
 		m.UsableVRAMMB, m.UsableRAMMB, m.GPULayers, m.TotalLayers, m.Stage)
+	if m.Mmap {
+		b.WriteString("; weights via mmap (file-backed, RAM counts KV only)")
+	}
 	return b.String()
 }

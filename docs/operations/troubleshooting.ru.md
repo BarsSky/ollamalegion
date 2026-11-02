@@ -231,6 +231,44 @@ curl -X POST http://localhost:18081/api/v1/cppworker/reset-reload-counter
 2. Проверить `max_vram_n_ctx` в логах.
 3. Перезапустить только после устранения.
 
+### 3.5 422 `n_ctx_infeasible`, когда RAM меньше весов модели (mmap)
+
+**Симптом.** Модель 27B (16.4 GB) на машине с RAM 20 GB, `n_ctx=131072`, `kvCacheType=q4_0`,
+в WebUI включён `useMmap` — загрузка отклоняется:
+
+```
+422 n_ctx_infeasible: requested n_ctx=131072 exceeds the physically feasible max 82824
+(max_vram_n_ctx=0, max_ram_n_ctx=82824, gguf_max_context=262144)
+```
+
+**Правило (R396, 2026-11-04).** Проверка памяти считает РЕЗИДЕНТНЫМИ в RAM:
+
+- KV-кэш и буферы — всегда (их нельзя вытеснить);
+- веса модели — только без mmap.
+
+С `use_mmap` файл модели — это page cache: страницы грязными не становятся и
+вытесняются под давлением, поэтому требовать их постоянного присутствия в RAM
+нельзя. Обязательными остаются KV и буферы, а также системный резерв (`RAM − 4 GiB`).
+
+**Цена честная.** Если RAM не держит рабочий набор страниц весов, часть весов будет
+перечитываться с диска на каждом токене — ответ станет медленнее. Это осознанный
+выбор оператора: он делает его, включая mmap.
+
+**Как проверить, что режим учтён** (ручка справочная, ничего не грузит):
+
+```bash
+curl -s 'http://<host>:18092/api/models/effective?model=Qwen3.8-27B-UD-Q4_K_M&ctx=131072&kvCacheType=q4_0' \
+  -H 'Authorization: Bearer <token>' | jq '.effective, .memory | .stage?, .feasible?, .max_ram_n_ctx?, .memory_breakdown.mmap_weights?'
+```
+
+В ответе `effective.use_mmap` — применённый режим (`request` / `profile` / `default`
+/ `loaded`), а в `memory.memory_breakdown` есть `mmap_weights: true` и строке
+`memory breakdown` — пояснение `weights via mmap (file-backed, RAM counts KV only)`.
+
+Если `useMmap` в профиле/настройках модели действительно включён, а отказ остался —
+значит, в RAM не помещаются уже KV и буферы: уменьшайте `n_ctx`, включите
+`kvCacheType=q4_0` (экономит KV примерно в 2.6 раза против f16) или добавьте RAM.
+
 ---
 
 ## 4. Бэкенд помечается как unhealthy

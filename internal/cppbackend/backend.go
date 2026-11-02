@@ -1975,11 +1975,44 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 			applyKVPlanToSpec(&spec, meta)
 		}
 	}
+	// R396 (2026-11-04): режим mmap решается ДО memfit.
+	//
+	// 2026-06-26 BUGFIX (сохранено): для больших моделей (model_size > 70% свободной
+	// VRAM) принудительно включаем useMmap=true. Без mmap веса форсируются в VRAM,
+	// что приводит к OOM на partial offload.
+	//
+	// ПОЧЕМУ РЕШЕНИЕ ПЕРЕЕХАЛО ВЫШЕ. memfit обязан считать раскладку в том режиме,
+	// в котором загрузка реально пойдёт: с mmap веса не обязаны быть резидентными в
+	// RAM. Раньше эвристика срабатывала ПОСЛЕ вердикта, поэтому большая модель
+	// отвергалась по RAM («does_not_fit») ещё до того, как mmap включался, — хотя
+	// именно mmap и делает такую загрузку возможной.
+	totalVRAMMB := uint64(0)
+	b.mu.RLock()
+	for _, dev := range b.gpuDevices {
+		totalVRAMMB += uint64(dev.VRAMFreeMB)
+	}
+	b.mu.RUnlock()
+	// S1 (2026-10-13): эвристика «модель больше 70% доступной VRAM → mmap» тоже
+	// обязана видеть удалённые узлы: иначе для модели, которая влезает только в
+	// паре «локальная карта + узел», mmap включался/выключался по локальной карте.
+	if _, remoteFree, n := b.remoteVRAMBytes(); n > 0 {
+		totalVRAMMB += remoteFree / (1024 * 1024)
+	}
+	modelSizeMB := fi.Size() / (1024 * 1024)
+	if totalVRAMMB > 0 && uint64(modelSizeMB)*100 > totalVRAMMB*70 && !opts.UseMmap {
+		logger.Get().Infow("forcing useMmap=true for large model",
+			"model", name,
+			"modelSizeMB", modelSizeMB,
+			"vramFreeMB", totalVRAMMB,
+			"reason", "model > 70% of available VRAM")
+		opts.UseMmap = true
+	}
+
 	verdict := memfit.Evaluate(spec, memfit.Request{
 		Ctx:       opts.ContextSize,
 		KVType:    MemfitKVType(effectiveKV),
 		GPULayers: opts.GPULayers, // <= 0 = авто: максимум, что влезает
-	}, b.MemfitBudgetFor(name), MemfitPolicy())
+	}, b.MemfitBudgetFor(name), MemfitPolicyForMmap(opts.UseMmap))
 
 	if logger.Get() != nil {
 		logger.Get().Debugw(i18n.T("cppbackend.backend.memory_verdict"),
@@ -2005,31 +2038,6 @@ func (b *Backend) checkVRAMForModel(name string, path string, opts LoadModelOpts
 			"model", name, "parallel_slots", slots,
 			"total_n_ctx", total, "context_per_slot", per,
 			"hint", i18n.T("cppbackend.backend.parallel_slots_window_hint"))
-	}
-
-	// 2026-06-26 BUGFIX (сохранено): для больших моделей (model_size > 70% свободной
-	// VRAM) принудительно включаем useMmap=true. Без mmap веса форсируются в VRAM,
-	// что приводит к OOM на partial offload.
-	totalVRAMMB := uint64(0)
-	b.mu.RLock()
-	for _, dev := range b.gpuDevices {
-		totalVRAMMB += uint64(dev.VRAMFreeMB)
-	}
-	b.mu.RUnlock()
-	// S1 (2026-10-13): эвристика «модель больше 70% доступной VRAM → mmap» тоже
-	// обязана видеть удалённые узлы: иначе для модели, которая влезает только в
-	// паре «локальная карта + узел», mmap включался/выключался по локальной карте.
-	if _, remoteFree, n := b.remoteVRAMBytes(); n > 0 {
-		totalVRAMMB += remoteFree / (1024 * 1024)
-	}
-	modelSizeMB := fi.Size() / (1024 * 1024)
-	if totalVRAMMB > 0 && uint64(modelSizeMB)*100 > totalVRAMMB*70 && !opts.UseMmap {
-		logger.Get().Infow("forcing useMmap=true for large model",
-			"model", name,
-			"modelSizeMB", modelSizeMB,
-			"vramFreeMB", totalVRAMMB,
-			"reason", "model > 70% of available VRAM")
-		opts.UseMmap = true
 	}
 
 	// R83 §3.2/§3.4 (2026-09-26): числа KV-кэша (слои с KV и head_dim KV) —
@@ -2240,7 +2248,13 @@ func (b *Backend) calculateResourceLimits(name string, budget memfit.Budget) Res
 		budgetForCeilings.VRAMFree += restored
 	}
 
-	exact, hard := memfit.Ceilings(spec, kvType, budgetForCeilings, MemfitPolicy())
+	// R396 (2026-11-04): потолки считаются в ТОМ ЖЕ режиме mmap, в котором модель
+	// загружена (или загрузится). Иначе справочные числа обещают недостижимое:
+	// живой случай A10 — 27B Q4_K_M при RAM 20 GB показывал max_ram_n_ctx=82824
+	// и 422 на n_ctx=131072, хотя с mmap веса читаются с диска и в RAM обязаны
+	// поместиться только KV и буферы.
+	ceilPolicy := MemfitPolicyForMmap(b.EffectiveUseMmapForMemfit(name))
+	exact, hard := memfit.Ceilings(spec, kvType, budgetForCeilings, ceilPolicy)
 	limits.MaxVRAMNCtx = exact
 	limits.MaxRAMNCtx = hard
 	limits.ModelMaxContext = spec.TrainCtx
@@ -2255,6 +2269,7 @@ func (b *Backend) calculateResourceLimits(name string, budget memfit.Budget) Res
 			"vram_free_mb", budget.VRAMFree.MiB(),
 			"ram_avail_mb", budget.RAMAvail.MiB(),
 			"ram_source", budget.Source,
+			"use_mmap", ceilPolicy.WeightsMmap,
 			"max_exact_fit_n_ctx", exact,
 			"max_hard_n_ctx", hard,
 			"gguf_max_context", spec.TrainCtx)

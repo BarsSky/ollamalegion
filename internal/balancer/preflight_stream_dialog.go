@@ -523,14 +523,24 @@ func selfProxyPostWithMarker(ctx context.Context, incoming *http.Request, reques
 // сессия, кошелёк admission-очереди делился, монитор показывал loopback, а
 // X-Session-ID/X-Client-ID клиента терялись (регресс R252/R118.9). Cookie нужен
 // для клиентов, которые идентифицируют сессию печенькой.
-var selfProxyForwardHeaders = []string{
-	"X-API-Token", "Authorization",
-	"X-Client-ID", "X-Session-ID", "X-Tab-ID", "X-Request-ID",
-	"X-User-Id", "X-OpenWebUI-User-Id",
-	"Cookie",
-	"X-Forwarded-For", "X-Real-IP",
-	"User-Agent", "Accept",
-}
+// R378 (2026-11-01): заголовки идентичности больше не перечислены здесь
+// вручную — они берутся из session_resolver_r378.go (identity*R378). Раньше
+// список проброса и списки ключей сессии/очереди жили отдельно, и новая голова
+// идентичности доезжала до внутреннего запроса только если её не забыли ни в
+// одном из трёх мест.
+var selfProxyForwardHeaders = mergeUniqueR378(
+	[]string{
+		"X-API-Token", "Authorization",
+		"X-Client-ID", "X-Session-ID", "X-Tab-ID", "X-Request-ID",
+		"Cookie",
+		"X-Forwarded-For", "X-Real-IP",
+		"User-Agent", "Accept",
+	},
+	identityUserHeadersR378,
+	identitySessionHeadersR378,
+	identityChatHeadersR378,
+	identityRequestIDHeadersR378,
+)
 
 // selfProxyPostRequest — общий self-proxy: проброс заголовков + опциональный
 // служебный маркер ("" = без маркера).

@@ -141,12 +141,16 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	// Pre-R55.8: sessions создавались только в proxyRequest.go для /api/generate + /api/chat.
 	// OpenAI пути шли через proxyRequestOpenAIStreamAsNonStream/proxyRequestLlamaCpp
 	// и НЕ создавали sessions -> WebUI показывал "0 сессий" под нагрузкой.
+	// R378 (2026-11-01): оба ключа (сессия для привязки и ключ admission-очереди)
+	// считает ОДНА функция — resolveInferenceKeysR378. Пока они считались
+	// раздельно, источники идентичности жили в двух файлах и могли разойтись.
+	var inferenceKeys inferenceKeysR378
 	{
 		clientName := lr.proxy.getClientName(r)
-		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
-		if sessionID != "" {
-			lr.proxy.sessionMgr.SetWithProtocol(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
-			w.Header().Set("X-Session-ID", sessionID)
+		inferenceKeys = lr.proxy.resolveInferenceKeysR378(r, clientName, model, bodyBuf)
+		if inferenceKeys.SessionID != "" {
+			lr.proxy.sessionMgr.SetWithProtocol(inferenceKeys.SessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
+			w.Header().Set("X-Session-ID", inferenceKeys.SessionID)
 		}
 		w.Header().Set("X-Backend-ID", backendID)
 	}
@@ -187,7 +191,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 		if resolved.Value > 0 {
 			loadOpts.NumCtx = resolved.Value
 		}
-		if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
+		if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: inferenceKeys.QueueKey}); loadErr != nil {
 			logger.Get().Errorw("handleOpenAIChatCompletions: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
 			// R60.16: include Retry-After so clients (Cline/Roo/openai-python)
@@ -379,7 +383,7 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 			if retryErr == nil {
 				retryReq.Header.Set("Content-Type", "application/json")
 				retryReq.Header.Set("Accept", "application/json, text/event-stream")
-	stampUpstreamRequestIDFromRequestR376(retryReq, r)
+				stampUpstreamRequestIDFromRequestR376(retryReq, r)
 				if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
 					retryReq.Header.Set("X-Forwarded-For", existingXFF)
 				} else {
@@ -486,12 +490,16 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	// Pre-R55.8: sessions создавались только в proxyRequest.go для /api/generate + /api/chat.
 	// OpenAI пути шли через proxyRequestOpenAIStreamAsNonStream/proxyRequestLlamaCpp
 	// и НЕ создавали sessions -> WebUI показывал "0 сессий" под нагрузкой.
+	// R378 (2026-11-01): оба ключа (сессия для привязки и ключ admission-очереди)
+	// считает ОДНА функция — resolveInferenceKeysR378. Пока они считались
+	// раздельно, источники идентичности жили в двух файлах и могли разойтись.
+	var inferenceKeys inferenceKeysR378
 	{
 		clientName := lr.proxy.getClientName(r)
-		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
-		if sessionID != "" {
-			lr.proxy.sessionMgr.SetWithProtocol(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
-			w.Header().Set("X-Session-ID", sessionID)
+		inferenceKeys = lr.proxy.resolveInferenceKeysR378(r, clientName, model, bodyBuf)
+		if inferenceKeys.SessionID != "" {
+			lr.proxy.sessionMgr.SetWithProtocol(inferenceKeys.SessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
+			w.Header().Set("X-Session-ID", inferenceKeys.SessionID)
 		}
 		w.Header().Set("X-Backend-ID", backendID)
 	}
@@ -532,7 +540,7 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 		if resolved.Value > 0 {
 			loadOpts.NumCtx = resolved.Value
 		}
-		if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
+		if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: inferenceKeys.QueueKey}); loadErr != nil {
 			logger.Get().Errorw("handleOpenAICompletion: auto-load failed",
 				"backend", backendID, "model", model, "error", loadErr)
 			// R60.16: include Retry-After so clients back off (see chat completions).
@@ -616,7 +624,7 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 			if retryErr == nil {
 				retryReq.Header.Set("Content-Type", "application/json")
 				retryReq.Header.Set("Accept", "application/json, text/event-stream")
-	stampUpstreamRequestIDFromRequestR376(retryReq, r)
+				stampUpstreamRequestIDFromRequestR376(retryReq, r)
 				if existingXFF := r.Header.Get("X-Forwarded-For"); existingXFF != "" {
 					retryReq.Header.Set("X-Forwarded-For", existingXFF)
 				} else {
@@ -876,12 +884,16 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 
 	// R55.8 (2026-08-25): bind session для Ollama native /api/chat клиентов.
+	// R378 (2026-11-01): оба ключа (сессия для привязки и ключ admission-очереди)
+	// считает ОДНА функция — resolveInferenceKeysR378. Пока они считались
+	// раздельно, источники идентичности жили в двух файлах и могли разойтись.
+	var inferenceKeys inferenceKeysR378
 	{
 		clientName := lr.proxy.getClientName(r)
-		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
-		if sessionID != "" {
-			lr.proxy.sessionMgr.SetWithProtocol(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
-			w.Header().Set("X-Session-ID", sessionID)
+		inferenceKeys = lr.proxy.resolveInferenceKeysR378(r, clientName, model, bodyBuf)
+		if inferenceKeys.SessionID != "" {
+			lr.proxy.sessionMgr.SetWithProtocol(inferenceKeys.SessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
+			w.Header().Set("X-Session-ID", inferenceKeys.SessionID)
 		}
 		w.Header().Set("X-Backend-ID", backendID)
 	}
@@ -904,7 +916,7 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	if resolvedLoad.Value > 0 {
 		loadOpts.NumCtx = resolvedLoad.Value
 	}
-	if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
+	if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: inferenceKeys.QueueKey}); loadErr != nil {
 		// R60.41: downgraded to Info — это не "error" в обычном смысле, это
 		// просто "load стартовал async, клиенту надо подождать". Реальная
 		// ошибка была бы только если load полностью провалился (sync path,
@@ -1061,12 +1073,16 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 
 	// R55.8 (2026-08-25): bind session для Ollama native /api/generate клиентов.
+	// R378 (2026-11-01): оба ключа (сессия для привязки и ключ admission-очереди)
+	// считает ОДНА функция — resolveInferenceKeysR378. Пока они считались
+	// раздельно, источники идентичности жили в двух файлах и могли разойтись.
+	var inferenceKeys inferenceKeysR378
 	{
 		clientName := lr.proxy.getClientName(r)
-		sessionID := lr.proxy.getSessionIDWithModel(r, clientName, model)
-		if sessionID != "" {
-			lr.proxy.sessionMgr.SetWithProtocol(sessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
-			w.Header().Set("X-Session-ID", sessionID)
+		inferenceKeys = lr.proxy.resolveInferenceKeysR378(r, clientName, model, bodyBuf)
+		if inferenceKeys.SessionID != "" {
+			lr.proxy.sessionMgr.SetWithProtocol(inferenceKeys.SessionID, backendID, model, clientName, lr.proxy.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
+			w.Header().Set("X-Session-ID", inferenceKeys.SessionID)
 		}
 		w.Header().Set("X-Backend-ID", backendID)
 	}
@@ -1089,7 +1105,7 @@ func (lr *LlamaCppRouter) handleGenerate(w http.ResponseWriter, r *http.Request)
 	if resolvedLoad.Value > 0 {
 		loadOpts.NumCtx = resolvedLoad.Value
 	}
-	if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: RequestSessionKey(r, bodyBuf)}); loadErr != nil {
+	if newBackend, loadErr := lr.ensureModelLoadedWithFailover(backendID, model, warmupOptions{NumCtx: loadOpts.NumCtx, GPULayers: loadOpts.GPULayers, Ctx: r.Context(), SessionKey: inferenceKeys.QueueKey}); loadErr != nil {
 		logger.Get().Errorw("handleGenerate: auto-load failed",
 			"backend", backendID, "model", model, "error", loadErr)
 		// R60.16: include Retry-After so clients back off (see chat completions).

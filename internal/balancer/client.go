@@ -3,8 +3,6 @@ package balancer
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -13,94 +11,14 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// requestUserIdentity — R67b (2026-09-23): идентификатор пользователя из
-// заголовков. OpenWebUI (и любой прокси перед ним) может передавать
-// X-User-Id / X-OpenWebUI-User-Id / X-User-Email; балансер обязан их учитывать,
-// иначе все пользователи OpenWebUI (один IP, один Authorization-токен)
-// сливаются в одну сессию. См. r67b_session_identity_test.go.
-func requestUserIdentity(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	for _, h := range []string{"X-User-Id", "X-OpenWebUI-User-Id", "X-User-Email"} {
-		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-// firstStringField — первое непустое строковое поле из набора ключей.
-func firstStringField(obj map[string]interface{}, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := obj[k].(string); ok && strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
-}
-
-// requestBodyIdentity — R67b: user/chat идентификаторы из тела запроса.
-//
-// Источники (по убыванию приоритета):
-//   - top-level: user / user_id, chat_id / conversation_id / session_id;
-//   - nested metadata: metadata.user_id, metadata.chat_id, metadata.session_id —
-//     именно так OpenWebUI (OpenAI-совместимый режим) помечает запрос.
-//
-// Тело читается один раз (до 1 MiB) и ВОССТАНАВЛИВАЕТСЯ через io.NopCloser,
-// так что вызывающий код может читать его снова.
-func requestBodyIdentity(r *http.Request) (user, chat string) {
-	if r == nil || r.Body == nil || r.Method != http.MethodPost {
-		return "", ""
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return "", ""
-	}
-	r.Body = io.NopCloser(strings.NewReader(string(body)))
-	if len(body) == 0 || len(body) > 1<<20 {
-		return "", ""
-	}
-	var req map[string]interface{}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return "", ""
-	}
-	user = firstStringField(req, "user", "user_id", "userId", "user_email")
-	chat = firstStringField(req, "chat_id", "chatId", "conversation_id", "conversationId", "session_id")
-	if md, ok := req["metadata"].(map[string]interface{}); ok {
-		if user == "" {
-			user = firstStringField(md, "user_id", "userId", "user", "user_email")
-		}
-		if chat == "" {
-			chat = firstStringField(md, "chat_id", "chatId", "conversation_id", "conversationId", "session_id")
-		}
-	}
-	return user, chat
-}
-
-// extractChatIDFromBody — пытается извлечь идентификатор чата из запроса.
-// Используется в первую очередь для OpenWebUI, который может передавать
-// chat_id в заголовке (X-Chat-Id / X-Conversation-Id) или в теле запроса
-// (chat_id / conversation_id / session_id, в т.ч. внутри metadata).
-// Это позволяет балансеру различать разные чаты одного пользователя, которые
-// иначе имели бы одинаковый sessionID.
-//
-// Функция читает тело через io.ReadAll и ВОССТАНАВЛИВАЕТ r.Body
-// через io.NopCloser — вызывающий код может перечитать тело без проблем.
-// Возвращает "", если ничего не нашли.
-func extractChatIDFromBody(r *http.Request) string {
-	if r == nil || r.Body == nil || r.Method != http.MethodPost {
-		return ""
-	}
-	// Сначала пробуем заголовки (быстрее, без чтения тела).
-	for _, h := range []string{"X-Chat-Id", "X-Chat-ID", "X-Conversation-Id", "X-Conversation-ID"} {
-		if v := r.Header.Get(h); v != "" {
-			return v
-		}
-	}
-	_, chat := requestBodyIdentity(r)
-	return chat
-}
+// Идентичность клиента (R67b): requestUserIdentity, firstStringField,
+// requestBodyIdentity и extractChatIDFromBody переехали в
+// session_resolver_r378.go (R378, P2-3). Причина: источники идентичности
+// (заголовки пользователя/сессии/чата, поля тела, metadata) жили в двух
+// файлах — client.go и autoload_wait.go — и расходились: ключ очереди не
+// видел X-Conversation-Id, ключ маршрутизации не видел metadata.session_id.
+// Теперь список источников один, а getClientFingerprint ниже остаётся здесь:
+// это различитель КЛИЕНТА (IP+UA, токен), а не ключ сессии или очереди.
 
 // defaultTrustedProxies — стандартные доверенные сети: loopback, Docker bridge, RFC1918
 var defaultTrustedProxies = []string{

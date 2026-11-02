@@ -61,4 +61,14 @@ var updateConfigKnownKeysR374 = map[string]bool{
 	// эти два ключа при смене роли донора — обработчик их применяет, но карта
 	// про них не знала и печатала «unknown field» ровно о применённом.
 	"rpcServerEnabled": true, "rpcServerPort": true,
+	// R381 (2026-11-01): ключи РАСКЛАДКИ-ПОТРЕБИТЕЛЯ (мастер). Тот же класс
+	// дефекта, что закрывал R374, но другая половина: балансер шлёт
+	// `rpcEnabled`/`rpcServers`, обработчик их применяет (ветка «Раскладка слоёв
+	// между машинами» ниже — getStringSlice/updates), а карта снова не знала.
+	// Живой след: после пересоздания мастера в логе
+	//   {"msg":"RPC-режим изменён через API","applied":["rpcServers","rpcEnabled"]}
+	//   {"msg":"handleCppWorkerUpdateConfig: unknown field","field":"rpcEnabled"}
+	//   {"msg":"handleCppWorkerUpdateConfig: unknown field","field":"rpcServers"}
+	// Стюард расширен: теперь он собирает ключи и из этих форм чтения.
+	"rpcEnabled": true, "rpcServers": true,
 }

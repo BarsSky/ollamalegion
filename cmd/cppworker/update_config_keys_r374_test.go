@@ -23,8 +23,13 @@ import (
 	"testing"
 )
 
-// appliedConfigKeysR374 — собрать ключи из вызовов apply*("<строка>", ...) в
-// файле обработчика.
+// appliedConfigKeysR374 — собрать ключи, которые обработчик ЧИТАЕТ и ПРИМЕНЯЕТ.
+//
+// R381 (2026-11-01): раньше сканер видел только `apply*("key", …)`, и ключи,
+// которые читаются иначе — getStringSlice("rpcServers"), updates["rpcEnabled"] —
+// оставались вне проверки. Именно в этой дыре жил дефект: обе настройки
+// раскладки применялись и одновременно логировались как «unknown field».
+// Теперь собираем все три формы.
 func appliedConfigKeysR374(t *testing.T) map[string]bool {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -33,24 +38,32 @@ func appliedConfigKeysR374(t *testing.T) map[string]bool {
 		t.Fatalf("разбор handlers_config.go: %v", err)
 	}
 	out := map[string]bool{}
-	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok || len(call.Args) == 0 {
-			return true
-		}
-		ident, ok := call.Fun.(*ast.Ident)
-		if !ok || !strings.HasPrefix(ident.Name, "apply") {
-			return true
-		}
-		lit, ok := call.Args[0].(*ast.BasicLit)
+	addLiteral := func(expr ast.Expr) {
+		lit, ok := expr.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
-			return true
+			return
 		}
-		key, err := strconv.Unquote(lit.Value)
-		if err != nil {
-			return true
+		if key, err := strconv.Unquote(lit.Value); err == nil && key != "" {
+			out[key] = true
 		}
-		out[key] = true
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.CallExpr:
+			ident, ok := node.Fun.(*ast.Ident)
+			if !ok || len(node.Args) == 0 {
+				return true
+			}
+			// apply*("key", …) — применение; get*("key") — чтение из тела запроса.
+			if strings.HasPrefix(ident.Name, "apply") || strings.HasPrefix(ident.Name, "get") {
+				addLiteral(node.Args[0])
+			}
+		case *ast.IndexExpr:
+			// updates["key"] — прямое чтение из карты обновления.
+			if id, ok := node.X.(*ast.Ident); ok && id.Name == "updates" {
+				addLiteral(node.Index)
+			}
+		}
 		return true
 	})
 	return out

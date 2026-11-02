@@ -429,12 +429,30 @@ func (b *Backend) rpcDeviceSnapshot() []bridge.DeviceInfo {
 		return snapshot
 	}
 
-	snapshot := bridge.CollectDevices(bridge.ModelConfig{
+	// R382 (2026-11-01): ПРЕДОХРАНИТЕЛЬ ОТ ЦИКЛА ПАДЕНИЙ.
+	//
+	// Проверка reachability выше ловит только МЁРТВЫЙ узел. Живой случай
+	// стенда: узел принимает TCP, но его единственный слот занят чужим
+	// соединением — handshake не проходит, и llama.cpp внутри
+	// ggml_backend_rpc_add_server падает SIGSEGV'ом (стек: bridge_collect_devices
+	// → ggml_backend_rpc_add_server). Go этого не перехватывает: умирает процесс,
+	// контейнер перезапускается, следующая попытка снова падает — цикл.
+	//
+	// Маркер ставится ПЕРЕД вызовом и снимается после успешного возврата. Маркер
+	// на месте = прошлая попытка не вернулась → RPC-перечисление пропускаем на
+	// время остывания и планируем только по локальной карте.
+	// R382: сам вызов идёт под предохранителем (см. rpc_enum_guard_r382.go).
+	snapshot, skipped := collectDevicesWithGuardR382(bridge.ModelConfig{
 		SplitMode:  b.cfg.DefaultSplitMode,
 		RPCServers: servers,
-	})
+	}, servers)
 	b.rpcDevices = snapshot
 	b.rpcDevAt = time.Now()
+	if skipped {
+		// Предохранитель после падения: RPC-устройств в снимке нет, планировщик
+		// считает только локальную карту. В лог причина уже ушла (R382).
+		return snapshot
+	}
 	// R174: запоминаем УСПЕШНЫЙ замер с узлами — им планируем во время работы.
 	if len(snapshot) > 0 {
 		b.rpcDevGood = snapshot

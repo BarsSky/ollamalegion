@@ -20,8 +20,8 @@
 package cppbackend
 
 import (
-	"time"
 	"strings"
+	"time"
 
 	"ollama-loadbalancer/c/bridge"
 )
@@ -103,7 +103,13 @@ func (b *Backend) waitRPCNodeReadyForLoad(servers []string, attempts int, delay 
 	}
 	nodeCfg := bridge.ModelConfig{SplitMode: b.cfg.DefaultSplitMode, RPCServers: servers}
 	for i := 1; i <= attempts; i++ {
-		snapshot := bridge.CollectDevices(nodeCfg)
+		// R382: гейт — тот же рискованный вызов моста (hello-handshake к узлу).
+		// Если предыдущая попытка не вернулась (маркер предохранителя на месте),
+		// не повторяем: считаем узел неготовым и грузим локально.
+		snapshot, skipped := collectDevicesWithGuardR382(nodeCfg, servers)
+		if skipped {
+			return false, i
+		}
 		if len(remoteDevices(snapshot)) > 0 {
 			return true, i
 		}

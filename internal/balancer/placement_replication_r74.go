@@ -55,39 +55,16 @@ func (p *Proxy) setupReplicationManager() {
 	})
 
 	p.modelReplication.SetFreeBackendFn(func(modelName string, targets []string) []string {
-		p.mu.RLock()
-		defer p.mu.RUnlock()
-		var free []string
-		for id, state := range p.backends {
-			if state.Backend.Status != types.StatusHealthy {
-				continue
-			}
-			// R304: репликация грузит КОПИЮ модели на свободный узел, то есть
-			// ровно то, что донору запрещено. Свободный по запросам донор —
-			// не свободный по памяти: его VRAM держит мастер.
-			if p.cannotHostModelR304(id) {
-				continue
-			}
-			if len(targets) > 0 {
-				found := false
-				for _, t := range targets {
-					if id == t {
-						found = true
-						break
-					}
-				}
-				if !found {
-					continue
-				}
-			}
-			state.mu.Lock()
-			active := state.ActiveReqs
-			state.mu.Unlock()
-			if active == 0 {
-				free = append(free, id)
-			}
-		}
-		return free
+		// R379 (2026-11-01, P2-2): «свободный» = тот, где модель ПОМЕЩАЕТСЯ,
+		// а не тот, у кого ActiveReqs == 0.
+		//
+		// Живой класс ошибок прежнего правила: бэкенд, обслуживающий один
+		// маленький запрос другой модели, считался «занятым» навсегда, хотя VRAM
+		// свободна; а бэкенд с нулём запросов, но чужой моделью на всю карту
+		// считался «свободным» — репликация шла туда и падала по памяти.
+		// Теперь решает placementFitForModel (тот же VRAM-фит, что у placement
+		// политики): копия уже загружена ИЛИ свободного VRAM хватает.
+		return p.freeBackendsForReplicationR379(modelName, targets)
 	})
 
 	p.modelReplication.SetWarmupFn(func(backendID, modelName string) error {

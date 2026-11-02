@@ -391,6 +391,20 @@ func (mgr *ModelGroupManager) ensureGroupInstances(g *ModelGroup) {
 		mgr.scaleUpGroup(g, cfg.MinInstances-loaded-inFlight)
 	}
 
+	// R379 (2026-11-01, P2-2): масштабирование по ЗАНЯТОСТИ. Раньше между
+	// minInstances и maxInstances контроллер не реагировал ни на что: группа
+	// стояла насыщенной, а разрешённый max не использовался. Условие
+	// loaded+inFlight < MaxInstances не даёт запросить вторую копию на тот же
+	// дефицит; при max == min (дефолт) блок не выполняется вовсе.
+	if loaded+inFlight >= cfg.MinInstances && loaded+inFlight < cfg.MaxInstances {
+		if mgr.groupSaturatedR379(g) {
+			logger.Get().Infow("group saturated: scaling up by load (R379)",
+				"model", cfg.ModelName,
+				"loaded", loaded, "in_flight", inFlight, "max", cfg.MaxInstances)
+			mgr.scaleUpGroup(g, 1)
+		}
+	}
+
 	// Если loaded > maxInstances → выгружаем LRU
 	if loaded > cfg.MaxInstances {
 		mgr.scaleDownGroup(g, loaded-cfg.MaxInstances)

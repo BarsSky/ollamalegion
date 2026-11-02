@@ -1656,16 +1656,23 @@ func patchNumCtxInBody(body []byte, newNCtx int) []byte {
 // меньше слоёв на GPU). Когда физический предел неизвестен (0) — не выдумываем
 // число, текст остаётся прежним.
 func formatNCtxCeilingRefusal(requested, operatorMax, physicalMax int, modelName string) string {
+	// R402 (2026-11-05): текст обязан объяснять ЕДИНИЦЫ и не отправлять
+	// оператора «загрузить модель явно вручную»: балансер уже пробовал вырасти
+	// сам, отказ означает, что расти некуда. Отдельно называем parallel — слоты
+	// делят окно, и это частая причина «не даёт поднять окно» у одной сессии.
 	if physicalMax > 0 && physicalMax < operatorMax {
 		return fmt.Sprintf("requested num_ctx=%d exceeds the backend's physical limit max_vram_n_ctx=%d "+
 			"(what fits in free VRAM with the models loaded now; operator limit auto_reload_max_n_ctx=%d is higher). "+
-			"Model %q keeps its loaded n_ctx. Free VRAM (unload other models, use a smaller model or fewer GPU layers) "+
-			"or load the model explicitly with the needed contextSize.",
+			"Model %q keeps its loaded window; the balancer cannot grow it automatically. "+
+			"Free VRAM (unload other models, use a smaller model or fewer GPU layers) or lower the model's "+
+			"parallel value: slots divide the window, so parallel=1 gives a single session the whole window.",
 			requested, physicalMax, operatorMax, modelName)
 	}
-	return fmt.Sprintf("requested num_ctx=%d exceeds operator limit auto_reload_max_n_ctx=%d "+
-		"(model %q keeps its loaded n_ctx). Raise LB_NCTX_RELOAD_MAX_N_CTX "+
-		"or load the model explicitly with the needed contextSize.",
+	return fmt.Sprintf("requested num_ctx=%d exceeds the effective window ceiling auto_reload_max_n_ctx=%d "+
+		"(operator limit; the model profile's declared window may cap it too). "+
+		"Model %q keeps its loaded window and the balancer cannot grow it automatically. "+
+		"Raise the declared window in the model profile or LB_NCTX_RELOAD_MAX_N_CTX, or lower the model's "+
+		"parallel value: slots divide the window, so parallel=1 gives a single session the whole window.",
 		requested, operatorMax, modelName)
 }
 

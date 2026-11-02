@@ -3250,7 +3250,11 @@ func writeOllamaShowLoadedResponse(w http.ResponseWriter, info *cppbackend.Model
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"license": "unknown", "modelfile": "",
-		"parameters": paramSize,
+		// R403: parameters — это Modelfile-параметры (как у настоящего Ollama),
+		// а НЕ размер модели. Клиенты (Cline/Roo) читают отсюда num_ctx, чтобы
+		// выбрать окно запроса; "3.3B" в этом поле не давало им ничего, и они
+		// падали на своём дефолте. Размер модели остаётся в details.parameter_size.
+		"parameters": fmt.Sprintf("num_ctx %d", perSlotNCtx),
 		"template":   "", "system": "",
 		"details": map[string]interface{}{
 			"parent_model": "", "format": "gguf", "family": info.Architecture,
@@ -3321,7 +3325,10 @@ func writeOllamaShowMetadataResponse(w http.ResponseWriter, meta *cppbackend.GGU
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"license": "unknown", "modelfile": "",
-		"parameters": paramSize,
+		// R403: Modelfile-параметры вместо размера модели (см. loaded-ветку).
+		// Для незагруженной модели доступен только training context из GGUF —
+		// это максимальное окно, которое может получить одна сессия.
+		"parameters": fmt.Sprintf("num_ctx %d", contextSize),
 		"template":   "", "system": "",
 		"details": map[string]interface{}{
 			"parent_model": "", "format": "gguf", "family": family,

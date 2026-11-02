@@ -101,3 +101,41 @@ func TestR402_ShowLoaded_ZeroContext(t *testing.T) {
 		t.Errorf("context_size_total = %d, want 0", got)
 	}
 }
+
+// TestR403_ShowParametersIsNumCtx — R403: поле parameters — это
+// Modelfile-параметры ("num_ctx N"), а не размер модели ("3.3B").
+//
+// Клиенты (Cline/Roo) читают num_ctx именно отсюда; размер модели обязан
+// оставаться в details.parameter_size.
+func TestR403_ShowParametersIsNumCtx(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeOllamaShowLoadedResponse(rec, &cppbackend.ModelInfo{
+		Name: "gemma-4-E4B-it-Q4_K_M", State: cppbackend.StateLoaded,
+		Architecture: "gemma4", NLayers: 42, NEmbd: 2560,
+		ContextSize: 131072, Parallel: 2, GGUFContextLength: 131072,
+	})
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("ответ не JSON: %v", err)
+	}
+	if got, _ := body["parameters"].(string); got != "num_ctx 65536" {
+		t.Errorf("parameters = %q, want \"num_ctx 65536\" (окно на слот, total 131072 / 2)", got)
+	}
+	details, _ := body["details"].(map[string]interface{})
+	if got, _ := details["parameter_size"].(string); got == "" || got == "num_ctx 65536" {
+		t.Errorf("details.parameter_size = %q, want размер модели (не num_ctx)", got)
+	}
+
+	// Незагруженная модель: доступен только training context из GGUF.
+	rec2 := httptest.NewRecorder()
+	writeOllamaShowMetadataResponse(rec2, &cppbackend.GGUFModelMeta{
+		Architecture: "gemma4", ContextLength: 131072, NLayers: 42, NEmbd: 2560,
+	})
+	var body2 map[string]interface{}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &body2); err != nil {
+		t.Fatalf("metadata-ответ не JSON: %v", err)
+	}
+	if got, _ := body2["parameters"].(string); got != "num_ctx 131072" {
+		t.Errorf("metadata parameters = %q, want \"num_ctx 131072\" (training context)", got)
+	}
+}

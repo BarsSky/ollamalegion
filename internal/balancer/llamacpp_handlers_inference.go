@@ -127,8 +127,14 @@ func (lr *LlamaCppRouter) handleOpenAIChatCompletions(w http.ResponseWriter, r *
 	}
 
 	if backendID == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
-		return
+		// R403: отдельная очередь ожидания СВОБОДНОГО БЭКЕНДА (не слота).
+		// Прежнее поведение — немедленный 503 «no llama.cpp backend available»:
+		// клиент уходил в retry или показывал ошибку, хотя бэкенд мог вернуться
+		// через секунды. Ждём до LB_BACKEND_WAIT_SEC, затем 503 с числами.
+		backendID = lr.waitForLlamaCppBackendR403(r.Context(), w, model, ExtractNumCtxFromBody(bodyBuf))
+		if backendID == "" {
+			return
+		}
 	}
 
 	state, ok := lr.proxy.backends[backendID]
@@ -476,8 +482,14 @@ func (lr *LlamaCppRouter) handleOpenAICompletion(w http.ResponseWriter, r *http.
 	}
 
 	if backendID == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
-		return
+		// R403: отдельная очередь ожидания СВОБОДНОГО БЭКЕНДА (не слота).
+		// Прежнее поведение — немедленный 503 «no llama.cpp backend available»:
+		// клиент уходил в retry или показывал ошибку, хотя бэкенд мог вернуться
+		// через секунды. Ждём до LB_BACKEND_WAIT_SEC, затем 503 с числами.
+		backendID = lr.waitForLlamaCppBackendR403(r.Context(), w, model, ExtractNumCtxFromBody(bodyBuf))
+		if backendID == "" {
+			return
+		}
 	}
 
 	state, ok := lr.proxy.backends[backendID]
@@ -718,8 +730,14 @@ func (lr *LlamaCppRouter) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.
 	}
 
 	if backendID == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
-		return
+		// R403: отдельная очередь ожидания СВОБОДНОГО БЭКЕНДА (не слота).
+		// Прежнее поведение — немедленный 503 «no llama.cpp backend available»:
+		// клиент уходил в retry или показывал ошибку, хотя бэкенд мог вернуться
+		// через секунды. Ждём до LB_BACKEND_WAIT_SEC, затем 503 с числами.
+		backendID = lr.waitForLlamaCppBackendR403(r.Context(), w, model, ExtractNumCtxFromBody(bodyBuf))
+		if backendID == "" {
+			return
+		}
 	}
 
 	state, ok := lr.proxy.backends[backendID]
@@ -874,10 +892,13 @@ func (lr *LlamaCppRouter) handleChat(w http.ResponseWriter, r *http.Request) {
 	// R81: сначала группа репликации (строгий обход копий), затем — как раньше.
 	backendID := lr.selectLlamaCppBackendForModelWithNCtx(model, ExtractNumCtxFromBody(bodyBuf))
 	if backendID == "" {
-		logger.Get().Errorw("handleChat: no llama.cpp backend available",
-			"model", model)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no llama.cpp backend available"})
-		return
+		// R403: ждём появления свободного бэкенда (см. backend_wait_queue_r403.go).
+		backendID = lr.waitForLlamaCppBackendR403(r.Context(), w, model, ExtractNumCtxFromBody(bodyBuf))
+		if backendID == "" {
+			logger.Get().Errorw("handleChat: no llama.cpp backend available after wait",
+				"model", model)
+			return
+		}
 	}
 	logger.Get().Debugw("handleChat: selected backend",
 		"model", model, "backend", backendID)

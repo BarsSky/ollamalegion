@@ -44,7 +44,7 @@
 | `contextLength` профиля | заявленное окно модели (для загрузки) | оператор | `applyProfileLoadParams`, `declaredWindowTotal` |
 | `contextPerSeq` | окно слота при загрузке | загрузка | `model_management.go`, cppworker `loadWithParams` |
 | `contextSize` (суммарное) | `contextPerSeq × slots` | cppworker | `/api/models`, `/api/show` (поле `context_size_total`) |
-| `parallel` / `num_parallel` | число слотов | профиль / `CPPWORKER_N_PARALLEL` | загрузка, preflight |
+| `parallel` / `num_parallel` | число слотов | профиль / `CPPWORKER_N_PARALLEL` (по умолчанию **1**, R403) | загрузка, preflight |
 | GGUF training context | максимум модели (суммарно) | GGUF-заголовок | потолок |
 | `LB_NCTX_RELOAD_MAX_N_CTX` | защитный потолок АВТО-роста | env | `effectiveAutoReloadCeiling` |
 
@@ -81,9 +81,15 @@
    оценка промпта. Результат — `RequestMeta`.
 2. **Выбор бэкенда** (`internal/balancer/admission_queue.go`, `unified_queue_r73.go`,
    `a`-селекторы): модель/тип/метки/роль донора, свободные слоты, очередь допуска.
-3. **Занятость**: если слотов нет — запрос ждёт в очереди (heartbeat, чтобы клиент не
-   отвалился), либо получает 503 с `X-Queue-*`.
-4. **preflight** (§5) — до проксирования: может отказать (413/503), перезагрузить
+3. **Занятость**: если слотов нет — запрос ждёт в **очереди допуска**
+   (`LB_ADMISSION_WAIT_SEC`, default 300 c; FIFO по сессиям), либо получает 503
+   с `X-Queue-*`.
+4. **Нет ни одного подходящего бэкенда** (все offline/disabled/доноры) — запрос
+   ждёт в **отдельной очереди ожидания бэкенда** (`LB_BACKEND_WAIT_SEC`,
+   default 120 c; FIFO по модели, R403). Это не то же самое, что очередь слота:
+   там бэкенд уже выбран, здесь его ещё нет. После таймаута — 503 `no_backend`
+   с `Retry-After`, `X-Backend-Queue-Position`, `X-Backend-Queue-Wait-Ms`.
+5. **preflight** (§5) — до проксирования: может отказать (413/503), перезагрузить
    модель (202/асинхронно) или пропустить как есть.
 
 **Границы:** балансер не считает токены модели; он принимает решение по окну и
@@ -217,6 +223,7 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | `parallel` | число слотов | добавлено |
 | `model_info.<arch>.context_length` | training context из GGUF | без изменений (физический максимум модели) |
 | `model_info.context_size` | то же, что `context_size` | для совместимости |
+| `parameters` | Modelfile-параметры: `num_ctx <окно>` | R403: раньше здесь лежал размер модели («3.3B»), и клиенты, читающие `num_ctx` из `parameters`, не получали окно вовсе. `details.parameter_size` остаётся размером |
 
 ### 9.3 Трансформации
 
@@ -237,6 +244,7 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | 413 `auto_reload_ceiling_reason` | окно выше `effective_ceiling` | `auto_reload_max_n_ctx`, `limited_by` | `preflight_nctx.go` |
 | 503 `reload_pending` | идёт рост окна | `estimated_prompt_tokens`, `loaded_window_tokens`, `required_tokens`, Retry-After | `nctx_reload_handlers.go` |
 | 503 `no_free_slots` / очередь | нет слотов | `X-Queue-Wait-Ms`, Retry-After | `admission_queue.go` |
+| 503 `no_backend` | нет ни одного подходящего бэкенда (offline/disabled/донор), ожидание истекло | `waited_ms`, `position`, `X-Backend-Queue-*`, Retry-After | `backend_wait_queue_r403.go` |
 | 400/413 `params_mismatch` | клиент просит параметры, несовместимые с загруженной копией (tools/reasoning/vision) | `differences` | `makeParamMismatchReject` |
 
 **Правило R402:** сообщение об отказе роста обязано объяснять **единицы**: окно на
@@ -276,6 +284,7 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | Метаданные модели | `cmd/cppworker/handlers_model.go` | `handleOllamaShow`, `writeOllamaShowLoadedResponse` |
 | Транспорт/трансляции | `internal/balancer/llamacpp_transport.go`, `llamacpp_translate_resp.go`, `anthropic_r247.go` | `stripNativeDoneContent`, `translateUsageChunkToOllama` |
 | Очередь/допуск | `internal/balancer/admission_queue.go`, `unified_queue_r73.go` | admission, `X-Queue-*` |
+| Ожидание бэкенда | `internal/balancer/backend_wait_queue_r403.go` | `waitBackendR403`, `waitForLlamaCppBackendR403` |
 | Статистика токенов | `internal/balancer/stats*.go`, `llamacpp_transport.go` | `recordTokenUsage` |
 
 ---
@@ -288,13 +297,18 @@ client_cap        = min( physical_ceiling, effective_ceiling )
    (a) оставить и доносить до клиента «на слот» (сделано в R402 для `/api/show`);
    (b) перейти к «`num_ctx` = на слот, суммарное не ограничивается training-context»
        (как Ollama) — потребует пересчёта memfit и проверки VRAM.
-2. **`parallel=2` по умолчанию** на стенде (`CPPWORKER_N_PARALLEL=2`) делит окно
-   между слотами. Для одиночных агентских сессий (Cline) выгоднее `parallel=1` в
-   профиле модели. Решение оператора.
-3. **Авто-снижение `parallel`** под запрос одного клиента (если других сессий нет) —
+2. **`parallel` по умолчанию = 1** (R403). Больше оператор ставит сам в панели
+   (профиль модели `parallel`) или в `CPPWORKER_N_PARALLEL`; слоты делят окно.
+3. **Семантика окна по протоколам.** Решено: переключение семантики (per-seq как
+   в Ollama vs total как сейчас) не должно быть глобальным — оно изолируется по
+   протоколу (ollama-путь / openai-путь), чтобы правка одного не меняла решения
+   другого, а новые маршруты выбирали семантику явно. Механизм: отдельный
+   резолвер семантики по `request path`; **реализация — следующий шаг**, до неё
+   оба пути работают на текущей (total) семантике.
+4. **Авто-снижение `parallel`** под запрос одного клиента (если других сессий нет) —
    не реализовано; обсуждается.
-4. **Очередь «нет свободного бэкенда»** как явный режим (сейчас async reload/503) —
-   не реализовано.
+5. **Очередь «нет свободного бэкенда»** — реализована в R403
+   (`backend_wait_queue_r403.go`, `LB_BACKEND_WAIT_SEC`).
 
 ---
 

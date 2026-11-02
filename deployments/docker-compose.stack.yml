@@ -242,6 +242,9 @@ services:
       - LB_SESSION_STICKINESS=${LB_SESSION_STICKINESS:-true}
       - LB_ADMISSION_WAIT_SEC=${LB_ADMISSION_WAIT_SEC:-300}
       - LB_ADMISSION_KEEPALIVE_SEC=${LB_ADMISSION_KEEPALIVE_SEC:-5}
+      # R403: ожидание свободного БЭКЕНДА (отдельная очередь от допуска по
+      # слотам). 0 = прежнее поведение «сразу 503».
+      - LB_BACKEND_WAIT_SEC=${LB_BACKEND_WAIT_SEC:-120}
       # Таймауты: по умолчанию инференс НЕ ограничен по длительности
       # (доктрина «таймаут — рубильник оператора, а не догадка»). Opt-in:
       # LB_REQUEST_TIMEOUT_SEC, LB_ALLOW_*. LB_STREAMING_NEVER_TIMEOUT=1 гасит все.
@@ -767,7 +770,10 @@ services:
       - CPPWORKER_DEFAULT_ENABLE_REASONING=${CPPWORKER_DEFAULT_ENABLE_REASONING:-false}
       - CPPWORKER_ENABLE_REASONING=${CPPWORKER_ENABLE_REASONING:-false}
       - CPPWORKER_ENABLE_BATCHED_PARALLEL=${CPPWORKER_ENABLE_BATCHED_PARALLEL:-false}
-      # Parallel model slots (n_parallel / n_seq_max). 0 = a single slot.
+      # Parallel model slots (n_parallel / n_seq_max). Default 1 (R403): slots
+      # DIVIDE the context window, so parallel=2 halves the window a single
+      # session gets. Operator can raise it in the model profile (`parallel`) or
+      # here deliberately.
       #
       # The in-container code reads exactly CPPWORKER_N_PARALLEL
       # (internal/cppbackend/config.go: LoadConfigFromEnv).
@@ -783,7 +789,7 @@ services:
       #
       # NOTE: AGENT_MAX_CONCURRENT_REQUESTS is NOT needed — cppworker reports its
       # own capacity (effectiveNParallel) to the balancer.
-      - CPPWORKER_N_PARALLEL=${CPPWORKER_N_PARALLEL:-0}
+      - CPPWORKER_N_PARALLEL=${CPPWORKER_N_PARALLEL:-1}
       # R93 (2026-10-09): как часто воркер сам сверяет каталог моделей с диском.
       #
       # Раньше список .gguf читался только на старте контейнера и после

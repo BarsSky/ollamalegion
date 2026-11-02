@@ -1,5 +1,5 @@
 {
-  "version": "R402",
+  "version": "R403",
   "title": "Схема работы: запрос → окно контекста → ответ",
   "subtitle": "Каждый блок — шаг конвейера. Нажмите на блок, чтобы увидеть, что происходит, что уходит клиенту и где это в коде.",
   "docs": {
@@ -83,6 +83,20 @@
       "code": ["internal/balancer/admission_queue.go", "internal/balancer/unified_queue_r73.go"],
       "doc": "§3, §10",
       "errors": ["no_free_slots", "queue_timeout"]
+    },
+    {
+      "id": "backend-queue",
+      "stage": "ingress",
+      "title": "Очередь свободного бэкенда",
+      "detail": [
+        "Все подходящие бэкенды offline/disabled/доноры — запрос НЕ получает 503 сразу (R403).",
+        "Ждёт появления бэкенда до LB_BACKEND_WAIT_SEC (default 120 c), FIFO по модели: быстрый retry одного клиента не перехватывает бэкенд у остальных.",
+        "Это отдельная очередь от допуска: там ждут свободный СЛОТ на уже выбранном бэкенде, здесь бэкенда ещё нет."
+      ],
+      "outputs": ["200 после появления бэкенда", "503 no_backend + Retry-After, X-Backend-Queue-Position/Wait-Ms"],
+      "code": ["internal/balancer/backend_wait_queue_r403.go: waitForLlamaCppBackendR403"],
+      "doc": "§3, §10",
+      "errors": ["no_backend"]
     },
     {
       "id": "w-missing",
@@ -289,6 +303,8 @@
     { "from": "req-openai", "to": "meta", "label": "" },
     { "from": "req-generate", "to": "meta", "label": "" },
     { "from": "meta", "to": "admission", "label": "" },
+    { "from": "admission", "to": "backend-queue", "label": "нет бэкенда" },
+    { "from": "backend-queue", "to": "w-cold", "label": "появился" },
     { "from": "admission", "to": "w-missing", "label": "нет модели" },
     { "from": "admission", "to": "w-cold", "label": "не загружена" },
     { "from": "admission", "to": "w-covers", "label": "окно хватает" },

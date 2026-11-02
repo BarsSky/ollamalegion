@@ -31,6 +31,10 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("LB_AUTO_LOAD_WAIT_SEC", "0")
 	_ = os.Setenv("LB_ADMISSION_WAIT_SEC", "0")
 	_ = os.Setenv("LB_NCTX_PREFLIGHT_WAIT_SEC", "0")
+	// R403: ожидание свободного БЭКЕНДА (отдельная очередь, default 120 c).
+	// В юнит-тестах «нет бэкенда» — это нормальный сценарий, а не временная
+	// недоступность; без этого десятки тестов ждали бы по 2 минуты.
+	_ = os.Setenv("LB_BACKEND_WAIT_SEC", "0")
 
 	// R118.14 (2026-10-14): ПРЕДОХРАНИТЕЛЬ ОТ ЗАВИСАНИЯ ВСЕГО ПАКЕТА.
 	//

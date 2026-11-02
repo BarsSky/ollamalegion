@@ -55,6 +55,7 @@
 | `LB_REQUEST_TIMEOUT_SEC` | 0 = без лимита | общий таймаут не-стримингового запроса |
 | `LB_MAX_REQUEST_BODY_MB` | см. код | предел тела запроса |
 | `LB_AUTO_LOAD_WAIT_SEC` | 900 | сколько клиент ждёт авто-загрузку модели |
+| `LB_BACKEND_WAIT_SEC` | 120 | R403: сколько ждёт свободный **бэкенд** (все offline/disabled/доноры), FIFO по модели; `0` = сразу 503 |
 | `LB_NCTX_PREFLIGHT_WAIT_SEC` | см. код | ожидание preflight перед ростом окна |
 | `LB_AGENT_OUTPUT_RESERVE_TOKENS` | 4096 | резерв вывода при расчёте окна для агентов |
 | `LB_ADMISSION_KEEPALIVE_SEC` | 5 | см. раздел Б |

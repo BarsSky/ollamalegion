@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -173,6 +174,33 @@ func (p *Proxy) GetModelProfile(modelName string) (types.LlamaCppModelProfile, b
 		}
 		if profile, ok := p.config.LlamaCppModelProfiles[legacy]; ok {
 			return profile, true
+		}
+	}
+	// R397 (2026-11-04): ДЕТЕРМИНИРОВАННЫЙ substring-match, как в
+	// GetModelProfileNumCtx/profileForModel.
+	//
+	// ЖИВОЙ СЛУЧАЙ. Профиль оператора называется `Qwen3.8-27B`, а модель —
+	// `Qwen3.8-27B-UD-Q4_K_M`. Точного ключа нет, и здесь возвращалось «профиля
+	// нет»; при этом загрузка (profileForModel) профиль НАХОДИЛА. Итог: загрузка
+	// брала contextLength=32768 из профиля, а потолок авто-роста
+	// (declaredWindowTotal → GetModelProfile) профиля не видел и упирался в
+	// LB_NCTX_RELOAD_MAX_N_CTX=32768 — запрос с num_ctx=131072 отвергался с 413
+	// «operator limit», хотя оператор заявил contextLengthMax=131072.
+	//
+	// Две разные точки «есть ли профиль у модели» — источник расхождений; здесь
+	// та же семантика, что у остальных читателей. Порядок детерминированный
+	// (сортировка ключей), чтобы при нескольких совпадениях выбор не зависел от
+	// порядка map.
+	if len(p.config.LlamaCppModelProfiles) > 0 {
+		keys := make([]string, 0, len(p.config.LlamaCppModelProfiles))
+		for k := range p.config.LlamaCppModelProfiles {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if containsFold(k, key) || containsFold(key, k) {
+				return p.config.LlamaCppModelProfiles[k], true
+			}
 		}
 	}
 	return types.LlamaCppModelProfile{}, false

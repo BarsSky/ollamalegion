@@ -113,3 +113,36 @@ func TestR397_AutoGrowMaxRaisesCeiling(t *testing.T) {
 		t.Fatalf("потолок = %d, want 65536 (env выше заявленного максимума)", got)
 	}
 }
+
+// TestR397_ProfileLookupFindsSubstringKey — третья причина живого отказа:
+// профиль оператора называется `Qwen3.8-27B`, а модель — `Qwen3.8-27B-UD-Q4_K_M`.
+//
+// GetModelProfile искал только точный/legacy-ключ и возвращал «профиля нет»,
+// поэтому declaredWindowTotal не видел contextLengthMax и потолок авто-роста
+// оставался env-значением (32768). Загрузка при этом профиль находила
+// (profileForModel — по substring), то есть два читателя одного профиля
+// отвечали по-разному.
+func TestR397_ProfileLookupFindsSubstringKey(t *testing.T) {
+	p := &Proxy{config: &types.LoadBalancerConfig{
+		LlamaCppModelProfiles: map[string]types.LlamaCppModelProfile{
+			"Qwen3.8-27B": {
+				ContextLength:     32768,
+				ContextLengthAuto: true,
+				ContextLengthMax:  131072,
+			},
+		},
+	}}
+
+	if _, ok := p.GetModelProfile("Qwen3.8-27B-UD-Q4_K_M"); !ok {
+		t.Fatal("профиль Qwen3.8-27B не найден для модели Qwen3.8-27B-UD-Q4_K_M: " +
+			"потолок авто-роста и primary/disabled читают именно GetModelProfile")
+	}
+	if got := p.effectiveAutoReloadCeiling("Qwen3.8-27B-UD-Q4_K_M", 32768); got != 131072 {
+		t.Fatalf("потолок = %d, want 131072 (contextLengthMax профиля, найденного по substring)", got)
+	}
+	// Точный ключ по-прежнему в приоритете: два профиля, один точный.
+	p.config.LlamaCppModelProfiles["Qwen3.8-27B-UD-Q4_K_M"] = types.LlamaCppModelProfile{ContextLength: 65536}
+	if prof, ok := p.GetModelProfile("Qwen3.8-27B-UD-Q4_K_M"); !ok || prof.ContextLength != 65536 {
+		t.Fatalf("точный ключ должен выигрывать у substring: %+v (ok=%v)", prof, ok)
+	}
+}

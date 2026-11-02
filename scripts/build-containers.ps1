@@ -256,6 +256,14 @@ try {
             $CudaArch = "all"
         }
 
+        # R394.3 (2026-11-04): список арок для nvcc только через ';'.
+        # Живая сборка: -CudaArch "75,86,120" проходил предполётную проверку
+        # (она понимает оба разделителя), а CMake получал
+        #   -DCMAKE_CUDA_ARCHITECTURES="75,86,120" -> nvcc fatal: '86' is not
+        #   in 'keyword=value' format — сборка падала через 4 секунды после старта.
+        # Нормализуем ДО build-arg, чтобы запятая не доходила до nvcc.
+        $CudaArch = (($CudaArch -split '[,;]+') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) -join ';'
+
         # R135: падать сразу и с объяснением, а не через nvcc посреди сборки.
         Assert-CudaArchBuildable -ArchList $CudaArch -ToolkitVersion $CudaVersion
 

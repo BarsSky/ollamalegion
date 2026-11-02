@@ -109,6 +109,10 @@ func (p *Proxy) findLiveLoadedCopyR303(model string, needPerSeq int, exclude map
 		if exclude != nil && exclude[e.backendID] {
 			return "", 0, false
 		}
+		// R403.2: узел могли выключить уже после того, как кэш записан.
+		if p.backendDisabled(e.backendID) {
+			return "", 0, false
+		}
 		return e.backendID, e.perSeq, true
 	}
 	liveCopyProbeMu.Unlock()

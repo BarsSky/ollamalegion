@@ -109,6 +109,14 @@ func (p *Proxy) collectModelCopyCandidates(modelName string, exclude map[string]
 		if exclude != nil && exclude[id] {
 			continue
 		}
+		// R403.2: выключенный оператором бэкенд не участвует и в выборе «копии
+		// под окно». Живой дефект: тумблер «не использовать бэкенд» не действовал
+		// на смешанном пути (/api/chat → selectBackendPreferWindow → этот
+		// коллектор), выключенный узел продолжал обслуживать запросы, а очередь
+		// ожидания бэкенда не могла включиться.
+		if isDisabledBackendState(state) {
+			continue
+		}
 		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
 			continue
 		}

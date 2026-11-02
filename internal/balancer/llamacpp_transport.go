@@ -1985,55 +1985,24 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			return
 		}
 		doneEmitted = true
-		if originalPath == "/v1/chat/completions" {
-			if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil {
-				logger.Get().Warnw("proxyRequestLlamaCpp: terminal [DONE] write error",
-					"backend", backendID, "error", err)
-				lastForwardErr = err
-				if firstForwardErr == nil {
-					firstForwardErr = err
-				}
-			}
-			Flush(w)
-			return
-		}
-		modelName := modelFromCtx
-		if modelName == "" {
-			modelName = "unknown"
-		}
-		msg := map[string]interface{}{"role": "assistant", "content": ""}
-		doneReason := "stop"
-		if len(toolAccum) > 0 {
-			calls := make([]map[string]interface{}, 0, len(toolAccum))
-			for i := 0; i < len(toolAccum); i++ {
-				acc, ok := toolAccum[i]
-				if !ok {
-					continue
-				}
-				tc := map[string]interface{}{"type": "function", "function": acc.function}
-				if acc.id != "" {
-					tc["id"] = acc.id
-				}
-				calls = append(calls, tc)
-			}
-			msg["tool_calls"] = calls
-			doneReason = "tool_calls"
-		}
-		chunk := map[string]interface{}{
-			"model":       modelName,
-			"created_at":  time.Now().UTC().Format(time.RFC3339),
-			"done":        true,
-			"done_reason": doneReason,
-			"message":     msg,
-		}
-		out, err := json.Marshal(chunk)
-		if err != nil {
-			return
-		}
-		if _, err := fmt.Fprintf(w, "%s\n", string(out)); err != nil {
-			lastForwardErr = err
+		// R377 (2026-11-01): кадр собирает единственный владелец. Пустой content —
+		// осознанное решение этого места: дельты клиенту уже отданы, повтор текста
+		// в терминальном кадре даёт дубль у клиентов, склеивающих чанки.
+		//
+		// ДО R377 кадр собирался здесь руками и расходился с хелпером в трёх
+		// местах: tool_calls уходили строкой аргументов (нарушение R295 — Ollama
+		// ждёт объект), /api/generate получал поле message вместо response,
+		// done_reason ставился "stop" даже без отданного текста.
+		if errFwd := writeTerminalFrameR377(w, terminalFrameR377{
+			path:      originalPath,
+			model:     modelFromCtx,
+			toolCalls: toolAccum,
+		}); errFwd != nil {
+			logger.Get().Warnw("proxyRequestLlamaCpp: terminal frame write error",
+				"backend", backendID, "path", originalPath, "error", errFwd)
+			lastForwardErr = errFwd
 			if firstForwardErr == nil {
-				firstForwardErr = err
+				firstForwardErr = errFwd
 			}
 		}
 		Flush(w)

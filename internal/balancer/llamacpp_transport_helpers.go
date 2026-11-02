@@ -147,6 +147,10 @@ func cleanFinalContent(s string) string {
 // Если есть tool_calls — writeStreamingSSEDone ВСЕГДА пишет финальный чанк
 // (translate не формирует tool_calls в финальном чанке), при этом content
 // ставится пустым (tool_calls заменяют content по семантике OpenAI).
+//
+// R377 (2026-11-01): эта функция больше НЕ собирает кадр — она решает только,
+// какой текст положить в него (восстановить полный ответ). Саму форму кадра
+// пишет единственный владелец writeTerminalFrameR377 (terminal_frame_r377.go).
 func writeStreamingSSEDone(
 	w http.ResponseWriter,
 	originalPath, modelFromCtx string,
@@ -157,14 +161,13 @@ func writeStreamingSSEDone(
 	usageChunkSeen bool,
 ) error {
 	if originalPath == "/v1/chat/completions" {
-		// SSE→SSE passthrough — просто завершаем [DONE]
-		_, err := fmt.Fprintf(w, "data: [DONE]\n\n")
-		// ВАЖНО: на быстрых моделях (Qwen3.6-35B-A3B, Llama-3.1-70B) финальный
-		// [DONE] может остаться в Go HTTP буфере и не дойти до клиента до закрытия
-		// TCP-сокета. Без flush клиент (aiohttp, httpx) парсит chunked-encoding
-		// с ошибкой: TransferEncodingError: Not enough data to satisfy transfer length header.
-		Flush(w)
-		return err
+		// R377: кадр собирает единственный владелец; здесь решается только факт
+		// «нужен терминатор», а форма ([DONE] + flush) — в writeTerminalFrameR377.
+		return writeTerminalFrameR377(w, terminalFrameR377{
+			path:      originalPath,
+			model:     modelFromCtx,
+			toolCalls: toolAccum,
+		})
 	}
 
 	// Bug #12 fix (2026-06-30): определяем итоговый контент с приоритетом:
@@ -177,8 +180,6 @@ func writeStreamingSSEDone(
 	}
 	finalContent = cleanFinalContent(finalContent)
 
-	hasToolCalls := len(toolAccum) > 0
-
 	// Round 53.1 (2026-08-24): if translateUsageChunkToOllama already emitted the
 	// canonical done:true chunk (with full stats), we MUST skip here — otherwise
 	// the client sees TWO done:true chunks (R51.3 regression).
@@ -187,111 +188,15 @@ func writeStreamingSSEDone(
 		return nil
 	}
 
-	// Round 53.1: if upstreamSentFinishReason=true (wrapper-чанк был, но мы его
-	// подавили в R53.1) и usage чанка не было — writeStreamingSSEDone пишет
-	// финальный done-чанк как fallback, иначе клиент зависнет.
-	// (До R53.1 этот блок был: if upstreamSentFinishReason && !hasToolCalls { skip } —
-	// что приводило к double-done в случае usage чанка.)
-	_ = upstreamSentFinishReason // used implicitly: если false, всё равно пишем done ниже
-
-	// Round 53.1: убран старый skip-блок "if upstreamSentFinishReason && !hasToolCalls { skip }".
-	// Pre-R53.1 wrapper-чанк эмитил done:true (R51.3 fix), и writeStreamingSSEDone
-	// пропускал повторную запись. Post-R53.1 wrapper подавлен, canonical done
-	// эмитится ТОЛЬКО из translateUsageChunkToOllama (если usage чанк пришёл) или
-	// из writeStreamingSSEDone как fallback (если usage чанка не было).
-	// Случай usageChunkSeen уже обработан выше. Случай !usageChunkSeen —
-	// writeStreamingSSEDone ПИШЕТ финальный done-чанк с накопленным content.
-
-	// Для /api/chat и /api/generate пишем NDJSON
-	if originalPath == "/api/chat" {
-		// При наличии tool_calls content намеренно пустой (tool_calls заменяют content).
-		contentForMsg := finalContent
-		if hasToolCalls {
-			contentForMsg = ""
-		}
-		msgMap := map[string]interface{}{
-			"role":    "assistant",
-			"content": contentForMsg,
-		}
-
-		// Если есть накопленные tool_calls — добавляем их
-		if hasToolCalls {
-			toolCallsArr := make([]map[string]interface{}, 0, len(toolAccum))
-			for i := 0; i < len(toolAccum); i++ {
-				acc, ok := toolAccum[i]
-				if !ok {
-					continue
-				}
-				tcMap := map[string]interface{}{
-					"type":     "function",
-					"function": acc.function,
-				}
-				if acc.id != "" {
-					tcMap["id"] = acc.id
-				}
-				toolCallsArr = append(toolCallsArr, tcMap)
-			}
-			// R295: Ollama ждёт function.arguments ОБЪЕКТОМ, а аккумулятор
-			// держит его строкой (OpenAI-форма, контракт cppworker→балансер).
-			msgMap["tool_calls"] = toOllamaToolCallsObject(toInterfaceSlice(toolCallsArr))
-		}
-
-		modelName := modelFromCtx
-		if modelName == "" {
-			modelName = "unknown"
-		}
-		doneChunk := map[string]interface{}{
-			"model":      modelName,
-			"created_at": time.Now().UTC().Format(time.RFC3339),
-			"done":       true,
-			"message":    msgMap,
-		}
-
-		// Если есть tool_calls — done_reason должен быть "tool_calls"
-		if hasToolCalls {
-			doneChunk["done_reason"] = "tool_calls"
-		} else if finalContent != "" {
-			doneChunk["done_reason"] = "stop"
-		}
-
-		out, err := json.Marshal(doneChunk)
-		if err != nil {
-			return fmt.Errorf("marshal /api/chat done chunk: %v", err)
-		}
-		_, err = fmt.Fprintf(w, "%s\n", string(out))
-		return err
-	}
-
-	// /api/generate
-	modelName := modelFromCtx
-	if modelName == "" {
-		modelName = "unknown"
-	}
-	// При наличии tool_calls response должен быть пустым (как и в /api/chat)
-	// и done_reason = "tool_calls" (Ollama-семантика).
-	responseValue := finalContent
-	if hasToolCalls {
-		responseValue = ""
-	}
-	doneChunk := map[string]interface{}{
-		"model":      modelName,
-		"created_at": time.Now().UTC().Format(time.RFC3339),
-		"done":       true,
-		"response":   responseValue,
-	}
-	switch {
-	case hasToolCalls:
-		doneChunk["done_reason"] = "tool_calls"
-	case finalContent != "":
-		doneChunk["done_reason"] = "stop"
-	}
-
-	out, err := json.Marshal(doneChunk)
-	if err != nil {
-		return fmt.Errorf("marshal /api/generate done chunk: %v", err)
-	}
-	_, err = fmt.Fprintf(w, "%s\n", string(out))
-	return err
+	// R377 (2026-11-01): сборку кадра делает единственный владелец. Этот путь
+	// отвечает за РЕШЕНИЕ о content (восстановить полный текст, потому что
+	// апстрим не прислал завершающего кадра со своим текстом), а не за форму.
+	return writeTerminalFrameR377(w, terminalFrameR377{
+		path:      originalPath,
+		model:     modelFromCtx,
+		toolCalls: toolAccum,
+		content:   finalContent,
+	})
 }
 
 // buildDoneResponse — строит финальный NDJSON done-маркер для пустого streaming-потока.

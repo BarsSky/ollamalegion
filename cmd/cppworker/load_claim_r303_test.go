@@ -48,6 +48,21 @@ func newTestBackendR303(t *testing.T) *cppbackend.Backend {
 	if err := b.Init(); err != nil {
 		_ = err
 	}
+	// Флейк «TempDir RemoveAll cleanup: The directory is not empty».
+	//
+	// RecordModelLoad (model_manager.go) персистит <ModelsDir>/.name_history.json
+	// в ФОНЕ, поэтому teardown t.TempDir() на Windows успевал удалить каталог
+	// раньше записи: unlinkat видел либо ещё не удалённый файл, либо каталог,
+	// опустевший между листингом и rmdir. Тот же класс уже ловили в R65e
+	// (backend.Close) и R66d (backend_metrics_tokens_r66d_test.go) — здесь
+	// ждём отложенные записи так же, до удаления каталога.
+	t.Cleanup(func() {
+		if mm := b.ModelManager(); mm != nil {
+			if !mm.WaitForPendingWrites(2 * time.Second) {
+				t.Logf("warning: nameHistory persist не завершился за 2 с — teardown каталога может упасть")
+			}
+		}
+	})
 	return b
 }
 

@@ -33,7 +33,9 @@
 | OR-7 | Заявленное оператором окно (профиль модели) сильнее env-потолка авто-роста; env-потолок защищает только от роста по клиентскому запросу. Физический предел (GGUF/VRAM) проверяется отдельно и называется своей причиной. | `internal/balancer/nctx_declared_r255.go`, `internal/balancer/nctx_ceiling_r267.go` | `TestR267_ResolverUsesDeclaredWindowNotEnvCeiling` |
 | OR-8 | Отмена по `request_id`, выданному клиенту, работает: балансер штампует свой id в каждый исходящий инференс-запрос, поэтому воркер находит генерацию по нему. | `internal/balancer/upstream_request_id_r376.go` | `TestR376_StampSetsHeader` |
 | OR-9 | Сторож тишины на стриме обязан закрыть поток с причиной и терминатором, а не ждать таймаута клиента. Порог задаётся `LB_STREAM_STALL_ABORT_SEC` / `LB_STREAM_FIRST_FRAME_ABORT_SEC`. | `internal/balancer/stream_stall_r297.go` | `TestR298_StallWatch_MidFrameFires` |
-
+| OR-10 | Авто-продолжение обрезанного ответа — ОПЦИЯ оператора (`LB_AUTO_CONTINUE_ON_TRUNCATION`, по умолчанию выключено). Агентский ход не продолжается никогда: диалог ведёт клиент. | `internal/balancer/auto_continue.go` | `TestR187_AgentTurnForbidsAutoContinue` |
+| OR-11 | Окно агентского запроса без `num_ctx`: балансер добавляет резерв вывода (`LB_AGENT_OUTPUT_RESERVE_TOKENS`, по умолчанию 4096). Отключается одной переменной `LB_NCTX_GROW_FOR_AGENTS`, отключение обязано быть обратно совместимым. | `internal/balancer/preflight_agent_window_r253.go` | `TestR253_GrowForAgentsDisabledIsBackwardCompatible` |
+| OR-12 | Жёсткая блокировка по VRAM/RAM/диску — опция (`LB_RESOURCE_LIMITS_HARD_BLOCK`, по умолчанию мягкий режим с предупреждением); включение флага обязано восстанавливать прежнее жёсткое поведение. | `internal/balancer/slot_manager.go` | `TestR118_HardBlockFlagRestoresOldBehaviour` |
 ## Что проверяет стюард
 
 1. Каждая строка правила `OR-N` ссылается хотя бы на один существующий тест.

@@ -337,6 +337,11 @@ curl -s -H 'X-API-Token: <token>' http://localhost:18079/api/v1/cppworker/model-
 меньшего запроса. Флаг остаётся в JSON для совместимости, но не влияет ни на
 одно решение и снимается при сохранении профиля из WebUI.
 
+**Полная схема процессов и ответов:** WebUI → Настройки → Справка → «Схема
+работы» (`/scheme.html`, доступна для каждого образа офлайн, с привязкой к коду);
+технический документ — `docs/architecture/request-lifecycle.md`, версия с
+диаграммами — `docs/architecture/request-lifecycle.ru.md`.
+
 ---
 
 ## 3. ReloadLoopLimitError (HTTP 413)

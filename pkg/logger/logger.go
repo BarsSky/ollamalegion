@@ -90,6 +90,13 @@ func Init(level string) {
 	if err != nil {
 		l = zap.NewNop()
 	}
+	// R390 (2026-11-02): каждое событие дополнительно публикуем в брокер логов
+	// (живой tail /ws/logs и выгрузка /api/v1/logs/export). Без этой обёртки
+	// брокер оставался пустым: в него писали только ручные logger.Publish(...),
+	// которых в коде не было.
+	l = l.WithOptions(zap.WrapCore(func(c zapcore.Core) zapcore.Core {
+		return brokerCore{Core: c}
+	}))
 	logPtr.Store(l.Sugar())
 }
 

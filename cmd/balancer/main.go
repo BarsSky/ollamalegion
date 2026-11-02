@@ -132,7 +132,10 @@ func main() {
 	// Брокер хранит ring buffer из 100 последних записей; Subscribe() из
 	// internal/api/handlers_logs_ws.go получает копию буфера + live channel.
 	// logger.Publish(...) в любом месте кода теперь рассылает запись всем WS-клиентам.
-	logBroker := logger.NewLogBroker(100)
+	// R390 (2026-11-02): буфер увеличен со 100: экспорт «пришлите логи» с
+	// сотней записей бесполезен (100 строк - это несколько секунд работы
+	// стенда). Размер настраивается LB_LOG_BUFFER_ENTRIES, дефолт 2000.
+	logBroker := logger.NewLogBroker(logBufferEntriesR390())
 	logger.SetBroker(logBroker)
 	defer logBroker.Stop()
 

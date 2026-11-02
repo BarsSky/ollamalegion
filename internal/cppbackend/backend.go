@@ -1347,6 +1347,10 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	// и все слои уезжают на локальную карту. Раньше это выяснялось по скорости.
 	// Теперь короткий гейт: пробуем РЕАЛЬНУЮ команду протокола (запрос памяти
 	// устройства) несколько раз, и только потом грузим.
+	// R380 (2026-11-01): результат гейта ОБЯЗАН влиять на список серверов.
+	// Раньше при любом исходе адреса уходили в мост, и занятый узел ронял
+	// процесс SIGSEGV'ом в cgo (negotiate_hello) вместо локальной загрузки.
+	bridgeRPCServers := loadRPCServers
 	if servers := b.activeRPCServers(); len(servers) > 0 {
 		// R177: «узел ответил на реальную команду» фиксируем ВСЕГДА. Без этого
 		// успешный гейт молчал, и по логу нельзя было отличить «узел был готов, а
@@ -1359,6 +1363,7 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		attempts := rpcReadyWaitAttempts(budget, rpcReadyProbeDelay)
 		ready, attempt := b.waitRPCNodeReadyForLoad(servers, attempts, rpcReadyProbeDelay)
 		b.noteRPCReadyGate(ready)
+		bridgeRPCServers = bridgeServersForLoadR380(loadRPCServers, ready)
 		if ready {
 			logger.Get().Infow(i18n.T("cppbackend.backend.layout_node_ready"),
 				"model", name, "servers", servers, "attempt", attempt,
@@ -1375,6 +1380,9 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 				"waited_ms", int64(attempt-1)*rpcReadyProbeDelay.Milliseconds(),
 				"timeout_streak", b.RPCReadyTimeoutStreak(),
 				"stuck_suspected", b.RPCLayoutStuckSuspected())
+			logger.Get().Warnw("R380: узел не принял загрузку — в мост не передаём ни одного адреса, "+
+				"грузим на локальные устройства (иначе llama.cpp падает в negotiate_hello)",
+				"model", name, "skipped_servers", servers)
 			if b.RPCLayoutStuckSuspected() {
 				logger.Get().Errorw(i18n.T("cppbackend.backend.layout_node_stuck"),
 					"model", name, "servers", servers, "timeout_streak", b.RPCReadyTimeoutStreak())
@@ -1382,7 +1390,7 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		}
 	}
 
-	if servers := applyRPCServersR105(&cfg, loadRPCServers); len(servers) > 0 {
+	if servers := applyRPCServersR105(&cfg, bridgeRPCServers); len(servers) > 0 {
 		logger.Get().Infow(i18n.T("cppbackend.backend.rpc_layout_handed_to_bridge"),
 			"model", name, "servers", servers)
 	}

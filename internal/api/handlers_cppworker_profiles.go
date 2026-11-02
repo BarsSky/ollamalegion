@@ -633,8 +633,17 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 	// занят — возвращаем 202 Accepted + Location с SSE-эндпоинтом прогресса.
 	// WebUI показывает modal "Model is busy (3 active), applying in background…"
 	// и продолжает polling /api/v1/cppworker/model-profiles/{name}/apply/progress.
+	// R398 (2026-11-04): ОДИН снимок состава на весь apply.
+	//
+	// getAllBackends собирается из map, порядок между двумя вызовами разный;
+	// прежний reload-цикл проверял фильтр по `GetAllBackends()[i]`, а грузил
+	// `GetAllBackends()[i]` из ВТОРОГО вызова — то есть индекс мог указывать на
+	// ДРУГОЙ узел. Живой симптом: «применить и перезагрузить» либо не трогает
+	// выбранный бэкенд, либо перезагружает чужой/устаревший (в ответе был
+	// cppworker-donor, хотя выбран cppworker-gpu-bundled-agent).
+	allBackends := s.proxy.GetAllBackends()
 	busyBackends := make([]string, 0)
-	for _, backend := range s.proxy.GetAllBackends() {
+	for _, backend := range allBackends {
 		if !matchesBackendFilter(backend.ID, targetFilter) {
 			continue
 		}
@@ -672,12 +681,10 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 		return
 	}
 
-	for i := range s.proxy.GetAllBackends() {
-		if !matchesBackendFilter(s.proxy.GetAllBackends()[i].ID, targetFilter) {
+	for _, backend := range allBackends {
+		if !matchesBackendFilter(backend.ID, targetFilter) {
 			continue
 		}
-		allBackends := s.proxy.GetAllBackends()
-		backend := allBackends[i]
 		backendID := backend.ID
 		// R210 (2026-10-21): в результате — ТОЛЬКО llama.cpp-бэкенды.
 		//
@@ -686,6 +693,21 @@ func (s *Server) applyModelProfile(w http.ResponseWriter, r *http.Request, model
 		// «model not currently loaded on this backend» — это не ошибки применения,
 		// а шум: к текстовым моделям llama.cpp они отношения не имеют.
 		if backend.Type != types.BackendTypeLlamaCpp {
+			continue
+		}
+
+		// R398: заведомо офлайн-узел не дёргаем — иначе в диалоге
+		// «Применение профиля…» появлялись красные кресты на устаревших записях
+		// (cppworker-donor/fake-donor в конфиге стенда): dial tcp ... connection
+		// refused. Это не ошибка применения профиля.
+		if backend.Status == types.StatusOffline {
+			log.Debugw("applyModelProfile: backend offline, reload skipped",
+				"backend", backendID, "model", modelName)
+			results = append(results, modelProfileApplyBackendResult{
+				BackendID: backendID,
+				Status:    "skipped",
+				Message:   i18n.T("api.cppworker_profiles.backend_offline_skipped"),
+			})
 			continue
 		}
 

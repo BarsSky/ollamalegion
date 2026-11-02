@@ -34,6 +34,9 @@ var messagesAPI2 = map[string]map[Lang]string{
 	"api.cppworker_profiles.not_loaded_on_backend": {
 		RU: "модель не загружена на этом бэкенде",
 		EN: "the model is not loaded on this backend",
+	},	"api.cppworker_profiles.backend_offline_skipped": {
+		RU: "бэкенд не в сети (нет heartbeat) — перезагрузка не отправлялась",
+		EN: "the backend is offline (no heartbeat) - reload was not sent",
 	},
 	"api.cppworker_profiles.already_loaded": {
 		RU: "текущие параметры модели не изменились (см. runtime-параметры на вкладке загруженных моделей)",

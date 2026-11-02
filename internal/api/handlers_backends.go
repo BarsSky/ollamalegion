@@ -1897,10 +1897,41 @@ func (s *Server) deleteBackend(w http.ResponseWriter, r *http.Request, backendID
 		return
 	}
 
+	// R398 (2026-11-04): удаление обязано доехать до config.json.
+	//
+	// ЖИВОЙ ФАКТ. RemoveBackend чистит runtime и state.json, но не статический
+	// конфиг. После рестарта балансер снова читает config.Backends — удалённый
+	// оператором узел ВОЗВРАЩАЛСЯ и его начинали дёргать apply/перезагрузки
+	// («затрагивается другой бэкенд»: в ответе apply появлялись cppworker-donor /
+	// fake-donor с connection refused, хотя выбран совсем другой бэкенд).
+	removedFromConfig := false
+	if s.config != nil {
+		kept := make([]types.Backend, 0, len(s.config.Backends))
+		for _, cb := range s.config.Backends {
+			if cb.ID == backendID {
+				removedFromConfig = true
+				continue
+			}
+			kept = append(kept, cb)
+		}
+		if removedFromConfig {
+			s.config.Backends = kept
+			if s.configSaver != nil {
+				if err := s.configSaver(); err != nil {
+					logger.Get().Warnw("deleteBackend: не удалось сохранить config.json после удаления",
+						"backend", backendID, "error", err)
+				}
+			}
+		}
+	}
+	logger.Get().Infow("deleteBackend: бэкенд удалён",
+		"backend", backendID, "removed_from_config", removedFromConfig)
+
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"id":      backendID,
-		"message": "Backend removed successfully",
+		"success":           true,
+		"id":                backendID,
+		"message":           "Backend removed successfully",
+		"removedFromConfig": removedFromConfig,
 	})
 }
 

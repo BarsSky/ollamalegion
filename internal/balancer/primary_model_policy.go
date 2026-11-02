@@ -58,10 +58,32 @@ func (p *Proxy) primaryFixedNCtx(backendID, modelName string) int {
 	if p == nil {
 		return 0
 	}
-	if p.nctxReload != nil {
-		if n := p.nctxReload.LastKnownNCtx(backendID); n > 0 {
-			return n
+	// R398.1 (2026-11-04): «зафиксированное окно» — ТОЛЬКО этой модели.
+	//
+	// ЖИВОЙ ДЕФЕКТ. Здесь первым читался nctxReload.LastKnownNCtx(backendID), а
+	// это значение живёт НА БЭКЕНД, не на модель: после перезагрузки любой другой
+	// модели (или после прежнего reload) в нём оставалось 32768, и primary-модель
+	// с заявленными 131072 «фиксировалась» на 32768 — клиентские num_ctx молча
+	// подменялись вниз (жалоба «стоит блок в 32768, настройки из WebUI
+	// игнорируются»). Окно модели берём из метрик загруженной модели, а если её
+	// нет — из профиля.
+	// Метрики — по КОНКРЕТНОЙ модели. loadedWindowNCtx здесь не годится: он
+	// добавляет LastKnownNCtx(backendID) (значение на бэкенд, а не на модель) и
+	// как раз это давало чужое/устаревшее окно.
+	if p.metricsMgr != nil && backendID != "" {
+		p.metricsMgr.mu.RLock()
+		if lm := p.metricsMgr.llamaMetrics[backendID]; lm != nil {
+			for _, m := range lm.LoadedModels {
+				if m.ContextLength <= 0 {
+					continue
+				}
+				if m.Name == modelName || containsFold(m.Name, modelName) || containsFold(modelName, m.Name) {
+					p.metricsMgr.mu.RUnlock()
+					return m.ContextLength
+				}
+			}
 		}
+		p.metricsMgr.mu.RUnlock()
 	}
 	if prof, ok := p.GetModelProfile(modelName); ok && prof.ContextLength > 0 {
 		return prof.ContextLength

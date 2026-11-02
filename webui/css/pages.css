@@ -1,4 +1,4 @@
-﻿/*
+/*
  * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
  *   DESIGN_VARIANCE = 5, MOTION_INTENSITY = 3, VISUAL_DENSITY = 5
  * Anti-slop rules applied:
@@ -117,7 +117,9 @@
 /* ===== Proxy Logs ===== */
 .proxy-logs-container {
     max-height: 600px;
-    overflow-y: auto;
+    /* R389: по горизонтали тоже скроллим - иначе широкая таблица уезжает за
+       край панели, и последнюю колонку («Ошибка») не увидеть вообще. */
+    overflow: auto;
     padding: var(--space-5);
 }
 .proxy-log-placeholder {
@@ -130,7 +132,21 @@
     width: 100%;
     border-collapse: collapse;
     font-size: var(--font-size-xs);
+    /* R389: ЖЁСТКАЯ раскладка. С auto-layout браузер игнорирует max-width у
+       ячейки, и длинный текст ошибки растягивал таблицу до бесконечности -
+       колонка уходила за край, а ellipsis не срабатывал. */
+    table-layout: fixed;
 }
+.proxy-logs-table th:nth-child(1) { width: 82px; }   /* время */
+.proxy-logs-table th:nth-child(2) { width: 66px; }   /* метод */
+.proxy-logs-table th:nth-child(3) { width: 20%; }    /* путь */
+.proxy-logs-table th:nth-child(4) { width: 13%; }    /* модель */
+.proxy-logs-table th:nth-child(5) { width: 10%; }    /* клиент */
+.proxy-logs-table th:nth-child(6) { width: 64px; }   /* статус */
+.proxy-logs-table th:nth-child(7) { width: 72px; }   /* длительность */
+.proxy-logs-table th:nth-child(8) { width: 12%; }    /* бэкенд */
+.proxy-logs-table th:nth-child(9) { width: auto; }   /* ошибка - остаток */
+.proxy-logs-table td:nth-child(9) { max-width: none; }
 .proxy-logs-table th {
     padding: 8px 10px;
     text-align: left;

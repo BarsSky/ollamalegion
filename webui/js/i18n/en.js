@@ -225,7 +225,7 @@ window.I18N_EN = {
   "logs.auto_scroll": "Auto-scroll",
   "logs.clear": "Clear",
   "logs.no_logs": "No log entries",
-  "logs.export": "Export",
+  "logs.export_server": "Download server logs",
   "logs.level_all": "All levels",
   "logs.level_debug": "Debug",
   "logs.level_filter_title": "Filter by level",

@@ -3,6 +3,19 @@
  */
 const Renderers = (function () {
     const { formatNumber, formatMB, getBackendMode, getBackendModeBadge, getBackendTypeBadge, getGPUStatus, getProgressClass, percent, escapeHtml } = Utils;
+    // R389 (2026-11-02): escapeAttr — экранирование для АТРИБУТОВ (title/data-*).
+    // Utils.escapeHtml работает через textContent/innerHTML и НЕ трогает кавычки:
+    // title="' + escapeHtml(err) + '" рвался на первом же `"` внутри текста
+    // ошибки (а в JSON-ошибках кавычки есть всегда) — поэтому наведение не
+    // показывало содержимое, а колонка «уходила за край».
+    function escapeAttr(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    }
 
     // Cache for prediction hysteresis to prevent flickering between warning/success
     const _predCache = {};
@@ -2548,7 +2561,12 @@ const Renderers = (function () {
             var status = e.statusCode ? String(e.statusCode) : '-';
             var duration = e.durationMs ? e.durationMs + 'ms' : '-';
             var backend = e.backendID || '-';
-            var error = e.error ? escapeHtml(String(e.error).substring(0, 100)) : '-';
+            // R389: в ячейке — усечённый текст, в title/data-full — ПОЛНЫЙ
+            // (attribute-safe: кавычки экранируются escapeAttr). Клик по ячейке
+            // разворачивает полный текст отдельной строкой.
+            var errorFull = e.error ? String(e.error) : '';
+            var errorText = errorFull.length > 120 ? errorFull.substring(0, 120) + '…' : errorFull;
+            var errorAttr = escapeAttr(errorFull);
             var statusClass = 'log-status-ok';
             if (status !== '-' && parseInt(status) >= 400) statusClass = 'log-status-err';
             html += '<tr>' +
@@ -2560,7 +2578,8 @@ const Renderers = (function () {
                 '<td><span class="' + statusClass + '">' + escapeHtml(status) + '</span></td>' +
                 '<td>' + escapeHtml(duration) + '</td>' +
                 '<td>' + escapeHtml(backend) + '</td>' +
-                '<td class="log-error-cell" title="' + escapeHtml(error) + '">' + error + '</td>' +
+                '<td class="log-error-cell" title="' + errorAttr + '" data-full="' + errorAttr + '">' +
+                (errorText ? escapeHtml(errorText) : '-') + '</td>' +
                 '</tr>';
         });
         html += '</tbody></table>';

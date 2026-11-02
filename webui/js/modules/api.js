@@ -401,6 +401,42 @@ const Api = (function () {
         //   PUT  /api/v1/settings        <- {name, value}   (value — ЦЕЛОЕ: bool=0/1,
         //                                   duration_sec=секунды) → {status,effective,source,...}
         //   POST /api/v1/settings/reset  <- {name} или {} (все) → {status,effective,source}
+        /**
+         * R389: скачать логи БАЛАНСЕРА файлом (GET /api/v1/logs/export).
+         *
+         * Отличие от кнопки «Экспорт»: та выгружает только то, что браузер
+         * получил по WebSocket с момента открытия страницы. Здесь — снимок
+         * ring-buffer'а балансера (история до открытия вкладки включительно),
+         * с серверными фильтрами по уровню/тексту и готовым именем файла.
+         *
+         * @param {{level?: string, q?: string, format?: string, limit?: number}} params
+         * @returns {Promise<{entries: number, filename: string}>}
+         */
+        async exportServerLogs(params = {}) {
+            const qs = new URLSearchParams();
+            if (params.level && params.level !== 'all') qs.set('level', params.level);
+            if (params.q) qs.set('q', params.q);
+            if (params.format) qs.set('format', params.format);
+            qs.set('limit', String(params.limit || 5000));
+            const response = await request(`${API_BASE}/api/v1/logs/export?${qs.toString()}`, {
+                method: 'GET',
+                timeoutMs: 60000
+            });
+            const blob = await response.blob();
+            const disposition = response.headers.get('Content-Disposition') || '';
+            const match = /filename="([^"]+)"/.exec(disposition);
+            const filename = match ? match[1] : 'balancer-logs.txt';
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+            const entries = Number(response.headers.get('X-Logs-Exported') || 0);
+            return { entries: entries, filename: filename };
+        },
         hotSettings: {
             /**
              * GET /api/v1/settings — весь реестр с действующими значениями.

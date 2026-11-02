@@ -519,7 +519,37 @@ const ui = (function () {
             renderLogs(data.logs);
         });
         var exportLogsBtn = document.getElementById('exportLogs');
-        if (exportLogsBtn) exportLogsBtn.addEventListener('click', exportLogs);
+        if (exportLogsBtn) exportLogsBtn.addEventListener('click', exportLogs);        // R389 (2026-11-02): выгрузка логов БАЛАНСЕРА (серверный буфер), а не
+        // только того, что браузер успел получить по WebSocket. Фильтры берём
+        // из панели: уровень и формат — те же селекты, что у кнопки «Экспорт».
+        var exportServerLogsBtn = document.getElementById('exportServerLogs');
+        if (exportServerLogsBtn) exportServerLogsBtn.addEventListener('click', async function () {
+            var levelEl = document.getElementById('logsLevelFilter');
+            var formatEl = document.getElementById('logsExportFormat');
+            try {
+                var res = await window.Api.exportServerLogs({
+                    level: levelEl ? levelEl.value : 'all',
+                    format: formatEl ? formatEl.value : 'txt'
+                });
+                if (typeof addLogEntry === 'function') {
+                    addLogEntry({
+                        time: new Date(),
+                        level: 'info',
+                        message: 'Логи балансера выгружены: ' + res.filename + ' (записей: ' + res.entries + ')',
+                        source: 'webui'
+                    });
+                }
+            } catch (err) {
+                if (typeof addLogEntry === 'function') {
+                    addLogEntry({
+                        time: new Date(),
+                        level: 'error',
+                        message: 'Экспорт логов балансера не удался: ' + (err && err.message ? err.message : err),
+                        source: 'webui'
+                    });
+                }
+            }
+        });
         var exportBackendsBtn = document.getElementById('exportBackends');
         if (exportBackendsBtn) exportBackendsBtn.addEventListener('click', exportBackends);
 

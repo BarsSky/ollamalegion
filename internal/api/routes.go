@@ -218,6 +218,14 @@ func (s *Server) setupRoutes() {
 	// Формат: snapshot + live entries + ping. Auth — внутри handler через query ?token=...
 	// (EventSource/WS не поддерживают custom headers; query token — единственный путь).
 	s.mux.Handle("/ws/logs", RateLimitMiddleware(s.wsLogsHandler, s.wsRateLimiter))
+	// R389 (2026-11-02): выгрузка логов балансера файлом.
+	//
+	// Отличие от /ws/logs: WS отдаёт live-tail с момента подключения и не умеет
+	// ни историю до него, ни фильтры на сервере, ни файл. Здесь — снимок
+	// ring-buffer'а логгера (text/plain или JSON) с фильтрами level/source/q и
+	// хвостом limit; под AdminAuth, как остальные административные ручки.
+	s.mux.Handle("/api/v1/logs/export",
+		AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleLogsExport), s.rateLimiter), s.authenticator))
 
 	// Monitor HTML page (без аутентификации)
 	s.mux.HandleFunc("/monitor", s.monitorHandler)

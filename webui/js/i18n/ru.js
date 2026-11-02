@@ -226,7 +226,7 @@ window.I18N_RU = {
   "logs.auto_scroll": "Автопрокрутка",
   "logs.clear": "Очистить",
   "logs.no_logs": "Нет записей в логах",
-  "logs.export": "Экспорт",
+  "logs.export_server": "Скачать логи сервера",
   "logs.level_all": "Все уровни",
   "logs.level_debug": "Отладка",
   "logs.level_filter_title": "Фильтр по уровню",

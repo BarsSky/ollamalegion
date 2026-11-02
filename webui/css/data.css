@@ -1,4 +1,4 @@
-﻿/*
+/*
  * TASTE SKILL DIALS  (taste-skill v2 design-taste-frontend)
  *   DESIGN_VARIANCE = 5, MOTION_INTENSITY = 3, VISUAL_DENSITY = 5
  * Anti-slop rules applied:
@@ -933,10 +933,31 @@
   color: var(--danger);
   font-size: var(--font-size-xs);
   font-family: monospace;
-  max-width: 240px;
+  /* R389: ширину задаёт колонка (table-layout: fixed), а не max-width:
+     с auto-layout он игнорировался и таблица уезжала за край. */
+  max-width: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+.log-error-cell:hover {
+  text-decoration: underline dotted;
+}
+/* R389: развёрнутый полный текст ошибки (клик по ячейке). */
+.log-error-full-row > td {
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  white-space: normal;
+}
+.log-error-full {
+  margin: 0;
+  font-family: monospace;
+  font-size: var(--font-size-xs);
+  color: var(--danger);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .log-method-badge {
   display: inline-block;

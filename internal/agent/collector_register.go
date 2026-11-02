@@ -102,6 +102,13 @@ func (a *Agent) register() error { // Сбор информации о сист�
 		registerCppWorkerPort = a.extractCppWorkerPort()
 		fmt.Printf("[%s] Registering llama_cpp backend at %s:%d (agent at %s)\n",
 			time.Now().Format(time.RFC3339), registerHost, registerCppWorkerPort, publicHost)
+	} else if a.config.BackendType == types.BackendTypeOllama {
+		// R392: хост Ollama — из OLLAMA_URL. Раньше для ollama-бэкенда
+		// регистрировался publicHost (адрес САМОГО агента), и балансер не мог
+		// достучаться до Ollama: пробы и инференс шли в контейнер агента.
+		registerHost = a.extractOllamaHost()
+		fmt.Printf("[%s] Registering ollama backend at %s:%d (agent at %s)\n",
+			time.Now().Format(time.RFC3339), registerHost, ollamaPort, publicHost)
 	}
 
 	// Отправляем регистрацию напрямую в формате, который ожидает балансировщик

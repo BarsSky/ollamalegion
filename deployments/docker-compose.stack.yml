@@ -1264,6 +1264,86 @@ services:
       retries: 3
       start_period: 20s
 
+  # R392 (2026-11-02): ОТДЕЛЬНЫЙ агент для Ollama-бэкенда.
+  #
+  # ЗАЧЕМ ОТДЕЛЬНЫЙ СЕРВИС. `agent` выше — observer физического cppworker'а
+  # (legacy-agent): он регистрирует тот же backendId, что встроенный агент
+  # воркера, и на Ollama-хосте бесполезен. Здесь — агент ровно для случая
+  # «на хосте запущена Ollama»: он читает GPU-нагрузку через NVML, снимает
+  # список моделей (/api/tags, /api/ps) и аргументы запуска процесса `ollama serve`
+  # и передаёт всё балансеру, чтобы тот оценивал загрузку узла.
+  #
+  # СВОИ ПАРАМЕТРЫ (не пересекаются с другими):
+  #   agentId/backendId — ollama-agent (у cppworker-агента свой);
+  #   порт агента       — 18036 (встроенный cppworker — 18034, legacy — 18032);
+  #   адрес бэкенда     — хост из OLLAMA_URL (R392), а не адрес агента;
+  #   labels            — gpu,ollama.
+  #
+  # КОГДА ЗАПУСКАТЬ: на машине, где работает Ollama (или в её сети), с
+  # доступом к балансеру:
+  #   docker compose -f docker-compose.stack.yml --profile ollama up -d ollama-agent
+  ollama-agent:
+    image: ${IMAGE_REGISTRY:-}ollama-legion/agent:${AGENT_TAG:-r83-submodule-v22}
+    build:
+      context: ..
+      dockerfile: docker/agent/Dockerfile
+      target: agent-gpu
+      args:
+        ENABLE_NVML: "true"
+        GIT_COMMIT: ${AGENT_GIT_COMMIT:-unknown}
+        BUILD_DATE: ${AGENT_BUILD_DATE:-unknown}
+    container_name: ol-stack-ollama-agent
+    profiles: ["ollama"]
+    restart: unless-stopped
+    # NVML внутри контейнера даёт реальные GPU/VRAM метрики хоста Ollama.
+    runtime: nvidia
+    # pid: host — чтобы `ps` видел процесс `ollama serve` ХОСТА (агент читает его
+    # аргументы: num_ctx, num_gpu, kv-cache). Без этого контейнер видит только
+    # свои процессы, и runtime-флаги Ollama остаются неизвестными.
+    pid: host
+    # host.docker.internal на Linux-хосте без Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      loadbalancer:
+        condition: service_healthy
+        required: false
+    environment:
+      # Собственная идентичность агента и его health-порт (18036 — не 18032/18034).
+      - AGENT_ID=${OLLAMA_AGENT_ID:-ollama-agent}
+      - AGENT_PORT=18036
+      - AGENT_PUBLIC_HOST=${OLLAMA_AGENT_PUBLIC_HOST:-ollama-agent}
+      - AGENT_PUBLIC_PORT=18036
+      - APP_VERSION=${AGENT_TAG:-r83-submodule-v22}
+      # Балансер: тот же admin API 18081 и тот же токен стека.
+      - BALANCER_URL=${BALANCER_URL:-http://loadbalancer:18081}
+      - BALANCER_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
+      - API_TOKEN=${CPPWORKER_API_TOKEN:?set CPPWORKER_API_TOKEN in deployments/.env}
+      # Тип бэкенда — Ollama; адрес — тот, по которому агент сам ходит в Ollama
+      # (R392: именно он уйдёт балансеру как host бэкенда).
+      - BACKEND_TYPE=ollama
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - NODE_LABELS=${OLLAMA_NODE_LABELS:-gpu,ollama}
+      # Вместимость: 0 = авто (агент спросит у Ollama/балансера), операторский
+      # лимит задаётся AGENT_MAX_CONCURRENT_REQUESTS.
+      - AGENT_MAX_CONCURRENT_REQUESTS=${OLLAMA_AGENT_MAX_CONCURRENT_REQUESTS:-0}
+      - AGENT_WEIGHT=${OLLAMA_AGENT_WEIGHT:-1}
+      - GPU_MODE=gpu
+      - NVML_ENABLED=true
+      - COLLECT_INTERVAL=${OLLAMA_COLLECT_INTERVAL:-15}
+      - HEARTBEAT_INTERVAL=${OLLAMA_HEARTBEAT_INTERVAL:-30}
+      - LOG_LEVEL=${OLLAMA_AGENT_LOG_LEVEL:-info}
+      - LOG_FORMAT=text
+    ports:
+      - "${OLLAMA_AGENT_PORT_HOST:-18036}:18036"
+    networks: [ol-net]
+    healthcheck:
+      test: ["CMD", "/app/agent", "-healthcheck", "-metrics-port", "18036"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
 networks:
   ol-net:
     name: ol-net

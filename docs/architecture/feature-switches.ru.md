@@ -228,6 +228,13 @@ WebUI — статика + nginx-прокси; учётные данные он 
 | `API_HOST` / `API_PORT` | `loadbalancer` / `18081` | то же по частям; имя `loadbalancer` существует только в compose-сети |
 | `API_TOKEN` | пусто | токен для проверки доступа и аварийного входа; fallback `WEBUI_API_TOKEN` → `LB_API_TOKEN` → `BALANCER_API_TOKEN` |
 | `LB_ADMIN_USER` / `LB_ADMIN_PASSWORD` | — | **здесь НЕ читаются**: учётки принадлежат балансеру, см. docs/operations/webui-auth.ru.md |
+## Ж. Отдельный агент Ollama-бэкенда (`ollama-agent`)
+
+Своя идентичность и порт, чтобы не пересекаться с встроенным агентом воркера
+(18034) и legacy-агентом (18032): `AGENT_ID=ollama-agent`, `AGENT_PORT=18036`,
+`BACKEND_TYPE=ollama`, `NODE_LABELS=gpu,ollama`. Адрес бэкенда берётся из
+`OLLAMA_URL` (R392), а не из адреса агента. Подробности и проверка —
+`docs/operations/ollama-agent.ru.md`.
 ## Как это связано с правилами оператора
 
 `docs/architecture/operator-rules.ru.md` фиксирует **требования** (что должно

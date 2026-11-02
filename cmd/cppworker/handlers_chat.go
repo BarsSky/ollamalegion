@@ -1517,6 +1517,22 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	if snapR320.Unclosed {
 		doneReason = "length"
 	}
+	// R394 (2026-11-04): исчерпанный клиентский лимит тоже даёт length.
+	//
+	// ЖИВОЙ ПРОГОН на стенде (этот самый путь, /api/chat без tools):
+	// options.num_predict=16, eval_count=17, видимый ответ обрезан на середине
+	// фразы — а причина была "stop". Cline по "stop" закрывает ход, поэтому
+	// продолжения не будет. R320 ставил length только при НЕзакрытом блоке
+	// размышлений; закрытый блок + обрыв по бюджету давал ложное «модель
+	// закончила».
+	//
+	// Считаем по СЫРОМУ выводу: бюджет тратится и на размышления, а
+	// cleanFinalContent их вырезает — по видимому тексту лимит выглядел бы
+	// неизрасходованным.
+	generatedTokens := countTokensSafe(modelName, fullOutput)
+	if doneReason == "stop" && toolsBudgetExhaustedR394(params.NPredict, generatedTokens) {
+		doneReason = "length"
+	}
 	// R320 (2026-10-30): пустая «видимая» часть при непустых размышлениях НЕ
 	// должна уезжать клиенту молча.
 	//
@@ -1757,11 +1773,6 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	reasoningHold := false
 	var emittedLen int
 	var toolsHold bool
-	// R394 (2026-11-04): сколько токенов реально сгенерировала модель. Нужен,
-	// чтобы отличить «модель закончила» (done_reason=stop) от «вывод упёрся в
-	// клиентский лимит» (done_reason=length): по счётчику токенов это видно
-	// точно, по длине текста — нет.
-	var generatedTokens int
 	emitContentDelta := func(delta string) {
 		// R114b (2026-10-13): служебные токены шаблона — не текст ответа. Живой
 		// случай: дельта «other coding task.\n<end_of_turn>» уехала клиенту
@@ -1794,11 +1805,6 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// R83: writer broken (клиент ушёл) → прекращаем генерацию немедленно.
 		if sw.IsBroken() {
 			return false
-		}
-		// R394: один вызов callback'а = один токен модели. Считаем ДО очистки:
-		// служебный токен тоже израсходовал бюджет вывода.
-		if token != "" {
-			generatedTokens++
 		}
 		// R83: чистим управляющие символы (см. stream_sanitize.go).
 		token = sanitizeStreamText(token)
@@ -2033,9 +2039,6 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			outputBuf.Reset()
 			emittedLen = 0
 			toolsHold = false
-			// R394: бюджет новой попытки считается заново — иначе счётчик первой
-			// попытки объявит length там, где повтор реально не упёрся в лимит.
-			generatedTokens = 0
 			atomic.StoreInt64(&firstTokenAt, 0)
 			if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr != nil {
 				logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_retry_failed"),
@@ -2072,8 +2075,6 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"violations", truncateForLog(strings.Join(violations, "; "), 300))
 			outputBuf.Reset()
 			toolsHold = false
-			// R394: повторная генерация — бюджет считается заново.
-			generatedTokens = 0
 			atomic.StoreInt64(&firstTokenAt, 0)
 			if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr == nil {
 				fullOutput = outputBuf.String()
@@ -2092,6 +2093,18 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			}
 		}
 	}
+
+	// R394.2 (2026-11-04): сколько токенов реально сгенерировано — считаем
+	// ТОКЕНИЗАТОРОМ по сырому выводу (то же число, что уходит в eval_count).
+	//
+	// ЖИВОЙ ПРОГОН на стенде показал, почему НЕЛЬЗЯ считать вызовы callback'а:
+	// при num_predict=16 воркер выдал eval_count=17, а callback'ов с непустым
+	// токеном было 14 (часть токенов приходит пустой строкой/служебной).
+	// Счётчик по callback'ам занижал вывод, бюджет считался неизрасходованным,
+	// и обрезанный ответ снова закрывался как done_reason=stop — ровно то, что
+	// чинит R394. Токенизатор даёт точное число независимо от того, как мост
+	// режет поток на куски.
+	generatedTokens := countTokensSafe(modelName, fullOutput)
 
 	// R113 (2026-10-13): РАЗМЕТКА ВЫЗОВА НЕ ЯВЛЯЕТСЯ ОТВЕТОМ.
 	//
@@ -2274,7 +2287,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// R65d (2026-09-20): реальные token counts вместо eval_count:0
 	// (та же причина, что и в writeChatStreamResponse — OpenWebUI считает
 	// tokens/sec из этих полей и показывал N/A).
-	fullOutputCount := countTokensSafe(modelName, fullOutput)
+	//
+	// R394.2: не считаем второй раз — generatedTokens (выше) это ровно то же
+	// число токенов сырого вывода, посчитанное тем же токенизатором.
+	fullOutputCount := generatedTokens
 	promptTokensTools := countTokensSafe(modelName, prompt)
 
 	// R66b (2026-09-22): отделяем prefill (TTFT) от генерации. До фикса

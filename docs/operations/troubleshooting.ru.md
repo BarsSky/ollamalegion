@@ -342,6 +342,52 @@ curl -s -H 'X-API-Token: <token>' http://localhost:18079/api/v1/cppworker/model-
 технический документ — `docs/architecture/request-lifecycle.md`, версия с
 диаграммами — `docs/architecture/request-lifecycle.ru.md`.
 
+### 2.8 «Клиент не получает маркеров Think, потом обрыв на длинной сессии» (R404)
+
+**Симптомы.** Cline/OpenWebUI при запросе с `tools[]` минутами не получает
+ничего: ни дельт ответа, ни `thinking` (хотя в интерфейсе Cline обычно есть
+пометка Think); потом ход обрывается. В логе воркера:
+
+```
+writeChatStreamResponseWithTools: reasoning отделён ...
+  reasoning_len=16647  content_len=12
+R188 повтор ограничен ... n_predict=4096
+/api/chat stream response summary ... thinking_len=16647 final_content_len=10
+  generated_tokens=4096 budget_exhausted=true done_reason=length elapsed_ms=362261
+AbortWatcher: per-infer abort set ... context canceled
+```
+
+**Причина (R404).** На tools-пути старт блока размышлений включал удержание
+всего вывода до ЗАКРЫТИЯ блока. Если бюджет `num_predict` заканчивался внутри
+размышлений (типовой исход на 4096 токенах), блок не закрывался никогда:
+клиент не получал ни байта, затем получал пустой финальный чанк и **повтор
+R188** с тем же бюджетом (ещё столько же тишины). Часть клиентов падает на
+разборе такого финала («text part … not found»), потому что thinking приходил
+только в done-кадре, без дельт.
+
+**Что сделано.** `thinking` теперь уходит дельтами сразу
+(`message.thinking`, `done:false`) — он не может быть вызовом инструмента;
+удержание осталось только для `content` (там возможна разметка tool call).
+Повтор генерации не запускается, если клиенту уже ушёл хотя бы один кадр.
+Если видимого ответа нет, финальный чанк несёт пояснение
+(`done_reason=length`), а не пустой content.
+
+**Что проверить:**
+
+```bash
+# в стриме должны быть кадры message.thinking ДО финального done
+curl -sN -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
+  -d '{"model":"<model>","stream":true,"messages":[{"role":"user","content":"hi"}],
+       "tools":[{"type":"function","function":{"name":"noop","parameters":{"type":"object"}}}]}' \
+  http://localhost:18080/api/chat | head -20
+# в логе воркера при исчерпании бюджета в размышлениях:
+#   retry skipped — stream already started (R404)
+```
+
+Если клиент всё равно пишет «text part … not found» — это уже разбор его
+собственного парсера: приложите версию клиента и точный кадр, на котором он
+падает (в стриме выше видно, что thinking идёт отдельными кадрами).
+
 ---
 
 ## 3. ReloadLoopLimitError (HTTP 413)

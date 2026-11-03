@@ -2631,9 +2631,33 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"model", modelName, "emitted_len", emittedLen, "tail_len", len(tail),
 				"tools_hold", toolsHold, "json_mode", jsonMode)
 		} else {
-			msg["content"] = content
+			// R424 (2026-11-03): КОРОТКИЙ ОТВЕТ ЦЕЛИКОМ В ОКНЕ УДЕРЖАНИЯ.
+			//
+			// ЖИВОЙ ДЕФЕКТ (воспроизведён прогоном Cline CLI 3.0.74 через
+			// балансер, сессия conv_1793730119921_sd9evze). Tools-путь держит
+			// последние toolsStreamHoldback=32 байта вывода, чтобы не отдать
+			// клиенту половину маркера вызова. Если весь видимый ответ короче
+			// окна (у нас — "FINAL: needle-7f3a", 18 байт), за ход не уходит
+			// НИ ОДНОЙ дельты: cppworker писал streamed_content_bytes=0,
+			// final_content_len=18. Дальше балансер по умолчанию вычищает
+			// content из done-чанка (LB_OLLAMA_DONE_CONTENT=strip), и клиент,
+			// читающий ответ дельтами, не получает ничего: Cline CLI падал с
+			// «text part <id> not found» — ровно тот симптом, на который
+			// жаловался оператор.
+			//
+			// R248 закрыл ту же дырку для случая «есть tool_calls»; здесь — для
+			// обычного короткого ответа. Порядок как в соседних ветках: сначала
+			// дельта, затем финальный чанк БЕЗ дубля content (клиент, читающий
+			// done, тоже получает текст — но ровно один раз).
+			if content != "" && streamContent {
+				emitContentDelta(content)
+				msg["content"] = ""
+			} else {
+				msg["content"] = content
+			}
 			logger.Get().Debugw("writeChatStreamResponseWithTools: text response (no tool_calls)",
-				"model", modelName, "content_len", len(content), "json_mode", jsonMode)
+				"model", modelName, "content_len", len(content), "json_mode", jsonMode,
+				"stream_content", streamContent, "emitted_len", emittedLen)
 		}
 		// R394 (2026-11-04): причина остановки — с учётом исчерпанного
 		// клиентского лимита. R320 ставил "length" только при незакрытом блоке

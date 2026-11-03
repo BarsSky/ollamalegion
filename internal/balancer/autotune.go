@@ -947,6 +947,18 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 	if p.nctxReload != nil {
 		minContext = p.nctxReload.DesiredNCtx(backendID, modelName)
 	}
+	// R425 (2026-11-03): окно, ЗАЯВЛЕННОЕ ОПЕРАТОРОМ в профиле модели, — это
+	// политика, а не «over-allocation». AutoTune не имеет права опускать n_ctx
+	// ниже profile.contextLength.
+	//
+	// ЖИВОЙ ДЕФЕКТ (стенд, балансер r261103-2245). Сразу после первого запроса
+	// без num_ctx AutoTune выгрузил модель, чтобы поставить «оптимум»
+	// 32768 → 20654 («over-allocation fix»), хотя в профиле заявлено окно 32768
+	// и потолок 65536. Клиент, пришедший с окном 32768, получил бы 20654, а
+	// сессия агента — обрыв по контексту; профиль оператора при этом никто не
+	// менял. Потолок профиля (contextLengthMax) уже проверяется в гардах R416b/c/d,
+	// а НИЖНЯЯ граница (contextLength) — нет.
+	minContext = autoTuneMinContextR425(minContext, p.GetModelProfileNumCtx(modelName))
 	plan := PlanApplyAutoTuneWithMinContext(analysis, loadedModel, minContext)
 	if plan == nil {
 		if minContext > 0 {
@@ -1458,6 +1470,24 @@ func (p *Proxy) executeLlamaCppUnload(backendID, modelName string) *ModelOpResul
 // Параметр currentLoaded — текущее состояние модели (для diff).
 func PlanApplyAutoTune(analysis *AutoTuneAnalysis, currentLoaded types.LlamaCppModel) *AutoTuneReloadPlan {
 	return PlanApplyAutoTuneWithMinContext(analysis, currentLoaded, 0)
+}
+
+// autoTuneMinContextR425 — нижняя граница n_ctx для AutoTune-плана.
+//
+// Максимум из двух величин:
+//   - clientRequested — сколько окна попросил клиент (R69): опускать окно ниже
+//     запроса нельзя, иначе reload-пинг-понг и 503 клиенту;
+//   - profileContext — окно, заявленное ОПЕРАТОРОМ в профиле модели (R425):
+//     это политика, а не «овер-аллокация», и AutoTune её не оспаривает.
+//
+// Вынесено отдельной функцией, чтобы правило было покрыто тестом (см.
+// autotune_profile_floor_r425_test.go) — формула внутри triggerAutoTuneReload
+// иначе осталась бы непроверяемой.
+func autoTuneMinContextR425(clientRequested, profileContext int) int {
+	if profileContext > clientRequested {
+		return profileContext
+	}
+	return clientRequested
 }
 
 // PlanApplyAutoTuneWithMinContext — R69 (2026-09-23): то же, но с учётом

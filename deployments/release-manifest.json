@@ -1,34 +1,34 @@
-{
-    "tag":  "r261103-1900",
-    "builtAt":  "2026-11-03T15:03:57Z",
-    "gitCommit":  "b4492015",
+﻿{
+    "tag":  "r261103-2310",
+    "builtAt":  "2026-11-03T19:28:54Z",
+    "gitCommit":  "160d4832",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "Стенд на Qwen3.8-9B: balancer r261103-1900, cppworker gpu-r261103-1820 (R417 terminal content), webui r261103-1515 (документация схем процесса/ответа), imageworker без изменений. CPPWORKER_VRAM_OVERHEAD_MB=512, профиль Qwen3.8-9B: окно 32768 (максимум 65536), kv q8_0, все слои на GPU.",
+    "note":  "Монитор и AutoTune (R425): тип бэкенда учитывается в советах (imageworker больше не предлагается для llama.cpp), имя модели и User-Agent не вылезают из карточки/подсказки; AutoTune не опускает окно ниже профиля модели. R424: короткий ответ на tools-пути уходит дельтой. Стенд: balancer r261103-2310, cppworker gpu-r261103-2130, webui r261103-2230, imageworker без изменений. Модель Qwen3-4B-Instruct-2507-Q4_K_M, окно 32768, kv q8_0, 36/36 слоёв на GPU.",
     "images":  [
                    {
-                       "service":  "balancer",
+                       "service":  "loadbalancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r261103-1900",
-                       "imageTag":  "r261103-1900",
-                       "imageId":  "sha256:2e2be3be1228d5944ccd0a106e66a289aa211d8549ff07b67a46cfa09790fc24",
+                       "image":  "ollama-legion/balancer:r261103-2310",
+                       "imageTag":  "r261103-2310",
+                       "imageId":  "sha256:8f11ff483d3511407d57d28363792368089d4d33416f9bd0b1fc5e57158eb373",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261103-1820",
-                       "imageTag":  "gpu-r261103-1820",
-                       "imageId":  "sha256:6d343d089715f7fd9bdb2e6b9037f209602816bfc8e6ee1480f0445c6e1a68ca",
+                       "image":  "ollama-legion/cppworker:gpu-r261103-2130",
+                       "imageTag":  "gpu-r261103-2130",
+                       "imageId":  "sha256:770d917bc8c99ddc1b1ddec1297295e96c65c78f1211eadab6c4019da7a980b3",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {
                        "service":  "webui",
                        "variable":  "WEBUI_TAG",
-                       "image":  "ollama-legion/webui:r261103-1515",
-                       "imageTag":  "r261103-1515",
-                       "imageId":  "sha256:240f4b4a004f5d24a1ea152b45557f3792aca54fff4006834625403db6491dee",
+                       "image":  "ollama-legion/webui:r261103-2230",
+                       "imageTag":  "r261103-2230",
+                       "imageId":  "sha256:3e6c55d35ac69854084b4179ff4e56fcd605105761eac47ed8877a856d2f25ea",
                        "alias":  "ollama-legion/webui:latest"
                    },
                    {

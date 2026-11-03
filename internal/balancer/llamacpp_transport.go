@@ -2583,6 +2583,17 @@ func stripNativeDoneContent(line, streamedContent string) string {
 	}
 	// Дельтами ничего не отдано — это единственный носитель ответа, оставляем.
 	if strings.TrimSpace(streamedContent) == "" {
+		// R405 (2026-11-03): диагностика для «пропала часть текста». Если ответ
+		// пришёл ТОЛЬКО в done-кадре (удержание с начала: JSON/служебный токен/
+		// блок размышлений), клиент, собирающий ответ из дельт, может его не
+		// показать. Поведение не меняем (done-content — валидный носитель Ollama
+		// API, и клиенты, читающие финал, его видят), но пишем факт в лог: без
+		// него такой случай неотличим от потери на стороне клиента.
+		modelName, _ := chunk["model"].(string)
+		if logger.Get() != nil {
+			logger.Get().Infow("proxyRequestLlamaCpp[native]: done-chunk is the only carrier of the answer (no deltas) — R405 diagnostic",
+				"model", modelName, "done_len", len(content))
+		}
 		return line
 	}
 	// R279 (2026-10-28): СНИМАЕМ ТОЛЬКО ДУБЛЬ, А НЕ ВЕСЬ ТЕКСТ.

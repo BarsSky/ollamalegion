@@ -48,6 +48,7 @@ func TestR416_ProfilePinnedKVWins(t *testing.T) {
 // TestR416_ProfileMatchesRecommendation — рекомендация совпадает с профилем:
 // план не трогаем.
 func TestR416_ProfileMatchesRecommendation(t *testing.T) {
+	t.Setenv("LB_AUTOTUNE_KV_MODE", "auto")
 	p := newKVGuardTestProxyR416("q8_0")
 	plan := &AutoTuneReloadPlan{ModelName: "Qwen3.8-9B-Distill-uncensored-heretic.Q4_K_M", KVCacheType: "q8_0"}
 	if dropped := guardAutoTuneKVPlanR416(p, "be1", plan.ModelName, plan); dropped != "" {
@@ -61,6 +62,7 @@ func TestR416_ProfileMatchesRecommendation(t *testing.T) {
 // TestR416_FlipCooldown — без профиля первая смена KV разрешена, обратная в
 // пределах cooldown — нет; после cooldown снова разрешена.
 func TestR416_FlipCooldown(t *testing.T) {
+	t.Setenv("LB_AUTOTUNE_KV_MODE", "auto")
 	resetAutoTuneKVGuardR416()
 	t.Cleanup(resetAutoTuneKVGuardR416)
 

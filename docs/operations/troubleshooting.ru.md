@@ -686,6 +686,14 @@ autotune: triggering async reload … kv_cache q4_0 → q8_0 (quality fix)
 `layers=-1 skipped … (R416b)`; строки `triggering async reload` отсутствуют;
 `loaded_at` модели не меняется между ответами.
 
+**R419: AutoTune больше не меняет KV-cache сам.** Смена KV — это выбор
+качества, а не следствие «сколько сейчас свободно VRAM», поэтому по умолчанию
+(`LB_AUTOTUNE_KV_MODE=recommend`) AutoTune только показывает рекомендацию в
+панели, а применить её можно вручную (кнопка «применить план» /
+`POST /api/v1/admin/autotune/{id}/apply`). Вернуть прежнее поведение:
+`LB_AUTOTUNE_KV_MODE=auto` (тогда действуют профиль и гистерезис R416).
+Любое иное значение = `recommend`.
+
 ---
 
 ### 2.16 Модель на 8 ГБ VRAM: что влезает, запас VRAM и переключение модели

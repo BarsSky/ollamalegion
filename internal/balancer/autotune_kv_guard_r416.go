@@ -70,6 +70,14 @@ func guardAutoTuneKVPlanR416(p *Proxy, backendID, model string, plan *AutoTuneRe
 		plan.KVCacheType = ""
 		return "kv-cache type is pinned by the model profile (" + pin + "), recommendation ignored"
 	}
+	// R419 (2026-11-03): смена KV — выбор КАЧЕСТВА, а не только памяти. По
+	// умолчанию (LB_AUTOTUNE_KV_MODE=recommend) AutoTune её только рекомендует и
+	// НЕ перезагружает модель. См. autotune_kv_mode_r419.go.
+	if !autoTuneKVAutomaticR419() {
+		plan.KVCacheType = ""
+		return "automatic KV-cache changes are disabled (LB_AUTOTUNE_KV_MODE=" +
+			autoTuneKVModeR419() + "); apply the recommendation manually"
+	}
 	autoTuneKVGuardMuR416.Lock()
 	last, ok := autoTuneKVGuardR416[autoTuneKVKeyR416(backendID, model)]
 	autoTuneKVGuardMuR416.Unlock()

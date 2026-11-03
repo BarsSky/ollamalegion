@@ -40,7 +40,11 @@ jobs:
   test:
     name: Build + test (ubuntu, no Docker)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # R423 (2026-11-06): 15 → 25 минут. Шаг с ./tests/... получил бюджет
+    # 600s вместо 300s (см. ниже), а сам пакет там — самый долгий: прогон
+    # 41676805057 целиком занял 12m31s при УПАВШЕМ на таймауте шаге tests/...
+    # Значит с честным бюджетом job в 15 минут перестаёт помещаться.
+    timeout-minutes: 25
 
     # R66c (2026-09-22): pipefail ОБЯЗАТЕЛЕН.
     #
@@ -113,7 +117,16 @@ jobs:
         # TestOpenAIChat_SlowFirstToken_HoldsConnection ~50s), поэтому шаг
         # упирался в таймаут и падал без единого '--- FAIL:' — только
         # 'FAIL ... 120.019s'. 300s совпадает с бюджетом self-hosted job'а.
-        run: scripts/run_go_test.sh "tests/..." -tags llama_stub -timeout 300s -short -v ./tests/...
+        #
+        # R423 (2026-11-06): 300s → 600s. Прогон 41676805057:
+        # 'panic: test timed out after 5m0s', 'FAIL ollama-loadbalancer/tests
+        # 300.076s' — без единого '--- FAIL:'. Пакет не сломан, он не успевает:
+        # те же тесты локально под -race идут 267-318s, а на двухъядерном
+        # раннере github дольше. В ci.yml у этого же пакета бюджет давно 600s
+        # (там ещё и -race), то есть два workflow проверяли одно и то же с
+        # разными лимитами. Приводим к 600s; timeout-minutes job'а поднят,
+        # чтобы бюджет шага не упирался в бюджет job'а.
+        run: scripts/run_go_test.sh "tests/..." -tags llama_stub -timeout 600s -short -v ./tests/...
 
       - name: go vet
         if: always()

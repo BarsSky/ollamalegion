@@ -460,6 +460,53 @@ docker logs --since 10m <balancer> 2>&1 | grep 'only carrier of the answer' | ta
 строкам. Без этих данных менять стрим/склейку наугад нельзя: легко получить
 дубли текста вместо потери.
 
+### 2.10 Как снять трейс запросов Cline (CLI и VS Code) и прогнать приёмку
+
+**Зачем.** Когда Cline показывает COMPLETE/обрыв/сжатие, нужно видеть, что
+именно клиент прислал и что получил, а не догадываться по логам балансера.
+
+**Трейс-прокси** (без зависимостей, ничего не меняет в ответе):
+
+```bash
+node scripts/cline-trace-proxy.js --port 18090 --target http://127.0.0.1:18080 --out C:\temp\cline-trace.ndjson
+```
+
+В Cline укажи base URL `http://127.0.0.1:18090` (и OpenAI-, и Ollama-путь
+пересылаются как есть). В `cline-trace.ndjson` будут тела запросов
+(`request_body`) и ответов (`response_body` / `response_stream` + сырой поток в
+`cline-trace.streams/<id>.ndjson`). В VS Code это поле — у провайдера
+(OpenAI-compatible / Ollama) в настройках Cline.
+
+**CLI Cline** (проверено на 3.0.74):
+
+```bash
+cline auth openai -b http://127.0.0.1:18090/v1 -k local-test-key -m <model> \
+  --config %TEMP%\cline-e2e-config --data-dir %TEMP%\cline-e2e-data
+cline -P openai-compatible -m <model> --config %TEMP%\cline-e2e-config \
+  --data-dir %TEMP%\cline-e2e-data -c <workdir> --json --auto-approve true \
+  --compaction agentic -t 900 "Create hello.txt with 'hi', read it back and report."
+```
+
+`--compaction off` отключает сжатие контекста клиентом (полезно, чтобы отделить
+поведение модели/балансера от компакции). В VS Code тот же режим — в настройках
+Cline.
+
+**Полная приёмка (то, что просил оператор):** сессия должна исчерпать контекст,
+провести сжатие, создать файл, отредактировать файл и выдать итоговый ответ.
+Минимум, что нужно зафиксировать:
+
+1. в трейсе — рост `request_body` до порога окна и запрос(-ы) после сжатия;
+2. в логе воркера — `stream response summary`: `done_reason`, `budget_tokens`,
+   `budget_exhausted`, `streamed_content_bytes`, `final_content_len`;
+3. в ответах клиенту — нет `done_reason=stop` при обрезанном ответе
+   (R394/R409), нет пустого ответа при `length` (R406);
+4. файл создан/изменён и итоговый ответ содержит результат.
+
+Примечание: сообщение Cline «Модель сгенерировала только размышления …
+(finish_reason=tool_calls)» — это **его собственное** предупреждение при
+reasoning + пустом content, даже когда tool_calls валидны. Вызовы при этом
+исполняются; это не обрыв.
+
 ---
 
 ## 3. ReloadLoopLimitError (HTTP 413)

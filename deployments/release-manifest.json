@@ -1,19 +1,12 @@
 {
     "tag":  "r261103-1740",
-    "builtAt":  "2026-11-03T13:31:41Z",
-    "gitCommit":  "8ba193cf",
+    "builtAt":  "2026-11-03T13:45:00Z",
+    "gitCommit":  "e9d22af2",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
+    "note":  "R415-R417: balancer r261103-1700 (AutoTune-гарды R416/R416b/R416c/R416d), cppworker gpu-r261103-1740 (qwen3.8 reasoning + R417 terminal content), webui r261103-1515 (docs), imageworker без изменений. Стенд: CPPWORKER_VRAM_OVERHEAD_MB=512, профиль Qwen3.8-9B (16k, q8_0, все слои на GPU).",
     "images":  [
-                   {
-                       "service":  "cppworker",
-                       "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261103-1740",
-                       "imageTag":  "gpu-r261103-1740",
-                       "imageId":  "sha256:05fa0aeddc7818805c317adea402d627acbe0a18df6440726b1b6ea17685dc82",
-                       "alias":  "ollama-legion/cppworker:latest-gpu-86"
-                   },
                    {
                        "service":  "balancer",
                        "variable":  "BALANCER_TAG",
@@ -25,9 +18,9 @@
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261103-1515",
-                       "imageTag":  "gpu-r261103-1515",
-                       "imageId":  "sha256:7c311378c99c9c8aad5c42d82f3a383e5c33dacc7a10321d92ece55890ad8648",
+                       "image":  "ollama-legion/cppworker:gpu-r261103-1740",
+                       "imageTag":  "gpu-r261103-1740",
+                       "imageId":  "sha256:05fa0aeddc7818805c317adea402d627acbe0a18df6440726b1b6ea17685dc82",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

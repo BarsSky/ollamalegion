@@ -507,6 +507,119 @@ Cline.
 reasoning + пустом content, даже когда tool_calls валидны. Вызовы при этом
 исполняются; это не обрыв.
 
+**Cline в VS Code: режим Plan не пишет файлы.** В хранилище Cline
+(`%USERPROFILE%\.cline\data\sessions\<id>\<id>.json`) поле `prompt` содержит
+`<user_input mode="plan">`. В этом режиме Cline не выполняет `write_file`
+(файлы в проекте не появляются), хотя модель их генерирует. Для приёмки
+«создать файл / отредактировать файл» переключите Cline в Act/Code-режим —
+это настройка клиента, не балансера.
+
+**Потеря хода при `write_file`.** Если модель выдала `tool_calls` с
+`write_file`, а в `messages.json` этой пары нет вообще (следующее сообщение —
+другой инструмент), смотрите сжатие контекста в `.compaction.json`: Cline мог
+выполнить overflow-recovery (`reason: overflow_recovery_compaction`) и выбросить
+часть хода. Причина в логе воркера — `done_reason=length` при
+`budget_exhausted=true`; с R411 бюджет reasoning-моделей поднят до 8192 и
+серверный дефолт больше не занижает объявленный клиентом `max_output_tokens`.
+
+---
+
+### 2.11 «Воркер завис: active_queries=1, GPU простаивает, ответов нет» (R413)
+
+**Симптомы.** В `/api/models` воркера `active_queries=1` и растёт
+`active_query_age_sec`; GPU загружена на единицы процентов; в
+`docker logs <cppworker>` нет новых `stream response summary`; балансер держит
+слот (`activeRequests=1`), новые запросы стоят в admission-очереди с
+`wait_max_sec=900` и в итоге получают 503.
+
+**Причина (R413).** Отмена клиента, стоявшего в очереди за единственным слотом,
+в момент, когда слот освобождался: `releaseInternal` резервировал слот за
+ожидающим, а тот уже ушёл в ветку `ctx.Done()` и слот никто не освобождал.
+До R413 ожидание шло в `Acquire(context.Background())`, то есть отмена не
+снимала даже само ожидание.
+
+**Что смотреть.**
+
+```bash
+curl -s http://127.0.0.1:18092/api/models | jq '.models[0] | {active_queries, active_query_age_sec}'
+docker logs --since 30m <cppworker> 2>&1 | grep -E "all slots busy|slot acquired|stream response summary"
+```
+
+На R413+ при ожидании появляется `inference: all slots busy, request will wait`,
+ а после выдачи — `inference: slot acquired after waiting`.
+
+**Что делать.** На сборке до R413 — перезапустить cppworker (модель
+загрузится заново). На R413+ состояние не воспроизводится; если видите его
+снова — снимите горутины воркера (`kill -QUIT` процессу cppworker) и приложите
+стек: это новый дефект.
+
+---
+
+### 2.12 AutoTune reload: `unload failed: cppworker error (HTTP 401)` (R412)
+
+**Симптомы.** В логе балансера повторяется:
+
+```
+autotune: triggering async reload … reason: kv_cache q4_0 → f16
+autotune reload failed … unload failed: cppworker error (HTTP 401): {"error":"invalid or missing API token"}
+```
+
+При этом токен в `.env` одинаков у балансера и воркера.
+
+**Причина (R412).** `ApplyAutoTunePlan` передавал в
+`ModelManager.executeLlamaCppUnload(host, port, backendID, req)` имя модели
+вместо ID бэкенда. `workerAdminToken()` не находил бэкенд, заголовок
+`X-API-Token` не ставился — воркер честно отвечал 401. Загрузка (`load`) тот же
+ID получала правильно, поэтому «unload 401, load даже не начинался».
+
+**Проверка.** В логе не должно быть 401; после успешного apply в карточке
+модели `kv_cache_type` меняется на рекомендуемый (например `f16`).
+
+**Если 401 всё равно есть.** Проверьте, что у бэкенда вообще есть токен:
+`curl -b cookies http://127.0.0.1:18080/api/v1/backends | jq '.backends[] | {id, hasAgent}'`
+и `docker exec <balancer> printenv | grep LB_API_TOKEN`; сравните с
+`docker exec <cppworker> printenv | grep -E "API_TOKEN|CPPWORKER_API_TOKEN"`.
+
+---
+
+### 2.13 В ответе виден `<channel|>` / `</think>` (R414)
+
+**Симптом.** Текст ответа заканчивается на служебный маркер шаблона:
+
+```
+…and finally run the check command.<channel|>
+```
+
+Cline сохраняет его в истории, и следующий ход получает испорченный контекст.
+
+**Причина (R414).** На tools-пути (`/api/chat` + `tools[]`) content режется
+как сырой буфер и не проходит через `ReasoningStreamState`; закрывающий маркер
+канала gemma-4 в окно удержания tool-маркеров не попадал и уходил как текст.
+
+**Проверка.** В `streamed_content_bytes`/сыром потоке нет `<channel|>`,
+`</think>`, `<|turn>`; маркеры reasoning при этом остаются в `thinking`
+(поле `message.thinking`), а не в `content`.
+
+---
+
+### 2.14 Cline обрывает ответ на 4096 токенах и «сжимает» почти пустую историю (R411)
+
+**Симптом.** В сессии Cline: `usageBefore.inputTokens ≈ 1700`,
+`reason: overflow_recovery_compaction`, часть переписки исчезла; в логе воркера
+`n_predict=4096, budget_exhausted=true, done_reason=length`.
+
+**Причина (R411).** Native `/api/chat` оставлял `n_predict` дефолтом моста
+4096 даже для reasoning-моделей; `/v1` для тех же моделей уже давал 8192.
+Gemma-4 с thinking (~2 КБ) упиралась в 4096 посреди ответа, а Cline трактует
+`done_reason=length` как «output token limit» и запускает overflow-recovery.
+
+**Проверка.** В summary теперь `n_predict=8192` (если клиент не задал
+`num_predict`/`max_tokens`); при явном `num_predict` — ровно оно; при
+`max_output_tokens < 8192` — граница клиента.
+
+**Настройка.** `CPPWORKER_DEFAULT_N_PREDICT_REASONING` (по умолчанию 8192).
+Снижение вернёт обрывы; повышение увеличит время хода на слабой карте.
+
 ---
 
 ## 3. ReloadLoopLimitError (HTTP 413)

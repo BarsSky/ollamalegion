@@ -1,4 +1,4 @@
-# Жизненный цикл запроса: нормативная схема (R402)
+# Жизненный цикл запроса: нормативная схема (R414)
 
 **Статус:** действующая схема. Любая правка пути запроса/ответа обязана обновить этот
 файл в том же коммите (см. §14).
@@ -176,6 +176,13 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 - **Гейты**: memfit (`internal/cppbackend/memfit_adapter.go`, `internal/memfit`),
   R297 `WindowFeasibility` (до разрушительного unload), R383 layout heal, R380/R382.
 - **Отказ не имеет права оставить стенд без модели** (R297): проверка до unload.
+- **AutoTune reload (R412).** Unload в `ApplyAutoTunePlan` обязан нести токен ЭТОГО
+  бэкенда. До R412 в `ModelManager.executeLlamaCppUnload` третьим аргументом уходило
+  имя модели вместо `backendID`: `workerAdminToken()` не находил бэкенд, заголовок
+  `X-API-Token` не ставился, воркер отвечал `401 invalid or missing API token`, и
+  `kv_cache q4_0 → f16` не применялся, повторяясь на каждом запросе. «Занято» (409)
+  и «сломано» (401) различаются: первое откладывается с backoff
+  (`autotune_defer_r283.go`), второе — ошибка конфигурации.
 
 ---
 
@@ -201,6 +208,26 @@ client_cap        = min( physical_ceiling, effective_ceiling )
    и запускает overflow-recovery: compacting → compacted → потеря части
    переписки и «text part … not found». `eval_count` после повтора — сумма
    обеих попыток (клиент видел thinking первой и ответ второй).
+6. **Политика `n_predict` — ОДНА на оба протокола (R411).** Порядок:
+   явный `num_predict`/`max_tokens` клиента → `ResolveNPredict` (reasoning-модель
+   без явного значения получает 8192 или `CPPWORKER_DEFAULT_N_PREDICT_REASONING`)
+   → дефолт моста 4096. Верхняя граница `max_output_tokens` может только
+   уменьшить результат. До R411 native `/api/chat` оставлял 4096 даже для
+   reasoning-моделей, а `/v1/chat/completions` давал 8192: gemma-4 обрывалась на
+   4096-м токене посреди ответа, Cline получал `done_reason=length` и запускал
+   overflow-recovery при `inputTokens≈1700` — то есть компактил почти пустую
+   историю (живая сессия 1793704404258_l9pcu).
+7. **Служебные маркеры не уходят в `content` (R414).** На tools-пути поток
+   режется как сырой буфер (`buf[emittedLen:cut]`) и не проходит через
+   `ReasoningStreamState`, поэтому закрывающий маркер канала gemma-4
+   (`<channel|>`) утекал в видимый ответ. Теперь перед выдачей дельты хвост,
+   который может быть началом маркера, удерживается
+   (`toolsStreamMarkerPrefixHoldbackR414`), а первый полный маркер
+   пропускается (`toolsStreamMarkerScanR414`).
+8. **Слот воркера (R413).** `SlotManager.Acquire` блокируется на слоте; отмена
+   клиента в момент освобождения слота не имеет права терять слот: waiter,
+   получивший резервирование, но уже отменённый, обязан вернуть слот в оборот.
+   Нарушение этого правила клинит воркер навсегда (`active_queries=1`, GPU
 4. Пустой видимый ответ при непустых размышлениях → пояснение клиенту
    (`emptyAnswerNoticeForNativeR314`) или `error`-терминатор.
 
@@ -287,6 +314,10 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | «окно не растёт» | `growth_blockers`, `active_streams`, `reload_pending`, `WindowFeasibility` | `growth_guard_r299.go`, `growth_stream_guard_r301.go` |
 | «модель не загрузилась» | `memfit` verdict, `feasible`, `stage`, `reason` | `internal/memfit`, `memfit_gate.go` |
 | «primary мешает» | `primary is deprecated and ignored (R401)` | `primary_model_policy.go` |
+| «воркер завис: active_queries=1, GPU простаивает» | `inference: all slots busy, request will wait` (R413) → есть ли `inference: slot acquired after waiting`; отсутствие `stream response summary` при завершённых HTTP-запросах | `internal/cppbackend/slot_manager.go` (`Acquire`, `releaseInternal`), `backend.go` (`GenerateStreamWithAbort`) |
+| «AutoTune reload: 401 invalid or missing API token» | `autotune reload failed … unload failed: cppworker error (HTTP 401)`; в `unload` нет `X-API-Token` | `internal/balancer/autotune.go` (`executeLlamaCppUnload`), `worker_admin_token_r307.go` |
+| «в ответе виден `<channel\|>` / `</think>`» | `streamed_content_bytes`, сырой хвост дельты; на tools-пути искать `toolsStreamMarkerScanR414` | `cmd/cppworker/tools_stream_markers_r414.go`, `handlers_chat.go` |
+| «Cline компактит при малом usage» / «ответ обрезан на 4096» | `budget_exhausted`, `n_predict` в summary; сравнить с `max_output_tokens` запроса | `handlers_generate.go` (`buildGenerationParams`), `reasoning_content.go` (`ResolveNPredict`) |
 
 ---
 
@@ -305,6 +336,9 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | Генерация (OpenAI) | `cmd/cppworker/handlers_openai.go` | `handleV1ChatCompletions`, `writeOpenAIChatStream`, `emitOpenAIUsageChunkSafe` |
 | Генерация (`/api/generate`) | `cmd/cppworker/handlers_generate.go` | `handleGenerate`, стрим-ветка |
 | Терминальные причины | `cmd/cppworker/tools_terminal_reason_r394.go` | `toolsBudgetExhaustedR394`, `toolsTerminalReasonR394` |
+| Слоты воркера | `internal/cppbackend/slot_manager.go`, `backend.go` | `Acquire`, `releaseInternal`, `GenerateStreamWithAbort` |
+| Маркеры в потоке | `cmd/cppworker/tools_stream_markers_r414.go` | `toolsStreamMarkerScanR414`, `toolsStreamMarkerPrefixHoldbackR414` |
+| Политика n_predict | `cmd/cppworker/reasoning_content.go` | `ResolveNPredict`, `DefaultNPredictReasoning` |
 | Метаданные модели | `cmd/cppworker/handlers_model.go` | `handleOllamaShow`, `writeOllamaShowLoadedResponse` |
 | Транспорт/трансляции | `internal/balancer/llamacpp_transport.go`, `llamacpp_translate_resp.go`, `anthropic_r247.go` | `stripNativeDoneContent`, `translateUsageChunkToOllama` |
 | Очередь/допуск | `internal/balancer/admission_queue.go`, `unified_queue_r73.go` | admission, `X-Queue-*` |
@@ -333,6 +367,12 @@ client_cap        = min( physical_ceiling, effective_ceiling )
    не реализовано; обсуждается.
 5. **Очередь «нет свободного бэкенда»** — реализована в R403
    (`backend_wait_queue_r403.go`, `LB_BACKEND_WAIT_SEC`).
+6. **Потолок `n_predict` для reasoning-моделей.** R411 даёт 8192
+   (`CPPWORKER_DEFAULT_N_PREDICT_REASONING`). На слабой карте 8192 токена — это
+   десятки минут на один ход; альтернатива — 4096 и регулярные обрывы
+   `done_reason=length` с overflow-recovery у Cline. Оператор выбирает значением
+   env (или профилем), серверное значение лишь не должно молча занижать
+   объявленный клиентом бюджет.
 
 ---
 

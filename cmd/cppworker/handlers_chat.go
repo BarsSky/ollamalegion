@@ -443,17 +443,12 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		if toolsEnabled || promptOpts.JSONMode {
 			// R406: альтернативный промпт БЕЗ размышлений — аварийный выход,
 			// когда модель потратила весь клиентский бюджет на thinking и не
-			// сказала ни слова. Строим из тех же сообщений (tools уже внедрены),
-			// чтобы структура запроса не менялась — меняется только
-			// enable_thinking в chat template.
+			// сказала ни слова. Строим из тех же сообщений (tools уже внедрены)
+			// через native chat template c enable_thinking=false: LEGACY-путь
+			// оставил бы thinking включённым по умолчанию шаблона.
 			promptNoThink := ""
 			if toolsEnabled {
-				noThink := false
-				optsNoThink := promptOpts
-				optsNoThink.ReasoningOverride = &noThink
-				if pnt, pntErr := buildChatPromptWithOptions(msgs, actualModel, optsNoThink); pntErr == nil {
-					promptNoThink = pnt
-				}
+				promptNoThink = buildChatPromptNoThinkingR406(msgs, actualModel)
 			}
 			writeChatStreamResponseWithTools(w, r, actualModel, prompt, params, promptOpts.JSONMode, promptOpts.ReasoningOverride, req.Tools, promptNoThink)
 			return

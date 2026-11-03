@@ -94,3 +94,28 @@ func toolsShouldRetryWithoutThinkingR406(nPredict, generatedTokens int, fullOutp
 	}
 	return toolsBudgetExhaustedR394(nPredict, generatedTokens)
 }
+
+// buildChatPromptNoThinkingR406 — промпт с enable_thinking=false, не меняя
+// остальную структуру запроса (та же tool-история).
+//
+// ПОЧЕМУ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ buildChatPromptWithOptions(ReasoningOverride=
+// false): тот путь при выключенном reasoning идёт в LEGACY-шаблон без
+// enable_thinking, а шаблон Qwen3 при отсутствии переменной оставляет thinking
+// включённым по умолчанию. Повтор тогда снова уйдёт в размышления. Нам нужен
+// именно native common_chat_templates_apply с enable_thinking=false.
+func buildChatPromptNoThinkingR406(msgs []chatMessage, modelName string) string {
+	caps := templateToolCapsForModel(modelName)
+	if p, _, err := safeApplyChatTemplateWithThinking(
+		modelName, "", buildNativeToolHistory(msgs, caps), false, true); err == nil && p != "" {
+		return p
+	}
+	if usesStructuredToolHistory(caps) {
+		// Тот же fallback, что в buildChatPrompt: шаблон отказался рисовать
+		// структурные tool_calls — пробуем текстовую форму.
+		if p, _, err := safeApplyChatTemplateWithThinking(
+			modelName, "", buildLegacyToolHistory(msgs), false, true); err == nil && p != "" {
+			return p
+		}
+	}
+	return ""
+}

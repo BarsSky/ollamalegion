@@ -49,11 +49,26 @@ import (
 //
 // n_predict <= 0 означает «лимита нет» (Ollama: -1/0 = дефолт): усечения по
 // бюджету в этом случае быть не может, поэтому false.
+//
+// R409 (2026-11-03): ДОПУСК -1 ТОКЕН. Живой лог A10 (Cline, 27B):
+//
+//	n_predict=4096  generated_tokens=4095  budget_exhausted=false
+//	done_reason=stop  streamed_content_bytes=416  final_content_len=0
+//
+// llama.cpp останавливается на n_predict декодированных токенов, но в
+// детокенизированном выводе их может быть на один меньше (последний — EOS/
+// служебный, текста не даёт). Строгое `>= nPredict` из-за этого не замечало
+// упор в кап: клиент получал stop на обрезанном ответе, Cline закрывал ход
+// («COMPLETE» сразу после начала размышлений), а R406 не срабатывал, потому
+// что budget_exhausted=false.
 func toolsBudgetExhaustedR394(nPredict, generatedTokens int) bool {
 	if nPredict <= 0 || generatedTokens <= 0 {
 		return false
 	}
-	return generatedTokens >= nPredict
+	if generatedTokens >= nPredict {
+		return true
+	}
+	return generatedTokens >= nPredict-1
 }
 
 // toolsTerminalReasonR394 — причина остановки для терминального кадра

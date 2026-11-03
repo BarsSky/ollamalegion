@@ -100,8 +100,14 @@ func TestR394_BudgetExhausted(t *testing.T) {
 	if !toolsBudgetExhaustedR394(4096, 4100) {
 		t.Error("сгенерировано больше n_predict — бюджет тем более исчерпан")
 	}
-	if toolsBudgetExhaustedR394(4096, 4095) {
-		t.Error("на один токен меньше лимита — законный stop, а не length")
+	if !toolsBudgetExhaustedR394(4096, 4095) {
+		// R409: живой лог A10 (27B, Cline): n_predict=4096, generated_tokens=4095,
+		// done_reason=stop на обрезанном ответе. Детокенизация теряет последний
+		// (EOS/служебный) токен, поэтому допуск -1 обязателен.
+		t.Error("на один токен меньше лимита при упоре в кап — это length (R409)")
+	}
+	if toolsBudgetExhaustedR394(4096, 4094) {
+		t.Error("на два токена меньше лимита — законный stop, а не length")
 	}
 	if toolsBudgetExhaustedR394(0, 5000) {
 		t.Error("n_predict=0 означает «лимита нет»: length объявлять нельзя")

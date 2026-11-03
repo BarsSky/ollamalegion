@@ -199,6 +199,35 @@ func analyseResponse(t *testing.T, responseBody []byte) diagResult {
 	return r
 }
 
+// mockProbeMetaResponse — отвечает на служебные запросы балансера
+// (/api/version, /api/info, /api/models) до SSE-ветки сценария.
+//
+// R420 (2026-11-03): метрик-поллер балансера ходит в /api/models; сценарии D/E/E2
+// отвечали на ЛЮБОЙ путь SSE-потоком, поллер не мог разобрать ответ и очищал
+// список загруженных моделей — после ужесточения «модель должна быть загружена»
+// запрос получал 503 «model is not loaded and auto-load failed».
+func mockProbeMetaResponse(w http.ResponseWriter, r *http.Request) bool {
+	switch r.URL.Path {
+	case "/api/version":
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"version": "0.0.0-test"})
+		return true
+	case "/api/info":
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"version": "0.0.0-test", "models": 1})
+		return true
+	case "/api/models":
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"models": []map[string]interface{}{
+				{"name": "qwen2.5:7b-instruct-q4_K_M", "state": "loaded", "context_size": 32768, "parallel": 1},
+			},
+		})
+		return true
+	}
+	return false
+}
+
 // setupLlamaCppProxy создаёт прокси с cppworker-бэкендом.
 func setupLlamaCppProxy(t *testing.T, backendSrvURL string) (*httptest.Server, *balancer.Proxy) {
 	t.Helper()
@@ -239,9 +268,10 @@ func setupLlamaCppProxy(t *testing.T, backendSrvURL string) (*httptest.Server, *
 	proxy := balancer.NewProxy(config)
 	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("cppworker-test", &types.BackendMetrics{
-		ID:     "cppworker-test",
-		GPU:    types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
-		System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, MemoryUsed: 16000, MemoryFree: 49536, DiskFree: 20480},
+		LlamaCpp: types.LlamaCppMetrics{LoadedModels: []types.LlamaCppModel{{Name: "qwen2.5:7b-instruct-q4_K_M", State: "loaded", ContextLength: 32768}}},
+		ID:       "cppworker-test",
+		GPU:      types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
+		System:   types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, MemoryUsed: 16000, MemoryFree: 49536, DiskFree: 20480},
 		Ollama: types.OllamaMetrics{
 			MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
 			RunningModels: []types.RunningModel{{Name: "qwen2.5:7b-instruct-q4_K_M", VRAMUsage: 6000}},
@@ -265,6 +295,9 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioA_CppWorkerSSE(t *testing.T) {
 	var backendRequestCount int64
 
 	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mockProbeMetaResponse(w, r) {
+			return
+		}
 		atomic.AddInt64(&backendRequestCount, 1)
 		body, _ := io.ReadAll(r.Body)
 
@@ -348,6 +381,9 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioB_OllamaDirect(t *testing.T) {
 
 	var backendRequestCount int64
 	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mockProbeMetaResponse(w, r) {
+			return
+		}
 		atomic.AddInt64(&backendRequestCount, 1)
 		t.Logf("\n[BALANCER → OLLAMA BACKEND] %s %s", r.Method, r.URL.Path)
 
@@ -412,9 +448,10 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioB_OllamaDirect(t *testing.T) {
 	proxy := balancer.NewProxy(config)
 	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("ollama-test", &types.BackendMetrics{
-		ID:     "ollama-test",
-		GPU:    types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
-		System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, MemoryUsed: 16000, MemoryFree: 49536, DiskFree: 20480},
+		LlamaCpp: types.LlamaCppMetrics{LoadedModels: []types.LlamaCppModel{{Name: "qwen2.5:7b-instruct-q4_K_M", State: "loaded", ContextLength: 32768}}},
+		ID:       "ollama-test",
+		GPU:      types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
+		System:   types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, MemoryUsed: 16000, MemoryFree: 49536, DiskFree: 20480},
 		Ollama: types.OllamaMetrics{
 			MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
 			RunningModels: []types.RunningModel{{Name: "qwen2.5:7b-instruct-q4_K_M", VRAMUsage: 6000}},
@@ -465,6 +502,9 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioC_ExpandedMockStyle(t *testing.T) {
 
 	var backendRequestCount int64
 	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mockProbeMetaResponse(w, r) {
+			return
+		}
 		atomic.AddInt64(&backendRequestCount, 1)
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.WriteHeader(http.StatusOK)
@@ -531,9 +571,10 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioC_ExpandedMockStyle(t *testing.T) {
 	proxy := balancer.NewProxy(config)
 	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("ollama-mock-style", &types.BackendMetrics{
-		ID:     "ollama-mock-style",
-		GPU:    types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
-		System: types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, MemoryUsed: 16000, MemoryFree: 49536, DiskFree: 20480},
+		LlamaCpp: types.LlamaCppMetrics{LoadedModels: []types.LlamaCppModel{{Name: "qwen2.5:7b-instruct-q4_K_M", State: "loaded", ContextLength: 32768}}},
+		ID:       "ollama-mock-style",
+		GPU:      types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
+		System:   types.SystemMetrics{CPUUsagePercent: 20, MemoryTotal: 65536, MemoryUsed: 16000, MemoryFree: 49536, DiskFree: 20480},
 		Ollama: types.OllamaMetrics{
 			MaxModels: 5, MaxConcurrentRequests: 10, ActiveRequests: 0, OllamaAvailable: true,
 			RunningModels: []types.RunningModel{{Name: "qwen2.5:7b-instruct-q4_K_M", VRAMUsage: 6000}},
@@ -582,6 +623,9 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioD_CppWorkerMixedChunks(t *testing.T) {
 
 	var backendRequestCount int64
 	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mockProbeMetaResponse(w, r) {
+			return
+		}
 		atomic.AddInt64(&backendRequestCount, 1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -692,6 +736,9 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioE_HermesStyleContentToolCall(t *testin
 
 	var backendRequestCount int64
 	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mockProbeMetaResponse(w, r) {
+			return
+		}
 		atomic.AddInt64(&backendRequestCount, 1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -827,6 +874,9 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioE2_HermesSingleChunk(t *testing.T) {
 
 	var backendRequestCount int64
 	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mockProbeMetaResponse(w, r) {
+			return
+		}
 		atomic.AddInt64(&backendRequestCount, 1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)

@@ -292,6 +292,19 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 						})
 						return nil
 					}
+					// R421: загрузка вернула КОНКРЕТНУЮ причину (битый файл,
+					// неподдерживаемая модель) — это терминальный отказ, ждать
+					// готовности бессмысленно. Без этой ветки клиент висел весь
+					// бюджет автозагрузки (180 с) при известной причине.
+					if isModelLoadFailedError(loadErr) {
+						logger.Get().Errorw("proxyRequest: загрузка модели провалилась по конкретной причине — 503 без ожидания (R421)",
+							"backend", backendID, "model", model, "error", loadErr)
+						writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+							"error": fmt.Sprintf("model %q is not loaded and auto-load failed: %v", model, loadErr),
+							"model": model,
+						})
+						return nil
+					}
 					if p.waitModelReadyForAutoLoad(r.Context(), backendID, model) {
 						logger.Get().Infow("proxyRequest: auto-load reported error but model became ready (R325.1)",
 							"backend", backendID, "model", model, "load_error", loadErr)

@@ -20,9 +20,9 @@ import (
 // числе когда имя профиля короче имени модели ("gemma-4" → "gemma-4-E4B-it-Q4_K_M").
 func TestReloadHints_R70_FromProfile(t *testing.T) {
 	p := admissionTestProxy(t, 4)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"gemma-4": {ContextLength: 32768, KVCacheType: "q4_0"},
-	}
+	})
 	hints := p.reloadHintsFor("llama_adm", "gemma-4-E4B-it-Q4_K_M")
 	if hints.KVCacheType != "q4_0" {
 		t.Fatalf("ожидался q4_0 из профиля (substring match), получено %q", hints.KVCacheType)
@@ -33,7 +33,7 @@ func TestReloadHints_R70_FromProfile(t *testing.T) {
 // загруженной модели (cppworker /api/models → llamaMetrics).
 func TestReloadHints_R70_FromLoadedModel(t *testing.T) {
 	p := admissionTestProxy(t, 4)
-	p.config.LlamaCppModelProfiles = nil
+	p.ReplaceModelProfiles(nil)
 	p.metricsMgr.mu.Lock()
 	p.metricsMgr.llamaMetrics["llama_adm"] = &types.LlamaCppMetrics{
 		LoadedModels: []types.LlamaCppModel{
@@ -52,7 +52,7 @@ func TestReloadHints_R70_FromLoadedModel(t *testing.T) {
 // (стратегия посчитает как раньше).
 func TestReloadHints_R70_UnknownIsEmpty(t *testing.T) {
 	p := admissionTestProxy(t, 4)
-	p.config.LlamaCppModelProfiles = nil
+	p.ReplaceModelProfiles(nil)
 	if hints := p.reloadHintsFor("llama_adm", "unknown-model"); hints.KVCacheType != "" {
 		t.Fatalf("ожидался пустой хинт, получено %q", hints.KVCacheType)
 	}
@@ -62,9 +62,9 @@ func TestReloadHints_R70_UnknownIsEmpty(t *testing.T) {
 // то есть координатор реально видит профиль (иначе хинт не дойдёт до cppworker).
 func TestReloadHintsProvider_R70_WiredInNewProxy(t *testing.T) {
 	p := admissionTestProxy(t, 4)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"gemma": {ContextLength: 8192, KVCacheType: "q4_0"},
-	}
+	})
 	got := p.nctxReload.ReloadHintsFor("llama_adm", "gemma")
 	if got.KVCacheType != "q4_0" {
 		t.Fatalf("координатор не получил хинт от Proxy: %+v", got)

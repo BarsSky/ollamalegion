@@ -34,7 +34,7 @@ func (p *Proxy) initBackendGroupsR92(cfg types.BalancingSettings) {
 		return
 	}
 	groups := cfg.BackendGroups
-	p.backendGroups = backendgroup.NewWithModelInfo(groups, p.groupMemberInfoR92, p.groupModelInfoR104)
+	p.backendGroups.Store(backendgroup.NewWithModelInfo(groups, p.groupMemberInfoR92, p.groupModelInfoR104))
 	// R304: тот же момент (старт и перезагрузка конфига) — правильное место для
 	// снимка ролей: роли приходят из state.json и persistent-оверрайдов, и
 	// горячий путь не должен успеть увидеть пустой снимок.
@@ -71,28 +71,38 @@ func (p *Proxy) SetBackendGroupsR92(cfg types.BalancingSettings) {
 	p.initBackendGroupsR92(cfg)
 }
 
-// BackendGroupsR92 возвращает реестр групп (nil, если групп нет).
-func (p *Proxy) BackendGroupsR92() *backendgroup.Registry {
+// backendGroupsR92 — текущий реестр групп (nil-safe, atomic.Load).
+//
+// R420 (2026-11-03): единственная точка чтения указателя. Реестр неизменяем,
+// поэтому возвращённый объект можно использовать без блокировок.
+func (p *Proxy) backendGroupsR92() *backendgroup.Registry {
 	if p == nil {
 		return nil
 	}
-	return p.backendGroups
+	return p.backendGroups.Load()
+}
+
+// BackendGroupsR92 возвращает реестр групп (nil, если групп нет).
+func (p *Proxy) BackendGroupsR92() *backendgroup.Registry {
+	return p.backendGroupsR92()
 }
 
 // BackendGroupStatuses — состояния всех групп для API и монитора.
 func (p *Proxy) BackendGroupStatuses() []backendgroup.GroupState {
-	if p == nil || p.backendGroups == nil {
+	bg := p.backendGroupsR92()
+	if bg == nil {
 		return nil
 	}
-	return p.backendGroups.States()
+	return bg.States()
 }
 
 // BackendGroupStateForModel — состояние группы, обслуживающей модель.
 func (p *Proxy) BackendGroupStateForModel(model string) (backendgroup.GroupState, bool) {
-	if p == nil || p.backendGroups == nil {
+	bg := p.backendGroupsR92()
+	if bg == nil {
 		return backendgroup.GroupState{}, false
 	}
-	return p.backendGroups.StateForModel(model)
+	return bg.StateForModel(model)
 }
 
 // BackendGroupWarnings — ошибки конфига `balancing.backendGroups[]`.
@@ -132,10 +142,11 @@ func (p *Proxy) RawBackendGroupsR102() []types.BackendGroupConfig {
 // построения неизменяем, поэтому проверка безопасна и в горячем пути, и под
 // уже взятым p.mu.RLock (см. expandCandidates) — вложенных локов нет.
 func (p *Proxy) isGroupWorkerR92(backendID string) bool {
-	if p == nil || p.backendGroups == nil {
+	bg := p.backendGroupsR92()
+	if bg == nil {
 		return false
 	}
-	return p.backendGroups.IsWorker(backendID)
+	return bg.IsWorker(backendID)
 }
 
 // groupModelInfoR104 — измеренная скорость декода модели группы.

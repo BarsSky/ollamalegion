@@ -197,9 +197,9 @@ func TestValidateCompositionR95_UsesLiveVRAMAndRAM(t *testing.T) {
 func TestValidateCompositionR95_TakesSizeFromProfile(t *testing.T) {
 	// Размер в запросе не задан — берём из профиля балансера.
 	p := compositionProxyR95(t, 6144, 16384)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"m-14b": {SizeBytes: 40 << 30}, // 40 ГиБ: не влезает никуда
-	}
+	})
 
 	report := p.ValidateCompositionR95(compositionRequestR95(listenR95(t), 0))
 	if _, found := issueForR95(report, composition.CheckVRAMSumInsufficient); !found {

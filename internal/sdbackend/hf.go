@@ -1009,6 +1009,23 @@ func (m *HFManager) deleteBundleFile(modelID, rel string) (*cppbackend.DeleteDow
 		return nil, fmt.Errorf("invalid filename %q: escapes models dir", rel)
 	}
 
+	// Размеры файлов снимаем ДО отмены активной загрузки.
+	//
+	// R423-флейк (2026-11-06). Отмена активной загрузки сама удаляет её
+	// `.download` (downloader освобождает место при Cancel). Если измерять
+	// размеры ПОСЛЕ отмены, то в гонке «соединение уже оборвалось, но
+	// downloader ещё не заметил этого» файла на диске уже нет, и Delete
+	// отвечал «no file found for <file>» с bytesFreed=0 — при том что место
+	// реально освобождено. Тест
+	// TestHFManager_DeletePartialBundleFileRemovesTemp падал именно так (то
+	// проходит, то нет — зависит от того, кто первый: downloader или Delete).
+	before := make(map[string]int64, 2)
+	for _, candidate := range []string{full, full + ".download"} {
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			before[candidate] = fi.Size()
+		}
+	}
+
 	// Отменяем активную загрузку этого bundle (если есть) — иначе файл занят.
 	m.cancelActiveBundleFor(filepath.Dir(full))
 
@@ -1016,20 +1033,28 @@ func (m *HFManager) deleteBundleFile(modelID, rel string) (*cppbackend.DeleteDow
 		ModelID:  modelID,
 		Filename: filepath.ToSlash(clean),
 	}
-	for _, candidate := range []string{full, full + ".download"} {
-		fi, err := os.Stat(candidate)
-		if err != nil || fi.IsDir() {
-			continue
-		}
-		if err := os.Remove(candidate); err != nil {
-			return result, fmt.Errorf("remove %s: %w", candidate, err)
-		}
-		result.BytesFreed += fi.Size()
+	markDeleted := func(candidate string, size int64) {
+		result.BytesFreed += size
 		if strings.HasSuffix(candidate, ".download") {
 			result.TempDeleted = true
 		} else {
 			result.FinalDeleted = true
 		}
+	}
+	for _, candidate := range []string{full, full + ".download"} {
+		fi, err := os.Stat(candidate)
+		if err != nil || fi.IsDir() {
+			// Файла уже нет: его мог убрать сам загрузчик, отменяя активную
+			// загрузку. Место освобождено — так и докладываем вместо ошибки.
+			if size, existed := before[candidate]; existed {
+				markDeleted(candidate, size)
+			}
+			continue
+		}
+		if err := os.Remove(candidate); err != nil {
+			return result, fmt.Errorf("remove %s: %w", candidate, err)
+		}
+		markDeleted(candidate, fi.Size())
 	}
 
 	// Если это был последний файл bundle с манифестом — снимаем регистрацию:

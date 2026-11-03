@@ -101,17 +101,21 @@ func asInt(v interface{}) (int, bool) {
 // чтобы profile "gemma-4" матчил модель "gemma-4-E4B-it-Q4_K_M".
 // Если найдено несколько совпадений — возвращается первое.
 func (p *Proxy) GetModelProfileNumCtx(modelName string) int {
-	if p == nil || p.config == nil || p.config.LlamaCppModelProfiles == nil {
+	// R423: читаем СНИМОК карты профилей, а не config.LlamaCppModelProfiles
+	// напрямую — админка может писать профиль прямо сейчас (см.
+	// model_profiles_guard_r423.go).
+	profiles := p.profilesSnapshotR423()
+	if len(profiles) == 0 {
 		return 0
 	}
 	// Точное совпадение (fast-path)
-	if profile, ok := p.config.LlamaCppModelProfiles[modelName]; ok {
+	if profile, ok := profiles[modelName]; ok {
 		if profile.ContextLength > 0 {
 			return profile.ContextLength
 		}
 	}
 	// Case-insensitive substring match (для профиля "gemma-4" → модель "gemma-4-E4B-it-Q4_K_M")
-	for name, profile := range p.config.LlamaCppModelProfiles {
+	for name, profile := range profiles {
 		if profile.ContextLength == 0 {
 			continue
 		}
@@ -158,11 +162,13 @@ func NormalizeModelProfileKey(modelName string) string {
 // GetModelProfile — полный профиль (для API endpoints).
 // Возвращает (profile, true) если найден, иначе (zero, false).
 func (p *Proxy) GetModelProfile(modelName string) (types.LlamaCppModelProfile, bool) {
-	if p == nil || p.config == nil || p.config.LlamaCppModelProfiles == nil {
+	// R423: снимок под RLock — см. model_profiles_guard_r423.go.
+	profiles := p.profilesSnapshotR423()
+	if len(profiles) == 0 {
 		return types.LlamaCppModelProfile{}, false
 	}
 	key := NormalizeModelProfileKey(modelName)
-	if profile, ok := p.config.LlamaCppModelProfiles[key]; ok {
+	if profile, ok := profiles[key]; ok {
 		return profile, true
 	}
 	// Совместимость: запись могла остаться под старым ключом с расширением
@@ -172,7 +178,7 @@ func (p *Proxy) GetModelProfile(modelName string) (types.LlamaCppModelProfile, b
 		if legacy == "" || legacy == key {
 			continue
 		}
-		if profile, ok := p.config.LlamaCppModelProfiles[legacy]; ok {
+		if profile, ok := profiles[legacy]; ok {
 			return profile, true
 		}
 	}
@@ -191,15 +197,15 @@ func (p *Proxy) GetModelProfile(modelName string) (types.LlamaCppModelProfile, b
 	// та же семантика, что у остальных читателей. Порядок детерминированный
 	// (сортировка ключей), чтобы при нескольких совпадениях выбор не зависел от
 	// порядка map.
-	if len(p.config.LlamaCppModelProfiles) > 0 {
-		keys := make([]string, 0, len(p.config.LlamaCppModelProfiles))
-		for k := range p.config.LlamaCppModelProfiles {
+	if len(profiles) > 0 {
+		keys := make([]string, 0, len(profiles))
+		for k := range profiles {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
 			if containsFold(k, key) || containsFold(key, k) {
-				return p.config.LlamaCppModelProfiles[k], true
+				return profiles[k], true
 			}
 		}
 	}
@@ -217,32 +223,44 @@ func (p *Proxy) SetModelProfile(modelName string, profile types.LlamaCppModelPro
 	if p == nil || p.config == nil {
 		return
 	}
+	key := NormalizeModelProfileKey(modelName)
+	raw := strings.TrimSpace(modelName)
+	// R423: запись под тем же замком, под которым читатели берут снимок.
+	p.profilesMu.Lock()
 	if p.config.LlamaCppModelProfiles == nil {
 		p.config.LlamaCppModelProfiles = make(map[string]types.LlamaCppModelProfile)
 	}
-	key := NormalizeModelProfileKey(modelName)
-	raw := strings.TrimSpace(modelName)
 	if raw != "" && raw != key {
 		delete(p.config.LlamaCppModelProfiles, raw)
+	}
+	p.config.LlamaCppModelProfiles[key] = profile
+	p.profilesMu.Unlock()
+	if raw != "" && raw != key {
 		if logger.Get() != nil {
 			logger.Get().Infow(i18n.T("balancer.num_ctx_resolver.profile_saved_normalized_key_info"),
 				"input", raw, "key", key,
 				"hint", i18n.T("balancer.num_ctx_resolver.profile_saved_normalized_key_hint"))
 		}
 	}
-	p.config.LlamaCppModelProfiles[key] = profile
 }
 
 // DeleteModelProfile — удаляет профиль.
 // Возвращает true если профиль был, false если его не было.
 func (p *Proxy) DeleteModelProfile(modelName string) bool {
-	if p == nil || p.config == nil || p.config.LlamaCppModelProfiles == nil {
+	if p == nil || p.config == nil {
 		return false
 	}
 	// R136: удаляем и нормализованный ключ, и старый с расширением .gguf —
 	// иначе «снять профиль» из карточки диска оставлял бы мёртвую запись.
 	raw := strings.TrimSpace(modelName)
 	key := NormalizeModelProfileKey(modelName)
+	// R423: проверка и удаление — под одним замком (иначе между ними админка
+	// успела бы создать профиль, и мы удалили бы не то, что проверили).
+	p.profilesMu.Lock()
+	defer p.profilesMu.Unlock()
+	if p.config.LlamaCppModelProfiles == nil {
+		return false
+	}
 	_, hadKey := p.config.LlamaCppModelProfiles[key]
 	_, hadRaw := p.config.LlamaCppModelProfiles[raw]
 	if !hadKey && !hadRaw {
@@ -258,10 +276,7 @@ func (p *Proxy) DeleteModelProfile(modelName string) bool {
 // CountModelProfiles — сколько per-model профилей назначено (для WebUI:
 // «сколько моделей уже настроено отдельно»).
 func (p *Proxy) CountModelProfiles() (int, error) {
-	if p == nil || p.config == nil {
-		return 0, nil
-	}
-	return len(p.config.LlamaCppModelProfiles), nil
+	return len(p.profilesSnapshotR423()), nil
 }
 
 // GetDefaultModelProfile — R83 (2026-09-30): настройки по умолчанию для моделей,

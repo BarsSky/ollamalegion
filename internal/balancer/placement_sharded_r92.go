@@ -55,12 +55,13 @@ type shardedFitR92 struct {
 // shardedFitR92 — проверка исполнимости раскладки для модели.
 func (p *Proxy) shardedFitR92(model string) shardedFitR92 {
 	var fit shardedFitR92
-	if p == nil || p.backendGroups == nil || !p.backendGroups.Configured() {
+	bg := p.backendGroupsR92()
+	if bg == nil || !bg.Configured() {
 		fit.Reason = "логические бэкенды не настроены: раскладка выполняется группой узлов, " +
 			"а balancing.backendGroups[] пуст — нечего раскладывать"
 		return fit
 	}
-	state, ok := p.backendGroups.StateForModel(model)
+	state, ok := bg.StateForModel(model)
 	if !ok {
 		fit.Reason = "для модели нет логического бэкенда: balancing.backendGroups[] не описывает " +
 			"ни одной группы под эту модель (маска model не совпала)"

@@ -33,6 +33,21 @@ type Proxy struct {
 	config   *types.LoadBalancerConfig
 	backends map[string]*BackendState
 
+	// profilesMu — R423 (2026-11-06): замок карты per-model профилей
+	// (config.LlamaCppModelProfiles).
+	//
+	// ЗАЧЕМ. Профили пишет админка (PUT/DELETE профиля, импорт config.json,
+	// загрузка profiles.json с диска), а читают горячие пути запроса: резолв
+	// окна, preflight n_ctx, выбор модели для загрузки, AutoTune, таймауты.
+	// Это разные горутины, а обычная map в Go не переживает одновременное
+	// чтение и запись: получается либо DATA RACE (его и нашёл CI), либо
+	// фатальный "concurrent map read and map write" — падение балансера.
+	//
+	// ПОРЯДОК ЗАМКОВ: profilesMu — ЛИСТОВОЙ, после него нельзя брать p.mu или
+	// любой другой замок. Все читатели берут СНИМОК карты (profilesSnapshotR423)
+	// и работают с ним уже без замка — см. model_profiles_guard_r423.go.
+	profilesMu sync.RWMutex
+
 	// mu — КОРНЕВОЙ лок реестра бэкендов.
 	//
 	// LOCK ORDER (R284, 2026-10-29). Порядок захвата СТРОГО:
@@ -301,7 +316,18 @@ type Proxy struct {
 	// которыми разрезана ОДНА модель (мастер + воркеры RPC). Реестр неизменяем
 	// после построения; состояние узлов подтягивается замыканием
 	// groupMemberInfoR92. См. backend_group_r92.go.
-	backendGroups *backendgroup.Registry
+	//
+	// R420 (2026-11-03): atomic.Pointer, а НЕ голый *Registry.
+	//
+	// ЖИВОЙ ДЕФЕКТ (CI, -race, tests). NewProxy запускает GroupController
+	// (initRpcModules → setupReplicationManager) ДО initBackendGroupsR92, и его
+	// горутина читает реестр из freeBackendsForReplicationR379. Без
+	// синхронизации запись указателя и чтение в другой горутине не имеют
+	// happens-before: race detector показывал гонку на самой map внутри Registry
+	// (IsWorker против NewWithModelInfo) — читатель мог увидеть недостроенный
+	// объект. atomic.Pointer даёт и happens-before, и безопасную подмену при
+	// reload конфига.
+	backendGroups atomic.Pointer[backendgroup.Registry]
 
 	// R304 (2026-10-30): снимок ролей раскладки для горячего пути — кто донор и
 	// чей он. Неизменяемый объект под atomic.Pointer: читается без p.mu, поэтому

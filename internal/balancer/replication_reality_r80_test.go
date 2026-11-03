@@ -114,9 +114,9 @@ func TestReplicationRealityR80_LowVRAMWithoutLoadedModelStillDegrades(t *testing
 	// Обратная сторона: копий нет и VRAM не хватает — деградация остаётся
 	// (R79-поведение не сломано).
 	proxy, _ := replicatedStubProxyR80(t, 2, 300, false)
-	proxy.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	proxy.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"r80-model": {SizeBytes: 8 << 30},
-	}
+	})
 
 	d := proxy.ResolvePlacement("r80-model", 8, "")
 	if !d.Degraded {

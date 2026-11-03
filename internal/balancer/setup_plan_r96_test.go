@@ -255,10 +255,10 @@ func TestPlacementPlanR96_PolicyFragmentIsReadyButNotApplied(t *testing.T) {
 
 func TestPlacementPlanR96_DiscoveryFromProfiles(t *testing.T) {
 	p := planProxyR96(t, 6144, 6144)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"m-alpha": {SizeBytes: 4 << 30},
 		"m-beta":  {SizeBytes: 8 << 30},
-	}
+	})
 
 	plan := p.PlacementPlanR96(SetupPlanRequestR96{Lang: composition.LangRU})
 	if plan.Discovered != 2 {

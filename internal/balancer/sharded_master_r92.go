@@ -24,7 +24,8 @@ import (
 // shardedMasterForRequestR92 — backend id мастера группы, если запрос должен
 // обслуживаться раскладкой; иначе "".
 func (p *Proxy) shardedMasterForRequestR92(model string, bt types.BackendType) string {
-	if p == nil || p.backendGroups == nil || model == "" || !p.backendGroups.Configured() {
+	bg := p.backendGroupsR92()
+	if bg == nil || model == "" || !bg.Configured() {
 		return ""
 	}
 	sizeGB := float64(p.getModelSizeBytes(model)) / (1024 * 1024 * 1024)
@@ -32,7 +33,7 @@ func (p *Proxy) shardedMasterForRequestR92(model string, bt types.BackendType) s
 	if decision.Strategy != types.PlacementSharded {
 		return ""
 	}
-	master := p.backendGroups.UsableMaster(model)
+	master := bg.UsableMaster(model)
 	if master == "" {
 		// Группа не готова. Дожимать запрос на мастера без части слоёв нельзя:
 		// это гарантированная ошибка инференса, а не деградация.

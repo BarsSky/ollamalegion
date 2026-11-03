@@ -35,6 +35,18 @@ func newMockCppWorkerOpenAI() *mockCppWorkerOpenAI {
 		case path == "/health":
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 
+		// R420 (2026-11-03): балансер перед маршрутизацией проверяет достижимость
+		// через /api/version; без него мок получал 503 «backend unreachable».
+		case path == "/api/version":
+			json.NewEncoder(w).Encode(map[string]string{"version": "0.0.0-test"})
+		case path == "/api/info":
+			json.NewEncoder(w).Encode(map[string]interface{}{"version": "0.0.0-test", "models": 1})
+		case path == "/api/models":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"models": []map[string]interface{}{
+					{"name": "test-model", "state": "loaded", "context_size": 32768, "parallel": 1, "n_layers": 32, "gpu_layers": 32},
+				},
+			})
 		case path == "/v1/models":
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"object": "list",
@@ -285,7 +297,7 @@ func createTestProxyForLlamaCppOpenAI(t *testing.T, cppWorkerURL string) *balanc
 func registerModel(proxy *balancer.Proxy, backendID, modelName string) {
 	proxy.UpdateMetrics(backendID, &types.BackendMetrics{
 		ID: backendID, BackendType: types.BackendTypeLlamaCpp,
-		LlamaCpp: types.LlamaCppMetrics{LoadedModels: []types.LlamaCppModel{{Name: modelName, State: "loaded", ContextLength: 2048}}},
+		LlamaCpp: types.LlamaCppMetrics{LoadedModels: []types.LlamaCppModel{{Name: modelName, State: "loaded", ContextLength: 32768}}},
 		Ollama:   types.OllamaMetrics{RunningModels: []types.RunningModel{}},
 	})
 }
@@ -305,7 +317,7 @@ func TestLlamaCppTransport_ChatNonStreaming(t *testing.T) {
 	proxy.ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
-		t.Fatalf("expected 200, got %d", rec.Code)
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	var resp map[string]interface{}
@@ -345,7 +357,7 @@ func TestLlamaCppTransport_ChatStreaming(t *testing.T) {
 	proxy.ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
-		t.Fatalf("expected 200, got %d", rec.Code)
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	scanner := bufio.NewScanner(rec.Result().Body)
@@ -389,7 +401,7 @@ func TestLlamaCppTransport_GenerateNonStreaming(t *testing.T) {
 	proxy.ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
-		t.Fatalf("expected 200, got %d", rec.Code)
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp map[string]interface{}
 	json.NewDecoder(rec.Result().Body).Decode(&resp)
@@ -411,7 +423,7 @@ func TestLlamaCppTransport_TagsWithFallback(t *testing.T) {
 	proxy.ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
-		t.Fatalf("expected 200, got %d", rec.Code)
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp map[string]interface{}
 	json.NewDecoder(rec.Result().Body).Decode(&resp)

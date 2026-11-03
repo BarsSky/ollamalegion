@@ -35,6 +35,25 @@ func newMockCppWorker() *mockCppWorker {
 		switch {
 		case path == "/health":
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		// R83: балансер перед маршрутизацией проверяет достижимость бэкенда
+		// запросом /api/version. Без этого мок отвечал 404, и весь
+		// llama.cpp-путь получал 503 «backend unreachable» (живой CI-дефект:
+		// TestLlamaCppProxy*/TestLlamaCppTransport* падали с 0.3 с).
+		case path == "/api/version":
+			json.NewEncoder(w).Encode(map[string]string{"version": "0.0.0-test"})
+		case path == "/api/info":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"version": "0.0.0-test",
+				"model":   "test-model",
+				"models":  1,
+			})
+		case path == "/api/models":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"models": []map[string]interface{}{
+					{"name": "test-model", "state": "loaded", "context_size": 32768, "parallel": 1, "n_layers": 32, "gpu_layers": 32},
+					{"name": "llama-model", "state": "loaded", "context_size": 32768, "parallel": 1, "n_layers": 32, "gpu_layers": 32},
+				},
+			})
 		case path == "/api/tags":
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"models": []map[string]interface{}{
@@ -51,7 +70,14 @@ func newMockCppWorker() *mockCppWorker {
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
 				flusher, _ := w.(http.Flusher)
-				chunk := map[string]interface{}{
+				// R420 (2026-11-03): стандартная SSE-последовательность, как у
+				// настоящего OpenAI: контент-чанк (finish_reason=null) →
+				// финальный чанк с finish_reason → [DONE]. Раньше мок присылал
+				// ОДИН чанк с content+finish_reason и без [DONE], а балансер по
+				// контракту ставит done:true только на usage-чанке или [DONE] —
+				// клиент получал стрим без терминатора, и тест падал
+				// «streaming response missing done:true».
+				content := map[string]interface{}{
 					"id":      "chatcmpl-test",
 					"object":  "chat.completion.chunk",
 					"created": time.Now().Unix(),
@@ -63,12 +89,27 @@ func newMockCppWorker() *mockCppWorker {
 								"role":    "assistant",
 								"content": "Привет! Я работающая модель llama.cpp.",
 							},
-							"finish_reason": "stop",
+							"finish_reason": nil,
 						},
 					},
 				}
-				data, _ := json.Marshal(chunk)
+				data, _ := json.Marshal(content)
 				fmt.Fprintf(w, "data: %s\n\n", data)
+				if flusher != nil {
+					flusher.Flush()
+				}
+				finalChunk := map[string]interface{}{
+					"id":      "chatcmpl-test",
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   req["model"],
+					"choices": []map[string]interface{}{
+						{"index": 0, "delta": map[string]interface{}{}, "finish_reason": "stop"},
+					},
+				}
+				finalData, _ := json.Marshal(finalChunk)
+				fmt.Fprintf(w, "data: %s\n\n", finalData)
+				fmt.Fprintf(w, "data: [DONE]\n\n")
 				if flusher != nil {
 					flusher.Flush()
 				}
@@ -107,8 +148,8 @@ func newMockCppWorker() *mockCppWorker {
 				"model":   req["model"],
 				"choices": []map[string]interface{}{
 					{
-						"index": 0,
-						"text":  "Ответ от llama.cpp модели.",
+						"index":         0,
+						"text":          "Ответ от llama.cpp модели.",
 						"finish_reason": "stop",
 					},
 				},
@@ -152,13 +193,13 @@ func createTestProxyForLLamaCpp(t *testing.T, cppWorkerURL string) *balancer.Pro
 
 	cfg := &types.LoadBalancerConfig{
 		Balancing: types.BalancingSettings{
-			OperatingMode:    "standard",
+			OperatingMode:     "standard",
 			SessionStickiness: true,
-			SessionTTL:       60,
-			SessionIdleTTL:   60,
-			RequestTimeout:   30,
-			QueueMaxSize:     100,
-			ModelAffinity:    true,
+			SessionTTL:        60,
+			SessionIdleTTL:    60,
+			RequestTimeout:    30,
+			QueueMaxSize:      100,
+			ModelAffinity:     true,
 			SyncModelLoad: types.SyncModelLoadConfig{
 				Enabled: false,
 			},
@@ -174,15 +215,15 @@ func createTestProxyForLLamaCpp(t *testing.T, cppWorkerURL string) *balancer.Pro
 		},
 		Backends: []types.Backend{
 			{
-				ID:              "llamacpp-1",
-				Name:            "Test llama.cpp Backend",
-				Host:            host,
-				OllamaPort:      port,
-				CppWorkerPort:   port,
-				Type:            types.BackendTypeLlamaCpp,
-				Status:          types.StatusHealthy,
+				ID:                "llamacpp-1",
+				Name:              "Test llama.cpp Backend",
+				Host:              host,
+				OllamaPort:        port,
+				CppWorkerPort:     port,
+				Type:              types.BackendTypeLlamaCpp,
+				Status:            types.StatusHealthy,
 				MaxConcurrentReqs: 10,
-				Weight:          100,
+				Weight:            100,
 			},
 		},
 		BackendEngine: types.EngineAuto,
@@ -201,13 +242,13 @@ func TestLlamaCppProxyChat_NonStreaming(t *testing.T) {
 
 	// Регистрируем модель на бэкенде через метрики
 	proxy.UpdateMetrics("llamacpp-1", &types.BackendMetrics{
-		ID:   "llamacpp-1",
-		Host: proxy.GetClusterState().Backends[0].Host,
-		OllamaPort: proxy.GetClusterState().Backends[0].OllamaPort,
+		ID:          "llamacpp-1",
+		Host:        proxy.GetClusterState().Backends[0].Host,
+		OllamaPort:  proxy.GetClusterState().Backends[0].OllamaPort,
 		BackendType: types.BackendTypeLlamaCpp,
 		LlamaCpp: types.LlamaCppMetrics{
 			LoadedModels: []types.LlamaCppModel{
-				{Name: "test-model", State: "loaded", ContextLength: 2048},
+				{Name: "test-model", State: "loaded", ContextLength: 32768},
 			},
 		},
 		Ollama: types.OllamaMetrics{
@@ -270,11 +311,11 @@ func TestLlamaCppProxyChat_Streaming(t *testing.T) {
 
 	// Регистрируем модель
 	proxy.UpdateMetrics("llamacpp-1", &types.BackendMetrics{
-		ID:   "llamacpp-1",
+		ID:          "llamacpp-1",
 		BackendType: types.BackendTypeLlamaCpp,
 		LlamaCpp: types.LlamaCppMetrics{
 			LoadedModels: []types.LlamaCppModel{
-				{Name: "test-model", State: "loaded", ContextLength: 2048},
+				{Name: "test-model", State: "loaded", ContextLength: 32768},
 			},
 		},
 		Ollama: types.OllamaMetrics{
@@ -353,11 +394,11 @@ func TestLlamaCppProxyRouting_ModelOnLLamaCpp(t *testing.T) {
 
 	// Регистрируем модель ТОЛЬКО на llama.cpp бэкенде
 	proxy.UpdateMetrics("llamacpp-1", &types.BackendMetrics{
-		ID:   "llamacpp-1",
+		ID:          "llamacpp-1",
 		BackendType: types.BackendTypeLlamaCpp,
 		LlamaCpp: types.LlamaCppMetrics{
 			LoadedModels: []types.LlamaCppModel{
-				{Name: "llama-model", State: "loaded", ContextLength: 2048},
+				{Name: "llama-model", State: "loaded", ContextLength: 32768},
 			},
 		},
 		Ollama: types.OllamaMetrics{
@@ -402,11 +443,11 @@ func TestLlamaCppProxyResponse_NotMarkdownBold(t *testing.T) {
 	proxy := createTestProxyForLLamaCpp(t, worker.server.URL)
 
 	proxy.UpdateMetrics("llamacpp-1", &types.BackendMetrics{
-		ID:   "llamacpp-1",
+		ID:          "llamacpp-1",
 		BackendType: types.BackendTypeLlamaCpp,
 		LlamaCpp: types.LlamaCppMetrics{
 			LoadedModels: []types.LlamaCppModel{
-				{Name: "test-model", State: "loaded", ContextLength: 2048},
+				{Name: "test-model", State: "loaded", ContextLength: 32768},
 			},
 		},
 		Ollama: types.OllamaMetrics{
@@ -488,20 +529,20 @@ func TestGgufBackendsAPI(t *testing.T) {
 
 	// Регистрируем модель
 	proxy.UpdateMetrics("llamacpp-1", &types.BackendMetrics{
-		ID:   "llamacpp-1",
+		ID:          "llamacpp-1",
 		BackendType: types.BackendTypeLlamaCpp,
-		OllamaPort: 8080,
+		OllamaPort:  8080,
 		GPU: types.GPUMetrics{
 			MemoryTotal: 24576,
 			MemoryUsed:  8192,
 		},
 		LlamaCpp: types.LlamaCppMetrics{
 			LoadedModels: []types.LlamaCppModel{
-				{Name: "test-model", State: "loaded", ContextLength: 2048},
+				{Name: "test-model", State: "loaded", ContextLength: 32768},
 			},
 		},
 		Ollama: types.OllamaMetrics{
-			RunningModels: []types.RunningModel{},
+			RunningModels:  []types.RunningModel{},
 			ActiveRequests: 1,
 		},
 		MaxConcurrentRequests: 10,

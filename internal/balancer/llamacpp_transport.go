@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ollama-loadbalancer/c/bridge"
@@ -37,6 +38,22 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	modelFromCtx := ""
 	if m, ok := r.Context().Value(modelContextKey).(string); ok {
 		modelFromCtx = m
+	}
+	// R422 (2026-11-03): имя модели узнаётся из первого содержательного чанка
+	// (ниже) и читается ещё и сторожем/onStall-горутинами. Голый string — гонка
+	// (поймана -race на TestR298): пишем в основной горутине, читаем в watcher.
+	// Держим отдельное atomic-значение; основной поток продолжает пользоваться
+	// локальной строкой без накладных расходов.
+	initialModelName := modelFromCtx
+	var modelFromCtxAtomic atomic.Value
+	if modelFromCtx != "" {
+		modelFromCtxAtomic.Store(modelFromCtx)
+	}
+	modelNameNow := func() string {
+		if v, ok := modelFromCtxAtomic.Load().(string); ok && v != "" {
+			return v
+		}
+		return initialModelName
 	}
 
 	originalPath := r.URL.Path
@@ -740,7 +757,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	statsEmitted := false
 	// R60.58: bytesForwarded объявлен ДО watcher goroutine чтобы избежать
 	// race condition (горутина читает эту переменную в log statement).
-	var bytesForwarded int64
+	var bytesForwarded atomic.Int64
 	var firstForwardErr error
 	var lastForwardErr error
 	// R60.22 (2026-09-08): track time of FIRST non-empty content chunk for
@@ -823,7 +840,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			return nil
 		}
 		n, errWrite := fmt.Fprintf(w, "%s\n", string(out))
-		bytesForwarded += int64(n)
+		bytesForwarded.Add(int64(n))
 		if errWrite != nil {
 			lastForwardErr = errWrite
 			if firstForwardErr == nil {
@@ -868,23 +885,23 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		select {
 		case <-r.Context().Done():
 			logger.Get().Infow("proxyRequestLlamaCpp: client cancelled, aborting stream",
-				"backend", backendID, "model", modelFromCtx,
+				"backend", backendID, "model", modelNameNow(),
 				"context_error", r.Context().Err(),
-				"bytes_forwarded", bytesForwarded)
+				"bytes_forwarded", bytesForwarded.Load())
 			// R184: закрытие СВОЕГО чтения не останавливает воркер - он продолжает
 			// генерировать и держит единственный слот (живой замер: следующий клиент
 			// ждал 100 429 мс). Отмену надо ПРИСЛАТЬ: POST /api/cancel.
-			p.cancelUpstreamGeneration(backendID, modelFromCtx, upstreamRequestIDR360, "client_cancel")
+			p.cancelUpstreamGeneration(backendID, modelNameNow(), upstreamRequestIDR360, "client_cancel")
 		case <-reqCtx.Done():
 			// R60.58: streamTimeout сработал ИЛИ cancel — в обоих случаях
 			// закрываем upstream чтобы разблокировать scanner.Scan().
 			// R184: таймаут тоже обязан освободить слот на воркере.
-			p.cancelUpstreamGeneration(backendID, modelFromCtx, upstreamRequestIDR360, "stream_timeout")
+			p.cancelUpstreamGeneration(backendID, modelNameNow(), upstreamRequestIDR360, "stream_timeout")
 			logger.Get().Warnw("proxyRequestLlamaCpp: streamTimeout fired, aborting stream",
-				"backend", backendID, "model", modelFromCtx,
+				"backend", backendID, "model", modelNameNow(),
 				"context_error", reqCtx.Err(),
-				"stream_timeout_sec", getEffectiveStreamTimeoutSec(p, modelFromCtx, isStreaming),
-				"bytes_forwarded", bytesForwarded)
+				"stream_timeout_sec", getEffectiveStreamTimeoutSec(p, modelNameNow(), isStreaming),
+				"bytes_forwarded", bytesForwarded.Load())
 		case <-watcherStop:
 			return
 		}
@@ -915,14 +932,14 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			_ = resp.Body.Close()
 		}
 		logger.Get().Warnw("proxyRequestLlamaCpp: upstream stalled — body closed to unblock scan (R298)",
-			"backend", backendID, "model", modelFromCtx,
+			"backend", backendID, "model", modelNameNow(),
 			"prefill", ev.prefill,
 			"stalled_sec", int(ev.stalled.Seconds()),
 			"original_path", originalPath,
-			"bytes_forwarded", bytesForwarded)
+			"bytes_forwarded", bytesForwarded.Load())
 		// R184: молчащий воркер всё равно держит слот — отменяем генерацию,
 		// иначе следующий клиент получит «busy».
-		p.cancelUpstreamGeneration(backendID, modelFromCtx, upstreamRequestIDR360, "upstream_stall")
+		p.cancelUpstreamGeneration(backendID, modelNameNow(), upstreamRequestIDR360, "upstream_stall")
 	})
 	stallWatch.Start()
 	defer stallWatch.Stop()
@@ -1061,6 +1078,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				if modelFromCtx == "" {
 					if m, ok := nativeChunk["model"].(string); ok && m != "" {
 						modelFromCtx = m
+						modelFromCtxAtomic.Store(m)
 					}
 				}
 				// Накапливаем видимый пользователю текст.
@@ -1246,7 +1264,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				outLine = filterNDJSONLineMarkers(outLine, &ndjsonHold)
 			}
 			n, errFwd := fmt.Fprintf(w, "%s\n", outLine)
-			bytesForwarded += int64(n)
+			bytesForwarded.Add(int64(n))
 			if errFwd != nil {
 				lastForwardErr = errFwd
 				if firstForwardErr == nil {
@@ -1365,7 +1383,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			}
 			if modified := extractToolCallsFromSSEContentWithSchema([]byte(data), toolSchemas, toolRepair); modified != nil {
 				n, errFwd := fmt.Fprintf(w, "data: %s\n\n", string(modified))
-				bytesForwarded += int64(n)
+				bytesForwarded.Add(int64(n))
 				if errFwd != nil {
 					lastForwardErr = errFwd
 					if firstForwardErr == nil {
@@ -1378,7 +1396,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				// объявленной схеме — валидатор клиента проверяет схему независимо
 				// от того, кто собрал вызов.
 				n, errFwd := fmt.Fprintf(w, "data: %s\n\n", string(normalized))
-				bytesForwarded += int64(n)
+				bytesForwarded.Add(int64(n))
 				if errFwd != nil {
 					lastForwardErr = errFwd
 					if firstForwardErr == nil {
@@ -1388,7 +1406,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				}
 			} else {
 				n, errFwd := fmt.Fprintf(w, "data: %s\n\n", data)
-				bytesForwarded += int64(n)
+				bytesForwarded.Add(int64(n))
 				if errFwd != nil {
 					lastForwardErr = errFwd
 					if firstForwardErr == nil {
@@ -1485,7 +1503,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 							}
 							outProse, _ := json.Marshal(proseChunk)
 							nProse, errProse := fmt.Fprintf(w, "%s\n", string(outProse))
-							bytesForwarded += int64(nProse)
+							bytesForwarded.Add(int64(nProse))
 							if errProse != nil {
 								if firstForwardErr == nil {
 									firstForwardErr = errProse
@@ -1540,7 +1558,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 							}
 							out, _ := json.Marshal(ollamaChunk)
 							n, errFwd := fmt.Fprintf(w, "%s\n", string(out))
-							bytesForwarded += int64(n)
+							bytesForwarded.Add(int64(n))
 							if errFwd != nil {
 								lastForwardErr = errFwd
 								if firstForwardErr == nil {
@@ -1843,7 +1861,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				}
 			}
 			n, errFwd := w.Write(ollamaChunk)
-			bytesForwarded += int64(n)
+			bytesForwarded.Add(int64(n))
 			if errFwd != nil {
 				lastForwardErr = errFwd
 				if firstForwardErr == nil {
@@ -1876,7 +1894,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		if held := ndjsonHold.Flush(); held != "" {
 			if tail := heldTailChunk(originalPath, modelFromCtx, held); tail != nil {
 				n, errTail := fmt.Fprintf(w, "%s\n", tail)
-				bytesForwarded += int64(n)
+				bytesForwarded.Add(int64(n))
 				if errTail != nil {
 					if firstForwardErr == nil {
 						firstForwardErr = errTail
@@ -2226,7 +2244,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				"prefill", stallEventR298.prefill,
 				"stalled_sec", int(stallEventR298.stalled.Seconds()),
 				"original_path", originalPath,
-				"bytes_forwarded", bytesForwarded,
+				"bytes_forwarded", bytesForwarded.Load(),
 				"elapsed_sec", time.Since(llamaStartTime).Seconds())
 		}
 		// R271 (2026-10-29): если незадолго до обрыва МЫ выгружали/перезагружали
@@ -2245,7 +2263,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 					"reason", abortReason, "cause", kind,
 					"backend", backendID, "model", modelFromCtx,
 					"original_path", originalPath,
-					"bytes_forwarded", bytesForwarded,
+					"bytes_forwarded", bytesForwarded.Load(),
 					"elapsed_sec", time.Since(llamaStartTime).Seconds())
 			}
 		}
@@ -2253,7 +2271,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			"reason", abortReason,
 			"backend", backendID, "model", modelFromCtx,
 			"original_path", originalPath,
-			"bytes_forwarded", bytesForwarded,
+			"bytes_forwarded", bytesForwarded.Load(),
 			"elapsed_sec", time.Since(llamaStartTime).Seconds(),
 			"scanner_err", errString(scannerErr),
 			"first_forward_err", errString(firstForwardErr),

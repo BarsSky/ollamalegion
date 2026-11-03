@@ -151,14 +151,14 @@ func TestR119_AsyncReloadLoadBody_ProfileBeatsHardcode(t *testing.T) {
 func TestR119_ReloadHintsFor_ProfileCarriesParallelAndReasoning(t *testing.T) {
 	p := admissionTestProxy(t, 4)
 	reasoning := true
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"gemma-4": {
 			ContextLength:   32768,
 			KVCacheType:     "q4_0",
 			Parallel:        3,
 			EnableReasoning: &reasoning,
 		},
-	}
+	})
 
 	hints := p.reloadHintsFor("llama_adm", "gemma-4-E4B-it-Q4_K_M")
 	if hints.KVCacheType != "q4_0" {
@@ -173,7 +173,7 @@ func TestR119_ReloadHintsFor_ProfileCarriesParallelAndReasoning(t *testing.T) {
 
 	// Профиля нет — параллельность берём фактическую у загруженной модели.
 	p2 := admissionTestProxy(t, 4)
-	p2.config.LlamaCppModelProfiles = nil
+	p2.ReplaceModelProfiles(nil)
 	p2.metricsMgr.mu.Lock()
 	p2.metricsMgr.llamaMetrics["llama_adm"] = &types.LlamaCppMetrics{
 		LoadedModels: []types.LlamaCppModel{{

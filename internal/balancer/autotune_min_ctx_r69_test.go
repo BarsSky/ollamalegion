@@ -111,7 +111,7 @@ func TestResolveNumCtx_R69_RecordsClientRequest(t *testing.T) {
 	}
 	// Сбрасываем замеры предыдущих тестов и клиентский профиль, чтобы значение
 	// из тела не было поднято/зажато.
-	p.config.LlamaCppModelProfiles = nil
+	p.ReplaceModelProfiles(nil)
 	p.nctxReload.SetLastKnownNCtx("llama_adm", 0)
 
 	res := p.ResolveNumCtx("gemma", []byte(`{"model":"gemma","options":{"num_ctx":65536}}`), "llama_adm")

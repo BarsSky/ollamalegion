@@ -95,7 +95,21 @@ func (s *Server) configImportHandler(w http.ResponseWriter, r *http.Request) {
 		lbPort := s.config.LoadBalancer.Port
 		lbAPIPort := s.config.LoadBalancer.APIPort
 
-		*s.config = *imported
+		// R423: импорт присваивает и LlamaCppModelProfiles — карту, которую
+		// балансер читает в горячем пути (резолв окна, preflight, загрузка
+		// модели, AutoTune). Поэтому подмена идёт под замком профилей:
+		// иначе -race и реальная гонка "map read/write" остаются, просто
+		// переезжают в поле структуры (см.
+		// internal/balancer/model_profiles_guard_r423.go).
+		//
+		// ГРАНИЦА: остальные поля config по-прежнему импортируются без общего
+		// замка — импорт конфига редкая админ-операция, и это отдельная задача;
+		// здесь закрыт ровно тот кусок, на который указал -race.
+		if s.proxy != nil {
+			s.proxy.SwapConfigContentR423(imported)
+		} else {
+			*s.config = *imported
+		}
 
 		// Восстанавливаем хост и порты балансировщика
 		if lbHost != "" && imported.LoadBalancer.Host == "" {

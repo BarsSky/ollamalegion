@@ -627,12 +627,12 @@ func newLazyTestProxy(t *testing.T, cppWorkerURL string) *balancer.Proxy {
 //
 // Клиент посылает POST /api/chat (Ollama-стиль) с stream=true. На cppworker
 // модель "lazy-model" находится в state=unloaded. Ожидаем:
-//   1. Балансер увидел модель в unloaded (через GET /api/models на cppworker)
-//   2. Балансер инициировал POST /api/models/load
-//   3. Клиент НЕ получил немедленного отказа (нет 503, 500)
-//   4. После завершения загрузки (loadDelay) запрос проксирован на /v1/chat/completions
-//   5. Клиент получил 200 + полный SSE-стрим с [DONE]
-//   6. Общее время запроса >= loadDelay (балансер ДЕЙСТВИТЕЛЬНО ждал)
+//  1. Балансер увидел модель в unloaded (через GET /api/models на cppworker)
+//  2. Балансер инициировал POST /api/models/load
+//  3. Клиент НЕ получил немедленного отказа (нет 503, 500)
+//  4. После завершения загрузки (loadDelay) запрос проксирован на /v1/chat/completions
+//  5. Клиент получил 200 + полный SSE-стрим с [DONE]
+//  6. Общее время запроса >= loadDelay (балансер ДЕЙСТВИТЕЛЬНО ждал)
 func TestCppWorker_LazyLoad_ChatStreaming_ClientWaitsForModel(t *testing.T) {
 	const loadDelay = 1500 * time.Millisecond
 
@@ -853,6 +853,7 @@ func TestCppWorker_LazyLoad_GenerateStreaming_ClientWaitsForModel(t *testing.T) 
 //   - Ollama-поверхность (/api/*) идёт основным flow: загрузку инициирует
 //     cppworker, а транспорт балансера отдаёт клиенту Ollama-форму ошибки с
 //     кодом 502 и ПРИЧИНОЙ от воркера внутри тела.
+//
 // Тест проверяет суть контракта (ошибка + причина + ни одного inference-запроса),
 // а не конкретный код: подмена 502 на 200 здесь была бы дефектом.
 func TestCppWorker_LazyLoad_LoadFails_Returns503(t *testing.T) {
@@ -879,10 +880,20 @@ func TestCppWorker_LazyLoad_LoadFails_Returns503(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
+	start := time.Now()
 	proxy.ServeHTTP(rec, req)
+	elapsed := time.Since(start)
 
 	resp := rec.Result()
 	defer resp.Body.Close()
+
+	inferenceAttempts := worker.chatCalls.Load()
+	if inferenceAttempts != 0 {
+		t.Errorf("после провала загрузки inference-попыток быть не должно, получено %d", inferenceAttempts)
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("терминальный отказ загрузки обязан возвращаться сразу, получено %v (R421)", elapsed)
+	}
 
 	if resp.StatusCode < 500 {
 		body, _ := io.ReadAll(resp.Body)
@@ -900,14 +911,15 @@ func TestCppWorker_LazyLoad_LoadFails_Returns503(t *testing.T) {
 		t.Errorf("expected error to mention model name, got: %s", bodyStr)
 	}
 
-	// На этой поверхности загрузку инициирует воркер прямо в inference-запросе
-	// (как cppworker: lazy-load внутри хендлера), поэтому отдельного вызова
-	// /api/models/load нет, а inference-попытка ровно одна — и она вернула ошибку.
-	if got := worker.loadCalls.Load(); got != 0 {
-		t.Errorf("на Ollama-поверхности отдельной загрузки быть не должно, получено %d", got)
+	// R421 (2026-11-03): гейт автозагрузки общий для обеих поверхностей — балансер
+	// сам инициирует POST /api/models/load. После КОНКРЕТНОГО отказа (битый файл)
+	// он обязан вернуть 5xx сразу, не дожидаясь бюджета автозагрузки, и НЕ
+	// отправлять inference-запрос: он обречён.
+	if got := worker.loadCalls.Load(); got != 1 {
+		t.Errorf("ожидался ровно 1 POST /api/models/load, получено %d", got)
 	}
-	if got := worker.chatCalls.Load(); got != 1 {
-		t.Errorf("ожидалась ровно 1 inference-попытка (она и упала на загрузке), получено %d", got)
+	if got := worker.chatCalls.Load(); got != 0 {
+		t.Errorf("после провала загрузки inference-запросов быть не должно, получено %d", got)
 	}
 
 	t.Logf("✅ 5xx on load failure (status=%d): %s", resp.StatusCode, bodyStr)

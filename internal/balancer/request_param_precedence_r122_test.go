@@ -22,9 +22,9 @@ import (
 func coldProxyWithProfile(t *testing.T, ctxLen int) *Proxy {
 	t.Helper()
 	p := admissionTestProxy(t, 4)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"gemma": {ContextLength: ctxLen},
-	}
+	})
 	return p
 }
 
@@ -73,7 +73,7 @@ func TestR122_Cold_NoRequestParams_UsesProfile(t *testing.T) {
 // своим дефолтом. Иначе автозагрузка поднимала бы модель с чужим окном.
 func TestR122_Cold_NoRequestNoProfile_NoInventedValue(t *testing.T) {
 	p := admissionTestProxy(t, 4)
-	p.config.LlamaCppModelProfiles = nil
+	p.ReplaceModelProfiles(nil)
 
 	res := p.ResolveNumCtx("gemma", []byte(`{"model":"gemma"}`), "llama_adm")
 	if res.Source == NumCtxSourceRequest {

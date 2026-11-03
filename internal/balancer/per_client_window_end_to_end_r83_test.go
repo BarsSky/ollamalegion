@@ -74,9 +74,9 @@ func TestR83_PerClientWindow_PollerParsesContextPerSeq(t *testing.T) {
 
 func TestR83_PerClientWindow_PreflightGrowsInsteadOfRejecting(t *testing.T) {
 	p := newPerClientWindowProxy(t)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"dbg": {ContextLength: 16384, ContextLengthMax: 131072},
-	}
+	})
 	body := []byte(`{"model":"dbg","options":{"num_ctx":65536}}`)
 
 	_, needsProxy, msg, status := p.preflightNCtxReloadIfNeeded(
@@ -92,9 +92,9 @@ func TestR83_PerClientWindow_PreflightGrowsInsteadOfRejecting(t *testing.T) {
 
 func TestR83_PerClientWindow_ResolverSendsPerSlotNotTotal(t *testing.T) {
 	p := newPerClientWindowProxy(t)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"dbg": {ContextLength: 16384, ContextLengthMax: 131072},
-	}
+	})
 	body := []byte(`{"model":"dbg","options":{"num_ctx":65536}}`)
 
 	// Preflight наполняет кэш (и планирует рост), резолвер затем считает значение

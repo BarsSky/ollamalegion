@@ -219,6 +219,14 @@ func TestR383_PollerTriggersHeal(t *testing.T) {
 	}
 
 	p := newReplicationFreeProxyR379(t, "master")
+	// R383-фикс теста (2026-11-03): останавливаем ФОНОВЫЙ поллер прокси до ручного
+	// опроса. NewProxy запускает его сразу на дефолтном 127.0.0.1:18092; пока тест
+	// меняет адрес и делает pollBackend вручную, фоновый тик успевает записать в
+	// кэш пустой снимок (rpc_enabled=false, servers=[]) и перетирает результат —
+	// тест падал только при запуске вместе с соседними (порядок/тайминг).
+	if p.llamaCppMetricsPoller != nil {
+		p.llamaCppMetricsPoller.Stop()
+	}
 	p.mu.Lock()
 	p.backends["master"].Backend.Host = host
 	p.backends["master"].Backend.CppWorkerPort = port

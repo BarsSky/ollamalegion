@@ -89,11 +89,17 @@ func (p *Proxy) LoadProfilesFromFile() (int, error) {
 		return 0, nil
 	}
 
-	if p.config.LlamaCppModelProfiles == nil {
-		p.config.LlamaCppModelProfiles = make(map[string]types.LlamaCppModelProfile)
+	// R423: карта профилей — общие данные (см. model_profiles_guard_r423.go).
+	// Слияние в два шага: сначала по СНИМКУ решаем, что добавлять (здесь же
+	// пишем логи), потом добавляем под замком. Так замок не держится на
+	// логировании, а запись, появившаяся в config за это время (PUT из
+	// админки), не теряется — под замком ключ проверяется повторно.
+	type pendingProfile struct {
+		key     string
+		profile types.LlamaCppModelProfile
 	}
-
-	loaded := 0
+	existing := p.profilesSnapshotR423()
+	pending := make([]pendingProfile, 0, len(file.Profiles))
 	for name, profile := range file.Profiles {
 		// R136 (2026-10-16): ключ нормализуем — карточка модели на диске писала
 		// профиль под именем файла (`m.gguf`), а загрузка читает его по имени
@@ -110,14 +116,27 @@ func (p *Proxy) LoadProfilesFromFile() (int, error) {
 				"hint", i18n.T("balancer.profiles_persistence.key_normalized_hint"))
 		}
 		// Skip if config.json already has this profile (config wins — bundled defaults)
-		if _, exists := p.config.LlamaCppModelProfiles[key]; exists {
+		if _, exists := existing[key]; exists {
 			logger.Get().Debugw("LoadProfilesFromFile: config has higher priority, skipping",
 				"model", key)
 			continue
 		}
-		p.config.LlamaCppModelProfiles[key] = profile
+		pending = append(pending, pendingProfile{key: key, profile: profile})
+	}
+
+	loaded := 0
+	p.profilesMu.Lock()
+	if p.config.LlamaCppModelProfiles == nil {
+		p.config.LlamaCppModelProfiles = make(map[string]types.LlamaCppModelProfile)
+	}
+	for _, item := range pending {
+		if _, exists := p.config.LlamaCppModelProfiles[item.key]; exists {
+			continue
+		}
+		p.config.LlamaCppModelProfiles[item.key] = item.profile
 		loaded++
 	}
+	p.profilesMu.Unlock()
 	logger.Get().Infow("LoadProfilesFromFile: loaded profiles from disk",
 		"path", path, "loaded", loaded, "total_in_file", len(file.Profiles))
 
@@ -155,8 +174,10 @@ func (p *Proxy) SaveProfilesToFile() error {
 	}
 
 	file := profilesFileFormat{
-		Version:  profilesFileVersion,
-		Profiles: p.config.LlamaCppModelProfiles,
+		Version: profilesFileVersion,
+		// R423: снимок — маршалить карту, которую прямо сейчас может менять
+		// админка, нельзя (см. model_profiles_guard_r423.go).
+		Profiles: p.ModelProfilesSnapshot(),
 		// R83 (2026-09-30): дефолтные настройки загрузки — вместе с профилями,
 		// иначе правка «настроек по умолчанию» из WebUI терялась бы при рестарте,
 		// если config.json смонтирован read-only.

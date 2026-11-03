@@ -465,7 +465,8 @@ func (p *Proxy) planModelsR96(requested []SetupPlanModelR96) []SetupPlanModelR96
 // мастеру что показать на шаге «модели и их вес».
 func (p *Proxy) discoverModelsR96() []SetupPlanModelR96 {
 	names := map[string]bool{}
-	for name := range p.config.LlamaCppModelProfiles {
+	// R423: снимок карты профилей (см. model_profiles_guard_r423.go).
+	for name := range p.profilesSnapshotR423() {
 		if strings.TrimSpace(name) != "" {
 			names[name] = true
 		}

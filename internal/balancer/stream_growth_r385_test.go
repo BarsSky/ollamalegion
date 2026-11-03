@@ -103,7 +103,7 @@ func TestR385_GrowthCheckReasons(t *testing.T) {
 
 	t.Run("primary: флаг отключён и рост не запрещает", func(t *testing.T) {
 		p := newGrowthGuardProxyR299()
-		p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{"m": {Primary: true}}
+		p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{"m": {Primary: true}})
 		ok, why := p.streamGrowthCheckR385("bk-1", "m", 16384)
 		if !ok && strings.Contains(why, "primary") {
 			t.Fatalf("primary-флаг больше не запрещает рост (R401), причина = %q", why)
@@ -112,7 +112,7 @@ func TestR385_GrowthCheckReasons(t *testing.T) {
 
 	t.Run("потолок окна ниже нужного", func(t *testing.T) {
 		p := newGrowthGuardProxyR299()
-		p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{"m": {ContextLengthMax: 8192}}
+		p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{"m": {ContextLengthMax: 8192}})
 		if ok, why := p.streamGrowthCheckR385("bk-1", "m", 65536); ok {
 			t.Fatal("нужно 65536 при потолке 8192 — рост обязан быть запрещён")
 		} else if why == "" {

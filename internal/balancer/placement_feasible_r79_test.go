@@ -162,9 +162,9 @@ func TestPlacementFeasible_R79_VRAMFitCounts(t *testing.T) {
 	// Два бэкенда, но свободно по 1 ГБ: 8 ГБ весов × 1.25 = 10 ГБ на копию —
 	// не влезает ни на один, значит копий 0 < 2 → degraded с числами.
 	proxy := replicatedPolicyProxyR79(t, 2, replicatedRuleR79("r79-model", 0, false), 1024)
-	proxy.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	proxy.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"r79-model": {SizeBytes: 8 << 30},
-	}
+	})
 
 	d := proxy.ResolvePlacement("r79-model", 8, "")
 	if !d.Degraded {

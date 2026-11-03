@@ -63,9 +63,9 @@ func TestR83_SilentClient_LoadedModel_NoReload(t *testing.T) {
 
 	p := newProxyForSilentNCtx(t, backendID, modelName, 8192)
 	// Профиль-подсказка «просит» 16384 — именно он раньше и запускал reload.
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		modelName: {ContextLength: 16384},
-	}
+	})
 	stub := &stubMetricsDoer{loadedNCtx: 16384}
 	p.metricsHTTPDoer = stub
 
@@ -101,9 +101,9 @@ func TestR83_SilentClient_NotLoadedModel_KeepsDefaultsPath(t *testing.T) {
 
 	// loadedNCtx = 0 → модель не загружена.
 	p := newProxyForSilentNCtx(t, backendID, modelName, 0)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		modelName: {ContextLength: 16384},
-	}
+	})
 	stub := &stubMetricsDoer{loadedNCtx: 0}
 	p.metricsHTTPDoer = stub
 

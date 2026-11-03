@@ -116,7 +116,9 @@ func (s *Server) handleListModelProfiles(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	models := s.config.LlamaCppModelProfiles
+	// R423: снимок карты профилей — админка и балансер работают с ней из разных
+	// горутин (см. model_profiles_r423.go).
+	models := s.modelProfilesSnapshotR423()
 	if models == nil {
 		models = make(map[string]types.LlamaCppModelProfile)
 	}

@@ -300,8 +300,10 @@ func (lr *LlamaCppRouter) collectPreflightState(backendID, model string) *NCtxBa
 	var profileMaxContext int
 	var profileContextLengthAuto bool
 	var profileContextLengthMax int
-	if lr.proxy.config != nil {
-		if mp, ok := lr.proxy.config.LlamaCppModelProfiles[model]; ok {
+	if lr.proxy != nil {
+		// R423: снимок карты профилей — админка может писать профиль
+		// одновременно с этим запросом (model_profiles_guard_r423.go).
+		if mp, ok := lr.proxy.profilesSnapshotR423()[model]; ok {
 			if mp.ContextLength > 0 {
 				profileMaxContext = mp.ContextLength
 			}
@@ -498,16 +500,18 @@ func resolvePhysicalMaxContext(ggufMax, contextLengthMax, autoReloadMaxNCtx int)
 // опустить ниже него самого. Максимум при этом продолжает поднимать потолок
 // для авто-роста, как и раньше.
 func (p *Proxy) profileCapCtx(modelName string, fold bool) int {
-	if p == nil || p.config == nil {
+	// R423: работаем со снимком (см. model_profiles_guard_r423.go).
+	profiles := p.profilesSnapshotR423()
+	if len(profiles) == 0 {
 		return 0
 	}
-	if mp, ok := p.config.LlamaCppModelProfiles[modelName]; ok {
+	if mp, ok := profiles[modelName]; ok {
 		return profileWindowCapCtx(mp)
 	}
 	if !fold {
 		return 0
 	}
-	for name, mp := range p.config.LlamaCppModelProfiles {
+	for name, mp := range profiles {
 		if containsFold(name, modelName) || containsFold(modelName, name) {
 			return profileWindowCapCtx(mp)
 		}
@@ -547,7 +551,7 @@ func (p *Proxy) reloadHintsFor(backendID, modelName string) ReloadHints {
 	// выходила по профилю модели — из-за этого «сколько слоёв сейчас на GPU»
 	// не доезжало до reload'а, и он мог понизить раскладку (см. ReloadHints.GPULayers).
 	hints := ReloadHints{}
-	if prof, ok := profileForReloadHints(p.config.LlamaCppModelProfiles, modelName); ok {
+	if prof, ok := profileForReloadHints(p.profilesSnapshotR423(), modelName); ok {
 		hints.KVCacheType = prof.KVCacheType
 		// R119 (2026-10-15): параллельность и размышления из профиля — раньше
 		// тело reload собиралось с нуля, и эти настройки оператора до cppworker

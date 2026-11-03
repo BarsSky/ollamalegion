@@ -28,9 +28,9 @@ func TestPreflightNCtxReload_NoBodyNumCtx_UseProfileFallback(t *testing.T) {
 	modelName := "gemma-4"
 	cppWorker, currentNCtx, _ := makeMockCppWorkerWithReload(t, modelName, 0)
 	p := buildProxyWithCppWorkerBackend(t, cppWorker.URL, modelName)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"gemma-4": {ContextLength: 32768},
-	}
+	})
 
 	// body без num_ctx (как Open WebUI иногда шлёт)
 	body := []byte(`{"model":"gemma-4","messages":[{"role":"user","content":"hi"}]}`)
@@ -62,9 +62,9 @@ func TestPreflightNCtxReload_BodyNumCtx8192_Profile32768_Loaded32768_NoReload(t 
 	modelName := "gemma-4"
 	cppWorker, _, _ := makeMockCppWorkerWithReload(t, modelName, 32768)
 	p := buildProxyWithMockInitialCtx(t, cppWorker.URL, modelName, 32768)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"gemma-4": {ContextLength: 32768},
-	}
+	})
 
 	// body имеет num_ctx=8192 (Open WebUI default)
 	body := []byte(`{"model":"gemma-4","options":{"num_ctx":8192}}`)
@@ -85,9 +85,9 @@ func TestPreflightNCtxReload_Body8192_NotLoaded_Profile32768_ReloadToProfile(t *
 	modelName := "gemma-4"
 	cppWorker, currentNCtx, _ := makeMockCppWorkerWithReload(t, modelName, 0)
 	p := buildProxyWithMockInitialCtx(t, cppWorker.URL, modelName, 0)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"gemma-4": {ContextLength: 32768},
-	}
+	})
 
 	// body с num_ctx=8192 (default Open WebUI) + profile=32768
 	body := []byte(`{"model":"gemma-4","options":{"num_ctx":8192}}`)

@@ -1,4 +1,4 @@
-﻿// anthropic_r247_test.go — R247, этап B: трансляция Anthropic <-> OpenAI.
+// anthropic_r247_test.go — R247, этап B: трансляция Anthropic <-> OpenAI.
 //
 // Приёмка этапа по плану: текст и инструмент, второй ход (tool_result),
 // корректная последовательность SSE-событий Anthropic, форма ошибок.

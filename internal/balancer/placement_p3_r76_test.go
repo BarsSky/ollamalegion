@@ -159,9 +159,9 @@ func TestPlacementP3_AllowDegradedServes_R76(t *testing.T) {
 		}},
 	})
 	// Профиль: 40 ГБ весов → need ≈ 50 ГБ, свободно 20 ГБ.
-	proxy.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	proxy.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"m-big": {SizeBytes: 40 << 30},
-	}
+	})
 
 	rec, header := postChatPlacementR76(proxy, "m-big")
 	if rec.Code != http.StatusOK {
@@ -185,9 +185,9 @@ func TestPlacementP3_RejectsDegradedWithoutAllowDegraded_R76(t *testing.T) {
 			Auto:     &types.PlacementAutoRule{Prefer: []string{"replicated", "single"}, MinBackends: 2},
 		}},
 	})
-	proxy.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	proxy.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		"m-big": {SizeBytes: 40 << 30},
-	}
+	})
 
 	rec, _ := postChatPlacementR76(proxy, "m-big")
 	if rec.Code != http.StatusServiceUnavailable {

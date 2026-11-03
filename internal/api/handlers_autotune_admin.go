@@ -473,7 +473,8 @@ func (s *Server) handleAdminAutotuneConfig(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Per-model overrides
-	profiles := cfg.LlamaCppModelProfiles
+	// R423: снимок карты профилей (см. model_profiles_r423.go).
+	profiles := s.modelProfilesSnapshotR423()
 	if profiles != nil {
 		perModel := make(map[string]interface{})
 		for name, prof := range profiles {
@@ -528,19 +529,23 @@ func (s *Server) handleAdminAutotuneConfigUpdate(w http.ResponseWriter, r *http.
 	}
 
 	// Update per-model
+	//
+	// R423: каждая запись меняется атомарно через прокси (profilesMu). Раньше
+	// здесь читалась и писалась карта config напрямую — конкурентный PUT профиля
+	// из карточки модели мог затереться целиком (последний писатель выигрывает
+	// запись), а с точки зрения -race это была обычная гонка на map.
 	if req.PerModel != nil {
-		if cfg.LlamaCppModelProfiles == nil {
-			cfg.LlamaCppModelProfiles = make(map[string]types.LlamaCppModelProfile)
-		}
 		for modelName, val := range req.PerModel {
-			prof := cfg.LlamaCppModelProfiles[modelName]
-			if val == nil {
-				// null → clear override
-				prof.AutoTune = nil
-			} else if b, ok := val.(bool); ok {
-				prof.AutoTune = &b
-			}
-			cfg.LlamaCppModelProfiles[modelName] = prof
+			b, isBool := val.(bool)
+			s.updateModelProfileR423(modelName, func(prof *types.LlamaCppModelProfile) {
+				switch {
+				case val == nil:
+					// null → clear override (наследование global)
+					prof.AutoTune = nil
+				case isBool:
+					prof.AutoTune = &b
+				}
+			})
 		}
 	}
 

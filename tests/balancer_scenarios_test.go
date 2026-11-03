@@ -62,8 +62,11 @@ func TestScenario1_StreamingFailover(t *testing.T) {
 	stopS1 := make(chan struct{})
 
 	s1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&b1, 1)
+		// R420 (2026-11-03): считаем ТОЛЬКО инференс-запросы: служебные пробы
+		// балансера (/api/tags, /api/version) не должны попадать в счётчик
+		// маршрутизации, иначе тест принимает пробу за запрос.
 		if strings.Contains(r.URL.Path, "/api/chat") || strings.Contains(r.URL.Path, "/api/generate") {
+			atomic.AddInt32(&b1, 1)
 			// Блокируемся до отмены контекста или сигнала остановки теста
 			select {
 			case <-r.Context().Done():
@@ -77,8 +80,8 @@ func TestScenario1_StreamingFailover(t *testing.T) {
 	defer s1.Close()
 
 	s2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&b2, 1)
 		if strings.Contains(r.URL.Path, "/api/chat") || strings.Contains(r.URL.Path, "/api/generate") {
+			atomic.AddInt32(&b2, 1)
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
 			for i := 0; i < 3; i++ {

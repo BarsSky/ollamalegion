@@ -21,9 +21,9 @@ func newKVGuardTestProxyR416(kv string) *Proxy {
 	p := &Proxy{config: &types.LoadBalancerConfig{}}
 	p.backends = map[string]*BackendState{}
 	if kv != "" {
-		p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+		p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 			"Qwen3.8-9B-Distill-uncensored-heretic.Q4_K_M": {ContextLength: 16384, KVCacheType: kv},
-		}
+		})
 	}
 	return p
 }

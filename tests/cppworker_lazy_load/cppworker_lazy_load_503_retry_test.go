@@ -297,8 +297,8 @@ func createTestProxyForCppWorker503Retry(t *testing.T, cppWorkerURL string) *bal
 // TestCppWorker_LazyLoad_503Retry_RecoversFromRaceCondition —
 // cppworker возвращает 503 + "model is loading" на первые 2 запроса загрузки,
 // на 3-й — 200. Балансер должен:
-//   1. Получить 200 OK на клиентский запрос
-//   2. Сделать не меньше 3 вызовов POST /api/models/load (2 неудачных + 1 успешный)
+//  1. Получить 200 OK на клиентский запрос
+//  2. Сделать не меньше 3 вызовов POST /api/models/load (2 неудачных + 1 успешный)
 //
 // ЭТО ТЕСТ ДЛЯ ИСПРАВЛЕНИЯ RACE CONDITION: до фикса балансер возвращал бы
 // клиенту 503 "auto-load failed: model is loading" после первого же 503.
@@ -399,14 +399,18 @@ func TestCppWorker_LazyLoad_503Always_ReturnsFinalError(t *testing.T) {
 	if result.Success {
 		t.Errorf("expected failure after exhausting retries, got success: %s", result.Message)
 	}
-	if result.Error == "" {
-		t.Fatal("expected non-empty error after exhausting retries")
+	// R299 (2026-10-29): «воркер всё ещё грузит» после всех попыток — это НЕ Error,
+	// а StillLoading (HTTP-слой отвечает 202 + pollAfter). Проверять non-empty
+	// Error здесь — значит требовать регресс R299 обратно.
+	if !result.StillLoading {
+		t.Fatalf("ожидался StillLoading=true после исчерпания retry, получено %+v", result)
 	}
-
-	// Проверяем, что ошибка содержит информацию о retry/исчерпании.
-	errLower := strings.ToLower(result.Error)
-	if !strings.Contains(errLower, "loading") && !strings.Contains(errLower, "attempts") {
-		t.Errorf("expected error to mention 'loading' or 'attempts', got: %s", result.Error)
+	if result.Error != "" {
+		t.Errorf("R299: «ещё грузится» не должно быть ошибкой, получено: %s", result.Error)
+	}
+	msgLower := strings.ToLower(result.Message)
+	if !strings.Contains(msgLower, "загружается") && !strings.Contains(msgLower, "loading") {
+		t.Errorf("сообщение не объясняет, что загрузка продолжается: %s", result.Message)
 	}
 
 	// Должно быть не менее 2-3 вызовов load (точно ≥1, в реальности ~10).

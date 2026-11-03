@@ -115,11 +115,11 @@ func TestR83_StaleCache_ResolverUsesLiveWindow(t *testing.T) {
 	const model = "m"
 
 	p, _ := newProxyWithLiveCppWorker(t, backendID, model, 32768)
-	p.config.LlamaCppModelProfiles = map[string]types.LlamaCppModelProfile{
+	p.ReplaceModelProfiles(map[string]types.LlamaCppModelProfile{
 		// Потолок профиля ВЫШЕ живого окна — именно так рождался
 		// n_ctx_override=32768 при фактических 31974.
 		model: {ContextLength: 16384, ContextLengthMax: 65536},
-	}
+	})
 
 	// Preflight идёт ПЕРЕД резолвером и обновляет кэш у cppworker.
 	//

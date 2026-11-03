@@ -35,8 +35,12 @@ func (p *Proxy) freeBackendsForReplicationR379(modelName string, targets []strin
 		id   string
 		idle bool
 	}
-	candidates := make([]replicationCandidateR379, 0, len(p.backends))
+	candidates := make([]replicationCandidateR379, 0)
 
+	// R423 (2026-11-06): `len(p.backends)` ДО p.mu.RLock — такая же гонка на
+	// map, как запись в неё: -race поймал её между AddBackend и этим циклом
+	// (TestPlacementResync_NewBackendGetsReplica_R78). Читаем карту целиком под
+	// замком, включая размер.
 	p.mu.RLock()
 	for id, state := range p.backends {
 		if state == nil || state.Backend == nil {

@@ -368,6 +368,7 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | Слоты воркера | `internal/cppbackend/slot_manager.go`, `backend.go` | `Acquire`, `releaseInternal`, `GenerateStreamWithAbort` |
 | Маркеры в потоке | `cmd/cppworker/tools_stream_markers_r414.go` | `toolsStreamMarkerScanR414`, `toolsStreamMarkerPrefixHoldbackR414` |
 | Политика n_predict | `cmd/cppworker/reasoning_content.go` | `ResolveNPredict`, `DefaultNPredictReasoning`, `ReasoningArchPrefixes` |
+| Профили моделей (замок) | `internal/balancer/model_profiles_guard_r423.go`, `internal/api/model_profiles_r423.go` | `profilesSnapshotR423`, `ReplaceModelProfiles`, `UpdateModelProfile`, `SwapConfigContentR423` |
 | AutoTune: гарды KV/слоёв/окна | `internal/balancer/autotune_kv_guard_r416.go`, `autotune.go` | `guardAutoTuneKVPlanR416`, `autoTunePlanHasRealChangeR416d`, `PlanApplyAutoTuneWithMinContext` |
 | Терминальный content с tool_calls | `cmd/cppworker/tools_terminal_reason_r394.go` | `terminalContentR417`, `nonStreamContentR417` |
 | Метаданные модели | `cmd/cppworker/handlers_model.go` | `handleOllamaShow`, `writeOllamaShowLoadedResponse` |

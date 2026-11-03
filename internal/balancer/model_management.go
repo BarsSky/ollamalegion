@@ -859,17 +859,20 @@ func (mm *ModelManager) profileForLoad(modelName string) (types.LlamaCppModelPro
 		return prof, true
 	}
 	// Точного совпадения нет — ищем substring-совпадение детерминированно.
-	if mm.proxy.config == nil || mm.proxy.config.LlamaCppModelProfiles == nil {
+	// R423: снимок карты профилей, а не прямое чтение config (см.
+	// model_profiles_guard_r423.go).
+	profiles := mm.proxy.profilesSnapshotR423()
+	if len(profiles) == 0 {
 		return types.LlamaCppModelProfile{}, false
 	}
-	keys := make([]string, 0, len(mm.proxy.config.LlamaCppModelProfiles))
-	for k := range mm.proxy.config.LlamaCppModelProfiles {
+	keys := make([]string, 0, len(profiles))
+	for k := range profiles {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
 		if containsFold(k, modelName) || containsFold(modelName, k) {
-			return mm.proxy.config.LlamaCppModelProfiles[k], true
+			return profiles[k], true
 		}
 	}
 	return types.LlamaCppModelProfile{}, false

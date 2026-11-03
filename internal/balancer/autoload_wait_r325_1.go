@@ -3,9 +3,12 @@
 //
 // НАЙДЕНО ЖИВОЙ МАТРИЦЕЙ API (tests/api_contract). `/api/chat` на только что
 // выгруженной модели получал 503 через 180.6 с с телом
-//   {"error":"model \"gemma-…\" is not loaded and auto-load failed: model load failed: "}
+//
+//	{"error":"model \"gemma-…\" is not loaded and auto-load failed: model load failed: "}
+//
 // — при том что в логе балансера через ту же секунду было
-//   "executeLlamaCppLoad: model loaded successfully (recovered from HTTP timeout), elapsed 68.5".
+//
+//	"executeLlamaCppLoad: model loaded successfully (recovered from HTTP timeout), elapsed 68.5".
 //
 // ПРИЧИНА. Гейт автозагрузки (R325) вызывает ensureModelLoadedOnBackend, а тот
 // внутри вызывает executeLlamaCppLoad с бюджетом ожидания загрузки 180 с. Модель
@@ -76,6 +79,7 @@ func isModelMissingLoadError(err error) bool {
 	}
 	return false
 }
+
 // isBackendUnreachableLoadError — R325.3: ошибка загрузки из-за недоступности
 // воркера. Ждать в этом случае бессмысленно: воркер не «грузится», его нет.
 //
@@ -90,4 +94,32 @@ func isBackendUnreachableLoadError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "backend unreachable") ||
 		strings.Contains(msg, "did not answer /api/version")
+}
+
+// isModelLoadFailedError — R421 (2026-11-03): загрузка вернула КОНКРЕТНУЮ
+// причину отказа (битый файл, неподдерживаемая модель). Ждать «до готовности»
+// нечего: воркер не в состоянии loading, модель не появится от ожидания.
+//
+// ЖИВОЙ ФАКТ (CI, tests/cppworker_lazy_load): мок отвечал 500
+// «model file corrupted: bad magic number», а балансер ждал полный бюджет
+// автозагрузки — тест шёл 180 с и получал 503 в конце. Клиент всё это время
+// висел, хотя причина была известна на первой секунде.
+//
+// ВАЖНО: ошибка «model load failed: » с ПУСТОЙ причиной остаётся ожидаемой
+// (R325.1: это таймаут executeLlamaCppLoad, модель может ещё грузиться).
+func isModelLoadFailedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	for _, marker := range []string{
+		"corrupted", "bad magic", "invalid model", "unsupported model",
+		"unsupported architecture", "failed to load model", "failed to load the model",
+		"cannot load model", "can't load model", "model file is damaged",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }

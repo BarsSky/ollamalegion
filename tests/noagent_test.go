@@ -84,7 +84,7 @@ func (m *noAgentMockOllama) handleChat(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (m *noAgentMockOllama) Close() { m.server.Close() }
+func (m *noAgentMockOllama) Close()      { m.server.Close() }
 func (m *noAgentMockOllama) URL() string { return m.server.URL }
 
 func (m *noAgentMockOllama) HostPort() (string, int) {
@@ -124,14 +124,14 @@ func createNoAgentProxy(t *testing.T, mocks []*noAgentMockOllama, algorithm type
 		},
 		Backends: backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:            algorithm,
-			ModelAffinity:          false, // Отключаем — требует метрик от агента
-			SessionStickiness:      true,
-			RequestTimeout:         30,
-			QueueTimeout:           60,
-			QueueMaxSize:           100,
-			QueueWorkers:           4,
-			UseEnhancedScoring:     false, // Отключаем — требует GPU метрик
+			Algorithm:          algorithm,
+			ModelAffinity:      false, // Отключаем — требует метрик от агента
+			SessionStickiness:  true,
+			RequestTimeout:     30,
+			QueueTimeout:       60,
+			QueueMaxSize:       100,
+			QueueWorkers:       4,
+			UseEnhancedScoring: false, // Отключаем — требует GPU метрик
 			// R60.18 F2: StreamingMaxDuration removed (dead field, see docs/archive/rounds/r60.18-env-flags-audit.ru.md)
 			// Все агент-зависимые модули отключены по умолчанию
 		},
@@ -262,20 +262,20 @@ func TestNoAgent_RoundRobin(t *testing.T) {
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 0},
 		Backends:     backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:            types.AlgorithmRoundRobin,
-			ModelAffinity:          false,
-			SessionStickiness:      false, // Отключаем для чистого round-robin
-			RequestTimeout:         30,
-			QueueTimeout:           60,
-			QueueMaxSize:           100,
-			QueueWorkers:           4,
-			UseEnhancedScoring:     false,
+			Algorithm:          types.AlgorithmRoundRobin,
+			ModelAffinity:      false,
+			SessionStickiness:  false, // Отключаем для чистого round-robin
+			RequestTimeout:     30,
+			QueueTimeout:       60,
+			QueueMaxSize:       100,
+			QueueWorkers:       4,
+			UseEnhancedScoring: false,
 		},
 		Resources: types.ResourceLimits{
-			GPU: types.GPULimits{MaxUsagePercent: 90},
-			CPU: types.CPULimits{MaxUsagePercent: 90},
+			GPU:    types.GPULimits{MaxUsagePercent: 90},
+			CPU:    types.CPULimits{MaxUsagePercent: 90},
 			Memory: types.MemoryLimits{MaxUsagePercent: 90},
-			Disk: types.DiskLimits{MinFreeMB: 1024},
+			Disk:   types.DiskLimits{MinFreeMB: 1024},
 		},
 	}
 
@@ -397,20 +397,20 @@ func TestNoAgent_QueueWhenAllBusy(t *testing.T) {
 		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 0},
 		Backends:     backends,
 		Balancing: types.BalancingSettings{
-			Algorithm:            types.AlgorithmRoundRobin,
-			ModelAffinity:          false,
-			SessionStickiness:      false,
-			RequestTimeout:         30,
-			QueueTimeout:           5, // короткий таймаут для теста
-			QueueMaxSize:           10,
-			QueueWorkers:           1,
-			UseEnhancedScoring:     false,
+			Algorithm:          types.AlgorithmRoundRobin,
+			ModelAffinity:      false,
+			SessionStickiness:  false,
+			RequestTimeout:     30,
+			QueueTimeout:       5, // короткий таймаут для теста
+			QueueMaxSize:       10,
+			QueueWorkers:       1,
+			UseEnhancedScoring: false,
 		},
 		Resources: types.ResourceLimits{
-			GPU: types.GPULimits{MaxUsagePercent: 90},
-			CPU: types.CPULimits{MaxUsagePercent: 90},
+			GPU:    types.GPULimits{MaxUsagePercent: 90},
+			CPU:    types.CPULimits{MaxUsagePercent: 90},
 			Memory: types.MemoryLimits{MaxUsagePercent: 90},
-			Disk: types.DiskLimits{MinFreeMB: 1024},
+			Disk:   types.DiskLimits{MinFreeMB: 1024},
 		},
 	}
 
@@ -774,10 +774,10 @@ func TestNoAgent_StreamingProxy(t *testing.T) {
 			QueueWorkers:      4,
 		},
 		Resources: types.ResourceLimits{
-			GPU: types.GPULimits{MaxUsagePercent: 90},
-			CPU: types.CPULimits{MaxUsagePercent: 90},
+			GPU:    types.GPULimits{MaxUsagePercent: 90},
+			CPU:    types.CPULimits{MaxUsagePercent: 90},
 			Memory: types.MemoryLimits{MaxUsagePercent: 90},
-			Disk: types.DiskLimits{MinFreeMB: 1024},
+			Disk:   types.DiskLimits{MinFreeMB: 1024},
 		},
 	}
 
@@ -829,7 +829,7 @@ func TestNoAgent_MultipleModels(t *testing.T) {
 	}
 
 	// Все 3 запроса должны быть обработаны
-	assert.Equal(t, int32(3), atomic.LoadInt32(&mock.requestCount))
+	assert.Equal(t, int32(3), atomic.LoadInt32(&mock.generateCount))
 }
 
 // ============================================================

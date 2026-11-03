@@ -33,6 +33,8 @@
 // отсутствие дубля в финале).
 package main
 
+import "strings"
+
 // toolsThinkingChunkR404 — NDJSON-кадр reasoning-дельты для tools-стрима.
 //
 // Форма — как у остальных дельт нативного /api/chat: message.thinking,
@@ -58,4 +60,37 @@ func toolsFeedThinkingR404(st *ReasoningStreamState, token string) string {
 	}
 	thinkingDelta, _ := st.Feed(token)
 	return thinkingDelta
+}
+
+// toolsShouldRetryWithoutThinkingR406 — стоит ли повторить генерацию БЕЗ
+// размышлений, когда клиентский бюджет вывода уже израсходован на thinking.
+//
+// ЖИВОЙ ДЕФЕКТ (R406, Cline). Клиент задаёт max_tokens (например 4096), модель
+// уходит в размышления на весь бюджет и не выдаёт видимого ответа. Мы честно
+// отдаём done_reason=length, но Cline трактует это как «output token limit» и
+// запускает свою overflow-recovery: compacting → compacted, пересказ истории и
+// повтор. В результате пропадает часть переписки и «text part … not found».
+//
+// Повтор с выключенным thinking даёт модели шанс ответить в ТОМ ЖЕ бюджете:
+// скрытая работа больше не съедает его целиком. Условия строгие, чтобы не
+// дублировать уже отданный ответ:
+//   - ничего видимого не стримилось (contentStreamed=false);
+//   - вызова инструмента не распознано;
+//   - размышления реально были, и бюджет исчерпан;
+//   - альтернативный промпт построен, и повтора ещё не было.
+func toolsShouldRetryWithoutThinkingR406(nPredict, generatedTokens int, fullOutput, visible, promptNoThink string,
+	contentStreamed bool, toolCalls int, retried bool) bool {
+	if retried || contentStreamed || toolCalls > 0 {
+		return false
+	}
+	if strings.TrimSpace(promptNoThink) == "" {
+		return false
+	}
+	if strings.TrimSpace(visible) != "" {
+		return false
+	}
+	if reasoningCharsRawR394(fullOutput) <= 0 {
+		return false
+	}
+	return toolsBudgetExhaustedR394(nPredict, generatedTokens)
 }

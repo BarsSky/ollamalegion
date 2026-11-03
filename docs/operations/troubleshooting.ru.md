@@ -372,6 +372,24 @@ R188** с тем же бюджетом (ещё столько же тишины)
 Если видимого ответа нет, финальный чанк несёт пояснение
 (`done_reason=length`), а не пустой content.
 
+**R406: бюджет съеден размышлениями.** Если `n_predict` клиента исчерпан, а
+видимого текста нет (`thinking` только), воркер делает **один повтор с
+выключенными размышлениями** (`enable_thinking=false`, тот же запрос и бюджет),
+чтобы модель всё-таки ответила. Без этого `done_reason=length` на пустом ответе
+Cline трактует как «output token limit» и запускает `overflow-recovery`:
+`compacting` → `compacted` → часть переписки исчезает, клиент падает с
+«text part … not found». В логе воркера:
+
+```
+reasoning exhausted the output budget — retrying with thinking disabled (R406)
+no-thinking retry produced output (R406) ... visible_len=...
+```
+
+Если после обновления Cline всё ещё показывает `overflow-recovery-compacting` —
+увеличьте `max_tokens` (Cline → Advanced) или проверьте, что новый воркер
+действительно выкачен: строка R406 в логе обязана появляться на reasoning-only
+исчерпании.
+
 **Что проверить:**
 
 ```bash

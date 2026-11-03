@@ -441,7 +441,21 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		// чанками (content + done) — это валидный Ollama NDJSON, клиенты
 		// (OpenWebUI, ollama-python, Cline) его принимают.
 		if toolsEnabled || promptOpts.JSONMode {
-			writeChatStreamResponseWithTools(w, r, actualModel, prompt, params, promptOpts.JSONMode, promptOpts.ReasoningOverride, req.Tools)
+			// R406: альтернативный промпт БЕЗ размышлений — аварийный выход,
+			// когда модель потратила весь клиентский бюджет на thinking и не
+			// сказала ни слова. Строим из тех же сообщений (tools уже внедрены),
+			// чтобы структура запроса не менялась — меняется только
+			// enable_thinking в chat template.
+			promptNoThink := ""
+			if toolsEnabled {
+				noThink := false
+				optsNoThink := promptOpts
+				optsNoThink.ReasoningOverride = &noThink
+				if pnt, pntErr := buildChatPromptWithOptions(msgs, actualModel, optsNoThink); pntErr == nil {
+					promptNoThink = pnt
+				}
+			}
+			writeChatStreamResponseWithTools(w, r, actualModel, prompt, params, promptOpts.JSONMode, promptOpts.ReasoningOverride, req.Tools, promptNoThink)
 			return
 		}
 		writeChatStreamResponse(w, r, actualModel, prompt, params, promptOpts.ReasoningOverride)
@@ -1663,7 +1677,7 @@ func toolsStopReasonR320(fullOutput, visibleOutput, prompt string, toolCalls int
 // привести arguments вызова к объекту по их схеме (см. tool_args_schema_r113.go):
 // без этого клиент получает arguments-массив/голую строку, не может выполнить
 // вызов и считает задачу завершённой после первой итерации.
-func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, jsonMode bool, thinkOverride *bool, tools []openAITool) {
+func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, jsonMode bool, thinkOverride *bool, tools []openAITool, promptNoThink string) {
 	// R83 (2026-09-26): тот же safeStreamWriter, что и в writeChatStreamResponse —
 	// здесь тоже пишут две горутины (heartbeat + финальные чанки), и на длинной
 	// генерации без мьютекса фреймы могли перемешаться.
@@ -1715,6 +1729,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// Нужен, чтобы не запускать R188-повтор после уже отданных размышлений:
 	// повтор сгенерировал бы их заново и снова съел бюджет.
 	anyStreamed := false
+	// R406: видимый текст клиенту уже ушёл? Нужно, чтобы аварийный повтор без
+	// размышлений не дублировал уже показанный ответ.
+	contentStreamed := false
+	retriedNoThink := false
 
 	// Round 6 Fix 5: heartbeat goroutine prevents idle-timeout during
 	// long generations.
@@ -1812,6 +1830,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		sw.Writef("%s\n", data)
 		sw.Flush()
 		anyStreamed = true
+		contentStreamed = true
 	}
 
 	// R404: thinking-дельта уходит сразу, не дожидаясь закрытия блока
@@ -2033,6 +2052,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			"model", modelName, "reasoning_len", len(reasoningOut), "content_len", len(outputForParse),
 			"reasoning_sent", reasoningOut != "")
 	}
+	// R406: токены первой попытки нужны для решения о повторе без размышлений
+	// и для честного eval_count (если повтор состоится — сложим обе попытки).
+	generatedTokens := countTokensSafe(modelName, fullOutput)
 
 	// R83/v59 (2026-10-01) + R110 (2026-10-13): повтор генерации, когда видимого
 	// ответа не получилось.
@@ -2111,6 +2133,57 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		}
 	}
 
+	// R406 (2026-11-03): АВАРИЙНЫЙ ПОВТОР БЕЗ РАЗМЫШЛЕНИЙ.
+	//
+	// ЖИВОЙ ДЕФЕКТ (Cline): клиент задаёт max_tokens (4096), модель тратит весь
+	// бюджет на thinking и не выдаёт видимого ответа. Мы честно отдаём
+	// done_reason=length, Cline трактует это как «output token limit» и
+	// запускает overflow-recovery: compacting → compacted, пересказ истории,
+	// повтор — и часть переписки исчезает, а клиент падает с
+	// «text part … not found».
+	//
+	// Повтор с ВЫКЛЮЧЕННЫМ thinking (тот же бюджет, тот же запрос, только
+	// enable_thinking=false в chat template) даёт модели шанс ответить вместо
+	// повторного ухода в размышления. Условие — ничего видимого ещё не ушло
+	// (thinking-дельты не считаются: они уже показаны и повторять их не нужно).
+	if toolsShouldRetryWithoutThinkingR406(params.NPredict, generatedTokens, fullOutput,
+		cleanFinalContent(outputForParse), promptNoThink, contentStreamed, len(toolCalls), retriedNoThink) {
+
+		attempt1Tokens := generatedTokens
+		logger.Get().Warnw("writeChatStreamResponseWithTools: reasoning exhausted the output budget — retrying with thinking disabled (R406)",
+			"model", modelName, "n_predict", params.NPredict,
+			"generated_tokens", generatedTokens,
+			"reasoning_chars", reasoningCharsRawR394(fullOutput),
+			"thinking_streamed", thinkingStreamed)
+		outputBuf.Reset()
+		emittedLen = 0
+		toolsHold = false
+		reasoningHold = false
+		// thinkingStreamed НЕ сбрасываем: клиент уже видел размышления первой
+		// попытки, в финале их дублировать нельзя.
+		thinkingParser = NewReasoningStreamState()
+		thinkingParser.SetImpliedOpen(false)
+		atomic.StoreInt64(&firstTokenAt, 0)
+		retriedNoThink = true
+		if retryErr := generateStreamWithRamFallback(ctx, modelName, promptNoThink, params, callback, false); retryErr != nil {
+			logger.Get().Warnw("writeChatStreamResponseWithTools: no-thinking retry failed (R406)",
+				"model", modelName, "error", retryErr)
+		} else {
+			fullOutput = outputBuf.String()
+			duration = time.Since(start)
+			reasoningOut, outputForParse, toolCalls, hasReasoning = splitToolsOutput(fullOutput, thinkOverride, tools)
+			// eval_count — сумма обеих попыток: клиент видел thinking первой и
+			// ответ второй; занижать нельзя (по usage он считает контекст).
+			generatedTokens = attempt1Tokens + countTokensSafe(modelName, fullOutput)
+			logger.Get().Infow("writeChatStreamResponseWithTools: no-thinking retry produced output (R406)",
+				"model", modelName,
+				"attempt1_tokens", attempt1Tokens,
+				"attempt2_tokens", generatedTokens-attempt1Tokens,
+				"tool_calls", len(toolCalls),
+				"visible_len", len(cleanFinalContent(outputForParse)))
+		}
+	}
+
 	// R247 (2026-10-26), этап A+F плана: STRICT-аргументы.
 	//
 	// Клиент объявил tools[].function.strict=true — значит аргументы обязаны
@@ -2168,7 +2241,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// и обрезанный ответ снова закрывался как done_reason=stop — ровно то, что
 	// чинит R394. Токенизатор даёт точное число независимо от того, как мост
 	// режет поток на куски.
-	generatedTokens := countTokensSafe(modelName, fullOutput)
+	//
+	// R406: generatedTokens посчитан выше и уже учитывает возможный повтор без
+	// размышлений (сумма обеих попыток) — второй раз не пересчитываем.
 
 	// R113 (2026-10-13): РАЗМЕТКА ВЫЗОВА НЕ ЯВЛЯЕТСЯ ОТВЕТОМ.
 	//

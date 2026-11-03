@@ -194,6 +194,13 @@ client_cap        = min( physical_ceiling, effective_ceiling )
    блока клиент минутами не получал ни байта, затем получал пустой финальный
    чанк и повтор R188 с тем же бюджетом. Повтор теперь не запускается, если
    клиенту уже ушёл хотя бы один кадр (thinking или content).
+5. **Бюджет съеден размышлениями (R406).** Если `n_predict` клиента исчерпан, а
+   видимого текста нет (только thinking), делается **один** повтор с
+   `enable_thinking=false` в chat template (тот же запрос и бюджет). Иначе
+   `done_reason=length` на пустом ответе Cline трактует как «output token limit»
+   и запускает overflow-recovery: compacting → compacted → потеря части
+   переписки и «text part … not found». `eval_count` после повтора — сумма
+   обеих попыток (клиент видел thinking первой и ответ второй).
 4. Пустой видимый ответ при непустых размышлениях → пояснение клиенту
    (`emptyAnswerNoticeForNativeR314`) или `error`-терминатор.
 

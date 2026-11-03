@@ -108,6 +108,29 @@ func TestLlamaModelLoadedConfirmsReplica_R81(t *testing.T) {
 	})
 
 	event := `{"backendId":"r81-c1","model":"r81-model","contextSize":4096}`
+	// R425 (2026-11-03): дождаться, пока контроллер репликации СОЗДАСТ группу.
+	//
+	// Группы создаёт контроллер (async), а событие «модель загружена» приходит
+	// от воркера; если событие опередило создание группы, подтверждение реплики
+	// уходит в пустоту, и кандидатов ещё нет. Локально контроллер успевал, на
+	// двухъядерном раннере — нет: прогон 41704260633 (ubuntu, internal/api),
+	// «--- FAIL: TestLlamaModelLoadedConfirmsReplica_R81». Ждём состояние
+	// ОКРУЖЕНИЯ (группа появилась), а само событие по-прежнему проверяем сразу,
+	// без задержки: смысл теста — подтверждение без 30-секундного тика поллера.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st := s.proxy.PlacementReplicationStatus()
+		if g, ok := st["groups"].(map[string]interface{}); ok {
+			if _, exists := g["r81-model"]; exists {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("группа репликации r81-model не создана за 5 с: %v", s.proxy.PlacementReplicationStatus())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/llama-model-loaded",
 		bytes.NewBufferString(event))
 	req.Header.Set("Content-Type", "application/json")

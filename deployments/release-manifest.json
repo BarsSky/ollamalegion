@@ -1,62 +1,43 @@
 {
-    "tag":  "v0.7.66",
-    "builtAt":  "2026-10-10T00:00:00Z",
-    "gitCommit":  "e581966",
+    "tag":  "r261103-1515",
+    "builtAt":  "2026-11-03T12:42:00Z",
+    "gitCommit":  "b311576b",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
+    "note":  "R411-R414: собраны balancer и cppworker (slot/AutoTune/n_predict/markers), webui пересобран ради обновлённых docs/architecture; образ агента в bundled-стеке не используется отдельным контейнером.",
     "images":  [
-                   {
-                       "service":  "webui",
-                       "variable":  "WEBUI_TAG",
-                       "image":  "ollama-legion/webui:r83-submodule-v129",
-                       "imageTag":  "r83-submodule-v129",
-                       "imageId":  "sha256:12eb2c181fd00041fbae58bbef1b4863d22bc2d0673bb7f2c6e7c26e75d2721b",
-                       "buildArg":  "VERSION=v0.7.66",
-                       "alias":  "ollama-legion/webui:latest"
-                   },
                    {
                        "service":  "balancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r83-submodule-v125",
-                       "imageTag":  "r83-submodule-v125",
-                       "imageId":  "sha256:6bff20896d6a3219265db3966c49f58ede29bc1d070bb1ad4701cf7c352dc194",
+                       "image":  "ollama-legion/balancer:r261103-1515",
+                       "imageTag":  "r261103-1515",
+                       "imageId":  "sha256:7370b83140630866fecf708405e29c90d423cde7df2e4766ad50ed710f2a8f13",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r83-submodule-v79",
-                       "imageTag":  "r83-submodule-v79",
-                       "imageId":  "sha256:a9e5980375745a43e48edf6b305312c338dba6cd22419047be301aaf32980409",
+                       "image":  "ollama-legion/cppworker:gpu-r261103-1515",
+                       "imageTag":  "gpu-r261103-1515",
+                       "imageId":  "sha256:7c311378c99c9c8aad5c42d82f3a383e5c33dacc7a10321d92ece55890ad8648",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
+                   },
+                   {
+                       "service":  "webui",
+                       "variable":  "WEBUI_TAG",
+                       "image":  "ollama-legion/webui:r261103-1515",
+                       "imageTag":  "r261103-1515",
+                       "imageId":  "sha256:240f4b4a004f5d24a1ea152b45557f3792aca54fff4006834625403db6491dee",
+                       "alias":  "ollama-legion/webui:latest"
                    },
                    {
                        "service":  "imageworker",
                        "variable":  "IMAGE_WORKER_TAG",
-                       "image":  "ollama-legion/imageworker:r83-submodule-v91",
-                       "imageTag":  "r83-submodule-v91",
-                       "imageId":  "sha256:79f6d1526e59fed8671d9ecb6d4aa744d66d64a77c0e0e8af816afc60eb3ca9f",
-                       "alias":  "ollama-legion/imageworker:latest-cuda"
-                   },
-                   {
-                       "service":  "agent (legacy, profile legacy-agent)",
-                       "variable":  "AGENT_TAG",
-                       "image":  "ollama-legion/agent:r83-submodule-v26",
-                       "imageTag":  "r83-submodule-v26",
-                       "imageId":  "sha256:cec78312630ced26a1bb104bec63691b6b52e08d381065537b7a22831549af20",
-                       "alias":  "ollama-legion/agent:latest"
+                       "image":  "ollama-legion/imageworker:72ec210a",
+                       "imageTag":  "72ec210a",
+                       "imageId":  "sha256:43c3ce9d34bafca7144944dcfde8e5fc266c75e4d795c30e5c487629e9058410",
+                       "alias":  ""
                    }
-               ],
-    "notes":  [
-                   "ТЕМЫ WEBUI: палитра канваса монитора вычисляется из фактических CSS-переменных темы (яркость фона + WCAG-контраст), а не из проверки имени 'light'. В теме mint сетка и подписи снова видны: живой замер по всем 7 темам даёт сетку 1.20-1.34 при норме 1.15 и текст 13.95-17.03 при норме 4.5:1 (было 1.00-1.08 и 1.15).",
-                  "ЖИВОЙ ИНВЕНТАРЬ МОДЕЛЕЙ: воркер сам сверяет каталог .gguf с диском (CPPWORKER_MODELS_RESCAN_SEC, default 30 s), балансер перечитывает листинги (LB_MODEL_CATALOG_REFRESH_SEC, default 60 s) и публикует изменение состава в ленту событий WebUI. Добавление и удаление файла видно без перезапуска контейнеров; POST /api/models/refresh проверяет немедленно.",
-                  "Проверено на стенде: файл, положенный в каталог моделей, появился в /api/models/files (added) без рестарта, удалённый исчез (removed); при недоступном каталоге ответ count=0 + dirError вместо старого кэша.",
-                  "WebUI без моделей-призраков: пустой ответ воркера применяется как есть, на вкладке «Модели» видно время проверки и причину пустоты, есть кнопка «Проверить наличие».",
-                  "Страницы движка (GGUF/Image) показываются по составу кластера (backendTypeCounts), а не по текущему фильтру типа; бейдж режима всегда определён, включая смешанный «llama.cpp + image.cpp».",
-                  "Monitor: переключатель типа бэкенда работает, поле топологии расширяется под данные (полоса прокручивается, узлы не наезжают и не прячутся за «+N»), анимация потока запросов видна на путях клиент→балансер→бэкенд.",
-                  "Холодная модель: дедупликация авто-загрузки не считается провалом — параллельные запросы дожидаются загрузки и обслуживаются по очереди; ошибка загрузки отдаётся actionable-текстом.",
-                  "Предупреждение о неиспользованной параллельности: если воркер держит больше слотов, чем пропускает балансер, Monitor показывает баннер с конкретными настройками — изменения остаются за оператором.",
-                  "Устранена гонка данных в HFManager.BundleProgress и закрыт ряд флаков CI (memfit RAM, TempDir в sdworker HF, image-гейт, i18n-подстановка)."
-              ]
+               ]
 }

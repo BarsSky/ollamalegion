@@ -186,6 +186,14 @@ client_cap        = min( physical_ceiling, effective_ceiling )
    отслеживает незакрытый блок размышлений (`Unclosed`) и длину (`ReasoningChars`).
 3. Инструменты: буферизация, `parseToolCallsFromOutput`, удержание маркеров
    (`toolsStreamHoldback`), терминальный чанк `tool_calls`.
+4. **Размышления на tools-пути (R404).** `thinking` — не вызов инструмента,
+   поэтому уходит клиенту **дельтами сразу** (`message.thinking`, `done:false`),
+   не дожидаясь закрытия блока. Удержание остаётся только для `content`: там
+   действительно может начаться разметка tool call. До R404 старт блока
+   размышлений включал удержание всего вывода: при исчерпании бюджета ВНУТРИ
+   блока клиент минутами не получал ни байта, затем получал пустой финальный
+   чанк и повтор R188 с тем же бюджетом. Повтор теперь не запускается, если
+   клиенту уже ушёл хотя бы один кадр (thinking или content).
 4. Пустой видимый ответ при непустых размышлениях → пояснение клиенту
    (`emptyAnswerNoticeForNativeR314`) или `error`-терминатор.
 
@@ -266,6 +274,7 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | Симптом клиента | Что смотреть в логе балансера | Файлы |
 |---|---|---|
 | «ответ обрезан, но завершён» | `finish_reason`, `done_reason`, `budget_exhausted`, `generated_tokens`, `tokens_sent` | `handlers_openai.go`, `handlers_chat.go`, `handlers_generate.go` |
+| «клиент не получает маркеров Think, потом обрыв» | `tools_reasoning_split` → появились ли `message.thinking`-дельты; `retry skipped — stream already started (R404)`; `thinking_len` в summary | `handlers_chat.go` (`writeChatStreamResponseWithTools`), `tools_stream_reasoning_r404.go` |
 | «не тот объём контекста» | `prompt_eval_count`/`eval_count`, `/api/show.context_size`, `parallel` | `handlers_chat.go`, `handlers_model.go` |
 | «не даёт поднять окно» | `physical_ceiling`, `limited_by`, `auto_reload_max_n_ctx`, `context_per_seq`, `slots` | `preflight_nctx.go`, `nctx_reload.go` |
 | «окно не растёт» | `growth_blockers`, `active_streams`, `reload_pending`, `WindowFeasibility` | `growth_guard_r299.go`, `growth_stream_guard_r301.go` |

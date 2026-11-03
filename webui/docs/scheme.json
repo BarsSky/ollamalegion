@@ -1,5 +1,5 @@
 {
-  "version": "R403",
+  "version": "R404",
   "title": "Схема работы: запрос → окно контекста → ответ",
   "subtitle": "Каждый блок — шаг конвейера. Нажмите на блок, чтобы увидеть, что происходит, что уходит клиенту и где это в коде.",
   "docs": {
@@ -198,6 +198,7 @@
       "title": "Инференс",
       "detail": [
         "cppworker вызывает llama.cpp, собирает thinking и content, удерживает маркеры tool-call.",
+        "R404: на tools-пути thinking уходит дельтами сразу (message.thinking, done:false); удержание применяется только к content — там может начаться маркер tool call.",
         "Пустой видимый ответ при непустых размышлениях получает пояснение, а не молчаливый done."
       ],
       "outputs": ["дельты thinking/content", "tool_calls"],
@@ -211,7 +212,8 @@
       "title": "Бюджет вывода",
       "detail": [
         "Считается токенизатором по СЫРОМУ выводу (включая размышления), не числом callback'ов.",
-        "Исчерпан → done_reason/finish_reason = length (R394 / R402)."
+        "Исчерпан → done_reason/finish_reason = length (R394 / R402).",
+        "R404: повтор генерации не запускается, если клиенту уже ушёл хотя бы один кадр (thinking или content)."
       ],
       "outputs": ["length", "auto-continue балансера получает повод"],
       "code": ["cmd/cppworker/tools_terminal_reason_r394.go: toolsBudgetExhaustedR394", "cmd/cppworker/handlers_openai.go: R402"],

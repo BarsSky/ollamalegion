@@ -1700,6 +1700,22 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// Buffer full output for final tool_calls detection.
 	var outputBuf strings.Builder
 
+	// R404: размышления отдаём ДЕЛЬТАМИ, не дожидаясь закрытия блока.
+	//
+	// На tools-пути content удерживается окном (там может начаться разметка
+	// tool call), но thinking вызовом инструмента быть не может — его можно
+	// отдавать сразу. До R404 старт блока размышлений включал reasoningHold, и
+	// при исчерпании бюджета ВНУТРИ блока клиент не получал ни байта минутами
+	// (живой лог: 16647 символов размышлений, done_reason=length, 362 с, затем
+	// повтор R188 ещё на столько же и обрыв).
+	thinkingParser := NewReasoningStreamState()
+	thinkingParser.SetImpliedOpen(PromptOpensReasoning(prompt))
+	thinkingStreamed := false
+	// anyStreamed — клиенту ушёл ХОТЬ ОДИН байт (thinking или content).
+	// Нужен, чтобы не запускать R188-повтор после уже отданных размышлений:
+	// повтор сгенерировал бы их заново и снова съел бюджет.
+	anyStreamed := false
+
 	// Round 6 Fix 5: heartbeat goroutine prevents idle-timeout during
 	// long generations.
 	//
@@ -1795,6 +1811,21 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		data, _ := json.Marshal(chunk)
 		sw.Writef("%s\n", data)
 		sw.Flush()
+		anyStreamed = true
+	}
+
+	// R404: thinking-дельта уходит сразу, не дожидаясь закрытия блока
+	// размышлений (он может не закрыться: бюджет вывода кончается внутри).
+	emitThinkingDelta := func(delta string) {
+		if delta == "" {
+			return
+		}
+		chunk := toolsThinkingChunkR404(modelName, createdAt, delta)
+		data, _ := json.Marshal(chunk)
+		sw.Writef("%s\n", data)
+		sw.Flush()
+		thinkingStreamed = true
+		anyStreamed = true
 	}
 
 	callback := func(token string) bool {
@@ -1810,6 +1841,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// R83: чистим управляющие символы (см. stream_sanitize.go).
 		token = sanitizeStreamText(token)
 		outputBuf.WriteString(token)
+		// R404: thinking отдаём сразу — он не может быть вызовом инструмента,
+		// поэтому не ждёт закрытия блока и не попадает под reasoningHold ниже.
+		if td := toolsFeedThinkingR404(thinkingParser, token); td != "" {
+			emitThinkingDelta(td)
+		}
 		// R66b: TTFT — время первого непустого токена.
 		if token != "" {
 			atomic.CompareAndSwapInt64(&firstTokenAt, 0, time.Now().UnixNano())
@@ -2023,6 +2059,17 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"model", modelName, "n_predict", params.NPredict, "retries_allowed", retryBudget)
 		}
 		for attempt := 1; attempt <= retryBudget; attempt++ {
+			// R404: клиенту уже ушли размышления (или текст) — повтор
+			// сгенерировал бы их заново и снова съел бы весь бюджет. Живой
+			// случай: 16647 символов thinking, 0 видимого текста, n_predict=4096,
+			// повтор R188 — ещё 6 минут тишины и обрыв клиентом.
+			if anyStreamed {
+				logger.Get().Infow("writeChatStreamResponseWithTools: retry skipped — stream already started (R404)",
+					"model", modelName, "attempt", attempt,
+					"thinking_streamed", thinkingStreamed,
+					"n_predict", params.NPredict)
+				break
+			}
 			emptyOutput := shouldRetryEmptyStreamingOutput(fullOutput, emittedLen, ctx)
 			// R113 (2026-10-13): повторяем и тогда, когда модель ВЫДАЛА разметку
 			// вызова, но распознать её не удалось. Повтор безопасен по тому же
@@ -2040,6 +2087,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			outputBuf.Reset()
 			emittedLen = 0
 			toolsHold = false
+			// R404: парсер thinking тоже начинается с чистого листа — иначе
+			// дельты второй попытки смешались бы с состоянием первой.
+			thinkingParser = NewReasoningStreamState()
+			thinkingParser.SetImpliedOpen(PromptOpensReasoning(prompt))
+			thinkingStreamed = false
 			atomic.StoreInt64(&firstTokenAt, 0)
 			if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr != nil {
 				logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_retry_failed"),
@@ -2069,13 +2121,16 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// Здесь: проверить по схеме и, если клиенту ещё ничего не отправлено, один
 	// раз повторить генерацию (тот же промпт — сэмплирование стохастично).
 	// Выключатель: CPPWORKER_STRICT_ARGS_RETRY=0.
-	if len(toolCalls) > 0 && emittedLen == 0 && strictArgsRetryEnabled() {
+	if len(toolCalls) > 0 && emittedLen == 0 && !anyStreamed && strictArgsRetryEnabled() {
 		if violations := strictToolCallViolations(toolCalls, tools); len(violations) > 0 {
 			logger.Get().Warnw("strict tool args invalid, retrying generation once",
 				"model", modelName, "tool", toolCalls[0].Function.Name,
 				"violations", truncateForLog(strings.Join(violations, "; "), 300))
 			outputBuf.Reset()
 			toolsHold = false
+			thinkingParser = NewReasoningStreamState()
+			thinkingParser.SetImpliedOpen(PromptOpensReasoning(prompt))
+			thinkingStreamed = false
 			atomic.StoreInt64(&firstTokenAt, 0)
 			if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr == nil {
 				fullOutput = outputBuf.String()
@@ -2093,6 +2148,14 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 					"model", modelName, "error", retryErr)
 			}
 		}
+	}
+
+	// R404: выпустить хвост, который парсер thinking удерживал (возможный
+	// неполный маркер). Без этого последние символы размышлений терялись бы:
+	// они не входили ни в одну дельту, а в финальном чанке thinking мы больше
+	// не дублируем, если он уже отдан дельтами.
+	if thinkingTail, _ := thinkingParser.FinalizeForStream(); thinkingTail != "" {
+		emitThinkingDelta(thinkingTail)
 	}
 
 	// R394.2 (2026-11-04): сколько токенов реально сгенерировано — считаем
@@ -2350,7 +2413,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// R106c: размышления — отдельным полем (Ollama: message.thinking), а не
 		// в content: клиент показывает их как «thinking», а не как ответ.
 		// R108: отдаём оба имени (`thinking` — канон §4.1, `reasoning` — legacy).
-		if reasoningOut != "" {
+		// R404: если thinking уже ушёл дельтами — в финале НЕ дублируем его.
+		if reasoningOut != "" && !thinkingStreamed {
 			msg["thinking"] = reasoningOut
 			msg["reasoning"] = reasoningOut
 		}
@@ -2388,16 +2452,42 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// которого R314 защищает остальные поверхности. Признак «размышления
 		// были» берём из СЫРОГО вывода (reasoningCharsRawR394), до политики.
 		content = toolsTerminalContentR394(content, fullOutput)
+		// R404: thinking уже мог уйти дельтами — тогда в финале его НЕ дублируем.
+		thinkingField := reasoningOut
+		if thinkingStreamed {
+			thinkingField = ""
+		}
 		if reasoningOut != "" {
 			// R106c: размышления отделены — их место в message.thinking, а в
-			// content только ответ. Дельты в этом случае не отдавались
-			// (holdback по маркеру reasoning), поэтому ответ кладём целиком.
+			// content только ответ.
 			// R108: `thinking` — канон (контракт §4.1), `reasoning` — legacy-алиас.
-			msg["thinking"] = reasoningOut
-			msg["reasoning"] = reasoningOut
-			msg["content"] = content
+			// R404: если thinking шёл дельтами, оставляем только content; при
+			// этом content либо уже стримился (тогда в финал кладём пустое и
+			// отдаём хвост), либо его не было — кладём целиком с пояснением.
+			if thinkingField != "" {
+				msg["thinking"] = thinkingField
+				msg["reasoning"] = thinkingField
+			}
+			if streamContent && emittedLen > 0 && emittedLen <= len(fullOutput) {
+				tail := content
+				if toolsHold {
+					tail = cleanFinalContent(fullOutput[emittedLen:])
+				} else {
+					tail = sanitizeStreamText(fullOutput[emittedLen:])
+				}
+				if jsonMode {
+					tail = stripJSONFence(tail)
+				}
+				tail = stripToolCallMarkup(tail)
+				emitContentDelta(tail)
+				msg["content"] = ""
+			} else {
+				msg["content"] = content
+			}
 			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_reasoning_separate_final_chunk"),
-				"model", modelName, "reasoning_len", len(reasoningOut), "content_len", len(content))
+				"model", modelName, "reasoning_len", len(reasoningOut),
+				"thinking_streamed", thinkingStreamed, "content_len", len(content),
+				"emitted_len", emittedLen)
 		} else if streamContent && emittedLen > 0 {
 			// R83/v56: префикс ответа уже ушёл дельтами. В финальный чанк кладём
 			// только остаток (клиент, складывающий чанки, не должен получить

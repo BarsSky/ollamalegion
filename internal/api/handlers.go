@@ -239,6 +239,19 @@ func NewServer(proxy *balancer.Proxy, config *types.LoadBalancerConfig, healthCh
 	// а ручной `docker run` без файла работает как раньше (память).
 	s.authSessions = NewSessionStoreFromFile(resolveSessionsPath(usersPath))
 	authenticator.SetSessions(s.authSessions)
+	// R408: раннее предупреждение о неразрешимом входе. Если файл пользователей
+	// не пишется, env-учётка (LB_ADMIN_USER/PASSWORD) живёт ТОЛЬКО в памяти:
+	// сегодня вход работает, после пересоздания контейнера — нет, а оператор
+	// ищет причину в пароле. Типовая причина на стенде: /app/data (или
+	// /app/config, если LB_USERS_FILE не задан) смонтирован read-only или
+	// принадлежит другому uid — балансер работает под appuser (uid 1000).
+	if info := s.authUsers.BootstrapInfo(); info.Writable == false {
+		logger.Get().Warnw("auth: users file is NOT writable — env credentials live in memory only and will disappear after container restart",
+			"path", info.Path,
+			"source", info.Source,
+			"reason", info.Reason,
+			"hint", "проверьте владельца/права каталога (uid 1000) и LB_USERS_FILE; compose по умолчанию: /app/data/users.json на томе balancer_data")
+	}
 	if s.authUsers.Enabled() {
 		logger.Get().Infow(i18n.T("api.handlers.auth_webui_enabled"), "users_file", s.authUsers.Path(), "users", len(s.authUsers.List()),
 			"sessions_file", s.authSessions.Path(), "sessions", s.authSessions.Count())

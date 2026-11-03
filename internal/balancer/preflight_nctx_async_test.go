@@ -28,6 +28,16 @@ func TestPreflightAsyncReload_RunPreflightReturnsAsyncDecision(t *testing.T) {
 
 	var reloadCalls int32
 	reloadStarted := make(chan struct{}, 1)
+	reloadDone := make(chan struct{}, 1)
+	// R425 (2026-11-03): имитация reload — 1 с, а не 50 мс.
+	//
+	// ЖИВОЙ ФЛЕЙК (прогон 41710030403, self-hosted, шаг «Generate coverage»):
+	// --- FAIL: TestPreflightAsyncReload_RunPreflightReturnsAsyncDecision (0.15s).
+	// Проверка «async вернулся быстрее 20 мс» — утверждение о РАСПИСАНИИ машины,
+	// а не о коде: под инструментацией покрытия и на загруженном раннере 20 мс
+	// легко превышаются, хотя reload НЕ ждали. Теперь мок спит секунду, а
+	// проверка — «вернулись заметно раньше, чем reload завершился» (200 мс при
+	// 1000 мс): проверяется семантика, а не удача планировщика.
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/models/reload" {
 			atomic.AddInt32(&reloadCalls, 1)
@@ -35,7 +45,11 @@ func TestPreflightAsyncReload_RunPreflightReturnsAsyncDecision(t *testing.T) {
 			case reloadStarted <- struct{}{}:
 			default:
 			}
-			time.Sleep(50 * time.Millisecond) // имитация долгого reload
+			time.Sleep(1 * time.Second) // имитация долгого reload
+			select {
+			case reloadDone <- struct{}{}:
+			default:
+			}
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"ok":true}`))
 			return
@@ -85,9 +99,11 @@ func TestPreflightAsyncReload_RunPreflightReturnsAsyncDecision(t *testing.T) {
 	if res.Decision != PreflightAsyncReload {
 		t.Errorf("expected PreflightAsyncReload, got %v", res.Decision)
 	}
-	// Async mode должен вернуть СРАЗУ, не дожидаясь reload (50ms в нашем mock)
-	if elapsed > 20*time.Millisecond {
-		t.Errorf("RunPreflight blocked for %v — should return immediately in async mode", elapsed)
+	// Async mode обязан вернуться, НЕ дожидаясь reload (1 c в нашем моке).
+	// 200 мс — десятикратный запас к 1 c: проверяется семантика «не ждали
+	// reload», а не скорость планировщика (см. комментарий у мока).
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("RunPreflight blocked for %v — should return immediately in async mode (reload takes 1s)", elapsed)
 	}
 	// TargetNCtx = min(required=51000, MaxVRAMNCtx=65536, ModelMaxContext=131072) = 51000
 	// Но DecidePreflight может также учитывать safety factor (0.85 * MaxVRAMNCtx = 55705.6)
@@ -108,8 +124,13 @@ func TestPreflightAsyncReload_RunPreflightReturnsAsyncDecision(t *testing.T) {
 		t.Fatal("reload was not started within 2s")
 	}
 
-	// Подождём завершения goroutine
-	time.Sleep(100 * time.Millisecond)
+	// Подождём завершения фонового reload (мок спит 1 c) — без фиксированной
+	// паузы, которая на медленном раннере оказывалась меньше самого reload.
+	select {
+	case <-reloadDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reload did not finish within 5s")
+	}
 	if got := atomic.LoadInt32(&reloadCalls); got != 1 {
 		t.Errorf("expected 1 reload call, got %d", got)
 	}

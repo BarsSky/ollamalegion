@@ -2050,6 +2050,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// R406: токены первой попытки нужны для решения о повторе без размышлений
 	// и для честного eval_count (если повтор состоится — сложим обе попытки).
 	generatedTokens := countTokensSafe(modelName, fullOutput)
+	// budgetTokens — токены ПОСЛЕДНЕЙ попытки: по ним решается «упёрлись в
+	// n_predict». generatedTokens после повтора — сумма обеих попыток (usage),
+	// и по ней бюджет всегда выглядел бы исчерпанным.
+	budgetTokens := generatedTokens
 
 	// R83/v59 (2026-10-01) + R110 (2026-10-13): повтор генерации, когда видимого
 	// ответа не получилось.
@@ -2169,7 +2173,12 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			reasoningOut, outputForParse, toolCalls, hasReasoning = splitToolsOutput(fullOutput, thinkOverride, tools)
 			// eval_count — сумма обеих попыток: клиент видел thinking первой и
 			// ответ второй; занижать нельзя (по usage он считает контекст).
-			generatedTokens = attempt1Tokens + countTokensSafe(modelName, fullOutput)
+			// Для решения о бюджете берём ТОЛЬКО вторую попытку: первая уже
+			// израсходовала n_predict на размышления, но ответ второй может
+			// быть полным.
+			retryTokens := countTokensSafe(modelName, fullOutput)
+			generatedTokens = attempt1Tokens + retryTokens
+			budgetTokens = retryTokens
 			logger.Get().Infow("writeChatStreamResponseWithTools: no-thinking retry produced output (R406)",
 				"model", modelName,
 				"attempt1_tokens", attempt1Tokens,
@@ -2325,7 +2334,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		if emittedLen == 0 {
 			if notice := toolsTerminalContentR394("", fullOutput); notice != "" {
 				reason := toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
-					len(toolCalls), params.NPredict, generatedTokens)
+					len(toolCalls), params.NPredict, budgetTokens)
 				logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_reasoning_only_notice"),
 					"model", modelName, "raw_len", len(fullOutput),
 					"reasoning_chars", reasoningCharsRawR394(fullOutput),
@@ -2368,7 +2377,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				// R394: причина считается с учётом исчерпанного клиентского лимита
 				// (R320 знал только про незакрытый reasoning и давал stop при обрыве).
 				"done_reason": toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
-					len(toolCalls), params.NPredict, generatedTokens),
+					len(toolCalls), params.NPredict, budgetTokens),
 			}
 			doneJSON, _ := json.Marshal(doneChunk)
 			sw.Writef("%s\n", doneJSON)
@@ -2380,7 +2389,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// при исчерпанном бюджете это length, а не stop (R394).
 		if emittedLen > 0 {
 			reason := toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
-				len(toolCalls), params.NPredict, generatedTokens)
+				len(toolCalls), params.NPredict, budgetTokens)
 			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_empty_after_prefix"),
 				"model", modelName, "emitted_len", emittedLen, "raw_len", len(fullOutput),
 				"n_predict", params.NPredict, "generated_tokens", generatedTokens,
@@ -2595,7 +2604,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// он давал "stop" — по контракту Ollama это «модель закончила», и Cline
 		// закрывал ход, не получив продолжения («флаг завершения раньше ответа»).
 		finalChunk["done_reason"] = toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
-			len(toolCalls), params.NPredict, generatedTokens)
+			len(toolCalls), params.NPredict, budgetTokens)
 	}
 
 	// R113 (2026-10-13): ЯВНОЕ ОТСЛЕЖИВАНИЕ ОТВЕТА. Одна строка на запрос, по
@@ -2626,7 +2635,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// было в СЫРОМ выводе (в том числе скрытых через think=false).
 		"n_predict", params.NPredict,
 		"generated_tokens", generatedTokens,
-		"budget_exhausted", toolsBudgetExhaustedR394(params.NPredict, generatedTokens),
+		"budget_tokens", budgetTokens,
+		"budget_exhausted", toolsBudgetExhaustedR394(params.NPredict, budgetTokens),
 		"reasoning_chars_raw", reasoningCharsRawR394(fullOutput),
 		"elapsed_ms", duration.Milliseconds(),
 	)

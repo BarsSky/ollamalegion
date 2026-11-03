@@ -604,7 +604,9 @@ func streamWithAbort(ctx context.Context, modelName, prompt string, params bridg
 	// Флаг создаём и вооружаем ЗАРАНЕЕ — это и есть исправление порядка.
 	abortFlag := beginInferCancellation(ctx)
 
-	_, err := backend.GenerateStreamWithAbort(modelName, prompt, params, callback, abortFlag)
+	// R413 (2026-11-03): ctx уходит и в ожидание слота — иначе отменённый клиент
+	// висел бы в Acquire вечно, а слот не возвращался.
+	_, err := backend.GenerateStreamWithAbort(ctx, modelName, prompt, params, callback, abortFlag)
 	return err
 }
 

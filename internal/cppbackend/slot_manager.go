@@ -13,11 +13,11 @@
 //     KV-cache и не нужно делать reset_inference_state между calls.
 //
 // Acquire/Release порядок (важно!):
-//   1. slot = sm.Acquire(ctx)        // BLOCKS if all busy (с FIFO ordering)
-//   2. inst.mu.Lock()                // serialize llama_decode
-//   3. handle.Infer(params{SeqId: slot, ...})
-//   4. inst.mu.Unlock()
-//   5. sm.Release(slot)              // освобождает слот, будит следующего waiter'а
+//  1. slot = sm.Acquire(ctx)        // BLOCKS if all busy (с FIFO ordering)
+//  2. inst.mu.Lock()                // serialize llama_decode
+//  3. handle.Infer(params{SeqId: slot, ...})
+//  4. inst.mu.Unlock()
+//  5. sm.Release(slot)              // освобождает слот, будит следующего waiter'а
 //
 // Deadlock prevention: defer Release() сразу после успешного Acquire(),
 // ДО lock inst.mu — это гарантирует что слот освобождается даже при panic.
@@ -111,18 +111,45 @@ func (sm *SlotManager) Acquire(ctx context.Context) (int, func(), error) {
 	// Мониторим ctx параллельно с ожиданием waiter-канала.
 	select {
 	case slot := <-waiter:
-		// Слот получен. Release уже привязан к slot ID.
+		// R413 (2026-11-03): слот уже зарезервирован за нами releaseInternal,
+		// но ctx мог быть отменён, пока мы стояли в очереди. Вернуть слот
+		// ОБЯЗАТЕЛЬНО: вызывающий код при ошибке release() не получает, и
+		// зарезервированный слот остался бы занятым навсегда (relese никто не
+		// вызовет) — все последующие генерации вставали бы в Acquire навсегда.
+		//
+		// ЖИВОЙ ДЕФЕКТ, который это закрывает: клиент отменял запрос ровно в
+		// момент, когда предыдущая генерация освобождала слот; releaseInternal
+		// успевал отдать слот отменённому waiter'у, и воркер заклинивало —
+		// в логах «/api/chat stream response summary» больше не появлялся,
+		// active_queries=1 висел, GPU простаивала.
+		if err := ctx.Err(); err != nil {
+			sm.releaseInternal(slot)
+			return -1, nil, ErrAllSlotsBusy
+		}
 		return slot, sm.makeRelease(slot), nil
 	case <-ctx.Done():
-		// ctx отменён — убираем waiter из очереди (если ещё там) и возвращаем ошибку.
+		// ctx отменён — убираем waiter из очереди (если ещё там).
 		sm.mu.Lock()
+		removed := false
 		for i, w := range sm.waiters {
 			if w == waiter {
 				sm.waiters = append(sm.waiters[:i], sm.waiters[i+1:]...)
+				removed = true
 				break
 			}
 		}
 		sm.mu.Unlock()
+		// R413: если waiter'а в очереди уже нет, releaseInternal успел забрать
+		// его и положить слот в канал (send под тем же мьютексом, канал
+		// буферизован на 1 — значение там уже есть). Забираем и возвращаем
+		// слот, иначе он потерян навсегда.
+		if !removed {
+			select {
+			case slot := <-waiter:
+				sm.releaseInternal(slot)
+			default:
+			}
+		}
 		return -1, nil, ErrAllSlotsBusy
 	}
 }

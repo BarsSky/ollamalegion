@@ -3074,7 +3074,7 @@ func (b *Backend) MMProjMarker(modelName string) string {
 }
 
 func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback) (unsafe.Pointer, error) {
-	return b.GenerateStreamWithAbort(modelName, prompt, params, callback, nil)
+	return b.GenerateStreamWithAbort(context.Background(), modelName, prompt, params, callback, nil)
 }
 
 // GenerateStreamWithAbort — R83 (2026-09-29): то же, что GenerateStream, но с
@@ -3084,7 +3084,16 @@ func (b *Backend) GenerateStream(modelName string, prompt string, params bridge.
 // генерации, поэтому клиентский Cancel не мог её прервать. Теперь вызывающий
 // создаёт флаг, вооружает AbortWatcher на ctx.Done() и передаёт флаг сюда —
 // отмена срабатывает на ближайшем checkpoint C-bridge (per-token).
-func (b *Backend) GenerateStreamWithAbort(modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback, streamAbortFlag unsafe.Pointer) (unsafe.Pointer, error) {
+// R413 (2026-11-03): ctx — первый аргумент и он реально используется на
+// ожидании слота. Раньше здесь стояло context.Background(): отменённый клиент
+// навсегда оставался в Acquire, слот не освобождался, и воркер переставал
+// отвечать (живой дефект: active_queries=1, GPU простаивает, ни одного
+// «stream response summary» больше нет). Теперь отмена клиента снимает
+// ожидание слота так же, как снимает саму генерацию.
+func (b *Backend) GenerateStreamWithAbort(ctx context.Context, modelName string, prompt string, params bridge.GenerationParams, callback bridge.StreamCallback, streamAbortFlag unsafe.Pointer) (unsafe.Pointer, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
 		return nil, err
@@ -3107,13 +3116,32 @@ func (b *Backend) GenerateStreamWithAbort(modelName string, prompt string, param
 	if inst.slots == nil {
 		inst.slots = NewSlotManager(parallelSlotsFor(resolveNParallel(0, b.cfg.DefaultNParallel)))
 	}
-	slot, release, err := inst.slots.Acquire(context.Background())
+	// R413: видимая точка «запрос ждёт слот». Без неё заклинивание выглядело как
+	// «запрос пришёл и молча исчез»: воркер занят одной генерацией, остальные
+	// висят в Acquire, и в логах нет ни строки.
+	if inst.slots.ActiveCount() >= inst.slots.MaxSlots() {
+		logger.Get().Infow("inference: all slots busy, request will wait",
+			"model", modelName, "slots", inst.slots.MaxSlots(), "wait_until", "ctx")
+	}
+	waitStart := time.Now()
+	slot, release, err := inst.slots.Acquire(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if waited := time.Since(waitStart); waited > 500*time.Millisecond {
+		logger.Get().Infow("inference: slot acquired after waiting",
+			"model", modelName, "slot", slot, "waited_ms", waited.Milliseconds())
 	}
 	// ВАЖНО: defer release() ДО defer mu.Unlock() — defer LIFO:
 	// сначала Unlock, потом Release (без deadlock).
 	defer release()
+
+	// R413: ctx мог быть отменён между выдачей слота и этим местом (клиент ушёл,
+	// пока запрос стоял в очереди). Генерацию заведомо отменённого запроса не
+	// начинаем.
+	if err := ctx.Err(); err != nil {
+		return nil, ErrAllSlotsBusy
+	}
 
 	// Round 13: пробрасываем slot ID как seq_id.
 	params.SeqId = slot

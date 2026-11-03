@@ -143,6 +143,26 @@ func buildGenerationParams(req generateRequest) bridge.GenerationParams {
 	}
 	if req.MaxTokens > 0 {
 		params.NPredict = req.MaxTokens
+	} else if hit := ResolveNPredict(0, req.Model); hit > params.NPredict {
+		// R411 (2026-11-03): ОДНА политика n_predict на оба протокола.
+		//
+		// ЖИВОЙ ДЕФЕКТ (Cline в VS Code, провайдер Ollama, 2026-11-03). На
+		// /api/chat клиент не задаёт num_predict (Cline шлёт только
+		// max_output_tokens), поэтому params.NPredict оставался дефолтом моста
+		// 4096 — даже для reasoning-модели. Gemma-4 тратила ~2 КБ на thinking,
+		// потом обрывалась на 4096-м токене посреди видимого ответа, мы честно
+		// отдавали done_reason=length, а Cline трактовал это как «output token
+		// limit» и запускал overflow-recovery: compacting → compacted с
+		// ПОТЕРЕЙ части переписки (text part … not found). При этом на
+		// /v1/chat/completions та же модель давно получала 8192
+		// (ResolveNPredict → DefaultNPredictReasoning), то есть протоколы
+		// расходились в семантике одного и того же поля.
+		//
+		// Теперь Ollama-путь берёт ту же политику: явный num_predict/max_tokens
+		// клиента (выше) → дефолт reasoning-модели (8192 или env
+		// CPPWORKER_DEFAULT_N_PREDICT_REASONING) → дефолт моста 4096. Граница
+		// max_output_tokens по-прежнему может только уменьшить результат (ниже).
+		params.NPredict = hit
 	}
 	// R83/v67 (2026-10-02): верхняя граница от клиента (max_output_tokens) может
 	// только УМЕНЬШИТЬ длину ответа, но не задать её. Раньше граница попадала в

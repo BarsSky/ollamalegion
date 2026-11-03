@@ -1975,7 +1975,33 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		if cut <= emittedLen {
 			return true
 		}
-		emitContentDelta(buf[emittedLen:cut])
+		// R414 (2026-11-03): служебные маркеры размышлений (в частности
+		// gemma-4 `<channel|>`) не должны уходить клиенту как текст ответа.
+		// Живой случай: «…run the check command.<channel|>» в сессии Cline.
+		// Сначала удерживаем хвост, который может быть НАЧАЛОМ маркера, затем
+		// отдаём текст до первого ПОЛНОГО маркера и пропускаем сам маркер.
+		delta := buf[emittedLen:cut]
+		if hb := toolsStreamMarkerPrefixHoldbackR414(delta); hb > 0 {
+			cut -= hb
+			if cut <= emittedLen {
+				return true
+			}
+			cut = toolsStreamRuneSafeCut(buf, emittedLen, cut)
+			if cut <= emittedLen {
+				return true
+			}
+			delta = buf[emittedLen:cut]
+		}
+		if pos, markerLen, found := toolsStreamMarkerScanR414(delta); found {
+			if pos > 0 {
+				emitContentDelta(delta[:pos])
+			}
+			// Маркер не отдаём: сдвигаем позицию ЗА него, чтобы он не попал
+			// в следующую дельту.
+			emittedLen += pos + markerLen
+			return true
+		}
+		emitContentDelta(delta)
 		emittedLen = cut
 		return true
 	}

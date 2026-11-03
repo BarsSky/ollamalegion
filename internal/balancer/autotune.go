@@ -1229,7 +1229,7 @@ func (p *Proxy) ApplyAutoTunePlan(backendID string, plan *AutoTuneReloadPlan) *A
 	}
 
 	// 2) Unload current model
-	unloadResult := p.executeLlamaCppUnload(backend.Host, backend.CppWorkerPort, plan.ModelName)
+	unloadResult := p.executeLlamaCppUnload(backendID, plan.ModelName)
 	if !unloadResult.Success {
 		result.Error = fmt.Sprintf("unload failed: %s", unloadResult.Error)
 		result.FinishedAt = time.Now()
@@ -1379,16 +1379,43 @@ func (p *Proxy) autotuneModelManager() *ModelManager {
 
 // executeLlamaCppUnload — R54.6: helper для unload через cppworker API.
 // Использует существующий POST /api/models/unload.
-func (p *Proxy) executeLlamaCppUnload(host string, port int, modelName string) *ModelOpResult {
+//
+// R412 (2026-11-03): аргумент — backendID, а НЕ имя модели.
+//
+// ЖИВОЙ ДЕФЕКТ. AutoTune apply передавал сюда plan.ModelName и дальше в
+// ModelManager.executeLlamaCppUnload(host, port, backendID, req) — то есть имя
+// модели попадало в параметр backendID. workerAdminToken(«gemma-4-…») не
+// находил бэкенд, токен получался пустым, заголовок X-API-Token не ставился —
+// воркер отвечал 401 «invalid or missing API token». На стенде это выглядело
+// так: «autotune reload failed … unload failed: cppworker error (HTTP 401)» при
+// одинаковом токене во всех .env, reload не применялся, а AutoTune повторял
+// попытку на каждом запросе (kv_cache q4_0 → f16).
+//
+// Загрузка (executeLlamaCppLoad) тот же backendID получала правильно, поэтому
+// «unload 401, load даже не начинался» — ровно эта асимметрия и была уликой.
+func (p *Proxy) executeLlamaCppUnload(backendID, modelName string) *ModelOpResult {
 	// Try ModelManager first
 	if mm := p.autotuneModelManager(); mm != nil {
-		req := ModelOpRequest{Operation: "unload", ModelName: modelName}
-		return mm.executeLlamaCppUnload(host, port, modelName, req)
+		backend := p.GetBackend(backendID)
+		if backend == nil {
+			return &ModelOpResult{
+				Success:   false,
+				Operation: "unload",
+				ModelName: modelName,
+				BackendID: backendID,
+				Error:     fmt.Sprintf("backend %s not found", backendID),
+			}
+		}
+		return mm.executeLlamaCppUnload(backend.Host, backend.CppWorkerPort, backendID, ModelOpRequest{
+			Operation: "unload",
+			ModelName: modelName,
+		})
 	}
 	return &ModelOpResult{
 		Success:   false,
 		Operation: "unload",
 		ModelName: modelName,
+		BackendID: backendID,
 		Error:     "ModelManager not available; cannot unload",
 	}
 }

@@ -170,7 +170,9 @@ func stripServiceTokensKeepSpaces(s string) string {
 			s = strings.ReplaceAll(s, tok, "")
 		}
 	}
-	return s
+	// R418 (2026-11-03): токены шаблона (Qwen/ChatML) — та же политика:
+	// служебная обёртка не является текстом ответа.
+	return stripTemplateTurnTokensR418(s)
 }
 
 // tailEndsWithServiceTokenPrefix — хвост заканчивается НАЧАЛОМ служебного токена

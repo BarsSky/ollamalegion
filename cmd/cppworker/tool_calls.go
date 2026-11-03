@@ -1771,6 +1771,10 @@ func cleanFinalContent(output string) string {
 	// max_tokens, чужой шаблон) оставался в content — живая жалоба оператора:
 	// «в ответе перемешка с ответом и маркером </think>».
 	s = stripOrphanReasoningTags(s)
+	// R418 (2026-11-03): токены шаблона в СЕРЕДИНЕ видимого текста
+	// (`<|user|>`, `<|im_start|>` …). `trailingToolTokens` выше чистит только
+	// хвост; живой случай Qwen3.8-9B: «ок\n<|user|>\nОтветь…» уехало клиенту.
+	s = stripTemplateTurnTokensR418(s)
 	// Trim whitespace и trailing newlines.
 	return strings.TrimSpace(s)
 }
@@ -1916,4 +1920,3 @@ func fixTrailingBraceMisorder(s string) string {
 	}
 	return s
 }
-

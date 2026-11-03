@@ -65,10 +65,17 @@ func toolsStreamMarkerPrefixHoldbackR414(s string) int {
 	if maxLen > len(s) {
 		maxLen = len(s)
 	}
+	best := 0
 	for n := maxLen; n >= 1; n-- {
 		if isProperTagPrefix(s[len(s)-n:]) {
-			return n
+			best = n
+			break
 		}
 	}
-	return 0
+	// R418 (2026-11-03): недособранный токен шаблона (`<|us`) тоже удерживается —
+	// иначе вторая половина придёт следующим чанком и клиент увидит обрывок.
+	if t := templateTurnTokenSuffixPrefixR418(s); t > best {
+		best = t
+	}
+	return best
 }

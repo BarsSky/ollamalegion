@@ -1,4 +1,4 @@
-# GitHub Actions CI для OllamaLegion
+﻿# GitHub Actions CI для OllamaLegion
 #
 # Стратегия: self-hosted Windows runner (primary) + ubuntu-latest (fallback).
 # Self-hosted использует persistent cache из C:\actions-runner, поэтому
@@ -594,7 +594,15 @@ jobs:
         if: success()
         run: |
           # R60.29: bump 180s → 300s (matches other internal/ test steps)
-          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -timeout 300s ./internal/...
+          #
+          # R425 (2026-11-03): -p 1 — пакеты последовательно. Прогон 41707325806:
+          # шаг упал на internal/sdbackend «--- FAIL: TestCancel_QueuedSucceeds
+          # (60.07s)» — это НЕ тест и не код: в supervisor есть ожидание
+          # освобождения порта (portFreeTimeout=60 c), а покрытие гоняло 20
+          # пакетов параллельно на двухъядерном раннере. Тот же пакет отдельно
+          # с покрытием проходит за 4.7 c. Отдельный шаг «Test internal/sdbackend
+          # (no race)» зелёный по той же причине — он идёт один.
+          go test -tags llama_stub -coverprofile=coverage.out -covermode=atomic -p 1 -timeout 300s ./internal/...
           go tool cover -func=coverage.out | tail -1
 
       - name: Upload coverage artifact
@@ -813,3 +821,4 @@ jobs:
           echo "All WebUI JS files pass syntax check"
         # Note: webui/js/i18n/* is a separate i18n pack and uses a
         # slightly different ES syntax; syntax check is optional.
+

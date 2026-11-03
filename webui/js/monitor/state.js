@@ -493,6 +493,71 @@
   // Canvas helpers
   MonitorApp.vF = function() { return 'system-ui,-apple-system,sans-serif'; };
   MonitorApp.trunc = function(s, l) { if (!s) return ''; return s.length > l ? s.slice(0, l) + '…' : s; };
+
+  // R425 (2026-11-03): ТИП БЭКЕНДА — часть контракта выбора, а не косметика.
+  //
+  // ЖИВОЙ ДЕФЕКТ (монитор стенда RTX 3070). В очереди стоял запрос к
+  // llama.cpp-модели, а баннер предлагал «перераспределить» нагрузку и в списке
+  // свободных бэкендов называл imageworker (image.cpp, 0/64 занято). Нажатие
+  // «Перераспределить» на таком совете ведёт к перекладке текстовой модели на
+  // image-бэкенд, что заведомо даёт ошибку: типы несовместимы
+  // (R-Image: backend type isolation). Источник — здесь: свободными считались
+  // ВСЕ healthy-бэкенды, без учёта типа.
+  MonitorApp.backendTypeOf = function(b) {
+    if (!b) return '';
+    return String(b.backendType || b.type || b.engine || '');
+  };
+
+  MonitorApp.isImageBackend = function(b) {
+    return MonitorApp.backendTypeOf(b) === 'image_cpp';
+  };
+
+  // freeTextBackends — «свободные» бэкенды ДЛЯ ТЕКСТОВОЙ нагрузки: только
+  // текстового типа (image_cpp не обслуживает /api/chat и /v1/chat/completions)
+  // и только живые. Порог занятости — доля слотов (по умолчанию 0.5).
+  MonitorApp.freeTextBackends = function(backends, threshold) {
+    var lim = (threshold && threshold > 0) ? threshold : 0.5;
+    var out = [];
+    (backends || []).forEach(function(b) {
+      if (!b || MonitorApp.isImageBackend(b)) return;
+      if (b.status !== 'active' && b.status !== 'ready' && b.status !== 'healthy') return;
+      var m = b.maxConcurrentRequests || 10;
+      if (((b.activeRequests || 0) / m) < lim) out.push(b);
+    });
+    return out;
+  };
+
+  // altBackendsFor — куда ЕЩЁ можно отдать нагрузку этой сессии: тот же тип
+  // бэкенда, что у текущего, и свободный. Разные типы не взаимозаменяемы.
+  MonitorApp.altBackendsFor = function(backends, sameTypeAs, threshold) {
+    var lim = (threshold && threshold > 0) ? threshold : 0.5;
+    var want = MonitorApp.backendTypeOf(sameTypeAs);
+    var selfID = sameTypeAs && sameTypeAs.id;
+    var out = [];
+    (backends || []).forEach(function(x) {
+      if (!x || x.id === selfID) return;
+      if (x.status !== 'active' && x.status !== 'ready' && x.status !== 'healthy') return;
+      if (MonitorApp.backendTypeOf(x) !== want) return;
+      var m = x.maxConcurrentRequests || 10;
+      if (((x.activeRequests || 0) / m) < lim) out.push(x);
+    });
+    return out;
+  };
+
+  // fitText — обрезка ПО ШИРИНЕ, а не по числу символов: длинное имя модели
+  // (Qwen3-4B-Instruct-2507-Q4_K_M) шире плитки клиента, и на канве оно
+  // вылезало за карточку. Возвращает строку, которая гарантированно влезает в
+  // maxWidth при ТЕКУЩЕМ шрифте контекста (вызывающий обязан выставить шрифт).
+  MonitorApp.fitText = function(ctx, text, maxWidth) {
+    if (!text || !ctx || !(maxWidth > 0)) return '';
+    if (ctx.measureText(text).width <= maxWidth) return text;
+    var lo = 0, hi = text.length;
+    while (lo < hi) {
+      var mid = Math.ceil((lo + hi) / 2);
+      if (ctx.measureText(text.slice(0, mid) + '…').width <= maxWidth) lo = mid; else hi = mid - 1;
+    }
+    return lo > 0 ? text.slice(0, lo) + '…' : '';
+  };
   MonitorApp.rr = function(ctx, x, y, w, h, r) {
     ctx.beginPath();
     ctx.moveTo(x + r, y);

@@ -1,4 +1,4 @@
-﻿// js/monitor/canvas-topology.js — Topology canvas (vizCanvas)
+// js/monitor/canvas-topology.js — Topology canvas (vizCanvas)
 
 (function() {
   'use strict';
@@ -572,10 +572,24 @@
       else if (ia) { bc = 'rgba(59,130,246,0.18)'; br = 'rgba(59,130,246,0.5)'; }
       else { bc = 'rgba(148,163,184,0.12)'; br = 'rgba(148,163,184,0.25)'; }
       cx.fillStyle = bc; MA.rr(cx, 12, y - 22, sessTileW, 44, 8); cx.fill(); cx.strokeStyle = br; cx.lineWidth = 1; cx.stroke();
+      // R425 (2026-11-03): текст плитки клиента обрезается ПО ШИРИНЕ плитки, а
+      // не по числу символов. ЖИВОЙ ДЕФЕКТ: длинное имя модели
+      // (Qwen3-4B-Instruct-2507-Q4_K_M) и длинный User-Agent
+      // (Mozilla/5.0 (Windows NT …) WindowsPowerShell/5.1.26100.8875) вылезали
+      // за карточку и наезжали на соседние блоки. fitText меряет шрифт, clip
+      // держит текст внутри самой плитки (раньше границы клипа были шире
+      // карточки), поэтому вылезти нечему даже при смене шрифта/масштаба.
+      var tilePad = 8;
+      var tileTextX = 12 + tilePad;
+      var tileTextW = Math.max(0, sessTileW - tilePad * 2);
+      cx.save(); cx.beginPath(); cx.rect(12, y - 22, sessTileW, 44); cx.clip();
       cx.fillStyle = textLight; cx.font = 'bold 11px ' + MA.vF(); cx.textAlign = 'left';
-      cx.save(); cx.beginPath(); cx.rect(16, y - 18, sessTileW - 12, 14); cx.clip(); cx.fillText(MA.getCI(s.clientName) + ' ' + MA.trunc(s.clientName, 8), 20, y - 6); cx.restore();
+      var clientLine = (MA.getCI(s.clientName) + ' ' + MA.trunc(s.clientName, 8)).trim();
+      cx.fillText(MA.fitText(cx, clientLine, tileTextW), tileTextX, y - 6);
       cx.fillStyle = isCloud ? '#60a5fa' : textMuted; cx.font = '10px ' + MA.vF();
-      cx.save(); cx.beginPath(); cx.rect(16, y + 1, sessTileW - 12, 14); cx.clip(); cx.fillText((isCloud ? '☁️ ' : '') + (s.model || '—') + ' • ' + (s.requestCount || 0) + ' req', 20, y + 8); cx.restore();
+      var modelLine = (isCloud ? '☁️ ' : '') + (s.model || '—') + ' • ' + (s.requestCount || 0) + ' req';
+      cx.fillText(MA.fitText(cx, modelLine, tileTextW), tileTextX, y + 8);
+      cx.restore();
     }
     // R91: клиентов больше, чем влезло — показываем счётчик, а не молчим.
     drawOverflowChip('session', 12, sLayout.chipY, sLayout.hidden, lt);

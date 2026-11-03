@@ -1,4 +1,4 @@
-﻿// js/monitor/ui-renderer.js — UI update and table rendering
+// js/monitor/ui-renderer.js — UI update and table rendering
 
 (function() {
   'use strict';
@@ -829,10 +829,18 @@
   function diagnose(data) {
     var alerts = [], bks = data.cluster.backends || [], q = data.queueDetails || {}, all = q.all || [];
     var activeBks = bks.filter(function(b) { return b.status === 'active' || b.status === 'ready'; });
-    var freeBks = activeBks.filter(function(b) {
-      var m = b.maxConcurrentRequests || 10;
-      return (b.activeRequests || 0) / m < 0.5;
-    });
+    // R425 (2026-11-03): «свободных» бэкендов для ТЕКСТОВОЙ очереди считаем
+    // только по её типу. ЖИВОЙ ДЕФЕКТ: в очереди стоял запрос к llama.cpp, а
+    // баннер называл свободным imageworker (image.cpp, 0/64) и предлагал
+    // «перераспределить» — перекладка текстовой модели на image-бэкенд заведомо
+    // даёт ошибку, типы несовместимы. Фильтр по типу — в state.js
+    // (freeTextBackends), чтобы правило было одно и покрыто тестом.
+    var freeBks = (typeof MA.freeTextBackends === 'function')
+      ? MA.freeTextBackends(bks, 0.5)
+      : activeBks.filter(function(b) {
+          var m = b.maxConcurrentRequests || 10;
+          return (b.activeRequests || 0) / m < 0.5;
+        });
     if (q.pending_count > 0 && freeBks.length > 0) {
       alerts.push({
         level: 'red',
@@ -852,7 +860,13 @@
       if (!b) return;
       var m = b.maxConcurrentRequests || 10, l = (b.activeRequests || 0) / m;
       if (l > 0.8) {
-        var alt = activeBks.filter(function(x) { return x.id !== b.id && (x.activeRequests || 0) / (x.maxConcurrentRequests || 10) < 0.5; });
+        // R425 (2026-11-03): альтернативой может быть только бэкенд ТОГО ЖЕ
+        // типа. Раньше список «свободных» включал imageworker, и оператор
+        // получал совет увести llama.cpp-сессию на image.cpp — заведомо
+        // несовместимая пара (backend type isolation).
+        var alt = (typeof MA.altBackendsFor === 'function')
+          ? MA.altBackendsFor(bks, b, 0.5)
+          : activeBks.filter(function(x) { return x.id !== b.id && (x.activeRequests || 0) / (x.maxConcurrentRequests || 10) < 0.5; });
         if (alt.length > 0) {
           alerts.push({
             level: 'yellow',

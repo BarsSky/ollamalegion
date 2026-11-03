@@ -48,23 +48,23 @@
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
     <link rel="shortcut icon" href="favicon.ico">
-    <link rel="stylesheet" href="css/font-awesome.min.css?v=R83">
-    <link rel="stylesheet" href="css/themes.css?v=R83">
-    <link rel="stylesheet" href="css/base.css?v=R83">
-    <link rel="stylesheet" href="css/icons.css?v=R83">
-    <link rel="stylesheet" href="css/components.css?v=R317">
+    <link rel="stylesheet" href="css/font-awesome.min.css?v=R425">
+    <link rel="stylesheet" href="css/themes.css?v=R425">
+    <link rel="stylesheet" href="css/base.css?v=R425">
+    <link rel="stylesheet" href="css/icons.css?v=R425">
+    <link rel="stylesheet" href="css/components.css?v=R425">
     <!-- R58.3 (2026-09-03): Hardware preset selector CSS for setup-wizard. -->
-    <link rel="stylesheet" href="css/components-presets.css?v=R83">
-    <link rel="stylesheet" href="css/metrics.css?v=R83">
-    <link rel="stylesheet" href="css/data.css?v=R389">
-    <link rel="stylesheet" href="css/pages.css?v=R389">
-    <link rel="stylesheet" href="css/layout.css?v=R83">
-    <link rel="stylesheet" href="css/responsive.css?v=R83">
+    <link rel="stylesheet" href="css/components-presets.css?v=R425">
+    <link rel="stylesheet" href="css/metrics.css?v=R425">
+    <link rel="stylesheet" href="css/data.css?v=R425">
+    <link rel="stylesheet" href="css/pages.css?v=R425">
+    <link rel="stylesheet" href="css/layout.css?v=R425">
+    <link rel="stylesheet" href="css/responsive.css?v=R425">
     <!-- R232: стили демо-режима (активны только при body.demo-mode) -->
-    <link rel="stylesheet" href="css/demo.css?v=R232">
+    <link rel="stylesheet" href="css/demo.css?v=R425">
     <!-- R239: финальный слой полировки. Грузится последним, чтобы выровнять
          ритм/типографику/геометрию контролов поверх старых правил. -->
-    <link rel="stylesheet" href="css/polish.css?v=R250">
+    <link rel="stylesheet" href="css/polish.css?v=R425">
 </head>
 <body>
     <div class="app">
@@ -1123,7 +1123,7 @@
 
             <!-- Monitor Page -->
             <div class="page" id="monitor-page">
-                <iframe id="monitorFrame" src="monitor.html?v=R83" class="monitor-iframe"></iframe>
+                <iframe id="monitorFrame" src="monitor.html?v=R425" class="monitor-iframe"></iframe>
             </div>
 
             <!-- Logs Page -->
@@ -2567,23 +2567,23 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <div class="toast-container" id="toastContainer"></div>
 
     <!-- i18n Language Packs -->
-    <script defer src="js/i18n/ru.js?v=R395"></script>
-    <script defer src="js/i18n/en.js?v=R395"></script>
-    <script defer src="js/i18n/index.js?v=R83"></script>
+    <script defer src="js/i18n/ru.js?v=R425"></script>
+    <script defer src="js/i18n/en.js?v=R425"></script>
+    <script defer src="js/i18n/index.js?v=R425"></script>
     <!-- Runtime config injected by entrypoint for Docker / local nginx -->
     <script defer>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
     <!-- Modules -->
-    <script defer src="js/modules/config.js?v=R83"></script>
+    <script defer src="js/modules/config.js?v=R425"></script>
     <!-- R232: демо-режим (no-op, если WEBUI_DEMO_MODE не включён).
          Ставится ДО auth.js и после config.js: перехват fetch должен быть
          внешним слоем (иначе auth.js успевает сходить за /auth/me на реальный
          сервер и панель получает гостевые 401 ещё до включения демо), а
          DEMO_MODE к этому моменту уже прочитан из сгенерированного конфига. -->
-    <script defer src="js/modules/demo-mode.js?v=R232"></script>
-    <script defer src="js/modules/auth.js?v=R202"></script>
-    <script defer src="js/modules/users-admin.js?v=R222"></script>
-    <script defer src="js/modules/layout-layers-info.js?v=R206"></script>
-    <script defer src="js/modules/backend-type-filter.js?v=R83"></script>
+    <script defer src="js/modules/demo-mode.js?v=R425"></script>
+    <script defer src="js/modules/auth.js?v=R425"></script>
+    <script defer src="js/modules/users-admin.js?v=R425"></script>
+    <script defer src="js/modules/layout-layers-info.js?v=R425"></script>
+    <script defer src="js/modules/backend-type-filter.js?v=R425"></script>
     <!-- Sprint 30 (2026-07-30): привязка version display к build tag.
          Читает VERSION / GIT_COMMIT / BUILD_DATE из WEBUI_CONFIG (заполняется
          entrypoint.sh из Docker --build-arg VERSION=...) и обновляет
@@ -2617,108 +2617,108 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
         } catch (e) { /* keep 'dev' fallback */ }
     })();
     </script>
-    <script defer src="js/modules/utils.js?v=R83"></script>
-    <script defer src="js/modules/nav-burger.js?v=R83"></script>
+    <script defer src="js/modules/utils.js?v=R425"></script>
+    <script defer src="js/modules/nav-burger.js?v=R425"></script>
     <!-- 2026-10-03: «Подключение клиентов» рядом с бэкендом (ключ + эндпоинты).
          Загружается ДО renderers.js: его renderOllamaParams/renderImageParams
          вызывают window.ClientAccess.render(backend). -->
-    <script defer src="js/modules/client-access.js?v=R83"></script>
-    <script defer src="js/modules/api.js?v=R389"></script>
+    <script defer src="js/modules/client-access.js?v=R425"></script>
+    <script defer src="js/modules/api.js?v=R425"></script>
     <!-- R234: язык логов и ошибок (GET/PUT /api/v1/i18n). Нужен admin-доступ. -->
-    <script defer src="js/modules/i18n-logs.js?v=R234"></script>
-    <script defer src="js/modules/gguf-api.js?v=R395"></script>
+    <script defer src="js/modules/i18n-logs.js?v=R425"></script>
+    <script defer src="js/modules/gguf-api.js?v=R425"></script>
     <!-- R84 (2026-10-03): единая точка обновления данных WebUI — реестр
          провайдеров страниц, индикатор свежести в шапке (#dataFreshness) и
          переключатель авто-обновления. Грузится ДО app.js (его init вызывает
          DataRefresh.mount) и ДО модулей страниц (они регистрируют провайдеров). -->
-    <script defer src="js/modules/data-refresh.js?v=R83"></script>
+    <script defer src="js/modules/data-refresh.js?v=R425"></script>
     <!-- R-Image Phase 5 (2026-10-02): Image page (генерация + image-модели).
          Загружается ПОСЛЕ utils/api/gguf-api (нужны Utils/Api/I18N) и ДО app.js
          (app.js refreshPage('image') вызывает window.ImagePage.init). -->
     <!-- R-Image Phase 6 (2026-10-02): редактор профилей image-моделей.
          Грузится ДО image-page.js: его init() вызывает window.ImageProfiles.mount. -->
-    <script defer src="js/modules/image-profiles.js?v=R83"></script>
+    <script defer src="js/modules/image-profiles.js?v=R425"></script>
     <!-- R89 (2026-10-08): «Поделиться моделью» — перенос модели с одного бэкенда
          на другие через балансер. Грузится ДО image-page.js и gguf-renderer-*.js:
          их кнопки вызывают window.ModelShare.open(...). -->
-    <script defer src="js/modules/model-share.js?v=R89"></script>
-    <script defer src="js/modules/image-page.js?v=R83"></script>
-    <script defer src="js/modules/image-models-page.js?v=R83"></script>
+    <script defer src="js/modules/model-share.js?v=R425"></script>
+    <script defer src="js/modules/image-page.js?v=R425"></script>
+    <script defer src="js/modules/image-models-page.js?v=R425"></script>
     <!-- R-Image Phase 9: табы «HuggingFace» и «Загрузки» страницы «Image-модели»
          (поиск репо, файлы с suggestedRole, bundle-загрузка, история/остатки). -->
-    <script defer src="js/modules/image-models-hf.js?v=R83"></script>
+    <script defer src="js/modules/image-models-hf.js?v=R425"></script>
     <!-- 2026-10-03: страница-инструмент «Image-тест» — форма, отправка клиентским
          путём балансера и показ результата (единственное место WebUI, где видно
          сгенерированное изображение). Видна только при наличии image_cpp. -->
-    <script defer src="js/modules/image-test-page.js?v=R83"></script>
-    <script defer src="js/modules/image-backends-page.js?v=R83"></script>
+    <script defer src="js/modules/image-test-page.js?v=R425"></script>
+    <script defer src="js/modules/image-backends-page.js?v=R425"></script>
     <!-- R84: политика сосуществования image-генерации с текстом (balancing.image)
          — форма на табе «Обзор» страницы «Image-модели». -->
-    <script defer src="js/modules/image-resources-policy.js?v=R83"></script>
-    <script defer src="js/modules/websocket.js?v=R83"></script>
-    <script defer src="js/modules/renderers.js?v=R389"></script>
+    <script defer src="js/modules/image-resources-policy.js?v=R425"></script>
+    <script defer src="js/modules/websocket.js?v=R425"></script>
+    <script defer src="js/modules/renderers.js?v=R425"></script>
     <!-- R102 (2026-10-10, S6 плана 2026-10-07): окно «Объединение бэкендов».
          Модуль сам монтируется в #backendMergePanel на странице «Бэкенды». -->
-    <script defer src="js/modules/backend-merge.js?v=R250"></script>
+    <script defer src="js/modules/backend-merge.js?v=R425"></script>
     <!-- R269 (2026-10-29): уведомление «есть более свежая стабильная версия
          llama.cpp». Спрашивает /api/v1/llama-version и вставляет строку в начало
          страницы бэкендов; при relation!=behind или выключенной проверке — молчит. -->
-    <script defer src="js/modules/llama-upstream-notice.js?v=R269"></script>
+    <script defer src="js/modules/llama-upstream-notice.js?v=R425"></script>
     <!-- R103 (S5 плана 2026-10-07): шаг мастера «состав кластера» — план с числами
          и запись balancing.placement. Монтируется мастером в #setupPlanPanel. -->
-    <script defer src="js/modules/setup-plan.js?v=R103"></script>
+    <script defer src="js/modules/setup-plan.js?v=R425"></script>
     <!-- R54.5 (2026-08-24): AutoTune visibility (Phase 1: read-only badge) -->
-    <script defer src="js/modules/autotune.js?v=R83"></script>
+    <script defer src="js/modules/autotune.js?v=R425"></script>
     <!-- R54.7 (2026-08-24): AutoTune Settings page handler -->
-    <script defer src="js/modules/autotune_settings.js?v=R83"></script>
+    <script defer src="js/modules/autotune_settings.js?v=R425"></script>
     <!-- R55.2 (2026-08-24): AutoTune history timeline modal -->
-    <script defer src="js/modules/autotune_history.js?v=R83"></script>
-    <script defer src="js/modules/gguf-load-progress.js?v=R83"></script>
+    <script defer src="js/modules/autotune_history.js?v=R425"></script>
+    <script defer src="js/modules/gguf-load-progress.js?v=R425"></script>
     <!-- R57.5a (2026-09-03): pure helpers (stripGGUF / formatFileSize / showToast). -->
-    <script defer src="js/modules/gguf-renderer-helpers.js?v=R83"></script>
+    <script defer src="js/modules/gguf-renderer-helpers.js?v=R425"></script>
     <!-- R57.5b (2026-09-03): state object + health helpers. MUST be loaded
          BEFORE gguf-renderer.js (which references state.* in 80+ call sites). -->
-    <script defer src="js/modules/gguf-renderer-state.js?v=R83"></script>
+    <script defer src="js/modules/gguf-renderer-state.js?v=R425"></script>
     <!-- R57.5c (2026-09-03): left panel renderers (renderBackendsPanel / renderBackendsList). -->
-    <script defer src="js/modules/gguf-renderer-list.js?v=R395"></script>
+    <script defer src="js/modules/gguf-renderer-list.js?v=R425"></script>
     <!-- R57.5d-1 (2026-09-03): action handlers (load/unload/cancel/download/HF search). -->
-    <script defer src="js/modules/gguf-renderer-actions.js?v=R395"></script>
+    <script defer src="js/modules/gguf-renderer-actions.js?v=R425"></script>
     <!-- R57.5d-2 (2026-09-03): data refresh + active queries polling + downloads polling. -->
-    <script defer src="js/modules/gguf-renderer-refresh.js?v=R395"></script>
-    <script defer src="js/modules/gguf-page-provider.js?v=R83"></script>
+    <script defer src="js/modules/gguf-renderer-refresh.js?v=R425"></script>
+    <script defer src="js/modules/gguf-page-provider.js?v=R425"></script>
     <!-- R57.5e (2026-09-03): delegated click handler + bindEvents + bindSettingsChange. -->
-    <script defer src="js/modules/gguf-renderer-detail.js?v=R83"></script>
+    <script defer src="js/modules/gguf-renderer-detail.js?v=R425"></script>
     <!-- R57.5f (2026-09-03): right panel render functions (renderDetailPanel, 4 sub-panes, settings, backend options). -->
-    <script defer src="js/modules/gguf-renderer-detail-render.js?v=R395"></script>
-    <script defer src="js/modules/gguf-renderer.js?v=R83"></script>
-    <script defer src="js/modules/settings-ui.js?v=R83"></script>
+    <script defer src="js/modules/gguf-renderer-detail-render.js?v=R425"></script>
+    <script defer src="js/modules/gguf-renderer.js?v=R425"></script>
+    <script defer src="js/modules/settings-ui.js?v=R425"></script>
     <!-- R305 (этап 3 рефакторинга настроек): реестр «горячих» настроек балансера
          (GET/PUT /api/v1/settings, POST /api/v1/settings/reset). Грузится ПОСЛЕ
          api.js — все запросы идут через Api.hotSettings с общими auth-заголовками,
          и ДО app.js — app.js при переходе на «Настройки» просит модуль обновиться.
          R317 (этап 5): тот же модуль — владелец значений для панели ролей на
          «Мониторе» и приёмник якорей «перекрыто горячей настройкой» из разметки. -->
-    <script defer src="js/modules/settings-registry.js?v=R317"></script>
-    <script defer src="js/modules/config-io.js?v=R83"></script>
-    <script defer src="js/modules/mode-wizard.js?v=R83"></script>
-    <script defer src="js/modules/setup-wizard-presets.js?v=R83"></script>
-    <script defer src="js/modules/setup-wizard.js?v=R83"></script>
-    <script defer src="js/modules/cppworker-params.js?v=R83"></script>
-    <script defer src="js/modules/bulk-models.js?v=R83"></script>
-    <script defer src="js/modules/notifications.js?v=R83"></script>
-    <script defer src="js/modules/logs-stream.js?v=R83"></script>
+    <script defer src="js/modules/settings-registry.js?v=R425"></script>
+    <script defer src="js/modules/config-io.js?v=R425"></script>
+    <script defer src="js/modules/mode-wizard.js?v=R425"></script>
+    <script defer src="js/modules/setup-wizard-presets.js?v=R425"></script>
+    <script defer src="js/modules/setup-wizard.js?v=R425"></script>
+    <script defer src="js/modules/cppworker-params.js?v=R425"></script>
+    <script defer src="js/modules/bulk-models.js?v=R425"></script>
+    <script defer src="js/modules/notifications.js?v=R425"></script>
+    <script defer src="js/modules/logs-stream.js?v=R425"></script>
     <!-- R57.2 (2026-09-03): app-core.js provides theme/density/i18n/AutoTune/showToast
          via window.App namespace. MUST be loaded BEFORE app.js (app.js init() calls App.*). -->
-    <script defer src="js/app-core.js?v=R83"></script>
+    <script defer src="js/app-core.js?v=R425"></script>
     <!-- R57.3 (2026-09-03): app-listeners.js provides setup* functions (navigation,
          restart handler, WebSocket events, API events, logs tab navigation).
          Reads from window.App.context populated by app.js. -->
-    <script defer src="js/app-listeners.js?v=R83"></script>
+    <script defer src="js/app-listeners.js?v=R425"></script>
     <!-- R57.4 (2026-09-03): app-modals.js provides Backend CRUD (openBackendModal,
          fillForm, closeModal, saveBackend, deleteBackend, editBackend,
          confirmDeleteBackend) via window.BackendCRUD. Loaded BEFORE app.js
          so window.ui public API can reference these at IIFE return time. -->
-    <script defer src="js/app-modals.js?v=R83"></script>
-    <script defer src="js/app.js?v=R389"></script>
+    <script defer src="js/app-modals.js?v=R425"></script>
+    <script defer src="js/app.js?v=R425"></script>
 </body>
 </html>

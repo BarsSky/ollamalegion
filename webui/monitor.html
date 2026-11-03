@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
@@ -10,27 +10,27 @@
   <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
   <link rel="shortcut icon" href="favicon.ico">
-  <link rel="stylesheet" href="css/themes.css?v=R83">
-  <link rel="stylesheet" href="css/base.css?v=R83">
-  <link rel="stylesheet" href="css/monitor-app.css?v=R317">
-  <link rel="stylesheet" href="css/monitor.css?v=R83">
+  <link rel="stylesheet" href="css/themes.css?v=R425">
+  <link rel="stylesheet" href="css/base.css?v=R425">
+  <link rel="stylesheet" href="css/monitor-app.css?v=R425">
+  <link rel="stylesheet" href="css/monitor.css?v=R425">
   <!-- R232: стили демо-режима (активны только при body.demo-mode) -->
-  <link rel="stylesheet" href="css/demo.css?v=R232">
-  <script src="js/i18n/ru.js?v=R83"></script>
-  <script src="js/i18n/en.js?v=R83"></script>
-  <script src="js/i18n/index.js?v=R83"></script>
-  <script src="js/monitor/backend-type-badges.js?v=R83"></script>
+  <link rel="stylesheet" href="css/demo.css?v=R425">
+  <script src="js/i18n/ru.js?v=R425"></script>
+  <script src="js/i18n/en.js?v=R425"></script>
+  <script src="js/i18n/index.js?v=R425"></script>
+  <script src="js/monitor/backend-type-badges.js?v=R425"></script>
   <!-- R59.3 (2026-09-03): WEBUI_CONFIG содержит API_TOKEN, инжектированный
        entrypoint.sh из Docker --env API_TOKEN. Нужен для monitor/api.js
        fallback (когда monitor.html загружается как iframe из index.html
        без ?token= и без localStorage.apiToken). -->
   <script defer>window.WEBUI_CONFIG = window.WEBUI_CONFIG || {};</script>
-  <script defer src="js/modules/config.js?v=R83"></script>
+  <script defer src="js/modules/config.js?v=R425"></script>
     <!-- R232: демо-режим (no-op, если WEBUI_DEMO_MODE не включён). Ставится ДО
          auth.js и после config.js: перехват fetch должен быть внешним слоем,
          иначе auth.js успевает сходить за /auth/me на реальный сервер. -->
-    <script defer src="js/modules/demo-mode.js?v=R232"></script>
-    <script defer src="js/modules/auth.js?v=R202"></script>
+    <script defer src="js/modules/demo-mode.js?v=R425"></script>
+    <script defer src="js/modules/auth.js?v=R425"></script>
 </head>
 <body>
 <header>
@@ -91,7 +91,7 @@
     </div>
   </div>
 </header>
-<div id="topoTooltip" style="display:none;position:fixed;pointer-events:none;z-index:1000;background:var(--glass-bg);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid var(--glass-border);border-radius:10px;padding:10px 14px;font-size:var(--font-size-xs);line-height:1.6;max-width:300px;box-shadow:var(--glass-shadow);color:var(--text-primary);white-space:nowrap"></div>
+<div id="topoTooltip" style="display:none;position:fixed;pointer-events:none;z-index:1000;background:var(--glass-bg);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid var(--glass-border);border-radius:10px;padding:10px 14px;font-size:var(--font-size-xs);line-height:1.6;max-width:340px;box-shadow:var(--glass-shadow);color:var(--text-primary);white-space:normal;overflow-wrap:anywhere;word-break:break-word"></div>
 <main>
   <div class="topo-section">
     <div class="topo-viewport" id="topoViewport">
@@ -690,21 +690,21 @@
 </main>
   <!-- R59.3 (2026-09-03): all scripts below are defer so they execute AFTER
        the defer scripts in <head> (window.WEBUI_CONFIG = {} and
-       config.js?v=R83) populate window.WEBUI_CONFIG.API_TOKEN. Without
+       config.js?v=R425) populate window.WEBUI_CONFIG.API_TOKEN. Without
        defer, init.js's setInterval(fetchAllSafe, 2000) + immediate
        fetchAll() call would fire BEFORE config.js (also defer) loads,
        so api.js's WEBUI_CONFIG.API_TOKEN fallback would be empty
        on first tick → 401 from balancer. With defer, all scripts
        execute in document order, and config.js (defer) runs before
        init.js (defer) before any api() call. -->
-  <script defer src="js/modules/utils.js?v=R83"></script>
+  <script defer src="js/modules/utils.js?v=R425"></script>
   <!-- R104 (S6 плана 2026-10-07): карточка логических бэкендов (групп). -->
-  <script defer src="js/modules/monitor-groups.js?v=R104"></script>
-  <script defer src="js/modules/monitor-charts.js?v=R83"></script>
-  <script defer src="js/modules/monitor-metrics.js?v=R83"></script>
-  <script defer src="js/modules/monitor-backends.js?v=R83"></script>
-  <script defer src="js/monitor/state.js?v=R83"></script>
-  <script defer src="js/monitor/api.js?v=R83"></script>
+  <script defer src="js/modules/monitor-groups.js?v=R425"></script>
+  <script defer src="js/modules/monitor-charts.js?v=R425"></script>
+  <script defer src="js/modules/monitor-metrics.js?v=R425"></script>
+  <script defer src="js/modules/monitor-backends.js?v=R425"></script>
+  <script defer src="js/monitor/state.js?v=R425"></script>
+  <script defer src="js/monitor/api.js?v=R425"></script>
   <!-- R317 (этап 5 рефакторинга настроек): панель ролей управляет ОДНОЙ строкой
        горячего реестра — LB_DONOR_ALLOW_OWN_COPIES. Владелец значений реестра —
        js/modules/settings-registry.js (get/set/reset, GET/PUT/POST
@@ -713,18 +713,18 @@
        Своего состояния «что действует» панель не заводит: две копии разошлись бы
        на первом же сбросе. mount() внутри registry на этой странице не находит
        #hotSettingsPanel и ничего не рисует — только отдаёт хелперы. -->
-  <script defer src="js/modules/api.js?v=R317"></script>
-  <script defer src="js/modules/settings-registry.js?v=R317"></script>
+  <script defer src="js/modules/api.js?v=R425"></script>
+  <script defer src="js/modules/settings-registry.js?v=R425"></script>
   <!-- R118.4 (2026-10-14): панель раскладки слоёв (RPC). Загружается после api.js
        (использует window.MonitorApiXhr) и до ui-renderer.js (тот зовёт
        MonitorLayout.rowLayoutCell/bindRowSelectors при отрисовке таблицы). -->
-  <script defer src="js/monitor/layout-panel.js?v=R317"></script>
-  <script defer src="js/monitor/ui-renderer.js?v=R83"></script>
-  <script defer src="js/monitor/sparkline.js?v=R83"></script>
-  <script defer src="js/monitor/canvas-topology.js?v=R83"></script>
-  <script defer src="js/monitor/canvas-conveyor.js?v=R83"></script>
-  <script defer src="js/monitor/i18n-theme.js?v=R83"></script>
-  <script defer src="js/monitor/init.js?v=R83"></script>
+  <script defer src="js/monitor/layout-panel.js?v=R425"></script>
+  <script defer src="js/monitor/ui-renderer.js?v=R425"></script>
+  <script defer src="js/monitor/sparkline.js?v=R425"></script>
+  <script defer src="js/monitor/canvas-topology.js?v=R425"></script>
+  <script defer src="js/monitor/canvas-conveyor.js?v=R425"></script>
+  <script defer src="js/monitor/i18n-theme.js?v=R425"></script>
+  <script defer src="js/monitor/init.js?v=R425"></script>
 
   <!-- Fallback API base + theme + lang sync (when opened directly, not via iframe) -->
   <script>

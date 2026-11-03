@@ -1,26 +1,26 @@
 {
-    "tag":  "r261103-1740",
-    "builtAt":  "2026-11-03T13:45:00Z",
-    "gitCommit":  "e9d22af2",
+    "tag":  "r261103-1900",
+    "builtAt":  "2026-11-03T15:03:57Z",
+    "gitCommit":  "b4492015",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R415-R417: balancer r261103-1700 (AutoTune-гарды R416/R416b/R416c/R416d), cppworker gpu-r261103-1740 (qwen3.8 reasoning + R417 terminal content), webui r261103-1515 (docs), imageworker без изменений. Стенд: CPPWORKER_VRAM_OVERHEAD_MB=512, профиль Qwen3.8-9B (16k, q8_0, все слои на GPU).",
+    "note":  "Стенд на Qwen3.8-9B: balancer r261103-1900, cppworker gpu-r261103-1820 (R417 terminal content), webui r261103-1515 (документация схем процесса/ответа), imageworker без изменений. CPPWORKER_VRAM_OVERHEAD_MB=512, профиль Qwen3.8-9B: окно 32768 (максимум 65536), kv q8_0, все слои на GPU.",
     "images":  [
                    {
                        "service":  "balancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r261103-1700",
-                       "imageTag":  "r261103-1700",
-                       "imageId":  "sha256:6d890e8ef46b8a0341d41ac8c9544d7293a057be8531ca61dbd7339ae47cf330",
+                       "image":  "ollama-legion/balancer:r261103-1900",
+                       "imageTag":  "r261103-1900",
+                       "imageId":  "sha256:2e2be3be1228d5944ccd0a106e66a289aa211d8549ff07b67a46cfa09790fc24",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261103-1740",
-                       "imageTag":  "gpu-r261103-1740",
-                       "imageId":  "sha256:05fa0aeddc7818805c317adea402d627acbe0a18df6440726b1b6ea17685dc82",
+                       "image":  "ollama-legion/cppworker:gpu-r261103-1820",
+                       "imageTag":  "gpu-r261103-1820",
+                       "imageId":  "sha256:6d343d089715f7fd9bdb2e6b9037f209602816bfc8e6ee1480f0445c6e1a68ca",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

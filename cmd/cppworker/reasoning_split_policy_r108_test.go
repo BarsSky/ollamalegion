@@ -31,8 +31,14 @@ import (
 
 // TestR108_NonWhitelistedModelMarkersNeverReachContent — сквозная проверка
 // правила на модели, которой нет ни в whitelist, ни в per-model состоянии.
+//
+// R415 (2026-11-03): раньше здесь стоял "Qwen3.8-27B-UD-Q4_K_M" — именно он был
+// моделью живого дефекта. После R415 Qwen3.8 внесён в ReasoningArchPrefixes
+// (он действительно reasoning-модель, и ему нужен n_predict 8192), поэтому
+// предпосылка «вне whitelist» для него больше не выполняется. Берём другую
+// модель, которой в списке нет: правило обязано работать независимо от имени.
 func TestR108_NonWhitelistedModelMarkersNeverReachContent(t *testing.T) {
-	const model = "Qwen3.8-27B-UD-Q4_K_M"
+	const model = "Mistral-Nemo-Instruct-2407"
 
 	// Фиксируем предпосылку: именно для такой модели старый гейт был false, и
 	// ответ уходил в content целиком. Если предпосылка изменилась (модель попала

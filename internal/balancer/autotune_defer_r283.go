@@ -209,6 +209,11 @@ func (p *Proxy) finalizeAutoTuneReload(backendID, modelName string, plan *AutoTu
 			p.autoTuneTracker.ResetCircuit(backendID, modelName)
 			p.autoTuneTracker.ClearAutoTuneDefer(backendID, modelName)
 		}
+		// R416 (2026-11-03): запоминаем применённый KV — гистерезис против
+		// пинг-понга q4_0 ↔ q8_0/f16 (см. autotune_kv_guard_r416.go).
+		if plan != nil && plan.KVCacheType != "" {
+			recordAutoTuneKVAppliedR416(backendID, modelName, plan.KVCacheType)
+		}
 		logger.Get().Infow("autotune: async reload succeeded",
 			"backend", backendID, "model", modelName, "reason", reason)
 		p.publishAutoTuneEvent(autoTuneSucceededEvent(backendID, modelName, plan))

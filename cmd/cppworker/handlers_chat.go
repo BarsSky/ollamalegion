@@ -587,9 +587,11 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	// Видимый ответ для правила берём ДО подстановки пояснения (R314 ниже):
 	// пояснение — наш текст, а не ответ модели, и по нему нельзя судить об обрыве.
 	visibleForReason := resp.Message.Content
-	if notice := emptyAnswerNoticeForNativeR314(visibleForReason, reasoningCharsForNotice); notice != "" {
-		resp.Message.Content = notice
-	}
+	// R417 (2026-11-03): при распознанном tool_calls это НЕ «пустой ответ» —
+	// пояснение рядом с вызовом инструмента клиент сохранит как сообщение
+	// ассистента (живой случай: Qwen3.8-9B + read_files, stream:false).
+	resp.Message.Content = nonStreamContentR417(visibleForReason,
+		len(resp.Message.ToolCalls), reasoningCharsForNotice)
 	// До R394 здесь было жёстко DoneReason:"stop" — даже когда модель упиралась
 	// в клиентский n_predict (ровно тот случай, который описывает комментарий
 	// R314: num_predict=160, 592 символа размышлений, видимого ответа нет).
@@ -2357,8 +2359,13 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// клиент терял ход: модель на самом деле рассуждала и упёрлась в лимит.
 		// Отдаём пояснение и честную причину — клиент продолжит ход вместо
 		// «пустого ответа». Разметку вызова по-прежнему считаем ошибкой (выше).
+		// R417 (2026-11-03): если РАСПОЗНАН tool_calls — это валидный ход, а не
+		// «пустой ответ». Пояснение «модель сгенерировала только размышления»
+		// здесь не нужно: клиент получит его как текст ответа рядом с вызовом
+		// инструмента и сохранит в истории (живой случай: Qwen3.8-9B, вызов
+		// read_files + пояснение в content).
 		if emittedLen == 0 {
-			if notice := toolsTerminalContentR394("", fullOutput); notice != "" {
+			if notice := terminalContentR417("", fullOutput, len(toolCalls)); notice != "" {
 				reason := toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
 					len(toolCalls), params.NPredict, budgetTokens)
 				logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_reasoning_only_notice"),
@@ -2556,7 +2563,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// клиент получал content:"" + done_reason:stop — то же молчание, от
 		// которого R314 защищает остальные поверхности. Признак «размышления
 		// были» берём из СЫРОГО вывода (reasoningCharsRawR394), до политики.
-		content = toolsTerminalContentR394(content, fullOutput)
+		// R417: при распознанном tool_calls content обязан остаться пустым.
+		// Пояснение «только размышления» — для случая «клиенту нечего показать»;
+		// рядом с вызовом инструмента оно превращается в текст ответа и попадает
+		// в историю клиента (живой случай: Qwen3.8-9B + read_files).
+		content = terminalContentR417(content, fullOutput, len(toolCalls))
 		// R404: thinking уже мог уйти дельтами — тогда в финале его НЕ дублируем.
 		thinkingField := reasoningOut
 		if thinkingStreamed {

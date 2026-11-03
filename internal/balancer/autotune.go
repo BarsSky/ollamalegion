@@ -960,6 +960,32 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 	}
 	res.Plan = plan
 
+	// R416 (2026-11-03): KV-cache не переключается туда-обратно и не спорит с
+	// профилем модели. Без этого q8_0 → q4_0 → q8_0 … перезагружали модель на
+	// каждом запросе (~80 c unload+load), и клиент видел «медленную модель».
+	// См. autotune_kv_guard_r416.go.
+	recommendedKV := plan.KVCacheType
+	if dropped := guardAutoTuneKVPlanR416(p, backendID, modelName, plan); dropped != "" {
+		logger.Get().Warnw("autotune: kv-cache change suppressed (R416)",
+			"backend", backendID, "model", modelName,
+			"recommended_kv", recommendedKV, "reason", dropped)
+	}
+	if !plan.NeedsReload() {
+		res.SkippedReason = "R416: only the kv-cache change was recommended, and it is pinned by profile or on flip cooldown"
+		return res
+	}
+	// R416d (2026-11-03): после гардов R416/R416b в плане мог остаться только
+	// «сохранённый» контекст (PlanApplyAutoTune кладёт в ContextSize фактически
+	// загруженное окно, чтобы reload не сбросил его env-дефолтом). NeedsReload
+	// считает это изменением, и балансер выгружает/загружает модель ПОСЛЕ КАЖДОГО
+	// ответа. Живой случай: Qwen3.8-9B — 33/32 слоя, ctx 16384, kv q8_0; KV и
+	// слои гарды отклонили, остался ContextSize=16384 (== текущему), и reload
+	// шёл по кругу.
+	if !autoTunePlanHasRealChangeR416d(plan, loadedModel.ContextLength) {
+		res.SkippedReason = "R416d: plan has no real change after guards (context is preserved, not changed)"
+		return res
+	}
+
 	// 5) Circuit breaker
 	if p.autoTuneTracker == nil {
 		p.autoTuneTracker = NewAutoTuneTracker(DefaultAutoTuneCircuitConfig())
@@ -1458,6 +1484,23 @@ func PlanApplyAutoTuneWithMinContext(
 			if rec.RecommendedNumCtx <= 0 || rec.RecommendedNumCtx == currentLoaded.ContextLength {
 				continue
 			}
+			// R416c (2026-11-03): фактическое окно ещё НЕ пришло из метрик
+			// (0 = неизвестно). Анализ в этот момент строит рекомендацию «поставить
+			// 16384» при неизвестном текущем — и это превращается в reload на
+			// КАЖДОМ запросе: план считает ContextSize изменением, хотя окно уже
+			// 16384. Живой случай: Qwen3.8-9B только что загружен, поллер ещё не
+			// обновил снапшот — балансер выгружал модель после каждого ответа.
+			//
+			// «Не знаем текущее окно» — не повод для перезагрузки. Настоящий рост
+			// (клиент просит больше) идёт другим путём — preflight n_ctx reload.
+			if currentLoaded.ContextLength <= 0 {
+				if logger.Get() != nil {
+					logger.Get().Infow("autotune: context recommendation skipped: current n_ctx unknown (R416c)",
+						"model", currentLoaded.Name,
+						"recommended_n_ctx", rec.RecommendedNumCtx)
+				}
+				continue
+			}
 			// R69: уменьшать ниже клиентского запроса нельзя — рекомендация
 			// построена на текущем feasible и не знает про запросы клиента.
 			if minContext > 0 && rec.RecommendedNumCtx < minContext {
@@ -1498,6 +1541,26 @@ func PlanApplyAutoTuneWithMinContext(
 						"model", currentLoaded.Name,
 						"current_gpu_layers", currentLoaded.NumGPULayers,
 						"reason", i18n.T("balancer.autotune.layers_auto_no_reload_reason"))
+				}
+				continue
+			}
+			// R416b (2026-11-03): -1 («все слои») — тоже НЕ цель reload'а, если
+			// модель уже полностью на GPU. Воркер сообщает ФАКТ (32 из 32 слоёв
+			// → например 33), анализ видит «рекомендуется -1, а стоит 33» и
+			// строит тот же план снова и снова. Живой случай: Qwen3.8-9B после
+			// R415 с запасом VRAM 512 MB загрузился всеми слоями — и балансер
+			// выгружал/загружал его на каждом запросе, хотя KV уже был отклонён
+			// гардом R416 (в плане оставался только -1).
+			//
+			// Частичный offload (20 из 32) по-прежнему получает план -1: там
+			// «все слои» — реальная цель, а не факт.
+			if rec.RecommendedNumGPULayers == -1 && currentLoaded.NLayers > 0 &&
+				currentLoaded.NumGPULayers >= currentLoaded.NLayers {
+				if logger.Get() != nil {
+					logger.Get().Infow("autotune: layers=-1 skipped: model is already fully offloaded (R416b)",
+						"model", currentLoaded.Name,
+						"current_gpu_layers", currentLoaded.NumGPULayers,
+						"n_layers", currentLoaded.NLayers)
 				}
 				continue
 			}

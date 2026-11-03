@@ -58,6 +58,12 @@ import (
 var ReasoningArchPrefixes = []string{
 	// === Specific reasoning architectures (qwen3.5+, deepseek-r1, kimi-k2, etc.) ===
 	"qwen3.5", "qwen3.6", "qwen3.5moe", "qwen35moe", "qwen35",
+	// R415 (2026-11-03): Qwen3.8 — reasoning-семейство (у distill/heretic-сборок
+	// thinking сохраняется; модель-карта помечена reasoning + function-calling).
+	// Без этих префиксов 9B/27B Qwen3.8 на /api/chat получали дефолт моста 4096
+	// вместо 8192 reasoning-политики (R411) — ровно тот же обрыв посреди ответа,
+	// что чинили для gemma-4.
+	"qwen3.8", "qwen38",
 	"qwen3moe", "qwen3-thinking", "qwen3_thinking",
 	"deepseek-r1", "deepseek_r1", "deepseekr1",
 	"kimi-k2", "kimi_k2", "kimik2",
@@ -910,12 +916,12 @@ func hasOpenThink(full string) bool {
 	// `<think>a<think>b</think>` — блок не закрыт, R83-семантика).
 	for _, p := range []struct{ open, close string }{
 		{"<think>", "</think>"},
-	// R243: "thought"-варианты (DeepSeek и производные шаблоны). Без них
-	// `<thought>…</thought>` считался видимым ответом, и клиент (Cline) видел
-	// служебные маркеры в content.
-	{"<thought>", "</thought>"},
-	{"<|begin_of_thought|>", "<|end_of_thought|>"},
-	{"<|thought|>", "<|/thought|>"},
+		// R243: "thought"-варианты (DeepSeek и производные шаблоны). Без них
+		// `<thought>…</thought>` считался видимым ответом, и клиент (Cline) видел
+		// служебные маркеры в content.
+		{"<thought>", "</thought>"},
+		{"<|begin_of_thought|>", "<|end_of_thought|>"},
+		{"<|thought|>", "<|/thought|>"},
 		{"<thinking>", "</thinking>"},
 		{"<reasoning>", "</reasoning>"},
 		{"<analysis>", "</analysis>"},

@@ -108,3 +108,27 @@ func TestR411_OllamaEnvOverride(t *testing.T) {
 		t.Fatalf("неожиданное значение env в тесте: %q", v)
 	}
 }
+
+// TestR415_Qwen38IsReasoning — R415 (2026-11-03): Qwen3.8 (и 27B, и 9B
+// distill/uncensored) обязан классифицироваться как reasoning-модель.
+//
+// ЖИВОЙ ДЕФЕКТ. В списке ReasoningArchPrefixes не было "qwen3.8": 27B и 9B
+// Qwen3.8 на /api/chat получали дефолт моста 4096 вместо 8192 reasoning-политики
+// (R411). При thinking-трейсе это снова обрыв посреди ответа и overflow-recovery
+// у Cline — то же, что уже чинили для gemma-4.
+func TestR415_Qwen38IsReasoning(t *testing.T) {
+	for _, name := range []string{
+		"Qwen3.8-9B-Distill-uncensored-heretic.Q4_K_M",
+		"Qwen3.8-27B-UD-Q4_K_M",
+	} {
+		if !IsReasoningModel(name) {
+			t.Fatalf("%s не распознан как reasoning — n_predict останется 4096", name)
+		}
+		if got := ResolveNPredict(0, name); got != DefaultNPredictReasoning {
+			t.Fatalf("%s: ResolveNPredict = %d, ожидалось %d", name, got, DefaultNPredictReasoning)
+		}
+	}
+	if IsReasoningModel("llama-3.1-8b-instruct") {
+		t.Fatal("llama-3.1-8b-instruct не должен считаться reasoning")
+	}
+}

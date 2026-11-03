@@ -685,6 +685,13 @@ services:
 
       # --- Model and memory ---------------------------------------------------
       - CPPWORKER_CTX_SIZE=${CPPWORKER_CTX_SIZE:-32768}
+      # R415 (2026-11-03): запас VRAM, вычитаемый из бюджета memfit при выборе
+      # числа GPU-слоёв и потолка n_ctx (см. internal/cppbackend/kv_cache_type.go).
+      # Default 2048 MB — консервативно: на 8 GB карте 9B-Q4 (5.38 GB) с ним
+      # помещается частично (29/32 слоя), и генерация падает до ~1.5 ток/с.
+      # Оператор может уменьшить запас (512) и получить полный offload, приняв
+      # риск OOM на очень больших n_ctx. Явное значение всегда приоритетнее.
+      - CPPWORKER_VRAM_OVERHEAD_MB=${CPPWORKER_VRAM_OVERHEAD_MB:-2048}
       - CPPWORKER_VISION_MMPROJ=${CPPWORKER_VISION_MMPROJ:-0}
       - CPPWORKER_DEBUG_TOOL_PROMPT=${CPPWORKER_DEBUG_TOOL_PROMPT:-0}
       - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}

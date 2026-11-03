@@ -620,8 +620,13 @@ func TestPlanApplyAutoTune_LayersZeroRecommended(t *testing.T) {
 }
 
 // TestPlanApplyAutoTune_LayersAllSemantic — current=N (all) vs recommended=-1 (all)
-// семантически одинаковы, но численно разные. PlanApplyAutoTune сравнивает
-// численно, поэтому создаст план — это OK, cppworker примет -1 так же как N.
+// семантически одинаковы, но численно разные.
+//
+// R416b (2026-11-03): раньше здесь ожидался план (численное сравнение 36 != -1).
+// На живом стенде это давало перезагрузку модели ПОСЛЕ КАЖДОГО ответа: воркер
+// сообщает факт (33 при 32 слоях), анализ рекомендует -1, план снова и снова
+// выгружает/загружает модель. Теперь «все слои уже на GPU» + рекомендация -1 —
+// не изменение, и плана быть не должно.
 func TestPlanApplyAutoTune_LayersAllSemantic(t *testing.T) {
 	a := &AutoTuneAnalysis{
 		IsSubOptimal: true,
@@ -631,13 +636,9 @@ func TestPlanApplyAutoTune_LayersAllSemantic(t *testing.T) {
 	}
 	currentLoaded := types.LlamaCppModel{Name: "test", NumGPULayers: 36, NLayers: 36}
 	plan := PlanApplyAutoTune(a, currentLoaded)
-	// Plan создастся (численно 36 != -1), но это OK: apply to cppworker
-	// отправит n_gpu_layers=-1 что для cppworker = all layers (semantically same).
-	if plan == nil {
-		t.Error("expected non-nil plan (numerical 36 != -1 triggers plan)")
-	}
-	if plan != nil && plan.NumGPULayers != -1 {
-		t.Errorf("expected NumGPULayers=-1 in plan, got %d", plan.NumGPULayers)
+	if plan != nil {
+		t.Fatalf("план ради «-1 при уже загруженных всех слоях» построен: %+v — "+
+			"это reload на каждом запросе (R416b)", plan)
 	}
 }
 

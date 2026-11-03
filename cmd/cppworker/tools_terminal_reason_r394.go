@@ -112,3 +112,42 @@ func toolsTerminalContentR394(visibleOutput, fullOutput string) string {
 	}
 	return visibleOutput
 }
+
+// terminalContentR417 — видимый content терминального кадра с учётом tool_calls.
+//
+// R417 (2026-11-03): если модель распознала вызов инструмента, пояснение
+// «сгенерировала только размышления, видимого ответа нет» НЕ добавляется.
+//
+// ЖИВОЙ ДЕФЕКТ (Qwen3.8-9B, /api/chat + tools, stream:false): ответ приходил как
+//
+//	content: "Модель сгенерировала только размышления … видимого ответа нет"
+//	tool_calls: [read_files]
+//
+// Клиент (Cline) сохраняет content как сообщение ассистента, и в истории рядом
+// с вызовом инструмента остаётся предупреждение на русском. Для клиента вызов
+// инструмента — это и есть ответ хода; «пустого ответа» тут нет.
+//
+// Для случая без tool_calls поведение прежнее: пустой content + размышления →
+// пояснение (R314/R394.1).
+func terminalContentR417(visibleOutput, fullOutput string, toolCalls int) string {
+	if toolCalls > 0 {
+		return visibleOutput
+	}
+	return toolsTerminalContentR394(visibleOutput, fullOutput)
+}
+
+// nonStreamContentR417 — тот же принцип для НЕпотокового /api/chat: пояснение
+// «только размышления» не подставляется, если распознан tool_calls.
+//
+// R417 (2026-11-03): живой ответ Qwen3.8-9B (stream:false, tools) содержал
+// одновременно content-пояснение и tool_calls; клиент сохраняет content как
+// сообщение ассистента. Вызов инструмента — валидный ход, «пустого ответа» нет.
+func nonStreamContentR417(visibleOutput string, toolCalls, reasoningChars int) string {
+	if toolCalls > 0 {
+		return visibleOutput
+	}
+	if notice := emptyAnswerNoticeForNativeR314(visibleOutput, reasoningChars); notice != "" {
+		return notice
+	}
+	return visibleOutput
+}

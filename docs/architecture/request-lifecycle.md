@@ -1,4 +1,4 @@
-# Жизненный цикл запроса: нормативная схема (R414)
+# Жизненный цикл запроса: нормативная схема (R417)
 
 **Статус:** действующая схема. Любая правка пути запроса/ответа обязана обновить этот
 файл в том же коммите (см. §14).
@@ -183,6 +183,16 @@ client_cap        = min( physical_ceiling, effective_ceiling )
   `kv_cache q4_0 → f16` не применялся, повторяясь на каждом запросе. «Занято» (409)
   и «сломано» (401) различаются: первое откладывается с backoff
   (`autotune_defer_r283.go`), второе — ошибка конфигурации.
+- **AutoTune не перезагружает модель без причины (R416/R416b/R416c/R416d).**
+  Анализ строит «оптимальный» KV-cache по свободной VRAM, поэтому после каждой
+  перезагрузки получалось обратное состояние: `q8_0 → q4_0 → q8_0 …`, unload+load
+  на каждом запросе. Теперь: (R416) явный `kvCacheType` профиля не оспаривается,
+  а тип KV меняется не чаще раза в 30 мин на пару backend+model; (R416b)
+  `layers=-1` не цель reload, если модель уже полностью на GPU; (R416c)
+  рекомендация по окну не строится при неизвестном фактическом `n_ctx` (0 в
+  метриках); (R416d) план, в котором после гардов остался только «сохранённый»
+  `ContextSize` (== текущему окну), не применяется. Код:
+  `autotune_kv_guard_r416.go`.
 
 ---
 
@@ -216,7 +226,9 @@ client_cap        = min( physical_ceiling, effective_ceiling )
    reasoning-моделей, а `/v1/chat/completions` давал 8192: gemma-4 обрывалась на
    4096-м токене посреди ответа, Cline получал `done_reason=length` и запускал
    overflow-recovery при `inputTokens≈1700` — то есть компактил почти пустую
-   историю (живая сессия 1793704404258_l9pcu).
+   историю (живая сессия 1793704404258_l9pcu). R415 добавил `qwen3.8` в
+   `ReasoningArchPrefixes`: без этого 9B/27B Qwen3.8 на `/api/chat` снова получали
+   4096 и обрывались посреди ответа.
 7. **Служебные маркеры не уходят в `content` (R414).** На tools-пути поток
    режется как сырой буфер (`buf[emittedLen:cut]`) и не проходит через
    `ReasoningStreamState`, поэтому закрывающий маркер канала gemma-4
@@ -228,8 +240,16 @@ client_cap        = min( physical_ceiling, effective_ceiling )
    клиента в момент освобождения слота не имеет права терять слот: waiter,
    получивший резервирование, но уже отменённый, обязан вернуть слот в оборот.
    Нарушение этого правила клинит воркер навсегда (`active_queries=1`, GPU
-4. Пустой видимый ответ при непустых размышлениях → пояснение клиенту
-   (`emptyAnswerNoticeForNativeR314`) или `error`-терминатор.
+   простаивает, новых `stream response summary` нет), а не «просто задерживает»
+   запрос.
+9. **Вызов инструмента — это ответ хода (R417).** Если `tool_calls` распознаны,
+   в `content` НЕ подставляется пояснение «модель сгенерировала только
+   размышления»: клиент сохраняет `content` как сообщение ассистента и получает
+   предупреждение рядом с валидным вызовом (живой случай: Qwen3.8-9B + `read_files`
+   на native `/api/chat`, stream:false). Для случая без tool_calls поведение
+   прежнее (R314/R394.1).
+10. Пустой видимый ответ при непустых размышлениях → пояснение клиенту
+    (`emptyAnswerNoticeForNativeR314`) или `error`-терминатор.
 
 ---
 
@@ -318,6 +338,8 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | «AutoTune reload: 401 invalid or missing API token» | `autotune reload failed … unload failed: cppworker error (HTTP 401)`; в `unload` нет `X-API-Token` | `internal/balancer/autotune.go` (`executeLlamaCppUnload`), `worker_admin_token_r307.go` |
 | «в ответе виден `<channel\|>` / `</think>`» | `streamed_content_bytes`, сырой хвост дельты; на tools-пути искать `toolsStreamMarkerScanR414` | `cmd/cppworker/tools_stream_markers_r414.go`, `handlers_chat.go` |
 | «Cline компактит при малом usage» / «ответ обрезан на 4096» | `budget_exhausted`, `n_predict` в summary; сравнить с `max_output_tokens` запроса | `handlers_generate.go` (`buildGenerationParams`), `reasoning_content.go` (`ResolveNPredict`) |
+| «модель перезагружается после каждого ответа» | `autotune: triggering async reload … kv_cache q8_0 → q4_0` (и обратно); `loaded_at` меняется | `autotune_kv_guard_r416.go`, `autotune.go` (`triggerAutoTuneReload`, план-билдер) |
+| «content = пояснение, но tool_calls валидны» | `terminalContentR417`/`nonStreamContentR417`; content-пояснение рядом с вызовом | `tools_terminal_reason_r394.go`, `handlers_chat.go` |
 
 ---
 
@@ -338,7 +360,9 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | Терминальные причины | `cmd/cppworker/tools_terminal_reason_r394.go` | `toolsBudgetExhaustedR394`, `toolsTerminalReasonR394` |
 | Слоты воркера | `internal/cppbackend/slot_manager.go`, `backend.go` | `Acquire`, `releaseInternal`, `GenerateStreamWithAbort` |
 | Маркеры в потоке | `cmd/cppworker/tools_stream_markers_r414.go` | `toolsStreamMarkerScanR414`, `toolsStreamMarkerPrefixHoldbackR414` |
-| Политика n_predict | `cmd/cppworker/reasoning_content.go` | `ResolveNPredict`, `DefaultNPredictReasoning` |
+| Политика n_predict | `cmd/cppworker/reasoning_content.go` | `ResolveNPredict`, `DefaultNPredictReasoning`, `ReasoningArchPrefixes` |
+| AutoTune: гарды KV/слоёв/окна | `internal/balancer/autotune_kv_guard_r416.go`, `autotune.go` | `guardAutoTuneKVPlanR416`, `autoTunePlanHasRealChangeR416d`, `PlanApplyAutoTuneWithMinContext` |
+| Терминальный content с tool_calls | `cmd/cppworker/tools_terminal_reason_r394.go` | `terminalContentR417`, `nonStreamContentR417` |
 | Метаданные модели | `cmd/cppworker/handlers_model.go` | `handleOllamaShow`, `writeOllamaShowLoadedResponse` |
 | Транспорт/трансляции | `internal/balancer/llamacpp_transport.go`, `llamacpp_translate_resp.go`, `anthropic_r247.go` | `stripNativeDoneContent`, `translateUsageChunkToOllama` |
 | Очередь/допуск | `internal/balancer/admission_queue.go`, `unified_queue_r73.go` | admission, `X-Queue-*` |

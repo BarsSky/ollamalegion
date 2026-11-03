@@ -1,18 +1,25 @@
 {
-    "tag":  "r261103-1515",
-    "builtAt":  "2026-11-03T12:42:00Z",
-    "gitCommit":  "b311576b",
+    "tag":  "r261103-1740",
+    "builtAt":  "2026-11-03T13:31:41Z",
+    "gitCommit":  "8ba193cf",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R411-R414: собраны balancer и cppworker (slot/AutoTune/n_predict/markers), webui пересобран ради обновлённых docs/architecture; образ агента в bundled-стеке не используется отдельным контейнером.",
     "images":  [
+                   {
+                       "service":  "cppworker",
+                       "variable":  "CPPWORKER_GPU_TAG",
+                       "image":  "ollama-legion/cppworker:gpu-r261103-1740",
+                       "imageTag":  "gpu-r261103-1740",
+                       "imageId":  "sha256:05fa0aeddc7818805c317adea402d627acbe0a18df6440726b1b6ea17685dc82",
+                       "alias":  "ollama-legion/cppworker:latest-gpu-86"
+                   },
                    {
                        "service":  "balancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r261103-1515",
-                       "imageTag":  "r261103-1515",
-                       "imageId":  "sha256:7370b83140630866fecf708405e29c90d423cde7df2e4766ad50ed710f2a8f13",
+                       "image":  "ollama-legion/balancer:r261103-1700",
+                       "imageTag":  "r261103-1700",
+                       "imageId":  "sha256:6d890e8ef46b8a0341d41ac8c9544d7293a057be8531ca61dbd7339ae47cf330",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {

@@ -205,6 +205,10 @@ func TestR394_ToolsPathUsesBudgetAwareReason(t *testing.T) {
 				reasonCalls++
 			case "toolsTerminalContentR394":
 				contentCalls++
+			case "terminalContentR417":
+				// R417 (2026-11-03): единая обёртка, которая НЕ подставляет
+				// пояснение, когда распознан tool_calls.
+				contentCalls++
 			}
 			return true
 		})

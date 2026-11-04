@@ -2293,6 +2293,13 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"raw_len", len(fullOutput),
 				"emitted_len", emittedLen,
 				"preview", truncateForLog(outputForParse, 300))
+			// R427: СЫРОЙ вывод сохраняем ПЕРЕД отдачей ошибки. Именно этот срыв
+			// (разметка вызова есть, вызов не распознан) потерял ход в живой
+			// сессии Cline; понять, что выдала модель, было уже нельзя — preview
+			// вытеснялся из docker logs. Только диагностика: ответ клиенту не
+			// меняется (тот же errChunk ниже).
+			recordUnparsedCapture(modelName, "/api/chat", "markup_unparsed",
+				fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools)
 			errChunk := map[string]interface{}{
 				"model":       modelName,
 				"created_at":  createdAt,
@@ -2311,6 +2318,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			"model", modelName,
 			"visible_len", len(visibleAfterStrip),
 			"raw_len", len(fullOutput))
+		// R427: разметка снята, но проза доставлена — фиксируем СЫРОЙ вывод:
+		// так видно, в какой форме модель прислала вызов, и почему он не распознан
+		// (живой случай — одинокая `[` в тексте перед tool_use).
+		recordUnparsedCapture(modelName, "/api/chat", "markup_stripped",
+			fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools)
 	}
 
 	// 2026-06-24: ???????? ?? ?????? ????? ????? cleanFinalContent (gemma antiprompt).
@@ -2339,6 +2351,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"raw_len", len(fullOutput),
 				"emitted_len", emittedLen,
 				"preview", truncateForLog(outputForParse, 300))
+			// R427: второй вход в ту же ошибку (путь «пустой видимый вывод»).
+			// Сырой вывод сохраняем до отдачи errChunk — только диагностика.
+			recordUnparsedCapture(modelName, "/api/chat", "empty_after_strip",
+				fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools)
 			errChunk := map[string]interface{}{
 				"model":       modelName,
 				"created_at":  createdAt,

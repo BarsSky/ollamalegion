@@ -26,10 +26,10 @@ func setupRouter() http.Handler {
 	// отдаём N байт известного объёма, время скачивания засекает балансер.
 	mux.HandleFunc("/api/rpc-link-probe", handleLinkProbe)
 	mux.HandleFunc("/api/models/load", authMiddleware(handleLoadModel))
-	mux.HandleFunc("/api/models/load-with-params", authMiddleware(handleLoadWithParams))         // ??????????? ????????? (Session 4 P-1)
-	mux.HandleFunc("/load", authMiddleware(handleLoadModel))                                     // alias for balancer warmup
-	mux.HandleFunc("/api/models/load/progress", handleLoadProgress)              // loading state polling
-	mux.HandleFunc("/api/models/load/progress/stream", handleLoadProgressStream) // Round 25: SSE stream
+	mux.HandleFunc("/api/models/load-with-params", authMiddleware(handleLoadWithParams)) // ??????????? ????????? (Session 4 P-1)
+	mux.HandleFunc("/load", authMiddleware(handleLoadModel))                             // alias for balancer warmup
+	mux.HandleFunc("/api/models/load/progress", handleLoadProgress)                      // loading state polling
+	mux.HandleFunc("/api/models/load/progress/stream", handleLoadProgressStream)         // Round 25: SSE stream
 	mux.HandleFunc("/api/models/unload", authMiddleware(handleUnloadModel))
 	mux.HandleFunc("/api/models/reload", authMiddleware(handleReloadModel))
 	mux.HandleFunc("/api/models/active-queries", handleGetActiveQueries) // Round 26 v0.5.13: WebUI busy badge
@@ -101,6 +101,7 @@ func setupRouter() http.Handler {
 	// Диагностика prompt-too-long: метаданные последнего inference-запроса
 	// (для runbook сценария B и для диагностики случаев "prompt_exceeds_context" в Cline).
 	mux.HandleFunc("/api/v1/cppworker/debug/last-prompt", authMiddleware(handleDebugLastPrompt))
+	mux.HandleFunc("/api/v1/cppworker/debug/unparsed", authMiddleware(handleDebugUnparsed))
 	// Диагностика stream disconnect: последний snapshot обрыва стрима
 	// (Issue «обрыв ответа без каких-либо ошибок»). Помогает понять, был ли
 	// это ctx.Done() (клиент отвалился) или write error (broken pipe).

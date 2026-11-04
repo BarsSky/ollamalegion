@@ -52,21 +52,26 @@ const (
 )
 
 // unparsedCapture — один зафиксированный срыв.
+//
+// R429 (2026-11-04): поля с указателями (строки, срез) идут ПЕРВЫМИ, числа —
+// после них: так GC сканирует непрерывный префикс структуры, меньше область
+// сканирования (govet fieldalignment). Порядок JSON-полей от этого не значит
+// ничего: объект читается по именам.
 type unparsedCapture struct {
 	Timestamp       string   `json:"ts"`
 	Model           string   `json:"model"`
 	Endpoint        string   `json:"endpoint"`
 	Reason          string   `json:"reason"` // markup_unparsed | empty_after_strip | markup_stripped
+	RawHead         string   `json:"raw_head"`
+	RawTail         string   `json:"raw_tail"`
+	RawFile         string   `json:"raw_file,omitempty"`
+	ToolNames       []string `json:"tool_names,omitempty"`
 	RawLen          int      `json:"raw_len"`
 	ParsedLen       int      `json:"parsed_len"`
 	EmittedLen      int      `json:"emitted_len"`
 	GeneratedTokens int      `json:"generated_tokens,omitempty"`
 	NPredict        int      `json:"n_predict,omitempty"`
 	ToolsCount      int      `json:"tools_count"`
-	ToolNames       []string `json:"tool_names,omitempty"`
-	RawHead         string   `json:"raw_head"`
-	RawTail         string   `json:"raw_tail"`
-	RawFile         string   `json:"raw_file,omitempty"`
 }
 
 var (

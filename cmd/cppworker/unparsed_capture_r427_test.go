@@ -128,10 +128,11 @@ func TestR427_EndpointReturnsAndClears(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body.String())
 	}
+	// R429: поля с указателями (строки, срез) — первыми (govet fieldalignment).
 	var resp struct {
-		Count int               `json:"count"`
-		Items []unparsedCapture `json:"items"`
 		File  string            `json:"file"`
+		Items []unparsedCapture `json:"items"`
+		Count int               `json:"count"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("ответ не JSON: %v", err)

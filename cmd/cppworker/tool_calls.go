@@ -1609,10 +1609,33 @@ func buildToolsSystemPrompt(tools []openAITool) string {
 
 	// Сначала собираем в буфер без жёсткого ограничения, чтобы понять реальный размер.
 	// Если превышает toolsPromptMaxTotalChars — обрезаем описания пропорционально.
+	//
+	// R426 (2026-11-04): ФОРМАТ ВЫЗОВА — ОДНОЗНАЧНО, и он же — формат списка.
+	//
+	// ЖИВОЙ ДЕФЕКТ (Cline CLI 4.1.26, провайдер ollama → /api/chat, модель
+	// Qwen3.8-9B-Distill-uncensored-heretic, 25 инструментов). Модель вместо
+	// вызова писала ОТВЕТ как текст: «I'll start by reading … [run_commands(
+	// commands=["type TASK.md"])]», а в другой раз просто вставила содержимое
+	// index.html в сообщение. Cline считает ответ без tool_calls финальным —
+	// в TUI это «PLAN → COMPLETED», работа не сделана.
+	//
+	// Причина в этой преамбуле: список инструментов был оформлен КАК ВЫЗОВ
+	// («- run_commands(commands)" описанием), и слабые модели копировали именно
+	// список, игнорируя JSON-пример наверху. Проверено A/B на стенде с реальным
+	// system-промптом Cline и реальными 25 инструментами: с прежней преамбулой
+	// 9B выдавала prose (tool_calls=0), с явной формулировкой ниже — корректный
+	// read_files/editor (tool_calls=1). Сам парсер принимает и документированный
+	// OpenAI-вид, и Hermes-вид (проверено tmp-тестом), то есть формат менять не
+	// нужно — нужно перестать двусмысленно его описывать.
 	var sb strings.Builder
-	sb.WriteString("You have access to tools. Call them via JSON array [TOOL_CALLS] with objects: ")
-	sb.WriteString(`{"id":"call_<name>","type":"function","function":{"name":"<name>","arguments":"<json-str>"}}. `)
-	sb.WriteString("Output ONLY the JSON array, no prose.\n\n")
+	sb.WriteString("You have tools. To call a tool, reply with exactly one line:\n")
+	sb.WriteString(`[TOOL_CALLS][{"id":"call_<tool>","type":"function","function":{"name":"<tool>","arguments":{"<arg>":<value>}}}]` + "\n")
+	sb.WriteString("Rules for tool calls:\n")
+	sb.WriteString("1. The \"name\" field must be one of the tools listed below; \"arguments\" must be a JSON object.\n")
+	sb.WriteString("2. Use exactly this form. Do NOT write calls as name(args) or [name(...)], and do not wrap the call in other markers.\n")
+	sb.WriteString("3. When a tool performs the action (e.g. writing a file), call the tool instead of pasting the artifact or its contents into the answer.\n")
+	sb.WriteString("4. If no tool is needed, answer normally in text; a text-only answer means the task is finished.\n\n")
+	sb.WriteString("Available tools (signature: description):\n")
 
 	perToolLimit := toolsPromptMaxDescriptionChars
 	// Адаптивное уменьшение лимита, если tools слишком много.

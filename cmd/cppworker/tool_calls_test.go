@@ -1,4 +1,4 @@
-// tool_calls_test.go — Unit tests for tool_calls parsing and normalization.
+﻿// tool_calls_test.go — Unit tests for tool_calls parsing and normalization.
 // Package: main (same as tool_calls.go), so unexported functions are accessible.
 package main
 
@@ -270,8 +270,11 @@ func TestBuildToolsSystemPrompt_MultipleTools(t *testing.T) {
 	if !strings.Contains(prompt, "calculator") {
 		t.Error("expected prompt to contain 'calculator'")
 	}
-	if !strings.Contains(prompt, "JSON array") {
-		t.Error("expected prompt to contain JSON format instructions")
+	// R426: преамбула обязана содержать ровно один документированный формат
+	// вызова — [TOOL_CALLS] с JSON-объектом аргументов (см.
+	// tools_prompt_format_r426_test.go).
+	if !strings.Contains(prompt, "[TOOL_CALLS][{") {
+		t.Error("expected prompt to contain the documented [TOOL_CALLS] JSON format")
 	}
 }
 
@@ -1136,3 +1139,4 @@ Done.`
 		t.Errorf("arguments should be valid JSON, got '%s'", result[0].Function.Arguments)
 	}
 }
+

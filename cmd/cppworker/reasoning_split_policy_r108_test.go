@@ -160,8 +160,16 @@ func TestR108_VisibleContentCleanedOnAllSurfaces(t *testing.T) {
 		{"handlers_chat.go", []string{"cleanFinalContent(output)"}},
 		{"handlers_openai.go", []string{
 			"cleanFinalContent(visibleOut)",
-			"cleanFinalContent(result.Output)",
 			"cleanFinalContent(textValue)",
+			// R430 (2026-11-04): ветка «вызова нет» собирает видимый текст через
+			// хелпер (он режет разметку вызова и сам зовёт cleanFinalContent) —
+			// поэтому литерал проверяется в хелпере отдельным случаем ниже.
+			"nonStreamVisibleContentR430(",
+		}},
+		{"escaped_call_markup_r430.go", []string{
+			// Гарантия «видимый ответ проходит через cleanFinalContent» держится
+			// здесь — на пути, которым идут все НЕпотоковые поверхности.
+			"stripToolCallMarkup(cleanFinalContent(parsed))",
 		}},
 		{"handlers_generate.go", []string{
 			"cleanFinalContent(response)",

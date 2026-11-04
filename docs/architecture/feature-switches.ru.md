@@ -45,6 +45,7 @@
 | `LB_AUTO_TUNE` | **вкл** | AutoTune может перезагружать модель под план |
 | `LB_RPC_PROBE_CACHE_SEC` | **вкл (20 c)** | результат пробы узлов кэшируется; `0` — пробить каждый раз |
 | `LB_LOG_BUFFER_ENTRIES` | 2000 | сколько лог-записей держит брокер (для /ws/logs и выгрузки файла); больше 20000 обрезается |
+| `CPPWORKER_UNPARSED_CAPTURE_FILE` | `/app/diag/unparsed-tool-calls.jsonl` (R427) | сохраняется СЫРОЙ вывод модели в нераспознанном формате вызова — для разбора «почему инструмент не вызван». Пишет файлы на диск (до 512 КБ на случай, кольцо из 5): путь задаётся здесь, содержимое смотрится через `GET /api/v1/cppworker/debug/unparsed` (`?clear=1` — очистить) |
 
 ## В. Сетевые/поведенческие пороги (значения по умолчанию)
 
@@ -188,6 +189,7 @@
 - `CPPWORKER_SPLIT_MODE`
 - `CPPWORKER_STRICT_ARGS_RETRY`
 - `CPPWORKER_TOOLS_STREAM_CONTENT`
+- `CPPWORKER_UNPARSED_CAPTURE_FILE`
 - `CPPWORKER_VRAM_BYTES`
 - `CPPWORKER_WRITE_TIMEOUT`
 - `LB_ALGORITHM`

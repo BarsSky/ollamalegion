@@ -837,15 +837,25 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		message["tool_calls"] = toolCalls
 	} else {
+		// R430 (2026-11-04): разметка вызова, которую разбор не понял, не уходит
+		// клиенту в content — режем по её началу и добавляем пояснение; сырой
+		// вывод сохраняем в диагностику. Тот же контракт, что на /api/chat.
+		parsedForVisible := result.Output
 		if hasReasoning {
 			// R108 (2026-10-13): видимый ответ чистим так же, как нативный
 			// /api/chat — иначе один и тот же ответ выглядит по-разному на двух
 			// поверхностях («ок» против «ок<end_of_turn>»), а клиент
 			// OpenAI-поверхности видит служебный токен шаблона как текст.
-			message["content"] = cleanFinalContent(visibleOut)
+			parsedForVisible = visibleOut
+		}
+		content, unparsedMarkup := nonStreamVisibleContentR430(parsedForVisible)
+		message["content"] = content
+		if hasReasoning {
 			message["reasoning_content"] = reasoningOut
-		} else {
-			message["content"] = cleanFinalContent(result.Output)
+		}
+		if unparsedMarkup {
+			recordUnparsedCapture(modelName, "/v1/chat/completions", "openai_nonstream_markup",
+				result.Output, parsedForVisible, 0, 0, 0, req.Tools)
 		}
 	}
 

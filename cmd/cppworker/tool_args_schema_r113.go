@@ -710,6 +710,14 @@ func looksLikeToolCallMarkup(text string) bool {
 			return true
 		}
 	}
+	// R430 (2026-11-04): переэкранированная разметка (`\"function\":{\"name\":…`).
+	// Живой случай: gemma-4 выдала вызов с экранированными ключами и без баланса
+	// скобок — прежняя проверка возвращала false, поэтому не срабатывали ни
+	// пояснение «вызов в нераспознанном формате» (R428), ни сохранение сырого
+	// вывода (R427), а тело вызова ушло клиенту как текст ответа.
+	if looksLikeEscapedToolCallR430(text) {
+		return true
+	}
 	if !strings.Contains(text, "{") {
 		return false
 	}

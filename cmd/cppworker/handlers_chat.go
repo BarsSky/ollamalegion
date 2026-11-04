@@ -536,7 +536,18 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			//
 			// R113: плюс вырезаем разметку нераспознанного вызова — она не ответ
 			// (в content клиента ей места нет).
-			resp.Message.Content = stripToolCallMarkup(cleanFinalContent(output))
+			// R430 (2026-11-04): и режем по НАЧАЛУ разметки. Раньше здесь стоял
+			// только stripToolCallMarkup, а он не знает переэкранированную форму
+			// (`\"name\"`) и питоновскую `call:NAME(` — живая проба вернула в
+			// content `[[{\"function\":{\"name\":\"editor\"…`. Теперь клиенту
+			// достаётся проза + пояснение «вызов не выполнен», а сырой вывод
+			// сохраняется в диагностику (R427).
+			content, unparsedMarkup := nonStreamVisibleContentR430(output)
+			resp.Message.Content = content
+			if unparsedMarkup {
+				recordUnparsedCapture(req.Model, "/api/chat", "nonstream_markup",
+					result.Output, output, 0, resp.EvalCount, params.NPredict, req.Tools)
+			}
 		}
 	} else {
 		resp.Message.Content = cleanFinalContent(output)
@@ -1804,6 +1815,16 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// (content_len=378 в живом логе) уходил клиенту одним кадром в конце хода.
 	reasoningHold := false
 	var emittedLen int
+	// R429 (2026-11-04): РЕАЛЬНО отданные клиенту байты content, а не позиция в
+	// буфере. Раньше сводка печатала emittedLen, и она врала в двух случаях:
+	//   - хвост из финального чанка (не-tool_calls) отдаётся без сдвига
+	//     emittedLen → сводка занижала поток (живой пример сегодня:
+	//     streamed_content_bytes=3714 при принятых клиентом 14133);
+	//   - сдвиг за маркер размышлений (R414) двигает emittedLen на длину
+	//     маркера, которого клиент не получал.
+	// Диагностика, по которой разбирают «ответ оборван/не доехал», обязана
+	// считать отправленное, а не индексы — иначе разбор ведёт не туда.
+	var streamedBytes int
 	var toolsHold bool
 	emitContentDelta := func(delta string) {
 		// R114b (2026-10-13): служебные токены шаблона — не текст ответа. Живой
@@ -1811,6 +1832,17 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// (маркер заканчивался в самом хвосте потока, а прежняя чистка
 		// (cleanFinalContent) срабатывает только на финальном чанке).
 		delta = stripServiceTokensKeepSpaces(delta)
+		// R429 (2026-11-04): одиночные маркеры размышлений не отдаём и здесь.
+		//
+		// ЗАЧЕМ. Дельта на tools-пути приходит из ДВУХ мест: из нарезки буфера по
+		// окну удержания (там R414 сам пропускает маркеры) и из предохранителей
+		// 2/2b/2c — они отдают срез `buf[emittedLen:pos]`, где pos — начало
+		// разметки вызова. `<channel|>` стоит РОВНО перед вызовом и попадал в
+		// такой срез: живой прогон gemma-4 + Cline (R430) закончил потоковую
+		// прозу на «…in the file `d:\cline-e2e-web\index.html`.<channel|>».
+		// Чистка та же, что на не-tools путях (R114b): список маркеров один —
+		// orphanReasoningTags.
+		delta = stripReasoningTagsInStreamDelta(delta)
 		if delta == "" {
 			return
 		}
@@ -1826,6 +1858,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		data, _ := json.Marshal(chunk)
 		sw.Writef("%s\n", data)
 		sw.Flush()
+		streamedBytes += len(delta)
 		anyStreamed = true
 		contentStreamed = true
 	}
@@ -2285,6 +2318,13 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// content 2456 символов с сырым JSON вызова). Агентский клиент видит тогда
 	// финальный ответ вместо вызова и помечает задачу выполненной — жалоба
 	// «инструмент опять оказался в теле ответа».
+	//
+	// R430 (2026-11-04): если разметка найдена, а вызов не распознан, а проза
+	// ЕСТЬ (markup_stripped), клиенту мало одной прозы: агентский клиент считает
+	// ход завершённым и задачу — выполненной, хотя инструмент не вызывался
+	// (живая жалоба: «Cline пишет COMPLETED, файла нет»). Поэтому к прозе
+	// добавляется пояснение — один раз, в одном месте (см. unparsedNoticeR430).
+	var unparsedNoticeR430 string
 	if len(toolCalls) == 0 && looksLikeToolCallMarkup(outputForParse) {
 		visibleAfterStrip := strings.TrimSpace(stripToolCallMarkup(cleanFinalContent(outputForParse)))
 		if visibleAfterStrip == "" {
@@ -2313,7 +2353,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"created_at": createdAt,
 				"message": map[string]string{
 					"role":    "assistant",
-					"content": "Модель вызвала инструмент в нераспознанном формате — вызов не выполнен. Повторите запрос.",
+					"content": unparsedToolCallNoticeR430,
 				},
 				"done":        true,
 				"done_reason": noticeReason,
@@ -2331,6 +2371,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			// так видно, в какой форме модель прислала вызов и почему он не распознан.
 			recordUnparsedCapture(modelName, "/api/chat", "markup_stripped",
 				fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools)
+			// R430: пояснение добавляется к прозе (см. unparsedNoticeR430 выше) —
+			// клиент видит, что вызов не выполнен, а проза не теряется.
+			unparsedNoticeR430 = unparsedToolCallNoticeR430
 		}
 	}
 
@@ -2376,7 +2419,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"created_at": createdAt,
 				"message": map[string]string{
 					"role":    "assistant",
-					"content": "Модель вызвала инструмент в нераспознанном формате — вызов не выполнен. Повторите запрос.",
+					"content": unparsedToolCallNoticeR430,
 				},
 				"done":        true,
 				"done_reason": noticeReason,
@@ -2424,7 +2467,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			// отправляем — иначе клиент, складывающий чанки, увидит текст дважды.
 			tail := rawPreview
 			if emittedLen > 0 && emittedLen <= len(fullOutput) {
-				tail = strings.TrimSpace(sanitizeStreamText(fullOutput[emittedLen:]))
+				// R429/R430: и здесь режем по началу разметки вызова — иначе
+				// «сырой вывод как content» снова вернул бы тело вызова клиенту.
+				tail, _ = visibleTailR429(fullOutput, emittedLen)
 			}
 			// R113: даже в «сыром» тексте вырезаем разметку вызова — она не ответ.
 			tail = stripToolCallMarkup(tail)
@@ -2523,13 +2568,27 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// текст оставался обрезанным. Флашим остаток прозы (разметку вызова
 	// вырезаем — она не часть ответа).
 	if len(toolCalls) > 0 && emittedLen > 0 && emittedLen < len(fullOutput) {
-		tail := strings.TrimSpace(stripToolCallMarkup(sanitizeStreamText(fullOutput[emittedLen:])))
+		// R429 (2026-11-04): добор берёт ТОЛЬКО прозу ДО разметки вызова.
+		//
+		// Живой дефект (gemma-4 + Cline, сборка R428): вызов распознан
+		// (done_reason=tool_calls, editor), но клиент получил в content всё тело
+		// вызова — HTML файла целиком, 3254 байта — ОДНОЙ дельтой отсюда.
+		// Причина: R248 брал `fullOutput[emittedLen:]` целиком и «чистил»
+		// stripToolCallMarkup, а тот снимает только теговые обёртки и
+		// ЗАВЕРШЁННЫЕ JSON-объекты; незавершённый JSON вызова (с экранированными
+		// кавычками внутри new_text) оставался как есть вместе с `<channel|>`.
+		// Теперь хвост режется по началу разметки: тело вызова в content не
+		// попадает никогда, а проза перед ним — попадает.
+		tail, callStart := visibleTailR429(fullOutput, emittedLen)
 		if tail != "" {
 			emitContentDelta(tail)
 			logger.Get().Infow("writeChatStreamResponseWithTools: flushed held tail before done",
 				"model", modelName, "tail_len", len(tail), "emitted_len", emittedLen,
-				"raw_len", len(fullOutput))
+				"call_start", callStart, "raw_len", len(fullOutput))
 		}
+		// Позиция разбора встаёт на начало разметки вызова: всё до неё уже
+		// отдано, всё после — тело вызова, его место в message.tool_calls.
+		emittedLen = callStart
 	}
 
 	finalChunk := map[string]interface{}{
@@ -2601,6 +2660,14 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// рядом с вызовом инструмента оно превращается в текст ответа и попадает
 		// в историю клиента (живой случай: Qwen3.8-9B + read_files).
 		content = terminalContentR417(content, fullOutput, len(toolCalls))
+		// R430: разметку вызова не распознал парсер, но она ЕСТЬ — видимый текст
+		// собираем до её начала + пояснение (см. unparsedNoticeR430 выше). Один раз,
+		// ДО всех веток отдачи: и content финального чанка, и единственная дельта
+		// короткого ответа (R424) идут из этого значения — без этого тело вызова
+		// уезжало клиенту именно этим каналом (живая проба).
+		if unparsedNoticeR430 != "" {
+			content = visibleContentBeforeMarkupR430(outputForParse)
+		}
 
 		// R404: thinking уже мог уйти дельтами — тогда в финале его НЕ дублируем.
 		thinkingField := reasoningOut
@@ -2619,18 +2686,29 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				msg["reasoning"] = thinkingField
 			}
 			if streamContent && emittedLen > 0 && emittedLen <= len(fullOutput) {
-				tail := content
-				if toolsHold {
-					tail = cleanFinalContent(fullOutput[emittedLen:])
-				} else {
-					tail = sanitizeStreamText(fullOutput[emittedLen:])
+				// R429/R430: хвост режется по началу разметки вызова — тело
+				// вызова в content не попадает никогда.
+				tail, _ := visibleTailR429(fullOutput, emittedLen)
+				if unparsedNoticeR430 != "" {
+					if tail == "" {
+						tail = unparsedNoticeR430
+					} else {
+						tail = tail + "\n\n" + unparsedNoticeR430
+					}
 				}
 				if jsonMode {
 					tail = stripJSONFence(tail)
 				}
 				tail = stripToolCallMarkup(tail)
-				emitContentDelta(tail)
-				msg["content"] = ""
+				if strings.TrimSpace(tail) == "" {
+					// Резать нечего: остаток был только разметкой вызова. Тогда
+					// видимый ответ обязан прийти в content финального чанка —
+					// иначе клиент не получит ничего (R424: «text part not found»).
+					msg["content"] = content
+				} else {
+					emitContentDelta(tail)
+					msg["content"] = ""
+				}
 			} else {
 				msg["content"] = content
 			}
@@ -2648,24 +2726,30 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			// cleanFinalContent срезал бы значимый хвостовой пробел/перевод строки.
 			tail := content
 			if emittedLen <= len(fullOutput) {
-				if toolsHold {
-					tail = cleanFinalContent(fullOutput[emittedLen:])
-				} else {
-					// R428: хвост тоже чистим от одиночных маркеров размышлений.
-					// Живой захват: ответ gemma-4 заканчивался «Создаю файл
-					// `index.html`:<channel|>», и этот маркер уезжал клиенту ЕОМ
-					// (в истории Cline остался трижды): cleanFinalContent его
-					// снимает, а sanitizeStreamText — нет (замерено).
-					tail = stripOrphanReasoningTags(sanitizeStreamText(fullOutput[emittedLen:]))
-				}
+				// R429/R430: хвост режется по началу разметки вызова. До этого
+				// здесь отдавался ВЕСЬ остаток буфера: живой прогон gemma-4 + Cline
+				// (сборка R429) отдал клиенту 3441 из 3442 байт — тело вызова
+				// (HTML файла целиком) уехало как «ответ» и осело в истории
+				// Cline. Чистки на месте (cleanFinalContent / stripToolCallMarkup)
+				// разметку не знают: она была переэкранирована (`\"name\"`) и без
+				// баланса скобок, поэтому единственный надёжный признак — её
+				// НАЧАЛО, по нему и режем.
+				visibleTail, _ := visibleTailR429(fullOutput, emittedLen)
+				tail = visibleTail
 				if jsonMode {
 					tail = stripJSONFence(tail)
 				}
 				// R113: хвост тоже чистим от разметки вызова.
 				tail = stripToolCallMarkup(tail)
 			}
-			emitContentDelta(tail)
-			msg["content"] = ""
+			if strings.TrimSpace(tail) == "" {
+				// Остаток был только разметкой вызова — видимый текст отдаём в
+				// финальном чанке, иначе клиент не получит ничего (R424).
+				msg["content"] = content
+			} else {
+				emitContentDelta(tail)
+				msg["content"] = ""
+			}
 			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_text_response_streamed"),
 				"model", modelName, "emitted_len", emittedLen, "tail_len", len(tail),
 				"tools_hold", toolsHold, "json_mode", jsonMode)
@@ -2721,7 +2805,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	logger.Get().Infow("/api/chat stream response summary",
 		"model", modelName,
 		"path", "/api/chat",
-		"streamed_content_bytes", emittedLen,
+		"streamed_content_bytes", streamedBytes,
+		// R429: позиция разбора в буфере — отдельным полем. Раньше она печаталась
+		// как streamed_content_bytes и расходилась с реально отданным текстом
+		// (пропущенные маркеры размышлений, хвост из финального чанка).
+		"emitted_len", emittedLen,
 		"final_content_len", len(fmt.Sprint(finalChunk["message"].(map[string]interface{})["content"])),
 		"thinking_len", len(reasoningOut),
 		"tool_calls", len(toolCalls),

@@ -347,6 +347,9 @@ client_cap        = min( physical_ceiling, effective_ceiling )
 | «Cline компактит при малом usage» / «ответ обрезан на 4096» | `budget_exhausted`, `n_predict` в summary; сравнить с `max_output_tokens` запроса | `handlers_generate.go` (`buildGenerationParams`), `reasoning_content.go` (`ResolveNPredict`) |
 | «модель перезагружается после каждого ответа» | `autotune: triggering async reload … kv_cache q8_0 → q4_0` (и обратно); `loaded_at` меняется | `autotune_kv_guard_r416.go`, `autotune.go` (`triggerAutoTuneReload`, план-билдер) |
 | «content = пояснение, но tool_calls валидны» | `terminalContentR417`/`nonStreamContentR417`; content-пояснение рядом с вызовом | `tools_terminal_reason_r394.go`, `handlers_chat.go` |
+| «инструмент не вызван, а в ответе — его тело / сырой JSON» | `tool_calls=0` при `raw_len` ≫ `streamed_content_bytes`; `flushed held tail before done` + `call_start`; `markup_unparsed` / `markup_stripped` (R427/R430) | `visible_tail_r429.go`, `escaped_call_markup_r430.go`, `declared_tool_filter_r428.go`, `handlers_chat.go` |
+| «какой именно сырой вывод не распознан» | `GET /api/v1/cppworker/debug/unparsed` (R427): `reason`, `raw_len`, `raw_file`; файл `$CPPWORKER_UNPARSED_CAPTURE_FILE` | `unparsed_capture_r427.go` |
+| «`streamed_content_bytes` не сходится с тем, что получил клиент» | R429: поле = реально отданные дельтами байты; рядом `emitted_len` — позиция разбора в буфере (по ней видно, где остановлены дельты) | `handlers_chat.go` (сводка `/api/chat stream response summary`) |
 
 ---
 

@@ -1,11 +1,11 @@
 ﻿{
-    "tag":  "r261103-2310",
-    "builtAt":  "2026-11-03T19:28:54Z",
-    "gitCommit":  "160d4832",
+    "tag":  "r261104-1605",
+    "builtAt":  "2026-11-04T16:06:57Z",
+    "gitCommit":  "0d445984",
     "cudaArch":  86,
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "Монитор и AutoTune (R425): тип бэкенда учитывается в советах (imageworker больше не предлагается для llama.cpp), имя модели и User-Agent не вылезают из карточки/подсказки; AutoTune не опускает окно ниже профиля модели. R424: короткий ответ на tools-пути уходит дельтой. Стенд: balancer r261103-2310, cppworker gpu-r261103-2130, webui r261103-2230, imageworker без изменений. Модель Qwen3-4B-Instruct-2507-Q4_K_M, окно 32768, kv q8_0, 36/36 слоёв на GPU.",
+    "note":  "R426: преамбула инструментов однозначна — cppworker gpu-r261104-1605 (Cline снова создаёт файлы, а не отвечает текстом); R425: webui r261103-2230 (тип бэкенда в советах монитора, текст не вылезает из карточки), balancer r261103-2310 (AutoTune не опускает окно ниже профиля модели); imageworker без изменений. Модель стенда: Qwen3.8-9B-Distill-uncensored-heretic, окно 32768, kv q8_0, все слои на GPU.",
     "images":  [
                    {
                        "service":  "loadbalancer",
@@ -18,9 +18,9 @@
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261103-2130",
-                       "imageTag":  "gpu-r261103-2130",
-                       "imageId":  "sha256:770d917bc8c99ddc1b1ddec1297295e96c65c78f1211eadab6c4019da7a980b3",
+                       "image":  "ollama-legion/cppworker:gpu-r261104-1605",
+                       "imageTag":  "gpu-r261104-1605",
+                       "imageId":  "sha256:e306a7cd759bc6e79499866f2429e5896d1d882f22cba152f26ae18df11b70ef",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

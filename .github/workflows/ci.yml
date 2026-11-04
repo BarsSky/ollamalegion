@@ -1,4 +1,4 @@
-﻿# GitHub Actions CI для OllamaLegion
+# GitHub Actions CI для OllamaLegion
 #
 # Стратегия: self-hosted Windows runner (primary) + ubuntu-latest (fallback).
 # Self-hosted использует persistent cache из C:\actions-runner, поэтому

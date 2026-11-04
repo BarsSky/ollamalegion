@@ -1,4 +1,4 @@
-﻿// tool_calls_test.go — Unit tests for tool_calls parsing and normalization.
+// tool_calls_test.go — Unit tests for tool_calls parsing and normalization.
 // Package: main (same as tool_calls.go), so unexported functions are accessible.
 package main
 

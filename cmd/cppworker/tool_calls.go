@@ -268,7 +268,11 @@ func parseToolCallsFromOutputWithTools(output string, tools []openAITool) []open
 	if len(calls) == 0 {
 		return nil
 	}
-	return coerceToolCallsToSchema(calls, tools)
+	calls = coerceToolCallsToSchema(calls, tools)
+	// R428: вызов инструмента, которого клиент НЕ объявлял, выполнить нельзя —
+	// известные синонимы записи файла переводим на объявленный инструмент,
+	// остальные отбрасываем (см. declared_tool_filter_r428.go).
+	return filterUndeclaredToolCalls(calls, tools)
 }
 
 func parseToolCallsFromOutputRaw(output string) []openAIToolCall {
@@ -324,6 +328,14 @@ func parseToolCallsFromOutputRaw(output string) []openAIToolCall {
 		return calls
 	}
 
+	// Стратегия 1d (R428 2026-11-04): нативный вызов gemma В ФОРМЕ ВЫЗОВА
+	// ФУНКЦИИ — `call:NAME(key: value, …)` в круглых скобках, без закрывающего
+	// тега и без JSON-объекта аргументов. Живой захват (R427) из сессии Cline:
+	//   <|tool_call>call:editor(new_text: "…</html>", path: "d:\\x\\index.html"}]
+	// Прежние стратегии его не видели → tool_calls=0 → Cline «COMPLETED».
+	if calls := extractGemmaParenToolCalls(output); len(calls) > 0 {
+		return calls
+	}
 	// Стратегия 2: Llama-3.x формат <|python_tag|>{...}
 	if calls := extractLlamaPythonTagCalls(output); len(calls) > 0 {
 		return calls

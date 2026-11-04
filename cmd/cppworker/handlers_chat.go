@@ -2293,36 +2293,45 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"raw_len", len(fullOutput),
 				"emitted_len", emittedLen,
 				"preview", truncateForLog(outputForParse, 300))
-			// R427: СЫРОЙ вывод сохраняем ПЕРЕД отдачей ошибки. Именно этот срыв
-			// (разметка вызова есть, вызов не распознан) потерял ход в живой
-			// сессии Cline; понять, что выдала модель, было уже нельзя — preview
-			// вытеснялся из docker logs. Только диагностика: ответ клиенту не
-			// меняется (тот же errChunk ниже).
+			// R427: СЫРОЙ вывод сохраняем ПЕРЕД принятием решения.
 			recordUnparsedCapture(modelName, "/api/chat", "markup_unparsed",
 				fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools)
-			errChunk := map[string]interface{}{
-				"model":       modelName,
-				"created_at":  createdAt,
-				"message":     map[string]string{"role": "assistant", "content": ""},
+			// R428: ХОД БОЛЬШЕ НЕ УБИВАЕТСЯ. Раньше здесь уходил errChunk с
+			// done_reason:"error" и пустым content: клиент (Cline) сохранял наше
+			// сообщение об ошибке как реплику ассистента, ход терялся, а следующий
+			// ответ модели строился уже по испорченной истории (живая сессия:
+			// после такого срыва обе модели начали писать файлы текстом).
+			// Теперь отдаём честное пояснение как обычный финальный ответ —
+			// клиент продолжает сессию, а сырой вывод лежит в диагностике.
+			// R320: причина НЕ прошивается "stop" — считаем её по контракту
+			// (обрезанный reasoning/бюджет = length), иначе клиент считает ход
+			// законченным. Контракт R428: этот чанк — обычный финальный ответ.
+			noticeReason := toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
+				len(toolCalls), params.NPredict, budgetTokens)
+			noticeChunk := map[string]interface{}{
+				"model":      modelName,
+				"created_at": createdAt,
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": "Модель вызвала инструмент в нераспознанном формате — вызов не выполнен. Повторите запрос.",
+				},
 				"done":        true,
-				"done_reason": "error",
-				"error":       "model returned a tool call that could not be parsed into tool_calls; retry the request",
-				"raw_len":     len(fullOutput),
+				"done_reason": noticeReason,
 			}
-			errJSON, _ := json.Marshal(errChunk)
-			sw.Writef("%s\n", errJSON)
+			noticeJSON, _ := json.Marshal(noticeChunk)
+			sw.Writef("%s\n", noticeJSON)
 			sw.Flush()
 			return
+		} else {
+			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_markup_stripped"),
+				"model", modelName,
+				"visible_len", len(visibleAfterStrip),
+				"raw_len", len(fullOutput))
+			// R427: разметка снята, но проза доставлена — фиксируем СЫРОЙ вывод:
+			// так видно, в какой форме модель прислала вызов и почему он не распознан.
+			recordUnparsedCapture(modelName, "/api/chat", "markup_stripped",
+				fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools)
 		}
-		logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_markup_stripped"),
-			"model", modelName,
-			"visible_len", len(visibleAfterStrip),
-			"raw_len", len(fullOutput))
-		// R427: разметка снята, но проза доставлена — фиксируем СЫРОЙ вывод:
-		// так видно, в какой форме модель прислала вызов, и почему он не распознан
-		// (живой случай — одинокая `[` в тексте перед tool_use).
-		recordUnparsedCapture(modelName, "/api/chat", "markup_stripped",
-			fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools)
 	}
 
 	// 2026-06-24: ???????? ?? ?????? ????? ????? cleanFinalContent (gemma antiprompt).
@@ -2352,20 +2361,28 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"emitted_len", emittedLen,
 				"preview", truncateForLog(outputForParse, 300))
 			// R427: второй вход в ту же ошибку (путь «пустой видимый вывод»).
-			// Сырой вывод сохраняем до отдачи errChunk — только диагностика.
+			// Сырой вывод сохраняем для диагностики.
 			recordUnparsedCapture(modelName, "/api/chat", "empty_after_strip",
 				fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools)
-			errChunk := map[string]interface{}{
-				"model":       modelName,
-				"created_at":  createdAt,
-				"message":     map[string]string{"role": "assistant", "content": ""},
+			// R428: ход не убиваем — уходим в обычную ветку ниже, которая отдаст
+			// пояснение вместо done_reason:"error" (см. комментарий выше).
+			// R320: причина НЕ прошивается "stop" — считаем её по контракту
+			// (обрезанный reasoning/бюджет = length), иначе клиент считает ход
+			// законченным. Контракт R428: этот чанк — обычный финальный ответ.
+			noticeReason := toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
+				len(toolCalls), params.NPredict, budgetTokens)
+			noticeChunk := map[string]interface{}{
+				"model":      modelName,
+				"created_at": createdAt,
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": "Модель вызвала инструмент в нераспознанном формате — вызов не выполнен. Повторите запрос.",
+				},
 				"done":        true,
-				"done_reason": "error",
-				"error":       "model returned a tool call that could not be parsed into tool_calls; retry the request",
-				"raw_len":     len(fullOutput),
+				"done_reason": noticeReason,
 			}
-			errJSON, _ := json.Marshal(errChunk)
-			sw.Writef("%s\n", errJSON)
+			noticeJSON, _ := json.Marshal(noticeChunk)
+			sw.Writef("%s\n", noticeJSON)
 			sw.Flush()
 			return
 		}
@@ -2584,6 +2601,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// рядом с вызовом инструмента оно превращается в текст ответа и попадает
 		// в историю клиента (живой случай: Qwen3.8-9B + read_files).
 		content = terminalContentR417(content, fullOutput, len(toolCalls))
+
 		// R404: thinking уже мог уйти дельтами — тогда в финале его НЕ дублируем.
 		thinkingField := reasoningOut
 		if thinkingStreamed {
@@ -2633,7 +2651,12 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				if toolsHold {
 					tail = cleanFinalContent(fullOutput[emittedLen:])
 				} else {
-					tail = sanitizeStreamText(fullOutput[emittedLen:])
+					// R428: хвост тоже чистим от одиночных маркеров размышлений.
+					// Живой захват: ответ gemma-4 заканчивался «Создаю файл
+					// `index.html`:<channel|>», и этот маркер уезжал клиенту ЕОМ
+					// (в истории Cline остался трижды): cleanFinalContent его
+					// снимает, а sanitizeStreamText — нет (замерено).
+					tail = stripOrphanReasoningTags(sanitizeStreamText(fullOutput[emittedLen:]))
 				}
 				if jsonMode {
 					tail = stripJSONFence(tail)

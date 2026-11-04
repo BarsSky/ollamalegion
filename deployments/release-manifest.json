@@ -1,11 +1,11 @@
 {
-    "tag":  "r261104-1605",
-    "builtAt":  "2026-11-04T16:06:57Z",
-    "gitCommit":  "0d445984",
-    "cudaArch":  86,
+    "tag":  "r261106-0015",
+    "builtAt":  "2026-11-05T00:15:00Z",
+    "gitCommit":  "08ce9366",
+    "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R426: преамбула инструментов однозначна — cppworker gpu-r261104-1605 (Cline снова создаёт файлы, а не отвечает текстом); R425: webui r261103-2230 (тип бэкенда в советах монитора, текст не вылезает из карточки), balancer r261103-2310 (AutoTune не опускает окно ниже профиля модели); imageworker без изменений. Модель стенда: Qwen3.8-9B-Distill-uncensored-heretic, окно 32768, kv q8_0, все слои на GPU.",
+    "note":  "R429/R430: тело вызова инструмента не попадает в content ни на одной поверхности — cppworker gpu-r261106-0015 (добор хвоста режется по началу разметки, переэкранированная разметка опознаётся и уходит в диагностику, нераспознанный вызов даёт пояснение, streamed_content_bytes считает реально отданные байты). Прочее без изменений: balancer r261103-2310 (R425), webui r261103-2230 (R425), imageworker 72ec210a. Модель стенда: gemma-4-E4B-it (Cline) и Qwen3.8-9B-Distill-uncensored-heretic (окно 32768, kv q8_0).",
     "images":  [
                    {
                        "service":  "loadbalancer",
@@ -18,9 +18,9 @@
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261104-1605",
-                       "imageTag":  "gpu-r261104-1605",
-                       "imageId":  "sha256:e306a7cd759bc6e79499866f2429e5896d1d882f22cba152f26ae18df11b70ef",
+                       "image":  "ollama-legion/cppworker:gpu-r261106-0015",
+                       "imageTag":  "gpu-r261106-0015",
+                       "imageId":  "sha256:2139d45e89358a11dd408b6458c84848e0e3283037ee7865455f65172b5e119b",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

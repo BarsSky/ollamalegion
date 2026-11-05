@@ -44,14 +44,16 @@ func formatTestTools() []openAITool {
 	}
 }
 
-// TestR426_ToolsPromptStatesOneFormat — в преамбуле один формат, запрет на
-// его имитации и правило «не вставлять артефакт в ответ».
+// TestR426_ToolsPromptStatesOneFormat — R432: преамбула перечисляет РЕАЛЬНЫЕ
+// формы вызова (на которых модели обучены), а не один придуманный гибрид, и
+// сохраняет поведенческие правила R426.
 func TestR426_ToolsPromptStatesOneFormat(t *testing.T) {
 	prompt := buildToolsSystemPrompt(formatTestTools())
 
 	for _, want := range []string{
-		"[TOOL_CALLS][{",
-		`"arguments":{`,
+		`<tool_call>{"name":"<tool>","arguments":{...}}</tool_call>`,
+		`[TOOL_CALLS][{"name":"<tool>","arguments":{...}}]`,
+		"call:<tool>(<arg>: <value>, ...)",
 		"name(args)",
 		"[name(...)]",
 		"call the tool instead of pasting",
@@ -63,10 +65,40 @@ func TestR426_ToolsPromptStatesOneFormat(t *testing.T) {
 			t.Errorf("преамбула инструментов не содержит %q:\n%s", want, prompt)
 		}
 	}
+	// R432: придуманного гибрида «маркер Mistral + OpenAI-объект» больше нет —
+	// именно его модель копировала с потерей name/arguments.
+	if strings.Contains(prompt, `[TOOL_CALLS][{"id":"call_`) {
+		t.Errorf("преамбула снова требует придуманный формат:\n%s", prompt)
+	}
 	// Старая формулировка «Output ONLY the JSON array, no prose» мешала обычным
 	// текстовым ответам при доступных инструментах — её больше нет.
 	if strings.Contains(prompt, "Output ONLY the JSON array") {
 		t.Errorf("преамбула сохранила старую безусловную инструкцию:\n%s", prompt)
+	}
+}
+
+// TestR432_AllDocumentedFormsAreParsed — КАЖДАЯ из перечисленных в преамбуле
+// форм обязана разбираться: «следуй инструкции» не должно кончаться потерей
+// вызова.
+func TestR432_AllDocumentedFormsAreParsed(t *testing.T) {
+	tools := formatTestTools()
+	cases := map[string]string{
+		"hermes":    `<tool_call>{"name":"read_files","arguments":{"files":["TASK.md"]}}</tool_call>`,
+		"mistral":   `[TOOL_CALLS][{"name":"read_files","arguments":{"files":["TASK.md"]}}]`,
+		"gemma par": `<|tool_call>call:read_files(files:["TASK.md"])`,
+		// R432: нативный синтаксис gemma со спец-токенами кавычек — живой захват
+		// (Cline в VS Code), до фикса не разбирался.
+		"gemma quotes": `<|tool_call>call:read_files(files:[<|"|>TASK.md<|"|>])`,
+	}
+	for name, out := range cases {
+		calls := parseToolCallsForRequest(out, tools)
+		if len(calls) != 1 || calls[0].Function.Name != "read_files" {
+			t.Errorf("%s: форма не разобрана: %+v\n%s", name, calls, out)
+			continue
+		}
+		if !strings.Contains(calls[0].Function.Arguments, "TASK.md") {
+			t.Errorf("%s: аргументы потеряны: %q", name, calls[0].Function.Arguments)
+		}
 	}
 }
 

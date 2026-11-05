@@ -58,6 +58,18 @@ func extractGemmaParenToolCalls(output string) []openAIToolCall {
 	if !strings.Contains(output, "call:") && !strings.Contains(output, "(") {
 		return nil
 	}
+	// R432 (2026-11-05): НАТИВНЫЕ спец-токены gemma внутри вызова.
+	//
+	// ЖИВОЙ ЗАХВАТ (Cline в VS Code + gemma-4, /app/diag/RAW-…-markup_unparsed.txt):
+	//
+	//	<|channel>thought …<channel|><|tool_call>call:read_files(files:[<|"|>TASK.md<|"|>])
+	//
+	// Строки в нативном синтаксисе gemma обёрнуты токеном `<|"|>` (в шаблоне это
+	// кавычка). Здесь применялась только скобочная форма — токен оставался в
+	// аргументах, JSON не собирался, вызов терялся (tool_calls=0). Та же
+	// нормализация уже есть в extractGemmaToolCalls (R109) — теперь она общая для
+	// обеих форм вызова.
+	output = normalizeGemmaNativeToolCallSyntax(output)
 
 	var result []openAIToolCall
 	for _, marker := range gemmaParenMarkers {
@@ -218,11 +230,26 @@ func findGemmaParenClose(s string, from int) (int, bool) {
 }
 
 // trimGemmaParenArgs — снять хвостовой мусор, который модель добавляет после
-// последнего значения (`"}]`, `"",}`, `")` и т.п.). Значимая часть аргументов
-// заканчивается на `"` (строка), цифре (число) или на `true`/`false`/`null`.
+// последнего значения (`"}]`, `"",}`, `")` и т.п.).
+//
+// R432 (2026-11-05): режем ТОЛЬКО пока аргументы не станут валидным JSON.
+//
+// ЖИВОЙ ДЕФЕКТ (Cline в VS Code + gemma-4): нативный вызов с МАССИВОМ в
+// аргументах
+//
+//	call:read_files(files:["TASK.md"])
+//
+// доезжал сюда как `files:["TASK.md"]`, прежняя версия вслепую снимала хвостовой
+// `]` (он же «мусор» в других формах) → `files:["TASK.md"` → JSON невалиден →
+// вызов терялся. Теперь `]`/`}`/`)` и запятые снимаются только как хвост, пока
+// остаток не станет валидным JSON-объектом; балансовая скобка значения остаётся
+// на месте.
 func trimGemmaParenArgs(s string) string {
 	s = strings.TrimSpace(s)
 	for len(s) > 0 {
+		if _, ok := gemmaParenArgsToJSON(s); ok {
+			break
+		}
 		last := s[len(s)-1]
 		if last == ')' || last == '}' || last == ']' || last == ',' || last == ' ' || last == '\n' || last == '\r' || last == '\t' {
 			s = strings.TrimSpace(s[:len(s)-1])
@@ -238,19 +265,92 @@ func trimGemmaParenArgs(s string) string {
 // Обёртку добавляем сами и чиним её fixGemmaArgs (unquoted-ключи). Значения при
 // этом уже в JSON-нотации: строки в кавычках с экранированием, числа/true/null
 // как есть. Если после починки JSON невалиден или это не объект — вызова нет.
+//
+// R432 (2026-11-05): строки в ОДИНАРНЫХ кавычках (питоновская запись).
+//
+// ЖИВОЙ ЗАХВАТ (Qwen3.8-9B + Cline, /app/diag/RAW-…-markup_unparsed.txt):
+//
+//	<tool_call>read_files(files: ['C:\\Ollama\\…\\TASK.md'])
+//
+// JSON требует двойных кавычек, поэтому вызов терялся. Теперь второй попыткой
+// аргументы конвертируются в JSON-строки (одинарные кавычки → двойные, кавычки
+// внутри значения экранируются); первая попытка остаётся прежней — валидный JSON
+// не переписываем.
 func gemmaParenArgsToJSON(raw string) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "{}", true
 	}
-	candidate := "{" + raw + "}"
-	fixed := fixGemmaArgs(candidate)
-	if !json.Valid([]byte(fixed)) {
-		return "", false
+	for _, cand := range []string{raw, singleQuotesToJSONR432(raw)} {
+		candidate := "{" + cand + "}"
+		fixed := fixGemmaArgs(candidate)
+		if !json.Valid([]byte(fixed)) {
+			continue
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(fixed), &obj); err != nil {
+			continue
+		}
+		return compactJSON(fixed), true
 	}
-	var obj map[string]interface{}
-	if err := json.Unmarshal([]byte(fixed), &obj); err != nil {
-		return "", false
+	return "", false
+}
+
+// singleQuotesToJSONR432 — строки в одинарных кавычках переводятся в JSON-строки.
+//
+// Внутри уже двойных кавычек ничего не меняется (там `'` — обычный символ).
+// Экранирование обратным слэшем сохраняется как есть: пути Windows
+// (`'C:\\Ollama\\…'`) после конверсии остаются валидными JSON-escape'ами.
+func singleQuotesToJSONR432(s string) string {
+	if !strings.Contains(s, "'") {
+		return s
 	}
-	return compactJSON(fixed), true
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	inDouble, escaped := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inDouble {
+			b.WriteByte(c)
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inDouble = false
+			}
+			continue
+		}
+		if c == '"' {
+			inDouble = true
+			b.WriteByte(c)
+			continue
+		}
+		if c != '\'' {
+			b.WriteByte(c)
+			continue
+		}
+		// Начало строки в одинарных кавычках → JSON-строка.
+		b.WriteByte('"')
+		for i++; i < len(s); i++ {
+			cc := s[i]
+			if cc == '\\' && i+1 < len(s) {
+				b.WriteByte(cc)
+				b.WriteByte(s[i+1])
+				i++
+				continue
+			}
+			if cc == '\'' {
+				break
+			}
+			if cc == '"' {
+				b.WriteString(`\"`)
+				continue
+			}
+			b.WriteByte(cc)
+		}
+		b.WriteByte('"')
+	}
+	return b.String()
 }

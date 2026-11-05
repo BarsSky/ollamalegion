@@ -625,7 +625,11 @@ func toolCallFromJSONObject(raw string) *openAIToolCall {
 // isToolCallJSONObject — объект ПОХОЖ на вызов инструмента (без разбора имени
 // по схеме). Нужен, чтобы не отдавать такой JSON клиенту как текст ответа.
 func isToolCallJSONObject(raw string) bool {
-	return toolCallFromJSONObject(raw) != nil
+	if toolCallFromJSONObject(raw) != nil {
+		return true
+	}
+	// R433: обёртка {"tool_calls":[…]} — тоже разметка вызова, а не ответ.
+	return isToolCallsEnvelopeR433(raw)
 }
 
 // recoverToolCallsFromText — последняя попытка распознать вызов, когда он не
@@ -659,7 +663,11 @@ func recoverToolCallsFromText(text string, tools []openAITool) []openAIToolCall 
 		// «COMPLETED» без созданного файла.
 		if call := namelessCallFromObjectR431(cand, declared); call != nil {
 			out = append(out, *call)
+			continue
 		}
+		// R433 (2026-11-05): JSON-обёртка `{"tool_calls":[{"name":…,"arguments":…}]}`
+		// — живой ответ gemma-4, вызов лежал в массиве и считался текстом.
+		out = append(out, toolCallsFromEnvelopeR433(cand)...)
 	}
 	if len(out) == 0 {
 		return nil

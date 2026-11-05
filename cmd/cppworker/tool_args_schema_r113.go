@@ -205,6 +205,57 @@ func (t toolSchemaInfo) paramItemsType(name string) string {
 	return ""
 }
 
+// expandStringifiedItemsR437 — строки-JSON внутри массива → значения.
+//
+// ЖИВОЙ СЛУЧАЙ (Qwen3.8-9B, нативная секция инструментов R434): при схеме
+// `files: {type: array, items: {type: object}}` модель прислала массив, в
+// котором лежит СТРОКА с сериализованным массивом объектов:
+//
+//	{"files": ["[{\"path\": \"C:\\\\...\\\\TASK.md\"}]"]}
+//
+// Клиент такой вызов выполнить не может. Правило узкое: элемент-строка
+// разбирается, только если он валидный JSON-объект/массив; обычные строки
+// (когда items объявлен как string) не трогаем — этим занимается R435.
+func expandStringifiedItemsR437(value interface{}) interface{} {
+	arr, ok := value.([]interface{})
+	if !ok || len(arr) == 0 {
+		return value
+	}
+	changed := false
+	out := make([]interface{}, 0, len(arr))
+	for _, el := range arr {
+		s, isStr := el.(string)
+		if !isStr {
+			out = append(out, el)
+			continue
+		}
+		trimmed := strings.TrimSpace(s)
+		if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') || !json.Valid([]byte(trimmed)) {
+			out = append(out, el)
+			continue
+		}
+		var parsed interface{}
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+			out = append(out, el)
+			continue
+		}
+		switch parsed.(type) {
+		case map[string]interface{}:
+			out = append(out, parsed)
+			changed = true
+		case []interface{}:
+			out = append(out, parsed.([]interface{})...)
+			changed = true
+		default:
+			out = append(out, el)
+		}
+	}
+	if !changed {
+		return value
+	}
+	return out
+}
+
 // flattenStringObjectsR435 — массив объектов-обёрток → массив строк.
 //
 // ЖИВОЙ СЛУЧАЙ (gemma-4 с нативной секцией инструментов, R434): при схеме
@@ -348,6 +399,27 @@ func coerceValueToDeclaredType(value interface{}, declared string) interface{} {
 	switch declared {
 	case "array":
 		if _, isArr := value.([]interface{}); !isArr {
+			// R437 (2026-11-05): СТРОКА с JSON-массивом внутри.
+			//
+			// ЖИВОЙ СЛУЧАЙ (Qwen3.8-9B с нативной секцией инструментов в шаблоне,
+			// R434): при схеме `files: {type: array, items: {type: object}}` модель
+			// прислала значение СТРОКОЙ с сериализованным массивом:
+			//
+			//	{"files": ["[{\"path\": \"C:\\\\...\\\\TASK.md\"}]"]}
+			//
+			// То есть в массив попала строка с JSON. Клиент такой вызов выполнить
+			// не может. Разбираем строку и берём РАЗОБРАННЫЙ массив; если строка
+			// не JSON-массив — прежнее поведение (обернуть в массив из одного
+			// элемента).
+			if s, isStr := value.(string); isStr {
+				trimmed := strings.TrimSpace(s)
+				if strings.HasPrefix(trimmed, "[") && json.Valid([]byte(trimmed)) {
+					var arr []interface{}
+					if err := json.Unmarshal([]byte(trimmed), &arr); err == nil {
+						return arr
+					}
+				}
+			}
 			return []interface{}{value}
 		}
 	case "string":
@@ -469,9 +541,15 @@ func coerceArgumentsValue(raw string, schema toolSchemaInfo, haveSchema bool) (s
 			for key, val := range v {
 				if typ := schema.paramType(key); typ != "" {
 					v[key] = coerceValueToDeclaredType(val, typ)
-					// R435: массив объектов-обёрток при объявленном items:string.
-					if typ == "array" && schema.paramItemsType(key) == "string" {
-						v[key] = flattenStringObjectsR435(v[key])
+					if typ == "array" {
+						switch schema.paramItemsType(key) {
+						case "string":
+							// R435: массив объектов-обёрток → массив строк.
+							v[key] = flattenStringObjectsR435(v[key])
+						case "object":
+							// R437: строки-JSON внутри массива → объекты.
+							v[key] = expandStringifiedItemsR437(v[key])
+						}
 					}
 				}
 			}

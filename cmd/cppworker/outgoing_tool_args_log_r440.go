@@ -28,7 +28,7 @@ func outgoingToolArgsLogEnabled() bool {
 }
 
 // logOutgoingToolCalls — записать в лог, что именно уходит клиенту.
-func logOutgoingToolCalls(model, surface string, calls []openAIToolCall) {
+func logOutgoingToolCalls(model, surface string, calls []openAIToolCall, rawOutput string) {
 	if len(calls) == 0 || !outgoingToolArgsLogEnabled() {
 		return
 	}
@@ -42,6 +42,10 @@ func logOutgoingToolCalls(model, surface string, calls []openAIToolCall) {
 			"model", model, "surface", surface, "index", i,
 			"tool", c.Function.Name, "args_shape", toolArgShape(args),
 			"args_len", len(args),
-			"args_head", truncateForLog(args, 400))
+			"args_head", truncateForLog(args, 400),
+			// R440: СЫРОЙ вывод модели — без него непонятно, что чинить: форму
+			// вызова в выводе или приведение аргументов.
+			"raw_len", len(rawOutput),
+			"raw_head", truncateForLog(rawOutput, 300))
 	}
 }

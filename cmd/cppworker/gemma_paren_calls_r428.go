@@ -69,7 +69,11 @@ func extractGemmaParenToolCalls(output string) []openAIToolCall {
 	// аргументах, JSON не собирался, вызов терялся (tool_calls=0). Та же
 	// нормализация уже есть в extractGemmaToolCalls (R109) — теперь она общая для
 	// обеих форм вызова.
-	output = normalizeGemmaNativeToolCallSyntax(output)
+	// R441: нормализуем ТОЛЬКО теги, а токены кавычек `<|"|>` оставляем сканеру
+	// нативного тела: он знает, что это РАЗДЕЛИТЕЛЬ строки (внутри могут быть
+	// настоящие кавычки). Полная нормализация (normalizeGemmaNativeToolCallSyntax)
+	// заменяет их на `"` и делает содержимое файла неразбираемым.
+	output = normalizeGemmaTagTokensOnlyR441(output)
 
 	var result []openAIToolCall
 	for _, marker := range gemmaParenMarkers {
@@ -140,6 +144,30 @@ func parseGemmaParenCallAt(output string, pos int) (*openAIToolCall, int) {
 	if len(rawArgs) > gemmaParenMaxBody {
 		rawArgs = rawArgs[:gemmaParenMaxBody]
 	}
+	// R441: нативный разбор тела (разделители <|"|> — это кавычки-разделители,
+	// внутри них кавычки литеральны). Прежний путь через JSON ломался на файлах
+	// с `lang="ru"` и на путях Windows.
+	if nativeArgs, okNative := gemmaNativeArgsToJSONR441(rawArgs); okNative {
+		call := &openAIToolCall{
+			ID:   "call_" + name,
+			Type: "function",
+			Function: openAIFunctionCall{
+				Name:      name,
+				Arguments: nativeArgs,
+			},
+		}
+		next := end
+		if closed {
+			next = end + 1
+		}
+		return call, next
+	}
+
+	// Запасной путь (нативный сканер не справился): приводим токены кавычек к
+	// обычным, как делал R432, и разбираем как JSON-ish.
+	rawArgs = strings.ReplaceAll(rawArgs, `<|"|>`, `"`)
+	rawArgs = strings.ReplaceAll(rawArgs, `<|'|>`, `"`)
+
 	// Хвостовой мусор модели: `)`/`}`/`]`, кавычки-обрывки и пробелы за
 	// последним значением. Значимая часть — пары `key: value`; последний
 	// символ валидных аргументов — закрывающая кавычка, число или `}`.
@@ -353,4 +381,24 @@ func singleQuotesToJSONR432(s string) string {
 		b.WriteByte('"')
 	}
 	return b.String()
+}
+
+// normalizeGemmaTagTokensOnlyR441 — привести ТОЛЬКО обёртки вызова gemma к
+// каноничным тегам (`<tool_call>` / `</tool_call>`), не трогая токены кавычек
+// `<|"|>`: их разбирает нативный сканер аргументов (R441).
+func normalizeGemmaTagTokensOnlyR441(s string) string {
+	if s == "" || !strings.Contains(s, "tool_call") {
+		return s
+	}
+	out := strings.NewReplacer(
+		"<|tool_call|>", "<tool_call>",
+		"<|tool_call>", "<tool_call>",
+		"<tool_call|>", "</tool_call>",
+		"<|/tool_call|>", "</tool_call>",
+		"<|/tool_call>", "</tool_call>",
+	).Replace(s)
+	for _, prefix := range []string{"call:", "tool:", "function:"} {
+		out = strings.ReplaceAll(out, "<tool_call>"+prefix, "<tool_call>")
+	}
+	return out
 }

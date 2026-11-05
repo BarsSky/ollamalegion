@@ -1075,7 +1075,9 @@ func extractGemmaToolCalls(output string) []openAIToolCall {
 	// Отличия от того, что парсер знал раньше: теги с пайпами, префикс `call:`
 	// перед именем функции и служебный токен кавычки `<|"|>`. Без нормализации
 	// вызов не распознавался и уходил клиенту текстом (Cline: toolCallCount=0).
-	output = normalizeGemmaNativeToolCallSyntax(output)
+	// R441: только теги; токены кавычек `<|"|>` оставляем сканеру нативного тела
+	// (см. gemma_native_args_r441.go).
+	output = normalizeGemmaTagTokensOnlyR441(output)
 
 	// Регекс: <tool_call>имя{json}</tool_call>
 	// Имя функции: [a-zA-Z_][a-zA-Z0-9_]* (допускаем подчёркивания и цифры)
@@ -1089,7 +1091,17 @@ func extractGemmaToolCalls(output string) []openAIToolCall {
 	var result []openAIToolCall
 	for _, m := range matches {
 		name := m[1]
-		argsJSON := fixGemmaArgs(strings.TrimSpace(m[2]))
+		// R441: сначала пробуем НАТИВНЫЙ разбор тела (разделители <|"|>,
+		// одинарные кавычки, кавычки-литералы внутри значений). fixGemmaArgs
+		// остаётся запасным путём: он чинит unquoted-ключи, но не спасает
+		// содержимое файла с кавычками внутри.
+		argsJSON, okNative := gemmaNativeArgsToJSONR441(strings.TrimSpace(m[2]))
+		if !okNative {
+			// Запасной путь: токены кавычек → обычные кавычки, затем fixGemmaArgs.
+			legacy := strings.ReplaceAll(m[2], `<|"|>`, `"`)
+			legacy = strings.ReplaceAll(legacy, `<|'|>`, `"`)
+			argsJSON = fixGemmaArgs(strings.TrimSpace(legacy))
+		}
 		call := openAIToolCall{
 			Type: "function",
 			Function: struct {

@@ -592,9 +592,23 @@ func coerceArgumentsValue(raw string, schema toolSchemaInfo, haveSchema bool) (s
 	case string:
 		trimmed := strings.TrimSpace(v)
 		// Двойное кодирование: строка внутри строки с JSON.
-		if trimmed != "" && (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) && json.Valid([]byte(trimmed)) {
-			if inner, ok := coerceArgumentsValue(trimmed, schema, haveSchema); ok {
-				return inner, true
+		//
+		// R439 (2026-11-05): Windows-путь в этой строке делает её невалидным JSON
+		// (`\c`, `\i` — недопустимые escape), и раньше весь объект уезжал в первый
+		// скалярный параметр (`new_text`), из-за чего клиент писал «expected string,
+		// received undefined → at new_text». Поэтому перед проверкой валидности
+		// пробуем ПОЧИНИТЬ escape-последовательности.
+		if trimmed != "" && (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) {
+			candidate := trimmed
+			if !json.Valid([]byte(candidate)) {
+				if repaired, changed := repairInvalidJSONEscapesR439(candidate); changed && json.Valid([]byte(repaired)) {
+					candidate = repaired
+				}
+			}
+			if json.Valid([]byte(candidate)) {
+				if inner, ok := coerceArgumentsValue(candidate, schema, haveSchema); ok {
+					return inner, true
+				}
 			}
 		}
 		if !haveSchema {

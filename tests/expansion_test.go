@@ -1,7 +1,7 @@
 package tests
 
 import (
-	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,9 +14,17 @@ import (
 // Тесты используют публичное API через создание Proxy с подготовленными бэкендами и метриками.
 
 func TestExpandCandidates_EmptyBackends(t *testing.T) {
-	statePath := "testdata/test_state_empty.json"
-	// Удаляем предыдущий state-файл чтобы избежать загрузки старых backends
-	os.Remove(statePath)
+	// R447: путь состояния — во временном каталоге теста, а НЕ testdata/.
+	//
+	// Живой факт (git status после прогона ./tests/...): untracked
+	// `tests/testdata/llama-upstream.json`. Это тот же класс дефекта, что R70
+	// (тесты пачкали рабочее дерево через state.json), только вернулся он
+	// СОСЕДНИМ файлом: прокси кладёт кэш опроса llama.cpp рядом со state.json
+	// (llama_upstream_r269.go:llamaUpstreamCachePath). Плюс к этому опрос ходил
+	// в api.github.com из модульного теста (в логе кэша — `github api: HTTP
+	// 403`), то есть тест зависел от внешней сети и её rate limit.
+	// Файла нет — состояние пустое, как и требует этот тест.
+	statePath := filepath.Join(t.TempDir(), "state.json")
 
 	cfg := &types.LoadBalancerConfig{
 		LoadBalancer: types.LoadBalancerSettings{Host: "127.0.0.1", Port: 18081, StatePath: statePath},

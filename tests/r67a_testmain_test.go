@@ -33,5 +33,14 @@ func TestMain(m *testing.M) {
 	// legacy: не ждать авто-загрузку и не вставать в admission-очередь
 	_ = os.Setenv("LB_AUTO_LOAD_WAIT_SEC", "0")
 	_ = os.Setenv("LB_ADMISSION_WAIT_SEC", "0")
+	// R447: опрос upstream llama.cpp (R269) выключаем на весь пакет.
+	//
+	// Живой факт: прогон ./tests/... оставлял в рабочем дереве untracked
+	// `tests/testdata/llama-upstream.json` с `"lastError":"github api: HTTP
+	// 403"` — то есть модульный тест ходил в api.github.com. Это и зависимость
+	// от внешней сети (в CI — rate limit и таймауты), и та же грязь в дереве,
+	// что чинил R70 для state.json. Тест на самую проверку живёт там, где ей
+	// место (internal/balancer/llama_upstream_r269_test.go, с подменой базы API).
+	_ = os.Setenv("LB_LLAMA_UPSTREAM_CHECK_ENABLED", "0")
 	os.Exit(m.Run())
 }

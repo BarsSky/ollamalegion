@@ -138,8 +138,26 @@ func itoaPort(port int) string {
 
 // modelAnswerable — можно ли обслужить модель этим бэкендом.
 //
-// Возвращает (ok, available). ok=false только когда каталог ОПРОШЕН и модели в
-// нём нет; при недоступном/пустом каталоге ok=true (прежнее поведение).
+// Возвращает (ok, available). ok=false только когда ОПРОШЕНЫ ОБА источника и
+// модели нет ни в одном: ни среди загруженных (/api/models), ни среди файлов на
+// диске (/api/models/files, кэш каталога балансера).
+//
+// R449 (2026-11-05): ЖИВОЙ ДЕФЕКТ, поймавший эту функцию. Стенд, порт 18079,
+// модель Qwen3-4B (файл на диске, 2.3 ГБ). В этот момент нагрузку держала другая
+// модель — Qwen3.8-9B (шла загрузка 207 с). Ответ клиенту:
+//
+//	HTTP 404 {"code":"model_not_found","decision":"model_missing",
+//	 "message":"model not found on this backend: модели нет в каталоге бэкенда
+//	 (available: Qwen3.8-9B-...)"}
+//
+// То есть модель, которая ЛЕЖИТ НА ДИСКЕ, объявлялась отсутствующей — только
+// потому что сейчас загружена другая. Для агента это терминальная ошибка «нет
+// модели»; повторить он не может, а воркер эту модель загрузил бы по первому
+// запросу. Причина: предпроверка R193 спрашивала /api/models, который отдаёт
+// ЗАГРУЖЕННЫЕ модели, и считала «не среди загруженных» = «нет модели».
+//
+// Правило: «нет ни в загруженных, ни на диске» — отказ; «на диске есть, сейчас
+// не загружена» — не отказ (дальше preflight её загрузит).
 func (p *Proxy) modelAnswerable(backendID, model string) (bool, []string) {
 	if p == nil || backendID == "" || model == "" {
 		return true, nil
@@ -156,5 +174,46 @@ func (p *Proxy) modelAnswerable(backendID, model string) (bool, []string) {
 	if !probed {
 		return true, nil
 	}
-	return known, available
+	if known {
+		return true, available
+	}
+
+	// R449: в загруженных нет — смотрим файлы на диске (кэш каталога).
+	onDisk, diskKnown := p.BackendModelOnDisk(backendID, model)
+	if diskKnown {
+		// Список в отказе должен быть про ДИСК, а не про «что сейчас загружено»:
+		// иначе оператор читает «доступна одна модель», хотя файлов три.
+		if files := p.catalogFilesForBackend(backendID); len(files) > 0 {
+			available = files
+		}
+	}
+	if onDisk {
+		return true, available
+	}
+	if !diskKnown {
+		// Каталог файлов ещё не опрошен — не превращаем это в отказ (правило R193:
+		// предпроверка не должна становиться источником новых отказов).
+		return true, available
+	}
+	return false, available
+}
+
+// catalogFilesForBackend — имена файлов модели на диске одного бэкенда
+// (пустой список, если каталог этого бэкенда не опрошен).
+func (p *Proxy) catalogFilesForBackend(backendID string) []string {
+	if p == nil || backendID == "" {
+		return nil
+	}
+	snap := p.ModelCatalogSnapshot()
+	entry, ok := snap[backendID]
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(entry.Files))
+	for _, name := range entry.Files {
+		if strings.TrimSpace(name) != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }

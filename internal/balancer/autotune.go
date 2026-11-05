@@ -996,6 +996,22 @@ func (p *Proxy) triggerAutoTuneReload(backendID, modelName string, freeVRAM, fre
 	if !autoTunePlanHasRealChangeR416d(plan, loadedModel.ContextLength) {
 		res.SkippedReason = "R416d: plan has no real change after guards (context is preserved, not changed)"
 		return res
+	} // R444 (2026-11-05): по умолчанию AutoTune ТОЛЬКО рекомендует.
+	//
+	// Живой дефект: агентский цикл Cline платил 43–67 с за unload+load перед
+	// каждым ходом, потому что план строился по сиюминутной свободной VRAM
+	// («освободилось → поднять слои»). Рекомендация при этом остаётся: её видно в
+	// панели и можно применить вручную. См. autotune_apply_mode_r444.go.
+	if !autoTuneApplyAutomaticR444() {
+		res.SkippedReason = "R444: AutoTune is recommend-only (LB_AUTOTUNE_APPLY=recommend); " +
+			"apply the recommendation manually (model card / POST /api/v1/admin/autotune/{id}/apply)"
+		logger.Get().Infow("autotune: plan built but not applied (recommend-only, R444)",
+			"backend", backendID, "model", modelName,
+			"reason", plan.Reason,
+			"context_size", plan.ContextSize,
+			"kv_cache_type", plan.KVCacheType,
+			"gpu_layers", plan.NumGPULayers)
+		return res
 	}
 
 	// 5) Circuit breaker

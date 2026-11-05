@@ -115,6 +115,23 @@ func autoTunePlanHasRealChangeR416d(plan *AutoTuneReloadPlan, currentContext int
 	if plan.KVCacheType != "" || plan.NumGPULayers != 0 || plan.FlashAttn != 0 || plan.UseMmap != nil {
 		return true
 	}
+	// R443 (2026-11-05): «не знаем текущее окно» — НЕ повод для перезагрузки.
+	//
+	// ЖИВОЙ ДЕФЕКТ (Cline + Qwen3-4B, стенд). После первого хода AutoTune
+	// перезагружал модель на КАЖДОМ ходу (~43 с unload+load), причём в причине
+	// стояло «kv_cache q8_0 → q4_0», хотя гард R419 (LB_AUTOTUNE_KV_MODE=recommend)
+	// это изменение уже вычеркнул (в логе рядом: «kv-cache change suppressed
+	// (R416)»). Перезагрузку давало именно это поле: план нёс ContextSize=32768
+	// («сохранить фактическое окно», R83), а снапшот загруженной модели в этот
+	// момент был ещё пустой/устаревший (ContextLength=0), поэтому «сохранение»
+	// выглядело как «изменение». Модель только что загрузилась, поллер обновится
+	// через 30 с — а клиент уже платил за лишний reload.
+	//
+	// Правило: если текущее окно неизвестно (<=0), ContextSize изменением не
+	// считаем. Ровно та же логика, что в R416c для рекомендации n_ctx.
+	if currentContext <= 0 {
+		return false
+	}
 	if plan.ContextSize > 0 && plan.ContextSize != currentContext {
 		return true
 	}

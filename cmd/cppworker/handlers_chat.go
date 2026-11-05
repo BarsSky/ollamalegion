@@ -304,6 +304,13 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R442: дамп того, что ПРИСЛАЛ клиент (messages/tools после декодирования).
+	if debugRequestDumpEnabledR442() {
+		if data, mErr := json.Marshal(req); mErr == nil {
+			dumpRequestBodyR442(req.Model, "/api/chat", data)
+		}
+	}
+
 	// Inject tool definitions into system prompt if tools are provided
 	// (R66b: ...и клиент не запретил инструменты через tool_choice:"none").
 	//
@@ -360,6 +367,11 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		msgs = injectMediaMarkers(msgs, marker)
 	}
 	prompt, err := buildChatPromptWithOptions(msgs, actualModel, promptOpts)
+	// R442: дамп СОБРАННОГО промпта — по нему видно, попал ли в модель результат
+	// инструмента и нет ли дублей.
+	if err == nil && prompt != "" && debugPromptDumpEnabledR442() {
+		dumpPromptToFileR442(actualModel, "/api/chat", prompt)
+	}
 	if err != nil {
 		logger.Get().Errorw("handleChat: failed to build prompt", "model", req.Model, "error", err)
 		writeError(w, http.StatusInternalServerError, "chat prompt error: "+err.Error())
@@ -854,6 +866,17 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 	// (toolsRendered) — преамбулы нет вообще. Не нарисовал (нет секции tools в
 	// шаблоне/шаблон сломан/рубильник CPPWORKER_TEMPLATE_TOOLS=prompt) — прежний
 	// текстовый список как fallback.
+	// R445 (2026-11-05): если в истории есть ОТКАЗЫ клиента (файл существует без
+	// old_text, new_text больше лимита), добавляем точную инструкцию в system.
+	// Текст ошибки модель видит и так (role:"tool"), но слабые модели его не
+	// применяют: без подсказки цикл повторяется до остановки задачей.
+	if hint := clientErrorHintsR445(msgs); hint != "" {
+		system = strings.TrimSpace(system + "\n\n" + hint)
+		msgs = upsertSystemMessage(msgs, system)
+		logger.Get().Infow("client error hints injected (R445)",
+			"model", modelName, "hint_len", len(hint))
+	}
+
 	if len(opts.Tools) > 0 {
 		if mode := templateToolsMode(); mode == templateToolsNative {
 			if prompt, ok := tryRenderToolsPromptR434(modelName, msgs, opts.Tools, lang, reasoningEnabled); ok {

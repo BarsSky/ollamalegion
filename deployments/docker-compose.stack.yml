@@ -160,7 +160,9 @@ services:
       #   это выбор качества, а не следствие «сколько сейчас свободно VRAM»
       #   (иначе q8_0 → q4_0 → q8_0 … на каждом запросе).
       # auto — прежнее поведение (с профилем и гистерезисом R416).
-      - LB_AUTOTUNE_KV_MODE=${LB_AUTOTUNE_KV_MODE:-recommend}
+      - LB_AUTOTUNE_KV_MODE=${LB_AUTOTUNE_KV_MODE:-recommend}      # R444: AutoTune только рекомендует (по умолчанию), не перезагружает модель.
+      # auto — прежнее поведение (применять план сам).
+      - LB_AUTOTUNE_APPLY=${LB_AUTOTUNE_APPLY:-recommend}
       # R158: кому объявлять image-инструмент. auto = только клиентам, которые сами
       # прислали tools[] (без этого воркер вклеивал ~200 токенов преамбулы всем и уводил
       # модель в reasoning: живой замер 220 против 19 prompt-токенов). always = прежнее.
@@ -702,10 +704,13 @@ services:
       - CPPWORKER_DEBUG_TOOL_PROMPT=${CPPWORKER_DEBUG_TOOL_PROMPT:-0}
       # R440: дамп ИСХОДЯЩИХ аргументов tool_call (что реально уехало клиенту).
       # По умолчанию 0: это содержимое файлов пользователя, включать по нужде.
-      - CPPWORKER_DEBUG_TOOL_ARGS=${CPPWORKER_DEBUG_TOOL_ARGS:-0}
+      - CPPWORKER_DEBUG_TOOL_ARGS=${CPPWORKER_DEBUG_TOOL_ARGS:-0}      # R442: полный дамп запроса клиента и собранного промпта (адресная отладка цикла).
+      - CPPWORKER_DEBUG_PROMPT_FILE=${CPPWORKER_DEBUG_PROMPT_FILE:-}
+      - CPPWORKER_DEBUG_REQUEST_FILE=${CPPWORKER_DEBUG_REQUEST_FILE:-}
       # R434: инструменты уходят в chat template ("native"), преамбула — fallback.
       # "prompt" возвращает прежнее поведение (только текстовая преамбула).
-      - CPPWORKER_TEMPLATE_TOOLS=${CPPWORKER_TEMPLATE_TOOLS:-native}
+      - CPPWORKER_TEMPLATE_TOOLS=${CPPWORKER_TEMPLATE_TOOLS:-native}      # R445: подсказка модели по отказам клиента в истории (old_text/лимит).
+      - CPPWORKER_CLIENT_HINTS=${CPPWORKER_CLIENT_HINTS:-1}
       - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
       # AUTO-UNLOAD OF IDLE MODELS. cppworker keeps EVERY loaded model in VRAM:
       # idleUnloadMinutes=0 means "never unload". On an 8 GB card that is a trap —

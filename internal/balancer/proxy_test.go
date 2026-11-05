@@ -213,8 +213,15 @@ func TestSelectBackend_WithReplicationGroup(t *testing.T) {
 	assert.NotNil(t, proxy.replicationSelector)
 	assert.NotNil(t, proxy.modelReplication)
 
-	// Создаём группу репликации вручную (initRpcModules уже создал из конфига)
-	// Проверяем что группа создана
+	// R446 (2026-11-05): ждём АСИНХРОННУЮ инициализацию группы.
+	//
+	// ЖИВОЙ ФЛЕЙК CI (self-hosted Windows, -race): `--- FAIL:
+	// TestSelectBackend_WithReplicationGroup` — группа ещё не создана в момент
+	// проверки. Создание идёт из initRpcModules/менеджера репликации в фоне, а
+	// тест проверял сразу. Локально успевало, в CI (медленнее, -race) — нет.
+	// Тот же класс, что чинили в R81 для cppworker.
+	waitReplicationGroupR446(t, proxy, "llama3")
+
 	group := proxy.modelReplication.GetGroup("llama3")
 	assert.NotNil(t, group)
 	assert.Equal(t, "llama3", group.ModelName)
@@ -768,4 +775,27 @@ func TestGetQueueStats(t *testing.T) {
 	stats := proxy.GetQueueStats()
 	assert.Equal(t, 100, stats.MaxSize)
 	assert.Equal(t, int64(0), stats.Processed)
+}
+
+// waitReplicationGroupR446 — дождаться появления группы репликации (до 5 с).
+//
+// Нужна, потому что группы создаются асинхронно при инициализации прокси, а тесты
+// проверяют их сразу: под -race/в CI инициализация не успевает, и тест падает по
+// таймингу, а не по логике.
+func waitReplicationGroupR446(t *testing.T, proxy *Proxy, model string) {
+	t.Helper()
+	if proxy == nil {
+		t.Fatal("proxy == nil")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if proxy.modelReplication != nil && proxy.modelReplication.GetGroup(model) != nil &&
+			proxy.replicationSelector != nil && proxy.replicationSelector.IsGroupModel(model) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("группа репликации %q не появилась за 5 с (асинхронная инициализация)", model)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

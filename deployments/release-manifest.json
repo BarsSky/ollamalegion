@@ -1,11 +1,11 @@
 {
-    "tag":  "r261106-0745",
-    "builtAt":  "2026-11-05T07:45:00Z",
-    "gitCommit":  "2ac8844e",
+    "tag":  "r261106-0945",
+    "builtAt":  "2026-11-05T09:45:00Z",
+    "gitCommit":  "af51239d",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R432/R433: преамбула инструментов больше не навязывает придуманный формат вызова (её копировала gemma-4, теряя name/arguments) — cppworker gpu-r261106-0745. Разбираются нативные формы: спец-токены кавычек gemma, питоновские одинарные кавычки, JSON-обёртка tool_calls; trim аргументов не срезает скобку массива. A/B первого хода Cline: gemma-4 5/5 и Qwen3.8-9B 4/4 (до R432 — 2/3 и 2/3). Прочее без изменений: balancer r261103-2310, webui r261103-2230, imageworker 72ec210a.",
+    "note":  "R434-R436: tools[] уходят в chat template (преамбула — только fallback, рубильник CPPWORKER_TEMPLATE_TOOLS=prompt); приводятся форма аргументов (items:string) и ключ params; конвертер Ollama→OpenAI в балансере переводит arguments-объект истории в JSON-строку. cppworker gpu-r261106-0945. На стенде gemma-4 получает нативный парсер шаблона (tool_format=3) и отдаёт аргументы по JSON-схеме клиента. Прочее без изменений: balancer r261103-2310, webui r261103-2230, imageworker 72ec210a.",
     "images":  [
                    {
                        "service":  "loadbalancer",
@@ -18,9 +18,9 @@
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261106-0745",
-                       "imageTag":  "gpu-r261106-0745",
-                       "imageId":  "sha256:183bfb3318db597d2591603a64b5457c2c2f713b68132b82f946309bb40a8827",
+                       "image":  "ollama-legion/cppworker:gpu-r261106-0945",
+                       "imageTag":  "gpu-r261106-0945",
+                       "imageId":  "sha256:e0862e133fa6d31ab9afb7a04f065d96306db87b87489a003492d6d3205fca8d",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

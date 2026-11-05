@@ -1,11 +1,11 @@
 {
-    "tag":  "r261106-1015",
-    "builtAt":  "2026-11-05T10:15:00Z",
-    "gitCommit":  "b46f30a9",
+    "tag":  "r261106-1110",
+    "builtAt":  "2026-11-05T11:10:00Z",
+    "gitCommit":  "bc3a3ca8",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R434-R437: tools[] уходят в chat template (нативная секция инструментов; преамбула — только fallback, рубильник CPPWORKER_TEMPLATE_TOOLS=prompt), форма аргументов приводится по объявленной схеме (items:string/object, стрингованные массивы), конвертер Ollama→OpenAI в балансере переводит arguments-объект истории в JSON-строку. cppworker gpu-r261106-1015. На стенде: gemma-4 4/4 и Qwen3.8-9B 3/3 вызовов с аргументами по схеме клиента; тёплый запрос 15–40 с, первый после загрузки до ~2 мин (префилл полных схем). Прочее без изменений: balancer r261103-2310, webui r261103-2230, imageworker 72ec210a.",
+    "note":  "R434-R438: tools[] уходят в chat template (нативная секция; преамбула — только fallback, рубильник CPPWORKER_TEMPLATE_TOOLS=prompt); форма аргументов приводится по схеме (items:string/object, стрингованные массивы, ключ params); конвертер Ollama→OpenAI в балансере приводит arguments-объект истории к JSON-строке и больше не добавляет выдуманный tool_choice. cppworker gpu-r261106-1110 (коммит bc3a3ca8). На стенде: gemma-4 4/4 и Qwen3.8-9B 3/3 вызовов с аргументами по схеме клиента. Прочее без изменений: balancer r261103-2310, webui r261103-2230, imageworker 72ec210a.",
     "images":  [
                    {
                        "service":  "loadbalancer",
@@ -18,9 +18,9 @@
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261106-1015",
-                       "imageTag":  "gpu-r261106-1015",
-                       "imageId":  "sha256:feedbcdcd3edda2221100dc65ffbb0490eabeec891c144a717a2772bcc28caad",
+                       "image":  "ollama-legion/cppworker:gpu-r261106-1110",
+                       "imageTag":  "gpu-r261106-1110",
+                       "imageId":  "sha256:43fbd2a08ae023ce9f2b0e39524ae7448eabacc726e1d4f6f3d513e5470724b4",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

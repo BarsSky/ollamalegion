@@ -6,6 +6,7 @@ import (
 
 	"ollama-loadbalancer/c/bridge"
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/pkg/version"
 )
 
 // ============================================================
@@ -25,6 +26,16 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func handleInfo(w http.ResponseWriter, r *http.Request) {
 	status := backend.Status()
+	// R448 (2026-11-05): сведения о СБОРКЕ — в /api/info, а не только в шапке
+	// логов. Живой факт: после раскатки стенда отличить «правка не сработала» от
+	// «в контейнере старый образ» можно было лишь через `docker inspect`; у
+	// оператора с WebUI/удалённым доступом такого способа нет. Коммит печётся в
+	// бинарник (`-X .../pkg/version.Commit`), теперь он виден по HTTP.
+	if about := version.Get(); about.String() != "" {
+		for k, v := range about.Fields() {
+			status[k] = v
+		}
+	}
 	// 2026-06-24: heartbeat reload_pending — балансировщик читает это поле
 	// и НЕ пытается дёргать LoadModel API, пока reload не завершён.
 	// Решает race condition: балансировщик polling'ом видел state=loading,

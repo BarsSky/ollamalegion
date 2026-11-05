@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"ollama-loadbalancer/pkg/version"
 )
 
 // OllamaTag — модель из ответа /api/tags
@@ -149,9 +151,22 @@ func (or *OllamaRouter) handleVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R448 (2026-11-05): «какой код реально работает» обязано читаться по HTTP.
+	//
+	// Живой факт: после раскатки стенда проверить, что в контейнере именно
+	// собранный из HEAD коммит, можно было ТОЛЬКО через `docker inspect`
+	// (тег/Id образа) — /api/version отдавал жёстко зашитую строку. Коммит
+	// печётся в бинарник с R83 (`-X .../pkg/version.Commit`), но наружу не
+	// выводился: оператор, у которого нет доступа к docker (WebUI, удалённый
+	// клиент), снова гадал бы «правка не сработала» или «в контейнере старый
+	// образ».
+	about := version.Get()
 	response := map[string]interface{}{
 		"version":        "ollamalegion-1.0.0",
 		"ollamaVersions": make(map[string]string),
+	}
+	for k, v := range about.Fields() {
+		response[k] = v
 	}
 
 	backends := or.getHealthyBackends()

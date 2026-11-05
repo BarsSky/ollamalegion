@@ -12,6 +12,7 @@ import (
 
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
+	"ollama-loadbalancer/pkg/version"
 )
 
 // ---------- Helpers для /api/ps и /api/tags (R65d, 2026-09-20) ----------
@@ -864,9 +865,14 @@ func (lr *LlamaCppRouter) handleVersion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// R448: см. handleVersion в ollama_router_tags.go — коммит сборки обязан быть
+	// виден по HTTP, а не только через docker inspect.
 	response := map[string]interface{}{
 		"version":       "ollamalegion-1.0.0",
 		"llamaVersions": make(map[string]string),
+	}
+	for k, v := range version.Get().Fields() {
+		response[k] = v
 	}
 
 	writeJSON(w, http.StatusOK, response)
@@ -1053,4 +1059,3 @@ func (lr *LlamaCppRouter) handleOpenAIModelByID(w http.ResponseWriter, r *http.R
 		"owned_by": "ollamalegion",
 	})
 }
-

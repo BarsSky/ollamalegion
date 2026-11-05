@@ -68,6 +68,34 @@ func (a About) String() string {
 	return fmt.Sprintf("%s (%s)", ver, strings.Join(parts, ", "))
 }
 
+// Fields — сведения о сборке как поля JSON-ответа (R448).
+//
+// ЗАЧЕМ ОТДЕЛЬНЫЙ МЕТОД. Строка String() годится для шапки логов, но её нельзя
+// разобрать клиенту: WebUI и внешний монитор должны видеть КОММИТ отдельным
+// полем, иначе «работает ли на стенде именно этот код» снова проверяется только
+// через docker. Ключи одинаковые у балансера и cppworker — иначе один и тот же
+// вопрос требовал бы двух правил.
+//
+// Пустые значения не публикуются: поле «unknown» хуже отсутствующего поля,
+// потому что выглядит как факт.
+func (a About) Fields() map[string]interface{} {
+	out := make(map[string]interface{}, 4)
+	if a.Commit != "" {
+		out["build_commit"] = a.Commit
+	}
+	if a.BuildDate != "" {
+		out["build_date"] = a.BuildDate
+	}
+	if a.Version != "" {
+		out["build_version"] = a.Version
+	}
+	// build — та же строка, что в шапке логов: «что запущено» одним взглядом.
+	if s := a.String(); s != "" && s != "unknown" {
+		out["build"] = s
+	}
+	return out
+}
+
 // firstNonEmpty возвращает первое непустое значение (пробелы обрезаются).
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {

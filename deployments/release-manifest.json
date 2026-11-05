@@ -1,36 +1,38 @@
 {
-    "tag":  "r261106-1400",
-    "builtAt":  "2026-11-05T14:00:00Z",
-    "gitCommit":  "ab99e3dd",
+    "tag":  "r261105-2238",
+    "builtAt":  "2026-11-05T19:38:00Z",
+    "gitCommit":  "c6569915",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R434-R441: tools[] в chat template (нативная секция, преамбула — fallback, CPPWORKER_TEMPLATE_TOOLS=prompt для откатa); нативное тело вызова gemma разбирает сканер с разделителями \\u003c|\"|\u003e (R441) — аргументы editor с HTML и Windows-путём больше не «схлопываются» в один параметр; невалидные escape чинятся (R439); диагностика исходящих аргументов (R440, CPPWORKER_DEBUG_TOOL_ARGS=1); конвертер Ollama→OpenAI приводит arguments к JSON-строке и не выдумывает tool_choice. cppworker gpu-r261106-1400 (ab99e3dd). Проверено живьём: editor{path,new_text} приходит целиком, gemma 4/4 и Qwen3.8-9B 3/3 вызовов. Прочее без изменений: balancer r261103-2310, webui r261103-2230, imageworker 72ec210a.",
-    "standOverride":  {
-        "why":  "Стенд гоняет диагностические сборки, а не образы этого релиза: они собраны из кода R442-R447 и содержат включённую запись дампов. Пока стенд не пересобран из HEAD и не перезапущен, этот манифест описывает ПРОШЛЫЙ релиз, а не работающее сейчас.",
-        "cppworkerGpuTag":  "diag-r445",
-        "balancerTag":  "diag-r445",
-        "webuiTag":  "r261103-2230",
-        "imageWorkerTag":  "72ec210a",
-        "gitCommit":  "3f4423e5",
-        "debugDumpsOn":  true,
-        "pending":  "Пересобрать balancer+cppworker из HEAD, выключить CPPWORKER_DEBUG_PROMPT_FILE / CPPWORKER_DEBUG_REQUEST_FILE / CPPWORKER_DEBUG_TOOL_ARGS / CPPWORKER_DEBUG_TOOL_PROMPT, поднять стек, обновить этот манифест (tag + gitCommit + imageId)."
+    "note":  "R442-R448. Balancer и cppworker пересобраны из HEAD (c6569915) и раскатаны на стенд. Содержание: (1) R447 — окно контекста растят только по требованию запроса (промпт не влезает, клиент явно попросил больше, или под ответ остаётся меньше 256 токенов), поэтому короткий запрос больше не получает 503 «needs 4099 tokens … retry in 60 s» и не запускает перезагрузку модели; (2) R447 — тело отказа называет те же числа, что его текст (числа снимаются один раз в вердикте); (3) R448 — сведения о сборке видны по HTTP: /api/version (обе поверхности балансера) и /api/info (cppworker) отдают build / build_commit / build_date / build_version, так что «какой код работает» проверяется без docker; (4) R442-R445 — дампы запроса/промпта (по умолчанию ВЫКЛ), подсказка модели после отказа инструмента (CPPWORKER_CLIENT_HINTS=1), AutoTune только рекомендует (LB_AUTOTUNE_APPLY=recommend), «неизвестное окно — не изменение»; (5) R426-R441 — разбор форм вызова инструментов, tools в chat template, приведение аргументов, конвертер Ollama→OpenAI. WebUI и imageworker не менялись.",
+    "standDeployed":  {
+        "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
+        "verifiedAt":  "2026-11-05T19:50:00Z",
+        "debugDumps":  "off (CPPWORKER_DEBUG_PROMPT_FILE / CPPWORKER_DEBUG_REQUEST_FILE / CPPWORKER_DEBUG_TOOL_ARGS / CPPWORKER_DEBUG_TOOL_PROMPT закомментированы в deployments/.env)",
+        "proof":  [
+                      "GET /api/version -> build_commit=c6569915, build_version=r261105-2238, build_date=2026-11-05T19:38:00Z",
+                      "GET cppworker /api/info -> те же поля сборки",
+                      "окно 2048 + короткий стриминг без num_ctx -> HTTP 200 за 2.0 s, done:true, окно осталось 2048 (перезагрузки не было)",
+                      "большой промпт на окне 2048 -> 503, числа совпали: текст needed=30198/loaded=2048/retry=60, тело requiredTokens=30198/loadedWindowTokens=2048/retryAfterSec=60",
+                      "tool_call write_file -> done_reason=tool_calls, один вызов с полными аргументами {path,new_text}"
+                  ]
     },
     "images":  [
                    {
                        "service":  "loadbalancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r261103-2310",
-                       "imageTag":  "r261103-2310",
-                       "imageId":  "sha256:8f11ff483d3511407d57d28363792368089d4d33416f9bd0b1fc5e57158eb373",
+                       "image":  "ollama-legion/balancer:r261105-2238",
+                       "imageTag":  "r261105-2238",
+                       "imageId":  "sha256:809b6be12c7a15bd32b081748b1e1a180d55d9f5820c16cfe6322854c304467c",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261106-1400",
-                       "imageTag":  "gpu-r261106-1400",
-                       "imageId":  "sha256:aca2b68e531e5a9eff49a991bc9c6cdb8ff715318d5a06e62234be18fb8b8c99",
+                       "image":  "ollama-legion/cppworker:gpu-r261105-2238",
+                       "imageTag":  "gpu-r261105-2238",
+                       "imageId":  "sha256:165d4ae516e5c73916f9f22b67fa506330ac23f24ce5d3e26f7baa5f664d36f6",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

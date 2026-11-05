@@ -1731,17 +1731,27 @@ func (m *ModelHandle) GetChatTemplate() (string, error) {
 //
 // Round 14b (next session): интеграция в cmd/cppworker/handlers_chat.go
 // — заменить soft prompt injection из Round 11 на этот native вызов.
-func (m *ModelHandle) ApplyChatTemplateWithThinking(
+// applyChatTemplateInternal — общий путь рендера шаблона для обеих публичных
+// функций (R434, 2026-11-05).
+//
+// ВОЗВРАЩАЕМ, ПОМИМО PROMPT'А:
+//	toolsRendered — шаблон нарисовал секцию инструментов (сравнение рендеров с
+//	                tools и без в C-мосте). false → вызывающий обязан включить
+//	                текстовую преамбулу как fallback;
+//	toolFormat    — common_chat_format, которым llama.cpp видит вызовы этой
+//	                модели (0 = CONTENT_ONLY).
+func (m *ModelHandle) applyChatTemplateInternal(
 	chatTemplateOverride string,
 	messages []ChatMessage,
+	toolsJSON string,
 	enableThinking bool,
 	addGenerationPrompt bool,
-) (string, bool, error) {
+) (prompt string, supportsThinking bool, toolsRendered bool, toolFormat int, err error) {
 	if m == nil || m.ptr == nil {
-		return "", false, fmt.Errorf("model not loaded")
+		return "", false, false, 0, fmt.Errorf("model not loaded")
 	}
 	if len(messages) == 0 {
-		return "", false, fmt.Errorf("no messages provided")
+		return "", false, false, 0, fmt.Errorf("no messages provided")
 	}
 
 	// Строим C-массив CBridgeChatMessage.
@@ -1805,15 +1815,6 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 	// то есть запоминает старый указатель; после переезда блока (realloc вернул
 	// другой адрес) этот free освобождал уже освобождённую память — glibc
 	// «double free or corruption (out)» и SIGABRT ВСЕГО процесса cppworker.
-	//
-	// Живой лог локального стенда 2026-09-30 14:14:22 (gemma-4, enableReasoning):
-	//   double free or corruption (out)
-	//   SIGABRT: abort ... signal arrived during cgo execution
-	//   c/bridge.(*ModelHandle).ApplyChatTemplateWithThinking.func2.func7()
-	//       c/bridge/bridge.go:1390
-	//   cmd/cppworker.buildChatPromptWithOptions → handleChat → /api/chat
-	// Клиент в этот момент получал connection refused (backend перезапускался).
-	// Process-level SIGABRT не ловится recover() в handlers_chat.go.
 	defer func() {
 		if outBuf != nil {
 			C.free(unsafe.Pointer(outBuf))
@@ -1826,19 +1827,32 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 		defer C.free(unsafe.Pointer(cOverride))
 	}
 
-	var supportsThinking C.bool
+	// R434: инструменты уходят в шаблон как OpenAI-массив (тот же, что прислал
+	// клиент). Пустая строка = без инструментов (прежнее поведение).
+	var cTools *C.char
+	if toolsJSON != "" {
+		cTools = C.CString(toolsJSON)
+		defer C.free(unsafe.Pointer(cTools))
+	}
+
+	var cSupportsThinking C.bool
+	var cToolsRendered C.bool
+	var cToolFormat C.int32_t
 	// m.ptr имеет тип *C.ModelHandle (typed pointer), но C-функция ожидает
 	// void*. CGo не делает auto-cast — нужен явный unsafe.Pointer().
-	ret := C.bridge_chat_templates_apply_with_thinking(
+	ret := C.bridge_chat_templates_apply_with_tools(
 		unsafe.Pointer(m.ptr),
 		cOverride,
+		cTools,
 		&cMsgs[0],
 		C.int32_t(len(cMsgs)),
 		C.bool(enableThinking),
 		C.bool(addGenerationPrompt),
 		outBuf,
 		C.int32_t(outBufSize),
-		&supportsThinking,
+		&cSupportsThinking,
+		&cToolsRendered,
+		&cToolFormat,
 	)
 
 	// Round 14b: -4 = buffer too small. Retry с 2x buffer size до max.
@@ -1850,36 +1864,72 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 		}
 		newBuf := (*C.char)(C.realloc(unsafe.Pointer(outBuf), C.size_t(newSize)))
 		if newBuf == nil {
-			return "", false, fmt.Errorf("realloc to %d bytes failed", newSize)
+			return "", false, false, 0, fmt.Errorf("realloc to %d bytes failed", newSize)
 		}
 		outBuf = newBuf
 		outBufSize = newSize
 
-		supportsThinking = C.bool(false)
-		ret = C.bridge_chat_templates_apply_with_thinking(
+		cSupportsThinking = C.bool(false)
+		cToolsRendered = C.bool(false)
+		ret = C.bridge_chat_templates_apply_with_tools(
 			unsafe.Pointer(m.ptr),
 			cOverride,
+			cTools,
 			&cMsgs[0],
 			C.int32_t(len(cMsgs)),
 			C.bool(enableThinking),
 			C.bool(addGenerationPrompt),
 			outBuf,
 			C.int32_t(outBufSize),
-			&supportsThinking,
+			&cSupportsThinking,
+			&cToolsRendered,
+			&cToolFormat,
 		)
 	}
 
 	if ret == -4 {
-		return "", false, fmt.Errorf("output buffer overflow (need >%d bytes, max=%d)", outBufSize, maxBufSize)
+		return "", false, false, 0, fmt.Errorf("output buffer overflow (need >%d bytes, max=%d)", outBufSize, maxBufSize)
 	}
 	if ret == -3 {
-		return "", false, fmt.Errorf("common_chat_templates_init failed (no template in GGUF or invalid override)")
+		return "", false, false, 0, fmt.Errorf("common_chat_templates_init failed (no template in GGUF or invalid override)")
 	}
 	if ret < 0 {
-		return "", false, fmt.Errorf("bridge_chat_templates_apply_with_thinking failed: %d", ret)
+		return "", false, false, 0, fmt.Errorf("bridge_chat_templates_apply_with_tools failed: %d", ret)
 	}
 
-	return C.GoStringN(outBuf, C.int(ret)), bool(supportsThinking), nil
+	return C.GoStringN(outBuf, C.int(ret)), bool(cSupportsThinking), bool(cToolsRendered), int(cToolFormat), nil
+}
+
+// ApplyChatTemplateWithThinking — прежний вид API (prompt, supportsThinking, err).
+func (m *ModelHandle) ApplyChatTemplateWithThinking(
+	chatTemplateOverride string,
+	messages []ChatMessage,
+	enableThinking bool,
+	addGenerationPrompt bool,
+) (string, bool, error) {
+	prompt, supportsThinking, _, _, err := m.applyChatTemplateInternal(
+		chatTemplateOverride, messages, "", enableThinking, addGenerationPrompt)
+	return prompt, supportsThinking, err
+}
+
+// ApplyChatTemplateWithTools — R434 (2026-11-05): рендер шаблона ВМЕСТЕ с
+// инструментами запроса.
+//
+// toolsJSON — OpenAI-массив tools[] как есть из запроса клиента ("" = без
+// инструментов, прежнее поведение).
+//
+// toolsRendered == false означает: шаблон инструменты не отрисовал (нет секции
+// tools в jinja-шаблоне модели или шаблон их игнорирует). В этом случае
+// вызывающий обязан включить текстовую преамбулу со списком инструментов —
+// иначе модель о них просто не узнает.
+func (m *ModelHandle) ApplyChatTemplateWithTools(
+	chatTemplateOverride string,
+	messages []ChatMessage,
+	toolsJSON string,
+	enableThinking bool,
+	addGenerationPrompt bool,
+) (prompt string, supportsThinking bool, toolsRendered bool, toolFormat int, err error) {
+	return m.applyChatTemplateInternal(chatTemplateOverride, messages, toolsJSON, enableThinking, addGenerationPrompt)
 }
 
 // ErrNoChatTemplate — в GGUF нет tokenizer.chat_template.

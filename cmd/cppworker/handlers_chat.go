@@ -306,11 +306,12 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// Inject tool definitions into system prompt if tools are provided
 	// (R66b: ...и клиент не запретил инструменты через tool_choice:"none").
+	//
+	// R434 (2026-11-05): здесь БОЛЬШЕ НЕ дописываем преамбулу в system. Инструменты
+	// уходят в сборку промпта (promptOpts.Tools) и сначала пробуются в самом chat
+	// template; текстовая преамбула добавляется только если шаблон их не отрисовал.
 	toolsEnabled := len(req.Tools) > 0 && !toolsDisabledByChoice(req.ToolChoice)
 	msgs := req.Messages
-	if toolsEnabled {
-		msgs = augmentSystemWithToolsForChoice(msgs, req.Tools, req.ToolChoice)
-	}
 
 	// Собираем prompt через GGUF chat template (если доступен)
 	// ApplyChatTemplate использует tokenizer.chat_template из GGUF метаданных,
@@ -322,6 +323,13 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	promptOpts := chatPromptOptions{
 		JSONMode:   formatWantsJSON(req.Format),
 		JSONSchema: jsonSchemaText(req.Format),
+	}
+	// R434 (2026-11-05): инструменты передаём В СБОРКУ ПРОМПТА, а не вставляем в
+	// system заранее: решение «шаблон нарисовал секцию инструментов сам» или
+	// «нужна текстовая преамбула» принимается там, по факту рендера шаблона.
+	if toolsEnabled {
+		promptOpts.Tools = req.Tools
+		promptOpts.ToolChoice = req.ToolChoice
 	}
 	if thinkOn, thinkExplicit := thinkEnabledFromRaw(req.Think); thinkExplicit {
 		promptOpts.ReasoningOverride = &thinkOn
@@ -829,6 +837,29 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 		system = injectThinkingInstructionWithLang(system, lang)
 		msgs = upsertSystemMessage(msgs, system)
 		thinkingInjected = true
+	}
+
+	// R434 (2026-11-05): ИНСТРУМЕНТЫ — В ШАБЛОН, ПРЕАМБУЛА — ТОЛЬКО FALLBACK.
+	//
+	// ЖИВОЙ ДЕФЕКТ (Cline в VS Code + gemma-4): преамбула задавала единственный
+	// формат вызова, придуманный нами, модель его копировала с потерей полей, и
+	// ход закрывался как «COMPLETED» без созданного файла. Причина — инструменты
+	// вообще не попадали в chat template (C-мост звал
+	// common_chat_templates_apply с пустым inputs.tools), поэтому нативный
+	// синтаксис модели молчал, а формат задавали мы.
+	//
+	// Теперь: сначала пробуем отрисовать tools[] самим шаблоном. Шаблон нарисовал
+	// (toolsRendered) — преамбулы нет вообще. Не нарисовал (нет секции tools в
+	// шаблоне/шаблон сломан/рубильник CPPWORKER_TEMPLATE_TOOLS=prompt) — прежний
+	// текстовый список как fallback.
+	if len(opts.Tools) > 0 {
+		if mode := templateToolsMode(); mode == templateToolsNative {
+			if prompt, ok := tryRenderToolsPromptR434(modelName, msgs, opts.Tools, lang, reasoningEnabled); ok {
+				return prompt, nil
+			}
+		}
+		msgs = augmentSystemWithToolsForChoice(msgs, opts.Tools, opts.ToolChoice)
+		system = extractSystemFromMessages(msgs)
 	}
 
 	// Round 11 (2026-07-28) SOFT PROMPT Injection для EnableReasoning:

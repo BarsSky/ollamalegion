@@ -136,3 +136,31 @@ func safeApplyChatTemplateWithThinking(
 	}()
 	return backend.ApplyChatTemplateWithThinking(modelName, chatTemplateOverride, msgs, enableThinking, addGenerationPrompt)
 }
+
+// safeApplyChatTemplateWithTools — R434 (2026-11-05): тот же guard для рендера
+// шаблона ВМЕСТЕ с инструментами запроса.
+//
+// Почему отдельная функция, а не параметр в предыдущей: возвращаются два
+// дополнительных ответа (нарисовал ли шаблон инструменты и каким парсером
+// llama.cpp видит вызовы), и потерять их по пути нельзя — именно по ним
+// решается, добавлять ли текстовую преамбулу.
+func safeApplyChatTemplateWithTools(
+	modelName, chatTemplateOverride string,
+	msgs []bridge.ChatMessage,
+	toolsJSON string,
+	enableThinking, addGenerationPrompt bool,
+) (prompt string, supportsThinking, toolsRendered bool, toolFormat int, err error) {
+	if reason, broken := chatTemplateBrokenReason(modelName); broken {
+		return "", false, false, 0, errors.New(i18n.T("cppworker.chat_template_guard.broken", reason))
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			reason := fmt.Sprintf("ApplyChatTemplateWithTools: %v", r)
+			markChatTemplateBroken(modelName, reason)
+			prompt, supportsThinking, toolsRendered, toolFormat, err =
+				"", false, false, 0, fmt.Errorf("native cgo panic: %v", r)
+		}
+	}()
+	return backend.ApplyChatTemplateWithTools(
+		modelName, chatTemplateOverride, msgs, toolsJSON, enableThinking, addGenerationPrompt)
+}

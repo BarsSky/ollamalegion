@@ -3461,6 +3461,39 @@ func (b *Backend) ApplyChatTemplateWithThinking(
 	)
 }
 
+// ApplyChatTemplateWithTools — R434 (2026-11-05): рендер шаблона ВМЕСТЕ с
+// инструментами запроса.
+//
+// Возвращает:
+//
+//	prompt          — готовый промпт
+//	supportsThinking — шаблон поддерживает native enable_thinking
+//	toolsRendered   — шаблон НАРИСОВАЛ секцию инструментов (иначе вызывающий
+//	                  обязан добавить текстовую преамбулу как fallback)
+//	toolFormat      — common_chat_format, которым llama.cpp видит вызовы
+//	                  (0 = CONTENT_ONLY)
+func (b *Backend) ApplyChatTemplateWithTools(
+	modelName, chatTemplateOverride string,
+	messages []bridge.ChatMessage,
+	toolsJSON string,
+	enableThinking, addGenerationPrompt bool,
+) (string, bool, bool, int, error) {
+	inst, err := b.getModelInstance(modelName)
+	if err != nil {
+		return "", false, false, 0, err
+	}
+	if inst.handle == nil {
+		return "", false, false, 0, fmt.Errorf("model %s has no loaded handle", modelName)
+	}
+	// Тот же мьютекс, что и в ApplyChatTemplate: native-путь ходит в одно и то же
+	// не потокобезопасное состояние шаблона (см. chatTemplateMu).
+	chatTemplateMu.Lock()
+	defer chatTemplateMu.Unlock()
+	return inst.handle.ApplyChatTemplateWithTools(
+		chatTemplateOverride, messages, toolsJSON, enableThinking, addGenerationPrompt,
+	)
+}
+
 // GetChatTemplate returns raw chat template from GGUF of a model.
 func (b *Backend) GetChatTemplate(modelName string) (string, error) {
 	inst, err := b.getModelInstance(modelName)

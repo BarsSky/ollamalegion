@@ -415,10 +415,17 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// все эти функции ищут модель по имени в backend.GetModel() — нужен actual name.
 	modelName := actualModel
 
-	// Конвертируем openAIChatMessage → chatMessage и инжектим определения tools
+	// Конвертируем openAIChatMessage → chatMessage.
+	//
+	// R434 (2026-11-05): преамбулу с инструментами здесь БОЛЬШЕ НЕ дописываем —
+	// tools[] уходят в сборку промпта и сначала пробуются в самом chat template
+	// (нативная секция инструментов модели). Текстовая преамбула добавляется
+	// только если шаблон их не отрисовал (см. buildChatPromptWithOptions).
 	chatMsgs := openAIToChatMessage(req.Messages)
-	if len(req.Tools) > 0 {
-		chatMsgs = augmentSystemWithToolsForChoice(chatMsgs, req.Tools, req.ToolChoice)
+	promptOpts := chatPromptOptions{}
+	if len(req.Tools) > 0 && !toolsDisabledByChoice(req.ToolChoice) {
+		promptOpts.Tools = req.Tools
+		promptOpts.ToolChoice = req.ToolChoice
 	}
 
 	// R248/B3 (2026-10-27): картинки на OpenAI-пути.
@@ -452,7 +459,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Собираем промпт из сообщений с применением chat template из GGUF.
-	prompt, err := buildChatPrompt(chatMsgs, actualModel)
+	prompt, err := buildChatPromptWithOptions(chatMsgs, actualModel, promptOpts)
 	var usedNaive bool
 	if err != nil {
 		logger.Get().Warnw("chat template bridge failed, falling back to naive prompt",
@@ -692,7 +699,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 						"model", actualModel, "tool", calls[0].Function.Name,
 						"violations", truncateForLog(strings.Join(violations, "; "), 300))
 					retryPrompt := prompt
-					if nudged, nerr := buildChatPrompt(appendToolRepairInstruction(chatMsgs, violations), actualModel); nerr == nil && nudged != "" {
+					if nudged, nerr := buildChatPromptWithOptions(appendToolRepairInstruction(chatMsgs, violations), actualModel, promptOpts); nerr == nil && nudged != "" {
 						retryPrompt = nudged
 					}
 					if retried, retryErr := generateBufferedWithCancel(r.Context(), actualModel, retryPrompt, params, hasTools); retryErr == nil {

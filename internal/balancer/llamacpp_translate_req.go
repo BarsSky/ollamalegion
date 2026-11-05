@@ -90,7 +90,11 @@ func translateOllamaChatToOpenAI(body []byte) ([]byte, error) {
 		"model": ollamaReq["model"],
 	}
 	if messages, ok := ollamaReq["messages"].([]interface{}); ok {
-		openaiReq["messages"] = messages
+		// R436 (2026-11-05): OpenAI-поверхность требует `function.arguments`
+		// СТРОКОЙ, а Ollama-клиент присылает в истории ОБЪЕКТ. Без приведения
+		// бэкенд не разбирает вызов из истории: модель на следующем ходу видит
+		// «вызов без аргументов» и компенсирует это повтором вызова или текстом.
+		openaiReq["messages"] = convertMessagesToOpenAIForm(messages)
 	} else if prompt, ok := ollamaReq["prompt"].(string); ok {
 		openaiReq["messages"] = []map[string]string{{"role": "user", "content": prompt}}
 	}

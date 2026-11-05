@@ -230,7 +230,7 @@ func TestR114b_EndToEnd_UserSessionShape(t *testing.T) {
 	// НЕобъявленного инструмента намеренно отбрасывается (его нельзя выполнить),
 	// поэтому без этой строки проверка измеряла бы не то.
 	tools := append(clineToolsR113(),
-		toolSchemaR113("submit_and_exit", []string{"summary"}, toolSchemaProp{"summary", "string"}))
+		toolSchemaR113("submit_and_exit", []string{"summary"}, toolSchemaProp{name: "summary", typ: "string"}))
 	calls := parseToolCallsForRequest(output, tools)
 	if len(calls) != 1 || calls[0].Function.Name != "submit_and_exit" {
 		t.Fatalf("вызов не восстановлен: %+v", calls)

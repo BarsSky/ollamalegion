@@ -50,6 +50,10 @@ type toolSchemaInfo struct {
 type toolSchemaProp struct {
 	name string
 	typ  string // "array" | "string" | "integer" | ... | "" (не объявлен)
+	// itemsType — R435 (2026-11-05): тип элементов для `type: array`.
+	// Нужен, чтобы отличить «массив объектов» (законно) от испорченного моделью
+	// массива обёрток (`files: [{"path": "x"}]` при `items: string`).
+	itemsType string
 }
 
 // buildToolSchemaIndex — индекс «имя инструмента → схема параметров».
@@ -126,10 +130,13 @@ func parseSchemaPropertiesOrdered(params json.RawMessage) []toolSchemaProp {
 			break
 		}
 		var meta struct {
-			Type string `json:"type"`
+			Type  string `json:"type"`
+			Items struct {
+				Type string `json:"type"`
+			} `json:"items"`
 		}
 		_ = json.Unmarshal(raw, &meta)
-		props = append(props, toolSchemaProp{name: key, typ: meta.Type})
+		props = append(props, toolSchemaProp{name: key, typ: meta.Type, itemsType: meta.Items.Type})
 	}
 	return props
 }
@@ -186,6 +193,55 @@ func (t toolSchemaInfo) paramType(name string) string {
 		}
 	}
 	return ""
+}
+
+// paramItemsType — тип элементов объявленного массива ("" если не объявлен).
+func (t toolSchemaInfo) paramItemsType(name string) string {
+	for _, p := range t.properties {
+		if strings.EqualFold(p.name, name) {
+			return p.itemsType
+		}
+	}
+	return ""
+}
+
+// flattenStringObjectsR435 — массив объектов-обёрток → массив строк.
+//
+// ЖИВОЙ СЛУЧАЙ (gemma-4 с нативной секцией инструментов, R434): при схеме
+// `files: {type: array, items: {type: string}}` модель выдала
+//
+//	{"files": [{"path": "TASK.md"}]}
+//
+// Клиент (Cline) такой вызов выполнить не может: валидатор ждёт массив строк.
+// Правило узкое: меняем ТОЛЬКО когда каждый элемент — объект с ОДНИМ строковым
+// значением, а схема объявляет items:string. Массив настоящих объектов
+// (`[{name, value}]`) не трогаем.
+func flattenStringObjectsR435(value interface{}) interface{} {
+	arr, ok := value.([]interface{})
+	if !ok || len(arr) == 0 {
+		return value
+	}
+	out := make([]interface{}, 0, len(arr))
+	for _, el := range arr {
+		obj, isObj := el.(map[string]interface{})
+		if !isObj || len(obj) != 1 {
+			return value
+		}
+		var single string
+		found := false
+		for _, v := range obj {
+			s, isStr := v.(string)
+			if !isStr {
+				return value
+			}
+			single, found = s, true
+		}
+		if !found {
+			return value
+		}
+		out = append(out, single)
+	}
+	return out
 }
 
 // isRequired — поле объявлено обязательным (сравнение без учёта регистра).
@@ -400,7 +456,7 @@ func coerceArgumentsValue(raw string, schema toolSchemaInfo, haveSchema bool) (s
 		return encodeArgsObject(map[string]interface{}{param: raw})
 	}
 
-		switch v := value.(type) {
+	switch v := value.(type) {
 	case map[string]interface{}:
 		if haveSchema {
 			if unwrapped, ok := unwrapArgsWrapper(v, schema); ok {
@@ -413,6 +469,10 @@ func coerceArgumentsValue(raw string, schema toolSchemaInfo, haveSchema bool) (s
 			for key, val := range v {
 				if typ := schema.paramType(key); typ != "" {
 					v[key] = coerceValueToDeclaredType(val, typ)
+					// R435: массив объектов-обёрток при объявленном items:string.
+					if typ == "array" && schema.paramItemsType(key) == "string" {
+						v[key] = flattenStringObjectsR435(v[key])
+					}
 				}
 			}
 			// R246 (2026-10-26): null у НЕобязательного поля — не значение, а
@@ -605,7 +665,7 @@ func toolCallFromJSONObject(raw string) *openAIToolCall {
 	if name == "" {
 		return nil
 	}
-	for _, argKey := range []string{"arguments", "parameters", "args", "input"} {
+	for _, argKey := range []string{"arguments", "parameters", "params", "args", "input"} {
 		rawArgs, ok := obj[argKey]
 		if !ok {
 			continue
@@ -858,4 +918,3 @@ func stripToolCallJSONObjects(text string) string {
 	}
 	return text
 }
-

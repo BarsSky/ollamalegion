@@ -85,6 +85,11 @@ func TestR83Fix_NoDeferredFreeOfReallocedPointer(t *testing.T) {
 
 // TestR83Fix_ApplyChatTemplateWithThinkingFreeIsClosure — конкретная регрессия
 // на место падения: освобождение буфера должно быть замыканием.
+//
+// R434 (2026-11-05): тело метода переехало в общий applyChatTemplateInternal
+// (обе публичные функции — ApplyChatTemplateWithThinking и
+// ApplyChatTemplateWithTools — идут через него, чтобы вариант с tools[] не
+// завёлся со своим, «забытым» освобождением буфера). Проверяем именно его.
 func TestR83Fix_ApplyChatTemplateWithThinkingFreeIsClosure(t *testing.T) {
 	path := filepath.Join("..", "..", "c", "bridge", "bridge.go")
 	src, err := os.ReadFile(path)
@@ -93,9 +98,9 @@ func TestR83Fix_ApplyChatTemplateWithThinkingFreeIsClosure(t *testing.T) {
 	}
 	text := stripLineComments(string(src))
 
-	idx := strings.Index(text, "func (m *ModelHandle) ApplyChatTemplateWithThinking(")
+	idx := strings.Index(text, "func (m *ModelHandle) applyChatTemplateInternal(")
 	if idx < 0 {
-		t.Fatal("ApplyChatTemplateWithThinking не найдена — тест устарел, поправьте его")
+		t.Fatal("applyChatTemplateInternal не найдена — тест устарел, поправьте его")
 	}
 	body := text[idx:]
 	if end := strings.Index(body[1:], "\nfunc "); end > 0 {
@@ -103,10 +108,22 @@ func TestR83Fix_ApplyChatTemplateWithThinkingFreeIsClosure(t *testing.T) {
 	}
 
 	if !strings.Contains(body, "defer func() {") {
-		t.Error("в ApplyChatTemplateWithThinking нет defer-замыкания для free — " +
+		t.Error("в applyChatTemplateInternal нет defer-замыкания для free — " +
 			"вернулся паттерн, на котором cppworker падал по double free")
 	}
 	if strings.Contains(body, "defer C.free(unsafe.Pointer(outBuf))") {
 		t.Error("вернулся `defer C.free(unsafe.Pointer(outBuf))` — double free после realloc")
+	}
+	// Обе публичные функции обязаны идти через общий путь: своя копия тела —
+	// это второй шанс забыть про free-замыкание.
+	if strings.Contains(text, "func (m *ModelHandle) ApplyChatTemplateWithTools(") {
+		part := text[strings.Index(text, "func (m *ModelHandle) ApplyChatTemplateWithTools("):]
+		if end := strings.Index(part[1:], "\nfunc "); end > 0 {
+			part = part[:end+1]
+		}
+		if strings.Contains(part, "C.malloc") || strings.Contains(part, "C.realloc") {
+			t.Error("ApplyChatTemplateWithTools управляет буфером сама — она обязана " +
+				"идти через applyChatTemplateInternal (иначе free-замыкание можно потерять)")
+		}
 	}
 }

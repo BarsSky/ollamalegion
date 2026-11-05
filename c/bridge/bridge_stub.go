@@ -313,6 +313,21 @@ func (m *ModelHandle) ApplyChatTemplateWithThinking(
 	return "", false, ErrNoChatTemplate
 }
 
+// ApplyChatTemplateWithTools — R434 (2026-11-05): stub-реализация.
+//
+// В stub-режиме llama.cpp нет, поэтому шаблон не рендерится вовсе; toolsRendered
+// = false и вызывающий включит текстовую преамбулу — поведение то же, что было
+// до R434 (см. cmd/cppworker/buildChatPromptWithOptions).
+func (m *ModelHandle) ApplyChatTemplateWithTools(
+	chatTemplateOverride string,
+	messages []ChatMessage,
+	toolsJSON string,
+	enableThinking bool,
+	addGenerationPrompt bool,
+) (string, bool, bool, int, error) {
+	return "", false, false, 0, ErrNoChatTemplate
+}
+
 // ============================================================
 // Bridge initialization (stub)
 // ============================================================

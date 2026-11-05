@@ -699,6 +699,41 @@ int32_t bridge_chat_templates_apply_with_thinking(
     bool* out_supports_thinking
 );
 
+// bridge_chat_templates_apply_with_tools — R434 (2026-11-05): рендер шаблона
+// ВМЕСТЕ с инструментами запроса.
+//
+// ЗАЧЕМ. Раньше tools[] никогда не попадали в common_chat_templates_apply
+// (inputs.tools оставался пустым), поэтому модель не видела нативную секцию
+// инструментов своего шаблона, и формат вызова задавала наша текстовая
+// преамбула. Живой дефект: gemma-4 копировала придуманный формат и теряла
+// name/arguments → Cline закрывал ход как «COMPLETED» без созданного файла.
+//
+// Параметры — те же, что у bridge_chat_templates_apply_with_thinking, плюс:
+//   tools_json          — OpenAI-массив tools[]; NULL или "" = без инструментов
+//   out_tools_rendered  — [OUT] true, если шаблон нарисовал секцию инструментов
+//                         (определяется сравнением рендеров с tools и без).
+//                         false → вызывающий обязан включить текстовую
+//                         преамбулу как fallback.
+//   out_format          — [OUT] common_chat_format (0 = CONTENT_ONLY): каким
+//                         парсером llama.cpp видит вызовы этой модели.
+//
+// Возвращает те же коды, что ..._with_thinking: >=0 длина prompt, -1 неверные
+// аргументы, -3 init шаблона, -4 буфер мал.
+int32_t bridge_chat_templates_apply_with_tools(
+    void* model,
+    const char* chat_template_override,
+    const char* tools_json,
+    const struct CBridgeChatMessage* messages,
+    int32_t n_messages,
+    bool enable_thinking,
+    bool add_generation_prompt,
+    char* out_buf,
+    int32_t out_buf_size,
+    bool* out_supports_thinking,
+    bool* out_tools_rendered,
+    int32_t* out_format
+);
+
 // ============================================================
 // Round 15.1 (2026-07-29): true batched parallel inference
 // ============================================================

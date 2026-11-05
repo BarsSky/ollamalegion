@@ -62,19 +62,19 @@ func toolSchemaR113(name string, required []string, props ...toolSchemaProp) ope
 // clineToolsR113 — слепок схем НАСТОЯЩЕГО запроса Cline (порядок как у клиента).
 func clineToolsR113() []openAITool {
 	return []openAITool{
-		toolSchemaR113("run_commands", []string{"commands"}, toolSchemaProp{"commands", "array"}),
-		toolSchemaR113("read_files", []string{"files"}, toolSchemaProp{"files", "array"}),
-		toolSchemaR113("search_codebase", []string{"queries"}, toolSchemaProp{"queries", "array"}),
+		toolSchemaR113("run_commands", []string{"commands"}, toolSchemaProp{name: "commands", typ: "array"}),
+		toolSchemaR113("read_files", []string{"files"}, toolSchemaProp{name: "files", typ: "array"}),
+		toolSchemaR113("search_codebase", []string{"queries"}, toolSchemaProp{name: "queries", typ: "array"}),
 		// Порядок из запроса Cline: path, old_text, new_text, insert_line.
 		toolSchemaR113("editor", []string{"path", "new_text"},
-			toolSchemaProp{"path", "string"},
-			toolSchemaProp{"old_text", "string"},
-			toolSchemaProp{"new_text", "string"},
-			toolSchemaProp{"insert_line", "integer"},
+			toolSchemaProp{name: "path", typ: "string"},
+			toolSchemaProp{name: "old_text", typ: "string"},
+			toolSchemaProp{name: "new_text", typ: "string"},
+			toolSchemaProp{name: "insert_line", typ: "integer"},
 		),
 		toolSchemaR113("ask_question", []string{"question", "options"},
-			toolSchemaProp{"question", "string"},
-			toolSchemaProp{"options", "array"},
+			toolSchemaProp{name: "question", typ: "string"},
+			toolSchemaProp{name: "options", typ: "array"},
 		),
 	}
 }

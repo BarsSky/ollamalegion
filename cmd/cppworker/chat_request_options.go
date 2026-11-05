@@ -18,6 +18,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 )
 
@@ -32,6 +33,14 @@ type chatPromptOptions struct {
 	JSONMode bool
 	// JSONSchema — исходный текст схемы (если format был объектом).
 	JSONSchema string
+
+	// Tools — R434 (2026-11-05): инструменты запроса для рендера ИХ В САМОМ
+	// ШАБЛОНЕ (native секция), а не текстовой преамбулой. Пусто = инструментов
+	// нет (прежнее поведение путей без tools).
+	Tools []openAITool
+	// ToolChoice — сырое значение tool_choice клиента: нужно только для
+	// fallback-преамбулы (вынужденный выбор инструмента, R246).
+	ToolChoice json.RawMessage
 }
 
 // upsertSystemMessage — R66b: записывает итоговый system-промпт (с JSON/

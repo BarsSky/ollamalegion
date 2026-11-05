@@ -224,7 +224,14 @@ func TestR114b_EndToEnd_UserSessionShape(t *testing.T) {
 	}
 
 	// 2. Разбор: вызов восстанавливается как tool_call (вызов не теряется).
-	calls := parseToolCallsForRequest(output, clineToolsR113())
+	//
+	// R431 (2026-11-05): инструмент объявляем в списке запроса. В той живой
+	// сессии Cline `submit_and_exit` был объявлен клиентом; начиная с R428 вызов
+	// НЕобъявленного инструмента намеренно отбрасывается (его нельзя выполнить),
+	// поэтому без этой строки проверка измеряла бы не то.
+	tools := append(clineToolsR113(),
+		toolSchemaR113("submit_and_exit", []string{"summary"}, toolSchemaProp{"summary", "string"}))
+	calls := parseToolCallsForRequest(output, tools)
 	if len(calls) != 1 || calls[0].Function.Name != "submit_and_exit" {
 		t.Fatalf("вызов не восстановлен: %+v", calls)
 	}

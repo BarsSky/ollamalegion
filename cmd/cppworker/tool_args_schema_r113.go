@@ -646,9 +646,18 @@ func recoverToolCallsFromText(text string, tools []openAITool) []openAIToolCall 
 	if text == "" || !strings.Contains(text, "{") {
 		return nil
 	}
+	declared := declaredToolNamesR431(tools)
 	var out []openAIToolCall
 	for _, cand := range jsonObjectCandidates(text) {
 		if call := toolCallFromJSONObject(cand); call != nil {
+			out = append(out, *call)
+			continue
+		}
+		// R431 (2026-11-05): вызов без поля `name` — аргументы вложены прямо в
+		// `function`, а имя осталось только в `id` (`call_read_files`). Живой
+		// случай: Cline в VS Code + gemma-4, `[TOOL_CALLS][{"id":…}]` → 0 вызовов,
+		// «COMPLETED» без созданного файла.
+		if call := namelessCallFromObjectR431(cand, declared); call != nil {
 			out = append(out, *call)
 		}
 	}
@@ -658,7 +667,23 @@ func recoverToolCallsFromText(text string, tools []openAITool) []openAIToolCall 
 	if !normalizeToolCalls(out) {
 		return nil
 	}
-	return coerceToolCallsToSchema(out, tools)
+	// R428: чужой инструмент выполнять нельзя — синонимы записи файла переводятся
+	// на объявленный инструмент, остальные отбрасываются.
+	return filterUndeclaredToolCalls(coerceToolCallsToSchema(out, tools), tools)
+}
+
+// declaredToolNamesR431 — множество объявленных в запросе инструментов.
+func declaredToolNamesR431(tools []openAITool) map[string]bool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		if name := strings.TrimSpace(t.Function.Name); name != "" {
+			out[name] = true
+		}
+	}
+	return out
 }
 
 // parseToolCallsForRequest — ЕДИНАЯ точка разбора вызова для клиентских путей:

@@ -239,12 +239,12 @@ func expandStringifiedItemsR437(value interface{}) interface{} {
 			out = append(out, el)
 			continue
 		}
-		switch parsed.(type) {
+		switch pv := parsed.(type) {
 		case map[string]interface{}:
-			out = append(out, parsed)
+			out = append(out, pv)
 			changed = true
 		case []interface{}:
-			out = append(out, parsed.([]interface{})...)
+			out = append(out, pv...)
 			changed = true
 		default:
 			out = append(out, el)

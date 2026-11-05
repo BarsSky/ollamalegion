@@ -32,9 +32,22 @@ import (
 
 func setupLoadLockTestBackend(t *testing.T) {
 	t.Helper()
+	// R437 (2026-11-05): дождаться фоновых работ предыдущего кейса.
+	//
+	// ЖИВОЙ СБОЙ CI (self-hosted Windows, `cmd/... -race`):
+	//
+	//	WARNING: DATA RACE
+	//	Write at ... by goroutine 820: setupLoadLockTestBackend (эта функция)
+	//	Previous read at ... by goroutine 819: donorMarkR304 (donor_guard_r304.go)
+	//
+	// Чтение — из фоновой загрузки модели, запущенной предыдущим кейсом и ещё не
+	// завершённой; она читает глобальный backend ровно тогда, когда следующий кейс
+	// его пересоздаёт. Хелпер теперь ждёт трекер asyncWorkWG (тот же, что ждёт
+	// graceful shutdown), с коротким таймаутом: тест не должен висеть вечно.
+	WaitAsyncWork(5 * time.Second)
 	cfg := cppbackend.Config{
-		ModelsDir:       t.TempDir(),
-		DefaultCtxSize:  4096,
+		ModelsDir:        t.TempDir(),
+		DefaultCtxSize:   4096,
 		DefaultBatchSize: 512,
 	}
 	backend = cppbackend.NewBackend(cfg)

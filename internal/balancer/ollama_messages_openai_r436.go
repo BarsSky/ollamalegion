@@ -33,7 +33,6 @@ package balancer
 
 import (
 	"encoding/json"
-	"strings"
 )
 
 // convertMessagesToOpenAIForm — привести срез сообщений к OpenAI-форме.
@@ -109,46 +108,4 @@ func convertMessageToOpenAIForm(msg map[string]interface{}) map[string]interface
 	}
 	msgCopy["tool_calls"] = converted
 	return msgCopy
-}
-
-// toolCallArgumentsAreString — вспомогательное: аргументы вызова уже строка
-// (нужно тестам и диагностике).
-func toolCallArgumentsAreString(messages []interface{}) bool {
-	for _, raw := range messages {
-		msg, ok := raw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		calls, ok := msg["tool_calls"].([]interface{})
-		if !ok {
-			continue
-		}
-		for _, rawCall := range calls {
-			call, ok := rawCall.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			fn, ok := call["function"].(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if _, isString := fn["arguments"].(string); !isString && fn["arguments"] != nil {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// messageHasToolNameOnly — у tool-сообщения нет tool_call_id, но есть имя
-// инструмента (Ollama-расширение). Нужно, чтобы не потерять связь результата с
-// вызовом при переводе.
-func messageHasToolNameOnly(msg map[string]interface{}) bool {
-	role, _ := msg["role"].(string)
-	if !strings.EqualFold(role, "tool") {
-		return false
-	}
-	id, _ := msg["tool_call_id"].(string)
-	name, _ := msg["tool_name"].(string)
-	return strings.TrimSpace(id) == "" && strings.TrimSpace(name) != ""
 }

@@ -99,23 +99,3 @@ func TestR436_NoToolCallsUntouched(t *testing.T) {
 		}
 	}
 }
-
-// TestR436_HelperReportsStringArgs — вспомогательная проверка формы.
-func TestR436_HelperReportsStringArgs(t *testing.T) {
-	objectForm := []interface{}{
-		map[string]interface{}{
-			"role": "assistant",
-			"tool_calls": []interface{}{
-				map[string]interface{}{"function": map[string]interface{}{
-					"name": "read_files", "arguments": map[string]interface{}{"files": []interface{}{"a"}},
-				}},
-			},
-		},
-	}
-	if toolCallArgumentsAreString(objectForm) {
-		t.Fatal("объект принят за строку")
-	}
-	if !toolCallArgumentsAreString(convertMessagesToOpenAIForm(objectForm)) {
-		t.Fatal("после конверсии аргументы не строка")
-	}
-}

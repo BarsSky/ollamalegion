@@ -5,7 +5,17 @@
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R434-R441: tools[] в chat template (нативная секция, преамбула — fallback, CPPWORKER_TEMPLATE_TOOLS=prompt для откатa); нативное тело вызова gemma разбирает сканер с разделителями \u003c|\"|\u003e (R441) — аргументы editor с HTML и Windows-путём больше не «схлопываются» в один параметр; невалидные escape чинятся (R439); диагностика исходящих аргументов (R440, CPPWORKER_DEBUG_TOOL_ARGS=1); конвертер Ollama→OpenAI приводит arguments к JSON-строке и не выдумывает tool_choice. cppworker gpu-r261106-1400 (ab99e3dd). Проверено живьём: editor{path,new_text} приходит целиком, gemma 4/4 и Qwen3.8-9B 3/3 вызовов. Прочее без изменений: balancer r261103-2310, webui r261103-2230, imageworker 72ec210a.",
+    "note":  "R434-R441: tools[] в chat template (нативная секция, преамбула — fallback, CPPWORKER_TEMPLATE_TOOLS=prompt для откатa); нативное тело вызова gemma разбирает сканер с разделителями \\u003c|\"|\u003e (R441) — аргументы editor с HTML и Windows-путём больше не «схлопываются» в один параметр; невалидные escape чинятся (R439); диагностика исходящих аргументов (R440, CPPWORKER_DEBUG_TOOL_ARGS=1); конвертер Ollama→OpenAI приводит arguments к JSON-строке и не выдумывает tool_choice. cppworker gpu-r261106-1400 (ab99e3dd). Проверено живьём: editor{path,new_text} приходит целиком, gemma 4/4 и Qwen3.8-9B 3/3 вызовов. Прочее без изменений: balancer r261103-2310, webui r261103-2230, imageworker 72ec210a.",
+    "standOverride":  {
+        "why":  "Стенд гоняет диагностические сборки, а не образы этого релиза: они собраны из кода R442-R447 и содержат включённую запись дампов. Пока стенд не пересобран из HEAD и не перезапущен, этот манифест описывает ПРОШЛЫЙ релиз, а не работающее сейчас.",
+        "cppworkerGpuTag":  "diag-r445",
+        "balancerTag":  "diag-r445",
+        "webuiTag":  "r261103-2230",
+        "imageWorkerTag":  "72ec210a",
+        "gitCommit":  "3f4423e5",
+        "debugDumpsOn":  true,
+        "pending":  "Пересобрать balancer+cppworker из HEAD, выключить CPPWORKER_DEBUG_PROMPT_FILE / CPPWORKER_DEBUG_REQUEST_FILE / CPPWORKER_DEBUG_TOOL_ARGS / CPPWORKER_DEBUG_TOOL_PROMPT, поднять стек, обновить этот манифест (tag + gitCommit + imageId)."
+    },
     "images":  [
                    {
                        "service":  "loadbalancer",

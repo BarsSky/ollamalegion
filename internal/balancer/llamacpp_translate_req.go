@@ -133,13 +133,17 @@ func translateOllamaChatToOpenAI(body []byte) ([]byte, error) {
 		}
 	}
 	if toolsSet {
-		// tool_choice: пропускаем только если клиент явно задал; иначе — "auto".
-		// Без этого Gemma-4 и аналогичные модели без нативного tool support
-		// не понимают, что нужно вызвать tool, и возвращают текст.
+		// tool_choice: пробрасываем ТОЛЬКО то, что задал клиент.
+		//
+		// R438 (2026-11-05): раньше при отсутствии tool_choice мы подставляли
+		// "auto" «чтобы модели без нативного tool support звали инструменты».
+		// Это ВЫДУМАННОЕ поле: клиент его не присылал, а бэкенд обязан вести себя
+		// по контракту OpenAI — при наличии tools[] режим и так "auto". На
+		// строгом парсере (llama.cpp/наши же воркеры с валидацией) лишнее поле
+		// рискует дать 400, а «заставить модель звать инструменты» — задача
+		// ПРОМПТА (R426–R434), а не флага, которого не было в запросе.
 		if toolChoice, ok := ollamaReq["tool_choice"]; ok {
 			openaiReq["tool_choice"] = toolChoice
-		} else {
-			openaiReq["tool_choice"] = "auto"
 		}
 	}
 	if options, ok := ollamaReq["options"].(map[string]interface{}); ok {

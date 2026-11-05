@@ -33,13 +33,12 @@ func TestTranslateOllamaChatToOpenAI_ToolChoiceAuto(t *testing.T) {
 		t.Fatalf("invalid output JSON: %v\n%s", err, out)
 	}
 
-	// tool_choice должен быть "auto" по умолчанию
-	tc, ok := req["tool_choice"]
-	if !ok {
-		t.Fatalf("tool_choice missing in output: %s", out)
-	}
-	if tc != "auto" {
-		t.Errorf("tool_choice = %v, want \"auto\"", tc)
+	// R438 (2026-11-05): tool_choice НЕ подставляется, если клиент его не прислал.
+	// Раньше тест требовал "auto" — то есть закреплял выдуманное поле. При наличии
+	// tools[] режим и так "auto" по контракту OpenAI, а лишнее поле на строгом
+	// бэкенде — риск 400. «Заставить модель звать инструменты» — задача промпта.
+	if tc, has := req["tool_choice"]; has {
+		t.Fatalf("в запрос добавлено выдуманное tool_choice=%v: %s", tc, out)
 	}
 
 	// tools должны быть прокинуты
@@ -101,9 +100,10 @@ func TestTranslateOllamaChatToOpenAI_OptionsToolsFallback(t *testing.T) {
 		t.Errorf("tool name = %v, want 'search'", tools[0])
 	}
 
-	// tool_choice тоже должен быть выставлен, т.к. tools появились
-	if req["tool_choice"] != "auto" {
-		t.Errorf("tool_choice = %v, want \"auto\"", req["tool_choice"])
+	// R438: наличие tools[] НЕ даёт права дописывать tool_choice — его не было в
+	// запросе клиента (см. TestTranslateOllamaChatToOpenAI_ToolChoiceAuto).
+	if tc, has := req["tool_choice"]; has {
+		t.Errorf("выдуманное tool_choice=%v при отсутствии его в запросе", tc)
 	}
 }
 

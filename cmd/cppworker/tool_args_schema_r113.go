@@ -513,6 +513,19 @@ func coerceToolCallsToSchema(calls []openAIToolCall, tools []openAITool) []openA
 func coerceArgumentsValue(raw string, schema toolSchemaInfo, haveSchema bool) (string, bool) {
 	value, ok := decodeJSONValue(raw)
 	if !ok {
+		// R439 (2026-11-05): сначала пробуем починить НЕВАЛИДНЫЕ escape-
+		// последовательности. Живой случай (Cline + gemma-4): Windows-путь,
+		// записанный одинарными обратными слэшами (`d:\cline-e2e-web\...`), делает
+		// всю строку аргументов невалидным JSON — и прежний fallback заворачивал
+		// ВЕСЬ блок в первый скалярный параметр (`path`), из-за чего клиент видел
+		// «new_text: undefined» и останавливал задачу.
+		if repaired, changed := repairInvalidJSONEscapesR439(raw); changed {
+			if v, okRepaired := decodeJSONValue(repaired); okRepaired {
+				value, ok = v, true
+			}
+		}
+	}
+	if !ok {
 		// Не JSON вообще (например Windows-путь с обратными слэшами).
 		if !haveSchema {
 			quoted, err := marshalNoHTMLEscape(raw)

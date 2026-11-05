@@ -534,6 +534,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	if toolsEnabled {
 		// R113: схема инструментов запроса — для приведения arguments к объекту.
 		if calls := parseToolCallsForRequest(output, req.Tools); len(calls) > 0 {
+			// R440: дамп исходящих аргументов (CPPWORKER_DEBUG_TOOL_ARGS=1).
+			logOutgoingToolCalls(req.Model, "/api/chat(nonstream)", calls)
 			resp.Message.ToolCalls = ollamaToolCallsFromOpenAI(calls)
 			resp.Message.Content = ""
 		} else {
@@ -2635,6 +2637,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	}
 
 	if len(toolCalls) > 0 {
+		// R440: что именно уходит клиенту (включается CPPWORKER_DEBUG_TOOL_ARGS=1).
+		logOutgoingToolCalls(modelName, "/api/chat", toolCalls)
 		// Tool calls обнаружены — эмитим message.tool_calls и очищаем content.
 		// Это критично: OpenWebUI при `done_reason: "tool_calls"` ожидает
 		// что content пустой, а tool_calls содержит вызовы функций.

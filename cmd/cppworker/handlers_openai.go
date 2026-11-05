@@ -826,6 +826,8 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasToolCalls {
+		// R440: дамп исходящих аргументов (CPPWORKER_DEBUG_TOOL_ARGS=1).
+		logOutgoingToolCalls(modelName, "/v1/chat/completions", toolCalls)
 		// tool_calls распарсены из СЫРОГО output (см. выше): вызов может стоять и
 		// внутри reasoning-блока, а parseToolCallsFromOutput сам снимает фенс и
 		// служебные токены.

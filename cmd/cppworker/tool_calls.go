@@ -736,14 +736,21 @@ func repairJSONText(s string) string {
 	return b.String()
 }
 
-// compactJSON переводит JSON-текст в компактный вид (без лишних пробелов).
+// compactJSON — сжать JSON-строку до компактного вида (без лишних пробелов).
 // Если компактизация невозможна — возвращает исходный текст.
+//
+// R439 (2026-11-05): кодирование БЕЗ HTML-эскейпинга. Раньше здесь стоял
+// json.Marshal, который превращает `<`, `>` и `&` в `\u003c`, `\u003e`, `\u0026`.
+// Для вызова вида `editor(new_text: "<!DOCTYPE html>…")` это раздувало аргументы
+// в разы (каждый `<` — шесть символов вместо одного), то есть битое по смыслу
+// ничего не несло, но гнало лишние килобайты через балансер и клиент. Для JSON
+// `\u003c` и `<` эквивалентны, поэтому клиент видит то же самое.
 func compactJSON(s string) string {
 	var v interface{}
 	if err := json.Unmarshal([]byte(s), &v); err != nil {
 		return s
 	}
-	out, err := json.Marshal(v)
+	out, err := marshalNoHTMLEscape(v)
 	if err != nil {
 		return s
 	}

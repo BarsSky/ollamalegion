@@ -700,6 +700,12 @@ services:
       - CPPWORKER_VRAM_OVERHEAD_MB=${CPPWORKER_VRAM_OVERHEAD_MB:-2048}
       - CPPWORKER_VISION_MMPROJ=${CPPWORKER_VISION_MMPROJ:-0}
       - CPPWORKER_DEBUG_TOOL_PROMPT=${CPPWORKER_DEBUG_TOOL_PROMPT:-0}
+      # R440: дамп ИСХОДЯЩИХ аргументов tool_call (что реально уехало клиенту).
+      # По умолчанию 0: это содержимое файлов пользователя, включать по нужде.
+      - CPPWORKER_DEBUG_TOOL_ARGS=${CPPWORKER_DEBUG_TOOL_ARGS:-0}
+      # R434: инструменты уходят в chat template ("native"), преамбула — fallback.
+      # "prompt" возвращает прежнее поведение (только текстовая преамбула).
+      - CPPWORKER_TEMPLATE_TOOLS=${CPPWORKER_TEMPLATE_TOOLS:-native}
       - CPPWORKER_BATCH_SIZE=${CPPWORKER_BATCH_SIZE:-512}
       # AUTO-UNLOAD OF IDLE MODELS. cppworker keeps EVERY loaded model in VRAM:
       # idleUnloadMinutes=0 means "never unload". On an 8 GB card that is a trap —

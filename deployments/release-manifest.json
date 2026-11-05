@@ -1,11 +1,11 @@
 {
-    "tag":  "r261106-0015",
-    "builtAt":  "2026-11-05T00:15:00Z",
-    "gitCommit":  "08ce9366",
+    "tag":  "r261106-0505",
+    "builtAt":  "2026-11-05T05:05:00Z",
+    "gitCommit":  "59dda55f",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R429/R430: тело вызова инструмента не попадает в content ни на одной поверхности — cppworker gpu-r261106-0015 (добор хвоста режется по началу разметки, переэкранированная разметка опознаётся и уходит в диагностику, нераспознанный вызов даёт пояснение, streamed_content_bytes считает реально отданные байты). Прочее без изменений: balancer r261103-2310 (R425), webui r261103-2230 (R425), imageworker 72ec210a. Модель стенда: gemma-4-E4B-it (Cline) и Qwen3.8-9B-Distill-uncensored-heretic (окно 32768, kv q8_0).",
+    "note":  "R431: вызов без поля name восстанавливается по id (call_<инструмент>) — cppworker gpu-r261106-0505. Сырой вывод Cline из VS Code показал [TOOL_CALLS][{\"id\":\"call_read_files\",\"function\":{\"files\":[…]]: имя только в id, аргументы внутри function — теперь такой вызов выполняется, а не закрывается как COMPLETED. Вместе с R429/R430 тело вызова больше не попадает в content ни на одной поверхности. Прочее без изменений: balancer r261103-2310 (R425), webui r261103-2230 (R425), imageworker 72ec210a.",
     "images":  [
                    {
                        "service":  "loadbalancer",
@@ -18,9 +18,9 @@
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261106-0015",
-                       "imageTag":  "gpu-r261106-0015",
-                       "imageId":  "sha256:2139d45e89358a11dd408b6458c84848e0e3283037ee7865455f65172b5e119b",
+                       "image":  "ollama-legion/cppworker:gpu-r261106-0505",
+                       "imageTag":  "gpu-r261106-0505",
+                       "imageId":  "sha256:b8dee746c4ac0c84a75ea15d3b2cfbd1a926e8336e16e19f2a0e48e4cc0871aa",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

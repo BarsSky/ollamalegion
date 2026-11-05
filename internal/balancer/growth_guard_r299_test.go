@@ -307,7 +307,11 @@ func TestR299_TransportDefersUseUnifiedBody(t *testing.T) {
 				t.Fatalf("%s:%d: самописное тело отказа вернулось (%s) — используй writePreflightDeferredR299",
 					name, i+1, code)
 			}
-			if strings.Contains(code, "writePreflightDeferredR299(") {
+			// R447: единая точка входа теперь пишет и числа снимка вердикта —
+			// имя функции стало writePreflightDeferredR299Ctx. Стюард должен
+			// принимать обе формы: он про ОДИН формат тела, а не про имя.
+			if strings.Contains(code, "writePreflightDeferredR299(") ||
+				strings.Contains(code, "writePreflightDeferredR299Ctx(") {
 				usedUnified = true
 			}
 		}

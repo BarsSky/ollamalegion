@@ -86,6 +86,10 @@ type growthVerdictR301 struct {
 	Active        int // сколько стримов идёт сейчас
 	ReloadPending bool
 	Streaming     bool
+	// RetryAfterSec — срок повтора, НАЗВАННЫЙ в тексте причины (R447). Writer
+	// тела обязан писать это же значение: иначе клиент читает «retry in 60
+	// seconds» рядом с `retryAfterSec: 30`.
+	RetryAfterSec int
 }
 
 // decided — вердикт что-то предписывает (отказ или подмена тела).
@@ -114,6 +118,31 @@ func (p *Proxy) growthVerdictR301(backendID, model string, body []byte, path str
 		return v
 	}
 
+	// R447 (2026-11-06): «окна мало» ≠ «окно надо растить».
+	//
+	// needed = оценка промпта + бюджет вывода, и бюджет — не требование модели:
+	// воркер урезает num_predict по свободному месту сам. Поэтому короткий
+	// запрос без явно запрошенного окна обслуживается загруженным окном как
+	// есть: ни роста (перезагрузка модели = медленно и с обрывом чужого
+	// процесса), ни отказа (503 «retry in 60 s» на вопрос в 3 токена).
+	//
+	// Раньше здесь падали в рост/отказ ВСЕГДА, когда needed > loaded. Живой
+	// дефект: «model "test-model" needs 4099 tokens of context; the loaded window
+	// is 2048 — the balancer has started reloading the model… retry in 60
+	// seconds» на промпт «Привет!». Тот же вход давал 200 или 503 в зависимости
+	// от свободной VRAM (рост разрешён только пока физика позволяет) — это
+	// классический флак, и решать его подгонкой теста было бы подлогом.
+	//
+	// Растим окно только по требованию самого запроса: промпт не влезает ИЛИ
+	// клиент явно попросил окно больше загруженного (R385).
+	if needGrowth, needWhy := growthNeedR447(estimated, loaded, meta.RequestedNCtxOverride); !needGrowth {
+		logger.Get().Debugw("R447: рост окна не нужен — обслуживаем загруженным окном",
+			"backend", backendID, "model", model, "path", path, "streaming", streaming,
+			"estimated_prompt_tokens", estimated, "loaded_window_tokens", loaded,
+			"required_tokens", needed, "reason", needWhy)
+		return v
+	}
+
 	v.Active, v.ReloadPending = growthBlockersR288(p, backendID, model)
 
 	if !streaming {
@@ -121,6 +150,7 @@ func (p *Proxy) growthVerdictR301(backendID, model string, body []byte, path str
 		// (прежнее правило R299 — рост пробует preflight).
 		if v.Active > 0 || v.ReloadPending {
 			v.Defer = true
+			v.RetryAfterSec = growthDeferRetryAfterSecR447
 		}
 		return v
 	}
@@ -139,6 +169,9 @@ func (p *Proxy) growthVerdictR301(backendID, model string, body []byte, path str
 	if v.Active == 0 && !v.ReloadPending {
 		if ok, why := p.streamGrowthCheckR385(backendID, model, v.Needed); ok {
 			v.Grow = true
+			// R447: текст причины называет срок повтора — writer тела обязан
+			// взять ровно его (раньше в теле стояло 30 при тексте «60 seconds»).
+			v.RetryAfterSec = streamGrowthRetryAfterSecR385
 			return v
 		} else if why != "" {
 			logger.Get().Debugw("R385: окно на стриминге не растим", "backend", backendID,
@@ -171,8 +204,14 @@ func (p *Proxy) growthVerdictR301(backendID, model string, body []byte, path str
 	// другое. Отказ при этом принимается по ПРОМПТУ (см. выше), поэтому запрос,
 	// который обслуживается укороченным ответом, отказа не получит.
 	v.Defer = true
+	v.RetryAfterSec = growthDeferRetryAfterSecR447
 	return v
 }
+
+// growthDeferRetryAfterSecR447 — срок повтора для отказа по окну. Один и тот же
+// в тексте причины и в теле (`retryAfterSec`); раньше транспорт писал свои 30,
+// а текст для роста окна говорил «retry in 60 seconds».
+const growthDeferRetryAfterSecR447 = 30
 
 // growthDeferMessageR301 — текст причины для стандартного тела отказа.
 //

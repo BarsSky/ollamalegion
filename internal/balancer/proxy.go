@@ -1471,14 +1471,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				logGrowthVerdictR301("servehttp-before-admission", guardBackend, model, path, v)
 				p.triggerStreamGrowthR385(guardBackend, model, v.Needed)
 				w.Header().Set("X-NCtx-Reload-Decision", "context-growth-starting")
-				writePreflightDeferredR299(w, p, guardBackend, model, parsed.RawBody, path,
+				// R447: тело пишет ЧИСЛА ВЕРДИКТА (перезагрузка выше уже могла
+				// изменить метрики — иначе тело и текст описывали бы разные
+				// состояния мира).
+				writePreflightDeferredR299Ctx(w, p, withGrowthNumbersR447(r.Context(), v),
+					guardBackend, model, parsed.RawBody, path,
 					growthStartsMessageR385(model, v), streamGrowthRetryAfterSecR385)
 				return
 			case v.Defer:
 				logGrowthVerdictR301("servehttp-before-admission", guardBackend, model, path, v)
 				w.Header().Set("X-NCtx-Reload-Decision", "context-growth")
-				writePreflightDeferredR299(w, p, guardBackend, model, parsed.RawBody, path,
-					growthDeferMessageR301(model, v), 30)
+				writePreflightDeferredR299Ctx(w, p, withGrowthNumbersR447(r.Context(), v),
+					guardBackend, model, parsed.RawBody, path,
+					growthDeferMessageR301(model, v), growthDeferRetryAfterSecR447)
 				return
 			}
 		}

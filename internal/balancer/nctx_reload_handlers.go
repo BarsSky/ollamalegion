@@ -779,6 +779,11 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	if modelName != "" && isStreamingFromBody("", bodyBuf) {
 		v := p.growthVerdictR301(backendID, modelName, bodyBuf, requestPath, true)
 		logGrowthVerdictR301("transport-preflight", backendID, modelName, requestPath, v)
+		// R447: числа вердикта едут к writer'у тела вместе с запросом — иначе
+		// тело пересчитает их после перезагрузки и разойдётся с текстом.
+		if v.Grow || v.decided() {
+			recordGrowthNumbersR447(ctx, v)
+		}
 		if v.Grow {
 			// R385: окно можно поднять — перезагрузка запущена, клиенту нужно
 			// повторить. Тело при этом не меняем: следующий запрос получит уже

@@ -63,9 +63,11 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	var preflightStatus int
 	var retryAfter int = 30 // Round 23 (2026-08-04): 5 → 30 (реальное время reload)
 	var preflightBody []byte
+	// R447: слот под числа вердикта R301/R385 (см. growth_numbers_ctx_r447.go).
+	preflightCtx, _ := growthNumbersSlotR447(r.Context())
 	if p.config != nil && p.config.Balancing.PreflightSyncEnabled {
 		preflightBody, preflightOK, preflightMsg, preflightStatus, retryAfter =
-			p.preflightNCtxReloadIfNeededSync(r.Context(), backendID, modelFromCtx, bodyNoStream, originalPath)
+			p.preflightNCtxReloadIfNeededSync(preflightCtx, backendID, modelFromCtx, bodyNoStream, originalPath)
 		if preflightOK {
 			bodyNoStream = preflightBody
 			logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx sync-reload applied",
@@ -73,7 +75,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		}
 	} else {
 		preflightBody, preflightOK, preflightMsg, preflightStatus =
-			p.preflightNCtxReloadIfNeeded(r.Context(), backendID, modelFromCtx, bodyNoStream, originalPath)
+			p.preflightNCtxReloadIfNeeded(preflightCtx, backendID, modelFromCtx, bodyNoStream, originalPath)
 		if preflightOK {
 			bodyNoStream = preflightBody
 			logger.Get().Debugw("proxyRequestLlamaCppNonStream: preflight n_ctx reload applied",
@@ -146,7 +148,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			// самописного `{"decision":"async_reload",...}`. Причина та же: клиент
 			// должен разбирать один формат, а не угадывать по строке.
 			w.Header().Set("X-NCtx-Reload-Decision", "async-reload")
-			writePreflightDeferredR299(w, p, backendID, modelFromCtx, bodyBuf, originalPath, preflightMsg, retryAfter)
+			writePreflightDeferredR299Ctx(w, p, preflightCtx, backendID, modelFromCtx, bodyBuf, originalPath, preflightMsg, retryAfter)
 			return nil
 		}
 	}

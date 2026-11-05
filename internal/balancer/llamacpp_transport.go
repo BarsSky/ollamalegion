@@ -122,8 +122,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// а loaded n_ctx на бэкенде меньше — синхронно перезагружаем модель на нужный n_ctx
 	// ДО проксирования. Это критично для OpenWebUI с tools: первый запрос
 	// получает reload один раз (10-30 сек), последующие — instant response.
+	// R447: слот под числа вердикта R301/R385 — writer тела (ниже) обязан
+	// написать те же числа, что названы в тексте причины.
+	preflightCtx, _ := growthNumbersSlotR447(r.Context())
 	preflightBody, preflightOK, preflightMsg, preflightStatus := p.preflightNCtxReloadIfNeeded(
-		r.Context(), backendID, modelFromCtx, bodyBuf, originalPath)
+		preflightCtx, backendID, modelFromCtx, bodyBuf, originalPath)
 	if preflightOK {
 		bodyBuf = preflightBody // preflight удалил num_ctx из body (cppworker возьмёт new n_ctx)
 		// R301 (2026-10-29): подменённое preflight'ом тело обязано ДОЙТИ до воркера.
@@ -203,7 +206,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			decision = "context-growth"
 		}
 		w.Header().Set("X-NCtx-Reload-Decision", decision)
-		writePreflightDeferredR299(w, p, backendID, modelFromCtx, bodyBuf, originalPath, preflightMsg, 30)
+		writePreflightDeferredR299Ctx(w, p, preflightCtx, backendID, modelFromCtx, bodyBuf, originalPath, preflightMsg, 30)
 		return nil
 	}
 

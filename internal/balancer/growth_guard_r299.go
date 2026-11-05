@@ -28,7 +28,10 @@
 //     мешает».
 package balancer
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
 
 // growthBlockersR288 — кто мешает росту окна прямо сейчас.
 //
@@ -97,8 +100,33 @@ func (p *Proxy) growthDeferR299(backendID, model string, body []byte, path strin
 // показывали его пользователю, не теряют текст.
 func writePreflightDeferredR299(w http.ResponseWriter, p *Proxy, backendID, model string,
 	body []byte, path, msg string, retryAfter int) {
-	estimated, loaded, needed := p.contextGrowthNumbers(backendID, model, body, path)
-	active, reloadPending := growthBlockersR288(p, backendID, model)
+	writePreflightDeferredR299Ctx(w, p, nil, backendID, model, body, path, msg, retryAfter)
+}
+
+// writePreflightDeferredR299Ctx — то же тело, но с числами СНИМКА из контекста
+// запроса (R447, см. growth_numbers_ctx_r447.go).
+//
+// Зачем отдельная точка входа: тело и текст отказа обязаны описывать одно
+// состояние мира. Когда числа пересчитываются здесь, между вердиктом и ответом
+// успевает пройти перезагрузка модели — и в теле появляется загруженное окно,
+// которого ещё нет, а в тексте остаётся прежнее.
+//
+// ctx == nil (или снимка нет) — прежнее поведение: считаем сами.
+func writePreflightDeferredR299Ctx(w http.ResponseWriter, p *Proxy, ctx context.Context,
+	backendID, model string, body []byte, path, msg string, retryAfter int) {
+	snap, hasSnap := growthNumbersFromCtxR447(ctx)
+	estimated, loaded, needed := 0, 0, 0
+	active, reloadPending := 0, false
+	if hasSnap {
+		estimated, loaded, needed = snap.Estimated, snap.Loaded, snap.Needed
+		active, reloadPending = snap.Active, snap.ReloadPending
+		if snap.RetryAfterSec > 0 {
+			retryAfter = snap.RetryAfterSec
+		}
+	} else {
+		estimated, loaded, needed = p.contextGrowthNumbers(backendID, model, body, path)
+		active, reloadPending = growthBlockersR288(p, backendID, model)
+	}
 	extra := map[string]interface{}{
 		"reloadPending": reloadPending,
 		"activeStreams": active,

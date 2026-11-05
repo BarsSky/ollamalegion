@@ -274,17 +274,50 @@ func TestSelectBackend_WithReplicationGroup(t *testing.T) {
 		MaxInstances:   2,
 		TargetBackends: []string{"backend-1", "backend-2"},
 	})
-	// Удаляем старую группу и создаём новую с корректными instances
-	// (в реальности instances добавляются через warmup callback)
-	// Проверяем что GetGroupCandidates возвращает пустой список без instances
-	candidates := proxy.replicationSelector.GetGroupCandidates("llama3")
-	assert.Empty(t, candidates, "Без loaded instances кандидаты пустые")
+	// R447 (2026-11-05): «без loaded instances кандидатов нет» проверяем на
+	// группе с ДРУГИМ именем, чем у загруженной модели.
+	//
+	// ЖИВОЙ ФЛЕЙК CI (self-hosted Windows, -race): здесь стояло
+	// `assert.Empty(GetGroupCandidates("llama3"))` и
+	// `assert.Equal(0, GetGroupStats("llama3")["loaded"])`, но инстансы приходят
+	// ДВУМЯ путями — warmup-колбэком и подхватом из метрик (R80
+	// syncLoadedInstances), а подхват вызывает асинхронный placement-resync,
+	// запущенный ещё из NewProxy. Метрики выше показывают llama3 загруженной на
+	// двух бэкендах, поэтому фоновая горутина успевает «усыновить» два инстанса —
+	// и тогда loaded=2. Исход зависел от планировщика: локально adoption не
+	// успевал, в CI успевал. Ассерты закрепляли транзиентное состояние.
+	//
+	// Для llama3-test метрик с этой моделью нет, значит инстансов не появится ни
+	// по одному пути — проверка детерминирована.
+	assert.Empty(t, proxy.replicationSelector.GetGroupCandidates("llama3-test"),
+		"Без loaded instances кандидаты пустые")
 
 	// Проверяем GetGroupStats
-	stats := proxy.replicationSelector.GetGroupStats("llama3")
+	stats := proxy.replicationSelector.GetGroupStats("llama3-test")
 	assert.NotNil(t, stats)
-	assert.Equal(t, "llama3", stats["modelName"])
+	assert.Equal(t, "llama3-test", stats["modelName"])
 	assert.Equal(t, 0, stats["loaded"])
+
+	// А для llama3, у которой модель загружена на двух бэкендах, проверяем
+	// КОНТРАКТ, а не транзиентное число: кандидаты и статистика читаются из
+	// снимка инстансов, поэтому «сколько кандидатов» обязано совпадать с
+	// «loaded». Читать их одним вызовом нельзя (каждый берёт свой снимок), а
+	// подхват инстансов (R80) идёт в фоне — поэтому ждём СХОДИМОСТИ двух чисел,
+	// а не сравниваем один раз: одноразовое сравнение снова зависело бы от
+	// планировщика.
+	assert.Eventually(t, func() bool {
+		candidates := proxy.replicationSelector.GetGroupCandidates("llama3")
+		statsLive := proxy.replicationSelector.GetGroupStats("llama3")
+		if statsLive == nil {
+			return false
+		}
+		loaded, ok := statsLive["loaded"].(int)
+		if !ok {
+			return false
+		}
+		return len(candidates) == loaded
+	}, 3*time.Second, 20*time.Millisecond,
+		"кандидаты и статистика — два взгляда на один снимок инстансов")
 }
 
 // TestProxyGetClusterState - проверка получения состояния кластера

@@ -1,11 +1,11 @@
 {
-    "tag":  "r261106-0505",
-    "builtAt":  "2026-11-05T05:05:00Z",
-    "gitCommit":  "59dda55f",
+    "tag":  "r261106-0745",
+    "builtAt":  "2026-11-05T07:45:00Z",
+    "gitCommit":  "2ac8844e",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R431: вызов без поля name восстанавливается по id (call_<инструмент>) — cppworker gpu-r261106-0505. Сырой вывод Cline из VS Code показал [TOOL_CALLS][{\"id\":\"call_read_files\",\"function\":{\"files\":[…]]: имя только в id, аргументы внутри function — теперь такой вызов выполняется, а не закрывается как COMPLETED. Вместе с R429/R430 тело вызова больше не попадает в content ни на одной поверхности. Прочее без изменений: balancer r261103-2310 (R425), webui r261103-2230 (R425), imageworker 72ec210a.",
+    "note":  "R432/R433: преамбула инструментов больше не навязывает придуманный формат вызова (её копировала gemma-4, теряя name/arguments) — cppworker gpu-r261106-0745. Разбираются нативные формы: спец-токены кавычек gemma <|\"|>, питоновские одинарные кавычки, JSON-обёртка {tool_calls:[...]}; trim аргументов не срезает скобку массива. A/B первого хода Cline: gemma-4 5/5 и Qwen3.8-9B 4/4 (до R432 — 2/3 и 2/3). Прочее без изменений: balancer r261103-2310, webui r261103-2230, imageworker 72ec210a."id\":\"call_read_files\",\"function\":{\"files\":[…]]: имя только в id, аргументы внутри function — теперь такой вызов выполняется, а не закрывается как COMPLETED. Вместе с R429/R430 тело вызова больше не попадает в content ни на одной поверхности. Прочее без изменений: balancer r261103-2310 (R425), webui r261103-2230 (R425), imageworker 72ec210a.",
     "images":  [
                    {
                        "service":  "loadbalancer",
@@ -18,9 +18,9 @@
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261106-0505",
-                       "imageTag":  "gpu-r261106-0505",
-                       "imageId":  "sha256:b8dee746c4ac0c84a75ea15d3b2cfbd1a926e8336e16e19f2a0e48e4cc0871aa",
+                       "image":  "ollama-legion/cppworker:gpu-r261106-0745",
+                       "imageTag":  "gpu-r261106-0745",
+                       "imageId":  "sha256:183bfb3318db597d2591603a64b5457c2c2f713b68132b82f946309bb40a8827",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

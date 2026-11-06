@@ -1,38 +1,38 @@
 {
-    "tag":  "r261106-0048",
-    "builtAt":  "2026-11-06T00:48:00Z",
-    "gitCommit":  "b1dc1a2e",
+    "tag":  "r261106-0718",
+    "builtAt":  "2026-11-06T04:18:00Z",
+    "gitCommit":  "6a90c528",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R442-R449. Balancer пересобран из HEAD (b1dc1a2e, добавлен R449), cppworker остаётся gpu-r261105-2238 (c6569915). R449: модель, файл которой ЛЕЖИТ НА ДИСКЕ, но сейчас не загружена (нагрузку держит другая модель), больше не получает терминальный 404 «модели нет в каталоге бэкенда» — предпроверка сверяется и с каталогом файлов; отказ остаётся только если модели нет ни среди загруженных, ни на диске, и список в отказе теперь про диск. Остальное из R442-R448 без изменений: R447 (окно растят по требованию запроса; числа тела = числа текста), R448 (build/build_commit в /api/version и /api/info), подсказка по отказам клиента, AutoTune recommend-only, дампы выключены.",
+    "note":  "R442-R451. Оба образа пересобраны из HEAD (6a90c528). R451 закрывает живой дефект хода Cline: (1) окно не растят из max_tokens клиента — в DecidePreflight действует правило R447 (растим только если не влезает сам промпт, клиент явно попросил больше, или под ответ не остаётся 256 токенов); в таргет входит минимальный вывод, а не весь бюджет клиента; откат целиком LB_AGENT_WINDOW_BUDGET=client; (2) cppworker печатает, какие параметры загрузки разошлись (changed: [\u0027contextSize 32768→2048\u0027]); (3) отложенная из-за живого стрима загрузка больше не выдаётся за начатую — ответ говорит «busy serving another request, did NOT unload, retry in Ns». Остальное из R442-R449 без изменений: R447 (числа тела = числа текста), R448 (build/build_commit по HTTP), R449 (модель на диске не объявляется отсутствующей), подсказка по отказам клиента, AutoTune recommend-only, дампы выключены.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-06T00:55:00Z",
+                          "verifiedAt":  "2026-11-06T04:45:00Z",
                           "debugDumps":  "off (CPPWORKER_DEBUG_PROMPT_FILE / CPPWORKER_DEBUG_REQUEST_FILE / CPPWORKER_DEBUG_TOOL_ARGS / CPPWORKER_DEBUG_TOOL_PROMPT закомментированы в deployments/.env)",
                           "proof":  [
-                                        "GET /api/version -\u003e build_commit=b1dc1a2e, build_version=r261106-0048",
-                                        "R447: окно 2048 + короткий стриминг без num_ctx -\u003e 200, окно не изменилось, reload не запускался",
-                                        "R447: большой промпт на окне 2048 -\u003e 503, числа текста и тела совпали (30198/2048/60)",
-                                        "tool_calls: не-стриминг и стриминг -\u003e полные аргументы {path,new_text}",
-                                        "R449: запрос к модели, которая есть на диске, но не загружена -\u003e больше НЕ 404 model_not_found (до правки — 404)"
+                                        "GET /api/version -\u003e build_commit=6a90c528 (balancer), /api/info -\u003e то же (cppworker)",
+                                        "R451/1: 4B окно 61440, промпт по оценке 49731, max_tokens 15393 -\u003e HTTP 200, перезагрузок 0 (старая формула дала бы 65188 \u003e 61440 и reload)",
+                                        "R451/1: лог «preflight: рост окна под агентский ход не нужен (R451)» с estimated=49731, loaded=61440, client_output_budget=15393, mode=minimal",
+                                        "R451/2: запрос загрузки с другим окном -\u003e лог «reloading model because parameters changed, changed: [contextSize 32768→2048, gpuLayers 36→-1]»",
+                                        "R451/3: запрос второй модели во время живого стрима -\u003e 503 «busy serving another request … the balancer did NOT unload it — retry in 5s» (до правки: «load started, waiting ~30-180s»)"
                                     ]
                       },
     "images":  [
                    {
                        "service":  "loadbalancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r261106-0048",
-                       "imageTag":  "r261106-0048",
-                       "imageId":  "sha256:e9f44b6011e1544882e2277c84b53f342f1cc39dd933e5a5891098ddd339ae10",
+                       "image":  "ollama-legion/balancer:r261106-0718",
+                       "imageTag":  "r261106-0718",
+                       "imageId":  "sha256:36f0643b5754ea7e14c4844b8d4c5dd56106dcdb766cd4002f6f4ddc6cabc40d",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261105-2238",
-                       "imageTag":  "gpu-r261105-2238",
-                       "imageId":  "sha256:165d4ae516e5c73916f9f22b67fa506330ac23f24ce5d3e26f7baa5f664d36f6",
+                       "image":  "ollama-legion/cppworker:gpu-r261106-0718",
+                       "imageTag":  "gpu-r261106-0718",
+                       "imageId":  "sha256:4334521b8ac19e507fd191890d1032006f279bc208f06b36c0c58950b60ce8bc",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

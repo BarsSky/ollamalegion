@@ -1276,18 +1276,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						forceRebalance = true
 					}
 					if loadRatio > 0.50 || forceRebalance {
-						altBackend := p.findLessLoadedBackendWithModel(model, targetBackend, allowedTypes)
+						// R459 (2026-11-06): «менее загруженный» не значит
+						// «лучше». Живой дефект: живую сессию увели на копию с
+						// МЕНЬШИМ окном (32768 против 65536 на слот), и
+						// агентский ход сломался — контекст перестал
+						// помещаться посреди работы. Переезд на холодный
+						// бэкенд (модели нет) — тот же класс: unload+load
+						// посреди сессии. Отсекаем таких кандидатов в том же
+						// проходе отбора, а не после.
+						moveGate := p.sessionMoveGateR459(targetBackend, model, parsed.NumCtx)
+						altBackend := p.findLessLoadedBackendWithModelWhere(model, targetBackend, allowedTypes, moveGate)
 						if altBackend != "" {
 							logger.Get().Infow("rebalancing session to less loaded backend (same model)",
 								"session", sessionID, "from", targetBackend, "to", altBackend,
-								"load_ratio", loadRatio, "force", forceRebalance)
+								"load_ratio", loadRatio, "force", forceRebalance,
+								"window_gate", "R459")
 							targetBackend = altBackend
 						} else {
-							altBackend = p.findLessLoadedBackendAny(model, targetBackend, allowedTypes)
+							altBackend = p.findLessLoadedBackendAnyWhere(model, targetBackend, allowedTypes, moveGate)
 							if altBackend != "" {
 								logger.Get().Infow("rebalancing session to less loaded backend (any)",
 									"session", sessionID, "from", targetBackend, "to", altBackend,
-									"load_ratio", loadRatio, "force", forceRebalance)
+									"load_ratio", loadRatio, "force", forceRebalance,
+									"window_gate", "R459")
 								targetBackend = altBackend
 							} else if forceRebalance {
 								logger.Get().Warnw("force rebalance failed, queueing request",

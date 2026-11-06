@@ -274,8 +274,13 @@ var r304SelectionSites = []struct{ file, fn string }{
 	{"backend_selector.go", "findLeastLoadedBackendWithModel"},
 	{"backend_selector.go", "findBackendWithModelExcludingLocked"},
 	{"backend_selector.go", "selectByResourcesExcluding"},
-	{"backend_selector.go", "findLessLoadedBackendWithModel"},
-	{"backend_selector.go", "findLessLoadedBackendAny"},
+	// R459 (2026-11-06): отбор с предикатом вынесен в ...Where-варианты, а сами
+	// публичные findLessLoadedBackendWithModel / …Any стали обёртками без цикла.
+	// Сторож проверяет ИМЕННО те функции, где перебираются кандидаты: проверять
+	// обёртку бессмысленно (вызова предиката в ней нет), а потерять фильтр донора
+	// в новом проходе — ровно класс R304 «новый путь обошёл общий фильтр».
+	{"backend_selector.go", "findLessLoadedBackendWithModelWhere"},
+	{"backend_selector.go", "findLessLoadedBackendAnyWhere"},
 	{"backend_selector.go", "findBackendWithModel"},
 	{"backend_selector.go", "findWarmingBackendForModelUnsafe"},
 	{"backend_selector.go", "findFreeBackendForModelUnsafe"},

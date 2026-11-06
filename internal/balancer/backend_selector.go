@@ -609,6 +609,21 @@ func (p *Proxy) findLeastLoadedBackendWithModel(modelName string, allowedTypes [
 
 // findLessLoadedBackendWithModel — поиск менее загруженного бэкенда с той же моделью
 func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID string, allowedTypes []types.BackendType) string {
+	return p.findLessLoadedBackendWithModelWhere(modelName, excludeBackendID, allowedTypes, nil)
+}
+
+// findLessLoadedBackendWithModelWhere — то же, но кандидат можно ОТКЛОНИТЬ
+// предикатом.
+//
+// R459 (2026-11-06): нужно, чтобы «менее загруженный» не означал «хуже по
+// окну/готовности». Живой дефект: живую сессию увели на копию с МЕНЬШИМ окном,
+// и агентский ход сломался. Предикат решает это в том же проходе, а не
+// отдельной проверкой уже выбранного (иначе второй по загрузке кандидат, вполне
+// годный, остаётся нерассмотренным).
+func (p *Proxy) findLessLoadedBackendWithModelWhere(
+	modelName, excludeBackendID string, allowedTypes []types.BackendType,
+	allow func(id string) bool,
+) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -659,6 +674,10 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 		if !p.backendHasModel(metrics, modelName) {
 			continue
 		}
+		// R459: предикат вызывающего (например, «копия покрывает окно сессии»).
+		if allow != nil && !allow(id) {
+			continue
+		}
 
 		loadRatio := float64(active) / float64(maxReqs)
 		if loadRatio < bestLoadRatio {
@@ -674,6 +693,15 @@ func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID strin
 // При равном loadRatio выбирает бэкенд с лучшим score (deterministic).
 // Если модель не загружена на выбранном бэкенде — запускает асинхронный warmup.
 func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string, allowedTypes []types.BackendType) string {
+	return p.findLessLoadedBackendAnyWhere(modelName, excludeBackendID, allowedTypes, nil)
+}
+
+// findLessLoadedBackendAnyWhere — вариант findLessLoadedBackendAny с предикатом
+// кандидата (R459: не уводить живую сессию туда, где окно меньше/модели нет).
+func (p *Proxy) findLessLoadedBackendAnyWhere(
+	modelName, excludeBackendID string, allowedTypes []types.BackendType,
+	allow func(id string) bool,
+) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -714,6 +742,10 @@ func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string, all
 		state.mu.Unlock()
 
 		if maxReqs <= 0 {
+			continue
+		}
+		// R459: предикат вызывающего (окно/готовность модели на кандидате).
+		if allow != nil && !allow(id) {
 			continue
 		}
 

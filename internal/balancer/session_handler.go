@@ -68,22 +68,34 @@ func (p *Proxy) rebalanceIfNeeded(model, targetBackend, sessionID, clientName st
 	forceRebalance := loadRatio >= 1.0
 
 	if loadRatio > 0.50 || forceRebalance {
+		// R459 (2026-11-06): «менее загруженный» не значит «подходит». Этот
+		// проход — второй экземпляр той же ребалансировки, что в proxy.go, и
+		// дефект у них общий: живую сессию уводило на копию с МЕНЬШИМ окном
+		// (или без модели вовсе — unload+load посреди хода). Окно клиента здесь
+		// неизвестно (r не парсится), поэтому действует нижняя граница — «не
+		// меньше, чем у сессии сейчас».
+		moveGate := p.sessionMoveGateR459(targetBackend, model, 0)
+
 		// Сначала ищем бэкенд с той же моделью
-		altBackend := p.findLessLoadedBackendWithModel(model, targetBackend, nil)
+		altBackend := p.findLessLoadedBackendWithModelWhere(model, targetBackend, nil, moveGate)
 		if altBackend != "" {
 			logger.Get().Infow("rebalancing session to less loaded backend (same model)",
 				"session", sessionID, "from", targetBackend, "to", altBackend,
-				"load_ratio", loadRatio, "force", forceRebalance)
+				"load_ratio", loadRatio, "force", forceRebalance, "window_gate", "R459")
 			return altBackend
 		}
 
 		// Затем ищем любой менее загруженный (даже без модели — Ollama загрузит при первом запросе).
 		// Это холодный старт, но лучше чем 503 на перегруженном бэкенде.
-		altBackend = p.findLessLoadedBackendAny(model, targetBackend, nil)
+		//
+		// R459: кандидат без загруженной модели предикатом отклоняется — переезд
+		// живой сессии на холодную копию стоил клиенту минуты тишины и мог дать
+		// меньшее окно. Ждать СВОЙ слот (правило R139) дешевле.
+		altBackend = p.findLessLoadedBackendAnyWhere(model, targetBackend, nil, moveGate)
 		if altBackend != "" {
 			logger.Get().Infow("rebalancing session to less loaded backend (any, may cold-start)",
 				"session", sessionID, "from", targetBackend, "to", altBackend,
-				"load_ratio", loadRatio, "force", forceRebalance)
+				"load_ratio", loadRatio, "force", forceRebalance, "window_gate", "R459")
 			return altBackend
 		}
 

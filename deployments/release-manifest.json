@@ -1,37 +1,39 @@
 {
-    "tag":  "r261106-1046",
-    "builtAt":  "2026-11-06T07:46:00Z",
-    "gitCommit":  "4be9e3b6",
+    "tag":  "r261106-1320",
+    "builtAt":  "2026-11-06T13:23:57Z",
+    "gitCommit":  "ccf9da37",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R442-R457. Оба образа пересобраны из HEAD (4be9e3b6); на стенде ВКЛЮЧЕНЫ диагностические дампы (CPPWORKER_DEBUG_REQUEST_FILE, CPPWORKER_DEBUG_PROMPT_FILE, CPPWORKER_DEBUG_TOOL_ARGS=1) — временно, для разбора прогонов Cline. Новое: R455 (подсказка при падающих командах: ненулевой код возврата / файл не найден), R456 (детектор повтора того же вызова с теми же аргументами + подсказка), R457 (файл текстом вместо вызова: подсказка на следующий ход + Warn-строка и поле file_body_instead_of_call в summary). Остальное: R451 (окно растят только по требованию запроса), R452 (gpuLayers -1/-2 по намерению), R453 (калибровка не завышает большие промпты), R454 (гонка в фоновой загрузке), R447/R448/R449.",
+    "note":  "R466 (balancer пересобран из ccf9da37; образ cppworker НЕ пересобирался и остаётся gpu-r261106-1130 — его код с 10fe8a34 не менялся, это состояние проверено живыми запросами). R466: отказ 413 по физическому потолку остаётся ТОЛЬКО для окна, которое клиент запросил явно (num_ctx). Окно, выведенное из НАШЕЙ оценки промпта (эвристика по символам, завышает в 2-3 раза — живой случай «требуется 151743 при занятых 63.6k»), теперь урезается до потолка на клиента (ceiling/slots, выравнивание ВНИЗ до 256) и грузится. То же правило применено к росту окна на стриминге (growthVerdictR301), а потолок и цель перезагрузки в stream_growth_r385 считаются в СУММАРНОМ окне (needed приходит НА КЛИЕНТА — при slots>1 раньше разрешался невыполнимый рост и перезагрузка шла с окном слота вдвое меньше нужного). Плюс docs: CPPWORKER_MAX_N_PREDICT в реестре переключателей (305dd33b) — стюард падал, CI был красный. Ранее в кадре: R463-R465 (бюджет вывода только повышается до CPPWORKER_MAX_N_PREDICT=16384, reasoning 8192; R188 больше не врёт; политика видна в /api/v1/cppworker/config).",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-06T07:58:00Z",
+                          "verifiedAt":  "2026-11-06T13:32:00Z",
                           "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args в лог; файлы внутри контейнера в /app/diag/",
                           "proof":  [
-                                        "GET /api/version -\u003e build_commit=4be9e3b6 (balancer), /api/info -\u003e то же (cppworker)",
-                                        "R455/R456/R457: синтетический запрос с тремя классами проблем -\u003e лог «client tool guidance injected», command_failed=true repeated_call=true file_body_answer=true, hint_len=1352",
-                                        "R455/R456/R457: в собранном промпте (/app/diag/prompt-last.txt) присутствуют все три инструкции (R455:, R456:, R457:) и определения инструментов",
-                                        "R452/R453/R451 проверены ранее на r261106-0935 и не менялись"
+                                        "GET /api/version -\u003e build=r261106-1320, build_commit=ccf9da37 (до этого 10fe8a34 — пересборка с явными BALANCER_GIT_COMMIT/BALANCER_BUILD_DATE)",
+                                        "R466 живой прогон: промпт 600 КБ (реальных токенов 75015 по токенизатору воркера) без num_ctx. В логе: «preflight: R466 выведенное окно урезано до потолка (оценка завышена)» -\u003e «загруженное окно меньше запрошенного — перезагружаем под клиента» -\u003e «async reload succeeded, new_n_ctx=65536» (48 с). До R466 этот же вход давал 413 «требуется выделить столько-то на контекстное окно» по НАШЕЙ оценке, без перезагрузки",
+                                        "После перезагрузки повторный тот же запрос: «R466 … урезано до потолка» + «загруженное окно не меньше запрошенного — reload не нужен» (цикла перезагрузок нет), ответ воркера проходит как есть: 413 с actual_prompt_tokens=75015, required_n_ctx=131072, suggestion",
+                                        "Поверхность OpenAI (18079 /v1/chat/completions), тот же промпт: 413 с ПОЛНЫМ телом воркера (Content-Length 1279: actual_prompt_tokens=75015, deficit_tokens=9992, min_n_predict_floor=512, profile_endpoint) — тело не подменяется и не теряется",
+                                        "Нативный путь /api/chat, тот же промпт: 413 с объяснением (898 байт): reason «required n_ctx=75527 exceeds configured max=65536», limited_by=env, safe_max_n_ctx=63492, suggestion. Раньше в этом месте клиент видел пустое тело — проверено: тело есть, раннее «пусто» было ошибкой чтения ответа на стороне PowerShell",
+                                        "Границы живьём: LB_NCTX_RELOAD_MAX_N_CTX=65536 (операторский потолок), профиль contextLengthMax=131072, GGUF max=262144 -\u003e действующий потолок 65536: R466 урезает именно до него"
                                     ]
                       },
     "images":  [
                    {
                        "service":  "loadbalancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r261106-1046",
-                       "imageTag":  "r261106-1046",
-                       "imageId":  "sha256:4fa8b30aaeaaa8321fba8497e40e172f36c8d38090d4a5d24d08fe03c34ef487",
+                       "image":  "ollama-legion/balancer:r261106-1320",
+                       "imageTag":  "r261106-1320",
+                       "imageId":  "sha256:3cacf19f66d07ac22b1c08ecdce77cda3b2c0bd253e6852f9aad8c983270d602",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261106-1046",
-                       "imageTag":  "gpu-r261106-1046",
-                       "imageId":  "sha256:741cfb9f05bcbfca78c421bd616c41d2ad8a6022d36d03190272037bbe3b9fc7",
+                       "image":  "ollama-legion/cppworker:gpu-r261106-1130",
+                       "imageTag":  "gpu-r261106-1130",
+                       "imageId":  "sha256:efaf3b097b12c6cfc5d4cb1662f887787ca4611774297ef49088ea2fa3cb53a7",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

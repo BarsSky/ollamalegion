@@ -80,11 +80,15 @@ func TestR467_EstimateIsLabelled(t *testing.T) {
 	if tokens, _ := out["tokens"].(float64); tokens <= 0 {
 		t.Errorf("tokens = %v, want > 0", out["tokens"])
 	}
-	if note, _ := out["note"].(string); note == "" {
+	notice, _ := out["notice"].(string)
+	if notice == "" {
 		t.Error("нет пояснения, почему это оценка — клиент не поймёт, можно ли верить числу")
 	}
-	if notice, _ := out["template_notice"].(string); !strings.Contains(notice, "template") {
+	if !strings.Contains(notice, "template") {
 		t.Errorf("нет оговорки про chat template: %q", notice)
+	}
+	if !strings.Contains(notice, "not loaded") {
+		t.Errorf("нет причины «модель не загружена»: %q", notice)
 	}
 }
 

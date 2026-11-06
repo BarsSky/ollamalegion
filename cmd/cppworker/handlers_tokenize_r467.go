@@ -31,11 +31,12 @@ import (
 
 // tokenizeRequestR467 — тело POST /api/tokenize.
 type tokenizeRequestR467 struct {
-	Model string `json:"model"`
-	Text  string `json:"text"`
 	// Messages — альтернатива Text: содержимое сообщений. Роли и структура
 	// сохраняются в ответе, чтобы клиент видел, где именно дорого.
+	// Порядок полей — под fieldalignment (govet), на JSON не влияет.
 	Messages []tokenizeMessageR467 `json:"messages"`
+	Model    string                `json:"model"`
+	Text     string                `json:"text"`
 }
 
 type tokenizeMessageR467 struct {
@@ -49,15 +50,23 @@ type tokenizeMessageResultR467 struct {
 	Chars  int    `json:"chars"`
 }
 
+// tokenizeResponseR467 — порядок полей подобран под fieldalignment (govet):
+// сначала срез (24 байта с указателем), затем строки (16), затем числа (8) и
+// bool (1); указателей ровно столько, сколько нужно (72 байта указательного
+// региона). Перестановка НЕ влияет на JSON — имена заданы тегами.
+//
+// `notice` — ОДНО поле вместо прежних note+template_notice: постоянная оговорка
+// (chat template и tools[] не применены) и переменная причина оценки живут в
+// одном тексте. Два поля не проходили fieldalignment, а разделять их для клиента
+// смысла нет: он всё равно показывает одну строку.
 type tokenizeResponseR467 struct {
-	Model          string                      `json:"model"`
-	Tokens         int                         `json:"tokens"`
-	Source         string                      `json:"source"`
-	ModelLoaded    bool                        `json:"model_loaded"`
-	Chars          int                         `json:"chars"`
-	Messages       []tokenizeMessageResultR467 `json:"messages,omitempty"`
-	Note           string                      `json:"note,omitempty"`
-	TemplateNotice string                      `json:"template_notice"`
+	Messages    []tokenizeMessageResultR467 `json:"messages,omitempty"`
+	Model       string                      `json:"model"`
+	Source      string                      `json:"source"`
+	Notice      string                      `json:"notice"`
+	Tokens      int                         `json:"tokens"`
+	Chars       int                         `json:"chars"`
+	ModelLoaded bool                        `json:"model_loaded"`
 }
 
 // handleTokenizeR467 — POST /api/tokenize.
@@ -92,7 +101,7 @@ func handleTokenizeR467(w http.ResponseWriter, r *http.Request) {
 	resp := tokenizeResponseR467{
 		Model:       req.Model,
 		ModelLoaded: loaded,
-		TemplateNotice: "chat template, tools[] and the system preamble are NOT applied — " +
+		Notice: "chat template, tools[] and the system preamble are NOT applied — " +
 			"these are the tokens of the given strings only",
 	}
 
@@ -104,7 +113,7 @@ func handleTokenizeR467(w http.ResponseWriter, r *http.Request) {
 		resp.Tokens = n
 		exactAll = exact
 		if !exact {
-			resp.Note = estimateNoteR467(loaded)
+			resp.Notice = appendNoticeR467(resp.Notice, estimateNoteR467(loaded))
 		}
 	}
 
@@ -131,7 +140,7 @@ func handleTokenizeR467(w http.ResponseWriter, r *http.Request) {
 		resp.Tokens = total
 		resp.Chars = chars
 		if !exactAll {
-			resp.Note = estimateNoteR467(loaded)
+			resp.Notice = appendNoticeR467(resp.Notice, estimateNoteR467(loaded))
 		}
 	}
 
@@ -150,6 +159,15 @@ func handleTokenizeR467(w http.ResponseWriter, r *http.Request) {
 		"model_loaded", loaded, "chars", resp.Chars,
 		"messages", len(req.Messages))
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// appendNoticeR467 — добавить причину оценки к постоянной оговорке (одно поле
+// notice вместо двух: см. комментарий у tokenizeResponseR467).
+func appendNoticeR467(notice, reason string) string {
+	if notice == "" {
+		return reason
+	}
+	return notice + "; " + reason
 }
 
 // estimateNoteR467 — честное объяснение, почему число — оценка.

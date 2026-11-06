@@ -7,23 +7,6 @@
 // показывал бы 0 — ровно та жалоба, из-за которой это и делается.
 package api
 
-// mapValue — вложенный объект по ключу (nil-safe).
-func (c cppworkerSnapshot) mapValue(key string) map[string]interface{} {
-	if c.Config == nil {
-		return nil
-	}
-	raw, ok := c.Config[key]
-	if !ok {
-		return nil
-	}
-	switch m := raw.(type) {
-	case map[string]interface{}:
-		return m
-	default:
-		return nil
-	}
-}
-
 // viewIntR465 — число из вложенного объекта.
 func viewIntR465(m map[string]interface{}, key string) (int, bool) {
 	if m == nil {

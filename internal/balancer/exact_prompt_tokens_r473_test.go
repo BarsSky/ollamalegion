@@ -69,14 +69,15 @@ func TestR473_EstimateSourceIsNotTrusted(t *testing.T) {
 // паники и без «нуля вместо окна».
 func TestR473_HTTPFailuresFallBack(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
+		name string
+		body string
+		// статус после указателей: fieldalignment (govet)
 		status int
-		body   string
 	}{
-		{"старый воркер без ручки", http.StatusNotFound, `{"error":"404 page not found"}`},
-		{"внутренняя ошибка", http.StatusInternalServerError, `boom`},
-		{"мусор в теле", http.StatusOK, `not json`},
-		{"токенизатор вернул 0", http.StatusOK, `{"tokens":0,"source":"tokenizer"}`},
+		{"старый воркер без ручки", `{"error":"404 page not found"}`, http.StatusNotFound},
+		{"внутренняя ошибка", `boom`, http.StatusInternalServerError},
+		{"мусор в теле", `not json`, http.StatusOK},
+		{"токенизатор вернул 0", `{"tokens":0,"source":"tokenizer"}`, http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

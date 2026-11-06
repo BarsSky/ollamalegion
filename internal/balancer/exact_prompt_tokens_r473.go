@@ -71,9 +71,11 @@ func exactTokensEnabledR473() bool {
 }
 
 // tokenizeResponseR473 — ответ воркера (R467), только нужные поля.
+// Порядок полей — под fieldalignment (govet): указатели впереди, числа и bool
+// после. На JSON не влияет (имена заданы тегами).
 type tokenizeResponseR473 struct {
-	Tokens      int    `json:"tokens"`
 	Source      string `json:"source"`
+	Tokens      int    `json:"tokens"`
 	ModelLoaded bool   `json:"model_loaded"`
 }
 

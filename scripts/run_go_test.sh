@@ -49,13 +49,32 @@ echo "--- упавшие пакеты и тесты (с сообщениями �
 # `race detected during execution of test`. Раньше этот заголовок не попадал в
 # сводку, и по логу ubuntu-джобы (прогон 40326149098) оставались только
 # `FAIL <pkg>` и хвост чужих логов — имя упавшего теста терялось.
+#
+# R458 (2026-11-06): печатаем и строки ПЕРЕД `--- FAIL:`. Go пишет сообщение
+# t.Errorf/t.Fatalf ДО строки `--- FAIL:` (это `t.Log`-порядок), поэтому сводка
+# без контекста снова теряла самого главного — ЧТО именно не сошлось. Живой
+# случай: прогон 42184010804, `TestReload_DegradedHeaderOnCPUOnly` — в логе
+# осталось только имя теста, и причину пришлось бы искать заново.
+# Держим «окно» из предыдущих строк и печатаем его при срабатывании FAIL.
 awk '
-  /^(FAIL|--- FAIL:|panic:|# )/ { show=1; print; next }
-  /^WARNING: DATA RACE/         { race=45; show=0; print; next }
-  race > 0                      { print; race--; next }
-  show && /^[[:space:]]/        { print; next }
+  { prev[NR % 12] = $0 }
+  /^(FAIL|--- FAIL:|panic:|# )/ {
+    if ($0 ~ /^--- FAIL:/) {
+      print "    … контекст перед этим тестом …"
+      start = NR - 11
+      if (start < 1) { start = 1 }
+      for (i = start; i < NR; i++) {
+        idx = i % 12
+        if (idx in prev) { print prev[idx] }
+      }
+    }
+    show = 1; print; next
+  }
+  /^WARNING: DATA RACE/          { race=45; show=0; print; next }
+  race > 0                       { print; race--; next }
+  show && /^[[:space:]]/         { print; next }
   { show=0 }
-' "$out" | head -200
+' "$out" | head -260
 echo "--- последние 60 строк вывода ---"
 tail -60 "$out"
 exit "$status"

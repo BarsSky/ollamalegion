@@ -1558,7 +1558,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(waitErr, errAdmissionTimeout):
 				// R117: отчитываемся РЕАЛЬНЫМ бюджетом ожидания (max(admission,
 				// auto-load)), иначе клиент видит 300 c там, где ждал 900.
-				writeAdmissionUnavailable(w, model, sessionKey, position, waited, p.admissionWaitBudget())
+				writeAdmissionUnavailable(w, p, model, sessionKey, position, waited, p.admissionWaitBudget())
 			case errors.Is(waitErr, errAdmissionDisabled):
 				http.Error(w, "Service unavailable - all backends busy", http.StatusServiceUnavailable)
 			default:

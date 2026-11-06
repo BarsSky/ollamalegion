@@ -408,7 +408,7 @@ func TestImageLockWaitCap_SoleBlockerCapsWait(t *testing.T) {
 // 503 обязан отчитаться ФАКТИЧЕСКИ применённым лимитом и назвать причину.
 func TestWriteAdmissionUnavailable_ReportsAppliedLimitAndReason(t *testing.T) {
 	capped := httptest.NewRecorder()
-	writeAdmissionUnavailable(capped, "m1", "sess", 3, time.Second, 5*time.Second)
+	writeAdmissionUnavailable(capped, nil, "m1", "sess", 3, time.Second, 5*time.Second)
 	if got := capped.Header().Get("X-Queue-Wait-Max-Sec"); got != "1" {
 		t.Errorf("X-Queue-Wait-Max-Sec = %q, want 1 (применённый лимит, а не настроенные 5 c)", got)
 	}
@@ -427,7 +427,7 @@ func TestWriteAdmissionUnavailable_ReportsAppliedLimitAndReason(t *testing.T) {
 
 	// Обычный случай (waited == предел): причина не выдумывается.
 	plain := httptest.NewRecorder()
-	writeAdmissionUnavailable(plain, "m1", "sess", 3, 5*time.Second, 5*time.Second)
+	writeAdmissionUnavailable(plain, nil, "m1", "sess", 3, 5*time.Second, 5*time.Second)
 	if got := plain.Header().Get("X-Queue-Wait-Reason"); got != "" {
 		t.Errorf("X-Queue-Wait-Reason = %q, want пусто (лимит не сужался)", got)
 	}

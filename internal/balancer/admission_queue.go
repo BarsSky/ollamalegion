@@ -824,7 +824,7 @@ func (lr *LlamaCppRouter) acquireInferenceAdmission(
 		// отправлены, поэтому статус честный (до ADMISSION-HONEST здесь был 200
 		// с keepalive-телом или с chunk с ошибкой внутри стрима).
 		maxWait := lr.proxy.admissionWaitBudget()
-		writeAdmissionUnavailable(w, model, session, position, maxWait, maxWait)
+		writeAdmissionUnavailable(w, lr.proxy, model, session, position, maxWait, maxWait)
 		return nil, false
 	default:
 		// Клиент отменил запрос, пока ждал слот: отвечать уже некому.
@@ -844,7 +844,16 @@ func (lr *LlamaCppRouter) acquireInferenceAdmission(
 // возвращается только при remaining <= 0, то есть waited >= применённого
 // лимита всегда. Поэтому здесь достаточно сравнения, без протаскивания флага
 // через сигнатуру (лишний параметр сломал бы всех вызывающих).
-func writeAdmissionUnavailable(w http.ResponseWriter, model, session string, position int, waited, maxWait time.Duration) {
+//
+// R460 (2026-11-06): в тело добавлен список причин по каждому бэкенду
+// (`backend_rejections`). Прежний текст «all inference slots are busy, waited and
+// timed out» оператор читал как «очередь переполнена», хотя живой случай был
+// другим: единственная копия занята, а второй бэкенд свободен, но без модели.
+// proxy может быть nil (юнит-тесты) — тогда поле просто отсутствует.
+func writeAdmissionUnavailable(
+	w http.ResponseWriter, proxy *Proxy, model, session string,
+	position int, waited, maxWait time.Duration,
+) {
 	capped := waited > 0 && waited < maxWait
 	if capped {
 		// Отчитываемся ФАКТИЧЕСКИ применённым лимитом: иначе клиент и оператор
@@ -875,6 +884,14 @@ func writeAdmissionUnavailable(w http.ResponseWriter, model, session string, pos
 		payload["waitReason"] = imageLockWaitReason
 		payload["waitReasonHint"] = "the text backends are on a GPU held by an image generation " +
 			"(balancing.image.coexistence=exclusive); retry after it finishes or lower balancing.image.queueWaitTimeoutSec expectations"
+	}
+	// R460: почему очередь не рассосалась — по каждому бэкенду.
+	if proxy != nil {
+		if rejections := proxy.backendRejectionsR460(model, ""); len(rejections) > 0 {
+			payload["backend_rejections"] = rejections
+			payload["backend_rejections_hint"] = "each entry explains why that backend could not take the request " +
+				"(disabled_by_operator / donor_or_group_worker / model_not_loaded / all_slots_busy / resource_limit)"
+		}
 	}
 	writeJSON(w, http.StatusServiceUnavailable, payload)
 }

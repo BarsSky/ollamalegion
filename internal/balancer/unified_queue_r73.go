@@ -155,9 +155,14 @@ func (p *Proxy) waitForInferenceBackend(
 	position = aq.position(admissionAnyBackend, w)
 	enqueued := w.enqueued
 	deadline := enqueued.Add(wait)
+	// R460 (2026-11-06): очередь — это действие, и у него должна быть видимая
+	// причина. Список строится теми же предикатами, что и отбор.
+	rejections := p.backendRejectionsR460(model, bt)
 	logger.Get().Infow(i18n.T("balancer.unified_queue_r73.enqueued_any_backend_info"),
 		"model", model, "session", session, "position", position,
-		"wait_max_sec", int(wait.Seconds()))
+		"wait_max_sec", int(wait.Seconds()),
+		"rejected_backends", len(rejections),
+		"why_queued", rejectionsSummaryR460(rejections))
 	defer aq.remove(admissionAnyBackend, w)
 
 	for {

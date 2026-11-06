@@ -2041,6 +2041,21 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"model", modelName)
 			return true
 		}
+		// R471 (2026-11-06): ОТКРЫВАЮЩЕГО маркера может НЕ быть в тексте (канал
+		// открыт шаблоном), и тогда начало вывода уходило клиенту как ответ.
+		// Живой прогон: streamed_content_bytes=5363 при content_len=3323 — 2040
+		// символов английских размышлений уехали в content вместе с русским
+		// ответом, хотя финальный разбор считал их reasoning. Держим начало до
+		// закрывающего маркера (см. reasoning_start_hold_r471.go).
+		if emittedLen == 0 && reasoningStartHoldR471(prompt, modelName, reasoningEcho) {
+			reasoningHold = true
+			toolsHold = true
+			logger.Get().Infow("R471: начало вывода удерживается до закрывающего маркера размышлений",
+				"model", modelName,
+				"why", "клиент не просил размышления, но модель их умеет и в промпте они включены",
+				"switch", "CPPWORKER_TOOLS_THINKING")
+			return true
+		}
 		// Предохранитель 1c (R110, 2026-10-13): ответ начинается со СЛУЖЕБНОГО
 		// токена шаблона (`<end_of_turn>`, `<|end|>`, `<start_of_turn>model`).
 		// Такие дельты тоже не отдаём: служебный токен — не текст ответа, а когда

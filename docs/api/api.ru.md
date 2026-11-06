@@ -310,7 +310,8 @@ WebUI-страницей GGUF или админскими скриптами, н
 | `/api/v1/cppworker/config` | `GET` | Текущий config (env+defaults merged) | ❌ |
 | `/api/v1/cppworker/config/update` | `POST` | Apply override-параметров | ✅ API_TOKEN |
 | `/api/v1/cppworker/config/reload` | `POST` | Reload конфига | ✅ API_TOKEN |
-| `/api/v1/cppworker/config/runtime` | `GET` | Runtime-параметры загруженных моделей (n_ctx, gpu_layers и т.д.) | ❌ |
+| `/api/v1/cppworker/config/runtime` | `GET` | Runtime-параметры загруженных моделей (n_ctx, gpu_layers, `default_num_predict`, `output_budget_ceiling`) | ❌ |
+| `/api/tokenize` | `POST` | R467: точный подсчёт токенов токенизатором модели. Тело `{"model":"…","text":"…"}` либо `{"model":"…","messages":[{"role":"user","content":"…"}]}`. Ответ: `tokens`, `source` (`tokenizer` — модель загружена; `estimate` — эвристика, модели нет), `model_loaded`, `template_notice` (chat template и `tools[]` НЕ применяются). Нужен потому, что решения про окно на стороне балансера опираются на эвристику, завышающую в 2–3 раза | ✅ API_TOKEN |
 | `/api/v1/cppworker/reset-reload-counter` | `POST` | Сброс `ramFallbackAttempts` (cycle counter) | ✅ API_TOKEN |
 | `/api/v1/cppworker/health` | `GET` | Health check (v1 namespace) | ❌ |
 | `/api/v1/cppworker/metrics` | `GET` | Метрики (Prometheus-совместимые) | ❌ |

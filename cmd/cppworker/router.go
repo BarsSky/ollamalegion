@@ -98,6 +98,10 @@ func setupRouter() http.Handler {
 	mux.HandleFunc("/api/v1/cppworker/reset-reload-counter", authMiddleware(handleResetReloadCounter))
 	mux.HandleFunc("/api/v1/cppworker/health", handleHealth)
 	mux.HandleFunc("/api/v1/cppworker/metrics", handleInfo)
+	// R467 (2026-11-06): точный подсчёт токенов по запросу. Балансер решает про
+	// окно по эвристике (завышает в 2–3 раза), а живой токенизатор есть только
+	// здесь. Под auth: это операция над моделью пользователя, как и загрузка.
+	mux.HandleFunc("/api/tokenize", authMiddleware(handleTokenizeR467))
 	// Диагностика prompt-too-long: метаданные последнего inference-запроса
 	// (для runbook сценария B и для диагностики случаев "prompt_exceeds_context" в Cline).
 	mux.HandleFunc("/api/v1/cppworker/debug/last-prompt", authMiddleware(handleDebugLastPrompt))

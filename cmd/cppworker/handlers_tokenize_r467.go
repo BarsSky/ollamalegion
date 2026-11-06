@@ -96,15 +96,15 @@ func handleTokenizeR467(w http.ResponseWriter, r *http.Request) {
 			"these are the tokens of the given strings only",
 	}
 
+	exactAll := true
+
 	if req.Text != "" {
 		resp.Chars = len([]rune(req.Text))
-		resp.Tokens = countTokensSafeR467(req.Model, req.Text)
-		if loaded {
-			resp.Source = "tokenizer"
-		} else {
-			resp.Source = "estimate"
-			resp.Note = "model is not loaded: the real tokenizer is unavailable, " +
-				"this is pkg/tokencount heuristics (use GET /api/models/load to load it first)"
+		n, exact := countTokensSafeR467(req.Model, req.Text)
+		resp.Tokens = n
+		exactAll = exact
+		if !exact {
+			resp.Note = estimateNoteR467(loaded)
 		}
 	}
 
@@ -114,8 +114,12 @@ func handleTokenizeR467(w http.ResponseWriter, r *http.Request) {
 		chars := 0
 		for _, m := range req.Messages {
 			n := 0
+			exact := true
 			if m.Content != "" {
-				n = countTokensSafeR467(req.Model, m.Content)
+				n, exact = countTokensSafeR467(req.Model, m.Content)
+			}
+			if !exact {
+				exactAll = false
 			}
 			c := len([]rune(m.Content))
 			total += n
@@ -126,11 +130,19 @@ func handleTokenizeR467(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Tokens = total
 		resp.Chars = chars
-		if loaded {
-			resp.Source = "tokenizer"
-		} else if resp.Source == "" {
-			resp.Source = "estimate"
+		if !exactAll {
+			resp.Note = estimateNoteR467(loaded)
 		}
+	}
+
+	// R467b: источник числа определяется ФАКТОМ подсчёта, а не состоянием
+	// загрузки. Живой дефект: сразу после старта загрузки инстанс ещё не
+	// StateLoaded, счётчик молча падал на оценку, а ответ называл это
+	// "tokenizer" — на 600 000 символов 300 000 вместо 75 000.
+	if exactAll {
+		resp.Source = "tokenizer"
+	} else {
+		resp.Source = "estimate"
 	}
 
 	logger.Get().Infow("tokenize: counted",
@@ -140,17 +152,27 @@ func handleTokenizeR467(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// estimateNoteR467 — честное объяснение, почему число — оценка.
+func estimateNoteR467(loaded bool) string {
+	if loaded {
+		return "tokenizer returned no usable count (multilingual or broken vocab): " +
+			"this is pkg/tokencount heuristics, not the model tokenizer"
+	}
+	return "model is not loaded: the real tokenizer is unavailable, " +
+		"this is pkg/tokencount heuristics (load the model first via POST /api/models/load)"
+}
+
 // countTokensSafeR467 — точный подсчёт, безопасный при неинициализированном backend
 // (unit-тесты и самый ранний старт воркера): без живой модели отдаём оценку
 // pkg/tokencount, а не падаем нулевым указателем.
-func countTokensSafeR467(modelName, text string) int {
+func countTokensSafeR467(modelName, text string) (int, bool) {
 	if text == "" {
-		return 0
+		return 0, true
 	}
 	if backend == nil {
-		return tokencount.Estimate(text)
+		return tokencount.Estimate(text), false
 	}
-	return countTokens(modelName, text)
+	return backend.CountTokensExact(modelName, text)
 }
 
 // modelLoadedForTokenizeR467 — загружена ли модель (есть ли живой токенизатор).

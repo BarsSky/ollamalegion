@@ -3370,18 +3370,32 @@ func (b *Backend) GetEmbeddings(modelName string, text string) ([]float32, error
 // второй завышает ровно в 4 раза относительно первого. Теперь один
 // обоснованный оценщик на оба случая — см. pkg/tokencount.
 func (b *Backend) CountTokens(modelName string, text string) int {
+	n, _ := b.CountTokensExact(modelName, text)
+	return n
+}
+
+// CountTokensExact — R467b (2026-11-06): число токенов и признак «посчитано
+// РЕАЛЬНЫМ токенизатором загруженной модели» (exact=true), иначе это оценка
+// pkg/tokencount.
+//
+// ЗАЧЕМ ПРИЗНАК. Раньше фолбэк на оценку был невидим наружу. Живой прогон:
+// сразу после старта загрузки модели инстанс ещё не в StateLoaded, подсчёт шёл
+// оценкой, а получатель считал число точным — на тексте 600 000 символов вышло
+// 300 000 вместо 75 000. Число, о котором неизвестно, чем оно посчитано, нельзя
+// класть в решение про окно (это и есть корень R466).
+func (b *Backend) CountTokensExact(modelName string, text string) (int, bool) {
 	inst, err := b.getModelInstance(modelName)
 	if err != nil {
 		// Модель не загружена/выгружена — реального токенизатора нет.
-		return tokencount.Estimate(text)
+		return tokencount.Estimate(text), false
 	}
-	n := inst.handle.CountTokens(text)
-	if n <= 0 && text != "" {
+	n, exact := inst.handle.CountTokensExact(text)
+	if exact && n <= 0 && text != "" {
 		// llama_tokenize вернул 0 (multilingual / сломанный токенизатор) —
 		// оценка вместо нуля, иначе n_predict посчитает prompt пустым.
-		n = tokencount.Estimate(text)
+		return tokencount.Estimate(text), false
 	}
-	return n
+	return n, exact
 }
 
 // chatTemplateMu — сериализация вызовов chat template (R91, 2026-10-08).

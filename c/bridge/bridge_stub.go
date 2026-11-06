@@ -897,6 +897,12 @@ func (m *ModelHandle) CountTokens(text string) int {
 	return tokencount.Estimate(text)
 }
 
+// CountTokensExact — R467b: в stub-режиме точного токенизатора НЕТ, и это
+// говорится прямо (exact=false), а не выдаётся за факт.
+func (m *ModelHandle) CountTokensExact(text string) (int, bool) {
+	return tokencount.Estimate(text), false
+}
+
 // Tokenize возвращает ошибку в stub-режиме (нет словаря).
 // Round 15.1: в stub-режиме batched path не используется; сигнатура нужна
 // для компиляции пакета.

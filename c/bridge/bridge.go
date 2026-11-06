@@ -1735,6 +1735,7 @@ func (m *ModelHandle) GetChatTemplate() (string, error) {
 // функций (R434, 2026-11-05).
 //
 // ВОЗВРАЩАЕМ, ПОМИМО PROMPT'А:
+//
 //	toolsRendered — шаблон нарисовал секцию инструментов (сравнение рендеров с
 //	                tools и без в C-мосте). false → вызывающий обязан включить
 //	                текстовую преамбулу как fallback;
@@ -1943,17 +1944,35 @@ var ErrNoChatTemplate = fmt.Errorf("no chat template in GGUF metadata")
 // (латиница на 63-81%, кириллица до 304%) и возвращала 0 для текста короче
 // 4 символов. См. doc-комментарий пакета tokencount с таблицей измерений.
 func (m *ModelHandle) CountTokens(text string) int {
+	n, _ := m.CountTokensExact(text)
+	return n
+}
+
+// CountTokensExact — R467b (2026-11-06): то же число, но с честным признаком
+// «это РЕАЛЬНЫЙ токенизатор» (exact=true) или оценка pkg/tokencount (exact=false).
+//
+// ЗАЧЕМ. До этой правки фолбэк на оценку был невидим: наружу уходило только
+// число. Живой прогон: сразу после загрузки модели (инстанс ещё не в
+// StateLoaded) подсчёт шёл оценкой, а вызывающий считал его точным — на тексте
+// из 600 000 символов это дало 300 000 «токенов» вместо 75 000. Ровно та ошибка,
+// из-за которой решения про окно и принимались по догадке.
+func (m *ModelHandle) CountTokensExact(text string) (int, bool) {
 	if m == nil || m.ptr == nil {
-		return tokencount.Estimate(text)
+		return tokencount.Estimate(text), false
 	}
 	cText := C.CString(text)
 	defer C.free(unsafe.Pointer(cText))
 	n := C.bridge_count_tokens(m.ptr, cText)
 	if n < 0 {
-		// Токенизация недоступна — оценка вместо неё.
-		return tokencount.Estimate(text)
+		// Токенизация недоступна — оценка вместо неё, и это НАЗЫВАЕТСЯ.
+		return tokencount.Estimate(text), false
 	}
-	return int(n)
+	if n == 0 && text != "" {
+		// Токенизатор вернул 0 на непустом тексте (multilingual / сломанный
+		// словарь) — тоже не факт.
+		return tokencount.Estimate(text), false
+	}
+	return int(n), true
 }
 
 // Tokenize — Round 15.1: конвертирует text в int32 массив токенов. Нужно для

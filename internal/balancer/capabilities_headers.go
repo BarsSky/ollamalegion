@@ -31,6 +31,23 @@ func (p *Proxy) addModelCapabilitiesHeaders(w http.ResponseWriter, modelName str
 	for k, v := range headers {
 		w.Header().Set(k, v)
 	}
+	// R469 (2026-11-06): ОБЕЩАТЬ КЛИЕНТУ МОЖНО ТОЛЬКО ТО, ЧТО МЫ ДАДИМ.
+	//
+	// До этой правки X-Model-Max-Context нёс GGUF-потолок (например 131072), а
+	// обслуживать мы могли не больше операторского cap (на стенде 65536). Клиент
+	// строил историю по нашей подсказке и не запускал сжатие: по его данным запас
+	// до 130k ещё был. Снаружи это выглядело как «контекст не учитывается», хотя
+	// расходились именно числа.
+	//
+	// Теперь в X-Model-Max-Context — ДЕЙСТВУЮЩИЙ потолок обслуживания, а сырой
+	// GGUF уходит отдельным заголовком (метаданные не теряем, но и не выдаём их
+	// за предел обслуживания).
+	if eff, ggufMax := p.advertisedMaxContextR469(modelName); eff > 0 {
+		w.Header().Set("X-Model-Max-Context", strconv.Itoa(eff))
+		if ggufMax > eff {
+			w.Header().Set("X-Model-Gguf-Max-Context", strconv.Itoa(ggufMax))
+		}
+	}
 	// R216 (2026-10-21): ФАКТИЧЕСКОЕ окно загруженного инстанса.
 	//
 	// Клиент (deepseek harness, OpenWebUI) не может вычислить его сам: X-Model-

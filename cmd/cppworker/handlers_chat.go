@@ -1309,6 +1309,20 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	// R216: если шаблон открыл блок размышлений в ПРОМПТЕ, вывод начинается внутри него.
 	rcParser.SetImpliedOpen(PromptOpensReasoning(prompt))
 	rcSendReasoning := ReasoningWantedByClient(thinkOverride)
+	// R470 (2026-11-06): на tools-пути размышления отдаём только если клиент
+	// попросил ЯВНО (think:true). Иначе агентский клиент (Cline) сохраняет их как
+	// текст нашего ответа: в истории следующего запроса assistant-сообщение
+	// длиной ровно в reasoning предыдущего хода и на английском — модель видит
+	// свои размышления как свой прошлый ответ и продолжает планировать «вслух».
+	// Разбор — в reasoning_echo_r470.go.
+	reasoningEcho := toolsThinkingEchoR470(thinkOverride)
+	if !reasoningEcho && rcSendReasoning {
+		logger.Get().Infow("R470: размышления не отдаются клиенту на tools-пути",
+			"model", modelName,
+			"why", "клиент не просил think явно — иначе он сохранит их как текст ответа",
+			"switch", "CPPWORKER_TOOLS_THINKING")
+	}
+	rcSendReasoning = rcSendReasoning && reasoningEcho
 	// emittedContentRawLen — сколько байт content (ДО замены `\\n`) уже отдано
 	// дельтами. Нужен в think=false-ветке ниже, чтобы дослать остаток без
 	// R91-фолбэка «незакрытый reasoning → content».
@@ -1809,6 +1823,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// повтор R188 ещё на столько же и обрыв).
 	thinkingParser := NewReasoningStreamState()
 	thinkingParser.SetImpliedOpen(PromptOpensReasoning(prompt))
+	// R470 (2026-11-06): эхо размышлений на tools-пути — только по явной просьбе
+	// клиента (think:true). Иначе Cline сохраняет их как текст нашего ответа, и
+	// модель на следующем ходу видит свои размышления как свой прошлый ответ
+	// (разбор — reasoning_echo_r470.go). Разбор вывода и промпт не меняются.
+	reasoningEcho := toolsThinkingEchoR470(thinkOverride)
 	thinkingStreamed := false
 	// anyStreamed — клиенту ушёл ХОТЬ ОДИН байт (thinking или content).
 	// Нужен, чтобы не запускать R188-повтор после уже отданных размышлений:
@@ -1944,6 +1963,13 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// размышлений (он может не закрыться: бюджет вывода кончается внутри).
 	emitThinkingDelta := func(delta string) {
 		if delta == "" {
+			return
+		}
+		// R470 (2026-11-06): ЕДИНСТВЕННАЯ точка отправки thinking-дельт на
+		// tools-пути. Если клиент не просил размышления (think не задан), не
+		// отдаём их: Cline сохраняет их как текст нашего ответа, и модель на
+		// следующем ходу видит свои размышления как свой прошлый ответ.
+		if !reasoningEcho {
 			return
 		}
 		chunk := toolsThinkingChunkR404(modelName, createdAt, delta)
@@ -2182,8 +2208,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	reasoningOut, outputForParse, toolCalls, hasReasoning := splitToolsOutput(fullOutput, thinkOverride, tools)
 	if hasReasoning {
 		logger.Get().Infow(i18n.T("cppworker.handlers_chat.tools_reasoning_split"),
-			"model", modelName, "reasoning_len", len(reasoningOut), "content_len", len(outputForParse),
-			"reasoning_sent", reasoningOut != "")
+			"model", modelName, "reasoning_len", len(reasoningOut), "reasoning_echo", reasoningEcho, "content_len", len(outputForParse),
+			"reasoning_sent", reasoningOut != "" && reasoningEcho,
+			"reasoning_echo", reasoningEcho)
 	}
 	// R406: токены первой попытки нужны для решения о повторе без размышлений
 	// и для честного eval_count (если повтор состоится — сложим обе попытки).
@@ -2742,7 +2769,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// в content: клиент показывает их как «thinking», а не как ответ.
 		// R108: отдаём оба имени (`thinking` — канон §4.1, `reasoning` — legacy).
 		// R404: если thinking уже ушёл дельтами — в финале НЕ дублируем его.
-		if reasoningOut != "" && !thinkingStreamed {
+		// R470: эхо размышлений — только если клиент их попросил (см. reasoning_echo_r470.go).
+		if reasoningEcho && reasoningOut != "" && !thinkingStreamed {
 			msg["thinking"] = reasoningOut
 			msg["reasoning"] = reasoningOut
 		}
@@ -2795,7 +2823,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 
 		// R404: thinking уже мог уйти дельтами — тогда в финале его НЕ дублируем.
 		thinkingField := reasoningOut
-		if thinkingStreamed {
+		if thinkingStreamed || !reasoningEcho {
 			thinkingField = ""
 		}
 		if reasoningOut != "" {
@@ -2837,7 +2865,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				msg["content"] = content
 			}
 			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_reasoning_separate_final_chunk"),
-				"model", modelName, "reasoning_len", len(reasoningOut),
+				"model", modelName, "reasoning_len", len(reasoningOut), "reasoning_echo", reasoningEcho,
 				"thinking_streamed", thinkingStreamed, "content_len", len(content),
 				"emitted_len", emittedLen)
 		} else if streamContent && emittedLen > 0 {

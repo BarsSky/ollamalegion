@@ -53,6 +53,46 @@ func TestR118_RuntimeModelDecodesTensorSplitArray(t *testing.T) {
 	}
 }
 
+// TestR463_RuntimeModelKeepsOutputBudget — R463-R465: бюджет вывода доезжает до
+// WebUI. Воркер отдаёт `default_num_predict`/`output_budget_ceiling` в runtime,
+// а балансер декодирует ответ в runtimeModelR118 и пересобирает свой — поля,
+// которых в структуре нет, до интерфейса не доезжают (класс R134). Живая
+// жалоба: «num_predict в env выставлен, а в WebUI его значения не увидеть».
+func TestR463_RuntimeModelKeepsOutputBudget(t *testing.T) {
+	payload := `{"loaded_models":[{
+		"name":"Qwen3.8-9B","state":"loaded","n_layers":36,"gpu_layers":-2,
+		"context_size":32768,"default_num_predict":8192,"output_budget_ceiling":16384
+	}]}`
+
+	var parsed struct {
+		LoadedModels []runtimeModelR118 `json:"loaded_models"`
+	}
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		t.Fatalf("декодирование упало: %v", err)
+	}
+	if len(parsed.LoadedModels) != 1 {
+		t.Fatalf("моделей = %d, want 1", len(parsed.LoadedModels))
+	}
+	m := parsed.LoadedModels[0]
+	if m.DefaultNumPredict != 8192 {
+		t.Errorf("default_num_predict = %d, want 8192 — в WebUI снова будет прочерк", m.DefaultNumPredict)
+	}
+	if m.OutputBudgetCeiling != 16384 {
+		t.Errorf("output_budget_ceiling = %d, want 16384", m.OutputBudgetCeiling)
+	}
+
+	// Поле обязано уйти и в ОТВЕТ балансера тем же именем.
+	encoded, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{`"default_num_predict":8192`, `"output_budget_ceiling":16384`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Errorf("в JSON для WebUI нет %s: %s", want, encoded)
+		}
+	}
+}
+
 // TestR118_DeriveLayerPlanMatchesLiveRuns — вывод плана совпадает с тем, что
 // llama.cpp напечатал в лог на живом стенде.
 func TestR118_DeriveLayerPlanMatchesLiveRuns(t *testing.T) {

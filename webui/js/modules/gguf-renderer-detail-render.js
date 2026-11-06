@@ -1203,6 +1203,35 @@
             });
         }
 
+        // R463-R465 (2026-11-06): сколько токенов ответа реально разрешено ЭТОЙ
+        // модели, если клиент не прислал num_predict, и до какого потолка воркер
+        // может поднять бюджет сам.
+        //
+        // ЖИВАЯ ЖАЛОБА ОПЕРАТОРА: «num_predict в env выставлен, а в WebUI его
+        // значения не увидеть». До этой правки число не доезжало: воркер отдаёт
+        // default_num_predict/output_budget_ceiling в runtime, балансер декодирует
+        // ответ в свою структуру и пересобирает его для WebUI — без этих полей
+        // они терялись (ровно класс R134).
+        const npDefault = pick(factOf(rt, ['default_num_predict', 'defaultNumPredict']),
+            factOf(m, ['default_num_predict', 'defaultNumPredict']));
+        const npCeiling = pick(factOf(rt, ['output_budget_ceiling', 'outputBudgetCeiling']),
+            factOf(m, ['output_budget_ceiling', 'outputBudgetCeiling']));
+        if (npDefault !== null || npCeiling !== null) {
+            const npValue = (npDefault !== null ? String(npDefault) : '?') +
+                (npCeiling !== null ? ' (потолок ' + String(npCeiling) + ')' : '');
+            flags.push({
+                label: 'num_predict',
+                value: npValue,
+                title: 'Бюджет ответа без клиентского num_predict/max_tokens: ' +
+                    (npDefault !== null ? String(npDefault) + ' токенов' : 'неизвестен') +
+                    (npCeiling !== null
+                        ? '; выше ' + String(npCeiling) + ' воркер не поднимает (CPPWORKER_MAX_N_PREDICT)'
+                        : '') +
+                    '. Клиентский num_predict важнее и не понижается; явный max_output_tokens может поднять бюджет до потолка.',
+                tone: 'normal'
+            });
+        }
+
         const quant = pick(m.quantization);
         if (quant !== null) {
             flags.push({label: 'quant', value: String(quant), title: 'Квантование весов', tone: 'normal'});

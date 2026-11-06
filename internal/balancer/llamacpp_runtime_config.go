@@ -231,11 +231,11 @@ type runtimeModelR118 struct {
 	// ReasoningEnabled — режим reasoning ЗАГРУЖЕННОГО инстанса. Указатель, чтобы
 	// «выключено» (false) отличалось от «неизвестно» (nil): размышления выключены —
 	// это ЗНАЧЕНИЕ, и карточка обязана показать именно его.
-	ReasoningEnabled *bool `json:"reasoning_enabled,omitempty"`
-	ActiveQueries     int       `json:"active_queries,omitempty"`
-	TotalQueries      int64     `json:"total_queries,omitempty"`
-	LastUsedAt        string    `json:"last_used_at,omitempty"`
-	Backend           string    `json:"backend"`
+	ReasoningEnabled *bool  `json:"reasoning_enabled,omitempty"`
+	ActiveQueries    int    `json:"active_queries,omitempty"`
+	TotalQueries     int64  `json:"total_queries,omitempty"`
+	LastUsedAt       string `json:"last_used_at,omitempty"`
+	Backend          string `json:"backend"`
 	// R118 (2026-10-14): раскладка слоёв по устройствам — «какие слои на доноре».
 	//
 	// R118.16 (2026-10-14): это ФАКТ, если cppworker отдал точный список
@@ -250,6 +250,17 @@ type runtimeModelR118 struct {
 	// ОТВЕЧАЕТ WebUI, а там `device_layers` занят объектом-планом выше: два поля
 	// с одним json-тегом молча конфликтуют.
 	ExactDeviceLayers []exactDeviceRangeR118 `json:"device_layers_exact,omitempty"`
+
+	// R463-R465 (2026-11-06): БЮДЖЕТ ВЫВОДА, который получит запрос к этой модели
+	// без явного num_predict, и потолок авто-повышения.
+	//
+	// ПОЧЕМУ ЗДЕСЬ. Воркер эти два поля уже отдаёт (`/api/v1/cppworker/config/runtime`,
+	// R465), но балансер декодирует ответ в ЭТУ структуру и пересобирает свой ответ
+	// для WebUI — поля, которых тут нет, до интерфейса не доезжают (ровно класс
+	// R134). Живая жалоба оператора: «num_predict в env выставлен, а в WebUI его
+	// значения не увидеть».
+	DefaultNumPredict   int `json:"default_num_predict,omitempty"`
+	OutputBudgetCeiling int `json:"output_budget_ceiling,omitempty"`
 }
 
 // exactDeviceRangeR118 — R118.16: диапазон слоёв на устройстве, как его напечатал

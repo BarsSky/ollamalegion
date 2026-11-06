@@ -157,12 +157,28 @@ func buildGenerationParams(req generateRequest) bridge.GenerationParams {
 		// /v1/chat/completions та же модель давно получала 8192
 		// (ResolveNPredict → DefaultNPredictReasoning), то есть протоколы
 		// расходились в семантике одного и того же поля.
-		//
-		// Теперь Ollama-путь берёт ту же политику: явный num_predict/max_tokens
-		// клиента (выше) → дефолт reasoning-модели (8192 или env
-		// CPPWORKER_DEFAULT_N_PREDICT_REASONING) → дефолт моста 4096. Граница
-		// max_output_tokens по-прежнему может только уменьшить результат (ниже).
 		params.NPredict = hit
+	}
+	// R463 (2026-11-06): клиентская ВЕРХНЯЯ ГРАНИЦА может не только уменьшить,
+	// но и ПОДНЯТЬ наш дефолт — если клиент явную длину не задавал.
+	//
+	// ЖИВОЙ ДЕФЕКТ (A10 ×2, Qwen3.8-27B, Cline): клиент присылал
+	// max_output_tokens=27392 и не присылал num_predict. Дефолт reasoning-модели
+	// 8192 съедался размышлениями → done_reason=length без видимого ответа →
+	// клиентская overflow-recovery (compacting) → «text part … not found» и
+	// потеря части переписки. Клиент сам сказал, сколько готов принять;
+	// упираться в наш дефолт было ошибкой.
+	if req.MaxTokens == 0 {
+		// Только ПОДНЯТЬ: политика R411/дефолт моста уже посчитаны выше, и R463 не
+		// должен их уменьшать (иначе не-reasoning модель получила бы 0 вместо 4096).
+		if budget, source := resolveOutputBudgetR463(0, req._upperBoundNumPredict, req.Model); budget > params.NPredict {
+			logger.Get().Infow("output budget resolved (R463)",
+				"model", req.Model, "source", source, "budget", budget,
+				"n_predict_before", params.NPredict,
+				"client_upper_bound", req._upperBoundNumPredict,
+				"ceiling", maxNPredictCeilingR463())
+			params.NPredict = budget
+		}
 	}
 	// R83/v67 (2026-10-02): верхняя граница от клиента (max_output_tokens) может
 	// только УМЕНЬШИТЬ длину ответа, но не задать её. Раньше граница попадала в

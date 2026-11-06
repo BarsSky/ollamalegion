@@ -50,6 +50,10 @@ type cppworkerSnapshot struct {
 	Available bool                   `json:"available"`
 	Error     string                 `json:"error,omitempty"`
 	Config    map[string]interface{} `json:"config,omitempty"`
+	// OutputBudget — R465: политика бюджета вывода отдельным разделом ответа
+	// воркера (`outputBudget`), а не полем Config. Без этого WebUI показывал по
+	// num_predict 0: значение живёт в ENV/константах, а не в Config.
+	OutputBudget map[string]interface{} `json:"outputBudget,omitempty"`
 }
 
 // loadDefaultsResponse — ответ GET /api/v1/cppworker/load-defaults.
@@ -221,6 +225,33 @@ func (s *Server) getLoadDefaults(w http.ResponseWriter, _ *http.Request) {
 	profilesCount := 0
 	if n, err := s.proxy.CountModelProfiles(); err == nil {
 		profilesCount = n
+	}
+
+	// R465 (2026-11-06): бюджет вывода — из ТОГО ЖЕ слоя, из которого его берёт
+	// генерация: сначала профиль модели, затем ENV контейнера, затем наши
+	// константы политики (reasoningDefault / ceiling из outputBudget воркера).
+	//
+	// ЖИВАЯ ЖАЛОБА: в WebUI поле num_predict показывало 0 (и на странице
+	// «Загруженные» значения не было вовсе), потому что значение живёт в ENV, а
+	// не в Config. Теперь оператор видит и число, и ИСТОЧНИК — как у остальных
+	// полей загрузки, и может понять, почему ход упирается в лимит вывода.
+	ob := cw.OutputBudget
+	// Профиль модели num_predict не содержит (это политика вывода, а не
+	// загрузки), поэтому источник — только раздел outputBudget воркера.
+	pickIntFromView := func(key, viewKey string) {
+		if v, ok := viewIntR465(ob, viewKey); ok && v > 0 {
+			effective[key] = v
+			effective[key+"Env"] = viewStrR465(ob, viewKey+"Env")
+			source[key] = "cppworker-" + viewStrR465(ob, viewKey+"Source")
+			return
+		}
+		source[key] = "none"
+	}
+	pickIntFromView("numPredictReasoning", "reasoningDefault")
+	pickIntFromView("numPredictCeiling", "ceiling")
+	if v, ok := viewBoolR465(ob, "upperBoundRaisesDefault"); ok {
+		effective["numPredictUpperBoundRaises"] = v
+		source["numPredictUpperBoundRaises"] = "cppworker-policy"
 	}
 
 	resp := loadDefaultsResponse{
@@ -577,7 +608,8 @@ func (s *Server) fetchCppWorkerSnapshot() cppworkerSnapshot {
 		return snap
 	}
 	var payload struct {
-		Config map[string]interface{} `json:"config"`
+		Config       map[string]interface{} `json:"config"`
+		OutputBudget map[string]interface{} `json:"outputBudget"`
 	}
 	if err := s.cppworkerGetJSON(baseURL+cppworkerConfigPath, &payload); err != nil {
 		snap.Error = err.Error()
@@ -585,6 +617,7 @@ func (s *Server) fetchCppWorkerSnapshot() cppworkerSnapshot {
 	}
 	snap.Available = true
 	snap.Config = payload.Config
+	snap.OutputBudget = payload.OutputBudget
 	return snap
 }
 

@@ -34,13 +34,30 @@ func ollamaChatParamsR411(t *testing.T, body string) int {
 
 // TestR411_OllamaReasoningDefaultMatchesOpenAIPath — главный инвариант: та же
 // модель, тот же отсутствующий num_predict → 8192, как на /v1.
+//
+// R463 (2026-11-06): КОНТРАКТ РАСШИРЕН. Если клиент прислал ВЕРХНЮЮ ГРАНИЦУ
+// (max_output_tokens) и она больше политики, бюджет поднимается до неё (не выше
+// предохранителя CPPWORKER_MAX_N_PREDICT). Живой дефект: на 27B (A10, 50 ГБ)
+// клиент разрешал 27392, а мы упирались в 8192 — размышления съедали бюджет,
+// ход кончался done_reason=length без видимого ответа, клиент запускал
+// overflow-recovery и падал с «text part … not found».
+//
+// Поэтому здесь два случая:
+//   - БЕЗ верхней границы — прежние 8192 (политика R411);
+//   - С границей 26284 — max(8192, min(26284, потолок)) = потолок R463.
 func TestR411_OllamaReasoningDefaultMatchesOpenAIPath(t *testing.T) {
-	body := `{"model":"gemma-4-E4B-it-Q4_K_M","messages":[{"role":"user","content":"hi"}],` +
-		`"max_output_tokens":26284}`
-	if got := ollamaChatParamsR411(t, body); got != DefaultNPredictReasoning {
-		t.Fatalf("NPredict = %d, ожидалось %d (reasoning-модель без явного num_predict "+
-			"должна получать ту же политику, что и /v1: DefaultNPredictReasoning)",
+	withoutBound := `{"model":"gemma-4-E4B-it-Q4_K_M","messages":[{"role":"user","content":"hi"}]}`
+	if got := ollamaChatParamsR411(t, withoutBound); got != DefaultNPredictReasoning {
+		t.Fatalf("без верхней границы NPredict = %d, ожидалось %d (политика R411)",
 			got, DefaultNPredictReasoning)
+	}
+
+	withBound := `{"model":"gemma-4-E4B-it-Q4_K_M","messages":[{"role":"user","content":"hi"}],` +
+		`"max_output_tokens":26284}`
+	if got := ollamaChatParamsR411(t, withBound); got != defaultMaxNPredictR463 {
+		t.Fatalf("с границей 26284 NPredict = %d, ожидалось %d (R463: граница клиента "+
+			"поднимает бюджет до потолка, а не оставляет %d)",
+			got, defaultMaxNPredictR463, DefaultNPredictReasoning)
 	}
 }
 

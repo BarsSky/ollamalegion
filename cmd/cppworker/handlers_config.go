@@ -34,6 +34,9 @@ func handleCppWorkerGetConfig(w http.ResponseWriter, r *http.Request) {
 		"nodeLabels":  os.Getenv("NODE_LABELS"),
 		"balancerUrl": os.Getenv("BALANCER_URL"),
 		"uptime":      time.Since(uptimeStart).String(),
+		// R465 (2026-11-06): политика бюджета вывода — ЯВНО, а не только в коде.
+		// Раньше num_predict жил в ENV/константах, и WebUI показывал по этому полю 0.
+		"outputBudget": outputBudgetViewR465(),
 	}
 	// R123 (2026-10-16, пункт 2): состояние узла раскладки — в КАЖДОМ чтении
 	// конфига, а не только в ответе на его изменение.
@@ -128,11 +131,18 @@ func handleCppWorkerRuntimeConfig(w http.ResponseWriter, r *http.Request) {
 				}
 				return m.DeviceLayers
 			}(),
+			// R465 (2026-11-06): какой бюджет вывода получит запрос к ЭТОЙ модели
+			// без явного num_predict. Раньше этого числа не было ни в API, ни в
+			// WebUI: оператор не мог увидеть, сколько токенов реально разрешено
+			// reasoning-модели (жалоба «num_predict в env есть, а в UI 0»).
+			"default_num_predict":   defaultNumPredictForModelR465(m.Name),
+			"output_budget_ceiling": maxNPredictCeilingR463(),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"loaded_models": models,
 		"count":         len(models),
+		"outputBudget":  outputBudgetViewR465(),
 	})
 }
 

@@ -522,16 +522,22 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		upperBound = *req.MaxOutputTokens
 	}
 	effectiveMaxTokens := req.MaxTokens
-	if effectiveMaxTokens > 0 {
-		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
-		// дефолт n_predict до DefaultNPredictReasoning, иначе модель обрывает генерацию
-		// сразу после <think>...</think> (completion_tokens=0).
-		params.NPredict = ResolveNPredict(effectiveMaxTokens, actualModel)
-	} else {
-		// 2026-07-01: req.MaxTokens==0 → используем дефолт cppworker (2048), но для
-		// reasoning-моделей повышаем до DefaultNPredictReasoning (8192).
-		params.NPredict = ResolveNPredict(0, actualModel)
+	// R463 (2026-11-06): единый резолвер бюджета вывода. Если клиент задал только
+	// верхнюю границу (max_output_tokens), она может ПОДНЯТЬ дефолт модели —
+	// иначе reasoning-модель на 27B съедала 8192 на размышления и ход кончался
+	// done_reason=length без видимого ответа (клиент → overflow-recovery →
+	// «text part … not found»).
+	budget, budgetSource := resolveOutputBudgetR463(effectiveMaxTokens, upperBound, actualModel)
+	if budget != params.NPredict {
+		logger.Get().Infow("output budget resolved (R463)",
+			"model", actualModel, "surface", "/v1/chat/completions",
+			"source", budgetSource, "budget", budget,
+			"n_predict_before", params.NPredict,
+			"client_max_tokens", effectiveMaxTokens,
+			"client_upper_bound", upperBound,
+			"ceiling", maxNPredictCeilingR463())
 	}
+	params.NPredict = budget
 	if upperBound > 0 && params.NPredict > upperBound {
 		logger.Get().Infow(i18n.T("cppworker.handlers_openai.max_output_tokens_capped_chat"),
 			"model", actualModel, "max_output_tokens", upperBound, "n_predict", params.NPredict)
@@ -1758,16 +1764,18 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		upperBound2 = *req.MaxOutputTokens
 	}
 	effectiveMaxTokens2 := req.MaxTokens
-	if effectiveMaxTokens2 > 0 {
-		// 2026-07-01: для reasoning-моделей (qwen3.5, deepseek-r1, gemma-4) поднимаем
-		// дефолт n_predict до DefaultNPredictReasoning, иначе модель обрывает генерацию
-		// сразу после <think>...</think> (completion_tokens=0).
-		params.NPredict = ResolveNPredict(effectiveMaxTokens2, modelName)
-	} else {
-		// 2026-07-01: req.MaxTokens==0 → дефолт cppworker (2048), для reasoning-моделей
-		// повышаем до DefaultNPredictReasoning (8192).
-		params.NPredict = ResolveNPredict(0, modelName)
+	// R463: тот же единый резолвер бюджета (см. buildOpenAIChatParams).
+	budget2, budgetSource2 := resolveOutputBudgetR463(effectiveMaxTokens2, upperBound2, modelName)
+	if budget2 != params.NPredict {
+		logger.Get().Infow("output budget resolved (R463)",
+			"model", modelName, "surface", "/v1/completions",
+			"source", budgetSource2, "budget", budget2,
+			"n_predict_before", params.NPredict,
+			"client_max_tokens", effectiveMaxTokens2,
+			"client_upper_bound", upperBound2,
+			"ceiling", maxNPredictCeilingR463())
 	}
+	params.NPredict = budget2
 	if upperBound2 > 0 && params.NPredict > upperBound2 {
 		logger.Get().Infow(i18n.T("cppworker.handlers_openai.max_output_tokens_capped_completions"),
 			"model", modelName, "max_output_tokens", upperBound2, "n_predict", params.NPredict)

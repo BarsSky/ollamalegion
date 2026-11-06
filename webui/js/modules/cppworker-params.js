@@ -179,7 +179,11 @@
         ['parallel', 'параллельных слотов'],
         ['flashAttn', 'flash attention (-1 = auto)'],
         ['useMmap', 'mmap'],
-        ['enableReasoning', 'reasoning по умолчанию']
+        ['enableReasoning', 'reasoning по умолчанию'],
+        // R465 (2026-11-06): бюджет вывода. Раньше оператор не видел его в UI:
+        // значение живёт в ENV воркера, а не в Config, поэтому поле показывало 0.
+        ['numPredictReasoning', 'num_predict по умолчанию (reasoning-модели)'],
+        ['numPredictCeiling', 'потолок num_predict (предохранитель)']
     ];
 
     // lowPerSlotWarning — R83 (2026-09-30): окно на клиента < 1024 — почти всегда

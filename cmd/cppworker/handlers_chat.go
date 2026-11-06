@@ -470,7 +470,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			if toolsEnabled {
 				promptNoThink = buildChatPromptNoThinkingR406(msgs, actualModel)
 			}
-			writeChatStreamResponseWithTools(w, r, actualModel, prompt, params, promptOpts.JSONMode, promptOpts.ReasoningOverride, req.Tools, promptNoThink)
+			writeChatStreamResponseWithTools(w, r, actualModel, prompt, params, promptOpts.JSONMode, promptOpts.ReasoningOverride, req.Tools, promptNoThink, clientSetOutputLimitChat(req.MaxTokens, req.Options.NumPredict))
 			return
 		}
 		writeChatStreamResponse(w, r, actualModel, prompt, params, promptOpts.ReasoningOverride)
@@ -1757,7 +1757,7 @@ func toolsStopReasonR320(fullOutput, visibleOutput, prompt string, toolCalls int
 // привести arguments вызова к объекту по их схеме (см. tool_args_schema_r113.go):
 // без этого клиент получает arguments-массив/голую строку, не может выполнить
 // вызов и считает задачу завершённой после первой итерации.
-func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, jsonMode bool, thinkOverride *bool, tools []openAITool, promptNoThink string) {
+func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, jsonMode bool, thinkOverride *bool, tools []openAITool, promptNoThink string, clientCapped bool) {
 	// R83 (2026-09-26): тот же safeStreamWriter, что и в writeChatStreamResponse —
 	// здесь тоже пишут две горутины (heartbeat + финальные чанки), и на длинной
 	// генерации без мьютекса фреймы могли перемешаться.
@@ -2207,10 +2207,16 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// R188 (2026-10-20): клиентский лимит длины ответа делает повтор бессмысленным —
 		// тот же лимит отрежет тот же вывод. При ограниченном выводе разрешён максимум
 		// один повтор (см. handlers_chat_retry_r188.go).
-		retryBudget := emptyOutputRetryBudget(params.NPredict > 0)
-		if params.NPredict > 0 {
+		retryBudget := emptyOutputRetryBudget(clientCapped)
+		if clientCapped {
+			// R464 (2026-11-06): «клиент задал длину» — это только ЯВНЫЙ
+			// num_predict/max_tokens. Наш собственный дефолт (8192 для
+			// reasoning-моделей) таким ограничением не является: раньше лог
+			// утверждал «клиент задал длину ответа n_predict=8192», хотя клиент
+			// длину не задавал, и бюджет повторов урезался без причины.
 			logger.Get().Infow(i18n.T("cppworker.handlers_chat.tools_retry_limited_r188"),
-				"model", modelName, "n_predict", params.NPredict, "retries_allowed", retryBudget)
+				"model", modelName, "n_predict", params.NPredict, "retries_allowed", retryBudget,
+				"client_set_limit", true)
 		}
 		for attempt := 1; attempt <= retryBudget; attempt++ {
 			// R404: клиенту уже ушли размышления (или текст) — повтор

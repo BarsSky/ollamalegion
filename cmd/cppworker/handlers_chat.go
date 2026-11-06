@@ -1645,7 +1645,12 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	// ВАЖНО: текст кладём в done-чанк только когда content-дельт НЕ было, поэтому
 	// клиент, складывающий чанки, не получит дубль (у балансера тот же инвариант —
 	// stripNativeDoneContent чистит done только при уже отданных дельтах).
-	if notice := emptyAnswerNoticeForNativeR314(doneContent, snapR320.ReasoningChars); notice != "" {
+	//
+	// R461 (2026-11-06): здесь числа ИЗВЕСТНЫ (бюджет num_predict и фактически
+	// сгенерированные токены), поэтому пояснение называет проверенный факт
+	// «бюджет исчерпан / не исчерпан», а не утверждает исчерпание всегда.
+	if notice := emptyAnswerNoticeWithBudgetR461(doneContent, snapR320.ReasoningChars,
+		params.NPredict, generatedTokens); notice != "" {
 		doneContent = notice
 	}
 	doneChunk := map[string]interface{}{

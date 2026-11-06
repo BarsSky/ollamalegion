@@ -22,9 +22,24 @@ var messagesCppworker = map[string]map[Lang]string{
 	// content молча, когда весь бюджет ответа ушёл в размышления. Живой факт:
 	// content:"" при 592 символах thinking и done_reason=length — клиент (Cline)
 	// показывал «Model returned empty response», оператор шёл искать поломку.
+	//
+	// R461 (2026-11-06): текст больше НЕ утверждает «бюджет ответа исчерпан» —
+	// этого факта в общем случае нет (модель могла остановиться сама, а
+	// размышления при этом непустые). Живая жалоба: клиент постоянно показывал
+	// «модель сгенерировала только размышления, увеличьте max_tokens», хотя окно
+	// было 131072 и бюджет выбран не был. Где числа известны, используется
+	// emptyAnswerNoticeWithBudgetR461 с двумя точными формулировками.
 	"cppworker.handlers_chat.empty_answer_reasoning_only": {
-		RU: "Модель сгенерировала только размышления (%d симв.), видимого ответа нет (бюджет ответа исчерпан). Увеличьте num_predict/max_tokens или отключите reasoning.",
-		EN: "The model produced reasoning only (%d chars), no visible answer (the output budget was used up). Raise num_predict/max_tokens or turn reasoning off.",
+		RU: "Модель сгенерировала только размышления (%d симв.), видимого ответа нет. Увеличьте num_predict/max_tokens (или бюджет размышлений) или отключите reasoning.",
+		EN: "The model produced reasoning only (%d chars) with no visible answer. Raise num_predict/max_tokens (or the reasoning budget) or turn reasoning off.",
+	},
+	"cppworker.handlers_chat.empty_answer_reasoning_only_budget_hit": {
+		RU: "Модель сгенерировала только размышления (%d симв.), видимого ответа нет: бюджет ответа исчерпан (сгенерировано %d из %d токенов). Увеличьте num_predict/max_tokens или отключите reasoning.",
+		EN: "The model produced reasoning only (%d chars) and no visible answer: the output budget was used up (%d of %d tokens generated). Raise num_predict/max_tokens or turn reasoning off.",
+	},
+	"cppworker.handlers_chat.empty_answer_reasoning_only_budget_left": {
+		RU: "Модель сгенерировала только размышления (%d симв.), видимого ответа нет, хотя бюджет ответа не исчерпан (сгенерировано %d из %d токенов) — модель остановилась сама. Если ответ должен был быть, поднимите num_predict/max_tokens или отключите reasoning.",
+		EN: "The model produced reasoning only (%d chars) with no visible answer although the output budget was NOT used up (%d of %d tokens generated) — the model stopped on its own. If an answer was expected, raise num_predict/max_tokens or turn reasoning off.",
 	},
 	"cppworker.handlers_chat.empty_output_retry": {
 		RU: "writeChatStreamResponse: пустой вывод модели — повторная генерация",

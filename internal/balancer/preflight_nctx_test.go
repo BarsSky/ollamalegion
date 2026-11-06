@@ -406,15 +406,22 @@ func TestDecidePreflight_DefaultNPredictWhenZero(t *testing.T) {
 	cfg := DefaultNCtxReloadConfig()
 	res := DecidePreflight(meta, state, cfg)
 	// R253 (2026-10-28): клиент не указал ни окна, ни n_predict — окно выводится из
-	// оценки промпта с дефолтным бюджетом вывода: 8000 + 4096 + 64 = 12160 >
-	// загруженных 4096 → перезагрузка. Раньше здесь ожидался NoOp, и именно из-за
-	// этого Cline жил с неизменным окном.
+	// оценки промпта. Раньше здесь ожидался NoOp, и именно из-за этого Cline жил с
+	// неизменным окном.
+	//
+	// R451 (2026-11-06): в таргет входит только минимальный вывод (256), а не
+	// дефолтные 4096: 8000+256+64 = 8320 > загруженных 4096 → перезагрузка.
 	if res.Decision != PreflightReload {
-		t.Fatalf("ожидался PreflightReload (12160 > загруженных 4096), получено %v (target=%d)",
+		t.Fatalf("ожидался PreflightReload (8320 > загруженных 4096), получено %v (target=%d)",
 			res.Decision, res.TargetNCtx)
 	}
-	if res.TargetNCtx != 12160 {
-		t.Errorf("TargetNCtx=%d, ожидалось 12160 (8000 + дефолтные 4096 + 64)", res.TargetNCtx)
+	if res.TargetNCtx != 8320 {
+		t.Errorf("TargetNCtx=%d, ожидалось 8320 (8000 + минимальный вывод 256 + 64)", res.TargetNCtx)
+	}
+	// Прежний таргет (с дефолтным бюджетом клиента) доступен в режиме client.
+	t.Setenv("LB_AGENT_WINDOW_BUDGET", "client")
+	if legacy := DecidePreflight(meta, state, cfg); legacy.TargetNCtx != 12160 {
+		t.Errorf("режим client: TargetNCtx=%d, ожидалось 12160 (8000 + 4096 + 64)", legacy.TargetNCtx)
 	}
 }
 

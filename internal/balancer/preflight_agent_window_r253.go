@@ -109,6 +109,49 @@ func agentRequiredWindow(meta *RequestMeta) int {
 	return agentRequiredWindowAtLeast(meta, 0)
 }
 
+// agentWindowBudgetMode — как учитывать бюджет ВЫВОДА в «нужном окне».
+//
+// R451 (2026-11-06): РАЗМЕР окна и БЮДЖЕТ вывода клиента — разные вещи.
+//
+// ЖИВОЙ ДЕФЕКТ (стенд, Cline на 9B). Первый ход прошёл на окне 32768. Второй
+// (продолжение) пришёл с `max_tokens=15393`, и балансер посчитал
+// «нужное окно» = оценка промпта 24677 + бюджет клиента 15393 + 64 = 40134,
+// то есть на 7.3k больше загруженного окна 32768. Итог — unload+load модели на
+// 243 с прямо посреди хода агента, хотя ПРОМПТ в окно влезал (24677 из 32768,
+// свободно ~8k под ответ): воркер в таком случае просто урезает n_predict по
+// свободному месту и отвечает.
+//
+// Что означает бюджет клиента: «сколько я готов принять», а не «сколько модели
+// нужно места». Из-за этой подмены Cline сам себе устраивал перезагрузку:
+// max_tokens он считает из объявленного окна, а окно балансер увеличивал по
+// этому же max_tokens — обратная связь.
+//
+// minimal (default) — в окно закладывается только нижняя граница осмысленного
+// хода (agentOutputReserveMinTokens, 256). Растим окно, когда не влезает САМ
+// промпт (или клиент явно попросил больше, или под ответ не остаётся места) —
+// то же правило, что в R447 для стримингового вердикта.
+//
+// client — прежнее поведение (промпт + весь бюджет клиента): нужно, если
+// оператор хочет гарантированно получать полный max_tokens без обрезки и готов
+// платить за это перезагрузками.
+func agentWindowBudgetMode() string {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LB_AGENT_WINDOW_BUDGET")))
+	switch v {
+	case "client", "full", "1", "true", "on":
+		return "client"
+	default:
+		return "minimal"
+	}
+}
+
+// agentWindowReserveTokens — сколько токенов вывода закладывать в «нужное окно».
+func agentWindowReserveTokens(meta *RequestMeta) int {
+	if agentWindowBudgetMode() == "client" {
+		return agentOutputBudget(meta)
+	}
+	return agentOutputReserveMinTokens
+}
+
 // agentRequiredWindowAtLeast — то же, но выведенное окно НИКОГДА не меньше
 // запрошенного клиентом и не меньше переданного «пола» (floor).
 //
@@ -117,11 +160,14 @@ func agentRequiredWindow(meta *RequestMeta) int {
 // оценка промпта оказалась маленькой. Так же и загруженное окно: рост не может
 // быть «ростом в меньшую сторону» — уменьшение окна под живым клиентом рвёт его
 // ход (cppworker делает unload+load).
+//
+// R451: слагаемое бюджета вывода — agentWindowReserveTokens (по умолчанию 256,
+// а не весь max_tokens клиента; см. agentWindowBudgetMode).
 func agentRequiredWindowAtLeast(meta *RequestMeta, floor int) int {
 	if meta == nil || meta.EstimatedPromptTokens <= 0 {
 		return floor
 	}
-	need := meta.EstimatedPromptTokens + agentOutputBudget(meta) + agentWindowSlackTokens
+	need := meta.EstimatedPromptTokens + agentWindowReserveTokens(meta) + agentWindowSlackTokens
 	if meta.RequestedNCtxOverride > need {
 		need = meta.RequestedNCtxOverride
 	}

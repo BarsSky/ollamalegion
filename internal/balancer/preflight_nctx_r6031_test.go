@@ -121,18 +121,36 @@ func TestPreflight_R6031_NoExplicitClientOverride(t *testing.T) {
 	// R253 (2026-10-28): КОНТРАКТ ИЗМЕНЁН. Раньше здесь ожидался NoOp («клиент не
 	// указал окно — не гадаем»), из-за чего Cline (он num_ctx не шлёт никогда) жил
 	// с неизменным окном и получал обрезанный вывод от cppworker. Теперь окно
-	// выводится из оценки промпта: 5000 + 3000 + 64 = 8064 > загруженных 2048 →
-	// перезагрузка (видно и таргет).
+	// выводится из оценки промпта и растёт, когда промпт не влезает.
+	//
+	// R451 (2026-11-06): таргет считается БЕЗ бюджета вывода клиента. Раньше
+	// ожидалось 5000+3000+64 = 8064, и второй ход Cline уезжал в unload+load на
+	// 243 с, хотя промпт в окно влезал (живой дефект: max_tokens 15393 раздувал
+	// «нужное окно» до 40134 при загруженных 32768). Теперь закладывается только
+	// нижняя граница осмысленного вывода (256): 5000+256+64 = 5320.
 	if res.Decision != PreflightReload {
 		t.Fatalf("промпт по оценке не влезает в загруженное окно 2048 — ожидался "+
 			"PreflightReload, получено %v", res.Decision)
 	}
-	if res.TargetNCtx != 8064 {
-		t.Errorf("TargetNCtx=%d, ожидалось 8064 (промпт 5000 + вывод 3000 + 64)", res.TargetNCtx)
+	if res.TargetNCtx != 5320 {
+		t.Errorf("TargetNCtx=%d, ожидалось 5320 (промпт 5000 + минимальный вывод 256 + 64)", res.TargetNCtx)
 	}
 	if !res.AgentDerivedWindow {
 		t.Error("ожидалась пометка AgentDerivedWindow (окно выведено из промпта)")
 	}
+
+	// Старое поведение (промпт + весь бюджет клиента) остаётся доступным
+	// оператору одной переменной: 5000 + 3000 + 64 = 8064.
+	t.Run("режим client возвращает прежний таргет", func(t *testing.T) {
+		t.Setenv("LB_AGENT_WINDOW_BUDGET", "client")
+		legacyCfg := DecidePreflight(meta, state, cfg)
+		if legacyCfg.Decision != PreflightReload {
+			t.Fatalf("в режиме client ожидался PreflightReload, получено %v", legacyCfg.Decision)
+		}
+		if legacyCfg.TargetNCtx != 8064 {
+			t.Errorf("TargetNCtx=%d, ожидалось 8064 (промпт 5000 + вывод 3000 + 64)", legacyCfg.TargetNCtx)
+		}
+	})
 
 	// Обратная совместимость: одной переменной возвращается прежнее поведение.
 	t.Setenv("LB_NCTX_GROW_FOR_AGENTS", "0")

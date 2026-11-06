@@ -74,30 +74,51 @@ func loadedModelNCtx(modelName string) int {
 // параметрами загрузки. Используется handleLoadModel для защиты от
 // повторной загрузки модели с теми же параметрами.
 func sameLoadOptions(info cppbackend.ModelInfo, opts cppbackend.LoadModelOpts) bool {
+	return len(loadOptionDiffs(info, opts)) == 0
+}
+
+// loadOptionDiffs — какие именно параметры загрузки разошлись (R451).
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. Строка «reloading model because parameters changed»
+// печатала только oldPath/newPath, а у перезагрузки того же файла они СОВПАДАЮТ:
+// по логу нельзя было понять, почему модель выгружают и грузят заново. Живой
+// разбор: 243 с посреди хода агента, причина — contextSize 32768 → 40134
+// (клиент прислал max_tokens, балансер посчитал это требованием к окну). Искать
+// это пришлось по параметрам запроса на загрузку и арифметике, а не по логу.
+//
+// sameLoadOptions теперь выражен через эту функцию: «нет разницы» и «нет причин
+// в логе» не могут разойтись по определению.
+func loadOptionDiffs(info cppbackend.ModelInfo, opts cppbackend.LoadModelOpts) []string {
+	diffs := make([]string, 0, 8)
+	add := func(name string, oldValue, newValue interface{}) {
+		diffs = append(diffs, fmt.Sprintf("%s %v→%v", name, oldValue, newValue))
+	}
 	if info.ContextSize != opts.ContextSize {
-		return false
+		add("contextSize", info.ContextSize, opts.ContextSize)
 	}
 	if info.BatchSize != opts.BatchSize {
-		return false
+		add("batchSize", info.BatchSize, opts.BatchSize)
 	}
 	if info.GPULayers != opts.GPULayers {
-		return false
+		add("gpuLayers", info.GPULayers, opts.GPULayers)
 	}
 	if info.FlashAttnType != opts.FlashAttnType {
-		return false
+		add("flashAttnType", info.FlashAttnType, opts.FlashAttnType)
 	}
 	if info.NUMA != opts.NUMA {
-		return false
+		add("numa", info.NUMA, opts.NUMA)
 	}
 	if info.UseMmap != opts.UseMmap {
-		return false
+		add("useMmap", info.UseMmap, opts.UseMmap)
 	}
 	if len(info.TensorSplit) != len(opts.TensorSplit) {
-		return false
-	}
-	for i := range info.TensorSplit {
-		if info.TensorSplit[i] != opts.TensorSplit[i] {
-			return false
+		add("tensorSplit", info.TensorSplit, opts.TensorSplit)
+	} else {
+		for i := range info.TensorSplit {
+			if info.TensorSplit[i] != opts.TensorSplit[i] {
+				add("tensorSplit", info.TensorSplit, opts.TensorSplit)
+				break
+			}
 		}
 	}
 	// Session 16 (2026-06-27): Parallel + KVCacheType.
@@ -107,12 +128,12 @@ func sameLoadOptions(info cppbackend.ModelInfo, opts cppbackend.LoadModelOpts) b
 	// делало per-model profile частично нерабочим (можно было поменять parallel
 	// в UI, но модель продолжала работать со старыми значениями).
 	if info.Parallel != opts.Parallel {
-		return false
+		add("parallel", info.Parallel, opts.Parallel)
 	}
 	if info.KVCacheType != opts.KVCacheType {
-		return false
+		add("kvCacheType", info.KVCacheType, opts.KVCacheType)
 	}
-	return true
+	return diffs
 }
 
 // ============================================================

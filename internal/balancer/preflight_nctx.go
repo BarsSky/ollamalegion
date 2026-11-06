@@ -722,7 +722,39 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 			// окно могло оказаться МЕНЬШЕ загруженного (промпт короткий, бюджет 0),
 			// и reload уходил в меньшую сторону: cppworker выгружал модель с 8192
 			// и грузил 4165, обрывая чужой ход. Рост не может быть уменьшением.
-			derived = agentRequiredWindowAtLeast(meta, state.effectivePerSeqNCtx())
+			loaded := state.effectivePerSeqNCtx()
+
+			// R451 (2026-11-06): РОСТ — ТОЛЬКО ПО ТРЕБОВАНИЮ ЗАПРОСА.
+			//
+			// ЖИВОЙ ДЕФЕКТ (Cline на 9B, второй ход). Клиент прислал
+			// `max_tokens=15393`; формула «оценка промпта + бюджет клиента + slack»
+			// дала 24677+15393+64 = 40134 при загруженных 32768 → unload+load на
+			// 243 с посреди хода. При этом промпт в окно ВЛЕЗАЛ (24677 из 32768,
+			// свободно ~8k под ответ), а бюджет клиента — это «сколько я готов
+			// принять», а не «сколько модели нужно места»: воркер урезает
+			// n_predict по свободному месту сам.
+			//
+			// Правило то же, что в R447 для стримингового вердикта: растим, если
+			// не влезает САМ промпт, клиент явно попросил больше, или под ответ не
+			// остаётся осмысленного места. Иначе — обслуживаем загруженным окном.
+			//
+			// В режиме LB_AGENT_WINDOW_BUDGET=client гейт не применяется: оператор
+			// этим режимом возвращает ПОЛНОСТЬЮ прежнее поведение (и решение, и
+			// таргет), иначе «откат» возвращал бы только половину правила.
+			if loaded > 0 && agentWindowBudgetMode() != "client" {
+				if need, why := growthNeedR447(meta.EstimatedPromptTokens, loaded, meta.RequestedNCtxOverride); !need {
+					logger.Get().Infow("preflight: рост окна под агентский ход не нужен (R451)",
+						"backend_id", state.BackendID,
+						"model", meta.ModelName,
+						"estimated_prompt_tokens", meta.EstimatedPromptTokens,
+						"loaded_per_seq_n_ctx", loaded,
+						"client_output_budget", agentOutputBudget(meta),
+						"window_budget_mode", agentWindowBudgetMode(),
+						"reason", why)
+					return &PreflightResult{Decision: PreflightNoOp}
+				}
+			}
+			derived = agentRequiredWindowAtLeast(meta, loaded)
 		}
 		if derived <= 0 {
 			logger.Get().Infow(i18n.T("balancer.preflight_nctx.client_silent_no_reload_info"),
@@ -739,7 +771,9 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 			"backend_id", state.BackendID,
 			"model", meta.ModelName,
 			"estimated_prompt_tokens", meta.EstimatedPromptTokens,
-			"output_budget", agentOutputBudget(meta),
+			"client_output_budget", agentOutputBudget(meta),
+			"window_reserve_tokens", agentWindowReserveTokens(meta),
+			"window_budget_mode", agentWindowBudgetMode(),
 			"requested_by_client", meta.RequestedNCtxOverride,
 			"derived_window_per_client", derived,
 			"loaded_per_seq_n_ctx", state.effectivePerSeqNCtx())

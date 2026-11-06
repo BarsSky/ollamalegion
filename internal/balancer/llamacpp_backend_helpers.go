@@ -224,6 +224,40 @@ func (lr *LlamaCppRouter) selectLlamaCppBackendExcluding(model string, exclude m
 	return ""
 }
 
+// autoloadWaitFailureR451 — что вернуть клиенту, когда ожидание загрузки не
+// уложилось в бюджет. Второе значение: true — причина терминальная для этого
+// запроса, false — загрузка реально идёт и клиенту честно сказать «подожди».
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. Живой дефект (R451, порт 18079): загрузку модели
+// ОТЛОЖИЛИ, потому что на бэкенде шёл чужой стрим (R271/R292), а клиент получил
+// текст «model … load started, waiting for cppworker to finish (~30-180s)» — то
+// есть совет ждать работу, которую не начинали. Причина: typed-ошибку R292 не
+// узнавали ни по тексту «model load failed», ни через канал loadDone (его уже
+// вычитал waitForModelLoad), и она проваливалась в общий fallback.
+//
+// Здесь классификация собрана в одном месте и проверяется тестом: сначала
+// «отложено» (самая частая причина в живом стенде), затем «настоящий провал
+// загрузки», затем «провал пришёл по каналу».
+func autoloadWaitFailureR451(waitErr error, loadDone <-chan error) (error, bool) {
+	if waitErr == nil {
+		return nil, false
+	}
+	// Отложено из-за живых стримов — не «идёт загрузка» и не «провал».
+	if IsDestructiveDeferredR292(waitErr) {
+		return waitErr, true
+	}
+	// Реальная ошибка загрузки — текст actionable (файла нет / n_ctx не влезает).
+	if strings.Contains(waitErr.Error(), "model load failed") {
+		return waitErr, true
+	}
+	// R82: ожидание истекло, а загрузка могла уже провалиться (например, DNS
+	// «no such host» у выпавшего бэкенда) — отдаём причину вместо «подожди».
+	if loadErr := drainLoadFailure(loadDone); loadErr != nil {
+		return loadErr, true
+	}
+	return nil, false
+}
+
 // maxBackendFailoverAttempts — сколько альтернативных копий пробуем, прежде чем
 // вернуть ошибку клиенту.
 const maxBackendFailoverAttempts = 3
@@ -1106,16 +1140,12 @@ func (lr *LlamaCppRouter) ensureModelLoadedOnBackend(backendID, modelName string
 				ridLog(lr_recentCtx()).Warnw("ensureModelLoadedOnBackend: async auto-load not finished in time, returning 503",
 					"backend", backendID, "model", modelName, "wait", wait,
 					"error", waitErr, "session", sessionKey)
-				if strings.Contains(waitErr.Error(), "model load failed") {
-					// Реальная ошибка загрузки — отдаём её текст клиенту, он
-					// actionable (файла нет / n_ctx не влезает и т.п.).
-					return false, waitErr
-				}
-				// R82: ожидание истекло, но загрузка могла уже провалиться
-				// (например, DNS «no such host» у выпавшего бэкенда) — отдаём
-				// actionable причину вместо «подожди 30-180 с».
-				if loadErr := drainLoadFailure(loadDone); loadErr != nil {
-					return false, loadErr
+				// R451: классификация причины — одной функцией (см.
+				// autoloadWaitFailureR451). Раньше отложенная из-за живых стримов
+				// загрузка теряла typed-ошибку R292 и клиент читал «load started»,
+				// хотя загрузку не начинали.
+				if cause, terminal := autoloadWaitFailureR451(waitErr, loadDone); terminal {
+					return false, cause
 				}
 			}
 		}

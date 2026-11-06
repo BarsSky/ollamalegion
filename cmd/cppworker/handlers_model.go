@@ -326,8 +326,15 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Параметры отличаются — выгружаем и перезагружаем.
+			//
+			// R451: печатаем ЧТО именно разошлось. oldPath/newPath у одного и того
+			// же файла совпадают, поэтому прежняя строка не объясняла причину
+			// перезагрузки — живой разбор (243 с посреди хода агента) шёл по
+			// параметрам запроса на загрузку и арифметике окна, а не по логу.
+			diffs := loadOptionDiffs(*info, opts)
 			logger.Get().Infow("reloading model because parameters changed",
-				"name", modelName, "oldPath", info.Path, "newPath", modelPath)
+				"name", modelName, "oldPath", info.Path, "newPath", modelPath,
+				"changed", diffs, "changed_count", len(diffs))
 			if unloadErr := backend.UnloadModel(modelName); unloadErr != nil {
 				logger.Get().Errorw("failed to unload model before reload", "name", modelName, "error", unloadErr)
 				writeError(w, http.StatusInternalServerError, "unload before reload failed: "+unloadErr.Error())

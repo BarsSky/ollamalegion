@@ -1,7 +1,7 @@
 {
     "tag":  "r261106-2329",
-    "builtAt":  "2026-11-06T23:29:44Z",
-    "gitCommit":  "3fbf5d39",
+    "builtAt":  "2026-11-07T00:15:06Z",
+    "gitCommit":  "8c441626",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
@@ -26,7 +26,7 @@
                        "variable":  "BALANCER_TAG",
                        "image":  "ollama-legion/balancer:r261106-2329",
                        "imageTag":  "r261106-2329",
-                       "imageId":  "sha256:6b91eb543b7e300860875a6514f0e41e97d65dcd9c06f4cf7bc7e7989adabce5",
+                       "imageId":  "sha256:83a6b5c656aa3b1615cfe32d5735ef2da9bc0bb09ee28e949724293861b41eac",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {

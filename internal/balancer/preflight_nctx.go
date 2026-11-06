@@ -86,6 +86,14 @@ type RequestMeta struct {
 	// Нужна, чтобы отличить «завышение из-за кириллицы» от «завышения из-за
 	// шаблона» и применить запасной коэффициент, пока калибровки нет.
 	PromptNonASCIIShare float64
+	// ExactSampleText — текст, который отправляется токенизатору модели для
+	// ТОЧНОГО подсчёта (R473): содержимое сообщений плюс сериализованные tools[].
+	// Пустая строка — точный подсчёт недоступен (нет текста).
+	ExactSampleText string
+	// PromptTokensSource — чем посчитано EstimatedPromptTokens: "estimate"
+	// (эвристика pkg/tokencount + калибровка) или "tokenizer" (реальный
+	// токенизатор модели через POST /api/tokenize, R473).
+	PromptTokensSource string
 	// RequestedNPredict — max_tokens / num_predict из тела (0 = default).
 	//
 	// R83/v67 (2026-10-02): сюда попадает ТОЛЬКО явное намерение клиента
@@ -315,6 +323,8 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		}
 		meta.EstimatedPromptTokens = EstimatePromptTokens(sb.String())
 		meta.PromptBytes, meta.PromptNonASCIIShare = promptTextStats(sb.String())
+		meta.ExactSampleText = exactSampleWithToolsR473(sb.String(), req.Tools)
+		meta.PromptTokensSource = "estimate"
 
 	case strings.HasSuffix(path, "/api/generate"):
 		var req ollamaGenerateRequestRaw
@@ -333,6 +343,8 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		meta.HasTools = len(req.Tools) > 0
 		meta.EstimatedPromptTokens = EstimatePromptTokens(req.Prompt + req.System)
 		meta.PromptBytes, meta.PromptNonASCIIShare = promptTextStats(req.Prompt + req.System)
+		meta.ExactSampleText = exactSampleWithToolsR473(req.Prompt+req.System, req.Tools)
+		meta.PromptTokensSource = "estimate"
 
 	case strings.HasSuffix(path, "/v1/chat/completions"):
 		var req openAIChatRequestRaw
@@ -356,6 +368,8 @@ func ExtractRequestMeta(body []byte, path string) *RequestMeta {
 		}
 		meta.EstimatedPromptTokens = EstimatePromptTokens(sb.String())
 		meta.PromptBytes, meta.PromptNonASCIIShare = promptTextStats(sb.String())
+		meta.ExactSampleText = exactSampleWithToolsR473(sb.String(), req.Tools)
+		meta.PromptTokensSource = "estimate"
 		meta.RequestedThink = parseThinkRequirement(req.Think)
 	}
 

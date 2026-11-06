@@ -1,38 +1,38 @@
 {
-    "tag":  "r261106-0718",
-    "builtAt":  "2026-11-06T04:18:00Z",
-    "gitCommit":  "6a90c528",
+    "tag":  "r261106-0911",
+    "builtAt":  "2026-11-06T06:11:00Z",
+    "gitCommit":  "6c708148",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R442-R451. Оба образа пересобраны из HEAD (6a90c528). R451 закрывает живой дефект хода Cline: (1) окно не растят из max_tokens клиента — в DecidePreflight действует правило R447 (растим только если не влезает сам промпт, клиент явно попросил больше, или под ответ не остаётся 256 токенов); в таргет входит минимальный вывод, а не весь бюджет клиента; откат целиком LB_AGENT_WINDOW_BUDGET=client; (2) cppworker печатает, какие параметры загрузки разошлись (changed: [\u0027contextSize 32768→2048\u0027]); (3) отложенная из-за живого стрима загрузка больше не выдаётся за начатую — ответ говорит «busy serving another request, did NOT unload, retry in Ns». Остальное из R442-R449 без изменений: R447 (числа тела = числа текста), R448 (build/build_commit по HTTP), R449 (модель на диске не объявляется отсутствующей), подсказка по отказам клиента, AutoTune recommend-only, дампы выключены.",
+    "note":  "R442-R453. Оба образа пересобраны из HEAD (6c708148). Новое в этом выпуске: R452 — gpuLayers в запросе трактуется как намерение (cppworker: -1 «все слои» и -2 AUTO сравниваются с ФАКТИЧЕСКИМ числом слоёв модели), поэтому повторный load с теми же намерениями больше не выгружает и не грузит модель заново; R453 — калибровка оценки промпта не завышает большие промпты (замеры короче 256 токенов в обучение не идут — они меряют накладные расходы шаблона, а не плотность текста; начиная с 4096 токенов калибровка может только снижать оценку). До этого в живом файле калибровки стояло ratio=1.84, выученное в том числе на промпте «Привет!» (raw=8 → actual=11), и оно умножалось на большие промпты: 44137 символов → 49731 вместо фактических 9816. Остальное из R442-R451 без изменений.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-06T04:45:00Z",
+                          "verifiedAt":  "2026-11-06T06:25:00Z",
                           "debugDumps":  "off (CPPWORKER_DEBUG_PROMPT_FILE / CPPWORKER_DEBUG_REQUEST_FILE / CPPWORKER_DEBUG_TOOL_ARGS / CPPWORKER_DEBUG_TOOL_PROMPT закомментированы в deployments/.env)",
                           "proof":  [
-                                        "GET /api/version -\u003e build_commit=6a90c528 (balancer), /api/info -\u003e то же (cppworker)",
-                                        "R451/1: 4B окно 61440, промпт по оценке 49731, max_tokens 15393 -\u003e HTTP 200, перезагрузок 0 (старая формула дала бы 65188 \u003e 61440 и reload)",
-                                        "R451/1: лог «preflight: рост окна под агентский ход не нужен (R451)» с estimated=49731, loaded=61440, client_output_budget=15393, mode=minimal",
-                                        "R451/2: запрос загрузки с другим окном -\u003e лог «reloading model because parameters changed, changed: [contextSize 32768→2048, gpuLayers 36→-1]»",
-                                        "R451/3: запрос второй модели во время живого стрима -\u003e 503 «busy serving another request … the balancer did NOT unload it — retry in 5s» (до правки: «load started, waiting ~30-180s»)"
+                                        "GET /api/version -\u003e build_commit=6c708148 (balancer), /api/info -\u003e то же (cppworker)",
+                                        "R452: повторный load той же модели с gpuLayers=-1 и с gpuLayers=-2 -\u003e HTTP 200 status=already_loaded, в логе «model already loaded with same parameters» (до правки — unload+load, «parameters changed»)",
+                                        "R453: тот же большой промпт (44137 символов) -\u003e HTTP 200 за 52.2 s, в логе estimated_prompt_tokens=26973 (было 49731), окно 32768 не менялось",
+                                        "R451 (без изменений, подтверждено): 200 без перезагрузки, лог «рост окна под агентский ход не нужен» с client_output_budget=15393",
+                                        "R451/3: 503 при живом стриме говорит «busy serving another request … did NOT unload it — retry in 5s»"
                                     ]
                       },
     "images":  [
                    {
                        "service":  "loadbalancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r261106-0718",
-                       "imageTag":  "r261106-0718",
-                       "imageId":  "sha256:36f0643b5754ea7e14c4844b8d4c5dd56106dcdb766cd4002f6f4ddc6cabc40d",
+                       "image":  "ollama-legion/balancer:r261106-0911",
+                       "imageTag":  "r261106-0911",
+                       "imageId":  "sha256:39877bd51486e74a159ddb74711154a2312c2e25fc9874cfdb19c3155924285d",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261106-0718",
-                       "imageTag":  "gpu-r261106-0718",
-                       "imageId":  "sha256:4334521b8ac19e507fd191890d1032006f279bc208f06b36c0c58950b60ce8bc",
+                       "image":  "ollama-legion/cppworker:gpu-r261106-0911",
+                       "imageTag":  "gpu-r261106-0911",
+                       "imageId":  "sha256:dffd9b471bbd2ac812340905f566c14743881bbeb7afd7c63edff92d058380a5",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

@@ -198,7 +198,14 @@ func (p *Proxy) growthVerdictR301(backendID, model string, body []byte, path str
 			v.RetryAfterSec = streamGrowthRetryAfterSecR385
 			return v
 		} else if why != "" {
-			logger.Get().Debugw("R385: окно на стриминге не растим", "backend", backendID,
+			// R472 (2026-11-06): причина отказа роста — WARN, а не Debug.
+			//
+			// ЖИВОЙ ДЕФЕКТ: клиент получал 503 «a streaming request does not reload
+			// the model», хотя рост на стриминге ВКЛЮЧЁН и ничто его не блокировало.
+			// Настоящая причина отказа (WindowFeasibility/потолок/выключатель) была
+			// видна только на Debug, поэтому по логу нельзя было понять, что именно
+			// решает. Оператор видит отказ — лог обязан назвать его причину.
+			logger.Get().Warnw("R385: окно на стриминге не растим", "backend", backendID,
 				"model", model, "needed_tokens", v.Needed, "loaded_tokens", v.Loaded, "reason", why)
 		}
 	}

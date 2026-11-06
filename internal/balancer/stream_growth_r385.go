@@ -78,8 +78,8 @@ func (p *Proxy) streamGrowthCheckR385(backendID, model string, needed int) (bool
 	if p.cannotHostModelR304(backendID) {
 		return false, "бэкенд — донор раскладки, своих копий он не держит"
 	}
-	// Физика и заявленное операторское окно: та же проверка, что перед ручной
-	// перезагрузкой (R297), — чтобы не выгрузить модель в никуда.
+	// Физика и операторский потолок авто-роста.
+	//
 	// R466 (2026-11-06): потолок — СУММАРНЫЙ (так его считает
 	// physicalNumCtxCeiling и так его делит воркер между слотами), а needed
 	// приходит НА КЛИЕНТА. Сравнивать их напрямую значило бы разрешать рост,
@@ -88,11 +88,33 @@ func (p *Proxy) streamGrowthCheckR385(backendID, model string, needed int) (bool
 	if slots := p.loadedSlotsNCtx(backendID, model); slots > 1 {
 		target = perClientToTotal(needed, slots)
 	}
-	if ok, ceiling, why := p.WindowFeasibility(backendID, model, target); !ok {
-		return false, fmt.Sprintf("окно %d физически невозможно: %s (потолок %d)", target, why, ceiling)
-	}
-	if ceiling := p.physicalNumCtxCeiling(model, backendID); ceiling > 0 && target > ceiling {
+	// R472 (2026-11-06): ЗДЕСЬ БОЛЬШЕ НЕ СПРАШИВАЕМ WindowFeasibility.
+	//
+	// ЖИВОЙ ДЕФЕКТ (Cline → балансер, gemma-4-E4B). Клиент просил num_ctx=32768,
+	// промпт требовал ~40.7k (наша оценка), загруженное окно было 16384. Рост
+	// отказывался с причиной
+	//   «окно 40697 физически невозможно: … (потолок 32768)»,
+	// хотя операторский потолок авто-роста — 65536, а профиль модели заявляет
+	// contextLengthMax=131072. «Потолок 32768» брался из WindowFeasibility, а там
+	// участвует `declaredWindowTotal` — окно, ЗАЯВЛЕННОЕ В ПРОФИЛЕ ДЛЯ ЗАГРУЗКИ
+	// (contextLength=32768). Это ХИНТ загрузки, а не потолок обслуживания: тот же
+	// класс, что R267/R255 («два мнения об одном потолке»).
+	//
+	// Правильный потолок для клиентского роста — physicalNumCtxCeiling:
+	// min(GGUF, contextLengthMax профиля, операторский LB_NCTX_RELOAD_MAX_N_CTX).
+	// Для ручной перезагрузки (R297) WindowFeasibility остаётся как был: там окно
+	// задаёт оператор, и его же заявленное значение разумно считать пределом.
+	ceiling := p.physicalNumCtxCeiling(model, backendID)
+	if ceiling > 0 && target > ceiling {
 		return false, fmt.Sprintf("нужно %d, потолок авто-роста %d", target, ceiling)
+	}
+	if ceiling <= 0 {
+		// Потолок неизвестен — не отказываем по догадке: пусть решает загрузка
+		// (воркер вернёт честную ошибку, если окно не влезет).
+		if ok, _, why := p.WindowFeasibility(backendID, model, target); !ok && why != "" {
+			logger.Get().Warnw("R472: потолок модели неизвестен, но WindowFeasibility отказал — всё равно пробуем рост",
+				"backend", backendID, "model", model, "target", target, "why", why)
+		}
 	}
 	return true, ""
 }

@@ -1950,6 +1950,20 @@ func (p *Proxy) executeAsyncReload(backendID, modelName string, requestedNCtx in
 	body, _ := io.ReadAll(resp.Body)
 	duration := time.Since(start)
 
+	// R472 (2026-11-06): 202 Accepted — это НАЧАТАЯ фоновая загрузка, а не отказ.
+	//
+	// Живая проверка: воркер отвечает 202 на POST /api/models/load («Model load
+	// started in background. Poll progressUrl…»), а балансер считал это
+	// «reload returned non-OK status», снимал пометку destructive-op и писал WARN
+	// на КАЖДОМ успешном росте окна. Оператор видел предупреждение при полностью
+	// здоровой перезагрузке, а координатор терял след «идёт перезагрузка».
+	if resp.StatusCode == http.StatusAccepted {
+		logger.Get().Infow("preflightNCtxReload(async): reload accepted in background (202)",
+			"backend", backendID, "model", modelName,
+			"target_n_ctx", requestedNCtx,
+			"duration_ms", duration.Milliseconds())
+		return
+	}
 	if resp.StatusCode != http.StatusOK {
 		// R296: перезагрузка не состоялась — снимаем пометку, иначе следующий
 		// оборванный стрим будет объяснён нашей перезагрузкой, которой не было.

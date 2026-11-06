@@ -2408,6 +2408,19 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// (живая жалоба: «Cline пишет COMPLETED, файла нет»). Поэтому к прозе
 	// добавляется пояснение — один раз, в одном месте (см. unparsedNoticeR430).
 	var unparsedNoticeR430 string
+	// R468 (2026-11-06): ПОЧЕМУ вызов не выполнен — две разные причины, и
+	// клиенту нельзя называть не ту.
+	//
+	// Живой артефакт (RAW-20261106-153057): модель выдала нативный вызов
+	// call:editor{…}, парсер его РАЗОБРАЛ, но в запросе было объявлено 5
+	// инструментов без editor — R428 правильно отбросил вызов. Текст же
+	// говорил «нераспознанный формат», и оператор шёл чинить парсер.
+	// Здесь считается именно случай «распознали, но не объявлен».
+	undeclaredToolCallNames := undeclaredCallNamesR468(outputForParse, tools)
+	honestNotice := unparsedToolCallNoticeR430
+	if len(undeclaredToolCallNames) > 0 {
+		honestNotice = undeclaredCallNoticeR468(undeclaredToolCallNames, tools)
+	}
 	if len(toolCalls) == 0 && looksLikeToolCallMarkup(outputForParse) {
 		visibleAfterStrip := strings.TrimSpace(stripToolCallMarkup(cleanFinalContent(outputForParse)))
 		if visibleAfterStrip == "" {
@@ -2417,8 +2430,21 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"emitted_len", emittedLen,
 				"preview", truncateForLog(outputForParse, 300))
 			// R427: СЫРОЙ вывод сохраняем ПЕРЕД принятием решения.
-			recordUnparsedCapture(modelName, "/api/chat", "markup_unparsed",
-				fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools)
+			// R468: reason называет настоящую причину — «вызов распознан, но
+			// инструмент не объявлен» отдельно от «разметку не распознали».
+			unparsedReason := "markup_unparsed"
+			if len(undeclaredToolCallNames) > 0 {
+				unparsedReason = "call_undeclared"
+			}
+			recordUnparsedCaptureFieldsR468(modelName, "/api/chat", unparsedReason,
+				fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools,
+				undeclaredToolCallNames)
+			if len(undeclaredToolCallNames) > 0 {
+				logger.Get().Warnw("R468: вызов распознан, но инструмент не объявлен клиентом",
+					"model", modelName,
+					"called", strings.Join(undeclaredToolCallNames, ","),
+					"declared_count", len(tools))
+			}
 			// R428: ХОД БОЛЬШЕ НЕ УБИВАЕТСЯ. Раньше здесь уходил errChunk с
 			// done_reason:"error" и пустым content: клиент (Cline) сохранял наше
 			// сообщение об ошибке как реплику ассистента, ход терялся, а следующий
@@ -2436,7 +2462,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"created_at": createdAt,
 				"message": map[string]string{
 					"role":    "assistant",
-					"content": unparsedToolCallNoticeR430,
+					"content": honestNotice,
 				},
 				"done":        true,
 				"done_reason": noticeReason,
@@ -2452,11 +2478,24 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"raw_len", len(fullOutput))
 			// R427: разметка снята, но проза доставлена — фиксируем СЫРОЙ вывод:
 			// так видно, в какой форме модель прислала вызов и почему он не распознан.
-			recordUnparsedCapture(modelName, "/api/chat", "markup_stripped",
-				fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools)
+			unparsedReason := "markup_stripped"
+			if len(undeclaredToolCallNames) > 0 {
+				unparsedReason = "call_undeclared"
+			}
+			recordUnparsedCaptureFieldsR468(modelName, "/api/chat", unparsedReason,
+				fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools,
+				undeclaredToolCallNames)
+			if len(undeclaredToolCallNames) > 0 {
+				logger.Get().Warnw("R468: вызов распознан, но инструмент не объявлен клиентом",
+					"model", modelName,
+					"called", strings.Join(undeclaredToolCallNames, ","),
+					"declared_count", len(tools))
+			}
 			// R430: пояснение добавляется к прозе (см. unparsedNoticeR430 выше) —
 			// клиент видит, что вызов не выполнен, а проза не теряется.
-			unparsedNoticeR430 = unparsedToolCallNoticeR430
+			// R468: текст зависит от причины — «не объявлен» вместо
+			// «нераспознанный формат», когда мы его распознали.
+			unparsedNoticeR430 = honestNotice
 		}
 	}
 
@@ -2502,7 +2541,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"created_at": createdAt,
 				"message": map[string]string{
 					"role":    "assistant",
-					"content": unparsedToolCallNoticeR430,
+					"content": honestNotice,
 				},
 				"done":        true,
 				"done_reason": noticeReason,

@@ -105,6 +105,18 @@ var messagesCppworker = map[string]map[Lang]string{
 		RU: "writeChatStreamResponseWithTools: разметка вызова в выводе, но вызов не распознан — отдаём error-чанк (в content разметку не кладём)",
 		EN: "writeChatStreamResponseWithTools: call markup present in the output but the call was not recognised — sending an error chunk (the markup is not put into content)",
 	},
+	// R468 (2026-11-06): вызов РАСПОЗНАН, но инструмент клиентом не объявлен.
+	// Прежний текст говорил «нераспознанный формат» — ложь: оператор шёл чинить
+	// парсер, а причина в составе tools[] запроса (живой артефакт
+	// RAW-20261106-153057: call:editor при 5 объявленных инструментах без editor).
+	"cppworker.handlers_chat.undeclared_call_notice": {
+		RU: "Модель вызвала инструмент %s, но в этом запросе он не объявлен (объявлены: %s) — вызов не выполнен. Включите режим с правом записи файлов (в Cline это Act mode) или объявите инструмент в запросе.",
+		EN: "The model called tool %s, but it is not declared in this request (declared: %s) — the call was not executed. Enable a mode that allows file writes (Act mode in Cline) or declare the tool in the request.",
+	},
+	"cppworker.handlers_chat.undeclared_call_none_declared": {
+		RU: "ни одного инструмента",
+		EN: "none",
+	},
 	"cppworker.handlers_chat.tools_markup_stripped": {
 		RU: "writeChatStreamResponseWithTools: разметка вызова вырезана из видимого ответа",
 		EN: "writeChatStreamResponseWithTools: call markup cut out of the visible answer",

@@ -58,20 +58,23 @@ const (
 // сканирования (govet fieldalignment). Порядок JSON-полей от этого не значит
 // ничего: объект читается по именам.
 type unparsedCapture struct {
-	Timestamp       string   `json:"ts"`
-	Model           string   `json:"model"`
-	Endpoint        string   `json:"endpoint"`
-	Reason          string   `json:"reason"` // markup_unparsed | empty_after_strip | markup_stripped
-	RawHead         string   `json:"raw_head"`
-	RawTail         string   `json:"raw_tail"`
-	RawFile         string   `json:"raw_file,omitempty"`
-	ToolNames       []string `json:"tool_names,omitempty"`
-	RawLen          int      `json:"raw_len"`
-	ParsedLen       int      `json:"parsed_len"`
-	EmittedLen      int      `json:"emitted_len"`
-	GeneratedTokens int      `json:"generated_tokens,omitempty"`
-	NPredict        int      `json:"n_predict,omitempty"`
-	ToolsCount      int      `json:"tools_count"`
+	Timestamp string   `json:"ts"`
+	Model     string   `json:"model"`
+	Endpoint  string   `json:"endpoint"`
+	Reason    string   `json:"reason"` // markup_unparsed | empty_after_strip | markup_stripped
+	RawHead   string   `json:"raw_head"`
+	RawTail   string   `json:"raw_tail"`
+	RawFile   string   `json:"raw_file,omitempty"`
+	ToolNames []string `json:"tool_names,omitempty"`
+	// R468 (2026-11-06): имена вызовов, которые РАСПОЗНАНЫ, но отклонены как
+	// необъявленные (R428). Пусто — прежнее поведение.
+	DroppedToolNames []string `json:"dropped_tool_names,omitempty"`
+	RawLen           int      `json:"raw_len"`
+	ParsedLen        int      `json:"parsed_len"`
+	EmittedLen       int      `json:"emitted_len"`
+	GeneratedTokens  int      `json:"generated_tokens,omitempty"`
+	NPredict         int      `json:"n_predict,omitempty"`
+	ToolsCount       int      `json:"tools_count"`
 }
 
 var (
@@ -105,8 +108,19 @@ func unparsedToolNames(tools []openAITool) []string {
 //
 // raw — ПОЛНЫЙ сырой вывод модели, parsed — то, что парсилось (без размышлений),
 // emittedLen — сколько из сырого вывода уже ушло клиенту дельтами.
+// recordUnparsedCapture — запись без сведений об отброшенных вызовах
+// (поведение до R468).
 func recordUnparsedCapture(model, endpoint, reason string, raw, parsed string,
 	emittedLen, generatedTokens, nPredict int, tools []openAITool) {
+	recordUnparsedCaptureFieldsR468(model, endpoint, reason, raw, parsed,
+		emittedLen, generatedTokens, nPredict, tools, nil)
+}
+
+// recordUnparsedCaptureFieldsR468 — то же плюс имена вызовов, отклонённых как
+// необъявленные. reason `call_undeclared` + этот список отвечают на вопрос «а
+// инструмент вообще объявляли?» по артефакту, без чтения исходников.
+func recordUnparsedCaptureFieldsR468(model, endpoint, reason string, raw, parsed string,
+	emittedLen, generatedTokens, nPredict int, tools []openAITool, dropped []string) {
 
 	head, tail := raw, raw
 	if len(head) > unparsedHeadChars {
@@ -116,19 +130,20 @@ func recordUnparsedCapture(model, endpoint, reason string, raw, parsed string,
 		tail = tail[len(tail)-unparsedTailChars:]
 	}
 	cap := unparsedCapture{
-		Timestamp:       time.Now().UTC().Format(time.RFC3339Nano),
-		Model:           model,
-		Endpoint:        endpoint,
-		Reason:          reason,
-		RawLen:          len(raw),
-		ParsedLen:       len(parsed),
-		EmittedLen:      emittedLen,
-		GeneratedTokens: generatedTokens,
-		NPredict:        nPredict,
-		ToolsCount:      len(tools),
-		ToolNames:       unparsedToolNames(tools),
-		RawHead:         head,
-		RawTail:         tail,
+		Timestamp:        time.Now().UTC().Format(time.RFC3339Nano),
+		Model:            model,
+		Endpoint:         endpoint,
+		Reason:           reason,
+		RawLen:           len(raw),
+		ParsedLen:        len(parsed),
+		EmittedLen:       emittedLen,
+		GeneratedTokens:  generatedTokens,
+		NPredict:         nPredict,
+		ToolsCount:       len(tools),
+		ToolNames:        unparsedToolNames(tools),
+		DroppedToolNames: dropped,
+		RawHead:          head,
+		RawTail:          tail,
 	}
 
 	// Полный сырой вывод — в отдельный файл, чтобы не обрезать самое интересное
@@ -140,6 +155,8 @@ func recordUnparsedCapture(model, endpoint, reason string, raw, parsed string,
 		body := "=== MODEL ===\n" + model + "\n=== REASON ===\n" + reason +
 			fmt.Sprintf("\n=== LEN raw=%d parsed=%d emitted=%d gen=%d n_predict=%d tools=%d ===\n",
 				len(raw), len(parsed), emittedLen, generatedTokens, nPredict, len(tools)) +
+			"\n=== DECLARED TOOLS ===\n" + strings.Join(unparsedToolNames(tools), ",") +
+			"\n=== DROPPED (не объявлены) ===\n" + strings.Join(dropped, ",") +
 			"\n=== FULL OUTPUT ===\n" + raw +
 			"\n\n=== PARSE INPUT (без размышлений) ===\n" + parsed + "\n"
 		if len(body) > unparsedRawMaxBytes {

@@ -80,11 +80,19 @@ func (p *Proxy) streamGrowthCheckR385(backendID, model string, needed int) (bool
 	}
 	// Физика и заявленное операторское окно: та же проверка, что перед ручной
 	// перезагрузкой (R297), — чтобы не выгрузить модель в никуда.
-	if ok, ceiling, why := p.WindowFeasibility(backendID, model, needed); !ok {
-		return false, fmt.Sprintf("окно %d физически невозможно: %s (потолок %d)", needed, why, ceiling)
+	// R466 (2026-11-06): потолок — СУММАРНЫЙ (так его считает
+	// physicalNumCtxCeiling и так его делит воркер между слотами), а needed
+	// приходит НА КЛИЕНТА. Сравнивать их напрямую значило бы разрешать рост,
+	// который воркер не сможет выполнить (или урезать окно слота вдвое).
+	target := needed
+	if slots := p.loadedSlotsNCtx(backendID, model); slots > 1 {
+		target = perClientToTotal(needed, slots)
 	}
-	if ceiling := p.physicalNumCtxCeiling(model, backendID); ceiling > 0 && needed > ceiling {
-		return false, fmt.Sprintf("нужно %d, потолок авто-роста %d", needed, ceiling)
+	if ok, ceiling, why := p.WindowFeasibility(backendID, model, target); !ok {
+		return false, fmt.Sprintf("окно %d физически невозможно: %s (потолок %d)", target, why, ceiling)
+	}
+	if ceiling := p.physicalNumCtxCeiling(model, backendID); ceiling > 0 && target > ceiling {
+		return false, fmt.Sprintf("нужно %d, потолок авто-роста %d", target, ceiling)
 	}
 	return true, ""
 }
@@ -111,7 +119,19 @@ func (p *Proxy) triggerStreamGrowthR385(backendID, model string, needed int) {
 	}
 	logger.Get().Infow("R385: стриминговый запрос требует большего окна — запускаем перезагрузку модели",
 		"backend", backendID, "model", model, "needed_tokens", needed)
-	p.executeAsyncReload(backendID, model, needed, backend)
+	// R466 (2026-11-06): executeAsyncReload ждёт СУММАРНОЕ окно (см.
+	// asyncReloadLoadBody — contextSize получает воркер и делит его между
+	// слотами), а сюда приходит окно НА КЛИЕНТА (v.Needed). Без пересчёта
+	// модель с двумя слотами поднималась бы до окна слота вдвое меньше нужного,
+	// и следующий запрос просил рост снова — та же ошибка учёта, что и в R466.
+	target := needed
+	if slots := p.loadedSlotsNCtx(backendID, model); slots > 1 {
+		target = perClientToTotal(needed, slots)
+		logger.Get().Infow("R385: окно пересчитано в суммарное",
+			"backend", backendID, "model", model,
+			"per_client", needed, "slots", slots, "total", target)
+	}
+	p.executeAsyncReload(backendID, model, target, backend)
 }
 
 // growthStartsMessageR385 — текст ответа клиенту: что происходит и когда

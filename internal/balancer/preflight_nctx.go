@@ -755,6 +755,34 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 				}
 			}
 			derived = agentRequiredWindowAtLeast(meta, loaded)
+
+			// R466 (2026-11-06): ВЫВЕДЕННОЕ ОКНО НЕ ОТКАЗЫВАЕТ ПО ФИЗИКЕ.
+			//
+			// ЖИВОЙ ДЕФЕКТ (второй стенд, A10 ×2, Qwen3.8-27B, Cline). Клиент
+			// показывал занятый контекст 63.6k, а балансер отвечал «требуется
+			// 151743 токенов на контекстное окно» и окно НЕ поднимал. Нужное окно
+			// выводится из ОЦЕНКИ промпта (эвристика по символам, без
+			// токенизатора), а она завышает в 2-3 раза: 151743 здесь — это оценка
+			// нашего же счётчика, а не требование клиента. Клиент num_ctx не
+			// присылал вовсе.
+			//
+			// Поэтому: отказ 413 по физическому потолку остаётся только для окна,
+			// которое ЯВНО запросил клиент (ветка ниже, reqWindow из тела). Нашу
+			// догадку урезаем до потолка и грузим её: реальный промпт в потолок
+			// может и влезть, а отказ по завышенной оценке гарантированно ломает
+			// ход. Рост не может быть уменьшением (R294): если потолок ниже
+			// загруженного окна, ветка (4) всё равно вернёт NoOp.
+			if capped, cut := capDerivedWindowR466(derived, state.physicalCeiling(), state.effectiveSlots()); cut {
+				logger.Get().Warnw("preflight: R466 выведенное окно урезано до потолка (оценка завышена)",
+					"backend_id", state.BackendID,
+					"model", meta.ModelName,
+					"estimated_prompt_tokens", meta.EstimatedPromptTokens,
+					"derived_window_per_client", derived,
+					"capped_window_per_client", capped,
+					"physical_ceiling", state.physicalCeiling(),
+					"slots", state.effectiveSlots())
+				derived = capped
+			}
 		}
 		if derived <= 0 {
 			logger.Get().Infow(i18n.T("balancer.preflight_nctx.client_silent_no_reload_info"),

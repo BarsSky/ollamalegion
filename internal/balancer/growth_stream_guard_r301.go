@@ -112,6 +112,30 @@ func (p *Proxy) growthVerdictR301(backendID, model string, body []byte, path str
 		return v
 	}
 	estimated, loaded, needed := p.contextGrowthNumbers(backendID, model, body, path)
+
+	// R466 (2026-11-06): ЗАВЫШЕННАЯ ОЦЕНКА НЕ ОТМЕНЯЕТ РОСТ.
+	//
+	// needed = оценка промпта + бюджет вывода, а оценка — эвристика по символам
+	// (без токенизатора), которая на живых стендах завышает в 2–3 раза: «нужно
+	// 151743 при занятых 63.6k». Дальше это число сравнивалось с физическим
+	// потолком и рост отменялся — при том что клиент не просил ни окна, ни
+	// такого бюджета, и реальный промпт в потолок мог влезть.
+	//
+	// Правило: если окно выведено нами (клиент num_ctx не присылал), урезаем его
+	// до потолка на клиента и пробуем рост; явно запрошенное клиентом окно
+	// сверх потолка по-прежнему честно отказывается (это его требование, а не
+	// наша догадка).
+	if meta.RequestedNCtxOverride <= 0 && needed > loaded {
+		ceil := p.physicalNumCtxCeiling(model, backendID)
+		if capped, cut := capDerivedWindowR466(needed, ceil, p.loadedSlotsNCtx(backendID, model)); cut && capped > loaded {
+			logger.Get().Warnw("R466: нужное окно урезано до потолка (оценка промпта завышена)",
+				"backend", backendID, "model", model, "path", path,
+				"estimated_prompt_tokens", estimated,
+				"needed_tokens", needed, "capped_tokens", capped,
+				"loaded_window_tokens", loaded, "physical_ceiling", ceil)
+			needed = capped
+		}
+	}
 	v.Estimated, v.Loaded, v.Needed = estimated, loaded, needed
 	if loaded <= 0 || needed <= 0 || needed <= loaded {
 		// Окно известно и его хватает (или неизвестно — числами не спекулируем).

@@ -1,38 +1,38 @@
 {
-    "tag":  "r261106-0911",
-    "builtAt":  "2026-11-06T06:11:00Z",
-    "gitCommit":  "6c708148",
+    "tag":  "r261106-0935",
+    "builtAt":  "2026-11-06T06:35:00Z",
+    "gitCommit":  "a3e69b2b",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R442-R453. Оба образа пересобраны из HEAD (6c708148). Новое в этом выпуске: R452 — gpuLayers в запросе трактуется как намерение (cppworker: -1 «все слои» и -2 AUTO сравниваются с ФАКТИЧЕСКИМ числом слоёв модели), поэтому повторный load с теми же намерениями больше не выгружает и не грузит модель заново; R453 — калибровка оценки промпта не завышает большие промпты (замеры короче 256 токенов в обучение не идут — они меряют накладные расходы шаблона, а не плотность текста; начиная с 4096 токенов калибровка может только снижать оценку). До этого в живом файле калибровки стояло ratio=1.84, выученное в том числе на промпте «Привет!» (raw=8 → actual=11), и оно умножалось на большие промпты: 44137 символов → 49731 вместо фактических 9816. Остальное из R442-R451 без изменений.",
+    "note":  "R442-R454. Оба образа пересобраны из HEAD (a3e69b2b). Новое: R452 (gpuLayers -1/-2 сравниваются по намерению с фактическим числом слоёв — повторный load не выгружает модель), R453 (калибровка оценки промпта не завышает большие промпты: замеры короче 256 токенов не учатся, с 4096 калибровка только снижает), R454 (фоновая загрузка в sync-пути не читает глобальный backend и регистрируется в asyncWorkWG — была гонка, пойманная CI на self-hosted Windows, и shutdown мог не дождаться загрузки). Остальное из R442-R451 без изменений.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-06T06:25:00Z",
+                          "verifiedAt":  "2026-11-06T06:45:00Z",
                           "debugDumps":  "off (CPPWORKER_DEBUG_PROMPT_FILE / CPPWORKER_DEBUG_REQUEST_FILE / CPPWORKER_DEBUG_TOOL_ARGS / CPPWORKER_DEBUG_TOOL_PROMPT закомментированы в deployments/.env)",
                           "proof":  [
-                                        "GET /api/version -\u003e build_commit=6c708148 (balancer), /api/info -\u003e то же (cppworker)",
-                                        "R452: повторный load той же модели с gpuLayers=-1 и с gpuLayers=-2 -\u003e HTTP 200 status=already_loaded, в логе «model already loaded with same parameters» (до правки — unload+load, «parameters changed»)",
-                                        "R453: тот же большой промпт (44137 символов) -\u003e HTTP 200 за 52.2 s, в логе estimated_prompt_tokens=26973 (было 49731), окно 32768 не менялось",
-                                        "R451 (без изменений, подтверждено): 200 без перезагрузки, лог «рост окна под агентский ход не нужен» с client_output_budget=15393",
-                                        "R451/3: 503 при живом стриме говорит «busy serving another request … did NOT unload it — retry in 5s»"
+                                        "GET /api/version -\u003e build_commit=a3e69b2b (balancer), /api/info -\u003e то же (cppworker)",
+                                        "R452: повторный load с gpuLayers=-1 и -2 -\u003e already_loaded, без unload/load",
+                                        "R453: большой промпт -\u003e estimated_prompt_tokens=26973 (было 49731), окно 32768, 200 без перезагрузки",
+                                        "R451: 200 без reload; 503 при живом стриме говорит «busy serving another request … did NOT unload it»",
+                                        "R454: `go test -race ./cmd/cppworker/ -run TestLoadLock -count=10` зелёный; полный пакет под -race 22.9 s зелёный"
                                     ]
                       },
     "images":  [
                    {
                        "service":  "loadbalancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r261106-0911",
-                       "imageTag":  "r261106-0911",
-                       "imageId":  "sha256:39877bd51486e74a159ddb74711154a2312c2e25fc9874cfdb19c3155924285d",
+                       "image":  "ollama-legion/balancer:r261106-0935",
+                       "imageTag":  "r261106-0935",
+                       "imageId":  "sha256:9aa0edd8c214fcffdadcb77efd5342472b1bd8b941276734e26e8690322ab36b",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261106-0911",
-                       "imageTag":  "gpu-r261106-0911",
-                       "imageId":  "sha256:dffd9b471bbd2ac812340905f566c14743881bbeb7afd7c63edff92d058380a5",
+                       "image":  "ollama-legion/cppworker:gpu-r261106-0935",
+                       "imageTag":  "gpu-r261106-0935",
+                       "imageId":  "sha256:faadeba6331c04fbb1bba4f825a9fd580db3224b7d48bb2370d518ead724877b",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

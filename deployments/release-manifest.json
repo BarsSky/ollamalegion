@@ -1,38 +1,37 @@
 {
-    "tag":  "r261106-0935",
-    "builtAt":  "2026-11-06T06:35:00Z",
-    "gitCommit":  "a3e69b2b",
+    "tag":  "r261106-1046",
+    "builtAt":  "2026-11-06T07:46:00Z",
+    "gitCommit":  "4be9e3b6",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R442-R454. Оба образа пересобраны из HEAD (a3e69b2b). Новое: R452 (gpuLayers -1/-2 сравниваются по намерению с фактическим числом слоёв — повторный load не выгружает модель), R453 (калибровка оценки промпта не завышает большие промпты: замеры короче 256 токенов не учатся, с 4096 калибровка только снижает), R454 (фоновая загрузка в sync-пути не читает глобальный backend и регистрируется в asyncWorkWG — была гонка, пойманная CI на self-hosted Windows, и shutdown мог не дождаться загрузки). Остальное из R442-R451 без изменений.",
+    "note":  "R442-R457. Оба образа пересобраны из HEAD (4be9e3b6); на стенде ВКЛЮЧЕНЫ диагностические дампы (CPPWORKER_DEBUG_REQUEST_FILE, CPPWORKER_DEBUG_PROMPT_FILE, CPPWORKER_DEBUG_TOOL_ARGS=1) — временно, для разбора прогонов Cline. Новое: R455 (подсказка при падающих командах: ненулевой код возврата / файл не найден), R456 (детектор повтора того же вызова с теми же аргументами + подсказка), R457 (файл текстом вместо вызова: подсказка на следующий ход + Warn-строка и поле file_body_instead_of_call в summary). Остальное: R451 (окно растят только по требованию запроса), R452 (gpuLayers -1/-2 по намерению), R453 (калибровка не завышает большие промпты), R454 (гонка в фоновой загрузке), R447/R448/R449.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-06T06:45:00Z",
-                          "debugDumps":  "off (CPPWORKER_DEBUG_PROMPT_FILE / CPPWORKER_DEBUG_REQUEST_FILE / CPPWORKER_DEBUG_TOOL_ARGS / CPPWORKER_DEBUG_TOOL_PROMPT закомментированы в deployments/.env)",
+                          "verifiedAt":  "2026-11-06T07:58:00Z",
+                          "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args в лог; файлы внутри контейнера в /app/diag/",
                           "proof":  [
-                                        "GET /api/version -\u003e build_commit=a3e69b2b (balancer), /api/info -\u003e то же (cppworker)",
-                                        "R452: повторный load с gpuLayers=-1 и -2 -\u003e already_loaded, без unload/load",
-                                        "R453: большой промпт -\u003e estimated_prompt_tokens=26973 (было 49731), окно 32768, 200 без перезагрузки",
-                                        "R451: 200 без reload; 503 при живом стриме говорит «busy serving another request … did NOT unload it»",
-                                        "R454: `go test -race ./cmd/cppworker/ -run TestLoadLock -count=10` зелёный; полный пакет под -race 22.9 s зелёный"
+                                        "GET /api/version -\u003e build_commit=4be9e3b6 (balancer), /api/info -\u003e то же (cppworker)",
+                                        "R455/R456/R457: синтетический запрос с тремя классами проблем -\u003e лог «client tool guidance injected», command_failed=true repeated_call=true file_body_answer=true, hint_len=1352",
+                                        "R455/R456/R457: в собранном промпте (/app/diag/prompt-last.txt) присутствуют все три инструкции (R455:, R456:, R457:) и определения инструментов",
+                                        "R452/R453/R451 проверены ранее на r261106-0935 и не менялись"
                                     ]
                       },
     "images":  [
                    {
                        "service":  "loadbalancer",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r261106-0935",
-                       "imageTag":  "r261106-0935",
-                       "imageId":  "sha256:9aa0edd8c214fcffdadcb77efd5342472b1bd8b941276734e26e8690322ab36b",
+                       "image":  "ollama-legion/balancer:r261106-1046",
+                       "imageTag":  "r261106-1046",
+                       "imageId":  "sha256:4fa8b30aaeaaa8321fba8497e40e172f36c8d38090d4a5d24d08fe03c34ef487",
                        "alias":  "ollama-legion/balancer:latest"
                    },
                    {
                        "service":  "cppworker-gpu",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261106-0935",
-                       "imageTag":  "gpu-r261106-0935",
-                       "imageId":  "sha256:faadeba6331c04fbb1bba4f825a9fd580db3224b7d48bb2370d518ead724877b",
+                       "image":  "ollama-legion/cppworker:gpu-r261106-1046",
+                       "imageTag":  "gpu-r261106-1046",
+                       "imageId":  "sha256:741cfb9f05bcbfca78c421bd616c41d2ad8a6022d36d03190272037bbe3b9fc7",
                        "alias":  "ollama-legion/cppworker:latest-gpu-86"
                    },
                    {

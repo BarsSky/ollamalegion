@@ -85,10 +85,26 @@ func TestLoadLock_SyncTimeout_ReleasesLockAfterBackgroundCompletes(t *testing.T)
 		`{"name":"`+modelName+`","contextSize":4096,"numGpuLayers":0}`)
 
 	// Fire w1 in goroutine; handleLoadWithParams may take a few μs.
-	go handleLoadWithParams(w1, httptest.NewRequest("POST",
-		"/api/models/load-with-params?wait=true&waitTimeoutMs=1",
-		io.NopCloser(strings.NewReader(
-			`{"name":"`+modelName+`","contextSize":4096,"numGpuLayers":0}`))))
+	//
+	// R454 (2026-11-06): горутину ОБЯЗАТЕЛЬНО дожидаемся. Под -race живьём
+	// ловилась гонка:
+	//
+	//	WARNING: DATA RACE
+	//	Write at ... setupLoadLockTestBackend (следующий тест пересоздаёт backend)
+	//	Previous read at ... donorMarkR304 → donorLoadGuard → handleLoadWithParams
+	//
+	// Обработчик, запущенный ЭТИМ тестом, ещё читал глобальный backend, когда
+	// следующий тест уже его подменил: 100 мс сна — не синхронизация.
+	var w1wg sync.WaitGroup
+	w1wg.Add(1)
+	go func() {
+		defer w1wg.Done()
+		handleLoadWithParams(w1, httptest.NewRequest("POST",
+			"/api/models/load-with-params?wait=true&waitTimeoutMs=1",
+			io.NopCloser(strings.NewReader(
+				`{"name":"`+modelName+`","contextSize":4096,"numGpuLayers":0}`))))
+	}()
+	t.Cleanup(w1wg.Wait)
 	_ = w1 // silence unused
 	time.Sleep(100 * time.Millisecond)
 

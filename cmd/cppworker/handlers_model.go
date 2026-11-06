@@ -419,13 +419,30 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 	// R60.57: передаём r.Context() в LoadModelWithOpts. Если клиент отвалится
 	// по timeout/close — watcher в LoadModelWithOpts попытается abort load
 	// через C-bridge (полная cancellable load требует C-side fix — см. PLAN.md §3.1).
+	// R454 (2026-11-06): в фоновую горутину — СНИМОК backend и трекинг.
+	//
+	// ЖИВОЙ СБОЙ CI (self-hosted Windows, `cmd/... -race`):
+	//
+	//	WARNING: DATA RACE
+	//	Write at ... setupLoadLockTestBackend (пересоздаёт глобальный backend)
+	//	Previous read at ... donorMarkR304 (читает глобальный backend)
+	//
+	// Это ровно тот класс, что R91 уже починил для async-пути: горутина
+	// отложенной синхронной загрузки читала ПАКЕТНУЮ переменную `backend` и не
+	// была зарегистрирована в asyncWorkWG. Поэтому (а) следующий тест успевал
+	// подменить глобальную переменную, пока горутина её читала, и (б) graceful
+	// shutdown не ждал эту загрузку — мог закрыть процесс посреди загрузки.
+	// Теперь как в async-пути: be := backend до горутины + trackAsyncWork.
+	be := backend
 	loadDone := make(chan error, 1)
+	done := trackAsyncWork()
 	go func() {
+		defer done()
 		// R365 (2026-10-31): ЗАЯВКА ОСВОБОЖДАЕТСЯ ЗДЕСЬ, а не в select.
 		//
 		// ЖИВОЙ ДЕФЕКТ (этот же раунд, сразу после R364). Select ниже может
 		// уйти по таймауту (waitTimeoutMs по умолчанию 60 с, а холодная
-		// загрузка gemma-4 — 60–100 с), и тогда `backend.UnlockLoad` в ветке
+		// загрузка gemma-4 — 60–100 с), и тогда `UnlockLoad` в ветке
 		// успеха не выполнялся НИКОГДА: заявка оставалась в b.loading, хотя
 		// модель уже загружена. Следующая загрузка того же имени получала
 		// «model is already being loaded by another request; waiting», ждала
@@ -441,13 +458,13 @@ func handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		// legacy-путь остался с прежним поведением. Теперь одинаково: defer в
 		// горутине гарантирует освобождение, когда LoadModelWithOpts вернётся
 		// (успех или ошибка), а ветка успеха ниже UnlockLoad не зовёт.
-		defer backend.UnlockLoad(modelName)
+		defer be.UnlockLoad(modelName)
 		// R83-fix (2026-09-29): контекст загрузки отвязан от HTTP-запроса.
 		// См. loadContextForSharedLoad (lazyload.go) и комментарий в
 		// handleLoadWithParams — уход клиента не должен убивать общую загрузку.
 		loadCtx, cancelLoad := loadContextForSharedLoad()
 		defer cancelLoad()
-		loadDone <- backend.LoadModelWithOpts(loadCtx, modelName, modelPath, opts)
+		loadDone <- be.LoadModelWithOpts(loadCtx, modelName, modelPath, opts)
 	}()
 	timeout := time.NewTimer(time.Duration(waitTimeoutMs) * time.Millisecond)
 	defer timeout.Stop()
@@ -953,15 +970,21 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 	//
 	// Async path (выше, `go runAsyncLoad(...)`) не затрагивается —
 	// runAsyncLoad сам вызывает UnlockLoad в конце.
+	// R454 (2026-11-06): то же, что в handleLoadModel — снимок backend и
+	// трекинг фоновой работы. Горутина отложенной синхронной загрузки читала
+	// пакетную переменную `backend` и не была зарегистрирована в asyncWorkWG:
+	// следующий тест успевал её подменить (DATA RACE под -race), а graceful
+	// shutdown не ждал загрузку.
+	be := backend
 	loadDone := make(chan error, 1)
+	done := trackAsyncWork()
 	go func() {
+		defer done()
 		// defer UnlockLoad здесь, не в select: select может не
 		// выполниться полностью (timeout wins), loadErr не придёт
 		// в основной goroutine. defer гарантирует освобождение
 		// lock когда LoadModelWithOpts ВЕРНЁТСЯ (успех или ошибка).
-		defer func() {
-			backend.UnlockLoad(modelName)
-		}()
+		defer be.UnlockLoad(modelName)
 		// R60.57: r.Context() — client disconnect → ctx.Done() → watcher в
 		// LoadModelWithOpts попытается abort load. C-side fix нужен для
 		// full cancel; см. PLAN.md §3.1.
@@ -976,7 +999,7 @@ func handleLoadWithParams(w http.ResponseWriter, r *http.Request) {
 		// Правило и подробности — loadContextForSharedLoad (lazyload.go).
 		loadCtx, cancelLoad := loadContextForSharedLoad()
 		defer cancelLoad()
-		loadDone <- backend.LoadModelWithOpts(loadCtx, modelName, modelPath, opts)
+		loadDone <- be.LoadModelWithOpts(loadCtx, modelName, modelPath, opts)
 	}()
 	timeout := time.NewTimer(time.Duration(waitTimeoutMs) * time.Millisecond)
 	defer timeout.Stop()

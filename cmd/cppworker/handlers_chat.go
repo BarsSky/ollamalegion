@@ -877,6 +877,22 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 			"model", modelName, "hint_len", len(hint))
 	}
 
+	// R455/R456/R457 (2026-11-06): три класса, на которых модель теряет
+	// инструменты и уходит в текст:
+	//   - последние команды падали с ненулевым кодом (R455);
+	//   - один и тот же вызов повторён с теми же аргументами (R456);
+	//   - предыдущий ответ выдал содержимое файла текстом вместо вызова (R457).
+	// Инструкция добавляется в system, данные клиента не трогаем.
+	if hint := clientToolGuidanceHint(msgs); hint != "" {
+		system = strings.TrimSpace(system + "\n\n" + hint)
+		msgs = upsertSystemMessage(msgs, system)
+		logger.Get().Infow("client tool guidance injected (R455/R456/R457)",
+			"model", modelName, "hint_len", len(hint),
+			"command_failed", commandFailureHintR455(msgs) != "",
+			"repeated_call", repeatedToolCallHintR456(msgs) != "",
+			"file_body_answer", fileBodyAnswerHintR457(msgs) != "")
+	}
+
 	if len(opts.Tools) > 0 {
 		if mode := templateToolsMode(); mode == templateToolsNative {
 			if prompt, ok := tryRenderToolsPromptR434(modelName, msgs, opts.Tools, lang, reasoningEnabled); ok {
@@ -2860,6 +2876,20 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		toolNames = append(toolNames, tc.Function.Name)
 		argKinds = append(argKinds, toolArgShape(tc.Function.Arguments))
 	}
+	finalContent := ""
+	if msg, ok := finalChunk["message"].(map[string]interface{}); ok {
+		finalContent, _ = msg["content"].(string)
+	}
+	// R457 (2026-11-06): запрос был С инструментами, а ответ — телом файла
+	// текстом и без вызова. Живой прогон: HTML-страница на 8587 символов ушла в
+	// чат, файл не создан; в логах это выглядело как обычный done_reason=stop,
+	// то есть причину «инструменты перестали работать» не было видно вообще.
+	fileBodyInsteadOfCall := len(tools) > 0 && len(toolCalls) == 0 && looksLikeFileBodyR457(finalContent)
+	if fileBodyInsteadOfCall {
+		logger.Get().Warnw("R457: модель ответила телом файла вместо вызова инструмента",
+			"model", modelName, "content_len", len(finalContent),
+			"tools", len(tools), "done_reason", finalChunk["done_reason"])
+	}
 	logger.Get().Infow("/api/chat stream response summary",
 		"model", modelName,
 		"path", "/api/chat",
@@ -2868,9 +2898,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// как streamed_content_bytes и расходилась с реально отданным текстом
 		// (пропущенные маркеры размышлений, хвост из финального чанка).
 		"emitted_len", emittedLen,
-		"final_content_len", len(fmt.Sprint(finalChunk["message"].(map[string]interface{})["content"])),
+		"final_content_len", len(finalContent),
 		"thinking_len", len(reasoningOut),
 		"tool_calls", len(toolCalls),
+		"file_body_instead_of_call", fileBodyInsteadOfCall,
 		"tool_names", strings.Join(toolNames, ","),
 		"tool_arg_shapes", strings.Join(argKinds, ","),
 		"done_reason", finalChunk["done_reason"],

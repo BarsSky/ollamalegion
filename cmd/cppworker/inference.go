@@ -99,7 +99,10 @@ func loadOptionDiffs(info cppbackend.ModelInfo, opts cppbackend.LoadModelOpts) [
 	if info.BatchSize != opts.BatchSize {
 		add("batchSize", info.BatchSize, opts.BatchSize)
 	}
-	if info.GPULayers != opts.GPULayers {
+	// R452: -1/-2 в запросе — это намерение («все слои» / «AUTO»), а у модели
+	// хранится фактическое число. Прямое сравнение тянуло перезагрузку на ровном
+	// месте; см. sameGPULayersR452.
+	if !sameGPULayersR452(info, opts.GPULayers) {
 		add("gpuLayers", info.GPULayers, opts.GPULayers)
 	}
 	if info.FlashAttnType != opts.FlashAttnType {
@@ -134,6 +137,36 @@ func loadOptionDiffs(info cppbackend.ModelInfo, opts cppbackend.LoadModelOpts) [
 		add("kvCacheType", info.KVCacheType, opts.KVCacheType)
 	}
 	return diffs
+}
+
+// sameGPULayersR452 — «сколько слоёв просят» против ФАКТИЧЕСКОГО числа слоёв у
+// загруженной модели.
+//
+// ЗАЧЕМ. В запросе на загрузку gpuLayers означает НАМЕРЕНИЕ: -2 = AUTO (число
+// считает memfit по свободной VRAM), -1 = все слои, 0 = только CPU, >0 = N
+// слоёв. У загруженной модели хранится ФАКТ (например 36). Прямое сравнение
+// «-1 != 36» объявляло изменение параметров при КАЖДОМ повторном load — живой
+// лог после R451: changed: [contextSize 32768→2048, gpuLayers 36→-1], то есть
+// слои «изменились» ровно на том значении, которое и означает «все слои».
+// В живом случае с ростом окна это было незаметно, но любой повторный load с
+// -1/-2 (балансер шлёт -2 по умолчанию) тянул бы unload+load без причины.
+//
+// AUTO (-2) считается совпадающим ВСЕГДА: систему уже спросили при загрузке, и
+// записанный факт — её ответ. Пересчёт имел бы смысл при других VRAM/n_ctx, а
+// это другие параметры и они сравниваются отдельно.
+func sameGPULayersR452(info cppbackend.ModelInfo, requested int) bool {
+	switch {
+	case requested == -2:
+		return true
+	case requested == -1:
+		// «Все слои»: факт равен числу слоёв модели (или больше — выходной слой
+		// некоторые сборки считают отдельно).
+		return info.NLayers > 0 && info.GPULayers >= info.NLayers
+	case requested == 0:
+		return info.GPULayers == 0
+	default:
+		return info.GPULayers == requested
+	}
 }
 
 // ============================================================

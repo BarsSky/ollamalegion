@@ -109,7 +109,22 @@ var (
 	exactTokensCacheMu   sync.Mutex
 	exactTokensCacheData = map[string]exactTokensCacheEntryR473{}
 	exactTokensSeqR473   uint64
+	// exactTokensInflightR473 — подсчёты, которые ИДУТ ПРЯМО СЕЙЧАС.
+	//
+	// ЗАЧЕМ. Живая проверка показала ДВА вызова токенизатора с разницей 0.8 мс
+	// при HTTP-времени 1–2 мс: мету одного запроса собирают два пути (guard роста
+	// и preflight) ПАРАЛЛЕЛЬНО, оба промахиваются по кэшу и оба идут в воркер.
+	// Кэш помогает только последовательным вызовам, поэтому второй участник ждёт
+	// результат первого (single-flight), а не дублирует работу.
+	exactTokensInflightR473 = map[string]*exactInflightR473{}
 )
+
+// exactInflightR473 — один идущий подсчёт; остальные участники ждут done.
+type exactInflightR473 struct {
+	done   chan struct{}
+	tokens int
+	ok     bool
+}
 
 // exactTokensKeyR473 — ключ кэша: модель + хэш образца.
 //
@@ -180,6 +195,14 @@ func (p *Proxy) exactPromptTokensR473(meta *RequestMeta) (int, bool) {
 			"model", meta.ModelName, "tokens", cached, "sample_bytes", len(sample))
 		return cached, true
 	}
+	// R473: single-flight. Два пути одного запроса идут ПАРАЛЛЕЛЬНО, поэтому
+	// проверки кэша недостаточно: второй участник обязан дождаться первого.
+	if tokens, ok, shared := exactTokensJoinOrStartR473(key); shared {
+		return tokens, ok
+	}
+	total, ok := 0, false
+	defer exactTokensPublishR473(key, &total, &ok)
+
 	backendID := p.backendWithLoadedModelR301(meta.ModelName)
 	if backendID == "" {
 		// Модель нигде не загружена — токенизатора нет, оценка остаётся.
@@ -189,13 +212,41 @@ func (p *Proxy) exactPromptTokensR473(meta *RequestMeta) (int, bool) {
 	if addr == "" {
 		return 0, false
 	}
-	n, ok := p.callTokenizeR473(addr, meta.ModelName, sample)
-	if !ok {
+	n, tokOK := p.callTokenizeR473(addr, meta.ModelName, sample)
+	if !tokOK {
 		return 0, false
 	}
-	total := n + exactTokensOverheadTokensR473
+	total, ok = n+exactTokensOverheadTokensR473, true
 	exactTokensCachePutR473(key, total)
 	return total, true
+}
+
+// exactTokensJoinOrStartR473 — встать в уже идущий подсчёт или начать свой.
+//
+// shared=true означает «результат дал другой участник»: вызывающий сразу
+// возвращает его и не делает HTTP.
+func exactTokensJoinOrStartR473(key string) (tokens int, ok bool, shared bool) {
+	exactTokensCacheMu.Lock()
+	if inf, running := exactTokensInflightR473[key]; running {
+		exactTokensCacheMu.Unlock()
+		<-inf.done
+		return inf.tokens, inf.ok, true
+	}
+	exactTokensInflightR473[key] = &exactInflightR473{done: make(chan struct{})}
+	exactTokensCacheMu.Unlock()
+	return 0, false, false
+}
+
+// exactTokensPublishR473 — отдать результат ожидающим и снять пометку «идёт».
+func exactTokensPublishR473(key string, tokens *int, ok *bool) {
+	exactTokensCacheMu.Lock()
+	inf, running := exactTokensInflightR473[key]
+	if running {
+		inf.tokens, inf.ok = *tokens, *ok
+		delete(exactTokensInflightR473, key)
+		close(inf.done)
+	}
+	exactTokensCacheMu.Unlock()
 }
 
 // callTokenizeR473 — HTTP-вызов /api/tokenize. Отдельная функция, чтобы её можно

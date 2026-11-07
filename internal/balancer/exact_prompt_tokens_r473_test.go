@@ -14,7 +14,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestR473_ExactReplacesEstimate — успешный ответ воркера заменяет оценку точным
@@ -200,5 +203,67 @@ func TestR473_CacheEvictsOldest(t *testing.T) {
 	}
 	if _, ok := exactTokensCacheGetR473("evict-"); ok {
 		t.Fatal("самая старая запись должна быть вытеснена")
+	}
+}
+
+// TestR473_ParallelCallersShareOneRequest — живой остаток: guard роста и preflight
+// собирают мету ПАРАЛЛЕЛЬНО (разница 0.8 мс при HTTP 1–2 мс), и кэш от этого не
+// спасал — оба шли в воркер. Теперь второй ждёт первого (single-flight).
+func TestR473_ParallelCallersShareOneRequest(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		// Задержка делает окно гонки широким: без single-flight оба вызова
+		// промахнутся по кэшу.
+		time.Sleep(50 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"tokens": 777, "source": "tokenizer", "model_loaded": true,
+		})
+	}))
+	defer srv.Close()
+
+	sample := strings.Repeat("параллельный-образец-", exactTokensMinSampleR473)
+	key := exactTokensKeyR473("parallel-model", sample)
+	exactTokensCacheMu.Lock()
+	delete(exactTokensCacheData, key)
+	delete(exactTokensInflightR473, key)
+	exactTokensCacheMu.Unlock()
+
+	p := &Proxy{}
+	const n = 4
+	results := make([]int, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			// Ровно тот контракт, что у настоящих путей: join-or-start, затем publish.
+			if tokens, ok, shared := exactTokensJoinOrStartR473(key); shared {
+				if ok {
+					results[idx] = tokens
+				}
+				return
+			}
+			tokens, ok := 0, false
+			defer exactTokensPublishR473(key, &tokens, &ok)
+			nTokens, tokOK := p.callTokenizeR473(srv.URL, "parallel-model", sample)
+			if !tokOK {
+				return
+			}
+			tokens, ok = nTokens+exactTokensOverheadTokensR473, true
+			exactTokensCachePutR473(key, tokens)
+			results[idx] = tokens
+		}(i)
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("HTTP-вызовов токенизатора = %d, want 1 (single-flight)", got)
+	}
+	want := 777 + exactTokensOverheadTokensR473
+	for i, got := range results {
+		if got != want {
+			t.Errorf("участник %d получил %d, want %d (все обязаны получить одно число)", i, got, want)
+		}
 	}
 }

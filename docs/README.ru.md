@@ -42,6 +42,7 @@
 | **RPC-координатор** | [RU](architecture/rpc-coordinator.ru.md) | [EN](architecture/rpc-coordinator.md) | Распределённый вывод через llama.cpp RPC: роли, состояние, лимиты. |
 | **Виртуальные модели** | [RU](architecture/virtual-router.ru.md) | [EN](architecture/virtual-router.md) | Виртуальные модели alias-on-pool и правила маршрутизации. |
 | **Раскладка слоёв** | [RU](architecture/layer-sharding.ru.md) | [EN](architecture/layer-sharding.md) | Раскладка слоёв по бэкендам, контейнеры, параметры. |
+| **Версия llama.cpp: что зафиксировано** | [RU](architecture/llama-cpp-pin.ru.md) | - | b10731 (2026-09-01) ↔ b11844 (2026-10-23, 1113 коммитов): что даст обновление, проверка совместимости моста, чек-лист. |
 | **Правила RPC-раскладки** | [RU](architecture/rpc-layout-rules.ru.md) | [EN](architecture/rpc-layout-rules.md) | Правила, добытые живыми падениями: один коммит, архитектура, флаг. |
 | **Канал между узлами** | [RU](architecture/rpc-link-bandwidth.ru.md) | [EN](architecture/rpc-link-bandwidth.md) | Как измеряется скорость канала между узлами и где хранится. |
 | **C-bridge API** | [RU](architecture/bridge-api.ru.md) | [EN](architecture/bridge-api.md) | Мост Go <-> C к llama.cpp: функции, структуры, контракт. |
@@ -93,6 +94,7 @@
 
 | Документ | Русский | English | О чём |
 |---|---|---|---|
+| **v0.7.235: окно контекста — не догадка** | [RU](releases/v0.7.235-release-notes.ru.md) | [EN](releases/v0.7.235-release-notes.md) | R448–R473: точный подсчёт токенов вместо эвристики, отказ 413 только для окна клиента, рост окна без ложных потолков, честные причины отказов. |
 | **v1.0: заметки о релизе** | [RU](releases/v1.0-release-notes.ru.md) | [EN](releases/v1.0-release-notes.md) | Что входит в v1.0: работает / частично / заглушка. |
 | **v1.0-rc2: заметки о релизе** | [RU](releases/v1.0-rc2-release-notes.ru.md) | [EN](releases/v1.0-rc2-release-notes.md) | Изменения с rc1 и как они проверялись. |
 | **v0.7.217: заметки о релизе** | [RU](releases/v0.7.217-release-notes.ru.md) | [EN](releases/v0.7.217-release-notes.md) | Гигиена репозитория, починка тестов и последние правки переводов; новых возможностей нет. |

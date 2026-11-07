@@ -2836,6 +2836,29 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			content = visibleContentBeforeMarkupR430(outputForParse)
 		}
 
+		// R474 (2026-11-07): АРГУМЕНТЫ ВЫЗОВА, ВЫДАННЫЕ ТЕКСТОМ.
+		//
+		// ЖИВОЙ ДЕФЕКТ (Cline + Qwen3.8-9B, /api/chat): ход закончился
+		// final_content_len=7095, tool_calls=0 — клиент получил ~7 КБ кода как
+		// ответ, а в конце шли сериализованные аргументы
+		// («…"path":"d:\cline-e2e-web\public\app.js"}]}}»). Файл не создан, Cline
+		// следом сообщил «text part … not found» (его реакция на такой ответ).
+		// Ни обёрток вызова, ни тела файла в начале текста здесь нет, поэтому
+		// прежние детекторы (R430, R457) молчали. Разбор — text_arguments_dump_r474.go.
+		// Условие len(tools) > 0 — как у R457: если клиент инструментов не
+		// объявлял, «код + JSON в конце» может быть обычным ответом на просьбу
+		// «напиши файл», и подменять его пояснением нельзя.
+		if len(tools) > 0 && len(toolCalls) == 0 && unparsedNoticeR430 == "" {
+			if hint, toolName, dumped := looksLikeDumpedArgumentsR474(outputForParse); dumped {
+				logger.Get().Warnw("R474: аргументы вызова выданы текстом — вызов не выполнен",
+					"model", modelName, "tool", toolName, "hint", hint,
+					"raw_len", len(fullOutput), "visible_len", len(content))
+				recordUnparsedCapture(modelName, "/api/chat", "arguments_as_text",
+					fullOutput, outputForParse, emittedLen, generatedTokens, params.NPredict, tools)
+				content = dumpedArgumentsNoticeR474(toolName, hint)
+			}
+		}
+
 		// R404: thinking уже мог уйти дельтами — тогда в финале его НЕ дублируем.
 		thinkingField := reasoningOut
 		if thinkingStreamed || !reasoningEcho {
@@ -2983,6 +3006,12 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			"model", modelName, "content_len", len(finalContent),
 			"tools", len(tools), "done_reason", finalChunk["done_reason"])
 	}
+	// R474 (2026-11-07): аргументы вызова, выданные текстом. В сводке это
+	// отдельное поле по той же причине, что и R457: снаружи такой ход выглядит
+	// обычным done_reason=stop, и без поля причину «вызов не выполнен» в логах
+	// не видно. Считаем по СЫРОМУ выводу: в finalContent уже лежит пояснение.
+	_, _, dumpedArgsInsteadOfCall := looksLikeDumpedArgumentsR474(fullOutput)
+	dumpedArgsInsteadOfCall = dumpedArgsInsteadOfCall && len(tools) > 0 && len(toolCalls) == 0
 	logger.Get().Infow("/api/chat stream response summary",
 		"model", modelName,
 		"path", "/api/chat",
@@ -2995,6 +3024,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		"thinking_len", len(reasoningOut),
 		"tool_calls", len(toolCalls),
 		"file_body_instead_of_call", fileBodyInsteadOfCall,
+		"dumped_args_instead_of_call", dumpedArgsInsteadOfCall,
 		"tool_names", strings.Join(toolNames, ","),
 		"tool_arg_shapes", strings.Join(argKinds, ","),
 		"done_reason", finalChunk["done_reason"],

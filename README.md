@@ -398,14 +398,16 @@ MIT - see [LICENSE.md](LICENSE.md).
 Full history with dates, image tags and the defect behind each fix:
 [CHANGELOG.md](CHANGELOG.md). Recently:
 
-- **v0.7.235 (R448…R473, 2026-11-07) - the context window stopped being a guess.**
+- **v0.7.235 (R448…R474, 2026-11-07) - the context window stopped being a guess.**
   The prompt estimate (character heuristic, 1.8–5x overshoot) no longer decides anything:
   `POST /api/tokenize` supplies the model tokenizer's exact count (live: 36601 → 10036),
   a physical 413 remains only for a window the client asked for explicitly (R466), a live
   session is never moved to a smaller window (R459), window growth is no longer blocked by
   the profile load hint (R472), reasoning is not forced on clients that did not ask for
-  `think` (R470/R471), and a refusal names the real cause (R460/R461/R468). Images:
-  balancer `r261106-2329`, cppworker `gpu-r261106-2122`, webui `r261106-1716`.
+  `think` (R470/R471), a refusal names the real cause (R460/R461/R468), and a tool call
+  emitted as text (7 KB of code plus an arguments tail instead of a call) no longer goes
+  out as the answer (R474). Images: balancer `r261106-2329`,
+  cppworker `gpu-r261107-1341`, webui `r261106-1716`.
   [Release notes](docs/releases/v0.7.235-release-notes.md)
 
 - **R232 (v0.7.211, 2026-10-24) - WebUI demo mode.** `WEBUI_DEMO_MODE=1` (env only) turns

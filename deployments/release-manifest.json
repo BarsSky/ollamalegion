@@ -1,57 +1,55 @@
-{
-    "tag":  "r261106-2329",
-    "builtAt":  "2026-11-07T08:36:52Z",
-    "gitCommit":  "f306aa48",
+﻿{
+    "tag":  "r261107-1341",
+    "builtAt":  "2026-11-07T10:47:19Z",
+    "gitCommit":  "779ea4f8",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "Закрытие остатка: R460 (очередь объясняет себя по каждому бэкенду + политика холодной копии в docs), R463-R465 (num_predict виден в WebUI на «Загруженные»), R467/R467b (POST /api/tokenize: точный подсчёт токенов токенизатором модели + честный лейбл source). R467b найден живым прогоном СРАЗУ после выкатки R467: эндпоинт вернул 300 000 «токенов» на 600 000 символов, хотя реальный промпт занимал 75 015 — это была эвристика, выданная за токенизатор. Теперь сначала проверяется ФАКТ подсчёта, и только потом пишется source=tokenizer. R473: балансер пересобран из 3fbf5d39 — preflight считает промпт токенизатором модели (POST /api/tokenize, R467) вместо эвристики: живой замер на одном запросе 36601 (эвристика) → 10077 (факт), после чего окно не пришлось перезагружать. Рубильник LB_PREFLIGHT_EXACT_TOKENS (по умолчанию вкл). Ранее R472: балансер пересобран из 1de4c46b — рост окна больше не блокируется хинтом профиля (WindowFeasibility убран из клиентского пути), причина отказа роста пишется WARN, 202 от воркера считается начатой загрузкой. Живой дефект: Cline с num_ctx=32768 получал вечный 503 «a streaming request does not reload the model» при включённом росте, потому что потолком считался contextLength профиля (32768) вместо операторского cap (65536). После правки: 503 «started reloading → retry 60» → загрузка 40704 за 40 с → повтор 200 с ответом. Ранее R471: cppworker пересобран из 5a97880d — начало вывода держится до закрывающего маркера размышлений, когда клиент их не просил (живой дефект: streamed 5363 байта при content_len 3323, английские размышления уехали в content вместе с ответом). Ранее R470: cppworker пересобран из ba6ff218 — на tools-пути размышления отдаются клиенту только по явной просьбе (think:true), тумблер CPPWORKER_TOOLS_THINKING. Живой повод: Cline сохраняет message.thinking как текст нашего ответа, и модель видит свои размышления как прошлый ответ (752 симв. reasoning = assistant-сообщение в истории). Ранее: R469 балансер (X-Model-Max-Context = действующий потолок), R468 cppworker и выкачен отдельно (balancer r261106-1637 и webui r261106-1716 не менялись). Причина выпуска — разбор живого прогона Cline по артефактам /app/diag: модель gemma-4-E4B, в запросе 5 инструментов БЕЗ editor, модель выдала нативный call:editor, парсер его РАЗОБРАЛ, R428 правильно отбросил вызов (инструмент не объявлен), а клиенту уходило «нераспознанный формат». Теперь причина названа верно, а диагностика пишет reason=call_undeclared + dropped_tool_names и секции DECLARED TOOLS/DROPPED в RAW-файле. Ранее в кадре: R466 (оценка промпта не отказывает по физике), R459 (переезд живой сессии не уменьшает окно), R461 (пояснение про «только размышления»).",
+    "note":  "R474: cppworker пересобран из 779ea4f8 — вызов инструмента, выданный ТЕКСТОМ, больше не уезжает клиенту ответом. Живой дефект (Cline + Qwen3.8-9B, /api/chat, 6 инструментов): final_content_len=7095, tool_calls=0 — клиент получил ~7 КБ JavaScript как ОТВЕТ, а последними символами шли сериализованные аргументы (\"path\":\"d:\\\\cline-e2e-web\\\\public\\\\app.js\"}]}}); файл не создан, следующий ход потерял контекст, Cline сообщил \"text part ... not found\" (его реакция на такой ответ). Прежние детекторы молчали: обёртки вызова нет (R430), текст начинается не с тела файла (R457), а парсеры требуют имени функции. Теперь при объявленных клиентом инструментах совпадение \"код + закрытие JSON + ключ path на позиции ключа\" даёт честное пояснение вместо кода, reason `arguments_as_text` в unparsed-tool-calls.jsonl и поле `dumped_args_instead_of_call` в сводке хода. Второй ключ рядом (\"content\"/\"new_text\") умышленно НЕ требуется: в живом выводе 7 КБ содержимого отодвигают его далеко за пределы хвоста — именно эта проверка и оставляла дефект нераспознанным. Ранее: R472 (рост окна не блокируется хинтом профиля), R473 (точный подсчёт токенов токенизатором в preflight), R470/R471 (размышления не навязываются), R468 (причина отказа названа), R466/R469 (окно и заголовки потолка), R460/R461/R463-R465. Балансер r261106-2329 (f306aa48) и webui r261106-1716 в этом выпуске не пересобирались: их код не менялся.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-06T16:20:00Z",
+                          "verifiedAt":  "2026-11-07T10:50:00Z",
                           "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args в лог; файлы внутри контейнера в /app/diag/",
                           "proof":  [
-                                        "GET /api/version -\u003e build=r261106-1602, commit=0f3db873; GET :18092/api/info -\u003e build=r261106-1602, commit=0f3db873",
-                                        "R467: POST /api/tokenize, модель НЕ загружена -\u003e {tokens:300000, source:\"estimate\", model_loaded:false, note:\"model is not loaded…\"} — эвристика честно названа",
-                                        "R467/R467b: модель загружена -\u003e 44 символа = 10 токенов, 1000 символов 'a' = 125, 600000 символов 'a' = 75000, source:\"tokenizer\" во всех трёх. Число 75000 совпадает с actual_prompt_tokens=75015, которое воркер сам сообщал в 413 по превышению окна (разница — служебные токены шаблона)",
-                                        "Живой замер завышения эвристики на этом же входе: estimate 300000 против реальных 75000 = 4x. Это и есть корень R466, теперь он измерим извне",
-                                        "R463-R465: worker /api/v1/cppworker/config/runtime отдаёт default_num_predict и output_budget_ceiling на модель; балансер после правки структуры пропускает их без потерь (тест TestR463_RuntimeModelKeepsOutputBudget + WebUI-сторож gguf-loaded-num-predict-r465.test.js)",
-                                        "R460: в логе постановки в очередь появились rejected_backends и why_queued (id=причина(числа); …), а 503 по таймауту ожидания несёт backend_rejections",
-                                        "ОТКРЫТО: флак TestReload_DegradedHeaderOnCPUOnly (прошёл 31.7 с на полном прогоне, упал дважды в полных прогонах ранее, изолированно всегда зелёный). К правкам этого выпуска не относится — load/reload пути не менялись"
+                                        "R474: образ cppworker:gpu-r261107-1341 (779ea4f8) пересобран и выкачен; GET :18092/api/info -\u003e build=r261107-1341, commit=779ea4f8, llama_build=0eadefebd (b10731), cuda_arch_ok=true, контейнер healthy",
+                                        "R474: бинарь внутри образа содержит маркеры правки (grep -a dumped_args_instead_of_call и arguments_as_text в /app/cppworker по 1 вхождению) — образ собран из HEAD, а не из кэша прошлой ревизии",
+                                        "R474: go build и go test -tags llama_stub ./cmd/cppworker/ (11.9 с) зелёные, повтор с -race (21.9 с) зелёный; R474-тесты покрывают форму живого вывода и три отрицательных случая (чистый код, проза с JSON, короткий фрагмент)",
+                                        "ОТКРЫТО: живой прогон Cline на этом образе ещё не сделан — детектор проверен на точной форме живого вывода, но не на реальном 7-КБ ответе модели; следующий прогон Cline покажет поле dumped_args_instead_of_call в сводке",
+                                        "ОТКРЫТО: флак TestReload_DegradedHeaderOnCPUOnly (не воспроизводится; нужен реальный случай)"
                                     ]
                       },
     "images":  [
                    {
-                       "service":  "loadbalancer",
+                       "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
-                       "image":  "ollama-legion/balancer:r261106-2329",
+                       "service":  "loadbalancer",
                        "imageTag":  "r261106-2329",
                        "imageId":  "sha256:c9116063180516b8e93686f81988415bbf4313e75cb01adb0c1a5dcf87bd1223",
-                       "alias":  "ollama-legion/balancer:latest"
+                       "image":  "ollama-legion/balancer:r261106-2329"
                    },
                    {
-                       "service":  "cppworker-gpu",
+                       "alias":  "ollama-legion/cppworker:latest-gpu-86",
                        "variable":  "CPPWORKER_GPU_TAG",
-                       "image":  "ollama-legion/cppworker:gpu-r261106-2122",
-                       "imageTag":  "gpu-r261106-2122",
-                       "imageId":  "sha256:3335bf371b79686778fd643ba9da524540afcf079793c29fec4837b9138824d3",
-                       "alias":  "ollama-legion/cppworker:latest-gpu-86"
+                       "service":  "cppworker-gpu",
+                       "imageTag":  "gpu-r261107-1341",
+                       "imageId":  "sha256:3d8089ee20d4390fd8ad04dfe58eefcf557b625a0b75f32def0be22990e23a9",
+                       "image":  "ollama-legion/cppworker:gpu-r261107-1341"
                    },
                    {
-                       "service":  "webui",
+                       "alias":  "ollama-legion/webui:latest",
                        "variable":  "WEBUI_TAG",
-                       "image":  "ollama-legion/webui:r261106-1716",
+                       "service":  "webui",
                        "imageTag":  "r261106-1716",
                        "imageId":  "sha256:4b286efff549aca0b0879648c2f6a4419fe38b5a0519690ab0ac2f5d000930e0",
-                       "alias":  "ollama-legion/webui:latest"
+                       "image":  "ollama-legion/webui:r261106-1716"
                    },
                    {
-                       "service":  "imageworker",
+                       "alias":  "",
                        "variable":  "IMAGE_WORKER_TAG",
-                       "image":  "ollama-legion/imageworker:72ec210a",
+                       "service":  "imageworker",
                        "imageTag":  "72ec210a",
                        "imageId":  "sha256:43c3ce9d34bafca7144944dcfde8e5fc266c75e4d795c30e5c487629e9058410",
-                       "alias":  ""
+                       "image":  "ollama-legion/imageworker:72ec210a"
                    }
                ]
 }

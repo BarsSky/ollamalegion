@@ -178,27 +178,29 @@ func exactTokensCachePutR473(key string, tokens int) {
 // Возвращает (tokens, true) только когда его посчитал РЕАЛЬНЫЙ токенизатор
 // загруженной модели. Во всех остальных случаях (false) вызывающий остаётся при
 // эвристике — это не ошибка, а честный фолбэк.
-func (p *Proxy) exactPromptTokensR473(meta *RequestMeta) (int, bool) {
+// sourceR473 — откуда пришло число: "tokenizer" (посчитали сами), "cache"
+// (запомнено), "shared" (ждали параллельного участника). Отдельный возврат
+// нужен, чтобы НЕ писать Info-строку дважды на один запрос: guard роста и
+// preflight собирают мету параллельно, и оба попадают в applyExactPromptTokens.
+func (p *Proxy) exactPromptTokensR473(meta *RequestMeta) (tokens int, source string, ok bool) {
 	if p == nil || meta == nil || meta.ModelName == "" {
-		return 0, false
+		return 0, "", false
 	}
 	sample := meta.ExactSampleText
 	if len(sample) < exactTokensMinSampleR473 {
-		return 0, false
+		return 0, "", false
 	}
 	if !exactTokensEnabledR473() {
-		return 0, false
+		return 0, "", false
 	}
 	key := exactTokensKeyR473(meta.ModelName, sample)
 	if cached, ok := exactTokensCacheGetR473(key); ok {
-		logger.Get().Debugw("prompt tokens: из кэша точного подсчёта (R473)",
-			"model", meta.ModelName, "tokens", cached, "sample_bytes", len(sample))
-		return cached, true
+		return cached, "cache", true
 	}
 	// R473: single-flight. Два пути одного запроса идут ПАРАЛЛЕЛЬНО, поэтому
 	// проверки кэша недостаточно: второй участник обязан дождаться первого.
 	if tokens, ok, shared := exactTokensJoinOrStartR473(key); shared {
-		return tokens, ok
+		return tokens, "shared", ok
 	}
 	total, ok := 0, false
 	defer exactTokensPublishR473(key, &total, &ok)
@@ -206,19 +208,19 @@ func (p *Proxy) exactPromptTokensR473(meta *RequestMeta) (int, bool) {
 	backendID := p.backendWithLoadedModelR301(meta.ModelName)
 	if backendID == "" {
 		// Модель нигде не загружена — токенизатора нет, оценка остаётся.
-		return 0, false
+		return 0, "", false
 	}
 	addr := p.backendHTTPAddrByID(backendID)
 	if addr == "" {
-		return 0, false
+		return 0, "", false
 	}
 	n, tokOK := p.callTokenizeR473(addr, meta.ModelName, sample)
 	if !tokOK {
-		return 0, false
+		return 0, "", false
 	}
 	total, ok = n+exactTokensOverheadTokensR473, true
 	exactTokensCachePutR473(key, total)
-	return total, true
+	return total, "tokenizer", true
 }
 
 // exactTokensJoinOrStartR473 — встать в уже идущий подсчёт или начать свой.
@@ -318,13 +320,21 @@ func exactSampleWithToolsR473(text string, tools any) string {
 // Калибровку при этом НЕ обучаем (promptCalib.note уже сделан по эвристике):
 // иначе точное число и коэффициент начнут подгонять друг друга.
 func (p *Proxy) applyExactPromptTokensR473(meta *RequestMeta) {
-	exact, ok := p.exactPromptTokensR473(meta)
+	exact, source, ok := p.exactPromptTokensR473(meta)
 	if !ok {
 		return
 	}
 	estimated := meta.EstimatedPromptTokens
 	meta.EstimatedPromptTokens = exact
 	meta.PromptTokensSource = "tokenizer"
+	if source != "tokenizer" {
+		// Не наш подсчёт: второй путь того же запроса (cache) или параллельный
+		// участник (shared). Info на каждый — это два одинаковых числа в логе.
+		logger.Get().Debugw("prompt tokens: число получено без нового вызова токенизатора (R473)",
+			"model", meta.ModelName, "source", source,
+			"estimated_tokens", estimated, "exact_tokens", exact)
+		return
+	}
 	logger.Get().Infow("prompt tokens: точный подсчёт токенизатором (R473)",
 		"model", meta.ModelName,
 		"estimated_tokens", estimated,

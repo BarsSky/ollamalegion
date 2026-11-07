@@ -133,7 +133,7 @@ func TestR473_SampleIncludesTools(t *testing.T) {
 func TestR473_SmallSampleSkipsCall(t *testing.T) {
 	p := &Proxy{}
 	meta := &RequestMeta{ModelName: "m", ExactSampleText: "короткий промпт"}
-	if _, ok := p.exactPromptTokensR473(meta); ok {
+	if _, _, ok := p.exactPromptTokensR473(meta); ok {
 		t.Fatal("мелкий образец не должен вызывать токенизатор")
 	}
 }

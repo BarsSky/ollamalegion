@@ -917,6 +917,10 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 	// Если native path работает И template поддерживает thinking —
 	// soft prompt НЕ нужен, template сам эмитит <think> блоки.
 	// Иначе fallback на soft prompt.
+	// R475 (2026-11-07): возможности шаблона нужны не только native-пути — от них
+	// зависит и ФОРМА вызова в текстовой истории (`<function=…>` вместо `[[…]]`).
+	caps := templateToolCapsForModel(modelName)
+
 	if reasoningEnabled {
 		// Round 35 (2026-08-12) CRITICAL bugfix: wrap C++ native chat template
 		// in recover() to catch cgo SIGSEGV. The native path calls
@@ -947,7 +951,6 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 		// tool_call_id — единственный вид, из которого шаблон gemma-4 рисует и
 		// вызов, и результат инструмента; на паре role+content результат
 		// терялся целиком и модель просила «подождать вывод».
-		caps := templateToolCapsForModel(modelName)
 		nativePrompt, supportsThinking, err = safeApplyChatTemplateWithThinking(
 			modelName, "" /* chatTemplateOverride */, buildNativeToolHistory(msgs, caps),
 			true /* enableThinking */, true, /* addGenerationPrompt */
@@ -959,7 +962,7 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 			logger.Get().Warnw("buildChatPrompt: structured tool history rejected by template, retrying as text",
 				"model", modelName, "error", err)
 			nativePrompt, supportsThinking, err = safeApplyChatTemplateWithThinking(
-				modelName, "", buildLegacyToolHistory(msgs), true, true,
+				modelName, "", buildLegacyToolHistory(msgs, caps), true, true,
 			)
 		}
 		if err == nil && nativePrompt != "" {
@@ -975,7 +978,7 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 			logger.Get().Debugw("buildChatPrompt: native enable_thinking not supported by template, using soft prompt",
 				"model", modelName, "prompt_len", len(nativePrompt), "lang", lang.String())
 			injectThinking()
-			prompt2, err2 := safeApplyChatTemplate(modelName, system, buildLegacyToolHistory(msgs), true)
+			prompt2, err2 := safeApplyChatTemplate(modelName, system, buildLegacyToolHistory(msgs, caps), true)
 			if err2 == nil && prompt2 != "" {
 				return prompt2, nil
 			}
@@ -1001,7 +1004,7 @@ func buildChatPromptWithOptions(msgs []chatMessage, modelName string, opts chatP
 	// вызов, на котором cppworker падал с SIGSEGV (bridge_apply_chat_template →
 	// SIGSEGV) и терял все запросы узла: recover() тогда стоял только вокруг
 	// native-пути выше, а этот остался без защиты.
-	prompt, err := safeApplyChatTemplate(modelName, system, buildLegacyToolHistory(msgs), true)
+	prompt, err := safeApplyChatTemplate(modelName, system, buildLegacyToolHistory(msgs, caps), true)
 	if err == nil && prompt != "" {
 		logger.Get().Debugw("buildChatPrompt: used GGUF chat template",
 			"model", modelName, "prompt_len", len(prompt))

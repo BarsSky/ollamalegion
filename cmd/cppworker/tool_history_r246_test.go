@@ -194,7 +194,7 @@ func TestR246_LegacyHistory(t *testing.T) {
 		}}},
 		{Role: "tool", Name: "read", Content: "file body"},
 	}
-	history := buildLegacyToolHistory(msgs)
+	history := buildLegacyToolHistory(msgs, templateToolCaps{})
 	if len(history) != 3 {
 		t.Fatalf("сообщений %d, ожидалось 3", len(history))
 	}
@@ -214,11 +214,10 @@ func TestR246_OrderPreserved(t *testing.T) {
 		{Role: "assistant", Content: "two"},
 		{Role: "user", Content: "three"},
 	}
-	history := buildLegacyToolHistory(msgs)
+	history := buildLegacyToolHistory(msgs, templateToolCaps{})
 	for i, want := range []string{"user", "assistant", "user"} {
 		if history[i].Role != want {
 			t.Errorf("позиция %d: роль %q, ожидалась %q", i, history[i].Role, want)
 		}
 	}
 }
-

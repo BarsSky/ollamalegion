@@ -60,6 +60,11 @@ type templateToolCaps struct {
 	// ConsumesToolResults — в шаблоне есть признаки отрисовки РЕЗУЛЬТАТА
 	// инструмента. Без них role="tool" будет молча пропущен (как было у gemma-4).
 	ConsumesToolResults bool
+	// FunctionTagCalls — шаблон описывает вызов формой `<tool_call>` +
+	// `<function=NAME>` + `<parameter=имя>` (R475). Такую историю надо показывать
+	// модели в ЭТОЙ форме, а не JSON-дампом `[[…]]`: иначе модель повторяет
+	// дамп в тексте ответа (живой дефект — Cline + Qwen3.8).
+	FunctionTagCalls bool
 	// Known — шаблон удалось прочитать (иначе считаем возможностей нет).
 	Known bool
 }
@@ -122,6 +127,7 @@ func analyzeTemplateToolCaps(src string) templateToolCaps {
 		StructuredCalls:     strings.Contains(src, "tool_calls"),
 		StandaloneTool:      standalone,
 		ConsumesToolResults: standalone || toolResultConsumptionRe.MatchString(src),
+		FunctionTagCalls:    functionTagCallsR475(src),
 		Known:               true,
 	}
 }
@@ -192,7 +198,7 @@ func historyIDsForCalls(calls []ollamaToolCall, msgIndex int) []bridge.ChatToolC
 // (без JSON-дампа): так их видит шаблон gemma-4.
 func buildNativeToolHistory(msgs []chatMessage, caps templateToolCaps) []bridge.ChatMessage {
 	if !usesStructuredToolHistory(caps) {
-		return buildLegacyToolHistory(msgs)
+		return buildLegacyToolHistory(msgs, caps)
 	}
 
 	out := make([]bridge.ChatMessage, 0, len(msgs))
@@ -253,7 +259,11 @@ func buildNativeToolHistory(msgs []chatMessage, caps templateToolCaps) []bridge.
 //
 // Этот же вид уходит в низкоуровневый llama_chat_apply_template, который про
 // role="tool" ничего не знает.
-func buildLegacyToolHistory(msgs []chatMessage) []bridge.ChatMessage {
+//
+// R475 (2026-11-07): если шаблон описывает вызовы формой `<function=…>`, дамп
+// вызова показывается в НЕЙ (см. tool_history_callformat_r475.go). JSON-дамп
+// `[[…]]` остаётся только для шаблонов без такой формы: там он и был уместен.
+func buildLegacyToolHistory(msgs []chatMessage, caps templateToolCaps) []bridge.ChatMessage {
 	out := make([]bridge.ChatMessage, 0, len(msgs))
 	var pendingNames []string
 	pendingUsed := 0
@@ -263,7 +273,7 @@ func buildLegacyToolHistory(msgs []chatMessage) []bridge.ChatMessage {
 		case "assistant":
 			content := m.Content
 			if len(m.ToolCalls) > 0 {
-				if block := legacyToolCallsText(m.ToolCalls); block != "" {
+				if block := legacyToolCallsText(m.ToolCalls, caps); block != "" {
 					if content != "" {
 						content = content + "\n" + block
 					} else {
@@ -291,13 +301,19 @@ func buildLegacyToolHistory(msgs []chatMessage) []bridge.ChatMessage {
 	return out
 }
 
-// legacyToolCallsText — текстовый дамп вызовов в прежней форме (`[[...]]`).
+// legacyToolCallsText — текстовый дамп вызовов для шаблонов, которые не умеют
+// показать вызов иначе.
 //
-// Форма сохранена намеренно: на ней работают модели, которых устраивает
-// JSON-текст (Qwen3.8 и др.), и её разбирает наш же парсер вызовов.
-func legacyToolCallsText(calls []ollamaToolCall) string {
+// R475: для шаблонов с формой `<function=…>` отдаём именно её (модель учится на
+// истории); `[[…]]` остаётся прежним фолбэком, его разбирает наш же парсер.
+func legacyToolCallsText(calls []ollamaToolCall, caps templateToolCaps) string {
 	if len(calls) == 0 {
 		return ""
+	}
+	if caps.FunctionTagCalls {
+		if xml := legacyToolCallsXMLR475(calls); xml != "" {
+			return xml
+		}
 	}
 	raw, err := json.Marshal(calls)
 	if err != nil || len(raw) == 0 {

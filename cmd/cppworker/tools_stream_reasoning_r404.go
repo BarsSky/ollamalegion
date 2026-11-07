@@ -113,7 +113,7 @@ func buildChatPromptNoThinkingR406(msgs []chatMessage, modelName string) string 
 		// Тот же fallback, что в buildChatPrompt: шаблон отказался рисовать
 		// структурные tool_calls — пробуем текстовую форму.
 		if p, _, err := safeApplyChatTemplateWithThinking(
-			modelName, "", buildLegacyToolHistory(msgs), false, true); err == nil && p != "" {
+			modelName, "", buildLegacyToolHistory(msgs, caps), false, true); err == nil && p != "" {
 			return p
 		}
 	}

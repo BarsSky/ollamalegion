@@ -94,7 +94,7 @@ func tryRenderToolsPromptR434(
 		// модель обязана увидеть и историю, и инструменты.
 		logger.Get().Warnw("R434: structured tool history rejected by template, retrying as text",
 			"model", modelName, "error", err)
-		history = buildLegacyToolHistory(msgs)
+		history = buildLegacyToolHistory(msgs, caps)
 		prompt, supportsThinking, rendered, toolFormat, err = render(history, reasoningEnabled)
 	}
 	if err != nil || prompt == "" {

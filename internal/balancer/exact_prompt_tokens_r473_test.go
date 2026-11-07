@@ -134,3 +134,71 @@ func TestR473_SmallSampleSkipsCall(t *testing.T) {
 		t.Fatal("мелкий образец не должен вызывать токенизатор")
 	}
 }
+
+// TestR473_CacheServesSecondCall — мету одного запроса собирают ДВА пути (guard
+// роста и preflight), поэтому живой лог показывал два одинаковых вызова
+// токенизатора. Кэш обязан отдать второе число без HTTP.
+func TestR473_CacheServesSecondCall(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"tokens": 4242, "source": "tokenizer", "model_loaded": true,
+		})
+	}))
+	defer srv.Close()
+
+	// Уникальный образец: тесты не должны делить записи кэша между собой.
+	sample := strings.Repeat("кэш-проверка-", exactTokensMinSampleR473)
+	key := exactTokensKeyR473("cache-test-model", sample)
+	exactTokensCacheMu.Lock()
+	delete(exactTokensCacheData, key)
+	exactTokensCacheMu.Unlock()
+
+	p := &Proxy{}
+	first, ok := p.callTokenizeR473(srv.URL, "cache-test-model", sample)
+	if !ok || first != 4242 {
+		t.Fatalf("первый вызов: tokens=%d ok=%v", first, ok)
+	}
+	exactTokensCachePutR473(key, first+exactTokensOverheadTokensR473)
+
+	if cached, ok := exactTokensCacheGetR473(key); !ok || cached != 4242+exactTokensOverheadTokensR473 {
+		t.Fatalf("из кэша не пришло число: %d ok=%v", cached, ok)
+	}
+	if calls != 1 {
+		t.Fatalf("HTTP-вызовов = %d, want 1 (второй обязан обслужить кэш)", calls)
+	}
+}
+
+// TestR473_CacheKeyIsModelAndText — разные модели и разные тексты не делят запись:
+// иначе чужое число токенов попадёт в решение об окне.
+func TestR473_CacheKeyIsModelAndText(t *testing.T) {
+	sample := "текст промпта"
+	k1 := exactTokensKeyR473("model-a", sample)
+	k2 := exactTokensKeyR473("model-b", sample)
+	k3 := exactTokensKeyR473("model-a", sample+" другой")
+	if k1 == k2 || k1 == k3 || k2 == k3 {
+		t.Fatalf("ключи совпали: %q %q %q", k1, k2, k3)
+	}
+}
+
+// TestR473_CacheEvictsOldest — переполнение вытесняет самую старую запись, а не
+// растёт без предела (кэш живёт в процессе).
+func TestR473_CacheEvictsOldest(t *testing.T) {
+	exactTokensCacheMu.Lock()
+	exactTokensCacheData = map[string]exactTokensCacheEntryR473{}
+	exactTokensCacheMu.Unlock()
+
+	for i := 0; i < exactTokensCacheMaxR473+5; i++ {
+		exactTokensCachePutR473("evict-"+strings.Repeat("x", i), i)
+	}
+	exactTokensCacheMu.Lock()
+	size := len(exactTokensCacheData)
+	exactTokensCacheMu.Unlock()
+	if size > exactTokensCacheMaxR473 {
+		t.Fatalf("записей в кэше %d, предел %d", size, exactTokensCacheMaxR473)
+	}
+	if _, ok := exactTokensCacheGetR473("evict-"); ok {
+		t.Fatal("самая старая запись должна быть вытеснена")
+	}
+}

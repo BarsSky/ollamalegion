@@ -30,10 +30,13 @@ package balancer
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -79,6 +82,82 @@ type tokenizeResponseR473 struct {
 	ModelLoaded bool   `json:"model_loaded"`
 }
 
+// exactTokensCacheTTLR473 — сколько живёт запомненный подсчёт.
+//
+// Зачем кэш вообще. Мету запроса собирают ДВА пути одного запроса (guard роста и
+// preflight), и живой прогон показал два одинаковых вызова токенизатора на один
+// запрос: `точный подсчёт токенизатором` дважды с одинаковыми числами. Плюс
+// клиенты-ретраи (Cline после 503 «retry in 60 s») присылают ТО ЖЕ тело — второй
+// вызов бесполезен: текст не изменился.
+const exactTokensCacheTTLR473 = 2 * time.Minute
+
+// exactTokensCacheMaxR473 — предел записей: кэш живёт в процессе, и без предела
+// он превратился бы в утечку памяти на длинной сессии.
+const exactTokensCacheMaxR473 = 128
+
+type exactTokensCacheEntryR473 struct {
+	at time.Time
+	// seq — порядковый номер записи. Вытесняем по нему, а не по времени:
+	// разрешение time.Now() на Windows ~1 мс, и десятки записей получают
+	// ОДИНАКОВУЮ метку — «самая старая» по времени тогда выбирается случайно
+	// (порядок обхода map), и вытеснение перестаёт быть вытеснением.
+	seq    uint64
+	tokens int
+}
+
+var (
+	exactTokensCacheMu   sync.Mutex
+	exactTokensCacheData = map[string]exactTokensCacheEntryR473{}
+	exactTokensSeqR473   uint64
+)
+
+// exactTokensKeyR473 — ключ кэша: модель + хэш образца.
+//
+// Хэш sha256, а не «первые N байт»: цена (≈0.2 мс на 67 КБ) несопоставима с
+// HTTP-вызовом, а совпадение ключа у РАЗНЫХ текстов дало бы чужое число токенов
+// и, как следствие, неверное окно. Ключ по модели обязателен: у разных моделей
+// словари разные.
+func exactTokensKeyR473(model, sample string) string {
+	sum := sha256.Sum256([]byte(sample))
+	return model + ":" + hex.EncodeToString(sum[:16])
+}
+
+// exactTokensCacheGetR473 — запомненное число, если оно ещё годно.
+func exactTokensCacheGetR473(key string) (int, bool) {
+	exactTokensCacheMu.Lock()
+	defer exactTokensCacheMu.Unlock()
+	entry, ok := exactTokensCacheData[key]
+	if !ok {
+		return 0, false
+	}
+	if time.Since(entry.at) > exactTokensCacheTTLR473 {
+		delete(exactTokensCacheData, key)
+		return 0, false
+	}
+	return entry.tokens, true
+}
+
+// exactTokensCachePutR473 — запомнить число, вытеснив самое старое при переполнении.
+func exactTokensCachePutR473(key string, tokens int) {
+	exactTokensCacheMu.Lock()
+	defer exactTokensCacheMu.Unlock()
+	if len(exactTokensCacheData) >= exactTokensCacheMaxR473 {
+		oldestKey, oldestSeq := "", uint64(0)
+		for k, v := range exactTokensCacheData {
+			if oldestKey == "" || v.seq < oldestSeq {
+				oldestKey, oldestSeq = k, v.seq
+			}
+		}
+		if oldestKey != "" {
+			delete(exactTokensCacheData, oldestKey)
+		}
+	}
+	exactTokensSeqR473++
+	exactTokensCacheData[key] = exactTokensCacheEntryR473{
+		at: time.Now(), seq: exactTokensSeqR473, tokens: tokens,
+	}
+}
+
 // exactPromptTokensR473 — точное число токенов образца промпта.
 //
 // Возвращает (tokens, true) только когда его посчитал РЕАЛЬНЫЙ токенизатор
@@ -95,6 +174,12 @@ func (p *Proxy) exactPromptTokensR473(meta *RequestMeta) (int, bool) {
 	if !exactTokensEnabledR473() {
 		return 0, false
 	}
+	key := exactTokensKeyR473(meta.ModelName, sample)
+	if cached, ok := exactTokensCacheGetR473(key); ok {
+		logger.Get().Debugw("prompt tokens: из кэша точного подсчёта (R473)",
+			"model", meta.ModelName, "tokens", cached, "sample_bytes", len(sample))
+		return cached, true
+	}
 	backendID := p.backendWithLoadedModelR301(meta.ModelName)
 	if backendID == "" {
 		// Модель нигде не загружена — токенизатора нет, оценка остаётся.
@@ -108,7 +193,9 @@ func (p *Proxy) exactPromptTokensR473(meta *RequestMeta) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	return n + exactTokensOverheadTokensR473, true
+	total := n + exactTokensOverheadTokensR473
+	exactTokensCachePutR473(key, total)
+	return total, true
 }
 
 // callTokenizeR473 — HTTP-вызов /api/tokenize. Отдельная функция, чтобы её можно

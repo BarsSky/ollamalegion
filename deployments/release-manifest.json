@@ -1,28 +1,24 @@
 ﻿{
-    "tag":  "r261109-1747",
-    "builtAt":  "2026-11-09T14:47:31Z",
-    "gitCommit":  "361490ec",
+    "tag":  "r261109-2144",
+    "builtAt":  "2026-11-09T18:44:59Z",
+    "gitCommit":  "4f98d3fa",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R477/R478: исправлен дефект, из-за которого OpenWebUI не получал ответ (гейт R470 стоял в общей функции и на обычном /api/chat у reasoning-моделей выбрасывал весь видимый ответ до закрывающего маркера; теперь только на tools-пути). Диагностика по стадиям: select_backend/admission/preflight/upstream/stream/client_write в строке request trace (stage, stage_ms), кольцо последних сбоев recent_failures в /api/v1/diag/summary и failures.json в архиве, паника в обработчике больше не обрывает запрос молча (500 + request_id), воркер пишет свои 5xx в failures.json и сводку хода на /api/chat без tools (раньше её не было вовсе). Исправления аудита: обёртка ответа не объявляет Hijack ложно (HTTP/2 диалог ожидания), X-Backend-ID ставится после ответа апстрима, R459 пускает сессию на живую Ollama-копию и пишет отказ на INFO, админские ручки Ollama отвечают 502 вместо пустого 200, /api/show|copy|delete находят модель по metricsMgr.llamaMetrics. Аудит (4 прохода) подтвердил: «потеряно распределение/типы» — старые расхождения путей (два мозга на один JSON), план рефакторинга docs/architecture/refactoring-plan.ru.md. Ранее в кадре: R476 (архив диагностики), R475 (история вызовов в форме шаблона), R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
+    "note":  "R479: паритет типов на поверхностях. /v1/* больше не привязан к llama_cpp: если под модель нет cppworker-бэкенда, запрос уходит в Ollama нативно (тот же путь/тело/формат, слот занимается, поток с Flush; только /v1/chat/completions, /v1/completions, /v1/embeddings, /v1/models). Алиасы /ollama/api/*, /ollama/v1/*, /openai/v1/* снимаются в начале ServeHTTP (X-LB-Surface-Alias: 1). /v1/models собирает модели Ollama-пула. Лимит LB_MAX_REQUEST_BODY_MB действует на generic-пути (413), вспомогательные чтения — begin-only. Диагностика: стадии preflight/client_write, stage_final, обрыв доставки в кольце сбоев. Закрыты P0 1-3 и P1-10/11 из docs/architecture/debts.ru.md. Ранее: R478 (OpenWebUI), R477, R476, R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-09T14:58:00Z",
+                          "verifiedAt":  "2026-11-09T18:47:00Z",
                           "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
                           "proof":  [
-                                        "R477/R478: образы выкачены — balancer r261109-1747 (447de44d), cppworker gpu-261109-1754 (361490ec), webui r261109-1747 (447de44d); /api/version и /api/info отдают эти коммиты, контейнеры healthy",
-                                        "R478 (главное): живой прогон /api/chat без поля think на Qwen3.8-9B дал 93 чанка, first_thinking_ms=77006, first_content_ms=80606, total_ms=80611 — контент и размышления идут ПО МЕРЕ генерации, а не одним куском в конце (до правки весь видимый текст до закрывающего маркера выбрасывался)",
-                                        "R477: в логе балансера строка request trace с request_id=probe-nothink-478, path=/api/chat, status=200, duration_ms=90268, bytes=16552, backend=cppworker-gpu-bundled-agent, stage=stream, stage_ms=4174",
-                                        "R477: в логе воркера появилась сводка «/api/chat stream response summary (no tools)» — request_id=probe-nothink-478, content_len=308, thinking_len=340, done_reason=length, generated_tokens=95/96, streamed_bytes=15937 (раньше на этом пути сводки не было вовсе)",
-                                        "R477: /api/v1/diag/summary отдаёт recent_failures (0 записей — сбоев не было), архив /api/v1/diag/bundle?since=15m содержит failures.json 3 B и архив воркера 8508 B",
-                                        "R478: отказы R459 теперь видны на INFO; Ollama-кандидат больше не считается «холодным» (тест TestR478_R459AllowsOllamaCandidate), холодный llama.cpp по-прежнему отклоняется",
-                                        "R478: админские ручки Ollama на недоступном бэкенде дают 502 JSON с бэкендом и request_id вместо пустого 200 (тест TestR478_AdminProxyErrorIsNotEmpty200), паника внутри обработчика — тоже 502",
-                                        "R478: обёртка ответа не объявляет Hijack, если нижний writer его не умеет (тест TestR478_WrapperDoesNotClaimHijackWhenUnderlyingCannot) — HTTP/2 диалог ожидания перезагрузки снова работает",
-                                        "Тесты: полные ./internal/balancer/ (168 с), ./internal/api/, ./cmd/cppworker/ (10.5 с), ./cmd/balancer/ — зелёные; новые R477 (стадии, кольцо сбоев, лимит кольца) и R478 (гейт R470 только на tools-пути, паритет интерфейсов обёртки, Ollama-кандидат, 502 вместо пустого 200)",
-                                        "АУДИТ (4 независимых прохода): подтверждено, что «потеряно распределение/типы» — не следствие R474-R476, а старые расхождения путей: /api/chat идёт generic-путём, /v1 и /ollama — handler-путём (разная очередь, окно, фичи), 39 функций выбора бэкенда, 4 очереди, 8 циклов стрима, 11 писателей стрима в воркере. План: docs/architecture/refactoring-plan.ru.md",
-                                        "ОТКРЫТО: живой прогон OpenWebUI на этом образе (ответ должен идти по мере генерации); паритет типов на /v1 и /ollama — этап 5 плана; R459 need из окна сессии — отдельным решением",
-                                        "ПРИМЕЧАНИЕ: образы собраны из 447de44d (balancer/webui) и 361490ec (cppworker); коммит d379e7d8 — только линт (перестановка полей stage/diagFailure и использование reset в тесте), поведение не менялось. Следующая пересборка образов — при следующей правке."
+                                        "R479: образ балансера r261109-2144 (4f98d3fa) выкачен; GET :18080/api/version -\u003e build=r261109-2144 commit=4f98d3fa; контейнер healthy; cppworker gpu-261109-1754 и webui r261109-1747 не пересобирались",
+                                        "R479: GET /ollama/api/tags -\u003e 200, X-LB-Surface-Alias: 1, 3 модели (раньше путь понимал только LlamaCppRouter)",
+                                        "R479: GET /openai/v1/models -\u003e 200, X-LB-Surface-Alias: 1, 3 модели; GET /api/tags -\u003e 200, 3 модели",
+                                        "R479: POST /openai/v1/chat/completions -\u003e 200, X-Backend-ID=cppworker-gpu-bundled-agent (алиас ведёт себя как прямой путь)",
+                                        "R479: строка request trace содержит stage_final: path=/api/tags status=200 stage=select_backend stage_final=done stage_ms=2",
+                                        "R479: тесты — полный ./internal/balancer/ (174 с) зелёный; новые R479: алиасы, passthrough /v1/chat/completions в Ollama (поток, X-Backend-ID, освобождение слота), запрет passthrough /v1/responses, /v1/models с Ollama, 413 на тело сверх лимита, разбор нормального тела",
+                                        "R479: закрыты P0 1-3 и P1-10/11 из docs/architecture/debts.ru.md; P1-9 частично (unified-очередь не ставит admission), P1-4..P1-8 и P2 остаются",
+                                        "ОТКРЫТО: живой прогон passthrough в Ollama на Ollama-only/смешанном стенде (здесь только cppworker); проверено unit-тестом с фальшивым Ollama-сервером"
                                     ]
                       },
     "images":  [
@@ -30,9 +26,9 @@
                        "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
                        "service":  "loadbalancer",
-                       "imageTag":  "r261109-1747",
-                       "imageId":  "sha256:0f482f0f6eab59e017b43413410d9f38aa5fc2ae156771cc1bf63be5eb620f4c",
-                       "image":  "ollama-legion/balancer:r261109-1747"
+                       "imageTag":  "r261109-2144",
+                       "imageId":  "sha256:18f3763d49425156e512d88720ef4563f60ac69b7d812d54c8f67362bb3ffd2a",
+                       "image":  "ollama-legion/balancer:r261109-2144"
                    },
                    {
                        "alias":  "ollama-legion/cppworker:latest-gpu-86",

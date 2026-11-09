@@ -26,6 +26,8 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		return fmt.Errorf("backend %s not found", backendID)
 	}
 
+	// R476: бэкенд в ответ — строка request trace берёт его из этого заголовка.
+	w.Header().Set("X-Backend-ID", backendID)
 	targetURL := p.getBackendBaseURL(state.Backend)
 	modelFromCtx := ""
 	if m, ok := r.Context().Value(modelContextKey).(string); ok {

@@ -29,6 +29,9 @@ import (
 // разбитый на множество SSE чанков. Этот прокси аккумулирует content из смежных
 // чанков, детектирует полный JSON, и эмитит чистый NDJSON чанк с tool_calls.
 func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, backendID string, bodyBuf []byte) error {
+	// R476: до первой записи — иначе заголовок уже не изменится и в строке
+	// трассировки бэкенд останется пустым (живая проверка это и показала).
+	w.Header().Set("X-Backend-ID", backendID)
 	state, ok := p.backends[backendID]
 	if !ok {
 		return fmt.Errorf("backend %s not found", backendID)

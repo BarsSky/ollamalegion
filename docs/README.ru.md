@@ -47,6 +47,7 @@
 | **Канал между узлами** | [RU](architecture/rpc-link-bandwidth.ru.md) | [EN](architecture/rpc-link-bandwidth.md) | Как измеряется скорость канала между узлами и где хранится. |
 | **C-bridge API** | [RU](architecture/bridge-api.ru.md) | [EN](architecture/bridge-api.md) | Мост Go <-> C к llama.cpp: функции, структуры, контракт. |
 | **Контракт балансер <-> cppworker** | [RU](architecture/balancer-cppworker-contract.ru.md) | [EN](architecture/balancer-cppworker-contract.md) | Сетевой контракт балансера и воркера, поле за полем. |
+| **Агентский цикл: почему симптомы повторяются** | [RU](architecture/agent-loop-diagnostics.ru.md) | - | План диагностики без правок: гипотезы (образ, шаблон, окно, слоты, VRAM, набор инструментов), чем каждая подтверждается, что прислать со стенда; `X-Request-ID`, выгрузка логов через WebUI, флаги ведения логов. |
 
 ## Эксплуатация
 

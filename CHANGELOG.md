@@ -15,11 +15,21 @@
   (не вызывался ниоткуда с R479), дубль обработчика `/health` в
   `routeRequest`. `SetQueueManagerProxy` оставлен осознанно: это тест-шов,
   который вызывают ~200 сценариев.
+- **BOM в теле запроса больше не ломает разбор (найдено живой проверкой).**
+  Тело с UTF-8 BOM (так пишет, например, PowerShell 5.1 `Set-Content -Encoding
+  utf8`) не разбиралось как JSON: модель оставалась пустой, а `stream:true`
+  терялся, и `/api/chat` уходил в НЕ-stream транспорт — воркер стримил, клиент
+  получал ответ одним куском. Теперь `stripUTF8BOMR480` снимает BOM в обоих
+  местах чтения тела (`peekBodyR479`, `readRequestBodyLimited`); тесты
+  `body_bom_r480_test.go`.
 
 **Проверено:** полный `./internal/balancer/` (167 с) зелёный; новый тест
 `TestWaitForInferenceBackend_SetsAdmissionStage_R477` проверяет стадию
-`admission` при ожидании; тесты `/health` и `routeRequest` зелёные. Живая
-проверка стадий — после выкатки образа балансера.
+`admission` при ожидании; тесты `/health`, `routeRequest` и BOM — зелёные.
+Живая проверка: `/api/chat` со `stream:true` и телом БЕЗ BOM проходит стадии
+`select_backend → upstream → preflight → stream → client_write`,
+`stage_final=done`; с BOM — после правки тоже стримит (до правки уходил в
+non-stream).
 
 ## [0.7.238 - R479: паритет типов на /v1 и /ollama, лимит тела, стадии доставки, 2026-11-09]
 

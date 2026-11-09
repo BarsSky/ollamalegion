@@ -398,6 +398,15 @@ MIT - see [LICENSE.md](LICENSE.md).
 Full history with dates, image tags and the defect behind each fix:
 [CHANGELOG.md](CHANGELOG.md). Recently:
 
+- **v0.7.239 (R480, 2026-11-09) - queue stage in the log, dead code removed.**
+  The `request trace` line now tells where a request actually was: waiting in the
+  unified queue (`stage=admission`), talking to the worker (`upstream`), reading
+  the stream (`stream`), failing to write to the client (`client_write`). Before,
+  all three looked like `select_backend`. Removed `bindSession`,
+  `acquireSlotWithRetry`, `executeWithFallback` (the whole `slot_handler.go` with
+  its tests), `extractModel` and the duplicate `/health` handler.
+  Debts: `docs/architecture/debts.ru.md` - P1-9 closed, P2-14 closed partially.
+
 - **v0.7.238 (R479, 2026-11-09) - type parity on /v1 and /ollama.**
   An OpenAI-surface request no longer hits 503 when the cluster has no cppworker:
   an Ollama backend is selected and the request is proxied natively (slot acquired,

@@ -1,4 +1,26 @@
 
+## [0.7.239 - R480: стадия очереди в логе, вычищен мёртвый код, 2026-11-09]
+
+Закрывает P1-9 и большую часть P2-14 из `docs/architecture/debts.ru.md`.
+
+- **Стадия `admission` у единой очереди.** Ожидание в
+  `waitForInferenceBackend` ставит стадию `admission`. Раньше её ставил только
+  per-backend путь, поэтому `/api/chat`, стоящий в единой очереди, был в
+  `request trace` неотличим от «бэкенд не выбран» (`stage=select_backend`).
+- **Стадии на generic-пути.** Перед `client.Do` ставится `upstream`, в начале
+  потока — `stream`, ошибка записи клиенту — `client_write`. Сбой апстрима
+  больше не показывается как сбой выбора бэкенда.
+- **Удалён мёртвый код (P2-14):** `bindSession`, `acquireSlotWithRetry`,
+  `executeWithFallback` (файл `slot_handler.go` и его тесты), `extractModel`
+  (не вызывался ниоткуда с R479), дубль обработчика `/health` в
+  `routeRequest`. `SetQueueManagerProxy` оставлен осознанно: это тест-шов,
+  который вызывают ~200 сценариев.
+
+**Проверено:** полный `./internal/balancer/` (167 с) зелёный; новый тест
+`TestWaitForInferenceBackend_SetsAdmissionStage_R477` проверяет стадию
+`admission` при ожидании; тесты `/health` и `routeRequest` зелёные. Живая
+проверка стадий — после выкатки образа балансера.
+
 ## [0.7.238 - R479: паритет типов на /v1 и /ollama, лимит тела, стадии доставки, 2026-11-09]
 
 Закрывает P0 (1–3) и часть P1 (9–11) из `docs/architecture/debts.ru.md`.

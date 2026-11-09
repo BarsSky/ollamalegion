@@ -50,11 +50,11 @@
    Осталось: гейт R459 в причинах — `backendRejectionsR460` не знает сессию и
    `fromBackend`, поэтому «сессия не переехала из-за окна» видно только в
    INFO-строке R459, а не в `why_queued`.
-9. **Стадийная трассировка.** `preflight`, `client_write`, `done` добавлены в
-   R479 (`stage_final` в строке `request trace`). Осталось: unified-очередь не
-   ставит `admission` (стадия только в per-backend пути, `admission_queue.go:629`),
-   поэтому `/api/chat`, стоящий в unified-очереди, в логе выглядит как
-   `select_backend`.
+9. ~~**Стадийная трассировка.**~~ **ЗАКРЫТО в R480:** unified-очередь ставит
+   `admission` (`unified_queue_r73.go`), generic-путь (`/api/chat` и прочие
+   Ollama-эндпоинты) ставит `upstream` перед `client.Do`, поток — `stream`,
+   ошибка записи клиенту — `client_write` (`streaming.go`). Тест
+   `TestWaitForInferenceBackend_SetsAdmissionStage_R477`.
 10. ~~**Кольцо сбоев ловит только 5xx**~~ **ЗАКРЫТО в R479** для балансера:
     `MarkAbortR477` пишет обрыв доставки отдельной причиной (статус может быть
     200). Осталось: обрывы воркера (не 5xx) в его кольцо не пишутся.
@@ -75,10 +75,13 @@
     по умолчанию `false`), 4 «очереди», 39 функций выбора бэкенда, 8 циклов
     стрима в балансере, 11 писателей стрима в воркере (из них 3 через
     `safeStreamWriter`).
-14. **Мёртвый код, который держат тесты**: `bindSession` (`session_handler.go:128`),
-    `acquireSlotWithRetry` (`slot_handler.go:13`), `executeWithFallback`
-    (`slot_handler.go:45`), `SetQueueManagerProxy` (no-op), дубль `/health`
-    (`proxy.go:1137` и `router.go:73`).
+14. **Мёртвый код.** **ЗАКРЫТО частично в R480:** удалены `bindSession`
+    (`session_handler.go`), `acquireSlotWithRetry` и `executeWithFallback`
+    (`slot_handler.go` — файл удалён вместе с тестами), `extractModel`
+    (`proxy.go`), дубль `/health` из `routeRequest` (`router.go`). Осталось:
+    `SetQueueManagerProxy` — no-op, но его вызывают ~200 тестов как шов
+    «подними прокси с очередью»; удаление требует переписать все сценарии,
+    выгоды нет — помечен как тест-шов в комментарии.
 15. **Устаревшее описание поверхностей**: `backend-type-isolation.ru.md` — врезка
     R112 есть, но таблица «кто что обслуживает» осталась исторической. Нужна одна
     актуальная таблица (поверхность × тип) или ссылка на карту из

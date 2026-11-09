@@ -1,26 +1,27 @@
 ﻿{
-    "tag":  "r261109-1705",
-    "builtAt":  "2026-11-09T14:05:07Z",
-    "gitCommit":  "1b8c17a2",
+    "tag":  "r261109-1747",
+    "builtAt":  "2026-11-09T14:47:31Z",
+    "gitCommit":  "361490ec",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R476: диагностика стенда одним архивом и страница «Диагностика» в WebUI. Разбор дефекта упирался не в код, а в доступ: версии, окно/профили, флаги, логи бэкендов и сводка хода лежали в пяти местах. Теперь (1) балансер пишет строку request trace на каждый запрос (request_id, статус, duration_ms, backend), воркер кладёт тот же request_id в /api/chat stream response summary; (2) GET /api/v1/diag/summary — версии, флаги set/unset по белому списку, nctx_reload, nctx_ceiling, профили с действующим окном, кластер, очередь; (3) GET /api/v1/diag/bundle — zip: сводка + логи балансера + архивы воркеров; (4) GET /api/v1/cppworker/debug/bundle — архив воркера: кольцевой буфер логов (появился впервые, CPPWORKER_LOG_BUFFER_ENTRIES), last-prompt/last-stream, prompt-last.txt, request-last.json, unparsed-tool-calls.jsonl, env по белому списку; (5) WebUI страница «Диагностика»: блоки с копированием (блок кнопкой, значение кликом) и скачивание архива. Секретов в выгрузке нет (белые списки + тесты). Флаги: LB_REQUEST_TRACE, CPPWORKER_LOG_BUFFER_ENTRIES, CPPWORKER_LOG_LEVEL (раньше только -verbose). Живая проверка нашла дефект в архиве: балансер ходил на OllamaPort 11434 вместо CppWorkerPort 18092 и получал connection refused — исправлено (BackendHTTPBaseURLR476), повторная выгрузка уже содержит backends/cppworker-gpu-bundled-agent.bundle.zip (6961 B) и .info.json; внутри воркера logs.txt 17168 B из кольцевого буфера. Ранее: R474 (вызов текстом не уезжает ответом), R475 (история вызовов в форме шаблона), R472/R473 (окно: потолок и точный подсчёт), R470/R471, R468, R466/R469, R460/R461/R463-R465.",
+    "note":  "R477/R478: исправлен дефект, из-за которого OpenWebUI не получал ответ (гейт R470 стоял в общей функции и на обычном /api/chat у reasoning-моделей выбрасывал весь видимый ответ до закрывающего маркера; теперь только на tools-пути). Диагностика по стадиям: select_backend/admission/preflight/upstream/stream/client_write в строке request trace (stage, stage_ms), кольцо последних сбоев recent_failures в /api/v1/diag/summary и failures.json в архиве, паника в обработчике больше не обрывает запрос молча (500 + request_id), воркер пишет свои 5xx в failures.json и сводку хода на /api/chat без tools (раньше её не было вовсе). Исправления аудита: обёртка ответа не объявляет Hijack ложно (HTTP/2 диалог ожидания), X-Backend-ID ставится после ответа апстрима, R459 пускает сессию на живую Ollama-копию и пишет отказ на INFO, админские ручки Ollama отвечают 502 вместо пустого 200, /api/show|copy|delete находят модель по metricsMgr.llamaMetrics. Аудит (4 прохода) подтвердил: «потеряно распределение/типы» — старые расхождения путей (два мозга на один JSON), план рефакторинга docs/architecture/refactoring-plan.ru.md. Ранее в кадре: R476 (архив диагностики), R475 (история вызовов в форме шаблона), R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-09T14:10:00Z",
-                          "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика»)",
+                          "verifiedAt":  "2026-11-09T14:58:00Z",
+                          "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
                           "proof":  [
-                                        "R476: образы выкачены — balancer r261109-1705 (1b8c17a2), cppworker gpu-261109-1658 (3bf81d18), webui r261109-1427 (55ce96cc); /api/version -\u003e build=r261109-1705 commit=1b8c17a2, /api/info -\u003e build=261109-1658 commit=3bf81d18; все контейнеры healthy",
-                                        "R476: СВЯЗКА id ПРОВЕРЕНА ЖИВЫМ ХОДОМ: POST :18080/api/generate с X-Request-ID=probe-476d -\u003e 200; в логе балансера строка request trace с request_id=probe-476d, path=/api/generate, status=200, duration_ms=454, backend=cppworker-gpu-bundled-agent; в логе воркера строка HTTP request с request_id=probe-476c (предыдущий probe) — тот же id, что выдал балансер",
-                                        "R476: строка запроса воркера теперь несёт request_id (обычная и polling-ветка), а /api/chat stream response summary — request_id+stream_chunks/stream_bytes/stream_sha256 при CPPWORKER_STREAM_TRACE=1",
-                                        "R476: GET :18081/api/v1/diag/summary — 11 ключей, flags.set=24, flags.unset=9, nctx_ceiling={envCeiling:65536,limitedBy:env}, профилей 21",
-                                        "R476: GET :18081/api/v1/diag/bundle?since=20m — zip: summary.json 21603 B, flags.txt 1098 B, balancer-logs.txt 1200 B (фильтр since), backends/cppworker-gpu-bundled-agent.info.json 1154 B, backends/cppworker-gpu-bundled-agent.bundle.zip 6332 B, README.txt",
-                                        "R476: архив воркера: info.json, logs.txt (кольцевой буфер), env.json (белый список), last-prompt/last-stream/unparsed-ring, отсутствующие дампы помечены *.missing.txt",
-                                        "R476: WebUI :18083 отдаёт страницу (#diagnostics-page, меню, script diagnostics.js), модуль 18965 B с window.Diagnostics, /api/v1/diag/summary и /bundle через nginx-прокси отвечают 200",
-                                        "R476: тесты — полные ./internal/balancer/ (165.3 с), ./internal/api/ (62.3 с), ./cmd/cppworker/ (9.3 с), ./cmd/balancer/ зелёные; новые тесты: id в строках HTTP-лога воркера (обе ветки), id в решении R301 и preflight, бэкенд в строке трассировки, трассировка стрима (чанки/байты/sha256), ротация дампов, ?since= (фильтр и мусор), псевдонимы буферов",
-                                        "ОТКРЫТО: /api/chat summary с request_id на живом ходе Cline ещё не снят (нужен ход с потоковым ответом); механизм и поля проверены тестами",
-                                        "ОТКРЫТО: флак TestReload_DegradedHeaderOnCPUOnly (не воспроизводится)"
+                                        "R477/R478: образы выкачены — balancer r261109-1747 (447de44d), cppworker gpu-261109-1754 (361490ec), webui r261109-1747 (447de44d); /api/version и /api/info отдают эти коммиты, контейнеры healthy",
+                                        "R478 (главное): живой прогон /api/chat без поля think на Qwen3.8-9B дал 93 чанка, first_thinking_ms=77006, first_content_ms=80606, total_ms=80611 — контент и размышления идут ПО МЕРЕ генерации, а не одним куском в конце (до правки весь видимый текст до закрывающего маркера выбрасывался)",
+                                        "R477: в логе балансера строка request trace с request_id=probe-nothink-478, path=/api/chat, status=200, duration_ms=90268, bytes=16552, backend=cppworker-gpu-bundled-agent, stage=stream, stage_ms=4174",
+                                        "R477: в логе воркера появилась сводка «/api/chat stream response summary (no tools)» — request_id=probe-nothink-478, content_len=308, thinking_len=340, done_reason=length, generated_tokens=95/96, streamed_bytes=15937 (раньше на этом пути сводки не было вовсе)",
+                                        "R477: /api/v1/diag/summary отдаёт recent_failures (0 записей — сбоев не было), архив /api/v1/diag/bundle?since=15m содержит failures.json 3 B и архив воркера 8508 B",
+                                        "R478: отказы R459 теперь видны на INFO; Ollama-кандидат больше не считается «холодным» (тест TestR478_R459AllowsOllamaCandidate), холодный llama.cpp по-прежнему отклоняется",
+                                        "R478: админские ручки Ollama на недоступном бэкенде дают 502 JSON с бэкендом и request_id вместо пустого 200 (тест TestR478_AdminProxyErrorIsNotEmpty200), паника внутри обработчика — тоже 502",
+                                        "R478: обёртка ответа не объявляет Hijack, если нижний writer его не умеет (тест TestR478_WrapperDoesNotClaimHijackWhenUnderlyingCannot) — HTTP/2 диалог ожидания перезагрузки снова работает",
+                                        "Тесты: полные ./internal/balancer/ (168 с), ./internal/api/, ./cmd/cppworker/ (10.5 с), ./cmd/balancer/ — зелёные; новые R477 (стадии, кольцо сбоев, лимит кольца) и R478 (гейт R470 только на tools-пути, паритет интерфейсов обёртки, Ollama-кандидат, 502 вместо пустого 200)",
+                                        "АУДИТ (4 независимых прохода): подтверждено, что «потеряно распределение/типы» — не следствие R474-R476, а старые расхождения путей: /api/chat идёт generic-путём, /v1 и /ollama — handler-путём (разная очередь, окно, фичи), 39 функций выбора бэкенда, 4 очереди, 8 циклов стрима, 11 писателей стрима в воркере. План: docs/architecture/refactoring-plan.ru.md",
+                                        "ОТКРЫТО: живой прогон OpenWebUI на этом образе (ответ должен идти по мере генерации); паритет типов на /v1 и /ollama — этап 5 плана; R459 need из окна сессии — отдельным решением"
                                     ]
                       },
     "images":  [
@@ -28,25 +29,25 @@
                        "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
                        "service":  "loadbalancer",
-                       "imageTag":  "r261109-1705",
-                       "imageId":  "sha256:c83da2e94cf10364eca0896c54adcdd2e3e678390225c6a58ad3e67862d1b9da",
-                       "image":  "ollama-legion/balancer:r261109-1705"
+                       "imageTag":  "r261109-1747",
+                       "imageId":  "sha256:0f482f0f6eab59e017b43413410d9f38aa5fc2ae156771cc1bf63be5eb620f4c",
+                       "image":  "ollama-legion/balancer:r261109-1747"
                    },
                    {
                        "alias":  "ollama-legion/cppworker:latest-gpu-86",
                        "variable":  "CPPWORKER_GPU_TAG",
                        "service":  "cppworker-gpu",
-                       "imageTag":  "gpu-261109-1658",
-                       "imageId":  "sha256:ae8b9ddb7bcdd99c1125a6123d91490285c313f541c5b41a7e65c17a4b8fb769",
-                       "image":  "ollama-legion/cppworker:gpu-261109-1658"
+                       "imageTag":  "gpu-261109-1754",
+                       "imageId":  "sha256:6e35014fadbfd9fa5417d6f33f437e0d2932f4f704b4545f697f88eb66f7b29b",
+                       "image":  "ollama-legion/cppworker:gpu-261109-1754"
                    },
                    {
                        "alias":  "ollama-legion/webui:latest",
                        "variable":  "WEBUI_TAG",
                        "service":  "webui",
-                       "imageTag":  "r261109-1427",
-                       "imageId":  "sha256:562131558ef1c992939f9a32f41502fd933ff02cfd495d1d644662f3a1fe01e9",
-                       "image":  "ollama-legion/webui:r261109-1427"
+                       "imageTag":  "r261109-1747",
+                       "imageId":  "sha256:8d2fd412adcd0f4591868d02005b71b1431d1e9a56bf19d3ed7b52993fb3b6fb",
+                       "image":  "ollama-legion/webui:r261109-1747"
                    },
                    {
                        "alias":  "",

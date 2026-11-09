@@ -199,7 +199,11 @@ func readRequestBodyLimited(r *http.Request) ([]byte, error) {
 	}
 	limit := maxRequestBodyBytes()
 	if limit <= 0 {
-		return io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		return stripUTF8BOMR480(body), nil
 	}
 	// +1 байт, чтобы отличить «ровно в лимите» от «больше лимита».
 	limited := io.LimitReader(r.Body, limit+1)
@@ -210,7 +214,10 @@ func readRequestBodyLimited(r *http.Request) ([]byte, error) {
 	if int64(len(body)) > limit {
 		return nil, errBodyTooLarge
 	}
-	return body, nil
+	// R480: BOM в начале тела — не часть JSON, но ломал разбор и stream-флаг
+	// (см. stripUTF8BOMR480). Снимаем здесь, чтобы и handler-путь, и перевод в
+	// формат воркера работали с чистым телом.
+	return stripUTF8BOMR480(body), nil
 }
 
 // errBodyTooLarge — тело запроса превышает LB_MAX_REQUEST_BODY_MB.

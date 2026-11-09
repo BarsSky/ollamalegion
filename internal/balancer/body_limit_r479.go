@@ -37,8 +37,31 @@ func peekBodyR479(r *http.Request, max int64) ([]byte, bool) {
 		r.Body = io.NopCloser(bytes.NewReader(head))
 		return nil, false
 	}
+	// R480: BOM в начале тела ломал разбор JSON (json.Unmarshal на "\xef\xbb\xbf{"
+	// падает), из-за чего модель оставалась пустой, а stream-флаг терялся. BOM
+	// снимаем из уже прочитанного начала и отдаём в MultiReader БЕЗ него, чтобы
+	// дальше по пути тело тоже было чистым.
+	head = stripUTF8BOMR480(head)
 	// Остаток потока не читаем — отдаём многослойный reader, чтобы дальше
 	// parseRequestBody/проксирование увидели полное тело без второй копии.
 	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(head), r.Body))
 	return head, true
+}
+
+// stripUTF8BOMR480 — снять UTF-8 BOM (EF BB BF) с начала тела.
+//
+// ЗАЧЕМ. Живая проверка R480: тело, записанное Windows-инструментом (PowerShell
+// Set-Content -Encoding utf8 в 5.1 пишет BOM), балансер принимал, но:
+//   - `parseRequestBody` не разбирал JSON → model="", stream-флаг терялся;
+//   - `isStreamingFromBody` возвращал false → запрос на /api/chat с "stream":true
+//     уходил в НЕ-stream транспорт и клиент получал ответ одним куском;
+//   - воркеру уезжало тело с BOM (для строгого JSON-декодера это мусор в начале).
+//
+// BOM — не часть JSON (RFC 8259 требует UTF-8 без BOM), но клиент не обязан быть
+// корректным, а балансер обязан не портить запрос. Снимаем ровно три байта.
+func stripUTF8BOMR480(body []byte) []byte {
+	if len(body) >= 3 && body[0] == 0xEF && body[1] == 0xBB && body[2] == 0xBF {
+		return body[3:]
+	}
+	return body
 }

@@ -3,7 +3,8 @@
 // Аудит типов и распределения показал: `LB_MAX_REQUEST_BODY_MB` действовал
 // только на handler-путях (`readRequestBodyLimited` в llamacpp_native_path.go),
 // а основной поток `ServeHTTP` читал тело через `io.ReadAll` без предела —
-// минимум трижды (recordRecentClient, extractModel, parseRequestBody). Длинная
+// минимум трижды (recordRecentClient, extractModel — удалён в P2-14,
+// parseRequestBody). Длинная
 // история с base64-картинками давала лишние копии всего запроса в памяти.
 //
 // ЧТО ЗДЕСЬ. Два помощника:

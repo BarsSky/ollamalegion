@@ -62,6 +62,11 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 
 	startTime := time.Now()
 
+	// R477 (P1-9): поток пошёл — стадия stream. Ставится здесь, а не в цикле,
+	// потому что до этого момента виноват апстрим (заголовки/первый байт), а
+	// после — уже чтение потока.
+	SetStageR477(r.Context(), stageStreamR477)
+
 	logger.Get().Infow("starting streaming session",
 		"backend", backendID, "model", modelFromCtx,
 		"content_type", contentType, "is_sse", isSSE,
@@ -231,6 +236,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, r *http.Request, 
 			}
 			_, writeErr := w.Write(buf[:n])
 			if writeErr != nil {
+				// R477: сломался не апстрим и не стрим, а запись клиенту —
+				// стадия client_write, чтобы по trace было видно виновника.
+				SetStageR477(r.Context(), stageClientR477)
 				logger.Get().Errorw("error writing to client, aborting stream",
 					"backend", backendID, "model", modelFromCtx,
 					"write_error", writeErr, "bytes_before_error", bytesStreamed,

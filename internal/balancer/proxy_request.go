@@ -451,6 +451,11 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		"method", r.Method, "model", modelFromCtx,
 		"timeout", client.Timeout)
 
+	// R477: с этого места запрос живёт у воркера — стадия upstream. Раньше
+	// generic-путь (/api/chat и прочие Ollama-эндпоинты) стадию не ставил
+	// вообще, поэтому в request trace сбой апстрима показывался как сбой
+	// выбора бэкенда (P1-9).
+	SetStageR477(reqCtx, stageUpstreamR477)
 	resp, err := client.Do(req)
 	if err != nil {
 		// Детальная классификация ошибки для диагностики TransferEncodingError

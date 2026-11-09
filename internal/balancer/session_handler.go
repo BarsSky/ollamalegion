@@ -123,10 +123,3 @@ func (p *Proxy) sessionInflight(sessionID string) int {
 	}
 	return p.admission.inflightOf(sessionID)
 }
-
-// bindSession — привязывает сессию к выбранному бэкенду.
-func (p *Proxy) bindSession(sessionID, backendID, model, clientName string, r *http.Request) {
-	if sessionID != "" && p.config.Balancing.SessionStickiness {
-		p.sessionMgr.SetWithProtocol(sessionID, backendID, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
-	}
-}

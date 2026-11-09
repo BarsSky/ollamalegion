@@ -1082,7 +1082,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Единый разбор тела запроса (избегаем тройного чтения в recordRecentClient + extractModel + proxyRequest)
+	// Единый разбор тела запроса (избегаем повторного чтения в recordRecentClient + proxyRequest)
 	parsed := p.parseRequestBody(r)
 	if parsed.TooLarge {
 		sendBodyTooLarge(w, r)
@@ -1799,37 +1799,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Service unavailable - all backends failed", http.StatusServiceUnavailable)
 }
 
-// extractModel - извлечение модели и stream-флага из запроса (с восстановлением тела)
-func (p *Proxy) extractModel(r *http.Request) (string, bool) {
-	if r.Method == http.MethodPost && r.Body != nil {
-		// R479: читаем только начало тела (модель и stream в первых килобайтах),
-		// остальное оставляем в потоке. Раньше здесь был io.ReadAll без лимита.
-		body, ok := peekBodyR479(r, 64<<10)
-		if !ok {
-			return "", true
-		}
-
-		var req map[string]interface{}
-		if err := json.Unmarshal(body, &req); err != nil {
-			return "", true
-		}
-
-		var model string
-		if m, ok := req["model"].(string); ok {
-			model = m
-		}
-
-		isStream := true
-		if stream, ok := req["stream"].(bool); ok {
-			isStream = stream
-		}
-
-		return model, isStream
-	}
-
-	return "", false
-}
-
 // UpdateMetrics - обновление метрик бэкенда с прогнозированием
 func (p *Proxy) UpdateMetrics(backendID string, metrics *types.BackendMetrics) {
 	// Round 15 (2026-07-10): нормализуем metrics.ID = backendID. Агент может
@@ -2120,7 +2089,7 @@ func (p *Proxy) rollbackAutoDistributeLoad(sourceBackendID, modelName, originalE
 }
 
 // parsedRequest — результат однократного разбора тела запроса.
-// Используется чтобы избежать тройного чтения тела (recordRecentClient + extractModel + proxyRequest).
+// Используется чтобы избежать повторного чтения тела (recordRecentClient + proxyRequest).
 type parsedRequest struct {
 	Model   string
 	Stream  bool

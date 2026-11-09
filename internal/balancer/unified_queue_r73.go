@@ -153,6 +153,12 @@ func (p *Proxy) waitForInferenceBackend(
 	aq := p.admission
 	w := aq.enqueue(admissionAnyBackend, session)
 	position = aq.position(admissionAnyBackend, w)
+	// R477 (P1-9): ожидание в ЕДИНОЙ очереди — тоже стадия admission. До этой
+	// правки стадию ставил только per-backend acquireInferenceSlot, а Ollama-
+	// поверхность (Cline/OpenWebUI через /api/chat) ждёт здесь — и в request
+	// trace такой ход висел на stage=select_backend, то есть по логу нельзя было
+	// отличить «не выбрали бэкенд» от «стоим в очереди за слотом».
+	SetStageR477(ctx, stageAdmissionR477)
 	enqueued := w.enqueued
 	deadline := enqueued.Add(wait)
 	// R460 (2026-11-06): очередь — это действие, и у него должна быть видимая

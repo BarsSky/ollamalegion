@@ -131,39 +131,6 @@ func TestRebalanceIfNeeded_HighLoad(t *testing.T) {
 	assert.Equal(t, "backend-2", backend, "Высокая нагрузка — rebalance на менее загруженный")
 }
 
-// TestBindSession — привязка сессии к backend
-func TestBindSession(t *testing.T) {
-	t.Parallel()
-
-	config := createTestConfig()
-	config.Balancing.SessionStickiness = true
-	proxy := newProxyWithCleanup(t, config)
-	proxy.SetQueueManagerProxy()
-	defer proxy.queueMgr.Stop()
-
-	req := httptest.NewRequest(http.MethodPost, "/api/generate", nil)
-	proxy.bindSession("sess-2", "backend-2", "llama3", "client1", req)
-
-	session := proxy.sessionMgr.Get("sess-2")
-	assert.NotNil(t, session)
-	assert.Equal(t, "backend-2", session.BackendID)
-	assert.Equal(t, "llama3", session.Model)
-	assert.Equal(t, "client1", session.ClientName)
-}
-
-// TestBindSession_Disabled — stickiness отключён, привязки нет
-func TestBindSession_Disabled(t *testing.T) {
-	t.Parallel()
-
-	config := createTestConfig()
-	config.Balancing.SessionStickiness = false
-	proxy := newProxyWithCleanup(t, config)
-	proxy.SetQueueManagerProxy()
-	defer proxy.queueMgr.Stop()
-
-	req := httptest.NewRequest(http.MethodPost, "/api/generate", nil)
-	proxy.bindSession("sess-3", "backend-1", "llama3", "client1", req)
-
-	session := proxy.sessionMgr.Get("sess-3")
-	assert.Nil(t, session, "При отключенном stickiness сессия не создаётся")
-}
+// TestBindSession_* удалены вместе с помощником bindSession (P2-14, R479):
+// привязку сессии делает сам ServeHTTP/транспорт через sessionMgr.SetWithProtocol
+// (см. internal/balancer/proxy.go), отдельного метода в проде не осталось.

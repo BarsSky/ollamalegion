@@ -67,16 +67,12 @@ func (p *Proxy) serveAPIv1Request(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // routeRequest — маршрутизация входящего HTTP запроса.
-// Возвращает true если запрос обработан (health или Ollama/llama.cpp API), false для основного flow.
+// Возвращает true если запрос обработан (Ollama/llama.cpp API), false для основного flow.
+//
+// P2-14 (R480): ветка /health отсюда убрана — её обслуживает ServeHTTP выше
+// (proxy.go), и до routeRequest такой запрос не доходит. Две копии одного
+// ответа расходились при правках.
 func (p *Proxy) routeRequest(w http.ResponseWriter, r *http.Request) bool {
-	// Health check
-	if r.URL.Path == "/health" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("{\"status\":\"healthy\"}"))
-		return true
-	}
-
 	// Round 40 #3 (2026-08-18): /api/v1/* пути — admin / management endpoints
 	// обслуживаемые API-сервером на порту 18081, а не backend'ами.
 	// Forward'им напрямую — иначе balancer проксирует на cppworker →

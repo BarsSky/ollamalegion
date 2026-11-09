@@ -278,6 +278,36 @@ func TestWaitForInferenceBackend_ContextCanceled_R73(t *testing.T) {
 	}
 }
 
+// TestWaitForInferenceBackend_SetsAdmissionStage_R477 — P1-9: ожидание в единой
+// очереди обязано ставить стадию admission. Раньше stage=select_backend висел и
+// на «бэкенд не выбран», и на «стоим в очереди» — по trace нельзя было отличить.
+func TestWaitForInferenceBackend_SetsAdmissionStage_R477(t *testing.T) {
+	proxy := newUnifiedQueueProxyR73(t, 1)
+	proxy.setAdmissionWait(5 * time.Second)
+
+	if !proxy.tryAcquireSlot("ollama-1") {
+		t.Fatal("не удалось занять слот")
+	}
+	defer proxy.releaseSlot("ollama-1")
+
+	req, err := http.NewRequest(http.MethodPost, "/api/chat", nil)
+	if err != nil {
+		t.Fatalf("не удалось создать запрос: %v", err)
+	}
+	req = withStageTrackerR477(req, newStageTrackerR477())
+	ctx, cancel := context.WithTimeout(req.Context(), 200*time.Millisecond)
+	defer cancel()
+
+	if _, _, _, _, waitErr := proxy.waitForInferenceBackend(
+		ctx, "m1", types.BackendTypeOllama, "X-User-Id:u8"); waitErr == nil {
+		t.Fatal("ожидалась ошибка отмены контекста (слот занят)")
+	}
+	stage, _ := CurrentStageR477(ctx)
+	if stage != stageAdmissionR477 {
+		t.Errorf("стадия должна быть %q, получено %q", stageAdmissionR477, stage)
+	}
+}
+
 // TestServeHTTP_UnifiedQueue_OllamaPath_R73 — end-to-end: два параллельных
 // запроса на бэкенд с одним слотом оба получают 200, а второй — заголовки
 // очереди (раньше его обслуживал legacy QueueManager с другим поведением).

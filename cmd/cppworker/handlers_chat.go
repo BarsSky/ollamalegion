@@ -3015,6 +3015,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// не видно. Считаем по СЫРОМУ выводу: в finalContent уже лежит пояснение.
 	_, _, dumpedArgsInsteadOfCall := looksLikeDumpedArgumentsR474(fullOutput)
 	dumpedArgsInsteadOfCall = dumpedArgsInsteadOfCall && len(tools) > 0 && len(toolCalls) == 0
+	// R476: снимок трассировки стрима (если включена CPPWORKER_STREAM_TRACE).
+	streamTraceChunks, streamTraceBytes, streamTraceSHA := sw.StreamTrace()
 	logger.Get().Infow("/api/chat stream response summary",
 		"model", modelName,
 		"path", "/api/chat",
@@ -3046,6 +3048,12 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		"budget_exhausted", toolsBudgetExhaustedR394(params.NPredict, budgetTokens),
 		"reasoning_chars_raw", reasoningCharsRawR394(fullOutput),
 		"elapsed_ms", duration.Milliseconds(),
+		// R476: побайтовое доказательство отдачи (CPPWORKER_STREAM_TRACE=1):
+		// чанки, записанные байты и sha256 всего записанного. Пусто — трассировка
+		// выключена (дефолт).
+		"stream_chunks", streamTraceChunks,
+		"stream_bytes", streamTraceBytes,
+		"stream_sha256", streamTraceSHA,
 	)
 
 	doneJSON, _ := json.Marshal(finalChunk)

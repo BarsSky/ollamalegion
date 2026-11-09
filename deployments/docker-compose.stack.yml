@@ -291,6 +291,9 @@ services:
       # длительность, бэкенд). По этому id ход находится в сводке воркера.
       # off | summary | full; пустое/неизвестное = summary.
       - LB_REQUEST_TRACE=${LB_REQUEST_TRACE:-summary}
+      # R476: псевдоним размера буфера логов (LB_LOG_BUFFER_ENTRIES главнее).
+      # Пустое значение = не задано: пусть работает основная переменная.
+      - LB_DIAG_RING=${LB_DIAG_RING:-}
       - LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC=${LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC:-180}
       - LB_ALLOW_PROFILE_TIMEOUTS=${LB_ALLOW_PROFILE_TIMEOUTS:-0}
       - LB_ALLOW_REQUEST_TIMEOUTS=${LB_ALLOW_REQUEST_TIMEOUTS:-0}
@@ -727,7 +730,14 @@ services:
       # архиве /api/v1/cppworker/debug/bundle) и уровень логирования без правки
       # command. 0 в буфере = выключить.
       - CPPWORKER_LOG_BUFFER_ENTRIES=${CPPWORKER_LOG_BUFFER_ENTRIES:-2000}
-      - CPPWORKER_LOG_LEVEL=${CPPWORKER_LOG_LEVEL:-info}
+      - CPPWORKER_LOG_LEVEL=${CPPWORKER_LOG_LEVEL:-info}      # R476: псевдоним размера буфера логов воркера (основная переменная главнее).
+      - CPPWORKER_DIAG_RING=${CPPWORKER_DIAG_RING:-}
+      # R476: побайтовое доказательство отдачи — чанки, байты и sha256 в сводке
+      # хода (stream_chunks/stream_bytes/stream_sha256). 0 = выключено.
+      - CPPWORKER_STREAM_TRACE=${CPPWORKER_STREAM_TRACE:-0}
+      # R476: сколько прошлых версий prompt-last.txt/request-last.json держать
+      # (path.1 … path.N). 0 = только последний (прежнее поведение).
+      - CPPWORKER_DIAG_KEEP_FILES=${CPPWORKER_DIAG_KEEP_FILES:-0}
       # R434: инструменты уходят в chat template ("native"), преамбула — fallback.
       # "prompt" возвращает прежнее поведение (только текстовая преамбула).
       - CPPWORKER_TEMPLATE_TOOLS=${CPPWORKER_TEMPLATE_TOOLS:-native}      # R445: подсказка модели по отказам клиента в истории (old_text/лимит).

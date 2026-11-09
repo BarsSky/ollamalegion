@@ -3,13 +3,13 @@
 //
 // Проблема (Issue «обрыв ответа без каких-либо ошибок»):
 //
-//   В writeOpenAIChatStream (и аналогах) использовались локальные
-//   safeFprintf/safeFlush, которые:
-//     1. НЕ проверяли ctx.Done() перед Write/Flush — после обрыва клиента
-//        продолжали писать в мёртвый socket, получая "broken pipe" без
-//        какого-либо логирования.
-//     2. НЕ возвращали write error — caller не мог остановить keepalive
-//        goroutine и inference продолжал тратить CPU после обрыва.
+//	В writeOpenAIChatStream (и аналогах) использовались локальные
+//	safeFprintf/safeFlush, которые:
+//	  1. НЕ проверяли ctx.Done() перед Write/Flush — после обрыва клиента
+//	     продолжали писать в мёртвый socket, получая "broken pipe" без
+//	     какого-либо логирования.
+//	  2. НЕ возвращали write error — caller не мог остановить keepalive
+//	     goroutine и inference продолжал тратить CPU после обрыва.
 //
 // Решение: safeStreamWriter с:
 //   - Проверкой ctx.Done() перед каждой операцией.
@@ -30,8 +30,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"hash"
+	"io"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,11 +70,16 @@ type safeStreamWriter struct {
 	headerWritten bool
 	broken        bool // true после первого write error
 
+	// R476: CPPWORKER_STREAM_TRACE — побайтовое доказательство отдачи.
+	traceHash   hash.Hash
+	traceChunks int64
+	traceBytes  int64
+
 	// Snapshot для диагностики.
-	lastWriteErr   error
-	lastWriteAt    time.Time
-	disconnectAt   time.Time
-	disconnectWhy  string
+	lastWriteErr  error
+	lastWriteAt   time.Time
+	disconnectAt  time.Time
+	disconnectWhy string
 }
 
 // newSafeStreamWriter создаёт writer для streaming-ответа.
@@ -83,6 +94,9 @@ func newSafeStreamWriter(w http.ResponseWriter, r *http.Request, handlerName, mo
 	}
 	if f, ok := w.(http.Flusher); ok {
 		sw.flusher = f
+	}
+	if streamTraceEnvR476() {
+		sw.traceHash = sha256.New()
 	}
 	return sw
 }
@@ -135,7 +149,17 @@ func (sw *safeStreamWriter) Writef(format string, a ...interface{}) bool {
 		return false
 	}
 
-	n, err := fmt.Fprintf(sw.w, format, a...)
+	var n int
+	var err error
+	if sw.traceHash != nil {
+		msg := fmt.Sprintf(format, a...)
+		n, err = io.WriteString(sw.w, msg)
+		if err == nil {
+			sw.traceWrite([]byte(msg))
+		}
+	} else {
+		n, err = fmt.Fprintf(sw.w, format, a...)
+	}
 	if err != nil {
 		sw.markBroken("write_error", err)
 		sw.lastWriteErr = err
@@ -165,6 +189,7 @@ func (sw *safeStreamWriter) Write(p []byte) bool {
 		sw.lastWriteErr = err
 		return false
 	}
+	sw.traceWrite(p[:n])
 	atomic.AddInt64(&sw.bytesWritten, int64(n))
 	sw.lastWriteAt = time.Now()
 	return true
@@ -272,4 +297,44 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// ── R476 (2026-11-07): CPPWORKER_STREAM_TRACE ────────────────────────────────
+//
+// ЗАЧЕМ. Спор «клиент получил неполный ответ» без доказательства решается
+// догадкой. Отдельный счётчик байт уже есть, но он не отвечает на вопрос, ДОШЛИ
+// ли байты до сокета в том же виде. При включённом CPPWORKER_STREAM_TRACE=1
+// writer считает чанки и sha256 ВСЕГО записанного: в сводке хода появляются
+// stream_chunks и stream_sha256, и их можно сверить с тем, что видит клиент.
+//
+// Выключено по умолчанию: хеширование на каждом чанке — лишняя работа, а для
+// обычных ходов достаточно streamed_content_bytes.
+
+// streamTraceEnvR476 — включён ли побайтовый учёт стрима.
+func streamTraceEnvR476() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CPPWORKER_STREAM_TRACE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// traceWrite добавить записанные байты в хеш (только при включённой трассировке).
+func (sw *safeStreamWriter) traceWrite(p []byte) {
+	if sw.traceHash == nil || len(p) == 0 {
+		return
+	}
+	_, _ = sw.traceHash.Write(p)
+	sw.traceChunks++
+	atomic.AddInt64(&sw.traceBytes, int64(len(p)))
+}
+
+// StreamTrace — чанки, байты и sha256 записанного ("" если трассировка выключена).
+func (sw *safeStreamWriter) StreamTrace() (chunks int64, bytes int64, sha string) {
+	if sw.traceHash == nil {
+		return 0, 0, ""
+	}
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.traceChunks, atomic.LoadInt64(&sw.traceBytes), hex.EncodeToString(sw.traceHash.Sum(nil))
 }

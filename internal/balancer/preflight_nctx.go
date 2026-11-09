@@ -94,6 +94,11 @@ type RequestMeta struct {
 	// (эвристика pkg/tokencount + калибровка) или "tokenizer" (реальный
 	// токенизатор модели через POST /api/tokenize, R473).
 	PromptTokensSource string
+	// RequestID — correlation-id запроса (R476): заголовок X-Request-ID, который
+	// выдал балансер. Заполняется там, где есть исходный *http.Request; в
+	// функциях, которые видят только тело, поле пустое (это честное «неизвестно»,
+	// а не другая правда).
+	RequestID string
 	// RequestedNPredict — max_tokens / num_predict из тела (0 = default).
 	//
 	// R83/v67 (2026-10-02): сюда попадает ТОЛЬКО явное намерение клиента
@@ -686,6 +691,7 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 		return &PreflightResult{Decision: PreflightNoOp}
 	}
 	logger.Get().Infow("preflight: DecidePreflight inputs",
+		"request_id", meta.RequestID,
 		"backend_id", state.BackendID,
 		"model", meta.ModelName,
 		"body_n_ctx", meta.RequestedNCtxOverride,
@@ -788,6 +794,7 @@ func DecidePreflight(meta *RequestMeta, state *NCtxBackendState, cfg NCtxReloadC
 			// загруженного окна, ветка (4) всё равно вернёт NoOp.
 			if capped, cut := capDerivedWindowR466(derived, state.physicalCeiling(), state.effectiveSlots()); cut {
 				logger.Get().Warnw("preflight: R466 выведенное окно урезано до потолка (оценка завышена)",
+					"request_id", meta.RequestID,
 					"backend_id", state.BackendID,
 					"model", meta.ModelName,
 					"estimated_prompt_tokens", meta.EstimatedPromptTokens,

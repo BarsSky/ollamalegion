@@ -76,9 +76,20 @@ func initLogBufferR476() {
 			entries = n
 		}
 	}
+	// R476: псевдоним CPPWORKER_DIAG_RING — только если основная не задана.
+	if strings.TrimSpace(os.Getenv("CPPWORKER_LOG_BUFFER_ENTRIES")) == "" {
+		if raw := strings.TrimSpace(os.Getenv("CPPWORKER_DIAG_RING")); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil {
+				entries = n
+			}
+		}
+	}
 	if entries <= 0 {
-		logger.Get().Infow("log buffer disabled", "CPPWORKER_LOG_BUFFER_ENTRIES", entries)
+		logger.Get().Infow("log buffer disabled", "entries", entries)
 		return
+	}
+	if entries > 50000 {
+		entries = 50000
 	}
 	logger.SetBrokerSource("cppworker")
 	logger.SetBroker(logger.NewLogBroker(entries))
@@ -100,6 +111,10 @@ func handleDebugBundle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 
+	// R476: `?since=30m` (или RFC3339) — отдать только записи после этого момента.
+	// Нужно, чтобы архив по живому дефекту не тащил сутки логов.
+	cutoff := bundleSinceCutoffR476(r.URL.Query().Get("since"))
+
 	zw := zip.NewWriter(w)
 	write := func() {
 		_ = zw.Close()
@@ -120,7 +135,7 @@ func handleDebugBundle(w http.ResponseWriter, r *http.Request) {
 	if err := bundleAddJSONR476(zw, "env.json", bundleEnvSnapshotR476()); err != nil {
 		logger.Get().Warnw("debug/bundle: env.json failed", "error", err)
 	}
-	bundleAddTextR476(zw, "logs.txt", bundleLogsTextR476())
+	bundleAddTextR476(zw, "logs.txt", bundleLogsTextSinceR476(cutoff))
 	bundleAddFileR476(zw, "prompt-last.txt", strings.TrimSpace(os.Getenv("CPPWORKER_DEBUG_PROMPT_FILE")))
 	bundleAddFileR476(zw, "request-last.json", strings.TrimSpace(os.Getenv("CPPWORKER_DEBUG_REQUEST_FILE")))
 	bundleAddFileR476(zw, "unparsed-tool-calls.jsonl", unparsedCapturePath())
@@ -167,6 +182,12 @@ func bundleEnvSnapshotR476() map[string]string {
 
 // bundleLogsTextR476 — снимок кольцевого буфера логов процесса.
 func bundleLogsTextR476() string {
+	return bundleLogsTextSinceR476(time.Time{})
+}
+
+// bundleLogsTextSinceR476 — то же, но только записи позже cutoff (нулевое время
+// = без фильтра).
+func bundleLogsTextSinceR476(cutoff time.Time) string {
 	broker := logger.GetBroker()
 	if broker == nil {
 		return "# кольцевой буфер логов не включён (CPPWORKER_LOG_BUFFER_ENTRIES=0)\n"
@@ -174,6 +195,9 @@ func bundleLogsTextR476() string {
 	entries := broker.Snapshot()
 	var b strings.Builder
 	for _, e := range entries {
+		if !cutoff.IsZero() && e.Time.Before(cutoff) {
+			continue
+		}
 		src := e.Source
 		if src == "" {
 			src = "worker"
@@ -237,6 +261,24 @@ func bundleAddFileR476(zw *zip.Writer, name, path string) {
 			"\n\n# ОБРЕЗАНО: файл больше " + fmt.Sprint(bundleMaxFileBytesR476) + " байт, показано начало\n"
 	}
 	bundleAddTextR476(zw, name, body)
+}
+
+// bundleSinceCutoffR476 — разобрать `since`: длительность ("30m", "2h", "90s")
+// или абсолютное время RFC3339. Пустое/мусор = без фильтра (нулевое время),
+// потому что «не понял параметр» не должно молча отдавать пустой архив.
+func bundleSinceCutoffR476(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return time.Now().Add(-d)
+	}
+	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+		return ts
+	}
+	logger.Get().Warnw("debug/bundle: since не разобран, фильтр не применён", "since", raw)
+	return time.Time{}
 }
 
 // bundleReadmeR476 — краткая инструкция к архиву.

@@ -1478,7 +1478,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			guardBackend = targetBackend
 		}
 		if guardBackend != "" {
-			v := p.growthVerdictR301(guardBackend, model, parsed.RawBody, path, parsed.Stream)
+			v := p.growthVerdictR301(RequestIDFromContext(r.Context()), guardBackend, model, parsed.RawBody, path, parsed.Stream)
 			switch {
 			case v.Grow:
 				// R385: окно можно поднять — запускаем перезагрузку и просим

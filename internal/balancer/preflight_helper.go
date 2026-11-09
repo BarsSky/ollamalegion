@@ -68,6 +68,9 @@ func (lr *LlamaCppRouter) runInferencePreflight(args runInferencePreflightArgs) 
 
 	path := args.r.URL.Path
 	meta := lr.proxy.extractRequestMeta(args.body, path)
+	if meta != nil {
+		meta.RequestID = RequestIDFromContext(args.r.Context())
+	}
 	if meta == nil {
 		// Не смогли распарсить body (например, нестандартный формат).
 		// Пропускаем preflight — пусть роутер проксирует как обычно.

@@ -28,6 +28,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -70,6 +71,8 @@ func writeFileAtomicR442(path string, data []byte) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
+	// R476: прошлые версии дампа не затираем, если оператор попросил хранить их.
+	rotateDiagFileR476(path, diagKeepFilesR476())
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return
@@ -126,4 +129,52 @@ func debugRequestDumpEnabledR442() bool {
 // debugPromptDumpEnabledR442 — включён ли дамп промпта.
 func debugPromptDumpEnabledR442() bool {
 	return strings.TrimSpace(os.Getenv("CPPWORKER_DEBUG_PROMPT_FILE")) != ""
+}
+
+// ── R476 (2026-11-07): CPPWORKER_DIAG_KEEP_FILES ─────────────────────────────
+//
+// Дампы prompt-last.txt и request-last.json перезаписываются каждый ход. Если
+// дефект случился ход назад, от него уже ничего не остаётся — а именно такие
+// случаи и разбираются. Переменная задаёт, сколько ПРЕДЫДУЩИХ версий держать:
+// path.1 (самая свежая прошлая), path.2, ... до N. 0/пусто = прежнее поведение
+// (только последний файл). Значения ограничены 50: это содержимое переписки,
+// его не нужно копить сотнями.
+
+// diagKeepFilesR476 — сколько прошлых версий дампа держать.
+func diagKeepFilesR476() int {
+	raw := strings.TrimSpace(os.Getenv("CPPWORKER_DIAG_KEEP_FILES"))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	if n > 50 {
+		n = 50
+	}
+	return n
+}
+
+// rotateDiagFileR476 — сдвинуть прошлые версии файла: path → path.1, path.1 →
+// path.2 … до keep. Ошибки намеренно проглатываются: ротация не должна мешать
+// записи свежего дампа.
+func rotateDiagFileR476(path string, keep int) {
+	if keep <= 0 {
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		return // нечего сдвигать
+	}
+	for i := keep; i >= 1; i-- {
+		prev := path
+		next := path + "." + strconv.Itoa(i)
+		if i > 1 {
+			prev = path + "." + strconv.Itoa(i-1)
+		}
+		if _, err := os.Stat(prev); err != nil {
+			continue
+		}
+		_ = os.Rename(prev, next)
+	}
 }

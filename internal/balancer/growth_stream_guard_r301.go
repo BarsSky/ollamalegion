@@ -69,6 +69,9 @@ import (
 // Числа (Estimated/Loaded/Needed) заполняются и при «ничего не делаем»: они
 // нужны логу, чтобы живой разбор не требовал догадок.
 type growthVerdictR301 struct {
+	// RID — request_id хода (R476): без него решение о росте нельзя связать со
+	// строкой equest trace и сводкой воркера. Пусто — вызов без HTTP-запроса.
+	RID string
 	// Defer — отказ стандартным телом «отложено» до любой сети и любого слота.
 	Defer bool
 	// Served — обслужить с подменённым телом (Body): окно растить не нужно.
@@ -102,8 +105,8 @@ func (v growthVerdictR301) decided() bool { return v.Defer || v.Served }
 // шапку файла), поэтому «пусть preflight попробует вырасти» здесь запрещено —
 // иначе мы отдаём воркеру заведомо невыполнимый запрос и клиент получает 200
 // с кадром ошибки вместо терминального ответа.
-func (p *Proxy) growthVerdictR301(backendID, model string, body []byte, path string, streaming bool) growthVerdictR301 {
-	v := growthVerdictR301{Streaming: streaming}
+func (p *Proxy) growthVerdictR301(rid, backendID, model string, body []byte, path string, streaming bool) growthVerdictR301 {
+	v := growthVerdictR301{Streaming: streaming, RID: rid}
 	if p == nil || backendID == "" || len(body) == 0 {
 		return v
 	}
@@ -129,6 +132,7 @@ func (p *Proxy) growthVerdictR301(backendID, model string, body []byte, path str
 		ceil := p.physicalNumCtxCeiling(model, backendID)
 		if capped, cut := capDerivedWindowR466(needed, ceil, p.loadedSlotsNCtx(backendID, model)); cut && capped > loaded {
 			logger.Get().Warnw("R466: нужное окно урезано до потолка (оценка промпта завышена)",
+				"request_id", v.RID,
 				"backend", backendID, "model", model, "path", path,
 				"estimated_prompt_tokens", estimated,
 				"needed_tokens", needed, "capped_tokens", capped,
@@ -269,6 +273,7 @@ func logGrowthVerdictR301(where, backendID, model, path string, v growthVerdictR
 		return
 	}
 	logger.Get().Infow("context growth decision (R301)",
+		"request_id", v.RID,
 		"where", where,
 		"backend", backendID, "model", model, "path", path,
 		"streaming", v.Streaming,

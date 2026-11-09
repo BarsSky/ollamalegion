@@ -50,7 +50,7 @@ func TestR301_StreamingServedWithLoadedWindow(t *testing.T) {
 	t.Setenv("LB_NCTX_GROW_FOR_STREAM", "0")
 	p := newGrowthGuardProxyR299()
 
-	v := p.growthVerdictR301("bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
 	if v.Defer {
 		t.Fatalf("промпт влезает в окно: отказ недопустим (needed=%d loaded=%d)", v.Needed, v.Loaded)
 	}
@@ -119,7 +119,7 @@ func TestR301_RefusalBodyKeepsR299Format(t *testing.T) {
 	p := newGrowthGuardProxyR299()
 	body := []byte(r301LongStreamBody())
 
-	v := p.growthVerdictR301("bk-1", "m", body, "/api/chat", true)
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", true)
 	if !v.Defer {
 		t.Fatal("ожидался отказ")
 	}
@@ -150,13 +150,13 @@ func TestR301_NonStreamingPathUnchanged(t *testing.T) {
 	p := newGrowthGuardProxyR299()
 
 	body := []byte(strings.Replace(r301StreamBody, `"stream":true`, `"stream":false`, 1))
-	if v := p.growthVerdictR301("bk-1", "m", body, "/api/chat", false); v.decided() {
+	if v := p.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", false); v.decided() {
 		t.Fatalf("без стримов и без перезагрузки рост возможен: verdict=%+v", v)
 	}
 
 	stop := beginClientStreamR271(p, "bk-1", "m")
 	defer stop()
-	v := p.growthVerdictR301("bk-1", "m", body, "/api/chat", false)
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", false)
 	if !v.Defer {
 		t.Fatal("при активном стриме рост отложен guard'ом R271 — нужен отказ (правило R299)")
 	}
@@ -214,7 +214,7 @@ func TestR301_StewardNoStreamingBypass(t *testing.T) {
 		t.Fatal("не найдена функция preflightNCtxReloadIfNeeded: разбор сторожевого теста устарел")
 	}
 	fnBody := text[fn:]
-	verdictAt := strings.Index(fnBody, "growthVerdictR301(backendID, modelName, bodyBuf, requestPath, true)")
+	verdictAt := strings.Index(fnBody, "growthVerdictR301(RequestIDFromContext(ctx), backendID, modelName, bodyBuf, requestPath, true)")
 	if verdictAt < 0 {
 		t.Fatal("в preflightNCtxReloadIfNeeded нет стримингового вердикта R301 — обход вернулся")
 	}

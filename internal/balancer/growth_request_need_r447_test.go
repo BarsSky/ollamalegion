@@ -60,7 +60,7 @@ func TestR447_SmallPromptOnSmallWindowIsNotRefused(t *testing.T) {
 			}
 			p := newGrowthGuardProxyWindowR447(2048)
 
-			v := p.growthVerdictR301("bk-1", "m", []byte(r447SmallStreamBody), "/api/chat", true)
+			v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r447SmallStreamBody), "/api/chat", true)
 			if v.Grow {
 				t.Fatalf("запущена перезагрузка модели ради промпта в 3 токена: %+v", v)
 			}
@@ -86,7 +86,7 @@ func TestR447_SmallPromptOnSmallWindowIsNotRefused(t *testing.T) {
 func TestR447_ClientAskedWindowStillGrows(t *testing.T) {
 	p := newGrowthGuardProxyR299() // окно 8192, в теле num_ctx=16384
 
-	v := p.growthVerdictR301("bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
 	if !v.Grow {
 		t.Fatalf("клиент попросил 16384 при загруженных 8192 — рост обязателен, получено %+v", v)
 	}
@@ -96,7 +96,7 @@ func TestR447_ClientAskedWindowStillGrows(t *testing.T) {
 func TestR447_OversizedPromptStillGrows(t *testing.T) {
 	p := newGrowthGuardProxyR299()
 
-	v := p.growthVerdictR301("bk-1", "m", []byte(r301LongStreamBody()), "/api/chat", true)
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301LongStreamBody()), "/api/chat", true)
 	if !v.Grow {
 		t.Fatalf("промпт не влезает в окно — рост обязателен, получено %+v", v)
 	}
@@ -141,7 +141,7 @@ func TestR447_DeferredBodyUsesVerdictNumbers(t *testing.T) {
 	p := newGrowthGuardProxyR299()
 	body := []byte(r301LongStreamBody())
 
-	v := p.growthVerdictR301("bk-1", "m", body, "/api/chat", true)
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", true)
 	if !v.Defer {
 		t.Fatalf("ожидался отказ (промпт не влезает), получено %+v", v)
 	}

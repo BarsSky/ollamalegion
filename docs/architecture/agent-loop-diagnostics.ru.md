@@ -164,6 +164,13 @@ final_content_len=… tool_calls=… done_reason=… dumped_args_instead_of_call
 | `CPPWORKER_DEBUG_PROMPT_FILE` | путь дампа промпта | путь (`/app/diag/prompt-last.txt`) |
 | `CPPWORKER_DEBUG_REQUEST_FILE` | путь дампа тела запроса | путь (`/app/diag/request-last.json`) |
 | `CPPWORKER_DEBUG_TOOL_ARGS` | дамп исходящих аргументов вызова | `0` / `1` |
+| `LB_DIAG_RING` / `CPPWORKER_DIAG_RING` | псевдонимы размеров буферов (основные имена главнее) | число / пусто |
+| `CPPWORKER_STREAM_TRACE` | чанки, байты и sha256 записанного — доказательство «отдано всё» | `0` / `1` |
+| `CPPWORKER_DIAG_KEEP_FILES` | сколько прошлых версий дампов держать | `0` … `50` |
+
+Выгрузка с фильтром времени: `GET /api/v1/diag/bundle?since=30m` (или RFC3339).
+Фильтр режет свой буфер логов и передаётся каждому воркеру; непонятное значение
+не превращается в пустой архив — приходит предупреждение и полный набор.
 
 Все перечисленные переменные проброшены в `deployments/docker-compose.stack.yml`
 и описаны в `.env.example` (сторож R274 больше не ругается).

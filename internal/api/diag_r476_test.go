@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -153,4 +154,40 @@ func containsStrR476(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestR476_BundleSinceParsing — `?since=` принимает длительность и RFC3339,
+// а мусор не превращается в пустой архив.
+func TestR476_BundleSinceParsing(t *testing.T) {
+	if !diagBundleSinceCutoffR476("").IsZero() {
+		t.Fatal("пустой since должен означать «без фильтра»")
+	}
+	if !diagBundleSinceCutoffR476("не-время").IsZero() {
+		t.Fatal("мусор в since должен означать «без фильтра», а не пустой архив")
+	}
+	if d := time.Since(diagBundleSinceCutoffR476("2h")); d < 119*time.Minute || d > 121*time.Minute {
+		t.Fatalf("since=2h дал cutoff %v назад", d)
+	}
+	ts := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	if got := diagBundleSinceCutoffR476(ts.Format(time.RFC3339)); !got.Equal(ts) {
+		t.Fatalf("RFC3339 разобран как %v, ожидалось %v", got, ts)
+	}
+}
+
+// TestR476_BalancerLogsSinceFilters — свой буфер тоже фильтруется по since.
+func TestR476_BalancerLogsSinceFilters(t *testing.T) {
+	b := logger.NewLogBroker(50)
+	logger.SetBroker(b)
+	defer logger.SetBroker(nil)
+
+	b.Publish(logger.LogEntry{Time: time.Now().Add(-3 * time.Hour), Level: "info", Message: "OLD-BAL-476"})
+	b.Publish(logger.LogEntry{Time: time.Now(), Level: "info", Message: "NEW-BAL-476"})
+
+	text := diagBundleBalancerLogsSinceR476(time.Now().Add(-time.Hour))
+	if strings.Contains(text, "OLD-BAL-476") {
+		t.Fatalf("старая запись не отфильтрована: %s", text)
+	}
+	if !strings.Contains(text, "NEW-BAL-476") {
+		t.Fatalf("свежая запись потеряна: %s", text)
+	}
 }

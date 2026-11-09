@@ -777,7 +777,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 		return bodyBuf, true, "", http.StatusOK
 	}
 	if modelName != "" && isStreamingFromBody("", bodyBuf) {
-		v := p.growthVerdictR301(backendID, modelName, bodyBuf, requestPath, true)
+		v := p.growthVerdictR301(RequestIDFromContext(ctx), backendID, modelName, bodyBuf, requestPath, true)
 		logGrowthVerdictR301("transport-preflight", backendID, modelName, requestPath, v)
 		// R447: числа вердикта едут к writer'у тела вместе с запросом — иначе
 		// тело пересчитает их после перезагрузки и разойдётся с текстом.

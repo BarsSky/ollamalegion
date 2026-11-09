@@ -336,6 +336,7 @@ func (p *Proxy) applyExactPromptTokensR473(meta *RequestMeta) {
 		return
 	}
 	logger.Get().Infow("prompt tokens: точный подсчёт токенизатором (R473)",
+		"request_id", meta.RequestID,
 		"model", meta.ModelName,
 		"estimated_tokens", estimated,
 		"exact_tokens", exact,

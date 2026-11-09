@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -62,6 +63,12 @@ func (s *Server) handleDiagBundle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 
+	// R476: `?since=30m` | RFC3339 — только записи после этого момента (свои логи
+	// фильтруем здесь, параметр передаём воркеру). Нужно, чтобы архив по живому
+	// дефекту не тащил сутки логов.
+	sinceRaw := strings.TrimSpace(r.URL.Query().Get("since"))
+	cutoff := diagBundleSinceCutoffR476(sinceRaw)
+
 	zw := zip.NewWriter(w)
 	defer func() { _ = zw.Close() }()
 
@@ -72,12 +79,12 @@ func (s *Server) handleDiagBundle(w http.ResponseWriter, r *http.Request) {
 	s.diagBundleAddTextR476(zw, "flags.txt", diagBundleFlagsTextR476())
 
 	// 3) Логи балансера из кольцевого буфера.
-	s.diagBundleAddTextR476(zw, "balancer-logs.txt", diagBundleBalancerLogsR476())
+	s.diagBundleAddTextR476(zw, "balancer-logs.txt", diagBundleBalancerLogsSinceR476(cutoff))
 
 	// 4) По каждому бэкенду — диагностика воркера, если это cppworker.
 	backends := s.diagBundleBackendsR476()
 	for _, b := range backends {
-		s.diagBundleAddBackendR476(zw, b)
+		s.diagBundleAddBackendR476(zw, b, sinceRaw)
 	}
 
 	s.diagBundleAddTextR476(zw, "README.txt", diagBundleReadmeR476)
@@ -96,7 +103,7 @@ func (s *Server) diagBundleBackendsR476() []types.Backend {
 }
 
 // diagBundleAddBackendR476 — вложенный архив и /api/info одного бэкенда.
-func (s *Server) diagBundleAddBackendR476(zw *zip.Writer, b types.Backend) {
+func (s *Server) diagBundleAddBackendR476(zw *zip.Writer, b types.Backend, sinceRaw string) {
 	base := ""
 	if s.proxy != nil {
 		base = s.proxy.BackendHTTPBaseURLR476(b)
@@ -118,7 +125,11 @@ func (s *Server) diagBundleAddBackendR476(zw *zip.Writer, b types.Backend) {
 			"бэкенд не cppworker (тип "+string(b.Type)+"): диагностический архив воркера недоступен\n")
 		return
 	}
-	body, err := diagBundleHTTPGetR476(base+"/api/v1/cppworker/debug/bundle", b.CppWorkerApiToken)
+	bundleURL := base + "/api/v1/cppworker/debug/bundle"
+	if strings.TrimSpace(sinceRaw) != "" {
+		bundleURL += "?since=" + url.QueryEscape(sinceRaw)
+	}
+	body, err := diagBundleHTTPGetR476(bundleURL, b.CppWorkerApiToken)
 	if err != nil {
 		s.diagBundleAddTextR476(zw, fmt.Sprintf("backends/%s.error.txt", b.ID), err.Error()+"\n")
 		return
@@ -198,6 +209,12 @@ func diagBundleFlagsTextR476() string {
 
 // diagBundleBalancerLogsR476 — снимок кольцевого буфера логов.
 func diagBundleBalancerLogsR476() string {
+	return diagBundleBalancerLogsSinceR476(time.Time{})
+}
+
+// diagBundleBalancerLogsSinceR476 — только записи позже cutoff (нулевое время =
+// без фильтра).
+func diagBundleBalancerLogsSinceR476(cutoff time.Time) string {
 	broker := logger.GetBroker()
 	if broker == nil {
 		return "# кольцевой буфер логов не включён (LB_LOG_BUFFER_ENTRIES=0)\n"
@@ -205,6 +222,9 @@ func diagBundleBalancerLogsR476() string {
 	entries := broker.Snapshot()
 	var b strings.Builder
 	for _, e := range entries {
+		if !cutoff.IsZero() && e.Time.Before(cutoff) {
+			continue
+		}
 		src := e.Source
 		if src == "" {
 			src = "balancer"
@@ -217,6 +237,24 @@ func diagBundleBalancerLogsR476() string {
 		return "# буфер пуст\n"
 	}
 	return b.String()
+}
+
+// diagBundleSinceCutoffR476 — разобрать `since`: длительность ("30m", "2h") или
+// RFC3339. Пустое/мусор = без фильтра: «не понял параметр» не должно молча
+// отдавать пустой архив.
+func diagBundleSinceCutoffR476(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return time.Now().Add(-d)
+	}
+	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+		return ts
+	}
+	logger.Get().Warnw("diag/bundle: since не разобран, фильтр не применён", "since", raw)
+	return time.Time{}
 }
 
 // diagBundleAddJSONR476 — JSON-файл архива.

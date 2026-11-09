@@ -24,7 +24,7 @@ import (
 func TestR385_StreamingGrowsInsteadOfServing(t *testing.T) {
 	p := newGrowthGuardProxyR299()
 
-	v := p.growthVerdictR301("bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
 	if !v.Grow {
 		t.Fatalf("ожидался рост окна (needed=%d loaded=%d), получено %+v", v.Needed, v.Loaded, v)
 	}
@@ -41,7 +41,7 @@ func TestR385_StreamingGrowsInsteadOfServing(t *testing.T) {
 func TestR385_StreamingGrowsForOversizedPrompt(t *testing.T) {
 	p := newGrowthGuardProxyR299()
 
-	v := p.growthVerdictR301("bk-1", "m", []byte(r301LongStreamBody()), "/api/chat", true)
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301LongStreamBody()), "/api/chat", true)
 	if !v.Grow {
 		t.Fatalf("ожидался рост окна под большой промпт, получено %+v", v)
 	}
@@ -80,7 +80,7 @@ func TestR385_NoGrowthWhileStreamActive(t *testing.T) {
 	release := beginClientStreamR271(p, "bk-1", "m")
 	defer release()
 
-	v := p.growthVerdictR301("bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
 	if v.Grow {
 		t.Fatalf("при активном стриме рост запрещён: %+v", v)
 	}

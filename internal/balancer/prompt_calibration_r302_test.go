@@ -230,7 +230,7 @@ func TestR302_AcceptanceNoFalseRefusalOnRussian(t *testing.T) {
 	// Отказ остаётся только когда рост запрещён/невозможен (см. R301-тесты с
 	// LB_NCTX_GROW_FOR_STREAM=0).
 	rawOnly := newPromptCalibProxyR302(32768, nil)
-	if v := rawOnly.growthVerdictR301("bk-1", "m", body, "/api/chat", true); !v.Grow || v.Defer {
+	if v := rawOnly.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", true); !v.Grow || v.Defer {
 		t.Fatalf("до R302 должен быть рост окна (а не отказ): grow=%v defer=%v estimated=%d loaded=%d",
 			v.Grow, v.Defer, v.Estimated, v.Loaded)
 	}
@@ -250,7 +250,7 @@ func TestR302_AcceptanceNoFalseRefusalOnRussian(t *testing.T) {
 		p.recordTokenUsage("m", 17616, 0)
 	}
 
-	v := p.growthVerdictR301("bk-1", "m", body, "/api/chat", true)
+	v := p.growthVerdictR301("rid-test", "bk-1", "m", body, "/api/chat", true)
 	if v.Loaded != 32768 {
 		t.Fatalf("загруженное окно в вердикте = %d, want 32768", v.Loaded)
 	}

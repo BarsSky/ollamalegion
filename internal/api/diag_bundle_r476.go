@@ -97,7 +97,13 @@ func (s *Server) diagBundleBackendsR476() []types.Backend {
 
 // diagBundleAddBackendR476 — вложенный архив и /api/info одного бэкенда.
 func (s *Server) diagBundleAddBackendR476(zw *zip.Writer, b types.Backend) {
-	base := fmt.Sprintf("http://%s:%d", b.Host, b.OllamaPort)
+	base := ""
+	if s.proxy != nil {
+		base = s.proxy.BackendHTTPBaseURLR476(b)
+	}
+	if base == "" {
+		base = fmt.Sprintf("http://%s:%d", b.Host, b.OllamaPort)
+	}
 
 	// /api/info есть у cppworker и у ollama — забираем у любого, ошибку пишем
 	// файлом: «не ответил» — это тоже факт для разбора.

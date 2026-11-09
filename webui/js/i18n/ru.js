@@ -41,7 +41,7 @@ window.I18N_RU = {
   "diag.col_parallel": "parallel",
   "diag.col_effective": "действующее окно",
   "diag.col_ceiling": "потолок окна",
-  "diag.col_backend": "Бэкенд",
+  "diag.col_ceiling_reason": "чем ограничен",  "diag.col_backend": "Бэкенд",
   "diag.col_type": "Тип",
   "diag.col_status": "Статус",
   "diag.col_slots": "Слоты (занято/всего)",

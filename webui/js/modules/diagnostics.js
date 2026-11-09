@@ -112,7 +112,19 @@ const Diagnostics = (function () {
     function renderWindow(summary) {
         var rows = [];
         var ceiling = summary && summary.nctx_ceiling;
-        if (ceiling) rows.push([t('diag.col_ceiling', 'потолок окна'), val(ceiling)]);
+        if (ceiling && typeof ceiling === 'object') {
+            // Балансер отдаёт потолок структурой (число + чем ограничен):
+            // показываем число с пометкой источника, причину — отдельной строкой,
+            // иначе оператор видит «[object Object]» вместо числа.
+            var ceilValue = ceiling.envCeiling || ceiling.ceiling || ceiling.effectiveCeiling;
+            if (ceilValue !== undefined) {
+                rows.push([t('diag.col_ceiling', 'потолок окна'),
+                    val(ceilValue) + (ceiling.limitedBy ? ' (' + val(ceiling.limitedBy) + ')' : '')]);
+            }
+            if (ceiling.reason) rows.push([t('diag.col_ceiling_reason', 'чем ограничен'), val(ceiling.reason)]);
+        } else if (ceiling) {
+            rows.push([t('diag.col_ceiling', 'потолок окна'), val(ceiling)]);
+        }
         var reload = (summary && summary.nctx_reload) || {};
         var keys = ['auto_reload_n_ctx', 'auto_reload_max_n_ctx', 'preflight_enabled',
             'preflight_async_reload', 'preflight_async_retry_after_sec'];

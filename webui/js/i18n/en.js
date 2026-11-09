@@ -41,7 +41,7 @@ window.I18N_EN = {
   "diag.col_parallel": "parallel",
   "diag.col_effective": "effective window",
   "diag.col_ceiling": "window ceiling",
-  "diag.col_backend": "Backend",
+  "diag.col_ceiling_reason": "limited by",  "diag.col_backend": "Backend",
   "diag.col_type": "Type",
   "diag.col_status": "Status",
   "diag.col_slots": "Slots (used/total)",

@@ -115,3 +115,14 @@ func (p *Proxy) backendHTTPAddrByID(backendID string) string {
 func (p *Proxy) isLlamaCppBackend(backend *types.Backend) bool {
 	return backend.EffectiveAPIStyle() == types.APIStyleOpenAICompatible
 }
+
+// BackendHTTPBaseURLR476 — базовый URL бэкенда для диагностических запросов
+// (R476). Тот же порт, что и для инференса: у llama.cpp это cppWorkerPort
+// (18092), а не OllamaPort (11434). Без этого архив диагностики ходил на 11434
+// и получал "connection refused" — проверено живой выгрузкой.
+func (p *Proxy) BackendHTTPBaseURLR476(b types.Backend) string {
+	if p == nil {
+		return ""
+	}
+	return p.getBackendBaseURL(&b)
+}

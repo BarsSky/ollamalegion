@@ -1,29 +1,24 @@
-﻿{
-    "tag":  "r261109-2239",
-    "builtAt":  "2026-11-09T19:39:07Z",
-    "gitCommit":  "850923d7",
+{
+    "tag":  "r261109-2352",
+    "builtAt":  "2026-11-09T23:52:00Z",
+    "gitCommit":  "71148041",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R479: паритет типов на поверхностях. /v1/* больше не привязан к llama_cpp: если под модель нет cppworker-бэкенда, запрос уходит в Ollama нативно (тот же путь/тело/формат, слот занимается, поток с Flush; только /v1/chat/completions, /v1/completions, /v1/embeddings, /v1/models). Алиасы /ollama/api/*, /ollama/v1/*, /openai/v1/* снимаются в начале ServeHTTP (X-LB-Surface-Alias: 1). /v1/models собирает модели Ollama-пула. Лимит LB_MAX_REQUEST_BODY_MB действует на generic-пути (413), вспомогательные чтения — begin-only. Диагностика: стадии preflight/client_write, stage_final, обрыв доставки в кольце сбоев. Закрыты P0 1-3 и P1-10/11 из docs/architecture/debts.ru.md. Ранее: R478 (OpenWebUI), R477, R476, R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
+    "note":  "R480: стадии для единой очереди и generic-пути (admission/upstream/stream/client_write), вычищен мёртвый код (bindSession, acquireSlotWithRetry, executeWithFallback, extractModel, дубль /health), BOM в теле запроса снимается (stripUTF8BOMR480) — иначе не разбирался JSON, терялся stream-флаг и /api/chat уходил в non-stream транспорт. Закрыты P1-9 и большая часть P2-14 из docs/architecture/debts.ru.md. Ранее: R479 (паритет типов, лимит тела), R478 (OpenWebUI), R477, R476, R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-09T19:41:00Z",
+                          "verifiedAt":  "2026-11-09T23:56:00Z",
                           "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
                           "proof":  [
-                                        "R479: образ балансера r261109-2144 (4f98d3fa) выкачен; GET :18080/api/version -\u003e build=r261109-2144 commit=4f98d3fa; контейнер healthy; cppworker gpu-261109-1754 и webui r261109-1747 не пересобирались",
-                                        "R479: GET /ollama/api/tags -\u003e 200, X-LB-Surface-Alias: 1, 3 модели (раньше путь понимал только LlamaCppRouter)",
-                                        "R479: GET /openai/v1/models -\u003e 200, X-LB-Surface-Alias: 1, 3 модели; GET /api/tags -\u003e 200, 3 модели",
-                                        "R479: POST /openai/v1/chat/completions -\u003e 200, X-Backend-ID=cppworker-gpu-bundled-agent (алиас ведёт себя как прямой путь)",
-                                        "R479: строка request trace содержит stage_final: path=/api/tags status=200 stage=select_backend stage_final=done stage_ms=2",
-                                        "R479: тесты — полный ./internal/balancer/ (174 с) зелёный; новые R479: алиасы, passthrough /v1/chat/completions в Ollama (поток, X-Backend-ID, освобождение слота), запрет passthrough /v1/responses, /v1/models с Ollama, 413 на тело сверх лимита, разбор нормального тела",
-                                        "R479: закрыты P0 1-3 и P1-10/11 из docs/architecture/debts.ru.md; P1-9 частично (unified-очередь не ставит admission), P1-4..P1-8 и P2 остаются",
-                                        "ОТКРЫТО: живой прогон passthrough в Ollama на Ollama-only/смешанном стенде (здесь только cppworker); проверено unit-тестом с фальшивым Ollama-сервером",
-                                        "R479 (линт-фикс 63903601): balancer r261109-2211 выкачен; GET :18080/api/version -\u003e build=r261109-2211 commit=63903601",
-                                        "R479: панель «последние клиенты» ожила — GET :18081/api/v1/cluster recentClients=1 (requestCount=4): recordRecentClient был мёртвым кодом, cluster_state читал пустую карту",
-                                        "R479: алиасы проверены и на этом образе — /ollama/api/tags -\u003e 200",
-                                        "R479 (850923d7): balancer r261109-2239 выкачен; GET :18080/api/version -\u003e build=r261109-2239 commit=850923d7",
-                                        "R479: причина over_load_threshold в R460 — порог загрузки берётся из одного места (loadThresholdR479), тест TestR479_RejectionsKnowLoadThreshold"
+                                        "R480: balancer r261109-2352 (71148041) выкачен; GET :18080/api/version -> build=r261109-2352 commit=71148041; контейнер healthy; cppworker gpu-261109-1754 и webui r261109-1747 не пересобирались",
+                                        "R480: POST /api/chat со stream:true и телом БЕЗ BOM -> 200, X-Backend-ID=cppworker-gpu-bundled-agent, 3 NDJSON-строки; request trace: stage=client_write stage_final=done (стадии шли select_backend -> upstream -> preflight -> stream -> client_write)",
+                                        "R480: POST /api/chat со stream:false -> 200, request trace: stage=upstream stage_final=done (non-stream транспорт)",
+                                        "R480: POST /api/chat с UTF-8 BOM в теле (битый клиент) -> 200, 3 NDJSON-строки, stage=client_write stage_final=done. До правки тот же запрос уходил в proxyRequestLlamaCppNonStream (model пустой, stream-флаг терялся) — воркер стримил, клиент получал ответ одним куском",
+                                        "R480: GET /api/tags -> 200 (1448 байт, модель горячая); /api/v1/diag/summary без X-API-Token -> 401 (авторизация обязательна, как и раньше)",
+                                        "R480: тесты — полный ./internal/balancer/ (168 с) зелёный; новые тесты: TestWaitForInferenceBackend_SetsAdmissionStage_R477, TestStripUTF8BOMR480, TestReadRequestBodyLimited_StripsBOM_R480, TestParseRequestBody_StripsBOM_R480, TestPeekBodyR479_StripsBOM_R480",
+                                        "R480: закрыты P1-9 (стадии) и P2-14 частично (кроме SetQueueManagerProxy — тест-шов у ~200 сценариев) из docs/architecture/debts.ru.md",
+                                        "ОТКРЫТО: живой ход, который именно СТОИТ в единой очереди (на стенде один бэкенд, слот почти всегда свободен; ожидание проверено unit-тестом); P1-4..P1-8 (R459 need/TTL/гейт на обходных путях), P2-12/13/15, E (A10/27B, смешанный стенд, Cline с tools)"
                                     ]
                       },
     "images":  [
@@ -31,9 +26,9 @@
                        "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
                        "service":  "loadbalancer",
-                       "imageTag":  "r261109-2239",
-                       "imageId":  "sha256:26a5e4ceb4a7a63144d05650c7de022158a943b0531324b2e996c0a233659160",
-                       "image":  "ollama-legion/balancer:r261109-2239"
+                       "imageTag":  "r261109-2352",
+                       "imageId":  "sha256:9a94ce1ed3a0c1a77320bb111b13cb91441aa2637ba68cc8f51cbef54135869e",
+                       "image":  "ollama-legion/balancer:r261109-2352"
                    },
                    {
                        "alias":  "ollama-legion/cppworker:latest-gpu-86",

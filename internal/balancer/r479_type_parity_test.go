@@ -189,3 +189,36 @@ func TestR479_OpenAIModelsIncludeOllama(t *testing.T) {
 		}
 	}
 }
+
+// TestR479_BodyTooLargeOnGenericPath — тело сверх LB_MAX_REQUEST_BODY_MB не
+// уходит бэкенду: parseRequestBody помечает TooLarge, ServeHTTP отвечает 413.
+func TestR479_BodyTooLargeOnGenericPath(t *testing.T) {
+	t.Setenv("LB_MAX_REQUEST_BODY_MB", "1")
+	p := &Proxy{config: &types.LoadBalancerConfig{}}
+
+	big := strings.Repeat("a", 2<<20) // 2 МБ при лимите 1 МБ
+	body := `{"model":"m","prompt":"` + big + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/generate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	parsed := p.parseRequestBody(req)
+	if !parsed.TooLarge {
+		t.Fatalf("тело %d байт при лимите 1 МБ не помечено TooLarge (limit bytes=%d)",
+			len(body), maxRequestBodyBytes())
+	}
+}
+
+// TestR479_BodyWithinLimitParses — нормальное тело разбирается как раньше.
+func TestR479_BodyWithinLimitParses(t *testing.T) {
+	t.Setenv("LB_MAX_REQUEST_BODY_MB", "4")
+	p := &Proxy{config: &types.LoadBalancerConfig{}}
+	req := httptest.NewRequest(http.MethodPost, "/api/generate",
+		strings.NewReader(`{"model":"m","stream":false}`))
+	parsed := p.parseRequestBody(req)
+	if parsed.TooLarge {
+		t.Fatal("маленькое тело помечено TooLarge")
+	}
+	if parsed.Model != "m" {
+		t.Fatalf("model = %q, ожидалось m", parsed.Model)
+	}
+}

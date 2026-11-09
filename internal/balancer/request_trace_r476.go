@@ -163,15 +163,21 @@ func startRequestTraceR476(w http.ResponseWriter, r *http.Request, rid string) (
 		if !stageAt.IsZero() {
 			stageMs = time.Since(stageAt).Milliseconds()
 		}
-		logger.Get().Infow("request trace",
-			"request_id", rid, "method", r.Method, "path", r.URL.Path,
-			"status", status, "duration_ms", time.Since(start).Milliseconds(),
-			"bytes", state.bytes, "backend", backend, "client", traceClientAddrR476(r),
-			"stage", stage, "stage_ms", stageMs)
 		// R479: «дошло ли до клиента» — отдельное измерение, не равное коду 200.
 		// Оборванный стрим (клиент отключился, контекст отменён) раньше выглядел
 		// как успешный ответ и в диагностику не попадал.
 		abort := AbortReasonR477(r.Context())
+		// R479: финальная стадия. stage выше говорит, ГДЕ ход сейчас/умер;
+		// stage_final — дошёл ли он до конца: done только при успехе без обрыва.
+		stageFinal := stage
+		if status < http.StatusBadRequest && abort == "" {
+			stageFinal = stageDoneR477
+		}
+		logger.Get().Infow("request trace",
+			"request_id", rid, "method", r.Method, "path", r.URL.Path,
+			"status", status, "duration_ms", time.Since(start).Milliseconds(),
+			"bytes", state.bytes, "backend", backend, "client", traceClientAddrR476(r),
+			"stage", stage, "stage_final", stageFinal, "stage_ms", stageMs)
 		if abort != "" {
 			logger.Get().Warnw("request trace: доставка оборвана",
 				"request_id", rid, "path", r.URL.Path, "stage", stage,

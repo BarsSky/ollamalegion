@@ -398,6 +398,17 @@ MIT - see [LICENSE.md](LICENSE.md).
 Full history with dates, image tags and the defect behind each fix:
 [CHANGELOG.md](CHANGELOG.md). Recently:
 
+- **v0.7.238 (R479, 2026-11-09) - type parity on /v1 and /ollama.**
+  An OpenAI-surface request no longer hits 503 when the cluster has no cppworker:
+  an Ollama backend is selected and the request is proxied natively (slot acquired,
+  streamed with Flush). `/ollama/api/*`, `/ollama/v1/*` and `/openai/v1/*` aliases are
+  stripped before dispatch (the response carries `X-LB-Surface-Alias`), and
+  `/v1/models` lists models of both pools. The `LB_MAX_REQUEST_BODY_MB` limit now
+  applies to the generic path too (413), and helper reads no longer copy the whole
+  request. Diagnostics: `preflight`/`client_write` stages, a final stage in
+  `request trace`, and delivery aborts recorded in the failures ring.
+  Debts: `docs/architecture/debts.ru.md` updated (P0 1-3 closed).
+
 - **v0.7.237 (R477/R478, 2026-11-09) - failure stage in the log, OpenWebUI gets the answer again.**
   The "model generates tokens but the answer never arrives" cause is found: the R470 gate sat in a
   shared function and, on plain `/api/chat` with reasoning models, dropped all visible output before

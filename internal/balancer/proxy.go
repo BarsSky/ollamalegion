@@ -933,6 +933,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// такой заголовок, не должен ни отключать рост окна, ни притворяться
 	// внутренним запросом — вырезаем до любой обработки.
 	stripExternalDialogMarker(r)
+	// R479 (2026-11-09): алиасы поверхностей (/ollama/api/*, /openai/v1/*)
+	// снимаем ДО определения типа и диспетчеризации. Раньше префикс /ollama
+	// понимал только LlamaCppRouter, и на кластере без cppworker эти пути
+	// отдавали пустоту/503, хотя /api/* работал.
+	if normalized, aliased := normalizeSurfaceAliasPathR479(r.URL.Path); aliased {
+		logger.Get().Debugw("surface alias normalized",
+			"from", r.URL.Path, "to", normalized, "method", r.Method)
+		r.URL.Path = normalized
+		r.URL.RawPath = ""
+		w.Header().Set("X-LB-Surface-Alias", "1")
+	}
 	startTime := time.Now()
 
 	// ==== Correlation ID ====
@@ -1068,6 +1079,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Единый разбор тела запроса (избегаем тройного чтения в recordRecentClient + extractModel + proxyRequest)
 	parsed := p.parseRequestBody(r)
+	if parsed.TooLarge {
+		sendBodyTooLarge(w, r)
+		return
+	}
 	model := parsed.Model
 	isStream := parsed.Stream
 	// Кладём разобранное тело в контекст: determineRequestBackendType и
@@ -1782,11 +1797,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // extractModel - извлечение модели и stream-флага из запроса (с восстановлением тела)
 func (p *Proxy) extractModel(r *http.Request) (string, bool) {
 	if r.Method == http.MethodPost && r.Body != nil {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
+		// R479: читаем только начало тела (модель и stream в первых килобайтах),
+		// остальное оставляем в потоке. Раньше здесь был io.ReadAll без лимита.
+		body, ok := peekBodyR479(r, 64<<10)
+		if !ok {
 			return "", true
 		}
-		r.Body = io.NopCloser(bytes.NewBuffer(body))
 
 		var req map[string]interface{}
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -1859,9 +1875,7 @@ func (p *Proxy) recordRecentClient(r *http.Request) {
 	// Определяем модель из запроса (если доступно)
 	model := ""
 	if r.Method == http.MethodPost {
-		body, err := io.ReadAll(r.Body)
-		if err == nil {
-			r.Body = io.NopCloser(bytes.NewBuffer(body))
+		if body, ok := peekBodyR479(r, 64<<10); ok {
 			var req map[string]interface{}
 			if err := json.Unmarshal(body, &req); err == nil {
 				if m, ok := req["model"].(string); ok {
@@ -2106,6 +2120,9 @@ type parsedRequest struct {
 	Model   string
 	Stream  bool
 	RawBody []byte
+	// TooLarge — тело превысило LB_MAX_REQUEST_BODY_MB: ServeHTTP отвечает 413
+	// и НЕ отправляет запрос бэкенду (R479).
+	TooLarge bool
 	// NumCtx — окно, которое запросил клиент (0 = не задавал).
 	//
 	// R118.5 (2026-10-14): нужно ДО выбора бэкенда: при нескольких загруженных
@@ -2132,7 +2149,14 @@ func (p *Proxy) parseRequestBody(r *http.Request) *parsedRequest {
 		return result
 	}
 
-	body, err := io.ReadAll(r.Body)
+	// R479: тот же лимит тела, что на handler-путях (LB_MAX_REQUEST_BODY_MB).
+	// Раньше generic-путь читал тело без предела: длинная история с картинками
+	// уходила в память целиком.
+	body, err := readRequestBodyLimited(r)
+	if errors.Is(err, errBodyTooLarge) {
+		result.TooLarge = true
+		return result
+	}
 	if err != nil {
 		return result
 	}

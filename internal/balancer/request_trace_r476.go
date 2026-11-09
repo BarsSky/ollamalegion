@@ -168,13 +168,26 @@ func startRequestTraceR476(w http.ResponseWriter, r *http.Request, rid string) (
 			"status", status, "duration_ms", time.Since(start).Milliseconds(),
 			"bytes", state.bytes, "backend", backend, "client", traceClientAddrR476(r),
 			"stage", stage, "stage_ms", stageMs)
-		// R477: сбой (5xx) попадает в кольцо — его видно в сводке и в архиве,
-		// и по нему понятно, какой компонент не отдал ответ.
-		if status >= http.StatusInternalServerError {
+		// R479: «дошло ли до клиента» — отдельное измерение, не равное коду 200.
+		// Оборванный стрим (клиент отключился, контекст отменён) раньше выглядел
+		// как успешный ответ и в диагностику не попадал.
+		abort := AbortReasonR477(r.Context())
+		if abort != "" {
+			logger.Get().Warnw("request trace: доставка оборвана",
+				"request_id", rid, "path", r.URL.Path, "stage", stage,
+				"bytes", state.bytes, "status", status, "reason", abort)
+		}
+		// R477: сбой (5xx) или обрыв доставки попадают в кольцо — его видно в
+		// сводке и в архиве, и по нему понятно, какой компонент не отдал ответ.
+		reason := "http " + strconv.Itoa(status)
+		if abort != "" {
+			reason = abort
+		}
+		if status >= http.StatusInternalServerError || abort != "" {
 			recordFailureR477(diagFailureR477{
 				RequestID: rid, Method: r.Method, Path: r.URL.Path,
 				Stage: stage, Status: status, Backend: backend,
-				Reason: "http " + strconv.Itoa(status),
+				Reason: reason,
 			})
 		}
 	}

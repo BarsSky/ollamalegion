@@ -125,6 +125,8 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// получает reload один раз (10-30 сек), последующие — instant response.
 	// R447: слот под числа вердикта R301/R385 — writer тела (ниже) обязан
 	// написать те же числа, что названы в тексте причины.
+	// R479: стадия preflight — видно, что ход застрял на решении об окне.
+	SetStageR477(r.Context(), stagePreflightR477)
 	preflightCtx, _ := growthNumbersSlotR447(r.Context())
 	preflightBody, preflightOK, preflightMsg, preflightStatus := p.preflightNCtxReloadIfNeeded(
 		preflightCtx, backendID, modelFromCtx, bodyBuf, originalPath)
@@ -817,6 +819,15 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	defer endClientStream()
 
 	// ==== Основной цикл SSE → NDJSON / SSE → SSE ==========
+	// R479: с этого места всё, что делает транспорт, — запись клиенту.
+	SetStageR477(r.Context(), stageClientR477)
+	// R479: если стрим оборвался не по EOF, это сбой доставки — фиксируем
+	// причину, даже когда ответ уже начат (status останется 200).
+	defer func() {
+		if err := r.Context().Err(); err != nil {
+			MarkAbortR477(r.Context(), "client_context: "+err.Error())
+		}
+	}()
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
 

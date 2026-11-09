@@ -949,6 +949,14 @@ func (lr *LlamaCppRouter) openAIModelIDs() map[string]bool {
 	backends := lr.getLlamaCppBackends()
 	uniqueModels := make(map[string]bool)
 
+	// R479 (2026-11-09): модели Ollama-пула тоже обязаны быть в /v1/models.
+	//
+	// ЖИВОЙ ДЕФЕКТ (аудит типов бэкендов): список собирался только из
+	// cppworker-источников (метрики llamaMetrics, /api/models/files, /v1/models
+	// воркера) плюс image-алиасы. На кластере с Ollama-нодой OpenAI-клиент
+	// (OpenWebUI, DSH) не видел её моделей вообще, хотя /api/tags их отдавал.
+	lr.addOllamaModelIDsR479(uniqueModels)
+
 	// 1) Loaded models из метрик всех llama.cpp бэкендов.
 	//    Round 19 hotfix: читаем из llamaMetrics (cppworker-poller), не metrics[id].LlamaCpp (Ollama-agent).
 	lr.proxy.metricsMgr.mu.RLock()
@@ -1058,4 +1066,53 @@ func (lr *LlamaCppRouter) handleOpenAIModelByID(w http.ResponseWriter, r *http.R
 		"created":  time.Now().Unix(),
 		"owned_by": "ollamalegion",
 	})
+}
+
+// addOllamaModelIDsR479 — добавить в набор модели Ollama-бэкендов.
+//
+// Два источника, как и у остальных агрегатов: running models из метрик (без
+// сетевого вызова) и /api/tags (полный список, включая не загруженные). Ошибка
+// опроса одного узла не ломает ответ — только Debug-строка.
+func (lr *LlamaCppRouter) addOllamaModelIDsR479(unique map[string]bool) {
+	if lr == nil || lr.proxy == nil {
+		return
+	}
+	states := lr.proxy.getAllActiveBackendsByType(types.BackendTypeOllama)
+	for _, st := range states {
+		if st == nil || st.Backend == nil {
+			continue
+		}
+		id := st.Backend.ID
+		lr.proxy.metricsMgr.mu.RLock()
+		if m, ok := lr.proxy.metricsMgr.metrics[id]; ok && m != nil {
+			for _, rm := range m.Ollama.RunningModels {
+				if rm.Name != "" {
+					unique[rm.Name] = true
+				}
+			}
+		}
+		lr.proxy.metricsMgr.mu.RUnlock()
+
+		url := fmt.Sprintf("http://%s:%d/api/tags", st.Backend.Host, lr.proxy.getBackendPort(st.Backend))
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get(url)
+		if err != nil {
+			logger.Get().Debugw("openAIModelIDs: Ollama /api/tags недоступен",
+				"backend", id, "error", err)
+			continue
+		}
+		var data OllamaTagsResponse
+		decodeErr := json.NewDecoder(resp.Body).Decode(&data)
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			logger.Get().Debugw("openAIModelIDs: Ollama /api/tags не разобран",
+				"backend", id, "error", decodeErr)
+			continue
+		}
+		for _, m := range data.Models {
+			if m.Name != "" {
+				unique[m.Name] = true
+			}
+		}
+	}
 }

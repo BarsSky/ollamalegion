@@ -41,6 +41,7 @@ const (
 // fieldalignment ругается на лишние байты (CI-линт это ловит).
 type stageTrackerR477 struct {
 	stage string
+	abort string
 	at    time.Time
 	mu    sync.Mutex
 }
@@ -155,4 +156,30 @@ func panicTextR477(rec interface{}) string {
 	default:
 		return "unknown panic value"
 	}
+}
+
+// MarkAbortR477 — запомнить причину обрыва доставки.
+//
+// Нужно, чтобы «токены шли, ответ не дошёл» попадало в диагностику. Раньше
+// сбоем считался только ответ 5xx, а оборванный стрим (клиент отключился,
+// контекст отменён) выглядел как успешный 200.
+func MarkAbortR477(ctx context.Context, reason string) {
+	t := stageTrackerFromCtxR477(ctx)
+	if t == nil || reason == "" {
+		return
+	}
+	t.mu.Lock()
+	t.abort = reason
+	t.mu.Unlock()
+}
+
+// AbortReasonR477 — причина обрыва ("" если не было).
+func AbortReasonR477(ctx context.Context) string {
+	t := stageTrackerFromCtxR477(ctx)
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.abort
 }

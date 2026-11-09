@@ -250,11 +250,9 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 			if maxReqs > 0 {
 				loadRatio = float64(active) / float64(maxReqs)
 			}
-			threshold := p.config.Balancing.Prewarm.TriggerLoadThreshold
-			if threshold <= 0 {
-				threshold = 0.80
-			}
-			if loadRatio >= threshold {
+			// R479: порог из одного места (loadThresholdR479) — иначе причины
+			// отказов R460 и селектор расходятся в числе.
+			if loadRatio >= p.loadThresholdR479() {
 				continue
 			}
 

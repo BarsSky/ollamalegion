@@ -42,6 +42,10 @@ const (
 	rejectResourceLimitR460 = "resource_limit"
 	rejectNoSlotsConfigR460 = "no_slots_configured"
 	rejectSlotsBusyR460     = "all_slots_busy"
+	// R479: селектор отбрасывает бэкенд при загрузке ≥ превью-порога (80% по
+	// умолчанию), но в списке причин этого не было — «свободен (1 слот из 10),
+	// а в очереди» оставалось необъяснимым.
+	rejectOverLoadThresholdR460 = "over_load_threshold"
 )
 
 // backendRejectionsR460 — по одной причине на каждый бэкенд, который НЕ может
@@ -107,6 +111,11 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType) []back
 			} else if active >= maxReqs {
 				reason = rejectSlotsBusyR460
 				detail = fmt.Sprintf("заняты все слоты (%d/%d)", active, maxReqs)
+			} else if ratio := float64(active) / float64(maxReqs); ratio >= p.loadThresholdR479() {
+				// R479: ровно тот порог, с которым селектор пропускает бэкенд.
+				reason = rejectOverLoadThresholdR460
+				detail = fmt.Sprintf("загрузка %.0f%% ≥ порога %.0f%% (свободно %d из %d слотов)",
+					ratio*100, p.loadThresholdR479()*100, maxReqs-active, maxReqs)
 			}
 		}
 		if reason == "" {
@@ -133,4 +142,14 @@ func rejectionsSummaryR460(list []backendRejectionR460) string {
 		parts = append(parts, r.BackendID+"="+r.Reason+"("+r.Detail+")")
 	}
 	return strings.Join(parts, "; ")
+}
+
+// loadThresholdR479 — порог загрузки, при котором селектор не берёт бэкенд.
+// Одно место с истиной: раньше число 0.80 жило только в селекторе, а причины
+// отказов R460 его не знали.
+func (p *Proxy) loadThresholdR479() float64 {
+	if p != nil && p.config != nil && p.config.Balancing.Prewarm.TriggerLoadThreshold > 0 {
+		return p.config.Balancing.Prewarm.TriggerLoadThreshold
+	}
+	return 0.80
 }

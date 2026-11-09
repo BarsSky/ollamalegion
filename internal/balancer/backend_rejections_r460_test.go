@@ -121,3 +121,34 @@ func TestR460_UnavailableBodyCarriesRejections(t *testing.T) {
 		t.Errorf("без proxy список причин появился: %s", rec2.Body.String())
 	}
 }
+
+// TestR479_RejectionsKnowLoadThreshold — «свободный» бэкенд при загрузке ≥ 80%
+// получает причину over_load_threshold: селектор его не берёт, и оператор должен
+// видеть why_queued, а не пустой список.
+func TestR479_RejectionsKnowLoadThreshold(t *testing.T) {
+	p := r460Proxy()
+	loaded := []types.LlamaCppModel{{Name: r460Model, ContextLength: 65536}}
+	p.backends["loaded"] = &BackendState{Backend: &types.Backend{
+		ID: "loaded", MaxConcurrentReqs: 10, Status: types.StatusHealthy, Type: types.BackendTypeLlamaCpp,
+	}}
+	p.backends["loaded"].ActiveReqs = 9 // 90% при пороге 80%: слот есть, но не берём
+	p.metricsMgr.llamaMetrics["loaded"] = &types.LlamaCppMetrics{LoadedModels: loaded}
+	p.metricsMgr.metrics["loaded"] = &types.BackendMetrics{
+		ID: "loaded", LlamaCpp: types.LlamaCppMetrics{LoadedModels: loaded},
+	}
+
+	list := p.backendRejectionsR460(r460Model, "")
+	for _, r := range list {
+		if r.BackendID != "loaded" {
+			continue
+		}
+		if r.Reason != rejectOverLoadThresholdR460 {
+			t.Fatalf("причина %q, ожидалась %q (загрузка 9/10)", r.Reason, rejectOverLoadThresholdR460)
+		}
+		if !strings.Contains(r.Detail, "90%") && !strings.Contains(r.Detail, "загрузка") {
+			t.Fatalf("в пояснении нет числа загрузки: %q", r.Detail)
+		}
+		return
+	}
+	t.Fatalf("бэкенд с загрузкой 90%% не попал в список причин: %+v", list)
+}

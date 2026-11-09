@@ -44,9 +44,12 @@
 7. **Очередь может выдать холодный бэкенд** после veto R459
    (`unified_queue_r73.go` → P3 sync-load в `backend_selector.go:308-337`):
    политика «холодный не берём» не проведена в очередь.
-8. **Причины отказов R460 не совпадают с предикатами селектора**
-   (`backend_rejections_r460.go:51-119` не знает порога загрузки 80% и гейта
-   R459) → «свободный бэкенд, `why_queued` пусто, а запрос ждёт».
+8. **Причины отказов R460.** Порог загрузки закрыт в R479: причина
+   `over_load_threshold` с числами, порог берётся из одного места
+   (`loadThresholdR479`) — тест `TestR479_RejectionsKnowLoadThreshold`.
+   Осталось: гейт R459 в причинах — `backendRejectionsR460` не знает сессию и
+   `fromBackend`, поэтому «сессия не переехала из-за окна» видно только в
+   INFO-строке R459, а не в `why_queued`.
 9. **Стадийная трассировка.** `preflight`, `client_write`, `done` добавлены в
    R479 (`stage_final` в строке `request trace`). Осталось: unified-очередь не
    ставит `admission` (стадия только в per-backend пути, `admission_queue.go:629`),

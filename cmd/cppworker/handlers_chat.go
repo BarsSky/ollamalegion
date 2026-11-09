@@ -1668,6 +1668,30 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		params.NPredict, generatedTokens); notice != "" {
 		doneContent = notice
 	}
+	// R477 (2026-11-09): сводка хода на НЕ-tools пути.
+	//
+	// Раньше строка "/api/chat stream response summary" была только на
+	// tools-пути, поэтому по обычному /api/chat (а это и есть OpenWebUI) нельзя
+	// было понять, сколько реально отдано клиенту: «токены генерировались, ответ
+	// не дошёл» разбиралось по догадке. Теперь сводка есть на обоих путях и
+	// несёт request_id, длину контента и размышлений, причину завершения и
+	// побайтовый учёт стрима (при CPPWORKER_STREAM_TRACE=1).
+	snapStreamR477 := sw.Snapshot()
+	chunksR477, traceBytesR477, traceSHAR477 := sw.StreamTrace()
+	logger.Get().Infow("/api/chat stream response summary (no tools)",
+		"request_id", getRequestID(r),
+		"model", modelName,
+		"path", "/api/chat",
+		"content_len", len(doneContent),
+		"thinking_len", snapR320.ReasoningChars,
+		"done_reason", doneReason,
+		"generated_tokens", generatedTokens,
+		"n_predict", params.NPredict,
+		"streamed_bytes", snapStreamR477.BytesWritten,
+		"stream_chunks", chunksR477,
+		"stream_bytes", traceBytesR477,
+		"stream_sha256", traceSHAR477,
+	)
 	doneChunk := map[string]interface{}{
 		"model":                modelName,
 		"created_at":           createdAt,

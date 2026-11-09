@@ -122,7 +122,9 @@
                 <a href="#logs" class="nav-item" data-page="logs">
                     <span class="nav-icon-wrap"><i class="fas fa-file-lines fa-fw"></i></span> <span data-i18n="nav.logs">Логи</span>
                 </a>
-                <a href="health.html" target="_blank" rel="noopener" class="nav-item" data-page="health">
+                <a href="#diagnostics" class="nav-item" data-page="diagnostics">
+                    <span class="nav-icon-wrap"><i class="fas fa-stethoscope fa-fw"></i></span> <span data-i18n="nav.diagnostics">Диагностика</span>
+                </a>                <a href="health.html" target="_blank" rel="noopener" class="nav-item" data-page="health">
                     <span class="nav-icon-wrap"><i class="fas fa-heartbeat fa-fw"></i></span> <span data-i18n="nav.health">Здоровье</span>
                 </a>
                 <a href="#settings" class="nav-item" data-page="settings">
@@ -1184,6 +1186,69 @@
                 </div>
             </div>
 
+            <!-- Diagnostics Page (R476, 2026-11-07): данные для разбора в одном
+                 месте, чтобы их можно было скопировать и передать, а не искать
+                 по пяти страницам. -->
+            <div class="page" id="diagnostics-page">
+                <div class="card diag-intro">
+                    <div class="card-header">
+                        <h3><i class="fas fa-stethoscope section-icon-i"></i> <span data-i18n="diag.title">Данные для разбора</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary" id="diagRefresh" data-i18n="diag.refresh">Обновить</button>
+                            <button class="btn btn-secondary" id="diagCopyAll" data-admin-only data-i18n="diag.copy_all">Копировать всё (JSON)</button>
+                            <button class="btn btn-primary" id="diagDownloadBundle" data-admin-only data-i18n="diag.download_bundle">Скачать архив диагностики</button>
+                        </div>
+                    </div>
+                    <div class="diag-body">
+                        <div class="diag-hint" data-i18n="diag.hint">Здесь собрано то, что обычно ищут по пяти местам: версии, окно контекста, профили моделей, флаги, состояние бэкендов. Копируйте блок целиком или значение по клику.</div>
+                        <div class="diag-statusline">
+                            <span class="diag-status" id="diagStatus"></span>
+                            <span class="diag-loaded" id="diagLoadedAt"></span>
+                        </div>
+                        <div class="diag-note" data-i18n="diag.bundle_hint">Архив: сводка + логи балансера + архивы воркеров (логи, промпт, тело запроса, срывы разбора вызовов). Без токенов и паролей.</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3><span data-i18n="diag.section_versions">Версии и сборка</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary diag-copy" data-diag-copy="versions" data-i18n="diag.copy_section">Копировать блок</button>
+                        </div>
+                    </div>
+                    <div class="diag-body" id="diagVersions"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3><span data-i18n="diag.section_window">Окно контекста и профили моделей</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary diag-copy" data-diag-copy="window" data-i18n="diag.copy_section">Копировать блок</button>
+                        </div>
+                    </div>
+                    <div class="diag-body" id="diagWindow"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3><span data-i18n="diag.section_flags">Флаги стенда</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary diag-copy" data-diag-copy="flags" data-i18n="diag.copy_section">Копировать блок</button>
+                        </div>
+                    </div>
+                    <div class="diag-body" id="diagFlags"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3><span data-i18n="diag.section_backends">Бэкенды</span></h3>
+                        <div class="card-actions">
+                            <button class="btn btn-secondary diag-copy" data-diag-copy="backends" data-i18n="diag.copy_section">Копировать блок</button>
+                        </div>
+                    </div>
+                    <div class="diag-body" id="diagBackends"></div>
+                </div>
+            </div>
             <!-- Settings Page -->
             <div class="page" id="settings-page">
                 <div class="card">
@@ -2707,6 +2772,8 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
     <script defer src="js/modules/bulk-models.js?v=R425"></script>
     <script defer src="js/modules/notifications.js?v=R425"></script>
     <script defer src="js/modules/logs-stream.js?v=R425"></script>
+    <!-- R476: страница диагностики (сводка + архив для разбора). -->
+    <script defer src="js/modules/diagnostics.js?v=R476"></script>
     <!-- R57.2 (2026-09-03): app-core.js provides theme/density/i18n/AutoTune/showToast
          via window.App namespace. MUST be loaded BEFORE app.js (app.js init() calls App.*). -->
     <script defer src="js/app-core.js?v=R425"></script>

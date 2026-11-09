@@ -226,6 +226,16 @@ func (s *Server) setupRoutes() {
 	// хвостом limit; под AdminAuth, как остальные административные ручки.
 	s.mux.Handle("/api/v1/logs/export",
 		AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleLogsExport), s.rateLimiter), s.authenticator))
+	// R476 (2026-11-07): диагностика стенда для передачи разработчику.
+	//
+	// summary — одна JSON-страница: версии, флаги (set/unset), конфигурация окна,
+	// профили моделей, снимок кластера. bundle — zip: та же сводка + логи
+	// балансера + диагностические архивы каждого воркера. Раньше эти данные
+	// приходилось искать по пяти местам, и разбор шёл по догадке.
+	s.mux.Handle("/api/v1/diag/summary",
+		AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleDiagSummary), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/diag/bundle",
+		AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleDiagBundle), s.rateLimiter), s.authenticator))
 
 	// Monitor HTML page (без аутентификации)
 	s.mux.HandleFunc("/monitor", s.monitorHandler)

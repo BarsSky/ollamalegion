@@ -945,6 +945,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rid, ctxWithRID := getOrGenerateRequestID(r)
 	r = r.WithContext(ctxWithRID)
 	w.Header().Set(requestIDHeader, rid) // echo в response для удобства curl-проверки
+	// R476 (2026-11-07): одна строка INFO на запрос с длительностью, кодом и
+	// бэкендом — по ней ход находится в логе обеих сторон (id тот же у воркера).
+	// LB_REQUEST_TRACE=off отключает строку, заголовок остаётся.
+	w, finishTrace := startRequestTraceR476(w, r, rid)
+	defer finishTrace()
 	logger.Get().Debugw("ServeHTTP: request received",
 		"request_id", rid,
 		"method", r.Method,

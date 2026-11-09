@@ -24,7 +24,20 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleInfo(w http.ResponseWriter, r *http.Request) {
+// collectInfoStatus — снимок /api/info без записи в HTTP.
+//
+// R476 (2026-11-07): тот же снимок входит в диагностический архив
+// (/api/v1/cppworker/debug/bundle), поэтому сборка данных отделена от
+// транспорта: одна логика — два потребителя.
+func collectInfoStatus() map[string]interface{} {
+	// Диагностика не должна падать раньше, чем бэкенд создан: архив просят и в
+	// момент «стенд не поднялся». Пусть будет честный минимум, а не SIGSEGV.
+	if backend == nil {
+		return map[string]interface{}{
+			"status": "backend not initialized",
+			"build":  version.Get().String(),
+		}
+	}
 	status := backend.Status()
 	// R448 (2026-11-05): сведения о СБОРКЕ — в /api/info, а не только в шапке
 	// логов. Живой факт: после раскатки стенда отличить «правка не сработала» от
@@ -117,7 +130,11 @@ func handleInfo(w http.ResponseWriter, r *http.Request) {
 			status["llama_build_date"] = facts.Date
 		}
 	}
-	writeJSON(w, http.StatusOK, status)
+	return status
+}
+
+func handleInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, collectInfoStatus())
 }
 
 func handleGPUInfo(w http.ResponseWriter, r *http.Request) {

@@ -208,7 +208,7 @@ const ui = (function () {
     // Значение проверяем по списку известных страниц, чтобы мусор в URL не
     // приводил к пустому экрану.
     function pageFromURL() {
-        var known = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'logs', 'settings', 'help'];
+        var known = ['dashboard', 'monitor', 'backends', 'models', 'sessions', 'queue', 'gguf', 'image', 'logs', 'diagnostics', 'settings', 'help'];
         var candidate = '';
         try {
             var qs = new URLSearchParams(window.location.search || '');
@@ -231,6 +231,7 @@ const ui = (function () {
             gguf: 'GGUF Models',
             image: 'Image models',
             logs: 'System Logs',
+            diagnostics: 'Diagnostics',
             settings: 'Settings',
             agents: 'Agents'
         };
@@ -323,6 +324,11 @@ const ui = (function () {
                 break;
             case 'queue':
                 queuePage(data.queue, data.queueTasks, data.queueHistory);
+                break;
+            case 'diagnostics':
+                if (window.Diagnostics && typeof window.Diagnostics.mount === 'function') {
+                    window.Diagnostics.mount();
+                }
                 break;
             case 'logs':
                 renderLogs(data.logs);

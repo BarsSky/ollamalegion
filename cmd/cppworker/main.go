@@ -169,7 +169,21 @@ func main() {
 	if *verbose {
 		logLevel = "debug"
 	}
+	// R476 (2026-11-07): уровень логирования можно задать переменной окружения —
+	// до этого единственным способом был флаг -verbose, недоступный в compose
+	// без правки command. Неизвестное значение не меняет уровень.
+	if envLevel := strings.ToLower(strings.TrimSpace(os.Getenv("CPPWORKER_LOG_LEVEL"))); envLevel != "" {
+		switch envLevel {
+		case "debug", "info", "warn", "error":
+			logLevel = envLevel
+		default:
+			fmt.Fprintf(os.Stderr, "cppworker: unknown CPPWORKER_LOG_LEVEL=%q, using %s\n", envLevel, logLevel)
+		}
+	}
 	logger.Init(logLevel)
+	// R476: кольцевой буфер логов — источник диагностического архива
+	// (/api/v1/cppworker/debug/bundle). CPPWORKER_LOG_BUFFER_ENTRIES=0 выключает.
+	initLogBufferR476()
 	log := logger.Get()
 
 	dotEnvPath := *envFile

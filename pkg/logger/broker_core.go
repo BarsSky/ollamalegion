@@ -14,9 +14,32 @@ package logger
 
 import (
 	"encoding/json"
+	"strings"
+	"sync/atomic"
 
 	"go.uber.org/zap/zapcore"
 )
+
+// brokerSource — подпись источника в записях брокера. По умолчанию "balancer"
+// (пакет исторически обслуживал балансер); воркер ставит свою (R476).
+var brokerSource atomic.Pointer[string]
+
+// SetBrokerSource — подпись источника для записей брокера (R476).
+func SetBrokerSource(name string) {
+	if strings.TrimSpace(name) == "" {
+		return
+	}
+	src := strings.TrimSpace(name)
+	brokerSource.Store(&src)
+}
+
+// brokerSourceName — текущая подпись источника.
+func brokerSourceName() string {
+	if p := brokerSource.Load(); p != nil && *p != "" {
+		return *p
+	}
+	return "balancer"
+}
 
 // brokerCore — zapcore.Core с побочной публикацией в брокер.
 type brokerCore struct {
@@ -48,7 +71,7 @@ func (c brokerCore) Write(e zapcore.Entry, fields []zapcore.Field) error {
 			Time:    e.Time,
 			Level:   brokerLevelName(e.Level),
 			Message: msg,
-			Source:  "balancer",
+			Source:  brokerSourceName(),
 		})
 	}
 	return c.Core.Write(e, fields)

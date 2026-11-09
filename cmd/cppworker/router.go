@@ -111,6 +111,10 @@ func setupRouter() http.Handler {
 	// это ctx.Done() (клиент отвалился) или write error (broken pipe).
 	mux.HandleFunc("/api/v1/cppworker/debug/last-stream", authMiddleware(handleDebugLastStream))
 	mux.HandleFunc("/api/v1/cppworker/debug/last-stream/clear", authMiddleware(handleDebugLastStreamClear))
+	// R476 (2026-11-07): диагностический архив одним zip — логи из кольцевого
+	// буфера, промпт, тело запроса, срывы разбора вызовов, env-флаги по белому
+	// списку. Нужен, чтобы «пришлите логи» решалось скачиванием из WebUI.
+	mux.HandleFunc("/api/v1/cppworker/debug/bundle", authMiddleware(handleDebugBundle))
 	// Adaptive loader API (?????????????? ????? init() ? adaptive_integration.go)
 	// Diagnostics endpoints — помогают диагностировать проблемы с загрузкой моделей
 	// через runtime JSON-ответ без чтения логов.

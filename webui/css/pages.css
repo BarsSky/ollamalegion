@@ -1472,3 +1472,79 @@
 .monitor-legend-dot.processing { background: var(--success); }
 .monitor-legend-dot.queued    { background: var(--warning); }
 .monitor-legend-dot.error     { background: var(--danger); }
+
+/* ── R476 (2026-11-07): страница «Диагностика» ─────────────────────────────
+   Задача страницы — чтобы данные можно было СКОПИРОВАТЬ: таблицы без
+   декоративных теней, значения моноширинным и кликабельным, статус рядом с
+   кнопками. */
+.diag-intro .diag-body { padding: 12px 16px; }
+.diag-hint,
+.diag-note {
+    color: var(--text-muted, #8b949e);
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 8px;
+}
+.diag-statusline {
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+.diag-status { font-size: 13px; color: var(--text-secondary, #c9d1d9); }
+.diag-status-ok { color: var(--success, #3fb950); }
+.diag-status-error { color: var(--danger, #f85149); }
+.diag-loaded { font-size: 12px; color: var(--text-muted, #8b949e); }
+.diag-body { padding: 8px 16px 14px; }
+.diag-body h4 {
+    font-size: 13px;
+    margin: 10px 0 6px;
+    color: var(--text-secondary, #c9d1d9);
+}
+.diag-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin-bottom: 6px;
+}
+.diag-table th,
+.diag-table td {
+    text-align: left;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border, #30363d);
+    vertical-align: top;
+}
+.diag-table thead th {
+    color: var(--text-muted, #8b949e);
+    font-weight: 600;
+    white-space: nowrap;
+}
+.diag-table-kv th {
+    width: 38%;
+    color: var(--text-secondary, #c9d1d9);
+    font-weight: 500;
+}
+.diag-value {
+    cursor: copy;
+    word-break: break-all;
+}
+.diag-value:hover { text-decoration: underline dotted; }
+.diag-chiplist {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    margin-bottom: 6px;
+}
+.diag-chip {
+    font-size: 12px;
+    padding: 1px 6px;
+    border: 1px solid var(--border, #30363d);
+    border-radius: 4px;
+    color: var(--text-muted, #8b949e);
+}
+.diag-empty {
+    font-size: 13px;
+    color: var(--text-muted, #8b949e);
+    padding: 4px 0;
+}

@@ -869,6 +869,39 @@ const Api = (function () {
             return response.json();
         },
 
+        // R476 (2026-11-07): диагностика стенда.
+        //
+        // Один запрос вместо пяти: сводка собирает версии, действующие флаги
+        // (set/unset), конфигурацию окна, профили моделей и снимок кластера.
+        // Нужна, чтобы оператор мог отдать данные для разбора копированием, а
+        // не обходом страниц.
+        async diagSummary() {
+            return getJson('/api/v1/diag/summary');
+        },
+
+        // Скачивание архива диагностики (сводка + логи балансера + архивы
+        // воркеров). Через blob, а не window.open: запрос идёт с auth-заголовками
+        // (сессия/токен), иначе балансер ответит 401.
+        async downloadDiagBundle() {
+            const response = await request(`${API_BASE}/api/v1/diag/bundle`, {
+                method: 'GET',
+                timeoutMs: 180000
+            });
+            const blob = await response.blob();
+            const disposition = response.headers.get('Content-Disposition') || '';
+            const match = /filename="([^"]+)"/.exec(disposition);
+            const filename = match ? match[1] : 'ollamalegion-diag.zip';
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+            return { bytes: blob.size, filename: filename };
+        },
+
         // R59.5 (2026-09-03): shared auth header builder. Returns headers
         // suitable for raw `fetch()` calls in modules that don't go through
         // the `request()` helper (autotune_settings.js, gguf-renderer.js

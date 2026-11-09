@@ -115,41 +115,67 @@ accepted`; в сводке воркера — `n_predict`, `budget_exhausted`, `
 
 ---
 
-## 4. Что нужно сделать для диагностики (предлагаемая правка, ещё не внесена)
+## 4. Что уже сделано для диагностики (R476, 2026-11-07)
+
+> Раздел изначально был планом; ниже — фактическое состояние. Всё перечисленное
+> работает и проверено тестами (Go + WebUI) и на стенде.
 
 ### 4.1. Сквозной идентификатор запроса
-Балансер генерирует `X-Request-ID` (если клиент не прислал), пишет его в каждую
-строку лога хода и передаёт воркеру; воркер пишет его в сводку и в лог.
-Без этого нельзя связать «в очереди», «reload» и «сводка хода».
+Балансер выдаёт `X-Request-ID` (или принимает присланный клиентом), пишет его в
+строку трассировки и передаёт воркеру (механизм был, начиная с R376 — теперь он
+виден в логе каждый ход). Строка на каждый запрос:
 
-### 4.2. Кольцевой буфер логов и выгрузка из WebUI
-- Балансер: `LB_DIAG_RING=5000` (строк в памяти, 0 = выключено), endpoint
-  `GET /api/v1/diag/bundle?since=30m` → zip.
-- Воркер: `CPPWORKER_DIAG_RING=5000`, endpoint
-  `GET /api/v1/cppworker/debug/bundle?lines=2000` (уже есть `last-prompt`,
-  `last-stream`, `unparsed` — они войдут в архив).
-- Содержимое архива: логи балансера (ring), по каждому бэкенду — ring + `last-prompt`
-  + `last-stream` + хвост `unparsed-tool-calls.jsonl`; версии (`/api/version`,
-  `/api/info`), действующая конфигурация окна (`parallel`, `context_size`,
-  `LB_NCTX_RELOAD_MAX_N_CTX`), секреты вырезаются.
-- WebUI: кнопка «Скачать диагностику» → этот endpoint. Без SSH и без docker на стенде.
+```
+request trace request_id=… method=POST path=/api/chat status=200
+              duration_ms=64201 bytes=18244 backend=cppworker-gpu
+```
 
-### 4.3. Флаги ведения логов (все выключены по умолчанию, кроме id)
+У воркера тот же id в сводке:
+
+```
+/api/chat stream response summary ... request_id=… streamed_content_bytes=…
+final_content_len=… tool_calls=… done_reason=… dumped_args_instead_of_call=…
+```
+
+Включение: `LB_REQUEST_TRACE=off|summary|full` (по умолчанию `summary`).
+
+### 4.2. Выгрузка одним архивом
+- Балансер: `GET /api/v1/diag/summary` — сводка (версии, флаги set/unset,
+  `nctx_reload`, `nctx_ceiling`, профили моделей с действующим окном, снимок
+  кластера, статистика очереди).
+- Балансер: `GET /api/v1/diag/bundle` — zip: сводка + логи балансера + по каждому
+  воркеру его архив и `/api/info`.
+- Воркер: `GET /api/v1/cppworker/debug/bundle` — zip: `info.json`, `logs.txt`
+  (кольцевой буфер), `last-prompt.json`, `last-stream.json`, `prompt-last.txt`,
+  `request-last.json`, `unparsed-tool-calls.jsonl`, `unparsed-ring.json`,
+  `env.json` (белый список), `README.txt`.
+- WebUI: страница **«Диагностика»** (`#diagnostics`) — блоки с кнопкой
+  «копировать блок», значение копируется кликом, кнопка «Скачать архив
+  диагностики». Секретов в выгрузке нет (белые списки + тесты на это).
+
+### 4.3. Флаги ведения логов
 
 | Флаг | Смысл | Значения |
 |---|---|---|
-| `LB_REQUEST_ID` | генерировать `X-Request-ID` и писать его в лог | `1` (по умолчанию) / `0` |
-| `LB_REQUEST_TRACE` | решение по ходу: окно, выбор бэкенда, очередь, reload | `off` / `summary` / `full` |
-| `LB_DIAG_RING` | строк лога в памяти для выгрузки | `0` … `50000` |
-| `CPPWORKER_LOG_LEVEL` | уровень логов воркера | `info` / `debug` |
-| `CPPWORKER_STREAM_TRACE` | хеш и длина каждого чанка (доказательство «всё ли отдано») | `0` / `1` |
-| `CPPWORKER_DIAG_RING` | строк лога воркера в памяти | `0` … `50000` |
-| `CPPWORKER_DIAG_KEEP_FILES` | сколько файлов `last-prompt`/`last-stream`/RAW хранить | `1` … `50` |
-| `CPPWORKER_DEBUG_PROMPT_FILE` / `..._REQUEST_FILE` / `..._TOOL_ARGS` | уже есть: пишут промпт/запрос/аргументы | пути / `1` |
+| `LB_REQUEST_TRACE` | строка `request trace` на запрос | `off` / `summary` (по умолчанию) / `full` |
+| `LB_LOG_BUFFER_ENTRIES` | строк лога балансера в памяти (уже было, R390) | `0` … `50000` |
+| `CPPWORKER_LOG_BUFFER_ENTRIES` | строк лога воркера в памяти (новое) | `0` … `50000` |
+| `CPPWORKER_LOG_LEVEL` | уровень логов воркера без правки command | `debug` / `info` / `warn` / `error` |
+| `CPPWORKER_DEBUG_PROMPT_FILE` | путь дампа промпта | путь (`/app/diag/prompt-last.txt`) |
+| `CPPWORKER_DEBUG_REQUEST_FILE` | путь дампа тела запроса | путь (`/app/diag/request-last.json`) |
+| `CPPWORKER_DEBUG_TOOL_ARGS` | дамп исходящих аргументов вызова | `0` / `1` |
+
+Все перечисленные переменные проброшены в `deployments/docker-compose.stack.yml`
+и описаны в `.env.example` (сторож R274 больше не ругается).
+
 
 ---
 
 ## 5. Чек-лист на A10 (что прислать, чтобы разбор был по фактам)
+
+> Быстрый путь: открыть в WebUI страницу **«Диагностика»** → «Скачать архив
+> диагностики» и приложить файл. Внутри будет всё, что ниже, включая архивы
+> воркеров. Ручной сбор ниже — если страница недоступна.
 
 1. `curl /api/version` на балансере и `curl /api/info` на КАЖДОМ воркере
    (`build_commit`, `llama_build`, `cuda_arch_ok`, `vramTotalMB`).

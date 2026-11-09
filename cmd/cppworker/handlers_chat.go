@@ -3018,6 +3018,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	logger.Get().Infow("/api/chat stream response summary",
 		"model", modelName,
 		"path", "/api/chat",
+		// R476 (2026-11-07): id, который выдал балансер — по нему ход находится
+		// в логе балансера одной строкой `request trace`. Без него разбор
+		// дефекта сводился к сопоставлению по времени.
+		"request_id", getRequestID(r),
 		"streamed_content_bytes", streamedBytes,
 		// R429: позиция разбора в буфере — отдельным полем. Раньше она печаталась
 		// как streamed_content_bytes и расходилась с реально отданным текстом

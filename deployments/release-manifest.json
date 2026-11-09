@@ -1,21 +1,25 @@
 ﻿{
-    "tag":  "261107-1533",
-    "builtAt":  "2026-11-07T12:33:05Z",
-    "gitCommit":  "30b9e0cb",
+    "tag":  "r261109-1410",
+    "builtAt":  "2026-11-09T11:10:54Z",
+    "gitCommit":  "4c7578a9",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R475: cppworker пересобран из 30b9e0cb — история вызовов показывается модели в форме её же шаблона, а не JSON-дампом. Живой разбор прогона Cline (Qwen3.8-9B, /api/chat, 6 инструментов, 14:30): сводка воркера и сохранённые сообщения Cline совпали — отдано 134 байта, done_reason=stop, 33 токена из 9479, обрыва передачи не было; модель написала «Проверяю синтаксис: ```bash node --check public/app.js```» текстом вместо вызова run_commands. Причина оказалась НАША: /app/diag/prompt-last.txt показал, что все 13 assistant-сообщений с вызовами в истории были JSON-дампом [[{\"id\":\"call_editor\",...}]], хотя tokenizer.chat_template этой модели требует \u003ctool_call\u003e\u003cfunction=…\u003e\u003cparameter=…\u003e. Модель училась на истории и повторяла дамп. Теперь форма выбирается по возможностям шаблона (FunctionTagCalls: \u003cfunction= + \u003cparameter=; 5 из 69 шаблонов llama.cpp + живой Qwen3.8), порядок параметров сохраняется, значения без JSON-кавычек, канал результата инструмента и структурный путь R246 не тронуты. Ранее R474: вызов, выданный ТЕКСТОМ, больше не уезжает клиенту ответом (reason arguments_as_text, поле dumped_args_instead_of_call). Ранее: R472 (рост окна не блокируется хинтом профиля), R473 (точный подсчёт токенов токенизатором в preflight), R470/R471 (размышления не навязываются), R468 (причина отказа названа), R466/R469 (окно и заголовки потолка), R460/R461/R463-R465. Балансер r261106-2329 (f306aa48) и webui r261106-1716 в этом выпуске не пересобирались: их код не менялся.",
+    "note":  "R476: диагностика стенда одним архивом и страница «Диагностика» в WebUI. Разбор дефекта упирался не в код, а в доступ: версии, окно/профили, флаги, логи бэкендов и сводка хода лежали в пяти местах. Теперь (1) балансер пишет строку request trace на каждый запрос (request_id, статус, duration_ms, backend), воркер кладёт тот же request_id в /api/chat stream response summary; (2) GET /api/v1/diag/summary — версии, флаги set/unset по белому списку, nctx_reload, nctx_ceiling, профили с действующим окном, кластер, очередь; (3) GET /api/v1/diag/bundle — zip: сводка + логи балансера + архивы воркеров; (4) GET /api/v1/cppworker/debug/bundle — архив воркера: кольцевой буфер логов (появился впервые, CPPWORKER_LOG_BUFFER_ENTRIES), last-prompt/last-stream, prompt-last.txt, request-last.json, unparsed-tool-calls.jsonl, env по белому списку; (5) WebUI страница «Диагностика»: блоки с копированием (блок кнопкой, значение кликом) и скачивание архива. Секретов в выгрузке нет (белые списки + тесты). Флаги: LB_REQUEST_TRACE, CPPWORKER_LOG_BUFFER_ENTRIES, CPPWORKER_LOG_LEVEL (раньше только -verbose). Живая проверка нашла дефект в архиве: балансер ходил на OllamaPort 11434 вместо CppWorkerPort 18092 и получал connection refused — исправлено (BackendHTTPBaseURLR476), повторная выгрузка уже содержит backends/cppworker-gpu-bundled-agent.bundle.zip (6961 B) и .info.json; внутри воркера logs.txt 17168 B из кольцевого буфера. Ранее: R474 (вызов текстом не уезжает ответом), R475 (история вызовов в форме шаблона), R472/R473 (окно: потолок и точный подсчёт), R470/R471, R468, R466/R469, R460/R461/R463-R465.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-07T12:36:00Z",
-                          "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args в лог; файлы внутри контейнера в /app/diag/",
+                          "verifiedAt":  "2026-11-09T11:16:00Z",
+                          "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера в /app/diag/. Плюс архив: GET /api/v1/diag/bundle (WebUI: страница «Диагностика»)",
                           "proof":  [
-                                        "R475: образ cppworker:gpu-261107-1533 (30b9e0cb) собран и выкачен; GET :18092/api/info -\u003e build=261107-1533, commit=30b9e0cb, llama_build=0eadefebd (b10731), cuda_arch_ok=true; контейнер healthy",
-                                        "R475: в бинаре образа есть маркеры новой формы (\u003cfunction=, \u003cparameter= по 4 вхождения), т.е. собран из HEAD",
-                                        "R475: go build + полный ./cmd/cppworker/ (10.3 с) и повтор с -race (19.4 с) зелёные; тесты R475 покрывают распознавание формы шаблона, форму вызова в истории, порядок аргументов, прежний дамп и фолбэк при аргументах не-объектом",
-                                        "ПРОМПТ ЖИВОГО ХОДА (14:28, до правки): 13 assistant-сообщений с вызовами, все 13 — JSON-дамп [[{...}]] в тексте, при требовании шаблона \u003ctool_call\u003e\u003cfunction=…\u003e; это и есть причина «вызовов текстом». После правки форма проверяется на следующем ходе Cline по /app/diag/prompt-last.txt",
-                                        "ОТКРЫТО: повторный живой прогон Cline на этом образе ещё не сделан",
+                                        "R476: образы собраны и выкачены — balancer r261109-1410 (4c7578a9), cppworker gpu-261109-1404 (b176967d), webui r261109-1410 (4c7578a9); GET :18080/api/version -\u003e build=r261109-1410 commit=4c7578a9; GET :18092/api/info -\u003e build=261109-1404 commit=b176967d; все контейнеры healthy",
+                                        "R476: GET :18081/api/v1/diag/summary (X-API-Token) отдал ключи cluster, flags, generated_at, model_profiles, nctx_ceiling, nctx_reload, operating_mode, queue_stats, version, version_text; flags.set=24 значения, flags.unset=9; nctx_ceiling={envCeiling:65536, limitedBy:env}; профилей 21",
+                                        "R476: GET :18081/api/v1/diag/bundle отдал zip 22 КБ: summary.json 22050 B, flags.txt 1098 B, balancer-logs.txt, backends/cppworker-gpu-bundled-agent.info.json 1155 B, backends/cppworker-gpu-bundled-agent.bundle.zip 6961 B, README.txt",
+                                        "R476: архив воркера содержит info.json, logs.txt (17168 B — кольцевой буфер реальных записей), env.json (белый список), last-prompt/last-stream/unparsed-ring, а отсутствующие дампы честно помечены *.missing.txt с подсказкой про CPPWORKER_DEBUG_*",
+                                        "R476: живая строка трассировки в логе балансера: {\"msg\":\"request trace\",\"request_id\":\"req55e2ed4a\",\"method\":\"GET\",\"path\":\"/api/version\",\"status\":200,\"duration_ms\":0,\"bytes\":207}; в контейнере LB_REQUEST_TRACE=summary, LB_LOG_BUFFER_ENTRIES=2000",
+                                        "R476: первый живой архив нашёл дефект порта (OllamaPort 11434 вместо CppWorkerPort 18092, connection refused) — исправлено, повторная выгрузка содержит архивы воркеров; тест на это не мог поймать, потому что поднимал httptest-сервер",
+                                        "R476: WebUI :18083 отдаёт страницу (#diagnostics-page, пункт меню, script diagnostics.js), сам модуль 18965 B с window.Diagnostics, styles .diag-table в pages.css; контрактный тест diagnostics-r476.test.js (14 проверок) зелёный",
+                                        "R476: Go-тесты: полный ./internal/balancer/ (166.9 с), ./internal/api/ (63.6 с), ./cmd/cppworker/ (11.0 с) зелёные; новые тесты R476 покрывают сводку, секреты, токен к воркеру, содержимое архива, выключенный буфер",
+                                        "ОТКРЫТО: сквозная связка request_id (балансер ↔ сводка воркера) на РЕАЛЬНОМ /api/chat ещё не снята: для этого нужен ход Cline (загрузка модели). Механизм передачи id (R376) и запись id в сводку проверены кодом+тестами; доказательство будет на первом живом ходе",
                                         "ОТКРЫТО: флак TestReload_DegradedHeaderOnCPUOnly (не воспроизводится)"
                                     ]
                       },
@@ -24,25 +28,25 @@
                        "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
                        "service":  "loadbalancer",
-                       "imageTag":  "r261106-2329",
-                       "imageId":  "sha256:c9116063180516b8e93686f81988415bbf4313e75cb01adb0c1a5dcf87bd1223",
-                       "image":  "ollama-legion/balancer:r261106-2329"
+                       "imageTag":  "r261109-1410",
+                       "imageId":  "sha256:00e2d71a081c4a44b9f3878b6e47ac524013a84c41a51139265b0b7d03715c81",
+                       "image":  "ollama-legion/balancer:r261109-1410"
                    },
                    {
                        "alias":  "ollama-legion/cppworker:latest-gpu-86",
                        "variable":  "CPPWORKER_GPU_TAG",
                        "service":  "cppworker-gpu",
-                       "imageTag":  "gpu-261107-1533",
-                       "imageId":  "sha256:e0e28845efd8b532a2c3478555eb19bdd790fb89856e3c226fb533ea02aa9fa5",
-                       "image":  "ollama-legion/cppworker:gpu-261107-1533"
+                       "imageTag":  "gpu-261109-1404",
+                       "imageId":  "sha256:61ee37ab18ff45ee1593913ec71121f3f280181e9248812f4d2264af920f7cf6",
+                       "image":  "ollama-legion/cppworker:gpu-261109-1404"
                    },
                    {
                        "alias":  "ollama-legion/webui:latest",
                        "variable":  "WEBUI_TAG",
                        "service":  "webui",
-                       "imageTag":  "r261106-1716",
-                       "imageId":  "sha256:4b286efff549aca0b0879648c2f6a4419fe38b5a0519690ab0ac2f5d000930e0",
-                       "image":  "ollama-legion/webui:r261106-1716"
+                       "imageTag":  "r261109-1410",
+                       "imageId":  "sha256:8045bbee9cec661ce2e447029bcee6dd755a7211b76bba96caf1bd4205028b6c",
+                       "image":  "ollama-legion/webui:r261109-1410"
                    },
                    {
                        "alias":  "",

@@ -398,6 +398,16 @@ MIT - see [LICENSE.md](LICENSE.md).
 Full history with dates, image tags and the defect behind each fix:
 [CHANGELOG.md](CHANGELOG.md). Recently:
 
+- **v0.7.236 (R476, 2026-11-09) - stand diagnostics in one bundle.**
+  Data for analysis is now collected in one click: the "Diagnostics" page in the WebUI
+  (versions, context window and model profiles, `set`/`unset` flags, backends) with
+  block copying and click-to-copy values, plus `GET /api/v1/diag/bundle` — a zip of the
+  summary, balancer logs and worker bundles (log ring buffer, prompt, request body,
+  unparsed tool calls). Every request gets a `request trace` line with `request_id`, and
+  the same id is recorded in the worker summary, so a turn is found with one grep.
+  Images: balancer `r261109-1410`, cppworker `gpu-261109-1404`, webui `r261109-1410`.
+  [Release notes](docs/releases/v0.7.236-release-notes.md)
+
 - **v0.7.235 (R448…R475, 2026-11-07) - the context window stopped being a guess.**
   The prompt estimate (character heuristic, 1.8–5x overshoot) no longer decides anything:
   `POST /api/tokenize` supplies the model tokenizer's exact count (live: 36601 → 10036),

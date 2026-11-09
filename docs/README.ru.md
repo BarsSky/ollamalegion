@@ -95,7 +95,7 @@
 
 | Документ | Русский | English | О чём |
 |---|---|---|---|
-| **v0.7.235: окно контекста — не догадка** | [RU](releases/v0.7.235-release-notes.ru.md) | [EN](releases/v0.7.235-release-notes.md) | R448–R473: точный подсчёт токенов вместо эвристики, отказ 413 только для окна клиента, рост окна без ложных потолков, честные причины отказов. |
+| **v0.7.236: диагностика стенда архивом** | [RU](releases/v0.7.236-release-notes.ru.md) | [EN](releases/v0.7.236-release-notes.md) | R476: `request trace` с `request_id`, `/api/v1/diag/summary`, архив `/api/v1/diag/bundle` (логи балансера + воркеров), страница «Диагностика» с копированием и скачиванием; флаги `LB_REQUEST_TRACE`, `CPPWORKER_LOG_BUFFER_ENTRIES`, `CPPWORKER_LOG_LEVEL`. || **v0.7.235: окно контекста — не догадка** | [RU](releases/v0.7.235-release-notes.ru.md) | [EN](releases/v0.7.235-release-notes.md) | R448–R473: точный подсчёт токенов вместо эвристики, отказ 413 только для окна клиента, рост окна без ложных потолков, честные причины отказов. |
 | **v1.0: заметки о релизе** | [RU](releases/v1.0-release-notes.ru.md) | [EN](releases/v1.0-release-notes.md) | Что входит в v1.0: работает / частично / заглушка. |
 | **v1.0-rc2: заметки о релизе** | [RU](releases/v1.0-rc2-release-notes.ru.md) | [EN](releases/v1.0-rc2-release-notes.md) | Изменения с rc1 и как они проверялись. |
 | **v0.7.217: заметки о релизе** | [RU](releases/v0.7.217-release-notes.ru.md) | [EN](releases/v0.7.217-release-notes.md) | Гигиена репозитория, починка тестов и последние правки переводов; новых возможностей нет. |

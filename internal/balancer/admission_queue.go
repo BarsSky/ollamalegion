@@ -625,6 +625,8 @@ func (p *Proxy) acquireInferenceSlot(
 	w := aq.enqueue(backendID, session)
 	position := aq.position(backendID, w)
 	deadline := time.Now().Add(wait)
+	// R477: ход стоит в очереди — стадия admission видна в request trace.
+	SetStageR477(ctx, stageAdmissionR477)
 	logger.Get().Infow("admission: request queued, waiting for free slot",
 		"backend", backendID, "session", session, "position", position,
 		"wait_max_sec", int(wait.Seconds()))

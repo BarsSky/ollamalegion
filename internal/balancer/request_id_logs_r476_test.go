@@ -102,3 +102,52 @@ func TestR476_TraceLineCarriesBackend(t *testing.T) {
 		t.Fatalf("в трассировке нет request_id: %s", out)
 	}
 }
+
+// hijacklessWriterR478 — ResponseWriter с Flush, но БЕЗ Hijack: так ведёт себя
+// writer под HTTP/2 (или любой прокси без перехвата соединения).
+type hijacklessWriterR478 struct {
+	http.ResponseWriter
+	flushed bool
+}
+
+func (w *hijacklessWriterR478) Flush() { w.flushed = true }
+
+// TestR478_WrapperDoesNotClaimHijackWhenUnderlyingCannot — обёртка обязана
+// объявлять только те интерфейсы, которые есть у нижнего writer.
+//
+// ЖИВОЙ РИСК (нашёл аудит): раньше traceRecorderR476 имел метод Hijack всегда,
+// поэтому `w.(http.Hijacker)` был истинен и для HTTP/2. Код диалога ожидания
+// перезагрузки (preflight_stream_dialog.go) шёл в hijack-ветку, получал
+// ErrNotSupported и вместо Plain-фолбэка отдавал 503.
+func TestR478_WrapperDoesNotClaimHijackWhenUnderlyingCannot(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+	under := &hijacklessWriterR478{ResponseWriter: httptest.NewRecorder()}
+	w, finish := startRequestTraceR476(under, req, "rid-hijack-478")
+	defer finish()
+
+	if _, ok := w.(http.Hijacker); ok {
+		t.Fatal("обёртка объявляет Hijack(), хотя нижний writer перехват не умеет")
+	}
+	if _, ok := w.(http.Flusher); !ok {
+		t.Fatal("обёртка потеряла Flush — стриминг сломается")
+	}
+}
+
+// TestR478_WrapperKeepsHijackWhenUnderlyingCan — и наоборот: если нижний writer
+// умеет hijack, обёртка обязана его сохранять (h2c/HTTP1.1 стримы).
+func TestR478_WrapperKeepsHijackWhenUnderlyingCan(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wrapped, finish := startRequestTraceR476(w, r, "rid-hijack-ok-478")
+		defer finish()
+		if _, ok := wrapped.(http.Hijacker); !ok {
+			t.Error("обёртка потеряла Hijack у hijack-способного writer")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL, "application/json", nil)
+	if err != nil {
+		t.Fatalf("запрос: %v", err)
+	}
+	_ = resp.Body.Close()
+}

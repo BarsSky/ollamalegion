@@ -34,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
@@ -74,6 +75,9 @@ func (s *Server) handleDiagBundle(w http.ResponseWriter, r *http.Request) {
 
 	// 1) Сводка: тот же JSON, что отдаёт /api/v1/diag/summary.
 	s.diagBundleAddJSONR476(zw, "summary.json", s.diagSummaryPayloadR476())
+
+	// R477: сбои по стадиям отдельным файлом — их читают первыми при разборе.
+	s.diagBundleAddJSONR476(zw, "failures.json", balancer.RecentFailuresR477())
 
 	// 2) Флаги отдельным текстовым файлом: удобно приложить к переписке.
 	s.diagBundleAddTextR476(zw, "flags.txt", diagBundleFlagsTextR476())

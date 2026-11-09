@@ -165,6 +165,17 @@ func loggingMiddleware(next http.Handler) http.Handler {
 				"duration", duration.String(),
 				"remote", remoteIP)
 		} else {
+			// R477: ответ 5xx воркера в кольцо — в архиве видно, какой эндпоинт
+			// и какой ход (request_id) дали сбой.
+			if lw.statusCode >= http.StatusInternalServerError {
+				recordWorkerFailureR477(workerFailureR477{
+					RequestID:  r.Header.Get("X-Request-Id"),
+					Method:     r.Method,
+					Path:       r.URL.Path,
+					Status:     lw.statusCode,
+					DurationMs: duration.Milliseconds(),
+				})
+			}
 			logger.Get().Infow("HTTP request",
 				// R476 (2026-11-07): id балансера в КАЖДОЙ строке запроса воркера —
 				// по нему ход находится и без сводки /api/chat (например /api/generate).

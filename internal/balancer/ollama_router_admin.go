@@ -22,17 +22,17 @@ func (or *OllamaRouter) handleShow(w http.ResponseWriter, r *http.Request) {
 		backendID = or.selectAnyHealthy()
 	}
 
-	or.proxy.proxyRequest(w, r, backendID)
+	or.proxyAdminOrFailR478(w, r, backendID)
 }
 
 func (or *OllamaRouter) handleCreate(w http.ResponseWriter, r *http.Request) {
 	backendID := or.selectBackendByResources(r)
-	or.proxy.proxyRequest(w, r, backendID)
+	or.proxyAdminOrFailR478(w, r, backendID)
 }
 
 func (or *OllamaRouter) handlePull(w http.ResponseWriter, r *http.Request) {
 	backendID := or.selectBackendByResources(r)
-	or.proxy.proxyRequest(w, r, backendID)
+	or.proxyAdminOrFailR478(w, r, backendID)
 }
 
 func (or *OllamaRouter) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +102,7 @@ func (or *OllamaRouter) handleCopy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = io.NopCloser(bytes.NewBuffer(body))
-	or.proxy.proxyRequest(w, r, sourceBackend)
+	or.proxyAdminOrFailR478(w, r, sourceBackend)
 }
 
 func (or *OllamaRouter) handlePush(w http.ResponseWriter, r *http.Request) {
@@ -118,5 +118,5 @@ func (or *OllamaRouter) handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	or.proxy.proxyRequest(w, r, backendID)
+	or.proxyAdminOrFailR478(w, r, backendID)
 }

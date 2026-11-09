@@ -46,7 +46,12 @@ window.I18N_RU = {
   "diag.col_status": "Статус",
   "diag.col_slots": "Слоты (занято/всего)",
   "diag.col_models": "Загруженные модели",
-  "diag.bundle_hint": "Архив: сводка + логи балансера + архивы воркеров (логи, промпт, тело запроса, срывы разбора вызовов). Без токенов и паролей.",
+  "diag.section_failures": "Последние сбои",
+  "diag.failures_none": "Сбоев не зафиксировано",
+  "diag.col_time": "Время",
+  "diag.col_stage": "Стадия",
+  "diag.col_request_id": "request_id",
+  "diag.col_reason": "Причина",  "diag.bundle_hint": "Архив: сводка + логи балансера + архивы воркеров (логи, промпт, тело запроса, срывы разбора вызовов). Без токенов и паролей.",
   "diag.window_source": "Потолок считается той же формулой, что и в запросах: min(GGUF, contextLengthMax, LB_NCTX_RELOAD_MAX_N_CTX).",
 
   // Header

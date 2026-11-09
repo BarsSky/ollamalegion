@@ -945,9 +945,33 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rid, ctxWithRID := getOrGenerateRequestID(r)
 	r = r.WithContext(ctxWithRID)
 	w.Header().Set(requestIDHeader, rid) // echo в response для удобства curl-проверки
+	// R477 (2026-11-09): стадия хода. Без неё по логу нельзя было сказать, ГДЕ
+	// запрос умер (выбор бэкенда, очередь, preflight, апстрим, стрим).
+	tracker := newStageTrackerR477()
+	r = withStageTrackerR477(r, tracker)
+	SetStageR477(r.Context(), stageSelectR477)
+	// R477: паника в обработчике не должна убивать запрос молча — фиксируем
+	// стадию и отвечаем 500, если ещё ничего не отправлено.
+	defer func() {
+		if rec := recover(); rec != nil {
+			stage, _ := CurrentStageR477(r.Context())
+			recordFailureR477(diagFailureR477{
+				RequestID: rid, Method: r.Method, Path: r.URL.Path,
+				Stage: stage, Status: http.StatusInternalServerError,
+				Reason: "panic: " + panicTextR477(rec),
+			})
+			logger.Get().Errorw("ServeHTTP: panic recovered",
+				"request_id", rid, "stage", stage, "path", r.URL.Path, "panic", rec)
+			func() {
+				defer func() { _ = recover() }() // заголовки могли быть отправлены
+				http.Error(w, "internal error (request_id: "+rid+")", http.StatusInternalServerError)
+			}()
+		}
+	}()
 	// R476 (2026-11-07): одна строка INFO на запрос с длительностью, кодом и
 	// бэкендом — по ней ход находится в логе обеих сторон (id тот же у воркера).
 	// LB_REQUEST_TRACE=off отключает строку, заголовок остаётся.
+
 	w, finishTrace := startRequestTraceR476(w, r, rid)
 	defer finishTrace()
 	logger.Get().Debugw("ServeHTTP: request received",

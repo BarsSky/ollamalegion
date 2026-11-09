@@ -26,8 +26,7 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 		return fmt.Errorf("backend %s not found", backendID)
 	}
 
-	// R476: бэкенд в ответ — строка request trace берёт его из этого заголовка.
-	w.Header().Set("X-Backend-ID", backendID)
+	SetStageR477(r.Context(), stageUpstreamR477)
 	targetURL := p.getBackendBaseURL(state.Backend)
 	modelFromCtx := ""
 	if m, ok := r.Context().Value(modelContextKey).(string); ok {
@@ -321,6 +320,9 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 			backendID, nonStreamAttempt, durationMs, errType, err)
 	}
 	defer resp.Body.Close()
+	// R476/R478: бэкенд в ответ — только после успешного ответа апстрима
+	// (до запроса заголовок мог назвать бэкенд, который запрос не обслуживал).
+	w.Header().Set("X-Backend-ID", backendID)
 
 	// 2026-07-01: transparent lazy-load retry (см. loading_retry.go).
 	//

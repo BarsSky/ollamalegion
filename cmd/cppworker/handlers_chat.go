@@ -1311,21 +1311,19 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	rcParser := NewReasoningStreamState()
 	// R216: если шаблон открыл блок размышлений в ПРОМПТЕ, вывод начинается внутри него.
 	rcParser.SetImpliedOpen(PromptOpensReasoning(prompt))
+	// R470 НЕ применяется на этом пути (исправление R478, 2026-11-09).
+	//
+	// ЖИВОЙ ДЕФЕКТ (OpenWebUI): «модель генерирует токены, ответ не доходит».
+	// Гейт R470 (`rcSendReasoning && reasoningEcho`) стоял в этой ОБЩЕЙ функции,
+	// хотя задумывался для tools-пути. Последствие для reasoning-моделей
+	// (Qwen3, gemma-4): парсер стартует ВНУТРИ размышлений
+	// (`SetImpliedOpen(PromptOpensReasoning(prompt))` выше), и весь вывод до
+	// закрывающего маркера — то есть обычно весь ответ — выбрасывался как
+	// размышления. Клиент получал пустые кадры и keepalive, а в конце — пояснение
+	// «бюджет исчерпан» вместо текста. На tools-пути
+	// (writeChatStreamResponseWithTools) гейт остаётся: там клиент — агент,
+	// который складывает thinking в текст ответа, и это отдельная проблема (R470).
 	rcSendReasoning := ReasoningWantedByClient(thinkOverride)
-	// R470 (2026-11-06): на tools-пути размышления отдаём только если клиент
-	// попросил ЯВНО (think:true). Иначе агентский клиент (Cline) сохраняет их как
-	// текст нашего ответа: в истории следующего запроса assistant-сообщение
-	// длиной ровно в reasoning предыдущего хода и на английском — модель видит
-	// свои размышления как свой прошлый ответ и продолжает планировать «вслух».
-	// Разбор — в reasoning_echo_r470.go.
-	reasoningEcho := toolsThinkingEchoR470(thinkOverride)
-	if !reasoningEcho && rcSendReasoning {
-		logger.Get().Infow("R470: размышления не отдаются клиенту на tools-пути",
-			"model", modelName,
-			"why", "клиент не просил think явно — иначе он сохранит их как текст ответа",
-			"switch", "CPPWORKER_TOOLS_THINKING")
-	}
-	rcSendReasoning = rcSendReasoning && reasoningEcho
 	// emittedContentRawLen — сколько байт content (ДО замены `\\n`) уже отдано
 	// дельтами. Нужен в think=false-ветке ниже, чтобы дослать остаток без
 	// R91-фолбэка «незакрытый reasoning → content».

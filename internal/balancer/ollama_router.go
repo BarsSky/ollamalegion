@@ -133,6 +133,17 @@ func (or *OllamaRouter) findBackendWithModel(model string) string {
 				return id
 			}
 		}
+		// R478 (2026-11-09): у llama.cpp-бэкенда loaded-модели лежат в
+		// metricsMgr.llamaMetrics, а не в metrics.LlamaCpp (это поле в проде никто
+		// не заполняет). Без этого источника /api/show|delete|copy|push по
+		// cppworker-модели уходили в СЛУЧАЙНЫЙ здоровый узел или давали 404.
+		if lm, ok := or.proxy.metricsMgr.llamaMetrics[id]; ok {
+			for _, m := range lm.LoadedModels {
+				if m.Name == model {
+					return id
+				}
+			}
+		}
 	}
 	return ""
 }
@@ -144,6 +155,10 @@ func (or *OllamaRouter) findBackendsWithModel(model string) []string {
 	for id, metrics := range or.proxy.metricsMgr.metrics {
 		runningModelsMap[id] = metrics.Ollama.RunningModels
 		loadedModelsMap[id] = metrics.LlamaCpp.LoadedModels
+		// R478: реальный источник loaded-моделей cppworker'а.
+		if lm, ok := or.proxy.metricsMgr.llamaMetrics[id]; ok && len(lm.LoadedModels) > 0 {
+			loadedModelsMap[id] = lm.LoadedModels
+		}
 	}
 	or.proxy.metricsMgr.mu.RUnlock()
 

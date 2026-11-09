@@ -129,6 +129,10 @@ func handleDebugBundle(w http.ResponseWriter, r *http.Request) {
 	if err := bundleAddJSONR476(zw, "last-stream.json", getLastStreamInfo()); err != nil {
 		logger.Get().Warnw("debug/bundle: last-stream.json failed", "error", err)
 	}
+	// R477: сбои воркера (5xx) — первым делом при разборе «ответ не дошёл».
+	if err := bundleAddJSONR476(zw, "failures.json", RecentWorkerFailuresR477()); err != nil {
+		logger.Get().Warnw("debug/bundle: failures.json failed", "error", err)
+	}
 	if err := bundleAddJSONR476(zw, "unparsed-ring.json", unparsedRingCopyR476()); err != nil {
 		logger.Get().Warnw("debug/bundle: unparsed-ring.json failed", "error", err)
 	}

@@ -46,7 +46,12 @@ window.I18N_EN = {
   "diag.col_status": "Status",
   "diag.col_slots": "Slots (used/total)",
   "diag.col_models": "Loaded models",
-  "diag.bundle_hint": "Bundle: summary + balancer logs + worker bundles (logs, prompt, request body, unparsed tool calls). No tokens or passwords.",
+  "diag.section_failures": "Recent failures",
+  "diag.failures_none": "No failures recorded",
+  "diag.col_time": "Time",
+  "diag.col_stage": "Stage",
+  "diag.col_request_id": "request_id",
+  "diag.col_reason": "Reason",  "diag.bundle_hint": "Bundle: summary + balancer logs + worker bundles (logs, prompt, request body, unparsed tool calls). No tokens or passwords.",
   "diag.window_source": "The ceiling uses the same formula as requests: min(GGUF, contextLengthMax, LB_NCTX_RELOAD_MAX_N_CTX).",
 
   // Header

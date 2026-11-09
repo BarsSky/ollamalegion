@@ -29,9 +29,7 @@ import (
 // разбитый на множество SSE чанков. Этот прокси аккумулирует content из смежных
 // чанков, детектирует полный JSON, и эмитит чистый NDJSON чанк с tool_calls.
 func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, backendID string, bodyBuf []byte) error {
-	// R476: до первой записи — иначе заголовок уже не изменится и в строке
-	// трассировки бэкенд останется пустым (живая проверка это и показала).
-	w.Header().Set("X-Backend-ID", backendID)
+	SetStageR477(r.Context(), stageUpstreamR477)
 	state, ok := p.backends[backendID]
 	if !ok {
 		return fmt.Errorf("backend %s not found", backendID)
@@ -311,10 +309,6 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
-	// R476: бэкенд в ответ — строка `request trace` берёт его отсюда, иначе в
-	// логе хода путь /api/* выглядел без адресата.
-	w.Header().Set("X-Backend-ID", backendID)
-
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	for key, values := range r.Header {
@@ -471,6 +465,13 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			backendID, llamaAttempt, durationMs, errType, err)
 	}
 	defer resp.Body.Close()
+	// R476/R478: бэкенд в ответ ставим ТОЛЬКО после успешного ответа апстрима.
+	// Раньше заголовок ставился до запроса, и в строке трассировки мог оказаться
+	// бэкенд, который запрос не обслуживал (failover/retry) — диагностическая
+	// ложь, на которую указал аудит.
+	w.Header().Set("X-Backend-ID", backendID)
+	// R477: апстрим ответил — дальше стадия стрима (видно в request trace).
+	SetStageR477(r.Context(), stageStreamR477)
 
 	// 2026-07-01: transparent lazy-load retry (см. loading_retry.go).
 	//

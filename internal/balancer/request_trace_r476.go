@@ -30,6 +30,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,26 +57,46 @@ func requestTraceModeR476() string {
 	}
 }
 
-// traceRecorderR476 — код ответа и объём тела для строки трассировки.
-type traceRecorderR476 struct {
-	http.ResponseWriter
+// traceStateR476 — то, что считаем про ответ (код, байты).
+//
+// R478 (2026-11-09): состояние вынесено из обёртки, потому что обёрток ДВЕ.
+// Было: один тип объявлял Hijack() ВСЕГДА, даже когда нижний writer перехват не
+// умеет. Из-за этого код, проверяющий `w.(http.Hijacker)`, шёл в hijack-ветку и
+// получал ErrNotSupported вместо Plain-фолбэка (живой риск:
+// preflight_stream_dialog.go — диалог ожидания перезагрузки просто не
+// показывался). Теперь тип обёртки выбирается по возможностям нижнего writer.
+type traceStateR476 struct {
 	status int
 	bytes  int64
 }
 
-func (t *traceRecorderR476) WriteHeader(code int) {
-	if t.status == 0 {
-		t.status = code
+func (s *traceStateR476) onWriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
 	}
+}
+
+func (s *traceStateR476) onWrite(n int) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	s.bytes += int64(n)
+}
+
+// traceRecorderR476 — базовая обёртка: код, байты, Flush, Unwrap. Без Hijack.
+type traceRecorderR476 struct {
+	http.ResponseWriter
+	state *traceStateR476
+}
+
+func (t *traceRecorderR476) WriteHeader(code int) {
+	t.state.onWriteHeader(code)
 	t.ResponseWriter.WriteHeader(code)
 }
 
 func (t *traceRecorderR476) Write(p []byte) (int, error) {
-	if t.status == 0 {
-		t.status = http.StatusOK
-	}
 	n, err := t.ResponseWriter.Write(p)
-	t.bytes += int64(n)
+	t.state.onWrite(n)
 	return n, err
 }
 
@@ -86,18 +107,24 @@ func (t *traceRecorderR476) Flush() {
 	}
 }
 
-// Hijack — сохранить перехват соединения для hijacked-стримов.
-func (t *traceRecorderR476) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+// Unwrap — для http.ResponseController в Go 1.20+.
+func (t *traceRecorderR476) Unwrap() http.ResponseWriter {
+	return t.ResponseWriter
+}
+
+// traceRecorderHijackR476 — обёртка для ResponseWriter, который УМЕЕТ hijack:
+// тип добавляет метод Hijack() честно, только когда перехват реально доступен.
+type traceRecorderHijackR476 struct {
+	traceRecorderR476
+}
+
+// Hijack — перехват соединения для hijacked-стримов.
+func (t *traceRecorderHijackR476) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	h, ok := t.ResponseWriter.(http.Hijacker)
 	if !ok {
 		return nil, nil, http.ErrNotSupported
 	}
 	return h.Hijack()
-}
-
-// Unwrap — для http.ResponseController в Go 1.20+.
-func (t *traceRecorderR476) Unwrap() http.ResponseWriter {
-	return t.ResponseWriter
 }
 
 // startRequestTraceR476 — включить трассировку запроса.
@@ -111,23 +138,45 @@ func startRequestTraceR476(w http.ResponseWriter, r *http.Request, rid string) (
 		return w, func() {}
 	}
 	start := time.Now()
-	rec := &traceRecorderR476{ResponseWriter: w}
+	state := &traceStateR476{}
+	var rec http.ResponseWriter
+	if _, ok := w.(http.Hijacker); ok {
+		rec = &traceRecorderHijackR476{traceRecorderR476{ResponseWriter: w, state: state}}
+	} else {
+		rec = &traceRecorderR476{ResponseWriter: w, state: state}
+	}
 	if mode == "full" && logger.Get() != nil {
 		logger.Get().Debugw("request trace: started",
 			"request_id", rid, "method", r.Method, "path", r.URL.Path,
 			"client", traceClientAddrR476(r), "content_length", r.ContentLength)
 	}
 	return rec, func() {
-		status := rec.status
+		status := state.status
 		if status == 0 {
 			status = http.StatusOK
 		}
 		// X-Backend-ID ставят обработчики; если запрос до них не дошёл — пусто.
 		backend := strings.TrimSpace(rec.Header().Get("X-Backend-ID"))
+		// R477: стадия, на которой ход находится (для 5xx — где сломался).
+		stage, stageAt := CurrentStageR477(r.Context())
+		stageMs := int64(0)
+		if !stageAt.IsZero() {
+			stageMs = time.Since(stageAt).Milliseconds()
+		}
 		logger.Get().Infow("request trace",
 			"request_id", rid, "method", r.Method, "path", r.URL.Path,
 			"status", status, "duration_ms", time.Since(start).Milliseconds(),
-			"bytes", rec.bytes, "backend", backend, "client", traceClientAddrR476(r))
+			"bytes", state.bytes, "backend", backend, "client", traceClientAddrR476(r),
+			"stage", stage, "stage_ms", stageMs)
+		// R477: сбой (5xx) попадает в кольцо — его видно в сводке и в архиве,
+		// и по нему понятно, какой компонент не отдал ответ.
+		if status >= http.StatusInternalServerError {
+			recordFailureR477(diagFailureR477{
+				RequestID: rid, Method: r.Method, Path: r.URL.Path,
+				Stage: stage, Status: status, Backend: backend,
+				Reason: "http " + strconv.Itoa(status),
+			})
+		}
 	}
 }
 

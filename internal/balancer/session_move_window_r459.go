@@ -23,7 +23,10 @@
 // «почему не переехали» не выяснялось чтением исходников.
 package balancer
 
-import "ollama-loadbalancer/pkg/logger"
+import (
+	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
+)
 
 // sessionMoveKeepsWindowR459 — можно ли увести сессию с fromBackend на
 // candidateBackend, не потеряв окно. Возвращает (можно, причина_отказа).
@@ -41,6 +44,15 @@ func (p *Proxy) sessionMoveKeepsWindowR459(candidateBackend, fromBackend, model 
 		// поведение: не выдумываем предел там, где его нет.
 		return true, ""
 	}
+	// R478 (2026-11-09): у Ollama-бэкендов окна слота в наших метриках НЕТ
+	// (num_ctx_resolver читает только llama.cpp-метрики). Прежний код считал
+	// такой кандидат «холодным» ВСЕГДА — и сессия никогда не переезжала на
+	// живую Ollama-копию. Это и было «перестало работать распределение».
+	// Правило то же, что для неизвестного окна: не выдумываем предел там, где
+	// его не знаем.
+	if b := p.GetBackend(candidateBackend); b != nil && b.Type == types.BackendTypeOllama {
+		return true, ""
+	}
 	perSeq := p.loadedPerSeqNCtx(candidateBackend, model)
 	if perSeq <= 0 {
 		return false, "на кандидате модель не загружена (переезд = выгрузка+загрузка)"
@@ -55,13 +67,16 @@ func (p *Proxy) sessionMoveKeepsWindowR459(candidateBackend, fromBackend, model 
 // проход отбора, но кандидаты, теряющие окно, отсеиваются сразу (см.
 // findLessLoadedBackendWithModelWhere).
 //
-// Отклонения логируются на Debug: ребалансировка при высоком loadRatio бывает
-// раз в несколько запросов, включать Info не нужно.
+// R478 (2026-11-09): отклонения логируются на INFO, а не Debug. Аудит показал
+// живое следствие: при штатном уровне info оператор не видел НИ ОДНОЙ причины
+// «почему сессия не переехала», и это выглядело как «сломалось распределение
+// нагрузки». Строка редкая (ребалансировка при высоком loadRatio), поэтому Info
+// здесь оправдан.
 func (p *Proxy) sessionMoveGateR459(fromBackend, model string, requestedNCtx int) func(string) bool {
 	return func(candidate string) bool {
 		ok, why := p.sessionMoveKeepsWindowR459(candidate, fromBackend, model, requestedNCtx)
 		if !ok {
-			logger.Get().Debugw("R459: кандидат на ребалансировку отклонён",
+			logger.Get().Infow("R459: кандидат на ребалансировку отклонён",
 				"session_backend", fromBackend, "candidate", candidate,
 				"model", model, "requested_n_ctx", requestedNCtx,
 				"candidate_per_seq_n_ctx", p.loadedPerSeqNCtx(candidate, model),

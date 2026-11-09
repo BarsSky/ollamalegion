@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/version"
 )
 
@@ -120,6 +121,9 @@ func (s *Server) diagSummaryPayloadR476() map[string]interface{} {
 		out["nctx_ceiling"] = nctxCeilingFor(s.proxy)
 	}
 	out["model_profiles"] = diagModelProfilesR476(s)
+	// R477: последние сбои по стадиям — ответ на «какой компонент дал сбой».
+	// Показываются в WebUI и попадают в архив (failures.json).
+	out["recent_failures"] = balancer.RecentFailuresR477()
 	return out
 }
 

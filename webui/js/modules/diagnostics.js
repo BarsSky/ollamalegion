@@ -231,7 +231,37 @@ const Diagnostics = (function () {
         return '<table class="diag-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
     }
 
-    // table — пары ключ/значение; значение кликабельно (копируется одно поле).
+    // renderFailures — R477: последние сбои по стадиям.
+    //
+    // ЗАЧЕМ НА СТРАНИЦЕ. Раньше на вопрос «какой компонент дал сбой» отвечал
+    // только лог: ответ 200 без тела, 503 из очереди и обрыв стрима выглядели
+    // одинаково. Здесь видно стадию (select_backend / admission / preflight /
+    // upstream / stream / client_write), id хода и бэкенд.
+    function renderFailures(summary) {
+        var list = (summary && summary.recent_failures) || [];
+        if (!list.length) {
+            return '<div class="diag-empty">' + esc(t('diag.failures_none', 'Сбоев не зафиксировано')) + '</div>';
+        }
+        var head = '<tr><th>' + esc(t('diag.col_time', 'Время')) + '</th><th>' +
+            esc(t('diag.col_stage', 'Стадия')) + '</th><th>' +
+            esc(t('diag.col_status', 'Статус')) + '</th><th>' +
+            esc(t('diag.col_request_id', 'request_id')) + '</th><th>' +
+            esc(t('diag.col_backend', 'Бэкенд')) + '</th><th>' +
+            esc(t('diag.col_reason', 'Причина')) + '</th></tr>';
+        var body = '';
+        for (var i = list.length - 1; i >= 0 && i >= list.length - 30; i--) {
+            var f = list[i] || {};
+            body += '<tr>' +
+                '<td><code class="diag-value" data-diag-value="' + esc(val(f.time)) + '">' + esc(val(f.time)) + '</code></td>' +
+                '<td><code>' + esc(val(f.stage)) + '</code></td>' +
+                '<td>' + esc(val(f.status)) + '</td>' +
+                '<td><code class="diag-value" data-diag-value="' + esc(val(f.request_id)) + '">' + esc(val(f.request_id)) + '</code></td>' +
+                '<td>' + esc(val(f.backend)) + '</td>' +
+                '<td>' + esc(val(f.reason)) + '</td>' +
+                '</tr>';
+        }
+        return '<table class="diag-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
+    }    // table — пары ключ/значение; значение кликабельно (копируется одно поле).
     function table(rows) {
         if (!rows || rows.length === 0) {
             return '<div class="diag-empty">' + esc(t('diag.empty', 'нет данных')) + '</div>';
@@ -269,6 +299,9 @@ const Diagnostics = (function () {
                 cluster: summary.cluster, queue_stats: summary.queue_stats
             }, null, 2);
         }
+        if (name === 'failures') {
+            return t('diag.section_failures', 'Последние сбои') + '\n' + JSON.stringify(summary.recent_failures || [], null, 2);
+        }
         return JSON.stringify(summary, null, 2);
     }
 
@@ -284,6 +317,8 @@ const Diagnostics = (function () {
         if (flags) flags.innerHTML = renderFlags(lastSummary);
         var backends = document.getElementById('diagBackends');
         if (backends) backends.innerHTML = renderBackends(lastSummary);
+        var failures = document.getElementById('diagFailures');
+        if (failures) failures.innerHTML = renderFailures(lastSummary);
         var stamp = document.getElementById('diagLoadedAt');
         if (stamp) {
             stamp.textContent = lastSummary && lastSummary.generated_at

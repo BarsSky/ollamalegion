@@ -398,6 +398,17 @@ MIT - see [LICENSE.md](LICENSE.md).
 Full history with dates, image tags and the defect behind each fix:
 [CHANGELOG.md](CHANGELOG.md). Recently:
 
+- **v0.7.237 (R477/R478, 2026-11-09) - failure stage in the log, OpenWebUI gets the answer again.**
+  The "model generates tokens but the answer never arrives" cause is found: the R470 gate sat in a
+  shared function and, on plain `/api/chat` with reasoning models, dropped all visible output before
+  the closing marker. It now applies to the tools path only. Also: the response wrapper no longer
+  claims `Hijack` falsely, `X-Backend-ID` is set after the upstream reply, R459 allows a session to
+  move to a live Ollama copy again, Ollama admin handlers return 502 instead of an empty 200, and
+  `/api/show|copy|delete` find the model through the right source. Diagnostics: request stage
+  (`select_backend`/`admission`/`preflight`/`upstream`/`stream`/`client_write`) in the `request
+  trace` line, a recent-failures ring in the summary/bundle and a "Recent failures" block in the
+  WebUI. Audit: refactoring plan in `docs/architecture/refactoring-plan.ru.md`.
+
 - **v0.7.236 (R476, 2026-11-09) - stand diagnostics in one bundle.**
   Data for analysis is now collected in one click: the "Diagnostics" page in the WebUI
   (versions, context window and model profiles, `set`/`unset` flags, backends) with

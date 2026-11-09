@@ -158,6 +158,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		// thousands of log lines that drown out actual request logs.
 		if pollingPaths[r.URL.Path] && r.Method == http.MethodGet {
 			logger.Get().Debugw("HTTP request",
+				"request_id", r.Header.Get("X-Request-Id"),
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", lw.statusCode,
@@ -165,6 +166,9 @@ func loggingMiddleware(next http.Handler) http.Handler {
 				"remote", remoteIP)
 		} else {
 			logger.Get().Infow("HTTP request",
+				// R476 (2026-11-07): id балансера в КАЖДОЙ строке запроса воркера —
+				// по нему ход находится и без сводки /api/chat (например /api/generate).
+				"request_id", r.Header.Get("X-Request-Id"),
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", lw.statusCode,

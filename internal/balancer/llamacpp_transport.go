@@ -308,6 +308,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
+	// R476: бэкенд в ответ — строка `request trace` берёт его отсюда, иначе в
+	// логе хода путь /api/* выглядел без адресата.
+	w.Header().Set("X-Backend-ID", backendID)
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")

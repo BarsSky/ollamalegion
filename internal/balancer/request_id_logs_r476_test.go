@@ -9,6 +9,8 @@ package balancer
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -72,5 +74,31 @@ func TestR476_GrowthVerdictKeepsRID(t *testing.T) {
 	v := p.growthVerdictR301("rid-kept-476", "bk-1", "m", []byte(r301StreamBody), "/api/chat", true)
 	if v.RID != "rid-kept-476" {
 		t.Fatalf("verdict.RID = %q, ожидался id запроса", v.RID)
+	}
+}
+
+// TestR476_TraceLineCarriesBackend — в строке `request trace` есть бэкенд:
+// для нативного /api/* его выставляет транспорт, для OpenAI-путей — обработчик.
+func TestR476_TraceLineCarriesBackend(t *testing.T) {
+	var buf bytes.Buffer
+	restore := logger.CaptureToBuffer(&buf)
+	defer restore()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+	rec := httptest.NewRecorder()
+	w, finish := startRequestTraceR476(rec, req, "rid-backend-476")
+	w.Header().Set("X-Backend-ID", "cppworker-gpu")
+	w.WriteHeader(http.StatusOK)
+	finish()
+
+	out := buf.String()
+	if !strings.Contains(out, "request trace") {
+		t.Fatalf("строки трассировки нет: %s", out)
+	}
+	if !strings.Contains(out, "cppworker-gpu") {
+		t.Fatalf("в трассировке нет бэкенда: %s", out)
+	}
+	if !strings.Contains(out, "rid-backend-476") {
+		t.Fatalf("в трассировке нет request_id: %s", out)
 	}
 }

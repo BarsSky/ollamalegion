@@ -25,18 +25,18 @@ import (
 // TestR479_SurfaceAliasNormalized — алиасы снимаются, чужие пути не трогаем.
 func TestR479_SurfaceAliasNormalized(t *testing.T) {
 	cases := []struct {
+		reason string
 		in     string
 		want   string
 		alias  bool
-		reason string
 	}{
-		{"/ollama/api/tags", "/api/tags", true, "префикс OpenWebUI"},
-		{"/ollama/api/chat", "/api/chat", true, "инференс через алиас"},
-		{"/ollama/v1/models", "/v1/models", true, "OpenAI через алиас ollama"},
-		{"/openai/v1/chat/completions", "/v1/chat/completions", true, "алиас openai"},
-		{"/api/tags", "/api/tags", false, "прямой путь не меняем"},
-		{"/ollama/health", "/ollama/health", false, "неизвестный путь не выдумываем"},
-		{"/v1/models", "/v1/models", false, "прямой OpenAI-путь"},
+		{reason: "префикс OpenWebUI", in: "/ollama/api/tags", want: "/api/tags", alias: true},
+		{reason: "инференс через алиас", in: "/ollama/api/chat", want: "/api/chat", alias: true},
+		{reason: "OpenAI через алиас ollama", in: "/ollama/v1/models", want: "/v1/models", alias: true},
+		{reason: "алиас openai", in: "/openai/v1/chat/completions", want: "/v1/chat/completions", alias: true},
+		{reason: "прямой путь не меняем", in: "/api/tags", want: "/api/tags", alias: false},
+		{reason: "неизвестный путь не выдумываем", in: "/ollama/health", want: "/ollama/health", alias: false},
+		{reason: "прямой OpenAI-путь", in: "/v1/models", want: "/v1/models", alias: false},
 	}
 	for _, c := range cases {
 		got, alias := normalizeSurfaceAliasPathR479(c.in)

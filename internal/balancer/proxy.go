@@ -944,6 +944,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawPath = ""
 		w.Header().Set("X-LB-Surface-Alias", "1")
 	}
+	// R479: «последние клиенты» для монитора. recordRecentClient существовал, но
+	// не вызывался ниоткуда: cluster_state читал пустую карту, панель показывала
+	// пустоту. Возвращаем вызов (и он же использует peekBodyR479 — чтение тела
+	// без второй копии).
+	p.recordRecentClient(r)
 	startTime := time.Now()
 
 	// ==== Correlation ID ====

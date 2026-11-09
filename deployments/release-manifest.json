@@ -1,7 +1,7 @@
 ﻿{
     "tag":  "r261109-1410",
     "builtAt":  "2026-11-09T11:10:54Z",
-    "gitCommit":  "4c7578a9",
+    "gitCommit":  "55ce96cc",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
@@ -20,7 +20,8 @@
                                         "R476: WebUI :18083 отдаёт страницу (#diagnostics-page, пункт меню, script diagnostics.js), сам модуль 18965 B с window.Diagnostics, styles .diag-table в pages.css; контрактный тест diagnostics-r476.test.js (14 проверок) зелёный",
                                         "R476: Go-тесты: полный ./internal/balancer/ (166.9 с), ./internal/api/ (63.6 с), ./cmd/cppworker/ (11.0 с) зелёные; новые тесты R476 покрывают сводку, секреты, токен к воркеру, содержимое архива, выключенный буфер",
                                         "ОТКРЫТО: сквозная связка request_id (балансер ↔ сводка воркера) на РЕАЛЬНОМ /api/chat ещё не снята: для этого нужен ход Cline (загрузка модели). Механизм передачи id (R376) и запись id в сводку проверены кодом+тестами; доказательство будет на первом живом ходе",
-                                        "ОТКРЫТО: флак TestReload_DegradedHeaderOnCPUOnly (не воспроизводится)"
+                                        "ОТКРЫТО: флак TestReload_DegradedHeaderOnCPUOnly (не воспроизводится)",
+                                        "R476: webui пересобран из 55ce96cc (r261109-1427) — убран em-dash из CSS-комментария, на котором упал CI (TestLintCSSAndI18nNoEmDash); локально тест зелёный, страница по-прежнему отдаётся"
                                     ]
                       },
     "images":  [
@@ -44,9 +45,9 @@
                        "alias":  "ollama-legion/webui:latest",
                        "variable":  "WEBUI_TAG",
                        "service":  "webui",
-                       "imageTag":  "r261109-1410",
-                       "imageId":  "sha256:8045bbee9cec661ce2e447029bcee6dd755a7211b76bba96caf1bd4205028b6c",
-                       "image":  "ollama-legion/webui:r261109-1410"
+                       "imageTag":  "r261109-1427",
+                       "imageId":  "sha256:562131558ef1c992939f9a32f41502fd933ff02cfd495d1d644662f3a1fe01e9",
+                       "image":  "ollama-legion/webui:r261109-1427"
                    },
                    {
                        "alias":  "",

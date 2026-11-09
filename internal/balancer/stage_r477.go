@@ -36,10 +36,13 @@ const (
 )
 
 // stageTrackerR477 — текущая стадия одного запроса.
+//
+// Порядок полей: сначала pointer/строки, потом мьютекс — иначе govet
+// fieldalignment ругается на лишние байты (CI-линт это ловит).
 type stageTrackerR477 struct {
-	mu    sync.Mutex
 	stage string
 	at    time.Time
+	mu    sync.Mutex
 }
 
 // stageCtxKeyR477 — ключ контекста (свой тип, чтобы не пересечься).
@@ -91,14 +94,14 @@ func CurrentStageR477(ctx context.Context) (stage string, at time.Time) {
 
 // diagFailureR477 — один зафиксированный сбой для архива и панели.
 type diagFailureR477 struct {
-	Time      time.Time `json:"time"`
 	RequestID string    `json:"request_id,omitempty"`
 	Method    string    `json:"method"`
 	Path      string    `json:"path"`
 	Stage     string    `json:"stage"`
-	Status    int       `json:"status"`
 	Backend   string    `json:"backend,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
+	Time      time.Time `json:"time"`
+	Status    int       `json:"status"`
 }
 
 // diagFailuresR477 — кольцо последних сбоев (не больше 64 записей).

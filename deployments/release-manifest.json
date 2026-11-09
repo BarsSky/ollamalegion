@@ -1,14 +1,14 @@
 ﻿{
-    "tag":  "r261109-2144",
-    "builtAt":  "2026-11-09T18:44:59Z",
-    "gitCommit":  "4f98d3fa",
+    "tag":  "r261109-2211",
+    "builtAt":  "2026-11-09T19:11:27Z",
+    "gitCommit":  "63903601",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
     "note":  "R479: паритет типов на поверхностях. /v1/* больше не привязан к llama_cpp: если под модель нет cppworker-бэкенда, запрос уходит в Ollama нативно (тот же путь/тело/формат, слот занимается, поток с Flush; только /v1/chat/completions, /v1/completions, /v1/embeddings, /v1/models). Алиасы /ollama/api/*, /ollama/v1/*, /openai/v1/* снимаются в начале ServeHTTP (X-LB-Surface-Alias: 1). /v1/models собирает модели Ollama-пула. Лимит LB_MAX_REQUEST_BODY_MB действует на generic-пути (413), вспомогательные чтения — begin-only. Диагностика: стадии preflight/client_write, stage_final, обрыв доставки в кольце сбоев. Закрыты P0 1-3 и P1-10/11 из docs/architecture/debts.ru.md. Ранее: R478 (OpenWebUI), R477, R476, R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-09T18:47:00Z",
+                          "verifiedAt":  "2026-11-09T19:13:00Z",
                           "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
                           "proof":  [
                                         "R479: образ балансера r261109-2144 (4f98d3fa) выкачен; GET :18080/api/version -\u003e build=r261109-2144 commit=4f98d3fa; контейнер healthy; cppworker gpu-261109-1754 и webui r261109-1747 не пересобирались",
@@ -18,7 +18,10 @@
                                         "R479: строка request trace содержит stage_final: path=/api/tags status=200 stage=select_backend stage_final=done stage_ms=2",
                                         "R479: тесты — полный ./internal/balancer/ (174 с) зелёный; новые R479: алиасы, passthrough /v1/chat/completions в Ollama (поток, X-Backend-ID, освобождение слота), запрет passthrough /v1/responses, /v1/models с Ollama, 413 на тело сверх лимита, разбор нормального тела",
                                         "R479: закрыты P0 1-3 и P1-10/11 из docs/architecture/debts.ru.md; P1-9 частично (unified-очередь не ставит admission), P1-4..P1-8 и P2 остаются",
-                                        "ОТКРЫТО: живой прогон passthrough в Ollama на Ollama-only/смешанном стенде (здесь только cppworker); проверено unit-тестом с фальшивым Ollama-сервером"
+                                        "ОТКРЫТО: живой прогон passthrough в Ollama на Ollama-only/смешанном стенде (здесь только cppworker); проверено unit-тестом с фальшивым Ollama-сервером",
+                                        "R479 (линт-фикс 63903601): balancer r261109-2211 выкачен; GET :18080/api/version -\u003e build=r261109-2211 commit=63903601",
+                                        "R479: панель «последние клиенты» ожила — GET :18081/api/v1/cluster recentClients=1 (requestCount=4): recordRecentClient был мёртвым кодом, cluster_state читал пустую карту",
+                                        "R479: алиасы проверены и на этом образе — /ollama/api/tags -\u003e 200"
                                     ]
                       },
     "images":  [
@@ -26,9 +29,9 @@
                        "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
                        "service":  "loadbalancer",
-                       "imageTag":  "r261109-2144",
-                       "imageId":  "sha256:18f3763d49425156e512d88720ef4563f60ac69b7d812d54c8f67362bb3ffd2a",
-                       "image":  "ollama-legion/balancer:r261109-2144"
+                       "imageTag":  "r261109-2211",
+                       "imageId":  "sha256:bc9ed85c95a38d9f25a5bf5164c29eaab0939093f4402a3f36b178f0886965df",
+                       "image":  "ollama-legion/balancer:r261109-2211"
                    },
                    {
                        "alias":  "ollama-legion/cppworker:latest-gpu-86",

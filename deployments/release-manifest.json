@@ -1,23 +1,24 @@
 {
-    "tag":  "r261110-0942",
-    "builtAt":  "2026-11-10T09:42:00Z",
-    "gitCommit":  "476397f6",
+    "tag":  "r261110-1346",
+    "builtAt":  "2026-11-10T13:46:00Z",
+    "gitCommit":  "8dc740e7",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R480: политика «нужного окна» по варианту C (need = max(потребность запроса + резерв, окно активной сессии в пределах TTL)), TTL метрики окна (неизвестно vs точно нет), гейт R459 на обходных путях переезда и в единой очереди (очередь сравнивает с окном СВОЕЙ копии — иначе запрос с промптом больше всех окон висел бы до 900 с), window_too_small в why_queued, снимок сессии под блокировкой (гонка из CI -race). Плюс стадии admission/upstream/stream/client_write и чистка мёртвого кода из 0.7.239. Закрыты P1-4..P1-9, P2-14 (частично), P2-15 из docs/architecture/debts.ru.md. Ранее: R479 (паритет типов, лимит тела), R478 (OpenWebUI), R477, R476, R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
+    "note":  "R481 (WebUI): доступ к «Диагностике» (ярлык в подвале sidebar + кнопки на странице логов), создание пользователей WebUI (LB_USERS_FILE по умолчанию /app/data/users.json; path+hint в ошибке), переработка страницы логов (поля события отдельным блоком, поиск и фильтр уровня, раскрытие полного текста ошибки, requestID/stage в прокси-логах, выгрузка CSV/JSON, локализация). Балансер и webui собраны из одного коммита. Ранее: R480 (окно сессии по варианту C, TTL метрики, гейт R459), R479 (паритет типов, лимит тела), R478 (OpenWebUI), R477/R476 (диагностика), R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
     "standDeployed":  {
-                          "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-10T09:46:00Z",
+                          "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI), 18083 (WebUI)",
+                          "verifiedAt":  "2026-11-10T13:52:00Z",
                           "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
                           "proof":  [
-                                        "R480: balancer r261110-0942 (476397f6) выкачен; GET :18080/api/version -> build=r261110-0942 commit=476397f6; контейнер healthy; cppworker gpu-261109-1754 и webui r261109-1747 не пересобирались",
-                                        "R480: POST /api/chat (stream:true, модель Qwen3-4B-Instruct-2507-Q4_K_M, num_predict=4) -> 200, X-Backend-ID=cppworker-gpu-bundled-agent, 3 NDJSON-строки; request trace: stage=client_write stage_final=done (33 с = холодная загрузка модели, stage_ms=948)",
-                                        "R480: CI на 476397f6 полностью зелёный: Build+test (ubuntu, no Docker), Lint (golangci-lint), Test (ubuntu-latest fallback, включая internal/balancer -race 169 с), Test (self-hosted Windows), C-bridge, WebUI, i18n",
-                                        "R480: локально — полный ./internal/balancer/ (169 с) зелёный; гонки в тестах гейта устранены (метрики ставятся через UpdateMetrics до UpdateLlamaCppMetrics; гейт проверяется через sessionQueueGateR480 без подмены ActiveReqs)",
-                                        "R480: закрыты P1-4..P1-9, P2-14 частично (кроме SetQueueManagerProxy — тест-шов), P2-15 (актуальная таблица поверхностей в backend-type-isolation.ru.md)",
-                                        "ИНФРА (2026-11-10): Docker Desktop дважды не поднимался — D: был заполнен (5.4 ГБ свободно при vhdx 123 ГБ). После удаления D:\\$WINDOWS.~TMP (2.8 ГБ) и перезапуска процессов Docker Desktop поднимался нестабильно; рабочий обход — запуск Docker Desktop.exe и ожидание до 200 с. Остаётся: сжатие .vhdx и перенос данных Docker на диск с запасом (нужна админ-операция)",
-                                        "ОТКРЫТО: живой переезд сессии между двумя прогретыми копиями с разными окнами (на стенде один cppworker); P2-12/13 (два мозга, дублирование), P1-10/11 остатки; E (A10/27B, смешанный стенд, Cline с tools)"
+                                        "R481: balancer r261110-1346 (8dc740e7) и webui r261110-1346 (8dc740e7) выкачены; GET :18080/api/version -> build=r261110-1346 commit=8dc740e7; webui :18083 -> 200, контейнеры healthy; cppworker gpu-261109-1754 не пересобирался",
+                                        "R481: GET :18083/ содержит новые элементы: .sidebar-diag-link, #logsSearch, #logsDownloadBundle, #logsOpenDiagnostics, #exportProxyLogs, #proxyExportFormat, #logsCount",
+                                        "R481: GET /api/v1/proxy/logs?limit=3 -> у записей есть requestID (reqfeba92e1/req3d9352ed) и stage (select_backend/upstream)",
+                                        "R481: GET /api/v1/logs/export?format=json -> fields объектом (request_id, stage, backend, duration_ms...), message без JSON-суффикса; format=txt -> поля парами key=value после сообщения",
+                                        "R481: PUT /api/v1/auth/users (webui-check) -> 200, запись в /app/data/users.json; DELETE webui-check и testguest -> 200, в файле остался только skyadmin (тестовые пользователи убраны)",
+                                        "R481: тесты — полный ./internal/balancer/ (168 с) зелёный; internal/api и pkg/logger зелёные (новые R481-тесты: путь users.json, path+hint в ошибке, поля в TXT/JSON-экспорте, поля логгера отдельной картой, requestID/stage в контракте прокси-логов); npm run test:webui зелёный, новый logs-rework-r481.test.js (14 проверок); i18n-placeholders и IIFE-guard зелёные",
+                                        "R481: compose-варианты cppworker-bundled-with-agent, bundled-full, cppworker-bundled теперь передают LB_USERS_FILE/LB_SESSIONS_FILE с дефолтом /app/data (раньше балancer брал config/users.json на read-only ../config — это и был отказ «нет прав»)",
+                                        "ОТКРЫТО: визуальный клик в браузере (разметка и статические тесты есть, headless-браузера на стенде нет); P2-12/13 (два мозга, дублирование), P1-10/11 остатки, E (A10/27B, смешанный стенд, Cline с tools). Новый пункт реестра 16: stream:true для GET в прокси-логах (косметика, нужен выбор варианта)"
                                     ]
                       },
     "images":  [
@@ -25,9 +26,9 @@
                        "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
                        "service":  "loadbalancer",
-                       "imageTag":  "r261110-0942",
-                       "imageId":  "sha256:64572275852c35d5526e4cdc29783ffbe40daa81804dd47619e50b57d3531d23",
-                       "image":  "ollama-legion/balancer:r261110-0942"
+                       "imageTag":  "r261110-1346",
+                       "imageId":  "sha256:d68abe48d262aa59e737eca666c5b31c62e942344cd4fed8b9d3e2d974040ced",
+                       "image":  "ollama-legion/balancer:r261110-1346"
                    },
                    {
                        "alias":  "ollama-legion/cppworker:latest-gpu-86",
@@ -41,9 +42,9 @@
                        "alias":  "ollama-legion/webui:latest",
                        "variable":  "WEBUI_TAG",
                        "service":  "webui",
-                       "imageTag":  "r261109-1747",
-                       "imageId":  "sha256:8d2fd412adcd0f4591868d02005b71b1431d1e9a56bf19d3ed7b52993fb3b6fb",
-                       "image":  "ollama-legion/webui:r261109-1747"
+                       "imageTag":  "r261110-1346",
+                       "imageId":  "sha256:7cd9ece1a0c20c151d8a6132ae829c72887e39b86062fc6c2f370db4c5f9512b",
+                       "image":  "ollama-legion/webui:r261110-1346"
                    },
                    {
                        "alias":  "",

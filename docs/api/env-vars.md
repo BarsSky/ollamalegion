@@ -172,7 +172,7 @@
 |---------|------|---------|-------|
 | `LB_ADMIN_USER` / `LB_ADMIN_PASSWORD` | string | - | **R270**: WebUI administrator. Read **only** by the balancer container. If the entry does not exist yet, it is created; if it exists with a different password, the password is updated (R203). **R275**: when the entry already exists with the *same* password, this counts as "env applied" too (`bootstrap.source=env+file`, `envApplied=true`) — previously that case reported `source=file`, which made the operator hunt for a cause that did not exist. |
 | `LB_ADMIN_ENV_SYNC` | bool | `1` | **R275**: whether the env credentials may be applied to an **already existing** users file (password update / extra administrator). `0` = do not touch existing users; creating the first administrator on an empty store still happens, otherwise an isolated stand would have nobody to log in. |
-| `LB_USERS_FILE` | path | `/app/data/users.json` | Users file; must be on a **writable** volume, otherwise the administrator lives in memory only (`bootstrap.persisted=false`). |
+| `LB_USERS_FILE` | path | `/app/data/users.json` (R481: if `/app/data` does not exist, the legacy `config/users.json` is used for local runs) | Users file; must be on a **writable** volume, otherwise the administrator lives in memory only (`bootstrap.persisted=false`) and "Add user" fails with permission denied. In the images `../config` is mounted read-only, so `config/users.json` is not usable in a container. |
 | `LB_SESSIONS_FILE` | path | next to `users.json` | Login sessions; survive a container restart. |
 
 Diagnostics (no secrets): `GET /api/v1/auth/me` → `bootstrap{source, envApplied, persisted, writable, path, users, reason}`.

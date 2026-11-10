@@ -398,6 +398,15 @@ MIT - see [LICENSE.md](LICENSE.md).
 Full history with dates, image tags and the defect behind each fix:
 [CHANGELOG.md](CHANGELOG.md). Recently:
 
+- **v0.7.241 (R481, 2026-11-10) - Diagnostics, users and logs in the WebUI.**
+  The sidebar footer and the Logs page now expose the Diagnostics page and a
+  bundle download (the menu item used to scroll out of view). User creation in
+  the WebUI works again: `LB_USERS_FILE` defaults to `/app/data/users.json` on a
+  writable volume (it used to be `config/users.json` on the read-only `../config`
+  mount), and save errors carry `path`/`hint`. Logs are reworked: event fields are
+  a separate block instead of a JSON suffix in the message, search and level
+  filtering actually filter, a proxy-log error can be expanded in full, CSV/JSON
+  download was added, and labels plus the Users section are localized.
 - **v0.7.240 (R480, 2026-11-10) - session window policy C, metric TTL, gating everywhere.**
   The window a session move must preserve is now
   `max(request need + reserve, window of an ACTIVE session within TTL)`: a live

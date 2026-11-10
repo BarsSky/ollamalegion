@@ -1336,6 +1336,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
+			// R483: клиент отменил запрос — это событие хода (в кольцо сбоев).
+			recordWorkerEventR483(r, r.URL.Path, "client_cancelled", "request context canceled by client")
 			return false
 		default:
 		}
@@ -2062,6 +2064,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
+			// R483: клиент отменил запрос — это событие хода (в кольцо сбоев).
+			recordWorkerEventR483(r, r.URL.Path, "client_cancelled", "request context canceled by client")
 			return false
 		default:
 		}

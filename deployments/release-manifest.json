@@ -1,16 +1,20 @@
 {
-    "tag": "r261110-1346",
-    "builtAt": "2026-11-10T13:46:00Z",
-    "gitCommit": "8dc740e7",
+    "tag": "r261110-1540",
+    "builtAt": "2026-11-10T15:40:00Z",
+    "gitCommit": "61173b03",
     "cudaArch": "75;86;120",
     "composeFile": "docker-compose.stack.yml",
     "composeProfile": "full",
-    "note": "R482 (cppworker): вызов инструмента ищется и внутри блока размышлений (Qwen3.8-27B кладёт его туда, в т.ч. без закрывающего тега) — tool_calls_from_reasoning в сводке; удержание вывода получило сторож CPPWORKER_TOOLS_HOLD_MAX_SEC (20 c) / ..._MAX_BYTES (32 КБ), иначе ответ приходил одним куском, если шаблон не закрывает канал; финальный «сырой» хвост режется на части. Плюс R481 (WebUI: диагностика, пользователи, логи) в образах балансера и webui r261110-1346. Ранее: R480 (окно по варианту C), R479 (паритет типов), R478 (OpenWebUI), R477/R476 (диагностика), R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
+    "note": "R483: диагностика «кто держал ответ». request trace получил first_byte_ms (воркер/балансер/клиент); кольцо сбоев воркера принимает не-5xx события (hold_released R482, client_gone, client_cancelled, unparsed_tool_markup, turn_retry) и отдаёт их в failures.json архива. Ранее: R482 (tool call в reasoning, сторож удержания), R481 (WebUI), R480 (окно по варианту C), R479 (паритет типов), R478 (OpenWebUI), R477/R476 (диагностика), R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
     "standDeployed": {
         "hostPorts": "18080 (Ollama+всё), 18079 (OpenAI), 18083 (WebUI)",
-        "verifiedAt": "2026-11-10T14:20:00Z",
+        "verifiedAt": "2026-11-10T15:55:00Z",
         "debugDumps": "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
         "proof": [
+            "R483: balancer r261110-1540 (61173b03) и cppworker gpu-261110-1545 (802a0492) выкачены; :18080/api/version -> r261110-1540 commit=61173b03; контейнеры healthy",
+            "R483: request trace содержит first_byte_ms: холодная загрузка duration_ms=83178 first_byte_ms=82100; тёплый стрим duration_ms=674 first_byte_ms=8 (раньше оба выглядели одинаково)",
+            "R483: оборванный клиентом стрим -> в worker failures.json (архив /api/v1/cppworker/debug/bundle) запись {\"request_id\":\"reqf8d1807a\",\"path\":\"/api/chat\",\"status\":200,\"kind\":\"client_cancelled\",\"detail\":\"request context canceled by client\"}; воркер healthy, рестартов нет",
+            "R483: тесты — internal/balancer (164.7 с) и cmd/cppworker (9.9 с) зелёные; новые request_trace_first_byte_r483_test.go и failures_r483_test.go",
             "R482: финальный образ cppworker gpu-261110-1436 (5d779b3e) выкачен; healthy; GET /api/chat с tools[] -> 200; в сводке хода tool_calls=1, tool_calls_from_reasoning=false, hold_released_ms=0, hold_max_sec=20 (5d779b3e = линт-фикс ineffassign + допуск флейка сторожа стрима)",
             "R482: cppworker gpu-261110-1411 (5c455277) выкачен; контейнер healthy; балансер r261110-1346 и webui r261110-1346 не пересобирались",
             "R482: POST /api/chat с tools[] (Qwen3.8-9B-Distill, Cline-style) -> 200, done_reason=tool_calls, tool_calls[0].function.name=get_weather, arguments объектом; в сводке хода tool_calls=1, tool_calls_from_reasoning=false, hold_released=\"\", hold_released_ms=0, hold_max_sec=20, first_content_ms=-1",
@@ -32,17 +36,17 @@
             "alias": "ollama-legion/balancer:latest",
             "variable": "BALANCER_TAG",
             "service": "loadbalancer",
-            "imageTag": "r261110-1346",
-            "imageId": "sha256:d68abe48d262aa59e737eca666c5b31c62e942344cd4fed8b9d3e2d974040ced",
-            "image": "ollama-legion/balancer:r261110-1346"
+            "imageTag": "r261110-1540",
+            "imageId": "sha256:93c24cb0c140bfea1a2ed06e7c74d3e3fa1e6f6b4bd0304892ead2b7092c7b07",
+            "image": "ollama-legion/balancer:r261110-1540"
         },
         {
             "alias": "ollama-legion/cppworker:latest-gpu-86",
             "variable": "CPPWORKER_GPU_TAG",
             "service": "cppworker-gpu",
-            "imageTag": "gpu-261110-1436",
-            "imageId": "sha256:d67358539e1a902817803ece3691e3933328da744792f2aec6162a16b4d1eb15",
-            "image": "ollama-legion/cppworker:gpu-261110-1436"
+            "imageTag": "gpu-261110-1545",
+            "imageId": "sha256:e60600327b5694614dd2487b52b9a974df25ffc6027f58560199654a4d75ef7b",
+            "image": "ollama-legion/cppworker:gpu-261110-1545"
         },
         {
             "alias": "ollama-legion/webui:latest",

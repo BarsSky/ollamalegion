@@ -25,6 +25,7 @@
 
 | Документ | Русский | English | О чём |
 |---|---|---|---|
+| **v0.7.243: где копился ответ** | [RU](releases/v0.7.243-release-notes.ru.md) | - | R483: `first_byte_ms` в трассировке (воркер/балансер/клиент) и кольцо событий воркера без 5xx (`hold_released`, `client_gone`, `client_cancelled`, `unparsed_tool_markup`, `turn_retry`) в `failures.json`. |
 | **v0.7.242: инструменты в reasoning и поток** | [RU](releases/v0.7.242-release-notes.ru.md) | - | R482: вызов инструмента ищется и внутри блока размышлений, удержание вывода получило сторож (20 с / 32 КБ), финальный хвост режется на части — «одним куском» больше не приходит. |
 | **Установка и сборка** | [RU](getting-started/installation.ru.md) | [EN](getting-started/installation.md) | Требования, сборка в Docker, локальная сборка, stub-режим. |
 | **Развёртывание** | [RU](getting-started/deployment.ru.md) | [EN](getting-started/deployment.md) | Развёртывание стека: профили, воркеры, окружения, порты. |

@@ -111,7 +111,11 @@ accepted`; в сводке воркера — `n_predict`, `budget_exhausted`, `
 **Подтверждение:** сводка воркера (`streamed_content_bytes`, `emitted_len`,
 `final_content_len`, `dumped_args_instead_of_call`, `tool_calls_from_reasoning`,
 `hold_released*`, `first_content_ms`) против текста в Cline; побайтово — только с
-трассировкой чанков (см. §4, `CPPWORKER_STREAM_TRACE`).
+трассировкой чанков (см. §4, `CPPWORKER_STREAM_TRACE`). **R483:** на стороне
+балансера в строке `request trace` есть `first_byte_ms` — если он близок к
+`duration_ms`, ответ держал воркер/балансер, а не клиент; события воркера без
+5xx (`hold_released`, `client_gone`, `client_cancelled`,
+`unparsed_tool_markup`, `turn_retry`) лежат в `failures.json` архива.
 
 ### H6. Вызов отброшен как необъявленный
 **Механизм:** R428/R468: вызов распознан, но инструмента нет в объявленном наборе

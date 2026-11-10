@@ -398,6 +398,12 @@ MIT - see [LICENSE.md](LICENSE.md).
 Full history with dates, image tags and the defect behind each fix:
 [CHANGELOG.md](CHANGELOG.md). Recently:
 
+- **v0.7.243 (R483, 2026-11-10) - where the answer was held, and worker events.**
+  `first_byte_ms` in `request trace` shows whether the worker held the answer
+  (close to `duration_ms`) or streamed it right away. The worker failure ring now
+  also records non-5xx turn events (`hold_released`, `client_gone`,
+  `client_cancelled`, `unparsed_tool_markup`, `turn_retry`) into
+  `failures.json` of the diagnostics bundle - the direct answer to "who held it".
 - **v0.7.242 (R482, 2026-11-10) - tool calls inside reasoning, streaming instead of one chunk.**
   On the A10/Qwen3.8-27B stand a tool call was lost when the model placed it inside
   its reasoning block (the parser only looked at the visible part); it is now also

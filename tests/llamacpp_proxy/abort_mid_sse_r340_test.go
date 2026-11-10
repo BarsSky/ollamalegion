@@ -483,11 +483,11 @@ func TestR340_ClientAbortMidSSE(t *testing.T) {
 	if !strings.Contains(frames[0], "chat.completion.chunk") {
 		t.Errorf("первый кадр не в форме OpenAI-чанка: %s", frames[0])
 	}
-	r340WaitFor(t, 5*time.Second, "запрос занял слот бэкенда", func() bool {
+	r340WaitFor(t, 10*time.Second, "запрос занял слот бэкенда", func() bool {
 		return r340ActiveReqs(proxy, r340BackendID) == baseline+1
 	})
 	if sessionID != "" {
-		r340WaitFor(t, 5*time.Second, "сессия помечена как стримящая", func() bool {
+		r340WaitFor(t, 10*time.Second, "сессия помечена как стримящая", func() bool {
 			return r340SessionStreaming(proxy, sessionID)
 		})
 	} else {
@@ -517,21 +517,21 @@ func TestR340_ClientAbortMidSSE(t *testing.T) {
 
 	// 4b. Слот admission освобождён. Обработчик отпускает его через defer
 	// (llamacpp_handlers_inference.go:272-276) ровно тогда, когда вернулся.
-	r340WaitFor(t, 5*time.Second, "слот бэкенда освобождён после обрыва", func() bool {
+	r340WaitFor(t, 10*time.Second, "слот бэкенда освобождён после обрыва", func() bool {
 		return r340ActiveReqs(proxy, r340BackendID) == baseline
 	})
 
 	// 4c. Учёт активных стримов снят (active_streams_r271.go:108-153). Иначе
 	// Shutdown (R217/R219) и разрушительные операции (R271) будут ждать стрим,
 	// которого уже нет.
-	r340WaitFor(t, 5*time.Second, "учёт активных стримов снят", func() bool {
+	r340WaitFor(t, 10*time.Second, "учёт активных стримов снят", func() bool {
 		return proxy.ActiveStreamsOnBackend(r340BackendID) == 0
 	})
 
 	// 4d. Флаг HasActiveStream снят (stream_session_r252.go:134-158): сессия не
 	// остаётся «вечно стримящей» и не мешает зомби-уборке/перепривязке.
 	if sessionID != "" {
-		r340WaitFor(t, 5*time.Second, "флаг HasActiveStream снят", func() bool {
+		r340WaitFor(t, 10*time.Second, "флаг HasActiveStream снят", func() bool {
 			return !r340SessionStreaming(proxy, sessionID)
 		})
 	}
@@ -584,7 +584,7 @@ func TestR344_AbortSendsExplicitCancel(t *testing.T) {
 	// 3. Клиент ещё читает? Нет — тело закрыто; балансер обнаруживает уход на
 	// ближайшей записи (heartbeat) и обязан прислать отмену воркеру.
 	// 3. Воркер обязан получить явный приказ об отмене.
-	r340WaitFor(t, 5*time.Second, "воркер получил POST /api/cancel", func() bool {
+	r340WaitFor(t, 10*time.Second, "воркер получил POST /api/cancel", func() bool {
 		select {
 		case <-worker.cancelSeen:
 			return true

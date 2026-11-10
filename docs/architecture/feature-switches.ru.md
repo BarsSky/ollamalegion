@@ -228,6 +228,26 @@
 - `LB_SESSION_STICKINESS`
 - `LB_SHUTDOWN_DRAIN_SEC`
 
+### Идентичность сборки — не переключатель, а build-time (R486)
+
+В разделах А–Г её нет и быть не может: переключать нечего. Восемь build-аргументов
+— `SERVICE`, `VERSION`, `IMAGE_TAG`, `GIT_COMMIT`, `GIT_COMMIT_FULL`,
+`GIT_COMMIT_DATE`, `BUILD_DATE`, `BUILD_AUTHOR` — плюс три llama.cpp-ных
+(`LLAMA_BUILD`, `LLAMA_BUILD_DATE`, `RPC_PROTO`, только cppworker) и `RELEASE`
+(только webui) задаются один раз на сборке. Дальше они живут в `-ldflags`,
+`/app/identity.json` и OCI-метках образа и на запуске не переопределяются: env
+остаётся последним источником только для `go run` в dev. Вычислитель один —
+`scripts/build-identity.ps1`; если значение не посчиталось, он бросает исключение,
+а Dockerfile падает на страже до `go build`, а не печёт «unknown».
+
+Пары `<СЕРВИС>_GIT_COMMIT` / `<СЕРВИС>_BUILD_DATE` (`BALANCER_GIT_COMMIT`,
+`BALANCER_BUILD_DATE`, `CPPWORKER_GIT_COMMIT`, `CPPWORKER_BUILD_DATE`,
+`WEBUI_GIT_COMMIT`, `WEBUI_BUILD_DATE`, `AGENT_GIT_COMMIT`, `AGENT_BUILD_DATE`)
+УДАЛЕНЫ из compose-файлов: в `.env` они больше ничего не настраивают и ничего не
+включают. `CPPWORKER_LLAMA_BUILD` и `CPPWORKER_LLAMA_BUILD_DATE` остались, но
+только как переопределение оператора: пусто = намерение не заявлено, факт
+берётся из запечённого образа.
+
 ## Д. Что уже управляется из WebUI (реестр горячих настроек)
 
 Панель **«Горячие настройки»** (`GET/PUT /api/v1/settings`) рисует реестр

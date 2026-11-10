@@ -398,6 +398,19 @@ MIT - see [LICENSE.md](LICENSE.md).
 Full history with dates, image tags and the defect behind each fix:
 [CHANGELOG.md](CHANGELOG.md). Recently:
 
+- **v0.7.246 (R486, 2026-11-10) - build identity is baked into the image.**
+  The balancer and cppworker images had been built and stamped with the PREVIOUS
+  commit: `deployments/.env` carried `BALANCER_GIT_COMMIT=850923d7` /
+  `CPPWORKER_GIT_COMMIT=361490ec` while HEAD was `8b246ffe`, the release script
+  passed no identity build args at all, and `ARG GIT_COMMIT=unknown` silently
+  produced a lying image (found by accident via `/api/version` after deploy).
+  Now commit, commit date, build date, author, service, image tag, llama.cpp
+  commit/date and the RPC protocol version are baked in (`-ldflags` plus
+  `/app/identity.json` plus OCI labels), `unknown` is no longer a value, and
+  every Go service REFUSES to start when its binary disagrees with the baked
+  identity. `deployments/.env` no longer holds commit/date, and
+  `/api/v1/backends` shows `workerReleaseMismatch` when a node comes from a
+  different release.
 - **v0.7.245 (R485, 2026-11-10) - reasoning never leaks into `content`.**
   Found from a real second-stand archive (A10 x2, Qwen3.8-27B): assistant messages
   WITH `tool_calls` carried `content_len=65109 / 18720 / 12113` of leaked planning

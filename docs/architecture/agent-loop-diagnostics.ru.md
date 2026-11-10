@@ -206,6 +206,27 @@ final_content_len=… tool_calls=… done_reason=… dumped_args_instead_of_call
 Все перечисленные переменные проброшены в `deployments/docker-compose.stack.yml`
 и описаны в `.env.example` (сторож R274 больше не ругается).
 
+### 4.4. Чем доказать, КАКОЙ образ запущен (R486)
+
+Половина разборов «исправление не сработало» — это старый образ в контейнере.
+С R486 идентичность сборки запечена в образ, поэтому ответ доказуем, а не
+предполагается по env стенда:
+
+| Чем | Что показывает |
+|---|---|
+| `identity.json` в архиве диагностики | что ЗАПЕЧЕНО в образ (в `env.json` — что в него ПЕРЕДАЛИ); файл лежит и в архиве балансера, и в архиве воркера |
+| `/api/version` (`build`, `build_commit`, `build_commit_full`, `build_commit_date`, `build_date`, `build_author`, `build_image_tag`, `build_service`, `llama_commit`, `llama_date`, `rpc_proto`) | что о себе говорит сам процесс; у воркера теперь те же поля, что у балансера |
+| `docker image inspect <образ> --format '{{json .Config.Labels}}'` | `org.opencontainers.image.revision/.created/.version` и `ru.ollamalegion.git.commit`/`.image.tag` — свойство образа, контейнер поднимать не нужно |
+| `docker run --rm --entrypoint sh <образ> -c 'cat /app/identity.json'` | запечённый манифест, когда контейнер не стартует |
+| `/api/v1/backends` → `workerCommit`/`workerVersion`/`workerBuildDate`/`workerRpcProto` и `workerReleaseMismatch` | из какого релиза собран узел раскладки; `true` = узел из другого релиза, чем балансер (пустые значения известные не затирают — старый образ остаётся видимым) |
+
+Отдельно: контейнер, у которого бинарь и запечённый `/app/identity.json` не
+сошлись (коммит, наличие даты сборки, имя сервиса), **не стартует** — в логе
+`FATAL: R486: идентичность образа не совпадает с бинарём (...)`. Это не дефект
+разбора, а доказательство, что образ и код внутри него из разных сборок:
+пересобирать, а не искать причину в логах запроса. Сверка — `VerifyR486` в
+`pkg/version/identity_r486.go`, вызывается первой строкой `main()`.
+
 
 ---
 

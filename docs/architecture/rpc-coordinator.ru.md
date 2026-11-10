@@ -268,8 +268,20 @@ Circuit breaker state можно посмотреть через `/api/v1/rpc/wo
 | Переменные | `CPPWORKER_RPC_SERVERS` (`host:port,host:port`), `CPPWORKER_RPC_ENABLE`, `CPPWORKER_MAIN_GPU`, `CPPWORKER_LLAMA_BUILD` — разбор и валидация: `cmd/cppworker/rpc_env_r101.go` |
 | Конфиг | `cppbackend.Config.RPCServers / RPCEnabled / LlamaBuild` |
 | Мост | `bridge.ModelConfig.RPCServers` заполняется в `LoadModelWithOpts` (`applyRPCServersR105`) |
-| Версия сборки | `CPPWORKER_LLAMA_BUILD` → регистрация → `types.Backend.BuildInfo` → проверка совместимости сторон RPC в `POST /api/v1/placement/validate` (`version_mismatch`) |
+| Версия сборки | `CPPWORKER_LLAMA_BUILD` → регистрация → `types.Backend.BuildInfo` → проверка совместимости сторон RPC в `POST /api/v1/placement/validate` (`version_mismatch`); R486: ФАКТ берётся из запечённого в образ коммита (`/app/identity.json`, `llama_commit`), env — только переопределение оператора |
+| Версия протокола RPC | `rpc_proto` из `c/llama.cpp/ggml/include/ggml-rpc.h` (`RPC_PROTO_MAJOR/MINOR/PATCH`), запечённая в образ → `config.rpcProto` узла → гейт допуска узла |
 | Балансер | логический бэкенд (группа), `strategy: sharded`, маршрутизация на мастера, фит по СУММЕ узлов — всё готово и покрыто тестами |
+
+Версия протокола RPC теперь сравнивается, а не только коммит (R486). Гейт
+допуска узла R115 (`internal/cppbackend/rpc_version_gate_r115.go`) сверяет пару
+«коммит + `RPC_PROTO_*`»: обе стороны сообщают версию, запечённую в образ из
+`ggml-rpc.h` (у мастера — свой процесс, у узла — `GET
+/api/v1/cppworker/config` → `config.rpcProto`). Расхождение даёт причину
+`rpc_proto_mismatch:<node>!=<master>`, то есть узел в раскладку не идёт. Если
+версию не сообщает любая из сторон, это НЕ вердикт: узел допускается — урок R115
+в том, что ёмкость нельзя молча отнимать. Узлы раскладки видны в
+`/api/v1/backends` полем `workerRpcProto` (рядом с `workerCommit`,
+`workerVersion`, `workerBuildDate` и `workerReleaseMismatch`).
 
 Пока транспорт не собран, включённый RPC **честно логируется как нерабочий** и на
 старте, и на каждой загрузке модели: молчаливая настройка заставила бы оператора

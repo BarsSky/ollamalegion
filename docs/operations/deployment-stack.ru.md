@@ -799,9 +799,14 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PUT \
 ║Version:       r83-submodule-v23 (commit 5731414, 2026-09-28)║
 ```
 
-Значение берётся из `APP_VERSION` (compose подставляет тег образа) плюс
-`GIT_COMMIT`/`BUILD_DATE`, вшитые при сборке. Отсюда сразу видно, применилась ли
-правка:
+Значение берётся из ЗАПЕЧЁННОЙ идентичности (R486): `-ldflags` → `pkg/version` и
+`/app/identity.json` в образе. Окружение версию больше НЕ описывает: `APP_VERSION`
+/ `VERSION` / `GIT_COMMIT` / `BUILD_DATE` читаются только как последний источник и
+только вне образа (`go run`), а `deployments/.env` больше не хранит пары
+`<СЕРВИС>_GIT_COMMIT` / `<СЕРВИС>_BUILD_DATE` — они удалены из compose-файлов и
+ни на что не влияют.
+
+Отсюда сразу видно, применилась ли правка:
 
 ```bash
 docker logs ol-stack-balancer 2>&1 | head -10 | grep Version
@@ -811,7 +816,55 @@ docker logs ol-stack-cppworker-gpu 2>&1 | grep -m1 'Worker starting'
 ```
 
 Если версия в логе не та, которую вы собирали, — в контейнере старый образ, и
-искать дефект в коде бессмысленно.
+искать дефект в коде бессмысленно. То же можно проверить без запуска контейнера:
+
+```bash
+# что запечено в образ (метки OCI + ru.ollamalegion.*)
+docker image inspect ollama-legion/balancer:<тег> --format '{{json .Config.Labels}}'
+# что запечено в файл идентичности
+docker run --rm --entrypoint sh ollama-legion/balancer:<тег> -c 'cat /app/identity.json'
+```
+
+**Ручная сборка: идентичность считает скрипт, а не `.env`.** `docker compose build`
+берёт build-аргументы ТОЛЬКО из окружения процесса (`env_file` на build args не
+действует, а `.git` в контекст сборки не попадает из-за `.dockerignore`).
+Единственный вычислитель — `scripts/build-identity.ps1`; значения надо
+экспортировать перед сборкой:
+
+```powershell
+. scripts/build-identity.ps1
+$tag = 'r261110-1925'
+$id = Get-BuildIdentity -Service balancer -Version $tag -ImageTag $tag
+$env:GIT_COMMIT      = $id.GitCommit
+$env:GIT_COMMIT_FULL = $id.GitCommitFull
+$env:GIT_COMMIT_DATE = $id.GitCommitDate
+$env:BUILD_DATE      = $id.BuildDate
+$env:BUILD_AUTHOR    = $id.Author
+
+docker compose -f deployments/docker-compose.stack.yml --env-file deployments/.env build loadbalancer
+```
+
+Для cppworker (`-Service cppworker -ImageTag "gpu-$tag"`) к экспорту добавляются
+три значения llama.cpp, иначе страж не пропустит сборку:
+
+```powershell
+$env:LLAMA_BUILD      = $id.LlamaBuild
+$env:LLAMA_BUILD_DATE = $id.LlamaBuildDate
+$env:RPC_PROTO        = $id.RpcProto
+docker compose -f deployments/docker-compose.stack.yml --env-file deployments/.env build cppworker-gpu
+```
+
+`VERSION`/`IMAGE_TAG` для каждого сервиса compose берёт из тегов в
+`deployments/.env` (`BALANCER_TAG`, `CPPWORKER_GPU_TAG`, …), а не из `$id`.
+Забыли экспорт — сборка не «пройдёт с unknown», а упадёт на страже Dockerfile:
+
+```
+FATAL: GIT_COMMIT not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1
+```
+
+Это и есть защита от «молча чужой штамп» (R486), а не неудобство. Поддерживаемый
+путь — скрипты, которые считают всё сами: `scripts/build-containers.ps1` и
+`scripts/release-all.ps1`.
 
 ---
 

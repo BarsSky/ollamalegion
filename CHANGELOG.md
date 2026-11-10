@@ -1,3 +1,86 @@
+## [0.7.246 - R486: идентичность сборки в образе, 2026-11-10]
+
+Образы балансера и воркера были собраны и проштампованы ПРЕДЫДУЩИМ коммитом: в
+`deployments/.env` лежали `BALANCER_GIT_COMMIT=850923d7` /
+`CPPWORKER_GIT_COMMIT=361490ec`, а HEAD был `8b246ffe`. `release-all.ps1` не
+передавал identity build-args вовсе, поэтому в Dockerfile срабатывал
+`ARG GIT_COMMIT=unknown` — и образ молча уезжал на стенд с чужим штампом.
+Ни одна проверка этого не видела: `check-image-tags.ps1` смотрел только строки
+`image:`, `release-manifest.json` брал `gitCommit` из репозитория, а
+`pkg/version` принимал `unknown` как значение. Нашли случайно, по `/api/version`
+после выкатки.
+
+- **Идентичность печётся, а не подставляется из env.** `pkg/version` получил
+  поля `Commit/CommitFull/CommitDate/BuildDate/Author/Service/Version/ImageTag/
+  LlamaCommit/LlamaDate/RPCProto`; порядок источников `-ldflags` >
+  `/app/identity.json` > env (env оставлен только для `go run` в dev).
+  `unknown` больше не считается значением.
+- **Проверка на старте `VerifyR486`/`MustVerifyR486(service)`:** бинарник
+  сверяется с запечённым `/app/identity.json` по коммиту, наличию даты сборки и
+  имени сервиса и при расхождении НЕ стартует (`FATAL` в stderr). Балансер,
+  cppworker, агент, sdworker вызывают это первой строкой `main()`. Это ровно та
+  проверка, которая поймала бы `850923d7`.
+- **`scripts/build-identity.ps1` — единственный вычислитель:** git short/full
+  SHA, дата коммита, дата сборки (UTC), автор, коммит+дата `c/llama.cpp`,
+  версия протокола RPC из `ggml-rpc.h`. Не смог посчитать — бросает исключение,
+  а не печёт «unknown». Зовётся из `build-containers.ps1` и `release-all.ps1`.
+- **Dockerfiles (10 файлов) падают до сборки:** у Go-образов build-аргументы
+  без дефолта `=unknown`, страж перед каждым `go build` (`FATAL: GIT_COMMIT not
+  supplied (build arg) — identity must be baked, see scripts/build-identity.ps1`),
+  `/app/identity.json` в каждом образе (включая nginx-WebUI и imageworker, где
+  Go-бинарника нет; у WebUI тот же файл ещё и в корне статики — виден `curl
+  /identity.json`), OCI-метки плюс `ru.ollamalegion.git.commit`/`.image.tag` и
+  (cppworker) `.llama.commit`/`.llama.date`/`.rpc.proto`. В cppworker настоящий
+  коммит llama.cpp теперь идёт в cmake (`-DLLAMA_BUILD_COMMIT`/
+  `-DLLAMA_BUILD_NUMBER`): `git init && git commit` внутри образа заставлял
+  `build-info.cpp` сообщать синтетический SHA.
+- **WebUI — единственный образ без Go-бинарника**, поэтому у него страж
+  `RELEASE=1` (compose всегда передаёт `RELEASE=1`): dev-сборка остаётся
+  возможной, релизная не может запечь `dev`/`unknown`.
+- **`-X ...Author=` убран из `-ldflags`:** автор из git содержит пробел
+  (`Имя <mail>`), линкер разбирал его как отдельный флаг, сборка падала (живой
+  случай). Автор едет в `/app/identity.json` и в OCI-метке; `pkg/version` читает
+  его из файла.
+- **Compose:** аргументы идентичности берутся из ОКРУЖЕНИЯ ПРОЦЕССА
+  (`${GIT_COMMIT:-}`), а не из `.env`. Удалены `BALANCER_GIT_COMMIT`,
+  `BALANCER_BUILD_DATE`, `CPPWORKER_GIT_COMMIT`, `CPPWORKER_BUILD_DATE`,
+  `WEBUI_GIT_COMMIT`, `WEBUI_BUILD_DATE`, `AGENT_GIT_COMMIT`, `AGENT_BUILD_DATE`
+  — на сборку и образ они больше не влияют.
+  `CPPWORKER_LLAMA_BUILD`/`CPPWORKER_LLAMA_BUILD_DATE` больше не приходят в
+  контейнер с дефолтом `unknown` и стали только переопределением (пусто =
+  намерение не заявлено), иначе каждый старт писал `llama_build_mismatch` против
+  запечённого факта.
+- **Балансер видит релиз узла:** регистрация несёт `workerVersion`,
+  `workerCommit`, `workerBuildDate`, `workerRpcProto`, а `/api/v1/backends` —
+  их же плюс `workerReleaseMismatch`. Пустые значения не затирают известные
+  (старые образы остаются пригодными).
+- **Гейт R115 сравнивает и протокол RPC:** причина
+  `rpc_proto_mismatch:<node>!=<master>`; если версию не сообщает любая из
+  сторон, узел всё равно допускается (урок R115: молча не отнимать ёмкость).
+  `cfg.LlamaBuild` и `buildInfo` регистрации — из запечённого значения, env
+  остаётся запасным путём для образов до R486.
+- **`scripts/check-image-tags.ps1` (его запускает CI)** падает на удалённой
+  переменной, дефолте `unknown` в build-аргументе, build-блоке без
+  `GIT_COMMIT_FULL`, Dockerfile без `/app/identity.json` / без стража / без
+  `-X pkg/version.Commit`.
+- **Диагностика:** оба архива несут `identity.json` отдельным файлом (`env.json`
+  — что ПЕРЕДАЛИ в контейнер, `identity.json` — что ЗАПЕЧЕНО); `/api/version`
+  воркера отдаёт те же поля сборки, что балансер (новые ключи добавлены, ни один
+  не переименован).
+
+**Проверено:** identity_r486_test.go (9 проверок), worker_identity_r486_test.go
+(3), rpc_version_gate_r486_test.go (3). Статически — реальный `docker build`
+балансера БЕЗ build-аргументов падает на страже с `FATAL: GIT_COMMIT not
+supplied ...`; собранный образ содержит ожидаемый `/app/identity.json` и метки.
+Полный `go test -tags llama_stub ./...` — один флейк
+(`TestVirtualRouter_HeavyModel_LeastLoaded_RespectsLoad`, в изоляции 3/3
+зелёный). Образы выпуска: balancer `r261110-1925`, cppworker `gpu-261110-1925`,
+коммит `9d42a329`. Живая выкатка выполнена: контейнер с подменённым
+identity.json не стартует, `/api/version` отдаёт запечённые поля,
+`/api/v1/backends` показывает workerVersion/workerCommit/workerRpcProto,
+поведение на
+стенде не проверено.
+
 ## [0.7.245 - R485: размышления не снимаются в content, 2026-11-10]
 
 Найдено по архиву диагностики второго стенда (A10 ×2, Qwen3.8-27B, клиент

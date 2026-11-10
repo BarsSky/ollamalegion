@@ -1344,6 +1344,8 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		// токены после ухода клиента: в живом логе обрыв 15:53:57, а HTTP-лог с
 		// status=200 и duration=32m40s появился только в 15:54:05.
 		if sw.IsBroken() {
+			// R483: обрыв записи клиенту — событие хода, а не только строка в логе.
+			recordWorkerEventR483(r, r.URL.Path, "client_gone", "stream write failed or client disconnected")
 			return false
 		}
 		// R83: чистим управляющие символы — клиентские JSON-парсеры (артефакты,
@@ -2050,6 +2052,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			"hold_max_sec", int(toolsHoldMaxHoldR482().Seconds()),
 			"hold_max_bytes", toolsHoldMaxBytesR482(),
 			"note", "накопленное не отдаётся (возможны размышления); последующие токены идут в content")
+		// R483: событие в кольцо воркера — иначе «ответ одним куском» в архиве
+		// диагностики не видно без чтения текста лога.
+		recordWorkerEventR483(r, "/api/chat", "hold_released",
+			fmt.Sprintf("%s held_ms=%d held_bytes=%d", why, holdReleasedAt.Sub(holdSince).Milliseconds(), held))
 		return true
 	}
 
@@ -2061,6 +2067,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		}
 		// R83: writer broken (клиент ушёл) → прекращаем генерацию немедленно.
 		if sw.IsBroken() {
+			// R483: обрыв записи клиенту — событие хода, а не только строка в логе.
+			recordWorkerEventR483(r, r.URL.Path, "client_gone", "stream write failed or client disconnected")
 			return false
 		}
 		// R83: чистим управляющие символы (см. stream_sanitize.go).
@@ -2364,6 +2372,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			if !emptyOutput && !unparsedMarkup {
 				break
 			}
+			// R483: повтор из-за пустого/нераспознанного вывода — событие хода.
+			recordWorkerEventR483(r, "/api/chat", "turn_retry",
+				retryReasonLabel(emptyOutput, unparsedMarkup))
 			logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_retry"),
 				"model", modelName, "attempt", attempt, "reason", retryReasonLabel(emptyOutput, unparsedMarkup),
 				"raw_len", len(fullOutput),
@@ -2721,6 +2732,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"clean_len", len(cleanFinalContent(outputForParse)),
 				"emitted_len", emittedLen,
 				"preview", truncateForLog(tail, 300))
+			// R483: «модель выдала разметку, но вызов не распознан» — в кольцо.
+			recordWorkerEventR483(r, "/api/chat", "unparsed_tool_markup",
+				fmt.Sprintf("raw_len=%d clean_len=%d emitted=%d", len(fullOutput), len(cleanFinalContent(outputForParse)), emittedLen))
 			for _, part := range splitTerminalContentR482(tail, 1024) {
 				emitContentDelta(part)
 			}

@@ -12,11 +12,37 @@
 package main
 
 import (
+	"net/http"
 	"sync"
 	"time"
 )
 
+// recordWorkerEventR483 — событие хода, которое не является 5xx, но объясняет
+// «почему клиент не получил то, что ждал» (R483). Используется для снятия
+// удержания вывода (R482), обрыва записи клиенту, пустого вывода после повторов
+// и нераспознанной разметки вызова.
+func recordWorkerEventR483(r *http.Request, path, kind, detail string) {
+	if r == nil {
+		return
+	}
+	recordWorkerFailureR477(workerFailureR477{
+		RequestID: getRequestID(r),
+		Method:    r.Method,
+		Path:      path,
+		Status:    http.StatusOK,
+		Kind:      kind,
+		Detail:    detail,
+	})
+}
+
 // workerFailureR477 — один сбой воркера.
+//
+// R483: сюда попадают не только 5xx. Живой разбор «ответ пришёл одним куском /
+// инструмент не применился / клиент ушёл» упирался в то, что в кольце были
+// только 500-е, а настоящие события хода — снятие удержания вывода (R482),
+// обрыв записи клиенту, пустой вывод после повторов, нераспознанная разметка
+// вызова — жили только в тексте лога. Kind — машинный код события, Detail —
+// числа/причина для человека.
 type workerFailureR477 struct {
 	Time       time.Time `json:"time"`
 	RequestID  string    `json:"request_id,omitempty"`
@@ -24,6 +50,8 @@ type workerFailureR477 struct {
 	Path       string    `json:"path"`
 	Status     int       `json:"status"`
 	DurationMs int64     `json:"duration_ms"`
+	Kind       string    `json:"kind,omitempty"`
+	Detail     string    `json:"detail,omitempty"`
 }
 
 // workerFailuresMaxR477 — сколько последних сбоев держим.

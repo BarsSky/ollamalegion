@@ -68,6 +68,10 @@ func requestTraceModeR476() string {
 type traceStateR476 struct {
 	status int
 	bytes  int64
+	// R483: момент первого байта клиенту. Нужен, чтобы отличить «балансер ждал
+	// воркер» от «воркер отдал сразу, а клиент получил всё в конце»: duration_ms
+	// этого не показывает.
+	firstByteAt time.Time
 }
 
 func (s *traceStateR476) onWriteHeader(code int) {
@@ -79,6 +83,9 @@ func (s *traceStateR476) onWriteHeader(code int) {
 func (s *traceStateR476) onWrite(n int) {
 	if s.status == 0 {
 		s.status = http.StatusOK
+	}
+	if n > 0 && s.firstByteAt.IsZero() {
+		s.firstByteAt = time.Now()
 	}
 	s.bytes += int64(n)
 }
@@ -173,10 +180,18 @@ func startRequestTraceR476(w http.ResponseWriter, r *http.Request, rid string) (
 		if status < http.StatusBadRequest && abort == "" {
 			stageFinal = stageDoneR477
 		}
+		// R483: first_byte_ms — когда клиенту ушёл ПЕРВЫЙ байт. Если он близок к
+		// duration_ms, ответ пришёл одним куском (держал воркер или балансер);
+		// если мал, а клиент всё равно ждал — проблема на стороне клиента/сети.
+		firstByteMs := int64(-1)
+		if !state.firstByteAt.IsZero() {
+			firstByteMs = state.firstByteAt.Sub(start).Milliseconds()
+		}
 		logger.Get().Infow("request trace",
 			"request_id", rid, "method", r.Method, "path", r.URL.Path,
 			"status", status, "duration_ms", time.Since(start).Milliseconds(),
-			"bytes", state.bytes, "backend", backend, "client", traceClientAddrR476(r),
+			"bytes", state.bytes, "first_byte_ms", firstByteMs,
+			"backend", backend, "client", traceClientAddrR476(r),
 			"stage", stage, "stage_final", stageFinal, "stage_ms", stageMs)
 		if abort != "" {
 			logger.Get().Warnw("request trace: доставка оборвана",

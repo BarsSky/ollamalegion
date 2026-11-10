@@ -12,8 +12,6 @@ import (
 func TestR480_RejectionsIncludeWindowTooSmall(t *testing.T) {
 	t.Setenv("LB_R459_SESSION_TTL_SEC", "900")
 	p := r480SelectorProxy(t)
-	p.backends["b1"].ActiveReqs = 0
-	p.backends["b2"].ActiveReqs = 0
 
 	list := p.backendRejectionsR460(r459Model, "", &backendRejectionMoveR480{Need: 65536, NeedSource: "session"})
 	var b2 *backendRejectionR460

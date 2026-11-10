@@ -4,7 +4,12 @@
 // Первый вариант сравнивал кандидата с потребностью запроса. Если она больше
 // ВСЕХ окон в кластере (большой промпт на маленьких копиях), гейт отклонял
 // всех, и запрос висел в очереди до 900 с вместо того, чтобы уйти на свою
-// копию и дать preflight поднять окно. CI ловил это таймаутом пакета.
+// копию и дать preflight поднять окно.
+//
+// Тесты проверяют сам предикат (детерминированно, без «занятия слотов»:
+// прямая подмена ActiveReqs ловится -race, а EffectiveMaxConcurrentRequests
+// может брать ёмкость из метрик модели) и то, что очередь без известного окна
+// ведёт себя по-прежнему.
 package balancer
 
 import (
@@ -15,51 +20,64 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// TestR480_QueueMoveUsesSessionWindowNotRequestNeed — сессия на b2 (окно
-// 32768), b2 занят: очередь вправе взять b1 (65536), потому что он НЕ хуже.
-func TestR480_QueueMoveUsesSessionWindowNotRequestNeed(t *testing.T) {
+// TestR480_QueueMoveGateUsesSessionWindow — гейт очереди строится по окну своей
+// копии: узкая копия отклоняется, равная/широкая — допускается, своя — всегда.
+func TestR480_QueueMoveGateUsesSessionWindow(t *testing.T) {
 	t.Setenv("LB_R459_COLD_TTL_SEC", "90")
-	p := r480SelectorProxy(t)
-	p.setAdmissionWait(2 * time.Second)
-	// b2 занят: один слот, уже занят (иначе у него 10 свободных слотов).
-	p.backends["b2"].Backend.MaxConcurrentReqs = 1
-	p.backends["b2"].ActiveReqs = 1
+	p := r480SelectorProxy(t) // b1: 65536, b2: 32768
 
-	id, release, _, _, err := p.waitForInferenceBackendWithMoveR480(
-		context.Background(), r459Model, types.BackendTypeLlamaCpp, "s1", "b2")
-	if err != nil {
-		t.Fatalf("переезд на b1 (окно больше) обязан быть разрешён, получено %v", err)
+	gate, need := p.sessionQueueGateR480("b1", r459Model)
+	if gate == nil || need != 65536 {
+		t.Fatalf("гейт от b1: gate=%v need=%d, ожидались непустой и 65536", gate != nil, need)
 	}
-	if id != "b1" {
-		t.Fatalf("получен %q, ожидался b1", id)
+	if !gate("b1") {
+		t.Fatal("своя копия обязана быть допустима")
 	}
-	if release != nil {
-		release()
+	if gate("b2") {
+		t.Fatal("b2 (32768) уже b1 (65536) — переезд обязан быть отклонён")
+	}
+
+	gate2, need2 := p.sessionQueueGateR480("b2", r459Model)
+	if gate2 == nil || need2 != 32768 {
+		t.Fatalf("гейт от b2: gate=%v need=%d, ожидались непустой и 32768", gate2 != nil, need2)
+	}
+	if !gate2("b1") {
+		t.Fatal("b1 (65536) не хуже b2 (32768) — переезд разрешён")
 	}
 }
 
-// TestR480_QueueMoveRejectsNarrowerCopy — сессия на b1 (65536), b1 занят:
-// b2 (32768) уже, переезд запрещён → ждём слот b1 до таймаута.
-func TestR480_QueueMoveRejectsNarrowerCopy(t *testing.T) {
+// TestR480_QueueMoveGateColdCandidateRejected — свежая метрика без модели:
+// «холодный» кандидат очередью не берётся.
+func TestR480_QueueMoveGateColdCandidateRejected(t *testing.T) {
 	t.Setenv("LB_R459_COLD_TTL_SEC", "90")
 	p := r480SelectorProxy(t)
-	p.setAdmissionWait(200 * time.Millisecond)
-	p.backends["b1"].Backend.MaxConcurrentReqs = 1
-	p.backends["b1"].ActiveReqs = 1
+	// b3 — бэкенд с известной пустой метрикой (свежий опрос, модели нет).
+	p.metricsMgr.UpdateLlamaCppMetrics("b3", &types.LlamaCppMetrics{})
+	p.metricsMgr.MarkLlamaCppPolled("b3", time.Now())
 
-	_, _, _, _, err := p.waitForInferenceBackendWithMoveR480(
-		context.Background(), r459Model, types.BackendTypeLlamaCpp, "s1", "b1")
-	if err != errAdmissionTimeout {
-		t.Fatalf("ожидался errAdmissionTimeout (ждём свою копию), получено %v", err)
+	gate, _ := p.sessionQueueGateR480("b1", r459Model)
+	if gate == nil {
+		t.Fatal("гейт не построен")
+	}
+	if gate("b3") {
+		t.Fatal("холодный кандидат (модели нет по свежей метрике) обязан быть отклонён")
 	}
 }
 
-// TestR480_QueueMoveNoGateWhenWindowUnknown — окно текущей копии неизвестно:
-// сравнивать не с чем, гейт не ставится (запрос обслуживается как раньше).
-func TestR480_QueueMoveNoGateWhenWindowUnknown(t *testing.T) {
+// TestR480_QueueMoveGateUnknownWindowNoGate — окно своей копии неизвестно:
+// сравнивать не с чем, гейт не ставится (поведение прежнее).
+func TestR480_QueueMoveGateUnknownWindowNoGate(t *testing.T) {
+	p := r480SelectorProxy(t)
+	if gate, need := p.sessionQueueGateR480("b9", r459Model); gate != nil || need != 0 {
+		t.Fatalf("для неизвестного окна ожидался nil-гейт, получено gate=%v need=%d", gate != nil, need)
+	}
+}
+
+// TestR480_QueueMoveWithoutKnownWindowServes — очередь с неизвестным окном
+// обслуживает запрос как раньше (не блокируется).
+func TestR480_QueueMoveWithoutKnownWindowServes(t *testing.T) {
 	p := r480SelectorProxy(t)
 	p.setAdmissionWait(2 * time.Second)
-	// Окно "b9" неизвестно: записи в llamaMetrics нет вовсе.
 	id, release, _, _, err := p.waitForInferenceBackendWithMoveR480(
 		context.Background(), r459Model, types.BackendTypeLlamaCpp, "s1", "b9")
 	if err != nil {

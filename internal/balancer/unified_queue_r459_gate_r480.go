@@ -88,6 +88,36 @@ type queueMoveR480 struct {
 	need       int
 }
 
+// sessionQueueGateR480 — предикат очереди для сессии, привязанной к from.
+//
+// Возвращает (nil, 0), если окно текущей копии неизвестно: сравнивать не с чем,
+// гейт не ставится (поведение прежнее), иначе можно заблокировать очередь на
+// пустом месте.
+func (p *Proxy) sessionQueueGateR480(from, model string) (func(string) bool, int) {
+	if p == nil || from == "" {
+		return nil, 0
+	}
+	fromWindow := p.loadedPerSeqNCtx(from, model)
+	if fromWindow <= 0 {
+		return nil, 0
+	}
+	return func(c string) bool {
+		if c == from {
+			return true
+		}
+		perSeq, known := p.loadedPerSeqNCtxKnownR480(c, model)
+		if !known {
+			// «Неизвестно» — не «нет модели»: допускаем, но оставляем след.
+			p.logColdCandidateUnknownR480(c, from, model, fromWindow)
+			return true
+		}
+		if perSeq <= 0 {
+			return false
+		}
+		return perSeq >= fromWindow
+	}, fromWindow
+}
+
 // waitForInferenceBackendWithMoveR480 — P1-7/P1-8: очередь с гейтом R459,
 // построенным по сессии.
 //
@@ -101,37 +131,21 @@ type queueMoveR480 struct {
 //   - кандидат с окном >= окна текущей копии — можно;
 //   - известный «холодный» (свежая метрика, модели нет) — нельзя;
 //   - окно неизвестно — можно (не выдумываем предел), с WARN.
-//
-// Если окно текущей копии неизвестно, сравнивать не с чем — гейт не ставится
-// вовсе (поведение прежнее), иначе можно заблокировать очередь на пустом месте.
 func (p *Proxy) waitForInferenceBackendWithMoveR480(
 	ctx context.Context, model string, bt types.BackendType, session, from string,
 ) (backendID string, release func(), waited time.Duration, position int, err error) {
 	var move *queueMoveR480
 	if from != "" {
-		fromWindow := p.loadedPerSeqNCtx(from, model)
-		if fromWindow > 0 {
+		gate, fromWindow := p.sessionQueueGateR480(from, model)
+		if gate != nil {
 			move = &queueMoveR480{
-				gate: func(c string) bool {
-					if c == from {
-						return true
-					}
-					perSeq, known := p.loadedPerSeqNCtxKnownR480(c, model)
-					if !known {
-						p.logColdCandidateUnknownR480(c, from, model, fromWindow)
-						return true
-					}
-					if perSeq <= 0 {
-						return false
-					}
-					return perSeq >= fromWindow
-				},
+				gate:       gate,
 				need:       fromWindow,
 				needSource: "session_window",
 			}
 			logger.Get().Infow("R480: очередь сессии с гейтом R459",
 				"session", session, "from", from, "model", model,
-				"session_window", fromWindow)
+				"session_window", move.need)
 		}
 	}
 	return p.waitForInferenceBackendR480(ctx, model, bt, session, move)

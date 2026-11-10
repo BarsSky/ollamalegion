@@ -29,7 +29,7 @@ func TestR480_GatedSelectorSkipsNarrowCandidate(t *testing.T) {
 		t.Fatalf("выбран %q, хотя предикат допускает только b1", got)
 	}
 
-	// Предикат допускает всё — работает прежний отбор (b2 свободнее).
+	// Предикат допускает всё — работает прежний отбор (b2 единственный).
 	allowAll := func(string) bool { return true }
 	if got := p.selectBackendExcludingGatedR480(r459Model, map[string]bool{"b1": true}, types.BackendTypeLlamaCpp, allowAll); got != "b2" {
 		t.Fatalf("получено %q, ожидался b2", got)
@@ -48,8 +48,17 @@ func TestR480_GatedSelectorSkipsNarrowCandidate(t *testing.T) {
 }
 
 // r480SelectorProxy — НАСТОЯЩИЙ Proxy (нужен queueMgr для selectByResources):
-// b1 с окном 65536 и 9 занятыми слотами, b2 с окном 32768 и 1 занятым.
+// b1 с окном 65536, b2 с окном 32768, по 10 слотов.
+//
+// ВАЖНО: состояние гоняет только через блокирующие API (UpdateLlamaCppMetrics,
+// UpdateMetrics, MarkLlamaCppPolled). Прямая запись в p.backends[...].ActiveReqs
+// в тестах ловилась -race: health-check/poller читают те же поля из горутин.
 func r480SelectorProxy(t *testing.T) *Proxy {
+	t.Helper()
+	return newR480SelectorProxy(t, 10)
+}
+
+func newR480SelectorProxy(t *testing.T, slots int) *Proxy {
 	t.Helper()
 	cfg := &types.LoadBalancerConfig{
 		LoadBalancer: types.LoadBalancerSettings{
@@ -58,9 +67,9 @@ func r480SelectorProxy(t *testing.T) *Proxy {
 		},
 		Backends: []types.Backend{
 			{ID: "b1", Name: "b1", Host: "127.0.0.1", OllamaPort: 1, CppWorkerPort: 2,
-				Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy, MaxConcurrentReqs: 10, Weight: 1},
+				Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy, MaxConcurrentReqs: slots, Weight: 1},
 			{ID: "b2", Name: "b2", Host: "127.0.0.1", OllamaPort: 3, CppWorkerPort: 4,
-				Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy, MaxConcurrentReqs: 10, Weight: 1},
+				Type: types.BackendTypeLlamaCpp, Status: types.StatusHealthy, MaxConcurrentReqs: slots, Weight: 1},
 		},
 		Balancing: types.BalancingSettings{
 			Algorithm: types.AlgorithmResourceAware, QueueMaxSize: 100, QueueWorkers: 1,
@@ -70,19 +79,19 @@ func r480SelectorProxy(t *testing.T) *Proxy {
 	}
 	p := newProxyWithCleanup(t, cfg)
 	for id, perSeq := range map[string]int{"b1": 65536, "b2": 32768} {
-		p.metricsMgr.llamaMetrics[id] = &types.LlamaCppMetrics{
-			LoadedModels: []types.LlamaCppModel{{Name: r459Model, ContextLength: perSeq}},
-		}
 		// R460-отказы читают SnapshotBackendMetrics — без этой записи бэкенд
 		// выглядит как «метрик нет», и причина окна до него не доходит.
-		p.metricsMgr.metrics[id] = &types.BackendMetrics{
+		// ВАЖНО: UpdateMetrics перезаписывает llamaMetrics из metrics.LlamaCpp,
+		// поэтому окно ставим ПОСЛЕ него.
+		p.UpdateMetrics(id, &types.BackendMetrics{
 			ID:       id,
 			LlamaCpp: types.LlamaCppMetrics{LoadedModels: []types.LlamaCppModel{{Name: r459Model}}},
-		}
+		})
+		p.metricsMgr.UpdateLlamaCppMetrics(id, &types.LlamaCppMetrics{
+			LoadedModels: []types.LlamaCppModel{{Name: r459Model, ContextLength: perSeq}},
+		})
 		p.metricsMgr.MarkLlamaCppPolled(id, time.Now())
 	}
-	p.backends["b1"].ActiveReqs = 9
-	p.backends["b2"].ActiveReqs = 1
 	return p
 }
 

@@ -11,6 +11,7 @@
         "verifiedAt": "2026-11-10T14:20:00Z",
         "debugDumps": "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
         "proof": [
+            "R482: финальный образ cppworker gpu-261110-1436 (5d779b3e) выкачен; healthy; GET /api/chat с tools[] -> 200; в сводке хода tool_calls=1, tool_calls_from_reasoning=false, hold_released_ms=0, hold_max_sec=20 (5d779b3e = линт-фикс ineffassign + допуск флейка сторожа стрима)",
             "R482: cppworker gpu-261110-1411 (5c455277) выкачен; контейнер healthy; балансер r261110-1346 и webui r261110-1346 не пересобирались",
             "R482: POST /api/chat с tools[] (Qwen3.8-9B-Distill, Cline-style) -> 200, done_reason=tool_calls, tool_calls[0].function.name=get_weather, arguments объектом; в сводке хода tool_calls=1, tool_calls_from_reasoning=false, hold_released=\"\", hold_released_ms=0, hold_max_sec=20, first_content_ms=-1",
             "R482: tests — полный cmd/cppworker (10.8 с) зелёный; новые tools_hold_r482_test.go (вызов в незакрытом reasoning, закрытый reasoning не считается дважды, снятие по времени/объёму, 0=выключено, нарезка хвоста по рунам)",
@@ -39,9 +40,9 @@
             "alias": "ollama-legion/cppworker:latest-gpu-86",
             "variable": "CPPWORKER_GPU_TAG",
             "service": "cppworker-gpu",
-            "imageTag": "gpu-261110-1411",
-            "imageId": "sha256:382df7485cc270d15ececca51274df9bcdb7ca7cf162d22a8544d4cda57776c2",
-            "image": "ollama-legion/cppworker:gpu-261110-1411"
+            "imageTag": "gpu-261110-1436",
+            "imageId": "sha256:d67358539e1a902817803ece3691e3933328da744792f2aec6162a16b4d1eb15",
+            "image": "ollama-legion/cppworker:gpu-261110-1436"
         },
         {
             "alias": "ollama-legion/webui:latest",

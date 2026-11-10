@@ -51,6 +51,7 @@ func TestCppWorker_LazyLoad_Async_Returns503WithRetryAfter(t *testing.T) {
 
 	const loadDelay = 700 * time.Millisecond
 	worker := newMockCppWorkerLazy(loadDelay)
+	worker.gateLoad = make(chan struct{})
 	defer worker.Close()
 
 	proxy := newLazyTestProxy(t, worker.server.URL)
@@ -65,7 +66,21 @@ func TestCppWorker_LazyLoad_Async_Returns503WithRetryAfter(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	start := time.Now()
-	proxy.ServeHTTP(rec, req)
+	// R486.1: загрузку завершает САМ тест (gateLoad), поэтому «ждал ли код
+	// загрузку» видно по факту ответа, а не по секундомеру раннера.
+	// ServeHTTP идёт в горутине: если код решит подождать загрузку, тест не
+	// зависнет, а скажет об этом прямым текстом.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		proxy.ServeHTTP(rec, req)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		close(worker.gateLoad) // отпускаем загрузку, чтобы не течь горутиной
+		t.Fatal("async cold start: ответа нет 10 s — код ЖДЁТ завершения загрузки, а должен отдавать 503 сразу")
+	}
 	elapsed := time.Since(start)
 
 	resp := rec.Result()
@@ -73,20 +88,22 @@ func TestCppWorker_LazyLoad_Async_Returns503WithRetryAfter(t *testing.T) {
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusServiceUnavailable {
+		close(worker.gateLoad)
 		t.Fatalf("async cold start: ожидался 503, получено %d: %s", resp.StatusCode, string(respBody))
 	}
-	// Ответ должен быть БЫСТРЫМ — клиент не ждёт загрузку (иначе OpenWebUI/Cline
-	// ловят свой 60-120s timeout, ради чего R60.33 и делался).
-	//
-	// R245 (2026-08-27): граница — loadDelay, а не фиксированные 400ms.
-	// Транспорт перед отдачей 503 делает awaitModelMissing с окном 500ms
-	// (llamacpp_transport.go, защита от гонки с обновлением каталога моделей),
-	// поэтому быстрый 503 штатно занимает ~500ms и под -race легко переваливал
-	// за 400ms — тест падал на здоровом коде (CI, 40311999866). Смысл проверки —
-	// «ответ пришёл РАНЬШЕ, чем закончилась загрузка», и его ровно и надо мерить.
-	if elapsed >= loadDelay {
-		t.Errorf("async cold start должен отвечать до окончания загрузки (%v), заняло %v", loadDelay, elapsed)
+	// Контракт R60.33 проверяется СОСТОЯНИЕМ, а не временем: к моменту ответа
+	// загрузка НЕ завершена (загрузку отпускает сам тест через gateLoad, по
+	// таймеру она не может закончиться). Состояние `unloaded` здесь нормально —
+	// фоновый POST ещё в пути; запрещено ровно `loaded`, потому что это значило
+	// бы «клиент дождался загрузки». Время печатаем для разбора, но не судим.
+	worker.mu.Lock()
+	stateAtResponse := worker.state["lazy-model"]
+	worker.mu.Unlock()
+	if stateAtResponse == "loaded" {
+		close(worker.gateLoad)
+		t.Fatalf("async cold start: к моменту ответа модель уже loaded — клиент дождался загрузки (ответ за %v)", elapsed)
 	}
+	t.Logf("async cold start: 503 за %v при незавершённой загрузке (state=%s)", elapsed, stateAtResponse)
 	if ra := resp.Header.Get("Retry-After"); ra == "" {
 		t.Errorf("ожидался заголовок Retry-After, получены заголовки: %v", resp.Header)
 	}
@@ -105,6 +122,19 @@ func TestCppWorker_LazyLoad_Async_Returns503WithRetryAfter(t *testing.T) {
 	}
 	if got := worker.loadCalls.Load(); got != 1 {
 		t.Errorf("ожидался ровно 1 POST /api/models/load в фоне, получено %d", got)
+	}
+	// Отпускаем имитацию загрузки и дожидаемся перехода в loaded — так тест не
+	// оставляет висящую горутину и проверяет, что загрузка реально доехала.
+	close(worker.gateLoad)
+	waitDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		worker.mu.Lock()
+		st := worker.state["lazy-model"]
+		worker.mu.Unlock()
+		if st == "loaded" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	t.Logf("✅ async cold start: 503 за %v, Retry-After=%s, loadCalls=%d",

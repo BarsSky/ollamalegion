@@ -67,6 +67,11 @@ type mockCppWorkerLazy struct {
 
 	// Сигнал о завершении загрузки (для синхронизации тестов)
 	loadStarted chan struct{}
+	// gateLoad (R486.1) — если задан, «загрузка» завершится по закрытию канала,
+	// а не по таймеру. Нужен тестам, которые проверяют контракт «клиент не ждёт
+	// загрузку»: тогда результат не зависит от загруженности раннера (на CI
+	// таймерный вариант дал 7.57 s и красный прогон при здоровом коде).
+	gateLoad chan struct{}
 }
 
 func newMockCppWorkerLazy(loadDelay time.Duration) *mockCppWorkerLazy {
@@ -167,7 +172,11 @@ func newMockCppWorkerLazy(loadDelay time.Duration) *mockCppWorkerLazy {
 			// готова. Из-за мгновенного ack дедупликация параллельных загрузок
 			// в балансере (mm.tryAcquireOp держит операцию всю её длительность)
 			// не проверялась — тест «LoadsOnce» видел 2 загрузки вместо 1.
-			time.Sleep(m.loadDelay)
+			if m.gateLoad != nil {
+				<-m.gateLoad
+			} else {
+				time.Sleep(m.loadDelay)
+			}
 			m.mu.Lock()
 			m.state["lazy-model"] = "loaded"
 			m.mu.Unlock()

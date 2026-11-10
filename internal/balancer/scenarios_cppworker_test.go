@@ -270,9 +270,9 @@ func TestVirtualRouter_HeavyModel_LeastLoaded_RespectsLoad(t *testing.T) {
 	router := NewVirtualRouter(registry, proxy)
 	router.SetLoadProvider(func(backendID string) (int, bool) {
 		switch backendID {
-		case fmt.Sprintf("%s:%d", w1.host, w1.port):
+		case fmt.Sprintf("%s:%d", w1.host, w1.port), "w1":
 			return 0, true // busy (max=1)
-		case fmt.Sprintf("%s:%d", w2.host, w2.port):
+		case fmt.Sprintf("%s:%d", w2.host, w2.port), "w2":
 			return 50, true // many free
 		}
 		return 0, false
@@ -285,9 +285,12 @@ func TestVirtualRouter_HeavyModel_LeastLoaded_RespectsLoad(t *testing.T) {
 	defer balancer.Close()
 
 	// Trigger lazy selector.
-	resp, _ := http.Post(balancer.URL+"/api/generate",
+	resp, err := http.Post(balancer.URL+"/api/generate",
 		"application/json",
 		strings.NewReader(`{"model":"vm-72b","prompt":"hi","stream":false}`))
+	require.NoError(t, err, "первый запрос к виртуальной модели не должен падать на транспорте")
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 	router.selectorsMu.RLock()
 	sel := router.selectors["vm-72b"]
@@ -295,29 +298,51 @@ func TestVirtualRouter_HeavyModel_LeastLoaded_RespectsLoad(t *testing.T) {
 	if ll, ok := sel.(*virtualmodel.LeastLoadedSelector); ok {
 		ll.SetLoadProvider(func(backendID string) (int, bool) {
 			switch backendID {
-			case fmt.Sprintf("%s:%d", w1.host, w1.port):
+			case fmt.Sprintf("%s:%d", w1.host, w1.port), "w1":
 				return 0, true
-			case fmt.Sprintf("%s:%d", w2.host, w2.port):
+			case fmt.Sprintf("%s:%d", w2.host, w2.port), "w2":
 				return 50, true
 			}
 			return 0, false
 		})
 	}
 
-	// 10 requests → mostly w2 (more free slots).
-	w1.calls.Store(0)
-	w2.calls.Store(0)
+	// Контракт least_loaded проверяем на САМОМ селекторе, а не по распределению
+	// запросов: раньше здесь было «w2 получил не меньше, чем w1» по 10 HTTP-
+	// запросам в t.Parallel()-тесте — под нагрузкой один запрос уходил на w1 и
+	// прогон падал без внятной причины. Выбор «узел с большим числом свободных
+	// слотов» детерминирован, его и проверяем; HTTP-путь уже проверен выше.
+	ll, ok := sel.(*virtualmodel.LeastLoadedSelector)
+	require.True(t, ok, "лениво созданный селектор vm-72b должен быть least_loaded, получено %T", sel)
+
+	w1Addr := fmt.Sprintf("%s:%d", w1.host, w1.port)
+	w2Addr := fmt.Sprintf("%s:%d", w2.host, w2.port)
+	pool := []string{w1Addr, w2Addr}
 	for i := 0; i < 10; i++ {
-		resp, _ := http.Post(balancer.URL+"/api/generate",
-			"application/json",
-			strings.NewReader(`{"model":"vm-72b","prompt":"hi","stream":false}`))
-		resp.Body.Close()
+		picked, err := ll.Select(pool, pool)
+		require.NoError(t, err)
+		assert.Equal(t, w2Addr, picked,
+			"least_loaded обязан выбирать узел с большим числом свободных слотов (попытка %d)", i+1)
 	}
 
-	// w2 should get more requests (higher FreeSlots).
+	// И один живой запрос через прокси: селектор применён в маршрутизации, ответ 200.
+	resp2, err := http.Post(balancer.URL+"/api/generate",
+		"application/json",
+		strings.NewReader(`{"model":"vm-72b","prompt":"hi","stream":false}`))
+	require.NoError(t, err)
+	require.NotNil(t, resp2)
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+	_, _ = io.Copy(io.Discard, resp2.Body)
+	resp2.Body.Close()
+	// Ответ 200 приходит по заголовкам, а счётчик симулятора инкрементируется в
+	// его обработчике: ждём факт, а не «сразу после Close».
+	hitDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(hitDeadline) && w2.inferCalls.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	assert.GreaterOrEqual(t, w2.inferCalls.Load(), int64(1),
+		"после выбора w2 запрос обязан дойти до него (w1=%d w2=%d)", w1.inferCalls.Load(), w2.inferCalls.Load())
 	t.Logf("least_loaded: w1=%d w2=%d", w1.inferCalls.Load(), w2.inferCalls.Load())
-	assert.GreaterOrEqual(t, w2.inferCalls.Load(), w1.inferCalls.Load(),
-		"w2 (more free slots) should get at least as many requests as w1")
 }
 
 // =====================================================================

@@ -1,4 +1,4 @@
-﻿# Backend Type Isolation (Ollama vs llama.cpp)
+# Backend Type Isolation (Ollama vs llama.cpp)
 
 > **R112 (2026-10-11) — ЧАСТИЧНО УСТАРЕЛО.** Разделение по ТИПУ бэкенда убрано:
 >
@@ -27,6 +27,32 @@
 > **Версия:** 1.3 (2026-06-22)  
 > **Связанные документы:** [`api.md`](../api/api.ru.md), [`audit-2026-06.md`](../../.cline/audit-2026-06.md), [`../.clinerules`](../../.clinerules) §6  
 > **Тесты:** `tests/backend_type_isolation_test.go` (15 тестов), `tests/operating_mode_dispatch_test.go`
+
+## Фактические поверхности сегодня (R480, 2026-11-10)
+
+Одна таблица вместо исторических описаний ниже. «Диспетчер» — путь, где запрос
+сначала попадает в роутер (`routeRequest` → `LlamaCppRouter`/`OllamaRouter`), а
+не в generic-поток `ServeHTTP`. Обе поверхности в итоге проксируют на бэкенд
+одного из двух типов (`llama_cpp` = cppworker, `ollama` = Ollama-нода).
+
+| Поверхность | Порт | Что обслуживает | Тип бэкенда | Где код |
+|---|---|---|---|---|
+| `POST /api/chat`, `/api/generate` | 18080 (универсальный) | generic-поток: сессии, R459-гейт, единая очередь, трансляция в llama.cpp | любой; для `llama_cpp` — транспорт SSE→NDJSON | `proxy.go`, `proxy_request.go`, `llamacpp_transport.go` |
+| `POST /api/embed`, `/api/embeddings` | 18080 | generic-поток (без сессий) | `llama_cpp` и `ollama` | `proxy_request.go` |
+| `GET /api/tags`, `/api/ps`, `/api/version` | 18080 | `LlamaCppRouter`/`OllamaRouter` (read-only) + агрегат | оба; модели обоих пулов | `llamacpp_handlers_readonly.go`, `ollama_router_tags.go` |
+| `/api/show`, `/api/copy`, `/api/delete`, `/api/pull`, `/api/push`, `/api/create` | 18080 | read-only/mgmt: прямой проксинг без inference-транспорта | оба; модель ищется в метриках и `llamaMetrics` | `proxyReadOnlyRequest`, `ollama_router_admin*.go` |
+| `-paths` `POST /v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `GET /v1/models` | 18079 (OpenAI) и 18080 | диспетчер: cppworker — при наличии; иначе **нативный passthrough в Ollama** (R479) | `llama_cpp`, иначе `ollama` | `llamacpp_handlers_inference.go`, `openai_native_passthrough_r479.go` |
+| `/v1/messages`, `/v1/responses` | 18079 | прежний handler-путь (passthrough в Ollama запрещён: другой формат) | только `llama_cpp` | `llamacpp_handlers_inference.go` |
+| `/v1/images/*`, `/sdapi/v1/*` | 18079 | image-бэкенды (`image_cpp`) | `image_cpp` | `image_router_r_image.go` |
+| `/ollama/api/*`, `/ollama/v1/*`, `/openai/v1/*` | 18080 | алиасы поверхностей: снимаются в начале `ServeHTTP` (R479), ответ несёт `X-LB-Surface-Alias: 1` | как у целевой поверхности | `surface_alias_r479.go` |
+| `/api/v1/*` (admin) | 18081 | admin API балансера (`apiReverseProxy`), не бэкенды | — | `router.go:serveAPIv1Request` |
+| `/health`, `/metrics` | 18080 | сам балансер | — | `proxy.go` |
+| `/api/cancel` | 18080 | служебная отмена генерации (не inference) | оба | `cancel_client_r229.go` |
+
+Правило, которое стоит держать в голове: **поверхность решает, кто отвечает за
+формат ответа**, а тип бэкенда решает только транспорт до воркера. Клиентские
+различия между «Ollama-клиентом» и «OpenAI-клиентом» — это заголовки и форма
+тела/ответа, а не выбор пула моделей.
 
 ## Содержание
 

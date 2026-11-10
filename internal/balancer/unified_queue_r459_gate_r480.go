@@ -81,9 +81,11 @@ func (p *Proxy) waitForInferenceBackendGatedR480(
 // need/needSource идут в «почему в очереди» (P1-8): без них оператор видит
 // «model_not_loaded» там, где настоящая причина — «окно кандидата меньше».
 type queueMoveR480 struct {
+	// Порядок полей — под fieldalignment (линт): строка и функция (указатели)
+	// раньше числа.
+	needSource string
 	gate       func(string) bool
 	need       int
-	needSource string
 }
 
 // waitForInferenceBackendWithMoveR480 — P1-7/P1-8: очередь с гейтом R459,
@@ -151,7 +153,7 @@ func (p *Proxy) waitForInferenceBackendR480(
 	// Без этого why_queued показывал model_not_loaded там, где решала именно
 	// проверка «нужного окна».
 	var rejectionMove *backendRejectionMoveR480
-	if move != nil && move.need > 0 {
+	if move.need > 0 {
 		rejectionMove = &backendRejectionMoveR480{Need: move.need, NeedSource: move.needSource}
 	}
 	rejections := p.backendRejectionsR460(model, bt, rejectionMove)

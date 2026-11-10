@@ -55,8 +55,10 @@ const (
 // backendRejectionMoveR480 — контекст переезда сессии для списка причин.
 // Передаётся вариативно, чтобы не менять сигнатуру у существующих вызовов.
 type backendRejectionMoveR480 struct {
-	Need       int
+	// Порядок полей — под fieldalignment (линт): строка (указатели) первой,
+	// число последним, иначе структура занимает лишние pointer-байты.
 	NeedSource string
+	Need       int
 }
 
 // backendRejectionsR460 — по одной причине на каждый бэкенд, который НЕ может

@@ -112,8 +112,8 @@ func (p *Proxy) sessionWindowCountsR480(sessionID string, now time.Time) bool {
 	if p.sessionMgr == nil {
 		return true
 	}
-	s := p.sessionMgr.Get(sessionID)
-	if s == nil || s.LastRequestAt.IsZero() {
+	s, ok := p.sessionMgr.GetSnapshot(sessionID)
+	if !ok || s.LastRequestAt.IsZero() {
 		return false
 	}
 	return now.Sub(s.LastRequestAt) <= ttl
@@ -176,7 +176,7 @@ func (p *Proxy) logMoveNeedR480(fromBackend, model, sessionID string, requestedN
 	}
 	ttlLeft := int64(-1)
 	if ttl := r459SessionTTLR480(); ttl > 0 && p != nil && p.sessionMgr != nil && sessionID != "" {
-		if s := p.sessionMgr.Get(sessionID); s != nil && !s.LastRequestAt.IsZero() {
+		if s, ok := p.sessionMgr.GetSnapshot(sessionID); ok && !s.LastRequestAt.IsZero() {
 			ttlLeft = int64((ttl - time.Since(s.LastRequestAt)).Seconds())
 		}
 	}

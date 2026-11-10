@@ -395,6 +395,23 @@ func (sm *SessionManager) GetAllSnapshots() []types.Session {
 	return sessions
 }
 
+// GetSnapshot — копия одной сессии под блокировкой (R480).
+//
+// Живая гонка (CI, -race, TestLoadBalancing_MultipleClients): R480 читал
+// s.BackendID / s.LastRequestAt через Get() (общий указатель, см. R66c) в
+// proxy.go и session_move_need_r480.go, пока параллельный Set писал те же поля.
+// Для точечного чтения полей одного поля мало (GetBackendID есть, LastRequestAt
+// — нет), поэтому возвращаем полную копию.
+func (sm *SessionManager) GetSnapshot(id string) (types.Session, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	s, ok := sm.sessions[id]
+	if !ok || s == nil {
+		return types.Session{}, false
+	}
+	return *s, true
+}
+
 // Delete - удаление сессии по ID
 func (sm *SessionManager) Delete(id string) bool {
 	sm.mu.Lock()

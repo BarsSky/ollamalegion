@@ -1597,7 +1597,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// попадают в why_queued вместе с гейтом окна (P1-8).
 		sessionFromBackend := ""
 		if sessionKey != "" && p.config.Balancing.SessionStickiness && p.sessionMgr != nil {
-			if s := p.sessionMgr.Get(sessionKey); s != nil {
+			// R480: снимок под блокировкой (R66c) — Get() отдаёт общий
+			// указатель, и -race ловил гонку с параллельным Set.
+			if s, ok := p.sessionMgr.GetSnapshot(sessionKey); ok {
 				sessionFromBackend = s.BackendID
 			}
 		}

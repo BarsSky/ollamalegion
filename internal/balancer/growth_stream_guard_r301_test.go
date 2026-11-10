@@ -233,7 +233,16 @@ func TestR301_StewardNoStreamingBypass(t *testing.T) {
 	if !bytes.Contains(proxySrc, []byte("servehttp-before-admission")) {
 		t.Fatal("нет проверки ДО admission-очереди на поверхности :18080")
 	}
-	if strings.Index(string(proxySrc), "servehttp-before-admission") > strings.Index(string(proxySrc), "waitForInferenceBackend(") {
+	// R480: вызов ожидания слота переименован (waitForInferenceBackendWithMoveR480),
+	// а сам guard обязан по-прежнему стоять ДО него.
+	admissionAt := strings.Index(string(proxySrc), "waitForInferenceBackendWithMoveR480(")
+	if admissionAt < 0 {
+		admissionAt = strings.Index(string(proxySrc), "waitForInferenceBackend(")
+	}
+	if admissionAt < 0 {
+		t.Fatal("не найден вызов unified-очереди в proxy.go: разбор сторожевого теста устарел")
+	}
+	if strings.Index(string(proxySrc), "servehttp-before-admission") > admissionAt {
 		t.Fatal("проверка стоит ПОСЛЕ ожидания слота: клиент снова простоит в очереди впустую")
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"ollama-loadbalancer/pkg/types"
 )
@@ -35,11 +36,16 @@ func TestR478_R459AllowsOllamaCandidate(t *testing.T) {
 
 // TestR478_R459StillRejectsColdLlamaCpp — для llama.cpp правило не ослаблено:
 // незагруженная модель = переезд с выгрузкой/загрузкой, такой кандидат плох.
+//
+// R480 (P1-5): «незагруженная модель» подтверждается СВЕЖЕЙ метрикой; без
+// отметки опроса кандидат считается неизвестным (см. cold_candidate_ttl_r480_test.go).
 func TestR478_R459StillRejectsColdLlamaCpp(t *testing.T) {
 	p := &Proxy{backends: map[string]*BackendState{
 		"cpp-cold": {Backend: &types.Backend{ID: "cpp-cold", Host: "h", Type: types.BackendTypeLlamaCpp}},
 		"cpp-hot":  {Backend: &types.Backend{ID: "cpp-hot", Host: "h", Type: types.BackendTypeLlamaCpp}},
 	}}
+	p.metricsMgr = NewMetricsManager()
+	p.metricsMgr.MarkLlamaCppPolled("cpp-cold", time.Now())
 	if ok, why := p.sessionMoveKeepsWindowR459("cpp-cold", "cpp-hot", "m", 32768); ok {
 		t.Fatalf("холодный llama.cpp-кандидат допущен без причины (%q)", why)
 	}

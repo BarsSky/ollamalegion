@@ -376,6 +376,41 @@ func (p *Proxy) selectBackendExcluding(model string, exclude map[string]bool, bt
 	return backend
 }
 
+// selectBackendExcludingGatedR480 — P1-6 (R480): тот же отбор «исключая
+// бэкенд», но с предикатом R459. Нужен обходным путям переезда (занятый слот,
+// 503/failover): они выбирали копию ТОЛЬКО по загрузке, и живая сессия могла
+// уехать на копию с меньшим окном, минуя гейт.
+//
+// Реализация через повторный отбор: кандидат, отклонённый предикатом,
+// добавляется в исключения и отбор идёт заново. Так не дублируются десятки
+// функций выбора (план рефакторинга, P2-13) и сохраняется вся существующая
+// логика скоринга/типов/ресурсов.
+//
+// Ограничение повторов — 16: столько же, сколько maxRetries у вызывающих
+// циклов; дальше отбор всё равно вернёт «нет кандидата».
+func (p *Proxy) selectBackendExcludingGatedR480(
+	model string, exclude map[string]bool, bt types.BackendType, gate func(string) bool,
+) string {
+	if gate == nil {
+		return p.selectBackendExcluding(model, exclude, bt)
+	}
+	ex := make(map[string]bool, len(exclude)+4)
+	for id, v := range exclude {
+		ex[id] = v
+	}
+	for i := 0; i < 16; i++ {
+		cand := p.selectBackendExcluding(model, ex, bt)
+		if cand == "" {
+			return ""
+		}
+		if gate(cand) {
+			return cand
+		}
+		ex[cand] = true
+	}
+	return ""
+}
+
 // findBackendWithModelExcluding - поиск бэкенда с моделью, исключая указанные.
 // Берёт p.mu.RLock сам: вызывать только когда лок НЕ удерживается.
 func (p *Proxy) findBackendWithModelExcluding(modelName string, exclude map[string]bool, allowedTypes []types.BackendType) string {

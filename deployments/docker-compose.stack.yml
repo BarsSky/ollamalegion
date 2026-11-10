@@ -155,6 +155,18 @@ services:
       - LB_CAPACITY_FROM_MODEL_SLOTS=${LB_CAPACITY_FROM_MODEL_SLOTS:-false}
       - LB_NCTX_RELOAD_ENABLED=${LB_NCTX_RELOAD_ENABLED:-true}
       - LB_NCTX_RELOAD_MAX_N_CTX=${LB_NCTX_RELOAD_MAX_N_CTX:-131072}
+      # R480 (P1-4/P1-5): политика «нужного окна» при переезде сессии.
+      #   REQUEST_NEED — учитывать потребность запроса (max с окном активной
+      #     сессии); off = поведение R459 (только окно сессии/клиента).
+      #   NEED_RESERVE — резерв к промпту, токены (0 = ровно промпт).
+      #   SESSION_TTL_SEC — сколько сессия считается активной; 0 = окно сессии
+      #     учитывать всегда (поведение R459).
+      #   COLD_TTL_SEC — срок годности метрики окна; устарела = «неизвестно»,
+      #     а не «модели нет» (переезд на такого кандидата допускается).
+      - LB_R459_REQUEST_NEED=${LB_R459_REQUEST_NEED:-on}
+      - LB_R459_NEED_RESERVE=${LB_R459_NEED_RESERVE:-4096}
+      - LB_R459_SESSION_TTL_SEC=${LB_R459_SESSION_TTL_SEC:-900}
+      - LB_R459_COLD_TTL_SEC=${LB_R459_COLD_TTL_SEC:-90}
       # R419 (2026-11-03): может ли AutoTune САМ менять тип KV-cache.
       # recommend (default) — только рекомендация в панели, без reload: смена KV
       #   это выбор качества, а не следствие «сколько сейчас свободно VRAM»

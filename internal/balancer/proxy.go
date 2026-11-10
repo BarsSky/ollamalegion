@@ -1333,7 +1333,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						// бэкенд (модели нет) — тот же класс: unload+load
 						// посреди сессии. Отсекаем таких кандидатов в том же
 						// проходе отбора, а не после.
-						moveGate := p.sessionMoveGateR459(targetBackend, model, parsed.NumCtx)
+						// R480 (P1-4): «нужное окно» считается как
+						// max(потребность запроса + резерв, окно АКТИВНОЙ
+						// сессии) — вариант C из
+						// docs/architecture/r459-window-policy-options.ru.md.
+						// Раньше need всегда равнялся окну сессии, и короткий
+						// запрос не мог уехать с занятой широкой копии.
+						moveGate := p.sessionMoveGateR480(targetBackend, model, sessionID, parsed.NumCtx,
+							p.promptTokensForMoveR480(parsed.RawBody, path))
 						altBackend := p.findLessLoadedBackendWithModelWhere(model, targetBackend, allowedTypes, moveGate)
 						if altBackend != "" {
 							logger.Get().Infow("rebalancing session to less loaded backend (same model)",
@@ -1473,8 +1480,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if targetBackend != "" && acquiredBackend == "" && !readOnlyOrMgmt {
 		attemptedBackends := map[string]bool{targetBackend: true}
 		const maxRetries = 10
+		// R480 (P1-6): уход с занятого слота — тоже переезд живой сессии, и он
+		// обязан проходить тот же гейт «нужного окна», что и ребалансировка.
+		// Раньше этот путь выбирал копию только по загрузке.
+		altGate := p.sessionMoveGateR480(targetBackend, model, sessionID, parsed.NumCtx,
+			p.promptTokensForMoveR480(parsed.RawBody, path))
 		for retry := 0; retry < maxRetries; retry++ {
-			altBackend := p.selectBackendExcluding(model, attemptedBackends, bt)
+			altBackend := p.selectBackendExcludingGatedR480(model, attemptedBackends, bt, altGate)
 			if altBackend == "" {
 				break
 			}
@@ -1578,8 +1590,20 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// строку здесь, до ожидания, и снимаем при выходе.
 		pendingRow := p.noteAdmissionPendingR329(model, "unified")
 		defer p.clearAdmissionPendingR329(pendingRow)
+		// R480 (P1-7, P1-8): если сессия привязана к прогретой копии, очередь
+		// не выдаёт слот на «холодной»/узкой копии мимо гейта R459 — запрос
+		// ждёт слот своей копии (правило R139). Новая сессия (нет привязки)
+		// идёт по прежнему пути: ей нужен любой свободный слот. Причины отказа
+		// попадают в why_queued вместе с гейтом окна (P1-8).
+		sessionFromBackend := ""
+		if sessionKey != "" && p.config.Balancing.SessionStickiness && p.sessionMgr != nil {
+			if s := p.sessionMgr.Get(sessionKey); s != nil {
+				sessionFromBackend = s.BackendID
+			}
+		}
 		unifiedBackend, unifiedRelease, unifiedWaited, unifiedPosition, waitErr :=
-			p.waitForInferenceBackend(ctxWithRID, model, bt, sessionKey)
+			p.waitForInferenceBackendWithMoveR480(ctxWithRID, model, bt, sessionKey, sessionFromBackend,
+				parsed.NumCtx, p.promptTokensForMoveR480(parsed.RawBody, path))
 		if waitErr == nil {
 			acquiredBackend = unifiedBackend
 			targetBackend = unifiedBackend
@@ -1643,8 +1667,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		attemptedBackends := map[string]bool{targetBackend: true}
+		// R480 (P1-6): failover после 503 — тоже переезд; гейт «нужного окна»
+		// применяется, чтобы живая сессия не уехала на узкую копию.
+		altGate := p.sessionMoveGateR480(acquiredBackend, model, sessionID, parsed.NumCtx,
+			p.promptTokensForMoveR480(parsed.RawBody, path))
 		for attempt := 1; attempt < 3; attempt++ {
-			altBackend := p.selectBackendExcluding(model, attemptedBackends, bt)
+			altBackend := p.selectBackendExcludingGatedR480(model, attemptedBackends, bt, altGate)
 			if altBackend == "" {
 				break
 			}
@@ -1772,8 +1800,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	attemptedBackends := map[string]bool{targetBackend: true}
+	// R480 (P1-6): failover после сбоя бэкенда — тоже переезд; узкую копию не
+	// выбираем (та же проверка, что у ребалансировки).
+	altGate := p.sessionMoveGateR480(acquiredBackend, model, sessionID, parsed.NumCtx,
+		p.promptTokensForMoveR480(parsed.RawBody, path))
 	for attempt := 1; attempt < 3; attempt++ {
-		altBackend := p.selectBackendExcluding(model, attemptedBackends, bt)
+		altBackend := p.selectBackendExcludingGatedR480(model, attemptedBackends, bt, altGate)
 		if altBackend == "" {
 			break
 		}

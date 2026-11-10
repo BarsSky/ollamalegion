@@ -542,6 +542,10 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 	// без них AutoTune не может посчитать KV cache для текущего n_ctx.
 	loadedModels = p.enrichLoadedModelsArch(b, loadedModels)
 
+	// R480 (P1-5): отметка «метрика по этому бэкенду СВЕЖАЯ». Отличает «модели
+	// нет» от «данные устарели» в гейте переезда сессии (cold_candidate_ttl_r480.go).
+	p.proxy.metricsMgr.MarkLlamaCppPolled(b.id, time.Now())
+
 	// Обновляем кэш
 	p.proxy.metricsMgr.mu.Lock()
 	lm, ok := p.proxy.metricsMgr.llamaMetrics[b.id]

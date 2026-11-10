@@ -46,15 +46,30 @@ const (
 	// умолчанию), но в списке причин этого не было — «свободен (1 слот из 10),
 	// а в очереди» оставалось необъяснимым.
 	rejectOverLoadThresholdR460 = "over_load_threshold"
+	// R480 (P1-8): кандидат не проходит гейт «нужного окна» R459. Раньше такая
+	// причина существовала только в отдельной INFO-строке R459, а why_queued
+	// показывал model_not_loaded/over_load_threshold — не то, что решило дело.
+	rejectWindowTooSmallR460 = "window_too_small"
 )
+
+// backendRejectionMoveR480 — контекст переезда сессии для списка причин.
+// Передаётся вариативно, чтобы не менять сигнатуру у существующих вызовов.
+type backendRejectionMoveR480 struct {
+	Need       int
+	NeedSource string
+}
 
 // backendRejectionsR460 — по одной причине на каждый бэкенд, который НЕ может
 // обслужить запрос сейчас. Бэкенды, способные его взять, в список не попадают:
 // если список непуст, а запрос всё равно в очереди — значит его забрал кто-то
 // быстрее (это другая ситуация, и она видна в строке про захват слота).
-func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType) []backendRejectionR460 {
+func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move ...*backendRejectionMoveR480) []backendRejectionR460 {
 	if p == nil || len(p.backends) == 0 {
 		return nil
+	}
+	var mv *backendRejectionMoveR480
+	if len(move) > 0 {
+		mv = move[0]
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -95,6 +110,13 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType) []back
 				// свободен ровно потому, что модели на нём нет.
 				reason = rejectModelAbsentR460
 				detail = "модель не загружена (загрузка = минуты и, возможно, меньшее окно)"
+			}
+		}
+		if reason == "" && mv != nil && mv.Need > 0 {
+			// R480 (P1-8): «нужное окно» — такая же причина отказа, как слоты.
+			if ok, why := p.sessionMoveKeepsWindowNeedR480(id, model, mv.Need, mv.NeedSource); !ok {
+				reason = rejectWindowTooSmallR460
+				detail = why
 			}
 		}
 		if reason == "" && !p.checkResourceLimitsLocked(id) {

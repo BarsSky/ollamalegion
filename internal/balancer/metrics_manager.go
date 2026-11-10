@@ -16,15 +16,47 @@ import (
 type MetricsManager struct {
 	metrics      map[string]*types.BackendMetrics
 	llamaMetrics map[string]*types.LlamaCppMetrics
-	mu           sync.RWMutex
+	// llamaMetricsAt — R480 (P1-5): когда по бэкенду последний раз УСПЕШНО
+	// ответил поллер. Нужен, чтобы отличать «модели нет» (свежая метрика без
+	// загруженных моделей) от «поллер отстал / ещё не опрашивал» (метрика
+	// устарела). Раньше оба состояния склеивались в loadedPerSeqNCtx=0, и
+	// переезды сессий стояли, пока метрика не обновится (~30 с).
+	llamaMetricsAt map[string]time.Time
+	mu             sync.RWMutex
 }
 
 // NewMetricsManager - создание менеджера метрик
 func NewMetricsManager() *MetricsManager {
 	return &MetricsManager{
-		metrics:      make(map[string]*types.BackendMetrics),
-		llamaMetrics: make(map[string]*types.LlamaCppMetrics),
+		metrics:        make(map[string]*types.BackendMetrics),
+		llamaMetrics:   make(map[string]*types.LlamaCppMetrics),
+		llamaMetricsAt: make(map[string]time.Time),
 	}
+}
+
+// MarkLlamaCppPolled — R480: отметить успешный опрос метрик бэкенда.
+func (mm *MetricsManager) MarkLlamaCppPolled(backendID string, at time.Time) {
+	if mm == nil || backendID == "" {
+		return
+	}
+	mm.mu.Lock()
+	mm.llamaMetricsAt[backendID] = at
+	mm.mu.Unlock()
+}
+
+// LlamaCppPollAge — R480: давность последнего успешного опроса.
+// ok=false — бэкенд ещё ни разу не опрашивался (или менеджер пуст).
+func (mm *MetricsManager) LlamaCppPollAge(backendID string, now time.Time) (time.Duration, bool) {
+	if mm == nil || backendID == "" {
+		return 0, false
+	}
+	mm.mu.RLock()
+	at, ok := mm.llamaMetricsAt[backendID]
+	mm.mu.RUnlock()
+	if !ok || at.IsZero() {
+		return 0, false
+	}
+	return now.Sub(at), true
 }
 
 // UpdateLlamaCppMetrics обновляет метрики llama.cpp бэкенда
@@ -57,6 +89,7 @@ func (mm *MetricsManager) ClearBackendMetrics(backendID string) {
 	mm.mu.Lock()
 	delete(mm.metrics, backendID)
 	delete(mm.llamaMetrics, backendID)
+	delete(mm.llamaMetricsAt, backendID)
 	mm.mu.Unlock()
 }
 

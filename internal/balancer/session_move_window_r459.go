@@ -13,31 +13,48 @@
 //
 // ПРАВИЛО (для переезда живого запроса/сессии):
 //  1. Клиент назвал окно (num_ctx) — копия на кандидате обязана его покрывать.
-//  2. Не назвал — кандидат не должен дать МЕНЬШЕ, чем уже есть у сессии
-//     (загруженное окно слота текущего бэкенда).
+//  2. Не назвал — кандидат не должен дать МЕНЬШЕ «нужного окна» сессии.
 //  3. Модель на кандидате не загружена (окно неизвестно) — переезд хуже
 //     очереди: там unload+load, то есть минуты тишины и, возможно, меньшее
 //     окно. Такой кандидат отклоняется, и сессия ждёт СВОЙ слот (правило R139).
 //
-// Наблюдаемость: каждое отклонение пишется Debug-строкой с числами, чтобы
+// R480 (2026-11-09): «нужное окно» больше не равно окну сессии всегда — оно
+// считается как max(потребность запроса, окно АКТИВНОЙ сессии), см.
+// session_move_need_r480.go (P1-4, вариант C). Здесь остаются сами проверки.
+//
+// Наблюдаемость: каждое отклонение пишется INFO-строкой с числами, чтобы
 // «почему не переехали» не выяснялось чтением исходников.
 package balancer
 
 import (
+	"strconv"
+
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
 )
 
 // sessionMoveKeepsWindowR459 — можно ли увести сессию с fromBackend на
 // candidateBackend, не потеряв окно. Возвращает (можно, причина_отказа).
+//
+// Оставлен как совместимый вход для тестов и путей, где потребность запроса
+// неизвестна: need := заявленное окно клиента, иначе окно сессии (поведение
+// R459 до R480). Новые пути зовут sessionMoveKeepsWindowNeedR480 с уже
+// посчитанным need.
 func (p *Proxy) sessionMoveKeepsWindowR459(candidateBackend, fromBackend, model string, requestedNCtx int) (bool, string) {
-	if p == nil || candidateBackend == "" {
-		return false, "кандидат не определён"
-	}
 	need := requestedNCtx
 	if need <= 0 {
-		// Клиент окно не называл — берём то, с которым уже работает сессия.
 		need = p.loadedPerSeqNCtx(fromBackend, model)
+	}
+	return p.sessionMoveKeepsWindowNeedR480(candidateBackend, model, need, "r459")
+}
+
+// sessionMoveKeepsWindowNeedR480 — проверка кандидата при известном need.
+//
+// needSource идёт в причину отказа: «окно кандидата меньше нужного» без чисел
+// уже один раз стоило разбора «а почему, собственно».
+func (p *Proxy) sessionMoveKeepsWindowNeedR480(candidateBackend, model string, need int, needSource string) (bool, string) {
+	if p == nil || candidateBackend == "" {
+		return false, "кандидат не определён"
 	}
 	if need <= 0 {
 		// Ничего не известно (окно не загружено/метрики пусты) — прежнее
@@ -53,12 +70,20 @@ func (p *Proxy) sessionMoveKeepsWindowR459(candidateBackend, fromBackend, model 
 	if b := p.GetBackend(candidateBackend); b != nil && b.Type == types.BackendTypeOllama {
 		return true, ""
 	}
-	perSeq := p.loadedPerSeqNCtx(candidateBackend, model)
+	perSeq, known := p.loadedPerSeqNCtxKnownR480(candidateBackend, model)
+	if !known {
+		// R480 (P1-5): метрика устарела или её ещё нет. Это «неизвестно», а не
+		// «модели нет»: отклонять переезд до обновления метрики (~30 с) значило
+		// держать живую сессию на занятой копии без причины.
+		p.logColdCandidateUnknownR480(candidateBackend, "", model, need)
+		return true, ""
+	}
 	if perSeq <= 0 {
 		return false, "на кандидате модель не загружена (переезд = выгрузка+загрузка)"
 	}
 	if perSeq < need {
-		return false, "окно кандидата меньше нужного"
+		return false, "окно кандидата меньше нужного: candidate=" +
+			strconv.Itoa(perSeq) + " need=" + strconv.Itoa(need) + " source=" + needSource
 	}
 	return true, ""
 }
@@ -73,12 +98,21 @@ func (p *Proxy) sessionMoveKeepsWindowR459(candidateBackend, fromBackend, model 
 // нагрузки». Строка редкая (ребалансировка при высоком loadRatio), поэтому Info
 // здесь оправдан.
 func (p *Proxy) sessionMoveGateR459(fromBackend, model string, requestedNCtx int) func(string) bool {
+	return p.sessionMoveGateR480(fromBackend, model, "", requestedNCtx, 0)
+}
+
+// sessionMoveGateR480 — гейт R459 с «нужным окном» по варианту C (P1-4):
+// потребность запроса + окно активной сессии в пределах TTL.
+func (p *Proxy) sessionMoveGateR480(fromBackend, model, sessionID string, requestedNCtx, requestTokens int) func(string) bool {
+	need, source := p.sessionMoveNeedR480(fromBackend, model, sessionID, requestedNCtx, requestTokens)
+	p.logMoveNeedR480(fromBackend, model, sessionID, requestedNCtx, requestTokens, need, source)
 	return func(candidate string) bool {
-		ok, why := p.sessionMoveKeepsWindowR459(candidate, fromBackend, model, requestedNCtx)
+		ok, why := p.sessionMoveKeepsWindowNeedR480(candidate, model, need, source)
 		if !ok {
 			logger.Get().Infow("R459: кандидат на ребалансировку отклонён",
 				"session_backend", fromBackend, "candidate", candidate,
 				"model", model, "requested_n_ctx", requestedNCtx,
+				"request_need", requestTokens, "need", need, "need_source", source,
 				"candidate_per_seq_n_ctx", p.loadedPerSeqNCtx(candidate, model),
 				"session_per_seq_n_ctx", p.loadedPerSeqNCtx(fromBackend, model),
 				"reason", why)

@@ -12,6 +12,7 @@ package balancer
 
 import (
 	"testing"
+	"time"
 
 	"ollama-loadbalancer/pkg/types"
 )
@@ -94,8 +95,13 @@ func TestR459_ClientWindowIsAuthoritative(t *testing.T) {
 
 // TestR459_ColdCandidateRejected — модели на кандидате нет: переезд означал бы
 // unload+load посреди сессии. Живой класс: «свободный бэкенд» без готовой копии.
+//
+// R480 (P1-5): «нет модели» — это ФАКТ свежей метрики. Без отметки опроса
+// (метрика устарела/не приходила) кандидат считается неизвестным и допускается,
+// см. cold_candidate_ttl_r480_test.go.
 func TestR459_ColdCandidateRejected(t *testing.T) {
 	p := r459Proxy(65536, 0)
+	p.metricsMgr.MarkLlamaCppPolled("b2", time.Now())
 
 	if ok, _ := p.sessionMoveKeepsWindowR459("b2", "b1", r459Model, 0); ok {
 		t.Fatal("переезд на бэкенд без загруженной модели запрещён: это unload+load посреди хода")

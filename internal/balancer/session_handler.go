@@ -71,10 +71,16 @@ func (p *Proxy) rebalanceIfNeeded(model, targetBackend, sessionID, clientName st
 		// R459 (2026-11-06): «менее загруженный» не значит «подходит». Этот
 		// проход — второй экземпляр той же ребалансировки, что в proxy.go, и
 		// дефект у них общий: живую сессию уводило на копию с МЕНЬШИМ окном
-		// (или без модели вовсе — unload+load посреди хода). Окно клиента здесь
-		// неизвестно (r не парсится), поэтому действует нижняя граница — «не
-		// меньше, чем у сессии сейчас».
-		moveGate := p.sessionMoveGateR459(targetBackend, model, 0)
+		// (или без модели вовсе — unload+load посреди хода).
+		//
+		// R480 (P1-4): окно клиента здесь по-прежнему неизвестно (тело не
+		// разбирается вызывающим), но потребность запроса считаем из начала
+		// тела — иначе вариант C на этом пути не работал бы вовсе.
+		requestTokens := 0
+		if body, ok := peekBodyR479(r, 64<<10); ok {
+			requestTokens = p.promptTokensForMoveR480(body, r.URL.Path)
+		}
+		moveGate := p.sessionMoveGateR480(targetBackend, model, sessionID, 0, requestTokens)
 
 		// Сначала ищем бэкенд с той же моделью
 		altBackend := p.findLessLoadedBackendWithModelWhere(model, targetBackend, nil, moveGate)

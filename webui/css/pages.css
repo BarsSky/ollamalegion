@@ -1548,3 +1548,134 @@
     color: var(--text-muted, #8b949e);
     padding: 4px 0;
 }
+/* ===== R481: логи - читаемость, поля, раскрытие ошибок =====
+ *
+ * Живые жалобы, которые закрывает этот блок:
+ *   - «лишний текст»: поля события больше не JSON-суффиксом в сообщении;
+ *   - «таблицы не дают рассмотреть ошибку»: у прокси-логов появился блок
+ *     деталей с ПОЛНЫМ текстом, request_id и стадией;
+ *   - «локализация»: подписи фильтров/заголовков идут через i18n;
+ *   - на невысоком экране «Диагностика» была не видна - ярлык в подвале
+ *     sidebar виден всегда.
+ */
+.logs-card-header { flex-wrap: wrap; gap: var(--space-3); align-items: flex-start; }
+.logs-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.logs-search {
+    min-width: 220px;
+    max-width: 320px;
+    padding: 8px 10px;
+    font-size: var(--font-size-sm);
+}
+.logs-count {
+    margin-left: var(--space-3);
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    font-weight: 400;
+}
+.logs-hint {
+    padding: 0 var(--space-5) var(--space-2);
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+}
+.logs-empty {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-muted);
+}
+.log-source {
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: var(--radius-xs);
+    background: var(--bg-hover);
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    text-transform: lowercase;
+}
+.log-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.log-message {
+    /* Клампим только длинные записи: короткие читаются целиком сразу. */
+    max-height: 4.6em;
+    overflow: hidden;
+}
+.log-message-expanded { max-height: none; }
+.log-entry-long .log-message { cursor: pointer; }
+.log-expand-btn {
+    align-self: flex-start;
+    padding: 0;
+    font-size: var(--font-size-xs);
+}
+.log-fields {
+    margin-top: 4px;
+    font-size: var(--font-size-xs);
+}
+.log-fields summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    user-select: none;
+}
+.log-fields-grid {
+    display: grid;
+    grid-template-columns: minmax(120px, max-content) 1fr;
+    gap: 2px 12px;
+    margin-top: 6px;
+    padding: 8px 10px;
+    border-left: 2px solid var(--border);
+    background: var(--bg-hover);
+    border-radius: var(--radius-xs);
+}
+.log-field-key { color: var(--text-muted); font-family: var(--font-family-mono); }
+.log-field-val {
+    font-family: var(--font-family-mono);
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+.proxy-log-row.has-details { cursor: pointer; }
+.proxy-log-row.has-details:hover { background: var(--bg-hover); }
+.proxy-log-detail td {
+    padding: 8px 12px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    white-space: normal;
+}
+.proxy-log-detail-body { display: flex; flex-direction: column; gap: 6px; }
+.proxy-log-detail-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: baseline;
+    font-size: var(--font-size-xs);
+}
+.proxy-log-detail-key {
+    min-width: 110px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.proxy-log-detail-row code {
+    font-family: var(--font-family-mono);
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+.proxy-log-detail-error { align-items: flex-start; }
+.proxy-log-error-full {
+    flex: 1 1 100%;
+    margin: 0;
+    padding: 8px 10px;
+    max-height: 220px;
+    overflow: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-xs);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+.sidebar-diag-link {
+    margin-bottom: var(--space-3);
+    border: 1px dashed var(--glass-border);
+}

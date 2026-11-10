@@ -1210,6 +1210,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		durationMs := time.Since(startTime).Milliseconds()
+		// R481: request_id и стадия — чтобы запись в «Прокси-логах» можно было
+		// связать с логами балансера/воркера и понять, какой компонент дал сбой.
+		stageNow, _ := CurrentStageR477(r.Context())
 		entry := ProxyLogEntry{
 			Timestamp:  startTime,
 			Method:     r.Method,
@@ -1223,6 +1226,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			StatusCode: sr.statusCode,
 			DurationMs: durationMs,
 			Stream:     isStream,
+			RequestID:  rid,
+			Stage:      stageNow,
 		}
 		// Round 16 (2026-07-10): для 4xx/5xx — заполняем Error field чтобы в WebUI
 		// логах (Logs page) видно что произошло. Используем sr.errBody

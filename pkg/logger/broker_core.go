@@ -13,7 +13,6 @@
 package logger
 
 import (
-	"encoding/json"
 	"strings"
 	"sync/atomic"
 
@@ -63,15 +62,15 @@ func (c brokerCore) Check(e zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.Ch
 // Write — публикация в брокер + обычная запись в stdout.
 func (c brokerCore) Write(e zapcore.Entry, fields []zapcore.Field) error {
 	if b := GetBroker(); b != nil {
-		msg := e.Message
-		if suffix := brokerFieldsSuffix(fields); suffix != "" {
-			msg += " " + suffix
-		}
 		b.Publish(LogEntry{
 			Time:    e.Time,
 			Level:   brokerLevelName(e.Level),
-			Message: msg,
+			Message: e.Message,
 			Source:  brokerSourceName(),
+			// R481: поля — отдельной картой, а не строкой в Message. В UI это
+			// раскрываемый блок «поля (N)», в JSON-экспорте — объект, в поиске —
+			// обычные пары key/value.
+			Fields: brokerFieldsMap(fields),
 		})
 	}
 	return c.Core.Write(e, fields)
@@ -92,15 +91,15 @@ func brokerLevelName(l zapcore.Level) string {
 	}
 }
 
-// brokerFieldsSuffix — поля записи компактным JSON-суффиксом к сообщению.
+// brokerFieldsMap — поля записи отдельной картой (R481).
 //
-// Зачем суффикс, а не отдельное поле: LogEntry контрактно содержит только
-// level/message/source (его читает WebUI), а контекст (backend, model, error…)
-// оператору нужен. Склеиваем в сообщение — формат строки экспорта остаётся
-// «время, уровень, источник, сообщение».
-func brokerFieldsSuffix(fields []zapcore.Field) string {
+// Раньше эти же поля склеивались JSON-суффиксом в сообщение
+// (brokerFieldsSuffix). Оператор видел в панели «текст + нечитаемый JSON» и не
+// мог ни прочитать сообщение, ни найти нужное поле; в экспорте поля приходилось
+// выковыривать из строки. Теперь Message — чистый текст, Fields — данные.
+func brokerFieldsMap(fields []zapcore.Field) map[string]interface{} {
 	if len(fields) == 0 {
-		return ""
+		return nil
 	}
 	m := make(map[string]interface{}, len(fields))
 	for _, f := range fields {
@@ -119,11 +118,7 @@ func brokerFieldsSuffix(fields []zapcore.Field) string {
 		}
 	}
 	if len(m) == 0 {
-		return ""
+		return nil
 	}
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return ""
-	}
-	return string(raw)
+	return m
 }

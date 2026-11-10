@@ -22,6 +22,16 @@ type ProxyLogEntry struct {
 	Error      string    `json:"error,omitempty"`
 	Stream     bool      `json:"stream"`
 	ClientName string    `json:"clientName,omitempty"`
+	// R481: идентификатор хода и стадия, на которой он завершился/умер.
+	//
+	// ЗАЧЕМ. Оператор видел в «Прокси-логах» текст ошибки, но не мог связать
+	// запись с логами балансера/воркера (request_id) и не знал, какой компонент
+	// дал сбой (stage: select_backend/admission/preflight/upstream/stream/
+	// client_write). Диагностика R476/R477 умеет и то, и другое — но в таблицу
+	// прокси-логов эти поля не попадали, поэтому разбор снова начинался с
+	// grep по контейнерам.
+	RequestID string `json:"requestID,omitempty"`
+	Stage     string `json:"stage,omitempty"`
 }
 
 // ProxyLogger — кольцевой буфер для хранения логов прокси-запросов

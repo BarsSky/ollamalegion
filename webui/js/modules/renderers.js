@@ -2417,22 +2417,93 @@ const Renderers = (function () {
 
     // ---- Logs ----
 
+    // logFieldPairsR481 — поля события детерминированным списком [key, value].
+    //
+    // R481. Раньше поля склеивались JSON-суффиксом прямо в сообщение, и строка
+    // лога выглядела как «текст + нечитаемый JSON»: прочитать ошибку и найти в
+    // ней backend/request_id было нельзя. Теперь сообщение — только текст, а
+    // поля рисуются отдельным раскрываемым блоком.
+    function logFieldPairsR481(fields) {
+        if (!fields || typeof fields !== 'object') return [];
+        return Object.keys(fields).sort().map(function (k) {
+            var v = fields[k];
+            var text = (v === null || v === undefined) ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+            return [k, text];
+        });
+    }
+
+    function logFieldsSearchTextR481(fields) {
+        var pairs = logFieldPairsR481(fields);
+        return pairs.map(function (p) { return p[0] + '=' + p[1]; }).join(' ');
+    }
+
     function logs(logEntries) {
         const container = document.getElementById('logsContainer');
         if (!container) return;
-        if (!logEntries.length) {
-            container.innerHTML = loading(_t('logs.no_logs'));
+        const all = Array.isArray(logEntries) ? logEntries : [];
+        const levelFilter = (window.logFilters && window.logFilters.level) || 'all';
+        const search = String((window.logFilters && window.logFilters.search) || '').trim().toLowerCase();
+        const filtered = all.filter(function (log) {
+            if (!log) return false;
+            if (levelFilter !== 'all' && String(log.level || '').toLowerCase() !== levelFilter) return false;
+            if (!search) return true;
+            const haystack = [
+                log.message || '',
+                log.source || '',
+                logFieldsSearchTextR481(log.fields)
+            ].join(' ').toLowerCase();
+            return haystack.indexOf(search) !== -1;
+        });
+
+        const countEl = document.getElementById('logsCount');
+        if (countEl) {
+            countEl.textContent = all.length
+                ? _t('logs.count', { shown: filtered.length, total: all.length })
+                : '';
+        }
+        if (!filtered.length) {
+            container.innerHTML = `<div class="logs-empty">${escapeHtml(_t('logs.no_logs'))}</div>`;
             return;
         }
-        container.innerHTML = logEntries.map(log => `
-            // R208 (2026-10-21): полный текст в title — длинное сообщение (ошибка) можно прочитать
-            // наведением: в поле оно раньше обрезалось.
-            <div class="log-entry" title="${escapeHtml(log.time + ' ' + log.level + ': ' + log.message)}">
-                <span class="log-time">${escapeHtml(log.time)}</span>
-                <span class="log-level ${log.level.toLowerCase()}">${escapeHtml(log.level)}</span>
-                <span class="log-message">${escapeHtml(log.message)}</span>
-            </div>
-        `).join('');
+        container.innerHTML = filtered.slice(0, 1000).map(function (log) {
+            const level = String(log.level || 'info').toLowerCase();
+            const fields = logFieldPairsR481(log.fields);
+            const msg = String(log.message || '');
+            const long = msg.length > 220 || msg.indexOf('\n') !== -1 || fields.length > 0;
+            const fieldsHtml = fields.length
+                ? `<details class="log-fields"><summary>${escapeHtml(_t('logs.fields'))} (${fields.length})</summary>` +
+                  `<div class="log-fields-grid">` +
+                  fields.map(function (p) {
+                      return `<div class="log-field-key">${escapeHtml(p[0])}</div><div class="log-field-val">${escapeHtml(p[1])}</div>`;
+                  }).join('') +
+                  `</div></details>`
+                : '';
+            return `<div class="log-entry log-${escapeAttr(level)}${long ? ' log-entry-long' : ''}">` +
+                `<span class="log-time">${escapeHtml(log.time || '')}</span>` +
+                `<span class="log-level ${escapeAttr(level)}">${escapeHtml(String(log.level || 'INFO'))}</span>` +
+                (log.source ? `<span class="log-source">${escapeHtml(String(log.source))}</span>` : '') +
+                `<div class="log-body">` +
+                    `<div class="log-message" title="${escapeAttr(msg)}">${escapeHtml(msg)}</div>` +
+                    (long ? `<button type="button" class="btn-link log-expand-btn">${escapeHtml(_t('logs.expand'))}</button>` : '') +
+                    fieldsHtml +
+                `</div>` +
+            `</div>`;
+        }).join('');
+
+        // Клик по кнопке «Развернуть» раскрывает сообщение целиком (CSS-клэмп
+        // снимается). Делегирование — один обработчик на контейнер.
+        if (!container.dataset.logExpandBound && container.addEventListener) {
+            container.dataset.logExpandBound = '1';
+            container.addEventListener('click', function (ev) {
+                const btn = ev.target && ev.target.closest ? ev.target.closest('.log-expand-btn') : null;
+                if (!btn) return;
+                const body = btn.closest('.log-body');
+                const msgEl = body ? body.querySelector('.log-message') : null;
+                if (!msgEl) return;
+                const expanded = msgEl.classList.toggle('log-message-expanded');
+                btn.textContent = expanded ? _t('logs.collapse') : _t('logs.expand');
+            });
+        }
         container.scrollTop = 0;
     }
 
@@ -2492,46 +2563,55 @@ const Renderers = (function () {
         }).catch(function() {});
     }
 
+    // proxyLogs — R481: читаемая таблица с локалью, раскрываемыми деталями и
+    // request_id/stage.
+    //
+    // Живые жалобы, которые здесь закрыты:
+    //   1. «таблицы не дают рассмотреть ошибку полностью»: ячейка ошибки была
+    //      обрезана до 120 символов, а обещанный клик-разворот (R389) не был
+    //      реализован. Теперь клик по строке открывает блок деталей с ПОЛНЫМ
+    //      текстом ошибки, путём, request_id и стадией.
+    //   2. «локализация»: «All / 2xx OK / 4xx Client / 5xx Server / Error /
+    //      No entries match filter» были захардкожены по-английски.
+    //   3. ошибка и путь были доступны только через title (наведение мышью) —
+    //      их нельзя скопировать; в деталях есть кнопки «Копировать».
     function proxyLogs(entries) {
         const container = document.getElementById('proxyLogsContainer');
         if (!container) return;
         if (!entries.length) {
-            container.innerHTML = `<div class="proxy-log-placeholder">${_t('logs.proxy_waiting')}</div>`;
+            container.innerHTML = `<div class="proxy-log-placeholder">${escapeHtml(_t('logs.proxy_waiting'))}</div>`;
             return;
         }
-        // Round 16 (2026-07-10): фильтры level (all/4xx/5xx/2xx) и search
         var levelFilter = (window.proxyLogFilters && window.proxyLogFilters.level) || 'all';
-        var searchQuery = (window.proxyLogFilters && window.proxyLogFilters.search || '').toLowerCase();
+        var searchQuery = ((window.proxyLogFilters && window.proxyLogFilters.search) || '').toLowerCase();
         var filtered = entries.filter(function(e) {
-            // Level filter
             if (levelFilter !== 'all') {
                 var sc = e.statusCode || 0;
                 if (levelFilter === '2xx' && (sc < 200 || sc >= 300)) return false;
                 if (levelFilter === '4xx' && (sc < 400 || sc >= 500)) return false;
                 if (levelFilter === '5xx' && sc < 500) return false;
             }
-            // Search filter (path, model, error, backend)
             if (searchQuery) {
                 var haystack = ((e.path || '') + ' ' + (e.model || '') + ' ' +
-                    (e.backendID || '') + ' ' + (e.error || '') + ' ' + (e.clientName || '')).toLowerCase();
+                    (e.backendID || '') + ' ' + (e.error || '') + ' ' + (e.clientName || '') + ' ' +
+                    (e.requestID || '') + ' ' + (e.stage || '')).toLowerCase();
                 if (haystack.indexOf(searchQuery) === -1) return false;
             }
             return true;
         });
         if (!filtered.length) {
-            container.innerHTML = `<div class="proxy-log-placeholder">No entries match filter</div>`;
+            container.innerHTML = `<div class="proxy-log-placeholder">${escapeHtml(_t('logs.proxy_no_match'))}</div>`;
             return;
         }
         const locale = (window.I18N && I18N.getLang() === 'ru') ? 'ru' : 'en';
-        // Toolbar с фильтрами (вставляется в container, над таблицей).
         var html = '<div class="proxy-logs-toolbar">' +
             '<select class="proxy-logs-level-filter">' +
-            '<option value="all"' + (levelFilter === 'all' ? ' selected' : '') + '>All</option>' +
-            '<option value="2xx"' + (levelFilter === '2xx' ? ' selected' : '') + '>2xx OK</option>' +
-            '<option value="4xx"' + (levelFilter === '4xx' ? ' selected' : '') + '>4xx Client</option>' +
-            '<option value="5xx"' + (levelFilter === '5xx' ? ' selected' : '') + '>5xx Server</option>' +
+            '<option value="all"' + (levelFilter === 'all' ? ' selected' : '') + '>' + escapeHtml(_t('logs.proxy_all')) + '</option>' +
+            '<option value="2xx"' + (levelFilter === '2xx' ? ' selected' : '') + '>' + escapeHtml(_t('logs.proxy_status_2xx')) + '</option>' +
+            '<option value="4xx"' + (levelFilter === '4xx' ? ' selected' : '') + '>' + escapeHtml(_t('logs.proxy_status_4xx')) + '</option>' +
+            '<option value="5xx"' + (levelFilter === '5xx' ? ' selected' : '') + '>' + escapeHtml(_t('logs.proxy_status_5xx')) + '</option>' +
             '</select>' +
-            '<input type="text" class="proxy-logs-search" placeholder="' + (window.I18N ? I18N.t('common.search') : 'Search...') + '" value="' + escapeHtml(searchQuery) + '">' +
+            '<input type="text" class="proxy-logs-search" placeholder="' + escapeAttr(_t('common.search')) + '" value="' + escapeAttr(searchQuery) + '">' +
             '<span class="proxy-logs-count">' + filtered.length + '/' + entries.length + '</span>' +
             '</div>' +
             '<table class="data-table proxy-logs-table"><thead><tr>' +
@@ -2543,48 +2623,58 @@ const Renderers = (function () {
             '<th>' + _t('logs.status') + '</th>' +
             '<th>' + _t('logs.duration') + '</th>' +
             '<th>' + _t('logs.backend') + '</th>' +
-            '<th>Error</th>' +
+            '<th>' + _t('logs.proxy_stage') + '</th>' +
+            '<th>' + _t('logs.proxy_error') + '</th>' +
             '</tr></thead><tbody>';
-        filtered.slice(0, 500).forEach(function(e) {
+        filtered.slice(0, 500).forEach(function(e, idx) {
             var time = e._time || (e.timestamp ? new Date(e.timestamp).toLocaleTimeString(locale) : '-');
             var method = e.method || 'GET';
             var path = e.path || '-';
             var model = e.model || '-';
-            var client = '';
-            if (e.clientName) {
-                client = escapeHtml(e.clientName);
-            } else if (e.clientIP) {
-                client = escapeHtml(e.clientIP);
-            } else {
-                client = '-';
-            }
+            var client = e.clientName || e.clientIP || '-';
             var status = e.statusCode ? String(e.statusCode) : '-';
             var duration = e.durationMs ? e.durationMs + 'ms' : '-';
             var backend = e.backendID || '-';
-            // R389: в ячейке — усечённый текст, в title/data-full — ПОЛНЫЙ
-            // (attribute-safe: кавычки экранируются escapeAttr). Клик по ячейке
-            // разворачивает полный текст отдельной строкой.
+            var stage = e.stage || '-';
+            var requestID = e.requestID || '';
             var errorFull = e.error ? String(e.error) : '';
-            var errorText = errorFull.length > 120 ? errorFull.substring(0, 120) + '…' : errorFull;
-            var errorAttr = escapeAttr(errorFull);
+            var errorText = errorFull.length > 90 ? errorFull.substring(0, 90) + '…' : errorFull;
             var statusClass = 'log-status-ok';
             if (status !== '-' && parseInt(status) >= 400) statusClass = 'log-status-err';
-            html += '<tr>' +
+            var hasDetails = !!(errorFull || requestID || stage !== '-' || path.length > 60);
+            html += '<tr class="proxy-log-row' + (hasDetails ? ' has-details' : '') + '" data-idx="' + idx + '">' +
                 '<td class="log-time-cell">' + escapeHtml(time) + '</td>' +
-                '<td><span class="log-method-badge log-method-' + method.toLowerCase() + '">' + escapeHtml(method) + '</span></td>' +
-                '<td class="log-path-cell" title="' + escapeHtml(path) + '">' + escapeHtml(path.length > 60 ? path.substring(0, 60) + '...' : path) + '</td>' +
+                '<td><span class="log-method-badge log-method-' + escapeAttr(method.toLowerCase()) + '">' + escapeHtml(method) + '</span></td>' +
+                '<td class="log-path-cell">' + escapeHtml(path.length > 60 ? path.substring(0, 60) + '…' : path) + '</td>' +
                 '<td>' + escapeHtml(model) + '</td>' +
-                '<td>' + client + '</td>' +
+                '<td>' + escapeHtml(client) + '</td>' +
                 '<td><span class="' + statusClass + '">' + escapeHtml(status) + '</span></td>' +
                 '<td>' + escapeHtml(duration) + '</td>' +
                 '<td>' + escapeHtml(backend) + '</td>' +
-                '<td class="log-error-cell" title="' + errorAttr + '" data-full="' + errorAttr + '">' +
-                (errorText ? escapeHtml(errorText) : '-') + '</td>' +
+                '<td class="log-stage-cell">' + escapeHtml(stage) + '</td>' +
+                '<td class="log-error-cell">' + (errorText ? escapeHtml(errorText) : '-') + '</td>' +
                 '</tr>';
+            if (hasDetails) {
+                html += '<tr class="proxy-log-detail" hidden><td colspan="10">' +
+                    '<div class="proxy-log-detail-body">' +
+                    '<div class="proxy-log-detail-row"><span class="proxy-log-detail-key">' + escapeHtml(_t('logs.proxy_request_id')) + '</span>' +
+                        '<code>' + escapeHtml(requestID || '-') + '</code>' +
+                        (requestID ? '<button type="button" class="btn-link proxy-copy-btn" data-copy="' + escapeAttr(requestID) + '">' + escapeHtml(_t('logs.copy_message')) + '</button>' : '') + '</div>' +
+                    '<div class="proxy-log-detail-row"><span class="proxy-log-detail-key">' + escapeHtml(_t('logs.path')) + '</span>' +
+                        '<code>' + escapeHtml(path) + '</code>' +
+                        '<button type="button" class="btn-link proxy-copy-btn" data-copy="' + escapeAttr(path) + '">' + escapeHtml(_t('logs.proxy_copy_path')) + '</button></div>' +
+                    '<div class="proxy-log-detail-row"><span class="proxy-log-detail-key">' + escapeHtml(_t('logs.proxy_stage')) + '</span>' +
+                        '<code>' + escapeHtml(stage) + '</code></div>' +
+                    '<div class="proxy-log-detail-row proxy-log-detail-error"><span class="proxy-log-detail-key">' + escapeHtml(_t('logs.proxy_error')) + '</span>' +
+                        '<pre class="proxy-log-error-full">' + escapeHtml(errorFull || '-') + '</pre>' +
+                        (errorFull ? '<button type="button" class="btn-link proxy-copy-btn" data-copy="' + escapeAttr(errorFull) + '">' + escapeHtml(_t('logs.proxy_copy_error')) + '</button>' : '') + '</div>' +
+                    '</div>' +
+                '</td></tr>';
+            }
         });
         html += '</tbody></table>';
         container.innerHTML = html;
-        // Bind filter events (Round 16)
+
         var sel = container.querySelector('.proxy-logs-level-filter');
         var inp = container.querySelector('.proxy-logs-search');
         if (sel) sel.onchange = function() {
@@ -2597,8 +2687,32 @@ const Renderers = (function () {
             window.proxyLogFilters.search = inp.value;
             proxyLogs(entries);
         };
+        // Раскрытие деталей и копирование — делегированием, один раз на контейнер.
+        if (!container.dataset.proxyDetailsBound && container.addEventListener) {
+            container.dataset.proxyDetailsBound = '1';
+            container.addEventListener('click', function(ev) {
+                var copyBtn = ev.target && ev.target.closest ? ev.target.closest('.proxy-copy-btn') : null;
+                if (copyBtn) {
+                    var text = copyBtn.getAttribute('data-copy') || '';
+                    var done = function() {
+                        var prev = copyBtn.textContent;
+                        copyBtn.textContent = _t('logs.copied');
+                        setTimeout(function() { copyBtn.textContent = prev; }, 1500);
+                    };
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(text).then(done).catch(function() {});
+                    }
+                    return;
+                }
+                var row = ev.target && ev.target.closest ? ev.target.closest('tr.proxy-log-row.has-details') : null;
+                if (!row) return;
+                var detail = row.nextElementSibling;
+                if (detail && detail.classList && detail.classList.contains('proxy-log-detail')) {
+                    detail.hidden = !detail.hidden;
+                }
+            });
+        }
     }
-
     // ---- Agents Page ----
 
     function agentsPage(agentsData) {

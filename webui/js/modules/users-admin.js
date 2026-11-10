@@ -16,6 +16,20 @@
 
   var CFG = window.WEBUI_CONFIG || {};
 
+  // R481: тексты модуля — через i18n (раньше раздел «Пользователи» был
+  // захардкожен по-русски даже в английском интерфейсе).
+  function t(key, fallback, params) {
+    if (window.I18N && typeof window.I18N.t === 'function') {
+      var v = window.I18N.t(key, params);
+      if (v && v !== key) { return v; }
+    }
+    var out = fallback;
+    if (params && out) {
+      Object.keys(params).forEach(function (k) { out = out.replace('{' + k + '}', params[k]); });
+    }
+    return out;
+  }
+
   function apiBase() {
     return String(CFG.API_BASE || '').replace(/\/+$/, '');
   }
@@ -54,7 +68,9 @@
   }
 
   function roleLabel(role) {
-    return role === 'admin' ? 'администратор' : 'гость (только чтение)';
+    return role === 'admin'
+      ? t('settings.users.role_admin', 'администратор')
+      : t('settings.users.role_viewer', 'гость (только чтение)');
   }
 
   function renderUsers(users) {
@@ -63,7 +79,7 @@
     tbody.innerHTML = '';
     if (!users || !users.length) {
       var tr = document.createElement('tr');
-      var td = cell('Пользователи не заведены: вход в панель невозможен без них.');
+      var td = cell(t('settings.users.empty', 'Пользователи не заведены: вход в панель невозможен без них.'));
       td.colSpan = 3;
       tr.appendChild(td);
       tbody.appendChild(tr);
@@ -79,28 +95,28 @@
       var passBtn = document.createElement('button');
       passBtn.className = 'btn btn-secondary';
       passBtn.type = 'button';
-      passBtn.textContent = 'Сменить пароль';
+      passBtn.textContent = t('settings.users.change_password', 'Сменить пароль');
       passBtn.style.marginRight = '6px';
       passBtn.addEventListener('click', function () {
-        var next = window.prompt('Новый пароль для ' + u.name, '');
+        var next = window.prompt(t('settings.users.prompt_password', 'Новый пароль для {name}', { name: u.name }), '');
         if (next === null) { return; }
-        if (String(next).length < 8) { hint('Пароль короче 8 символов — не сохраняю.', true); return; }
+        if (String(next).length < 8) { hint(t('settings.users.password_short', 'Пароль короче 8 символов — не сохраняю.'), true); return; }
         request('PUT', '/api/v1/auth/users', { name: u.name, password: next, role: u.role }).then(function (r) {
-          if (r.status !== 200) { hint('Не удалось сменить пароль: ' + errorText(r), true); return; }
-          hint('Пароль обновлён для ' + u.name + '. Старые сессии этого пользователя погашены.', false);
+          if (r.status !== 200) { hint(t('settings.users.change_failed', 'Не удалось сменить пароль: {error}', { error: errorText(r) }), true); return; }
+          hint(t('settings.users.password_updated', 'Пароль обновлён для {name}. Старые сессии этого пользователя погашены.', { name: u.name }), false);
           renderUsers((r.body && r.body.users) || users);
-        }).catch(function (e) { hint('Сеть: ' + (e && e.message ? e.message : e), true); });
+        }).catch(function (e) { hint(t('settings.users.network', 'Сеть: {error}', { error: (e && e.message ? e.message : e) }), true); });
       });
 
       var delBtn = document.createElement('button');
       delBtn.className = 'btn btn-secondary';
       delBtn.type = 'button';
-      delBtn.textContent = 'Удалить';
+      delBtn.textContent = t('settings.users.delete', 'Удалить');
       delBtn.addEventListener('click', function () {
-        if (!window.confirm('Удалить пользователя ' + u.name + '?')) { return; }
+        if (!window.confirm(t('settings.users.confirm_delete', 'Удалить пользователя {name}?', { name: u.name }))) { return; }
         request('DELETE', '/api/v1/auth/users?name=' + encodeURIComponent(u.name)).then(function (r) {
-          if (r.status !== 200) { hint('Не удалось удалить: ' + errorText(r), true); return; }
-          hint('Пользователь ' + u.name + ' удалён.', false);
+          if (r.status !== 200) { hint(t('settings.users.delete_failed', 'Не удалось удалить: {error}', { error: errorText(r) }), true); return; }
+          hint(t('settings.users.deleted', 'Пользователь {name} удалён.', { name: u.name }), false);
           renderUsers((r.body && r.body.users) || []);
         }).catch(function (e) { hint('Сеть: ' + (e && e.message ? e.message : e), true); });
       });
@@ -145,7 +161,7 @@
     tbody.innerHTML = '';
     if (!list || !list.length) {
       var tr = document.createElement('tr');
-      var td = cell('Активных сессий нет.');
+      var td = cell(t('settings.users.sessions_none', 'Активных сессий нет.'));
       td.colSpan = 6;
       tr.appendChild(td);
       tbody.appendChild(tr);
@@ -156,25 +172,25 @@
       tr.appendChild(cell(s.user || ''));
       tr.appendChild(cell(roleLabel(s.role)));
       tr.appendChild(cell(formatTime(s.created)));
-      tr.appendChild(cell(formatTime(s.last_seen) + (s.current ? ' (эта вкладка)' : '')));
+      tr.appendChild(cell(formatTime(s.last_seen) + (s.current ? ' ' + t('settings.users.session_current', '(эта вкладка)') : '')));
       tr.appendChild(cell(sourceOf(s)));
 
       var actions = document.createElement('td');
       if (s.current) {
         // Текст, а не вложенная <td>: td внутри td — невалидная разметка.
-        actions.textContent = 'текущая';
+        actions.textContent = t('settings.users.session_current', 'текущая');
       } else {
         var btn = document.createElement('button');
         btn.className = 'btn btn-secondary';
         btn.type = 'button';
-        btn.textContent = 'Завершить';
+        btn.textContent = t('settings.users.session_end', 'Завершить');
         btn.addEventListener('click', function () {
-          if (!window.confirm('Завершить сессию пользователя ' + s.user + '?')) { return; }
+          if (!window.confirm(t('settings.users.confirm_end_session', 'Завершить сессию пользователя {user}?', { user: s.user }))) { return; }
           request('DELETE', '/api/v1/auth/sessions?id=' + encodeURIComponent(s.id)).then(function (r) {
-            if (r.status !== 200) { sessionsHint('Не удалось завершить: ' + errorText(r), true); return; }
-            sessionsHint('Сессия завершена.', false);
+            if (r.status !== 200) { sessionsHint(t('settings.users.session_end_failed', 'Не удалось завершить: {error}', { error: errorText(r) }), true); return; }
+            sessionsHint(t('settings.users.session_ended', 'Сессия завершена.'), false);
             loadSessions();
-          }).catch(function (e) { sessionsHint('Сеть: ' + (e && e.message ? e.message : e), true); });
+          }).catch(function (e) { sessionsHint(t('settings.users.network', 'Сеть: {error}', { error: (e && e.message ? e.message : e) }), true); });
         });
         actions.appendChild(btn);
       }
@@ -185,10 +201,10 @@
 
   function loadSessions() {
     var tbody = document.getElementById('authSessionsTableBody');
-    if (tbody) { tbody.innerHTML = '<tr><td colspan="6" class="loading-cell">Загрузка...</td></tr>'; }
+    if (tbody) { tbody.innerHTML = '<tr><td colspan="6" class="loading-cell">' + t('common.loading', 'Загрузка...') + '</td></tr>'; }
     return request('GET', '/api/v1/auth/sessions').then(function (r) {
       if (r.status !== 200) {
-        sessionsHint('Не удалось получить сессии: ' + errorText(r), true);
+        sessionsHint(t('settings.users.sessions_load_failed', 'Не удалось получить сессии: {error}', { error: errorText(r) }), true);
         renderSessions([]);
         return;
       }
@@ -200,17 +216,23 @@
   }
 
   function errorText(r) {
-    if (r && r.body && (r.body.error || r.body.message)) { return r.body.error || r.body.message; }
-    return 'HTTP ' + (r ? r.status : '?');
+    // R481: сервер уже объясняет, куда именно он не смог записать users.json
+    // (поле hint). Раньше эта подсказка до оператора не доходила — он видел
+    // только «permission denied» и искал причину в контейнере WebUI.
+    var main = '';
+    if (r && r.body && (r.body.error || r.body.message)) { main = r.body.error || r.body.message; }
+    else { main = 'HTTP ' + (r ? r.status : '?'); }
+    if (r && r.body && r.body.hint) { main += ' — ' + r.body.hint; }
+    return main;
   }
 
   function loadUsers() {
     var tbody = document.getElementById('usersTableBody');
-    if (tbody) { tbody.innerHTML = '<tr><td colspan="3" class="loading-cell">Загрузка...</td></tr>'; }
+    if (tbody) { tbody.innerHTML = '<tr><td colspan="3" class="loading-cell">' + t('common.loading', 'Загрузка...') + '</td></tr>'; }
     return request('GET', '/api/v1/auth/users').then(function (r) {
-      if (r.status === 401) { hint('Нужен вход администратора.', true); renderUsers([]); return; }
-      if (r.status === 403) { hint('Требуются права администратора.', true); renderUsers([]); return; }
-      if (r.status !== 200) { hint('Не удалось получить список: ' + errorText(r), true); renderUsers([]); return; }
+      if (r.status === 401) { hint(t('settings.users.login_required', 'Нужен вход администратора.'), true); renderUsers([]); return; }
+      if (r.status === 403) { hint(t('settings.users.admin_required', 'Требуются права администратора.'), true); renderUsers([]); return; }
+      if (r.status !== 200) { hint(t('settings.users.load_failed', 'Не удалось получить список: {error}', { error: errorText(r) }), true); renderUsers([]); return; }
       hint('', false);
       renderUsers((r.body && r.body.users) || []);
     }).catch(function (e) {
@@ -222,13 +244,13 @@
     var name = String((document.getElementById('userNewName') || {}).value || '').trim();
     var role = String((document.getElementById('userNewRole') || {}).value || 'viewer');
     var password = String((document.getElementById('userNewPassword') || {}).value || '');
-    if (!name) { hint('Укажите имя пользователя.', true); return; }
-    if (password.length < 8) { hint('Пароль короче 8 символов — не сохраняю.', true); return; }
+    if (!name) { hint(t('settings.users.name_required', 'Укажите имя пользователя.'), true); return; }
+    if (password.length < 8) { hint(t('settings.users.password_short', 'Пароль короче 8 символов — не сохраняю.'), true); return; }
     request('PUT', '/api/v1/auth/users', { name: name, password: password, role: role }).then(function (r) {
-      if (r.status !== 200) { hint('Не удалось сохранить: ' + errorText(r), true); return; }
+      if (r.status !== 200) { hint(t('settings.users.save_failed', 'Не удалось сохранить: {error}', { error: errorText(r) }), true); return; }
       var passField = document.getElementById('userNewPassword');
       if (passField) { passField.value = ''; }
-      hint('Сохранено: ' + name + ' (' + roleLabel(role) + ').', false);
+      hint(t('settings.users.saved', 'Сохранено: {name} ({role}).', { name: name, role: roleLabel(role) }), false);
       renderUsers((r.body && r.body.users) || []);
     }).catch(function (e) { hint('Сеть: ' + (e && e.message ? e.message : e), true); });
   }

@@ -229,9 +229,14 @@ func NewServer(proxy *balancer.Proxy, config *types.LoadBalancerConfig, healthCh
 	}
 
 	// R201 (2026-10-21): пользователи и серверные сессии для WebUI-аутентификации.
-	usersPath := os.Getenv("LB_USERS_FILE")
+	//
+	// R481: дефолт — /app/data/users.json, если в контейнере есть том /app/data.
+	// Живая жалоба: «не даёт создавать пользователей — нет прав на config/users.json»,
+	// потому что в Docker-образе ../config смонтирован read-only. Legacy-путь
+	// config/users.json остаётся только для локального запуска без тома.
+	usersPath := strings.TrimSpace(os.Getenv("LB_USERS_FILE"))
 	if usersPath == "" {
-		usersPath = "config/users.json"
+		usersPath = defaultUsersFileR481(dirExists)
 	}
 	s.authUsers = NewUserStore(usersPath)
 	// R223: сессии переживают рестарт. Путь задаётся LB_SESSIONS_FILE, иначе берём

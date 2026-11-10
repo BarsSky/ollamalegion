@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -110,11 +111,23 @@ func (s *Server) handleLogsExport(w http.ResponseWriter, r *http.Request) {
 			if src == "" {
 				src = "-"
 			}
-			// Формат строки стабилен и разбирается глазами/awk: время, уровень,
-			// источник, сообщение. JSON-тело сообщения не трогаем — как есть.
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			// R481: поля записи — отдельными парами key=value в детерминированном
+			// порядке, а не JSON-суффиксом в сообщении. Формат строки стабилен:
+			// время, уровень, источник, сообщение, затем поля (если есть).
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s",
 				e.Time.UTC().Format(time.RFC3339Nano),
 				strings.ToUpper(e.Level), src, e.Message)
+			if len(e.Fields) > 0 {
+				keys := make([]string, 0, len(e.Fields))
+				for k := range e.Fields {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				for _, k := range keys {
+					fmt.Fprintf(w, " %s=%v", k, e.Fields[k])
+				}
+			}
+			fmt.Fprintln(w)
 		}
 	}
 }

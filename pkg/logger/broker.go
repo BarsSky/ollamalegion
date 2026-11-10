@@ -15,6 +15,15 @@ type LogEntry struct {
 	Level   string    `json:"level"` // "debug" | "info" | "warn" | "error"
 	Message string    `json:"message"`
 	Source  string    `json:"source,omitempty"` // optional: "balancer" | "proxy" | "cppworker" | etc.
+	// Fields — структурированные поля события (backend, model, request_id, …).
+	//
+	// R481. Раньше поля склеивались в Message строкой `{"backend":"x",…}`, и в
+	// WebUI лог выглядел как «текст + нечитаемый JSON» — оператор не мог ни
+	// прочитать сообщение, ни найти поле (жалоба «лишний текст, поля
+	// некорректно заполняются»). Теперь Message — только текст, а Fields
+	// отдаются отдельно: UI рисует раскрываемый блок «поля (N)», поиск и
+	// экспорт работают с ними как с данными.
+	Fields map[string]interface{} `json:"fields,omitempty"`
 }
 
 // LogSubscriber — одна подписка (один WebSocket-клиент).

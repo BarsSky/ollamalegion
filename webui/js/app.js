@@ -524,6 +524,45 @@ const ui = (function () {
             data.logs = [];
             renderLogs(data.logs);
         });
+        // R481: поиск и уровень для «Системных логов» реально фильтруют список.
+        // Раньше селект уровня применялся только при экспорте, а поиска не было
+        // вовсе — «поля не корректно заполняются, не информативно».
+        var logsSearchEl = document.getElementById('logsSearch');
+        if (logsSearchEl) {
+            logsSearchEl.addEventListener('input', Utils.debounce(function (e) {
+                window.logFilters = window.logFilters || {};
+                window.logFilters.search = e.target.value;
+                renderLogs(data.logs);
+            }, 150));
+        }
+        var logsLevelEl = document.getElementById('logsLevelFilter');
+        if (logsLevelEl) {
+            logsLevelEl.addEventListener('change', function () {
+                window.logFilters = window.logFilters || {};
+                window.logFilters.level = logsLevelEl.value;
+                renderLogs(data.logs);
+            });
+        }
+        // R481: из «Логов» видно, как открыть «Диагностику» и скачать архив.
+        var logsOpenDiagBtn = document.getElementById('logsOpenDiagnostics');
+        if (logsOpenDiagBtn) {
+            logsOpenDiagBtn.addEventListener('click', function () {
+                var nav = document.querySelector('.nav-item[data-page="diagnostics"]');
+                if (nav) nav.click();
+            });
+        }
+        var logsDownloadBundleBtn = document.getElementById('logsDownloadBundle');
+        if (logsDownloadBundleBtn) {
+            logsDownloadBundleBtn.addEventListener('click', function () {
+                if (window.Diagnostics && typeof window.Diagnostics.downloadBundle === 'function') {
+                    window.Diagnostics.downloadBundle(logsDownloadBundleBtn);
+                }
+            });
+        }
+        var exportProxyLogsBtn = document.getElementById('exportProxyLogs');
+        if (exportProxyLogsBtn) {
+            exportProxyLogsBtn.addEventListener('click', function () { exportProxyLogs(); });
+        }
         var exportLogsBtn = document.getElementById('exportLogs');
         if (exportLogsBtn) exportLogsBtn.addEventListener('click', exportLogs);        // R389 (2026-11-02): выгрузка логов БАЛАНСЕРА (серверный буфер), а не
         // только того, что браузер успел получить по WebSocket. Фильтры берём
@@ -2269,7 +2308,10 @@ const ui = (function () {
             time: timeStr,
             level: (entry.level || 'info').toUpperCase(),
             message: entry.message || '',
-            source: entry.source || ''
+            source: entry.source || '',
+            // R481: поля события — отдельной картой (раньше JSON-суффикс жил
+            // внутри message, и лог выглядел как «текст + нечитаемый JSON»).
+            fields: (entry.fields && typeof entry.fields === 'object') ? entry.fields : null
         };
         data.logs.unshift(normalized);
         if (data.logs.length > 500) data.logs = data.logs.slice(0, 500);
@@ -2314,7 +2356,8 @@ const ui = (function () {
                         time: timeStr,
                         level: (e.level || 'info').toUpperCase(),
                         message: e.message || '',
-                        source: e.source || ''
+                        source: e.source || '',
+                        fields: (e.fields && typeof e.fields === 'object') ? e.fields : null
                     };
                 });
                 if (currentPage === 'logs') renderLogs(data.logs);
@@ -2338,17 +2381,39 @@ const ui = (function () {
      *
      * Использует Utils.downloadFile для Blob-based download (без сервера).
      */
+    // logFieldsPairsR481 — те же пары key/value, что рисует renderers.js.
+    function logFieldsPairsR481(fields) {
+        if (!fields || typeof fields !== 'object') return [];
+        return Object.keys(fields).sort().map(function (k) {
+            var v = fields[k];
+            return [k, (v === null || v === undefined) ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v))];
+        });
+    }
+
+    function logFieldsTextR481(fields) {
+        return logFieldsPairsR481(fields).map(function (p) { return p[0] + '=' + p[1]; }).join(' ');
+    }
+
     function exportLogs() {
-        // Читаем текущий фильтр уровня (если есть).
+        // R481: экспорт учитывает ОБА фильтра панели — уровень и поиск, — и
+        // включает поля события. Раньше «Экспорт» игнорировал поиск и терял
+        // поля (они были склеены в message).
         var levelSelect = document.getElementById('logsLevelFilter');
         var levelFilter = levelSelect ? levelSelect.value : 'all';
+        var searchEl = document.getElementById('logsSearch');
+        var searchQuery = String(searchEl ? searchEl.value : '').trim().toLowerCase();
 
-        // Фильтруем логи по уровню.
         var filteredLogs = (data.logs || []).filter(function (l) {
-            if (!l || !l.level) return levelFilter === 'all';
-            if (levelFilter === 'all') return true;
-            return (l.level || '').toLowerCase() === levelFilter;
+            if (!l) return false;
+            if (levelFilter !== 'all' && String(l.level || '').toLowerCase() !== levelFilter) return false;
+            if (!searchQuery) return true;
+            var haystack = [l.message || '', l.source || '', logFieldsTextR481(l.fields)].join(' ').toLowerCase();
+            return haystack.indexOf(searchQuery) !== -1;
         });
+        if (!filteredLogs.length) {
+            showToast(window.I18N ? I18N.t('logs.export_empty') : 'Nothing to export: no entries left after filtering', 'warning');
+            return;
+        }
 
         // Определяем формат из #logsExportFormat (default csv).
         var formatSelect = document.getElementById('logsExportFormat');
@@ -2369,8 +2434,9 @@ const ui = (function () {
                 }
                 return s;
             };
-            content = 'timestamp,level,message\r\n' + filteredLogs.map(function (l) {
-                return escapeCsv(l.time) + ',' + escapeCsv(l.level) + ',' + escapeCsv(l.message);
+            content = 'timestamp,level,source,message,fields\r\n' + filteredLogs.map(function (l) {
+                return escapeCsv(l.time) + ',' + escapeCsv(l.level) + ',' + escapeCsv(l.source) +
+                    ',' + escapeCsv(l.message) + ',' + escapeCsv(logFieldsTextR481(l.fields));
             }).join('\r\n');
             mime = 'text/csv';
             ext = 'csv';
@@ -2386,12 +2452,75 @@ const ui = (function () {
         } else {
             // TXT (legacy): [time] LEVEL: message
             content = filteredLogs.map(function (l) {
-                return '[' + (l.time || '') + '] ' + (l.level || '') + ': ' + (l.message || '');
+                var line = '[' + (l.time || '') + '] ' + (l.level || '') + ': ' + (l.message || '');
+                var fields = logFieldsTextR481(l.fields);
+                if (fields) line += ' | ' + fields;
+                return line;
             }).join('\n');
         }
 
         var filename = 'ollamalegion-logs-' + stamp + (levelFilter !== 'all' ? '-' + levelFilter : '') + '.' + ext;
         Utils.downloadFile(content, filename, mime);
+        if (window.I18N) {
+            showToast(I18N.t('logs.export_done', { filename: filename, count: filteredLogs.length }), 'success');
+        }
+    }
+
+    // exportProxyLogsR481 — скачивание отфильтрованных прокси-логов файлом.
+    //
+    // Раньше у прокси-логов была только кнопка «Копировать» (TSV в буфер) — ни
+    // файла, ни формата. Теперь CSV/JSON с учётом фильтров уровня и поиска;
+    // в детали попадают request_id, stage, полный текст ошибки.
+    function exportProxyLogs() {
+        var entries = Array.isArray(data.proxyLogs) ? data.proxyLogs : [];
+        var levelFilter = (window.proxyLogFilters && window.proxyLogFilters.level) || 'all';
+        var searchQuery = String((window.proxyLogFilters && window.proxyLogFilters.search) || '').toLowerCase();
+        var filtered = entries.filter(function (e) {
+            if (!e) return false;
+            if (levelFilter !== 'all') {
+                var sc = e.statusCode || 0;
+                if (levelFilter === '2xx' && (sc < 200 || sc >= 300)) return false;
+                if (levelFilter === '4xx' && (sc < 400 || sc >= 500)) return false;
+                if (levelFilter === '5xx' && sc < 500) return false;
+            }
+            if (!searchQuery) return true;
+            var haystack = [e.path, e.model, e.backendID, e.error, e.clientName, e.requestID, e.stage]
+                .join(' ').toLowerCase();
+            return haystack.indexOf(searchQuery) !== -1;
+        });
+        if (!filtered.length) {
+            showToast(window.I18N ? I18N.t('logs.export_empty') : 'Nothing to export', 'warning');
+            return;
+        }
+        var formatEl = document.getElementById('proxyExportFormat');
+        var format = formatEl ? formatEl.value : 'csv';
+        var stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        var content = '';
+        var mime = 'text/csv';
+        var ext = 'csv';
+        var escapeCsv = function (val) {
+            var s = val === null || val === undefined ? '' : String(val);
+            return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        };
+        if (format === 'json') {
+            content = JSON.stringify({ exportedAt: new Date().toISOString(), count: filtered.length, entries: filtered }, null, 2);
+            mime = 'application/json';
+            ext = 'json';
+        } else {
+            content = 'timestamp,method,path,model,client,status,durationMs,backend,stage,requestID,error\r\n' +
+                filtered.map(function (e) {
+                    return [
+                        e.timestamp || '', e.method || '', e.path || '', e.model || '',
+                        e.clientName || e.clientIP || '', e.statusCode || '', e.durationMs || '',
+                        e.backendID || '', e.stage || '', e.requestID || '', e.error || ''
+                    ].map(escapeCsv).join(',');
+                }).join('\r\n');
+        }
+        var filename = 'ollamalegion-proxy-logs-' + stamp + '.' + ext;
+        Utils.downloadFile(content, filename, mime);
+        if (window.I18N) {
+            showToast(I18N.t('logs.export_done', { filename: filename, count: filtered.length }), 'success');
+        }
     }
 
     function exportBackends() {

@@ -1117,8 +1117,14 @@ func AuthUsersHandler(users *UserStore, sessions *SessionStore) http.HandlerFunc
 				return
 			}
 			if err := users.Upsert(req.Name, req.Password, req.Role); err != nil {
+				// R481: ошибка обязана быть действенной. Живая жалоба «не даёт
+				// создавать пользователей — нет прав на config/users.json»:
+				// оператор видел только «permission denied» и искал причину в
+				// контейнере WebUI. Отдаём путь, куда писали, и подсказку про том.
 				writeAuthJSON(w, http.StatusBadRequest, map[string]interface{}{
 					"error": i18n.T("api.auth_session.user_save_failed", err),
+					"path":  users.Path(),
+					"hint":  i18n.T("api.auth_session.admin_hint_mount_volume"),
 				})
 				return
 			}

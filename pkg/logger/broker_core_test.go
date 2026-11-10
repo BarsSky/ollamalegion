@@ -43,9 +43,16 @@ func TestR390_LoggerFeedsBroker(t *testing.T) {
 	if !strings.Contains(e.Message, "узел раскладки молчит") {
 		t.Errorf("сообщение потерялось: %q", e.Message)
 	}
-	// Поля записи обязаны доехать контекстом — иначе в выгрузке нет backend/stalled_sec.
-	if !strings.Contains(e.Message, `"backend":"donor-1"`) || !strings.Contains(e.Message, `"stalled_sec":12`) {
-		t.Errorf("поля не попали в сообщение: %q", e.Message)
+	// R481: поля записи — отдельная карта, а НЕ JSON-суффикс в сообщении.
+	// Живая жалоба: в панели лог выглядел как «текст + нечитаемый JSON».
+	if strings.Contains(e.Message, "{") {
+		t.Errorf("в сообщении остался JSON-суффикс: %q", e.Message)
+	}
+	if e.Fields["backend"] != "donor-1" {
+		t.Errorf("Fields[backend] = %v, ожидался donor-1 (поля не доехали)", e.Fields["backend"])
+	}
+	if got, ok := e.Fields["stalled_sec"].(int64); !ok || got != 12 {
+		t.Errorf("Fields[stalled_sec] = %v (%T), ожидалось 12 (int64)", e.Fields["stalled_sec"], e.Fields["stalled_sec"])
 	}
 	if e.Source != "balancer" {
 		t.Errorf("source = %q, ожидался balancer", e.Source)

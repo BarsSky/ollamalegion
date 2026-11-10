@@ -132,6 +132,15 @@
                 </a>
             </nav>
             <div class="sidebar-footer">
+                <!-- R481: ярлык «Диагностика» в подвале — он виден всегда, без
+                     прокрутки списка разделов. Живая жалоба: «не видно, как
+                     перейти на страницу Диагностика, чтобы получить архив логов»:
+                     пункт меню есть, но на невысоком экране уезжает за границу
+                     прокручиваемого nav, и его не находят. -->
+                <a href="#diagnostics" class="nav-item sidebar-diag-link" data-page="diagnostics" data-i18n-title="nav.diagnostics_hint" title="Сводка, последние сбои и архив логов">
+                    <span class="nav-icon-wrap"><i class="fas fa-stethoscope fa-fw"></i></span>
+                    <span data-i18n="nav.diagnostics">Диагностика</span>
+                </a>
                 <div class="connection-status" id="connectionStatus">
                     <span class="status-dot"></span>
                     <span class="status-text" data-i18n="common.connecting">Подключение...</span>
@@ -1142,9 +1151,14 @@
 
                 <!-- Системные логи -->
                 <div class="card logs-panel active" id="logsPanelSystem">
-                    <div class="card-header">
-                        <h3><i class="fas fa-file-lines section-icon-i"></i> <span data-i18n="logs.title">Системные логи</span></h3>
-                        <div class="card-actions">
+                    <div class="card-header logs-card-header">
+                        <h3><i class="fas fa-file-lines section-icon-i"></i> <span data-i18n="logs.title">Системные логи</span>
+                            <span class="logs-count" id="logsCount"></span>
+                        </h3>
+                        <div class="card-actions logs-actions">
+                            <input type="search" class="form-control logs-search" id="logsSearch"
+                                   data-i18n-placeholder="logs.search_placeholder" placeholder="Поиск по тексту и полям"
+                                   data-i18n-title="logs.search_title" title="Поиск по сообщению, источнику и полям (backend, model, request_id…)">
                             <select class="sort-select" id="logsLevelFilter" data-i18n-title="logs.level_filter_title" title="Filter by level">
                                 <option value="all" data-i18n="logs.level_all">All levels</option>
                                 <option value="debug" data-i18n="logs.level_debug">Debug</option>
@@ -1160,8 +1174,18 @@
                             <button class="btn btn-secondary" id="exportLogs" data-admin-only data-i18n="logs.export">Экспорт</button>
                             <button class="btn btn-secondary" id="exportServerLogs" data-admin-only data-i18n="logs.export_server" data-i18n-title="logs.export_server_title" title="Скачать логи балансера файлом (весь буфер сервера)">Скачать логи сервера</button>
                             <button class="btn btn-secondary" id="clearLogs" data-admin-only data-i18n="logs.clear">Очистить</button>
+                            <!-- R481: из «Логов» должно быть видно, КАК получить архив
+                                 диагностики — раньше это было только на отдельной странице,
+                                 и её не находили. -->
+                            <button class="btn btn-primary" id="logsDownloadBundle" data-admin-only
+                                    data-i18n="logs.download_bundle" data-i18n-title="logs.download_bundle_title"
+                                    title="Скачать архив: сводка, логи балансера и воркеров">Архив диагностики</button>
+                            <button class="btn btn-secondary" id="logsOpenDiagnostics"
+                                    data-i18n="logs.open_diagnostics" data-i18n-title="logs.open_diagnostics_title"
+                                    title="Открыть страницу «Диагностика»: сводка, флаги, последние сбои">Подробнее</button>
                         </div>
                     </div>
+                    <div class="logs-hint" data-i18n="logs.hint">Показаны последние записи сервера. Строка с длинным сообщением разворачивается кликом; поля события — в блоке «поля».</div>
                     <div class="logs-container" id="logsContainer">
                         <div class="log-entry log-info">
                             <span class="log-time">--:--:--</span>
@@ -1173,11 +1197,16 @@
 
                 <!-- Прокси логи -->
                 <div class="card logs-panel" id="logsPanelProxy">
-                    <div class="card-header">
+                    <div class="card-header logs-card-header">
                         <h3><i class="fas fa-arrow-right-arrow-left section-icon-i"></i> <span data-i18n="logs.proxy_title">Прокси-запросы</span></h3>
-                        <div class="card-actions">
+                        <div class="card-actions logs-actions">
+                            <select class="sort-select" id="proxyExportFormat" data-i18n-title="logs.export_format_title" title="Export format">
+                                <option value="csv" data-i18n="logs.format_csv">CSV</option>
+                                <option value="json" data-i18n="logs.format_json">JSON</option>
+                            </select>
+                            <button class="btn btn-secondary" id="exportProxyLogs" data-i18n="logs.proxy_export" data-i18n-title="logs.proxy_export_title" title="Скачать отфильтрованные прокси-логи файлом">Скачать</button>
                             <button class="btn btn-secondary" id="clearProxyLogs" data-admin-only data-i18n="logs.clear">Очистить</button>
-                                <button class="btn btn-secondary" id="copyProxyLogs" data-i18n="logs.copy_proxy" data-i18n-title="logs.copy_proxy_title" title="Копировать логи прокси"><i class="fas fa-copy" aria-hidden="true"></i> Копировать</button>
+                            <button class="btn btn-secondary" id="copyProxyLogs" data-i18n="logs.copy_proxy" data-i18n-title="logs.copy_proxy_title" title="Копировать логи прокси"><i class="fas fa-copy" aria-hidden="true"></i> Копировать</button>
                         </div>
                     </div>
                     <div class="proxy-logs-container" id="proxyLogsContainer">
@@ -2210,7 +2239,7 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                 <span data-i18n="settings.section.users">Пользователи</span>
                             </div>
                             <div class="settings-section-body open">
-                                <p style="color:var(--text-muted);margin-bottom:12px;font-size:var(--font-size-sm);">
+                                <p style="color:var(--text-muted);margin-bottom:12px;font-size:var(--font-size-sm);" data-i18n="settings.users.roles_desc">
                                     Роли: <strong>администратор</strong> — полный доступ,
                                     <strong>гость</strong> (viewer) — только чтение и генерация, мутации отклоняются сервером (403).
                                 </p>
@@ -2218,13 +2247,13 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                     <table class="table">
                                         <thead>
                                             <tr>
-                                                <th>Пользователь</th>
-                                                <th>Роль</th>
-                                                <th style="width:220px;">Действия</th>
+                                                <th data-i18n="settings.users.col_user">Пользователь</th>
+                                                <th data-i18n="settings.users.col_role">Роль</th>
+                                                <th style="width:220px;" data-i18n="settings.users.col_actions">Действия</th>
                                             </tr>
                                         </thead>
                                         <tbody id="usersTableBody">
-                                            <tr><td colspan="3" class="loading-cell">Загрузка...</td></tr>
+                                            <tr><td colspan="3" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
                                         </tbody>
                                     </table>
                                 </div>
@@ -2236,16 +2265,16 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                     <div class="form-group" style="margin:0">
                                         <label for="userNewRole" data-i18n="settings.users.role">Роль</label>
                                         <select id="userNewRole" class="form-control">
-                                            <option value="viewer">гость (только чтение)</option>
-                                            <option value="admin">администратор</option>
+                                            <option value="viewer" data-i18n="settings.users.role_viewer">гость (только чтение)</option>
+                                            <option value="admin" data-i18n="settings.users.role_admin">администратор</option>
                                         </select>
                                     </div>
                                     <div class="form-group" style="margin:0">
                                         <label for="userNewPassword" data-i18n="settings.users.password">Пароль</label>
-                                        <input type="password" id="userNewPassword" class="form-control" placeholder="мин. 8 символов" autocomplete="new-password">
+                                        <input type="password" id="userNewPassword" class="form-control" data-i18n-placeholder="settings.users.password_placeholder" placeholder="мин. 8 символов" autocomplete="new-password">
                                     </div>
                                     <div class="form-group" style="margin:0;display:flex;align-items:flex-end;">
-                                        <button class="btn btn-primary" id="userAddBtn" data-admin-only style="width:100%;">Добавить / обновить</button>
+                                        <button class="btn btn-primary" id="userAddBtn" data-admin-only data-i18n="settings.users.add" style="width:100%;">Добавить / обновить</button>
                                     </div>
                                 </div>
                                 <div id="usersHint" style="display:none;font-size:var(--font-size-xs);margin-top:10px;"></div>
@@ -2253,21 +2282,21 @@ Beta-slow параметр YaRN. Стандарт: 1. Низкое = более 
                                 <!-- R225: активные сессии. Раньше погасить чужой вход
                                      можно было только сменой пароля, и оператор не видел,
                                      кто и откуда вошёл. -->
-                                <h4 style="margin:18px 0 8px;font-size:var(--font-size-base);">Активные сессии</h4>
+                                <h4 style="margin:18px 0 8px;font-size:var(--font-size-base);" data-i18n="settings.users.active_sessions">Активные сессии</h4>
                                 <div class="table-responsive">
                                     <table class="table">
                                         <thead>
                                             <tr>
-                                                <th>Пользователь</th>
-                                                <th>Роль</th>
-                                                <th>Вход</th>
-                                                <th>Активность</th>
-                                                <th>Откуда</th>
-                                                <th style="width:150px;">Действия</th>
+                                                <th data-i18n="settings.users.col_user">Пользователь</th>
+                                                <th data-i18n="settings.users.col_role">Роль</th>
+                                                <th data-i18n="settings.users.col_login">Вход</th>
+                                                <th data-i18n="settings.users.col_activity">Активность</th>
+                                                <th data-i18n="settings.users.col_from">Откуда</th>
+                                                <th style="width:150px;" data-i18n="settings.users.col_actions">Действия</th>
                                             </tr>
                                         </thead>
                                         <tbody id="authSessionsTableBody">
-                                            <tr><td colspan="6" class="loading-cell">Загрузка...</td></tr>
+                                            <tr><td colspan="6" class="loading-cell" data-i18n="common.loading">Загрузка...</td></tr>
                                         </tbody>
                                     </table>
                                 </div>

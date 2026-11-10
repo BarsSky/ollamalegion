@@ -84,6 +84,11 @@ services:
       - GIN_MODE=release
       - LOG_LEVEL=${LB_LOG_LEVEL:-info}
       - LB_CONFIG_PATH=/app/config/config.json
+      # R481: users.json обязан лежать на ЗАПИСЫВАЕМОМ томе. ../config смонтирован
+      # read-only — дефолт config/users.json давал permission denied на «Добавить
+      # пользователя». Том balancer_data:/app/data в этом compose есть.
+      - LB_USERS_FILE=${LB_USERS_FILE:-/app/data/users.json}
+      - LB_SESSIONS_FILE=${LB_SESSIONS_FILE:-/app/data/sessions.json}
       # R66d: единственный источник токена — CPPWORKER_API_TOKEN в
       # deployments/.env (см. блок "ПРО ТОКЕН" в шапке файла). Значение ниже
       # обязано совпадать с API_TOKEN/CPPWORKER_BALANCER_TOKEN/BALANCER_TOKEN

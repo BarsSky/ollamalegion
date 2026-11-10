@@ -215,6 +215,12 @@ func (p *Proxy) compositionNodeR95(member types.BackendGroupMemberConfig, skipPr
 	// вывод «можно ли соединять эти два узла».
 	if state != nil && state.Backend != nil {
 		node.LlamaCppVersion = strings.TrimSpace(state.Backend.BuildInfo)
+		// R486: релизная идентичность узла и версия протокола RPC. BuildInfo
+		// описывает только llama.cpp; «узел из другого релиза» до этого не
+		// проверялся ни валидатором, ни раскладкой.
+		node.ReleaseVersion = strings.TrimSpace(state.Backend.WorkerVersion)
+		node.ReleaseCommit = strings.TrimSpace(state.Backend.WorkerCommit)
+		node.RPCProto = strings.TrimSpace(state.Backend.WorkerRPCProto)
 	}
 
 	if role == types.BackendGroupRoleWorker && node.RPCEndpoint != "" && !skipProbes {

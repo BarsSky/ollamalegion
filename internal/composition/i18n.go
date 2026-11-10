@@ -85,6 +85,38 @@ func renderText(check CheckID, lang string, p map[string]any) string {
 		return "версия llama.cpp не сообщается узлами: " + str(p["detail"]) +
 			" — совместимость протокола RPC не подтверждена"
 
+	case CheckReleaseMismatch:
+		if lang == LangEN {
+			return "nodes are built from different releases: " + str(p["detail"]) +
+				" — llama.cpp may match, but balancer/worker code differs, so the same request behaves differently on these nodes"
+		}
+		return "узлы собраны из РАЗНЫХ релизов: " + str(p["detail"]) +
+			" — llama.cpp может совпадать, но код балансера/воркера разный, поэтому один и тот же запрос ведёт себя на этих узлах по-разному"
+
+	case CheckReleaseUnknown:
+		if lang == LangEN {
+			return "release commit is not reported by: " + str(p["detail"]) +
+				" — these images predate identity baking, so release equality is not confirmed"
+		}
+		return "релизный коммит не сообщается узлами: " + str(p["detail"]) +
+			" — образы собраны до запекания идентичности, равенство релизов не подтверждено"
+
+	case CheckRPCProtoMismatch:
+		if lang == LangEN {
+			return "RPC protocol versions differ: " + str(p["detail"]) +
+				" — llama.cpp rejects such peers with GGML_ABORT after weights are loaded"
+		}
+		return "версии протокола RPC не совпадают: " + str(p["detail"]) +
+			" — llama.cpp отвергает такие узлы через GGML_ABORT уже после загрузки весов"
+
+	case CheckRPCProtoUnknown:
+		if lang == LangEN {
+			return "RPC protocol version is not reported by: " + str(p["detail"]) +
+				" — protocol compatibility is not confirmed"
+		}
+		return "версия протокола RPC не сообщается узлами: " + str(p["detail"]) +
+			" — совместимость протокола не подтверждена"
+
 	case CheckVRAMSumInsufficient:
 		need := humanBytes(lang, int64(num(p["needBytes"])))
 		weights := humanBytes(lang, int64(num(p["weightsMB"]))*1024*1024)

@@ -52,6 +52,14 @@ const (
 	CheckVersionMismatch CheckID = "version_mismatch"
 	// CheckVersionUnknown — версию не сообщает хотя бы один узел.
 	CheckVersionUnknown CheckID = "version_unknown"
+	// CheckReleaseMismatch — узлы собраны из РАЗНЫХ релизов (R486).
+	CheckReleaseMismatch CheckID = "release_mismatch"
+	// CheckReleaseUnknown — релизный коммит не сообщает хотя бы один узел.
+	CheckReleaseUnknown CheckID = "release_unknown"
+	// CheckRPCProtoMismatch — разные версии протокола RPC (R486).
+	CheckRPCProtoMismatch CheckID = "rpc_proto_mismatch"
+	// CheckRPCProtoUnknown — версию протокола RPC не сообщает хотя бы один узел.
+	CheckRPCProtoUnknown CheckID = "rpc_proto_unknown"
 	// CheckVRAMSumInsufficient — сумма свободного VRAM узлов меньше весов с запасом.
 	CheckVRAMSumInsufficient CheckID = "vram_sum_insufficient"
 	// CheckKVRAMInsufficient — KV для запрошенного n_ctx не помещается.
@@ -90,6 +98,15 @@ type Node struct {
 	RPCError string
 	// LlamaCppVersion — версия/коммит сборки, как её сообщает узел.
 	LlamaCppVersion string
+	// ReleaseVersion/ReleaseCommit — РЕЛИЗНЫЙ образ узла (R486): тег и коммит
+	// репозитория, запечённые в образ. LlamaCppVersion говорит только про
+	// llama.cpp; два узла с одинаковым llama.cpp могли быть собраны из разных
+	// релизов балансера/воркера, и это до сих пор нигде не проверялось.
+	ReleaseVersion string
+	ReleaseCommit  string
+	// RPCProto — версия протокола RPC (RPC_PROTO_MAJOR.MINOR.PATCH), запечённая
+	// в образ. Несовпадение = отказ раскладки до загрузки весов.
+	RPCProto string
 	// GPUIdentity — «личность» GPU для проверки однородности (sm_86, vram:8192).
 	GPUIdentity string
 	// GPUName — человекочитаемое имя карты (для текста), если известно.
@@ -224,6 +241,10 @@ var allCheckIDs = []CheckID{
 	CheckRPCUnreachable,
 	CheckVersionMismatch,
 	CheckVersionUnknown,
+	CheckReleaseMismatch,
+	CheckReleaseUnknown,
+	CheckRPCProtoMismatch,
+	CheckRPCProtoUnknown,
 	CheckVRAMSumInsufficient,
 	CheckWeightsNeedRAMOffload,
 	CheckKVRAMInsufficient,
@@ -273,6 +294,8 @@ func Validate(req Request) Report {
 
 	report.Issues = append(report.Issues, checkNodes(req)...)
 	report.Issues = append(report.Issues, checkVersions(req)...)
+	// R486: релиз образа и версия протокола RPC — отдельными проверками.
+	report.Issues = append(report.Issues, checkReleaseAndProto(req)...)
 	report.Issues = append(report.Issues, checkBackendTypes(req)...)
 	report.Issues = append(report.Issues, checkVRAMSum(req)...)
 	report.Issues = append(report.Issues, checkKV(req)...)
@@ -380,6 +403,112 @@ func checkVersions(req Request) []Issue {
 			"detail":   strings.Join(unknown, ", "),
 		}))
 	}
+	return issues
+}
+
+// checkReleaseAndProto — узлы из одного РЕЛИЗА и с одним протоколом RPC (R486).
+//
+// ЗАЧЕМ. checkVersions сравнивает только коммит llama.cpp. Живой случай R486:
+// балансер и воркер были собраны из разных релизов (образ воркера проштампован
+// предыдущим коммитом), llama.cpp при этом совпадал — раскладка считалась
+// совместимой, а поведение стенда расходилось. Версия протокола RPC сравнивается
+// отдельно от коммита: патч-версия протокола меняется вместе с числом
+// ggml-операций, то есть два разных протокола ловятся только по ней.
+//
+// Уровни: несовпадение известных значений — error (это отказ раскладки),
+// «не сообщил» — HINT. Именно hint, а не warning: образы, собранные до R486,
+// не несут идентичности, и постоянное предупреждение на каждом стенде приучило
+// бы игнорировать список предупреждений целиком. Hint виден в блоке подсказок.
+func checkReleaseAndProto(req Request) []Issue {
+	var issues []Issue
+
+	// --- релизный коммит ---
+	byCommit := map[string][]string{}
+	displayByCommit := map[string][]string{}
+	var unknownRelease []string
+	for _, node := range req.Group.Nodes {
+		if !node.Registered || !node.Healthy {
+			continue
+		}
+		commit := strings.TrimSpace(node.ReleaseCommit)
+		if commit == "" {
+			unknownRelease = append(unknownRelease, node.BackendID)
+			continue
+		}
+		key := strings.ToLower(commit)
+		byCommit[key] = append(byCommit[key], node.BackendID)
+		if v := strings.TrimSpace(node.ReleaseVersion); v != "" {
+			displayByCommit[key] = appendUniqueStringR305(displayByCommit[key], v)
+		} else {
+			displayByCommit[key] = appendUniqueStringR305(displayByCommit[key], commit)
+		}
+	}
+	if len(byCommit) > 1 {
+		keys := make([]string, 0, len(byCommit))
+		for k := range byCommit {
+			keys = append(keys, k)
+		}
+		sortStrings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			ids := byCommit[key]
+			sortStrings(ids)
+			displays := displayByCommit[key]
+			sortStrings(displays)
+			parts = append(parts, strings.Join(displays, " | ")+"="+strings.Join(ids, ","))
+		}
+		issues = append(issues, newIssue(req, CheckReleaseMismatch, LevelError, req.Group.ID, map[string]any{
+			"releases": parts,
+			"detail":   strings.Join(parts, "; "),
+		}))
+	}
+	if len(unknownRelease) > 0 && len(req.Group.Nodes) > 1 {
+		sortStrings(unknownRelease)
+		issues = append(issues, newIssue(req, CheckReleaseUnknown, LevelHint, req.Group.ID, map[string]any{
+			"backends": unknownRelease,
+			"detail":   strings.Join(unknownRelease, ", "),
+		}))
+	}
+
+	// --- версия протокола RPC ---
+	byProto := map[string][]string{}
+	var unknownProto []string
+	for _, node := range req.Group.Nodes {
+		if !node.Registered || !node.Healthy {
+			continue
+		}
+		proto := strings.TrimSpace(node.RPCProto)
+		if proto == "" {
+			unknownProto = append(unknownProto, node.BackendID)
+			continue
+		}
+		byProto[proto] = append(byProto[proto], node.BackendID)
+	}
+	if len(byProto) > 1 {
+		keys := make([]string, 0, len(byProto))
+		for k := range byProto {
+			keys = append(keys, k)
+		}
+		sortStrings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			ids := byProto[key]
+			sortStrings(ids)
+			parts = append(parts, key+"="+strings.Join(ids, ","))
+		}
+		issues = append(issues, newIssue(req, CheckRPCProtoMismatch, LevelError, req.Group.ID, map[string]any{
+			"protocols": parts,
+			"detail":    strings.Join(parts, "; "),
+		}))
+	}
+	if len(unknownProto) > 0 && len(req.Group.Nodes) > 1 {
+		sortStrings(unknownProto)
+		issues = append(issues, newIssue(req, CheckRPCProtoUnknown, LevelHint, req.Group.ID, map[string]any{
+			"backends": unknownProto,
+			"detail":   strings.Join(unknownProto, ", "),
+		}))
+	}
+
 	return issues
 }
 

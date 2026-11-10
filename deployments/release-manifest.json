@@ -1,24 +1,24 @@
 {
-    "tag":  "r261109-2352",
-    "builtAt":  "2026-11-09T23:52:00Z",
-    "gitCommit":  "71148041",
+    "tag":  "r261110-0737",
+    "builtAt":  "2026-11-10T07:37:00Z",
+    "gitCommit":  "f98f9a98",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R480: стадии для единой очереди и generic-пути (admission/upstream/stream/client_write), вычищен мёртвый код (bindSession, acquireSlotWithRetry, executeWithFallback, extractModel, дубль /health), BOM в теле запроса снимается (stripUTF8BOMR480) — иначе не разбирался JSON, терялся stream-флаг и /api/chat уходил в non-stream транспорт. Закрыты P1-9 и большая часть P2-14 из docs/architecture/debts.ru.md. Ранее: R479 (паритет типов, лимит тела), R478 (OpenWebUI), R477, R476, R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
+    "note":  "R480: политика «нужного окна» по варианту C (need = max(потребность запроса + резерв, окно активной сессии в пределах TTL)), TTL метрики окна (cold candidate: неизвестно vs точно нет), гейт R459 на обходных путях переезда и в единой очереди, причина window_too_small в why_queued. Плюс стадии admission/upstream/stream/client_write и чистка мёртвого кода из 0.7.239 (в том же образе). Закрыты P1-4..P1-9 и большая часть P2-14 из docs/architecture/debts.ru.md. Ранее: R479 (паритет типов, лимит тела), R478 (OpenWebUI), R477, R476, R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-09T23:56:00Z",
+                          "verifiedAt":  "2026-11-10T07:52:00Z",
                           "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
                           "proof":  [
-                                        "R480: balancer r261109-2352 (71148041) выкачен; GET :18080/api/version -> build=r261109-2352 commit=71148041; контейнер healthy; cppworker gpu-261109-1754 и webui r261109-1747 не пересобирались",
-                                        "R480: POST /api/chat со stream:true и телом БЕЗ BOM -> 200, X-Backend-ID=cppworker-gpu-bundled-agent, 3 NDJSON-строки; request trace: stage=client_write stage_final=done (стадии шли select_backend -> upstream -> preflight -> stream -> client_write)",
-                                        "R480: POST /api/chat со stream:false -> 200, request trace: stage=upstream stage_final=done (non-stream транспорт)",
-                                        "R480: POST /api/chat с UTF-8 BOM в теле (битый клиент) -> 200, 3 NDJSON-строки, stage=client_write stage_final=done. До правки тот же запрос уходил в proxyRequestLlamaCppNonStream (model пустой, stream-флаг терялся) — воркер стримил, клиент получал ответ одним куском",
-                                        "R480: GET /api/tags -> 200 (1448 байт, модель горячая); /api/v1/diag/summary без X-API-Token -> 401 (авторизация обязательна, как и раньше)",
-                                        "R480: тесты — полный ./internal/balancer/ (168 с) зелёный; новые тесты: TestWaitForInferenceBackend_SetsAdmissionStage_R477, TestStripUTF8BOMR480, TestReadRequestBodyLimited_StripsBOM_R480, TestParseRequestBody_StripsBOM_R480, TestPeekBodyR479_StripsBOM_R480",
-                                        "R480: закрыты P1-9 (стадии) и P2-14 частично (кроме SetQueueManagerProxy — тест-шов у ~200 сценариев) из docs/architecture/debts.ru.md",
-                                        "ОТКРЫТО: живой ход, который именно СТОИТ в единой очереди (на стенде один бэкенд, слот почти всегда свободен; ожидание проверено unit-тестом); P1-4..P1-8 (R459 need/TTL/гейт на обходных путях), P2-12/13/15, E (A10/27B, смешанный стенд, Cline с tools)"
+                                        "R480: balancer r261110-0737 (f98f9a98) выкачен; GET :18080/api/version -> build=r261110-0737 commit=f98f9a98; контейнер healthy; cppworker gpu-261109-1754 и webui r261109-1747 не пересобирались",
+                                        "R480: POST /api/chat (stream:true, модель Qwen3-4B-Instruct-2507-Q4_K_M, num_predict=4) -> 200, X-Backend-ID=cppworker-gpu-bundled-agent, 3 NDJSON-строки; request trace: stage=client_write stage_final=done duration_ms=460",
+                                        "R480: POST /v1/chat/completions (stream:true, max_tokens=4) -> 200, SSE-поток (data: chunks + :prefill_started_at)",
+                                        "R480: GET /api/tags -> 200, 3 модели (Qwen3-4B-Instruct-2507-Q4_K_M, Qwen3.8-9B-Distill-uncensored-heretic.Q4_K_M, gemma-4-E4B-it-Q4_K_M)",
+                                        "R480: тесты — полный ./internal/balancer/ (166 с) зелёный; новые тесты: session_move_need_r480_test.go, cold_candidate_ttl_r480_test.go, queue_gate_r480_test.go, queue_rejections_r480_test.go; сторожевые R301/R302/R387 обновлены и зелёные",
+                                        "R480: закрыты P1-4..P1-9 (политика окна, TTL метрики, гейт на обходных путях, очередь, window_too_small, стадии) из docs/architecture/debts.ru.md",
+                                        "СТЕНД (не регресс): первый живой прогон после выкатки использовал имя qwen3:0.6b, которого нет в /api/tags этого стенда — воркер ответил 400 'model not found', балансер отработал это штатно (503 + Retry-After на /api/chat, error-chunk на /v1). Повтор с существующей моделью — 200 (см. выше). Проверка имени модели — ответственность клиента, не балансера",
+                                        "ОТКРЫТО: живой переезд сессии между двумя прогретыми копиями с разными окнами — на стенде один cppworker (RTX 3070, окно 8192/65536 в зависимости от загрузки), логика покрыта unit-тестами с двумя бэкендами; P2-12/13/15, E (A10/27B, смешанный стенд, Cline с tools)"
                                     ]
                       },
     "images":  [
@@ -26,9 +26,9 @@
                        "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
                        "service":  "loadbalancer",
-                       "imageTag":  "r261109-2352",
-                       "imageId":  "sha256:9a94ce1ed3a0c1a77320bb111b13cb91441aa2637ba68cc8f51cbef54135869e",
-                       "image":  "ollama-legion/balancer:r261109-2352"
+                       "imageTag":  "r261110-0737",
+                       "imageId":  "sha256:fd827f4673c7b72f03ac5a96ea34be33676e5abd9858afe235335f0efa2e12ef",
+                       "image":  "ollama-legion/balancer:r261110-0737"
                    },
                    {
                        "alias":  "ollama-legion/cppworker:latest-gpu-86",

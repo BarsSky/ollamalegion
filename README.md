@@ -398,6 +398,17 @@ MIT - see [LICENSE.md](LICENSE.md).
 Full history with dates, image tags and the defect behind each fix:
 [CHANGELOG.md](CHANGELOG.md). Recently:
 
+- **v0.7.240 (R480, 2026-11-10) - session window policy C, metric TTL, gating everywhere.**
+  The window a session move must preserve is now
+  `max(request need + reserve, window of an ACTIVE session within TTL)`: a live
+  session keeps its wide copy, an idle one no longer dictates the window, and the
+  move is decided by the request's own need. Window metrics got an expiry
+  (`LB_R459_COLD_TTL_SEC`, 90 s): "unknown" no longer means "model absent", so
+  moves no longer stall until the poller refreshes. The R459 gate now also applies
+  to bypass paths (busy slot, 503, failover) and to the unified queue: a session
+  waits for its own copy, and `window_too_small` shows up in `why_queued`.
+  Debts: P1-4…P1-8 closed (`docs/architecture/debts.ru.md`).
+
 - **v0.7.239 (R480, 2026-11-09) - queue stage in the log, dead code removed.**
   The `request trace` line now tells where a request actually was: waiting in the
   unified queue (`stage=admission`), talking to the worker (`upstream`), reading

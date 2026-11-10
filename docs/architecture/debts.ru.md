@@ -29,33 +29,46 @@
 
 ## P1 — распределение и диагностика
 
-4. **`R459`: «нужное окно» берётся из окна сессии, а не из потребности запроса**
-   (`session_move_window_r459.go:34-38`). Короткий запрос никогда не уедет с
-   «широкой» копии на свободную — это осознанная осторожность, но она
-   ограничивает балансировку. Нужно продуктовое решение: варианты A (need =
-   потребность запроса), B (TTL окна сессии), C (A+B) разобраны в
-   `r459-window-policy-options.ru.md` — с ценой каждого.
-5. **«Холодный кандидат» без TTL.** `loadedPerSeqNCtx = 0` означает и «модели
-   нет», и «поллер не обновился», и «идёт reload»
-   (`num_ctx_resolver.go:437-473`); пока метрика не обновилась (~30 с), переезды
-   стоят. Нужно различать «неизвестно» и «точно нет» + TTL.
-6. **Обходные пути переезда не учитывают гейт R459** (`proxy.go` — выбор
-   «исключая бэкенд» через `backend_selector.go:391-460`): при занятом слоте
-   сессия может уехать на копию с меньшим окном, минуя проверку.
-7. **Очередь может выдать холодный бэкенд** после veto R459
-   (`unified_queue_r73.go` → P3 sync-load в `backend_selector.go:308-337`):
-   политика «холодный не берём» не проведена в очередь.
-8. **Причины отказов R460.** Порог загрузки закрыт в R479: причина
-   `over_load_threshold` с числами, порог берётся из одного места
-   (`loadThresholdR479`) — тест `TestR479_RejectionsKnowLoadThreshold`.
-   Осталось: гейт R459 в причинах — `backendRejectionsR460` не знает сессию и
-   `fromBackend`, поэтому «сессия не переехала из-за окна» видно только в
-   INFO-строке R459, а не в `why_queued`.
+4. ~~**`R459`: «нужное окно» берётся из окна сессии, а не из потребности
+   запроса**~~ **ЗАКРЫТО в R480 (вариант C, выбран 2026-11-09):**
+   `need = max(потребность запроса + резерв, окно АКТИВНОЙ сессии в пределах
+   TTL)`. Промпт считается калиброванной оценкой (`promptTokensForMoveR480`),
+   ручки `LB_R459_REQUEST_NEED` (on/off), `LB_R459_NEED_RESERVE` (4096),
+   `LB_R459_SESSION_TTL_SEC` (900). Файл `session_move_need_r480.go`, разбор
+   цены вариантов — `r459-window-policy-options.ru.md`. Тесты
+   `TestR480_ActiveSessionPinsWideWindow`, `TestR480_IdleSessionUsesRequestNeed`,
+   `TestR480_TTLDisabledKeepsOldBehaviour`, `TestR480_RequestNeedCanBeSwitchedOff`.
+   Второй переезд НЕ блокируется: при варианте C активная сессия не переезжает,
+   а «вернуть» сессию на широкую копию нужно именно тогда, когда запрос реально
+   требует больше окна — блокировка превратила бы медленный ход в 413.
+5. ~~**«Холодный кандидат» без TTL**~~ **ЗАКРЫТО в R480:** метрика окна имеет
+   срок годности (`LB_R459_COLD_TTL_SEC`, 90 с = 3× интервал поллера).
+   Различаются три состояния: окно известно; «точно нет модели» (свежая метрика,
+   переезд отклоняется); «неизвестно» (поллер не отрабатывал / метрика устарела —
+   кандидат допускается с WARN-строкой). `cold_candidate_ttl_r480.go`,
+   `MetricsManager.MarkLlamaCppPolled/LlamaCppPollAge`. Тесты
+   `TestR480_FreshColdCandidateRejected`, `TestR480_StaleColdCandidateAllowed`,
+   `TestR480_NeverPolledCandidateAllowed`, `TestR480_ColdTTLZeroMeansStrict`.
+6. ~~**Обходные пути переезда не учитывают гейт R459**~~ **ЗАКРЫТО в R480:**
+   `selectBackendExcludingGatedR480` + гейт на трёх путях в `proxy.go`:
+   уход с занятого слота, failover после 503, failover после сбоя бэкенда.
+   Тест `TestR480_GatedSelectorSkipsNarrowCandidate`.
+7. ~~**Очередь может выдать холодный бэкенд**~~ **ЗАКРЫТО в R480:** единая
+   очередь выбирает слот тем же предикатом для сессии с привязкой
+   (`waitForInferenceBackendWithMoveR480`); нет подходящего кандидата — запрос
+   ждёт слот своей копии (R139), а не уезжает. Новые сессии идут прежним путём.
+   Тесты `TestR480_QueueGateRejectsCandidate`, `TestR480_QueueGateWaitsInsteadOfMoving`,
+   `TestR480_QueueGateNilKeepsOldPath`.
+8. ~~**Причины отказов R460**~~ **ЗАКРЫТО в R480:** добавлена причина
+   `window_too_small` с числами (`candidate=… need=… source=…`) и контекст
+   переезда в `backendRejectionsR460`; `why_queued` в очереди с гейтом показывает
+   её. Тест `TestR480_RejectionsIncludeWindowTooSmall`. Порог загрузки
+   (`over_load_threshold`, R479) остаётся как был.
 9. ~~**Стадийная трассировка.**~~ **ЗАКРЫТО в R480:** unified-очередь ставит
-   `admission` (`unified_queue_r73.go`), generic-путь (`/api/chat` и прочие
-   Ollama-эндпоинты) ставит `upstream` перед `client.Do`, поток — `stream`,
-   ошибка записи клиенту — `client_write` (`streaming.go`). Тест
-   `TestWaitForInferenceBackend_SetsAdmissionStage_R477`.
+   `admission` (`unified_queue_r73.go` и очередь с гейтом), generic-путь
+   (`/api/chat` и прочие Ollama-эндпоинты) ставит `upstream` перед `client.Do`,
+   поток — `stream`, ошибка записи клиенту — `client_write` (`streaming.go`).
+   Тест `TestWaitForInferenceBackend_SetsAdmissionStage_R477`.
 10. ~~**Кольцо сбоев ловит только 5xx**~~ **ЗАКРЫТО в R479** для балансера:
     `MarkAbortR477` пишет обрыв доставки отдельной причиной (статус может быть
     200). Осталось: обрывы воркера (не 5xx) в его кольцо не пишутся.

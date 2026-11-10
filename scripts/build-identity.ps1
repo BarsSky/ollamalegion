@@ -17,15 +17,14 @@
 #       -> JSON в stdout
 #   pwsh scripts/build-identity.ps1 -Service balancer -BuildArgs
 #       -> строки "--build-arg K=V" (для передачи в docker build)
-param(
-    [string]$Service = '',
-    [string]$Version = '',
-    [string]$ImageTag = '',
-    [string]$Author = '',
-    [string]$RepoRoot = '',
-    [switch]$BuildArgs
-)
-
+#
+# ПОЧЕМУ НЕТ БЛОКА param(). Этот файл ДОТ-СОРСИТСЯ из build-containers.ps1 и
+# release-all.ps1, а блок param() выполнялся бы в области видимости вызывающего и
+# затирал его переменные своими дефолтами: `$RepoRoot = ''` обнулял `$repoRoot`
+# вызывающего скрипта, `$Version`/`$ImageTag`/`$Service` — их одноимённые
+# значения (живой отказ: release-all падал на `Join-Path $repoRoot "deployments"`
+# с «Path is an empty string»). Аргументы разбираются в точке входа ниже и
+# ТОЛЬКО при обычном запуске, не при dot-source.
 $ErrorActionPreference = 'Stop'
 
 function ConvertTo-Rfc3339Utc {
@@ -175,18 +174,36 @@ function Get-BuildArgLinesR486 {
     return $lines.ToArray()
 }
 
-# Точка входа скрипта: при dot-source Service пуст, и ничего не выполняется.
-if ($MyInvocation.InvocationName -ne '.' -and $Service) {
-    $params = @{ Service = $Service }
-    if ($Version) { $params['Version'] = $Version }
-    if ($ImageTag) { $params['ImageTag'] = $ImageTag }
-    if ($Author) { $params['Author'] = $Author }
-    if ($RepoRoot) { $params['RepoRoot'] = $RepoRoot }
-    $identity = Get-BuildIdentity @params
-    if ($BuildArgs) {
-        Get-BuildArgLinesR486 -Identity $identity | ForEach-Object { $_ }
+# Точка входа скрипта: работает ТОЛЬКО при обычном запуске (не при dot-source) и
+# только при наличии -Service. Разбор аргументов сделан здесь, а не блоком
+# param(), чтобы dot-source не затирал переменные вызывающего скрипта.
+if ($MyInvocation.InvocationName -ne '.') {
+    $cli = @{ Service = ''; Version = ''; ImageTag = ''; Author = ''; RepoRoot = ''; BuildArgs = $false }
+    $i = 0
+    while ($i -lt $args.Count) {
+        $a = [string]$args[$i]
+        switch ($a) {
+            '-Service'   { $cli.Service = [string]$args[$i + 1]; $i += 2; continue }
+            '-Version'   { $cli.Version = [string]$args[$i + 1]; $i += 2; continue }
+            '-ImageTag'  { $cli.ImageTag = [string]$args[$i + 1]; $i += 2; continue }
+            '-Author'    { $cli.Author = [string]$args[$i + 1]; $i += 2; continue }
+            '-RepoRoot'  { $cli.RepoRoot = [string]$args[$i + 1]; $i += 2; continue }
+            '-BuildArgs' { $cli.BuildArgs = $true; $i++; continue }
+            default { throw "build-identity: неизвестный аргумент '$a'" }
+        }
     }
-    else {
-        $identity | ConvertTo-Json -Depth 3
+    if ($cli.Service) {
+        $params = @{ Service = $cli.Service }
+        if ($cli.Version) { $params['Version'] = $cli.Version }
+        if ($cli.ImageTag) { $params['ImageTag'] = $cli.ImageTag }
+        if ($cli.Author) { $params['Author'] = $cli.Author }
+        if ($cli.RepoRoot) { $params['RepoRoot'] = $cli.RepoRoot }
+        $identity = Get-BuildIdentity @params
+        if ($cli.BuildArgs) {
+            Get-BuildArgLinesR486 -Identity $identity | ForEach-Object { $_ }
+        }
+        else {
+            $identity | ConvertTo-Json -Depth 3
+        }
     }
 }

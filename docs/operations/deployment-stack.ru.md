@@ -864,7 +864,20 @@ FATAL: GIT_COMMIT not supplied (build arg) — identity must be baked, see scrip
 
 Это и есть защита от «молча чужой штамп» (R486), а не неудобство. Поддерживаемый
 путь — скрипты, которые считают всё сами: `scripts/build-containers.ps1` и
-`scripts/release-all.ps1`.
+`scripts/release-all.ps1` (оба вызывают вычислитель; `.env` больше не содержит
+`<СЕРВИС>_GIT_COMMIT`/`<СЕРВИС>_BUILD_DATE` и они ни на что не влияют).
+
+Проверить проводку идентичности, НЕ собирая образы и не трогая стенд:
+
+```powershell
+# печатает фактические `docker build --build-arg ...` для каждого сервиса,
+# ничего не собирает, теги в .env и release-manifest.json не меняет
+scripts/release-all.ps1 -Tag r261110-dryrun -Services balancer,cppworker -DryRun
+```
+
+Для локальной сборки конкретных компонентов тем же способом (guard проходит,
+identity.json печётся): `scripts/build-containers.ps1 -Tag <tag> -Balancer`
+(или `-WebUI`, `-Agent`, `-CppWorker`).
 
 ---
 

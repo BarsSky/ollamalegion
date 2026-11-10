@@ -69,6 +69,12 @@ $ErrorActionPreference = "Continue"
 
 # R83: префикс локального репозитория образов — та же переменная, что читает compose.
 . (Join-Path $PSScriptRoot 'lib-image-registry.ps1')
+
+# R486 (2026-11-10): идентичность сборки считает ЕДИНСТВЕННЫЙ вычислитель —
+# scripts/build-identity.ps1. Раньше здесь был свой расчёт с молчаливым
+# 'unknown' при любой ошибке git и без даты коммита/автора: именно так образ
+# уехал на стенд с чужим штампом. Теперь ошибка вычисления = отказ сборки.
+. (Join-Path $PSScriptRoot 'build-identity.ps1')
 $registryPrefix = ''
 if (-not $NoRegistryPrefix) {
     $registryPrefix = Get-ImageRegistryPrefix -EnvDir (Join-Path $PSScriptRoot '..\deployments')
@@ -158,19 +164,6 @@ if ($SelfTest) {
     exit 0
 }
 
-# R83: версия/коммит/дата вшиваются в бинарники (pkg/version) — их печатает
-# стартовая шапка логов. Значения те же, что в Dockerfile'ах по умолчанию.
-$gitCommit = 'unknown'
-$gitDescribe = 'unknown'
-try {
-    $sha = & git rev-parse --short HEAD 2>$null
-    if ($LASTEXITCODE -eq 0 -and $sha) { $gitCommit = $sha.Trim() }
-    $desc = & git describe --tags --always 2>$null
-    if ($LASTEXITCODE -eq 0 -and $desc) { $gitDescribe = $desc.Trim() }
-} catch { }
-$buildDate = (Get-Date -Format 'yyyy-MM-dd')
-$versionArgs = @('--build-arg', "GIT_COMMIT=$gitCommit", '--build-arg', "BUILD_DATE=$buildDate")
-
 # Round 23 (2026-08-04): ВКЛЮЧАЕМ BuildKit глобально.
 # Без этого:
 #   - `--mount=type=cache,target=/root/.ccache` в docker/cppworker/Dockerfile.gpu
@@ -190,7 +183,9 @@ try {
         $registryLabel = $registryPrefix.TrimEnd('/')
     }
     Write-Host "=== Репозиторий образов: $registryLabel | тег: $imageTag ===" -ForegroundColor Gray
-    Write-Host "=== Версия сборки: commit=$gitCommit buildDate=$buildDate ===" -ForegroundColor Gray
+    # R486: баннер печатает значения из вычислителя, а не локальные переменные.
+    $identityHead = Get-BuildIdentity -Service balancer -Version $imageTag -ImageTag $imageTag
+    Write-Host ("=== Версия сборки: commit={0} buildDate={1} ===" -f $identityHead.GitCommit, $identityHead.BuildDate) -ForegroundColor Gray
 
     if (-not $Balancer -and -not $WebUI -and -not $Agent -and -not $CppWorker) {
         $Balancer = $true
@@ -202,26 +197,21 @@ try {
     if ($Balancer) {
         $balancerImage = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/balancer' -Tag $imageTag
         Write-Host "=== Building $balancerImage ===" -ForegroundColor Cyan
-        docker build @versionArgs -t $balancerImage -f docker/balancer/Dockerfile .
+                $versionArgsBalancer = Get-BuildArgLinesR486 -Identity (Get-BuildIdentity -Service balancer -Version $imageTag -ImageTag $imageTag)
+docker build @versionArgsBalancer -t $balancerImage -f docker/balancer/Dockerfile .
         if ($LASTEXITCODE -ne 0) { throw "Balancer build failed" }
     }
 
     if ($WebUI) {
         Write-Host "=== Building webui ===" -ForegroundColor Cyan
-        # Sprint 30 (2026-07-30): пробрасываем VERSION / GIT_COMMIT / BUILD_DATE
-        # в WebUI build как --build-arg. entrypoint.sh инжектит их в config.js,
-        # JS в index.html показывает версию в sidebar footer (id=appVersion).
-        $webuiVersion = $gitDescribe
-        $webuiBuildDate = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-        Write-Host "  version=$webuiVersion commit=$gitCommit" -ForegroundColor Gray
-        # R83: имя образа при сборке через compose задаётся в самом compose, поэтому
-        # здесь передаём его явно — иначе при заданном IMAGE_REGISTRY тег внутри
-        # compose и фактически собранный разойдутся.
+        # R486: идентичность WebUI — тем же вычислителем, что у остальных образов.
+        # Раньше блок ссылался на локальные $gitDescribe/$gitCommit, которые
+        # посчитаны «по-своему» и молчали при ошибке git.
         $webuiImage = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/webui' -Tag $imageTag
-        docker build `
-            --build-arg "VERSION=$webuiVersion" `
-            --build-arg "GIT_COMMIT=$gitCommit" `
-            --build-arg "BUILD_DATE=$webuiBuildDate" `
+        $identityWebUI = Get-BuildIdentity -Service webui -Version $imageTag -ImageTag $imageTag
+        $versionArgsWebUI = Get-BuildArgLinesR486 -Identity $identityWebUI
+        Write-Host "  version=$($identityWebUI.Version) commit=$($identityWebUI.GitCommit)" -ForegroundColor Gray
+        docker build @versionArgsWebUI --build-arg RELEASE=1 `
             -t $webuiImage -f docker/webui/Dockerfile .
         if ($LASTEXITCODE -ne 0) { throw "WebUI build failed" }
     }
@@ -229,7 +219,8 @@ try {
     if ($Agent) {
         $agentImage = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/agent' -Tag $imageTag
         Write-Host "=== Building $agentImage ===" -ForegroundColor Cyan
-        docker build @versionArgs --build-arg ENABLE_NVML=true -t $agentImage -f docker/agent/Dockerfile .
+                $versionArgsAgent = Get-BuildArgLinesR486 -Identity (Get-BuildIdentity -Service agent -Version $imageTag -ImageTag $imageTag)
+docker build @versionArgsAgent --build-arg ENABLE_NVML=true -t $agentImage -f docker/agent/Dockerfile .
         if ($LASTEXITCODE -ne 0) { throw "Agent build failed" }
     }
 
@@ -293,6 +284,11 @@ try {
         $cpuImage = Resolve-ImageRef -Prefix $registryPrefix -Name 'ollama-legion/cppworker' -Tag $cpuTag
 
         Write-Host "=== Building $gpuImage (CUDA_ARCH=$CudaArch) ===" -ForegroundColor Cyan
+        # R486: коммит/дата llama.cpp и версия протокола RPC — из сабмодуля и
+        # ggml-rpc.h (единственный вычислитель). Считаем ДО аргументов сборки.
+        $identityCpp = Get-BuildIdentity -Service cppworker -Version $imageTag -ImageTag $gpuTag
+        $versionArgsCpp = Get-BuildArgLinesR486 -Identity $identityCpp
+        Write-Host ("  identity: commit {0}, llama {1} ({2}), rpc {3}" -f $identityCpp.GitCommit, $identityCpp.LlamaBuild, $identityCpp.LlamaBuildDate, $identityCpp.RpcProto) -ForegroundColor Gray
         $gpuBuildArgs = @()
         if ($lowerArch -ne "arch_all") {
             # передаём --build-arg только если архитектура не "all" (иначе используем дефолт в Dockerfile)
@@ -313,7 +309,12 @@ try {
         if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($llamaCommit)) {
             $llamaCommit = $llamaCommit.Trim()
             $gpuBuildArgs += "--build-arg"
-            $gpuBuildArgs += "LLAMA_BUILD=$llamaCommit"
+            $gpuBuildArgs += "LLAMA_BUILD=$($identityCpp.LlamaBuild)"
+$gpuBuildArgs += "LLAMA_BUILD_DATE=$($identityCpp.LlamaBuildDate)"
+$gpuBuildArgs += "RPC_PROTO=$($identityCpp.RpcProto)"
+$gpuBuildArgs += "SERVICE=cppworker"
+$gpuBuildArgs += "VERSION=$($identityCpp.Version)"
+$gpuBuildArgs += "IMAGE_TAG=$($identityCpp.ImageTag)"
             Write-Host "  llama.cpp commit: $llamaCommit" -ForegroundColor DarkGray
         } else {
             Write-Host "  ВНИМАНИЕ: не удалось прочитать коммит c/llama.cpp — образ соберётся с LLAMA_BUILD=unknown" -ForegroundColor Yellow
@@ -348,7 +349,10 @@ try {
                 Write-Host "Using arch-specific Dockerfile: $dockerfile" -ForegroundColor Yellow
             }
         }
-        & docker build @gpuBuildArgs @versionArgs -t $gpuImage -f $dockerfile --target runtime .
+                $identityCpp = Get-BuildIdentity -Service cppworker -Version $imageTag -ImageTag $gpuTag
+        $versionArgsCpp = Get-BuildArgLinesR486 -Identity $identityCpp
+        Write-Host ("  identity: commit {0}, llama {1} ({2}), rpc {3}" -f $identityCpp.GitCommit, $identityCpp.LlamaBuild, $identityCpp.LlamaBuildDate, $identityCpp.RpcProto) -ForegroundColor Gray
+& docker build @gpuBuildArgs @versionArgsCpp -t $gpuImage -f $dockerfile --target runtime .
         if ($LASTEXITCODE -ne 0) { throw "CppWorker GPU build failed" }
 
         # R157 (2026-10-16): CPU-вариант собирается отдельной стадией и на стенде не
@@ -360,7 +364,7 @@ try {
             Write-Host "=== CPU-вариант пропущен (-SkipCpu) ===" -ForegroundColor DarkGray
         } else {
         Write-Host "=== Building $cpuImage ===" -ForegroundColor Cyan
-        docker build @versionArgs -t $cpuImage -f docker/cppworker/Dockerfile.cpu --target runtime .
+        docker build @versionArgsCpp -t $cpuImage -f docker/cppworker/Dockerfile.cpu --target runtime .
         if ($LASTEXITCODE -ne 0) { throw "CppWorker CPU build failed" }
         }
     }

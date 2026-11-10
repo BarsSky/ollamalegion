@@ -84,10 +84,25 @@ param(
     # docker-compose.cppworker-bundled-with-agent.yml (проект ol-bundled-*),
     # который делит порты с рабочим стендом ol-stack-* и падал на 18080.
     [string]$ComposeFile = "docker-compose.stack.yml",
-    [string]$ComposeProfile = "full"
+    [string]$ComposeProfile = "full",
+    # R486: прогон «на сухую» — печатает, ЧТО было бы собрано и с какими
+    # build-arg'ами идентичности, но не вызывает docker и не трогает теги
+    # в deployments/.env и release-manifest.json. Нужен, чтобы проверять проводку
+    # идентичности без 20-минутной сборки и без правки живого стенда.
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Continue"
+
+# R486: в DryRun команды не выполняются, а печатаются. Отдельная функция, потому
+# что `echo` — cmdlet, а не программа: `& 'echo' build -t x` он разбирает как свои
+# параметры и падает («parameter cannot be found»).
+function Invoke-DockerDryRun {
+    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
+    Write-Host ("DRY: docker " + ($Rest -join ' ')) -ForegroundColor Yellow
+    $global:LASTEXITCODE = 0
+}
+$dockerBin = if ($DryRun) { 'Invoke-DockerDryRun' } else { 'docker' }
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
@@ -98,6 +113,11 @@ Set-Location $repoRoot
 # R83 (2026-09-28): локальный репозиторий образов — та же переменная, что читает
 # compose (deployments/.env → IMAGE_REGISTRY). Пусто = стандартный путь.
 . (Join-Path $PSScriptRoot 'lib-image-registry.ps1')
+
+# R486: единственный вычислитель идентичности сборки (git + сабмодуль
+# c/llama.cpp + RPC_PROTO из ggml-rpc.h). Значения передаются build-arg'ами
+# и печётся в образ; руками в .env их больше не задают.
+. (Join-Path $PSScriptRoot 'build-identity.ps1')
 $registryPrefix = Get-ImageRegistryPrefix -EnvDir (Join-Path $PSScriptRoot '..\deployments')
 
 if ([string]::IsNullOrWhiteSpace($Tag)) {
@@ -162,31 +182,50 @@ foreach ($svc in $Services) {
     # образом, который только что собран локально под другим именем.
     $imageRef = Resolve-ImageRef -Prefix $registryPrefix -Name $s.Repo -Tag $s.ImageTag
 
+    # R486: идентичность считается ДО сборки и передаётся build-arg'ами.
+    # Падение здесь — это отказ выпуска (не «собралось со штампом unknown»).
+    $identity = Get-BuildIdentity -Service $svc -Version $Tag -ImageTag $s.ImageTag
+    $idArgs = Get-BuildArgLinesR486 -Identity $identity
+    # compose-сборка (imageworker) берёт build-arg'и из ОКРУЖЕНИЯ процесса —
+    # env_file на них не действует.
+    $env:GIT_COMMIT = $identity.GitCommit
+    $env:GIT_COMMIT_FULL = $identity.GitCommitFull
+    $env:GIT_COMMIT_DATE = $identity.GitCommitDate
+    $env:BUILD_DATE = $identity.BuildDate
+    $env:BUILD_AUTHOR = $identity.Author
+    $env:VERSION = $identity.Version
+    $env:IMAGE_TAG = $identity.ImageTag
+    if ($identity.LlamaBuild) {
+        $env:LLAMA_BUILD = $identity.LlamaBuild
+        $env:LLAMA_BUILD_DATE = $identity.LlamaBuildDate
+        $env:RPC_PROTO = $identity.RpcProto
+    }
+
     if (-not $SkipBuild) {
-        Write-Host "[$svc] build $imageRef ..." -ForegroundColor Cyan
+        Write-Host "[$svc] build $imageRef (commit $($identity.GitCommit)) ..." -ForegroundColor Cyan
         switch ($svc) {
             "balancer" {
-                docker build -t $imageRef -f docker/balancer/Dockerfile .
+                & $dockerBin build @idArgs -t $imageRef -f docker/balancer/Dockerfile .
             }
             "cppworker" {
                 # CUDA_ARCH — только нужная архитектура: default "all" в Dockerfile.gpu
                 # собирает 9 архитектур (~9x дольше) и нужен лишь для multi-arch.
                 # CUDA_BASE — реестр базового образа; пусто = дефолт Dockerfile.
                 if ($CudaBase -ne "") {
-                    docker build --build-arg CUDA_ARCH=$CudaArch --build-arg CUDA_BASE=$CudaBase -t $imageRef -f docker/cppworker/Dockerfile.gpu .
+                    & $dockerBin build @idArgs --build-arg CUDA_ARCH=$CudaArch --build-arg CUDA_BASE=$CudaBase -t $imageRef -f docker/cppworker/Dockerfile.gpu .
                 } else {
-                    docker build --build-arg CUDA_ARCH=$CudaArch -t $imageRef -f docker/cppworker/Dockerfile.gpu .
+                    & $dockerBin build @idArgs --build-arg CUDA_ARCH=$CudaArch -t $imageRef -f docker/cppworker/Dockerfile.gpu .
                 }
             }
             "agent" {
                 # Продовый стек использует GPU-агента (nvidia runtime) → target agent-gpu.
-                docker build -t $imageRef -f docker/agent/Dockerfile --target agent-gpu --build-arg ENABLE_NVML=true .
+                & $dockerBin build @idArgs -t $imageRef -f docker/agent/Dockerfile --target agent-gpu --build-arg ENABLE_NVML=true .
             }
             "webui" {
                 # VERSION попадает и в config.js (window.WEBUI_CONFIG.VERSION), и —
                 # благодаря R83 — в токен cache-busting `?v=` внутри образа, поэтому
                 # HTML при выпуске править не нужно.
-                docker build --build-arg VERSION=$Tag -t $imageRef -f docker/webui/Dockerfile .
+                & $dockerBin build @idArgs --build-arg RELEASE=1 -t $imageRef -f docker/webui/Dockerfile .
             }
             "imageworker" {
                 # Образ imageworker собирается ЦЕЛЬЮ compose: вариант движка
@@ -200,7 +239,7 @@ foreach ($svc in $Services) {
                 Push-Location $envDir
                 try {
                     $env:IMAGE_WORKER_TAG = $s.ImageTag
-                    docker compose -f $ComposeFile --profile $ComposeProfile build imageworker
+                    & $dockerBin compose -f $ComposeFile --profile $ComposeProfile build imageworker
                 } finally {
                     Remove-Item Env:IMAGE_WORKER_TAG -ErrorAction SilentlyContinue
                     Pop-Location
@@ -210,6 +249,12 @@ foreach ($svc in $Services) {
         if ($LASTEXITCODE -ne 0) {
             throw "[$svc] docker build failed (exit $LASTEXITCODE) — .env НЕ изменён, ничего не раскатано"
         }
+    }
+
+    if ($DryRun) {
+        # Сухой прогон: печатаем, что было бы записано, и не трогаем стенд.
+        Write-Host ("DRY: тег {0}={1} (алиас {2})" -f $s.Var, $s.ImageTag, $s.Alias) -ForegroundColor Yellow
+        continue
     }
 
     if (-not $NoAlias) {
@@ -228,6 +273,15 @@ foreach ($svc in $Services) {
         imageId  = $imgID
         alias    = if ($NoAlias) { "" } else { Resolve-ImageRef -Prefix $registryPrefix -Name $s.Repo -Tag $s.Alias }
     }
+}
+
+# --- DryRun: дальше ничего не делаем ---------------------------------------
+# Проверка проводки идентичности не должна ни переписывать .env/манифест, ни
+# раскатывать контейнеры. Раньше сюда доходило и меняло манифест на dry-run тег.
+if ($DryRun) {
+    Write-Host ""
+    Write-Host "DRY: сборка не выполнялась; теги в deployments/.env, release-manifest.json и раскатка НЕ менялись." -ForegroundColor Yellow
+    exit 0
 }
 
 # --- фиксируем теги в deployments/.env -------------------------------------

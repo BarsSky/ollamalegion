@@ -1,34 +1,26 @@
 {
-    "tag": "r261110-1540",
-    "builtAt": "2026-11-10T15:40:00Z",
-    "gitCommit": "61173b03",
+    "tag": "r261110-1740",
+    "builtAt": "2026-11-10T14:40:00Z",
+    "gitCommit": "8b246ffe",
     "cudaArch": "75;86;120",
     "composeFile": "docker-compose.stack.yml",
     "composeProfile": "full",
-    "note": "R483: диагностика «кто держал ответ». request trace получил first_byte_ms (воркер/балансер/клиент); кольцо сбоев воркера принимает не-5xx события (hold_released R482, client_gone, client_cancelled, unparsed_tool_markup, turn_retry) и отдаёт их в failures.json архива. Ранее: R482 (tool call в reasoning, сторож удержания), R481 (WebUI), R480 (окно по варианту C), R479 (паритет типов), R478 (OpenWebUI), R477/R476 (диагностика), R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
+    "note": "R484 (балансер): единый разбор «это стрим?» (streamFlagFromBodyR484 + явный дефолт поверхности) и фактический транспорт (stream|json) в request trace и /api/v1/proxy/logs. R485 (воркер): сторож R482 больше НЕ снимает удержание, если оно вызвано размышлениями — иначе размышления уходили в content, клиент сохранял их как прошлый ответ модели и следующий ход начинался с этого загрязнения (живой архив второго стенда: content_len=65109/18720/12113 у assistant-сообщений с tool_calls). Наблюдаемость: поле hold_kept_reasoning в сводке хода, событие hold_kept_reasoning в кольце воркера, пределы удержания в env.json архива. Аварийный тумблер CPPWORKER_TOOLS_HOLD_RELEASE_REASONING=1. Ранее: R483 (first_byte_ms), R482 (tool call в reasoning, сторож удержания), R481 (WebUI), R480 (окно по варианту C), R479 (паритет типов), R478 (OpenWebUI), R477/R476 (диагностика), R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
     "standDeployed": {
         "hostPorts": "18080 (Ollama+всё), 18079 (OpenAI), 18083 (WebUI)",
-        "verifiedAt": "2026-11-10T15:55:00Z",
-        "debugDumps": "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
+        "verifiedAt": "2026-11-10T14:56:00Z",
+        "debugDumps": "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle (WebUI: страница «Диагностика», блок «Последние сбои»)",
         "proof": [
-            "R483: balancer r261110-1540 (61173b03) и cppworker gpu-261110-1545 (802a0492) выкачены; :18080/api/version -> r261110-1540 commit=61173b03; контейнеры healthy",
-            "R483: request trace содержит first_byte_ms: холодная загрузка duration_ms=83178 first_byte_ms=82100; тёплый стрим duration_ms=674 first_byte_ms=8 (раньше оба выглядели одинаково)",
-            "R483: оборванный клиентом стрим -> в worker failures.json (архив /api/v1/cppworker/debug/bundle) запись {\"request_id\":\"reqf8d1807a\",\"path\":\"/api/chat\",\"status\":200,\"kind\":\"client_cancelled\",\"detail\":\"request context canceled by client\"}; воркер healthy, рестартов нет",
-            "R483: тесты — internal/balancer (164.7 с) и cmd/cppworker (9.9 с) зелёные; новые request_trace_first_byte_r483_test.go и failures_r483_test.go",
-            "R482: финальный образ cppworker gpu-261110-1436 (5d779b3e) выкачен; healthy; GET /api/chat с tools[] -> 200; в сводке хода tool_calls=1, tool_calls_from_reasoning=false, hold_released_ms=0, hold_max_sec=20 (5d779b3e = линт-фикс ineffassign + допуск флейка сторожа стрима)",
-            "R482: cppworker gpu-261110-1411 (5c455277) выкачен; контейнер healthy; балансер r261110-1346 и webui r261110-1346 не пересобирались",
-            "R482: POST /api/chat с tools[] (Qwen3.8-9B-Distill, Cline-style) -> 200, done_reason=tool_calls, tool_calls[0].function.name=get_weather, arguments объектом; в сводке хода tool_calls=1, tool_calls_from_reasoning=false, hold_released=\"\", hold_released_ms=0, hold_max_sec=20, first_content_ms=-1",
-            "R482: tests — полный cmd/cppworker (10.8 с) зелёный; новые tools_hold_r482_test.go (вызов в незакрытом reasoning, закрытый reasoning не считается дважды, снятие по времени/объёму, 0=выключено, нарезка хвоста по рунам)",
-            "R482: env CPPWORKER_TOOLS_HOLD_MAX_SEC=20 / CPPWORKER_TOOLS_HOLD_MAX_BYTES=32768 проброшены в docker-compose.stack.yml и .env.example",
-            "R482 ОТКРЫТО: второй стенд A10/27B недоступен из этой сессии. Если симптом остался — нужен /api/v1/diag/bundle: в logs.txt воркера строка \"/api/chat stream response summary\" (поля tool_calls, tool_calls_from_reasoning, hold_released*, first_content_ms, reasoning_chars_raw, done_reason, raw_len) и raw_head из /app/diag",
-            "R481: balancer r261110-1346 (8dc740e7) и webui r261110-1346 (8dc740e7) выкачены; GET :18080/api/version -> build=r261110-1346 commit=8dc740e7; webui :18083 -> 200, контейнеры healthy; cppworker gpu-261109-1754 не пересобирался",
-            "R481: GET :18083/ содержит новые элементы: .sidebar-diag-link, #logsSearch, #logsDownloadBundle, #logsOpenDiagnostics, #exportProxyLogs, #proxyExportFormat, #logsCount",
-            "R481: GET /api/v1/proxy/logs?limit=3 -> у записей есть requestID (reqfeba92e1/req3d9352ed) и stage (select_backend/upstream)",
-            "R481: GET /api/v1/logs/export?format=json -> fields объектом (request_id, stage, backend, duration_ms...), message без JSON-суффикса; format=txt -> поля парами key=value после сообщения",
-            "R481: PUT /api/v1/auth/users (webui-check) -> 200, запись в /app/data/users.json; DELETE webui-check и testguest -> 200, в файле остался только skyadmin (тестовые пользователи убраны)",
-            "R481: тесты — полный ./internal/balancer/ (168 с) зелёный; internal/api и pkg/logger зелёные (новые R481-тесты: путь users.json, path+hint в ошибке, поля в TXT/JSON-экспорте, поля логгера отдельной картой, requestID/stage в контракте прокси-логов); npm run test:webui зелёный, новый logs-rework-r481.test.js (14 проверок); i18n-placeholders и IIFE-guard зелёные",
-            "R481: compose-варианты cppworker-bundled-with-agent, bundled-full, cppworker-bundled теперь передают LB_USERS_FILE/LB_SESSIONS_FILE с дефолтом /app/data (раньше балancer брал config/users.json на read-only ../config — это и был отказ «нет прав»)",
-            "ОТКРЫТО: визуальный клик в браузере (разметка и статические тесты есть, headless-браузера на стенде нет); P2-12/13 (два мозга, дублирование), P1-10/11 остатки, E (A10/27B, смешанный стенд, Cline с tools). Новый пункт реестра 16: stream:true для GET в прокси-логах (косметика, нужен выбор варианта)"
+            "R484/R485: balancer r261110-1740 и cppworker gpu-261110-1740 выкачены из коммита 8b246ffe; GET :18080/api/version -> build=r261110-1740 commit=8b246ffe build_date=2026-11-10T14:40:00Z; лог воркера: version=261110-1740 (commit 8b246ffe); все 4 контейнера healthy",
+            "R484/R485: первая сборка проштамповалась старым коммитом 850923d7 — в deployments/.env лежали BALANCER_GIT_COMMIT/CPPWORKER_GIT_COMMIT от прошлого релиза. Значения обновлены на 8b246ffe, образы пересобраны; проверено по /api/version",
+            "R484 живьём: POST :18080/api/chat stream=false -> request trace transport=json (duration_ms=61210, first_byte_ms=61209, холодная загрузка модели); stream=true -> transport=stream (first_byte_ms=10, duration_ms=200, 529 байт). GET /api/version -> transport пустой (нет тела — классифицировать нечего)",
+            "R485 живьём: POST :18080/api/chat (gemma-4-E4B-it-Q4_K_M, tools=[get_weather], stream=true) при временно выставленном CPPWORKER_TOOLS_HOLD_MAX_SEC=1 -> WARN «R485: удержание reasoning не снимаем — иначе размышления уйдут в content» held_ms=1345 held_bytes=21; в сводке хода hold_kept_reasoning=true, streamed_content_bytes=0, thinking_len=265, reasoning_chars_raw=265, tool_calls=1, done_reason=tool_calls, first_content_ms=-1 — ноль байт размышлений в content (при R482 они уходили в content)",
+            "R485: тот же ход дал в кольце воркера запись {\"request_id\":\"reqb60bca2e\",\"path\":\"/api/chat\",\"status\":200,\"kind\":\"hold_kept_reasoning\",\"detail\":\"hold_timeout held_ms=1346 held_bytes=21\"} (worker failures.json из архива /api/v1/diag/bundle); эпизоды удержания, не связанные с размышлениями (служебный токен/JSON-предохранитель), по-прежнему снимаются: kind=hold_released held_ms=1192 held_bytes=37",
+            "R485: env.json архива воркера теперь показывает действующие пределы: CPPWORKER_TOOLS_HOLD_MAX_SEC, CPPWORKER_TOOLS_HOLD_MAX_BYTES, CPPWORKER_TOOLS_HOLD_RELEASE_REASONING, CPPWORKER_STREAM_TRACE (раньше их в архиве не было и разбор «почему ход не потоковый» упирался в текст лога)",
+            "R485: после проверки CPPWORKER_TOOLS_HOLD_MAX_SEC возвращён в 20, воркер пересоздан (printenv=20), healthy — стенд остался в штатном режиме",
+            "R484/R485: тесты — cmd/cppworker (10.3 с) и internal/balancer (167.8 с) зелёные; новые stream_flag_r484_test.go, transport_r484_test.go, tools_hold_r485_test.go (7 проверок). Один прогон internal/balancer из пяти упал (флейк таймингового теста, имя не зафиксировано — повторные четыре прогона зелёные)",
+            "R484/R485: webui (r261110-1346) и imageworker (72ec210a) не пересобирались — их код не менялся",
+            "ОТКРЫТО: живая проверка на втором стенде (A10 ×2, Qwen3.8-27B). Ожидаемое подтверждение R485: в сводке хода hold_kept_reasoning=true (или отсутствие hold_released по hold_timeout при reasoning-выводе), в request-last.json следующего хода assistant-сообщения с tool_calls имеют content_len близкий к нулю. Остаток реестра: P2-13 (4 очереди, 39 селекторов, 8 циклов стрима, 11 писателей стрима), P2-12, P2-16, E-20 (архив A10), E-21/E-22 (живьём), R-16…R-19 (продуктовые решения)"
         ]
     },
     "images": [
@@ -36,17 +28,17 @@
             "alias": "ollama-legion/balancer:latest",
             "variable": "BALANCER_TAG",
             "service": "loadbalancer",
-            "imageTag": "r261110-1540",
-            "imageId": "sha256:93c24cb0c140bfea1a2ed06e7c74d3e3fa1e6f6b4bd0304892ead2b7092c7b07",
-            "image": "ollama-legion/balancer:r261110-1540"
+            "imageTag": "r261110-1740",
+            "imageId": "sha256:d0f6f7e406e92d7c900bc6f44e1ab382f48584ea5cb5a650eb81bd51eca95687",
+            "image": "ollama-legion/balancer:r261110-1740"
         },
         {
             "alias": "ollama-legion/cppworker:latest-gpu-86",
             "variable": "CPPWORKER_GPU_TAG",
             "service": "cppworker-gpu",
-            "imageTag": "gpu-261110-1545",
-            "imageId": "sha256:e60600327b5694614dd2487b52b9a974df25ffc6027f58560199654a4d75ef7b",
-            "image": "ollama-legion/cppworker:gpu-261110-1545"
+            "imageTag": "gpu-261110-1740",
+            "imageId": "sha256:dff094434e9d7722580c2314909081e339b6cbbf49975b40a13d9416051e4329",
+            "image": "ollama-legion/cppworker:gpu-261110-1740"
         },
         {
             "alias": "ollama-legion/webui:latest",

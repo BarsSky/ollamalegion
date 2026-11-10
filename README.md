@@ -398,6 +398,23 @@ MIT - see [LICENSE.md](LICENSE.md).
 Full history with dates, image tags and the defect behind each fix:
 [CHANGELOG.md](CHANGELOG.md). Recently:
 
+- **v0.7.245 (R485, 2026-11-10) - reasoning never leaks into `content`.**
+  Found from a real second-stand archive (A10 x2, Qwen3.8-27B): assistant messages
+  WITH `tool_calls` carried `content_len=65109 / 18720 / 12113` of leaked planning
+  text, because the R482 watchdog released the hold and streamed the remaining
+  reasoning as `content`. The client stored that as the model's previous answer, so
+  the next turn started from its own thinking ("loops inside itself", tools degrade).
+  The watchdog no longer releases a hold caused by reasoning; the answer still
+  arrives in the terminal part of the turn, and thinking is separated as usual.
+  Visible as `hold_kept_reasoning` in the turn summary, as a `hold_kept_reasoning`
+  event in the worker ring, and overridable with
+  `CPPWORKER_TOOLS_HOLD_RELEASE_REASONING=1`.
+- **v0.7.244 (R484, 2026-11-10) - one "is this a stream?" parser and the real transport.**
+  Three stream predicates disagreed in their default for a request without the
+  `stream` field; they now call one parser with an explicit per-surface default
+  (behaviour unchanged). `request trace` and `/api/v1/proxy/logs` carry the actual
+  `transport` (`stream` | `json`), so `stream=true` + `transport=json` reads as a
+  normal legacy request instead of a broken stream.
 - **v0.7.243 (R483, 2026-11-10) - where the answer was held, and worker events.**
   `first_byte_ms` in `request trace` shows whether the worker held the answer
   (close to `duration_ms`) or streamed it right away. The worker failure ring now

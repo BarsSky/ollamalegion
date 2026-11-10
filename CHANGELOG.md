@@ -24,9 +24,12 @@ ai-sdk с 16 tools). Дефект был не в «слабости модели
   `CPPWORKER_STREAM_TRACE` — раньше по архиву нельзя было понять, какие пределы
   действовали на стенде.
 
-**Проверено:** tools_hold_r485_test.go (7 тестов); полный ./cmd/cppworker/ и
-./internal/balancer/ — см. прогон. Живьём на втором стенде — после выкатки
-образа воркера.
+**Проверено:** tools_hold_r485_test.go (7 тестов); полный ./cmd/cppworker/ (10.3 с)
+и ./internal/balancer/ (167.8 с) зелёные. Живьём на стенде r261110-1740
+(gemma-4-E4B + tools, сторож временно 1 с): сводка хода hold_kept_reasoning=true,
+streamed_content_bytes=0, thinking_len=265, tool_calls=1, done_reason=tool_calls;
+в failures.json архива — kind=hold_kept_reasoning held_ms=1346. Второй стенд
+A10/27B — после выкатки образа воркера.
 
 ## [0.7.244 - R484: единый разбор «это стрим?» и transport в логах, 2026-11-10]
 
@@ -44,8 +47,10 @@ ai-sdk с 16 tools). Дефект был не в «слабости модели
   не стримит».
 
 **Проверено:** новые stream_flag_r484_test.go и transport_r484_test.go; полный
-./internal/balancer/ — см. прогон. Живьём: transport для stream и non-stream
-запросов (после выкатки).
+./internal/balancer/ — 167.8 с, зелёный. Живьём на стенде r261110-1740:
+POST /api/chat stream=false -> transport=json (first_byte_ms=61209), stream=true ->
+transport=stream (first_byte_ms=10); GET /api/version -> transport пустой (нет
+тела).
 
 
 ## [0.7.243 - R483: first_byte_ms и события воркера без 5xx, 2026-11-10]

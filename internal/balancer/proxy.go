@@ -1604,8 +1604,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		unifiedBackend, unifiedRelease, unifiedWaited, unifiedPosition, waitErr :=
-			p.waitForInferenceBackendWithMoveR480(ctxWithRID, model, bt, sessionKey, sessionFromBackend,
-				parsed.NumCtx, p.promptTokensForMoveR480(parsed.RawBody, path))
+			p.waitForInferenceBackendWithMoveR480(ctxWithRID, model, bt, sessionKey, sessionFromBackend)
 		if waitErr == nil {
 			acquiredBackend = unifiedBackend
 			targetBackend = unifiedBackend

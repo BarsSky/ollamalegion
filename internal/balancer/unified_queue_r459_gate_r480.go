@@ -89,22 +89,49 @@ type queueMoveR480 struct {
 }
 
 // waitForInferenceBackendWithMoveR480 — P1-7/P1-8: очередь с гейтом R459,
-// построенным по сессии (привязанный бэкенд + потребность запроса).
+// построенным по сессии.
+//
+// ВАЖНО (найдено -race/таймаутом в CI на первом варианте): порог гейта здесь —
+// ОКНО ТЕКУЩЕЙ КОПИИ СЕССИИ, а не «потребность запроса». Первый вариант
+// сравнивал кандидата с потребностью запроса, и если она больше ВСЕХ окон в
+// кластере, гейт отклонял всех — запрос висел в очереди до таймаута (900 с)
+// вместо того, чтобы уйти на свою копию и дать preflight поднять окно.
+//
+// Правило очереди — ровно R459: «не хуже, чем у меня сейчас».
+//   - кандидат с окном >= окна текущей копии — можно;
+//   - известный «холодный» (свежая метрика, модели нет) — нельзя;
+//   - окно неизвестно — можно (не выдумываем предел), с WARN.
+//
+// Если окно текущей копии неизвестно, сравнивать не с чем — гейт не ставится
+// вовсе (поведение прежнее), иначе можно заблокировать очередь на пустом месте.
 func (p *Proxy) waitForInferenceBackendWithMoveR480(
 	ctx context.Context, model string, bt types.BackendType, session, from string,
-	requestedNCtx, requestTokens int,
 ) (backendID string, release func(), waited time.Duration, position int, err error) {
 	var move *queueMoveR480
 	if from != "" {
-		need, source := p.sessionMoveNeedR480(from, model, session, requestedNCtx, requestTokens)
-		p.logMoveNeedR480(from, model, session, requestedNCtx, requestTokens, need, source)
-		move = &queueMoveR480{
-			gate: func(c string) bool {
-				ok, _ := p.sessionMoveKeepsWindowNeedR480(c, model, need, source)
-				return ok
-			},
-			need:       need,
-			needSource: source,
+		fromWindow := p.loadedPerSeqNCtx(from, model)
+		if fromWindow > 0 {
+			move = &queueMoveR480{
+				gate: func(c string) bool {
+					if c == from {
+						return true
+					}
+					perSeq, known := p.loadedPerSeqNCtxKnownR480(c, model)
+					if !known {
+						p.logColdCandidateUnknownR480(c, from, model, fromWindow)
+						return true
+					}
+					if perSeq <= 0 {
+						return false
+					}
+					return perSeq >= fromWindow
+				},
+				need:       fromWindow,
+				needSource: "session_window",
+			}
+			logger.Get().Infow("R480: очередь сессии с гейтом R459",
+				"session", session, "from", from, "model", model,
+				"session_window", fromWindow)
 		}
 	}
 	return p.waitForInferenceBackendR480(ctx, model, bt, session, move)

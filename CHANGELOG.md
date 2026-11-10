@@ -67,6 +67,13 @@
   — что ПЕРЕДАЛИ в контейнер, `identity.json` — что ЗАПЕЧЕНО); `/api/version`
   воркера отдаёт те же поля сборки, что балансер (новые ключи добавлены, ни один
   не переименован).
+- **Мёртвая обвязка RPC удалена:** `docker/rpcworker/Dockerfile` и
+  `deployments/docker-compose.rpc.yml` ссылались на образ
+  `ollama-legion/rpcworker:0.1.0-stub`, который давно не собирается, — поднять
+  этот стек было нельзя. Рабочая схема живёт ВНУТРИ образа cppworker
+  (`ggml-rpc-server` в том же образе, управление `CPPWORKER_RPC_*` и настройками
+  балансера), поэтому отдельный образ не нужен. Код `cmd/rpcworker` и
+  `internal/rpcworker` (stub-протокол `rpc-v0.1.0-stub`, тесты в CI) оставлен.
 
 **Проверено:** identity_r486_test.go (9 проверок), worker_identity_r486_test.go
 (3), rpc_version_gate_r486_test.go (3). Статически — реальный `docker build`

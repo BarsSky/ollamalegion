@@ -313,7 +313,7 @@ Circuit breaker state можно посмотреть через `/api/v1/rpc/wo
 - **Compose:** ✅ `deployments/docker-compose.rpc-node.yml` — сайдкар узла.
   Важная деталь: у образа `ENTRYPOINT=/entrypoint.sh`, который всегда запускает
   `./cppworker`, поэтому сайдкар переопределяет **entrypoint**, а не `command`.
-  Старый `docker-compose.rpc.yml` помечен как историческая заготовка другой схемы.
+  Старый `docker-compose.rpc.yml` (вместе с `docker/rpcworker/Dockerfile`) удалён в R486: это была заготовка другой схемы, образ `rpcworker:0.1.0-stub` не собирался. Рабочая схема — `ggml-rpc-server` внутри образа cppworker, управление через `CPPWORKER_RPC_*` и настройки балансера.
 - **Версия:** ⏳ Осталось (см. пункт 5 выше).
 
 ### Грабли сборки с RPC (проверено на живой сборке, 2026-10-11)

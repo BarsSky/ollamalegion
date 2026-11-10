@@ -307,7 +307,7 @@ docker logs ol-stack-balancer 2>&1 | grep 'routeRequest: backend type resolved'
 | Механизм | Файлы | Статус |
 |---|---|---|
 | Отдельные llama.cpp-воркеры на каждой машине, балансер раскидывает запросы | `cmd/cppworker`, `internal/balancer` | ✅ работает (штатный `--profile worker` на каждой машине) |
-| RPC-координатор + RPC-воркеры (конвейер по слоям) | `internal/rpccoordinator`, `internal/rpcworker` | ⚠️ каркас: HTTP-слой, health, split/merge, KV-шарды и 66 тестов есть, но реальный инференс — **stub** (`stubMode`, «Реальная llama.cpp интеграция — B1.real»). Стек: `deployments/docker-compose.rpc.yml` |
+| RPC-координатор + RPC-воркеры (конвейер по слоям) | `internal/rpccoordinator`, `internal/rpcworker` | ⚠️ каркас: HTTP-слой, health, split/merge, KV-шарды и 66 тестов есть, но реальный инференс — **stub** (`stubMode`, «Реальная llama.cpp интеграция — B1.real»). Рабочая схема RPC — **внутри образа cppworker** (`ggml-rpc-server` + `CPPWORKER_RPC_*`/настройки балансера), отдельного образа RPC-воркера нет; исторический `docker-compose.rpc.yml` удалён в R486 как мёртвая обвязка |
 | Tensor Parallelism (части матриц внутри слоя, `rptensor`) | `internal/rptensor` | ⬜ не начато: см. `docs/plans/b8-tensor-parallelism-plan.md` — «НЕ НАЧАТО, 20–30 дней» |
 | Интеграция `llama_rpc` / `ggml_backend_rpc` | — | ❌ в коде отсутствует |
 
@@ -1738,7 +1738,7 @@ curl -s -D - -o /dev/null ... http://127.0.0.1:18080/api/chat | grep -i x-backen
 | `docker-compose.llama.cpp.yml`, `…llama.cpu.yml` | запуск llama.cpp-сервера без нашего воркера | исторические (используются `scripts/deploy-llama-remote.*`) |
 | `docker-compose.agent.yml` | запуск только агента (для Ollama-бэкендов) | рабочий; в stack то же самое — `--profile legacy-agent` |
 | `docker-compose.agent.gpu.yml` | **оверлей** к `agent.yml` (host-сеть, лимиты GPU) | не самостоятельный файл: `-f docker-compose.agent.yml -f docker-compose.agent.gpu.yml` |
-| `docker-compose.rpc.yml` | RPC-координатор (этап P2) | не исполняется, см. /api/v1/placement |
+| ~~`docker-compose.rpc.yml`~~ | RPC-координатор (этап P2, stub) | **удалён в R486**: образ `rpcworker:0.1.0-stub` не собирался, файл не мог подняться. RPC-узлы поднимаются профилем `rpc-node` из образа cppworker |
 | `docker-compose.cocoindex.yml` | внешний сервис cocoindex | не относится к ядру |
 | `docker-compose.test-stub.yml` | стаб-стенд для тестов (им пользуется `playwright.config.js`) | тестовый |
 | `docker-compose.fanout-test.yml` | стенд проверки распределения запросов | тестовый (см. `scripts/test-backend-fanout.ps1`) |

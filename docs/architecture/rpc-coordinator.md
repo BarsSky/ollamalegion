@@ -347,7 +347,7 @@ second machine is idle.
 - **Compose:** ✅ `deployments/docker-compose.rpc-node.yml` — the node sidecar.
   An important detail: the image has `ENTRYPOINT=/entrypoint.sh`, which always starts
   `./cppworker`, so the sidecar overrides the **entrypoint**, not `command`.
-  The old `docker-compose.rpc.yml` is marked as a historical scaffold of a different scheme.
+  The old `docker-compose.rpc.yml` (and `docker/rpcworker/Dockerfile`) was removed in R486: it was a scaffold of a different scheme and the `rpcworker:0.1.0-stub` image was never built. The working scheme is `ggml-rpc-server` inside the cppworker image, managed via `CPPWORKER_RPC_*` and balancer settings.
 - **Version:** ⏳ Remaining (see item 5 above).
 
 ### Build pitfalls with RPC (verified on a live build, 2026-10-11)

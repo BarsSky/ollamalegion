@@ -313,7 +313,7 @@ has cannot be deployed across the network. It is worked around with quantization
 | Mechanism | Files | Status |
 |---|---|---|
 | Separate llama.cpp workers on each machine, the balancer scatters requests | `cmd/cppworker`, `internal/balancer` | ✅ works (the standard `--profile worker` on each machine) |
-| RPC coordinator + RPC workers (layer-by-layer pipeline) | `internal/rpccoordinator`, `internal/rpcworker` | ⚠️ scaffolding: the HTTP layer, health, split/merge, KV shards and 66 tests exist, but real inference is a **stub** (`stubMode`, "Real llama.cpp integration — B1.real"). Stack: `deployments/docker-compose.rpc.yml` |
+| RPC coordinator + RPC workers (layer-by-layer pipeline) | `internal/rpccoordinator`, `internal/rpcworker` | ⚠️ scaffolding: the HTTP layer, health, split/merge, KV shards and 66 tests exist, but real inference is a **stub** (`stubMode`, "Real llama.cpp integration — B1.real"). The working RPC scheme lives **inside the cppworker image** (`ggml-rpc-server` + `CPPWORKER_RPC_*`/balancer settings); there is no separate RPC worker image, and the historical `docker-compose.rpc.yml` was removed in R486 as dead scaffolding |
 | Tensor Parallelism (parts of matrices inside a layer, `rptensor`) | `internal/rptensor` | ⬜ not started: see `docs/plans/b8-tensor-parallelism-plan.md` — "NOT STARTED, 20–30 days" |
 | `llama_rpc` / `ggml_backend_rpc` integration | — | ❌ absent from the code |
 
@@ -1720,7 +1720,7 @@ either historical or highly specialized; always start with stack.
 | `docker-compose.llama.cpp.yml`, `…llama.cpu.yml` | running the llama.cpp server without our worker | historical (used by `scripts/deploy-llama-remote.*`) |
 | `docker-compose.agent.yml` | starting only the agent (for Ollama backends) | working; in stack the same thing is `--profile legacy-agent` |
 | `docker-compose.agent.gpu.yml` | an **overlay** on `agent.yml` (host network, GPU limits) | not a standalone file: `-f docker-compose.agent.yml -f docker-compose.agent.gpu.yml` |
-| `docker-compose.rpc.yml` | the RPC coordinator (stage P2) | not running, see /api/v1/placement |
+| ~~`docker-compose.rpc.yml`~~ | the RPC coordinator (stage P2, stub) | **removed in R486**: the `rpcworker:0.1.0-stub` image was never built, so the file could not start. RPC nodes come up through the `rpc-node` profile from the cppworker image |
 | `docker-compose.cocoindex.yml` | the external cocoindex service | not part of the core |
 | `docker-compose.test-stub.yml` | a stub stand for tests (used by `playwright.config.js`) | test |
 | `docker-compose.fanout-test.yml` | a stand for checking request distribution | test (see `scripts/test-backend-fanout.ps1`) |

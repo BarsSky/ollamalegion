@@ -37,9 +37,8 @@ func TestR486_IdentityNotOverwrittenByEmpty(t *testing.T) {
 		b.WorkerBuildDate != "2026-11-10T14:40:00Z" || b.WorkerRPCProto != "6.0.0" {
 		t.Fatalf("известная идентичность затёрта пустыми значениями: %+v", b)
 	}
-	if applyWorkerIdentityR486(nil, "x", "y", "z", "p"); true {
-		// nil-бэкенд не должен паниковать — проверка выше уже это доказала.
-	}
+	// nil-бэкенд не должен паниковать: вызов ниже — сама эта проверка.
+	applyWorkerIdentityR486(nil, "x", "y", "z", "p")
 }
 
 // TestR486_ReleaseMismatch — узел из другого релиза виден как расхождение.

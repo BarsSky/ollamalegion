@@ -2434,7 +2434,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		} else {
 			fullOutput = outputBuf.String()
 			duration = time.Since(start)
-			reasoningOut, outputForParse, toolCalls, hasReasoning, toolCallsFromReasoning = splitToolsOutputR482(fullOutput, thinkOverride, tools)
+			reasoningOut, outputForParse, toolCalls, _, toolCallsFromReasoning = splitToolsOutputR482(fullOutput, thinkOverride, tools)
 			// eval_count — сумма обеих попыток: клиент видел thinking первой и
 			// ответ второй; занижать нельзя (по usage он считает контекст).
 			// Для решения о бюджете берём ТОЛЬКО вторую попытку: первая уже
@@ -2476,7 +2476,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr == nil {
 				fullOutput = outputBuf.String()
 				duration = time.Since(start)
-				reasoningOut, outputForParse, toolCalls, hasReasoning, toolCallsFromReasoning = splitToolsOutputR482(fullOutput, thinkOverride, tools)
+				reasoningOut, outputForParse, toolCalls, _, toolCallsFromReasoning = splitToolsOutputR482(fullOutput, thinkOverride, tools)
 				if stillInvalid := strictToolCallViolations(toolCalls, tools); len(stillInvalid) > 0 {
 					logger.Get().Warnw("strict tool args still invalid after retry",
 						"model", modelName, "violations", truncateForLog(strings.Join(stillInvalid, "; "), 300))

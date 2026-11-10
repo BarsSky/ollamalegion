@@ -28,6 +28,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"ollama-loadbalancer/pkg/version"
 	"time"
 
 	"ollama-loadbalancer/internal/i18n"
@@ -61,6 +63,10 @@ func envOrPort(key, def string) string {
 // nodeBuildState — результат опроса одного узла (кэш).
 type nodeBuildState struct {
 	build string
+	// proto — версия протокола RPC, которую узел сообщает (R486): без неё
+	// отказ «протоколы разные» случался внутри llama.cpp (GGML_ABORT) уже
+	// после загрузки весов.
+	proto string
 	at    time.Time
 }
 
@@ -78,30 +84,36 @@ func nodeHTTPAddr(endpoint string) string {
 	return net.JoinHostPort(host, nodeHTTPPort)
 }
 
-// fetchNodeBuild — коммит llama.cpp, который сообщает узел ("" = не сообщил).
-func fetchNodeBuild(endpoint string, timeout time.Duration) (string, error) {
+// fetchNodeBuild — коммит llama.cpp и версия протокола RPC, которые сообщает
+// узел ("" = не сообщил).
+//
+// R486: proto добавлен рядом с коммитом, потому что сравнивать только коммит
+// недостаточно: два образа с одним коммитом llama.cpp могут быть собраны с
+// разным RPC_PROTO_* (патч-версия протокола меняется вместе с числом ggml-операций).
+func fetchNodeBuild(endpoint string, timeout time.Duration) (string, string, error) {
 	addr := nodeHTTPAddr(endpoint)
 	if addr == "" {
-		return "", errors.New(i18n.T("cppbackend.rpc_version_gate.node_addr_invalid", endpoint))
+		return "", "", errors.New(i18n.T("cppbackend.rpc_version_gate.node_addr_invalid", endpoint))
 	}
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get("http://" + addr + "/api/v1/cppworker/config")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", errors.New(i18n.T("cppbackend.rpc_version_gate.node_http_status", addr, resp.StatusCode))
+		return "", "", errors.New(i18n.T("cppbackend.rpc_version_gate.node_http_status", addr, resp.StatusCode))
 	}
 	var payload struct {
 		Config struct {
 			LlamaBuild string `json:"llamaBuild"`
+			RPCProto   string `json:"rpcProto"`
 		} `json:"config"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return strings.TrimSpace(payload.Config.LlamaBuild), nil
+	return strings.TrimSpace(payload.Config.LlamaBuild), strings.TrimSpace(payload.Config.RPCProto), nil
 }
 
 // rpcVersionStrict — оператор требует подтверждённую версию узла.
@@ -128,15 +140,16 @@ func (b *Backend) nodeBuildMatches(endpoint string) (bool, string) {
 	st, ok := nodeBuildCache[endpoint]
 	nodeBuildMu.Unlock()
 	if !ok || time.Since(st.at) >= rpcNodeBuildTTL {
-		build, err := fetchNodeBuild(endpoint, rpcNodeHTTPTimeout)
+		build, proto, err := fetchNodeBuild(endpoint, rpcNodeHTTPTimeout)
 		if err != nil {
 			build = ""
+			proto = ""
 			if logger.Get() != nil {
 				logger.Get().Warnw(i18n.T("cppbackend.rpc_version_gate.version_lookup_failed"),
 					"endpoint", endpoint, "error", err.Error())
 			}
 		}
-		st = nodeBuildState{build: build, at: time.Now()}
+		st = nodeBuildState{build: build, proto: proto, at: time.Now()}
 		nodeBuildMu.Lock()
 		nodeBuildCache[endpoint] = st
 		nodeBuildMu.Unlock()
@@ -172,9 +185,24 @@ func (b *Backend) nodeBuildMatches(endpoint string) (bool, string) {
 		return true, "version_unknown_allowed"
 	case st.build != expect:
 		return false, "version_mismatch:" + st.build + "!=" + expect
-	default:
-		return true, "version_match"
 	}
+
+	// R486: тот же коммит llama.cpp ещё не значит «тот же протокол». Обе
+	// стороны сообщают RPC_PROTO_* из ggml-rpc.h; если обе известны и
+	// различаются — узел в раскладку не идёт. Раньше это выяснялось только
+	// GGML_ABORT внутри llama.cpp, то есть после загрузки весов в сокет.
+	if masterProto := masterRPCProtoR486(); masterProto != "" && st.proto != "" && st.proto != masterProto {
+		return false, "rpc_proto_mismatch:" + st.proto + "!=" + masterProto
+	}
+	return true, "version_match"
+}
+
+// masterRPCProtoR486 — версия протокола RPC этого процесса (запечена в образ).
+//
+// Отдельная функция, чтобы тесты могли подменить источник, не трогая
+// package-level переменную pkg/version.
+func masterRPCProtoR486() string {
+	return strings.TrimSpace(version.RPCProto)
 }
 
 // admittedRPCServers — узлы, допущенные в раскладку (совпал коммит).

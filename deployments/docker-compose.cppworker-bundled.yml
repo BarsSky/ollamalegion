@@ -25,6 +25,19 @@ services:
     build:
       context: ..
       dockerfile: docker/balancer/Dockerfile
+      # R486: идентичность сборки ПЕЧЁТСЯ в образ и обязательна: без неё
+      # `docker compose build` падает на страже в Dockerfile (а не собирает образ со
+# штампом «unknown»). Значения
+      # считает scripts/build-identity.ps1. Подробности — docker-compose.stack.yml.
+      args:
+        SERVICE: balancer
+        VERSION: cppworker-bundled
+        IMAGE_TAG: cppworker-bundled
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     image: ollama-legion/balancer:cppworker-bundled
     container_name: ol-bundled-balancer
     restart: unless-stopped
@@ -70,8 +83,22 @@ services:
     build:
       context: ..
       dockerfile: docker/cppworker/Dockerfile.gpu
+      # R486: идентичность сборки (args идентичности; пустое значение валит сборку). llama.cpp-часть —
+      # LLAMA_BUILD / LLAMA_BUILD_DATE / RPC_PROTO из сабмодуля c/llama.cpp;
+      # их считает scripts/build-identity.ps1 -Service cppworker.
       args:
         CUDA_ARCH: ${CUDA_ARCH:-all}
+        SERVICE: cppworker
+        VERSION: ${CPPWORKER_GPU_TAG:-arch_all}
+        IMAGE_TAG: gpu-${CPPWORKER_GPU_TAG:-arch_all}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
+        LLAMA_BUILD: ${LLAMA_BUILD:-}
+        LLAMA_BUILD_DATE: ${LLAMA_BUILD_DATE:-}
+        RPC_PROTO: ${RPC_PROTO:-}
     # Тэг образа зависит от CUDA_ARCH:
     #   "all"       -> ollama-legion/cppworker:gpu-arch_all
     #   "86"        -> ollama-legion/cppworker:gpu-86
@@ -199,15 +226,22 @@ services:
       # Sprint 30 (2026-07-30): VERSION / GIT_COMMIT / BUILD_DATE
       # пробрасываются как build-args. entrypoint.sh инжектит их в config.js,
       # JS в index.html показывает в sidebar footer (id=appVersion).
-      # Можно переопределить через env или .env.bundled:
-      #   WEBUI_VERSION, WEBUI_GIT_COMMIT, WEBUI_BUILD_DATE
-      # При запуске через scripts/build-containers.ps1 эти args
-      # автоматически берутся из `git describe --tags --always` +
-      # `git rev-parse --short HEAD`.
+      #
+      # R486 (2026-11-10): идентичность ПЕЧЁТСЯ в образ (в /app/identity.json и
+      # в config.js) и обязательна — без неё сборка падает, а не
+      # собирает образ с чужим штампом. Значения считает
+      # scripts/build-identity.ps1 (build-containers.ps1 вызывает его сам).
+      # Прежние WEBUI-варианты пары GIT_COMMIT/BUILD_DATE из .env УДАЛЕНЫ.
       args:
+        SERVICE: webui
         VERSION: ${WEBUI_VERSION:-dev}
-        GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
-        BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
+        IMAGE_TAG: cppworker-bundled
+        RELEASE: "1"
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     image: ollama-legion/webui:cppworker-bundled
     container_name: ol-bundled-webui
     restart: unless-stopped

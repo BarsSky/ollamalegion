@@ -77,6 +77,14 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		// (buildInfoOrKeepR101), иначе повторная регистрация старым агентом
 		// стирала бы уже известную версию.
 		BuildInfo string `json:"buildInfo"`
+		// R486 (2026-11-10): релизная идентичность узла. В bundled-стеке
+		// регистрацию делает встроенный агент, поэтому поля обязаны приниматься
+		// ЗДЕСЬ, а не только в PUT /api/v1/backends. Пустое значение не стирает
+		// известное (applyWorkerIdentityR486).
+		WorkerVersion   string `json:"workerVersion"`
+		WorkerCommit    string `json:"workerCommit"`
+		WorkerBuildDate string `json:"workerBuildDate"`
+		WorkerRPCProto  string `json:"workerRpcProto"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -333,6 +341,10 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			DisabledAt:        cloneDisabledSince(existing.DisabledAt),
 			CppWorkerApiToken: cppToken,
 			BuildInfo:         buildInfoOrKeepR101(req.BuildInfo, existing.BuildInfo),
+			WorkerVersion:     firstNonEmptyStr(req.WorkerVersion, existing.WorkerVersion),
+			WorkerCommit:      firstNonEmptyStr(req.WorkerCommit, existing.WorkerCommit),
+			WorkerBuildDate:   firstNonEmptyStr(req.WorkerBuildDate, existing.WorkerBuildDate),
+			WorkerRPCProto:    firstNonEmptyStr(req.WorkerRPCProto, existing.WorkerRPCProto),
 			Engine:            existing.Engine,
 			ApiStyle:          existing.ApiStyle,
 			GPUMode:           existing.GPUMode,
@@ -446,9 +458,14 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		// в структуре запроса выше).
 		CppWorkerApiToken: req.CppWorkerApiToken,
 		BuildInfo:         req.BuildInfo,
-		Labels:            mergeNodeLabelsR393(req.Labels, req.NodeLabels),
-		Status:            types.StatusStarting,
-		Type:              backendType,
+		// R486: релизная идентичность узла из запечённого образа.
+		WorkerVersion:   req.WorkerVersion,
+		WorkerCommit:    req.WorkerCommit,
+		WorkerBuildDate: req.WorkerBuildDate,
+		WorkerRPCProto:  req.WorkerRPCProto,
+		Labels:          mergeNodeLabelsR393(req.Labels, req.NodeLabels),
+		Status:          types.StatusStarting,
+		Type:            backendType,
 		// R118 (2026-10-14): роль бэкенда в раскладке слоёв — операторское
 		// решение, оно живёт в persistent-override (backend-roles.json).
 		// После перезапуска балансера записей нет вовсе (состояние тоже не
@@ -1306,4 +1323,17 @@ func (s *Server) agentBackendMetricsHandler(w http.ResponseWriter, r *http.Reque
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "received",
 	})
+}
+
+// firstNonEmptyStr — первое непустое значение (R486).
+//
+// Нужен там, где старая сборка не присылает поле: пустое не должно стирать уже
+// известную релизную идентичность узла.
+func firstNonEmptyStr(values ...string) string {
+	for _, v := range values {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }

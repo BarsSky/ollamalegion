@@ -141,6 +141,12 @@ func packageLogger() *zap.SugaredLogger {
 // ============================================================
 
 func main() {
+	// R486 (2026-11-10): доказательство идентичности — ПЕРВЫМ делом.
+	// Проверка не зависит ни от конфига, ни от GPU: если бинарь не совпадает
+	// с запечённым /app/identity.json, контейнер не должен принимать запросы
+	// вообще (живой случай: образ был собран с коммитом предыдущего релиза).
+	version.MustVerifyR486("cppworker")
+
 	flag.Parse()
 
 	// R234 (2026-10-24): язык логов и ошибок. Локальная настройка (env/локаль)
@@ -387,20 +393,37 @@ func main() {
 			log.Warnw("CPPWORKER_MAIN_GPU: invalid GPU index, ignoring (use >=0)", "value", envVal)
 		}
 	}
-	if envVal := strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD")); envVal != "" {
+	// R486 (2026-11-10): КОММИТ llama.cpp теперь запечён в бинарник
+	// (-X pkg/version.LlamaCommit), а не приходит из env. Раньше здесь
+	// cfg.LlamaBuild брался из CPPWORKER_LLAMA_BUILD, то есть гейт совместимости
+	// узлов раскладки (R115) сравнивал НАМЕРЕНИЕ оператора с намерением другого
+	// оператора: ошибка в .env отключала защиту молча.
+	envVal := strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD"))
+	bakedLlama := strings.TrimSpace(version.LlamaCommit)
+	if bakedLlama != "" {
+		cfg.LlamaBuild = bakedLlama
+	} else if envVal != "" {
+		// Старый образ без запечённого значения: остаётся прежний путь, но об
+		// этом честно пишем — иначе «совместимость» будет мнимой.
 		cfg.LlamaBuild = envVal
 	}
 	// R167 (2026-10-17): env — это НАМЕРЕНИЕ, а не факт. Сверяем с коммитом,
 	// вшитым в бинарник, и говорим вслух, если они разошлись: узлы раскладки
 	// обязаны быть на одном коммите llama.cpp, иначе слои не поедут.
-	envLlamaBuildValue = strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD"))
+	envLlamaBuildValue = envVal
+	// R486: версия протокола RPC — тоже факт образа, а не настройка стенда.
+	cfg.RPCProto = strings.TrimSpace(version.RPCProto)
 	if facts := currentLlamaBuildFacts(); !facts.Compatible {
 		log.Warnw(i18n.T("cppworker.main.llama_build_mismatch"),
 			"env_llama_build", facts.Env, "binary_llama_build", facts.Binary,
 			"hint", i18n.T("cppworker.main.llama_build_mismatch_hint"))
 	} else {
-		log.Infow("llama.cpp build info", "env_llama_build", envLlamaBuildValue,
-			"image_llama_build", strings.TrimSpace(os.Getenv(envLlamaBuildBaked)))
+		log.Infow("llama.cpp build info",
+			"env_llama_build", envLlamaBuildValue,
+			"image_llama_build", bakedLlama,
+			"image_llama_build_date", strings.TrimSpace(version.LlamaDate),
+			"rpc_proto", strings.TrimSpace(version.RPCProto),
+			"source", factsLlamaBuildSourceR486())
 	}
 	if cfg.RPCEnabled {
 		// R108 (2026-10-12): предупреждение «транспорт не подключён» убрано.

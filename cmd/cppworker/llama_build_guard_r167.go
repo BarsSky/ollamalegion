@@ -19,7 +19,7 @@ import (
 	"os"
 	"strings"
 
-
+	"ollama-loadbalancer/pkg/version"
 )
 
 // llamaBuildCompatible — совместимы ли «намерение из env» и «факт из бинаря».
@@ -72,7 +72,7 @@ type llamaBuildFacts struct {
 // синтетический docker-коммит (Dockerfile делает git init && git commit, чтобы
 // build-info вообще собрался), поэтому для сверки он не годится.
 func currentLlamaBuildFacts() llamaBuildFacts {
-	baked := strings.TrimSpace(os.Getenv(envLlamaBuildBaked))
+	baked := bakedLlamaCommitR486()
 	env := strings.TrimSpace(getenvLlamaBuild())
 	if baked == "" {
 		// Старый образ: сверять не с чем. Не выдаём «совпало» — говорим, что
@@ -83,8 +83,41 @@ func currentLlamaBuildFacts() llamaBuildFacts {
 		Binary:     baked,
 		Env:        env,
 		Compatible: llamaBuildCompatible(env, baked),
-		Date:       strings.TrimSpace(os.Getenv(envLlamaBuildDateBaked)),
+		Date:       bakedLlamaDateR486(),
 	}
+}
+
+// bakedLlamaCommitR486 — ФАКТ коммита llama.cpp, запечённый в образ.
+//
+// R486 (2026-11-10): приоритет у -X pkg/version.LlamaCommit (или
+// /app/identity.json): это значение нельзя переопределить из .env, и оно
+// совпадает с тем, что реально собрано в этом билде. CPPWORKER_LLAMA_BUILD_BAKED
+// остаётся запасным путём для образов, собранных до R486.
+func bakedLlamaCommitR486() string {
+	if v := strings.TrimSpace(version.LlamaCommit); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(envLlamaBuildBaked))
+}
+
+// bakedLlamaDateR486 — дата коммита llama.cpp (R305), тот же приоритет.
+func bakedLlamaDateR486() string {
+	if v := strings.TrimSpace(version.LlamaDate); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(envLlamaBuildDateBaked))
+}
+
+// factsLlamaBuildSourceR486 — откуда взялся факт: нужно в логе, потому что
+// «запечено в бинарь» и «старый образ с env» — разные степени доверия.
+func factsLlamaBuildSourceR486() string {
+	if strings.TrimSpace(version.LlamaCommit) != "" {
+		return "ldflags"
+	}
+	if strings.TrimSpace(os.Getenv(envLlamaBuildBaked)) != "" {
+		return "env_baked_legacy"
+	}
+	return "none"
 }
 
 // getenvLlamaBuild — env-значение (вынесено ради тестируемости).

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"ollama-loadbalancer/pkg/version"
 	"os"
 	"strconv"
 	"strings"
@@ -175,6 +176,15 @@ func (a *Agent) register() error { // Сбор информации о сист�
 		// Из-за этого buildInfo у бэкендов всегда оставался пустым, и валидатор
 		// композиции не мог сверить версии сторон RPC — писал version_unknown.
 		"buildInfo": llamaBuildInfoR101Agent(),
+		// R486 (2026-11-10): релизная идентичность воркера. В bundled-стенде
+		// бэкенд регистрирует ВСТРОЕННЫЙ АГЕНТ (Go-регистрация cppworker
+		// выключена через CPPWORKER_REGISTER_DISABLE), поэтому без этих полей
+		// балансер по-прежнему не знал бы, из какого релиза собран узел — ровно
+		// та же находка приёмки, что была с buildInfo в R101.
+		"workerVersion":   workerIdentityR486().Version,
+		"workerCommit":    workerIdentityR486().Commit,
+		"workerBuildDate": workerIdentityR486().BuildDate,
+		"workerRpcProto":  workerIdentityR486().RPCProto,
 	}
 
 	// R-Image (2026-10-07): image-бэкенд (sdworker/sd-server).
@@ -283,7 +293,12 @@ func (a *Agent) healthCheckOllama() error {
 // иначе версия не доедет, и проверка совместимости сторон RPC в валидаторе
 // композиции останется неподтверждённой (version_unknown).
 func llamaBuildInfoR101Agent() string {
-	commit := strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD"))
+	// R486: факт — запечённый в образ коммит. env остался переопределением
+	// «намерения» для образов до R486; если пусто и там, узел честно молчит.
+	commit := strings.TrimSpace(version.LlamaCommit)
+	if commit == "" {
+		commit = strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD"))
+	}
 	if commit == "" {
 		return ""
 	}
@@ -299,8 +314,20 @@ func llamaBuildInfoR101Agent() string {
 	// коммит и дату из одной строки. Совместимость узлов раскладки при этом
 	// сравнивается по коммиту (internal/composition/validate.go), поэтому дата в
 	// строке не может дать ложное «узлы собраны из разного».
-	if date := strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD_DATE")); date != "" {
+	date := strings.TrimSpace(version.LlamaDate)
+	if date == "" {
+		date = strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD_DATE"))
+	}
+	if date != "" {
 		return commit + " " + date
 	}
 	return commit
+}
+
+// workerIdentityR486 — запечённая идентичность образа, в котором работает агент.
+//
+// В bundled-стеке агент живёт ВНУТРИ образа воркера, поэтому его собственная
+// запечённая идентичность и есть идентичность узла.
+func workerIdentityR486() version.About {
+	return version.Get()
 }

@@ -46,6 +46,7 @@ import (
 	"go.uber.org/zap"
 
 	"ollama-loadbalancer/internal/cppbackend"
+	"ollama-loadbalancer/pkg/version"
 )
 
 // balancerRegistration — состояние auto-registration в балансировщике.
@@ -183,15 +184,29 @@ type registerPayload struct {
 	// Балансер хранит её на бэкенде (types.Backend.BuildInfo) и сравнивает у
 	// узлов одной раскладки: расхождение ловится до загрузки модели.
 	BuildInfo string `json:"buildInfo,omitempty"`
+	// R486 (2026-11-10): релизная идентичность образа — коммит, тег, дата и
+	// версия протокола RPC. Балансер сравнивает коммит со своим и показывает
+	// workerReleaseMismatch: «узел из другого релиза» больше не надо искать
+	// глазами по логам.
+	WorkerVersion   string `json:"workerVersion,omitempty"`
+	WorkerCommit    string `json:"workerCommit,omitempty"`
+	WorkerBuildDate string `json:"workerBuildDate,omitempty"`
+	WorkerRPCProto  string `json:"workerRpcProto,omitempty"`
 }
 
 // llamaBuildInfoR101 — что узел сообщает о своей сборке llama.cpp.
 //
-// Источник — env `CPPWORKER_LLAMA_BUILD` (его проставляет образ: build-arg или
-// тег образа). Если он не задан, узел ЧЕСТНО сообщает пусто, и балансер помечает
-// совместимость сторон RPC неподтверждённой: выдумывать версию нельзя — именно
+// R486 (2026-11-10): источник — ЗАПЕЧЁННЫЙ в образ коммит (-X
+// pkg/version.LlamaCommit или /app/identity.json). Раньше читался env
+// CPPWORKER_LLAMA_BUILD, то есть узел сообщал НАМЕРЕНИЕ оператора; именно
+// поэтому гейт совместимости узлов раскладки (R115) сравнивал env с env и
+// соглашался при расхождении. env остаётся запасным путём для образов до R486.
+// Если не задано ничего, узел ЧЕСТНО сообщает пусто: выдумывать версию нельзя —
 // на ней строится вывод «можно ли соединять эти два узла».
 func llamaBuildInfoR101() string {
+	if baked := strings.TrimSpace(version.LlamaCommit); baked != "" {
+		return baked
+	}
 	return strings.TrimSpace(os.Getenv("CPPWORKER_LLAMA_BUILD"))
 }
 
@@ -242,6 +257,8 @@ func effectiveNParallel() int {
 
 // register отправляет POST /api/v1/backends.
 func (r *balancerRegistration) register(ctx context.Context, log *zap.SugaredLogger) (int, error) {
+	// R486: релизная идентичность берётся из запечённых значений образа.
+	about := version.Get()
 	// R70 (2026-09-24): в регистрацию уходит РЕАЛЬНОЕ число параллельных
 	// inference-запросов, а не константа 4.
 	//
@@ -275,6 +292,11 @@ func (r *balancerRegistration) register(ctx context.Context, log *zap.SugaredLog
 		// её у узлов одной раскладки (протокол RPC версионно-чувствителен) и
 		// покажет расхождение в сухом прогоне, а не таймаутом загрузки.
 		BuildInfo: llamaBuildInfoR101(),
+		// R486: релизная идентичность — из запечённых значений, не из env.
+		WorkerVersion:   about.Version,
+		WorkerCommit:    about.Commit,
+		WorkerBuildDate: about.BuildDate,
+		WorkerRPCProto:  about.RPCProto,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

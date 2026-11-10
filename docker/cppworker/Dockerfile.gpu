@@ -44,6 +44,15 @@ FROM ${CUDA_BASE}:${CUDA_VERSION}-devel-ubuntu22.04 AS llama-builder
 #   "75;86;89" — список через ";" для нескольких архитектур
 ARG CUDA_ARCH="all"
 
+# LLAMA_BUILD — коммит llama.cpp, который РЕАЛЬНО линкуется в образ (R486).
+#
+# Приходит build-arg'ом (scripts/build-identity.ps1 читает его из сабмодуля
+# c/llama.cpp). Сам Dockerfile вычислить его не может: .git в контекст сборки не
+# попадает (.dockerignore), а `git init && git commit` ниже создаёт ЛОЖНЫЙ
+# коммит — build-info.cmake принял бы его за настоящий. Поэтому реальный коммит
+# передаётся в cmake через -DLLAMA_BUILD_COMMIT (см. RUN ниже).
+ARG LLAMA_BUILD
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -109,6 +118,11 @@ RUN for p in /tmp/patches/*.patch; do \
 #   docker buildx create --name ollamalegion --driver docker-container --use
 #   docker buildx build --builder ollamalegion ...
 # С этим ccache реально переиспользуется между билдами (с 20 мин до 1-2 мин).
+# R486: СТРАЖ перед сборкой llama.cpp. Коммит едет в cmake (-DLLAMA_BUILD_COMMIT),
+# поэтому пустое значение запекло бы в libllama/build-info «неизвестно» молча.
+RUN test -n "$LLAMA_BUILD" && test "$LLAMA_BUILD" != "unknown" || \
+        (echo "FATAL: LLAMA_BUILD not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+
 RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
     mkdir -p build && cd build && \
     if [ -z "${CUDA_ARCH}" ] || [ "${CUDA_ARCH}" = "all" ]; then \
@@ -135,6 +149,12 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
       -DLLAMA_BUILD_TESTS=OFF \
       -DLLAMA_BUILD_EXAMPLES=OFF \
       -DBUILD_SHARED_LIBS=OFF \
+      # R486: build-info.cmake по умолчанию берёт коммит из локального git, а он
+      # здесь синтетический (git init выше). Передаём НАСТОЯЩИЙ коммит сабмодуля,
+      # иначе образ сообщал бы выдуманный SHA. LLAMA_BUILD_NUMBER=0 фиксирует
+      # номер сборки (иначе он считается как rev-list --count синтетической истории).
+      -DLLAMA_BUILD_COMMIT="${LLAMA_BUILD}" \
+      -DLLAMA_BUILD_NUMBER=0 \
       # Round 14a: enable LLAMA_BUILD_COMMON для libcommon.a (chat.h, common_chat_*).
       # Default is OFF (только при LLAMA_STANDALONE=ON), но нам нужна libcommon.a
       # для нашего C++ wrapper chat_thinking.cpp.
@@ -274,11 +294,50 @@ ENV CGO_LDFLAGS="-L/build/c/llama.cpp/build/src -L/build/c/llama.cpp/build/ggml/
 # чтобы уложиться в доступную RAM при сборке в Docker Desktop / WSL2.
 # R83 (2026-09-28): версия сборки в pkg/version — стартовая запись лога
 # cppworker сообщает тег/коммит (см. cmd/cppworker/main.go).
-ARG GIT_COMMIT=unknown
-ARG BUILD_DATE=unknown
+#
+# R486 (2026-11-10): дефолты `=unknown` УБРАНЫ — непереданный arg обязан валить
+# сборку стражей ниже, а не давать образ с молчаливым «unknown» (живой случай:
+# образ с коммитом 850923d7 при HEAD 8b246ffe).
+ARG SERVICE=cppworker
+ARG VERSION
+ARG IMAGE_TAG
+ARG GIT_COMMIT
+ARG GIT_COMMIT_FULL
+ARG GIT_COMMIT_DATE
+ARG BUILD_DATE
+ARG BUILD_AUTHOR
+ARG LLAMA_BUILD
+ARG LLAMA_BUILD_DATE
+ARG RPC_PROTO
+
+# R486: СТРАЖ перед go build: без штампа образ не собирается.
+RUN test -n "$GIT_COMMIT" && test "$GIT_COMMIT" != "unknown" || \
+        (echo "FATAL: GIT_COMMIT not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+RUN test -n "$GIT_COMMIT_FULL" && test "$GIT_COMMIT_FULL" != "unknown" || \
+        (echo "FATAL: GIT_COMMIT_FULL not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+RUN test -n "$BUILD_DATE" && test "$BUILD_DATE" != "unknown" || \
+        (echo "FATAL: BUILD_DATE not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+RUN test -n "$LLAMA_BUILD" && test "$LLAMA_BUILD" != "unknown" || \
+        (echo "FATAL: LLAMA_BUILD not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+RUN test -n "$LLAMA_BUILD_DATE" && test "$LLAMA_BUILD_DATE" != "unknown" || \
+        (echo "FATAL: LLAMA_BUILD_DATE not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+RUN test -n "$RPC_PROTO" && test "$RPC_PROTO" != "unknown" || \
+        (echo "FATAL: RPC_PROTO not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOMAXPROCS=2 \
     go build -trimpath \
-    -ldflags "-w -s -X ollama-loadbalancer/pkg/version.Commit=${GIT_COMMIT} -X ollama-loadbalancer/pkg/version.BuildDate=${BUILD_DATE}" \
+    -ldflags "-w -s \
+      -X ollama-loadbalancer/pkg/version.Service=${SERVICE} \
+      -X ollama-loadbalancer/pkg/version.Version=${VERSION} \
+      -X ollama-loadbalancer/pkg/version.ImageTag=${IMAGE_TAG} \
+      -X ollama-loadbalancer/pkg/version.Commit=${GIT_COMMIT} \
+      -X ollama-loadbalancer/pkg/version.CommitFull=${GIT_COMMIT_FULL} \
+      -X ollama-loadbalancer/pkg/version.CommitDate=${GIT_COMMIT_DATE} \
+      -X ollama-loadbalancer/pkg/version.BuildDate=${BUILD_DATE} \
+
+      -X ollama-loadbalancer/pkg/version.LlamaCommit=${LLAMA_BUILD} \
+      -X ollama-loadbalancer/pkg/version.LlamaDate=${LLAMA_BUILD_DATE} \
+      -X ollama-loadbalancer/pkg/version.RPCProto=${RPC_PROTO}" \
     -o cppworker ./cmd/cppworker
 
 # -----------------------------------------------------------------------------
@@ -320,7 +379,7 @@ FROM ${CUDA_BASE}:${CUDA_VERSION}-runtime-ubuntu22.04 AS runtime
 # Значение пекут в образ из того же исходника, что и libllama/rpc-server, поэтому
 # оно не может разойтись с реально собранным кодом; окружение может переопределить
 # его на запуске (см. CPPWORKER_LLAMA_BUILD в compose).
-ARG LLAMA_BUILD=unknown
+ARG LLAMA_BUILD
 ENV CPPWORKER_LLAMA_BUILD=${LLAMA_BUILD}
 # R167 (2026-10-17): ФАКТ для сверки с env. compose переопределяет CPPWORKER_LLAMA_BUILD,
 # и тогда расхождение «намерение vs собранное» становится невидимым. Эта переменная
@@ -336,7 +395,7 @@ ENV CPPWORKER_LLAMA_BUILD_BAKED=${LLAMA_BUILD}
 # оператор видел «неизвестно» там, где ответ существует (сборка от 2026-09-01
 # старше релиза от 2026-10-2x). Дата берётся у того же сабмодуля, что и коммит:
 #   git -C c/llama.cpp log -1 --format=%cs
-ARG LLAMA_BUILD_DATE=unknown
+ARG LLAMA_BUILD_DATE
 ENV CPPWORKER_LLAMA_BUILD_DATE=${LLAMA_BUILD_DATE}
 ENV CPPWORKER_LLAMA_BUILD_DATE_BAKED=${LLAMA_BUILD_DATE}
 
@@ -414,6 +473,26 @@ RUN mkdir -p /app/models /app/config && \
 
 USER appuser
 
+# R486 (2026-11-10): build-arg'и объявлены ПОВТОРНО (ARG виден только в той
+# стадии, где объявлен) и СРАЗУ перед использованием: объявление выше сбрасывало
+# бы кэш тяжёлых слоёв (apt/pip) на каждой смене коммита. LLAMA_BUILD /
+# LLAMA_BUILD_DATE объявлены выше в этой же стадии — их требуют ENV
+# CPPWORKER_LLAMA_BUILD*.
+ARG SERVICE=cppworker
+ARG VERSION
+ARG IMAGE_TAG
+ARG GIT_COMMIT
+ARG GIT_COMMIT_FULL
+ARG GIT_COMMIT_DATE
+ARG BUILD_DATE
+ARG BUILD_AUTHOR
+ARG RPC_PROTO
+
+# R486: /app/identity.json — ЗАПЕЧЁННЫЙ манифест сборки, читает pkg/version
+# (порядок: -ldflags > identity.json > env) и сверяет с бинарём на старте
+# (VerifyR486). Пишем после USER appuser — файл сразу принадлежит appuser.
+RUN printf '{"service":"%s","version":"%s","image_tag":"%s","commit":"%s","commit_full":"%s","commit_date":"%s","build_date":"%s","author":"%s","llama_commit":"%s","llama_date":"%s","rpc_proto":"%s"}\n' "$SERVICE" "$VERSION" "$IMAGE_TAG" "$GIT_COMMIT" "$GIT_COMMIT_FULL" "$GIT_COMMIT_DATE" "$BUILD_DATE" "$BUILD_AUTHOR" "$LLAMA_BUILD" "$LLAMA_BUILD_DATE" "$RPC_PROTO" > /app/identity.json && chmod 0644 /app/identity.json
+
 EXPOSE 18092
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
@@ -445,5 +524,17 @@ ENTRYPOINT ["/entrypoint.sh"]
 LABEL org.opencontainers.image.title="Ollama Legion CppBackend Worker (GPU)"
 LABEL org.opencontainers.image.description="GGUF model inference server with real llama.cpp (CUDA_ARCH=${CUDA_ARCH})"
 LABEL org.opencontainers.image.vendor="OllamaLegion"
-LABEL org.opencontainers.image.version="0.1.0"
+# R486: версия — из build-arg, а не литерал «0.1.0» (литерал не имел отношения к
+# собранному коду). .revision — ПОЛНЫЙ коммит, короткий лежит в ru.*-метке.
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${GIT_COMMIT_FULL}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL org.opencontainers.image.authors="${BUILD_AUTHOR}"
 LABEL org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion"
+LABEL ru.ollamalegion.git.commit="${GIT_COMMIT}"
+LABEL ru.ollamalegion.image.tag="${IMAGE_TAG}"
+# R486: llama.cpp, реально слинкованный в образ — по этим меткам видно
+# рассинхрон узлов раскладки (протокол RPC версионно-чувствителен) без docker run.
+LABEL ru.ollamalegion.llama.commit="${LLAMA_BUILD}"
+LABEL ru.ollamalegion.llama.date="${LLAMA_BUILD_DATE}"
+LABEL ru.ollamalegion.rpc.proto="${RPC_PROTO}"

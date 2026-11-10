@@ -75,8 +75,35 @@ COPY . .
 # R83 (2026-09-28): GIT_COMMIT/BUILD_DATE подставляются в pkg/version, чтобы
 # стартовая шапка логов показывала, ЧТО именно запущено. Передаются как
 # build-args (см. scripts/rebuild_balancer_r66a.ps1 / release-all.ps1).
-ARG GIT_COMMIT=unknown
-ARG BUILD_DATE=unknown
+#
+# R486 (2026-11-10): идентичность ЗАПЕКАЕТСЯ в образ, а не приезжает из
+# deployments/.env через compose env.
+#
+# ЖИВОЙ ДЕФЕКТ, РАДИ КОТОРОГО ЭТО СДЕЛАНО. Образ был проштампован предыдущим
+# коммитом: в .env лежали BALANCER_GIT_COMMIT=850923d7 при HEAD 8b246ffe,
+# scripts/release-all.ps1 build-arg'и вообще не передавал, поэтому срабатывал
+# дефолт `ARG GIT_COMMIT=unknown` — и образ МОЛЧА уезжал на стенд с чужим
+# штампом (оператор узнал случайно, по /api/version).
+#
+# Теперь значения приходят build-arg'ами из scripts/build-identity.ps1, а
+# дефолтов у них НЕТ: непереданный arg остаётся пустым и валит стражу ниже.
+ARG SERVICE=balancer
+ARG VERSION
+ARG IMAGE_TAG
+ARG GIT_COMMIT
+ARG GIT_COMMIT_FULL
+ARG GIT_COMMIT_DATE
+ARG BUILD_DATE
+ARG BUILD_AUTHOR
+
+# R486: СТРАЖ перед go build. Без него сборка «успешна», а образ сообщает
+# unknown/пустоту — то есть молча врёт, и это выясняется только на стенде.
+RUN test -n "$GIT_COMMIT" && test "$GIT_COMMIT" != "unknown" || \
+        (echo "FATAL: GIT_COMMIT not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+RUN test -n "$GIT_COMMIT_FULL" && test "$GIT_COMMIT_FULL" != "unknown" || \
+        (echo "FATAL: GIT_COMMIT_FULL not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+RUN test -n "$BUILD_DATE" && test "$BUILD_DATE" != "unknown" || \
+        (echo "FATAL: BUILD_DATE not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
 # R127 (2026-10-16): -extldflags БЕЗ вложенных кавычек.
 #
 # ЖИВОЙ СЛУЧАЙ. Базовая стадия — плавающий тег `golang:1.24-alpine`; при
@@ -88,7 +115,12 @@ ARG BUILD_DATE=unknown
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -tags llama_stub -trimpath \
     -ldflags "-w -s -extldflags=-static \
+      -X ollama-loadbalancer/pkg/version.Service=${SERVICE} \
+      -X ollama-loadbalancer/pkg/version.Version=${VERSION} \
+      -X ollama-loadbalancer/pkg/version.ImageTag=${IMAGE_TAG} \
       -X ollama-loadbalancer/pkg/version.Commit=${GIT_COMMIT} \
+      -X ollama-loadbalancer/pkg/version.CommitFull=${GIT_COMMIT_FULL} \
+      -X ollama-loadbalancer/pkg/version.CommitDate=${GIT_COMMIT_DATE} \
       -X ollama-loadbalancer/pkg/version.BuildDate=${BUILD_DATE}" \
     -a -o balancer ./cmd/balancer
 
@@ -144,6 +176,37 @@ RUN addgroup -g 1000 appgroup && \
     chown -R appuser:appgroup /app
 
 USER appuser
+
+# R486: build-arg'и объявлены ПОВТОРНО (Docker видит ARG только в той стадии, где
+# он объявлен) и СРАЗУ перед использованием: объявление выше по файлу сбрасывало
+# бы кэш тяжёлых слоёв (apk/webui) на каждой смене коммита — идентичность меняется
+# каждый релиз, а пакеты нет.
+ARG SERVICE=balancer
+ARG VERSION
+ARG IMAGE_TAG
+ARG GIT_COMMIT
+ARG GIT_COMMIT_FULL
+ARG GIT_COMMIT_DATE
+ARG BUILD_DATE
+ARG BUILD_AUTHOR
+
+# R486: /app/identity.json — ЗАПЕЧЁННЫЙ манифест сборки. Его читает
+# pkg/version (порядок источников: -ldflags > identity.json > env) и сверяет с
+# бинарём на старте (VerifyR486), поэтому «в контейнере старый образ» больше не
+# выясняется по логам. Пишем ПОСЛЕ USER appuser: файл сразу принадлежит appuser.
+RUN printf '{"service":"%s","version":"%s","image_tag":"%s","commit":"%s","commit_full":"%s","commit_date":"%s","build_date":"%s","author":"%s","llama_commit":"%s","llama_date":"%s","rpc_proto":"%s"}\n' "$SERVICE" "$VERSION" "$IMAGE_TAG" "$GIT_COMMIT" "$GIT_COMMIT_FULL" "$GIT_COMMIT_DATE" "$BUILD_DATE" "$BUILD_AUTHOR" "$LLAMA_BUILD" "$LLAMA_BUILD_DATE" "$RPC_PROTO" > /app/identity.json && chmod 0644 /app/identity.json
+
+# R486: OCI-метки. .revision — ПОЛНЫЙ коммит (короткий лежит в
+# ru.ollamalegion.git.commit): по полному сверяют образ с git, по короткому —
+# читают глазами. Балансер llama.cpp не линкует, поэтому llama-меток нет.
+LABEL org.opencontainers.image.title="Ollama Legion Load Balancer"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${GIT_COMMIT_FULL}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion"
+LABEL org.opencontainers.image.authors="${BUILD_AUTHOR}"
+LABEL ru.ollamalegion.git.commit="${GIT_COMMIT}"
+LABEL ru.ollamalegion.image.tag="${IMAGE_TAG}"
 
 # Порты: 18080 (Ollama API proxy), 18081 (Management API + WebSocket)
 EXPOSE 18080 18081

@@ -33,8 +33,38 @@ COPY . .
 
 # Сборка со stub llama.cpp (тег llama_stub, не требует C-библиотеки)
 # CGO_ENABLED=0 — статический бинарник, нет зависимостей от C
+#
+# R486 (2026-11-10): идентичность ЗАПЕКАЕТСЯ в бинарник. Заглушка llama.cpp НЕ
+# содержит, поэтому llama/rpc-полей здесь НЕТ: в образ не попадает пустое
+# значение, которое выглядело бы фактом. Страж — только на три обязательных
+# поля (коммит, полный коммит, дата сборки).
+ARG SERVICE=cppworker
+ARG VERSION
+ARG IMAGE_TAG
+ARG GIT_COMMIT
+ARG GIT_COMMIT_FULL
+ARG GIT_COMMIT_DATE
+ARG BUILD_DATE
+ARG BUILD_AUTHOR
+
+# R486: СТРАЖ перед go build: без штампа образ не собирается.
+RUN test -n "$GIT_COMMIT" && test "$GIT_COMMIT" != "unknown" || \
+        (echo "FATAL: GIT_COMMIT not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+RUN test -n "$GIT_COMMIT_FULL" && test "$GIT_COMMIT_FULL" != "unknown" || \
+        (echo "FATAL: GIT_COMMIT_FULL not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+RUN test -n "$BUILD_DATE" && test "$BUILD_DATE" != "unknown" || \
+        (echo "FATAL: BUILD_DATE not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags "-w -s -extldflags '-static'" \
+    go build -trimpath \
+    -ldflags "-w -s -extldflags '-static' \
+      -X ollama-loadbalancer/pkg/version.Service=${SERVICE} \
+      -X ollama-loadbalancer/pkg/version.Version=${VERSION} \
+      -X ollama-loadbalancer/pkg/version.ImageTag=${IMAGE_TAG} \
+      -X ollama-loadbalancer/pkg/version.Commit=${GIT_COMMIT} \
+      -X ollama-loadbalancer/pkg/version.CommitFull=${GIT_COMMIT_FULL} \
+      -X ollama-loadbalancer/pkg/version.CommitDate=${GIT_COMMIT_DATE} \
+      -X ollama-loadbalancer/pkg/version.BuildDate=${BUILD_DATE}" \
     -tags llama_stub \
     -a -installsuffix cgo -o cppworker ./cmd/cppworker
 
@@ -61,6 +91,25 @@ RUN mkdir -p /app/models && \
 
 USER appuser
 
+# R486 (2026-11-10): build-arg'и объявлены ПОВТОРНО (ARG виден только в той
+# стадии, где объявлен) и СРАЗУ перед использованием: объявление выше по файлу
+# сбрасывало бы кэш слоя apk/pip на каждой смене коммита.
+# LLAMA_*/RPC_PROTO НЕ объявлены: заглушка llama.cpp не содержит, и в файл
+# идентичности эти поля попадут пустыми (pkg/version пустое значение отбрасывает).
+ARG SERVICE=cppworker
+ARG VERSION
+ARG IMAGE_TAG
+ARG GIT_COMMIT
+ARG GIT_COMMIT_FULL
+ARG GIT_COMMIT_DATE
+ARG BUILD_DATE
+ARG BUILD_AUTHOR
+
+# R486: /app/identity.json — ЗАПЕЧЁННЫЙ манифест сборки, читает pkg/version
+# (порядок: -ldflags > identity.json > env) и сверяет с бинарём на старте
+# (VerifyR486). Пишем после USER appuser — файл сразу принадлежит appuser.
+RUN printf '{"service":"%s","version":"%s","image_tag":"%s","commit":"%s","commit_full":"%s","commit_date":"%s","build_date":"%s","author":"%s","llama_commit":"%s","llama_date":"%s","rpc_proto":"%s"}\n' "$SERVICE" "$VERSION" "$IMAGE_TAG" "$GIT_COMMIT" "$GIT_COMMIT_FULL" "$GIT_COMMIT_DATE" "$BUILD_DATE" "$BUILD_AUTHOR" "$LLAMA_BUILD" "$LLAMA_BUILD_DATE" "$RPC_PROTO" > /app/identity.json && chmod 0644 /app/identity.json
+
 EXPOSE 18093
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
@@ -78,5 +127,13 @@ ENTRYPOINT ["/entrypoint.sh"]
 LABEL org.opencontainers.image.title="Ollama Legion CppBackend Worker (STUB)"
 LABEL org.opencontainers.image.description="GGUF model inference server with llama.cpp STUB (CI/tests only, no real inference)"
 LABEL org.opencontainers.image.vendor="OllamaLegion"
-LABEL org.opencontainers.image.version="0.1.0"
+# R486: версия — из build-arg, а не литерал «0.1.0» (литерал не имел отношения к
+# собранному коду). .revision — ПОЛНЫЙ коммит, короткий лежит в ru.*-метке.
+# llama/rpc-меток нет: llama.cpp в этом образе нет вовсе.
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${GIT_COMMIT_FULL}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL org.opencontainers.image.authors="${BUILD_AUTHOR}"
 LABEL org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion"
+LABEL ru.ollamalegion.git.commit="${GIT_COMMIT}"
+LABEL ru.ollamalegion.image.tag="${IMAGE_TAG}"

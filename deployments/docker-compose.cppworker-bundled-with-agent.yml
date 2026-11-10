@@ -61,6 +61,19 @@ services:
     build:
       context: ..
       dockerfile: docker/balancer/Dockerfile
+      # R486: идентичность сборки ПЕЧЁТСЯ в образ и обязательна: без неё
+      # `docker compose build` падает на страже в Dockerfile (а не собирает образ со
+# штампом «unknown»). Значения
+      # считает scripts/build-identity.ps1. Подробности — docker-compose.stack.yml.
+      args:
+        SERVICE: balancer
+        VERSION: ${BALANCER_TAG:-r82-submodule-v19}
+        IMAGE_TAG: ${BALANCER_TAG:-r82-submodule-v19}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     # Round 34 image (cppworker-bundled-r34) crashed after ~75min with
     # "sync: unlock of unlocked mutex" — reverted to Round 33 (stable 7h+).
     # Round 35 (r35): reload→load fallback + idleUnload disabled.
@@ -163,8 +176,22 @@ services:
     build:
       context: ..
       dockerfile: docker/cppworker/Dockerfile.gpu
+      # R486: идентичность сборки (args идентичности; пустое значение валит сборку). llama.cpp-часть —
+      # LLAMA_BUILD / LLAMA_BUILD_DATE / RPC_PROTO из сабмодуля c/llama.cpp;
+      # их считает scripts/build-identity.ps1 -Service cppworker.
       args:
         CUDA_ARCH: ${CUDA_ARCH:-all}
+        SERVICE: cppworker
+        VERSION: ${CPPWORKER_GPU_TAG:-86-r60.4-webui-meta}
+        IMAGE_TAG: gpu-${CPPWORKER_GPU_TAG:-86-r60.4-webui-meta}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
+        LLAMA_BUILD: ${LLAMA_BUILD:-}
+        LLAMA_BUILD_DATE: ${LLAMA_BUILD_DATE:-}
+        RPC_PROTO: ${RPC_PROTO:-}
     image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-86-r60.4-webui-meta}
     container_name: ol-bundled-cppworker-gpu
     restart: unless-stopped
@@ -265,8 +292,18 @@ services:
       context: ..
       dockerfile: docker/agent/Dockerfile
       target: agent-gpu
+      # R486: идентичность сборки — args идентичности (пустое значение валит сборку). SERVICE=agent
+      # совпадает с именем, которое проверяет cmd/agent/main.go на старте.
       args:
         ENABLE_NVML: "true"
+        SERVICE: agent
+        VERSION: ${AGENT_TAG:-cppworker-bundled-r41-agent-x-api-token}
+        IMAGE_TAG: ${AGENT_TAG:-cppworker-bundled-r41-agent-x-api-token}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     image: ollama-legion/agent:${AGENT_TAG:-cppworker-bundled-r41-agent-x-api-token}  # Round 41 (2026-08-19): X-API-Token auth header — agent шлёт BALANCER_TOKEN в register/metrics/heartbeat (was: 401 restart loop)
     container_name: ol-bundled-cppworker-gpu-agent
     restart: unless-stopped
@@ -344,12 +381,21 @@ services:
       # Sprint 30 (2026-07-30): VERSION / GIT_COMMIT / BUILD_DATE пробрасываются
       # как build-args в WebUI. entrypoint.sh инжектит их в config.js, JS в
       # index.html показывает в sidebar footer (id=appVersion).
-      # Можно переопределить через env:
-      #   WEBUI_VERSION, WEBUI_GIT_COMMIT, WEBUI_BUILD_DATE
+      #
+      # R486 (2026-11-10): идентичность ПЕЧЁТСЯ в образ (в /app/identity.json и в
+      # config.js) и обязательна (`:?`). Значения считает
+      # scripts/build-identity.ps1. Прежние WEBUI-варианты пары
+      # GIT_COMMIT/BUILD_DATE из .env УДАЛЕНЫ — они больше ни на что не влияют.
       args:
+        SERVICE: webui
         VERSION: ${WEBUI_VERSION:-dev}
-        GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
-        BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
+        IMAGE_TAG: ${WEBUI_TAG:-r77-submodule-v2}
+        RELEASE: "1"
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     image: ollama-legion/webui:${WEBUI_TAG:-r77-submodule-v2}  # R77 (2026-09-24): карточка «Размещение моделей» на /monitor — данные GET /api/v1/placement (enabled/fallback/operatingMode, решения по моделям со стратегией/источником/причиной, пометки degraded и «не исполняется (P2)», группы репликации с кандидатами, предупреждения валидации конфига). Требует ?v=R77 для i18n/api.js/ui-renderer.js. R66d (2026-09-23): load через балансер с настройками формы (ctx/batch/flash/mmap/kv), рабочие Apply профиля / Delete / Cancel download, runtime-параметры загруженной модели + бейдж CPU-offload на вкладке загруженных. Требует ?v=R66g (см. webui/index.html).
     container_name: ol-bundled-webui
     restart: unless-stopped

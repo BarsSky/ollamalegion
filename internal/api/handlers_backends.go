@@ -15,6 +15,7 @@ import (
 	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
+	"ollama-loadbalancer/pkg/version"
 )
 
 // rpcLink — R118 (2026-10-14): замер пропускной способности канала до узлов
@@ -818,6 +819,14 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			// расхождение — причина таймаута загрузки, а не «медленная сеть».
 			// Поле отдаётся всегда (пустая строка = узел версию не сообщает).
 			"buildInfo": backend.BuildInfo,
+			// R486 (2026-11-10): с какого РЕЛИЗА собран узел. Раньше балансер
+			// знал только коммит llama.cpp; «узел на другом образе» не видел
+			// никто, и рассинхрон стенда искали глазами оператора.
+			"workerVersion":         backend.WorkerVersion,
+			"workerCommit":          backend.WorkerCommit,
+			"workerBuildDate":       backend.WorkerBuildDate,
+			"workerRpcProto":        backend.WorkerRPCProto,
+			"workerReleaseMismatch": workerReleaseMismatchR486(&backend),
 			// R269 (2026-10-29): свежесть сборки относительно стабильного
 			// upstream llama.cpp. Раньше оператор видел только строку версии и
 			// не знал, есть ли новее; relation=unknown — это ЧЕСТНОЕ «сравнить
@@ -1172,6 +1181,9 @@ func (s *Server) refreshRegisteredBackend(w http.ResponseWriter, req backendRequ
 	if req.BuildInfo != "" {
 		updated.BuildInfo = req.BuildInfo
 	}
+	// R486: релизная идентичность воркера — тем же правилом «не стирать
+	// известное», иначе она исчезала бы на первом обновлении статуса.
+	applyWorkerIdentityR486(&updated, req.WorkerVersion, req.WorkerCommit, req.WorkerBuildDate, req.WorkerRPCProto)
 	// GPUIndex: нода сообщила индекс (в т.ч. 0 — явная первая карта) → принимаем;
 	// ключа в payload нет → сохраняем операторское значение. Сборки, которые поля
 	// не знают, не должны стирать настройку, иначе лок сосуществования молча
@@ -1243,6 +1255,12 @@ type backendRequest struct {
 	// которую узел сообщает при регистрации. Балансер сравнивает её у узлов одной
 	// раскладки (протокол RPC версионно-чувствителен) — см. types.Backend.BuildInfo.
 	BuildInfo string `json:"buildInfo"`
+	// R486: релизная идентичность образа воркера (см. types.Backend.WorkerCommit).
+	// Пустые поля не стирают уже известные значения.
+	WorkerVersion   string `json:"workerVersion"`
+	WorkerCommit    string `json:"workerCommit"`
+	WorkerBuildDate string `json:"workerBuildDate"`
+	WorkerRPCProto  string `json:"workerRpcProto"`
 	// Round 7 (2026-07-09): cppworker пробрасывает свой API_TOKEN при
 	// регистрации, чтобы balancer мог авторизоваться на /api/models/reload
 	// (authMiddleware). В bundled-режиме устраняет необходимость ручной
@@ -1418,6 +1436,11 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		// Иначе Backend.EffectiveAPIStyle() выведет из Type автоматически.
 		ApiStyle:  types.APIStyle(req.ApiStyle),
 		BuildInfo: req.BuildInfo,
+		// R486: релизная идентичность образа воркера — из запечённых значений.
+		WorkerVersion:   req.WorkerVersion,
+		WorkerCommit:    req.WorkerCommit,
+		WorkerBuildDate: req.WorkerBuildDate,
+		WorkerRPCProto:  req.WorkerRPCProto,
 		// R118 (2026-10-14): роль бэкенда в раскладке слоёв — операторское
 		// решение, оно живёт в persistent-override (backend-roles.json). Именно
 		// ЭТОТ путь создаёт запись для bundled-агента (POST /api/v1/backends),
@@ -2248,4 +2271,42 @@ func (s *Server) evacuateBackend(w http.ResponseWriter, r *http.Request, backend
 		"evacuatedSessions": count,
 		"message":           fmt.Sprintf("Backend %s evacuated: %d sessions reassigned", backendID, count),
 	})
+}
+
+// applyWorkerIdentityR486 — запомнить релизную идентичность воркера (R486).
+//
+// Пустое значение НЕ стирает известное: сборки, которые этих полей ещё не знают
+// (образы до R486), не должны обнулять уже полученную идентичность — иначе
+// проверка «узел из того же релиза» мигала бы на каждом heartbeat.
+func applyWorkerIdentityR486(b *types.Backend, version, commit, buildDate, rpcProto string) {
+	if b == nil {
+		return
+	}
+	if v := strings.TrimSpace(version); v != "" {
+		b.WorkerVersion = v
+	}
+	if v := strings.TrimSpace(commit); v != "" {
+		b.WorkerCommit = v
+	}
+	if v := strings.TrimSpace(buildDate); v != "" {
+		b.WorkerBuildDate = v
+	}
+	if v := strings.TrimSpace(rpcProto); v != "" {
+		b.WorkerRPCProto = v
+	}
+}
+
+// workerReleaseMismatchR486 — собран ли узел из ДРУГОГО релиза, чем балансер.
+//
+// true только когда известны оба коммита и они различаются: пустой коммит узла
+// (образ до R486) — это «неизвестно», а не «совпало» и не «разошлось».
+func workerReleaseMismatchR486(b *types.Backend) bool {
+	if b == nil || strings.TrimSpace(b.WorkerCommit) == "" {
+		return false
+	}
+	own := strings.TrimSpace(version.Commit)
+	if own == "" {
+		return false
+	}
+	return !strings.EqualFold(own, strings.TrimSpace(b.WorkerCommit))
 }

@@ -113,6 +113,70 @@ foreach ($m in $imageLines) {
     Write-Host ("  {0,-30} → {1}" -f $repo, $tag)
 }
 
+# --- R486: идентичность сборки запекается в образ --------------------------
+#
+# ЗАЧЕМ ЭТОТ БЛОК. Проверка выше видит только строки `image:`. Живой дефект был
+# ровно в другом месте: образ собирался с ЧУЖИМ штампом (коммит предыдущего
+# релиза), потому что build-arg'и идентичности не передавались, а Dockerfile
+# молча брал `ARG GIT_COMMIT=unknown`. Манifest при этом честно писал gitCommit
+# из репозитория — то есть расхождение «манифест vs образ» не видел никто.
+#
+# Что проверяется теперь (текстово, без docker):
+#   1) в compose не осталось отменённых переменных идентичности (R486);
+#   2) ни один аргумент сборки не имеет дефолта `unknown`;
+#   3) у КАЖДОГО build-блока есть аргумент GIT_COMMIT_FULL (count build-блоков
+#      = count `GIT_COMMIT_FULL:`), то есть новый сервис не появится без
+#      идентичности;
+#   4) каждый `dockerfile:` пишет `/app/identity.json` и штампует
+#      pkg/version.Commit -ldflags.
+$argsSectionSeen = $false
+$removedVars = @('BALANCER_GIT_COMMIT', 'BALANCER_BUILD_DATE',
+    'CPPWORKER_GIT_COMMIT', 'CPPWORKER_BUILD_DATE',
+    'WEBUI_GIT_COMMIT', 'WEBUI_BUILD_DATE',
+    'AGENT_GIT_COMMIT', 'AGENT_BUILD_DATE')
+foreach ($name in $removedVars) {
+    $hits = Select-String -Path $composePath -Pattern ([regex]::Escape($name))
+    foreach ($h in $hits) {
+        $problems.Add("строка $($h.LineNumber): осталась отменённая переменная $name — идентичность сборки задаётся build-arg'ами из scripts/build-identity.ps1 (R486)")
+    }
+}
+
+$unknownDefaults = Select-String -Path $composePath -Pattern '^\s*(GIT_COMMIT|GIT_COMMIT_FULL|GIT_COMMIT_DATE|BUILD_DATE|BUILD_AUTHOR|LLAMA_BUILD|LLAMA_BUILD_DATE|RPC_PROTO):.*:-unknown\}'
+foreach ($h in $unknownDefaults) {
+    $problems.Add("строка $($h.LineNumber): аргумент сборки с дефолтом 'unknown' — образ соберётся с ложным штампом. Оставьте пусто (`$`{VAR:-}) и передавайте значение из scripts/build-identity.ps1")
+}
+
+$buildBlocks = @(Select-String -Path $composePath -Pattern '^\s+dockerfile:\s*(\S+)\s*$')
+$identityArgs = @(Select-String -Path $composePath -Pattern '^\s*GIT_COMMIT_FULL:')
+if ($buildBlocks.Count -ne $identityArgs.Count) {
+    $problems.Add("build-блоков в ${ComposeFile}: $($buildBlocks.Count), аргументов GIT_COMMIT_FULL: $($identityArgs.Count) — сервис без идентичности сборки соберётся со штампом 'unknown' (R486)")
+}
+
+foreach ($b in $buildBlocks) {
+    $dockerfileRel = $b.Matches[0].Groups[1].Value
+    # Пути dockerfile: в compose отсчитываются от КОРНЯ репозитория (context: ..),
+    # а не от deployments/.
+    $dockerfilePath = Join-Path (Split-Path -Parent $PSScriptRoot) $dockerfileRel
+    if (-not (Test-Path $dockerfilePath)) {
+        $problems.Add("строка $($b.LineNumber): dockerfile '$dockerfileRel' не найден")
+        continue
+    }
+    $df = Get-Content -Raw -LiteralPath $dockerfilePath
+    if ($df -notmatch 'identity\.json') {
+        $problems.Add("$dockerfileRel не пишет identity.json — образ не сможет доказать свою идентичность (R486)")
+    }
+    if ($df -match 'go build' -and $df -notmatch 'pkg/version\.Commit=') {
+        $problems.Add("$dockerfileRel собирает Go-бинарь без -X pkg/version.Commit — штамп сборки не попадёт в бинарь (R486)")
+    }
+    if ($df -match 'go build' -and $df -notmatch 'GIT_COMMIT not supplied') {
+        $problems.Add("$dockerfileRel собирает Go-бинарь без стража 'GIT_COMMIT not supplied' — пустой build-arg снова даст образ со штампом 'unknown' (R486)")
+    }
+    $argsSectionSeen = $true
+}
+if (-not $argsSectionSeen) {
+    $problems.Add("в ${ComposeFile} не найдено ни одного build-блока с dockerfile: — проверьте формат")
+}
+
 # --- сверка с манифестом ---------------------------------------------------
 if (Test-Path $manifestPath) {
     Write-Host ""

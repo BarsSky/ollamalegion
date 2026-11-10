@@ -59,10 +59,50 @@ case "$(printf '%s' "${WEBUI_DEMO_MODE:-0}" | tr '[:upper:]' '[:lower:]')" in
     1|true|yes|on) DEMO_MODE=true ;;
     *) DEMO_MODE=false ;;
 esac
-# === Build info (передаются через --build-arg в docker build) ===
+# === Build info: ЗАПЕЧЕНО в образ (R486), env — только fallback ===
+#
+# ПОРЯДОК ИСТОЧНИКОВ:
+#   1. /app/identity.json — манифест, записанный при СБОРКЕ образа (канонический
+#      путь контракта, см. docker/webui/Dockerfile). Это факт образа: он не может
+#      разойтись с тем, что реально собрано.
+#   2. /usr/share/nginx/html/identity.json — тот же файл в корне статики (копия из
+#      той же сборки): нужна, если /app в образе нет или файл там не читается.
+#   3. VERSION / GIT_COMMIT / BUILD_DATE из env — только если файла НЕТ
+#      (локальный запуск, отладка).
+#
+# ЗАЧЕМ ТАК. Раньше значения целиком приходили из env (deployments/.env →
+# compose environment), и одно устаревшее значение давало образ, который
+# «честно» сообщал ЧУЖОЙ коммит: живой случай — образ с 850923d7 при HEAD
+# 8b246ffe. Имя переменной то же, что у Go-сервисов (pkg/version: IDENTITY_FILE).
+IDENTITY_FILE="${IDENTITY_FILE:-/app/identity.json}"
+IDENTITY_HTTP_COPY="/usr/share/nginx/html/identity.json"
+if [ ! -f "$IDENTITY_FILE" ] && [ -f "$IDENTITY_HTTP_COPY" ]; then
+    IDENTITY_FILE="$IDENTITY_HTTP_COPY"
+fi
+IDENTITY_SOURCE="env"
+
+# json_str <ключ> — строковое поле из однострочного JSON БЕЗ jq/python:
+# в nginx:alpine их нет, а `grep -o '"commit":"[^"]*"'` не отличает `commit`
+# от `commit_full`/`commit_date` (подстрока). sed с якорем на `"ключ":`
+# различает их; пробелы вокруг ':' допускаются — файл могут переформатировать.
+json_str() {
+    sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$IDENTITY_FILE" | head -n 1
+}
+
 # VERSION: git tag (v0.5.0, v0.4.12, ...) или "dev" для локальных сборок
 # GIT_COMMIT: короткий SHA (abc1234) или "unknown"
 # BUILD_DATE: ISO 8601 timestamp или "unknown"
+if [ -f "$IDENTITY_FILE" ]; then
+    _id_version="$(json_str version)"
+    _id_commit="$(json_str commit)"
+    _id_build_date="$(json_str build_date)"
+    if [ -n "$_id_version" ]; then VERSION="$_id_version"; fi
+    if [ -n "$_id_commit" ]; then GIT_COMMIT="$_id_commit"; fi
+    if [ -n "$_id_build_date" ]; then BUILD_DATE="$_id_build_date"; fi
+    IDENTITY_SOURCE="$IDENTITY_FILE"
+fi
+# Ключи в config.js не меняются (их читают webui/index.html и
+# webui/js/modules/diagnostics.js): VERSION / GIT_COMMIT / BUILD_DATE.
 : "${VERSION:=dev}"
 : "${GIT_COMMIT:=unknown}"
 : "${BUILD_DATE:=unknown}"
@@ -156,6 +196,8 @@ echo "  CPPWORKER_PORT=$CPPWORKER_PORT"
 echo "  API_TOKEN=(не вшивается; вход по токену — на экране входа, R222)"
 echo "  REFRESH_INTERVAL=$REFRESH_INTERVAL"
 echo "  DEMO_MODE=$DEMO_MODE (WEBUI_DEMO_MODE=${WEBUI_DEMO_MODE:-0})"
+# R486: откуда взялись версия/коммит — видно сразу, без docker inspect.
+echo "  IDENTITY=$IDENTITY_SOURCE"
 echo "  VERSION=$VERSION"
 echo "  GIT_COMMIT=$GIT_COMMIT"
 echo "  BUILD_DATE=$BUILD_DATE"

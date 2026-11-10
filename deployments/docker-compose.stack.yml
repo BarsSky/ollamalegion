@@ -98,9 +98,42 @@ services:
     build:
       context: ..
       dockerfile: docker/balancer/Dockerfile
+      # ═══ R486 (2026-11-10): идентичность сборки ПЕЧЁТСЯ в образ ═════════════
+      #
+      # Раньше здесь стояли build-arg'и идентичности со значениями из .env
+      # (BALANCER-вариант пары GIT_COMMIT/BUILD_DATE, дефолт `:-unknown`): значения
+      # лежали в deployments/.env, скрипт выпуска их не передавал, в Dockerfile
+      # срабатывал `ARG GIT_COMMIT=unknown` — и образ молча уезжал на стенд с
+      # ЧУЖИМ штампом (живой случай: /api/version показывал 850923d7 при HEAD
+      # 8b246ffe; узнали случайно). Переменные REMOVED: в .env они больше ни на
+      # что не влияют, см. deployments/.env.example.
+      #
+      # Теперь каждый идентификационный arg ОБЯЗАТЕЛЕН (`:?`): без него
+      # `docker compose build` падает с текстом ниже, а не собирает образ без
+      # штампа. Значения считает ЕДИНСТВЕННЫЙ вычислитель
+      # scripts/build-identity.ps1 (git + сабмодуль c/llama.cpp) и кладёт их в
+      # ОКРУЖЕНИЕ процесса: `docker compose build` берёт build-arg'и только
+      # оттуда (env_file на build args не действует; .git в контекст сборки не
+      # попадает из-за .dockerignore, поэтому вычислить коммит внутри RUN нельзя).
+      #
+      # SERVICE        — какой бинарь внутри образа (balancer|cppworker|agent|
+      #                  sdworker|imageworker); по нему code выбирает поля
+      #                  идентичности.
+      # VERSION        — версия выпуска (ldflags -X ...Version), НЕ обязательна:
+      #                  дефолт = тот же тег образа.
+      # IMAGE_TAG      — фактический тег собранного образа (ldflags).
+      # GIT_COMMIT     — короткий SHA HEAD; GIT_COMMIT_FULL — полный SHA;
+      # GIT_COMMIT_DATE — дата коммита (ISO-8601, git log -1 --format=%cI);
+      # BUILD_DATE     — время СБОРКИ (RFC3339 UTC); BUILD_AUTHOR — кто собрал.
       args:
-        GIT_COMMIT: ${BALANCER_GIT_COMMIT:-unknown}
-        BUILD_DATE: ${BALANCER_BUILD_DATE:-unknown}
+        SERVICE: balancer
+        VERSION: ${BALANCER_TAG:-r83-submodule-v22}
+        IMAGE_TAG: ${BALANCER_TAG:-r83-submodule-v22}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     container_name: ol-stack-balancer
     restart: unless-stopped
     # R217 (2026-10-21): graceful shutdown с дренажом активных стримов.
@@ -533,10 +566,27 @@ services:
     build:
       context: ..
       dockerfile: docker/webui/Dockerfile
+      # R486: та же идентичность сборки, что у Go-образов, и по тем же правилам
+      # (`:?` = обязательно; значения считает scripts/build-identity.ps1).
+      # WebUI печёт её в /app/identity.json (+ window.WEBUI_CONFIG), поэтому
+      # «какой сборкой поднят стенд» отвечает образ, а не deployments/.env.
+      # Пары WEBUI-вариантов GIT_COMMIT/BUILD_DATE из .env удалены: на сборку
+      # они больше ни на что не влияют (см. deployments/.env.example).
+      #
+      # VERSION здесь не просто метка: Dockerfile подставляет его в ?v= у каждого
+      # html (sed 's/?v=.../?v=${VERSION}/'), а nginx отдаёт js с expires 1y.
+      # С неизменным токеном браузер держал бы СТАРЫЕ модули из кэша даже после
+      # пересборки. Поэтому дефолт — версия выпуска, а не тег образа.
       args:
+        SERVICE: webui
         VERSION: ${WEBUI_VERSION:-0.7.0}
-        GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
-        BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
+        IMAGE_TAG: ${WEBUI_TAG:-r83-submodule-v22}
+        RELEASE: "1"
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     container_name: ol-stack-webui
     restart: unless-stopped
     depends_on:
@@ -598,18 +648,37 @@ services:
         # описан в Dockerfile.gpu: CUDA_BASE=mirror.gcr.io/nvidia/cuda.
         CUDA_VERSION: ${CUDA_VERSION:-12.2.0}
         CUDA_BASE: ${CUDA_BASE:-dockerhub.timeweb.cloud/nvidia/cuda}
-        GIT_COMMIT: ${CPPWORKER_GIT_COMMIT:-unknown}
-        BUILD_DATE: ${CPPWORKER_BUILD_DATE:-unknown}
-        # R114 (2026-10-13): коммит llama.cpp, который узел сообщает балансеру.
-        # Печётся в образ (ENV CPPWORKER_LLAMA_BUILD) и служит для проверки
-        # version_mismatch у узлов раскладки: мастер и донор обязаны быть из
-        # одного коммита. Обновлять в deployments/.env при апдейте сабмодуля:
-        #   git -C c/llama.cpp rev-parse --short HEAD
-        LLAMA_BUILD: ${CPPWORKER_LLAMA_BUILD:-unknown}
-        # R305 (2026-10-30): дата того же коммита (git -C c/llama.cpp log -1
-        # --format=%cs). Без неё сравнение «сборка узла vs последний стабильный
-        # релиз» честно упирается в «не с чем сравнивать», хотя ответ есть.
-        LLAMA_BUILD_DATE: ${CPPWORKER_LLAMA_BUILD_DATE:-unknown}
+        # R486: идентичность сборки — обязательные args, см. блок у
+        # loadbalancer выше. Пары CPPWORKER-вариантов GIT_COMMIT/BUILD_DATE
+        # УДАЛЕНЫ (значения из .env в образ больше не попадают; живой случай
+        # «молча чужой штамп» — ровно про них). Считает scripts/build-identity.ps1.
+        SERVICE: cppworker
+        VERSION: ${CPPWORKER_GPU_TAG:-r83-submodule-v22}
+        # Тег собранного образа РЕАЛЬНО содержит префикс gpu- (см. image: выше),
+        # поэтому IMAGE_TAG = gpu-<тот же тег>: иначе бинарь сообщал бы тег,
+        # которого нет в `docker images`.
+        IMAGE_TAG: gpu-${CPPWORKER_GPU_TAG:-r83-submodule-v22}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
+        # R114/R305/R486: идентичность llama.cpp тоже ПЕЧЁТСЯ в образ и тоже
+        # обязательна. Значения берёт scripts/build-identity.ps1 из САМОГО
+        # сабмодуля:
+        #   LLAMA_BUILD      — git -C c/llama.cpp rev-parse --short HEAD
+        #   LLAMA_BUILD_DATE — git -C c/llama.cpp log -1 --format=%cs
+        #   RPC_PROTO        — c/llama.cpp/ggml/include/ggml-rpc.h
+        #                      (RPC_PROTO_MAJOR/MINOR/PATCH_VERSION)
+        # Зачем: балансер сравнивает у узлов раскладки коммит/протокол RPC
+        # (version_mismatch), мастер и донор обязаны быть из ОДНОЙ сборки.
+        # ВНИМАНИЕ, это РАЗНЫЕ вещи: LLAMA_BUILD (build-arg → факт, что в образе)
+        # и CPPWORKER_LLAMA_BUILD (переменная окружения контейнера, ниже в
+        # `environment:` — рантайм-оверрайд оператора). Раньше build-arg брался
+        # из CPPWORKER_LLAMA_BUILD и устаревал вместе с .env.
+        LLAMA_BUILD: ${LLAMA_BUILD:-}
+        LLAMA_BUILD_DATE: ${LLAMA_BUILD_DATE:-}
+        RPC_PROTO: ${RPC_PROTO:-}
     container_name: ol-stack-cppworker-gpu
     restart: unless-stopped
     # R217: генерация на большом контексте может идти минуты; дефолтные 10 с
@@ -645,7 +714,7 @@ services:
       # раскладки. Значение печётся в образ (Dockerfile.gpu: ARG LLAMA_BUILD),
       # здесь — точка переопределения на запуске; дефолт совпадает с образом,
       # чтобы пустая переменная в .env не обнуляла её.
-      - CPPWORKER_LLAMA_BUILD=${CPPWORKER_LLAMA_BUILD:-unknown}
+      - CPPWORKER_LLAMA_BUILD=${CPPWORKER_LLAMA_BUILD:-}
       # R135 (2026-10-16): под какие архитектуры CUDA собран образ — чтобы
       # cppworker мог ЗАРАНЕЕ предупредить, что на этой карте первое GPU-ядро
       # убьёт процесс («no kernel image is available»), вместо SIGABRT и
@@ -1032,6 +1101,23 @@ services:
         CUDA_DEVEL_BASE: ${IMAGE_WORKER_CUDA_DEVEL_BASE:-dockerhub.timeweb.cloud/nvidia/cuda:12.2.0-devel-ubuntu22.04}
         CUDA_ARCH: ${IMAGE_WORKER_CUDA_ARCH:-86}
         SD_SERVER_REF: ${SD_SERVER_REF:-3f8527a46c54ecf4cb4ed6003da8e8982283c73c}
+        # R486: идентичность сборки — обязательные args (см. блок у
+        # loadbalancer выше). SERVICE=sdworker — имя Go-сервиса, который
+        # проверяет свою идентичность на старте (cmd/sdworker/main.go:
+        # version.MustVerifyR486("sdworker")). Образ называется imageworker, но
+        # ВНУТРИ — бинарь sdworker, и SERVICE обязан совпадать с ним, иначе
+        # VerifyR486 уронит контейнер с «образ собран для другого сервиса».
+        #
+        # Идентичность кладётся и в /app/identity.json, поэтому у образа без
+        # -ldflags (nginx-подобные слои) тоже есть доказательство сборки.
+        SERVICE: sdworker
+        VERSION: ${IMAGE_WORKER_TAG:-vulkan}
+        IMAGE_TAG: ${IMAGE_WORKER_TAG:-vulkan}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     container_name: ol-stack-imageworker
     restart: unless-stopped
     # Same GPU path as cppworker-gpu above: nvidia-container-runtime.
@@ -1231,10 +1317,21 @@ services:
       context: ..
       dockerfile: docker/agent/Dockerfile
       target: agent-gpu
+      # R486: идентичность сборки — args идентичности (пустое значение валит сборку), см. подробный
+      # блок у loadbalancer выше. Пары AGENT-вариантов GIT_COMMIT/BUILD_DATE
+      # удалены: значения из deployments/.env в образ больше не попадают.
+      # SERVICE=agent — имя сервиса, которым проверяется идентичность на старте
+      # (cmd/agent/main.go: version.MustVerifyR486("agent")).
       args:
         ENABLE_NVML: "true"
-        GIT_COMMIT: ${AGENT_GIT_COMMIT:-unknown}
-        BUILD_DATE: ${AGENT_BUILD_DATE:-unknown}
+        SERVICE: agent
+        VERSION: ${AGENT_TAG:-r83-submodule-v22}
+        IMAGE_TAG: ${AGENT_TAG:-r83-submodule-v22}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     container_name: ol-stack-agent
     # Profiles: legacy-agent ONLY.
     #
@@ -1377,10 +1474,21 @@ services:
       context: ..
       dockerfile: docker/agent/Dockerfile
       target: agent-gpu
+      # R486: идентичность сборки — args идентичности (пустое значение валит сборку), см. подробный
+      # блок у loadbalancer выше. Пары AGENT-вариантов GIT_COMMIT/BUILD_DATE
+      # удалены: значения из deployments/.env в образ больше не попадают.
+      # SERVICE=agent — имя сервиса, которым проверяется идентичность на старте
+      # (cmd/agent/main.go: version.MustVerifyR486("agent")).
       args:
         ENABLE_NVML: "true"
-        GIT_COMMIT: ${AGENT_GIT_COMMIT:-unknown}
-        BUILD_DATE: ${AGENT_BUILD_DATE:-unknown}
+        SERVICE: agent
+        VERSION: ${AGENT_TAG:-r83-submodule-v22}
+        IMAGE_TAG: ${AGENT_TAG:-r83-submodule-v22}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     container_name: ol-stack-ollama-agent
     profiles: ["ollama"]
     restart: unless-stopped

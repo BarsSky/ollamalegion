@@ -56,6 +56,19 @@ services:
     build:
       context: ..
       dockerfile: docker/balancer/Dockerfile
+      # R486: идентичность сборки ПЕЧЁТСЯ в образ и обязательна: без неё
+      # `docker compose build` падает на страже в Dockerfile (а не собирает образ со
+# штампом «unknown»). Значения
+      # считает scripts/build-identity.ps1. Подробности — docker-compose.stack.yml.
+      args:
+        SERVICE: balancer
+        VERSION: cppworker-bundled-full-v31r12
+        IMAGE_TAG: cppworker-bundled-full-v31r12
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     image: ollama-legion/balancer:cppworker-bundled-full-v31r12
     container_name: ol-bundled-full-balancer
     restart: unless-stopped
@@ -111,8 +124,24 @@ services:
     build:
       context: ..
       dockerfile: docker/cppworker/Dockerfile.gpu
+      # R486: идентичность сборки (args идентичности; пустое значение валит сборку). llama.cpp-часть —
+      # отдельные LLAMA_BUILD / LLAMA_BUILD_DATE / RPC_PROTO из сабмодуля
+      # c/llama.cpp (их считает scripts/build-identity.ps1 -Service cppworker).
+      # Не путать с CPPWORKER_LLAMA_BUILD в `environment:` ниже — та переменная
+      # контейнера (рантайм-оверрайд), а это build-arg образа.
       args:
         CUDA_ARCH: ${CUDA_ARCH:-all}
+        SERVICE: cppworker
+        VERSION: ${CPPWORKER_GPU_TAG:-86-abort-v2}
+        IMAGE_TAG: gpu-${CPPWORKER_GPU_TAG:-86-abort-v2}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
+        LLAMA_BUILD: ${LLAMA_BUILD:-}
+        LLAMA_BUILD_DATE: ${LLAMA_BUILD_DATE:-}
+        RPC_PROTO: ${RPC_PROTO:-}
     # Round 31 #6 (2026-08-09): default cppworker image — `gpu-86-abort-v2` (with Abort API).
     # Override через .env: CPPWORKER_GPU_TAG=arch_all (legacy, без abort).
     image: ollama-legion/cppworker:gpu-${CPPWORKER_GPU_TAG:-86-abort-v2}
@@ -201,8 +230,19 @@ services:
       context: ..
       dockerfile: docker/agent/Dockerfile
       target: agent-gpu
+      # R486: идентичность сборки — args идентичности (пустое значение валит сборку), см. пояснение у
+      # loadbalancer в этом же файле. SERVICE=agent совпадает с именем, которое
+      # проверяет cmd/agent/main.go на старте.
       args:
         ENABLE_NVML: "true"
+        SERVICE: agent
+        VERSION: gpu-llamacpp
+        IMAGE_TAG: gpu-llamacpp
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     image: ollama-legion/agent:gpu-llamacpp
     container_name: ol-bundled-full-cppworker-gpu-agent
     restart: unless-stopped
@@ -277,12 +317,22 @@ services:
       # Sprint 30 (2026-07-30): VERSION / GIT_COMMIT / BUILD_DATE пробрасываются
       # как build-args в WebUI. entrypoint.sh инжектит их в config.js, JS в
       # index.html показывает в sidebar footer (id=appVersion).
-      # Можно переопределить через env:
-      #   WEBUI_VERSION, WEBUI_GIT_COMMIT, WEBUI_BUILD_DATE
+      #
+      # R486 (2026-11-10): идентичность ПЕЧЁТСЯ в образ и обязательна;
+      # значения считает scripts/build-identity.ps1 (или build-containers.ps1 /
+      # release-all.ps1). Прежние WEBUI-варианты пары GIT_COMMIT/BUILD_DATE из
+      # .env УДАЛЕНЫ: они больше ни на что не влияют. VERSION остаётся
+      # переопределяемым (WEBUI_VERSION): от него зависит токен cache-busting ?v=.
       args:
+        SERVICE: webui
         VERSION: ${WEBUI_VERSION:-dev}
-        GIT_COMMIT: ${WEBUI_GIT_COMMIT:-unknown}
-        BUILD_DATE: ${WEBUI_BUILD_DATE:-unknown}
+        IMAGE_TAG: cppworker-bundled-full
+        RELEASE: "1"
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     image: ollama-legion/webui:cppworker-bundled-full
     container_name: ol-bundled-full-webui
     restart: unless-stopped
@@ -349,11 +399,22 @@ services:
     build:
       context: ..
       dockerfile: docker/imageworker/Dockerfile
+      # R486: идентичность сборки — args идентичности (пустое значение валит сборку). SERVICE=sdworker:
+      # внутри образа imageworker лежит Go-бинарь cmd/sdworker, и он сверяет
+      # запечённую идентичность на старте (version.MustVerifyR486("sdworker")).
       args:
         SD_SERVER_REVISION: ${SD_SERVER_REVISION:-master-929-3f8527a}
         SD_SERVER_ASSET: ${SD_SERVER_ASSET:-sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip}
         SD_SERVER_BIN: ${SD_SERVER_BIN:-}
         RUNTIME_BASE: ${IMAGE_WORKER_RUNTIME_BASE:-ubuntu:24.04}
+        SERVICE: sdworker
+        VERSION: ${IMAGE_WORKER_TAG:-vulkan}
+        IMAGE_TAG: ${IMAGE_WORKER_TAG:-vulkan}
+        GIT_COMMIT: ${GIT_COMMIT:-}
+        GIT_COMMIT_FULL: ${GIT_COMMIT_FULL:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        BUILD_AUTHOR: ${BUILD_AUTHOR:-}
     image: ollama-legion/imageworker:${IMAGE_WORKER_TAG:-vulkan}
     container_name: ol-bundled-full-imageworker
     restart: unless-stopped

@@ -161,7 +161,18 @@ func handleGPUInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCppWorkerVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	out := map[string]interface{}{
 		"version": backend.Version(),
-	})
+	}
+	// R486: воркер обязан отдавать ту же идентичность сборки, что и балансер.
+	// Раньше /api/version воркера нёс только версию моста, и на вопрос «какой
+	// коммит крутится на узле» отвечал лишь /api/info.
+	about := version.Get()
+	if about.String() != "" {
+		out["build"] = about.String()
+	}
+	for k, v := range about.Fields() {
+		out[k] = v
+	}
+	writeJSON(w, http.StatusOK, out)
 }

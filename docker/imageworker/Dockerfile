@@ -85,8 +85,45 @@ COPY . .
 
 # CGO_ENABLED=0: sdworker общается с sd-server по HTTP, C-линковок нет —
 # образ остаётся маленьким, а сборка не зависит от тулчейна/ABI движка.
+#
+# R486 (2026-11-10): идентичность ЗАПЕКАЕТСЯ в бинарник. Дефолтов `=unknown` у
+# ARG нет: непереданный arg валит сборку стражей ниже (живой дефект: образ с
+# коммитом 850923d7 при HEAD 8b246ffe «честно» сообщал чужой штамп).
+# llama/rpc-полей здесь НЕТ: этот образ llama.cpp не линкует (движок — отдельный
+# процесс sd-server из готового релиза).
+#
+# ВНИМАНИЕ НА SERVICE. Образ называется imageworker, но Go-бинарь внутри —
+# sdworker (cmd/sdworker), поэтому SERVICE = sdworker: pkg/version.VerifyR486
+# сверяет это поле с именем сервиса, и «imageworker» уронило бы контейнер на
+# старте. Это же значение передаёт compose (deployments/docker-compose.stack.yml:
+# `SERVICE: sdworker`). Дефолт стоит только для сборки без --build-arg.
+ARG SERVICE=sdworker
+ARG VERSION
+ARG IMAGE_TAG
+ARG GIT_COMMIT
+ARG GIT_COMMIT_FULL
+ARG GIT_COMMIT_DATE
+ARG BUILD_DATE
+ARG BUILD_AUTHOR
+
+# R486: СТРАЖ перед go build: без штампа образ не собирается.
+RUN test -n "$GIT_COMMIT" && test "$GIT_COMMIT" != "unknown" || \
+        (echo "FATAL: GIT_COMMIT not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+RUN test -n "$GIT_COMMIT_FULL" && test "$GIT_COMMIT_FULL" != "unknown" || \
+        (echo "FATAL: GIT_COMMIT_FULL not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+RUN test -n "$BUILD_DATE" && test "$BUILD_DATE" != "unknown" || \
+        (echo "FATAL: BUILD_DATE not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1)
+
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
-    go build -trimpath -tags llama_stub -ldflags "-w -s" \
+    go build -trimpath -tags llama_stub \
+    -ldflags "-w -s \
+      -X ollama-loadbalancer/pkg/version.Service=${SERVICE} \
+      -X ollama-loadbalancer/pkg/version.Version=${VERSION} \
+      -X ollama-loadbalancer/pkg/version.ImageTag=${IMAGE_TAG} \
+      -X ollama-loadbalancer/pkg/version.Commit=${GIT_COMMIT} \
+      -X ollama-loadbalancer/pkg/version.CommitFull=${GIT_COMMIT_FULL} \
+      -X ollama-loadbalancer/pkg/version.CommitDate=${GIT_COMMIT_DATE} \
+      -X ollama-loadbalancer/pkg/version.BuildDate=${BUILD_DATE}" \
     -o /out/sdworker ./cmd/sdworker
 
 # -----------------------------------------------------------------------------
@@ -259,6 +296,28 @@ RUN chmod +x /entrypoint.sh && \
     (getent passwd 1000 >/dev/null || useradd -u 1000 -g 1000 -M -s /usr/sbin/nologin appuser) && \
     chown -R 1000:1000 /app
 
+# R486 (2026-11-10): build-arg'и объявлены ПОВТОРНО (ARG виден только в той
+# стадии, где объявлен) и СРАЗУ перед использованием: объявление выше по файлу
+# сбрасывало бы кэш слоя apt на каждой смене коммита.
+# Стадия runtime-base — общая для целей imageworker-vulkan / imageworker-cuda:
+# файл и метки наследуются ОБОИМИ итоговыми образами.
+# SERVICE = sdworker (бинарь внутри), см. пояснение в стадии builder выше —
+# дефолт обязан совпадать с ним, иначе /app/identity.json разойдётся с бинарём.
+ARG SERVICE=sdworker
+ARG VERSION
+ARG IMAGE_TAG
+ARG GIT_COMMIT
+ARG GIT_COMMIT_FULL
+ARG GIT_COMMIT_DATE
+ARG BUILD_DATE
+ARG BUILD_AUTHOR
+
+# R486: /app/identity.json — ЗАПЕЧЁННЫЙ манифест сборки, читает pkg/version
+# (порядок: -ldflags > identity.json > env) и сверяет с бинарём на старте
+# (VerifyR486). Владелец — 1000:1000, тот же uid/gid, что у остального /app
+# (контейнер стартует root'ом, entrypoint сбрасывает привилегии через setpriv).
+RUN printf '{"service":"%s","version":"%s","image_tag":"%s","commit":"%s","commit_full":"%s","commit_date":"%s","build_date":"%s","author":"%s","llama_commit":"%s","llama_date":"%s","rpc_proto":"%s"}\n' "$SERVICE" "$VERSION" "$IMAGE_TAG" "$GIT_COMMIT" "$GIT_COMMIT_FULL" "$GIT_COMMIT_DATE" "$BUILD_DATE" "$BUILD_AUTHOR" "$LLAMA_BUILD" "$LLAMA_BUILD_DATE" "$RPC_PROTO" > /app/identity.json && chmod 0644 /app/identity.json && chown 1000:1000 /app/identity.json
+
 # Пути по умолчанию: sd-server берём из образа, модели — из volume.
 ENV SDWORKER_PORT=18093 \
     SDWORKER_SD_SERVER_BIN=/app/sd-server/sd-server \
@@ -286,8 +345,15 @@ CMD ["--port", "18093"]
 LABEL org.opencontainers.image.title="Ollama Legion Image Worker (sd.cpp)"
 LABEL org.opencontainers.image.description="Image generation worker: supervises sd-server (stable-diffusion.cpp) and exposes OpenAI/A1111/native HTTP API"
 LABEL org.opencontainers.image.vendor="OllamaLegion"
-LABEL org.opencontainers.image.version="0.1.0"
+# R486: версия — из build-arg, а не литерал «0.1.0» (литерал не имел отношения к
+# собранному коду). .revision — ПОЛНЫЙ коммит, короткий лежит в ru.*-метке.
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${GIT_COMMIT_FULL}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL org.opencontainers.image.authors="${BUILD_AUTHOR}"
 LABEL org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion"
+LABEL ru.ollamalegion.git.commit="${GIT_COMMIT}"
+LABEL ru.ollamalegion.image.tag="${IMAGE_TAG}"
 
 # -----------------------------------------------------------------------------
 # Целевые стадии: выбор движка через `docker build --target`

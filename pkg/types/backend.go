@@ -279,6 +279,20 @@ type Backend struct {
 	// помечается неподтверждённой (warning), а не считается пройденной.
 	BuildInfo string `json:"buildInfo,omitempty"`
 
+	// R486 (2026-11-10): РЕЛИЗНАЯ идентичность образа воркера — коммит, тег,
+	// дата сборки и версия протокола RPC, запечённые в образ (-ldflags +
+	// /app/identity.json), а не взятые из env стенда.
+	//
+	// ЗАЧЕМ. BuildInfo выше описывает только llama.cpp. Балансер не видел,
+	// собран ли узел из ТОГО ЖЕ релиза: стенд из master-ноды и узла на разных
+	// сборках выглядел рабочим, пока не начинались загадки вида «инструменты
+	// не применяются». Теперь расхождение видно в /api/v1/backends
+	// (workerReleaseMismatch) и в логе при регистрации.
+	WorkerVersion   string `json:"workerVersion,omitempty"`
+	WorkerCommit    string `json:"workerCommit,omitempty"`
+	WorkerBuildDate string `json:"workerBuildDate,omitempty"`
+	WorkerRPCProto  string `json:"workerRpcProto,omitempty"`
+
 	// RequestTimeout — пер-бэкенд таймаут запроса (сек), 0 = использовать глобальный LB_REQUEST_TIMEOUT
 	RequestTimeout int `json:"requestTimeout"`
 	// RuntimeRequestTimeout — runtime-значение таймаута от балансера (меняется адаптивно, сохраняется в state.json)

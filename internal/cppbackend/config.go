@@ -163,6 +163,10 @@ type Config struct {
 	// балансеру при регистрации (env CPPWORKER_LLAMA_BUILD). Нужна для проверки
 	// совместимости сторон RPC (см. types.Backend.BuildInfo).
 	LlamaBuild string `json:"llamaBuild,omitempty"`
+	// RPCProto — версия протокола RPC (RPC_PROTO_MAJOR.MINOR.PATCH из
+	// ggml-rpc.h), запечённая в образ (R486). Нужна, чтобы отказ «протоколы
+	// разные» видел Go, а не только GGML_ABORT внутри llama.cpp.
+	RPCProto string `json:"rpcProto,omitempty"`
 
 	// Session 18 (2026-07-28): Включает reasoning-режим для моделей которые
 	// поддерживают thinking (gemma-4, deepseek-r1, qwen3-thinking, и т.п.).

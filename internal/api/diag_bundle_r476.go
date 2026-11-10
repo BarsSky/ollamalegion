@@ -37,6 +37,7 @@ import (
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
+	"ollama-loadbalancer/pkg/version"
 )
 
 const (
@@ -80,6 +81,12 @@ func (s *Server) handleDiagBundle(w http.ResponseWriter, r *http.Request) {
 	s.diagBundleAddJSONR476(zw, "failures.json", balancer.RecentFailuresR477())
 
 	// 2) Флаги отдельным текстовым файлом: удобно приложить к переписке.
+	// R486: запечённая идентичность образа балансера отдельным файлом. В
+	// summary.json она тоже есть, но отдельный файл читается человеком и
+	// сравнивается с identity.json воркеров один-в-один.
+	if id := version.BakedIdentityR486(); id != nil {
+		s.diagBundleAddJSONR476(zw, "identity.json", id)
+	}
 	s.diagBundleAddTextR476(zw, "flags.txt", diagBundleFlagsTextR476())
 
 	// 3) Логи балансера из кольцевого буфера.

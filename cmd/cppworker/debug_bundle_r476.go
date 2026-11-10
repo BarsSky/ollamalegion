@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/version"
 )
 
 // bundleMaxFileBytesR476 — предел на один файл в архиве. Промпт на 100k
@@ -145,6 +146,14 @@ func handleDebugBundle(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := bundleAddJSONR476(zw, "env.json", bundleEnvSnapshotR476()); err != nil {
 		logger.Get().Warnw("debug/bundle: env.json failed", "error", err)
+	}
+	// R486: запечённая идентичность образа — отдельным файлом. env.json теперь
+	// вторичен: он показывает, что ПЕРЕДАЛИ в контейнер, а identity.json — что
+	// реально СОБРАНО. Разбирать «какой образ крутится» надо по второму.
+	if id := version.BakedIdentityR486(); id != nil {
+		if err := bundleAddJSONR476(zw, "identity.json", id); err != nil {
+			logger.Get().Warnw("debug/bundle: identity.json failed", "error", err)
+		}
 	}
 	bundleAddTextR476(zw, "logs.txt", bundleLogsTextSinceR476(cutoff))
 	bundleAddFileR476(zw, "prompt-last.txt", strings.TrimSpace(os.Getenv("CPPWORKER_DEBUG_PROMPT_FILE")))

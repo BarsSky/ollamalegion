@@ -19,9 +19,34 @@ FROM dockerhub.timeweb.cloud/library/nginx:alpine
 # как window.WEBUI_CONFIG.VERSION / GIT_COMMIT / BUILD_DATE.
 # Передаются через `docker build --build-arg VERSION=...`.
 # По умолчанию `dev` (локальная сборка без тега).
+#
+# R486 (2026-11-10): идентичность ЗАПЕКАЕТСЯ в образ — файлом
+# /usr/share/nginx/html/identity.json (см. RUN ниже) и OCI-метками. entrypoint.sh
+# читает ФАЙЛ первым и падает на env только когда файла нет (локальный запуск).
+# Go-бинарника в этом образе нет, поэтому стражи (guard) тоже нет: сборка WebUI
+# должна оставаться возможной без выпускного пайплайна, дефолты `dev`/`unknown`
+# сохранены намеренно.
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
+ARG GIT_COMMIT_FULL
+ARG GIT_COMMIT_DATE
 ARG BUILD_DATE=unknown
+ARG IMAGE_TAG
+ARG BUILD_AUTHOR
+ARG SERVICE=webui
+# R486: у «девовой» сборки стражи нет намеренно. Release-сборка (compose всегда
+# передаёт RELEASE=1) обязана прийти с идентичностью: иначе WebUI запёк бы
+# `dev/unknown` и остался единственным образом, который «не может доказать, что
+# он собран».
+ARG RELEASE=0
+RUN if [ "$RELEASE" = "1" ]; then \
+        test -n "$GIT_COMMIT" && test "$GIT_COMMIT" != "unknown" || \
+            (echo "FATAL: GIT_COMMIT not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1); \
+        test -n "$GIT_COMMIT_FULL" && test "$GIT_COMMIT_FULL" != "unknown" || \
+            (echo "FATAL: GIT_COMMIT_FULL not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1); \
+        test -n "$BUILD_DATE" && test "$BUILD_DATE" != "unknown" || \
+            (echo "FATAL: BUILD_DATE not supplied (build arg) — identity must be baked, see scripts/build-identity.ps1" >&2; exit 1); \
+    fi
 
 # Делаем ARG доступными как ENV для entrypoint.sh
 ENV VERSION=${VERSION} \
@@ -29,11 +54,16 @@ ENV VERSION=${VERSION} \
     BUILD_DATE=${BUILD_DATE}
 
 # OCI image labels (для `docker inspect` / registries)
+# R486: .revision — ПОЛНЫЙ коммит (раньше здесь был короткий), короткий лежит в
+# ru.ollamalegion.git.commit; .version/.created уже брались из build-arg.
 LABEL org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.revision="${GIT_COMMIT_FULL}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.source="https://github.com/BarsSky/ollamalegion" \
-      org.opencontainers.image.title="ollama-legion/webui"
+      org.opencontainers.image.title="ollama-legion/webui" \
+      org.opencontainers.image.authors="${BUILD_AUTHOR}" \
+      ru.ollamalegion.git.commit="${GIT_COMMIT}" \
+      ru.ollamalegion.image.tag="${IMAGE_TAG}"
 
 WORKDIR /usr/share/nginx/html
 
@@ -106,6 +136,21 @@ COPY webui/nginx.conf /etc/nginx/conf.d/default.conf.template
 # Копирование entrypoint скрипта
 COPY docker/webui/entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
+
+# R486: identity.json — ЗАПЕЧЁННЫЙ манифест сборки (Go-бинарника здесь нет, но
+# идентичность нужна тем же способом: файл, а не env).
+#
+# ПУТИ — ДВА ФАЙЛА ИЗ ОДНОГО printf, чтобы не разъехались:
+#   /app/identity.json — КАНОНИЧЕСКИЙ путь контракта (pkg/version:
+#     identityDefaultPathR486 = "/app/identity.json"; тот же путь у всех остальных
+#     образов, поэтому `docker cp <образ>:/app/identity.json .` работает единообразно;
+#     этот же путь называет deployments/docker-compose.stack.yml в описании сборки).
+#   /usr/share/nginx/html/identity.json — тот же байт-в-байт файл в корне статики:
+#     nginx отдаёт его как /identity.json, то есть «что запечено» видно curl'ом,
+#     без docker exec. Каталога /app в nginx-образе нет — создаём его здесь.
+RUN mkdir -p /app && \
+    printf '{"service":"%s","version":"%s","image_tag":"%s","commit":"%s","commit_full":"%s","commit_date":"%s","build_date":"%s","author":"%s","llama_commit":"%s","llama_date":"%s","rpc_proto":"%s"}\n' "$SERVICE" "$VERSION" "$IMAGE_TAG" "$GIT_COMMIT" "$GIT_COMMIT_FULL" "$GIT_COMMIT_DATE" "$BUILD_DATE" "$BUILD_AUTHOR" "$LLAMA_BUILD" "$LLAMA_BUILD_DATE" "$RPC_PROTO" > /app/identity.json && chmod 0644 /app/identity.json && \
+    cp /app/identity.json /usr/share/nginx/html/identity.json && chmod 0644 /usr/share/nginx/html/identity.json
 
 EXPOSE 80
 

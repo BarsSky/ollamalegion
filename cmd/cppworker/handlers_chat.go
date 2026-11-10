@@ -3142,7 +3142,12 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// одним куском» снова разбиралась бы по догадкам.
 		"tool_calls_from_reasoning", toolCallsFromReasoning,
 		"hold_released", holdReleaseReason,
-		"hold_released_ms", holdReleasedAt.Sub(holdSince).Milliseconds(),
+		"hold_released_ms", func() int64 {
+			if holdReleasedAt.IsZero() || holdSince.IsZero() {
+				return 0
+			}
+			return holdReleasedAt.Sub(holdSince).Milliseconds()
+		}(),
 		"hold_released_bytes", holdReleasedBytes,
 		"hold_max_sec", int(toolsHoldMaxHoldR482().Seconds()),
 		"hold_max_bytes", toolsHoldMaxBytesR482(),

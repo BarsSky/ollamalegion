@@ -1,58 +1,63 @@
 {
-    "tag":  "r261110-1346",
-    "builtAt":  "2026-11-10T13:46:00Z",
-    "gitCommit":  "8dc740e7",
-    "cudaArch":  "75;86;120",
-    "composeFile":  "docker-compose.stack.yml",
-    "composeProfile":  "full",
-    "note":  "R481 (WebUI): доступ к «Диагностике» (ярлык в подвале sidebar + кнопки на странице логов), создание пользователей WebUI (LB_USERS_FILE по умолчанию /app/data/users.json; path+hint в ошибке), переработка страницы логов (поля события отдельным блоком, поиск и фильтр уровня, раскрытие полного текста ошибки, requestID/stage в прокси-логах, выгрузка CSV/JSON, локализация). Балансер и webui собраны из одного коммита. Ранее: R480 (окно сессии по варианту C, TTL метрики, гейт R459), R479 (паритет типов, лимит тела), R478 (OpenWebUI), R477/R476 (диагностика), R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
-    "standDeployed":  {
-                          "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI), 18083 (WebUI)",
-                          "verifiedAt":  "2026-11-10T13:52:00Z",
-                          "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
-                          "proof":  [
-                                        "R481: balancer r261110-1346 (8dc740e7) и webui r261110-1346 (8dc740e7) выкачены; GET :18080/api/version -> build=r261110-1346 commit=8dc740e7; webui :18083 -> 200, контейнеры healthy; cppworker gpu-261109-1754 не пересобирался",
-                                        "R481: GET :18083/ содержит новые элементы: .sidebar-diag-link, #logsSearch, #logsDownloadBundle, #logsOpenDiagnostics, #exportProxyLogs, #proxyExportFormat, #logsCount",
-                                        "R481: GET /api/v1/proxy/logs?limit=3 -> у записей есть requestID (reqfeba92e1/req3d9352ed) и stage (select_backend/upstream)",
-                                        "R481: GET /api/v1/logs/export?format=json -> fields объектом (request_id, stage, backend, duration_ms...), message без JSON-суффикса; format=txt -> поля парами key=value после сообщения",
-                                        "R481: PUT /api/v1/auth/users (webui-check) -> 200, запись в /app/data/users.json; DELETE webui-check и testguest -> 200, в файле остался только skyadmin (тестовые пользователи убраны)",
-                                        "R481: тесты — полный ./internal/balancer/ (168 с) зелёный; internal/api и pkg/logger зелёные (новые R481-тесты: путь users.json, path+hint в ошибке, поля в TXT/JSON-экспорте, поля логгера отдельной картой, requestID/stage в контракте прокси-логов); npm run test:webui зелёный, новый logs-rework-r481.test.js (14 проверок); i18n-placeholders и IIFE-guard зелёные",
-                                        "R481: compose-варианты cppworker-bundled-with-agent, bundled-full, cppworker-bundled теперь передают LB_USERS_FILE/LB_SESSIONS_FILE с дефолтом /app/data (раньше балancer брал config/users.json на read-only ../config — это и был отказ «нет прав»)",
-                                        "ОТКРЫТО: визуальный клик в браузере (разметка и статические тесты есть, headless-браузера на стенде нет); P2-12/13 (два мозга, дублирование), P1-10/11 остатки, E (A10/27B, смешанный стенд, Cline с tools). Новый пункт реестра 16: stream:true для GET в прокси-логах (косметика, нужен выбор варианта)"
-                                    ]
-                      },
-    "images":  [
-                   {
-                       "alias":  "ollama-legion/balancer:latest",
-                       "variable":  "BALANCER_TAG",
-                       "service":  "loadbalancer",
-                       "imageTag":  "r261110-1346",
-                       "imageId":  "sha256:d68abe48d262aa59e737eca666c5b31c62e942344cd4fed8b9d3e2d974040ced",
-                       "image":  "ollama-legion/balancer:r261110-1346"
-                   },
-                   {
-                       "alias":  "ollama-legion/cppworker:latest-gpu-86",
-                       "variable":  "CPPWORKER_GPU_TAG",
-                       "service":  "cppworker-gpu",
-                       "imageTag":  "gpu-261109-1754",
-                       "imageId":  "sha256:6e35014fadbfd9fa5417d6f33f437e0d2932f4f704b4545f697f88eb66f7b29b",
-                       "image":  "ollama-legion/cppworker:gpu-261109-1754"
-                   },
-                   {
-                       "alias":  "ollama-legion/webui:latest",
-                       "variable":  "WEBUI_TAG",
-                       "service":  "webui",
-                       "imageTag":  "r261110-1346",
-                       "imageId":  "sha256:7cd9ece1a0c20c151d8a6132ae829c72887e39b86062fc6c2f370db4c5f9512b",
-                       "image":  "ollama-legion/webui:r261110-1346"
-                   },
-                   {
-                       "alias":  "",
-                       "variable":  "IMAGE_WORKER_TAG",
-                       "service":  "imageworker",
-                       "imageTag":  "72ec210a",
-                       "imageId":  "sha256:43c3ce9d34bafca7144944dcfde8e5fc266c75e4d795c30e5c487629e9058410",
-                       "image":  "ollama-legion/imageworker:72ec210a"
-                   }
-               ]
+    "tag": "r261110-1346",
+    "builtAt": "2026-11-10T13:46:00Z",
+    "gitCommit": "8dc740e7",
+    "cudaArch": "75;86;120",
+    "composeFile": "docker-compose.stack.yml",
+    "composeProfile": "full",
+    "note": "R482 (cppworker): вызов инструмента ищется и внутри блока размышлений (Qwen3.8-27B кладёт его туда, в т.ч. без закрывающего тега) — tool_calls_from_reasoning в сводке; удержание вывода получило сторож CPPWORKER_TOOLS_HOLD_MAX_SEC (20 c) / ..._MAX_BYTES (32 КБ), иначе ответ приходил одним куском, если шаблон не закрывает канал; финальный «сырой» хвост режется на части. Плюс R481 (WebUI: диагностика, пользователи, логи) в образах балансера и webui r261110-1346. Ранее: R480 (окно по варианту C), R479 (паритет типов), R478 (OpenWebUI), R477/R476 (диагностика), R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
+    "standDeployed": {
+        "hostPorts": "18080 (Ollama+всё), 18079 (OpenAI), 18083 (WebUI)",
+        "verifiedAt": "2026-11-10T14:20:00Z",
+        "debugDumps": "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
+        "proof": [
+            "R482: cppworker gpu-261110-1411 (5c455277) выкачен; контейнер healthy; балансер r261110-1346 и webui r261110-1346 не пересобирались",
+            "R482: POST /api/chat с tools[] (Qwen3.8-9B-Distill, Cline-style) -> 200, done_reason=tool_calls, tool_calls[0].function.name=get_weather, arguments объектом; в сводке хода tool_calls=1, tool_calls_from_reasoning=false, hold_released=\"\", hold_released_ms=0, hold_max_sec=20, first_content_ms=-1",
+            "R482: tests — полный cmd/cppworker (10.8 с) зелёный; новые tools_hold_r482_test.go (вызов в незакрытом reasoning, закрытый reasoning не считается дважды, снятие по времени/объёму, 0=выключено, нарезка хвоста по рунам)",
+            "R482: env CPPWORKER_TOOLS_HOLD_MAX_SEC=20 / CPPWORKER_TOOLS_HOLD_MAX_BYTES=32768 проброшены в docker-compose.stack.yml и .env.example",
+            "R482 ОТКРЫТО: второй стенд A10/27B недоступен из этой сессии. Если симптом остался — нужен /api/v1/diag/bundle: в logs.txt воркера строка \"/api/chat stream response summary\" (поля tool_calls, tool_calls_from_reasoning, hold_released*, first_content_ms, reasoning_chars_raw, done_reason, raw_len) и raw_head из /app/diag",
+            "R481: balancer r261110-1346 (8dc740e7) и webui r261110-1346 (8dc740e7) выкачены; GET :18080/api/version -> build=r261110-1346 commit=8dc740e7; webui :18083 -> 200, контейнеры healthy; cppworker gpu-261109-1754 не пересобирался",
+            "R481: GET :18083/ содержит новые элементы: .sidebar-diag-link, #logsSearch, #logsDownloadBundle, #logsOpenDiagnostics, #exportProxyLogs, #proxyExportFormat, #logsCount",
+            "R481: GET /api/v1/proxy/logs?limit=3 -> у записей есть requestID (reqfeba92e1/req3d9352ed) и stage (select_backend/upstream)",
+            "R481: GET /api/v1/logs/export?format=json -> fields объектом (request_id, stage, backend, duration_ms...), message без JSON-суффикса; format=txt -> поля парами key=value после сообщения",
+            "R481: PUT /api/v1/auth/users (webui-check) -> 200, запись в /app/data/users.json; DELETE webui-check и testguest -> 200, в файле остался только skyadmin (тестовые пользователи убраны)",
+            "R481: тесты — полный ./internal/balancer/ (168 с) зелёный; internal/api и pkg/logger зелёные (новые R481-тесты: путь users.json, path+hint в ошибке, поля в TXT/JSON-экспорте, поля логгера отдельной картой, requestID/stage в контракте прокси-логов); npm run test:webui зелёный, новый logs-rework-r481.test.js (14 проверок); i18n-placeholders и IIFE-guard зелёные",
+            "R481: compose-варианты cppworker-bundled-with-agent, bundled-full, cppworker-bundled теперь передают LB_USERS_FILE/LB_SESSIONS_FILE с дефолтом /app/data (раньше балancer брал config/users.json на read-only ../config — это и был отказ «нет прав»)",
+            "ОТКРЫТО: визуальный клик в браузере (разметка и статические тесты есть, headless-браузера на стенде нет); P2-12/13 (два мозга, дублирование), P1-10/11 остатки, E (A10/27B, смешанный стенд, Cline с tools). Новый пункт реестра 16: stream:true для GET в прокси-логах (косметика, нужен выбор варианта)"
+        ]
+    },
+    "images": [
+        {
+            "alias": "ollama-legion/balancer:latest",
+            "variable": "BALANCER_TAG",
+            "service": "loadbalancer",
+            "imageTag": "r261110-1346",
+            "imageId": "sha256:d68abe48d262aa59e737eca666c5b31c62e942344cd4fed8b9d3e2d974040ced",
+            "image": "ollama-legion/balancer:r261110-1346"
+        },
+        {
+            "alias": "ollama-legion/cppworker:latest-gpu-86",
+            "variable": "CPPWORKER_GPU_TAG",
+            "service": "cppworker-gpu",
+            "imageTag": "gpu-261110-1411",
+            "imageId": "sha256:382df7485cc270d15ececca51274df9bcdb7ca7cf162d22a8544d4cda57776c2",
+            "image": "ollama-legion/cppworker:gpu-261110-1411"
+        },
+        {
+            "alias": "ollama-legion/webui:latest",
+            "variable": "WEBUI_TAG",
+            "service": "webui",
+            "imageTag": "r261110-1346",
+            "imageId": "sha256:7cd9ece1a0c20c151d8a6132ae829c72887e39b86062fc6c2f370db4c5f9512b",
+            "image": "ollama-legion/webui:r261110-1346"
+        },
+        {
+            "alias": "",
+            "variable": "IMAGE_WORKER_TAG",
+            "service": "imageworker",
+            "imageTag": "72ec210a",
+            "imageId": "sha256:43c3ce9d34bafca7144944dcfde8e5fc266c75e4d795c30e5c487629e9058410",
+            "image": "ollama-legion/imageworker:72ec210a"
+        }
+    ]
 }

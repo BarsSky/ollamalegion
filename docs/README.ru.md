@@ -25,6 +25,7 @@
 
 | Документ | Русский | English | О чём |
 |---|---|---|---|
+| **v0.7.242: инструменты в reasoning и поток** | [RU](releases/v0.7.242-release-notes.ru.md) | - | R482: вызов инструмента ищется и внутри блока размышлений, удержание вывода получило сторож (20 с / 32 КБ), финальный хвост режется на части — «одним куском» больше не приходит. |
 | **Установка и сборка** | [RU](getting-started/installation.ru.md) | [EN](getting-started/installation.md) | Требования, сборка в Docker, локальная сборка, stub-режим. |
 | **Развёртывание** | [RU](getting-started/deployment.ru.md) | [EN](getting-started/deployment.md) | Развёртывание стека: профили, воркеры, окружения, порты. |
 | **Конфигурация** | [RU](getting-started/configuration.ru.md) | [EN](getting-started/configuration.md) | config.json балансера, env-переопределения, nginx и настройки WebUI. |

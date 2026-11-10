@@ -398,6 +398,15 @@ MIT - see [LICENSE.md](LICENSE.md).
 Full history with dates, image tags and the defect behind each fix:
 [CHANGELOG.md](CHANGELOG.md). Recently:
 
+- **v0.7.242 (R482, 2026-11-10) - tool calls inside reasoning, streaming instead of one chunk.**
+  On the A10/Qwen3.8-27B stand a tool call was lost when the model placed it inside
+  its reasoning block (the parser only looked at the visible part); it is now also
+  parsed from reasoning (`tool_calls_from_reasoning` in the turn summary). The second
+  symptom - the whole answer arriving as one chunk when the template never closes the
+  reasoning channel - is handled by a hold watchdog
+  (`CPPWORKER_TOOLS_HOLD_MAX_SEC` 20 s / `CPPWORKER_TOOLS_HOLD_MAX_BYTES` 32 KB):
+  after the limit the hold is released and subsequent tokens stream normally; the
+  final raw tail is also split into chunks.
 - **v0.7.241 (R481, 2026-11-10) - Diagnostics, users and logs in the WebUI.**
   The sidebar footer and the Logs page now expose the Diagnostics page and a
   bundle download (the menu item used to scroll out of view). User creation in

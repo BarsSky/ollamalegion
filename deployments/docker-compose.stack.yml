@@ -750,6 +750,11 @@ services:
       # R476: сколько прошлых версий prompt-last.txt/request-last.json держать
       # (path.1 … path.N). 0 = только последний (прежнее поведение).
       - CPPWORKER_DIAG_KEEP_FILES=${CPPWORKER_DIAG_KEEP_FILES:-0}
+      # R482: сторож удержания вывода на tools-пути. Если шаблон модели не
+      # закрывает канал размышлений, вывод держится вечно и клиент получает всё
+      # одним куском (живой случай: Qwen3.8-27B). 0 = сторож выключен.
+      - CPPWORKER_TOOLS_HOLD_MAX_SEC=${CPPWORKER_TOOLS_HOLD_MAX_SEC:-20}
+      - CPPWORKER_TOOLS_HOLD_MAX_BYTES=${CPPWORKER_TOOLS_HOLD_MAX_BYTES:-32768}
       # R434: инструменты уходят в chat template ("native"), преамбула — fallback.
       # "prompt" возвращает прежнее поведение (только текстовая преамбула).
       - CPPWORKER_TEMPLATE_TOOLS=${CPPWORKER_TEMPLATE_TOOLS:-native}      # R445: подсказка модели по отказам клиента в истории (old_text/лимит).

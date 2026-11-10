@@ -10,6 +10,8 @@ package main
 import (
 	"context"
 	"strings"
+
+	"ollama-loadbalancer/pkg/logger"
 )
 
 // maxEmptyOutputRetries — сколько раз повторять генерацию при «пустом» выводе.
@@ -140,14 +142,44 @@ func toolsStreamStartsWithServiceToken(buf string) bool {
 func splitToolsOutput(fullOutput string, thinkOverride *bool, tools []openAITool) (
 	reasoningOut, outputForParse string, toolCalls []openAIToolCall, hasReasoning bool,
 ) {
+	reasoningOut, outputForParse, toolCalls, hasReasoning, _ = splitToolsOutputR482(fullOutput, thinkOverride, tools)
+	return reasoningOut, outputForParse, toolCalls, hasReasoning
+}
+
+// splitToolsOutputR482 — то же, плюс признак «вызов найден ВНУТРИ размышлений».
+//
+// ЖИВОЙ ДЕФЕКТ (второй стенд, Qwen3.8-27B через Cline): модель кладёт вызов
+// инструмента внутрь блока размышлений (`<think>… {"name":"read_files",…}`) и
+// либо не закрывает блок до конца хода, либо закрывает уже после вызова.
+// Прежний разбор смотрел ТОЛЬКО видимую часть (outputForParse): при незакрытом
+// блоке она пуста — и вызов исчезал («инструменты не применяются»), а текст
+// затем уходил клиенту одним куском как «сырой ответ».
+//
+// Правило: если в видимой части вызова нет, ищем вызов в тексте размышлений.
+// reasoningOut при этом по-прежнему отдаётся клиенту только по его просьбе
+// (R470) — меняется только распознавание вызова.
+func splitToolsOutputR482(fullOutput string, thinkOverride *bool, tools []openAITool) (
+	reasoningOut, outputForParse string, toolCalls []openAIToolCall, hasReasoning bool, fromReasoning bool,
+) {
 	outputForParse = fullOutput
 	rsn, cnt, has := SplitReasoningContent(fullOutput)
 	if !has {
-		return "", outputForParse, parseToolCallsForRequest(outputForParse, tools), false
+		return "", outputForParse, parseToolCallsForRequest(outputForParse, tools), false, false
 	}
 	if ReasoningWantedByClient(thinkOverride) {
 		reasoningOut = rsn
 	}
 	outputForParse = cnt
-	return reasoningOut, outputForParse, parseToolCallsForRequest(outputForParse, tools), true
+	toolCalls = parseToolCallsForRequest(outputForParse, tools)
+	if len(toolCalls) == 0 && strings.TrimSpace(rsn) != "" && len(tools) > 0 {
+		if rc := parseToolCallsForRequest(rsn, tools); len(rc) > 0 {
+			logger.Get().Warnw("R482: tool call найден внутри блока размышлений",
+				"reasoning_chars", len(rsn),
+				"visible_chars", len(strings.TrimSpace(cnt)),
+				"tool_calls", len(rc),
+				"note", "модель положила вызов в reasoning; вызов применён, размышления клиенту не отдаются без think=true")
+			return reasoningOut, outputForParse, rc, true, true
+		}
+	}
+	return reasoningOut, outputForParse, toolCalls, true, false
 }

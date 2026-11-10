@@ -1838,6 +1838,15 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// Buffer full output for final tool_calls detection.
 	var outputBuf strings.Builder
 
+	// R482: сторож удержания вывода. См. tools_hold_r482.go: без него шаблон,
+	// который не закрывает канал размышлений до конца хода, держит ВЕСЬ ответ
+	// до финального чанка («одним огромным куском», живая жалоба на 27B).
+	var holdSince time.Time
+	holdReleaseReason := ""
+	holdReleasedAt := time.Time{}
+	holdReleasedBytes := 0
+	firstContentAt := time.Time{}
+
 	// R404: размышления отдаём ДЕЛЬТАМИ, не дожидаясь закрытия блока.
 	//
 	// На tools-пути content удерживается окном (там может начаться разметка
@@ -1982,6 +1991,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		streamedBytes += len(delta)
 		anyStreamed = true
 		contentStreamed = true
+		if firstContentAt.IsZero() {
+			firstContentAt = time.Now()
+		}
 	}
 
 	// R404: thinking-дельта уходит сразу, не дожидаясь закрытия блока
@@ -2005,6 +2017,42 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		anyStreamed = true
 	}
 
+	// releaseHoldIfOverdue — R482: снять удержание, если оно длится слишком
+	// долго или накопило слишком много. Накопленное НЕ отдаём (в нём могут быть
+	// размышления), но все следующие токены пойдут клиенту нормально.
+	releaseHoldIfOverdue := func() bool {
+		if !reasoningHold && !toolsHold {
+			// Удержание закончилось само (R190 нашёл закрывающий маркер) —
+			// следующий эпизод считается с нуля.
+			holdSince = time.Time{}
+			return false
+		}
+		if holdSince.IsZero() {
+			holdSince = time.Now()
+			return false
+		}
+		held := len(outputBuf.String()) - emittedLen
+		ok, why := toolsHoldShouldReleaseR482(holdSince, held, time.Now())
+		if !ok {
+			return false
+		}
+		reasoningHold = false
+		toolsHold = false
+		emittedLen = len(outputBuf.String())
+		holdReleaseReason = why
+		holdReleasedAt = time.Now()
+		holdReleasedBytes = held
+		logger.Get().Warnw("R482: удержание вывода снято — ход снова потоковый",
+			"model", modelName,
+			"reason", why,
+			"held_ms", holdReleasedAt.Sub(holdSince).Milliseconds(),
+			"held_bytes", held,
+			"hold_max_sec", int(toolsHoldMaxHoldR482().Seconds()),
+			"hold_max_bytes", toolsHoldMaxBytesR482(),
+			"note", "накопленное не отдаётся (возможны размышления); последующие токены идут в content")
+		return true
+	}
+
 	callback := func(token string) bool {
 		select {
 		case <-ctx.Done():
@@ -2018,6 +2066,11 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// R83: чистим управляющие символы (см. stream_sanitize.go).
 		token = sanitizeStreamText(token)
 		outputBuf.WriteString(token)
+		// R482: если удержание вывода длится слишком долго (шаблон не закрывает
+		// канал размышлений), снимаем его — иначе весь ответ уйдёт одним куском.
+		if releaseHoldIfOverdue() {
+			return true
+		}
 		// R404: thinking отдаём сразу — он не может быть вызовом инструмента,
 		// поэтому не ждёт закрытия блока и не попадает под reasoningHold ниже.
 		if td := toolsFeedThinkingR404(thinkingParser, token); td != "" {
@@ -2245,7 +2298,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// R108 (2026-10-13): разбор безусловный (по тегам, не по имени модели), а при
 	// явном think=false размышления не отдаются вовсе — см. «Политика отдачи
 	// reasoning» в reasoning_content.go.
-	reasoningOut, outputForParse, toolCalls, hasReasoning := splitToolsOutput(fullOutput, thinkOverride, tools)
+	reasoningOut, outputForParse, toolCalls, hasReasoning, toolCallsFromReasoning := splitToolsOutputR482(fullOutput, thinkOverride, tools)
 	if hasReasoning {
 		logger.Get().Infow(i18n.T("cppworker.handlers_chat.tools_reasoning_split"),
 			"model", modelName, "reasoning_len", len(reasoningOut), "reasoning_echo", reasoningEcho, "content_len", len(outputForParse),
@@ -2332,7 +2385,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			}
 			fullOutput = outputBuf.String()
 			duration = time.Since(start)
-			reasoningOut, outputForParse, toolCalls, hasReasoning = splitToolsOutput(fullOutput, thinkOverride, tools)
+			reasoningOut, outputForParse, toolCalls, hasReasoning, toolCallsFromReasoning = splitToolsOutputR482(fullOutput, thinkOverride, tools)
 			logger.Get().Infow(i18n.T("cppworker.handlers_chat.tools_retry_done"),
 				"model", modelName, "attempt", attempt, "raw_len", len(fullOutput),
 				"tool_calls", len(toolCalls), "visible_len", len(cleanFinalContent(outputForParse)),
@@ -2381,7 +2434,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		} else {
 			fullOutput = outputBuf.String()
 			duration = time.Since(start)
-			reasoningOut, outputForParse, toolCalls, hasReasoning = splitToolsOutput(fullOutput, thinkOverride, tools)
+			reasoningOut, outputForParse, toolCalls, hasReasoning, toolCallsFromReasoning = splitToolsOutputR482(fullOutput, thinkOverride, tools)
 			// eval_count — сумма обеих попыток: клиент видел thinking первой и
 			// ответ второй; занижать нельзя (по usage он считает контекст).
 			// Для решения о бюджете берём ТОЛЬКО вторую попытку: первая уже
@@ -2423,7 +2476,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			if retryErr := generateStreamWithRamFallback(ctx, modelName, prompt, params, callback, false); retryErr == nil {
 				fullOutput = outputBuf.String()
 				duration = time.Since(start)
-				reasoningOut, outputForParse, toolCalls, hasReasoning = splitToolsOutput(fullOutput, thinkOverride, tools)
+				reasoningOut, outputForParse, toolCalls, hasReasoning, toolCallsFromReasoning = splitToolsOutputR482(fullOutput, thinkOverride, tools)
 				if stillInvalid := strictToolCallViolations(toolCalls, tools); len(stillInvalid) > 0 {
 					logger.Get().Warnw("strict tool args still invalid after retry",
 						"model", modelName, "violations", truncateForLog(strings.Join(stillInvalid, "; "), 300))
@@ -2668,7 +2721,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				"clean_len", len(cleanFinalContent(outputForParse)),
 				"emitted_len", emittedLen,
 				"preview", truncateForLog(tail, 300))
-			emitContentDelta(tail)
+			for _, part := range splitTerminalContentR482(tail, 1024) {
+				emitContentDelta(part)
+			}
 			doneChunk := map[string]interface{}{
 				"model":      modelName,
 				"created_at": createdAt,
@@ -2770,7 +2825,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// попадает никогда, а проза перед ним — попадает.
 		tail, callStart := visibleTailR429(fullOutput, emittedLen)
 		if tail != "" {
-			emitContentDelta(tail)
+			for _, part := range splitTerminalContentR482(tail, 1024) {
+				emitContentDelta(part)
+			}
 			logger.Get().Infow("writeChatStreamResponseWithTools: flushed held tail before done",
 				"model", modelName, "tail_len", len(tail), "emitted_len", emittedLen,
 				"call_start", callStart, "raw_len", len(fullOutput))
@@ -2921,7 +2978,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 					// иначе клиент не получит ничего (R424: «text part not found»).
 					msg["content"] = content
 				} else {
-					emitContentDelta(tail)
+					for _, part := range splitTerminalContentR482(tail, 1024) {
+						emitContentDelta(part)
+					}
 					msg["content"] = ""
 				}
 			} else {
@@ -2962,7 +3021,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 				// финальном чанке, иначе клиент не получит ничего (R424).
 				msg["content"] = content
 			} else {
-				emitContentDelta(tail)
+				for _, part := range splitTerminalContentR482(tail, 1024) {
+					emitContentDelta(part)
+				}
 				msg["content"] = ""
 			}
 			logger.Get().Debugw(i18n.T("cppworker.handlers_chat.tools_text_response_streamed"),
@@ -3076,6 +3137,21 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		"stream_chunks", streamTraceChunks,
 		"stream_bytes", streamTraceBytes,
 		"stream_sha256", streamTraceSHA,
+		// R482: был ли вызов найден в reasoning и снималось ли удержание вывода.
+		// Без этих полей живая жалоба «инструменты не применяются, ответ пришёл
+		// одним куском» снова разбиралась бы по догадкам.
+		"tool_calls_from_reasoning", toolCallsFromReasoning,
+		"hold_released", holdReleaseReason,
+		"hold_released_ms", holdReleasedAt.Sub(holdSince).Milliseconds(),
+		"hold_released_bytes", holdReleasedBytes,
+		"hold_max_sec", int(toolsHoldMaxHoldR482().Seconds()),
+		"hold_max_bytes", toolsHoldMaxBytesR482(),
+		"first_content_ms", func() int64 {
+			if firstContentAt.IsZero() {
+				return -1
+			}
+			return firstContentAt.Sub(start).Milliseconds()
+		}(),
 	)
 
 	doneJSON, _ := json.Marshal(finalChunk)

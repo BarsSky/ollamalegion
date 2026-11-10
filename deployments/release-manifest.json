@@ -1,22 +1,22 @@
 {
-    "tag":  "r261110-0854",
-    "builtAt":  "2026-11-10T08:54:00Z",
-    "gitCommit":  "01cadb57",
+    "tag":  "r261110-0942",
+    "builtAt":  "2026-11-10T09:42:00Z",
+    "gitCommit":  "476397f6",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
-    "note":  "R480: политика «нужного окна» по варианту C (need = max(потребность запроса + резерв, окно активной сессии в пределах TTL)), TTL метрики окна (неизвестно vs точно нет), гейт R459 на обходных путях переезда и в единой очереди, window_too_small в why_queued; снимок сессии под блокировкой (гонка, найденная CI -race); гейт очереди сравнивает с окном СВОЕЙ копии, а не с потребностью запроса (иначе запрос с промптом больше всех окон висел в очереди до 900 с). Плюс стадии admission/upstream/stream/client_write и чистка мёртвого кода из 0.7.239. Закрыты P1-4..P1-9, P2-14 (частично), P2-15 из docs/architecture/debts.ru.md. Ранее: R479 (паритет типов, лимит тела), R478 (OpenWebUI), R477, R476, R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
+    "note":  "R480: политика «нужного окна» по варианту C (need = max(потребность запроса + резерв, окно активной сессии в пределах TTL)), TTL метрики окна (неизвестно vs точно нет), гейт R459 на обходных путях переезда и в единой очереди (очередь сравнивает с окном СВОЕЙ копии — иначе запрос с промптом больше всех окон висел бы до 900 с), window_too_small в why_queued, снимок сессии под блокировкой (гонка из CI -race). Плюс стадии admission/upstream/stream/client_write и чистка мёртвого кода из 0.7.239. Закрыты P1-4..P1-9, P2-14 (частично), P2-15 из docs/architecture/debts.ru.md. Ранее: R479 (паритет типов, лимит тела), R478 (OpenWebUI), R477, R476, R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
     "standDeployed":  {
                           "hostPorts":  "18080 (Ollama+всё), 18079 (OpenAI)",
-                          "verifiedAt":  "2026-11-10T08:58:00Z",
+                          "verifiedAt":  "2026-11-10T09:46:00Z",
                           "debugDumps":  "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle?since=… (WebUI: страница «Диагностика», блок «Последние сбои»)",
                           "proof":  [
-                                        "R480: balancer r261110-0854 (01cadb57) выкачен; GET :18080/api/version -> build=r261110-0854 commit=01cadb57; контейнер healthy; cppworker gpu-261109-1754 и webui r261109-1747 не пересобирались",
-                                        "R480: POST /api/chat (stream:true, модель Qwen3-4B-Instruct-2507-Q4_K_M, num_predict=4) -> 200, X-Backend-ID=cppworker-gpu-bundled-agent, 3 NDJSON-строки; request trace: stage=client_write stage_final=done (30.5 с = холодная загрузка модели, stage_ms=517)",
-                                        "R480: GET /api/tags -> 200, 3 модели; GET /health :18080 -> 200; GET :18081/api/v1/ping -> 200",
-                                        "R480: тесты — полный ./internal/balancer/ (166 с) зелёный; CI: lint зелёный, internal/balancer (-race) на ubuntu-latest зелёный (169 с) после снимка сессии под блокировкой; новые тесты session_move_need_r480_test.go, cold_candidate_ttl_r480_test.go, queue_gate_r480_test.go, queue_move_gate_r480_test.go, queue_rejections_r480_test.go",
+                                        "R480: balancer r261110-0942 (476397f6) выкачен; GET :18080/api/version -> build=r261110-0942 commit=476397f6; контейнер healthy; cppworker gpu-261109-1754 и webui r261109-1747 не пересобирались",
+                                        "R480: POST /api/chat (stream:true, модель Qwen3-4B-Instruct-2507-Q4_K_M, num_predict=4) -> 200, X-Backend-ID=cppworker-gpu-bundled-agent, 3 NDJSON-строки; request trace: stage=client_write stage_final=done (33 с = холодная загрузка модели, stage_ms=948)",
+                                        "R480: CI на 476397f6 полностью зелёный: Build+test (ubuntu, no Docker), Lint (golangci-lint), Test (ubuntu-latest fallback, включая internal/balancer -race 169 с), Test (self-hosted Windows), C-bridge, WebUI, i18n",
+                                        "R480: локально — полный ./internal/balancer/ (169 с) зелёный; гонки в тестах гейта устранены (метрики ставятся через UpdateMetrics до UpdateLlamaCppMetrics; гейт проверяется через sessionQueueGateR480 без подмены ActiveReqs)",
                                         "R480: закрыты P1-4..P1-9, P2-14 частично (кроме SetQueueManagerProxy — тест-шов), P2-15 (актуальная таблица поверхностей в backend-type-isolation.ru.md)",
-                                        "ИНФРА (2026-11-10 05:50–08:45 UTC): Docker Desktop не мог стартовать — диск D: был заполнен (vhdx 123 ГБ, свободно 5.4 ГБ). После удаления D:\\$WINDOWS.~TMP (2.8 ГБ) и перезапуска процессов Docker desktop поднялся, стек healthy. В этом окне живая проверка была невозможна; после восстановления — выполнена (см. выше). Остаётся: сжатие .vhdx (нужна админ-операция)",
+                                        "ИНФРА (2026-11-10): Docker Desktop дважды не поднимался — D: был заполнен (5.4 ГБ свободно при vhdx 123 ГБ). После удаления D:\\$WINDOWS.~TMP (2.8 ГБ) и перезапуска процессов Docker Desktop поднимался нестабильно; рабочий обход — запуск Docker Desktop.exe и ожидание до 200 с. Остаётся: сжатие .vhdx и перенос данных Docker на диск с запасом (нужна админ-операция)",
                                         "ОТКРЫТО: живой переезд сессии между двумя прогретыми копиями с разными окнами (на стенде один cppworker); P2-12/13 (два мозга, дублирование), P1-10/11 остатки; E (A10/27B, смешанный стенд, Cline с tools)"
                                     ]
                       },
@@ -25,9 +25,9 @@
                        "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
                        "service":  "loadbalancer",
-                       "imageTag":  "r261110-0854",
-                       "imageId":  "sha256:a906ec544b06cafc34b7fd70547b8bd4245c7c36f65c04f556264792cc7ad97c",
-                       "image":  "ollama-legion/balancer:r261110-0854"
+                       "imageTag":  "r261110-0942",
+                       "imageId":  "sha256:64572275852c35d5526e4cdc29783ffbe40daa81804dd47619e50b57d3531d23",
+                       "image":  "ollama-legion/balancer:r261110-0942"
                    },
                    {
                        "alias":  "ollama-legion/cppworker:latest-gpu-86",

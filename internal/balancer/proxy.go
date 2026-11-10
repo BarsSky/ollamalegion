@@ -965,6 +965,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// запрос умер (выбор бэкенда, очередь, preflight, апстрим, стрим).
 	tracker := newStageTrackerR477()
 	r = withStageTrackerR477(r, tracker)
+	// R484: трекер ФАКТИЧЕСКОГО транспорта (stream/json) — для request trace и
+	// прокси-логов. Флаг stream в запросе и транспорт не одно и то же.
+	r = withTransportTrackerR484(r)
 	SetStageR477(r.Context(), stageSelectR477)
 	// R477: паника в обработчике не должна убивать запрос молча — фиксируем
 	// стадию и отвечаем 500, если ещё ничего не отправлено.
@@ -1228,6 +1231,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Stream:     isStream,
 			RequestID:  rid,
 			Stage:      stageNow,
+			Transport:  TransportR484(r.Context()),
 		}
 		// Round 16 (2026-07-10): для 4xx/5xx — заполняем Error field чтобы в WebUI
 		// логах (Logs page) видно что произошло. Используем sr.errBody
@@ -2155,7 +2159,10 @@ func (p *Proxy) parseRequestBody(r *http.Request) *parsedRequest {
 	// стриминг включается только явным полем stream в теле запроса. Иначе
 	// запрос без поля stream (обычный случай для image/OpenAI-клиентов) уходил
 	// бы в streaming/NDJSON-ветку без таймаута и с чужой обработкой ответа.
-	result := &parsedRequest{Stream: requestSurfaceOf(r) == surfaceLegacy}
+	// R484: дефолт surface вынесен в streamDefaultForSurfaceR484; сам разбор
+	// поля — один на все пути (streamFlagFromBodyR484).
+	defaultStreamR484 := streamDefaultForSurfaceR484(requestSurfaceOf(r))
+	result := &parsedRequest{Stream: defaultStreamR484}
 
 	if r.Method != http.MethodPost || r.Body == nil {
 		return result
@@ -2192,7 +2199,7 @@ func (p *Proxy) parseRequestBody(r *http.Request) *parsedRequest {
 			result.Model = n
 		}
 	}
-	if stream, ok := req["stream"].(bool); ok {
+	if stream, _, ok := streamFlagFromBodyR484(body, defaultStreamR484); ok {
 		result.Stream = stream
 	}
 	// R118.5: окно клиента (options.num_ctx у Ollama, num_ctx/context_length у

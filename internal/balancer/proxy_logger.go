@@ -32,6 +32,11 @@ type ProxyLogEntry struct {
 	// grep по контейнерам.
 	RequestID string `json:"requestID,omitempty"`
 	Stage     string `json:"stage,omitempty"`
+	// R484: фактический транспорт ответа ("stream" | "json"), а не флаг
+	// stream из запроса. stream=true при transport=json — нормальная ситуация
+	// (legacy-дефолт + non-stream транспорт llama.cpp), раньше она читалась как
+	// «балансер не стримит».
+	Transport string `json:"transport,omitempty"`
 }
 
 // ProxyLogger — кольцевой буфер для хранения логов прокси-запросов

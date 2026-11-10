@@ -325,8 +325,10 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 		// Для streaming — proxyRequestLlamaCpp (SSE→NDJSON).
 		// Для non-streaming — proxyRequestLlamaCppNonStream (JSON→JSON с Content-Type: application/json).
 		if isStreamingFromBody(r.URL.Path, bodyBuf) {
+			SetTransportR484(r.Context(), transportStreamR484)
 			return p.proxyRequestLlamaCpp(w, r, backendID, bodyBuf)
 		}
+		SetTransportR484(r.Context(), transportJSONR484)
 		return p.proxyRequestLlamaCppNonStream(w, r, backendID, bodyBuf)
 	}
 
@@ -599,6 +601,12 @@ retrySucceeded:
 	}
 
 	isStreaming := p.isStreamingResponse(resp)
+	// R484: фактический транспорт ответа (не флаг запроса).
+	if isStreaming {
+		SetTransportR484(r.Context(), transportStreamR484)
+	} else {
+		SetTransportR484(r.Context(), transportJSONR484)
+	}
 
 	// Обработка ошибки "model not found"
 	if !isStreaming && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest) {
@@ -1127,16 +1135,14 @@ func (p *Proxy) isStreamingRequest(r *http.Request) bool {
 
 	r.Body = io.NopCloser(bytes.NewBuffer(body))
 
-	var req map[string]interface{}
-	if err := json.Unmarshal(body, &req); err != nil {
+	// R484: тот же разбор, что и на остальных путях. Дефолт здесь — true
+	// (историческое поведение этого вызова); различия в дефолте видны в одном
+	// месте — stream_flag_r484.go.
+	stream, _, ok := streamFlagFromBodyR484(body, true)
+	if !ok {
 		return false
 	}
-
-	if stream, ok := req["stream"].(bool); ok {
-		return stream
-	}
-
-	return true
+	return stream
 }
 
 // isStreamingResponse - проверка на streaming ответ (SSE, NDJSON или chunked)

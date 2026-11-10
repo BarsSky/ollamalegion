@@ -168,6 +168,7 @@ func (p *Proxy) forwardOpenAIToOllamaR479(w http.ResponseWriter, r *http.Request
 	defer func() { _ = resp.Body.Close() }()
 
 	SetStageR477(r.Context(), stageStreamR477)
+	SetTransportR484(r.Context(), transportStreamR484)
 	w.Header().Set("X-Backend-ID", st.Backend.ID)
 	// Ollama отдаёт chunked NDJSON/SSE; буферизация на прокси-слое испортила бы
 	// интерактивность (та же причина, что и у основного транспорта).

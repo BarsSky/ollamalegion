@@ -283,17 +283,13 @@ func translateOllamaEmbeddingsToOpenAI(body []byte) ([]byte, error) {
 
 // isStreamingFromBody — определяет, является ли запрос streaming, по полю stream в теле.
 func isStreamingFromBody(path string, body []byte) bool {
-	if len(body) == 0 {
+	// R484: один разбор на все пути. Здесь дефолт — false: транспорт llama.cpp
+	// уходит в стрим только по ЯВНОМУ stream:true (иначе ответ читается целиком).
+	stream, _, ok := streamFlagFromBodyR484(body, false)
+	if !ok {
 		return false
 	}
-	var req map[string]interface{}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return false
-	}
-	if stream, ok := req["stream"].(bool); ok && stream {
-		return true
-	}
-	return false
+	return stream
 }
 
 // stripStreamFlag — принудительно отключает streaming в теле запроса.

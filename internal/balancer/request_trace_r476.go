@@ -191,6 +191,7 @@ func startRequestTraceR476(w http.ResponseWriter, r *http.Request, rid string) (
 			"request_id", rid, "method", r.Method, "path", r.URL.Path,
 			"status", status, "duration_ms", time.Since(start).Milliseconds(),
 			"bytes", state.bytes, "first_byte_ms", firstByteMs,
+			"transport", TransportR484(r.Context()),
 			"backend", backend, "client", traceClientAddrR476(r),
 			"stage", stage, "stage_final", stageFinal, "stage_ms", stageMs)
 		if abort != "" {

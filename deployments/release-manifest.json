@@ -1,14 +1,14 @@
 {
     "tag": "r261110-1925",
-    "builtAt": "2026-11-10T17:28:47Z",
-    "gitCommit": "9d42a329",
+    "builtAt": "2026-11-10T21:13:02Z",
+    "gitCommit": "24b3a151",
     "cudaArch": "75;86;120",
     "composeFile": "docker-compose.stack.yml",
     "composeProfile": "full",
-    "note": "R486: идентичность сборки ЗАПЕКАЕТСЯ в образ (pkg/version через -ldflags, /app/identity.json, OCI-метки, ru.ollamalegion.*), а не приходит из deployments/.env. Живой повод: образ был собран и проштампован ПРЕДЫДУЩИМ коммитом (в .env лежал BALANCER_GIT_COMMIT=850923d7 при HEAD 8b246ffe), и это не поймала ни одна проверка. Теперь: scripts/build-identity.ps1 — единственный вычислитель (git + сабмодуль c/llama.cpp + RPC_PROTO из ggml-rpc.h); Dockerfile-стража падает на пустом build-arg; на старте VerifyR486 сверяет бинарь с identity.json и НЕ ДАЁТ контейнеру подняться при расхождении; балансер видит релиз узла (workerVersion/workerCommit/workerReleaseMismatch) и версию протокола RPC (rpc_proto_mismatch в гейте R115); check-image-tags.ps1 ловит возврат к env-штампам. Переменные BALANCER_GIT_COMMIT/BALANCER_BUILD_DATE/CPPWORKER_GIT_COMMIT/CPPWORKER_BUILD_DATE/WEBUI_GIT_COMMIT/WEBUI_BUILD_DATE/AGENT_GIT_COMMIT/AGENT_BUILD_DATE удалены. Ранее: R485 (удержание reasoning), R484 (транспорт), R483 (first_byte_ms), R482 (tool call в reasoning), R481 (WebUI), R480 (окно по варианту C), R479 (паритет типов), R478 (OpenWebUI), R477/R476 (диагностика), R475, R474, R472/R473, R470/R471, R468, R466/R469, R460/R461/R463-R465.",
+    "note": "R486: идентичность сборки ЗАПЕКАЕТСЯ в образ (pkg/version через -ldflags, /app/identity.json, OCI-метки, ru.ollamalegion.*), а не приходит из deployments/.env. Теперь идентичность несут ВСЕ четыре образа, включая webui (r261110-2130) и imageworker. Живой повод: образ был собран и проштампован ПРЕДЫДУЩИМ коммитом (в .env лежал BALANCER_GIT_COMMIT=850923d7 при HEAD 8b246ffe), и это не поймала ни одна проверка. Механизм: scripts/build-identity.ps1 — единственный вычислитель (git + сабмодуль c/llama.cpp + RPC_PROTO из ggml-rpc.h); Dockerfile-стража падает на пустом build-arg; на старте VerifyR486 сверяет бинарь с identity.json и НЕ ДАЁТ контейнеру подняться при расхождении; балансер видит релиз узла (workerVersion/workerCommit/workerReleaseMismatch) и версию протокола RPC, валидатор композиции (R486.2) сравнивает узлы группы по релизному коммиту и RPC-протоколу; check-image-tags.ps1 ловит возврат к env-штампам. Переменные BALANCER_GIT_COMMIT/BALANCER_BUILD_DATE/CPPWORKER_GIT_COMMIT/CPPWORKER_BUILD_DATE/WEBUI_GIT_COMMIT/WEBUI_BUILD_DATE/AGENT_GIT_COMMIT/AGENT_BUILD_DATE удалены. R486.1: два тайминговых теста переведены с секундомера на состояние. Ранее: R485 (удержание reasoning), R484 (транспорт), R483 (first_byte_ms), R482 (tool call в reasoning), R481 (WebUI), R480 (окно по варианту C), R479 (паритет типов), R478 (OpenWebUI), R477/R476 (диагностика).",
     "standDeployed": {
         "hostPorts": "18080 (Ollama+всё), 18079 (OpenAI), 18083 (WebUI)",
-        "verifiedAt": "2026-11-10T17:35:00Z",
+        "verifiedAt": "2026-11-10T21:20:00Z",
         "debugDumps": "ВКЛЮЧЕНЫ (временно): request-last.json, prompt-last.txt, tool-args; файлы внутри контейнера /app/diag/. Архив: GET /api/v1/diag/bundle (WebUI: страница «Диагностика»). В архиве теперь есть identity.json — что СОБРАНО, в отличие от env.json — что ПЕРЕДАЛИ",
         "proof": [
             "R486: balancer r261110-1925 и cppworker gpu-261110-1925 выкачены из коммита 9d42a329; GET :18080/api/version -> build_commit=9d42a329, build_commit_full=9d42a3294fb96f171735c9057a1d2b348c880be8, build_author, build_image_tag=r261110-1925, build_service=balancer, build_date=2026-11-10T17:28:47Z; оба контейнера healthy; webui r261110-1346 и imageworker 72ec210a не пересобирались",
@@ -21,6 +21,11 @@
             "R486: регрессия — POST :18080/api/chat с tools[] (gemma-4-E4B) -> 200, вызов инструмента распознан; API/поведение не изменились",
             "R486: тесты — pkg/version (9 новых), internal/api (3), internal/cppbackend (3); полный ./... с -tags llama_stub: один флейк TestVirtualRouter_HeavyModel_LeastLoaded_RespectsLoad под общей нагрузкой (изолированно 3/3 PASS), остальное зелёное",
             "R486: check-image-tags.ps1 расширен и зелёный: отменённые переменные, дефолты unknown в build-args, наличие GIT_COMMIT_FULL у каждого build-блока, identity.json и стража в каждом Dockerfile",
+            "R486 (дополнение): webui пересобран с запечённой идентичностью — r261110-2130 (commit ee901744, version 0.7.246); /identity.json отдаётся nginx-ом и совпадает с /app/identity.json, config.js несёт VERSION=0.7.246, GIT_COMMIT=ee901744, BUILD_DATE из identity.json",
+            "R486 (дополнение): imageworker пересобран с запечённой идентичностью — 72ec210a (commit ee901744, service=sdworker); контейнер healthy, стартовый лог: version=72ec210a (commit ee901744)",
+            "R486 (дополнение): балансер и воркер пересобраны из 24b3a151 — /api/version: build_commit=24b3a151; /api/v1/backends: workerVersion=261110-1925, workerCommit=24b3a151, workerRpcProto=6.0.0, workerReleaseMismatch=false для LLM-воркера; у imageworker mismatch=true (он собран из ee901744) — проверка честно показывает разницу сборок, а не молчит",
+            "R486.2: валидатор композиции сравнивает релизный коммит и версию протокола RPC узлов группы (release_mismatch / rpc_proto_mismatch = error, неизвестно = hint); 5 новых тестов, полный ./internal/composition/ зелёный",
+            "R486.1: флейки убраны — lazy-load тест проверяет СОСТОЯНИЕ (загрузку отпускает сам тест, gateLoad) вместо таймера; тест least_loaded проверяет сам селектор, а не вероятностное распределение HTTP-запросов (корень флейка: провайдер ключевался по host:port, а роутер спрашивает по ID бэкенда). Оба по 10 прогонов под -race зелёные",
             "ОТКРЫТО: второй стенд A10 ×2 (Qwen3.8-27B) — нужен образ воркера gpu-261110-1925; на нём проверить R485 (hold_kept_reasoning) и workerReleaseMismatch. Остаток реестра: P2-13 (4 очереди, 39 селекторов, 8 циклов стрима, 11 писателей стрима), P2-12, P2-16, E-20 (архив A10), E-21/E-22 (живьём), R-16…R-19 (продуктовые решения)"
         ]
     },
@@ -30,7 +35,7 @@
             "variable": "BALANCER_TAG",
             "service": "loadbalancer",
             "imageTag": "r261110-1925",
-            "imageId": "sha256:f146412ea7303a2f2b0b3798bb339b50538237a7221a4364f25e4fb58f99e8c8",
+            "imageId": "sha256:e9cc3acdfe97c910b3b4142e32a6ea7d543dda0b8aa18561b930b1e47f1ac95d",
             "image": "ollama-legion/balancer:r261110-1925"
         },
         {
@@ -38,23 +43,23 @@
             "variable": "CPPWORKER_GPU_TAG",
             "service": "cppworker-gpu",
             "imageTag": "gpu-261110-1925",
-            "imageId": "sha256:eb6d75e4a5cfaf42e884ffea2df2fa859f95924426f034731149f430a20cebe2",
+            "imageId": "sha256:0ba69e5108aebfe6bfa5857015c35fdb3f5bd4aa9f43ea820da3d13e9d094142",
             "image": "ollama-legion/cppworker:gpu-261110-1925"
         },
         {
             "alias": "ollama-legion/webui:latest",
             "variable": "WEBUI_TAG",
             "service": "webui",
-            "imageTag": "r261110-1346",
-            "imageId": "sha256:7cd9ece1a0c20c151d8a6132ae829c72887e39b86062fc6c2f370db4c5f9512b",
-            "image": "ollama-legion/webui:r261110-1346"
+            "imageTag": "r261110-2130",
+            "imageId": "sha256:61e6050de614f65fa8b3d1f988eb9677d0957fd9ae66eadbf066a70c43a66011",
+            "image": "ollama-legion/webui:r261110-2130"
         },
         {
             "alias": "",
             "variable": "IMAGE_WORKER_TAG",
             "service": "imageworker",
             "imageTag": "72ec210a",
-            "imageId": "sha256:43c3ce9d34bafca7144944dcfde8e5fc266c75e4d795c30e5c487629e9058410",
+            "imageId": "sha256:3a85c81e27771342576c2ae813fa970a2ef2e98865170257611d6306260ec2b6",
             "image": "ollama-legion/imageworker:72ec210a"
         }
     ]

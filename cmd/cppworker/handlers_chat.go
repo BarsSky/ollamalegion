@@ -1849,6 +1849,8 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	holdReleaseReason := ""
 	holdReleasedAt := time.Time{}
 	holdReleasedBytes := 0
+	// R485: «удержание reasoning не снимали» — чтобы писать это в лог/кольцо один раз.
+	holdKeptReasoning := false
 	firstContentAt := time.Time{}
 
 	// R404: размышления отдаём ДЕЛЬТАМИ, не дожидаясь закрытия блока.
@@ -2024,6 +2026,13 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// releaseHoldIfOverdue — R482: снять удержание, если оно длится слишком
 	// долго или накопило слишком много. Накопленное НЕ отдаём (в нём могут быть
 	// размышления), но все следующие токены пойдут клиенту нормально.
+	//
+	// R485: если удержание вызвано РАЗМЫШЛЕНИЯМИ (открытый блок/канал открыт
+	// шаблоном), удержание НЕ снимаем — иначе размышления уходят в content,
+	// клиент сохраняет их как ответ ассистента, и на следующем ходу модель видит
+	// свои же размышления как прошлый ответ (живой архив: content_len=18720/65109
+	// у assistant-сообщений с tool_calls). Аварийный тумблер —
+	// CPPWORKER_TOOLS_HOLD_RELEASE_REASONING=1.
 	releaseHoldIfOverdue := func() bool {
 		if !reasoningHold && !toolsHold {
 			// Удержание закончилось само (R190 нашёл закрывающий маркер) —
@@ -2038,6 +2047,22 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		held := len(outputBuf.String()) - emittedLen
 		ok, why := toolsHoldShouldReleaseR482(holdSince, held, time.Now())
 		if !ok {
+			return false
+		}
+		if toolsHoldReasoningR485(reasoningHold, outputBuf.String(), prompt, modelName, reasoningEcho, emittedLen) &&
+			!toolsHoldReleaseReasoningR485() {
+			if !holdKeptReasoning {
+				holdKeptReasoning = true
+				logger.Get().Warnw("R485: удержание reasoning не снимаем — иначе размышления уйдут в content",
+					"model", modelName,
+					"reason", why,
+					"held_ms", time.Since(holdSince).Milliseconds(),
+					"held_bytes", held,
+					"switch", "CPPWORKER_TOOLS_HOLD_RELEASE_REASONING=1 — снять принудительно (риск загрязнения истории)",
+					"thinking_switch", "CPPWORKER_TOOLS_THINKING=on — отдавать размышления в поле thinking")
+				recordWorkerEventR483(r, "/api/chat", "hold_kept_reasoning",
+					fmt.Sprintf("%s held_ms=%d held_bytes=%d", why, time.Since(holdSince).Milliseconds(), held))
+			}
 			return false
 		}
 		reasoningHold = false
@@ -3167,6 +3192,10 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			return holdReleasedAt.Sub(holdSince).Milliseconds()
 		}(),
 		"hold_released_bytes", holdReleasedBytes,
+		// R485: сторож сработал, но удержание оставлено, потому что оно вызвано
+		// размышлениями. Без этого поля в архиве диагностики снова пришлось бы
+		// выяснять по логам, почему ход «не потоковый».
+		"hold_kept_reasoning", holdKeptReasoning,
 		"hold_max_sec", int(toolsHoldMaxHoldR482().Seconds()),
 		"hold_max_bytes", toolsHoldMaxBytesR482(),
 		"first_content_ms", func() int64 {

@@ -755,6 +755,12 @@ services:
       # одним куском (живой случай: Qwen3.8-27B). 0 = сторож выключен.
       - CPPWORKER_TOOLS_HOLD_MAX_SEC=${CPPWORKER_TOOLS_HOLD_MAX_SEC:-20}
       - CPPWORKER_TOOLS_HOLD_MAX_BYTES=${CPPWORKER_TOOLS_HOLD_MAX_BYTES:-32768}
+      # R485: по умолчанию (0) сторож НЕ снимает удержание, если оно вызвано
+      # размышлениями: иначе размышления уходят в content, клиент сохраняет их
+      # как прошлый ответ модели, и следующий ход начинается с загрязнения
+      # (живой архив: content_len=18720/65109 у assistant-сообщений с tool_calls).
+      # 1 — вернуть поведение R482 (снимать и reasoning), понимая риск.
+      - CPPWORKER_TOOLS_HOLD_RELEASE_REASONING=${CPPWORKER_TOOLS_HOLD_RELEASE_REASONING:-0}
       # R434: инструменты уходят в chat template ("native"), преамбула — fallback.
       # "prompt" возвращает прежнее поведение (только текстовая преамбула).
       - CPPWORKER_TEMPLATE_TOOLS=${CPPWORKER_TEMPLATE_TOOLS:-native}      # R445: подсказка модели по отказам клиента в истории (old_text/лимит).

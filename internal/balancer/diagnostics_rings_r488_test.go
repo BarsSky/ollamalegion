@@ -55,7 +55,9 @@ func TestR488_ThrottlePerBackendAndKind(t *testing.T) {
 func TestR488_ThrottleDisabledWhenZero(t *testing.T) {
 	resetSoftLogThrottleR488()
 	now := time.Now()
-	if !softLogAllowedR488("be", "k", now, 0) || !softLogAllowedR488("be", "k", now, 0) {
+	first := softLogAllowedR488("be", "k", now, 0)
+	second := softLogAllowedR488("be", "k", now, 0)
+	if !first || !second {
 		t.Fatal("every=0 обязан пропускать всё")
 	}
 }

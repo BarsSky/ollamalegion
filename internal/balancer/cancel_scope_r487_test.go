@@ -42,7 +42,7 @@ func TestR487_IndexTrackQueuedThenRunning(t *testing.T) {
 	}
 	idx.MarkRunning("req-1", "backend-2")
 	task, _ = idx.Lookup("req-1")
-	if task.Queued || task.Backend != "backend-2" || task.CancelQue != nil {
+	if task.Queued || task.Backend != "backend-2" {
 		t.Fatalf("MarkRunning не перевёл заявку в running: %+v", task)
 	}
 	if task.Identity != "client:cline-1" {
@@ -225,7 +225,9 @@ func TestR487_QueueWaitContextIsNotTheRequestContext(t *testing.T) {
 	if !ok || !task.Queued {
 		t.Fatal("заявка не зарегистрирована")
 	}
-	task.CancelQue()
+	if !idx.CancelQueued("req-x") {
+		t.Fatal("снятие заявки не сработало")
+	}
 	if child.Err() == nil {
 		t.Fatal("дочерний контекст не отменён")
 	}

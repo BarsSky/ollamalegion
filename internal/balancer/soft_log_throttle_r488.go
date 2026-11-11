@@ -24,8 +24,8 @@ const softLogEveryR488 = 60 * time.Second
 
 // softLogThrottleR488 — состояние троттлинга (ключ "backend|kind").
 var softLogThrottleR488 = struct {
-	mu   sync.Mutex
 	last map[string]time.Time
+	mu   sync.Mutex
 }{last: make(map[string]time.Time)}
 
 // softLogAllowedR488 — можно ли сейчас печатать это мягкое наблюдение.

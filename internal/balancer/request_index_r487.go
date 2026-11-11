@@ -41,25 +41,32 @@ import (
 
 // trackedTaskR487 — одна заявка, которую можно снять или отменить.
 type trackedTaskR487 struct {
-	ID      string
-	Session string
 	// Identity — явная личность клиента (X-Client-ID / X-User-Id / user_id тела).
 	// Пусто = личность не заявлена; тогда сессия остаётся единственным признаком.
-	Identity  string
-	Backend   string
-	Queued    bool
-	CancelQue context.CancelFunc
+	Identity string
+	ID       string
+	Session  string
+	Backend  string
+	Queued   bool
 }
 
-// requestIndexR487 — индекс заявок. Ноль значения не используется: конструктор
-// создаёт карты, а Proxy лениво создаёт сам индекс.
+// requestIndexR487 — индекс заявок.
+//
+// cancel-функции лежат ОТДЕЛЬНОЙ картой, а не полем trackedTaskR487: структура с
+// указателем внутри держала бы GC-сканером весь свой объём (fieldalignment), а
+// задача — это четыре строки и флаг, копировать её в ответы/тесты дешевле без
+// функции. Внешнее поведение от этого не меняется.
 type requestIndexR487 struct {
-	mu   sync.Mutex
-	byID map[string]*trackedTaskR487
+	byID    map[string]*trackedTaskR487
+	cancels map[string]context.CancelFunc
+	mu      sync.Mutex
 }
 
 func newRequestIndexR487() *requestIndexR487 {
-	return &requestIndexR487{byID: make(map[string]*trackedTaskR487)}
+	return &requestIndexR487{
+		byID:    make(map[string]*trackedTaskR487),
+		cancels: make(map[string]context.CancelFunc),
+	}
 }
 
 // requestIndexR487 — ленивый доступ к индексу прокси.
@@ -88,8 +95,27 @@ func (x *requestIndexR487) TrackQueued(id, session, identity, backend string, ca
 	defer x.mu.Unlock()
 	x.byID[id] = &trackedTaskR487{
 		ID: id, Session: session, Identity: identity, Backend: backend,
-		Queued: true, CancelQue: cancel,
+		Queued: true,
 	}
+	if cancel != nil {
+		x.cancels[id] = cancel
+	}
+}
+
+// CancelQueued — снять заявку с очереди (вызвать её cancel). Возвращает false,
+// если заявка уже не в очереди: тогда снимать нечего и врать «снято» нельзя.
+func (x *requestIndexR487) CancelQueued(id string) bool {
+	if x == nil {
+		return false
+	}
+	x.mu.Lock()
+	cancel, ok := x.cancels[id]
+	x.mu.Unlock()
+	if !ok || cancel == nil {
+		return false
+	}
+	cancel()
+	return true
 }
 
 // MarkRunning — заявка ушла на конкретный бэкенд. Снимает queued-состояние;
@@ -108,7 +134,7 @@ func (x *requestIndexR487) MarkRunning(id, backend string) {
 	}
 	task.Backend = backend
 	task.Queued = false
-	task.CancelQue = nil
+	delete(x.cancels, id)
 }
 
 // MarkIdentity — запомнить личность клиента для заявки, которая не проходила
@@ -140,6 +166,7 @@ func (x *requestIndexR487) Drop(id string) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	delete(x.byID, id)
+	delete(x.cancels, id)
 }
 
 // Lookup — копия записи по request_id.
@@ -207,9 +234,7 @@ func (p *Proxy) cancelByScopeR487(req clientCancelBody, identity string) (map[st
 			}, true
 		}
 		if task.Queued {
-			if task.CancelQue != nil {
-				task.CancelQue()
-			}
+			idx.CancelQueued(id)
 			idx.Drop(id)
 			return map[string]interface{}{
 				"status":       "cancelled_queued",
@@ -266,10 +291,8 @@ func (p *Proxy) cancelTasksR487(tasks []trackedTaskR487, req clientCancelBody, s
 	results := make([]map[string]interface{}, 0, len(tasks))
 	for _, task := range tasks {
 		if task.Queued {
-			if task.CancelQue != nil {
-				task.CancelQue()
-			}
 			if idx != nil {
+				idx.CancelQueued(task.ID)
 				idx.Drop(task.ID)
 			}
 			queued++

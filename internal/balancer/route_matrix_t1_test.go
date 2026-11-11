@@ -21,7 +21,6 @@
 package balancer
 
 import (
-	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,17 +30,27 @@ import (
 	"ollama-loadbalancer/pkg/types"
 )
 
-// routeDecisionT1 — чем закончился routeRequest для одного случая.
-type routeDecisionT1 struct {
-	handled     bool   // true: обслужил роутер (handler-путь)
-	whyFallback string // маркер причины, если ушёл в generic-путь
-}
+// Решение о пути кодируется ОДНОЙ строкой, а не структурой: во-первых, сравнение
+// значений читается однозначно, во-вторых, линт CI (fieldalignment) ругается и на
+// тестовые структуры с bool+string — «16 pointer bytes could be 8».
+const (
+	decisionHandledT1    = "handler"                 // обслужил роутер
+	decisionMixedModeT1  = "generic:mixed_mode_chat" // ушёл в selectBackend (смешанный режим)
+	decisionNotHandledT1 = "generic:not_handled"     // ушёл в общий поток по другой причине
+)
 
 // routeProbeT1 — один прогон routeRequest с захватом логов.
-func routeProbeT1(t *testing.T, p *Proxy, path, body string) routeDecisionT1 {
+//
+// ВАЖНО (поймано -race в CI): ловушка `bytes.Buffer` + `CaptureToBuffer` даёт
+// гонку с ФОНОВЫМИ горутинами прокси (поллер llama.cpp пишет в тот же лог-sink):
+// `bytes.Buffer.Write` против `bytes.Buffer.String`. R489 защитил писателей, но
+// читателя — нет. Поэтому здесь используется `logger.CaptureBuffer`: у него
+// собственный мьютекс на Write И на String, то есть захват логов безопасен и при
+// живой фоновой активности.
+func routeProbeT1(t *testing.T, p *Proxy, path, body string) string {
 	t.Helper()
-	var buf bytes.Buffer
-	restore := logger.CaptureToBuffer(&buf)
+	buf := logger.NewCaptureBuffer()
+	restore := logger.CaptureToBuffer(buf)
 	defer restore()
 
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
@@ -51,14 +60,14 @@ func routeProbeT1(t *testing.T, p *Proxy, path, body string) routeDecisionT1 {
 	handled := p.routeRequest(w, req)
 	logs := buf.String()
 
-	dec := routeDecisionT1{handled: handled}
 	switch {
+	case handled:
+		return decisionHandledT1
 	case strings.Contains(logs, "mixed mode, falling through to selectBackend"):
-		dec.whyFallback = "mixed_mode_chat_generate"
-	case !handled:
-		dec.whyFallback = "not_handled_by_routers"
+		return decisionMixedModeT1
+	default:
+		return decisionNotHandledT1
 	}
-	return dec
 }
 
 // matrixProxyT1 — прокси с заданным набором типов бэкендов. Адреса указывают на
@@ -214,26 +223,22 @@ func TestT1_BackendTypePerSurface(t *testing.T) {
 // Отсюда и «два мозга»: /api/chat и /v1/chat/completions идут РАЗНЫМИ путями при
 // одном и том же кластере и одном и том же теле запроса.
 func TestT1_CurrentMatrix(t *testing.T) {
-	type want struct {
-		handled     bool
-		whyFallback string
-	}
 	cases := []struct {
 		cluster string
 		path    string
-		want    want
+		want    string
 		note    string
 	}{
 		// /api/* — generic-путь (selectBackend) при любом составе кластера.
-		{"llama_only", "/api/chat", want{false, "mixed_mode_chat_generate"}, "generic-путь: bt==\"\" (allowed>1)"},
-		{"ollama_only", "/api/chat", want{false, "mixed_mode_chat_generate"}, "generic-путь: bt==\"\" (allowed>1)"},
-		{"mixed", "/api/chat", want{false, "mixed_mode_chat_generate"}, "generic-путь: bt==\"\""},
-		{"mixed", "/api/generate", want{false, "mixed_mode_chat_generate"}, "generic-путь: bt==\"\""},
+		{"llama_only", "/api/chat", decisionMixedModeT1, "generic-путь: bt==\"\" (allowed>1)"},
+		{"ollama_only", "/api/chat", decisionMixedModeT1, "generic-путь: bt==\"\" (allowed>1)"},
+		{"mixed", "/api/chat", decisionMixedModeT1, "generic-путь: bt==\"\""},
+		{"mixed", "/api/generate", decisionMixedModeT1, "generic-путь: bt==\"\""},
 		// /v1/* — handler-путь (роутер), тип llama_cpp по R112.
-		{"llama_only", "/v1/chat/completions", want{true, ""}, "OpenAI-поверхность обслуживает роутер"},
-		{"ollama_only", "/v1/chat/completions", want{true, ""}, "OpenAI-поверхность обслуживает роутер"},
-		{"mixed", "/v1/chat/completions", want{true, ""}, "OpenAI-поверхность обслуживает роутер"},
-		{"mixed", "/v1/completions", want{true, ""}, "OpenAI-поверхность обслуживает роутер"},
+		{"llama_only", "/v1/chat/completions", decisionHandledT1, "OpenAI-поверхность обслуживает роутер"},
+		{"ollama_only", "/v1/chat/completions", decisionHandledT1, "OpenAI-поверхность обслуживает роутер"},
+		{"mixed", "/v1/chat/completions", decisionHandledT1, "OpenAI-поверхность обслуживает роутер"},
+		{"mixed", "/v1/completions", decisionHandledT1, "OpenAI-поверхность обслуживает роутер"},
 	}
 
 	for _, c := range cases {
@@ -248,12 +253,10 @@ func TestT1_CurrentMatrix(t *testing.T) {
 		}
 		p := matrixProxyT1(t, backends...)
 		got := routeProbeT1(t, p, c.path, bodiesT1[1].body)
-		if got.handled != c.want.handled || got.whyFallback != c.want.whyFallback {
-			t.Errorf("матрица изменилась: кластер %s, путь %s → handled=%v why=%q, "+
-				"зафиксировано handled=%v why=%q (%s). Если это осознанный этап "+
-				"refactoring-plan.ru.md — обновите ожидание и документ, иначе это регресс",
-				c.cluster, c.path, got.handled, got.whyFallback,
-				c.want.handled, c.want.whyFallback, c.note)
+		if got != c.want {
+			t.Errorf("матрица изменилась: кластер %s, путь %s → %q, зафиксировано %q (%s). "+
+				"Если это осознанный этап refactoring-plan.ru.md — обновите ожидание и "+
+				"документ, иначе это регресс", c.cluster, c.path, got, c.want, c.note)
 		}
 	}
 }
@@ -272,11 +275,9 @@ func TestT1_TwoBrainsAreMeasured(t *testing.T) {
 	handler := routeProbeT1(t, matrixProxyT1(t, types.BackendTypeLlamaCpp, types.BackendTypeOllama),
 		"/v1/chat/completions", body)
 
-	if generic.handled == handler.handled {
-		t.Fatalf("пути СОШЛИСЬ (оба handled=%v) — если это результат этапов плана, "+
-			"обновите этот тест и refactoring-plan.ru.md; иначе расхождение потеряно",
-			generic.handled)
+	if generic == handler {
+		t.Fatalf("пути СОШЛИСЬ (%q) — если это результат этапов плана, обновите этот "+
+			"тест и refactoring-plan.ru.md; иначе расхождение потеряно", generic)
 	}
-	t.Logf("измерено: /api/chat → generic (%s), /v1/chat/completions → handler",
-		generic.whyFallback)
+	t.Logf("измерено: /api/chat → %s, /v1/chat/completions → %s", generic, handler)
 }

@@ -592,7 +592,8 @@ func TestProxyGenerate_FirstRequestSessionBind(t *testing.T) {
 
 	// Проверяем, что сессия создалась
 	sessions := proxy.GetSessions()
-	expectedID := sessionID + "::llama3.1:8b::gen"
+	// R490: без суффикса поверхности — ключ явной сессии одинаков для обоих API.
+	expectedID := sessionID + "::llama3.1:8b"
 	found := false
 	for _, s := range sessions {
 		if s.ID == expectedID {

@@ -543,7 +543,9 @@ func TestProxyOllama_SessionStickiness(t *testing.T) {
 
 	session := proxy.GetSessions()
 	found := false
-	expectedSessionID := "test-session-123::llama3.1:8b::gen"
+	// R490: поверхность API больше не входит в ключ явной сессии (X-Session-ID) —
+	// один разговор на 18080 и на 18079 это одна сессия.
+	expectedSessionID := "test-session-123::llama3.1:8b"
 	for _, s := range session {
 		if s.ID == expectedSessionID {
 			found = true

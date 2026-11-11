@@ -201,7 +201,11 @@ func TestR493_LoadableFreeBackendRespectsVram(t *testing.T) {
 	})
 	defer restore()
 
-	p := availProxyR493(t, map[string]int{"small": 1, "big": 1})
+	// Прогретая копия есть и занята (иначе «загрузка вместо очереди» неприменима —
+	// см. TestR493_NoLoadedCopyNoFreeBackendHijack).
+	p := availProxyR493(t, map[string]int{"master": 1, "small": 1, "big": 1})
+	setMetricsR493(p, "master", []string{"m12b"}, 2471)
+	p.backends["master"].ActiveReqs = 1
 	setMetricsR493(p, "small", nil, 6000)
 	setMetricsR493(p, "big", nil, 20490)
 
@@ -210,11 +214,13 @@ func TestR493_LoadableFreeBackendRespectsVram(t *testing.T) {
 		t.Fatalf("под загрузку 12 ГиБ должен выбираться узел с 20 ГБ свободных, а не с 6 ГБ; got %q", got)
 	}
 
-	// Обратная сторона: модель, которая не влезает НИКУДА, не даёт бэкенда.
+	// Обратная сторона: модель, которая не влезает НИКУДА, не даёт бэкенда —
+	// при этом прогретая копия на мастере остаётся (гейт открыт).
 	restore2 := setModelSizeBytesForTest(func(name string) int64 {
 		return int64(40) << 30
 	})
 	defer restore2()
+	setMetricsR493(p, "master", []string{"m40b"}, 2471)
 	if got := p.pickLoadableFreeBackendR493("m40b", p.getAllowedTypesList(types.BackendTypeLlamaCpp)); got != "" {
 		t.Fatalf("модель 40 ГиБ не влезает ни в один узел, выбирать некого; got %q", got)
 	}
@@ -223,14 +229,50 @@ func TestR493_LoadableFreeBackendRespectsVram(t *testing.T) {
 // TestR493_LoadableFreeBackendSkipsSaturatedNode — свободных слотов нет ни у кого:
 // выбирать нечего (дальше решает очередь, а не выдуманный бэкенд).
 func TestR493_LoadableFreeBackendSkipsSaturatedNode(t *testing.T) {
-	p := availProxyR493(t, map[string]int{"only": 1})
+	// Прогретая копия занята на мастере, а свободный узел один.
+	p := availProxyR493(t, map[string]int{"master": 1, "only": 1})
+	setMetricsR493(p, "master", []string{"m27b"}, 2471)
+	setMetricsR493(p, "only", nil, 20490)
+	p.backends["master"].ActiveReqs = 1
 	types1 := p.getAllowedTypesList(types.BackendTypeLlamaCpp)
+
 	if got := p.pickLoadableFreeBackendR493("m27b", types1); got != "only" {
 		t.Fatalf("контроль: свободный узел обязан выбираться, иначе тест ниже ничего не доказывает; got %q", got)
 	}
 	p.backends["only"].ActiveReqs = 1
 	if got := p.pickLoadableFreeBackendR493("m27b", types1); got != "" {
-		t.Fatalf("при занятом единственном узле выбирать нечего, got %q", got)
+		t.Fatalf("при занятых узлах выбирать нечего, got %q", got)
+	}
+}
+
+// TestR493_NoLoadedCopyNoFreeBackendHijack — этап «загрузка вместо очереди» НЕ
+// работает, когда прогретой копии нет ни на одном узле.
+//
+// Живой регресс этого правила (пойман на CI): TestReplication_Scenario_
+// LiveRequestReplicated — два узла БЕЗ метрик, 10 запросов; ранняя версия R493
+// выбирала «свободный узел под загрузку» по score, при равных score всегда
+// выигрывал первый из map, и round-robin переставал действовать: один узел
+// получал 10 запросов, второй 0. Модель не загружена нигде → решает обычный
+// алгоритм, а не этот этап.
+func TestR493_NoLoadedCopyNoFreeBackendHijack(t *testing.T) {
+	p := availProxyR493(t, map[string]int{"a": 1, "b": 1})
+	setMetricsR493(p, "a", nil, 20490)
+	setMetricsR493(p, "b", nil, 20490)
+	types1 := p.getAllowedTypesList(types.BackendTypeLlamaCpp)
+
+	if p.modelLoadedSomewhereR493("m27b", types1) {
+		t.Fatal("условие теста не выполнено: модель не должна считаться загруженной")
+	}
+	if got := p.pickLoadableFreeBackendR493("m27b", types1); got != "" {
+		t.Fatalf("без прогретой копии выбирать «узел под загрузку» нельзя, got %q", got)
+	}
+
+	// Контроль: как только модель появилась в памяти (пусть и на занятом узле),
+	// этап снова имеет право выбирать.
+	setMetricsR493(p, "a", []string{"m27b"}, 2471)
+	p.backends["a"].ActiveReqs = 1
+	if got := p.pickLoadableFreeBackendR493("m27b", types1); got != "b" {
+		t.Fatalf("при занятой прогретой копии должен выбираться свободный узел, got %q", got)
 	}
 }
 

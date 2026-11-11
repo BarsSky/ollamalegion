@@ -175,8 +175,19 @@ P3 живёт только внутри `selectBackend` (`internal/balancer/back
 | Привязка сессии — предпочтение: sticky-узел передаётся в очередь, только если у него есть свободный слот | `proxy.go` + `stickyBackendIfAvailableR493` | `TestR493_StickyBackendNotPinnedWhenSaturated`, `TestR493_StickyReleaseWiredInProxy` (по AST `proxy.go`: ровно один вызов хелпера, нет прямого `GetSnapshot`). Мутация «вернуть `GetSnapshot`» → тест падает |
 | Загрузка вместо очереди: если ни один loaded-узел не принимает, выбирается свободный узел и модель поднимается там | `backend_selector.go`, этап 3b + `pickLoadableFreeBackendR493` | `TestR493_SelectorSkipsSaturatedLoadedBackend` (занятый мастер ВЫГОДНЕЕ по score, но заявка уходит на свободный) — без этапа 3b тест падает |
 | Этап 3b не обходит выключатель автозагрузки | тот же этап, гейт `lbAutoLoadAsync \|\| SyncModelLoad.Enabled` | `TestR493_NoAutoloadNoFreeNodeLoad`. Мутация «снять гейт» → тест падает |
+| Этап 3b работает ТОЛЬКО если прогретая копия где-то есть и занята | `modelLoadedSomewhereR493` | `TestR493_NoLoadedCopyNoFreeBackendHijack` + CI-регресс `TestReplication_Scenario_LiveRequestReplicated` |
 | Модель не грузится туда, где не влезает | `pickLoadableFreeBackendR493` (VRAM-fit) | `TestR493_LoadableFreeBackendRespectsVram`: 12 ГиБ → узел с 20 ГБ, не с 6 ГБ; 40 ГиБ → «некого выбирать». Мутация «снять фильтр» → тест падает |
 | Узел под загрузку не берётся, если на хосте идёт image-генерация (Phase 6) | `pickLoadableFreeBackendR493` | существующий `TestImageLockWaitCap_SoleBlockerCapsWait`. Мутация «снять image-гейт» → тест падает |
+
+**Найденный по ходу регресс (и почему правило выше появилось).** Первая версия этапа
+3b срабатывала на любом свободном узле и выбирала его по score. В CI упал
+`TestReplication_Scenario_LiveRequestReplicated`: два узла БЕЗ метрик, 10 запросов
+round-robin — при равных score (у обоих `computeNoMetricsScore` = 1) всегда
+выигрывал первый из map-порядка, и один узел получал все 10 запросов, второй 0, то
+есть балансер снова «не распределял нагрузку». Проверено сравнением: на коммите до
+R493 тест проходил 10/10, с первой версией 3b падал. Поэтому теперь этап 3b
+включается только при наличии прогретой копии (`modelLoadedSomewhereR493`): если
+модель не загружена нигде, решает обычный алгоритм, а не «загрузка вместо очереди».
 
 Отдельно, чего в реализации **сознательно нет**:
 

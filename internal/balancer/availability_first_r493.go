@@ -104,8 +104,52 @@ func (p *Proxy) stickyBackendIfAvailableR493(sessionKey string) string {
 // обычный score того же вида, что в P4: свободный узел не должен выигрывать у
 // более подходящего только потому, что перебор шёл по map. «VRAM неизвестна» не
 // запрещает выбор — иначе стенд без метрик не поднимал бы ничего.
+// modelLoadedSomewhereR493 — есть ли модель в памяти ХОТЯ БЫ на одном узле,
+// который вообще рассматривается для этой заявки.
+//
+// ЗАЧЕМ ЭТОТ ПРЕДИКАТ. R493 решает узкий случай: модель УЖЕ загружена, но её
+// узел занят, а рядом простаивает свободный. Без такой проверки этап 3b
+// превращался в «выбери первый свободный по score» и забирал заявки у обычного
+// распределения: живой регресс — TestReplication_Scenario_LiveRequestReplicated
+// (10 запросов к двум узлам БЕЗ метрик уходили на один, второй получал 0, а
+// алгоритм round-robin переставал действовать). Модель не загружена нигде —
+// значит, никакого «занятого узла с прогретой копией» нет, и решать должен
+// обычный выбор, а не этот этап.
+func (p *Proxy) modelLoadedSomewhereR493(model string, allowedTypes []types.BackendType) bool {
+	if p == nil || model == "" || p.metricsMgr == nil {
+		return false
+	}
+	p.mu.RLock()
+	ids := make([]string, 0, len(p.backends))
+	for id, state := range p.backends {
+		if state == nil || state.Backend == nil {
+			continue
+		}
+		if isDisabledBackendState(state) || p.cannotHostModelR304(id) {
+			continue
+		}
+		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	p.mu.RUnlock()
+	for _, id := range ids {
+		if p.backendHasModelByID(id, model) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Proxy) pickLoadableFreeBackendR493(model string, allowedTypes []types.BackendType) string {
 	if p == nil {
+		return ""
+	}
+	// См. modelLoadedSomewhereR493: «загрузка вместо очереди» применима только
+	// тогда, когда прогретая копия где-то есть и занята. Иначе распределение
+	// заявок остаётся за обычным алгоритмом.
+	if !p.modelLoadedSomewhereR493(model, allowedTypes) {
 		return ""
 	}
 	sizeBytes := p.getModelSizeBytes(model)

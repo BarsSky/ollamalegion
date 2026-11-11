@@ -21,8 +21,8 @@ import (
 
 // lockedWriterR489 — io.Writer с мьютексом и Sync под zapcore.WriteSyncer.
 type lockedWriterR489 struct {
-	mu sync.Mutex
 	w  io.Writer
+	mu sync.Mutex
 }
 
 func (l *lockedWriterR489) Write(p []byte) (int, error) {

@@ -118,6 +118,13 @@ Set-Location $repoRoot
 # c/llama.cpp + RPC_PROTO из ggml-rpc.h). Значения передаются build-arg'ами
 # и печётся в образ; руками в .env их больше не задают.
 . (Join-Path $PSScriptRoot 'build-identity.ps1')
+# R493/долг 15b: ЕДИНСТВЕННЫЙ писатель манифеста. Раньше манифест собирался здесь
+# из {service, variable, image, imageTag, imageId, alias} и на каждом выпуске
+# терял per-image идентичность (commit/buildDate/author, у cppworker llama+rpc) и
+# блок standDeployed с доказательствами приёмки — наблюдалось дважды 2026-11-11.
+# Теперь идентичность берётся из OCI-меток самого образа, а неполный манифест не
+# пишется вовсе (throw до записи).
+. (Join-Path $PSScriptRoot 'lib-release-manifest.ps1')
 $registryPrefix = Get-ImageRegistryPrefix -EnvDir (Join-Path $PSScriptRoot '..\deployments')
 
 if ([string]::IsNullOrWhiteSpace($Tag)) {
@@ -314,12 +321,13 @@ if (-not $NoDeploy) {
 # собрано». Вместе они дают воспроизводимость и откат даже после перезаписи тега
 # (образ остаётся в локальном демоне по image id).
 #
-# R-Image follow-up (2026-10-03): манифест описывает СТЕНД, а не один запуск
-# скрипта. Раньше он перезаписывался только собранными сейчас сервисами, поэтому
-# выпуск одного компонента (`-Services webui`) «терял» из манифеста balancer и
-# imageworker — и check-image-tags.ps1 переставал видеть рассинхрон остальных.
-# Теперь компоненты, которых не было в этом запуске, переносятся из предыдущего
-# манифеста как есть (их теги в .env мы не трогали).
+# R-Image follow-up (2026-10-03): манифест описывает СТЕНД, а не один запуск:
+# компоненты, которых не было в этом запуске, переносятся из прошлого манифеста
+# как есть (их теги в .env мы не трогали).
+#
+# R493/долг 15b: сама запись — в scripts/lib-release-manifest.ps1. Он же берёт
+# идентичность из OCI-меток образа (не из .env и не из HEAD: образ мог быть собран
+# раньше последнего коммита) и отказывается писать неполный манифест.
 $builtServices = @{}
 $manifestImages = @()
 foreach ($r in $results) {
@@ -347,17 +355,21 @@ if (Test-Path $manifestPath) {
 }
 
 $gitCommit = (git rev-parse --short HEAD 2>$null | Select-Object -First 1)
-$manifest = [ordered]@{
-    tag = $Tag
-    builtAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    gitCommit = $gitCommit
-    cudaArch = $CudaArch
-    composeFile = $ComposeFile
-    composeProfile = $ComposeProfile
-    images = $manifestImages
+# Образ мог быть вычищен prune'ом: тогда идентичность переносится из прошлого
+# манифеста, но это НЕ молчаливое исключение — флаг явный.
+$noIdentityRefresh = $false
+foreach ($img in $manifestImages) {
+    if (-not (Get-ImageIdentityR493 -ImageRef ([string]$img.image))) { $noIdentityRefresh = $true; break }
 }
-$manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath
-Write-Host "[release] манифест: $manifestPath" -ForegroundColor Cyan
+Write-ReleaseManifest -ManifestPath $manifestPath -Tag $Tag -GitCommit $gitCommit `
+    -CudaArch $CudaArch -ComposeFile $ComposeFile -ComposeProfile $ComposeProfile `
+    -Images $manifestImages -RepoRoot $repoRoot -ReleaseServices $Services -NoIdentityRefresh:$noIdentityRefresh | Out-Null
+if ($noIdentityRefresh) {
+    Write-Host "[release] внимание: часть образов отсутствует в демоне — идентичность перенесена из прошлого манифеста" -ForegroundColor Yellow
+}
+
+Write-Host ""
+Write-Host "======================================================================" -ForegroundColor Cyan
 
 Write-Host ""
 Write-Host "======================================================================" -ForegroundColor Green

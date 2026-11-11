@@ -64,7 +64,7 @@ func TestR459_MoveRejectedWhenCandidateWindowSmaller(t *testing.T) {
 		t.Fatalf("выбран %q, а окно кандидата меньше — переезд запрещён", got)
 	}
 	// Без предиката выбор прежний (поведение других путей не изменилось).
-	if got := p.findLessLoadedBackendWithModel(r459Model, "b1", nil); got != "b2" {
+	if got := p.findLessLoadedBackendWithModelWhere(r459Model, "b1", nil, nil); got != "b2" {
 		t.Fatalf("без предиката = %q, want b2 (прежнее поведение)", got)
 	}
 }

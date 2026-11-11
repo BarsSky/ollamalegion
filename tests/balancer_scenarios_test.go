@@ -965,7 +965,7 @@ func TestScenario_Enhanced_Scoring(t *testing.T) {
 	// gpu-2 с весом 2 должен иметь преимущество (при равных метриках)
 }
 
-// TestScenario_Session_Rebalance — проверка findLessLoadedBackendWithModel
+// TestScenario_Session_Rebalance — проверка переезда сессии (findLessLoadedBackendWithModelWhere)
 // при перегрузке sticky-бэкенда.
 func TestScenario_Session_Rebalance(t *testing.T) {
 	b1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -677,11 +677,6 @@ func (p *Proxy) findLeastLoadedBackendWithModel(modelName string, allowedTypes [
 	return bestBackendID
 }
 
-// findLessLoadedBackendWithModel — поиск менее загруженного бэкенда с той же моделью
-func (p *Proxy) findLessLoadedBackendWithModel(modelName, excludeBackendID string, allowedTypes []types.BackendType) string {
-	return p.findLessLoadedBackendWithModelWhere(modelName, excludeBackendID, allowedTypes, nil)
-}
-
 // findLessLoadedBackendWithModelWhere — то же, но кандидат можно ОТКЛОНИТЬ
 // предикатом.
 //
@@ -757,13 +752,6 @@ func (p *Proxy) findLessLoadedBackendWithModelWhere(
 	}
 
 	return bestBackendID
-}
-
-// findLessLoadedBackendAny — поиск любого менее загруженного healthy бэкенда.
-// При равном loadRatio выбирает бэкенд с лучшим score (deterministic).
-// Если модель не загружена на выбранном бэкенде — запускает асинхронный warmup.
-func (p *Proxy) findLessLoadedBackendAny(modelName, excludeBackendID string, allowedTypes []types.BackendType) string {
-	return p.findLessLoadedBackendAnyWhere(modelName, excludeBackendID, allowedTypes, nil)
 }
 
 // findLessLoadedBackendAnyWhere — вариант findLessLoadedBackendAny с предикатом
@@ -954,86 +942,6 @@ func (p *Proxy) findBackendWithModel(modelName string, allowedTypes []types.Back
 	}
 
 	return bestBackendID
-}
-
-// findWarmingBackendForModelUnsafe — поиск WARMING_UP бэкенда (без блокировки, вызывается под p.mu.RLock)
-func (p *Proxy) findWarmingBackendForModelUnsafe(model string) string {
-	for id, state := range p.backends {
-		// R92 (S2): воркер логического бэкенда держит только часть слоёв
-		// раскладки — как самостоятельная цель запроса он не годится. Его
-		// обслуживает мастер группы (см. sharded_master_r92.go).
-		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
-		if p.cannotHostModelR304(id) {
-			continue
-		}
-		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
-		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
-		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
-		if isDisabledBackendState(state) {
-			continue
-		}
-		if state.Backend.Status != types.StatusHealthy {
-			continue
-		}
-		state.mu.Lock()
-		ws, exists := state.WarmingUpModels[model]
-		state.mu.Unlock()
-		if exists && ws != nil && time.Now().Before(ws.EstimatedReadyAt) {
-			return id
-		}
-	}
-	return ""
-}
-
-// findFreeBackendForModelUnsafe — свободный бэкенд с достаточным VRAM (без блокировки)
-func (p *Proxy) findFreeBackendForModelUnsafe(model string, allowedTypes []types.BackendType) string {
-	var best string
-	var maxFree uint64
-	for id, state := range p.backends {
-		// R92 (S2): воркер логического бэкенда держит только часть слоёв
-		// раскладки — как самостоятельная цель запроса он не годится. Его
-		// обслуживает мастер группы (см. sharded_master_r92.go).
-		// R304: сюда же донор — его VRAM отдана мастеру, свои копии ему нельзя.
-		if p.cannotHostModelR304(id) {
-			continue
-		}
-		// R250 (2026-10-28): бэкенд исключён оператором («не использовать»).
-		// Он остаётся в списке, в метриках и в раскладке, но целью ВЫБОРА не
-		// становится — ровно этого оператор и просил (см. backend_disable_r250.go).
-		if isDisabledBackendState(state) {
-			continue
-		}
-		if !isBackendTypeAllowed(normalizeBackendType(state.Backend.Type), allowedTypes) {
-			continue
-		}
-		if state.Backend.Status != types.StatusHealthy {
-			continue
-		}
-		if !p.checkResourceLimitsLocked(id) {
-			continue
-		}
-		state.mu.Lock()
-		active := state.ActiveReqs
-		maxReqs := state.Backend.MaxConcurrentReqs
-		state.mu.Unlock()
-		if active > 0 || (maxReqs > 0 && active >= maxReqs) {
-			continue
-		}
-		metrics, ok := p.metricsMgr.SnapshotBackendMetrics(id)
-		if !ok || metrics.GPU.MemoryTotal == 0 {
-			continue
-		}
-		freeVRAM := metrics.GPU.MemoryTotal - metrics.GPU.MemoryUsed
-		needed := estimateModelVRAM(model)
-		if freeVRAM <= needed {
-			continue
-		}
-		if !p.backendHasModel(metrics, model) && freeVRAM > maxFree {
-			maxFree = freeVRAM
-			best = id
-		}
-	}
-	return best
 }
 
 // checkModelReadyUnsafe — готова ли модель на бэкенде (без блокировки)

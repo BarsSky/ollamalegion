@@ -214,13 +214,13 @@ func TestFindLessLoadedBackendWithModel(t *testing.T) {
 	p.backends["b2"].ActiveReqs = 2
 	p.backends["b2"].mu.Unlock()
 
-	got := p.findLessLoadedBackendWithModel("llama3.1:8b", "", nil)
+	got := p.findLessLoadedBackendWithModelWhere("llama3.1:8b", "", nil, nil)
 	if got != "b2" {
 		t.Errorf("findLessLoadedBackendWithModel() = %s, want b2", got)
 	}
 
 	// Exclude b2
-	got2 := p.findLessLoadedBackendWithModel("llama3.1:8b", "b2", nil)
+	got2 := p.findLessLoadedBackendWithModelWhere("llama3.1:8b", "b2", nil, nil)
 	if got2 != "b1" {
 		t.Errorf("findLessLoadedBackendWithModel(exclude b2) = %s, want b1", got2)
 	}
@@ -264,7 +264,7 @@ func TestFindLessLoadedBackendAny(t *testing.T) {
 	p.backends["b2"].ActiveReqs = 2
 	p.backends["b2"].mu.Unlock()
 
-	got := p.findLessLoadedBackendAny("new-model", "", nil)
+	got := p.findLessLoadedBackendAnyWhere("new-model", "", nil, nil)
 	if got != "b2" {
 		t.Errorf("findLessLoadedBackendAny() = %s, want b2", got)
 	}
@@ -274,7 +274,7 @@ func TestFindLessLoadedBackendAny(t *testing.T) {
 	p.backends["b1"].ActiveReqs = 2
 	p.backends["b1"].mu.Unlock()
 
-	got2 := p.findLessLoadedBackendAny("new-model", "", nil)
+	got2 := p.findLessLoadedBackendAnyWhere("new-model", "", nil, nil)
 	if got2 == "" {
 		t.Errorf("findLessLoadedBackendAny() with tie = empty, want non-empty")
 	}

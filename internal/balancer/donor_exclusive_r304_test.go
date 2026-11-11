@@ -282,8 +282,6 @@ var r304SelectionSites = []struct{ file, fn string }{
 	{"backend_selector.go", "findLessLoadedBackendWithModelWhere"},
 	{"backend_selector.go", "findLessLoadedBackendAnyWhere"},
 	{"backend_selector.go", "findBackendWithModel"},
-	{"backend_selector.go", "findWarmingBackendForModelUnsafe"},
-	{"backend_selector.go", "findFreeBackendForModelUnsafe"},
 	{"backend_selector.go", "selectFreeBackendAny"},
 	{"backend_selector.go", "selectByResources"},
 	{"candidate.go", "expandCandidates"},

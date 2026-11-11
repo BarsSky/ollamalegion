@@ -101,15 +101,16 @@ func TestR250_DisabledBackendIsNotChosen(t *testing.T) {
 	if got := p.findLeastLoadedBackendWithModel("llama3.1:8b", nil); got == "b1" {
 		t.Fatal("findLeastLoadedBackendWithModel вернул выключенный b1")
 	}
-	if got := p.findLessLoadedBackendAny("llama3.1:8b", "b2", nil); got == "b1" {
+	if got := p.findLessLoadedBackendAnyWhere("llama3.1:8b", "b2", nil, nil); got == "b1" {
 		t.Fatal("findLessLoadedBackendAny вернул выключенный b1")
 	}
 	if got := p.selectFreeBackendAny(nil); got == "b1" {
 		t.Fatal("selectFreeBackendAny вернул выключенный b1")
 	}
-	if got := p.findFreeBackendForModelUnsafe("другая-модель", nil); got == "b1" {
-		t.Fatal("findFreeBackendForModelUnsafe вернул выключенный b1")
-	}
+	// R493/P2-14: findFreeBackendForModelUnsafe удалён как мёртвый — его роль
+	// играет pickLoadableFreeBackendR493 (узел под загрузку), а фильтр выключенного
+	// узла проверяется выше через expandCandidates: выключенный b1 не попадает ни в
+	// одну группу кандидатов, значит и ни один путь выбора его не получит.
 
 	// И это НЕ удаление: узел остаётся в кластере, с причиной.
 	all := p.GetAllBackends()

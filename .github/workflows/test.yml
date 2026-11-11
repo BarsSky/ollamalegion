@@ -74,13 +74,28 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true         # кеширует GOMODCACHE + GOCACHE между прогонами
 
-      - name: Install build tools
+      - name: Install build tools (only if missing)
         # build-essential нужен для cgo (хотя в stub-режиме не линкуемся
         # с реальной llama.cpp, headers gcc всё равно используются).
         # cmake не требуется — собираем только Go-бинарь.
+        #
+        # R493-CI (2026-11-11): apt только если инструментов ДЕЙСТВИТЕЛЬНО нет.
+        # Живой факт: прогоны падали в этом шаге на `Temporary failure resolving
+        # 'archive.ubuntu.com'` / 'security.ubuntu.com' — то есть красный CI не
+        # имел отношения к коду. На ubuntu-latest компиляторы предустановлены,
+        # поэтому проверка наличия делает шаг no-op в нормальном случае.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential
+          missing=""
+          for t in gcc g++ make; do
+            command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+          done
+          if [ -z "$missing" ]; then
+            echo "все инструменты уже есть: gcc g++ make"
+            exit 0
+          fi
+          echo "не хватает:$missing — ставим пакеты"
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y build-essential
 
       - name: Build all binaries (stub mode)
         run: |

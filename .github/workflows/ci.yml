@@ -467,10 +467,27 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Install build tools
+      # R493-CI (2026-11-11): apt больше не «обязательный первый шаг».
+      #
+      # Живой факт: прогоны 43041495674 и 43058531096 падали В ЭТОМ шаге на
+      # `Temporary failure resolving 'archive.ubuntu.com'` и
+      # 'security.ubuntu.com' — красный CI не имел отношения к коду. На
+      # ubuntu-latest gcc/g++/make/cmake/git уже предустановлены, а шаг был
+      # страховкой. Теперь: инструменты на месте — шаг ничего не делает; нет —
+      # apt с повторами (падение apt остаётся падением, а не глохнет).
+      - name: Install build tools (only if missing)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake
+          missing=""
+          for t in gcc g++ make cmake git; do
+            command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+          done
+          if [ -z "$missing" ]; then
+            echo "все инструменты уже есть: gcc g++ make cmake git"
+            exit 0
+          fi
+          echo "не хватает:$missing — ставим пакеты"
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y build-essential cmake git
 
       - name: Build all binaries (stub mode)
         run: |
@@ -639,10 +656,20 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install build deps
+      # R493-CI: то же правило, что в job выше — apt только если инструментов нет.
+      - name: Install build deps (only if missing)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake git
+          missing=""
+          for t in gcc g++ make cmake git; do
+            command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+          done
+          if [ -z "$missing" ]; then
+            echo "все инструменты уже есть: gcc g++ make cmake git"
+            exit 0
+          fi
+          echo "не хватает:$missing — ставим пакеты"
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y build-essential cmake git
 
       - name: Build llama.cpp CPU-only (libllama-common.a)
         run: |

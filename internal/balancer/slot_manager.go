@@ -179,8 +179,12 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 					"backend", backendID, "vram_percent", vramPercent, "headroom_pct", headroom)
 				return false
 			}
-			logger.Get().Infow(i18n.T("balancer.slot_manager.vram_above_headroom_soft_info"),
-				"backend", backendID, "vram_percent", vramPercent, "headroom_pct", headroom)
+			// R488: мягкое наблюдение — не событие хода; без троттлинга оно вытесняло
+			// из кольца логов строки request trace (живой архив: 733/2000 строк).
+			if softLogAllowedR488(backendID, "vram_headroom", time.Now(), softLogEveryR488) {
+				logger.Get().Infow(i18n.T("balancer.slot_manager.vram_above_headroom_soft_info"),
+					"backend", backendID, "vram_percent", vramPercent, "headroom_pct", headroom)
+			}
 		}
 	}
 
@@ -189,15 +193,19 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 			logger.Get().Warnw("backend GPU usage critical, blocking", "backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
 			return false
 		}
-		logger.Get().Infow(i18n.T("balancer.slot_manager.gpu_busy_soft_info"),
-			"backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
+		if softLogAllowedR488(backendID, "gpu_busy", time.Now(), softLogEveryR488) {
+			logger.Get().Infow(i18n.T("balancer.slot_manager.gpu_busy_soft_info"),
+				"backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
+		}
 	}
 
 	if limits.GPU.MaxVRAMUsagePercent > 0 && metrics.GPU.MemoryTotal > 0 {
 		vramPercent := float64(metrics.GPU.MemoryUsed) * 100 / float64(metrics.GPU.MemoryTotal)
 		if vramPercent > limits.GPU.MaxVRAMUsagePercent {
-			logger.Get().Warnw("backend VRAM usage above threshold (degraded, not blocked)",
-				"backend", backendID, "vram_percent", vramPercent, "threshold", limits.GPU.MaxVRAMUsagePercent)
+			if softLogAllowedR488(backendID, "vram_threshold", time.Now(), softLogEveryR488) {
+				logger.Get().Warnw("backend VRAM usage above threshold (degraded, not blocked)",
+					"backend", backendID, "vram_percent", vramPercent, "threshold", limits.GPU.MaxVRAMUsagePercent)
+			}
 		}
 	}
 
@@ -206,8 +214,10 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 			logger.Get().Warnw("backend CPU usage critical, blocking", "backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent)
 			return false
 		}
-		logger.Get().Infow(i18n.T("balancer.slot_manager.cpu_busy_soft_info"),
-			"backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent)
+		if softLogAllowedR488(backendID, "cpu_busy", time.Now(), softLogEveryR488) {
+			logger.Get().Infow(i18n.T("balancer.slot_manager.cpu_busy_soft_info"),
+				"backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent)
+		}
 	}
 
 	if limits.Memory.MaxUsagePercent > 0 && metrics.System.MemoryTotal > 0 {

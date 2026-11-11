@@ -170,6 +170,10 @@ func TestR229_ClientCancelRejectsGet(t *testing.T) {
 
 func TestR229_ClientCancelForwardsRequestID(t *testing.T) {
 	p, recs := newCancelTestProxy(t, 1)
+	// R487: отмена по request_id адресная — заявка должна быть известна балансеру.
+	// Иначе (неизвестный id) приказ НЕ рассылается: именно это убивало чужую
+	// генерацию на занятом бэкенде (см. cancel_scope_r487_test.go).
+	p.requestIndexR487().MarkRunning("req-42", "backend-1")
 	rec := doCancel(t, p, http.MethodPost, `{"request_id":"req-42","user_id":"alice"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)

@@ -30,6 +30,13 @@ import (
 
 // Proxy - HTTP прокси для балансировки запросов
 type Proxy struct {
+	// R487 (2026-11-11): индекс «request_id → где заявка» (очередь или бэкенд).
+	// Без него POST /api/cancel выбирал адресатов по МОДЕЛИ и рассылал приказ во
+	// все бэкенды с загруженной моделью — убивая чужую работающую генерацию и не
+	// снимая запись из очереди (живой архив второго стенда, 2026-11-11).
+	reqIdxR487   *requestIndexR487
+	reqIdxMuR487 sync.Mutex
+
 	config   *types.LoadBalancerConfig
 	backends map[string]*BackendState
 

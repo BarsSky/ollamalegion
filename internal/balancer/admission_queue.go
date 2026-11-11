@@ -606,7 +606,7 @@ func (p *Proxy) acquireInferenceSlotNow(backendID, session string) (*admissionLe
 //	errAdmissionTimeout   — ожидание истекло (503 + Retry-After);
 //	ctx.Err()             — клиент отвалился/отменил запрос.
 func (p *Proxy) acquireInferenceSlot(
-	ctx context.Context, backendID, session string,
+	ctx context.Context, backendID, session, identity string,
 ) (*admissionLease, int, error) {
 	if p == nil || backendID == "" {
 		return nil, 0, errAdmissionDisabled
@@ -624,6 +624,20 @@ func (p *Proxy) acquireInferenceSlot(
 	aq := p.admission
 	w := aq.enqueue(backendID, session)
 	position := aq.position(backendID, w)
+	// R487: пока заявка стоит в очереди, она должна быть АДРЕСНО снимаема.
+	// Клиентский Stop приходит отдельным POST /api/cancel: он не снимает
+	// http-сессию ожидающего запроса, поэтому до этой правки заявка висела до
+	// таймаута, а приказ уходил на бэкенд и убивал чужую генерацию.
+	waitCtx := ctx
+	var cancelWait context.CancelFunc
+	if reqID := RequestIDFromContext(ctx); reqID != "" {
+		if reqIdx := p.requestIndexR487(); reqIdx != nil {
+			waitCtx, cancelWait = context.WithCancel(ctx)
+			reqIdx.TrackQueued(reqID, session, identity, backendID, cancelWait)
+			defer reqIdx.Drop(reqID)
+			defer cancelWait()
+		}
+	}
 	deadline := time.Now().Add(wait)
 	// R477: ход стоит в очереди — стадия admission видна в request trace.
 	SetStageR477(ctx, stageAdmissionR477)
@@ -662,12 +676,15 @@ func (p *Proxy) acquireInferenceSlot(
 		select {
 		case <-notify:
 		case <-timer.C:
-		case <-ctx.Done():
+		case <-waitCtx.Done():
 			timer.Stop()
-			logger.Get().Infow("admission: client canceled while waiting for slot",
+			// R487: два разных события снаружи выглядят одинаково, но означают
+			// разное: клиент ушёл (его ctx) или балансер снял заявку по Stop.
+			logger.Get().Infow("admission: request left the queue while waiting for slot",
 				"backend", backendID, "session", session,
-				"waited_ms", time.Since(w.enqueued).Milliseconds())
-			return nil, position, ctx.Err()
+				"waited_ms", time.Since(w.enqueued).Milliseconds(),
+				"reason", waitCtx.Err())
+			return nil, position, waitCtx.Err()
 		}
 		timer.Stop()
 	}
@@ -803,7 +820,7 @@ func (lr *LlamaCppRouter) acquireInferenceAdmission(
 	// того, как запрос получит или не получит слот, и снимаем её при выходе.
 	pendingRow := lr.proxy.noteAdmissionPendingR329(model, backendID)
 	defer lr.proxy.clearAdmissionPendingR329(pendingRow)
-	lease, position, err := lr.proxy.acquireInferenceSlot(r.Context(), backendID, session)
+	lease, position, err := lr.proxy.acquireInferenceSlot(r.Context(), backendID, session, cancelIdentityR487(r.Header, ""))
 	switch {
 	case err == nil:
 		if lease.Waited > 0 {

@@ -49,7 +49,40 @@ var (
 	identityRequestIDHeadersR378 = []string{"X-Request-Id", "X-Request-ID"}
 	// identityCookieNameR378 — cookie с уже назначенной сессией.
 	identityCookieNameR378 = "session_id"
+	// identityClientHeadersR378 — явный идентификатор ЭКЗЕМПЛЯРА клиента
+	// (R118.9: два Cline с одной машины). R487 использует его же как scope
+	// адресной отмены: клиент, снимающий свой запрос, присылает тот же заголовок.
+	identityClientHeadersR378 = []string{"X-Client-ID"}
 )
+
+// cancelIdentityR487 — явная личность клиента для адресной отмены (R487).
+//
+// Функция живёт ЗДЕСЬ, а не рядом с обработчиком отмены: стюард
+// TestR378_Steward_IdentitySourcesLiveHere запрещает читать заголовки
+// идентичности где-либо ещё — иначе ключ очереди и ключ сессии разойдутся, и
+// отмена снова начнёт попадать в чужую заявку.
+//
+// Берём только то, что клиент заявил САМ: сессию здесь выводить нельзя — у
+// запроса отмены нет ни истории, ни chat_id, поэтому выведенный ключ заведомо не
+// совпадёт с ключом рабочей заявки.
+func cancelIdentityR487(h http.Header, bodyUserID string) string {
+	if h != nil {
+		for _, name := range identityUserHeadersR378 {
+			if v := strings.TrimSpace(h.Get(name)); v != "" {
+				return "user:" + v
+			}
+		}
+		for _, name := range identityClientHeadersR378 {
+			if v := strings.TrimSpace(h.Get(name)); v != "" {
+				return "client:" + v
+			}
+		}
+	}
+	if v := strings.TrimSpace(bodyUserID); v != "" {
+		return "user:" + v
+	}
+	return ""
+}
 
 // requestUserIdentity — явный пользователь из заголовков (без префикса).
 func requestUserIdentity(r *http.Request) string {

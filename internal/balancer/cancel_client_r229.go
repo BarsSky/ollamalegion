@@ -86,6 +86,21 @@ func (p *Proxy) handleClientCancel(w http.ResponseWriter, r *http.Request) {
 		req.CancelLoad = &allowLoadCancel
 	}
 
+	// R487 (2026-11-11): СНАЧАЛА адресная отмена — по request_id, затем по явной
+	// личности клиента. Только если клиент не сказал ни того, ни другого, идёт
+	// прежняя широковещательная рассылка по модели (совместимость с OpenWebUI,
+	// который присылает одно поле model).
+	//
+	// ЖИВОЙ ДЕФЕКТ, ради которого это здесь: снятие запроса, стоявшего В ОЧЕРЕДИ,
+	// оставляло его висеть, а приказ по модели убивал генерацию, которая в этот
+	// момент РАБОТАЛА на занятом бэкенде (и доезжал до cppworker).
+	identity := cancelIdentityR487(r.Header, req.UserID)
+	if scoped, handled := p.cancelByScopeR487(req, identity); handled {
+		w.Header().Set("Content-Type", "application/json")
+		writeJSON(w, http.StatusOK, scoped)
+		return
+	}
+
 	targets := p.cancelTargets(req.Model)
 	accepted := make([]string, 0, len(targets))
 	results := make([]map[string]interface{}, 0, len(targets))
@@ -121,8 +136,14 @@ func (p *Proxy) handleClientCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	responseBody := map[string]interface{}{
-		"status":   status,
-		"model":    req.Model,
+		"status": status,
+		"model":  req.Model,
+		// R487: адресного признака не было ни в request_id, ни в личности клиента —
+		// значит это широковещательная отмена по модели. Говорим это прямо, чтобы
+		// «Stop убил не ту сессию» больше не искали в логах воркера.
+		"scope": "model_broadcast",
+		"hint_scope": "клиент не прислал ни request_id, ни X-User-Id/X-Client-ID: " +
+			"отмена разослана по всем бэкендам с этой моделью (R487)",
 		"backends": accepted,
 		// results — детали по каждому воркеру: сколько отменено и статус. Клиенту
 		// достаточно "cancelled", оператору нужен ответ «почему не остановилось».

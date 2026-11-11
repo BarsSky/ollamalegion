@@ -52,6 +52,14 @@ type workerFailureR477 struct {
 	DurationMs int64     `json:"duration_ms"`
 	Kind       string    `json:"kind,omitempty"`
 	Detail     string    `json:"detail,omitempty"`
+	// Count — сколько РАЗ одно и то же событие повторилось подряд (R488).
+	//
+	// ЗАЧЕМ. На 27B-стенде сторож удержания снимает вывод каждые ~20 с, и каждое
+	// снятие писало отдельную запись. Кольцо на 50 записей заполнялось рутиной
+	// целиком: в архиве 2026-11-11 не осталось ни одного client_cancelled — то
+	// есть ответ на «кто отменил запрос» приходил пустым. Теперь повторы
+	// схлопываются в одну запись со счётчиком, а редкие события живут.
+	Count int `json:"count,omitempty"`
 }
 
 // workerFailuresMaxR477 — сколько последних сбоев держим.
@@ -68,6 +76,19 @@ func recordWorkerFailureR477(f workerFailureR477) {
 	defer workerFailuresMu.Unlock()
 	if f.Time.IsZero() {
 		f.Time = time.Now()
+	}
+	// R488: подряд идущие повторы того же события (kind) по той же заявке
+	// (request_id) не добавляют запись, а увеличивают счётчик последней. Порядок
+	// и содержимое кольца от этого только информативнее: вместо 50 строк
+	// «hold_released held_ms=20034» остаётся одна с «count=37».
+	if f.Kind != "" && len(workerFailuresLog) > 0 {
+		last := &workerFailuresLog[len(workerFailuresLog)-1]
+		if last.Kind == f.Kind && last.RequestID == f.RequestID {
+			last.Count++
+			last.Detail = f.Detail
+			last.Time = f.Time
+			return
+		}
 	}
 	workerFailuresLog = append(workerFailuresLog, f)
 	if len(workerFailuresLog) > workerFailuresMaxR477 {

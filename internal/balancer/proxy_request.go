@@ -177,6 +177,16 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 	p.recordRequest(backendID)
 	startTime := time.Now()
 
+	// R487: с этого места заявка выполняется на конкретном бэкенде — фиксируем
+	// это, чтобы POST /api/cancel с известным request_id попал РОВНО сюда, а не
+	// во все бэкенды с этой моделью.
+	reqIDR487 := getRequestIDFromRequest(r)
+	if reqIdx := p.requestIndexR487(); reqIdx != nil && reqIDR487 != "" {
+		reqIdx.MarkRunning(reqIDR487, backendID)
+		reqIdx.MarkIdentity(reqIDR487, cancelIdentityR487(r.Header, ""), "")
+		defer reqIdx.Drop(reqIDR487)
+	}
+
 	targetURL := p.getBackendBaseURL(state.Backend)
 
 	// Для llama.cpp бэкендов — используем отдельный прокси с трансляцией форматов

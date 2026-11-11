@@ -177,7 +177,7 @@ func TestAdmission_WaitsInsteadOfRejecting_R67b(t *testing.T) {
 
 	results := make(chan admissionResult, 1)
 	go func() {
-		lease, pos, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:u1")
+		lease, pos, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:u1", "")
 		results <- admissionResult{lease: lease, pos: pos, err: err}
 	}()
 
@@ -235,7 +235,7 @@ func TestAdmission_DisabledKeepsLegacyBehaviour_R67b(t *testing.T) {
 		t.Fatal("не удалось занять единственный слот")
 	}
 
-	lease, _, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:u1")
+	lease, _, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:u1", "")
 	if !errors.Is(err, errAdmissionDisabled) {
 		t.Fatalf("ожидался errAdmissionDisabled, получено: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestAdmission_WaitTimeout_R67b(t *testing.T) {
 	}
 
 	start := time.Now()
-	lease, pos, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:u1")
+	lease, pos, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:u1", "")
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, errAdmissionTimeout) {
@@ -304,7 +304,7 @@ func TestAdmission_SameSessionYieldsToNewSession_R67b(t *testing.T) {
 	p.setAdmissionWait(5 * time.Second)
 
 	// A1 уже обслуживается (держит единственный слот).
-	a1, _, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:A")
+	a1, _, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:A", "")
 	if err != nil {
 		t.Fatalf("A1 не получил слот: %v", err)
 	}
@@ -313,12 +313,12 @@ func TestAdmission_SameSessionYieldsToNewSession_R67b(t *testing.T) {
 	resA2 := make(chan admissionResult, 1)
 	resB1 := make(chan admissionResult, 1)
 	go func() {
-		lease, pos, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:A")
+		lease, pos, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:A", "")
 		resA2 <- admissionResult{lease: lease, pos: pos, err: err}
 	}()
 	waitForAdmissionWaiters(t, p, 1)
 	go func() {
-		lease, pos, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:B")
+		lease, pos, err := p.acquireInferenceSlot(context.Background(), "llama_adm", "X-User-Id:B", "")
 		resB1 <- admissionResult{lease: lease, pos: pos, err: err}
 	}()
 	waitForAdmissionWaiters(t, p, 2)

@@ -38,7 +38,7 @@ func TestAdmissionStats_WaitingDetail(t *testing.T) {
 	for _, session := range []string{"X-User-Id:alice", "X-User-Id:bob"} {
 		session := session
 		go func() {
-			lease, _, err := p.acquireInferenceSlot(ctx, "llama_adm", session)
+			lease, _, err := p.acquireInferenceSlot(ctx, "llama_adm", session, "")
 			if lease != nil {
 				lease.release()
 			}

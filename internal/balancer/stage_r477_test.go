@@ -9,7 +9,6 @@
 package balancer
 
 import (
-	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,8 +35,8 @@ func TestR477_StageTrackerStoresStage(t *testing.T) {
 
 // TestR477_TraceLineCarriesStage — строка трассировки печатает стадию.
 func TestR477_TraceLineCarriesStage(t *testing.T) {
-	var buf bytes.Buffer
-	restore := logger.CaptureToBuffer(&buf)
+	buf := logger.NewCaptureBuffer()
+	restore := logger.CaptureToBuffer(buf)
 	defer restore()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)

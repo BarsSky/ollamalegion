@@ -8,7 +8,6 @@
 package balancer
 
 import (
-	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,8 +18,8 @@ import (
 
 // TestR476_GrowthDecisionLogCarriesRequestID — решение R301 несёт request_id.
 func TestR476_GrowthDecisionLogCarriesRequestID(t *testing.T) {
-	var buf bytes.Buffer
-	restore := logger.CaptureToBuffer(&buf)
+	buf := logger.NewCaptureBuffer()
+	restore := logger.CaptureToBuffer(buf)
 	defer restore()
 
 	v := growthVerdictR301{
@@ -47,8 +46,8 @@ func TestR476_GrowthDecisionLogCarriesRequestID(t *testing.T) {
 // TestR476_PreflightInputsLogCarriesRequestID — вход preflight несёт request_id
 // из RequestMeta (его ставит вызывающий, у которого есть *http.Request).
 func TestR476_PreflightInputsLogCarriesRequestID(t *testing.T) {
-	var buf bytes.Buffer
-	restore := logger.CaptureToBuffer(&buf)
+	buf := logger.NewCaptureBuffer()
+	restore := logger.CaptureToBuffer(buf)
 	defer restore()
 
 	meta := &RequestMeta{
@@ -80,8 +79,8 @@ func TestR476_GrowthVerdictKeepsRID(t *testing.T) {
 // TestR476_TraceLineCarriesBackend — в строке `request trace` есть бэкенд:
 // для нативного /api/* его выставляет транспорт, для OpenAI-путей — обработчик.
 func TestR476_TraceLineCarriesBackend(t *testing.T) {
-	var buf bytes.Buffer
-	restore := logger.CaptureToBuffer(&buf)
+	buf := logger.NewCaptureBuffer()
+	restore := logger.CaptureToBuffer(buf)
 	defer restore()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)

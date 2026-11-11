@@ -24,7 +24,6 @@
 package logger
 
 import (
-	"bytes"
 	"io"
 	"sync/atomic"
 
@@ -133,9 +132,16 @@ func CaptureTo(w io.Writer) (restore func()) {
 	// R489 (2026-11-11): writer оборачивается в мьютекс. Без этого перехват логов
 	// в тестах ставил *bytes.Buffer, а параллельные тесты писали в него
 	// одновременно — детектор гонок валил прогон (internal/... (-race)).
+	// R489.1 (2026-11-11): если передан уже потокобезопасный CaptureBuffer, второй
+	// раз не оборачиваем — его мьютекс покрывает и запись, и ЧТЕНИЕ (String), а
+	// иначе гонка переезжает с «писатель-писатель» на «писатель-читатель».
+	sink := w
+	if _, ok := w.(*CaptureBuffer); !ok {
+		sink = newLockedWriterR489(w)
+	}
 	core := zapcore.NewCore(
 		zapcore.NewJSONEncoder(encCfg),
-		zapcore.AddSync(newLockedWriterR489(w)),
+		zapcore.AddSync(sink),
 		zap.DebugLevel,
 	)
 	logPtr.Store(zap.New(core, zap.AddStacktrace(zapcore.FatalLevel)).Sugar())
@@ -145,7 +151,12 @@ func CaptureTo(w io.Writer) (restore func()) {
 	}
 }
 
-// CaptureToBuffer — удобная обёртка над CaptureTo для *bytes.Buffer.
-func CaptureToBuffer(buf *bytes.Buffer) (restore func()) {
-	return CaptureTo(buf)
+// CaptureToBuffer — удобная обёртка над CaptureTo.
+//
+// R489.1: принимает любой io.Writer, а не только *bytes.Buffer: тестам нужен
+// CaptureBuffer (запись И чтение под одним мьютексом). *bytes.Buffer тоже
+// подходит — но тогда вызывающий обязан сам не читать буфер, пока другие
+// горутины пишут в перехват.
+func CaptureToBuffer(w io.Writer) (restore func()) {
+	return CaptureTo(w)
 }

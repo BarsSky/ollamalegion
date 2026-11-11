@@ -7,7 +7,6 @@
 package balancer
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -46,8 +45,8 @@ func TestR484_TransportTrackerWithoutAttachNoPanic(t *testing.T) {
 
 // TestR484_TraceLineCarriesTransport — строка трассировки печатает транспорт.
 func TestR484_TraceLineCarriesTransport(t *testing.T) {
-	var buf bytes.Buffer
-	restore := logger.CaptureToBuffer(&buf)
+	buf := logger.NewCaptureBuffer()
+	restore := logger.CaptureToBuffer(buf)
 	defer restore()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)

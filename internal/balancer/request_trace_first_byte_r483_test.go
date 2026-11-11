@@ -8,7 +8,6 @@
 package balancer
 
 import (
-	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,8 +38,8 @@ func TestR483_TraceStateFirstByte(t *testing.T) {
 
 // TestR483_TraceLineCarriesFirstByteMs — строка трассировки печатает first_byte_ms.
 func TestR483_TraceLineCarriesFirstByteMs(t *testing.T) {
-	var buf bytes.Buffer
-	restore := logger.CaptureToBuffer(&buf)
+	buf := logger.NewCaptureBuffer()
+	restore := logger.CaptureToBuffer(buf)
 	defer restore()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
@@ -65,8 +64,8 @@ func TestR483_TraceLineCarriesFirstByteMs(t *testing.T) {
 // TestR483_TraceLineFirstByteMinusOneWhenNothingWritten — клиенту не ушло ни
 // байта (отказ до записи): first_byte_ms = -1, а не 0 (0 значил бы «сразу»).
 func TestR483_TraceLineFirstByteMinusOneWhenNothingWritten(t *testing.T) {
-	var buf bytes.Buffer
-	restore := logger.CaptureToBuffer(&buf)
+	buf := logger.NewCaptureBuffer()
+	restore := logger.CaptureToBuffer(buf)
 	defer restore()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tags", nil)

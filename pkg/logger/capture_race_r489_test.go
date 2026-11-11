@@ -8,7 +8,6 @@
 package logger
 
 import (
-	"bytes"
 	"strings"
 	"sync"
 	"testing"
@@ -19,8 +18,8 @@ import (
 // Тест имеет смысл именно под `-race` (так его и гоняет CI): без блокировки
 // writer детектор гонок печатает WARNING: DATA RACE и прогон краснеет.
 func TestR489_CaptureIsRaceFree(t *testing.T) {
-	var buf bytes.Buffer
-	restore := CaptureToBuffer(&buf)
+	buf := NewCaptureBuffer()
+	restore := CaptureToBuffer(buf)
 	defer restore()
 
 	const writers = 8
@@ -56,8 +55,8 @@ func TestR489_CaptureIsRaceFree(t *testing.T) {
 
 // TestR489_NilWriterDoesNotPanic — capture в nil не должен падать.
 func TestR489_NilWriterDoesNotPanic(t *testing.T) {
-	var buf bytes.Buffer
-	restore := CaptureTo(&buf) // sanity: обычный writer
+	buf := NewCaptureBuffer()
+	restore := CaptureTo(buf) // sanity: потокобезопасный буфер
 	Get().Infow("r489 nil probe")
 	restore()
 	if buf.Len() == 0 {

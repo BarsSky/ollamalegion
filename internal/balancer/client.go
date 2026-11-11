@@ -210,7 +210,10 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 		// Приоритет 1: X-Client-ID + IP + модель + endpoint type + tab/request ID
 		tabID := r.Header.Get("X-Tab-ID")
 		requestID := r.Header.Get("X-Request-ID")
-		composite := clientID + "::" + realIP + "::" + model + "::" + endpointType
+		// R490: поверхность API в ключ НЕ входит: один разговор на 18080 и на
+		// 18079 — это один клиент и одна сессия (иначе affinity и кошелёк очереди
+		// расходятся, и балансер не видит, что бэкенд уже свободен для этой заявки).
+		composite := clientID + "::" + realIP + "::" + model
 		if tabID != "" {
 			composite += "::tab:" + tabID
 		}
@@ -221,10 +224,12 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 		return "cid:" + hex.EncodeToString(h[:16]) + "::" + model
 	}
 	if sessionID := r.Header.Get("X-Session-ID"); sessionID != "" {
-		return sessionID + "::" + model + "::" + endpointType
+		// R490: без endpointType — поверхность не различает один разговор.
+		return sessionID + "::" + model
 	}
 	if cookie, err := r.Cookie("session_id"); err == nil {
-		return cookie.Value + "::" + model + "::" + endpointType
+		// R490: без endpointType (см. выше).
+		return cookie.Value + "::" + model
 	}
 
 	// R67b (2026-09-23): явный пользователь (заголовок или тело/metadata) —
@@ -239,7 +244,8 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 		userID = bodyUser
 	}
 	if userID != "" {
-		composite := "user:" + userID + "::" + model + "::" + endpointType
+		// R490: явный пользователь — поверхность не входит в ключ.
+		composite := "user:" + userID + "::" + model
 		if chatID := extractChatIDFromBody(r); chatID != "" {
 			composite += "::chat:" + chatID
 		}
@@ -252,7 +258,8 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 	// сессию (fp + clientName совпадают), что приводило к попаданию в чужую
 	// привязку backendID и «пустым» ответам при смене чата.
 	if chatID := extractChatIDFromBody(r); chatID != "" {
-		h := sha256.Sum256([]byte("chat::" + chatID + "::" + realIP + "::" + endpointType))
+		// R490: чат — самодостаточный идентификатор разговора.
+		h := sha256.Sum256([]byte("chat::" + chatID + "::" + realIP))
 		return "chat:" + hex.EncodeToString(h[:16]) + "::" + model
 	}
 
@@ -268,7 +275,9 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 	// Cline пересылает историю целиком, поэтому системная инструкция + первая задача
 	// стабильны внутри задачи и различаются между задачами/экземплярами.
 	if conv := conversationFingerprintFromRequest(r); conv != "" {
-		composite := fp + "::" + clientName + "::" + model + "::" + endpointType + "::conv:" + conv
+		// R490: разговор (conv) — тоже самодостаточный признак: поверхность не
+		// добавляем, иначе сжатие/переключение API снова начнёт новую сессию.
+		composite := fp + "::" + clientName + "::" + model + "::conv:" + conv
 		h := sha256.Sum256([]byte(composite))
 		candidate := "conv:" + hex.EncodeToString(h[:16]) + "::" + model
 		// R252 (2026-10-28): СЖАТИЕ ИСТОРИИ НЕ ДОЛЖНО НАЧИНАТЬ НОВУЮ СЕССИЮ.
@@ -293,10 +302,13 @@ func (p *Proxy) getSessionIDWithModel(r *http.Request, clientName, model string)
 		// Явные идентификаторы клиента (X-Client-ID / X-Session-ID / cookie /
 		// user / chat_id) сюда не попадают: у них ветки выше, и там своя семантика.
 		parts := conversationPartsFromRequest(r)
-		if sid := p.resolveConversationSessionID(candidate, realIP, clientName, model, endpointType, conv, parts); sid != "" {
+		// R490: и сопоставление, и запись — без endpointType: ключ его больше не
+		// содержит, иначе «продолжение разговора» перестало бы находиться на
+		// другой поверхности API (а именно это и требовалось починить).
+		if sid := p.resolveConversationSessionID(candidate, realIP, clientName, model, "", conv, parts); sid != "" {
 			candidate = sid
 		}
-		p.recordSessionIdentity(candidate, realIP, clientName, model, endpointType, conv, parts)
+		p.recordSessionIdentity(candidate, realIP, clientName, model, "", conv, parts)
 		return candidate
 	}
 

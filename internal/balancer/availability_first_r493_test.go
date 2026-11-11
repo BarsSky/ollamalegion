@@ -21,6 +21,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strings"
 	"testing"
 
 	"ollama-loadbalancer/pkg/types"
@@ -342,5 +343,89 @@ func TestR493_StickyReleaseWiredInProxy(t *testing.T) {
 	if direct != 0 {
 		t.Fatalf("в proxy.go найден прямой GetSnapshot (%d): бэкенд сессии снова берётся без проверки "+
 			"свободного слота", direct)
+	}
+}
+
+// reasonForR493 — причина отказа конкретного бэкенда (или "", если он НЕ в списке).
+func reasonForR493(list []backendRejectionR460, id string) (string, string, bool) {
+	for _, r := range list {
+		if r.BackendID == id {
+			return r.Reason, r.Detail, true
+		}
+	}
+	return "", "", false
+}
+
+// TestR493_RejectionNamesVRAMShortage — долг 11a: «свободный узел, но модель не
+// влезает» обязано называться числами, а не «модель не загружена».
+func TestR493_RejectionNamesVRAMShortage(t *testing.T) {
+	restore := setModelSizeBytesForTest(func(name string) int64 {
+		if name == "m12b" {
+			return int64(12) << 30
+		}
+		return 0
+	})
+	defer restore()
+
+	p := availProxyR493(t, map[string]int{"small": 1})
+	setMetricsR493(p, "small", nil, 6000) // 6 ГБ свободно — 12 ГиБ не влезет
+
+	list := p.backendRejectionsR460("m12b", types.BackendTypeLlamaCpp)
+	reason, detail, found := reasonForR493(list, "small")
+	if !found {
+		t.Fatalf("свободный узел вообще не попал в список причин: %+v", list)
+	}
+	if reason != rejectVRAMInsufficientR460 {
+		t.Fatalf("причина %q, ожидалась %q (модель не влезает — это не «модель не загружена»)",
+			reason, rejectVRAMInsufficientR460)
+	}
+	for _, want := range []string{"need", "free", "GiB"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("в причине нет %q: %q — без чисел оператору нечего решать", want, detail)
+		}
+	}
+	t.Logf("причина названа: %s", detail)
+
+	// Контроль: если модель ВЛЕЗАЕТ, причина другая (загрузкой это устранимо).
+	setMetricsR493(p, "small", nil, 20490)
+	list = p.backendRejectionsR460("m12b", types.BackendTypeLlamaCpp)
+	reason, detail, found = reasonForR493(list, "small")
+	if !found {
+		t.Fatalf("узел с достаточной VRAM пропал из списка причин")
+	}
+	if reason != rejectModelAbsentR460 {
+		t.Fatalf("при достаточной VRAM причина %q, ожидалась %q", reason, rejectModelAbsentR460)
+	}
+	t.Logf("контроль: %s", detail)
+}
+
+// TestR493_RejectionSlotsUseEffectiveCapacity — долг 11a: причина «заняты слоты»
+// считается по ЭФФЕКТИВНОЙ вместимости (R71), как селектор и очередь, а не по
+// статическому лимиту конфига: иначе в why_queued бывает «(1/4)» на узле,
+// который физически принимает один запрос.
+func TestR493_RejectionSlotsUseEffectiveCapacity(t *testing.T) {
+	p := availProxyR493(t, map[string]int{"only": 4})
+	p.backends["only"].Backend.NodeClaimedCapacity = 1
+	setMetricsR493(p, "only", []string{"m27b"}, 2471) // модель загружена здесь
+	p.backends["only"].ActiveReqs = 1
+
+	if eff := p.backends["only"].Backend.EffectiveMaxConcurrentRequests(); eff != 1 {
+		t.Fatalf("условие теста не выполнено: эффективная вместимость %d", eff)
+	}
+
+	list := p.backendRejectionsR460("m27b", types.BackendTypeLlamaCpp)
+	reason, detail, found := reasonForR493(list, "only")
+	if !found {
+		t.Fatalf("занятый узел не попал в список причин: %+v", list)
+	}
+	if reason != rejectSlotsBusyR460 {
+		t.Fatalf("причина %q, ожидалась %q", reason, rejectSlotsBusyR460)
+	}
+	if !strings.Contains(detail, "(1/1)") {
+		t.Errorf("в причине %q нет «(1/1)» — считается статический лимит конфига, "+
+			"а узел принимает один запрос; оператор видит неверные числа", detail)
+	}
+	if strings.Contains(detail, "/4") {
+		t.Errorf("в причине статический лимит (%q) — должно быть по эффективной вместимости", detail)
 	}
 }

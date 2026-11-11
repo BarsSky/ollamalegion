@@ -20,6 +20,7 @@
 package balancer
 
 import (
+	"fmt"
 	"strings"
 
 	"ollama-loadbalancer/pkg/logger"
@@ -104,6 +105,37 @@ func (p *Proxy) stickyBackendIfAvailableR493(sessionKey string) string {
 // обычный score того же вида, что в P4: свободный узел не должен выигрывать у
 // более подходящего только потому, что перебор шёл по map. «VRAM неизвестна» не
 // запрещает выбор — иначе стенд без метрик не поднимал бы ничего.
+// vramNeedVsFreeR493 — сколько нужно под модель и сколько свободно у узла.
+//
+// Одна и та же арифметика для двух мест, чтобы они не разошлись: выбор узла под
+// загрузку (pickLoadableFreeBackendR493) и причина отказа в why_queued
+// (backendRejectionsR460). Правило R248/R493: потребность = размер файла × 1.05
+// (KV-cache и буферы контекста), «нет данных» не считается отказом.
+//
+// known=false, если размер модели неизвестен ИЛИ у узла нет данных о VRAM:
+// тогда причину называть нечем, и вызывающий оставляет прежнюю формулировку.
+func (p *Proxy) vramNeedVsFreeR493(backendID, model string) (needMB float64, freeMB int, known bool) {
+	if p == nil {
+		return 0, 0, false
+	}
+	sizeBytes := p.getModelSizeBytes(model)
+	if sizeBytes <= 0 {
+		return 0, 0, false
+	}
+	needMB = float64(sizeBytes) / (1024 * 1024) * vramFitSlack
+	freeMB, vrOK := p.backendVramFreeMB(backendID)
+	if !vrOK {
+		return needMB, 0, false
+	}
+	return needMB, freeMB, true
+}
+
+// formatGiBR493 — МБ в «N.N GiB» для сообщений оператору. Гибибайты, потому что
+// и размер модели, и свободная VRAM считаются в МиБ; «ГБ» в подписи путало бы.
+func formatGiBR493(mb float64) string {
+	return fmt.Sprintf("%.1f GiB", mb/1024)
+}
+
 // modelLoadedSomewhereR493 — есть ли модель в памяти ХОТЯ БЫ на одном узле,
 // который вообще рассматривается для этой заявки.
 //

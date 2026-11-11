@@ -50,6 +50,11 @@ const (
 	// причина существовала только в отдельной INFO-строке R459, а why_queued
 	// показывал model_not_loaded/over_load_threshold — не то, что решило дело.
 	rejectWindowTooSmallR460 = "window_too_small"
+	// R493 (долг 11a): «свободный узел, но модель не влезает». R493 научился
+	// выбирать узел под загрузку по свободной VRAM (запас 5 %) и пропускать те,
+	// где модель не помещается, — но в why_queued этот отказ не попадал, и
+	// оператор снова видел model_not_loaded вместо «need 21 GiB, free 5 GiB».
+	rejectVRAMInsufficientR460 = "vram_insufficient"
 )
 
 // backendRejectionMoveR480 — контекст переезда сессии для списка причин.
@@ -112,6 +117,15 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move .
 				// свободен ровно потому, что модели на нём нет.
 				reason = rejectModelAbsentR460
 				detail = "модель не загружена (загрузка = минуты и, возможно, меньшее окно)"
+				// R493 (долг 11a): если известно, что модель СЮДА не влезет,
+				// «модель не загружена» — неполная причина: её нельзя устранить
+				// загрузкой. Называем это числами, теми же, что решают выбор
+				// узла под загрузку (R248/R493: размер × 1.05 против свободной VRAM).
+				if needMB, freeMB, known := p.vramNeedVsFreeR493(id, model); known && float64(freeMB) < needMB {
+					reason = rejectVRAMInsufficientR460
+					detail = fmt.Sprintf("модель не влезает: need %s, free %s",
+						formatGiBR493(needMB), formatGiBR493(float64(freeMB)))
+				}
 			}
 		}
 		if reason == "" && mv != nil && mv.Need > 0 {
@@ -127,9 +141,14 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move .
 		}
 		if reason == "" {
 			state.mu.Lock()
-			active, maxReqs := state.ActiveReqs, state.Backend.MaxConcurrentReqs
+			active, staticMax := state.ActiveReqs, state.Backend.MaxConcurrentReqs
 			state.mu.Unlock()
-			if maxReqs <= 0 {
+			// R493: вместимость — ЭФФЕКТИВНАЯ (заявка узла → лимит оператора →
+			// статика), как в tryAcquireSlot и в очереди (R71). Со статикой
+			// список причин врал: «заняты все слоты (1/4)» на узле, который
+			// физически принимает один запрос.
+			maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
+			if capFromModelSlots := staticMax <= 0 && maxReqs <= 0; capFromModelSlots {
 				reason = rejectNoSlotsConfigR460
 				detail = "не задано maxConcurrentReqs — брать запросы нельзя"
 			} else if active >= maxReqs {

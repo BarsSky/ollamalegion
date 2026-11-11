@@ -13,7 +13,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1629,12 +1628,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			targetBackend = unifiedBackend
 			releaseLease = unifiedRelease
 			waited, position = unifiedWaited, unifiedPosition
-			if waited > 0 {
-				w.Header().Set("X-Queue-Wait-Ms", strconv.FormatInt(waited.Milliseconds(), 10))
-				if position > 0 {
-					w.Header().Set("X-Queue-Position", strconv.Itoa(position))
-				}
-			}
+			// Те же заголовки, что на handler-пути — через общий сеттер
+			// (queue_headers_r493.go): клиент видит ожидание одинаково на обеих
+			// поверхностях.
+			setQueueWaitHeadersR493(w, waited, position)
 			if sessionID != "" && p.config.Balancing.SessionStickiness && !isEmbeddingsRequest(path) {
 				p.sessionMgr.SetWithProtocol(sessionID, targetBackend, model, clientName, p.getClientRealIP(r), r.UserAgent(), RequestProtocol(r.URL.Path))
 			}

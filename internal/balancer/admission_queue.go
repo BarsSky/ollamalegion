@@ -825,9 +825,9 @@ func (lr *LlamaCppRouter) acquireInferenceAdmission(
 	case err == nil:
 		if lease.Waited > 0 {
 			// Заголовки ещё не отправлены — клиент увидит, что запрос стоял в
-			// очереди, и на /api/chat, и на /v1/chat/completions.
-			w.Header().Set("X-Queue-Wait-Ms", strconv.FormatInt(lease.Waited.Milliseconds(), 10))
-			w.Header().Set("X-Queue-Position", strconv.Itoa(position))
+			// очереди, и на /api/chat, и на /v1/chat/completions. Имена и порядок
+			// — в queue_headers_r493.go (один источник для обоих путей).
+			setQueueWaitHeadersR493(w, lease.Waited, position)
 			logger.Get().Infow("admission: slot granted after waiting",
 				"backend", backendID, "model", model, "session", session,
 				"waited_ms", lease.Waited.Milliseconds())
@@ -879,12 +879,13 @@ func writeAdmissionUnavailable(
 		// увидели бы LB_ADMISSION_WAIT_SEC, которого в этом запросе не было.
 		maxWait = waited
 	}
-	w.Header().Set("Retry-After", strconv.Itoa(admissionRetryAfterSec))
-	if position > 0 {
-		w.Header().Set("X-Queue-Position", strconv.Itoa(position))
+	// Причина (reason) заполняется ниже: она зависит от capped, а заголовки
+	// обязаны ставиться одним вызовом вместе с числами.
+	waitReason := ""
+	if capped {
+		waitReason = imageLockWaitReason
 	}
-	w.Header().Set("X-Queue-Wait-Ms", strconv.FormatInt(waited.Milliseconds(), 10))
-	w.Header().Set("X-Queue-Wait-Max-Sec", strconv.Itoa(int(maxWait.Seconds())))
+	setQueueUnavailableHeadersR493(w, position, waited, maxWait, admissionRetryAfterSec, waitReason)
 	payload := map[string]interface{}{
 		"error": "all inference slots are busy, request waited in queue and timed out: " +
 			"model '" + model + "'",
@@ -898,8 +899,8 @@ func writeAdmissionUnavailable(
 	if capped {
 		// Причина отказа машинночитаема: слот не освободился, потому что GPU
 		// занята image-генерацией (exclusive-политика), а не потому что очередь
-		// переполнена текстовыми запросами.
-		w.Header().Set("X-Queue-Wait-Reason", imageLockWaitReason)
+		// переполнена текстовыми запросами. Заголовок уже выставлен выше
+		// (setQueueUnavailableHeadersR493), здесь — тело ответа.
 		payload["waitReason"] = imageLockWaitReason
 		payload["waitReasonHint"] = "the text backends are on a GPU held by an image generation " +
 			"(balancing.image.coexistence=exclusive); retry after it finishes or lower balancing.image.queueWaitTimeoutSec expectations"

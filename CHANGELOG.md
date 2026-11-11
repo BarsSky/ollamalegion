@@ -81,6 +81,13 @@
   РЕЛИЗНЫЙ коммит узлов группы (`release_mismatch`) и версию протокола RPC
   (`rpc_proto_mismatch`) — уровень error; «узел не сообщил» → hint, чтобы старые
   образы не засоряли предупреждения.
+- **Манифест выпуска фиксирует идентичность каждого образа:** `commit`,
+  `commitFull`, `commitDate`, `buildDate`, `author`, а у cppworker ещё
+  `llamaCommit`/`llamaDate`/`rpcProto` — значения читаются из
+  `/app/identity.json` образа, не «на память». `check-image-tags.ps1` проверяет
+  контракты C1–C4 (per-image commit у всех, buildDate/imageId, llama/rpc у
+  cppworker, `gitCommit` = commit балансера). Негативные ноги: манифест без
+  полей → `C1`/`C3`, подменённый `gitCommit` → `C4b`.
 - **Мёртвая обвязка RPC удалена:** `docker/rpcworker/Dockerfile` и
   `deployments/docker-compose.rpc.yml` ссылались на образ
   `ollama-legion/rpcworker:0.1.0-stub`, который давно не собирается, — поднять

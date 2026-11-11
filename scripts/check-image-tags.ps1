@@ -177,6 +177,64 @@ if (-not $argsSectionSeen) {
     $problems.Add("в ${ComposeFile} не найдено ни одного build-блока с dockerfile: — проверьте формат")
 }
 
+# --- R486.3: манифест обязан нести идентичность КАЖДОГО образа --------------
+#
+# ЗАЧЕМ. До этой проверки манифест фиксировал только `image`+`imageId`, поэтому
+# вопрос «а какой коммит внутри вот этого образа» он не отвечал: у webui и
+# imageworker штамп отличается от балансера (их собрали позже, из другого
+# коммита), и это НЕ рассинхрон — но и не было видно, что это так. Ровно класс
+# «утверждение без доказательства»: тег записан, содержимое не зафиксировано.
+#
+# Контракты:
+#   C1. у каждого образа в манифесте есть commit (7-40 hex) — свой, не общий;
+#   C2. у каждого есть buildDate (ISO-8601) и imageId (sha256:…);
+#   C3. у cppworker дополнительно llamaCommit, llamaDate, rpcProto;
+#   C4. верхнеуровневый gitCommit есть и совпадает с commit записи балансера;
+#   C5. записи РАЗНЫХ образов могут нести разные commit (сборка в разное время) —
+#       но тогда это должно быть видно, то есть C1 обязателен для всех.
+$manifestIssues = New-Object System.Collections.Generic.List[string]
+if (Test-Path $manifestPath) {
+    $mf = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    $balancerCommit = ""
+    foreach ($img in $mf.images) {
+        $label = [string]$img.image
+        $commit = [string]$img.commit
+        if ($commit -notmatch '^[0-9a-f]{7,40}$') {
+            $manifestIssues.Add("C1: $label без per-image commit (нужен короткий или полный SHA сборки именно этого образа)")
+        }
+        if ([string]$img.buildDate -notmatch '^\d{4}-\d{2}-\d{2}T') {
+            $manifestIssues.Add("C2: $label без buildDate (ISO-8601) — дата сборки образа не зафиксирована")
+        }
+        if ([string]$img.imageId -notmatch '^sha256:[0-9a-f]{64}$') {
+            $manifestIssues.Add("C2b: $label без корректного imageId (sha256:…)")
+        }
+        if ($label -like '*cppworker*') {
+            if ([string]$img.llamaCommit -notmatch '^[0-9a-f]{7,40}$') {
+                $manifestIssues.Add("C3: $label без llamaCommit — неизвестно, какой llama.cpp слинкован")
+            }
+            if ([string]$img.llamaDate -notmatch '^\d{4}-\d{2}-\d{2}$') {
+                $manifestIssues.Add("C3b: $label без llamaDate (ГГГГ-ММ-ДД)")
+            }
+            if ([string]$img.rpcProto -notmatch '^\d+\.\d+\.\d+$') {
+                $manifestIssues.Add("C3c: $label без rpcProto (X.Y.Z из ggml-rpc.h)")
+            }
+        }
+        if ($label -like '*balancer*') {
+            $balancerCommit = $commit
+        }
+    }
+    if ([string]$mf.gitCommit -notmatch '^[0-9a-f]{7,40}$') {
+        $manifestIssues.Add("C4: верхнеуровневый gitCommit отсутствует или не SHA")
+    } elseif ($balancerCommit -and $mf.gitCommit -ne $balancerCommit) {
+        $manifestIssues.Add("C4b: gitCommit=$($mf.gitCommit) не совпадает с commit записи балансера $balancerCommit — какая сборка считается выпуском?")
+    }
+    if ($manifestIssues.Count -eq 0) {
+        Write-Host "  OK  идентичность зафиксирована у всех $($mf.images.Count) образов (per-image commit, buildDate, imageId; llama+rpc у cppworker)" -ForegroundColor DarkGray
+    } else {
+        foreach ($mi in $manifestIssues) { $problems.Add($mi) }
+    }
+}
+
 # --- сверка с манифестом ---------------------------------------------------
 if (Test-Path $manifestPath) {
     Write-Host ""

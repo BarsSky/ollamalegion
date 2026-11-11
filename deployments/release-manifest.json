@@ -33,34 +33,57 @@
         {
             "alias": "ollama-legion/balancer:latest",
             "variable": "BALANCER_TAG",
-            "service": "loadbalancer",
+            "service": "balancer",
             "imageTag": "r261110-1925",
+            "image": "ollama-legion/balancer:r261110-1925",
             "imageId": "sha256:e9cc3acdfe97c910b3b4142e32a6ea7d543dda0b8aa18561b930b1e47f1ac95d",
-            "image": "ollama-legion/balancer:r261110-1925"
+            "commit": "24b3a151",
+            "commitFull": "24b3a151c7e3f33f89ddecfba4b3cec13d3b0741",
+            "commitDate": "2026-11-10T23:50:18+03:00",
+            "buildDate": "2026-11-10T21:13:02Z",
+            "author": "BarsSky <knagaenko@mail.ru>"
         },
         {
             "alias": "ollama-legion/cppworker:latest-gpu-86",
             "variable": "CPPWORKER_GPU_TAG",
-            "service": "cppworker-gpu",
+            "service": "cppworker",
             "imageTag": "gpu-261110-1925",
+            "image": "ollama-legion/cppworker:gpu-261110-1925",
             "imageId": "sha256:0ba69e5108aebfe6bfa5857015c35fdb3f5bd4aa9f43ea820da3d13e9d094142",
-            "image": "ollama-legion/cppworker:gpu-261110-1925"
+            "commit": "24b3a151",
+            "commitFull": "24b3a151c7e3f33f89ddecfba4b3cec13d3b0741",
+            "commitDate": "2026-11-10T23:50:18+03:00",
+            "buildDate": "2026-11-10T21:13:42Z",
+            "author": "BarsSky <knagaenko@mail.ru>",
+            "llamaCommit": "0eadefebd",
+            "llamaDate": "2026-09-01",
+            "rpcProto": "6.0.0"
         },
         {
             "alias": "ollama-legion/webui:latest",
             "variable": "WEBUI_TAG",
             "service": "webui",
             "imageTag": "r261110-2130",
+            "image": "ollama-legion/webui:r261110-2130",
             "imageId": "sha256:61e6050de614f65fa8b3d1f988eb9677d0957fd9ae66eadbf066a70c43a66011",
-            "image": "ollama-legion/webui:r261110-2130"
+            "commit": "ee901744",
+            "commitFull": "ee9017448ed95e843707d7a4c3ce48c7e811ff05",
+            "commitDate": "2026-11-10T22:14:31+03:00",
+            "buildDate": "2026-11-10T20:39:00Z",
+            "author": "BarsSky <knagaenko@mail.ru>"
         },
         {
             "alias": "",
             "variable": "IMAGE_WORKER_TAG",
-            "service": "imageworker",
+            "service": "sdworker",
             "imageTag": "72ec210a",
+            "image": "ollama-legion/imageworker:72ec210a",
             "imageId": "sha256:3a85c81e27771342576c2ae813fa970a2ef2e98865170257611d6306260ec2b6",
-            "image": "ollama-legion/imageworker:72ec210a"
+            "commit": "ee901744",
+            "commitFull": "ee9017448ed95e843707d7a4c3ce48c7e811ff05",
+            "commitDate": "2026-11-10T22:14:31+03:00",
+            "buildDate": "2026-11-10T20:40:01Z",
+            "author": "BarsSky <knagaenko@mail.ru>"
         }
     ]
 }

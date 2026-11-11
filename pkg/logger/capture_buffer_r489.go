@@ -19,8 +19,8 @@ import (
 
 // CaptureBuffer — потокобезопасный буфер для перехвата логов в тестах.
 type CaptureBuffer struct {
-	mu  sync.Mutex
 	buf bytes.Buffer
+	mu  sync.Mutex
 }
 
 // NewCaptureBuffer — пустой буфер перехвата.

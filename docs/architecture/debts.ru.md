@@ -13,6 +13,26 @@
 
 ---
 
+## Состояние закрытия: пять пунктов плана работ (2026-11-12)
+
+Таблица — не отчёт «мы молодцы», а карта: по каждому пункту видно, ЧЕМ он закрыт,
+чтобы следующий разбор не начинал с пересказа. Все проверки воспроизводимы
+командами из правой колонки.
+
+| Пункт плана | Состояние | Чем закрыт |
+|---|---|---|
+| (1) P0 паритет типов: `/v1/*` не привязан к `llama_cpp`, алиасы `/ollama/*` и `/openai/*`, `/v1/models` из обоих пулов | закрыт | `internal/balancer/`: `TestR479_OpenAIChatGoesToOllama`, `TestR479_SurfaceAliasNormalized`, `TestR479_OpenAIModelsIncludeOllama`, `TestR479_UnsupportedOpenAIPathNotForwarded` — `go test -run TestR479_` |
+| (2) P1 распределение: need из потребности, холодный кандидат с TTL, гейт на обходных путях, причина в R460, очередь не отдаёт холодный бэкенд | закрыт | `TestR480_*` (25 тестов: `ActiveSessionPinsWideWindow`, `IdleSessionUsesRequestNeed`, `FreshColdCandidateRejected`, `GatedSelectorSkipsNarrowCandidate`, `QueueGateWaitsInsteadOfMoving`, `RejectionsIncludeWindowTooSmall`, …) + `TestR479_RejectionsKnowLoadThreshold` — `go test -run 'TestR479_\|TestR480_'` |
+| (3) P1 диагностика: стадии `preflight`/`client_write`/`done`, обрывы стрима и не-5xx в кольцо, лимит тела | закрыт | `TestR477_*` (7, включая страж стадий `EveryStageHasProductionCall` и `TerminalStageIsComputed`), `TestR479_BodyTooLargeOnGenericPath`, события воркера — `go test ./internal/balancer/ -run 'TestR477_\|TestR488_'` и `go test ./cmd/cppworker/ -run 'TestR477\|TestR482\|TestR483'` |
+| (4) P2: удалить мёртвый код, обновить таблицу поверхностей | закрыт | мёртвое: 4 селектора (`findLessLoadedBackendWithModel`, `…Any`, `findWarmingBackendForModelUnsafe`, `findFreeBackendForModelUnsafe`) + no-op `SetQueueManagerProxy` вне продакшена (стражи `TestP2_14_QueueSeamIsTestOnly`, `TestR304_SelectionSitesAskSharedPredicate`); таблица — `backend-type-isolation.ru.md:38` |
+| (5) реестр/деплой/CI на этап | закрыт для перечисленного | реестр обновлялся каждым коммитом (11-star, 11a, 14, 15b, 26a, 26b); образ `balancer r261112-0055` (commit `64e9af80`) на стенде: `/api/version` = identity, два healthy узла, лог без error; CI зелёный на каждом коммите после исправлений (последний — `087dc4bf`, 6/6 + test) |
+
+**Что осталось и НЕ входит в эти пять пунктов** (отдельная очередь, записана ниже
+по разделам): `file_absent` (11a, нужны `/api/tags` узлов), 11b (каталог моделей
+узла), T2/T3 предохранители и этапы 1–7 плана «два мозга» (P2-12), остаток
+дедупликации (P2-13: 35 селекторов, 7 ожиданий слота, 8 циклов стрима, 5
+писателей), продуктовые решения R-16…R-19, внешние проверки E-20…E-22, диск I-24.
+
 ## P0 — функциональность на смешанном кластере
 
 1. ~~**`/v1/*` жёстко привязан к `llama_cpp`.**~~ **ЗАКРЫТО в R479.** Было:

@@ -130,9 +130,12 @@ func CaptureTo(w io.Writer) (restore func()) {
 	encCfg.MessageKey = "msg"
 	encCfg.CallerKey = "caller"
 
+	// R489 (2026-11-11): writer оборачивается в мьютекс. Без этого перехват логов
+	// в тестах ставил *bytes.Buffer, а параллельные тесты писали в него
+	// одновременно — детектор гонок валил прогон (internal/... (-race)).
 	core := zapcore.NewCore(
 		zapcore.NewJSONEncoder(encCfg),
-		zapcore.AddSync(w),
+		zapcore.AddSync(newLockedWriterR489(w)),
 		zap.DebugLevel,
 	)
 	logPtr.Store(zap.New(core, zap.AddStacktrace(zapcore.FatalLevel)).Sugar())

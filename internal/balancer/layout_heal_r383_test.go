@@ -218,20 +218,44 @@ func TestR383_PollerTriggersHeal(t *testing.T) {
 		t.Fatalf("порт тестового сервера: %v", err)
 	}
 
-	p := newReplicationFreeProxyR379(t, "master")
-	// R383-фикс теста (2026-11-03): останавливаем ФОНОВЫЙ поллер прокси до ручного
-	// опроса. NewProxy запускает его сразу на дефолтном 127.0.0.1:18092; пока тест
-	// меняет адрес и делает pollBackend вручную, фоновый тик успевает записать в
-	// кэш пустой снимок (rpc_enabled=false, servers=[]) и перетирает результат —
-	// тест падал только при запуске вместе с соседними (порядок/тайминг).
+	// R383-фикс теста, ВТОРАЯ ИТЕРАЦИЯ (2026-11-12). Первая (2026-11-03) меняла
+	// адрес бэкенда ПОСЛЕ NewProxy и останавливала фоновый поллер. Этого мало:
+	// прокси создавался с дефолтным адресом 127.0.0.1:18092, то есть на машине с
+	// поднятым стендом его первый же тик опрашивал ЖИВОЙ cppworker, получал
+	// rpc_enabled=false и писал в кэш пустой снимок — иногда уже после ручного
+	// опроса, перетирая результат. Живой симптом: локально 1 падение на ~50
+	// прогонов под -race, на self-hosted раннере (там стенд тоже поднят) —
+	// красный CI на коммите из ОДНИХ ДОКОВ.
+	//
+	// Теперь адрес известен ДО создания прокси: любой тик фонового поллера идёт на
+	// тестовый сервер и пишет те же данные, поэтому гонка «кто последний записал»
+	// больше не решает исход. Поллер всё равно останавливаем — не нужно лишних
+	// запросов, — но корректность теста на этом больше не держится.
+	cfg := &types.LoadBalancerConfig{
+		LoadBalancer: types.LoadBalancerSettings{Host: "localhost", Port: 8080, APIPort: 8081},
+		Backends: []types.Backend{{
+			ID:                "master",
+			Name:              "test master",
+			Host:              host,
+			CppWorkerPort:     port,
+			CppWorkerApiToken: "tok-383",
+			Type:              types.BackendTypeLlamaCpp,
+			Weight:            1,
+			Status:            types.StatusHealthy,
+			MaxConcurrentReqs: 4,
+		}},
+		Balancing: types.BalancingSettings{
+			Algorithm:           types.AlgorithmResourceAware,
+			HealthCheckInterval: 60,
+			MetricsInterval:     60,
+		},
+		API:  types.APISettings{RateLimit: 100, RateBurst: 200},
+		Auth: types.AuthConfig{Enabled: false},
+	}
+	p := newProxyWithCleanup(t, cfg)
 	if p.llamaCppMetricsPoller != nil {
 		p.llamaCppMetricsPoller.Stop()
 	}
-	p.mu.Lock()
-	p.backends["master"].Backend.Host = host
-	p.backends["master"].Backend.CppWorkerPort = port
-	p.backends["master"].Backend.CppWorkerApiToken = "tok-383"
-	p.mu.Unlock()
 
 	poller := newLlamaCppMetricsPoller(p)
 	if ok := poller.pollBackend(backendInfo{id: "master", host: host, port: port}); !ok {

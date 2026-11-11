@@ -192,7 +192,6 @@ func TestOperatingMode_DispatchQueue_Standard(t *testing.T) {
 	cfg.Balancing.QueueTimeout = 5
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("gpu-1", &types.BackendMetrics{
 		GPU:    types.GPUMetrics{UsagePercent: 10, MemoryTotal: 24576, MemoryUsed: 4096, MemoryFree: 20480},
 		System: types.SystemMetrics{CPUUsagePercent: 5, MemoryTotal: 65536, MemoryUsed: 8192, MemoryFree: 57344},
@@ -232,7 +231,6 @@ func TestOperatingMode_DispatchQueue_Replication(t *testing.T) {
 	cfg.Balancing.QueueMaxSize = 10
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("gpu-1", &types.BackendMetrics{
 		GPU:    types.GPUMetrics{UsagePercent: 10, MemoryTotal: 24576, MemoryUsed: 4096, MemoryFree: 20480},
 		System: types.SystemMetrics{CPUUsagePercent: 5, MemoryTotal: 65536, MemoryUsed: 8192, MemoryFree: 57344},

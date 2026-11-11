@@ -970,7 +970,6 @@ func TestOpenWebUI_NDJSON_ContentType(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("mock-ndjson", &types.BackendMetrics{
 		ID: "mock-ndjson",
 		GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},

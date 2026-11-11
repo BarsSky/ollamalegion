@@ -180,7 +180,6 @@ func TestProxyEmbed_ModelNotFoundThenAutoPull(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("embed-backend", &types.BackendMetrics{
 		ID:     "embed-backend",
 		GPU:    types.GPUMetrics{UsagePercent: 20, MemoryTotal: 16384},
@@ -256,7 +255,6 @@ func TestProxyEmbed_MultiBackend(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 
 	for i := range mocks {
 		proxy.UpdateMetrics(fmt.Sprintf("backend-%d", i+1), &types.BackendMetrics{
@@ -405,7 +403,6 @@ func TestProxyGenerate_FirstRequestWarmup_Success(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("warmup-backend", &types.BackendMetrics{
 		ID:     "warmup-backend",
 		GPU:    types.GPUMetrics{UsagePercent: 20, MemoryTotal: 24576, MemoryFree: 16576},
@@ -784,7 +781,6 @@ func TestIntegration_BackendFailover(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("fail-backend", &types.BackendMetrics{
 		ID:     "fail-backend",
 		GPU:    types.GPUMetrics{UsagePercent: 50, MemoryTotal: 16384},
@@ -1100,7 +1096,6 @@ func TestResponseIntegrity_TimeoutHandling(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("slow-backend", &types.BackendMetrics{
 		ID:     "slow-backend",
 		GPU:    types.GPUMetrics{UsagePercent: 20, MemoryTotal: 16384},

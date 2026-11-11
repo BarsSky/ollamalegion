@@ -81,7 +81,6 @@ func TestStreaming_ClientCancel(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 
 	proxy.UpdateMetrics("test-backend", &types.BackendMetrics{
 		ID: "test-backend",

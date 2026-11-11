@@ -337,7 +337,6 @@ func TestStreaming_SlowClientWriteError(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("fast-backend", &types.BackendMetrics{
 		ID: "fast-backend",
 		Ollama: types.OllamaMetrics{
@@ -1085,7 +1084,6 @@ func TestQueueing_StreamingQueueTimeout(t *testing.T) {
 	config.Backends[0].OllamaPort = port
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("single-slot", &types.BackendMetrics{
 		ID: "single-slot",
 		Ollama: types.OllamaMetrics{

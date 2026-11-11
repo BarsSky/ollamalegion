@@ -23,7 +23,6 @@ func newCRUDTestProxy(t *testing.T) *balancer.Proxy {
 	t.Helper()
 	config := createTestCRUDConfig()
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	// queueMgr cleanup not exposed; tests are short-lived so this is OK.
 	return proxy
 }

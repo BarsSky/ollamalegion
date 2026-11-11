@@ -288,7 +288,6 @@ func setupProxyWithSlowLoadMock(t *testing.T, mock *mockOllamaWithSlowLoad, requ
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 
 	// Ключевой момент: метрики показывают что модель НЕ в RunningModels (не в памяти),
 	// но ЕСТЬ в AvailableModels (на диске). Это заставляет балансер выбрать backend
@@ -482,7 +481,6 @@ func TestProxy_ModelNotAvailable_AutoPullRetry(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 
 	// НЕТ модели ни в RunningModels, ни в AvailableModels
 	proxy.UpdateMetrics("ollama-empty", &types.BackendMetrics{

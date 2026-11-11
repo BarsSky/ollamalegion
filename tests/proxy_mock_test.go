@@ -537,7 +537,6 @@ func setupProxyWithMockOllama(t *testing.T, mock *mockOllamaServer) (*httptest.S
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 
 	// Обновляем метрики бэкенда чтобы он был доступен для балансировки
 	proxy.UpdateMetrics("ollama-test", &types.BackendMetrics{

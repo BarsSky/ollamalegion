@@ -909,7 +909,6 @@ func TestLoadScenario_ErrorHandling(t *testing.T) {
 		}
 
 		proxy := balancer.NewProxy(config)
-		proxy.SetQueueManagerProxy()
 
 		proxy.UpdateMetrics("garbage-backend", &types.BackendMetrics{
 			ID:     "garbage-backend",

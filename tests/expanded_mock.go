@@ -958,7 +958,6 @@ func SetupExpandedProxy(t testing.TB, mock *ExpandedMockServer, extraCfg ...func
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 
 	proxy.UpdateMetrics(mock.BackendID, &types.BackendMetrics{
 		ID: mock.BackendID,
@@ -1038,7 +1037,6 @@ func SetupMultiBackendProxy(t testing.TB, mocks []*ExpandedMockServer, extraCfg 
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 
 	for _, mock := range mocks {
 		proxy.UpdateMetrics(mock.BackendID, &types.BackendMetrics{

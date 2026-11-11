@@ -814,11 +814,6 @@ func (p *Proxy) determineRequestBackendType(r *http.Request) types.BackendType {
 	return ""
 }
 
-// SetQueueManagerProxy — сохранён для совместимости вызовов: с R78 у
-// QueueManager нет ссылки на proxy (канал и пул worker'ов удалены, осталась
-// только статистика/история), поэтому метод ничего не делает.
-func (p *Proxy) SetQueueManagerProxy() {}
-
 // SetHealthChecker — устанавливает HealthChecker после создания Proxy
 // (избегаем circular dep Proxy ↔ HealthChecker).
 // Round 8 (2026-07-10): нужен для MarkUnhealthy при persistent connection failures.

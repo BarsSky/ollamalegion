@@ -63,7 +63,6 @@ func setupHasAgentTestEnvironment(t *testing.T) (*httptest.Server, *balancer.Pro
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 
 	healthChecker := balancer.NewHealthChecker(
 		proxy,

@@ -183,9 +183,15 @@
     (`session_handler.go`), `acquireSlotWithRetry` и `executeWithFallback`
     (`slot_handler.go` — файл удалён вместе с тестами), `extractModel`
     (`proxy.go`), дубль `/health` из `routeRequest` (`router.go`). Осталось:
-    `SetQueueManagerProxy` — no-op, но его вызывают ~200 тестов как шов
+    ~~`SetQueueManagerProxy` — no-op, но его вызывают ~200 тестов как шов
     «подними прокси с очередью»; удаление требует переписать все сценарии,
-    выгоды нет — помечен как тест-шов в комментарии.
+    выгоды нет — помечен как тест-шов в комментарии.~~ **ЗАКРЫТО в R493/P2-14
+    (2026-11-11) иначе, чем думали:** выгода оказалась не в тестах, а в том, что
+    ПРОДАКШЕН объявлял фальшивый API. Объявление перенесено в
+    `internal/balancer/queue_seam_test.go` (в бинарь не попадает), 45 вызовов из
+    внешних пакетов (`tests/`, `internal/api`) удалены — они были тем же no-op.
+    Замок: `TestP2_14_QueueSeamIsTestOnly` падает, если объявление вернётся в
+    продакшен-файл или продакшен начнёт его вызывать.
     **R486:** удалены `docker/rpcworker/Dockerfile` и
     `deployments/docker-compose.rpc.yml` — обвязка образа
     `ollama-legion/rpcworker:0.1.0-stub`, которого нет в сборке; стек поднять

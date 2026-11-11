@@ -418,7 +418,6 @@ func TestMonitorAPI_AuthRequired(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	healthChecker := balancer.NewHealthChecker(proxy, 10*time.Second, 3)
 	server := api.NewServer(proxy, config, healthChecker)
 	testServer := httptest.NewServer(server)

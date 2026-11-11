@@ -266,7 +266,6 @@ func setupLlamaCppProxy(t *testing.T, backendSrvURL string) (*httptest.Server, *
 		},
 	}
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("cppworker-test", &types.BackendMetrics{
 		LlamaCpp: types.LlamaCppMetrics{LoadedModels: []types.LlamaCppModel{{Name: "qwen2.5:7b-instruct-q4_K_M", State: "loaded", ContextLength: 32768}}},
 		ID:       "cppworker-test",
@@ -446,7 +445,6 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioB_OllamaDirect(t *testing.T) {
 		},
 	}
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("ollama-test", &types.BackendMetrics{
 		LlamaCpp: types.LlamaCppMetrics{LoadedModels: []types.LlamaCppModel{{Name: "qwen2.5:7b-instruct-q4_K_M", State: "loaded", ContextLength: 32768}}},
 		ID:       "ollama-test",
@@ -569,7 +567,6 @@ func TestDebugOpenWebUI_ToolCalls_ScenarioC_ExpandedMockStyle(t *testing.T) {
 		},
 	}
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("ollama-mock-style", &types.BackendMetrics{
 		LlamaCpp: types.LlamaCppMetrics{LoadedModels: []types.LlamaCppModel{{Name: "qwen2.5:7b-instruct-q4_K_M", State: "loaded", ContextLength: 32768}}},
 		ID:       "ollama-mock-style",

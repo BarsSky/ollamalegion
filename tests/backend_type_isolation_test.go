@@ -955,7 +955,6 @@ func TestServeHTTP_OllamaRequest_RoutedToOllamaBackend(t *testing.T) {
 	cfg.Balancing.OperatingMode = "standard"
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("ollama-live", &types.BackendMetrics{
 		GPU:    types.GPUMetrics{UsagePercent: 10, MemoryTotal: 24576, MemoryUsed: 4096, MemoryFree: 20480},
 		System: types.SystemMetrics{CPUUsagePercent: 5, MemoryTotal: 65536, MemoryUsed: 8192, MemoryFree: 57344},
@@ -1015,7 +1014,6 @@ func TestServeHTTP_LlamaCppRequest_RoutedToLlamaCppBackend(t *testing.T) {
 	cfg.Balancing.OperatingMode = "standard"
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("ollama-live", &types.BackendMetrics{
 		GPU:    types.GPUMetrics{UsagePercent: 10, MemoryTotal: 24576, MemoryUsed: 4096, MemoryFree: 20480},
 		System: types.SystemMetrics{CPUUsagePercent: 5, MemoryTotal: 65536, MemoryUsed: 8192, MemoryFree: 57344},

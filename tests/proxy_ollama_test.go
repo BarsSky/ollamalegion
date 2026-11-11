@@ -713,7 +713,6 @@ func TestProxyOllama_RetryOnBackendFailure(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 
 	proxy.UpdateMetrics("fail-then-success", &types.BackendMetrics{
 		ID: "fail-then-success",

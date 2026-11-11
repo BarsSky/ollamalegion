@@ -153,7 +153,6 @@ func createNoAgentProxy(t *testing.T, mocks []*noAgentMockOllama, algorithm type
 	}
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	return proxy
 }
 
@@ -280,7 +279,6 @@ func TestNoAgent_RoundRobin(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 
@@ -415,7 +413,6 @@ func TestNoAgent_QueueWhenAllBusy(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 
 	// Создаём реальный мок для бэкенда
 	host, port := mock.HostPort()
@@ -548,7 +545,6 @@ func TestNoAgent_RetryOnBackendFailure(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 
@@ -782,7 +778,6 @@ func TestNoAgent_StreamingProxy(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 

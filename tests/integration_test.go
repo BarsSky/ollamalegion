@@ -92,7 +92,6 @@ func setupTestEnvironment(t *testing.T) (*httptest.Server, *api.Server, *balance
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 
 	healthChecker := balancer.NewHealthChecker(proxy, time.Duration(config.Balancing.HealthCheckInterval)*time.Second, 3)
 	server := api.NewServer(proxy, config, healthChecker)

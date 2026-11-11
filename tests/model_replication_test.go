@@ -115,7 +115,6 @@ func createReplicationProxy(t *testing.T) *balancer.Proxy {
 	t.Helper()
 	cfg := configForReplication()
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	return proxy
 }
 
@@ -516,7 +515,6 @@ func TestModelReplication_SelectInstance(t *testing.T) {
 func TestModelReplication_ProxyInit(t *testing.T) {
 	cfg := configForReplication()
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 
 	// Проверяем, что менеджер создан и включён
 	mgr := proxy.GetModelReplicationManager()
@@ -546,7 +544,6 @@ func TestModelReplication_ProxyInit_Disabled(t *testing.T) {
 	cfg.Balancing.ModelReplication.Enabled = false
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 
 	// Менеджер должен быть nil, если репликация выключена
 	mgr := proxy.GetModelReplicationManager()
@@ -563,7 +560,6 @@ func TestModelReplication_SelectBackend_NotGroupModel(t *testing.T) {
 	// Если модель не в группе репликации — selectBackend работает как обычно
 	cfg := configForReplication()
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	defer func() {
 		if ctrl := proxy.GetReplicationController(); ctrl != nil {
 			_ = ctrl.Stop()
@@ -583,7 +579,6 @@ func serverWithReplication(t *testing.T) (*httptest.Server, *api.Server, *balanc
 	t.Helper()
 	cfg := configForReplication()
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	healthChecker := balancer.NewHealthChecker(proxy, 10*time.Second, 3)
 	server := api.NewServer(proxy, cfg, healthChecker)
 	testServer := httptest.NewServer(server)
@@ -874,7 +869,6 @@ func TestModelReplication_API_Disabled(t *testing.T) {
 	cfg.Balancing.ModelReplication.Enabled = false
 
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	healthChecker := balancer.NewHealthChecker(proxy, 10*time.Second, 3)
 	server := api.NewServer(proxy, cfg, healthChecker)
 	testServer := httptest.NewServer(server)
@@ -962,7 +956,6 @@ func TestModelReplication_GroupAwareIntegration(t *testing.T) {
 	// Создаём proxy с репликацией
 	cfg := configForReplication()
 	proxy := balancer.NewProxy(cfg)
-	proxy.SetQueueManagerProxy()
 	defer func() {
 		if ctrl := proxy.GetReplicationController(); ctrl != nil {
 			_ = ctrl.Stop()

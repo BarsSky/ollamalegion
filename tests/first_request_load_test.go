@@ -112,7 +112,6 @@ func TestFirstRequest_ModelNotLoaded_LoadsIntoVRAM(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 
 	// Метрики: модель скачана, но НЕ в running models
 	proxy.UpdateMetrics("first-req-backend", &types.BackendMetrics{
@@ -245,7 +244,6 @@ func TestFirstRequest_SyncModelLoadEnabled_UsesFastWarmup(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 
 	proxy.UpdateMetrics("sync-backend", &types.BackendMetrics{
 		ID: "sync-backend",

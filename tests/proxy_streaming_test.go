@@ -404,7 +404,6 @@ func TestTransferEncoding_BackendConnectionReset(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("mock-rst", &types.BackendMetrics{
 		ID: "mock-rst",
 		GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
@@ -612,7 +611,6 @@ func TestTransferEncoding_Backend503ThenStream(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("mock-503", &types.BackendMetrics{
 		ID: "mock-503",
 		GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
@@ -757,7 +755,6 @@ func TestTransferEncoding_RealOllamaNdjson(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxy.UpdateMetrics("mock-ndjson", &types.BackendMetrics{
 		ID: "mock-ndjson",
 		GPU: types.GPUMetrics{UsagePercent: 30, MemoryTotal: 24576, MemoryUsed: 8000, MemoryFree: 16576},
@@ -1295,7 +1292,6 @@ func TestTransferEncoding_HealthAndMetricsEndpoints(t *testing.T) {
 	}
 
 	proxy := balancer.NewProxy(config)
-	proxy.SetQueueManagerProxy()
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 	defer proxy.StopQueue()

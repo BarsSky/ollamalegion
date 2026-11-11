@@ -240,18 +240,28 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 		var bestBackendID string
 		var bestScore float64 = -1
 		for _, backendID := range group.BackendIDs {
+			// R493 (2026-11-11): загрузка считается от ЭФФЕКТИВНОЙ вместимости.
+			//
+			// Живой дефект (второй стенд): мастер A10 держал одну генерацию при
+			// заявленной вместимости 1 и 27B в памяти, а STATIC-лимит конфига у
+			// него был 4. Коэффициент 1/4 = 0.25 проходил порог 0.8, загруженный
+			// узел выигрывал у свободного A10 (20490 МБ VRAM, 0% GPU), и заявка
+			// ждала освобождения слота до 300 с.
+			//
+			// EffectiveMaxConcurrentRequests — то же правило, по которому работают
+			// tryAcquireSlot и очередь (R71): заявка узла, операторский лимит,
+			// затем статика. Отсюда коэффициент и есть ответ «примет ли узел
+			// запрос сейчас»: active >= effective даёт ratio >= 1 (порог 0.8 его
+			// отсекает), а недогруженный узел со свободным слотом остаётся.
 			state := p.backends[backendID]
 			state.mu.Lock()
 			active := state.ActiveReqs
-			maxReqs := state.Backend.MaxConcurrentReqs
+			maxReqs := state.Backend.EffectiveMaxConcurrentRequests()
 			state.mu.Unlock()
-
 			loadRatio := 0.0
 			if maxReqs > 0 {
 				loadRatio = float64(active) / float64(maxReqs)
 			}
-			// R479: порог из одного места (loadThresholdR479) — иначе причины
-			// отказов R460 и селектор расходятся в числе.
 			if loadRatio >= p.loadThresholdR479() {
 				continue
 			}
@@ -331,6 +341,33 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 				}
 				logger.Get().Warnw("sync model load timeout", "backend", backendID, "model", model)
 			}
+		}
+	}
+
+	// 3b. R493: НИ ОДИН узел с загруженной моделью не принимает сейчас —
+	// выбираем свободный узел, где модель можно ПОДНЯТЬ, вместо очереди к
+	// занятому. Загрузку выполнит существующий гейт R325 (ensureModelLoaded…)
+	// на выбранном бэкенде; здесь важно только верно выбрать.
+	//
+	// Почему не полагаемся на этап 3 (SyncModelLoad): тот ждёт загрузку
+	// синхронно своим таймаутом и включается флагом конфигурации; на 27B-модели
+	// (загрузка 140-260 с) он истекает и возвращает P4 — то есть очередь.
+	//
+	// Гейт автозагрузки соблюдается: этап работает только если загрузку вообще
+	// разрешено инициировать запросом — async-автозагрузка (LB_AUTO_LOAD_ASYNC,
+	// дефолт вкл.) либо синхронная (SyncModelLoad.Enabled). Иначе оператор прямо
+	// запретил поднимать модели из запроса, и «свободный узел» превратился бы в
+	// обход этого запрета.
+	if !skipWarmup && (p.lbAutoLoadAsync || p.config.Balancing.SyncModelLoad.Enabled) {
+		if free := p.pickLoadableFreeBackendR493(model, allowedTypes); free != "" {
+			// Счётчик диспетчеризации — best-effort: в тестах и на «голом»
+			// прокси менеджера очереди может не быть.
+			if p.queueMgr != nil {
+				p.queueMgr.addDispatchLoad()
+			}
+			logger.Get().Infow("R493: выбран свободный бэкенд под загрузку модели вместо очереди к занятому",
+				"model", model, "backend", free, "async_autoload", p.lbAutoLoadAsync)
+			return free
 		}
 	}
 

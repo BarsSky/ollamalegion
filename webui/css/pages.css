@@ -137,16 +137,24 @@
        колонка уходила за край, а ellipsis не срабатывал. */
     table-layout: fixed;
 }
+/* R493-D4 (2026-11-11): ширины ВСЕХ колонок таблицы прокси-логов.
+   Живой дефект: рендер отдаёт 10 колонок (последняя — «Ошибка»), а правил
+   ширины было 9. При table-layout:fixed десятая колонка оставалась без размера,
+   и текст ошибки наезжал на соседей/обрезался в ноль — при том что клик по
+   строке открывал полный текст, до него нельзя было догадаться: в строке не
+   видно ни символа ошибки. Девятая колонка «Стадия» ширину «auto» отдала
+   десятому, поэтому теперь у неё фиксированная ширина, а остаток забирает
+   ошибка. */
 .proxy-logs-table th:nth-child(1) { width: 82px; }   /* время */
 .proxy-logs-table th:nth-child(2) { width: 66px; }   /* метод */
-.proxy-logs-table th:nth-child(3) { width: 20%; }    /* путь */
-.proxy-logs-table th:nth-child(4) { width: 13%; }    /* модель */
+.proxy-logs-table th:nth-child(3) { width: 18%; }    /* путь */
+.proxy-logs-table th:nth-child(4) { width: 12%; }    /* модель */
 .proxy-logs-table th:nth-child(5) { width: 10%; }    /* клиент */
 .proxy-logs-table th:nth-child(6) { width: 64px; }   /* статус */
 .proxy-logs-table th:nth-child(7) { width: 72px; }   /* длительность */
 .proxy-logs-table th:nth-child(8) { width: 12%; }    /* бэкенд */
-.proxy-logs-table th:nth-child(9) { width: auto; }   /* ошибка - остаток */
-.proxy-logs-table td:nth-child(9) { max-width: none; }
+.proxy-logs-table th:nth-child(9) { width: 84px; }   /* стадия */
+.proxy-logs-table th:nth-child(10) { width: auto; }  /* ошибка - остаток */
 .proxy-logs-table th {
     padding: 8px 10px;
     text-align: left;
@@ -163,6 +171,22 @@
     padding: 6px 10px;
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
+    /* Ячейка обязана укладываться в свою колонку: иначе при nowrap текст
+       вылезает на соседнюю колонку и цифры «съезжают». Полный текст — в
+       раскрывающемся блоке (клик по строке). */
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* Ошибка — единственная колонка, где многострочность допустима: две строки
+   с многоточием читаются лучше одной обрезанной. Полный текст — по клику. */
+.proxy-logs-table td.log-error-cell {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    vertical-align: top;
+    line-height: 1.3;
 }
 .proxy-logs-table tbody tr:hover {
     background: var(--bg-hover);
@@ -173,7 +197,8 @@
     font-size: var(--font-size-xs);
 }
 .log-path-cell {
-    max-width: 200px;
+    /* Ширину задаёт колонка (table-layout:fixed): max-width спорил с ней и
+       обрезал путь раньше, чем заканчивалось место колонки. */
     overflow: hidden;
     text-overflow: ellipsis;
     font-family: var(--font-family-mono);

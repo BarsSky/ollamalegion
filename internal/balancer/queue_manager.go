@@ -121,9 +121,30 @@ func (qm *QueueManager) Stop() {}
 
 // addDispatchAffinity/addDispatchLoad/addDispatchConfig — инкременты счётчиков
 // выбора бэкенда (заменяют прямые atomic.AddInt64 в backend_selector/queue_dispatch).
-func (qm *QueueManager) addDispatchAffinity() { atomic.AddInt64(&qm.dispatchAffinity, 1) }
-func (qm *QueueManager) addDispatchLoad()     { atomic.AddInt64(&qm.dispatchLoad, 1) }
-func (qm *QueueManager) addDispatchConfig()   { atomic.AddInt64(&qm.dispatchConfig, 1) }
+//
+// R493: получатель проверяется на nil. Счётчики — телеметрия выбора, а не часть
+// решения; падать из-за отсутствия менеджера очереди (юнит-тесты, ранняя
+// инициализация) они не должны.
+func (qm *QueueManager) addDispatchAffinity() {
+	if qm == nil {
+		return
+	}
+	atomic.AddInt64(&qm.dispatchAffinity, 1)
+}
+
+func (qm *QueueManager) addDispatchLoad() {
+	if qm == nil {
+		return
+	}
+	atomic.AddInt64(&qm.dispatchLoad, 1)
+}
+
+func (qm *QueueManager) addDispatchConfig() {
+	if qm == nil {
+		return
+	}
+	atomic.AddInt64(&qm.dispatchConfig, 1)
+}
 
 // RecordUnified — запись запроса, обслуженного ЕДИНОЙ (admission-)очередью.
 //

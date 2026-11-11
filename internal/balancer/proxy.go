@@ -1615,9 +1615,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if sessionKey != "" && p.config.Balancing.SessionStickiness && p.sessionMgr != nil {
 			// R480: снимок под блокировкой (R66c) — Get() отдаёт общий
 			// указатель, и -race ловил гонку с параллельным Set.
-			if s, ok := p.sessionMgr.GetSnapshot(sessionKey); ok {
-				sessionFromBackend = s.BackendID
-			}
+			//
+			// R493 (2026-11-11): привязка — ПРЕДПОЧТЕНИЕ, а не замок. Если у
+			// бэкенда сессии нет свободного слота, она НЕ передаётся в ожидание:
+			// иначе заявка ждёт занятый узел (до 300 с), пока рядом простаивает
+			// подходящий. Правило R480 продолжает действовать, когда слот есть.
+			sessionFromBackend = p.stickyBackendIfAvailableR493(sessionKey)
 		}
 		unifiedBackend, unifiedRelease, unifiedWaited, unifiedPosition, waitErr :=
 			p.waitForInferenceBackendWithMoveR480(ctxWithRID, model, bt, sessionKey, sessionFromBackend)

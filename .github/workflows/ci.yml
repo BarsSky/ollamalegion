@@ -808,6 +808,15 @@ jobs:
         run: |
           python scripts/check_webui_assets.py
 
+      # R493-D4 (2026-11-11): каждый data-i18n страницы обязан быть в ru.js и
+      # en.js. Живой дефект: кнопка «Экспорт» на странице логов ссылалась на
+      # logs.export, ключа не было НИ В ОДНОМ пакете. i18n_diff.js это не ловит
+      # (он сравнивает пакеты между собой), а оператор в русской локали видел
+      # литерал «logs.export» вместо слова.
+      - name: WebUI i18n keys referenced by pages exist in both packs
+        run: |
+          python scripts/check_webui_i18n_keys.py
+
       - name: WebUI JS syntax check
         run: |
           # node --check verifies syntax of each .js file without running

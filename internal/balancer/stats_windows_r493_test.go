@@ -250,6 +250,34 @@ func TestR493_NativeDoneFrameGetsLoadDuration(t *testing.T) {
 	}
 }
 
+// TestR493_NativeDoneFrameAddsWorkerLoadDuration — 40 секунд ленивой загрузки
+// видит ТОЛЬКО воркер (загрузка идёт внутри запроса, после client.Do):
+// балансер обязан сложить их со своим ожиданием, а не перезаписать нулём.
+func TestR493_NativeDoneFrameAddsWorkerLoadDuration(t *testing.T) {
+	now := time.Now()
+	// Балансер ждал 2 с (очередь/preflight), воркер грузил модель 40 с.
+	w := statsWindowsR493{RequestStart: now.Add(-2 * time.Second), UpstreamSent: now}
+	frame := `{"done":true,"eval_count":60,"prompt_eval_duration":140000000,` +
+		`"eval_duration":1230000000,"total_duration":1370000000,` +
+		`"load_duration":40000000000,"message":{"content":"ok"}}`
+	out, changed := applyStatsWindowsNativeR493(frame, w)
+	if !changed {
+		t.Fatal("кадр не дополнен: ожидание балансера и загрузка воркера не сошлись")
+	}
+	var got map[string]interface{}
+	_ = json.Unmarshal([]byte(out), &got)
+	load := got["load_duration"].(float64)
+	if load < 41e9 || load > 42e9 {
+		t.Fatalf("load_duration = %.0f нс, ожидалось ≈42 с (2 с ожидания + 40 с загрузки), "+
+			"а не только ожидание балансера", load)
+	}
+	prompt := got["prompt_eval_duration"].(float64)
+	eval := got["eval_duration"].(float64)
+	if total := got["total_duration"].(float64); total != load+prompt+eval {
+		t.Fatalf("total=%.0f != load+prompt+eval=%.0f", total, load+prompt+eval)
+	}
+}
+
 // TestR493_NativeDoneFrameUntouchedWithoutWindows — балансер не видел отправки:
 // кадр воркера остаётся как есть (не выдумываем время).
 func TestR493_NativeDoneFrameUntouchedWithoutWindows(t *testing.T) {

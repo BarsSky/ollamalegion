@@ -288,6 +288,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	// отмену через /api/cancel (фикс первого P0.2-бага).
 	r, requestID, cancelCleanup := setupCancelTracking(r, req.Model, "cppworker-gpu", "chat")
 	defer cancelCleanup()
+	// R493-12a: ячейка «сколько ушло на загрузку модели» на этот запрос.
+	r = r.WithContext(withLoadScopeR493(r.Context()))
 	logger.Get().Debugw("handleChat: cancel tracking enabled",
 		"request_id", requestID, "model", req.Model, "user_id", userID)
 
@@ -295,7 +297,11 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	// R83-политика (2026-10-01): окно загрузки = num_ctx запроса (если клиент
 	// его указал). Раньше lazy-load брал окно из env/профиля, и клиент получал
 	// модель с чужим окном, после чего шли «перезагрузки под клиента».
-	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.Options.NumCtx)
+	//
+	// R493-12a (2026-11-12): загрузка измеряется и уезжает в контекст запроса —
+	// живой замер показал 40 с ожидания, которых не было ни в одном поле
+	// статистики (клиент видел total_duration 1.37 с).
+	actualModel, err := loadModelMeasuredR493(r.Context(), req.Model, req.Options.NumCtx)
 	if err != nil {
 		// R119 (2026-10-15): 503 «грузится» / 404 «нет файла» / 500 «поломка» —
 		// одна точка перевода, см. writeModelLoadError. До этого ЛЮБАЯ причина
@@ -1703,6 +1709,7 @@ func writeChatStreamResponse(w http.ResponseWriter, r *http.Request, modelName, 
 		"done":                 true,
 		"done_reason":          doneReason,
 		"total_duration":       evalNs,
+		"load_duration":        loadDurationNsR493(r.Context()),
 		"prompt_eval_count":    promptTokens,
 		"prompt_eval_duration": promptEvalNs,
 		"eval_count":           generatedTokens,
@@ -2886,6 +2893,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		"message":              map[string]interface{}{"role": "assistant"},
 		"done":                 true,
 		"total_duration":       totalNs,
+		"load_duration":        loadDurationNsR493(r.Context()),
 		"prompt_eval_count":    promptTokensTools,
 		"prompt_eval_duration": promptEvalNsTools,
 		"eval_count":           fullOutputCount,

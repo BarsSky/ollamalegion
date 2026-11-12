@@ -275,7 +275,9 @@ func runGenerateCore(w http.ResponseWriter, r *http.Request, req generateRequest
 	}
 
 	// R83-политика (2026-10-01): окно загрузки = num_ctx запроса (если задан).
-	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.Options.NumCtx)
+	// R493-12a: длительность загрузки пишется в ячейку контекста запроса и уезжает
+	// в done-кадр (клиент иначе не знает, что ждал загрузку модели).
+	actualModel, err := loadModelMeasuredR493(r.Context(), req.Model, req.Options.NumCtx)
 	if err != nil {
 		// R119 (2026-10-15): 404 «модели нет» вместо 500 с пустым телом —
 		// живой случай: запрос к llama-3-8b давал Internal Server Error без
@@ -389,6 +391,8 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// иначе writeGenerateStreamResponse смотрит на parent и не видит отмену).
 	r, requestID, cancelCleanup := setupCancelTracking(r, modelName, "cppworker-gpu", "gen")
 	defer cancelCleanup()
+	// R493-12a: ячейка «сколько ушло на загрузку модели» на этот запрос.
+	r = r.WithContext(withLoadScopeR493(r.Context()))
 	logger.Get().Debugw("handleGenerate: cancel tracking enabled",
 		"request_id", requestID, "model", modelName, "user_id", userID)
 	params, prompt, ok := runGenerateCore(w, r, req)
@@ -676,6 +680,7 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		"done":              true,
 		"done_reason":       doneReason,
 		"total_duration":    duration.Microseconds() * 1000,
+		"load_duration":     loadDurationNsR493(r.Context()),
 		"eval_count":        generatedTokens,
 		"eval_duration":     duration.Microseconds() * 1000,
 		"tokens_per_second": tps,
@@ -692,6 +697,10 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 
 // handleOllamaGenerate — Ollama /api/ollama/generate и /api/generate (Ollama-формат).
 func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
+	// R493-12a: ячейка «сколько ушло на загрузку модели» на этот запрос (та же,
+	// что в handleGenerate: кадры /api/generate и /api/ollama/generate должны
+	// нести одинаковую статистику).
+	r = r.WithContext(withLoadScopeR493(r.Context()))
 	var req generateRequest
 	// R60.16 (2026-09-08): use BOM-stripping decoder (Windows PowerShell
 	// Out-File default adds EF BB BF BOM → 400 without this).
@@ -774,10 +783,11 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	promptEvalCount := countTokens(modelName, prompt)
-	loadDuration := int64(0)
-	if info, err := backend.GetModel(modelName); err == nil && !info.LoadedAt.IsZero() {
-		loadDuration = time.Since(info.LoadedAt).Milliseconds()
-	}
+	// R493-12a (2026-11-12): `load_duration` — время, потраченное НА ЗАГРУЗКУ в
+	// этом запросе (Ollama-семантика). Раньше здесь отдавался возраст модели
+	// (`time.Since(LoadedAt)`): клиент видел «загрузку» длиной в часы работы
+	// стенда, а реальные 40 с ленивой загрузки оставались невидимыми.
+	loadDuration := loadDurationNsR493(r.Context())
 	duration := time.Since(start)
 	tokens := countTokens(modelName, result.Output)
 
@@ -805,7 +815,7 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 		"done":                 true,
 		"context":              []int{},
 		"total_duration":       duration.Microseconds() * 1000,
-		"load_duration":        loadDuration * 1000,
+		"load_duration":        loadDuration,
 		"prompt_eval_count":    promptEvalCount,
 		"prompt_eval_duration": duration.Microseconds() * 1000,
 		"eval_count":           tokens,
@@ -960,6 +970,7 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		"model": modelName, "done": true, "done_reason": doneReason,
 		"created_at":        createdAt,
 		"total_duration":    duration.Microseconds() * 1000,
+		"load_duration":     loadDurationNsR493(r.Context()),
 		"eval_count":        generatedTokens,
 		"eval_duration":     duration.Microseconds() * 1000,
 		"tokens_per_second": tps,

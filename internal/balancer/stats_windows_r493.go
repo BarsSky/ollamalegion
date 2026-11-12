@@ -196,7 +196,15 @@ func applyStatsWindowsNativeR493(line string, w statsWindowsR493) (string, bool)
 	if w.RequestStart.IsZero() || w.UpstreamSent.IsZero() {
 		return line, false
 	}
-	load := nonNegative(w.UpstreamSent.Sub(w.RequestStart))
+	// R493-12a (вторая половина): воркер сам знает, сколько отдал на загрузку
+	// модели (ленивая загрузка идёт ВНУТРИ запроса и балансеру не видна), а
+	// балансер знает своё ожидание в очереди/preflight. Итог — их сумма: только
+	// так «сколько ждал клиент» сходится с тем, что он реально видел.
+	workerLoad := int64FromChunkR493(chunk, "load_duration")
+	if workerLoad < 0 {
+		workerLoad = 0
+	}
+	load := nonNegative(w.UpstreamSent.Sub(w.RequestStart)) + workerLoad
 
 	promptNs := int64FromChunkR493(chunk, "prompt_eval_duration")
 	evalNs := int64FromChunkR493(chunk, "eval_duration")

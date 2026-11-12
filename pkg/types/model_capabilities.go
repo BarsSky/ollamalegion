@@ -44,6 +44,11 @@ type ModelCapabilities struct {
 	// Приходит из GGUF header (general.context_length).
 	// 0 = unknown (fallback to cppworker default).
 	MaxContext int `json:"maxContext"`
+	// LoadedContextSize — окно ЗАГРУЖЕННОЙ копии на этом узле (может быть меньше
+	// MaxContext). R493-12e (2026-11-12): раньше это значение попадало в
+	// MaxContext, и один и тот же файл модели отдавал 262144 с одного узла и
+	// 131072 с другого. Агент считал «размер контекста» по разным числам.
+	LoadedContextSize int `json:"loadedContextSize,omitempty"`
 
 	// Architecture — название архитектуры из GGUF header (qwen3, llama, gpt2, ...).
 	Architecture string `json:"architecture"`
@@ -199,10 +204,14 @@ func CapabilitiesFromModelInfo(name string, reasoningEnabled bool, architecture 
 	caps := DefaultCapabilitiesForModelName(name)
 	caps.Reasoning = reasoningEnabled
 	caps.Architecture = architecture
-	caps.MaxContext = contextSize
+	// R493-12e: MaxContext — ФИЗИЧЕСКИЙ предел модели (GGUF), а не окно загрузки.
+	// Окно загруженной копии отдаётся отдельным полем: иначе клиент видел
+	// 262144 на одном узле и 131072 на другом при одном файле модели.
+	caps.MaxContext = ggufContextLength
 	if caps.MaxContext == 0 {
-		caps.MaxContext = ggufContextLength
+		caps.MaxContext = contextSize
 	}
+	caps.LoadedContextSize = contextSize
 	caps.Source = "cppworker-runtime"
 	return caps
 }

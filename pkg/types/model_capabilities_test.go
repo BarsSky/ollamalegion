@@ -106,8 +106,15 @@ func TestCapabilitiesFromModelInfo(t *testing.T) {
 	if caps.Reasoning {
 		t.Error("Reasoning should be false (instruct, no reasoning)")
 	}
-	if caps.MaxContext != 32768 {
-		t.Errorf("MaxContext: got %d, want 32768", caps.MaxContext)
+	// R493-12e (2026-11-12, по архиву стенда): раньше MaxContext отдавал окно
+	// ЗАГРУЖЕННОЙ копии (32768), и та же модель с разных узлов показывала разный
+	// «размер контекста» (262144 и 131072). Теперь MaxContext — физический предел
+	// из GGUF, а окно загрузки — отдельное поле LoadedContextSize.
+	if caps.MaxContext != 262144 {
+		t.Errorf("MaxContext: got %d, want 262144 (физический предел GGUF)", caps.MaxContext)
+	}
+	if caps.LoadedContextSize != 32768 {
+		t.Errorf("LoadedContextSize: got %d, want 32768 (окно загруженной копии)", caps.LoadedContextSize)
 	}
 	if caps.Architecture != "qwen3" {
 		t.Errorf("Architecture: got %q, want %q", caps.Architecture, "qwen3")

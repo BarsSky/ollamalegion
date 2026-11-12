@@ -524,8 +524,12 @@ func (p *llamaCppMetricsPoller) pollBackend(b backendInfo) bool {
 			VramKnown:          m.VramKnown,
 			// Round 18 P0.1 (2026-08-03): capabilities. Если cppworker не вернул
 			// (старая версия), вычисляем по имени как fallback.
-			Capabilities: capabilitiesOrFallback(m.Capabilities, m.Name, m.Architecture, m.GGUFContextLength,
-				m.ReasoningEnabled != nil && *m.ReasoningEnabled),
+			// R493-12e (2026-11-12): в fallback передаём ФАКТИЧЕСКОЕ окно
+			// загрузки (ContextSize) и GGUF-предел отдельно — раньше сюда
+			// дважды шёл GGUFContextLength, и LoadedContextSize показывал
+			// физический предел вместо окна копии.
+			Capabilities: capabilitiesOrFallback(m.Capabilities, m.Name, m.Architecture, m.ContextSize,
+				m.GGUFContextLength, m.ReasoningEnabled != nil && *m.ReasoningEnabled),
 			// R83-политика (2026-10-01): nil = cppworker не сообщил.
 			ReasoningEnabled: m.ReasoningEnabled,
 			// R118.16 (2026-10-14): точная раскладка слоёв — как её напечатал
@@ -851,13 +855,16 @@ func (p *llamaCppMetricsPoller) pollLoadingProgress(b backendInfo) {
 // capabilitiesOrFallback — если cppworker вернул capabilities, используем их.
 // Иначе вычисляем по имени модели (fallback для старых cppworker).
 //
-// Round 18 P0.1 (2026-08-03).
-func capabilitiesOrFallback(cppCaps *types.ModelCapabilities, name, architecture string, maxContext int, reasoningEnabled bool) *types.ModelCapabilities {
+// Round 18 P0.1 (2026-08-03). R493-12e (2026-11-12): два разных числа —
+// окно загруженной копии (contextSize) и физический предел GGUF
+// (ggufContextLength); путать их нельзя, иначе одна и та же модель
+// показывает с разных узлов разный «размер контекста».
+func capabilitiesOrFallback(cppCaps *types.ModelCapabilities, name, architecture string, contextSize, ggufContextLength int, reasoningEnabled bool) *types.ModelCapabilities {
 	if cppCaps != nil {
 		// cppworker вернул — приоритет.
 		return cppCaps
 	}
-	caps := types.CapabilitiesFromModelInfo(name, reasoningEnabled, architecture, maxContext, maxContext)
+	caps := types.CapabilitiesFromModelInfo(name, reasoningEnabled, architecture, contextSize, ggufContextLength)
 	return &caps
 }
 

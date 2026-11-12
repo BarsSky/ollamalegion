@@ -49,6 +49,24 @@ function Set-ImageTagVar {
         }
     }
 
+    # .env.example — ТРАССИРУЕМАЯ ссылка на выпуск, и её читает CI.
+    #
+    # ЗАЧЕМ ЗДЕСЬ. `.env` в git не входит (это файл стенда), поэтому CI сравнивает
+    # манифест выпуска именно с `.env.example` (`check-image-tags.ps1 -EnvFile
+    # .env.example`). Пока выпуск его не обновлял, КАЖДЫЙ релиз валил CI тремя
+    # «рассинхрон выпуска» на ровном месте (живой случай 2026-11-12: два раза
+    # подряд ручная правка .env.example уже после пуша). Обновляем там же, где и
+    # .env — тогда «что раскатано» в репозитории и в манифесте одно и то же.
+    $examplePath = Join-Path $EnvDir ".env.example"
+    if (Test-Path $examplePath) {
+        $content3 = Get-Content $examplePath
+        if ($content3 | Where-Object { $_ -match "^$VariableName=" }) {
+            $content3 = $content3 -replace "^$VariableName=.*", "$VariableName=$Value"
+            Set-Content -Path $examplePath -Value $content3
+            Write-Host "[tags] $VariableName=$Value записан в deployments/.env.example (ссылка для CI)" -ForegroundColor Cyan
+        }
+    }
+
     Write-Host "[tags] $VariableName=$Value записан в deployments/.env" -ForegroundColor Cyan
 }
 

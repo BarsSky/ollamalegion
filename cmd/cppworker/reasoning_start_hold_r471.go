@@ -29,9 +29,20 @@ import "strings"
 // Условия намеренно узкие, чтобы не задерживать обычные ответы:
 //   - клиент НЕ просил размышления (echo=false): если просил — он их и получит;
 //   - модель reasoning-архитектуры (иначе рассуждений и не будет);
-//   - в промпте размышления ВКЛЮЧЕНЫ: там стоит служебный токен включения
-//     (`<|think|>` у gemma, `enable_thinking` у qwen и т.п.). Если размышления
-//     выключены, задерживать нечего.
+//   - в промпте размышления ВКЛЮЧЕНЫ: служебный токен включения
+//     (`<|think|>` у gemma, `enable_thinking` у qwen и т.п.) ИЛИ промпт
+//     ЗАКАНЧИВАЕТСЯ ВНУТРИ открытого блока размышлений.
+//
+// R493 (2026-11-12, по архиву стенда A10 ×2 / Qwen3.8-27B). Второе условие
+// добавлено по живому дефекту: шаблон qwen35 заканчивает промпт
+// `<|im_start|>assistant\n<think>\n` — то есть открывает канал размышлений
+// В ПРОМПТЕ. Такого маркера в списке thinkingEnableMarkersR471 нет, поэтому
+// удержание не включалось: первые ~20 с (пока модель думала) вывод уходил
+// клиенту КАК КОНТЕНТ, а потом R482 снимал удержание по таймауту с записью
+// `hold_released ... held_bytes=1137`. Оператор видел мысли модели в ответе.
+//
+// Признак «промпт оставил блок открытым» — это не эвристика: его считает тот же
+// парсер, что режет вывод (reasoning_content.go, reasoningBlockOpenAtEnd).
 func reasoningStartHoldR471(prompt, modelName string, echo bool) bool {
 	if echo {
 		return false
@@ -39,7 +50,11 @@ func reasoningStartHoldR471(prompt, modelName string, echo bool) bool {
 	if !IsReasoningModel(modelName) {
 		return false
 	}
-	return promptEnablesThinkingR471(prompt)
+	if promptEnablesThinkingR471(prompt) {
+		return true
+	}
+	// R493: шаблон уже открыл блок размышлений — держим до закрывающего маркера.
+	return PromptOpensReasoning(prompt)
 }
 
 // promptEnablesThinkingR471 — включены ли размышления в собранном промпте.

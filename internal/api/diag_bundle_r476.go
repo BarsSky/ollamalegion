@@ -31,6 +31,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -223,6 +224,34 @@ func diagBundleBalancerLogsR476() string {
 	return diagBundleBalancerLogsSinceR476(time.Time{})
 }
 
+
+// diagFieldValueR476 — значение поля в одну строку, без пробелов-разделителей.
+// Строки с пробелами/кавычками берём в кавычки (strconv.Quote), остальные — как
+// есть; вложенные структуры — компактным JSON, чтобы поле не терялось.
+func diagFieldValueR476(v interface{}) string {
+	switch t := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		if t == "" {
+			return "\"\""
+		}
+		if strings.ContainsAny(t, " \t\"") {
+			return strconv.Quote(t)
+		}
+		return t
+	case error:
+		return strconv.Quote(t.Error())
+	case bool, int, int32, int64, uint, uint32, uint64, float32, float64:
+		return fmt.Sprintf("%v", t)
+	default:
+		if raw, err := json.Marshal(t); err == nil {
+			return string(raw)
+		}
+		return fmt.Sprintf("%v", t)
+	}
+}
+
 // diagBundleBalancerLogsSinceR476 — только записи позже cutoff (нулевое время =
 // без фильтра).
 func diagBundleBalancerLogsSinceR476(cutoff time.Time) string {
@@ -240,9 +269,26 @@ func diagBundleBalancerLogsSinceR476(cutoff time.Time) string {
 		if src == "" {
 			src = "balancer"
 		}
-		b.WriteString(fmt.Sprintf("%s %-5s %-9s %s\n",
+		b.WriteString(fmt.Sprintf("%s %-5s %-9s %s",
 			e.Time.Format("2006-01-02T15:04:05.000Z07:00"),
 			strings.ToUpper(e.Level), src, e.Message))
+		// R493 (2026-11-12, по архиву стенда): в файл попадали ТОЛЬКО сообщения,
+		// структурированные поля терялись. Оператор видел «request trace» без
+		// request_id/path/status/duration, «свободный узел пропущен» — без
+		// backend/model/need_mb/free_mb, то есть архив, сделанный ради разбора,
+		// не позволял разобрать ничего. Поля есть в LogEntry.Fields — печатаем их
+		// в стабильном порядке ключей, чтобы diff между архивами был читаемым.
+		if len(e.Fields) > 0 {
+			keys := make([]string, 0, len(e.Fields))
+			for k := range e.Fields {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				b.WriteString(" " + k + "=" + diagFieldValueR476(e.Fields[k]))
+			}
+		}
+		b.WriteString("\n")
 	}
 	if b.Len() == 0 {
 		return "# буфер пуст\n"
@@ -300,7 +346,8 @@ const diagBundleReadmeR476 = `Диагностический архив OllamaLe
 Состав:
   summary.json        — версии всех компонентов, флаги, конфигурация окна,
                         профили моделей, снимок кластера (бэкенды, модели, очередь)
-  balancer-logs.txt   — кольцевой буфер логов балансера
+  balancer-logs.txt   — кольцевой буфер логов балансера: время, уровень,
+                        источник, сообщение и структурированные поля (key=value)
   flags.txt           — флаги по белому списку (set / unset)
   backends/<id>.bundle.zip — архив воркера: его логи, промпт, тело запроса,
                         срывы разбора вызовов, env-флаги (см. README в нём)

@@ -82,4 +82,17 @@ func TestR493_TransportPassesStatsWindows(t *testing.T) {
 		t.Fatal("транспорт снова зовёт translateOpenAISSEDataToOllamaWithFlags (две " +
 			"точки времени вместо четырёх): ожидание и загрузка вернутся в prompt_eval_duration")
 	}
+	// Старт «сколько ждал клиент» обязан брать момент ПРИЁМА запроса: llamaStartTime
+	// ставится уже после очереди и авто-загрузки, и ожидание из него не видно.
+	if !strings.Contains(src, "requestStartR493(r.Context())") {
+		t.Fatal("транспорт не читает момент приёма запроса из контекста: ожидание " +
+			"до отправки воркеру снова не попадёт в load_duration")
+	}
+	proxySrc, err := os.ReadFile("proxy.go")
+	if err != nil {
+		t.Fatalf("не прочитать proxy.go: %v", err)
+	}
+	if !strings.Contains(string(proxySrc), "withRequestStartR493(r.Context(), startTime)") {
+		t.Fatal("Proxy.ServeHTTP не отмечает момент приёма запроса: транспорту нечего читать")
+	}
 }

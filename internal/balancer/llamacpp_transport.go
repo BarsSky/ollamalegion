@@ -109,6 +109,14 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// F.0.4 (2026-06-28): session F — диагностика EOF.
 	// Запоминаем startTime для расчёта duration_ms при ошибках upstream.
 	llamaStartTime := time.Now()
+	// R493-12a: если вход запроса (Proxy.ServeHTTP) отметил момент приёма — считаем
+	// от него. llamaStartTime ставится уже ПОСЛЕ выбора бэкенда, авто-загрузки и
+	// ожидания слота, поэтому «сколько клиент ждал» из него не видно вовсе
+	// (живой замер: 44 с ожидания при total_duration 2.55 с).
+	requestStartTime := requestStartR493(r.Context())
+	if requestStartTime.IsZero() {
+		requestStartTime = llamaStartTime
+	}
 	// R493-12a (2026-11-12): окна времени для статистики скорости токенов.
 	//
 	// ДО ЭТОЙ ПРАВКИ: prompt_eval_duration считался от llamaStartTime, то есть
@@ -867,7 +875,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// R493-12a: окна для правки НАТИВНОГО done-кадра. Запрос воркеру уже ушёл
 	// (upstreamSentTime), значит «ожидание» для клиента — это отрезок до него:
 	// очередь, авто-загрузка модели и preflight. Раньше он не попадал никуда.
-	statsWindowsNative := statsWindowsR493{RequestStart: llamaStartTime, UpstreamSent: upstreamSentTime}
+	statsWindowsNative := statsWindowsR493{RequestStart: requestStartTime, UpstreamSent: upstreamSentTime}
 	// R292: состояние «подозрительного на tool-вызов» текста.
 	//   contentBufferSince — когда буфер начали копить (для grace-порога);
 	//   contentBufferGaveUp — мы уже решили, что это проза: больше не копим.
@@ -1908,7 +1916,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// R493-12a: окна передаём четырьмя моментами — иначе в «время промпта»
 			// снова попали бы очередь и загрузка, а размышления выпали бы из
 			// «времени генерации» (см. stats_windows_r493.go).
-			statsWindows := statsWindowsForTransportR493(llamaStartTime, upstreamSentTime, firstDeltaTime, firstContentTime, time.Now())
+			statsWindows := statsWindowsForTransportR493(requestStartTime, upstreamSentTime, firstDeltaTime, firstContentTime, time.Now())
 			// R493-12a: загрузку модели знает воркер (она внутри запроса) — берём
 			// её из заголовка ответа, иначе 40+ секунд не попадут никуда.
 			statsWindows.WorkerLoad = workerLoadNsR493

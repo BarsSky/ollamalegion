@@ -10,6 +10,7 @@
 package balancer
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -90,6 +91,54 @@ func TestR493_WindowsWorkerLoadPartialPrefill(t *testing.T) {
 	}
 	if d.Eval != int64(4*time.Second) {
 		t.Fatalf("eval = %d, ожидалось 4 с", d.Eval)
+	}
+}
+
+// TestR493_RequestStartTravelsInContext — момент приёма запроса ставит вход
+// (Proxy.ServeHTTP), а читает транспорт: без этого ожидание до отправки воркеру
+// (очередь, авто-загрузка, ожидание слота) не попадает ни в один отрезок.
+func TestR493_RequestStartTravelsInContext(t *testing.T) {
+	start := time.Now().Add(-30 * time.Second)
+	ctx := withRequestStartR493(context.Background(), start)
+	if got := requestStartR493(ctx); !got.Equal(start) {
+		t.Fatalf("requestStartR493 = %v, ожидалось %v", got, start)
+	}
+	// Второй вызов не сдвигает начало: вложенные обёртки не должны «омолаживать»
+	// момент приёма, иначе ожидание снова потеряется.
+	if got := requestStartR493(withRequestStartR493(ctx, time.Now())); !got.Equal(start) {
+		t.Fatalf("повторная установка сдвинула начало: %v", got)
+	}
+	if got := requestStartR493(context.Background()); !got.IsZero() {
+		t.Fatalf("без значения ожидался zero, получено %v", got)
+	}
+	if got := requestStartR493(nil); !got.IsZero() {
+		t.Fatalf("nil-контекст: ожидался zero, получено %v", got)
+	}
+}
+
+// TestR493_WindowsFromAcceptToFirstDelta — сквозной смысл: клиент ждал 30 с до
+// отправки воркеру (очередь + загрузка узла), потом 5 с до первого токена.
+// «Промпт» обязан быть 5 с, «загрузка» — 30 с.
+func TestR493_WindowsFromAcceptToFirstDelta(t *testing.T) {
+	now := time.Now()
+	d := statsWindowsForTransportR493(
+		now.Add(-40*time.Second), // балансер принял запрос
+		now.Add(-10*time.Second), // отправил воркеру (30 с ожидания)
+		now.Add(-5*time.Second),  // первый дельта-чанк (5 с префилла)
+		now.Add(-5*time.Second),
+		now,
+	).Durations()
+	if d.Load != int64(30*time.Second) {
+		t.Fatalf("load = %d, ожидалось 30 с (очередь + авто-загрузка)", d.Load)
+	}
+	if d.PromptEval != int64(5*time.Second) {
+		t.Fatalf("prompt_eval = %d, ожидалось 5 с", d.PromptEval)
+	}
+	if d.Eval != int64(5*time.Second) {
+		t.Fatalf("eval = %d, ожидалось 5 с", d.Eval)
+	}
+	if d.Total != int64(40*time.Second) {
+		t.Fatalf("total = %d, ожидалось 40 с", d.Total)
 	}
 }
 

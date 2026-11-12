@@ -951,6 +951,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// без второй копии).
 	p.recordRecentClient(r)
 	startTime := time.Now()
+	// R493-12a: момент приёма запроса уезжает в контекст — от него считается
+	// «сколько клиент ждал» (очередь, авто-загрузка, preflight). Внутри
+	// proxyRequestLlamaCpp своё время старта ставится ПОЗЖЕ всех ожиданий, и
+	// построенные от него окна статистики показывали 0 там, где клиент ждал
+	// десятки секунд.
+	r = r.WithContext(withRequestStartR493(r.Context(), startTime))
 
 	// ==== Correlation ID ====
 	// Генерируем (или берём из заголовка X-Request-ID) уникальный id для этого

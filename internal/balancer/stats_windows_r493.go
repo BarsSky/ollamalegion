@@ -33,10 +33,43 @@
 package balancer
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"time"
 )
+
+// requestStartKeyR493 — ключ контекста с моментом, когда балансер ПРИНЯЛ запрос.
+//
+// ЗАЧЕМ ОТДЕЛЬНО ОТ llamaStartTime. `llamaStartTime` ставится внутри
+// proxyRequestLlamaCpp — уже ПОСЛЕ выбора бэкенда, авто-загрузки модели и
+// ожидания слота. Живой замер: клиент ждал 30–44 с, а окна, построенные от
+// llamaStartTime, показывали 0: ожидание шло ДО этой точки и не попадало никуда.
+// Момент приёма запроса известен только на входе (`Proxy.ServeHTTP`), поэтому он
+// едет в контексте.
+type requestStartKeyR493 struct{}
+
+// withRequestStartR493 — запомнить момент приёма запроса (первый вызов побеждает:
+// вложенные обёртки не должны сдвигать начало).
+func withRequestStartR493(ctx context.Context, t time.Time) context.Context {
+	if ctx == nil || t.IsZero() {
+		return ctx
+	}
+	if existing, ok := ctx.Value(requestStartKeyR493{}).(time.Time); ok && !existing.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, requestStartKeyR493{}, t)
+}
+
+// requestStartR493 — момент приёма запроса балансером (zero, если вход его не
+// поставил: тогда вызывающий использует своё начало отсчёта).
+func requestStartR493(ctx context.Context) time.Time {
+	if ctx == nil {
+		return time.Time{}
+	}
+	t, _ := ctx.Value(requestStartKeyR493{}).(time.Time)
+	return t
+}
 
 // statsWindowsR493 — четыре момента времени, из которых считаются длительности.
 //

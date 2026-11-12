@@ -36,11 +36,6 @@ const (
 	t3Window = 65536
 )
 
-// windowProxyT3 — прокси с двумя llama.cpp-узлами: «from» с окном 65536 и
-// кандидат, окно которого задаёт тест. pollAge управляет «свежестью» метрики
-// кандидата (для состояния «неизвестно»).
-type windowProxyT3 struct{ p *Proxy }
-
 func newWindowProxyT3(t *testing.T, candidateWindow int, candidatePollAge time.Duration) *Proxy {
 	t.Helper()
 	conf := &types.LoadBalancerConfig{
@@ -83,19 +78,21 @@ func newWindowProxyT3(t *testing.T, candidateWindow int, candidatePollAge time.D
 // состоянию. Именно здесь расходятся пути, если кто-то поправит порог в одном
 // месте.
 func TestT3_WindowVerdictTable(t *testing.T) {
+	// Порядок полей — под fieldalignment (линт): строки (указатели) первыми,
+	// числа и були последними, иначе структура занимает лишние pointer-байты.
 	cases := []struct {
 		name      string
-		candWin   int
+		state     string
 		pollAge   time.Duration
+		candWin   int
 		moveWant  bool
 		queueWant bool
-		state     string
 	}{
-		{"неизвестно (метрика устарела)", 0, 3 * time.Hour, true, true, "unknown"},
-		{"известный холодный (0, свежая метрика)", 0, time.Second, false, false, "cold"},
-		{"уже́ нужного (32768 < 65536)", 32768, time.Second, false, false, "narrow"},
-		{"ровно нужное (65536)", 65536, time.Second, true, true, "equal"},
-		{"больше нужного (131072)", 131072, time.Second, true, true, "wide"},
+		{"неизвестно (метрика устарела)", "unknown", 3 * time.Hour, 0, true, true},
+		{"известный холодный (0, свежая метрика)", "cold", time.Second, 0, false, false},
+		{"уже́ нужного (32768 < 65536)", "narrow", time.Second, 32768, false, false},
+		{"ровно нужное (65536)", "equal", time.Second, 65536, true, true},
+		{"больше нужного (131072)", "wide", time.Second, 131072, true, true},
 	}
 
 	for _, c := range cases {

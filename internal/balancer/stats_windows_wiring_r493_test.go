@@ -57,6 +57,13 @@ func TestR493_TransportPassesStatsWindows(t *testing.T) {
 				"любого вида»: собранные вручную в транспорте они уже один раз " +
 				"потеряли размышления (и это не ловилось тестом)",
 		},
+		{
+			needle: "applyStatsWindowsNativeR493(",
+			count:  1,
+			why: "нативный done-кадр обязан дополняться окнами балансера: без этого " +
+				"клиент снова получит total_duration без времени загрузки модели " +
+				"(живой замер: ждал 62 с, видел 2.15 с)",
+		},
 	}
 	for _, r := range required {
 		if got := strings.Count(src, r.needle); got != r.count {

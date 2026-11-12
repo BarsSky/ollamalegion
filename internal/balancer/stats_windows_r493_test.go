@@ -10,6 +10,7 @@
 package balancer
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -203,7 +204,95 @@ func TestR493_FirstDeltaPrefersAnyDelta(t *testing.T) {
 	}
 }
 
-// TestR493_TransportWindowsUseAnyDelta — ГЛАВНЫЙ сторож 12a на уровне сборки
+// TestR493_NativeDoneFrameGetsLoadDuration — живой случай стенда: модель
+// грузилась 60 с, воркер отдал свои 2.15 с и ни слова про ожидание.
+func TestR493_NativeDoneFrameGetsLoadDuration(t *testing.T) {
+	now := time.Now()
+	w := statsWindowsR493{RequestStart: now.Add(-62 * time.Second), UpstreamSent: now.Add(-2 * time.Second)}
+	// Ровно то, что отдал воркер (замер со стенда 2026-11-12).
+	frame := `{"model":"Qwen3-4B","done":true,"done_reason":"stop",` +
+		`"prompt_eval_count":30,"eval_count":80,` +
+		`"prompt_eval_duration":740000000,"eval_duration":1410000000,"total_duration":2150000000,` +
+		`"message":{"role":"assistant","content":"ok"}}`
+
+	out, changed := applyStatsWindowsNativeR493(frame, w)
+	if !changed {
+		t.Fatal("нативный done-кадр не тронут: клиент снова не узнает, что ждал 60 с")
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("кадр перестал быть JSON: %v (%s)", err, out)
+	}
+	load := got["load_duration"].(float64)
+	if load < 59e9 || load > 61e9 {
+		t.Fatalf("load_duration = %.0f нс, ожидалось ≈60 с (ожидание + загрузка)", load)
+	}
+	prompt := got["prompt_eval_duration"].(float64)
+	eval := got["eval_duration"].(float64)
+	total := got["total_duration"].(float64)
+	if prompt != 740000000 || eval != 1410000000 {
+		t.Fatalf("отрезки воркера изменены: prompt=%.0f eval=%.0f (должны остаться его)", prompt, eval)
+	}
+	if total != load+prompt+eval {
+		t.Fatalf("total=%.0f != load+prompt+eval=%.0f — инвариант нарушен", total, load+prompt+eval)
+	}
+	tps, ok := got["tokens_per_second"].(float64)
+	if !ok {
+		t.Fatal("tokens_per_second отсутствует — панель покажет N/A при непустом eval_count")
+	}
+	if want := 80.0 / 1.41; tps < want-0.2 || tps > want+0.2 {
+		t.Fatalf("tokens_per_second = %.2f, ожидалось ≈%.2f", tps, want)
+	}
+	// Содержимое и структура кадра не должны пострадать.
+	msg, _ := got["message"].(map[string]interface{})
+	if msg == nil || msg["content"] != "ok" {
+		t.Fatalf("message.content потерян при правке: %s", out)
+	}
+}
+
+// TestR493_NativeDoneFrameUntouchedWithoutWindows — балансер не видел отправки:
+// кадр воркера остаётся как есть (не выдумываем время).
+func TestR493_NativeDoneFrameUntouchedWithoutWindows(t *testing.T) {
+	frame := `{"done":true,"eval_count":5,"eval_duration":1000000000}`
+	if out, changed := applyStatsWindowsNativeR493(frame, statsWindowsR493{}); changed || out != frame {
+		t.Fatalf("кадр изменён без окон: %s", out)
+	}
+}
+
+// TestR493_NativeStreamFrameUntouched — не-done кадры не трогаем вовсе.
+func TestR493_NativeStreamFrameUntouched(t *testing.T) {
+	now := time.Now()
+	w := statsWindowsR493{RequestStart: now.Add(-5 * time.Second), UpstreamSent: now.Add(-1 * time.Second)}
+	frame := `{"done":false,"message":{"role":"assistant","content":"привет"}}`
+	if out, changed := applyStatsWindowsNativeR493(frame, w); changed || out != frame {
+		t.Fatalf("промежуточный кадр переписан: %s", out)
+	}
+}
+
+// TestR493_NativeDoneFrameWithoutWorkerDurations — старая сборка воркера не
+// присылает длительностей: считаем нашими окнами, форму не выдумываем.
+func TestR493_NativeDoneFrameWithoutWorkerDurations(t *testing.T) {
+	now := time.Now()
+	w := statsWindowsR493{
+		RequestStart: now.Add(-30 * time.Second),
+		UpstreamSent: now.Add(-25 * time.Second),
+		FirstDelta:   now.Add(-20 * time.Second),
+		End:          now,
+	}
+	out, changed := applyStatsWindowsNativeR493(`{"done":true,"eval_count":100}`, w)
+	if !changed {
+		t.Fatal("кадр без длительностей не дополнен нашими окнами")
+	}
+	var got map[string]interface{}
+	_ = json.Unmarshal([]byte(out), &got)
+	if got["load_duration"].(float64) != float64(5*time.Second) {
+		t.Fatalf("load_duration = %.0f, ожидалось 5 с", got["load_duration"])
+	}
+	if got["eval_duration"].(float64) != float64(20*time.Second) {
+		t.Fatalf("eval_duration = %.0f, ожидалось 20 с", got["eval_duration"])
+	}
+}
+
 // окон: если модель думала 65 с и только потом выдала 5 с ответа, окно
 // генерации обязано начинаться с размышления. Именно эта граница и была
 // дефектом (первый CONTENT-чанк), и именно её мутация должна ронять тест.

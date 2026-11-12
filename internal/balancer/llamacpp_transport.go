@@ -851,6 +851,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
 
+	// R493-12a: окна для правки НАТИВНОГО done-кадра. Запрос воркеру уже ушёл
+	// (upstreamSentTime), значит «ожидание» для клиента — это отрезок до него:
+	// очередь, авто-загрузка модели и preflight. Раньше он не попадал никуда.
+	statsWindowsNative := statsWindowsR493{RequestStart: llamaStartTime, UpstreamSent: upstreamSentTime}
+
 	// R292: состояние «подозрительного на tool-вызов» текста.
 	//   contentBufferSince — когда буфер начали копить (для grace-порога);
 	//   contentBufferGaveUp — мы уже решили, что это проза: больше не копим.
@@ -1301,6 +1306,17 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				}
 			} else {
 				outLine = trimmed
+			}
+			// R493-12a (2026-11-12): нативный done-кадр несёт статистику cppworker,
+			// и она не знает про очередь/авто-загрузку/preflight. Живой замер на
+			// стенде: клиент ждал 62 с (модель грузилась), а получил total_duration
+			// 2.15 с, load_duration 0 и вообще без tokens_per_second. Здесь
+			// добавляется то, что видит ТОЛЬКО балансер: load_duration и
+			// total = load + prompt + eval (см. applyStatsWindowsNativeR493).
+			if originalPath == "/api/chat" || originalPath == "/api/generate" {
+				if fixed, changed := applyStatsWindowsNativeR493(outLine, statsWindowsNative); changed {
+					outLine = fixed
+				}
 			}
 			// R266.1 (2026-10-28): на нативном пути cppworker уже отдаёт NDJSON,
 			// и балансер писал строку клиенту как есть — поэтому служебные метки

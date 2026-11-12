@@ -18,6 +18,7 @@
 package balancer
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -131,8 +132,13 @@ func TestT2_SixCombinationsGolden(t *testing.T) {
 			name: "api/chat stream",
 			path: "/api/chat",
 			body: `{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			// R493-12a: нативный done-кадр теперь несёт длительности — их дополняет
+			// балансер (load_duration и total = load+prompt+eval). Сами числа
+			// переменные по определению, поэтому golden фиксирует ФОРМУ кадра с
+			// обнулёнными длительностями (normalizeGoldenDurationsT2), а наличие
+			// полей и инвариант суммы проверяются отдельно ниже.
 			wantBody: `{"model":"m","message":{"role":"assistant","content":"hi"},"done":false}` + "\n" +
-				`{"done":true,"done_reason":"stop","message":{"content":"","role":"assistant"},"model":"m"}` + "\n",
+				`{"done":true,"done_reason":"stop","eval_duration":0,"load_duration":0,"message":{"content":"","role":"assistant"},"model":"m","prompt_eval_duration":0,"total_duration":0}` + "\n",
 			terminator: `"done":true`,
 		},
 		{
@@ -146,7 +152,7 @@ func TestT2_SixCombinationsGolden(t *testing.T) {
 			path: "/api/generate",
 			body: `{"model":"m","stream":true,"prompt":"hi"}`,
 			wantBody: `{"model":"m","response":"hi","done":false}` + "\n" +
-				`{"done":true,"done_reason":"stop","model":"m","response":""}` + "\n",
+				`{"done":true,"done_reason":"stop","eval_duration":0,"load_duration":0,"model":"m","prompt_eval_duration":0,"response":"","total_duration":0}` + "\n",
 			terminator: `"done":true`,
 		},
 		{
@@ -186,8 +192,14 @@ func TestT2_SixCombinationsGolden(t *testing.T) {
 				t.Fatalf("статус %d, ожидался 200; тело: %q", w.Code, w.Body.String())
 			}
 			got := w.Body.String()
-			if got != c.wantBody {
-				t.Fatalf("golden разошёлся.\nполучено: %q\nожидалось: %q", got, c.wantBody)
+			// R493-12a: нативные кадры несут ДЛИТЕЛЬНОСТИ, а они переменные по
+			// определению (время загрузки/префилла/генерации). Golden фиксирует
+			// форму кадра, а не числа: иначе он «мигал» бы на каждой машине.
+			// Наличие полей и инвариант «сумма отрезков = total» проверяются ниже.
+			compare := normalizeGoldenDurationsT2(t, got, c.path)
+			want := normalizeGoldenDurationsT2(t, c.wantBody, c.path)
+			if compare != want {
+				t.Fatalf("golden разошёлся.\nполучено: %q\nожидалось: %q", compare, want)
 			}
 			if c.terminator == "" {
 				return
@@ -197,6 +209,69 @@ func TestT2_SixCombinationsGolden(t *testing.T) {
 			if n := strings.Count(got, c.terminator); n != 1 {
 				t.Fatalf("терминаторов %q: %d, ожидался ровно один.\nтело: %q", c.terminator, n, got)
 			}
+			// R493-12a: у нативного клиента ОБЯЗАНЫ быть все три отрезка, и они
+			// обязаны складываться в total_duration. Без этого «скорость токенов»
+			// снова посчитается по чужому окну (живой замер: ждал 62 с, видел 2.15 с).
+			if c.path == "/api/chat" || c.path == "/api/generate" {
+				assertNativeStatsWindowsT2(t, got)
+			}
 		})
+	}
+}
+
+// normalizeGoldenDurationsT2 — обнулить переменные длительности в NDJSON-кадрах,
+// чтобы golden сравнивал форму, а не время. Другие пути не трогаем.
+func normalizeGoldenDurationsT2(t *testing.T, body, path string) string {
+	t.Helper()
+	if path != "/api/chat" && path != "/api/generate" {
+		return body
+	}
+	keys := []string{"load_duration", "prompt_eval_duration", "eval_duration", "total_duration", "tokens_per_second"}
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(ln), &m); err != nil {
+			t.Fatalf("кадр не JSON: %v (%q)", err, ln)
+		}
+		for _, k := range keys {
+			if _, ok := m[k]; ok {
+				if k == "tokens_per_second" {
+					delete(m, k) // процент/скорость в golden не фиксируем вовсе
+					continue
+				}
+				m[k] = 0
+			}
+		}
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("кадр не сериализуется: %v", err)
+		}
+		out = append(out, string(b))
+	}
+	return strings.Join(out, "\n") + "\n"
+}
+
+// assertNativeStatsWindowsT2 — на нативном пути клиент получает три отрезка,
+// и их сумма равна total_duration.
+func assertNativeStatsWindowsT2(t *testing.T, body string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	last := lines[len(lines)-1]
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(last), &m); err != nil {
+		t.Fatalf("последний кадр не JSON: %v (%q)", err, last)
+	}
+	nums := make(map[string]float64, 4)
+	for _, k := range []string{"load_duration", "prompt_eval_duration", "eval_duration", "total_duration"} {
+		v, ok := m[k].(float64)
+		if !ok {
+			t.Fatalf("в нативном done-кадре нет %s — клиент не узнает, сколько ждал: %q", k, last)
+		}
+		nums[k] = v
+	}
+	sum := nums["load_duration"] + nums["prompt_eval_duration"] + nums["eval_duration"]
+	if diff := nums["total_duration"] - sum; diff > 1e6 || diff < -1e6 {
+		t.Fatalf("сумма отрезков %.0f != total_duration %.0f (кадр: %q)", sum, nums["total_duration"], last)
 	}
 }

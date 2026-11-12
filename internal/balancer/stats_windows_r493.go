@@ -32,7 +32,11 @@
 // Теперь оно в своём поле, а сумма трёх отрезков равна total (до наносекунды).
 package balancer
 
-import "time"
+import (
+	"encoding/json"
+	"strings"
+	"time"
+)
 
 // statsWindowsR493 — четыре момента времени, из которых считаются длительности.
 //
@@ -156,6 +160,111 @@ func statsWindowsForTransportR493(requestStart, upstreamSent, firstDelta, firstC
 		FirstDelta:   firstDeltaOrContentR493(firstDelta, firstContent),
 		End:          end,
 	}
+}
+
+// applyStatsWindowsNativeR493 — R493-12a на НАТИВНОМ пути.
+//
+// ЖИВОЙ ФАКТ (стенд 2026-11-12, /api/chat → cppworker, модель грузилась ~60 с):
+// клиент получил `load_duration=0`, `prompt_eval_duration=0.74`,
+// `eval_duration=1.41`, `total_duration=2.15` — и `tokens_per_second` не было
+// вовсе. Числа cppworker верные (его собственный отсчёт), но они не знают про
+// очередь, авто-загрузку и preflight: 60 секунд ожидания для клиента не
+// существовали, а сумма «отрезков» не совпадала с тем, что человек реально ждал.
+//
+// ПРАВИЛО: нативные отрезки cppworker (prompt/eval) остаются его — они измерены
+// внутри генерации. Добавляется то, что видит ТОЛЬКО балансер: `load_duration`
+// (от начала обработки до отправки воркеру) и `total_duration` = load + prompt +
+// eval. Если воркер длительностей не прислал (старая сборка), считаем их нашими
+// окнами — тогда оба пути дают одинаковую форму.
+//
+// Возвращает (строка, изменено). Не-done и не-JSON кадры не трогаем.
+func applyStatsWindowsNativeR493(line string, w statsWindowsR493) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || trimmed[0] != '{' {
+		return line, false
+	}
+	var chunk map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &chunk); err != nil {
+		return line, false
+	}
+	done, _ := chunk["done"].(bool)
+	if !done {
+		return line, false
+	}
+	// Окна балансера бесполезны, если он не видел ни начала обработки, ни отправки:
+	// тогда оставляем кадр воркера как есть (не выдумываем время).
+	if w.RequestStart.IsZero() || w.UpstreamSent.IsZero() {
+		return line, false
+	}
+	load := nonNegative(w.UpstreamSent.Sub(w.RequestStart))
+
+	promptNs := int64FromChunkR493(chunk, "prompt_eval_duration")
+	evalNs := int64FromChunkR493(chunk, "eval_duration")
+	if promptNs <= 0 && evalNs <= 0 {
+		// Воркер не измерял: берём наши отрезки (prefill/eval по первому
+		// дельта-чанку).
+		d := w.Durations()
+		promptNs, evalNs = d.PromptEval, d.Eval
+	}
+	total := load + promptNs + evalNs
+
+	changed := setInt64R493(chunk, "load_duration", load)
+	if setInt64R493(chunk, "prompt_eval_duration", promptNs) {
+		changed = true
+	}
+	if setInt64R493(chunk, "eval_duration", evalNs) {
+		changed = true
+	}
+	if setInt64R493(chunk, "total_duration", total) {
+		changed = true
+	}
+	// tokens_per_second клиенты считают сами, но панель показывает поле: без него
+	// там N/A даже при непустом eval_count.
+	if evalNs > 0 {
+		if count := int64FromChunkR493(chunk, "eval_count"); count > 0 {
+			if setFloatR493(chunk, "tokens_per_second", float64(count)/(float64(evalNs)/1e9)) {
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return line, false
+	}
+	out, err := json.Marshal(chunk)
+	if err != nil {
+		return line, false
+	}
+	return string(out), true
+}
+
+// int64FromChunkR493 — целое из JSON-числа (float64 после Unmarshal).
+func int64FromChunkR493(chunk map[string]interface{}, key string) int64 {
+	if v, ok := chunk[key].(float64); ok {
+		return int64(v)
+	}
+	return 0
+}
+
+// setInt64R493 — записать целое, вернуть true, если значение изменилось.
+func setInt64R493(chunk map[string]interface{}, key string, v int64) bool {
+	if cur, ok := chunk[key].(float64); ok && int64(cur) == v {
+		return false
+	}
+	chunk[key] = v
+	return true
+}
+
+// setFloatR493 — записать float, вернуть true, если значение изменилось
+// (сравнение с допуском: пересчёт даёт почти то же число).
+func setFloatR493(chunk map[string]interface{}, key string, v float64) bool {
+	if cur, ok := chunk[key].(float64); ok {
+		diff := cur - v
+		if diff < 1e-6 && diff > -1e-6 {
+			return false
+		}
+	}
+	chunk[key] = v
+	return true
 }
 
 // chunkHasStatsDeltaR493 — содержит ли разобранный чанк (OpenAI SSE или нативный

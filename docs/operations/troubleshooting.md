@@ -293,7 +293,7 @@ CPPWORKER_WRITE_TIMEOUT=1800  # 30 minutes
 | Symptom | Scenario | Where to look |
 |---|---|---|
 | HTTP 413 on the first request with tools | **A** — RAM fallback disabled for tools | `cmd/cppworker/inference.go:491` |
-| First request OK, second one returns empty NDJSON | **B** — clamping n_predict with `has_tools=true` | `internal/balancer/nctx_clamp.go` |
+| First request OK, second one returns empty NDJSON | **B** — clamping n_predict with `has_tools=true` | `cmd/cppworker/nctx_clamp.go`, `cmd/cppworker/inference.go` (clamp) |
 | Infinite reload loop, 503 | **C** — `ReloadLoopLimitError` | `cmd/cppworker/inference.go` |
 | Tool_call appears in `content`, but `tool_calls=null` | **D** — Hermes/Mistral detection | `internal/balancer/llamacpp_toolcall_detector.go` |
 | HTTP 5xx / "reset by peer" | **E** — WriteTimeout/RequestTimeout timeouts | see §5 |

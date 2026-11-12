@@ -321,11 +321,14 @@ KV-cache. Preflight в этом случае возвращает HTTP 413 с ac
 **Флаги конфигурации:**
 
 - `LB_NCTX_RELOAD_ENABLED=true` (default true) — включает auto-reload.
-- `LB_NCTX_RELOAD_ALLOW_TOOLS=true` (default true) — разрешает reload при tools-запросах.
+- поле конфигурации `auto_reload_allow_tools` (default true) — разрешает reload при tools-запросах.
+  Переменной окружения `LB_NCTX_RELOAD_ALLOW_TOOLS` НЕТ: `nctx_reload_config_bridge.go`
+  читает только `LB_NCTX_RELOAD_ENABLED`, `LB_NCTX_RELOAD_MAX_N_CTX`
+  и `LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR`.
 - `LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=0.85` — доля от MaxVRAMNCtx, доступная для KV-cache.
 - `CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS=true` (default true) — на стороне cppworker.
 - Чтобы вернуть старое поведение (без auto-reload при tools):
-  `LB_NCTX_RELOAD_ENABLED=false` ИЛИ `LB_NCTX_RELOAD_ALLOW_TOOLS=false`.
+  `LB_NCTX_RELOAD_ENABLED=false` ИЛИ `auto_reload_allow_tools: false` в конфигурации.
 
 ### 4.7 Сценарий G: EOF при preflight n_ctx reload (cppworker рвёт соединение) — ИСПРАВЛЕНО 2026-06-24
 
@@ -517,7 +520,7 @@ node scripts/webui-e2e/clients-compat-r246.js
      `POST /api/v1/cppworker/model-profiles/{name}/apply` или увеличить GPU VRAM.
      При `preflight: triggering reload` в логах — preflight сработал, ждём завершения reload.
 12. ☐ При `RAM fallback: reload disabled for tools-request (flag off)` — проверить, что
-     `CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS=true` (или `LB_NCTX_RELOAD_ALLOW_TOOLS=true`).
+     `CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS=true` (или `auto_reload_allow_tools: true` в конфигурации).
 
 ---
 
@@ -536,7 +539,7 @@ node scripts/webui-e2e/clients-compat-r246.js
 - `docs/cppworker-routing-fixes-2026-06-07.md` — Phase D.3-fix (X-Cpp-Ctx header).
 - `docs/test-report-2026-06-09-cppworker-clamping.md` — Phase D.6/D.8 (clamp n_predict).
 - `tests/openwebui_tool_calls_debug_test.go` — диагностические тесты транспорта.
-- `tests/cppworker_inference_test.go` (новый) — диагностические тесты inference-логики.
+- `cmd/cppworker/inference_internal_test.go` — диагностические тесты inference-логики (в `tests/` такого файла нет).
 - `cmd/cppworker/inference.go` — `generateWithRamFallback`, `clampNPredictToFitContext`.
 - `cmd/cppworker/nctx_clamp.go` — `ApplyCppCtxHeader`.
 - `cmd/cppworker/tool_calls.go` — парсеры Hermes/Llama-3/Mistral.

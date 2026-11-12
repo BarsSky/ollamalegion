@@ -343,11 +343,14 @@ in this case returns HTTP 413 with an actionable suggestion.
 **Configuration flags:**
 
 - `LB_NCTX_RELOAD_ENABLED=true` (default true) — enables auto-reload.
-- `LB_NCTX_RELOAD_ALLOW_TOOLS=true` (default true) — allows reload for tools requests.
+- `auto_reload_allow_tools` in the config (default true) — allows reload for tools requests.
+  There is NO `LB_NCTX_RELOAD_ALLOW_TOOLS` env var: `internal/balancer/nctx_reload_config_bridge.go`
+  reads only `LB_NCTX_RELOAD_ENABLED`, `LB_NCTX_RELOAD_MAX_N_CTX`
+  and `LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR`.
 - `LB_NCTX_RELOAD_VRAM_SAFETY_FACTOR=0.85` — fraction of MaxVRAMNCtx available for KV-cache.
 - `CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS=true` (default true) — on the cppworker side.
 - To revert to the old behavior (without auto-reload for tools):
-  `LB_NCTX_RELOAD_ENABLED=false` OR `LB_NCTX_RELOAD_ALLOW_TOOLS=false`.
+  `LB_NCTX_RELOAD_ENABLED=false` OR set `auto_reload_allow_tools: false` in the config.
 
 ### 4.7 Scenario G: EOF during preflight n_ctx reload (cppworker drops the connection) — FIXED 2026-06-24
 
@@ -519,7 +522,7 @@ name a value taken from it).
       `POST /api/v1/cppworker/model-profiles/{name}/apply` or increase GPU VRAM.
       On `preflight: triggering reload` in the logs — preflight fired, wait for reload to complete.
 12. ☐ On `RAM fallback: reload disabled for tools-request (flag off)` — check that
-      `CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS=true` (or `LB_NCTX_RELOAD_ALLOW_TOOLS=true`).
+      `CPPWORKER_RAM_FALLBACK_ALLOW_TOOLS=true` (or `auto_reload_allow_tools: true` (config)).
 
 ---
 
@@ -538,7 +541,7 @@ name a value taken from it).
 - `docs/cppworker-routing-fixes-2026-06-07.md` — Phase D.3-fix (X-Cpp-Ctx header).
 - `docs/test-report-2026-06-09-cppworker-clamping.md` — Phase D.6/D.8 (clamp n_predict).
 - `tests/openwebui_tool_calls_debug_test.go` — diagnostic tests for transport.
-- `tests/cppworker_inference_test.go` (new) — diagnostic tests for inference logic.
+- `cmd/cppworker/inference_internal_test.go` — diagnostic tests for inference logic (no such file under `tests/`).
 - `cmd/cppworker/inference.go` — `generateWithRamFallback`, `clampNPredictToFitContext`.
 - `cmd/cppworker/nctx_clamp.go` — `ApplyCppCtxHeader`.
 - `cmd/cppworker/tool_calls.go` — Hermes/Llama-3/Mistral parsers.

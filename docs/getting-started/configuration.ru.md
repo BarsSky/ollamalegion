@@ -761,8 +761,10 @@ GET /api/v1/ratelimit/status
 
 ```env
 LB_OPERATING_MODE=cluster_balancing
-LB_AUTO_DETECT_MODE=true
 ```
+
+(Переменной `LB_AUTO_DETECT_MODE` нет: поведение задаёт operatingMode, а движок
+выводится из состава кластера — см. `types.ModeBackendTypes`.)
 
 ### Сброс конфигурации к заводским настройкам
 

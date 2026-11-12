@@ -147,7 +147,7 @@ cppworker в `cmd/cppworker/main.go:applyCppCtxHeader` читает этот hea
 - Если `body.num_ctx > headerLimit` → clamp к headerLimit.
 
 Дополнительно:
-- Если в body задан `num_predict` и его default превышает header/2 — выполняется `clampNPredictToFitContext` (см. `internal/balancer/nctx_clamp.go`).
+- Если в body задан `num_predict` и его default превышает header/2 — выполняется `clampNPredictToFitContext` (см. `cmd/cppworker/inference.go`, `clampNPredictToFitContext`; для внутренних путей — `internal/balancer/nctx_reload_handlers.go`).
 
 ---
 

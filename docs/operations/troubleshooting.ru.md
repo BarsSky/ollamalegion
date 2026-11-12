@@ -856,7 +856,7 @@ CPPWORKER_WRITE_TIMEOUT=1800  # 30 минут
 | Симптом | Сценарий | Где искать |
 |---|---|---|
 | HTTP 413 на первом запросе с tools | **A** — RAM fallback disabled для tools | `cmd/cppworker/inference.go:491` |
-| Первый запрос OK, второй пустой NDJSON | **B** — clamping n_predict с has_tools=true | `internal/balancer/nctx_clamp.go` |
+| Первый запрос OK, второй пустой NDJSON | **B** — clamping n_predict с has_tools=true | `cmd/cppworker/nctx_clamp.go`, `cmd/cppworker/inference.go` (clamp) |
 | Бесконечный reload loop, 503 | **C** — `ReloadLoopLimitError` | `cmd/cppworker/inference.go` |
 | Tool_call в content, но `tool_calls=null` | **D** — Hermes/Mistral detection | `internal/balancer/llamacpp_toolcall_detector.go` |
 | HTTP 5xx / "reset by peer" | **E** — таймауты WriteTimeout/RequestTimeout | см. §5 |

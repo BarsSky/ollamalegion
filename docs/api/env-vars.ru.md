@@ -96,7 +96,7 @@
 |---------|------|---------|-----------------|------------------------|-------|
 | `CPPWORKER_PORT` | int | `18092` | `--port` flag | Env проигрывает flag | |
 | `CPPWORKER_AUTO_KV_CACHE` | bool | `true` | `autoKVCacheEnabled` | Env проигрывает `--auto-kv-cache` flag | |
-| `CPPWORKER_CPU_ONLY_MAX_N_CTX` | int | `65536` | `cpuOnlyMaxNCtx` | Env проигрывает `--cpu-only-max-n-ctx` flag | |
+| `CPPWORKER_CPU_ONLY_MAX_NCTX` | int | `65536` | `cpuOnlyMaxNCtx` | Env проигрывает `--cpu-only-max-n-ctx` flag | |
 | `CPPWORKER_RAM_FALLBACK_N_CTX` | bool | — | `*ramFallbackNCtx` | **R60.18 F4**: env применяется только если CLI flag НЕ задан (одинаково в startup и reload path) | До F4: silent state divergence на /config/reload |
 | `CPPWORKER_RAM_FALLBACK_GPU_LAYERS` | int | — | `*ramFallbackGpuLayers` | Same as above | |
 | `CPPWORKER_RAM_FALLBACK_MAX_N_CTX` | int | `4096` | `*ramFallbackMaxNCtx` | Same as above | Min 512. |

@@ -147,7 +147,7 @@ cppworker, in `cmd/cppworker/main.go:applyCppCtxHeader`, reads this header **and
 - If `body.num_ctx > headerLimit` → clamp to headerLimit.
 
 Additionally:
-- If the body has `num_predict` and its default exceeds header/2 — `clampNPredictToFitContext` is performed (see `internal/balancer/nctx_clamp.go`).
+- If the body has `num_predict` and its default exceeds header/2 — `clampNPredictToFitContext` is performed (see `cmd/cppworker/inference.go`, `clampNPredictToFitContext`; internal paths use `internal/balancer/nctx_reload_handlers.go`).
 
 ---
 

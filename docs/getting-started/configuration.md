@@ -761,8 +761,10 @@ The balancer supports several operating modes, switched via `PUT /api/v1/config/
 
 ```env
 LB_OPERATING_MODE=cluster_balancing
-LB_AUTO_DETECT_MODE=true
 ```
+
+(There is no `LB_AUTO_DETECT_MODE`: the operating mode is what selects the behaviour;
+the engine is derived from the cluster composition — see `types.ModeBackendTypes`.)
 
 ### Resetting the configuration to factory defaults
 

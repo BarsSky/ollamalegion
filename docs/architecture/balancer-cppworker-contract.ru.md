@@ -729,7 +729,7 @@ maxWait = min(max(2 × estimatedMs + 60s, cap), clamp)
 |---------|---------|------------------|---------|
 | `LB_REQUEST_TIMEOUT_SEC` | 120 | env | общий таймаут запроса |
 | `LB_STREAMING_IDLE_TIMEOUT_SEC` | 120 | env | таймаут между чанками (отдельно от общего) |
-| `LB_STREAMING_FIRST_BYTE_TIMEOUT_SEC` | 30 | env | ожидание первого байта от cppworker |
+| `LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC` | 30 | env | ожидание первого байта от cppworker (переменная `LB_STREAMING_FIRST_BYTE_TIMEOUT_SEC` не существует) |
 | `LB_NCTX_RELOAD_TIMEOUT_SEC` | 300 | env | время ожидания перезагрузки |
 | `LB_NCTX_PREFLIGHT_MAX_WAIT_SEC` | 900 | env | максимальное ожидание асинхронной загрузки |
 | `LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER` | 2 | env | множитель для оценки cppworker |
@@ -868,9 +868,9 @@ cppworker ДОЛЖЕН проверять ОБА заголовка. (Раунд
 
 Этот контракт обеспечивается:
 
-- **Фаза 2 (типобезопасные модели)**: Go-структуры с `DisallowUnknownFields()` в каждом обработчике. См. `pkg/types/llamacpp_contract.go` (Раунд 36, Фаза 2).
-- **Фаза 3 (тесты соответствия)**: golden-файлы в `testdata/cppworker_golden/*.json` фиксируют точные байтовые последовательности. См. `internal/balancer/contract_conformance_test.go` (Раунд 36, Фаза 3).
-- **Фаза 4 (наблюдаемость)**: проброс X-Request-Id даёт сквозную трассировку. См. `internal/observability/request_id.go` (Раунд 36, Фаза 4).
+- **Фаза 2 (типобезопасные модели)**: Go-структуры с `DisallowUnknownFields()` в обработчиках — `cmd/cppworker/handlers_chat.go`, `handlers_openai.go`, `handlers_cppworker_load_defaults.go`, `handlers_cppworker_profiles.go` (38 мест в коде).
+- **Фаза 3 (тесты соответствия)**: **НЕ РЕАЛИЗОВАНО.** Golden-файлов `testdata/cppworker_golden/*.json` и теста `contract_conformance_test.go` в репозитории НЕТ; документ обещал их как «контракт обеспечивается». Это зафиксировано долгом в `debts.ru.md` (11c), а не выдаётся за сделанное.
+- **Фаза 4 (наблюдаемость)**: проброс `X-Request-Id` даёт сквозную трассировку — реализован в балансере (`internal/balancer/llamacpp_transport.go`, `client.go`), отдельного пакета `internal/observability` нет.
 
 Любое изменение протокола ДОЛЖНО обновлять:
 1. Этот документ

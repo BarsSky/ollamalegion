@@ -171,6 +171,85 @@ func isSSEDoneLine(line []byte) bool {
 	return bytes.Equal(payload, []byte("[DONE]"))
 }
 
+// sseDoneTrackerR252 — обёртка writer'а, которая ЗНАЕТ, ушёл ли уже `data: [DONE]`
+// в клиентский поток.
+//
+// ЗАЧЕМ (2026-11-12, поймано T2 «ровно один терминатор»). Гарантия R252 решала
+// «нужен ли терминатор» по ПОСЛЕДНЕМУ КАДРУ, который записал сам цикл. Но на пути
+// до клиента есть записи МИМО этого учёта: остаток буфера upstream при EOF,
+// keepalive-строки, кадры фильтра. Живой результат на /v1/chat/completions:
+// `data: [DONE]` от воркера уезжал клиенту, счётчик об этом не знал, и
+// ensurePlainSSEDone дописывал ВТОРОЙ терминатор — клиент видел два конца потока.
+//
+// Правило: «ушёл ли терминатор» — факт о ПОТОКЕ, а не о переменной. Поэтому
+// трассируем то, что реально записано (хвост из последних байт), и финальное
+// решение принимается по нему.
+type sseDoneTrackerR252 struct {
+	w        io.Writer
+	tail     []byte
+	doneSent bool
+	// frame — что считать терминатором (у SSE и NDJSON он разный).
+	frame []byte
+}
+
+// newSSEDoneTrackerR252 — обёртка над w, распознающая терминатор frame.
+func newSSEDoneTrackerR252(w io.Writer, frame string) *sseDoneTrackerR252 {
+	return &sseDoneTrackerR252{w: w, frame: []byte(frame)}
+}
+
+func (t *sseDoneTrackerR252) Write(p []byte) (int, error) {
+	n, err := t.w.Write(p)
+	if n > 0 {
+		t.note(p[:n])
+		if f, ok := t.w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}
+	return n, err
+}
+
+// note — запомнить хвост и отметить наличие терминатора в записанном.
+func (t *sseDoneTrackerR252) note(p []byte) {
+	if len(t.frame) == 0 {
+		return
+	}
+	if bytes.Contains(p, t.frame) {
+		t.doneSent = true
+	}
+	// Терминатор может прийти разрезанным на две записи: держим хвост размером
+	// с кадр и проверяем склейку «хвост + начало».
+	need := len(t.frame) - 1
+	if need <= 0 {
+		return
+	}
+	if len(t.tail) > 0 && len(p) > 0 {
+		joined := make([]byte, 0, len(t.tail)+minInt(len(p), need))
+		joined = append(joined, t.tail...)
+		take := len(p)
+		if take > need {
+			take = need
+		}
+		joined = append(joined, p[:take]...)
+		if bytes.Contains(joined, t.frame) {
+			t.doneSent = true
+		}
+	}
+	t.tail = append(t.tail[:0], p...)
+	if len(t.tail) > need {
+		t.tail = t.tail[len(t.tail)-need:]
+	}
+}
+
+// DoneSent — терминатор уже ушёл клиенту.
+func (t *sseDoneTrackerR252) DoneSent() bool { return t.doneSent }
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // ensurePlainSSEDone — дописать `data: [DONE]`, если последний кадр им не был.
 //
 // Для путей, которые пишут в обычный http.ResponseWriter (legacy SSE-цикл).

@@ -728,7 +728,7 @@ The balancer's defaults for timeouts:
 |---------|---------|------------------|---------|
 | `LB_REQUEST_TIMEOUT_SEC` | 120 | env | total request timeout |
 | `LB_STREAMING_IDLE_TIMEOUT_SEC` | 120 | env | between-chunk timeout (separate from total) |
-| `LB_STREAMING_FIRST_BYTE_TIMEOUT_SEC` | 30 | env | wait for first byte from cppworker |
+| `LB_FIRST_BYTE_TIMEOUT_DEFAULT_SEC` | 30 | env | wait for the first byte from cppworker (`LB_STREAMING_FIRST_BYTE_TIMEOUT_SEC` does not exist) |
 | `LB_NCTX_RELOAD_TIMEOUT_SEC` | 300 | env | time to wait for reload |
 | `LB_NCTX_PREFLIGHT_MAX_WAIT_SEC` | 900 | env | max wait for async load |
 | `LB_NCTX_PREFLIGHT_WAIT_MULTIPLIER` | 2 | env | multiplier for cppworker estimate |
@@ -867,9 +867,9 @@ Both mechanisms MUST be active; the callbacks reduce the staleness window, the p
 
 This contract is enforced by:
 
-- **Phase 2 (Type-safe models)**: Go structs with `DisallowUnknownFields()` in every handler. See `pkg/types/llamacpp_contract.go` (Round 36 Phase 2).
-- **Phase 3 (Conformance tests)**: Golden files in `testdata/cppworker_golden/*.json` capture exact byte sequences. See `internal/balancer/contract_conformance_test.go` (Round 36 Phase 3).
-- **Phase 4 (Observability)**: X-Request-Id propagation enables end-to-end tracing. See `internal/observability/request_id.go` (Round 36 Phase 4).
+- **Phase 2 (Type-safe models)**: Go structs with `DisallowUnknownFields()` in handlers — `cmd/cppworker/handlers_chat.go`, `handlers_openai.go`, `handlers_cppworker_load_defaults.go`, `handlers_cppworker_profiles.go` (38 call sites).
+- **Phase 3 (Conformance tests)**: **NOT IMPLEMENTED.** There are no golden files in `testdata/cppworker_golden/` and no `contract_conformance_test.go`. This document used to claim the contract is "enforced"; recorded as debt 11c in `debts.ru.md` instead.
+- **Phase 4 (Observability)**: `X-Request-Id` propagation works in the balancer (`internal/balancer/llamacpp_transport.go`, `client.go`); there is no `internal/observability` package.
 
 Any change to the protocol MUST update:
 1. This document

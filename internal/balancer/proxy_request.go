@@ -911,6 +911,12 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 
 	flusher, canFlush := w.(http.Flusher)
 
+	// T2/R252 (2026-11-12): «ровно один терминатор» — факт о ПОТОКЕ, а не о
+	// переменной. Гарантия ниже решала по lastSSELine (что записал сам цикл), но
+	// записи идут и мимо этого учёта, поэтому на /v1/chat/completions клиент
+	// получал `data: [DONE]` дважды. Трекер смотрит на реально записанные байты.
+	tw := newSSEDoneTrackerR252(w, sseDoneFrame)
+
 	streamSess := startStreamSession(p, r, legacyModel)
 	defer streamSess.Stop()
 
@@ -958,7 +964,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 		case <-heartbeatTicker.C:
 			// SSE-heartbeat: ": keepalive\n\n" — комментарий, который клиент
 			// игнорирует, но не закрывает соединение по idle-таймауту.
-			if _, werr := w.Write([]byte(": keepalive\n\n")); werr != nil {
+			if _, werr := tw.Write([]byte(": keepalive\n\n")); werr != nil {
 				logger.Get().Warnw("proxyRequestOpenAIStreaming: heartbeat write failed",
 					"backend", backendID, "error", werr)
 				return nil
@@ -1014,7 +1020,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 				for _, fr := range egressFilter.finalizeFrames() {
 					// R277: граница SSE-события для кадров из фильтра.
 					fr = withSSEEventBoundary(fr)
-					if _, werr := w.Write(fr); werr != nil {
+					if _, werr := tw.Write(fr); werr != nil {
 						logger.Get().Warnw("proxyRequestOpenAIStreaming: finalize before [DONE] failed",
 							"backend", backendID, "error", werr)
 						return nil
@@ -1025,7 +1031,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 					}
 				}
 			}
-			if _, werr := w.Write(lineToWrite); werr != nil {
+			if _, werr := tw.Write(lineToWrite); werr != nil {
 				logger.Get().Warnw("proxyRequestOpenAIStreaming: write to client failed",
 					"backend", backendID, "error", werr)
 				return nil
@@ -1044,7 +1050,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 	for _, fr := range egressFilter.finalizeFrames() {
 		// R277: граница SSE-события (см. withSSEEventBoundary).
 		fr = withSSEEventBoundary(fr)
-		if _, werr := w.Write(fr); werr != nil {
+		if _, werr := tw.Write(fr); werr != nil {
 			logger.Get().Warnw("proxyRequestOpenAIStreaming: finalize frame write failed",
 				"backend", backendID, "error", werr)
 			return nil
@@ -1058,7 +1064,17 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 	// R252 (2026-10-28): гарантия `data: [DONE]`. Раньше поток мог закрыться без
 	// него (upstream закрыл соединение после финального чанка без маркера), и
 	// OpenAI-совместимые клиенты считали ответ оборванным.
-	ensurePlainSSEDone(w, lastSSELine)
+	//
+	// T2 (2026-11-12): решение принимается по ФАКТУ записи (tw.DoneSent), а не по
+	// lastSSELine: терминатор мог уйти мимо учёта цикла, и тогда клиент получал
+	// второй [DONE] (живой случай R258/T2 — «два конца потока»).
+	if !tw.DoneSent() {
+		if _, werr := tw.Write([]byte(sseDoneFrame)); werr != nil {
+			logger.Get().Warnw("proxyRequestOpenAIStreaming: guarantee [DONE] failed",
+				"backend", backendID, "error", werr)
+		}
+	}
+	_ = lastSSELine
 
 	// Финальный flush на всякий случай.
 	if canFlush {

@@ -306,11 +306,14 @@ func TestR493_NoAutoloadNoFreeNodeLoad(t *testing.T) {
 
 // TestR493_StickyReleaseWiredInProxy — ПОДКЛЮЧЕНИЕ, а не только предикат.
 //
-// Юнит-тест предиката не ловит возврат к прежнему поведению в proxy.go: там
-// привязка сессии раньше безусловно уезжала в ожидание слота. Проверяем по
-// исходнику (тот же приём, что в TestR378_Steward_IdentitySourcesLiveHere):
-// единственный источник бэкенда сессии для очереди — хелпер R493, а прямой
-// GetSnapshot рядом с ним — регресс.
+// Контракт после уточнения по архиву стенда (2026-11-12):
+//   - proxy.go ОБЯЗАН звать stickyBackendForGateR493 — из него строится гейт
+//     «кандидат покрывает окно сессии»; без него занятая копия снова «отпускает»
+//     заявку на свободную копию с меньшим окном (живой 503 на select_backend);
+//   - stickyBackendIfAvailableR493 остаётся ПРЕДПОЧТЕНИЕМ (для лога и быстрого
+//     пути) и тоже обязан вызываться;
+//   - прямого sessionMgr.GetSnapshot в proxy.go быть не должно: источник окна
+//     живёт в одном месте, иначе правила разъедутся (это уже случалось).
 func TestR493_StickyReleaseWiredInProxy(t *testing.T) {
 	fset := token.NewFileSet()
 	af, err := parser.ParseFile(fset, "proxy.go", nil, 0)
@@ -318,35 +321,42 @@ func TestR493_StickyReleaseWiredInProxy(t *testing.T) {
 		t.Fatalf("не разобрать proxy.go: %v", err)
 	}
 
-	calls := 0
-	direct := 0
+	gateCalls, prefCalls, direct := 0, 0, 0
 	ast.Inspect(af, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-			switch sel.Sel.Name {
-			case "stickyBackendIfAvailableR493":
-				calls++
-			case "GetSnapshot":
-				direct++
-			}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		switch sel.Sel.Name {
+		case "stickyBackendForGateR493":
+			gateCalls++
+		case "stickyBackendIfAvailableR493":
+			prefCalls++
+		case "GetSnapshot":
+			direct++
 		}
 		return true
 	})
 
-	if calls != 1 {
+	if gateCalls != 1 {
+		t.Fatalf("в proxy.go ожидается ровно один вызов stickyBackendForGateR493, найдено %d: "+
+			"без источника окна гейт не строится, и заявка уедет на копию с меньшим окном", gateCalls)
+	}
+	if prefCalls != 1 {
 		t.Fatalf("в proxy.go ожидается ровно один вызов stickyBackendIfAvailableR493, найдено %d: "+
-			"привязка сессии снова может стать замком, и заявка будет ждать занятый узел", calls)
+			"предпочтение должно оставаться явным (иначе «предпочтение» и «источник окна» снова склеятся)", prefCalls)
 	}
 	if direct != 0 {
-		t.Fatalf("в proxy.go найден прямой GetSnapshot (%d): бэкенд сессии снова берётся без проверки "+
-			"свободного слота", direct)
+		t.Fatalf("в proxy.go найден прямой GetSnapshot (%d): источник окна должен быть один — "+
+			"stickyBackendForGateR493", direct)
 	}
 }
 
-// reasonForR493 — причина отказа конкретного бэкенда (или "", если он НЕ в списке).
+// reasonForR493 — причина отказа конкретного бэкенда (или "", если его нет в списке).
 func reasonForR493(list []backendRejectionR460, id string) (string, string, bool) {
 	for _, r := range list {
 		if r.BackendID == id {

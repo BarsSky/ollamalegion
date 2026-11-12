@@ -1610,11 +1610,24 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// R480: снимок под блокировкой (R66c) — Get() отдаёт общий
 			// указатель, и -race ловил гонку с параллельным Set.
 			//
-			// R493 (2026-11-11): привязка — ПРЕДПОЧТЕНИЕ, а не замок. Если у
-			// бэкенда сессии нет свободного слота, она НЕ передаётся в ожидание:
-			// иначе заявка ждёт занятый узел (до 300 с), пока рядом простаивает
-			// подходящий. Правило R480 продолжает действовать, когда слот есть.
-			sessionFromBackend = p.stickyBackendIfAvailableR493(sessionKey)
+			// R493 (2026-11-11): привязка — ПРЕДПОЧТЕНИЕ, а не замок.
+			//
+			// R493-уточнение (2026-11-12, по архиву стенда): «предпочтение»
+			// отдаёт бэкенд только при свободном слоте, но ИСТОЧНИКОМ ОКНА для
+			// гейта R459 он остаётся всегда. Иначе при занятой копии гейт не
+			// строится вовсе, и очередь берёт свободную копию с МЕНЬШИМ окном:
+			// живой итог — уход на A10-126 (131072 < 198656), загрузки на
+			// 8-гигабайтные узлы и 503 на стадии select_backend.
+			//
+			// Решение оператора: занята копия, а бэкенд с нужным окном есть —
+			// ставим заявку в очередь К НЕМУ; свободная копия используется, если
+			// её окно не меньше нужного (это и проверяет гейт).
+			sessionFromBackend = p.stickyBackendForGateR493(sessionKey)
+			if preferred := p.stickyBackendIfAvailableR493(sessionKey); preferred == "" &&
+				sessionFromBackend != "" && logger.Get() != nil {
+				logger.Get().Infow("R493: у копии сессии нет свободного слота — ждём её слот или копию с нужным окном",
+					"session", sessionKey, "backend", sessionFromBackend, "model", model)
+			}
 		}
 		unifiedBackend, unifiedRelease, unifiedWaited, unifiedPosition, waitErr :=
 			p.waitForInferenceBackendWithMoveR480(ctxWithRID, model, bt, sessionKey, sessionFromBackend)

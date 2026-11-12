@@ -81,10 +81,15 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		// регистрацию делает встроенный агент, поэтому поля обязаны приниматься
 		// ЗДЕСЬ, а не только в PUT /api/v1/backends. Пустое значение не стирает
 		// известное (applyWorkerIdentityR486).
-		WorkerVersion   string `json:"workerVersion"`
-		WorkerCommit    string `json:"workerCommit"`
-		WorkerBuildDate string `json:"workerBuildDate"`
-		WorkerRPCProto  string `json:"workerRpcProto"`
+		WorkerVersion string `json:"workerVersion"`
+		// R493-12i (2026-11-12): идентичность АГЕНТА отдельно от воркера и
+		// источник worker*-полей (worker-http | agent-fallback).
+		AgentVersion         string `json:"agentVersion"`
+		AgentCommit          string `json:"agentCommit"`
+		WorkerIdentitySource string `json:"workerIdentitySource"`
+		WorkerCommit         string `json:"workerCommit"`
+		WorkerBuildDate      string `json:"workerBuildDate"`
+		WorkerRPCProto       string `json:"workerRpcProto"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -345,9 +350,13 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 			WorkerCommit:      firstNonEmptyStr(req.WorkerCommit, existing.WorkerCommit),
 			WorkerBuildDate:   firstNonEmptyStr(req.WorkerBuildDate, existing.WorkerBuildDate),
 			WorkerRPCProto:    firstNonEmptyStr(req.WorkerRPCProto, existing.WorkerRPCProto),
-			Engine:            existing.Engine,
-			ApiStyle:          existing.ApiStyle,
-			GPUMode:           existing.GPUMode,
+			// R493-12i: агент и воркер — разные сборки, храним обе.
+			AgentVersion:         firstNonEmptyStr(req.AgentVersion, existing.AgentVersion),
+			AgentCommit:          firstNonEmptyStr(req.AgentCommit, existing.AgentCommit),
+			WorkerIdentitySource: firstNonEmptyStr(req.WorkerIdentitySource, existing.WorkerIdentitySource),
+			Engine:               existing.Engine,
+			ApiStyle:             existing.ApiStyle,
+			GPUMode:              existing.GPUMode,
 			// R-Image (2026-10-07): агент, зарегистрировавшийся под ID уже
 			// существующего бэкенда, ОБЯЗАН включать признак HasAgent.
 			//
@@ -463,9 +472,14 @@ func (s *Server) agentRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		WorkerCommit:    req.WorkerCommit,
 		WorkerBuildDate: req.WorkerBuildDate,
 		WorkerRPCProto:  req.WorkerRPCProto,
-		Labels:          mergeNodeLabelsR393(req.Labels, req.NodeLabels),
-		Status:          types.StatusStarting,
-		Type:            backendType,
+		// R493-12i: идентичность агента и источник worker*-полей — на пути
+		// СОЗДАНИЯ записи тоже, иначе на первом регистре они терялись.
+		AgentVersion:         req.AgentVersion,
+		AgentCommit:          req.AgentCommit,
+		WorkerIdentitySource: req.WorkerIdentitySource,
+		Labels:               mergeNodeLabelsR393(req.Labels, req.NodeLabels),
+		Status:               types.StatusStarting,
+		Type:                 backendType,
 		// R118 (2026-10-14): роль бэкенда в раскладке слоёв — операторское
 		// решение, оно живёт в persistent-override (backend-roles.json).
 		// После перезапуска балансера записей нет вовсе (состояние тоже не

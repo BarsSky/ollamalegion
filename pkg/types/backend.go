@@ -293,6 +293,26 @@ type Backend struct {
 	WorkerBuildDate string `json:"workerBuildDate,omitempty"`
 	WorkerRPCProto  string `json:"workerRpcProto,omitempty"`
 
+	// R493-12i (2026-11-12): ЧЬЯ это идентичность и где её взяли.
+	//
+	// ЖИВОЙ ДЕФЕКТ. В bundled-стеке бэкенд регистрирует ВСТРОЕННЫЙ АГЕНТ, и поля
+	// выше он заполнял СВОИМ `version.Get()` — то есть идентичностью агента, а не
+	// воркера. На стенде это дало `workerCommit=9d42a329` при образе
+	// `gpu-261110-1925`, чей `/app/identity.json` несёт `24b3a151`: поле читается
+	// как «чем собран воркер», и на нём легко сделать ложный вывод «раскатали не
+	// то» (стоило лишней проверки при выкладке).
+	//
+	// Теперь агент спрашивает идентичность у САМОГО воркера (`GET /api/info` →
+	// build_*), а свою отдаёт отдельно; source говорит, чем именно заполнены
+	// worker*-поля, чтобы «неизвестно» не выглядело как «совпало».
+	AgentVersion string `json:"agentVersion,omitempty"`
+	AgentCommit  string `json:"agentCommit,omitempty"`
+	// WorkerIdentitySource — "worker-http" (источник — /api/info воркера),
+	// "agent-fallback" (воркер не ответил, взята идентичность агента — для
+	// bundled-образа это обычно то же самое, но это ДОПУЩЕНИЕ, а не факт) или
+	// пусто (старое поле, источник неизвестен).
+	WorkerIdentitySource string `json:"workerIdentitySource,omitempty"`
+
 	// RequestTimeout — пер-бэкенд таймаут запроса (сек), 0 = использовать глобальный LB_REQUEST_TIMEOUT
 	RequestTimeout int `json:"requestTimeout"`
 	// RuntimeRequestTimeout — runtime-значение таймаута от балансера (меняется адаптивно, сохраняется в state.json)

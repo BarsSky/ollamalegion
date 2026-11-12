@@ -140,6 +140,11 @@ func (a *Agent) register() error { // Сбор информации о сист�
 		detected,
 		a.config.MaxConcurrentRequests,
 	)
+	// R493-12i: две идентичности — воркера (факт, из его /api/info) и наша.
+	// Смешивать их нельзя: агент может быть собран другим коммитом, чем воркер, и
+	// тогда «чем собран узел» превращается в догадку.
+	workerIdent := resolveWorkerIdentityR493(a)
+	ownIdentity := version.Get()
 	// R121 (2026-10-15): запоминаем СВОЮ заявку — её будет слать каждый heartbeat
 	// отдельным полем, чтобы балансер восстановил вместимость после своего
 	// перезапуска, не дожидаясь перезапуска агента. Значение из ответа балансера
@@ -181,10 +186,19 @@ func (a *Agent) register() error { // Сбор информации о сист�
 		// выключена через CPPWORKER_REGISTER_DISABLE), поэтому без этих полей
 		// балансер по-прежнему не знал бы, из какого релиза собран узел — ровно
 		// та же находка приёмки, что была с buildInfo в R101.
-		"workerVersion":   workerIdentityR486().Version,
-		"workerCommit":    workerIdentityR486().Commit,
-		"workerBuildDate": workerIdentityR486().BuildDate,
-		"workerRpcProto":  workerIdentityR486().RPCProto,
+		//
+		// R493-12i (2026-11-12): и это идентичность ВОРКЕРА, а не агента. Раньше
+		// сюда шёл version.Get() агента, и на стенде поле показывало чужой коммит
+		// (9d42a329 при образе с 24b3a151) — со стороны выглядело как «раскатали
+		// не тот образ». Теперь спрашиваем воркера (`/api/info`), а свою
+		// идентичность шлём отдельными полями.
+		"workerVersion":        workerIdent.Version,
+		"workerCommit":         workerIdent.Commit,
+		"workerBuildDate":      workerIdent.BuildDate,
+		"workerRpcProto":       workerIdent.RPCProto,
+		"workerIdentitySource": workerIdent.Source,
+		"agentVersion":         ownIdentity.Version,
+		"agentCommit":          ownIdentity.Commit,
 	}
 
 	// R-Image (2026-10-07): image-бэкенд (sdworker/sd-server).
@@ -322,12 +336,4 @@ func llamaBuildInfoR101Agent() string {
 		return commit + " " + date
 	}
 	return commit
-}
-
-// workerIdentityR486 — запечённая идентичность образа, в котором работает агент.
-//
-// В bundled-стеке агент живёт ВНУТРИ образа воркера, поэтому его собственная
-// запечённая идентичность и есть идентичность узла.
-func workerIdentityR486() version.About {
-	return version.Get()
 }

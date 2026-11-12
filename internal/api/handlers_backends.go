@@ -827,6 +827,13 @@ func (s *Server) listBackends(w http.ResponseWriter, r *http.Request) {
 			"workerBuildDate":       backend.WorkerBuildDate,
 			"workerRpcProto":        backend.WorkerRPCProto,
 			"workerReleaseMismatch": workerReleaseMismatchR486(&backend),
+			// R493-12i (2026-11-12): идентичность АГЕНТА отдельно и источник
+			// worker*-полей. Раньше агент заполнял worker*-поля своей версией, и
+			// в bundled-стеке «workerCommit» показывал коммит агента — при
+			// проверке выкладки это читалось как «раскатали не тот образ».
+			"agentVersion":         backend.AgentVersion,
+			"agentCommit":          backend.AgentCommit,
+			"workerIdentitySource": backend.WorkerIdentitySource,
 			// R269 (2026-10-29): свежесть сборки относительно стабильного
 			// upstream llama.cpp. Раньше оператор видел только строку версии и
 			// не знал, есть ли новее; relation=unknown — это ЧЕСТНОЕ «сравнить
@@ -1184,6 +1191,8 @@ func (s *Server) refreshRegisteredBackend(w http.ResponseWriter, req backendRequ
 	// R486: релизная идентичность воркера — тем же правилом «не стирать
 	// известное», иначе она исчезала бы на первом обновлении статуса.
 	applyWorkerIdentityR486(&updated, req.WorkerVersion, req.WorkerCommit, req.WorkerBuildDate, req.WorkerRPCProto)
+	// R493-12i: идентичность агента и источник worker*-полей.
+	applyAgentIdentityR493(&updated, req.AgentVersion, req.AgentCommit, req.WorkerIdentitySource)
 	// GPUIndex: нода сообщила индекс (в т.ч. 0 — явная первая карта) → принимаем;
 	// ключа в payload нет → сохраняем операторское значение. Сборки, которые поля
 	// не знают, не должны стирать настройку, иначе лок сосуществования молча
@@ -1261,6 +1270,12 @@ type backendRequest struct {
 	WorkerCommit    string `json:"workerCommit"`
 	WorkerBuildDate string `json:"workerBuildDate"`
 	WorkerRPCProto  string `json:"workerRpcProto"`
+	// R493-12i (2026-11-12): идентичность АГЕНТА отдельно от идентичности
+	// ВОРКЕРА, плюс источник worker*-полей. Раньше агент клал в worker-поля свою
+	// версию, и на стенде это читалось как «раскатали не тот образ».
+	AgentVersion         string `json:"agentVersion"`
+	AgentCommit          string `json:"agentCommit"`
+	WorkerIdentitySource string `json:"workerIdentitySource"`
 	// Round 7 (2026-07-09): cppworker пробрасывает свой API_TOKEN при
 	// регистрации, чтобы balancer мог авторизоваться на /api/models/reload
 	// (authMiddleware). В bundled-режиме устраняет необходимость ручной
@@ -1441,6 +1456,10 @@ func (s *Server) addBackend(w http.ResponseWriter, r *http.Request) {
 		WorkerCommit:    req.WorkerCommit,
 		WorkerBuildDate: req.WorkerBuildDate,
 		WorkerRPCProto:  req.WorkerRPCProto,
+		// R493-12i: идентичность агента отдельно + источник worker*-полей.
+		AgentVersion:         req.AgentVersion,
+		AgentCommit:          req.AgentCommit,
+		WorkerIdentitySource: req.WorkerIdentitySource,
 		// R118 (2026-10-14): роль бэкенда в раскладке слоёв — операторское
 		// решение, оно живёт в persistent-override (backend-roles.json). Именно
 		// ЭТОТ путь создаёт запись для bundled-агента (POST /api/v1/backends),
@@ -2293,6 +2312,28 @@ func applyWorkerIdentityR486(b *types.Backend, version, commit, buildDate, rpcPr
 	}
 	if v := strings.TrimSpace(rpcProto); v != "" {
 		b.WorkerRPCProto = v
+	}
+}
+
+// applyAgentIdentityR493 — R493-12i: идентичность АГЕНТА и источник worker*-полей.
+//
+// Отдельно от applyWorkerIdentityR486, потому что это разные сущности: агент может
+// быть собран другим коммитом, чем воркер, и раньше именно смешение давало
+// «workerCommit не совпадает с образом». Пустое значение, как и там, не стирает
+// известное; source, наоборот, перезаписывается — он описывает ТЕКУЩИЙ способ
+// получения, а не историю.
+func applyAgentIdentityR493(b *types.Backend, agentVersion, agentCommit, source string) {
+	if b == nil {
+		return
+	}
+	if v := strings.TrimSpace(agentVersion); v != "" {
+		b.AgentVersion = v
+	}
+	if v := strings.TrimSpace(agentCommit); v != "" {
+		b.AgentCommit = v
+	}
+	if v := strings.TrimSpace(source); v != "" {
+		b.WorkerIdentitySource = v
 	}
 }
 

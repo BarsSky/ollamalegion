@@ -30,13 +30,16 @@ import (
 )
 
 // windowAlignResponseR494 — ответ ручки.
+//
+// Порядок полей — под fieldalignment (CI-линт): указатели (строка, срез) раньше
+// чисел.
 type windowAlignResponseR494 struct {
+	// Setting — имя настройки, которой оператор управляет потолком: чтобы в
+	// ответе было видно, ГДЕ это менять, а не только число.
+	Setting     string                               `json:"setting"`
 	Suggestions []balancer.WindowAlignSuggestionR494 `json:"suggestions"`
 	Count       int                                  `json:"count"`
 	Cap         int                                  `json:"cap"`
-	// Setting — имя настройки, которой оператор управляет потолком: чтобы в
-	// ответе было видно, ГДЕ это менять, а не только число.
-	Setting string `json:"setting"`
 }
 
 // handleWindowAlignR494 — GET /api/v1/window/align.

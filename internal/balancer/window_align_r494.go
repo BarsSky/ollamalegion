@@ -57,15 +57,18 @@ type WindowAlignCopyR494 struct {
 
 // WindowAlignSuggestionR494 — «эти копии уже, чем самая широкая; выровнять до
 // targetWindow можно на alignableBackends».
+//
+// Порядок полей — под fieldalignment (CI-линт): поля с указателями (строка,
+// срезы) раньше чисел, иначе GC сканирует лишний префикс структуры.
 type WindowAlignSuggestionR494 struct {
-	Model        string                `json:"model"`
-	Cap          int                   `json:"cap"`
-	TargetWindow int                   `json:"targetWindow"`
-	Copies       []WindowAlignCopyR494 `json:"copies"`
+	Model  string                `json:"model"`
+	Copies []WindowAlignCopyR494 `json:"copies"`
 	// Alignable — узлы со свободной узкой копией: их и предлагаем поднять.
 	Alignable []string `json:"alignableBackends"`
 	// Busy — узкие копии, занятые работой: их НЕ предлагаем (правило оператора).
-	Busy []string `json:"busyBackends,omitempty"`
+	Busy         []string `json:"busyBackends,omitempty"`
+	Cap          int      `json:"cap"`
+	TargetWindow int      `json:"targetWindow"`
 }
 
 // windowAlignDecideR494 — чистое решение: какие копии и до какого окна

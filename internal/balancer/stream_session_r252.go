@@ -185,11 +185,12 @@ func isSSEDoneLine(line []byte) bool {
 // трассируем то, что реально записано (хвост из последних байт), и финальное
 // решение принимается по нему.
 type sseDoneTrackerR252 struct {
-	w        io.Writer
-	tail     []byte
-	doneSent bool
-	// frame — что считать терминатором (у SSE и NDJSON он разный).
+	w     io.Writer
+	tail  []byte
 	frame []byte
+	// doneSent — терминатор уже ушёл клиенту. Порядок полей — под fieldalignment
+	// (линт CI): указатели и срезы первыми, буль последним.
+	doneSent bool
 }
 
 // newSSEDoneTrackerR252 — обёртка над w, распознающая терминатор frame.

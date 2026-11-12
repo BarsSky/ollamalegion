@@ -6,29 +6,32 @@
 // поднимается из config.json при каждом перезапуске балансера, а регистрация у
 // воркера одноразовая (при старте). Поле читается как «чем собран узел», и
 // устаревшее значение снова выглядит как «раскатали не то».
+//
+// ПРО ТОЧНЫЕ СЧЁТЧИКИ ЗАПРОСОВ. Первая версия теста считала хиты /api/info и
+// падала в CI под -race: рядом тикает ФОНОВЫЙ поллер прокси и тоже имеет право
+// спросить идентичность, поэтому «ровно 1 запрос» зависело от планировщика.
+// Поэтому TTL проверяется там, где он и живёт — на identityRefreshR493.due
+// (детерминированно), а сквозные тесты проверяют только результат обновления.
 package balancer
 
 import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"ollama-loadbalancer/pkg/types"
 )
 
-// identityServerR493 — тестовый воркер: /api/info с build-полями, счётчик хитов.
-func identityServerR493(t *testing.T, reject bool) (*httptest.Server, *int32) {
+// identityServerR493 — тестовый воркер: /api/info с build-полями.
+func identityServerR493(t *testing.T, reject bool) *httptest.Server {
 	t.Helper()
-	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/info" {
 			http.NotFound(w, r)
 			return
 		}
-		atomic.AddInt32(&hits, 1)
 		if reject {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -38,7 +41,7 @@ func identityServerR493(t *testing.T, reject bool) (*httptest.Server, *int32) {
 			`"build_date":"2026-11-12T18:46:37Z","rpc_proto":"6.0.0"}`))
 	}))
 	t.Cleanup(srv.Close)
-	return srv, &hits
+	return srv
 }
 
 // identityProxyR493 — прокси с одним llama_cpp бэкендом, чья запись «старая».
@@ -57,9 +60,31 @@ func identityProxyR493(t *testing.T, host string, port int) *Proxy {
 	return newProxyWithCleanup(t, conf)
 }
 
+// TestR493_IdentityRefreshTTL — «спрашиваем не чаще раза в TTL» проверяется на
+// самом TTL-состоянии: детерминированно, без гонки с фоновым поллером.
+func TestR493_IdentityRefreshTTL(t *testing.T) {
+	var r identityRefreshR493
+	now := time.Now()
+
+	if !r.due("b1", now) {
+		t.Fatal("первый опрос обязан быть разрешён")
+	}
+	if r.due("b1", now.Add(workerIdentityTTLR493/2)) {
+		t.Fatalf("опрос раньше TTL (%v) разрешён — /api/info будет дёргаться каждый цикл метрик",
+			workerIdentityTTLR493)
+	}
+	if !r.due("b1", now.Add(workerIdentityTTLR493+time.Second)) {
+		t.Fatalf("после TTL (%v) опрос не разрешён", workerIdentityTTLR493)
+	}
+	// Разные бэкенды не мешают друг другу.
+	if !r.due("b2", now) {
+		t.Fatal("TTL одного узла не должен блокировать другой")
+	}
+}
+
 // TestR493_WorkerIdentityRefreshedFromInfo — старая запись заменяется фактом с узла.
 func TestR493_WorkerIdentityRefreshedFromInfo(t *testing.T) {
-	srv, _ := identityServerR493(t, false)
+	srv := identityServerR493(t, false)
 	host, port := hostPortOfR493(t, srv.URL)
 	p := identityProxyR493(t, host, port)
 
@@ -74,41 +99,17 @@ func TestR493_WorkerIdentityRefreshedFromInfo(t *testing.T) {
 			b.WorkerVersion, b.WorkerCommit)
 	}
 	if b.WorkerIdentitySource != "worker-http" {
-		t.Fatalf("источник идентичности не отмечен: %q (значения пришли из /api/info — это факт)", b.WorkerIdentitySource)
+		t.Fatalf("источник идентичности не отмечен: %q (значения пришли из /api/info — это факт)",
+			b.WorkerIdentitySource)
 	}
 	if b.WorkerBuildDate != "2026-11-12T18:46:37Z" || b.WorkerRPCProto != "6.0.0" {
 		t.Fatalf("не все поля обновлены: %+v", b)
 	}
 }
 
-// TestR493_WorkerIdentityTTL — второго запроса в пределах TTL нет (иначе каждый
-// цикл метрик дёргал бы /api/info).
-func TestR493_WorkerIdentityTTL(t *testing.T) {
-	srv, hits := identityServerR493(t, false)
-	host, port := hostPortOfR493(t, srv.URL)
-	p := identityProxyR493(t, host, port)
-	poller := &llamaCppMetricsPoller{proxy: p, httpClient: srv.Client()}
-	bi := backendInfo{id: "b1", host: host, port: port}
-
-	poller.refreshWorkerIdentityR493(bi)
-	poller.refreshWorkerIdentityR493(bi)
-	if got := atomic.LoadInt32(hits); got != 1 {
-		t.Fatalf("/api/info опрошен %d раз, ожидался 1 (TTL %v)", got, workerIdentityTTLR493)
-	}
-
-	// По истечении TTL — снова можно.
-	poller.identityRefresh.mu.Lock()
-	poller.identityRefresh.last["b1"] = time.Now().Add(-workerIdentityTTLR493 - time.Second)
-	poller.identityRefresh.mu.Unlock()
-	poller.refreshWorkerIdentityR493(bi)
-	if got := atomic.LoadInt32(hits); got != 2 {
-		t.Fatalf("после TTL /api/info опрошен %d раз, ожидалось 2", got)
-	}
-}
-
 // TestR493_WorkerIdentityErrorKeepsPrevious — ошибка узла не стирает известное.
 func TestR493_WorkerIdentityErrorKeepsPrevious(t *testing.T) {
-	srv, _ := identityServerR493(t, true)
+	srv := identityServerR493(t, true)
 	host, port := hostPortOfR493(t, srv.URL)
 	p := identityProxyR493(t, host, port)
 	poller := &llamaCppMetricsPoller{proxy: p, httpClient: srv.Client()}

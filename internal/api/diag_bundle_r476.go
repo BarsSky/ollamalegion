@@ -31,7 +31,6 @@ import (
 	"net/url"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -224,33 +223,13 @@ func diagBundleBalancerLogsR476() string {
 	return diagBundleBalancerLogsSinceR476(time.Time{})
 }
 
-
-// diagFieldValueR476 — значение поля в одну строку, без пробелов-разделителей.
-// Строки с пробелами/кавычками берём в кавычки (strconv.Quote), остальные — как
-// есть; вложенные структуры — компактным JSON, чтобы поле не терялось.
-func diagFieldValueR476(v interface{}) string {
-	switch t := v.(type) {
-	case nil:
-		return "null"
-	case string:
-		if t == "" {
-			return "\"\""
-		}
-		if strings.ContainsAny(t, " \t\"") {
-			return strconv.Quote(t)
-		}
-		return t
-	case error:
-		return strconv.Quote(t.Error())
-	case bool, int, int32, int64, uint, uint32, uint64, float32, float64:
-		return fmt.Sprintf("%v", t)
-	default:
-		if raw, err := json.Marshal(t); err == nil {
-			return string(raw)
-		}
-		return fmt.Sprintf("%v", t)
-	}
-}
+// diagFieldValueR476 — значение поля в одну строку.
+//
+// R493-12a-dump: формат переехал в pkg/logger (FieldValueText), потому что тот же
+// дамп пишет воркер (`cmd/cppworker/debug_bundle_r476.go`), и два независимых
+// форматтера расходились бы порядком ключей и кавычками. Оставлено как тонкая
+// обёртка: имя используется в тестах и в логах разбора.
+func diagFieldValueR476(v interface{}) string { return logger.FieldValueText(v) }
 
 // diagBundleBalancerLogsSinceR476 — только записи позже cutoff (нулевое время =
 // без фильтра).
@@ -277,17 +256,9 @@ func diagBundleBalancerLogsSinceR476(cutoff time.Time) string {
 		// request_id/path/status/duration, «свободный узел пропущен» — без
 		// backend/model/need_mb/free_mb, то есть архив, сделанный ради разбора,
 		// не позволял разобрать ничего. Поля есть в LogEntry.Fields — печатаем их
-		// в стабильном порядке ключей, чтобы diff между архивами был читаемым.
-		if len(e.Fields) > 0 {
-			keys := make([]string, 0, len(e.Fields))
-			for k := range e.Fields {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				b.WriteString(" " + k + "=" + diagFieldValueR476(e.Fields[k]))
-			}
-		}
+		// общим форматтером (logger.FieldsText: стабильный порядок ключей, тот же
+		// вид, что в архиве воркера).
+		b.WriteString(logger.FieldsText(e.Fields))
 		b.WriteString("\n")
 	}
 	if b.Len() == 0 {

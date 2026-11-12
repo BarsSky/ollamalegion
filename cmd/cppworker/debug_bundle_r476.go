@@ -222,9 +222,17 @@ func bundleLogsTextSinceR476(cutoff time.Time) string {
 		if src == "" {
 			src = "worker"
 		}
-		b.WriteString(fmt.Sprintf("%s %-5s %-9s %s\n",
+		b.WriteString(fmt.Sprintf("%s %-5s %-9s %s",
 			e.Time.Format("2006-01-02T15:04:05.000Z07:00"),
 			strings.ToUpper(e.Level), src, e.Message))
+		// R493-12a-dump (2026-11-12, по архиву стенда): здесь печаталось ТОЛЬКО
+		// сообщение, а LogEntry.Fields терялись — и архив воркера не позволял
+		// разобрать ничего: «R482: удержание вывода снято» без held_ms/held_bytes,
+		// «R83 гейт n_ctx» без значения, «stream response summary» без счётчиков
+		// токенов. Формат — общий с балансером (logger.FieldsText), иначе два
+		// дампа расходятся в порядке ключей и кавычках.
+		b.WriteString(logger.FieldsText(e.Fields))
+		b.WriteString("\n")
 	}
 	if b.Len() == 0 {
 		return "# буфер пуст: с момента старта не было записей уровня логирования\n"

@@ -285,6 +285,8 @@ func runGenerateCore(w http.ResponseWriter, r *http.Request, req generateRequest
 		writeModelLoadError(w, req.Model, err)
 		return bridge.GenerationParams{}, "", false
 	}
+	// Заголовок — до первой записи тела: после Flush он уже не уйдёт.
+	markLoadHeaderR493(w, r.Context())
 	_ = actualModel
 
 	// R368 (2026-10-31): prompt собираем ПОСЛЕ загрузки — шаблон модели доступен

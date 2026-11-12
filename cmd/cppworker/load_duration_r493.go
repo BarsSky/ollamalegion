@@ -31,6 +31,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -81,6 +83,29 @@ func loadDurationNsR493(ctx context.Context) int64 {
 		return s.ns.Load()
 	}
 	return 0
+}
+
+// loadDurationHeaderR493 — заголовок ответа с измеренной загрузкой, в
+// миллисекундах.
+//
+// ЗАЧЕМ ЗАГОЛОВОК: на OpenAI-поверхности (/v1/*, а балансер ходит к воркеру
+// именно так — apiStyle=openai-compatible) в ответе нет места для длительностей
+// вообще, но загрузка там такая же реальная: живой замер показал 44 с ожидания
+// клиента при total_duration 2.55 с. Заголовок видят и балансер, и человек в
+// `curl -i`, и он не ломает OpenAI-схему.
+const loadDurationHeaderR493 = "X-Cppworker-Load-Duration-Ms"
+
+// markLoadHeaderR493 — записать загрузку в заголовок ответа (если она была).
+// Вызывать ДО первой записи тела: после Flush заголовки уже ушли.
+func markLoadHeaderR493(w http.ResponseWriter, ctx context.Context) {
+	if w == nil {
+		return
+	}
+	ns := loadDurationNsR493(ctx)
+	if ns <= 0 {
+		return
+	}
+	w.Header().Set(loadDurationHeaderR493, strconv.FormatInt(ns/int64(time.Millisecond), 10))
 }
 
 // loadModelMeasuredR493 — обёртка над ensureModelLoadedWithNCtx: измеряет загрузку

@@ -41,6 +41,58 @@ func TestR493_WindowsSegments(t *testing.T) {
 	}
 }
 
+// TestR493_WindowsWorkerLoadMovedOutOfPrefill — загрузка, которую видел воркер,
+// переносится из «промпта» в «загрузку», а не добавляется сверху.
+//
+// Живой случай: клиент ждал 44 с, из них 40 с — ленивая загрузка модели внутри
+// запроса к воркеру. Без переноса сумма отрезков превысила бы total, и либо
+// инвариант ломался, либо скорость генерации считалась по чужому окну.
+func TestR493_WindowsWorkerLoadMovedOutOfPrefill(t *testing.T) {
+	now := time.Now()
+	w := statsWindowsR493{
+		RequestStart: now.Add(-4 * time.Second), // начало обработки (очередь 2 с)
+		UpstreamSent: now.Add(-2 * time.Second), // отправка воркеру
+		FirstDelta:   now.Add(time.Second),      // через 3 с после отправки
+		End:          now.Add(3 * time.Second),
+		WorkerLoad:   int64(3 * time.Second), // из этих 3 с — загрузка модели воркером
+	}
+	d := w.Durations()
+	if d.Load != int64(5*time.Second) {
+		t.Fatalf("load = %d, ожидалось 5 с (2 с очереди + 3 с загрузки воркера)", d.Load)
+	}
+	if d.PromptEval != 0 {
+		t.Fatalf("prompt_eval = %d, ожидалось 0: всё окно ушло на загрузку", d.PromptEval)
+	}
+	if d.Eval != int64(2*time.Second) {
+		t.Fatalf("eval = %d, ожидалось 2 с", d.Eval)
+	}
+	if sum := d.Load + d.PromptEval + d.Eval; sum != d.Total {
+		t.Fatalf("сумма отрезков %d != total %d", sum, d.Total)
+	}
+}
+
+// TestR493_WindowsWorkerLoadPartialPrefill — загрузка меньше окна: остаток окна
+// остаётся префиллом.
+func TestR493_WindowsWorkerLoadPartialPrefill(t *testing.T) {
+	now := time.Now()
+	d := statsWindowsR493{
+		RequestStart: now.Add(-10 * time.Second),
+		UpstreamSent: now.Add(-10 * time.Second),
+		FirstDelta:   now.Add(-4 * time.Second), // 6 с до первого дельта-чанка
+		End:          now,
+		WorkerLoad:   int64(5 * time.Second), // 5 с из них — загрузка
+	}.Durations()
+	if d.Load != int64(5*time.Second) {
+		t.Fatalf("load = %d, ожидалось 5 с", d.Load)
+	}
+	if d.PromptEval != int64(1*time.Second) {
+		t.Fatalf("prompt_eval = %d, ожидалось 1 с (6 с окна − 5 с загрузки)", d.PromptEval)
+	}
+	if d.Eval != int64(4*time.Second) {
+		t.Fatalf("eval = %d, ожидалось 4 с", d.Eval)
+	}
+}
+
 // TestR493_WindowsLegacyNoDispatch — вызывающий не знает момент отправки:
 // поведение прежнее (load=0, префилл от начала запроса), а не «нет данных — ноль
 // у всего».

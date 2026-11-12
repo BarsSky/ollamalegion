@@ -689,6 +689,19 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// (cancelUpstreamGeneration): без него отмена по модели гасит ВСЕ генерации этой
 	// модели на узле, включая чужие (аудит abort, A5).
 	upstreamRequestIDR360 := resp.Header.Get("X-Request-Id")
+	// R493-12a: сколько воркер отдал на загрузку модели в ЭТОМ запросе.
+	//
+	// Зачем из заголовка: на OpenAI-поверхности, которой балансер и разговаривает
+	// с воркером (apiStyle=openai-compatible), в теле ответа нет полей
+	// длительностей вообще. Живой замер: клиент ждал 44 с (ленивая загрузка), а
+	// total_duration в кадре был 2.55 с. Заголовок несёт эти секунды, и балансер
+	// переносит их в load_duration, не выдумывая чисел.
+	workerLoadNsR493 := int64(0)
+	if v := strings.TrimSpace(resp.Header.Get("X-Cppworker-Load-Duration-Ms")); v != "" {
+		if ms, convErr := strconv.ParseInt(v, 10, 64); convErr == nil && ms > 0 {
+			workerLoadNsR493 = ms * int64(time.Millisecond)
+		}
+	}
 	// R332.3 (2026-10-30, поймано живой матрицей): нативный стрим обязан
 	// объявлять, КТО обслужил запрос.
 	//
@@ -855,7 +868,6 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// (upstreamSentTime), значит «ожидание» для клиента — это отрезок до него:
 	// очередь, авто-загрузка модели и preflight. Раньше он не попадал никуда.
 	statsWindowsNative := statsWindowsR493{RequestStart: llamaStartTime, UpstreamSent: upstreamSentTime}
-
 	// R292: состояние «подозрительного на tool-вызов» текста.
 	//   contentBufferSince — когда буфер начали копить (для grace-порога);
 	//   contentBufferGaveUp — мы уже решили, что это проза: больше не копим.
@@ -1897,6 +1909,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// снова попали бы очередь и загрузка, а размышления выпали бы из
 			// «времени генерации» (см. stats_windows_r493.go).
 			statsWindows := statsWindowsForTransportR493(llamaStartTime, upstreamSentTime, firstDeltaTime, firstContentTime, time.Now())
+			// R493-12a: загрузку модели знает воркер (она внутри запроса) — берём
+			// её из заголовка ответа, иначе 40+ секунд не попадут никуда.
+			statsWindows.WorkerLoad = workerLoadNsR493
 			ollamaChunk := translateOpenAISSEDataToOllamaWindowsR493(originalPath, []byte(data), modelFromCtx, &seenReasoning, statsWindows, accumulatedPlainContent, &priorDoneEmitted, &statsEmitted)
 			if len(ollamaChunk) == 0 {
 				continue

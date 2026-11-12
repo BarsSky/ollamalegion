@@ -309,6 +309,8 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		writeModelLoadError(w, req.Model, err)
 		return
 	}
+	// Заголовок — до первой записи тела: после Flush он уже не уйдёт.
+	markLoadHeaderR493(w, r.Context())
 
 	// R442: дамп того, что ПРИСЛАЛ клиент (messages/tools после декодирования).
 	if debugRequestDumpEnabledR442() {

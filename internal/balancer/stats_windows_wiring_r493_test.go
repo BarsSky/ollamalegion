@@ -64,6 +64,13 @@ func TestR493_TransportPassesStatsWindows(t *testing.T) {
 				"клиент снова получит total_duration без времени загрузки модели " +
 				"(живой замер: ждал 62 с, видел 2.15 с)",
 		},
+		{
+			needle: `resp.Header.Get("X-Cppworker-Load-Duration-Ms")`,
+			count:  1,
+			why: "загрузку модели видит только воркер (она внутри запроса, после " +
+				"client.Do). Без чтения его заголовка 40+ секунд снова не попадут " +
+				"ни в один отрезок — это третий живой замер",
+		},
 	}
 	for _, r := range required {
 		if got := strings.Count(src, r.needle); got != r.count {

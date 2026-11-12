@@ -82,4 +82,16 @@ func TestR493_DoneChunksReadLoadDuration(t *testing.T) {
 	if !strings.Contains(gen, "loadModelMeasuredR493(") {
 		t.Fatal("runGenerateCore не измеряет загрузку через loadModelMeasuredR493 — длительность останется нулём")
 	}
+	// Заголовок нужен там, где в теле ответа длительностей нет вовсе —
+	// OpenAI-поверхность (/v1/*), через которую балансер и говорит с воркером.
+	for _, path := range []string{"handlers_chat.go", "handlers_generate.go", "handlers_openai.go"} {
+		if !strings.Contains(read(path), "markLoadHeaderR493(") {
+			t.Fatalf("%s не выставляет заголовок загрузки: на OpenAI-поверхности "+
+				"балансер не узнает, что модель грузилась", path)
+		}
+	}
+	openai := read("handlers_openai.go")
+	if n := strings.Count(openai, "loadModelMeasuredR493("); n != 2 {
+		t.Fatalf("в handlers_openai.go измерений: %d, ожидалось 2 (v1/chat и v1/completions)", n)
+	}
 }

@@ -398,10 +398,14 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// и не видит отмену через /api/cancel.
 	r, requestID, cancelCleanup := setupCancelTracking(r, req.Model, "cppworker-gpu", "oai")
 	defer cancelCleanup()
+	// R493-12a: ячейка загрузки + измерение. На OpenAI-поверхности в ответе нет
+	// полей длительностей вообще, поэтому загрузка уезжает заголовком
+	// (X-Cppworker-Load-Duration-Ms): балансер складывает её со своим ожиданием.
+	r = r.WithContext(withLoadScopeR493(r.Context()))
 	logger.Get().Debugw("handleV1ChatCompletions: cancel tracking enabled",
 		"request_id", requestID, "model", req.Model, "user_id", userID)
 
-	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.NumCtx)
+	actualModel, err := loadModelMeasuredR493(r.Context(), req.Model, req.NumCtx)
 	if err != nil {
 		// R119 (2026-10-15): 503/404/500 — одна точка перевода (см.
 		// writeModelLoadError). До этого неизвестная модель давала 500 с пустым
@@ -409,6 +413,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeModelLoadError(w, req.Model, err)
 		return
 	}
+	markLoadHeaderR493(w, r.Context())
 	// R62 (2026-09-14): use actualModel для всех downstream calls (chat template,
 	// Infer, antiprompts, etc). Если dedup-pre-check загрузил модель под alias
 	// (например requested="Qwen3-Instruct-2507-q4km" → loaded="qwen3-instruct"),
@@ -1734,10 +1739,12 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 	// и не видит отмену через /api/cancel.
 	r, requestID, cancelCleanup := setupCancelTracking(r, req.Model, "cppworker-gpu", "oai-cmpl")
 	defer cancelCleanup()
+	// R493-12a: та же ячейка и тот же заголовок, что в v1/chat (см. выше).
+	r = r.WithContext(withLoadScopeR493(r.Context()))
 	logger.Get().Debugw("handleV1Completions: cancel tracking enabled",
 		"request_id", requestID, "model", req.Model, "user_id", userID)
 
-	actualModel, err := ensureModelLoadedWithNCtx(r.Context(), req.Model, req.NumCtx)
+	actualModel, err := loadModelMeasuredR493(r.Context(), req.Model, req.NumCtx)
 	if err != nil {
 		// R119 (2026-10-15): 503/404/500 — одна точка перевода (см.
 		// writeModelLoadError). До этого неизвестная модель давала 500 с пустым
@@ -1745,6 +1752,7 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 		writeModelLoadError(w, req.Model, err)
 		return
 	}
+	markLoadHeaderR493(w, r.Context())
 	// R62 (2026-09-14): use actualModel для downstream calls.
 	modelName := actualModel
 

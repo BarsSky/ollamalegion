@@ -590,6 +590,46 @@
     return counts;
   };
 
+  // windowAlignAlerts — R494 (2026-11-12): баннер «окно копии уже, чем у соседней;
+  // выровнять?» с числами и целью.
+  //
+  // ОТКУДА ЧИСЛА. Не из бэкендов в браузере, а из балансера
+  // (GET /api/v1/window/align): только он видит сессии, активные запросы и потолок
+  // LB_WINDOW_ALIGN_MAX_N_CTX. Считать это здесь значило бы завести ВТОРУЮ
+  // арифметику рядом с R459 и разойтись с ней на первом изменении правил.
+  //
+  // ЧТО ФИЛЬТРУЕМ. Предложение без свободной копии (alignableBackends пуст) не
+  // показываем вовсе: «выровнять» занятую копию = оборвать чужую генерацию
+  // (правило оператора: занята — ставим в очередь, не перезагружаем).
+  MonitorApp.windowAlignAlerts = function(suggestions, i18n) {
+    var Tt = (typeof i18n === 'function') ? i18n : function(k) { return k; };
+    var out = [];
+    (suggestions || []).forEach(function(s) {
+      if (!s || !s.alignableBackends || !s.alignableBackends.length) return;
+      if (!(s.targetWindow > 0)) return;
+      var backendId = s.alignableBackends[0];
+      var cur = 0;
+      (s.copies || []).forEach(function(c) {
+        if (c && c.backendId === backendId) cur = c.window || 0;
+      });
+      out.push({
+        level: 'yellow',
+        action: 'windowAlign',
+        model: s.model,
+        backendId: backendId,
+        target: s.targetWindow,
+        more: Math.max(0, s.alignableBackends.length - 1),
+        text: Tt('monitor.alert.windowAlign', {
+          model: s.model,
+          backend: backendId,
+          current: cur,
+          target: s.targetWindow
+        })
+      });
+    });
+    return out;
+  };
+
   // fitText — обрезка ПО ШИРИНЕ, а не по числу символов: длинное имя модели
   // (Qwen3-4B-Instruct-2507-Q4_K_M) шире плитки клиента, и на канве оно
   // вылезало за карточку. Возвращает строку, которая гарантированно влезает в

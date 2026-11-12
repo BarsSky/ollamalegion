@@ -828,6 +828,10 @@
 
   function diagnose(data) {
     var alerts = [], bks = data.cluster.backends || [], q = data.queueDetails || {}, all = q.all || [];
+    // R494: индексы кнопок «Выровнять» живут в этом списке и пересобираются на
+    // каждый рендер — иначе после обновления данных кнопка подставила бы старую
+    // пару «модель/узел».
+    MA.alignActions = [];
     var activeBks = bks.filter(function(b) { return b.status === 'active' || b.status === 'ready'; });
     // R425 (2026-11-03): «свободных» бэкендов для ТЕКСТОВОЙ очереди считаем
     // только по её типу. ЖИВОЙ ДЕФЕКТ: в очереди стоял запрос к llama.cpp, а
@@ -890,6 +894,25 @@
       var m = b.maxConcurrentRequests || 10, l = (b.activeRequests || 0) / m;
       if (l >= 1.0) alerts.push({ level: 'red', text: T('monitor.alert.backendFull', { backend: b.id, active: b.activeRequests || 0, max: m }) });
     });
+    // R494 (2026-11-12, по архиву стенда A10 ×2): «одна модель — разные окна».
+    //
+    // ЖИВОЙ ФАКТ. Мастер держал Qwen3.8-27B с окном 198656, A10-126 — с 131072.
+    // Снаружи это выглядело как «балансер не использует второй узел»: сессия не
+    // могла туда уехать (R459 запрещает окно меньше), и узел простаивал.
+    //
+    // Числа приходят из балансера (GET /api/v1/window/align): он видит сессии,
+    // активные запросы и потолок LB_WINDOW_ALIGN_MAX_N_CTX. Здесь только показ и
+    // кнопка — сама перезагрузка требует подтверждения оператором: 27B грузится
+    // минутами, и «само поднялось» выбило бы чужую работу.
+    if (typeof MA.windowAlignAlerts === 'function') {
+      var waAlerts = MA.windowAlignAlerts(data.windowAlign && data.windowAlign.suggestions, T);
+      waAlerts.forEach(function(a) {
+        MA.alignActions = MA.alignActions || [];
+        MA.alignActions.push({ model: a.model, backendId: a.backendId, target: a.target });
+        a.idx = MA.alignActions.length - 1;
+        alerts.push(a);
+      });
+    }
     // R83-fix (2026-10-09): «потенциал параллельности не раскрыт».
     //
     // Воркер держит модель с N слотами (cppworker max_slots -> runtimeModelSlots),
@@ -924,8 +947,13 @@
     if (tv > 0 && uv / tv > 0.85) alerts.push({ level: 'red', text: T('monitor.alert.vramFull', { pct: (uv / tv * 100).toFixed(0), used: uv.toFixed(1), total: tv.toFixed(0) }) });
 
     document.getElementById('alertContainer').innerHTML = alerts.map(function(a) {
-      return '<div class="alert-banner alert-' + a.level + '"><span>' + (a.level === 'red' ? '❌' : '⚠️') + '</span><span>' + MA.esc(a.text) + '</span>' +
-        (a.action === 'rebalance' ? '<button onclick="forceRebalance()" style="margin-left:8px;padding:2px 8px;font-size:var(--font-size-xs);background:var(--danger);color:#fff;border:none;border-radius:4px;cursor:pointer">' + T('monitor.alert.rebalance') + '</button>' : '') +
+      var btn = '';
+      if (a.action === 'rebalance') {
+        btn = '<button onclick="forceRebalance()" style="margin-left:8px;padding:2px 8px;font-size:var(--font-size-xs);background:var(--danger);color:#fff;border:none;border-radius:4px;cursor:pointer">' + T('monitor.alert.rebalance') + '</button>';
+      } else if (a.action === 'windowAlign') {
+        btn = '<button onclick="alignWindowAction(' + Number(a.idx) + ')" style="margin-left:8px;padding:2px 8px;font-size:var(--font-size-xs);background:var(--warning);color:#fff;border:none;border-radius:4px;cursor:pointer">' + T('monitor.alert.windowAlignButton') + '</button>';
+      }
+      return '<div class="alert-banner alert-' + a.level + '"><span>' + (a.level === 'red' ? '❌' : '⚠️') + '</span><span>' + MA.esc(a.text) + '</span>' + btn +
         '</div>';
     }).join('');
   }

@@ -64,6 +64,15 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/settings", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.settingsHandler), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/settings/reset", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.settingsResetHandler), s.rateLimiter), s.authenticator))
 
+	// R494 (2026-11-12): предложение выровнять окна копий одной модели.
+	//
+	// Только чтение: правило «свободная копия — можно выравнивать, занятая —
+	// ждать слот или в очередь к копии с нужным окном» считает балансер (он
+	// видит сессии, активные запросы и потолок LB_WINDOW_ALIGN_MAX_N_CTX).
+	// Перезагрузку подтверждает оператор через уже существующий
+	// POST /api/v1/cluster/models/{name}/reload.
+	s.mux.Handle("/api/v1/window/align", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleWindowAlignR494), s.rateLimiter), s.authenticator))
+
 	// R234 (2026-10-24): язык логов и ошибок. GET отдаёт действующий язык
 	// (его читают воркеры: cppworker/agent синхронизируются с балансером),
 	// PUT переключает язык на лету и сохраняет в config.logging.language.

@@ -1,4 +1,4 @@
-﻿// js/monitor/init.js — Initialization, rebalance, animation loop
+// js/monitor/init.js — Initialization, rebalance, animation loop
 
 (function() {
   'use strict';
@@ -127,6 +127,61 @@
   // Panel toggle
   window.togglePanel = function(id) {
     document.getElementById(id).classList.toggle('open');
+  };
+
+  // R494 (2026-11-12, по архиву стенда A10 ×2): «выровнять окно копии».
+  //
+  // ПОЧЕМУ ПОДТВЕРЖДЕНИЕ, А НЕ АВТОМАТ. Перезагрузка 27B — это минуты и
+  // выгрузка прогретой модели; молчаливое «само поднялось» оператор увидел бы
+  // как зависший стенд. Балансер уже проверил, что копия СВОБОДНА (0 сессий,
+  // 0 активных) — этим кнопка и безопасна, — но время выбирает человек.
+  //
+  // ПЕРЕЗАГРУЗКА ИДЁТ ЧЕРЕЗ СУЩЕСТВУЮЩУЮ РУЧКУ
+  // POST /api/v1/cluster/models/{name}/reload. Второй дороги загрузки моделей не
+  // заводим: у неё был бы свой набор проверок состояния узла (R263) и она
+  // разошлась бы с операторской.
+  window.alignWindowAction = function(idx) {
+    var a = (MA.alignActions || [])[idx];
+    if (!a) return;
+    if (MA.demoMode) { alert(MA.T('monitor.rebalance.disabled')); return; }
+    var q = MA.T('monitor.alert.windowAlignConfirm', {
+      model: a.model, backend: a.backendId, target: a.target, current: a.current || 0
+    });
+    if (typeof window.confirm === 'function' && !window.confirm(q)) return;
+    var token = new URLSearchParams(location.search).get('token') || localStorage.getItem('apiToken') || '';
+    var ctrl = new AbortController();
+    var tid = setTimeout(function() { ctrl.abort(); }, 30000);
+    var headers = Object.assign({ 'Content-Type': 'application/json' }, token ? { 'X-API-Token': token } : {});
+    fetch(MA.API_BASE + '/api/v1/cluster/models/' + encodeURIComponent(a.model) + '/reload', {
+      method: 'POST',
+      headers: headers,
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        operation: 'reload',
+        backendId: a.backendId,
+        contextSize: a.target,
+        reason: 'R494 window align'
+      })
+    }).then(function(r) {
+      clearTimeout(tid);
+      return r.json().catch(function() { return {}; }).then(function(body) {
+        if (!r.ok && !(body && body.deferred)) {
+          throw new Error((body && (body.message || body.error)) || (r.status + ' ' + r.statusText));
+        }
+        return body || {};
+      });
+    }).then(function(body) {
+      var ok = !body.deferred;
+      var msg = ok
+        ? MA.T('monitor.alert.windowAlignStarted', { backend: a.backendId, target: a.target })
+        : MA.T('monitor.alert.windowAlignDeferred', { reason: body.deferredReason || '' });
+      _showRebalanceBanner(msg, ok);
+      if (typeof window.fetchAll === 'function') window.fetchAll();
+    }).catch(function(e) {
+      clearTimeout(tid);
+      console.error('[monitor] window align failed:', e);
+      _showRebalanceBanner(MA.T('monitor.alert.windowAlignFailed', { error: e.message }), false);
+    });
   };
 
   // Help modal

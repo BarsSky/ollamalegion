@@ -258,6 +258,14 @@ function Write-ReleaseManifest {
         composeProfile = $ComposeProfile
         images         = $out
     }
+    # releasedServices — ЧТО собиралось в этом запуске. Нужно проверке C4b
+    # (check-image-tags.ps1): при частичном выпуске (только воркер) gitCommit
+    # равен коммиту собранного образа, а не балансера, и сверять его с балансером
+    # нельзя. Без этого поля проверка падала на ровном месте при каждом выпуске
+    # одного компонента (живой случай 2026-11-12).
+    if ($ReleaseServices -and $ReleaseServices.Count -gt 0) {
+        $manifest['releasedServices'] = @($ReleaseServices | Sort-Object)
+    }
     # note/standDeployed — доказательства приёмки, они не выводятся из сборки.
     if ($null -ne $prev) {
         if ($null -ne $prev.PSObject.Properties['note'] -and $prev.note) { $manifest['note'] = [string]$prev.note }

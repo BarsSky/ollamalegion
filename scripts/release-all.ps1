@@ -70,7 +70,25 @@
 param(
     [string]$Tag = "",
     [string[]]$Services = @("balancer", "cppworker", "agent", "webui", "imageworker"),
-    [int]$CudaArch = 86,
+    # R493-арх (2026-11-12): СПИСОК архитектур, а не одно число.
+    #
+    # ЖИВОЙ ФАКТ. Здесь стояло `[int]$CudaArch = 86`, и любой выпуск собирал
+    # cppworker ТОЛЬКО под sm_86 — независимо от `CUDA_ARCH` в deployments/.env
+    # (там было записано 75;86;120). Оператор видел в .env одно, а в образе —
+    # `CPPWORKER_CUDA_ARCH_BUILT=86`, то есть на карте 7.5 или 12.0 образ падал бы
+    # с «no kernel image is available for execution on the device» (этот класс уже
+    # ловил гард R135, но здесь причина была не в карте, а в сборке).
+    # Кроме того `[int]` физически не принимает список через ";" — значения вида
+    # 75;86;120 отбрасывались/падали приведением типа.
+    #
+    # Правило теперь: параметр → переменная CUDA_ARCH из deployments/.env → "86".
+    [string]$CudaArch = "",
+    # Версия базового образа CUDA (ARG CUDA_VERSION в Dockerfile.gpu).
+    # Пусто → берётся CUDA_VERSION из deployments/.env, иначе дефолт Dockerfile.
+    # Нужна именно затем, чтобы можно было назвать архитектуру 120 (Blackwell):
+    # CUDA 12.2 её не знает и падает на «Unsupported gpu architecture
+    # 'compute_120'» — для 120 нужна 12.8+.
+    [string]$CudaVersion = "",
     # Реестр базового образа CUDA для cppworker (ARG CUDA_BASE в Dockerfile.gpu).
     # Оставлено настраиваемым намеренно: зеркало по умолчанию (timeweb) отдаёт
     # слой devel-образа 2.34 GB со скоростью ~110 KB/s, и сборка висит часами.
@@ -143,12 +161,62 @@ $envPath = Join-Path $envDir ".env"
 $envContainerPath = Join-Path $envDir ".env.bundled-with-agent"
 $manifestPath = Join-Path $envDir "release-manifest.json"
 
+# --- архитектуры CUDA: параметр → deployments/.env → дефолт -------------------
+# Читаем .env, а не только окружение процесса: оператор задаёт CUDA_ARCH там, и
+# образ обязан совпасть с заявленным намерением (иначе .env говорит «75;86;120»,
+# а в образе 86 — ровно та расхождение «намерение vs факт», что чинил R486 для
+# идентичности сборки).
+function Get-EnvValueR493 {
+    param([string]$Path, [string]$Name)
+    if (-not (Test-Path $Path)) { return "" }
+    $line = Get-Content $Path | Where-Object { $_ -match "^$Name=" } | Select-Object -Last 1
+    if (-not $line) { return "" }
+    return ($line -replace "^$Name=", "").Trim()
+}
+
+if ([string]::IsNullOrWhiteSpace($CudaArch)) {
+    $CudaArch = Get-EnvValueR493 -Path $envPath -Name "CUDA_ARCH"
+}
+if ([string]::IsNullOrWhiteSpace($CudaArch)) { $CudaArch = "86" }
+$CudaArch = ($CudaArch -replace '\s', '')
+if ($CudaArch -notmatch '^[A-Za-z0-9_;.,-]+$') {
+    throw "Недопустимый CUDA_ARCH '$CudaArch': ожидается список вида '86' или '75;86;120'"
+}
+
+if ([string]::IsNullOrWhiteSpace($CudaVersion)) {
+    $CudaVersion = Get-EnvValueR493 -Path $envPath -Name "CUDA_VERSION"
+}
+
+# Реестр базового образа CUDA: тоже из deployments/.env, если не задан параметром.
+# Оператор пишет его там осознанно (медленное зеркало тянет 2.3 ГБ часами), и
+# сборка «мимо .env» — это опять расхождение намерения и факта.
+if ([string]::IsNullOrWhiteSpace($CudaBase)) {
+    $CudaBase = Get-EnvValueR493 -Path $envPath -Name "CUDA_BASE"
+}
+
+# Список архитектур без префикса sm_ — как в build-arg и в гарде R135.
+$archList = @($CudaArch -split '[;,]' | ForEach-Object { ($_ -replace '^sm_', '').Trim() } | Where-Object { $_ })
+$needsBlackwell = ($archList | Where-Object { [int]$_ -ge 100 }).Count -gt 0
+# Версия, которую реально возьмёт Dockerfile, если не передать CUDA_VERSION.
+$effectiveCudaVersion = if ($CudaVersion -ne "") { $CudaVersion } else { "12.2.0" }
+$cudaMajorMinor = $effectiveCudaVersion -replace '^(\d+\.\d+).*$', '$1'
+if ($needsBlackwell -and ([double]$cudaMajorMinor -lt 12.8)) {
+    throw ("CUDA_ARCH='$CudaArch' содержит архитектуру 100+ (Blackwell/sm_120), " +
+        "а базовый образ CUDA $effectiveCudaVersion её не знает: компилятор упадёт на " +
+        "«Unsupported gpu architecture 'compute_120'» уже после долгой сборки. " +
+        "Передайте -CudaVersion 12.8.0 (или CUDA_VERSION=12.8.0 в deployments/.env) " +
+        "и повторите выпуск.")
+}
+$cudaArchTag = ($archList -join '-')  # для docker-тега: точка с запятой в теге недопустима
+Write-Host ("архитектуры CUDA: {0} (тег-алиас latest-gpu-{1}, базовый образ CUDA {2})" -f
+    ($archList -join ';'), $cudaArchTag, $effectiveCudaVersion) -ForegroundColor Cyan
+
 # Компонент → (переменная в deployments/.env, image repo, полный тег для образа)
 # ВНИМАНИЕ: для cppworker compose добавляет префикс `gpu-`, поэтому переменная
 # хранит тег БЕЗ него (совпадает с прежним поведением rebuild_cppworker_*.ps1).
 $spec = @{
     balancer  = @{ Var = "BALANCER_TAG";        Repo = "ollama-legion/balancer";  ImageTag = $Tag;                 Alias = "latest" }
-    cppworker = @{ Var = "CPPWORKER_GPU_TAG";   Repo = "ollama-legion/cppworker"; ImageTag = "gpu-$Tag";           Alias = "latest-gpu-$CudaArch" }
+    cppworker = @{ Var = "CPPWORKER_GPU_TAG";   Repo = "ollama-legion/cppworker"; ImageTag = "gpu-$Tag";           Alias = "latest-gpu-$cudaArchTag" }
     agent     = @{ Var = "AGENT_TAG";           Repo = "ollama-legion/agent";     ImageTag = $Tag;                 Alias = "latest" }
     webui     = @{ Var = "WEBUI_TAG";           Repo = "ollama-legion/webui";     ImageTag = $Tag;                 Alias = "latest" }
     # R-Image Phase 9 (2026-10-03): imageworker в выпуске. Тег вариантный
@@ -215,14 +283,16 @@ foreach ($svc in $Services) {
                 & $dockerBin build @idArgs -t $imageRef -f docker/balancer/Dockerfile .
             }
             "cppworker" {
-                # CUDA_ARCH — только нужная архитектура: default "all" в Dockerfile.gpu
-                # собирает 9 архитектур (~9x дольше) и нужен лишь для multi-arch.
-                # CUDA_BASE — реестр базового образа; пусто = дефолт Dockerfile.
-                if ($CudaBase -ne "") {
-                    & $dockerBin build @idArgs --build-arg CUDA_ARCH=$CudaArch --build-arg CUDA_BASE=$CudaBase -t $imageRef -f docker/cppworker/Dockerfile.gpu .
-                } else {
-                    & $dockerBin build @idArgs --build-arg CUDA_ARCH=$CudaArch -t $imageRef -f docker/cppworker/Dockerfile.gpu .
-                }
+                # R493-арх: CUDA_ARCH — СПИСОК архитектур (86, 75;86;120, all).
+                # Default "all" в Dockerfile.gpu собирает 9 архитектур (~9x дольше),
+                # поэтому передаём ровно то, что заявлено в deployments/.env
+                # (параметр -CudaArch перекрывает).
+                # CUDA_VERSION передаём только если он задан/выведен из .env:
+                # 120 (Blackwell) требует 12.8+, и это проверено выше — до сборки.
+                $cppArgs = @("--build-arg", "CUDA_ARCH=$CudaArch")
+                if ($CudaVersion -ne "") { $cppArgs += @("--build-arg", "CUDA_VERSION=$CudaVersion") }
+                if ($CudaBase -ne "") { $cppArgs += @("--build-arg", "CUDA_BASE=$CudaBase") }
+                & $dockerBin build @idArgs @cppArgs -t $imageRef -f docker/cppworker/Dockerfile.gpu .
             }
             "agent" {
                 # Продовый стек использует GPU-агента (nvidia runtime) → target agent-gpu.

@@ -225,8 +225,43 @@ if (Test-Path $manifestPath) {
     }
     if ([string]$mf.gitCommit -notmatch '^[0-9a-f]{7,40}$') {
         $manifestIssues.Add("C4: верхнеуровневый gitCommit отсутствует или не SHA")
-    } elseif ($balancerCommit -and $mf.gitCommit -ne $balancerCommit) {
-        $manifestIssues.Add("C4b: gitCommit=$($mf.gitCommit) не совпадает с commit записи балансера $balancerCommit — какая сборка считается выпуском?")
+    } else {
+        # C4b — «какая сборка считается выпуском».
+        #
+        # R493-арх (2026-11-12): правило было «gitCommit == коммит записи
+        # БАЛАНСЕРА», и оно верно только для полного выпуска. Живой случай: выпуск
+        # ТОЛЬКО воркера (обновление CUDA-архитектур) — gitCommit честно равен
+        # коммиту собранного воркера, а балансер остался на прежнем образе, и
+        # проверка падала на ровном месте трижды за день.
+        #
+        # Теперь: если манифест сообщает, ЧТО собиралось (releasedServices), сверяем
+        # gitCommit с коммитами именно этих записей; иначе (старые манифесты) —
+        # прежнее правило про балансер, а если балансера в записях нет — «совпадает
+        # хотя бы с одним образом».
+        $released = @()
+        if ($null -ne $mf.PSObject.Properties['releasedServices'] -and $mf.releasedServices) {
+            $released = @($mf.releasedServices | ForEach-Object { [string]$_ })
+        }
+        if ($released.Count -gt 0) {
+            $releasedEntries = @($mf.images | Where-Object { $released -contains [string]$_.service })
+            if ($releasedEntries.Count -eq 0) {
+                $manifestIssues.Add("C4b: releasedServices=$($released -join ', ') не находит таких образов в манифесте")
+            }
+            foreach ($e in $releasedEntries) {
+                if ([string]$e.commit -ne $mf.gitCommit) {
+                    $manifestIssues.Add("C4b: gitCommit=$($mf.gitCommit) не совпадает с commit собранного образа $($e.image) = $($e.commit) — какая сборка считается выпуском?")
+                }
+            }
+        } elseif ($balancerCommit) {
+            if ($mf.gitCommit -ne $balancerCommit) {
+                $manifestIssues.Add("C4b: gitCommit=$($mf.gitCommit) не совпадает с commit записи балансера $balancerCommit — какая сборка считается выпуском?")
+            }
+        } else {
+            $anyMatch = @($mf.images | Where-Object { [string]$_.commit -eq $mf.gitCommit })
+            if ($anyMatch.Count -eq 0) {
+                $manifestIssues.Add("C4b: gitCommit=$($mf.gitCommit) не совпадает ни с одним образом манифеста — какая сборка считается выпуском?")
+            }
+        }
     }
     if ($manifestIssues.Count -eq 0) {
         Write-Host "  OK  идентичность зафиксирована у всех $($mf.images.Count) образов (per-image commit, buildDate, imageId; llama+rpc у cppworker)" -ForegroundColor DarkGray

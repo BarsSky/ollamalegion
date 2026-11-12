@@ -65,6 +65,10 @@ type llamaCppMetricsPoller struct {
 	// посчитать KV cache (см. arch_enrich_r230.go).
 	archMu    sync.Mutex
 	archCache map[string]archParams
+	// R493-12i: TTL-состояние «свежести» идентичности воркера (см.
+	// worker_identity_refresh_r493.go). Идентичность из config.json стареет молча
+	// после пересборки воркера, поэтому её нужно переспрашивать у самого узла.
+	identityRefresh identityRefreshR493
 
 	// R245: фоновое обновление каталога моделей (refreshStaleModelCatalogs)
 	// запускается отдельной горутиной из pollAll. Без учёта в WaitGroup
@@ -200,6 +204,12 @@ func (p *llamaCppMetricsPoller) pollAll() {
 		go func(bi backendInfo) {
 			defer wg.Done()
 			p.pollBackend(bi)
+			// R493-12i: раз в TTL переспрашиваем идентичность сборки у самого
+			// воркера. Идентичность из config.json/регистрации стареет молча после
+			// пересборки узла: живой случай — образ gpu-r261112-2146, а
+			// /api/v1/backends показывал 261110-1925. Ошибки здесь не влияют на
+			// метрики (см. worker_identity_refresh_r493.go).
+			p.refreshWorkerIdentityR493(bi)
 		}(b)
 	}
 	wg.Wait()

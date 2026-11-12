@@ -2,32 +2,20 @@
 // (по просьбе оператора 2026-11-12: «агент получает значения очень сильно
 // отличающиеся от действительности»).
 //
-// ЧТО ЭТО ЗА ТЕСТ. Это ХАРАКТЕРИЗУЮЩИЙ тест: он фиксирует, как статы считаются
-// СЕЙЧАС, и явно называет два места, где результат не соответствует реальности.
-// Он зелёный ровно потому, что фиксирует текущее поведение, — и обязан измениться
-// вместе с исправлением. Такой тест нужен затем, чтобы правку нельзя было сделать
-// «молча»: любое изменение формул видно здесь числом.
+// ИСТОРИЯ. Этот файл начинался как ХАРАКТЕРИЗУЮЩИЙ: он фиксировал, как статы
+// считаются СЕЙЧАС, и называл числами два дефекта:
 //
-// НАЙДЕННЫЕ ДЕФЕКТЫ (разбор: docs/architecture/stats-and-context-check.ru.md):
+//  1. в prompt_eval_duration входило ОЖИДАНИЕ (очередь, авто-загрузка, preflight
+//     n_ctx), потому что окна считались от llamaStartTime — начала обработки
+//     запроса балансером: 2000 токенов за 95 с = 21 t/s вместо ~400;
+//  2. в eval_duration не входило время РАЗМЫШЛЕНИЙ: первый контент-чанк ставился
+//     только на чанке content, а reasoning-дельты его не двигали, хотя их токены
+//     входят в eval_count: 520 токенов за 5 с = 104 t/s вместо ~8.
 //
-//  1. В prompt_eval_duration попадает ВРЕМЯ ОЖИДАНИЯ, а не только префилл.
-//     В llamacpp_transport.go статы считаются от llamaStartTime (строка 111) —
-//     это время ДО preflight n_ctx, а preflight умеет синхронно перезагружать
-//     модель (минуты на 27B). В результате «скорость промпта» = prompt_tokens /
-//     (очередь + загрузка + префилл) — на 27B это занижение в десятки раз.
-//
-//  2. В eval_duration не попадает время РАЗМЫШЛЕНИЙ, хотя их токены входят в
-//     eval_count. firstContentTime ставится на первом ЧАНКЕ CONTENT
-//     (llamacpp_transport.go:1135, 1454), а reasoning-дельты его не двигают.
-//     Значит prompt_eval_duration поглощает всё время размышлений, а eval_count
-//     содержит и их токены → tokens_per_second завышается (в тесте ниже —
-//     500 токенов за 5 секунд видимого контента = 100 t/s).
-//
-// ПОЧЕМУ НЕ ИСПРАВЛЕНО ЗДЕСЬ ЖЕ: правка меняет то, что видит КАЖДЫЙ клиент
-// (OpenWebUI, Cline, панель). По правилу оператора («сначала причина, потом
-// правка, и чтобы не убила остальное») сначала нужен архив со стенда: подтвердить,
-// что агент читает именно эти поля и что смещение объясняется очередью/загрузкой,
-// а не другим источником. Дефекты внесены в реестр (debts.ru.md 12a).
+// СЕЙЧАС ФИКСИРУЕТ ИСПРАВЛЕННОЕ поведение (R493-12a, stats_windows_r493.go):
+// у каждого отрезка свой источник, и тест падает, если кто-то вернёт старую
+// формулу «одно окно на всё». Исторические числа оставлены в комментариях —
+// чтобы было видно, ЧТО именно изменилось, а не только «стало зелено».
 package balancer
 
 import (
@@ -55,88 +43,95 @@ func statsFromUsageR493(t *testing.T, chunk []byte) map[string]float64 {
 	return out
 }
 
-// TestR493_StatsIncludeQueueAndPreflight — дефект 1, зафиксирован числом.
+// TestR493_StatsQueueAndLoadOutOfPromptWindow — дефект 1 закрыт.
 //
-// Сценарий живой: запрос ждал в очереди и/или модель грузилась 90 с, затем
-// префилл 5 с и генерация 5 с. Клиент получает prompt_eval_duration ≈ 95 с,
-// хотя префилл занял 5 с.
-func TestR493_StatsIncludeQueueAndPreflight(t *testing.T) {
+// Живой сценарий: 5 с в очереди/на загрузку, 5 с префилл, 10 с генерация.
+// ДО: prompt_eval_duration ≈ 95 с (ожидание внутри «промпта»).
+// ПОСЛЕ: load_duration = 5 с, prompt_eval_duration = 5 с, eval = 10 с.
+func TestR493_StatsQueueAndLoadOutOfPromptWindow(t *testing.T) {
 	now := time.Now()
-	streamStart := now.Add(-100 * time.Second) // начало обработки запроса
-	firstContent := now.Add(-5 * time.Second)  // первый видимый контент
+	w := statsWindowsR493{
+		RequestStart: now.Add(-20 * time.Second), // балансер начал обработку
+		UpstreamSent: now.Add(-15 * time.Second), // запрос ушёл воркеру (5 с очередь/загрузка)
+		FirstDelta:   now.Add(-10 * time.Second), // конец префилла (5 с)
+		End:          now,                        // конец генерации (10 с)
+	}
 	usage := map[string]interface{}{"prompt_tokens": 2000.0, "completion_tokens": 400.0, "total_tokens": 2400.0}
 
-	chunk := translateUsageChunkToOllama("/api/chat", "m", usage, map[string]interface{}{},
-		streamStart, firstContent, "answer", true)
+	chunk := translateUsageChunkToOllamaWindowsR493("/api/chat", "m", usage, map[string]interface{}{},
+		w, "answer", true)
 	s := statsFromUsageR493(t, chunk)
 
-	promptNs := s["prompt_eval_duration"]
-	totalNs := s["total_duration"]
-	evalNs := s["eval_duration"]
+	approx := func(name string, got, want float64) {
+		t.Helper()
+		if got < want-0.2e9 || got > want+0.2e9 {
+			t.Fatalf("%s = %.0f нс, ожидалось ≈%.0f нс", name, got, want)
+		}
+	}
+	approx("total_duration", s["total_duration"], 20e9)
+	approx("load_duration", s["load_duration"], 5e9)
+	approx("prompt_eval_duration", s["prompt_eval_duration"], 5e9)
+	approx("eval_duration", s["eval_duration"], 10e9)
 
-	// ХАРАКТЕРИСТИКА текущего поведения: в «время промпта» входит ожидание.
-	if promptNs < 90e9 {
-		t.Fatalf("prompt_eval_duration = %.0f нс, ожидалось ≈95 с: тест фиксирует, что "+
-			"ожидание/загрузка попадают в эту величину; если формулу исправили — "+
-			"обновите ожидание и docs/architecture/stats-and-context-check.ru.md", promptNs)
+	// Скорость промпта теперь считается по СВОЕМУ окну: 2000/5 = 400 t/s.
+	// Клиент сам делит prompt_eval_count на prompt_eval_duration; проверяем окно.
+	if reported := 2000.0 / (s["prompt_eval_duration"] / 1e9); reported < 300 {
+		t.Fatalf("prompt t/s по отданному окну = %.0f, ожидалось ≈400 (старое поведение "+
+			"давало 21 — в окно попадало ожидание)", reported)
 	}
-	if totalNs < 99e9 {
-		t.Fatalf("total_duration = %.0f нс, ожидалось ≈100 с", totalNs)
-	}
-	if evalNs < 4.9e9 || evalNs > 5.1e9 {
-		t.Fatalf("eval_duration = %.0f нс, ожидалось ≈5 с", evalNs)
-	}
-	// Скорость промпта, которую увидит клиент: 2000 токенов за 95 с = 21 t/s,
-	// при реальном префилле 5 с это было бы 400 t/s — занижение в 19 раз.
-	if got := s["tokens_per_second"]; got > 0 {
-		t.Logf("tokens_per_second = %.1f (это только генерация, без размышлений)", got)
-	}
+	// tokens_per_second — только генерация: 400/10 = 40 t/s.
+	approx("tokens_per_second", s["tokens_per_second"], 40)
 }
 
-// TestR493_StatsDilutePromptSpeed — то же, но проверяем величину искажения.
-func TestR493_StatsDilutePromptSpeed(t *testing.T) {
-	now := time.Now()
-	streamStart := now.Add(-120 * time.Second)
-	firstContent := now.Add(-20 * time.Second)
-	usage := map[string]interface{}{"prompt_tokens": 4000.0, "completion_tokens": 200.0, "total_tokens": 4200.0}
-
-	chunk := translateUsageChunkToOllama("/api/chat", "m", usage, map[string]interface{}{},
-		streamStart, firstContent, "answer", true)
-	s := statsFromUsageR493(t, chunk)
-
-	reportedPromptTPS := 4000.0 / (s["prompt_eval_duration"] / 1e9)
-	// Реальный префилл — это первые ~20 секунд (в них же сидит ожидание); если бы
-	// ожидания не было, скорость считалась бы по меньшему окну и была бы выше.
-	if reportedPromptTPS > 100 {
-		t.Fatalf("prompt t/s = %.1f — ожидалось сильно заниженное значение; "+
-			"похоже, формулу исправили: обновите тест и документ", reportedPromptTPS)
-	}
-	t.Logf("клиент видит prompt t/s = %.1f (реально было бы выше)", reportedPromptTPS)
-}
-
-// TestR493_StatsReasoningTimeInflatesCompletionSpeed — дефект 2, зафиксирован числом.
+// TestR493_StatsReasoningTimeCountedInEval — дефект 2 закрыт.
 //
-// Модель думала 60 с (500 токенов размышлений), затем 5 с видимого ответа (20
-// токенов). completion_tokens = 520. firstContentTime — момент первого ВИДИМОГО
-// контента, поэтому eval_duration = 5 с, а в токенах — все 520:
-// tokens_per_second = 104 t/s вместо реальных ~8 t/s.
-func TestR493_StatsReasoningTimeInflatesCompletionSpeed(t *testing.T) {
+// Модель думала 60 с (500 токенов размышлений), затем 5 с видимого ответа
+// (20 токенов). completion_tokens = 520.
+// ДО: eval_duration = 5 с → 104 t/s.
+// ПОСЛЕ: eval_duration = 65 с → ≈8 t/s (время размышлений — это генерация).
+func TestR493_StatsReasoningTimeCountedInEval(t *testing.T) {
 	now := time.Now()
-	streamStart := now.Add(-65 * time.Second)
-	firstContent := now.Add(-5 * time.Second) // первый ВИДИМЫЙ контент после размышлений
+	w := statsWindowsR493{
+		RequestStart: now.Add(-65 * time.Second),
+		UpstreamSent: now.Add(-65 * time.Second),
+		// Первый дельта-чанк — РАЗМЫШЛЕНИЕ (не content): именно это и было слепым
+		// пятном старого кода.
+		FirstDelta: now.Add(-65 * time.Second),
+		End:        now,
+	}
 	usage := map[string]interface{}{"prompt_tokens": 100.0, "completion_tokens": 520.0, "total_tokens": 620.0}
 
-	chunk := translateUsageChunkToOllama("/api/chat", "m", usage, map[string]interface{}{},
-		streamStart, firstContent, "answer", true)
+	chunk := translateUsageChunkToOllamaWindowsR493("/api/chat", "m", usage, map[string]interface{}{},
+		w, "answer", true)
 	s := statsFromUsageR493(t, chunk)
 
 	tps := s["tokens_per_second"]
-	if tps < 90 {
-		t.Fatalf("tokens_per_second = %.1f, ожидалось ≈104 (500 рассуждений + 20 ответа за "+
-			"5 с видимого контента). Если размышления стали учитываться в eval_duration — "+
-			"обновите тест и документ", tps)
+	if tps > 10 || tps < 7 {
+		t.Fatalf("tokens_per_second = %.1f, ожидалось ≈8 (520 токенов за 65 с). "+
+			"104 означало бы, что время размышлений снова выпало из eval_duration", tps)
 	}
-	realTPS := 520.0 / 65.0 // весь вывод за всё время генерации
-	t.Logf("клиент видит %.0f t/s, по всему времени вывода — %.1f t/s (искажение в %.1f раза)",
-		tps, realTPS, tps/realTPS)
+	if evalNs := s["eval_duration"]; evalNs < 64e9 {
+		t.Fatalf("eval_duration = %.0f нс, ожидалось ≈65 с (размышления внутри генерации)", evalNs)
+	}
+}
+
+// TestR493_StatsSegmentsSumToTotal — сумма трёх отрезков равна total_duration.
+// Клиент показывает их рядом; расхождение и есть «скорости не совпадают».
+func TestR493_StatsSegmentsSumToTotal(t *testing.T) {
+	now := time.Now()
+	w := statsWindowsR493{
+		RequestStart: now.Add(-100 * time.Second),
+		UpstreamSent: now.Add(-90 * time.Second),
+		FirstDelta:   now.Add(-80 * time.Second),
+		End:          now,
+	}
+	usage := map[string]interface{}{"prompt_tokens": 1000.0, "completion_tokens": 200.0}
+	s := statsFromUsageR493(t, translateUsageChunkToOllamaWindowsR493("/api/chat", "m", usage,
+		map[string]interface{}{}, w, "x", true))
+
+	sum := s["load_duration"] + s["prompt_eval_duration"] + s["eval_duration"]
+	if diff := s["total_duration"] - sum; diff > 1e6 || diff < -1e6 {
+		t.Fatalf("load+prompt+eval = %.0f, total = %.0f (расхождение %.0f нс)",
+			sum, s["total_duration"], diff)
+	}
 }

@@ -620,6 +620,31 @@ func translateOpenAISSEDataToOllamaWithDoneFlag(ollamaPath string, sseData []byt
 // Флаги передаются указателями, чтобы caller мог менять их после каждой
 // отправки и вести состояние по всему стриму.
 func translateOpenAISSEDataToOllamaWithFlags(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, streamStart time.Time, firstContentTime time.Time, accumulatedContent string, priorDoneEmitted *bool, priorStatsEmitted *bool) []byte {
+	return translateOpenAISSEDataToOllamaWindowsR493(ollamaPath, sseData, modelName, seenReasoning,
+		legacyWindowsR493(streamStart, firstContentTime), accumulatedContent, priorDoneEmitted, priorStatsEmitted)
+}
+
+// legacyWindowsR493 — окна из «старых» двух моментов времени.
+//
+// R493-12a: транспорт теперь передаёт ЧЕТЫРЕ момента (начало запроса, отправку
+// воркеру, первый дельта-чанк ЛЮБОГО вида, конец), и статистика считается по
+// своим отрезкам. Эта обёртка нужна старым вызовам (тесты, пути без транспорта):
+// у них есть только начало запроса и первый видимый контент, поэтому
+// load_duration = 0, а префилл считается от начала запроса — прежнее поведение
+// без изменений.
+func legacyWindowsR493(streamStart, firstContentTime time.Time) statsWindowsR493 {
+	return statsWindowsR493{
+		RequestStart: streamStart,
+		FirstDelta:   firstContentTime,
+		End:          time.Now(),
+	}
+}
+
+// translateOpenAISSEDataToOllamaWindowsR493 — тот же перевод SSE→Ollama, но с
+// ЧЕТЫРЬМЯ моментами времени (R493-12a). Отличие только в статистике: окна
+// считаются так, чтобы в «время промпта» не входили очередь/загрузка, а в
+// «время генерации» входили размышления.
+func translateOpenAISSEDataToOllamaWindowsR493(ollamaPath string, sseData []byte, modelName string, seenReasoning *bool, windows statsWindowsR493, accumulatedContent string, priorDoneEmitted *bool, priorStatsEmitted *bool) []byte {
 	if len(sseData) == 0 || bytes.Equal(sseData, []byte("[DONE]")) {
 		return nil
 	}
@@ -656,7 +681,7 @@ func translateOpenAISSEDataToOllamaWithFlags(ollamaPath string, sseData []byte, 
 		// H2: если done:true уже отправлен, статистику отдаём строкой с
 		// done:false — второй done:true нарушил бы инвариант R51.3/R53.1.
 		doneAlreadyEmitted := priorDoneEmitted != nil && *priorDoneEmitted
-		return translateUsageChunkToOllama(ollamaPath, modelName, usage, openaiChunk, streamStart, firstContentTime, accumulatedContent, !doneAlreadyEmitted)
+		return translateUsageChunkToOllamaWindowsR493(ollamaPath, modelName, usage, openaiChunk, windows, accumulatedContent, !doneAlreadyEmitted)
 	}
 	switch ollamaPath {
 	case "/api/chat":
@@ -725,6 +750,18 @@ func hasNonEmptyChoices(chunk map[string]interface{}) bool {
 //     намеренно пустой: ответ уже уехал клиенту предыдущим done-чанком, и
 //     повтор его в не-финальном чанке дал бы дубль ответа в OpenWebUI.
 func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]interface{}, openaiChunk map[string]interface{}, streamStart time.Time, firstContentTime time.Time, accumulatedContent string, emitDone bool) []byte {
+	return translateUsageChunkToOllamaWindowsR493(ollamaPath, modelName, usage, openaiChunk,
+		legacyWindowsR493(streamStart, firstContentTime), accumulatedContent, emitDone)
+}
+
+// translateUsageChunkToOllamaWindowsR493 — R493-12a: та же сборка Ollama-чанка
+// статистики, но окна времени передаются четырьмя моментами (statsWindowsR493).
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. Старые вызовы знают только «начало запроса» и
+// «первый видимый контент» — по ним load_duration неоткуда взять. Транспорт
+// знает все четыре и передаёт их сюда; обёртка выше сохраняет прежнее поведение
+// для тестов и путей без транспорта.
+func translateUsageChunkToOllamaWindowsR493(ollamaPath, modelName string, usage map[string]interface{}, openaiChunk map[string]interface{}, windows statsWindowsR493, accumulatedContent string, emitDone bool) []byte {
 	promptTokens := intFromUsage(usage, "prompt_tokens")
 	completionTokens := intFromUsage(usage, "completion_tokens")
 
@@ -765,50 +802,18 @@ func translateUsageChunkToOllama(ollamaPath, modelName string, usage map[string]
 	// - prompt_eval_duration: TTFT (time to first content chunk) = firstContentTime - streamStart
 	// - eval_duration: total_duration - prompt_eval_duration
 	//
-	// ВАЖНО: даже если values 0, Open WebUI UI показывает "..." а не "0h0m0s"
-	// если поле присутствует в chunk (визуально лучше чем "0h0m0s" из missing).
-	if !streamStart.IsZero() {
-		totalNs := time.Since(streamStart).Nanoseconds()
-		if totalNs < 0 {
-			totalNs = 0
-		}
-		ollamaChunk["total_duration"] = totalNs
-		ollamaChunk["load_duration"] = int64(0)
-
-		// R60.22: split total_duration by firstContentTime
-		// (TTFT = prompt_eval_duration, rest = eval_duration).
-		if !firstContentTime.IsZero() && firstContentTime.After(streamStart) {
-			ttftNs := firstContentTime.Sub(streamStart).Nanoseconds()
-			if ttftNs < 0 {
-				ttftNs = 0
-			}
-			evalNs := totalNs - ttftNs
-			if evalNs < 0 {
-				evalNs = 0
-			}
-			ollamaChunk["prompt_eval_duration"] = ttftNs
-			ollamaChunk["eval_duration"] = evalNs
-			// R60.22: tokens_per_second — OpenWebUI / Ollama webui показывают
-			// "tokens/sec" в stats panel. Без этого поля OpenWebUI показывает N/A.
-			if evalNs > 0 && completionTokens > 0 {
-				tps := float64(completionTokens) / (float64(evalNs) / 1e9)
-				ollamaChunk["tokens_per_second"] = tps
-			}
-		} else {
-			// firstContentTime не зафиксирован (legacy path / response в одном
-			// done-чанке без streaming content). Аппроксимируем: всё время
-			// относим к prompt_eval_duration, eval_duration = 0. OpenWebUI
-			// покажет t/s только для prompt (нормально для short response).
-			ollamaChunk["prompt_eval_duration"] = totalNs
-			ollamaChunk["eval_duration"] = int64(0)
-		}
-	} else {
-		// streamStart не передан (legacy callers, tests) — оставляем поля,
-		// но 0. Round 35c+ все callers передают streamStart.
-		ollamaChunk["total_duration"] = int64(0)
-		ollamaChunk["load_duration"] = int64(0)
-		ollamaChunk["prompt_eval_duration"] = int64(0)
-		ollamaChunk["eval_duration"] = int64(0)
+	// R60.22: tokens_per_second — OpenWebUI / Ollama webui показывают
+	// "tokens/sec" в stats panel. Без этого поля OpenWebUI показывает N/A.
+	// R493-12a: считается от eval_duration, в которую теперь входит и время
+	// размышлений (их токены всегда были в eval_count — раньше делили на
+	// слишком короткое окно и получали 104 t/s вместо ~8).
+	d := windows.Durations()
+	ollamaChunk["total_duration"] = d.Total
+	ollamaChunk["load_duration"] = d.Load
+	ollamaChunk["prompt_eval_duration"] = d.PromptEval
+	ollamaChunk["eval_duration"] = d.Eval
+	if d.Eval > 0 && completionTokens > 0 {
+		ollamaChunk["tokens_per_second"] = float64(completionTokens) / (float64(d.Eval) / 1e9)
 	}
 
 	// Ollama schema compliance (Round 53.1): оба endpoint'а должны иметь

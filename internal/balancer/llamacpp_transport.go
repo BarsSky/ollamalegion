@@ -109,6 +109,20 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// F.0.4 (2026-06-28): session F — диагностика EOF.
 	// Запоминаем startTime для расчёта duration_ms при ошибках upstream.
 	llamaStartTime := time.Now()
+	// R493-12a (2026-11-12): окна времени для статистики скорости токенов.
+	//
+	// ДО ЭТОЙ ПРАВКИ: prompt_eval_duration считался от llamaStartTime, то есть
+	// включал очередь, авто-загрузку и synchronous preflight n_ctx (на 27B —
+	// минуты), а первый контент-чанк не двигался reasoning-дельтами, поэтому
+	// время размышлений тоже уходило в «время промпта», хотя их токены входили
+	// в eval_count. Агент получал 21 t/s вместо ~400 и 104 t/s вместо ~8.
+	//
+	// ТЕПЕРЬ: upstreamSentTime — момент реальной отправки запроса воркеру (после
+	// очереди/загрузки/preflight); firstDeltaTime — первый дельта-чанк ЛЮБОГО вида
+	// (content, reasoning/thinking, tool_calls). Разбор окна:
+	// docs/architecture/stats-and-context-check.ru.md, код: stats_windows_r493.go.
+	var upstreamSentTime time.Time
+	var firstDeltaTime time.Time
 	// EOF-retry counter (1 = первая попытка). Используется в error context и для
 	// retry на тот же бэкенд после 500ms (типичный случай — cppworker перезагружал
 	// модель ровно во время первого запроса).
@@ -386,6 +400,12 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	// клиента (OpenWebUI/Cline) — раньше стрим обрывался на первом запросе.
 	//
 	// После записи заголовков (строка ~213 ниже) retry невозможен — TCP уже начат.
+	// R493-12a: фиксируем момент отправки воркеру — с него начинается префилл,
+	// и только он попадает в prompt_eval_duration. Все ожидания до этой строки
+	// (очередь, авто-загрузка, preflight reload) уходят в load_duration.
+	if upstreamSentTime.IsZero() {
+		upstreamSentTime = time.Now()
+	}
 	resp, err := clientForReq.Do(req)
 	// Round 8 (2026-07-10): connection-level error retry with exponential backoff
 	// (только для non-streaming — для streaming headers ещё не записаны,
@@ -1102,6 +1122,12 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 						modelFromCtxAtomic.Store(m)
 					}
 				}
+				// R493-12a: первый дельта-чанк ЛЮБОГО вида (включая thinking) —
+				// граница префилла. Здесь же ловятся и native-чанки, у которых
+				// текст лежит в message.thinking, а не в message.content.
+				if firstDeltaTime.IsZero() && chunkHasStatsDeltaR493(nativeChunk) {
+					firstDeltaTime = time.Now()
+				}
 				// Накапливаем видимый пользователю текст.
 				//   /api/chat     → message.content (reasoning идёт в message.reasoning)
 				//   /api/generate → response
@@ -1343,6 +1369,13 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			if m, ok := chunk["model"].(string); ok && m != "" {
 				modelFromCtx = m
 			}
+		}
+
+		// R493-12a: первый дельта-чанк ЛЮБОГО вида закрывает префилл. Reasoning
+		// считается так же, как content: время размышлений — это генерация, а не
+		// «оценка промпта» (их токены всегда входят в eval_count).
+		if firstDeltaTime.IsZero() && chunkHasStatsDeltaR493(chunk) {
+			firstDeltaTime = time.Now()
 		}
 
 		// R65d (2026-09-20): агрегируем статистику токенов со streaming-пути.
@@ -1844,7 +1877,11 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			} else {
 				data = filtered
 			}
-			ollamaChunk := translateOpenAISSEDataToOllamaWithFlags(originalPath, []byte(data), modelFromCtx, &seenReasoning, llamaStartTime, firstContentTime, accumulatedPlainContent, &priorDoneEmitted, &statsEmitted)
+			// R493-12a: окна передаём четырьмя моментами — иначе в «время промпта»
+			// снова попали бы очередь и загрузка, а размышления выпали бы из
+			// «времени генерации» (см. stats_windows_r493.go).
+			statsWindows := statsWindowsForTransportR493(llamaStartTime, upstreamSentTime, firstDeltaTime, firstContentTime, time.Now())
+			ollamaChunk := translateOpenAISSEDataToOllamaWindowsR493(originalPath, []byte(data), modelFromCtx, &seenReasoning, statsWindows, accumulatedPlainContent, &priorDoneEmitted, &statsEmitted)
 			if len(ollamaChunk) == 0 {
 				continue
 			}

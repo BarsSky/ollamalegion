@@ -529,19 +529,65 @@
 
   // altBackendsFor — куда ЕЩЁ можно отдать нагрузку этой сессии: тот же тип
   // бэкенда, что у текущего, и свободный. Разные типы не взаимозаменяемы.
-  MonitorApp.altBackendsFor = function(backends, sameTypeAs, threshold) {
+  //
+  // R493 (2026-11-12, по архиву стенда): «свободный» — не значит «подходящий».
+  // На стенде A10 ×2 живой сессии предлагалось «перераспределиться» на узлы,
+  // где НЕТ загруженной модели (8 ГБ, 27B туда не влезает) или где окно копии
+  // МЕНЬШЕ (131072 против 198656). Совет был вредным: переезд = выгрузка+загрузка
+  // 27B и, возможно, меньшее окно. Поэтому:
+  //   - при указанном modelName альтернатива обязана иметь эту модель загруженной;
+  //   - при известных окнах окно альтернативы не должно быть меньше окна текущей.
+  MonitorApp.backendLoadedContext = function(b, modelName) {
+    if (!b) return 0;
+    var lists = [b.loadedModels, (b.llamaCpp && b.llamaCpp.loadedModels), b.models];
+    for (var i = 0; i < lists.length; i++) {
+      var list = lists[i];
+      if (!list || !list.length) continue;
+      for (var j = 0; j < list.length; j++) {
+        var m = list[j];
+        var name = (typeof m === 'string') ? m : (m && m.name);
+        if (!name) continue;
+        if (modelName && name.indexOf(modelName) < 0 && modelName.indexOf(name) < 0) continue;
+        if (typeof m === 'string') return 1; // имя есть, окно неизвестно
+        var win = m.context_per_seq || m.contextPerSeq || m.contextLength || m.contextSize || 0;
+        return win > 0 ? win : 1;
+      }
+    }
+    return 0;
+  };
+
+  MonitorApp.altBackendsFor = function(backends, sameTypeAs, threshold, modelName) {
     var lim = (threshold && threshold > 0) ? threshold : 0.5;
     var want = MonitorApp.backendTypeOf(sameTypeAs);
     var selfID = sameTypeAs && sameTypeAs.id;
+    var selfCtx = modelName ? MonitorApp.backendLoadedContext(sameTypeAs, modelName) : 0;
     var out = [];
     (backends || []).forEach(function(x) {
       if (!x || x.id === selfID) return;
       if (x.status !== 'active' && x.status !== 'ready' && x.status !== 'healthy') return;
       if (MonitorApp.backendTypeOf(x) !== want) return;
       var m = x.maxConcurrentRequests || 10;
-      if (((x.activeRequests || 0) / m) < lim) out.push(x);
+      if (((x.activeRequests || 0) / m) >= lim) return;
+      if (modelName) {
+        var ctx = MonitorApp.backendLoadedContext(x, modelName);
+        if (ctx <= 0) return;            // модели нет — переезд стоил бы загрузки
+        if (selfCtx > 0 && ctx < selfCtx) return; // окно меньше — R459 это запрещает
+      }
+      out.push(x);
     });
     return out;
+  };
+
+  // sessionsPerBackend — сколько живых сессий держит каждый бэкенд.
+  // Нужно, чтобы не предлагать «перераспределение» там, где его не требуется:
+  // одна сессия на бэкенд и нет очереди = движению нечего улучшать.
+  MonitorApp.sessionsPerBackend = function(sessions) {
+    var counts = {};
+    (sessions || []).forEach(function(s) {
+      if (!s || !s.backendId) return;
+      counts[s.backendId] = (counts[s.backendId] || 0) + 1;
+    });
+    return counts;
   };
 
   // fitText — обрезка ПО ШИРИНЕ, а не по числу символов: длинное имя модели

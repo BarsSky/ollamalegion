@@ -854,25 +854,36 @@
         if (w > 10) alerts.push({ level: 'yellow', text: T('monitor.alert.stuckInQueue', { model: r.model, sec: w.toFixed(0) }) });
       }
     });
+    // R493 (2026-11-12, жалоба оператора): «сессий две и два бэкенда занято,
+    // больше сессий нет — перераспределение не требуется», а баннер предлагал его.
+    // Причина: совет строился по загрузке бэкенда, без двух фактов —
+    //   (а) есть ли КОНТЕНЦИЯ: одна сессия на бэкенд и пустая очередь = двигать
+    //       нечего, переезд только сбросит прогрев;
+    //   (б) способна ли альтернатива принять ЭТУ модель: должна быть загружена,
+    //       и её окно не меньше (иначе R459 запержит, как в архиве: 131072 < 198656).
+    var sessPerBackend = (typeof MA.sessionsPerBackend === 'function')
+      ? MA.sessionsPerBackend(data.sessions && data.sessions.sessions)
+      : {};
     (data.sessions && data.sessions.sessions || []).forEach(function(s) {
       if (!s.backendId) return;
       var b = bks.find(function(x) { return x.id === s.backendId; });
       if (!b) return;
       var m = b.maxConcurrentRequests || 10, l = (b.activeRequests || 0) / m;
-      if (l > 0.8) {
-        // R425 (2026-11-03): альтернативой может быть только бэкенд ТОГО ЖЕ
-        // типа. Раньше список «свободных» включал imageworker, и оператор
-        // получал совет увести llama.cpp-сессию на image.cpp — заведомо
-        // несовместимая пара (backend type isolation).
-        var alt = (typeof MA.altBackendsFor === 'function')
-          ? MA.altBackendsFor(bks, b, 0.5)
-          : activeBks.filter(function(x) { return x.id !== b.id && (x.activeRequests || 0) / (x.maxConcurrentRequests || 10) < 0.5; });
-        if (alt.length > 0) {
-          alerts.push({
-            level: 'yellow',
-            text: T('monitor.alert.sessionOverloaded', { id: s.id.slice(0, 8), backend: b.id, load: (l * 100).toFixed(0), alt: alt.map(function(a) { return a.id; }).join(', ') })
-          });
-        }
+      if (l <= 0.8) return;
+      // (а) конкуренция: больше одной сессии на бэкенд ИЛИ есть ожидающие.
+      var onBackend = sessPerBackend[b.id] || 0;
+      var pending = q.pending_count || 0;
+      if (onBackend <= 1 && pending === 0) return;
+      // R425 (2026-11-03): альтернативой может быть только бэкенд ТОГО ЖЕ типа.
+      // (б) R493: и только если на нём ЗАГРУЖЕНА эта модель и окно не меньше.
+      var alt = (typeof MA.altBackendsFor === 'function')
+        ? MA.altBackendsFor(bks, b, 0.5, s.model)
+        : activeBks.filter(function(x) { return x.id !== b.id && (x.activeRequests || 0) / (x.maxConcurrentRequests || 10) < 0.5; });
+      if (alt.length > 0) {
+        alerts.push({
+          level: 'yellow',
+          text: T('monitor.alert.sessionOverloaded', { id: s.id.slice(0, 8), backend: b.id, load: (l * 100).toFixed(0), alt: alt.map(function(a) { return a.id; }).join(', ') })
+        });
       }
     });
     bks.forEach(function(b) {

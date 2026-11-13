@@ -146,6 +146,20 @@ func TestR493r_PipeDoesNotChangeClientBytes(t *testing.T) {
 		return rec.Body.String()
 	}
 
+	// СНАЧАЛА — что флаг вообще применяется. Живой урок (R493-12r): флаг
+	// LB_STREAM_PIPE был не зарегистрирован в реестре настроек, HotInt возвращал
+	// 0, и «при флаге 0 и при флаге 1» оба прогона шли БЕЗ стока — сравнение
+	// байтов было ложным доказательством.
+	t.Setenv("LB_STREAM_PIPE", "0")
+	if streamPipeEnabledR493() {
+		t.Fatal("при значении 0 сток обязан быть выключен")
+	}
+	t.Setenv("LB_STREAM_PIPE", "1")
+	if !streamPipeEnabledR493() {
+		t.Fatal("флаг LB_STREAM_PIPE не применяется: настройка не зарегистрирована в реестре " +
+			"или парсится не тем путём — прогон «со стоком» был бы тем же прогоном без стока")
+	}
+
 	off := normalizeGoldenDurationsT2(t, run("0"), "/api/chat")
 	on := normalizeGoldenDurationsT2(t, run("1"), "/api/chat")
 	if off == "" {

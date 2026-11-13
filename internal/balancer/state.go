@@ -17,8 +17,23 @@ import (
 func (p *Proxy) SaveState() error {
 	p.mu.RLock()
 	backends := make([]types.Backend, 0, len(p.backends))
+	// R493 (2026-11-13): копию записи берём под ЕЁ замком.
+	//
+	// ЖИВОЙ ФАКТ (поймал -race в CI на коммите с golden-контрактом): фоновая
+	// запись состояния читала `*state.Backend` без state.mu, а поллер в это же
+	// время обновлял идентичность воркера (12i) — DATA RACE на полях бэкенда,
+	// которые обновляются и обработчиками статуса. Гонка была и раньше (любой
+	// Path обновления статуса её давал), просто до появления постоянного
+	// фонового писателя окно не попадалось.
+	//
+	// Порядок замков тот же, что везде в балансере: сначала p.mu, потом state.mu.
 	for _, state := range p.backends {
+		if state == nil || state.Backend == nil {
+			continue
+		}
+		state.mu.Lock()
 		backends = append(backends, *state.Backend)
+		state.mu.Unlock()
 	}
 	p.mu.RUnlock()
 

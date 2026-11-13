@@ -393,6 +393,20 @@
     `gpu_layers`, `use_mmap`, `n_ctx`): тогда причина называется числом, а не
     догадкой. До этого правку не делаем — иначе «лечим» вслепую.
 
+12j. **Гонка чтения полей бэкенда: autosave и состав кластера читали запись без
+    замка.** **ЗАКРЫТО 2026-11-13 (поймал CI, `-race`).**
+    Живой факт: на коммите с golden-контрактом (11c) self-hosted Windows упал с
+    `DATA RACE`: `SaveState` (`internal/balancer/state.go`) и
+    `compositionNodeR95` (`composition_r95.go`) читали поля `types.Backend` без
+    `state.mu`, а поллер 12i в это время обновлял идентичность воркера под замком.
+    Гонка существовала и до 12i — её давал любой путь обновления статуса, но
+    постоянный фоновый писатель сделал окно регулярным (и `-race` его поймал).
+    Исправлено: обе стороны читают запись под её замком (порядок `p.mu` →
+    `state.mu`, как в `filterBackendsByType`/`GetAllBackends`). Добавлен тест
+    `internal/balancer/state_race_r493_test.go`: писатель (identity refresh) +
+    autosave + состав кластера одновременно; мутация (снять замки) роняет его под
+    `-race` — проверено.
+
 12i. **`workerVersion` / `workerCommit` в `/api/v1/backends` — это идентичность
     АГЕНТА, а не воркера.**
     **ЗАКРЫТО 2026-11-12 (R493-12i).** Было: `internal/agent/collector_register.go`

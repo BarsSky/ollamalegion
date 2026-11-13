@@ -31,6 +31,10 @@ import (
 // пересборка воркера случается раз в часы, а лишние запросы к GPU-узлу ни к чему.
 const workerIdentityTTLR493 = 2 * time.Minute
 
+// workerIdentityTimeoutR493 — сколько ждать ответ /api/info. Короткий таймаут:
+// запрос идёт в фоне, и «узел молчит» не должно задерживать ни метрики, ни тесты.
+const workerIdentityTimeoutR493 = 2 * time.Second
+
 // workerIdentityR493 — то, что узел сообщает о своей сборке.
 type workerIdentityR493 struct {
 	Version   string
@@ -71,7 +75,7 @@ func (p *llamaCppMetricsPoller) refreshWorkerIdentityR493(b backendInfo) {
 		return
 	}
 	url := "http://" + b.host + ":" + itoaPortR493(b.port) + "/api/info"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), workerIdentityTimeoutR493)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

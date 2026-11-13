@@ -195,9 +195,24 @@ func (p *Proxy) compositionNodeR95(member types.BackendGroupMemberConfig, skipPr
 	p.mu.RLock()
 	state := p.backends[backendID]
 	p.mu.RUnlock()
+	// R493 (2026-11-13): поля записи читаем под ЕЁ замком.
+	//
+	// ЖИВОЙ ФАКТ (-race в CI): состав кластера читал Backend.Type/BuildInfo/
+	// WorkerVersion/WorkerCommit/WorkerRPCProto без state.mu, а поллер в это же
+	// время обновлял идентичность воркера (12i) — гонка на полях бэкенда. Чтение
+	// без замка было ошибкой и до 12i (любой путь обновления статуса давал то же
+	// окно), просто окна редко совпадали.
+	var backendType, buildInfo, releaseVersion, releaseCommit, rpcProto string
 	if state != nil && state.Backend != nil {
-		node.BackendType = string(normalizeBackendType(state.Backend.Type))
+		state.mu.Lock()
+		backendType = string(normalizeBackendType(state.Backend.Type))
+		buildInfo = strings.TrimSpace(state.Backend.BuildInfo)
+		releaseVersion = strings.TrimSpace(state.Backend.WorkerVersion)
+		releaseCommit = strings.TrimSpace(state.Backend.WorkerCommit)
+		rpcProto = strings.TrimSpace(state.Backend.WorkerRPCProto)
+		state.mu.Unlock()
 	}
+	node.BackendType = backendType
 
 	if p.metricsMgr != nil {
 		if metrics, ok := p.metricsMgr.SnapshotBackendMetrics(backendID); ok {
@@ -213,15 +228,14 @@ func (p *Proxy) compositionNodeR95(member types.BackendGroupMemberConfig, skipPr
 	// совместимость сторон RPC неподтверждённой (warning `version_unknown`), а не
 	// считает проверку пройденной. Выдумывать версию нельзя: на ней строится
 	// вывод «можно ли соединять эти два узла».
-	if state != nil && state.Backend != nil {
-		node.LlamaCppVersion = strings.TrimSpace(state.Backend.BuildInfo)
-		// R486: релизная идентичность узла и версия протокола RPC. BuildInfo
-		// описывает только llama.cpp; «узел из другого релиза» до этого не
-		// проверялся ни валидатором, ни раскладкой.
-		node.ReleaseVersion = strings.TrimSpace(state.Backend.WorkerVersion)
-		node.ReleaseCommit = strings.TrimSpace(state.Backend.WorkerCommit)
-		node.RPCProto = strings.TrimSpace(state.Backend.WorkerRPCProto)
-	}
+	// R486: релизная идентичность узла и версия протокола RPC. BuildInfo
+	// описывает только llama.cpp; «узел из другого релиза» до этого не
+	// проверялся ни валидатором, ни раскладкой.
+	// R493: значения уже сняты под замком записи выше (до 12i читались без него).
+	node.LlamaCppVersion = buildInfo
+	node.ReleaseVersion = releaseVersion
+	node.ReleaseCommit = releaseCommit
+	node.RPCProto = rpcProto
 
 	if role == types.BackendGroupRoleWorker && node.RPCEndpoint != "" && !skipProbes {
 		node.RPCChecked = true

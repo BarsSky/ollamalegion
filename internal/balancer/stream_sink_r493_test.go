@@ -13,6 +13,7 @@ package balancer
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -173,5 +174,66 @@ func TestR493r_PipeDoesNotChangeClientBytes(t *testing.T) {
 	// Сравниваются ВСЕ кадры, включая терминатор: их число — часть контракта T2.
 	if strings.Count(off, `"done":true`) != 1 {
 		t.Fatalf("терминаторов %d, ожидался ровно один: %q", strings.Count(off, `"done":true`), off)
+	}
+}
+
+// TestR493r_HijackFrameMatchesLegacyChunkWriter — chunked-фрейм стока
+// БАЙТ-В-БАЙТ равен прежнему writeChunkedFrame (R32 #16). Это критерий «один сток
+// вместо двух реализаций»: если форма фрейма разойдётся, OpenWebUI/aiohttp
+// получат "Not enough data to satisfy transfer length header" ровно на одном из
+// режимов флага.
+func TestR493r_HijackFrameMatchesLegacyChunkWriter(t *testing.T) {
+	frames := [][]byte{
+		[]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"),
+		[]byte(": keepalive\r\n"),
+		[]byte("data: [DONE]\n\n"),
+		nil, // терминатор chunked: "0\r\n\r\n"
+	}
+	for _, fr := range frames {
+		// Эталон — исторический писатель.
+		var legacy bytes.Buffer
+		lrw := bufio.NewReadWriter(bufio.NewReader(&legacy), bufio.NewWriter(&legacy))
+		if err := writeChunkedFrame(lrw, fr); err != nil {
+			t.Fatalf("эталонный writeChunkedFrame(%q): %v", fr, err)
+		}
+		// Сток.
+		var viaSink bytes.Buffer
+		bw := bufio.NewWriter(&viaSink)
+		sink := newHijackStreamSinkR493(nil, bw)
+		if _, err := sink.WriteFrame(fr); err != nil {
+			t.Fatalf("sink.WriteFrame(%q): %v", fr, err)
+		}
+		if legacy.String() != viaSink.String() {
+			t.Fatalf("фрейм разошёлся:\n legacy: %q\n сток:   %q", legacy.String(), viaSink.String())
+		}
+	}
+}
+
+// TestR493r_HijackSinkOwnsTransportFraming — правило «кадра» у стока: один
+// WriteFrame = один chunked-фрейм, счётчик считает ПОЛЕЗНЫЕ байты (без обрамления).
+func TestR493r_HijackSinkOwnsTransportFraming(t *testing.T) {
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	s := newHijackStreamSinkR493(nil, bw)
+	frame := []byte("data: [DONE]\n\n")
+	n, err := s.WriteFrame(frame)
+	if err != nil {
+		t.Fatalf("WriteFrame: %v", err)
+	}
+	if n != len(frame) {
+		t.Fatalf("вернулось %d байт, ожидалось %d полезных", n, len(frame))
+	}
+	if got := s.Written(); got != int64(len(frame)) {
+		t.Fatalf("Written() = %d, ожидалось %d полезных байт", got, len(frame))
+	}
+	// Обрамление chunked присутствует: "<hex>\r\n<data>\r\n". Размер берём из
+	// длины кадра, а не константой: ошибка в константе проверяла бы арифметику
+	// теста, а не сток.
+	wantSize := fmt.Sprintf("%x\r\n", len(frame))
+	if !strings.HasPrefix(buf.String(), wantSize) {
+		t.Fatalf("нет chunked-заголовка размера (%q): %q", wantSize, buf.String())
+	}
+	if !strings.HasSuffix(buf.String(), "\r\n") {
+		t.Fatalf("нет завершающего CRLF фрейма: %q", buf.String())
 	}
 }

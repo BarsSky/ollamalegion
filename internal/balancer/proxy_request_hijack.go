@@ -297,6 +297,32 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	bufrw.WriteString("\r\n")
 	bufrw.Flush()
 
+	// R493-12r: единый сток стрима (флаг LB_STREAM_PIPE). nil — историческое
+	// поведение: цикл пишет chunked-фреймы напрямую (writeChunkedFrame/String).
+	//
+	// ЗАЧЕМ ЗДЕСЬ ТОТ ЖЕ СТОК. Клиентский вывод этого цикла отличался от
+	// NDJSON-ветки ТОЛЬКО транспортным обрамлением: там перевод строки, здесь
+	// chunked-фрейм. Правила «один кадр — одна запись — счётчик — флаш» должны
+	// быть одни; сток и есть это место, а форма кадра — его внутреннее дело.
+	var hijackSink streamSinkR493
+	if streamPipeEnabledR493() {
+		hijackSink = newHijackStreamSinkR493(clientConn, bufrw.Writer)
+	}
+	writeFrameR493 := func(frame []byte) error {
+		if hijackSink != nil {
+			_, err := hijackSink.WriteFrame(frame)
+			return err
+		}
+		return writeChunkedFrame(bufrw, frame)
+	}
+	writeKeepaliveR493 := func() error {
+		if hijackSink != nil {
+			_, err := hijackSink.WriteFrame([]byte(": keepalive\r\n"))
+			return err
+		}
+		return writeChunkedString(bufrw, ": keepalive\r\n")
+	}
+
 	// R297 (2026-10-29): chunked-ТЕРМИНАТОР ОБЯЗАТЕЛЕН НА ЛЮБОМ ИСХОДЕ.
 	//
 	// Заголовки выше объявляют Transfer-Encoding: chunked, а `0\r\n\r\n` писала
@@ -311,7 +337,9 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	// кадры-причина и `[DONE]` доезжали, а тело всё равно рвалось. Раньше никто не
 	// проверял ранние выходы — только штатный конец.
 	defer func() {
-		if err := writeChunkedFrame(bufrw, nil); err != nil {
+		// Терминатор chunked — тоже кадр: через сток (или напрямую при флаге 0),
+		// чтобы правило «один кадр — одна запись» не имело исключений.
+		if err := writeFrameR493(nil); err != nil {
 			logger.Get().Debugw("hijack streaming: chunked terminator write failed (client may have closed)",
 				"backend", backendID, "error", err)
 		}
@@ -481,7 +509,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 		case <-time.After(heartbeatInterval):
 			// SSE-heartbeat: ": keepalive\r\n" — comment, игнорируется клиентом.
 			// Round 32 #16: chunked-framed (был raw WriteString).
-			if werr := writeChunkedString(bufrw, ": keepalive\r\n"); werr != nil {
+			if werr := writeKeepaliveR493(); werr != nil {
 				logger.Get().Warnw("hijack streaming: heartbeat write failed",
 					"backend", backendID, "error", werr)
 				// R344: ошибка записи клиенту — его больше нет (broken pipe).
@@ -502,7 +530,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				"backend", backendID, "model", hijackStreamModel,
 				"prefill", ev.prefill, "stalled_sec", int(ev.stalled.Seconds()))
 			for _, fr := range abortFramesR296("/v1/chat/completions", hijackStreamModel, streamAbortUpstreamStall) {
-				if werr := writeChunkedString(bufrw, string(fr)); werr != nil {
+				if werr := writeFrameR493(fr); werr != nil {
 					logger.Get().Warnw("hijack streaming: stall terminator write failed",
 						"backend", backendID, "error", werr)
 					return nil
@@ -590,7 +618,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 					// восстанавливаем границу SSE-события, иначе строгий клиент
 					// склеивает его с [DONE] и падает на разборе JSON.
 					fr = withSSEEventBoundary(fr)
-					if werr := writeChunkedFrame(bufrw, fr); werr != nil {
+					if werr := writeFrameR493(fr); werr != nil {
 						logger.Get().Warnw("hijack streaming: finalize before [DONE] failed",
 							"backend", backendID, "error", werr)
 						return nil
@@ -602,7 +630,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				lineToWrite = append(lineToWrite, '\n')
 			}
 			// Round 32 #16: chunked-framed write.
-			if werr := writeChunkedFrame(bufrw, lineToWrite); werr != nil {
+			if werr := writeFrameR493(lineToWrite); werr != nil {
 				logger.Get().Warnw("hijack streaming: write to client failed",
 					"backend", backendID, "error", werr)
 				// R344: клиент ушёл — это ГЛАВНЫЙ путь обнаружения на /v1 (ошибка
@@ -627,7 +655,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				if payload := extractSSEDataPayload(lineToWrite); payload != nil {
 					if isUpstreamErrorPayload(payload) {
 						for _, fr := range egressFilter.finalizeFrames() {
-							_ = writeChunkedFrame(bufrw, withSSEEventBoundary(fr))
+							_ = writeFrameR493(withSSEEventBoundary(fr))
 						}
 						ensureChunkedSSEDone(bufrw, lastSSELine)
 						logger.Get().Infow("hijack streaming: upstream error frame — stream closed (R294)",
@@ -646,7 +674,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	for _, fr := range egressFilter.finalizeFrames() {
 		// R277: граница SSE-события (см. withSSEEventBoundary).
 		fr = withSSEEventBoundary(fr)
-		if werr := writeChunkedFrame(bufrw, fr); werr != nil {
+		if werr := writeFrameR493(fr); werr != nil {
 			logger.Get().Warnw("hijack streaming: finalize frame write failed",
 				"backend", backendID, "error", werr)
 			return nil

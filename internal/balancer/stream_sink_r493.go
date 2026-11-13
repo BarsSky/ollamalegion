@@ -36,6 +36,7 @@ package balancer
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -50,9 +51,15 @@ import (
 // счётчик отправленного и признак «терминатор уже ушёл». Всё остальное (что
 // именно за кадр) — дело цикла.
 type streamSinkR493 interface {
-	// WriteLine — записать строку как ОДИН кадр: перевод строки добавляет сток
-	// (клиенты Ollama читают NDJSON построчно), затем сбрасывает буфер клиенту.
-	// Возвращает число записанных БАЙТ (вместе с переводом строки) для сводки.
+	// WriteFrame — записать РОВНО эти байты как один кадр клиенту и сбросить
+	// буфер. Транспортное обрамление — дело стока: обычный ResponseWriter пишет
+	// как есть (фрейминг chunked/Content-Length делает net/http), hijack-сток
+	// сам обрамляет chunked-фреймом (R32 #16) и флашит. Цикл стрима форму кадра
+	// больше не выбирает.
+	WriteFrame(frame []byte) (int, error)
+	// WriteLine — то же для NDJSON: перевод строки добавляет сток (клиенты Ollama
+	// читают поток построчно). Возвращает число записанных байт (с переводом
+	// строки) для сводки.
 	WriteLine(line []byte) (int, error)
 	// TerminatorSent — ушёл ли терминальный кадр (`[DONE]`/`done:true`). Факт о
 	// потоке, а не о переменной цикла: ровно на этом расхождении R252 дописывал
@@ -88,6 +95,16 @@ func newPlainStreamSinkR493(w http.ResponseWriter) *plainStreamSinkR493 {
 		s.flusher = f
 	}
 	return s
+}
+
+func (s *plainStreamSinkR493) WriteFrame(frame []byte) (int, error) {
+	if s == nil || s.w == nil {
+		return 0, io.ErrClosedPipe
+	}
+	n, err := s.w.Write(frame)
+	s.written += int64(n)
+	s.Flush()
+	return n, err
 }
 
 func (s *plainStreamSinkR493) WriteLine(line []byte) (int, error) {
@@ -140,6 +157,33 @@ type hijackStreamSinkR493 struct {
 
 func newHijackStreamSinkR493(conn net.Conn, bw *bufio.Writer) *hijackStreamSinkR493 {
 	return &hijackStreamSinkR493{conn: conn, bw: bw}
+}
+
+// WriteFrame — chunked-фрейм HTTP/1.1: "{hex}\r\n{data}\r\n", затем flush.
+//
+// Ровно то, что делает writeChunkedFrame (R32 #16): после Hijack Go в фрейминг
+// не вмешивается, и без этого OpenWebUI/aiohttp падают с
+// "Not enough data to satisfy transfer length header" при обрыве стрима.
+func (s *hijackStreamSinkR493) WriteFrame(frame []byte) (int, error) {
+	if s == nil || s.bw == nil {
+		return 0, io.ErrClosedPipe
+	}
+	if _, err := fmt.Fprintf(s.bw, "%x\r\n", len(frame)); err != nil {
+		return 0, err
+	}
+	if len(frame) > 0 {
+		if _, err := s.bw.Write(frame); err != nil {
+			return 0, err
+		}
+	}
+	if _, err := s.bw.WriteString("\r\n"); err != nil {
+		return 0, err
+	}
+	s.written += int64(len(frame))
+	if err := s.bw.Flush(); err != nil {
+		return len(frame), err
+	}
+	return len(frame), nil
 }
 
 func (s *hijackStreamSinkR493) WriteLine(line []byte) (int, error) {

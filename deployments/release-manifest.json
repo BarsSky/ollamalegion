@@ -1,7 +1,7 @@
 {
-    "tag":  "r261113-0822",
-    "builtAt":  "2026-11-13T05:23:50Z",
-    "gitCommit":  "f37f221f",
+    "tag":  "r261113-1408",
+    "builtAt":  "2026-11-13T11:12:44Z",
+    "gitCommit":  "3a518282",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
@@ -10,14 +10,30 @@
                        "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
                        "service":  "balancer",
-                       "imageTag":  "r261113-0822",
-                       "image":  "ollama-legion/balancer:r261113-0822",
-                       "imageId":  "sha256:4752a18aa16ae7d016f5330f7c6528cd4b5f240aac2170145f25b30f953d7918",
-                       "commit":  "f37f221f",
-                       "commitFull":  "f37f221f2636a4d1e96b7c312ef23d357de47561",
-                       "commitDate":  "2026-11-13T08:02:24+03:00",
-                       "buildDate":  "2026-11-13T05:22:52Z",
+                       "imageTag":  "r261113-1408",
+                       "image":  "ollama-legion/balancer:r261113-1408",
+                       "imageId":  "sha256:55ce3610a369079f9f894956a0ea8bd1bb5c5f499377fb81b23011d589bcce07",
+                       "commit":  "3a518282",
+                       "commitFull":  "3a5182829a941b6348a53071bfc8fcc4662d7a55",
+                       "commitDate":  "2026-11-13T14:08:46+03:00",
+                       "buildDate":  "2026-11-13T11:08:50Z",
                        "author":  "BarsSky <knagaenko@mail.ru>"
+                   },
+                   {
+                       "alias":  "ollama-legion/cppworker:latest-gpu-75-86-120",
+                       "variable":  "CPPWORKER_GPU_TAG",
+                       "service":  "cppworker",
+                       "imageTag":  "gpu-r261113-1408",
+                       "image":  "ollama-legion/cppworker:gpu-r261113-1408",
+                       "imageId":  "sha256:05e6a6fffdc3f870ae20e1a620aee28fb960e1cac5688270eba3bdc378505cc5",
+                       "commit":  "3a518282",
+                       "commitFull":  "3a5182829a941b6348a53071bfc8fcc4662d7a55",
+                       "commitDate":  "2026-11-13T14:08:46+03:00",
+                       "buildDate":  "2026-11-13T11:09:24Z",
+                       "author":  "BarsSky <knagaenko@mail.ru>",
+                       "llamaCommit":  "0eadefebd",
+                       "llamaDate":  "2026-09-01",
+                       "rpcProto":  "6.0.0"
                    },
                    {
                        "alias":  "ollama-legion/agent:latest",
@@ -31,22 +47,6 @@
                        "commitDate":  "2026-11-12T22:58:24+03:00",
                        "buildDate":  "2026-11-12T19:59:41Z",
                        "author":  "BarsSky <knagaenko@mail.ru>"
-                   },
-                   {
-                       "alias":  "ollama-legion/cppworker:latest-gpu-75-86-120",
-                       "variable":  "CPPWORKER_GPU_TAG",
-                       "service":  "cppworker",
-                       "imageTag":  "gpu-r261112-2146",
-                       "image":  "ollama-legion/cppworker:gpu-r261112-2146",
-                       "imageId":  "sha256:d0213ca387c39addb254e465266c0fe8243e4c95d4b0295acf922aeebe878de2",
-                       "commit":  "32153c14",
-                       "commitFull":  "32153c1418967d9ad36c6d68e96672c383c2a10f",
-                       "commitDate":  "2026-11-12T20:15:29+03:00",
-                       "buildDate":  "2026-11-12T18:46:57Z",
-                       "author":  "BarsSky <knagaenko@mail.ru>",
-                       "llamaCommit":  "0eadefebd",
-                       "llamaDate":  "2026-09-01",
-                       "rpcProto":  "6.0.0"
                    },
                    {
                        "alias":  "ollama-legion/webui:latest",
@@ -76,7 +76,8 @@
                    }
                ],
     "releasedServices":  [
-                             "balancer"
+                             "balancer",
+                             "cppworker"
                          ],
     "note":  "R493 (2026-11-11): P1 считает занятость от эффективной вместимости, привязка сессии стала предпочтением, этап 3b «загрузка на свободном узле вместо очереди» работает только при наличии прогретой копии (иначе перехватывал распределение — регресс поймал CI), VRAM-fit для узла под загрузку, узлы без метрик рассматриваются после P3. WebUI: logs.export в обоих пакетах + шаг CI check_webui_i18n_keys.py, таблица прокси-логов — ширина всех 10 колонок. Пересобраны balancer и webui; cppworker и imageworker не менялись. R493 (2026-11-11): занятость в P1 считается от эффективной вместимости, привязка сессии стала предпочтением, добавлен этап 3b «загрузка на свободном узле вместо очереди» (с гейтом автозагрузки и image-гейтом), VRAM-fit для узла под загрузку, узлы без метрик (FALLBACK) рассматриваются после P3. WebUI: ключ logs.export в обоих пакетах + шаг CI scripts/check_webui_i18n_keys.py; таблица прокси-логов получила ширину всех 10 колонок. Пересобраны только balancer и webui (cppworker и imageworker не менялись). R486: идентичность сборки ЗАПЕКАЕТСЯ в образ (pkg/version через -ldflags, /app/identity.json, OCI-метки, ru.ollamalegion.*), а не приходит из deployments/.env. Теперь идентичность несут ВСЕ четыре образа, включая webui (r261110-2130) и imageworker. Живой повод: образ был собран и проштампован ПРЕДЫДУЩИМ коммитом (в .env лежал BALANCER_GIT_COMMIT=850923d7 при HEAD 8b246ffe), и это не поймала ни одна проверка. Механизм: scripts/build-identity.ps1 — единственный вычислитель (git + сабмодуль c/llama.cpp + RPC_PROTO из ggml-rpc.h); Dockerfile-стража падает на пустом build-arg; на старте VerifyR486 сверяет бинарь с identity.json и НЕ ДАЁТ контейнеру подняться при расхождении; балансер видит релиз узла (workerVersion/workerCommit/workerReleaseMismatch) и версию протокола RPC, валидатор композиции (R486.2) сравнивает узлы группы по релизному коммиту и RPC-протоколу; check-image-tags.ps1 ловит возврат к env-штампам. Переменные BALANCER_GIT_COMMIT/BALANCER_BUILD_DATE/CPPWORKER_GIT_COMMIT/CPPWORKER_BUILD_DATE/WEBUI_GIT_COMMIT/WEBUI_BUILD_DATE/AGENT_GIT_COMMIT/AGENT_BUILD_DATE удалены. R486.1: два тайминговых теста переведены с секундомера на состояние. Ранее: R485 (удержание reasoning), R484 (транспорт), R483 (first_byte_ms), R482 (tool call в reasoning), R481 (WebUI), R480 (окно по варианту C), R479 (паритет типов), R478 (OpenWebUI), R477/R476 (диагностика).",
     "standDeployed":  {

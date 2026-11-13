@@ -788,7 +788,7 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 			// R385: окно можно поднять — перезагрузка запущена, клиенту нужно
 			// повторить. Тело при этом не меняем: следующий запрос получит уже
 			// новое окно (тот же контракт, что у не-стримингового роста).
-			p.triggerStreamGrowthR385(backendID, modelName, v.Needed)
+			p.triggerStreamGrowthR385(backendID, modelName, v.Needed, v.Target)
 			return bodyBuf, false, growthStartsMessageR385(modelName, v), http.StatusServiceUnavailable
 		}
 		if v.Served {

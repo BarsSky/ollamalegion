@@ -1557,7 +1557,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// повторить. Клиент получает те же числа, что и при отказе, но
 				// с причиной «рост начат», а не «нельзя».
 				logGrowthVerdictR301("servehttp-before-admission", guardBackend, model, path, v)
-				p.triggerStreamGrowthR385(guardBackend, model, v.Needed)
+				p.triggerStreamGrowthR385(guardBackend, model, v.Needed, v.Target)
 				w.Header().Set("X-NCtx-Reload-Decision", "context-growth-starting")
 				// R447: тело пишет ЧИСЛА ВЕРДИКТА (перезагрузка выше уже могла
 				// изменить метрики — иначе тело и текст описывали бы разные

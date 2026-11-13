@@ -83,9 +83,14 @@ type growthVerdictR301 struct {
 	// перезагрузить: это требование оператора (см. stream_growth_r385.go).
 	Grow bool
 
-	Estimated     int // оценка промпта
-	Loaded        int // окно ОДНОГО слота загруженной модели
-	Needed        int // сколько нужно: max(промпт + бюджет вывода, запрошенное окно)
+	Estimated int // оценка промпта
+	Loaded    int // окно ОДНОГО слота загруженной модели
+	Needed    int // сколько нужно: max(промпт + бюджет вывода, запрошенное окно)
+	// Target — R493-12n: окно НА КЛИЕНТА, до которого надо поднять модель.
+	// Заполняется единым решением (LB_WINDOW_UNIFIED=1/2); 0 — исторический путь,
+	// и тогда цель считает streamGrowthPlanR385. Одно поле вместо второго расчёта:
+	// «разрешено» и «до какого окна» не могут разойтись (R493-12h).
+	Target        int
 	Active        int // сколько стримов идёт сейчас
 	ReloadPending bool
 	Streaming     bool
@@ -105,7 +110,153 @@ func (v growthVerdictR301) decided() bool { return v.Defer || v.Served }
 // шапку файла), поэтому «пусть preflight попробует вырасти» здесь запрещено —
 // иначе мы отдаём воркеру заведомо невыполнимый запрос и клиент получает 200
 // с кадром ошибки вместо терминального ответа.
+//
+// R493-12n (этап 3 «два мозга»): при LB_WINDOW_UNIFIED=1 правила (R288/R447/
+// R466/R385) считает ОДНА функция decideWindowR493, а эта — только переводит её
+// вердикт в транспортное действие. Исторический расчёт остался ниже
+// (growthVerdictLegacyR301) и работает при флаге 0 — это и есть путь отката.
 func (p *Proxy) growthVerdictR301(rid, backendID, model string, body []byte, path string, streaming bool) growthVerdictR301 {
+	mode := windowUnifiedModeR493()
+	if mode == windowUnifiedOffR493 {
+		return p.growthVerdictLegacyR301(rid, backendID, model, body, path, streaming)
+	}
+	unified, ok := p.growthVerdictUnifiedR493(rid, backendID, model, body, path, streaming)
+	if !ok {
+		return p.growthVerdictLegacyR301(rid, backendID, model, body, path, streaming)
+	}
+	if mode == windowUnifiedOnR493 {
+		return unified
+	}
+	// Режим «тень»: считаем оба, расхождение пишем в лог, поведение — историческое.
+	legacy := p.growthVerdictLegacyR301(rid, backendID, model, body, path, streaming)
+	if windowVerdictKindLegacyR493(legacy) != windowVerdictKindLegacyR493(unified) {
+		logWindowDivergenceR493("growth-verdict", backendID, model, path,
+			windowVerdictKindLegacyR493(legacy), mustWindowDecisionR493(unified))
+	}
+	return legacy
+}
+
+// mustWindowDecisionR493 — восстановить решение из вердикта для строки лога
+// расхождения: у «тени» нет под рукой исходного windowDecisionR493.
+func mustWindowDecisionR493(v growthVerdictR301) windowDecisionR493 {
+	return windowDecisionR493{
+		Kind:          windowVerdictKindLegacyR493(v),
+		Needed:        v.Needed,
+		Estimated:     v.Estimated,
+		Loaded:        v.Loaded,
+		Target:        v.Needed,
+		RetryAfterSec: v.RetryAfterSec,
+	}
+}
+
+// growthVerdictUnifiedR493 — вердикт из единого решения (R493-12n).
+func (p *Proxy) growthVerdictUnifiedR493(rid, backendID, model string, body []byte, path string, streaming bool) (growthVerdictR301, bool) {
+	d, ok := p.windowDecisionForR493(backendID, model, body, path, streaming)
+	if !ok {
+		return growthVerdictR301{}, false
+	}
+	v, _ := windowVerdictFromDecisionR493(rid, d, streaming)
+	// Тело с приведённым num_ctx нужно только для «обслужить» — и только когда
+	// клиент попросил больше загруженного (R83).
+	if v.Served {
+		if patched := patchNumCtxInBody(body, d.Loaded); patched != nil {
+			v.Body = patched
+		} else {
+			// Тело не разобралось — «обслужить» без подмены отправило бы воркеру
+			// чужой num_ctx, и он отверг бы запрос кадром ошибки.
+			v.Served = false
+		}
+	}
+	logWindowDecisionR493("growth-verdict", backendID, model, path, d)
+	return v, true
+}
+
+// windowVerdictFromDecisionR493 — вердикт решения → транспортное действие.
+//
+// ПОЧЕМУ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ ВЕТКИ НА МЕСТЕ. Отображение «вид → действие»
+// должно быть одно: у generic-пути и у транспортного preflight оно одинаковое,
+// иначе один и тот же вердикт снова даст 200 на одной поверхности и 503 на
+// другой. Второе возвращаемое значение — «вердикт вообще что-то предписывает».
+//
+// ЧЕМ ОТЛИЧАЮТСЯ ПУТИ (и только этим). Не-стриминговый запрос умеет ждать
+// перезагрузку: ему «рост невозможен сейчас» говорит «повтори» (Defer) или
+// «решение за preflight-движком» (числа без действия). Стриминговый перезагрузку
+// под собой не делает (R271: это оборвало бы стрим), поэтому «рост невозможен» для
+// него означает «обслужи загруженным окном, если промпт влезает» — ровно то, что
+// делал R301 до единого решения.
+func windowVerdictFromDecisionR493(rid string, d windowDecisionR493, streaming bool) (growthVerdictR301, bool) {
+	v := growthVerdictR301{
+		RID:           rid,
+		Streaming:     streaming,
+		Estimated:     d.Estimated,
+		Loaded:        d.Loaded,
+		Needed:        d.Needed,
+		Target:        d.Target,
+		Active:        d.Active,
+		ReloadPending: d.ReloadPending,
+		RetryAfterSec: d.RetryAfterSec,
+	}
+	// serveOrDeferR493 — общий для «роста не будет» исход на стриминге: промпт
+	// влезает → обслужить с подменой num_ctx (R83), не влезает → отказ с числами.
+	serveOrDeferR493 := func() (growthVerdictR301, bool) {
+		if d.PromptFits {
+			v.Served = d.Requested > d.Loaded
+			return v, v.Served
+		}
+		v.Defer = true
+		v.RetryAfterSec = growthDeferRetryAfterSecR447
+		return v, true
+	}
+
+	switch d.Kind {
+	case windowNoopR493:
+		return v, false
+	case windowServeR493:
+		v.Served = true
+		return v, true
+	case windowDeferR493:
+		if streaming {
+			return serveOrDeferR493()
+		}
+		v.Defer = true
+		return v, true
+	case windowGrowR493:
+		// Рост исполняет ТОЛЬКО путь, который это умеет: не-стриминговые запросы
+		// отдают решение preflight-движку (он умеет выбрать свободный узел вместо
+		// перезагрузки — R493 availability-first), поэтому им вердикт сообщает
+		// числа и цель, но не предписывает 503.
+		v.Grow = streaming
+		return v, true
+	default: // windowRefuseR493
+		if streaming {
+			return serveOrDeferR493()
+		}
+		// Не-стриминговому пути отказ по потолку/роли сообщает сам preflight-движок
+		// (у него 413 с числами и предложением). Здесь вердикт только называет
+		// числа — действие остаётся прежним.
+		return v, false
+	}
+}
+
+// windowVerdictKindLegacyR493 — вид исторического вердикта строкой: нужен только
+// для сравнения в режиме «тень» и в логе расхождений.
+func windowVerdictKindLegacyR493(v growthVerdictR301) windowKindR493 {
+	switch {
+	case v.Grow:
+		return windowGrowR493
+	case v.Defer:
+		return windowDeferR493
+	case v.Served:
+		return windowServeR493
+	}
+	return windowNoopR493
+}
+
+// growthVerdictLegacyR301 — историческое решение (LB_WINDOW_UNIFIED=0).
+//
+// Оставлено как путь отката флага и как эталон для «тени»: пока единый расчёт не
+// сходится с ним на реальном трафике, включать его нельзя.
+func (p *Proxy) growthVerdictLegacyR301(rid, backendID, model string, body []byte, path string, streaming bool) growthVerdictR301 {
 	v := growthVerdictR301{Streaming: streaming, RID: rid}
 	if p == nil || backendID == "" || len(body) == 0 {
 		return v

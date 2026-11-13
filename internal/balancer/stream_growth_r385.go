@@ -165,7 +165,12 @@ func (p *Proxy) streamGrowthPlanR385(backendID, model string, needed int) stream
 }
 
 // triggerStreamGrowthR385 — запустить перезагрузку модели под нужное окно.
-func (p *Proxy) triggerStreamGrowthR385(backendID, model string, needed int) {
+//
+// targetPerClient — окно НА КЛИЕНТА из решения (R493-12n). 0 означает
+// исторический путь: цель считается здесь через streamGrowthPlanR385 (флаг
+// LB_WINDOW_UNIFIED=0). Два расчёта на один запрос не нужны: при едином решении
+// цель уже посчитана той же функцией, которая сказала «растим».
+func (p *Proxy) triggerStreamGrowthR385(backendID, model string, needed, targetPerClient int) {
 	if p == nil || model == "" || needed <= 0 {
 		return
 	}
@@ -188,14 +193,16 @@ func (p *Proxy) triggerStreamGrowthR385(backendID, model string, needed int) {
 	// уходило «нужное» число как есть: 149809 при загруженных 150016 — воркер
 	// видел «parameters changed» и перезагружал модель ВНИЗ (207 токенов), а
 	// выровненное 150016 никогда не совпадало с целью.
-	plan := p.streamGrowthPlanR385(backendID, model, needed)
-	if !plan.Grow {
-		logger.Get().Infow("R385: рост окна не запускается",
-			"backend", backendID, "model", model, "needed_tokens", needed,
-			"refused", plan.Refuse != "", "reason", plan.Refuse, "note", plan.Note)
-		return
+	if targetPerClient <= 0 {
+		plan := p.streamGrowthPlanR385(backendID, model, needed)
+		if !plan.Grow {
+			logger.Get().Infow("R385: рост окна не запускается",
+				"backend", backendID, "model", model, "needed_tokens", needed,
+				"refused", plan.Refuse != "", "reason", plan.Refuse, "note", plan.Note)
+			return
+		}
+		targetPerClient = plan.Target
 	}
-	targetPerClient := plan.Target
 	logger.Get().Infow("R385: стриминговый запрос требует большего окна — запускаем перезагрузку модели",
 		"backend", backendID, "model", model, "needed_tokens", needed, "target_per_client", targetPerClient)
 	// R466 (2026-11-06): executeAsyncReload ждёт СУММАРНОЕ окно (см.

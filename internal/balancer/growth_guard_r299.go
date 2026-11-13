@@ -69,6 +69,15 @@ func (p *Proxy) growthDeferR299(backendID, model string, body []byte, path strin
 	if p == nil || backendID == "" || len(body) == 0 {
 		return false, 0, 0, 0, 0, false
 	}
+	// R493-12n (этап 3): при едином решении «ждать или нет» отвечает та же
+	// функция, что и на остальных путях. Иначе этот вход preflight жил бы по
+	// своим правилам — ровно тот дефект, из которого выросли «два мозга».
+	if windowUnifiedDecisionR493() {
+		if d, ok := p.windowDecisionForR493(backendID, model, body, path, false); ok {
+			logWindowDecisionR493("growth-defer", backendID, model, path, d)
+			return d.Kind == windowDeferR493, d.Estimated, d.Loaded, d.Needed, d.Active, d.ReloadPending
+		}
+	}
 	meta := p.extractRequestMeta(body, path)
 	if meta == nil {
 		return false, 0, 0, 0, 0, false

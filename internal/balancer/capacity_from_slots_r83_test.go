@@ -154,7 +154,6 @@ func TestR83_Poller_IgnoresNotLoadedAndLegacyPayload(t *testing.T) {
 // фактические слоты модели.
 func TestR83_Poller_AgentReregistrationDoesNotResetSlots(t *testing.T) {
 	t.Setenv("LB_CAPACITY_FROM_MODEL_SLOTS", "true")
-	t.Setenv("LB_CAPACITY_FROM_MODEL_SLOTS", "true")
 	p := capacityHarness(t, 1, 0)
 	poller := &llamaCppMetricsPoller{proxy: p}
 
@@ -163,20 +162,36 @@ func TestR83_Poller_AgentReregistrationDoesNotResetSlots(t *testing.T) {
 	})
 
 	// Имитируем heartbeat/перерегистрацию агента с его значением 1.
-	b := p.backends["bk"].Backend
-	b.MaxConcurrentReqs = 1
-	b.RuntimeMaxConcurrentRequests = 1
-	b.RuntimeCapacityFromNode = true
-
-	if got := b.EffectiveMaxConcurrentRequests(); got != 1 {
-		// Операторское значение (1) НИЖЕ слотов (2) → оно и выигрывает.
-		t.Errorf("EffectiveMaxConcurrentRequests() = %d, want 1 (лимит ниже слотов)", got)
+	//
+	// R493-12p (поймал CI, self-hosted Windows, -race): писать поля бэкенда
+	// напрямую из теста НЕЛЬЗЯ — фоновая запись состояния (scheduleSave) читает
+	// их под state.mu, и -race честно показывает гонку «Read в SaveState /
+	// Previous write в тесте». Запись идёт тем же путём, что и в проде
+	// (MutateBackend), а проверки читают под его же замком.
+	mutate := func(apply func(b *types.Backend)) {
+		t.Helper()
+		if err := p.MutateBackend("bk", apply); err != nil {
+			t.Fatalf("MutateBackend(bk): %v", err)
+		}
 	}
+	check := func(want int, msg string) {
+		t.Helper()
+		mutate(func(b *types.Backend) {
+			if got := b.EffectiveMaxConcurrentRequests(); got != want {
+				t.Errorf("EffectiveMaxConcurrentRequests() = %d, want %d: %s", got, want, msg)
+			}
+		})
+	}
+
+	mutate(func(b *types.Backend) {
+		b.MaxConcurrentReqs = 1
+		b.RuntimeMaxConcurrentRequests = 1
+		b.RuntimeCapacityFromNode = true
+	})
+	// Операторское значение (1) НИЖЕ слотов (2) → оно и выигрывает.
+	check(1, "лимит ниже слотов")
 
 	// А если агент не ограничивает (0), фактические слоты должны работать.
-	b.RuntimeMaxConcurrentRequests = 0
-	if got := b.EffectiveMaxConcurrentRequests(); got != 2 {
-		t.Errorf("EffectiveMaxConcurrentRequests() = %d, want 2: фактические слоты модели "+
-			"не должны теряться от перерегистрации агента", got)
-	}
+	mutate(func(b *types.Backend) { b.RuntimeMaxConcurrentRequests = 0 })
+	check(2, "фактические слоты модели не должны теряться от перерегистрации агента")
 }

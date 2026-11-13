@@ -189,3 +189,27 @@ func TestR493_AdmitterBudgetIsTheOnlyDifference(t *testing.T) {
 		t.Fatal("бюджет единой очереди обязан быть положительным: иначе путь без ожидания")
 	}
 }
+
+// TestR493_QueuedMeansRealWaitR493 — правило «стоял в очереди» проверяется
+// числами, без часов: иначе оно снова окажется платформенным (Windows даёт 0 там,
+// где Linux даёт микросекунды).
+func TestR493_QueuedMeansRealWaitR493(t *testing.T) {
+	cases := []struct {
+		name   string
+		waited time.Duration
+		want   bool
+	}{
+		{"мгновенный бэкенд (0)", 0, false},
+		{"микросекунды — это не ожидание", 300 * time.Microsecond, false},
+		{"чуть меньше шага опроса", backendWaitPoll - time.Millisecond, false},
+		{"ровно шаг опроса", backendWaitPoll, true},
+		{"реальное ожидание", 3 * time.Second, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := admitterQueuedR493(tc.waited); got != tc.want {
+				t.Fatalf("admitterQueuedR493(%v) = %t, ожидалось %t", tc.waited, got, tc.want)
+			}
+		})
+	}
+}

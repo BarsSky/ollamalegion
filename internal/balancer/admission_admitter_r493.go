@@ -148,7 +148,15 @@ func (a probeAdmitterR493) Admit(ctx context.Context, req admitRequestR493) admi
 	}
 	id, waited, position, ok := waitBackendR403(ctx, queue, req.Model, a.timeout, req.Probe)
 	out.BackendID, out.Waited, out.Position = id, waited, position
-	out.Queued = waited > 0
+	// «Стоял в очереди» — это РЕАЛЬНОЕ ожидание, а не «time.Since(start) > 0».
+	//
+	// ЖИВОЙ ФАКТ (поймал CI, ubuntu + -race): очередь проверяет probe сразу после
+	// постановки, поэтому при свободном бэкенде waited — микросекунды. Правило
+	// `waited > 0` объявляло такой запрос ждавшим: клиент получал
+	// X-Queue-Wait-Ms: 0 и строку «дождался» в лог на ровном месте. На Windows
+	// (грубые часы) тот же тест был зелёным — проверка была ещё и платформенной.
+	// Настоящее ожидание всегда не меньше шага опроса очереди.
+	out.Queued = admitterQueuedR493(out.Waited)
 	if !ok {
 		if ctx != nil && ctx.Err() != nil {
 			out.Err = ctx.Err()
@@ -178,6 +186,20 @@ func (p *Proxy) admitterForR493(req admitRequestR493) Admitter {
 func admissionUnifiedR493() bool {
 	v, ok := settings.HotInt("LB_UNIFIED_ADMISSION")
 	return ok && v == 1
+}
+
+// admitterQueuedR493 — «запрос действительно стоял в очереди».
+//
+// ПОЧЕМУ НЕ `waited > 0`. Очередь проверяет probe сразу после постановки, поэтому
+// при свободном бэкенде waited — микросекунды (на Windows часто ровно 0). Правило
+// `waited > 0` объявляло такой запрос ждавшим: клиент получал X-Queue-Wait-Ms: 0 и
+// строку «дождался» в лог на ровном месте. Живой факт: CI (ubuntu + -race) уронил
+// именно это, а локально тест был зелёным — проверка была платформенной.
+//
+// Настоящее ожидание не меньше шага опроса очереди (backendWaitPoll). Функция
+// вынесена отдельно, чтобы правило проверялось числами без часов.
+func admitterQueuedR493(waited time.Duration) bool {
+	return waited >= backendWaitPoll
 }
 
 // admitOutcomeLogFieldsR493 — поля ожидания для лога: одна форма на обе

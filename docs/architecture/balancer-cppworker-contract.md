@@ -868,7 +868,7 @@ Both mechanisms MUST be active; the callbacks reduce the staleness window, the p
 This contract is enforced by:
 
 - **Phase 2 (Type-safe models)**: Go structs with `DisallowUnknownFields()` in handlers — `cmd/cppworker/handlers_chat.go`, `handlers_openai.go`, `handlers_cppworker_load_defaults.go`, `handlers_cppworker_profiles.go` (38 call sites).
-- **Phase 3 (Conformance tests)**: **NOT IMPLEMENTED.** There are no golden files in `testdata/cppworker_golden/` and no `contract_conformance_test.go`. This document used to claim the contract is "enforced"; recorded as debt 11c in `debts.ru.md` instead.
+- **Phase 3 (Conformance tests)**: **IMPLEMENTED 2026-11-12 (debt 11c closed).** Golden files live in `internal/balancer/contract/testdata/cppworker_golden/` (`models_loaded.json`, `info.json`, `health.json`, `load_request.json`, `reload_request.json`; captured from a live worker `gpu-r261112-2146`, commit `32153c14`, provenance and the capture command in the `README.md` next to them), the test is `internal/balancer/contract/contract_golden_r493_test.go`. It asserts that balancer structs parse the recorded responses (window, slots, GGUF limit, VRAM, build fields), that every golden key is either mirrored or listed as intentionally ignored with a reason, and that requests decode with `DisallowUnknownFields` exactly as cppworker does. Sending the bytes to a real worker remains covered by `cppworker_contract_live_test.go` under the `integration` build tag.
 - **Phase 4 (Observability)**: `X-Request-Id` propagation works in the balancer (`internal/balancer/llamacpp_transport.go`, `client.go`); there is no `internal/observability` package.
 
 Any change to the protocol MUST update:

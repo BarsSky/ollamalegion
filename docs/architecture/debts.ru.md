@@ -177,16 +177,32 @@
     слоты по статике» роняют тесты.
 
 11c. **Golden-тесты контракта cppworker отсутствуют, хотя документ их обещал.**
-    **ОТКРЫТО, найдено проверкой документации 2026-11-12.**
-    docs/architecture/balancer-cppworker-contract.ru.md §12 утверждал, что контракт
-    «обеспечивается» тремя фазами: (2) DisallowUnknownFields() — реализовано
-    (38 мест в cmd/cppworker/handlers_*.go), (3) golden-файлы
-    	estdata/cppworker_golden/*.json + contract_conformance_test.go — **НЕТ НИ
-    ТОГО, НИ ДРУГОГО**, (4) internal/observability/request_id.go — пакета нет
-    (проброс X-Request-Id живёт в internal/balancer/llamacpp_transport.go).
-    Документ исправлен: фаза 3 помечена «не реализовано», пути фаз 2/4 заменены на
-    реальные. Закрывает: тест соответствия на golden-байтах протокола
-    (либо решение, что он не нужен, — тогда убрать фазу из документа совсем).
+    **ЗАКРЫТО 2026-11-12 (R493-11c).**
+    Было: `docs/architecture/balancer-cppworker-contract.ru.md` §12 обещал фазу 3
+    (`testdata/cppworker_golden/*.json` + `contract_conformance_test.go`) — **не
+    существовало ни того, ни другого**; контракт проверялся только зеркальными
+    структурами (L1), которые сами могут разойтись с реальным JSON.
+    Стало: golden-файлы сняты с ЖИВОГО воркера
+    (`internal/balancer/contract/testdata/cppworker_golden/`): `models_loaded.json`
+    (образ `gpu-r261112-2146`, commit `32153c14`, модель Qwen3-4B, окно 8192,
+    `gguf_context_length=262144`, `feasible_max_context=44721`), `info.json`,
+    `health.json` и запросы `load_request.json`/`reload_request.json`; происхождение
+    и команда — в `README.md` рядом.
+    `contract_golden_r493_test.go` проверяет: (1) ответы разбираются структурами
+    балансера и дают ожидаемые значения (окно, слоты, GGUF-предел, VRAM, сборка);
+    (2) покрытие ключей — каждый ключ golden либо зеркалится, либо записан
+    игнорируемым С ПРИЧИНОЙ (новый/переименованный ключ ломает тест и требует
+    решения, а не молчания); (3) запросы разбираются строго
+    (`DisallowUnknownFields`, как у cppworker) и содержат только известные ему
+    поля; (4) сборка `info.json` (её читает 12i) обязана нести `build_service`
+    `cppworker`, SHA-коммит, `rpc_proto` вида X.Y.Z и `cuda_arch_built`.
+    Мутации (проверено): лишний ключ в golden роняет покрытие; пропавший
+    `context_per_seq` — тоже. Второй тест ловит именно «переименовали на стороне
+    воркера»: для этого golden переснимается с нового образа (README).
+    **Не проверено:** живая отправка golden-запроса в воркер из CI — для этого
+    остаётся `cppworker_contract_live_test.go` под тегом `integration`
+    (`CPPWORKER_URL=… go test -tags=integration ./internal/balancer/contract/...`);
+    на локальном стенде порт воркера не публикуется, поэтому не прогонялось.
 
 11b. **Каталог моделей узла молча исключает узел.** **ОТКРЫТО, нужна проверка на
     стенде.** `expandCandidates` отправляет узел в P3 только если модель есть в

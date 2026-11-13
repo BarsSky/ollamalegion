@@ -1,3 +1,31 @@
+## [0.7.252 - R493-11c: golden-байты контракта балансер↔cppworker, 2026-11-12]
+
+- **11c — golden-тесты контракта появились.** Документ
+  `balancer-cppworker-contract.ru.md` §12 обещал фазу 3
+  (`testdata/cppworker_golden/*.json` + `contract_conformance_test.go`) —
+  не существовало ни файлов, ни теста; контракт держался только на зеркальных
+  структурах, которые сами могут разойтись с реальным JSON.
+  Теперь файлы сняты с ЖИВОГО воркера (`gpu-r261112-2146`, commit `32153c14`,
+  модель Qwen3-4B, окно 8192, `gguf_context_length=262144`,
+  `feasible_max_context=44721`): `internal/balancer/contract/testdata/cppworker_golden/`
+  — `models_loaded.json`, `info.json`, `health.json`, `load_request.json`,
+  `reload_request.json`; происхождение и команда съёма — в `README.md` рядом.
+  Тест `contract_golden_r493_test.go` проверяет разбор ответов структурами
+  балансера (окно, слоты, GGUF-предел, VRAM, build-поля — их теперь читает 12i),
+  покрытие ключей (каждый ключ golden либо зеркалится, либо записан игнорируемым
+  С ПРИЧИНОЙ) и строгий разбор запросов `DisallowUnknownFields` — ровно как у
+  cppworker.
+  По ходу выяснилось, что в реальном `/api/models` НЕТ `n_kv_heads`,
+  `flash_attn_type`, `use_mmap` — они приходят другими путями; держать их в
+  зеркале значило бы утверждать про протокол то, чего в нём нет.
+
+**Проверено:** `go test -tags llama_stub ./internal/balancer/contract/...
+./internal/balancer ./internal/api` — зелёные (balancer 172 с); мутации: лишний
+ключ в golden роняет покрытие, пропавший `context_per_seq` — тоже (проверено).
+**Не проверено:** живая отправка golden-запроса в воркер из CI — для этого
+остаётся `cppworker_contract_live_test.go` под тегом `integration`; на локальном
+стенде порт воркера не публикуется.
+
 ## [0.7.251 - R493-12i: worker-поля описывают воркера, а не агента, 2026-11-12]
 
 - **12i — `workerVersion`/`workerCommit` в `/api/v1/backends` больше не путают

@@ -1,0 +1,8 @@
+{
+  "name": "Qwen3-4B-Instruct-2507-Q4_K_M",
+  "contextSize": 8192,
+  "gpuLayers": -2,
+  "kvCacheType": "q8_0",
+  "useMmap": true,
+  "reason": "R493 golden contract capture"
+}

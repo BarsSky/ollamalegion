@@ -869,7 +869,17 @@ cppworker ДОЛЖЕН проверять ОБА заголовка. (Раунд
 Этот контракт обеспечивается:
 
 - **Фаза 2 (типобезопасные модели)**: Go-структуры с `DisallowUnknownFields()` в обработчиках — `cmd/cppworker/handlers_chat.go`, `handlers_openai.go`, `handlers_cppworker_load_defaults.go`, `handlers_cppworker_profiles.go` (38 мест в коде).
-- **Фаза 3 (тесты соответствия)**: **НЕ РЕАЛИЗОВАНО.** Golden-файлов `testdata/cppworker_golden/*.json` и теста `contract_conformance_test.go` в репозитории НЕТ; документ обещал их как «контракт обеспечивается». Это зафиксировано долгом в `debts.ru.md` (11c), а не выдаётся за сделанное.
+- **Фаза 3 (тесты соответствия)**: **РЕАЛИЗОВАНО 2026-11-12 (долг 11c закрыт).**
+  Golden-файлы — `internal/balancer/contract/testdata/cppworker_golden/`
+  (`models_loaded.json`, `info.json`, `health.json`, `load_request.json`,
+  `reload_request.json`; сняты с живого воркера `gpu-r261112-2146`, commit
+  `32153c14`, происхождение и команда — в `README.md` рядом), тест —
+  `internal/balancer/contract/contract_golden_r493_test.go`. Он проверяет разбор
+  ответов нашими структурами (окно, слоты, GGUF-предел, VRAM, build-поля),
+  покрытие ключей (каждый ключ golden либо зеркалится, либо записан игнорируемым
+  с причиной) и строгий разбор запросов (`DisallowUnknownFields`, как у
+  cppworker). Живая отправка байтов остаётся в
+  `cppworker_contract_live_test.go` под тегом `integration`.
 - **Фаза 4 (наблюдаемость)**: проброс `X-Request-Id` даёт сквозную трассировку — реализован в балансере (`internal/balancer/llamacpp_transport.go`, `client.go`), отдельного пакета `internal/observability` нет.
 
 Любое изменение протокола ДОЛЖНО обновлять:

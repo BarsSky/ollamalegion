@@ -872,6 +872,35 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0), streamMaxLineBytes())
 
+	// R493-12r (этап 6 «два мозга», флаг LB_STREAM_PIPE): единый сток стрима.
+	// nil при выключенном флаге — тогда цикл пишет напрямую, как раньше
+	// (историческое поведение и путь отката).
+	var sink streamSinkR493
+	if streamPipeEnabledR493() {
+		sink = newStreamSinkR493(w)
+	}
+	// writeClientLineR493 — одна точка записи кадра в этом цикле.
+	// Возвращает (байт_записано, ошибка). При выключенном флаге это ровно прежний
+	// `fmt.Fprintf(w, "%s\n", line)` + `bytesForwarded.Add` + `Flush`.
+	writeClientLineR493 := func(line []byte) (int, error) {
+		if sink != nil {
+			// Счётчик — у стока (единственный источник правды о том, сколько
+			// байт ушло клиенту): сводка берёт РАЗНИЦУ, а не число из цикла,
+			// иначе два счётчика снова начнут расходиться.
+			before := sink.Written()
+			_, err := sink.WriteLine(line)
+			sent := int(sink.Written() - before)
+			bytesForwarded.Add(int64(sent))
+			return sent, err
+		}
+		n, err := fmt.Fprintf(w, "%s\n", string(line))
+		bytesForwarded.Add(int64(n))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return n, err
+	}
+
 	// R493-12a: окна для правки НАТИВНОГО done-кадра. Запрос воркеру уже ушёл
 	// (upstreamSentTime), значит «ожидание» для клиента — это отрезок до него:
 	// очередь, авто-загрузка модели и preflight. Раньше он не попадал никуда.
@@ -905,8 +934,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 		if errMarshal != nil {
 			return nil
 		}
-		n, errWrite := fmt.Fprintf(w, "%s\n", string(out))
-		bytesForwarded.Add(int64(n))
+		n, errWrite := writeClientLineR493(out)
 		if errWrite != nil {
 			lastForwardErr = errWrite
 			if firstForwardErr == nil {
@@ -914,9 +942,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			}
 			return fmt.Errorf("write NDJSON (buffered text flush/%s): %v", reason, errWrite)
 		}
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+		_ = n
 		accumulatedPlainContent += clean
 		logger.Get().Infow("proxyRequestLlamaCpp: buffered text flushed to client",
 			"backend", backendID, "model", modelFromCtx,
@@ -1346,8 +1372,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			if originalPath == "/api/chat" || originalPath == "/api/generate" {
 				outLine = filterNDJSONLineMarkers(outLine, &ndjsonHold)
 			}
-			n, errFwd := fmt.Fprintf(w, "%s\n", outLine)
-			bytesForwarded.Add(int64(n))
+			n, errFwd := writeClientLineR493([]byte(outLine))
 			if errFwd != nil {
 				lastForwardErr = errFwd
 				if firstForwardErr == nil {
@@ -1355,6 +1380,7 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 				}
 				return fmt.Errorf("write native NDJSON: %v", errFwd)
 			}
+			_ = n
 			// R66b (2026-09-22): отмечаем, что для нативного пути апстрим уже
 			// отдал хотя бы одну NDJSON-строку. Без этого lastData оставался ""
 			// (он заполняется только в SSE-ветке ниже), и финальный блок
@@ -1370,9 +1396,9 @@ func (p *Proxy) proxyRequestLlamaCpp(w http.ResponseWriter, r *http.Request, bac
 			// "Did not receive done or success response in stream" (тот же класс
 			// дефекта, что чинили в R60.55 для SSE-ветки).
 			lastData = trimmed
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
+			// Флаш уже сделан writeClientLineR493 (у стока — свой, у исторической
+			// ветки — тот же http.Flusher). Отдельный флаш здесь означал бы второй
+			// набор правил записи — ровно то, что этап 6 и убирает.
 			continue
 		}
 

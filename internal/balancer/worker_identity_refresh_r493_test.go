@@ -91,19 +91,19 @@ func TestR493_WorkerIdentityRefreshedFromInfo(t *testing.T) {
 	poller := &llamaCppMetricsPoller{proxy: p, httpClient: srv.Client()}
 	poller.refreshWorkerIdentityR493(backendInfo{id: "b1", host: host, port: port})
 
-	p.mu.RLock()
-	b := p.backends["b1"].Backend
-	p.mu.RUnlock()
-	if b.WorkerVersion != "r261112-2146" || b.WorkerCommit != "32153c14" {
+	// Поля читаем под замком записи: рядом тикает фоновый поллер прокси и тоже
+	// может обновлять идентичность (ровно та гонка, что поймал -race в CI).
+	got := backendIdentitySnapshotR493(p, "b1")
+	if got.version != "r261112-2146" || got.commit != "32153c14" {
 		t.Fatalf("идентичность не обновлена: version=%q commit=%q (осталась из config.json)",
-			b.WorkerVersion, b.WorkerCommit)
+			got.version, got.commit)
 	}
-	if b.WorkerIdentitySource != "worker-http" {
+	if got.source != "worker-http" {
 		t.Fatalf("источник идентичности не отмечен: %q (значения пришли из /api/info — это факт)",
-			b.WorkerIdentitySource)
+			got.source)
 	}
-	if b.WorkerBuildDate != "2026-11-12T18:46:37Z" || b.WorkerRPCProto != "6.0.0" {
-		t.Fatalf("не все поля обновлены: %+v", b)
+	if got.buildDate != "2026-11-12T18:46:37Z" || got.rpcProto != "6.0.0" {
+		t.Fatalf("не все поля обновлены: %+v", got)
 	}
 }
 
@@ -115,11 +115,33 @@ func TestR493_WorkerIdentityErrorKeepsPrevious(t *testing.T) {
 	poller := &llamaCppMetricsPoller{proxy: p, httpClient: srv.Client()}
 	poller.refreshWorkerIdentityR493(backendInfo{id: "b1", host: host, port: port})
 
+	got := backendIdentitySnapshotR493(p, "b1")
+	if got.version != "261110-1925" {
+		t.Fatalf("при ошибке /api/info запись изменена: %q", got.version)
+	}
+}
+
+// backendIdentitySnapshotR493 — снимок identity-полей под замками. Тесты обязаны
+// читать так же, как продакшен: рядом работает фоновый поллер.
+type backendIdentityR493 struct {
+	version, commit, buildDate, rpcProto, source string
+}
+
+func backendIdentitySnapshotR493(p *Proxy, backendID string) backendIdentityR493 {
 	p.mu.RLock()
-	b := p.backends["b1"].Backend
+	state := p.backends[backendID]
 	p.mu.RUnlock()
-	if b.WorkerVersion != "261110-1925" {
-		t.Fatalf("при ошибке /api/info запись изменена: %q", b.WorkerVersion)
+	if state == nil || state.Backend == nil {
+		return backendIdentityR493{}
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return backendIdentityR493{
+		version:   state.Backend.WorkerVersion,
+		commit:    state.Backend.WorkerCommit,
+		buildDate: state.Backend.WorkerBuildDate,
+		rpcProto:  state.Backend.WorkerRPCProto,
+		source:    state.Backend.WorkerIdentitySource,
 	}
 }
 

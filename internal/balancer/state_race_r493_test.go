@@ -68,11 +68,10 @@ func TestR493_SaveStateConcurrentWithIdentityRefresh(t *testing.T) {
 	close(done)
 	wg.Wait()
 
-	// Значение обязано быть на месте: писатель не потерялся в замках.
-	p.mu.RLock()
-	b := p.backends["b1"].Backend
-	p.mu.RUnlock()
-	if b.WorkerCommit != "32153c14" {
-		t.Fatalf("идентичность не применилась: %q", b.WorkerCommit)
+	// Значение обязано быть на месте: писатель не потерялся в замках. Читаем тем
+	// же способом, что продакшен — под замком записи (рядом ещё тикает фоновый
+	// поллер прокси).
+	if got := backendIdentitySnapshotR493(p, "b1"); got.commit != "32153c14" {
+		t.Fatalf("идентичность не применилась: %q", got.commit)
 	}
 }

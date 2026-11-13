@@ -22,9 +22,11 @@ import (
 
 // flushCounterR493 — ResponseWriter, считающий флаши (http.ResponseWriter сам не
 // умеет: Flusher — отдельный интерфейс).
+// Порядок полей — под fieldalignment (govet): bytes.Buffer несёт указатель на
+// данные, поэтому идёт первым (иначе lint падает на 16 pointer bytes вместо 8).
 type flushCounterR493 struct {
-	mu      sync.Mutex
 	buf     bytes.Buffer
+	mu      sync.Mutex
 	flushes int
 }
 

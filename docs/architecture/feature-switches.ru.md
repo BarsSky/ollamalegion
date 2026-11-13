@@ -265,6 +265,7 @@ UI автоматически — отдельного кода панели н�
 | `LB_NCTX_GROW_FOR_STREAM` | да | 1 (вкл) |
 | `LB_WINDOW_UNIFIED` | да | 0 (историческое поведение; 1 — единое решение, 2 — «тень») |
 | `LB_UNIFIED_ADMISSION` | да | 0 (два механизма ожидания; 1 — путь обработчиков в единой admission-очереди) |
+| `LB_ONE_INFERENCE` | да | 0 (историческое: `/api/chat` без image-инструмента; 1 — паритет R86 на generic-пути) |
 | `LB_OPENAI_AUTO_STREAM` | да | 0 (выкл) |
 | `LB_AUTO_CONTINUE_ON_TRUNCATION` | да | 0 (выкл) |
 | `LB_OLLAMA_NATIVE_PATH` | **нет** (только с рестартом) | 1 (вкл) |

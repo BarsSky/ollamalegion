@@ -331,6 +331,23 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, backendID s
 			}
 		}
 
+		// R493-12q (этап 5 «два мозга», флаг LB_ONE_INFERENCE): на generic-пути
+		// инструмент генерации изображений объявляется и исполняется ТЕМ ЖЕ кодом,
+		// что и на handler-пути (/ollama/api/chat): injectImageToolOllama +
+		// runImageToolLoopOllama. До этого /api/chat инструмента не объявлял вовсе,
+		// и один кластер вёл себя по-разному в зависимости от URL у клиента.
+		//
+		// Ставится ДО выбора транспорта: цикл сам решает, нужен ли второй turn, и
+		// пишет ответ клиенту; false — обслуживаем обычным путём с ИСХОДНЫМ телом.
+		if handled, toolBody := p.genericImageToolLoopR493(w, r, backendID, modelFromCtxOrBodyR493(r, bodyBuf), bodyBuf); handled {
+			return nil
+		} else if len(toolBody) > 0 {
+			// Инструмент объявлен, но первый шаг цикла не удался: обслуживаем
+			// обычным путём с ТЕМ ЖЕ телом, что у handler-пути (R493-12q).
+			bodyBuf = toolBody
+			r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
+		}
+
 		// Выбираем прокси по режиму streaming.
 		// Для streaming — proxyRequestLlamaCpp (SSE→NDJSON).
 		// Для non-streaming — proxyRequestLlamaCppNonStream (JSON→JSON с Content-Type: application/json).

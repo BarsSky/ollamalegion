@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/internal/i18n"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -1382,8 +1383,16 @@ func autoTuneAppliedMismatch(plan *AutoTuneReloadPlan, actual types.LlamaCppMode
 	var diffs []string
 	// Сверяем только то, что воркер реально сообщил: старые сборки/моки могут
 	// не отдавать параметры вообще (0/""), и это не повод объявлять провал.
-	if plan.ContextSize > 0 && actual.ContextLength > 0 && actual.ContextLength != plan.ContextSize {
-		diffs = append(diffs, fmt.Sprintf("n_ctx=%d, ожидалось %d", actual.ContextLength, plan.ContextSize))
+	//
+	// R493-12h: окно сравнивается ВЫРОВНЕННЫМ. Воркер всегда выравнивает n_ctx
+	// вверх до 256 (GGML_PAD) и отдаёт в /api/models выровненное значение.
+	// Прямое сравнение объявляло провал там, где план применился: план 40000 →
+	// фактически 40192 → «load reported success, но конфигурация не применилась:
+	// n_ctx=40192, ожидалось 40000», и AutoTune повторял применение снова и снова.
+	if want := cppbackend.PadContext(plan.ContextSize); plan.ContextSize > 0 && actual.ContextLength > 0 &&
+		actual.ContextLength != want {
+		diffs = append(diffs, fmt.Sprintf("n_ctx=%d, ожидалось %d (план %d + выравнивание по 256)",
+			actual.ContextLength, want, plan.ContextSize))
 	}
 	if want := normalizeKVType(plan.KVCacheType); want != "" && actual.KvCacheType != "" {
 		if got := normalizeKVType(actual.KvCacheType); got != want {

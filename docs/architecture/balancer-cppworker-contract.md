@@ -659,6 +659,18 @@ The balancer MUST compare these runtime parameters. A mismatch on any of them tr
 
 The Round 32 #26 fix (commit `bd9943b`) only compared `n_ctx`. It is now extended to compare all parameters. (Round 36 Phase 2 work.)
 
+**R493-12h: `contextSize` is compared ALIGNED.** cppworker rounds the window up to
+256 (`GGML_PAD`, `cppbackend.ContextPadStep`) and reports the aligned value in
+`/api/models`. So "parameters match" means: the padded requested window equals the
+loaded one. A request with `contextSize=149809` against a loaded `150016` is NOT a
+reason to reload (it is the same quantity). A smaller window that pads to a different
+number (65536 vs 131072) remains a difference — the manual "reload to a smaller
+window" still works. The other side of the rule belongs to the balancer: it must ask
+for and cache the ALIGNED window (`perClientToTotal`, `reloadTargetForState`),
+otherwise "needed / loaded" compares two renderings of one window (live archive:
+`contextSize 150016→149809`, a 27B reload DOWN by 207 tokens, `avgDurationMs`
+215875 ms).
+
 ### 6.5 Reload vs load endpoint choice
 
 - For explicit admin/UI reload (operator knows current state): use `POST /api/models/reload`

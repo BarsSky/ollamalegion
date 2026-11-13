@@ -93,7 +93,7 @@ func loadOptionDiffs(info cppbackend.ModelInfo, opts cppbackend.LoadModelOpts) [
 	add := func(name string, oldValue, newValue interface{}) {
 		diffs = append(diffs, fmt.Sprintf("%s %v→%v", name, oldValue, newValue))
 	}
-	if info.ContextSize != opts.ContextSize {
+	if !sameContextSizeR493(info.ContextSize, opts.ContextSize) {
 		add("contextSize", info.ContextSize, opts.ContextSize)
 	}
 	if info.BatchSize != opts.BatchSize {

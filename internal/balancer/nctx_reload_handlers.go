@@ -1338,7 +1338,12 @@ func (p *Proxy) preflightNCtxReloadIfNeeded(
 	// Теперь суммарное окно, до которого делаем reload, считается как
 	// «окно клиента × слоты» (PAD256), то есть каждый клиент получает ровно
 	// запрошенное, а memfit проверяет суммарный объём.
-	reloadTarget := requestedNCtx
+	// R493-12h: выравнивание по 256 нужно и при ОДНОМ слоте — ровно так окно
+	// округляет воркер (GGML_PAD) и ровно это значение он показывает в
+	// /api/models. Невыровненное число здесь означало: воркер загружает 150016,
+	// а балансер кэширует 149809 и на следующем ходу просит перезагрузку «до
+	// 149809», то есть ВНИЗ на 207 токенов.
+	reloadTarget := cppbackend.PadContext(requestedNCtx)
 	if slots := p.loadedSlotsNCtx(backendID, modelName); slots > 1 {
 		if total, per := cppbackend.EffectiveContextSize(0, requestedNCtx, slots); total > 0 {
 			reloadTarget = total

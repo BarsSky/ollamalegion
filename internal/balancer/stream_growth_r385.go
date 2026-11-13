@@ -40,6 +40,7 @@ import (
 	"os"
 	"strings"
 
+	"ollama-loadbalancer/internal/cppbackend"
 	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
 )
@@ -60,23 +61,61 @@ func streamGrowthEnabledR385() bool {
 	return true
 }
 
+// streamGrowthPlanR493 — решение о росте окна на стриминге: цель, растим ли, и
+// ПОЧЕМУ нет.
+//
+// ЗАЧЕМ ТИП, А НЕ ТРИ ВОЗВРАЩАЕМЫХ ЗНАЧЕНИЯ. Есть два разных «роста не будет»:
+//
+//   - отказ (Refuse): рост нужен, но невозможен (выключатель, донор раскладки,
+//     потолок). Клиент получит 503 — причину обязан назвать WARN в логе (R472).
+//   - нечего растить (Note): нужное окно уже покрыто выровненным загруженным
+//     (149809 при 150016). Это НЕ отказ: запрос обслуживается загруженным окном,
+//     а WARN «окно не растим» на ровном месте только пугал бы оператора.
+//
+// Смешивать их в одной строке нельзя: guard делает WARN по непустой причине, и
+// пустой строкой «нет отказа» он как раз и отличается.
+type streamGrowthPlanR493 struct {
+	Note   string // пояснение для лога, когда роста просто не нужно
+	Refuse string // причина ОТКАЗА, когда рост нужен, но невозможен
+	Target int    // окно НА КЛИЕНТА, до которого растим
+	Grow   bool
+}
+
 // streamGrowthCheckR385 — можно ли поднять модель под нужное окно ради
 // стримингового запроса. Возвращает (можно, причина_отказа).
+//
+// R493-12h: проверка и запуск обязаны считать ЦЕЛЬ ОДИНАКОВО — иначе «разрешено»
+// и «до какого окна» разойдутся (именно это дало перезагрузки вниз на 94–207
+// токенов из архива 09:53). Обе стороны зовут growthTargetR493.
 func (p *Proxy) streamGrowthCheckR385(backendID, model string, needed int) (bool, string) {
+	plan := p.streamGrowthPlanR385(backendID, model, needed)
+	return plan.Grow, plan.Refuse
+}
+
+// streamGrowthPlanR385 — цель перезагрузки и решение «растим ли».
+//
+// ПОЧЕМУ ОТДЕЛЬНАЯ ФУНКЦИЯ. Решение «можно» и число «до какого окна» считаются
+// ОДНИМ И ТЕМ ЖЕ кодом: иначе проверка разрешала рост по нужному числу, а
+// перезагрузка уходила на другое (в архиве — цель 149809 при загруженных 150016,
+// то есть перезагрузка ВНИЗ).
+func (p *Proxy) streamGrowthPlanR385(backendID, model string, needed int) streamGrowthPlanR493 {
+	refuse := func(why string) streamGrowthPlanR493 {
+		return streamGrowthPlanR493{Refuse: why}
+	}
 	if p == nil || model == "" {
-		return false, "модель не определена"
+		return refuse("модель не определена")
 	}
 	if !streamGrowthEnabledR385() {
-		return false, "рост окна на стриминге выключен (LB_NCTX_GROW_FOR_STREAM=0)"
+		return refuse("рост окна на стриминге выключен (LB_NCTX_GROW_FOR_STREAM=0)")
 	}
 	if needed <= 0 {
-		return false, "нужное окно неизвестно"
+		return refuse("нужное окно неизвестно")
 	}
 	if backendID == "" {
-		return false, "бэкенд не определён"
+		return refuse("бэкенд не определён")
 	}
 	if p.cannotHostModelR304(backendID) {
-		return false, "бэкенд — донор раскладки, своих копий он не держит"
+		return refuse("бэкенд — донор раскладки, своих копий он не держит")
 	}
 	// Физика и операторский потолок авто-роста.
 	//
@@ -84,10 +123,7 @@ func (p *Proxy) streamGrowthCheckR385(backendID, model string, needed int) (bool
 	// physicalNumCtxCeiling и так его делит воркер между слотами), а needed
 	// приходит НА КЛИЕНТА. Сравнивать их напрямую значило бы разрешать рост,
 	// который воркер не сможет выполнить (или урезать окно слота вдвое).
-	target := needed
-	if slots := p.loadedSlotsNCtx(backendID, model); slots > 1 {
-		target = perClientToTotal(needed, slots)
-	}
+	//
 	// R472 (2026-11-06): ЗДЕСЬ БОЛЬШЕ НЕ СПРАШИВАЕМ WindowFeasibility.
 	//
 	// ЖИВОЙ ДЕФЕКТ (Cline → балансер, gemma-4-E4B). Клиент просил num_ctx=32768,
@@ -105,18 +141,27 @@ func (p *Proxy) streamGrowthCheckR385(backendID, model string, needed int) (bool
 	// Для ручной перезагрузки (R297) WindowFeasibility остаётся как был: там окно
 	// задаёт оператор, и его же заявленное значение разумно считать пределом.
 	ceiling := p.physicalNumCtxCeiling(model, backendID)
-	if ceiling > 0 && target > ceiling {
-		return false, fmt.Sprintf("нужно %d, потолок авто-роста %d", target, ceiling)
+	loaded := p.loadedPerSeqNCtx(backendID, model)
+	target, grow := growthTargetR493(needed, loaded, ceiling)
+	if !grow {
+		if ceiling > 0 && needed > ceiling {
+			return refuse(fmt.Sprintf("нужно %d, потолок авто-роста %d", needed, ceiling))
+		}
+		// Не отказ: выровненное нужное окно уже внутри загруженного. Именно этот
+		// случай в архиве 09:53 и перезагружал 27B ВНИЗ на 94–207 токенов.
+		return streamGrowthPlanR493{Note: fmt.Sprintf(
+			"окно уже покрывает запрос: нужно %d, выровненное %d, загружено %d",
+			needed, cppbackend.PadContext(needed), loaded)}
 	}
 	if ceiling <= 0 {
 		// Потолок неизвестен — не отказываем по догадке: пусть решает загрузка
 		// (воркер вернёт честную ошибку, если окно не влезет).
-		if ok, _, why := p.WindowFeasibility(backendID, model, target); !ok && why != "" {
+		if ok, _, why := p.WindowFeasibility(backendID, model, perClientToTotal(target, p.loadedSlotsNCtx(backendID, model))); !ok && why != "" {
 			logger.Get().Warnw("R472: потолок модели неизвестен, но WindowFeasibility отказал — всё равно пробуем рост",
 				"backend", backendID, "model", model, "target", target, "why", why)
 		}
 	}
-	return true, ""
+	return streamGrowthPlanR493{Target: target, Grow: true}
 }
 
 // triggerStreamGrowthR385 — запустить перезагрузку модели под нужное окно.
@@ -139,19 +184,29 @@ func (p *Proxy) triggerStreamGrowthR385(backendID, model string, needed int) {
 			"port", backend.CppWorkerPort, "needed_tokens", needed)
 		return
 	}
+	// R493-12h: цель берём ТОЙ ЖЕ функцией, что и решение о росте. Раньше здесь
+	// уходило «нужное» число как есть: 149809 при загруженных 150016 — воркер
+	// видел «parameters changed» и перезагружал модель ВНИЗ (207 токенов), а
+	// выровненное 150016 никогда не совпадало с целью.
+	plan := p.streamGrowthPlanR385(backendID, model, needed)
+	if !plan.Grow {
+		logger.Get().Infow("R385: рост окна не запускается",
+			"backend", backendID, "model", model, "needed_tokens", needed,
+			"refused", plan.Refuse != "", "reason", plan.Refuse, "note", plan.Note)
+		return
+	}
+	targetPerClient := plan.Target
 	logger.Get().Infow("R385: стриминговый запрос требует большего окна — запускаем перезагрузку модели",
-		"backend", backendID, "model", model, "needed_tokens", needed)
+		"backend", backendID, "model", model, "needed_tokens", needed, "target_per_client", targetPerClient)
 	// R466 (2026-11-06): executeAsyncReload ждёт СУММАРНОЕ окно (см.
 	// asyncReloadLoadBody — contextSize получает воркер и делит его между
-	// слотами), а сюда приходит окно НА КЛИЕНТА (v.Needed). Без пересчёта
-	// модель с двумя слотами поднималась бы до окна слота вдвое меньше нужного,
-	// и следующий запрос просил рост снова — та же ошибка учёта, что и в R466.
-	target := needed
+	// слотами), а план даёт окно НА КЛИЕНТА. Без пересчёта модель с двумя слотами
+	// поднималась бы до окна слота вдвое меньше нужного.
+	target := perClientToTotal(targetPerClient, p.loadedSlotsNCtx(backendID, model))
 	if slots := p.loadedSlotsNCtx(backendID, model); slots > 1 {
-		target = perClientToTotal(needed, slots)
 		logger.Get().Infow("R385: окно пересчитано в суммарное",
 			"backend", backendID, "model", model,
-			"per_client", needed, "slots", slots, "total", target)
+			"per_client", targetPerClient, "slots", slots, "total", target)
 	}
 	p.executeAsyncReload(backendID, model, target, backend)
 }

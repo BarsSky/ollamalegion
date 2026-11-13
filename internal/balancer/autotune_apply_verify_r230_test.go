@@ -115,4 +115,18 @@ func TestR230_AutoTuneAppliedMismatch(t *testing.T) {
 			t.Fatalf("nil план не должен давать diff, got %q", diff)
 		}
 	})
+	// R493-12h: план 40000, воркер загрузил выровненное 40192 — это НЕ провал
+	// применения. Прямое сравнение объявляло «конфигурация не применилась» и
+	// AutoTune повторял применение снова и снова.
+	t.Run("выровненное окно воркера — план применён", func(t *testing.T) {
+		unaligned := &AutoTuneReloadPlan{ContextSize: 40000, KVCacheType: "q4_0", NumGPULayers: 42}
+		m := types.LlamaCppModel{ContextLength: 40192, KvCacheType: "q4_0", NumGPULayers: 42, NLayers: 42}
+		if diff := autoTuneAppliedMismatch(unaligned, m); diff != "" {
+			t.Fatalf("40000 выравнивается в 40192 — план применён, got %q", diff)
+		}
+		m.ContextLength = 40960
+		if diff := autoTuneAppliedMismatch(unaligned, m); !strings.Contains(diff, "n_ctx") {
+			t.Fatalf("настоящее расхождение окна (40960) обязано называться, got %q", diff)
+		}
+	})
 }

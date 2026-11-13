@@ -13,8 +13,10 @@
 package logger
 
 import (
+	"math"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap/zapcore"
 )
@@ -97,6 +99,24 @@ func brokerLevelName(l zapcore.Level) string {
 // (brokerFieldsSuffix). Оператор видел в панели «текст + нечитаемый JSON» и не
 // мог ни прочитать сообщение, ни найти нужное поле; в экспорте поля приходилось
 // выковыривать из строки. Теперь Message — чистый текст, Fields — данные.
+//
+// R493-12k (2026-11-13, по архиву второго стенда): ЧИСЛА БЫЛИ БИТАМИ float64.
+//
+// ЖИВОЙ ФАКТ (`balancer-logs.txt`, строки каждую минуту):
+//
+//	backend VRAM usage above threshold backend=A10-126
+//	  threshold=4635681760191971328 vram_percent=4635833999675857520
+//
+// 4635833999675857520 — это 87.16 (процент VRAM), записанный как биты IEEE-754:
+// у zap дробное поле лежит в `Field.Integer` КАК БИТЫ (так устроен zapcore:
+// строки — в String, bool — 0/1, дроби — биты в том же int64). Прежний код
+// складывал Integer в карту без разбора типа, поэтому любое дробное поле в
+// панели и в текстовом дампе выглядело как 4.6e18 — то есть число, по которому
+// нельзя принять ни одного решения. Хуже: `time.Time` и `time.Duration` в том же
+// Integer-поле лежат наносекундами, и «сколько ждали» тоже было нечитаемым.
+//
+// Поэтому тип поля разбирается явно. Всё, что не перечислено, по-прежнему
+// отдаётся Integer как есть: это серверные int64, их так и надо показывать.
 func brokerFieldsMap(fields []zapcore.Field) map[string]interface{} {
 	if len(fields) == 0 {
 		return nil
@@ -111,8 +131,23 @@ func brokerFieldsMap(fields []zapcore.Field) map[string]interface{} {
 			m[f.Key] = f.Interface
 		case f.String != "":
 			m[f.Key] = f.String
+			// Порядок важен: у строкового поля с пустым значением String == "",
+			// и оно не должно попасть в числовые ветки — тип разбирается ниже
+			// отдельно от содержимого.
+		case f.Type == zapcore.StringType:
+			m[f.Key] = f.String
 		case f.Type == zapcore.BoolType:
 			m[f.Key] = f.Integer == 1
+		case f.Type == zapcore.Float64Type:
+			m[f.Key] = math.Float64frombits(uint64(f.Integer))
+		case f.Type == zapcore.Float32Type:
+			m[f.Key] = float64(math.Float32frombits(uint32(f.Integer)))
+		case f.Type == zapcore.Uint64Type:
+			m[f.Key] = uint64(f.Integer)
+		case f.Type == zapcore.DurationType:
+			m[f.Key] = time.Duration(f.Integer)
+		case f.Type == zapcore.TimeType:
+			m[f.Key] = time.Unix(0, f.Integer)
 		default:
 			m[f.Key] = f.Integer
 		}

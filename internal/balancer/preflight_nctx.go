@@ -522,15 +522,20 @@ type NCtxBackendState struct {
 // нужно суммарно в два раза больше — иначе клиент снова получит половину и
 // упрётся в то же ограничение (это и наблюдалось: gemma-4 при max_slots=2
 // давала клиенту 32768 при суммарных 65536).
+//
+// R493-12h: выравнивание по 256 — ВСЕГДА, в том числе при одном слоте. См.
+// perClientToTotal: без этого балансер просил и кэшировал невыровненное окно,
+// которого у воркера не бывает.
 func reloadTargetForState(perSeqTarget int, state *NCtxBackendState) int {
 	if perSeqTarget <= 0 {
 		return perSeqTarget
 	}
 	slots := state.effectiveSlots()
+	aligned := cppbackend.PadContext(perSeqTarget)
 	if slots <= 1 {
-		return perSeqTarget
+		return aligned
 	}
-	total := cppbackend.PadContext(perSeqTarget) * slots
+	total := aligned * slots
 	logger.Get().Infow(i18n.T("balancer.preflight_nctx.target_window_recalculated"),
 		"backend_id", state.BackendID,
 		"per_seq_target", perSeqTarget, "slots", slots, "total_target", total)
@@ -945,14 +950,23 @@ func requestedWindowOr(meta *RequestMeta) int {
 // llama.cpp при kv_unified=false делит суммарное окно между слотами:
 // n_ctx_seq = PAD(n_ctx / n_seq_max, 256). Значит для N клиентов нужно
 // суммарно ≈ окно × N (с выравниванием вверх до 256).
+//
+// R493-12h: выравнивание нужно и при ОДНОМ слоте. Живой архив второго стенда
+// 09:53 (Qwen3.8-27B): балансер считал целевым окном 149809 (оценка промпта,
+// невыровненная), воркер загружал 150016 (GGML_PAD по 256) и держал в
+// /api/models именно 150016, а балансер записывал в кэш метрик своё 149809.
+// Дальше любое сравнение «нужно / загружено» шло между разными числами одного и
+// того же окна: 149809 ≠ 150016 → «параметры изменились» → перезагрузка ВНИЗ на
+// 207 токенов (выгрузка 27B, avgDurationMs 215875 мс).
 func perClientToTotal(perSeq, slots int) int {
 	if perSeq <= 0 {
 		return perSeq
 	}
+	perSeq = cppbackend.PadContext(perSeq)
 	if slots <= 1 {
 		return perSeq
 	}
-	return cppbackend.PadContext(perSeq) * slots
+	return perSeq * slots
 }
 
 // ParamDiff — расхождение между требованием клиента и загруженной моделью.

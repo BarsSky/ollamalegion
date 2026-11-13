@@ -39,8 +39,10 @@ import (
 // GPUIndex стал указателем именно для этого). «Неизвестно» — clearGPUIndex.
 func setGPUIndex(t *testing.T, p *Proxy, backendID string, gpuIndex int) {
 	t.Helper()
-	b := p.GetBackend(backendID)
-	if b == nil {
+	// R493-12r-fix: снимок под state.mu, а не живой указатель — поллер обновляет
+	// поля записи параллельно (гонку поймал CI).
+	b, ok := p.GetBackendSnapshot(backendID)
+	if !ok {
 		t.Fatalf("бэкенд %q не найден на стенде", backendID)
 	}
 	cp := *b
@@ -53,8 +55,8 @@ func setGPUIndex(t *testing.T, p *Proxy, backendID string, gpuIndex int) {
 // clearGPUIndex — сбросить индекс в «неизвестно»: лок снова хостовый.
 func clearGPUIndex(t *testing.T, p *Proxy, backendID string) {
 	t.Helper()
-	b := p.GetBackend(backendID)
-	if b == nil {
+	b, ok := p.GetBackendSnapshot(backendID)
+	if !ok {
 		t.Fatalf("бэкенд %q не найден на стенде", backendID)
 	}
 	cp := *b

@@ -479,6 +479,34 @@ func (p *Proxy) GetBackend(backendID string) *types.Backend {
 	return nil
 }
 
+// GetBackendSnapshot — КОПИЯ записи бэкенда под её замком (R493-12r-fix).
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. `GetBackend` отдаёт ЖИВОЙ указатель под `p.mu`
+// (замок карты, а не записи). Читать поля такого указателя без `state.mu` нельзя:
+// поллер обновляет идентичность воркера (12i) под `state.mu`, и `-race` честно
+// показывает гонку. Живой факт (поймал CI, self-hosted Windows):
+//
+//	Write at ... setNonEmptyR493 <- applyWorkerIdentityR493 <- refreshWorkerIdentityR493
+//	Previous read at ... (*types.Backend) через хелпер теста
+//
+// Поэтому читателям, которым нужен СНИМОК (а не право менять запись), — сюда:
+// копия делается под `state.mu`, дальше это обычная структура без замков.
+func (p *Proxy) GetBackendSnapshot(backendID string) (*types.Backend, bool) {
+	if p == nil || backendID == "" {
+		return nil, false
+	}
+	p.mu.RLock()
+	state, exists := p.backends[backendID]
+	p.mu.RUnlock()
+	if !exists || state == nil || state.Backend == nil {
+		return nil, false
+	}
+	state.mu.Lock()
+	cp := *state.Backend
+	state.mu.Unlock()
+	return &cp, true
+}
+
 // GetBackendFreeSlots — возвращает количество свободных слотов backend'а
 // (MaxConcurrentReqs - ActiveReqs) для use в least_loaded selector'ах.
 // Phase 8 Item 2 (2026-07-11): LoadProvider wire-up.

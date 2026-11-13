@@ -19,6 +19,7 @@ package balancer
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"strconv"
@@ -28,6 +29,7 @@ import (
 
 	"ollama-loadbalancer/internal/settings"
 	"ollama-loadbalancer/pkg/logger"
+	"ollama-loadbalancer/pkg/types"
 )
 
 const (
@@ -110,6 +112,53 @@ func (q *backendWaitQueue) position(model string, id uint64) int {
 	return 0
 }
 
+// snapshot — сколько ждёт по каждой модели (R493-12p: очередь обязана быть видна
+// в /queue, а не только в логе).
+//
+// Возвращает nil, если никто не ждёт: /queue тогда не рисует блок, и «0
+// ожидающих» не выглядит как отдельная очередь с нулём.
+func (q *backendWaitQueue) snapshot() map[string]int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.waiters) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(q.waiters))
+	for model, ids := range q.waiters {
+		if len(ids) > 0 {
+			out[model] = len(ids)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// backendWaitStatsR403 — срез очереди ожидания бэкенда для /api/v1/queue/stats.
+//
+// R493-12p: до этой правки ожидающие на /v1 не были видны оператору НИГДЕ —
+// /queue отдавал только admission-очередь. Живое следствие: запрос «висит»
+// 120 c в ожидании бэкенда, панель показывает пустую очередь, и разбор
+// начинается с догадок.
+func backendWaitStatsR403() *queueBackendWaitStats {
+	byModel := llmBackendWaitQueue.snapshot()
+	unified := admissionUnifiedR493()
+	if byModel == nil && !unified && backendWaitTimeoutR403() <= 0 {
+		return nil
+	}
+	total := 0
+	for _, n := range byModel {
+		total += n
+	}
+	return &queueBackendWaitStats{
+		WaitMaxSec: int(backendWaitTimeoutR403().Seconds()),
+		Waiting:    total,
+		ByModel:    byModel,
+		Unified:    unified,
+	}
+}
+
 // waitBackendR403 — ждёт, пока probe вернёт непустой id бэкенда.
 //
 // Возвращает:
@@ -180,34 +229,85 @@ func (lr *LlamaCppRouter) selectForInferenceR403(model string, requestedNCtx int
 //
 // probe должен быть тем же выбором, что и в обработчике (модель + окно), иначе
 // очередь «увидит» не тот бэкенд, который выберет запрос.
+//
+// R493-12p (этап 4 «два мозга»): механизм ожидания выбирает `admitterForR493` —
+// либо историческая очередь появления бэкенда (R403), либо единая
+// admission-очередь (флаг LB_UNIFIED_ADMISSION=1). Здесь остаётся ТРАНСПОРТ:
+// заголовки ответа и тело 503.
 func (lr *LlamaCppRouter) waitForLlamaCppBackendR403(ctx context.Context, w http.ResponseWriter,
 	model string, requestedNCtx int) string {
 
-	timeout := backendWaitTimeoutR403()
-	probe := func() string {
-		return lr.selectForInferenceR403(model, requestedNCtx)
-	}
-	if timeout <= 0 {
-		if id := probe(); id != "" {
-			return id
-		}
+	if lr == nil || lr.proxy == nil {
 		writeBackendUnavailableR403(w, model, 0, 0, false)
 		return ""
 	}
-	id, waited, pos, ok := waitBackendR403(ctx, llmBackendWaitQueue, model, timeout, probe)
-	if ok {
-		if waited > 0 {
-			// R493-12o: «запрос ждал и дождался» — это данные клиента, а не
-			// только строка в логе. До правки /v1 не сообщал об ожидании вовсе,
-			// хотя /api/chat сообщал: паритет T4 был заявлен, но не выполнялся.
-			setQueueWaitHeadersR493(w, waited, pos)
-			setLegacyBackendQueueHeadersR493(w, waited, pos)
-			logBackendWaitR403(model, waited, pos)
-		}
-		return id
+	req := admitRequestR493{
+		Model:         model,
+		Type:          types.BackendTypeLlamaCpp,
+		RequestedNCtx: requestedNCtx,
+		Probe: func() string {
+			return lr.selectForInferenceR403(model, requestedNCtx)
+		},
 	}
-	writeBackendUnavailableR403(w, model, waited, pos, true)
+	admitter := lr.proxy.admitterForR493(req)
+	out := admitter.Admit(ctx, req)
+	if out.Err == nil && out.BackendID != "" {
+		if out.Queued {
+			// «Запрос ждал и дождался» — это данные клиента, а не только строка в
+			// логе. До R493-12o /v1 не сообщал об ожидании вовсе.
+			setQueueWaitHeadersR493(w, out.Waited, out.Position)
+			setLegacyBackendQueueHeadersR493(w, out.Waited, out.Position)
+			logBackendWaitR403(model, out.Waited, out.Position)
+		}
+		if logger.Get() != nil && out.Queued {
+			logger.Get().Infow("R493-12p: ожидание закончилось выдачей бэкенда",
+				append([]interface{}{"model", model}, admitOutcomeLogFieldsR493(admitter, out)...)...)
+		}
+		return out.BackendID
+	}
+	logger.Get().Warnw("R493-12p: бэкенд не выдан — отказ с числами",
+		append([]interface{}{"model", model}, admitOutcomeLogFieldsR493(admitter, out)...)...)
+	writeAdmitUnavailableR493(w, model, out)
 	return ""
+}
+
+// writeAdmitUnavailableR493 — 503 «ожидание закончилось ничем» в ОДНОЙ форме для
+// обеих реализаций ожидания.
+//
+// Прежнее тело (`writeBackendUnavailableR403`) сохранено: клиенты читают
+// error/code/reason/position/waited_ms, и менять это ради единообразия значило бы
+// ломать их. Добавлено только то, чего не хватало: фактический предел ожидания и
+// машинный механизм (какая очередь обслуживала запрос).
+func writeAdmitUnavailableR493(w http.ResponseWriter, model string, out admitOutcomeR493) {
+	if w == nil {
+		return
+	}
+	retryAfter := backendWaitRetryAfter
+	code := "no_backend"
+	reason := "no llama.cpp backend available: all backends are offline, disabled or serving a layout role"
+	switch {
+	case errors.Is(out.Err, errAdmissionOverloaded):
+		retryAfter = 5
+		code = "overloaded"
+		reason = "admission queue is full: backpressure, retry shortly"
+	case errors.Is(out.Err, errAdmissionTimeout):
+		retryAfter = backendWaitRetryAfter
+		code = "wait_timeout"
+		reason = "no llama.cpp backend available within wait: all backends are offline, disabled or serving a layout role"
+	case errors.Is(out.Err, errAdmissionDisabled):
+		retryAfter = backendWaitRetryAfter
+		reason = "backend wait is disabled (LB_ADMISSION_WAIT_SEC=0 or LB_BACKEND_WAIT_SEC=0): no backend available now"
+	}
+	setQueueUnavailableHeadersR493(w, out.Position, out.Waited, out.Budget, retryAfter, "")
+	setLegacyBackendQueueHeadersR493(w, out.Waited, out.Position)
+	writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+		"error":     "no llama.cpp backend available",
+		"code":      code,
+		"reason":    reason,
+		"model":     model,
+		"waited_ms": out.Waited.Milliseconds(),
+		"position":  out.Position,
+	})
 }
 
 // writeBackendUnavailableR403 — 503 с числами и позицией в очереди.

@@ -100,6 +100,31 @@ type QueueStats struct {
 	// omitempty: на стенде без image-бэкендов и без image-трафика блока нет —
 	// нулевой image-блок только путал бы (см. image_queue_visibility_r98.go).
 	Image map[string]interface{} `json:"image,omitempty"`
+
+	// BackendWait — R493-12p (этап 4 «два мозга»): ожидание ПОЯВЛЕНИЯ бэкенда
+	// (R403). Раньше эти ожидающие не были видны в панели вовсе: /queue отдавал
+	// только admission-очередь, поэтому запрос, стоящий на /v1 в ожидании
+	// бэкенда, выглядел как «ничего не происходит». omitempty: при выключенном
+	// ожидании блока нет — нулевой блок только путал бы.
+	BackendWait *queueBackendWaitStats `json:"backend_wait,omitempty"`
+}
+
+// queueBackendWaitStats — срез очереди ожидания бэкенда (R403) для /queue.
+//
+// ПОЧЕМУ ОТДЕЛЬНЫЙ БЛОК, А НЕ СЛИЯНИЕ С admission. Это РАЗНЫЕ очереди с разными
+// бюджетами и разной справедливостью (R493-12p сводит их только при
+// LB_UNIFIED_ADMISSION=1). Складывать их в одно число значило бы соврать о том,
+// сколько запросов ждёт и чего именно они ждут.
+type queueBackendWaitStats struct {
+	// ByModel — по модели: сколько ждёт (ключ — имя модели).
+	ByModel map[string]int `json:"by_model,omitempty"`
+	// WaitMaxSec — действующий предел ожидания (LB_BACKEND_WAIT_SEC).
+	WaitMaxSec int `json:"wait_max_sec"`
+	// Waiting — сколько запросов ждёт появления бэкенда прямо сейчас.
+	Waiting int `json:"waiting"`
+	// Unified — R493-12p: путь обработчиков уже входит в единую очередь, и этот
+	// блок описывает только исторический механизм (false = он используется).
+	Unified bool `json:"unified"`
 }
 
 // NewQueueManager - создание хранилища статистики очереди.

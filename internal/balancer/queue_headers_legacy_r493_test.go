@@ -89,7 +89,7 @@ func TestR493_WaitingRequestReportsCanonicalHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("не прочитать backend_wait_queue_r403.go: %v", err)
 	}
-	if !strings.Contains(string(src), "setQueueWaitHeadersR493(w, waited, pos)") {
+	if !strings.Contains(string(src), "setQueueWaitHeadersR493(w, out.Waited, out.Position)") {
 		t.Fatal("успешное ожидание в waitForLlamaCppBackendR403 не выставляет X-Queue-* — " +
 			"клиент на /v1 не узнает, что запрос стоял в очереди")
 	}

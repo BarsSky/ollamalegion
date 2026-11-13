@@ -197,6 +197,11 @@ func (lr *LlamaCppRouter) waitForLlamaCppBackendR403(ctx context.Context, w http
 	id, waited, pos, ok := waitBackendR403(ctx, llmBackendWaitQueue, model, timeout, probe)
 	if ok {
 		if waited > 0 {
+			// R493-12o: «запрос ждал и дождался» — это данные клиента, а не
+			// только строка в логе. До правки /v1 не сообщал об ожидании вовсе,
+			// хотя /api/chat сообщал: паритет T4 был заявлен, но не выполнялся.
+			setQueueWaitHeadersR493(w, waited, pos)
+			setLegacyBackendQueueHeadersR493(w, waited, pos)
 			logBackendWaitR403(model, waited, pos)
 		}
 		return id
@@ -210,15 +215,26 @@ func (lr *LlamaCppRouter) waitForLlamaCppBackendR403(ctx context.Context, w http
 // Прежний ответ был {"error":"no llama.cpp backend available"} без чисел и без
 // указания, что запрос вообще стоял в очереди; клиент не мог отличить «нет
 // бэкенда» от «подожди и повтори».
+//
+// R493-12o (долг P2-13/T4): заголовки очереди — ИЗ ОДНОГО МЕСТА. Здесь стояли
+// литералы `X-Backend-Queue-Position` / `X-Backend-Queue-Wait-Ms`, то есть одна
+// и та же информация называлась по-разному в зависимости от поверхности:
+// `/api/chat` отдавал `X-Queue-Position`, а `/v1/chat/completions` —
+// `X-Backend-Queue-Position`. Клиент, читающий контракт `X-Queue-*`, на второй
+// поверхности не видел ничего. Страж T4 этого не ловил: он искал литералы только
+// из списка `X-Queue-*`.
+//
+// Теперь канонические `X-Queue-*` ставятся общей функцией (как на generic-пути),
+// а прежние имена оставлены АЛИАСАМИ: их читают уже написанные клиенты, и убрать
+// их молча — значит отобрать данные у тех, кто их использует. Оба набора объявлены
+// в queue_headers_r493.go, литералов мимо него не остаётся.
 func writeBackendUnavailableR403(w http.ResponseWriter, model string, waited time.Duration, position int, queued bool) {
 	if w == nil {
 		return
 	}
-	if position > 0 {
-		w.Header().Set("X-Backend-Queue-Position", strconv.Itoa(position))
-	}
-	w.Header().Set("X-Backend-Queue-Wait-Ms", strconv.FormatInt(waited.Milliseconds(), 10))
-	w.Header().Set("Retry-After", strconv.Itoa(backendWaitRetryAfter))
+	setQueueUnavailableHeadersR493(w, position, waited, backendWaitTimeoutR403(),
+		backendWaitRetryAfter, "" /* обычная перегрузка: причина — в теле */)
+	setLegacyBackendQueueHeadersR493(w, waited, position)
 	code := "no_backend"
 	reason := "no llama.cpp backend available: all backends are offline, disabled or serving a layout role"
 	if queued {

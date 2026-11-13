@@ -41,6 +41,12 @@ var queueHeaderLiteralsT4 = []string{
 	"X-Queue-Position",
 	"X-Queue-Wait-Max-Sec",
 	"X-Queue-Wait-Reason",
+	// R493-12o: прежние имена очереди ожидания бэкенда (R403). Пока они жили
+	// литералами в backend_wait_queue_r403.go, ОДНА И ТА ЖЕ информация называлась
+	// по-разному на разных поверхностях, и страж этого не видел (он искал только
+	// X-Queue-*). Теперь они — алиасы, объявленные там же, где канон.
+	"X-Backend-Queue-Position",
+	"X-Backend-Queue-Wait-Ms",
 }
 
 // TestT4_HeaderNamesLiveInOneFile — имена заголовков очереди объявлены один раз.
@@ -100,6 +106,21 @@ func TestT4_BothPathsCallSharedSetters(t *testing.T) {
 	if !strings.Contains(string(src), "setQueueUnavailableHeadersR493(") {
 		t.Error("admission_queue.go: 503 очереди не использует setQueueUnavailableHeadersR493 — " +
 			"Retry-After и лимит ожидания снова начнут расходиться")
+	}
+
+	// R493-12o: очередь ожидания бэкенда (второй путь входа в handler-путь) тоже
+	// обязана говорить на общем языке — и при отказе, и при успешном ожидании.
+	// До правки она выставляла только СВОИ имена, поэтому клиент с одним
+	// парсером видел очередь лишь на одной поверхности.
+	wq, err := os.ReadFile("backend_wait_queue_r403.go")
+	if err != nil {
+		t.Fatalf("не прочитать backend_wait_queue_r403.go: %v", err)
+	}
+	for _, call := range []string{"setQueueUnavailableHeadersR493(", "setQueueWaitHeadersR493("} {
+		if !strings.Contains(string(wq), call) {
+			t.Errorf("backend_wait_queue_r403.go: нет вызова %s — /v1 не сообщает об "+
+				"ожидании на языке X-Queue-*, паритет T4 не выполняется", call)
+		}
 	}
 }
 

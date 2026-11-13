@@ -62,3 +62,30 @@ func setQueueUnavailableHeadersR493(
 		w.Header().Set(headerQueueWaitReasonR493, reason)
 	}
 }
+
+// Прежние имена очереди ожидания бэкенда (R403). Оставлены АЛИАСАМИ: их читают
+// уже написанные клиенты, и убрать их молча — значит отобрать данные у тех, кто
+// на них опирается. Канонические имена — X-Queue-* (см. выше); литералов мимо
+// этого файла нет (страж T4).
+const (
+	headerLegacyBackendQueuePositionR493 = "X-Backend-Queue-Position"
+	headerLegacyBackendQueueWaitMsR493   = "X-Backend-Queue-Wait-Ms"
+)
+
+// setLegacyBackendQueueHeadersR493 — алиасы для клиентов, читающих прежние имена.
+//
+// R493-12o (долг P2-13/T4): до этой правки ОДНА И ТА ЖЕ информация называлась
+// по-разному в зависимости от поверхности — `/api/chat` отдавал X-Queue-Position,
+// `/v1/chat/completions` (путь с очередью ожидания бэкенда) отдавал
+// X-Backend-Queue-Position. Клиент с одним парсером видел очередь только на одной
+// из поверхностей, а страж T4 этого не ловил: он искал литералы только из списка
+// X-Queue-*.
+func setLegacyBackendQueueHeadersR493(w http.ResponseWriter, waited time.Duration, position int) {
+	if w == nil {
+		return
+	}
+	if position > 0 {
+		w.Header().Set(headerLegacyBackendQueuePositionR493, strconv.Itoa(position))
+	}
+	w.Header().Set(headerLegacyBackendQueueWaitMsR493, strconv.FormatInt(waited.Milliseconds(), 10))
+}

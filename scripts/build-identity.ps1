@@ -98,13 +98,16 @@ function Get-BuildIdentity {
     $commitDate = Get-GitValueR486 -RepoRoot $RepoRoot -GitArgs @('log', '-1', '--format=%cI')
     if (-not $commitDate) { throw "R486: дату коммита получить не удалось" }
 
+    # R493 (2026-11-14): в подпись сборки НЕ попадает email из git config.
+    #
+    # Зачем: подпись уходит в метку образа (org.opencontainers.image.authors),
+    # оттуда — в deployments/release-manifest.json, который коммитится. Личный email
+    # оператора оказывался в публичном репозитории при каждой сборке. Теперь по
+    # умолчанию только имя; контакт указывается ОСОЗНАННО через -Author/BUILD_AUTHOR.
     if (-not $Author) { $Author = $env:BUILD_AUTHOR }
     if (-not $Author) {
         $name = Get-GitValueR486 -RepoRoot $RepoRoot -GitArgs @('config', 'user.name')
-        $email = Get-GitValueR486 -RepoRoot $RepoRoot -GitArgs @('config', 'user.email')
-        if ($name -and $email) { $Author = "$name <$email>" }
-        elseif ($name) { $Author = $name }
-        elseif ($email) { $Author = $email }
+        if ($name) { $Author = $name }
     }
 
     if (-not $Version) {

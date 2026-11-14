@@ -511,7 +511,9 @@ docker logs <rpc-server-container> --tail 100        # какое устройс
 
 Живой сценарий: после сборки нового образа docker compose up -d пересоздаёт
 контейнер воркера. Файл переопределений содержал приказ балансера
-(pcEnabled=true, pcServers=["100.64.0.7:50052"]), лог подтверждал
+(
+pcEnabled=true, 
+pcServers=["100.64.0.7:50052"]), лог подтверждал
 «applied runtime overrides», но:
 
 ```
@@ -526,11 +528,13 @@ CPPWORKER_RPC_ENABLE/CPPWORKER_RPC_SERVERS из окружения (в compose �
 и затирал приказ. Теперь порядок один и в одном месте
 (cmd/cppworker/startup_config_r370.go): решение по env (намерение) считается ДО
 pplyRuntimeOverrides (факт), переопределения побеждают. Стюард-тесты
-запрещают звать esolveRPCMode напрямую из main и требуют порядок вызовов.
+запрещают звать 
+esolveRPCMode напрямую из main и требуют порядок вызовов.
 
 Живая проверка после правки: пересоздание контейнера → в логе
 pplied runtime overrides ... "rpc_enabled":true,"rpc_servers":["100.64.0.7:50052"],
-/api/models → pc_enabled=True, загрузка модели даёт RPC-строки.
+/api/models → 
+pc_enabled=True, загрузка модели даёт RPC-строки.
 
 ### 15.5. Закрыт зависший замер R349 (§10)
 
@@ -559,7 +563,8 @@ CPPWORKER_RPC_ENABLE/CPPWORKER_RPC_SERVERS из окружения (в compose �
 Поэтому «переехать на LAN» проблему не решает; запись бэкенда возвращена на
 100.64.0.7 (конвенция проекта), роль — standalone.
 
-После возврата в однопузловой режим: pc_enabled=false, 42/43 слоя на GPU,
+После возврата в однопузловой режим: 
+pc_enabled=false, 42/43 слоя на GPU,
 **25.4 tok/s** (стенд снова в рабочем состоянии).
 ## 16. SSH на донор (2026-11-01): загадка VRAM §15.2 решена, донор снова уснул
 
@@ -568,14 +573,14 @@ CPPWORKER_RPC_ENABLE/CPPWORKER_RPC_SERVERS из окружения (в compose �
 Рабочая комбинация (в ~/.ssh/config алиаса не было):
 
 ```
-ssh -i ~/.ssh/id_ed25519_legion2 -l 'knagaenko@mail.ru' cyborg
-# -> CYBORG (Windows 10.0.26300), LAN 192.168.13.12, Tailscale 100.64.0.7
+ssh -i ~/.ssh/id_ed25519_legion2 -l '<ms-account>' cyborg
+# -> CYBORG (Windows 10.0.26300), LAN 192.168.13.12, Tailscale <tailscale-ip>
 ```
 
 Это та же машина, что раньше была legion2 (192.168.13.34 из старого
 конфига — адрес уже мёртв). Ключи id_ed25519* под других пользователей
 (knaga, cyborg, Administrator) не подходят: нужен именно MS-аккаунт
-knagaenko@mail.ru.
+оператора (<ms-account>).
 
 ### 16.2. Инвентаризация донора
 
@@ -590,7 +595,8 @@ mounts:    /run/desktop/mnt/host/c/ollama/ollamalegion/models -> /app/models
 ```
 
 Про «мёртвый адрес»: донор до сих пор рекламирует 192.168.13.34, поэтому
-балансеру и нужен R350 (pcNodeAddrResolved: сообщённый адрес пробуется, при
+балансеру и нужен R350 (
+pcNodeAddrResolved: сообщённый адрес пробуется, при
 мёртвом берётся host записи). Это не догадка — это его env.
 
 ### 16.3. Загадка VRAM §15.2: РЕШЕНА — донорский GPU держит буферы
@@ -638,7 +644,8 @@ o reply, SSH timeout по LAN, /api/models HTTP 000) — ноутбук засы
 узле.
 
 Действия: роль донора снята (standalone), раскладка выключена
-(pc_enabled=false), модель перезагружена в однопузловом режиме. Стенд снова
+(
+pc_enabled=false), модель перезагружена в однопузловом режиме. Стенд снова
 рабочий (17–18 tok/s при загруженном столе: 43 % CPU у msedge/landing_demo,
 48 % GPU — это фон машины, не дефект).
 
@@ -660,7 +667,7 @@ o reply, SSH timeout по LAN, /api/models HTTP 000) — ноутбук засы
 спит, подготовлено всё, чтобы обновление заняло минуты:
 
 1. SSH-алиас добавлен в ~/.ssh/config:
-   Host donor → knagaenko@mail.ru@192.168.13.12, ключ id_ed25519_legion2.
+   Host donor → <ms-account>@192.168.13.12, ключ id_ed25519_legion2.
 2. deployments/donor/update.cmd сгенерирован из сохранённого docker inspect
    (70 env, 2 bind'а) под образ gpu-09b9b41d; **исправлен мёртвый адрес**:
    CPPWORKER_ADVERTISE_HOST=192.168.13.12 (было .34).
@@ -676,7 +683,8 @@ ssh donor 'cmd /c C:\ollama\update-donor.cmd'      # переименует ст
 # затем в балансере: роль donor, health проверить, /api/info донора = новая сборка
 ```
 
-Что это даст: на доноре появятся ole/donor/canLoadOwnModels (R304) — их
+Что это даст: на доноре появятся 
+ole/donor/canLoadOwnModels (R304) — их
 сейчас нет, потому что образ gpu-r248 старее правки; сборки llama.cpp на
 узлах станут одинаковыми (сейчас у мастера в логе предупреждение о расхождении);
 плюс отпадут догадки про адрес из §16.2.
@@ -809,7 +817,8 @@ deployments/donor/donor-install-keepalive.cmd лежат, но по умолча
 - донор: контейнер cppworker-node2 на рабочем gpu-r248 (sm_120), healthy,
   роль standalone — раскладка выключена, потому что с ней однопоточная
   генерация в 8 раз медленнее (см. §16.4);
-- модели: gemma-4 загружена локально, pc_enabled=false, 42/42 слоя,
+- модели: gemma-4 загружена локально, 
+pc_enabled=false, 42/42 слоя,
   18.5 tok/s (на фоне рабочего стола);
 - для повторного двухузлового прогона: PUT …/role {"role":"donor"} — и
   раскладка поднимется сама (проверено в §17.4).
@@ -821,7 +830,8 @@ deployments/donor/donor-install-keepalive.cmd лежат, но по умолча
 через DELETE /api/v1/backends/cppworker-cyborg-bundled-agent; health теперь
 	otalBackends=3, healthyBackends=3.
 
-Для протокола: её pcNode-метки не были причиной §17.4 — там виноват
+Для протокола: её 
+pcNode-метки не были причиной §17.4 — там виноват
 gentSilentSince у записи cppworker-donor (другой host), но удаление
 мусорной записи всё равно правильное: у неё мёртвый адрес и она искажала счётчики.
 ### 17.9. Донор обновлён на сборку под СВОЮ карту
@@ -868,7 +878,8 @@ cppWorkerApiToken. После смены роли на standalone балансе
 ```
 
 Роль на балансере сменилась, а воркер продолжал считать себя донором
-(pc_server_enabled=true) и отвечал 409 на загрузку — оператор снял роль, а
+(
+pc_server_enabled=true) и отвечал 409 на загрузку — оператор снял роль, а
 узел остался занятым. Токен в системе есть (стековый), он не доезжал до записи.
 
 Исправление: pushRPCNodeConfig берёт токен из записи, а при её отсутствии — из
@@ -902,7 +913,9 @@ CPPWORKER_API_TOKEN → LB_API_TOKEN).
 
 ### 17.13. Найдено попутно (не исправлено)
 
-PUT /api/v1/cppworker/config/update с полями pcServerEnabled/pcServerPort
+PUT /api/v1/cppworker/config/update с полями 
+pcServerEnabled/
+pcServerPort
 пишет на воркере предупреждения unknown field, хотя значения ПРИМЕНЯЮТСЯ
 (видно по «runtime overrides: сохранено» и по реальному запуску/остановке узла).
 Это шум в горячем пути смены роли: оператор видит warning там, где всё работает.
@@ -921,13 +934,16 @@ PUT /api/v1/cppworker/config/update с полями pcServerEnabled/pcServerPo
   standalone, rpc-server погашен, моделей нет — готов к включению одной
   командой;
 - модель gemma-4 загружена на мастере локально: ctx=32768, kv=q4_0,
-  42/42 слоя, pc_enabled=false, **30.7 tok/s**;
+  42/42 слоя, 
+pc_enabled=false, **30.7 tok/s**;
 - health: 3 бэкенда, все healthy.
 ## 18. R374: «unknown field» о том, что успешно применено (закрыто)
 
 ### 18.1. Что было
 
-Балансер при смене роли донора присылает pcServerEnabled и pcServerPort.
+Балансер при смене роли донора присылает 
+pcServerEnabled и 
+pcServerPort.
 Воркер их ПРИМЕНЯЕТ (applyBool/applyInt в handlers_config.go), узел реально
 поднимается и гасится — и тут же пишет в лог:
 
@@ -945,7 +961,9 @@ PUT /api/v1/cppworker/config/update с полями pcServerEnabled/pcServerPo
 ### 18.2. Что сделано (d502c69d)
 
 - карта вынесена в cmd/cppworker/update_config_keys_r374.go как единственный
-  источник; pcServerEnabled/pcServerPort добавлены;
+  источник; 
+pcServerEnabled/
+pcServerPort добавлены;
 - стюард-тест разбирает handlers_config.go через go/ast и требует, чтобы
   КАЖДЫЙ ключ, применяемый вызовом pply*("<key>"), был в карте (сейчас их 37).
   Новая настройка, добавленная только в применение, ломает тест — вместо тихого
@@ -980,7 +998,8 @@ cuda:12.8.0-devel ~1 МБ/с, а повторная попытка оборва�
 - балансер 975875ae (R371+R372+R373), мастер cppworker:gpu-d502c69d
   (R364…R374), донор gpu-donor-09b9b41d;
 - модель gemma-4 загружена на мастере локально: ctx=32768, kv=q4_0,
-  42/42 слоя, pc_enabled=false;
+  42/42 слоя, 
+pc_enabled=false;
 - старые образы вычищены (освобождено ~8 ГБ), на D: 68.7 ГБ.
 ## 19. Мультиархитектурный образ cppworker: 75;86;120 (2026-11-01)
 

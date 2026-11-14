@@ -26,7 +26,7 @@ import (
 // TestR270_EnvBootstrapCreatesAdminOnEmptyStore — env создаёт админа и пишет файл.
 func TestR270_EnvBootstrapCreatesAdminOnEmptyStore(t *testing.T) {
 	t.Setenv("LB_ADMIN_USER", "skyadmin")
-	t.Setenv("LB_ADMIN_PASSWORD", "Ol-legion-34172hsb@qw")
+	t.Setenv("LB_ADMIN_PASSWORD", "test-admin-pass-not-a-secret")
 
 	path := filepath.Join(t.TempDir(), "users.json")
 	us := NewUserStore(path)
@@ -34,7 +34,7 @@ func TestR270_EnvBootstrapCreatesAdminOnEmptyStore(t *testing.T) {
 	if !us.Enabled() {
 		t.Fatal("админ из env не создан — вход невозможен")
 	}
-	if _, ok := us.Verify("skyadmin", "Ol-legion-34172hsb@qw"); !ok {
+	if _, ok := us.Verify("skyadmin", "test-admin-pass-not-a-secret"); !ok {
 		t.Fatal("пароль из env не подошёл к созданному админу")
 	}
 	info := us.BootstrapInfo()

@@ -17,7 +17,7 @@
                        "commitFull":  "377de3853cf80e44628b37c682aa71b5f04dadaa",
                        "commitDate":  "2026-11-14T22:59:43+03:00",
                        "buildDate":  "2026-11-14T19:59:52Z",
-                       "author":  "BarsSky <knagaenko@mail.ru>"
+                       "author":  "<redacted>"
                    },
                    {
                        "alias":  "ollama-legion/cppworker:latest-gpu-75-86-120",
@@ -30,7 +30,7 @@
                        "commitFull":  "3a5182829a941b6348a53071bfc8fcc4662d7a55",
                        "commitDate":  "2026-11-13T14:08:46+03:00",
                        "buildDate":  "2026-11-13T11:09:24Z",
-                       "author":  "BarsSky <knagaenko@mail.ru>",
+                       "author":  "<redacted>",
                        "llamaCommit":  "0eadefebd",
                        "llamaDate":  "2026-09-01",
                        "rpcProto":  "6.0.0"
@@ -46,7 +46,7 @@
                        "commitFull":  "17949ad974967b69f935e87740c99574793aa960",
                        "commitDate":  "2026-11-12T22:58:24+03:00",
                        "buildDate":  "2026-11-12T19:59:41Z",
-                       "author":  "BarsSky <knagaenko@mail.ru>"
+                       "author":  "<redacted>"
                    },
                    {
                        "alias":  "ollama-legion/webui:latest",
@@ -59,7 +59,7 @@
                        "commitFull":  "5620705208e7e2b892df6e0c31a4fceda75af176",
                        "commitDate":  "2026-11-12T17:16:35+03:00",
                        "buildDate":  "2026-11-12T14:17:25Z",
-                       "author":  "BarsSky <knagaenko@mail.ru>"
+                       "author":  "<redacted>"
                    },
                    {
                        "alias":  "",
@@ -72,7 +72,7 @@
                        "commitFull":  "ee9017448ed95e843707d7a4c3ce48c7e811ff05",
                        "commitDate":  "2026-11-10T22:14:31+03:00",
                        "buildDate":  "2026-11-10T20:40:01Z",
-                       "author":  "BarsSky <knagaenko@mail.ru>"
+                       "author":  "<redacted>"
                    }
                ],
     "releasedServices":  [

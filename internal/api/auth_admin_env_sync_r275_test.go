@@ -41,11 +41,16 @@ func prepStoreWithUser(t *testing.T, path, name, pass, role string) {
 	}
 }
 
+// ПАРОЛЬ ЗДЕСЬ — ЗАГЛУШКА. До R493 (2026-11-14) в этих тестах стоял
+// РЕАЛЬНЫЙ пароль стенда: он попадал в репозиторий и в историю git, хотя
+// тесту нужно лишь «какой-то пароль, который env и файл видят одинаково».
+// Если стенд использовал этот пароль — его надо сменить (история не чистится
+// без перезаписи).
 // TestR275_EnvMatchesFileIsRecognised — главный живой случай: env действует,
 // и это должно быть видно как envApplied=true, а не как «файл».
 func TestR275_EnvMatchesFileIsRecognised(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "users.json")
-	prepStoreWithUser(t, path, "skyadmin", "Ol-legion-34172hsb@qw", "admin")
+	prepStoreWithUser(t, path, "skyadmin", "test-admin-pass-not-a-secret", "admin")
 
 	before, err := os.ReadFile(path)
 	if err != nil {
@@ -53,10 +58,10 @@ func TestR275_EnvMatchesFileIsRecognised(t *testing.T) {
 	}
 
 	t.Setenv("LB_ADMIN_USER", "skyadmin")
-	t.Setenv("LB_ADMIN_PASSWORD", "Ol-legion-34172hsb@qw")
+	t.Setenv("LB_ADMIN_PASSWORD", "test-admin-pass-not-a-secret")
 
 	us := NewUserStore(path)
-	if _, ok := us.Verify("skyadmin", "Ol-legion-34172hsb@qw"); !ok {
+	if _, ok := us.Verify("skyadmin", "test-admin-pass-not-a-secret"); !ok {
 		t.Fatal("вход паролем из env не работает")
 	}
 	info := us.BootstrapInfo()

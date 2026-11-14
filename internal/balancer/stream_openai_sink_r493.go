@@ -113,20 +113,20 @@ func (p *Proxy) openOpenAIStreamSinkR493(w http.ResponseWriter, resp *http.Respo
 			if statusText == "" {
 				statusText = "OK"
 			}
-			bufrw.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\n", resp.StatusCode, statusText))
-			bufrw.WriteString("Content-Type: text/event-stream\r\n")
-			bufrw.WriteString("Cache-Control: no-cache\r\n")
-			bufrw.WriteString("Transfer-Encoding: chunked\r\n")
+			_, _ = bufrw.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\n", resp.StatusCode, statusText))
+			_, _ = bufrw.WriteString("Content-Type: text/event-stream\r\n")
+			_, _ = bufrw.WriteString("Cache-Control: no-cache\r\n")
+			_, _ = bufrw.WriteString("Transfer-Encoding: chunked\r\n")
 			// R219 (2026-10-21): НЕ обещаем keep-alive: после стрима соединение
 			// ЗАКРЫВАЕТСЯ, а клиенты с пулом (Node/OpenAI SDK/OpenWebUI) брали сокет
 			// для следующего запроса и получали ECONNRESET.
-			bufrw.WriteString("Connection: close\r\n")
-			bufrw.WriteString("X-Accel-Buffering: no\r\n")
+			_, _ = bufrw.WriteString("Connection: close\r\n")
+			_, _ = bufrw.WriteString("X-Accel-Buffering: no\r\n")
 			// R66c: заголовки балансера из w.Header() (X-Backend-ID / X-Session-ID /
 			// X-Model-* / CORS) + заголовки upstream'а, которых ещё нет.
 			writeHijackedHeaders(bufrw, w, resp.Header, hijackSSEReservedHeaders)
-			bufrw.WriteString("\r\n")
-			bufrw.Flush()
+			_, _ = bufrw.WriteString("\r\n")
+			_ = bufrw.Flush()
 
 			gone, stopPoll := startHijackDisconnectPollR493(conn, backendID)
 			out.conn = conn
@@ -228,7 +228,7 @@ func (p *Proxy) openAIStreamNon2xxR493(w http.ResponseWriter, resp *http.Respons
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	w.WriteHeader(resp.StatusCode)
-	w.Write(body)
+	_, _ = w.Write(body)
 	return true, nil
 }
 
@@ -361,7 +361,7 @@ func (p *Proxy) writeNonSSEStreamResponseR493(w http.ResponseWriter, resp *http.
 		}
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 		w.WriteHeader(resp.StatusCode)
-		w.Write(body)
+		_, _ = w.Write(body)
 		return nil
 	}
 	bufrw := opened.bufrw
@@ -369,14 +369,14 @@ func (p *Proxy) writeNonSSEStreamResponseR493(w http.ResponseWriter, resp *http.
 	if statusText == "" {
 		statusText = "Unknown"
 	}
-	bufrw.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\n", resp.StatusCode, statusText))
-	bufrw.WriteString(fmt.Sprintf("Content-Type: %s\r\n", contentType))
-	bufrw.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(body)))
-	bufrw.WriteString("Connection: close\r\n")
+	_, _ = bufrw.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\n", resp.StatusCode, statusText))
+	_, _ = bufrw.WriteString(fmt.Sprintf("Content-Type: %s\r\n", contentType))
+	_, _ = bufrw.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(body)))
+	_, _ = bufrw.WriteString("Connection: close\r\n")
 	writeHijackedHeaders(bufrw, w, resp.Header, hijackReservedHeaders)
-	bufrw.WriteString("\r\n")
-	bufrw.Write(body)
-	bufrw.Flush()
+	_, _ = bufrw.WriteString("\r\n")
+	_, _ = bufrw.Write(body)
+	_ = bufrw.Flush()
 	return nil
 }
 

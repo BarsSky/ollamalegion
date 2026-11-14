@@ -63,10 +63,21 @@ func TestR493q_GenericImageToolGate(t *testing.T) {
 			wantChanged: false, wantReason: imageToolSkipDisabled,
 		},
 		{
+			// Живой факт с локального стенда: при LB_IMAGE_TOOL_INJECT=off и
+			// клиентских tools[] причина обязана называть ВЫКЛЮЧАТЕЛЬ, а не
+			// «клиент не прислал tools[]».
+			name: "инжект выключен, клиент прислал tools[]",
+			flag: "1", surface: "/api/chat", body: ollamaChatBodyR493,
+			env:         map[string]string{"LB_IMAGE_TOOL_INJECT": "off"},
+			wantChanged: false, wantReason: imageToolSkipInjectOff,
+		},
+		{
 			name: "клиент не прислал tools[] в режиме auto",
 			flag: "1", surface: "/api/chat", body: ollamaChatBodyNoToolsR493,
-			env:         map[string]string{"LB_IMAGE_TOOL_INJECT": "auto"},
-			wantChanged: false, wantReason: oneInferenceSkipNoClientR493,
+			env: map[string]string{"LB_IMAGE_TOOL_INJECT": "auto"},
+			// Причина — та же, что у handler-пути (imageToolNoInjectReason), иначе
+			// лог врёт про «клиент не прислал tools[]» там, где выключен инжект.
+			wantChanged: false, wantReason: imageToolSkipNoClientTools,
 		},
 		{
 			name: "флаг включён, image-бэкенд есть, клиент прислал tools[] — объявляем",

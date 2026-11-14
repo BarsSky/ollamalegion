@@ -80,7 +80,11 @@ func (p *Proxy) chooseGenericImageToolR493(ctx context.Context, surface, model s
 	}
 	clientTools := countClientTools(body)
 	if !imageToolShouldInject(p.imageToolSettings(), clientTools) {
-		return body, nil, nil, oneInferenceSkipNoClientR493
+		// ПРИЧИНУ БЕРЁМ ТУ ЖЕ, ЧТО HANDLER-ПУТЬ (imageToolNoInjectReason): иначе
+		// лог врёт. Живой факт с локального стенда: при LB_IMAGE_TOOL_INJECT=off и
+		// клиентских tools[]=[1] в логе стояло «клиент не прислал tools[]», хотя
+		// он их прислал — оператор пошёл бы чинить клиента, а не выключатель.
+		return body, nil, nil, imageToolNoInjectReason(p.imageToolSettings())
 	}
 	injected, added := injectImageToolOllama(body, tgt)
 	if len(added) == 0 {

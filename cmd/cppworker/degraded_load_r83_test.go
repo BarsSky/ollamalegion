@@ -562,9 +562,23 @@ func backendWithTruncatedModel(t *testing.T, name string, nLayers, nHeads, nKvHe
 	// РАНЬШЕ удаления каталога — иначе на Windows падало
 	// «TempDir RemoveAll cleanup: The directory is not empty», а под -race ещё и
 	// гонка с Close().
+	//
+	// R91-продолжение (2026-11-14): ожидания загрузки НЕДОСТАТОЧНО. Успешная
+	// загрузка вызывает RecordModelLoad, а тот пишет <ModelsDir>/.name_history.json
+	// В ФОНЕ (cppbackend ModelManager.persistLoop) — эта горутина НЕ в asyncWorkWG,
+	// она живёт в другом пакете. Живое падение CI (ubuntu-latest, сборка
+	// d9293d75, TestReload_DegradedHeaderOnCPUOnly):
+	// «TempDir RemoveAll cleanup: unlinkat /tmp/TestReload_…/001: directory not
+	// empty» — УЖЕ ПОСЛЕ успешного WaitAsyncWork. Поэтому здесь же ждём отложенную
+	// запись: без этого дефект остаётся недетерминированным.
+	var mm *cppbackend.ModelManager
 	t.Cleanup(func() {
 		if !WaitAsyncWork(15 * time.Second) {
 			t.Logf("cleanup: фоновая загрузка/перезагрузка не завершилась за 15 с")
+		}
+		if mm != nil && !mm.WaitForPendingWrites(5*time.Second) {
+			t.Errorf("cleanup: отложенная запись .name_history.json не завершилась за 5 с — " +
+				"teardown каталога модели снова может упасть на «directory not empty»")
 		}
 	})
 	filename := name + ".gguf"
@@ -589,7 +603,7 @@ func backendWithTruncatedModel(t *testing.T, name string, nLayers, nHeads, nKvHe
 	if err := be.Init(); err != nil {
 		t.Logf("Init warning (ожидаемо в stub): %v", err)
 	}
-	mm := be.ModelManager()
+	mm = be.ModelManager()
 	if mm == nil {
 		t.Fatal("ModelManager недоступен")
 	}

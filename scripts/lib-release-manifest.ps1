@@ -79,7 +79,14 @@ function Get-ImageIdentityR493 {
         commitFull  = & $read $script:ManifestLabelKeys.CommitFull
         commitDate  = ''
         buildDate   = & $read $script:ManifestLabelKeys.BuildDate
-        author      = & $read $script:ManifestLabelKeys.Author
+        # R493 (2026-11-14): email из подписи образа НЕ переносим в манифест.
+        #
+        # Зачем: манифест коммитится, а метка org.opencontainers.image.authors в
+        # старых образах содержала личный email оператора (сборка брала его из
+        # git config). Даже после фикса build-identity старые образы в манифесте
+        # сохраняются при слиянии, поэтому вычищаем здесь — одном месте, где
+        # манифест пишется.
+        author      = (& $read $script:ManifestLabelKeys.Author) -replace '\s*<[^>]*@[^>]*>', ''
         llamaCommit = & $read $script:ManifestLabelKeys.LlamaCommit
         llamaDate   = & $read $script:ManifestLabelKeys.LlamaDate
         rpcProto    = & $read $script:ManifestLabelKeys.RpcProto

@@ -1,7 +1,7 @@
 {
-    "tag":  "r261114-2259",
-    "builtAt":  "2026-11-14T20:01:11Z",
-    "gitCommit":  "377de385",
+    "tag":  "r261115-0014",
+    "builtAt":  "2026-11-14T21:15:12Z",
+    "gitCommit":  "280f15ba",
     "cudaArch":  "75;86;120",
     "composeFile":  "docker-compose.stack.yml",
     "composeProfile":  "full",
@@ -10,27 +10,27 @@
                        "alias":  "ollama-legion/balancer:latest",
                        "variable":  "BALANCER_TAG",
                        "service":  "balancer",
-                       "imageTag":  "r261114-2259",
-                       "image":  "ollama-legion/balancer:r261114-2259",
-                       "imageId":  "sha256:e924cb798a218c53c2de5c900925c0efcebe0d23386dcca313393b07add412c6",
-                       "commit":  "377de385",
-                       "commitFull":  "377de3853cf80e44628b37c682aa71b5f04dadaa",
-                       "commitDate":  "2026-11-14T22:59:43+03:00",
-                       "buildDate":  "2026-11-14T19:59:52Z",
-                       "author":  "<redacted>"
+                       "imageTag":  "r261115-0014",
+                       "image":  "ollama-legion/balancer:r261115-0014",
+                       "imageId":  "sha256:3107a55ff47b621780babb28fb70c47af1c21a2c5ba8e1d183b2a4ddfd781103",
+                       "commit":  "280f15ba",
+                       "commitFull":  "280f15bad540bd795cb0f9c35e64ab6cad27f8d1",
+                       "commitDate":  "2026-11-14T23:45:04+03:00",
+                       "buildDate":  "2026-11-14T21:14:11Z",
+                       "author":  "BarsSky"
                    },
                    {
                        "alias":  "ollama-legion/cppworker:latest-gpu-75-86-120",
                        "variable":  "CPPWORKER_GPU_TAG",
                        "service":  "cppworker",
-                       "imageTag":  "gpu-r261113-1408",
-                       "image":  "ollama-legion/cppworker:gpu-r261113-1408",
-                       "imageId":  "sha256:05e6a6fffdc3f870ae20e1a620aee28fb960e1cac5688270eba3bdc378505cc5",
-                       "commit":  "3a518282",
-                       "commitFull":  "3a5182829a941b6348a53071bfc8fcc4662d7a55",
-                       "commitDate":  "2026-11-13T14:08:46+03:00",
-                       "buildDate":  "2026-11-13T11:09:24Z",
-                       "author":  "<redacted>",
+                       "imageTag":  "gpu-r261114-2346",
+                       "image":  "ollama-legion/cppworker:gpu-r261114-2346",
+                       "imageId":  "sha256:079f138305b3782dfb5dd53240bd3e56acb4c11b6527a13f078422075a9380e7",
+                       "commit":  "280f15ba",
+                       "commitFull":  "280f15bad540bd795cb0f9c35e64ab6cad27f8d1",
+                       "commitDate":  "2026-11-14T23:45:04+03:00",
+                       "buildDate":  "2026-11-14T20:46:02Z",
+                       "author":  "BarsSky",
                        "llamaCommit":  "0eadefebd",
                        "llamaDate":  "2026-09-01",
                        "rpcProto":  "6.0.0"
@@ -46,7 +46,7 @@
                        "commitFull":  "17949ad974967b69f935e87740c99574793aa960",
                        "commitDate":  "2026-11-12T22:58:24+03:00",
                        "buildDate":  "2026-11-12T19:59:41Z",
-                       "author":  "<redacted>"
+                       "author":  "BarsSky"
                    },
                    {
                        "alias":  "ollama-legion/webui:latest",
@@ -59,7 +59,7 @@
                        "commitFull":  "5620705208e7e2b892df6e0c31a4fceda75af176",
                        "commitDate":  "2026-11-12T17:16:35+03:00",
                        "buildDate":  "2026-11-12T14:17:25Z",
-                       "author":  "<redacted>"
+                       "author":  "BarsSky"
                    },
                    {
                        "alias":  "",
@@ -72,7 +72,7 @@
                        "commitFull":  "ee9017448ed95e843707d7a4c3ce48c7e811ff05",
                        "commitDate":  "2026-11-10T22:14:31+03:00",
                        "buildDate":  "2026-11-10T20:40:01Z",
-                       "author":  "<redacted>"
+                       "author":  "BarsSky"
                    }
                ],
     "releasedServices":  [

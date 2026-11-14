@@ -371,6 +371,29 @@ func (p *Proxy) selectBackend(model string, bt types.BackendType, skipSyncLoad .
 		}
 	}
 
+	// 3c. R493 (11b-хвост, 2026-11-14): ХОЛОДНЫЙ СТАРТ — модель не загружена
+	// НИГДЕ, значит этап 3b молчит (он работает только когда прогретая копия есть и
+	// занята), и выбор падает в 4 (score по ресурсам). А score НЕ ЗНАЕТ МОДЕЛИ:
+	// он не проверяет, есть ли на узле файл. Живой факт со стенда (образ
+	// r261114-2356, после пересоздания воркера модель была выгружена):
+	// запрос /api/chat выбрал cyborg (8 ГБ, файла модели там нет), авто-загрузка
+	// провалилась, клиент получил 503 — при том что на мастере файл лежит.
+	//
+	// Здесь выбираем узел, где ФАЙЛ есть (findLeastLoadedBackendWithModelOnDisk:
+	// тот же R91-источник, что у переезда и failover). Если каталог узлов не
+	// опрошен или файла нет ни у кого — helper вернёт "", и поведение остаётся
+	// прежним (score по ресурсам): выдумывать отказ там, где данных нет, нельзя.
+	if model != "" {
+		if id := p.findLeastLoadedBackendWithModelOnDisk(model, allowedTypes); id != "" {
+			if p.queueMgr != nil {
+				p.queueMgr.addDispatchLoad()
+			}
+			logger.Get().Infow("R493: холодный старт — выбран узел, где файл модели есть на диске",
+				"model", model, "backend", id)
+			return id
+		}
+	}
+
 	// 4. selectByResources (scoring v2) — P4 (FALLBACK)
 	return p.selectByResources(allowedTypes)
 }

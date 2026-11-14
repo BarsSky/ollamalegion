@@ -245,3 +245,34 @@ func TestR493b_CatalogNeverExcludesCandidateSilently(t *testing.T) {
 		t.Fatalf("причина %q (%s), ожидалась %q", reason, detail, rejectFileAbsentR460)
 	}
 }
+
+// TestR493b_ColdStartPicksNodeWithFileOnDisk — 11b-хвост: при ХОЛОДНОМ старте
+// (модель не загружена нигде) выбор обязан учитывать, у кого файл на диске.
+//
+// ЖИВОЙ ДЕФЕКТ (стенд, образ r261114-2356, после пересоздания воркера модель
+// выгрузилась): запрос /api/chat выбрал cyborg — у него 8 ГБ свободной VRAM и
+// лучший score, — а файла модели там нет. Авто-загрузка провалилась, клиент
+// получил 503 «auto-load failed», хотя на мастере файл лежит и он свободен.
+// Этап 3b молчал (он работает только когда прогретая копия занята), а этап 4
+// (score по ресурсам) модели не знает вовсе.
+func TestR493b_ColdStartPicksNodeWithFileOnDisk(t *testing.T) {
+	p := catalogProxyR493(t, map[string]int{"master": 1, "other": 1})
+	// Файл есть только у мастера; модель НИГДЕ не загружена (холодный старт).
+	p.modelCatalog.store("master", []string{"m12b.gguf"}, "", time.Now())
+	p.modelCatalog.store("other", []string{"unrelated.gguf"}, "", time.Now())
+	setMetricsR493(p, "master", nil, 3000)
+	setMetricsR493(p, "other", nil, 20000) // «лучший по ресурсам» — без файла
+
+	if got := p.selectBackend("m12b", types.BackendTypeLlamaCpp); got != "master" {
+		t.Fatalf("выбран %q, а файл модели есть только у master: загрузка там провалится "+
+			"и клиент получит 503 (живой дефект 2026-11-14)", got)
+	}
+
+	// Контроль: каталог не опрошен — выбор ОБЯЗАН состояться, «не знаем» не равно
+	// «файла нет». Какой именно узел выберется (master или other) — дело прежней
+	// логики (P3/score); проверяем, что мы не ввели отказ там, где данных нет.
+	p.modelCatalog = newModelCatalog()
+	if got := p.selectBackend("m12b", types.BackendTypeLlamaCpp); got != "master" && got != "other" {
+		t.Fatalf("без снимка каталога выбор не должен отказывать, получено %q", got)
+	}
+}

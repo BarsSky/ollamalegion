@@ -495,6 +495,50 @@ func (p *Proxy) BackendModelOnDisk(backendID, model string) (has bool, known boo
 	return has, known
 }
 
+// presence — «есть ли файл модели на диске узла» вместе с данными для причины
+// отказа, ОДНИМ запросом под блокировкой каталога.
+//
+// Отличие от lookup: возвращает ещё число файлов в снимке и dirError (R93), без
+// копирования списка имён — этим пользуется построение почему-в-очереди
+// (backendRejectionsR460), где на каждый бэкенд нужны только числа.
+//
+// Три состояния, и это ТРИ РАЗНЫХ ответа оператору:
+//   - known=false            — снимка нет (узел не опрашивался): не знаем;
+//   - known=true, dirError≠"" — каталог узла недоступен (отвалился bind-mount):
+//     файл мог быть, поэтому «файла нет» здесь — ложь;
+//   - known=true, dirError="" — список прочитан: has решает по нормализованному
+//     имени (регистр, путь, .gguf — см. normalizeCatalogModelName).
+func (mc *modelCatalog) presence(backendID, model string) (has, known bool, files int, dirError string, ageSec int) {
+	if mc == nil || backendID == "" {
+		return false, false, 0, "", 0
+	}
+	mc.mu.RLock()
+	entry := mc.byID[backendID]
+	if entry == nil {
+		mc.mu.RUnlock()
+		return false, false, 0, "", 0
+	}
+	files = len(entry.names)
+	dirError = entry.dirError
+	ageSec = int(time.Since(entry.fetchedAt).Seconds())
+	if key := normalizeCatalogModelName(model); key != "" {
+		_, has = entry.byName[key]
+	}
+	mc.mu.RUnlock()
+	return has, true, files, dirError, ageSec
+}
+
+// backendCatalogPresenceR493 — presence через прокси (nil-safe).
+//
+// R493 (долги 11a/11b): причина «модель не загружена» ничего не говорила о том,
+// УСТРАНИМА ли загрузка на этом узле. Каталог отвечает на это, но молчал.
+func (p *Proxy) backendCatalogPresenceR493(backendID, model string) (has, known bool, files int, dirError string, ageSec int) {
+	if p == nil {
+		return false, false, 0, "", 0
+	}
+	return p.modelCatalog.presence(backendID, model)
+}
+
 // ModelCatalogSnapshot — снимок каталога по всем бэкендам (админ-API).
 func (p *Proxy) ModelCatalogSnapshot() map[string]ModelCatalogSnapshot {
 	if p == nil || p.modelCatalog == nil {

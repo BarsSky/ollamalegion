@@ -55,6 +55,14 @@ const (
 	// где модель не помещается, — но в why_queued этот отказ не попадал, и
 	// оператор снова видел model_not_loaded вместо «need 21 GiB, free 5 GiB».
 	rejectVRAMInsufficientR460 = "vram_insufficient"
+	// R493 (долги 11a/11b): «на этом узле файла модели НЕТ на диске» и «каталог
+	// узла недоступен». Оба состояния каталог (R91/R93) знал, но в why_queued
+	// оператор видел на их месте model_not_loaded — то есть причину, которую
+	// загрузкой НЕ устранить. Документация эти коды уже обещала
+	// (docs/architecture/availability-first-r493.ru.md §4: `file_absent: <узел>`),
+	// код их не выдавал — обещание и поведение разошлись.
+	rejectFileAbsentR460         = "file_absent"
+	rejectCatalogUnavailableR460 = "catalog_unavailable"
 )
 
 // backendRejectionMoveR480 — контекст переезда сессии для списка причин.
@@ -117,14 +125,38 @@ func (p *Proxy) backendRejectionsR460(model string, bt types.BackendType, move .
 				// свободен ровно потому, что модели на нём нет.
 				reason = rejectModelAbsentR460
 				detail = "модель не загружена (загрузка = минуты и, возможно, меньшее окно)"
-				// R493 (долг 11a): если известно, что модель СЮДА не влезет,
-				// «модель не загружена» — неполная причина: её нельзя устранить
-				// загрузкой. Называем это числами, теми же, что решают выбор
-				// узла под загрузку (R248/R493: размер × 1.05 против свободной VRAM).
-				if needMB, freeMB, known := p.vramNeedVsFreeR493(id, model); known && float64(freeMB) < needMB {
-					reason = rejectVRAMInsufficientR460
-					detail = fmt.Sprintf("модель не влезает: need %s, free %s",
-						formatGiBR493(needMB), formatGiBR493(float64(freeMB)))
+				// R493 (долги 11a/11b): каталог узла отвечает, УСТРАНИМА ли
+				// загрузка здесь. Порядок важен: «файла нет» и «каталог
+				// недоступен» называются ВМЕСТО model_not_loaded, потому что
+				// загрузкой они не лечатся, а VRAM решает только тогда, когда
+				// файл на диске действительно есть.
+				hasOnDisk, catalogKnown, files, dirErr, ageSec := p.backendCatalogPresenceR493(id, model)
+				switch {
+				case catalogKnown && dirErr != "":
+					// R93: пустой список при dirError≠"" — это «каталог отвалился»,
+					// а НЕ «моделей нет». Утверждать «файла нет» здесь нельзя.
+					reason = rejectCatalogUnavailableR460
+					detail = "каталог моделей узла недоступен, наличие файла проверить нельзя: " + dirErr
+				case catalogKnown && !hasOnDisk:
+					reason = rejectFileAbsentR460
+					// Форма «файлов в каталоге: N» вместо «N файлов» намеренно: при
+					// N=1 живой прогон 2026-11-14 показал «в каталоге 1 файлов», а
+					// склонение по числу — это второй список правил в диагностике,
+					// который однажды разойдётся с первым.
+					detail = fmt.Sprintf(
+						"файла модели нет на диске узла (файлов в каталоге: %d, снимок %d с назад) — загрузка здесь невозможна без копирования файла",
+						files, ageSec)
+				default:
+					// R493 (долг 11a): если известно, что модель СЮДА не влезет,
+					// «модель не загружена» — неполная причина: её нельзя
+					// устранить загрузкой. Называем это числами, теми же, что
+					// решают выбор узла под загрузку (R248/R493: размер × 1.05
+					// против свободной VRAM).
+					if needMB, freeMB, vramKnown := p.vramNeedVsFreeR493(id, model); vramKnown && float64(freeMB) < needMB {
+						reason = rejectVRAMInsufficientR460
+						detail = fmt.Sprintf("модель не влезает: need %s, free %s",
+							formatGiBR493(needMB), formatGiBR493(float64(freeMB)))
+					}
 				}
 			}
 		}

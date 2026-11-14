@@ -341,17 +341,68 @@ func (mm *MetricsManager) UpdateLlamaCppModelUnloaded(backendID, model string) {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 
-	lm, ok := mm.llamaMetrics[backendID]
-	if !ok {
-		return
+	// R493 (2026-11-14): чистим ВСЕ локальные источники «модель загружена», а не
+	// только llamaMetrics.
+	//
+	// ЖИВОЙ ДЕФЕКТ (нашёл CI-прогон fe3a9d99, TestLlamaModelLoadedConfirmsReplica_R81
+	// в internal/api): обработчик выгрузки снимал инстанс группы
+	// (MarkReplicationInstanceUnloaded → DropInstance), но следом запускал
+	// `go p.ensurePlacementInstances()`, который «усыновляет» копии по метрикам.
+	// `backendHasModelByID` смотрит ТРИ источника, и здесь чистился только первый —
+	// поэтому объединённый `metrics.Models` продолжал утверждать «загружена», и
+	// инстанс возвращался в группу сразу после того, как оператор его убрал.
+	// На быстрой машине горутина не успевала до проверки (тест зелёный), на
+	// двухъядерном раннере — успевала.
+	if lm, ok := mm.llamaMetrics[backendID]; ok {
+		lm.LoadedModels = filterOutModelR493(lm.LoadedModels, model)
 	}
-	filtered := lm.LoadedModels[:0]
-	for _, m := range lm.LoadedModels {
-		if m.Name != model {
-			filtered = append(filtered, m)
+	if bm, ok := mm.metrics[backendID]; ok && bm != nil {
+		if len(bm.Models) > 0 {
+			kept := make([]string, 0, len(bm.Models))
+			for _, name := range bm.Models {
+				if modelNameMatchesR493(name, model) {
+					continue
+				}
+				kept = append(kept, name)
+			}
+			bm.Models = kept
+		}
+		if len(bm.Ollama.RunningModels) > 0 {
+			running := make([]types.RunningModel, 0, len(bm.Ollama.RunningModels))
+			for _, m := range bm.Ollama.RunningModels {
+				if modelNameMatchesR493(m.Name, model) {
+					continue
+				}
+				running = append(running, m)
+			}
+			bm.Ollama.RunningModels = running
 		}
 	}
-	lm.LoadedModels = filtered
+}
+
+// filterOutModelR493 — убрать модель из списка загруженных llama.cpp-моделей.
+func filterOutModelR493(models []types.LlamaCppModel, model string) []types.LlamaCppModel {
+	if len(models) == 0 {
+		return models
+	}
+	kept := models[:0]
+	for _, m := range models {
+		if modelNameMatchesR493(m.Name, model) {
+			continue
+		}
+		kept = append(kept, m)
+	}
+	return kept
+}
+
+// modelNameMatchesR493 — то же сопоставление имён, что у backendHasModelByID:
+// точное имя или вхождение без учёта регистра (воркер может отдавать имя с
+// расширением или путём).
+func modelNameMatchesR493(name, model string) bool {
+	if name == "" {
+		return false
+	}
+	return name == model || containsFold(name, model)
 }
 
 // UpdateLlamaCppLoadingModels — обновляет LoadingModels в кэше (вызывается

@@ -316,6 +316,20 @@ func (p *Proxy) PlacementReplicationStatus() map[string]interface{} {
 			if group := p.modelReplication.GetGroup(rule.Model); group != nil {
 				entry["hasGroup"] = true
 				entry["candidates"] = p.replicationSelector.GetGroupCandidates(rule.Model)
+				// R493 (2026-11-14): состояния инстансов, а не только список
+				// кандидатов. Без них «кандидат есть» неотличимо от «кандидат готов»:
+				// контроллер самовосстанавливает группу, и после события выгрузки
+				// бэкенд может снова попасть в кандидаты со статусом LOADING — это
+				// НЕ отменённая выгрузка, а начатая заново загрузка.
+				states := p.modelReplication.GetInstanceStatesSnapshot(rule.Model)
+				instances := make([]map[string]interface{}, 0, len(states))
+				for _, st := range states {
+					instances = append(instances, map[string]interface{}{
+						"backendId": st.BackendID,
+						"status":    string(st.Status),
+					})
+				}
+				entry["instances"] = instances
 			} else {
 				entry["hasGroup"] = false
 			}

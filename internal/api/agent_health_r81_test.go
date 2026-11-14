@@ -167,7 +167,25 @@ func TestLlamaModelLoadedConfirmsReplica_R81(t *testing.T) {
 	}
 	status = s.proxy.PlacementReplicationStatus()
 	entry = status["groups"].(map[string]interface{})["r81-model"].(map[string]interface{})
-	if cands, _ := entry["candidates"].([]string); len(cands) != 0 {
-		t.Fatalf("после выгрузки кандидаты %v, ожидалось пусто", cands)
+
+	// R493 (2026-11-14): проверяем СОСТОЯНИЕ инстанса, а не «список кандидатов пуст».
+	//
+	// Почему прежнее ожидание было неверным: контроллер репликации самовосстанавливает
+	// группу и вправе сразу после выгрузки начать загрузку заново — тогда бэкенд снова
+	// появляется в candidates со статусом LOADING. Это не «выгрузка отменена», а новая
+	// загрузка. Из-за этого тест и был плавающим: на быстрой машине проверка успевала
+	// раньше тика контроллера (зелено), на двухъядерном раннере — нет
+	// (живое падение CI fe3a9d99: «после выгрузки кандидаты [r81-c1], ожидалось пусто»).
+	//
+	// Контракт события: подтверждение (LOADED) снимается немедленно. Состояния инстансов
+	// с R493 отдаёт сам статус (entry["instances"]).
+	if raw, ok := entry["instances"].([]map[string]interface{}); ok {
+		for _, st := range raw {
+			if st["backendId"] == "r81-c1" && st["status"] == string(types.ModelStateLoaded) {
+				t.Fatalf("после события выгрузки инстанс r81-c1 всё ещё LOADED: %v", st)
+			}
+		}
+	} else {
+		t.Fatalf("статус репликации не отдаёт состояния инстансов: %v", entry)
 	}
 }

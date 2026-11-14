@@ -1007,62 +1007,61 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 				return nil
 			}
 
-			// Bug fix (Round 3): extract tool calls from delta.content for models
-			// that emit them as text (Gemma-4, Hermes/Qwen without native tool_call
-			// support, etc.). Without this, Cline/Roo see raw JSON text and ignore it
-			// → tool_calls never reach the client. extractToolCallsFromSSEContent
-			// returns nil if no tool calls detected (passthrough).
+			// R493 (этап 6): что видит клиент — решает ОДНО место
+			// (planStreamLineR493), то же, что и на hijack-пути. Здесь остаётся
+			// только запись через трекер этого транспорта и пометка последнего
+			// кадра для гарантии [DONE].
 			//
-			// Filter line BEFORE normalization so we see exactly what client would see.
-			lineToWrite, _ := filterAssistantEgressForClient(res.line, egressFilter)
-			if isOpenAISSEDataLine(lineToWrite) {
-				if payload := extractSSEDataPayload(lineToWrite); payload != nil {
-					// R186 (2026-10-20): извлечение вызова из текста + приведение
-					// НАТИВНЫХ вызовов к форме OpenAI (id/type/INDEX). Раньше здесь
-					// вызывался только extract: нативные чанки без `index` уходили
-					// клиенту как есть, и Cline не мог склеить фрагменты/параллельные
-					// вызовы → «✖ Invalid input» и повтор до остановки по циклу.
-					if modified := normalizeOpenAISSEPayload(payload, p.toolSchemasForRequest(r), toolRepair); modified != nil {
-						lineToWrite = rewriteSSEDataPayload(lineToWrite, modified)
-					}
+			// ЖИВОЕ РАСХОЖДЕНИЕ, которое этим убрано: на hijack-пути кадр-ошибка
+			// воркера закрывал поток (R294), а здесь он просто пересылался дальше —
+			// клиент /v1 без Hijack'а ждал EOF вместо готового ответа. Такие
+			// различия и были причиной, почему R294 «работал не везде».
+			plan := planStreamLineR493(res.line, egressFilter, p.toolSchemasForRequest(r), toolRepair, streamLineTransportPlainR493)
+			for _, fr := range plan.Pre {
+				if _, werr := tw.Write(fr); werr != nil {
+					logger.Get().Warnw("proxyRequestOpenAIStreaming: finalize before [DONE] failed",
+						"backend", backendID, "error", werr)
+					return nil
 				}
+				lastSSELine = append(lastSSELine[:0], fr...)
 			}
-
-			// R261 (2026-10-28): finish-кадр придерживаем — объяснение пустого
-			// ответа обязано идти ПЕРЕД finish_reason.
-			if egressFilter.tryHoldFinishFrame(lineToWrite) {
+			if plan.Line == nil {
+				// Придержанный finish-кадр (R261): клиенту он уйдёт в конце.
 				continue
 			}
-			// R261: [DONE] от воркера — отдаём придержанный finish и объяснение
-			// ДО него, иначе они окажутся после конца потока.
-			if isSSEDoneLine(lineToWrite) {
-				for _, fr := range egressFilter.finalizeFrames() {
-					// R277: граница SSE-события для кадров из фильтра.
-					fr = withSSEEventBoundary(fr)
-					if _, werr := tw.Write(fr); werr != nil {
-						logger.Get().Warnw("proxyRequestOpenAIStreaming: finalize before [DONE] failed",
-							"backend", backendID, "error", werr)
-						return nil
-					}
-					lastSSELine = append(lastSSELine[:0], fr...)
-				}
-			}
-			if _, werr := tw.Write(lineToWrite); werr != nil {
+			if _, werr := tw.Write(plan.Line); werr != nil {
 				logger.Get().Warnw("proxyRequestOpenAIStreaming: write to client failed",
 					"backend", backendID, "error", werr)
 				return nil
 			}
 			// R252: запоминаем последний кадр для гарантии завершения потока.
-			lastSSELine = append(lastSSELine[:0], lineToWrite...)
+			lastSSELine = append(lastSSELine[:0], plan.Line...)
+
+			// R294: кадр-ошибка воркера закрывает поток и на этом пути. Хвост
+			// фильтра (объяснение/придержанный finish) — перед терминатором, иначе
+			// клиент прочитает объяснение после конца потока.
+			if plan.Terminate {
+				for _, fr := range plan.Post {
+					_, _ = tw.Write(fr)
+				}
+				if !tw.DoneSent() {
+					if _, werr := tw.Write([]byte(sseDoneFrame)); werr != nil {
+						logger.Get().Warnw("proxyRequestOpenAIStreaming: guarantee [DONE] after upstream error failed",
+							"backend", backendID, "error", werr)
+					}
+				}
+				logger.Get().Infow("proxyRequestOpenAIStreaming: upstream error frame — stream closed (R294)",
+					"backend", backendID)
+				return nil
+			}
 		}
 	}
 
 	// R261 (2026-10-28): закрываем выход фильтра размышлений (хвост, объяснение
 	// пустого ответа, придержанный finish) — иначе клиент без поддержки
-	// reasoning_content видит пустой ответ.
-	for _, fr := range egressFilter.finalizeFrames() {
-		// R277: граница SSE-события (см. withSSEEventBoundary).
-		fr = withSSEEventBoundary(fr)
+	// reasoning_content видит пустой ответ. Список кадров и граница события —
+	// в одном месте (finalizeStreamFramesR493), как и на hijack-пути.
+	for _, fr := range finalizeStreamFramesR493(egressFilter) {
 		if _, werr := tw.Write(fr); werr != nil {
 			logger.Get().Warnw("proxyRequestOpenAIStreaming: finalize frame write failed",
 				"backend", backendID, "error", werr)

@@ -558,79 +558,28 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 				return nil
 			}
 
-			lineToWrite, _ := filterAssistantEgressForClient(res.line, egressFilter)
-			// Round 35e (2026-08-13): skip empty SSE lines.
-			//
-			// cppworker (и другие SSE backends) разделяют data: events парой \n\n.
-			// ReadBytes('\n') отдаёт каждую строку отдельно, включая пустые строки
-			// (одиночный \n) между событиями. Раньше код писал пустую строку
-			// через writeChunkedFrame как отдельный 1-байт chunk — это ломает
-			// strict chunked-парсеры (Open WebUI aiohttp кидает
-			// "TransferEncodingError: 400, message='Not enough data to satisfy
-			// transfer length header.'") на длинных стримах с thinking tokens.
-			//
-			// Фикс: пропускаем пустые строки (ReadBytes для разделителя между
-			// SSE events). SSE-комментарии (строки начинающиеся с ':') пишутся
-			// нормально — они не пустые.
-			if len(lineToWrite) == 0 || (len(lineToWrite) == 1 && lineToWrite[0] == '\n') {
-				continue
-			}
-			if isOpenAISSEDataLine(lineToWrite) {
-				if payload := extractSSEDataPayload(lineToWrite); payload != nil {
-					// R186: извлечение из текста + форма OpenAI (id/type/INDEX) и
-					// приведение аргументов к схеме инструмента из запроса.
-					if modified := normalizeOpenAISSEPayload(payload, p.toolSchemasForRequest(r), toolRepair); modified != nil {
-						lineToWrite = rewriteSSEDataPayload(lineToWrite, modified)
-					}
+			// R493 (этап 6): что видит клиент — решает ОДНО место
+			// (planStreamLineR493), а этот цикл только пишет то, что решили, и
+			// закрывает поток, если решено закрыть. Раньше здесь жила своя копия
+			// правила (фильтр → нормализация → придержанный finish → [DONE] →
+			// граница события → кадр-ошибка), и legacy-цикл имел свою. Именно
+			// поэтому R294 (кадр-ошибка закрывает поток) существовал только здесь.
+			plan := planStreamLineR493(res.line, egressFilter, p.toolSchemasForRequest(r), toolRepair, streamLineTransportChunkedR493)
+			for _, fr := range plan.Pre {
+				if werr := writeFrameR493(fr); werr != nil {
+					logger.Get().Warnw("hijack streaming: finalize before [DONE] failed",
+						"backend", backendID, "error", werr)
+					return nil
 				}
+				lastSSELine = append(lastSSELine[:0], fr...)
 			}
-
-			// Round 32 #17 (2026-08-11): SSE event boundary fix.
-			//
-			// cppworker шлёт каждую SSE event как `data: {...}\n\n` (double newline —
-			// стандарт SSE spec). ReadBytes('\n') в main loop возвращает только
-			// `data: {...}\n` (одна строка с trailing \n), оставляя второй \n
-			// в буфере на следующий ReadBytes. Если писать только `data: {...}\n`
-			// в chunked frame, клиент получает события склеенными
-			// `data: {...}data: {...}data: {...}` без двойного newline между ними.
-			//
-			// OpenWebUI aiohttp и другие strict SSE-парсеры интерпретируют
-			// такое как **одну строку без разделителей** — поэтому в UI
-			// виден "код в линию без пробелов" (fences не отделяются,
-			// \n внутри code block тоже).
-			//
-			// Fix: дописываем \n к data: строкам перед chunked-framing,
-			// восстанавливая SSE event boundary `data: {...}\n\n`.
-			// Heartbeat `:` lines не трогаем — это SSE-комментарии без
-			// content, не нуждаются в \n\n boundary.
-			// R261 (2026-10-28): finish-кадр придерживаем до конца стрима —
-			// объяснение пустого ответа обязано прийти ПЕРЕД finish_reason
-			// (строгие клиенты не читают контент после finish).
-			if egressFilter.tryHoldFinishFrame(lineToWrite) {
+			if plan.Line == nil {
+				// Строка не пишется: пустая строка-разделитель SSE (Round 35e) или
+				// придержанный finish-кадр (R261).
 				continue
-			}
-			// R261: маркер [DONE] от воркера — последняя точка, где ещё можно
-			// отдать придержанный finish и объяснение. Иначе они окажутся ПОСЛЕ
-			// [DONE], и клиент увидит два конца потока (поймано тестом R258).
-			if isSSEDoneLine(lineToWrite) {
-				for _, fr := range egressFilter.finalizeFrames() {
-					// R277: кадр из фильтра приходит без второго перевода строки —
-					// восстанавливаем границу SSE-события, иначе строгий клиент
-					// склеивает его с [DONE] и падает на разборе JSON.
-					fr = withSSEEventBoundary(fr)
-					if werr := writeFrameR493(fr); werr != nil {
-						logger.Get().Warnw("hijack streaming: finalize before [DONE] failed",
-							"backend", backendID, "error", werr)
-						return nil
-					}
-					lastSSELine = append(lastSSELine[:0], fr...)
-				}
-			}
-			if isOpenAISSEDataLine(lineToWrite) {
-				lineToWrite = append(lineToWrite, '\n')
 			}
 			// Round 32 #16: chunked-framed write.
-			if werr := writeFrameR493(lineToWrite); werr != nil {
+			if werr := writeFrameR493(plan.Line); werr != nil {
 				logger.Get().Warnw("hijack streaming: write to client failed",
 					"backend", backendID, "error", werr)
 				// R344: клиент ушёл — это ГЛАВНЫЙ путь обнаружения на /v1 (ошибка
@@ -641,7 +590,7 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			}
 			// R252: помним последний отданный кадр — по нему решаем, нужен ли
 			// синтетический [DONE] перед закрытием потока.
-			lastSSELine = append(lastSSELine[:0], lineToWrite...)
+			lastSSELine = append(lastSSELine[:0], plan.Line...)
 
 			// R294 (2026-10-29): КАДР ОШИБКИ ОТ ВОРКЕРА ЗАКРЫВАЕТ СТРИМ.
 			//
@@ -649,20 +598,17 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 			// requested n_ctx=16384 exceeds…}` и НЕ присылал терминатор. Балансер
 			// честно пересылал кадр и продолжал ждать, клиент (/v1) висел до
 			// своего таймаута (curl HTTP 000 через 40 с), хотя ответ уже был.
-			// Теперь после кадра с ошибкой отдаём терминатор и закрываем поток —
-			// дальше ждать нечего.
-			if isOpenAISSEDataLine(lineToWrite) {
-				if payload := extractSSEDataPayload(lineToWrite); payload != nil {
-					if isUpstreamErrorPayload(payload) {
-						for _, fr := range egressFilter.finalizeFrames() {
-							_ = writeFrameR493(withSSEEventBoundary(fr))
-						}
-						ensureChunkedSSEDone(bufrw, lastSSELine)
-						logger.Get().Infow("hijack streaming: upstream error frame — stream closed (R294)",
-							"backend", backendID)
-						return nil
-					}
+			// Теперь решение «закрывать» принимает план, а цикл его исполняет:
+			// сначала хвост фильтра (объяснение/придержанный finish), затем
+			// терминатор, затем закрытие.
+			if plan.Terminate {
+				for _, fr := range plan.Post {
+					_ = writeFrameR493(fr)
 				}
+				ensureChunkedSSEDone(bufrw, lastSSELine)
+				logger.Get().Infow("hijack streaming: upstream error frame — stream closed (R294)",
+					"backend", backendID)
+				return nil
 			}
 		}
 	}
@@ -671,9 +617,9 @@ func (p *Proxy) proxyRequestOpenAIStreamingHijacked(
 	// хвоста, объяснение «пустого ответа» (если весь текст ушёл в размышления) и
 	// придержанный finish-кадр. До этого клиент без поддержки reasoning_content
 	// получал молчаливую пустоту, хотя модель ответила.
-	for _, fr := range egressFilter.finalizeFrames() {
-		// R277: граница SSE-события (см. withSSEEventBoundary).
-		fr = withSSEEventBoundary(fr)
+	// Список кадров и граница события — в одном месте (finalizeStreamFramesR493),
+	// как и на пути без hijack.
+	for _, fr := range finalizeStreamFramesR493(egressFilter) {
 		if werr := writeFrameR493(fr); werr != nil {
 			logger.Get().Warnw("hijack streaming: finalize frame write failed",
 				"backend", backendID, "error", werr)

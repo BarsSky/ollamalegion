@@ -113,6 +113,62 @@ func TestR493r_HijackSSELoopWritesOnlyThroughHelpers(t *testing.T) {
 	}
 }
 
+// TestR493r_StreamLinePlanIsTheOnlyDecisionPoint — этап 6, шаг «свести сами
+// циклы»: решение «что видит клиент» принимается в ОДНОМ месте
+// (planStreamLineR493), а оба SSE-цикла /v1 только пишут то, что решено.
+//
+// ЖИВОЙ ДЕФЕКТ, ради которого страж. В двух циклах дословно дублировались
+// фильтр размышлений, нормализация формы вызова (R186), придержанный finish
+// (R261), граница события (R277) и закрытие по кадру-ошибке (R294). Расхождение
+// было не теорией: R294 существовал ТОЛЬКО на hijack-пути, поэтому клиент /v1 без
+// Hijack'а получал кадр-ошибку и продолжал ждать EOF. Пока правило живёт в двух
+// копиях, такая правка снова доедет до одного пути из двух.
+//
+// Почему страж, а не тест поведения: покрыть ВСЕ комбинации двух транспортов
+// поведением можно, но именно «следующая правка в одном цикле» поведением не
+// ловится — обе ветки по отдельности остаются корректными, расходятся только
+// реакции на редкий кадр. Поэтому правило проверяется по исходнику.
+func TestR493r_StreamLinePlanIsTheOnlyDecisionPoint(t *testing.T) {
+	loops := []struct{ name, file, sig, marker string }{
+		{"SSE без hijack", "proxy_request.go",
+			"func (p *Proxy) proxyRequestOpenAIStreamingLegacy(", "tw := newSSEDoneTrackerR252("},
+		{"SSE hijack", "proxy_request_hijack.go",
+			"func (p *Proxy) proxyRequestOpenAIStreamingHijacked(", "writeFrameR493 := func("},
+	}
+	// Всё это — шаги ОДНОГО правила, сведённого в planStreamLineR493 /
+	// finalizeStreamFramesR493. В цикле их быть не должно.
+	forbidden := []struct {
+		needle string
+		why    string
+	}{
+		{"filterAssistantEgressForClient(", "фильтр размышлений решается в плане"},
+		{"normalizeOpenAISSEPayload(", "форма вызова (R186) решается в плане"},
+		{"tryHoldFinishFrame(", "придержанный finish (R261) решается в плане"},
+		{"isUpstreamErrorPayload(", "закрытие по кадру-ошибке (R294) решается в плане"},
+		{"withSSEEventBoundary(", "граница события (R277) восстанавливается в плане"},
+		{"isSSEDoneLine(", "момент выдачи терминатора решается в плане"},
+		{"finalizeFrames(", "хвост стрима отдаётся через finalizeStreamFramesR493"},
+	}
+	for _, l := range loops {
+		body := funcBodyR493(t, l.file, l.sig, l.marker)
+		if !strings.Contains(body, "planStreamLineR493(") {
+			t.Errorf("%s: цикл не использует общее решение planStreamLineR493 — значит у него "+
+				"снова своя копия правила (класс дефекта этапа 6)", l.name)
+		}
+		if !strings.Contains(body, "finalizeStreamFramesR493(") {
+			t.Errorf("%s: конец стрима не идёт через finalizeStreamFramesR493", l.name)
+		}
+		for _, f := range forbidden {
+			if strings.Contains(body, f.needle) {
+				t.Errorf("%s: в цикле снова вызывается %q (%s). Правило обязано быть в "+
+					"planStreamLineR493: иначе правка доедет до одного транспорта из двух — "+
+					"ровно так R294 годами работал только на hijack-пути",
+					l.name, f.needle, f.why)
+			}
+		}
+	}
+}
+
 // TestR493r_StreamPipeFlagIsRegistered — флаг обязан быть в реестре горячих
 // настроек (урок 0.7.261: он был «мёртвым», а тесты «при 0 и при 1» проходили оба).
 func TestR493r_StreamPipeFlagIsRegistered(t *testing.T) {

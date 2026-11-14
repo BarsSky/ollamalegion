@@ -926,8 +926,13 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 	endClientStream := beginClientStreamR271(p, backendID, legacyModel)
 	defer endClientStream()
 
-	flusher, canFlush := w.(http.Flusher)
-
+	// R493-12r (этап 6): ФЛАШ — в одном месте, в трекере терминатора.
+	//
+	// Живой факт: `sseDoneTrackerR252.Write` уже пишет, отмечает байты и флашит
+	// (если w умеет Flush). Пять повторных `if canFlush { flusher.Flush() }` в
+	// этом цикле были вторым набором правил поверх того же писателя — ровно то,
+	// что этап 6 и убирает. Поведение клиента не меняется: T2 (golden-байты)
+	// проходит в обоих режимах флага LB_STREAM_PIPE.
 	// T2/R252 (2026-11-12): «ровно один терминатор» — факт о ПОТОКЕ, а не о
 	// переменной. Гарантия ниже решала по lastSSELine (что записал сам цикл), но
 	// записи идут и мимо этого учёта, поэтому на /v1/chat/completions клиент
@@ -986,9 +991,6 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 					"backend", backendID, "error", werr)
 				return nil
 			}
-			if canFlush {
-				flusher.Flush()
-			}
 
 		case res := <-dataCh:
 			if res.err != nil {
@@ -1043,9 +1045,6 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 						return nil
 					}
 					lastSSELine = append(lastSSELine[:0], fr...)
-					if canFlush {
-						flusher.Flush()
-					}
 				}
 			}
 			if _, werr := tw.Write(lineToWrite); werr != nil {
@@ -1055,9 +1054,6 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 			}
 			// R252: запоминаем последний кадр для гарантии завершения потока.
 			lastSSELine = append(lastSSELine[:0], lineToWrite...)
-			if canFlush {
-				flusher.Flush()
-			}
 		}
 	}
 
@@ -1073,9 +1069,6 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 			return nil
 		}
 		lastSSELine = append(lastSSELine[:0], fr...)
-		if canFlush {
-			flusher.Flush()
-		}
 	}
 
 	// R252 (2026-10-28): гарантия `data: [DONE]`. Раньше поток мог закрыться без
@@ -1093,10 +1086,8 @@ func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http
 	}
 	_ = lastSSELine
 
-	// Финальный flush на всякий случай.
-	if canFlush {
-		flusher.Flush()
-	}
+	// Финальный flush не нужен: последний tw.Write уже флашил, а если записей не
+	// было — флашить нечего.
 	return nil
 }
 

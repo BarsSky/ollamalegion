@@ -37,15 +37,14 @@ type stallPathStatus struct {
 // Список — это решение, а не украшение: сюда попадают только осознанно.
 var stallPathRegistryR298 = map[string]stallPathStatus{
 	// Сторож подключён.
-	"proxy_request_hijack.go": {covered: true},
-	"llamacpp_transport.go":   {covered: true},
+	//
+	// 2026-11-14 (этап 6): цикл SSE /v1 стал ОДНИМ и живёт в
+	// stream_openai_sse_r493.go — там же создаётся сторож, а не в одном из
+	// транспортов. Записи proxy_request.go и proxy_request_hijack.go убраны: они
+	// больше не читают стрим (тела переехали), и реестр не должен врать.
+	"stream_openai_sse_r493.go": {covered: true},
+	"llamacpp_transport.go":     {covered: true},
 
-	// Пока НЕ подключён — зафиксированные пробелы R298. Каждый требует
-	// отдельного решения, и тест не даст про них забыть.
-	"proxy_request.go": {
-		why: "не-hijack путь /v1/chat/completions (буферизующий). Пробел R298: " +
-			"сторож не подключён; при LB_STREAMING_NEVER_TIMEOUT=1 поток может висеть",
-	},
 	"proxy_request_openai_auto_stream.go": {
 		why: "авто-стрим для клиентов, попросивших stream:false (не агентский путь)",
 	},

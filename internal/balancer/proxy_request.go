@@ -1,7 +1,6 @@
 package balancer
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -769,16 +768,15 @@ retrySucceeded:
 //   - Если тело ответа не-SSE (Content-Type отличается) — проксируется как
 //     обычный JSON с заданным Content-Length, без heartbeat.
 func (p *Proxy) proxyRequestOpenAIStreaming(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) error {
-	// Round 31 #6 real fix (2026-08-09): hijack-based client disconnect detection.
-	// Если w поддерживает http.Hijacker — используем hijack path для <1s detection.
-	// Иначе (HTTP/2, wrapped writer) — fallback к legacy w.Write + ReadTimeout=30s.
-	if hj, ok := w.(http.Hijacker); ok {
-		logger.Get().Infow("Round 31 #6 hijack: using hijack path", "backend", backendID)
-		return p.proxyRequestOpenAIStreamingHijacked(w, r, resp, backendID, hj)
+	// R493 (этап 6): проверки http.Hijacker здесь больше НЕТ — транспорт открывает
+	// сток (openOpenAIStreamSinkR493), и он же пишет заголовки. Диспетчер не обязан
+	// помнить про два пути, поэтому и рекурсия R66c здесь невозможна.
+	if handled, err := p.openAIStreamNon2xxR493(w, resp); handled {
+		return err
 	}
-	logger.Get().Infow("Round 31 #6 hijack: NOT supported, using fallback", "backend", backendID, "w_type", fmt.Sprintf("%T", w))
-
-	return p.proxyRequestOpenAIStreamingLegacy(w, r, resp, backendID)
+	opened := p.openOpenAIStreamSinkR493(w, resp, backendID, nil, false)
+	defer opened.close()
+	return p.streamOpenAIWithSinkR493(w, r, resp, backendID, opened)
 }
 
 // proxyRequestOpenAIStreamingLegacy — SSE-стриминг БЕЗ hijack'а: пишет в
@@ -796,298 +794,15 @@ func (p *Proxy) proxyRequestOpenAIStreaming(w http.ResponseWriter, r *http.Reque
 // overflow. Теперь оба входа (нет Hijacker'а / hijack не удался) ведут
 // сюда напрямую, без повторной проверки интерфейса.
 func (p *Proxy) proxyRequestOpenAIStreamingLegacy(w http.ResponseWriter, r *http.Request, resp *http.Response, backendID string) error {
-	defer resp.Body.Close()
-
-	// 0. Проверка статус-кода: если upstream вернул не-2xx, не начинаем SSE-стрим,
-	// а возвращаем структурированную ошибку. Без этой проверки клиент получает
-	// пустой SSE-поток (или не-SSE тело), и OpenWebUI/Cline падает с
-	// "Expecting value: line 2 column 1 (char 1)" при попытке распарсить ответ.
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			body = []byte(fmt.Sprintf(`{"error":"upstream read error: %v"}`, readErr))
-		}
-		// Восстанавливаем Body для повторного использования
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-
-		contentType := resp.Header.Get("Content-Type")
-		if strings.Contains(contentType, "text/event-stream") {
-			// Upstream вернул ошибку с SSE Content-Type (крайне маловероятно, но страхуемся).
-			// Отдаём SSE с ошибкой, чтобы OpenAI-клиент не завис в ожидании.
-			w.Header().Set("X-Accel-Buffering", "no")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Connection", "keep-alive")
-			w.WriteHeader(resp.StatusCode)
-			fmt.Fprintf(w, "data: {\"error\":\"upstream returned HTTP %d\",\"choices\":[{\"delta\":{},\"finish_reason\":\"error\"}]}\n\n", resp.StatusCode)
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			return nil
-		}
-
-		// JSON-ошибка — проксируем как есть
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-		w.WriteHeader(resp.StatusCode)
-		w.Write(body)
-		return nil
+	// Обычный транспорт принудительно (forcePlain): этот вход существует для
+	// писателей без http.Hijacker и для тестов. Тело — общий цикл, отдельных
+	// реализаций больше нет.
+	if handled, err := p.openAIStreamNon2xxR493(w, resp); handled {
+		return err
 	}
-
-	// 1. Копируем заголовки ответа бэкенда
-
-	for key, values := range resp.Header {
-		keyLower := strings.ToLower(key)
-		if keyLower == "transfer-encoding" || keyLower == "content-length" || keyLower == "connection" {
-			continue
-		}
-		if strings.HasPrefix(keyLower, "access-control-") {
-			continue
-		}
-		// R60.15: preserve upstream X-Request-Id as X-Upstream-Request-Id
-		// (avoid duplicate X-Request-Id — balancer sets its own).
-		if keyLower == "x-request-id" {
-			for _, value := range values {
-				if existing := w.Header().Get("X-Upstream-Request-Id"); existing == "" {
-					w.Header().Set("X-Upstream-Request-Id", value)
-				}
-			}
-			continue
-		}
-		if keyLower == "vary" {
-			for _, value := range values {
-				if strings.ToLower(strings.TrimSpace(value)) == "origin" {
-					continue
-				}
-				w.Header().Add(key, value)
-			}
-			continue
-		}
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-
-	// 2. Если бэкенд вернул НЕ-SSE (например, JSON-ошибку с content-type: application/json),
-	// проксируем тело как есть и завершаемся.
-	contentType := resp.Header.Get("Content-Type")
-	isSSEResponse := strings.Contains(contentType, "text/event-stream") ||
-		strings.Contains(contentType, "application/x-ndjson")
-	if !isSSEResponse {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read non-streaming response: %w", err)
-		}
-		// Round 31 #7 (2026-08-09): record token usage для мониторинга.
-		// Этот branch срабатывает для non-stream ответов на /v1/chat/completions
-		// (когда body не stream=true).
-		if resp.StatusCode < 400 {
-			var openaiResp map[string]interface{}
-			if json.Unmarshal(body, &openaiResp) == nil {
-				if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
-					var prompt, completion int64
-					if v, ok := usage["prompt_tokens"].(float64); ok {
-						prompt = int64(v)
-					}
-					if v, ok := usage["completion_tokens"].(float64); ok {
-						completion = int64(v)
-					}
-					if prompt > 0 || completion > 0 {
-						modelName, _ := openaiResp["model"].(string)
-						p.recordTokenUsage(modelName, prompt, completion)
-					}
-				}
-			}
-		}
-		if w.Header().Get("Content-Type") == "" {
-			w.Header().Set("Content-Type", "application/json")
-		}
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-		w.WriteHeader(resp.StatusCode)
-		w.Write(body)
-		return nil
-	}
-
-	// 3. SSE-стрим. Сначала фиксируем headers, потом WriteHeader, потом стрим.
-	w.WriteHeader(resp.StatusCode)
-	// R217: тот же учёт активных стримов, что и в hijack-пути: без него
-	// graceful shutdown не ждёт этот ответ и рвёт его при рестарте.
-	// R252 (2026-10-28): тот же единый вход стрима, что и на hijack-пути
-	// (stream_session_r252.go). До этого «клиент виден как живой» ставилось
-	// только здесь и только на нативном пути — новые пути оставались невидимыми
-	// в сессиях и мониторе.
-	legacyModel := ""
-	if m, ok := r.Context().Value(modelContextKey).(string); ok {
-		legacyModel = m
-	}
-	// R271: считаем стрим и по бэкенду/модели, чтобы перезагрузка модели по
-	// чужому запросу не выгружала её под этим стримом (active_streams_r271.go).
-	endClientStream := beginClientStreamR271(p, backendID, legacyModel)
-	defer endClientStream()
-
-	// R493-12r (этап 6): ФЛАШ — в одном месте, в трекере терминатора.
-	//
-	// Живой факт: `sseDoneTrackerR252.Write` уже пишет, отмечает байты и флашит
-	// (если w умеет Flush). Пять повторных `if canFlush { flusher.Flush() }` в
-	// этом цикле были вторым набором правил поверх того же писателя — ровно то,
-	// что этап 6 и убирает. Поведение клиента не меняется: T2 (golden-байты)
-	// проходит в обоих режимах флага LB_STREAM_PIPE.
-	// T2/R252 (2026-11-12): «ровно один терминатор» — факт о ПОТОКЕ, а не о
-	// переменной. Гарантия ниже решала по lastSSELine (что записал сам цикл), но
-	// записи идут и мимо этого учёта, поэтому на /v1/chat/completions клиент
-	// получал `data: [DONE]` дважды. Трекер смотрит на реально записанные байты.
-	tw := newSSEDoneTrackerR252(w, sseDoneFrame)
-
-	streamSess := startStreamSession(p, r, legacyModel)
-	defer streamSess.Stop()
-
-	heartbeatInterval := p.getHeartbeatInterval()
-
-	// Контекст клиента — если клиент отвалился, прерываем чтение из upstream
-	clientCtx := r.Context()
-
-	// Канал для пробуждения select при приходе данных от бэкенда.
-	// Если upstream закрыл соединение — reader.ReadBytes вернёт EOF, и горутина
-	// закроет dataCh. heartbeatTicker шлёт тики по расписанию.
-	type readResult struct {
-		line []byte
-		err  error
-	}
-	// R243/R256: состояние фильтра на весь стрим (размышления → reasoning_content).
-	egressFilter := &reasoningEgressState{}
-	dataCh := make(chan readResult, 1)
-	go func() {
-		reader := bufio.NewReader(resp.Body)
-		for {
-			line, err := reader.ReadBytes('\n')
-			dataCh <- readResult{line: line, err: err}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	done := false
-	// R252: последний отданный клиенту SSE-кадр (для гарантии [DONE]).
-	var lastSSELine []byte
-	// R254: состояние ремонта аргументов на этот стрим (диагностика — один раз).
-	toolRepair := &toolRepairState{}
-	heartbeatTicker := time.NewTicker(heartbeatInterval)
-	defer heartbeatTicker.Stop()
-	for !done {
-		select {
-		case <-clientCtx.Done():
-			// Клиент отвалился — закрываем upstream и выходим.
-			logger.Get().Infow("proxyRequestOpenAIStreaming: client disconnected, closing upstream",
-				"backend", backendID)
-			return nil
-
-		case <-heartbeatTicker.C:
-			// SSE-heartbeat: ": keepalive\n\n" — комментарий, который клиент
-			// игнорирует, но не закрывает соединение по idle-таймауту.
-			if _, werr := tw.Write([]byte(": keepalive\n\n")); werr != nil {
-				logger.Get().Warnw("proxyRequestOpenAIStreaming: heartbeat write failed",
-					"backend", backendID, "error", werr)
-				return nil
-			}
-
-		case res := <-dataCh:
-			if res.err != nil {
-				if res.err == io.EOF {
-					// Бэкенд закрыл стрим штатно (после [DONE] или финального чанка).
-					done = true
-					break
-				}
-				logger.Get().Warnw("proxyRequestOpenAIStreaming: read from backend error",
-					"backend", backendID, "error", res.err)
-				// R252.1: error-кадр + ровно один `data: [DONE]` — иначе клиент
-				// получает причину, но поток остаётся незавершённым.
-				writePlainStreamError(w, "upstream read error")
-				return nil
-			}
-
-			// R493 (этап 6): что видит клиент — решает ОДНО место
-			// (planStreamLineR493), то же, что и на hijack-пути. Здесь остаётся
-			// только запись через трекер этого транспорта и пометка последнего
-			// кадра для гарантии [DONE].
-			//
-			// ЖИВОЕ РАСХОЖДЕНИЕ, которое этим убрано: на hijack-пути кадр-ошибка
-			// воркера закрывал поток (R294), а здесь он просто пересылался дальше —
-			// клиент /v1 без Hijack'а ждал EOF вместо готового ответа. Такие
-			// различия и были причиной, почему R294 «работал не везде».
-			plan := planStreamLineR493(res.line, egressFilter, p.toolSchemasForRequest(r), toolRepair, streamLineTransportPlainR493)
-			for _, fr := range plan.Pre {
-				if _, werr := tw.Write(fr); werr != nil {
-					logger.Get().Warnw("proxyRequestOpenAIStreaming: finalize before [DONE] failed",
-						"backend", backendID, "error", werr)
-					return nil
-				}
-				lastSSELine = append(lastSSELine[:0], fr...)
-			}
-			if plan.Line == nil {
-				// Придержанный finish-кадр (R261): клиенту он уйдёт в конце.
-				continue
-			}
-			if _, werr := tw.Write(plan.Line); werr != nil {
-				logger.Get().Warnw("proxyRequestOpenAIStreaming: write to client failed",
-					"backend", backendID, "error", werr)
-				return nil
-			}
-			// R252: запоминаем последний кадр для гарантии завершения потока.
-			lastSSELine = append(lastSSELine[:0], plan.Line...)
-
-			// R294: кадр-ошибка воркера закрывает поток и на этом пути. Хвост
-			// фильтра (объяснение/придержанный finish) — перед терминатором, иначе
-			// клиент прочитает объяснение после конца потока.
-			if plan.Terminate {
-				for _, fr := range plan.Post {
-					_, _ = tw.Write(fr)
-				}
-				if !tw.DoneSent() {
-					if _, werr := tw.Write([]byte(sseDoneFrame)); werr != nil {
-						logger.Get().Warnw("proxyRequestOpenAIStreaming: guarantee [DONE] after upstream error failed",
-							"backend", backendID, "error", werr)
-					}
-				}
-				logger.Get().Infow("proxyRequestOpenAIStreaming: upstream error frame — stream closed (R294)",
-					"backend", backendID)
-				return nil
-			}
-		}
-	}
-
-	// R261 (2026-10-28): закрываем выход фильтра размышлений (хвост, объяснение
-	// пустого ответа, придержанный finish) — иначе клиент без поддержки
-	// reasoning_content видит пустой ответ. Список кадров и граница события —
-	// в одном месте (finalizeStreamFramesR493), как и на hijack-пути.
-	for _, fr := range finalizeStreamFramesR493(egressFilter) {
-		if _, werr := tw.Write(fr); werr != nil {
-			logger.Get().Warnw("proxyRequestOpenAIStreaming: finalize frame write failed",
-				"backend", backendID, "error", werr)
-			return nil
-		}
-		lastSSELine = append(lastSSELine[:0], fr...)
-	}
-
-	// R252 (2026-10-28): гарантия `data: [DONE]`. Раньше поток мог закрыться без
-	// него (upstream закрыл соединение после финального чанка без маркера), и
-	// OpenAI-совместимые клиенты считали ответ оборванным.
-	//
-	// T2 (2026-11-12): решение принимается по ФАКТУ записи (tw.DoneSent), а не по
-	// lastSSELine: терминатор мог уйти мимо учёта цикла, и тогда клиент получал
-	// второй [DONE] (живой случай R258/T2 — «два конца потока»).
-	if !tw.DoneSent() {
-		if _, werr := tw.Write([]byte(sseDoneFrame)); werr != nil {
-			logger.Get().Warnw("proxyRequestOpenAIStreaming: guarantee [DONE] failed",
-				"backend", backendID, "error", werr)
-		}
-	}
-	_ = lastSSELine
-
-	// Финальный flush не нужен: последний tw.Write уже флашил, а если записей не
-	// было — флашить нечего.
-	return nil
+	opened := p.openOpenAIStreamSinkR493(w, resp, backendID, nil, true)
+	defer opened.close()
+	return p.streamOpenAIWithSinkR493(w, r, resp, backendID, opened)
 }
 
 // proxyNonStreamingResponse — проксирует тело ответа как есть (без streaming).

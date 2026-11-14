@@ -71,7 +71,9 @@ func TestR360_PayloadEmptyIsBroadcast(t *testing.T) {
 // (NDJSON-транспорт и hijack-путь /v1). Новая точка отмены, забывшая request_id,
 // снова начнёт гасить чужие генерации — молча.
 func TestR360_CancelPathsPassRequestID_STEWARD(t *testing.T) {
-	files := []string{"llamacpp_transport.go", "proxy_request_hijack.go"}
+	// 2026-11-14 (этап 6): цикл SSE /v1 переехал в общий,
+	// поэтому отмена с request_id проверяется там, где она теперь вызывается.
+	files := []string{"llamacpp_transport.go", "stream_openai_sink_r493.go"}
 	for _, name := range files {
 		var src string
 		for _, p := range []string{name, "internal/balancer/" + name} {

@@ -137,8 +137,24 @@ func TestR219_StreamAccountingWiredInBothPaths(t *testing.T) {
 			t.Fatalf("%s: не найден ожидаемый контекст %q", path, anchor)
 		}
 	}
-	check("proxy_request_hijack.go", "hijack path active")
-	check("proxy_request.go", "proxyRequestOpenAIStreamingLegacy")
+	// 2026-11-14 (этап 6): раньше проверялись ДВА файла — по одному на транспорт,
+	// и это была «проверка на слово»: новый путь мог не зарегистрироваться. Теперь
+	// регистрация одна и не зависит от транспорта (streamOpenAIWithSinkR493), а
+	// проверка требует, чтобы она стояла ДО запуска цикла.
+	check("stream_openai_sink_r493.go", "streamOpenAIWithSinkR493")
+	if raw, err := os.ReadFile("stream_openai_sink_r493.go"); err == nil {
+		src := string(raw)
+		add := strings.Index(src, "beginClientStreamR271(")
+		loop := strings.Index(src, "runOpenAISSEStreamR493(")
+		if add < 0 || loop < 0 {
+			t.Fatal("stream_openai_sink_r493.go: нет регистрации стрима или запуска цикла")
+		}
+		if add > loop {
+			t.Error("стрим регистрируется ПОСЛЕ запуска цикла — Shutdown может не увидеть его")
+		}
+	} else {
+		t.Fatalf("не читается stream_openai_sink_r493.go: %v", err)
+	}
 
 	// Сам учёт для graceful shutdown обязан остаться внутри помощника.
 	helperRaw, err := os.ReadFile("active_streams_r271.go")

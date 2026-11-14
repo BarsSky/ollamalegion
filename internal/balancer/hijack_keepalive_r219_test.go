@@ -19,9 +19,10 @@ import (
 )
 
 func TestR219_HijackDoesNotAdvertiseKeepAlive(t *testing.T) {
-	raw, err := os.ReadFile("proxy_request_hijack.go")
+	// 2026-11-14 (этап 6): заголовки hijack-ответа пишет открыватель транспорта.
+	raw, err := os.ReadFile("stream_openai_sink_r493.go")
 	if err != nil {
-		t.Fatalf("не читается proxy_request_hijack.go: %v", err)
+		t.Fatalf("не читается stream_openai_sink_r493.go: %v", err)
 	}
 	src := string(raw)
 
@@ -32,7 +33,7 @@ func TestR219_HijackDoesNotAdvertiseKeepAlive(t *testing.T) {
 		t.Error("hijack-путь не сообщает Connection: close")
 	}
 	// Соединение действительно закрывается — на этом и основан запрет keep-alive.
-	if !strings.Contains(src, "clientConn.Close()") {
+	if !strings.Contains(src, "o.conn.Close()") {
 		t.Error("hijack-путь больше не закрывает соединение — тогда решение о Connection нужно пересмотреть")
 	}
 }
@@ -45,13 +46,14 @@ func TestR219_HijackDoesNotAdvertiseKeepAlive(t *testing.T) {
 // вещи: вызов помощника стоит ДО старта цикла чтения, и сам помощник реально
 // инкрементирует activeStreams.
 func TestR219_HijackRegistersStreamBeforeDrain(t *testing.T) {
-	raw, err := os.ReadFile("proxy_request_hijack.go")
+	// 2026-11-14 (этап 6): цикл и регистрация — в одном месте.
+	raw, err := os.ReadFile("stream_openai_sink_r493.go")
 	if err != nil {
-		t.Fatalf("не читается proxy_request_hijack.go: %v", err)
+		t.Fatalf("не читается stream_openai_sink_r493.go: %v", err)
 	}
 	src := string(raw)
 	addIdx := strings.Index(src, "beginClientStreamR271(")
-	loopIdx := strings.Index(src, "clientCtx, cancel := context.WithCancel")
+	loopIdx := strings.Index(src, "runOpenAISSEStreamR493(")
 	if addIdx < 0 || loopIdx < 0 {
 		t.Fatal("не найдены регистрация стрима (beginClientStreamR271) или старт цикла")
 	}

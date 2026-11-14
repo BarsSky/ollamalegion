@@ -57,86 +57,81 @@ func funcBodyR493(t *testing.T, file, signature, marker string) string {
 	return rest
 }
 
-// TestR493r_LegacySSELoopWritesOnlyThroughTracker — цикл SSE без hijack пишет
-// клиенту только через трекер терминатора (он же считает байты и флашит).
-func TestR493r_LegacySSELoopWritesOnlyThroughTracker(t *testing.T) {
-	body := funcBodyR493(t, "proxy_request.go",
-		"func (p *Proxy) proxyRequestOpenAIStreamingLegacy(",
-		"tw := newSSEDoneTrackerR252(")
+// TestR493r_SSELoopWritesOnlyThroughTheSink — общий SSE-цикл пишет клиенту только
+// через сток (run.writeFrame), а не напрямую в ResponseWriter.
+//
+// ПОЧЕМУ СТРАЖ ПЕРЕЕХАЛ. До этапа 6 у каждого транспорта был свой цикл, и страж
+// смотрел в оба тела. Теперь цикл ОДИН (stream_openai_sse_r493.go): если в нём
+// появится прямая запись, она обойдёт и счётчик, и флаш, и терминатор — то есть
+// вернёт ровно тот класс дефектов, ради которого этап 6 и делался.
+func TestR493r_SSELoopWritesOnlyThroughTheSink(t *testing.T) {
+	body := funcBodyR493(t, "stream_openai_sse_r493.go",
+		"func (p *Proxy) runOpenAISSEStreamR493(", "")
 
-	if !strings.Contains(body, "tw.Write(") {
-		t.Fatal("цикл не пишет через трекер tw — значит учёт терминатора (R252) не работает")
+	if !strings.Contains(body, "run.writeFrame(") {
+		t.Fatal("цикл не пишет через сток run.writeFrame — значит у него снова своя точка записи")
 	}
-	// ВНИМАНИЕ: проверка регуляркой, а не Contains. Подстрока "w.Write(" есть
-	// внутри "tw.Write(" — первая версия стража ловила саму разрешённую запись
-	// (ложное срабатывание, которое я и получил).
 	forbidden := []struct {
 		re  *regexp.Regexp
 		why string
 	}{
 		{regexp.MustCompile(`(^|[^A-Za-z0-9_.])w\.Write\(`),
-			"запись мимо трекера: R252 не увидит [DONE]"},
+			"запись мимо стока: счётчик/терминатор/флаш не увидят кадр"},
 		{regexp.MustCompile(`fmt\.Fprintf\(w,`),
-			"запись мимо трекера через формат"},
+			"запись мимо стока через формат"},
 		{regexp.MustCompile(`flusher\.Flush\(\)`),
-			"второй набор правил флаша поверх трекера"},
+			"второй набор правил флаша поверх стока"},
 	}
 	for _, f := range forbidden {
 		if f.re.MatchString(body) {
-			t.Errorf("в цикле SSE без hijack найдено %q (%s): клиентская запись обязана идти "+
-				"через ОДНУ точку (tw.Write). Иначе счётчик/терминатор/флаш снова разъедутся — "+
-				"это и есть класс дефектов этапа 6", f.re.String(), f.why)
+			t.Errorf("в общем SSE-цикле найдено %q (%s): клиентская запись обязана идти "+
+				"через ОДНУ точку (run.writeFrame)", f.re.String(), f.why)
 		}
 	}
 }
 
-// TestR493r_HijackSSELoopWritesOnlyThroughHelpers — hijack-цикл пишет только через
-// writeFrameR493/writeKeepaliveR493 (сток или исторический писатель).
-func TestR493r_HijackSSELoopWritesOnlyThroughHelpers(t *testing.T) {
-	body := funcBodyR493(t, "proxy_request_hijack.go",
-		"func (p *Proxy) proxyRequestOpenAIStreamingHijacked(",
-		"writeFrameR493 := func(")
+// TestR493r_HijackTransportOwnsFraming — обрамление chunked-кадра принадлежит
+// стоку, а не открывателю транспорта: там только решение «перехватить или нет» и
+// заголовки.
+func TestR493r_HijackTransportOwnsFraming(t *testing.T) {
+	body := funcBodyR493(t, "stream_openai_sink_r493.go",
+		"func (p *Proxy) openOpenAIStreamSinkR493(", "")
 
-	if !strings.Contains(body, "writeFrameR493(") {
-		t.Fatal("hijack-цикл не использует общий хелпер записи кадра")
+	if !strings.Contains(body, "newHijackStreamSinkR493(") {
+		t.Fatal("перехваченное соединение не заводит hijack-сток — обрамление кадра " +
+			"снова окажется в цикле")
 	}
-	forbidden := []string{
-		"writeChunkedFrame(bufrw, fr)",
-		"writeChunkedString(bufrw, string(fr))",
-		"bufrw.Write(",
-	}
-	for _, f := range forbidden {
-		if strings.Contains(body, f) {
-			t.Errorf("в hijack-цикле найдена прямая запись %q — кадры обязаны идти "+
-				"через writeFrameR493 (одно правило обрамления)", f)
+	for _, forbidden := range []string{"writeChunkedFrame(", "writeChunkedString("} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("в открывателе транспорта найдено ручное обрамление %q — "+
+				"форма кадра обязана быть делом стока", forbidden)
 		}
 	}
 }
 
-// TestR493r_StreamLinePlanIsTheOnlyDecisionPoint — этап 6, шаг «свести сами
-// циклы»: решение «что видит клиент» принимается в ОДНОМ месте
-// (planStreamLineR493), а оба SSE-цикла /v1 только пишут то, что решено.
+// TestR493r_StreamLinePlanIsTheOnlyDecisionPoint — этап 6: решение «что видит
+// клиент» принимается в ОДНОМ месте (planStreamLineR493), а общий цикл только
+// пишет решённое.
 //
-// ЖИВОЙ ДЕФЕКТ, ради которого страж. В двух циклах дословно дублировались
-// фильтр размышлений, нормализация формы вызова (R186), придержанный finish
-// (R261), граница события (R277) и закрытие по кадру-ошибке (R294). Расхождение
-// было не теорией: R294 существовал ТОЛЬКО на hijack-пути, поэтому клиент /v1 без
-// Hijack'а получал кадр-ошибку и продолжал ждать EOF. Пока правило живёт в двух
-// копиях, такая правка снова доедет до одного пути из двух.
+// ЖИВОЙ ДЕФЕКТ, ради которого страж. В двух циклах дословно дублировались фильтр
+// размышлений, нормализация формы вызова (R186), придержанный finish (R261),
+// граница события (R277) и закрытие по кадру-ошибке (R294). Расхождение было не
+// теорией: R294 существовал ТОЛЬКО на hijack-пути, поэтому клиент /v1 без
+// Hijack\'а получал кадр-ошибку и продолжал ждать EOF.
 //
-// Почему страж, а не тест поведения: покрыть ВСЕ комбинации двух транспортов
-// поведением можно, но именно «следующая правка в одном цикле» поведением не
-// ловится — обе ветки по отдельности остаются корректными, расходятся только
-// реакции на редкий кадр. Поэтому правило проверяется по исходнику.
+// Почему страж, а не тест поведения: покрыть все комбинации поведением можно, но
+// «следующая правка в одном цикле» поведением не ловится — обе ветки по
+// отдельности остаются корректными, расходятся только реакции на редкий кадр.
 func TestR493r_StreamLinePlanIsTheOnlyDecisionPoint(t *testing.T) {
-	loops := []struct{ name, file, sig, marker string }{
-		{"SSE без hijack", "proxy_request.go",
-			"func (p *Proxy) proxyRequestOpenAIStreamingLegacy(", "tw := newSSEDoneTrackerR252("},
-		{"SSE hijack", "proxy_request_hijack.go",
-			"func (p *Proxy) proxyRequestOpenAIStreamingHijacked(", "writeFrameR493 := func("},
+	loop := funcBodyR493(t, "stream_openai_sse_r493.go",
+		"func (p *Proxy) runOpenAISSEStreamR493(", "")
+	if !strings.Contains(loop, "planStreamLineR493(") {
+		t.Error("общий цикл не использует planStreamLineR493 — значит у него снова своя " +
+			"копия правила (класс дефекта этапа 6)")
 	}
-	// Всё это — шаги ОДНОГО правила, сведённого в planStreamLineR493 /
-	// finalizeStreamFramesR493. В цикле их быть не должно.
+	if !strings.Contains(loop, "finalizeStreamFramesR493(") {
+		t.Error("общий цикл не закрывает стрим через finalizeStreamFramesR493")
+	}
 	forbidden := []struct {
 		needle string
 		why    string
@@ -149,22 +144,24 @@ func TestR493r_StreamLinePlanIsTheOnlyDecisionPoint(t *testing.T) {
 		{"isSSEDoneLine(", "момент выдачи терминатора решается в плане"},
 		{"finalizeFrames(", "хвост стрима отдаётся через finalizeStreamFramesR493"},
 	}
-	for _, l := range loops {
-		body := funcBodyR493(t, l.file, l.sig, l.marker)
-		if !strings.Contains(body, "planStreamLineR493(") {
-			t.Errorf("%s: цикл не использует общее решение planStreamLineR493 — значит у него "+
-				"снова своя копия правила (класс дефекта этапа 6)", l.name)
+	for _, f := range forbidden {
+		if strings.Contains(loop, f.needle) {
+			t.Errorf("в общем цикле снова вызывается %q (%s). Правило обязано быть в "+
+				"planStreamLineR493: иначе правка доедет до одного транспорта из двух — "+
+				"ровно так R294 годами работал только на hijack-пути", f.needle, f.why)
 		}
-		if !strings.Contains(body, "finalizeStreamFramesR493(") {
-			t.Errorf("%s: конец стрима не идёт через finalizeStreamFramesR493", l.name)
-		}
-		for _, f := range forbidden {
-			if strings.Contains(body, f.needle) {
-				t.Errorf("%s: в цикле снова вызывается %q (%s). Правило обязано быть в "+
-					"planStreamLineR493: иначе правка доедет до одного транспорта из двух — "+
-					"ровно так R294 годами работал только на hijack-пути",
-					l.name, f.needle, f.why)
-			}
+	}
+
+	// Обратная сторона: само правило обязано содержать все шаги. Если кто-то
+	// «упростит» план, выкинув нормализацию или придержанный finish, это будет
+	// видно здесь, а не у клиента.
+	plan := funcBodyR493(t, "stream_line_plan_r493.go", "func planStreamLineR493(", "")
+	for _, needle := range []string{
+		"filterAssistantEgressForClient(", "normalizeOpenAISSEPayload(",
+		"tryHoldFinishFrame(", "isUpstreamErrorPayload(", "finalizeStreamFramesR493(",
+	} {
+		if !strings.Contains(plan, needle) {
+			t.Errorf("в planStreamLineR493 нет шага %q — правило стало неполным", needle)
 		}
 	}
 }

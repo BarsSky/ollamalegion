@@ -49,10 +49,15 @@ const (
 //
 // Порядок полей — под fieldalignment (линт): срезы первыми.
 type streamLinePlanR493 struct {
-	Pre       [][]byte
-	Line      []byte
-	Post      [][]byte
-	Terminate bool
+	Pre  [][]byte
+	Line []byte
+	Post [][]byte
+	// Terminator — эта строка и есть терминатор потока (`data: [DONE]`/`done:true`
+	// в форме SSE). Нужен транспорту, чтобы гарантия «ровно один [DONE]» решалась
+	// по факту записи, а не по последнему кадру: апстрим присылает после [DONE]
+	// пустую строку-разделитель, и решение «по последнему» дописывало второй (R252).
+	Terminator bool
+	Terminate  bool
 }
 
 // planStreamLineR493 — единственное место, где решается «что видит клиент».
@@ -98,6 +103,7 @@ func planStreamLineR493(
 	// придержанный finish и объяснение. Иначе они окажутся ПОСЛЕ [DONE], и клиент
 	// увидит два конца потока (поймано тестом R258).
 	if isSSEDoneLine(lineToWrite) {
+		plan.Terminator = true
 		plan.Pre = append(plan.Pre, finalizeStreamFramesR493(egress)...)
 	}
 	if tr == streamLineTransportChunkedR493 && isOpenAISSEDataLine(lineToWrite) {

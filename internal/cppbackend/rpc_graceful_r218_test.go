@@ -25,26 +25,44 @@ import (
 	"testing"
 )
 
-const r218PatchPath = "../../docker/cppworker/patches/0002-rpc-graceful-connect.patch"
+// R493 (2026-11-15, обновление llama.cpp до 1.0.0): наш патч 0002 снят —
+// upstream реализовал ровно тот же контракт сам. Проверка теперь смотрит в
+// САБМОДУЛЬ (фактический upstream), а не в текст патча: иначе она требует файла,
+// которого больше нет, и падает на ровном месте.
+//
+// Контракт R218 остаётся тем же: недоступный RPC-узел не убивает мастер.
+const r218SourcePath = "../../c/llama.cpp/ggml/src/ggml-rpc/ggml-rpc.cpp"
 
-func TestR218_GracefulConnectPatchExists(t *testing.T) {
-	raw, err := os.ReadFile(r218PatchPath)
+func TestR218_GracefulConnectUpstream(t *testing.T) {
+	raw, err := os.ReadFile(r218SourcePath)
 	if err != nil {
-		t.Fatalf("патч R218 не найден (%s): %v", r218PatchPath, err)
+		// В CI сабмодуль llama.cpp не вычекан (workflow: submodules:false) —
+		// проверка осмысленна только когда он на месте (так же, как R221).
+		t.Skipf("сабмодуль llama.cpp недоступен (%s): %v", r218SourcePath, err)
 	}
-	patch := string(raw)
+	src := string(raw)
 
-	if !strings.Contains(patch, "ggml/src/ggml-rpc/ggml-rpc.cpp") {
-		t.Error("патч должен править ggml-rpc.cpp")
+	if !strings.Contains(src, "bool start(const std::string & endpoint);") {
+		t.Error("upstream: start() обязан возвращать bool — иначе единственный способ сообщить о недоступном узле это abort")
 	}
-	if !strings.Contains(patch, "std::runtime_error") {
-		t.Error("нет исключения вместо GGML_ABORT при неудачном подключении")
+	if !strings.Contains(src, "dispatcher->start(endpoint)") || !strings.Contains(src, "return nullptr") {
+		t.Error("upstream: get_dispatcher обязан вернуть nullptr, а не падать, если узел недоступен")
 	}
-	if !strings.Contains(patch, "return nullptr") {
-		t.Error("get_dispatcher должен возвращать nullptr для недоступного узла")
+	if !strings.Contains(src, "dispatcher == nullptr") {
+		t.Error("upstream: get_device_count обязан обрабатывать nullptr (иначе null deref)")
 	}
-	if !strings.Contains(patch, "dispatcher == nullptr") {
-		t.Error("get_device_count должен обрабатывать nullptr (иначе null deref)")
+	// Подключение НЕ должно прерывать процесс: GGML_ABORT на connect не осталось.
+	if strings.Contains(src, `GGML_ABORT("Failed to connect`) {
+		t.Error("upstream всё ещё делает GGML_ABORT при неудачном подключении — R218 вернулся")
+	}
+}
+
+func TestR218_OurPatchIsGoneOnPurpose(t *testing.T) {
+	// Файл удалён ОСОЗНАННО при обновлении до 1.0.0. Тест держит это решение:
+	// если кто-то вернёт патч, он должен снова проверить, не дублирует ли он upstream.
+	if _, err := os.Stat("../../docker/cppworker/patches/0002-rpc-graceful-connect.patch"); err == nil {
+		t.Error("патч 0002 вернулся, хотя upstream его уже реализовал — " +
+			"проверьте, не дублирует ли он код llama.cpp")
 	}
 }
 

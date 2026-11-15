@@ -72,8 +72,16 @@ func TestR221_SessionLossPatchKeepsQueueDrained(t *testing.T) {
 	}
 	// КРИТИЧНО: completion должен ставиться всегда. Иначе send()/synchronize()
 	// повиснут в future.wait() и мы получим deadlock вместо abort.
-	if !strings.Contains(patch, " msg_ptr->completion.set_value();") {
-		t.Error("патч убрал set_value() — вызывающий повиснет навсегда вместо ошибки")
+	//
+	// R493: проверяем ОТСУТСТВИЕ УДАЛЕНИЯ, а не наличие строки-контекста: в 1.0.0
+	// `work()` переписан (send_rpc_cmd_payload, payload), и контекстные строки
+	// вокруг set_value() из патча ушли. Удаление же строки было бы регрессом
+	// независимо от версии.
+	for _, line := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(line, "-") && strings.Contains(line, "completion.set_value()") {
+			t.Errorf("патч удаляет set_value() — вызывающий повиснет навсегда вместо ошибки: %s",
+				strings.TrimSpace(line))
+		}
 	}
 	// Буфер ответа обнуляется, чтобы вызывающий не читал неинициализированную
 	// память (device_count, base_ptr и прочие ответы с output-буфером).
@@ -93,53 +101,71 @@ func TestR221_SessionLossPatchSurfacesComputeError(t *testing.T) {
 	}
 	// Рукопожатие тоже не должно брать на себя abort: иначе узел, который принял
 	// TCP и умер до HELLO, снова уронит мастер при добавлении RPC-устройства.
-	if !strings.Contains(patch, "did not answer the hello handshake") {
-		t.Error("сбой рукопожатия не переведён в возврат ошибки")
+	//
+	// R493: в 1.0.0 upstream уже перевёл negotiate_hello на log+false, поэтому наш
+	// патч этого делать больше не должен. Требование остаётся: патч не имеет
+	// права ВОЗВРАЩАТЬ abort в рукопожатие.
+	for _, line := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(line, "+") && strings.Contains(line, "RPC_STATUS_ASSERT(status)") {
+			t.Errorf("патч добавляет RPC_STATUS_ASSERT — abort на рукопожатии вернётся: %s",
+				strings.TrimSpace(line))
+		}
 	}
 	if strings.Contains(patch, "+    RPC_STATUS_ASSERT(status);") {
 		t.Error("патч оставил RPC_STATUS_ASSERT в рукопожатии")
 	}
 }
 
-// Патч обязан иметь те же переводы строк, что и правимый файл сабмодуля. На
-// Windows-чекауте исходники CRLF; `git apply` в контейнере сборки не прощает
-// несовпадения и падает `patch does not apply` — именно так первый вариант
-// патча не попал в образ, хотя локально применялся.
+// R493 (2026-11-15, обновление llama.cpp до 1.0.0): прежняя проверка требовала,
+// чтобы переводы строк ПАТЧА совпадали с файлом сабмодуля. Это было верно, пока
+// образ копировал CRLF-файлы Windows-чекаута как есть. Теперь инвариант другой и
+// он надёжнее:
+//
+//  1. патч всегда в LF (так его пишет git diff и так требует .gitattributes);
+//  2. Dockerfile НОРМАЛИЗУЕТ переводы строк сабмодуля ДО `git apply`
+//     (`sed -i 's/\r$//'` в стадии llama-builder).
+//
+// Проверять «патч == источник» больше не нужно и вредно: на Windows-хосте
+// источник CRLF, и такая проверка краснела бы всегда, хотя сборка зелёная.
 func TestR221_PatchLineEndingsMatchSource(t *testing.T) {
-	const srcPath = "../../c/llama.cpp/ggml/src/ggml-rpc/ggml-rpc.cpp"
-
-	read := func(path string) []byte {
-		raw, err := os.ReadFile(path)
+	patch := string(func() []byte {
+		raw, err := os.ReadFile(r221PatchPath)
 		if err != nil {
-			t.Fatalf("не читается %s: %v", path, err)
+			t.Fatalf("не читается %s: %v", r221PatchPath, err)
 		}
 		return raw
-	}
-	// R245: в CI сабмодуль llama.cpp НЕ вычекан (workflow: submodules:false,
-	// поэтому файла просто нет). Проверка осмысленна только когда сабмодуль на
-	// месте; вместо красного CI — SKIP с объяснением.
-	srcRaw, srcErr := os.ReadFile(srcPath)
-	if srcErr != nil {
-		if os.IsNotExist(srcErr) {
-			t.Skipf("сабмодуль c/llama.cpp не вычекан (CI: submodules:false) — сравнивать переводы строк не с чем: %v", srcErr)
-		}
-		t.Fatalf("не читается %s: %v", srcPath, srcErr)
-	}
-	srcEOL := "\n"
-	if strings.Contains(string(srcRaw), "\r\n") {
-		srcEOL = "\r\n"
-	}
-	patch := string(read(r221PatchPath))
-	patchEOL := "\n"
+	}())
+
+	// 1. Патч в LF и без смеси.
 	if strings.Contains(patch, "\r\n") {
-		patchEOL = "\r\n"
+		t.Fatal("патч содержит CRLF — .gitattributes требует LF для *.patch")
 	}
-	if srcEOL != patchEOL {
-		t.Fatalf("переводы строк не совпадают: источник %q, патч %q (сборка упадёт на git apply)",
-			srcEOL, patchEOL)
+
+	// 2/3. Dockerfile нормализует источник ДО применения патчей, и делает это для
+	// файлов C/C++, где живёт наш патч.
+	dockerfile := string(func() []byte {
+		raw, err := os.ReadFile("../../docker/cppworker/Dockerfile.gpu")
+		if err != nil {
+			t.Fatalf("не читается Dockerfile.gpu: %v", err)
+		}
+		return raw
+	}())
+	normIdx := strings.Index(dockerfile, `sed -i 's/\r$//'`)
+	applyIdx := strings.Index(dockerfile, `for p in /tmp/patches/*.patch`)
+	if normIdx < 0 {
+		t.Fatal("Dockerfile не нормализует переводы строк сабмодуля — LF-патч не приложится к CRLF-файлу")
 	}
-	if mixed := strings.Contains(strings.ReplaceAll(patch, "\r\n", ""), "\n"); mixed {
-		t.Error("в патче смешаны CRLF и одиночные LF")
+	if applyIdx < 0 {
+		t.Fatal("Dockerfile не применяет патчи циклом")
+	}
+	if normIdx > applyIdx {
+		t.Fatal("нормализация стоит ПОСЛЕ применения патчей — она бесполезна")
+	}
+	// Нормализация обязана покрывать C/C++ исходники, иначе наш патч не подпадёт.
+	for _, ext := range []string{"'*.c'", "'*.h'", "'*.cpp'"} {
+		if !strings.Contains(dockerfile, ext) {
+			t.Errorf("нормализация не покрывает %s — патч к ggml-rpc.cpp может не приложиться", ext)
+		}
 	}
 }
 

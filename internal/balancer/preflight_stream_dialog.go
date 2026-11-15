@@ -469,13 +469,18 @@ func selfProxyEgressLine(line []byte, egress *reasoningEgressState, write func([
 // не работал (живой провал на стенде r261: кадр-объяснение не приходил).
 // last обновляется, чтобы вызывающий корректно решил, нужен ли синтетический
 // [DONE].
+//
+// R493 (этап 6, последний остаток): сами кадры закрытия выхода и правило
+// границы SSE-события (R277) берутся из ОДНОГО места —
+// finalizeStreamFramesR493. Здесь остаётся только транспортная часть: записать
+// кадр и запомнить последний удачно записанный (по нему ensure*SSEDone решает,
+// нужен ли синтетический [DONE]). Своя копия правила жила тут с R264 и успела бы
+// разойтись с основными путями молча.
 func writeEgressFinalizeFrames(egress *reasoningEgressState, last *[]byte, write func([]byte) error) error {
-	if egress == nil || write == nil {
+	if write == nil {
 		return nil
 	}
-	for _, fr := range egress.finalizeFrames() {
-		// R277: та же граница SSE-события, что и на остальных путях.
-		fr = withSSEEventBoundary(fr)
+	for _, fr := range finalizeStreamFramesR493(egress) {
 		if err := write(fr); err != nil {
 			return err
 		}

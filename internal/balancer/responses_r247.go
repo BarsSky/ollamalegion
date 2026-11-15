@@ -337,6 +337,10 @@ type responsesStreamWriter struct {
 	usage    openAIUsage
 	calls    []struct{ id, name, args string }
 	callIdx  map[string]int
+	// R493: см. anthropic — контракт R261 на этой поверхности.
+	reasoningChars int
+	textChars      int
+	suppressNotice bool
 }
 
 func (s *responsesStreamWriter) event(name string, payload map[string]interface{}) {
@@ -387,8 +391,11 @@ func forwardOpenAISSEToResponses(r io.Reader, w io.Writer, flush func(), model s
 			ID      string `json:"id"`
 			Choices []struct {
 				Delta struct {
-					Content   string `json:"content"`
-					ToolCalls []struct {
+					Content string `json:"content"`
+					// R493: размышления нужны, чтобы на этой поверхности работал
+					// контракт R261 (объяснение вместо молчаливой пустоты).
+					ReasoningContent string `json:"reasoning_content"`
+					ToolCalls        []struct {
 						Index    *int   `json:"index"`
 						ID       string `json:"id"`
 						Function struct {
@@ -411,6 +418,7 @@ func forwardOpenAISSEToResponses(r io.Reader, w io.Writer, flush func(), model s
 			continue
 		}
 		choice := chunk.Choices[0]
+		s.reasoningChars += len(choice.Delta.ReasoningContent)
 		if choice.Delta.Content != "" {
 			s.emitText(choice.Delta.Content)
 		}
@@ -443,6 +451,7 @@ func forwardOpenAISSEToResponses(r io.Reader, w io.Writer, flush func(), model s
 
 // emitText — текст ответа как item message + content_part output_text.
 func (s *responsesStreamWriter) emitText(delta string) {
+	s.textChars += len(delta)
 	if !s.textOpen {
 		s.textOpen = true
 		s.event("response.output_item.added", map[string]interface{}{
@@ -473,6 +482,10 @@ func (s *responsesStreamWriter) emitText(delta string) {
 
 // finishStream — закрыть item'ы и отдать response.completed.
 func (s *responsesStreamWriter) finishStream() {
+	// R493/R261: ответ ушёл целиком в размышления — объясняем текстом.
+	if !s.suppressNotice && s.textChars == 0 && len(s.calls) == 0 && s.reasoningChars > 0 {
+		s.emitText(emptyAnswerNotice(s.reasoningChars, s.finish))
+	}
 	output := make([]interface{}, 0, 2)
 	if s.textOpen {
 		text := s.textBuf.String()

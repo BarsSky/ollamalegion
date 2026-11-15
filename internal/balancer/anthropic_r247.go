@@ -492,6 +492,12 @@ type anthropicStreamForwarder struct {
 	finish   string
 	calls    []struct{ id, name, args string }
 	callIdx  map[string]int
+	// R493: сколько символов ушло в размышления и сколько видимого текста отдано.
+	// Нужны, чтобы на этой поверхности работал контракт R261: ответ, ушедший
+	// ЦЕЛИКОМ в размышления, обязан получить объяснение, а не пустой блок.
+	reasoningChars int
+	textChars      int
+	suppressNotice bool
 }
 
 // forwardOpenAISSEToAnthropic — построчная трансляция потока.
@@ -533,6 +539,7 @@ func forwardOpenAISSEToAnthropic(r io.Reader, w io.Writer, flush func(), model s
 			continue
 		}
 		if chunk.Error != nil {
+			f.suppressNotice = true // причина уже будет отдана отдельным событием
 			f.finishStream()
 			writeAnthropicErrorEvent(w, flush, "api_error", fmt.Sprintf("%v", chunk.Error))
 			return nil
@@ -545,6 +552,7 @@ func forwardOpenAISSEToAnthropic(r io.Reader, w io.Writer, flush func(), model s
 			continue
 		}
 		choice := chunk.Choices[0]
+		f.reasoningChars += len(choice.Delta.ReasoningContent)
 		if content := choice.Delta.Content; content != "" {
 			f.emitText(content)
 		}
@@ -607,6 +615,7 @@ func (f *anthropicStreamForwarder) ensureStart(id string) {
 }
 
 func (f *anthropicStreamForwarder) emitText(text string) {
+	f.textChars += len(text)
 	f.ensureStart("")
 	if !f.textOpen {
 		f.textIdx = f.nextIdx
@@ -630,6 +639,12 @@ func (f *anthropicStreamForwarder) emitText(text string) {
 
 // finishStream — закрыть открытые блоки и отдать message_delta/message_stop.
 func (f *anthropicStreamForwarder) finishStream() {
+	// R493/R261: ответ ушёл целиком в размышления — объясняем это текстом.
+	// Без этого клиент Anthropic-поверхности получал ПУСТОЙ текстовый блок и
+	// считал ответ сломанным (на основном пути этот контракт работает с R261).
+	if !f.suppressNotice && f.textChars == 0 && len(f.calls) == 0 && f.reasoningChars > 0 {
+		f.emitText(emptyAnswerNotice(f.reasoningChars, f.finish))
+	}
 	f.ensureStart("")
 	if f.textOpen {
 		writeAnthropicSSE(f.w, "content_block_stop", map[string]interface{}{

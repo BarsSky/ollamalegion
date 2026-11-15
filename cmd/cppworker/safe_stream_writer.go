@@ -135,6 +135,35 @@ func (sw *safeStreamWriter) SetHeader(key, value string) bool {
 	return true
 }
 
+// newStreamWriterR493 — единая точка создания писателя потока
+// (этап 7 рефакторинга, R493). contentType — "text/event-stream" для SSE или
+// "application/x-ndjson" для Ollama-поверхности: у двух форматов разные
+// заголовки, но учёт байт/ошибок/обрывов обязан быть один.
+//
+// ЗАЧЕМ. safeStreamWriter существовал с 2026-08, но его получали только три
+// обработчика. Остальные девять писали напрямую через fmt.Fprintf(w, ...) и
+// игнорировали ошибку записи, поэтому обрыв клиента не попадал ни в
+// /api/v1/cppworker/debug/last-stream, ни в RecordStreamBreak (NaN-healer),
+// ни в лог — тот самый класс «обрыв ответа без каких-либо ошибок».
+//
+// Возвращает (nil, false), если клиент не умеет flush: тогда поток отдать
+// нельзя, и вызывающий обязан выйти так же, как выходил раньше (без записи
+// в диагностику — обрыва ещё не было).
+//
+// Заголовки выставляются через сам writer (SetHeader), а не напрямую в
+// http.ResponseWriter: иначе обёртка могла бы разойтись с тем, что пишет
+// writer, и учёт байт/ошибок перестал бы совпадать с отданным клиенту.
+func newStreamWriterR493(w http.ResponseWriter, r *http.Request, handler, model, contentType string) (*safeStreamWriter, bool) {
+	if _, ok := w.(http.Flusher); !ok {
+		return nil, false
+	}
+	sw := newSafeStreamWriter(w, r, handler, model)
+	sw.SetHeader("Content-Type", contentType)
+	sw.SetHeader("Cache-Control", "no-cache")
+	sw.SetHeader("Connection", "keep-alive")
+	return sw, true
+}
+
 // Writef пишет форматированную строку в writer.
 // Возвращает false если ctx.Done() или write error.
 func (sw *safeStreamWriter) Writef(format string, a ...interface{}) bool {

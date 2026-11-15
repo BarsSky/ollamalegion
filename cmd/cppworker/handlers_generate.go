@@ -521,12 +521,8 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 // writeStreamResponse — streaming ответ в формате NDJSON (application/x-ndjson).
 func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
-	// 2026-06-24: preflight n_ctx check BEFORE flushing headers.
+	// 2026-06-24: preflight n_ctx check BEFORE flushing headers — он пишет свой
+	// статус и тело, поэтому до создания писателя потока.
 	if err := clampNPredictToFitContext(modelName, prompt, &params); err != nil {
 		var perr *PromptExceedsNCtxError
 		if errors.As(err, &perr) {
@@ -536,10 +532,14 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher.Flush()
+	// R493 (этап 7): поток пишется через общий writer — обрыв клиента виден
+	// в debug/last-stream и RecordStreamBreak.
+	sw, ok := newStreamWriterR493(w, r, "writeStreamResponse", modelName, "application/x-ndjson")
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	sw.Flush()
 	ctx := r.Context()
 	// R63 (2026-09-15): per-infer AbortWatcher создаётся внутри GenerateStream
 	// (inference.go:521), там где доступен abortFlag от C-bridge. Удаляем
@@ -576,8 +576,8 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 				"done":     false,
 			}
 			tcJSON, _ := json.Marshal(tc)
-			fmt.Fprintf(w, "%s\n", tcJSON)
-			flusher.Flush()
+			sw.Writef("%s\n", tcJSON)
+			sw.Flush()
 		}
 		if responseDelta != "" {
 			contentSeen.WriteString(responseDelta)
@@ -587,8 +587,8 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 				"done":     false,
 			}
 			jsonData, _ := json.Marshal(chunk)
-			fmt.Fprintf(w, "%s\n", jsonData)
-			flusher.Flush()
+			sw.Writef("%s\n", jsonData)
+			sw.Flush()
 		}
 		tokens++
 		return true
@@ -606,8 +606,8 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 			"error":       streamErr.Error(),
 		}
 		errJSON, _ := json.Marshal(errChunk)
-		fmt.Fprintf(w, "%s\n", errJSON)
-		flusher.Flush()
+		sw.Writef("%s\n", errJSON)
+		sw.Flush()
 		return
 	}
 	fullOutput := outputBuf.String()
@@ -627,15 +627,15 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		if thinkingTail != "" {
 			tc := map[string]interface{}{"model": modelName, "thinking": sanitizeStreamText(thinkingTail), "done": false}
 			tcJSON, _ := json.Marshal(tc)
-			fmt.Fprintf(w, "%s\n", tcJSON)
-			flusher.Flush()
+			sw.Writef("%s\n", tcJSON)
+			sw.Flush()
 		}
 		if responseTail != "" {
 			contentSeen.WriteString(responseTail)
 			rc := map[string]interface{}{"model": modelName, "response": sanitizeStreamText(responseTail), "done": false}
 			rcJSON, _ := json.Marshal(rc)
-			fmt.Fprintf(w, "%s\n", rcJSON)
-			flusher.Flush()
+			sw.Writef("%s\n", rcJSON)
+			sw.Flush()
 		}
 	}
 	if snap := genParser.Snapshot(); snap.HasReasoning {
@@ -656,8 +656,8 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 			"error":       "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
 		}
 		errJSON, _ := json.Marshal(errChunk)
-		fmt.Fprintf(w, "%s\n", errJSON)
-		flusher.Flush()
+		sw.Writef("%s\n", errJSON)
+		sw.Flush()
 		return
 	}
 	duration := time.Since(start)
@@ -693,8 +693,8 @@ func writeStreamResponse(w http.ResponseWriter, r *http.Request, modelName, prom
 		"prompt_eval_count": countTokens(modelName, prompt),
 	}
 	doneJSON, _ := json.Marshal(doneChunk)
-	fmt.Fprintf(w, "%s\n", doneJSON)
-	flusher.Flush()
+	sw.Writef("%s\n", doneJSON)
+	sw.Flush()
 }
 
 // handleOllamaGenerate — Ollama /api/ollama/generate и /api/generate (Ollama-формат).
@@ -830,11 +830,6 @@ func handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
 	// 2026-06-24: preflight n_ctx check BEFORE flushing headers.
 	if err := clampNPredictToFitContext(modelName, prompt, &params); err != nil {
 		var perr *PromptExceedsNCtxError
@@ -845,16 +840,19 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	// R493 (этап 7): общий writer потока.
+	sw, ok := newStreamWriterR493(w, r, "writeOllamaStream", modelName, "application/x-ndjson")
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
 	// Round 32 (2026-08-09): emit immediate prefill heartbeat для /api/generate.
 	// NDJSON {"done":false} — клиент видит что запрос "пошёл" сразу,
 	// не дожидаясь 5-30s C-bridge prefill. См. handlers_chat.go для подробностей.
 	prefillHB := map[string]interface{}{"done": false}
 	prefillHBJSON, _ := json.Marshal(prefillHB)
-	fmt.Fprintf(w, "%s\n", prefillHBJSON)
-	flusher.Flush()
+	sw.Writef("%s\n", prefillHBJSON)
+	sw.Flush()
 	// R63: per-infer AbortWatcher создаётся внутри GenerateStream (inference.go:521).
 	tokens := 0
 	var outputBuf strings.Builder
@@ -884,14 +882,14 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		if thinkingDelta != "" {
 			tc := map[string]interface{}{"model": modelName, "thinking": thinkingDelta, "done": false}
 			tcJSON, _ := json.Marshal(tc)
-			fmt.Fprintf(w, "%s\n", tcJSON)
-			flusher.Flush()
+			sw.Writef("%s\n", tcJSON)
+			sw.Flush()
 		}
 		if responseDelta != "" {
 			rc := map[string]interface{}{"model": modelName, "response": responseDelta, "done": false}
 			rcJSON, _ := json.Marshal(rc)
-			fmt.Fprintf(w, "%s\n", rcJSON)
-			flusher.Flush()
+			sw.Writef("%s\n", rcJSON)
+			sw.Flush()
 		}
 		tokens++
 		return true
@@ -910,8 +908,8 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 			"done_reason": "error",
 			"error":       streamErr.Error(),
 		})
-		fmt.Fprintf(w, "%s\n", errJSON)
-		flusher.Flush()
+		sw.Writef("%s\n", errJSON)
+		sw.Flush()
 		return
 	}
 	fullOutput := outputBuf.String()
@@ -929,14 +927,14 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		if thinkingTail != "" {
 			tc := map[string]interface{}{"model": modelName, "thinking": sanitizeStreamText(thinkingTail), "done": false}
 			tcJSON, _ := json.Marshal(tc)
-			fmt.Fprintf(w, "%s\n", tcJSON)
-			flusher.Flush()
+			sw.Writef("%s\n", tcJSON)
+			sw.Flush()
 		}
 		if responseTail != "" {
 			rc := map[string]interface{}{"model": modelName, "response": sanitizeStreamText(responseTail), "done": false}
 			rcJSON, _ := json.Marshal(rc)
-			fmt.Fprintf(w, "%s\n", rcJSON)
-			flusher.Flush()
+			sw.Writef("%s\n", rcJSON)
+			sw.Flush()
 		}
 	}
 	// 2026-06-24: проверка на пустой ответ после cleanFinalContent (gemma antiprompt).
@@ -949,8 +947,8 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 			"done_reason": "error",
 			"error":       "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
 		})
-		fmt.Fprintf(w, "%s\n", errJSON)
-		flusher.Flush()
+		sw.Writef("%s\n", errJSON)
+		sw.Flush()
 		return
 	}
 	duration := time.Since(start)
@@ -982,8 +980,8 @@ func writeOllamaStream(w http.ResponseWriter, r *http.Request, modelName, prompt
 		"context":           []int{},
 		"prompt_eval_count": countTokens(modelName, prompt),
 	})
-	fmt.Fprintf(w, "%s\n", doneJSON)
-	flusher.Flush()
+	sw.Writef("%s\n", doneJSON)
+	sw.Flush()
 }
 
 // defaultKeepAliveDuration — дефолтное значение keep_alive, если клиент его

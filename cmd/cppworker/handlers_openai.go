@@ -636,7 +636,7 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeCppWorkerErrorWithBridgeInfo(w, http.StatusInternalServerError, "vision generate failed", verr)
 			return
 		}
-		writeOpenAISSEFromResult(w, actualModel, result)
+		writeOpenAISSEFromResult(w, r, actualModel, result)
 		return
 	}
 	if req.Stream {
@@ -748,13 +748,13 @@ func handleV1ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				// на локальной машине. Совместимость: клиент может явно opt-out
 				// через "stream_options": {"include_usage": false}.
 				includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
-				writeToolCallsStream(w, actualModel, chatID(), time.Now().Unix(), calls, reasoningOut, prompt, includeUsage)
+				writeToolCallsStream(w, r, actualModel, chatID(), time.Now().Unix(), calls, reasoningOut, prompt, includeUsage)
 			} else {
 				// Нет tool_calls — стримим как обычный текст.
 				// R216: reasoning отделяем (см. комментарий выше): в content уходит
 				// только видимый ответ, размышления — отдельным delta.reasoning_content.
 				includeUsage := req.StreamOptions == nil || req.StreamOptions.IncludeUsage
-				writeStaticTextStream(w, actualModel, chatID(), time.Now().Unix(), reasoningOut, visibleOut, prompt, includeUsage)
+				writeStaticTextStream(w, r, actualModel, chatID(), time.Now().Unix(), reasoningOut, visibleOut, prompt, includeUsage)
 			}
 			return
 		}
@@ -950,16 +950,15 @@ func chatID() string {
 //
 // Параметр includeUsage включает финальный usage-чанк (после finish_reason
 // но до [DONE]) — соответствует OpenAI stream_options.include_usage=true.
-func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, created int64, calls []openAIToolCall, reasoning string, prompt string, includeUsage bool) {
-	flusher, ok := w.(http.Flusher)
+func writeToolCallsStream(w http.ResponseWriter, r *http.Request, modelName, chatID string, created int64, calls []openAIToolCall, reasoning string, prompt string, includeUsage bool) {
+	// R493 (этап 7): поток пишется через общий writer — обрыв клиента виден в
+	// диагностике (debug/last-stream) и в RecordStreamBreak, а не терялся.
+	sw, ok := newStreamWriterR493(w, r, "writeToolCallsStream", modelName, "text/event-stream")
 	if !ok {
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	sw.WriteHeader(http.StatusOK)
+	sw.Flush()
 
 	// R216 (2026-10-21): размышления уходят ОТДЕЛЬНЫМ delta.reasoning_content
 	// ПЕРЕД tool_calls. Раньше они просто терялись: клиент видел вызов
@@ -983,8 +982,8 @@ func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, creat
 			},
 		}
 		reasoningJSON, _ := json.Marshal(reasoningChunk)
-		fmt.Fprintf(w, "data: %s\n\n", reasoningJSON)
-		flusher.Flush()
+		sw.Writef("data: %s\n\n", reasoningJSON)
+		sw.Flush()
 		roleSent = true
 	}
 
@@ -1015,8 +1014,8 @@ func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, creat
 		},
 	}
 	jsonData, _ := json.Marshal(firstChunk)
-	fmt.Fprintf(w, "data: %s\n\n", jsonData)
-	flusher.Flush()
+	sw.Writef("data: %s\n\n", jsonData)
+	sw.Flush()
 
 	// Chunk 2: завершение с finish_reason="tool_calls"
 	stopChunk := map[string]interface{}{
@@ -1033,18 +1032,18 @@ func writeToolCallsStream(w http.ResponseWriter, modelName, chatID string, creat
 		},
 	}
 	stopJSON, _ := json.Marshal(stopChunk)
-	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
-	flusher.Flush()
+	sw.Writef("data: %s\n\n", stopJSON)
+	sw.Flush()
 
 	// Chunk 3 (опционально): usage блок, если includeUsage=true.
 	// Для tool_calls output completion=JSON аргументы функций.
 	// Тут output = serialized tool_calls (см. caller), используем как есть.
 	if includeUsage {
-		writeOpenAIUsageChunk(w, flusher, chatID, created, modelName, prompt, reasoning+serializeToolCallsForUsage(indexed), includeUsage)
+		writeOpenAIUsageChunk(sw, chatID, created, modelName, prompt, reasoning+serializeToolCallsForUsage(indexed), includeUsage)
 	}
 
-	fmt.Fprintf(w, "data: [DONE]\n\n")
-	flusher.Flush()
+	sw.Writef("data: [DONE]\n\n")
+	sw.Flush()
 }
 
 // serializeToolCallsForUsage склеивает tool_calls в строку для подсчёта
@@ -1071,16 +1070,14 @@ func serializeToolCallsForUsage(calls []map[string]interface{}) string {
 // Параметр includeUsage добавляет финальный usage-чанк перед [DONE]
 // (OpenAI stream_options.include_usage=true). Используется Cline/Roo для
 // корректного трекинга контекстного окна.
-func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, created int64, reasoning, content, prompt string, includeUsage bool) {
-	flusher, ok := w.(http.Flusher)
+func writeStaticTextStream(w http.ResponseWriter, r *http.Request, modelName, chatID string, created int64, reasoning, content, prompt string, includeUsage bool) {
+	// R493 (этап 7): общий writer — обрыв клиента виден диагностике.
+	sw, ok := newStreamWriterR493(w, r, "writeStaticTextStream", modelName, "text/event-stream")
 	if !ok {
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	sw.WriteHeader(http.StatusOK)
+	sw.Flush()
 
 	// R219 (2026-10-21): НЕ подставляем reasoning в content, если видимого
 	// ответа нет.
@@ -1117,8 +1114,8 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 			},
 		}
 		reasoningJSON, _ := json.Marshal(reasoningChunk)
-		fmt.Fprintf(w, "data: %s\n\n", reasoningJSON)
-		flusher.Flush()
+		sw.Writef("data: %s\n\n", reasoningJSON)
+		sw.Flush()
 		roleSent = true
 	}
 
@@ -1141,8 +1138,8 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 		},
 	}
 	jsonData, _ := json.Marshal(chunk)
-	fmt.Fprintf(w, "data: %s\n\n", jsonData)
-	flusher.Flush()
+	sw.Writef("data: %s\n\n", jsonData)
+	sw.Flush()
 
 	// Сигнал завершения
 	stopChunk := map[string]interface{}{
@@ -1159,15 +1156,15 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 		},
 	}
 	stopJSON, _ := json.Marshal(stopChunk)
-	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
-	flusher.Flush()
+	sw.Writef("data: %s\n\n", stopJSON)
+	sw.Flush()
 
 	// Финальный usage chunk (если include_usage=true) — перед [DONE].
 	// OpenAI stream_options.include_usage=true → клиент получает prompt/completion/total_tokens.
-	writeOpenAIUsageChunk(w, flusher, chatID, created, modelName, prompt, reasoning+content, includeUsage)
+	writeOpenAIUsageChunk(sw, chatID, created, modelName, prompt, reasoning+content, includeUsage)
 
-	fmt.Fprintf(w, "data: [DONE]\n\n")
-	flusher.Flush()
+	sw.Writef("data: [DONE]\n\n")
+	sw.Flush()
 }
 
 // writeOpenAIChatStream — streaming ответ в формате SSE для /v1/chat/completions.
@@ -1180,11 +1177,6 @@ func writeStaticTextStream(w http.ResponseWriter, modelName, chatID string, crea
 // эмитим tool_calls в финальном чанке и обнуляем content.
 func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, includeUsage bool, tools []openAITool) {
 	// Round 15 (2026-07-29): debug-логирование для диагностики missing usage chunk.
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
 	// 2026-06-24: preflight n_ctx check BEFORE WriteHeader(200).
 	// Once WriteHeader(200) is called, we can't change status code mid-stream.
 	// The HTTP client would see "200 OK" with whatever body we wrote after
@@ -1199,10 +1191,13 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+	// R493 (этап 7): единый писатель потока (заголовки, статус, учёт байт/ошибок).
+	sw, ok := newStreamWriterR493(w, r, "writeOpenAIChatStream", modelName, "text/event-stream")
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	sw.WriteHeader(http.StatusOK)
 	// Round 32 (2026-08-09): emit "thinking" SSE comment immediately после headers.
 	// C-bridge prefill (особенно для reasoning моделей типа gemma-4) занимает 5-30s
 	// на больших prompts. Без этой строки клиент получает headers + 0 байт данных
@@ -1213,8 +1208,8 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	// SSE comments (lines starting with `:`) per RFC spec §4.4 — клиенты игнорируют
 	// но используют как keep-alive signal.
 	prefillStartTime := time.Now()
-	fmt.Fprintf(w, ": prefill_started_at=%s\n\n", prefillStartTime.Format(time.RFC3339Nano))
-	flusher.Flush()
+	sw.Writef(": prefill_started_at=%s\n\n", prefillStartTime.Format(time.RFC3339Nano))
+	sw.Flush()
 
 	ctx := r.Context()
 	// R63 (2026-09-15): AbortWatcher per-infer flag теперь создаётся внутри
@@ -1245,7 +1240,7 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 	//   - логирует первый write error;
 	//   - записывает snapshot в /api/v1/cppworker/debug/last-stream;
 	//   - потокобезопасен.
-	sw := newSafeStreamWriter(w, r, "writeOpenAIChatStream", modelName)
+	// (писатель уже создан выше — этап 7 свёл создание в одну точку)
 
 	// === 2026-06-26 BUGFIX: явный stopCh для keepalive goroutine ===
 	//
@@ -1675,7 +1670,7 @@ func writeOpenAIChatStream(w http.ResponseWriter, r *http.Request, modelName, pr
 		} else {
 			completionText = fullOutput
 		}
-		emitOpenAIUsageChunkSafe(sw, chatID, created, modelName, prompt, completionText, true)
+		writeOpenAIUsageChunk(sw, chatID, created, modelName, prompt, completionText, true)
 	}
 
 	sw.Writef("data: [DONE]\n\n")
@@ -1911,12 +1906,9 @@ func handleV1Completions(w http.ResponseWriter, r *http.Request) {
 // IDE-агентам для tracking контекстного окна. По дефолту ВКЛЮЧЕНО (если
 // клиент явно не передал stream_options.include_usage=false).
 func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelName, prompt string, params bridge.GenerationParams, includeUsage bool) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
-	// 2026-06-24: preflight n_ctx check BEFORE WriteHeader.
+	// 2026-06-24: preflight n_ctx check BEFORE WriteHeader — он пишет свой статус
+	// и тело, поэтому до создания потокового писателя (иначе заголовки потока
+	// уже были бы зафиксированы).
 	if err := clampNPredictToFitContext(modelName, prompt, &params); err != nil {
 		var perr *PromptExceedsNCtxError
 		if errors.As(err, &perr) {
@@ -1926,9 +1918,13 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	// R493 (этап 7): поток пишется через общий writer — обрыв клиента виден
+	// в debug/last-stream и RecordStreamBreak.
+	sw, ok := newStreamWriterR493(w, r, "writeOpenAICompletionStream", modelName, "text/event-stream")
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
 
 	ctx := r.Context()
 	// R63: per-infer AbortWatcher создаётся внутри GenerateStream (inference.go:521).
@@ -1976,10 +1972,9 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 			"choices": []map[string]interface{}{choice},
 		}
 		jsonData, _ := json.Marshal(chunk)
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", jsonData); err != nil {
+		if !sw.Writef("data: %s\n\n", jsonData) {
 			return false
 		}
-		flusher.Flush()
 		return true
 	}
 
@@ -2036,9 +2031,9 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 				"elapsed_seconds": rllErr.Elapsed.Seconds(),
 			}
 			errJSON, _ := json.Marshal(errChunk)
-			fmt.Fprintf(w, "data: %s\n\n", errJSON)
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			flusher.Flush()
+			sw.Writef("data: %s\n\n", errJSON)
+			sw.Writef("data: [DONE]\n\n")
+			sw.Flush()
 			return
 		}
 		errChunk := map[string]interface{}{
@@ -2056,9 +2051,9 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 			"error": streamErr.Error(),
 		}
 		errJSON, _ := json.Marshal(errChunk)
-		fmt.Fprintf(w, "data: %s\n\n", errJSON)
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		sw.Writef("data: %s\n\n", errJSON)
+		sw.Writef("data: [DONE]\n\n")
+		sw.Flush()
 		return
 	}
 
@@ -2090,9 +2085,9 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 			"error": "model produced an empty response (inference succeeded but output is empty). This may indicate n_ctx too small, prompt too long, or model issue.",
 		}
 		errJSON, _ := json.Marshal(errChunk)
-		fmt.Fprintf(w, "data: %s\n\n", errJSON)
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		sw.Writef("data: %s\n\n", errJSON)
+		sw.Writef("data: [DONE]\n\n")
+		sw.Flush()
 		return
 	}
 	// 2026-06-29: финальный чанк с пустым text. Токены уже стримились
@@ -2112,16 +2107,16 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 		},
 	}
 	stopJSON, _ := json.Marshal(stopChunk)
-	fmt.Fprintf(w, "data: %s\n\n", stopJSON)
-	flusher.Flush()
+	sw.Writef("data: %s\n\n", stopJSON)
+	sw.Flush()
 
 	// Round 15 (2026-07-29): финальный usage chunk (если includeUsage=true)
 	// — перед [DONE]. OpenAI stream_options.include_usage=true. Cline/прочие
 	// IDE-агенты читают prompt_tokens из этого чанка и трекают контекст.
-	writeOpenAIUsageChunk(w, flusher, completionID, created, modelName, prompt, fullOutput, includeUsage)
+	writeOpenAIUsageChunk(sw, completionID, created, modelName, prompt, fullOutput, includeUsage)
 
-	fmt.Fprintf(w, "data: [DONE]\n\n")
-	flusher.Flush()
+	sw.Writef("data: [DONE]\n\n")
+	sw.Flush()
 }
 
 // handleV1Embeddings — OpenAI-совместимый /v1/embeddings endpoint.
@@ -2426,41 +2421,7 @@ type openAITokenUsage struct {
 //
 // chunkID, created, modelName — копируются из вызывающего запроса (или
 // генерируются заново). Безопасно для буферизованной и реальной передачи.
-func writeOpenAIUsageChunk(w http.ResponseWriter, flusher http.Flusher, chunkID string, created int64, modelName string, prompt, output string, includeUsage bool) {
-	if !includeUsage {
-		return
-	}
-	usage := openAITokenUsage{
-		PromptTokens:     countTokensSafe(modelName, prompt),
-		CompletionTokens: countTokensSafe(modelName, output),
-	}
-	chunk := map[string]interface{}{
-		"id":      chunkID,
-		"object":  "chat.completion.chunk",
-		"created": created,
-		"model":   modelName,
-		"choices": []map[string]interface{}{},
-		"usage": map[string]interface{}{
-			"prompt_tokens":     usage.PromptTokens,
-			"completion_tokens": usage.CompletionTokens,
-			"total_tokens":      usage.PromptTokens + usage.CompletionTokens,
-		},
-	}
-	jsonData, _ := json.Marshal(chunk)
-	fmt.Fprintf(w, "data: %s\n\n", jsonData)
-	if flusher != nil {
-		flusher.Flush()
-	}
-}
-
-// emitOpenAIUsageChunkSafe — то же что writeOpenAIUsageChunk, но использует
-// safeStreamWriter (для уже-стартовавшего streaming). Используется в
-// writeOpenAIChatStream где WriteHeader уже вызван и балансером может
-// уже идти инкрементальный стрим.
-//
-// Возвращает false если writer broken (клиент отвалился) — позволяет
-// caller прервать дальнейшую работу.
-func emitOpenAIUsageChunkSafe(sw *safeStreamWriter, chunkID string, created int64, modelName, prompt, output string, includeUsage bool) {
+func writeOpenAIUsageChunk(sw *safeStreamWriter, chunkID string, created int64, modelName string, prompt, output string, includeUsage bool) {
 	if !includeUsage {
 		return
 	}
@@ -2482,7 +2443,9 @@ func emitOpenAIUsageChunkSafe(sw *safeStreamWriter, chunkID string, created int6
 	}
 	jsonData, _ := json.Marshal(chunk)
 	sw.Writef("data: %s\n\n", jsonData)
+	sw.Flush()
 }
+
 
 // ============================================================
 // Usage helpers

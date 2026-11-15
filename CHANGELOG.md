@@ -1,3 +1,35 @@
+## [0.7.277 - этап 7: один писатель потока в воркере (семь путей перестали молчать об обрыве), 2026-11-15]
+
+`safeStreamWriter` был ответом на жалобу «обрыв ответа без каких-либо ошибок», но
+его получили только три обработчика. Семь остальных писали напрямую
+`fmt.Fprintf(w, ...)` и игнорировали результат записи — обрыв клиента на них не
+попадал ни в `debug/last-stream`, ни в `RecordStreamBreak` (NaN-healer), ни в лог.
+
+- **Одна точка создания:** `newStreamWriterR493(w, r, handler, model, contentType)`
+  — проверяет `http.Flusher`, ставит заголовки ЧЕРЕЗ writer (не напрямую в
+  `http.ResponseWriter`, иначе учёт байт разходится с отданным), принимает тип
+  контента (SSE или NDJSON).
+- **Переведены:** `writeToolCallsStream`, `writeStaticTextStream`,
+  `writeOpenAICompletionStream`, `writeOllamaStream`, `writeStreamResponse`,
+  `writeChatNDJSONFromResult`, `writeOpenAISSEFromResult`. У `writeOpenAIChatStream`
+  убраны второе создание writer'а и прямая запись `: prefill_started_at` мимо
+  writer'а. Две копии usage-чанка сведены в одну.
+- **Байты клиента не изменились:** `R216`, матрица писателей `R219`,
+  `empty_stream_response`, `streaming_byte_format` прошли без правки ожиданий.
+  Одно отличие записано честно: у image-ветки NDJSON появились
+  `Cache-Control: no-cache` и `Connection: keep-alive` (как у основного
+  NDJSON-пути; раньше прокси мог буферизовать поток), тело кадров то же.
+- **Флаг `CPPWORKER_STREAM_SAFE` не заведён:** этап не меняет поведение клиента,
+  второй путь «как было» стоил бы дороже отката одного коммита.
+- **Тесты писаны ДО правки и падали:** `stream_unified_writer_r493_test.go` (прямые
+  вызовы + контроль «без Flusher ничего не пишем» и «на здоровом потоке ложного
+  обрыва нет») и `stream_unified_writer_r493_inference_test.go` (живой HTTP по
+  четырём поверхностям через обёртку с «broken pipe» после N байт). Мутация
+  «писатель игнорирует ошибку записи» роняет все шесть — проверено.
+- **Намеренно не переведено:** прогресс-стримы загрузки модели (клиент закрывает
+  их штатно — `warn`+`RecordStreamBreak` были бы ложным сигналом) и
+  диагностический пробник полосы (raw-байты, ошибка уже проверяется).
+
 ## [0.7.276 - живой соук четырёх флагов R493: 18/18 ответов, инварианты держатся, 2026-11-15]
 
 Четыре флага refactoring-плана (`LB_WINDOW_UNIFIED`, `LB_UNIFIED_ADMISSION`,

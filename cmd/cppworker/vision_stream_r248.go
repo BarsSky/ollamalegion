@@ -24,42 +24,49 @@ import (
 
 // writeChatNDJSONFromResult — стриминговый ответ Ollama /api/chat по готовому
 // результату: один чанк с content, затем финальный done.
-func writeChatNDJSONFromResult(w http.ResponseWriter, modelName string, result *bridge.InferenceResult) {
-	flusher, _ := w.(http.Flusher)
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.WriteHeader(http.StatusOK)
+func writeChatNDJSONFromResult(w http.ResponseWriter, r *http.Request, modelName string, result *bridge.InferenceResult) {
+	// R493 (этап 7): общий писатель потока. Заголовки — те же, что у основного
+	// NDJSON-пути (/api/generate): раньше здесь не было Cache-Control, и прокси
+	// мог буферизовать поток; тело кадров не изменилось.
+	sw, ok := newStreamWriterR493(w, r, "writeChatNDJSONFromResult", modelName, "application/x-ndjson")
+	if !ok {
+		return
+	}
+	sw.WriteHeader(http.StatusOK)
 
-	enc := json.NewEncoder(w)
-	_ = enc.Encode(map[string]interface{}{
+	emit := func(payload map[string]interface{}) {
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return
+		}
+		sw.Writef("%s\n", body)
+		sw.Flush()
+	}
+	emit(map[string]interface{}{
 		"model":      modelName,
 		"created_at": time.Now().UTC().Format(time.RFC3339),
 		"message":    map[string]string{"role": "assistant", "content": result.Output},
 		"done":       false,
 	})
-	if flusher != nil {
-		flusher.Flush()
-	}
-	_ = enc.Encode(map[string]interface{}{
-		"model":      modelName,
-		"created_at": time.Now().UTC().Format(time.RFC3339),
-		"message":    map[string]string{"role": "assistant", "content": ""},
-		"done":       true,
+	emit(map[string]interface{}{
+		"model":       modelName,
+		"created_at":  time.Now().UTC().Format(time.RFC3339),
+		"message":     map[string]string{"role": "assistant", "content": ""},
+		"done":        true,
 		"done_reason": "stop",
 	})
-	if flusher != nil {
-		flusher.Flush()
-	}
 }
 
 // writeOpenAISSEFromResult — стриминговый ответ OpenAI /v1/chat/completions по
 // готовому результату: delta-чанк с содержимым, терминальный чанк finish и
 // [DONE].
-func writeOpenAISSEFromResult(w http.ResponseWriter, modelName string, result *bridge.InferenceResult) {
-	flusher, _ := w.(http.Flusher)
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+func writeOpenAISSEFromResult(w http.ResponseWriter, r *http.Request, modelName string, result *bridge.InferenceResult) {
+	// R493 (этап 7): общий писатель потока (обрыв клиента виден диагностике).
+	sw, ok := newStreamWriterR493(w, r, "writeOpenAISSEFromResult", modelName, "text/event-stream")
+	if !ok {
+		return
+	}
+	sw.WriteHeader(http.StatusOK)
 
 	id := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
@@ -69,10 +76,8 @@ func writeOpenAISSEFromResult(w http.ResponseWriter, modelName string, result *b
 		if err != nil {
 			return
 		}
-		fmt.Fprintf(w, "data: %s\n\n", body)
-		if flusher != nil {
-			flusher.Flush()
-		}
+		sw.Writef("data: %s\n\n", body)
+		sw.Flush()
 	}
 
 	emit(map[string]interface{}{
@@ -88,8 +93,6 @@ func writeOpenAISSEFromResult(w http.ResponseWriter, modelName string, result *b
 			"index": 0, "delta": map[string]interface{}{}, "finish_reason": "stop",
 		}},
 	})
-	fmt.Fprint(w, "data: [DONE]\n\n")
-	if flusher != nil {
-		flusher.Flush()
-	}
+	sw.Writef("data: [DONE]\n\n")
+	sw.Flush()
 }

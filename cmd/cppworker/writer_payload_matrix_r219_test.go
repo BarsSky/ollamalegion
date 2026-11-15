@@ -11,6 +11,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -31,7 +33,7 @@ func TestR219_StaticWriterMatrix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := newRecorder()
-			writeStaticTextStream(rec, "m", "chatcmpl-1", 1, tc.reasoning, tc.content, "p", false)
+			writeStaticTextStream(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), "m", "chatcmpl-1", 1, tc.reasoning, tc.content, "p", false)
 			verifyWriterContract(t, rec.Body.String(), tc.wantRsn, tc.wantCnt, "stop")
 		})
 	}
@@ -49,7 +51,7 @@ func TestR219_ToolCallsWriterMatrix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := newRecorder()
-			writeToolCallsStream(rec, "m", "chatcmpl-2", 1, calls, tc.reasoning, "p", false)
+			writeToolCallsStream(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), "m", "chatcmpl-2", 1, calls, tc.reasoning, "p", false)
 			// content при tool_calls пуст (клиент получает действие, а не текст).
 			verifyWriterContract(t, rec.Body.String(), tc.reasoning, "", "tool_calls")
 		})

@@ -452,7 +452,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			writeCppWorkerErrorWithBridgeInfo(w, http.StatusInternalServerError, "vision generate failed", verr)
 			return
 		}
-		writeChatNDJSONFromResult(w, req.Model, result)
+		writeChatNDJSONFromResult(w, r, req.Model, result)
 		return
 	}
 

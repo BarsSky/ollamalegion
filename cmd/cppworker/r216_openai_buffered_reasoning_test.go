@@ -19,6 +19,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -69,7 +70,7 @@ func r216ParseSSE(t *testing.T, raw string) (roleCount int, content, reasoning s
 // не попадают в content и не теряются.
 func TestR216_StaticTextStream_SeparatesReasoning(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeStaticTextStream(rec, "gemma-4", "chatcmpl-1", 1,
+	writeStaticTextStream(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), "gemma-4", "chatcmpl-1", 1,
 		"сначала подумаю", "Видимый ответ.", "prompt", true)
 
 	roleCount, content, reasoning, finish := r216ParseSSE(t, rec.Body.String())
@@ -103,7 +104,7 @@ func TestR216_StaticTextStream_SeparatesReasoning(t *testing.T) {
 func TestR216_StaticTextStream_UnclosedReasoningStaysInReasoning(t *testing.T) {
 	rec := httptest.NewRecorder()
 	// reasoning без закрывающего маркера: видимого ответа нет вовсе.
-	writeStaticTextStream(rec, "gemma-4", "chatcmpl-2", 1,
+	writeStaticTextStream(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), "gemma-4", "chatcmpl-2", 1,
 		"думаю и не закрываю", "", "prompt", false)
 
 	_, content, reasoning, _ := r216ParseSSE(t, rec.Body.String())
@@ -126,7 +127,7 @@ func TestR216_ToolCallsStream_KeepsReasoning(t *testing.T) {
 	calls := []openAIToolCall{one}
 
 	rec := httptest.NewRecorder()
-	writeToolCallsStream(rec, "gemma-4", "chatcmpl-3", 1, calls, "обдумываю вызов", "prompt", false)
+	writeToolCallsStream(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), "gemma-4", "chatcmpl-3", 1, calls, "обдумываю вызов", "prompt", false)
 
 	roleCount, _, reasoning, finish := r216ParseSSE(t, rec.Body.String())
 	if got := reasoning.String(); got != "обдумываю вызов" {

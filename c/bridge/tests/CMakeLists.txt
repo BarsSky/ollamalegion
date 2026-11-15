@@ -127,6 +127,29 @@ bridge_link_llama(test_batch_n_tokens)
 target_compile_features(test_batch_n_tokens PRIVATE c_std_99 cxx_std_17)
 
 # ============================================================
+# R493 (2026-11-15, обновление llama.cpp до 1.0.0): compile-only проверка
+# ВСЕХ исходников моста — ровно как их собирает образ (bridge.c + оба csrc/*.cpp).
+#
+# ЗАЧЕМ. До этого CI компилировал только bridge.c и csrc/vision_mtmd.cpp, а
+# csrc/chat_thinking.cpp — нет. Из-за этого смена типа
+# `common_chat_params::prompt` (std::string → common_chat_prompt) в 1.0.0
+# всплыла ТОЛЬКО на релизной сборке образа (`no match for operator!=`), то есть
+# в самом дорогом месте и уже после смены пина. Цель без линковки и без main():
+# её единственная задача — не дать такому расхождению пройти мимо CI.
+# ============================================================
+add_library(bridge_compile_all OBJECT
+    ../bridge.c
+    ../csrc/chat_thinking.cpp
+    ../csrc/vision_mtmd.cpp
+)
+target_include_directories(bridge_compile_all PRIVATE
+    ${CMAKE_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    ${LLAMA_CPP_INCLUDE_DIRS}
+)
+target_compile_features(bridge_compile_all PRIVATE c_std_99 cxx_std_17)
+
+# ============================================================
 # test_batched_batch — Round 15.1 regression test для build_batched_batch
 # (true batched parallel inference — N sequences в ОДНОМ llama_batch).
 # ============================================================

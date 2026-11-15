@@ -71,6 +71,19 @@ ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 WORKDIR /build/llama.cpp
 COPY c/llama.cpp .
 
+# R493 (обновление до llama.cpp 1.0.0, 2026-11-15): нормализуем переводы строк.
+#
+# ЗАЧЕМ. Сабмодуль копируется из рабочего дерева ХОСТА, а на Windows checkout с
+# core.autocrlf=true даёт CRLF. Дальше `git apply` сравнивает контекст патча с
+# содержимым файла, и LF-патч на CRLF-файле не прикладывается (`patch does not
+# apply`), хотя логика патча верна. Нормализация делает сборку одинаковой на
+# Windows и Linux и снимает зависимость от настроек git на машине сборки.
+RUN find . -path ./.git -prune -o -type f \
+        \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.hpp' \
+           -o -name '*.cuh' -o -name '*.cu' -o -name '*.txt' -o -name '*.cmake' \
+           -o -name 'CMakeLists.txt' -o -name '*.py' -o -name '*.json' \) \
+        -print0 | xargs -0 -r sed -i 's/\r$//'
+
 RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build commit -m "llama.cpp"
 
 # R214 (2026-10-21): локальный патч llama.cpp — TCP keepalive на сокете раскладки.
@@ -89,7 +102,12 @@ RUN git init && git add -A && git -c user.name=docker -c user.email=docker@build
 COPY docker/cppworker/patches /tmp/patches
 # R218: патчи применяются по порядку и падают громко, если хоть один не встал.
 #  0001 — TCP keepalive сокета раскладки (R214);
-#  0002 — недоступный RPC-узел больше не GGML_ABORT'ит процесс (R218).
+#  0003 — потеря RPC-сессии не убивает процесс: failed_flag/failed() вместо
+#         RPC_STATUS_ASSERT (R218/R223). Перенесён на llama.cpp 1.0.0 2026-11-15.
+# Патч 0002 (graceful connect, R218) УДАЛЁН при обновлении до 1.0.0: upstream
+# сделал то же самое — `rpc_dispatcher::start` возвращает bool и логирует вместо
+# `GGML_ABORT`, `get_dispatcher` проверяет результат, а
+# `ggml_backend_rpc_get_device_count` уже имеет `if (dispatcher == nullptr) return 0;`.
 RUN for p in /tmp/patches/*.patch; do \
         git apply "$p" || exit 1; \
     done && rm -rf /tmp/patches

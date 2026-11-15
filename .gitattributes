@@ -25,3 +25,8 @@ go.sum text eol=lf
 
 # Documentation
 *.md text eol=lf
+
+# R493 (2026-11-15): патчи llama.cpp обязаны иметь LF на любой ОС —
+# `git apply` сравнивает контекст побайтово, и CRLF-чекаут ломал их
+# прикладывание (при обновлении до 1.0.0 это всплыло на сборке образа).
+docker/cppworker/patches/*.patch text eol=lf

@@ -1,8 +1,8 @@
 diff --git a/ggml/src/ggml-rpc/transport.cpp b/ggml/src/ggml-rpc/transport.cpp
-index 5ec15dc80..cb2f38089 100644
+index c7d9f53..1f69a9b 100644
 --- a/ggml/src/ggml-rpc/transport.cpp
 +++ b/ggml/src/ggml-rpc/transport.cpp
-@@ -635,6 +635,45 @@ static bool set_no_delay(sockfd_t sockfd) {
+@@ -717,6 +717,45 @@ static bool set_no_delay(sockfd_t sockfd) {
      return ret == 0;
  }
  
@@ -48,18 +48,18 @@ index 5ec15dc80..cb2f38089 100644
  static bool set_reuse_addr(sockfd_t sockfd) {
      int flag = 1;
      int ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&flag, sizeof(int));
-@@ -650,6 +689,9 @@ socket_ptr socket_t::accept() {
-         GGML_LOG_ERROR("Failed to set TCP_NODELAY\n");
+@@ -732,6 +771,9 @@ socket_ptr socket_t::accept() {
+         LOG_ERROR("Failed to set TCP_NODELAY\n");
          return nullptr;
      }
 +    if (!set_keep_alive(client_socket_fd)) {
 +        GGML_LOG_ERROR("Failed to set TCP keepalive\n");
 +    }
+     LOG_DBG("[%s] accepted client connection\n", __func__);
      return socket_ptr(new socket_t(std::make_unique<impl>(client_socket_fd)));
  }
- 
-@@ -689,6 +731,9 @@ socket_ptr socket_t::connect(const char * host, int port) {
-         GGML_LOG_ERROR("Failed to set TCP_NODELAY\n");
+@@ -773,6 +815,9 @@ socket_ptr socket_t::connect(const char * host, int port) {
+         LOG_ERROR("Failed to set TCP_NODELAY\n");
          return nullptr;
      }
 +    if (!set_keep_alive(sockfd)) {

@@ -671,6 +671,24 @@ jobs:
           sudo apt-get -o Acquire::Retries=5 update
           sudo apt-get -o Acquire::Retries=5 install -y build-essential cmake git
 
+      # R493 (обновление llama.cpp 1.0.0, 2026-11-15): применить НАШИ патчи до
+      # сборки. До этого job собирал llama.cpp БЕЗ них, и поломка патчей
+      # (нераскладываемый хунк после обновления пина) всплывала только на релизной
+      # сборке образа — то есть в самом дорогом месте. Теперь несовместимость
+      # видна в CI за минуты, и «поддержка двух версий» (текущей и 1.0.0)
+      # проверяется там же: меняешь пин — CI обязан собрать патчи под него.
+      - name: Apply our llama.cpp patches
+        run: |
+          set -e
+          cd c/llama.cpp
+          git init -q 2>/dev/null || true
+          git add -A 2>/dev/null || true
+          git -c user.name=ci -c user.email=ci@ci commit -qm "llama.cpp" 2>/dev/null || true
+          for p in ../../docker/cppworker/patches/*.patch; do
+            echo "--- applying $p"
+            git apply "$p"
+          done
+
       - name: Build llama.cpp CPU-only (libllama-common.a)
         run: |
           set -e

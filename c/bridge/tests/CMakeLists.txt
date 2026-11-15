@@ -146,6 +146,10 @@ target_include_directories(bridge_compile_all PRIVATE
     ${CMAKE_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
     ${LLAMA_CPP_INCLUDE_DIRS}
+    # R493: chat_thinking.cpp включает "chat.h" (c/llama.cpp/common) — в образе этот
+    # каталог даёт CMake моста, а здесь его надо назвать явно (CI-падение 826e607c:
+    # `fatal error: chat.h: No such file or directory`).
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp/common
 )
 target_compile_features(bridge_compile_all PRIVATE c_std_99 cxx_std_17)
 

@@ -28,6 +28,15 @@
 // из Go (cgo). C++ имеет name mangling, без extern "C" имена будут
 // искажены и Go-сторона не сможет их найти.
 
+// R493 (2026-11-15, обновление llama.cpp до 1.0.0): поле `common_chat_params::prompt`
+// СМЕНИЛО ТИП: было `std::string`, стало `common_chat_prompt` (части шаблона +
+// пользовательский ввод, см. common/chat.h). Наша сборка обязана собираться с
+// ОБОИМИ пинами (требование «поддержка текущей версии»), поэтому здесь перегрузка,
+// а не `#if`: макроса версии в llama.h нет (только функция llama_version()),
+// а сам тип `common_chat_prompt` объявлен в обоих пинах.
+static inline const std::string & promptTextR493(const std::string & p) { return p; }
+static inline std::string promptTextR493(const common_chat_prompt & p) { return p.str(); }
+
 // R434 (2026-11-05): общая реализация рендера шаблона.
 // (forward declaration — C++ linkage, поэтому ВНЕ extern "C" блока ниже.)
 //
@@ -192,7 +201,7 @@ static int32_t bridge_chat_templates_apply_common(
             common_chat_templates_inputs plain = inputs;
             plain.tools.clear();
             common_chat_params plain_params = common_chat_templates_apply(tmpls.get(), plain);
-            tools_rendered = (plain_params.prompt != params.prompt);
+            tools_rendered = (promptTextR493(plain_params.prompt) != promptTextR493(params.prompt));
         } catch (...) {
             tools_rendered = false;
         }
@@ -210,7 +219,7 @@ static int32_t bridge_chat_templates_apply_common(
     }
 
     // Копируем prompt в out_buf.
-    const std::string& prompt = params.prompt;
+    const std::string prompt = promptTextR493(params.prompt);
     int32_t prompt_len = static_cast<int32_t>(prompt.size());
 
     if (prompt_len >= out_buf_size) {

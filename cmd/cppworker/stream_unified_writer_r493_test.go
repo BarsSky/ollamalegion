@@ -23,7 +23,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -32,12 +31,14 @@ import (
 // Flush() есть — иначе обработчик не стал бы отдавать поток вовсе и тест
 // проверял бы ветку «streaming not supported», а не обрыв.
 type brokenClientWriter struct {
-	mu        sync.Mutex
+	// Порядок полей — под fieldalignment: сначала указательные (8/16 байт),
+	// потом числовые. Мьютекс не нужен: писатель однопоточный, его вызывает
+	// один обработчик в одном goroutine.
 	header    http.Header
+	err       error
 	status    int
 	written   int
 	failAfter int
-	err       error
 }
 
 func newBrokenClientWriter(failAfter int) *brokenClientWriter {
@@ -52,14 +53,10 @@ func newBrokenClientWriter(failAfter int) *brokenClientWriter {
 func (b *brokenClientWriter) Header() http.Header { return b.header }
 
 func (b *brokenClientWriter) WriteHeader(code int) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.status = code
 }
 
 func (b *brokenClientWriter) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.written >= b.failAfter {
 		return 0, b.err
 	}

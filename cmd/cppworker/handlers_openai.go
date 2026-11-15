@@ -1972,10 +1972,7 @@ func writeOpenAICompletionStream(w http.ResponseWriter, r *http.Request, modelNa
 			"choices": []map[string]interface{}{choice},
 		}
 		jsonData, _ := json.Marshal(chunk)
-		if !sw.Writef("data: %s\n\n", jsonData) {
-			return false
-		}
-		return true
+		return sw.Writef("data: %s\n\n", jsonData)
 	}
 
 	callback := func(token string) bool {

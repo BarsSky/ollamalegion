@@ -281,3 +281,7 @@ dist/
 # попадал в git вместе со стендовыми RPC-адресами). Шаблон дефолтов живёт в
 # config/cppworker-defaults.json.
 cmd/cppworker/config/
+
+# Временные каталоги проверок (не часть репозитория).
+.tmp_base/
+.tmp_v1/

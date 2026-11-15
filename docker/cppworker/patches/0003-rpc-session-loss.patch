@@ -1,8 +1,8 @@
 diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
-index a97db24..4e378d1 100644
+index e4a84cb..6e80e80 100644
 --- a/ggml/src/ggml-rpc/ggml-rpc.cpp
 +++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
-@@ -31,8 +31,6 @@ static const char * RPC_DEBUG = std::getenv("GGML_RPC_DEBUG");
+@@ -27,8 +27,6 @@
  
  namespace fs = std::filesystem;
  
@@ -11,66 +11,56 @@ index a97db24..4e378d1 100644
  
  // all RPC structures must be packed
  #pragma pack(push, 1)
-@@ -351,7 +349,10 @@ static bool negotiate_hello(const std::shared_ptr<socket_t> & sock) {
-     sock->get_caps(request.conn_caps);
- 
-     bool status = send_rpc_cmd(sock, RPC_CMD_HELLO, &request, sizeof(request), &response, sizeof(response));
--    RPC_STATUS_ASSERT(status);
-+    if (!status) {
-+        GGML_LOG_ERROR("%s: RPC server did not answer the hello handshake\n", __func__);
-+        return false;
-+    }
- 
-     if (response.major != RPC_PROTO_MAJOR_VERSION || response.minor > RPC_PROTO_MINOR_VERSION) {
-         GGML_LOG_ERROR("RPC server version mismatch: %d.%d.%d\n",
-@@ -419,6 +420,8 @@ public:
-     void event_record(ggml_backend_event_t event);
-     void synchronize();
- 
-+    bool failed() const;
-+
-     void start(const std::string & endpoint);
+@@ -532,6 +530,11 @@ public:
+     bool start(const std::string & endpoint);
      void work();
  
-@@ -439,9 +442,12 @@ private:
-         rpc_msg_ptr              msg;
-         std::shared_future<void> sf;
-     };
-+    void fail(const std::string & what);
++    // R493 (обновление llama.cpp 1.0.0): сессия RPC может умереть, и это НЕ повод
++    // убивать процесс воркера (старый RPC_STATUS_ASSERT делал именно это).
++    // failed() — факт о сессии, а не флаг в вызывающем.
++    bool failed() const;
 +
-     rpc_msg_queue    queue;
-     socket_ptr       sock;
-     std::atomic_bool running;
-+    std::atomic_bool failed_flag = false;
-     std::thread      thread;
- };
+     bool get_send_tensor_hash() const { return flags & RPC_DISPATCHER_FLAGS_SEND_TENSOR_HASH; }
  
-@@ -561,18 +567,35 @@ void rpc_dispatcher::work() {
-             break;
-         }
-         if (msg_ptr->cmd != RPC_CMD_NONE) {
+     ~rpc_dispatcher();
+@@ -561,6 +564,9 @@ private:
+     rpc_msg_queue queue;
+     socket_ptr    sock;
+ 
++    void fail(const std::string & what);
++    std::atomic_bool failed_flag = false;
++
+     rpc_dispatcher_flags flags = {};
+ 
+     std::atomic_uint busy_spin_users = 0;
+@@ -691,12 +697,20 @@ void rpc_dispatcher::work() {
+                      rpc_log_format_size(msg_ptr->input_size).c_str(), rpc_log_format_size(msg_ptr->output_size).c_str());
+             const bool trace = rpc_log_debug_level() >= 3;
+             const auto t0 = std::chrono::steady_clock::now();
 -            if (msg_ptr->output) {
 -                bool status = send_rpc_cmd(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size, msg_ptr->output, msg_ptr->output_size);
 -                RPC_STATUS_ASSERT(status);
 -            } else {
--                bool status = send_rpc_cmd(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size);
+-                bool status = send_rpc_cmd_payload(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size, msg_ptr->payload, msg_ptr->payload_size);
 -                RPC_STATUS_ASSERT(status);
 +            bool ok = !failed_flag.load();
 +            if (ok) {
 +                if (msg_ptr->output) {
 +                    ok = send_rpc_cmd(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size, msg_ptr->output, msg_ptr->output_size);
 +                } else {
-+                    ok = send_rpc_cmd(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size);
++                    ok = send_rpc_cmd_payload(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size, msg_ptr->payload, msg_ptr->payload_size);
 +                }
 +                if (!ok) {
 +                    fail("command " + std::to_string((int) msg_ptr->cmd) + " failed");
 +                }
 +            }
++            // Ответа не будет: нулим буфер, чтобы вызывающий не прочитал мусор.
 +            if (!ok && msg_ptr->output) {
 +                memset(msg_ptr->output, 0, msg_ptr->output_size);
              }
-         }
-         msg_ptr->completion.set_value();
+             if (trace) {
+                 const std::chrono::duration<double, std::milli> elapsed = std::chrono::steady_clock::now() - t0;
+@@ -710,6 +724,16 @@ void rpc_dispatcher::work() {
      }
  }
  
@@ -80,21 +70,21 @@ index a97db24..4e378d1 100644
 +
 +void rpc_dispatcher::fail(const std::string & what) {
 +    if (!failed_flag.exchange(true)) {
-+        GGML_LOG_ERROR("%s: RPC session lost, remote endpoint is gone: %s\n", __func__, what.c_str());
++        LOG_ERROR("%s: RPC session lost, remote endpoint is gone: %s\n", __func__, what.c_str());
 +    }
 +}
 +
  rpc_dispatcher::~rpc_dispatcher() {
      running = false;
      queue.interrupt();
-@@ -1018,6 +1041,10 @@ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, g
-     ggml_backend_rpc_device_context * rpc_dev_ctx = (ggml_backend_rpc_device_context *)rpc_dev->context;
+@@ -1298,6 +1322,10 @@ void rpc_dispatcher::graph_compute(uint32_t device, const ggml_cgraph * cgraph)
  
-     GGML_ASSERT(cgraph->n_nodes > 0);
+ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+     ggml_backend_rpc_context * rpc_ctx = (ggml_backend_rpc_context *)backend->context;
 +    if (rpc_ctx->dispatcher->failed()) {
++        // R493: сессия потеряна — отказ вместо ожидания ответа от мёртвого узла.
 +        return GGML_STATUS_FAILED;
 +    }
-+
-     bool reuse = cgraph->uid != 0 && rpc_dev_ctx->last_graph_uid == cgraph->uid;
-     if (reuse) {
-         auto request = std::make_shared<rpc_msg_graph_recompute_req>();
+     rpc_ctx->dispatcher->graph_compute(rpc_ctx->device, cgraph);
+     return GGML_STATUS_SUCCESS;
+ }

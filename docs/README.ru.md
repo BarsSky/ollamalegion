@@ -151,6 +151,7 @@
 - [2026-10-18-layout-on-reload-r174-check](plans/2026-10-18-layout-on-reload-r174-check.md)
 - [2026-10-21-webui-auth](plans/2026-10-21-webui-auth.md)
 - [2026-10-22-r220-r226-summary](plans/2026-10-22-r220-r226-summary.md)
+- [2026-11-14-llama-cpp-v1-upgrade](plans/2026-11-14-llama-cpp-v1-upgrade.md)
 - [2026-q3-production-ready-plan](plans/2026-q3-production-ready-plan.md)
 - [2026-q3-roadmap](plans/2026-q3-roadmap.md)
 - [2026-q3-session-f-quick-wins](plans/2026-q3-session-f-quick-wins.md)

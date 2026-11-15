@@ -36,7 +36,7 @@
 |---------|------|---------|-----------------|---------------------|-------|
 | `LB_API_TOKEN` | string | — | `conf.Auth.Tokens` (полная замена) | Высший | Если задан, заменяет весь config token list + `auth.Enabled=true`. Auth bypass. |
 | `LB_AUTH_TOKENS` | CSV | — | `conf.Auth.Tokens` | Высший | Используется ТОЛЬКО если `LB_API_TOKEN` пуст. |
-| `LB_ALGORITHM` | string | `resource-aware` | `conf.Balancing.Algorithm` | Высший | Валидируется против whitelist. Invalid → warn + ignore. |
+| `LB_ALGORITHM` | string | `resource-aware` | `conf.Balancing.Algorithm` | Высший | Валидируется против whitelist. Invalid → warn + ignore. **На выбор НЕ влияет (проверено 2026-11-15):** селектор один, многоступенчатый (`backend_selector.go`); значение сохраняется и отдаётся API. См. `debts.ru.md` 12n. |
 | `LB_DATA_DIR` | path | `/app/data` | `dataDir` | Высший | Volume mount path. |
 | `LOG_LEVEL` | string | — | `conf.Logging.Level` | Только если `--log-level` flag НЕ задан | |
 | `LB_STREAMING_NEVER_TIMEOUT` | bool | `false` | Все streaming таймауты = 0 | **ВЫСШИЙ** (выше env и config) | `1/true/yes` → disable. Для OpenWebUI multi-turn. |

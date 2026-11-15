@@ -36,7 +36,7 @@
 |---------|------|---------|-----------------|---------------------|-------|
 | `LB_API_TOKEN` | string | — | `conf.Auth.Tokens` (full replacement) | Highest | If set, replaces the whole config token list + `auth.Enabled=true`. Auth bypass. |
 | `LB_AUTH_TOKENS` | CSV | — | `conf.Auth.Tokens` | Highest | Used ONLY if `LB_API_TOKEN` is empty. |
-| `LB_ALGORITHM` | string | `resource-aware` | `conf.Balancing.Algorithm` | Highest | Validated against a whitelist. Invalid → warn + ignore. |
+| `LB_ALGORITHM` | string | `resource-aware` | `conf.Balancing.Algorithm` | Highest | Validated against a whitelist. Invalid → warn + ignore. **No effect on selection (checked 2026-11-15):** the selector is single, multi-stage (`backend_selector.go`); the value is stored and reported by the API. See `debts.ru.md` 12n. |
 | `LB_DATA_DIR` | path | `/app/data` | `dataDir` | Highest | Volume mount path. |
 | `LOG_LEVEL` | string | — | `conf.Logging.Level` | Only if `--log-level` flag is NOT set | |
 | `LB_STREAMING_NEVER_TIMEOUT` | bool | `false` | All streaming timeouts = 0 | **HIGHEST** (above env and config) | `1/true/yes` → disable. For OpenWebUI multi-turn. |

@@ -76,7 +76,16 @@ Client                    Balancer                    Backend
 
 ### 2.1 Multi-Stage Selection (4 stages + pre-step)
 
-The `selectBackend()` method in `internal/balancer/backend_selector.go` implements 4-stage logic on top of `expandCandidates()` (plus a pre-step for Model Replication).  
+The `selectBackend()` method in `internal/balancer/backend_selector.go` implements 4-stage logic on top of `expandCandidates()` (plus a pre-step for Model Replication).
+
+**Один алгоритм, не переключаемый (факт 2026-11-15).** В коде ровно один
+селектор — описанный ниже. Поле `balancing.algorithm` (и `LB_ALGORITHM`)
+принимается ради совместимости конфигов, валидируется по whitelist и
+сохраняется, но ветвления «round-robin против least-connections» в выборе
+НЕТ: ни один продакшн-файл пакета `internal/balancer` это поле не читает.
+Проверка: `Select-String -Path internal\\balancer\\*.go -Pattern 'Algorithm'`
+даёт только комментарии. Это записано долгом (12n), а не «работает» — если
+нужны разные алгоритмы, это отдельная разработка.  
 Stages 2–4 are optional and depend on configuration (`SyncModelLoad.Enabled`, `Prewarm`, etc.).
 
 #### 2.1.1 `expandCandidates(modelName)` — grouping backends by priority
@@ -794,7 +803,7 @@ Configuration: `balancing.virtual_models.enabled`.
 
 | Parameter | Description | Default |
 |----------|----------|---------|
-| `balancingAlgorithm` | Algorithm: resource-aware, least-connections, round-robin | resource-aware |
+| `balancingAlgorithm` | **Настройка без эффекта (проверено 2026-11-15):** значения `roundrobin`/`leastconn`/`resource-aware`/`model-affinity` проходят whitelist, сохраняются в конфиге и отдаются API, но селектор их НЕ читает — выбор один, многоступенчатый (см. §2.1). См. `debts.ru.md`, пункт 12n | resource-aware |
 | `modelAffinity` | Prefer a backend with the model already loaded | true |
 | `sessionStickiness` | Bind a session to a backend | true |
 | `useEnhancedScoring` | Use the extended scoring formula v2 | true |

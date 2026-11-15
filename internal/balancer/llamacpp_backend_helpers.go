@@ -9,7 +9,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"ollama-loadbalancer/internal/i18n"
@@ -34,20 +33,7 @@ type backendInfo struct {
 // зависал в `concurrent load already in progress, waiting` loop. Теперь мы
 // возвращаем последний известный snapshot (модели, которые точно были загружены
 // до reload) — polling корректно завершается при их появлении.
-type cppWorkerLastKnown struct {
-	mu        sync.RWMutex
-	models    map[string][]cppWorkerModelState
-	updatedAt map[string]time.Time
-}
 
-// cppWorkerLastKnownHolder — helper для embedded-инициализации (вызывается из
-// конструктора LlamaCppRouter).
-func newCppWorkerLastKnown() *cppWorkerLastKnown {
-	return &cppWorkerLastKnown{
-		models:    make(map[string][]cppWorkerModelState),
-		updatedAt: make(map[string]time.Time),
-	}
-}
 
 // ---------- Backend helpers (llama.cpp specific) ----------
 

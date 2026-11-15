@@ -927,9 +927,3 @@ func (p *Proxy) proxyRequestLlamaCppNonStream(w http.ResponseWriter, r *http.Req
 	return nil
 }
 
-func minLenInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

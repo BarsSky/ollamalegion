@@ -384,13 +384,6 @@ func closeThinkTag(s string, from int, kindIdx int) (endPos int, closeTagLen int
 // kindIdx == 0 (<think>) → isThinking=false
 // kindIdx == 1 (<thinking>) → isThinking=true
 // остальные → деградируют на старую логику.
-func openThinkTagLegacy(s string, from int) (int, int, bool) {
-	pos, end, kind := openThinkTag(s, from)
-	if pos < 0 {
-		return -1, -1, false
-	}
-	return pos, end, kind == 1
-}
 
 // PromptOpensReasoning — R216 (2026-10-21): заканчивается ли prompt ВНУТРИ
 // открытого блока размышлений.

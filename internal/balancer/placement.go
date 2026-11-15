@@ -292,7 +292,6 @@ func (p *Proxy) healthyBackendCount() int {
 	return n
 }
 
-func itoaR74(v int) string { return strconv.Itoa(v) }
 
 // ResolvePlacementDecision — чистая функция resolution (без Proxy):
 // приоритет по §3.1 плана: запрос → модель → класс → глобальный дефолт.

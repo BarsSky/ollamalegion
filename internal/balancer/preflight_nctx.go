@@ -1097,12 +1097,6 @@ func makeWindowTooBigReject(
 	}
 }
 
-func preflightDecisionFromCfg(cfg NCtxReloadConfig) PreflightDecision {
-	if cfg.PreflightAsyncReload {
-		return PreflightAsyncReload
-	}
-	return PreflightReload
-}
 
 // nctxPreflightWaitDefaultSec — исторический дефолт 240 c (R68). Оставлен как
 // документация: R83/v67 убрал его из поведения — ждать нужно терминального

@@ -176,14 +176,30 @@ func (p *Proxy) streamUpstreamSSEToClient(
 	logger.Get().Infow("R258: buffering disabled — client accepts SSE, streaming through",
 		"backend", backendID, "model", modelName)
 
+	// R493 (этап 6): решение «что видит клиент» — общее (planStreamLineR493), запись
+	// — через общий сток кадра. Своя копия правила здесь разошлась с основным
+	// путём дважды: не приводилась форма tool_call (R186 — клиент не склеивал
+	// фрагменты вызова) и не закрывался поток по кадру-ошибке воркера (R294).
 	egress := &reasoningEgressState{}
+	schemas := p.toolSchemasForRequest(r)
+	repair := &toolRepairState{}
+	sink := newPlainStreamSinkR493(w)
 	scanner := bufio.NewScanner(upstreamResp.Body)
 	// R259: тот же конфигурируемый лимит строки, что и в основном тракте —
 	// иначе на большом tool-call здесь получился бы ложный «обрезанный поток».
 	scanner.Buffer(make([]byte, 0, 64*1024), streamMaxLineBytes())
 
-	var lastForwarded []byte
 	frames := 0
+	writeFrame := func(fr []byte) bool {
+		if _, err := sink.WriteFrame(fr); err != nil {
+			logger.Get().Infow("R258: client write failed while streaming",
+				"backend", backendID, "error", err, "frames", frames)
+			return false
+		}
+		frames++
+		return true
+	}
+
 	for scanner.Scan() {
 		select {
 		case <-r.Context().Done():
@@ -196,42 +212,43 @@ func (p *Proxy) streamUpstreamSSEToClient(
 		}
 
 		line := scanner.Text()
+		// Этот путь отдаёт ТОЛЬКО SSE-кадры (R258): не-data строки и пустые
+		// разделители сюда не доходят как кадры.
 		if line == "" || !strings.HasPrefix(line, "data: ") {
 			continue
 		}
-		out, _ := filterAssistantEgressForClient([]byte(line), egress)
-		// R261: finish придерживаем и отдаём последним — объяснение пустого
-		// ответа должно идти перед finish_reason.
-		if egress.tryHoldFinishFrame(out) {
-			continue
-		}
-		// R261: [DONE] от воркера — придержанный finish и объяснение пустого
-		// ответа отдаём ДО него (иначе клиент увидит кадры после конца потока).
-		if isSSEDoneLine(out) {
-			for _, fr := range egress.finalizeFrames() {
-				// R277: граница SSE-события для кадров из фильтра.
-				fr = withSSEEventBoundary(fr)
-				if _, werr := w.Write(fr); werr != nil {
-					logger.Get().Infow("R258: finalize before [DONE] failed",
-						"backend", backendID, "error", werr)
-					return nil
-				}
-				lastForwarded = fr
-				frames++
-				if flusher != nil {
-					flusher.Flush()
-				}
+		plan := planStreamLineR493([]byte(line), egress, schemas, repair, streamLineTransportPlainR493)
+		for _, fr := range plan.Pre {
+			if !writeFrame(fr) {
+				return nil
 			}
 		}
-		if _, err := w.Write(append(out, '\n', '\n')); err != nil {
-			logger.Get().Infow("R258: client write failed while streaming",
-				"backend", backendID, "error", err, "frames", frames)
-			return nil
+		if plan.Line != nil {
+			// Граница события: строке из Scanner перевод строки не принадлежит.
+			frame := make([]byte, 0, len(plan.Line)+2)
+			frame = append(frame, plan.Line...)
+			frame = append(frame, '\n', '\n')
+			if !writeFrame(frame) {
+				return nil
+			}
+			if plan.Terminator {
+				// R252: факт о потоке, а не переменная цикла — иначе финальная
+				// гарантия допишет второй [DONE] (поймал golden-тест этого шага).
+				sink.NoteTerminator()
+			}
 		}
-		lastForwarded = out
-		frames++
-		if flusher != nil {
-			flusher.Flush()
+		if plan.Terminate {
+			// R294: кадр-ошибка воркера закрывает поток — клиент не ждёт EOF.
+			for _, fr := range plan.Post {
+				_ = writeFrame(fr)
+			}
+			if !sink.TerminatorSent() {
+				_ = writeFrame([]byte(sseDoneFrame))
+				sink.NoteTerminator()
+			}
+			logger.Get().Infow("R258: upstream error frame — stream closed (R294)",
+				"backend", backendID, "model", modelName)
+			return nil
 		}
 	}
 
@@ -242,25 +259,19 @@ func (p *Proxy) streamUpstreamSSEToClient(
 			"backend", backendID, "model", modelName, "error", err, "frames", frames)
 	}
 	// R261: закрываем фильтр — хвост, объяснение пустого ответа, придержанный
-	// finish. Иначе клиент, не рисующий reasoning_content, видит пустоту.
-	for _, fr := range egress.finalizeFrames() {
-		// R277: граница SSE-события (см. withSSEEventBoundary).
-		fr = withSSEEventBoundary(fr)
-		if _, err := w.Write(fr); err != nil {
-			logger.Get().Infow("R258: finalize frame write failed",
-				"backend", backendID, "error", err)
+	// finish. Список кадров и граница события — в одном месте (finalizeStreamFramesR493).
+	for _, fr := range finalizeStreamFramesR493(egress) {
+		if !writeFrame(fr) {
 			return nil
 		}
-		lastForwarded = fr
-		frames++
-		if flusher != nil {
-			flusher.Flush()
-		}
 	}
-	// Ровно один [DONE]: если воркер успел прислать свой — второй не пишем.
-	if ensurePlainSSEDone(w, lastForwarded) && flusher != nil {
-		flusher.Flush()
+	// Ровно один [DONE]: решение — по ФАКТУ записи через сток (R252), а не по
+	// последнему кадру: апстрим присылает после [DONE] пустую строку-разделитель.
+	if !sink.TerminatorSent() {
+		_ = writeFrame([]byte(sseDoneFrame))
+		sink.NoteTerminator()
 	}
+
 	logger.Get().Infow("R258: SSE passthrough complete",
 		"backend", backendID, "model", modelName, "frames", frames,
 		"elapsed_sec", time.Since(upstreamStartedAt).Seconds())

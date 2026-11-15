@@ -123,8 +123,22 @@ func TestR493r_HijackTransportOwnsFraming(t *testing.T) {
 // «следующая правка в одном цикле» поведением не ловится — обе ветки по
 // отдельности остаются корректными, расходятся только реакции на редкий кадр.
 func TestR493r_StreamLinePlanIsTheOnlyDecisionPoint(t *testing.T) {
-	loop := funcBodyR493(t, "stream_openai_sse_r493.go",
-		"func (p *Proxy) runOpenAISSEStreamR493(", "")
+	// R493 (2026-11-14): к этому списку добавлен авто-стрим R258 — он был ЧЕТВЁРТОЙ
+	// копией правила и уже разошёлся (не приводил форму tool_call и не закрывал
+	// поток по кадру-ошибке).
+	loops := map[string]string{
+		"stream_openai_sse_r493.go":                "func (p *Proxy) runOpenAISSEStreamR493(",
+		"proxy_request_openai_auto_stream_r258.go": "func (p *Proxy) streamUpstreamSSEToClient(",
+	}
+	for file, sig := range loops {
+		checkSSEPipelineStewardR493(t, file, sig)
+	}
+}
+
+// checkSSEPipelineStewardR493 — правило для одного стримингового цикла.
+func checkSSEPipelineStewardR493(t *testing.T, file, sig string) {
+	t.Helper()
+	loop := funcBodyR493(t, file, sig, "")
 	if !strings.Contains(loop, "planStreamLineR493(") {
 		t.Error("общий цикл не использует planStreamLineR493 — значит у него снова своя " +
 			"копия правила (класс дефекта этапа 6)")

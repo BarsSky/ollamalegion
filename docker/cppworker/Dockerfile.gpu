@@ -211,7 +211,10 @@ WORKDIR /build/bridge
 # (native enable_thinking через common::chat). CMakeLists.txt ссылается
 # на csrc/chat_thinking.cpp — без COPY csrc/ сборка падает с "Cannot find
 # source file: csrc/chat_thinking.cpp".
-COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/CMakeLists.txt ./
+# R493 (2026-11-16): prefix_cache.{c,h} — кэш префилла. CMakeLists моста
+# перечисляет prefix_cache.c в BRIDGE_SOURCES, поэтому без этого COPY сборка
+# падает на этапе generate: «Cannot find source file: prefix_cache.c».
+COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/prefix_cache.h c/bridge/prefix_cache.c c/bridge/CMakeLists.txt ./
 COPY c/bridge/csrc ./csrc/
 
 COPY --from=llama-builder /build/llama.cpp/include /build/llama.cpp/include

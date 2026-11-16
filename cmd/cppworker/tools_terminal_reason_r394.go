@@ -107,7 +107,22 @@ func reasoningCharsRawR394(fullOutput string) int {
 // Непустой ответ не трогаем никогда: иначе мы начали бы дописывать текст в
 // чужие ответы (то же правило, что у emptyAnswerNoticeForNativeR314).
 func toolsTerminalContentR394(visibleOutput, fullOutput string) string {
-	if notice := emptyAnswerNoticeForNativeR314(visibleOutput, reasoningCharsRawR394(fullOutput)); notice != "" {
+	return toolsTerminalContentReasoningR493(visibleOutput, fullOutput, false)
+}
+
+// toolsTerminalContentReasoningR493 — то же, но знает, открыл ли промпт блок
+// размышлений (R493). Без этого признака модель, у которой шаблон сам открыл
+// <think>, получала «размышлений не было» и пустой ответ БЕЗ пояснения: в сыром
+// выводе маркера нет, splitter его не находит.
+func toolsTerminalContentReasoningR493(visibleOutput, fullOutput string, promptOpensReasoning bool) string {
+	reasoningChars := reasoningCharsRawR394(fullOutput)
+	if reasoningChars == 0 && promptOpensReasoning && strings.TrimSpace(visibleOutput) == "" &&
+		strings.TrimSpace(fullOutput) != "" {
+		// Вывод непустой, но целиком внутри размышлений, открытых промптом:
+		// для пояснения важно, что размышления БЫЛИ.
+		reasoningChars = len([]rune(strings.TrimSpace(fullOutput)))
+	}
+	if notice := emptyAnswerNoticeForNativeR314(visibleOutput, reasoningChars); notice != "" {
 		return notice
 	}
 	return visibleOutput

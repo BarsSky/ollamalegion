@@ -97,6 +97,9 @@ endif()
 # Go source (Go сканирует все .go/.c/.cpp в package directory).
 set(BRIDGE_SOURCES
     bridge.c
+    # R493 (2026-11-16): чистая логика кэша префилла (без llama.cpp) — в
+    # отдельном файле, чтобы её можно было прогнать standalone-тестом в CI.
+    prefix_cache.c
     csrc/chat_thinking.cpp
     csrc/vision_mtmd.cpp
 )
@@ -104,6 +107,7 @@ set(BRIDGE_SOURCES
 # Заголовки
 set(BRIDGE_HEADERS
     bridge.h
+    prefix_cache.h
 )
 
 # Собираем статическую библиотеку bridge

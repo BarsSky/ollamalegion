@@ -18,6 +18,7 @@
 #include "bridge_internal.h"
 // R248/B2: extern "C" граница к libmtmd (mmproj passthrough).
 #include "csrc/vision_mtmd.h"
+#include "prefix_cache.h" // R493: кэш префилла (см. prefix_cache.h)
 #include "llama.h"
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +102,26 @@ void bridge_install_log_capture(BridgeLogLineFn fn) {
 // Внутренние структуры
 // ============================================================
 
+// R493 (2026-11-16): мьютекс кэша префилла. Та же платформенная развилка, что
+// у err_mutex ниже по файлу: в Windows — CRITICAL_SECTION (MinGW без pthread.h),
+// иначе — pthread_mutex_t. winsock2.h уже включён выше, поэтому windows.h здесь
+// безопасен (порядок winsock2 → windows соблюдён).
+#ifdef _WIN32
+#  include <windows.h>
+typedef CRITICAL_SECTION pc_mutex_t;
+#  define pc_mu_init(m)    (InitializeCriticalSection(m))
+#  define pc_mu_lock(m)    (EnterCriticalSection(m))
+#  define pc_mu_unlock(m)  (LeaveCriticalSection(m))
+#  define pc_mu_destroy(m) (DeleteCriticalSection(m))
+#else
+#  include <pthread.h>
+typedef pthread_mutex_t pc_mutex_t;
+#  define pc_mu_init(m)    (void)pthread_mutex_init((m), NULL)
+#  define pc_mu_lock(m)    (void)pthread_mutex_lock(m)
+#  define pc_mu_unlock(m)  (void)pthread_mutex_unlock(m)
+#  define pc_mu_destroy(m) (void)pthread_mutex_destroy(m)
+#endif
+
 // InternalModel — внутреннее представление загруженной модели.
 // ctx_n_ctx хранит размер контекста, с которым модель фактически загружена.
 // Это нужно для pre-flight проверки ёмкости перед llama_decode, чтобы
@@ -146,6 +167,17 @@ typedef struct {
     // Initialized to 1 in bridge_load_model (matches ctx_params.embeddings=true at load).
     // Setter: bridge_set_embeddings_mode(). Cheap (single bool write in cparams).
     int embeddings_mode;
+    // R493 (2026-11-16): кэш префилла. Токены последнего запроса (промпт +
+    // сгенерированное) — по ним следующий запрос находит общий префикс и
+    // декодирует только хвост. pc_valid=0 означает «KV-кэш и pc_tokens не
+    // согласованы», тогда reset_inference_state как раньше.
+    int32_t* pc_tokens;
+    int pc_count;
+    int pc_cap;
+    llama_seq_id pc_seq;
+    int pc_valid;
+    pc_mutex_t pc_mu;
+
     // R248/B2 (2026-10-27): mmproj-проектор (opaque mtmd_context*), привязанный
     // к model. NULL = модель текстовая. Загружается bridge_load_mmproj,
     // освобождается в bridge_free_model ПОСЛЕ llama_free контекста и ДО
@@ -203,6 +235,137 @@ static void reset_inference_state(InternalModel *im, llama_seq_id seq_id) {
         }
     }
     // Sampler reset больше не нужен — sampler chain per-request (Round 15.2d).
+}
+
+// ── R493 (2026-11-16): переиспользование KV-кэша префилла ────────────────────
+//
+// ЖИВОЙ ФАКТ. До этой правки каждый запрос начинал с reset_inference_state и
+// заново считал весь промпт. На втором стенде (Qwen3.8-27B на A10) это дало
+// медиану 213 с на ход агента при 260 сгенерированных токенах: декод там же
+// 23-33 ток/с, то есть ~200 с из хода — повторный префилл 80-90 тыс. токенов.
+//
+// КАК. pc_prepare ищет самый длинный общий префикс новых токенов с
+// pc_tokens, обрезает KV до него (llama_memory_seq_rm) и возвращает длину
+// префилла — с этой позиции начинается prefill. pc_begin запоминает промпт
+// сразу после успешного префилла, pc_append дописывает сгенерированные токены
+// после их llama_decode. Инвариант: pc_tokens ВСЕГДА равно содержимому KV-кэша
+// (пока pc_valid=1), поэтому после обрыва/ошибки кэш не «врёт».
+static void pc_init(InternalModel* im) {
+    if (im == NULL) return;
+    im->pc_tokens = NULL;
+    im->pc_count = 0;
+    im->pc_cap = 0;
+    im->pc_seq = 0;
+    im->pc_valid = 0;
+    pc_mu_init(&im->pc_mu);
+}
+
+static void pc_destroy(InternalModel* im) {
+    if (im == NULL) return;
+    pc_mu_lock(&im->pc_mu);
+    free(im->pc_tokens);
+    im->pc_tokens = NULL;
+    im->pc_count = 0;
+    im->pc_cap = 0;
+    im->pc_valid = 0;
+    pc_mu_unlock(&im->pc_mu);
+    pc_mu_destroy(&im->pc_mu);
+}
+
+// pc_invalidate — KV-кэш и pc_tokens больше не согласованы (reset, ошибка
+// декода, смена режима). Буфер не освобождаем: он переиспользуется ростом.
+static void pc_invalidate(InternalModel* im) {
+    if (im == NULL) return;
+    pc_mu_lock(&im->pc_mu);
+    im->pc_valid = 0;
+    pc_mu_unlock(&im->pc_mu);
+}
+
+// pc_reserve_locked — место под n токенов (вызывать под pc_mu).
+static int pc_reserve_locked(InternalModel* im, int n) {
+    if (n <= im->pc_cap) return 1;
+    int cap = im->pc_cap > 0 ? im->pc_cap : 1024;
+    while (cap < n) cap *= 2;
+    int32_t* buf = (int32_t*)realloc(im->pc_tokens, (size_t)cap * sizeof(int32_t));
+    if (buf == NULL) return 0;
+    im->pc_tokens = buf;
+    im->pc_cap = cap;
+    return 1;
+}
+
+// pc_prepare — сколько токенов промпта уже лежит в KV-кэше.
+//
+// Возвращает 0, если переиспользовать нечего (вызывающий обязан сделать
+// reset_inference_state). При 0 кэш помечается невалидным: KV будет очищен, и
+// старые pc_tokens перестанут соответствовать содержимому KV.
+static int pc_prepare(InternalModel* im, const llama_token* tokens, int n_tokens, llama_seq_id seq_id) {
+    if (im == NULL || im->context == NULL || tokens == NULL || n_tokens <= 0) return 0;
+
+    pc_mu_lock(&im->pc_mu);
+    if (!im->pc_valid || im->pc_seq != seq_id || im->pc_count <= 0) {
+        pc_mu_unlock(&im->pc_mu);
+        return 0;
+    }
+    int common = bridge_prefix_common_len(tokens, n_tokens, im->pc_tokens, im->pc_count);
+    // Хотя бы один токен обязан уйти в llama_decode: без него нет logits для
+    // сэмплинга. Поэтому «весь промпт из кэша» — это n_tokens-1.
+    if (common > n_tokens - 1) common = n_tokens - 1;
+    if (common < bridge_prefix_cache_min_reuse()) {
+        im->pc_valid = 0;
+        pc_mu_unlock(&im->pc_mu);
+        return 0;
+    }
+    llama_memory_t mem = llama_get_memory(im->context);
+    if (mem == NULL) {
+        im->pc_valid = 0;
+        pc_mu_unlock(&im->pc_mu);
+        return 0;
+    }
+    // Обрезаем KV до общего префикса: всё, что дальше (хвост прошлого ответа),
+    // не совпадает с новым промптом и должно быть пересчитано.
+    llama_memory_seq_rm(mem, seq_id, (llama_pos)common, -1);
+    int cached = im->pc_count;
+    pc_mu_unlock(&im->pc_mu);
+
+    fprintf(stderr, "[bridge] prefix cache: reused %d of %d tokens (cached %d, recompute %d)\n", common, n_tokens, cached, n_tokens - common);
+    return common;
+}
+
+// pc_begin — после успешного префилла: KV содержит ровно эти токены.
+static void pc_begin(InternalModel* im, const llama_token* tokens, int n_tokens, llama_seq_id seq_id) {
+    if (im == NULL || tokens == NULL || n_tokens <= 0) return;
+    if (im->ctx_n_ctx > 0 && n_tokens > (int)im->ctx_n_ctx) {
+        pc_invalidate(im);
+        return;
+    }
+    pc_mu_lock(&im->pc_mu);
+    if (!pc_reserve_locked(im, n_tokens)) {
+        im->pc_valid = 0;
+        pc_mu_unlock(&im->pc_mu);
+        return;
+    }
+    memcpy(im->pc_tokens, tokens, (size_t)n_tokens * sizeof(int32_t));
+    im->pc_count = n_tokens;
+    im->pc_seq = seq_id;
+    im->pc_valid = 1;
+    pc_mu_unlock(&im->pc_mu);
+}
+
+// pc_append — сгенерированный токен УЖЕ декодирован в KV: дописываем его в
+// кэш, чтобы следующий промпт (он содержит этот ответ) совпал по префиксу.
+static void pc_append(InternalModel* im, llama_token token) {
+    if (im == NULL) return;
+    pc_mu_lock(&im->pc_mu);
+    if (im->pc_valid) {
+        if (im->ctx_n_ctx > 0 && im->pc_count >= (int)im->ctx_n_ctx) {
+            im->pc_valid = 0;
+        } else if (!pc_reserve_locked(im, im->pc_count + 1)) {
+            im->pc_valid = 0;
+        } else {
+            im->pc_tokens[im->pc_count++] = (int32_t)token;
+        }
+    }
+    pc_mu_unlock(&im->pc_mu);
 }
 
 // build_batch_with_seq — создаёт llama_batch с явным seq_id для каждого токена.
@@ -2045,6 +2208,8 @@ ModelHandle bridge_load_model(const ModelConfig* config, char** error_msg, Model
     // Round 39: start in embedding mode (matches ctx_params.embeddings=true).
     // The C-bridge switches to chat mode (0) before each chat decode call.
     im->embeddings_mode = 1;
+    // R493: кэш префилла пуст у новой модели/контекста.
+    pc_init(im);
 
     // R60.57: CHECKPOINT C — InternalModel полностью populated, im->model и
     // im->context валидны. Отмена здесь использует bridge_free_model-equivalent
@@ -2182,6 +2347,9 @@ void bridge_free_model(ModelHandle model) {
         im->mmproj_ctx = NULL;
     }
     // Sampler больше не хранится в InternalModel (per-request с Round 15.2d).
+    // R493: сначала освобождаем кэш префилла (не зависит от llama, но должен
+    // уйти до контекста, чтобы не осталось ссылок на освобождённые токены).
+    pc_destroy(im);
     if (im->context) {
         llama_free(im->context);
         im->context = NULL;
@@ -2273,11 +2441,9 @@ InferenceResult bridge_infer(
     // (clear only this slot's region).
     llama_seq_id seq_id = (llama_seq_id)(params->seq_id > 0 ? params->seq_id : 0);
 
-    // Сбрасываем KV-cache и сэмплер перед новым запросом.
-    // Без этого prompt-токены и сгенерированные токены предыдущего запроса
-    // остаются в KV-cache, и через 1-2 запроса контекст переполняется
-    // с ошибкой "failed to find a memory slot".
-    reset_inference_state(im, seq_id);
+    // R493: сброс KV перенесён ПОСЛЕ токенизации и проверки ёмкости ниже — до
+    // этого момента мы не знаем токены, а значит не можем решить, можно ли
+    // переиспользовать префикс. Сам сброс там же, где решается переиспользование.
 
     // Токенизируем prompt
     int n_tokens = -llama_tokenize(im->vocab, prompt, (int)strlen(prompt), NULL, 0, true, true);
@@ -2322,6 +2488,18 @@ InferenceResult bridge_infer(
         return result;
     }
 
+    // R493: переиспользование KV-кэша префилла. Если общий префикс найден —
+    // KV обрезан до него, prefill начнётся с этой позиции; иначе полный сброс.
+    int pc_reuse = 0;
+    if (bridge_prefix_cache_enabled()) {
+        pc_reuse = pc_prepare(im, tokens, actual_tokens, seq_id);
+    }
+    if (pc_reuse <= 0) {
+        reset_inference_state(im, seq_id);
+        pc_invalidate(im);
+        pc_reuse = 0;
+    }
+
     // Подготавливаем output buffer
     size_t output_capacity = 8192 * 16; // 128 KB initial
     char *output = (char *)malloc(output_capacity);
@@ -2355,7 +2533,8 @@ InferenceResult bridge_infer(
     // не меняется: CUDA kernel launch overhead амортизируется, и для типичных
     // prompts (200-2000 tokens) overhead маленький vs общий GPU time.
     int n_batch = params->n_batch > 0 ? params->n_batch : 64;
-    int n_processed = 0;
+    // R493: prefill начинается с уже посчитанного префилла (0 = как раньше).
+    int n_processed = pc_reuse;
 
     while (n_processed < actual_tokens) {
         int batch_size = (actual_tokens - n_processed) > n_batch ? n_batch : (actual_tokens - n_processed);
@@ -2392,6 +2571,9 @@ InferenceResult bridge_infer(
         llama_batch_free(batch);
         n_processed += batch_size;
     }
+
+    // R493: KV содержит ровно промпт — это и есть кэшируемый префилл.
+    pc_begin(im, tokens, actual_tokens, seq_id);
 
     free(tokens);
 
@@ -2460,11 +2642,14 @@ InferenceResult bridge_infer(
             free(output);
             result.status = 1;
             result.error_msg = strdup("llama_decode failed during generation");
+            pc_invalidate(im);
             llama_batch_free(gen_batch);
             llama_sampler_free(sampler);
             return result;
         }
         llama_batch_free(gen_batch);
+        // R493: токен уже в KV — дописываем в кэш префилла.
+        pc_append(im, new_token);
     }
 
     // Сэмплер per-request — освобождаем.
@@ -2525,6 +2710,9 @@ InferenceResult bridge_infer_images(
 
     llama_seq_id seq_id = (llama_seq_id)(params->seq_id > 0 ? params->seq_id : 0);
     reset_inference_state(im, seq_id);
+    // R493: vision-префилл идёт своим путём (mtmd), поэтому текстовый кэш
+    // префилла к содержимому KV больше не относится.
+    pc_invalidate(im);
 
     int n_batch = params->n_batch > 0 ? params->n_batch : 64;
 
@@ -2806,10 +2994,8 @@ int bridge_infer_stream(
     // Round 13 (2026-07-28): extract seq_id for multi-slot support.
     llama_seq_id seq_id = (llama_seq_id)(params->seq_id > 0 ? params->seq_id : 0);
 
-    // Сбрасываем KV-cache и сэмплер перед новым запросом — иначе
-    // после 1-2 инференсов контекст забит и llama_decode падает
-    // с "failed to find a memory slot".
-    reset_inference_state(im, seq_id);
+    // R493: сброс KV перенесён ниже — после токенизации и проверки ёмкости,
+    // чтобы можно было переиспользовать общий префикс прошлого запроса.
 
     // Токенизируем prompt
     int n_tokens = -llama_tokenize(im->vocab, prompt, (int)strlen(prompt), NULL, 0, true, true);
@@ -2850,6 +3036,17 @@ int bridge_infer_stream(
         return (code != BRIDGE_OK) ? code : 1;
     }
 
+    // R493: переиспользование KV-кэша префилла (см. pc_prepare).
+    int pc_reuse = 0;
+    if (bridge_prefix_cache_enabled()) {
+        pc_reuse = pc_prepare(im, tokens, actual_tokens, seq_id);
+    }
+    if (pc_reuse <= 0) {
+        reset_inference_state(im, seq_id);
+        pc_invalidate(im);
+        pc_reuse = 0;
+    }
+
     // Round 15.2d: per-request sampler chain (было im->sampler = greedy).
     // Round 35d (2026-08-13): передаём n_vocab для новой сигнатуры
     // llama_sampler_init_penalties.
@@ -2861,8 +3058,8 @@ int bridge_infer_stream(
         return 1;
     }
 
-    // Процессим токены промпта
-    int n_processed = 0;
+    // Процессим токены промпта (R493: с уже посчитанного префилла)
+    int n_processed = pc_reuse;
     while (n_processed < actual_tokens) {
         int batch_size = (actual_tokens - n_processed) > n_batch ? n_batch : (actual_tokens - n_processed);
 
@@ -2895,6 +3092,9 @@ int bridge_infer_stream(
         llama_batch_free(batch);
         n_processed += batch_size;
     }
+
+    // R493: KV содержит ровно промпт — это и есть кэшируемый префилл.
+    pc_begin(im, tokens, actual_tokens, seq_id);
 
     free(tokens);
 
@@ -3018,11 +3218,14 @@ int bridge_infer_stream(
             // Обычно это переполнение KV-cache при длинной выдаче
             // (n_predict > n_ctx - prompt_len), либо OOM на GPU.
             set_error("llama_decode failed during generation step (likely KV-cache overflow: n_predict + prompt_len > n_ctx, or GPU OOM)");
+            pc_invalidate(im);
             llama_batch_free(gen_batch);
             llama_sampler_free(sampler);
             return 1;
         }
         llama_batch_free(gen_batch);
+        // R493: токен уже в KV — дописываем в кэш префилла.
+        pc_append(im, new_token);
     }
 
     // Сбрасываем удержанный хвост: без этого последние hold байт ответа
@@ -3063,6 +3266,9 @@ InferenceResult bridge_get_embeddings(
     // re-enable here. Idempotent and safe.
     llama_set_embeddings(im->context, true);
     im->embeddings_mode = BRIDGE_MODE_EMBEDDING;
+    // R493: режим эмбеддингов переписывает KV своим промптом — текстовый кэш
+    // префилла больше не соответствует содержимому KV.
+    pc_invalidate(im);
 
     // Токенизируем текст
     int n_tokens = -llama_tokenize(im->vocab, text, (int)strlen(text), NULL, 0, true, true);

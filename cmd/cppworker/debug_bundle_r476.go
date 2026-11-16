@@ -48,6 +48,10 @@ const bundleMaxFileBytesR476 = 4 << 20
 // ключи API, их нельзя отдавать в архив.
 var bundleEnvWhitelistR476 = []string{
 	"CPPWORKER_LOG_LEVEL",
+	// R493 (2026-11-16): кэш префилла в мосте (читается в c/bridge/prefix_cache.c).
+	// Без этой строки флаг не попадал бы в архив: он живёт только в C-коде,
+	// а проверка доков (scripts/check_docs_claims.py) ищет env-имена в Go/скриптах.
+	"CPPWORKER_PREFIX_CACHE",
 	"CPPWORKER_LOG_BUFFER_ENTRIES",
 	"CPPWORKER_MAX_N_PREDICT",
 	"CPPWORKER_DEFAULT_N_PREDICT",

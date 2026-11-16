@@ -39,7 +39,9 @@ func TestR404_ThinkingStreamsImmediately(t *testing.T) {
 		name   string
 		tokens []string
 		want   string
-	}{
+	
+			promptOpensReasoning bool
+			reasoningBudget      int}{
 		{
 			name:   "channel-маркер qwen",
 			tokens: []string{"<|channel>thought", "Привет", "<channel|>", "ответ"},
@@ -121,6 +123,10 @@ func TestR406_RetryWithoutThinkingDecision(t *testing.T) {
 		fullOutput    string
 		visible       string
 		promptNoThink string
+		// R493: шаблон сам открыл размышления в промпте (маркера в выводе нет)
+		// и явный лимит токенов на размышления (0 = без лимита).
+		promptOpensReasoning bool
+		reasoningBudget      int
 		contentStream bool
 		toolCalls     int
 		retried       bool
@@ -162,6 +168,35 @@ func TestR406_RetryWithoutThinkingDecision(t *testing.T) {
 			promptNoThink: "alt", want: false,
 		},
 		{
+			// R493: живой случай второго стенда — шаблон Qwen3 сам открыл <think>
+			// в промпте, в сыром выводе маркера нет, reasoningCharsRaw=0.
+			name:     "размышления открыты промптом (маркера в выводе нет), бюджет исчерпан",
+			nPredict: 64, generated: 64, fullOutput: "думаю и думаю", visible: "",
+			promptNoThink: "alt", promptOpensReasoning: true, want: true,
+		},
+		{
+			name:     "размышления открыты промптом, но бюджет не исчерпан — рано",
+			nPredict: 4096, generated: 1000, fullOutput: "думаю", visible: "",
+			promptNoThink: "alt", promptOpensReasoning: true, want: false,
+		},
+		{
+			// R493: reasoningBudget — явный порог размышлений (до этого поле
+			// читалось из конфига, но ни на что не влияло).
+			name:     "reasoningBudget исчерпан при done_reason=stop (n_predict не добит)",
+			nPredict: 4096, generated: 512, fullOutput: "думаю", visible: "",
+			promptNoThink: "alt", promptOpensReasoning: true, reasoningBudget: 512, want: true,
+		},
+		{
+			name:     "reasoningBudget не исчерпан — рано",
+			nPredict: 4096, generated: 100, fullOutput: "думаю", visible: "",
+			promptNoThink: "alt", promptOpensReasoning: true, reasoningBudget: 512, want: false,
+		},
+		{
+			name:     "reasoningBudget=0 (без лимита) не срабатывает",
+			nPredict: 4096, generated: 1000, fullOutput: "думаю", visible: "",
+			promptNoThink: "alt", promptOpensReasoning: true, reasoningBudget: 0, want: false,
+		},
+		{
 			name:     "альтернативный промпт не построен",
 			nPredict: 64, generated: 64, fullOutput: rawThinking, visible: "",
 			promptNoThink: "", want: false,
@@ -169,8 +204,10 @@ func TestR406_RetryWithoutThinkingDecision(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			// R493: promptOpensReasoning / reasoningBudget — новые входы предиката.
 			got := toolsShouldRetryWithoutThinkingR406(c.nPredict, c.generated, c.fullOutput,
-				c.visible, c.promptNoThink, c.contentStream, c.toolCalls, c.retried)
+				c.visible, c.promptNoThink, c.contentStream, c.toolCalls, c.retried,
+				c.promptOpensReasoning, c.reasoningBudget)
 			if got != c.want {
 				t.Fatalf("решение = %v, want %v", got, c.want)
 			}

@@ -2458,8 +2458,12 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	// enable_thinking=false в chat template) даёт модели шанс ответить вместо
 	// повторного ухода в размышления. Условие — ничего видимого ещё не ушло
 	// (thinking-дельты не считаются: они уже показаны и повторять их не нужно).
+	// R493: promptOpensReasoning — шаблон сам открыл <think> в конце промпта;
+	// в таком случае сырой вывод БЕЗ маркеров — это размышления, и предикат
+	// обязан их видеть (иначе живой «пустой ответ» после 8 минут thinking).
 	if toolsShouldRetryWithoutThinkingR406(params.NPredict, generatedTokens, fullOutput,
-		cleanFinalContent(outputForParse), promptNoThink, contentStreamed, len(toolCalls), retriedNoThink) {
+		cleanFinalContent(outputForParse), promptNoThink, contentStreamed, len(toolCalls), retriedNoThink,
+		PromptOpensReasoning(prompt), reasoningBudgetTokensR493()) {
 
 		attempt1Tokens := generatedTokens
 		logger.Get().Warnw("writeChatStreamResponseWithTools: reasoning exhausted the output budget — retrying with thinking disabled (R406)",
@@ -2732,7 +2736,7 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// инструмента и сохранит в истории (живой случай: Qwen3.8-9B, вызов
 		// read_files + пояснение в content).
 		if emittedLen == 0 {
-			if notice := terminalContentR417("", fullOutput, len(toolCalls)); notice != "" {
+			if notice := toolsTerminalContentReasoningR493("", fullOutput, PromptOpensReasoning(prompt)); notice != "" {
 				reason := toolsTerminalReasonR394(fullOutput, outputForParse, prompt,
 					len(toolCalls), params.NPredict, budgetTokens)
 				logger.Get().Warnw(i18n.T("cppworker.handlers_chat.tools_reasoning_only_notice"),
@@ -2962,6 +2966,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// рядом с вызовом инструмента оно превращается в текст ответа и попадает
 		// в историю клиента (живой случай: Qwen3.8-9B + read_files).
 		content = terminalContentR417(content, fullOutput, len(toolCalls))
+	if strings.TrimSpace(content) == "" && len(toolCalls) == 0 {
+		content = toolsTerminalContentReasoningR493(content, fullOutput, PromptOpensReasoning(prompt))
+	}
 		// R430: разметку вызова не распознал парсер, но она ЕСТЬ — видимый текст
 		// собираем до её начала + пояснение (см. unparsedNoticeR430 выше). Один раз,
 		// ДО всех веток отдачи: и content финального чанка, и единственная дельта

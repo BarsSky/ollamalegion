@@ -139,6 +139,7 @@ target_compile_features(test_batch_n_tokens PRIVATE c_std_99 cxx_std_17)
 # ============================================================
 add_library(bridge_compile_all OBJECT
     ../bridge.c
+    ../prefix_cache.c
     ../csrc/chat_thinking.cpp
     ../csrc/vision_mtmd.cpp
 )
@@ -225,8 +226,25 @@ target_include_directories(abort_syntax_test PRIVATE
 target_compile_features(abort_syntax_test PRIVATE c_std_99)
 
 # ============================================================
+# test_prefix_cache — R493 (2026-11-16): standalone-тест кэша префилла.
+#
+# Без libllama: проверяет только чистую логику (общий префикс токенов и
+# env-выключатель). Само переиспользование KV требует llama_memory_seq_rm и
+# проверяется живьём (см. docs/plans/2026-11-16-second-stand-qwen38-speed.md).
+# ============================================================
+add_executable(test_prefix_cache
+    test_prefix_cache.c
+    ../prefix_cache.c
+)
+target_include_directories(test_prefix_cache PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_compile_features(test_prefix_cache PRIVATE c_std_99)
+
+# ============================================================
 # Регистрация в ctest — единая точка входа для CI.
 # ============================================================
+add_test(NAME test_prefix_cache COMMAND test_prefix_cache)
 add_test(NAME test_batch_n_tokens COMMAND test_batch_n_tokens)
 add_test(NAME test_batched_batch COMMAND test_batched_batch)
 add_test(NAME test_abort_api COMMAND test_abort_api)
@@ -238,7 +256,7 @@ add_test(NAME abort_syntax_test COMMAND abort_syntax_test)
 # (`make -j`) бинарь мог не успеть собраться до запуска.
 add_custom_target(bridge-tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS test_batch_n_tokens test_batched_batch test_abort_api
+    DEPENDS test_prefix_cache test_batch_n_tokens test_batched_batch test_abort_api
             test_embeddings_mode abort_syntax_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running bridge regression tests (ctest)"

@@ -78,8 +78,23 @@ func toolsFeedThinkingR404(st *ReasoningStreamState, token string) string {
 //   - вызова инструмента не распознано;
 //   - размышления реально были, и бюджет исчерпан;
 //   - альтернативный промпт построен, и повтора ещё не было.
+// R493 (2026-11-16): два добавленных входа — promptOpensReasoning и
+// reasoningBudget — закрывают живой случай со второго стенда.
+//
+// ЖИВОЙ ДЕФЕКТ. Чат-шаблон Qwen3 сам открывает блок размышлений в конце промпта
+// (`assistant\n<think>\n`), поэтому в СЫРОМ выводе модели маркера `<think>` нет:
+// reasoningCharsRawR394(fullOutput) возвращает 0, предикат считал «размышлений не
+// было» и повтор без thinking НЕ запускался. Итог: 2169 токенов ушли в
+// размышления, budget_exhausted=true, done_reason=length, клиенту — пусто
+// (elapsed 495814 мс, emitted_len=0). Теперь «промпт открыл размышления» —
+// законный признак того, что вывод целиком размышления.
+//
+// reasoningBudget (>0) — вторая дверь: если модель потратила на размышления не
+// меньше бюджета, повторяем без thinking, даже когда n_predict формально не
+// исчерпан (done_reason=stop посреди незакрытого блока). До R493 поле
+// reasoningBudget читалось из конфига и API, но НИ НА ЧТО не влияло.
 func toolsShouldRetryWithoutThinkingR406(nPredict, generatedTokens int, fullOutput, visible, promptNoThink string,
-	contentStreamed bool, toolCalls int, retried bool) bool {
+	contentStreamed bool, toolCalls int, retried bool, promptOpensReasoning bool, reasoningBudget int) bool {
 	if retried || contentStreamed || toolCalls > 0 {
 		return false
 	}
@@ -89,10 +104,27 @@ func toolsShouldRetryWithoutThinkingR406(nPredict, generatedTokens int, fullOutp
 	if strings.TrimSpace(visible) != "" {
 		return false
 	}
-	if reasoningCharsRawR394(fullOutput) <= 0 {
+	reasoningSeen := reasoningCharsRawR394(fullOutput) > 0 || promptOpensReasoning
+	if !reasoningSeen {
 		return false
 	}
+	if reasoningBudget > 0 && generatedTokens >= reasoningBudget {
+		return true
+	}
 	return toolsBudgetExhaustedR394(nPredict, generatedTokens)
+}
+
+// reasoningBudgetTokensR493 — лимит токенов на размышления из конфига воркера
+// (0 = без лимита). Один читатель, чтобы «сколько разрешено думать» не
+// разъехалось между поверхностями.
+func reasoningBudgetTokensR493() int {
+	if currentConfig == nil {
+		return 0
+	}
+	if currentConfig.ReasoningBudget < 0 {
+		return 0
+	}
+	return currentConfig.ReasoningBudget
 }
 
 // buildChatPromptNoThinkingR406 — промпт с enable_thinking=false, не меняя

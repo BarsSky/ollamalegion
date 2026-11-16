@@ -202,7 +202,9 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 	if limits.GPU.MaxVRAMUsagePercent > 0 && metrics.GPU.MemoryTotal > 0 {
 		vramPercent := float64(metrics.GPU.MemoryUsed) * 100 / float64(metrics.GPU.MemoryTotal)
 		if vramPercent > limits.GPU.MaxVRAMUsagePercent {
-			if softLogAllowedR488(backendID, "vram_threshold", time.Now(), softLogEveryR488) {
+			// R493 (долг про шум): для VRAM — свой, более редкий период; см.
+		// softLogEveryVramR493 — почему не 60 с.
+		if softLogAllowedR488(backendID, "vram_threshold", time.Now(), softLogEveryVramR493) {
 				logger.Get().Warnw("backend VRAM usage above threshold (degraded, not blocked)",
 					"backend", backendID, "vram_percent", vramPercent, "threshold", limits.GPU.MaxVRAMUsagePercent)
 			}

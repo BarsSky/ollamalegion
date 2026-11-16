@@ -115,6 +115,8 @@ endfunction()
 add_executable(test_batch_n_tokens
     test_batch_n_tokens.c
     ../bridge.c
+    # R493: bridge.c ссылается на bridge_prefix_* — без этого файла линковка падает.
+    ../prefix_cache.c
     # R248/B2: bridge.c вызывает bridge_mtmd_* (mmproj) — компилируем обёртку.
     ../csrc/vision_mtmd.cpp
 )
@@ -161,6 +163,8 @@ target_compile_features(bridge_compile_all PRIVATE c_std_99 cxx_std_17)
 add_executable(test_batched_batch
     test_batched_batch.c
     ../bridge.c
+    # R493: см. test_batch_n_tokens.
+    ../prefix_cache.c
     # R248/B2: см. test_batch_n_tokens.
     ../csrc/vision_mtmd.cpp
 )

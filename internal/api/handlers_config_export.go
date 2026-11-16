@@ -274,6 +274,8 @@ func mergeConfig(current *types.LoadBalancerConfig, imported *types.LoadBalancer
 	}
 	if imported.Balancing.Algorithm != "" {
 		current.Balancing.Algorithm = imported.Balancing.Algorithm
+		// R493 (долг 12n): импорт не должен создавать иллюзию смены алгоритма.
+		logAlgorithmIgnoredR493("config import", string(imported.Balancing.Algorithm))
 	}
 	if imported.Balancing.OperatingMode != "" {
 		current.Balancing.OperatingMode = imported.Balancing.OperatingMode

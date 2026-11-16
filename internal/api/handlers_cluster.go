@@ -68,6 +68,8 @@ func configDefaults(cfg *types.LoadBalancerConfig) {
 	if cfg.Balancing.Algorithm == "" {
 		cfg.Balancing.Algorithm = types.AlgorithmResourceAware
 	}
+	// R493 (долг 12n): стартовое значение тоже не переключает селектор.
+	logAlgorithmIgnoredR493("startup", string(cfg.Balancing.Algorithm))
 	if cfg.Balancing.HealthCheckInterval == 0 {
 		cfg.Balancing.HealthCheckInterval = 10
 	}
@@ -224,6 +226,7 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		response := map[string]interface{}{
 			"algorithm":           s.config.Balancing.Algorithm,
+			"effectiveAlgorithm":           effectiveSelectionAlgorithmR493, // R493 (12n): что реально работает
 			"modelAffinity":       s.config.Balancing.ModelAffinity,
 			"sessionStickiness":   s.config.Balancing.SessionStickiness,
 			"queueMaxSize":        s.config.Balancing.QueueMaxSize,
@@ -392,6 +395,10 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.config.Balancing.Algorithm = types.BalancingAlgorithm(req.Algorithm)
+			// R493 (долг 12n): значение принимаем для совместимости, но выбор
+			// бэкенда оно не переключает — оператор узнаёт это из лога и из
+			// effectiveAlgorithm в ответе, а не из чтения исходников.
+			logAlgorithmIgnoredR493("PUT /api/v1/cluster/config", req.Algorithm)
 			updatedFields = append(updatedFields, "algorithm")
 		}
 
@@ -646,6 +653,7 @@ func (s *Server) clusterConfigHandler(w http.ResponseWriter, r *http.Request) {
 			"updated": updatedFields,
 			"config": map[string]interface{}{
 				"algorithm":           s.config.Balancing.Algorithm,
+				"effectiveAlgorithm":           effectiveSelectionAlgorithmR493, // R493 (12n): что реально работает
 				"modelAffinity":       s.config.Balancing.ModelAffinity,
 				"sessionStickiness":   s.config.Balancing.SessionStickiness,
 				"useEnhancedScoring":  s.config.Balancing.UseEnhancedScoring,
@@ -755,6 +763,7 @@ func (s *Server) configResetHandler(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"config": map[string]interface{}{
 			"algorithm":          s.config.Balancing.Algorithm,
+			"effectiveAlgorithm":          effectiveSelectionAlgorithmR493, // R493 (12n): что реально работает
 			"modelAffinity":      s.config.Balancing.ModelAffinity,
 			"sessionStickiness":  s.config.Balancing.SessionStickiness,
 			"useEnhancedScoring": s.config.Balancing.UseEnhancedScoring,

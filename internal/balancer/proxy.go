@@ -1373,8 +1373,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 									"window_gate", "R459")
 								targetBackend = altBackend
 							} else if forceRebalance {
-								logger.Get().Warnw("force rebalance failed, queueing request",
-									"session", sessionID, "backend", targetBackend, "load_ratio", loadRatio)
+								// R493 (долг 12m): уровень зависит от того, примет ли
+								// запрос единая очередь — см. logForceRebalanceNoAltR493.
+								logForceRebalanceNoAltR493(sessionID, targetBackend, loadRatio)
 								targetBackend = ""
 							}
 						}

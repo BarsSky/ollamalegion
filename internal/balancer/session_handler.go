@@ -106,8 +106,9 @@ func (p *Proxy) rebalanceIfNeeded(model, targetBackend, sessionID, clientName st
 		}
 
 		if forceRebalance {
-			logger.Get().Warnw("force rebalance failed, queueing request",
-				"session", sessionID, "backend", targetBackend, "load_ratio", loadRatio)
+			// R493 (долг 12m): см. logForceRebalanceNoAltR493 — warn только там,
+			// где единая очередь запрос НЕ примет.
+			logForceRebalanceNoAltR493(sessionID, targetBackend, loadRatio)
 			return ""
 		}
 	}

@@ -719,6 +719,41 @@ autotune: triggering async reload … kv_cache q4_0 → q8_0 (quality fix)
 
 ---
 
+## 2a. `llama_build_mismatch=true` в `/api/info` (env расходится с бинарём)
+
+**Что это значит.** Образ воркера печёт коммит llama.cpp в
+`CPPWORKER_LLAMA_BUILD_BAKED` (из того же исходника, что и `libllama`), а
+`CPPWORKER_LLAMA_BUILD` может быть переопределён на запуске (compose/`.env`).
+`/api/info` отдаёт три поля: `llama_build` (факт из бинаря), `llama_build_env`
+(намерение из env), `llama_build_mismatch` (они не совпали).
+
+**Живой пример (второй стенд, архив 2026-11-16):**
+`llama_commit=b1b770d90`, `llama_build_env=0eadefebd`, `llama_build_mismatch=true`.
+На работу не влияет: RPC-совместимость проверяется отдельным гейтом R115/R486
+(узел с другим коммитом/proto просто не идёт в раскладку), а сам воркер собран
+на baked-коммите. Но при разборе архива это путает: в логе выглядит как «узел
+собран не на той версии».
+
+**Как исправить (операторская сторона, кода это не касается):**
+
+```bash
+# 1) какой коммит РЕАЛЬНО в образе и какой заявлен
+curl -s :18092/api/info | jq '{llama_commit, llama_build, llama_build_env, llama_build_mismatch}'
+
+# 2) в deployments/.env привести LLAMA_BUILD к факту из образа (baked),
+#    либо пересобрать образ на нужном пине и обновить LLAMA_BUILD в .env;
+#    после правки — пересоздать сервис:
+docker compose --profile full up -d cppworker-gpu
+
+# 3) проверить, что расхождение ушло
+curl -s :18092/api/info | jq '.llama_build_mismatch'   # ожидаем false
+```
+
+**Почему не правится в репозитории.** `LLAMA_BUILD`/`CUDA_BASE` и прочие
+значения стенда живут в `deployments/.env` (не версионируется); в репозитории
+пекётся только baked-факт (`docker/cppworker/Dockerfile.gpu`,
+`ENV CPPWORKER_LLAMA_BUILD_BAKED`).
+
 ## 3. ReloadLoopLimitError (HTTP 413)
 
 ### 3.1 Симптомы

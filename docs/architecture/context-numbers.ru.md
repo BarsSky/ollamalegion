@@ -502,6 +502,32 @@ ctest — `c/bridge/tests/test_window_fit.c`, 16 проверок:
 пути декода) юнит-тестом не покрыт — он проверяется сборкой (CI c-bridge job,
 образ cppworker) и живым прогоном. Это записано в `debts.ru.md` (12u).
 
+**Живая проверка (2026-11-17, образ `cppworker:gpu-r261117-r493d` = коммит
+43f0c9aa, RTX 3070, `Qwen3-4B-Instruct-2507-Q4_K_M`, загруженное окно 4096):**
+
+```
+POST /api/generate {"options":{"num_ctx":8192,"num_predict":64}}
+→ HTTP 400
+  error: generate failed: inference failed: code=2 requested n_ctx=8192 exceeds the
+         per-slot window=4096 (n_ctx=4096, slots derived from it) …
+         (current_n_ctx=4096, required_n_ctx=8192, actual_tokens=15,
+          n_predict=64, max_vram_n_ctx=63996)
+  bridge_info: known=true, code=2, current_n_ctx=4096, required_n_ctx=8192
+```
+
+Тот же запрос потоком даёт ровно тот же текст в done-чанке
+(`stream inference failed with code 2: …`) — то есть в той строке, где раньше
+стояли `current_n_ctx=0, required_n_ctx=0`. Нулевых полей нет ни в одном ответе,
+«окно слота» названо словами, `n_batch` (512) в тексте присутствует.
+
+Проверено также, что предохранитель Go-уровня не даёт дойти до декода напрасно:
+промпт 33600 символов (8411 реальных токенов) при окне 4096 и `num_predict=256`
+→ **413** с `actual_prompt_tokens=8411` и `deficit_tokens=4828` (это путь
+`prompt exceeds n_ctx even with minimum n_predict floor`, он работал и раньше).
+
+**Не проверено живьём:** generic-отказ декода (code 1) — его нельзя вызвать
+нарочно, не ломая стенд; текст для него покрыт `test_window_fit` и Go-тестом.
+
 **Отдельный дефект стенда, найденный в этом же архиве:**
 `A10-126/info.json` — `llama_build_env=0eadefebd` против `llama_build=b1b770d90`,
 `llama_build_mismatch=true`. Причина — в `.env` второго стенда:

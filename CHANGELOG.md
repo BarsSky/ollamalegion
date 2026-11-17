@@ -126,9 +126,14 @@ Previous write at 0x… by goroutine 1994:
 **Чем проверено:** четыре новых стража зелёные; мутации — воссозданный
 `Dockerfile.gpu.86` краснит сторож уникальности, возвращённый блок `+=` краснит
 сторож парности (`строка 323/324`), восстановление — снова зелёные. Живая
-сборка `-CudaArch 86` (CUDA 12.8, `CUDA_BASE=mirror.gcr.io/nvidia/cuda`) —
-образ `ollama-legion/cppworker:gpu-r261117-r493d` собран и развёрнут; факты
-прогона — в отчёте к этой правке. **Не проверено:** сборка `-CudaArch all` на
+сборка `-CudaArch 86` (`CUDA_VERSION=12.8.0`,
+`CUDA_BASE=mirror.gcr.io/nvidia/cuda`) — образ
+`ollama-legion/cppworker:gpu-r261117-r493d` (6.26 GB, id `00434f7d683a`) собран и
+развёрнут на стенде (`/api/version` воркера: `r261117-r493d (commit 43f0c9aa)`),
+живые ответы — в записи 0.7.294 ниже. Сборка шла уже на новом диске Docker:
+`D:\Docker\disk\docker_data.vhdx` был раздут до 140.8 GB при ~35 GB занятых
+внутри, `Optimize-VHD -Mode Full` сжал его до 113.6 GB и освободил на `D:`
+≈25 GB (без удаления образов). **Не проверено:** сборка `-CudaArch all` на
 этом стенде (9 архитектур, ~9× дольше) — выбранный аргумент из скрипта не
 менялся, но живой прогон именно `all` не делался.
 
@@ -190,9 +195,23 @@ stream inference failed with code 1: llama_decode failed for prompt batch
 суммарным окном» краснит 2, мутация «всегда заявлять переполнение» — 1;
 мутация `NCtxError.Error()` «печатать безусловно» воспроизводит живой текст
 (`current_n_ctx=0, required_n_ctx=0`) и краснит 3 подтеста; `gcc -fsyntax-only`
-по `bridge.c` — 0. **Не проверено живьём** до пересборки образа cppworker: запрос
-с prompt больше окна слота должен дать code 3 с настоящими числами (записано в
-`debts.ru.md` 12u).
+по `bridge.c` — 0.
+
+**Проверено живьём (2026-11-17, образ `cppworker:gpu-r261117-r493d`, коммит
+43f0c9aa, стенд RTX 3070, модель `Qwen3-4B-Instruct-2507-Q4_K_M`, окно 4096):**
+
+- запрос с `options.num_ctx=8192` при загруженном окне 4096 → **HTTP 400, code 2**
+  и текст `requested n_ctx=8192 exceeds the per-slot window=4096 (n_ctx=4096,
+  slots derived from it) … (current_n_ctx=4096, required_n_ctx=8192,
+  actual_tokens=15, n_predict=64, max_vram_n_ctx=63996)`, `bridge_info.known=true`;
+- тот же запрос потоком → **тот же текст в done-чанке** (`stream inference failed
+  with code 2: …`), то есть именно та строка, где раньше стояли нули;
+- ни одного `current_n_ctx=0`/`required_n_ctx=0` в обоих ответах; `n_batch`
+  урезание и «окно слота» видны в тексте.
+
+**Не проверено живьём:** сам generic-отказ декода (code 1) — его нельзя вызвать
+нарочно, не ломая стенд; текст для него покрыт `test_window_fit` (16 проверок) и
+Go-тестом. Записано в `debts.ru.md` 12u.
 
 ## [0.7.293 - долг 12n: поле `algorithm` удалено из API и WebUI, заложен шов порядка выбора с `leastconn`, 2026-11-17]
 

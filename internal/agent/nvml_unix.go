@@ -281,5 +281,36 @@ func (a *Agent) collectGPUMetricsNVML() types.GPUMetrics {
 		fmt.Printf("[NVML] Failed to get memory clock: %v\n", ret)
 	}
 
+	// R495 (2026-11-18): занятость ПАМЯТИ и причины троттлинга.
+	//
+	// ЗАЧЕМ. GetUtilizationRates возвращает ДВЕ величины — Gpu и Memory, — а
+	// бралась только первая (util.Memory не читался нигде: grep по internal/
+	// пустой). На декоде каждый токен читает все веса + KV-cache: скорость
+	// упирается в полосу памяти, занятость SM при этом падает до 40–70 %, и
+	// memory-bound карта выглядела в балансере свободной. Здесь тот же вызов уже
+	// даёт занятость памяти — терять её больше нельзя.
+	metrics.MemBusyPercent = float64(util.Memory)
+
+	// Причины троттлинга: «почему медленно» (питание / температура / браке).
+	if reasons, rret := device.GetCurrentClocksThrottleReasons(); rret == nvml.SUCCESS {
+		metrics.ThrottleReasons = reasons
+		metrics.ThrottleKnown = true
+		metrics.ThrottleReasonsList = throttleReasonNames(reasons)
+	}
+
+	// PState: 0 = P0 (максимум), 8 = P8 (простой). -1 = неизвестно.
+	metrics.PState = -1
+	if pstate, pret := device.GetPerformanceState(); pret == nvml.SUCCESS {
+		metrics.PState = int(pstate)
+	}
+
+	// PCIe: узкое место раскладки слоёв (RPC-узел/частичный offload).
+	if gen, gret := device.GetCurrPcieLinkGeneration(); gret == nvml.SUCCESS {
+		metrics.PCIELinkGen = gen
+	}
+	if width, wret := device.GetCurrPcieLinkWidth(); wret == nvml.SUCCESS {
+		metrics.PCIELinkWidth = width
+	}
+
 	return metrics
 }

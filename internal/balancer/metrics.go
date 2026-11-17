@@ -139,6 +139,16 @@ func (bm *BalancerMetrics) GetMetrics() map[string]interface{} {
 	//   nctx_reload_duration_ms_avg/sum/count, nctx_per_backend
 	// Если координатор не инициализирован (p.nctxReload == nil) — Snapshot()
 	// возвращает map с дефолтными нулями (см. nctx_reload.go).
+	// ==== R495 (S1): «почему карта медленная» — только измеренные числа ====
+	//
+	// Публикуем то же сырьё, по которому S2 будет считать вердикт. Правило R493:
+	// нули НЕ печатаются — отсутствие поля означает «не измерено», а не «ноль».
+	// Иначе `mem_busy_percent: 0` на старом агенте читался бы как «память
+	// свободна», то есть повторял бы ровно тот дефект, который задача исправляет.
+	if gpuDiag := bm.proxy.gpuDiagnosisSnapshot(); len(gpuDiag) > 0 {
+		result["gpu_diagnosis"] = gpuDiag
+	}
+
 	if bm.proxy.nctxReload != nil {
 		nctxSnap := bm.proxy.nctxReload.Snapshot()
 		// Копируем поля в плоский top-level (для совместимости с Prometheus exporters

@@ -146,6 +146,44 @@ type GPUMetrics struct {
 	// Пустой срез = «неизвестно» (не-nvidia платформа или nvidia-smi без прав):
 	// такие бэкенды считаются разными машинами, как раньше.
 	UUIDs []string `json:"uuids,omitempty"`
+
+	// --- R495 (2026-11-18): «почему карта медленная», а не только «насколько занята»
+
+	// MemBusyPercent — занятость интерфейса памяти (NVML
+	// `GetUtilizationRates().Memory`, на Windows `utilization.memory`).
+	//
+	// ЗАЧЕМ. На декоде каждый токен читает все веса модели + KV-cache: скорость
+	// упирается в полосу памяти, а занятость SM при этом падает до 40–70 %
+	// (тензорные ядра ждут данные). Балансер же судил о занятости ТОЛЬКО по SM
+	// (`UsagePercent`), поэтому memory-bound карта выглядела свободной и получала
+	// ещё запросов. 0 = «неизвестно» (старый агент, N/A у драйвера) — это НЕ
+	// «свободно».
+	MemBusyPercent float64 `json:"memBusyPercent,omitempty"`
+
+	// ThrottleReasons — битовая маска `clocks_throttle_reasons.active`
+	// (NVML `GetCurrentClocksThrottleReasons()`, Windows `clocks_throttle_reasons.active`).
+	// 0 = троттлинга нет ИЛИ данных нет (различает ThrottleKnown).
+	ThrottleReasons uint64 `json:"throttleReasons,omitempty"`
+
+	// ThrottleReasonsList — те же причины словами для панели
+	// (`sw_power_cap`, `hw_slowdown`, `hw_thermal_slowdown`, `hw_power_brake_slowdown`).
+	ThrottleReasonsList []string `json:"throttleReasonsList,omitempty"`
+
+	// ThrottleKnown — измерялись ли причины троттлинга. false = «нет данных»,
+	// а не «троттлинга нет»: иначе отсутствие сигнала читалось бы как здоровье.
+	ThrottleKnown bool `json:"throttleKnown,omitempty"`
+
+	// PState — NVML performance state: 0 = P0 (максимальная производительность),
+	// 8 = P8 (простой). -1 = «неизвестно» (поле НЕ omitempty: 0 — законное
+	// значение P0, и потерять его нельзя).
+	PState int `json:"pstate"`
+
+	// PCIELinkGen / PCIELinkWidth — текущее поколение и ширина PCIe.
+	// ЗАЧЕМ: при раскладке слоёв по RPC-узлу (или при частичном offload) узкое
+	// место — шина, а не карта; без этих чисел «медленно» нечем объяснить.
+	// 0 = неизвестно.
+	PCIELinkGen   int `json:"pcieLinkGen,omitempty"`
+	PCIELinkWidth int `json:"pcieLinkWidth,omitempty"`
 }
 
 // CPUMetrics - расширенные метрики CPU

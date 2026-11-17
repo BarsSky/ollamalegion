@@ -973,6 +973,35 @@ func mergeGPUMetrics(primary, local types.GPUMetrics) types.GPUMetrics {
 	localUsable := local.MemoryTotal > 0 || local.UsagePercent > 0 || local.Temperature > 0 ||
 		local.GPUClock > 0 || local.MemClock > 0 || local.PowerUsage > 0
 
+	// R495 (2026-11-18): ЛОВУШКА, из-за которой новые поля терялись бы молча.
+	//
+	// «Локальный опрос состоялся» проверяется по СТАРЫМ полям. Карта может отдать
+	// utilization.memory и причины троттлинга, но иметь нулевые
+	// temperature/clock (виртуализация, MIG, ограниченные права NVML). Если
+	// переносить новые поля только внутри `if localUsable`, они оставались бы
+	// нулями = «неизвестно», классификатор всегда видел бы unknown — задача была
+	// бы «сделана», а диагноза не было.
+	//
+	// Правило: непустое локальное значение перекрывает снимок движка, пустое
+	// (0/false) — сохраняет движковое. PState: -1 = «неизвестно», 0 = законный P0.
+	if local.MemBusyPercent > 0 {
+		merged.MemBusyPercent = local.MemBusyPercent
+	}
+	if local.ThrottleKnown {
+		merged.ThrottleReasons = local.ThrottleReasons
+		merged.ThrottleReasonsList = local.ThrottleReasonsList
+		merged.ThrottleKnown = true
+	}
+	if local.PState >= 0 {
+		merged.PState = local.PState
+	}
+	if local.PCIELinkGen > 0 {
+		merged.PCIELinkGen = local.PCIELinkGen
+	}
+	if local.PCIELinkWidth > 0 {
+		merged.PCIELinkWidth = local.PCIELinkWidth
+	}
+
 	if localUsable {
 		merged.UsagePercent = local.UsagePercent
 		merged.Temperature = local.Temperature

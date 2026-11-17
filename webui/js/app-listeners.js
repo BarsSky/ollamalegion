@@ -82,8 +82,23 @@
         const ctx = App.context;
         document.querySelectorAll('.nav-item').forEach(function(item) {
             item.addEventListener('click', function (e) {
+                // R497 (2026-11-19): пункты, ведущие на ОТДЕЛЬНЫЙ файл
+                // (`virtual-models.html`, `health.html`), не должны гаситься.
+                //
+                // ЖИВОЙ ДЕФЕКТ (аудит 2026-11-19 §4.2). Здесь стоял безусловный
+                // preventDefault + switchPage(data-page). Для этих двух пунктов
+                // секции внутри SPA нет, поэтому клик снимал .active со всех
+                // страниц, оставлял пустую область и сырой ключ в заголовке:
+                // «пункт меню ведёт в пустоту». Ссылка на реальный файл при этом
+                // НИКОГДА не открывалась — preventDefault убивал переход.
+                const page = item.dataset.page;
+                const href = item.getAttribute('href') || '';
+                const isRealFile = href !== '' && href.charAt(0) !== '#';
+                if (isRealFile) {
+                    return; // отдаём клик браузеру: это отдельная страница
+                }
                 e.preventDefault();
-                if (ctx && ctx.switchPage) ctx.switchPage(item.dataset.page);
+                if (ctx && ctx.switchPage) ctx.switchPage(page);
             });
         });
     };

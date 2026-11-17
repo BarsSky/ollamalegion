@@ -9,7 +9,7 @@ window.I18N_RU = {
   "nav.sessions": "Сессии",
   "nav.queue": "Очередь",
   "nav.logs": "Логи",
-  "nav.health": "Здоровье",
+  "nav.health": "Состояние",
   "nav.settings": "Настройки",
   "nav.virtual_models": "Виртуальные модели",
   "nav.diagnostics": "Диагностика",

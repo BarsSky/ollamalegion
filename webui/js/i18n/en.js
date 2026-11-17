@@ -9,7 +9,7 @@ window.I18N_EN = {
   "nav.sessions": "Sessions",
   "nav.queue": "Queue",
   "nav.logs": "Logs",
-  "nav.health": "Health",
+  "nav.health": "Status",
   "nav.settings": "Settings",
   "nav.virtual_models": "Virtual Models",
   "nav.diagnostics": "Diagnostics",

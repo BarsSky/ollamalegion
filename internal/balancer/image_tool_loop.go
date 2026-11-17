@@ -58,7 +58,8 @@ type imageToolLoopArgs struct {
 // runImageToolLoop обрабатывает запрос с объявленным инструментом.
 // true — ответ клиенту уже записан (штатный путь handler'а не нужен).
 func (lr *LlamaCppRouter) runImageToolLoop(w http.ResponseWriter, r *http.Request, a imageToolLoopArgs) bool {
-	clientStream := isStreamingFromBody(r.URL.Path, a.bodyBuf)
+	// R493 (этап 1): решение о стриме — из плана запроса, не из тела.
+	clientStream := streamDecisionR493(r, r.URL.Path, a.bodyBuf)
 	cfg := lr.proxy.imageToolSettings()
 
 	// --- turn 1: нестриминговый, чтобы увидеть вызов целиком ---

@@ -146,6 +146,25 @@ func outputLimitFromBodyR493(body []byte) (int, string) {
 	return 0, ""
 }
 
+// streamDecisionR493 — решение «клиент ждёт поток» из ОДНОГО места.
+//
+// Порядок: план запроса (этап 1) → уже разобранное тело (parsedRequest.Stream) →
+// старый разбор через isStreamingFromBody. Два последних шага — только для
+// миграции и внутренних вызовов, где план ещё не собран (тесты, self-proxy).
+// Новые потребители обязаны получать решение отсюда, а не звать
+// isStreamingFromBody напрямую: иначе копия №15 (см.
+// request_plan_steward_r493_test.go).
+func streamDecisionR493(r *http.Request, path string, body []byte) bool {
+	if plan := requestPlanOfR493(r); plan != nil {
+		return plan.Stream
+	}
+	if parsed := parsedRequestOf(r); parsed != nil {
+		return parsed.Stream
+	}
+	// Fallback на время миграции: внутренние вызовы без разобранного тела.
+	return isStreamingFromBody(path, body)
+}
+
 // logRequestPlanR493 — плановая строка в лог на debug-уровне: план есть у
 // каждого запроса, поэтому info здесь был бы шумом (та же причина, по которой
 // R493 убрал warn «force rebalance failed» с нормального пути).

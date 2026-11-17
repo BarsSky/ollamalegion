@@ -32,7 +32,6 @@ var requestDecisionAllowlistR493 = map[string]int{
 	// База 2026-11-16 (фактический подсчёт, не догадка): 14 прямых решений
 	// в 10 файлах. Уменьшать можно, увеличивать — нельзя.
 	"admission_queue.go":             1,
-	"image_tool_loop.go":             1,
 	"image_tool_loop_ollama.go":      1,
 	"llamacpp_handlers_inference.go": 3,
 	"llamacpp_translate_req.go":      1,
@@ -41,6 +40,9 @@ var requestDecisionAllowlistR493 = map[string]int{
 	"preflight_stream_dialog.go":     1,
 	"primary_model_policy.go":        1,
 	"proxy_request.go":               1,
+	// Модуль плана — последнее место, где прямой разбор ещё допустим
+	// (fallback для внутренних вызовов без разобранного тела).
+	"request_plan_r493.go":           1,
 }
 
 func TestR493_RequestDecisionsOnlyInPlan(t *testing.T) {

@@ -640,6 +640,25 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	resp.DoneReason = toolsTerminalReasonR394(result.Output, visibleForReason, prompt,
 		len(resp.Message.ToolCalls), params.NPredict, resp.EvalCount)
 
+	// R496 (2026-11-18): сторож «слабый ход агента» — warn по умолчанию.
+	//
+	// Живой случай: Qwen3.8-9B на агентском клиенте заканчивает ход текстом
+	// «сейчас сделаю …» без вызова инструмента, клиент видит завершённый ответ и
+	// цикл останавливается. Здесь ход уже измерен (tool_calls, done_reason,
+	// видимый текст), поэтому проверка детерминированная: заголовки видны клиенту,
+	// Warn с числами — оператору. Догенерации в режиме warn нет (решение владельца
+	// 2026-11-18); retry — отдельный шаг.
+	toolGuardVerdict := observeToolGuardR496(req.Model, "/api/chat(nonstream)", ToolGuardInputR496{
+		ToolsOffered:   len(req.Tools) > 0,
+		ToolCalls:      len(resp.Message.ToolCalls),
+		DoneReason:     resp.DoneReason,
+		VisibleContent: visibleForReason,
+		// Бюджет исчерпан, если модель встала по n_predict: тогда пустой ответ —
+		// следствие бюджета, а не срыва хода (пояснения R314/R394 уже есть).
+		BudgetExhausted: resp.EvalCount >= params.NPredict && params.NPredict > 0,
+	})
+	applyToolGuardHeaderR496(w, toolGuardVerdict)
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -2966,9 +2985,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 		// рядом с вызовом инструмента оно превращается в текст ответа и попадает
 		// в историю клиента (живой случай: Qwen3.8-9B + read_files).
 		content = terminalContentR417(content, fullOutput, len(toolCalls))
-	if strings.TrimSpace(content) == "" && len(toolCalls) == 0 {
-		content = toolsTerminalContentReasoningR493(content, fullOutput, PromptOpensReasoning(prompt))
-	}
+		if strings.TrimSpace(content) == "" && len(toolCalls) == 0 {
+			content = toolsTerminalContentReasoningR493(content, fullOutput, PromptOpensReasoning(prompt))
+		}
 		// R430: разметку вызова не распознал парсер, но она ЕСТЬ — видимый текст
 		// собираем до её начала + пояснение (см. unparsedNoticeR430 выше). Один раз,
 		// ДО всех веток отдачи: и content финального чанка, и единственная дельта
@@ -3160,7 +3179,18 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 	dumpedArgsInsteadOfCall = dumpedArgsInsteadOfCall && len(tools) > 0 && len(toolCalls) == 0
 	// R476: снимок трассировки стрима (если включена CPPWORKER_STREAM_TRACE).
 	streamTraceChunks, streamTraceBytes, streamTraceSHA := sw.StreamTrace()
-	logger.Get().Infow("/api/chat stream response summary",
+	// R496 (2026-11-18): сторож «слабый ход агента» — та же проверка, что в
+	// не-стриме, но здесь заголовки уже отправлены (поток идёт), поэтому диагноз
+	// уходит в сводку и счётчик: строка с числами хода — единственное место, где
+	// оператор сопоставит «пустой/обещающий ответ» с моделью и request_id.
+	toolGuardVerdict := observeToolGuardR496(modelName, "/api/chat", ToolGuardInputR496{
+		ToolsOffered:    len(tools) > 0,
+		ToolCalls:       len(toolCalls),
+		DoneReason:      doneReasonStringR496(finalChunk["done_reason"]),
+		VisibleContent:  finalContent,
+		BudgetExhausted: toolsBudgetExhaustedR394(params.NPredict, budgetTokens),
+	})
+	logArgs := []interface{}{
 		"model", modelName,
 		"path", "/api/chat",
 		// R476 (2026-11-07): id, который выдал балансер — по нему ход находится
@@ -3221,7 +3251,9 @@ func writeChatStreamResponseWithTools(w http.ResponseWriter, r *http.Request, mo
 			}
 			return firstContentAt.Sub(start).Milliseconds()
 		}(),
-	)
+	}
+	logArgs = append(logArgs, toolGuardFieldsForLogR496(toolGuardVerdict)...)
+	logger.Get().Infow("/api/chat stream response summary", logArgs...)
 
 	doneJSON, _ := json.Marshal(finalChunk)
 	sw.Writef("%s\n", doneJSON)

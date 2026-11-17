@@ -12,7 +12,9 @@ package balancer
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,15 +43,16 @@ func TestConcurrency_Scenario_ParallelRequests(t *testing.T) {
 	rig.registerVM(t, "vm-parallel", virtualmodel.SelectionRoundRobin)
 
 	const N = 100
+	parallelClientR493 := newParallelClientR493()
 	var wg sync.WaitGroup
 	var success, errors int64
 	for i := 0; i < N; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			resp, err := http.Post(rig.balancer.URL+"/api/generate",
-				"application/json",
-				strings.NewReader(`{"model":"vm-parallel","prompt":"hi","stream":false}`))
+			resp, err := postParallelR493(parallelClientR493,
+				rig.balancer.URL+"/api/generate",
+				`{"model":"vm-parallel","prompt":"hi","stream":false}`)
 			if err != nil {
 				atomic.AddInt64(&errors, 1)
 				return
@@ -82,10 +85,12 @@ func TestConcurrency_Scenario_ParallelRequests_Streaming(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Post(rig.balancer.URL+"/v1/chat/completions",
-				"application/json",
-				strings.NewReader(`{"model":"vm-pstream","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+			// R493: тот же транспорт, что у ParallelRequests — иначе на загруженном
+			// раннере соединения упираются в бюджет машины, и тест «нет дедлока»
+			// краснеет не по делу.
+			resp, err := postParallelR493(newParallelClientR493(),
+				rig.balancer.URL+"/v1/chat/completions",
+				`{"model":"vm-pstream","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 			if err != nil {
 				return
 			}
@@ -518,3 +523,46 @@ var (
 	_ = rpccoordinator.LayerSlice{}
 	_ = fmt.Sprintf
 )
+
+// postParallelR493 — POST для сценарных тестов с ОДНИМ повтором только на
+// ошибку установки соединения.
+//
+// ЗАЧЕМ. `TestConcurrency_Scenario_ParallelRequests` краснел на self-hosted
+// раннере (CI, 2026-11-19): 100 одновременных `http.Post` на тестовый сервер, и
+// под нагрузкой раннера часть из них падала на уровне ТРАНСПОРТА (dial), а тест
+// считал это ошибкой балансера (expected 100 success, 0 errors). Локально
+// (-race, count=3) — зелено, то есть это не дефект маршрутизации, а зависимость
+// теста от бюджета соединений машины.
+//
+// ЧТО ИМЕННО ЧИНИМ (не «глушим»): свой Transport с большим MaxIdleConnsPerHost и
+// один повтор ТОЛЬКО при `*net.OpError` с Op=="dial". Ошибка приложения
+// (не-200, отмена) не повторяется и по-прежнему валит тест: смысл проверки —
+// «балансер обслужил все 100», а не «сеть раннера выдержала».
+func postParallelR493(client *http.Client, url, body string) (*http.Response, error) {
+	resp, err := client.Post(url, "application/json", strings.NewReader(body))
+	if err != nil && isDialErrorR493(err) {
+		resp, err = client.Post(url, "application/json", strings.NewReader(body))
+	}
+	return resp, err
+}
+
+// isDialErrorR493 — «не смогли установить соединение» (а не «запрос отклонён»).
+func isDialErrorR493(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+	return false
+}
+
+// newParallelClientR493 — клиент с транспортом под 100+ одновременных соединений.
+func newParallelClientR493() *http.Client {
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        256,
+			MaxIdleConnsPerHost: 256,
+			MaxConnsPerHost:     256,
+		},
+	}
+}

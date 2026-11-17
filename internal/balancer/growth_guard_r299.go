@@ -57,12 +57,20 @@ func growthBlockersR288(p *Proxy, backendID, model string) (active int, reloadPe
 // growthDeferR299 — вердикт «отвечаем сразу, preflight не запускаем».
 //
 // Возвращает true только когда оба условия выполнены:
-//   - окно действительно мало (needed > loaded, см. contextGrowthBlocker);
+//   - загруженное окно НЕ обслуживает запрос как есть (windowServeAsIsR447:
+//     промпт не влезает или клиент попросил окно больше загруженного);
 //   - росту сейчас что-то мешает (идут стримы или перезагрузка уже в процессе).
 //
 // Второе условие обязательно: если не мешает ничего, preflight ОБЯЗАН попробовать
 // вырастить окно — иначе мы отказывали бы запросу, который сами же могли
 // обслужить.
+//
+// R447 (2026-11-17, вторая половина правила). Первым условием было
+// `needed > loaded`, где needed = оценка промпта + БЮДЖЕТ ВЫВОДА. Это ровно то
+// сравнение, из которого вырос R447, и оно давало живой отказ
+// «needs 184296 tokens … the loaded window is 180224 and cannot grow right now»
+// запросу, промпт которого (180200 по оценке, 93962 по факту) влезал в окно.
+// Теперь условие одно на все пути — windowServeAsIsR447.
 func (p *Proxy) growthDeferR299(backendID, model string, body []byte, path string) (
 	shouldDefer bool, estimated, loaded, needed, active int, reloadPending bool,
 ) {
@@ -85,8 +93,21 @@ func (p *Proxy) growthDeferR299(backendID, model string, body []byte, path strin
 	// Числа считаются ТЕМ ЖЕ правилом, что и в остальных отказах
 	// (needed = max(оценка промпта + бюджет, явно запрошенное окно)).
 	estimated, loaded, needed = p.contextGrowthNumbers(backendID, model, body, path)
-	if needed <= 0 || loaded <= 0 || needed <= loaded {
+	if needed <= 0 || loaded <= 0 {
 		return false, estimated, loaded, 0, 0, false
+	}
+	// R447 (2026-11-17): «нужен рост» ≠ «можно отказать».
+	//
+	// ЖИВОЙ ДЕФЕКТ → ПРАВИЛО → СЛЕДСТВИЕ. Здесь стояло `needed <= loaded` →
+	// «не вмешиваемся», а выше — отказ при занятости: запрос с загруженным окном
+	// 180224 и оценкой промпта 180200 (needed = 184296) получал 503 «cannot grow
+	// right now (active streams=1)», хотя промпт влезал и воркер обслужил бы его
+	// укороченным ответом. Правило одно на все пути — windowServeAsIsR447:
+	// отказываем (ждём), только если загруженное окно НЕ обслуживает запрос как
+	// есть. Следствие: такой запрос идёт дальше и обслуживается, а решение
+	// «расти» остаётся за growthNeedR447 (оно про другое — про запас под ответ).
+	if served, _ := windowServeAsIsR447(estimated, loaded, meta.RequestedNCtxOverride); served {
+		return false, estimated, loaded, needed, 0, false
 	}
 	active, reloadPending = growthBlockersR288(p, backendID, model)
 	if active == 0 && !reloadPending {

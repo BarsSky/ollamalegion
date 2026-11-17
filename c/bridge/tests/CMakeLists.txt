@@ -117,6 +117,7 @@ add_executable(test_batch_n_tokens
     ../bridge.c
     # R493: bridge.c ссылается на bridge_prefix_* — без этого файла линковка падает.
     ../prefix_cache.c
+    ../window_fit.c
     # R248/B2: bridge.c вызывает bridge_mtmd_* (mmproj) — компилируем обёртку.
     ../csrc/vision_mtmd.cpp
 )
@@ -142,6 +143,7 @@ target_compile_features(test_batch_n_tokens PRIVATE c_std_99 cxx_std_17)
 add_library(bridge_compile_all OBJECT
     ../bridge.c
     ../prefix_cache.c
+    ../window_fit.c
     ../csrc/chat_thinking.cpp
     ../csrc/vision_mtmd.cpp
 )
@@ -165,6 +167,7 @@ add_executable(test_batched_batch
     ../bridge.c
     # R493: см. test_batch_n_tokens.
     ../prefix_cache.c
+    ../window_fit.c
     # R248/B2: см. test_batch_n_tokens.
     ../csrc/vision_mtmd.cpp
 )
@@ -239,6 +242,7 @@ target_compile_features(abort_syntax_test PRIVATE c_std_99)
 add_executable(test_prefix_cache
     test_prefix_cache.c
     ../prefix_cache.c
+    ../window_fit.c
 )
 target_include_directories(test_prefix_cache PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
@@ -248,6 +252,21 @@ target_compile_features(test_prefix_cache PRIVATE c_std_99)
 # ============================================================
 # Регистрация в ctest — единая точка входа для CI.
 # ============================================================
+# test_window_fit — R493 (2026-11-17): pure-логика окна слота и текст отказа
+# декода. Без libllama: проверяются арифметика (окно слота vs суммарное),
+# классификация (reload / too_long / ok), урезание батча и текст ошибки.
+# Живой факт, ради которого это есть: prompt 80878 при окне 131072 падал
+# generic-кодом с «current_n_ctx=0» — см. window_fit.h.
+add_executable(test_window_fit
+    test_window_fit.c
+    ../window_fit.c
+)
+target_include_directories(test_window_fit PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_compile_features(test_window_fit PRIVATE c_std_99)
+add_test(NAME test_window_fit COMMAND test_window_fit)
+
 add_test(NAME test_prefix_cache COMMAND test_prefix_cache)
 add_test(NAME test_batch_n_tokens COMMAND test_batch_n_tokens)
 add_test(NAME test_batched_batch COMMAND test_batched_batch)

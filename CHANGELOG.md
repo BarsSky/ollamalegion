@@ -1,3 +1,65 @@
+## [0.7.294 - отказ декода называет факты и считает окно слота, 2026-11-17]
+
+Третий приход одного и того же текста от пользователя (новый архив
+`…-4c13682715b5-20261117-145351.zip`) показал, что прошлая правка закрыла не тот
+путь. Текст:
+
+```
+stream inference failed with code 1: llama_decode failed for prompt batch
+(likely n_ctx overflow, prompt too long, or n_batch > n_ctx)
+(current_n_ctx=0, required_n_ctx=0, max_vram_n_ctx=218989)
+```
+
+**Почему было не так (по архиву, не по догадке).**
+
+- Текст видимого отказа собирает **`c/bridge/bridge.go`** (стриминговый done-чанк),
+  а не `cmd/cppworker`, куда пришлась прошлая правка (`bridge_info.known=false`,
+  0.7.293). Здесь числа печатались безусловно: `current_n_ctx`/`required_n_ctx` —
+  из полей, которые при generic-отказе декода не заполняются, `max_vram_n_ctx` —
+  из последнего известного `g_max_vram_n_ctx`. Живой факт:
+  `A10-126/last-prompt.json` — `prompt_tokens=80878`, `n_ctx_loaded=131072`, то
+  есть **в окно запрос влезал**; ноль и чужое число выдавались за измерение, и
+  причина искалась не там (у узла 59/64 слоёв на GPU и 2025 MB свободной VRAM,
+  `n_batch=512`).
+- `bridge_check_ctx_capacity` сравнивал с **суммарным** `llama_n_ctx`, а при
+  `parallel>1` это окно на слот: запрос, влезающий в сумму и не влезающий в слот,
+  доходил до декода и отдавался как generic code 1 — reload/413 не применялись.
+- `n_batch` не урезался до окна слота, хотя `n_batch > n_ctx` назван причиной в
+  самом тексте отказа.
+
+**Изменено:**
+
+- новое `c/bridge/window_fit.{c,h}` — чистая логика: `bridge_window_effective_seq`
+  (окно слота), `bridge_window_fit_kind` → `OK`/`RELOAD`/`TOO_LONG`,
+  `bridge_window_suggest_batch`, `bridge_decode_failure_message` (факты вместо
+  нулей; если по числам запрос влезает — прямо «причина не в окне, а в
+  памяти/раскладке», с советом проверить VRAM и уменьшить `n_batch`, напр. 128);
+- `c/bridge/bridge.c`: классификация по окну слота, урезание `n_batch` до окна
+  слота в обоих prefill (stream и non-stream), оба места отказа декода берут
+  текст из хелпера; в `bridge_info` — настоящие `prompt_tokens`/`n_predict`/
+  `n_ctx` и `per slot`;
+- `c/bridge/bridge.go`: `formatBridgeNumbers` печатает только непустые числа,
+  иначе «(числа не измерены: ошибка не про окно…)»; применено к `inference
+  failed:` и `stream inference failed with code N:`;
+- `internal/balancer/llamacpp_error.go`: `NCtxError.Error()` печатает только
+  измеренные `current_n_ctx`/`required_n_ctx`, иначе «числа окна не измерены»
+  (ноль больше не читается как факт);
+- `docker/cppworker/Dockerfile.gpu` — в образ копируются `window_fit.h/.c`;
+  `c/bridge/CMakeLists.txt` и `c/bridge/tests/CMakeLists.txt` — новые файлы и
+  `test_window_fit` (16 проверок) в ctest;
+- `deployments/.env.example`: `CPPWORKER_LLAMA_BUILD=b1b770d90` (было
+  `b1b770d9`) с комментарием: в архиве второго стенда
+  `llama_build_env=0eadefebd` против `llama_build=b1b770d90` дал
+  `llama_build_mismatch=true`; сам `.env` стенда правит владелец.
+
+**Чем проверено:** `test_window_fit` — 16 проверок; мутация «сравнивать с
+суммарным окном» краснит 2, мутация «всегда заявлять переполнение» — 1;
+мутация `NCtxError.Error()` «печатать безусловно» воспроизводит живой текст
+(`current_n_ctx=0, required_n_ctx=0`) и краснит 3 подтеста; `gcc -fsyntax-only`
+по `bridge.c` — 0. **Не проверено живьём** до пересборки образа cppworker: запрос
+с prompt больше окна слота должен дать code 3 с настоящими числами (записано в
+`debts.ru.md` 12u).
+
 ## [0.7.293 - долг 12n: поле `algorithm` удалено из API и WebUI, заложен шов порядка выбора с `leastconn`, 2026-11-17]
 
 Решение владельца: «вычистить поле и на стороне UI тоже, совместимость с

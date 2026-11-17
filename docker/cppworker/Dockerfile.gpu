@@ -214,7 +214,7 @@ WORKDIR /build/bridge
 # R493 (2026-11-16): prefix_cache.{c,h} — кэш префилла. CMakeLists моста
 # перечисляет prefix_cache.c в BRIDGE_SOURCES, поэтому без этого COPY сборка
 # падает на этапе generate: «Cannot find source file: prefix_cache.c».
-COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/prefix_cache.h c/bridge/prefix_cache.c c/bridge/CMakeLists.txt ./
+COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/prefix_cache.h c/bridge/prefix_cache.c c/bridge/window_fit.h c/bridge/window_fit.c c/bridge/CMakeLists.txt ./
 COPY c/bridge/csrc ./csrc/
 
 COPY --from=llama-builder /build/llama.cpp/include /build/llama.cpp/include

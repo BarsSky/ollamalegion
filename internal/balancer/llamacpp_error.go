@@ -67,11 +67,25 @@ type NCtxError struct {
 }
 
 // Error возвращает человекочитаемое описание ошибки.
+//
+// R493 (2026-11-17): числа печатаются только ИЗМЕРЕННЫЕ. Раньше сюда
+// безусловно подставлялись current_n_ctx/required_n_ctx, и для ошибок, где мост
+// их не заполнял, оператор видел «current_n_ctx=0» рядом с настоящим message —
+// то есть ноль читался как измерение (живой факт: архив второго стенда).
 func (e *NCtxError) Error() string {
 	if e.BridgeInfo != nil && e.BridgeInfo.Message != "" {
-		return fmt.Sprintf("cppworker error: code=%d %s (backend=%s, current_n_ctx=%d, required_n_ctx=%d)",
-			e.BridgeInfo.Code, e.BridgeInfo.Message, e.BackendID,
-			e.BridgeInfo.CurrentNCtx, e.BridgeInfo.RequiredNCtx)
+		numbers := ""
+		if e.BridgeInfo.CurrentNCtx > 0 {
+			numbers += fmt.Sprintf(", current_n_ctx=%d", e.BridgeInfo.CurrentNCtx)
+		}
+		if e.BridgeInfo.RequiredNCtx > 0 {
+			numbers += fmt.Sprintf(", required_n_ctx=%d", e.BridgeInfo.RequiredNCtx)
+		}
+		if numbers == "" {
+			numbers = ", числа окна не измерены"
+		}
+		return fmt.Sprintf("cppworker error: code=%d %s (backend=%s%s)",
+			e.BridgeInfo.Code, e.BridgeInfo.Message, e.BackendID, numbers)
 	}
 	return fmt.Sprintf("cppworker error: status=%d body=%s (backend=%s)",
 		e.HTTPStatus, truncateBody(e.Body, 200), e.BackendID)

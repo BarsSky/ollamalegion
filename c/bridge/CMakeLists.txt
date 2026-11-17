@@ -100,6 +100,7 @@ set(BRIDGE_SOURCES
     # R493 (2026-11-16): чистая логика кэша префилла (без llama.cpp) — в
     # отдельном файле, чтобы её можно было прогнать standalone-тестом в CI.
     prefix_cache.c
+    window_fit.c
     csrc/chat_thinking.cpp
     csrc/vision_mtmd.cpp
 )
@@ -108,6 +109,7 @@ set(BRIDGE_SOURCES
 set(BRIDGE_HEADERS
     bridge.h
     prefix_cache.h
+    window_fit.h
 )
 
 # Собираем статическую библиотеку bridge

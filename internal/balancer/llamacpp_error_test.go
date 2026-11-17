@@ -344,6 +344,80 @@ func TestNCtxError_Error(t *testing.T) {
 	}
 }
 
+// TestNCtxError_ErrorPrintsOnlyMeasuredNumbers_R493 — отрицательный контроль
+// к живому багу второго стенда (2026-11-17): в UI и логах висело
+// «current_n_ctx=0, required_n_ctx=0, max_vram_n_ctx=218989» — нули, которые
+// мост НЕ измерял, читались оператором как измерение (и вели к ложной версии
+// «окно не то»). Error() обязан печатать только измеренные числа, а когда
+// измерений нет — прямо говорить об этом.
+func TestNCtxError_ErrorPrintsOnlyMeasuredNumbers_R493(t *testing.T) {
+	t.Run("чисел нет — нет и нулей", func(t *testing.T) {
+		errStr := (&NCtxError{
+			BackendID:  "A10-126",
+			HTTPStatus: 200,
+			BridgeInfo: &NCtxBridgeError{
+				Code:    bridge.ErrCodeGeneric,
+				Message: "llama_decode failed for prompt batch (likely n_ctx overflow, prompt too long, or n_batch > n_ctx)",
+			},
+		}).Error()
+
+		for _, forbidden := range []string{"current_n_ctx=0", "required_n_ctx=0", "current_n_ctx=", "required_n_ctx="} {
+			if strings.Contains(errStr, forbidden) {
+				t.Errorf("Error() = %q, не должен содержать %q: неизмеренный ноль выдаётся за измерение", errStr, forbidden)
+			}
+		}
+		if !strings.Contains(errStr, "числа окна не измерены") {
+			t.Errorf("Error() = %q, должен явно сказать, что числа окна не измерены", errStr)
+		}
+		// Настоящая причина из message обязана остаться видимой.
+		if !strings.Contains(errStr, "llama_decode failed") {
+			t.Errorf("Error() = %q, должен сохранять message моста", errStr)
+		}
+		if !strings.Contains(errStr, "A10-126") {
+			t.Errorf("Error() = %q, должен содержать backend", errStr)
+		}
+	})
+
+	t.Run("измерено только current", func(t *testing.T) {
+		errStr := (&NCtxError{
+			BackendID: "b1",
+			BridgeInfo: &NCtxBridgeError{
+				Code:        bridge.ErrCodePromptTooLong,
+				CurrentNCtx: 32768,
+				Message:     "prompt exceeds per-slot window",
+			},
+		}).Error()
+
+		if !strings.Contains(errStr, "current_n_ctx=32768") {
+			t.Errorf("Error() = %q, должен печатать измеренный current_n_ctx", errStr)
+		}
+		if strings.Contains(errStr, "required_n_ctx=") {
+			t.Errorf("Error() = %q, не должен печатать неизмеренный required_n_ctx", errStr)
+		}
+		if strings.Contains(errStr, "числа окна не измерены") {
+			t.Errorf("Error() = %q, не должен говорить «не измерены», когда current измерен", errStr)
+		}
+	})
+
+	t.Run("измерено только required", func(t *testing.T) {
+		errStr := (&NCtxError{
+			BackendID: "b2",
+			BridgeInfo: &NCtxBridgeError{
+				Code:         bridge.ErrCodeNCtxNeedsReload,
+				RequiredNCtx: 131072,
+				Message:      "need reload",
+			},
+		}).Error()
+
+		if !strings.Contains(errStr, "required_n_ctx=131072") {
+			t.Errorf("Error() = %q, должен печатать измеренный required_n_ctx", errStr)
+		}
+		if strings.Contains(errStr, "current_n_ctx=") {
+			t.Errorf("Error() = %q, не должен печатать неизмеренный current_n_ctx", errStr)
+		}
+	})
+}
+
 func TestNCtxError_Truncation(t *testing.T) {
 	// Очень длинное тело — Error() должен trunc'нуть его.
 	longBody := strings.Repeat("x", 5000)

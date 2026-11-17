@@ -432,6 +432,85 @@ Go-код в этой задаче не менялся — это решение
 | — (новое) | **Противоречие профиля называется при сохранении**: `contextLength > contextLengthMax` даёт `warnings[].code=context_length_exceeds_max` в ответе PUT и Warn в лог. R400 по-прежнему отдаёт приоритет заявленному окну, но молчаливого сохранения больше нет | `internal/api/profile_window_conflict_r493_test.go`: таблица случаев (живой 194296/131072 → предупреждение, равные → нет, нули → нет) + страж «ветка рабочая». Мутация «ветка мертва» → красный |
 | — (новое) | **`bridge_info` больше не выдаёт нули за факт**: у блока появился `known:false` + `note`, когда числа пришли не от C-моста (раньше клиент видел `current_n_ctx: 0, required_n_ctx: 0` рядом с настоящим `code` и читал это как «окно 0») | `cmd/cppworker/error_bridge_info_r493_test.go`: `known=false`, `note` не пуст, числовые ключи сохранены. Мутация «убрать known» → красный |
 
+### 5.9 Отказ декода: «нули как факт» и сравнение с суммарным окном (R493, 2026-11-17)
+
+Пользователь принёс новый архив (`…-4c13682715b5-20261117-145351.zip`) с тем же
+текстом, что и раньше:
+
+```
+stream inference failed with code 1: llama_decode failed for prompt batch
+(likely n_ctx overflow, prompt too long, or n_batch > n_ctx)
+(current_n_ctx=0, required_n_ctx=0, max_vram_n_ctx=218989)
+```
+
+Три отдельные причины, все воспроизведены по архиву:
+
+1. **Текст видимого отказа собирает НЕ `cmd/cppworker`.** Предыдущая правка
+   (`bridge_info.known=false`, см. §5.8, последняя строка) закрыла JSON-ошибку
+   синхронного пути, но стриминговый отказ приходит строкой в done-чанке, и её
+   формировал `c/bridge/bridge.go` (`stream inference failed with code %d: …`).
+   Там числа печатались безусловно: `current_n_ctx`/`required_n_ctx` — из полей,
+   которые при generic-ошибке декода мост вообще не заполняет, а
+   `max_vram_n_ctx` — из «последнего известного» `g_max_vram_n_ctx` (218989 к
+   запросу отношения не имеет). То есть ноль и чужое число выдавались за
+   измерение, и оператор третий раз искал причину в окне. Живой факт:
+   `A10-126/last-prompt.json` — `prompt_tokens=80878`, `n_ctx_loaded=131072`, то
+   есть **в окно запрос влезал** и причина была другая (59/64 слоёв на GPU при
+   2025 MB свободной VRAM, `n_batch=512`).
+2. **Классификация шла по суммарному окну, а не по окну слота.** При
+   `parallel>1` `llama_n_ctx` — это окно на слот. Запрос, который в суммарное
+   окно влезает, а в окно слота нет, доходил до декода и отдавался как
+   generic code 1 без шанса на верное решение (reload/413).
+3. **`n_batch` не урезался до окна слота**, хотя в самом тексте ошибки
+   `n_batch > n_ctx` назван одной из трёх причин.
+
+**Сделано:** чистая логика вынесена в `c/bridge/window_fit.{c,h}` и покрыта
+ctest — `c/bridge/tests/test_window_fit.c`, 16 проверок:
+
+- `bridge_window_effective_seq(n_ctx, n_ctx_seq)` — окно слота (`llama_n_ctx_seq`)
+  или суммарное, если слотов один;
+- `bridge_window_fit_kind(...)` → `OK` / `RELOAD` (клиент просит больше окна
+  слота, даже если меньше суммарного) / `TOO_LONG`;
+- `bridge_window_suggest_batch(...)` — `n_batch` не больше окна слота;
+- `bridge_decode_failure_message(...)` — текст с настоящими числами
+  (`prompt_tokens`, `n_predict`, `n_batch`, `n_ctx`, `per slot`) и прямым
+  выводом: если по числам запрос влезает, текст говорит «причина не в окне, а в
+  памяти/раскладке; проверьте VRAM и уменьшите n_batch (напр. 128)».
+
+`c/bridge/bridge.c`: `bridge_check_ctx_capacity` классифицирует по окну слота;
+оба места (потоковый и не-потоковый prefill) урезают `n_batch` до окна слота;
+оба места отказа декода берут текст из `bridge_decode_failure_message`.
+`c/bridge/bridge.go`: `formatBridgeNumbers` печатает только непустые числа, а
+когда их нет — «(числа не измерены: ошибка не про окно…)». Балансер
+(`internal/balancer/llamacpp_error.go`) в `NCtxError.Error()` печатает только
+измеренные `current_n_ctx`/`required_n_ctx`, иначе — «числа окна не измерены».
+
+**Чем проверено (мутации):**
+
+| Что проверяли | Мутация | Результат |
+|---|---|---|
+| Окно слота в классификации | `bridge_window_fit_kind`: сравнение с `n_ctx_total` вместо окна слота (ровно прежнее поведение) | красный: 2 из 16 (`TOO_LONG` и `RELOAD` не распознаны) |
+| Вывод «причина не в окне» | `bridge_decode_failure_message`: `fits = 0` (всегда заявлять переполнение) | красный: 1 из 16 |
+| Числа в тексте балансера | `NCtxError.Error()`: печать `current_n_ctx=%d, required_n_ctx=%d` без проверки на ноль | красный: воспроизведён живой текст `… (current_n_ctx=0, required_n_ctx=0)`, 3 из 3 подтестов |
+
+Мутации проверялись и в Go (`internal/balancer`), и в C (`gcc -std=c11
+-I c/bridge c/bridge/tests/test_window_fit.c c/bridge/window_fit.c` + запуск:
+`OK (16 проверок)` до и после восстановления; `fc /b` подтвердил, что файл
+вернулся байт в байт).
+
+**Остаётся не покрытым:** сам `c/bridge/bridge.c` (встраивание хелперов в
+пути декода) юнит-тестом не покрыт — он проверяется сборкой (CI c-bridge job,
+образ cppworker) и живым прогоном. Это записано в `debts.ru.md` (12u).
+
+**Отдельный дефект стенда, найденный в этом же архиве:**
+`A10-126/info.json` — `llama_build_env=0eadefebd` против `llama_build=b1b770d90`,
+`llama_build_mismatch=true`. Причина — в `.env` второго стенда:
+`CPPWORKER_LLAMA_BUILD=0eadefebd`. В репозитории `deployments/.env.example`
+исправлен на `b1b770d90` с комментарием, почему расхождение опасно (переменная
+попадает в образ как ярлык сборки, и любой guard «одна ли сборка» начинает
+врать). Сам `.env` стенда репозиторием не управляется — его правит владелец
+стенда.
+
 ---
 
 ## 8. Чем проверено
@@ -462,4 +541,15 @@ go test -tags llama_stub ./internal/balancer/ -run 'TestR447_' -count=1 -v
 #   TestR447_ShortPromptSmallWindowNoGrowthNoReload,
 #   TestR447_UnifiedDecisionAgreesWithGuard, TestR447_BlockerServesAsIs
 # полный пакет: go test -tags llama_stub ./internal/balancer/ -count=1  → ok
+```
+
+Проверка отказа декода (§5.9, R493):
+
+```
+# C: чистая логика окна (ctest в CI, локально — gcc):
+gcc -std=c11 -I c/bridge -o test_window_fit c/bridge/tests/test_window_fit.c c/bridge/window_fit.c
+./test_window_fit                      # → OK (16 проверок)
+
+# Go: числа в тексте ошибки
+go test -tags llama_stub ./internal/balancer/ -run 'TestNCtxError_ErrorPrintsOnlyMeasuredNumbers_R493' -count=1 -v
 ```

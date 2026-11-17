@@ -19,6 +19,7 @@
 // R248/B2: extern "C" граница к libmtmd (mmproj passthrough).
 #include "csrc/vision_mtmd.h"
 #include "prefix_cache.h" // R493: кэш префилла (см. prefix_cache.h)
+#include "window_fit.h"   // R493: окно СЛОТА и текст отказа декода (см. window_fit.h)
 #include "llama.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1037,40 +1038,44 @@ static size_t trim_antiprompt_suffix(char* output, size_t output_len, int ap_ind
 // Возвращает BRIDGE_OK (0) если ОК, иначе один из BRIDGE_ERR_* кодов.
 static int bridge_check_ctx_capacity(InternalModel *im, const GenerationParams* params, int actual_tokens, int n_predict) {
     if (im == NULL || im->ctx_n_ctx == 0) return BRIDGE_OK;
-    uint32_t effective_n_ctx = im->ctx_n_ctx;
     int n_ctx_override = (params != NULL ? params->n_ctx_override : 0);
-
-    if (n_ctx_override > 0) {
-        if ((uint32_t)n_ctx_override > im->ctx_n_ctx) {
-            // Клиент запрашивает контекст больше, чем загружено — нужен reload.
-            int required = n_ctx_override;
-            char buf[640];
-            snprintf(buf, sizeof(buf),
-                "requested n_ctx=%d exceeds model's effective n_ctx=%u. "
-                "Auto-reload may be possible if VRAM allows (max_vram_n_ctx=%d). "
-                "Otherwise save a model profile with n_ctx=%d and reload the model "
-                "(or send a smaller n_ctx in options.num_ctx)",
-                n_ctx_override, im->ctx_n_ctx, g_max_vram_n_ctx, n_ctx_override);
-            set_error_info(BRIDGE_ERR_N_CTX_NEEDS_RELOAD, buf,
-                           (int)im->ctx_n_ctx, required,
-                           actual_tokens, n_predict, n_ctx_override, g_max_vram_n_ctx);
-            return BRIDGE_ERR_N_CTX_NEEDS_RELOAD;
-        }
-        effective_n_ctx = (uint32_t)n_ctx_override;
+    // R493 (2026-11-17): сверяемся с окном СЛОТА (llama_n_ctx_seq), а не только с
+    // суммарным. Живой факт второго стенда: prompt 80878 при суммарном 131072 и
+    // двух слотах (окно слота 65536) проходил проверку и падал уже в
+    // llama_decode — generic-кодом, без чисел, без перезагрузки.
+    int n_ctx_seq = 0;
+    if (im->context != NULL) {
+        n_ctx_seq = (int)llama_n_ctx_seq(im->context);
     }
-    int64_t total = (int64_t)actual_tokens + (int64_t)n_predict + 1;
-    if (total > (int64_t)effective_n_ctx) {
-        int required = actual_tokens + n_predict + 1;
+    int per_seq = bridge_window_effective_seq((int)im->ctx_n_ctx, n_ctx_seq);
+    int fit = bridge_window_fit_kind(actual_tokens, n_predict, (int)im->ctx_n_ctx, n_ctx_seq, n_ctx_override);
+    if (fit == BRIDGE_WINDOW_FIT_RELOAD) {
+        // Клиент запрашивает окно больше, чем даёт СЛОТ — нужен reload.
+        int required = n_ctx_override;
         char buf[640];
         snprintf(buf, sizeof(buf),
-            "prompt too long for n_ctx: prompt_tokens=%d + n_predict=%d + 1 = %lld > n_ctx=%u "
-            "(model loaded with n_ctx=%u, request asked for n_ctx=%d). "
+            "requested n_ctx=%d exceeds the per-slot window=%d (n_ctx=%u, slots derived from it). "
+            "Auto-reload may be possible if VRAM allows (max_vram_n_ctx=%d). "
+            "Otherwise save a model profile with n_ctx=%d and reload the model "
+            "(or send a smaller n_ctx in options.num_ctx)",
+            n_ctx_override, per_seq, im->ctx_n_ctx, g_max_vram_n_ctx, n_ctx_override);
+        set_error_info(BRIDGE_ERR_N_CTX_NEEDS_RELOAD, buf,
+                       per_seq, required,
+                       actual_tokens, n_predict, n_ctx_override, g_max_vram_n_ctx);
+        return BRIDGE_ERR_N_CTX_NEEDS_RELOAD;
+    }
+    if (fit == BRIDGE_WINDOW_FIT_TOO_LONG) {
+        int required = actual_tokens + n_predict + 1;
+        long long total = (long long)actual_tokens + (long long)n_predict + 1;
+        char buf[640];
+        snprintf(buf, sizeof(buf),
+            "prompt too long for the per-slot window: prompt_tokens=%d + n_predict=%d + 1 = %lld > "
+            "per-slot n_ctx=%d (total n_ctx=%u, request asked for n_ctx=%d). "
             "Reduce prompt, set smaller max_tokens, or save a model profile with bigger n_ctx "
             "and reload the model",
-            actual_tokens, n_predict, (long long)total, effective_n_ctx,
-            im->ctx_n_ctx, n_ctx_override);
+            actual_tokens, n_predict, total, per_seq, im->ctx_n_ctx, n_ctx_override);
         set_error_info(BRIDGE_ERR_PROMPT_TOO_LONG, buf,
-                       (int)im->ctx_n_ctx, required,
+                       per_seq, required,
                        actual_tokens, n_predict, n_ctx_override, g_max_vram_n_ctx);
         return BRIDGE_ERR_PROMPT_TOO_LONG;
     }
@@ -2533,6 +2538,18 @@ InferenceResult bridge_infer(
     // не меняется: CUDA kernel launch overhead амортизируется, и для типичных
     // prompts (200-2000 tokens) overhead маленький vs общий GPU time.
     int n_batch = params->n_batch > 0 ? params->n_batch : 64;
+    // R493 (2026-11-17): тот же предохранитель, что и в стриминге — батч не может
+    // быть больше окна слота (см. window_fit.c).
+    {
+        int ctx_total = (int)llama_n_ctx(im->context);
+        int ctx_seq = (int)llama_n_ctx_seq(im->context);
+        int clamped = bridge_window_suggest_batch(n_batch, ctx_total, ctx_seq);
+        if (clamped != n_batch) {
+            printf("[bridge] prefill: n_batch clamped to slot window: requested=%d clamped=%d n_ctx=%d per_slot=%d\n",
+                   n_batch, clamped, ctx_total, bridge_window_effective_seq(ctx_total, ctx_seq));
+            n_batch = clamped;
+        }
+    }
     // R493: prefill начинается с уже посчитанного префилла (0 = как раньше).
     int n_processed = pc_reuse;
 
@@ -2562,7 +2579,18 @@ InferenceResult bridge_infer(
         if (llama_decode(im->context, batch) != 0) {
             free(tokens);
             free(output);
-            result.error_msg = strdup("llama_decode failed for prompt");
+            // R493 (2026-11-17): те же факты, что и в стриминге (см. window_fit.c),
+            // и заполненные числа для Go-стороны.
+            int ctx_total = (int)llama_n_ctx(im->context);
+            int ctx_seq = (int)llama_n_ctx_seq(im->context);
+            char dbuf[768];
+            bridge_decode_failure_message(dbuf, sizeof(dbuf), actual_tokens, n_predict,
+                                          n_batch, ctx_total, ctx_seq);
+            int n_ctx_override = (params != NULL ? params->n_ctx_override : 0);
+            set_error_info(BRIDGE_ERR_GENERIC, dbuf,
+                           bridge_window_effective_seq(ctx_total, ctx_seq), 0,
+                           actual_tokens, n_predict, n_ctx_override, g_max_vram_n_ctx);
+            result.error_msg = strdup(dbuf);
             result.status = 1;
             llama_batch_free(batch);
             return result;
@@ -3022,6 +3050,19 @@ int bridge_infer_stream(
     // Round 32 (2026-08-09): n_batch default 512 → 64 для frequent abort checks в prefill.
     // См. bridge_infer для подробного обоснования.
     int n_batch = params->n_batch > 0 ? params->n_batch : 64;
+    // R493 (2026-11-17): батч больше окна слота обработать невозможно —
+    // урезаем ДО декода («n_batch > n_ctx» — одна из трёх причин, названных в
+    // старой ошибке; теперь она просто не наступает).
+    {
+        int ctx_total = (int)llama_n_ctx(im->context);
+        int ctx_seq = (int)llama_n_ctx_seq(im->context);
+        int clamped = bridge_window_suggest_batch(n_batch, ctx_total, ctx_seq);
+        if (clamped != n_batch) {
+            printf("[bridge] prefill: n_batch clamped to slot window: requested=%d clamped=%d n_ctx=%d per_slot=%d\n",
+                   n_batch, clamped, ctx_total, bridge_window_effective_seq(ctx_total, ctx_seq));
+            n_batch = clamped;
+        }
+    }
 
 // bridge_infer_stream тоже пробрасывает структурированный код ошибки из
 // bridge_check_ctx_capacity. Раньше всегда возвращал 1, что не позволяло
@@ -3082,9 +3123,19 @@ int bridge_infer_stream(
         im->embeddings_mode = BRIDGE_MODE_CHAT;
         if (llama_decode(im->context, batch) != 0) {
             free(tokens);
-            // Самая частая причина: n_ctx переполнен (kv-cache overflow),
-            // либо n_batch > n_ctx, либо модель не помещается в VRAM.
-            set_error("llama_decode failed for prompt batch (likely n_ctx overflow, prompt too long, or n_batch > n_ctx)");
+            // R493 (2026-11-17): называем ФАКТЫ, а не догадки, и заполняем числа
+            // (раньше в текст уходили нули «current_n_ctx=0, required_n_ctx=0»,
+            // а max_vram брался от прошлой ошибки). Текст строит pure-функция
+            // window_fit.c — она же проверяется ctest-ом.
+            int ctx_total = (int)llama_n_ctx(im->context);
+            int ctx_seq = (int)llama_n_ctx_seq(im->context);
+            char dbuf[768];
+            bridge_decode_failure_message(dbuf, sizeof(dbuf), actual_tokens, n_predict,
+                                          n_batch, ctx_total, ctx_seq);
+            int n_ctx_override = (params != NULL ? params->n_ctx_override : 0);
+            set_error_info(BRIDGE_ERR_GENERIC, dbuf,
+                           bridge_window_effective_seq(ctx_total, ctx_seq), 0,
+                           actual_tokens, n_predict, n_ctx_override, g_max_vram_n_ctx);
             llama_batch_free(batch);
             return 1;
         }

@@ -344,6 +344,47 @@ type BridgeErrorInfo struct {
 	Message      string // человекочитаемое описание ошибки
 }
 
+// formatBridgeNumbers — числовой хвост ошибки моста: ТОЛЬКО измеренные значения.
+//
+// R493 (2026-11-17). Живой факт второго стенда: клиент получал текст
+//
+//	stream inference failed with code 1: llama_decode failed for prompt batch
+//	(...) (current_n_ctx=0, required_n_ctx=0, max_vram_n_ctx=218989)
+//
+// при загруженном окне 131072 и промпте 80878 токенов. Числа не измерялись:
+// generic-ошибки C-моста кладут в структуру нули (и, бывает, оставляют
+// max_vram_n_ctx от предыдущей ошибки). Ноль в current_n_ctx читался оператором
+// как «окно 0», хотя это «неизвестно».
+//
+// Теперь печатаются только ненулевые поля; если измеренных нет — честная
+// подпись вместо нулей. Для ошибок про окно (коды 2/3) числа заполняются
+// C-мостом (см. window_fit.c), поэтому там хвост информативный.
+func formatBridgeNumbers(info *BridgeErrorInfo) string {
+	if info == nil {
+		return ""
+	}
+	var parts []string
+	if info.CurrentNCtx > 0 {
+		parts = append(parts, fmt.Sprintf("current_n_ctx=%d", info.CurrentNCtx))
+	}
+	if info.RequiredNCtx > 0 {
+		parts = append(parts, fmt.Sprintf("required_n_ctx=%d", info.RequiredNCtx))
+	}
+	if info.ActualTokens > 0 {
+		parts = append(parts, fmt.Sprintf("actual_tokens=%d", info.ActualTokens))
+	}
+	if info.NPredict > 0 {
+		parts = append(parts, fmt.Sprintf("n_predict=%d", info.NPredict))
+	}
+	if info.MaxVRAMNCtx > 0 {
+		parts = append(parts, fmt.Sprintf("max_vram_n_ctx=%d", info.MaxVRAMNCtx))
+	}
+	if len(parts) == 0 {
+		return " (числа не измерены: ошибка не про окно; см. лог cppworker и /api/models)"
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
+}
+
 // GetLastErrorInfo возвращает структурированную информацию о последней ошибке
 // из C-bridge. Должна вызываться СРАЗУ после того, как Infer/InferStream вернул
 // ошибку. Действительна до следующего вызова C-bridge.
@@ -1224,8 +1265,11 @@ func (m *ModelHandle) Infer(prompt string, params GenerationParams) (*InferenceR
 		if detail == "" {
 			detail = "(no detail from bridge)"
 		}
-		base := fmt.Errorf("inference failed: code=%d %s (current_n_ctx=%d, required_n_ctx=%d, max_vram_n_ctx=%d)",
-			result.status, detail, info.CurrentNCtx, info.RequiredNCtx, info.MaxVRAMNCtx)
+		// R493 (2026-11-17): печатаем только ИЗМЕРЕННЫЕ числа. Раньше сюда
+		// безусловно подставлялись нули (generic-ошибки C-моста их не заполняют),
+		// и клиент видел «current_n_ctx=0, required_n_ctx=0» рядом с настоящим
+		// текстом — то есть нули читались как измерение.
+		base := fmt.Errorf("inference failed: code=%d %s%s", result.status, detail, formatBridgeNumbers(info))
 		switch info.Code {
 		case ErrCodeNCtxNeedsReload:
 			return nil, fmt.Errorf("%w: %w", base, ErrNCtxNeedsReload)
@@ -1512,8 +1556,8 @@ func (m *ModelHandle) inferStreamWithAbortFlag(prompt string, params GenerationP
 		if detail == "" {
 			detail = "(no detail from bridge)"
 		}
-		base := fmt.Errorf("stream inference failed with code %d: %s (current_n_ctx=%d, required_n_ctx=%d, max_vram_n_ctx=%d)",
-			ret, detail, info.CurrentNCtx, info.RequiredNCtx, info.MaxVRAMNCtx)
+		// R493 (2026-11-17): факты вместо нулей — см. formatBridgeNumbers.
+		base := fmt.Errorf("stream inference failed with code %d: %s%s", ret, detail, formatBridgeNumbers(info))
 		switch info.Code {
 		case ErrCodeNCtxNeedsReload:
 			return abortFlag, fmt.Errorf("%w: %w", base, ErrNCtxNeedsReload)

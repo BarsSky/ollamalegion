@@ -511,6 +511,24 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/api/v1/cppworker/load-defaults", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleLoadDefaults), s.rateLimiter), s.authenticator))
 	s.mux.Handle("/api/v1/cppworker/model-catalog", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleModelCatalog), s.rateLimiter), s.authenticator))
 
+	// Справка-рекомендации и шаблоны параметров загрузки (страница WebUI
+	// «Справка/рекомендации + шаблоны»). Контракт:
+	// docs/plans/2026-11-17-reference-templates-design.md §3.
+	//
+	//   GET/PUT/DELETE /api/v1/reference/recommendations[/{id}]
+	//   POST           /api/v1/reference/recommendations/{id}/to-template
+	//   GET/PUT/DELETE /api/v1/reference/templates[/{id}]
+	//   POST           /api/v1/reference/templates/{id}/preview  — dry-run, без записи
+	//   POST           /api/v1/reference/templates/{id}/apply    — профиль + reload
+	//
+	// Обёртки ровно те же, что у профилей моделей выше: GET доступен viewer,
+	// мутации — admin + CSRF (internal/api/auth.go:189-214). Отдельного
+	// механизма прав не заводим (§1.7, §7 п.6 документа).
+	s.mux.Handle("/api/v1/reference/recommendations", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleReferenceRecommendations), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/reference/recommendations/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleReferenceRecommendations), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/reference/templates", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleReferenceTemplates), s.rateLimiter), s.authenticator))
+	s.mux.Handle("/api/v1/reference/templates/", AuthMiddleware(RateLimitMiddleware(http.HandlerFunc(s.handleReferenceTemplates), s.rateLimiter), s.authenticator))
+
 	// 2026-06-24: proxy to cppworker reset-reload-counter endpoint.
 	// Сбрасывает ramFallbackAttempts на cppworker (cycle counter блокирует reload
 	// после превышения лимита). Без этого нужен `docker restart`.

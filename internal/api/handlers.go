@@ -11,6 +11,7 @@ import (
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/config"
 	"ollama-loadbalancer/internal/i18n"
+	"ollama-loadbalancer/internal/reference"
 	"ollama-loadbalancer/internal/runtimeoverrides"
 	"ollama-loadbalancer/pkg/logger"
 	"ollama-loadbalancer/pkg/types"
@@ -79,6 +80,12 @@ type Server struct {
 	// целей (байты/скорость/ошибка) не имеет смысла после рестарта балансера
 	// (сам файл либо доехал, либо нет — это видно по инвентарю воркеров).
 	modelShare *modelShareManager
+	// referenceStore — хранилище «справки/рекомендаций + шаблонов» параметров
+	// загрузки (файл model-reference.json рядом с state.json, см.
+	// internal/reference). Инициализируется из main.go через SetReferenceStore:
+	// nil означает «хранилище не подключено», и ручки /api/v1/reference/*
+	// отвечают 503 store_unavailable вместо паники.
+	referenceStore *reference.Store
 }
 
 // EventBusLike — интерфейс EventBus из balancer.EventBus для тестирования.
@@ -91,6 +98,21 @@ type EventBusLike interface {
 // SetConfigSaver — устанавливает функцию для сохранения конфигурации на диск
 func (s *Server) SetConfigSaver(saver func() error) {
 	s.configSaver = saver
+}
+
+// SetReferenceStore — подключает хранилище «справки/рекомендаций + шаблонов».
+//
+// Вызывается из cmd/balancer/main.go после NewServer. nil допустим: ручки
+// /api/v1/reference/* в этом случае отвечают 503 store_unavailable (так
+// хранилище ведёт себя как «не подключено», а не как «пусто» — иначе оператор
+// принял бы отсутствие файла за отсутствие данных).
+func (s *Server) SetReferenceStore(store *reference.Store) {
+	s.referenceStore = store
+}
+
+// ReferenceStore — хранилище справки/шаблонов (для тестов и диагностики).
+func (s *Server) ReferenceStore() *reference.Store {
+	return s.referenceStore
 }
 
 // OverridesStore — интерфейс для persistent runtime-оверрайдов.

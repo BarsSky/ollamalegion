@@ -19,6 +19,7 @@ import (
 	"ollama-loadbalancer/internal/balancer"
 	"ollama-loadbalancer/internal/config"
 	"ollama-loadbalancer/internal/i18n"
+	"ollama-loadbalancer/internal/reference"
 	"ollama-loadbalancer/internal/rpccoordinator"
 	"ollama-loadbalancer/internal/runtimeoverrides"
 	"ollama-loadbalancer/internal/settings"
@@ -278,6 +279,21 @@ func main() {
 	} else if loaded > 0 {
 		log.Printf("Loaded %d model profile(s) from /app/data/profiles.json", loaded)
 	}
+
+	// Справка-рекомендации и шаблоны параметров загрузки (страница WebUI
+	// «Справка/рекомендации + шаблоны»).
+	//
+	// Отдельный файл model-reference.json в том же записываемом томе, что
+	// profiles.json (config.json в bundled-развёртывании read-only). Путь:
+	// LB_MODEL_REFERENCE_PATH, иначе рядом со state.json (LB_STATE_PATH).
+	// Чтение — до первого HTTP-запроса; если файла нет, выполняется ОДНОКРАТНЫЙ
+	// сид записями из docs/operations/model-tuning-reference.ru.md (существующий
+	// файл сид не перезаписывает).
+	// Контракт: docs/plans/2026-11-17-reference-templates-design.md §2.
+	referencePath := reference.ResolvePath(conf.LoadBalancer.StatePath)
+	referenceStore := reference.NewStore(referencePath)
+	referenceStore.Load()
+	apiServer.SetReferenceStore(referenceStore)
 
 	// Session 17 (2026-07-27): persistent runtime overrides для llamaCpp.
 	// В bundled compose config.json монтируется :ro, поэтому WebUI-изменения

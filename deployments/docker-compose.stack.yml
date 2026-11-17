@@ -171,6 +171,13 @@ services:
       # что и users.json (в нём cookie-id и CSRF — секреты, права 0600). Пусто =
       # только память, поведение прежних версий.
       - LB_SESSIONS_FILE=${LB_SESSIONS_FILE:-/app/data/sessions.json}
+      # R493 (2026-11-17): справочник рекомендаций и шаблонов параметров модели
+      # (страница WebUI «Справка и шаблоны»). Лежит на том же томе, что профили и
+      # пользователи: файл не секрет (0644), но он — состояние стенда, и при
+      # пересоздании контейнера оператор не должен терять свои записи.
+      # Каталог по умолчанию вычисляется кодом от LB_STATE_PATH; переменная нужна
+      # как override (например, чтобы положить справочник в другой том).
+      - LB_MODEL_REFERENCE_PATH=${LB_MODEL_REFERENCE_PATH:-/app/data/model-reference.json}
       - GIN_MODE=release
       - LOG_LEVEL=${LB_LOG_LEVEL:-info}
       - LB_CONFIG_PATH=/app/config/config.json

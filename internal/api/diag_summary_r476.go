@@ -110,7 +110,18 @@ func (s *Server) diagSummaryPayloadR476() map[string]interface{} {
 	if s.config != nil {
 		// nctxReload — конфигурация окна, всё целиком: так видно preflight,
 		// async-режим, потолок и таймауты без выдёргивания по одному полю.
+		//
+		// R493-12c (дефект 1): это СЫРАЯ секция config.json. Действующие
+		// значения могут отличаться, потому что LB_NCTX_* переопределяют её на
+		// старте (см. balancer.applyNCtxReloadEnvOverrides). Живой факт из архива
+		// второго стенда: в дампе рядом лежали auto_reload_max_n_ctx=131072,
+		// preflight_enabled=false, preflight_async_reload=false — а preflight
+		// работал асинхронно и поднял окно до 188416. Оператор читал сырое поле и
+		// искал причину не там, поэтому ниже — отдельный блок действующих значений.
 		out["nctx_reload"] = s.config.Balancing.NCtxReload
+		out["nctx_reload_effective"] = diagNCtxReloadEffectiveR493(s.config.Balancing.NCtxReload)
+		out["nctx_reload_note"] = "nctx_reload — сырая секция config.json; nctx_reload_effective учитывает " +
+			"переопределения LB_NCTX_* (действующие значения); расхождение — норма, а не ошибка"
 		out["operating_mode"] = s.config.Balancing.OperatingMode
 	}
 	if s.proxy != nil {

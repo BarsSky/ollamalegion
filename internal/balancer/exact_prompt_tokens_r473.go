@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,9 +51,24 @@ const exactTokensSwitchEnvR473 = "LB_PREFLIGHT_EXACT_TOKENS"
 // влияет на решения: 4 КБ ≈ 1–2k токенов, а пороги окон начинаются с 2–16k.
 const exactTokensMinSampleR473 = 4096
 
-// exactTokensTimeoutR473 — жёсткий предел на вызов токенизатора. Это горячий
-// путь: лучше остаться с оценкой, чем держать запрос.
-const exactTokensTimeoutR473 = 1500 * time.Millisecond
+// exactTokensTimeoutR473 — предел на ПЕРВЫЙ вызов токенизатора. Это горячий
+// путь, поэтому он короткий.
+//
+// R493-12c (2026-11-16): раньше на таймауте молча оставались с оценкой — и
+// решение о росте окна считалось по ней. Живой факт: оценка/факт = 1.917…2.010
+// (40 измерений), из-за чего запрос с 93 891 фактическими токенами получил 503
+// и перезагрузку 27B на A10 (needed=184100 против реальных 97987). Поэтому
+// таймаут теперь (а) настраиваемый, (б) при нём делается ОДИН повтор с
+// увеличенным лимитом: лишние секунды дешевле перезагрузки модели.
+var exactTokensTimeoutR473 = 1500 * time.Millisecond
+
+// exactTokensRetryTimeoutR473 — предел на повтор после таймаута.
+var exactTokensRetryTimeoutR473 = 6 * time.Second
+
+// exactTokensFallbackWarnEveryR493 — как часто писать warn «остались с оценкой».
+// Один и тот же повод повторяется на каждом запросе, а warn должен означать
+// проблему, а не быть фоном (та же причина, что у долга 12m).
+const exactTokensFallbackWarnEveryR493 = time.Minute
 
 // exactTokensOverheadTokensR473 — запас на то, чего нет в образце: системная
 // преамбула, служебные токены шаблона, разделители ролей.
@@ -214,10 +230,23 @@ func (p *Proxy) exactPromptTokensR473(meta *RequestMeta) (tokens int, source str
 	if addr == "" {
 		return 0, "", false
 	}
-	n, tokOK := p.callTokenizeR473(addr, meta.ModelName, sample)
+	n, tokOK, why := p.exactTokenizeWithRetryR493(addr, meta.ModelName, sample)
 	if !tokOK {
+		// R493-12c: НЕ молча. Раньше здесь был просто `return 0, "", false`, и
+		// оператор не знал, что решение о росте окна посчитано по оценке ×1.98.
+		if softLogAllowedR488(meta.ModelName, "exact_tokens_fallback", time.Now(),
+			exactTokensFallbackWarnEveryR493) {
+			logger.Get().Warnw("exact prompt tokens unavailable — growth decision falls back to estimate",
+				"model", meta.ModelName, "reason", why,
+				"timeout_ms", exactTokensTimeoutR473.Milliseconds(),
+				"retry_timeout_ms", exactTokensRetryTimeoutR473.Milliseconds(),
+				"impact", "оценка завышает ~в 2 раза (1.917…2.010 по 40 измерениям): "+
+					"возможна лишняя перезагрузка модели под большее окно",
+				"hint", "увеличьте LB_PREFLIGHT_EXACT_TOKENS_TIMEOUT_MS или проверьте /api/tokenize воркера")
+		}
 		return 0, "", false
 	}
+	_ = why
 	total, ok = n+exactTokensOverheadTokensR473, true
 	exactTokensCachePutR473(key, total)
 	return total, "tokenizer", true
@@ -253,15 +282,43 @@ func exactTokensPublishR473(key string, tokens *int, ok *bool) {
 
 // callTokenizeR473 — HTTP-вызов /api/tokenize. Отдельная функция, чтобы её можно
 // было проверить тестом без Proxy и без живого воркера.
+// exactTokenizeWithRetryR493 — подсчёт с ОДНИМ повтором при таймауте.
+//
+// Повод: таймаут первого вызова в 1.5 с — обычное дело на большом промпте
+// (сотни КБ) и загруженном воркере. Раньше это молча давало оценку ×1.98 и могло
+// стоить перезагрузки 27B (R83: 62/64 слоёв, stage=degraded).
+func (p *Proxy) exactTokenizeWithRetryR493(baseURL, model, text string) (int, bool, string) {
+	n, ok, why := p.callTokenizeTimeoutR493(baseURL, model, text, exactTokensTimeoutR473)
+	if ok {
+		return n, true, ""
+	}
+	if why != "timeout" {
+		return 0, false, why
+	}
+	n, ok, why2 := p.callTokenizeTimeoutR493(baseURL, model, text, exactTokensRetryTimeoutR473)
+	if ok {
+		return n, true, ""
+	}
+	return 0, false, "timeout_after_retry:" + why2
+}
+
 func (p *Proxy) callTokenizeR473(baseURL, model, text string) (int, bool) {
+	n, ok, _ := p.callTokenizeTimeoutR493(baseURL, model, text, exactTokensTimeoutR473)
+	return n, ok
+}
+
+// callTokenizeTimeoutR493 — один вызов /api/tokenize с причиной отказа:
+// "" (успех), "marshal", "request", "timeout", "status_<код>", "decode",
+// "no_tokenizer" (воркер вернул source != tokenizer).
+func (p *Proxy) callTokenizeTimeoutR493(baseURL, model, text string, timeout time.Duration) (int, bool, string) {
 	body, err := json.Marshal(map[string]string{"model": model, "text": text})
 	if err != nil {
-		return 0, false
+		return 0, false, "marshal"
 	}
 	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/tokenize",
 		bytes.NewReader(body))
 	if err != nil {
-		return 0, false
+		return 0, false, "request"
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// Тот же токен, что балансер использует для остальных ручек воркера:
@@ -272,23 +329,26 @@ func (p *Proxy) callTokenizeR473(baseURL, model, text string) (int, bool) {
 			break
 		}
 	}
-	client := &http.Client{Timeout: exactTokensTimeoutR473}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, false
+		if os.IsTimeout(err) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
+			return 0, false, "timeout"
+		}
+		return 0, false, "request"
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, false
+		return 0, false, "status_" + strconv.Itoa(resp.StatusCode)
 	}
 	var out tokenizeResponseR473
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return 0, false
+		return 0, false, "decode"
 	}
 	if out.Source != "tokenizer" || out.Tokens <= 0 {
-		return 0, false
+		return 0, false, "no_tokenizer"
 	}
-	return out.Tokens, true
+	return out.Tokens, true, ""
 }
 
 // exactSampleWithToolsR473 — образец для точного подсчёта: текст сообщений плюс

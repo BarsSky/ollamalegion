@@ -340,7 +340,8 @@ services:
       # кода: пустое значение разбирается как отсутствие (см. обработчики).
       #
       # Маршрутизация и очередь
-      - LB_ALGORITHM=${LB_ALGORITHM:-resource-aware}
+      # R493 (12n): LB_ALGORITHM удалена вместе с полем algorithm — переменная
+      # больше не читается, поэтому и в окружение не передаётся.
       - LB_MODEL_AFFINITY=${LB_MODEL_AFFINITY:-true}
       - LB_SESSION_STICKINESS=${LB_SESSION_STICKINESS:-true}
       - LB_ADMISSION_WAIT_SEC=${LB_ADMISSION_WAIT_SEC:-300}

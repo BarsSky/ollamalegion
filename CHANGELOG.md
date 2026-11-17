@@ -21,7 +21,10 @@ resource-aware, model-affinity», а два принимаемых имени в
 - `PUT /api/v1/cluster/config` с полем → **400 `algorithm_removed`** с
   `effectiveAlgorithm` и подсказкой (вместо тихого игнорирования);
 - поле из трёх GET-ответов, экспорта и импорта конфига, `diag/summary`,
-  `config/config.json`, `deployments/.env.example`;
+  `config/config.json`, `deployments/.env.example` И
+  `deployments/docker-compose.stack.yml` (compose больше не передаёт
+  `LB_ALGORITHM` в контейнер: проверено живьём — в окружении контейнера её нет, в
+  баннере `Selection: unified-multistage`, предупреждения об остатке нет);
 - из WebUI: select «Алгоритм балансировки» и строка «Algorithm» в мастере
   заменены статичным фактом (`#selectionAlgorithmValue`, «Переключателя нет»),
   обработчики и поле в теле запроса убраны, из экспорта/импорта настроек и

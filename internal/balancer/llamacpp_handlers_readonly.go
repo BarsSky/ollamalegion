@@ -619,6 +619,12 @@ func (lr *LlamaCppRouter) handleModels(w http.ResponseWriter, r *http.Request) {
 		ActiveQueries int    `json:"activeQueries,omitempty"`
 		LoadedAt      string `json:"loadedAt,omitempty"`
 		Backend       string `json:"backend,omitempty"`
+		// R493-12c (дефект 2): окно на слот и слоты обязаны быть в агрегате —
+		// иначе при parallel>1 клиент принимает суммарное окно за своё.
+		ContextPerSeq int    `json:"contextPerSeq,omitempty"`
+		MaxSlots      int    `json:"maxSlots,omitempty"`
+		Parallel      int    `json:"parallel,omitempty"`
+		KVCacheType   string `json:"kvCacheType,omitempty"`
 	}
 	type cppResponse struct {
 		Count  int        `json:"count"`
@@ -664,6 +670,12 @@ func (lr *LlamaCppRouter) handleModels(w http.ResponseWriter, r *http.Request) {
 				ActiveQueries: m.ActiveQueries,
 				LoadedAt:      m.LoadedAt,
 				Backend:       b.id,
+				// R493-12c: переносим как есть; ноль означает «воркер не сообщил»
+				// (старые сборки), и omitempty не выдаёт это за факт.
+				ContextPerSeq: m.ContextPerSeq,
+				MaxSlots:      m.MaxSlots,
+				Parallel:      m.Parallel,
+				KVCacheType:   m.KVCacheType,
 			})
 		}
 	}

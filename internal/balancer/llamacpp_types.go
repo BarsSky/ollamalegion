@@ -47,6 +47,14 @@ type cppWorkerModelsNative struct {
 		GPULayers       int    `json:"gpu_layers,omitempty"`
 		ActiveQueries   int    `json:"active_queries,omitempty"`
 		LoadedAt        string `json:"loaded_at,omitempty"`
+		// R493-12c (дефект 2): окно НА СЛОТ, число слотов и параллелизм воркер
+		// отдаёт в /api/models, но агрегат балансера их выбрасывал. При
+		// parallel>1 это повторяло бы класс дефекта R83 на другой ручке:
+		// клиент видит суммарное окно и считает его своим.
+		ContextPerSeq int `json:"context_per_seq,omitempty"`
+		MaxSlots      int `json:"max_slots,omitempty"`
+		Parallel      int `json:"parallel,omitempty"`
+		KVCacheType   string `json:"kv_cache_type,omitempty"`
 	} `json:"models"`
 }
 

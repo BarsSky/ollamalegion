@@ -1103,6 +1103,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Кладём разобранное тело в контекст: determineRequestBackendType и
 	// slot-handler'ы переиспользуют его без повторного парсинга body.
 	r = withParsedRequest(r, parsed)
+	// R493 (этап 1): единое решение о запросе — и в контекст, явным ключом.
+	r = withRequestPlanR493(r, parsed.Plan)
 
 	// Определяем требуемый тип бэкенда из URL запроса
 	bt := p.determineRequestBackendType(r)

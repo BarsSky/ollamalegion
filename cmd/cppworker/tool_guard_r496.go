@@ -251,3 +251,15 @@ func doneReasonStringR496(v interface{}) string {
 	}
 	return ""
 }
+
+// toolGuardCheckedLoadR496 / toolGuardUnresolvedLoadR496 — значения счётчиков для
+// /metrics (Prometheus-серия, см. handlers_metrics.go).
+func toolGuardCheckedLoadR496() int64 {
+	checked, _ := ToolGuardCountersR496()
+	return checked
+}
+
+func toolGuardUnresolvedLoadR496() int64 {
+	_, unresolved := ToolGuardCountersR496()
+	return unresolved
+}

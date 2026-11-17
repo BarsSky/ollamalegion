@@ -315,15 +315,6 @@ func (t *bottleneckTrackerR495) snapshot() map[string]BottleneckStateR495 {
 	return out
 }
 
-// resetBottleneckTrackerR495 — для тестов.
-func (t *bottleneckTrackerR495) reset() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.current = make(map[string]BottleneckStateR495)
-	t.pending = make(map[string]BottleneckKindR495)
-	t.streak = make(map[string]int)
-}
-
 // bottleneckInputFromMetricsR495 — собрать вход правила из снимка метрик бэкенда.
 func bottleneckInputFromMetricsR495(gpu types.GPUMetrics, active int) BottleneckInputR495 {
 	return BottleneckInputR495{

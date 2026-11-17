@@ -13,27 +13,28 @@ import (
 // handleInferMetrics — Round 18 P1.4 (2026-08-04): per-model stats endpoint.
 //
 // GET /api/infer/metrics
-// → {
-//     "uptime_seconds": 12345,
-//     "totals": {
-//       "requests": 1234, "errors": 12, "tokens": 567890,
-//       "error_rate": 0.00973,
-//       "active_requests": 0,
-//       "active_models": 2,
-//       "models_loaded_total": 5, "models_unloaded_total": 3,
-//       "token_latency_ms": 23,
-//       "gpu_memory_used_mb": 4200, "gpu_memory_total_mb": 8192
-//     },
-//     "models": {
-//       "qwen3-4b": {
-//         "requests": 1000, "errors": 10, "error_rate": 0.01,
-//         "tokens": 500000, "avg_ms": 1234,
-//         "p50_ms": 1100, "p95_ms": 2500, "p99_ms": 5000,
-//         "last_used_at": "2026-08-04T07:30:00Z"
-//       },
-//       ...
-//     }
-//   }
+//
+//	→ {
+//	    "uptime_seconds": 12345,
+//	    "totals": {
+//	      "requests": 1234, "errors": 12, "tokens": 567890,
+//	      "error_rate": 0.00973,
+//	      "active_requests": 0,
+//	      "active_models": 2,
+//	      "models_loaded_total": 5, "models_unloaded_total": 3,
+//	      "token_latency_ms": 23,
+//	      "gpu_memory_used_mb": 4200, "gpu_memory_total_mb": 8192
+//	    },
+//	    "models": {
+//	      "qwen3-4b": {
+//	        "requests": 1000, "errors": 10, "error_rate": 0.01,
+//	        "tokens": 500000, "avg_ms": 1234,
+//	        "p50_ms": 1100, "p95_ms": 2500, "p99_ms": 5000,
+//	        "last_used_at": "2026-08-04T07:30:00Z"
+//	      },
+//	      ...
+//	    }
+//	  }
 //
 // Auth: X-API-Token обязателен.
 //
@@ -67,19 +68,19 @@ func handleInferMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	totals := map[string]interface{}{
-		"requests":              totalRequests,
-		"errors":                totalErrors,
-		"tokens":                totalTokens,
-		"cancelled":             totalCancelled,
-		"error_rate":            errorRate,
-		"cancel_rate":           cancelRate,
-		"active_requests":       m.ActiveRequests.Load(),
-		"active_models":         m.ActiveModels.Load(),
-		"models_loaded_total":   m.TotalModelsLoaded.Load(),
-		"models_unloaded_total": m.TotalModelsUnloaded.Load(),
-		"token_latency_ms":      m.TokenLatencyMs.Load(),
+		"requests":               totalRequests,
+		"errors":                 totalErrors,
+		"tokens":                 totalTokens,
+		"cancelled":              totalCancelled,
+		"error_rate":             errorRate,
+		"cancel_rate":            cancelRate,
+		"active_requests":        m.ActiveRequests.Load(),
+		"active_models":          m.ActiveModels.Load(),
+		"models_loaded_total":    m.TotalModelsLoaded.Load(),
+		"models_unloaded_total":  m.TotalModelsUnloaded.Load(),
+		"token_latency_ms":       m.TokenLatencyMs.Load(),
 		"reasoning_auto_enables": m.ReasoningAutoEnables.Load(),
-		"unload_timeouts":       m.TotalUnloadTimeouts.Load(),
+		"unload_timeouts":        m.TotalUnloadTimeouts.Load(),
 	}
 
 	snap := m.GetMetricsSnapshot()
@@ -233,13 +234,18 @@ func handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {
 		// R358: общий счётчик отмен (по всем моделям) — чтобы «клиент не дождался»
 		// было видно на дашборде без суммирования по моделям.
 		{"cppworker_cancelled_total", "Total generations cancelled by client (all models)", m.TotalCancelled.Load()},
+		// R496 (2026-11-18): сторож «слабый ход агента». checked — сколько ходов с
+		// tools[] проверено, unresolved — сколько закончилось без вызова инструмента.
+		// Без публикации оператор не увидит, что модель систематически «обещает»
+		// вместо действия: в логе это одна Warn-строка на ход, а нужен тренд.
+		{"cppworker_tool_guard_checked_total", "Agent turns checked by tool guard (tools offered)", toolGuardCheckedLoadR496()},
+		{"cppworker_tool_guard_unresolved_total", "Agent turns finished without a tool call (tool guard)", toolGuardUnresolvedLoadR496()},
 	}
 	for _, g := range gauges {
 		fmt.Fprintf(&b, "# HELP %s %s\n", g.name, g.help)
 		fmt.Fprintf(&b, "# TYPE %s gauge\n", g.name)
 		fmt.Fprintf(&b, "%s %s\n", g.name, formatPromValue(g.value))
 	}
-
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)

@@ -23,10 +23,15 @@ import (
 const r214PatchPath = "../../docker/cppworker/patches/0001-rpc-tcp-keepalive.patch"
 
 // r214Dockerfiles — все сборки cppworker, которые компилируют llama.cpp.
+//
+// R493d (2026-11-17): из списка убран `Dockerfile.gpu.86` — файла больше нет.
+// Это была копия Dockerfile.gpu от 2026-11-10, отставшая на 330 строк: она
+// ссылалась на удалённый патч 0002 и не копировала c/bridge/window_fit.c, из-за
+// чего `-CudaArch 86` не собирался вовсе (падало на `git apply`). Сторож
+// уникальности — dockerfiles_no_arch_variants_r493d_test.go.
 func r214Dockerfiles() []string {
 	return []string{
 		"../../docker/cppworker/Dockerfile.gpu",
-		"../../docker/cppworker/Dockerfile.gpu.86",
 		"../../docker/cppworker/Dockerfile.cpu",
 		"../../docker/cppworker/Dockerfile.r66",
 	}

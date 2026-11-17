@@ -308,13 +308,16 @@ docker build @versionArgsAgent --build-arg ENABLE_NVML=true -t $agentImage -f do
         $llamaCommit = (& git -C c/llama.cpp rev-parse --short HEAD 2>$null)
         if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($llamaCommit)) {
             $llamaCommit = $llamaCommit.Trim()
-            $gpuBuildArgs += "--build-arg"
-            $gpuBuildArgs += "LLAMA_BUILD=$($identityCpp.LlamaBuild)"
-$gpuBuildArgs += "LLAMA_BUILD_DATE=$($identityCpp.LlamaBuildDate)"
-$gpuBuildArgs += "RPC_PROTO=$($identityCpp.RpcProto)"
-$gpuBuildArgs += "SERVICE=cppworker"
-$gpuBuildArgs += "VERSION=$($identityCpp.Version)"
-$gpuBuildArgs += "IMAGE_TAG=$($identityCpp.ImageTag)"
+            # R493d (2026-11-17): ЗДЕСЬ БЫЛ ДЕФЕКТ — на шесть значений
+            # (LLAMA_BUILD, LLAMA_BUILD_DATE, RPC_PROTO, SERVICE, VERSION,
+            # IMAGE_TAG) добавлялся ОДИН `--build-arg`. Docker (buildx) съедает
+            # ровно одно значение, остальные пять становятся ПОЗИЦИОННЫМИ
+            # аргументами, и сборка падает ДО компиляции:
+            #   ERROR: docker: 'docker buildx build' requires 1 argument
+            # Ничего не собиралось, но сообщение читалось как «проблема в docker».
+            # Причём все шесть значений уже приходят из единственного
+            # вычислителя идентичности ($versionArgsCpp, R486) — второй источник
+            # тут был не нужен вовсе, поэтому строки удалены, а не починены.
             Write-Host "  llama.cpp commit: $llamaCommit" -ForegroundColor DarkGray
         } else {
             Write-Host "  ВНИМАНИЕ: не удалось прочитать коммит c/llama.cpp — образ соберётся с LLAMA_BUILD=unknown" -ForegroundColor Yellow
@@ -337,18 +340,17 @@ $gpuBuildArgs += "IMAGE_TAG=$($identityCpp.ImageTag)"
             $gpuBuildArgs += "--build-arg"
             $gpuBuildArgs += "GO_DOWNLOAD_BASE=$($GoDownloadBase.Trim())"
         }
-        # Round 14a follow-up (2026-07-29): для одиночной архитектуры (напр. "86")
-        # используем Dockerfile.gpu.<arch> — у него более полный COPY в go-builder
-        # stage и короче компиляция (только один CUDA arch). Для "all" или
-        # нескольких arch — Dockerfile.gpu (универсальный).
+        # R493d (2026-11-17): ВЕТКА Dockerfile.gpu.<arch> УДАЛЕНА ВМЕСТЕ С САМИМ
+        # ФАЙЛОМ. Живой отказ: `-CudaArch 86` выбирал docker/cppworker/Dockerfile.gpu.86
+        # — копию от 2026-11-10, отставшую от Dockerfile.gpu на 330 строк. Она
+        # ссылалась на УДАЛЁННЫЙ патч 0002 и не копировала c/bridge/window_fit.c,
+        # поэтому сборка падала строкой `error: patch failed:
+        # ggml/src/ggml-rpc/transport.cpp:717 … patch does not apply`, хотя оба
+        # патча к текущему сабмодулю применяются (`git apply --check` = 0), а
+        # сообщение читалось как «сломан патч», а не «сломан Dockerfile».
+        # Один файл + --build-arg CUDA_ARCH: архитектуру задаёт аргумент
+        # (см. Dockerfile.gpu:45/146), отдельная копия ради одной арки не нужна.
         $dockerfile = "docker/cppworker/Dockerfile.gpu"
-        if ($lowerArch -notmatch "all" -and $lowerArch -notmatch "-" -and $lowerArch -notmatch ";") {
-            $archSpecific = "docker/cppworker/Dockerfile.gpu.$CudaArch"
-            if (Test-Path $archSpecific) {
-                $dockerfile = $archSpecific
-                Write-Host "Using arch-specific Dockerfile: $dockerfile" -ForegroundColor Yellow
-            }
-        }
                 $identityCpp = Get-BuildIdentity -Service cppworker -Version $imageTag -ImageTag $gpuTag
         $versionArgsCpp = Get-BuildArgLinesR486 -Identity $identityCpp
         Write-Host ("  identity: commit {0}, llama {1} ({2}), rpc {3}" -f $identityCpp.GitCommit, $identityCpp.LlamaBuild, $identityCpp.LlamaBuildDate, $identityCpp.RpcProto) -ForegroundColor Gray

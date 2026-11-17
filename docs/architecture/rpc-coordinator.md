@@ -341,7 +341,7 @@ second machine is idle.
 
 ### What has to be done in the packaging — DONE (2026-10-11)
 
-- **cppworker image:** ✅ `-DGGML_RPC=ON` in `Dockerfile.gpu` and `Dockerfile.gpu.86`,
+- **cppworker image:** ✅ `-DGGML_RPC=ON` in `docker/cppworker/Dockerfile.gpu` (the architecture comes from `--build-arg CUDA_ARCH`; the separate `Dockerfile.gpu.86` is gone — R493d),
   `rpc-server` is copied into the runtime layer (`/app/rpc-server`) by the same commit and
   with the same `CUDA_ARCHITECTURES` as `libllama`.
 - **Compose:** ✅ `deployments/docker-compose.rpc-node.yml` — the node sidecar.

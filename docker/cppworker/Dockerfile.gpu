@@ -181,6 +181,17 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
       # (LLAMA_STANDALONE=ON → LLAMA_BUILD_TOOLS=ON по умолчанию), флаг
       # LLAMA_BUILD_MTMD фиксирует намерение и оставит mtmd доступным, если
       # tools/ когда-нибудь выключат: standalone-хук сработает только тогда.
+      -DLLAMA_BUILD_SERVER=OFF \
+      # R493d (2026-11-17): llama-server/cli нам НЕ нужны (в образ копируется
+      # только ggml-rpc-server), а их сборка тянет tools/ui: на configure стадии
+      # скачивается ГОТОВЫЙ бандл UI из HuggingFace и проверяется его раскладка.
+      # Это делало сборку невоспроизводимой и однажды уже уронило её:
+      #   CMake Error at scripts/ui-assets.cmake:137 (message):
+      #     UI: missing required asset(s): bundle[hash].css / workbox[hash].js
+      # (upstream перегенерировал бандл в 'latest', а проверка в нашем коммите
+      # ждёт старую раскладку). tools/mtmd и tools/rpc собираются ВНЕ гейта
+      # LLAMA_BUILD_SERVER (c/llama.cpp/tools/CMakeLists.txt:31/33), поэтому обе
+      # нужные нам цели остаются.
       -DLLAMA_BUILD_MTMD=ON \
       # v0.5.16: gemma-4 workaround — её compute-graph с Gated Delta Net hybrid
       # attention даёт split с n_inputs > 30, что триггерит GGML_ASSERT в

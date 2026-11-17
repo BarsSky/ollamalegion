@@ -307,7 +307,7 @@ Circuit breaker state можно посмотреть через `/api/v1/rpc/wo
 
 ### Что нужно сделать в поставке — СДЕЛАНО (2026-10-11)
 
-- **Образ cppworker:** ✅ `-DGGML_RPC=ON` в `Dockerfile.gpu` и `Dockerfile.gpu.86`,
+- **Образ cppworker:** ✅ `-DGGML_RPC=ON` в `docker/cppworker/Dockerfile.gpu` (архитектура задаётся `--build-arg CUDA_ARCH`; отдельного `Dockerfile.gpu.86` больше нет — R493d),
   `rpc-server` копируется в runtime-слой (`/app/rpc-server`) тем же коммитом и с
   теми же `CUDA_ARCHITECTURES`, что `libllama`.
 - **Compose:** ✅ `deployments/docker-compose.rpc-node.yml` — сайдкар узла.

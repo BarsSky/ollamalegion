@@ -188,14 +188,44 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 		}
 	}
 
-	if metrics.GPU.UsagePercent > 90 {
+	// R499 / аудит S-2 (2026-11-19): порог GPU берётся из КОНФИГА, а не зашит.
+	//
+	// БЫЛО: `> 90` в коде, а Resources.GPU.MaxUsagePercent (LB_GPU_MAX_USAGE)
+	// влиял только как выключатель (`> 0`): оператор менял число в настройках и
+	// не видел эффекта. Значение по умолчанию — те же 90, поэтому поведение без
+	// настройки не меняется.
+	gpuMaxUsage := limits.GPU.MaxUsagePercent
+	if gpuMaxUsage <= 0 {
+		gpuMaxUsage = 90
+	}
+	if metrics.GPU.UsagePercent > gpuMaxUsage {
 		if hard {
-			logger.Get().Warnw("backend GPU usage critical, blocking", "backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
+			logger.Get().Warnw("backend GPU usage critical, blocking", "backend", backendID,
+				"gpu_usage", metrics.GPU.UsagePercent, "threshold", gpuMaxUsage)
 			return false
 		}
 		if softLogAllowedR488(backendID, "gpu_busy", time.Now(), softLogEveryR488) {
 			logger.Get().Infow(i18n.T("balancer.slot_manager.gpu_busy_soft_info"),
-				"backend", backendID, "gpu_usage", metrics.GPU.UsagePercent)
+				"backend", backendID, "gpu_usage", metrics.GPU.UsagePercent, "threshold", gpuMaxUsage)
+		}
+	}
+
+	// R499 / аудит S-3 (2026-11-19): у `Resources.GPU.MaxTemperature`
+	// (LB_GPU_MAX_TEMP) НЕ БЫЛО ПОТРЕБИТЕЛЯ ВООБЩЕ — значение читалось из env,
+	// попадало в конфиг и умирало там. Перегрев — тот самый факт «почему
+	// медленно», который R495 S1/S2 видит в throttle-масках; здесь он закрывает
+	// допуск при ЯВНО заданном пределе. По умолчанию границы нет: температура
+	// зависит от карты и корпуса, выдумывать ей предел нельзя.
+	if limits.GPU.MaxTemperature > 0 && metrics.GPU.Temperature > limits.GPU.MaxTemperature {
+		if hard {
+			logger.Get().Warnw("backend GPU temperature critical, blocking", "backend", backendID,
+				"temperature", metrics.GPU.Temperature, "threshold", limits.GPU.MaxTemperature)
+			return false
+		}
+		if softLogAllowedR488(backendID, "gpu_hot", time.Now(), softLogEveryR488) {
+			logger.Get().Infow(i18n.T("balancer.slot_manager.gpu_hot_soft_info"),
+				"backend", backendID, "temperature", metrics.GPU.Temperature,
+				"threshold", limits.GPU.MaxTemperature)
 		}
 	}
 
@@ -203,29 +233,43 @@ func (p *Proxy) checkResourceLimitsLocked(backendID string) bool {
 		vramPercent := float64(metrics.GPU.MemoryUsed) * 100 / float64(metrics.GPU.MemoryTotal)
 		if vramPercent > limits.GPU.MaxVRAMUsagePercent {
 			// R493 (долг про шум): для VRAM — свой, более редкий период; см.
-		// softLogEveryVramR493 — почему не 60 с.
-		if softLogAllowedR488(backendID, "vram_threshold", time.Now(), softLogEveryVramR493) {
+			// softLogEveryVramR493 — почему не 60 с.
+			if softLogAllowedR488(backendID, "vram_threshold", time.Now(), softLogEveryVramR493) {
 				logger.Get().Warnw("backend VRAM usage above threshold (degraded, not blocked)",
 					"backend", backendID, "vram_percent", vramPercent, "threshold", limits.GPU.MaxVRAMUsagePercent)
 			}
 		}
 	}
 
-	if metrics.System.CPUUsagePercent > 95 {
+	// R499 / аудит S-2: порог CPU — из конфига (по умолчанию те же 95).
+	cpuMaxUsage := limits.CPU.MaxUsagePercent
+	if cpuMaxUsage <= 0 {
+		cpuMaxUsage = 95
+	}
+	if metrics.System.CPUUsagePercent > cpuMaxUsage {
 		if hard {
-			logger.Get().Warnw("backend CPU usage critical, blocking", "backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent)
+			logger.Get().Warnw("backend CPU usage critical, blocking", "backend", backendID,
+				"cpu_usage", metrics.System.CPUUsagePercent, "threshold", cpuMaxUsage)
 			return false
 		}
 		if softLogAllowedR488(backendID, "cpu_busy", time.Now(), softLogEveryR488) {
 			logger.Get().Infow(i18n.T("balancer.slot_manager.cpu_busy_soft_info"),
-				"backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent)
+				"backend", backendID, "cpu_usage", metrics.System.CPUUsagePercent, "threshold", cpuMaxUsage)
 		}
 	}
 
-	if limits.Memory.MaxUsagePercent > 0 && metrics.System.MemoryTotal > 0 {
+	// R499 / аудит S-2: порог RAM — из конфига. Раньше значение использовалось
+	// только как выключатель (`> 0`), а порог был зашит 98 — то есть настройка
+	// «память выше 85 %» ничего не ограничивала.
+	ramMaxUsage := limits.Memory.MaxUsagePercent
+	if ramMaxUsage <= 0 {
+		ramMaxUsage = 98
+	}
+	if metrics.System.MemoryTotal > 0 {
 		memPercent := float64(metrics.System.MemoryUsed) * 100 / float64(metrics.System.MemoryTotal)
-		if memPercent > 98 {
-			logger.Get().Warnw("backend RAM usage critical, blocking", "backend", backendID, "ram_percent", memPercent)
+		if memPercent > ramMaxUsage {
+			logger.Get().Warnw("backend RAM usage critical, blocking", "backend", backendID,
+				"ram_percent", memPercent, "threshold", ramMaxUsage)
 			return false
 		}
 	}

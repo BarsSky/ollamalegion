@@ -300,7 +300,6 @@ type Proxy struct {
 	// Background controllers
 	AutoPull        *AutoPullManager     // Менеджер автоматической загрузки моделей (Pull-on-Demand)
 	unloadScheduler *UnloadScheduler     // Планировщик выгрузки моделей
-	weightTuner     *AdaptiveWeightTuner // Адаптивный тюнер весов
 	agentChecker    *agentTimeoutChecker // Проверка таймаута агентов
 
 	// R91 (2026-10-09): каталог моделей НА ДИСКЕ по бэкендам
@@ -706,8 +705,8 @@ func NewProxy(config *types.LoadBalancerConfig) *Proxy {
 	// Инициализация background controllers
 	p.unloadScheduler = NewUnloadScheduler(p)
 	p.unloadScheduler.Start()
-	p.weightTuner = NewAdaptiveWeightTuner(p)
-	p.weightTuner.Start()
+	// R499 / аудит S-1: тюнер весов удалён (его веса не читались скорингом,
+	// а RecordOutcome недостижим на llama.cpp-пути).
 
 	// Инициализация nctxReload координатора (Stage 3, 5).
 	// Загружает конфиг из BalancingSettings.NCtxReload (см. internal/config).
@@ -842,7 +841,6 @@ func (p *Proxy) SetHealthChecker(hc *HealthChecker) {
 //  2. Остановка приёма очереди — QueueManager.Stop
 //  3. Остановка background controllers:
 //     - UnloadScheduler (auto-unload idle models)
-//     - AdaptiveWeightTuner (per-backend weights)
 //     - AgentTimeoutChecker (agent health)
 //     - SessionManager (session stickiness)
 //     - LlamaCppMetricsPoller (cppworker metrics poll)
@@ -867,10 +865,6 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 	if p.unloadScheduler != nil {
 		logger.Get().Infow("stopping unload scheduler...")
 		p.unloadScheduler.Stop()
-	}
-	if p.weightTuner != nil {
-		logger.Get().Infow("stopping weight tuner...")
-		p.weightTuner.Stop()
 	}
 	if p.agentChecker != nil {
 		logger.Get().Infow("stopping agent timeout checker...")

@@ -178,6 +178,15 @@ var messagesBalancer3 = map[string]map[Lang]string{
 		EN: "backend CPU is busy (soft, non-blocking): CPU generation is " +
 			"normal for a partial offload, the request will be queued",
 	},
+	// R499 / аудит S-3: у LB_GPU_MAX_TEMP до этой правки не было потребителя —
+	// настройка читалась и умирала в конфиге. Строка называет ФАКТ (карта горячее
+	// заданного предела) и что из этого следует.
+	"balancer.slot_manager.gpu_hot_soft_info": {
+		RU: "backend GPU горячее заданного предела (soft, не блокирует): " +
+			"перегрев снижает частоту — смотрите throttle-причины в /api/metrics (gpu_diagnosis)",
+		EN: "backend GPU is above the configured temperature limit (soft, non-blocking): " +
+			"thermal throttling lowers clocks — see throttle reasons in /api/metrics (gpu_diagnosis)",
+	},
 
 	// === stale_model_snapshot_r160.go: устаревший снимок метрик =========
 	"balancer.stale_model_snapshot.missing_everywhere_404_warn": {

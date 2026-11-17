@@ -3,7 +3,7 @@
 // Pre-R52.4: tests calling `NewProxy(conf)` напрямую не останавливали
 // background controllers, которые NewProxy запускает (goroutine-leak):
 //   - llamaCppMetricsPoller.loop (query llama.cpp каждые 30s)
-//   - AdaptiveWeightTuner.loop (tune weights каждые 60s)
+//   - (тюнер весов удалён в R499 / аудит S-1: его веса не читались скорингом)
 //   - SessionManager.cleanupLoop (cleanup idle sessions каждые 30s)
 //   - StartAgentTimeoutChecker.func1 (timeout check каждые 60s)
 //   - queueMgr workers (request queue workers)
@@ -45,7 +45,7 @@ import (
 //
 // newProxyWithCleanup вызывает proxy.Shutdown с 5s timeout в t.Cleanup, что
 // останавливает ВСЕ background goroutines: queueMgr, unloadScheduler,
-// weightTuner, agentChecker, sessionMgr, llamaCppMetricsPoller,
+// agentChecker, sessionMgr, llamaCppMetricsPoller,
 // profileSyncer, и т.д.
 func newProxyWithCleanup(t *testing.T, config *types.LoadBalancerConfig) *Proxy {
 	t.Helper()

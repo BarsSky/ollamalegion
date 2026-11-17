@@ -733,9 +733,6 @@ retrySucceeded:
 	if p.unloadScheduler != nil {
 		p.unloadScheduler.RecordModelUse(modelFromCtx, backendID)
 	}
-	if p.weightTuner != nil {
-		p.weightTuner.RecordOutcome(backendID, modelFromCtx, latencyMs, success)
-	}
 
 	// Записываем latency для адаптивного таймаута
 	recordLatency(state, latencyMs, modelFromCtx, success)

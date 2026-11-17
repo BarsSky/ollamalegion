@@ -87,7 +87,7 @@ func newTestProxy(t *testing.T) *Proxy {
 	proxy := newProxyWithCleanup(t, createTestConfig())
 	proxy.SetQueueManagerProxy()
 	// Round 52.4 (2026-08-24): используем proxy.Shutdown чтобы остановить
-	// ВСЕ background goroutines (queueMgr, unloadScheduler, weightTuner,
+	// ВСЕ background goroutines (queueMgr, unloadScheduler,
 	// agentChecker, sessionMgr, llamaCppMetricsPoller, и т.д.).
 	// Раньше cleanup делал только queueMgr.Stop() — все остальные goroutine
 	// leaked → 1000+ leaked goroutine по всему test-suite → timeout через 60s.

@@ -241,13 +241,27 @@ func (p *Proxy) calculateModelLoadPenalty(backendID string, modelName string) fl
 		}
 	}
 
-	penalty := 5.0
+	// R499 / аудит S-4 (2026-11-19): штраф за загрузку модели берётся из конфига.
+	//
+	// БЫЛО: числа 5/10/20 зашиты здесь, а `balancing.scoring.modelLoadingCost`
+	// никем не читался (единственное вхождение в non-test Go) — при этом он
+	// документирован как рабочий вес (config.example.json, balancing-guide).
+	//
+	// Семантика сохранена: поле — БАЗОВЫЙ штраф (5 по умолчанию), рост по VRAM
+	// кратен ему (×4 при >80 %, ×2 при >60 %) — без настройки те же 5/10/20.
+	// Ноль/отрицательное значение трактуется как «взять дефолт»: выключать штраф
+	// нулём нельзя (класс S-6: defaultIfZero подменяет ≤0 дефолтом).
+	basePenalty := 5.0
+	if cost := p.config.Balancing.Scoring.ModelLoadingCost; cost > 0 {
+		basePenalty = cost
+	}
+	penalty := basePenalty
 	if metrics.GPU.MemoryTotal > 0 {
 		vramUsedPercent := float64(metrics.GPU.MemoryUsed) * 100 / float64(metrics.GPU.MemoryTotal)
 		if vramUsedPercent > 80 {
-			penalty = 20.0
+			penalty = basePenalty * 4
 		} else if vramUsedPercent > 60 {
-			penalty = 10.0
+			penalty = basePenalty * 2
 		}
 	}
 

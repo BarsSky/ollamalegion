@@ -20,7 +20,11 @@ type ApplyFn func(fromBackendID, toBackendID, modelName string) error
 
 // ApplyResult — summary of apply operation.
 type ApplyResult struct {
-	Applied int                 `json:"applied"`
+	Applied int `json:"applied"`
+	// R499 / аудит S-7 (2026-11-19): проверено, но НЕ применено (applyFn не
+	// передан). Отдельное поле, чтобы отчёт не выдавал проверку за переезд
+	// модели: раньше такие записи попадали в Applied.
+	Planned int                 `json:"planned"`
 	Failed  int                 `json:"failed"`
 	Details []ApplyDetailResult `json:"details"`
 	Errors  []string            `json:"errors,omitempty"`
@@ -108,16 +112,27 @@ func ApplySuggestions(
 		}
 
 		// Apply (if applyFn provided)
-		if applyFn != nil {
-			if err := applyFn(sug.FromBackend, sug.ToBackend, sug.Model); err != nil {
-				detail.Status = "failed"
-				detail.Error = err.Error()
-				detail.Actions = []string{"apply failed"}
-				result.Details = append(result.Details, detail)
-				result.Errors = append(result.Errors, sug.ID+": "+err.Error())
-				result.Failed++
-				continue
-			}
+		//
+		// R499 / аудит S-7 (2026-11-19): `applied` — только после РЕАЛЬНОГО
+		// применения. Раньше при applyFn == nil запись всё равно получала статус
+		// "applied" и попадала в result.Applied: отчёт «переехало N моделей»
+		// печатался даже когда не вызывалось ничего (dry-run / проверка без
+		// функции применения). Теперь без applyFn — честный статус "planned".
+		if applyFn == nil {
+			detail.Status = "planned"
+			detail.Actions = []string{"validated only: no apply function (dry-run)"}
+			result.Details = append(result.Details, detail)
+			result.Planned++
+			continue
+		}
+		if err := applyFn(sug.FromBackend, sug.ToBackend, sug.Model); err != nil {
+			detail.Status = "failed"
+			detail.Error = err.Error()
+			detail.Actions = []string{"apply failed"}
+			result.Details = append(result.Details, detail)
+			result.Errors = append(result.Errors, sug.ID+": "+err.Error())
+			result.Failed++
+			continue
 		}
 
 		// Update local loadedByBackend (для consistency при multi-step apply)

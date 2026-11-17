@@ -25,7 +25,15 @@ func makeSuggestion(id, from, to, model string, priority int) Suggestion {
 	}
 }
 
-// TestApplySuggestions_AllValid — все suggestions валидны, все applied.
+// TestApplySuggestions_AllValid — все suggestions валидны.
+//
+// R499 / аудит S-7 (2026-11-19): без applyFn записи НЕ «applied», а «planned».
+//
+// БЫЛО (этот тест и закреплял): applyFn = nil, но результат считался
+// «2 applied» — то есть отчёт выдавал валидацию за переезд моделей, ничего не
+// применяя. Отдельный подтест ниже — положительный контроль: с реальной
+// функцией применения те же две записи обязаны дать applied=2, иначе «planned»
+// можно было бы получить всегда и тест ничего не проверял бы.
 func TestApplySuggestions_AllValid(t *testing.T) {
 	backends := []*types.Backend{
 		makeBackend("b1", statusHealthy, 0, 10, 0, 4, types.BackendTypeOllama),
@@ -39,13 +47,37 @@ func TestApplySuggestions_AllValid(t *testing.T) {
 		"b1": {"m1", "m2"},
 		"b2": {},
 	}
-	result := ApplySuggestions(backends, suggestions, loadedByBackend, nil /* requestedIDs */, nil /* applyFn */)
-	if result.Applied != 2 {
-		t.Errorf("expected 2 applied, got %d (failed=%d)", result.Applied, result.Failed)
-	}
-	if result.Failed != 0 {
-		t.Errorf("expected 0 failed, got %d", result.Failed)
-	}
+
+	t.Run("dry-run (applyFn=nil) → planned, не applied", func(t *testing.T) {
+		result := ApplySuggestions(backends, suggestions, loadedByBackend, nil /* requestedIDs */, nil /* applyFn */)
+		if result.Applied != 0 {
+			t.Errorf("applied = %d без функции применения: валидация выдана за переезд (аудит S-7)", result.Applied)
+		}
+		if result.Planned != 2 {
+			t.Errorf("planned = %d, ожидалось 2 (проверено, но не применено)", result.Planned)
+		}
+		if result.Failed != 0 {
+			t.Errorf("failed = %d, ожидалось 0", result.Failed)
+		}
+	})
+
+	t.Run("с applyFn → applied", func(t *testing.T) {
+		calls := 0
+		applyFn := func(from, to, model string) error {
+			calls++
+			return nil
+		}
+		result := ApplySuggestions(backends, suggestions, loadedByBackend, nil, applyFn)
+		if result.Applied != 2 {
+			t.Errorf("applied = %d с функцией применения, ожидалось 2", result.Applied)
+		}
+		if result.Planned != 0 {
+			t.Errorf("planned = %d при реальном применении, ожидалось 0", result.Planned)
+		}
+		if calls != 2 {
+			t.Errorf("функция применения вызвана %d раз, ожидалось 2", calls)
+		}
+	})
 }
 
 // TestApplySuggestions_InvalidID — suggestion_id не существует в списке.

@@ -572,20 +572,20 @@ func (p *Proxy) SetUnloadScheduler(us *UnloadScheduler) {
 	p.unloadScheduler = us
 }
 
-// SetWeightTuner — установка адаптивного тюнера весов
-func (p *Proxy) SetWeightTuner(wt *AdaptiveWeightTuner) {
-	p.weightTuner = wt
-}
-
 // GetUnloadScheduler — получение планировщика выгрузки
 func (p *Proxy) GetUnloadScheduler() *UnloadScheduler {
 	return p.unloadScheduler
 }
 
-// GetWeightTuner — получение адаптивного тюнера весов
-func (p *Proxy) GetWeightTuner() *AdaptiveWeightTuner {
-	return p.weightTuner
-}
+// R499 / аудит S-1 (2026-11-19): тюнер весов УДАЛЁН (файл weight_tuner.go).
+//
+// Он правил свои TuningWeights по successRate/avgLatency, но скорринг читает
+// p.config.Balancing.Scoring — то есть поправленные веса не влияли НИ НА ОДНО
+// решение; GetWeights встречался только в тестах. Плюс RecordOutcome
+// вызывается лишь в generic-пути /api/* (proxy_request.go), а на llama.cpp-пути
+// (handler-путь, которым ходят Cline/OpenWebUI) недостижим. Вместо «подключить»
+// выбран вариант владельца «удалить»: иначе это была бы ещё одна настройка без
+// потребителя — ровно класс S-1 из аудита.
 
 // CandidateGroupDTO — DTO для группы кандидатов (приоритет + список бэкендов)
 type CandidateGroupDTO struct {

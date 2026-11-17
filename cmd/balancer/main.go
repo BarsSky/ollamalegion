@@ -241,11 +241,9 @@ func main() {
 
 	// Создание планировщика выгрузки и тюнера весов
 	unloadScheduler := balancer.NewUnloadScheduler(proxy)
-	weightTuner := balancer.NewAdaptiveWeightTuner(proxy)
 
 	// Подключение к proxy
 	proxy.SetUnloadScheduler(unloadScheduler)
-	proxy.SetWeightTuner(weightTuner)
 
 	// Создание health checker
 	healthChecker := balancer.NewHealthChecker(
@@ -446,7 +444,6 @@ func main() {
 	fmt.Println("[Unload] Starting unload scheduler...")
 	unloadScheduler.Start()
 	fmt.Println("[Weight] Starting adaptive weight tuner...")
-	weightTuner.Start()
 
 	// Создание HTTP сервера для прокси
 	mux := http.NewServeMux()

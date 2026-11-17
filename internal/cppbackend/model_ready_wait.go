@@ -31,17 +31,20 @@ const DefaultModelReadyPoll = 500 * time.Millisecond
 
 // ModelState — состояние модели (loaded/loading/error/unloaded) и признак наличия
 // записи. Отдельный метод нужен потому, что GetModel состояние не проверяет.
+//
+// R493e (2026-11-17): состояние читается ПОД b.mu — тем же замком, под которым
+// его пишет загрузчик. Раньше читали под inst.mu, а писали под b.mu: два разных
+// замка не дают отношения «случилось-до», и -race честно называет это гонкой
+// (тот же класс, что найденный в ListModels — см. комментарий у публикации
+// инстанса в LoadModelWithOpts).
 func (b *Backend) ModelState(name string) (LoadState, bool) {
 	b.mu.RLock()
+	defer b.mu.RUnlock()
 	inst, exists := b.models[name]
-	b.mu.RUnlock()
-	if !exists {
+	if !exists || inst == nil {
 		return StateUnloaded, false
 	}
-	inst.mu.Lock()
-	state := inst.info.State
-	inst.mu.Unlock()
-	return state, true
+	return inst.info.State, true
 }
 
 // WaitForModelReady — блокируется, пока модель не перейдёт в StateLoaded.

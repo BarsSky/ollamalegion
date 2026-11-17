@@ -97,10 +97,11 @@ func (b *Backend) LoadClaimR303(name string) (LoadClaimR303, bool) {
 	}
 	// Состояние инстанса читаем ВНЕ loadMu: порядок блокировок в пакете —
 	// loadMu → b.mu (см. TryLockLoad), но наружу мы его не выносим.
-	if inst := b.lookupInstanceR303(name); inst != nil {
-		inst.mu.Lock()
-		state := inst.info.State
-		inst.mu.Unlock()
+	//
+	// R493e (2026-11-17): состояние берём под b.mu, как GetModel/ModelState, —
+	// писать его под inst.mu нельзя считать синхронизацией, потому что загрузчик
+	// пишет его под b.mu (см. комментарий у публикации инстанса).
+	if state, ok := b.ModelState(name); ok {
 		out.LoadingInstance = state == StateLoading
 		out.ModelLoaded = state == StateLoaded
 	}

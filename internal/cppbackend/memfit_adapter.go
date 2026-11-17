@@ -576,13 +576,21 @@ func (b *Backend) MemfitBudgetFor(reclaimModel string) memfit.Budget {
 
 	// Сколько занимает СЕЙЧАС загруженный экземпляр этой модели: веса на GPU +
 	// KV-кэш. Считаем по тем же величинам, которыми оперирует memfit.
+	//
+	// R493e (2026-11-17): копию ModelInfo снимаем ПОД b.mu.RLock. Раньше указатель
+	// брали под замком, а сам info читали уже после RUnlock — и это была гонка с
+	// загрузчиком, который пишет inst.info (живой красный CI: ListModels vs
+	// LoadModelWithOpts).
 	b.mu.RLock()
 	inst, ok := b.models[reclaimModel]
+	var info ModelInfo
+	if ok && inst != nil {
+		info = inst.info
+	}
 	b.mu.RUnlock()
 	if !ok || inst == nil {
 		return budget
 	}
-	info := inst.info
 	if info.SizeBytes == 0 || info.NLayers <= 0 || info.GPULayers == 0 {
 		return budget
 	}

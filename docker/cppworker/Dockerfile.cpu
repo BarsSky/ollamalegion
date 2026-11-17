@@ -57,6 +57,13 @@ RUN mkdir -p build && cd build && \
       -DLLAMA_BUILD_EXAMPLES=OFF \
       # R248/B2: libmtmd.a для mmproj passthrough (vision). tools/ и так
       # собирается при standalone-сборке; флаг фиксирует намерение.
+      # R493d: сервер/CLI/единый бинарь в образ не копируются (нужны libmtmd и
+      # ggml-rpc-server), а их сборка тянет tools/ui: на configure скачивается
+      # готовый бандл UI из HuggingFace и сверяется его раскладка — сборка
+      # перестаёт быть воспроизводимой (см. Dockerfile.gpu). tools/mtmd и
+      # tools/rpc собираются вне гейта LLAMA_BUILD_SERVER.
+      -DLLAMA_BUILD_SERVER=OFF \
+      -DLLAMA_BUILD_APP=OFF \
       -DLLAMA_BUILD_MTMD=ON \
       # R486: build-info.cmake берёт коммит из локального git, а здесь он
       # синтетический (git init выше). Передаём НАСТОЯЩИЙ коммит сабмодуля и
@@ -74,7 +81,7 @@ FROM alpine:latest AS bridge-builder
 RUN apk add --no-cache build-base cmake nlohmann-json
 
 WORKDIR /build/bridge
-COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/CMakeLists.txt ./
+COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/window_fit.h c/bridge/window_fit.c c/bridge/CMakeLists.txt ./
 COPY c/bridge/csrc ./csrc/
 
 # Копируем собранный llama.cpp из предыдущего stage

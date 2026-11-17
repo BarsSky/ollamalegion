@@ -34,15 +34,15 @@ func backendWithModelR113(t *testing.T, name string, state LoadState) *Backend {
 }
 
 func setStateR113(b *Backend, name string, state LoadState) {
-	b.mu.RLock()
-	inst := b.models[name]
-	b.mu.RUnlock()
-	if inst == nil {
-		return
+	// R493e (2026-11-17): состояние пишется ПОД b.mu — тем же замком, под которым
+	// его читает ModelState (и под которым его пишет загрузчик в LoadModelWithOpts).
+	// Раньше здесь был inst.mu, и -race честно ловил гонку: два разных замка не
+	// дают отношения «случилось-до».
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if inst := b.models[name]; inst != nil {
+		inst.info.State = state
 	}
-	inst.mu.Lock()
-	inst.info.State = state
-	inst.mu.Unlock()
 }
 
 // TestR113_GetModelDoesNotMeanReady — GetModel отдаёт запись и в состоянии

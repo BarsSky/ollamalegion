@@ -182,6 +182,11 @@ RUN --mount=type=cache,id=ccache,target=/root/.ccache,mode=0755,uid=0,gid=0 \
       # LLAMA_BUILD_MTMD фиксирует намерение и оставит mtmd доступным, если
       # tools/ когда-нибудь выключат: standalone-хук сработает только тогда.
       -DLLAMA_BUILD_SERVER=OFF \
+      # R493d: и «единый бинарь» app/llama тоже не нужен: с выключенным server он
+      # всё равно пытается слинковать -lllama-server-impl/-lllama-cli-impl и падает
+      # на 100% сборки («cannot find -lllama-server-impl»). Нам из tools нужны
+      # только ggml-rpc-server (LLAMA_RPC) и mtmd.
+      -DLLAMA_BUILD_APP=OFF \
       # R493d (2026-11-17): llama-server/cli нам НЕ нужны (в образ копируется
       # только ggml-rpc-server), а их сборка тянет tools/ui: на configure стадии
       # скачивается ГОТОВЫЙ бандл UI из HuggingFace и проверяется его раскладка.

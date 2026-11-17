@@ -1141,6 +1141,28 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	b.models[name] = inst
 	b.mu.Unlock()
 
+	// R493e (2026-11-17): ПОСЛЕ этой строки инстанс виден другим горутинам —
+	// ListModels/GetModel/GetMetrics копируют inst.info под b.mu.RLock. Всё, что
+	// загрузчик пишет в inst.info ДО `b.mu.Lock()` ниже (tensor split, состояние
+	// mmproj, деградация раскладки), обязано идти в локальные переменные и
+	// попадать в inst.info уже под этим замком.
+	//
+	// ЖИВОЙ ДЕФЕКТ, ради которого: красный CI (`cmd/...`, -race)
+	//   WARNING: DATA RACE
+	//   Read at ... by goroutine 1999:  cppbackend.(*Backend).ListModels()   backend.go:2611
+	//   Previous write ...:             cppbackend.(*Backend).LoadModelWithOpts() backend.go:1556
+	// то есть /api/models отвечал во время загрузки, пока лоадер писал
+	// LayoutDegraded. Чтение под b.mu.RLock без записи под b.mu.Lock — гонка по
+	// контракту, который уже соблюдался в остальных 170 строках этого метода.
+	var (
+		infoTensorSplit    []float32
+		infoMmprojPath     string
+		infoVision         bool
+		infoVisionError    string
+		infoLayoutDegraded bool
+		infoLayoutReason   string
+	)
+
 	// R60.57 follow-up: watcher goroutine для ctx.Done() → bridge.RequestLoadAbort.
 	// Запускается ПОСЛЕ pre-allocation inst.handle (нужен для direct access),
 	// но ДО bridge.LoadModelWithEarlyHandle (чтобы watcher мог прервать load).
@@ -1428,8 +1450,9 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	if len(opts.TensorSplit) > 0 {
 		cfg.TensorSplit = opts.TensorSplit
 		if b.gpuCount > 0 && len(opts.TensorSplit) > 0 {
-			inst.info.TensorSplit = make([]float32, len(opts.TensorSplit))
-			copy(inst.info.TensorSplit, opts.TensorSplit)
+			// R493e: в inst.info — только под b.mu (см. комментарий у публикации
+			// инстанса выше).
+			infoTensorSplit = append([]float32(nil), opts.TensorSplit...)
 			cfg.MainGPU = 0
 			logger.Get().Infow("manual tensor split applied",
 				"model", name,
@@ -1449,8 +1472,8 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 		if ts.GPUCount > 1 {
 			cfg.TensorSplit = ts.Ratios
 			cfg.MainGPU = ts.MainGPU
-			inst.info.TensorSplit = make([]float32, len(ts.Ratios))
-			copy(inst.info.TensorSplit, ts.Ratios)
+			// R493e: в inst.info — только под b.mu (см. комментарий у публикации).
+			infoTensorSplit = append([]float32(nil), ts.Ratios...)
 			logger.Get().Infow("multi-GPU tensor split applied",
 				"model", name,
 				"gpuCount", ts.GPUCount,
@@ -1505,10 +1528,11 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	// остаётся выключенным (415 на картинки), а причина видна в
 	// /api/models.visionError и в логе — вместо тихой «модель без глаз».
 	if opts.MmprojPath != "" {
-		inst.info.MmprojPath = opts.MmprojPath
+		// R493e: результат проектора — в локальных переменных, публикация под b.mu.
+		infoMmprojPath = opts.MmprojPath
 		if verr := handle.LoadMMProj(opts.MmprojPath); verr != nil {
-			inst.info.Vision = false
-			inst.info.VisionError = verr.Error()
+			infoVision = false
+			infoVisionError = verr.Error()
 			logger.Get().Warnw("mmproj load failed: images stay unsupported (415)",
 				"name", name, "mmproj", opts.MmprojPath, "error", verr.Error())
 		} else {
@@ -1519,11 +1543,11 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 			// ответил бы текстом — молчаливый неверный ответ вместо 415.
 			// Флаг CPPWORKER_VISION_MMPROJ=1 включает capability заранее
 			// (стенд/приёмка), по умолчанию vision остаётся false.
-			inst.info.Vision = handle.MMProjLoaded() && visionInferenceEnabled()
-			inst.info.VisionError = ""
+			infoVision = handle.MMProjLoaded() && visionInferenceEnabled()
+			infoVisionError = ""
 			logger.Get().Infow("mmproj loaded",
 				"name", name, "mmproj", opts.MmprojPath,
-				"vision", inst.info.Vision, "marker", handle.MMProjMarker())
+				"vision", infoVision, "marker", handle.MMProjMarker())
 		}
 	}
 
@@ -1547,14 +1571,15 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	{
 		servers := b.activeRPCServers()
 		layers := bridge.DeviceLayers()
+		// R493e: результат — в локальные переменные, публикация под b.mu ниже.
 		if degraded, reason := layoutRegistration(servers, layers); degraded {
-			inst.info.LayoutDegraded = true
-			inst.info.LayoutDegradedReason = reason
+			infoLayoutDegraded = true
+			infoLayoutReason = reason
 			logger.Get().Warnw(i18n.T("cppbackend.backend.layout_not_applied"),
 				"name", name, "servers", servers, "layers", len(layers), "reason", reason)
 		} else {
-			inst.info.LayoutDegraded = false
-			inst.info.LayoutDegradedReason = ""
+			infoLayoutDegraded = false
+			infoLayoutReason = ""
 		}
 	}
 
@@ -1580,6 +1605,19 @@ func (b *Backend) LoadModelWithOpts(ctx context.Context, name string, path strin
 	_ = handle // R60.57 follow-up: handle уже в inst.handle (pre-allocated)
 	inst.metadata = meta
 	inst.info.State = StateLoaded
+	// R493e: публикация того, что загрузчик посчитал ДО этого замка
+	// (см. комментарий у публикации инстанса выше). Здесь и только здесь эти
+	// поля попадают в inst.info, который читают снимки.
+	if infoTensorSplit != nil {
+		inst.info.TensorSplit = infoTensorSplit
+	}
+	if infoMmprojPath != "" {
+		inst.info.MmprojPath = infoMmprojPath
+		inst.info.Vision = infoVision
+		inst.info.VisionError = infoVisionError
+	}
+	inst.info.LayoutDegraded = infoLayoutDegraded
+	inst.info.LayoutDegradedReason = infoLayoutReason
 	inst.info.Architecture = meta.Architecture
 	inst.info.NLayers = meta.NLayers
 	// R248: фактический offload вместо запрошенного. C-bridge клампит

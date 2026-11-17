@@ -76,7 +76,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build/bridge
-COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/CMakeLists.txt ./
+COPY c/bridge/bridge.h c/bridge/bridge.c c/bridge/window_fit.h c/bridge/window_fit.c c/bridge/CMakeLists.txt ./
 COPY c/bridge/csrc ./csrc/
 COPY --from=llama-builder /build/llama.cpp/include /build/llama.cpp/include
 COPY --from=llama-builder /build/llama.cpp/ggml/include /build/llama.cpp/ggml/include

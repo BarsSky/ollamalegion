@@ -884,9 +884,23 @@ func (p *Proxy) ResolveNumCtx(modelName string, body []byte, backendID string) R
 		if perSeqLoaded > 0 && perSeqLoaded > n {
 			// R60.37: loaded > body — patch body к loaded.
 			// Это предотвращает cppworker overflow (loaded=4096, body=2048, prompt overflow).
-			logger.Get().Infow("ResolveNumCtx: R60.37 — body num_ctx < loaded, upgrading",
+			// R493-12c (дефект 3): «upgrading» было неправдой для запроса.
+			//
+			// Что делает значение на самом деле: резолвер поднимает n до окна слота,
+			// и это уходит в X-Cpp-Ctx. Но X-Cpp-Ctx в воркере — ВЕРХНИЙ ПРЕДЕЛ
+			// (nctx_clamp.go:105-113): если клиент прислал num_ctx (обычный случай),
+			// его значение остаётся, а подъём влияет только на автозагрузку. Живой
+			// факт (архив второго стенда): 58 строк «upgrading body 131072 →
+			// loaded 180224», при этом воркер видел n_ctx_override=131072 на обоих
+			// узлах — эффективное окно запроса = min(клиент, загруженное).
+			//
+			// Поэтому в логе два числа и явная роль значения: иначе оператор
+			// считает, что запрос пошёл на 180k, и ищет причину 503 не там.
+			logger.Get().Infow("ResolveNumCtx: R60.37 — окно загружено больше клиентского, подъём для автозагрузки (X-Cpp-Ctx = верхний предел)",
 				"model", modelName, "backend", backendID,
-				"body_n_ctx", n, "loaded_per_seq_n_ctx", perSeqLoaded)
+				"body_n_ctx", n, "loaded_per_seq_n_ctx", perSeqLoaded,
+				"effective_request_n_ctx", n,
+				"header_role", "upper_limit")
 			n = perSeqLoaded
 		}
 		// Clamp к потолку из profile (если задан).

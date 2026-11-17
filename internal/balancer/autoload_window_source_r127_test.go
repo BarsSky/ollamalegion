@@ -66,9 +66,18 @@ func TestR127_ResolverUpgradesToLoadedWindow(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 	src := string(raw)
-	if !strings.Contains(src, "body num_ctx < loaded, upgrading") {
-		t.Error("в резолвере пропал подъём клиентского окна до загруженного (R60.37): " +
+	if !strings.Contains(src, "подъём для автозагрузки") {
+		t.Error("в резолвере пропал подъём окна до загруженного (R60.37): " +
 			"без него запрос с меньшим num_ctx к уже загруженной модели получит 400 " +
 			"prompt_too_long")
+	}
+	// R493-12c (дефект 3): лог обязан называть ЭФФЕКТИВНОЕ окно запроса и роль
+	// X-Cpp-Ctx. Раньше он писал «upgrading», хотя воркер применяет клиентское
+	// значение (header — верхний предел), и оператор искал причину 503 не там.
+	for _, want := range []string{"effective_request_n_ctx", "header_role"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("в логе подъёма нет поля %q: оператор снова примет подъём "+
+				"за эффективное окно запроса", want)
+		}
 	}
 }

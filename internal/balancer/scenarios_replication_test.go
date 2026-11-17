@@ -10,8 +10,10 @@ package balancer
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -281,8 +283,187 @@ func TestReplication_Scenario_OneBackendDown_StillWorks(t *testing.T) {
 // Concurrent replication
 // =====================================================================
 
+// replProbeBodyPrefix — сколько байт тела ответа хватает, чтобы опознать
+// источник отказа по тексту (диагностика долга 12l).
+//
+// ЗАЧЕМ 200: тела отказов балансера короткие и самодостаточные, и все известные
+// ветки укладываются в них целиком, с запасом: `Service overloaded` — 18 байт,
+// `Service unavailable - all backends busy` — 39, `... all backends failed` — 41,
+// `... no healthy backends for read endpoint` — 59 (плюс перевод строки от
+// `http.Error`). 200 байт хватает и на JSON-тело (`{"error":...}`), а полный
+// ответ фейка в 100 параллельных запросах в лог не лезет.
+const replProbeBodyPrefix = 200
+
+// replProbeRecord — что удалось выяснить про ОДИН запрос из N.
+//
+// ЗАЧЕМ. Долг 12l: падение «expected 100, actual 99» случилось ОДИН раз в
+// полном прогоне `go test -tags llama_stub ./...`, и разобрать его было нечем —
+// тест считал только «код 200 или нет», не записывая ни кода, ни тела, ни
+// длительности. По такому выводу нельзя отличить 503 очереди/допуска от 502
+// бэкенда и от обрыва связи клиента.
+//
+// Каждый goroutine пишет в СВОЙ индекс среза (results[i]) — поэтому ни мьютекса,
+// ни atomic на строки не нужно, а -race остаётся чистым.
+type replProbeRecord struct {
+	err         error
+	elapsed     time.Duration
+	status      int
+	contentType string
+	requestID   string
+	backendID   string
+	retryAfter  string
+	queueWait   string
+	body        string
+	truncated   bool
+}
+
+// String — одна строка на запрос для примера в логе падения.
+func (r replProbeRecord) String() string {
+	if r.err != nil {
+		return fmt.Sprintf("transport error after %s: %v", r.elapsed.Round(time.Millisecond), r.err)
+	}
+	out := fmt.Sprintf("status=%d elapsed=%s content-type=%q request-id=%q backend=%q",
+		r.status, r.elapsed.Round(time.Millisecond), r.contentType, r.requestID, r.backendID)
+	if r.retryAfter != "" {
+		out += fmt.Sprintf(" retry-after=%q", r.retryAfter)
+	}
+	if r.queueWait != "" {
+		out += fmt.Sprintf(" queue-wait-ms=%q", r.queueWait)
+	}
+	if r.truncated {
+		out += fmt.Sprintf(" body(первые %d байт)=%q", replProbeBodyPrefix, r.body)
+	} else {
+		out += fmt.Sprintf(" body=%q", r.body)
+	}
+	return out
+}
+
+// replProbe — выполняет один запрос и записывает в results[idx] всё, что нужно
+// для разбора. Смысл проверки не меняется: успех по-прежнему ровно «200»; тело
+// читается только чтобы попасть в лог падения (фейк отвечает ~40 байтами JSON,
+// поэтому это не влияет ни на длительность, ни на переиспользование соединений
+// сколько-нибудь заметно).
+func replProbe(balancerURL string, idx int, results []replProbeRecord) {
+	started := time.Now()
+	resp, err := http.Post(balancerURL+"/api/generate", "application/json",
+		strings.NewReader(`{"model":"llama","prompt":"hi","stream":false}`))
+	if err != nil {
+		results[idx] = replProbeRecord{err: err, elapsed: time.Since(started)}
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, replProbeBodyPrefix+1))
+	rec := replProbeRecord{
+		elapsed:     time.Since(started),
+		status:      resp.StatusCode,
+		contentType: resp.Header.Get("Content-Type"),
+		requestID:   resp.Header.Get("X-Request-ID"),
+		backendID:   resp.Header.Get("X-Backend-ID"),
+		retryAfter:  resp.Header.Get("Retry-After"),
+		queueWait:   resp.Header.Get("X-Queue-Wait-Ms"),
+		body:        string(body),
+	}
+	if len(rec.body) > replProbeBodyPrefix {
+		rec.body = rec.body[:replProbeBodyPrefix]
+		rec.truncated = true
+	}
+	results[idx] = rec
+}
+
+// logReplicatedProbeDiagnostics — печатает гистограмму статусов и до 3 примеров
+// тел. Вызывается всегда (одна строка сводки), подробности — только когда что-то
+// не так: иначе 100 запросов в каждом прогоне засоряли бы вывод.
+func logReplicatedProbeDiagnostics(t *testing.T, results []replProbeRecord, o1, o2 *ollamaFakeServer, proxy *Proxy) {
+	t.Helper()
+
+	byStatus := map[int]int{}
+	byBackend := map[string]int{}
+	var transport, ok int
+	durs := make([]time.Duration, 0, len(results))
+	for _, r := range results {
+		if r.err != nil {
+			transport++
+			continue
+		}
+		byStatus[r.status]++
+		if r.backendID != "" {
+			byBackend[r.backendID]++
+		}
+		if r.status == http.StatusOK {
+			ok++
+		}
+		durs = append(durs, r.elapsed)
+	}
+	sort.Slice(durs, func(i, j int) bool { return durs[i] < durs[j] })
+	pct := func(p float64) time.Duration {
+		if len(durs) == 0 {
+			return 0
+		}
+		i := int(float64(len(durs)-1) * p)
+		return durs[i].Round(time.Millisecond)
+	}
+
+	// Гистограмма по возрастанию кода — чтобы вывод был стабильным и сравнимым
+	// между прогонами.
+	codes := make([]int, 0, len(byStatus))
+	for code := range byStatus {
+		codes = append(codes, code)
+	}
+	sort.Ints(codes)
+	hist := make([]string, 0, len(codes))
+	for _, code := range codes {
+		hist = append(hist, fmt.Sprintf("%d×%d", code, byStatus[code]))
+	}
+	// Куда реально ушли запросы (X-Backend-ID отдаёт сам балансер): если
+	// гистограмма показывает только один узел, проверка «replicated» ничего не
+	// проверила — это тоже видно без разбора тела.
+	routed := make([]string, 0, len(byBackend))
+	for id, n := range byBackend {
+		routed = append(routed, fmt.Sprintf("%s=%d", id, n))
+	}
+	sort.Strings(routed)
+	t.Logf("concurrent probe: n=%d ok=%d transport_errors=%d statuses=[%s] routed=[%s] "+
+		"duration p50=%s p95=%s max=%s backend_calls o1=%d o2=%d",
+		len(results), ok, transport, strings.Join(hist, " "), strings.Join(routed, " "),
+		pct(0.50), pct(0.95), pct(1.0), o1.calls.Load(), o2.calls.Load())
+
+	if ok == len(results) {
+		return
+	}
+
+	// Состояние бэкендов на момент разбора: если балансер пометил узел
+	// unhealthy по одному неудачному запросу, следующие 503 придут уже отсюда.
+	proxy.mu.RLock()
+	states := make([]string, 0, len(proxy.backends))
+	for id, st := range proxy.backends {
+		states = append(states, fmt.Sprintf("%s=%s", id, st.Backend.Status))
+	}
+	proxy.mu.RUnlock()
+	sort.Strings(states)
+	t.Logf("PROBE backends after run: %s", strings.Join(states, " "))
+
+	shown := 0
+	for i, r := range results {
+		if shown == 3 {
+			break
+		}
+		if r.err == nil && r.status == http.StatusOK {
+			continue
+		}
+		t.Logf("PROBE example #%d (request %d/%d): %s", shown+1, i, len(results), r)
+		shown++
+	}
+}
+
 // TestReplication_Scenario_ConcurrentRequests_Replicated —
 // 100 concurrent запросов к replicated model.
+//
+// Диагностика долга 12l: смысл проверки не изменился (успех = 200, ожидаем все
+// 100), но каждый запрос теперь записывает код, тело (первые 200 байт),
+// Content-Type, X-Request-ID, Retry-After, X-Queue-Wait-Ms и длительность, а на
+// провале печатается гистограмма статусов и до 3 примеров. Раньше вывод
+// «expected 100, actual 99» не позволял отличить 503 допуска от 502 бэкенда.
 func TestReplication_Scenario_ConcurrentRequests_Replicated(t *testing.T) {
 	t.Parallel()
 	o1 := newOllamaFake(t, "o1")
@@ -311,27 +492,33 @@ func TestReplication_Scenario_ConcurrentRequests_Replicated(t *testing.T) {
 	const N = 100
 	var wg sync.WaitGroup
 	var success, totalErr int64
+	// results[i] пишет только goroutine i — гонок нет, читаем после wg.Wait().
+	results := make([]replProbeRecord, N)
 	for i := 0; i < N; i++ {
 		wg.Add(1)
-		go func() {
+		go func(idx int) {
 			defer wg.Done()
-			resp, err := http.Post(balancer.URL+"/api/generate", "application/json",
-				strings.NewReader(`{"model":"llama","prompt":"hi","stream":false}`))
-			if err != nil {
+			replProbe(balancer.URL, idx, results)
+			if results[idx].err != nil {
 				atomic.AddInt64(&totalErr, 1)
 				return
 			}
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
+			if results[idx].status == http.StatusOK {
 				atomic.AddInt64(&success, 1)
 			} else {
 				atomic.AddInt64(&totalErr, 1)
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
 
+	logReplicatedProbeDiagnostics(t, results, o1, o2, proxy)
+
 	assert.Equal(t, int64(N), success, "all requests should succeed")
+	// Отдельная строка для транспорта: она НЕ меняет исход (обрыв связи тоже
+	// даёт success<100 и валит первый assert), но в выводе сразу видно, что это
+	// не код ответа, а ошибка клиента — иначе разбор снова начинается с нуля.
+	assert.Zero(t, totalErr, "no request may fail (transport error or non-200)")
 }
 
 // TestReplication_Scenario_BackendRecovery —

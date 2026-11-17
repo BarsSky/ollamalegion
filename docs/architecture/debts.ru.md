@@ -748,8 +748,16 @@
     `statuses=[200×100]`, `transport_errors=0`; p50 31–188 мс, p95 46–242 мс,
     max 265 мс. `-race -count=20`: **20/20 зелёные**, p50 98–290 мс, p95
     132–375 мс, max 409 мс. Полный пакет `go test -tags llama_stub
-    ./internal/balancer`: **4/4 прогона зелёные** по ~176 с (тест в них участвует).
-    То есть в штатных условиях не воспроизводится.
+    ./internal/balancer`: **4 прогона по ~172–176 с, и НИ В ОДНОМ наш тест не
+    упал**. Три прогона зелёные; четвёртый упал, но не на этом тесте — на десятке
+    посторонних (`TestR193_KnownModelAndAlias`, `TestModelCatalog_*`,
+    `TestExecuteLlamaCppLoad_202*`, `TestCheckLlamaCppModelLoaded_*` и др.), и
+    ровно в те секунды, когда шёл стресс ниже: та же нехватка сокетов хоста валит
+    и чужие тесты. То есть в штатных условиях флак не воспроизводится.
+
+    **Проверка после правки:** `go vet -tags llama_stub ./internal/balancer` —
+    чисто; `go test … -count=5` — 5/5 зелёные, в каждом `statuses=[200×100]`,
+    `routed=[o1=62…68 o2=32…38]` (выбор не круговой — это известное 12n).
 
     **Стресс, которым причина получена** (не штатный режим, а способ получить
     доказательства): `-count=60` и `-count=100` в ОДНОМ процессе (одна таблица
@@ -759,9 +767,10 @@
     `backend request failed backend=o1 error="backend error [unknown]: Post
     \"http://127.0.0.1:49152/api/generate\": dial tcp 127.0.0.1:49152: connectex:
     Only one usage of each socket address (protocol/network address/port) is
-    normally permitted."` — 39 из 42 падений это отказ открыть сокет на хосте, в
-    обе стороны (клиент→балансер: `transport_errors=72…100`, до балансера запрос
-    не дошёл; балансер→фейк: та же строка в логе). «Service overloaded» не был ни
+    normally permitted."` — в 42 блоках падений набралось 39 таких строк (все с
+    этой ошибкой), то есть отказ открыть сокет виден в ОБЕ стороны: клиент→балансер
+    (`transport_errors=72…100` — до балансера запрос не дошёл) и балансер→фейк
+    (та же строка в логе балансера). «Service overloaded» не был ни
     разу: backpressure очереди в этом конфиге не участвует — у бэкендов не задан
     `MaxConcurrentReqs`, поэтому `EffectiveMaxConcurrentRequests()==0` (слоты не
     ограничены), `tryAcquireSlot` выдаёт слот всегда, а `TestMain` пакета и так

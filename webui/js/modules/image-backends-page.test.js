@@ -1,4 +1,4 @@
-// image-backends-page.test.js - R-Image: интеграционный smoke страницы
+﻿// image-backends-page.test.js - R-Image: интеграционный smoke страницы
 // «Image-бэкенды» (управление бэкендами генерации изображений, тип image_cpp)
 // с мок-DOM, мок-fetch и реальным паком переводов ru.js (без браузера).
 //
@@ -406,7 +406,15 @@ function lastRequest(filter) {
         assert.ok(/id="image-page"/.test(INDEX_HTML), 'нет страницы id="image-page"');
         assert.ok(INDEX_HTML.indexOf('id="imTabOverview"') !== -1, 'нет таба «Обзор»');
         assert.ok(INDEX_HTML.indexOf('data-i18n="nav.image_models"') !== -1, 'нет data-i18n пункта');
-        assert.ok(INDEX_HTML.indexOf('js/modules/image-backends-page.js?v=R83') !== -1, 'нет script-тега модуля');
+        // R493 (2026-11-17): раньше здесь был ЛИТЕРАЛ `?v=R83` — токен
+        // кэш-бастинга конкретного выпуска. В репозитории он бампается каждым
+        // выпуском, а Dockerfile переписывает его в хеш содержимого статики,
+        // поэтому проверка была верна ровно один выпуск: при `?v=R425` набор
+        // краснел — и оставался красным незамеченным, потому что не запускался
+        // ни локально (его не было в списке test:webui), ни в CI.
+        // Проверять надо НАЛИЧИЕ тега и токена, а не его значение.
+        assert.ok(/js\/modules\/image-backends-page\.js\?v=[A-Za-z0-9._-]+/.test(INDEX_HTML),
+            'нет script-тега модуля с токеном кэш-бастинга (?v=…)');
     });
 
     await check('app.js: таблица рендерится на странице «Image-модели» и видимость синхронизируется', function () {

@@ -876,3 +876,45 @@ jobs:
         # Note: webui/js/i18n/* is a separate i18n pack and uses a
         # slightly different ES syntax; syntax check is optional.
 
+  # ---------------------------------------------------------------------------
+  # Job 6: WebUI JS tests (lightweight, no Docker).
+  #
+  # R493 (2026-11-17). ЗАЧЕМ ОТДЕЛЬНАЯ ДЖОБА. Наборов `*.test.js` в webui/ было
+  # 102, а запускалось 28 — список файлов жил руками в `package.json`
+  # (scripts.test:webui) и отстал на 74 набора. Ещё хуже: `npm run test:webui`
+  # в CI не вызывался ВООБЩЕ (в этом файле не было ни одного упоминания), так что
+  # даже эти 28 проверок не давали сигнала на pull request.
+  #
+  # Живое следствие (жалоба оператора «кнопки обновить не работают, и их
+  # несколько»): проверки механизма обновления существовали и были зелёными, но
+  # не запускались — `data-refresh.test.js` (13 проверок) и
+  # `no-dead-refresh-buttons.test.js` не входили в список, а
+  # `image-backends-page.test.js` годами висел красным (проверял литерал
+  # `?v=R83`, который бампается каждым выпуском) — и никто этого не видел.
+  #
+  # Джоба не зависит от Go-джоб: наборы WebUI — чистый node, без npm install
+  # (external-зависимостей у них нет; playwright нужен только для `test:visual`).
+  # Список файлов руками больше не ведётся: `scripts/run-webui-tests.js`
+  # обходит webui/ и падает на любом красном наборе — новый тест нельзя «забыть
+  # добавить», единственное правило — имя файла `*.test.js`.
+  # ---------------------------------------------------------------------------
+  webui-js-tests:
+    name: WebUI JS tests (all *.test.js)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run every WebUI test set
+        run: |
+          node scripts/run-webui-tests.js
+

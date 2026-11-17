@@ -9,8 +9,10 @@
 package balancer
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -338,6 +340,34 @@ func (r replProbeRecord) String() string {
 	return out
 }
 
+// replProbeClient — клиент пробника с запасом на 100 одновременных соединений.
+//
+// ЗАЧЕМ НЕ http.Post (R493, долг 12l): 100 горутин одновременно открывают
+// соединения к 127.0.0.1, а `http.DefaultClient` держит общий пул с малым
+// MaxIdleConnsPerHost=2. На раннере это давало 1 из 100 ошибок «dial …
+// Only one usage of each socket address» — клиент не мог занять эфемерный порт,
+// хотя балансер тут ни при чём (запрос до него не доходил). Ниже — свой пул,
+// чтобы соединения переиспользовались, а не открывались заново.
+var replProbeClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        200,
+		MaxIdleConnsPerHost: 200,
+		IdleConnTimeout:     30 * time.Second,
+	},
+}
+
+// isClientDialError — ошибка «не удалось даже соединиться» (а не ответ сервера).
+//
+// Отличать обязательно: dial-ошибка означает, что балансер НЕ отказал, а клиент
+// не смог дозвониться. Такая ошибка повторяется один раз (см. replProbe); если и
+// повтор не соединился — она попадает в результат, и проверка падает, то есть
+// реальная недоступность балансера по-прежнему валит тест.
+func isClientDialError(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
+}
+
 // replProbe — выполняет один запрос и записывает в results[idx] всё, что нужно
 // для разбора. Смысл проверки не меняется: успех по-прежнему ровно «200»; тело
 // читается только чтобы попасть в лог падения (фейк отвечает ~40 байтами JSON,
@@ -345,8 +375,16 @@ func (r replProbeRecord) String() string {
 // сколько-нибудь заметно).
 func replProbe(balancerURL string, idx int, results []replProbeRecord) {
 	started := time.Now()
-	resp, err := http.Post(balancerURL+"/api/generate", "application/json",
+	resp, err := replProbeClient.Post(balancerURL+"/api/generate", "application/json",
 		strings.NewReader(`{"model":"llama","prompt":"hi","stream":false}`))
+	if err != nil && isClientDialError(err) {
+		// Долг 12l: исчерпание эфемерных портов на раннере. Один повтор с паузой;
+		// счётчик повторов не нужен — важно, что ПОСЛЕ повтора ошибка всё ещё
+		// валит тест (это проверяется отсутствием третьей попытки).
+		time.Sleep(20 * time.Millisecond)
+		resp, err = replProbeClient.Post(balancerURL+"/api/generate", "application/json",
+			strings.NewReader(`{"model":"llama","prompt":"hi","stream":false}`))
+	}
 	if err != nil {
 		results[idx] = replProbeRecord{err: err, elapsed: time.Since(started)}
 		return
